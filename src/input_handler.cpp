@@ -3,6 +3,7 @@
 #include "../include/logger.h"
 #include "../include/memory.h"
 #include "../include/constants.h"
+#include "../include/network.h" // Add at top with other includes
 #include <windows.h>
 
 void MonitorKeys() {
@@ -17,6 +18,13 @@ void MonitorKeys() {
     ShowHotkeyInfo();
     
     while (true) {
+        // *** Add this check at the beginning of the loop ***
+        if (isOnlineMatch.load()) {
+            // Skip all keybind processing during online matches
+            Sleep(100); // Reduced polling when online
+            continue;
+        }
+        
         // Only process hotkeys when EFZ window is active
         if (IsEFZWindowActive()) {
             uintptr_t base = GetEFZBase();
