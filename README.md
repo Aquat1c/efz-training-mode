@@ -18,7 +18,7 @@ A comprehensive training mode enhancement tool for Eternal Fighter Zero that pro
 3. Make sure to add `efz_training_mode=1` in the "EfzModManager.ini" file. You can download and install the EFZ Mod Manager here - [link](https://docs.google.com/spreadsheets/d/1r0nBAaQczj9K4RG5zAVV4uXperDeoSnXaqQBal2)
 4. A console window will appear with frame data information.
 
-# Please keep in mind that it is not recommended to have the mod enabled when connecting to a multiplayer match, since it can cause desynchs and some other problems(not tested).
+# Please keep in mind that it is not recommended to have the mod enabled when connecting to a multiplayer match, since it can cause desynchs and some other problems (not tested).
 
 ## Controls
 
