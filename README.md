@@ -10,6 +10,7 @@ A comprehensive training mode enhancement tool for Eternal Fighter Zero that pro
 - **Player Status Modification**: Adjust health, meter, RF values, and positions through an in-game menu
 - **Move ID Tracking**: Monitor character state transitions with detailed move ID logging
 - **Visual Frame Counter**: Track game frames with accurate internal and visual frame displays
+- **Smart Online Mode Detection**: Automatically detects online play and temporarily disables training features to prevent desyncs
 
 ## Installation
 
@@ -18,11 +19,20 @@ A comprehensive training mode enhancement tool for Eternal Fighter Zero that pro
 3. Make sure to add `efz_training_mode=1` in the "EfzModManager.ini" file. You can download and install the EFZ Mod Manager here - [link](https://docs.google.com/spreadsheets/d/1r0nBAaQczj9K4RG5zAVV4uXperDeoSnXaqQBal2)
 4. A console window will appear with frame data information.
 
-# Please keep in mind that it is not recommended to have the mod enabled when connecting to a multiplayer match, since it can cause desynchs and some other problems (not tested).
+## Online Play Support
+
+The training mode now features automatic network detection:
+
+- When a connection to another player is detected, the tool will:
+  - Temporarily hide the console window (after a 3-second countdown)
+  - Disable all training mode hotkeys
+  - Prevent any accidental inputs that could cause desynchronization
+- When the online match ends, the console and hotkeys will be automatically closed.
+- This ensures a safe experience when switching between training and online play without needing to disable the mod
 
 ## Controls
 
-The tool provides several hotkeys to control its functionality:
+The tool provides several hotkeys to control its functionality (automatically disabled during online play):
 
 - **1**: Teleport players to recorded/default positions
   - With **Left Arrow**: Move both players to left side
@@ -73,6 +83,7 @@ The project is built in C++ with CMake support and includes:
 - **Frame Monitoring**: Track and analyze frame data in real-time
 - **Console UI**: Display frame data and debugging information
 - **Dialog Interface**: Configure player settings through in-game dialog
+- **Network Detection**: Monitor TCP/UDP connections to detect online matches and prevent desyncs
 
 ## Building from Source
 
