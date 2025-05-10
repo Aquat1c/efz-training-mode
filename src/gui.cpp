@@ -42,9 +42,17 @@ void OpenMenu() {
         if (hpAddr1) memcpy(&displayData.hp1, (void*)hpAddr1, sizeof(WORD));
         if (meterAddr1) memcpy(&displayData.meter1, (void*)meterAddr1, sizeof(WORD));
         if (rfAddr1) {
-            float rf;
-            memcpy(&rf, (void*)rfAddr1, sizeof(float));
-            displayData.rf1 = rf;
+            // Read RF value as a double with error checking
+            double rf = 0.0;
+            memcpy(&rf, (void*)rfAddr1, sizeof(double));
+            
+            // Validate RF value (should be between 0 and 1000)
+            if (rf >= 0.0 && rf <= MAX_RF) {
+                displayData.rf1 = rf;
+            } else {
+                // If value is out of valid range, set to a reasonable default
+                displayData.rf1 = 0.0;
+            }
         }
         if (xAddr1) memcpy(&displayData.x1, (void*)xAddr1, sizeof(double));
         if (yAddr1) memcpy(&displayData.y1, (void*)yAddr1, sizeof(double));
@@ -52,9 +60,14 @@ void OpenMenu() {
         if (hpAddr2) memcpy(&displayData.hp2, (void*)hpAddr2, sizeof(WORD));
         if (meterAddr2) memcpy(&displayData.meter2, (void*)meterAddr2, sizeof(WORD));
         if (rfAddr2) {
-            float rf;
-            memcpy(&rf, (void*)rfAddr2, sizeof(float));
-            displayData.rf2 = rf;
+            double rf = 0.0;
+            memcpy(&rf, (void*)rfAddr2, sizeof(double));
+            
+            if (rf >= 0.0 && rf <= MAX_RF) {
+                displayData.rf2 = rf;
+            } else {
+                displayData.rf2 = 0.0;
+            }
         }
         if (xAddr2) memcpy(&displayData.x2, (void*)xAddr2, sizeof(double));
         if (yAddr2) memcpy(&displayData.y2, (void*)yAddr2, sizeof(double));
