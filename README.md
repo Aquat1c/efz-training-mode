@@ -101,4 +101,4 @@ cmake --build . --config Release
 3. Additional training mode quality-of-life features
 
 ## License
-# This project is provided for educational purposes. Eternal Fighter Zero is property of Twilight Frontier and its respective owners.
+This project is provided for educational purposes. Eternal Fighter Zero is property of Twilight Frontier and its respective owners.
