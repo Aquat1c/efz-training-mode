@@ -16,7 +16,7 @@ A comprehensive training mode enhancement tool for Eternal Fighter Zero that pro
 
 1. Build the DLL using Visual Studio or CMake
 2. Place the generated `efz_training_mode.dll` in your EFZ mods directory.  
-3. Make sure to add `efz_training_mode=1` in the "EfzModManager.ini" file. You can download and install the EFZ Mod Manager here - [link](https://docs.google.com/spreadsheets/d/1r0nBAaQczj9K4RG5zAVV4uXperDeoSnXaqQBal2)
+3. Make sure to add `efz_training_mode=1` in the "EfzModManager.ini" file. You can download and install the EFZ Mod Manager here - [link](docs.google.com/spreadsheets/d/1r0nBAaQczj9K4RG5zAVV4uXperDeoSnXaqQBal2-8Us/edit?usp=sharing)
 4. A console window will appear with frame data information.
 
 ## Online Play Support
