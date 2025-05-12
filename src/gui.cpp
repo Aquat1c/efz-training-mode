@@ -72,6 +72,10 @@ void OpenMenu() {
         if (xAddr2) memcpy(&displayData.x2, (void*)xAddr2, sizeof(double));
         if (yAddr2) memcpy(&displayData.y2, (void*)yAddr2, sizeof(double));
 
+        // Load auto-airtech settings
+        displayData.autoAirtech = autoAirtechEnabled.load();
+        displayData.airtechDirection = autoAirtechDirection.load();
+
         // Show dialog
         HWND hWnd = GetForegroundWindow();
         
@@ -109,6 +113,14 @@ INT_PTR CALLBACK EditDataDlgProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM 
         SetDlgItemTextA(hDlg, IDC_X2, std::to_string(pData->x2).c_str());
         SetDlgItemTextA(hDlg, IDC_Y2, std::to_string(pData->y2).c_str());
 
+        // Initialize auto-airtech controls
+        CheckDlgButton(hDlg, IDC_AUTO_AIRTECH_CHECK, pData->autoAirtech ? BST_CHECKED : BST_UNCHECKED);
+        CheckDlgButton(hDlg, pData->airtechDirection == 0 ? IDC_AIRTECH_FORWARD : IDC_AIRTECH_BACKWARD, BST_CHECKED);
+
+        // Enable/disable the radio buttons based on checkbox state
+        EnableWindow(GetDlgItem(hDlg, IDC_AIRTECH_FORWARD), pData->autoAirtech);
+        EnableWindow(GetDlgItem(hDlg, IDC_AIRTECH_BACKWARD), pData->autoAirtech);
+
         return TRUE;
 
     case WM_COMMAND:
@@ -135,6 +147,14 @@ INT_PTR CALLBACK EditDataDlgProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM 
             GetDlgItemTextA(hDlg, IDC_Y2, buffer, sizeof(buffer));
             pData->y2 = std::stod(buffer);
             
+            // Get auto-airtech settings
+            pData->autoAirtech = (IsDlgButtonChecked(hDlg, IDC_AUTO_AIRTECH_CHECK) == BST_CHECKED);
+            pData->airtechDirection = (IsDlgButtonChecked(hDlg, IDC_AIRTECH_FORWARD) == BST_CHECKED) ? 0 : 1;
+
+            // After dialog values are saved, update the atomic variables
+            autoAirtechEnabled = pData->autoAirtech;
+            autoAirtechDirection = pData->airtechDirection;
+
             // Apply values to game
             UpdatePlayerValues(GetEFZBase(), EFZ_BASE_OFFSET_P1, EFZ_BASE_OFFSET_P2);
             
@@ -173,6 +193,14 @@ INT_PTR CALLBACK EditDataDlgProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM 
             SetDlgItemTextA(hDlg, IDC_Y2, std::to_string(startY).c_str());
             return TRUE;
         }
+
+        // Handle checkbox state changes
+        if (LOWORD(wParam) == IDC_AUTO_AIRTECH_CHECK) {
+            bool checked = (IsDlgButtonChecked(hDlg, IDC_AUTO_AIRTECH_CHECK) == BST_CHECKED);
+            EnableWindow(GetDlgItem(hDlg, IDC_AIRTECH_FORWARD), checked);
+            EnableWindow(GetDlgItem(hDlg, IDC_AIRTECH_BACKWARD), checked);
+            return TRUE;
+        }
         break;
     }
     return FALSE;
@@ -183,10 +211,10 @@ void ShowEditDataDialog(HWND hParent) {
     ZeroMemory(dlgTemplate, sizeof(dlgTemplate));
     DLGTEMPLATE* dlg = (DLGTEMPLATE*)dlgTemplate;
     dlg->style = DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU;
-    dlg->cdit = 24;  // Total number of controls (10 fields + 10 labels + 4 buttons)
+    dlg->cdit = 29;  // Total number of controls (10 fields + 10 labels + 4 buttons + 5 new controls)
     dlg->x = 10; dlg->y = 10;
     dlg->cx = 300; // Wider dialog to ensure all elements fit
-    dlg->cy = 270; // Taller dialog for new buttons
+    dlg->cy = 290;  // Give more space for all controls including the bottom buttons
     WORD* p = (WORD*)(dlg + 1);
     *p++ = 0; // no menu
     *p++ = 0; // default dialog class
@@ -281,9 +309,72 @@ void ShowEditDataDialog(HWND hParent) {
     *pi++ = 0; // no creation data
     item = (DLGITEMTEMPLATE*)(((DWORD_PTR)pi + 3) & ~3);
 
+    // Separator line
+    item->style = WS_CHILD | WS_VISIBLE | SS_ETCHEDHORZ;
+    item->x = 10; item->y = 180; item->cx = 280; item->cy = 2;
+    item->id = IDC_STATIC;
+    item->dwExtendedStyle = 0;
+    pi = (WORD*)(item + 1);
+    *pi++ = 0xFFFF; *pi++ = 0x0082;  // Static class
+    *pi++ = 0; // No text
+    *pi++ = 0; // No creation data
+    item = (DLGITEMTEMPLATE*)(((DWORD_PTR)pi + 3) & ~3);
+
+    // Auto-airtech Settings Label
+    item->style = WS_CHILD | WS_VISIBLE | SS_LEFT;
+    item->x = 10; item->y = 190; item->cx = 280; item->cy = 16;
+    item->id = IDC_STATIC;
+    item->dwExtendedStyle = 0;
+    pi = (WORD*)(item + 1);
+    *pi++ = 0xFFFF; *pi++ = 0x0082;  // Static class
+    const char* airtechLabel = "Auto-Airtech Settings:";
+    while (*airtechLabel) *pi++ = *airtechLabel++;
+    *pi++ = 0;
+    *pi++ = 0; // No creation data
+    item = (DLGITEMTEMPLATE*)(((DWORD_PTR)pi + 3) & ~3);
+
+    // Auto-Airtech Checkbox
+    item->style = WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX;
+    item->x = 20; item->y = 210; item->cx = 200; item->cy = 20;
+    item->id = IDC_AUTO_AIRTECH_CHECK;
+    item->dwExtendedStyle = 0;
+    pi = (WORD*)(item + 1);
+    *pi++ = 0xFFFF; *pi++ = 0x0080;  // Button class
+    const char* airtechCheckText = "Enable Auto-Airtech";
+    while (*airtechCheckText) *pi++ = *airtechCheckText++;
+    *pi++ = 0;
+    *pi++ = 0; // No creation data
+    item = (DLGITEMTEMPLATE*)(((DWORD_PTR)pi + 3) & ~3);
+
+    // Forward Airtech Radio Button
+    item->style = WS_CHILD | WS_VISIBLE | BS_AUTORADIOBUTTON;
+    item->x = 35; item->y = 235; item->cx = 100; item->cy = 20;
+    item->id = IDC_AIRTECH_FORWARD;
+    item->dwExtendedStyle = 0;
+    pi = (WORD*)(item + 1);
+    *pi++ = 0xFFFF; *pi++ = 0x0080;  // Button class
+    const char* forwardText = "Forward";
+    while (*forwardText) *pi++ = *forwardText++;
+    *pi++ = 0;
+    *pi++ = 0; // No creation data
+    item = (DLGITEMTEMPLATE*)(((DWORD_PTR)pi + 3) & ~3);
+
+    // Backward Airtech Radio Button
+    item->style = WS_CHILD | WS_VISIBLE | BS_AUTORADIOBUTTON;
+    item->x = 150; item->y = 235; item->cx = 100; item->cy = 20;
+    item->id = IDC_AIRTECH_BACKWARD;
+    item->dwExtendedStyle = 0;
+    pi = (WORD*)(item + 1);
+    *pi++ = 0xFFFF; *pi++ = 0x0080;  // Button class
+    const char* backwardText = "Backward";
+    while (*backwardText) *pi++ = *backwardText++;
+    *pi++ = 0;
+    *pi++ = 0; // No creation data
+    item = (DLGITEMTEMPLATE*)(((DWORD_PTR)pi + 3) & ~3);
+
     // Confirm button
     item->style = WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON;
-    item->x = 60; item->y = 190; item->cx = 60; item->cy = 20;
+    item->x = 60; item->y = 265; item->cx = 60; item->cy = 20;
     item->id = IDC_BTN_CONFIRM;
     item->dwExtendedStyle = 0;
     pi = (WORD*)(item + 1);
@@ -296,7 +387,7 @@ void ShowEditDataDialog(HWND hParent) {
 
     // Cancel button
     item->style = WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON;
-    item->x = 160; item->y = 190; item->cx = 60; item->cy = 20;
+    item->x = 160; item->y = 265; item->cx = 60; item->cy = 20;
     item->id = IDC_BTN_CANCEL;
     item->dwExtendedStyle = 0;
     pi = (WORD*)(item + 1);

@@ -8,6 +8,8 @@
 std::atomic<bool> menuOpen(false);
 std::atomic<int> frameCounter(0);
 std::atomic<bool> detailedLogging(false);
+std::atomic<bool> autoAirtechEnabled(false);
+std::atomic<int> autoAirtechDirection(0);  // 0=forward, 1=backward
 DisplayData displayData;
 
 std::string FormatPosition(double x, double y) {

@@ -31,6 +31,27 @@
 #define RG_CROUCH_ID 169
 #define RG_AIR_ID 170
 
+// Hitstun Move IDs
+#define STAND_HITSTUN_START 50
+#define STAND_HITSTUN_END 55
+#define CROUCH_HITSTUN_START 56
+#define CROUCH_HITSTUN_END 58  // Changed from 59 to avoid overlap
+#define LAUNCHED_HITSTUN_START 59  // New constant for range start
+#define LAUNCHED_HITSTUN_END 71    // New constant for range end
+#define SWEEP_HITSTUN 71  // Special case of launch
+
+// Tech Move IDs
+#define FORWARD_AIRTECH 157
+#define BACKWARD_AIRTECH 158
+#define GROUNDTECH_START 98
+#define GROUNDTECH_END 99
+
+// Special Stun States
+#define FIRE_STATE 81
+#define ELECTRIC_STATE 82
+#define FROZEN_STATE_START 83
+#define FROZEN_STATE_END 86
+
 // Game frame rate settings
 #define SUBFRAMES_PER_VISUAL_FRAME 3.0
 
@@ -42,6 +63,25 @@
 #define RG_AIR_FREEZE_DEFENDER 22
 #define RG_AIR_FREEZE_ATTACKER 20
 #define RG_STUN_DURATION 20     // 21.66 for Sayuri, but 20 for everyone else
+
+// RG Constants - Add these freeze durations in internal frames
+#define RG_STAND_FREEZE_DURATION (RG_STAND_FREEZE_DEFENDER * 3)
+#define RG_CROUCH_FREEZE_DURATION (RG_CROUCH_FREEZE_DEFENDER * 3) 
+#define RG_AIR_FREEZE_DURATION (RG_AIR_FREEZE_DEFENDER * 3)
+
+// Superflash-related constants
+#define GROUND_IC_ID 167            // Ground Infinite Cancel moveID
+#define AIR_IC_ID 171               // Air Infinite Cancel moveID
+#define SUPER_FLASH_DURATION 119    // 39.66 visual frames * 3
+#define IC_FLASH_DURATION 89        // 29.66 visual frames * 3
+#define SUPERFLASH_BLACK_BG_OFFSET 1  // First subframe of black bg isn't part of freeze
+
+// Untech memory offset
+#define UNTECH_OFFSET 0x124
+
+// Tech recovery frames
+#define AIRTECH_VULNERABLE_FRAMES 16
+#define RUMI_AIRTECH_DOUBLEJUMP_LOCKOUT 31
 
 // Helper macros
 #define CLAMP(val, min, max) ((val)<(min)?(min):((val)>(max)?(max):(val)))
@@ -68,3 +108,12 @@
 #define IDC_BTN_ROUND_START 2021
 #define IDC_BTN_CONFIRM 2022
 #define IDC_BTN_CANCEL 2023
+
+#define IDC_AUTO_AIRTECH_CHECK 3001
+#define IDC_AIRTECH_FORWARD 3002
+#define IDC_AIRTECH_BACKWARD 3003
+
+#define IDC_STATIC -1  // Standard Windows constant for static controls
+#define IDC_AUTO_AIRTECH_CHECK 3001
+#define IDC_AIRTECH_FORWARD 3002
+#define IDC_AIRTECH_BACKWARD 3003
