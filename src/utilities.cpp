@@ -10,6 +10,11 @@ std::atomic<int> frameCounter(0);
 std::atomic<bool> detailedLogging(false);
 std::atomic<bool> autoAirtechEnabled(false);
 std::atomic<int> autoAirtechDirection(0);  // 0=forward, 1=backward
+std::atomic<bool> autoJumpEnabled(false);
+std::atomic<int> jumpDirection(0);      // 0=straight, 1=forward, 2=backward
+std::atomic<bool> p1Jumping(false);
+std::atomic<bool> p2Jumping(false);
+std::atomic<int> jumpTarget(3);         // Default to both players
 DisplayData displayData;
 
 std::string FormatPosition(double x, double y) {

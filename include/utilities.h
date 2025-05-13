@@ -10,6 +10,11 @@ extern std::atomic<int> frameCounter;
 extern std::atomic<bool> detailedLogging;
 extern std::atomic<bool> autoAirtechEnabled;  // New: Controls auto-airtech feature
 extern std::atomic<int> autoAirtechDirection; // New: 0=forward, 1=backward
+extern std::atomic<bool> autoJumpEnabled;     // Controls auto-jump feature
+extern std::atomic<int> jumpDirection;        // 0=straight, 1=forward, 2=backward
+extern std::atomic<bool> p1Jumping;           // Tracks if P1 is currently in jump state
+extern std::atomic<bool> p2Jumping;           // Tracks if P2 is currently in jump state
+extern std::atomic<int> jumpTarget;           // 1=P1, 2=P2, 3=Both
 
 // Function declarations
 uintptr_t GetEFZBase();
@@ -31,11 +36,16 @@ short GetUntechValue(uintptr_t base, int player);
 
 // Display data structure
 struct DisplayData {
-    WORD hp1 = 0, hp2 = 0, meter1 = 0, meter2 = 0;
-    double rf1 = 0, rf2 = 0;
-    double x1 = 0, y1 = 0, x2 = 0, y2 = 0;
-    bool autoAirtech = false;    // New: Added to DisplayData
-    int airtechDirection = 0;    // New: Added to DisplayData 
+    int hp1, hp2;
+    int meter1, meter2;
+    double rf1, rf2;
+    double x1, y1;
+    double x2, y2;
+    bool autoAirtech;
+    int airtechDirection;  // 0=forward, 1=backward
+    bool autoJump;
+    int jumpDirection;     // 0=straight, 1=forward, 2=backward
+    int jumpTarget;        // 1=P1, 2=P2, 3=Both
 };
 
 extern DisplayData displayData;

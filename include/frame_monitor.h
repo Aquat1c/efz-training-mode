@@ -17,12 +17,10 @@ extern bool p2InAirHitstun;
 extern int p1LastHitstunFrame;
 extern int p2LastHitstunFrame;
 
+// Add function declarations for the missing functions
+void ApplyAirtechPatches();
+void RemoveAirtechPatches();
 void ApplyAirtech(uintptr_t moveIDAddr, int playerNum, int frameNum);
-void MonitorAutoAirtech(
-    uintptr_t base,
-    uintptr_t moveIDAddr1, uintptr_t moveIDAddr2,
-    short moveID1, short moveID2, 
-    short prevMoveID1, short prevMoveID2
-);
+void MonitorAutoAirtech(short moveID1, short moveID2);
 
 void FrameDataMonitor();

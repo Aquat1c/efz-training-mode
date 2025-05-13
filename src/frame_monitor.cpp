@@ -44,6 +44,17 @@ bool IsSpecialStun(short moveID) {
            (moveID >= FROZEN_STATE_START && moveID <= FROZEN_STATE_END);
 }
 
+// Add this new function after IsSpecialStun()
+bool CanAirtech(short moveID) {
+    // Check for standard launched hitstun
+    bool isLaunched = moveID >= LAUNCHED_HITSTUN_START && moveID <= LAUNCHED_HITSTUN_END;
+    
+    // Also allow airtech from fire and electric states
+    bool isFireOrElectric = moveID == FIRE_STATE || moveID == ELECTRIC_STATE;
+    
+    return isLaunched || isFireOrElectric;
+}
+
 // Function to get untech value
 short GetUntechValue(uintptr_t base, int player) {
     short untechValue = 0;
@@ -71,8 +82,8 @@ void ApplyAirtech(uintptr_t moveIDAddr, int playerNum, int frameNum) {
     double yPos = playerNum == 1 ? displayData.y1 : displayData.y2;
     double xPos = playerNum == 1 ? displayData.x1 : displayData.x2;
     
-    // At Y=-2.0 characters can airtech (confirmed by frame-by-frame testing)
-    const double MIN_AIRTECH_HEIGHT = -2.0;
+    // At Y=-1.0 characters can airtech (confirmed by frame-by-frame testing)
+    const double MIN_AIRTECH_HEIGHT = -1.1;
     
     // Only apply airtech if character is high enough
     if (yPos <= MIN_AIRTECH_HEIGHT) {
@@ -84,27 +95,19 @@ void ApplyAirtech(uintptr_t moveIDAddr, int playerNum, int frameNum) {
         WriteGameMemory(moveIDAddr, &airtechMoveID, sizeof(short));
         
         // 2. Calculate physics values based on airtech direction
-        double xVelocity, yVelocity, newYPos;
+        double xVelocity, yVelocity;
         
-        // Values based on your test data
+        // Values based on your test data - only keep velocities
         if (autoAirtechDirection == 0) { // Forward
             xVelocity = 1.0;
             yVelocity = -2.21;
-            newYPos = -8.765;
         } else { // Backward
             xVelocity = -1.0;
             yVelocity = -2.21;
-            newYPos = -8.765;
         }
         
         // 3. Apply physics values
         uintptr_t baseOffset = (playerNum == 1) ? EFZ_BASE_OFFSET_P1 : EFZ_BASE_OFFSET_P2;
-        
-        // Write Y position
-        uintptr_t yPosAddr = ResolvePointer(base, baseOffset, 0x28);
-        if (yPosAddr) {
-            WriteGameMemory(yPosAddr, &newYPos, sizeof(double));
-        }
         
         // Write X velocity
         uintptr_t xVelAddr = ResolvePointer(base, baseOffset, 0x30);
@@ -122,7 +125,7 @@ void ApplyAirtech(uintptr_t moveIDAddr, int playerNum, int frameNum) {
                std::string(autoAirtechDirection == 0 ? "forward" : "backward") + 
                " airtech for P" + std::to_string(playerNum) + 
                " at frame " + std::to_string(frameNum) + 
-               " (Y position: " + std::to_string(yPos) + " → " + std::to_string(newYPos) + 
+               " (Y position: " + std::to_string(yPos) + 
                ", X velocity: " + std::to_string(xVelocity) + 
                ", Y velocity: " + std::to_string(yVelocity) + ")", true);
     } else {
@@ -132,60 +135,309 @@ void ApplyAirtech(uintptr_t moveIDAddr, int playerNum, int frameNum) {
     }
 }
 
-// Monitor and handle auto-airtech for both players
-void MonitorAutoAirtech(
-    uintptr_t base,
-    uintptr_t moveIDAddr1, uintptr_t moveIDAddr2,
-    short moveID1, short moveID2, 
-    short prevMoveID1, short prevMoveID2
-) {
-    // Skip if auto-airtech is disabled
-    if (!autoAirtechEnabled) return;
+// Monitor auto-airtech state
+void MonitorAutoAirtech(short moveID1, short moveID2) {
+    static bool prevEnabled = false;
+    static int prevDirection = -1;
     
-    // P1 airtech monitoring - PREDICT the end of hitstun and apply airtech BEFORE it happens
-    if (p1InAirHitstun && IsLaunched(moveID1)) {
-        // Get untech value to see how close we are to end of hitstun
-        short untechValue = GetUntechValue(base, 1);
-        
-        // When untech value is 1, it means we're 1 frame away from being actionable
-        // This is the exact frame where we need to apply airtech for proper physics
-        if (untechValue == 1) {
-            double yPos = displayData.y1;
-            
-            // Check height for airtech - confirmed to work at -2.0
-            if (yPos <= -2.0) {
-                ApplyAirtech(moveIDAddr1, 1, frameCounter);
-            }
+    // Check if settings have changed
+    bool directionChanged = prevDirection != autoAirtechDirection.load();
+    bool enabledChanged = prevEnabled != autoAirtechEnabled.load();
+    
+    if (enabledChanged || directionChanged) {
+        if (autoAirtechEnabled) {
+            // Enable auto-airtech with current direction
+            ApplyAirtechPatches();
+        } else {
+            // Disable auto-airtech
+            RemoveAirtechPatches();
         }
-    } else if (!IsLaunched(moveID1)) {
-        // Reset state when not in air hitstun
-        p1InAirHitstun = false;
-    } else if (IsLaunched(moveID1) && !p1InAirHitstun) {
-        // Enter air hitstun state
-        p1InAirHitstun = true;
-        LogOut("[AUTO-AIRTECH] P1 entered air hitstun at frame " + 
-               std::to_string(frameCounter), detailedLogging);
+        
+        prevEnabled = autoAirtechEnabled;
+        prevDirection = autoAirtechDirection;
     }
     
-    // P2 airtech monitoring - same logic
-    if (p2InAirHitstun && IsLaunched(moveID2)) {
-        short untechValue = GetUntechValue(base, 2);
+    // Log when players enter airtech-eligible states
+    static bool p1WasAirtechable = false;
+    static bool p2WasAirtechable = false;
+    
+    bool p1Airtechable = CanAirtech(moveID1);
+    bool p2Airtechable = CanAirtech(moveID2);
+    
+    // P1 entered a state where airtech is possible
+    if (p1Airtechable && !p1WasAirtechable) {
+        std::string stateType = "air hitstun";
+        if (moveID1 == FIRE_STATE) stateType = "fire state";
+        else if (moveID1 == ELECTRIC_STATE) stateType = "electric state";
         
-        // When untech value is 1, it means we're 1 frame away from being actionable
-        // This is the exact frame where we need to apply airtech for proper physics
-        if (untechValue == 1) {
-            double yPos = displayData.y2;
-            
-            if (yPos <= -2.0) {
-                ApplyAirtech(moveIDAddr2, 2, frameCounter);
-            }
+        LogOut("[AUTO-AIRTECH] P1 entered " + stateType + " at frame " + 
+               std::to_string(frameCounter) + 
+               (autoAirtechEnabled ? " (auto-airtech active)" : ""), 
+               detailedLogging);
+    }
+    
+    // P2 entered a state where airtech is possible
+    if (p2Airtechable && !p2WasAirtechable) {
+        std::string stateType = "air hitstun";
+        if (moveID2 == FIRE_STATE) stateType = "fire state";
+        else if (moveID2 == ELECTRIC_STATE) stateType = "electric state";
+        
+        LogOut("[AUTO-AIRTECH] P2 entered " + stateType + " at frame " + 
+               std::to_string(frameCounter) + 
+               (autoAirtechEnabled ? " (auto-airtech active)" : ""), 
+               detailedLogging);
+    }
+    
+    p1WasAirtechable = p1Airtechable;
+    p2WasAirtechable = p2Airtechable;
+}
+
+// Original bytes for patches
+char originalEnableBytes[2];
+char originalForwardBytes[2];
+char originalBackwardBytes[2];
+bool patchesApplied = false;
+
+// Apply patches to enable auto-airtech
+void ApplyAirtechPatches() {
+    if (patchesApplied) return;
+    
+    uintptr_t base = GetEFZBase();
+    if (!base) return;
+    
+    // Store original bytes before patching
+    memcpy(originalEnableBytes, (void*)(base + AIRTECH_ENABLE_ADDR), 2);
+    memcpy(originalForwardBytes, (void*)(base + AIRTECH_FORWARD_ADDR), 2);
+    memcpy(originalBackwardBytes, (void*)(base + AIRTECH_BACKWARD_ADDR), 2);
+    
+    // Apply patches
+    bool mainPatchSuccess = NopMemory(base + AIRTECH_ENABLE_ADDR, 2);
+    
+    // Apply direction-specific patch based on settings
+    if (autoAirtechDirection == 0) {
+        // Forward airtech
+        NopMemory(base + AIRTECH_FORWARD_ADDR, 2);
+    } else {
+        // Backward airtech
+        NopMemory(base + AIRTECH_BACKWARD_ADDR, 2);
+    }
+    
+    if (mainPatchSuccess) {
+        patchesApplied = true;
+        LogOut("[AUTO-AIRTECH] Patches applied - automatic " + 
+               std::string(autoAirtechDirection == 0 ? "forward" : "backward") + 
+               " airtech enabled", true);
+    } else {
+        LogOut("[AUTO-AIRTECH] Failed to apply patches", true);
+    }
+}
+
+// Remove patches and restore original bytes
+void RemoveAirtechPatches() {
+    if (!patchesApplied) return;
+    
+    uintptr_t base = GetEFZBase();
+    if (!base) return;
+    
+    // Restore original bytes
+    PatchMemory(base + AIRTECH_ENABLE_ADDR, originalEnableBytes, 2);
+    PatchMemory(base + AIRTECH_FORWARD_ADDR, originalForwardBytes, 2);
+    PatchMemory(base + AIRTECH_BACKWARD_ADDR, originalBackwardBytes, 2);
+    
+    patchesApplied = false;
+    LogOut("[AUTO-AIRTECH] Patches removed - automatic airtech disabled", true);
+}
+
+// Variables to track jump state for each player
+enum JumpState {
+    Grounded,
+    Rising,
+    Falling,
+    Landing,
+    NeutralFrame
+};
+
+JumpState p1JumpState = Grounded;
+JumpState p2JumpState = Grounded;
+int p1StateFrames = 0; // Track how many frames in current state
+int p2StateFrames = 0;
+
+// Apply jump moveID to a player
+void ApplyJump(uintptr_t moveIDAddr, int playerNum, int jumpType) {
+    if (!moveIDAddr) return;
+    
+    short jumpMoveID;
+    
+    // Determine which jump type to use
+    switch (jumpType) {
+        case 0: // Straight
+            jumpMoveID = STRAIGHT_JUMP_ID;
+            break;
+        case 1: // Forward
+            jumpMoveID = FORWARD_JUMP_ID;
+            break;
+        case 2: // Backward
+            jumpMoveID = BACKWARD_JUMP_ID;
+            break;
+        default:
+            jumpMoveID = STRAIGHT_JUMP_ID;
+    }
+    
+    // Write the jump moveID to memory
+    WriteGameMemory(moveIDAddr, &jumpMoveID, sizeof(short));
+    
+    LogOut("[AUTO-JUMP] Applied " + 
+           std::string(jumpType == 0 ? "straight" : (jumpType == 1 ? "forward" : "backward")) + 
+           " jump for P" + std::to_string(playerNum), detailedLogging);
+}
+
+// Monitor and handle auto-jump for both players
+void MonitorAutoJump(
+    uintptr_t base,
+    uintptr_t moveIDAddr1, uintptr_t moveIDAddr2,
+    short moveID1, short moveID2
+) {
+    // Skip if auto-jump is disabled
+    if (!autoJumpEnabled) {
+        p1JumpState = Grounded;
+        p2JumpState = Grounded;
+        p1StateFrames = 0;
+        p2StateFrames = 0;
+        return;
+    }
+    
+    // Check if player is in hitstun/blockstun - don't interfere with combat
+    bool p1InHitstun = CanAirtech(moveID1) || IsHitstun(moveID1) || IsBlockstun(moveID1);
+    bool p2InHitstun = CanAirtech(moveID2) || IsHitstun(moveID2) || IsBlockstun(moveID2);
+    
+    // Player 1 jump monitoring if enabled AND not in airtech state
+    if ((jumpTarget == 1 || jumpTarget == 3) && !p1InHitstun && !IsAirtech(moveID1) && moveIDAddr1) {
+        switch (p1JumpState) {
+            case Grounded:
+                // Start jump
+                ApplyJump(moveIDAddr1, 1, jumpDirection);
+                p1JumpState = Rising;
+                p1StateFrames = 0;
+                break;
+                
+            case Rising:
+                // Check if we've started falling
+                if (moveID1 == FALLING_ID) {
+                    p1JumpState = Falling;
+                    p1StateFrames = 0;
+                } else {
+                    p1StateFrames++;
+                    // Force the proper jumping moveID
+                    short jumpMoveID;
+                    switch (jumpDirection) {
+                        case 0: jumpMoveID = STRAIGHT_JUMP_ID; break;
+                        case 1: jumpMoveID = FORWARD_JUMP_ID; break;
+                        case 2: jumpMoveID = BACKWARD_JUMP_ID; break;
+                        default: jumpMoveID = STRAIGHT_JUMP_ID;
+                    }
+                    WriteGameMemory(moveIDAddr1, &jumpMoveID, sizeof(short));
+                }
+                break;
+                
+            case Falling:
+                // Wait for landing
+                if (moveID1 == LANDING_ID) {
+                    p1JumpState = Landing;
+                    p1StateFrames = 0;
+                } else {
+                    p1StateFrames++;
+                    // Ensure we're still in falling state
+                    if (moveID1 != FALLING_ID) {
+                        short fallingID = FALLING_ID;
+                        WriteGameMemory(moveIDAddr1, &fallingID, sizeof(short));
+                    }
+                }
+                break;
+                
+            case Landing:
+                // Allow landing animation to play for at least 2 frames
+                p1StateFrames++;
+                if (p1StateFrames >= 2) {
+                    p1JumpState = NeutralFrame;
+                    p1StateFrames = 0;
+                    // Force neutral state
+                    short idleID = IDLE_MOVE_ID;
+                    WriteGameMemory(moveIDAddr1, &idleID, sizeof(short));
+                }
+                break;
+                
+            case NeutralFrame:
+                // Wait one frame in neutral state
+                p1StateFrames++;
+                if (p1StateFrames >= 1) {
+                    // Restart jump cycle
+                    p1JumpState = Grounded;
+                    p1StateFrames = 0;
+                }
+                break;
         }
-    } else if (!IsLaunched(moveID2)) {
-        p2InAirHitstun = false;
-    } else if (IsLaunched(moveID2) && !p2InAirHitstun) {
-        p2InAirHitstun = true;
-        LogOut("[AUTO-AIRTECH] P2 entered air hitstun at frame " + 
-               std::to_string(frameCounter), detailedLogging);
+    }
+    
+    // Player 2 jump monitoring if enabled AND not in airtech state
+    if ((jumpTarget == 2 || jumpTarget == 3) && !p2InHitstun && !IsAirtech(moveID2) && moveIDAddr2) {
+        switch (p2JumpState) {
+            case Grounded:
+                ApplyJump(moveIDAddr2, 2, jumpDirection);
+                p2JumpState = Rising;
+                p2StateFrames = 0;
+                break;
+                
+            case Rising:
+                if (moveID2 == FALLING_ID) {
+                    p2JumpState = Falling;
+                    p2StateFrames = 0;
+                } else {
+                    p2StateFrames++;
+                    // Force the proper jumping moveID
+                    short jumpMoveID;
+                    switch (jumpDirection) {
+                        case 0: jumpMoveID = STRAIGHT_JUMP_ID; break;
+                        case 1: jumpMoveID = FORWARD_JUMP_ID; break;
+                        case 2: jumpMoveID = BACKWARD_JUMP_ID; break;
+                        default: jumpMoveID = STRAIGHT_JUMP_ID;
+                    }
+                    WriteGameMemory(moveIDAddr2, &jumpMoveID, sizeof(short));
+                }
+                break;
+                
+            case Falling:
+                if (moveID2 == LANDING_ID) {
+                    p2JumpState = Landing;
+                    p2StateFrames = 0;
+                } else {
+                    p2StateFrames++;
+                    // Ensure we're still in falling state
+                    if (moveID2 != FALLING_ID) {
+                        short fallingID = FALLING_ID;
+                        WriteGameMemory(moveIDAddr2, &fallingID, sizeof(short));
+                    }
+                }
+                break;
+                
+            case Landing:
+                p2StateFrames++;
+                if (p2StateFrames >= 2) {
+                    p2JumpState = NeutralFrame;
+                    p2StateFrames = 0;
+                    // Force neutral state
+                    short idleID = IDLE_MOVE_ID;
+                    WriteGameMemory(moveIDAddr2, &idleID, sizeof(short));
+                }
+                break;
+                
+            case NeutralFrame:
+                p2StateFrames++;
+                if (p2StateFrames >= 1) {
+                    p2JumpState = Grounded;
+                    p2StateFrames = 0;
+                }
+                break;
+        }
     }
 }
 
@@ -264,6 +516,12 @@ void FrameDataMonitor() {
             // Get current move IDs
             if (moveIDAddr1) memcpy(&moveID1, (void*)moveIDAddr1, sizeof(short));
             if (moveIDAddr2) memcpy(&moveID2, (void*)moveIDAddr2, sizeof(short));
+
+            // Add this line to call our modified MonitorAutoAirtech function
+            MonitorAutoAirtech(moveID1, moveID2);
+            
+            // Add this line to call our auto-jump monitoring function
+            MonitorAutoJump(base, moveIDAddr1, moveIDAddr2, moveID1, moveID2);
 
             // Get untech values
             prevP1UntechValue = p1UntechValue;
@@ -344,9 +602,6 @@ void FrameDataMonitor() {
             moveHistory2.push_front(moveID2);
             if (moveHistory1.size() > HISTORY_SIZE) moveHistory1.pop_back();
             if (moveHistory2.size() > HISTORY_SIZE) moveHistory2.pop_back();
-
-            // Monitor for auto-airtech - check if either player is in air hitstun
-            MonitorAutoAirtech(base, moveIDAddr1, moveIDAddr2, moveID1, moveID2, prevMoveID1, prevMoveID2);
 
             // Log MoveID changes for debugging
             if (moveID1 != prevMoveID1 && moveIDAddr1 && detailedLogging) {

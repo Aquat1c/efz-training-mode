@@ -1,8 +1,21 @@
 #pragma once
 
-// HP and Resource limits
+// Only include these for C++ compiler, not for RC compiler
+#ifndef RC_INVOKED
+
+#define HMENU_ID(id) reinterpret_cast<HMENU>(static_cast<UINT_PTR>(id))
+#else
+// Simple definitions for resource compiler
+#endif
+
+// Constants that can be shared between C++ and RC
+#define IDD_EDITDATA 1001
+#define IDC_TAB_CONTROL 4000
+
 #define MAX_HP 9999
 #define MAX_METER 3000
+
+// HP and Resource limits
 #define MAX_RF 1000
 
 // Memory offsets
@@ -46,6 +59,13 @@
 #define GROUNDTECH_START 98
 #define GROUNDTECH_END 99
 
+// Jump Move IDs - add these after the Tech Move IDs section
+#define STRAIGHT_JUMP_ID 4
+#define FORWARD_JUMP_ID 5
+#define BACKWARD_JUMP_ID 6
+#define FALLING_ID 9
+#define LANDING_ID 13  // Already defined, no need to add again
+
 // Special Stun States
 #define FIRE_STATE 81
 #define ELECTRIC_STATE 82
@@ -86,6 +106,14 @@
 // Helper macros
 #define CLAMP(val, min, max) ((val)<(min)?(min):((val)>(max)?(max):(val)))
 
+// Auto-Airtech patch addresses and original bytes
+#define AIRTECH_ENABLE_ADDR 0xF4FF
+#define AIRTECH_ENABLE_BYTES "\x74\x71"
+#define AIRTECH_FORWARD_ADDR 0xF514
+#define AIRTECH_FORWARD_BYTES "\x75\x24"
+#define AIRTECH_BACKWARD_ADDR 0xF54F
+#define AIRTECH_BACKWARD_BYTES "\x75\x21"
+
 // GUI Dialog IDs
 #define IDD_EDITDATA 1001
 
@@ -113,7 +141,19 @@
 #define IDC_AIRTECH_FORWARD 3002
 #define IDC_AIRTECH_BACKWARD 3003
 
-#define IDC_STATIC -1  // Standard Windows constant for static controls
-#define IDC_AUTO_AIRTECH_CHECK 3001
-#define IDC_AIRTECH_FORWARD 3002
-#define IDC_AIRTECH_BACKWARD 3003
+// GUI Dialog IDs - Add these after your existing dialog IDs
+#define IDC_TAB_CONTROL 4000
+#define IDC_PAGE_AIRTECH 4001
+#define IDC_PAGE_JUMP 4002
+#define IDC_AUTO_JUMP_CHECK 4010
+#define IDC_JUMP_STRAIGHT 4011
+#define IDC_JUMP_FORWARD 4012
+#define IDC_JUMP_BACKWARD 4013
+#define IDC_JUMP_P1 4014
+#define IDC_JUMP_P2 4015
+#define IDC_JUMP_BOTH 4016
+
+// Combo box control IDs (replacing radio buttons)
+#define IDC_AIRTECH_DIRECTION 3010  // Combo box for airtech direction
+#define IDC_JUMP_DIRECTION    4020  // Combo box for jump direction
+#define IDC_JUMP_TARGET       4021  // Combo box for jump target

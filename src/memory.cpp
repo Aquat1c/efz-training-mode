@@ -27,6 +27,38 @@ void WriteGameMemory(uintptr_t address, const void* data, size_t size) {
     }
 }
 
+bool PatchMemory(uintptr_t address, const char* bytes, size_t length) {
+    DWORD oldProtect;
+    
+    // Change memory protection to allow writing
+    if (!VirtualProtect((LPVOID)address, length, PAGE_EXECUTE_READWRITE, &oldProtect))
+        return false;
+        
+    // Write the bytes
+    memcpy((void*)address, bytes, length);
+    
+    // Restore the old protection
+    VirtualProtect((LPVOID)address, length, oldProtect, &oldProtect);
+    
+    return true;
+}
+
+bool NopMemory(uintptr_t address, size_t length) {
+    DWORD oldProtect;
+    
+    // Change memory protection to allow writing
+    if (!VirtualProtect((LPVOID)address, length, PAGE_EXECUTE_READWRITE, &oldProtect))
+        return false;
+        
+    // Fill with NOPs (0x90)
+    memset((void*)address, 0x90, length);
+    
+    // Restore the old protection
+    VirtualProtect((LPVOID)address, length, oldProtect, &oldProtect);
+    
+    return true;
+}
+
 void SetPlayerPosition(uintptr_t base, uintptr_t baseOffset, double x, double y) {
     // Position validation to avoid teleporting players offscreen
     const double MIN_X = -100.0;

@@ -9,8 +9,8 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 if(MSVC)
     # Proper way to force 32-bit build
     set(CMAKE_GENERATOR_PLATFORM Win32)
-    # For Visual Studio compiler flags
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /arch:IA32")
+    # Use appropriate architecture flags for 32-bit
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
     set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} /MACHINE:X86")
     set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} /MACHINE:X86")
 endif()
@@ -33,15 +33,15 @@ add_library(efz_training_mode SHARED ${SOURCES})
 # Include directories
 target_include_directories(efz_training_mode PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include
-    ${CMAKE_CURRENT_SOURCE_DIR}/resource
 )
 
 # Link required libraries including network libraries
 target_link_libraries(efz_training_mode PRIVATE 
     user32 
     kernel32
-    ws2_32      # Required for Winsock networking functions
-    iphlpapi    # Required for IP Helper API functions (GetExtendedTcpTable, etc.)
+    ws2_32
+    iphlpapi
+    comctl32
 )
 
 # Set output directories if needed

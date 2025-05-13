@@ -3,11 +3,26 @@
 #include "../include/memory.h"
 #include "../include/utilities.h"
 #include "../include/logger.h"
+//#include "../resource/cpp_resource.h" 
 #include <windows.h>
 #include <string>
 #include <thread>
+#include <commctrl.h>
+#include <windowsx.h>
+
+// Add this link to the Common Controls library
+#pragma comment(lib, "comctl32.lib")
+
+// Forward declaration of the PageSubclassProc function
+LRESULT CALLBACK PageSubclassProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam, UINT_PTR uIdSubclass, DWORD_PTR dwRefData);
 
 void OpenMenu() {
+    // Initialize common controls for tab control support
+    INITCOMMONCONTROLSEX icc;
+    icc.dwSize = sizeof(INITCOMMONCONTROLSEX);
+    icc.dwICC = ICC_TAB_CLASSES;
+    InitCommonControlsEx(&icc);
+
     // Check if we're in EFZ window
     if (!IsEFZWindowActive()) {
         LogOut("[GUI] Cannot open menu: EFZ window not active", true);
@@ -76,6 +91,11 @@ void OpenMenu() {
         displayData.autoAirtech = autoAirtechEnabled.load();
         displayData.airtechDirection = autoAirtechDirection.load();
 
+        // Load auto-jump settings
+        displayData.autoJump = autoJumpEnabled.load();
+        displayData.jumpDirection = jumpDirection.load();
+        displayData.jumpTarget = jumpTarget.load();
+
         // Show dialog
         HWND hWnd = GetForegroundWindow();
         
@@ -91,312 +111,556 @@ void OpenMenu() {
     }
 }
 
+void ShowEditDataDialog(HWND hParent) {
+    // Create a dialog template with better-proportioned size
+    static WORD dlgTemplate[128];
+    ZeroMemory(dlgTemplate, sizeof(dlgTemplate));
+    DLGTEMPLATE* dlg = (DLGTEMPLATE*)dlgTemplate;
+    dlg->style = DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU;
+    dlg->cdit = 0;
+    dlg->x = 10; dlg->y = 10;
+    dlg->cx = 550; // Smaller width, just enough for the controls
+    dlg->cy = 480; // Smaller height, just enough for the content
+    
+    // Create and show the dialog
+    DialogBoxIndirectParamA(GetModuleHandle(NULL), (LPCDLGTEMPLATEA)dlgTemplate, hParent, EditDataDlgProc, (LPARAM)&displayData);
+}
+
 INT_PTR CALLBACK EditDataDlgProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam) {
     static DisplayData* pData = nullptr;
+    static HWND hTabControl = NULL;
+    static HWND hPage1 = NULL;
+    static HWND hPage2 = NULL;
+    
     // Round start positions
     const double p1StartX = 240.0, p2StartX = 400.0, startY = 0.0;
 
     switch (message) {
-    case WM_INITDIALOG:
+    case WM_INITDIALOG: {
         pData = (DisplayData*)lParam;
+        
+        // Initialize common controls
+        INITCOMMONCONTROLSEX icc;
+        icc.dwSize = sizeof(INITCOMMONCONTROLSEX);
+        icc.dwICC = ICC_TAB_CLASSES;
+        InitCommonControlsEx(&icc);
+        
+        // Create a tab control that fits the dialog better
+        hTabControl = CreateWindowEx(0, WC_TABCONTROL, NULL, 
+            WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | TCS_FOCUSONBUTTONDOWN,
+            10, 10, 530, 380, hDlg, (HMENU)IDC_TAB_CONTROL, GetModuleHandle(NULL), NULL);
 
-        // Initialize all form fields with current values
-        SetDlgItemInt(hDlg, IDC_HP1, CLAMP((int)pData->hp1, 0, MAX_HP), FALSE);
-        SetDlgItemInt(hDlg, IDC_METER1, CLAMP((int)pData->meter1, 0, MAX_METER), FALSE);
-        SetDlgItemInt(hDlg, IDC_RF1, (UINT)CLAMP((int)pData->rf1, 0, MAX_RF), FALSE);
-        SetDlgItemTextA(hDlg, IDC_X1, std::to_string(pData->x1).c_str());
-        SetDlgItemTextA(hDlg, IDC_Y1, std::to_string(pData->y1).c_str());
+        // Add tab items
+        TCITEM tie;
+        tie.mask = TCIF_TEXT;
+        tie.pszText = (LPSTR)"Game Values";
+        TabCtrl_InsertItem(hTabControl, 0, &tie);
+        tie.pszText = (LPSTR)"Movement Options";
+        TabCtrl_InsertItem(hTabControl, 1, &tie);
 
-        SetDlgItemInt(hDlg, IDC_HP2, CLAMP((int)pData->hp2, 0, MAX_HP), FALSE);
-        SetDlgItemInt(hDlg, IDC_METER2, CLAMP((int)pData->meter2, 0, MAX_METER), FALSE);
-        SetDlgItemInt(hDlg, IDC_RF2, (UINT)CLAMP((int)pData->rf2, 0, MAX_RF), FALSE);
-        SetDlgItemTextA(hDlg, IDC_X2, std::to_string(pData->x2).c_str());
-        SetDlgItemTextA(hDlg, IDC_Y2, std::to_string(pData->y2).c_str());
+        // Create page containers with subclassing
+        hPage1 = CreateWindowEx(
+            0, "STATIC", "", 
+            WS_CHILD | WS_VISIBLE, 
+            0, 0, 0, 0, hDlg, NULL, GetModuleHandle(NULL), NULL);
+            
+        hPage2 = CreateWindowEx(
+            0, "STATIC", "", 
+            WS_CHILD | WS_VISIBLE, 
+            0, 0, 0, 0, hDlg, NULL, GetModuleHandle(NULL), NULL);
+        
+        // Subclass both page windows to forward button messages
+        SetWindowSubclass(hPage1, PageSubclassProc, 1, (DWORD_PTR)hDlg);
+        SetWindowSubclass(hPage2, PageSubclassProc, 2, (DWORD_PTR)hDlg);
+        
+        // Position pages in tab control
+        RECT rc;
+        GetClientRect(hTabControl, &rc);
+        TabCtrl_AdjustRect(hTabControl, FALSE, &rc);
+        SetWindowPos(hPage1, NULL, rc.left, rc.top, rc.right - rc.left, rc.bottom - rc.top, 
+            SWP_NOZORDER);
+        SetWindowPos(hPage2, NULL, rc.left, rc.top, rc.right - rc.left, rc.bottom - rc.top, 
+            SWP_NOZORDER);
 
-        // Initialize auto-airtech controls
-        CheckDlgButton(hDlg, IDC_AUTO_AIRTECH_CHECK, pData->autoAirtech ? BST_CHECKED : BST_UNCHECKED);
-        CheckDlgButton(hDlg, pData->airtechDirection == 0 ? IDC_AIRTECH_FORWARD : IDC_AIRTECH_BACKWARD, BST_CHECKED);
+        // Create page content
+        GameValuesPage_CreateContent(hPage1, pData);
+        MovementOptionsPage_CreateContent(hPage2, pData);
 
-        // Enable/disable the radio buttons based on checkbox state
-        EnableWindow(GetDlgItem(hDlg, IDC_AIRTECH_FORWARD), pData->autoAirtech);
-        EnableWindow(GetDlgItem(hDlg, IDC_AIRTECH_BACKWARD), pData->autoAirtech);
+        // Show first page, hide second page
+        ShowWindow(hPage1, SW_SHOW);
+        ShowWindow(hPage2, SW_HIDE);
+
+        // Create confirm/cancel buttons closer to content
+        CreateWindowEx(0, "BUTTON", "Confirm", 
+            WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON,
+            180, 400, 100, 30, hDlg, (HMENU)IDC_BTN_CONFIRM, GetModuleHandle(NULL), NULL);
+            
+        CreateWindowEx(0, "BUTTON", "Cancel", 
+            WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+            300, 400, 100, 30, hDlg, (HMENU)IDC_BTN_CANCEL, GetModuleHandle(NULL), NULL);
+
+        // Set focus to tab control
+        SetFocus(hTabControl);
 
         return TRUE;
+    }
+    
+    case WM_COMMAND: {
+        WORD cmdID = LOWORD(wParam);
+        WORD notifyCode = HIWORD(wParam);
+        HWND ctrlHwnd = (HWND)lParam;
 
-    case WM_COMMAND:
-        // Handle Confirm button (same as IDOK)
-        if (LOWORD(wParam) == IDC_BTN_CONFIRM || LOWORD(wParam) == IDOK) {
-            // Get values from dialog
-            BOOL success;
-            pData->hp1 = GetDlgItemInt(hDlg, IDC_HP1, &success, FALSE);
-            pData->meter1 = GetDlgItemInt(hDlg, IDC_METER1, &success, FALSE);
-            pData->rf1 = GetDlgItemInt(hDlg, IDC_RF1, &success, FALSE);
-            
+        // More detailed logging for debugging button clicks
+        LogOut("[GUI] Command received: ID=" + std::to_string(cmdID) + 
+              ", NotifyCode=" + std::to_string(notifyCode) + 
+              ", Control=0x" + std::to_string((uintptr_t)ctrlHwnd), true);
+        
+        // Handle button clicks
+        if (cmdID == IDC_BTN_CONFIRM) {
+            // Read values from controls
             char buffer[32];
-            GetDlgItemTextA(hDlg, IDC_X1, buffer, sizeof(buffer));
-            pData->x1 = std::stod(buffer);
-            GetDlgItemTextA(hDlg, IDC_Y1, buffer, sizeof(buffer));
-            pData->y1 = std::stod(buffer);
             
-            pData->hp2 = GetDlgItemInt(hDlg, IDC_HP2, &success, FALSE);
-            pData->meter2 = GetDlgItemInt(hDlg, IDC_METER2, &success, FALSE);
-            pData->rf2 = GetDlgItemInt(hDlg, IDC_RF2, &success, FALSE);
+            // Get Player 1 values
+            GetDlgItemTextA(hPage1, IDC_HP1, buffer, sizeof(buffer));
+            pData->hp1 = atoi(buffer);
             
-            GetDlgItemTextA(hDlg, IDC_X2, buffer, sizeof(buffer));
-            pData->x2 = std::stod(buffer);
-            GetDlgItemTextA(hDlg, IDC_Y2, buffer, sizeof(buffer));
-            pData->y2 = std::stod(buffer);
+            GetDlgItemTextA(hPage1, IDC_METER1, buffer, sizeof(buffer));
+            pData->meter1 = atoi(buffer);
             
-            // Get auto-airtech settings
-            pData->autoAirtech = (IsDlgButtonChecked(hDlg, IDC_AUTO_AIRTECH_CHECK) == BST_CHECKED);
-            pData->airtechDirection = (IsDlgButtonChecked(hDlg, IDC_AIRTECH_FORWARD) == BST_CHECKED) ? 0 : 1;
-
-            // After dialog values are saved, update the atomic variables
-            autoAirtechEnabled = pData->autoAirtech;
-            autoAirtechDirection = pData->airtechDirection;
-
-            // Apply values to game
-            UpdatePlayerValues(GetEFZBase(), EFZ_BASE_OFFSET_P1, EFZ_BASE_OFFSET_P2);
+            GetDlgItemTextA(hPage1, IDC_RF1, buffer, sizeof(buffer));
+            pData->rf1 = atof(buffer);
+            
+            GetDlgItemTextA(hPage1, IDC_X1, buffer, sizeof(buffer));
+            pData->x1 = atof(buffer);
+            
+            GetDlgItemTextA(hPage1, IDC_Y1, buffer, sizeof(buffer));
+            pData->y1 = atof(buffer);
+            
+            // Get Player 2 values
+            GetDlgItemTextA(hPage1, IDC_HP2, buffer, sizeof(buffer));
+            pData->hp2 = atoi(buffer);
+            
+            GetDlgItemTextA(hPage1, IDC_METER2, buffer, sizeof(buffer));
+            pData->meter2 = atoi(buffer);
+            
+            GetDlgItemTextA(hPage1, IDC_RF2, buffer, sizeof(buffer));
+            pData->rf2 = atof(buffer);
+            
+            GetDlgItemTextA(hPage1, IDC_X2, buffer, sizeof(buffer));
+            pData->x2 = atof(buffer);
+            
+            GetDlgItemTextA(hPage1, IDC_Y2, buffer, sizeof(buffer));
+            pData->y2 = atof(buffer);
+            
+            // Get airtech settings from combo box
+            int airtechSelection = SendMessage(GetDlgItem(hPage1, IDC_AIRTECH_DIRECTION), CB_GETCURSEL, 0, 0);
+            if (airtechSelection > 0) {
+                pData->autoAirtech = true;
+                pData->airtechDirection = airtechSelection - 1;
+            } else {
+                pData->autoAirtech = false;
+                pData->airtechDirection = 0;
+            }
+            
+            // Get jump settings from combo boxes
+            int jumpDirSelection = SendMessage(GetDlgItem(hPage2, IDC_JUMP_DIRECTION), CB_GETCURSEL, 0, 0);
+            if (jumpDirSelection > 0) {
+                pData->autoJump = true;
+                pData->jumpDirection = jumpDirSelection - 1;
+            } else {
+                pData->autoJump = false;
+                pData->jumpDirection = 0;
+            }
+            
+            // Get jump target
+            int targetSelection = SendMessage(GetDlgItem(hPage2, IDC_JUMP_TARGET), CB_GETCURSEL, 0, 0);
+            pData->jumpTarget = targetSelection + 1;  // Convert from 0-based to 1-based
+            
+            // Apply settings to game memory
+            ApplySettings(pData);
             
             EndDialog(hDlg, IDOK);
             return TRUE;
         }
-
-        // Handle Cancel button
-        if (LOWORD(wParam) == IDC_BTN_CANCEL || LOWORD(wParam) == IDCANCEL) {
+        else if (cmdID == IDC_BTN_CANCEL) {
             EndDialog(hDlg, IDCANCEL);
             return TRUE;
         }
-
-        // Handle Swap Positions button
-        if (LOWORD(wParam) == IDC_BTN_SWAP_POS) {
-            char x1[32], y1[32], x2[32], y2[32];
-            GetDlgItemTextA(hDlg, IDC_X1, x1, sizeof(x1));
-            GetDlgItemTextA(hDlg, IDC_Y1, y1, sizeof(y1));
-            GetDlgItemTextA(hDlg, IDC_X2, x2, sizeof(x2));
-            GetDlgItemTextA(hDlg, IDC_Y2, y2, sizeof(y2));
+        else if (cmdID == IDC_BTN_SWAP_POS) {
+            LogOut("[GUI] Swap Positions button clicked", true);
             
-            // Swap the position values
-            SetDlgItemTextA(hDlg, IDC_X1, x2);
-            SetDlgItemTextA(hDlg, IDC_Y1, y2);
-            SetDlgItemTextA(hDlg, IDC_X2, x1);
-            SetDlgItemTextA(hDlg, IDC_Y2, y1);
+            // Get current position values
+            char p1x[32] = {0}, p1y[32] = {0}, p2x[32] = {0}, p2y[32] = {0};
+            
+            GetDlgItemTextA(hPage1, IDC_X1, p1x, sizeof(p1x));
+            GetDlgItemTextA(hPage1, IDC_Y1, p1y, sizeof(p1y));
+            GetDlgItemTextA(hPage1, IDC_X2, p2x, sizeof(p2x));
+            GetDlgItemTextA(hPage1, IDC_Y2, p2y, sizeof(p2y));
+            
+            // Log current values for debugging
+            LogOut("[GUI] Before swap - P1: " + std::string(p1x) + "," + std::string(p1y) + 
+                   " P2: " + std::string(p2x) + "," + std::string(p2y), true);
+            
+            // Simple swap of text fields
+            SetDlgItemTextA(hPage1, IDC_X1, p2x);
+            SetDlgItemTextA(hPage1, IDC_Y1, p2y);
+            SetDlgItemTextA(hPage1, IDC_X2, p1x);
+            SetDlgItemTextA(hPage1, IDC_Y2, p1y);
+            
+            LogOut("[GUI] Positions swapped", true);
             return TRUE;
         }
-
-        // Handle Round Start button
-        if (LOWORD(wParam) == IDC_BTN_ROUND_START) {
+        else if (cmdID == IDC_BTN_ROUND_START) {
+            LogOut("[GUI] Round Start button clicked", true);
+            
             // Set round start positions
-            SetDlgItemTextA(hDlg, IDC_X1, std::to_string(p1StartX).c_str());
-            SetDlgItemTextA(hDlg, IDC_Y1, std::to_string(startY).c_str());
-            SetDlgItemTextA(hDlg, IDC_X2, std::to_string(p2StartX).c_str());
-            SetDlgItemTextA(hDlg, IDC_Y2, std::to_string(startY).c_str());
+            char buffer[32];
+            
+            sprintf_s(buffer, "%.1f", p1StartX);
+            SetDlgItemTextA(hPage1, IDC_X1, buffer);
+            
+            sprintf_s(buffer, "%.1f", startY);
+            SetDlgItemTextA(hPage1, IDC_Y1, buffer);
+            
+            sprintf_s(buffer, "%.1f", p2StartX);
+            SetDlgItemTextA(hPage1, IDC_X2, buffer);
+            
+            sprintf_s(buffer, "%.1f", startY);
+            SetDlgItemTextA(hPage1, IDC_Y2, buffer);
+            
+            LogOut("[GUI] Round start positions set", true);
             return TRUE;
         }
-
-        // Handle checkbox state changes
-        if (LOWORD(wParam) == IDC_AUTO_AIRTECH_CHECK) {
-            bool checked = (IsDlgButtonChecked(hDlg, IDC_AUTO_AIRTECH_CHECK) == BST_CHECKED);
-            EnableWindow(GetDlgItem(hDlg, IDC_AIRTECH_FORWARD), checked);
-            EnableWindow(GetDlgItem(hDlg, IDC_AIRTECH_BACKWARD), checked);
+        else if (((LPNMHDR)lParam)->code == TCN_SELCHANGE) {
+            // Tab selection changed
+            int iPage = TabCtrl_GetCurSel(hTabControl);
+            
+            // Show selected page
+            if (iPage == 0) {
+                ShowWindow(hPage1, SW_SHOW);
+                ShowWindow(hPage2, SW_HIDE);
+            }
+            else if (iPage == 1) {
+                ShowWindow(hPage1, SW_HIDE);
+                ShowWindow(hPage2, SW_SHOW);
+            }
+            
+            return TRUE;
+        }
+        
+        return FALSE;
+    }
+    
+    case WM_NOTIFY:
+        if (((LPNMHDR)lParam)->code == TCN_SELCHANGE) {
+            // Tab selection changed
+            int iPage = TabCtrl_GetCurSel(hTabControl);
+            
+            // Hide both pages
+            ShowWindow(hPage1, SW_HIDE);
+            ShowWindow(hPage2, SW_HIDE);
+            
+            // Show the selected page
+            if (iPage == 0) {
+                ShowWindow(hPage1, SW_SHOW);
+                SetFocus(hPage1);
+            } else if (iPage == 1) {
+                ShowWindow(hPage2, SW_SHOW);
+                SetFocus(hPage2);
+            }
+            
             return TRUE;
         }
         break;
     }
+    
     return FALSE;
 }
 
-void ShowEditDataDialog(HWND hParent) {
-    static WORD dlgTemplate[1024]; // Increased size for additional controls
-    ZeroMemory(dlgTemplate, sizeof(dlgTemplate));
-    DLGTEMPLATE* dlg = (DLGTEMPLATE*)dlgTemplate;
-    dlg->style = DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU;
-    dlg->cdit = 29;  // Total number of controls (10 fields + 10 labels + 4 buttons + 5 new controls)
-    dlg->x = 10; dlg->y = 10;
-    dlg->cx = 300; // Wider dialog to ensure all elements fit
-    dlg->cy = 290;  // Give more space for all controls including the bottom buttons
-    WORD* p = (WORD*)(dlg + 1);
-    *p++ = 0; // no menu
-    *p++ = 0; // default dialog class
+void ApplySettings(DisplayData* data) {
+    uintptr_t base = GetEFZBase();
+    if (!base) return;
     
-    // Set dialog title to "Config menu"
-    const wchar_t* title = L"Config menu";
-    for (int i = 0; title[i]; i++) {
-        *p++ = title[i];
-    }
-    *p++ = 0; // null terminator
+    // Apply player 1 values
+    uintptr_t hpAddr1 = ResolvePointer(base, EFZ_BASE_OFFSET_P1, HP_OFFSET);
+    if (hpAddr1) WriteGameMemory(hpAddr1, &data->hp1, sizeof(WORD));
+    
+    uintptr_t meterAddr1 = ResolvePointer(base, EFZ_BASE_OFFSET_P1, METER_OFFSET);
+    if (meterAddr1) WriteGameMemory(meterAddr1, &data->meter1, sizeof(WORD));
+    
+    uintptr_t rfAddr1 = ResolvePointer(base, EFZ_BASE_OFFSET_P1, RF_OFFSET);
+    if (rfAddr1) WriteGameMemory(rfAddr1, &data->rf1, sizeof(double));
+    
+    uintptr_t xAddr1 = ResolvePointer(base, EFZ_BASE_OFFSET_P1, XPOS_OFFSET);
+    if (xAddr1) WriteGameMemory(xAddr1, &data->x1, sizeof(double));
+    
+    uintptr_t yAddr1 = ResolvePointer(base, EFZ_BASE_OFFSET_P1, YPOS_OFFSET);
+    if (yAddr1) WriteGameMemory(yAddr1, &data->y1, sizeof(double));
+    
+    // Apply player 2 values
+    uintptr_t hpAddr2 = ResolvePointer(base, EFZ_BASE_OFFSET_P2, HP_OFFSET);
+    if (hpAddr2) WriteGameMemory(hpAddr2, &data->hp2, sizeof(WORD));
+    
+    uintptr_t meterAddr2 = ResolvePointer(base, EFZ_BASE_OFFSET_P2, METER_OFFSET);
+    if (meterAddr2) WriteGameMemory(meterAddr2, &data->meter2, sizeof(WORD));
+    
+    uintptr_t rfAddr2 = ResolvePointer(base, EFZ_BASE_OFFSET_P2, RF_OFFSET);
+    if (rfAddr2) WriteGameMemory(rfAddr2, &data->rf2, sizeof(double));
+    
+    uintptr_t xAddr2 = ResolvePointer(base, EFZ_BASE_OFFSET_P2, XPOS_OFFSET);
+    if (xAddr2) WriteGameMemory(xAddr2, &data->x2, sizeof(double));
+    
+    uintptr_t yAddr2 = ResolvePointer(base, EFZ_BASE_OFFSET_P2, YPOS_OFFSET);
+    if (yAddr2) WriteGameMemory(yAddr2, &data->y2, sizeof(double));
+    
+    // Update global variables for auto-airtech
+    autoAirtechEnabled = data->autoAirtech;
+    autoAirtechDirection = data->airtechDirection;
+    
+    // Update global variables for auto-jump
+    autoJumpEnabled = data->autoJump;
+    jumpDirection = data->jumpDirection;
+    jumpTarget = data->jumpTarget;
+    
+    LogOut("[SETTINGS] Applied settings from GUI", true);
 
-    // Define all field positions explicitly
+    LogOut("[SETTINGS] Auto-Airtech: " + 
+           std::string(data->autoAirtech ? "ON" : "OFF") + 
+           ", Direction: " + 
+           std::string(data->airtechDirection == 0 ? "Forward" : "Backward"), true);
+
+    LogOut("[SETTINGS] Auto-Jump: " + 
+           std::string(data->autoJump ? "ON" : "OFF") + 
+           ", Direction: " + 
+           std::to_string(data->jumpDirection) + 
+           ", Target: " + 
+           std::to_string(data->jumpTarget), true);
+}
+
+// Add these new helper functions for creating page content
+
+// Create all the controls for the Game Values page
+void GameValuesPage_CreateContent(HWND hParent, DisplayData* pData) {
+    // Get the size of the parent window for better scaling
+    RECT rc;
+    GetClientRect(hParent, &rc);
+    int width = rc.right - rc.left;
+    int height = rc.bottom - rc.top;
+    
+    // Calculate better positioned fields based on available space
     struct { LPCSTR label; int x; int y; int id; int width; } fields[] = {
-        {"P1 HP:", 10, 10, IDC_HP1, 50},
-        {"P1 Meter:", 10, 35, IDC_METER1, 50},
-        {"P1 RF:", 10, 60, IDC_RF1, 50},
-        {"P1 X:", 10, 85, IDC_X1, 80},
-        {"P1 Y:", 10, 110, IDC_Y1, 80},
-        {"P2 HP:", 160, 10, IDC_HP2, 50},
-        {"P2 Meter:", 160, 35, IDC_METER2, 50},
-        {"P2 RF:", 160, 60, IDC_RF2, 50},
-        {"P2 X:", 160, 85, IDC_X2, 80},
-        {"P2 Y:", 160, 110, IDC_Y2, 80}
+        {"P1 HP:", width/20, height/10, IDC_HP1, width/7},
+        {"P1 Meter:", width/20, height*2/10, IDC_METER1, width/7},
+        {"P1 RF:", width/20, height*3/10, IDC_RF1, width/7},
+        {"P1 X:", width/20, height*4/10, IDC_X1, width/5},
+        {"P1 Y:", width/20, height*5/10, IDC_Y1, width/5},
+        {"P2 HP:", width*3/5, height/10, IDC_HP2, width/7},
+        {"P2 Meter:", width*3/5, height*2/10, IDC_METER2, width/7},
+        {"P2 RF:", width*3/5, height*3/10, IDC_RF2, width/7},
+        {"P2 X:", width*3/5, height*4/10, IDC_X2, width/5},
+        {"P2 Y:", width*3/5, height*5/10, IDC_Y2, width/5}
     };
 
-    DLGITEMTEMPLATE* item = (DLGITEMTEMPLATE*)(((DWORD_PTR)p + 3) & ~3);
-
-    // Create all fields with their labels
+    // Create fields with responsive sizing
     for (int i = 0; i < 10; ++i) {
-        // Label control
-        item->style = WS_CHILD | WS_VISIBLE;
-        item->x = fields[i].x;
-        item->y = fields[i].y;
-        item->cx = 55;
-        item->cy = 14;
-        item->id = 0; // Labels don't need IDs
-        item->dwExtendedStyle = 0;
-        WORD* pi = (WORD*)(item + 1);
-        *pi++ = 0xFFFF;
-        *pi++ = 0x0082; // Static class
-        LPCSTR label = fields[i].label;
-        while (*label) *pi++ = *label++;
-        *pi++ = 0;
-        *pi++ = 0; // no creation data
-        item = (DLGITEMTEMPLATE*)(((DWORD_PTR)pi + 3) & ~3);
-
-        // Edit control
+        CreateWindowEx(0, "STATIC", fields[i].label, 
+            WS_CHILD | WS_VISIBLE,
+            fields[i].x, fields[i].y, width/10, height/20, 
+            hParent, NULL, GetModuleHandle(NULL), NULL);
+        
         DWORD style = WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL;
         if (fields[i].id != IDC_X1 && fields[i].id != IDC_Y1 &&
             fields[i].id != IDC_X2 && fields[i].id != IDC_Y2) {
             style |= ES_NUMBER;
         }
-
-        item->style = style;
-        item->x = fields[i].x + 55;
-        item->y = fields[i].y;
-        item->cx = fields[i].width;
-        item->cy = 14;
-        item->id = fields[i].id;
-        item->dwExtendedStyle = 0;
-        pi = (WORD*)(item + 1);
-        *pi++ = 0xFFFF;
-        *pi++ = 0x0081; // Edit class
-        *pi++ = 0; // no text
-        *pi++ = 0; // no creation data
-        item = (DLGITEMTEMPLATE*)(((DWORD_PTR)pi + 3) & ~3);
+        
+        CreateWindowEx(0, "EDIT", "", style,
+            fields[i].x + width/10, fields[i].y, fields[i].width, height/20, 
+            hParent, (HMENU)fields[i].id, GetModuleHandle(NULL), NULL);
     }
 
-    // Swap Positions button
-    item->style = WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON;
-    item->x = 35; item->y = 140; item->cx = 100; item->cy = 20;
-    item->id = IDC_BTN_SWAP_POS;
-    item->dwExtendedStyle = 0;
-    WORD* pi = (WORD*)(item + 1);
-    *pi++ = 0xFFFF; *pi++ = 0x0080; // Button class
-    const char* swapPosText = "Swap Positions";
-    while (*swapPosText) *pi++ = *swapPosText++;
-    *pi++ = 0;
-    *pi++ = 0; // no creation data
-    item = (DLGITEMTEMPLATE*)(((DWORD_PTR)pi + 3) & ~3);
+    // Buttons with better positioning
+    CreateWindowEx(0, "BUTTON", "Swap Positions", 
+        WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+        width/5, height*6/10, width/4, height/15, 
+        hParent, (HMENU)IDC_BTN_SWAP_POS, GetModuleHandle(NULL), NULL);
+    
+    CreateWindowEx(0, "BUTTON", "Round Start", 
+        WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+        width*3/5, height*6/10, width/4, height/15, 
+        hParent, (HMENU)IDC_BTN_ROUND_START, GetModuleHandle(NULL), NULL);
 
-    // Round Start Positions button
-    item->style = WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON;
-    item->x = 160; item->y = 140; item->cx = 100; item->cy = 20;
-    item->id = IDC_BTN_ROUND_START;
-    item->dwExtendedStyle = 0;
-    pi = (WORD*)(item + 1);
-    *pi++ = 0xFFFF; *pi++ = 0x0080; // Button class
-    const char* roundStartText = "Round Start";
-    while (*roundStartText) *pi++ = *roundStartText++;
-    *pi++ = 0;
-    *pi++ = 0; // no creation data
-    item = (DLGITEMTEMPLATE*)(((DWORD_PTR)pi + 3) & ~3);
+    // Separator with better spacing
+    CreateWindowEx(0, "STATIC", "", 
+        WS_CHILD | WS_VISIBLE | SS_ETCHEDHORZ,
+        width/20, height*7/10, width*9/10, 2, 
+        hParent, NULL, GetModuleHandle(NULL), NULL);
 
-    // Separator line
-    item->style = WS_CHILD | WS_VISIBLE | SS_ETCHEDHORZ;
-    item->x = 10; item->y = 180; item->cx = 280; item->cy = 2;
-    item->id = IDC_STATIC;
-    item->dwExtendedStyle = 0;
-    pi = (WORD*)(item + 1);
-    *pi++ = 0xFFFF; *pi++ = 0x0082;  // Static class
-    *pi++ = 0; // No text
-    *pi++ = 0; // No creation data
-    item = (DLGITEMTEMPLATE*)(((DWORD_PTR)pi + 3) & ~3);
+    // Auto-Airtech section with better positioning
+    CreateWindowEx(0, "STATIC", "Auto-Airtech Direction:", 
+        WS_CHILD | WS_VISIBLE | SS_LEFT,
+        width/10, height*8/10, width/4, height/20, 
+        hParent, NULL, GetModuleHandle(NULL), NULL);
 
-    // Auto-airtech Settings Label
-    item->style = WS_CHILD | WS_VISIBLE | SS_LEFT;
-    item->x = 10; item->y = 190; item->cx = 280; item->cy = 16;
-    item->id = IDC_STATIC;
-    item->dwExtendedStyle = 0;
-    pi = (WORD*)(item + 1);
-    *pi++ = 0xFFFF; *pi++ = 0x0082;  // Static class
-    const char* airtechLabel = "Auto-Airtech Settings:";
-    while (*airtechLabel) *pi++ = *airtechLabel++;
-    *pi++ = 0;
-    *pi++ = 0; // No creation data
-    item = (DLGITEMTEMPLATE*)(((DWORD_PTR)pi + 3) & ~3);
+    // Create combo box with better positioning
+    HWND hAirtechCombo = CreateWindowEx(0, "COMBOBOX", "", 
+        WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | WS_VSCROLL,
+        width*4/10, height*8/10, width*5/10, height/6, 
+        hParent, (HMENU)IDC_AIRTECH_DIRECTION, GetModuleHandle(NULL), NULL);
+    
+    // Add items to the airtech combo box
+    SendMessage(hAirtechCombo, CB_RESETCONTENT, 0, 0);
+    SendMessage(hAirtechCombo, CB_ADDSTRING, 0, (LPARAM)"Neutral (Disabled)");
+    SendMessage(hAirtechCombo, CB_ADDSTRING, 0, (LPARAM)"Forward");
+    SendMessage(hAirtechCombo, CB_ADDSTRING, 0, (LPARAM)"Backward");
 
-    // Auto-Airtech Checkbox
-    item->style = WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX;
-    item->x = 20; item->y = 210; item->cx = 200; item->cy = 20;
-    item->id = IDC_AUTO_AIRTECH_CHECK;
-    item->dwExtendedStyle = 0;
-    pi = (WORD*)(item + 1);
-    *pi++ = 0xFFFF; *pi++ = 0x0080;  // Button class
-    const char* airtechCheckText = "Enable Auto-Airtech";
-    while (*airtechCheckText) *pi++ = *airtechCheckText++;
-    *pi++ = 0;
-    *pi++ = 0; // No creation data
-    item = (DLGITEMTEMPLATE*)(((DWORD_PTR)pi + 3) & ~3);
+    // Set selected item based on current settings
+    int airtechIndex = 0; // Default to Neutral (Disabled)
+    if (pData->autoAirtech) {
+        airtechIndex = pData->airtechDirection + 1; // +1 because index 0 is "Neutral"
+    }
+    if (airtechIndex < 0 || airtechIndex > 2) airtechIndex = 0; // Validate index
+    SendMessage(hAirtechCombo, CB_SETCURSEL, airtechIndex, 0);
 
-    // Forward Airtech Radio Button
-    item->style = WS_CHILD | WS_VISIBLE | BS_AUTORADIOBUTTON;
-    item->x = 35; item->y = 235; item->cx = 100; item->cy = 20;
-    item->id = IDC_AIRTECH_FORWARD;
-    item->dwExtendedStyle = 0;
-    pi = (WORD*)(item + 1);
-    *pi++ = 0xFFFF; *pi++ = 0x0080;  // Button class
-    const char* forwardText = "Forward";
-    while (*forwardText) *pi++ = *forwardText++;
-    *pi++ = 0;
-    *pi++ = 0; // No creation data
-    item = (DLGITEMTEMPLATE*)(((DWORD_PTR)pi + 3) & ~3);
+    // Add tooltip for auto-airtech combo
+    HWND hToolTip = CreateWindowEx(0, TOOLTIPS_CLASS, NULL,
+        WS_POPUP | TTS_ALWAYSTIP,
+        CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT,
+        hParent, NULL, GetModuleHandle(NULL), NULL);
+        
+    TOOLINFO toolInfo = { 0 };
+    toolInfo.cbSize = sizeof(toolInfo);
+    toolInfo.hwnd = hParent;
+    toolInfo.uFlags = TTF_SUBCLASS | TTF_IDISHWND;
+    toolInfo.uId = (UINT_PTR)hAirtechCombo;
+    toolInfo.lpszText = (LPSTR)"Auto-Airtech makes your character automatically recover when hit in the air.\r\nSelect a direction or Neutral to disable this feature.";
+    SendMessage(hToolTip, TTM_ADDTOOL, 0, (LPARAM)&toolInfo);
+    SendMessage(hToolTip, TTM_ACTIVATE, TRUE, 0);
 
-    // Backward Airtech Radio Button
-    item->style = WS_CHILD | WS_VISIBLE | BS_AUTORADIOBUTTON;
-    item->x = 150; item->y = 235; item->cx = 100; item->cy = 20;
-    item->id = IDC_AIRTECH_BACKWARD;
-    item->dwExtendedStyle = 0;
-    pi = (WORD*)(item + 1);
-    *pi++ = 0xFFFF; *pi++ = 0x0080;  // Button class
-    const char* backwardText = "Backward";
-    while (*backwardText) *pi++ = *backwardText++;
-    *pi++ = 0;
-    *pi++ = 0; // No creation data
-    item = (DLGITEMTEMPLATE*)(((DWORD_PTR)pi + 3) & ~3);
+    // Initialize edit fields with current values
+    char buffer[32];
+    
+    // Player 1 values
+    sprintf_s(buffer, "%d", pData->hp1);
+    SetDlgItemTextA(hParent, IDC_HP1, buffer);
+    
+    sprintf_s(buffer, "%d", pData->meter1);
+    SetDlgItemTextA(hParent, IDC_METER1, buffer);
+    
+    sprintf_s(buffer, "%d", (int)pData->rf1);
+    SetDlgItemTextA(hParent, IDC_RF1, buffer);
+    
+    sprintf_s(buffer, "%.1f", pData->x1);
+    SetDlgItemTextA(hParent, IDC_X1, buffer);
+    
+    sprintf_s(buffer, "%.1f", pData->y1);
+    SetDlgItemTextA(hParent, IDC_Y1, buffer);
+    
+    // Player 2 values
+    sprintf_s(buffer, "%d", pData->hp2);
+    SetDlgItemTextA(hParent, IDC_HP2, buffer);
+    
+    sprintf_s(buffer, "%d", pData->meter2);
+    SetDlgItemTextA(hParent, IDC_METER2, buffer);
+    
+    sprintf_s(buffer, "%d", (int)pData->rf2);
+    SetDlgItemTextA(hParent, IDC_RF2, buffer);
+    
+    sprintf_s(buffer, "%.1f", pData->x2);
+    SetDlgItemTextA(hParent, IDC_X2, buffer);
+    
+    sprintf_s(buffer, "%.1f", pData->y2);
+    SetDlgItemTextA(hParent, IDC_Y2, buffer);
+}
 
-    // Confirm button
-    item->style = WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON;
-    item->x = 60; item->y = 265; item->cx = 60; item->cy = 20;
-    item->id = IDC_BTN_CONFIRM;
-    item->dwExtendedStyle = 0;
-    pi = (WORD*)(item + 1);
-    *pi++ = 0xFFFF; *pi++ = 0x0080; // Button class
-    const char* confirmText = "Confirm";
-    while (*confirmText) *pi++ = *confirmText++;
-    *pi++ = 0;
-    *pi++ = 0; // no creation data
-    item = (DLGITEMTEMPLATE*)(((DWORD_PTR)pi + 3) & ~3);
+// Create all the controls for the Movement Options page
+void MovementOptionsPage_CreateContent(HWND hParent, DisplayData* pData) {
+    // Jump direction label
+    CreateWindowEx(0, "STATIC", "Auto-Jump Direction:", 
+        WS_CHILD | WS_VISIBLE | SS_LEFT,
+        50, 40, 150, 30, hParent, NULL, GetModuleHandle(NULL), NULL);
+        
+    // Create Jump Direction Combo Box
+    HWND hJumpDirCombo = CreateWindowEx(0, "COMBOBOX", "", 
+        WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | WS_VSCROLL,
+        240, 40, 250, 120, hParent, (HMENU)IDC_JUMP_DIRECTION, GetModuleHandle(NULL), NULL);
+    
+    // Add items to combo box
+    SendMessage(hJumpDirCombo, CB_RESETCONTENT, 0, 0);
+    SendMessage(hJumpDirCombo, CB_ADDSTRING, 0, (LPARAM)"Neutral (Disabled)");
+    SendMessage(hJumpDirCombo, CB_ADDSTRING, 0, (LPARAM)"Straight (Up)");
+    SendMessage(hJumpDirCombo, CB_ADDSTRING, 0, (LPARAM)"Forward");
+    SendMessage(hJumpDirCombo, CB_ADDSTRING, 0, (LPARAM)"Backward");
+    
+    // Set selected item
+    int jumpDirIndex = 0; // Default to Neutral
+    if (pData->autoJump) {
+        jumpDirIndex = pData->jumpDirection + 1; // +1 because index 0 is now "Neutral"
+    }
+    if (jumpDirIndex < 0 || jumpDirIndex > 3) jumpDirIndex = 0; // Validate index
+    SendMessage(hJumpDirCombo, CB_SETCURSEL, jumpDirIndex, 0);
+    
+    // Jump target label
+    CreateWindowEx(0, "STATIC", "Jump Target:", 
+        WS_CHILD | WS_VISIBLE | SS_LEFT,
+        50, 100, 150, 30, hParent, NULL, GetModuleHandle(NULL), NULL);
+    
+    // Create Jump Target Combo Box
+    HWND hTargetCombo = CreateWindowEx(0, "COMBOBOX", "", 
+        WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | WS_VSCROLL,
+        240, 100, 250, 120, hParent, (HMENU)IDC_JUMP_TARGET, GetModuleHandle(NULL), NULL);
+    
+    // Add items to combo box
+    SendMessage(hTargetCombo, CB_RESETCONTENT, 0, 0);
+    SendMessage(hTargetCombo, CB_ADDSTRING, 0, (LPARAM)"P1 Only");
+    SendMessage(hTargetCombo, CB_ADDSTRING, 0, (LPARAM)"P2 Only");
+    SendMessage(hTargetCombo, CB_ADDSTRING, 0, (LPARAM)"Both Players");
+    
+    // Set selected item
+    int targetIndex = pData->jumpTarget - 1; // Adjust index (jumpTarget is 1-based)
+    if (targetIndex < 0 || targetIndex > 2) targetIndex = 2; // Default to "Both"
+    SendMessage(hTargetCombo, CB_SETCURSEL, targetIndex, 0);
+    
+    // Create tooltip control
+    HWND hToolTip = CreateWindowEx(0, TOOLTIPS_CLASS, NULL,
+        WS_POPUP | TTS_ALWAYSTIP,
+        CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT,
+        hParent, NULL, GetModuleHandle(NULL), NULL);
+        
+    // Define tooltip structure
+    TOOLINFO toolInfo = { 0 };
+    toolInfo.cbSize = sizeof(toolInfo);
+    toolInfo.hwnd = hParent;
+    toolInfo.uFlags = TTF_SUBCLASS | TTF_IDISHWND;
+    
+    // Add tooltip for Jump Direction combo
+    toolInfo.uId = (UINT_PTR)hJumpDirCombo;
+    toolInfo.lpszText = (LPSTR)"Auto-Jump will automatically make the player jump whenever they get close to the opponent.\r\n\r\nThis is useful for practicing anti-air timing and defensive movement options.";
+    SendMessage(hToolTip, TTM_ADDTOOL, 0, (LPARAM)&toolInfo);
+    
+    // Add tooltip for Jump Target combo
+    toolInfo.uId = (UINT_PTR)hTargetCombo;
+    toolInfo.lpszText = (LPSTR)"Select which player(s) will automatically jump when they approach the opponent.";
+    SendMessage(hToolTip, TTM_ADDTOOL, 0, (LPARAM)&toolInfo);
+    
+    // Activate tooltips
+    SendMessage(hToolTip, TTM_ACTIVATE, TRUE, 0);
+}
 
-    // Cancel button
-    item->style = WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON;
-    item->x = 160; item->y = 265; item->cx = 60; item->cy = 20;
-    item->id = IDC_BTN_CANCEL;
-    item->dwExtendedStyle = 0;
-    pi = (WORD*)(item + 1);
-    *pi++ = 0xFFFF; *pi++ = 0x0080; // Button class
-    const char* cancelText = "Cancel";
-    while (*cancelText) *pi++ = *cancelText++;
-    *pi++ = 0;
-    *pi++ = 0; // no creation data
-
-    // Create and show the dialog
-    DialogBoxIndirectParamA(GetModuleHandle(NULL), (LPCDLGTEMPLATEA)dlgTemplate, hParent, EditDataDlgProc, (LPARAM)&displayData);
+// Add this subclass procedure to forward button messages to the main dialog
+LRESULT CALLBACK PageSubclassProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam, UINT_PTR uIdSubclass, DWORD_PTR dwRefData) {
+    HWND hDialogParent = (HWND)dwRefData;
+    
+    if (message == WM_COMMAND) {
+        WORD cmdID = LOWORD(wParam);
+        
+        // Forward button clicks to main dialog
+        if (cmdID == IDC_BTN_SWAP_POS || cmdID == IDC_BTN_ROUND_START) {
+            LogOut("[GUI] Forwarding button click to main dialog: " + std::to_string(cmdID), true);
+            SendMessage(hDialogParent, message, wParam, lParam);
+            return 0; // We handled this message
+        }
+    }
+    
+    return DefSubclassProc(hWnd, message, wParam, lParam);
 }
