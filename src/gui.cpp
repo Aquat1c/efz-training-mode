@@ -121,7 +121,7 @@ void ShowEditDataDialog(HWND hParent) {
     dlg->cdit = 0;
     dlg->x = 10; dlg->y = 10;
     dlg->cx = 280; //Width of the dialog
-    dlg->cy = 230; // Height of the dialog
+    dlg->cy = 240; // Height of the dialog
     
     // Create and show the dialog
     DialogBoxIndirectParamA(GetModuleHandle(NULL), (LPCDLGTEMPLATEA)dlgTemplate, hParent, EditDataDlgProc, (LPARAM)&displayData);
@@ -149,7 +149,7 @@ INT_PTR CALLBACK EditDataDlgProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM 
         // Create a tab control that fits the dialog
         hTabControl = CreateWindowEx(0, WC_TABCONTROL, NULL, 
             WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | TCS_FOCUSONBUTTONDOWN,
-            10, 10, 560, 340, hDlg, (HMENU)IDC_TAB_CONTROL, GetModuleHandle(NULL), NULL);
+            10, 10, 560, 370, hDlg, (HMENU)IDC_TAB_CONTROL, GetModuleHandle(NULL), NULL);
 
         // Add tab items
         TCITEM tie;
@@ -206,11 +206,11 @@ INT_PTR CALLBACK EditDataDlgProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM 
         // Update button positions to be within the dialog
         CreateWindowEx(0, "BUTTON", "Confirm", 
             WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON,
-            180, 360, 100, 30, hDlg, (HMENU)IDC_BTN_CONFIRM, GetModuleHandle(NULL), NULL);
+            180, 410, 100, 30, hDlg, (HMENU)IDC_BTN_CONFIRM, GetModuleHandle(NULL), NULL);
             
         CreateWindowEx(0, "BUTTON", "Cancel", 
             WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-            300, 360, 100, 30, hDlg, (HMENU)IDC_BTN_CANCEL, GetModuleHandle(NULL), NULL);
+            300, 410, 100, 30, hDlg, (HMENU)IDC_BTN_CANCEL, GetModuleHandle(NULL), NULL);
 
         // Set focus to tab control
         SetFocus(hTabControl);
@@ -518,7 +518,7 @@ void GameValuesPage_CreateContent(HWND hParent, DisplayData* pData) {
     // Create combo box with better positioning
     HWND hAirtechCombo = CreateWindowEx(0, "COMBOBOX", "", 
         WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | WS_VSCROLL,
-        width*4/10, height*8/10, width*5/10, height/6, 
+        width*4/10, height*8/10, width*5/10, 120, // Changed from height/6 to fixed 120
         hParent, (HMENU)IDC_AIRTECH_DIRECTION, GetModuleHandle(NULL), NULL);
     
     // Add items to the airtech combo box
