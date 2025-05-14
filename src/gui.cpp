@@ -112,15 +112,16 @@ void OpenMenu() {
 }
 
 void ShowEditDataDialog(HWND hParent) {
-    // Create a dialog template with better-proportioned size
+    // Create a dialog template with sizes that match our controls
     static WORD dlgTemplate[128];
     ZeroMemory(dlgTemplate, sizeof(dlgTemplate));
     DLGTEMPLATE* dlg = (DLGTEMPLATE*)dlgTemplate;
-    dlg->style = DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU;
+    dlg->style = DS_SETFONT | DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU | DS_FIXEDSYS;
+    dlg->dwExtendedStyle = 0;
     dlg->cdit = 0;
     dlg->x = 10; dlg->y = 10;
-    dlg->cx = 550; // Smaller width, just enough for the controls
-    dlg->cy = 480; // Smaller height, just enough for the content
+    dlg->cx = 280; //Width of the dialog
+    dlg->cy = 230; // Height of the dialog
     
     // Create and show the dialog
     DialogBoxIndirectParamA(GetModuleHandle(NULL), (LPCDLGTEMPLATEA)dlgTemplate, hParent, EditDataDlgProc, (LPARAM)&displayData);
@@ -145,10 +146,10 @@ INT_PTR CALLBACK EditDataDlgProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM 
         icc.dwICC = ICC_TAB_CLASSES;
         InitCommonControlsEx(&icc);
         
-        // Create a tab control that fits the dialog better
+        // Create a tab control that fits the dialog
         hTabControl = CreateWindowEx(0, WC_TABCONTROL, NULL, 
             WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | TCS_FOCUSONBUTTONDOWN,
-            10, 10, 530, 380, hDlg, (HMENU)IDC_TAB_CONTROL, GetModuleHandle(NULL), NULL);
+            10, 10, 560, 340, hDlg, (HMENU)IDC_TAB_CONTROL, GetModuleHandle(NULL), NULL);
 
         // Add tab items
         TCITEM tie;
@@ -177,9 +178,21 @@ INT_PTR CALLBACK EditDataDlgProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM 
         RECT rc;
         GetClientRect(hTabControl, &rc);
         TabCtrl_AdjustRect(hTabControl, FALSE, &rc);
-        SetWindowPos(hPage1, NULL, rc.left, rc.top, rc.right - rc.left, rc.bottom - rc.top, 
+
+        // Log tab rect dimensions for debugging
+        LogOut("[GUI] Tab client area: left=" + std::to_string(rc.left) + 
+               ", top=" + std::to_string(rc.top) + 
+               ", right=" + std::to_string(rc.right) + 
+               ", bottom=" + std::to_string(rc.bottom), true);
+
+        // Position pages with the adjusted rectangle
+        SetWindowPos(hPage1, NULL, 
+            rc.left + 10, rc.top + 10,  // Add padding 
+            rc.right - rc.left - 20, rc.bottom - rc.top - 20,  // Subtract padding
             SWP_NOZORDER);
-        SetWindowPos(hPage2, NULL, rc.left, rc.top, rc.right - rc.left, rc.bottom - rc.top, 
+        SetWindowPos(hPage2, NULL, 
+            rc.left + 10, rc.top + 10,  // Add padding
+            rc.right - rc.left - 20, rc.bottom - rc.top - 20,  // Subtract padding
             SWP_NOZORDER);
 
         // Create page content
@@ -190,14 +203,14 @@ INT_PTR CALLBACK EditDataDlgProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM 
         ShowWindow(hPage1, SW_SHOW);
         ShowWindow(hPage2, SW_HIDE);
 
-        // Create confirm/cancel buttons closer to content
+        // Update button positions to be within the dialog
         CreateWindowEx(0, "BUTTON", "Confirm", 
             WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON,
-            180, 400, 100, 30, hDlg, (HMENU)IDC_BTN_CONFIRM, GetModuleHandle(NULL), NULL);
+            180, 360, 100, 30, hDlg, (HMENU)IDC_BTN_CONFIRM, GetModuleHandle(NULL), NULL);
             
         CreateWindowEx(0, "BUTTON", "Cancel", 
             WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-            300, 400, 100, 30, hDlg, (HMENU)IDC_BTN_CANCEL, GetModuleHandle(NULL), NULL);
+            300, 360, 100, 30, hDlg, (HMENU)IDC_BTN_CANCEL, GetModuleHandle(NULL), NULL);
 
         // Set focus to tab control
         SetFocus(hTabControl);
