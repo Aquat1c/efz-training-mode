@@ -1,3 +1,6 @@
+#include <fstream>
+#include <iomanip>
+#include <chrono>
 #include "../include/frame_monitor.h"
 #include "../include/constants.h"
 #include "../include/utilities.h"
@@ -153,8 +156,9 @@ void MonitorAutoAirtech(short moveID1, short moveID2) {
             RemoveAirtechPatches();
         }
         
-        prevEnabled = autoAirtechEnabled;
-        prevDirection = autoAirtechDirection;
+        // Fix: Load the atomic values into regular bool/int variables
+        prevEnabled = autoAirtechEnabled.load();
+        prevDirection = autoAirtechDirection.load();
     }
     
     // Log when players enter airtech-eligible states
@@ -193,9 +197,9 @@ void MonitorAutoAirtech(short moveID1, short moveID2) {
 }
 
 // Original bytes for patches
-char originalEnableBytes[2];
-char originalForwardBytes[2];
-char originalBackwardBytes[2];
+char originalEnableBytes[2] = {0x74, 0x71}; // Default values from constants
+char originalForwardBytes[2] = {0x75, 0x24};
+char originalBackwardBytes[2] = {0x75, 0x21};
 bool patchesApplied = false;
 
 // Apply patches to enable auto-airtech
@@ -206,9 +210,9 @@ void ApplyAirtechPatches() {
     if (!base) return;
     
     // Store original bytes before patching
-    memcpy(originalEnableBytes, (void*)(base + AIRTECH_ENABLE_ADDR), 2);
-    memcpy(originalForwardBytes, (void*)(base + AIRTECH_FORWARD_ADDR), 2);
-    memcpy(originalBackwardBytes, (void*)(base + AIRTECH_BACKWARD_ADDR), 2);
+    memcpy(originalEnableBytes, (void*)(base + AIRTECH_ENABLE_ADDR), sizeof(originalEnableBytes));
+    memcpy(originalForwardBytes, (void*)(base + AIRTECH_FORWARD_ADDR), sizeof(originalForwardBytes));
+    memcpy(originalBackwardBytes, (void*)(base + AIRTECH_BACKWARD_ADDR), sizeof(originalBackwardBytes));
     
     // Apply patches
     bool mainPatchSuccess = NopMemory(base + AIRTECH_ENABLE_ADDR, 2);
@@ -291,7 +295,73 @@ void ApplyJump(uintptr_t moveIDAddr, int playerNum, int jumpType) {
            " jump for P" + std::to_string(playerNum), detailedLogging);
 }
 
-// Monitor and handle auto-jump for both players
+// First add this helper function to properly check if a player is in a state where auto-jump shouldn't be applied
+bool IsNonJumpableState(short moveID) {
+    // Debug logging for troubleshooting
+    if (detailedLogging && moveID > 0) {
+        LogOut("[AUTO-JUMP] Checking move ID: " + std::to_string(moveID), false);
+    }
+
+    // First, let's make explicit checks for common problematic moveIDs
+    if (moveID == 59) { // Explicitly check for moveID 59 (air hitstun)
+        return true;
+    }
+    
+    // Check for hitstun and blockstun states
+    if (IsHitstun(moveID) || IsBlockstun(moveID)) {
+        return true;
+    }
+    
+    // Check for launched states (air hitstun)
+    if (moveID >= LAUNCHED_HITSTUN_START && moveID <= LAUNCHED_HITSTUN_END) {
+        return true;
+    }
+    
+    // Check for tech states
+    if (IsGroundtech(moveID) || IsAirtech(moveID)) {
+        return true;
+    }
+    
+    // Special stun states
+    if (IsFrozen(moveID) || IsSpecialStun(moveID)) {
+        return true;
+    }
+    
+    // Air throw states - use wider ranges to be safe
+    if ((moveID >= 120 && moveID <= 130) ||  // Generic air throw range
+        (moveID >= 72 && moveID <= 90))      // Extended range for special attacks
+    {
+        return true;
+    }
+    
+    // Already in air states
+    if (moveID == FALLING_ID || 
+        moveID == LANDING_ID || 
+        moveID == STRAIGHT_JUMP_ID || 
+        moveID == FORWARD_JUMP_ID || 
+        moveID == BACKWARD_JUMP_ID) {
+        return true;
+    }
+    
+    // Additional check: any moveID above a certain threshold is likely a special state
+    // This is a safety net to catch unknown special states
+    if (moveID >= 50 && moveID <= 170) {
+        // This range covers most non-normal states
+        // But we'll exclude known actionable states
+        if (moveID != IDLE_MOVE_ID &&
+            moveID != WALK_FWD_ID &&
+            moveID != WALK_BACK_ID &&
+            moveID != CROUCH_ID &&
+            moveID != CROUCH_TO_STAND_ID) {
+            return true;
+        }
+    }
+    
+    // If none of the above, the state is likely jumpable
+    return false;
+}
+
+// Now modify the MonitorAutoJump function to use this helper
 void MonitorAutoJump(
     uintptr_t base,
     uintptr_t moveIDAddr1, uintptr_t moveIDAddr2,
@@ -306,18 +376,33 @@ void MonitorAutoJump(
         return;
     }
     
-    // Check if player is in hitstun/blockstun - don't interfere with combat
-    bool p1InHitstun = CanAirtech(moveID1) || IsHitstun(moveID1) || IsBlockstun(moveID1);
-    bool p2InHitstun = CanAirtech(moveID2) || IsHitstun(moveID2) || IsBlockstun(moveID2);
+    // Check if player is in a non-jumpable state
+    bool p1NonJumpable = IsNonJumpableState(moveID1);
+    bool p2NonJumpable = IsNonJumpableState(moveID2);
     
-    // Player 1 jump monitoring if enabled AND not in airtech state
-    if ((jumpTarget == 1 || jumpTarget == 3) && !p1InHitstun && !IsAirtech(moveID1) && moveIDAddr1) {
+    // Enhanced logging for debugging
+    if (detailedLogging) {
+        if (p1NonJumpable || moveID1 > 0) {
+            LogOut("[AUTO-JUMP] P1 MoveID: " + std::to_string(moveID1) + 
+                   " (Non-jumpable: " + (p1NonJumpable ? "Yes" : "No") + ")", false);
+        }
+        
+        if (p2NonJumpable || moveID2 > 0) {
+            LogOut("[AUTO-JUMP] P2 MoveID: " + std::to_string(moveID2) + 
+                   " (Non-jumpable: " + (p2NonJumpable ? "Yes" : "No") + ")", false);
+        }
+    }
+    
+    // Player 1 jump monitoring if enabled AND in an actionable state
+    if ((jumpTarget == 1 || jumpTarget == 3) && !p1NonJumpable && moveIDAddr1) {
         switch (p1JumpState) {
             case Grounded:
-                // Start jump
-                ApplyJump(moveIDAddr1, 1, jumpDirection);
-                p1JumpState = Rising;
-                p1StateFrames = 0;
+                // Only apply jump if in an actionable state
+                if (IsActionable(moveID1)) {
+                    ApplyJump(moveIDAddr1, 1, jumpDirection);
+                    p1JumpState = Rising;
+                    p1StateFrames = 0;
+                }
                 break;
                 
             case Rising:
@@ -378,16 +463,20 @@ void MonitorAutoJump(
         }
     }
     
-    // Player 2 jump monitoring if enabled AND not in airtech state
-    if ((jumpTarget == 2 || jumpTarget == 3) && !p2InHitstun && !IsAirtech(moveID2) && moveIDAddr2) {
+    // Player 2 jump monitoring if enabled AND in an actionable state
+    if ((jumpTarget == 2 || jumpTarget == 3) && !p2NonJumpable && moveIDAddr2) {
         switch (p2JumpState) {
             case Grounded:
-                ApplyJump(moveIDAddr2, 2, jumpDirection);
-                p2JumpState = Rising;
-                p2StateFrames = 0;
+                // Only apply jump if in an actionable state
+                if (IsActionable(moveID2)) {
+                    ApplyJump(moveIDAddr2, 2, jumpDirection);
+                    p2JumpState = Rising;
+                    p2StateFrames = 0;
+                }
                 break;
                 
             case Rising:
+                // Check if we've started falling
                 if (moveID2 == FALLING_ID) {
                     p2JumpState = Falling;
                     p2StateFrames = 0;
@@ -406,6 +495,7 @@ void MonitorAutoJump(
                 break;
                 
             case Falling:
+                // Wait for landing
                 if (moveID2 == LANDING_ID) {
                     p2JumpState = Landing;
                     p2StateFrames = 0;
@@ -420,6 +510,7 @@ void MonitorAutoJump(
                 break;
                 
             case Landing:
+                // Allow landing animation to play for at least 2 frames
                 p2StateFrames++;
                 if (p2StateFrames >= 2) {
                     p2JumpState = NeutralFrame;
@@ -431,6 +522,7 @@ void MonitorAutoJump(
                 break;
                 
             case NeutralFrame:
+                // Wait one frame in neutral state
                 p2StateFrames++;
                 if (p2StateFrames >= 1) {
                     p2JumpState = Grounded;

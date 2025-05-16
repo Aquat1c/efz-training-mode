@@ -1,3 +1,6 @@
+#include <fstream>
+#include <iomanip>
+#include <chrono>
 #include "../include/gui.h"
 #include "../include/constants.h"
 #include "../include/memory.h"
@@ -41,51 +44,100 @@ void OpenMenu() {
     uintptr_t base = GetEFZBase();
     
     if (base) {
+        // Enhanced logging to debug P2 data loading
+        LogOut("[GUI] Reading values from memory with base: " + std::to_string(base), detailedLogging);
+        
+        // Resolve P1 pointers with validation
         uintptr_t hpAddr1 = ResolvePointer(base, EFZ_BASE_OFFSET_P1, HP_OFFSET);
         uintptr_t meterAddr1 = ResolvePointer(base, EFZ_BASE_OFFSET_P1, METER_OFFSET);
         uintptr_t rfAddr1 = ResolvePointer(base, EFZ_BASE_OFFSET_P1, RF_OFFSET);
         uintptr_t xAddr1 = ResolvePointer(base, EFZ_BASE_OFFSET_P1, XPOS_OFFSET);
         uintptr_t yAddr1 = ResolvePointer(base, EFZ_BASE_OFFSET_P1, YPOS_OFFSET);
         
+        // Resolve P2 pointers with validation
         uintptr_t hpAddr2 = ResolvePointer(base, EFZ_BASE_OFFSET_P2, HP_OFFSET);
         uintptr_t meterAddr2 = ResolvePointer(base, EFZ_BASE_OFFSET_P2, METER_OFFSET);
         uintptr_t rfAddr2 = ResolvePointer(base, EFZ_BASE_OFFSET_P2, RF_OFFSET);
         uintptr_t xAddr2 = ResolvePointer(base, EFZ_BASE_OFFSET_P2, XPOS_OFFSET);
         uintptr_t yAddr2 = ResolvePointer(base, EFZ_BASE_OFFSET_P2, YPOS_OFFSET);
 
-        // Read current values from memory
-        if (hpAddr1) memcpy(&displayData.hp1, (void*)hpAddr1, sizeof(WORD));
-        if (meterAddr1) memcpy(&displayData.meter1, (void*)meterAddr1, sizeof(WORD));
+        // Debug output of resolved addresses
+        LogOut("[GUI] P1 HP Addr: " + std::to_string(hpAddr1) + 
+               ", P2 HP Addr: " + std::to_string(hpAddr2), detailedLogging);
+        LogOut("[GUI] P1 Meter Addr: " + std::to_string(meterAddr1) + 
+               ", P2 Meter Addr: " + std::to_string(meterAddr2), detailedLogging);
+
+        // Read P1 values with explicit error checking
+        if (hpAddr1) {
+            memcpy(&displayData.hp1, (void*)hpAddr1, sizeof(WORD));
+        } else {
+            displayData.hp1 = 2000; // Default value
+            LogOut("[GUI] Failed to resolve P1 HP address", detailedLogging);
+        }
+        
+        if (meterAddr1) {
+            memcpy(&displayData.meter1, (void*)meterAddr1, sizeof(WORD));
+        } else {
+            displayData.meter1 = 0; // Default value
+            LogOut("[GUI] Failed to resolve P1 Meter address", detailedLogging);
+        }
+        
         if (rfAddr1) {
-            // Read RF value as a double with error checking
             double rf = 0.0;
             memcpy(&rf, (void*)rfAddr1, sizeof(double));
-            
-            // Validate RF value (should be between 0 and 1000)
-            if (rf >= 0.0 && rf <= MAX_RF) {
-                displayData.rf1 = rf;
-            } else {
-                // If value is out of valid range, set to a reasonable default
-                displayData.rf1 = 0.0;
-            }
+            displayData.rf1 = rf;
+        } else {
+            displayData.rf1 = 0.0; // Default value
         }
-        if (xAddr1) memcpy(&displayData.x1, (void*)xAddr1, sizeof(double));
-        if (yAddr1) memcpy(&displayData.y1, (void*)yAddr1, sizeof(double));
         
-        if (hpAddr2) memcpy(&displayData.hp2, (void*)hpAddr2, sizeof(WORD));
-        if (meterAddr2) memcpy(&displayData.meter2, (void*)meterAddr2, sizeof(WORD));
+        if (xAddr1) {
+            memcpy(&displayData.x1, (void*)xAddr1, sizeof(double));
+        } else {
+            displayData.x1 = 240.0; // Default value
+        }
+        
+        if (yAddr1) {
+            memcpy(&displayData.y1, (void*)yAddr1, sizeof(double));
+        } else {
+            displayData.y1 = 0.0; // Default value
+        }
+        
+        // Read P2 values with explicit error checking
+        if (hpAddr2) {
+            memcpy(&displayData.hp2, (void*)hpAddr2, sizeof(WORD));
+            LogOut("[GUI] Successfully read P2 HP: " + std::to_string(displayData.hp2), detailedLogging);
+        } else {
+            displayData.hp2 = 2000; // Default value
+            LogOut("[GUI] Failed to resolve P2 HP address", true); // Log as error
+        }
+        
+        if (meterAddr2) {
+            memcpy(&displayData.meter2, (void*)meterAddr2, sizeof(WORD));
+            LogOut("[GUI] Successfully read P2 Meter: " + std::to_string(displayData.meter2), detailedLogging);
+        } else {
+            displayData.meter2 = 0; // Default value
+            LogOut("[GUI] Failed to resolve P2 Meter address", true); // Log as error
+        }
+        
         if (rfAddr2) {
             double rf = 0.0;
             memcpy(&rf, (void*)rfAddr2, sizeof(double));
-            
-            if (rf >= 0.0 && rf <= MAX_RF) {
-                displayData.rf2 = rf;
-            } else {
-                displayData.rf2 = 0.0;
-            }
+            displayData.rf2 = rf;
+        } else {
+            displayData.rf2 = 0.0; // Default value
         }
-        if (xAddr2) memcpy(&displayData.x2, (void*)xAddr2, sizeof(double));
-        if (yAddr2) memcpy(&displayData.y2, (void*)yAddr2, sizeof(double));
+        
+        if (xAddr2) {
+            memcpy(&displayData.x2, (void*)xAddr2, sizeof(double));
+        } else {
+            displayData.x2 = 400.0; // Default value
+        }
+        
+        if (yAddr2) {
+            memcpy(&displayData.y2, (void*)yAddr2, sizeof(double));
+        } else {
+            displayData.y2 = 0.0; // Default value
+        }
 
         // Load auto-airtech settings
         displayData.autoAirtech = autoAirtechEnabled.load();
@@ -218,6 +270,13 @@ INT_PTR CALLBACK EditDataDlgProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM 
         return TRUE;
     }
     
+    case WM_CLOSE:
+        // Handle the X button the same way as Cancel button
+        EndDialog(hDlg, IDCANCEL);
+        menuOpen = false;  // Make sure we reset the menuOpen flag
+        LogOut("[GUI] Dialog closed via X button", detailedLogging);
+        return TRUE;
+        
     case WM_COMMAND: {
         WORD cmdID = LOWORD(wParam);
         WORD notifyCode = HIWORD(wParam);
@@ -235,35 +294,52 @@ INT_PTR CALLBACK EditDataDlgProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM 
             
             // Get Player 1 values
             GetDlgItemTextA(hPage1, IDC_HP1, buffer, sizeof(buffer));
-            pData->hp1 = atoi(buffer);
-            
+            pData->hp1 = CLAMP(atoi(buffer), 0, MAX_HP);
+
             GetDlgItemTextA(hPage1, IDC_METER1, buffer, sizeof(buffer));
-            pData->meter1 = atoi(buffer);
-            
+            pData->meter1 = CLAMP(atoi(buffer), 0, MAX_METER);
+
             GetDlgItemTextA(hPage1, IDC_RF1, buffer, sizeof(buffer));
-            pData->rf1 = atof(buffer);
+            pData->rf1 = CLAMP(atof(buffer), 0.0, static_cast<double>(MAX_RF));
             
+            // For P1 X coordinate
             GetDlgItemTextA(hPage1, IDC_X1, buffer, sizeof(buffer));
-            pData->x1 = atof(buffer);
+            // Replace commas with periods to ensure proper parsing regardless of locale
+            for (char* p = buffer; *p; ++p) {
+                if (*p == ',') *p = '.';
+            }
+            pData->x1 = CLAMP(atof(buffer), -1000.0, 1000.0);
             
+            // For P1 Y coordinate  
             GetDlgItemTextA(hPage1, IDC_Y1, buffer, sizeof(buffer));
-            pData->y1 = atof(buffer);
+            for (char* p = buffer; *p; ++p) {
+                if (*p == ',') *p = '.';
+            }
+            pData->y1 = CLAMP(atof(buffer), -1000.0, 1000.0);
             
             // Get Player 2 values
             GetDlgItemTextA(hPage1, IDC_HP2, buffer, sizeof(buffer));
-            pData->hp2 = atoi(buffer);
+            pData->hp2 = CLAMP(atoi(buffer), 0, MAX_HP);
             
             GetDlgItemTextA(hPage1, IDC_METER2, buffer, sizeof(buffer));
-            pData->meter2 = atoi(buffer);
-            
+            pData->meter2 = CLAMP(atoi(buffer), 0, MAX_METER);
+
             GetDlgItemTextA(hPage1, IDC_RF2, buffer, sizeof(buffer));
-            pData->rf2 = atof(buffer);
+            pData->rf2 = CLAMP(atof(buffer), 0.0, static_cast<double>(MAX_RF));
             
+            // For P2 X coordinate
             GetDlgItemTextA(hPage1, IDC_X2, buffer, sizeof(buffer));
-            pData->x2 = atof(buffer);
+            for (char* p = buffer; *p; ++p) {
+                if (*p == ',') *p = '.';
+            }
+            pData->x2 = CLAMP(atof(buffer), -1000.0, 1000.0);
             
+            // For P2 Y coordinate
             GetDlgItemTextA(hPage1, IDC_Y2, buffer, sizeof(buffer));
-            pData->y2 = atof(buffer);
+            for (char* p = buffer; *p; ++p) {
+                if (*p == ',') *p = '.';
+            }
+            pData->y2 = CLAMP(atof(buffer), -1000.0, 1000.0);
             
             // Get airtech settings from combo box
             int airtechSelection = SendMessage(GetDlgItem(hPage1, IDC_AIRTECH_DIRECTION), CB_GETCURSEL, 0, 0);
@@ -391,63 +467,103 @@ INT_PTR CALLBACK EditDataDlgProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM 
 }
 
 void ApplySettings(DisplayData* data) {
-    uintptr_t base = GetEFZBase();
-    if (!base) return;
-    
-    // Apply player 1 values
-    uintptr_t hpAddr1 = ResolvePointer(base, EFZ_BASE_OFFSET_P1, HP_OFFSET);
-    if (hpAddr1) WriteGameMemory(hpAddr1, &data->hp1, sizeof(WORD));
-    
-    uintptr_t meterAddr1 = ResolvePointer(base, EFZ_BASE_OFFSET_P1, METER_OFFSET);
-    if (meterAddr1) WriteGameMemory(meterAddr1, &data->meter1, sizeof(WORD));
-    
-    uintptr_t rfAddr1 = ResolvePointer(base, EFZ_BASE_OFFSET_P1, RF_OFFSET);
-    if (rfAddr1) WriteGameMemory(rfAddr1, &data->rf1, sizeof(double));
-    
-    uintptr_t xAddr1 = ResolvePointer(base, EFZ_BASE_OFFSET_P1, XPOS_OFFSET);
-    if (xAddr1) WriteGameMemory(xAddr1, &data->x1, sizeof(double));
-    
-    uintptr_t yAddr1 = ResolvePointer(base, EFZ_BASE_OFFSET_P1, YPOS_OFFSET);
-    if (yAddr1) WriteGameMemory(yAddr1, &data->y1, sizeof(double));
-    
-    // Apply player 2 values
-    uintptr_t hpAddr2 = ResolvePointer(base, EFZ_BASE_OFFSET_P2, HP_OFFSET);
-    if (hpAddr2) WriteGameMemory(hpAddr2, &data->hp2, sizeof(WORD));
-    
-    uintptr_t meterAddr2 = ResolvePointer(base, EFZ_BASE_OFFSET_P2, METER_OFFSET);
-    if (meterAddr2) WriteGameMemory(meterAddr2, &data->meter2, sizeof(WORD));
-    
-    uintptr_t rfAddr2 = ResolvePointer(base, EFZ_BASE_OFFSET_P2, RF_OFFSET);
-    if (rfAddr2) WriteGameMemory(rfAddr2, &data->rf2, sizeof(double));
-    
-    uintptr_t xAddr2 = ResolvePointer(base, EFZ_BASE_OFFSET_P2, XPOS_OFFSET);
-    if (xAddr2) WriteGameMemory(xAddr2, &data->x2, sizeof(double));
-    
-    uintptr_t yAddr2 = ResolvePointer(base, EFZ_BASE_OFFSET_P2, YPOS_OFFSET);
-    if (yAddr2) WriteGameMemory(yAddr2, &data->y2, sizeof(double));
-    
-    // Update global variables for auto-airtech
-    autoAirtechEnabled = data->autoAirtech;
-    autoAirtechDirection = data->airtechDirection;
-    
-    // Update global variables for auto-jump
-    autoJumpEnabled = data->autoJump;
-    jumpDirection = data->jumpDirection;
-    jumpTarget = data->jumpTarget;
-    
-    LogOut("[SETTINGS] Applied settings from GUI", true);
+    if (!data) {
+        LogOut("[ERROR] ApplySettings called with null data pointer", true);
+        return;
+    }
 
-    LogOut("[SETTINGS] Auto-Airtech: " + 
-           std::string(data->autoAirtech ? "ON" : "OFF") + 
-           ", Direction: " + 
-           std::string(data->airtechDirection == 0 ? "Forward" : "Backward"), true);
-
-    LogOut("[SETTINGS] Auto-Jump: " + 
-           std::string(data->autoJump ? "ON" : "OFF") + 
-           ", Direction: " + 
-           std::to_string(data->jumpDirection) + 
-           ", Target: " + 
-           std::to_string(data->jumpTarget), true);
+    try {
+        // Force C locale for consistent decimal handling
+        std::locale oldLocale = std::locale::global(std::locale("C"));
+        
+        // Validate all floating point inputs
+        if (!std::isfinite(data->x1)) data->x1 = 240.0;
+        if (!std::isfinite(data->y1)) data->y1 = 0.0;
+        if (!std::isfinite(data->x2)) data->x2 = 400.0;
+        if (!std::isfinite(data->y2)) data->y2 = 0.0;
+        if (!std::isfinite(data->rf1)) data->rf1 = 0.0;
+        if (!std::isfinite(data->rf2)) data->rf2 = 0.0;
+        
+        uintptr_t base = GetEFZBase();
+        if (!base) {
+            LogOut("[SETTINGS] Failed to get game base address", true);
+            std::locale::global(oldLocale); // Restore locale before returning
+            return;
+        }
+        
+        // Apply player 1 values - with comprehensive error checking
+        uintptr_t hpAddr1 = ResolvePointer(base, EFZ_BASE_OFFSET_P1, HP_OFFSET);
+        if (hpAddr1) {
+            WriteGameMemory(hpAddr1, &data->hp1, sizeof(WORD));
+        }
+        
+        uintptr_t meterAddr1 = ResolvePointer(base, EFZ_BASE_OFFSET_P1, METER_OFFSET);
+        if (meterAddr1) {
+            WriteGameMemory(meterAddr1, &data->meter1, sizeof(WORD));
+        }
+        
+        uintptr_t rfAddr1 = ResolvePointer(base, EFZ_BASE_OFFSET_P1, RF_OFFSET);
+        if (rfAddr1) {
+            float rf = static_cast<float>(data->rf1);
+            WriteGameMemory(rfAddr1, &rf, sizeof(float));
+        }
+        
+        uintptr_t xAddr1 = ResolvePointer(base, EFZ_BASE_OFFSET_P1, XPOS_OFFSET);
+        if (xAddr1) {
+            WriteGameMemory(xAddr1, &data->x1, sizeof(double));
+        }
+        
+        uintptr_t yAddr1 = ResolvePointer(base, EFZ_BASE_OFFSET_P1, YPOS_OFFSET);
+        if (yAddr1) {
+            WriteGameMemory(yAddr1, &data->y1, sizeof(double));
+        }
+        
+        // Apply player 2 values
+        uintptr_t hpAddr2 = ResolvePointer(base, EFZ_BASE_OFFSET_P2, HP_OFFSET);
+        if (hpAddr2) {
+            LogOut("[SETTINGS] P2 HP address: " + std::to_string(hpAddr2) + ", value: " + std::to_string(data->hp2), detailedLogging);
+            WriteGameMemory(hpAddr2, &data->hp2, sizeof(WORD));
+        } else {
+            LogOut("[ERROR] Failed to resolve P2 HP address", true);
+        }
+        
+        uintptr_t meterAddr2 = ResolvePointer(base, EFZ_BASE_OFFSET_P2, METER_OFFSET);
+        if (meterAddr2) {
+            WriteGameMemory(meterAddr2, &data->meter2, sizeof(WORD));
+        }
+        
+        uintptr_t rfAddr2 = ResolvePointer(base, EFZ_BASE_OFFSET_P2, RF_OFFSET);
+        if (rfAddr2) {
+            float rf = static_cast<float>(data->rf2);
+            WriteGameMemory(rfAddr2, &rf, sizeof(float));
+        }
+        
+        uintptr_t xAddr2 = ResolvePointer(base, EFZ_BASE_OFFSET_P2, XPOS_OFFSET);
+        if (xAddr2) {
+            WriteGameMemory(xAddr2, &data->x2, sizeof(double));
+        }
+        
+        uintptr_t yAddr2 = ResolvePointer(base, EFZ_BASE_OFFSET_P2, YPOS_OFFSET);
+        if (yAddr2) {
+            WriteGameMemory(yAddr2, &data->y2, sizeof(double));
+        }
+        
+        // Restore original locale when done
+        std::locale::global(oldLocale);
+        
+        // Update global variables
+        autoAirtechEnabled = data->autoAirtech;
+        autoAirtechDirection = data->airtechDirection;
+        autoJumpEnabled = data->autoJump;
+        jumpDirection = data->jumpDirection;
+        jumpTarget = data->jumpTarget;
+        
+        LogOut("[SETTINGS] Applied settings from GUI", true);
+    } catch (const std::exception& e) {
+        LogOut("[ERROR] Exception in ApplySettings: " + std::string(e.what()), true);
+    } catch (...) {
+        LogOut("[ERROR] Unknown exception in ApplySettings", true);
+    }
 }
 
 // Add these new helper functions for creating page content
@@ -563,13 +679,7 @@ void GameValuesPage_CreateContent(HWND hParent, DisplayData* pData) {
     sprintf_s(buffer, "%d", (int)pData->rf1);
     SetDlgItemTextA(hParent, IDC_RF1, buffer);
     
-    sprintf_s(buffer, "%.1f", pData->x1);
-    SetDlgItemTextA(hParent, IDC_X1, buffer);
-    
-    sprintf_s(buffer, "%.1f", pData->y1);
-    SetDlgItemTextA(hParent, IDC_Y1, buffer);
-    
-    // Player 2 values
+    // Player 2 values (add these after P1 values)
     sprintf_s(buffer, "%d", pData->hp2);
     SetDlgItemTextA(hParent, IDC_HP2, buffer);
     
@@ -579,11 +689,23 @@ void GameValuesPage_CreateContent(HWND hParent, DisplayData* pData) {
     sprintf_s(buffer, "%d", (int)pData->rf2);
     SetDlgItemTextA(hParent, IDC_RF2, buffer);
     
+    // Force C locale for coordinate string formatting to ensure consistent decimal points
+    std::locale oldLocale = std::locale::global(std::locale("C"));
+
+    sprintf_s(buffer, "%.1f", pData->x1);
+    SetDlgItemTextA(hParent, IDC_X1, buffer);
+    
+    sprintf_s(buffer, "%.1f", pData->y1);
+    SetDlgItemTextA(hParent, IDC_Y1, buffer);
+    
     sprintf_s(buffer, "%.1f", pData->x2);
     SetDlgItemTextA(hParent, IDC_X2, buffer);
     
     sprintf_s(buffer, "%.1f", pData->y2);
     SetDlgItemTextA(hParent, IDC_Y2, buffer);
+
+    // Restore original locale
+    std::locale::global(oldLocale);
 }
 
 // Create all the controls for the Movement Options page
