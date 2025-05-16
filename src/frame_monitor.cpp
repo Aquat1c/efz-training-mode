@@ -533,6 +533,28 @@ void MonitorAutoJump(
     }
 }
 
+// First, improve the IsBlockstunState function to catch more standing blockstun states
+bool IsBlockstunState(short moveID) {
+    // Directly check for core blockstun IDs
+    if (moveID == STAND_GUARD_ID || 
+        moveID == CROUCH_GUARD_ID || 
+        moveID == CROUCH_GUARD_STUN1 ||
+        moveID == CROUCH_GUARD_STUN2 || 
+        moveID == AIR_GUARD_ID) {
+        return true;
+    }
+    
+    // Check the range that includes standing blockstun states
+    // Ensure we explicitly include 150 and 152 for clarity
+    if (moveID == 150 || moveID == 152 || 
+        (moveID >= 140 && moveID <= 149) ||  // First blockstun range
+        (moveID >= 153 && moveID <= 165)) {  // Second blockstun range (excluding 150-152 which we check explicitly)
+        return true;
+    }
+    
+    return false;
+}
+
 void FrameDataMonitor() {
     uintptr_t base = GetEFZBase();
     state = Idle;
@@ -590,25 +612,81 @@ void FrameDataMonitor() {
         RG_STAND_ID, RG_CROUCH_ID, RG_AIR_ID
     };
 
+    // Add these variables near the top of the function
+    int frameAdv = 0;
+    int lastFrameAdvDisplay = 0;
+    const int FRAME_ADV_COOLDOWN = 30; // Don't show more than once per 30 frames
+    
+    // Making detection more sensitive by tracking possible blockstun transitions
+    bool p1WasInBlockstun = false;
+    bool p2WasInBlockstun = false;
+    int p1BlockstunEndFrame = -1;
+    int p2BlockstunEndFrame = -1;
+    
     while (true) {
         base = GetEFZBase();
         if (base) {
+            // Add this code to improve detection of blockstun exit
             // Get player move IDs
             uintptr_t moveIDAddr1 = ResolvePointer(base, EFZ_BASE_OFFSET_P1, MOVE_ID_OFFSET);
             uintptr_t moveIDAddr2 = ResolvePointer(base, EFZ_BASE_OFFSET_P2, MOVE_ID_OFFSET);
-
-            // Store previous move IDs
-            prevMoveID1 = moveID1;
-            prevMoveID2 = moveID2;
-
-            // Reset move IDs
-            moveID1 = 0;
-            moveID2 = 0;
-
-            // Get current move IDs
+            
+            short moveID1 = 0, moveID2 = 0;
             if (moveIDAddr1) memcpy(&moveID1, (void*)moveIDAddr1, sizeof(short));
             if (moveIDAddr2) memcpy(&moveID2, (void*)moveIDAddr2, sizeof(short));
-
+            
+            // Check for blockstun -> actionable transitions
+            bool p1BlockstunNow = IsBlockstunState(moveID1);
+            bool p2BlockstunNow = IsBlockstunState(moveID2);
+            
+            // P1 exiting blockstun
+            if (p1WasInBlockstun && !p1BlockstunNow) {
+                // Store the frame advantage calculation even without checking IsActionable
+                p1BlockstunEndFrame = frameCounter;
+                
+                // P1 was defender, P2 was attacker
+                if (p2BlockstunEndFrame < 0 || (frameCounter - p2BlockstunEndFrame) < 20) {
+                    int advantage = p1BlockstunEndFrame - p2BlockstunEndFrame;
+                    
+                    // Only show if we have valid data and enough time since last display
+                    if (p2BlockstunEndFrame > 0 && (frameCounter - lastFrameAdvDisplay) >= FRAME_ADV_COOLDOWN) {
+                        LogOut("[FRAME ADVANTAGE] P2 +" + std::to_string(advantage) + 
+                              " (P2 vs P1)", true);
+                        lastFrameAdvDisplay = frameCounter;
+                    }
+                }
+            }
+            
+            // P2 exiting blockstun
+            if (p2WasInBlockstun && !p2BlockstunNow) {
+                // Store the frame advantage calculation even without checking IsActionable
+                p2BlockstunEndFrame = frameCounter;
+                
+                // P2 was defender, P1 was attacker
+                if (p1BlockstunEndFrame < 0 || (frameCounter - p1BlockstunEndFrame) < 20) {
+                    int advantage = p2BlockstunEndFrame - p1BlockstunEndFrame;
+                    
+                    // Only show if we have valid data and enough time since last display
+                    if (p1BlockstunEndFrame > 0 && (frameCounter - lastFrameAdvDisplay) >= FRAME_ADV_COOLDOWN) {
+                        LogOut("[FRAME ADVANTAGE] P1 +" + std::to_string(advantage) + 
+                              " (P1 vs P2)", true);
+                        lastFrameAdvDisplay = frameCounter;
+                    }
+                }
+            }
+            
+            // Update blockstun tracking
+            p1WasInBlockstun = p1BlockstunNow;
+            p2WasInBlockstun = p2BlockstunNow;
+            
+            // Monitor for new blockstun (reset tracking)
+            if (p1BlockstunNow && !p1WasInBlockstun) {
+                p1BlockstunEndFrame = -1;
+            }
+            if (p2BlockstunNow && !p2WasInBlockstun) {
+                p2BlockstunEndFrame = -1;
+            }
+            
             // Add this line to call our modified MonitorAutoAirtech function
             MonitorAutoAirtech(moveID1, moveID2);
             

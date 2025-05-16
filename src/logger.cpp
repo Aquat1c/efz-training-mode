@@ -53,11 +53,11 @@ void LogOut(const std::string& msg, bool consoleOutput) {
         bool isDetailedDebugMsg = 
             currentCategory == "POSITION" || 
             currentCategory == "HITSTUN" || 
-            currentCategory == "FRAME DATA" ||
-            currentCategory == "AIRTECH" ||
             currentCategory == "STATE";
             
-        if (isDetailedDebugMsg && !detailedDebugOutput) {
+        // Always show frame advantage regardless of detailed debug setting
+        if (isDetailedDebugMsg && !detailedDebugOutput && 
+            currentCategory != "FRAME ADVANTAGE") { // Special case for frame advantage
             // Skip this message - detailed debug not enabled
             return;
         }
