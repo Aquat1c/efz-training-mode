@@ -127,11 +127,25 @@ bool IsActionable(short moveID) {
 bool IsBlockstun(short moveID) {
     std::locale::global(std::locale("C")); 
     // This ensures consistent decimal point format
-    return moveID == STAND_GUARD_ID ||
-        moveID == CROUCH_GUARD_ID ||
+    
+    // Directly check for core blockstun IDs
+    if (moveID == STAND_GUARD_ID || 
+        moveID == CROUCH_GUARD_ID || 
         moveID == CROUCH_GUARD_STUN1 ||
-        moveID == CROUCH_GUARD_STUN2 ||
-        moveID == AIR_GUARD_ID;
+        moveID == CROUCH_GUARD_STUN2 || 
+        moveID == AIR_GUARD_ID) {
+        return true;
+    }
+    
+    // Check the range that includes standing blockstun states
+    // Explicitly include 150 and 152
+    if (moveID == 150 || moveID == 152 || 
+        (moveID >= 140 && moveID <= 149) ||  // First blockstun range
+        (moveID >= 153 && moveID <= 165)) {  // Second blockstun range (excluding 150-152 which we check explicitly)
+        return true;
+    }
+    
+    return false;
 }
 
 bool IsRecoilGuard(short moveID) {
@@ -416,4 +430,13 @@ std::string GetKeyName(int virtualKey) {
     }
     
     return "Key(" + std::to_string(virtualKey) + ")";
+}
+
+bool IsDashState(short moveID) {
+    std::locale::global(std::locale("C")); 
+    // This ensures consistent decimal point format
+    return moveID == FORWARD_DASH_START_ID || 
+           moveID == FORWARD_DASH_RECOVERY_ID ||
+           moveID == BACKWARD_DASH_START_ID || 
+           moveID == BACKWARD_DASH_RECOVERY_ID;
 }

@@ -157,3 +157,28 @@
 #define IDC_AIRTECH_DIRECTION 3010  // Combo box for airtech direction
 #define IDC_JUMP_DIRECTION    4020  // Combo box for jump direction
 #define IDC_JUMP_TARGET       4021  // Combo box for jump target
+
+// Add these after your existing Move ID section
+// Attack level blockstun MoveIDs
+#define STANDING_BLOCK_LVL1 150
+#define STANDING_BLOCK_LVL2 151  // Same as STAND_GUARD_ID
+#define STANDING_BLOCK_LVL3 152
+
+#define CROUCHING_BLOCK_LVL1 153  // Same as CROUCH_GUARD_ID
+#define CROUCHING_BLOCK_LVL2_A 154  // Same as CROUCH_GUARD_STUN1
+#define CROUCHING_BLOCK_LVL2_B 155  // Same as CROUCH_GUARD_STUN2
+
+// Dash states
+#define FORWARD_DASH_START_ID 163
+#define FORWARD_DASH_RECOVERY_ID 164
+#define BACKWARD_DASH_START_ID 165
+#define BACKWARD_DASH_RECOVERY_ID 166
+
+// Frame advantage constants (internal frames)
+#define FRAME_ADV_LVL1_BLOCK 9
+#define FRAME_ADV_LVL2_BLOCK 14
+#define FRAME_ADV_LVL3_BLOCK 21
+#define FRAME_ADV_LVL1_HIT 10
+#define FRAME_ADV_LVL2_HIT 16
+#define FRAME_ADV_LVL3_HIT 23
+#define FRAME_ADV_AIR_BLOCK 19

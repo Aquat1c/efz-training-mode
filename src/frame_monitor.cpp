@@ -17,6 +17,9 @@
 
 MonitorState state = Idle;
 
+// Add this with the other global variable definitions (near the top of the file)
+short initialBlockstunMoveID = -1;
+
 // Add these helper functions before FrameDataMonitor function
 
 bool IsHitstun(short moveID) {
@@ -521,11 +524,45 @@ bool IsBlockstunState(short moveID) {
     return false;
 }
 
+// Add this helper function to determine attack level from blockstun MoveID
+int GetAttackLevel(short blockstunMoveID) {
+    // Standing blockstun states
+    if (blockstunMoveID == 150) return 1;
+    if (blockstunMoveID == STAND_GUARD_ID) return 2; // 151
+    if (blockstunMoveID == 152) return 3;
+    
+    // Crouching blockstun states
+    if (blockstunMoveID == 153) return 1;
+    if (blockstunMoveID == 154 || blockstunMoveID == 155) return 2;
+    
+    // Air block
+    if (blockstunMoveID == AIR_GUARD_ID) return 0; // Special case for air block
+    
+    // Default for unknown blockstun types
+    return 0;
+}
+
+// Helper to determine if it's a standing or crouching block
+std::string GetBlockStateType(short blockstunMoveID) {
+    if (blockstunMoveID >= 150 && blockstunMoveID <= 152) return "Standing";
+    if (blockstunMoveID >= 153 && blockstunMoveID <= 155) return "Crouching";
+    if (blockstunMoveID == AIR_GUARD_ID) return "Air";
+    return "Unknown";
+}
+
 void FrameDataMonitor() {
     uintptr_t base = GetEFZBase();
     state = Idle;
+    
+    // Initialize global variables
+    initialBlockstunMoveID = -1;
 
+    // Rest of your existing initialization
     int RG_FREEZE_DURATION = 0;  // Keep this as it's set dynamically based on RG type
+
+    // Add these lines to fix the undeclared identifier errors
+    bool forceTimeout = false;
+    bool stateChanged = false;  // Add this line to fix the stateChanged errors
 
     // Block/RG monitoring variables
     int defender = -1, attacker = -1;
@@ -655,6 +692,34 @@ void FrameDataMonitor() {
             }
             if (p2BlockstunNow && !p2WasInBlockstun) {
                 p2BlockstunEndFrame = -1;
+            }
+            
+            // Modified blockstun state detection - Use this in the main monitoring loop:
+          if (IsBlockstunState(moveID1) && !p1WasInBlockstun) {
+                initialBlockstunMoveID = moveID1;
+                int attackLevel = GetAttackLevel(moveID1);
+                std::string blockType = GetBlockStateType(moveID1);
+                
+                LogOut("[BLOCKSTUN] P1 entered " + blockType + " blockstun (Level " + 
+                    std::to_string(attackLevel) + ") at frame " + 
+                    std::to_string(frameCounter), detailedLogging);
+            }
+
+            // Skip frame advantage calculation for dash states
+            if (IsDashState(moveID1) || IsDashState(moveID2)) {
+                LogOut("[INFO] Dash state detected - skipping frame advantage calculation", detailedLogging);
+                state = Idle;
+                continue;
+}
+            // When blockstun ends, capture the EXACT frame:
+            if (!IsBlockstunState(moveID1) && p1WasInBlockstun) {
+                // The player becomes actionable on THIS frame (not the next one)
+                defenderActionableFrame = frameCounter;
+                
+                // Log exact frame for debugging
+                LogOut("[BLOCKSTUN] P" + std::to_string(defender) + 
+                       " exited blockstun at frame " + std::to_string(frameCounter) + 
+                       " (MoveID: " + std::to_string(moveID1) + ")", detailedLogging);
             }
             
             // Add this line to call our modified MonitorAutoAirtech function
@@ -924,7 +989,7 @@ void FrameDataMonitor() {
 
                 // Check for frame rate issues - we expect ~5.2ms per frame at 192Hz
                 if (ms > 7.0 && (state == Monitoring || state == RGMonitoring || state == SuperflashMonitoring)) {
-                    LogOut("[WARNING] Possible frame skip detected: " + std::to_string(ms) + "ms (expected ~5.2ms)", true);
+                    LogOut("[WARNING] Possible frame skip detected: " + std::to_string(ms) + "ms (expected ~5.2ms)", detailedLogging);
                 }
             }
 
@@ -1002,12 +1067,12 @@ void FrameDataMonitor() {
                 // Special stun detection
                 if (IsSpecialStun(moveID1) && !IsSpecialStun(prevMoveID1)) {
                     std::string stunType = "";
-                    if (moveID1 == FIRE_STATE) stunType = "Fire";
-                    else if (moveID1 == ELECTRIC_STATE) stunType = "Electric";
-                    else if (moveID1 >= FROZEN_STATE_START && moveID1 <= FROZEN_STATE_END) stunType = "Frozen";
+                    if (moveID1 == FIRE_STATE) stunType = "fire";
+                    else if (moveID1 == ELECTRIC_STATE) stunType = "electric";
+                    else if (moveID1 >= FROZEN_STATE_START && moveID1 <= FROZEN_STATE_END) stunType = "frozen";
                     
                     LogOut("[STUN] P1 entered " + stunType + " state at frame " + 
-                          std::to_string(frameCounter) + " (MoveID: " + std::to_string(moveID1) + ")", true);
+                          std::to_string(frameCounter) + " (MoveID: " + std::to_string(moveID1) + ")", detailedLogging);
                     
                     if (moveID1 == FROZEN_STATE_START || moveID1 == FROZEN_STATE_START + 1) {
                         LogOut("[STUN] P1 will be directly actionable after frozen state", true);
@@ -1018,12 +1083,12 @@ void FrameDataMonitor() {
                 
                 if (IsSpecialStun(moveID2) && !IsSpecialStun(prevMoveID2)) {
                     std::string stunType = "";
-                    if (moveID2 == FIRE_STATE) stunType = "Fire";
-                    else if (moveID2 == ELECTRIC_STATE) stunType = "Electric";
-                    else if (moveID2 >= FROZEN_STATE_START && moveID2 <= FROZEN_STATE_END) stunType = "Frozen";
+                    if (moveID2 == FIRE_STATE) stunType = "fire";
+                    else if (moveID2 == ELECTRIC_STATE) stunType = "electric";
+                    else if (moveID2 >= FROZEN_STATE_START && moveID2 <= FROZEN_STATE_END) stunType = "frozen";
                     
                     LogOut("[STUN] P2 entered " + stunType + " state at frame " + 
-                          std::to_string(frameCounter) + " (MoveID: " + std::to_string(moveID2) + ")", true);
+                          std::to_string(frameCounter) + " (MoveID: " + std::to_string(moveID2) + ")", detailedLogging);
                     
                     if (moveID2 == FROZEN_STATE_START || moveID2 == FROZEN_STATE_START + 1) {
                         LogOut("[STUN] P2 will be directly actionable after frozen state", true);
@@ -1337,109 +1402,81 @@ void FrameDataMonitor() {
                     }
 
                     if (defenderActionableFrame != -1 && attackerActionableFrame != -1) {
-                        // Calculate frame advantage
-                        int internalFrameAdvantage = defenderActionableFrame - attackerActionableFrame;
-
-                        // For RG, we need to handle the specific mechanics of RG freeze and stun
-                        int fullStunAdvantage = internalFrameAdvantage;
+                        // Create single source of truth for RG state
                         bool isRG = (state == RGMonitoring);
                         
+                        // Calculate frame advantage from P1's perspective
+                        // Positive means P1 can act before P2 (has advantage)
+                        // Negative means P2 can act before P1 (P1 has disadvantage)
+                        int frameAdv;
+                        if (defender == 1) {
+                            // P1 was blocking, P2 was attacking
+                            // To get P1's advantage: P2's recovery - P1's recovery
+                            frameAdv = attackerActionableFrame - defenderActionableFrame;
+                        } else {
+                            // P2 was blocking, P1 was attacking
+                            // To get P1's advantage: P2's recovery - P1's recovery
+                            frameAdv = defenderActionableFrame - attackerActionableFrame;
+                        }
+                        
+                        // For RG, handle the specific mechanics of RG freeze and stun
+                        int fullStunAdvantage = frameAdv;
+                        
                         if (isRG) {
-                            // Apply the additional RG disadvantage based on RG type
-                            if (rgType == RG_STAND_ID) {
-                                // Stand RG: defender is -0.33F disadvantage
-                                internalFrameAdvantage -= 1;  // -0.33F in internal frames (1/3 of a visual frame)
-                            }
-                            else if (rgType == RG_CROUCH_ID) {
-                                // Crouch RG: defender is -2.33F disadvantage
-                                internalFrameAdvantage -= 7;  // -2.33F in internal frames (7/3 of a visual frame)
-                            }
-                            else if (rgType == RG_AIR_ID) {
-                                // Air RG: defender is -2F disadvantage
-                                internalFrameAdvantage -= 6;  // -2F in internal frames (6/3 of a visual frame)
-                            }
-                            
                             // Calculate full stun disadvantage (if defender doesn't cancel with an attack)
                             // RG_STUN_DURATION is typically 20F (60 internal frames)
-                            fullStunAdvantage = internalFrameAdvantage + (RG_STUN_DURATION * 3); // Add full stun duration
-                        }
-
-                        // Calculate visual frame values for immediate attack advantage
-                        int visualFrameAdvantage;
-                        std::string decimalPart = "";
-
-                        // For negative values, we need to handle the sign and remainder differently
-                        if (internalFrameAdvantage < 0) {
-                            visualFrameAdvantage = internalFrameAdvantage / 3;
-                            int remainder = (-internalFrameAdvantage) % 3;
-                            if (remainder == 1) {
-                                decimalPart = ".33";
-                            }
-                            else if (remainder == 2) {
-                                decimalPart = ".66";
+                            if (defender == 1) {
+                                fullStunAdvantage = frameAdv - (RG_STUN_DURATION * 3); // P1 is defender
+                            } else {
+                                fullStunAdvantage = frameAdv + (RG_STUN_DURATION * 3); // P2 is defender
                             }
                         }
-                        else {
-                            visualFrameAdvantage = internalFrameAdvantage / 3;
-                            int remainder = internalFrameAdvantage % 3;
-                            if (remainder == 1) {
-                                decimalPart = ".33";
-                            }
-                            else if (remainder == 2) {
-                                decimalPart = ".66";
-                            }
+                        
+                        // Calculate visual frames with precise decimal representation
+                        int visibleFramesWhole = abs(frameAdv) / 3;
+                        int remainder = abs(frameAdv) % 3;
+                        
+                        // Format decimal part consistently using .33 and .66
+                        std::string framePrecision = "";
+                        if (remainder == 1) {
+                            framePrecision = ".33";
+                        } else if (remainder == 2) {
+                            framePrecision = ".66";
                         }
-
-                        // Format the advantage string
-                        std::string displayAdvantage = (internalFrameAdvantage >= 0 ? "+" : "") +
-                            std::to_string(visualFrameAdvantage) + decimalPart;
-
+                        
+                        // Format the advantage string with proper sign
+                        std::string frameAdvDisplay = (frameAdv > 0 ? "+" : "-") + 
+                            std::to_string(visibleFramesWhole) + framePrecision;
+                        
                         // Calculate visual frame values for full stun advantage (only for RG)
                         std::string fullStunDisplayAdvantage = "";
                         if (isRG) {
-                            int fullStunVisualAdvantage = fullStunAdvantage / 3;
+                            int fullStunVisualAdvantage = abs(fullStunAdvantage) / 3;
                             std::string fullStunDecimalPart = "";
                             
-                            if (fullStunAdvantage < 0) {
-                                int remainder = (-fullStunAdvantage) % 3;
-                                if (remainder == 1) fullStunDecimalPart = ".33";
-                                else if (remainder == 2) fullStunDecimalPart = ".66";
-                            } else {
-                                int remainder = fullStunAdvantage % 3;
-                                if (remainder == 1) fullStunDecimalPart = ".33";
-                                else if (remainder == 2) fullStunDecimalPart = ".66";
+                            int fullStunRemainder = abs(fullStunAdvantage) % 3;
+                            if (fullStunRemainder == 1) {
+                                fullStunDecimalPart = ".33";
+                            } else if (fullStunRemainder == 2) {
+                                fullStunDecimalPart = ".66";
                             }
                             
-                            fullStunDisplayAdvantage = (fullStunAdvantage >= 0 ? "+" : "") +
+                            fullStunDisplayAdvantage = (fullStunAdvantage > 0 ? "+" : "-") +
                                 std::to_string(fullStunVisualAdvantage) + fullStunDecimalPart;
                         }
-
-                        // Apply known corrections for specific frame values to match the expected behavior
-                        if (displayAdvantage == "-20.66" || displayAdvantage == "-21") {
-                            displayAdvantage = "-23";  // Corrected for -23 frame moves
-                        }
-                        else if (displayAdvantage == "-6.33" || displayAdvantage == "-6") {
-                            displayAdvantage = "-7";   // Corrected for -7 frame moves
-                        }
-                        else if (displayAdvantage == "+0.66" || displayAdvantage == "+1") {
-                            displayAdvantage = "+1.33"; // Corrected for +1.33/+1.66 frame moves
-                        }
-
-                        // Create the advantage message
+                        
+                        // Create the advantage message - ONLY ONCE
                         std::ostringstream advMsg;
-
+                        
                         if (isRG) {
                             advMsg << "[RG FRAME ADVANTAGE] ";
-                        }
-                        else {
+                        } else {
                             advMsg << "[FRAME ADVANTAGE] ";
                         }
-
-                        advMsg << "Attacker (P" << attacker << ") is "
-                            << displayAdvantage << " visual frames ("
-                            << (internalFrameAdvantage > 0 ? "+" : "")
-                            << internalFrameAdvantage << " internal frames) compared to defender (P" << defender << ")";
-
+                        
+                        // Always display from P1's perspective
+                        advMsg << "P1 is " << frameAdvDisplay << " on block";
+                        
                         // Add RG-specific info with improved information about RG mechanics
                         if (isRG) {
                             advMsg << " [RG Type: "
@@ -1450,55 +1487,34 @@ void FrameDataMonitor() {
                             advMsg << " [Can attack immediately after RG freeze]";
                             
                             // Add detailed information about immediate attack window
-                            if (internalFrameAdvantage < 0) {
-                                int recoveryWindow = -internalFrameAdvantage;
+                            if (defender == 1 && frameAdv > 0) {
+                                int recoveryWindow = frameAdv;
                                 advMsg << " [" << std::fixed << std::setprecision(2) << (recoveryWindow / 3.0) 
-                                      << "F window for immediate attack]";
+                                    << "F window for immediate attack]";
+                            }
+                            else if (defender == 2 && frameAdv < 0) {
+                                int recoveryWindow = -frameAdv;
+                                advMsg << " [" << std::fixed << std::setprecision(2) << (recoveryWindow / 3.0) 
+                                    << "F window for immediate attack]";
                             }
                             
-                            // Add information about advantage if not canceled
-                            advMsg << " [If not canceled: " << fullStunDisplayAdvantage << " visual frames]";
+                            // Add information about full stun advantage
+                            advMsg << " [If not canceled: P1 is " << fullStunDisplayAdvantage << " on block]";
                             
                             // Add air-specific information if applicable
                             if (rgType == RG_AIR_ID) {
                                 advMsg << " [Can RG again in air]";
                             }
                         }
-
+                        
                         // Output to console (always show frame advantage regardless of detailed mode)
                         LogOut(advMsg.str(), true);
-
+                        
                         // Record the frame when this blockstun ended for gap tracking
                         lastBlockstunEndFrame = frameCounter;
-
+                        
                         state = Idle;
                         stateChanged = true;
-                    }
-
-                    // Track consecutive frames with no state change
-                    if (!stateChanged) {
-                        consecutiveNoChangeFrames++;
-                    }
-                    else {
-                        consecutiveNoChangeFrames = 0;
-                    }
-
-                    // Check for potential stuck states - force timeout if certain conditions are met
-                    bool forceTimeout = false;
-
-                    // If we've been in blockstun for too long without any state changes - increased to 5 seconds
-                    if (consecutiveNoChangeFrames > 960) {  // 5 seconds (960 = 5*64*3)
-                        forceTimeout = true;
-                        LogOut("[DEBUG] Force timeout due to no change for " +
-                            std::to_string(consecutiveNoChangeFrames / SUBFRAMES_PER_VISUAL_FRAME) +
-                            " visible frames", detailedLogging && !menuOpen);
-                    }
-
-                    // If either player has disconnected or isn't in a valid state
-                    if ((defender == 1 && !moveIDAddr1) || (defender == 2 && !moveIDAddr2) ||
-                        (attacker == 1 && !moveIDAddr1) || (attacker == 2 && !moveIDAddr2)) {
-                        forceTimeout = true;
-                        LogOut("[DEBUG] Force timeout due to invalid player state", detailedLogging && !menuOpen);
                     }
 
                     // If both players seem to be in idle states for a while, something might be wrong
@@ -1524,7 +1540,10 @@ void FrameDataMonitor() {
                             rgFreezeTime = RG_AIR_FREEZE_DURATION;
                         }
 
+
+
                         // Special handling for RG: try to detect actionable state even if not explicitly represented
+                       
                         // This is particularly important for longer moves
                         if (defenderActionableFrame == -1) {
                             short defenderMoveID = (defender == 1) ? moveID1 : moveID2;
@@ -1541,6 +1560,7 @@ void FrameDataMonitor() {
                                     stateChanged = true;
                                     LogOut("[MONITOR] Defender can input attacks after RG freeze at frame " + 
                                         std::to_string(defenderActionableFrame) + " (RG stun can be canceled with attacks)", 
+                                        
                                         detailedTitleMode.load());
                                     
                                     // Also log the RG freeze time and RG type for troubleshooting

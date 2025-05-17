@@ -37,6 +37,7 @@ short GetUntechValue(uintptr_t base, int player);
 void WriteStartupLog(const std::string& message); // Logs messages during the startup phase
 std::string GetKeyName(int virtualKey);
 void DetectKeyBindings();
+bool IsDashState(short moveID); // New: Check if in dash state
 
 // Display data structure
 struct DisplayData {
