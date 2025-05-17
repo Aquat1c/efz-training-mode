@@ -140,9 +140,9 @@ void SetPlayerPosition(uintptr_t base, uintptr_t playerOffset, double x, double 
     SafeWriteMemory(xAddr, &x, sizeof(double));
     
     // For Y coordinate, we need to handle it differently
-    if (y != 0.0) {
-        // If we want non-zero Y, we need to put character in air state
-        short airState = FALLING_ID;  // 6 is the falling state in EFZ
+    if (y < 0.0) {
+        // If we want negative Y (above ground), we need to put character in air state
+        short airState = FALLING_ID;  // Use falling state for air positions
         
         // First set the Y position
         SafeWriteMemory(yAddr, &y, sizeof(double));
@@ -158,8 +158,15 @@ void SetPlayerPosition(uintptr_t base, uintptr_t playerOffset, double x, double 
         Sleep(1);
         SafeWriteMemory(yAddr, &y, sizeof(double));
     } else {
-        // Normal ground position
+        // Normal ground position (y = 0 or positive)
         SafeWriteMemory(yAddr, &y, sizeof(double));
+        
+        // Force to idle state for ground positions if requested
+        if (moveIDAddr && updateMoveID) {
+            short idleState = IDLE_MOVE_ID;  // 0 = standing idle state
+            SafeWriteMemory(moveIDAddr, &idleState, sizeof(short));
+            LogOut("[POSITION] Changed character to idle state for ground position", detailedLogging);
+        }
     }
 }
 
