@@ -1,29 +1,94 @@
+#include <fstream>
+#include <iomanip>
+#include <chrono>
 #include "../include/memory.h"
 #include "../include/constants.h"
 #include "../include/utilities.h"
 #include "../include/logger.h"
 #include <windows.h>
 
-uintptr_t ResolvePointer(uintptr_t base, uintptr_t baseOffset, uintptr_t offset) {
-    if (base == 0) return 0;
-    
-    uintptr_t ptrAddr = base + baseOffset;
-    uintptr_t ptrValue = 0;
-    memcpy(&ptrValue, (void*)ptrAddr, sizeof(uintptr_t));
-    
-    if (ptrValue == 0 || ptrValue > 0x7FFFFFFF)
-        return 0;
-        
-    return ptrValue + offset;
+// Helper function for safe memory reading
+bool SafeReadMemory(uintptr_t address, void* buffer, size_t size) {
+    __try {
+        memcpy(buffer, (void*)address, size);
+        return true;
+    } __except(EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
 }
 
+// Helper function for safe memory writing
+bool SafeWriteMemory(uintptr_t address, const void* data, size_t size) {
+    __try {
+        memcpy((void*)address, data, size);
+        return true;
+    } __except(EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+// Enhanced version of ResolvePointer with additional validation
+uintptr_t ResolvePointer(uintptr_t base, uintptr_t baseOffset, uintptr_t offset) {
+    if (base == 0) {
+        LogOut("[MEMORY] ResolvePointer called with null base", detailedLogging);
+        return 0;
+    }
+    
+    uintptr_t ptrAddr = base + baseOffset;
+    
+    // Validate the pointer address is within reasonable bounds
+    // Using more permissive bounds for better compatibility
+    if (ptrAddr < 0x1000 || ptrAddr > 0xFFFFFFFF) {
+        LogOut("[MEMORY] Invalid pointer address: " + std::to_string(ptrAddr), detailedLogging);
+        return 0;
+    }
+    
+    uintptr_t ptrValue = 0;
+    
+    // Use our safe helper function instead of __try/__except directly
+    if (!SafeReadMemory(ptrAddr, &ptrValue, sizeof(uintptr_t))) {
+        LogOut("[MEMORY] Exception reading memory at: " + std::to_string(ptrAddr), true);
+        return 0;
+    }
+    
+    if (ptrValue == 0 || ptrValue > 0xFFFFFFFF) {
+        LogOut("[MEMORY] Invalid pointer value: " + std::to_string(ptrValue), detailedLogging);
+        return 0;
+    }
+    
+    uintptr_t finalAddr = ptrValue + offset;
+    
+    // Verify the final address is valid with more permissive bounds
+    if (finalAddr < 0x1000 || finalAddr > 0xFFFFFFFF) {
+        LogOut("[MEMORY] Invalid final address: " + std::to_string(finalAddr), detailedLogging);
+        return 0;
+    }
+    
+    return finalAddr;
+}
+
+// Enhanced WriteGameMemory with added protections
 void WriteGameMemory(uintptr_t address, const void* data, size_t size) {
-    if (address == 0) return;
+    if (address == 0 || !data) {
+        LogOut("[MEMORY] WriteGameMemory called with invalid parameters", detailedLogging);
+        return;
+    }
+
+    // Verify address is within valid range
+    if (address < 0x10000 || address > 0x7FFFFFFF) {
+        LogOut("[MEMORY] Attempt to write to invalid address: " + std::to_string(address), true);
+        return;
+    }
 
     DWORD oldProtect;
     if (VirtualProtect((LPVOID)address, size, PAGE_EXECUTE_READWRITE, &oldProtect)) {
-        memcpy((void*)address, data, size);
+        // Use our safe helper function instead of __try/__except directly
+        if (!SafeWriteMemory(address, data, size)) {
+            LogOut("[MEMORY] Exception writing to memory at: " + std::to_string(address), true);
+        }
         VirtualProtect((LPVOID)address, size, oldProtect, &oldProtect);
+    } else {
+        LogOut("[MEMORY] Failed to change memory protection at: " + std::to_string(address), true);
     }
 }
 
@@ -59,25 +124,50 @@ bool NopMemory(uintptr_t address, size_t length) {
     return true;
 }
 
-void SetPlayerPosition(uintptr_t base, uintptr_t baseOffset, double x, double y) {
-    // Position validation to avoid teleporting players offscreen
-    const double MIN_X = -100.0;
-    const double MAX_X = 700.0;
-    const double MIN_Y = 0.0;
-    const double MAX_Y = 300.0;
-
-    // Clamp positions to safe values
-    x = CLAMP(x, MIN_X, MAX_X);
-    y = CLAMP(y, MIN_Y, MAX_Y);
-
-    uintptr_t xAddr = ResolvePointer(base, baseOffset, XPOS_OFFSET);
-    uintptr_t yAddr = ResolvePointer(base, baseOffset, YPOS_OFFSET);
-
-    // Log before writing to memory
-    LogOut("[POSITION] Setting position to " + FormatPosition(x, y), detailedLogging);
-
-    if (xAddr) WriteGameMemory(xAddr, &x, sizeof(double));
-    if (yAddr) WriteGameMemory(yAddr, &y, sizeof(double));
+// Enhanced version of SetPlayerPosition with better Y-position handling
+void SetPlayerPosition(uintptr_t base, uintptr_t playerOffset, double x, double y, bool updateMoveID) {
+    // Resolve position pointers
+    uintptr_t xAddr = ResolvePointer(base, playerOffset, XPOS_OFFSET);
+    uintptr_t yAddr = ResolvePointer(base, playerOffset, YPOS_OFFSET);
+    uintptr_t moveIDAddr = ResolvePointer(base, playerOffset, MOVE_ID_OFFSET);
+    
+    if (!xAddr || !yAddr) {
+        LogOut("[POSITION] Failed to resolve position addresses", true);
+        return;
+    }
+    
+    // Set X coordinate (this always works)
+    SafeWriteMemory(xAddr, &x, sizeof(double));
+    
+    // For Y coordinate, we need to handle it differently
+    if (y < 0.0) {
+        // If we want negative Y (above ground), we need to put character in air state
+        short airState = FALLING_ID;  // Use falling state for air positions
+        
+        // First set the Y position
+        SafeWriteMemory(yAddr, &y, sizeof(double));
+        
+        // Then change move ID to air state if requested
+        if (moveIDAddr && updateMoveID) {
+            SafeWriteMemory(moveIDAddr, &airState, sizeof(short));
+            LogOut("[POSITION] Changed character to air state for Y-position", detailedLogging);
+        }
+        
+        // For more persistent Y position (less likely to be overridden)
+        // Write the position twice with a small delay
+        Sleep(1);
+        SafeWriteMemory(yAddr, &y, sizeof(double));
+    } else {
+        // Normal ground position (y = 0 or positive)
+        SafeWriteMemory(yAddr, &y, sizeof(double));
+        
+        // Force to idle state for ground positions if requested
+        if (moveIDAddr && updateMoveID) {
+            short idleState = IDLE_MOVE_ID;  // 0 = standing idle state
+            SafeWriteMemory(moveIDAddr, &idleState, sizeof(short));
+            LogOut("[POSITION] Changed character to idle state for ground position", detailedLogging);
+        }
+    }
 }
 
 void UpdatePlayerValues(uintptr_t base, uintptr_t baseOffsetP1, uintptr_t baseOffsetP2) {
@@ -122,4 +212,28 @@ void UpdatePlayerValues(uintptr_t base, uintptr_t baseOffsetP1, uintptr_t baseOf
         " RF:" + std::to_string(displayData.rf2) +
         " X:" + std::to_string(displayData.x2) +
         " Y:" + std::to_string(displayData.y2) + "]", true);
+}
+
+uint8_t GetPlayerInputs(int playerNum) {
+    uintptr_t base = GetEFZBase();
+    if (!base) return 0;
+    
+    uintptr_t baseOffset = (playerNum == 1) ? EFZ_BASE_OFFSET_P1 : EFZ_BASE_OFFSET_P2;
+    uintptr_t inputAddr = ResolvePointer(base, baseOffset, P1_INPUT_OFFSET);
+    
+    if (!inputAddr) return 0;
+    
+    uint8_t inputState = 0;
+    memcpy(&inputState, (void*)inputAddr, sizeof(uint8_t));
+    
+    // Debug log when inputs change (uncommenting for development only)
+    // static uint8_t lastInputState = 0;
+    // if (inputState != lastInputState && detailedLogging) {
+    //     LogOut("[INPUT] P" + std::to_string(playerNum) + " inputs: " + 
+    //            std::to_string(inputState) + " (binary: " + 
+    //            std::bitset<8>(inputState).to_string() + ")", true);
+    //     lastInputState = inputState;
+    // }
+    
+    return inputState;
 }
