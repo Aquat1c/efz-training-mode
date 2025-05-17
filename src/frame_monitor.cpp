@@ -124,13 +124,19 @@ void ApplyAirtech(uintptr_t moveIDAddr, int playerNum, int frameNum) {
             WriteGameMemory(yVelAddr, &yVelocity, sizeof(double));
         }
         
-        LogOut("[AUTO-AIRTECH] Applied " + 
-               std::string(autoAirtechDirection == 0 ? "forward" : "backward") + 
-               " airtech for P" + std::to_string(playerNum) + 
-               " at frame " + std::to_string(frameNum) + 
-               " (Y position: " + std::to_string(yPos) + 
-               ", X velocity: " + std::to_string(xVelocity) + 
-               ", Y velocity: " + std::to_string(yVelocity) + ")", true);
+        // Only log if detailed logging is enabled
+        if (detailedLogging) {
+            LogOut("[AUTO-AIRTECH] Applied " + 
+                   std::string(autoAirtechDirection == 0 ? "forward" : "backward") + 
+                   " airtech for P" + std::to_string(playerNum) + 
+                   " at frame " + std::to_string(frameNum) + 
+                   " (Y position: " + std::to_string(yPos) + 
+                   ", X velocity: " + std::to_string(xVelocity) + 
+                   ", Y velocity: " + std::to_string(yVelocity) + ")", true);
+        } else {
+            // Simplified message for normal mode
+            LogOut("[SYSTEM] Applied auto-airtech for P" + std::to_string(playerNum), true);
+        }
     } else {
         LogOut("[AUTO-AIRTECH] Skipped airtech for P" + std::to_string(playerNum) + 
                " - too close to ground (Y position: " + std::to_string(yPos) + 
@@ -174,10 +180,13 @@ void MonitorAutoAirtech(short moveID1, short moveID2) {
         if (moveID1 == FIRE_STATE) stateType = "fire state";
         else if (moveID1 == ELECTRIC_STATE) stateType = "electric state";
         
-        LogOut("[AUTO-AIRTECH] P1 entered " + stateType + " at frame " + 
-               std::to_string(frameCounter) + 
-               (autoAirtechEnabled ? " (auto-airtech active)" : ""), 
-               detailedLogging);
+        // Only log if detailed logging is enabled
+        if (detailedLogging) {
+            LogOut("[AUTO-AIRTECH] P1 entered " + stateType + " at frame " + 
+                   std::to_string(frameCounter) + 
+                   (autoAirtechEnabled ? " (auto-airtech active)" : ""), 
+                   true); // Changed from "detailedLogging" to "true" for when detailed is enabled
+        }
     }
     
     // P2 entered a state where airtech is possible
@@ -297,68 +306,25 @@ void ApplyJump(uintptr_t moveIDAddr, int playerNum, int jumpType) {
 
 // First add this helper function to properly check if a player is in a state where auto-jump shouldn't be applied
 bool IsNonJumpableState(short moveID) {
-    // Debug logging for troubleshooting
+    // For debug logging
     if (detailedLogging && moveID > 0) {
-        LogOut("[AUTO-JUMP] Checking move ID: " + std::to_string(moveID), false);
+        LogOut("[AUTO-JUMP] Checking moveID: " + std::to_string(moveID), false);
     }
 
-    // First, let's make explicit checks for common problematic moveIDs
-    if (moveID == 59) { // Explicitly check for moveID 59 (air hitstun)
-        return true;
-    }
+    // APPROACH: Only allow jumping from specific known jumpable states
+    // This is safer than trying to identify all non-jumpable states
     
-    // Check for hitstun and blockstun states
-    if (IsHitstun(moveID) || IsBlockstun(moveID)) {
-        return true;
-    }
+    // These are the only states we know for sure allow jumping
+    bool isJumpableState = 
+        moveID == IDLE_MOVE_ID ||         // Standing idle
+        moveID == WALK_FWD_ID ||          // Walking forward
+        moveID == WALK_BACK_ID ||         // Walking backward
+        moveID == CROUCH_ID ||            // Crouching
+        moveID == CROUCH_TO_STAND_ID ||   // Rising from crouch
+        moveID == 163;                    // Forward dash (as mentioned)
     
-    // Check for launched states (air hitstun)
-    if (moveID >= LAUNCHED_HITSTUN_START && moveID <= LAUNCHED_HITSTUN_END) {
-        return true;
-    }
-    
-    // Check for tech states
-    if (IsGroundtech(moveID) || IsAirtech(moveID)) {
-        return true;
-    }
-    
-    // Special stun states
-    if (IsFrozen(moveID) || IsSpecialStun(moveID)) {
-        return true;
-    }
-    
-    // Air throw states - use wider ranges to be safe
-    if ((moveID >= 120 && moveID <= 130) ||  // Generic air throw range
-        (moveID >= 72 && moveID <= 90))      // Extended range for special attacks
-    {
-        return true;
-    }
-    
-    // Already in air states
-    if (moveID == FALLING_ID || 
-        moveID == LANDING_ID || 
-        moveID == STRAIGHT_JUMP_ID || 
-        moveID == FORWARD_JUMP_ID || 
-        moveID == BACKWARD_JUMP_ID) {
-        return true;
-    }
-    
-    // Additional check: any moveID above a certain threshold is likely a special state
-    // This is a safety net to catch unknown special states
-    if (moveID >= 50 && moveID <= 170) {
-        // This range covers most non-normal states
-        // But we'll exclude known actionable states
-        if (moveID != IDLE_MOVE_ID &&
-            moveID != WALK_FWD_ID &&
-            moveID != WALK_BACK_ID &&
-            moveID != CROUCH_ID &&
-            moveID != CROUCH_TO_STAND_ID) {
-            return true;
-        }
-    }
-    
-    // If none of the above, the state is likely jumpable
-    return false;
+    // If it's in our list of jumpable states, then it's not non-jumpable
+    return !isJumpableState;
 }
 
 // Now modify the MonitorAutoJump function to use this helper
@@ -623,6 +589,10 @@ void FrameDataMonitor() {
     int p1BlockstunEndFrame = -1;
     int p2BlockstunEndFrame = -1;
     
+    // Add at the beginning of the FrameDataMonitor function
+    bool p1WasInGroundtech = false;
+    bool p2WasInGroundtech = false;
+
     while (true) {
         base = GetEFZBase();
         if (base) {
@@ -985,7 +955,7 @@ void FrameDataMonitor() {
                 // Air tech detection
                 if (IsAirtech(moveID1) && !IsAirtech(prevMoveID1)) {
                     LogOut("[TECH] P1 performed air tech at frame " + std::to_string(frameCounter) +
-                          " (MoveID: " + std::to_string(moveID1) + ")", true);
+                          " (MoveID: " + std::to_string(moveID1) + ")", detailedLogging);
                     
                     techStartFrame = frameCounter;
                     techType = moveID1;
@@ -993,11 +963,11 @@ void FrameDataMonitor() {
                     techRecoveryEndFrame = frameCounter + AIRTECH_VULNERABLE_FRAMES * 3;
                     
                     LogOut("[TECH] P1 is vulnerable for " + std::to_string(AIRTECH_VULNERABLE_FRAMES) + 
-                          " frames after air tech", true);
+                          " frames after air tech", detailedLogging);
                 }
                 else if (IsAirtech(moveID2) && !IsAirtech(prevMoveID2)) {
                     LogOut("[TECH] P2 performed air tech at frame " + std::to_string(frameCounter) +
-                          " (MoveID: " + std::to_string(moveID2) + ")", true);
+                          " (MoveID: " + std::to_string(moveID2) + ")", detailedLogging);
                     
                     techStartFrame = frameCounter;
                     techType = moveID2;
@@ -1005,28 +975,28 @@ void FrameDataMonitor() {
                     techRecoveryEndFrame = frameCounter + AIRTECH_VULNERABLE_FRAMES * 3;
                     
                     LogOut("[TECH] P2 is vulnerable for " + std::to_string(AIRTECH_VULNERABLE_FRAMES) + 
-                          " frames after air tech", true);
+                          " frames after air tech", detailedLogging);
                 }
                 
                 // Ground tech detection
                 if (moveID1 == GROUNDTECH_START && prevMoveID1 != GROUNDTECH_START) {
-                    LogOut("[TECH] P1 started ground tech at frame " + std::to_string(frameCounter), true);
+                    LogOut("[TECH] P1 started ground tech at frame " + std::to_string(frameCounter), detailedLogging);
                     techStartFrame = frameCounter;
                     techType = GROUNDTECH_START;
                     techPlayer = 1;
                 }
                 else if (moveID1 == GROUNDTECH_END && prevMoveID1 == GROUNDTECH_START) {
-                    LogOut("[TECH] P1 ground tech recovery at frame " + std::to_string(frameCounter), true);
+                    LogOut("[TECH] P1 ground tech recovery at frame " + std::to_string(frameCounter), detailedLogging);
                 }
                 
                 if (moveID2 == GROUNDTECH_START && prevMoveID2 != GROUNDTECH_START) {
-                    LogOut("[TECH] P2 started ground tech at frame " + std::to_string(frameCounter), true);
+                    LogOut("[TECH] P2 started ground tech at frame " + std::to_string(frameCounter), detailedLogging);
                     techStartFrame = frameCounter;
                     techType = GROUNDTECH_START;
                     techPlayer = 2;
                 }
                 else if (moveID2 == GROUNDTECH_END && prevMoveID2 == GROUNDTECH_START) {
-                    LogOut("[TECH] P2 ground tech recovery at frame " + std::to_string(frameCounter), true);
+                    LogOut("[TECH] P2 ground tech recovery at frame " + std::to_string(frameCounter), detailedLogging);
                 }
                 
                 // Special stun detection
@@ -1065,7 +1035,7 @@ void FrameDataMonitor() {
                 // Tech recovery end detection
                 if (techRecoveryEndFrame != -1 && frameCounter == techRecoveryEndFrame) {
                     LogOut("[TECH] P" + std::to_string(techPlayer) + " tech vulnerability period ended at frame " + 
-                          std::to_string(frameCounter), true);
+                          std::to_string(frameCounter), detailedLogging);
                     techRecoveryEndFrame = -1;
                     techPlayer = -1;
                 }

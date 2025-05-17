@@ -242,24 +242,24 @@ void MonitorKeys() {
                             SetPlayerPosition(base, p2BaseOffset, p2StartX, startY);
                             LogOut("[POSITION] Teleported players to round start positions", true);
                         } else {
-                            // 1+Down - Center close together
-                            SetPlayerPosition(base, p1BaseOffset, centerX - 40.0, teleportY);
-                            SetPlayerPosition(base, p2BaseOffset, centerX + 40.0, teleportY);
-                            LogOut("[POSITION] Teleported players close together at center", true);
+                            // 1+Down - Center close together (UPDATED - 3 unit spacing)
+                            SetPlayerPosition(base, p1BaseOffset, centerX - 1.5, teleportY);
+                            SetPlayerPosition(base, p2BaseOffset, centerX + 1.5, teleportY);
+                            LogOut("[POSITION] Teleported players close together at center (3 unit spacing)", true);
                         }
                         Sleep(250); // Prevent multiple activations
                     }
                     else if (GetAsyncKeyState(VK_LEFT) & 0x8000) {
-                        // 1+Left - Left side of screen
+                        // 1+Left - Left side of screen (UPDATED - 3 unit spacing)
                         LogOut("[POSITION] 1+Left pressed - teleporting to left side", true);
                         SetPlayerPosition(base, p1BaseOffset, leftX, teleportY);
-                        SetPlayerPosition(base, p2BaseOffset, leftX + 180.0, teleportY);
+                        SetPlayerPosition(base, p2BaseOffset, leftX + 3.0, teleportY);
                         Sleep(250); // Prevent multiple activations
                     }
                     else if (GetAsyncKeyState(VK_RIGHT) & 0x8000) {
-                        // 1+Right - Right side of screen
+                        // 1+Right - Right side of screen (UPDATED - 3 unit spacing)
                         LogOut("[POSITION] 1+Right pressed - teleporting to right side", true);
-                        SetPlayerPosition(base, p1BaseOffset, rightX - 180.0, teleportY);
+                        SetPlayerPosition(base, p1BaseOffset, rightX - 3.0, teleportY);
                         SetPlayerPosition(base, p2BaseOffset, rightX, teleportY);
                         Sleep(250); // Prevent multiple activations
                     }

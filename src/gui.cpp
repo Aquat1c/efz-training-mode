@@ -256,13 +256,16 @@ INT_PTR CALLBACK EditDataDlgProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM 
         ShowWindow(hPage2, SW_HIDE);
 
         // Update button positions to be within the dialog
-        CreateWindowEx(0, "BUTTON", "Confirm", 
+        HWND hConfirmBtn = CreateWindowEx(0, "BUTTON", "Confirm", 
             WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON,
             180, 410, 100, 30, hDlg, (HMENU)IDC_BTN_CONFIRM, GetModuleHandle(NULL), NULL);
             
         CreateWindowEx(0, "BUTTON", "Cancel", 
             WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
             300, 410, 100, 30, hDlg, (HMENU)IDC_BTN_CANCEL, GetModuleHandle(NULL), NULL);
+
+        // Ensure the confirm button is properly set as default
+        SendMessage(hDlg, DM_SETDEFID, IDC_BTN_CONFIRM, 0);
 
         // Set focus to tab control
         SetFocus(hTabControl);
@@ -795,6 +798,14 @@ LRESULT CALLBACK PageSubclassProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM
             SendMessage(hDialogParent, message, wParam, lParam);
             return 0; // We handled this message
         }
+    }
+    // Add this block to handle Enter key presses
+    else if (message == WM_KEYDOWN && wParam == VK_RETURN) {
+        // Forward Enter key to parent dialog as a click on the Confirm button
+        LogOut("[GUI] Forwarding Enter key to Confirm button", detailedLogging);
+        SendMessage(hDialogParent, WM_COMMAND, MAKEWPARAM(IDC_BTN_CONFIRM, BN_CLICKED), 
+                   (LPARAM)GetDlgItem(hDialogParent, IDC_BTN_CONFIRM));
+        return 0; // We handled this message
     }
     
     return DefSubclassProc(hWnd, message, wParam, lParam);
