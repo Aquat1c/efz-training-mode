@@ -1,3 +1,6 @@
+#include <fstream>
+#include <iomanip>
+#include <chrono>
 #include "../include/logger.h"
 #include "../include/utilities.h"
 #include "../include/memory.h"
@@ -12,6 +15,7 @@
 
 std::mutex g_logMutex;
 std::atomic<bool> detailedTitleMode(false);
+std::atomic<bool> detailedDebugOutput(false);
 
 void LogOut(const std::string& msg, bool consoleOutput) {
     // Only output to console if requested
@@ -43,6 +47,19 @@ void LogOut(const std::string& msg, bool consoleOutput) {
             if (currentCategory == "RG FRAME ADVANTAGE") {
                 currentCategory = "FRAME ADVANTAGE";
             }
+        }
+        
+        // Skip certain debug messages unless detailed debug is enabled
+        bool isDetailedDebugMsg = 
+            currentCategory == "POSITION" || 
+            currentCategory == "HITSTUN" || 
+            currentCategory == "STATE";
+            
+        // Always show frame advantage regardless of detailed debug setting
+        if (isDetailedDebugMsg && !detailedDebugOutput && 
+            currentCategory != "FRAME ADVANTAGE") { // Special case for frame advantage
+            // Skip this message - detailed debug not enabled
+            return;
         }
         
         // Don't add spacing for hotkey info or help messages

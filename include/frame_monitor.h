@@ -24,3 +24,11 @@ void ApplyAirtech(uintptr_t moveIDAddr, int playerNum, int frameNum);
 void MonitorAutoAirtech(short moveID1, short moveID2);
 
 void FrameDataMonitor();
+
+// Blockstun and attack level detection
+extern short initialBlockstunMoveID;
+bool IsBlockstunState(short moveID);
+int GetAttackLevel(short blockstunMoveID);
+std::string GetBlockStateType(short blockstunMoveID);
+bool IsDashState(short moveID);
+int GetExpectedFrameAdvantage(int attackLevel, bool isAirBlock, bool isHit = false);

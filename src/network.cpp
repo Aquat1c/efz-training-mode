@@ -1,4 +1,7 @@
 #define WIN32_LEAN_AND_MEAN
+#include <fstream>
+#include <iomanip>
+#include <chrono>
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <iphlpapi.h>
