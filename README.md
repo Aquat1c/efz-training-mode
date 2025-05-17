@@ -16,7 +16,7 @@ A comprehensive training mode enhancement tool for Eternal Fighter Zero that pro
 
 1. Build the DLL using Visual Studio or CMake
 2. Place the generated `efz_training_mode.dll` in your EFZ mods directory.  
-3. Make sure to add `efz_training_mode=1` in the "EfzModManager.ini" file. You can download and install the EFZ Mod Manager here - [link](https://docs.google.com/spreadsheets/d/1r0nBAaQczj9K4RG5zAVV4uXperDeoSnXaqQBal2-8Us/edit?usp=sharing)
+3. Make sure to add `efz_training_mode=1` AT THE BOTTOM of the "EfzModManager.ini" file. You can download and install the EFZ Mod Manager here - [link](https://docs.google.com/spreadsheets/d/1r0nBAaQczj9K4RG5zAVV4uXperDeoSnXaqQBal2-8Us/edit?usp=sharing)
 4. A console window will appear with frame data information.
 
 ## Online Play Support
@@ -40,7 +40,7 @@ The tool provides several hotkeys to control its functionality (automatically di
   - With **Up Arrow**: Swap P1 and P2 positions
   - With **Down Arrow**: Place players at round start positions
 - **2**: Record current player positions
-- **3**: Open configuration menu
+- **3**: Open configuration menu: enable airtechs, jumps and change the values like positions, HP, RF and Eternity meter.
 - **4**: Toggle title display mode between detailed and standard
 - **5**: Reset frame counter
 - **6**: Show help information and clear console
@@ -72,8 +72,6 @@ The tool tries to account for EFZ's specific RG system mechanics:
 3. **Defender Actionable Frame Detection**: In some cases, the precise frame when a defender becomes actionable may be missed.
 
 4. **MoveID Tracking Limitations**: Some rare character-specific states may not be correctly identified.
-
-5. **Performance Impact**: Running the tool may cause slight performance degradation during complex sequences.
 
 ## Technical Implementation
 
