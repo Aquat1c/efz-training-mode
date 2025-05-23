@@ -13,8 +13,16 @@ uintptr_t ResolvePointer(uintptr_t base, uintptr_t baseOffset, uintptr_t offset)
 void WriteGameMemory(uintptr_t address, const void* data, size_t size);
 void SetPlayerPosition(uintptr_t base, uintptr_t baseOffset, double x, double y, bool updateMoveID = true);
 void UpdatePlayerValues(uintptr_t base, uintptr_t baseOffsetP1, uintptr_t baseOffsetP2);
+void UpdatePlayerValuesExceptRF(uintptr_t base, uintptr_t baseOffsetP1, uintptr_t baseOffsetP2);
+void ApplyRFValues(double p1RF, double p2RF);
 bool PatchMemory(uintptr_t address, const char* bytes, size_t length);
 bool NopMemory(uintptr_t address, size_t length);
+bool SetRFValuesDirect(double p1RF, double p2RF);
+
+// Add these declarations with the other function declarations
+void InitRFFreezeThread();
+void StartRFFreeze(double p1Value, double p2Value);
+void StopRFFreeze();
 
 // Input bitmask constants
 #define INPUT_UP     0x01

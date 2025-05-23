@@ -6,6 +6,9 @@
 #include "../include/utilities.h"
 #include "../include/logger.h"
 #include <windows.h>
+#include <atomic>
+#include <thread>
+#include <sstream>
 
 // Helper function for safe memory reading
 bool SafeReadMemory(uintptr_t address, void* buffer, size_t size) {
@@ -170,6 +173,83 @@ void SetPlayerPosition(uintptr_t base, uintptr_t playerOffset, double x, double 
     }
 }
 
+// Direct RF value setter that matches Cheat Engine's approach
+bool SetRFValuesDirect(double p1RF, double p2RF) {
+    uintptr_t base = GetEFZBase();
+    if (!base) return false;
+    
+    // Use direct pointer access exactly as Cheat Engine does
+    uintptr_t* p1Ptr = (uintptr_t*)(base + EFZ_BASE_OFFSET_P1);
+    uintptr_t* p2Ptr = (uintptr_t*)(base + EFZ_BASE_OFFSET_P2);
+    
+    // Validate pointers are readable
+    if (IsBadReadPtr(p1Ptr, sizeof(uintptr_t)) || IsBadReadPtr(p2Ptr, sizeof(uintptr_t))) {
+        LogOut("[RF] Invalid player base pointers", detailedLogging);
+        return false;
+    }
+    
+    // Follow the pointers to get player structures
+    uintptr_t p1Base = *p1Ptr;
+    uintptr_t p2Base = *p2Ptr;
+    
+    if (!p1Base || !p2Base) {
+        LogOut("[RF] Player structures not initialized", detailedLogging);
+        return false;
+    }
+    
+    // Calculate RF addresses
+    double* p1RFAddr = (double*)(p1Base + RF_OFFSET);
+    double* p2RFAddr = (double*)(p2Base + RF_OFFSET);
+    
+    // Validate these addresses
+    if (IsBadWritePtr(p1RFAddr, sizeof(double)) || IsBadWritePtr(p2RFAddr, sizeof(double))) {
+        LogOut("[RF] Invalid RF addresses", detailedLogging);
+        return false;
+    }
+    
+    // Write values with memory protection handling
+    DWORD oldProtect1, oldProtect2;
+    bool success = true;
+    
+    // P1 RF write
+    if (VirtualProtect(p1RFAddr, sizeof(double), PAGE_EXECUTE_READWRITE, &oldProtect1)) {
+        *p1RFAddr = p1RF; // Direct write - no memcpy
+        VirtualProtect(p1RFAddr, sizeof(double), oldProtect1, &oldProtect1);
+        
+        // Verify the write
+        double verification = 0.0;
+        memcpy(&verification, p1RFAddr, sizeof(double));
+        if (verification != p1RF) {
+            LogOut("[RF] P1 RF verification failed: wrote " + std::to_string(p1RF) + 
+                   " but read back " + std::to_string(verification), true);
+            success = false;
+        }
+    } else {
+        LogOut("[RF] P1 VirtualProtect failed", true);
+        success = false;
+    }
+    
+    // P2 RF write
+    if (VirtualProtect(p2RFAddr, sizeof(double), PAGE_EXECUTE_READWRITE, &oldProtect2)) {
+        *p2RFAddr = p2RF; // Direct write - no memcpy
+        VirtualProtect(p2RFAddr, sizeof(double), oldProtect2, &oldProtect2);
+        
+        // Verify the write
+        double verification = 0.0;
+        memcpy(&verification, p2RFAddr, sizeof(double));
+        if (verification != p2RF) {
+            LogOut("[RF] P2 RF verification failed: wrote " + std::to_string(p2RF) + 
+                   " but read back " + std::to_string(verification), true);
+            success = false;
+        }
+    } else {
+        LogOut("[RF] P2 VirtualProtect failed", true);
+        success = false;
+    }
+    
+    return success;
+}
+
 void UpdatePlayerValues(uintptr_t base, uintptr_t baseOffsetP1, uintptr_t baseOffsetP2) {
     // Write values from displayData to game memory
     uintptr_t hpAddr1 = ResolvePointer(base, baseOffsetP1, HP_OFFSET);
@@ -186,23 +266,29 @@ void UpdatePlayerValues(uintptr_t base, uintptr_t baseOffsetP1, uintptr_t baseOf
 
     if (hpAddr1) WriteGameMemory(hpAddr1, &displayData.hp1, sizeof(WORD));
     if (meterAddr1) WriteGameMemory(meterAddr1, &displayData.meter1, sizeof(WORD));
+    
+    // CRITICAL FIX: Write RF as float (4 bytes), not double (8 bytes)
     if (rfAddr1) {
         float rf = static_cast<float>(displayData.rf1);
         WriteGameMemory(rfAddr1, &rf, sizeof(float));
     }
+    
     if (xAddr1) WriteGameMemory(xAddr1, &displayData.x1, sizeof(double));
     if (yAddr1) WriteGameMemory(yAddr1, &displayData.y1, sizeof(double));
 
     if (hpAddr2) WriteGameMemory(hpAddr2, &displayData.hp2, sizeof(WORD));
     if (meterAddr2) WriteGameMemory(meterAddr2, &displayData.meter2, sizeof(WORD));
+    
+    // CRITICAL FIX: Write RF as float (4 bytes), not double (8 bytes)
     if (rfAddr2) {
         float rf = static_cast<float>(displayData.rf2);
         WriteGameMemory(rfAddr2, &rf, sizeof(float));
     }
+    
     if (xAddr2) WriteGameMemory(xAddr2, &displayData.x2, sizeof(double));
     if (yAddr2) WriteGameMemory(yAddr2, &displayData.y2, sizeof(double));
 
-    LogOut("Applied values from dialog: P1[HP:" + std::to_string(displayData.hp1) +
+    LogOut("[MEMORY] Applied values from dialog: P1[HP:" + std::to_string(displayData.hp1) +
         " Meter:" + std::to_string(displayData.meter1) +
         " RF:" + std::to_string(displayData.rf1) +
         " X:" + std::to_string(displayData.x1) +
@@ -212,6 +298,30 @@ void UpdatePlayerValues(uintptr_t base, uintptr_t baseOffsetP1, uintptr_t baseOf
         " RF:" + std::to_string(displayData.rf2) +
         " X:" + std::to_string(displayData.x2) +
         " Y:" + std::to_string(displayData.y2) + "]", true);
+}
+
+// Add this function that updates all values except RF
+void UpdatePlayerValuesExceptRF(uintptr_t base, uintptr_t baseOffsetP1, uintptr_t baseOffsetP2) {
+    // Write values from displayData to game memory
+    uintptr_t hpAddr1 = ResolvePointer(base, baseOffsetP1, HP_OFFSET);
+    uintptr_t meterAddr1 = ResolvePointer(base, baseOffsetP1, METER_OFFSET);
+    uintptr_t xAddr1 = ResolvePointer(base, baseOffsetP1, XPOS_OFFSET);
+    uintptr_t yAddr1 = ResolvePointer(base, baseOffsetP1, YPOS_OFFSET);
+
+    uintptr_t hpAddr2 = ResolvePointer(base, baseOffsetP2, HP_OFFSET);
+    uintptr_t meterAddr2 = ResolvePointer(base, baseOffsetP2, METER_OFFSET);
+    uintptr_t xAddr2 = ResolvePointer(base, baseOffsetP2, XPOS_OFFSET);
+    uintptr_t yAddr2 = ResolvePointer(base, baseOffsetP2, YPOS_OFFSET);
+
+    if (hpAddr1) WriteGameMemory(hpAddr1, &displayData.hp1, sizeof(WORD));
+    if (meterAddr1) WriteGameMemory(meterAddr1, &displayData.meter1, sizeof(WORD));
+    if (xAddr1) WriteGameMemory(xAddr1, &displayData.x1, sizeof(double));
+    if (yAddr1) WriteGameMemory(yAddr1, &displayData.y1, sizeof(double));
+
+    if (hpAddr2) WriteGameMemory(hpAddr2, &displayData.hp2, sizeof(WORD));
+    if (meterAddr2) WriteGameMemory(meterAddr2, &displayData.meter2, sizeof(WORD));
+    if (xAddr2) WriteGameMemory(xAddr2, &displayData.x2, sizeof(double));
+    if (yAddr2) WriteGameMemory(yAddr2, &displayData.y2, sizeof(double));
 }
 
 uint8_t GetPlayerInputs(int playerNum) {
@@ -236,4 +346,92 @@ uint8_t GetPlayerInputs(int playerNum) {
     // }
     
     return inputState;
+}
+
+// Add near other global variables
+std::atomic<bool> rfFreezing(false);
+std::atomic<double> rfFreezeValueP1(0.0);
+std::atomic<double> rfFreezeValueP2(0.0);
+std::thread rfFreezeThread;
+bool rfThreadRunning = false;
+
+// Improved RF freeze thread function with better error handling
+void RFFreezeThreadFunc() {
+    rfThreadRunning = true;
+    
+    while (rfThreadRunning) {
+        if (rfFreezing.load()) {
+            // Get current values to freeze
+            double p1RF = rfFreezeValueP1.load();
+            double p2RF = rfFreezeValueP2.load();
+            
+            // Only write if the game is running
+            uintptr_t base = GetEFZBase();
+            if (base) {
+                // Use direct pointer access exactly as Cheat Engine does
+                uintptr_t* p1Ptr = (uintptr_t*)(base + EFZ_BASE_OFFSET_P1);
+                uintptr_t* p2Ptr = (uintptr_t*)(base + EFZ_BASE_OFFSET_P2);
+                
+                // Only proceed if pointers are valid
+                if (!IsBadReadPtr(p1Ptr, sizeof(uintptr_t)) && !IsBadReadPtr(p2Ptr, sizeof(uintptr_t))) {
+                    uintptr_t p1Base = *p1Ptr;
+                    uintptr_t p2Base = *p2Ptr;
+                    
+                    if (p1Base && p2Base) {
+                        // Calculate RF addresses
+                        double* p1RFAddr = (double*)(p1Base + RF_OFFSET);
+                        double* p2RFAddr = (double*)(p2Base + RF_OFFSET);
+                        
+                        // Only proceed if addresses are valid
+                        if (!IsBadWritePtr(p1RFAddr, sizeof(double)) && !IsBadWritePtr(p2RFAddr, sizeof(double))) {
+                            // Write values with memory protection handling
+                            DWORD oldProtect1, oldProtect2;
+                            
+                            // P1 RF write - use VirtualProtect for reliable memory access
+                            if (VirtualProtect(p1RFAddr, sizeof(double), PAGE_EXECUTE_READWRITE, &oldProtect1)) {
+                                *p1RFAddr = p1RF; // Direct write without memcpy
+                                VirtualProtect(p1RFAddr, sizeof(double), oldProtect1, &oldProtect1);
+                            }
+                            
+                            // P2 RF write
+                            if (VirtualProtect(p2RFAddr, sizeof(double), PAGE_EXECUTE_READWRITE, &oldProtect2)) {
+                                *p2RFAddr = p2RF; // Direct write without memcpy
+                                VirtualProtect(p2RFAddr, sizeof(double), oldProtect2, &oldProtect2);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // Update at 60Hz to match game's refresh rate
+        std::this_thread::sleep_for(std::chrono::milliseconds(16));
+    }
+}
+
+// Initialize the RF freeze thread
+void InitRFFreezeThread() {
+    if (!rfThreadRunning) {
+        rfFreezeThread = std::thread(RFFreezeThreadFunc);
+        rfFreezeThread.detach();
+        LogOut("[RF] RF freeze thread initialized", true);
+    }
+}
+
+// Start freezing RF values
+void StartRFFreeze(double p1Value, double p2Value) {
+    // Save values to atomic variables for thread-safe access
+    rfFreezeValueP1.store(p1Value);
+    rfFreezeValueP2.store(p2Value);
+    
+    // Enable freezing
+    rfFreezing.store(true);
+    
+    LogOut("[RF] Started freezing RF values: P1=" + std::to_string(p1Value) + 
+           ", P2=" + std::to_string(p2Value), true);
+}
+
+// Stop freezing RF values
+void StopRFFreeze() {
+    rfFreezing.store(false);
+    LogOut("[RF] Stopped freezing RF values", true);
 }
