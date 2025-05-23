@@ -4,6 +4,7 @@
 #include <vector>
 #include <windows.h>
 #include <thread>
+#include "../include/memory.h"
 #include "../include/utilities.h"
 #include "../include/logger.h"
 #include "../include/frame_monitor.h"
@@ -89,6 +90,9 @@ void DelayedInitialization(HMODULE hModule) {
     // Set initialization flag and stop startup logging
     g_initialized = true;
     inStartupPhase = false;
+
+    // Initialize RF freeze thread
+    InitRFFreezeThread();
 }
 
 BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserved) {

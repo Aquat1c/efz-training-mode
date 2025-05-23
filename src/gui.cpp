@@ -12,7 +12,7 @@
 #include <thread>
 #include <commctrl.h>
 #include <windowsx.h>
-
+#include <sstream>
 // Add this link to the Common Controls library
 #pragma comment(lib, "comctl32.lib")
 
@@ -302,76 +302,91 @@ INT_PTR CALLBACK EditDataDlgProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM 
             GetDlgItemTextA(hPage1, IDC_METER1, buffer, sizeof(buffer));
             pData->meter1 = CLAMP(atoi(buffer), 0, MAX_METER);
 
+            // For P1 RF - Improved parsing with locale handling
             GetDlgItemTextA(hPage1, IDC_RF1, buffer, sizeof(buffer));
-            pData->rf1 = CLAMP(atof(buffer), 0.0, static_cast<double>(MAX_RF));
-            
-            // For P1 X coordinate
-            GetDlgItemTextA(hPage1, IDC_X1, buffer, sizeof(buffer));
-            // Replace commas with periods to ensure proper parsing regardless of locale
+            // Replace commas with periods for consistent parsing
             for (char* p = buffer; *p; ++p) {
                 if (*p == ',') *p = '.';
             }
-            pData->x1 = CLAMP(atof(buffer), -1000.0, 1000.0);
-            
-            // For P1 Y coordinate  
+            // Use C locale for consistent parsing
+            std::locale::global(std::locale("C"));
+            pData->rf1 = CLAMP(atof(buffer), 0.0, static_cast<double>(MAX_RF));
+
+            // Get P1 position values
+            GetDlgItemTextA(hPage1, IDC_X1, buffer, sizeof(buffer));
+            for (char* p = buffer; *p; ++p) {
+                if (*p == ',') *p = '.';
+            }
+            pData->x1 = atof(buffer);
+
             GetDlgItemTextA(hPage1, IDC_Y1, buffer, sizeof(buffer));
             for (char* p = buffer; *p; ++p) {
                 if (*p == ',') *p = '.';
             }
-            pData->y1 = CLAMP(atof(buffer), -1000.0, 1000.0);
-            
+            pData->y1 = atof(buffer);
+
             // Get Player 2 values
             GetDlgItemTextA(hPage1, IDC_HP2, buffer, sizeof(buffer));
             pData->hp2 = CLAMP(atoi(buffer), 0, MAX_HP);
-            
+
             GetDlgItemTextA(hPage1, IDC_METER2, buffer, sizeof(buffer));
             pData->meter2 = CLAMP(atoi(buffer), 0, MAX_METER);
 
+            // For P2 RF - Improved parsing
             GetDlgItemTextA(hPage1, IDC_RF2, buffer, sizeof(buffer));
+            // Replace commas with periods
+            for (char* p = buffer; *p; ++p) {
+                if (*p == ',') *p = '.';
+            }
             pData->rf2 = CLAMP(atof(buffer), 0.0, static_cast<double>(MAX_RF));
-            
-            // For P2 X coordinate
+
+            // Get P2 position values
             GetDlgItemTextA(hPage1, IDC_X2, buffer, sizeof(buffer));
             for (char* p = buffer; *p; ++p) {
                 if (*p == ',') *p = '.';
             }
-            pData->x2 = CLAMP(atof(buffer), -1000.0, 1000.0);
-            
-            // For P2 Y coordinate
+            pData->x2 = atof(buffer);
+
             GetDlgItemTextA(hPage1, IDC_Y2, buffer, sizeof(buffer));
             for (char* p = buffer; *p; ++p) {
                 if (*p == ',') *p = '.';
             }
-            pData->y2 = CLAMP(atof(buffer), -1000.0, 1000.0);
-            
-            // Get airtech settings from combo box
-            int airtechSelection = SendMessage(GetDlgItem(hPage1, IDC_AIRTECH_DIRECTION), CB_GETCURSEL, 0, 0);
-            if (airtechSelection > 0) {
-                pData->autoAirtech = true;
-                pData->airtechDirection = airtechSelection - 1;
-            } else {
+            pData->y2 = atof(buffer);
+
+            // Get auto-airtech settings (from page 1)
+            int airtechDir = (int)SendDlgItemMessage(hPage1, IDC_AIRTECH_DIRECTION, CB_GETCURSEL, 0, 0);
+            if (airtechDir == 0) {
+                // Neutral = disabled
                 pData->autoAirtech = false;
                 pData->airtechDirection = 0;
+            } else {
+                // Forward or Backward
+                pData->autoAirtech = true;
+                pData->airtechDirection = airtechDir - 1; // Adjust index (1=forward, 2=backward) -> (0=forward, 1=backward)
             }
             
-            // Get jump settings from combo boxes
-            int jumpDirSelection = SendMessage(GetDlgItem(hPage2, IDC_JUMP_DIRECTION), CB_GETCURSEL, 0, 0);
-            if (jumpDirSelection > 0) {
-                pData->autoJump = true;
-                pData->jumpDirection = jumpDirSelection - 1;
-            } else {
+            // Get auto-jump settings (from page 2)
+            int jumpDir = (int)SendDlgItemMessage(hPage2, IDC_JUMP_DIRECTION, CB_GETCURSEL, 0, 0);
+            if (jumpDir == 0) {
+                // Disabled
                 pData->autoJump = false;
                 pData->jumpDirection = 0;
+            } else {
+                // Auto-jump enabled
+                pData->autoJump = true;
+                pData->jumpDirection = jumpDir - 1; // Adjust for combo box ordering
             }
             
             // Get jump target
-            int targetSelection = SendMessage(GetDlgItem(hPage2, IDC_JUMP_TARGET), CB_GETCURSEL, 0, 0);
-            pData->jumpTarget = targetSelection + 1;  // Convert from 0-based to 1-based
+            int jumpTarget = (int)SendDlgItemMessage(hPage2, IDC_JUMP_TARGET, CB_GETCURSEL, 0, 0);
+            pData->jumpTarget = jumpTarget + 1; // 0,1,2 -> 1,2,3 (P1, P2, Both)
             
-            // Apply settings to game memory
+            // Apply settings
             ApplySettings(pData);
             
+            // Close dialog
             EndDialog(hDlg, IDOK);
+            menuOpen = false;
             return TRUE;
         }
         else if (cmdID == IDC_BTN_CANCEL) {
@@ -471,103 +486,66 @@ INT_PTR CALLBACK EditDataDlgProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM 
 
 void ApplySettings(DisplayData* data) {
     if (!data) {
-        LogOut("[ERROR] ApplySettings called with null data pointer", true);
+        LogOut("[SETTINGS] Invalid data pointer", true);
         return;
     }
 
     try {
-        // Force C locale for consistent decimal handling
-        std::locale oldLocale = std::locale::global(std::locale("C"));
-        
-        // Validate all floating point inputs
-        if (!std::isfinite(data->x1)) data->x1 = 240.0;
-        if (!std::isfinite(data->y1)) data->y1 = 0.0;
-        if (!std::isfinite(data->x2)) data->x2 = 400.0;
-        if (!std::isfinite(data->y2)) data->y2 = 0.0;
-        if (!std::isfinite(data->rf1)) data->rf1 = 0.0;
-        if (!std::isfinite(data->rf2)) data->rf2 = 0.0;
-        
-        uintptr_t base = GetEFZBase();
-        if (!base) {
-            LogOut("[SETTINGS] Failed to get game base address", true);
-            std::locale::global(oldLocale); // Restore locale before returning
-            return;
-        }
-        
-        // Apply player 1 values - with comprehensive error checking
-        uintptr_t hpAddr1 = ResolvePointer(base, EFZ_BASE_OFFSET_P1, HP_OFFSET);
-        if (hpAddr1) {
-            WriteGameMemory(hpAddr1, &data->hp1, sizeof(WORD));
-        }
-        
-        uintptr_t meterAddr1 = ResolvePointer(base, EFZ_BASE_OFFSET_P1, METER_OFFSET);
-        if (meterAddr1) {
-            WriteGameMemory(meterAddr1, &data->meter1, sizeof(WORD));
-        }
-        
-        uintptr_t rfAddr1 = ResolvePointer(base, EFZ_BASE_OFFSET_P1, RF_OFFSET);
-        if (rfAddr1) {
-            float rf = static_cast<float>(data->rf1);
-            WriteGameMemory(rfAddr1, &rf, sizeof(float));
-        }
-        
-        uintptr_t xAddr1 = ResolvePointer(base, EFZ_BASE_OFFSET_P1, XPOS_OFFSET);
-        if (xAddr1) {
-            WriteGameMemory(xAddr1, &data->x1, sizeof(double));
-        }
-        
-        uintptr_t yAddr1 = ResolvePointer(base, EFZ_BASE_OFFSET_P1, YPOS_OFFSET);
-        if (yAddr1) {
-            WriteGameMemory(yAddr1, &data->y1, sizeof(double));
-        }
-        
-        // Apply player 2 values
-        uintptr_t hpAddr2 = ResolvePointer(base, EFZ_BASE_OFFSET_P2, HP_OFFSET);
-        if (hpAddr2) {
-            LogOut("[SETTINGS] P2 HP address: " + std::to_string(hpAddr2) + ", value: " + std::to_string(data->hp2), detailedLogging);
-            WriteGameMemory(hpAddr2, &data->hp2, sizeof(WORD));
-        } else {
-            LogOut("[ERROR] Failed to resolve P2 HP address", true);
-        }
-        
-        uintptr_t meterAddr2 = ResolvePointer(base, EFZ_BASE_OFFSET_P2, METER_OFFSET);
-        if (meterAddr2) {
-            WriteGameMemory(meterAddr2, &data->meter2, sizeof(WORD));
-        }
-        
-        uintptr_t rfAddr2 = ResolvePointer(base, EFZ_BASE_OFFSET_P2, RF_OFFSET);
-        if (rfAddr2) {
-            float rf = static_cast<float>(data->rf2);
-            WriteGameMemory(rfAddr2, &rf, sizeof(float));
-        }
-        
-        uintptr_t xAddr2 = ResolvePointer(base, EFZ_BASE_OFFSET_P2, XPOS_OFFSET);
-        if (xAddr2) {
-            WriteGameMemory(xAddr2, &data->x2, sizeof(double));
-        }
-        
-        uintptr_t yAddr2 = ResolvePointer(base, EFZ_BASE_OFFSET_P2, YPOS_OFFSET);
-        if (yAddr2) {
-            WriteGameMemory(yAddr2, &data->y2, sizeof(double));
-        }
-        
-        // Restore original locale when done
-        std::locale::global(oldLocale);
-        
-        // Update global variables
+        // Save GUI values to global variables
         autoAirtechEnabled = data->autoAirtech;
         autoAirtechDirection = data->airtechDirection;
         autoJumpEnabled = data->autoJump;
         jumpDirection = data->jumpDirection;
         jumpTarget = data->jumpTarget;
-        
-        LogOut("[SETTINGS] Applied settings from GUI", true);
+
+        // Update the client memory
+        uintptr_t base = GetEFZBase();
+        if (base) {
+            // Update everything EXCEPT RF values
+            UpdatePlayerValuesExceptRF(base, EFZ_BASE_OFFSET_P1, EFZ_BASE_OFFSET_P2);
+            
+            // Handle RF values separately with the persistent approach
+            ApplyRFValues(data->rf1, data->rf2);
+            
+            LogOut("[SETTINGS] Settings applied from dialog", true);
+        } else {
+            LogOut("[SETTINGS] Failed to get base address", true);
+        }
     } catch (const std::exception& e) {
         LogOut("[ERROR] Exception in ApplySettings: " + std::string(e.what()), true);
     } catch (...) {
         LogOut("[ERROR] Unknown exception in ApplySettings", true);
     }
 }
+
+// Add this function after ApplySettings to handle RF values specifically
+
+void ApplyRFValues(double p1RF, double p2RF) {
+    // Get base address
+    uintptr_t base = GetEFZBase();
+    if (!base) return;
+    
+    // Repeatedly apply values to ensure they "stick"
+    std::thread([base, p1RF, p2RF]() {
+        // First attempt - immediate write
+        SetRFValuesDirect(p1RF, p2RF);
+        
+        // Wait a short time to ensure initial write completes
+        std::this_thread::sleep_for(std::chrono::milliseconds(16));
+        
+        // Create a repeated series of writes to override any game logic
+        // that might be trying to change the values
+        for (int i = 0; i < 10; i++) {
+            SetRFValuesDirect(p1RF, p2RF);
+            std::this_thread::sleep_for(std::chrono::milliseconds(16));
+        }
+        
+        // Log that we've completed the write
+        LogOut("[RF] Applied RF values with persistence: P1=" + 
+            std::to_string(p1RF) + ", P2=" + std::to_string(p2RF), true);
+    }).detach();
+}
+
 
 // Add these new helper functions for creating page content
 

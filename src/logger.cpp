@@ -142,7 +142,7 @@ void UpdateConsoleTitle() {
             if (hpAddr1) memcpy(&displayData.hp1, (void*)hpAddr1, sizeof(WORD));
             if (meterAddr1) memcpy(&displayData.meter1, (void*)meterAddr1, sizeof(WORD));
             if (rfAddr1) {
-                // Read RF value as a double with error checking
+                // Read RF value as a double (8 bytes)
                 double rf = 0.0;
                 memcpy(&rf, (void*)rfAddr1, sizeof(double));
                 
@@ -160,12 +160,15 @@ void UpdateConsoleTitle() {
             if (hpAddr2) memcpy(&displayData.hp2, (void*)hpAddr2, sizeof(WORD));
             if (meterAddr2) memcpy(&displayData.meter2, (void*)meterAddr2, sizeof(WORD));
             if (rfAddr2) {
+                // Read RF value as a double (8 bytes)
                 double rf = 0.0;
                 memcpy(&rf, (void*)rfAddr2, sizeof(double));
                 
+                // Validate RF value (should be between 0 and 1000)
                 if (rf >= 0.0 && rf <= MAX_RF) {
                     displayData.rf2 = rf;
                 } else {
+                    // If value is out of valid range, set to a reasonable default
                     displayData.rf2 = 0.0;
                 }
             }
