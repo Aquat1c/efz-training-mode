@@ -11,6 +11,7 @@
 #include "../include/network.h"
 #include "../include/di_keycodes.h"
 #include "../include/input_handler.h"
+#include "../include/overlay.h"
 
 // Forward declarations for functions in other files
 void MonitorKeys();
@@ -87,6 +88,36 @@ void DelayedInitialization(HMODULE hModule) {
     ShowHotkeyInfo();
     WriteStartupLog("Help screen shown");
     
+    // Don't attempt to initialize the overlay right away
+    WriteStartupLog("Deferring DirectDraw overlay initialization until game is ready");
+    
+    // Add a thread to periodically try overlay initialization
+    std::thread([]{
+        // Wait for initial startup to complete
+        Sleep(3000);
+        
+        LogOut("[OVERLAY] Will initialize when player data is available", true);
+        
+        // Try DirectDraw hook first
+        for (int attempt = 1; attempt <= 30 && !DirectDrawHook::isHooked; attempt++) {
+            if (DirectDrawHook::TryInitializeOverlay()) {
+                LogOut("[OVERLAY] DirectDraw hook initialized successfully", true);
+                break;
+            }
+            Sleep(2000);
+        }
+        
+        // If DirectDraw hook failed, try fallback method
+        if (!DirectDrawHook::isHooked) {
+            LogOut("[OVERLAY] DirectDraw hook failed, trying fallback method...", true);
+            if (DirectDrawHook::InitializeFallbackOverlay()) {
+                LogOut("[OVERLAY] Fallback overlay initialized successfully", true);
+            } else {
+                LogOut("[OVERLAY] All overlay initialization methods failed", true);
+            }
+        }
+    }).detach();
+    
     // Set initialization flag and stop startup logging
     g_initialized = true;
     inStartupPhase = false;
@@ -120,6 +151,10 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
         // Return immediately to let the game continue loading
         WriteStartupLog("DLL_PROCESS_ATTACH complete, returning control to game");
         return TRUE;
+    }
+    else if (ul_reason_for_call == DLL_PROCESS_DETACH) {
+        // Clean up the overlay
+        DirectDrawHook::Shutdown();
     }
     return TRUE;
 }

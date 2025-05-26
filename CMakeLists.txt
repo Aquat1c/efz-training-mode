@@ -40,6 +40,7 @@ set(SOURCES
     src/gui.cpp
     src/frame_monitor.cpp
     src/network.cpp
+    src/overlay.cpp  # Add this line
 )
 
 # Create a shared library (DLL)
@@ -48,16 +49,19 @@ add_library(efz_training_mode SHARED ${SOURCES})
 # Include directories
 target_include_directories(efz_training_mode PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/detours/include
 )
 
-# Link required libraries including network libraries
+# Link required libraries including network libraries and Detours
 target_link_libraries(efz_training_mode PRIVATE 
     user32 
     kernel32
     ws2_32
     iphlpapi
     comctl32
-    # Add additional static linking options
+    ddraw
+    dxguid
+    ${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/detours/lib.X86/detours.lib
     legacy_stdio_definitions
 )
 

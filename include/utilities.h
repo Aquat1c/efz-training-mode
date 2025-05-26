@@ -23,6 +23,7 @@ bool IsActionable(short moveID);
 bool IsBlockstun(short moveID);
 bool IsRecoilGuard(short moveID);
 bool IsEFZWindowActive();
+HWND FindEFZWindow();
 void CreateDebugConsole();
 void ResetFrameCounter();
 void ShowHotkeyInfo();

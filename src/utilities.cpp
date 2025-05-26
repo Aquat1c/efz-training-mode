@@ -440,3 +440,75 @@ bool IsDashState(short moveID) {
            moveID == BACKWARD_DASH_START_ID || 
            moveID == BACKWARD_DASH_RECOVERY_ID;
 }
+
+// Add this function after the IsEFZWindowActive() function
+HWND FindEFZWindow() {
+    HWND foundWindow = NULL;
+    static bool debugLogged = false;
+    
+    // Log debug info only once
+    if (!debugLogged) {
+        LogOut("[WINDOW] Searching for EFZ window...", true);
+        debugLogged = true;
+    }
+    
+    // Enumerate all windows to find EFZ
+    EnumWindows([](HWND hwnd, LPARAM lParam) -> BOOL {
+        HWND* result = reinterpret_cast<HWND*>(lParam);
+        
+        // Skip invisible windows
+        if (!IsWindowVisible(hwnd)) {
+            return TRUE; // Continue enumeration
+        }
+        
+        // Get window title for debugging
+        char title[256] = { 0 };
+        GetWindowTextA(hwnd, title, sizeof(title) - 1);
+        
+        // Log visible windows (only log non-empty titles)
+        if (strlen(title) > 0) {
+            LogOut("[WINDOW] Found window: '" + std::string(title) + "'", true);
+        }
+        
+        // Try with Unicode API first
+        WCHAR wideTitle[256] = { 0 };
+        GetWindowTextW(hwnd, wideTitle, sizeof(wideTitle)/sizeof(WCHAR) - 1);
+        
+        // Make a copy for case-insensitive comparison
+        WCHAR wideTitleLower[256];
+        wcscpy_s(wideTitleLower, wideTitle);
+        _wcslwr_s(wideTitleLower);
+        
+        // Case-insensitive comparison for wide strings
+        if (_wcsicmp(wideTitle, L"ETERNAL FIGHTER ZERO") == 0 ||
+            wcsstr(wideTitleLower, L"efz.exe") != NULL ||
+            wcsstr(wideTitleLower, L"eternal fighter zero") != NULL ||
+            wcsstr(wideTitleLower, L"revival") != NULL) {
+            
+            LogOut("[WINDOW] Found EFZ window via Unicode: '" + std::string(title) + "'", true);
+            *result = hwnd;
+            return FALSE; // Stop enumeration
+        }
+        
+        // Fallback to ANSI for compatibility
+        std::string t(title);
+        std::transform(t.begin(), t.end(), t.begin(), ::toupper);
+        
+        if (t.find("ETERNAL FIGHTER ZERO") != std::string::npos ||
+            t.find("EFZ.EXE") != std::string::npos ||
+            t.find("REVIVAL") != std::string::npos) {
+            
+            LogOut("[WINDOW] Found EFZ window via ANSI: '" + std::string(title) + "'", true);
+            *result = hwnd;
+            return FALSE; // Stop enumeration
+        }
+        
+        return TRUE; // Continue enumeration
+    }, reinterpret_cast<LPARAM>(&foundWindow));
+    
+    if (!foundWindow) {
+        LogOut("[WINDOW] EFZ window not found", true);
+    }
+    
+    return foundWindow;
+}

@@ -22,6 +22,7 @@ void ApplyAirtechPatches();
 void RemoveAirtechPatches();
 void ApplyAirtech(uintptr_t moveIDAddr, int playerNum, int frameNum);
 void MonitorAutoAirtech(short moveID1, short moveID2);
+void MonitorAutoJump(); // Remove any parameters from this declaration
 
 void FrameDataMonitor();
 
