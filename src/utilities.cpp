@@ -335,7 +335,6 @@ void ShowHotkeyInfo() {
     
     // Only use detected values if they've been found
     if (detectedBindings.directionsDetected) {
-        // Use Windows API function GetKeyNameText for consistent results
         leftKey = GetKeyName(detectedBindings.leftKey);
         rightKey = GetKeyName(detectedBindings.rightKey);
         upKey = GetKeyName(detectedBindings.upKey);
@@ -357,6 +356,7 @@ void ShowHotkeyInfo() {
     LogOut("1: Teleport players to recorded/default position", true);
     LogOut("  + 1+" + leftKey + " (P1's Left): Teleport both players to left side", true);
     LogOut("  + 1+" + rightKey + " (P1's Right): Teleport both players to right side", true);
+    // FIX: Correct these two lines to match the actual functionality
     LogOut("  + 1+" + upKey + " (P1's Up): Swap P1 and P2 positions", true);
     LogOut("  + 1+" + downKey + " (P1's Down): Place players close together at center", true);
     LogOut("  + 1+" + downKey + "+" + aKey + " (P1's Down + Light Attack): Place players at round start positions", true);
@@ -365,6 +365,7 @@ void ShowHotkeyInfo() {
     LogOut("4: Toggle title display mode", true);
     LogOut("5: Reset frame counter", true);
     LogOut("6: Show this help and clear console", true);
+    LogOut("T: Test overlay system (Hello, world)", true);
     LogOut("", true);
     
     // Show message about detected keys

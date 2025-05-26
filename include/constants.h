@@ -182,3 +182,8 @@
 #define FRAME_ADV_LVL2_HIT 16
 #define FRAME_ADV_LVL3_HIT 23
 #define FRAME_ADV_AIR_BLOCK 19
+
+// Missing input constants
+#define INPUT_DEVICE_KEYBOARD 0
+#define INPUT_DEVICE_GAMEPAD 1
+#define MAX_CONTROLLERS 4

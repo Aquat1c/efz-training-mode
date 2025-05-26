@@ -8,9 +8,8 @@
 #include <mutex>
 
 // Forward declaration of interfaces - match the struct type used by Windows SDK
-struct IDirectDraw;          // Change from class to struct
-struct IDirectDrawSurface;   // Change from class to struct
-struct IDirectDrawSurface7;  // Change from class to struct
+struct IDirectDraw7;         // Add the 7 suffix
+struct IDirectDrawSurface7;  // This one is correct
 
 // Function pointer types for DirectDraw
 typedef HRESULT(WINAPI* DirectDrawCreateFunc)(GUID*, LPVOID*, IUnknown*);
@@ -52,6 +51,7 @@ private:
     
     // Rendering helper functions
     static void RenderText(HDC hdc, const std::string& text, int x, int y, COLORREF color);
+    static void RenderSimpleText(IDirectDrawSurface7* surface, const std::string& text, int x, int y, COLORREF color);
     static void RenderAllMessages(IDirectDrawSurface7* surface);
 
 public:
@@ -89,6 +89,15 @@ public:
 
     // Add this after the existing public methods
     static void TestOverlay();  // For testing if overlay works
+
+    // Add this test method
+    static void TestHelloWorld();
+
+    // Add this simple overlay test method
+    static bool InitializeSimpleOverlay();
+
+    // Add this brute-force overlay method
+    static bool InitializeBruteForceOverlay();
 };
 
 // Global status message IDs

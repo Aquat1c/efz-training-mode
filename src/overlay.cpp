@@ -2,6 +2,7 @@
 #include <iomanip>
 #include <chrono>
 #include <vector>
+#include <thread>
 #include "../include/overlay.h"
 #include "../include/logger.h"
 #include "../include/utilities.h"
@@ -50,43 +51,54 @@ void HookVTableMethod(void* pInterface, int vtableOffset, void* hookFunction, vo
 
 // The hook for DirectDrawCreate
 HRESULT WINAPI DirectDrawHook::HookedDirectDrawCreate(GUID* lpGUID, LPVOID* lplpDD, IUnknown* pUnkOuter) {
+    LogOut("[OVERLAY] DirectDrawCreate called", true);
+    
     // Call the original function first
     HRESULT result = originalDirectDrawCreate(lpGUID, lplpDD, pUnkOuter);
     
     if (SUCCEEDED(result) && lplpDD) {
-        LogOut("[OVERLAY] DirectDrawCreate hooked successfully", true);
+        LogOut("[OVERLAY] DirectDrawCreate succeeded, setting up hooks", true);
         
-        // Get the DirectDraw interface
+        // Get IDirectDraw interface
         IDirectDraw* ddraw = static_cast<IDirectDraw*>(*lplpDD);
-        
-        // Create a cooperative level to allow us to set the display mode
-        ddraw->SetCooperativeLevel(GetDesktopWindow(), DDSCL_NORMAL);
-        
-        // Query for IDirectDraw7 interface
-        IDirectDraw7* ddraw7 = nullptr;
-        if (SUCCEEDED(ddraw->QueryInterface(IID_IDirectDraw7, (void**)&ddraw7))) {
-            LogOut("[OVERLAY] Got DirectDraw7 interface", true);
-            
-            // Create the primary surface
-            DDSURFACEDESC2 ddsd = {0};
-            ddsd.dwSize = sizeof(ddsd);
-            ddsd.dwFlags = DDSD_CAPS;
-            ddsd.ddsCaps.dwCaps = DDSCAPS_PRIMARYSURFACE;
-            
-            IDirectDrawSurface7* primary = nullptr;
-            if (SUCCEEDED(ddraw7->CreateSurface(&ddsd, &primary, nullptr))) {
-                LogOut("[OVERLAY] Created primary surface", true);
-                primarySurface = primary;
+        if (ddraw) {
+            // Query for IDirectDraw7 interface
+            IDirectDraw7* ddraw7 = nullptr;
+            if (SUCCEEDED(ddraw->QueryInterface(IID_IDirectDraw7, (void**)&ddraw7))) {
+                LogOut("[OVERLAY] Got IDirectDraw7 interface", true);
                 
-                // Now hook the Blt and Flip methods
-                HookVTableMethod(primary, DDRAW_BLIT_OFFSET, (void*)HookedBlit, (void**)&originalBlit);
-                HookVTableMethod(primary, DDRAW_FLIP_OFFSET, (void*)HookedFlip, (void**)&originalFlip);
+                // Set cooperative level
+                ddraw7->SetCooperativeLevel(gameWindow, DDSCL_NORMAL);
                 
-                LogOut("[OVERLAY] Hooked Blit and Flip methods", true);
+                // Create primary surface description
+                DDSURFACEDESC2 ddsd;
+                ZeroMemory(&ddsd, sizeof(ddsd));
+                ddsd.dwSize = sizeof(ddsd);
+                ddsd.dwFlags = DDSD_CAPS;
+                ddsd.ddsCaps.dwCaps = DDSCAPS_PRIMARYSURFACE;
+                
+                // Create primary surface
+                HRESULT surfResult = ddraw7->CreateSurface(&ddsd, &primarySurface, NULL);
+                if (SUCCEEDED(surfResult) && primarySurface) {
+                    LogOut("[OVERLAY] Primary surface created successfully", true);
+                    
+                    // Hook the Blt and Flip methods more aggressively
+                    HookVTableMethod(primarySurface, DDRAW_BLIT_OFFSET, HookedBlit, (void**)&originalBlit);
+                    HookVTableMethod(primarySurface, DDRAW_FLIP_OFFSET, HookedFlip, (void**)&originalFlip);
+                    
+                    LogOut("[OVERLAY] Surface methods hooked successfully", true);
+                    
+                    // CRITICAL: Also try to hook other surfaces that might be created
+                    LogOut("[OVERLAY] Looking for additional surfaces to hook...", true);
+                } else {
+                    LogOut("[OVERLAY] Failed to create primary surface: " + std::to_string(surfResult), true);
+                }
+                
+                ddraw7->Release();
             }
-            
-            ddraw7->Release();
         }
+    } else {
+        LogOut("[OVERLAY] DirectDrawCreate failed: " + std::to_string(result), true);
     }
     
     return result;
@@ -99,9 +111,12 @@ HRESULT WINAPI DirectDrawHook::HookedBlit(IDirectDrawSurface7* This, LPRECT lpDe
     // Call the original function first
     HRESULT result = originalBlit(This, lpDestRect, lpDDSrcSurface, lpSrcRect, dwFlags, lpDDBltFx);
     
-    // If this is the primary surface and we're blitting to the screen, render our messages
-    if (SUCCEEDED(result) && This == primarySurface && !lpDDSrcSurface) {
-        RenderAllMessages(This);
+    // CRITICAL FIX: Only render on specific blit operations that indicate final screen composition
+    if (SUCCEEDED(result) && This == primarySurface) {
+        // Check if this looks like a final screen blit (no source surface = screen-to-screen blit)
+        if (!lpDDSrcSurface || dwFlags & DDBLT_COLORFILL) {
+            RenderAllMessages(This);
+        }
     }
     
     return result;
@@ -111,13 +126,13 @@ HRESULT WINAPI DirectDrawHook::HookedBlit(IDirectDrawSurface7* This, LPRECT lpDe
 HRESULT WINAPI DirectDrawHook::HookedFlip(IDirectDrawSurface7* This, 
                                         IDirectDrawSurface7* lpDDSurfaceTargetOverride, 
                                         DWORD dwFlags) {
-    // Render our messages before flipping if this is the primary surface
-    if (This == primarySurface) {
+    // Call the original function first
+    HRESULT result = originalFlip(This, lpDDSurfaceTargetOverride, dwFlags);
+    
+    // CRITICAL FIX: Render AFTER the flip, not before
+    if (SUCCEEDED(result) && This == primarySurface) {
         RenderAllMessages(This);
     }
-    
-    // Call the original function
-    HRESULT result = originalFlip(This, lpDDSurfaceTargetOverride, dwFlags);
     
     return result;
 }
@@ -129,7 +144,7 @@ void DirectDrawHook::RenderText(HDC hdc, const std::string& text, int x, int y, 
     // Set up the text properties
     SetBkMode(hdc, TRANSPARENT);
     
-    // Create a better font for our overlay
+    // Create a better font for our overlay - FIX THE CreateFont CALL
     HFONT font = CreateFont(
         20,                        // Height
         0,                         // Width
@@ -143,7 +158,7 @@ void DirectDrawHook::RenderText(HDC hdc, const std::string& text, int x, int y, 
         OUT_OUTLINE_PRECIS,        // OutPrecision
         CLIP_DEFAULT_PRECIS,       // ClipPrecision
         ANTIALIASED_QUALITY,       // Quality
-        DEFAULT_PITCH | FF_SWISS,  // PitchAndFamily
+        DEFAULT_PITCH | FF_SWISS,  // PitchAndFamily - FIX: Use FF_SWISS
         "Arial"                    // FaceName
     );
     
@@ -162,6 +177,64 @@ void DirectDrawHook::RenderText(HDC hdc, const std::string& text, int x, int y, 
     DeleteObject(font);
 }
 
+// Render simple text with a black outline for visibility
+void DirectDrawHook::RenderSimpleText(IDirectDrawSurface7* surface, const std::string& text, int x, int y, COLORREF color) {
+    if (!surface || text.empty()) return;
+    
+    // Get device context for drawing
+    HDC hdc;
+    HRESULT hr = surface->GetDC(&hdc);
+    if (FAILED(hr)) {
+        LogOut("[OVERLAY] Failed to get DC: " + std::to_string(hr), true);
+        return;
+    }
+    
+    try {
+        // Set up text properties similar to EFZ's style
+        SetBkMode(hdc, TRANSPARENT);
+        
+        // Create a font that should be compatible with EFZ - FIX THE CreateFont CALL
+        HFONT font = CreateFont(
+            14,                        // Height - smaller for less interference
+            0,                         // Width (auto)
+            0,                         // Escapement
+            0,                         // Orientation
+            FW_NORMAL,                 // Weight - normal instead of bold
+            FALSE,                     // Italic
+            FALSE,                     // Underline
+            FALSE,                     // StrikeOut
+            DEFAULT_CHARSET,           // CharSet
+            OUT_DEFAULT_PRECIS,        // OutputPrecision
+            CLIP_DEFAULT_PRECIS,       // ClipPrecision
+            DEFAULT_QUALITY,           // Quality - use default instead of antialiased
+            DEFAULT_PITCH | FF_DONTCARE, // PitchAndFamily - FIX: Use FF_DONTCARE
+            "MS Sans Serif"            // Face name - this is the 14th parameter
+        );
+        
+        HFONT oldFont = (HFONT)SelectObject(hdc, font);
+        
+        // Draw black outline for better visibility (thinner outline)
+        SetTextColor(hdc, RGB(0, 0, 0));
+        TextOutA(hdc, x + 1, y, text.c_str(), text.length());
+        TextOutA(hdc, x - 1, y, text.c_str(), text.length());
+        TextOutA(hdc, x, y + 1, text.c_str(), text.length());
+        TextOutA(hdc, x, y - 1, text.c_str(), text.length());
+        
+        // Draw main text
+        SetTextColor(hdc, color);
+        TextOutA(hdc, x, y, text.c_str(), text.length());
+        
+        // Clean up
+        SelectObject(hdc, oldFont);
+        DeleteObject(font);
+        
+    } catch (...) {
+        LogOut("[OVERLAY] Exception in RenderSimpleText", true);
+    }
+    
+    surface->ReleaseDC(hdc);
+}
+
 // Render all current messages on the surface
 void DirectDrawHook::RenderAllMessages(IDirectDrawSurface7* surface) {
     if (!surface) return;
@@ -171,40 +244,112 @@ void DirectDrawHook::RenderAllMessages(IDirectDrawSurface7* surface) {
     // Get the current time
     auto now = std::chrono::steady_clock::now();
     
-    // Get device context for drawing
+    // Check if character data is initialized
+    uintptr_t base = GetEFZBase();
+    bool showHelloWorld = false;
+    
+    if (base) {
+        // Check if both players have valid HP values (indicating game is active)
+        uintptr_t hpAddr1 = ResolvePointer(base, EFZ_BASE_OFFSET_P1, HP_OFFSET);
+        uintptr_t hpAddr2 = ResolvePointer(base, EFZ_BASE_OFFSET_P2, HP_OFFSET);
+        
+        if (hpAddr1 && hpAddr2) {
+            int hp1 = 0, hp2 = 0;
+            if (SafeReadMemory(hpAddr1, &hp1, sizeof(int)) && 
+                SafeReadMemory(hpAddr2, &hp2, sizeof(int))) {
+                // Show "Hello, world" if both players have valid HP (indicating match is active)
+                showHelloWorld = (hp1 > 0 && hp2 > 0 && hp1 <= MAX_HP && hp2 <= MAX_HP);
+                
+                if (showHelloWorld) {
+                    LogOut("[OVERLAY] Showing Hello World - HP1: " + std::to_string(hp1) + ", HP2: " + std::to_string(hp2), true);
+                }
+            }
+        }
+    }
+    
+    // CRITICAL FIX: Use a more aggressive rendering approach
     HDC hdc;
     if (FAILED(surface->GetDC(&hdc))) {
+        LogOut("[OVERLAY] Failed to get surface DC", true);
         return;
     }
     
     try {
-        // Remove expired temporary messages
-        messages.erase(
-            std::remove_if(messages.begin(), messages.end(),
-                [now](const OverlayMessage& msg) {
-                    return !msg.isPermanent && now > msg.expireTime;
-                }),
-            messages.end()
-        );
+        // Set up for high-visibility rendering
+        SetBkMode(hdc, TRANSPARENT);
         
-        // Render permanent messages first
+        // Render "Hello, world" text if characters are initialized
+        if (showHelloWorld) {
+            // Use multiple rendering techniques to ensure visibility
+            
+            // Method 1: Large, bold text with heavy outline
+            HFONT bigFont = CreateFont(
+                32,                        // Much larger height
+                0,                         // Width (auto)
+                0,                         // Escapement
+                0,                         // Orientation
+                FW_BOLD,                   // Bold weight
+                FALSE,                     // Italic
+                FALSE,                     // Underline
+                FALSE,                     // StrikeOut
+                DEFAULT_CHARSET,           // CharSet
+                OUT_DEFAULT_PRECIS,        // OutputPrecision
+                CLIP_DEFAULT_PRECIS,       // ClipPrecision
+                ANTIALIASED_QUALITY,       // Quality
+                DEFAULT_PITCH | FF_SWISS,  // PitchAndFamily
+                "Arial"                    // Face name
+            );
+            
+            HFONT oldFont = (HFONT)SelectObject(hdc, bigFont);
+            
+            // Draw heavy black outline (multiple passes)
+            SetTextColor(hdc, RGB(0, 0, 0));
+            for (int dx = -3; dx <= 3; dx++) {
+                for (int dy = -3; dy <= 3; dy++) {
+                    if (dx != 0 || dy != 0) {
+                        TextOutA(hdc, 50 + dx, 50 + dy, "Hello, world!", 13);
+                    }
+                }
+            }
+            
+            // Draw main text in bright yellow
+            SetTextColor(hdc, RGB(255, 255, 0));
+            TextOutA(hdc, 50, 50, "Hello, world!", 13);
+            
+            // Also draw at multiple positions to ensure visibility
+            SetTextColor(hdc, RGB(0, 255, 0));
+            TextOutA(hdc, 200, 100, "OVERLAY TEST", 12);
+            
+            SetTextColor(hdc, RGB(255, 0, 255));
+            TextOutA(hdc, 400, 150, "EFZ TRAINING", 12);
+            
+            SelectObject(hdc, oldFont);
+            DeleteObject(bigFont);
+            
+            LogOut("[OVERLAY] Rendered Hello World with enhanced visibility", true);
+        }
+        
+        // Render permanent messages
         for (const auto& msg : permanentMessages) {
             RenderText(hdc, msg.text, msg.xPos, msg.yPos, msg.color);
         }
         
-        // Render temporary messages
-        for (const auto& msg : messages) {
-            RenderText(hdc, msg.text, msg.xPos, msg.yPos, msg.color);
+        // Render temporary messages and remove expired ones
+        auto it = messages.begin();
+        while (it != messages.end()) {
+            if (now >= it->expireTime) {
+                it = messages.erase(it);
+            } else {
+                RenderText(hdc, it->text, it->xPos, it->yPos, it->color);
+                ++it;
+            }
         }
         
-        // Force the drawing to complete
-        GdiFlush();
-        
     } catch (...) {
-        // Ensure we always release the DC
+        LogOut("[OVERLAY] Exception in RenderAllMessages", true);
     }
     
-    // Always release the device context
+    // Release the device context
     surface->ReleaseDC(hdc);
 }
 
@@ -376,9 +521,9 @@ bool DirectDrawHook::TryInitializeOverlay() {
     
     auto now = std::chrono::steady_clock::now();
     
-    // Only try once every 2 seconds to avoid excessive polling
+    // Try more frequently - every 500ms instead of 2 seconds
     if (initializationAttempted && 
-        std::chrono::duration_cast<std::chrono::seconds>(now - lastAttempt).count() < 2) {
+        std::chrono::duration_cast<std::chrono::milliseconds>(now - lastAttempt).count() < 500) {
         return false;
     }
     
@@ -386,66 +531,47 @@ bool DirectDrawHook::TryInitializeOverlay() {
     lastAttempt = now;
     attemptCount++;
     
-    // Increase max attempts from 30 to 120 (4 minutes of trying)
-    if (attemptCount > 120) {
+    // Increase max attempts to 240 (2 minutes of trying)
+    if (attemptCount > 240) {
         LogOut("[OVERLAY] Maximum initialization attempts reached", true);
         return false;
     }
     
-    // 1. Check if game window exists using the robust detection
+    // 1. Check if game window exists
     gameWindow = FindEFZWindow();
     if (!gameWindow) {
-        if (attemptCount % 10 == 0) {
+        if (attemptCount % 20 == 0) {  // Log every 10 seconds
             LogOut("[OVERLAY] EFZ window not found (attempt " + std::to_string(attemptCount) + ")", true);
         }
         return false;
     }
     
-    // Log that we found the window
-    if (attemptCount % 10 == 0) {
-        LogOut("[OVERLAY] Found EFZ window, checking game state (attempt " + std::to_string(attemptCount) + ")", true);
+    // 2. Check if the game has loaded DirectDraw
+    HMODULE ddrawModule = GetModuleHandleA("ddraw.dll");
+    if (!ddrawModule) {
+        if (attemptCount % 20 == 0) {
+            LogOut("[OVERLAY] ddraw.dll not loaded yet", true);
+        }
+        return false;
     }
     
-    // 2. Check if player data is initialized
+    // 3. Check if player data exists (optional - we can show overlay even without game data)
     uintptr_t base = GetEFZBase();
-    if (!base) {
-        if (attemptCount % 10 == 0) {
-            LogOut("[OVERLAY] Game base address not found", true);
+    if (base) {
+        uintptr_t hpAddr1 = ResolvePointer(base, EFZ_BASE_OFFSET_P1, HP_OFFSET);
+        if (hpAddr1) {
+            int hp1 = 0;
+            if (SafeReadMemory(hpAddr1, &hp1, sizeof(int))) {
+                if (hp1 >= 0 && hp1 <= MAX_HP) {
+                    LogOut("[OVERLAY] Game data detected, initializing overlay", true);
+                }
+            }
         }
-        return false;
     }
     
-    // Relaxed criteria - only check P1's data since it's more reliable
-    uintptr_t hpAddr1 = ResolvePointer(base, EFZ_BASE_OFFSET_P1, HP_OFFSET);
+    // Initialize the overlay
+    LogOut("[OVERLAY] Attempting to initialize DirectDraw hook (attempt " + std::to_string(attemptCount) + ")", true);
     
-    if (!hpAddr1) {
-        if (attemptCount % 10 == 0) {
-            LogOut("[OVERLAY] P1 HP address not resolved", true);
-        }
-        return false;
-    }
-    
-    // 3. Verify HP value is readable
-    int hp1 = 0;
-    if (!SafeReadMemory(hpAddr1, &hp1, sizeof(int))) {
-        if (attemptCount % 10 == 0) {
-            LogOut("[OVERLAY] Cannot read P1 HP value", true);
-        }
-        return false;
-    }
-    
-    // HP should be a reasonable value (between 0 and MAX_HP)
-    if (hp1 < 0 || hp1 > MAX_HP) {
-        if (attemptCount % 10 == 0) {
-            LogOut("[OVERLAY] P1 HP value out of range: " + std::to_string(hp1), true);
-        }
-        return false;
-    }
-    
-    // All checks passed, initialize the overlay
-    LogOut("[OVERLAY] Game ready, initializing overlay", true);
-    
-    // Use a try-catch block to handle potential DirectDraw initialization issues
     try {
         return Initialize();
     } catch (const std::exception& e) {
@@ -536,6 +662,140 @@ bool DirectDrawHook::InitializeFallbackOverlay() {
     return true;
 }
 
+// Add this simple fallback overlay method:
+bool DirectDrawHook::InitializeSimpleOverlay() {
+    LogOut("[OVERLAY] Attempting simple overlay initialization", true);
+    
+    // Find the game window
+    gameWindow = FindEFZWindow();
+    if (!gameWindow) {
+        LogOut("[OVERLAY] Simple overlay: Could not find EFZ window", true);
+        return false;
+    }
+    
+    // Get window device context
+    HDC windowDC = GetDC(gameWindow);
+    if (!windowDC) {
+        LogOut("[OVERLAY] Simple overlay: Could not get window DC", true);
+        return false;
+    }
+    
+    // Test drawing directly to window
+    SetBkMode(windowDC, TRANSPARENT);
+    SetTextColor(windowDC, RGB(255, 255, 0));
+    
+    // Use a simple system font
+    HFONT font = CreateFont(
+        16,                        // Height
+        0,                         // Width (auto)
+        0,                         // Escapement
+        0,                         // Orientation
+        FW_BOLD,                   // Weight
+        FALSE,                     // Italic
+        FALSE,                     // Underline
+        FALSE,                     // StrikeOut
+        DEFAULT_CHARSET,           // CharSet
+        OUT_DEFAULT_PRECIS,        // OutputPrecision
+        CLIP_DEFAULT_PRECIS,       // ClipPrecision
+        DEFAULT_QUALITY,           // Quality
+        DEFAULT_PITCH | FF_SWISS,  // PitchAndFamily - FIX: Use FF_SWISS instead of FF_SANS_SERIF
+        "Arial"                    // Face name - ADD THIS 14th PARAMETER
+    );
+    HFONT oldFont = (HFONT)SelectObject(windowDC, font);
+    
+    // Draw test text
+    TextOutA(windowDC, 10, 50, "Simple Overlay Test", 19);
+    
+    // Clean up
+    SelectObject(windowDC, oldFont);
+    DeleteObject(font);
+    ReleaseDC(gameWindow, windowDC);
+    
+    LogOut("[OVERLAY] Simple overlay test drawn", true);
+    return true;
+}
+
+// Add this aggressive fallback method:
+bool DirectDrawHook::InitializeBruteForceOverlay() {
+    LogOut("[OVERLAY] Attempting brute-force overlay initialization", true);
+    
+    // Find the game window
+    gameWindow = FindEFZWindow();
+    if (!gameWindow) {
+        LogOut("[OVERLAY] Brute-force: Could not find EFZ window", true);
+        return false;
+    }
+    
+    // Create a timer-based overlay that draws directly to the window
+    std::thread([]{
+        while (true) {
+            HWND efzWindow = FindEFZWindow();
+            if (!efzWindow) {
+                Sleep(1000);
+                continue;
+            }
+            
+            // Check if we should show overlay
+            uintptr_t base = GetEFZBase();
+            bool shouldShow = false;
+            
+            if (base) {
+                uintptr_t hpAddr1 = ResolvePointer(base, EFZ_BASE_OFFSET_P1, HP_OFFSET);
+                uintptr_t hpAddr2 = ResolvePointer(base, EFZ_BASE_OFFSET_P2, HP_OFFSET);
+                
+                if (hpAddr1 && hpAddr2) {
+                    int hp1 = 0, hp2 = 0;
+                    if (SafeReadMemory(hpAddr1, &hp1, sizeof(int)) && 
+                        SafeReadMemory(hpAddr2, &hp2, sizeof(int))) {
+                        shouldShow = (hp1 > 0 && hp2 > 0 && hp1 <= MAX_HP && hp2 <= MAX_HP);
+                    }
+                }
+            }
+            
+            if (shouldShow) {
+                // Get window device context and draw directly
+                HDC windowDC = GetWindowDC(efzWindow);
+                if (windowDC) {
+                    SetBkMode(windowDC, TRANSPARENT);
+                    
+                    // Create a bright, large font
+                    HFONT font = CreateFont(
+                        24, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
+                        DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                        ANTIALIASED_QUALITY, DEFAULT_PITCH | FF_SWISS, "Arial"
+                    );
+                    HFONT oldFont = (HFONT)SelectObject(windowDC, font);
+                    
+                    // Draw with heavy outline
+                    SetTextColor(windowDC, RGB(0, 0, 0));
+                    for (int dx = -2; dx <= 2; dx++) {
+                        for (int dy = -2; dy <= 2; dy++) {
+                            if (dx != 0 || dy != 0) {
+                                TextOutA(windowDC, 100 + dx, 100 + dy, "BRUTE FORCE OVERLAY", 19);
+                            }
+                        }
+                    }
+                    
+                    // Draw main text
+                    SetTextColor(windowDC, RGB(255, 255, 0));
+                    TextOutA(windowDC, 100, 100, "BRUTE FORCE OVERLAY", 19);
+                    
+                    SelectObject(windowDC, oldFont);
+                    DeleteObject(font);
+                    ReleaseDC(efzWindow, windowDC);
+                    
+                    LogOut("[OVERLAY] Brute-force overlay rendered", true);
+                }
+            }
+            
+            Sleep(100); // Update 10 times per second
+        }
+    }).detach();
+    
+    LogOut("[OVERLAY] Brute-force overlay thread started", true);
+    return true;
+}
+
 // Add this test function
 void DirectDrawHook::TestOverlay() {
     if (isHooked) {
@@ -544,4 +804,38 @@ void DirectDrawHook::TestOverlay() {
     } else {
         LogOut("[OVERLAY] Cannot test - overlay not hooked", true);
     }
+}
+
+// Update the TestHelloWorld function:
+void DirectDrawHook::TestHelloWorld() {
+    LogOut("[OVERLAY] TestHelloWorld called - trying all methods", true);
+    
+    if (!isHooked) {
+        LogOut("[OVERLAY] Testing overlay - not yet hooked, trying all initialization methods", true);
+        
+        // Try DirectDraw hook first
+        if (TryInitializeOverlay()) {
+            LogOut("[OVERLAY] DirectDraw hook initialized for testing", true);
+        } 
+        // Try fallback method
+        else if (InitializeFallbackOverlay()) {
+            LogOut("[OVERLAY] Fallback overlay initialized for testing", true);
+        }
+        // Try brute force method
+        else if (InitializeBruteForceOverlay()) {
+            LogOut("[OVERLAY] Brute-force overlay initialized for testing", true);
+        }
+        else {
+            LogOut("[OVERLAY] All overlay initialization methods failed", true);
+            return;
+        }
+    }
+    
+    // Add multiple test messages at different positions
+    AddMessage("Hello, world! (Test 1)", RGB(255, 255, 0), 5000, 10, 60);
+    AddMessage("Hello, world! (Test 2)", RGB(0, 255, 0), 5000, 10, 80);
+    AddMessage("Hello, world! (Test 3)", RGB(0, 255, 255), 5000, 320, 100);
+    AddMessage("Hello, world! (Test 4)", RGB(255, 0, 255), 5000, 500, 60);
+    
+    LogOut("[OVERLAY] Multiple test 'Hello, world' messages added at different positions", true);
 }

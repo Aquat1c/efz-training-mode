@@ -556,8 +556,8 @@ bool ReadKeyMappingsFromIni() {
         const char* name;
         int* bindingPtr;
     } keyMaps[] = {
-        { 0, "Down", &detectedBindings.downKey },
-        { 2, "Up", &detectedBindings.upKey },
+        { 0, "Down", &detectedBindings.upKey },
+        { 2, "Up", &detectedBindings.downKey },
         { 4, "Left", &detectedBindings.leftKey },
         { 6, "Right", &detectedBindings.rightKey },
         { 8, "A (Light)", &detectedBindings.aButton },

@@ -331,223 +331,141 @@ bool IsNonJumpableState(short moveID) {
 }
 
 // Now modify the MonitorAutoJump function to use this helper
-void MonitorAutoJump(
-    uintptr_t base,
-    uintptr_t moveIDAddr1, uintptr_t moveIDAddr2,
-    short moveID1, short moveID2
-) {
-    // Skip if auto-jump is disabled
-    if (!autoJumpEnabled) {
-        p1JumpState = Grounded;
-        p2JumpState = Grounded;
-        p1StateFrames = 0;
-        p2StateFrames = 0;
-        return;
-    }
+void MonitorAutoJump() {
+    static bool prevJumpEnabled = false;
+    static int prevJumpDirection = -1;
+    static int prevJumpTarget = -1;
     
-    // Check if player is in a non-jumpable state
-    bool p1NonJumpable = IsNonJumpableState(moveID1);
-    bool p2NonJumpable = IsNonJumpableState(moveID2);
+    bool currentJumpEnabled = autoJumpEnabled.load();
+    int currentJumpDirection = jumpDirection.load();
+    int currentJumpTarget = jumpTarget.load();
     
-    // Enhanced logging for debugging
-    if (detailedLogging) {
-        if (p1NonJumpable || moveID1 > 0) {
-            LogOut("[AUTO-JUMP] P1 MoveID: " + std::to_string(moveID1) + 
-                   " (Non-jumpable: " + (p1NonJumpable ? "Yes" : "No") + ")", false);
+    // Check if settings have changed
+    bool jumpEnabledChanged = prevJumpEnabled != currentJumpEnabled;
+    bool jumpDirectionChanged = prevJumpDirection != currentJumpDirection;
+    bool jumpTargetChanged = prevJumpTarget != currentJumpTarget;
+    
+    if (jumpEnabledChanged || jumpDirectionChanged || jumpTargetChanged) {
+        if (currentJumpEnabled) {
+            std::string directionStr;
+            switch (currentJumpDirection) {
+                case 0: directionStr = "Straight"; break;
+                case 1: directionStr = "Forward"; break;
+                case 2: directionStr = "Backward"; break;
+                default: directionStr = "Unknown"; break;
+            }
+            
+            std::string targetStr;
+            switch (currentJumpTarget) {
+                case 1: targetStr = "P1"; break;
+                case 2: targetStr = "P2"; break;
+                case 3: targetStr = "Both"; break;
+                default: targetStr = "Unknown"; break;
+            }
+            
+            LogOut("[AUTO-JUMP] Enabled: " + targetStr + " " + directionStr, true);
+        } else {
+            LogOut("[AUTO-JUMP] Disabled", true);
         }
         
-        if (p2NonJumpable || moveID2 > 0) {
-            LogOut("[AUTO-JUMP] P2 MoveID: " + std::to_string(moveID2) + 
-                   " (Non-jumpable: " + (p2NonJumpable ? "Yes" : "No") + ")", false);
-        }
-    }
-    
-    // Player 1 jump monitoring if enabled AND in an actionable state
-    if ((jumpTarget == 1 || jumpTarget == 3) && !p1NonJumpable && moveIDAddr1) {
-        switch (p1JumpState) {
-            case Grounded:
-                // Only apply jump if in an actionable state
-                if (IsActionable(moveID1)) {
-                    ApplyJump(moveIDAddr1, 1, jumpDirection);
-                    p1JumpState = Rising;
-                    p1StateFrames = 0;
-                }
-                break;
-                
-            case Rising:
-                // Check if we've started falling
-                if (moveID1 == FALLING_ID) {
-                    p1JumpState = Falling;
-                    p1StateFrames = 0;
-                } else {
-                    p1StateFrames++;
-                    // Force the proper jumping moveID
-                    short jumpMoveID;
-                    switch (jumpDirection) {
-                        case 0: jumpMoveID = STRAIGHT_JUMP_ID; break;
-                        case 1: jumpMoveID = FORWARD_JUMP_ID; break;
-                        case 2: jumpMoveID = BACKWARD_JUMP_ID; break;
-                        default: jumpMoveID = STRAIGHT_JUMP_ID;
-                    }
-                    WriteGameMemory(moveIDAddr1, &jumpMoveID, sizeof(short));
-                }
-                break;
-                
-            case Falling:
-                // Wait for landing
-                if (moveID1 == LANDING_ID) {
-                    p1JumpState = Landing;
-                    p1StateFrames = 0;
-                } else {
-                    p1StateFrames++;
-                    // Ensure we're still in falling state
-                    if (moveID1 != FALLING_ID) {
-                        short fallingID = FALLING_ID;
-                        WriteGameMemory(moveIDAddr1, &fallingID, sizeof(short));
-                    }
-                }
-                break;
-                
-            case Landing:
-                // Allow landing animation to play for at least 2 frames
-                p1StateFrames++;
-                if (p1StateFrames >= 2) {
-                    p1JumpState = NeutralFrame;
-                    p1StateFrames = 0;
-                    // Force neutral state
-                    short idleID = IDLE_MOVE_ID;
-                    WriteGameMemory(moveIDAddr1, &idleID, sizeof(short));
-                }
-                break;
-                
-            case NeutralFrame:
-                // Wait one frame in neutral state
-                p1StateFrames++;
-                if (p1StateFrames >= 1) {
-                    // Restart jump cycle
-                    p1JumpState = Grounded;
-                    p1StateFrames = 0;
-                }
-                break;
-        }
-    }
-    
-    // Player 2 jump monitoring if enabled AND in an actionable state
-    if ((jumpTarget == 2 || jumpTarget == 3) && !p2NonJumpable && moveIDAddr2) {
-        switch (p2JumpState) {
-            case Grounded:
-                // Only apply jump if in an actionable state
-                if (IsActionable(moveID2)) {
-                    ApplyJump(moveIDAddr2, 2, jumpDirection);
-                    p2JumpState = Rising;
-                    p2StateFrames = 0;
-                }
-                break;
-                
-            case Rising:
-                // Check if we've started falling
-                if (moveID2 == FALLING_ID) {
-                    p2JumpState = Falling;
-                    p2StateFrames = 0;
-                } else {
-                    p2StateFrames++;
-                    // Force the proper jumping moveID
-                    short jumpMoveID;
-                    switch (jumpDirection) {
-                        case 0: jumpMoveID = STRAIGHT_JUMP_ID; break;
-                        case 1: jumpMoveID = FORWARD_JUMP_ID; break;
-                        case 2: jumpMoveID = BACKWARD_JUMP_ID; break;
-                        default: jumpMoveID = STRAIGHT_JUMP_ID;
-                    }
-                    WriteGameMemory(moveIDAddr2, &jumpMoveID, sizeof(short));
-                }
-                break;
-                
-            case Falling:
-                // Wait for landing
-                if (moveID2 == LANDING_ID) {
-                    p2JumpState = Landing;
-                    p2StateFrames = 0;
-                } else {
-                    p2StateFrames++;
-                    // Ensure we're still in falling state
-                    if (moveID2 != FALLING_ID) {
-                        short fallingID = FALLING_ID;
-                        WriteGameMemory(moveIDAddr2, &fallingID, sizeof(short));
-                    }
-                }
-                break;
-                
-            case Landing:
-                // Allow landing animation to play for at least 2 frames
-                p2StateFrames++;
-                if (p2StateFrames >= 2) {
-                    p2JumpState = NeutralFrame;
-                    p2StateFrames = 0;
-                    // Force neutral state
-                    short idleID = IDLE_MOVE_ID;
-                    WriteGameMemory(moveIDAddr2, &idleID, sizeof(short));
-                }
-                break;
-                
-            case NeutralFrame:
-                // Wait one frame in neutral state
-                p2StateFrames++;
-                if (p2StateFrames >= 1) {
-                    p2JumpState = Grounded;
-                    p2StateFrames = 0;
-                }
-                break;
-        }
+        prevJumpEnabled = currentJumpEnabled;
+        prevJumpDirection = currentJumpDirection;
+        prevJumpTarget = currentJumpTarget;
     }
 }
 
-// First, improve the IsBlockstunState function to catch more standing blockstun states
+// Add these missing function implementations after the existing helper functions:
+
 bool IsBlockstunState(short moveID) {
-    // Directly check for core blockstun IDs
-    if (moveID == STAND_GUARD_ID || 
-        moveID == CROUCH_GUARD_ID || 
-        moveID == CROUCH_GUARD_STUN1 ||
-        moveID == CROUCH_GUARD_STUN2 || 
-        moveID == AIR_GUARD_ID) {
-        return true;
-    }
-    
-    // Check the range that includes standing blockstun states
-    // Ensure we explicitly include 150 and 152 for clarity
-    if (moveID == 150 || moveID == 152 || 
-        (moveID >= 140 && moveID <= 149) ||  // First blockstun range
-        (moveID >= 153 && moveID <= 165)) {  // Second blockstun range (excluding 150-152 which we check explicitly)
-        return true;
-    }
-    
-    return false;
+    // Check if the moveID corresponds to any blockstun state
+    return moveID == STANDING_BLOCK_LVL1 || 
+           moveID == STANDING_BLOCK_LVL2 || 
+           moveID == STANDING_BLOCK_LVL3 ||
+           moveID == CROUCHING_BLOCK_LVL1 || 
+           moveID == CROUCHING_BLOCK_LVL2_A ||
+           moveID == CROUCHING_BLOCK_LVL2_B || 
+           moveID == AIR_GUARD_ID ||
+           (moveID >= 157 && moveID <= 165); // Extended blockstun range
 }
 
-// Add this helper function to determine attack level from blockstun MoveID
 int GetAttackLevel(short blockstunMoveID) {
-    // Standing blockstun states
-    if (blockstunMoveID == 150) return 1;
-    if (blockstunMoveID == STAND_GUARD_ID) return 2; // 151
-    if (blockstunMoveID == 152) return 3;
-    
-    // Crouching blockstun states
-    if (blockstunMoveID == 153) return 1;
-    if (blockstunMoveID == 154 || blockstunMoveID == 155) return 2;
-    
-    // Air block
-    if (blockstunMoveID == AIR_GUARD_ID) return 0; // Special case for air block
-    
-    // Default for unknown blockstun types
-    return 0;
+    // Determine attack level based on the blockstun moveID
+    switch (blockstunMoveID) {
+        case STANDING_BLOCK_LVL1:
+        case CROUCHING_BLOCK_LVL1:
+            return 1; // Level 1 attack
+            
+        case STANDING_BLOCK_LVL2:
+        case CROUCHING_BLOCK_LVL2_A:
+        case CROUCHING_BLOCK_LVL2_B:
+            return 2; // Level 2 attack
+            
+        case STANDING_BLOCK_LVL3:
+            return 3; // Level 3 attack
+            
+        case AIR_GUARD_ID:
+            return 0; // Air block (special case)
+            
+        default:
+            // For extended blockstun ranges, try to infer level
+            if (blockstunMoveID >= 157 && blockstunMoveID <= 160) {
+                return 1; // Assume level 1 for lower range
+            } else if (blockstunMoveID >= 161 && blockstunMoveID <= 165) {
+                return 2; // Assume level 2 for higher range
+            }
+            return 1; // Default to level 1
+    }
 }
 
-// Helper to determine if it's a standing or crouching block
 std::string GetBlockStateType(short blockstunMoveID) {
-    if (blockstunMoveID >= 150 && blockstunMoveID <= 152) return "Standing";
-    if (blockstunMoveID >= 153 && blockstunMoveID <= 155) return "Crouching";
-    if (blockstunMoveID == AIR_GUARD_ID) return "Air";
-    return "Unknown";
+    // Return a descriptive string for the block state
+    switch (blockstunMoveID) {
+        case STANDING_BLOCK_LVL1:
+            return "Standing Block (Level 1)";
+        case STANDING_BLOCK_LVL2:
+            return "Standing Block (Level 2)";
+        case STANDING_BLOCK_LVL3:
+            return "Standing Block (Level 3)";
+        case CROUCHING_BLOCK_LVL1:
+            return "Crouching Block (Level 1)";
+        case CROUCHING_BLOCK_LVL2_A:
+            return "Crouching Block (Level 2A)";
+        case CROUCHING_BLOCK_LVL2_B:
+            return "Crouching Block (Level 2B)";
+        case AIR_GUARD_ID:
+            return "Air Block";
+        default:
+            // For other blockstun states, provide generic description
+            if (blockstunMoveID >= 157 && blockstunMoveID <= 165) {
+                return "Extended Blockstun (Level " + std::to_string(GetAttackLevel(blockstunMoveID)) + ")";
+            }
+            return "Unknown Blockstun State";
+    }
+}
+
+int GetExpectedFrameAdvantage(int attackLevel, bool isAirBlock, bool isHit) {
+    // Calculate expected frame advantage based on attack level and hit/block
+    if (isAirBlock) {
+        return FRAME_ADV_AIR_BLOCK;
+    }
+    
+    if (isHit) {
+        // Hit advantages
+        switch (attackLevel) {
+            case 1: return FRAME_ADV_LVL1_HIT;
+            case 2: return FRAME_ADV_LVL2_HIT;
+            case 3: return FRAME_ADV_LVL3_HIT;
+            default: return FRAME_ADV_LVL1_HIT;
+        }
+    } else {
+        // Block advantages
+        switch (attackLevel) {
+            case 1: return FRAME_ADV_LVL1_BLOCK;
+            case 2: return FRAME_ADV_LVL2_BLOCK;
+            case 3: return FRAME_ADV_LVL3_BLOCK;
+            default: return FRAME_ADV_LVL1_BLOCK;
+        }
+    }
 }
 
 void FrameDataMonitor() {
@@ -726,7 +644,7 @@ void FrameDataMonitor() {
             MonitorAutoAirtech(moveID1, moveID2);
             
             // Add this line to call our auto-jump monitoring function
-            MonitorAutoJump(base, moveIDAddr1, moveIDAddr2, moveID1, moveID2);
+            MonitorAutoJump();
 
             // Get untech values
             prevP1UntechValue = p1UntechValue;
