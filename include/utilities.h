@@ -17,6 +17,13 @@ extern std::atomic<bool> p2Jumping;           // Tracks if P2 is currently in ju
 extern std::atomic<int> jumpTarget;           // 1=P1, 2=P2, 3=Both
 extern std::atomic<bool> inStartupPhase;      // Tracks if the application is in the startup phase
 
+// Auto-action settings
+extern std::atomic<bool> autoActionEnabled;
+extern std::atomic<int> autoActionTrigger;
+extern std::atomic<int> autoActionType;
+extern std::atomic<int> autoActionCustomID;
+extern std::atomic<int> autoActionPlayer;  // 1=P1, 2=P2, 3=Both
+
 // Function declarations
 uintptr_t GetEFZBase();
 bool IsActionable(short moveID);
@@ -52,6 +59,12 @@ struct DisplayData {
     bool autoJump;
     int jumpDirection;     // 0=straight, 1=forward, 2=backward
     int jumpTarget;        // 1=P1, 2=P2, 3=Both
+    // Add auto-action settings
+    bool autoAction;
+    int autoActionTrigger;
+    int autoActionType;
+    int autoActionCustomID;
+    int autoActionPlayer;
 };
 
 extern DisplayData displayData;

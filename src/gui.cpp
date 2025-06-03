@@ -184,6 +184,7 @@ INT_PTR CALLBACK EditDataDlgProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM 
     static HWND hTabControl = NULL;
     static HWND hPage1 = NULL;
     static HWND hPage2 = NULL;
+    static HWND hPage3 = NULL;
     
     // Round start positions
     const double p1StartX = 240.0, p2StartX = 400.0, startY = 0.0;
@@ -203,13 +204,15 @@ INT_PTR CALLBACK EditDataDlgProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM 
             WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | TCS_FOCUSONBUTTONDOWN,
             10, 10, 560, 370, hDlg, (HMENU)IDC_TAB_CONTROL, GetModuleHandle(NULL), NULL);
 
-        // Add tab items
+        // Add tab items - add Auto Action tab
         TCITEM tie;
         tie.mask = TCIF_TEXT;
         tie.pszText = (LPSTR)"Game Values";
         TabCtrl_InsertItem(hTabControl, 0, &tie);
         tie.pszText = (LPSTR)"Movement Options";
         TabCtrl_InsertItem(hTabControl, 1, &tie);
+        tie.pszText = (LPSTR)"Auto Action";  // Add new tab
+        TabCtrl_InsertItem(hTabControl, 2, &tie);
 
         // Create page containers with subclassing
         hPage1 = CreateWindowEx(
@@ -222,9 +225,14 @@ INT_PTR CALLBACK EditDataDlgProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM 
             WS_CHILD | WS_VISIBLE, 
             0, 0, 0, 0, hDlg, NULL, GetModuleHandle(NULL), NULL);
         
-        // Subclass both page windows to forward button messages
-        SetWindowSubclass(hPage1, PageSubclassProc, 1, (DWORD_PTR)hDlg);
-        SetWindowSubclass(hPage2, PageSubclassProc, 2, (DWORD_PTR)hDlg);
+        // Create page 3 for Auto Action
+        hPage3 = CreateWindowEx(
+            0, "STATIC", "", 
+            WS_CHILD | WS_VISIBLE, 
+            0, 0, 0, 0, hDlg, NULL, GetModuleHandle(NULL), NULL);
+        
+        // Subclass page 3
+        SetWindowSubclass(hPage3, PageSubclassProc, 3, (DWORD_PTR)hDlg);
         
         // Position pages in tab control
         RECT rc;
@@ -246,14 +254,20 @@ INT_PTR CALLBACK EditDataDlgProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM 
             rc.left + 10, rc.top + 10,  // Add padding
             rc.right - rc.left - 20, rc.bottom - rc.top - 20,  // Subtract padding
             SWP_NOZORDER);
-
+        SetWindowPos(hPage3, NULL, 
+            rc.left + 10, rc.top + 10,
+            rc.right - rc.left - 20, rc.bottom - rc.top - 20,
+            SWP_NOZORDER);
+    
         // Create page content
         GameValuesPage_CreateContent(hPage1, pData);
         MovementOptionsPage_CreateContent(hPage2, pData);
-
-        // Show first page, hide second page
+        AutoActionPage_CreateContent(hPage3, pData);  // Create auto action page content
+    
+        // Show first page, hide others
         ShowWindow(hPage1, SW_SHOW);
         ShowWindow(hPage2, SW_HIDE);
+        ShowWindow(hPage3, SW_HIDE);  // Hide auto action page
 
         // Update button positions to be within the dialog
         HWND hConfirmBtn = CreateWindowEx(0, "BUTTON", "Confirm", 
@@ -284,6 +298,17 @@ INT_PTR CALLBACK EditDataDlgProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM 
         WORD cmdID = LOWORD(wParam);
         WORD notifyCode = HIWORD(wParam);
         HWND ctrlHwnd = (HWND)lParam;
+
+        // Handle auto-action control changes
+        if (cmdID == IDC_AUTOACTION_ACTION && notifyCode == CBN_SELCHANGE) {
+            // Enable/disable custom ID edit based on selection
+            int selectedIndex = SendMessage(ctrlHwnd, CB_GETCURSEL, 0, 0);
+            HWND hCustomIDEdit = GetDlgItem(hPage3, IDC_AUTOACTION_CUSTOM_ID);
+            if (hCustomIDEdit) {
+                EnableWindow(hCustomIDEdit, selectedIndex == 8); // Index 8 is "Custom MoveID"
+            }
+            return TRUE;
+        }
 
         // More detailed logging for debugging button clicks
         LogOut("[GUI] Command received: ID=" + std::to_string(cmdID) + 
@@ -381,6 +406,41 @@ INT_PTR CALLBACK EditDataDlgProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM 
             int jumpTarget = (int)SendDlgItemMessage(hPage2, IDC_JUMP_TARGET, CB_GETCURSEL, 0, 0);
             pData->jumpTarget = jumpTarget + 1; // 0,1,2 -> 1,2,3 (P1, P2, Both)
             
+            // Update auto-action settings - READ FROM THE RIGHT DIALOG CONTROLS
+            bool newAutoActionEnabled = (SendDlgItemMessage(hPage3, IDC_AUTOACTION_ENABLE, BM_GETCHECK, 0, 0) == BST_CHECKED);
+            int newAutoActionTrigger = SendDlgItemMessage(hPage3, IDC_AUTOACTION_TRIGGER, CB_GETCURSEL, 0, 0) + 1;
+            int newAutoActionType = SendDlgItemMessage(hPage3, IDC_AUTOACTION_ACTION, CB_GETCURSEL, 0, 0) + 1;
+            int newAutoActionPlayer = SendDlgItemMessage(hPage3, IDC_AUTOACTION_PLAYER, CB_GETCURSEL, 0, 0) + 1;
+            
+            // Get custom MoveID value
+            char customIDText[8];
+            GetDlgItemTextA(hPage3, IDC_AUTOACTION_CUSTOM_ID, customIDText, sizeof(customIDText));
+            int newCustomID = atoi(customIDText);
+            if (newCustomID <= 0) newCustomID = 200; // Default to 5A if invalid value
+            
+            // Update both atomic variables AND DisplayData structure
+            autoActionEnabled.store(newAutoActionEnabled);
+            autoActionTrigger.store(newAutoActionTrigger);
+            autoActionType.store(newAutoActionType);
+            autoActionCustomID.store(newCustomID);
+            autoActionPlayer.store(newAutoActionPlayer);
+            
+            // Also update the DisplayData structure
+            pData->autoAction = newAutoActionEnabled;
+            pData->autoActionTrigger = newAutoActionTrigger;
+            pData->autoActionType = newAutoActionType;
+            pData->autoActionCustomID = newCustomID;
+            pData->autoActionPlayer = newAutoActionPlayer;
+            
+            // Log the settings update
+            if (newAutoActionEnabled) {
+                LogOut("[AUTO-ACTION] Enabled with settings - Trigger: " + std::to_string(newAutoActionTrigger) + 
+                       ", Action: " + std::to_string(newAutoActionType) + 
+                       ", Player: " + std::to_string(newAutoActionPlayer), true);
+            } else {
+                LogOut("[AUTO-ACTION] Disabled", true);
+            }
+            
             // Apply settings
             ApplySettings(pData);
             
@@ -446,10 +506,17 @@ INT_PTR CALLBACK EditDataDlgProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM 
             if (iPage == 0) {
                 ShowWindow(hPage1, SW_SHOW);
                 ShowWindow(hPage2, SW_HIDE);
+                ShowWindow(hPage3, SW_HIDE);  // Hide auto action page
             }
             else if (iPage == 1) {
                 ShowWindow(hPage1, SW_HIDE);
                 ShowWindow(hPage2, SW_SHOW);
+                ShowWindow(hPage3, SW_HIDE);  // Hide auto action page
+            }
+            else if (iPage == 2) {
+                ShowWindow(hPage1, SW_HIDE);
+                ShowWindow(hPage2, SW_HIDE);
+                ShowWindow(hPage3, SW_SHOW);  // Show auto action page
             }
             
             return TRUE;
@@ -460,23 +527,13 @@ INT_PTR CALLBACK EditDataDlgProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM 
     
     case WM_NOTIFY:
         if (((LPNMHDR)lParam)->code == TCN_SELCHANGE) {
-            // Tab selection changed
+            // Get the newly selected tab
             int iPage = TabCtrl_GetCurSel(hTabControl);
             
-            // Hide both pages
-            ShowWindow(hPage1, SW_HIDE);
-            ShowWindow(hPage2, SW_HIDE);
-            
-            // Show the selected page
-            if (iPage == 0) {
-                ShowWindow(hPage1, SW_SHOW);
-                SetFocus(hPage1);
-            } else if (iPage == 1) {
-                ShowWindow(hPage2, SW_SHOW);
-                SetFocus(hPage2);
-            }
-            
-            return TRUE;
+            // Show the selected page, hide others
+            ShowWindow(hPage1, iPage == 0 ? SW_SHOW : SW_HIDE);
+            ShowWindow(hPage2, iPage == 1 ? SW_SHOW : SW_HIDE);
+            ShowWindow(hPage3, iPage == 2 ? SW_SHOW : SW_HIDE);  // Add auto action page
         }
         break;
     }
@@ -761,6 +818,149 @@ void MovementOptionsPage_CreateContent(HWND hParent, DisplayData* pData) {
     
     // Activate tooltips
     SendMessage(hToolTip, TTM_ACTIVATE, TRUE, 0);
+}
+
+// Create all the controls for the Auto Action page
+void AutoActionPage_CreateContent(HWND hParent, DisplayData* pData) {
+    // Enable checkbox - use atomic variable instead of pData
+    HWND hAutoActionCheck = CreateWindowEx(0, "BUTTON", "Enable Auto Action", 
+        WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
+        50, 40, 200, 30, hParent, (HMENU)IDC_AUTOACTION_ENABLE, GetModuleHandle(NULL), NULL);
+    
+    // Check if enabled - get from atomic variable, not pData
+    SendMessage(hAutoActionCheck, BM_SETCHECK, autoActionEnabled.load() ? BST_CHECKED : BST_UNCHECKED, 0);
+    
+    // Trigger label
+    CreateWindowEx(0, "STATIC", "Trigger On:", 
+        WS_CHILD | WS_VISIBLE | SS_LEFT,
+        50, 80, 150, 30, hParent, NULL, GetModuleHandle(NULL), NULL);
+    
+    // Create Trigger Combo Box
+    HWND hTriggerCombo = CreateWindowEx(0, "COMBOBOX", "", 
+        WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | WS_VSCROLL,
+        240, 80, 250, 120, hParent, (HMENU)IDC_AUTOACTION_TRIGGER, GetModuleHandle(NULL), NULL);
+    
+    // Add items to combo box
+    SendMessage(hTriggerCombo, CB_RESETCONTENT, 0, 0);
+    SendMessage(hTriggerCombo, CB_ADDSTRING, 0, (LPARAM)"After Block");
+    SendMessage(hTriggerCombo, CB_ADDSTRING, 0, (LPARAM)"On Wake-up");
+    SendMessage(hTriggerCombo, CB_ADDSTRING, 0, (LPARAM)"After Hitstun");
+    
+    // Set selected trigger - get from atomic variable
+    int triggerIndex = autoActionTrigger.load() - 1;
+    if (triggerIndex < 0 || triggerIndex > 2) triggerIndex = 0;
+    SendMessage(hTriggerCombo, CB_SETCURSEL, triggerIndex, 0);
+    
+    // Action label
+    CreateWindowEx(0, "STATIC", "Action:", 
+        WS_CHILD | WS_VISIBLE | SS_LEFT,
+        50, 120, 150, 30, hParent, NULL, GetModuleHandle(NULL), NULL);
+    
+    // Create Action Combo Box
+    HWND hActionCombo = CreateWindowEx(0, "COMBOBOX", "", 
+        WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | WS_VSCROLL,
+        240, 120, 250, 120, hParent, (HMENU)IDC_AUTOACTION_ACTION, GetModuleHandle(NULL), NULL);
+    
+    // Add items to combo box
+    SendMessage(hActionCombo, CB_RESETCONTENT, 0, 0);
+    SendMessage(hActionCombo, CB_ADDSTRING, 0, (LPARAM)"5A (Light)");
+    SendMessage(hActionCombo, CB_ADDSTRING, 0, (LPARAM)"5B (Medium)");
+    SendMessage(hActionCombo, CB_ADDSTRING, 0, (LPARAM)"5C (Heavy)");
+    SendMessage(hActionCombo, CB_ADDSTRING, 0, (LPARAM)"2A (Crouching Light)");
+    SendMessage(hActionCombo, CB_ADDSTRING, 0, (LPARAM)"2B (Crouching Medium)");
+    SendMessage(hActionCombo, CB_ADDSTRING, 0, (LPARAM)"2C (Crouching Heavy)");
+    SendMessage(hActionCombo, CB_ADDSTRING, 0, (LPARAM)"Jump");
+    SendMessage(hActionCombo, CB_ADDSTRING, 0, (LPARAM)"Backdash");
+    SendMessage(hActionCombo, CB_ADDSTRING, 0, (LPARAM)"Custom MoveID");
+    
+    // Set selected action - get from atomic variable
+    int actionIndex = autoActionType.load() - 1;
+    if (actionIndex < 0 || actionIndex > 8) actionIndex = 0;
+    SendMessage(hActionCombo, CB_SETCURSEL, actionIndex, 0);
+    
+    // Custom MoveID label and edit
+    CreateWindowEx(0, "STATIC", "Custom MoveID:", 
+        WS_CHILD | WS_VISIBLE | SS_LEFT,
+        50, 160, 150, 30, hParent, NULL, GetModuleHandle(NULL), NULL);
+    
+    // Create edit control for custom MoveID
+    char customIDText[8];
+    sprintf_s(customIDText, "%d", autoActionCustomID.load()); // Use atomic variable
+    
+    HWND hCustomIDEdit = CreateWindowEx(WS_EX_CLIENTEDGE, "EDIT", customIDText, 
+        WS_CHILD | WS_VISIBLE | WS_BORDER | ES_NUMBER,
+        240, 160, 80, 25, hParent, (HMENU)IDC_AUTOACTION_CUSTOM_ID, GetModuleHandle(NULL), NULL);
+    
+    // Enable/disable custom ID edit based on action selection
+    bool enableCustomEdit = (actionIndex == 8); // Index 8 is "Custom MoveID"
+    EnableWindow(hCustomIDEdit, enableCustomEdit);
+    
+    // Player label
+    CreateWindowEx(0, "STATIC", "Apply To:", 
+        WS_CHILD | WS_VISIBLE | SS_LEFT,
+        50, 200, 150, 30, hParent, NULL, GetModuleHandle(NULL), NULL);
+        
+    // Create Player Combo Box
+    HWND hPlayerCombo = CreateWindowEx(0, "COMBOBOX", "", 
+        WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | WS_VSCROLL,
+        240, 200, 250, 120, hParent, (HMENU)IDC_AUTOACTION_PLAYER, GetModuleHandle(NULL), NULL);
+    
+    // Add items to combo box
+    SendMessage(hPlayerCombo, CB_RESETCONTENT, 0, 0);
+    SendMessage(hPlayerCombo, CB_ADDSTRING, 0, (LPARAM)"P1 Only");
+    SendMessage(hPlayerCombo, CB_ADDSTRING, 0, (LPARAM)"P2 Only");
+    SendMessage(hPlayerCombo, CB_ADDSTRING, 0, (LPARAM)"Both Players");
+    
+    // Set selected player - get from atomic variable
+    int playerIndex = autoActionPlayer.load() - 1;
+    if (playerIndex < 0 || playerIndex > 2) playerIndex = 1; // Default to P2
+    SendMessage(hPlayerCombo, CB_SETCURSEL, playerIndex, 0);
+    
+    // Set up a subclass proc to handle enabling/disabling the custom ID box
+    SetWindowSubclass(hActionCombo, ActionComboSubclassProc, 0, (DWORD_PTR)hCustomIDEdit);
+    
+    // Create tooltip control
+    HWND hToolTip = CreateWindowEx(0, TOOLTIPS_CLASS, NULL,
+        WS_POPUP | TTS_ALWAYSTIP,
+        CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT,
+        hParent, NULL, GetModuleHandle(NULL), NULL);
+    
+    // Define tooltip structure
+    TOOLINFO toolInfo = { 0 };
+    toolInfo.cbSize = sizeof(toolInfo);
+    toolInfo.hwnd = hParent;
+    toolInfo.uFlags = TTF_SUBCLASS | TTF_IDISHWND;
+    
+    // Add tooltip for auto action
+    toolInfo.uId = (UINT_PTR)hAutoActionCheck;
+    toolInfo.lpszText = (LPSTR)"Automatically performs the selected action when the character becomes actionable after the selected trigger.";
+    SendMessage(hToolTip, TTM_ADDTOOL, 0, (LPARAM)&toolInfo);
+    
+    // Add tooltip for custom moveID
+    toolInfo.uId = (UINT_PTR)hCustomIDEdit;
+    toolInfo.lpszText = (LPSTR)"Enter a custom MoveID value (usually 200-299 for most attacks).\r\nUse this for character-specific special moves.";
+    SendMessage(hToolTip, TTM_ADDTOOL, 0, (LPARAM)&toolInfo);
+    
+    // Activate tooltips
+    SendMessage(hToolTip, TTM_ACTIVATE, TRUE, 0);
+}
+
+// Subclass procedure for action combo box to enable/disable custom ID box
+LRESULT CALLBACK ActionComboSubclassProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam,
+                                         UINT_PTR uIdSubclass, DWORD_PTR dwRefData) {
+    HWND hCustomIDEdit = (HWND)dwRefData;
+    
+    switch (message) {
+        case WM_COMMAND:
+            if (HIWORD(wParam) == CBN_SELCHANGE) {
+                int selectedIndex = SendMessage(hWnd, CB_GETCURSEL, 0, 0);
+                // Enable custom ID edit only if "Custom MoveID" is selected (index 8)
+                EnableWindow(hCustomIDEdit, selectedIndex == 8);
+            }
+            break;
+    }
+    
+    return DefSubclassProc(hWnd, message, wParam, lParam);
 }
 
 // Add this subclass procedure to forward button messages to the main dialog

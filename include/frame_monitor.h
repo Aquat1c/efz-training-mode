@@ -33,3 +33,11 @@ int GetAttackLevel(short blockstunMoveID);
 std::string GetBlockStateType(short blockstunMoveID);
 bool IsDashState(short moveID);
 int GetExpectedFrameAdvantage(int attackLevel, bool isAirBlock, bool isHit = false);
+
+// Add these declarations
+
+// Auto-action related functions
+short GetActionMoveID(int actionType);
+void ApplyAutoAction(int playerNum, uintptr_t moveIDAddr, short currentMoveID, short prevMoveID);
+extern bool p1ActionApplied;
+extern bool p2ActionApplied;

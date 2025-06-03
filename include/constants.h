@@ -58,6 +58,7 @@
 #define BACKWARD_AIRTECH 158
 #define GROUNDTECH_START 98
 #define GROUNDTECH_END 99
+#define GROUNDTECH_RECOVERY 96  // Add this new constant for the recovery state
 
 // Jump Move IDs - add these after the Tech Move IDs section
 #define STRAIGHT_JUMP_ID 4
@@ -187,3 +188,41 @@
 #define INPUT_DEVICE_KEYBOARD 0
 #define INPUT_DEVICE_GAMEPAD 1
 #define MAX_CONTROLLERS 4
+
+// After the existing Move IDs section
+
+// Base moveIDs for common attacks (most characters follow this pattern)
+#define BASE_ATTACK_5A        200  // Standing A
+#define BASE_ATTACK_5B        201  // Standing B
+#define BASE_ATTACK_F5B       202  // Far B
+#define BASE_ATTACK_5C        203  // Standing C
+#define BASE_ATTACK_2A        204  // Crouching A 
+#define BASE_ATTACK_2B        205  // Crouching B
+#define BASE_ATTACK_2C        206  // Crouching C
+
+// Auto-action trigger points
+#define TRIGGER_NONE          0
+#define TRIGGER_AFTER_BLOCK   1
+#define TRIGGER_ON_WAKEUP     2
+#define TRIGGER_AFTER_HITSTUN 3
+
+// Auto-action types
+#define ACTION_NONE           0
+#define ACTION_5A             1
+#define ACTION_5B             2
+#define ACTION_5C             3
+#define ACTION_2A             4
+#define ACTION_2B             5
+#define ACTION_2C             6
+#define ACTION_JUMP           7
+#define ACTION_BACKDASH       8
+#define ACTION_BLOCK          9
+#define ACTION_CUSTOM        10
+
+// Control IDs for auto-action UI
+#define IDC_AUTOACTION_ENABLE     5001
+#define IDC_AUTOACTION_TRIGGER    5002
+#define IDC_AUTOACTION_ACTION     5003
+#define IDC_AUTOACTION_CUSTOM_ID  5004
+#define IDC_AUTOACTION_PLAYER     5005
+#define IDC_PAGE_AUTOACTION       5000

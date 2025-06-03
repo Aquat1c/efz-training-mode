@@ -196,6 +196,41 @@ void UpdateConsoleTitle() {
                 GetCurrentMoveID(1),
                 GetCurrentMoveID(2),
                 detailedLogging.load() ? "ON" : "OFF");
+            
+            // Add auto-action status if enabled
+            if (autoActionEnabled.load()) {
+                // Get the trigger text
+                std::string triggerText;
+                switch (autoActionTrigger.load()) {
+                    case TRIGGER_AFTER_BLOCK: triggerText = "Block"; break;
+                    case TRIGGER_ON_WAKEUP: triggerText = "Wake-up"; break;
+                    case TRIGGER_AFTER_HITSTUN: triggerText = "Hitstun"; break;
+                    default: triggerText = "?"; break;
+                }
+                
+                // Get the action text
+                std::string actionText;
+                switch (autoActionType.load()) {
+                    case ACTION_5A: actionText = "5A"; break;
+                    case ACTION_5B: actionText = "5B"; break;
+                    case ACTION_5C: actionText = "5C"; break;
+                    case ACTION_2A: actionText = "2A"; break;
+                    case ACTION_2B: actionText = "2B"; break;
+                    case ACTION_2C: actionText = "2C"; break;
+                    case ACTION_JUMP: actionText = "Jump"; break;
+                    case ACTION_BACKDASH: actionText = "Backdash"; break;
+                    case ACTION_BLOCK: actionText = "Block"; break;
+                    case ACTION_CUSTOM: actionText = "MvID:" + std::to_string(autoActionCustomID.load()); break;
+                    default: actionText = "?"; break;
+                }
+                
+                // Append to the title
+                char autoActionInfo[128];
+                sprintf_s(autoActionInfo, " | AUTO-ACTION: %s→%s (P%d)", 
+                        triggerText.c_str(), actionText.c_str(), 
+                        autoActionPlayer.load() == 3 ? 12 : autoActionPlayer.load());
+                strcat_s(title, autoActionInfo);
+            }
         } 
         else {
             // Normal mode - show player stats

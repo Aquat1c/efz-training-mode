@@ -91,6 +91,15 @@ KeyBindings detectedBindings = {
     false                  // attacksDetected
 };
 
+// Add with other globals
+
+// Auto-action settings
+std::atomic<bool> autoActionEnabled(false);
+std::atomic<int> autoActionTrigger(TRIGGER_AFTER_BLOCK);
+std::atomic<int> autoActionType(ACTION_5A);
+std::atomic<int> autoActionCustomID(200); // Default to 5A
+std::atomic<int> autoActionPlayer(2);     // Default to P2 (training dummy)
+
 void EnsureLocaleConsistency() {
     static bool localeSet = false;
     if (!localeSet) {
@@ -113,20 +122,26 @@ uintptr_t GetEFZBase() {
     return (uintptr_t)GetModuleHandleA(NULL);
 }
 
+// Add these helper functions to better detect state changes
 bool IsActionable(short moveID) {
     std::locale::global(std::locale("C")); 
-    // This ensures consistent decimal point format
-    return moveID == IDLE_MOVE_ID ||
+    bool actionable = moveID == IDLE_MOVE_ID ||
         moveID == WALK_FWD_ID ||
         moveID == WALK_BACK_ID ||
         moveID == CROUCH_ID ||
         moveID == LANDING_ID ||
         moveID == CROUCH_TO_STAND_ID;
+    
+    // Debug logging for actionable state detection
+    if (detailedLogging.load() && actionable) {
+        LogOut("[STATE] MoveID " + std::to_string(moveID) + " is actionable", true);
+    }
+    
+    return actionable;
 }
 
 bool IsBlockstun(short moveID) {
     std::locale::global(std::locale("C")); 
-    // This ensures consistent decimal point format
     
     // Directly check for core blockstun IDs
     if (moveID == STAND_GUARD_ID || 
@@ -138,10 +153,9 @@ bool IsBlockstun(short moveID) {
     }
     
     // Check the range that includes standing blockstun states
-    // Explicitly include 150 and 152
     if (moveID == 150 || moveID == 152 || 
-        (moveID >= 140 && moveID <= 149) ||  // First blockstun range
-        (moveID >= 153 && moveID <= 165)) {  // Second blockstun range (excluding 150-152 which we check explicitly)
+        (moveID >= 140 && moveID <= 149) ||
+        (moveID >= 153 && moveID <= 165)) {
         return true;
     }
     
@@ -513,3 +527,4 @@ HWND FindEFZWindow() {
     
     return foundWindow;
 }
+
