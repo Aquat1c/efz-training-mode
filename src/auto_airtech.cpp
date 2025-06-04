@@ -173,7 +173,9 @@ void MonitorAutoAirtech(short moveID1, short moveID2) {
         
         // Detect when P1 BECOMES airtechable (start counting)
         if (p1Airtechable && !p1WasAirtechable) {
-            p1DelayCounter = autoAirtechDelay.load() * 3; // Convert visual to internal frames
+            // Convert visual frames to internal frames
+            p1DelayCounter = autoAirtechDelay.load();
+
             LogOut("[AUTO-AIRTECH] P1 became airtechable, starting delay: " + 
                    std::to_string(autoAirtechDelay.load()) + " visual frames", true);
         }
@@ -195,7 +197,7 @@ void MonitorAutoAirtech(short moveID1, short moveID2) {
         
         // Detect when P2 BECOMES airtechable (start counting)
         if (p2Airtechable && !p2WasAirtechable) {
-            p2DelayCounter = autoAirtechDelay.load() * 3; // Convert visual to internal frames
+            p2DelayCounter = autoAirtechDelay.load();
             LogOut("[AUTO-AIRTECH] P2 became airtechable, starting delay: " + 
                    std::to_string(autoAirtechDelay.load()) + " visual frames", true);
         }
