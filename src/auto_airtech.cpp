@@ -6,197 +6,223 @@
 #include <thread>
 #include <atomic>
 
-// Global variables
-bool p1InAirHitstun = false;
-bool p2InAirHitstun = false;
-int p1LastHitstunFrame = -1;
-int p2LastHitstunFrame = -1;
-
-// Original bytes for patches (exactly matching Cheat Engine)
-char originalEnableBytes[2] = {0x74, 0x71};    // "je +71h" -> "nop nop"
-char originalForwardBytes[2] = {0x75, 0x24};   // "jne +24h" -> "nop nop"
-char originalBackwardBytes[2] = {0x75, 0x21};  // "jne +21h" -> "nop nop"
+// Original bytes for patches
+char originalEnableBytes[2] = {0x74, 0x71};
+char originalForwardBytes[2] = {0x75, 0x24};
+char originalBackwardBytes[2] = {0x75, 0x21};
 bool patchesApplied = false;
 
-// NEW: Delay tracking for auto-airtech
-struct AirtechDelayState {
-    bool isDelaying;
-    int delayFramesRemaining;
-    int airtechAvailableFrame;
-    bool wasInLaunchedHitstun;
-};
+// Simple state tracking for delayed patches
+bool patchesPending = false;
+int patchDelayCountdown = 0;
 
-static AirtechDelayState p1AirtechDelay = {false, 0, -1, false};
-static AirtechDelayState p2AirtechDelay = {false, 0, -1, false};
+void ApplyAirtechPatches() {
+    uintptr_t base = GetEFZBase();
+    if (!base) {
+        LogOut("[AUTO-AIRTECH] Cannot get game base address", true);
+        return;
+    }
 
-bool CanAirtech(short moveID) {
-    // Standard launched hitstun
-    bool isLaunched = moveID >= LAUNCHED_HITSTUN_START && moveID <= LAUNCHED_HITSTUN_END;
+    // Store memory values before patch for debugging
+    char currentEnableBytes[2] = {0, 0};
+    SafeReadMemory(base + AIRTECH_ENABLE_ADDR, currentEnableBytes, 2);
+    LogOut("[AUTO-AIRTECH] Before patch - Enable bytes: " + 
+           std::to_string((int)currentEnableBytes[0] & 0xFF) + " " + 
+           std::to_string((int)currentEnableBytes[1] & 0xFF), true);
+
+    // Always NOP the main enable address
+    if (!NopMemory(base + AIRTECH_ENABLE_ADDR, 2)) {
+        LogOut("[AUTO-AIRTECH] Failed to NOP enable address", true);
+    }
+
+    // Apply the appropriate directional patch
+    int direction = autoAirtechDirection.load();
+    if (direction == 0) { // Forward
+        if (!NopMemory(base + AIRTECH_FORWARD_ADDR, 2)) {
+            LogOut("[AUTO-AIRTECH] Failed to NOP forward address", true);
+        }
+        // Make sure backward is restored to original
+        PatchMemory(base + AIRTECH_BACKWARD_ADDR, originalBackwardBytes, 2);
+        LogOut("[AUTO-AIRTECH] Forward airtech enabled", detailedLogging.load());
+    } else { // Backward
+        if (!NopMemory(base + AIRTECH_BACKWARD_ADDR, 2)) {
+            LogOut("[AUTO-AIRTECH] Failed to NOP backward address", true);
+        }
+        // Make sure forward is restored to original
+        PatchMemory(base + AIRTECH_FORWARD_ADDR, originalForwardBytes, 2);
+        LogOut("[AUTO-AIRTECH] Backward airtech enabled", detailedLogging.load());
+    }
+
+    // Verify patches were applied correctly
+    SafeReadMemory(base + AIRTECH_ENABLE_ADDR, currentEnableBytes, 2);
+    if (currentEnableBytes[0] != 0x90 || currentEnableBytes[1] != 0x90) {
+        LogOut("[AUTO-AIRTECH ERROR] Enable NOP failed! Current bytes: " + 
+               std::to_string((int)currentEnableBytes[0]) + " " + 
+               std::to_string((int)currentEnableBytes[1]), true);
+    } else {
+        LogOut("[AUTO-AIRTECH] Patches verified", detailedLogging.load());
+    }
+
+    patchesApplied = true;
+}
+
+void RemoveAirtechPatches() {
+    uintptr_t base = GetEFZBase();
+    if (!base) {
+        LogOut("[AUTO-AIRTECH] Cannot get game base address", true);
+        return;
+    }
+
+    // Restore all patches to original bytes
+    PatchMemory(base + AIRTECH_ENABLE_ADDR, originalEnableBytes, 2);
+    PatchMemory(base + AIRTECH_FORWARD_ADDR, originalForwardBytes, 2);
+    PatchMemory(base + AIRTECH_BACKWARD_ADDR, originalBackwardBytes, 2);
+
+    patchesApplied = false;
+    LogOut("[AUTO-AIRTECH] Patches removed", detailedLogging.load());
+}
+
+// Check if the player is currently in an airtechable state
+// using BOTH moveID and untech value for accuracy
+bool IsPlayerAirtechable(short moveID, int playerNum) {
+    uintptr_t base = GetEFZBase();
+    if (!base) return false;
     
-    // Fire and electric states
-    bool isFireOrElectric = moveID == FIRE_STATE || moveID == ELECTRIC_STATE;
+    uintptr_t baseOffset = (playerNum == 1) ? EFZ_BASE_OFFSET_P1 : EFZ_BASE_OFFSET_P2;
     
-    // Air blockstun states - make sure to include AIR_GUARD_ID (156)
-    bool isAirBlockstun = moveID == AIR_GUARD_ID;
+    // Check untech value
+    short untechValue = 0;
+    uintptr_t untechAddr = ResolvePointer(base, baseOffset, UNTECH_OFFSET);
+    if (untechAddr) {
+        SafeReadMemory(untechAddr, &untechValue, sizeof(short));
+    }
     
-    return isLaunched || isFireOrElectric || isAirBlockstun;
+    // Check moveID for airtechable states
+    bool airtechableMoveID = (moveID >= LAUNCHED_HITSTUN_START && moveID <= LAUNCHED_HITSTUN_END) ||
+                            (moveID == FIRE_STATE || moveID == ELECTRIC_STATE) ||
+                            (moveID == AIR_GUARD_ID);
+    
+    // Log untech value for debugging
+    if (airtechableMoveID && detailedLogging.load()) {
+        LogOut("[AUTO-AIRTECH] P" + std::to_string(playerNum) + 
+               " MoveID: " + std::to_string(moveID) + 
+               ", Untech: " + std::to_string(untechValue), true);
+    }
+    
+    // Untech value == 0 means player can tech
+    // AND moveID should be in an airtechable state
+    return airtechableMoveID && (untechValue == 0);
 }
 
 void MonitorAutoAirtech(short moveID1, short moveID2) {
     static bool prevEnabled = false;
     static int prevDirection = -1;
     static int prevDelay = -1;
+    static bool p1WasAirtechable = false;
+    static bool p2WasAirtechable = false;
+    static int p1DelayCounter = 0;
+    static int p2DelayCounter = 0;
+    static int debugCounter = 0;
 
-    bool directionChanged = prevDirection != autoAirtechDirection.load();
-    bool enabledChanged = prevEnabled != autoAirtechEnabled.load();
-    bool delayChanged = prevDelay != autoAirtechDelay.load();
+    // Periodic status logging
+    if (++debugCounter % 120 == 0) {
+        LogOut("[AUTO-AIRTECH] Status: Enabled=" + std::to_string(autoAirtechEnabled.load()) +
+               ", Direction=" + std::to_string(autoAirtechDirection.load()) +
+               ", Delay=" + std::to_string(autoAirtechDelay.load()) +
+               ", Patches=" + (patchesApplied ? "YES" : "NO"), true);
+    }
 
-    if (enabledChanged || directionChanged || delayChanged) {
-        if (autoAirtechEnabled.load()) {
-            if (autoAirtechDelay.load() == 0) {
-                ApplyAirtechPatches();
-            } else {
-                RemoveAirtechPatches();
-            }
-        } else {
+    // Settings changed
+    bool settingsChanged = (prevEnabled != autoAirtechEnabled.load() ||
+                           prevDirection != autoAirtechDirection.load() ||
+                           prevDelay != autoAirtechDelay.load());
+    
+    if (settingsChanged) {
+        // Handle disabled state
+        if (!autoAirtechEnabled.load() && patchesApplied) {
             RemoveAirtechPatches();
-            LogOut("[AUTO-AIRTECH] Disabled", true);
+            p1DelayCounter = 0;
+            p2DelayCounter = 0;
         }
+        // Handle instant airtech (delay = 0)
+        else if (autoAirtechEnabled.load() && autoAirtechDelay.load() == 0) {
+            if (!patchesApplied) {
+                ApplyAirtechPatches();
+            }
+            p1DelayCounter = 0;
+            p2DelayCounter = 0;
+        }
+        // Handle new delay settings
+        else if (autoAirtechEnabled.load() && autoAirtechDelay.load() > 0) {
+            if (patchesApplied) {
+                RemoveAirtechPatches(); // Remove any existing patches
+            }
+            p1DelayCounter = 0;
+            p2DelayCounter = 0;
+        }
+        
         prevEnabled = autoAirtechEnabled.load();
         prevDirection = autoAirtechDirection.load();
         prevDelay = autoAirtechDelay.load();
     }
 
+    // Only process delay logic if enabled with delay > 0
     if (autoAirtechEnabled.load() && autoAirtechDelay.load() > 0) {
-        static bool p1WasInAirtechState = false;
-        static bool p2WasInAirtechState = false;
-        static int p1DelayCounter = 0;
-        static int p2DelayCounter = 0;
-        static bool temporaryPatchesApplied = false;
-        static int patchDuration = 0;
-
-        bool p1InAirtechState = CanAirtech(moveID1);
-        bool p2InAirtechState = CanAirtech(moveID2);
-
-        // P1: Just LEFT airtechable state
-        if (p1WasInAirtechState && !p1InAirtechState) {
-            p1DelayCounter = autoAirtechDelay.load() * 3;
-            temporaryPatchesApplied = false;
-            LogOut("[AUTO-AIRTECH] P1 delay started: " + std::to_string(autoAirtechDelay.load()) + " frames after leaving airtechable state", true);
+        // Check P1 airtechable state
+        bool p1Airtechable = IsPlayerAirtechable(moveID1, 1);
+        
+        // Detect when P1 BECOMES airtechable (start counting)
+        if (p1Airtechable && !p1WasAirtechable) {
+            p1DelayCounter = autoAirtechDelay.load() * 3; // Convert visual to internal frames
+            LogOut("[AUTO-AIRTECH] P1 became airtechable, starting delay: " + 
+                   std::to_string(autoAirtechDelay.load()) + " visual frames", true);
         }
-        // P2: Just LEFT airtechable state
-        if (p2WasInAirtechState && !p2InAirtechState) {
-            p2DelayCounter = autoAirtechDelay.load() * 3;
-            temporaryPatchesApplied = false;
-            LogOut("[AUTO-AIRTECH] P2 delay started: " + std::to_string(autoAirtechDelay.load()) + " frames after leaving airtechable state", true);
-        }
-
-        // P1 delay processing
+        
+        // Count down P1's delay and apply patches when it expires
         if (p1DelayCounter > 0) {
             p1DelayCounter--;
-            if (p1DelayCounter == 0) {
-                if (!temporaryPatchesApplied) {
-                    ApplyAirtechPatches();
-                    temporaryPatchesApplied = true;
-                }
-                patchDuration = 20;
-                LogOut("[AUTO-AIRTECH] P1 delay complete - applying airtech patches for 20 frames", true);
+            if (p1DelayCounter == 0 && p1Airtechable) {
+                LogOut("[AUTO-AIRTECH] P1 delay expired, applying patches", true);
+                ApplyAirtechPatches();
+                
+                // Set a timer to remove patches (about 10 internal frames)
+                patchDelayCountdown = 10;
             }
         }
-        // P2 delay processing
+        
+        // Check P2 airtechable state
+        bool p2Airtechable = IsPlayerAirtechable(moveID2, 2);
+        
+        // Detect when P2 BECOMES airtechable (start counting)
+        if (p2Airtechable && !p2WasAirtechable) {
+            p2DelayCounter = autoAirtechDelay.load() * 3; // Convert visual to internal frames
+            LogOut("[AUTO-AIRTECH] P2 became airtechable, starting delay: " + 
+                   std::to_string(autoAirtechDelay.load()) + " visual frames", true);
+        }
+        
+        // Count down P2's delay and apply patches when it expires
         if (p2DelayCounter > 0) {
             p2DelayCounter--;
-            if (p2DelayCounter == 0) {
-                if (!temporaryPatchesApplied) {
-                    ApplyAirtechPatches();
-                    temporaryPatchesApplied = true;
-                }
-                patchDuration = 20;
-                LogOut("[AUTO-AIRTECH] P2 delay complete - applying airtech patches for 20 frames", true);
+            if (p2DelayCounter == 0 && p2Airtechable) {
+                LogOut("[AUTO-AIRTECH] P2 delay expired, applying patches", true);
+                ApplyAirtechPatches();
+                
+                // Set a timer to remove patches (about 10 internal frames)
+                patchDelayCountdown = 10;
             }
         }
-        // Manage patch duration
-        if (temporaryPatchesApplied) {
-            if (patchDuration > 0) {
-                patchDuration--;
-            } else {
+        
+        // Update previous states
+        p1WasAirtechable = p1Airtechable;
+        p2WasAirtechable = p2Airtechable;
+        
+        // Handle temporary patches
+        if (patchDelayCountdown > 0) {
+            patchDelayCountdown--;
+            if (patchDelayCountdown == 0 && patchesApplied) {
                 RemoveAirtechPatches();
-                temporaryPatchesApplied = false;
+                LogOut("[AUTO-AIRTECH] Temporary patches removed", detailedLogging.load());
             }
         }
-        p1WasInAirtechState = p1InAirtechState;
-        p2WasInAirtechState = p2InAirtechState;
     }
-}
-
-void ApplyAirtechPatches() {
-    if (patchesApplied) {
-        LogOut("[AUTO-AIRTECH] Patches already applied", detailedLogging.load());
-        return;
-    }
-    
-    uintptr_t base = GetEFZBase();
-    if (!base) {
-        LogOut("[AUTO-AIRTECH] Cannot get game base address", true);
-        return;
-    }
-    
-    // Store original bytes before patching (exactly as Cheat Engine does)
-    SafeReadMemory(base + AIRTECH_ENABLE_ADDR, originalEnableBytes, 2);
-    SafeReadMemory(base + AIRTECH_FORWARD_ADDR, originalForwardBytes, 2);
-    SafeReadMemory(base + AIRTECH_BACKWARD_ADDR, originalBackwardBytes, 2);
-    
-    // STEP 1: Always apply the main enable patch (NOP the "je +71h" at F4FF)
-    bool mainPatchSuccess = NopMemory(base + AIRTECH_ENABLE_ADDR, 2);
-    if (!mainPatchSuccess) {
-        LogOut("[AUTO-AIRTECH] Failed to apply main enable patch", true);
-        return;
-    }
-    
-    // STEP 2: Apply direction-specific patches (exactly like Cheat Engine)
-    if (autoAirtechDirection.load() == 0) {
-        // Forward airtech: NOP the forward check at F514 (like "Forwards" script)
-        bool forwardPatchSuccess = NopMemory(base + AIRTECH_FORWARD_ADDR, 2);
-        if (forwardPatchSuccess) {
-            LogOut("[AUTO-AIRTECH] Applied forward airtech patches (NOPed F4FF and F514)", detailedLogging.load());
-        } else {
-            LogOut("[AUTO-AIRTECH] Failed to apply forward direction patch", true);
-        }
-    } else {
-        // Backward airtech: NOP the backward check at F54F (like "Backwards" script)
-        bool backwardPatchSuccess = NopMemory(base + AIRTECH_BACKWARD_ADDR, 2);
-        if (backwardPatchSuccess) {
-            LogOut("[AUTO-AIRTECH] Applied backward airtech patches (NOPed F4FF and F54F)", detailedLogging.load());
-        } else {
-            LogOut("[AUTO-AIRTECH] Failed to apply backward direction patch", true);
-        }
-    }
-    
-    patchesApplied = true;
-}
-
-void RemoveAirtechPatches() {
-    if (!patchesApplied) {
-        LogOut("[AUTO-AIRTECH] No patches to remove", detailedLogging.load());
-        return;
-    }
-    
-    uintptr_t base = GetEFZBase();
-    if (!base) {
-        LogOut("[AUTO-AIRTECH] Cannot get game base address for cleanup", true);
-        return;
-    }
-    
-    // Restore original bytes (exactly as Cheat Engine does)
-    bool enableRestored = PatchMemory(base + AIRTECH_ENABLE_ADDR, originalEnableBytes, 2);
-    bool forwardRestored = PatchMemory(base + AIRTECH_FORWARD_ADDR, originalForwardBytes, 2);
-    bool backwardRestored = PatchMemory(base + AIRTECH_BACKWARD_ADDR, originalBackwardBytes, 2);
-    
-    if (enableRestored && forwardRestored && backwardRestored) {
-        LogOut("[AUTO-AIRTECH] All airtech patches removed successfully", detailedLogging.load());
-    } else {
-        LogOut("[AUTO-AIRTECH] Warning: Some patches may not have been restored properly", true);
-    }
-    
-    patchesApplied = false;
 }
