@@ -7,10 +7,6 @@
 #include <chrono>
 #include <mutex>
 
-// Forward declaration of interfaces - match the struct type used by Windows SDK
-struct IDirectDraw7;         // Add the 7 suffix
-struct IDirectDrawSurface7;  // This one is correct
-
 // Function pointer types for DirectDraw
 typedef HRESULT(WINAPI* DirectDrawCreateFunc)(GUID*, LPVOID*, IUnknown*);
 typedef HRESULT(WINAPI* DirectDrawEnumerateFunc)(LPDDENUMCALLBACKA, LPVOID);

@@ -17,12 +17,23 @@ extern std::atomic<bool> p2Jumping;           // Tracks if P2 is currently in ju
 extern std::atomic<int> jumpTarget;           // 1=P1, 2=P2, 3=Both
 extern std::atomic<bool> inStartupPhase;      // Tracks if the application is in the startup phase
 
-// Auto-action settings
+// Auto-action settings - replace the single trigger system with individual triggers
 extern std::atomic<bool> autoActionEnabled;
-extern std::atomic<int> autoActionTrigger;
 extern std::atomic<int> autoActionType;
 extern std::atomic<int> autoActionCustomID;
 extern std::atomic<int> autoActionPlayer;  // 1=P1, 2=P2, 3=Both
+
+// Individual trigger settings - ADD THESE MISSING DECLARATIONS
+extern std::atomic<bool> triggerAfterBlockEnabled;
+extern std::atomic<bool> triggerOnWakeupEnabled;
+extern std::atomic<bool> triggerAfterHitstunEnabled;
+extern std::atomic<bool> triggerAfterAirtechEnabled;
+
+// Delay settings (in visual frames) - ADD THESE MISSING DECLARATIONS
+extern std::atomic<int> triggerAfterBlockDelay;
+extern std::atomic<int> triggerOnWakeupDelay;
+extern std::atomic<int> triggerAfterHitstunDelay;
+extern std::atomic<int> triggerAfterAirtechDelay;
 
 // Function declarations
 uintptr_t GetEFZBase();
@@ -46,6 +57,10 @@ void WriteStartupLog(const std::string& message); // Logs messages during the st
 std::string GetKeyName(int virtualKey);
 void DetectKeyBindings();
 bool IsDashState(short moveID); // New: Check if in dash state
+bool CanAirtech(short moveID); // Add this missing declaration
+
+// Add delay support for auto-airtech
+extern std::atomic<int> autoAirtechDelay; // 0=instant, 1+=frames to wait
 
 // Display data structure
 struct DisplayData {
@@ -55,16 +70,41 @@ struct DisplayData {
     double x1, y1;
     double x2, y2;
     bool autoAirtech;
-    int airtechDirection;  // 0=forward, 1=backward
+    int airtechDirection;
+    int airtechDelay;
     bool autoJump;
-    int jumpDirection;     // 0=straight, 1=forward, 2=backward
-    int jumpTarget;        // 1=P1, 2=P2, 3=Both
-    // Add auto-action settings
+    int jumpDirection;
+    int jumpTarget;
+    
+    // Keep these for backward compatibility
     bool autoAction;
-    int autoActionTrigger;
-    int autoActionType;
-    int autoActionCustomID;
+    int autoActionType;        // ADD THIS BACK
+    int autoActionCustomID;    // ADD THIS BACK
     int autoActionPlayer;
+    
+    // Individual trigger settings
+    bool triggerAfterBlock;
+    bool triggerOnWakeup;
+    bool triggerAfterHitstun;
+    bool triggerAfterAirtech;
+    
+    // Delay settings
+    int delayAfterBlock;
+    int delayOnWakeup;
+    int delayAfterHitstun;
+    int delayAfterAirtech;
+    
+    // Individual action settings for each trigger
+    int actionAfterBlock;
+    int actionOnWakeup;
+    int actionAfterHitstun;
+    int actionAfterAirtech;
+    
+    // Custom action IDs for each trigger
+    int customAfterBlock;
+    int customOnWakeup;
+    int customAfterHitstun;
+    int customAfterAirtech;
 };
 
 extern DisplayData displayData;
@@ -94,3 +134,15 @@ struct KeyBindings {
 };
 
 extern KeyBindings detectedBindings;
+
+// Individual action settings for each trigger
+extern std::atomic<int> triggerAfterBlockAction;
+extern std::atomic<int> triggerOnWakeupAction;
+extern std::atomic<int> triggerAfterHitstunAction;
+extern std::atomic<int> triggerAfterAirtechAction;
+
+// Custom action IDs for each trigger
+extern std::atomic<int> triggerAfterBlockCustomID;
+extern std::atomic<int> triggerOnWakeupCustomID;
+extern std::atomic<int> triggerAfterHitstunCustomID;
+extern std::atomic<int> triggerAfterAirtechCustomID;

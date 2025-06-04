@@ -7,11 +7,11 @@ void ShowEditDataDialog(HWND hParent);
 INT_PTR CALLBACK EditDataDlgProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam);
 void ApplySettings(DisplayData* data);
 
-// New helper functions
+// Page content creation functions
 void GameValuesPage_CreateContent(HWND hParent, DisplayData* pData);
 void MovementOptionsPage_CreateContent(HWND hParent, DisplayData* pData);
 void AutoActionPage_CreateContent(HWND hParent, DisplayData* pData);
 
-// Add this declaration
-LRESULT CALLBACK ActionComboSubclassProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam,
-                                         UINT_PTR uIdSubclass, DWORD_PTR dwRefData);
+// Helper functions
+void ProcessFormData(HWND hDlg, HWND hPage1, HWND hPage2, HWND hPage3, DisplayData* pData);
+LRESULT CALLBACK PageSubclassProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam, UINT_PTR uIdSubclass, DWORD_PTR dwRefData);

@@ -67,11 +67,11 @@ std::atomic<int> frameCounter(0);
 std::atomic<bool> detailedLogging(false);
 std::atomic<bool> autoAirtechEnabled(false);
 std::atomic<int> autoAirtechDirection(0);  // 0=forward, 1=backward
-std::atomic<bool> autoJumpEnabled(false);
-std::atomic<int> jumpDirection(0);      // 0=straight, 1=forward, 2=backward
+std::atomic<bool> autoJumpEnabled(false);     // This was missing!
+std::atomic<int> jumpDirection(0);            // 0=straight, 1=forward, 2=backward
 std::atomic<bool> p1Jumping(false);
 std::atomic<bool> p2Jumping(false);
-std::atomic<int> jumpTarget(3);         // Default to both players
+std::atomic<int> jumpTarget(3);               // Default to both players
 DisplayData displayData;
 
 // Initialize key bindings with default values
@@ -93,12 +93,38 @@ KeyBindings detectedBindings = {
 
 // Add with other globals
 
-// Auto-action settings
+// Auto-action settings - replace single trigger with individual triggers
 std::atomic<bool> autoActionEnabled(false);
-std::atomic<int> autoActionTrigger(TRIGGER_AFTER_BLOCK);
 std::atomic<int> autoActionType(ACTION_5A);
 std::atomic<int> autoActionCustomID(200); // Default to 5A
 std::atomic<int> autoActionPlayer(2);     // Default to P2 (training dummy)
+
+// Individual trigger settings
+std::atomic<bool> triggerAfterBlockEnabled(false);
+std::atomic<bool> triggerOnWakeupEnabled(false);
+std::atomic<bool> triggerAfterHitstunEnabled(false);
+std::atomic<bool> triggerAfterAirtechEnabled(false);
+
+// Delay settings (in visual frames)
+std::atomic<int> triggerAfterBlockDelay(DEFAULT_TRIGGER_DELAY);
+std::atomic<int> triggerOnWakeupDelay(DEFAULT_TRIGGER_DELAY);
+std::atomic<int> triggerAfterHitstunDelay(DEFAULT_TRIGGER_DELAY);
+std::atomic<int> triggerAfterAirtechDelay(DEFAULT_TRIGGER_DELAY);
+
+// Auto-airtech delay support
+std::atomic<int> autoAirtechDelay(0); // Default to instant activation
+
+// Individual action settings for each trigger
+std::atomic<int> triggerAfterBlockAction(ACTION_5A);
+std::atomic<int> triggerOnWakeupAction(ACTION_5A);
+std::atomic<int> triggerAfterHitstunAction(ACTION_5A);
+std::atomic<int> triggerAfterAirtechAction(ACTION_5A);
+
+// Custom action IDs for each trigger
+std::atomic<int> triggerAfterBlockCustomID(BASE_ATTACK_5A);
+std::atomic<int> triggerOnWakeupCustomID(BASE_ATTACK_5A);
+std::atomic<int> triggerAfterHitstunCustomID(BASE_ATTACK_5A);
+std::atomic<int> triggerAfterAirtechCustomID(BASE_ATTACK_JA);  // Default to jumping A for airtech
 
 void EnsureLocaleConsistency() {
     static bool localeSet = false;
@@ -124,17 +150,22 @@ uintptr_t GetEFZBase() {
 
 // Add these helper functions to better detect state changes
 bool IsActionable(short moveID) {
-    std::locale::global(std::locale("C")); 
+    // Only ground idle/walk/crouch/landing/crouch-to-stand are actionable
     bool actionable = moveID == IDLE_MOVE_ID ||
         moveID == WALK_FWD_ID ||
         moveID == WALK_BACK_ID ||
         moveID == CROUCH_ID ||
         moveID == LANDING_ID ||
         moveID == CROUCH_TO_STAND_ID;
-    
-    // Debug logging for actionable state detection
-    if (detailedLogging.load() && actionable) {
-        LogOut("[STATE] MoveID " + std::to_string(moveID) + " is actionable", true);
+
+    // CRITICAL FIX: Explicitly exclude jumping/falling states
+    bool isJumping = moveID == STRAIGHT_JUMP_ID || 
+                    moveID == FORWARD_JUMP_ID || 
+                    moveID == BACKWARD_JUMP_ID || 
+                    moveID == FALLING_ID;
+
+    if (isJumping) {
+        return false;  // Never consider jumping states as actionable for auto-jump
     }
     
     return actionable;
@@ -456,6 +487,7 @@ bool IsDashState(short moveID) {
            moveID == BACKWARD_DASH_RECOVERY_ID;
 }
 
+
 // Add this function after the IsEFZWindowActive() function
 HWND FindEFZWindow() {
     HWND foundWindow = NULL;
@@ -527,4 +559,3 @@ HWND FindEFZWindow() {
     
     return foundWindow;
 }
-

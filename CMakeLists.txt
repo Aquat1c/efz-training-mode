@@ -38,9 +38,18 @@ set(SOURCES
     src/logger.cpp
     src/input_handler.cpp
     src/gui.cpp
+    src/gui_game_values.cpp
+    src/gui_movement.cpp
+    src/gui_auto_action.cpp
+    src/gui_dialog.cpp
     src/frame_monitor.cpp
+    src/auto_airtech.cpp
+    src/auto_jump.cpp
+    src/auto_action.cpp
+    src/frame_analysis.cpp
+    src/frame_advantage.cpp
     src/network.cpp
-    src/overlay.cpp  # Add this line
+    src/overlay.cpp
 )
 
 # Create a shared library (DLL)
