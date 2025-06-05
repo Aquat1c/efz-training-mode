@@ -64,6 +64,14 @@ void AutoActionPage_CreateContent(HWND hParent, DisplayData* pData) {
         WS_CHILD | WS_VISIBLE | WS_BORDER | ES_NUMBER,
         355, yPos, 40, 25, hParent, (HMENU)IDC_TRIGGER_AFTER_BLOCK_DELAY, GetModuleHandle(NULL), NULL);
 
+    // Add custom move ID field for After Block trigger
+    sprintf_s(delayText, "%d", triggerAfterBlockCustomID.load());
+    CreateWindowEx(0, "STATIC", "Custom ID:", WS_CHILD | WS_VISIBLE | SS_LEFT,
+        415, yPos, 60, 25, hParent, NULL, GetModuleHandle(NULL), NULL);
+    CreateWindowEx(WS_EX_CLIENTEDGE, "EDIT", delayText, 
+        WS_CHILD | WS_VISIBLE | WS_BORDER | ES_NUMBER,
+        480, yPos, 40, 25, hParent, (HMENU)IDC_TRIGGER_AFTER_BLOCK_CUSTOM, GetModuleHandle(NULL), NULL);
+
     // After Hitstun trigger
     yPos += 35;
     HWND hAfterHitstunCheck = CreateWindowEx(0, "BUTTON", "After Hitstun:", 
@@ -95,6 +103,14 @@ void AutoActionPage_CreateContent(HWND hParent, DisplayData* pData) {
     CreateWindowEx(WS_EX_CLIENTEDGE, "EDIT", delayText, 
         WS_CHILD | WS_VISIBLE | WS_BORDER | ES_NUMBER,
         355, yPos, 40, 25, hParent, (HMENU)IDC_TRIGGER_AFTER_HITSTUN_DELAY, GetModuleHandle(NULL), NULL);
+
+    // Add custom move ID field for After Hitstun trigger
+    sprintf_s(delayText, "%d", triggerAfterHitstunCustomID.load());
+    CreateWindowEx(0, "STATIC", "Custom ID:", WS_CHILD | WS_VISIBLE | SS_LEFT,
+        415, yPos, 60, 25, hParent, NULL, GetModuleHandle(NULL), NULL);
+    CreateWindowEx(WS_EX_CLIENTEDGE, "EDIT", delayText, 
+        WS_CHILD | WS_VISIBLE | WS_BORDER | ES_NUMBER,
+        480, yPos, 40, 25, hParent, (HMENU)IDC_TRIGGER_AFTER_HITSTUN_CUSTOM, GetModuleHandle(NULL), NULL);
 
     // On Wakeup trigger
     yPos += 35;
@@ -128,6 +144,14 @@ void AutoActionPage_CreateContent(HWND hParent, DisplayData* pData) {
         WS_CHILD | WS_VISIBLE | WS_BORDER | ES_NUMBER,
         355, yPos, 40, 25, hParent, (HMENU)IDC_TRIGGER_ON_WAKEUP_DELAY, GetModuleHandle(NULL), NULL);
 
+    // Add custom move ID field for On Wakeup trigger
+    sprintf_s(delayText, "%d", triggerOnWakeupCustomID.load());
+    CreateWindowEx(0, "STATIC", "Custom ID:", WS_CHILD | WS_VISIBLE | SS_LEFT,
+        415, yPos, 60, 25, hParent, NULL, GetModuleHandle(NULL), NULL);
+    CreateWindowEx(WS_EX_CLIENTEDGE, "EDIT", delayText, 
+        WS_CHILD | WS_VISIBLE | WS_BORDER | ES_NUMBER,
+        480, yPos, 40, 25, hParent, (HMENU)IDC_TRIGGER_ON_WAKEUP_CUSTOM, GetModuleHandle(NULL), NULL);
+
     // After Airtech trigger
     yPos += 35;
     HWND hAfterAirtechCheck = CreateWindowEx(0, "BUTTON", "After Airtech:", 
@@ -138,6 +162,8 @@ void AutoActionPage_CreateContent(HWND hParent, DisplayData* pData) {
     HWND hAfterAirtechAction = CreateWindowEx(0, "COMBOBOX", "", 
         WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | WS_VSCROLL,
         180, yPos, 120, 200, hParent, (HMENU)IDC_TRIGGER_AFTER_AIRTECH_ACTION, GetModuleHandle(NULL), NULL);
+
+    // Add combo box items
     SendMessage(hAfterAirtechAction, CB_ADDSTRING, 0, (LPARAM)"5A");
     SendMessage(hAfterAirtechAction, CB_ADDSTRING, 0, (LPARAM)"5B");
     SendMessage(hAfterAirtechAction, CB_ADDSTRING, 0, (LPARAM)"5C");
@@ -151,12 +177,49 @@ void AutoActionPage_CreateContent(HWND hParent, DisplayData* pData) {
     SendMessage(hAfterAirtechAction, CB_ADDSTRING, 0, (LPARAM)"Backdash");
     SendMessage(hAfterAirtechAction, CB_ADDSTRING, 0, (LPARAM)"Block");
     SendMessage(hAfterAirtechAction, CB_ADDSTRING, 0, (LPARAM)"Custom");
-    SendMessage(hAfterAirtechAction, CB_SETCURSEL, triggerAfterAirtechAction.load() - 1, 0);
 
+    // FIXED: Properly map action type to combo box index
+    int afterAirtechActionType = triggerAfterAirtechAction.load();
+    int afterAirtechComboIndex = 0;
+    
+    if (afterAirtechActionType == ACTION_CUSTOM) {
+        afterAirtechComboIndex = 12; // "Custom" is at index 12
+    } else {
+        afterAirtechComboIndex = afterAirtechActionType - 1; // Regular actions map directly (minus 1)
+    }
+    
+    SendMessage(hAfterAirtechAction, CB_SETCURSEL, afterAirtechComboIndex, 0);
+
+    // Add delay field
     CreateWindowEx(0, "STATIC", "Delay:", WS_CHILD | WS_VISIBLE | SS_LEFT,
         310, yPos, 40, 25, hParent, NULL, GetModuleHandle(NULL), NULL);
     sprintf_s(delayText, "%d", triggerAfterAirtechDelay.load());
     CreateWindowEx(WS_EX_CLIENTEDGE, "EDIT", delayText, 
         WS_CHILD | WS_VISIBLE | WS_BORDER | ES_NUMBER,
         355, yPos, 40, 25, hParent, (HMENU)IDC_TRIGGER_AFTER_AIRTECH_DELAY, GetModuleHandle(NULL), NULL);
+
+    // Add custom move ID field for After Airtech trigger
+    sprintf_s(delayText, "%d", triggerAfterAirtechCustomID.load());
+    CreateWindowEx(0, "STATIC", "Custom ID:", WS_CHILD | WS_VISIBLE | SS_LEFT,
+        415, yPos, 60, 25, hParent, NULL, GetModuleHandle(NULL), NULL);
+    CreateWindowEx(WS_EX_CLIENTEDGE, "EDIT", delayText, 
+        WS_CHILD | WS_VISIBLE | WS_BORDER | ES_NUMBER,
+        480, yPos, 40, 25, hParent, (HMENU)IDC_TRIGGER_AFTER_AIRTECH_CUSTOM, GetModuleHandle(NULL), NULL);
+
+    // Apply the same fix for other triggers
+    
+    // For After Block
+    int afterBlockActionType = triggerAfterBlockAction.load();
+    int afterBlockComboIndex = (afterBlockActionType == ACTION_CUSTOM) ? 12 : (afterBlockActionType - 1);
+    SendMessage(hAfterBlockAction, CB_SETCURSEL, afterBlockComboIndex, 0);
+    
+    // For After Hitstun
+    int afterHitstunActionType = triggerAfterHitstunAction.load();
+    int afterHitstunComboIndex = (afterHitstunActionType == ACTION_CUSTOM) ? 12 : (afterHitstunActionType - 1);
+    SendMessage(hAfterHitstunAction, CB_SETCURSEL, afterHitstunComboIndex, 0);
+    
+    // For On Wakeup
+    int onWakeupActionType = triggerOnWakeupAction.load();
+    int onWakeupComboIndex = (onWakeupActionType == ACTION_CUSTOM) ? 12 : (onWakeupActionType - 1);
+    SendMessage(hOnWakeupAction, CB_SETCURSEL, onWakeupComboIndex, 0);
 }

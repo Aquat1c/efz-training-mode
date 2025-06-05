@@ -13,16 +13,26 @@ bool p2ActionApplied = false;
 short GetActionMoveID(int actionType, int triggerType = TRIGGER_NONE) {
     // First check if it's a custom action
     if (actionType == ACTION_CUSTOM) {
+        short customID = 0;
         switch (triggerType) {
             case TRIGGER_AFTER_BLOCK:
-                return triggerAfterBlockCustomID.load();
+                customID = triggerAfterBlockCustomID.load();
+                LogOut("[AUTO-ACTION] Using After Block custom moveID: " + std::to_string(customID), true);
+                return customID;
             case TRIGGER_ON_WAKEUP:
-                return triggerOnWakeupCustomID.load();
+                customID = triggerOnWakeupCustomID.load();
+                LogOut("[AUTO-ACTION] Using On Wakeup custom moveID: " + std::to_string(customID), true);
+                return customID;
             case TRIGGER_AFTER_HITSTUN:
-                return triggerAfterHitstunCustomID.load();
+                customID = triggerAfterHitstunCustomID.load();
+                LogOut("[AUTO-ACTION] Using After Hitstun custom moveID: " + std::to_string(customID), true);
+                return customID;
             case TRIGGER_AFTER_AIRTECH:
-                return triggerAfterAirtechCustomID.load();
+                customID = triggerAfterAirtechCustomID.load();
+                LogOut("[AUTO-ACTION] Using After Airtech custom moveID: " + std::to_string(customID), true);
+                return customID;
             default:
+                LogOut("[AUTO-ACTION] Warning: Custom action with unknown trigger type", true);
                 return BASE_ATTACK_5A;
         }
     }
@@ -60,7 +70,94 @@ short GetActionMoveID(int actionType, int triggerType = TRIGGER_NONE) {
 }
 
 void ProcessTriggerDelays() {
-    // P2 delay processing
+    uintptr_t base = GetEFZBase();
+    if (!base) return;
+
+    // P1 delay processing
+    if (p1DelayState.isDelaying) {
+        p1DelayState.delayFramesRemaining--;
+        
+        if (p1DelayState.delayFramesRemaining % 64 == 0 && p1DelayState.delayFramesRemaining > 0) {
+            int visualFramesRemaining = p1DelayState.delayFramesRemaining / 3;
+            LogOut("[AUTO-ACTION] P1 delay countdown: " + 
+                   std::to_string(visualFramesRemaining) + " visual frames remaining", true);
+        }
+        
+        if (p1DelayState.delayFramesRemaining <= 0) {
+            LogOut("[AUTO-ACTION] P1 delay expired, applying action moveID " + 
+                   std::to_string(p1DelayState.pendingMoveID), true);
+            
+            uintptr_t moveIDAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P1, MOVE_ID_OFFSET);
+            
+            // CRITICAL FIX: Handle airtech trigger properly
+            bool isAirTechTrigger = (p1DelayState.triggerType == TRIGGER_AFTER_AIRTECH);
+            
+            if (moveIDAddr) {
+                if (isAirTechTrigger) {
+                    // Get Y position and velocity
+                    uintptr_t yPosAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P1, YPOS_OFFSET);
+                    uintptr_t yVelAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P1, YVEL_OFFSET);
+                    
+                    if (yPosAddr && yVelAddr) {
+                        double yPos = 0.0;
+                        double yVel = 0.0;
+                        
+                        SafeReadMemory(yPosAddr, &yPos, sizeof(double));
+                        SafeReadMemory(yVelAddr, &yVel, sizeof(double));
+                        
+                        // Apply the moveID
+                        SafeWriteMemory(moveIDAddr, &p1DelayState.pendingMoveID, sizeof(short));
+                        
+                        // If not a jump move and in air, ensure we preserve air state
+                        if (p1DelayState.pendingMoveID != STRAIGHT_JUMP_ID && 
+                            p1DelayState.pendingMoveID != FORWARD_JUMP_ID && 
+                            p1DelayState.pendingMoveID != BACKWARD_JUMP_ID && 
+                            yPos > 0.0) {
+                            
+                            if (p1DelayState.pendingMoveID != FALLING_ID && 
+                               (p1DelayState.pendingMoveID < BASE_ATTACK_JA || 
+                                p1DelayState.pendingMoveID > BASE_ATTACK_JC)) {
+                                
+                                // Apply the attack but ensure we go back to falling state after
+                                LogOut("[AUTO-ACTION] P1: Preserving air state after moveID " + 
+                                      std::to_string(p1DelayState.pendingMoveID), true);
+                                
+                                // Ensure downward velocity for proper falling
+                                double fallVelocity = yVel <= -1.0 ? yVel : -1.0;
+                                SafeWriteMemory(yVelAddr, &fallVelocity, sizeof(double));
+                                
+                                // Set a timer to restore falling state
+                                std::thread([=]() {
+                                    Sleep(50); // Short delay for move to execute
+                                    short fallingID = FALLING_ID;
+                                    SafeWriteMemory(moveIDAddr, &fallingID, sizeof(short));
+                                }).detach();
+                            }
+                        }
+                    } else {
+                        // Fallback to just applying the moveID
+                        SafeWriteMemory(moveIDAddr, &p1DelayState.pendingMoveID, sizeof(short));
+                    }
+                } else {
+                    // Standard trigger, apply moveID directly
+                    SafeWriteMemory(moveIDAddr, &p1DelayState.pendingMoveID, sizeof(short));
+                }
+                
+                LogOut("[AUTO-ACTION] P1 action applied: moveID " + 
+                       std::to_string(p1DelayState.pendingMoveID), true);
+                
+                p1DelayState.isDelaying = false;
+                p1DelayState.triggerType = TRIGGER_NONE;
+                p1DelayState.pendingMoveID = 0;
+                p1ActionApplied = true;
+            } else {
+                LogOut("[AUTO-ACTION] Failed to apply P1 action - invalid moveID address", true);
+                p1DelayState.isDelaying = false;
+            }
+        }
+    }
+    
+    // P2 delay processing (mirror of P1 code)
     if (p2DelayState.isDelaying) {
         p2DelayState.delayFramesRemaining--;
         
@@ -76,114 +173,72 @@ void ProcessTriggerDelays() {
             LogOut("[AUTO-ACTION] P2 delay EXPIRED, applying action moveID " + 
                    std::to_string(p2DelayState.pendingMoveID), true);
             
-            uintptr_t base = GetEFZBase();
-            if (base) {
-                uintptr_t moveIDAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P2, MOVE_ID_OFFSET);
-                if (moveIDAddr) {
-                    short actionMoveID = p2DelayState.pendingMoveID;
-                    
-                    // Check if player is still actionable before applying
-                    short currentMoveID = 0;
-                    SafeReadMemory(moveIDAddr, &currentMoveID, sizeof(short));
-                    
-                    if (IsActionable(currentMoveID)) {
-                        if (SafeWriteMemory(moveIDAddr, &actionMoveID, sizeof(short))) {
-                            LogOut("[AUTO-ACTION] SUCCESS: Applied action moveID " + 
-                                   std::to_string(actionMoveID) + " to P2 (was in state " + 
-                                   std::to_string(currentMoveID) + ")", true);
-                        } else {
-                            LogOut("[AUTO-ACTION] FAILED: Could not write action to P2", true);
-                        }
-                    } else {
-                        LogOut("[AUTO-ACTION] SKIPPED: P2 no longer actionable (moveID " + 
-                               std::to_string(currentMoveID) + ")", true);
-                    }
-                } else {
-                    LogOut("[AUTO-ACTION] FAILED: Could not resolve P2 moveID address", true);
-                }
-            } else {
-                LogOut("[AUTO-ACTION] FAILED: Could not get game base address", true);
-            }
+            uintptr_t moveIDAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P2, MOVE_ID_OFFSET);
             
-            p2DelayState.isDelaying = false;
-            p2DelayState.triggerType = TRIGGER_NONE;
-            p2DelayState.pendingMoveID = 0;
-            p2ActionApplied = true;
-        }
-    }
-    
-    // P1 delay processing (same logic)
-    if (p1DelayState.isDelaying) {
-        p1DelayState.delayFramesRemaining--;
-        
-        if (p1DelayState.delayFramesRemaining % 64 == 0 && p1DelayState.delayFramesRemaining > 0) {
-            int visualFramesRemaining = p1DelayState.delayFramesRemaining / 3;
-            LogOut("[AUTO-ACTION] P1 delay countdown: " + 
-                   std::to_string(visualFramesRemaining) + " visual frames remaining (" +
-                   std::to_string(p1DelayState.delayFramesRemaining) + " internal frames)", true);
-        }
-        
-        if (p1DelayState.delayFramesRemaining <= 0) {
-            LogOut("[AUTO-ACTION] P1 delay EXPIRED, applying action moveID " + 
-                   std::to_string(p1DelayState.pendingMoveID), true);
+            // CRITICAL FIX: Handle airtech trigger properly
+            bool isAirTechTrigger = (p2DelayState.triggerType == TRIGGER_AFTER_AIRTECH);
             
-            uintptr_t base = GetEFZBase();
-            if (base) {
-                uintptr_t moveIDAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P1, MOVE_ID_OFFSET);
-                if (moveIDAddr) {
-                    short actionMoveID = p1DelayState.pendingMoveID;
+            if (moveIDAddr) {
+                if (isAirTechTrigger) {
+                    // Get Y position and velocity
+                    uintptr_t yPosAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P2, YPOS_OFFSET);
+                    uintptr_t yVelAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P2, YVEL_OFFSET);
                     
-                    // Check if player is still actionable before applying
-                    short currentMoveID = 0;
-                    SafeReadMemory(moveIDAddr, &currentMoveID, sizeof(short));
-                    
-                    if (IsActionable(currentMoveID)) {
-                        if (SafeWriteMemory(moveIDAddr, &actionMoveID, sizeof(short))) {
-                            LogOut("[AUTO-ACTION] SUCCESS: Applied action moveID " + 
-                                   std::to_string(actionMoveID) + " to P1 (was in state " + 
-                                   std::to_string(currentMoveID) + ")", true);
-                        } else {
-                            LogOut("[AUTO-ACTION] FAILED: Could not write action to P1", true);
-                        }
-                    } else {
-                        LogOut("[AUTO-ACTION] SKIPPED: P1 no longer actionable (moveID " + 
-                               std::to_string(currentMoveID) + ")", true);
-                    }
-                } else {
-                    LogOut("[AUTO-ACTION] FAILED: Could not resolve P1 moveID address", true);
-                }
-            } else {
-                LogOut("[AUTO-ACTION] FAILED: Could not get game base address", true);
-            }
-            
-            // When applying the action, add this protection:
-            if (p1DelayState.delayFramesRemaining <= 0) {
-                // Apply the action
-                uintptr_t moveIDAddr1 = ResolvePointer(base, EFZ_BASE_OFFSET_P1, MOVE_ID_OFFSET);
-                if (moveIDAddr1) {
-                    LogOut("[AUTO-ACTION] P1 applying moveID " + std::to_string(p1DelayState.pendingMoveID), true);
-                    
-                    if (SafeWriteMemory(moveIDAddr1, &p1DelayState.pendingMoveID, sizeof(short))) {
-                        // Verify the write immediately
-                        short verifyMoveID = 0;
-                        SafeReadMemory(moveIDAddr1, &verifyMoveID, sizeof(short));
+                    if (yPosAddr && yVelAddr) {
+                        double yPos = 0.0;
+                        double yVel = 0.0;
                         
-                        if (verifyMoveID == p1DelayState.pendingMoveID) {
-                            LogOut("[AUTO-ACTION] P1 action applied successfully (verified: " + std::to_string(verifyMoveID) + ")", true);
-                            p1ActionApplied = true;
-                        } else {
-                            LogOut("[AUTO-ACTION] P1 action verification failed! Expected " + 
-                                   std::to_string(p1DelayState.pendingMoveID) + " but got " + std::to_string(verifyMoveID), true);
+                        SafeReadMemory(yPosAddr, &yPos, sizeof(double));
+                        SafeReadMemory(yVelAddr, &yVel, sizeof(double));
+                        
+                        // Apply the moveID
+                        SafeWriteMemory(moveIDAddr, &p2DelayState.pendingMoveID, sizeof(short));
+                        
+                        // If not a jump move and in air, ensure we preserve air state
+                        if (p2DelayState.pendingMoveID != STRAIGHT_JUMP_ID && 
+                            p2DelayState.pendingMoveID != FORWARD_JUMP_ID && 
+                            p2DelayState.pendingMoveID != BACKWARD_JUMP_ID && 
+                            yPos > 0.0) {
+                            
+                            if (p2DelayState.pendingMoveID != FALLING_ID && 
+                               (p2DelayState.pendingMoveID < BASE_ATTACK_JA || 
+                                p2DelayState.pendingMoveID > BASE_ATTACK_JC)) {
+                                
+                                // Apply the attack but ensure we go back to falling state after
+                                LogOut("[AUTO-ACTION] P2: Preserving air state after moveID " + 
+                                      std::to_string(p2DelayState.pendingMoveID), true);
+                                
+                                // Ensure downward velocity for proper falling
+                                double fallVelocity = yVel <= -1.0 ? yVel : -1.0;
+                                SafeWriteMemory(yVelAddr, &fallVelocity, sizeof(double));
+                                
+                                // Set a timer to restore falling state
+                                std::thread([=]() {
+                                    Sleep(50); // Short delay for move to execute
+                                    short fallingID = FALLING_ID;
+                                    SafeWriteMemory(moveIDAddr, &fallingID, sizeof(short));
+                                }).detach();
+                            }
                         }
                     } else {
-                        LogOut("[AUTO-ACTION] P1 memory write failed", true);
+                        // Fallback to just applying the moveID
+                        SafeWriteMemory(moveIDAddr, &p2DelayState.pendingMoveID, sizeof(short));
                     }
+                } else {
+                    // Standard trigger, apply moveID directly
+                    SafeWriteMemory(moveIDAddr, &p2DelayState.pendingMoveID, sizeof(short));
                 }
                 
-                // Clear delay state
-                p1DelayState.isDelaying = false;
-                p1DelayState.triggerType = TRIGGER_NONE;
-                p1DelayState.pendingMoveID = 0;
+                LogOut("[AUTO-ACTION] P2 action applied: moveID " + 
+                       std::to_string(p2DelayState.pendingMoveID), true);
+                
+                p2DelayState.isDelaying = false;
+                p2DelayState.triggerType = TRIGGER_NONE;
+                p2DelayState.pendingMoveID = 0;
+                p2ActionApplied = true;
+            } else {
+                LogOut("[AUTO-ACTION] Failed to apply P2 action - invalid moveID address", true);
+                p2DelayState.isDelaying = false;
             }
         }
     }
@@ -197,41 +252,78 @@ void StartTriggerDelay(int playerNum, int triggerType, short moveID, int delayFr
     if (delayFrames == 0) {
         uintptr_t base = GetEFZBase();
         if (!base) {
-            LogOut("[AUTO-ACTION] Failed to get base address for immediate application", true);
+            LogOut("[AUTO-ACTION] Failed to get base address", true);
             return;
         }
         
+        // Determine whether we need to preserve air state
+        bool isAirTechTrigger = (triggerType == TRIGGER_AFTER_AIRTECH);
+        
         uintptr_t moveIDAddr;
+        uintptr_t playerOffset;
+        
         if (playerNum == 1) {
+            playerOffset = EFZ_BASE_OFFSET_P1;
             moveIDAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P1, MOVE_ID_OFFSET);
         } else {
+            playerOffset = EFZ_BASE_OFFSET_P2;
             moveIDAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P2, MOVE_ID_OFFSET);
         }
         
         if (moveIDAddr) {
-            LogOut("[AUTO-ACTION] Applying immediate action (0 delay): P" + std::to_string(playerNum) + 
-                   " moveID " + std::to_string(moveID), true);
-            
-            if (SafeWriteMemory(moveIDAddr, &moveID, sizeof(short))) {
-                // Verify the write
-                short verifyMoveID = 0;
-                SafeReadMemory(moveIDAddr, &verifyMoveID, sizeof(short));
+            // CRITICAL FIX: For airtech triggers, preserve velocity and air state
+            if (isAirTechTrigger) {
+                // Get Y position and velocity
+                uintptr_t yPosAddr = ResolvePointer(base, playerOffset, YPOS_OFFSET);
+                uintptr_t yVelAddr = ResolvePointer(base, playerOffset, YVEL_OFFSET);
                 
-                if (verifyMoveID == moveID) {
-                    LogOut("[AUTO-ACTION] SUCCESS: P" + std::to_string(playerNum) + 
-                           " immediate action applied (verified moveID: " + std::to_string(verifyMoveID) + ")", true);
+                if (yPosAddr && yVelAddr) {
+                    double yPos = 0.0;
+                    double yVel = 0.0;
                     
-                    if (playerNum == 1) p1ActionApplied = true;
-                    else if (playerNum == 2) p2ActionApplied = true;
+                    SafeReadMemory(yPosAddr, &yPos, sizeof(double));
+                    SafeReadMemory(yVelAddr, &yVel, sizeof(double));
+                    
+                    // Set the requested moveID
+                    SafeWriteMemory(moveIDAddr, &moveID, sizeof(short));
+                    
+                    // If not a jump and in air, ensure we stay in air with proper velocity
+                    if (moveID != STRAIGHT_JUMP_ID && 
+                        moveID != FORWARD_JUMP_ID && 
+                        moveID != BACKWARD_JUMP_ID && 
+                        yPos > 0.0) {
+                        
+                        // If move isn't already a jump or air attack, preserve the falling state
+                        if (moveID != FALLING_ID && (moveID < BASE_ATTACK_JA || moveID > BASE_ATTACK_JC)) {
+                            // Apply the attack but ensure we go back to falling state afterward
+                            LogOut("[AUTO-ACTION] Preserving air state after moveID " + 
+                                   std::to_string(moveID) + " application", true);
+                            
+                            // Ensure downward velocity for proper falling
+                            double fallVelocity = yVel <= -1.0 ? yVel : -1.0;
+                            SafeWriteMemory(yVelAddr, &fallVelocity, sizeof(double));
+                            
+                            // Set a timer to restore falling state
+                            std::thread([=]() {
+                                Sleep(50); // Short delay for move to execute
+                                short fallingID = FALLING_ID;
+                                SafeWriteMemory(moveIDAddr, &fallingID, sizeof(short));
+                            }).detach();
+                        }
+                    }
                 } else {
-                    LogOut("[AUTO-ACTION] VERIFICATION FAILED: Expected " + std::to_string(moveID) + 
-                           " but got " + std::to_string(verifyMoveID), true);
+                    LogOut("[AUTO-ACTION] Failed to resolve position addresses", true);
+                    SafeWriteMemory(moveIDAddr, &moveID, sizeof(short));
                 }
             } else {
-                LogOut("[AUTO-ACTION] MEMORY WRITE FAILED for immediate action", true);
+                // Non-airtech trigger, just apply moveID directly
+                SafeWriteMemory(moveIDAddr, &moveID, sizeof(short));
             }
+            
+            LogOut("[AUTO-ACTION] Immediate action applied: Player " + std::to_string(playerNum) + 
+                   " moveID " + std::to_string(moveID), true);
         } else {
-            LogOut("[AUTO-ACTION] Failed to resolve moveID address for immediate application", true);
+            LogOut("[AUTO-ACTION] Failed to resolve moveID address", true);
         }
         
         return;
@@ -326,13 +418,23 @@ void MonitorAutoActions() {
         
         // CRITICAL FIX: Complete implementation of After Airtech trigger
         if (!shouldTrigger && triggerAfterAirtechEnabled.load()) {
-            // Check for the specific transition from airtech (157/158) to actionable state
-            if (IsAirtech(prevMoveID1) && !IsAirtech(moveID1) && IsActionable(moveID1)) {
+            // Check if player was in airtech last frame
+            bool wasInAirtech = (prevMoveID1 == FORWARD_AIRTECH || prevMoveID1 == BACKWARD_AIRTECH);
+            
+            // Check if player is now in first actionable frame after airtech
+            bool isNowActionable = (moveID1 == FALLING_ID);
+            
+            // P1 After-Airtech trigger condition
+            if (wasInAirtech && isNowActionable) {
+                LogOut("[AUTO-ACTION] P1 After Airtech trigger activated (from moveID " + 
+                       std::to_string(prevMoveID1) + " to " + std::to_string(moveID1) + ")", true);
                 shouldTrigger = true;
                 triggerType = TRIGGER_AFTER_AIRTECH;
                 delay = triggerAfterAirtechDelay.load();
-                actionMoveID = GetActionMoveID(triggerAfterAirtechAction.load(), TRIGGER_AFTER_AIRTECH);
-                LogOut("[AUTO-ACTION] P1 after airtech trigger activated", true);
+                
+                // Get the appropriate action moveID for After Airtech trigger
+                int actionType = triggerAfterAirtechAction.load();
+                actionMoveID = GetActionMoveID(actionType, TRIGGER_AFTER_AIRTECH);
             }
         }
         
@@ -388,13 +490,23 @@ void MonitorAutoActions() {
         
         // CRITICAL FIX: Complete implementation of After Airtech trigger for P2
         if (!shouldTrigger && triggerAfterAirtechEnabled.load()) {
-            if (IsAirtech(prevMoveID2) && !IsAirtech(moveID2) && IsActionable(moveID2)) {
+            // Check if player was in airtech last frame
+            bool wasInAirtech = (prevMoveID2 == FORWARD_AIRTECH || prevMoveID2 == BACKWARD_AIRTECH);
+            
+            // Check if player is now in first actionable frame after airtech
+            bool isNowActionable = (moveID2 == FALLING_ID);
+            
+            // P2 After-Airtech trigger condition
+            if (wasInAirtech && isNowActionable) {
+                LogOut("[AUTO-ACTION] P2 After Airtech trigger activated (from moveID " + 
+                       std::to_string(prevMoveID2) + " to " + std::to_string(moveID2) + ")", true);
                 shouldTrigger = true;
                 triggerType = TRIGGER_AFTER_AIRTECH;
                 delay = triggerAfterAirtechDelay.load();
-                actionMoveID = GetActionMoveID(triggerAfterAirtechAction.load(), TRIGGER_AFTER_AIRTECH);
                 
-                LogOut("[AUTO-ACTION] P2 after airtech trigger activated", true);
+                // Get the appropriate action moveID for After Airtech trigger
+                int actionType = triggerAfterAirtechAction.load();
+                actionMoveID = GetActionMoveID(actionType, TRIGGER_AFTER_AIRTECH);
             }
         }
         

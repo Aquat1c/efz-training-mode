@@ -104,7 +104,7 @@ void ApplySettings(DisplayData* data) {
         // Save GUI values to global variables
         autoAirtechEnabled = data->autoAirtech;
         autoAirtechDirection = data->airtechDirection;
-        autoAirtechDelay.store(data->airtechDelay); // NEW: Apply airtech delay
+        autoAirtechDelay.store(data->airtechDelay);
         
         // CRITICAL: Make sure jump settings are applied to atomic variables
         autoJumpEnabled.store(data->autoJump);
@@ -132,6 +132,12 @@ void ApplySettings(DisplayData* data) {
         triggerOnWakeupDelay.store(data->delayOnWakeup);
         triggerAfterHitstunDelay.store(data->delayAfterHitstun);
         triggerAfterAirtechDelay.store(data->delayAfterAirtech);
+        
+        // MISSING CODE: Store custom moveID values
+        triggerAfterBlockCustomID.store(data->customAfterBlock);
+        triggerOnWakeupCustomID.store(data->customOnWakeup);
+        triggerAfterHitstunCustomID.store(data->customAfterHitstun);
+        triggerAfterAirtechCustomID.store(data->customAfterAirtech);
         
         // Update the client memory
         uintptr_t base = GetEFZBase();

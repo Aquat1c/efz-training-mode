@@ -306,42 +306,78 @@ void ProcessFormData(HWND hDlg, HWND hPage1, HWND hPage2, HWND hPage3, DisplayDa
     // Process auto-action settings
     pData->autoAction = (SendDlgItemMessage(hPage3, IDC_AUTOACTION_ENABLE, BM_GETCHECK, 0, 0) == BST_CHECKED);
     int playerIndex = SendDlgItemMessage(hPage3, IDC_AUTOACTION_PLAYER, CB_GETCURSEL, 0, 0);
-    pData->autoActionPlayer = playerIndex + 1;  // 1=P1, 2=P2, 3=Both
-
-    // After Block
+    pData->autoActionPlayer = playerIndex + 1;
+    
+    // After Block trigger
     pData->triggerAfterBlock = (SendDlgItemMessage(hPage3, IDC_TRIGGER_AFTER_BLOCK_CHECK, BM_GETCHECK, 0, 0) == BST_CHECKED);
     int afterBlockActionIndex = SendDlgItemMessage(hPage3, IDC_TRIGGER_AFTER_BLOCK_ACTION, CB_GETCURSEL, 0, 0);
-    pData->actionAfterBlock = afterBlockActionIndex + 1;  // Convert to 1-based index for action types
     
-    char delayText[32];
+    // FIXED: Map combo box index to action type
+    if (afterBlockActionIndex == 12) { // "Custom" is at index 12
+        pData->actionAfterBlock = ACTION_CUSTOM;
+    } else {
+        pData->actionAfterBlock = afterBlockActionIndex + 1;
+    }
+    
+    char customText[8];
+    GetDlgItemTextA(hPage3, IDC_TRIGGER_AFTER_BLOCK_CUSTOM, customText, sizeof(customText));
+    pData->customAfterBlock = atoi(customText);
+    
+    // Get delay
+    char delayText[8];
     GetDlgItemTextA(hPage3, IDC_TRIGGER_AFTER_BLOCK_DELAY, delayText, sizeof(delayText));
     pData->delayAfterBlock = atoi(delayText);
-
-    // After Hitstun
+    
+    // After Hitstun trigger
     pData->triggerAfterHitstun = (SendDlgItemMessage(hPage3, IDC_TRIGGER_AFTER_HITSTUN_CHECK, BM_GETCHECK, 0, 0) == BST_CHECKED);
     int afterHitstunActionIndex = SendDlgItemMessage(hPage3, IDC_TRIGGER_AFTER_HITSTUN_ACTION, CB_GETCURSEL, 0, 0);
-    pData->actionAfterHitstun = afterHitstunActionIndex + 1;
+    
+    // FIXED: Map combo box index to action type for After Hitstun
+    if (afterHitstunActionIndex == 12) {
+        pData->actionAfterHitstun = ACTION_CUSTOM;
+    } else {
+        pData->actionAfterHitstun = afterHitstunActionIndex + 1;
+    }
+    
+    GetDlgItemTextA(hPage3, IDC_TRIGGER_AFTER_HITSTUN_CUSTOM, customText, sizeof(customText));
+    pData->customAfterHitstun = atoi(customText);
     
     GetDlgItemTextA(hPage3, IDC_TRIGGER_AFTER_HITSTUN_DELAY, delayText, sizeof(delayText));
     pData->delayAfterHitstun = atoi(delayText);
-
-    // On Wakeup 
+    
+    // On Wakeup trigger
     pData->triggerOnWakeup = (SendDlgItemMessage(hPage3, IDC_TRIGGER_ON_WAKEUP_CHECK, BM_GETCHECK, 0, 0) == BST_CHECKED);
     int onWakeupActionIndex = SendDlgItemMessage(hPage3, IDC_TRIGGER_ON_WAKEUP_ACTION, CB_GETCURSEL, 0, 0);
-    pData->actionOnWakeup = onWakeupActionIndex + 1;
+    
+    // FIXED: Map combo box index to action type for On Wakeup
+    if (onWakeupActionIndex == 12) {
+        pData->actionOnWakeup = ACTION_CUSTOM;
+    } else {
+        pData->actionOnWakeup = onWakeupActionIndex + 1;
+    }
+    
+    GetDlgItemTextA(hPage3, IDC_TRIGGER_ON_WAKEUP_CUSTOM, customText, sizeof(customText));
+    pData->customOnWakeup = atoi(customText);
     
     GetDlgItemTextA(hPage3, IDC_TRIGGER_ON_WAKEUP_DELAY, delayText, sizeof(delayText));
     pData->delayOnWakeup = atoi(delayText);
-
-    // After Airtech
+    
+    // After Airtech trigger
     pData->triggerAfterAirtech = (SendDlgItemMessage(hPage3, IDC_TRIGGER_AFTER_AIRTECH_CHECK, BM_GETCHECK, 0, 0) == BST_CHECKED);
     int afterAirtechActionIndex = SendDlgItemMessage(hPage3, IDC_TRIGGER_AFTER_AIRTECH_ACTION, CB_GETCURSEL, 0, 0);
-    pData->actionAfterAirtech = afterAirtechActionIndex + 1;
+    
+    // FIXED: Map combo box index to action type for After Airtech
+    if (afterAirtechActionIndex == 12) {
+        pData->actionAfterAirtech = ACTION_CUSTOM;
+    } else {
+        pData->actionAfterAirtech = afterAirtechActionIndex + 1;
+    }
+    
+    GetDlgItemTextA(hPage3, IDC_TRIGGER_AFTER_AIRTECH_CUSTOM, customText, sizeof(customText));
+    pData->customAfterAirtech = atoi(customText);
     
     GetDlgItemTextA(hPage3, IDC_TRIGGER_AFTER_AIRTECH_DELAY, delayText, sizeof(delayText));
     pData->delayAfterAirtech = atoi(delayText);
-
-    LogOut("[GUI] Form data processed successfully", true);
 }
 
 // Page subclass procedure

@@ -16,6 +16,10 @@ bool patchesApplied = false;
 bool patchesPending = false;
 int patchDelayCountdown = 0;
 
+// Track if player is currently airteching
+bool p1IsAirteching = false;
+bool p2IsAirteching = false;
+
 void ApplyAirtechPatches() {
     uintptr_t base = GetEFZBase();
     if (!base) {
@@ -26,10 +30,7 @@ void ApplyAirtechPatches() {
     // Store memory values before patch for debugging
     char currentEnableBytes[2] = {0, 0};
     SafeReadMemory(base + AIRTECH_ENABLE_ADDR, currentEnableBytes, 2);
-    LogOut("[AUTO-AIRTECH] Before patch - Enable bytes: " + 
-           std::to_string((int)currentEnableBytes[0] & 0xFF) + " " + 
-           std::to_string((int)currentEnableBytes[1] & 0xFF), true);
-
+    
     // Always NOP the main enable address
     if (!NopMemory(base + AIRTECH_ENABLE_ADDR, 2)) {
         LogOut("[AUTO-AIRTECH] Failed to NOP enable address", true);
@@ -53,17 +54,8 @@ void ApplyAirtechPatches() {
         LogOut("[AUTO-AIRTECH] Backward airtech enabled", detailedLogging.load());
     }
 
-    // Verify patches were applied correctly
-    SafeReadMemory(base + AIRTECH_ENABLE_ADDR, currentEnableBytes, 2);
-    if (currentEnableBytes[0] != 0x90 || currentEnableBytes[1] != 0x90) {
-        LogOut("[AUTO-AIRTECH ERROR] Enable NOP failed! Current bytes: " + 
-               std::to_string((int)currentEnableBytes[0]) + " " + 
-               std::to_string((int)currentEnableBytes[1]), true);
-    } else {
-        LogOut("[AUTO-AIRTECH] Patches verified", detailedLogging.load());
-    }
-
     patchesApplied = true;
+    LogOut("[AUTO-AIRTECH] Patches applied successfully", detailedLogging.load());
 }
 
 void RemoveAirtechPatches() {
@@ -83,7 +75,6 @@ void RemoveAirtechPatches() {
 }
 
 // Check if the player is currently in an airtechable state
-// using BOTH moveID and untech value for accuracy
 bool IsPlayerAirtechable(short moveID, int playerNum) {
     uintptr_t base = GetEFZBase();
     if (!base) return false;
@@ -102,16 +93,14 @@ bool IsPlayerAirtechable(short moveID, int playerNum) {
                             (moveID == FIRE_STATE || moveID == ELECTRIC_STATE) ||
                             (moveID == AIR_GUARD_ID);
     
-    // Log untech value for debugging
-    if (airtechableMoveID && detailedLogging.load()) {
-        LogOut("[AUTO-AIRTECH] P" + std::to_string(playerNum) + 
-               " MoveID: " + std::to_string(moveID) + 
-               ", Untech: " + std::to_string(untechValue), true);
-    }
-    
     // Untech value == 0 means player can tech
     // AND moveID should be in an airtechable state
     return airtechableMoveID && (untechValue == 0);
+}
+
+// Check if player is in airtech animation
+bool IsAirtechAnimation(short moveID) {
+    return moveID == FORWARD_AIRTECH || moveID == BACKWARD_AIRTECH;
 }
 
 void MonitorAutoAirtech(short moveID1, short moveID2) {
@@ -124,12 +113,34 @@ void MonitorAutoAirtech(short moveID1, short moveID2) {
     static int p2DelayCounter = 0;
     static int debugCounter = 0;
 
+    // Track if player is in airtech animation
+    bool p1CurrentlyAirteching = IsAirtechAnimation(moveID1);
+    bool p2CurrentlyAirteching = IsAirtechAnimation(moveID2);
+    
+    // Detect transitions into airtech animation
+    if (p1CurrentlyAirteching && !p1IsAirteching) {
+        LogOut("[AUTO-AIRTECH] P1 entered airtech animation, removing patches", true);
+        if (patchesApplied) RemoveAirtechPatches();
+    }
+    
+    if (p2CurrentlyAirteching && !p2IsAirteching) {
+        LogOut("[AUTO-AIRTECH] P2 entered airtech animation, removing patches", true);
+        if (patchesApplied) RemoveAirtechPatches();
+    }
+    
+    // Update tracking variables
+    p1IsAirteching = p1CurrentlyAirteching;
+    p2IsAirteching = p2CurrentlyAirteching;
+
     // Periodic status logging
     if (++debugCounter % 120 == 0) {
         LogOut("[AUTO-AIRTECH] Status: Enabled=" + std::to_string(autoAirtechEnabled.load()) +
                ", Direction=" + std::to_string(autoAirtechDirection.load()) +
                ", Delay=" + std::to_string(autoAirtechDelay.load()) +
-               ", Patches=" + (patchesApplied ? "YES" : "NO"), true);
+               ", Patches=" + (patchesApplied ? "YES" : "NO") +
+               ", P1Airteching=" + (p1IsAirteching ? "YES" : "NO") +
+               ", P2Airteching=" + (p2IsAirteching ? "YES" : "NO"), 
+               detailedLogging.load());
     }
 
     // Settings changed
@@ -146,7 +157,8 @@ void MonitorAutoAirtech(short moveID1, short moveID2) {
         }
         // Handle instant airtech (delay = 0)
         else if (autoAirtechEnabled.load() && autoAirtechDelay.load() == 0) {
-            if (!patchesApplied) {
+            // Only apply patches if nobody is currently airteching
+            if (!patchesApplied && !p1IsAirteching && !p2IsAirteching) {
                 ApplyAirtechPatches();
             }
             p1DelayCounter = 0;
@@ -166,16 +178,17 @@ void MonitorAutoAirtech(short moveID1, short moveID2) {
         prevDelay = autoAirtechDelay.load();
     }
 
-    // Only process delay logic if enabled with delay > 0
-    if (autoAirtechEnabled.load() && autoAirtechDelay.load() > 0) {
+    // Only process delayed airtech logic if:
+    // 1. Feature is enabled
+    // 2. Delay > 0
+    // 3. NO player is currently in airtech animation
+    if (autoAirtechEnabled.load() && autoAirtechDelay.load() > 0 && !p1IsAirteching && !p2IsAirteching) {
         // Check P1 airtechable state
         bool p1Airtechable = IsPlayerAirtechable(moveID1, 1);
         
         // Detect when P1 BECOMES airtechable (start counting)
         if (p1Airtechable && !p1WasAirtechable) {
-            // Convert visual frames to internal frames
             p1DelayCounter = autoAirtechDelay.load();
-
             LogOut("[AUTO-AIRTECH] P1 became airtechable, starting delay: " + 
                    std::to_string(autoAirtechDelay.load()) + " visual frames", true);
         }
@@ -186,8 +199,6 @@ void MonitorAutoAirtech(short moveID1, short moveID2) {
             if (p1DelayCounter == 0 && p1Airtechable) {
                 LogOut("[AUTO-AIRTECH] P1 delay expired, applying patches", true);
                 ApplyAirtechPatches();
-                
-                // Set a timer to remove patches (about 10 internal frames)
                 patchDelayCountdown = 10;
             }
         }
@@ -208,8 +219,6 @@ void MonitorAutoAirtech(short moveID1, short moveID2) {
             if (p2DelayCounter == 0 && p2Airtechable) {
                 LogOut("[AUTO-AIRTECH] P2 delay expired, applying patches", true);
                 ApplyAirtechPatches();
-                
-                // Set a timer to remove patches (about 10 internal frames)
                 patchDelayCountdown = 10;
             }
         }
@@ -225,6 +234,19 @@ void MonitorAutoAirtech(short moveID1, short moveID2) {
                 RemoveAirtechPatches();
                 LogOut("[AUTO-AIRTECH] Temporary patches removed", detailedLogging.load());
             }
+        }
+    } 
+    // Instant-mode logic (delay = 0)
+    else if (autoAirtechEnabled.load() && autoAirtechDelay.load() == 0) {
+        // In instant mode, we still need to disable patches during airtech animation
+        if ((p1IsAirteching || p2IsAirteching) && patchesApplied) {
+            RemoveAirtechPatches();
+            LogOut("[AUTO-AIRTECH] Removed patches during airtech (instant mode)", detailedLogging.load());
+        }
+        // And re-apply them when both players are no longer airteching
+        else if (!p1IsAirteching && !p2IsAirteching && !patchesApplied) {
+            ApplyAirtechPatches();
+            LogOut("[AUTO-AIRTECH] Re-applied patches after airtech (instant mode)", detailedLogging.load());
         }
     }
 }
