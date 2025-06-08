@@ -4,6 +4,8 @@
 #include "../include/memory.h"
 #include "../include/input_handler.h"
 #include "../include/di_keycodes.h"
+#include "../include/frame_analysis.h"    // ADD THIS - for IsBlockstunState
+#include "../include/frame_advantage.h"   // ADD THIS - for IsAttackMove
 #include <sstream>
 #include <iomanip>
 #include <iostream>  // Add this include for std::cout and std::cerr
@@ -150,25 +152,31 @@ uintptr_t GetEFZBase() {
 
 // Add these helper functions to better detect state changes
 bool IsActionable(short moveID) {
-    // Only ground idle/walk/crouch/landing/crouch-to-stand are actionable
-    bool actionable = moveID == IDLE_MOVE_ID ||
-        moveID == WALK_FWD_ID ||
-        moveID == WALK_BACK_ID ||
+    // Character is actionable in these neutral states
+    if (moveID == IDLE_MOVE_ID || 
+        moveID == WALK_FWD_ID || 
+        moveID == WALK_BACK_ID || 
         moveID == CROUCH_ID ||
-        moveID == LANDING_ID ||
-        moveID == CROUCH_TO_STAND_ID;
-
-    // CRITICAL FIX: Explicitly exclude jumping/falling states
-    bool isJumping = moveID == STRAIGHT_JUMP_ID || 
-                    moveID == FORWARD_JUMP_ID || 
-                    moveID == BACKWARD_JUMP_ID || 
-                    moveID == FALLING_ID;
-
-    if (isJumping) {
-        return false;  // Never consider jumping states as actionable for auto-jump
+        moveID == CROUCH_TO_STAND_ID ||
+        moveID == LANDING_ID) {
+        return true;
     }
     
-    return actionable;
+    // NOT actionable during these states
+    if (IsAttackMove(moveID) || 
+        IsBlockstunState(moveID) || 
+        IsHitstun(moveID) || 
+        IsLaunched(moveID) ||
+        IsAirtech(moveID) || 
+        IsGroundtech(moveID) ||
+        IsFrozen(moveID) ||
+        moveID == STAND_GUARD_ID || 
+        moveID == CROUCH_GUARD_ID || 
+        moveID == AIR_GUARD_ID) {
+        return false;
+    }
+    
+    return true; // Default to actionable for unknown states
 }
 
 bool IsBlockstun(short moveID) {

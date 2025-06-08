@@ -1,7 +1,8 @@
 #pragma once
 #include <windows.h>
+#include <string>
 
-// Structure to track frame advantage state
+// Structure to track frame advantage state with subframe precision
 struct FrameAdvantageState {
     // Blockstun/Hitstun tracking
     bool p1InBlockstun;
@@ -9,29 +10,29 @@ struct FrameAdvantageState {
     bool p1InHitstun;
     bool p2InHitstun;
     
-    // Attack tracking - NEW: Track who attacked whom
+    // Attack tracking
     bool p1Attacking;
     bool p2Attacking;
-    int p1AttackStartVisualFrame;
-    int p2AttackStartVisualFrame;
+    int p1AttackStartInternalFrame;     // Changed to internal frames for precision
+    int p2AttackStartInternalFrame;
     short p1AttackMoveID;
     short p2AttackMoveID;
     
-    // Frame tracking (in visual frames at 64 FPS)
-    int p1BlockstunStartVisualFrame;
-    int p2BlockstunStartVisualFrame;
-    int p1HitstunStartVisualFrame;
-    int p2HitstunStartVisualFrame;
+    // Frame tracking (in internal frames at 192 FPS for precision)
+    int p1BlockstunStartInternalFrame;
+    int p2BlockstunStartInternalFrame;
+    int p1HitstunStartInternalFrame;
+    int p2HitstunStartInternalFrame;
     
-    // Recovery tracking - NEW: Track when attacker becomes actionable
-    int p1ActionableVisualFrame;
-    int p2ActionableVisualFrame;
-    int p1DefenderFreeVisualFrame;  // When P1 exits blockstun/hitstun
-    int p2DefenderFreeVisualFrame;  // When P2 exits blockstun/hitstun
+    // Recovery tracking (in internal frames)
+    int p1ActionableInternalFrame;
+    int p2ActionableInternalFrame;
+    int p1DefenderFreeInternalFrame;    // When P1 exits blockstun/hitstun
+    int p2DefenderFreeInternalFrame;    // When P2 exits blockstun/hitstun
     
-    // Frame advantage results
-    int p1FrameAdvantage;  // Positive = advantage, negative = disadvantage
-    int p2FrameAdvantage;
+    // Frame advantage results (stored as subframes for precision)
+    double p1FrameAdvantage;            // Changed to double for subframe precision
+    double p2FrameAdvantage;
     bool p1AdvantageCalculated;
     bool p2AdvantageCalculated;
     
@@ -49,7 +50,9 @@ void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, shor
 bool IsFrameAdvantageActive();
 FrameAdvantageState GetFrameAdvantageState();
 
-// Helper functions
-int GetCurrentVisualFrame();
+// Helper functions with subframe precision
+int GetCurrentInternalFrame();
+double GetCurrentVisualFrame();      // Returns frame with .33/.66 subframes
+std::string FormatFrameAdvantage(double advantage);  // Format with subframes
 bool IsAttackMove(short moveID);
 bool IsRecoveryFromAttack(short currentMoveID, short prevMoveID);

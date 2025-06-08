@@ -52,6 +52,11 @@ bool IsAirtech(short moveID);
 bool IsGroundtech(short moveID);
 bool IsFrozen(short moveID);
 bool IsSpecialStun(short moveID);
+
+// ADD THESE MISSING FUNCTION DECLARATIONS
+bool IsAttackMove(short moveID);      // From frame_advantage.cpp
+bool IsBlockstunState(short moveID);  // From frame_analysis.cpp
+
 short GetUntechValue(uintptr_t base, int player);
 void WriteStartupLog(const std::string& message); // Logs messages during the startup phase
 std::string GetKeyName(int virtualKey);
@@ -146,3 +151,6 @@ extern std::atomic<int> triggerAfterBlockCustomID;
 extern std::atomic<int> triggerOnWakeupCustomID;
 extern std::atomic<int> triggerAfterHitstunCustomID;
 extern std::atomic<int> triggerAfterAirtechCustomID;
+
+// Add a missing constant that utilities.cpp needs
+#define DEFAULT_TRIGGER_DELAY 0
