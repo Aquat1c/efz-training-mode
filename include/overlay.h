@@ -7,6 +7,7 @@
 #include <chrono>
 #include <mutex>
 
+
 // Function pointer types for DirectDraw
 typedef HRESULT(WINAPI* DirectDrawCreateFunc)(GUID*, LPVOID*, IUnknown*);
 typedef HRESULT(WINAPI* DirectDrawEnumerateFunc)(LPDDENUMCALLBACKA, LPVOID);
@@ -94,6 +95,14 @@ public:
 
     // Add this brute-force overlay method
     static bool InitializeBruteForceOverlay();
+
+    // Set up window procedure hooks for ImGui input handling
+    static void SetupWindowProcedures();
+    
+    // Add after the existing public methods
+    static bool InitializeD3D9();
+    static void RenderImGui();
+    static void TestImGuiRendering();
 };
 
 // Global status message IDs

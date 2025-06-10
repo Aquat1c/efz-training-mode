@@ -12,6 +12,8 @@
 #include "../include/di_keycodes.h"
 #include "../include/input_handler.h"
 #include "../include/overlay.h"
+#include "../include/imgui_impl.h"
+#include "../include/imgui_gui.h"
 
 // Forward declarations for functions in other files
 void MonitorKeys();
@@ -124,8 +126,27 @@ void DelayedInitialization(HMODULE hModule) {
 
     // Initialize RF freeze thread
     InitRFFreezeThread();
+    
+    // Add ImGui monitoring thread
+    std::thread([]{
+        // Wait a bit for everything to initialize
+        Sleep(5000);
+        
+        // Log ImGui rendering status every few seconds
+        while (true) {
+            if (ImGuiImpl::IsInitialized()) {
+                LogOut("[IMGUI_MONITOR] Status: Initialized=" + 
+                      std::to_string(ImGuiImpl::IsInitialized()) + 
+                      ", Visible=" + std::to_string(ImGuiImpl::IsVisible()), true);
+            }
+            
+            // Check every 5 seconds
+            Sleep(5000);
+        }
+    }).detach();
 }
 
+// In the DllMain function, keep the existing code as is
 BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserved) {
     if (ul_reason_for_call == DLL_PROCESS_ATTACH) {
         // Begin minimal startup logging

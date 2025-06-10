@@ -16,6 +16,8 @@
 #include <sstream>
 #include <string>
 #include <commctrl.h> // Add this include for Common Controls
+#include "../include/imgui_impl.h"
+#include "../include/overlay.h"  // Add this include for DirectDrawHook class
 
 #pragma comment(lib, "dinput8.lib")
 #pragma comment(lib, "dxguid.lib")
@@ -186,6 +188,8 @@ void MonitorKeys() {
     
     // Add this near the beginning of MonitorKeys function
     bool enableDebugLogging = false;  // Set to true when needed for deeper investigation
+    
+    static bool wasKey7Pressed = false;
     
     while (keyMonitorRunning) {
         // Check for online mode
@@ -419,6 +423,22 @@ void MonitorKeys() {
                 // Sleep to prevent multiple help displays
                 Sleep(200);
             }
+
+                if ((GetAsyncKeyState('7') & 0x8000) && !wasKey7Pressed) {
+        LogOut("[INPUT] Key 7 pressed - toggling ImGui interface", true);
+        wasKey7Pressed = true;  // Set flag to prevent multiple activations
+        
+        // Initialize D3D9 and toggle visibility in one go
+        if (!DirectDrawHook::InitializeD3D9()) {
+            LogOut("[INPUT] Failed to initialize D3D9 for ImGui", true);
+        }
+        
+        // Make sure to render at least one frame immediately
+        DirectDrawHook::RenderImGui();
+    }
+    else if (!(GetAsyncKeyState('7') & 0x8000) && wasKey7Pressed) {
+        wasKey7Pressed = false;  // Reset flag when key is released
+    }
             
             // Debug toggle (Ctrl+D)
             if ((GetAsyncKeyState(VK_CONTROL) & 0x8000) && (GetAsyncKeyState('D') & 0x8000)) {
