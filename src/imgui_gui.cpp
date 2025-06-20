@@ -76,7 +76,8 @@ namespace ImGuiGui {
         ImGui::Columns(2, "playerColumns", false);
 
         // P1 Column
-        ImGui::Text("Player 1");
+        ImGui::TextColored(ImVec4(0.5f, 0.8f, 1.0f, 1.0f), "Player 1 (%s)", 
+            guiState.localData.p1CharName[0] ? guiState.localData.p1CharName : "Unknown");
         ImGui::Separator();
 
         // P1 HP
@@ -109,7 +110,8 @@ namespace ImGuiGui {
 
         // Next column (P2)
         ImGui::NextColumn();
-        ImGui::Text("Player 2");
+        ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.5f, 1.0f), "Player 2 (%s)", 
+            guiState.localData.p2CharName[0] ? guiState.localData.p2CharName : "Unknown");
         ImGui::Separator();
 
         // P2 HP

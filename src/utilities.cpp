@@ -74,7 +74,42 @@ std::atomic<int> jumpDirection(0);            // 0=straight, 1=forward, 2=backwa
 std::atomic<bool> p1Jumping(false);
 std::atomic<bool> p2Jumping(false);
 std::atomic<int> jumpTarget(3);               // Default to both players
-DisplayData displayData;
+DisplayData displayData = {
+    // Initialize DisplayData with all fields in the correct order
+    9999, 9999,             // hp1, hp2
+    3000, 3000,             // meter1, meter2
+    1000.0, 1000.0,         // rf1, rf2
+    240.0, 0.0,             // x1, y1
+    400.0, 0.0,             // x2, y2
+    false,                  // autoAirtech
+    0,                      // airtechDirection
+    0,                      // airtechDelay
+    false,                  // autoJump
+    0,                      // jumpDirection
+    3,                      // jumpTarget
+    "",                     // p1CharName (empty string)
+    "",                     // p2CharName (empty string)
+    false,                  // autoAction
+    ACTION_5A,              // autoActionType
+    BASE_ATTACK_5A,         // autoActionCustomID
+    2,                      // autoActionPlayer
+    false,                  // triggerAfterBlock
+    false,                  // triggerOnWakeup
+    false,                  // triggerAfterHitstun
+    false,                  // triggerAfterAirtech
+    DEFAULT_TRIGGER_DELAY,  // delayAfterBlock
+    DEFAULT_TRIGGER_DELAY,  // delayOnWakeup
+    DEFAULT_TRIGGER_DELAY,  // delayAfterHitstun
+    DEFAULT_TRIGGER_DELAY,  // delayAfterAirtech
+    ACTION_5A,              // actionAfterBlock
+    ACTION_5A,              // actionOnWakeup
+    ACTION_5A,              // actionAfterHitstun
+    ACTION_JA,              // actionAfterAirtech
+    BASE_ATTACK_5A,         // customAfterBlock
+    BASE_ATTACK_5A,         // customOnWakeup
+    BASE_ATTACK_5A,         // customAfterHitstun
+    BASE_ATTACK_JA          // customAfterAirtech
+};
 
 // Initialize key bindings with default values
 KeyBindings detectedBindings = {

@@ -81,10 +81,14 @@ struct DisplayData {
     int jumpDirection;
     int jumpTarget;
     
+    // Add character name fields
+    char p1CharName[16];  // Character name with buffer for null termination
+    char p2CharName[16];  // Character name 
+    
     // Keep these for backward compatibility
     bool autoAction;
-    int autoActionType;        // ADD THIS BACK
-    int autoActionCustomID;    // ADD THIS BACK
+    int autoActionType;
+    int autoActionCustomID;
     int autoActionPlayer;
     
     // Individual trigger settings

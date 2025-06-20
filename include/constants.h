@@ -28,6 +28,9 @@
 #define RF_OFFSET 0x118
 #define YVEL_OFFSET 0x38  // Y velocity offset from player base
 
+// Character name offset
+#define CHARACTER_NAME_OFFSET 0x94  // Character name offset from player base
+
 // Move IDs
 #define IDLE_MOVE_ID 0
 #define WALK_FWD_ID 1

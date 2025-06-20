@@ -139,7 +139,7 @@ void UpdateConsoleTitle() {
         // Keep the fast update rate as requested - every 250ms
         if (base != 0) {
             // Cache memory addresses to avoid repeated ResolvePointer calls
-            static uintptr_t cachedAddresses[10] = {0};
+            static uintptr_t cachedAddresses[12] = {0};
             static int titleCacheCounter = 0;
             
             // Refresh cached addresses every 20 iterations (5 seconds)
@@ -154,6 +154,9 @@ void UpdateConsoleTitle() {
                 cachedAddresses[7] = ResolvePointer(base, EFZ_BASE_OFFSET_P2, RF_OFFSET);
                 cachedAddresses[8] = ResolvePointer(base, EFZ_BASE_OFFSET_P2, XPOS_OFFSET);
                 cachedAddresses[9] = ResolvePointer(base, EFZ_BASE_OFFSET_P2, YPOS_OFFSET);
+                // Add character name addresses to cached addresses
+                cachedAddresses[10] = ResolvePointer(base, EFZ_BASE_OFFSET_P1, CHARACTER_NAME_OFFSET);
+                cachedAddresses[11] = ResolvePointer(base, EFZ_BASE_OFFSET_P2, CHARACTER_NAME_OFFSET);
                 titleCacheCounter = 0;
             }
             
@@ -181,6 +184,14 @@ void UpdateConsoleTitle() {
             }
             if (cachedAddresses[8]) memcpy(&displayData.x2, (void*)cachedAddresses[8], sizeof(double));
             if (cachedAddresses[9]) memcpy(&displayData.y2, (void*)cachedAddresses[9], sizeof(double));
+            if (cachedAddresses[10]) {
+                SafeReadMemory(cachedAddresses[10], displayData.p1CharName, sizeof(displayData.p1CharName) - 1);
+                displayData.p1CharName[sizeof(displayData.p1CharName) - 1] = '\0'; // Ensure null termination
+            }
+            if (cachedAddresses[11]) {
+                SafeReadMemory(cachedAddresses[11], displayData.p2CharName, sizeof(displayData.p2CharName) - 1);
+                displayData.p2CharName[sizeof(displayData.p2CharName) - 1] = '\0'; // Ensure null termination
+            }
         }
         
         // Check if we can access game data or if all values are default/zero
@@ -248,9 +259,11 @@ void UpdateConsoleTitle() {
         else {
             // Normal mode - show player stats
             sprintf_s(title,
-                "EFZ DLL | P1 HP:%d Meter:%d RF:%.1f X:%.1f Y:%.1f | P2 HP:%d Meter:%d RF:%.1f X:%.1f Y:%.1f",
-                displayData.hp1, displayData.meter1, displayData.rf1, displayData.x1, displayData.y1,
-                displayData.hp2, displayData.meter2, displayData.rf2, displayData.x2, displayData.y2);
+                "EFZ Training Mode | P1: %s (HP:%d) vs P2: %s (HP:%d) | Press 3 to open menu",
+                displayData.p1CharName[0] ? displayData.p1CharName : "Unknown",
+                displayData.hp1,
+                displayData.p2CharName[0] ? displayData.p2CharName : "Unknown", 
+                displayData.hp2);
         }
         
         SetConsoleTitleA(title);
