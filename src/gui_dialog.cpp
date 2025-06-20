@@ -10,6 +10,9 @@
 #include <windowsx.h>
 #include <sstream>
 
+// Add near the top of the file, after includes but before the dialog proc
+extern "C" const int ComboIndexToActionType[];  // Import the array from gui_auto_action.cpp
+
 // Forward declaration of the PageSubclassProc function
 LRESULT CALLBACK PageSubclassProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam, UINT_PTR uIdSubclass, DWORD_PTR dwRefData);
 
@@ -311,73 +314,23 @@ void ProcessFormData(HWND hDlg, HWND hPage1, HWND hPage2, HWND hPage3, DisplayDa
     // After Block trigger
     pData->triggerAfterBlock = (SendDlgItemMessage(hPage3, IDC_TRIGGER_AFTER_BLOCK_CHECK, BM_GETCHECK, 0, 0) == BST_CHECKED);
     int afterBlockActionIndex = SendDlgItemMessage(hPage3, IDC_TRIGGER_AFTER_BLOCK_ACTION, CB_GETCURSEL, 0, 0);
-    
-    // FIXED: Map combo box index to action type
-    if (afterBlockActionIndex == 12) { // "Custom" is at index 12
-        pData->actionAfterBlock = ACTION_CUSTOM;
-    } else {
-        pData->actionAfterBlock = afterBlockActionIndex + 1;
-    }
-    
-    char customText[8];
-    GetDlgItemTextA(hPage3, IDC_TRIGGER_AFTER_BLOCK_CUSTOM, customText, sizeof(customText));
-    pData->customAfterBlock = atoi(customText);
-    
-    // Get delay
-    char delayText[8];
-    GetDlgItemTextA(hPage3, IDC_TRIGGER_AFTER_BLOCK_DELAY, delayText, sizeof(delayText));
-    pData->delayAfterBlock = atoi(delayText);
-    
-    // After Hitstun trigger
-    pData->triggerAfterHitstun = (SendDlgItemMessage(hPage3, IDC_TRIGGER_AFTER_HITSTUN_CHECK, BM_GETCHECK, 0, 0) == BST_CHECKED);
-    int afterHitstunActionIndex = SendDlgItemMessage(hPage3, IDC_TRIGGER_AFTER_HITSTUN_ACTION, CB_GETCURSEL, 0, 0);
-    
-    // FIXED: Map combo box index to action type for After Hitstun
-    if (afterHitstunActionIndex == 12) {
-        pData->actionAfterHitstun = ACTION_CUSTOM;
-    } else {
-        pData->actionAfterHitstun = afterHitstunActionIndex + 1;
-    }
-    
-    GetDlgItemTextA(hPage3, IDC_TRIGGER_AFTER_HITSTUN_CUSTOM, customText, sizeof(customText));
-    pData->customAfterHitstun = atoi(customText);
-    
-    GetDlgItemTextA(hPage3, IDC_TRIGGER_AFTER_HITSTUN_DELAY, delayText, sizeof(delayText));
-    pData->delayAfterHitstun = atoi(delayText);
+    // Convert to action type using the mapping array
+    pData->actionAfterBlock = ComboIndexToActionType[afterBlockActionIndex];
     
     // On Wakeup trigger
     pData->triggerOnWakeup = (SendDlgItemMessage(hPage3, IDC_TRIGGER_ON_WAKEUP_CHECK, BM_GETCHECK, 0, 0) == BST_CHECKED);
     int onWakeupActionIndex = SendDlgItemMessage(hPage3, IDC_TRIGGER_ON_WAKEUP_ACTION, CB_GETCURSEL, 0, 0);
+    pData->actionOnWakeup = ComboIndexToActionType[onWakeupActionIndex];
     
-    // FIXED: Map combo box index to action type for On Wakeup
-    if (onWakeupActionIndex == 12) {
-        pData->actionOnWakeup = ACTION_CUSTOM;
-    } else {
-        pData->actionOnWakeup = onWakeupActionIndex + 1;
-    }
-    
-    GetDlgItemTextA(hPage3, IDC_TRIGGER_ON_WAKEUP_CUSTOM, customText, sizeof(customText));
-    pData->customOnWakeup = atoi(customText);
-    
-    GetDlgItemTextA(hPage3, IDC_TRIGGER_ON_WAKEUP_DELAY, delayText, sizeof(delayText));
-    pData->delayOnWakeup = atoi(delayText);
+    // After Hitstun trigger
+    pData->triggerAfterHitstun = (SendDlgItemMessage(hPage3, IDC_TRIGGER_AFTER_HITSTUN_CHECK, BM_GETCHECK, 0, 0) == BST_CHECKED);
+    int afterHitstunActionIndex = SendDlgItemMessage(hPage3, IDC_TRIGGER_AFTER_HITSTUN_ACTION, CB_GETCURSEL, 0, 0);
+    pData->actionAfterHitstun = ComboIndexToActionType[afterHitstunActionIndex];
     
     // After Airtech trigger
     pData->triggerAfterAirtech = (SendDlgItemMessage(hPage3, IDC_TRIGGER_AFTER_AIRTECH_CHECK, BM_GETCHECK, 0, 0) == BST_CHECKED);
     int afterAirtechActionIndex = SendDlgItemMessage(hPage3, IDC_TRIGGER_AFTER_AIRTECH_ACTION, CB_GETCURSEL, 0, 0);
-    
-    // FIXED: Map combo box index to action type for After Airtech
-    if (afterAirtechActionIndex == 12) {
-        pData->actionAfterAirtech = ACTION_CUSTOM;
-    } else {
-        pData->actionAfterAirtech = afterAirtechActionIndex + 1;
-    }
-    
-    GetDlgItemTextA(hPage3, IDC_TRIGGER_AFTER_AIRTECH_CUSTOM, customText, sizeof(customText));
-    pData->customAfterAirtech = atoi(customText);
-    
-    GetDlgItemTextA(hPage3, IDC_TRIGGER_AFTER_AIRTECH_DELAY, delayText, sizeof(delayText));
-    pData->delayAfterAirtech = atoi(delayText);
+    pData->actionAfterAirtech = ComboIndexToActionType[afterAirtechActionIndex];
 }
 
 // Page subclass procedure

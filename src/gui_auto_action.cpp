@@ -6,6 +6,34 @@
 #include <windows.h>
 #include <commctrl.h>
 
+// Maps combobox indices to action type constants 
+extern "C" const int ComboIndexToActionType[] = {
+    ACTION_5A,          // 0 = 5A
+    ACTION_5B,          // 1 = 5B
+    ACTION_5C,          // 2 = 5C
+    ACTION_2A,          // 3 = 2A
+    ACTION_2B,          // 4 = 2B
+    ACTION_2C,          // 5 = 2C
+    ACTION_JA,          // 6 = j.A (value 11)
+    ACTION_JB,          // 7 = j.B (value 12)
+    ACTION_JC,          // 8 = j.C (value 13)
+    ACTION_JUMP,        // 9 = Jump (value 7)
+    ACTION_BACKDASH,    // 10 = Backdash (value 8)
+    ACTION_BLOCK,       // 11 = Block (value 9)
+    ACTION_CUSTOM       // 12 = Custom (value 10)
+};
+
+// Helper function to convert action type to combobox index
+int ActionTypeToComboIndex(int actionType) {
+    // Loop through the mapping array to find the matching index
+    for (int i = 0; i < sizeof(ComboIndexToActionType)/sizeof(int); i++) {
+        if (ComboIndexToActionType[i] == actionType) {
+            return i;
+        }
+    }
+    return 0; // Default to first item (5A) if not found
+}
+
 void AutoActionPage_CreateContent(HWND hParent, DisplayData* pData) {
     // Master enable checkbox
     HWND hAutoActionCheck = CreateWindowEx(0, "BUTTON", "Enable Auto Action System", 
@@ -54,7 +82,8 @@ void AutoActionPage_CreateContent(HWND hParent, DisplayData* pData) {
     SendMessage(hAfterBlockAction, CB_ADDSTRING, 0, (LPARAM)"Backdash");
     SendMessage(hAfterBlockAction, CB_ADDSTRING, 0, (LPARAM)"Block");
     SendMessage(hAfterBlockAction, CB_ADDSTRING, 0, (LPARAM)"Custom");
-    SendMessage(hAfterBlockAction, CB_SETCURSEL, triggerAfterBlockAction.load() - 1, 0);
+    SendMessage(hAfterBlockAction, CB_SETCURSEL, 
+        ActionTypeToComboIndex(triggerAfterBlockAction.load()), 0);
 
     CreateWindowEx(0, "STATIC", "Delay:", WS_CHILD | WS_VISIBLE | SS_LEFT,
         310, yPos, 40, 25, hParent, NULL, GetModuleHandle(NULL), NULL);
@@ -95,7 +124,8 @@ void AutoActionPage_CreateContent(HWND hParent, DisplayData* pData) {
     SendMessage(hAfterHitstunAction, CB_ADDSTRING, 0, (LPARAM)"Backdash");
     SendMessage(hAfterHitstunAction, CB_ADDSTRING, 0, (LPARAM)"Block");
     SendMessage(hAfterHitstunAction, CB_ADDSTRING, 0, (LPARAM)"Custom");
-    SendMessage(hAfterHitstunAction, CB_SETCURSEL, triggerAfterHitstunAction.load() - 1, 0);
+    SendMessage(hAfterHitstunAction, CB_SETCURSEL, 
+        ActionTypeToComboIndex(triggerAfterHitstunAction.load()), 0);
 
     CreateWindowEx(0, "STATIC", "Delay:", WS_CHILD | WS_VISIBLE | SS_LEFT,
         310, yPos, 40, 25, hParent, NULL, GetModuleHandle(NULL), NULL);
@@ -135,7 +165,8 @@ void AutoActionPage_CreateContent(HWND hParent, DisplayData* pData) {
     SendMessage(hOnWakeupAction, CB_ADDSTRING, 0, (LPARAM)"Backdash");
     SendMessage(hOnWakeupAction, CB_ADDSTRING, 0, (LPARAM)"Block");
     SendMessage(hOnWakeupAction, CB_ADDSTRING, 0, (LPARAM)"Custom");
-    SendMessage(hOnWakeupAction, CB_SETCURSEL, triggerOnWakeupAction.load() - 1, 0);
+    SendMessage(hOnWakeupAction, CB_SETCURSEL, 
+        ActionTypeToComboIndex(triggerOnWakeupAction.load()), 0);
 
     CreateWindowEx(0, "STATIC", "Delay:", WS_CHILD | WS_VISIBLE | SS_LEFT,
         310, yPos, 40, 25, hParent, NULL, GetModuleHandle(NULL), NULL);
@@ -177,18 +208,8 @@ void AutoActionPage_CreateContent(HWND hParent, DisplayData* pData) {
     SendMessage(hAfterAirtechAction, CB_ADDSTRING, 0, (LPARAM)"Backdash");
     SendMessage(hAfterAirtechAction, CB_ADDSTRING, 0, (LPARAM)"Block");
     SendMessage(hAfterAirtechAction, CB_ADDSTRING, 0, (LPARAM)"Custom");
-
-    // FIXED: Properly map action type to combo box index
-    int afterAirtechActionType = triggerAfterAirtechAction.load();
-    int afterAirtechComboIndex = 0;
-    
-    if (afterAirtechActionType == ACTION_CUSTOM) {
-        afterAirtechComboIndex = 12; // "Custom" is at index 12
-    } else {
-        afterAirtechComboIndex = afterAirtechActionType - 1; // Regular actions map directly (minus 1)
-    }
-    
-    SendMessage(hAfterAirtechAction, CB_SETCURSEL, afterAirtechComboIndex, 0);
+    SendMessage(hAfterAirtechAction, CB_SETCURSEL, 
+        ActionTypeToComboIndex(triggerAfterAirtechAction.load()), 0);
 
     // Add delay field
     CreateWindowEx(0, "STATIC", "Delay:", WS_CHILD | WS_VISIBLE | SS_LEFT,
@@ -206,20 +227,26 @@ void AutoActionPage_CreateContent(HWND hParent, DisplayData* pData) {
         WS_CHILD | WS_VISIBLE | WS_BORDER | ES_NUMBER,
         480, yPos, 40, 25, hParent, (HMENU)IDC_TRIGGER_AFTER_AIRTECH_CUSTOM, GetModuleHandle(NULL), NULL);
 
-    // Apply the same fix for other triggers
-    
+    // CRITICAL FIX: Use ActionTypeToComboIndex function instead of direct mapping
+    // to properly handle air moves (j.A, j.B, j.C)
+
     // For After Block
     int afterBlockActionType = triggerAfterBlockAction.load();
-    int afterBlockComboIndex = (afterBlockActionType == ACTION_CUSTOM) ? 12 : (afterBlockActionType - 1);
+    int afterBlockComboIndex = ActionTypeToComboIndex(afterBlockActionType);
     SendMessage(hAfterBlockAction, CB_SETCURSEL, afterBlockComboIndex, 0);
-    
+
     // For After Hitstun
     int afterHitstunActionType = triggerAfterHitstunAction.load();
-    int afterHitstunComboIndex = (afterHitstunActionType == ACTION_CUSTOM) ? 12 : (afterHitstunActionType - 1);
+    int afterHitstunComboIndex = ActionTypeToComboIndex(afterHitstunActionType);
     SendMessage(hAfterHitstunAction, CB_SETCURSEL, afterHitstunComboIndex, 0);
-    
+
     // For On Wakeup
     int onWakeupActionType = triggerOnWakeupAction.load();
-    int onWakeupComboIndex = (onWakeupActionType == ACTION_CUSTOM) ? 12 : (onWakeupActionType - 1);
+    int onWakeupComboIndex = ActionTypeToComboIndex(onWakeupActionType);
     SendMessage(hOnWakeupAction, CB_SETCURSEL, onWakeupComboIndex, 0);
+
+    // For After Airtech
+    int afterAirtechActionType = triggerAfterAirtechAction.load();
+    int afterAirtechComboIndex = ActionTypeToComboIndex(afterAirtechActionType);
+    SendMessage(hAfterAirtechAction, CB_SETCURSEL, afterAirtechComboIndex, 0);
 }

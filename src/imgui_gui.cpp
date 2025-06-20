@@ -7,6 +7,21 @@
 #include "../include/gui.h"
 
 namespace ImGuiGui {
+    // Action type mapping (same as in gui_auto_action.cpp)
+    static const int ComboIndexToActionType[] = {
+        ACTION_5A, ACTION_5B, ACTION_5C, ACTION_2A, ACTION_2B, ACTION_2C,
+        ACTION_JA, ACTION_JB, ACTION_JC, ACTION_JUMP, ACTION_BACKDASH,
+        ACTION_BLOCK, ACTION_CUSTOM
+    };
+
+    // Helper function to convert action type to combo index
+    static int ActionTypeToComboIndex(int actionType) {
+        for (int i = 0; i < IM_ARRAYSIZE(ComboIndexToActionType); i++) {
+            if (ComboIndexToActionType[i] == actionType) return i;
+        }
+        return 0; // Default to 5A
+    }
+
     // Initialize GUI state
     ImGuiGuiState guiState = {
         false,  // visible
@@ -243,7 +258,8 @@ namespace ImGuiGui {
             ImGui::TableHeadersRow();
 
             // Common action items
-            const char* actionItems[] = { "5A", "5B", "5C", "2A", "2B", "2C", "j.A", "j.B", "j.C", "Jump", "Backdash", "Block", "Custom" };
+            const char* actionItems[] = { "5A", "5B", "5C", "2A", "2B", "2C", 
+                                         "j.A", "j.B", "j.C", "Jump", "Backdash", "Block", "Custom" };
 
             // After Block trigger
             ImGui::TableNextRow();
@@ -254,10 +270,10 @@ namespace ImGuiGui {
             }
             
             ImGui::TableNextColumn();
-            int actionAfterBlock = guiState.localData.actionAfterBlock - 1;
+            int actionAfterBlock = ActionTypeToComboIndex(guiState.localData.actionAfterBlock);
             ImGui::PushItemWidth(-1);
             if (ImGui::Combo("##ActionAfterBlock", &actionAfterBlock, actionItems, IM_ARRAYSIZE(actionItems))) {
-                guiState.localData.actionAfterBlock = actionAfterBlock + 1;
+                guiState.localData.actionAfterBlock = ComboIndexToActionType[actionAfterBlock];
             }
             ImGui::PopItemWidth();
             
@@ -286,10 +302,10 @@ namespace ImGuiGui {
             }
             
             ImGui::TableNextColumn();
-            int actionAfterHitstun = guiState.localData.actionAfterHitstun - 1;
+            int actionAfterHitstun = ActionTypeToComboIndex(guiState.localData.actionAfterHitstun);
             ImGui::PushItemWidth(-1);
             if (ImGui::Combo("##ActionAfterHitstun", &actionAfterHitstun, actionItems, IM_ARRAYSIZE(actionItems))) {
-                guiState.localData.actionAfterHitstun = actionAfterHitstun + 1;
+                guiState.localData.actionAfterHitstun = ComboIndexToActionType[actionAfterHitstun];
             }
             ImGui::PopItemWidth();
             
@@ -318,10 +334,10 @@ namespace ImGuiGui {
             }
             
             ImGui::TableNextColumn();
-            int actionOnWakeup = guiState.localData.actionOnWakeup - 1;
+            int actionOnWakeup = ActionTypeToComboIndex(guiState.localData.actionOnWakeup);
             ImGui::PushItemWidth(-1);
             if (ImGui::Combo("##ActionOnWakeup", &actionOnWakeup, actionItems, IM_ARRAYSIZE(actionItems))) {
-                guiState.localData.actionOnWakeup = actionOnWakeup + 1;
+                guiState.localData.actionOnWakeup = ComboIndexToActionType[actionOnWakeup];
             }
             ImGui::PopItemWidth();
             
@@ -350,10 +366,10 @@ namespace ImGuiGui {
             }
             
             ImGui::TableNextColumn();
-            int actionAfterAirtech = guiState.localData.actionAfterAirtech - 1;
+            int actionAfterAirtech = ActionTypeToComboIndex(guiState.localData.actionAfterAirtech);
             ImGui::PushItemWidth(-1);
             if (ImGui::Combo("##ActionAfterAirtech", &actionAfterAirtech, actionItems, IM_ARRAYSIZE(actionItems))) {
-                guiState.localData.actionAfterAirtech = actionAfterAirtech + 1;
+                guiState.localData.actionAfterAirtech = ComboIndexToActionType[actionAfterAirtech];
             }
             ImGui::PopItemWidth();
             

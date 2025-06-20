@@ -10,7 +10,31 @@ TriggerDelayState p2DelayState = {false, 0, TRIGGER_NONE, 0};
 bool p1ActionApplied = false;
 bool p2ActionApplied = false;
 
-short GetActionMoveID(int actionType, int triggerType = TRIGGER_NONE) {
+static bool p1TriggerActive = false;
+static bool p2TriggerActive = false;
+static int p1TriggerCooldown = 0;
+static int p2TriggerCooldown = 0;
+static const int TRIGGER_COOLDOWN_FRAMES = 20; // About 1/3 second cooldown
+
+bool IsCharacterGrounded(int playerNum) {
+    uintptr_t base = GetEFZBase();
+    if (!base) return true; // Default to true if can't check
+    
+    uintptr_t playerOffset = (playerNum == 1) ? EFZ_BASE_OFFSET_P1 : EFZ_BASE_OFFSET_P2;
+    uintptr_t yAddr = ResolvePointer(base, playerOffset, YPOS_OFFSET);
+    uintptr_t yVelAddr = ResolvePointer(base, playerOffset, YVEL_OFFSET);
+    
+    if (!yAddr || !yVelAddr) return true; // Default to true if can't check
+    
+    double yPos = 0.0, yVel = 0.0;
+    SafeReadMemory(yAddr, &yPos, sizeof(double));
+    SafeReadMemory(yVelAddr, &yVel, sizeof(double));
+    
+    // Character is considered grounded when very close to y=0 and not moving vertically
+    return (yPos <= 0.1 && fabs(yVel) < 0.1);
+}
+
+short GetActionMoveID(int actionType, int triggerType, int playerNum) {
     // First check if it's a custom action
     if (actionType == ACTION_CUSTOM) {
         short customID = 0;
@@ -32,40 +56,61 @@ short GetActionMoveID(int actionType, int triggerType = TRIGGER_NONE) {
                 LogOut("[AUTO-ACTION] Using After Airtech custom moveID: " + std::to_string(customID), true);
                 return customID;
             default:
-                LogOut("[AUTO-ACTION] Warning: Custom action with unknown trigger type", true);
-                return BASE_ATTACK_5A;
+                LogOut("[AUTO-ACTION] Using default custom moveID: 200", true);
+                return 200; // Default to 5A if no trigger specified
         }
     }
     
-    // Standard action types
-    switch (actionType) {
-        case ACTION_5A:
-            return BASE_ATTACK_5A;
-        case ACTION_5B:
-            return BASE_ATTACK_5B;
-        case ACTION_5C:
-            return BASE_ATTACK_5C;
-        case ACTION_2A:
-            return BASE_ATTACK_2A;
-        case ACTION_2B:
-            return BASE_ATTACK_2B;
-        case ACTION_2C:
-            return BASE_ATTACK_2C;
-        case ACTION_JUMP:
-            return STRAIGHT_JUMP_ID;
-        case ACTION_BACKDASH:
-            return BACKWARD_DASH_START_ID;
-        case ACTION_BLOCK:
-            return STAND_GUARD_ID;
-        // NEW: Add air attack options
-        case ACTION_JA:
-            return BASE_ATTACK_JA;
-        case ACTION_JB:
-            return BASE_ATTACK_JB;
-        case ACTION_JC:
-            return BASE_ATTACK_JC;
-        default:
-            return BASE_ATTACK_5A;
+    // Check character ground/air state for context-specific moves
+    bool isGrounded = IsCharacterGrounded(playerNum);
+    LogOut("[AUTO-ACTION] Player " + std::to_string(playerNum) + 
+           " ground state: " + (isGrounded ? "grounded" : "airborne") + 
+           ", action type: " + std::to_string(actionType), true);
+    
+    // Air-specific moves - only process these if character is in the air
+    if (!isGrounded) {
+        switch (actionType) {
+            case ACTION_JA:
+                return BASE_ATTACK_JA;  // Air A
+            case ACTION_JB:
+                return BASE_ATTACK_JB;  // Air B
+            case ACTION_JC:
+                return BASE_ATTACK_JC;  // Air C
+            default:
+                // If in air and trying to do a ground move, use a safe fallback
+                return STRAIGHT_JUMP_ID;
+        }
+    }
+    else { // Character is on the ground
+        // Air move attempted on ground - check if it's a jump-related action
+        if (actionType == ACTION_JA || actionType == ACTION_JB || actionType == ACTION_JC) {
+            LogOut("[AUTO-ACTION] Cannot perform air move on ground, using JUMP instead", true);
+            return STRAIGHT_JUMP_ID; // If air move selected on ground, do a jump instead
+        }
+        
+        // Ground moves - only available when grounded
+        switch (actionType) {
+            case ACTION_5A:
+                return BASE_ATTACK_5A;  // 200
+            case ACTION_5B:
+                return BASE_ATTACK_5B;  // 201
+            case ACTION_5C:
+                return BASE_ATTACK_5C;  // 203
+            case ACTION_2A:
+                return BASE_ATTACK_2A;  // 204
+            case ACTION_2B:
+                return BASE_ATTACK_2B;  // 205
+            case ACTION_2C:
+                return BASE_ATTACK_2C;  // 206
+            case ACTION_JUMP:
+                return STRAIGHT_JUMP_ID; // 4
+            case ACTION_BACKDASH:
+                return BACKWARD_DASH_START_ID; // 165
+            case ACTION_BLOCK:
+                return STAND_GUARD_ID; // 151
+            default:
+                return BASE_ATTACK_5A; // Default to 5A for unknown actions
+        }
     }
 }
 
@@ -245,87 +290,63 @@ void ProcessTriggerDelays() {
 }
 
 void StartTriggerDelay(int playerNum, int triggerType, short moveID, int delayFrames) {
+    // Check if the player is already in a trigger cooldown period
+    if (playerNum == 1 && p1TriggerActive) {
+        LogOut("[AUTO-ACTION] P1 trigger already active, skipping", detailedLogging.load());
+        return;
+    }
+    if (playerNum == 2 && p2TriggerActive) {
+        LogOut("[AUTO-ACTION] P2 trigger already active, skipping", detailedLogging.load());
+        return;
+    }
+
     LogOut("[AUTO-ACTION] StartTriggerDelay called: Player=" + std::to_string(playerNum) + 
            ", delay=" + std::to_string(delayFrames) + ", moveID=" + std::to_string(moveID), true);
+    
+    // Set cooldown to prevent rapid re-triggering
+    if (playerNum == 1) {
+        p1TriggerActive = true;
+        p1TriggerCooldown = TRIGGER_COOLDOWN_FRAMES;
+    } else {
+        p2TriggerActive = true;
+        p2TriggerCooldown = TRIGGER_COOLDOWN_FRAMES;
+    }
     
     // CRITICAL FIX: If delay is 0, apply immediately
     if (delayFrames == 0) {
         uintptr_t base = GetEFZBase();
-        if (!base) {
-            LogOut("[AUTO-ACTION] Failed to get base address", true);
-            return;
-        }
+        if (!base) return;
         
-        // Determine whether we need to preserve air state
-        bool isAirTechTrigger = (triggerType == TRIGGER_AFTER_AIRTECH);
-        
-        uintptr_t moveIDAddr;
-        uintptr_t playerOffset;
-        
+        uintptr_t moveIDAddr = 0;
         if (playerNum == 1) {
-            playerOffset = EFZ_BASE_OFFSET_P1;
             moveIDAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P1, MOVE_ID_OFFSET);
         } else {
-            playerOffset = EFZ_BASE_OFFSET_P2;
             moveIDAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P2, MOVE_ID_OFFSET);
         }
         
-        if (moveIDAddr) {
-            // CRITICAL FIX: For airtech triggers, preserve velocity and air state
-            if (isAirTechTrigger) {
-                // Get Y position and velocity
-                uintptr_t yPosAddr = ResolvePointer(base, playerOffset, YPOS_OFFSET);
-                uintptr_t yVelAddr = ResolvePointer(base, playerOffset, YVEL_OFFSET);
-                
-                if (yPosAddr && yVelAddr) {
-                    double yPos = 0.0;
-                    double yVel = 0.0;
-                    
-                    SafeReadMemory(yPosAddr, &yPos, sizeof(double));
-                    SafeReadMemory(yVelAddr, &yVel, sizeof(double));
-                    
-                    // Set the requested moveID
-                    SafeWriteMemory(moveIDAddr, &moveID, sizeof(short));
-                    
-                    // If not a jump and in air, ensure we stay in air with proper velocity
-                    if (moveID != STRAIGHT_JUMP_ID && 
-                        moveID != FORWARD_JUMP_ID && 
-                        moveID != BACKWARD_JUMP_ID && 
-                        yPos > 0.0) {
-                        
-                        // If move isn't already a jump or air attack, preserve the falling state
-                        if (moveID != FALLING_ID && (moveID < BASE_ATTACK_JA || moveID > BASE_ATTACK_JC)) {
-                            // Apply the attack but ensure we go back to falling state afterward
-                            LogOut("[AUTO-ACTION] Preserving air state after moveID " + 
-                                   std::to_string(moveID) + " application", true);
-                            
-                            // Ensure downward velocity for proper falling
-                            double fallVelocity = yVel <= -1.0 ? yVel : -1.0;
-                            SafeWriteMemory(yVelAddr, &fallVelocity, sizeof(double));
-                            
-                            // Set a timer to restore falling state
-                            std::thread([=]() {
-                                Sleep(50); // Short delay for move to execute
-                                short fallingID = FALLING_ID;
-                                SafeWriteMemory(moveIDAddr, &fallingID, sizeof(short));
-                            }).detach();
-                        }
-                    }
-                } else {
-                    LogOut("[AUTO-ACTION] Failed to resolve position addresses", true);
-                    SafeWriteMemory(moveIDAddr, &moveID, sizeof(short));
-                }
-            } else {
-                // Non-airtech trigger, just apply moveID directly
-                SafeWriteMemory(moveIDAddr, &moveID, sizeof(short));
-            }
-            
-            LogOut("[AUTO-ACTION] Immediate action applied: Player " + std::to_string(playerNum) + 
-                   " moveID " + std::to_string(moveID), true);
-        } else {
-            LogOut("[AUTO-ACTION] Failed to resolve moveID address", true);
+        if (!moveIDAddr) {
+            LogOut("[AUTO-ACTION] Failed to resolve moveID address for immediate action", true);
+            return;
         }
         
+        // CRITICAL FIX: Apply the moveID directly with proper logging
+        if (SafeWriteMemory(moveIDAddr, &moveID, sizeof(short))) {
+            LogOut("[AUTO-ACTION] Immediately applied moveID " + std::to_string(moveID) + 
+                   " to P" + std::to_string(playerNum), true);
+            
+            // Set flags to prevent re-triggering
+            if (playerNum == 1) {
+                p1ActionApplied = true;
+                p1TriggerActive = true;  // ADD THIS LINE
+                p1TriggerCooldown = TRIGGER_COOLDOWN_FRAMES;  // ADD THIS LINE
+            } else {
+                p2ActionApplied = true;
+                p2TriggerActive = true;  // ADD THIS LINE
+                p2TriggerCooldown = TRIGGER_COOLDOWN_FRAMES;  // ADD THIS LINE
+            }
+        } else {
+            LogOut("[AUTO-ACTION] Failed to apply immediate action moveID", true);
+        }
         return;
     }
     
@@ -351,10 +372,28 @@ void StartTriggerDelay(int playerNum, int triggerType, short moveID, int delayFr
     }
 }
 
+// Add this function to process cooldowns
+void ProcessTriggerCooldowns() {
+    if (p1TriggerCooldown > 0) {
+        p1TriggerCooldown--;
+        if (p1TriggerCooldown <= 0) {
+            p1TriggerActive = false;
+        }
+    }
+    
+    if (p2TriggerCooldown > 0) {
+        p2TriggerCooldown--;
+        if (p2TriggerCooldown <= 0) {
+            p2TriggerActive = false;
+        }
+    }
+}
+
 void MonitorAutoActions() {
     if (!autoActionEnabled.load()) {
         return;
     }
+        ProcessTriggerCooldowns();
     
     uintptr_t base = GetEFZBase();
     if (!base) return;
@@ -384,7 +423,7 @@ void MonitorAutoActions() {
                 shouldTrigger = true;
                 triggerType = TRIGGER_AFTER_BLOCK;
                 delay = triggerAfterBlockDelay.load();
-                actionMoveID = GetActionMoveID(triggerAfterBlockAction.load(), TRIGGER_AFTER_BLOCK);
+                actionMoveID = GetActionMoveID(triggerAfterBlockAction.load(), TRIGGER_AFTER_BLOCK, 1);
                 
                 LogOut("[AUTO-ACTION] P1 After Block trigger activated", true);
             }
@@ -398,7 +437,7 @@ void MonitorAutoActions() {
                     shouldTrigger = true;
                     triggerType = TRIGGER_AFTER_HITSTUN;
                     delay = triggerAfterHitstunDelay.load();
-                    actionMoveID = GetActionMoveID(triggerAfterHitstunAction.load(), TRIGGER_AFTER_HITSTUN);
+                    actionMoveID = GetActionMoveID(triggerAfterHitstunAction.load(), TRIGGER_AFTER_HITSTUN, 1);
                     LogOut("[AUTO-ACTION] P1 after hitstun trigger activated", true);
                 }
             }
@@ -410,7 +449,7 @@ void MonitorAutoActions() {
                 shouldTrigger = true;
                 triggerType = TRIGGER_ON_WAKEUP;
                 delay = triggerOnWakeupDelay.load();
-                actionMoveID = GetActionMoveID(triggerOnWakeupAction.load(), TRIGGER_ON_WAKEUP);
+                actionMoveID = GetActionMoveID(triggerOnWakeupAction.load(), TRIGGER_ON_WAKEUP, 1);
                 
                 LogOut("[AUTO-ACTION] P1 On Wakeup trigger activated", true);
             }
@@ -434,7 +473,7 @@ void MonitorAutoActions() {
                 
                 // Get the appropriate action moveID for After Airtech trigger
                 int actionType = triggerAfterAirtechAction.load();
-                actionMoveID = GetActionMoveID(actionType, TRIGGER_AFTER_AIRTECH);
+                actionMoveID = GetActionMoveID(actionType, TRIGGER_AFTER_AIRTECH, 1);
             }
         }
         
@@ -457,7 +496,7 @@ void MonitorAutoActions() {
                 shouldTrigger = true;
                 triggerType = TRIGGER_AFTER_BLOCK;
                 delay = triggerAfterBlockDelay.load();
-                actionMoveID = GetActionMoveID(triggerAfterBlockAction.load(), TRIGGER_AFTER_BLOCK);
+                actionMoveID = GetActionMoveID(triggerAfterBlockAction.load(), TRIGGER_AFTER_BLOCK, 2);
                 
                 LogOut("[AUTO-ACTION] P2 After Block trigger activated", true);
             }
@@ -470,7 +509,7 @@ void MonitorAutoActions() {
                     shouldTrigger = true;
                     triggerType = TRIGGER_AFTER_HITSTUN;
                     delay = triggerAfterHitstunDelay.load();
-                    actionMoveID = GetActionMoveID(triggerAfterHitstunAction.load(), TRIGGER_AFTER_HITSTUN);
+                    actionMoveID = GetActionMoveID(triggerAfterHitstunAction.load(), TRIGGER_AFTER_HITSTUN, 2);
                     LogOut("[AUTO-ACTION] P2 after hitstun trigger activated", true);
                 }
             }
@@ -482,7 +521,7 @@ void MonitorAutoActions() {
                 shouldTrigger = true;
                 triggerType = TRIGGER_ON_WAKEUP;
                 delay = triggerOnWakeupDelay.load();
-                actionMoveID = GetActionMoveID(triggerOnWakeupAction.load(), TRIGGER_ON_WAKEUP);
+                actionMoveID = GetActionMoveID(triggerOnWakeupAction.load(), TRIGGER_ON_WAKEUP, 2);
                 
                 LogOut("[AUTO-ACTION] P2 On Wakeup trigger activated", true);
             }
@@ -490,23 +529,16 @@ void MonitorAutoActions() {
         
         // CRITICAL FIX: Complete implementation of After Airtech trigger for P2
         if (!shouldTrigger && triggerAfterAirtechEnabled.load()) {
-            // Check if player was in airtech last frame
-            bool wasInAirtech = (prevMoveID2 == FORWARD_AIRTECH || prevMoveID2 == BACKWARD_AIRTECH);
+            // Check for transition from airtech to actionable state
+            bool wasAirtech = IsAirtech(prevMoveID2);
+            bool isNowActionable = IsActionable(moveID2);
             
-            // Check if player is now in first actionable frame after airtech
-            bool isNowActionable = (moveID2 == FALLING_ID);
-            
-            // P2 After-Airtech trigger condition
-            if (wasInAirtech && isNowActionable) {
-                LogOut("[AUTO-ACTION] P2 After Airtech trigger activated (from moveID " + 
-                       std::to_string(prevMoveID2) + " to " + std::to_string(moveID2) + ")", true);
+            if (wasAirtech && isNowActionable) {
+                LogOut("[AUTO-ACTION] P2 After Airtech trigger activated", true);
                 shouldTrigger = true;
                 triggerType = TRIGGER_AFTER_AIRTECH;
-                delay = triggerAfterAirtechDelay.load();
-                
-                // Get the appropriate action moveID for After Airtech trigger
-                int actionType = triggerAfterAirtechAction.load();
-                actionMoveID = GetActionMoveID(actionType, TRIGGER_AFTER_AIRTECH);
+                delay = triggerAfterAirtechDelay.load() * 3; // Convert to internal frames
+                actionMoveID = GetActionMoveID(triggerAfterAirtechAction.load(), TRIGGER_AFTER_AIRTECH, 2);
             }
         }
         
