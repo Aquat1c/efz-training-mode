@@ -6,11 +6,18 @@
 #include <deque>
 #include <chrono>
 #include <mutex>
-
+#include <d3d9.h> // Add for LPDIRECT3DDEVICE9
 
 // Function pointer types for DirectDraw
 typedef HRESULT(WINAPI* DirectDrawCreateFunc)(GUID*, LPVOID*, IUnknown*);
 typedef HRESULT(WINAPI* DirectDrawEnumerateFunc)(LPDDENUMCALLBACKA, LPVOID);
+// NEW: Typedefs for Blit and Flip
+typedef HRESULT(WINAPI* BlitFunc)(IDirectDrawSurface7*, LPRECT, IDirectDrawSurface7*, LPRECT, DWORD, LPDDBLTFX);
+typedef HRESULT(WINAPI* FlipFunc)(IDirectDrawSurface7*, IDirectDrawSurface7*, DWORD);
+
+// NEW: V-table offsets for hooking
+#define DDRAW_BLIT_OFFSET 4
+#define DDRAW_FLIP_OFFSET 11
 
 // Structure to represent a text message in the overlay
 struct OverlayMessage {
@@ -28,6 +35,9 @@ private:
     // Original DirectDraw functions
     static DirectDrawCreateFunc originalDirectDrawCreate;
     static DirectDrawEnumerateFunc originalDirectDrawEnumerate;
+    // NEW: Add original Blit and Flip pointers
+    static BlitFunc originalBlit;
+    static FlipFunc originalFlip;
     
     // Hook state
     static IDirectDrawSurface7* primarySurface;
@@ -55,8 +65,8 @@ public:
     // Initialize the hook
     static bool Initialize();
     
-    // Try to initialize when the game is ready
-    static bool TryInitializeOverlay();
+    // Try to initialize when the game is ready - THIS IS OBSOLETE
+    // static bool TryInitializeOverlay();
     
     // Make isHooked visible for status checks
     static bool isHooked;
@@ -81,28 +91,23 @@ public:
     // Add this method - it's missing but called in dllmain.cpp
     static void Shutdown();
 
-    // Fallback method for when DirectDraw hook fails
+    // Fallback methods
     static bool InitializeFallbackOverlay();
-
-    // Add this after the existing public methods
-    static void TestOverlay();  // For testing if overlay works
-
-    // Add this test method
-    static void TestHelloWorld();
-
-    // Add this simple overlay test method
+    // NEW: Add declarations for other fallback/test methods
     static bool InitializeSimpleOverlay();
-
-    // Add this brute-force overlay method
     static bool InitializeBruteForceOverlay();
+    static void TestOverlay();
+    static void TestHelloWorld();
 
     // Set up window procedure hooks for ImGui input handling
     static void SetupWindowProcedures();
     
-    // Add after the existing public methods
+    // --- D3D9 Hooking for ImGui ---
     static bool InitializeD3D9();
-    static void RenderImGui();
-    static void TestImGuiRendering();
+    static void ShutdownD3D9();
+    // OBSOLETE: These functions are part of the old rendering model and should be removed.
+    // static void RenderImGui();
+    // static void TestImGuiRendering();
 };
 
 // Global status message IDs

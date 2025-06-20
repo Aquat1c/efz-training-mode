@@ -43,10 +43,28 @@ namespace ImGuiGui {
 
         // Set window position and size
         ImGui::SetNextWindowPos(ImVec2(50, 50), ImGuiCond_FirstUseEver);
-        ImGui::SetNextWindowSize(ImVec2(580, 500), ImGuiCond_FirstUseEver);
+        ImGui::SetNextWindowSize(ImVec2(580, 520), ImGuiCond_FirstUseEver); // Increased height for new buttons
 
         // Main window
-        if (ImGui::Begin("EFZ Training Mode", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        if (ImGui::Begin("EFZ Training Mode", nullptr, ImGuiWindowFlags_NoCollapse)) {
+            // Action Buttons
+            if (ImGui::Button("Apply Changes", ImVec2(120, 30))) {
+                ApplyImGuiSettings();
+                LogOut("[IMGUI] Applied settings from GUI.", true);
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Refresh Values", ImVec2(120, 30))) {
+                guiState.localData = displayData; // Refresh from global state
+                LogOut("[IMGUI] Refreshed GUI values from game.", true);
+            }
+            ImGui::SameLine();
+            ImGui::TextDisabled("(?)");
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("Apply: Saves all changes to the game.\nRefresh: Loads current game values into the GUI.");
+            }
+
+            ImGui::Separator();
+
             // Tab bar
             if (ImGui::BeginTabBar("MainTabBar", ImGuiTabBarFlags_None)) {
                 // Game Values Tab

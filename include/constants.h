@@ -1,5 +1,5 @@
 #pragma once
-
+#define DIRECTINPUT_VERSION 0x0800
 // Only include these for C++ compiler, not for RC compiler
 #ifndef RC_INVOKED
 

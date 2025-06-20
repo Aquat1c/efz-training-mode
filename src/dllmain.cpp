@@ -90,33 +90,15 @@ void DelayedInitialization(HMODULE hModule) {
     ShowHotkeyInfo();
     WriteStartupLog("Help screen shown");
     
-    // Don't attempt to initialize the overlay right away
-    WriteStartupLog("Deferring DirectDraw overlay initialization until game is ready");
-    
-    // Add a thread to periodically try overlay initialization
+    // NEW: Replace the old overlay logic with the new D3D9 hook initialization.
     std::thread([]{
-        // Wait for initial startup to complete
-        Sleep(3000);
+        // Wait for the game window and D3D to be ready.
+        Sleep(5000);
         
-        LogOut("[OVERLAY] Will initialize when player data is available", true);
-        
-        // Try DirectDraw hook first
-        for (int attempt = 1; attempt <= 30 && !DirectDrawHook::isHooked; attempt++) {
-            if (DirectDrawHook::TryInitializeOverlay()) {
-                LogOut("[OVERLAY] DirectDraw hook initialized successfully", true);
-                break;
-            }
-            Sleep(2000);
-        }
-        
-        // If DirectDraw hook failed, try fallback method
-        if (!DirectDrawHook::isHooked) {
-            LogOut("[OVERLAY] DirectDraw hook failed, trying fallback method...", true);
-            if (DirectDrawHook::InitializeFallbackOverlay()) {
-                LogOut("[OVERLAY] Fallback overlay initialized successfully", true);
-            } else {
-                LogOut("[OVERLAY] All overlay initialization methods failed", true);
-            }
+        if (DirectDrawHook::InitializeD3D9()) {
+            LogOut("[SYSTEM] ImGui D3D9 hook initialized successfully.", true);
+        } else {
+            LogOut("[SYSTEM] FATAL: Could not initialize ImGui D3D9 hook.", true);
         }
     }).detach();
     
@@ -174,6 +156,8 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
         return TRUE;
     }
     else if (ul_reason_for_call == DLL_PROCESS_DETACH) {
+        // Clean up the D3D9 hook and ImGui
+        DirectDrawHook::ShutdownD3D9();
         // Clean up the overlay
         DirectDrawHook::Shutdown();
     }

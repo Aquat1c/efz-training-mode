@@ -108,6 +108,28 @@ namespace ImGuiImpl {
         g_d3dDevice = nullptr;
     }
     
+    void RenderFrame() {
+        if (!g_imguiInitialized || !g_imguiVisible || !g_d3dDevice)
+            return;
+
+        // 1. Start a new ImGui frame
+        ImGui_ImplDX9_NewFrame();
+        ImGui_ImplWin32_NewFrame();
+        ImGui::NewFrame();
+
+        // 2. Build the GUI
+        ImGuiGui::RenderGui();
+
+        // 3. End the frame. This is a necessary step before rendering.
+        ImGui::EndFrame();
+
+        // 4. Render the ImGui draw data
+        ImGui::Render();
+        ImGui_ImplDX9_RenderDrawData(ImGui::GetDrawData());
+    }
+
+    // The functions below are now obsolete and can be removed.
+    /*
     void NewFrame() {
         if (!g_imguiInitialized || !g_imguiVisible)
             return;
@@ -135,6 +157,7 @@ namespace ImGuiImpl {
         ImGui::Render();
         ImGui_ImplDX9_RenderDrawData(ImGui::GetDrawData());
     }
+    */
     
     bool IsInitialized() {
         return g_imguiInitialized;

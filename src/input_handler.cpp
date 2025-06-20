@@ -424,21 +424,15 @@ void MonitorKeys() {
                 Sleep(200);
             }
 
-                if ((GetAsyncKeyState('7') & 0x8000) && !wasKey7Pressed) {
-        LogOut("[INPUT] Key 7 pressed - toggling ImGui interface", true);
-        wasKey7Pressed = true;  // Set flag to prevent multiple activations
-        
-        // Initialize D3D9 and toggle visibility in one go
-        if (!DirectDrawHook::InitializeD3D9()) {
-            LogOut("[INPUT] Failed to initialize D3D9 for ImGui", true);
+                // Debug key '7' - This block contains the error
+        bool isKey7Pressed = IsKeyPressed('7', true);
+        if (isKey7Pressed && !wasKey7Pressed) {
+            LogOut("[DEBUG] Key 7 pressed - Toggling ImGui visibility.", true);
+            // The line below was calling the old RenderImGui function.
+            // It should now toggle the visibility instead.
+            ImGuiImpl::ToggleVisibility();
         }
-        
-        // Make sure to render at least one frame immediately
-        DirectDrawHook::RenderImGui();
-    }
-    else if (!(GetAsyncKeyState('7') & 0x8000) && wasKey7Pressed) {
-        wasKey7Pressed = false;  // Reset flag when key is released
-    }
+        wasKey7Pressed = isKey7Pressed;
             
             // Debug toggle (Ctrl+D)
             if ((GetAsyncKeyState(VK_CONTROL) & 0x8000) && (GetAsyncKeyState('D') & 0x8000)) {

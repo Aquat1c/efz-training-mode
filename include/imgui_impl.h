@@ -16,14 +16,13 @@ namespace ImGuiImpl {
     // Shutdown ImGui
     void Shutdown();
     
-    // Begin ImGui frame (call before rendering)
-    void NewFrame();
+    // NEW: Consolidated render function
+    void RenderFrame();
     
-    // End ImGui frame (call after rendering)
-    void EndFrame();
-    
-    // Render ImGui (call after EndFrame)
-    void Render();
+    // OBSOLETE: These are now handled within RenderFrame
+    // void NewFrame();
+    // void EndFrame();
+    // void Render();
     
     // Check if ImGui is initialized
     bool IsInitialized();

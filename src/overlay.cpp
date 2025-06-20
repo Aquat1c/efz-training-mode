@@ -16,123 +16,30 @@
 #include <mutex>
 #include <deque>
 #include "../include/imgui_gui.h"
-// Forward declare global variables needed by the render thread
-static IDirect3DDevice9* g_pd3dDevice = nullptr;
-static bool g_d3dInitialized = false;
 
-// Add these global variables for ImGui rendering thread
-static std::atomic<bool> g_imguiRenderThreadRunning(false);
-static HANDLE g_imguiRenderThread = NULL;
-static std::mutex g_renderMutex;
-// Initialize static members
+// --- Define static members of DirectDrawHook ---
 DirectDrawCreateFunc DirectDrawHook::originalDirectDrawCreate = nullptr;
 DirectDrawEnumerateFunc DirectDrawHook::originalDirectDrawEnumerate = nullptr;
-bool DirectDrawHook::isHooked = false;
+BlitFunc DirectDrawHook::originalBlit = nullptr;
+FlipFunc DirectDrawHook::originalFlip = nullptr;
 IDirectDrawSurface7* DirectDrawHook::primarySurface = nullptr;
-HWND DirectDrawHook::gameWindow = NULL; 
+HWND DirectDrawHook::gameWindow = nullptr;
 std::mutex DirectDrawHook::messagesMutex;
 std::deque<OverlayMessage> DirectDrawHook::messages;
 std::vector<OverlayMessage> DirectDrawHook::permanentMessages;
-int DirectDrawHook::nextMessageId = 1;
-// Global message IDs
-int g_AirtechStatusId = -1;
-int g_JumpStatusId = -1;
+int DirectDrawHook::nextMessageId = 0;
+bool DirectDrawHook::isHooked = false;
+// --- End static member definitions ---
 
-// Function prototypes for vtable hooks
-typedef HRESULT(WINAPI* Blit_t)(IDirectDrawSurface7*, LPRECT, IDirectDrawSurface7*, LPRECT, DWORD, LPDDBLTFX);
-typedef HRESULT(WINAPI* Flip_t)(IDirectDrawSurface7*, IDirectDrawSurface7*, DWORD);
-
-// Original function pointers
-Blit_t originalBlit = nullptr;
-Flip_t originalFlip = nullptr;
-
-// VTable offsets
-constexpr int DDRAW_BLIT_OFFSET = 5;  // Offset in the vtable for Blt
-constexpr int DDRAW_FLIP_OFFSET = 11; // Offset in the vtable for Flip
-
-// ImGui rendering thread function
-DWORD WINAPI ImGuiRenderThreadProc(LPVOID lpParam) {
-    // Set thread priority to high to ensure smooth rendering
-    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
-    
-    LogOut("[IMGUI] Render thread starting", true);
-    
-    // Timing variables for frame rate control
-    LARGE_INTEGER freq, lastTime, currentTime;
-    QueryPerformanceFrequency(&freq);
-    QueryPerformanceCounter(&lastTime);
-    
-    // Target 64 FPS for ImGui rendering
-    const double targetFrameTime = 1000.0 / 64.0;
-    
-    while (g_imguiRenderThreadRunning) {
-        // Only render if ImGui is visible and initialized
-        if (ImGuiImpl::IsInitialized() && ImGuiImpl::IsVisible() && g_pd3dDevice) {
-            try {
-                // CRITICAL FIX: Use a mutex to prevent concurrent rendering
-                static std::mutex renderMutex;
-                std::lock_guard<std::mutex> lock(renderMutex);
-                
-                // Start the ImGui frame
-                ImGui_ImplDX9_NewFrame();
-                ImGui_ImplWin32_NewFrame();
-                ImGui::NewFrame();
-                
-                // Render the actual UI content
-                ImGuiGui::RenderGui();
-                
-                // End the frame and prepare for rendering
-                ImGui::EndFrame();
-                ImGui::Render();
-                
-                // Begin scene and render ImGui
-                if (SUCCEEDED(g_pd3dDevice->BeginScene())) {
-                    // Clear with fully transparent color
-                    g_pd3dDevice->Clear(0, NULL, D3DCLEAR_TARGET, D3DCOLOR_ARGB(0, 0, 0, 0), 1.0f, 0);
-                    
-                    // CRITICAL FIX: Actually render the ImGui data
-                    ImGui_ImplDX9_RenderDrawData(ImGui::GetDrawData());
-                    
-                    // CRITICAL FIX: Properly end the scene
-                    g_pd3dDevice->EndScene();
-                }
-                
-                // Present the scene to display the UI
-                g_pd3dDevice->Present(NULL, NULL, NULL, NULL);
-                
-                // Log much less frequently - once per 5 seconds
-                static int frameCount = 0;
-                if (++frameCount % 320 == 0) {
-                    LogOut("[IMGUI] Render thread active", false);
-                }
-            }
-            catch (const std::exception& e) {
-                LogOut("[IMGUI] Exception in render thread: " + std::string(e.what()), true);
-                Sleep(500); // Sleep longer after an error
-            }
-        }
-        
-        // Calculate elapsed time and sleep to maintain target frame rate
-        QueryPerformanceCounter(&currentTime);
-        double elapsedMs = (currentTime.QuadPart - lastTime.QuadPart) * 1000.0 / freq.QuadPart;
-        
-        if (elapsedMs < targetFrameTime) {
-            // Sleep for the remaining time to maintain 64 FPS
-            DWORD sleepMs = static_cast<DWORD>(targetFrameTime - elapsedMs);
-            if (sleepMs > 0) {
-                Sleep(sleepMs);
-            }
-        }
-        
-        // Update last frame time
-        //lastRenderTime = currentTime;
-        QueryPerformanceCounter(&lastTime);
-    }
-    
-    LogOut("[IMGUI] Render thread exiting", true);
-    return 0;
-}
-
+// --- D3D9 Hooking Globals ---
+typedef HRESULT(WINAPI* EndScene_t)(LPDIRECT3DDEVICE9);
+static EndScene_t oEndScene = nullptr;
+static std::atomic<bool> g_d3d9Hooked = false;
+static LPDIRECT3DDEVICE9 g_pd3dDevice = nullptr; // Renamed from g_d3dDevice
+static std::atomic<bool> g_d3dInitialized = false; // Added
+static HANDLE g_imguiRenderThread = nullptr; // Added
+static std::atomic<bool> g_imguiRenderThreadRunning = false; // Added
+// --- End D3D9 Globals ---
 
 
 // Helper function to hook virtual methods
@@ -227,16 +134,44 @@ HRESULT WINAPI DirectDrawHook::HookedBlit(IDirectDrawSurface7* This, LPRECT lpDe
 HRESULT WINAPI DirectDrawHook::HookedFlip(IDirectDrawSurface7* This, 
                                         IDirectDrawSurface7* lpDDSurfaceTargetOverride, 
                                         DWORD dwFlags) {
-    // Call the original function first
-    HRESULT result = originalFlip(This, lpDDSurfaceTargetOverride, dwFlags);
-    
-    // CRITICAL FIX: Render AFTER the flip, not before
-    if (SUCCEEDED(result) && This == primarySurface) {
+    // This is for the old text overlay. We can leave it.
+    if (isHooked) {
         RenderAllMessages(This);
     }
-    
-    return result;
+    return originalFlip(This, lpDDSurfaceTargetOverride, dwFlags);
 }
+
+// --- NEW: The Correct D3D9 EndScene Hook ---
+HRESULT WINAPI HookedEndScene(LPDIRECT3DDEVICE9 pDevice) {
+    if (!g_pd3dDevice) {
+        g_pd3dDevice = pDevice;
+    }
+
+    // Initialize ImGui on the first call to EndScene
+    if (!ImGuiImpl::IsInitialized()) {
+        LogOut("[D3D9] First EndScene call, initializing ImGui.", true);
+        ImGuiImpl::Initialize(pDevice);
+    }
+
+    // Render the ImGui frame if it's visible
+    if (ImGuiImpl::IsVisible()) {
+        // CRITICAL: Save device state, render ImGui, then restore state.
+        // This prevents the black screen and rendering artifacts.
+        IDirect3DStateBlock9* stateBlock = nullptr;
+        if (SUCCEEDED(pDevice->CreateStateBlock(D3DSBT_ALL, &stateBlock))) {
+            stateBlock->Capture();
+
+            ImGuiImpl::RenderFrame();
+
+            stateBlock->Apply();
+            stateBlock->Release();
+        }
+    }
+
+    // Call the original EndScene function to let the game finish rendering
+    return oEndScene(pDevice);
+}
+
 
 // Render text on the given surface
 void DirectDrawHook::RenderText(HDC hdc, const std::string& text, int x, int y, COLORREF color) {
@@ -635,80 +570,71 @@ void DirectDrawHook::ClearAllMessages() {
     permanentMessages.clear();
 }
 
-// Add this function before the Initialize() function:
-/*
-bool DirectDrawHook::TryInitializeOverlay() {
-    static bool initializationAttempted = false;
-    static std::chrono::steady_clock::time_point lastAttempt;
-    static int attemptCount = 0;
-    
-    // Don't attempt if already hooked
-    if (isHooked) return true;
-    
-    auto now = std::chrono::steady_clock::now();
-    
-    // Try more frequently - every 500ms instead of 2 seconds
-    if (initializationAttempted && 
-        std::chrono::duration_cast<std::chrono::milliseconds>(now - lastAttempt).count() < 500) {
+// --- NEW: D3D9 Hook Initialization and Shutdown ---
+bool DirectDrawHook::InitializeD3D9() {
+    if (g_d3d9Hooked) return true;
+
+    LogOut("[D3D9] Attempting to hook D3D9 EndScene...", true);
+
+    // Create a dummy D3D device to get the v-table
+    IDirect3D9* pD3D = Direct3DCreate9(D3D_SDK_VERSION);
+    if (!pD3D) {
+        LogOut("[D3D9] Error: Direct3DCreate9 failed.", true);
         return false;
     }
-    
-    initializationAttempted = true;
-    lastAttempt = now;
-    attemptCount++;
-    
-    // Increase max attempts to 240 (2 minutes of trying)
-    if (attemptCount > 240) {
-        LogOut("[OVERLAY] Maximum initialization attempts reached", true);
+
+    D3DPRESENT_PARAMETERS d3dpp = {};
+    d3dpp.Windowed = TRUE;
+    d3dpp.SwapEffect = D3DSWAPEFFECT_DISCARD;
+    d3dpp.hDeviceWindow = FindEFZWindow();
+
+    IDirect3DDevice9* pDummyDevice = nullptr;
+    HRESULT hr = pD3D->CreateDevice(D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, d3dpp.hDeviceWindow,
+                                    D3DCREATE_SOFTWARE_VERTEXPROCESSING, &d3dpp, &pDummyDevice);
+    if (FAILED(hr) || !pDummyDevice) {
+        LogOut("[D3D9] Error: Failed to create dummy D3D device.", true);
+        pD3D->Release();
         return false;
     }
-    
-    // 1. Check if game window exists
-    gameWindow = FindEFZWindow();
-    if (!gameWindow) {
-        if (attemptCount % 20 == 0) {  // Log every 10 seconds
-            LogOut("[OVERLAY] EFZ window not found (attempt " + std::to_string(attemptCount) + ")", true);
-        }
-        return false;
+
+    // Get the v-table address
+    void** vTable = *reinterpret_cast<void***>(pDummyDevice);
+    pDummyDevice->Release();
+    pD3D->Release();
+
+    // Hook EndScene (v-table index 42)
+    oEndScene = (EndScene_t)vTable[42];
+
+    DetourTransactionBegin();
+    DetourUpdateThread(GetCurrentThread());
+    DetourAttach(&(PVOID&)oEndScene, HookedEndScene);
+    if (DetourTransactionCommit() == NO_ERROR) {
+        LogOut("[D3D9] Successfully hooked EndScene.", true);
+        g_d3d9Hooked = true;
+        return true;
     }
-    
-    // 2. Check if the game has loaded DirectDraw
-    HMODULE ddrawModule = GetModuleHandleA("ddraw.dll");
-    if (!ddrawModule) {
-        if (attemptCount % 20 == 0) {
-            LogOut("[OVERLAY] ddraw.dll not loaded yet", true);
-        }
-        return false;
-    }
-    
-    // 3. Check if player data exists (optional - we can show overlay even without game data)
-    uintptr_t base = GetEFZBase();
-    if (base) {
-        uintptr_t hpAddr1 = ResolvePointer(base, EFZ_BASE_OFFSET_P1, HP_OFFSET);
-        if (hpAddr1) {
-            int hp1 = 0;
-            if (SafeReadMemory(hpAddr1, &hp1, sizeof(int))) {
-                if (hp1 >= 0 && hp1 <= MAX_HP) {
-                    LogOut("[OVERLAY] Game data detected, initializing overlay", true);
-                }
-            }
-        }
-    }
-    
-    // Initialize the overlay
-    LogOut("[OVERLAY] Attempting to initialize DirectDraw hook (attempt " + std::to_string(attemptCount) + ")", true);
-    
-    try {
-        return Initialize();
-    } catch (const std::exception& e) {
-        LogOut("[OVERLAY] Exception during initialization: " + std::string(e.what()), true);
-        return false;
-    } catch (...) {
-        LogOut("[OVERLAY] Unknown exception during initialization", true);
-        return false;
-    }
+
+    LogOut("[D3D9] Error: DetourTransactionCommit failed for EndScene.", true);
+    return false;
 }
-*/
+
+void DirectDrawHook::ShutdownD3D9() {
+    if (!g_d3d9Hooked) return;
+
+    DetourTransactionBegin();
+    DetourUpdateThread(GetCurrentThread());
+    DetourDetach(&(PVOID&)oEndScene, HookedEndScene);
+    DetourTransactionCommit();
+
+    if (ImGuiImpl::IsInitialized()) {
+        ImGuiImpl::Shutdown();
+    }
+
+    g_d3d9Hooked = false;
+    LogOut("[D3D9] D3D9 hook shut down.", true);
+}
+
+
 // Fallback implementation using a transparent window
 bool DirectDrawHook::InitializeFallbackOverlay() {
     if (isHooked) return true;
@@ -829,10 +755,8 @@ bool DirectDrawHook::InitializeSimpleOverlay() {
     );
     HFONT oldFont = (HFONT)SelectObject(windowDC, font);
     
-    // Draw test text
     TextOutA(windowDC, 10, 50, "Simple Overlay Test", 19);
     
-    // Clean up
     SelectObject(windowDC, oldFont);
     DeleteObject(font);
     ReleaseDC(gameWindow, windowDC);
@@ -841,18 +765,15 @@ bool DirectDrawHook::InitializeSimpleOverlay() {
     return true;
 }
 
-// Add this aggressive fallback method:
 bool DirectDrawHook::InitializeBruteForceOverlay() {
     LogOut("[OVERLAY] Attempting brute-force overlay initialization", true);
     
-    // Find the game window
     gameWindow = FindEFZWindow();
     if (!gameWindow) {
         LogOut("[OVERLAY] Brute-force: Could not find EFZ window", true);
         return false;
     }
     
-    // Create a timer-based overlay that draws directly to the window
     std::thread([]{
         while (true) {
             HWND efzWindow = FindEFZWindow();
@@ -879,12 +800,10 @@ bool DirectDrawHook::InitializeBruteForceOverlay() {
             }
             
             if (shouldShow) {
-                // Get window device context and draw directly
                 HDC windowDC = GetWindowDC(efzWindow);
                 if (windowDC) {
                     SetBkMode(windowDC, TRANSPARENT);
                     
-                    // Create a bright, large font
                     HFONT font = CreateFont(
                         24, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
                         DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
@@ -892,7 +811,6 @@ bool DirectDrawHook::InitializeBruteForceOverlay() {
                     );
                     HFONT oldFont = (HFONT)SelectObject(windowDC, font);
                     
-                    // Draw with heavy outline
                     SetTextColor(windowDC, RGB(0, 0, 0));
                     for (int dx = -2; dx <= 2; dx++) {
                         for (int dy = -2; dy <= 2; dy++) {
@@ -914,7 +832,7 @@ bool DirectDrawHook::InitializeBruteForceOverlay() {
                 }
             }
             
-            Sleep(100); // Update 10 times per second
+            Sleep(100); // 10 times per second
         }
     }).detach();
     
@@ -934,327 +852,13 @@ void DirectDrawHook::TestOverlay() {
 
 // Update the TestHelloWorld function:
 void DirectDrawHook::TestHelloWorld() {
-    LogOut("[OVERLAY] TestHelloWorld called - trying all methods", true);
+    LogOut("[OVERLAY] Running TestHelloWorld...", true);
     
-    if (!isHooked) {
-        LogOut("[OVERLAY] Testing overlay - not yet hooked, trying all initialization methods", true);
-        
-        // Try DirectDraw hook first
-        if (TryInitializeOverlay()) {
-            LogOut("[OVERLAY] DirectDraw hook initialized for testing", true);
-        } 
-        // Try fallback method
-        else if (InitializeFallbackOverlay()) {
-            LogOut("[OVERLAY] Fallback overlay initialized for testing", true);
-        }
-        // Try brute force method
-        else if (InitializeBruteForceOverlay()) {
-            LogOut("[OVERLAY] Brute-force overlay initialized for testing", true);
-        }
-        else {
-            LogOut("[OVERLAY] All overlay initialization methods failed", true);
-            return;
-        }
-    }
-    
-    // Add multiple test messages at different positions
-    AddMessage("Hello, world! (Test 1)", RGB(255, 255, 0), 5000, 10, 64);
-    AddMessage("Hello, world! (Test 2)", RGB(0, 255, 0), 5000, 10, 80);
-    AddMessage("Hello, world! (Test 3)", RGB(0, 255, 255), 5000, 320, 100);
-    AddMessage("Hello, world! (Test 4)", RGB(255, 0, 255), 5000, 500, 64);
-    
-    LogOut("[OVERLAY] Multiple test 'Hello, world' messages added at different positions", true);
-}
-
-void DirectDrawHook::RenderImGui() {
-    // CRITICAL FIX: Add mutex to prevent concurrent rendering
-    static std::mutex renderMutex;
-    std::lock_guard<std::mutex> lock(renderMutex);
-    
-    if (!g_pd3dDevice || !ImGuiImpl::IsInitialized() || !ImGuiImpl::IsVisible())
-        return;
-    
-    try {
-        // Start ImGui frame
-        ImGui_ImplDX9_NewFrame();
-        ImGui_ImplWin32_NewFrame();
-        ImGui::NewFrame();
-        
-        // Render the actual GUI content
-        ImGuiGui::RenderGui();
-        
-        // End the frame and prepare for rendering
-        ImGui::EndFrame();
-        ImGui::Render();
-        
-        // Begin scene and render ImGui
-        if (SUCCEEDED(g_pd3dDevice->BeginScene())) {
-            g_pd3dDevice->Clear(0, NULL, D3DCLEAR_TARGET, D3DCOLOR_ARGB(0, 0, 0, 0), 1.0f, 0);
-            ImGui_ImplDX9_RenderDrawData(ImGui::GetDrawData());
-            g_pd3dDevice->EndScene(); // Ensure EndScene is always called
-        }
-        
-        // Present the scene - CRITICAL: Use immediate presentation for high framerate games
-        g_pd3dDevice->Present(NULL, NULL, NULL, NULL);
-    }
-    catch (const std::exception& e) {
-        LogOut("[IMGUI] Exception during rendering: " + std::string(e.what()), true);
-    }
-}
-
-// Update InitializeD3D9 to use the game's window
-bool DirectDrawHook::InitializeD3D9() {
-    if (g_d3dInitialized && g_pd3dDevice)
-        return true;
-        
-    LogOut("[D3D9] Initializing DirectX 9 for ImGui", true);
-    
-    // Find the game window
-    HWND targetWindow = FindEFZWindow();
-    if (!targetWindow) {
-        LogOut("[D3D9] Failed to find EFZ window", true);
-        return false;
-    }
-    
-    // Store it for later use
-    gameWindow = targetWindow;
-    
-    LogOut("[D3D9] Using window: " + Logger::hwndToString(targetWindow), true);
-    
-    // Get client area dimensions
-    RECT clientRect;
-    GetClientRect(targetWindow, &clientRect);
-    int width = clientRect.right - clientRect.left;
-    int height = clientRect.bottom - clientRect.top;
-    
-    // Create D3D9 object
-    IDirect3D9* d3d = Direct3DCreate9(D3D_SDK_VERSION);
-    if (!d3d) {
-        LogOut("[D3D9] Failed to create D3D9 object", true);
-        return false;
-    }
-    
-    // CRITICAL: Parameters optimized for DirectDraw compatibility
-    D3DPRESENT_PARAMETERS params = {};
-    params.Windowed = TRUE;
-    params.SwapEffect = D3DSWAPEFFECT_DISCARD;  // Most efficient swap effect
-    params.BackBufferFormat = D3DFMT_A8R8G8B8;  // Support alpha blending
-    params.BackBufferWidth = width;
-    params.BackBufferHeight = height;
-    params.hDeviceWindow = targetWindow;
-    params.PresentationInterval = D3DPRESENT_INTERVAL_IMMEDIATE;  // CRITICAL: No VSync for high FPS games
-    params.EnableAutoDepthStencil = FALSE;  // Not needed for 2D UI
-    params.BackBufferCount = 1;  // Single back buffer is sufficient
-    
-    // Try to create device with hardware then software processing
-    HRESULT hr = d3d->CreateDevice(
-        D3DADAPTER_DEFAULT,
-        D3DDEVTYPE_HAL,
-        targetWindow,
-        D3DCREATE_HARDWARE_VERTEXPROCESSING | D3DCREATE_FPU_PRESERVE,
-        &params,
-        &g_pd3dDevice
-    );
-    
-    // Fall back to software if needed
-    if (FAILED(hr)) {
-        LogOut("[D3D9] Hardware processing failed, trying software", true);
-        hr = d3d->CreateDevice(
-            D3DADAPTER_DEFAULT,
-            D3DDEVTYPE_HAL,
-            targetWindow,
-            D3DCREATE_SOFTWARE_VERTEXPROCESSING | D3DCREATE_FPU_PRESERVE,
-            &params,
-            &g_pd3dDevice
-        );
-    }
-     
-    d3d->Release();
-    
-    if (FAILED(hr) || !g_pd3dDevice) {
-        LogOut("[D3D9] Failed to create D3D9 device: 0x" + std::to_string(hr), true);
-        return false;
-    }
-    
-    // Set up blending for transparency
-    if (g_pd3dDevice) {
-        g_pd3dDevice->SetRenderState(D3DRS_ZENABLE, FALSE);
-        g_pd3dDevice->SetRenderState(D3DRS_ALPHABLENDENABLE, TRUE);
-        g_pd3dDevice->SetRenderState(D3DRS_SRCBLEND, D3DBLEND_SRCALPHA);
-        g_pd3dDevice->SetRenderState(D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA);
-        g_pd3dDevice->SetRenderState(D3DRS_ALPHATESTENABLE, TRUE);
-        g_pd3dDevice->SetRenderState(D3DRS_ALPHAREF, 0x08);
-        g_pd3dDevice->SetRenderState(D3DRS_ALPHAFUNC, D3DCMP_GREATEREQUAL);
-        g_pd3dDevice->SetRenderState(D3DRS_SCISSORTESTENABLE, TRUE);
-    }
-    
-    g_d3dInitialized = true;
-    
-    // Initialize ImGui
-    if (!ImGuiImpl::Initialize(g_pd3dDevice)) {
-        LogOut("[D3D9] Failed to initialize ImGui", true);
-        g_pd3dDevice->Release();
-        g_pd3dDevice = nullptr;
-        g_d3dInitialized = false;
-        return false;
-    }
-    
-    // Set up window proc for input handling
-    SetupWindowProcedures();
-    
-    // Start the ImGui render thread if not already running
-    if (!g_imguiRenderThread) {
-        g_imguiRenderThreadRunning = true;
-        g_imguiRenderThread = CreateThread(NULL, 0, ImGuiRenderThreadProc, NULL, 0, NULL);
-        if (!g_imguiRenderThread) {
-            LogOut("[D3D9] Failed to create ImGui render thread", true);
-            // Continue anyway, the main rendering might still work
-        } else {
-            LogOut("[D3D9] ImGui render thread started", true);
-        }
-    }
-    
-    LogOut("[D3D9] DirectX 9 initialized successfully", true);
-    return true;
-}
-
-// After initializing ImGui, test rendering with a simple message
-void DirectDrawHook::TestImGuiRendering() {
-    if (!g_pd3dDevice || !ImGuiImpl::IsInitialized()) {
-        LogOut("[IMGUI] Cannot test - not initialized", true);
-        return;
-    }
-    
-    // Force visibility on
-    ImGuiImpl::ToggleVisibility();
-    
-    // Run a render cycle with a clear red background to verify it's working
-    g_pd3dDevice->Clear(0, NULL, D3DCLEAR_TARGET, D3DCOLOR_XRGB(255, 0, 0), 1.0f, 0);
-    g_pd3dDevice->Present(NULL, NULL, NULL, NULL);
-    
-    LogOut("[IMGUI] Test render performed - should see a red overlay briefly", true);
-    Sleep(1000);
-    
-    // Render normal ImGui content
-    RenderImGui();
-    
-    LogOut("[IMGUI] Test render complete - ImGui should now be visible", true);
-}
-
-// Global variables
-static WNDPROC g_originalWndProc = nullptr;
-
-// Custom WndProc for ImGui input handling
-LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
-    // Pass events to ImGui first when visible
-    if (ImGuiImpl::IsVisible() && ImGui_ImplWin32_WndProcHandler(hWnd, msg, wParam, lParam))
-        return TRUE;
-    
-    // Handle key 7 toggle explicitly here
-    if (msg == WM_KEYDOWN && wParam == '7' && !(lParam & (1 << 30))) { // Not a repeat
-        ImGuiImpl::ToggleVisibility();
-        return 0;
-    }
-    
-    // Pass to original window procedure
-    return CallWindowProc(g_originalWndProc, hWnd, msg, wParam, lParam);
-}
-
-void DirectDrawHook::SetupWindowProcedures() {
-    HWND targetWindow = FindEFZWindow();
-    if (!targetWindow) {
-        LogOut("[IMGUI] Failed to find game window for input hook", true);
-        return;
-    }
-    
-    // Only hook once
-    if (g_originalWndProc == nullptr) {
-        // Hook window procedure
-        g_originalWndProc = (WNDPROC)SetWindowLongPtr(
-            targetWindow, 
-            GWLP_WNDPROC, 
-            (LONG_PTR)OverlayWndProc
-        );
-        
-        if (!g_originalWndProc) {
-            DWORD error = GetLastError();
-            LogOut("[IMGUI] Failed to hook window procedure, error: " + 
-                   std::to_string(error), true);
-        } else {
-            LogOut("[IMGUI] Window procedure hooked for input handling", true);
-        }
-    }
-}
-
-bool DirectDrawHook::TryInitializeOverlay() {
-    static bool initializationAttempted = false;
-    static std::chrono::steady_clock::time_point lastAttempt;
-    static int attemptCount = 0;
-    
-    // Don't attempt if already hooked
-    if (isHooked) return true;
-    
-    auto now = std::chrono::steady_clock::now();
-    
-    // Try more frequently - every 500ms instead of 2 seconds
-    if (initializationAttempted && 
-        std::chrono::duration_cast<std::chrono::milliseconds>(now - lastAttempt).count() < 500) {
-        return false;
-    }
-    
-    initializationAttempted = true;
-    lastAttempt = now;
-    attemptCount++;
-    
-    // Increase max attempts to 240 (2 minutes of trying)
-    if (attemptCount > 240) {
-        LogOut("[OVERLAY] Maximum initialization attempts reached", true);
-        return false;
-    }
-    
-    // 1. Check if game window exists
-    gameWindow = FindEFZWindow();
-    if (!gameWindow) {
-        if (attemptCount % 20 == 0) {  // Log every 10 seconds
-            LogOut("[OVERLAY] EFZ window not found (attempt " + std::to_string(attemptCount) + ")", true);
-        }
-        return false;
-    }
-    
-    // 2. Check if the game has loaded DirectDraw
-    HMODULE ddrawModule = GetModuleHandleA("ddraw.dll");
-    if (!ddrawModule) {
-        if (attemptCount % 20 == 0) {
-            LogOut("[OVERLAY] ddraw.dll not loaded yet", true);
-        }
-        return false;
-    }
-    
-    // 3. Check if player data exists (optional - we can show overlay even without game data)
-    uintptr_t base = GetEFZBase();
-    if (base) {
-        uintptr_t hpAddr1 = ResolvePointer(base, EFZ_BASE_OFFSET_P1, HP_OFFSET);
-        if (hpAddr1) {
-            int hp1 = 0;
-            if (SafeReadMemory(hpAddr1, &hp1, sizeof(int))) {
-                if (hp1 >= 0 && hp1 <= MAX_HP) {
-                    LogOut("[OVERLAY] Game data detected, initializing overlay", true);
-                }
-            }
-        }
-    }
-    
-    // Initialize the overlay
-    LogOut("[OVERLAY] Attempting to initialize DirectDraw hook (attempt " + std::to_string(attemptCount) + ")", true);
-    
-    try {
-        return Initialize();
-    } catch (const std::exception& e) {
-        LogOut("[OVERLAY] Exception during initialization: " + std::string(e.what()), true);
-        return false;
-    } catch (...) {
-        LogOut("[OVERLAY] Unknown exception during initialization", true);
-        return false;
+    if (isHooked) {
+        AddMessage("Hello, World! (DDraw Overlay Test)", RGB(255, 255, 0), 5000, 100, 100);
+        LogOut("[OVERLAY] Test message added.", true);
+    } else {
+        LogOut("[OVERLAY] DDraw hook not active, cannot add test message.", true);
     }
 }
 
