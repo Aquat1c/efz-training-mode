@@ -128,7 +128,7 @@ cmake --build . --config Release
 ```
 
 ## Contributing
-# Contributions are welcome! Major areas that need improvement:
+Contributions are welcome! Major areas that need improvement:
 
 1. More accurate RG frame advantage calculations
 2. Better state detection for defender actionable frames
@@ -137,7 +137,7 @@ cmake --build . --config Release
 
 ## Special Thanks
 
-# Special thanks goes to:
+Special thanks goes to:
 - **fishshapedfish** - Initial CheatEngine tables for the character states and other things.
 - **Ev.Geniy**, **kolya_kaban**, **lazerock** and some other people I probably forgot - Testing and feedback.
 
