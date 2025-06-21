@@ -18,6 +18,7 @@
 #include <commctrl.h> // Add this include for Common Controls
 #include "../include/imgui_impl.h"
 #include "../include/overlay.h"  // Add this include for DirectDrawHook class
+#include "../include/config.h"
 
 #pragma comment(lib, "dinput8.lib")
 #pragma comment(lib, "dxguid.lib")
@@ -163,10 +164,30 @@ std::atomic<bool> keyMonitorRunning(true);
 void MonitorKeys() {
     LogOut("[KEYBINDS] Key monitoring thread started", true);
     
-    // Reset state variables
-    p1Jumping = false;
-    p2Jumping = false;
+    // Get config settings for hotkeys
+    const Config::Settings& cfg = Config::GetSettings();
     
+    // Log the hotkeys for debugging
+    LogOut("[KEYBINDS] Hotkey values from config:", true);
+    LogOut("[KEYBINDS] Teleport key: " + std::to_string(cfg.teleportKey) + " (" + GetKeyName(cfg.teleportKey) + ")", true);
+    LogOut("[KEYBINDS] Record key: " + std::to_string(cfg.recordKey) + " (" + GetKeyName(cfg.recordKey) + ")", true);
+    LogOut("[KEYBINDS] Config key: " + std::to_string(cfg.configMenuKey) + " (" + GetKeyName(cfg.configMenuKey) + ")", true);
+    LogOut("[KEYBINDS] ImGui key: " + std::to_string(cfg.toggleImGuiKey) + " (" + GetKeyName(cfg.toggleImGuiKey) + ")", true);
+    
+    // Fallback to default keys if config values are 0 (invalid)
+    int teleportKey = (cfg.teleportKey > 0) ? cfg.teleportKey : '1';
+    int recordKey = (cfg.recordKey > 0) ? cfg.recordKey : '2';
+    int configKey = (cfg.configMenuKey > 0) ? cfg.configMenuKey : '3';
+    int titleKey = (cfg.toggleTitleKey > 0) ? cfg.toggleTitleKey : '4';
+    int resetFrameKey = (cfg.resetFrameCounterKey > 0) ? cfg.resetFrameCounterKey : '5';
+    int helpKey = (cfg.helpKey > 0) ? cfg.helpKey : '6';
+    int imguiKey = (cfg.toggleImGuiKey > 0) ? cfg.toggleImGuiKey : '7';
+    
+    LogOut("[KEYBINDS] Using actual hotkeys:", true);
+    LogOut("[KEYBINDS] Teleport key: " + std::to_string(teleportKey) + " (" + GetKeyName(teleportKey) + ")", true);
+    LogOut("[KEYBINDS] Record key: " + std::to_string(recordKey) + " (" + GetKeyName(recordKey) + ")", true);
+    LogOut("[KEYBINDS] ImGui key: " + std::to_string(imguiKey) + " (" + GetKeyName(imguiKey) + ")", true);
+
     // Constants for teleport positions
     const double centerX = 320.0;
     const double leftX = 43.6548, rightX = 595.425, teleportY = 0.0;
@@ -189,36 +210,40 @@ void MonitorKeys() {
     // Add this near the beginning of MonitorKeys function
     bool enableDebugLogging = false;  // Set to true when needed for deeper investigation
     
-    static bool wasKey7Pressed = false;
+    static bool wasImGuiKeyPressed = false;
+    
+    // Add base variable declaration here
+    uintptr_t base = 0;
     
     while (keyMonitorRunning) {
-        // Check for online mode
-        if (isOnlineMatch.load()) {
-            Sleep(100);  // Sleep longer in online mode
-            continue;
-        }
+        // Update base address at the start of each loop iteration
+        base = GetEFZBase();
         
-        // Only process hotkeys when EFZ window is active
         if (IsEFZWindowActive()) {
-            // Get base address
-            uintptr_t base = GetEFZBase();
-            
-            // Periodically try to detect key bindings
             if (++detectionCounter >= 100) {
-                detectionCounter = 0;
                 if (!detectedBindings.directionsDetected || !detectedBindings.attacksDetected) {
                     DetectKeyBindings();
                 }
             }
 
-            // Use simple key state checks
-            bool key1Pressed = (GetAsyncKeyState('1') & 0x8000) != 0;
+            // Use the actual key variables, not cfg directly
+            bool teleportKeyPressed = (GetAsyncKeyState(teleportKey) & 0x8000) != 0;
+            bool recordKeyPressed = (GetAsyncKeyState(recordKey) & 0x8000) != 0;
+            bool configKeyPressed = (GetAsyncKeyState(configKey) & 0x8000) != 0;
+            bool titleKeyPressed = (GetAsyncKeyState(titleKey) & 0x8000) != 0;
+            bool resetFrameKeyPressed = (GetAsyncKeyState(resetFrameKey) & 0x8000) != 0;
+            bool helpKeyPressed = (GetAsyncKeyState(helpKey) & 0x8000) != 0;
             
-            // For key combinations, detect inputs from game memory directly
-            uint8_t gameInputs = GetPlayerInputs(1);
+            // Check for ImGui toggle
+            bool imguiKeyPressed = (GetAsyncKeyState(imguiKey) & 0x8000) != 0;
+            if (imguiKeyPressed && !wasImGuiKeyPressed) {
+                LogOut("[DEBUG] Key " + GetKeyName(imguiKey) + " pressed - Toggling ImGui visibility.", true);
+                ImGuiImpl::ToggleVisibility();
+            }
+            wasImGuiKeyPressed = imguiKeyPressed;
             
-            // IMPORTANT: Process key combinations ONLY if key 1 is pressed
-            if (key1Pressed && base) {
+            // IMPORTANT: Process key combinations ONLY if teleport key is pressed
+            if (teleportKeyPressed && base) {
                 // Resolve player positions
                 uintptr_t p1BaseOffset = EFZ_BASE_OFFSET_P1;
                 uintptr_t p2BaseOffset = EFZ_BASE_OFFSET_P2;
@@ -423,55 +448,9 @@ void MonitorKeys() {
                 // Sleep to prevent multiple help displays
                 Sleep(200);
             }
-
-                // Debug key '7' - This block contains the error
-        bool isKey7Pressed = IsKeyPressed('7', true);
-        if (isKey7Pressed && !wasKey7Pressed) {
-            LogOut("[DEBUG] Key 7 pressed - Toggling ImGui visibility.", true);
-            // The line below was calling the old RenderImGui function.
-            // It should now toggle the visibility instead.
-            ImGuiImpl::ToggleVisibility();
-        }
-        wasKey7Pressed = isKey7Pressed;
-            
-            // Debug toggle (Ctrl+D)
-            if ((GetAsyncKeyState(VK_CONTROL) & 0x8000) && (GetAsyncKeyState('D') & 0x8000)) {
-                detailedLogging = !detailedLogging;
-                LogOut("[DEBUG] Detailed logging " + 
-                      std::string(detailedLogging ? "enabled" : "disabled"), true);
-                
-                // Sleep to prevent multiple toggles
-                Sleep(200);
-            }
         }
         
-        // Add this block to enable advanced key logging
-        if ((GetAsyncKeyState(VK_CONTROL) & 0x8000) && (GetAsyncKeyState(VK_SHIFT) & 0x8000) && (GetAsyncKeyState('D') & 0x8000)) {
-            enableDebugLogging = !enableDebugLogging;
-            LogOut("[DEBUG] Advanced key logging " + std::string(enableDebugLogging ? "enabled" : "disabled"), true);
-            Sleep(300);
-        }
-        
-        // Log key states and game inputs for debugging
-        if (enableDebugLogging) {
-            // Log all key states
-            std::stringstream keyLog;
-            keyLog << "[KEYS] ";
-            for (int vk = 0x01; vk <= 0x5F; vk++) {
-                if (GetAsyncKeyState(vk) & 0x8000) {
-                    keyLog << "VK" << std::hex << vk << " ";
-                }
-            }
-            LogOut(keyLog.str(), true);
-            
-            // Log game inputs separately
-            uint8_t p1Input = GetPlayerInputs(1);
-            uint8_t p2Input = GetPlayerInputs(2);
-            LogOut("[INPUTS] P1: " + std::to_string(p1Input) + " P2: " + std::to_string(p2Input), true);
-        }
-        
-        // Sleep to reduce CPU usage
-        Sleep(10);
+        Sleep(5);  // Small sleep to prevent high CPU usage
     }
     
     LogOut("[KEYBINDS] Key monitoring thread exiting", true);

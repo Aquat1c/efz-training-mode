@@ -3,6 +3,8 @@
 #include "../include/memory.h"
 #include "../include/utilities.h"
 #include "../include/logger.h"
+#include "../include/config.h"
+#include "../include/imgui_impl.h"  // Add this include
 #include <windows.h>
 #include <string>
 #include <thread>
@@ -33,65 +35,75 @@ void OpenMenu() {
     menuOpen = true;
     LogOut("[GUI] Opening config menu", true);
 
-    // Get current values from memory
-    uintptr_t base = GetEFZBase();
-    
-    if (base) {
-        // Read current values into displayData
-        uintptr_t hpAddr1 = ResolvePointer(base, EFZ_BASE_OFFSET_P1, HP_OFFSET);
-        uintptr_t meterAddr1 = ResolvePointer(base, EFZ_BASE_OFFSET_P1, METER_OFFSET);
-        uintptr_t rfAddr1 = ResolvePointer(base, EFZ_BASE_OFFSET_P1, RF_OFFSET);
-        uintptr_t xAddr1 = ResolvePointer(base, EFZ_BASE_OFFSET_P1, XPOS_OFFSET);
-        uintptr_t yAddr1 = ResolvePointer(base, EFZ_BASE_OFFSET_P1, YPOS_OFFSET);
+    // Check which UI system to use
+    if (Config::GetSettings().useImGui) {
+        // Use ImGui interface
+        LogOut("[GUI] Using ImGui interface as per config", true);
+        ImGuiImpl::ToggleVisibility();
+    } else {
+        // Use legacy Win32 dialog
+        LogOut("[GUI] Using legacy dialog as per config", true);
         
-        if (hpAddr1) memcpy(&displayData.hp1, (void*)hpAddr1, sizeof(WORD));
-        if (meterAddr1) memcpy(&displayData.meter1, (void*)meterAddr1, sizeof(WORD));
-        if (rfAddr1) memcpy(&displayData.rf1, (void*)rfAddr1, sizeof(double));
-        if (xAddr1) memcpy(&displayData.x1, (void*)xAddr1, sizeof(double));
-        if (yAddr1) memcpy(&displayData.y1, (void*)yAddr1, sizeof(double));
+        // Get current values from memory
+        uintptr_t base = GetEFZBase();
         
-        uintptr_t hpAddr2 = ResolvePointer(base, EFZ_BASE_OFFSET_P2, HP_OFFSET);
-        uintptr_t meterAddr2 = ResolvePointer(base, EFZ_BASE_OFFSET_P2, METER_OFFSET);
-        uintptr_t rfAddr2 = ResolvePointer(base, EFZ_BASE_OFFSET_P2, RF_OFFSET);
-        uintptr_t xAddr2 = ResolvePointer(base, EFZ_BASE_OFFSET_P2, XPOS_OFFSET);
-        uintptr_t yAddr2 = ResolvePointer(base, EFZ_BASE_OFFSET_P2, YPOS_OFFSET);
+        if (base) {
+            // Read current values into displayData
+            uintptr_t hpAddr1 = ResolvePointer(base, EFZ_BASE_OFFSET_P1, HP_OFFSET);
+            uintptr_t meterAddr1 = ResolvePointer(base, EFZ_BASE_OFFSET_P1, METER_OFFSET);
+            uintptr_t rfAddr1 = ResolvePointer(base, EFZ_BASE_OFFSET_P1, RF_OFFSET);
+            uintptr_t xAddr1 = ResolvePointer(base, EFZ_BASE_OFFSET_P1, XPOS_OFFSET);
+            uintptr_t yAddr1 = ResolvePointer(base, EFZ_BASE_OFFSET_P1, YPOS_OFFSET);
+            
+            if (hpAddr1) memcpy(&displayData.hp1, (void*)hpAddr1, sizeof(WORD));
+            if (meterAddr1) memcpy(&displayData.meter1, (void*)meterAddr1, sizeof(WORD));
+            if (rfAddr1) memcpy(&displayData.rf1, (void*)rfAddr1, sizeof(double));
+            if (xAddr1) memcpy(&displayData.x1, (void*)xAddr1, sizeof(double));
+            if (yAddr1) memcpy(&displayData.y1, (void*)yAddr1, sizeof(double));
+            
+            uintptr_t hpAddr2 = ResolvePointer(base, EFZ_BASE_OFFSET_P2, HP_OFFSET);
+            uintptr_t meterAddr2 = ResolvePointer(base, EFZ_BASE_OFFSET_P2, METER_OFFSET);
+            uintptr_t rfAddr2 = ResolvePointer(base, EFZ_BASE_OFFSET_P2, RF_OFFSET);
+            uintptr_t xAddr2 = ResolvePointer(base, EFZ_BASE_OFFSET_P2, XPOS_OFFSET);
+            uintptr_t yAddr2 = ResolvePointer(base, EFZ_BASE_OFFSET_P2, YPOS_OFFSET);
+            
+            if (hpAddr2) memcpy(&displayData.hp2, (void*)hpAddr2, sizeof(WORD));
+            if (meterAddr2) memcpy(&displayData.meter2, (void*)meterAddr2, sizeof(WORD));
+            if (rfAddr2) memcpy(&displayData.rf2, (void*)rfAddr2, sizeof(double));
+            if (xAddr2) memcpy(&displayData.x2, (void*)xAddr2, sizeof(double));
+            if (yAddr2) memcpy(&displayData.y2, (void*)yAddr2, sizeof(double));
+            
+            // Update settings from atomic variables
+            displayData.autoAirtech = autoAirtechEnabled.load();
+            displayData.airtechDirection = autoAirtechDirection.load();
+            displayData.autoJump = autoJumpEnabled.load();
+            displayData.jumpDirection = jumpDirection.load();
+            displayData.jumpTarget = jumpTarget.load();
+            
+            displayData.autoAction = autoActionEnabled.load();
+            displayData.autoActionType = autoActionType.load();
+            displayData.autoActionCustomID = autoActionCustomID.load();
+            displayData.autoActionPlayer = autoActionPlayer.load();
+            
+            displayData.triggerAfterBlock = triggerAfterBlockEnabled.load();
+            displayData.triggerOnWakeup = triggerOnWakeupEnabled.load();
+            displayData.triggerAfterHitstun = triggerAfterHitstunEnabled.load();
+            displayData.triggerAfterAirtech = triggerAfterAirtechEnabled.load();
+            
+            displayData.delayAfterBlock = triggerAfterBlockDelay.load();
+            displayData.delayOnWakeup = triggerOnWakeupDelay.load();
+            displayData.delayAfterHitstun = triggerAfterHitstunDelay.load();
+            displayData.delayAfterAirtech = triggerAfterAirtechDelay.load();
+        }
+        else {
+            LogOut("[GUI] Failed to get game base address", true);
+            menuOpen = false;
+            return;
+        }
         
-        if (hpAddr2) memcpy(&displayData.hp2, (void*)hpAddr2, sizeof(WORD));
-        if (meterAddr2) memcpy(&displayData.meter2, (void*)meterAddr2, sizeof(WORD));
-        if (rfAddr2) memcpy(&displayData.rf2, (void*)rfAddr2, sizeof(double));
-        if (xAddr2) memcpy(&displayData.x2, (void*)xAddr2, sizeof(double));
-        if (yAddr2) memcpy(&displayData.y2, (void*)yAddr2, sizeof(double));
-        
-        // Update settings from atomic variables
-        displayData.autoAirtech = autoAirtechEnabled.load();
-        displayData.airtechDirection = autoAirtechDirection.load();
-        displayData.autoJump = autoJumpEnabled.load();
-        displayData.jumpDirection = jumpDirection.load();
-        displayData.jumpTarget = jumpTarget.load();
-        
-        displayData.autoAction = autoActionEnabled.load();
-        displayData.autoActionType = autoActionType.load();
-        displayData.autoActionCustomID = autoActionCustomID.load();
-        displayData.autoActionPlayer = autoActionPlayer.load();
-        
-        displayData.triggerAfterBlock = triggerAfterBlockEnabled.load();
-        displayData.triggerOnWakeup = triggerOnWakeupEnabled.load();
-        displayData.triggerAfterHitstun = triggerAfterHitstunEnabled.load();
-        displayData.triggerAfterAirtech = triggerAfterAirtechEnabled.load();
-        
-        displayData.delayAfterBlock = triggerAfterBlockDelay.load();
-        displayData.delayOnWakeup = triggerOnWakeupDelay.load();
-        displayData.delayAfterHitstun = triggerAfterHitstunDelay.load();
-        displayData.delayAfterAirtech = triggerAfterAirtechDelay.load();
+        // Show the dialog
+        ShowEditDataDialog(NULL);
     }
-    else {
-        LogOut("[GUI] Failed to get game base address", true);
-        menuOpen = false;
-        return;
-    }
-    
-    // Show the dialog
-    ShowEditDataDialog(NULL);
 }
 
 void ApplySettings(DisplayData* data) {

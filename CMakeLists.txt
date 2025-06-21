@@ -1,8 +1,8 @@
 cmake_minimum_required(VERSION 3.10)
 project(efz_training_mode)
 
-# Set C++ standard
-set(CMAKE_CXX_STANDARD 14)
+# Set C++ standard to C++17 for std::filesystem support
+set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # Force 32-bit build
@@ -69,6 +69,7 @@ set(SOURCES
     src/frame_advantage.cpp
     src/network.cpp
     src/overlay.cpp
+    src/config.cpp  # Add this new file
     # Add new ImGui implementation files
     src/imgui_impl.cpp
     src/imgui_gui.cpp
@@ -100,6 +101,17 @@ target_link_libraries(efz_training_mode PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/minhook/lib/libMinHook.x86.lib  # Add this line
     legacy_stdio_definitions
 )
+
+# Add explicit LTCG flag and resolve library conflicts
+if(MSVC)
+    # Enable Link Time Code Generation explicitly
+    set_target_properties(efz_training_mode PROPERTIES
+        LINK_FLAGS "/LTCG")
+    
+    # If needed, exclude conflicting libraries
+    # Uncomment if build issues persist
+    # target_link_options(efz_training_mode PRIVATE "/NODEFAULTLIB:MSVCRT")
+endif()
 
 # Set output directories if needed
 set_target_properties(efz_training_mode PROPERTIES
