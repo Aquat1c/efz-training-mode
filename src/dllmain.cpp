@@ -14,6 +14,7 @@
 #include "../include/overlay.h"
 #include "../include/imgui_impl.h"
 #include "../include/imgui_gui.h"
+#include "../include/config.h"
 
 // Forward declarations for functions in other files
 void MonitorKeys();
@@ -22,6 +23,9 @@ void UpdateConsoleTitle();
 void MonitorOnlineStatus();
 void WriteStartupLog(const std::string& message);
 extern std::atomic<bool> inStartupPhase;
+
+// Add this declaration before it's used
+void InitializeConfig();
 
 // Add this flag to track initialization state
 std::atomic<bool> g_initialized(false);
@@ -53,6 +57,9 @@ void DelayedInitialization(HMODULE hModule) {
     LogOut("[SYSTEM] EFZ Training Mode - Delayed initialization starting", true);
     LogOut("[SYSTEM] Console initialized with code page: " + std::to_string(GetConsoleOutputCP()), true);
     LogOut("[SYSTEM] Current locale: C", true);
+    
+    // Initialize configuration system - ADD THIS LINE
+    InitializeConfig();
     
     // Start threads with small delays between them to avoid race conditions
     WriteStartupLog("Starting MonitorKeys thread...");
@@ -126,6 +133,20 @@ void DelayedInitialization(HMODULE hModule) {
             Sleep(5000);
         }
     }).detach();
+}
+
+// Implementation of the function
+void InitializeConfig() {
+    LogOut("[SYSTEM] Initializing configuration system...", true);
+    if (Config::Initialize()) {
+        LogOut("[SYSTEM] Configuration loaded successfully", true);
+        
+        // Apply settings
+        detailedLogging = Config::GetSettings().detailedLogging;
+    }
+    else {
+        LogOut("[SYSTEM] Failed to initialize configuration, using defaults", true);
+    }
 }
 
 // In the DllMain function, keep the existing code as is

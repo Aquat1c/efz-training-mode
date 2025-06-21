@@ -6,6 +6,7 @@
 #include "../include/di_keycodes.h"
 #include "../include/frame_analysis.h"    // ADD THIS - for IsBlockstunState
 #include "../include/frame_advantage.h"   // ADD THIS - for IsAttackMove
+#include "../include/config.h"
 #include <sstream>
 #include <iomanip>
 #include <iostream>  // Add this include for std::cout and std::cerr
@@ -413,70 +414,78 @@ void ResetFrameCounter() {
 }
 
 void ShowHotkeyInfo() {
-    std::locale::global(std::locale("C"));
+    // Get configured hotkeys
+    const Config::Settings& cfg = Config::GetSettings();
     
-    // Clear the console before showing the help
+    // Use default keys if config values are 0 (invalid)
+    int teleportKey = (cfg.teleportKey > 0) ? cfg.teleportKey : '1';
+    int recordKey = (cfg.recordKey > 0) ? cfg.recordKey : '2';
+    int configKey = (cfg.configMenuKey > 0) ? cfg.configMenuKey : '3';
+    int titleKey = (cfg.toggleTitleKey > 0) ? cfg.toggleTitleKey : '4';
+    int resetFrameKey = (cfg.resetFrameCounterKey > 0) ? cfg.resetFrameCounterKey : '5'; 
+    int helpKey = (cfg.helpKey > 0) ? cfg.helpKey : '6';
+    int imguiKey = (cfg.toggleImGuiKey > 0) ? cfg.toggleImGuiKey : '7';
+    
+    // Get key names for display
+    std::string teleportKeyName = GetKeyName(teleportKey);
+    std::string recordKeyName = GetKeyName(recordKey);
+    std::string configKeyName = GetKeyName(configKey);
+    std::string titleKeyName = GetKeyName(titleKey);
+    std::string resetFrameKeyName = GetKeyName(resetFrameKey);
+    std::string helpKeyName = GetKeyName(helpKey);
+    std::string imguiKeyName = GetKeyName(imguiKey);
+    
+    // Display the help text using the actual key names
     system("cls");
-    
-    // Get key/button names based on the detected input device
-    std::string leftKey = "←", rightKey = "→", upKey = "↑", downKey = "↓", aKey = "A";
-    
-    // Only use detected values if they've been found
-    if (detectedBindings.directionsDetected) {
-        leftKey = GetKeyName(detectedBindings.leftKey);
-        rightKey = GetKeyName(detectedBindings.rightKey);
-        upKey = GetKeyName(detectedBindings.upKey);
-        downKey = GetKeyName(detectedBindings.downKey);
-        
-        if (detectedBindings.attacksDetected) {
-            aKey = GetKeyName(detectedBindings.aButton);
-        }
-    }
-    
-    LogOut("\n--- EFZ TRAINING MODE CONTROLS ---", true);
-    
-    // Show the detected input device if available
-    if (!detectedBindings.deviceName.empty()) {
-        LogOut("Detected input device: " + detectedBindings.deviceName, true);
-    }
-    
-    LogOut("\nKey Combinations:", true);
-    LogOut("1: Teleport players to recorded/default position", true);
-    LogOut("  + 1+" + leftKey + " (P1's Left): Teleport both players to left side", true);
-    LogOut("  + 1+" + rightKey + " (P1's Right): Teleport both players to right side", true);
-    // FIX: Correct these two lines to match the actual functionality
-    LogOut("  + 1+" + upKey + " (P1's Up): Swap P1 and P2 positions", true);
-    LogOut("  + 1+" + downKey + " (P1's Down): Place players close together at center", true);
-    LogOut("  + 1+" + downKey + "+" + aKey + " (P1's Down + Light Attack): Place players at round start positions", true);
-    LogOut("2: Record current player positions", true);
-    LogOut("3: Open config menu", true);
-    LogOut("4: Toggle title display mode", true);
-    LogOut("5: Reset frame counter", true);
-    LogOut("6: Show this help and clear console", true);
-    LogOut("T: Test overlay system (Hello, world)", true);
+    LogOut("--- EFZ TRAINING MODE CONTROLS ---", true);
+    LogOut("Detected input device: " + detectedBindings.deviceName, true);
+    LogOut("", true);
+    LogOut("Key Combinations:", true);
+    LogOut("", true);
+    LogOut(teleportKeyName + ": Teleport players to recorded/default position", true);
+    LogOut("", true);
+    LogOut("  + " + teleportKeyName + "+← (P1's Left): Teleport both players to left side", true);
+    LogOut("", true);
+    LogOut("  + " + teleportKeyName + "+→ (P1's Right): Teleport both players to right side", true);
+    LogOut("", true);
+    LogOut("  + " + teleportKeyName + "+↑ (P1's Up): Swap P1 and P2 positions", true);
+    LogOut("", true);
+    LogOut("  + " + teleportKeyName + "+↓ (P1's Down): Place players close together at center", true);
+    LogOut("", true);
+    LogOut("  + " + teleportKeyName + "+↓+Z (P1's Down + Light Attack): Place players at round start positions", true);
+    LogOut("", true);
+    LogOut(recordKeyName + ": Record current player positions", true);
+    LogOut("", true);
+    LogOut(configKeyName + ": Open config menu", true);
+    LogOut("", true);
+    LogOut(titleKeyName + ": Toggle title display mode", true);
+    LogOut("", true);
+    LogOut(resetFrameKeyName + ": Reset frame counter", true);
+    LogOut("", true);
+    LogOut(helpKeyName + ": Show this help and clear console", true);
+    LogOut("", true);
+    LogOut(imguiKeyName + ": Toggle ImGui overlay interface", true);
     LogOut("", true);
     
-    // Show message about detected keys
-    if (!detectedBindings.directionsDetected || !detectedBindings.attacksDetected) {
-        LogOut("NOTE: Some input bindings haven't been detected yet.", true);
-        LogOut("      Play the game for a while to improve detection.", true);
-    } else {
-        LogOut("NOTE: Input bindings have been detected for your controls.", true);
-        
-        if (detectedBindings.inputDevice == INPUT_DEVICE_GAMEPAD) {
-            LogOut("      Using " + detectedBindings.deviceName + " (Gamepad " + 
-                   std::to_string(detectedBindings.gamepadIndex + 1) + ")", true);
-        } else {
-            LogOut("      Using keyboard controls", true);
-        }
-    }
-    
+    LogOut("", true);
+    LogOut("NOTE: Input bindings have been detected for your controls.", true);
+    LogOut("", true);
+    LogOut("      Using " + detectedBindings.deviceName, true);
+    LogOut("", true);
     LogOut("-------------------------", true);
+    LogOut("", true);
+    LogOut("Configuration file: " + Config::GetConfigFilePath(), true);
+    LogOut("", true);
 }
 
 // Add this function
 
 std::string GetKeyName(int virtualKey) {
+    // Handle invalid key code
+    if (virtualKey <= 0) {
+        return "Unknown";
+    }
+    
     unsigned int scanCode = MapVirtualKey(virtualKey, MAPVK_VK_TO_VSC);
     
     // Handle extended keys
