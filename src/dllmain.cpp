@@ -11,6 +11,9 @@
 #include "../include/network.h"
 #include "../include/di_keycodes.h"
 #include "../include/input_handler.h"
+#include "../include/overlay.h"
+#include "../include/imgui_impl.h"
+#include "../include/imgui_gui.h"
 
 // Forward declarations for functions in other files
 void MonitorKeys();
@@ -87,14 +90,45 @@ void DelayedInitialization(HMODULE hModule) {
     ShowHotkeyInfo();
     WriteStartupLog("Help screen shown");
     
+    // NEW: Replace the old overlay logic with the new D3D9 hook initialization.
+    std::thread([]{
+        // Wait for the game window and D3D to be ready.
+        Sleep(5000);
+        
+        if (DirectDrawHook::InitializeD3D9()) {
+            LogOut("[SYSTEM] ImGui D3D9 hook initialized successfully.", true);
+        } else {
+            LogOut("[SYSTEM] FATAL: Could not initialize ImGui D3D9 hook.", true);
+        }
+    }).detach();
+    
     // Set initialization flag and stop startup logging
     g_initialized = true;
     inStartupPhase = false;
 
     // Initialize RF freeze thread
     InitRFFreezeThread();
+    
+    // Add ImGui monitoring thread
+    std::thread([]{
+        // Wait a bit for everything to initialize
+        Sleep(5000);
+        
+        // Log ImGui rendering status every few seconds
+        while (true) {
+            if (ImGuiImpl::IsInitialized()) {
+                LogOut("[IMGUI_MONITOR] Status: Initialized=" + 
+                      std::to_string(ImGuiImpl::IsInitialized()) + 
+                      ", Visible=" + std::to_string(ImGuiImpl::IsVisible()), true);
+            }
+            
+            // Check every 5 seconds
+            Sleep(5000);
+        }
+    }).detach();
 }
 
+// In the DllMain function, keep the existing code as is
 BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserved) {
     if (ul_reason_for_call == DLL_PROCESS_ATTACH) {
         // Begin minimal startup logging
@@ -120,6 +154,12 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
         // Return immediately to let the game continue loading
         WriteStartupLog("DLL_PROCESS_ATTACH complete, returning control to game");
         return TRUE;
+    }
+    else if (ul_reason_for_call == DLL_PROCESS_DETACH) {
+        // Clean up the D3D9 hook and ImGui
+        DirectDrawHook::ShutdownD3D9();
+        // Clean up the overlay
+        DirectDrawHook::Shutdown();
     }
     return TRUE;
 }

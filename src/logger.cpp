@@ -6,7 +6,7 @@
 #include "../include/memory.h"
 #include "../include/constants.h"
 #include <iostream>
-#include <sstream>
+#include <sstream> // Required for std::ostringstream
 #include <chrono>
 #include <iomanip>
 #include <windows.h>
@@ -16,6 +16,18 @@
 std::mutex g_logMutex;
 std::atomic<bool> detailedTitleMode(false);
 std::atomic<bool> detailedDebugOutput(false);
+
+// NEW: Definition for Logger::hwndToString
+namespace Logger {
+    std::string hwndToString(HWND hwnd) {
+        if (hwnd == NULL) {
+            return "NULL";
+        }
+        std::ostringstream oss;
+        oss << hwnd;
+        return oss.str();
+    }
+}
 
 void LogOut(const std::string& msg, bool consoleOutput) {
     // Only output to console if requested
@@ -112,68 +124,74 @@ short GetCurrentMoveID(int player) {
 }
 
 void UpdateConsoleTitle() {
+    // Keep this thread at normal priority since you want it to keep up with the game
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_NORMAL);
+    
     while (true) {
         // Check if the console window still exists
         if (GetConsoleWindow() == nullptr) {
-            // Console window was closed, exit thread
             break;
         }
 
-        char title[256];
+        char title[512];
         uintptr_t base = GetEFZBase();
         
-        // Refresh display data from memory before updating title
+        // Keep the fast update rate as requested - every 250ms
         if (base != 0) {
-            // Read P1 data
-            uintptr_t hpAddr1 = ResolvePointer(base, EFZ_BASE_OFFSET_P1, HP_OFFSET);
-            uintptr_t meterAddr1 = ResolvePointer(base, EFZ_BASE_OFFSET_P1, METER_OFFSET);
-            uintptr_t rfAddr1 = ResolvePointer(base, EFZ_BASE_OFFSET_P1, RF_OFFSET);
-            uintptr_t xAddr1 = ResolvePointer(base, EFZ_BASE_OFFSET_P1, XPOS_OFFSET);
-            uintptr_t yAddr1 = ResolvePointer(base, EFZ_BASE_OFFSET_P1, YPOS_OFFSET);
+            // Cache memory addresses to avoid repeated ResolvePointer calls
+            static uintptr_t cachedAddresses[12] = {0};
+            static int titleCacheCounter = 0;
             
-            // Read P2 data
-            uintptr_t hpAddr2 = ResolvePointer(base, EFZ_BASE_OFFSET_P2, HP_OFFSET);
-            uintptr_t meterAddr2 = ResolvePointer(base, EFZ_BASE_OFFSET_P2, METER_OFFSET);
-            uintptr_t rfAddr2 = ResolvePointer(base, EFZ_BASE_OFFSET_P2, RF_OFFSET);
-            uintptr_t xAddr2 = ResolvePointer(base, EFZ_BASE_OFFSET_P2, XPOS_OFFSET);
-            uintptr_t yAddr2 = ResolvePointer(base, EFZ_BASE_OFFSET_P2, YPOS_OFFSET);
+            // Refresh cached addresses every 20 iterations (5 seconds)
+            if (titleCacheCounter++ >= 20) {
+                cachedAddresses[0] = ResolvePointer(base, EFZ_BASE_OFFSET_P1, HP_OFFSET);
+                cachedAddresses[1] = ResolvePointer(base, EFZ_BASE_OFFSET_P1, METER_OFFSET);
+                cachedAddresses[2] = ResolvePointer(base, EFZ_BASE_OFFSET_P1, RF_OFFSET);
+                cachedAddresses[3] = ResolvePointer(base, EFZ_BASE_OFFSET_P1, XPOS_OFFSET);
+                cachedAddresses[4] = ResolvePointer(base, EFZ_BASE_OFFSET_P1, YPOS_OFFSET);
+                cachedAddresses[5] = ResolvePointer(base, EFZ_BASE_OFFSET_P2, HP_OFFSET);
+                cachedAddresses[6] = ResolvePointer(base, EFZ_BASE_OFFSET_P2, METER_OFFSET);
+                cachedAddresses[7] = ResolvePointer(base, EFZ_BASE_OFFSET_P2, RF_OFFSET);
+                cachedAddresses[8] = ResolvePointer(base, EFZ_BASE_OFFSET_P2, XPOS_OFFSET);
+                cachedAddresses[9] = ResolvePointer(base, EFZ_BASE_OFFSET_P2, YPOS_OFFSET);
+                // Add character name addresses to cached addresses
+                cachedAddresses[10] = ResolvePointer(base, EFZ_BASE_OFFSET_P1, CHARACTER_NAME_OFFSET);
+                cachedAddresses[11] = ResolvePointer(base, EFZ_BASE_OFFSET_P2, CHARACTER_NAME_OFFSET);
+                titleCacheCounter = 0;
+            }
             
-            // Update the display data structure
-            if (hpAddr1) memcpy(&displayData.hp1, (void*)hpAddr1, sizeof(WORD));
-            if (meterAddr1) memcpy(&displayData.meter1, (void*)meterAddr1, sizeof(WORD));
-            if (rfAddr1) {
-                // Read RF value as a double (8 bytes)
+            // Read values using cached addresses (existing code)
+            if (cachedAddresses[0]) memcpy(&displayData.hp1, (void*)cachedAddresses[0], sizeof(WORD));
+            if (cachedAddresses[1]) memcpy(&displayData.meter1, (void*)cachedAddresses[1], sizeof(WORD));
+            if (cachedAddresses[2]) {
                 double rf = 0.0;
-                memcpy(&rf, (void*)rfAddr1, sizeof(double));
-                
-                // Validate RF value (should be between 0 and 1000)
+                memcpy(&rf, (void*)cachedAddresses[2], sizeof(double));
                 if (rf >= 0.0 && rf <= MAX_RF) {
                     displayData.rf1 = rf;
-                } else {
-                    // If value is out of valid range, set to a reasonable default
-                    displayData.rf1 = 0.0;
                 }
             }
-            if (xAddr1) memcpy(&displayData.x1, (void*)xAddr1, sizeof(double));
-            if (yAddr1) memcpy(&displayData.y1, (void*)yAddr1, sizeof(double));
+            if (cachedAddresses[3]) memcpy(&displayData.x1, (void*)cachedAddresses[3], sizeof(double));
+            if (cachedAddresses[4]) memcpy(&displayData.y1, (void*)cachedAddresses[4], sizeof(double));
             
-            if (hpAddr2) memcpy(&displayData.hp2, (void*)hpAddr2, sizeof(WORD));
-            if (meterAddr2) memcpy(&displayData.meter2, (void*)meterAddr2, sizeof(WORD));
-            if (rfAddr2) {
-                // Read RF value as a double (8 bytes)
+            if (cachedAddresses[5]) memcpy(&displayData.hp2, (void*)cachedAddresses[5], sizeof(WORD));
+            if (cachedAddresses[6]) memcpy(&displayData.meter2, (void*)cachedAddresses[6], sizeof(WORD));
+            if (cachedAddresses[7]) {
                 double rf = 0.0;
-                memcpy(&rf, (void*)rfAddr2, sizeof(double));
-                
-                // Validate RF value (should be between 0 and 1000)
+                memcpy(&rf, (void*)cachedAddresses[7], sizeof(double));
                 if (rf >= 0.0 && rf <= MAX_RF) {
                     displayData.rf2 = rf;
-                } else {
-                    // If value is out of valid range, set to a reasonable default
-                    displayData.rf2 = 0.0;
                 }
             }
-            if (xAddr2) memcpy(&displayData.x2, (void*)xAddr2, sizeof(double));
-            if (yAddr2) memcpy(&displayData.y2, (void*)yAddr2, sizeof(double));
+            if (cachedAddresses[8]) memcpy(&displayData.x2, (void*)cachedAddresses[8], sizeof(double));
+            if (cachedAddresses[9]) memcpy(&displayData.y2, (void*)cachedAddresses[9], sizeof(double));
+            if (cachedAddresses[10]) {
+                SafeReadMemory(cachedAddresses[10], displayData.p1CharName, sizeof(displayData.p1CharName) - 1);
+                displayData.p1CharName[sizeof(displayData.p1CharName) - 1] = '\0'; // Ensure null termination
+            }
+            if (cachedAddresses[11]) {
+                SafeReadMemory(cachedAddresses[11], displayData.p2CharName, sizeof(displayData.p2CharName) - 1);
+                displayData.p2CharName[sizeof(displayData.p2CharName) - 1] = '\0'; // Ensure null termination
+            }
         }
         
         // Check if we can access game data or if all values are default/zero
@@ -188,26 +206,69 @@ void UpdateConsoleTitle() {
                 "EFZ Training Mode | Waiting for match to start... | Press 3 to open config menu | Press 6 for help");
         } 
         else if (detailedTitleMode) {
-            // Detailed mode - show frame counters and move IDs
+            // Detailed mode - show frame counters correctly
+            int currentVisualFrame = frameCounter.load();
+            double secondsElapsed = currentVisualFrame / 64.0; // 64 visual FPS
+            
             sprintf_s(title, 
-                "EFZ DLL | Frame: %d (Visual: %.1f) | P1 Move: %d | P2 Move: %d | Detailed: %s",
-                frameCounter.load(),
-                frameCounter.load() / SUBFRAMES_PER_VISUAL_FRAME,
+                "EFZ DLL | Visual Frame: %d (%.2fs @ 64FPS) | P1 Move: %d | P2 Move: %d | Detailed: %s",
+                currentVisualFrame,
+                secondsElapsed,
                 GetCurrentMoveID(1),
                 GetCurrentMoveID(2),
                 detailedLogging.load() ? "ON" : "OFF");
+            
+            // Add auto-action status if enabled
+            if (autoActionEnabled.load()) {
+                std::string triggerTypes = "";
+                if (triggerAfterBlockEnabled.load()) triggerTypes += "Block ";
+                if (triggerOnWakeupEnabled.load()) triggerTypes += "Wakeup ";
+                if (triggerAfterHitstunEnabled.load()) triggerTypes += "Hitstun ";
+                if (triggerAfterAirtechEnabled.load()) triggerTypes += "Airtech ";
+                
+                if (triggerTypes.empty()) {
+                    triggerTypes = "None";
+                } else {
+                    // Remove trailing space
+                    triggerTypes = triggerTypes.substr(0, triggerTypes.length() - 1);
+                }
+                
+                std::string actionName;
+                switch (autoActionType.load()) {
+                    case ACTION_5A: actionName = "5A"; break;
+                    case ACTION_5B: actionName = "5B"; break;
+                    case ACTION_5C: actionName = "5C"; break;
+                    case ACTION_2A: actionName = "2A"; break;
+                    case ACTION_2B: actionName = "2B"; break;
+                    case ACTION_2C: actionName = "2C"; break;
+                    case ACTION_JUMP: actionName = "Jump"; break;
+                    case ACTION_BACKDASH: actionName = "Backdash"; break;
+                    case ACTION_BLOCK: actionName = "Block"; break;
+                    case ACTION_CUSTOM: actionName = "Custom(" + std::to_string(autoActionCustomID.load()) + ")"; break;
+                    default: actionName = "Unknown"; break;
+                }
+                
+                // Append auto-action info to title
+                strcat_s(title, " | Auto: ");
+                strcat_s(title, actionName.c_str());
+                strcat_s(title, " (");
+                strcat_s(title, triggerTypes.c_str());
+                strcat_s(title, ")");
+            }
         } 
         else {
             // Normal mode - show player stats
             sprintf_s(title,
-                "EFZ DLL | P1 HP:%d Meter:%d RF:%.1f X:%.1f Y:%.1f | P2 HP:%d Meter:%d RF:%.1f X:%.1f Y:%.1f",
-                displayData.hp1, displayData.meter1, displayData.rf1, displayData.x1, displayData.y1,
-                displayData.hp2, displayData.meter2, displayData.rf2, displayData.x2, displayData.y2);
+                "EFZ Training Mode | P1: %s (HP:%d) vs P2: %s (HP:%d) | Press 3 to open menu",
+                displayData.p1CharName[0] ? displayData.p1CharName : "Unknown",
+                displayData.hp1,
+                displayData.p2CharName[0] ? displayData.p2CharName : "Unknown", 
+                displayData.hp2);
         }
         
         SetConsoleTitleA(title);
         
-        // Update at 64Hz to match EFZ's update frequency
-        Sleep(15);  // ~64 updates per second
+        // Keep the fast 250ms update as requested
+        Sleep(250);
     }
 }
