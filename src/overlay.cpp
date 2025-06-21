@@ -16,6 +16,7 @@
 #include <mutex>
 #include <deque>
 #include "../include/imgui_gui.h"
+#include "../3rdparty/minhook/include/MinHook.h"
 
 // --- Define static members of DirectDrawHook ---
 DirectDrawCreateFunc DirectDrawHook::originalDirectDrawCreate = nullptr;
@@ -143,32 +144,62 @@ HRESULT WINAPI DirectDrawHook::HookedFlip(IDirectDrawSurface7* This,
 
 // --- NEW: The Correct D3D9 EndScene Hook ---
 HRESULT WINAPI HookedEndScene(LPDIRECT3DDEVICE9 pDevice) {
+    static std::mutex renderMutex;
+    
+    // Prevent crashes caused by null device
+    if (!pDevice) {
+        return oEndScene ? oEndScene(pDevice) : D3DERR_INVALIDCALL;
+    }
+    
+    // Store device pointer for initialization (without race conditions)
     if (!g_pd3dDevice) {
-        g_pd3dDevice = pDevice;
+        std::lock_guard<std::mutex> lock(renderMutex);
+        if (!g_pd3dDevice) { // Double-check after lock
+            g_pd3dDevice = pDevice;
+            LogOut("[IMGUI] D3D device obtained", true);
+        }
     }
-
-    // Initialize ImGui on the first call to EndScene
-    if (!ImGuiImpl::IsInitialized()) {
-        LogOut("[D3D9] First EndScene call, initializing ImGui.", true);
-        ImGuiImpl::Initialize(pDevice);
-    }
-
-    // Render the ImGui frame if it's visible
-    if (ImGuiImpl::IsVisible()) {
-        // CRITICAL: Save device state, render ImGui, then restore state.
-        // This prevents the black screen and rendering artifacts.
-        IDirect3DStateBlock9* stateBlock = nullptr;
-        if (SUCCEEDED(pDevice->CreateStateBlock(D3DSBT_ALL, &stateBlock))) {
-            stateBlock->Capture();
-
-            ImGuiImpl::RenderFrame();
-
-            stateBlock->Apply();
-            stateBlock->Release();
+    
+    // Initialize ImGui at the first possible moment - but safely
+    static bool imguiInitStarted = false;
+    if (!ImGuiImpl::IsInitialized() && g_pd3dDevice && !imguiInitStarted) {
+        std::lock_guard<std::mutex> lock(renderMutex);
+        if (!imguiInitStarted) { // Double-check after lock
+            imguiInitStarted = true;
+            
+            // Initialize directly without threading - safer approach
+            try {
+                bool success = ImGuiImpl::Initialize(g_pd3dDevice);
+                LogOut("[IMGUI] ImGui initialization " + 
+                      std::string(success ? "succeeded" : "failed"), true);
+            }
+            catch (const std::exception& e) {
+                LogOut("[IMGUI] Exception during ImGui initialization: " + 
+                      std::string(e.what()), true);
+            }
+            catch (...) {
+                LogOut("[IMGUI] Unknown exception during ImGui initialization", true);
+            }
         }
     }
 
-    // Call the original EndScene function to let the game finish rendering
+    // Render ImGui with proper synchronization
+    if (ImGuiImpl::IsInitialized() && ImGuiImpl::IsVisible()) {
+        std::lock_guard<std::mutex> lock(renderMutex);
+        try {
+            ImGuiImpl::RenderFrame();
+        }
+        catch (const std::exception& e) {
+            LogOut("[IMGUI] Exception during ImGui rendering: " + 
+                  std::string(e.what()), true);
+        }
+        catch (...) {
+            LogOut("[IMGUI] Unknown exception during ImGui rendering", true);
+            // Don't disable rendering on exception to avoid permanent breakage
+        }
+    }
+
+    // Call the original EndScene
     return oEndScene(pDevice);
 }
 
@@ -572,50 +603,102 @@ void DirectDrawHook::ClearAllMessages() {
 
 // --- NEW: D3D9 Hook Initialization and Shutdown ---
 bool DirectDrawHook::InitializeD3D9() {
-    if (g_d3d9Hooked) return true;
-
-    LogOut("[D3D9] Attempting to hook D3D9 EndScene...", true);
-
-    // Create a dummy D3D device to get the v-table
-    IDirect3D9* pD3D = Direct3DCreate9(D3D_SDK_VERSION);
-    if (!pD3D) {
-        LogOut("[D3D9] Error: Direct3DCreate9 failed.", true);
+    LogOut("[OVERLAY] Attempting to initialize D3D9 hook", true);
+    
+    if (g_d3d9Hooked) {
+        LogOut("[OVERLAY] D3D9 already hooked", true);
+        return true;
+    }
+    
+    // Initialize MinHook
+    if (MH_Initialize() != MH_OK) {
+        LogOut("[OVERLAY] Failed to initialize MinHook", true);
         return false;
     }
-
+    
+    // Find the game window
+    HWND gameWindow = FindEFZWindow();
+    if (!gameWindow) {
+        LogOut("[OVERLAY] Failed to find EFZ window", true);
+        return false;
+    }
+    
+    LogOut("[OVERLAY] Found game window: " + Logger::hwndToString(gameWindow), true);
+    
+    // Get the D3D9 module handle
+    HMODULE d3d9Module = GetModuleHandleA("d3d9.dll");
+    if (!d3d9Module) {
+        // Try to load it if it's not already loaded
+        d3d9Module = LoadLibraryA("d3d9.dll");
+        if (!d3d9Module) {
+            LogOut("[OVERLAY] Failed to get d3d9.dll module", true);
+            return false;
+        }
+    }
+    
+    // Get the address of Direct3DCreate9
+    auto Direct3DCreate9_fn = (LPDIRECT3D9(WINAPI*)(UINT))(GetProcAddress(d3d9Module, "Direct3DCreate9"));
+    if (!Direct3DCreate9_fn) {
+        LogOut("[OVERLAY] Failed to get Direct3DCreate9 address", true);
+        return false;
+    }
+    
+    // Create a D3D9 object
+    LPDIRECT3D9 d3d9 = Direct3DCreate9_fn(D3D_SDK_VERSION);
+    if (!d3d9) {
+        LogOut("[OVERLAY] Failed to create D3D9 object", true);
+        return false;
+    }
+    
+    // Set up present parameters
     D3DPRESENT_PARAMETERS d3dpp = {};
     d3dpp.Windowed = TRUE;
     d3dpp.SwapEffect = D3DSWAPEFFECT_DISCARD;
-    d3dpp.hDeviceWindow = FindEFZWindow();
-
-    IDirect3DDevice9* pDummyDevice = nullptr;
-    HRESULT hr = pD3D->CreateDevice(D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, d3dpp.hDeviceWindow,
-                                    D3DCREATE_SOFTWARE_VERTEXPROCESSING, &d3dpp, &pDummyDevice);
-    if (FAILED(hr) || !pDummyDevice) {
-        LogOut("[D3D9] Error: Failed to create dummy D3D device.", true);
-        pD3D->Release();
+    d3dpp.BackBufferFormat = D3DFMT_UNKNOWN;
+    d3dpp.BackBufferWidth = 2;
+    d3dpp.BackBufferHeight = 2;
+    d3dpp.PresentationInterval = D3DPRESENT_INTERVAL_IMMEDIATE;
+    
+    // Create a temporary device to get the VTable
+    LPDIRECT3DDEVICE9 tempDevice;
+    HRESULT hr = d3d9->CreateDevice(
+        D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, gameWindow,
+        D3DCREATE_SOFTWARE_VERTEXPROCESSING, &d3dpp, &tempDevice);
+        
+    if (FAILED(hr)) {
+        LogOut("[OVERLAY] Failed to create temp D3D9 device: " + std::to_string(hr), true);
+        d3d9->Release();
         return false;
     }
-
-    // Get the v-table address
-    void** vTable = *reinterpret_cast<void***>(pDummyDevice);
-    pDummyDevice->Release();
-    pD3D->Release();
-
-    // Hook EndScene (v-table index 42)
-    oEndScene = (EndScene_t)vTable[42];
-
-    DetourTransactionBegin();
-    DetourUpdateThread(GetCurrentThread());
-    DetourAttach(&(PVOID&)oEndScene, HookedEndScene);
-    if (DetourTransactionCommit() == NO_ERROR) {
-        LogOut("[D3D9] Successfully hooked EndScene.", true);
-        g_d3d9Hooked = true;
-        return true;
+    
+    // Get the function pointer for EndScene
+    void** vTable = *reinterpret_cast<void***>(tempDevice);
+    void* endSceneAddr = vTable[42]; // EndScene is at index 42
+    
+    // Create the hook using MinHook
+    LogOut("[OVERLAY] Hooking EndScene", true);
+    if (MH_CreateHook(endSceneAddr, HookedEndScene, reinterpret_cast<void**>(&oEndScene)) != MH_OK) {
+        LogOut("[OVERLAY] Failed to create hook for EndScene", true);
+        tempDevice->Release();
+        d3d9->Release();
+        return false;
     }
-
-    LogOut("[D3D9] Error: DetourTransactionCommit failed for EndScene.", true);
-    return false;
+    
+    // Enable the hook
+    if (MH_EnableHook(endSceneAddr) != MH_OK) {
+        LogOut("[OVERLAY] Failed to enable EndScene hook", true);
+        tempDevice->Release();
+        d3d9->Release();
+        return false;
+    }
+    
+    // Clean up temporary objects
+    tempDevice->Release();
+    d3d9->Release();
+    
+    g_d3d9Hooked = true;
+    LogOut("[OVERLAY] D3D9 hook initialized successfully", true);
+    return true;
 }
 
 void DirectDrawHook::ShutdownD3D9() {

@@ -11,6 +11,10 @@ A comprehensive training mode enhancement tool for Eternal Fighter Zero that pro
 - **Move ID Tracking**: Monitor character state transitions with detailed move ID logging
 - **Visual Frame Counter**: Track game frames with accurate internal and visual frame displays
 - **Smart Online Mode Detection**: Automatically detects online play and temporarily disables training features to prevent desyncs
+- **ImGui Overlay Interface**: Modern in-game overlay with configuration options and real-time data display
+- **Auto-Tech Options**: Configure automatic air-teching with directional control
+- **Auto-Action System**: Set up automatic responses after blocking, hitstun, or on wakeup
+- **Auto-Jump Configuration**: Customize automatic jump patterns with directional options
 
 ## Installation
 
@@ -38,12 +42,14 @@ The tool provides several hotkeys to control its functionality (automatically di
   - With **Left Arrow**: Move both players to left side
   - With **Right Arrow**: Move both players to right side
   - With **Up Arrow**: Swap P1 and P2 positions
-  - With **Down Arrow**: Place players at round start positions
+  - With **Down Arrow**: Place players close together at center
+  - With **Down Arrow + Z**: Place players at round start positions
 - **2**: Record current player positions
 - **3**: Open configuration menu
 - **4**: Toggle title display mode between detailed and standard
 - **5**: Reset frame counter
 - **6**: Show help information and clear console
+- **7**: Toggle ImGui overlay interface
 
 ## Frame Data Monitoring
 
@@ -62,6 +68,17 @@ The tool tries to account for EFZ's specific RG system mechanics:
 - **Stand RG**: -0.33F disadvantage to defender (can attack after 20F freeze)
 - **Crouch RG**: -2.33F disadvantage to defender (can attack after 22F freeze)
 - **Air RG**: -2.00F disadvantage to defender (can attack after 22F freeze)
+
+## Automated Training Features
+
+The tool includes advanced training features accessible through the in-game overlay:
+
+- **Auto-Airtech**: Configure automatic recovery from air hitstun with directional control
+- **Auto-Jump**: Set up automatic jumping patterns with customizable timing and directions
+- **Auto-Action System**:
+  - After Block: Automatically perform actions after blocking an attack
+  - After Hitstun: Execute specific moves when recovering from hitstun
+  - On Wakeup: Set automatic wakeup actions after knockdown
 
 ## Known Issues
 
@@ -82,8 +99,18 @@ The project is built in C++ with CMake support and includes:
 - **Memory Management**: Read/write EFZ game memory for state tracking and modifications
 - **Frame Monitoring**: Track and analyze frame data in real-time
 - **Console UI**: Display frame data and debugging information
-- **Dialog Interface**: Configure player settings through in-game dialog
+- **ImGui Integration**: Modern in-game overlay interface with real-time configuration
+- **DirectX Hooking**: Reliable D3D9 hooking for graphical overlays
 - **Network Detection**: Monitor TCP/UDP connections to detect online matches and prevent desyncs
+
+## External Libraries
+
+This project relies on several external libraries:
+
+- [**MinHook**](https://github.com/TsudaKageyu/minhook): Function hooking library for Windows
+- [**Dear ImGui**](https://github.com/ocornut/imgui): Immediate-mode graphical user interface library
+- [**Microsoft Detours**}(https://github.com/microsoft/Detours): API hooking library for intercepting Win32 functions
+- **DirectX SDK**: Used for rendering the overlay interface with D3D9
 
 ## Building from Source
 
@@ -100,8 +127,6 @@ cmake ..
 
 # Build with your platform's build system
 cmake --build . --config Release
-
-##
 ```
 
 ## Contributing
@@ -110,6 +135,14 @@ cmake --build . --config Release
 1. More accurate RG frame advantage calculations
 2. Better state detection for defender actionable frames
 3. Additional training mode quality-of-life features
+
+
+## Special Thanks
+
+# Special thanks goes to:
+- **fishshapedfish** - Initial CheatEngine tables for the character states and other things.
+- **Ev.Geniy**, **kolya_kaban**, **lazerock** - Testing and feedback.
+
 
 ## License
 This project is provided for educational purposes. Eternal Fighter Zero is property of Twilight Frontier and its respective owners.

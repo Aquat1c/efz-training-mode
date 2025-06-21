@@ -97,6 +97,7 @@ target_link_libraries(efz_training_mode PRIVATE
     dxguid
     d3d9
     ${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/detours/lib.X86/detours.lib
+    ${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/minhook/lib/libMinHook.x86.lib  # Add this line
     legacy_stdio_definitions
 )
 
