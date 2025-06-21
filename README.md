@@ -141,7 +141,7 @@ cmake --build . --config Release
 
 # Special thanks goes to:
 - **fishshapedfish** - Initial CheatEngine tables for the character states and other things.
-- **Ev.Geniy**, **kolya_kaban**, **lazerock** - Testing and feedback.
+- **Ev.Geniy**, **kolya_kaban**, **lazerock** and some other people I probably forgot - Testing and feedback.
 
 
 ## License
