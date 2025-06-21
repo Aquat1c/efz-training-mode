@@ -107,7 +107,7 @@ This project relies on several external libraries:
 
 - [**MinHook**](https://github.com/TsudaKageyu/minhook): Function hooking library for Windows
 - [**Dear ImGui**](https://github.com/ocornut/imgui): Immediate-mode graphical user interface library
-- [**Microsoft Detours**}(https://github.com/microsoft/Detours): API hooking library for intercepting Win32 functions
+- [**Microsoft Detours**](https://github.com/microsoft/Detours): API hooking library for intercepting Win32 functions
 - **DirectX SDK**: Used for rendering the overlay interface with D3D9
 
 ## Building from Source
