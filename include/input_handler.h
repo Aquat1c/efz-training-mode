@@ -1,9 +1,9 @@
 #pragma once
+#define DIRECTINPUT_VERSION 0x0800 // Define before including dinput.h
 #include <windows.h>
 #include <atomic>
 #include <thread>
 #include <dinput.h>
-
 // DirectInput global objects
 extern LPDIRECTINPUT8 g_pDI;
 extern LPDIRECTINPUTDEVICE8 g_pKeyboard;

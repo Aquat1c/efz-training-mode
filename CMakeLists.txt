@@ -30,6 +30,25 @@ if(MSVC)
     add_definitions(-D_CRT_SECURE_NO_WARNINGS)
 endif()
 
+# First, check if the main ImGui file exists
+if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/imgui/imgui.cpp")
+    message(FATAL_ERROR "ImGui files not found. Please check that 3rdparty/imgui/imgui.cpp exists.")
+endif()
+
+# Define ImGui directory with absolute paths
+set(IMGUI_DIR "${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/imgui")
+
+# List ImGui sources explicitly
+set(IMGUI_SOURCES
+    "${IMGUI_DIR}/imgui.cpp"
+    "${IMGUI_DIR}/imgui_demo.cpp"
+    "${IMGUI_DIR}/imgui_draw.cpp"
+    "${IMGUI_DIR}/imgui_tables.cpp"
+    "${IMGUI_DIR}/imgui_widgets.cpp"
+    "${IMGUI_DIR}/backends/imgui_impl_win32.cpp"
+    "${IMGUI_DIR}/backends/imgui_impl_dx9.cpp"
+)
+
 # Define source files
 set(SOURCES
     src/dllmain.cpp
@@ -38,8 +57,22 @@ set(SOURCES
     src/logger.cpp
     src/input_handler.cpp
     src/gui.cpp
+    src/gui_game_values.cpp
+    src/gui_movement.cpp
+    src/gui_auto_action.cpp
+    src/gui_dialog.cpp
     src/frame_monitor.cpp
+    src/auto_airtech.cpp
+    src/auto_jump.cpp
+    src/auto_action.cpp
+    src/frame_analysis.cpp
+    src/frame_advantage.cpp
     src/network.cpp
+    src/overlay.cpp
+    # Add new ImGui implementation files
+    src/imgui_impl.cpp
+    src/imgui_gui.cpp
+    ${IMGUI_SOURCES}
 )
 
 # Create a shared library (DLL)
@@ -48,16 +81,23 @@ add_library(efz_training_mode SHARED ${SOURCES})
 # Include directories
 target_include_directories(efz_training_mode PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/detours/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/imgui
+    ${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/imgui/backends
 )
 
-# Link required libraries including network libraries
+# Link required libraries including network libraries, Detours, and DirectX
 target_link_libraries(efz_training_mode PRIVATE 
     user32 
     kernel32
     ws2_32
     iphlpapi
     comctl32
-    # Add additional static linking options
+    ddraw
+    dxguid
+    d3d9
+    ${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/detours/lib.X86/detours.lib
+    ${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/minhook/lib/libMinHook.x86.lib  # Add this line
     legacy_stdio_definitions
 )
 

@@ -4,6 +4,8 @@
 #include "../include/memory.h"
 #include "../include/input_handler.h"
 #include "../include/di_keycodes.h"
+#include "../include/frame_analysis.h"    // ADD THIS - for IsBlockstunState
+#include "../include/frame_advantage.h"   // ADD THIS - for IsAttackMove
 #include <sstream>
 #include <iomanip>
 #include <iostream>  // Add this include for std::cout and std::cerr
@@ -67,12 +69,47 @@ std::atomic<int> frameCounter(0);
 std::atomic<bool> detailedLogging(false);
 std::atomic<bool> autoAirtechEnabled(false);
 std::atomic<int> autoAirtechDirection(0);  // 0=forward, 1=backward
-std::atomic<bool> autoJumpEnabled(false);
-std::atomic<int> jumpDirection(0);      // 0=straight, 1=forward, 2=backward
+std::atomic<bool> autoJumpEnabled(false);     // This was missing!
+std::atomic<int> jumpDirection(0);            // 0=straight, 1=forward, 2=backward
 std::atomic<bool> p1Jumping(false);
 std::atomic<bool> p2Jumping(false);
-std::atomic<int> jumpTarget(3);         // Default to both players
-DisplayData displayData;
+std::atomic<int> jumpTarget(3);               // Default to both players
+DisplayData displayData = {
+    // Initialize DisplayData with all fields in the correct order
+    9999, 9999,             // hp1, hp2
+    3000, 3000,             // meter1, meter2
+    1000.0, 1000.0,         // rf1, rf2
+    240.0, 0.0,             // x1, y1
+    400.0, 0.0,             // x2, y2
+    false,                  // autoAirtech
+    0,                      // airtechDirection
+    0,                      // airtechDelay
+    false,                  // autoJump
+    0,                      // jumpDirection
+    3,                      // jumpTarget
+    "",                     // p1CharName (empty string)
+    "",                     // p2CharName (empty string)
+    false,                  // autoAction
+    ACTION_5A,              // autoActionType
+    BASE_ATTACK_5A,         // autoActionCustomID
+    2,                      // autoActionPlayer
+    false,                  // triggerAfterBlock
+    false,                  // triggerOnWakeup
+    false,                  // triggerAfterHitstun
+    false,                  // triggerAfterAirtech
+    DEFAULT_TRIGGER_DELAY,  // delayAfterBlock
+    DEFAULT_TRIGGER_DELAY,  // delayOnWakeup
+    DEFAULT_TRIGGER_DELAY,  // delayAfterHitstun
+    DEFAULT_TRIGGER_DELAY,  // delayAfterAirtech
+    ACTION_5A,              // actionAfterBlock
+    ACTION_5A,              // actionOnWakeup
+    ACTION_5A,              // actionAfterHitstun
+    ACTION_JA,              // actionAfterAirtech
+    BASE_ATTACK_5A,         // customAfterBlock
+    BASE_ATTACK_5A,         // customOnWakeup
+    BASE_ATTACK_5A,         // customAfterHitstun
+    BASE_ATTACK_JA          // customAfterAirtech
+};
 
 // Initialize key bindings with default values
 KeyBindings detectedBindings = {
@@ -90,6 +127,41 @@ KeyBindings detectedBindings = {
     false,                 // directionsDetected
     false                  // attacksDetected
 };
+
+// Add with other globals
+
+// Auto-action settings - replace single trigger with individual triggers
+std::atomic<bool> autoActionEnabled(false);
+std::atomic<int> autoActionType(ACTION_5A);
+std::atomic<int> autoActionCustomID(200); // Default to 5A
+std::atomic<int> autoActionPlayer(2);     // Default to P2 (training dummy)
+
+// Individual trigger settings
+std::atomic<bool> triggerAfterBlockEnabled(false);
+std::atomic<bool> triggerOnWakeupEnabled(false);
+std::atomic<bool> triggerAfterHitstunEnabled(false);
+std::atomic<bool> triggerAfterAirtechEnabled(false);
+
+// Delay settings (in visual frames)
+std::atomic<int> triggerAfterBlockDelay(DEFAULT_TRIGGER_DELAY);
+std::atomic<int> triggerOnWakeupDelay(DEFAULT_TRIGGER_DELAY);
+std::atomic<int> triggerAfterHitstunDelay(DEFAULT_TRIGGER_DELAY);
+std::atomic<int> triggerAfterAirtechDelay(DEFAULT_TRIGGER_DELAY);
+
+// Auto-airtech delay support
+std::atomic<int> autoAirtechDelay(0); // Default to instant activation
+
+// Individual action settings for each trigger
+std::atomic<int> triggerAfterBlockAction(ACTION_5A);
+std::atomic<int> triggerOnWakeupAction(ACTION_5A);
+std::atomic<int> triggerAfterHitstunAction(ACTION_5A);
+std::atomic<int> triggerAfterAirtechAction(ACTION_5A);
+
+// Custom action IDs for each trigger
+std::atomic<int> triggerAfterBlockCustomID(BASE_ATTACK_5A);
+std::atomic<int> triggerOnWakeupCustomID(BASE_ATTACK_5A);
+std::atomic<int> triggerAfterHitstunCustomID(BASE_ATTACK_5A);
+std::atomic<int> triggerAfterAirtechCustomID(BASE_ATTACK_JA);  // Default to jumping A for airtech
 
 void EnsureLocaleConsistency() {
     static bool localeSet = false;
@@ -113,20 +185,37 @@ uintptr_t GetEFZBase() {
     return (uintptr_t)GetModuleHandleA(NULL);
 }
 
+// Add these helper functions to better detect state changes
 bool IsActionable(short moveID) {
-    std::locale::global(std::locale("C")); 
-    // This ensures consistent decimal point format
-    return moveID == IDLE_MOVE_ID ||
-        moveID == WALK_FWD_ID ||
-        moveID == WALK_BACK_ID ||
+    // Character is actionable in these neutral states
+    if (moveID == IDLE_MOVE_ID || 
+        moveID == WALK_FWD_ID || 
+        moveID == WALK_BACK_ID || 
         moveID == CROUCH_ID ||
-        moveID == LANDING_ID ||
-        moveID == CROUCH_TO_STAND_ID;
+        moveID == CROUCH_TO_STAND_ID ||
+        moveID == LANDING_ID) {
+        return true;
+    }
+    
+    // NOT actionable during these states
+    if (IsAttackMove(moveID) || 
+        IsBlockstunState(moveID) || 
+        IsHitstun(moveID) || 
+        IsLaunched(moveID) ||
+        IsAirtech(moveID) || 
+        IsGroundtech(moveID) ||
+        IsFrozen(moveID) ||
+        moveID == STAND_GUARD_ID || 
+        moveID == CROUCH_GUARD_ID || 
+        moveID == AIR_GUARD_ID) {
+        return false;
+    }
+    
+    return true; // Default to actionable for unknown states
 }
 
 bool IsBlockstun(short moveID) {
     std::locale::global(std::locale("C")); 
-    // This ensures consistent decimal point format
     
     // Directly check for core blockstun IDs
     if (moveID == STAND_GUARD_ID || 
@@ -138,10 +227,9 @@ bool IsBlockstun(short moveID) {
     }
     
     // Check the range that includes standing blockstun states
-    // Explicitly include 150 and 152
     if (moveID == 150 || moveID == 152 || 
-        (moveID >= 140 && moveID <= 149) ||  // First blockstun range
-        (moveID >= 153 && moveID <= 165)) {  // Second blockstun range (excluding 150-152 which we check explicitly)
+        (moveID >= 140 && moveID <= 149) ||
+        (moveID >= 153 && moveID <= 165)) {
         return true;
     }
     
@@ -335,7 +423,6 @@ void ShowHotkeyInfo() {
     
     // Only use detected values if they've been found
     if (detectedBindings.directionsDetected) {
-        // Use Windows API function GetKeyNameText for consistent results
         leftKey = GetKeyName(detectedBindings.leftKey);
         rightKey = GetKeyName(detectedBindings.rightKey);
         upKey = GetKeyName(detectedBindings.upKey);
@@ -357,6 +444,7 @@ void ShowHotkeyInfo() {
     LogOut("1: Teleport players to recorded/default position", true);
     LogOut("  + 1+" + leftKey + " (P1's Left): Teleport both players to left side", true);
     LogOut("  + 1+" + rightKey + " (P1's Right): Teleport both players to right side", true);
+    // FIX: Correct these two lines to match the actual functionality
     LogOut("  + 1+" + upKey + " (P1's Up): Swap P1 and P2 positions", true);
     LogOut("  + 1+" + downKey + " (P1's Down): Place players close together at center", true);
     LogOut("  + 1+" + downKey + "+" + aKey + " (P1's Down + Light Attack): Place players at round start positions", true);
@@ -365,6 +453,7 @@ void ShowHotkeyInfo() {
     LogOut("4: Toggle title display mode", true);
     LogOut("5: Reset frame counter", true);
     LogOut("6: Show this help and clear console", true);
+    LogOut("T: Test overlay system (Hello, world)", true);
     LogOut("", true);
     
     // Show message about detected keys
@@ -439,4 +528,77 @@ bool IsDashState(short moveID) {
            moveID == FORWARD_DASH_RECOVERY_ID ||
            moveID == BACKWARD_DASH_START_ID || 
            moveID == BACKWARD_DASH_RECOVERY_ID;
+}
+
+
+// Add this function after the IsEFZWindowActive() function
+HWND FindEFZWindow() {
+    HWND foundWindow = NULL;
+    static bool debugLogged = false;
+    
+    // Log debug info only once
+    if (!debugLogged) {
+        LogOut("[WINDOW] Searching for EFZ window...", true);
+        debugLogged = true;
+    }
+    
+    // Enumerate all windows to find EFZ
+    EnumWindows([](HWND hwnd, LPARAM lParam) -> BOOL {
+        HWND* result = reinterpret_cast<HWND*>(lParam);
+        
+        // Skip invisible windows
+        if (!IsWindowVisible(hwnd)) {
+            return TRUE; // Continue enumeration
+        }
+        
+        // Get window title for debugging
+        char title[256] = { 0 };
+        GetWindowTextA(hwnd, title, sizeof(title) - 1);
+        
+        // Log visible windows (only log non-empty titles)
+        if (strlen(title) > 0) {
+            LogOut("[WINDOW] Found window: '" + std::string(title) + "'", true);
+        }
+        
+        // Try with Unicode API first
+        WCHAR wideTitle[256] = { 0 };
+        GetWindowTextW(hwnd, wideTitle, sizeof(wideTitle)/sizeof(WCHAR) - 1);
+        
+        // Make a copy for case-insensitive comparison
+        WCHAR wideTitleLower[256];
+        wcscpy_s(wideTitleLower, wideTitle);
+        _wcslwr_s(wideTitleLower);
+        
+        // Case-insensitive comparison for wide strings
+        if (_wcsicmp(wideTitle, L"ETERNAL FIGHTER ZERO") == 0 ||
+            wcsstr(wideTitleLower, L"efz.exe") != NULL ||
+            wcsstr(wideTitleLower, L"eternal fighter zero") != NULL ||
+            wcsstr(wideTitleLower, L"revival") != NULL) {
+            
+            LogOut("[WINDOW] Found EFZ window via Unicode: '" + std::string(title) + "'", true);
+            *result = hwnd;
+            return FALSE; // Stop enumeration
+        }
+        
+        // Fallback to ANSI for compatibility
+        std::string t(title);
+        std::transform(t.begin(), t.end(), t.begin(), ::toupper);
+        
+        if (t.find("ETERNAL FIGHTER ZERO") != std::string::npos ||
+            t.find("EFZ.EXE") != std::string::npos ||
+            t.find("REVIVAL") != std::string::npos) {
+            
+            LogOut("[WINDOW] Found EFZ window via ANSI: '" + std::string(title) + "'", true);
+            *result = hwnd;
+            return FALSE; // Stop enumeration
+        }
+        
+        return TRUE; // Continue enumeration
+    }, reinterpret_cast<LPARAM>(&foundWindow));
+    
+    if (!foundWindow) {
+        LogOut("[WINDOW] EFZ window not found", true);
+    }
+    
+    return foundWindow;
 }

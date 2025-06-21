@@ -16,6 +16,8 @@
 #include <sstream>
 #include <string>
 #include <commctrl.h> // Add this include for Common Controls
+#include "../include/imgui_impl.h"
+#include "../include/overlay.h"  // Add this include for DirectDrawHook class
 
 #pragma comment(lib, "dinput8.lib")
 #pragma comment(lib, "dxguid.lib")
@@ -186,6 +188,8 @@ void MonitorKeys() {
     
     // Add this near the beginning of MonitorKeys function
     bool enableDebugLogging = false;  // Set to true when needed for deeper investigation
+    
+    static bool wasKey7Pressed = false;
     
     while (keyMonitorRunning) {
         // Check for online mode
@@ -419,6 +423,16 @@ void MonitorKeys() {
                 // Sleep to prevent multiple help displays
                 Sleep(200);
             }
+
+                // Debug key '7' - This block contains the error
+        bool isKey7Pressed = IsKeyPressed('7', true);
+        if (isKey7Pressed && !wasKey7Pressed) {
+            LogOut("[DEBUG] Key 7 pressed - Toggling ImGui visibility.", true);
+            // The line below was calling the old RenderImGui function.
+            // It should now toggle the visibility instead.
+            ImGuiImpl::ToggleVisibility();
+        }
+        wasKey7Pressed = isKey7Pressed;
             
             // Debug toggle (Ctrl+D)
             if ((GetAsyncKeyState(VK_CONTROL) & 0x8000) && (GetAsyncKeyState('D') & 0x8000)) {
@@ -556,8 +570,8 @@ bool ReadKeyMappingsFromIni() {
         const char* name;
         int* bindingPtr;
     } keyMaps[] = {
-        { 0, "Down", &detectedBindings.downKey },
-        { 2, "Up", &detectedBindings.upKey },
+        { 0, "Down", &detectedBindings.upKey },
+        { 2, "Up", &detectedBindings.downKey },
         { 4, "Left", &detectedBindings.leftKey },
         { 6, "Right", &detectedBindings.rightKey },
         { 8, "A (Light)", &detectedBindings.aButton },

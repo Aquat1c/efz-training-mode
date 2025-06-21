@@ -11,61 +11,51 @@
 #include <sstream>
 
 // Helper function for safe memory reading
+bool SafeWriteMemory(uintptr_t address, const void* data, size_t size) {
+    if (!address || !data || size == 0) return false;
+
+    DWORD oldProtect;
+    if (!VirtualProtect((LPVOID)address, size, PAGE_EXECUTE_READWRITE, &oldProtect)) {
+        return false;
+    }
+
+    bool success = false;
+    if (!IsBadWritePtr((LPVOID)address, size)) {
+        memcpy((void*)address, data, size);
+        success = true;
+    }
+
+    VirtualProtect((LPVOID)address, size, oldProtect, &oldProtect);
+    return success;
+}
+
 bool SafeReadMemory(uintptr_t address, void* buffer, size_t size) {
-    __try {
+    if (!address || !buffer || size == 0) {
+        return false;
+    }
+    
+    // Use IsBadReadPtr to check if we can read from the address safely
+    if (!IsBadReadPtr((LPVOID)address, size)) {
         memcpy(buffer, (void*)address, size);
         return true;
-    } __except(EXCEPTION_EXECUTE_HANDLER) {
-        return false;
     }
+    
+    return false;
 }
 
-// Helper function for safe memory writing
-bool SafeWriteMemory(uintptr_t address, const void* data, size_t size) {
-    __try {
-        memcpy((void*)address, data, size);
-        return true;
-    } __except(EXCEPTION_EXECUTE_HANDLER) {
-        return false;
-    }
-}
-
-// Enhanced version of ResolvePointer with additional validation
 uintptr_t ResolvePointer(uintptr_t base, uintptr_t baseOffset, uintptr_t offset) {
-    if (base == 0) {
-        LogOut("[MEMORY] ResolvePointer called with null base", detailedLogging);
-        return 0;
-    }
+    if (base == 0) return 0;
     
     uintptr_t ptrAddr = base + baseOffset;
-    
-    // Validate the pointer address is within reasonable bounds
-    // Using more permissive bounds for better compatibility
-    if (ptrAddr < 0x1000 || ptrAddr > 0xFFFFFFFF) {
-        LogOut("[MEMORY] Invalid pointer address: " + std::to_string(ptrAddr), detailedLogging);
-        return 0;
-    }
+    if (ptrAddr < 0x1000 || ptrAddr > 0xFFFFFFFF) return 0;
     
     uintptr_t ptrValue = 0;
+    if (!SafeReadMemory(ptrAddr, &ptrValue, sizeof(uintptr_t))) return 0;
     
-    // Use our safe helper function instead of __try/__except directly
-    if (!SafeReadMemory(ptrAddr, &ptrValue, sizeof(uintptr_t))) {
-        LogOut("[MEMORY] Exception reading memory at: " + std::to_string(ptrAddr), true);
-        return 0;
-    }
-    
-    if (ptrValue == 0 || ptrValue > 0xFFFFFFFF) {
-        LogOut("[MEMORY] Invalid pointer value: " + std::to_string(ptrValue), detailedLogging);
-        return 0;
-    }
+    if (ptrValue == 0 || ptrValue > 0xFFFFFFFF) return 0;
     
     uintptr_t finalAddr = ptrValue + offset;
-    
-    // Verify the final address is valid with more permissive bounds
-    if (finalAddr < 0x1000 || finalAddr > 0xFFFFFFFF) {
-        LogOut("[MEMORY] Invalid final address: " + std::to_string(finalAddr), detailedLogging);
-        return 0;
-    }
+    if (finalAddr < 0x1000 || finalAddr > 0xFFFFFFFF) return 0;
     
     return finalAddr;
 }
@@ -73,25 +63,31 @@ uintptr_t ResolvePointer(uintptr_t base, uintptr_t baseOffset, uintptr_t offset)
 // Enhanced WriteGameMemory with added protections
 void WriteGameMemory(uintptr_t address, const void* data, size_t size) {
     if (address == 0 || !data) {
-        LogOut("[MEMORY] WriteGameMemory called with invalid parameters", detailedLogging);
+        LogOut("[MEMORY] WriteGameMemory: Invalid parameters", true);
         return;
     }
 
     // Verify address is within valid range
     if (address < 0x10000 || address > 0x7FFFFFFF) {
-        LogOut("[MEMORY] Attempt to write to invalid address: " + std::to_string(address), true);
+        LogOut("[MEMORY] WriteGameMemory: Address out of range: 0x" + std::to_string(address), true);
         return;
     }
 
     DWORD oldProtect;
     if (VirtualProtect((LPVOID)address, size, PAGE_EXECUTE_READWRITE, &oldProtect)) {
-        // Use our safe helper function instead of __try/__except directly
-        if (!SafeWriteMemory(address, data, size)) {
-            LogOut("[MEMORY] Exception writing to memory at: " + std::to_string(address), true);
+        if (!IsBadWritePtr((LPVOID)address, size)) {
+            memcpy((void*)address, data, size);
+            LogOut("[MEMORY] WriteGameMemory: Successfully wrote " + std::to_string(size) + 
+                   " bytes to 0x" + std::to_string(address), true);
+        } else {
+            LogOut("[MEMORY] WriteGameMemory: Cannot write to address 0x" + std::to_string(address), true);
         }
+        
+        // Restore old protection
         VirtualProtect((LPVOID)address, size, oldProtect, &oldProtect);
     } else {
-        LogOut("[MEMORY] Failed to change memory protection at: " + std::to_string(address), true);
+        LogOut("[MEMORY] WriteGameMemory: Failed to change memory protection for address 0x" + 
+               std::to_string(address) + " - Error: " + std::to_string(GetLastError()), true);
     }
 }
 
@@ -135,42 +131,36 @@ void SetPlayerPosition(uintptr_t base, uintptr_t playerOffset, double x, double 
     uintptr_t moveIDAddr = ResolvePointer(base, playerOffset, MOVE_ID_OFFSET);
     
     if (!xAddr || !yAddr) {
-        LogOut("[POSITION] Failed to resolve position addresses", true);
+        LogOut("[MEMORY] Failed to resolve position pointers", true);
         return;
     }
     
-    // Set X coordinate (this always works)
-    SafeWriteMemory(xAddr, &x, sizeof(double));
+    // Set X coordinate
+    if (!SafeWriteMemory(xAddr, &x, sizeof(double))) {
+        LogOut("[MEMORY] Failed to write X position", true);
+    }
     
-    // For Y coordinate, we need to handle it differently
-    if (y < 0.0) {
-        // If we want negative Y (above ground), we need to put character in air state
-        short airState = FALLING_ID;  // Use falling state for air positions
-        
-        // First set the Y position
-        SafeWriteMemory(yAddr, &y, sizeof(double));
-        
-        // Then change move ID to air state if requested
-        if (moveIDAddr && updateMoveID) {
-            SafeWriteMemory(moveIDAddr, &airState, sizeof(short));
-            LogOut("[POSITION] Changed character to air state for Y-position", detailedLogging);
-        }
-        
-        // For more persistent Y position (less likely to be overridden)
-        // Write the position twice with a small delay
-        Sleep(1);
-        SafeWriteMemory(yAddr, &y, sizeof(double));
-    } else {
-        // Normal ground position (y = 0 or positive)
-        SafeWriteMemory(yAddr, &y, sizeof(double));
-        
-        // Force to idle state for ground positions if requested
-        if (moveIDAddr && updateMoveID) {
-            short idleState = IDLE_MOVE_ID;  // 0 = standing idle state
-            SafeWriteMemory(moveIDAddr, &idleState, sizeof(short));
-            LogOut("[POSITION] Changed character to idle state for ground position", detailedLogging);
+    // Set Y coordinate
+    if (!SafeWriteMemory(yAddr, &y, sizeof(double))) {
+        LogOut("[MEMORY] Failed to write Y position", true);
+    }
+    
+    // Reset Y velocity to zero to prevent unintended movement
+    uintptr_t yVelAddr = ResolvePointer(base, playerOffset, YVEL_OFFSET);
+    if (yVelAddr) {
+        double zeroVel = 0.0;
+        SafeWriteMemory(yVelAddr, &zeroVel, sizeof(double));
+    }
+    
+    // If requested, update moveID to reset the character state
+    if (updateMoveID && moveIDAddr) {
+        short idleID = IDLE_MOVE_ID;
+        if (!SafeWriteMemory(moveIDAddr, &idleID, sizeof(short))) {
+            LogOut("[MEMORY] Failed to reset moveID", true);
         }
     }
+    
+    LogOut("[MEMORY] Set position - X: " + std::to_string(x) + ", Y: " + std::to_string(y), detailedLogging.load());
 }
 
 // Direct RF value setter that matches Cheat Engine's approach
@@ -361,19 +351,15 @@ void RFFreezeThreadFunc() {
     
     while (rfThreadRunning) {
         if (rfFreezing.load()) {
-            // Get current values to freeze
-            double p1RF = rfFreezeValueP1.load();
-            double p2RF = rfFreezeValueP2.load();
-            
-            // Only write if the game is running
             uintptr_t base = GetEFZBase();
             if (base) {
                 // Use direct pointer access exactly as Cheat Engine does
                 uintptr_t* p1Ptr = (uintptr_t*)(base + EFZ_BASE_OFFSET_P1);
                 uintptr_t* p2Ptr = (uintptr_t*)(base + EFZ_BASE_OFFSET_P2);
                 
-                // Only proceed if pointers are valid
+                // Validate pointers are readable using IsBadReadPtr
                 if (!IsBadReadPtr(p1Ptr, sizeof(uintptr_t)) && !IsBadReadPtr(p2Ptr, sizeof(uintptr_t))) {
+                    // Follow the pointers to get player structures
                     uintptr_t p1Base = *p1Ptr;
                     uintptr_t p2Base = *p2Ptr;
                     
@@ -382,20 +368,20 @@ void RFFreezeThreadFunc() {
                         double* p1RFAddr = (double*)(p1Base + RF_OFFSET);
                         double* p2RFAddr = (double*)(p2Base + RF_OFFSET);
                         
-                        // Only proceed if addresses are valid
+                        // Validate these addresses using IsBadWritePtr
                         if (!IsBadWritePtr(p1RFAddr, sizeof(double)) && !IsBadWritePtr(p2RFAddr, sizeof(double))) {
                             // Write values with memory protection handling
                             DWORD oldProtect1, oldProtect2;
                             
-                            // P1 RF write - use VirtualProtect for reliable memory access
+                            // P1 RF write
                             if (VirtualProtect(p1RFAddr, sizeof(double), PAGE_EXECUTE_READWRITE, &oldProtect1)) {
-                                *p1RFAddr = p1RF; // Direct write without memcpy
+                                *p1RFAddr = rfFreezeValueP1.load();
                                 VirtualProtect(p1RFAddr, sizeof(double), oldProtect1, &oldProtect1);
                             }
                             
                             // P2 RF write
                             if (VirtualProtect(p2RFAddr, sizeof(double), PAGE_EXECUTE_READWRITE, &oldProtect2)) {
-                                *p2RFAddr = p2RF; // Direct write without memcpy
+                                *p2RFAddr = rfFreezeValueP2.load();
                                 VirtualProtect(p2RFAddr, sizeof(double), oldProtect2, &oldProtect2);
                             }
                         }
@@ -403,8 +389,8 @@ void RFFreezeThreadFunc() {
                 }
             }
         }
-        // Update at 60Hz to match game's refresh rate
-        std::this_thread::sleep_for(std::chrono::milliseconds(16));
+        
+        Sleep(10); // 100Hz update rate
     }
 }
 
