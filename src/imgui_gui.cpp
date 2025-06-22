@@ -33,7 +33,9 @@ namespace ImGuiGui {
     void Initialize() {
         // Copy current display data into our local copy
         guiState.localData = displayData;
-        LogOut("[IMGUI_GUI] GUI state initialized", true);
+        
+        // Only show in detailed mode
+        LogOut("[IMGUI_GUI] GUI state initialized", detailedLogging.load());
     }
 
     // Main render function
@@ -427,6 +429,6 @@ namespace ImGuiGui {
         // Apply the settings by calling the global ApplySettings function
         ::ApplySettings(&displayData);  // Use global namespace resolution
         
-        LogOut("[IMGUI_GUI] Settings applied", true);
+        LogOut("[IMGUI_GUI] Settings applied", detailedLogging.load()); // Use detailed logging
     }
 }

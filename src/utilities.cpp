@@ -414,71 +414,54 @@ void ResetFrameCounter() {
 }
 
 void ShowHotkeyInfo() {
-    // Get configured hotkeys
-    const Config::Settings& cfg = Config::GetSettings();
-    
-    // Use default keys if config values are 0 (invalid)
-    int teleportKey = (cfg.teleportKey > 0) ? cfg.teleportKey : '1';
-    int recordKey = (cfg.recordKey > 0) ? cfg.recordKey : '2';
-    int configKey = (cfg.configMenuKey > 0) ? cfg.configMenuKey : '3';
-    int titleKey = (cfg.toggleTitleKey > 0) ? cfg.toggleTitleKey : '4';
-    int resetFrameKey = (cfg.resetFrameCounterKey > 0) ? cfg.resetFrameCounterKey : '5'; 
-    int helpKey = (cfg.helpKey > 0) ? cfg.helpKey : '6';
-    int imguiKey = (cfg.toggleImGuiKey > 0) ? cfg.toggleImGuiKey : '7';
-    
-    // Get key names for display
-    std::string teleportKeyName = GetKeyName(teleportKey);
-    std::string recordKeyName = GetKeyName(recordKey);
-    std::string configKeyName = GetKeyName(configKey);
-    std::string titleKeyName = GetKeyName(titleKey);
-    std::string resetFrameKeyName = GetKeyName(resetFrameKey);
-    std::string helpKeyName = GetKeyName(helpKey);
-    std::string imguiKeyName = GetKeyName(imguiKey);
-    
-    // Display the help text using the actual key names
     system("cls");
     LogOut("--- EFZ TRAINING MODE CONTROLS ---", true);
+    
+    // FIX THE DUPLICATE TEXT:
+    // Change this line:
+    // LogOut("Detected input device: " + detectedBindings.deviceName + " (from key.ini)", true);
+    
+    // To:
     LogOut("Detected input device: " + detectedBindings.deviceName, true);
-    LogOut("", true);
+    
+    // Get settings for hotkey display
+    const Config::Settings& cfg = Config::GetSettings();
+    std::string teleportKey = GetKeyName(cfg.teleportKey > 0 ? cfg.teleportKey : '1');
+    std::string recordKey = GetKeyName(cfg.recordKey > 0 ? cfg.recordKey : '2');
+    std::string configKey = GetKeyName(cfg.configMenuKey > 0 ? cfg.configMenuKey : '3');
+    std::string titleKey = GetKeyName(cfg.toggleTitleKey > 0 ? cfg.toggleTitleKey : '4');
+    std::string resetFrameKey = GetKeyName(cfg.resetFrameCounterKey > 0 ? cfg.resetFrameCounterKey : '5');
+    std::string helpKey = GetKeyName(cfg.helpKey > 0 ? cfg.helpKey : '6');
+    std::string imguiKey = GetKeyName(cfg.toggleImGuiKey > 0 ? cfg.toggleImGuiKey : '7');
+    
     LogOut("Key Combinations:", true);
     LogOut("", true);
-    LogOut(teleportKeyName + ": Teleport players to recorded/default position", true);
-    LogOut("", true);
-    LogOut("  + " + teleportKeyName + "+← (P1's Left): Teleport both players to left side", true);
-    LogOut("", true);
-    LogOut("  + " + teleportKeyName + "+→ (P1's Right): Teleport both players to right side", true);
-    LogOut("", true);
-    LogOut("  + " + teleportKeyName + "+↑ (P1's Up): Swap P1 and P2 positions", true);
-    LogOut("", true);
-    LogOut("  + " + teleportKeyName + "+↓ (P1's Down): Place players close together at center", true);
-    LogOut("", true);
-    LogOut("  + " + teleportKeyName + "+↓+Z (P1's Down + Light Attack): Place players at round start positions", true);
-    LogOut("", true);
-    LogOut(recordKeyName + ": Record current player positions", true);
-    LogOut("", true);
-    LogOut(configKeyName + ": Open config menu", true);
-    LogOut("", true);
-    LogOut(titleKeyName + ": Toggle title display mode", true);
-    LogOut("", true);
-    LogOut(resetFrameKeyName + ": Reset frame counter", true);
-    LogOut("", true);
-    LogOut(helpKeyName + ": Show this help and clear console", true);
-    LogOut("", true);
-    LogOut(imguiKeyName + ": Toggle ImGui overlay interface", true);
-    LogOut("", true);
+    LogOut(teleportKey + ": Teleport players to recorded/default position", true);
+    LogOut("  + " + teleportKey + "+← (P1's Left): Teleport both players to left side", true);
+    LogOut("  + " + teleportKey + "+→ (P1's Right): Teleport both players to right side", true);
+    LogOut("  + " + teleportKey + "+↑ (P1's Up): Swap P1 and P2 positions", true);
+    LogOut("  + " + teleportKey + "+↓ (P1's Down): Place players close together at center", true);
+    LogOut("  + " + teleportKey + "+↓+Z (P1's Down + Light Attack): Place players at round start positions", true);
+    
+    LogOut("", true); // Just ONE blank line between sections
+    LogOut(recordKey + ": Record current player positions", true);
+    LogOut(configKey + ": Open config menu", true);
+    LogOut(titleKey + ": Toggle frame data title mode", true);
+    LogOut(resetFrameKey + ": Reset frame counter", true);
+    LogOut(helpKey + ": Show this help and clear console", true);
+    LogOut(imguiKey + ": Toggle ImGui overlay interface", true);
     
     LogOut("", true);
     LogOut("NOTE: Input bindings have been detected for your controls.", true);
-    LogOut("", true);
-    LogOut("      Using " + detectedBindings.deviceName, true);
+    LogOut("      Using " + detectedBindings.deviceName + " (from key.ini)", true);
     LogOut("", true);
     LogOut("-------------------------", true);
     LogOut("", true);
-    LogOut("Configuration file: " + Config::GetConfigFilePath(), true);
+    
+    // Only show config file path in detailed mode
+    LogOut("Configuration file: " + Config::GetConfigFilePath(), detailedLogging.load());
     LogOut("", true);
 }
-
-// Add this function
 
 std::string GetKeyName(int virtualKey) {
     // Handle invalid key code

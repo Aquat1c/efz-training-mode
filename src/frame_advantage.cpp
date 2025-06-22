@@ -46,6 +46,11 @@ void ResetFrameAdvantageState() {
     frameAdvState.p2AdvantageCalculated = false;
     frameAdvState.p1InitialBlockstunMoveID = 0;
     frameAdvState.p2InitialBlockstunMoveID = 0;
+    
+    // Add debug message to trace resets
+    if (detailedLogging.load()) {
+        LogOut("[FRAME_ADV_DEBUG] Frame advantage state reset", false);
+    }
 }
 
 int GetCurrentInternalFrame() {
@@ -118,11 +123,28 @@ void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, shor
     int currentInternalFrame = GetCurrentInternalFrame();
     double currentVisualFrame = GetCurrentVisualFrame();
     
-    // Reset if both players are neutral to prevent stale data
+    // Add debug logging to track if the function is being called
+    static int debugCounter = 0;
+    if (detailedLogging.load() && ++debugCounter % 60 == 0) {
+        LogOut("[FRAME_ADV_DEBUG] Monitoring active: p1Attacking=" + 
+               std::to_string(frameAdvState.p1Attacking) + 
+               ", p2Attacking=" + std::to_string(frameAdvState.p2Attacking), false);
+    }
+    
+    // IMPROVED RESET: Reset if both players are in neutral for several frames 
+    static int neutralFrameCount = 0;
     if (IsActionable(moveID1) && IsActionable(moveID2) && 
-        !frameAdvState.p1Attacking && !frameAdvState.p2Attacking) {
-        ResetFrameAdvantageState();
-        return;
+        !IsAttackMove(moveID1) && !IsAttackMove(moveID2)) {
+        
+        if (++neutralFrameCount > 30) { // Half a second in neutral
+            if (frameAdvState.p1Attacking || frameAdvState.p2Attacking) {
+                LogOut("[FRAME_ADV_DEBUG] Resetting state due to extended neutral state", detailedLogging.load());
+                ResetFrameAdvantageState();
+            }
+            neutralFrameCount = 0;
+        }
+    } else {
+        neutralFrameCount = 0;
     }
     
     // STEP 1: Detect when an attack CONNECTS (causes blockstun/hitstun)
@@ -134,21 +156,31 @@ void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, shor
         bool p1WasAttacking = IsAttackMove(prevMoveID1) || IsAttackMove(moveID1);
         
         if ((p2EnteredBlockstun || p2EnteredHitstun) && p1WasAttacking) {
+            // Start tracking attack - P1 attacking P2
             frameAdvState.p1Attacking = true;
+            frameAdvState.p1AttackMoveID = prevMoveID1;
             frameAdvState.p1AttackStartInternalFrame = currentInternalFrame;
-            frameAdvState.p1AttackMoveID = IsAttackMove(moveID1) ? moveID1 : prevMoveID1;
-            frameAdvState.p2InBlockstun = IsBlockstunState(moveID2);
-            frameAdvState.p2InHitstun = IsHitstun(moveID2);
-            frameAdvState.p2BlockstunStartInternalFrame = currentInternalFrame;
-            frameAdvState.p2InitialBlockstunMoveID = moveID2;
-            frameAdvState.p1ActionableInternalFrame = -1;
-            frameAdvState.p2DefenderFreeInternalFrame = -1;
-            frameAdvState.p1AdvantageCalculated = false;
             
+            // Track if we're in blockstun or hitstun
+            frameAdvState.p2InBlockstun = p2EnteredBlockstun;
+            frameAdvState.p2InHitstun = p2EnteredHitstun;
+            frameAdvState.p2InitialBlockstunMoveID = moveID2;
+            
+            // Record start times
+            if (p2EnteredBlockstun) {
+                frameAdvState.p2BlockstunStartInternalFrame = currentInternalFrame;
+            } else {
+                frameAdvState.p2HitstunStartInternalFrame = currentInternalFrame;
+            }
+            
+            std::string stateType = p2EnteredBlockstun ? "blockstun (moveID: " + std::to_string(moveID2) + ")" : 
+                           "hitstun (moveID: " + std::to_string(moveID2) + ")";
+            
+            // Only show connection logs in detailed mode
             LogOut("[FRAME ADVANTAGE] P1 attack connected at internal frame " + 
-                   std::to_string(currentInternalFrame) + " (visual: " + std::to_string(currentVisualFrame) + ")" +
-                   " - P2 in " + (IsBlockstunState(moveID2) ? "blockstun" : "hitstun") + 
-                   " (moveID: " + std::to_string(moveID2) + ")", true);
+                   std::to_string(currentInternalFrame) + 
+                   " (visual: " + std::to_string(currentVisualFrame) + 
+                   ") - P2 in " + stateType, detailedLogging.load());
         }
     }
     
@@ -171,8 +203,9 @@ void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, shor
             frameAdvState.p2AdvantageCalculated = false;
             
             LogOut("[FRAME ADVANTAGE] P2 attack connected at internal frame " + 
-                   std::to_string(currentInternalFrame) + " (visual: " + std::to_string(currentVisualFrame) + ")" +
-                   " - P1 in " + (IsBlockstunState(moveID1) ? "blockstun" : "hitstun") + 
+                   std::to_string(currentInternalFrame) + 
+                   " (visual: " + std::to_string(currentVisualFrame) + 
+                   ") - P1 in " + (IsBlockstunState(moveID1) ? "blockstun" : "hitstun") + 
                    " (moveID: " + std::to_string(moveID1) + ")", true);
         }
     }
@@ -198,9 +231,14 @@ void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, shor
         
         if (exitedAttackToActionable || becameActionable || inNeutralAfterAttack) {
             frameAdvState.p1ActionableInternalFrame = currentInternalFrame;
+            double actionableVisualFrame = currentVisualFrame;
+            
+            // Only show attacker actionable logs in detailed mode
             LogOut("[FRAME ADVANTAGE] P1 (attacker) became actionable at internal frame " + 
-                   std::to_string(currentInternalFrame) + " (visual: " + std::to_string(currentVisualFrame) + ")" +
-                   " | moveID: " + std::to_string(prevMoveID1) + " -> " + std::to_string(moveID1), true);
+                   std::to_string(frameAdvState.p1ActionableInternalFrame) + 
+                   " (visual: " + std::to_string(actionableVisualFrame) + 
+                   ") | moveID: " + std::to_string(frameAdvState.p1AttackMoveID) + 
+                   " -> " + std::to_string(moveID1), detailedLogging.load());
         }
     }
     
@@ -219,8 +257,10 @@ void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, shor
         if (exitedAttackToActionable || becameActionable || inNeutralAfterAttack) {
             frameAdvState.p2ActionableInternalFrame = currentInternalFrame;
             LogOut("[FRAME ADVANTAGE] P2 (attacker) became actionable at internal frame " + 
-                   std::to_string(currentInternalFrame) + " (visual: " + std::to_string(currentVisualFrame) + ")" +
-                   " | moveID: " + std::to_string(prevMoveID2) + " -> " + std::to_string(moveID2), true);
+                   std::to_string(frameAdvState.p2ActionableInternalFrame) + 
+                   " (visual: " + std::to_string(currentVisualFrame) + 
+                   ") | moveID: " + std::to_string(frameAdvState.p2AttackMoveID) + 
+                   " -> " + std::to_string(moveID2), detailedLogging.load());
         }
     }
     
@@ -243,9 +283,13 @@ void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, shor
         
         if (exitedToActionable || exitedToNeutral) {
             frameAdvState.p2DefenderFreeInternalFrame = currentInternalFrame;
+            
+            // Only show defender exit logs in detailed mode
             LogOut("[FRAME ADVANTAGE] P2 (defender) exited stun at internal frame " + 
-                   std::to_string(currentInternalFrame) + " (visual: " + std::to_string(currentVisualFrame) + ")" +
-                   " | moveID: " + std::to_string(prevMoveID2) + " -> " + std::to_string(moveID2), true);
+                   std::to_string(currentInternalFrame) + 
+                   " (visual: " + std::to_string(currentVisualFrame) + 
+                   ") | moveID: " + std::to_string(prevMoveID2) + 
+                   " -> " + std::to_string(moveID2), detailedLogging.load());
         }
     }
     
@@ -266,14 +310,19 @@ void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, shor
         if (exitedToActionable || exitedToNeutral) {
             frameAdvState.p1DefenderFreeInternalFrame = currentInternalFrame;
             LogOut("[FRAME ADVANTAGE] P1 (defender) exited stun at internal frame " + 
-                   std::to_string(currentInternalFrame) + " (visual: " + std::to_string(currentVisualFrame) + ")" +
-                   " | moveID: " + std::to_string(prevMoveID1) + " -> " + std::to_string(moveID1), true);
+                   std::to_string(currentInternalFrame) + 
+                   " (visual: " + std::to_string(currentVisualFrame) + 
+                   ") | moveID: " + std::to_string(prevMoveID1) + 
+                   " -> " + std::to_string(moveID1), true);
         }
     }
     
     // STEP 4: Calculate frame advantage with PRECISE subframe calculation
     if (frameAdvState.p1Attacking && !frameAdvState.p1AdvantageCalculated &&
         frameAdvState.p1ActionableInternalFrame != -1 && frameAdvState.p2DefenderFreeInternalFrame != -1) {
+        
+        // Set flag BEFORE calculating to prevent duplicate calculations
+        frameAdvState.p1AdvantageCalculated = true;
         
         // CRITICAL: Calculate advantage in internal frames first
         int internalFrameAdvantage = frameAdvState.p2DefenderFreeInternalFrame - frameAdvState.p1ActionableInternalFrame;
@@ -313,24 +362,29 @@ void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, shor
         }
         
         frameAdvState.p1FrameAdvantage = visualFrameAdvantage;
-        frameAdvState.p1AdvantageCalculated = true;
         
-        // Get attack info for context
-        int attackLevel = GetAttackLevel(frameAdvState.p2InitialBlockstunMoveID);
-        bool wasBlocked = frameAdvState.p2InBlockstun;
+        // Format the advantage for display
         std::string advantageStr = FormatFrameAdvantage(visualFrameAdvantage);
         
-        LogOut("[FRAME ADVANTAGE] P1 " + advantageStr + " frames" + 
-               " (Level " + std::to_string(attackLevel) + " " + (wasBlocked ? "blocked" : "hit") + ")" +
-               " | Internal advantage: " + std::to_string(internalFrameAdvantage) +
-               " | Attacker free: " + std::to_string(frameAdvState.p1ActionableInternalFrame) + 
-               " | Defender free: " + std::to_string(frameAdvState.p2DefenderFreeInternalFrame), true);
+        // Always show the final frame advantage message (true)
+        LogOut("[FRAME ADVANTAGE] Player 1 is " + advantageStr + " frames compared to Player 2", true);
         
+        // IMPORTANT: Reset MORE state variables to prepare for the next attack sequence
         frameAdvState.p1Attacking = false;
+        // Don't reset p1AdvantageCalculated yet - this will be reset on a new attack
+        
+        // Reset detection state variables so we can detect the next sequence properly
+        frameAdvState.p1ActionableInternalFrame = -1;
+        frameAdvState.p2DefenderFreeInternalFrame = -1;
+        frameAdvState.p1AttackStartInternalFrame = -1;
+        frameAdvState.p1AttackMoveID = 0;
     }
     
     if (frameAdvState.p2Attacking && !frameAdvState.p2AdvantageCalculated &&
         frameAdvState.p2ActionableInternalFrame != -1 && frameAdvState.p1DefenderFreeInternalFrame != -1) {
+        
+        // Set flag BEFORE calculating to prevent duplicate calculations
+        frameAdvState.p2AdvantageCalculated = true;
         
         int internalFrameAdvantage = frameAdvState.p1DefenderFreeInternalFrame - frameAdvState.p2ActionableInternalFrame;
         
@@ -368,33 +422,34 @@ void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, shor
         }
         
         frameAdvState.p2FrameAdvantage = visualFrameAdvantage;
-        frameAdvState.p2AdvantageCalculated = true;
         
-        int attackLevel = GetAttackLevel(frameAdvState.p1InitialBlockstunMoveID);
-        bool wasBlocked = frameAdvState.p1InBlockstun;
+        // Format the advantage for display
         std::string advantageStr = FormatFrameAdvantage(visualFrameAdvantage);
         
-        LogOut("[FRAME ADVANTAGE] P2 " + advantageStr + " frames" + 
-               " (Level " + std::to_string(attackLevel) + " " + (wasBlocked ? "blocked" : "hit") + ")" +
-               " | Internal advantage: " + std::to_string(internalFrameAdvantage) +
-               " | Attacker free: " + std::to_string(frameAdvState.p2ActionableInternalFrame) + 
-               " | Defender free: " + std::to_string(frameAdvState.p1DefenderFreeInternalFrame), true);
+        // Always show the final frame advantage message (true)
+        LogOut("[FRAME ADVANTAGE] Player 2 is " + advantageStr + " frames compared to Player 1", true);
         
+        // IMPORTANT: Reset MORE state variables
         frameAdvState.p2Attacking = false;
+        // Don't reset p2AdvantageCalculated yet
+        
+        // Reset detection state variables
+        frameAdvState.p2ActionableInternalFrame = -1;
+        frameAdvState.p1DefenderFreeInternalFrame = -1;  
+        frameAdvState.p2AttackStartInternalFrame = -1;
+        frameAdvState.p2AttackMoveID = 0;
     }
     
-    // STEP 5: Auto-reset if tracking goes stale
-    static int idleFrameCount = 0;
-    if (IsActionable(moveID1) && IsActionable(moveID2) && 
-        (frameAdvState.p1Attacking || frameAdvState.p2Attacking)) {
-        idleFrameCount++;
-        if (idleFrameCount > 360) { // 2 seconds at 192 internal FPS
-            LogOut("[FRAME ADVANTAGE] Resetting stale tracking", true);
+    // STEP 5: Add improved timeout detection
+    static int staleFrameCounter = 0;
+    if (frameAdvState.p1Attacking || frameAdvState.p2Attacking) {
+        if (++staleFrameCounter > 180) { // 3 seconds with no resolution
+            LogOut("[FRAME_ADV_DEBUG] Resetting stale frame advantage tracking", detailedLogging.load());
             ResetFrameAdvantageState();
-            idleFrameCount = 0;
+            staleFrameCounter = 0;
         }
     } else {
-        idleFrameCount = 0;
+        staleFrameCounter = 0;
     }
 }
 

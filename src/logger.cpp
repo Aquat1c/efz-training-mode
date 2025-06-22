@@ -34,19 +34,16 @@ void LogOut(const std::string& msg, bool consoleOutput) {
     if (consoleOutput) {
         std::lock_guard<std::mutex> lock(g_logMutex);
         
+        // Skip spacing logic for empty lines - this fixes most spacing issues
+        if (msg.empty()) {
+            std::cout << std::endl;
+            return;
+        }
+        
         // Track message categories for proper spacing
         static std::string lastCategory = "";
-        static bool inHotkeyBlock = false;
+        static bool wasEmptyLine = false;
         std::string currentCategory = "OTHER"; // Default
-        
-        // Check if we're entering the hotkey information block
-        if (msg.find("--- HOTKEY INFORMATION ---") != std::string::npos) {
-            inHotkeyBlock = true;
-        }
-        // Check if we're exiting the hotkey block (at the final divider)
-        else if (msg.find("-------------------------") != std::string::npos && inHotkeyBlock) {
-            inHotkeyBlock = false;
-        }
         
         // Extract the message category from inside first []
         size_t startBracket = msg.find('[');
@@ -54,48 +51,38 @@ void LogOut(const std::string& msg, bool consoleOutput) {
         
         if (startBracket != std::string::npos && endBracket != std::string::npos) {
             currentCategory = msg.substr(startBracket + 1, endBracket - startBracket - 1);
-            
-            // Handle special case - group RG FRAME ADVANTAGE with FRAME ADVANTAGE
-            if (currentCategory == "RG FRAME ADVANTAGE") {
-                currentCategory = "FRAME ADVANTAGE";
-            }
         }
         
         // Skip certain debug messages unless detailed debug is enabled
         bool isDetailedDebugMsg = 
-            currentCategory == "POSITION" || 
-            currentCategory == "HITSTUN" || 
-            currentCategory == "STATE";
+            currentCategory == "WINDOW" || 
+            currentCategory == "OVERLAY" || 
+            currentCategory == "IMGUI" || 
+            currentCategory == "IMGUI_MONITOR" ||
+            currentCategory == "CONFIG" ||
+            currentCategory == "KEYBINDS";
             
-        // Always show frame advantage regardless of detailed debug setting
-        if (isDetailedDebugMsg && !detailedDebugOutput && 
-            currentCategory != "FRAME ADVANTAGE") { // Special case for frame advantage
-            // Skip this message - detailed debug not enabled
+        // Don't show detailed debug messages unless enabled
+        if (isDetailedDebugMsg && !detailedLogging.load()) {
             return;
         }
         
-        // Don't add spacing for hotkey info or help messages
-        bool isHotkeyInfo = inHotkeyBlock || 
-                           (msg.find("Key") != std::string::npos && msg.find(":") != std::string::npos) || 
-                           msg.find("Press") != std::string::npos ||
-                           msg.find("HELP") != std::string::npos;
+        // Don't add extra spacing if the last line was empty or this is a help message
+        bool isHelpMessage = (msg.find("Key") != std::string::npos && msg.find(":") != std::string::npos) || 
+                            msg.find("NOTE:") != std::string::npos ||
+                            msg.find("---") != std::string::npos;
         
-        // Add spacing based on message category, but not for hotkey info
-        if (!lastCategory.empty() && !isHotkeyInfo) {
-            if (currentCategory != lastCategory && lastCategory != "HELP" && currentCategory != "HELP") {
-                // Different categories - add two newlines
-                std::cout << std::endl << std::endl;
-            } else if (lastCategory != "HELP" && currentCategory != "HELP") {
-                // Same category - add one newline
-                std::cout << std::endl;
-            }
+        // Add spacing based on category change, but not for help messages
+        if (!wasEmptyLine && !isHelpMessage && !lastCategory.empty() && currentCategory != lastCategory) {
+            std::cout << std::endl;
         }
         
         // Output the message
         std::cout << msg << std::endl;
         
-        // Only update the last category if it's not a hotkey message
-        if (!isHotkeyInfo) {
+        // Update tracking variables
+        wasEmptyLine = msg.empty();
+        if (!msg.empty() && !isHelpMessage) {
             lastCategory = currentCategory;
         }
     }

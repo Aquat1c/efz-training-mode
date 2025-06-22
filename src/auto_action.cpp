@@ -38,34 +38,36 @@ short GetActionMoveID(int actionType, int triggerType, int playerNum) {
     // First check if it's a custom action
     if (actionType == ACTION_CUSTOM) {
         short customID = 0;
+        // Move custom moveID selection logs to detailed mode
         switch (triggerType) {
             case TRIGGER_AFTER_BLOCK:
                 customID = triggerAfterBlockCustomID.load();
-                LogOut("[AUTO-ACTION] Using After Block custom moveID: " + std::to_string(customID), true);
+                LogOut("[AUTO-ACTION] Using After Block custom moveID: " + std::to_string(customID), detailedLogging.load());
                 return customID;
             case TRIGGER_ON_WAKEUP:
                 customID = triggerOnWakeupCustomID.load();
-                LogOut("[AUTO-ACTION] Using On Wakeup custom moveID: " + std::to_string(customID), true);
+                LogOut("[AUTO-ACTION] Using On Wakeup custom moveID: " + std::to_string(customID), detailedLogging.load());
                 return customID;
             case TRIGGER_AFTER_HITSTUN:
                 customID = triggerAfterHitstunCustomID.load();
-                LogOut("[AUTO-ACTION] Using After Hitstun custom moveID: " + std::to_string(customID), true);
+                LogOut("[AUTO-ACTION] Using After Hitstun custom moveID: " + std::to_string(customID), detailedLogging.load());
                 return customID;
             case TRIGGER_AFTER_AIRTECH:
                 customID = triggerAfterAirtechCustomID.load();
-                LogOut("[AUTO-ACTION] Using After Airtech custom moveID: " + std::to_string(customID), true);
+                LogOut("[AUTO-ACTION] Using After Airtech custom moveID: " + std::to_string(customID), detailedLogging.load());
                 return customID;
             default:
-                LogOut("[AUTO-ACTION] Using default custom moveID: 200", true);
+                LogOut("[AUTO-ACTION] Using default custom moveID: 200", detailedLogging.load());
                 return 200; // Default to 5A if no trigger specified
         }
     }
     
     // Check character ground/air state for context-specific moves
     bool isGrounded = IsCharacterGrounded(playerNum);
+    // Move ground state check logs to detailed mode
     LogOut("[AUTO-ACTION] Player " + std::to_string(playerNum) + 
            " ground state: " + (isGrounded ? "grounded" : "airborne") + 
-           ", action type: " + std::to_string(actionType), true);
+           ", action type: " + std::to_string(actionType), detailedLogging.load());
     
     // Air-specific moves - only process these if character is in the air
     if (!isGrounded) {
@@ -122,10 +124,10 @@ void ProcessTriggerDelays() {
     if (p1DelayState.isDelaying) {
         p1DelayState.delayFramesRemaining--;
         
+        // Move additional debug logs to detailed mode, such as delay countdown logs
         if (p1DelayState.delayFramesRemaining % 64 == 0 && p1DelayState.delayFramesRemaining > 0) {
-            int visualFramesRemaining = p1DelayState.delayFramesRemaining / 3;
-            LogOut("[AUTO-ACTION] P1 delay countdown: " + 
-                   std::to_string(visualFramesRemaining) + " visual frames remaining", true);
+            LogOut("[AUTO-ACTION] P1 delay countdown: " + std::to_string(p1DelayState.delayFramesRemaining/3) + 
+                   " visual frames remaining", detailedLogging.load());
         }
         
         if (p1DelayState.delayFramesRemaining <= 0) {
@@ -300,8 +302,9 @@ void StartTriggerDelay(int playerNum, int triggerType, short moveID, int delayFr
         return;
     }
 
+    // Move trigger delay logs to detailed mode
     LogOut("[AUTO-ACTION] StartTriggerDelay called: Player=" + std::to_string(playerNum) + 
-           ", delay=" + std::to_string(delayFrames) + ", moveID=" + std::to_string(moveID), true);
+           ", delay=" + std::to_string(delayFrames) + ", moveID=" + std::to_string(moveID), detailedLogging.load());
     
     // Set cooldown to prevent rapid re-triggering
     if (playerNum == 1) {

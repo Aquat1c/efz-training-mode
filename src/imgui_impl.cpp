@@ -1,9 +1,12 @@
-#include "../include/imgui_impl.h"
 #include "../include/utilities.h"
+#include "../include/imgui_impl.h"
 #include "../include/logger.h"
 #include "../include/imgui_gui.h"
-#include "../include/overlay.h"  
+#include "../include/overlay.h" 
 #include <stdexcept>
+
+// Global reference to shutdown flag - MOVED OUTSIDE namespace
+extern std::atomic<bool> g_isShuttingDown;
 
 // Global state
 static bool g_imguiInitialized = false;
@@ -33,30 +36,24 @@ namespace ImGuiImpl {
         
         g_d3dDevice = device;
 
-        // Create ImGui context
         IMGUI_CHECKVERSION();
         ImGui::CreateContext();
         ImGuiIO& io = ImGui::GetIO(); (void)io;
         
-        // Enable keyboard controls, gamepad controls
         io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
         io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
         
-        // Setup Dear ImGui style
         ImGui::StyleColorsDark();
         
-        // Scale up the style for better readability
         ImGuiStyle& style = ImGui::GetStyle();
         style.ScaleAllSizes(1.2f);
         
-        // Find game window
         HWND gameWindow = FindEFZWindow();
         if (!gameWindow) {
             LogOut("[IMGUI] Error: Couldn't find EFZ window", true);
             return false;
         }
         
-        // Setup Platform/Renderer backends
         if (!ImGui_ImplWin32_Init(gameWindow)) {
             LogOut("[IMGUI] Error: ImGui_ImplWin32_Init failed", true);
             return false;
@@ -68,7 +65,6 @@ namespace ImGuiImpl {
             return false;
         }
         
-        // Hook window procedure to receive input events
         g_originalWndProc = (WNDPROC)SetWindowLongPtr(gameWindow, GWLP_WNDPROC, (LONG_PTR)ImGuiWndProc);
         if (!g_originalWndProc) {
             LogOut("[IMGUI] Error: Failed to hook window procedure", true);
@@ -77,7 +73,6 @@ namespace ImGuiImpl {
             return false;
         }
         
-        // Initialize ImGui GUI
         ImGuiGui::Initialize();
         
         g_imguiInitialized = true;
@@ -98,7 +93,6 @@ namespace ImGuiImpl {
             SetWindowLongPtr(gameWindow, GWLP_WNDPROC, (LONG_PTR)g_originalWndProc);
         }
         
-        // Shutdown ImGui backends
         ImGui_ImplDX9_Shutdown();
         ImGui_ImplWin32_Shutdown();
         ImGui::DestroyContext();
@@ -109,55 +103,48 @@ namespace ImGuiImpl {
     }
     
     void RenderFrame() {
-        if (!g_imguiInitialized || !g_imguiVisible || !g_d3dDevice)
+        // First check shutdown flag, then the other conditions
+        if (g_isShuttingDown || !g_imguiInitialized || !g_imguiVisible || !g_d3dDevice)
             return;
 
-        // 1. Start a new ImGui frame
+        // Add more null checks
+        HWND gameWindow = FindEFZWindow();
+        if (!gameWindow || !IsWindow(gameWindow))
+            return;
+        
         ImGui_ImplDX9_NewFrame();
         ImGui_ImplWin32_NewFrame();
         ImGui::NewFrame();
 
-        // 2. Build the GUI
-        ImGuiGui::RenderGui();
+        ImGuiIO& io = ImGui::GetIO();
+        if (gameWindow) {
+            POINT mousePos;
+            GetCursorPos(&mousePos);
+            ScreenToClient(gameWindow, &mousePos);
 
-        // 3. End the frame. This is a necessary step before rendering.
+            RECT rect;
+            GetClientRect(gameWindow, &rect);
+            float scaleX = (float)(rect.right - rect.left) / 640.0f;
+            float scaleY = (float)(rect.bottom - rect.top) / 480.0f;
+
+            io.MousePos.x = mousePos.x / scaleX;
+            io.MousePos.y = mousePos.y / scaleY;
+            
+            static int frameCounter = 0;
+            if (frameCounter++ % 300 == 0) { 
+                LogOut("[IMGUI] Mouse position: " + std::to_string(io.MousePos.x) + 
+                       ", " + std::to_string(io.MousePos.y) + 
+                       " (scale: " + std::to_string(scaleX) + ", " + std::to_string(scaleY) + ")", true);
+            }
+        }
+
+        ImGuiGui::RenderGui();
         ImGui::EndFrame();
 
         // 4. Render the ImGui draw data
         ImGui::Render();
         ImGui_ImplDX9_RenderDrawData(ImGui::GetDrawData());
     }
-
-    // The functions below are now obsolete and can be removed.
-    /*
-    void NewFrame() {
-        if (!g_imguiInitialized || !g_imguiVisible)
-            return;
-        
-        ImGui_ImplDX9_NewFrame();
-        ImGui_ImplWin32_NewFrame();
-        ImGui::NewFrame();
-    }
-    
-    void EndFrame() {
-        if (!g_imguiInitialized || !g_imguiVisible)
-            return;
-        
-        ImGui::EndFrame();
-    }
-    
-    void Render() {
-        if (!g_imguiInitialized || !g_imguiVisible || !g_d3dDevice)
-            return;
-        
-        // Render the ImGui interface
-        ImGuiGui::RenderGui();
-        
-        // Render ImGui
-        ImGui::Render();
-        ImGui_ImplDX9_RenderDrawData(ImGui::GetDrawData());
-    }
-    */
     
     bool IsInitialized() {
         return g_imguiInitialized;
@@ -173,6 +160,10 @@ namespace ImGuiImpl {
             ImGuiGui::guiState.localData = displayData;
         } else {
             LogOut("[IMGUI] ImGui interface closed", true);
+            
+            // BUGFIX: Reset the global menuOpen flag when ImGui is closed
+            // Use global namespace resolution operator (::) to access the global variable
+            ::menuOpen.store(false);
         }
         
         // Ensure the visibility state persists by setting it in a global

@@ -22,23 +22,23 @@ void OpenMenu() {
 
     // Check if we're in EFZ window
     if (!IsEFZWindowActive()) {
-        LogOut("[GUI] EFZ window not active, cannot open menu", true);
+        LogOut("[GUI] EFZ window not active, cannot open menu", true); // Keep errors visible
         return;
     }
 
     // Don't open menu if it's already open
     if (menuOpen) {
-        LogOut("[GUI] Menu already open", detailedLogging);
+        LogOut("[GUI] Menu already open", detailedLogging.load());
         return;
     }
 
     menuOpen = true;
-    LogOut("[GUI] Opening config menu", true);
+    LogOut("[GUI] Opening config menu", detailedLogging.load()); // Use detailed logging
 
     // Check which UI system to use
     if (Config::GetSettings().useImGui) {
         // Use ImGui interface
-        LogOut("[GUI] Using ImGui interface as per config", true);
+        LogOut("[GUI] Using ImGui interface as per config", detailedLogging.load()); // Use detailed logging
         ImGuiImpl::ToggleVisibility();
     } else {
         // Use legacy Win32 dialog
@@ -164,7 +164,7 @@ void ApplySettings(DisplayData* data) {
             }
         }
         
-        LogOut("[GUI] All settings applied successfully", true);
+        LogOut("[GUI] All settings applied successfully", detailedLogging.load()); // Use detailed logging
     } catch (const std::exception& e) {
         LogOut("[GUI] Exception in ApplySettings: " + std::string(e.what()), true);
     } catch (...) {
