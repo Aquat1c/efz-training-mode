@@ -41,7 +41,10 @@ void FrameDataMonitor() {
     auto lastLogTime = clock::now();
     int framesSinceLastLog = 0;
     
-    while (true) {
+    // Add reference to the shutdown flag
+    extern std::atomic<bool> g_isShuttingDown;
+    
+    while (!g_isShuttingDown) {  // Check flag in loop condition
         auto frameStartTime = clock::now();
         
         uintptr_t base = GetEFZBase();
@@ -164,4 +167,6 @@ void FrameDataMonitor() {
             }
         }
     }
+    
+    LogOut("[FRAME MONITOR] Shutting down frame monitor thread", true);
 }

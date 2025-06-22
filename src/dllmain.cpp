@@ -30,6 +30,9 @@ void InitializeConfig();
 // Add this flag to track initialization state
 std::atomic<bool> g_initialized(false);
 
+// Add this near the top with other globals
+std::atomic<bool> g_isShuttingDown(false);
+
 // Delayed initialization function
 void DelayedInitialization(HMODULE hModule) {
     // Remove the 5-second delay
@@ -103,8 +106,10 @@ void DelayedInitialization(HMODULE hModule) {
         Sleep(5000);
         
         if (DirectDrawHook::InitializeD3D9()) {
-            LogOut("[SYSTEM] ImGui D3D9 hook initialized successfully.", true);
+            // Only show in detailed mode
+            LogOut("[SYSTEM] ImGui D3D9 hook initialized successfully.", detailedLogging.load());
         } else {
+            // Keep error messages visible to all users
             LogOut("[SYSTEM] FATAL: Could not initialize ImGui D3D9 hook.", true);
         }
     }).detach();
@@ -124,9 +129,11 @@ void DelayedInitialization(HMODULE hModule) {
         // Log ImGui rendering status every few seconds
         while (true) {
             if (ImGuiImpl::IsInitialized()) {
+                // Change this line to respect the detailed logging flag
                 LogOut("[IMGUI_MONITOR] Status: Initialized=" + 
                       std::to_string(ImGuiImpl::IsInitialized()) + 
-                      ", Visible=" + std::to_string(ImGuiImpl::IsVisible()), true);
+                      ", Visible=" + std::to_string(ImGuiImpl::IsVisible()), 
+                      detailedLogging.load()); // Only show if detailed logging is enabled
             }
             
             // Check every 5 seconds
@@ -177,10 +184,22 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
         return TRUE;
     }
     else if (ul_reason_for_call == DLL_PROCESS_DETACH) {
-        // Clean up the D3D9 hook and ImGui
+        // Set shutdown flag to stop threads
+        g_isShuttingDown.store(true);
+        
+        // Add a small delay to allow threads to notice the flag
+        Sleep(100);
+        
+        // First clean up ImGui to prevent rendering during shutdown
+        ImGuiImpl::Shutdown();
+        
+        // Then clean up the D3D9 hook
         DirectDrawHook::ShutdownD3D9();
-        // Clean up the overlay
+        
+        // Finally clean up the overlay
         DirectDrawHook::Shutdown();
+        
+        LogOut("[SYSTEM] DLL detaching, cleanup complete", true);
     }
     return TRUE;
 }

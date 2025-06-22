@@ -119,12 +119,12 @@ void MonitorAutoAirtech(short moveID1, short moveID2) {
     
     // Detect transitions into airtech animation
     if (p1CurrentlyAirteching && !p1IsAirteching) {
-        LogOut("[AUTO-AIRTECH] P1 entered airtech animation, removing patches", true);
+        LogOut("[AUTO-AIRTECH] P1 entered airtech animation", detailedLogging.load());
         if (patchesApplied) RemoveAirtechPatches();
     }
     
     if (p2CurrentlyAirteching && !p2IsAirteching) {
-        LogOut("[AUTO-AIRTECH] P2 entered airtech animation, removing patches", true);
+        LogOut("[AUTO-AIRTECH] P2 entered airtech animation", detailedLogging.load());
         if (patchesApplied) RemoveAirtechPatches();
     }
     
@@ -190,7 +190,7 @@ void MonitorAutoAirtech(short moveID1, short moveID2) {
         if (p1Airtechable && !p1WasAirtechable) {
             p1DelayCounter = autoAirtechDelay.load();
             LogOut("[AUTO-AIRTECH] P1 became airtechable, starting delay: " + 
-                   std::to_string(autoAirtechDelay.load()) + " visual frames", true);
+                   std::to_string(autoAirtechDelay.load()) + " visual frames", detailedLogging.load());
         }
         
         // Count down P1's delay and apply patches when it expires
@@ -210,7 +210,7 @@ void MonitorAutoAirtech(short moveID1, short moveID2) {
         if (p2Airtechable && !p2WasAirtechable) {
             p2DelayCounter = autoAirtechDelay.load();
             LogOut("[AUTO-AIRTECH] P2 became airtechable, starting delay: " + 
-                   std::to_string(autoAirtechDelay.load()) + " visual frames", true);
+                   std::to_string(autoAirtechDelay.load()) + " visual frames", detailedLogging.load());
         }
         
         // Count down P2's delay and apply patches when it expires

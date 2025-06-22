@@ -63,31 +63,26 @@ uintptr_t ResolvePointer(uintptr_t base, uintptr_t baseOffset, uintptr_t offset)
 // Enhanced WriteGameMemory with added protections
 void WriteGameMemory(uintptr_t address, const void* data, size_t size) {
     if (address == 0 || !data) {
-        LogOut("[MEMORY] WriteGameMemory: Invalid parameters", true);
+        LogOut("[MEMORY] Invalid address or data pointer", true); // Keep errors visible
         return;
     }
 
     // Verify address is within valid range
     if (address < 0x10000 || address > 0x7FFFFFFF) {
-        LogOut("[MEMORY] WriteGameMemory: Address out of range: 0x" + std::to_string(address), true);
+        LogOut("[MEMORY] Address out of valid range: " + std::to_string(address), true); // Keep errors visible
         return;
     }
 
     DWORD oldProtect;
     if (VirtualProtect((LPVOID)address, size, PAGE_EXECUTE_READWRITE, &oldProtect)) {
-        if (!IsBadWritePtr((LPVOID)address, size)) {
-            memcpy((void*)address, data, size);
-            LogOut("[MEMORY] WriteGameMemory: Successfully wrote " + std::to_string(size) + 
-                   " bytes to 0x" + std::to_string(address), true);
-        } else {
-            LogOut("[MEMORY] WriteGameMemory: Cannot write to address 0x" + std::to_string(address), true);
-        }
-        
-        // Restore old protection
+        memcpy((void*)address, data, size);
         VirtualProtect((LPVOID)address, size, oldProtect, &oldProtect);
+        // Change this line to use detailedLogging instead of always showing
+        LogOut("[MEMORY] WriteGameMemory: Successfully wrote " + std::to_string(size) + 
+               " bytes to 0x" + std::to_string(address), detailedLogging.load());
     } else {
-        LogOut("[MEMORY] WriteGameMemory: Failed to change memory protection for address 0x" + 
-               std::to_string(address) + " - Error: " + std::to_string(GetLastError()), true);
+        LogOut("[MEMORY] Failed to change memory protection at address: 0x" + 
+               std::to_string(address), true); // Keep errors visible
     }
 }
 
@@ -396,11 +391,14 @@ void RFFreezeThreadFunc() {
 
 // Initialize the RF freeze thread
 void InitRFFreezeThread() {
-    if (!rfThreadRunning) {
-        rfFreezeThread = std::thread(RFFreezeThreadFunc);
-        rfFreezeThread.detach();
-        LogOut("[RF] RF freeze thread initialized", true);
-    }
+    if (rfThreadRunning) return;
+    
+    rfThreadRunning = true;
+    rfFreezeThread = std::thread(RFFreezeThreadFunc);
+    rfFreezeThread.detach();
+    
+    // Only show in detailed mode
+    LogOut("[RF] RF freeze thread initialized", detailedLogging.load());
 }
 
 // Start freezing RF values
@@ -413,11 +411,11 @@ void StartRFFreeze(double p1Value, double p2Value) {
     rfFreezing.store(true);
     
     LogOut("[RF] Started freezing RF values: P1=" + std::to_string(p1Value) + 
-           ", P2=" + std::to_string(p2Value), true);
+           ", P2=" + std::to_string(p2Value), detailedLogging.load());
 }
 
 // Stop freezing RF values
 void StopRFFreeze() {
     rfFreezing.store(false);
-    LogOut("[RF] Stopped freezing RF values", true);
+    LogOut("[RF] Stopped freezing RF values", detailedLogging.load());
 }

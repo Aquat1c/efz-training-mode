@@ -156,7 +156,7 @@ HRESULT WINAPI HookedEndScene(LPDIRECT3DDEVICE9 pDevice) {
         std::lock_guard<std::mutex> lock(renderMutex);
         if (!g_pd3dDevice) { // Double-check after lock
             g_pd3dDevice = pDevice;
-            LogOut("[IMGUI] D3D device obtained", true);
+            LogOut("[IMGUI] D3D device obtained", detailedLogging.load());
         }
     }
     
@@ -603,7 +603,7 @@ void DirectDrawHook::ClearAllMessages() {
 
 // --- NEW: D3D9 Hook Initialization and Shutdown ---
 bool DirectDrawHook::InitializeD3D9() {
-    LogOut("[OVERLAY] Attempting to initialize D3D9 hook", true);
+    LogOut("[OVERLAY] Attempting to initialize D3D9 hook", detailedLogging.load());
     
     if (g_d3d9Hooked) {
         LogOut("[OVERLAY] D3D9 already hooked", true);
@@ -612,7 +612,7 @@ bool DirectDrawHook::InitializeD3D9() {
     
     // Initialize MinHook
     if (MH_Initialize() != MH_OK) {
-        LogOut("[OVERLAY] Failed to initialize MinHook", true);
+        LogOut("[OVERLAY] Failed to initialize MinHook library", true);
         return false;
     }
     
@@ -676,7 +676,7 @@ bool DirectDrawHook::InitializeD3D9() {
     void* endSceneAddr = vTable[42]; // EndScene is at index 42
     
     // Create the hook using MinHook
-    LogOut("[OVERLAY] Hooking EndScene", true);
+    LogOut("[OVERLAY] Hooking EndScene", detailedLogging.load());
     if (MH_CreateHook(endSceneAddr, HookedEndScene, reinterpret_cast<void**>(&oEndScene)) != MH_OK) {
         LogOut("[OVERLAY] Failed to create hook for EndScene", true);
         tempDevice->Release();
@@ -697,7 +697,11 @@ bool DirectDrawHook::InitializeD3D9() {
     d3d9->Release();
     
     g_d3d9Hooked = true;
-    LogOut("[OVERLAY] D3D9 hook initialized successfully", true);
+    LogOut("[OVERLAY] D3D9 hook initialized successfully", detailedLogging.load());
+    LogOut("[SYSTEM] ImGui D3D9 hook initialized successfully.", detailedLogging.load());  // Keep this one visible
+    LogOut("[IMGUI] ImGui initialized successfully", detailedLogging.load());
+    LogOut("[IMGUI] ImGui initialization succeeded", detailedLogging.load());
+    LogOut("[IMGUI_GUI] GUI state initialized", detailedLogging.load());
     return true;
 }
 
@@ -716,7 +720,6 @@ void DirectDrawHook::ShutdownD3D9() {
     g_d3d9Hooked = false;
     LogOut("[D3D9] D3D9 hook shut down.", true);
 }
-
 
 // Fallback implementation using a transparent window
 bool DirectDrawHook::InitializeFallbackOverlay() {
