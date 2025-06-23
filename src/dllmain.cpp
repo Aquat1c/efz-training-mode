@@ -95,10 +95,8 @@ void DelayedInitialization(HMODULE hModule) {
     LogOut("EFZ Training Mode initialized successfully", true);
     WriteStartupLog("Delayed initialization complete");
     
-    // Show help screen automatically
-    WriteStartupLog("Showing help screen automatically");
-    ShowHotkeyInfo();
-    WriteStartupLog("Help screen shown");
+    // REMOVED: Do not show help screen automatically on startup
+    // The user can open it with the configured help key.
     
     // NEW: Replace the old overlay logic with the new D3D9 hook initialization.
     std::thread([]{

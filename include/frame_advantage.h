@@ -9,6 +9,8 @@ struct FrameAdvantageState {
     bool p2InBlockstun;
     bool p1InHitstun;
     bool p2InHitstun;
+    bool p1Defending;
+    bool p2Defending;
     
     // Attack tracking
     bool p1Attacking;
@@ -39,6 +41,9 @@ struct FrameAdvantageState {
     // Initial moveIDs for analysis
     short p1InitialBlockstunMoveID;
     short p2InitialBlockstunMoveID;
+
+    // Timer to control how long the advantage is displayed
+    int displayUntilInternalFrame;
 };
 
 // Global frame advantage state
@@ -53,6 +58,6 @@ FrameAdvantageState GetFrameAdvantageState();
 // Helper functions with subframe precision
 int GetCurrentInternalFrame();
 double GetCurrentVisualFrame();      // Returns frame with .33/.66 subframes
-std::string FormatFrameAdvantage(double advantage);  // Format with subframes
+std::string FormatFrameAdvantage(int advantageInternal);  // Changed parameter from double to int
 bool IsAttackMove(short moveID);
 bool IsRecoveryFromAttack(short currentMoveID, short prevMoveID);

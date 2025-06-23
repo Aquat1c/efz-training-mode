@@ -28,6 +28,7 @@ struct OverlayMessage {
     int yPos;
     bool isPermanent;  // If true, stays until explicitly removed
     int id;            // Unique ID for permanent messages
+    std::string category; // NEW: Category for grouping messages
 };
 
 class DirectDrawHook {
@@ -71,9 +72,9 @@ public:
     // Make isHooked visible for status checks
     static bool isHooked;
     
-    // Add a temporary message
-    static void AddMessage(const std::string& text, COLORREF color = RGB(255, 255, 0), 
-                          int durationMs = 3000, int x = 10, int y = 10);
+    // Add a temporary message with a category
+    static void AddMessage(const std::string& text, const std::string& category, COLORREF color, 
+                          int durationMs, int x, int y);
     
     // Add or update a permanent message
     static int AddPermanentMessage(const std::string& text, COLORREF color = RGB(255, 255, 0), 
@@ -85,19 +86,17 @@ public:
     // Remove a permanent message
     static void RemovePermanentMessage(int id);
     
+    // Remove messages by category
+    static void RemoveMessagesByCategory(const std::string& category);
+
     // Remove all messages
     static void ClearAllMessages();
 
+    // Make this function public so it can be called from the global EndScene hook
+    static void RenderD3D9Overlays(LPDIRECT3DDEVICE9 pDevice);
+
     // Add this method - it's missing but called in dllmain.cpp
     static void Shutdown();
-
-    // Fallback methods
-    static bool InitializeFallbackOverlay();
-    // NEW: Add declarations for other fallback/test methods
-    static bool InitializeSimpleOverlay();
-    static bool InitializeBruteForceOverlay();
-    static void TestOverlay();
-    static void TestHelloWorld();
 
     // Set up window procedure hooks for ImGui input handling
     static void SetupWindowProcedures();
@@ -113,3 +112,10 @@ public:
 // Global status message IDs
 extern int g_AirtechStatusId;
 extern int g_JumpStatusId;
+extern int g_FrameAdvantageId;
+
+// NEW: Individual trigger message IDs
+extern int g_TriggerAfterBlockId;
+extern int g_TriggerOnWakeupId;
+extern int g_TriggerAfterHitstunId;
+extern int g_TriggerAfterAirtechId;

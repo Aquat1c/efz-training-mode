@@ -102,49 +102,6 @@ namespace ImGuiImpl {
         g_d3dDevice = nullptr;
     }
     
-    void RenderFrame() {
-        // First check shutdown flag, then the other conditions
-        if (g_isShuttingDown || !g_imguiInitialized || !g_imguiVisible || !g_d3dDevice)
-            return;
-
-        // Add more null checks
-        HWND gameWindow = FindEFZWindow();
-        if (!gameWindow || !IsWindow(gameWindow))
-            return;
-        
-        ImGui_ImplDX9_NewFrame();
-        ImGui_ImplWin32_NewFrame();
-        ImGui::NewFrame();
-
-        ImGuiIO& io = ImGui::GetIO();
-        if (gameWindow) {
-            POINT mousePos;
-            GetCursorPos(&mousePos);
-            ScreenToClient(gameWindow, &mousePos);
-
-            RECT rect;
-            GetClientRect(gameWindow, &rect);
-            float scaleX = (float)(rect.right - rect.left) / 640.0f;
-            float scaleY = (float)(rect.bottom - rect.top) / 480.0f;
-
-            io.MousePos.x = mousePos.x / scaleX;
-            io.MousePos.y = mousePos.y / scaleY;
-            
-            static int frameCounter = 0;
-            if (frameCounter++ % 300 == 0) { 
-                LogOut("[IMGUI] Mouse position: " + std::to_string(io.MousePos.x) + 
-                       ", " + std::to_string(io.MousePos.y) + 
-                       " (scale: " + std::to_string(scaleX) + ", " + std::to_string(scaleY) + ")", true);
-            }
-        }
-
-        ImGuiGui::RenderGui();
-        ImGui::EndFrame();
-
-        // 4. Render the ImGui draw data
-        ImGui::Render();
-        ImGui_ImplDX9_RenderDrawData(ImGui::GetDrawData());
-    }
     
     bool IsInitialized() {
         return g_imguiInitialized;
@@ -156,8 +113,8 @@ namespace ImGuiImpl {
         if (g_imguiVisible) {
             LogOut("[IMGUI] ImGui interface opened - will render continuously until closed", true);
             
-            // Update our local copy of the display data
-            ImGuiGui::guiState.localData = displayData;
+            // Update our local copy of the display data by reading from memory
+            ImGuiGui::RefreshLocalData();
         } else {
             LogOut("[IMGUI] ImGui interface closed", true);
             

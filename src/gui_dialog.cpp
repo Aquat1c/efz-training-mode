@@ -36,7 +36,7 @@ INT_PTR CALLBACK EditDataDlgProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM 
     static DisplayData* pData = nullptr;
     static HWND hTabControl = NULL;
     static HWND hPage1 = NULL;
-    static HWND hPage2 = NULL;
+    // static HWND hPage2 = NULL; // REMOVED
     static HWND hPage3 = NULL;
     
     // Round start positions
@@ -65,10 +65,10 @@ INT_PTR CALLBACK EditDataDlgProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM 
         tie.mask = TCIF_TEXT;
         tie.pszText = (LPSTR)"Game Values";
         TabCtrl_InsertItem(hTabControl, 0, &tie);
-        tie.pszText = (LPSTR)"Movement Options";
-        TabCtrl_InsertItem(hTabControl, 1, &tie);
+        // tie.pszText = (LPSTR)"Movement Options"; // REMOVED
+        // TabCtrl_InsertItem(hTabControl, 1, &tie); // REMOVED
         tie.pszText = (LPSTR)"Auto Action";
-        TabCtrl_InsertItem(hTabControl, 2, &tie);
+        TabCtrl_InsertItem(hTabControl, 1, &tie); // Index changed from 2 to 1
 
         // Create page containers
         hPage1 = CreateWindowEx(
@@ -77,11 +77,13 @@ INT_PTR CALLBACK EditDataDlgProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM 
             0, 0, 0, 0, hDlg, NULL, GetModuleHandle(NULL), NULL);
         LogOut("[GUI_DEBUG] EditDataDlgProc: Created hPage1=" + Logger::hwndToString(hPage1), true);
             
+        /* REMOVED
         hPage2 = CreateWindowEx(
             0, "STATIC", "", 
             WS_CHILD | WS_VISIBLE, 
             0, 0, 0, 0, hDlg, NULL, GetModuleHandle(NULL), NULL);
         LogOut("[GUI_DEBUG] EditDataDlgProc: Created hPage2=" + Logger::hwndToString(hPage2), true);
+        */
         
         hPage3 = CreateWindowEx(
             0, "STATIC", "", 
@@ -92,8 +94,7 @@ INT_PTR CALLBACK EditDataDlgProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM 
         // Subclass ALL page containers to forward WM_COMMAND messages
         BOOL sub1 = SetWindowSubclass(hPage1, PageSubclassProc, 1, (DWORD_PTR)hDlg);
         LogOut("[GUI_DEBUG] EditDataDlgProc: SetWindowSubclass for hPage1 result: " + std::to_string(sub1) + ", hPage1=" + Logger::hwndToString(hPage1) + ", hDlg=" + Logger::hwndToString(hDlg), true);
-        BOOL sub2 = SetWindowSubclass(hPage2, PageSubclassProc, 2, (DWORD_PTR)hDlg);
-        LogOut("[GUI_DEBUG] EditDataDlgProc: SetWindowSubclass for hPage2 result: " + std::to_string(sub2), true);
+        // BOOL sub2 = SetWindowSubclass(hPage2, PageSubclassProc, 2, (DWORD_PTR)hDlg); // REMOVED
         BOOL sub3 = SetWindowSubclass(hPage3, PageSubclassProc, 3, (DWORD_PTR)hDlg);        
         LogOut("[GUI_DEBUG] EditDataDlgProc: SetWindowSubclass for hPage3 result: " + std::to_string(sub3), true);
         
@@ -107,10 +108,12 @@ INT_PTR CALLBACK EditDataDlgProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM 
             rc.left + 10, rc.top + 10,
             rc.right - rc.left - 20, rc.bottom - rc.top - 20,
             SWP_NOZORDER);
+        /* REMOVED
         SetWindowPos(hPage2, NULL, 
             rc.left + 10, rc.top + 10,
             rc.right - rc.left - 20, rc.bottom - rc.top - 20,
             SWP_NOZORDER);
+        */
         SetWindowPos(hPage3, NULL, 
             rc.left + 10, rc.top + 10,
             rc.right - rc.left - 20, rc.bottom - rc.top - 20,
@@ -118,30 +121,19 @@ INT_PTR CALLBACK EditDataDlgProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM 
     
         // Create page content
         GameValuesPage_CreateContent(hPage1, pData);
-        MovementOptionsPage_CreateContent(hPage2, pData);
         AutoActionPage_CreateContent(hPage3, pData);
-        
-        // Show first page, hide others
+
+        // Show the first page by default
         ShowWindow(hPage1, SW_SHOW);
-        ShowWindow(hPage2, SW_HIDE);
         ShowWindow(hPage3, SW_HIDE);
         
-        // Update button positions for the larger dialog
-        HWND hConfirmBtn = CreateWindowEx(0, "BUTTON", "Confirm", 
-            WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON,
-            200, 410, 100, 30, hDlg, (HMENU)IDC_BTN_CONFIRM, GetModuleHandle(NULL), NULL); // Moved down
-            
-        CreateWindowEx(0, "BUTTON", "Cancel", 
-            WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-            320, 410, 100, 30, hDlg, (HMENU)IDC_BTN_CANCEL, GetModuleHandle(NULL), NULL); // Moved down
+        // Set the title of the cancel button to "Exit"
+        HWND hCancelButton = GetDlgItem(hDlg, IDC_BTN_CANCEL);
+        if (hCancelButton) {
+            SetWindowText(hCancelButton, "Exit");
+        }
 
-        // Ensure the confirm button is properly set as default
-        SendMessage(hDlg, DM_SETDEFID, IDC_BTN_CONFIRM, 0);
-
-        // Set focus to tab control
-        SetFocus(hTabControl);
-
-        return TRUE; // Ensure WM_INITDIALOG returns TRUE if focus was not set manually
+        return (INT_PTR)TRUE;
     }
     
     case WM_CLOSE:
@@ -235,7 +227,7 @@ INT_PTR CALLBACK EditDataDlgProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM 
         
         if (cmdID == IDC_BTN_CONFIRM) {
             LogOut("[GUI_DEBUG] EditDataDlgProc: IDC_BTN_CONFIRM detected.", true);
-            ProcessFormData(hDlg, hPage1, hPage2, hPage3, pData);
+            ProcessFormData(hDlg, hPage1, hPage3, pData);
             ApplySettings(pData);
             EndDialog(hDlg, IDOK); 
             menuOpen = false;
@@ -255,82 +247,75 @@ INT_PTR CALLBACK EditDataDlgProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM 
         return FALSE; 
     }
     
-    case WM_NOTIFY: { 
-        NMHDR* pnmh = (NMHDR*)lParam;
-        // LogOut("[GUI_DEBUG] EditDataDlgProc: WM_NOTIFY received. hwndFrom=" + Logger::hwndToString(pnmh->hwndFrom) + ", code=" + std::to_string(pnmh->code), true);
-        if (pnmh->hwndFrom == hTabControl && pnmh->code == TCN_SELCHANGE) {
+    case WM_NOTIFY: {
+        switch (((LPNMHDR)lParam)->code) {
+        case TCN_SELCHANGE: {
             int iPage = TabCtrl_GetCurSel(hTabControl);
             ShowWindow(hPage1, (iPage == 0) ? SW_SHOW : SW_HIDE);
-            ShowWindow(hPage2, (iPage == 1) ? SW_SHOW : SW_HIDE);
-            ShowWindow(hPage3, (iPage == 2) ? SW_SHOW : SW_HIDE);
-            LogOut("[GUI] Tab changed to page " + std::to_string(iPage), detailedLogging.load());
-            return TRUE; // Indicate that we've processed this notification
+            ShowWindow(hPage3, (iPage == 1) ? SW_SHOW : SW_HIDE); // Index changed from 2 to 1
+            break;
         }
-        return FALSE; // For unhandled notifications
+        }
+        break;
     }
     } // End of switch (message)
     
-    return FALSE; // Default processing for unhandled messages
+    return (INT_PTR)FALSE;
 }
 
 // Helper function to process form data
-void ProcessFormData(HWND hDlg, HWND hPage1, HWND hPage2, HWND hPage3, DisplayData* pData) {
-    char text[32];
-    GetDlgItemTextA(hPage1, IDC_HP1, text, sizeof(text)); pData->hp1 = atoi(text);
-    GetDlgItemTextA(hPage1, IDC_METER1, text, sizeof(text)); pData->meter1 = atoi(text);
-    GetDlgItemTextA(hPage1, IDC_RF1, text, sizeof(text)); pData->rf1 = atof(text);
-    GetDlgItemTextA(hPage1, IDC_X1, text, sizeof(text)); pData->x1 = atof(text);
-    GetDlgItemTextA(hPage1, IDC_Y1, text, sizeof(text)); pData->y1 = atof(text);
-    
-    GetDlgItemTextA(hPage1, IDC_HP2, text, sizeof(text)); pData->hp2 = atoi(text);
-    GetDlgItemTextA(hPage1, IDC_METER2, text, sizeof(text)); pData->meter2 = atoi(text);
-    GetDlgItemTextA(hPage1, IDC_RF2, text, sizeof(text)); pData->rf2 = atof(text);
-    GetDlgItemTextA(hPage1, IDC_X2, text, sizeof(text)); pData->x2 = atof(text);
-    GetDlgItemTextA(hPage1, IDC_Y2, text, sizeof(text)); pData->y2 = atof(text);
-    
-    // Process auto-airtech settings
-    int airtechDirIndex = SendDlgItemMessage(hPage1, IDC_AIRTECH_DIRECTION, CB_GETCURSEL, 0, 0);
-    pData->autoAirtech = (airtechDirIndex > 0);
-    pData->airtechDirection = (airtechDirIndex > 0) ? airtechDirIndex - 1 : 0;
-    
-    // Get airtech delay
-    char airtechDelayText[8];
-    GetDlgItemTextA(hPage1, IDC_AIRTECH_DELAY, airtechDelayText, sizeof(airtechDelayText));
-    pData->airtechDelay = atoi(airtechDelayText);
-    
-    // Process movement options (auto-jump)
-    int jumpDirIndex = SendDlgItemMessage(hPage2, IDC_JUMP_DIRECTION, CB_GETCURSEL, 0, 0);
-    pData->autoJump = (jumpDirIndex > 0);  // 0 = disabled, >0 = enabled
-    pData->jumpDirection = (jumpDirIndex > 0) ? jumpDirIndex - 1 : 0;  // Convert to 0-based
-    
-    int jumpTargetIndex = SendDlgItemMessage(hPage2, IDC_JUMP_TARGET, CB_GETCURSEL, 0, 0);
-    pData->jumpTarget = jumpTargetIndex + 1;  // Convert to 1-based (1=P1, 2=P2, 3=Both)
-    
-    // Process auto-action settings
-    pData->autoAction = (SendDlgItemMessage(hPage3, IDC_AUTOACTION_ENABLE, BM_GETCHECK, 0, 0) == BST_CHECKED);
-    int playerIndex = SendDlgItemMessage(hPage3, IDC_AUTOACTION_PLAYER, CB_GETCURSEL, 0, 0);
-    pData->autoActionPlayer = playerIndex + 1;
-    
-    // After Block trigger
-    pData->triggerAfterBlock = (SendDlgItemMessage(hPage3, IDC_TRIGGER_AFTER_BLOCK_CHECK, BM_GETCHECK, 0, 0) == BST_CHECKED);
-    int afterBlockActionIndex = SendDlgItemMessage(hPage3, IDC_TRIGGER_AFTER_BLOCK_ACTION, CB_GETCURSEL, 0, 0);
-    // Convert to action type using the mapping array
-    pData->actionAfterBlock = ComboIndexToActionType[afterBlockActionIndex];
-    
-    // On Wakeup trigger
-    pData->triggerOnWakeup = (SendDlgItemMessage(hPage3, IDC_TRIGGER_ON_WAKEUP_CHECK, BM_GETCHECK, 0, 0) == BST_CHECKED);
-    int onWakeupActionIndex = SendDlgItemMessage(hPage3, IDC_TRIGGER_ON_WAKEUP_ACTION, CB_GETCURSEL, 0, 0);
-    pData->actionOnWakeup = ComboIndexToActionType[onWakeupActionIndex];
-    
-    // After Hitstun trigger
-    pData->triggerAfterHitstun = (SendDlgItemMessage(hPage3, IDC_TRIGGER_AFTER_HITSTUN_CHECK, BM_GETCHECK, 0, 0) == BST_CHECKED);
-    int afterHitstunActionIndex = SendDlgItemMessage(hPage3, IDC_TRIGGER_AFTER_HITSTUN_ACTION, CB_GETCURSEL, 0, 0);
-    pData->actionAfterHitstun = ComboIndexToActionType[afterHitstunActionIndex];
-    
-    // After Airtech trigger
-    pData->triggerAfterAirtech = (SendDlgItemMessage(hPage3, IDC_TRIGGER_AFTER_AIRTECH_CHECK, BM_GETCHECK, 0, 0) == BST_CHECKED);
-    int afterAirtechActionIndex = SendDlgItemMessage(hPage3, IDC_TRIGGER_AFTER_AIRTECH_ACTION, CB_GETCURSEL, 0, 0);
-    pData->actionAfterAirtech = ComboIndexToActionType[afterAirtechActionIndex];
+void ProcessFormData(HWND hDlg, HWND hPage1, HWND hPage3, DisplayData* pData) {
+    if (!pData) return;
+
+    char buffer[256];
+
+    // --- Page 1: Game Values ---
+    GetDlgItemText(hPage1, IDC_HP1, buffer, 256); pData->hp1 = atoi(buffer);
+    GetDlgItemText(hPage1, IDC_METER1, buffer, 256); pData->meter1 = atoi(buffer);
+    GetDlgItemText(hPage1, IDC_RF1, buffer, 256); pData->rf1 = atof(buffer);
+    GetDlgItemText(hPage1, IDC_X1, buffer, 256); pData->x1 = atof(buffer);
+    GetDlgItemText(hPage1, IDC_Y1, buffer, 256); pData->y1 = atof(buffer);
+
+    GetDlgItemText(hPage1, IDC_HP2, buffer, 256); pData->hp2 = atoi(buffer);
+    GetDlgItemText(hPage1, IDC_METER2, buffer, 256); pData->meter2 = atoi(buffer);
+    GetDlgItemText(hPage1, IDC_RF2, buffer, 256); pData->rf2 = atof(buffer);
+    GetDlgItemText(hPage1, IDC_X2, buffer, 256); pData->x2 = atof(buffer);
+    GetDlgItemText(hPage1, IDC_Y2, buffer, 256); pData->y2 = atof(buffer);
+
+    int airtechIndex = SendMessage(GetDlgItem(hPage1, IDC_AIRTECH_DIRECTION), CB_GETCURSEL, 0, 0);
+    pData->autoAirtech = (airtechIndex > 0);
+    pData->airtechDirection = (airtechIndex > 0) ? airtechIndex - 1 : 0;
+
+    GetDlgItemText(hPage1, IDC_AIRTECH_DELAY, buffer, 256);
+    pData->airtechDelay = atoi(buffer);
+
+    // --- Page 3: Auto Action ---
+    pData->autoAction = (IsDlgButtonChecked(hPage3, IDC_AUTOACTION_ENABLE) == BST_CHECKED);
+    pData->autoActionPlayer = SendMessage(GetDlgItem(hPage3, IDC_AUTOACTION_PLAYER), CB_GETCURSEL, 0, 0) + 1;
+
+    // After Block
+    pData->triggerAfterBlock = (IsDlgButtonChecked(hPage3, IDC_TRIGGER_AFTER_BLOCK_CHECK) == BST_CHECKED);
+    pData->actionAfterBlock = ComboIndexToActionType[SendMessage(GetDlgItem(hPage3, IDC_TRIGGER_AFTER_BLOCK_ACTION), CB_GETCURSEL, 0, 0)];
+    GetDlgItemText(hPage3, IDC_TRIGGER_AFTER_BLOCK_DELAY, buffer, 256); pData->delayAfterBlock = atoi(buffer);
+    GetDlgItemText(hPage3, IDC_TRIGGER_AFTER_BLOCK_CUSTOM, buffer, 256); pData->customAfterBlock = atoi(buffer);
+
+    // After Hitstun
+    pData->triggerAfterHitstun = (IsDlgButtonChecked(hPage3, IDC_TRIGGER_AFTER_HITSTUN_CHECK) == BST_CHECKED);
+    pData->actionAfterHitstun = ComboIndexToActionType[SendMessage(GetDlgItem(hPage3, IDC_TRIGGER_AFTER_HITSTUN_ACTION), CB_GETCURSEL, 0, 0)];
+    GetDlgItemText(hPage3, IDC_TRIGGER_AFTER_HITSTUN_DELAY, buffer, 256); pData->delayAfterHitstun = atoi(buffer);
+    GetDlgItemText(hPage3, IDC_TRIGGER_AFTER_HITSTUN_CUSTOM, buffer, 256); pData->customAfterHitstun = atoi(buffer);
+
+    // On Wakeup
+    pData->triggerOnWakeup = (IsDlgButtonChecked(hPage3, IDC_TRIGGER_ON_WAKEUP_CHECK) == BST_CHECKED);
+    pData->actionOnWakeup = ComboIndexToActionType[SendMessage(GetDlgItem(hPage3, IDC_TRIGGER_ON_WAKEUP_ACTION), CB_GETCURSEL, 0, 0)];
+    GetDlgItemText(hPage3, IDC_TRIGGER_ON_WAKEUP_DELAY, buffer, 256); pData->delayOnWakeup = atoi(buffer);
+    GetDlgItemText(hPage3, IDC_TRIGGER_ON_WAKEUP_CUSTOM, buffer, 256); pData->customOnWakeup = atoi(buffer);
+
+    // After Airtech
+    pData->triggerAfterAirtech = (IsDlgButtonChecked(hPage3, IDC_TRIGGER_AFTER_AIRTECH_CHECK) == BST_CHECKED);
+    pData->actionAfterAirtech = ComboIndexToActionType[SendMessage(GetDlgItem(hPage3, IDC_TRIGGER_AFTER_AIRTECH_ACTION), CB_GETCURSEL, 0, 0)];
+    GetDlgItemText(hPage3, IDC_TRIGGER_AFTER_AIRTECH_DELAY, buffer, 256); pData->delayAfterAirtech = atoi(buffer);
+    GetDlgItemText(hPage3, IDC_TRIGGER_AFTER_AIRTECH_CUSTOM, buffer, 256); pData->customAfterAirtech = atoi(buffer);
 }
 
 // Page subclass procedure

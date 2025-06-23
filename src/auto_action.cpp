@@ -10,6 +10,10 @@ TriggerDelayState p2DelayState = {false, 0, TRIGGER_NONE, 0};
 bool p1ActionApplied = false;
 bool p2ActionApplied = false;
 
+// NEW: Definitions for trigger tracking globals
+std::atomic<int> g_lastActiveTriggerType(TRIGGER_NONE);
+std::atomic<int> g_lastActiveTriggerFrame(0);
+
 static bool p1TriggerActive = false;
 static bool p2TriggerActive = false;
 static int p1TriggerCooldown = 0;
@@ -298,9 +302,12 @@ void StartTriggerDelay(int playerNum, int triggerType, short moveID, int delayFr
         return;
     }
     if (playerNum == 2 && p2TriggerActive) {
-        LogOut("[AUTO-ACTION] P2 trigger already active, skipping", detailedLogging.load());
         return;
     }
+
+    // NEW: Set the last active trigger type and frame for overlay feedback
+    g_lastActiveTriggerType.store(triggerType);
+    g_lastActiveTriggerFrame.store(frameCounter.load());
 
     // Move trigger delay logs to detailed mode
     LogOut("[AUTO-ACTION] StartTriggerDelay called: Player=" + std::to_string(playerNum) + 
