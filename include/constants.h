@@ -20,12 +20,14 @@
 // Memory offsets
 #define EFZ_BASE_OFFSET_P1 0x390104
 #define EFZ_BASE_OFFSET_P2 0x390108
+#define EFZ_BASE_OFFSET_GAME_STATE 0x39010C // NEW: For game state
 #define XPOS_OFFSET 0x20
 #define YPOS_OFFSET 0x28
 #define HP_OFFSET 0x108
 #define METER_OFFSET 0x148
 #define MOVE_ID_OFFSET 0x8
 #define RF_OFFSET 0x118
+#define GAME_MODE_OFFSET 0x1364 // CORRECTED: The offset is hexadecimal, not decimal.
 #define YVEL_OFFSET 0x38  // Y velocity offset from player base
 
 // Character name offset
@@ -285,4 +287,3 @@
 #define IDC_TRIGGER_ON_WAKEUP_CUSTOM       5023
 #define IDC_TRIGGER_AFTER_HITSTUN_CUSTOM   5024
 #define IDC_TRIGGER_AFTER_AIRTECH_CUSTOM   5025
-#define YVEL_OFFSET 0x38

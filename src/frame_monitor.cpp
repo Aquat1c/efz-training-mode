@@ -9,6 +9,7 @@
 #include "../include/memory.h"
 #include "../include/logger.h"
 #include "../include/overlay.h"
+#include "../include/game_state.h"
 #include <deque>
 #include <vector>
 #include <chrono>
@@ -21,12 +22,16 @@
 MonitorState state = Idle;
 
 // New function to check for invalid game state (e.g., between matches)
-bool CheckAndHandleInvalidGameState() {
+bool CheckAndHandleInvalidGameState(GameMode currentMode) {
     static bool wasInInvalidState = true; // Assume invalid at start
     uintptr_t base = GetEFZBase();
     bool isCurrentlyInvalid = true;
 
-    if (base) {
+    // The tool should only be active in Practice Mode.
+    if (currentMode != GameMode::Practice) {
+        isCurrentlyInvalid = true;
+    } else if (base) {
+        // In practice mode, check if a match is actually running.
         char p1Name[16] = {0};
         char p2Name[16] = {0};
         int p1HP = 0, p2HP = 0;
@@ -49,7 +54,7 @@ bool CheckAndHandleInvalidGameState() {
 
     // If we just transitioned into an invalid state, perform a full reset.
     if (isCurrentlyInvalid && !wasInInvalidState) {
-        LogOut("[SYSTEM] Invalid game state detected (e.g., match ended). Resetting overlays and state.", true);
+        LogOut("[SYSTEM] Invalid game state detected (e.g., match ended or not in practice mode). Resetting overlays and state.", true);
 
         // Reset frame advantage
         ResetFrameAdvantageState();
@@ -170,7 +175,10 @@ void FrameDataMonitor() {
     while (!g_isShuttingDown) {  // Check flag in loop condition
         auto frameStartTime = clock::now();
         
-        bool isGameActive = CheckAndHandleInvalidGameState();
+        // The GetCurrentGameMode function now handles its own logging internally.
+        GameMode currentMode = GetCurrentGameMode();
+        
+        bool isGameActive = CheckAndHandleInvalidGameState(currentMode);
 
         if (isGameActive) {
             UpdateTriggerOverlay();

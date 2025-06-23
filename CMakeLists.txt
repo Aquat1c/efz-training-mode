@@ -69,7 +69,8 @@ set(SOURCES
     src/frame_advantage.cpp
     src/network.cpp
     src/overlay.cpp
-    src/config.cpp  # Add this new file
+    src/config.cpp
+    src/game_state.cpp
     # Add new ImGui implementation files
     src/imgui_impl.cpp
     src/imgui_gui.cpp

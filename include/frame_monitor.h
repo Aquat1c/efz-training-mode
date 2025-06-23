@@ -1,7 +1,8 @@
 #pragma once
 #include <atomic>
-#include <string>  // Add this include
+#include <string>
 #include "../include/constants.h"
+#include "../include/game_state.h"
 
 // Update the monitor state enum
 enum MonitorState {
@@ -53,4 +54,4 @@ void MonitorAutoActions();
 void ResetActionFlags();
 void ClearDelayStatesIfNonActionable();
 void UpdateTriggerOverlay();
-bool CheckAndHandleInvalidGameState(); // Changed return type from void to bool
+bool CheckAndHandleInvalidGameState(GameMode currentMode); // Changed signature

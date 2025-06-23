@@ -12,6 +12,7 @@
 #include <windows.h>
 #include <atomic>
 #include <thread>
+#include "../include/game_state.h" // Add this include
 
 std::mutex g_logMutex;
 std::atomic<bool> detailedTitleMode(false);
@@ -131,54 +132,34 @@ void UpdateConsoleTitle() {
             
             // Refresh cached addresses every 20 iterations (5 seconds)
             if (titleCacheCounter++ >= 20) {
+                titleCacheCounter = 0;
                 cachedAddresses[0] = ResolvePointer(base, EFZ_BASE_OFFSET_P1, HP_OFFSET);
                 cachedAddresses[1] = ResolvePointer(base, EFZ_BASE_OFFSET_P1, METER_OFFSET);
                 cachedAddresses[2] = ResolvePointer(base, EFZ_BASE_OFFSET_P1, RF_OFFSET);
                 cachedAddresses[3] = ResolvePointer(base, EFZ_BASE_OFFSET_P1, XPOS_OFFSET);
                 cachedAddresses[4] = ResolvePointer(base, EFZ_BASE_OFFSET_P1, YPOS_OFFSET);
-                cachedAddresses[5] = ResolvePointer(base, EFZ_BASE_OFFSET_P2, HP_OFFSET);
-                cachedAddresses[6] = ResolvePointer(base, EFZ_BASE_OFFSET_P2, METER_OFFSET);
-                cachedAddresses[7] = ResolvePointer(base, EFZ_BASE_OFFSET_P2, RF_OFFSET);
-                cachedAddresses[8] = ResolvePointer(base, EFZ_BASE_OFFSET_P2, XPOS_OFFSET);
-                cachedAddresses[9] = ResolvePointer(base, EFZ_BASE_OFFSET_P2, YPOS_OFFSET);
-                // Add character name addresses to cached addresses
-                cachedAddresses[10] = ResolvePointer(base, EFZ_BASE_OFFSET_P1, CHARACTER_NAME_OFFSET);
+                cachedAddresses[5] = ResolvePointer(base, EFZ_BASE_OFFSET_P1, CHARACTER_NAME_OFFSET);
+                cachedAddresses[6] = ResolvePointer(base, EFZ_BASE_OFFSET_P2, HP_OFFSET);
+                cachedAddresses[7] = ResolvePointer(base, EFZ_BASE_OFFSET_P2, METER_OFFSET);
+                cachedAddresses[8] = ResolvePointer(base, EFZ_BASE_OFFSET_P2, RF_OFFSET);
+                cachedAddresses[9] = ResolvePointer(base, EFZ_BASE_OFFSET_P2, XPOS_OFFSET);
+                cachedAddresses[10] = ResolvePointer(base, EFZ_BASE_OFFSET_P2, YPOS_OFFSET);
                 cachedAddresses[11] = ResolvePointer(base, EFZ_BASE_OFFSET_P2, CHARACTER_NAME_OFFSET);
-                titleCacheCounter = 0;
             }
             
-            // Read values using cached addresses (existing code)
-            if (cachedAddresses[0]) memcpy(&displayData.hp1, (void*)cachedAddresses[0], sizeof(WORD));
-            if (cachedAddresses[1]) memcpy(&displayData.meter1, (void*)cachedAddresses[1], sizeof(WORD));
-            if (cachedAddresses[2]) {
-                double rf = 0.0;
-                memcpy(&rf, (void*)cachedAddresses[2], sizeof(double));
-                if (rf >= 0.0 && rf <= MAX_RF) {
-                    displayData.rf1 = rf;
-                }
-            }
-            if (cachedAddresses[3]) memcpy(&displayData.x1, (void*)cachedAddresses[3], sizeof(double));
-            if (cachedAddresses[4]) memcpy(&displayData.y1, (void*)cachedAddresses[4], sizeof(double));
-            
-            if (cachedAddresses[5]) memcpy(&displayData.hp2, (void*)cachedAddresses[5], sizeof(WORD));
-            if (cachedAddresses[6]) memcpy(&displayData.meter2, (void*)cachedAddresses[6], sizeof(WORD));
-            if (cachedAddresses[7]) {
-                double rf = 0.0;
-                memcpy(&rf, (void*)cachedAddresses[7], sizeof(double));
-                if (rf >= 0.0 && rf <= MAX_RF) {
-                    displayData.rf2 = rf;
-                }
-            }
-            if (cachedAddresses[8]) memcpy(&displayData.x2, (void*)cachedAddresses[8], sizeof(double));
-            if (cachedAddresses[9]) memcpy(&displayData.y2, (void*)cachedAddresses[9], sizeof(double));
-            if (cachedAddresses[10]) {
-                SafeReadMemory(cachedAddresses[10], displayData.p1CharName, sizeof(displayData.p1CharName) - 1);
-                displayData.p1CharName[sizeof(displayData.p1CharName) - 1] = '\0'; // Ensure null termination
-            }
-            if (cachedAddresses[11]) {
-                SafeReadMemory(cachedAddresses[11], displayData.p2CharName, sizeof(displayData.p2CharName) - 1);
-                displayData.p2CharName[sizeof(displayData.p2CharName) - 1] = '\0'; // Ensure null termination
-            }
+            // Read values from cached addresses
+            if (cachedAddresses[0]) SafeReadMemory(cachedAddresses[0], &displayData.hp1, sizeof(int));
+            if (cachedAddresses[1]) SafeReadMemory(cachedAddresses[1], &displayData.meter1, sizeof(int));
+            if (cachedAddresses[2]) SafeReadMemory(cachedAddresses[2], &displayData.rf1, sizeof(double));
+            if (cachedAddresses[3]) SafeReadMemory(cachedAddresses[3], &displayData.x1, sizeof(double));
+            if (cachedAddresses[4]) SafeReadMemory(cachedAddresses[4], &displayData.y1, sizeof(double));
+            if (cachedAddresses[5]) SafeReadMemory(cachedAddresses[5], &displayData.p1CharName, sizeof(displayData.p1CharName) - 1);
+            if (cachedAddresses[6]) SafeReadMemory(cachedAddresses[6], &displayData.hp2, sizeof(int));
+            if (cachedAddresses[7]) SafeReadMemory(cachedAddresses[7], &displayData.meter2, sizeof(int));
+            if (cachedAddresses[8]) SafeReadMemory(cachedAddresses[8], &displayData.rf2, sizeof(double));
+            if (cachedAddresses[9]) SafeReadMemory(cachedAddresses[9], &displayData.x2, sizeof(double));
+            if (cachedAddresses[10]) SafeReadMemory(cachedAddresses[10], &displayData.y2, sizeof(double));
+            if (cachedAddresses[11]) SafeReadMemory(cachedAddresses[11], &displayData.p2CharName, sizeof(displayData.p2CharName) - 1);
         }
         
         // Check if we can access game data or if all values are default/zero
@@ -188,70 +169,24 @@ void UpdateConsoleTitle() {
                        displayData.x1 == 0 && displayData.y1 == 0;
         
         if (!gameActive || allZeros) {
-            // Game not fully loaded or initialized yet
-            sprintf_s(title, 
-                "EFZ Training Mode | Waiting for match to start... | Press 3 to open config menu | Press 6 for help");
-        } 
-        else if (detailedTitleMode) {
-            // Detailed mode - show frame counters correctly
-            int currentVisualFrame = frameCounter.load();
-            double secondsElapsed = currentVisualFrame / 64.0; // 64 visual FPS
-            
-            sprintf_s(title, 
-                "EFZ DLL | Visual Frame: %d (%.2fs @ 64FPS) | P1 Move: %d | P2 Move: %d | Detailed: %s",
-                currentVisualFrame,
-                secondsElapsed,
-                GetCurrentMoveID(1),
-                GetCurrentMoveID(2),
-                detailedLogging.load() ? "ON" : "OFF");
-            
-            // Add auto-action status if enabled
-            if (autoActionEnabled.load()) {
-                std::string triggerTypes = "";
-                if (triggerAfterBlockEnabled.load()) triggerTypes += "Block ";
-                if (triggerOnWakeupEnabled.load()) triggerTypes += "Wakeup ";
-                if (triggerAfterHitstunEnabled.load()) triggerTypes += "Hitstun ";
-                if (triggerAfterAirtechEnabled.load()) triggerTypes += "Airtech ";
-                
-                if (triggerTypes.empty()) {
-                    triggerTypes = "None";
-                } else {
-                    // Remove trailing space
-                    triggerTypes = triggerTypes.substr(0, triggerTypes.length() - 1);
-                }
-                
-                std::string actionName;
-                switch (autoActionType.load()) {
-                    case ACTION_5A: actionName = "5A"; break;
-                    case ACTION_5B: actionName = "5B"; break;
-                    case ACTION_5C: actionName = "5C"; break;
-                    case ACTION_2A: actionName = "2A"; break;
-                    case ACTION_2B: actionName = "2B"; break;
-                    case ACTION_2C: actionName = "2C"; break;
-                    case ACTION_JUMP: actionName = "Jump"; break;
-                    case ACTION_BACKDASH: actionName = "Backdash"; break;
-                    case ACTION_BLOCK: actionName = "Block"; break;
-                    case ACTION_CUSTOM: actionName = "Custom(" + std::to_string(autoActionCustomID.load()) + ")"; break;
-                    default: actionName = "Unknown"; break;
-                }
-                
-                // Append auto-action info to title
-                strcat_s(title, " | Auto: ");
-                strcat_s(title, actionName.c_str());
-                strcat_s(title, " (");
-                strcat_s(title, triggerTypes.c_str());
-                strcat_s(title, ")");
-            }
+            sprintf_s(title, sizeof(title), "EFZ Training Mode - Waiting for match...");
         } 
         else {
-            // Normal mode - show player stats
-            sprintf_s(title,
-                "EFZ Training Mode | P1: %s (HP:%d) vs P2: %s (HP:%d) | Press 3 to open menu",
-                displayData.p1CharName[0] ? displayData.p1CharName : "Unknown",
-                displayData.hp1,
-                displayData.p2CharName[0] ? displayData.p2CharName : "Unknown", 
-                displayData.hp2);
+            sprintf_s(title, sizeof(title),
+                    "P1 (%s): %d HP, %d Meter, %.1f RF | P2 (%s): %d HP, %d Meter, %.1f RF | Frame: %d",
+                    displayData.p1CharName, displayData.hp1, displayData.meter1, displayData.rf1,
+                    displayData.p2CharName, displayData.hp2, displayData.meter2, displayData.rf2,
+                    frameCounter.load() / 3);
         }
+    
+        // Append game mode information to the title, regardless of game state
+        uint8_t rawValue;
+        GameMode currentMode = GetCurrentGameMode(&rawValue); // Get both enum and raw value
+        std::string modeName = GetGameModeName(currentMode);
+        
+        char modeBuffer[100];
+        sprintf_s(modeBuffer, sizeof(modeBuffer), " | Mode: %s (%d)", modeName.c_str(), rawValue);
+        strcat_s(title, sizeof(title), modeBuffer);
         
         SetConsoleTitleA(title);
         
