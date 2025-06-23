@@ -64,25 +64,13 @@ void DelayedInitialization(HMODULE hModule) {
     // Initialize configuration system - ADD THIS LINE
     InitializeConfig();
     
-    // Start threads with small delays between them to avoid race conditions
-    WriteStartupLog("Starting MonitorKeys thread...");
-    std::thread(MonitorKeys).detach();
-    Sleep(100);
-    WriteStartupLog("MonitorKeys thread started");
-    
-    WriteStartupLog("Starting UpdateConsoleTitle thread...");
+    // Start ESSENTIAL threads. Hotkey monitor is now managed by Enable/DisableFeatures.
+    LogOut("[SYSTEM] Starting background threads...", true);
     std::thread(UpdateConsoleTitle).detach();
-    Sleep(100);
-    WriteStartupLog("UpdateConsoleTitle thread started");
-    
-    WriteStartupLog("Starting FrameDataMonitor thread...");
     std::thread(FrameDataMonitor).detach();
-    Sleep(100);
-    WriteStartupLog("FrameDataMonitor thread started");
-    
-    WriteStartupLog("Starting MonitorOnlineStatus thread...");
     std::thread(MonitorOnlineStatus).detach();
-    WriteStartupLog("MonitorOnlineStatus thread started");
+    // The MonitorKeys thread is now started by EnableFeatures() when appropriate.
+    LogOut("[SYSTEM] Essential background threads started.", true);
     
     // Use standard Windows input APIs instead of DirectInput
     WriteStartupLog("Using standard Windows input APIs instead of DirectInput");
@@ -98,17 +86,13 @@ void DelayedInitialization(HMODULE hModule) {
     // REMOVED: Do not show help screen automatically on startup
     // The user can open it with the configured help key.
     
-    // NEW: Replace the old overlay logic with the new D3D9 hook initialization.
+    // RE-ADD: Initialize D3D9 hook for overlays once at startup
     std::thread([]{
-        // Wait for the game window and D3D to be ready.
-        Sleep(5000);
-        
+        Sleep(2000); // Give the game a moment to be fully ready
         if (DirectDrawHook::InitializeD3D9()) {
-            // Only show in detailed mode
-            LogOut("[SYSTEM] ImGui D3D9 hook initialized successfully.", detailedLogging.load());
+            LogOut("[SYSTEM] D3D9 Overlay system initialized.", true);
         } else {
-            // Keep error messages visible to all users
-            LogOut("[SYSTEM] FATAL: Could not initialize ImGui D3D9 hook.", true);
+            LogOut("[SYSTEM] Failed to initialize D3D9 Overlay system.", true);
         }
     }).detach();
     

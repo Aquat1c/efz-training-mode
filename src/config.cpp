@@ -179,68 +179,52 @@ namespace Config {
         LogOut("[CONFIG] Creating default config file at: " + configFilePath, true);
         
         try {
-            // Make sure the directory exists
-            std::filesystem::path configDir = std::filesystem::path(configFilePath).parent_path();
-            if (!std::filesystem::exists(configDir)) {
-                LogOut("[CONFIG] Creating directory: " + configDir.string(), true);
-                std::error_code ec;
-                bool dirCreated = std::filesystem::create_directories(configDir, ec);
-                if (!dirCreated) {
-                    LogOut("[CONFIG] Failed to create directory, error: " + ec.message(), true);
-                    return false;
-                }
-            }
-            
-            // Attempt to open file with detailed error handling
-            std::ofstream configFile(configFilePath);
-            if (!configFile.is_open()) {
-                char errMsg[256];
-                strerror_s(errMsg, sizeof(errMsg), errno);
-                LogOut("[CONFIG] Failed to open config file for writing: " + std::string(errMsg), true);
+            std::ofstream file(configFilePath);
+            if (!file.is_open()) {
+                LogOut("[CONFIG] Error: Could not open config file for writing.", true);
                 return false;
             }
             
-            LogOut("[CONFIG] File opened successfully, writing content...", true);
+            file << "[General]\n";
+            file << "; Use the modern ImGui interface (1) or the legacy Win32 dialog (0)\n";
+            file << "useImGui = 1\n";
+            file << "; Enable detailed debug messages in the console (1 = yes, 0 = no)\n";
+            file << "detailedLogging = 0\n";
+            file << "; Restrict functionality to Practice Mode only (1 = yes, 0 = no)\n";
+            file << "restrictToPracticeMode = 1\n\n";
             
-            // Write default content
-            configFile << "[General]\n";
-            configFile << "# Use GUI system: 0 = Legacy (Win32 dialog), 1 = ImGui (overlay)\n";
-            configFile << "UseImGui=1\n";
-            configFile << "# Enable detailed logging: 0 = disabled, 1 = enabled\n";
-            configFile << "DetailedLogging=0\n\n";
+            file << "[Hotkeys]\n";
+            file << "; Use virtual-key codes (hexadecimal, e.g., 0x70 for F1)\n";
+            file << "; See key code definitions at: https://docs.microsoft.com/en-us/windows/win32/inputdev/virtual-key-codes\n";
+            file << "; Common keys: \n";
+            file << "; - 0x31-0x39: Number keys 1-9\n";
+            file << "; - 0x41-0x5A: Letter keys A-Z\n";
+            file << "; - 0x70-0x7B: Function keys F1-F12\n\n";
             
-            configFile << "[Hotkeys]\n";
-            configFile << "# Key codes can be specified in hexadecimal (0x##) or decimal\n";
-            configFile << "# See key code definitions at: https://docs.microsoft.com/en-us/windows/win32/inputdev/virtual-key-codes\n";
-            configFile << "# Common keys: \n";
-            configFile << "# - 0x31-0x39: Number keys 1-9\n";
-            configFile << "# - 0x41-0x5A: Letter keys A-Z\n";
-            configFile << "# - 0x70-0x7B: Function keys F1-F12\n\n";
+            file << "; Teleport players to recorded positions\n";
+            file << "TeleportKey=0x31    # Default: '1' key\n\n";
             
-            configFile << "# Teleport players to recorded positions\n";
-            configFile << "TeleportKey=0x31    # Default: '1' key\n\n";
+            file << "; Record current player positions\n";
+            file << "RecordKey=0x32      # Default: '2' key\n\n";
             
-            configFile << "# Record current player positions\n";
-            configFile << "RecordKey=0x32      # Default: '2' key\n\n";
+            file << "; Open config menu\n";
+            file << "ConfigMenuKey=0x33  # Default: '3' key\n\n";
             
-            configFile << "# Open config menu\n";
-            configFile << "ConfigMenuKey=0x33  # Default: '3' key\n\n";
+            file << "; Toggle title display mode\n";
+            file << "ToggleTitleKey=0x34 # Default: '4' key\n\n";
             
-            configFile << "# Toggle title display mode\n";
-            configFile << "ToggleTitleKey=0x34 # Default: '4' key\n\n";
+            file << "; Reset frame counter\n";
+            file << "ResetFrameCounterKey=0x35 # Default: '5' key\n\n";
             
-            configFile << "# Reset frame counter\n";
-            configFile << "ResetFrameCounterKey=0x35 # Default: '5' key\n\n";
+            file << "; Show help and clear console\n";
+            file << "HelpKey=0x36        # Default: '6' key\n\n";
             
-            configFile << "# Show help and clear console\n";
-            configFile << "HelpKey=0x36        # Default: '6' key\n\n";
+            file << "; Toggle ImGui overlay\n";
+            file << "ToggleImGuiKey=0x37 # Default: '7' key\n";
             
-            configFile << "# Toggle ImGui overlay\n";
-            configFile << "ToggleImGuiKey=0x37 # Default: '7' key\n";
+            file.close();
             
-            configFile.close();
-            
-            if (configFile.fail()) {
+            if (file.fail()) {
                 char errMsg[256];
                 strerror_s(errMsg, sizeof(errMsg), errno);
                 LogOut("[CONFIG] Error occurred while closing file: " + std::string(errMsg), true);
@@ -281,94 +265,18 @@ namespace Config {
         LogOut("[CONFIG] Loading settings from: " + configFilePath, true);
         
         try {
-            // Clear current ini data
-            iniData.clear();
+            settings.useImGui = GetValueBool("General", "useImGui", true);
+            settings.detailedLogging = GetValueBool("General", "detailedLogging", false);
+            settings.restrictToPracticeMode = GetValueBool("General", "restrictToPracticeMode", true);
             
-            // Check if file exists before trying to open
-            if (!std::filesystem::exists(configFilePath)) {
-                LogOut("[CONFIG] Config file does not exist! Path: " + configFilePath, true);
-                LogOut("[CONFIG] Creating default config and retrying...", true);
-                if (CreateDefaultConfig()) {
-                    LogOut("[CONFIG] Default config created, continuing to load", true);
-                } else {
-                    LogOut("[CONFIG] Failed to create default config, aborting load", true);
-                    return false;
-                }
-            }
-            
-            std::ifstream configFile(configFilePath);
-            if (!configFile.is_open()) {
-                LogOut("[CONFIG] Failed to open config file for reading: " + configFilePath, true);
-                char errMsg[256];
-                strerror_s(errMsg, sizeof(errMsg), errno);
-                LogOut("[CONFIG] Error message: " + std::string(errMsg), true);
-                return false;
-            }
-            
-            // Report file size
-            std::streampos fileSize = 0;
-            fileSize = configFile.tellg();
-            configFile.seekg(0, std::ios::end);
-            fileSize = configFile.tellg() - fileSize;
-            configFile.seekg(0, std::ios::beg);
-            LogOut("[CONFIG] Config file opened successfully, size: " + std::to_string(fileSize) + " bytes", true);
-            
-            std::string line;
-            std::string currentSection;
-            int lineCount = 0;
-            
-            while (std::getline(configFile, line)) {
-                lineCount++;
-                
-                // Skip empty lines and comments
-                if (line.empty() || line[0] == '#' || line[0] == ';')
-                    continue;
-                    
-                // Check for section
-                if (line[0] == '[' && line[line.length() - 1] == ']') {
-                    currentSection = line.substr(1, line.length() - 2);
-                    LogOut("[CONFIG] Found section: " + currentSection, true);
-                    continue;
-                }
-                
-                // Look for key=value pairs
-                size_t equalsPos = line.find('=');
-                if (equalsPos != std::string::npos && !currentSection.empty()) {
-                    std::string key = line.substr(0, equalsPos);
-                    std::string value = line.substr(equalsPos + 1);
-                    
-                    // Remove comments after the value
-                    size_t commentPos = value.find('#');
-                    if (commentPos != std::string::npos)
-                        value = value.substr(0, commentPos);
-                        
-                    // Trim whitespace
-                    key.erase(0, key.find_first_not_of(" \t"));
-                    key.erase(key.find_last_not_of(" \t") + 1);
-                    value.erase(0, value.find_first_not_of(" \t"));
-                    value.erase(value.find_last_not_of(" \t") + 1);
-                    
-                    // Store in our data structure
-                    iniData[currentSection][key] = value;
-                    LogOut("[CONFIG] Loaded key=" + key + ", value=" + value, true);
-                }
-            }
-            
-            configFile.close();
-            LogOut("[CONFIG] Finished reading " + std::to_string(lineCount) + " lines from config file", true);
-            
-            // Parse the settings with defaults if not found
-            settings.useImGui = GetValueBool("General", "UseImGui", true);
-            settings.detailedLogging = GetValueBool("General", "DetailedLogging", false);
-            
-            settings.teleportKey = GetValueInt("Hotkeys", "TeleportKey", 0x31);      // '1'
-            settings.recordKey = GetValueInt("Hotkeys", "RecordKey", 0x32);          // '2'
-            settings.configMenuKey = GetValueInt("Hotkeys", "ConfigMenuKey", 0x33);  // '3'
-            settings.toggleTitleKey = GetValueInt("Hotkeys", "ToggleTitleKey", 0x34); // '4'
-            settings.resetFrameCounterKey = GetValueInt("Hotkeys", "ResetFrameCounterKey", 0x35); // '5'
-            settings.helpKey = GetValueInt("Hotkeys", "HelpKey", 0x36);              // '6'
-            settings.toggleImGuiKey = GetValueInt("Hotkeys", "ToggleImGuiKey", 0x37); // '7'
-            
+            // Hotkey settings - REVERTED to number key defaults
+            settings.teleportKey = GetValueInt("Hotkeys", "TeleportKey", 0x31);          // Default: '1'
+            settings.recordKey = GetValueInt("Hotkeys", "RecordKey", 0x32);            // Default: '2'
+            settings.configMenuKey = GetValueInt("Hotkeys", "ConfigMenuKey", 0x33);      // Default: '3'
+            settings.toggleTitleKey = GetValueInt("Hotkeys", "ToggleTitleKey", 0x34);     // Default: '4'
+            settings.resetFrameCounterKey = GetValueInt("Hotkeys", "ResetFrameCounterKey", 0x35); // Default: '5'
+            settings.helpKey = GetValueInt("Hotkeys", "HelpKey", 0x36);                // Default: '6'
+            settings.toggleImGuiKey = GetValueInt("Hotkeys", "ToggleImGuiKey", 0x37);      // Default: '7'            
             LogOut("[CONFIG] Settings loaded successfully", true);
             LogOut("[CONFIG] UseImGui: " + std::to_string(settings.useImGui), true);
             LogOut("[CONFIG] DetailedLogging: " + std::to_string(settings.detailedLogging), true);
@@ -392,12 +300,13 @@ namespace Config {
         // Update the iniData structure with current settings
         SetIniValue("General", "UseImGui", settings.useImGui ? "1" : "0");
         SetIniValue("General", "DetailedLogging", settings.detailedLogging ? "1" : "0");
+        SetIniValue("General", "restrictToPracticeMode", settings.restrictToPracticeMode ? "1" : "0");
         
         // Convert to hex string with "0x" prefix
         auto toHexString = [](int value) -> std::string {
-            std::stringstream ss;
-            ss << "0x" << std::hex << value;
-            return ss.str();
+            std::ostringstream oss;
+            oss << "0x" << std::hex << value;
+            return oss.str();
         };
         
         SetIniValue("Hotkeys", "TeleportKey", toHexString(settings.teleportKey));
@@ -422,28 +331,19 @@ namespace Config {
         
         // Update the appropriate setting
         if (section == "General") {
-            if (key == "UseImGui")
-                settings.useImGui = (value == "1" || value == "true");
-            else if (key == "DetailedLogging")
-                settings.detailedLogging = (value == "1" || value == "true");
+            if (key == "UseImGui") settings.useImGui = (value == "1");
+            if (key == "DetailedLogging") settings.detailedLogging = (value == "1");
+            if (key == "restrictToPracticeMode") settings.restrictToPracticeMode = (value == "1");
         }
         else if (section == "Hotkeys") {
-            int keyValue = ParseKeyValue(value);
-            
-            if (key == "TeleportKey")
-                settings.teleportKey = keyValue;
-            else if (key == "RecordKey")
-                settings.recordKey = keyValue;
-            else if (key == "ConfigMenuKey")
-                settings.configMenuKey = keyValue;
-            else if (key == "ToggleTitleKey")
-                settings.toggleTitleKey = keyValue;
-            else if (key == "ResetFrameCounterKey")
-                settings.resetFrameCounterKey = keyValue;
-            else if (key == "HelpKey")
-                settings.helpKey = keyValue;
-            else if (key == "ToggleImGuiKey")
-                settings.toggleImGuiKey = keyValue;
+            int intValue = ParseKeyValue(value);
+            if (key == "TeleportKey") settings.teleportKey = intValue;
+            if (key == "RecordKey") settings.recordKey = intValue;
+            if (key == "ConfigMenuKey") settings.configMenuKey = intValue;
+            if (key == "ToggleTitleKey") settings.toggleTitleKey = intValue;
+            if (key == "ResetFrameCounterKey") settings.resetFrameCounterKey = intValue;
+            if (key == "HelpKey") settings.helpKey = intValue;
+            if (key == "ToggleImGuiKey") settings.toggleImGuiKey = intValue;
         }
     }
     

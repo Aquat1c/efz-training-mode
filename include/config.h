@@ -8,6 +8,7 @@ namespace Config {
         // General settings
         bool useImGui;
         bool detailedLogging;
+        bool restrictToPracticeMode; // NEW: Restrict to practice mode
         
         // Hotkey settings
         int teleportKey;

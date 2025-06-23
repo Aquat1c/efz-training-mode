@@ -10,6 +10,7 @@
 #include "../include/logger.h"
 #include "../include/overlay.h"
 #include "../include/game_state.h"
+#include "../include/config.h"
 #include <deque>
 #include <vector>
 #include <chrono>
@@ -21,54 +22,27 @@
 
 MonitorState state = Idle;
 
-// New function to check for invalid game state (e.g., between matches)
-bool CheckAndHandleInvalidGameState(GameMode currentMode) {
-    static bool wasInInvalidState = true; // Assume invalid at start
+// REVISED: This function now ONLY determines if features should be active.
+// It no longer performs resets itself. That is handled by DisableFeatures.
+bool ShouldFeaturesBeActive() {
     uintptr_t base = GetEFZBase();
-    bool isCurrentlyInvalid = true;
+    const Config::Settings& cfg = Config::GetSettings();
+    GameMode currentMode = GetCurrentGameMode();
 
-    // The tool should only be active in Practice Mode.
-    if (currentMode != GameMode::Practice) {
-        isCurrentlyInvalid = true;
-    } else if (base) {
-        // In practice mode, check if a match is actually running.
-        char p1Name[16] = {0};
-        char p2Name[16] = {0};
-        int p1HP = 0, p2HP = 0;
-
-        uintptr_t p1NameAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P1, CHARACTER_NAME_OFFSET);
-        uintptr_t p2NameAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P2, CHARACTER_NAME_OFFSET);
-        uintptr_t p1HPAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P1, HP_OFFSET);
-        uintptr_t p2HPAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P2, HP_OFFSET);
-
-        if (p1NameAddr) SafeReadMemory(p1NameAddr, p1Name, sizeof(p1Name) - 1);
-        if (p2NameAddr) SafeReadMemory(p2NameAddr, p2Name, sizeof(p2Name) - 1);
-        if (p1HPAddr) SafeReadMemory(p1HPAddr, &p1HP, sizeof(int));
-        if (p2HPAddr) SafeReadMemory(p2HPAddr, &p2HP, sizeof(int));
-
-        // A valid state requires non-empty names and non-zero HP for both players.
-        if (p1Name[0] != '\0' && p2Name[0] != '\0' && p1HP > 0 && p2HP > 0) {
-            isCurrentlyInvalid = false;
-        }
+    bool isMatchRunning = false;
+    if (base) {
+        uintptr_t p1StructAddr = 0;
+        SafeReadMemory(base + EFZ_BASE_OFFSET_P1, &p1StructAddr, sizeof(uintptr_t));
+        isMatchRunning = (p1StructAddr != 0);
     }
 
-    // If we just transitioned into an invalid state, perform a full reset.
-    if (isCurrentlyInvalid && !wasInInvalidState) {
-        LogOut("[SYSTEM] Invalid game state detected (e.g., match ended or not in practice mode). Resetting overlays and state.", true);
-
-        // Reset frame advantage
-        ResetFrameAdvantageState();
-
-        // Reset auto-actions
-        ResetActionFlags();
-        p1DelayState = {false, 0, TRIGGER_NONE, 0};
-        p2DelayState = {false, 0, TRIGGER_NONE, 0};
-        
-        // The old g_TriggerStatusId is removed; individual triggers are cleared in the main loop.
+    if (!isMatchRunning) {
+        return false;
     }
-    
-    wasInInvalidState = isCurrentlyInvalid;
-    return !isCurrentlyInvalid;
+
+    // If restriction is off, features are active.
+    // If restriction is on, features are only active in Practice mode.
+    return !cfg.restrictToPracticeMode || (currentMode == GameMode::Practice);
 }
 
 // Function to update the trigger status overlay with per-line coloring
@@ -156,36 +130,33 @@ void FrameDataMonitor() {
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
     
     short prevMoveID1 = -1, prevMoveID2 = -1;
-    
-    // CRITICAL: Ultra-precise timing that NEVER changes (exactly 192 Hz)
-    const auto targetFrameTime = std::chrono::nanoseconds(5208333); // 1,000,000,000 / 192
-    
-    // Cache addresses to reduce ResolvePointer calls
+    const auto targetFrameTime = std::chrono::nanoseconds(5208333);
     static uintptr_t cachedMoveIDAddr1 = 0;
     static uintptr_t cachedMoveIDAddr2 = 0;
     static int addressCacheCounter = 0;
-    
-    // Performance tracking
     auto lastLogTime = clock::now();
     int framesSinceLastLog = 0;
-    
-    // Add reference to the shutdown flag
     extern std::atomic<bool> g_isShuttingDown;
     
-    while (!g_isShuttingDown) {  // Check flag in loop condition
+    while (!g_isShuttingDown) {
         auto frameStartTime = clock::now();
         
-        // The GetCurrentGameMode function now handles its own logging internally.
-        GameMode currentMode = GetCurrentGameMode();
-        
-        bool isGameActive = CheckAndHandleInvalidGameState(currentMode);
+        // --- NEW FEATURE MANAGEMENT LOGIC ---
+        bool shouldBeActive = ShouldFeaturesBeActive();
 
-        if (isGameActive) {
+        if (shouldBeActive && !g_featuresEnabled.load()) {
+            EnableFeatures();
+        } else if (!shouldBeActive && g_featuresEnabled.load()) {
+            DisableFeatures();
+        }
+        // --- END NEW LOGIC ---
+
+        // Only run the main monitoring logic if features are enabled
+        if (g_featuresEnabled.load()) {
             UpdateTriggerOverlay();
 
             uintptr_t base = GetEFZBase();
             if (!base) {
-                // If base is lost mid-frame, skip processing and maintain timing.
                 continue;
             }
             
@@ -276,16 +247,6 @@ void FrameDataMonitor() {
             
             prevMoveID1 = moveID1;
             prevMoveID2 = moveID2;
-        } else {
-            // Game is not active, ensure all overlays are cleared
-            if (g_FrameAdvantageId != -1) {
-                DirectDrawHook::RemovePermanentMessage(g_FrameAdvantageId);
-                g_FrameAdvantageId = -1;
-            }
-            if (g_TriggerAfterBlockId != -1) { DirectDrawHook::RemovePermanentMessage(g_TriggerAfterBlockId); g_TriggerAfterBlockId = -1; }
-            if (g_TriggerOnWakeupId != -1) { DirectDrawHook::RemovePermanentMessage(g_TriggerOnWakeupId); g_TriggerOnWakeupId = -1; }
-            if (g_TriggerAfterHitstunId != -1) { DirectDrawHook::RemovePermanentMessage(g_TriggerAfterHitstunId); g_TriggerAfterHitstunId = -1; }
-            if (g_TriggerAfterAirtechId != -1) { DirectDrawHook::RemovePermanentMessage(g_TriggerAfterAirtechId); g_TriggerAfterAirtechId = -1; }
         }
         
         // Ensure the loop runs at the target rate
