@@ -16,6 +16,7 @@ extern std::atomic<bool> p1Jumping;           // Tracks if P1 is currently in ju
 extern std::atomic<bool> p2Jumping;           // Tracks if P2 is currently in jump state
 extern std::atomic<int> jumpTarget;           // 1=P1, 2=P2, 3=Both
 extern std::atomic<bool> inStartupPhase;      // Tracks if the application is in the startup phase
+extern std::atomic<bool> g_featuresEnabled;   // NEW: Master switch for all features
 
 // Auto-action settings - replace the single trigger system with individual triggers
 extern std::atomic<bool> autoActionEnabled;
@@ -63,6 +64,11 @@ std::string GetKeyName(int virtualKey);
 void DetectKeyBindings();
 bool IsDashState(short moveID); // New: Check if in dash state
 bool CanAirtech(short moveID); // Add this missing declaration
+
+// NEW: Add feature management functions
+extern std::atomic<bool> g_featuresEnabled;
+void EnableFeatures();
+void DisableFeatures();
 
 // Add delay support for auto-airtech
 extern std::atomic<int> autoAirtechDelay; // 0=instant, 1+=frames to wait

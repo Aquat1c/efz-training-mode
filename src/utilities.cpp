@@ -5,10 +5,14 @@
 #include "../include/input_handler.h"
 #include "../include/di_keycodes.h"
 #include "../include/frame_analysis.h"    // ADD THIS - for IsBlockstunState
-#include "../include/frame_advantage.h"   // ADD THIS - for IsAttackMove
+#include "../include/frame_advantage.h"
 #include "../include/config.h"
-#include "../include/imgui_impl.h" // Add this include
-#include "../include/imgui_gui.h"  // Add this include
+#include "../include/imgui_impl.h"
+#include "../include/imgui_gui.h"
+#include "../include/overlay.h"
+#include "../include/input_handler.h"
+#include "../include/auto_airtech.h"
+#include "../include/auto_action.h"
 #include <sstream>
 #include <iomanip>
 #include <iostream>  // Add this include for std::cout and std::cerr
@@ -19,6 +23,50 @@
 #include <iomanip>
 #include <chrono>
 #include <vector>
+
+// NEW: Add feature management functions
+void EnableFeatures() {
+    if (g_featuresEnabled.load()) return;
+    LogOut("[SYSTEM] Game active. Enabling features.", true);
+    
+    // Start hotkey monitoring
+    RestartKeyMonitoring();
+
+    // Apply patches if the feature is enabled
+    if (autoAirtechEnabled.load()) {
+        ApplyAirtechPatches();
+    }
+
+    g_featuresEnabled.store(true);
+}
+
+void DisableFeatures() {
+    if (!g_featuresEnabled.load()) return;
+    LogOut("[SYSTEM] Game inactive. Disabling features.", true);
+
+    // Stop hotkey monitoring
+    keyMonitorRunning.store(false);
+
+    // Remove any active patches
+    RemoveAirtechPatches();
+
+    // Clear all visual overlays
+    DirectDrawHook::ClearAllMessages();
+    
+    // Close the menu if it's open
+    if (ImGuiImpl::IsVisible()) {
+        ImGuiImpl::ToggleVisibility();
+    }
+
+    // Reset all core logic states
+    ResetFrameAdvantageState();
+    ResetActionFlags();
+    p1DelayState = {false, 0, TRIGGER_NONE, 0};
+    p2DelayState = {false, 0, TRIGGER_NONE, 0};
+
+    g_featuresEnabled.store(false);
+}
+
 
 // Global flag to track if we're still in startup mode
 std::atomic<bool> inStartupPhase(true);
@@ -76,42 +124,15 @@ std::atomic<bool> autoJumpEnabled(false);     // This was missing!
 std::atomic<int> jumpDirection(0);            // 0=straight, 1=forward, 2=backward
 std::atomic<bool> p1Jumping(false);
 std::atomic<bool> p2Jumping(false);
-std::atomic<int> jumpTarget(3);               // Default to both players
+std::atomic<int> jumpTarget(3);
+std::atomic<bool> g_featuresEnabled(false); // Default to disabled
 DisplayData displayData = {
-    // Initialize DisplayData with all fields in the correct order
-    9999, 9999,             // hp1, hp2
-    3000, 3000,             // meter1, meter2
-    1000.0, 1000.0,         // rf1, rf2
-    240.0, 0.0,             // x1, y1
-    400.0, 0.0,             // x2, y2
-    false,                  // autoAirtech
-    0,                      // airtechDirection
-    0,                      // airtechDelay
-    false,                  // autoJump
-    0,                      // jumpDirection
-    3,                      // jumpTarget
-    "",                     // p1CharName (empty string)
-    "",                     // p2CharName (empty string)
-    false,                  // autoAction
-    ACTION_5A,              // autoActionType
-    BASE_ATTACK_5A,         // autoActionCustomID
-    2,                      // autoActionPlayer
-    false,                  // triggerAfterBlock
-    false,                  // triggerOnWakeup
-    false,                  // triggerAfterHitstun
-    false,                  // triggerAfterAirtech
-    DEFAULT_TRIGGER_DELAY,  // delayAfterBlock
-    DEFAULT_TRIGGER_DELAY,  // delayOnWakeup
-    DEFAULT_TRIGGER_DELAY,  // delayAfterHitstun
-    DEFAULT_TRIGGER_DELAY,  // delayAfterAirtech
-    ACTION_5A,              // actionAfterBlock
-    ACTION_5A,              // actionOnWakeup
-    ACTION_5A,              // actionAfterHitstun
-    ACTION_JA,              // actionAfterAirtech
-    BASE_ATTACK_5A,         // customAfterBlock
-    BASE_ATTACK_5A,         // customOnWakeup
-    BASE_ATTACK_5A,         // customAfterHitstun
-    BASE_ATTACK_JA          // customAfterAirtech
+    9999, 9999,    3000, 3000,    1000.0, 1000.0,    240.0, 0.0,    400.0, 0.0,
+    false,    0,    0,    false,    0,    3,    "",    "",    false,    ACTION_5A,
+    BASE_ATTACK_5A,    2,    false,    false,    false,    false,    DEFAULT_TRIGGER_DELAY,
+    DEFAULT_TRIGGER_DELAY,    DEFAULT_TRIGGER_DELAY,    DEFAULT_TRIGGER_DELAY,    ACTION_5A,
+    ACTION_5A,    ACTION_5A,    ACTION_JA,    BASE_ATTACK_5A,    BASE_ATTACK_5A,
+    BASE_ATTACK_5A,    BASE_ATTACK_JA
 };
 
 // Initialize key bindings with default values
