@@ -163,293 +163,165 @@ std::atomic<bool> keyMonitorRunning(true);
 
 void MonitorKeys() {
     LogOut("[KEYBINDS] Key monitoring thread started", true);
-    
+
     // Get config settings for hotkeys
     const Config::Settings& cfg = Config::GetSettings();
     
     // Log the hotkeys for debugging
     LogOut("[KEYBINDS] Hotkey values from config:", true);
-    LogOut("[KEYBINDS] Teleport key: " + std::to_string(cfg.teleportKey) + " (" + GetKeyName(cfg.teleportKey) + ")", true);
-    LogOut("[KEYBINDS] Record key: " + std::to_string(cfg.recordKey) + " (" + GetKeyName(cfg.recordKey) + ")", true);
-    LogOut("[KEYBINDS] Config key: " + std::to_string(cfg.configMenuKey) + " (" + GetKeyName(cfg.configMenuKey) + ")", true);
-    LogOut("[KEYBINDS] ImGui key: " + std::to_string(cfg.toggleImGuiKey) + " (" + GetKeyName(cfg.toggleImGuiKey) + ")", true);
+    LogOut("[KEYBINDS] Teleport/Load key: " + GetKeyName(cfg.teleportKey), true);
+    LogOut("[KEYBINDS] Record/Save key: " + GetKeyName(cfg.recordKey), true);
+    LogOut("[KEYBINDS] Config Menu key: " + GetKeyName(cfg.configMenuKey), true);
+    LogOut("[KEYBINDS] Toggle ImGui key: " + GetKeyName(cfg.toggleImGuiKey), true);
     
-    // Fallback to default keys if config values are 0 (invalid)
+    // Use configured hotkeys, with fallbacks for safety
     int teleportKey = (cfg.teleportKey > 0) ? cfg.teleportKey : '1';
     int recordKey = (cfg.recordKey > 0) ? cfg.recordKey : '2';
-    int configKey = (cfg.configMenuKey > 0) ? cfg.configMenuKey : '3';
-    int titleKey = (cfg.toggleTitleKey > 0) ? cfg.toggleTitleKey : '4';
-    int resetFrameKey = (cfg.resetFrameCounterKey > 0) ? cfg.resetFrameCounterKey : '5';
+    int configMenuKey = (cfg.configMenuKey > 0) ? cfg.configMenuKey : '3';
+    int toggleTitleKey = (cfg.toggleTitleKey > 0) ? cfg.toggleTitleKey : '4';
+    int resetFrameCounterKey = (cfg.resetFrameCounterKey > 0) ? cfg.resetFrameCounterKey : '5';
     int helpKey = (cfg.helpKey > 0) ? cfg.helpKey : '6';
-    int imguiKey = (cfg.toggleImGuiKey > 0) ? cfg.toggleImGuiKey : '7';
-    
-    LogOut("[KEYBINDS] Using actual hotkeys:", true);
-    LogOut("[KEYBINDS] Teleport key: " + std::to_string(teleportKey) + " (" + GetKeyName(teleportKey) + ")", true);
-    LogOut("[KEYBINDS] Record key: " + std::to_string(recordKey) + " (" + GetKeyName(recordKey) + ")", true);
-    LogOut("[KEYBINDS] ImGui key: " + std::to_string(imguiKey) + " (" + GetKeyName(imguiKey) + ")", true);
+    int toggleImGuiKey = (cfg.toggleImGuiKey > 0) ? cfg.toggleImGuiKey : VK_F12;
 
     // Constants for teleport positions
     const double centerX = 320.0;
     const double leftX = 43.6548, rightX = 595.425, teleportY = 0.0;
     const double p1StartX = 240.0, p2StartX = 400.0, startY = 0.0;
-    
-    // Initialize recorded positions with default values
-    double recordedX1 = p1StartX, recordedY1 = startY;
-    double recordedX2 = p2StartX, recordedY2 = startY;
-    bool hasRecorded = false;  // Start with false to require recording first
-    
-    // Wait a moment for other initialization to complete
-    Sleep(100);
-    
-    // Clear the console and show hotkey info
-    ShowHotkeyInfo();
-    
-    // Try to detect key bindings every so often
-    int detectionCounter = 0;
-    
-    // Add this near the beginning of MonitorKeys function
-    bool enableDebugLogging = false;  // Set to true when needed for deeper investigation
-    
-    static bool wasImGuiKeyPressed = false;
-    
-    // Add base variable declaration here
-    uintptr_t base = 0;
-    
-    while (keyMonitorRunning) {
-        // Update base address at the start of each loop iteration
-        base = GetEFZBase();
-        
-        if (IsEFZWindowActive()) {
-            if (++detectionCounter >= 100) {
-                if (!detectedBindings.directionsDetected || !detectedBindings.attacksDetected) {
-                    DetectKeyBindings();
-                }
-            }
 
-            // Use the actual key variables, not cfg directly
-            bool teleportKeyPressed = (GetAsyncKeyState(teleportKey) & 0x8000) != 0;
-            bool recordKeyPressed = (GetAsyncKeyState(recordKey) & 0x8000) != 0;
-            bool configKeyPressed = (GetAsyncKeyState(configKey) & 0x8000) != 0;
-            bool titleKeyPressed = (GetAsyncKeyState(titleKey) & 0x8000) != 0;
-            bool resetFrameKeyPressed = (GetAsyncKeyState(resetFrameKey) & 0x8000) != 0;
-            bool helpKeyPressed = (GetAsyncKeyState(helpKey) & 0x8000) != 0;
-            
-            // Check for ImGui toggle
-            bool imguiKeyPressed = (GetAsyncKeyState(imguiKey) & 0x8000) != 0;
-            if (imguiKeyPressed && !wasImGuiKeyPressed) {
-                LogOut("[DEBUG] Key " + GetKeyName(imguiKey) + " pressed - Toggling ImGui visibility.", true);
-                ImGuiImpl::ToggleVisibility();
-            }
-            wasImGuiKeyPressed = imguiKeyPressed;
-            
-            // IMPORTANT: Process key combinations ONLY if teleport key is pressed
-            if (teleportKeyPressed && base) {
-                // Resolve player positions
-                uintptr_t p1BaseOffset = EFZ_BASE_OFFSET_P1;
-                uintptr_t p2BaseOffset = EFZ_BASE_OFFSET_P2;
-                
-                // Check for 1 key held down
-                if (GetAsyncKeyState('1') & 0x8000) {
-                    // Check for direction keys
-                    // Simplified direct checks for better reliability
-                    if (GetAsyncKeyState(VK_DOWN) & 0x8000) {
-                        // 1+Down - Center players close together
-                        LogOut("[POSITION] 1+Down pressed - teleporting to center", true);
-                        
-                        bool aPressed = (GetAsyncKeyState('Z') & 0x8000) != 0;
-                        
-                        // Check if player bindings are detected and use them
-                        if (detectedBindings.attacksDetected) {
-                            if (GetAsyncKeyState(detectedBindings.aButton) & 0x8000) {
-                                aPressed = true;
-                            }
-                        }
-                        
-                        if (aPressed) {
-                            // 1+Down+A - Round start positions
-                            SetPlayerPosition(base, p1BaseOffset, p1StartX, startY);
-                            SetPlayerPosition(base, p2BaseOffset, p2StartX, startY);
-                            LogOut("[POSITION] Teleported players to round start positions", true);
-                        } else {
-                            // 1+Down - Center close together (UPDATED - 3 unit spacing)
-                            SetPlayerPosition(base, p1BaseOffset, centerX - 1.5, teleportY);
-                            SetPlayerPosition(base, p2BaseOffset, centerX + 1.5, teleportY);
-                            LogOut("[POSITION] Teleported players close together at center (3 unit spacing)", true);
-                        }
-                        Sleep(250); // Prevent multiple activations
-                    }
-                    else if (GetAsyncKeyState(VK_LEFT) & 0x8000) {
-                        // 1+Left - Left side of screen (UPDATED - 3 unit spacing)
-                        LogOut("[POSITION] 1+Left pressed - teleporting to left side", true);
-                        SetPlayerPosition(base, p1BaseOffset, leftX, teleportY);
-                        SetPlayerPosition(base, p2BaseOffset, leftX + 3.0, teleportY);
-                        Sleep(250); // Prevent multiple activations
-                    }
-                    else if (GetAsyncKeyState(VK_RIGHT) & 0x8000) {
-                        // 1+Right - Right side of screen (UPDATED - 3 unit spacing)
-                        LogOut("[POSITION] 1+Right pressed - teleporting to right side", true);
-                        SetPlayerPosition(base, p1BaseOffset, rightX - 3.0, teleportY);
-                        SetPlayerPosition(base, p2BaseOffset, rightX, teleportY);
-                        Sleep(250); // Prevent multiple activations
-                    }
-                    else if (GetAsyncKeyState(VK_UP) & 0x8000) {
-                        // 1+Up - Swap positions
-                        LogOut("[POSITION] 1+Up pressed - swapping positions", true);
-                        double tempX1 = 0.0, tempY1 = 0.0;
-                        double tempX2 = 0.0, tempY2 = 0.0;
-                        
-                        // Read current positions
-                        uintptr_t xAddr1 = ResolvePointer(base, p1BaseOffset, XPOS_OFFSET);
-                        uintptr_t yAddr1 = ResolvePointer(base, p1BaseOffset, YPOS_OFFSET);
-                        uintptr_t xAddr2 = ResolvePointer(base, p2BaseOffset, XPOS_OFFSET);
-                        uintptr_t yAddr2 = ResolvePointer(base, p2BaseOffset, YPOS_OFFSET);
-                        
-                        if (xAddr1 && yAddr1 && xAddr2 && yAddr2) {
-                            SafeReadMemory(xAddr1, &tempX1, sizeof(double));
-                            SafeReadMemory(yAddr1, &tempY1, sizeof(double));
-                            SafeReadMemory(xAddr2, &tempX2, sizeof(double));
-                            SafeReadMemory(yAddr2, &tempY2, sizeof(double));
-                            
-                            // Swap positions
-                            SetPlayerPosition(base, p1BaseOffset, tempX2, tempY2);
-                            SetPlayerPosition(base, p2BaseOffset, tempX1, tempY1);
-                            LogOut("[POSITION] Swapped player positions", true);
-                        } else {
-                            LogOut("[POSITION] Failed to get player positions for swap", true);
-                        }
-                        Sleep(250); // Prevent multiple activations
-                    }
-                    else if (hasRecorded) {
-                        // 1 only (with recorded positions) - Teleport to recorded positions
-                        LogOut("[POSITION] Key 1 pressed - teleporting to recorded positions", true);
-                        LogOut("[POSITION] Teleporting to recorded positions - P1(" + 
-                               std::to_string(recordedX1) + "," + std::to_string(recordedY1) + 
-                               ") P2(" + std::to_string(recordedX2) + "," + std::to_string(recordedY2) + ")", true);
-    
-                        // Set player positions with updateMoveID=true for Y positions to work
-                        SetPlayerPosition(base, p1BaseOffset, recordedX1, recordedY1, true);
-                        SetPlayerPosition(base, p2BaseOffset, recordedX2, recordedY2, true);
-    
-                        // Double-check Y positions after setting
-                        uintptr_t yAddr1 = ResolvePointer(base, p1BaseOffset, YPOS_OFFSET);
-                        uintptr_t yAddr2 = ResolvePointer(base, p2BaseOffset, YPOS_OFFSET);
-    
-                        double verifyY1 = 0.0, verifyY2 = 0.0;
-                        if (yAddr1) SafeReadMemory(yAddr1, &verifyY1, sizeof(double));
-                        if (yAddr2) SafeReadMemory(yAddr2, &verifyY2, sizeof(double));
-    
-                        LogOut("[POSITION] Verified Y positions after teleport - P1:" + 
-                              std::to_string(verifyY1) + ", P2:" + std::to_string(verifyY2), true);
-    
-                        // If Y positions were not applied, try setting them with air state
-                        if ((recordedY1 != 0 && verifyY1 == 0) || (recordedY2 != 0 && verifyY2 == 0)) {
-                            LogOut("[POSITION] Y positions were reset by game, forcing air state", true);
-                            
-                            // Try setting move ID directly to air state
-                            uintptr_t moveID1 = ResolvePointer(base, p1BaseOffset, MOVE_ID_OFFSET);
-                            uintptr_t moveID2 = ResolvePointer(base, p2BaseOffset, MOVE_ID_OFFSET);
-                            
-                            if (moveID1 && recordedY1 != 0) {
-                                short airState = FALLING_ID;
-                                SafeWriteMemory(moveID1, &airState, sizeof(short));
-                                SafeWriteMemory(yAddr1, &recordedY1, sizeof(double));
-                            }
-                            
-                            if (moveID2 && recordedY2 != 0) {
-                                short airState = FALLING_ID;
-                                SafeWriteMemory(moveID2, &airState, sizeof(short));
-                                SafeWriteMemory(yAddr2, &recordedY2, sizeof(double));
-                            }
-                        }
-                        
-                        // Sleep to prevent multiple activations
-                        Sleep(200);
-                    }
+    while (keyMonitorRunning) {
+        bool keyHandled = false;
+
+        // Check if the config menu should be opened
+        if (IsKeyPressed(configMenuKey, false)) {
+            OpenMenu();
+            // Wait a bit to prevent multiple openings
+            Sleep(500);
+            continue;
+        }
+
+        // Check if ImGui should be toggled
+        if (IsKeyPressed(toggleImGuiKey, false)) {
+            ImGuiImpl::ToggleVisibility();
+            keyHandled = true;
+        } else if (IsKeyPressed(teleportKey, true)) {
+            // Round start positions
+            if (IsKeyPressed(VK_DOWN, true) && IsKeyPressed('A', true)) {
+                uintptr_t base = GetEFZBase();
+                if (base) {
+                    SetPlayerPosition(base, EFZ_BASE_OFFSET_P1, p1StartX, startY);
+                    SetPlayerPosition(base, EFZ_BASE_OFFSET_P2, p2StartX, startY);
+                    DirectDrawHook::AddMessage("Round Start Position", "SYSTEM", RGB(100, 255, 100), 1500, 450, 150);
                 }
+                keyHandled = true;
             }
-            
-            // Process other hotkeys (2, 3, 4, 5, 6) independently
-            if ((GetAsyncKeyState('2') & 0x8000) && base) {
-                // Record positions
-                uintptr_t xAddr1 = ResolvePointer(base, EFZ_BASE_OFFSET_P1, XPOS_OFFSET);
-                uintptr_t yAddr1 = ResolvePointer(base, EFZ_BASE_OFFSET_P1, YPOS_OFFSET);
-                uintptr_t xAddr2 = ResolvePointer(base, EFZ_BASE_OFFSET_P2, XPOS_OFFSET);
-                uintptr_t yAddr2 = ResolvePointer(base, EFZ_BASE_OFFSET_P2, YPOS_OFFSET);
-                
-                if (xAddr1 && yAddr1 && xAddr2 && yAddr2) {
-                    // Read current positions with explicit error checking
-                    if (!SafeReadMemory(xAddr1, &recordedX1, sizeof(double))) {
-                        LogOut("[POSITION] Failed to read P1 X position", true);
-                    }
-                    if (!SafeReadMemory(yAddr1, &recordedY1, sizeof(double))) {
-                        LogOut("[POSITION] Failed to read P1 Y position", true);
-                    }
-                    if (!SafeReadMemory(xAddr2, &recordedX2, sizeof(double))) {
-                        LogOut("[POSITION] Failed to read P2 X position", true);
-                    }
-                    if (!SafeReadMemory(yAddr2, &recordedY2, sizeof(double))) {
-                        LogOut("[POSITION] Failed to read P2 Y position", true);
-                    }
+            // Center players
+            else if (IsKeyPressed(VK_DOWN, true)) {
+                uintptr_t base = GetEFZBase();
+                if (base) {
+                    SetPlayerPosition(base, EFZ_BASE_OFFSET_P1, centerX, teleportY);
+                    SetPlayerPosition(base, EFZ_BASE_OFFSET_P2, centerX, teleportY);
+                    DirectDrawHook::AddMessage("Players Centered", "SYSTEM", RGB(100, 255, 100), 1500, 450, 150);
+                }
+                keyHandled = true;
+            }
+            // Players to left corner
+            else if (IsKeyPressed(VK_LEFT, true)) {
+                uintptr_t base = GetEFZBase();
+                if (base) {
+                    SetPlayerPosition(base, EFZ_BASE_OFFSET_P1, leftX, teleportY);
+                    SetPlayerPosition(base, EFZ_BASE_OFFSET_P2, leftX, teleportY);
+                    DirectDrawHook::AddMessage("Left Corner", "SYSTEM", RGB(100, 255, 100), 1500, 450, 150);
+                }
+                keyHandled = true;
+            }
+            // Players to right corner
+            else if (IsKeyPressed(VK_RIGHT, true)) {
+                uintptr_t base = GetEFZBase();
+                if (base) {
+                    SetPlayerPosition(base, EFZ_BASE_OFFSET_P1, rightX, teleportY);
+                    SetPlayerPosition(base, EFZ_BASE_OFFSET_P2, rightX, teleportY);
+                    DirectDrawHook::AddMessage("Right Corner", "SYSTEM", RGB(100, 255, 100), 1500, 450, 150);
+                }
+                keyHandled = true;
+            }
+            // Swap player positions
+            else if (IsKeyPressed(detectedBindings.dButton, true)) {
+                uintptr_t base = GetEFZBase();
+                if (base) {
+                    double tempX1 = 0.0, tempY1 = 0.0;
+                    double tempX2 = 0.0, tempY2 = 0.0;
                     
-                    // Log recorded values explicitly
-                    LogOut("[POSITION] Recorded P1 X: " + std::to_string(recordedX1), true);
-                    LogOut("[POSITION] Recorded P1 Y: " + std::to_string(recordedY1), true);
-                    LogOut("[POSITION] Recorded P2 X: " + std::to_string(recordedX2), true);
-                    LogOut("[POSITION] Recorded P2 Y: " + std::to_string(recordedY2), true);
+                    // Read current positions
+                    uintptr_t xAddr1 = ResolvePointer(base, EFZ_BASE_OFFSET_P1, XPOS_OFFSET);
+                    uintptr_t yAddr1 = ResolvePointer(base, EFZ_BASE_OFFSET_P1, YPOS_OFFSET);
+                    uintptr_t xAddr2 = ResolvePointer(base, EFZ_BASE_OFFSET_P2, XPOS_OFFSET);
+                    uintptr_t yAddr2 = ResolvePointer(base, EFZ_BASE_OFFSET_P2, YPOS_OFFSET);
                     
-                    hasRecorded = true;
-                    LogOut("[POSITION] Positions recorded successfully", true);
-                    
-                    // Sleep to prevent multiple recordings from single press
-                    Sleep(200);
-                } else {
-                    LogOut("[POSITION] Failed to resolve position pointers for recording", true);
+                    if (xAddr1 && yAddr1 && xAddr2 && yAddr2) {
+                        SafeReadMemory(xAddr1, &tempX1, sizeof(double));
+                        SafeReadMemory(yAddr1, &tempY1, sizeof(double));
+                        SafeReadMemory(xAddr2, &tempX2, sizeof(double));
+                        SafeReadMemory(yAddr2, &tempY2, sizeof(double));
+                        
+                        // Swap positions
+                        SetPlayerPosition(base, EFZ_BASE_OFFSET_P1, tempX2, tempY2);
+                        SetPlayerPosition(base, EFZ_BASE_OFFSET_P2, tempX1, tempY1);
+                        DirectDrawHook::AddMessage("Positions Swapped", "SYSTEM", RGB(100, 255, 100), 1500, 450, 150);
+                    } else {
+                        DirectDrawHook::AddMessage("Swap Failed: Can't read positions", "SYSTEM", RGB(255, 100, 100), 1500, 450, 150);
+                    }
                 }
+                keyHandled = true;
             }
-            
-            // Hotkey 3: Open menu
-            if ((GetAsyncKeyState('3') & 0x8000)) {
-                if (!menuOpen) {
-                    OpenMenu();
-                    // Sleep to prevent multiple menu opens
-                    Sleep(200);
+            // If no other key was pressed with teleport key, load saved position
+            else {
+                uintptr_t base = GetEFZBase();
+                if (base) {
+                    LoadPlayerPositions(base);
+                    DirectDrawHook::AddMessage("Position Loaded", "SYSTEM", RGB(100, 255, 100), 1500, 450, 150);
                 }
+                keyHandled = true;
             }
-            
-            // Hotkey 4: Toggle title display mode and detailed debug output
-            if ((GetAsyncKeyState('4') & 0x8000)) {
-                detailedTitleMode = !detailedTitleMode;
-                detailedDebugOutput.store(detailedTitleMode.load()); // Link both settings together
-                
-                LogOut("[DISPLAY] " + 
-                       std::string(detailedTitleMode ? "Detailed" : "Normal") + 
-                       " display mode enabled", true);
-                if (detailedTitleMode) {
-                    LogOut("[DISPLAY] Showing detailed debug information (hitstun, positions, frame data)", true);
-                } else {
-                    LogOut("[DISPLAY] Hiding detailed debug information", true);
-                }
-                
-                // Sleep to prevent multiple activations
-                Sleep(200);
+        } else if (IsKeyPressed(cfg.recordKey, false)) {
+            uintptr_t base = GetEFZBase();
+            if (base) {
+                SavePlayerPositions(base);
+                DirectDrawHook::AddMessage("Position Saved", "SYSTEM", RGB(255, 255, 100), 1500, 450, 150);
             }
-            
-            // Hotkey 5: Reset frame counter
-            if ((GetAsyncKeyState('5') & 0x8000)) {
-                ResetFrameCounter();
-                LogOut("[FRAME] Frame counter reset", true);
-                // Sleep to prevent multiple resets
-                Sleep(200);
+            keyHandled = true;
+        } else if (IsKeyPressed(cfg.toggleTitleKey, false)) {
+            detailedTitleMode = !detailedTitleMode;
+            DirectDrawHook::AddMessage("Title Toggled", "SYSTEM", RGB(150, 150, 150), 1500, 450, 150);
+            keyHandled = true;
+        } else if (IsKeyPressed(cfg.resetFrameCounterKey, false)) {
+            ResetFrameCounter();
+            keyHandled = true;
+        } else if (IsKeyPressed(cfg.helpKey, false)) {
+            ShowHotkeyInfo();
+            keyHandled = true;
+        } else if (IsKeyPressed(VK_F8, false)) {
+            std::string status = "OFF";
+            if (autoAirtechEnabled) {
+                status = autoAirtechDirection == 0 ? "FORWARD" : "BACKWARD";
             }
-            
-            // Hotkey 6: Show help
-            if ((GetAsyncKeyState('6') & 0x8000)) {
-                ShowHotkeyInfo();
-                // Sleep to prevent multiple help displays
-                Sleep(200);
+            DirectDrawHook::AddMessage(("Auto-Airtech: " + status).c_str(), "SYSTEM", RGB(255, 165, 0), 1500, 450, 150);
+            keyHandled = true;
+        } else if (IsKeyPressed(VK_F9, false)) {
+            autoJumpEnabled = !autoJumpEnabled;
+            DirectDrawHook::AddMessage(autoJumpEnabled ? "Auto-Jump: ON" : "Auto-Jump: OFF", "SYSTEM", RGB(255, 165, 0), 1500, 450, 150);
+            keyHandled = true;
+        }
+
+        // If a key was handled, wait for it to be released
+        if (keyHandled) {
+            Sleep(100);
+            while (IsKeyPressed(teleportKey, true) || IsKeyPressed(recordKey, true) ||
+                   IsKeyPressed(toggleTitleKey, true) || IsKeyPressed(resetFrameCounterKey, true) ||
+                   IsKeyPressed(helpKey, true) || IsKeyPressed(VK_F8, true) || IsKeyPressed(VK_F9, true)) {
+                Sleep(10);
             }
         }
-        
+
         Sleep(5);  // Small sleep to prevent high CPU usage
     }
     
@@ -610,29 +482,21 @@ bool ReadDirectInputKeyboardState(BYTE* keyboardState) {
 
 // Implementation of MapEFZKeyToVK
 int MapEFZKeyToVK(unsigned short efzKey) {
-    // First try an exact match with a DirectInput key code
-    for (const auto& mapping : KeyMappings) {
-        if (mapping.dikCode == efzKey) {
-            return mapping.vkCode;
-        }
-    }
-    
-    // Special cases for EFZ-specific codes
     switch (efzKey) {
-        case 0xCB: return VK_LEFT;      // DIK_LEFT
-        case 0xCD: return VK_RIGHT;     // DIK_RIGHT
-        case 0xC8: return VK_UP;        // DIK_UP
-        case 0xD0: return VK_DOWN;      // DIK_DOWN
-        case 0x2C: return 'Z';          // DIK_Z
-        case 0x2D: return 'X';          // DIK_X
-        case 0x2E: return 'C';          // DIK_C
-        case 0x2F: return 'V';          // DIK_V
-        case 0x1E: return 'A';          // DIK_A
-        case 0x1F: return 'S';          // DIK_S
-        case 0x20: return 'D';          // DIK_D
-        case 0x21: return 'F';          // DIK_F
-        case 0x39: return VK_SPACE;     // DIK_SPACE
-        case 0x1C: return VK_RETURN;    // DIK_RETURN
+        case 0xCB: return VK_LEFT;
+        case 0xCD: return VK_RIGHT;
+        case 0xC8: return VK_UP;
+        case 0xD0: return VK_DOWN;
+        case 0x2C: return 'Z';
+        case 0x2D: return 'X';
+        case 0x2E: return 'C';
+        case 0x2F: return 'V';
+        case 0x1E: return 'A';
+        case 0x1F: return 'S';
+        case 0x20: return 'D';
+        case 0x21: return 'F';
+        case 0x39: return VK_SPACE;
+        case 0x1C: return VK_RETURN;
         
         // Handle specific joystick buttons based on config_EN.exe
         case 0x13:  return VK_LEFT;     // Joystick Left
@@ -641,59 +505,25 @@ int MapEFZKeyToVK(unsigned short efzKey) {
         case 0x112: return VK_DOWN;     // Joystick Down
         
         default:
-            return efzKey & 0xFF; // Take the low byte as a character code
+            return 0;
     }
 }
 
-// Forward-declared in gui.h, implemented here for convenience
-void ShowConfigMenu() {
-    // Initialize common controls
-    INITCOMMONCONTROLSEX icc;
-    icc.dwSize = sizeof(INITCOMMONCONTROLSEX);
-    icc.dwICC = ICC_TAB_CLASSES;
-    InitCommonControlsEx(&icc);
-    
-    // Check if EFZ window is active
-    if (!IsEFZWindowActive()) {
-        LogOut("[GUI] Cannot open menu: EFZ window not active", true);
-        return;
-    }
-    
-    // Don't open menu if already open
-    if (menuOpen) {
-        return;
-    }
-    
-    menuOpen = true;
-    LogOut("[GUI] Opening config menu", true);
-    
-    // Get the game window and show the dialog
-    HWND hwnd = FindWindowA(NULL, "Eternal Fighter Zero");
-    if (!hwnd) {
-        hwnd = GetConsoleWindow();
-    }
-    
-    if (hwnd) {
-        ShowEditDataDialog(hwnd);
-    } else {
-        LogOut("[MENU] Could not find game window for menu display", true);
-        menuOpen = false;
-    }
-}
+// REMOVED redundant ShowConfigMenu function. The functionality is handled by OpenMenu() in gui.cpp
 
 void DetectKeyBindings() {
-    // Try to read mappings from key.ini first
-    bool iniMappingsFound = ReadKeyMappingsFromIni();
-    
-    if (!iniMappingsFound) {
-        // If no ini mappings found, use DirectInput detection
-        if (g_directInputAvailable) {
-            DetectKeyBindingsWithDI();
-        }
-        // Otherwise, as a fallback, use Windows API detection
-        else {
-            LogOut("[INPUT] Using WinAPI for key detection", true);
-        }
+    // First, try to read from the INI file
+    if (ReadKeyMappingsFromIni()) {
+        return;
+    }
+
+    // If no ini mappings found, use DirectInput detection
+    if (g_directInputAvailable) {
+        DetectKeyBindingsWithDI();
+    }
+    // Otherwise, as a fallback, use Windows API detection
+    else {
+        LogOut("[INPUT] Using WinAPI for key detection", true);
     }
 }
 
@@ -871,8 +701,8 @@ void DetectKeyBindingsWithDI() {
                     
                     if ((pov >= 31500 || pov <= 4500) && (prevPov < 31500 && prevPov > 4500)) gpUpPressed = true;
                     if ((pov >= 4500 && pov <= 13500) && (prevPov < 4500 || prevPov > 13500)) gpRightPressed = true;
-                    if ((pov >= 13500 && pov <= 22500) && (prevPov < 13500 || prevPov > 22500)) gpDownPressed = true;
-                    if ((pov >= 22500 && pov <= 31500) && (prevPov < 22500 || prevPov > 31500)) gpLeftPressed = true;
+                    if ((pov >= 13500 && pov <= 24500) && (prevPov < 13500 || prevPov > 24500)) gpDownPressed = true;
+                    if ((pov >= 24500 && pov <= 31500) && (prevPov < 24500 || prevPov > 31500)) gpLeftPressed = true;
                 }
                 
                 // Associate gamepad inputs with game inputs

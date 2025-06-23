@@ -10,6 +10,10 @@
 #include <thread>
 #include <sstream>
 
+// Add static variables for position saving
+static double saved_x1 = 240.0, saved_y1 = 0.0;
+static double saved_x2 = 400.0, saved_y2 = 0.0;
+
 // Helper function for safe memory reading
 bool SafeWriteMemory(uintptr_t address, const void* data, size_t size) {
     if (!address || !data || size == 0) return false;
@@ -236,7 +240,8 @@ bool SetRFValuesDirect(double p1RF, double p2RF) {
 }
 
 void UpdatePlayerValues(uintptr_t base, uintptr_t baseOffsetP1, uintptr_t baseOffsetP2) {
-    // Write values from displayData to game memory
+    // This function applies values from the displayData struct to the game
+    // (Used by the GUI dialogs)
     uintptr_t hpAddr1 = ResolvePointer(base, baseOffsetP1, HP_OFFSET);
     uintptr_t meterAddr1 = ResolvePointer(base, baseOffsetP1, METER_OFFSET);
     uintptr_t rfAddr1 = ResolvePointer(base, baseOffsetP1, RF_OFFSET);
@@ -283,6 +288,67 @@ void UpdatePlayerValues(uintptr_t base, uintptr_t baseOffsetP1, uintptr_t baseOf
         " RF:" + std::to_string(displayData.rf2) +
         " X:" + std::to_string(displayData.x2) +
         " Y:" + std::to_string(displayData.y2) + "]", true);
+}
+
+// New function to save current player positions
+void SavePlayerPositions(uintptr_t base) {
+    if (!base) return;
+
+    uintptr_t xAddr1 = ResolvePointer(base, EFZ_BASE_OFFSET_P1, XPOS_OFFSET);
+    uintptr_t yAddr1 = ResolvePointer(base, EFZ_BASE_OFFSET_P1, YPOS_OFFSET);
+    uintptr_t xAddr2 = ResolvePointer(base, EFZ_BASE_OFFSET_P2, XPOS_OFFSET);
+    uintptr_t yAddr2 = ResolvePointer(base, EFZ_BASE_OFFSET_P2, YPOS_OFFSET);
+
+    if (xAddr1) SafeReadMemory(xAddr1, &saved_x1, sizeof(double));
+    if (yAddr1) SafeReadMemory(yAddr1, &saved_y1, sizeof(double));
+    if (xAddr2) SafeReadMemory(xAddr2, &saved_x2, sizeof(double));
+    if (yAddr2) SafeReadMemory(yAddr2, &saved_y2, sizeof(double));
+
+    LogOut("[MEMORY] Saved positions: P1(" + std::to_string(saved_x1) + "), P2(" + std::to_string(saved_x2) + ")", true);
+}
+
+// New function to load saved player positions
+void LoadPlayerPositions(uintptr_t base) {
+    if (!base) return;
+
+    LogOut("[POSITION] Teleporting to recorded positions - P1(" + 
+           std::to_string(saved_x1) + "," + std::to_string(saved_y1) + 
+           ") P2(" + std::to_string(saved_x2) + "," + std::to_string(saved_y2) + ")", true);
+
+    // Set player positions. If Y is non-zero, we don't want to force an idle state.
+    SetPlayerPosition(base, EFZ_BASE_OFFSET_P1, saved_x1, saved_y1, (saved_y1 == 0.0));
+    SetPlayerPosition(base, EFZ_BASE_OFFSET_P2, saved_x2, saved_y2, (saved_y2 == 0.0));
+
+    // Double-check Y positions after setting
+    uintptr_t yAddr1 = ResolvePointer(base, EFZ_BASE_OFFSET_P1, YPOS_OFFSET);
+    uintptr_t yAddr2 = ResolvePointer(base, EFZ_BASE_OFFSET_P2, YPOS_OFFSET);
+
+    double verifyY1 = 0.0, verifyY2 = 0.0;
+    if (yAddr1) SafeReadMemory(yAddr1, &verifyY1, sizeof(double));
+    if (yAddr2) SafeReadMemory(yAddr2, &verifyY2, sizeof(double));
+
+    LogOut("[POSITION] Verified Y positions after teleport - P1:" + 
+          std::to_string(verifyY1) + ", P2:" + std::to_string(verifyY2), true);
+
+    // If Y positions were not applied, try setting them with air state
+    if ((saved_y1 > 0.1 && verifyY1 < 0.1) || (saved_y2 > 0.1 && verifyY2 < 0.1)) {
+        LogOut("[POSITION] Y positions were reset by game, forcing air state", true);
+        
+        uintptr_t moveIDAddr1 = ResolvePointer(base, EFZ_BASE_OFFSET_P1, MOVE_ID_OFFSET);
+        uintptr_t moveIDAddr2 = ResolvePointer(base, EFZ_BASE_OFFSET_P2, MOVE_ID_OFFSET);
+        
+        if (moveIDAddr1 && saved_y1 > 0.1) {
+            short airState = FALLING_ID;
+            SafeWriteMemory(moveIDAddr1, &airState, sizeof(short));
+            SafeWriteMemory(yAddr1, &saved_y1, sizeof(double));
+        }
+        
+        if (moveIDAddr2 && saved_y2 > 0.1) {
+            short airState = FALLING_ID;
+            SafeWriteMemory(moveIDAddr2, &airState, sizeof(short));
+            SafeWriteMemory(yAddr2, &saved_y2, sizeof(double));
+        }
+    }
 }
 
 // Add this function that updates all values except RF

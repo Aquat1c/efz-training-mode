@@ -19,11 +19,6 @@ namespace ImGuiImpl {
     // NEW: Consolidated render function
     void RenderFrame();
     
-    // OBSOLETE: These are now handled within RenderFrame
-    // void NewFrame();
-    // void EndFrame();
-    // void Render();
-    
     // Check if ImGui is initialized
     bool IsInitialized();
     

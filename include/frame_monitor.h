@@ -52,3 +52,5 @@ void ProcessTriggerDelays();
 void MonitorAutoActions();
 void ResetActionFlags();
 void ClearDelayStatesIfNonActionable();
+void UpdateTriggerOverlay();
+bool CheckAndHandleInvalidGameState(); // Changed return type from void to bool

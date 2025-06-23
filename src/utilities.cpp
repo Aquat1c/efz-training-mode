@@ -7,6 +7,8 @@
 #include "../include/frame_analysis.h"    // ADD THIS - for IsBlockstunState
 #include "../include/frame_advantage.h"   // ADD THIS - for IsAttackMove
 #include "../include/config.h"
+#include "../include/imgui_impl.h" // Add this include
+#include "../include/imgui_gui.h"  // Add this include
 #include <sstream>
 #include <iomanip>
 #include <iostream>  // Add this include for std::cout and std::cerr
@@ -407,110 +409,73 @@ void CreateDebugConsole() {
 }
 
 void ResetFrameCounter() {
-    std::locale::global(std::locale("C")); 
-    // This ensures consistent decimal point format
-    frameCounter.store(0);
-    LogOut("[DLL] Frame counter reset to 0", true);
+    frameCounter = 0;
+    startFrameCount = 0;
+    LogOut("[SYSTEM] Frame counter reset", true);
 }
 
+// REVISED: This function now opens the ImGui menu to the Help tab.
 void ShowHotkeyInfo() {
-    system("cls");
-    LogOut("--- EFZ TRAINING MODE CONTROLS ---", true);
-    
-    // FIX THE DUPLICATE TEXT:
-    // Change this line:
-    // LogOut("Detected input device: " + detectedBindings.deviceName + " (from key.ini)", true);
-    
-    // To:
-    LogOut("Detected input device: " + detectedBindings.deviceName, true);
-    
-    // Get settings for hotkey display
-    const Config::Settings& cfg = Config::GetSettings();
-    std::string teleportKey = GetKeyName(cfg.teleportKey > 0 ? cfg.teleportKey : '1');
-    std::string recordKey = GetKeyName(cfg.recordKey > 0 ? cfg.recordKey : '2');
-    std::string configKey = GetKeyName(cfg.configMenuKey > 0 ? cfg.configMenuKey : '3');
-    std::string titleKey = GetKeyName(cfg.toggleTitleKey > 0 ? cfg.toggleTitleKey : '4');
-    std::string resetFrameKey = GetKeyName(cfg.resetFrameCounterKey > 0 ? cfg.resetFrameCounterKey : '5');
-    std::string helpKey = GetKeyName(cfg.helpKey > 0 ? cfg.helpKey : '6');
-    std::string imguiKey = GetKeyName(cfg.toggleImGuiKey > 0 ? cfg.toggleImGuiKey : '7');
-    
-    LogOut("Key Combinations:", true);
-    LogOut("", true);
-    LogOut(teleportKey + ": Teleport players to recorded/default position", true);
-    LogOut("  + " + teleportKey + "+← (P1's Left): Teleport both players to left side", true);
-    LogOut("  + " + teleportKey + "+→ (P1's Right): Teleport both players to right side", true);
-    LogOut("  + " + teleportKey + "+↑ (P1's Up): Swap P1 and P2 positions", true);
-    LogOut("  + " + teleportKey + "+↓ (P1's Down): Place players close together at center", true);
-    LogOut("  + " + teleportKey + "+↓+Z (P1's Down + Light Attack): Place players at round start positions", true);
-    
-    LogOut("", true); // Just ONE blank line between sections
-    LogOut(recordKey + ": Record current player positions", true);
-    LogOut(configKey + ": Open config menu", true);
-    LogOut(titleKey + ": Toggle frame data title mode", true);
-    LogOut(resetFrameKey + ": Reset frame counter", true);
-    LogOut(helpKey + ": Show this help and clear console", true);
-    LogOut(imguiKey + ": Toggle ImGui overlay interface", true);
-    
-    LogOut("", true);
-    LogOut("NOTE: Input bindings have been detected for your controls.", true);
-    LogOut("      Using " + detectedBindings.deviceName + " (from key.ini)", true);
-    LogOut("", true);
-    LogOut("-------------------------", true);
-    LogOut("", true);
-    
-    // Only show config file path in detailed mode
-    LogOut("Configuration file: " + Config::GetConfigFilePath(), detailedLogging.load());
-    LogOut("", true);
+    // If ImGui is enabled, open it to the help tab
+    if (Config::GetSettings().useImGui) {
+        if (!ImGuiImpl::IsVisible()) {
+            ImGuiImpl::ToggleVisibility();
+        }
+        ImGuiGui::guiState.requestedTab = 2; // Request the Help tab
+        LogOut("[GUI] Opening ImGui to Help tab", true);
+    } else {
+        // Fallback for legacy dialog
+        LogOut("[GUI] ImGui not enabled, showing legacy hotkey dialog", true);
+        MessageBoxA(NULL, "Hotkeys:\n\nMove: Arrow Keys\nAttack: A, S, D\nJump: W\nSpecial: Q, E\nPause: P\nToggle Debug: F1\nShow Frame Data: F2\nShow Hitboxes: F3\nShow HUD: F4\nShow Console: F5", "Hotkey Info", MB_OK | MB_ICONINFORMATION);
+    }
 }
 
 std::string GetKeyName(int virtualKey) {
-    // Handle invalid key code
-    if (virtualKey <= 0) {
-        return "Unknown";
-    }
-    
-    unsigned int scanCode = MapVirtualKey(virtualKey, MAPVK_VK_TO_VSC);
-    
-    // Handle extended keys
+    // Handle special cases for clarity
     switch (virtualKey) {
-        case VK_LEFT: case VK_UP: case VK_RIGHT: case VK_DOWN:
-        case VK_PRIOR: case VK_NEXT: case VK_END: case VK_HOME:
-        case VK_INSERT: case VK_DELETE:
-        case VK_DIVIDE:
-            scanCode |= 0x100;
-            break;
+        case VK_LEFT: return "Left Arrow";
+        case VK_RIGHT: return "Right Arrow";
+        case VK_UP: return "Up Arrow";
+        case VK_DOWN: return "Down Arrow";
+        case VK_RETURN: return "Enter";
+        case VK_ESCAPE: return "Escape";
+        case VK_SPACE: return "Space";
+        case VK_LSHIFT: return "Left Shift";
+        case VK_RSHIFT: return "Right Shift";
+        case VK_LCONTROL: return "Left Ctrl";
+        case VK_RCONTROL: return "Right Ctrl";
+        case VK_LMENU: return "Left Alt";
+        case VK_RMENU: return "Right Alt";
+        case VK_TAB: return "Tab";
+        case VK_CAPITAL: return "Caps Lock";
+        case VK_BACK: return "Backspace";
+        case VK_INSERT: return "Insert";
+        case VK_DELETE: return "Delete";
+        case VK_HOME: return "Home";
+        case VK_END: return "End";
+        case VK_PRIOR: return "Page Up";
+        case VK_NEXT: return "Page Down";
     }
 
-    // Special cases for keys that need different names
-    switch (virtualKey) {
-        case VK_LEFT:     return "←";
-        case VK_UP:       return "↑";
-        case VK_RIGHT:    return "→";
-        case VK_DOWN:     return "↓";
-        case VK_RETURN:   return "Enter";
-        case VK_ESCAPE:   return "Esc";
-        case VK_SPACE:    return "Space";
-        case VK_LSHIFT:   return "L-Shift";
-        case VK_RSHIFT:   return "R-Shift";
-        case VK_LCONTROL: return "L-Ctrl";
-        case VK_RCONTROL: return "R-Ctrl";
-        case VK_LMENU:    return "L-Alt";
-        case VK_RMENU:    return "R-Alt";
+    // For F-keys and numbers/letters
+    if (virtualKey >= VK_F1 && virtualKey <= VK_F24) {
+        return "F" + std::to_string(virtualKey - VK_F1 + 1);
     }
-    
-    // Get key name from system
-    char keyName[64];
-    if (GetKeyNameTextA(scanCode << 16, keyName, sizeof(keyName)) > 0) {
-        return keyName;
+    if (virtualKey >= '0' && virtualKey <= '9') {
+        return std::string(1, (char)virtualKey);
     }
-    
-    // If all else fails, return the virtual key code
     if (virtualKey >= 'A' && virtualKey <= 'Z') {
-        char c = static_cast<char>(virtualKey);
-        return std::string(1, c);
+        return std::string(1, (char)virtualKey);
     }
-    
-    return "Key(" + std::to_string(virtualKey) + ")";
+
+    // Fallback for other keys using system function
+    char keyName[256];
+    UINT scanCode = MapVirtualKey(virtualKey, MAPVK_VK_TO_VSC);
+    if (GetKeyNameTextA(scanCode << 16, keyName, sizeof(keyName)) > 0) {
+        return std::string(keyName);
+    }
+
+    return "Unknown Key";
 }
 
 bool IsDashState(short moveID) {

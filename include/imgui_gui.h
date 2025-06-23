@@ -8,13 +8,14 @@ namespace ImGuiGui {
     
     // Individual tab rendering functions
     void RenderGameValuesTab();
-    void RenderMovementOptionsTab();
     void RenderAutoActionTab();
+    void RenderHelpTab();
     
     // Overall GUI state
     struct ImGuiGuiState {
         bool visible;
         int currentTab;
+        int requestedTab; // Add this for programmatic tab switching
         DisplayData localData; // Local copy of display data
     };
     
@@ -26,4 +27,5 @@ namespace ImGuiGui {
     
     // Apply settings from ImGui interface to game
     void ApplyImGuiSettings();
+    void RefreshLocalData();
 }

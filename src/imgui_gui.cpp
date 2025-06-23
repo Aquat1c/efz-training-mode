@@ -5,6 +5,8 @@
 #include "../include/memory.h"
 #include "../include/logger.h"
 #include "../include/gui.h"
+#include "../include/config.h" // Add this include for GetKeyName
+#include "../include/overlay.h" // Add this include for DirectDrawHook
 
 namespace ImGuiGui {
     // Action type mapping (same as in gui_auto_action.cpp)
@@ -26,6 +28,7 @@ namespace ImGuiGui {
     ImGuiGuiState guiState = {
         false,  // visible
         0,      // currentTab
+        -1,     // requestedTab
         {}      // localData (initialized with default values)
     };
 
@@ -45,58 +48,53 @@ namespace ImGuiGui {
 
         // Set window position and size
         ImGui::SetNextWindowPos(ImVec2(50, 50), ImGuiCond_FirstUseEver);
-        ImGui::SetNextWindowSize(ImVec2(580, 520), ImGuiCond_FirstUseEver); // Increased height for new buttons
+        ImGui::SetNextWindowSize(ImVec2(580, 520), ImGuiCond_FirstUseEver);
 
         // Main window
         if (ImGui::Begin("EFZ Training Mode", nullptr, ImGuiWindowFlags_NoCollapse)) {
-            // Action Buttons
-            if (ImGui::Button("Apply Changes", ImVec2(120, 30))) {
-                ApplyImGuiSettings();
-                LogOut("[IMGUI] Applied settings from GUI.", true);
-            }
-            ImGui::SameLine();
-            if (ImGui::Button("Refresh Values", ImVec2(120, 30))) {
-                guiState.localData = displayData; // Refresh from global state
-                LogOut("[IMGUI] Refreshed GUI values from game.", true);
-            }
-            ImGui::SameLine();
-            ImGui::TextDisabled("(?)");
-            if (ImGui::IsItemHovered()) {
-                ImGui::SetTooltip("Apply: Saves all changes to the game.\nRefresh: Loads current game values into the GUI.");
-            }
-
-            ImGui::Separator();
-
-            // Tab bar
-            if (ImGui::BeginTabBar("MainTabBar", ImGuiTabBarFlags_None)) {
-                // Game Values Tab
-                if (ImGui::BeginTabItem("Game Values")) {
+            if (ImGui::BeginTabBar("MainTabBar")) {
+                ImGuiTabItemFlags gameValuesFlags = (guiState.requestedTab == 0) ? ImGuiTabItemFlags_SetSelected : 0;
+                if (ImGui::BeginTabItem("Game Values", nullptr, gameValuesFlags)) {
+                    guiState.currentTab = 0;
                     RenderGameValuesTab();
                     ImGui::EndTabItem();
                 }
 
-                // Movement Options Tab
-                if (ImGui::BeginTabItem("Movement Options")) {
-                    RenderMovementOptionsTab();
+                ImGuiTabItemFlags autoActionFlags = (guiState.requestedTab == 1) ? ImGuiTabItemFlags_SetSelected : 0;
+                if (ImGui::BeginTabItem("Auto Action", nullptr, autoActionFlags)) {
+                    guiState.currentTab = 1;
+                    RenderAutoActionTab();
                     ImGui::EndTabItem();
                 }
 
-                // Auto Action Tab
-                if (ImGui::BeginTabItem("Auto Action")) {
-                    RenderAutoActionTab();
+                ImGuiTabItemFlags helpFlags = (guiState.requestedTab == 2) ? ImGuiTabItemFlags_SetSelected : 0;
+                if (ImGui::BeginTabItem("Help & Hotkeys", nullptr, helpFlags)) {
+                    guiState.currentTab = 2;
+                    RenderHelpTab();
                     ImGui::EndTabItem();
+                }
+
+                // Reset the request after processing this frame
+                if (guiState.requestedTab != -1) {
+                    guiState.requestedTab = -1;
                 }
 
                 ImGui::EndTabBar();
             }
 
-            // Buttons at bottom of window
+            // Add action buttons at the bottom
             ImGui::Separator();
-            if (ImGui::Button("Apply", ImVec2(100, 30))) {
+            if (ImGui::Button("Apply", ImVec2(120, 0))) {
                 ApplyImGuiSettings();
+                DirectDrawHook::AddMessage("Settings Applied", "SYSTEM", RGB(100, 255, 100), 1500, 250, 200);
             }
             ImGui::SameLine();
-            if (ImGui::Button("Cancel", ImVec2(100, 30))) {
+            if (ImGui::Button("Refresh Values", ImVec2(120, 0))) {
+                RefreshLocalData();
+                DirectDrawHook::AddMessage("Values Refreshed", "SYSTEM", RGB(200, 200, 200), 1500, 250, 200);
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Exit", ImVec2(120, 0))) {
                 ImGuiImpl::ToggleVisibility();
             }
         }
@@ -219,36 +217,6 @@ namespace ImGuiGui {
         ImGui::PopItemWidth();
 
         ImGui::PopItemWidth();
-    }
-
-    // Movement Options Tab
-    void RenderMovementOptionsTab() {
-        ImGui::TextUnformatted("Auto-Jump Settings:");
-        ImGui::Separator();
-
-        // Jump Direction
-        ImGui::TextUnformatted("Jump Direction:");
-        const char* jumpDirItems[] = { "Disabled", "Straight Jump", "Forward Jump", "Backward Jump" };
-        int jumpDir = guiState.localData.autoJump ? guiState.localData.jumpDirection + 1 : 0;
-        if (ImGui::Combo("##JumpDir", &jumpDir, jumpDirItems, IM_ARRAYSIZE(jumpDirItems))) {
-            guiState.localData.autoJump = (jumpDir > 0);
-            guiState.localData.jumpDirection = jumpDir > 0 ? jumpDir - 1 : 0;
-        }
-
-        // Jump Target
-        ImGui::TextUnformatted("Apply To:");
-        const char* jumpTargetItems[] = { "P1 Only", "P2 Only", "Both Players" };
-        int jumpTarget = guiState.localData.jumpTarget - 1;
-        if (ImGui::Combo("##JumpTarget", &jumpTarget, jumpTargetItems, IM_ARRAYSIZE(jumpTargetItems))) {
-            guiState.localData.jumpTarget = jumpTarget + 1;
-        }
-
-        // Help text
-        ImGui::Separator();
-        ImGui::TextWrapped(
-            "Auto-Jump makes the selected player(s) automatically jump when they land.\n"
-            "Select Disabled to turn off this feature."
-        );
     }
 
     // Auto Action Tab
@@ -419,6 +387,62 @@ namespace ImGuiGui {
             "Each trigger can have its own action, delay, and custom move ID (if applicable).\n"
             "Delay is measured in visual frames (0 = instant)."
         );
+    }
+
+    // NEW: Help Tab implementation
+    void RenderHelpTab() {
+        ImGui::TextUnformatted("Hotkeys (can be changed in config.ini):");
+        ImGui::Separator();
+
+        const Config::Settings& cfg = Config::GetSettings();
+
+        ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.0f, 1.0f), "Core Hotkeys:");
+        ImGui::BulletText("Open/Close this Menu: %s", GetKeyName(cfg.toggleImGuiKey).c_str());
+        ImGui::BulletText("Load Position: %s", GetKeyName(cfg.teleportKey).c_str());
+        ImGui::BulletText("Save Position: %s", GetKeyName(cfg.recordKey).c_str());
+        ImGui::BulletText("Toggle Detailed Title: %s", GetKeyName(cfg.toggleTitleKey).c_str());
+        ImGui::BulletText("Reset Frame Counter: %s", GetKeyName(cfg.resetFrameCounterKey).c_str());
+        ImGui::BulletText("Show This Help Screen: %s", GetKeyName(cfg.helpKey).c_str());
+
+        ImGui::Separator();
+        ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.0f, 1.0f), "Positioning Hotkeys (Hold Load Key + ...):");
+        ImGui::BulletText("Swap Player Positions: %s + UP", GetKeyName(cfg.teleportKey).c_str());
+        ImGui::BulletText("Center Players: %s + DOWN", GetKeyName(cfg.teleportKey).c_str());
+        ImGui::BulletText("Players to Left Corner: %s + LEFT", GetKeyName(cfg.teleportKey).c_str());
+        ImGui::BulletText("Players to Right Corner: %s + RIGHT", GetKeyName(cfg.teleportKey).c_str());
+        ImGui::BulletText("Round Start Positions: %s + DOWN + A", GetKeyName(cfg.teleportKey).c_str());
+
+        ImGui::Separator();
+        ImGui::TextWrapped("Press the key again to close this help screen.");
+    }
+
+    // Add this new function to refresh data from game memory
+    void RefreshLocalData() {
+        uintptr_t base = GetEFZBase();
+        if (!base) {
+            LogOut("[GUI] Refresh failed: Could not get game base address", true);
+            return;
+        }
+
+        // P1
+        SafeReadMemory(ResolvePointer(base, EFZ_BASE_OFFSET_P1, HP_OFFSET), &guiState.localData.hp1, sizeof(int));
+        SafeReadMemory(ResolvePointer(base, EFZ_BASE_OFFSET_P1, METER_OFFSET), &guiState.localData.meter1, sizeof(int));
+        SafeReadMemory(ResolvePointer(base, EFZ_BASE_OFFSET_P1, RF_OFFSET), &guiState.localData.rf1, sizeof(double));
+        SafeReadMemory(ResolvePointer(base, EFZ_BASE_OFFSET_P1, XPOS_OFFSET), &guiState.localData.x1, sizeof(double));
+        SafeReadMemory(ResolvePointer(base, EFZ_BASE_OFFSET_P1, YPOS_OFFSET), &guiState.localData.y1, sizeof(double));
+        SafeReadMemory(ResolvePointer(base, EFZ_BASE_OFFSET_P1, CHARACTER_NAME_OFFSET), &guiState.localData.p1CharName, sizeof(guiState.localData.p1CharName) - 1);
+        guiState.localData.p1CharName[15] = '\0'; // Null terminate
+
+        // P2
+        SafeReadMemory(ResolvePointer(base, EFZ_BASE_OFFSET_P2, HP_OFFSET), &guiState.localData.hp2, sizeof(int));
+        SafeReadMemory(ResolvePointer(base, EFZ_BASE_OFFSET_P2, METER_OFFSET), &guiState.localData.meter2, sizeof(int));
+        SafeReadMemory(ResolvePointer(base, EFZ_BASE_OFFSET_P2, RF_OFFSET), &guiState.localData.rf2, sizeof(double));
+        SafeReadMemory(ResolvePointer(base, EFZ_BASE_OFFSET_P2, XPOS_OFFSET), &guiState.localData.x2, sizeof(double));
+        SafeReadMemory(ResolvePointer(base, EFZ_BASE_OFFSET_P2, YPOS_OFFSET), &guiState.localData.y2, sizeof(double));
+        SafeReadMemory(ResolvePointer(base, EFZ_BASE_OFFSET_P2, CHARACTER_NAME_OFFSET), &guiState.localData.p2CharName, sizeof(guiState.localData.p2CharName) - 1);
+        guiState.localData.p2CharName[15] = '\0'; // Null terminate
+
+        LogOut("[GUI] Refreshed local data from game memory.", true);
     }
 
     // Apply settings to the game
