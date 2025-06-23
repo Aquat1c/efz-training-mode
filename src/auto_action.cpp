@@ -44,6 +44,10 @@ short GetActionMoveID(int actionType, int triggerType, int playerNum) {
         short customID = 0;
         // Move custom moveID selection logs to detailed mode
         switch (triggerType) {
+            case TRIGGER_AFTER_AIRTECH:
+                customID = triggerAfterAirtechCustomID.load();
+                LogOut("[AUTO-ACTION] Using After Airtech custom moveID: " + std::to_string(customID), detailedLogging.load());
+                return customID;
             case TRIGGER_AFTER_BLOCK:
                 customID = triggerAfterBlockCustomID.load();
                 LogOut("[AUTO-ACTION] Using After Block custom moveID: " + std::to_string(customID), detailedLogging.load());
@@ -55,10 +59,6 @@ short GetActionMoveID(int actionType, int triggerType, int playerNum) {
             case TRIGGER_AFTER_HITSTUN:
                 customID = triggerAfterHitstunCustomID.load();
                 LogOut("[AUTO-ACTION] Using After Hitstun custom moveID: " + std::to_string(customID), detailedLogging.load());
-                return customID;
-            case TRIGGER_AFTER_AIRTECH:
-                customID = triggerAfterAirtechCustomID.load();
-                LogOut("[AUTO-ACTION] Using After Airtech custom moveID: " + std::to_string(customID), detailedLogging.load());
                 return customID;
             default:
                 LogOut("[AUTO-ACTION] Using default custom moveID: 200", detailedLogging.load());
@@ -427,8 +427,30 @@ void MonitorAutoActions() {
         int delay = 0;
         short actionMoveID = 0;        
         
+        if (!shouldTrigger && triggerAfterAirtechEnabled.load()) {
+            // Check if player was in airtech last frame
+            bool wasInAirtech = (prevMoveID1 == FORWARD_AIRTECH || prevMoveID1 == BACKWARD_AIRTECH);
+            
+            // Check if player is now in first actionable frame after airtech
+            bool isNowActionable = (moveID1 == FALLING_ID);
+            
+            // P1 After-Airtech trigger condition
+            if (wasInAirtech && isNowActionable) {
+                LogOut("[AUTO-ACTION] P1 After Airtech trigger activated (from moveID " + 
+                       std::to_string(prevMoveID1) + " to " + std::to_string(moveID1) + ")", true);
+                shouldTrigger = true;
+                triggerType = TRIGGER_AFTER_AIRTECH;
+                delay = triggerAfterAirtechDelay.load();
+                
+                // Get the appropriate action moveID for After Airtech trigger
+                int actionType = triggerAfterAirtechAction.load();
+                actionMoveID = GetActionMoveID(actionType, TRIGGER_AFTER_AIRTECH, 1);
+            }
+        }
+
+
         // After Block trigger
-        if (triggerAfterBlockEnabled.load()) {
+        if (!shouldTrigger && triggerAfterBlockEnabled.load()) {
             if (IsBlockstun(prevMoveID1) && IsActionable(moveID1)) {
                 shouldTrigger = true;
                 triggerType = TRIGGER_AFTER_BLOCK;
@@ -465,28 +487,6 @@ void MonitorAutoActions() {
             }
         }
         
-        // CRITICAL FIX: Complete implementation of After Airtech trigger
-        if (!shouldTrigger && triggerAfterAirtechEnabled.load()) {
-            // Check if player was in airtech last frame
-            bool wasInAirtech = (prevMoveID1 == FORWARD_AIRTECH || prevMoveID1 == BACKWARD_AIRTECH);
-            
-            // Check if player is now in first actionable frame after airtech
-            bool isNowActionable = (moveID1 == FALLING_ID);
-            
-            // P1 After-Airtech trigger condition
-            if (wasInAirtech && isNowActionable) {
-                LogOut("[AUTO-ACTION] P1 After Airtech trigger activated (from moveID " + 
-                       std::to_string(prevMoveID1) + " to " + std::to_string(moveID1) + ")", true);
-                shouldTrigger = true;
-                triggerType = TRIGGER_AFTER_AIRTECH;
-                delay = triggerAfterAirtechDelay.load();
-                
-                // Get the appropriate action moveID for After Airtech trigger
-                int actionType = triggerAfterAirtechAction.load();
-                actionMoveID = GetActionMoveID(actionType, TRIGGER_AFTER_AIRTECH, 1);
-            }
-        }
-        
         // Apply the trigger if any condition was met
         if (shouldTrigger) {
             StartTriggerDelay(1, triggerType, actionMoveID, delay);
@@ -500,8 +500,22 @@ void MonitorAutoActions() {
         int delay = 0;
         short actionMoveID = 0;
         
+         // CRITICAL FIX: Complete implementation of After Airtech trigger for P2
+        if (!shouldTrigger && triggerAfterAirtechEnabled.load()) {
+            // Check for transition from airtech to actionable state
+            bool wasAirtech = IsAirtech(prevMoveID2);
+            bool isNowActionable = IsActionable(moveID2);
+            
+            if (wasAirtech && isNowActionable) {
+                LogOut("[AUTO-ACTION] P2 After Airtech trigger activated", true);
+                shouldTrigger = true;
+                triggerType = TRIGGER_AFTER_AIRTECH;
+                delay = triggerAfterAirtechDelay.load() * 3; // Convert to internal frames
+                actionMoveID = GetActionMoveID(triggerAfterAirtechAction.load(), TRIGGER_AFTER_AIRTECH, 2);
+            }
+        }
         // After Block trigger
-        if (triggerAfterBlockEnabled.load()) {
+        if (!shouldTrigger && triggerAfterBlockEnabled.load()) {
             if (IsBlockstun(prevMoveID2) && IsActionable(moveID2)) {
                 shouldTrigger = true;
                 triggerType = TRIGGER_AFTER_BLOCK;
@@ -534,21 +548,6 @@ void MonitorAutoActions() {
                 actionMoveID = GetActionMoveID(triggerOnWakeupAction.load(), TRIGGER_ON_WAKEUP, 2);
                 
                 LogOut("[AUTO-ACTION] P2 On Wakeup trigger activated", true);
-            }
-        }
-        
-        // CRITICAL FIX: Complete implementation of After Airtech trigger for P2
-        if (!shouldTrigger && triggerAfterAirtechEnabled.load()) {
-            // Check for transition from airtech to actionable state
-            bool wasAirtech = IsAirtech(prevMoveID2);
-            bool isNowActionable = IsActionable(moveID2);
-            
-            if (wasAirtech && isNowActionable) {
-                LogOut("[AUTO-ACTION] P2 After Airtech trigger activated", true);
-                shouldTrigger = true;
-                triggerType = TRIGGER_AFTER_AIRTECH;
-                delay = triggerAfterAirtechDelay.load() * 3; // Convert to internal frames
-                actionMoveID = GetActionMoveID(triggerAfterAirtechAction.load(), TRIGGER_AFTER_AIRTECH, 2);
             }
         }
         
