@@ -59,7 +59,7 @@ void UpdateTriggerOverlay() {
         return;
     }
 
-    int yPos = 120;
+    int yPos = 140;
     const int yIncrement = 15;
     int targetPlayer = autoActionPlayer.load();
 
@@ -101,8 +101,8 @@ void UpdateTriggerOverlay() {
             COLORREF color = isActive ? RGB(50, 255, 50) : RGB(255, 215, 0);
 
             if (msgId == -1) {
-                // Corrected Position: x=20
-                msgId = DirectDrawHook::AddPermanentMessage(text, color, 0, yPos);
+                // Moved to the right side of the screen
+                msgId = DirectDrawHook::AddPermanentMessage(text, color, 510, yPos);
             } else {
                 DirectDrawHook::UpdatePermanentMessage(msgId, text, color);
             }

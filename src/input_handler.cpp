@@ -210,7 +210,7 @@ void MonitorKeys() {
                 if (base) {
                     SetPlayerPosition(base, EFZ_BASE_OFFSET_P1, p1StartX, startY);
                     SetPlayerPosition(base, EFZ_BASE_OFFSET_P2, p2StartX, startY);
-                    DirectDrawHook::AddMessage("Round Start Position", "SYSTEM", RGB(100, 255, 100), 1500, 450, 150);
+                    DirectDrawHook::AddMessage("Round Start Position", "SYSTEM", RGB(100, 255, 100), 1500, 0, 100);
                 }
                 keyHandled = true;
             }
@@ -220,7 +220,7 @@ void MonitorKeys() {
                 if (base) {
                     SetPlayerPosition(base, EFZ_BASE_OFFSET_P1, centerX, teleportY);
                     SetPlayerPosition(base, EFZ_BASE_OFFSET_P2, centerX, teleportY);
-                    DirectDrawHook::AddMessage("Players Centered", "SYSTEM", RGB(100, 255, 100), 1500, 450, 150);
+                    DirectDrawHook::AddMessage("Players Centered", "SYSTEM", RGB(100, 255, 100), 1500, 0, 100);
                 }
                 keyHandled = true;
             }
@@ -230,7 +230,7 @@ void MonitorKeys() {
                 if (base) {
                     SetPlayerPosition(base, EFZ_BASE_OFFSET_P1, leftX, teleportY);
                     SetPlayerPosition(base, EFZ_BASE_OFFSET_P2, leftX, teleportY);
-                    DirectDrawHook::AddMessage("Left Corner", "SYSTEM", RGB(100, 255, 100), 1500, 450, 150);
+                    DirectDrawHook::AddMessage("Left Corner", "SYSTEM", RGB(100, 255, 100), 1500, 0, 100);
                 }
                 keyHandled = true;
             }
@@ -240,7 +240,7 @@ void MonitorKeys() {
                 if (base) {
                     SetPlayerPosition(base, EFZ_BASE_OFFSET_P1, rightX, teleportY);
                     SetPlayerPosition(base, EFZ_BASE_OFFSET_P2, rightX, teleportY);
-                    DirectDrawHook::AddMessage("Right Corner", "SYSTEM", RGB(100, 255, 100), 1500, 450, 150);
+                    DirectDrawHook::AddMessage("Right Corner", "SYSTEM", RGB(100, 255, 100), 1500, 0, 100);
                 }
                 keyHandled = true;
             }
@@ -266,9 +266,9 @@ void MonitorKeys() {
                         // Swap positions
                         SetPlayerPosition(base, EFZ_BASE_OFFSET_P1, tempX2, tempY2);
                         SetPlayerPosition(base, EFZ_BASE_OFFSET_P2, tempX1, tempY1);
-                        DirectDrawHook::AddMessage("Positions Swapped", "SYSTEM", RGB(100, 255, 100), 1500, 450, 150);
+                        DirectDrawHook::AddMessage("Positions Swapped", "SYSTEM", RGB(100, 255, 100), 1500, 0, 100);
                     } else {
-                        DirectDrawHook::AddMessage("Swap Failed: Can't read positions", "SYSTEM", RGB(255, 100, 100), 1500, 450, 150);
+                        DirectDrawHook::AddMessage("Swap Failed: Can't read positions", "SYSTEM", RGB(255, 100, 100), 1500, 0, 100);
                     }
                 }
                 keyHandled = true;
@@ -278,7 +278,7 @@ void MonitorKeys() {
                 uintptr_t base = GetEFZBase();
                 if (base) {
                     LoadPlayerPositions(base);
-                    DirectDrawHook::AddMessage("Position Loaded", "SYSTEM", RGB(100, 255, 100), 1500, 450, 150);
+                    DirectDrawHook::AddMessage("Position Loaded", "SYSTEM", RGB(100, 255, 100), 1500, 0, 100);
                 }
                 keyHandled = true;
             }
@@ -286,12 +286,12 @@ void MonitorKeys() {
             uintptr_t base = GetEFZBase();
             if (base) {
                 SavePlayerPositions(base);
-                DirectDrawHook::AddMessage("Position Saved", "SYSTEM", RGB(255, 255, 100), 1500, 450, 150);
+                DirectDrawHook::AddMessage("Position Saved", "SYSTEM", RGB(255, 255, 100), 1500, 0, 100);
             }
             keyHandled = true;
         } else if (IsKeyPressed(cfg.toggleTitleKey, false)) {
             detailedTitleMode = !detailedTitleMode;
-            DirectDrawHook::AddMessage("Title Toggled", "SYSTEM", RGB(150, 150, 150), 1500, 450, 150);
+            DirectDrawHook::AddMessage("Title Toggled", "SYSTEM", RGB(100, 100, 100), 1500, 0, 100);
             keyHandled = true;
         } else if (IsKeyPressed(cfg.resetFrameCounterKey, false)) {
             ResetFrameCounter();
@@ -304,11 +304,11 @@ void MonitorKeys() {
             if (autoAirtechEnabled) {
                 status = autoAirtechDirection == 0 ? "FORWARD" : "BACKWARD";
             }
-            DirectDrawHook::AddMessage(("Auto-Airtech: " + status).c_str(), "SYSTEM", RGB(255, 165, 0), 1500, 450, 150);
+            DirectDrawHook::AddMessage(("Auto-Airtech: " + status).c_str(), "SYSTEM", RGB(255, 165, 0), 1500, 0, 100);
             keyHandled = true;
         } else if (IsKeyPressed(VK_F9, false)) {
             autoJumpEnabled = !autoJumpEnabled;
-            DirectDrawHook::AddMessage(autoJumpEnabled ? "Auto-Jump: ON" : "Auto-Jump: OFF", "SYSTEM", RGB(255, 165, 0), 1500, 450, 150);
+            DirectDrawHook::AddMessage(autoJumpEnabled ? "Auto-Jump: ON" : "Auto-Jump: OFF", "SYSTEM", RGB(255, 165, 0), 1500, 0, 100);
             keyHandled = true;
         }
 
@@ -699,10 +699,10 @@ void DetectKeyBindingsWithDI() {
                     DWORD pov = g_gamepads[i].state.rgdwPOV[0];
                     DWORD prevPov = g_gamepads[i].prevState.rgdwPOV[0];
                     
-                    if ((pov >= 31500 || pov <= 4500) && (prevPov < 31500 && prevPov > 4500)) gpUpPressed = true;
-                    if ((pov >= 4500 && pov <= 13500) && (prevPov < 4500 || prevPov > 13500)) gpRightPressed = true;
-                    if ((pov >= 13500 && pov <= 24500) && (prevPov < 13500 || prevPov > 24500)) gpDownPressed = true;
-                    if ((pov >= 24500 && pov <= 31500) && (prevPov < 24500 || prevPov > 31500)) gpLeftPressed = true;
+                    if ((pov >= 31500 || pov <= 00) && (prevPov < 31500 && prevPov > 00)) gpUpPressed = true;
+                    if ((pov >= 00 && pov <= 13500) && (prevPov < 00 || prevPov > 13500)) gpRightPressed = true;
+                    if ((pov >= 13500 && pov <= 200) && (prevPov < 13500 || prevPov > 200)) gpDownPressed = true;
+                    if ((pov >= 200 && pov <= 31500) && (prevPov < 200 || prevPov > 31500)) gpLeftPressed = true;
                 }
                 
                 // Associate gamepad inputs with game inputs
