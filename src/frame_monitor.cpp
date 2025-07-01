@@ -325,21 +325,21 @@ void FrameDataMonitor() {
 
 void ReinitializeOverlays() {
     // Clear existing trigger messages
-    if (g_TriggerAfterBlockId != -1) { 
-        DirectDrawHook::RemovePermanentMessage(g_TriggerAfterBlockId); 
-        g_TriggerAfterBlockId = -1; 
+    if (g_TriggerAfterBlockId != -1) {
+        DirectDrawHook::RemovePermanentMessage(g_TriggerAfterBlockId);
+        g_TriggerAfterBlockId = -1;
     }
-    if (g_TriggerOnWakeupId != -1) { 
-        DirectDrawHook::RemovePermanentMessage(g_TriggerOnWakeupId); 
-        g_TriggerOnWakeupId = -1; 
+    if (g_TriggerOnWakeupId != -1) {
+        DirectDrawHook::RemovePermanentMessage(g_TriggerOnWakeupId);
+        g_TriggerOnWakeupId = -1;
     }
-    if (g_TriggerAfterHitstunId != -1) { 
-        DirectDrawHook::RemovePermanentMessage(g_TriggerAfterHitstunId); 
-        g_TriggerAfterHitstunId = -1; 
+    if (g_TriggerAfterHitstunId != -1) {
+        DirectDrawHook::RemovePermanentMessage(g_TriggerAfterHitstunId);
+        g_TriggerAfterHitstunId = -1;
     }
-    if (g_TriggerAfterAirtechId != -1) { 
-        DirectDrawHook::RemovePermanentMessage(g_TriggerAfterAirtechId); 
-        g_TriggerAfterAirtechId = -1; 
+    if (g_TriggerAfterAirtechId != -1) {
+        DirectDrawHook::RemovePermanentMessage(g_TriggerAfterAirtechId);
+        g_TriggerAfterAirtechId = -1;
     }
     
     // Reset frame advantage display
@@ -357,6 +357,20 @@ void ReinitializeOverlays() {
     if (g_JumpStatusId != -1) {
         DirectDrawHook::RemovePermanentMessage(g_JumpStatusId);
         g_JumpStatusId = -1;
+    }
+    
+    // Also reset stats display IDs so they'll be recreated if enabled
+    if (g_statsDisplayEnabled.load()) {
+        if (g_statsP1ValuesId != -1) {
+            DirectDrawHook::RemovePermanentMessage(g_statsP1ValuesId);
+            DirectDrawHook::RemovePermanentMessage(g_statsP2ValuesId);
+            DirectDrawHook::RemovePermanentMessage(g_statsPositionId);
+            DirectDrawHook::RemovePermanentMessage(g_statsMoveIdId);
+            g_statsP1ValuesId = -1;
+            g_statsP2ValuesId = -1;
+            g_statsPositionId = -1;
+            g_statsMoveIdId = -1;
+        }
     }
     
     // Force an immediate update of the trigger overlay
@@ -397,6 +411,22 @@ void UpdateStatsDisplay() {
     // Return early if stats display is disabled or DirectDraw hook isn't initialized
     if (!g_statsDisplayEnabled.load() || !DirectDrawHook::isHooked) {
         // Clear existing messages if display is disabled
+        if (g_statsP1ValuesId != -1) {
+            DirectDrawHook::RemovePermanentMessage(g_statsP1ValuesId);
+            DirectDrawHook::RemovePermanentMessage(g_statsP2ValuesId);
+            DirectDrawHook::RemovePermanentMessage(g_statsPositionId);
+            DirectDrawHook::RemovePermanentMessage(g_statsMoveIdId);
+            g_statsP1ValuesId = -1;
+            g_statsP2ValuesId = -1;
+            g_statsPositionId = -1;
+            g_statsMoveIdId = -1;
+        }
+        return;
+    }
+
+    // Check for valid game state - return early if not in a valid state
+    if (!AreCharactersInitialized()) {
+        // Clear existing messages in invalid game state
         if (g_statsP1ValuesId != -1) {
             DirectDrawHook::RemovePermanentMessage(g_statsP1ValuesId);
             DirectDrawHook::RemovePermanentMessage(g_statsP2ValuesId);
@@ -481,9 +511,9 @@ void UpdateStatsDisplay() {
     // Move IDs
     moveIds << "MoveID:  P1: " << p1MoveId << "  P2: " << p2MoveId;
 
-    // Set or update the display
+    // Set or update the display - MOVED DOWN from original position
     const int startX = 20;
-    const int startY = 30;
+    const int startY = 100;  // Changed from 80 to 100 to position lower
     const int lineHeight = 20;
     COLORREF textColor = RGB(255, 255, 0); // Yellow
 
