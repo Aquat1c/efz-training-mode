@@ -13,6 +13,7 @@
 #include "../include/input_handler.h"
 #include "../include/auto_airtech.h"
 #include "../include/auto_action.h"
+#include "../include/frame_monitor.h"
 #include <sstream>
 #include <iomanip>
 #include <iostream>  // Add this include for std::cout and std::cerr
@@ -29,7 +30,9 @@ std::atomic<bool> g_guiActive(false);
 
 // NEW: Add feature management functions
 void EnableFeatures() {
-    if (g_featuresEnabled.load()) return;
+    if (g_featuresEnabled.load())
+        return;
+        
     LogOut("[SYSTEM] Game active. Enabling features.", true);
     
     // Start hotkey monitoring
@@ -41,6 +44,17 @@ void EnableFeatures() {
     }
 
     g_featuresEnabled.store(true);
+    
+    // Only reinitialize overlays if characters are initialized and we're in a valid game mode
+    if (DirectDrawHook::isHooked && AreCharactersInitialized()) {
+        GameMode currentMode = GetCurrentGameMode();
+        if (IsValidGameMode(currentMode)) {
+            ReinitializeOverlays();
+        } else {
+            LogOut("[SYSTEM] Not initializing overlays - invalid game mode: " + 
+                   GetGameModeName(currentMode), true);
+        }
+    }
 }
 
 void DisableFeatures() {
