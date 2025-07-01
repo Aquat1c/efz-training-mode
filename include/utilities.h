@@ -164,3 +164,10 @@ extern std::atomic<int> triggerAfterAirtechCustomID;
 
 // Add a missing constant that utilities.cpp needs
 #define DEFAULT_TRIGGER_DELAY 0
+
+// Add these after the other global state variables
+extern std::atomic<bool> g_efzWindowActive;
+extern std::atomic<bool> g_guiActive;
+
+// Add this function declaration
+void UpdateWindowActiveState();

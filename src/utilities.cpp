@@ -24,6 +24,9 @@
 #include <chrono>
 #include <vector>
 
+std::atomic<bool> g_efzWindowActive(false);
+std::atomic<bool> g_guiActive(false);
+
 // NEW: Add feature management functions
 void EnableFeatures() {
     if (g_featuresEnabled.load()) return;
@@ -579,4 +582,28 @@ HWND FindEFZWindow() {
     }
     
     return foundWindow;
+}
+
+void UpdateWindowActiveState() {
+    HWND activeWindow = GetForegroundWindow();
+    HWND efzWindow = FindEFZWindow();
+    
+    // Update EFZ window active state
+    g_efzWindowActive.store(activeWindow == efzWindow);
+    
+    // Check if our GUI is active
+    g_guiActive.store(menuOpen.load() || ImGuiImpl::IsVisible());
+    
+    // Log state changes only (not every update)
+    static bool prevEfzActive = false;
+    static bool prevGuiActive = false;
+    
+    if (prevEfzActive != g_efzWindowActive.load() || prevGuiActive != g_guiActive.load()) {
+        LogOut("[WINDOW] EFZ window active: " + std::to_string(g_efzWindowActive.load()) + 
+               ", GUI active: " + std::to_string(g_guiActive.load()), 
+               detailedLogging.load());
+        
+        prevEfzActive = g_efzWindowActive.load();
+        prevGuiActive = g_guiActive.load();
+    }
 }

@@ -25,6 +25,13 @@ MonitorState state = Idle;
 // REVISED: This function now ONLY determines if features should be active.
 // It no longer performs resets itself. That is handled by DisableFeatures.
 bool ShouldFeaturesBeActive() {
+    // First check if EFZ window is active
+    UpdateWindowActiveState();
+    if (!g_efzWindowActive.load()) {
+        return false;
+    }
+    
+    // Then do the existing checks
     uintptr_t base = GetEFZBase();
     const Config::Settings& cfg = Config::GetSettings();
     GameMode currentMode = GetCurrentGameMode();
@@ -141,16 +148,17 @@ void FrameDataMonitor() {
     while (!g_isShuttingDown) {
         auto frameStartTime = clock::now();
         
-        // --- NEW FEATURE MANAGEMENT LOGIC ---
+        // Update window state at the beginning of each frame
+        UpdateWindowActiveState();
+        
+        // Feature management logic
         bool shouldBeActive = ShouldFeaturesBeActive();
-
         if (shouldBeActive && !g_featuresEnabled.load()) {
             EnableFeatures();
         } else if (!shouldBeActive && g_featuresEnabled.load()) {
             DisableFeatures();
         }
-        // --- END NEW LOGIC ---
-
+        
         // Only run the main monitoring logic if features are enabled
         if (g_featuresEnabled.load()) {
             UpdateTriggerOverlay();

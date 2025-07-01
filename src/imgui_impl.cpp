@@ -16,6 +16,7 @@ static WNDPROC g_originalWndProc = nullptr;
 
 // Custom WndProc to handle ImGui input
 LRESULT CALLBACK ImGuiWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    // Only process input for ImGui when it's visible
     if (g_imguiVisible && ImGui_ImplWin32_WndProcHandler(hWnd, msg, wParam, lParam))
         return true;
     
