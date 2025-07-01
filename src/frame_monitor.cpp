@@ -158,21 +158,17 @@ void FrameDataMonitor() {
         // Update window state at the beginning of each frame
         UpdateWindowActiveState();
         
+        // Update stats display regardless of whether other features are enabled
+        UpdateStatsDisplay();
+        
         // Feature management logic
         bool shouldBeActive = ShouldFeaturesBeActive();
-        bool transitionToActive = shouldBeActive && !g_featuresEnabled.load();
-        bool transitionToInactive = !shouldBeActive && g_featuresEnabled.load();
-
-        // Handle transitioning to active state
-        if (transitionToActive) {
+        if (shouldBeActive && !g_featuresEnabled.load()) {
             EnableFeatures();
-            // ReinitializeOverlays is now called inside EnableFeatures
-        } 
-        // Handle transitioning to inactive state
-        else if (transitionToInactive) {
+        } else if (!shouldBeActive && g_featuresEnabled.load()) {
             DisableFeatures();
         }
-
+        
         // Track mode transitions and character initialization
         static bool wasInitialized = false;
         bool isInitialized = AreCharactersInitialized();
@@ -202,7 +198,7 @@ void FrameDataMonitor() {
         // Only run the main monitoring logic if features are enabled
         if (g_featuresEnabled.load()) {
             UpdateTriggerOverlay();
-
+            UpdateStatsDisplay();
             uintptr_t base = GetEFZBase();
             if (!base) {
                 continue;
@@ -395,4 +391,114 @@ bool AreCharactersInitialized() {
     }
     
     return false;
+}
+
+void UpdateStatsDisplay() {
+    // Return early if stats display is disabled or DirectDraw hook isn't initialized
+    if (!g_statsDisplayEnabled.load() || !DirectDrawHook::isHooked) {
+        // Clear existing messages if display is disabled
+        if (g_statsP1ValuesId != -1) {
+            DirectDrawHook::RemovePermanentMessage(g_statsP1ValuesId);
+            DirectDrawHook::RemovePermanentMessage(g_statsP2ValuesId);
+            DirectDrawHook::RemovePermanentMessage(g_statsPositionId);
+            DirectDrawHook::RemovePermanentMessage(g_statsMoveIdId);
+            g_statsP1ValuesId = -1;
+            g_statsP2ValuesId = -1;
+            g_statsPositionId = -1;
+            g_statsMoveIdId = -1;
+        }
+        return;
+    }
+
+    // Read current game values
+    uintptr_t base = GetEFZBase();
+    if (!base) return;
+
+    // Cache memory addresses for efficiency
+    static uintptr_t p1HpAddr = 0, p1MeterAddr = 0, p1RfAddr = 0;
+    static uintptr_t p2HpAddr = 0, p2MeterAddr = 0, p2RfAddr = 0;
+    static uintptr_t p1XAddr = 0, p1YAddr = 0, p2XAddr = 0, p2YAddr = 0;
+    static uintptr_t p1MoveIdAddr = 0, p2MoveIdAddr = 0;
+    static int cacheCounter = 0;
+
+    // Refresh cache occasionally
+    if (cacheCounter++ >= 60 || !p1HpAddr) {
+        p1HpAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P1, HP_OFFSET);
+        p1MeterAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P1, METER_OFFSET);
+        p1RfAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P1, RF_OFFSET);
+        p1XAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P1, XPOS_OFFSET);
+        p1YAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P1, YPOS_OFFSET);
+        p1MoveIdAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P1, MOVE_ID_OFFSET);
+
+        p2HpAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P2, HP_OFFSET);
+        p2MeterAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P2, METER_OFFSET);
+        p2RfAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P2, RF_OFFSET);
+        p2XAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P2, XPOS_OFFSET);
+        p2YAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P2, YPOS_OFFSET);
+        p2MoveIdAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P2, MOVE_ID_OFFSET);
+        
+        cacheCounter = 0;
+    }
+
+    // Read values
+    int p1Hp = 0, p1Meter = 0;
+    double p1Rf = 0;
+    if (p1HpAddr) SafeReadMemory(p1HpAddr, &p1Hp, sizeof(int));
+    if (p1MeterAddr) SafeReadMemory(p1MeterAddr, &p1Meter, sizeof(int));
+    if (p1RfAddr) SafeReadMemory(p1RfAddr, &p1Rf, sizeof(double));
+
+    int p2Hp = 0, p2Meter = 0;
+    double p2Rf = 0;
+    if (p2HpAddr) SafeReadMemory(p2HpAddr, &p2Hp, sizeof(int));
+    if (p2MeterAddr) SafeReadMemory(p2MeterAddr, &p2Meter, sizeof(int));
+    if (p2RfAddr) SafeReadMemory(p2RfAddr, &p2Rf, sizeof(double));
+
+    double p1X = 0, p1Y = 0, p2X = 0, p2Y = 0;
+    if (p1XAddr) SafeReadMemory(p1XAddr, &p1X, sizeof(double));
+    if (p1YAddr) SafeReadMemory(p1YAddr, &p1Y, sizeof(double));
+    if (p2XAddr) SafeReadMemory(p2XAddr, &p2X, sizeof(double));
+    if (p2YAddr) SafeReadMemory(p2YAddr, &p2Y, sizeof(double));
+
+    short p1MoveId = 0, p2MoveId = 0;
+    if (p1MoveIdAddr) SafeReadMemory(p1MoveIdAddr, &p1MoveId, sizeof(short));
+    if (p2MoveIdAddr) SafeReadMemory(p2MoveIdAddr, &p2MoveId, sizeof(short));
+
+    // Format the strings
+    std::stringstream p1Values, p2Values, positions, moveIds;
+    
+    // Player 1 values (HP, Meter, RF)
+    p1Values << "P1:  HP: " << p1Hp << "  Meter: " << p1Meter << "  RF: " << std::fixed << std::setprecision(1) << p1Rf;
+    
+    // Player 2 values (HP, Meter, RF)
+    p2Values << "P2:  HP: " << p2Hp << "  Meter: " << p2Meter << "  RF: " << std::fixed << std::setprecision(1) << p2Rf;
+    
+    // Player positions
+    positions << "Position:  P1 [X: " << std::fixed << std::setprecision(2) << p1X 
+              << ", Y: " << std::fixed << std::setprecision(2) << p1Y 
+              << "]  P2 [X: " << std::fixed << std::setprecision(2) << p2X 
+              << ", Y: " << std::fixed << std::setprecision(2) << p2Y << "]";
+    
+    // Move IDs
+    moveIds << "MoveID:  P1: " << p1MoveId << "  P2: " << p2MoveId;
+
+    // Set or update the display
+    const int startX = 20;
+    const int startY = 30;
+    const int lineHeight = 20;
+    COLORREF textColor = RGB(255, 255, 0); // Yellow
+
+    // Create or update the permanent messages
+    if (g_statsP1ValuesId == -1) {
+        g_statsP1ValuesId = DirectDrawHook::AddPermanentMessage(p1Values.str(), textColor, startX, startY);
+        g_statsP2ValuesId = DirectDrawHook::AddPermanentMessage(p2Values.str(), textColor, startX, startY + lineHeight);
+        g_statsPositionId = DirectDrawHook::AddPermanentMessage(positions.str(), textColor, startX, startY + lineHeight * 2);
+        g_statsMoveIdId = DirectDrawHook::AddPermanentMessage(moveIds.str(), textColor, startX, startY + lineHeight * 3);
+        
+        LogOut("[STATS] Created stats display messages", true);
+    } else {
+        DirectDrawHook::UpdatePermanentMessage(g_statsP1ValuesId, p1Values.str(), textColor);
+        DirectDrawHook::UpdatePermanentMessage(g_statsP2ValuesId, p2Values.str(), textColor);
+        DirectDrawHook::UpdatePermanentMessage(g_statsPositionId, positions.str(), textColor);
+        DirectDrawHook::UpdatePermanentMessage(g_statsMoveIdId, moveIds.str(), textColor);
+    }
 }

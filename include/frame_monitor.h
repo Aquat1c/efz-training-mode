@@ -60,3 +60,4 @@ void ReinitializeOverlays();
 // Add with other function declarations
 bool AreCharactersInitialized();
 bool IsValidGameMode(GameMode mode);
+void UpdateStatsDisplay();
