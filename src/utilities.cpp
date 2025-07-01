@@ -50,6 +50,9 @@ void EnableFeatures() {
         GameMode currentMode = GetCurrentGameMode();
         if (IsValidGameMode(currentMode)) {
             ReinitializeOverlays();
+            if (g_statsDisplayEnabled.load()) {
+            UpdateStatsDisplay();
+        }
         } else {
             LogOut("[SYSTEM] Not initializing overlays - invalid game mode: " + 
                    GetGameModeName(currentMode), true);
@@ -69,25 +72,14 @@ void DisableFeatures() {
     // Remove any active patches
     RemoveAirtechPatches();
 
-    // Clear all visual overlays EXCEPT stats display if it's enabled
-    if (!g_statsDisplayEnabled.load()) {
-        DirectDrawHook::ClearAllMessages();
-        
-        // Reset stats display IDs only if we're clearing them
-        g_statsP1ValuesId = -1;
-        g_statsP2ValuesId = -1;
-        g_statsPositionId = -1;
-        g_statsMoveIdId = -1;
-    } else {
-        // Only clear non-stats overlays
-        if (g_AirtechStatusId != -1) DirectDrawHook::RemovePermanentMessage(g_AirtechStatusId);
-        if (g_JumpStatusId != -1) DirectDrawHook::RemovePermanentMessage(g_JumpStatusId);
-        if (g_FrameAdvantageId != -1) DirectDrawHook::RemovePermanentMessage(g_FrameAdvantageId);
-        if (g_TriggerAfterBlockId != -1) DirectDrawHook::RemovePermanentMessage(g_TriggerAfterBlockId);
-        if (g_TriggerOnWakeupId != -1) DirectDrawHook::RemovePermanentMessage(g_TriggerOnWakeupId);
-        if (g_TriggerAfterHitstunId != -1) DirectDrawHook::RemovePermanentMessage(g_TriggerAfterHitstunId);
-        if (g_TriggerAfterAirtechId != -1) DirectDrawHook::RemovePermanentMessage(g_TriggerAfterAirtechId);
-    }
+    // Clear ALL visual overlays
+    DirectDrawHook::ClearAllMessages();
+    
+    // Reset stats display IDs since they've been cleared
+    g_statsP1ValuesId = -1;
+    g_statsP2ValuesId = -1;
+    g_statsPositionId = -1;
+    g_statsMoveIdId = -1;
     
     // Close the menu if it's open
     if (ImGuiImpl::IsVisible()) {
