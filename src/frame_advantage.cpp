@@ -87,11 +87,13 @@ double GetCurrentVisualFrame() {
     return visualFrameWhole + subframeDecimal;
 }
 
+// Fix the FormatFrameAdvantage function to handle signs properly
 std::string FormatFrameAdvantage(int advantageInternal) {
     // Convert internal frames to visual frames with subframe precision
     int visualFrames = advantageInternal / 3;
     int subframes = std::abs(advantageInternal % 3);
 
+    // Only add the sign for positive values - this prevents double + signs later
     std::string sign = (advantageInternal >= 0) ? "+" : "";
     std::string subframeStr = "";
     
@@ -199,21 +201,31 @@ void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, shor
         if (p2_last_defender_free_frame != -1) {
             int gapFrames = currentInternalFrame - p2_last_defender_free_frame;
             
-            // Only show gaps that are between 1-60 frames (0.3 sec - 1 sec)
+            // Only consider gaps that are reasonably small
             if (gapFrames > 0 && gapFrames <= 60) {
-                std::string gapText = "Gap: " + FormatFrameAdvantage(gapFrames);
+                // Format gap WITHOUT a plus sign
+                int visualGapFrames = gapFrames / 3;
+                int subframes = gapFrames % 3;
                 
-                LogOut("[FRAME_ADV] Detected gap before hit: " + gapText, true);
+                std::string gapText = "Gap: " + std::to_string(visualGapFrames);
                 
-                // Display the gap with higher priority than previous frame advantage
+                // Add subframe precision if needed
+                if (subframes == 1) {
+                    gapText += ".33";
+                } else if (subframes == 2) {
+                    gapText += ".66";
+                }
+                
                 if (g_FrameAdvantageId != -1) {
                     DirectDrawHook::UpdatePermanentMessage(g_FrameAdvantageId, gapText, RGB(255, 255, 0));
                 } else {
                     g_FrameAdvantageId = DirectDrawHook::AddPermanentMessage(gapText, RGB(255, 255, 0), 305, 430);
                 }
                 
-                // Show for ~30 frames (0.5 sec)
-                frameAdvState.displayUntilInternalFrame = currentInternalFrame + 96;
+                // Display for ~1/3 second (60 internal frames)
+                frameAdvState.displayUntilInternalFrame = currentInternalFrame + 60;
+                
+                LogOut("[FRAME_ADV] Gap detected: " + gapText, true);
             }
         }
         
@@ -269,21 +281,31 @@ void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, shor
         if (p1_last_defender_free_frame != -1) {
             int gapFrames = currentInternalFrame - p1_last_defender_free_frame;
             
-            // Only show gaps that are between 1-60 frames (0.3 sec - 1 sec)
+            // Only consider gaps that are reasonably small
             if (gapFrames > 0 && gapFrames <= 60) {
-                std::string gapText = "Gap: " + FormatFrameAdvantage(gapFrames);
+                // Format gap WITHOUT a plus sign
+                int visualGapFrames = gapFrames / 3;
+                int subframes = gapFrames % 3;
                 
-                LogOut("[FRAME_ADV] Detected gap before hit: " + gapText, true);
+                std::string gapText = "Gap: " + std::to_string(visualGapFrames);
                 
-                // Display the gap with higher priority than previous frame advantage
+                // Add subframe precision if needed
+                if (subframes == 1) {
+                    gapText += ".33";
+                } else if (subframes == 2) {
+                    gapText += ".66";
+                }
+                
                 if (g_FrameAdvantageId != -1) {
                     DirectDrawHook::UpdatePermanentMessage(g_FrameAdvantageId, gapText, RGB(255, 255, 0));
                 } else {
                     g_FrameAdvantageId = DirectDrawHook::AddPermanentMessage(gapText, RGB(255, 255, 0), 305, 430);
                 }
                 
-                // Show for ~30 frames (0.5 sec)
-                frameAdvState.displayUntilInternalFrame = currentInternalFrame + 96;
+                // Display for ~1/3 second (60 internal frames)
+                frameAdvState.displayUntilInternalFrame = currentInternalFrame + 60;
+                
+                LogOut("[FRAME_ADV] Gap detected: " + gapText, true);
             }
         }
         
@@ -382,10 +404,8 @@ void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, shor
         frameAdvState.p1AdvantageCalculated = true;
         
         // Format the advantage display with proper sign and subframe precision
+        // FormatFrameAdvantage already includes the "+" for positive values
         std::string frameAdvText = FormatFrameAdvantage(frameAdvantage);
-        if (frameAdvantage >= 0) {
-            frameAdvText = "+" + frameAdvText;
-        }
         
         // Display the calculated advantage
         if (g_FrameAdvantageId != -1) {
@@ -416,10 +436,8 @@ void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, shor
         frameAdvState.p2AdvantageCalculated = true;
         
         // Format the advantage display with proper sign and subframe precision
+        // FormatFrameAdvantage already includes the "+" for positive values
         std::string frameAdvText = FormatFrameAdvantage(frameAdvantage);
-        if (frameAdvantage >= 0) {
-            frameAdvText = "+" + frameAdvText;
-        }
         
         // Display the calculated advantage
         if (g_FrameAdvantageId != -1) {
