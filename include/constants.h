@@ -70,7 +70,7 @@
 #define FORWARD_JUMP_ID 5
 #define BACKWARD_JUMP_ID 6
 #define FALLING_ID 9
-#define LANDING_ID 13  // Already defined, no need to add again
+#define LANDING_ID 13 
 
 // Special Stun States
 #define FIRE_STATE 81
