@@ -22,8 +22,15 @@
 
 MonitorState state = Idle;
 
-// REVISED: This function now ONLY determines if features should be active.
-// It no longer performs resets itself. That is handled by DisableFeatures.
+static GameMode s_previousGameMode = GameMode::Unknown;
+static bool s_wasActive = false;
+
+
+bool IsValidGameMode(GameMode mode) {
+    const Config::Settings& cfg = Config::GetSettings();
+    return !cfg.restrictToPracticeMode || (mode == GameMode::Practice);
+}
+
 bool ShouldFeaturesBeActive() {
     // First check if EFZ window is active
     UpdateWindowActiveState();
@@ -153,11 +160,44 @@ void FrameDataMonitor() {
         
         // Feature management logic
         bool shouldBeActive = ShouldFeaturesBeActive();
-        if (shouldBeActive && !g_featuresEnabled.load()) {
+        bool transitionToActive = shouldBeActive && !g_featuresEnabled.load();
+        bool transitionToInactive = !shouldBeActive && g_featuresEnabled.load();
+
+        // Handle transitioning to active state
+        if (transitionToActive) {
             EnableFeatures();
-        } else if (!shouldBeActive && g_featuresEnabled.load()) {
+            // ReinitializeOverlays is now called inside EnableFeatures
+        } 
+        // Handle transitioning to inactive state
+        else if (transitionToInactive) {
             DisableFeatures();
         }
+
+        // Track mode transitions and character initialization
+        static bool wasInitialized = false;
+        bool isInitialized = AreCharactersInitialized();
+        GameMode currentMode = GetCurrentGameMode();
+        bool isValidGameMode = !Config::GetSettings().restrictToPracticeMode || (currentMode == GameMode::Practice);
+
+        // Detect when characters become initialized in a valid game mode
+        if (g_featuresEnabled.load() && isValidGameMode && isInitialized && !wasInitialized) {
+            LogOut("[FRAME MONITOR] Characters initialized in valid game mode, reinitializing overlays", true);
+            ReinitializeOverlays();
+        }
+
+        // Track game mode transitions
+        if (g_featuresEnabled.load() && currentMode != s_previousGameMode) {
+            // Coming from another game mode to valid mode when characters are initialized
+            if (isValidGameMode && isInitialized && 
+                (s_previousGameMode != GameMode::Unknown && !IsValidGameMode(s_previousGameMode))) {
+                LogOut("[FRAME MONITOR] Detected return to valid game mode with initialized characters, reinitializing overlays", true);
+                ReinitializeOverlays();
+            }
+            s_previousGameMode = currentMode;
+        }
+
+        // Update initialization tracking
+        wasInitialized = isInitialized;
         
         // Only run the main monitoring logic if features are enabled
         if (g_featuresEnabled.load()) {
@@ -285,4 +325,74 @@ void FrameDataMonitor() {
     }
     
     LogOut("[FRAME MONITOR] Shutting down frame monitor thread", true);
+}
+
+void ReinitializeOverlays() {
+    // Clear existing trigger messages
+    if (g_TriggerAfterBlockId != -1) { 
+        DirectDrawHook::RemovePermanentMessage(g_TriggerAfterBlockId); 
+        g_TriggerAfterBlockId = -1; 
+    }
+    if (g_TriggerOnWakeupId != -1) { 
+        DirectDrawHook::RemovePermanentMessage(g_TriggerOnWakeupId); 
+        g_TriggerOnWakeupId = -1; 
+    }
+    if (g_TriggerAfterHitstunId != -1) { 
+        DirectDrawHook::RemovePermanentMessage(g_TriggerAfterHitstunId); 
+        g_TriggerAfterHitstunId = -1; 
+    }
+    if (g_TriggerAfterAirtechId != -1) { 
+        DirectDrawHook::RemovePermanentMessage(g_TriggerAfterAirtechId); 
+        g_TriggerAfterAirtechId = -1; 
+    }
+    
+    // Reset frame advantage display
+    if (g_FrameAdvantageId != -1) {
+        DirectDrawHook::RemovePermanentMessage(g_FrameAdvantageId);
+        g_FrameAdvantageId = -1;
+    }
+    
+    // Reset auto-tech and auto-jump status displays
+    if (g_AirtechStatusId != -1) {
+        DirectDrawHook::RemovePermanentMessage(g_AirtechStatusId);
+        g_AirtechStatusId = -1;
+    }
+    
+    if (g_JumpStatusId != -1) {
+        DirectDrawHook::RemovePermanentMessage(g_JumpStatusId);
+        g_JumpStatusId = -1;
+    }
+    
+    // Force an immediate update of the trigger overlay
+    UpdateTriggerOverlay();
+    
+    LogOut("[FRAME MONITOR] Reinitialized overlay displays", true);
+}
+
+bool AreCharactersInitialized() {
+    uintptr_t base = GetEFZBase();
+    if (!base) {
+        return false;
+    }
+
+    // Check if both P1 and P2 character pointers exist
+    uintptr_t p1StructAddr = 0;
+    uintptr_t p2StructAddr = 0;
+    SafeReadMemory(base + EFZ_BASE_OFFSET_P1, &p1StructAddr, sizeof(uintptr_t));
+    SafeReadMemory(base + EFZ_BASE_OFFSET_P2, &p2StructAddr, sizeof(uintptr_t));
+
+    // Check if both pointers are valid and at least one has a non-zero HP value
+    if (p1StructAddr && p2StructAddr) {
+        int hp1 = 0, hp2 = 0;
+        uintptr_t hp1Addr = p1StructAddr + HP_OFFSET;
+        uintptr_t hp2Addr = p2StructAddr + HP_OFFSET;
+
+        SafeReadMemory(hp1Addr, &hp1, sizeof(int));
+        SafeReadMemory(hp2Addr, &hp2, sizeof(int));
+
+        // Consider initialized if both pointers exist and at least one has HP
+        return (hp1 > 0 || hp2 > 0);
+    }
+    
+    return false;
 }

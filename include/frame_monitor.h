@@ -55,3 +55,8 @@ void ResetActionFlags();
 void ClearDelayStatesIfNonActionable();
 void UpdateTriggerOverlay();
 bool CheckAndHandleInvalidGameState(GameMode currentMode); // Changed signature
+void ReinitializeOverlays();
+
+// Add with other function declarations
+bool AreCharactersInitialized();
+bool IsValidGameMode(GameMode mode);
