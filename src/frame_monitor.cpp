@@ -114,9 +114,12 @@ void UpdateTriggerOverlay() {
 
             COLORREF color = isActive ? RGB(50, 255, 50) : RGB(255, 215, 0);
 
+            // Position to the right side with proper margins
+            // 640 is standard game width, leave 10px margin
+            const int triggerX = 540; // Fixed position at the right side of the screen
+
             if (msgId == -1) {
-                // Moved to the right side of the screen
-                msgId = DirectDrawHook::AddPermanentMessage(text, color, 510, yPos);
+                msgId = DirectDrawHook::AddPermanentMessage(text, color, triggerX, yPos);
             } else {
                 DirectDrawHook::UpdatePermanentMessage(msgId, text, color);
             }
@@ -519,6 +522,7 @@ void UpdateStatsDisplay() {
 
     // Create or update the permanent messages
     if (g_statsP1ValuesId == -1) {
+        // Leave a 20px margin on both sides for better visibility
         g_statsP1ValuesId = DirectDrawHook::AddPermanentMessage(p1Values.str(), textColor, startX, startY);
         g_statsP2ValuesId = DirectDrawHook::AddPermanentMessage(p2Values.str(), textColor, startX, startY + lineHeight);
         g_statsPositionId = DirectDrawHook::AddPermanentMessage(positions.str(), textColor, startX, startY + lineHeight * 2);

@@ -143,13 +143,38 @@ void DirectDrawHook::RenderText(HDC hdc, const std::string& text, int x, int y, 
     
     HFONT oldFont = (HFONT)SelectObject(hdc, font);
     
+    // Get screen width to avoid going off-screen
+    // Using 640 as default game window width, and allowing 20px margin
+    const int screenWidth = 640;
+    const int MAX_TEXT_WIDTH = screenWidth - x - 20;
+    
+    // Check if this is a trigger overlay by position (right-aligned text)
+    bool isTriggerOverlay = (x >= 510 && y >= 140 && y <= 200);
+    
+    // For trigger overlay, adjust X position instead of truncating
+    int adjustedX = x;
+    std::string displayText = text;
+    
+    // Measure text size
+    SIZE textSize;
+    GetTextExtentPoint32A(hdc, text.c_str(), text.length(), &textSize);
+    
+    if (isTriggerOverlay && textSize.cx > MAX_TEXT_WIDTH) {
+        // Calculate how far left we need to move the text
+        // to ensure the last character is at the right edge
+        adjustedX = screenWidth - 20 - textSize.cx;
+    } else if (!isTriggerOverlay && textSize.cx > MAX_TEXT_WIDTH) {
+        // For regular overlay, truncate text from the right
+        displayText = FitTextToWidth(text, MAX_TEXT_WIDTH, hdc);
+    }
+    
     // Draw drop shadow first (for better visibility)
     SetTextColor(hdc, RGB(0, 0, 0));
-    TextOutA(hdc, x + 2, y + 2, text.c_str(), text.length());
+    TextOutA(hdc, adjustedX + 2, y + 2, displayText.c_str(), displayText.length());
     
     // Draw the main text
     SetTextColor(hdc, color);
-    TextOutA(hdc, x, y, text.c_str(), text.length());
+    TextOutA(hdc, adjustedX, y, displayText.c_str(), displayText.length());
     
     // Clean up
     SelectObject(hdc, oldFont);
@@ -191,16 +216,40 @@ void DirectDrawHook::RenderSimpleText(IDirectDrawSurface7* surface, const std::s
         
         HFONT oldFont = (HFONT)SelectObject(hdc, font);
         
+        // Get screen width to avoid going off-screen (640 is standard game width)
+        const int screenWidth = 640;
+        const int MAX_TEXT_WIDTH = screenWidth - x - 20;
+        
+        // Check if this is a trigger overlay by position (right-aligned text)
+        bool isTriggerOverlay = (x >= 510 && y >= 140 && y <= 200);
+        
+        // For trigger overlay, adjust X position instead of truncating
+        int adjustedX = x;
+        std::string displayText = text;
+        
+        // Measure text size
+        SIZE textSize;
+        GetTextExtentPoint32A(hdc, text.c_str(), text.length(), &textSize);
+        
+        if (isTriggerOverlay && textSize.cx > MAX_TEXT_WIDTH) {
+            // Calculate how far left we need to move the text
+            // to ensure the last character is at the right edge
+            adjustedX = screenWidth - 20 - textSize.cx;
+        } else if (!isTriggerOverlay && textSize.cx > MAX_TEXT_WIDTH) {
+            // For regular overlay, truncate text from the right
+            displayText = FitTextToWidth(text, MAX_TEXT_WIDTH, hdc);
+        }
+        
         // Draw black outline for better visibility (thinner outline)
         SetTextColor(hdc, RGB(0, 0, 0));
-        TextOutA(hdc, x + 1, y, text.c_str(), text.length());
-        TextOutA(hdc, x - 1, y, text.c_str(), text.length());
-        TextOutA(hdc, x, y + 1, text.c_str(), text.length());
-        TextOutA(hdc, x, y - 1, text.c_str(), text.length());
+        TextOutA(hdc, adjustedX + 1, y, displayText.c_str(), displayText.length());
+        TextOutA(hdc, adjustedX - 1, y, displayText.c_str(), displayText.length());
+        TextOutA(hdc, adjustedX, y + 1, displayText.c_str(), displayText.length());
+        TextOutA(hdc, adjustedX, y - 1, displayText.c_str(), displayText.length());
         
         // Draw main text
         SetTextColor(hdc, color);
-        TextOutA(hdc, x, y, text.c_str(), text.length());
+        TextOutA(hdc, adjustedX, y, displayText.c_str(), displayText.length());
         
         // Clean up
         SelectObject(hdc, oldFont);
@@ -216,25 +265,53 @@ void DirectDrawHook::RenderSimpleText(IDirectDrawSurface7* surface, const std::s
 // NEW: Implement the D3D9 overlay renderer
 void DirectDrawHook::RenderD3D9Overlays(LPDIRECT3DDEVICE9 pDevice) {
     auto drawList = ImGui::GetBackgroundDrawList();
-    if (!drawList) return;
+    if (!drawList)
+        return;
 
     std::lock_guard<std::mutex> lock(messagesMutex);
 
     // Helper lambda to render a message with a background
     auto renderMessage = [&](const OverlayMessage& msg) {
-        ImVec2 textPos((float)msg.xPos, (float)msg.yPos);
+        // Check if this is a trigger overlay by position
+        bool isTriggerOverlay = (msg.xPos >= 510 && msg.yPos >= 140 && msg.yPos <= 200);
+        
+        // Calculate starting position
+        ImVec2 textPos(msg.xPos, msg.yPos);
         ImVec2 textSize = ImGui::CalcTextSize(msg.text.c_str());
-
-        // Add a small padding for the background
-        ImVec2 bgMin(textPos.x - 4, textPos.y - 2);
-        ImVec2 bgMax(textPos.x + textSize.x + 4, textPos.y + textSize.y + 2);
-
-        // Draw the semi-transparent background
-        drawList->AddRectFilled(bgMin, bgMax, IM_COL32(0, 0, 0, 128));
-
-        // Draw the text (FIX: Convert COLORREF to ImU32 for correct color and alpha)
-        ImU32 textColor = IM_COL32(GetRValue(msg.color), GetGValue(msg.color), GetBValue(msg.color), 255);
-        drawList->AddText(textPos, textColor, msg.text.c_str());
+        
+        if (isTriggerOverlay) {
+            // For trigger overlays, adjust X position so text ends at screen edge
+            const float screenWidth = 640.0f;  // Standard EFZ window width
+            const float margin = 20.0f;        // Margin from screen edge
+            const float targetX = screenWidth - margin;  // Where we want text to end
+            
+            // If text would go off-screen, adjust position
+            if (textPos.x + textSize.x > targetX) {
+                textPos.x = targetX - textSize.x;
+            }
+            
+            // Draw background with corrected position and width
+            drawList->AddRectFilled(
+                ImVec2(textPos.x - 4, textPos.y - 2),
+                ImVec2(textPos.x + textSize.x + 4, textPos.y + textSize.y + 2),
+                IM_COL32(0, 0, 0, 180)
+            );
+        } else {
+            // For normal messages, just draw background directly
+            drawList->AddRectFilled(
+                ImVec2(textPos.x - 4, textPos.y - 2),
+                ImVec2(textPos.x + textSize.x + 4, textPos.y + textSize.y + 2),
+                IM_COL32(0, 0, 0, 180)
+            );
+        }
+        
+        // Extract color components
+        int r = (msg.color & 0xFF);
+        int g = ((msg.color >> 8) & 0xFF);
+        int b = ((msg.color >> 16) & 0xFF);
+        
+        // Draw text
+        drawList->AddText(ImVec2((float)textPos.x, (float)textPos.y), IM_COL32(r, g, b, 255), msg.text.c_str());
     };
 
     // Render permanent messages
@@ -244,14 +321,11 @@ void DirectDrawHook::RenderD3D9Overlays(LPDIRECT3DDEVICE9 pDevice) {
 
     // Render temporary messages
     auto now = std::chrono::steady_clock::now();
-    messages.erase(std::remove_if(messages.begin(), messages.end(),
-        [&](const OverlayMessage& msg) {
-            if (now > msg.expireTime) {
-                return true;
-            }
+    for (const auto& msg : messages) {
+        if (msg.expireTime > now) {
             renderMessage(msg);
-            return false;
-        }), messages.end());
+        }
+    }
 }
 
 // Render all current messages on the surface
@@ -630,33 +704,129 @@ void DirectDrawHook::SetupWindowProcedures() {
     LogOut("[OVERLAY] SetupWindowProcedures called (currently a stub).", detailedLogging.load());
 }
 
-// REMOVE the following obsolete function implementations
-/*
-// Fallback implementation using a transparent window
-bool DirectDrawHook::InitializeFallbackOverlay() {
-    LogOut("[OVERLAY] InitializeFallbackOverlay is obsolete and has been disabled.", true);
-    return false;
+
+
+// NEW: Text fitting utility to prevent text from going off-screen
+std::string DirectDrawHook::FitTextToWidth(const std::string& text, int maxWidth, HDC hdc) {
+    if (text.empty() || maxWidth <= 0) return text;
+    
+    // Create a temporary DC if none provided
+    HDC tempDC = hdc;
+    bool needToReleaseDC = false;
+    
+    if (!tempDC) {
+        tempDC = CreateCompatibleDC(NULL);
+        needToReleaseDC = true;
+    }
+    
+    // Create and select font to measure text accurately
+    HFONT font = CreateFont(
+        20, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
+        DEFAULT_CHARSET, OUT_OUTLINE_PRECIS, CLIP_DEFAULT_PRECIS,
+        ANTIALIASED_QUALITY, DEFAULT_PITCH | FF_SWISS, "Arial"
+    );
+    HFONT oldFont = (HFONT)SelectObject(tempDC, font);
+    
+    // Measure text
+    SIZE textSize;
+    GetTextExtentPoint32A(tempDC, text.c_str(), text.length(), &textSize);
+    
+    std::string result = text;
+    
+    // If text is too long, truncate and add ellipsis
+    if (textSize.cx > maxWidth) {
+        // Start with whole string and binary search to find fitting length
+        int left = 0;
+        int right = text.length();
+        std::string ellipsis = "...";
+        SIZE ellipsisSize;
+        GetTextExtentPoint32A(tempDC, ellipsis.c_str(), ellipsis.length(), &ellipsisSize);
+        
+        while (left < right) {
+            int mid = (left + right + 1) / 2;
+            std::string testStr = text.substr(0, mid);
+            SIZE testSize;
+            GetTextExtentPoint32A(tempDC, testStr.c_str(), testStr.length(), &testSize);
+            
+            if (testSize.cx + ellipsisSize.cx <= maxWidth) {
+                left = mid;
+            } else {
+                right = mid - 1;
+            }
+        }
+        
+        // Ensure we don't cut in the middle of a word if possible
+        int cutPoint = left;
+        if (cutPoint > 10) {  // Only if we have enough text to work with
+            while (cutPoint > 0 && text[cutPoint] != ' ' && text[cutPoint] != ',') {
+                cutPoint--;
+            }
+            if (text[cutPoint] == ' ' || text[cutPoint] == ',') {
+                cutPoint++; // Move past the space/comma
+            } else {
+                cutPoint = left; // No good word break found, revert to original
+            }
+        }
+        
+        result = text.substr(0, cutPoint) + ellipsis;
+    }
+    
+    // Clean up
+    SelectObject(tempDC, oldFont);
+    DeleteObject(font);
+    
+    if (needToReleaseDC) {
+        DeleteDC(tempDC);
+    }
+    
+    return result;
 }
 
-// Add this simple fallback overlay method:
-bool DirectDrawHook::InitializeSimpleOverlay() {
-    LogOut("[OVERLAY] InitializeSimpleOverlay is obsolete and has been disabled.", true);
-    return false;
+// NEW: Text fitting utility to fit text within a width by truncating from the left side
+std::string DirectDrawHook::FitTextToWidthFromLeft(const std::string& text, int maxWidth, HDC hdc) {
+    if (text.empty() || maxWidth <= 0) return text;
+    
+    // Create a temporary DC if none provided
+    HDC tempDC = hdc;
+    bool needToReleaseDC = false;
+    
+    if (!tempDC) {
+        tempDC = CreateCompatibleDC(NULL);
+        needToReleaseDC = true;
+    }
+    
+    // Create and select font to measure text accurately
+    HFONT font = CreateFont(
+        20, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
+        DEFAULT_CHARSET, OUT_OUTLINE_PRECIS, CLIP_DEFAULT_PRECIS,
+        ANTIALIASED_QUALITY, DEFAULT_PITCH | FF_SWISS, "Arial"
+    );
+    HFONT oldFont = (HFONT)SelectObject(tempDC, font);
+    
+    // Measure text
+    SIZE textSize;
+    GetTextExtentPoint32A(tempDC, text.c_str(), text.length(), &textSize);
+    
+    std::string result = text;
+    
+    // For right-aligned text, we don't truncate but calculate the adjusted X position
+    // so that the last character is always at the right edge (maxWidth)
+    if (textSize.cx > maxWidth) {
+        // This function doesn't actually modify the text, it just returns the original
+        // The caller will need to adjust the X position when drawing
+        
+        // We return the original text, as we'll adjust position instead
+        result = text;
+    }
+    
+    // Clean up
+    SelectObject(tempDC, oldFont);
+    DeleteObject(font);
+    
+    if (needToReleaseDC) {
+        DeleteDC(tempDC);
+    }
+    
+    return result;
 }
-
-bool DirectDrawHook::InitializeBruteForceOverlay() {
-    LogOut("[OVERLAY] InitializeBruteForceOverlay is obsolete and has been disabled.", true);
-    return false;
-}
-
-// Add this test function
-void DirectDrawHook::TestOverlay() {
-    LogOut("[OVERLAY] TestOverlay is obsolete and has been disabled.", true);
-}
-
-// Update the TestHelloWorld function:
-void DirectDrawHook::TestHelloWorld() {
-    LogOut("[OVERLAY] TestHelloWorld is obsolete and has been disabled.", true);
-}
-*/
 

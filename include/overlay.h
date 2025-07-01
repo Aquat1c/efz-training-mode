@@ -61,6 +61,11 @@ private:
     static void RenderText(HDC hdc, const std::string& text, int x, int y, COLORREF color);
     static void RenderSimpleText(IDirectDrawSurface7* surface, const std::string& text, int x, int y, COLORREF color);
     static void RenderAllMessages(IDirectDrawSurface7* surface);
+    
+    // NEW: Text fitting utility
+    static std::string FitTextToWidth(const std::string& text, int maxWidth, HDC hdc = NULL);
+    // NEW: Text fitting utility from the left side (for right-aligned text)
+    static std::string FitTextToWidthFromLeft(const std::string& text, int maxWidth, HDC hdc = NULL);
 
 public:
     // Initialize the hook
