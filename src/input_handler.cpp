@@ -163,7 +163,7 @@ std::atomic<bool> keyMonitorRunning(true);
 
 void MonitorKeys() {
     LogOut("[KEYBINDS] Key monitoring thread started", true);
-
+    
     // Get config settings for hotkeys
     const Config::Settings& cfg = Config::GetSettings();
     
@@ -189,140 +189,147 @@ void MonitorKeys() {
     const double p1StartX = 240.0, p2StartX = 400.0, startY = 0.0;
 
     while (keyMonitorRunning) {
-        bool keyHandled = false;
+        // Update window active state at the beginning of each loop
+        UpdateWindowActiveState();
+        
+        // Only process hotkeys if EFZ window is active AND we're not currently in a GUI
+        if (g_efzWindowActive.load() && !g_guiActive.load()) {
+            bool keyHandled = false;
 
-        // Check if the config menu should be opened
-        if (IsKeyPressed(configMenuKey, false)) {
-            OpenMenu();
-            // Wait a bit to prevent multiple openings
-            Sleep(500);
-            continue;
-        }
+            // Check if the config menu should be opened
+            if (IsKeyPressed(configMenuKey, false)) {
+                OpenMenu();
+                // Wait a bit to prevent multiple openings
+                Sleep(500);
+                continue;
+            }
 
-        // Check if ImGui should be toggled
-        if (IsKeyPressed(toggleImGuiKey, false)) {
-            ImGuiImpl::ToggleVisibility();
-            keyHandled = true;
-        } else if (IsKeyPressed(teleportKey, true)) {
-            // Round start positions
-            if (IsKeyPressed(VK_DOWN, true) && IsKeyPressed('A', true)) {
-                uintptr_t base = GetEFZBase();
-                if (base) {
-                    SetPlayerPosition(base, EFZ_BASE_OFFSET_P1, p1StartX, startY);
-                    SetPlayerPosition(base, EFZ_BASE_OFFSET_P2, p2StartX, startY);
-                    DirectDrawHook::AddMessage("Round Start Position", "SYSTEM", RGB(100, 255, 100), 1500, 0, 100);
-                }
+            // Check if ImGui should be toggled
+            if (IsKeyPressed(toggleImGuiKey, false)) {
+                ImGuiImpl::ToggleVisibility();
                 keyHandled = true;
-            }
-            // Center players
-            else if (IsKeyPressed(VK_DOWN, true)) {
-                uintptr_t base = GetEFZBase();
-                if (base) {
-                    SetPlayerPosition(base, EFZ_BASE_OFFSET_P1, centerX, teleportY);
-                    SetPlayerPosition(base, EFZ_BASE_OFFSET_P2, centerX, teleportY);
-                    DirectDrawHook::AddMessage("Players Centered", "SYSTEM", RGB(100, 255, 100), 1500, 0, 100);
-                }
-                keyHandled = true;
-            }
-            // Players to left corner
-            else if (IsKeyPressed(VK_LEFT, true)) {
-                uintptr_t base = GetEFZBase();
-                if (base) {
-                    SetPlayerPosition(base, EFZ_BASE_OFFSET_P1, leftX, teleportY);
-                    SetPlayerPosition(base, EFZ_BASE_OFFSET_P2, leftX, teleportY);
-                    DirectDrawHook::AddMessage("Left Corner", "SYSTEM", RGB(100, 255, 100), 1500, 0, 100);
-                }
-                keyHandled = true;
-            }
-            // Players to right corner
-            else if (IsKeyPressed(VK_RIGHT, true)) {
-                uintptr_t base = GetEFZBase();
-                if (base) {
-                    SetPlayerPosition(base, EFZ_BASE_OFFSET_P1, rightX, teleportY);
-                    SetPlayerPosition(base, EFZ_BASE_OFFSET_P2, rightX, teleportY);
-                    DirectDrawHook::AddMessage("Right Corner", "SYSTEM", RGB(100, 255, 100), 1500, 0, 100);
-                }
-                keyHandled = true;
-            }
-            // Swap player positions
-            else if (IsKeyPressed(detectedBindings.dButton, true)) {
-                uintptr_t base = GetEFZBase();
-                if (base) {
-                    double tempX1 = 0.0, tempY1 = 0.0;
-                    double tempX2 = 0.0, tempY2 = 0.0;
-                    
-                    // Read current positions
-                    uintptr_t xAddr1 = ResolvePointer(base, EFZ_BASE_OFFSET_P1, XPOS_OFFSET);
-                    uintptr_t yAddr1 = ResolvePointer(base, EFZ_BASE_OFFSET_P1, YPOS_OFFSET);
-                    uintptr_t xAddr2 = ResolvePointer(base, EFZ_BASE_OFFSET_P2, XPOS_OFFSET);
-                    uintptr_t yAddr2 = ResolvePointer(base, EFZ_BASE_OFFSET_P2, YPOS_OFFSET);
-                    
-                    if (xAddr1 && yAddr1 && xAddr2 && yAddr2) {
-                        SafeReadMemory(xAddr1, &tempX1, sizeof(double));
-                        SafeReadMemory(yAddr1, &tempY1, sizeof(double));
-                        SafeReadMemory(xAddr2, &tempX2, sizeof(double));
-                        SafeReadMemory(yAddr2, &tempY2, sizeof(double));
-                        
-                        // Swap positions
-                        SetPlayerPosition(base, EFZ_BASE_OFFSET_P1, tempX2, tempY2);
-                        SetPlayerPosition(base, EFZ_BASE_OFFSET_P2, tempX1, tempY1);
-                        DirectDrawHook::AddMessage("Positions Swapped", "SYSTEM", RGB(100, 255, 100), 1500, 0, 100);
-                    } else {
-                        DirectDrawHook::AddMessage("Swap Failed: Can't read positions", "SYSTEM", RGB(255, 100, 100), 1500, 0, 100);
+            } else if (IsKeyPressed(teleportKey, true)) {
+                // Round start positions
+                if (IsKeyPressed(VK_DOWN, true) && IsKeyPressed('A', true)) {
+                    uintptr_t base = GetEFZBase();
+                    if (base) {
+                        SetPlayerPosition(base, EFZ_BASE_OFFSET_P1, p1StartX, startY);
+                        SetPlayerPosition(base, EFZ_BASE_OFFSET_P2, p2StartX, startY);
+                        DirectDrawHook::AddMessage("Round Start Position", "SYSTEM", RGB(100, 255, 100), 1500, 0, 100);
                     }
+                    keyHandled = true;
                 }
-                keyHandled = true;
-            }
-            // If no other key was pressed with teleport key, load saved position
-            else {
+                // Center players
+                else if (IsKeyPressed(VK_DOWN, true)) {
+                    uintptr_t base = GetEFZBase();
+                    if (base) {
+                        SetPlayerPosition(base, EFZ_BASE_OFFSET_P1, centerX, teleportY);
+                        SetPlayerPosition(base, EFZ_BASE_OFFSET_P2, centerX, teleportY);
+                        DirectDrawHook::AddMessage("Players Centered", "SYSTEM", RGB(100, 255, 100), 1500, 0, 100);
+                    }
+                    keyHandled = true;
+                }
+                // Players to left corner
+                else if (IsKeyPressed(VK_LEFT, true)) {
+                    uintptr_t base = GetEFZBase();
+                    if (base) {
+                        SetPlayerPosition(base, EFZ_BASE_OFFSET_P1, leftX, teleportY);
+                        SetPlayerPosition(base, EFZ_BASE_OFFSET_P2, leftX, teleportY);
+                        DirectDrawHook::AddMessage("Left Corner", "SYSTEM", RGB(100, 255, 100), 1500, 0, 100);
+                    }
+                    keyHandled = true;
+                }
+                // Players to right corner
+                else if (IsKeyPressed(VK_RIGHT, true)) {
+                    uintptr_t base = GetEFZBase();
+                    if (base) {
+                        SetPlayerPosition(base, EFZ_BASE_OFFSET_P1, rightX, teleportY);
+                        SetPlayerPosition(base, EFZ_BASE_OFFSET_P2, rightX, teleportY);
+                        DirectDrawHook::AddMessage("Right Corner", "SYSTEM", RGB(100, 255, 100), 1500, 0, 100);
+                    }
+                    keyHandled = true;
+                }
+                // Swap player positions
+                else if (IsKeyPressed(detectedBindings.dButton, true)) {
+                    uintptr_t base = GetEFZBase();
+                    if (base) {
+                        double tempX1 = 0.0, tempY1 = 0.0;
+                        double tempX2 = 0.0, tempY2 = 0.0;
+                        
+                        // Read current positions
+                        uintptr_t xAddr1 = ResolvePointer(base, EFZ_BASE_OFFSET_P1, XPOS_OFFSET);
+                        uintptr_t yAddr1 = ResolvePointer(base, EFZ_BASE_OFFSET_P1, YPOS_OFFSET);
+                        uintptr_t xAddr2 = ResolvePointer(base, EFZ_BASE_OFFSET_P2, XPOS_OFFSET);
+                        uintptr_t yAddr2 = ResolvePointer(base, EFZ_BASE_OFFSET_P2, YPOS_OFFSET);
+                        
+                        if (xAddr1 && yAddr1 && xAddr2 && yAddr2) {
+                            SafeReadMemory(xAddr1, &tempX1, sizeof(double));
+                            SafeReadMemory(yAddr1, &tempY1, sizeof(double));
+                            SafeReadMemory(xAddr2, &tempX2, sizeof(double));
+                            SafeReadMemory(yAddr2, &tempY2, sizeof(double));
+                            
+                            // Swap positions
+                            SetPlayerPosition(base, EFZ_BASE_OFFSET_P1, tempX2, tempY2);
+                            SetPlayerPosition(base, EFZ_BASE_OFFSET_P2, tempX1, tempY1);
+                            DirectDrawHook::AddMessage("Positions Swapped", "SYSTEM", RGB(100, 255, 100), 1500, 0, 100);
+                        } else {
+                            DirectDrawHook::AddMessage("Swap Failed: Can't read positions", "SYSTEM", RGB(255, 100, 100), 1500, 0, 100);
+                        }
+                    }
+                    keyHandled = true;
+                }
+                // If no other key was pressed with teleport key, load saved position
+                else {
+                    uintptr_t base = GetEFZBase();
+                    if (base) {
+                        LoadPlayerPositions(base);
+                        DirectDrawHook::AddMessage("Position Loaded", "SYSTEM", RGB(100, 255, 100), 1500, 0, 100);
+                    }
+                    keyHandled = true;
+                }
+            } else if (IsKeyPressed(cfg.recordKey, false)) {
                 uintptr_t base = GetEFZBase();
                 if (base) {
-                    LoadPlayerPositions(base);
-                    DirectDrawHook::AddMessage("Position Loaded", "SYSTEM", RGB(100, 255, 100), 1500, 0, 100);
+                    SavePlayerPositions(base);
+                    DirectDrawHook::AddMessage("Position Saved", "SYSTEM", RGB(255, 255, 100), 1500, 0, 100);
                 }
                 keyHandled = true;
+            } else if (IsKeyPressed(cfg.toggleTitleKey, false)) {
+                detailedTitleMode = !detailedTitleMode;
+                DirectDrawHook::AddMessage("Title Toggled", "SYSTEM", RGB(100, 100, 100), 1500, 0, 100);
+                keyHandled = true;
+            } else if (IsKeyPressed(cfg.resetFrameCounterKey, false)) {
+                ResetFrameCounter();
+                keyHandled = true;
+            } else if (IsKeyPressed(cfg.helpKey, false)) {
+                ShowHotkeyInfo();
+                keyHandled = true;
+            } else if (IsKeyPressed(VK_F8, false)) {
+                std::string status = "OFF";
+                if (autoAirtechEnabled) {
+                    status = autoAirtechDirection == 0 ? "FORWARD" : "BACKWARD";
+                }
+                DirectDrawHook::AddMessage(("Auto-Airtech: " + status).c_str(), "SYSTEM", RGB(255, 165, 0), 1500, 0, 100);
+                keyHandled = true;
+            } else if (IsKeyPressed(VK_F9, false)) {
+                autoJumpEnabled = !autoJumpEnabled;
+                DirectDrawHook::AddMessage(autoJumpEnabled ? "Auto-Jump: ON" : "Auto-Jump: OFF", "SYSTEM", RGB(255, 165, 0), 1500, 0, 100);
+                keyHandled = true;
             }
-        } else if (IsKeyPressed(cfg.recordKey, false)) {
-            uintptr_t base = GetEFZBase();
-            if (base) {
-                SavePlayerPositions(base);
-                DirectDrawHook::AddMessage("Position Saved", "SYSTEM", RGB(255, 255, 100), 1500, 0, 100);
-            }
-            keyHandled = true;
-        } else if (IsKeyPressed(cfg.toggleTitleKey, false)) {
-            detailedTitleMode = !detailedTitleMode;
-            DirectDrawHook::AddMessage("Title Toggled", "SYSTEM", RGB(100, 100, 100), 1500, 0, 100);
-            keyHandled = true;
-        } else if (IsKeyPressed(cfg.resetFrameCounterKey, false)) {
-            ResetFrameCounter();
-            keyHandled = true;
-        } else if (IsKeyPressed(cfg.helpKey, false)) {
-            ShowHotkeyInfo();
-            keyHandled = true;
-        } else if (IsKeyPressed(VK_F8, false)) {
-            std::string status = "OFF";
-            if (autoAirtechEnabled) {
-                status = autoAirtechDirection == 0 ? "FORWARD" : "BACKWARD";
-            }
-            DirectDrawHook::AddMessage(("Auto-Airtech: " + status).c_str(), "SYSTEM", RGB(255, 165, 0), 1500, 0, 100);
-            keyHandled = true;
-        } else if (IsKeyPressed(VK_F9, false)) {
-            autoJumpEnabled = !autoJumpEnabled;
-            DirectDrawHook::AddMessage(autoJumpEnabled ? "Auto-Jump: ON" : "Auto-Jump: OFF", "SYSTEM", RGB(255, 165, 0), 1500, 0, 100);
-            keyHandled = true;
-        }
 
-        // If a key was handled, wait for it to be released
-        if (keyHandled) {
-            Sleep(100);
-            while (IsKeyPressed(teleportKey, true) || IsKeyPressed(recordKey, true) ||
-                   IsKeyPressed(toggleTitleKey, true) || IsKeyPressed(resetFrameCounterKey, true) ||
-                   IsKeyPressed(helpKey, true) || IsKeyPressed(VK_F8, true) || IsKeyPressed(VK_F9, true)) {
-                Sleep(10);
+            // If a key was handled, wait for it to be released
+            if (keyHandled) {
+                Sleep(100);
+                while (IsKeyPressed(teleportKey, true) || IsKeyPressed(recordKey, true) ||
+                       IsKeyPressed(toggleTitleKey, true) || IsKeyPressed(resetFrameCounterKey, true) ||
+                       IsKeyPressed(helpKey, true) || IsKeyPressed(VK_F8, true) || IsKeyPressed(VK_F9, true)) {
+                    Sleep(10);
+                }
             }
         }
 
-        Sleep(5);  // Small sleep to prevent high CPU usage
+        // Sleep to avoid high CPU usage
+        Sleep(16); // ~60Hz polling
     }
     
     LogOut("[KEYBINDS] Key monitoring thread exiting", true);

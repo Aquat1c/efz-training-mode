@@ -21,8 +21,9 @@ void OpenMenu() {
     InitCommonControlsEx(&icc);
 
     // Check if we're in EFZ window
-    if (!IsEFZWindowActive()) {
-        LogOut("[GUI] EFZ window not active, cannot open menu", true); // Keep errors visible
+    UpdateWindowActiveState();
+    if (!g_efzWindowActive.load()) {
+        LogOut("[GUI] EFZ window not active, cannot open menu", true);
         return;
     }
 
