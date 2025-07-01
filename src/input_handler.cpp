@@ -294,9 +294,18 @@ void MonitorKeys() {
                     DirectDrawHook::AddMessage("Position Saved", "SYSTEM", RGB(255, 255, 100), 1500, 0, 100);
                 }
                 keyHandled = true;
-            } else if (IsKeyPressed(cfg.toggleTitleKey, false)) {
-                detailedTitleMode = !detailedTitleMode;
-                DirectDrawHook::AddMessage("Title Toggled", "SYSTEM", RGB(100, 100, 100), 1500, 0, 100);
+            } else if (IsKeyPressed(toggleTitleKey, true)) {
+                // Toggle stats display instead of detailed title mode
+                bool currentState = g_statsDisplayEnabled.load();
+                g_statsDisplayEnabled.store(!currentState);
+                
+                if (g_statsDisplayEnabled.load()) {
+                    LogOut("[STATS] Stats display enabled", true);
+                    DirectDrawHook::AddMessage("Stats Display Enabled", "SYSTEM", RGB(255, 255, 0), 1500, 20, 100);
+                } else {
+                    LogOut("[STATS] Stats display disabled", true);
+                    DirectDrawHook::AddMessage("Stats Display Disabled", "SYSTEM", RGB(255, 255, 0), 1500, 20, 100);
+                }
                 keyHandled = true;
             } else if (IsKeyPressed(cfg.resetFrameCounterKey, false)) {
                 ResetFrameCounter();

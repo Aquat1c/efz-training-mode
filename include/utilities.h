@@ -171,3 +171,10 @@ extern std::atomic<bool> g_guiActive;
 
 // Add this function declaration
 void UpdateWindowActiveState();
+
+// Add these after the other global state variables
+extern std::atomic<bool> g_statsDisplayEnabled;
+extern int g_statsP1ValuesId;
+extern int g_statsP2ValuesId;
+extern int g_statsPositionId;
+extern int g_statsMoveIdId;

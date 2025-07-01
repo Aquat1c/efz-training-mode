@@ -58,7 +58,9 @@ void EnableFeatures() {
 }
 
 void DisableFeatures() {
-    if (!g_featuresEnabled.load()) return;
+    if (!g_featuresEnabled.load())
+        return;
+    
     LogOut("[SYSTEM] Game inactive. Disabling features.", true);
 
     // Stop hotkey monitoring
@@ -67,8 +69,25 @@ void DisableFeatures() {
     // Remove any active patches
     RemoveAirtechPatches();
 
-    // Clear all visual overlays
-    DirectDrawHook::ClearAllMessages();
+    // Clear all visual overlays EXCEPT stats display if it's enabled
+    if (!g_statsDisplayEnabled.load()) {
+        DirectDrawHook::ClearAllMessages();
+        
+        // Reset stats display IDs only if we're clearing them
+        g_statsP1ValuesId = -1;
+        g_statsP2ValuesId = -1;
+        g_statsPositionId = -1;
+        g_statsMoveIdId = -1;
+    } else {
+        // Only clear non-stats overlays
+        if (g_AirtechStatusId != -1) DirectDrawHook::RemovePermanentMessage(g_AirtechStatusId);
+        if (g_JumpStatusId != -1) DirectDrawHook::RemovePermanentMessage(g_JumpStatusId);
+        if (g_FrameAdvantageId != -1) DirectDrawHook::RemovePermanentMessage(g_FrameAdvantageId);
+        if (g_TriggerAfterBlockId != -1) DirectDrawHook::RemovePermanentMessage(g_TriggerAfterBlockId);
+        if (g_TriggerOnWakeupId != -1) DirectDrawHook::RemovePermanentMessage(g_TriggerOnWakeupId);
+        if (g_TriggerAfterHitstunId != -1) DirectDrawHook::RemovePermanentMessage(g_TriggerAfterHitstunId);
+        if (g_TriggerAfterAirtechId != -1) DirectDrawHook::RemovePermanentMessage(g_TriggerAfterAirtechId);
+    }
     
     // Close the menu if it's open
     if (ImGuiImpl::IsVisible()) {
@@ -169,7 +188,12 @@ KeyBindings detectedBindings = {
     false                  // attacksDetected
 };
 
-// Add with other globals
+// Add with other global variables
+std::atomic<bool> g_statsDisplayEnabled(false);
+int g_statsP1ValuesId = -1;
+int g_statsP2ValuesId = -1;
+int g_statsPositionId = -1;
+int g_statsMoveIdId = -1;
 
 // Auto-action settings - replace single trigger with individual triggers
 std::atomic<bool> autoActionEnabled(false);
