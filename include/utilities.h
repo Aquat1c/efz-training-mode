@@ -91,6 +91,18 @@ struct DisplayData {
     char p1CharName[16];  // Character name with buffer for null termination
     char p2CharName[16];  // Character name 
     
+    // Add character ID fields
+    int p1CharID;
+    int p2CharID;
+    
+    // Character-specific settings
+    // Ikumi
+    int p1IkumiBlood;
+    int p2IkumiBlood;
+    int p1IkumiGenocide;
+    int p2IkumiGenocide;
+    bool infiniteBloodMode;  // Enables freeze patch for blood
+    
     // Keep these for backward compatibility
     bool autoAction;
     int autoActionType;

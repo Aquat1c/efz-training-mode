@@ -24,6 +24,7 @@
 #include <iomanip>
 #include <chrono>
 #include <vector>
+#include "../include/character_settings.h"
 
 std::atomic<bool> g_efzWindowActive(false);
 std::atomic<bool> g_guiActive(false);
@@ -71,6 +72,7 @@ void DisableFeatures() {
 
     // Remove any active patches
     RemoveAirtechPatches();
+    CharacterSettings::RemoveCharacterPatches(); // Remove character-specific patches
 
     // Clear ALL visual overlays
     DirectDrawHook::ClearAllMessages();
@@ -155,12 +157,46 @@ std::atomic<bool> p2Jumping(false);
 std::atomic<int> jumpTarget(3);
 std::atomic<bool> g_featuresEnabled(false); // Default to disabled
 DisplayData displayData = {
-    9999, 9999,    3000, 3000,    1000.0, 1000.0,    240.0, 0.0,    400.0, 0.0,
-    false,    0,    0,    false,    0,    3,    "",    "",    false,    ACTION_5A,
-    BASE_ATTACK_5A,    2,    false,    false,    false,    false,    DEFAULT_TRIGGER_DELAY,
-    DEFAULT_TRIGGER_DELAY,    DEFAULT_TRIGGER_DELAY,    DEFAULT_TRIGGER_DELAY,    ACTION_5A,
-    ACTION_5A,    ACTION_5A,    ACTION_JA,    BASE_ATTACK_5A,    BASE_ATTACK_5A,
-    BASE_ATTACK_5A,    BASE_ATTACK_JA
+    9999, 9999,         // hp1, hp2
+    3000, 3000,         // meter1, meter2
+    1000.0, 1000.0,     // rf1, rf2
+    240.0, 0.0,         // x1, y1
+    400.0, 0.0,         // x2, y2
+    false,              // autoAirtech
+    0,                  // airtechDirection
+    0,                  // airtechDelay
+    false,              // autoJump
+    0,                  // jumpDirection
+    3,                  // jumpTarget
+    "",                 // p1CharName
+    "",                 // p2CharName
+    false,              // autoAction
+    ACTION_5A,          // autoActionType
+    BASE_ATTACK_5A,     // autoActionCustomID
+    2,                  // autoActionPlayer
+    false,              // triggerAfterBlock
+    false,              // triggerOnWakeup
+    false,              // triggerAfterHitstun
+    false,              // triggerAfterAirtech
+    DEFAULT_TRIGGER_DELAY, // delayAfterBlock
+    DEFAULT_TRIGGER_DELAY, // delayOnWakeup
+    DEFAULT_TRIGGER_DELAY, // delayAfterHitstun
+    DEFAULT_TRIGGER_DELAY, // delayAfterAirtech
+    ACTION_5A,          // actionAfterBlock
+    ACTION_5A,          // actionOnWakeup
+    ACTION_5A,          // actionAfterHitstun
+    ACTION_JA,          // actionAfterAirtech
+    BASE_ATTACK_5A,     // customAfterBlock
+    BASE_ATTACK_5A,     // customOnWakeup
+    BASE_ATTACK_5A,     // customAfterHitstun
+    BASE_ATTACK_JA,     // customAfterAirtech
+    -1,                 // p1CharID
+    -1,                 // p2CharID
+    0,                  // p1IkumiBlood
+    0,                  // p2IkumiBlood
+    0,                  // p1IkumiGenocide
+    0,                  // p2IkumiGenocide
+    false               // infiniteBloodMode
 };
 
 // Initialize key bindings with default values

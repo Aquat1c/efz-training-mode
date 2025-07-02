@@ -71,7 +71,7 @@ set(SOURCES
     src/overlay.cpp
     src/config.cpp
     src/game_state.cpp
-    # Add new ImGui implementation files
+    src/character_settings.cpp
     src/imgui_impl.cpp
     src/imgui_gui.cpp
     ${IMGUI_SOURCES}
