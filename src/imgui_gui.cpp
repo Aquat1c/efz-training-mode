@@ -7,6 +7,8 @@
 #include "../include/gui.h"
 #include "../include/config.h" // Add this include for GetKeyName
 #include "../include/overlay.h" // Add this include for DirectDrawHook
+#include "../include/character_settings.h"
+#include "../include/frame_monitor.h"
 
 namespace ImGuiGui {
     // Action type mapping (same as in gui_auto_action.cpp)
@@ -39,66 +41,6 @@ namespace ImGuiGui {
         
         // Only show in detailed mode
         LogOut("[IMGUI_GUI] GUI state initialized", detailedLogging.load());
-    }
-
-    // Main render function
-    void RenderGui() {
-        if (!ImGuiImpl::IsVisible())
-            return;
-
-        // Set window position and size
-        ImGui::SetNextWindowPos(ImVec2(50, 50), ImGuiCond_FirstUseEver);
-        ImGui::SetNextWindowSize(ImVec2(580, 520), ImGuiCond_FirstUseEver);
-
-        // Main window
-        if (ImGui::Begin("EFZ Training Mode", nullptr, ImGuiWindowFlags_NoCollapse)) {
-            if (ImGui::BeginTabBar("MainTabBar")) {
-                ImGuiTabItemFlags gameValuesFlags = (guiState.requestedTab == 0) ? ImGuiTabItemFlags_SetSelected : 0;
-                if (ImGui::BeginTabItem("Game Values", nullptr, gameValuesFlags)) {
-                    guiState.currentTab = 0;
-                    RenderGameValuesTab();
-                    ImGui::EndTabItem();
-                }
-
-                ImGuiTabItemFlags autoActionFlags = (guiState.requestedTab == 1) ? ImGuiTabItemFlags_SetSelected : 0;
-                if (ImGui::BeginTabItem("Auto Action", nullptr, autoActionFlags)) {
-                    guiState.currentTab = 1;
-                    RenderAutoActionTab();
-                    ImGui::EndTabItem();
-                }
-
-                ImGuiTabItemFlags helpFlags = (guiState.requestedTab == 2) ? ImGuiTabItemFlags_SetSelected : 0;
-                if (ImGui::BeginTabItem("Help & Hotkeys", nullptr, helpFlags)) {
-                    guiState.currentTab = 2;
-                    RenderHelpTab();
-                    ImGui::EndTabItem();
-                }
-
-                // Reset the request after processing this frame
-                if (guiState.requestedTab != -1) {
-                    guiState.requestedTab = -1;
-                }
-
-                ImGui::EndTabBar();
-            }
-
-            // Add action buttons at the bottom
-            ImGui::Separator();
-            if (ImGui::Button("Apply", ImVec2(120, 0))) {
-                ApplyImGuiSettings();
-                DirectDrawHook::AddMessage("Settings Applied", "SYSTEM", RGB(100, 255, 100), 1500, 250, 200);
-            }
-            ImGui::SameLine();
-            if (ImGui::Button("Refresh Values", ImVec2(120, 0))) {
-                RefreshLocalData();
-                DirectDrawHook::AddMessage("Values Refreshed", "SYSTEM", RGB(200, 200, 200), 1500, 250, 200);
-            }
-            ImGui::SameLine();
-            if (ImGui::Button("Exit", ImVec2(120, 0))) {
-                ImGuiImpl::ToggleVisibility();
-            }
-        }
-        ImGui::End();
     }
 
     // Game Values Tab
@@ -416,11 +358,271 @@ namespace ImGuiGui {
         ImGui::TextWrapped("Press the key again to close this help screen.");
     }
 
-    // Add this new function to refresh data from game memory
+    // Add the implementation for the character tab
+    void RenderCharacterTab() {
+        ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.0f, 1.0f), "Character-Specific Settings");
+        ImGui::Separator();
+        
+        // Add debug information for character names and IDs
+        ImGui::Text("P1 Raw Name: %s", guiState.localData.p1CharName);
+        ImGui::Text("P2 Raw Name: %s", guiState.localData.p2CharName);
+        ImGui::Text("P1 ID: %d (%s)", guiState.localData.p1CharID, 
+                CharacterSettings::GetCharacterName(guiState.localData.p1CharID).c_str());
+    ImGui::Text("P2 ID: %d (%s)", guiState.localData.p2CharID, 
+                CharacterSettings::GetCharacterName(guiState.localData.p2CharID).c_str());
+    
+        // Check if characters are valid
+        if (!AreCharactersInitialized()) {
+            ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.5f, 1.0f), "No valid characters detected.");
+            return;
+        }
+        
+        ImGui::Separator();
+        
+        // Update character IDs
+        CharacterSettings::UpdateCharacterIDs(guiState.localData);
+        
+        // Track if we have any character-specific settings to show
+        bool hasCharSpecificSettings = false;
+        
+        // Ikumi-specific settings
+        bool p1IsIkumi = guiState.localData.p1CharID == CHAR_ID_IKUMI;
+        bool p2IsIkumi = guiState.localData.p2CharID == CHAR_ID_IKUMI;
+        
+        if (p1IsIkumi || p2IsIkumi) {
+            hasCharSpecificSettings = true;
+            
+            ImGui::TextColored(ImVec4(0.7f, 0.9f, 1.0f, 1.0f), "Ikumi Settings");
+            
+            // Add global infinite blood mode toggle
+            bool infiniteBlood = guiState.localData.infiniteBloodMode;
+            if (ImGui::Checkbox("Infinite Blood Mode (No Genocide Timer Depletion)", &infiniteBlood)) {
+                guiState.localData.infiniteBloodMode = infiniteBlood;
+                
+                // If we just turned it off, make sure we remove any patches
+                if (!infiniteBlood) {
+                    CharacterSettings::RemoveCharacterPatches();
+                }
+            }
+            
+            ImGui::SameLine();
+            ImGui::TextDisabled("(?)");
+            if (ImGui::IsItemHovered()) {
+                ImGui::BeginTooltip();
+                ImGui::PushTextWrapPos(ImGui::GetFontSize() * 35.0f);
+                ImGui::TextUnformatted("Prevents Ikumi's genocide timer from depleting when it's active.\n"
+                                      "This patch is only applied in Practice Mode.");
+                ImGui::PopTextWrapPos();
+                ImGui::EndTooltip();
+            }
+            
+            ImGui::Separator();
+            ImGui::Columns(2, "ikumiColumns", false);
+            
+            // P1 Ikumi settings
+            if (p1IsIkumi) {
+                ImGui::TextColored(ImVec4(0.5f, 0.8f, 1.0f, 1.0f), "P1 Ikumi");
+                
+                // Blood meter slider and visualization
+                int p1Blood = guiState.localData.p1IkumiBlood;
+                float p1BloodPercent = (float)p1Blood / IKUMI_BLOOD_MAX;
+                
+                ImGui::Text("Blood Level:");
+                
+                // Progress bar with color gradient
+                ImGui::PushStyleColor(ImGuiCol_PlotHistogram, 
+                    ImVec4(0.7f + p1BloodPercent * 0.3f, 0.3f - p1BloodPercent * 0.3f, 0.3f, 1.0f));
+                ImGui::ProgressBar(p1BloodPercent, ImVec2(-1, 0), 
+                                   (std::to_string(p1Blood) + "/" + std::to_string(IKUMI_BLOOD_MAX)).c_str());
+                ImGui::PopStyleColor();
+                
+                // Slider
+                if (ImGui::SliderInt("##P1Blood", &p1Blood, 0, IKUMI_BLOOD_MAX)) {
+                    guiState.localData.p1IkumiBlood = p1Blood;
+                }
+                
+                // Genocide timer
+                int p1Genocide = guiState.localData.p1IkumiGenocide;
+                float genocideSeconds = p1Genocide / 60.0f;
+                
+                ImGui::Text("Genocide Timer: %.1f seconds", genocideSeconds);
+                if (ImGui::SliderInt("##P1Genocide", &p1Genocide, 0, IKUMI_GENOCIDE_MAX)) {
+                    guiState.localData.p1IkumiGenocide = p1Genocide;
+                }
+                
+                // Quick set buttons
+                if (ImGui::Button("Max Blood##p1")) {
+                    guiState.localData.p1IkumiBlood = IKUMI_BLOOD_MAX;
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Min Blood##p1")) {
+                    guiState.localData.p1IkumiBlood = 0;
+                }
+                
+                if (ImGui::Button("Max Genocide##p1")) {
+                    guiState.localData.p1IkumiGenocide = IKUMI_GENOCIDE_MAX;
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Reset Genocide##p1")) {
+                    guiState.localData.p1IkumiGenocide = 0;
+                }
+            } else {
+                ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "P1 is not Ikumi");
+            }
+            
+            // Next column for P2
+            ImGui::NextColumn();
+            
+            // P2 Ikumi settings
+            if (p2IsIkumi) {
+                ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.5f, 1.0f), "P2 Ikumi");
+                
+                // Blood meter slider and visualization
+                int p2Blood = guiState.localData.p2IkumiBlood;
+                float p2BloodPercent = (float)p2Blood / IKUMI_BLOOD_MAX;
+                
+                ImGui::Text("Blood Level:");
+                
+                // Progress bar with color gradient
+                ImGui::PushStyleColor(ImGuiCol_PlotHistogram, 
+                    ImVec4(0.7f + p2BloodPercent * 0.3f, 0.3f - p2BloodPercent * 0.3f, 0.3f, 1.0f));
+                ImGui::ProgressBar(p2BloodPercent, ImVec2(-1, 0), 
+                                   (std::to_string(p2Blood) + "/" + std::to_string(IKUMI_BLOOD_MAX)).c_str());
+                ImGui::PopStyleColor();
+                
+                // Slider
+                if (ImGui::SliderInt("##P2Blood", &p2Blood, 0, IKUMI_BLOOD_MAX)) {
+                    guiState.localData.p2IkumiBlood = p2Blood;
+                }
+                
+                // Genocide timer
+                int p2Genocide = guiState.localData.p2IkumiGenocide;
+                float genocideSeconds = p2Genocide / 60.0f;
+                
+                ImGui::Text("Genocide Timer: %.1f seconds", genocideSeconds);
+                if (ImGui::SliderInt("##P2Genocide", &p2Genocide, 0, IKUMI_GENOCIDE_MAX)) {
+                    guiState.localData.p2IkumiGenocide = p2Genocide;
+                }
+                
+                // Quick set buttons
+                if (ImGui::Button("Max Blood##p2")) {
+                    guiState.localData.p2IkumiBlood = IKUMI_BLOOD_MAX;
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Min Blood##p2")) {
+                    guiState.localData.p2IkumiBlood = 0;
+                }
+                
+                if (ImGui::Button("Max Genocide##p2")) {
+                    guiState.localData.p2IkumiGenocide = IKUMI_GENOCIDE_MAX;
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Reset Genocide##p2")) {
+                    guiState.localData.p2IkumiGenocide = 0;
+                }
+            } else {
+                ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "P2 is not Ikumi");
+            }
+            
+            ImGui::Columns(1);
+        }
+        
+        // Add a section at the bottom for help info
+        ImGui::Separator();
+        
+        if (!hasCharSpecificSettings) {
+            ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.7f, 1.0f), 
+                          "No character-specific settings available for the current characters.");
+        }
+        
+        ImGui::TextWrapped(
+            "Character-specific settings allow you to modify special parameters unique to each character.\n"
+            "Currently supported characters: Ikumi (Blood Meter & Genocide Mode)");
+    }
+    
+    // Update the RenderGui function to include the new tab:
+    void RenderGui() {
+        if (!ImGuiImpl::IsVisible())
+            return;
+
+        // Set window position and size
+        ImGui::SetNextWindowPos(ImVec2(50, 50), ImGuiCond_FirstUseEver);
+        ImGui::SetNextWindowSize(ImVec2(580, 520), ImGuiCond_FirstUseEver);
+
+        // Main window
+        if (ImGui::Begin("EFZ Training Mode", nullptr, ImGuiWindowFlags_NoCollapse)) {
+            // Check if a specific tab has been requested
+            if (guiState.requestedTab >= 0) {
+                guiState.currentTab = guiState.requestedTab;
+                guiState.requestedTab = -1; // Reset request
+            }
+            
+            // Tab bar at the top
+            if (ImGui::BeginTabBar("MainTabBar", ImGuiTabBarFlags_None)) {
+                // Game Values tab
+                if (ImGui::BeginTabItem("Game Values")) {
+                    guiState.currentTab = 0;
+                    RenderGameValuesTab();
+                    ImGui::EndTabItem();
+                }
+                
+                // Auto Action tab
+                if (ImGui::BeginTabItem("Auto Action")) {
+                    guiState.currentTab = 1;
+                    RenderAutoActionTab();
+                    ImGui::EndTabItem();
+                }
+                
+                // Add Character tab unconditionally for now
+                if (ImGui::BeginTabItem("Character")) {
+                    guiState.currentTab = 2;
+                    RenderCharacterTab();
+                    ImGui::EndTabItem();
+                }
+                
+                // Help tab
+                if (ImGui::BeginTabItem("Help & Hotkeys")) {
+                    guiState.currentTab = 3;
+                    RenderHelpTab();
+                    ImGui::EndTabItem();
+                }
+                
+                ImGui::EndTabBar();
+            }
+
+            // Add action buttons at the bottom
+            ImGui::Separator();
+            if (ImGui::Button("Apply", ImVec2(120, 0))) {
+                ApplyImGuiSettings();
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Refresh Values", ImVec2(120, 0))) {
+                RefreshLocalData();
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Exit", ImVec2(120, 0))) {
+                ImGuiImpl::ToggleVisibility();
+            }
+        }
+        ImGui::End();
+    }
+
+    // Add the helper function to determine if character tab should be shown
+    bool ShouldShowCharacterSettings() {
+        CharacterSettings::UpdateCharacterIDs(guiState.localData);
+        
+        // For now, just check for Ikumi since that's the only character with special settings
+        bool p1IsIkumi = guiState.localData.p1CharID == CHAR_ID_IKUMI;
+        bool p2IsIkumi = guiState.localData.p2CharID == CHAR_ID_IKUMI;
+        
+        return p1IsIkumi || p2IsIkumi;
+    }
+
+    // Update RefreshLocalData to include character-specific data
     void RefreshLocalData() {
         uintptr_t base = GetEFZBase();
         if (!base) {
-            LogOut("[GUI] Refresh failed: Could not get game base address", true);
+            LogOut("[IMGUI] RefreshLocalData: Couldn't get base address", true);
             return;
         }
 
@@ -430,29 +632,50 @@ namespace ImGuiGui {
         SafeReadMemory(ResolvePointer(base, EFZ_BASE_OFFSET_P1, RF_OFFSET), &guiState.localData.rf1, sizeof(double));
         SafeReadMemory(ResolvePointer(base, EFZ_BASE_OFFSET_P1, XPOS_OFFSET), &guiState.localData.x1, sizeof(double));
         SafeReadMemory(ResolvePointer(base, EFZ_BASE_OFFSET_P1, YPOS_OFFSET), &guiState.localData.y1, sizeof(double));
-        SafeReadMemory(ResolvePointer(base, EFZ_BASE_OFFSET_P1, CHARACTER_NAME_OFFSET), &guiState.localData.p1CharName, sizeof(guiState.localData.p1CharName) - 1);
-        guiState.localData.p1CharName[15] = '\0'; // Null terminate
-
+        
+        // Read character name and ensure null-termination
+        memset(guiState.localData.p1CharName, 0, sizeof(guiState.localData.p1CharName));
+        SafeReadMemory(ResolvePointer(base, EFZ_BASE_OFFSET_P1, CHARACTER_NAME_OFFSET), 
+                   guiState.localData.p1CharName, sizeof(guiState.localData.p1CharName) - 1);
+        
         // P2
         SafeReadMemory(ResolvePointer(base, EFZ_BASE_OFFSET_P2, HP_OFFSET), &guiState.localData.hp2, sizeof(int));
         SafeReadMemory(ResolvePointer(base, EFZ_BASE_OFFSET_P2, METER_OFFSET), &guiState.localData.meter2, sizeof(int));
         SafeReadMemory(ResolvePointer(base, EFZ_BASE_OFFSET_P2, RF_OFFSET), &guiState.localData.rf2, sizeof(double));
         SafeReadMemory(ResolvePointer(base, EFZ_BASE_OFFSET_P2, XPOS_OFFSET), &guiState.localData.x2, sizeof(double));
         SafeReadMemory(ResolvePointer(base, EFZ_BASE_OFFSET_P2, YPOS_OFFSET), &guiState.localData.y2, sizeof(double));
-        SafeReadMemory(ResolvePointer(base, EFZ_BASE_OFFSET_P2, CHARACTER_NAME_OFFSET), &guiState.localData.p2CharName, sizeof(guiState.localData.p2CharName) - 1);
-        guiState.localData.p2CharName[15] = '\0'; // Null terminate
+        
+        // Read character name and ensure null-termination
+        memset(guiState.localData.p2CharName, 0, sizeof(guiState.localData.p2CharName));
+        SafeReadMemory(ResolvePointer(base, EFZ_BASE_OFFSET_P2, CHARACTER_NAME_OFFSET), 
+                   guiState.localData.p2CharName, sizeof(guiState.localData.p2CharName) - 1);
 
-        LogOut("[GUI] Refreshed local data from game memory.", true);
+        // Log the character names we're reading
+        LogOut("[IMGUI] Read character names: P1=" + std::string(guiState.localData.p1CharName) + 
+           ", P2=" + std::string(guiState.localData.p2CharName), true);
+    
+        // Update character IDs
+        CharacterSettings::UpdateCharacterIDs(guiState.localData);
+    
+        // Read character-specific values
+        CharacterSettings::ReadCharacterValues(base, guiState.localData);
+
+        LogOut("[IMGUI] Refreshed local data from game memory.", true);
     }
 
-    // Apply settings to the game
+    // Update ApplyImGuiSettings to include character-specific data
     void ApplyImGuiSettings() {
-        // Copy our local data to the global display data
-        displayData = guiState.localData;
+        uintptr_t base = GetEFZBase();
+        if (!base) {
+            LogOut("[IMGUI] ApplySettings: Couldn't get base address", true);
+            return;
+        }
         
-        // Apply the settings by calling the global ApplySettings function
-        ::ApplySettings(&displayData);  // Use global namespace resolution
+        // Apply basic values...
         
-        LogOut("[IMGUI_GUI] Settings applied", detailedLogging.load()); // Use detailed logging
+        // Apply character-specific values
+        CharacterSettings::ApplyCharacterValues(base, guiState.localData);
+        
+        LogOut("[IMGUI] Applied settings to game memory", true);
     }
 }

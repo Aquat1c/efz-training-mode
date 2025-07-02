@@ -287,3 +287,45 @@
 #define IDC_TRIGGER_ON_WAKEUP_CUSTOM       5023
 #define IDC_TRIGGER_AFTER_HITSTUN_CUSTOM   5024
 #define IDC_TRIGGER_AFTER_AIRTECH_CUSTOM   5025
+
+// After your existing character constants, add:
+
+// Character IDs - corrected to match internal game IDs
+#define CHAR_ID_AKANE     0
+#define CHAR_ID_AKIKO     1
+#define CHAR_ID_IKUMI     2
+#define CHAR_ID_MISAKI    3
+#define CHAR_ID_SAYURI    4
+#define CHAR_ID_KANNA     5
+#define CHAR_ID_KAORI     6
+#define CHAR_ID_MAKOTO    7
+#define CHAR_ID_MINAGI    8
+#define CHAR_ID_MIO       9
+#define CHAR_ID_MISHIO    10
+#define CHAR_ID_MISUZU    11
+#define CHAR_ID_MIZUKA    12  // Actually Nagamori in files
+#define CHAR_ID_NAGAMORI  13
+#define CHAR_ID_NANASE    14  // Actually Rumi in files
+#define CHAR_ID_EXNANASE  15  // Actually Doppel in files
+#define CHAR_ID_NAYUKI    16  // Actually NayukiB (Neyuki) in files
+#define CHAR_ID_NAYUKIB   17  // Actually Nayuki in files
+#define CHAR_ID_SHIORI    18
+#define CHAR_ID_AYU       19
+#define CHAR_ID_MAI       20
+#define CHAR_ID_MAYU      21
+#define CHAR_ID_MIZUKAB   22  // Actually Unknown in files
+#define CHAR_ID_KANO      23
+
+// Character-specific offsets
+// Ikumi's blood meter and genocide timer
+#define IKUMI_BLOOD_OFFSET   0x314C  // Blood meter (0-8)
+#define IKUMI_GENOCIDE_OFFSET 0x3150  // Genocide timer
+
+// Maximum values
+#define IKUMI_BLOOD_MAX      8       // Blood ranges from 0-8
+#define IKUMI_GENOCIDE_MAX   7200    // 120 seconds (60 fps * 120)
+
+// Patch addresses for infinite blood mode
+#define IKUMI_GENOCIDE_TIMER_ADDR 0x2A718    // Address to patch genocide timer decrement
+#define IKUMI_GENOCIDE_TIMER_ORIGINAL "\x89\x86\x50\x31\x00\x00"  // Original bytes
+#define IKUMI_GENOCIDE_TIMER_PATCH "\x90\x90\x90\x90\x90\x90"     // NOP sequence

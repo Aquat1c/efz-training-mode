@@ -10,6 +10,7 @@ namespace ImGuiGui {
     void RenderGameValuesTab();
     void RenderAutoActionTab();
     void RenderHelpTab();
+    void RenderCharacterTab(); // Add character settings tab
     
     // Overall GUI state
     struct ImGuiGuiState {
@@ -28,4 +29,7 @@ namespace ImGuiGui {
     // Apply settings from ImGui interface to game
     void ApplyImGuiSettings();
     void RefreshLocalData();
+    
+    // Helper function to check if character settings should be shown
+    bool ShouldShowCharacterSettings();
 }
