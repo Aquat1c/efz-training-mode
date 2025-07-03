@@ -108,6 +108,10 @@ struct DisplayData {
     int p2MisuzuFeathers;
     bool infiniteFeatherMode; // Add this missing field
     
+    // Blue IC/Red IC toggle
+    bool p1BlueIC;
+    bool p2BlueIC;
+    
     // Keep these for backward compatibility
     bool autoAction;
     int autoActionType;

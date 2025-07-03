@@ -239,6 +239,87 @@ bool SetRFValuesDirect(double p1RF, double p2RF) {
     return success;
 }
 
+// Set IC Color values directly (similar to SetRFValuesDirect)
+bool SetICColorDirect(bool p1BlueIC, bool p2BlueIC) {
+    uintptr_t base = GetEFZBase();
+    if (!base) return false;
+    
+    // Use direct pointer access exactly as Cheat Engine does
+    uintptr_t* p1Ptr = (uintptr_t*)(base + EFZ_BASE_OFFSET_P1);
+    uintptr_t* p2Ptr = (uintptr_t*)(base + EFZ_BASE_OFFSET_P2);
+    
+    // Validate pointers are readable
+    if (IsBadReadPtr(p1Ptr, sizeof(uintptr_t)) || IsBadReadPtr(p2Ptr, sizeof(uintptr_t))) {
+        LogOut("[IC] Invalid player base pointers", detailedLogging.load());
+        return false;
+    }
+    
+    // Follow the pointers to get player structures
+    uintptr_t p1Base = *p1Ptr;
+    uintptr_t p2Base = *p2Ptr;
+    
+    if (!p1Base || !p2Base) {
+        LogOut("[IC] Player structures not initialized", detailedLogging.load());
+        return false;
+    }
+    
+    // Calculate IC color addresses (offset 0x120 = 4-byte int)
+    int* p1ICAddr = (int*)(p1Base + IC_COLOR_OFFSET);
+    int* p2ICAddr = (int*)(p2Base + IC_COLOR_OFFSET);
+    
+    // Validate these addresses
+    if (IsBadWritePtr(p1ICAddr, sizeof(int)) || IsBadWritePtr(p2ICAddr, sizeof(int))) {
+        LogOut("[IC] Invalid IC color addresses", detailedLogging.load());
+        return false;
+    }
+    
+    // Convert bool to int (0=red IC, 1=blue IC)
+    int p1ICValue = p1BlueIC ? 1 : 0;
+    int p2ICValue = p2BlueIC ? 1 : 0;
+    
+    // Write values with memory protection handling
+    DWORD oldProtect1, oldProtect2;
+    bool success = true;
+    
+    // P1 IC color write
+    if (VirtualProtect(p1ICAddr, sizeof(int), PAGE_EXECUTE_READWRITE, &oldProtect1)) {
+        *p1ICAddr = p1ICValue;
+        VirtualProtect(p1ICAddr, sizeof(int), oldProtect1, &oldProtect1);
+        
+        // Verify the write
+        int verification = 0;
+        memcpy(&verification, p1ICAddr, sizeof(int));
+        if (verification != p1ICValue) {
+            LogOut("[IC] P1 IC verification failed: wrote " + std::to_string(p1ICValue) + 
+                   " but read back " + std::to_string(verification), true);
+            success = false;
+        }
+    } else {
+        LogOut("[IC] P1 VirtualProtect failed", true);
+        success = false;
+    }
+    
+    // P2 IC color write
+    if (VirtualProtect(p2ICAddr, sizeof(int), PAGE_EXECUTE_READWRITE, &oldProtect2)) {
+        *p2ICAddr = p2ICValue;
+        VirtualProtect(p2ICAddr, sizeof(int), oldProtect2, &oldProtect2);
+        
+        // Verify the write
+        int verification = 0;
+        memcpy(&verification, p2ICAddr, sizeof(int));
+        if (verification != p2ICValue) {
+            LogOut("[IC] P2 IC verification failed: wrote " + std::to_string(p2ICValue) + 
+                   " but read back " + std::to_string(verification), true);
+            success = false;
+        }
+    } else {
+        LogOut("[IC] P2 VirtualProtect failed", true);
+        success = false;
+    }
+    
+    return success;
+}
+
 void UpdatePlayerValues(uintptr_t base, uintptr_t baseOffsetP1, uintptr_t baseOffsetP2) {
     // This function applies values from the displayData struct to the game
     // (Used by the GUI dialogs)

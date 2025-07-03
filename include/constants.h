@@ -30,6 +30,9 @@
 #define GAME_MODE_OFFSET 0x1364 // CORRECTED: The offset is hexadecimal, not decimal.
 #define YVEL_OFFSET 0x38  // Y velocity offset from player base
 
+// IC (Instant Charge) color offset - 0=red IC, 1=blue IC
+#define IC_COLOR_OFFSET 0x120  // IC color offset from player base
+
 // Character name offset
 #define CHARACTER_NAME_OFFSET 0x94  // Character name offset from player base
 
