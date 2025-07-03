@@ -323,7 +323,7 @@
 
 // Maximum values
 #define IKUMI_BLOOD_MAX      8       // Blood ranges from 0-8
-#define IKUMI_GENOCIDE_MAX   7200    // 120 seconds (60 fps * 120)
+#define IKUMI_GENOCIDE_MAX   1260    // Depletes by 3 every frames
 
 // Patch addresses for infinite blood mode
 #define IKUMI_GENOCIDE_TIMER_ADDR 0x2A718    // Address to patch genocide timer decrement
@@ -331,4 +331,4 @@
 #define IKUMI_GENOCIDE_TIMER_PATCH "\x90\x90\x90\x90\x90\x90"     // NOP sequence
 //Misuzu
 #define MISUZU_FEATHER_OFFSET 0x3464
-#define MISUZU_FEATHER_MAX 5
+#define MISUZU_FEATHER_MAX 3 // Feather count ranges from 0-3

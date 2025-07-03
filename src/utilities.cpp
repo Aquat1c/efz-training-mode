@@ -34,10 +34,7 @@ void EnableFeatures() {
     if (g_featuresEnabled.load())
         return;
         
-    LogOut("[SYSTEM] Game active. Enabling features.", true);
-    
-    // Start hotkey monitoring
-    RestartKeyMonitoring();
+    LogOut("[SYSTEM] Game in valid mode. Enabling patches and overlays.", true);
 
     // Apply patches if the feature is enabled
     if (autoAirtechEnabled.load()) {
@@ -52,23 +49,28 @@ void EnableFeatures() {
         if (IsValidGameMode(currentMode)) {
             ReinitializeOverlays();
             if (g_statsDisplayEnabled.load()) {
-            UpdateStatsDisplay();
-        }
+                UpdateStatsDisplay();
+            }
         } else {
             LogOut("[SYSTEM] Not initializing overlays - invalid game mode: " + 
                    GetGameModeName(currentMode), true);
         }
     }
+    
+    // Key monitoring will be handled separately by ManageKeyMonitoring()
 }
 
 void DisableFeatures() {
     if (!g_featuresEnabled.load())
         return;
     
-    LogOut("[SYSTEM] Game inactive. Disabling features.", true);
+    LogOut("[SYSTEM] Game left valid mode. Disabling patches and overlays.", true);
 
-    // Stop hotkey monitoring
-    keyMonitorRunning.store(false);
+    // Stop key monitoring when leaving valid game mode
+    if (keyMonitorRunning.load()) {
+        LogOut("[SYSTEM] Stopping key monitoring due to invalid game mode.", true);
+        keyMonitorRunning.store(false);
+    }
 
     // Remove any active patches
     RemoveAirtechPatches();
@@ -95,6 +97,8 @@ void DisableFeatures() {
     p2DelayState = {false, 0, TRIGGER_NONE, 0};
 
     g_featuresEnabled.store(false);
+    
+    // Key monitoring will be handled separately by ManageKeyMonitoring()
 }
 
 
@@ -650,5 +654,29 @@ void UpdateWindowActiveState() {
         
         prevEfzActive = g_efzWindowActive.load();
         prevGuiActive = g_guiActive.load();
+    }
+}
+
+// Separate function to manage key monitoring based on window focus
+void ManageKeyMonitoring() {
+    bool currentWindowActive = g_efzWindowActive.load();
+    bool currentFeaturesEnabled = g_featuresEnabled.load();
+    
+    // Check if we should start key monitoring
+    bool shouldMonitorKeys = currentWindowActive && currentFeaturesEnabled;
+    bool isCurrentlyMonitoring = keyMonitorRunning.load();
+    
+    // Start key monitoring if we should be monitoring but aren't
+    if (shouldMonitorKeys && !isCurrentlyMonitoring) {
+        LogOut("[SYSTEM] Starting key monitoring - Window active: " + 
+               std::to_string(currentWindowActive) + ", Features enabled: " + 
+               std::to_string(currentFeaturesEnabled), true);
+        RestartKeyMonitoring();
+    }
+    // Stop key monitoring if we shouldn't be monitoring but are
+    else if (!shouldMonitorKeys && isCurrentlyMonitoring) {
+        std::string reason = !currentFeaturesEnabled ? "features disabled" : "window inactive";
+        LogOut("[SYSTEM] Stopping key monitoring - " + reason, true);
+        keyMonitorRunning.store(false);
     }
 }
