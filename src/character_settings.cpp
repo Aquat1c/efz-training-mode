@@ -160,13 +160,16 @@ namespace CharacterSettings {
             
             // Fix: Add explicit template parameters to std::max and std::min
             int bloodValue = std::max<int>(0, std::min<int>(IKUMI_BLOOD_MAX, data.p1IkumiBlood));
-            int genocideValue = std::max<int>(0, std::min<int>(IKUMI_GENOCIDE_MAX, data.p1IkumiGenocide));
+            // For infinite mode, set genocide timer to max, otherwise use the provided value
+            int genocideValue = data.infiniteBloodMode ? IKUMI_GENOCIDE_MAX : 
+                              std::max<int>(0, std::min<int>(IKUMI_GENOCIDE_MAX, data.p1IkumiGenocide));
             
             if (bloodAddr) SafeWriteMemory(bloodAddr, &bloodValue, sizeof(int));
             if (genocideAddr) SafeWriteMemory(genocideAddr, &genocideValue, sizeof(int));
             
             LogOut("[CHAR] Applied P1 Ikumi values: Blood=" + std::to_string(bloodValue) + 
-                   ", Genocide=" + std::to_string(genocideValue), 
+                   ", Genocide=" + std::to_string(genocideValue) + " (infinite: " + 
+                   (data.infiniteBloodMode ? "ON" : "OFF") + ")", 
                    detailedLogging.load());
         }
         
@@ -177,7 +180,9 @@ namespace CharacterSettings {
             
             // Fix: Add explicit template parameters to std::max and std::min
             int bloodValue = std::max<int>(0, std::min<int>(IKUMI_BLOOD_MAX, data.p2IkumiBlood));
-            int genocideValue = std::max<int>(0, std::min<int>(IKUMI_GENOCIDE_MAX, data.p2IkumiGenocide));
+            // For infinite mode, set genocide timer to max, otherwise use the provided value
+            int genocideValue = data.infiniteBloodMode ? IKUMI_GENOCIDE_MAX : 
+                              std::max<int>(0, std::min<int>(IKUMI_GENOCIDE_MAX, data.p2IkumiGenocide));
             
             if (bloodAddr) SafeWriteMemory(bloodAddr, &bloodValue, sizeof(int));
             if (genocideAddr) SafeWriteMemory(genocideAddr, &genocideValue, sizeof(int));
@@ -211,10 +216,12 @@ namespace CharacterSettings {
         }
         
         // Apply any character-specific patches if enabled
+        // Always restart character patches when applying values
+        // This ensures the monitoring thread is updated with the latest settings
+        RemoveCharacterPatches();
+        
         if (data.infiniteBloodMode || data.infiniteFeatherMode) {
             ApplyCharacterPatches(data);
-        } else {
-            RemoveCharacterPatches();
         }
     }
     
@@ -230,8 +237,8 @@ namespace CharacterSettings {
     void CharacterValueMonitoringThread() {
         LogOut("[CHAR] Starting character value monitoring thread", true);
         
-        // Sleep interval in milliseconds (60fps = ~16ms per frame)
-        const int sleepInterval = 16;
+        // Sleep interval in milliseconds (60fps = ~16ms per frame, but we'll be more aggressive)
+        const int sleepInterval = 8; // ~120 fps for faster response
         
         while (valueMonitoringActive) {
             uintptr_t base = GetEFZBase();
@@ -257,49 +264,55 @@ namespace CharacterSettings {
                     }
                 }
                 
-                // Misuzu's feather count - restore if decreased approach
+                // Misuzu's feather count - continuous overwrite approach (freeze functionality)
                 if (localData.infiniteFeatherMode) {
                     // P1 Misuzu feather preservation
-                    if (localData.p1CharID == CHAR_ID_MISUZU) {
+                    if (localData.p1CharID == CHAR_ID_MISUZU && p1LastFeatherCount > 0) {
                         uintptr_t featherAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P1, MISUZU_FEATHER_OFFSET);
                         if (featherAddr) {
                             int currentFeatherCount = 0;
                             SafeReadMemory(featherAddr, &currentFeatherCount, sizeof(int));
                             
-                            // If feather count decreased, restore it
-                            if (currentFeatherCount < p1LastFeatherCount && p1LastFeatherCount > 0) {
-                                LogOut("[CHAR] Restoring P1 Misuzu feathers from " + 
+                            // If feathers have decreased, immediately restore
+                            if (currentFeatherCount < p1LastFeatherCount) {
+                                SafeWriteMemory(featherAddr, &p1LastFeatherCount, sizeof(int));
+                                LogOut("[CHAR] Restored P1 Misuzu feathers from " + 
                                       std::to_string(currentFeatherCount) + " to " + 
                                       std::to_string(p1LastFeatherCount), 
                                       detailedLogging.load());
-                                SafeWriteMemory(featherAddr, &p1LastFeatherCount, sizeof(int));
-                                currentFeatherCount = p1LastFeatherCount;
                             }
-                            
-                            // Always update the last count
-                            p1LastFeatherCount = currentFeatherCount;
+                            // Update tracking if feathers increased (player gained feathers)
+                            else if (currentFeatherCount > p1LastFeatherCount) {
+                                p1LastFeatherCount = currentFeatherCount;
+                                LogOut("[CHAR] P1 Misuzu gained feathers, new count: " + 
+                                      std::to_string(p1LastFeatherCount), 
+                                      detailedLogging.load());
+                            }
                         }
                     }
                     
                     // P2 Misuzu feather preservation
-                    if (localData.p2CharID == CHAR_ID_MISUZU) {
+                    if (localData.p2CharID == CHAR_ID_MISUZU && p2LastFeatherCount > 0) {
                         uintptr_t featherAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P2, MISUZU_FEATHER_OFFSET);
                         if (featherAddr) {
                             int currentFeatherCount = 0;
                             SafeReadMemory(featherAddr, &currentFeatherCount, sizeof(int));
                             
-                            // If feather count decreased, restore it
-                            if (currentFeatherCount < p2LastFeatherCount && p2LastFeatherCount > 0) {
-                                LogOut("[CHAR] Restoring P2 Misuzu feathers from " + 
+                            // If feathers have decreased, immediately restore
+                            if (currentFeatherCount < p2LastFeatherCount) {
+                                SafeWriteMemory(featherAddr, &p2LastFeatherCount, sizeof(int));
+                                LogOut("[CHAR] Restored P2 Misuzu feathers from " + 
                                       std::to_string(currentFeatherCount) + " to " + 
                                       std::to_string(p2LastFeatherCount), 
                                       detailedLogging.load());
-                                SafeWriteMemory(featherAddr, &p2LastFeatherCount, sizeof(int));
-                                currentFeatherCount = p2LastFeatherCount;
                             }
-                            
-                            // Always update the last count
-                            p2LastFeatherCount = currentFeatherCount;
+                            // Update tracking if feathers increased (player gained feathers)
+                            else if (currentFeatherCount > p2LastFeatherCount) {
+                                p2LastFeatherCount = currentFeatherCount;
+                                LogOut("[CHAR] P2 Misuzu gained feathers, new count: " + 
+                                      std::to_string(p2LastFeatherCount), 
+                                      detailedLogging.load());
+                            }
                         }
                     }
                 } 
@@ -331,6 +344,7 @@ namespace CharacterSettings {
                                 (data.p1CharID == CHAR_ID_MISUZU || data.p2CharID == CHAR_ID_MISUZU);
         
         if (!shouldMonitorIkumi && !shouldMonitorMisuzu) {
+            LogOut("[CHAR] No character monitoring needed - no infinite modes or supported characters", true);
             return;
         }
         
@@ -343,9 +357,26 @@ namespace CharacterSettings {
         
         // Start value monitoring thread if not already running
         if (!valueMonitoringActive) {
-            // Reset the tracking variables
-            p1LastFeatherCount = 0;
-            p2LastFeatherCount = 0;
+            // Initialize the tracking variables with current values
+            uintptr_t base = GetEFZBase();
+            if (base) {
+                if (data.infiniteFeatherMode) {
+                    if (data.p1CharID == CHAR_ID_MISUZU) {
+                        uintptr_t featherAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P1, MISUZU_FEATHER_OFFSET);
+                        if (featherAddr) {
+                            SafeReadMemory(featherAddr, &p1LastFeatherCount, sizeof(int));
+                            LogOut("[CHAR] Initialized P1 feather count to: " + std::to_string(p1LastFeatherCount), true);
+                        }
+                    }
+                    if (data.p2CharID == CHAR_ID_MISUZU) {
+                        uintptr_t featherAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P2, MISUZU_FEATHER_OFFSET);
+                        if (featherAddr) {
+                            SafeReadMemory(featherAddr, &p2LastFeatherCount, sizeof(int));
+                            LogOut("[CHAR] Initialized P2 feather count to: " + std::to_string(p2LastFeatherCount), true);
+                        }
+                    }
+                }
+            }
             
             // Initialize the thread
             valueMonitoringActive = true;
@@ -375,5 +406,16 @@ namespace CharacterSettings {
         // Just reset the tracking variables
         p1LastFeatherCount = 0;
         p2LastFeatherCount = 0;
+    }
+
+    // Function to get the status of the monitoring thread for debugging
+    bool IsMonitoringThreadActive() {
+        return valueMonitoringActive.load();
+    }
+    
+    // Function to get the current feather counts for debugging
+    void GetFeatherCounts(int& p1Count, int& p2Count) {
+        p1Count = p1LastFeatherCount;
+        p2Count = p2LastFeatherCount;
     }
 }

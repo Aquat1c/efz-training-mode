@@ -5,6 +5,7 @@
 #include "../include/logger.h"
 #include "../include/config.h"
 #include "../include/imgui_impl.h"  // Add this include
+#include "../include/character_settings.h" // Add this include for ImGui dialog
 #include <windows.h>
 #include <string>
 #include <thread>
@@ -157,6 +158,9 @@ void ApplySettings(DisplayData* data) {
         if (base) {
             // Update everything EXCEPT RF values
             UpdatePlayerValuesExceptRF(base, EFZ_BASE_OFFSET_P1, EFZ_BASE_OFFSET_P2);
+            
+            // Add this line to apply character-specific values
+            CharacterSettings::ApplyCharacterValues(base, *data);
             
             // Handle RF values separately using the robust method
             if (!SetRFValuesDirect(data->rf1, data->rf2)) {

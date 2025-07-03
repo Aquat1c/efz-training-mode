@@ -424,6 +424,25 @@ namespace ImGuiGui {
         
         if (hasFeatures) {
             ImGui::Separator();
+            
+            // Debug information for character features
+            if (guiState.localData.infiniteBloodMode || guiState.localData.infiniteFeatherMode) {
+                ImGui::Text("Debug Status:");
+                ImGui::SameLine();
+                if (CharacterSettings::IsMonitoringThreadActive()) {
+                    ImGui::TextColored(ImVec4(0, 1, 0, 1), "Thread Active");
+                } else {
+                    ImGui::TextColored(ImVec4(1, 0, 0, 1), "Thread Inactive");
+                }
+                
+                if (guiState.localData.infiniteFeatherMode) {
+                    int p1Count, p2Count;
+                    CharacterSettings::GetFeatherCounts(p1Count, p2Count);
+                    ImGui::Text("Feather Tracking: P1=%d, P2=%d", p1Count, p2Count);
+                }
+            }
+            
+            ImGui::Separator();
         }
         
         // ---------- PLAYER SPECIFIC SECTIONS ----------
@@ -732,17 +751,30 @@ namespace ImGuiGui {
 
     // Update ApplyImGuiSettings to include character-specific data
     void ApplyImGuiSettings() {
-        uintptr_t base = GetEFZBase();
-        if (!base) {
-            LogOut("[IMGUI] ApplySettings: Couldn't get base address", true);
-            return;
+        if (g_featuresEnabled.load()) {
+            LogOut("[IMGUI_GUI] Applying settings from ImGui interface", true);
+            
+            DisplayData updatedData = guiState.localData;
+            displayData = updatedData;
+            
+            // Update atomic variables from our local copy
+            autoAirtechEnabled.store(displayData.autoAirtech);
+            autoAirtechDirection.store(displayData.airtechDirection);
+            autoAirtechDelay.store(displayData.airtechDelay);
+            autoJumpEnabled.store(displayData.autoJump);
+            jumpDirection.store(displayData.jumpDirection);
+            jumpTarget.store(displayData.jumpTarget);
+            
+            // Add this to log character-specific settings being applied
+            LogOut("[IMGUI_GUI] Applying character settings - Blood Mode: " + 
+                   std::to_string(displayData.infiniteBloodMode) + 
+                   ", Feather Mode: " + std::to_string(displayData.infiniteFeatherMode), true);
+            
+            // Apply the settings to the game
+            uintptr_t base = GetEFZBase();
+            if (base) {
+                ApplySettings(&displayData);
+            }
         }
-        
-        // Apply basic values...
-        
-        // Apply character-specific values
-        CharacterSettings::ApplyCharacterValues(base, guiState.localData);
-        
-        LogOut("[IMGUI] Applied settings to game memory", true);
     }
 }

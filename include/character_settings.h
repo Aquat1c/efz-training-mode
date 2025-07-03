@@ -32,4 +32,8 @@ namespace CharacterSettings {
 
     // Character value monitoring thread
     void CharacterValueMonitoringThread();
+
+    // Debugging functions
+    bool IsMonitoringThreadActive();
+    void GetFeatherCounts(int& p1Count, int& p2Count);
 }
