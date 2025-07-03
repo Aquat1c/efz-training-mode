@@ -18,6 +18,7 @@ void ApplyRFValues(double p1RF, double p2RF);
 bool PatchMemory(uintptr_t address, const char* bytes, size_t length);
 bool NopMemory(uintptr_t address, size_t length);
 bool SetRFValuesDirect(double p1RF, double p2RF);
+bool SetICColorDirect(bool p1BlueIC, bool p2BlueIC);
 
 // Add these for position save/load
 void SavePlayerPositions(uintptr_t base);

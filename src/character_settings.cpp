@@ -215,12 +215,33 @@ namespace CharacterSettings {
                    detailedLogging.load());
         }
         
+        // Apply Blue IC/Red IC toggle for both players
+        if (data.p1BlueIC || data.p2BlueIC) {
+            if (data.p1BlueIC) {
+                uintptr_t icAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P1, IC_COLOR_OFFSET);
+                if (icAddr) {
+                    int icValue = 1; // 1 = Blue IC
+                    SafeWriteMemory(icAddr, &icValue, sizeof(int));
+                    LogOut("[IC] Applied P1 Blue IC", detailedLogging.load());
+                }
+            }
+            
+            if (data.p2BlueIC) {
+                uintptr_t icAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P2, IC_COLOR_OFFSET);
+                if (icAddr) {
+                    int icValue = 1; // 1 = Blue IC
+                    SafeWriteMemory(icAddr, &icValue, sizeof(int));
+                    LogOut("[IC] Applied P2 Blue IC", detailedLogging.load());
+                }
+            }
+        }
+        
         // Apply any character-specific patches if enabled
         // Always restart character patches when applying values
         // This ensures the monitoring thread is updated with the latest settings
         RemoveCharacterPatches();
         
-        if (data.infiniteBloodMode || data.infiniteFeatherMode) {
+        if (data.infiniteBloodMode || data.infiniteFeatherMode || data.p1BlueIC || data.p2BlueIC) {
             ApplyCharacterPatches(data);
         }
     }
@@ -321,6 +342,23 @@ namespace CharacterSettings {
                     p1LastFeatherCount = 0;
                     p2LastFeatherCount = 0;
                 }
+                
+                // Blue IC/Red IC toggle - continuously apply when enabled
+                if (localData.p1BlueIC) {
+                    uintptr_t icAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P1, IC_COLOR_OFFSET);
+                    if (icAddr) {
+                        int icValue = 1; // 1 = Blue IC
+                        SafeWriteMemory(icAddr, &icValue, sizeof(int));
+                    }
+                }
+                
+                if (localData.p2BlueIC) {
+                    uintptr_t icAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P2, IC_COLOR_OFFSET);
+                    if (icAddr) {
+                        int icValue = 1; // 1 = Blue IC
+                        SafeWriteMemory(icAddr, &icValue, sizeof(int));
+                    }
+                }
             }
             
             // Sleep to avoid hammering the CPU
@@ -333,8 +371,8 @@ namespace CharacterSettings {
     // Update ApplyCharacterPatches to start the monitoring thread
     void ApplyCharacterPatches(const DisplayData& data) {
         // Only apply monitoring if:
-        // 1. Any infinite mode is enabled
-        // 2. At least one player is using a supported character
+        // 1. Any infinite mode is enabled OR Blue IC is enabled
+        // 2. At least one player is using a supported character (for infinite modes)
         // 3. We're in a valid game mode (practice mode)
         
         bool shouldMonitorIkumi = data.infiniteBloodMode && 
@@ -342,9 +380,11 @@ namespace CharacterSettings {
         
         bool shouldMonitorMisuzu = data.infiniteFeatherMode &&
                                 (data.p1CharID == CHAR_ID_MISUZU || data.p2CharID == CHAR_ID_MISUZU);
+                                
+        bool shouldMonitorIC = data.p1BlueIC || data.p2BlueIC;
         
-        if (!shouldMonitorIkumi && !shouldMonitorMisuzu) {
-            LogOut("[CHAR] No character monitoring needed - no infinite modes or supported characters", true);
+        if (!shouldMonitorIkumi && !shouldMonitorMisuzu && !shouldMonitorIC) {
+            LogOut("[CHAR] No character monitoring needed - no infinite modes, Blue IC, or supported characters", true);
             return;
         }
         

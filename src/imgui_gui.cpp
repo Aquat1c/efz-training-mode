@@ -73,6 +73,12 @@ namespace ImGuiGui {
             guiState.localData.rf1 = CLAMP(rf1, 0.0f, MAX_RF);
         }
 
+        // P1 Blue IC toggle
+        ImGui::Checkbox("P1 Blue IC", &guiState.localData.p1BlueIC);
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("Checked = Blue IC (forced), Unchecked = Red IC (normal)\nApply changes to update the game");
+        }
+
         // P1 Position
         float x1 = (float)guiState.localData.x1;
         float y1 = (float)guiState.localData.y1;
@@ -105,6 +111,12 @@ namespace ImGuiGui {
         float rf2 = (float)guiState.localData.rf2;
         if (ImGui::InputFloat("P2 RF", &rf2, 0.1f, 1.0f, "%.1f")) {
             guiState.localData.rf2 = CLAMP(rf2, 0.0f, MAX_RF);
+        }
+
+        // P2 Blue IC toggle
+        ImGui::Checkbox("P2 Blue IC", &guiState.localData.p2BlueIC);
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("Checked = Blue IC (forced), Unchecked = Red IC (normal)\nApply changes to update the game");
         }
 
         // P2 Position
@@ -422,6 +434,35 @@ namespace ImGuiGui {
             }
         }
         
+        // Blue IC/Red IC Toggle (universal for all characters)
+        hasFeatures = true; // Always show this section since it works for all characters
+        
+        ImGui::Text("IC Color Override:");
+        
+        bool p1BlueIC = guiState.localData.p1BlueIC;
+        if (ImGui::Checkbox("P1 Blue IC", &p1BlueIC)) {
+            guiState.localData.p1BlueIC = p1BlueIC;
+        }
+        
+        ImGui::SameLine();
+        
+        bool p2BlueIC = guiState.localData.p2BlueIC;
+        if (ImGui::Checkbox("P2 Blue IC", &p2BlueIC)) {
+            guiState.localData.p2BlueIC = p2BlueIC;
+        }
+        
+        ImGui::SameLine();
+        ImGui::TextDisabled("(?)");
+        if (ImGui::IsItemHovered()) {
+            ImGui::BeginTooltip();
+            ImGui::PushTextWrapPos(ImGui::GetFontSize() * 35.0f);
+            ImGui::TextUnformatted("Forces RF bar to Blue IC state (full RF special properties).\n"
+                                   "When unchecked, RF bar returns to normal Red IC state.\n"
+                                   "This affects all characters and works in all game modes.");
+            ImGui::PopTextWrapPos();
+            ImGui::EndTooltip();
+        }
+        
         if (hasFeatures) {
             ImGui::Separator();
             
@@ -631,6 +672,15 @@ namespace ImGuiGui {
         if (!ImGuiImpl::IsVisible())
             return;
 
+        // Auto-refresh data when UI first becomes visible
+        static bool lastVisible = false;
+        bool currentVisible = ImGuiImpl::IsVisible();
+        if (currentVisible && !lastVisible) {
+            // UI just became visible, refresh data
+            RefreshLocalData();
+        }
+        lastVisible = currentVisible;
+
         // Set window position and size
         ImGui::SetNextWindowPos(ImVec2(50, 50), ImGuiCond_FirstUseEver);
         ImGui::SetNextWindowSize(ImVec2(580, 520), ImGuiCond_FirstUseEver);
@@ -746,7 +796,17 @@ namespace ImGuiGui {
         // Read character-specific values
         CharacterSettings::ReadCharacterValues(base, guiState.localData);
 
-        LogOut("[IMGUI] Refreshed local data from game memory.", true);
+        // Read current IC color values from memory
+        int p1ICValue = 0, p2ICValue = 0;
+        SafeReadMemory(ResolvePointer(base, EFZ_BASE_OFFSET_P1, IC_COLOR_OFFSET), &p1ICValue, sizeof(int));
+        SafeReadMemory(ResolvePointer(base, EFZ_BASE_OFFSET_P2, IC_COLOR_OFFSET), &p2ICValue, sizeof(int));
+        
+        // Update checkbox states based on current IC color values (1=Blue IC, 0=Red IC)
+        guiState.localData.p1BlueIC = (p1ICValue == 1);
+        guiState.localData.p2BlueIC = (p2ICValue == 1);
+
+        LogOut("[IMGUI] Refreshed local data from game memory. IC Colors: P1=" + 
+               std::to_string(p1ICValue) + ", P2=" + std::to_string(p2ICValue), true);
     }
 
     // Update ApplyImGuiSettings to include character-specific data
@@ -768,7 +828,12 @@ namespace ImGuiGui {
             // Add this to log character-specific settings being applied
             LogOut("[IMGUI_GUI] Applying character settings - Blood Mode: " + 
                    std::to_string(displayData.infiniteBloodMode) + 
-                   ", Feather Mode: " + std::to_string(displayData.infiniteFeatherMode), true);
+                   ", Feather Mode: " + std::to_string(displayData.infiniteFeatherMode) +
+                   ", P1 Blue IC: " + std::to_string(displayData.p1BlueIC) + 
+                   ", P2 Blue IC: " + std::to_string(displayData.p2BlueIC), true);
+            
+            // Apply IC color settings directly
+            SetICColorDirect(displayData.p1BlueIC, displayData.p2BlueIC);
             
             // Apply the settings to the game
             uintptr_t base = GetEFZBase();
