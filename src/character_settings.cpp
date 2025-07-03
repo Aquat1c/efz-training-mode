@@ -6,6 +6,8 @@
 #include <algorithm>
 #include <cctype>
 #include <unordered_map>
+#include <thread>
+#include <atomic>
 
 namespace CharacterSettings {
     // Track if character patches are currently applied
@@ -28,8 +30,8 @@ namespace CharacterSettings {
         {"nagamori", CHAR_ID_MIZUKA},    // Nagamori is actually Mizuka
         {"nanase", CHAR_ID_NANASE},      // Nanase is Rumi
         {"exnanase", CHAR_ID_EXNANASE},  // ExNanase is Doppel
-        {"nayuki", CHAR_ID_NAYUKIB},     // Nayuki is actually NayukiB (Nayuki)
-        {"nayukib", CHAR_ID_NAYUKI},     // NayukiB is actually Nayuki (Neyuki)
+        {"nayuki", CHAR_ID_NAYUKIB},     // Nayuki is actually NayukiB, this one is Neyuki
+        {"nayukib", CHAR_ID_NAYUKI},     // NayukiB is actually Nayuki
         {"shiori", CHAR_ID_SHIORI},
         {"ayu", CHAR_ID_AYU},
         {"mai", CHAR_ID_MAI},
@@ -129,6 +131,25 @@ namespace CharacterSettings {
                    ", Genocide=" + std::to_string(data.p2IkumiGenocide), 
                    detailedLogging.load());
         }
+        
+        // Read Misuzu's values if either player is using her
+        if (data.p1CharID == CHAR_ID_MISUZU) {
+            uintptr_t featherAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P1, MISUZU_FEATHER_OFFSET);
+            
+            if (featherAddr) SafeReadMemory(featherAddr, &data.p1MisuzuFeathers, sizeof(int));
+            
+            LogOut("[CHAR] Read P1 Misuzu values: Feathers=" + std::to_string(data.p1MisuzuFeathers), 
+                   detailedLogging.load());
+        }
+        
+        if (data.p2CharID == CHAR_ID_MISUZU) {
+            uintptr_t featherAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P2, MISUZU_FEATHER_OFFSET);
+            
+            if (featherAddr) SafeReadMemory(featherAddr, &data.p2MisuzuFeathers, sizeof(int));
+            
+            LogOut("[CHAR] Read P2 Misuzu values: Feathers=" + std::to_string(data.p2MisuzuFeathers), 
+                   detailedLogging.load());
+        }
     }
     
     void ApplyCharacterValues(uintptr_t base, const DisplayData& data) {
@@ -166,66 +187,193 @@ namespace CharacterSettings {
                    detailedLogging.load());
         }
         
+        // Apply Misuzu's values if either player is using her
+        if (data.p1CharID == CHAR_ID_MISUZU) {
+            uintptr_t featherAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P1, MISUZU_FEATHER_OFFSET);
+            
+            int featherValue = std::max<int>(0, std::min<int>(MISUZU_FEATHER_MAX, data.p1MisuzuFeathers));
+            
+            if (featherAddr) SafeWriteMemory(featherAddr, &featherValue, sizeof(int));
+            
+            LogOut("[CHAR] Applied P1 Misuzu values: Feathers=" + std::to_string(featherValue), 
+                   detailedLogging.load());
+        }
+        
+        if (data.p2CharID == CHAR_ID_MISUZU) {
+            uintptr_t featherAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P2, MISUZU_FEATHER_OFFSET);
+            
+            int featherValue = std::max<int>(0, std::min<int>(MISUZU_FEATHER_MAX, data.p2MisuzuFeathers));
+            
+            if (featherAddr) SafeWriteMemory(featherAddr, &featherValue, sizeof(int));
+            
+            LogOut("[CHAR] Applied P2 Misuzu values: Feathers=" + std::to_string(featherValue), 
+                   detailedLogging.load());
+        }
+        
         // Apply any character-specific patches if enabled
-        if (data.infiniteBloodMode) {
+        if (data.infiniteBloodMode || data.infiniteFeatherMode) {
             ApplyCharacterPatches(data);
         } else {
             RemoveCharacterPatches();
         }
     }
     
+    // Track if character value monitoring thread is active
+    static std::atomic<bool> valueMonitoringActive(false);
+    static std::thread valueMonitoringThread;
+    
+    // Track previous values for Misuzu's feather count
+    static int p1LastFeatherCount = 0;
+    static int p2LastFeatherCount = 0;
+
+    // Function to continuously monitor and preserve character-specific values
+    void CharacterValueMonitoringThread() {
+        LogOut("[CHAR] Starting character value monitoring thread", true);
+        
+        // Sleep interval in milliseconds (60fps = ~16ms per frame)
+        const int sleepInterval = 16;
+        
+        while (valueMonitoringActive) {
+            uintptr_t base = GetEFZBase();
+            if (base && g_featuresEnabled) {
+                DisplayData localData = displayData; // Make a local copy to work with
+                
+                // Ikumi's genocide timer - continuous overwrite approach
+                if (localData.infiniteBloodMode) {
+                    // P1 Ikumi genocide timer preservation
+                    if (localData.p1CharID == CHAR_ID_IKUMI) {
+                        uintptr_t genocideAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P1, IKUMI_GENOCIDE_OFFSET);
+                        if (genocideAddr) {
+                            SafeWriteMemory(genocideAddr, &localData.p1IkumiGenocide, sizeof(int));
+                        }
+                    }
+                    
+                    // P2 Ikumi genocide timer preservation
+                    if (localData.p2CharID == CHAR_ID_IKUMI) {
+                        uintptr_t genocideAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P2, IKUMI_GENOCIDE_OFFSET);
+                        if (genocideAddr) {
+                            SafeWriteMemory(genocideAddr, &localData.p2IkumiGenocide, sizeof(int));
+                        }
+                    }
+                }
+                
+                // Misuzu's feather count - restore if decreased approach
+                if (localData.infiniteFeatherMode) {
+                    // P1 Misuzu feather preservation
+                    if (localData.p1CharID == CHAR_ID_MISUZU) {
+                        uintptr_t featherAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P1, MISUZU_FEATHER_OFFSET);
+                        if (featherAddr) {
+                            int currentFeatherCount = 0;
+                            SafeReadMemory(featherAddr, &currentFeatherCount, sizeof(int));
+                            
+                            // If feather count decreased, restore it
+                            if (currentFeatherCount < p1LastFeatherCount && p1LastFeatherCount > 0) {
+                                LogOut("[CHAR] Restoring P1 Misuzu feathers from " + 
+                                      std::to_string(currentFeatherCount) + " to " + 
+                                      std::to_string(p1LastFeatherCount), 
+                                      detailedLogging.load());
+                                SafeWriteMemory(featherAddr, &p1LastFeatherCount, sizeof(int));
+                                currentFeatherCount = p1LastFeatherCount;
+                            }
+                            
+                            // Always update the last count
+                            p1LastFeatherCount = currentFeatherCount;
+                        }
+                    }
+                    
+                    // P2 Misuzu feather preservation
+                    if (localData.p2CharID == CHAR_ID_MISUZU) {
+                        uintptr_t featherAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P2, MISUZU_FEATHER_OFFSET);
+                        if (featherAddr) {
+                            int currentFeatherCount = 0;
+                            SafeReadMemory(featherAddr, &currentFeatherCount, sizeof(int));
+                            
+                            // If feather count decreased, restore it
+                            if (currentFeatherCount < p2LastFeatherCount && p2LastFeatherCount > 0) {
+                                LogOut("[CHAR] Restoring P2 Misuzu feathers from " + 
+                                      std::to_string(currentFeatherCount) + " to " + 
+                                      std::to_string(p2LastFeatherCount), 
+                                      detailedLogging.load());
+                                SafeWriteMemory(featherAddr, &p2LastFeatherCount, sizeof(int));
+                                currentFeatherCount = p2LastFeatherCount;
+                            }
+                            
+                            // Always update the last count
+                            p2LastFeatherCount = currentFeatherCount;
+                        }
+                    }
+                } 
+                else {
+                    // Reset the stored values when feature is disabled
+                    p1LastFeatherCount = 0;
+                    p2LastFeatherCount = 0;
+                }
+            }
+            
+            // Sleep to avoid hammering the CPU
+            std::this_thread::sleep_for(std::chrono::milliseconds(sleepInterval));
+        }
+        
+        LogOut("[CHAR] Character value monitoring thread stopped", true);
+    }
+
+    // Update ApplyCharacterPatches to start the monitoring thread
     void ApplyCharacterPatches(const DisplayData& data) {
-        // Only apply patches if:
-        // 1. Infinite blood mode is enabled
-        // 2. At least one player is using Ikumi
+        // Only apply monitoring if:
+        // 1. Any infinite mode is enabled
+        // 2. At least one player is using a supported character
         // 3. We're in a valid game mode (practice mode)
         
-        if (!data.infiniteBloodMode || 
-            (data.p1CharID != CHAR_ID_IKUMI && data.p2CharID != CHAR_ID_IKUMI)) {
+        bool shouldMonitorIkumi = data.infiniteBloodMode && 
+                               (data.p1CharID == CHAR_ID_IKUMI || data.p2CharID == CHAR_ID_IKUMI);
+        
+        bool shouldMonitorMisuzu = data.infiniteFeatherMode &&
+                                (data.p1CharID == CHAR_ID_MISUZU || data.p2CharID == CHAR_ID_MISUZU);
+        
+        if (!shouldMonitorIkumi && !shouldMonitorMisuzu) {
             return;
         }
         
-        // Verify we're in a valid game state before applying patches
+        // Verify we're in a valid game state before monitoring
         GameMode currentMode = GetCurrentGameMode();
         if (currentMode != GameMode::Practice) {
-            LogOut("[CHAR] Not applying infinite blood patch - not in practice mode", true);
+            LogOut("[CHAR] Not applying character monitoring - not in practice mode", true);
             return;
         }
         
-        // Apply NOP patch to prevent genocide timer from decreasing
-        uintptr_t base = GetEFZBase();
-        if (!base) return;
-        
-        uintptr_t patchAddr = base + IKUMI_GENOCIDE_TIMER_ADDR;
-        
-        if (!ikumiBloodPatchApplied) {
-            if (PatchMemory(patchAddr, IKUMI_GENOCIDE_TIMER_PATCH, 6)) {
-                ikumiBloodPatchApplied = true;
-                LogOut("[CHAR] Applied infinite blood patch", true);
-            } else {
-                LogOut("[CHAR] Failed to apply infinite blood patch", true);
-            }
+        // Start value monitoring thread if not already running
+        if (!valueMonitoringActive) {
+            // Reset the tracking variables
+            p1LastFeatherCount = 0;
+            p2LastFeatherCount = 0;
+            
+            // Initialize the thread
+            valueMonitoringActive = true;
+            valueMonitoringThread = std::thread(CharacterValueMonitoringThread);
+            LogOut("[CHAR] Started character value monitoring thread", true);
         }
     }
-    
+
+    // Update RemoveCharacterPatches to stop the monitoring thread
     void RemoveCharacterPatches() {
-        // Remove the Ikumi blood patch if applied
-        if (ikumiBloodPatchApplied) {
-            uintptr_t base = GetEFZBase();
-            if (!base) return;
+        // Stop the value monitoring thread if it's running
+        if (valueMonitoringActive) {
+            valueMonitoringActive = false;
             
-            uintptr_t patchAddr = base + IKUMI_GENOCIDE_TIMER_ADDR;
-            
-            if (PatchMemory(patchAddr, IKUMI_GENOCIDE_TIMER_ORIGINAL, 6)) {
-                ikumiBloodPatchApplied = false;
-                LogOut("[CHAR] Removed infinite blood patch", true);
-            } else {
-                LogOut("[CHAR] Failed to remove infinite blood patch", true);
+            if (valueMonitoringThread.joinable()) {
+                valueMonitoringThread.join();
             }
+            
+            LogOut("[CHAR] Stopped character value monitoring thread", true);
         }
     }
     
-    bool AreCharacterPatchesApplied() {
-        return ikumiBloodPatchApplied;
+    // Implementation for Misuzu-specific patches
+    void RemoveMisuzuPatches() {
+        // We're using value monitoring instead of code patching,
+        // so we don't need specific removal code for Misuzu
+        // Just reset the tracking variables
+        p1LastFeatherCount = 0;
+        p2LastFeatherCount = 0;
     }
 }

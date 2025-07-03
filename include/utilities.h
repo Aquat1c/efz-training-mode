@@ -103,6 +103,11 @@ struct DisplayData {
     int p2IkumiGenocide;
     bool infiniteBloodMode;  // Enables freeze patch for blood
     
+    // Misuzu
+    int p1MisuzuFeathers;
+    int p2MisuzuFeathers;
+    bool infiniteFeatherMode; // Add this missing field
+    
     // Keep these for backward compatibility
     bool autoAction;
     int autoActionType;

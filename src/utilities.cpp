@@ -170,33 +170,12 @@ DisplayData displayData = {
     3,                  // jumpTarget
     "",                 // p1CharName
     "",                 // p2CharName
-    false,              // autoAction
-    ACTION_5A,          // autoActionType
-    BASE_ATTACK_5A,     // autoActionCustomID
-    2,                  // autoActionPlayer
-    false,              // triggerAfterBlock
-    false,              // triggerOnWakeup
-    false,              // triggerAfterHitstun
-    false,              // triggerAfterAirtech
-    DEFAULT_TRIGGER_DELAY, // delayAfterBlock
-    DEFAULT_TRIGGER_DELAY, // delayOnWakeup
-    DEFAULT_TRIGGER_DELAY, // delayAfterHitstun
-    DEFAULT_TRIGGER_DELAY, // delayAfterAirtech
-    ACTION_5A,          // actionAfterBlock
-    ACTION_5A,          // actionOnWakeup
-    ACTION_5A,          // actionAfterHitstun
-    ACTION_JA,          // actionAfterAirtech
-    BASE_ATTACK_5A,     // customAfterBlock
-    BASE_ATTACK_5A,     // customOnWakeup
-    BASE_ATTACK_5A,     // customAfterHitstun
-    BASE_ATTACK_JA,     // customAfterAirtech
-    -1,                 // p1CharID
-    -1,                 // p2CharID
-    0,                  // p1IkumiBlood
-    0,                  // p2IkumiBlood
-    0,                  // p1IkumiGenocide
-    0,                  // p2IkumiGenocide
-    false               // infiniteBloodMode
+    0,                  // p1CharID
+    0,                  // p2CharID
+    0, 0, 0, 0,         // p1IkumiBlood, p2IkumiBlood, p1IkumiGenocide, p2IkumiGenocide
+    false,              // infiniteBloodMode
+    0, 0,               // p1MisuzuFeathers, p2MisuzuFeathers
+    false,              // infiniteFeatherMode
 };
 
 // Initialize key bindings with default values

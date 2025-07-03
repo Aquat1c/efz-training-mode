@@ -363,46 +363,30 @@ namespace ImGuiGui {
         ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.0f, 1.0f), "Character-Specific Settings");
         ImGui::Separator();
         
-        // Add debug information for character names and IDs
-        ImGui::Text("P1 Raw Name: %s", guiState.localData.p1CharName);
-        ImGui::Text("P2 Raw Name: %s", guiState.localData.p2CharName);
-        ImGui::Text("P1 ID: %d (%s)", guiState.localData.p1CharID, 
-                CharacterSettings::GetCharacterName(guiState.localData.p1CharID).c_str());
-    ImGui::Text("P2 ID: %d (%s)", guiState.localData.p2CharID, 
-                CharacterSettings::GetCharacterName(guiState.localData.p2CharID).c_str());
-    
         // Check if characters are valid
         if (!AreCharactersInitialized()) {
             ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.5f, 1.0f), "No valid characters detected.");
             return;
         }
         
-        ImGui::Separator();
-        
         // Update character IDs
         CharacterSettings::UpdateCharacterIDs(guiState.localData);
         
-        // Track if we have any character-specific settings to show
-        bool hasCharSpecificSettings = false;
+        // Get current characters for easier reference
+        int p1CharID = guiState.localData.p1CharID;
+        int p2CharID = guiState.localData.p2CharID;
         
-        // Ikumi-specific settings
-        bool p1IsIkumi = guiState.localData.p1CharID == CHAR_ID_IKUMI;
-        bool p2IsIkumi = guiState.localData.p2CharID == CHAR_ID_IKUMI;
+        bool hasFeatures = false;
         
-        if (p1IsIkumi || p2IsIkumi) {
-            hasCharSpecificSettings = true;
+        // ---------- GLOBAL SETTINGS SECTION (TOP) ----------
+        
+        // Ikumi - Infinite Blood Mode
+        if (p1CharID == CHAR_ID_IKUMI || p2CharID == CHAR_ID_IKUMI) {
+            hasFeatures = true;
             
-            ImGui::TextColored(ImVec4(0.7f, 0.9f, 1.0f, 1.0f), "Ikumi Settings");
-            
-            // Add global infinite blood mode toggle
             bool infiniteBlood = guiState.localData.infiniteBloodMode;
-            if (ImGui::Checkbox("Infinite Blood Mode (No Genocide Timer Depletion)", &infiniteBlood)) {
+            if (ImGui::Checkbox("Infinite Blood Mode (Ikumi)", &infiniteBlood)) {
                 guiState.localData.infiniteBloodMode = infiniteBlood;
-                
-                // If we just turned it off, make sure we remove any patches
-                if (!infiniteBlood) {
-                    CharacterSettings::RemoveCharacterPatches();
-                }
             }
             
             ImGui::SameLine();
@@ -411,133 +395,216 @@ namespace ImGuiGui {
                 ImGui::BeginTooltip();
                 ImGui::PushTextWrapPos(ImGui::GetFontSize() * 35.0f);
                 ImGui::TextUnformatted("Prevents Ikumi's genocide timer from depleting when it's active.\n"
-                                      "This patch is only applied in Practice Mode.");
+                                       "This patch is only applied in Practice Mode.");
                 ImGui::PopTextWrapPos();
                 ImGui::EndTooltip();
             }
+        }
+        
+        // Misuzu - Infinite Feather Mode
+        if (p1CharID == CHAR_ID_MISUZU || p2CharID == CHAR_ID_MISUZU) {
+            hasFeatures = true;
             
+            bool infiniteFeathers = guiState.localData.infiniteFeatherMode;
+            if (ImGui::Checkbox("Infinite Feather Mode (Misuzu)", &infiniteFeathers)) {
+                guiState.localData.infiniteFeatherMode = infiniteFeathers;
+            }
+            
+            ImGui::SameLine();
+            ImGui::TextDisabled("(?)");
+            if (ImGui::IsItemHovered()) {
+                ImGui::BeginTooltip();
+                ImGui::PushTextWrapPos(ImGui::GetFontSize() * 35.0f);
+                ImGui::TextUnformatted("Prevents Misuzu's feathers from being consumed when using special moves.\n"
+                                       "This patch is only applied in Practice Mode.");
+                ImGui::PopTextWrapPos();
+                ImGui::EndTooltip();
+            }
+        }
+        
+        if (hasFeatures) {
             ImGui::Separator();
-            ImGui::Columns(2, "ikumiColumns", false);
-            
-            // P1 Ikumi settings
-            if (p1IsIkumi) {
-                ImGui::TextColored(ImVec4(0.5f, 0.8f, 1.0f, 1.0f), "P1 Ikumi");
-                
-                // Blood meter slider and visualization
-                int p1Blood = guiState.localData.p1IkumiBlood;
-                float p1BloodPercent = (float)p1Blood / IKUMI_BLOOD_MAX;
-                
-                ImGui::Text("Blood Level:");
-                
-                // Progress bar with color gradient
-                ImGui::PushStyleColor(ImGuiCol_PlotHistogram, 
-                    ImVec4(0.7f + p1BloodPercent * 0.3f, 0.3f - p1BloodPercent * 0.3f, 0.3f, 1.0f));
-                ImGui::ProgressBar(p1BloodPercent, ImVec2(-1, 0), 
-                                   (std::to_string(p1Blood) + "/" + std::to_string(IKUMI_BLOOD_MAX)).c_str());
-                ImGui::PopStyleColor();
-                
-                // Slider
-                if (ImGui::SliderInt("##P1Blood", &p1Blood, 0, IKUMI_BLOOD_MAX)) {
-                    guiState.localData.p1IkumiBlood = p1Blood;
-                }
-                
-                // Genocide timer
-                int p1Genocide = guiState.localData.p1IkumiGenocide;
-                float genocideSeconds = p1Genocide / 60.0f;
-                
-                ImGui::Text("Genocide Timer: %.1f seconds", genocideSeconds);
-                if (ImGui::SliderInt("##P1Genocide", &p1Genocide, 0, IKUMI_GENOCIDE_MAX)) {
-                    guiState.localData.p1IkumiGenocide = p1Genocide;
-                }
-                
-                // Quick set buttons
-                if (ImGui::Button("Max Blood##p1")) {
-                    guiState.localData.p1IkumiBlood = IKUMI_BLOOD_MAX;
-                }
-                ImGui::SameLine();
-                if (ImGui::Button("Min Blood##p1")) {
-                    guiState.localData.p1IkumiBlood = 0;
-                }
-                
-                if (ImGui::Button("Max Genocide##p1")) {
-                    guiState.localData.p1IkumiGenocide = IKUMI_GENOCIDE_MAX;
-                }
-                ImGui::SameLine();
-                if (ImGui::Button("Reset Genocide##p1")) {
-                    guiState.localData.p1IkumiGenocide = 0;
-                }
-            } else {
-                ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "P1 is not Ikumi");
-            }
-            
-            // Next column for P2
-            ImGui::NextColumn();
-            
-            // P2 Ikumi settings
-            if (p2IsIkumi) {
-                ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.5f, 1.0f), "P2 Ikumi");
-                
-                // Blood meter slider and visualization
-                int p2Blood = guiState.localData.p2IkumiBlood;
-                float p2BloodPercent = (float)p2Blood / IKUMI_BLOOD_MAX;
-                
-                ImGui::Text("Blood Level:");
-                
-                // Progress bar with color gradient
-                ImGui::PushStyleColor(ImGuiCol_PlotHistogram, 
-                    ImVec4(0.7f + p2BloodPercent * 0.3f, 0.3f - p2BloodPercent * 0.3f, 0.3f, 1.0f));
-                ImGui::ProgressBar(p2BloodPercent, ImVec2(-1, 0), 
-                                   (std::to_string(p2Blood) + "/" + std::to_string(IKUMI_BLOOD_MAX)).c_str());
-                ImGui::PopStyleColor();
-                
-                // Slider
-                if (ImGui::SliderInt("##P2Blood", &p2Blood, 0, IKUMI_BLOOD_MAX)) {
-                    guiState.localData.p2IkumiBlood = p2Blood;
-                }
-                
-                // Genocide timer
-                int p2Genocide = guiState.localData.p2IkumiGenocide;
-                float genocideSeconds = p2Genocide / 60.0f;
-                
-                ImGui::Text("Genocide Timer: %.1f seconds", genocideSeconds);
-                if (ImGui::SliderInt("##P2Genocide", &p2Genocide, 0, IKUMI_GENOCIDE_MAX)) {
-                    guiState.localData.p2IkumiGenocide = p2Genocide;
-                }
-                
-                // Quick set buttons
-                if (ImGui::Button("Max Blood##p2")) {
-                    guiState.localData.p2IkumiBlood = IKUMI_BLOOD_MAX;
-                }
-                ImGui::SameLine();
-                if (ImGui::Button("Min Blood##p2")) {
-                    guiState.localData.p2IkumiBlood = 0;
-                }
-                
-                if (ImGui::Button("Max Genocide##p2")) {
-                    guiState.localData.p2IkumiGenocide = IKUMI_GENOCIDE_MAX;
-                }
-                ImGui::SameLine();
-                if (ImGui::Button("Reset Genocide##p2")) {
-                    guiState.localData.p2IkumiGenocide = 0;
-                }
-            } else {
-                ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "P2 is not Ikumi");
-            }
-            
-            ImGui::Columns(1);
         }
         
-        // Add a section at the bottom for help info
+        // ---------- PLAYER SPECIFIC SECTIONS ----------
+        // Create two columns for P1 and P2
+        ImGui::Columns(2, "playerColumns", true);
+        
+        // --- P1 COLUMN ---
+        ImGui::TextColored(ImVec4(0.5f, 0.8f, 1.0f, 1.0f), "P1: %s", 
+                          CharacterSettings::GetCharacterName(p1CharID).c_str());
+        
+        // P1 Ikumi Settings
+        if (p1CharID == CHAR_ID_IKUMI) {
+            // Blood Level
+            int p1Blood = guiState.localData.p1IkumiBlood;
+            float p1BloodPercent = (float)p1Blood / IKUMI_BLOOD_MAX;
+            
+            ImGui::Text("Blood Level:");
+            
+            // Progress bar with color gradient
+            ImGui::PushStyleColor(ImGuiCol_PlotHistogram, 
+                ImVec4(0.7f + p1BloodPercent * 0.3f, 0.3f - p1BloodPercent * 0.3f, 0.3f, 1.0f));
+            ImGui::ProgressBar(p1BloodPercent, ImVec2(-1, 0), 
+                              (std::to_string(p1Blood) + "/" + std::to_string(IKUMI_BLOOD_MAX)).c_str());
+            ImGui::PopStyleColor();
+            
+            // Slider
+            if (ImGui::SliderInt("##P1Blood", &p1Blood, 0, IKUMI_BLOOD_MAX)) {
+                guiState.localData.p1IkumiBlood = p1Blood;
+            }
+            
+            // Genocide Timer
+            int p1Genocide = guiState.localData.p1IkumiGenocide;
+            float genocideSeconds = p1Genocide / 60.0f;
+            
+            ImGui::Text("Genocide Timer: %.1f sec", genocideSeconds);
+            if (ImGui::SliderInt("##P1Genocide", &p1Genocide, 0, IKUMI_GENOCIDE_MAX)) {
+                guiState.localData.p1IkumiGenocide = p1Genocide;
+            }
+            
+            // Quick set buttons
+            if (ImGui::Button("Max Blood##p1")) {
+                guiState.localData.p1IkumiBlood = IKUMI_BLOOD_MAX;
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Min Blood##p1")) {
+                guiState.localData.p1IkumiBlood = 0;
+            }
+            
+            if (ImGui::Button("Max Genocide##p1")) {
+                guiState.localData.p1IkumiGenocide = IKUMI_GENOCIDE_MAX;
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Reset Genocide##p1")) {
+                guiState.localData.p1IkumiGenocide = 0;
+            }
+        }
+        // P1 Misuzu Settings
+        else if (p1CharID == CHAR_ID_MISUZU) {
+            // Feather Count
+            int p1Feathers = guiState.localData.p1MisuzuFeathers;
+            float p1FeatherPercent = (float)p1Feathers / MISUZU_FEATHER_MAX;
+            
+            ImGui::Text("Feather Count:");
+            
+            // Progress bar with blue color gradient
+            ImGui::PushStyleColor(ImGuiCol_PlotHistogram, 
+                ImVec4(0.3f, 0.5f, 0.8f + p1FeatherPercent * 0.2f, 1.0f));
+            ImGui::ProgressBar(p1FeatherPercent, ImVec2(-1, 0), 
+                              (std::to_string(p1Feathers) + "/" + std::to_string(MISUZU_FEATHER_MAX)).c_str());
+            ImGui::PopStyleColor();
+            
+            // Slider
+            if (ImGui::SliderInt("##P1Feathers", &p1Feathers, 0, MISUZU_FEATHER_MAX)) {
+                guiState.localData.p1MisuzuFeathers = p1Feathers;
+            }
+            
+            // Quick set buttons
+            if (ImGui::Button("Max Feathers##p1")) {
+                guiState.localData.p1MisuzuFeathers = MISUZU_FEATHER_MAX;
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("No Feathers##p1")) {
+                guiState.localData.p1MisuzuFeathers = 0;
+            }
+        }
+        else {
+            ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "No special settings available");
+        }
+        
+        // --- P2 COLUMN ---
+        ImGui::NextColumn();
+        ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.5f, 1.0f), "P2: %s", 
+                          CharacterSettings::GetCharacterName(p2CharID).c_str());
+        
+        // P2 Ikumi Settings
+        if (p2CharID == CHAR_ID_IKUMI) {
+            // Blood Level
+            int p2Blood = guiState.localData.p2IkumiBlood;
+            float p2BloodPercent = (float)p2Blood / IKUMI_BLOOD_MAX;
+            
+            ImGui::Text("Blood Level:");
+            
+            // Progress bar with color gradient
+            ImGui::PushStyleColor(ImGuiCol_PlotHistogram, 
+                ImVec4(0.7f + p2BloodPercent * 0.3f, 0.3f - p2BloodPercent * 0.3f, 0.3f, 1.0f));
+            ImGui::ProgressBar(p2BloodPercent, ImVec2(-1, 0), 
+                              (std::to_string(p2Blood) + "/" + std::to_string(IKUMI_BLOOD_MAX)).c_str());
+            ImGui::PopStyleColor();
+            
+            // Slider
+            if (ImGui::SliderInt("##P2Blood", &p2Blood, 0, IKUMI_BLOOD_MAX)) {
+                guiState.localData.p2IkumiBlood = p2Blood;
+            }
+            
+            // Genocide Timer
+            int p2Genocide = guiState.localData.p2IkumiGenocide;
+            float genocideSeconds = p2Genocide / 60.0f;
+            
+            ImGui::Text("Genocide Timer: %.1f sec", genocideSeconds);
+            if (ImGui::SliderInt("##P2Genocide", &p2Genocide, 0, IKUMI_GENOCIDE_MAX)) {
+                guiState.localData.p2IkumiGenocide = p2Genocide;
+            }
+            
+            // Quick set buttons
+            if (ImGui::Button("Max Blood##p2")) {
+                guiState.localData.p2IkumiBlood = IKUMI_BLOOD_MAX;
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Min Blood##p2")) {
+                guiState.localData.p2IkumiBlood = 0;
+            }
+            
+            if (ImGui::Button("Max Genocide##p2")) {
+                guiState.localData.p2IkumiGenocide = IKUMI_GENOCIDE_MAX;
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Reset Genocide##p2")) {
+                guiState.localData.p2IkumiGenocide = 0;
+            }
+        }
+        // P2 Misuzu Settings
+        else if (p2CharID == CHAR_ID_MISUZU) {
+            // Feather Count
+            int p2Feathers = guiState.localData.p2MisuzuFeathers;
+            float p2FeatherPercent = (float)p2Feathers / MISUZU_FEATHER_MAX;
+            
+            ImGui::Text("Feather Count:");
+            
+            // Progress bar with blue color gradient
+            ImGui::PushStyleColor(ImGuiCol_PlotHistogram, 
+                ImVec4(0.3f, 0.5f, 0.8f + p2FeatherPercent * 0.2f, 1.0f));
+            ImGui::ProgressBar(p2FeatherPercent, ImVec2(-1, 0), 
+                              (std::to_string(p2Feathers) + "/" + std::to_string(MISUZU_FEATHER_MAX)).c_str());
+            ImGui::PopStyleColor();
+            
+            // Slider
+            if (ImGui::SliderInt("##P2Feathers", &p2Feathers, 0, MISUZU_FEATHER_MAX)) {
+                guiState.localData.p2MisuzuFeathers = p2Feathers;
+            }
+            
+            // Quick set buttons
+            if (ImGui::Button("Max Feathers##p2")) {
+                guiState.localData.p2MisuzuFeathers = MISUZU_FEATHER_MAX;
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("No Feathers##p2")) {
+                guiState.localData.p2MisuzuFeathers = 0;
+            }
+        }
+        else {
+            ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "No special settings available");
+        }
+        
+        // Reset columns
+        ImGui::Columns(1);
+        
+        // Bottom help section
         ImGui::Separator();
-        
-        if (!hasCharSpecificSettings) {
-            ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.7f, 1.0f), 
-                          "No character-specific settings available for the current characters.");
-        }
-        
         ImGui::TextWrapped(
             "Character-specific settings allow you to modify special parameters unique to each character.\n"
-            "Currently supported characters: Ikumi (Blood Meter & Genocide Mode)");
+            "Currently supported characters: Ikumi (Blood Meter & Genocide Mode), Misuzu (Feather Count)");
     }
     
     // Update the RenderGui function to include the new tab:
