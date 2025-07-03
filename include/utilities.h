@@ -195,3 +195,6 @@ extern int g_statsP1ValuesId;
 extern int g_statsP2ValuesId;
 extern int g_statsPositionId;
 extern int g_statsMoveIdId;
+
+// Window and key monitoring management
+void ManageKeyMonitoring();

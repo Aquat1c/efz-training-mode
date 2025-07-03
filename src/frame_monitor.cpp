@@ -32,13 +32,7 @@ bool IsValidGameMode(GameMode mode) {
 }
 
 bool ShouldFeaturesBeActive() {
-    // First check if EFZ window is active
-    UpdateWindowActiveState();
-    if (!g_efzWindowActive.load()) {
-        return false;
-    }
-    
-    // Then do the existing checks
+    // Check if we have a valid game state
     uintptr_t base = GetEFZBase();
     const Config::Settings& cfg = Config::GetSettings();
     GameMode currentMode = GetCurrentGameMode();
@@ -54,8 +48,8 @@ bool ShouldFeaturesBeActive() {
         return false;
     }
 
-    // If restriction is off, features are active.
-    // If restriction is on, features are only active in Practice mode.
+    // Features are active based on game mode, not window focus
+    // Window focus only affects key monitoring (handled separately in input_handler.cpp)
     return !cfg.restrictToPracticeMode || (currentMode == GameMode::Practice);
 }
 
@@ -164,13 +158,16 @@ void FrameDataMonitor() {
         // Update stats display regardless of whether other features are enabled
         UpdateStatsDisplay();
         
-        // Feature management logic
+        // Feature management logic (based on game mode, not window focus)
         bool shouldBeActive = ShouldFeaturesBeActive();
         if (shouldBeActive && !g_featuresEnabled.load()) {
             EnableFeatures();
         } else if (!shouldBeActive && g_featuresEnabled.load()) {
             DisableFeatures();
         }
+        
+        // Key monitoring management (based on window focus, separate from patches/overlays)
+        ManageKeyMonitoring();
         
         // Track mode transitions and character initialization
         static bool wasInitialized = false;
