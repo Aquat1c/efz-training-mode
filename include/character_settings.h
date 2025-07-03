@@ -29,4 +29,7 @@ namespace CharacterSettings {
     
     // Check if any character patches are applied
     bool AreCharacterPatchesApplied();
+
+    // Character value monitoring thread
+    void CharacterValueMonitoringThread();
 }

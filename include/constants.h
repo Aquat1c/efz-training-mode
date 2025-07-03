@@ -329,3 +329,6 @@
 #define IKUMI_GENOCIDE_TIMER_ADDR 0x2A718    // Address to patch genocide timer decrement
 #define IKUMI_GENOCIDE_TIMER_ORIGINAL "\x89\x86\x50\x31\x00\x00"  // Original bytes
 #define IKUMI_GENOCIDE_TIMER_PATCH "\x90\x90\x90\x90\x90\x90"     // NOP sequence
+//Misuzu
+#define MISUZU_FEATHER_OFFSET 0x3464
+#define MISUZU_FEATHER_MAX 5
