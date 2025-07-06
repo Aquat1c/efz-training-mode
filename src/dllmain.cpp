@@ -15,6 +15,7 @@
 #include "../include/imgui_impl.h"
 #include "../include/imgui_gui.h"
 #include "../include/config.h"
+#include "../include/practice_patch.h" // Add the practice mode patch header
 
 // Forward declarations for functions in other files
 void MonitorKeys();
@@ -69,6 +70,8 @@ void DelayedInitialization(HMODULE hModule) {
     std::thread(UpdateConsoleTitle).detach();
     std::thread(FrameDataMonitor).detach();
     std::thread(MonitorOnlineStatus).detach();
+    // Start the practice mode patching thread
+    std::thread(MonitorAndPatchPracticeMode).detach();
     // The MonitorKeys thread is now started by EnableFeatures() when appropriate.
     LogOut("[SYSTEM] Essential background threads started.", true);
     

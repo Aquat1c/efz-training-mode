@@ -74,6 +74,7 @@ set(SOURCES
     src/character_settings.cpp
     src/imgui_impl.cpp
     src/imgui_gui.cpp
+    src/practice_patch.cpp
     ${IMGUI_SOURCES}
 )
 
