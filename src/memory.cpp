@@ -459,25 +459,28 @@ void UpdatePlayerValuesExceptRF(uintptr_t base, uintptr_t baseOffsetP1, uintptr_
 uint8_t GetPlayerInputs(int playerNum) {
     uintptr_t base = GetEFZBase();
     if (!base) return 0;
+
+    uintptr_t playerOffset = (playerNum == 1) ? EFZ_BASE_OFFSET_P1 : EFZ_BASE_OFFSET_P2;
+    uintptr_t playerBase = 0;
     
-    uintptr_t baseOffset = (playerNum == 1) ? EFZ_BASE_OFFSET_P1 : EFZ_BASE_OFFSET_P2;
-    uintptr_t inputAddr = ResolvePointer(base, baseOffset, P1_INPUT_OFFSET);
+    if (!SafeReadMemory(base + playerOffset, &playerBase, sizeof(uintptr_t)) || !playerBase) {
+        return 0;
+    }
+
+    // Get the current input buffer index
+    uint8_t currentIndex = 0;
+    if (!SafeReadMemory(playerBase + P1_INPUT_BUFFER_INDEX_OFFSET, &currentIndex, sizeof(uint8_t))) {
+        return 0;
+    }
+
+    // Calculate the address to read the current input
+    uintptr_t inputAddr = playerBase + P1_INPUT_BUFFER_OFFSET + currentIndex;
     
-    if (!inputAddr) return 0;
+    // Read the current input value
+    uint8_t inputValue = 0;
+    SafeReadMemory(inputAddr, &inputValue, sizeof(uint8_t));
     
-    uint8_t inputState = 0;
-    memcpy(&inputState, (void*)inputAddr, sizeof(uint8_t));
-    
-    // Debug log when inputs change (uncommenting for development only)
-    // static uint8_t lastInputState = 0;
-    // if (inputState != lastInputState && detailedLogging) {
-    //     LogOut("[INPUT] P" + std::to_string(playerNum) + " inputs: " + 
-    //            std::to_string(inputState) + " (binary: " + 
-    //            std::bitset<8>(inputState).to_string() + ")", true);
-    //     lastInputState = inputState;
-    // }
-    
-    return inputState;
+    return inputValue;
 }
 
 // Add near other global variables

@@ -9,19 +9,41 @@
 #include "../include/overlay.h" // Add this include for DirectDrawHook
 #include "../include/character_settings.h"
 #include "../include/frame_monitor.h"
+#include "../include/input_motion.h"
+
 
 namespace ImGuiGui {
+    // Define static variable at namespace level
+    static bool s_randomInputActive = false;
+
     // Action type mapping (same as in gui_auto_action.cpp)
     static const int ComboIndexToActionType[] = {
-        ACTION_5A, ACTION_5B, ACTION_5C, ACTION_2A, ACTION_2B, ACTION_2C,
-        ACTION_JA, ACTION_JB, ACTION_JC, ACTION_JUMP, ACTION_BACKDASH,
-        ACTION_BLOCK, ACTION_CUSTOM
+        ACTION_5A,          // 0 = 5A
+        ACTION_5B,          // 1 = 5B
+        ACTION_5C,          // 2 = 5C
+        ACTION_2A,          // 3 = 2A
+        ACTION_2B,          // 4 = 2B
+        ACTION_2C,          // 5 = 2C
+        ACTION_JA,          // 6 = j.A 
+        ACTION_JB,          // 7 = j.B
+        ACTION_JC,          // 8 = j.C
+        ACTION_QCF,         // 9 = QCF
+        ACTION_DP,          // 10 = DP
+        ACTION_QCB,         // 11 = QCB
+        ACTION_SUPER1,      // 12 = Super 1
+        ACTION_SUPER2,      // 13 = Super 2
+        ACTION_JUMP,        // 14 = Jump
+        ACTION_BACKDASH,    // 15 = Backdash
+        ACTION_BLOCK,       // 16 = Block
+        ACTION_CUSTOM       // 17 = Custom
     };
 
     // Helper function to convert action type to combo index
     static int ActionTypeToComboIndex(int actionType) {
         for (int i = 0; i < IM_ARRAYSIZE(ComboIndexToActionType); i++) {
-            if (ComboIndexToActionType[i] == actionType) return i;
+            if (ComboIndexToActionType[i] == actionType) {
+                return i;
+            }
         }
         return 0; // Default to 5A
     }
@@ -200,8 +222,16 @@ namespace ImGuiGui {
             ImGui::TableHeadersRow();
 
             // Common action items
-            const char* actionItems[] = { "5A", "5B", "5C", "2A", "2B", "2C", 
-                                         "j.A", "j.B", "j.C", "Jump", "Backdash", "Block", "Custom" };
+            const char* actionItems[] = { 
+                "5A", "5B", "5C", "2A", "2B", "2C", 
+                "j.A", "j.B", "j.C",
+                "QCF", "DP", "QCB", "Super 1", "Super 2",
+                "Jump", "Backdash", "Block", "Custom" 
+            };
+            
+            // Make sure the number of items matches the ComboIndexToActionType array
+            static_assert(IM_ARRAYSIZE(actionItems) == IM_ARRAYSIZE(ComboIndexToActionType), 
+                         "Action items and action types must have the same number of elements");
 
             // After Block trigger
             ImGui::TableNextRow();
@@ -667,6 +697,87 @@ namespace ImGuiGui {
             "Currently supported characters: Ikumi (Blood Meter & Genocide Mode), Misuzu (Feather Count)");
     }
     
+    // Add this new function to the ImGuiGui namespace:
+    void RenderDebugInputTab() {
+        if (!ImGui::CollapsingHeader("Input Testing", ImGuiTreeNodeFlags_DefaultOpen))
+            return;
+            
+        ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.0f, 1.0f), "Direct Input Testing");
+        ImGui::Separator();
+        
+        static int testPlayer = 1;
+        static uint8_t testMask = 0x10; // Default to A button
+        
+        ImGui::RadioButton("Test P1 Input", &testPlayer, 1); ImGui::SameLine();
+        ImGui::RadioButton("Test P2 Input", &testPlayer, 2);
+        
+        // Display memory addresses
+        uintptr_t base = GetEFZBase();
+        if (base) {
+            uintptr_t p1Base = 0, p2Base = 0;
+            SafeReadMemory(base + EFZ_BASE_OFFSET_P1, &p1Base, sizeof(uintptr_t));
+            SafeReadMemory(base + EFZ_BASE_OFFSET_P2, &p2Base, sizeof(uintptr_t));
+            
+            ImGui::Text("Input Addresses:");
+            ImGui::Text("P1 Base: 0x%llX", p1Base);
+            ImGui::Text("P2 Base: 0x%llX", p2Base);
+            ImGui::Text("Input Buffer Offset: 0x%X", P1_INPUT_BUFFER_OFFSET);
+            ImGui::Text("Index Offset: 0x%X", P1_INPUT_BUFFER_INDEX_OFFSET);
+            
+            uint8_t p1Index = 0, p2Index = 0;
+            SafeReadMemory(p1Base + P1_INPUT_BUFFER_INDEX_OFFSET, &p1Index, sizeof(uint8_t));
+            SafeReadMemory(p2Base + P1_INPUT_BUFFER_INDEX_OFFSET, &p2Index, sizeof(uint8_t));
+            
+            ImGui::Text("Current Indices: P1=%d, P2=%d", p1Index, p2Index);
+        }
+        
+        // Display current inputs
+        uint8_t p1Input = GetPlayerInputs(1);
+        uint8_t p2Input = GetPlayerInputs(2);
+        
+        ImGui::Spacing();
+        ImGui::Text("Current Inputs:");
+        ImGui::Text("P1: 0x%02X | %s%s%s%s | %s%s%s%s", 
+            p1Input,
+            (p1Input & INPUT_UP) ? "↑" : " ",
+            (p1Input & INPUT_DOWN) ? "↓" : " ",
+            (p1Input & INPUT_LEFT) ? "←" : " ",
+            (p1Input & INPUT_RIGHT) ? "→" : " ",
+            (p1Input & INPUT_A) ? "A" : " ",
+            (p1Input & INPUT_B) ? "B" : " ",
+            (p1Input & INPUT_C) ? "C" : " ",
+            (p1Input & INPUT_D) ? "D" : " ");
+            
+        ImGui::Text("P2: 0x%02X | %s%s%s%s | %s%s%s%s", 
+            p2Input,
+            (p2Input & INPUT_UP) ? "↑" : " ",
+            (p2Input & INPUT_DOWN) ? "↓" : " ",
+            (p2Input & INPUT_LEFT) ? "←" : " ",
+            (p2Input & INPUT_RIGHT) ? "→" : " ",
+            (p2Input & INPUT_A) ? "A" : " ",
+            (p2Input & INPUT_B) ? "B" : " ",
+            (p2Input & INPUT_C) ? "C" : " ",
+            (p2Input & INPUT_D) ? "D" : " ");
+        
+        ImGui::Spacing();
+        
+        // Test full input sequence
+        if (ImGui::Button("Run Input Test Sequence")) {
+            int playerNum = testPlayer;
+            std::thread([playerNum]() {
+                TestInputSequence(playerNum);
+            }).detach();
+        }
+        
+        ImGui::SameLine();
+        if (ImGui::Button("Monitor Input Buffer")) {
+            int playerNum = testPlayer;
+            std::thread([playerNum]() {
+                MonitorInputBuffer(playerNum, 300);
+            }).detach();
+        }
+    }
+
     // Update the RenderGui function to include the new tab:
     void RenderGui() {
         if (!ImGuiImpl::IsVisible())
@@ -694,7 +805,7 @@ namespace ImGuiGui {
             }
             
             // Tab bar at the top
-            if (ImGui::BeginTabBar("MainTabBar", ImGuiTabBarFlags_None)) {
+            if (ImGui::BeginTabBar("##Tabs", ImGuiTabBarFlags_None)) {
                 // Game Values tab
                 if (ImGui::BeginTabItem("Game Values")) {
                     guiState.currentTab = 0;
@@ -716,9 +827,16 @@ namespace ImGuiGui {
                     ImGui::EndTabItem();
                 }
                 
-                // Help tab
-                if (ImGui::BeginTabItem("Help & Hotkeys")) {
+                // Debug tab
+                if (ImGui::BeginTabItem("Debug")) {
                     guiState.currentTab = 3;
+                    RenderDebugInputTab();
+                    ImGui::EndTabItem();
+                }
+                
+                // Help tab
+                if (ImGui::BeginTabItem("Help")) {
+                    guiState.currentTab = 4;
                     RenderHelpTab();
                     ImGui::EndTabItem();
                 }

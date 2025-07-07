@@ -41,7 +41,7 @@ int GetAttackLevel(short blockstunMoveID);
 bool IsDashState(short moveID);
 
 // Auto-action related functions
-short GetActionMoveID(int actionType, int triggerType = TRIGGER_NONE, int playerNum = 2);
+extern short GetActionMoveID(int actionType, int triggerType, int playerNum);
 void ApplyAutoAction(int playerNum, uintptr_t moveIDAddr, short currentMoveID, short prevMoveID);
 extern bool p1ActionApplied;
 extern bool p2ActionApplied;

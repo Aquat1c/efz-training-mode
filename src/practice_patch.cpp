@@ -7,6 +7,8 @@
 #include "../include/game_state.h"
 #include "../include/constants.h"
 #include "../include/utilities.h"
+#include "../include/practice_patch.h"
+#include "../include/input_motion.h"
 
 // Define constants for offsets
 const uintptr_t P2_CPU_FLAG_OFFSET = 4931;
@@ -234,6 +236,7 @@ void MonitorAndPatchPracticeMode() {
     bool lastP2CpuControlled = true;
     bool lastP2AIControlled = true;
     
+    // Add input monitoring to the main loop
     while (true) {
         GameMode currentMode = GetCurrentGameMode();
         cycleCount++;
@@ -428,105 +431,53 @@ void DumpPracticeModeState() {
     LogOut("[PRACTICE_PATCH] --------- End of Debug Dump ---------", true);
 }
 
-// Function to monitor and log player inputs in practice mode
-// This function should be called periodically when in practice mode
+// Add this variable near the top of the file with other globals
+std::atomic<bool> g_monitorInputs(true);
+uint8_t lastP1Input = 0;
+uint8_t lastP2Input = 0;
+
+// Enhanced function to log player inputs with filtering for non-neutral inputs
 void LogPlayerInputsInPracticeMode() {
-    uintptr_t efzBase = GetEFZBase();
-    if (!efzBase) {
-        return; // Silently fail - this will be called frequently
-    }
+    uintptr_t base = GetEFZBase();
+    if (!base) return;
     
-    GameMode currentMode = GetCurrentGameMode();
-    if (currentMode != GameMode::Practice) {
-        return; // Only log inputs in practice mode
-    }
-    
-    // Get character pointers
-    uintptr_t p1CharPtr = 0;
-    uintptr_t p2CharPtr = 0;
-    
-    if (!SafeReadMemory(efzBase + EFZ_BASE_OFFSET_P1, &p1CharPtr, sizeof(uintptr_t)) ||
-        !SafeReadMemory(efzBase + EFZ_BASE_OFFSET_P2, &p2CharPtr, sizeof(uintptr_t))) {
-        return; // Can't read character pointers
-    }
-    
-    // Get AI control flags
-    uint32_t p1AIFlag = 0;
-    uint32_t p2AIFlag = 0;
-    
-    bool p1AIFlagValid = p1CharPtr && SafeReadMemory(p1CharPtr + AI_CONTROL_FLAG_OFFSET, &p1AIFlag, sizeof(uint32_t));
-    bool p2AIFlagValid = p2CharPtr && SafeReadMemory(p2CharPtr + AI_CONTROL_FLAG_OFFSET, &p2AIFlag, sizeof(uint32_t));
-    
-    // Get player inputs
+    // Get the current inputs for both players
     uint8_t p1Input = GetPlayerInputs(1);
     uint8_t p2Input = GetPlayerInputs(2);
     
-    // Only log if inputs are detected or every 20 calls (for periodic updates)
-    static int callCount = 0;
-    callCount++;
-    
-    if (p1Input || p2Input || callCount >= 20) {
-        std::stringstream ss;
-        ss << "[PRACTICE_PATCH] P1 " << (p1AIFlagValid ? (p1AIFlag ? "(AI) " : "(Human) ") : "(Unknown) ");
-        
-        // Decode P1 inputs
-        if (p1Input & INPUT_UP) ss << "UP ";
-        if (p1Input & INPUT_DOWN) ss << "DOWN ";
-        if (p1Input & INPUT_LEFT) ss << "LEFT ";
-        if (p1Input & INPUT_RIGHT) ss << "RIGHT ";
-        if (p1Input & INPUT_A) ss << "A ";
-        if (p1Input & INPUT_B) ss << "B ";
-        if (p1Input & INPUT_C) ss << "C ";
-        if (p1Input & INPUT_D) ss << "D ";
-        
-        if (!p1Input) ss << "NONE ";
-        
-        ss << "| P2 " << (p2AIFlagValid ? (p2AIFlag ? "(AI) " : "(Human) ") : "(Unknown) ");
-        
-        // Decode P2 inputs
-        if (p2Input & INPUT_UP) ss << "UP ";
-        if (p2Input & INPUT_DOWN) ss << "DOWN ";
-        if (p2Input & INPUT_LEFT) ss << "LEFT ";
-        if (p2Input & INPUT_RIGHT) ss << "RIGHT ";
-        if (p2Input & INPUT_A) ss << "A ";
-        if (p2Input & INPUT_B) ss << "B ";
-        if (p2Input & INPUT_C) ss << "C ";
-        if (p2Input & INPUT_D) ss << "D ";
-        
-        if (!p2Input) ss << "NONE ";
-        
-        LogOut(ss.str(), true);
-        
-        // Reset counter after logging
-        if (callCount >= 20) {
-            callCount = 0;
-        }
+    // Only log when inputs change from previous state or are non-neutral
+    if (p1Input != lastP1Input && p1Input != 0) {
+        LogOut("[INPUT] P1: 0x" + std::to_string(p1Input) + " (" + DecodeInputMask(p1Input) + ")", true);
     }
+    
+    if (p2Input != lastP2Input && p2Input != 0) {
+        LogOut("[INPUT] P2: 0x" + std::to_string(p2Input) + " (" + DecodeInputMask(p2Input) + ")", true);
+    }
+    
+    // Update last known inputs
+    lastP1Input = p1Input;
+    lastP2Input = p2Input;
 }
 
-
-// NEW: Function to reset P2 character completely
-void ResetP2Character() {
-    LogOut("[PRACTICE_PATCH] Attempting to reset P2 character...", true);
+// Add/update this function to properly decode player inputs
+std::string GetDirectionName(uint8_t inputBits) {
+    if (inputBits == 0) return "NONE";
     
-    uintptr_t efzBase = GetEFZBase();
-    if (!efzBase) {
-        LogOut("[PRACTICE_PATCH] Failed to get EFZ base address", true);
-        return;
+    std::string result;
+    
+    if (inputBits & INPUT_UP)    result += "UP ";
+    if (inputBits & INPUT_DOWN)  result += "DOWN ";
+    if (inputBits & INPUT_LEFT)  result += "LEFT ";
+    if (inputBits & INPUT_RIGHT) result += "RIGHT ";
+    if (inputBits & INPUT_A)     result += "A ";
+    if (inputBits & INPUT_B)     result += "B ";
+    if (inputBits & INPUT_C)     result += "C ";
+    if (inputBits & INPUT_D)     result += "D ";
+    
+    // Remove trailing space if any
+    if (!result.empty()) {
+        result.pop_back();
     }
     
-    uintptr_t gameStatePtr = 0;
-    if (!SafeReadMemory(efzBase + EFZ_BASE_OFFSET_GAME_STATE, &gameStatePtr, sizeof(uintptr_t))) {
-        LogOut("[PRACTICE_PATCH] Failed to read game state pointer", true);
-        return;
-    }
-    
-    // Set Player 2 to be human controlled (0 = human, 1 = CPU)
-    uint8_t humanControlled = 0;
-    if (!SafeWriteMemory(gameStatePtr + P2_CPU_FLAG_OFFSET, &humanControlled, sizeof(uint8_t))) {
-        LogOut("[PRACTICE_PATCH] Failed to patch Player 2 CPU flag during reset", true);
-        return;
-    }
-    
-    LogOut("[PRACTICE_PATCH] Reset P2 character completed", true);
+    return result;
 }
