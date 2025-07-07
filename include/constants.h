@@ -158,31 +158,11 @@
 #define IDC_JUMP_TARGET       4021  // Combo box for jump target
 #define IDC_AIRTECH_DELAY     3020  // For the airtech delay field
 
-// REMOVED DUPLICATE AUTO-ACTION GUI IDs
-/*
-#define IDC_AUTOACTION_ENABLE 5000
-#define IDC_AUTOACTION_PLAYER 5001
-
-#define IDC_TRIGGER_AFTER_BLOCK_CHECK  5100
-#define IDC_TRIGGER_AFTER_BLOCK_ACTION 5101
-#define IDC_TRIGGER_AFTER_BLOCK_DELAY  5102
-#define IDC_TRIGGER_AFTER_BLOCK_CUSTOM 5103
-
-#define IDC_TRIGGER_AFTER_HITSTUN_CHECK  5200
-#define IDC_TRIGGER_AFTER_HITSTUN_ACTION 5201
-#define IDC_TRIGGER_AFTER_HITSTUN_DELAY  5202
-#define IDC_TRIGGER_AFTER_HITSTUN_CUSTOM 5203
-
-#define IDC_TRIGGER_ON_WAKEUP_CHECK  5300
-#define IDC_TRIGGER_ON_WAKEUP_ACTION 5301
-#define IDC_TRIGGER_ON_WAKEUP_DELAY  5302
-#define IDC_TRIGGER_ON_WAKEUP_CUSTOM 5303
-
-#define IDC_TRIGGER_AFTER_AIRTECH_CHECK  5400
-#define IDC_TRIGGER_AFTER_AIRTECH_ACTION 5401
-#define IDC_TRIGGER_AFTER_AIRTECH_DELAY  5402
-#define IDC_TRIGGER_AFTER_AIRTECH_CUSTOM 5403
-*/
+#define ACTION_QCF       14  // Quarter Circle Forward (236)
+#define ACTION_DP        15  // Dragon Punch (623)
+#define ACTION_QCB       16  // Quarter Circle Back (214)
+#define ACTION_SUPER1    17  // Super Move 1 (41236)
+#define ACTION_SUPER2    18  // Super Move 2 (63214)
 
 // Add these after your existing Move ID section
 // Attack level blockstun MoveIDs
@@ -335,3 +315,10 @@
 //Misuzu
 #define MISUZU_FEATHER_OFFSET 0x3464
 #define MISUZU_FEATHER_MAX 3 // Feather count ranges from 0-3
+
+// Add these definitions to your constants.h file
+
+// Player input buffer offsets
+#define P1_INPUT_BUFFER_OFFSET 0x1AB      // Base address of input buffer
+#define P1_INPUT_BUFFER_INDEX_OFFSET 0x260 // Offset to current buffer index
+#define P1_INPUT_BUFFER_SIZE 180          // Size of the circular buffer

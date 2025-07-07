@@ -10,14 +10,15 @@ namespace ImGuiGui {
     void RenderGameValuesTab();
     void RenderAutoActionTab();
     void RenderHelpTab();
-    void RenderCharacterTab(); // Add character settings tab
+    void RenderCharacterTab();
+    void RenderDebugInputTab();  // Add debug input tab
     
     // Overall GUI state
     struct ImGuiGuiState {
         bool visible;
         int currentTab;
-        int requestedTab; // Add this for programmatic tab switching
-        DisplayData localData; // Local copy of display data
+        int requestedTab; 
+        DisplayData localData;
     };
     
     // Global GUI state

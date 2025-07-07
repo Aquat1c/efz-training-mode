@@ -17,10 +17,15 @@ extern "C" const int ComboIndexToActionType[] = {
     ACTION_JA,          // 6 = j.A (value 11)
     ACTION_JB,          // 7 = j.B (value 12)
     ACTION_JC,          // 8 = j.C (value 13)
-    ACTION_JUMP,        // 9 = Jump (value 7)
-    ACTION_BACKDASH,    // 10 = Backdash (value 8)
-    ACTION_BLOCK,       // 11 = Block (value 9)
-    ACTION_CUSTOM       // 12 = Custom (value 10)
+    ACTION_QCF,         // 9 = QCF (Quarter Circle Forward)
+    ACTION_DP,          // 10 = DP (Dragon Punch)
+    ACTION_QCB,         // 11 = QCB (Quarter Circle Back)
+    ACTION_SUPER1,      // 12 = Super 1 (Half Circle Forward)
+    ACTION_SUPER2,      // 13 = Super 2 (Half Circle Back)
+    ACTION_JUMP,        // 14 = Jump (value 7)
+    ACTION_BACKDASH,    // 15 = Backdash (value 8)
+    ACTION_BLOCK,       // 16 = Block (value 9)
+    ACTION_CUSTOM       // 17 = Custom (value 10)
 };
 
 // Helper function to convert action type to combobox index
@@ -69,6 +74,7 @@ void AutoActionPage_CreateContent(HWND hParent, DisplayData* pData) {
         WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | WS_VSCROLL,
         180, yPos, 120, 200, hParent, (HMENU)IDC_TRIGGER_AFTER_BLOCK_ACTION, GetModuleHandle(NULL), NULL);
 
+    // When adding options to the action combos, add the special moves:
     SendMessage(hAfterBlockAction, CB_ADDSTRING, 0, (LPARAM)"5A");
     SendMessage(hAfterBlockAction, CB_ADDSTRING, 0, (LPARAM)"5B");
     SendMessage(hAfterBlockAction, CB_ADDSTRING, 0, (LPARAM)"5C");
@@ -78,6 +84,15 @@ void AutoActionPage_CreateContent(HWND hParent, DisplayData* pData) {
     SendMessage(hAfterBlockAction, CB_ADDSTRING, 0, (LPARAM)"j.A");
     SendMessage(hAfterBlockAction, CB_ADDSTRING, 0, (LPARAM)"j.B");
     SendMessage(hAfterBlockAction, CB_ADDSTRING, 0, (LPARAM)"j.C");
+
+    // Add special moves here
+    SendMessage(hAfterBlockAction, CB_ADDSTRING, 0, (LPARAM)"QCF");
+    SendMessage(hAfterBlockAction, CB_ADDSTRING, 0, (LPARAM)"DP");
+    SendMessage(hAfterBlockAction, CB_ADDSTRING, 0, (LPARAM)"QCB");
+    SendMessage(hAfterBlockAction, CB_ADDSTRING, 0, (LPARAM)"Super 1");
+    SendMessage(hAfterBlockAction, CB_ADDSTRING, 0, (LPARAM)"Super 2");
+    
+    // Then add the remaining options
     SendMessage(hAfterBlockAction, CB_ADDSTRING, 0, (LPARAM)"Jump");
     SendMessage(hAfterBlockAction, CB_ADDSTRING, 0, (LPARAM)"Backdash");
     SendMessage(hAfterBlockAction, CB_ADDSTRING, 0, (LPARAM)"Block");
@@ -120,6 +135,15 @@ void AutoActionPage_CreateContent(HWND hParent, DisplayData* pData) {
     SendMessage(hAfterHitstunAction, CB_ADDSTRING, 0, (LPARAM)"j.A");
     SendMessage(hAfterHitstunAction, CB_ADDSTRING, 0, (LPARAM)"j.B");
     SendMessage(hAfterHitstunAction, CB_ADDSTRING, 0, (LPARAM)"j.C");
+
+    // Add special moves here
+    SendMessage(hAfterHitstunAction, CB_ADDSTRING, 0, (LPARAM)"QCF");
+    SendMessage(hAfterHitstunAction, CB_ADDSTRING, 0, (LPARAM)"DP");
+    SendMessage(hAfterHitstunAction, CB_ADDSTRING, 0, (LPARAM)"QCB");
+    SendMessage(hAfterHitstunAction, CB_ADDSTRING, 0, (LPARAM)"Super 1");
+    SendMessage(hAfterHitstunAction, CB_ADDSTRING, 0, (LPARAM)"Super 2");
+    
+    // Then add the remaining options
     SendMessage(hAfterHitstunAction, CB_ADDSTRING, 0, (LPARAM)"Jump");
     SendMessage(hAfterHitstunAction, CB_ADDSTRING, 0, (LPARAM)"Backdash");
     SendMessage(hAfterHitstunAction, CB_ADDSTRING, 0, (LPARAM)"Block");
@@ -161,6 +185,15 @@ void AutoActionPage_CreateContent(HWND hParent, DisplayData* pData) {
     SendMessage(hOnWakeupAction, CB_ADDSTRING, 0, (LPARAM)"j.A");
     SendMessage(hOnWakeupAction, CB_ADDSTRING, 0, (LPARAM)"j.B");
     SendMessage(hOnWakeupAction, CB_ADDSTRING, 0, (LPARAM)"j.C");
+
+    // Add special moves here
+    SendMessage(hOnWakeupAction, CB_ADDSTRING, 0, (LPARAM)"QCF");
+    SendMessage(hOnWakeupAction, CB_ADDSTRING, 0, (LPARAM)"DP");
+    SendMessage(hOnWakeupAction, CB_ADDSTRING, 0, (LPARAM)"QCB");
+    SendMessage(hOnWakeupAction, CB_ADDSTRING, 0, (LPARAM)"Super 1");
+    SendMessage(hOnWakeupAction, CB_ADDSTRING, 0, (LPARAM)"Super 2");
+    
+    // Then add the remaining options
     SendMessage(hOnWakeupAction, CB_ADDSTRING, 0, (LPARAM)"Jump");
     SendMessage(hOnWakeupAction, CB_ADDSTRING, 0, (LPARAM)"Backdash");
     SendMessage(hOnWakeupAction, CB_ADDSTRING, 0, (LPARAM)"Block");
@@ -204,6 +237,15 @@ void AutoActionPage_CreateContent(HWND hParent, DisplayData* pData) {
     SendMessage(hAfterAirtechAction, CB_ADDSTRING, 0, (LPARAM)"j.A");
     SendMessage(hAfterAirtechAction, CB_ADDSTRING, 0, (LPARAM)"j.B");
     SendMessage(hAfterAirtechAction, CB_ADDSTRING, 0, (LPARAM)"j.C");
+
+    // Add special moves here
+    SendMessage(hAfterAirtechAction, CB_ADDSTRING, 0, (LPARAM)"QCF");
+    SendMessage(hAfterAirtechAction, CB_ADDSTRING, 0, (LPARAM)"DP");
+    SendMessage(hAfterAirtechAction, CB_ADDSTRING, 0, (LPARAM)"QCB");
+    SendMessage(hAfterAirtechAction, CB_ADDSTRING, 0, (LPARAM)"Super 1");
+    SendMessage(hAfterAirtechAction, CB_ADDSTRING, 0, (LPARAM)"Super 2");
+    
+    // Then add the remaining options
     SendMessage(hAfterAirtechAction, CB_ADDSTRING, 0, (LPARAM)"Jump");
     SendMessage(hAfterAirtechAction, CB_ADDSTRING, 0, (LPARAM)"Backdash");
     SendMessage(hAfterAirtechAction, CB_ADDSTRING, 0, (LPARAM)"Block");

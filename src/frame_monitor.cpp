@@ -11,6 +11,7 @@
 #include "../include/overlay.h"
 #include "../include/game_state.h"
 #include "../include/config.h"
+#include "../include/input_motion.h"
 #include <deque>
 #include <vector>
 #include <chrono>
@@ -73,20 +74,45 @@ void UpdateTriggerOverlay() {
 
     auto getActionName = [](int actionType, int customId) -> std::string {
         switch (actionType) {
-            case ACTION_5A: return "5A";
-            case ACTION_5B: return "5B";
-            case ACTION_5C: return "5C";
-            case ACTION_2A: return "2A";
-            case ACTION_2B: return "2B";
-            case ACTION_2C: return "2C";
-            case ACTION_JA: return "j.A";
-            case ACTION_JB: return "j.B";
-            case ACTION_JC: return "j.C";
-            case ACTION_JUMP: return "Jump";
-            case ACTION_BACKDASH: return "Backdash";
-            case ACTION_BLOCK: return "Block";
-            case ACTION_CUSTOM: return "MoveID " + std::to_string(customId);
-            default: return "Unknown";
+            case ACTION_5A:
+                return "5A";
+            case ACTION_5B:
+                return "5B";
+            case ACTION_5C:
+                return "5C";
+            case ACTION_2A:
+                return "2A";
+            case ACTION_2B:
+                return "2B";
+            case ACTION_2C:
+                return "2C";
+            case ACTION_JA:
+                return "j.A";
+            case ACTION_JB:
+                return "j.B";
+            case ACTION_JC:
+                return "j.C";
+            case ACTION_JUMP:
+                return "Jump";
+            case ACTION_BACKDASH:
+                return "Backdash";
+            case ACTION_BLOCK:
+                return "Block";
+            // Add these cases for special moves
+            case ACTION_QCF:
+                return "QCF";
+            case ACTION_DP:
+                return "DP";
+            case ACTION_QCB:
+                return "QCB";
+            case ACTION_SUPER1:
+                return "Super 1";
+            case ACTION_SUPER2:
+                return "Super 2";
+            case ACTION_CUSTOM:
+                return "Custom (" + std::to_string(customId) + ")";
+            default:
+                return "Unknown (" + std::to_string(actionType) + ")";
         }
     };
 
@@ -292,6 +318,9 @@ void FrameDataMonitor() {
             prevMoveID1 = moveID1;
             prevMoveID2 = moveID2;
         }
+        
+        // Process input queues every frame
+        ProcessInputQueues();
         
         // Ensure the loop runs at the target rate
         auto frameEndTime = clock::now();

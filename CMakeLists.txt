@@ -75,6 +75,7 @@ set(SOURCES
     src/imgui_impl.cpp
     src/imgui_gui.cpp
     src/practice_patch.cpp
+    src/input_motion.cpp   # Add this line to include the new file
     ${IMGUI_SOURCES}
 )
 
