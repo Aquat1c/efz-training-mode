@@ -250,3 +250,21 @@ void MonitorAutoAirtech(short moveID1, short moveID2) {
         }
     }
 }
+
+// Helper to read the input buffer and current index for a player
+bool ReadPlayerInputBuffer(int playerNum, uint8_t* outBuffer, int bufferLen, int& outCurrentIndex) {
+    uintptr_t base = GetEFZBase();
+    uintptr_t playerPtr = 0;
+    uintptr_t baseOffset = (playerNum == 1) ? EFZ_BASE_OFFSET_P1 : EFZ_BASE_OFFSET_P2;
+    if (!SafeReadMemory(base + baseOffset, &playerPtr, sizeof(uintptr_t)) || !playerPtr)
+        return false;
+    // Read buffer (0x1AB, length 0x180)
+    if (!SafeReadMemory(playerPtr + 0x1AB, outBuffer, bufferLen))
+        return false;
+    // Read current index (0x260, 2 bytes)
+    uint16_t idx = 0;
+    if (!SafeReadMemory(playerPtr + 0x260, &idx, sizeof(uint16_t)))
+        return false;
+    outCurrentIndex = idx;
+    return true;
+}

@@ -433,17 +433,18 @@ bool WritePlayerInput(int playerNum, uint8_t inputMask) {
         return false;
     }
 
-    // Get the current input buffer index
-    uint8_t currentIndex = 0;
-    if (!SafeReadMemory(playerBase + P1_INPUT_BUFFER_INDEX_OFFSET, &currentIndex, sizeof(uint8_t))) {
-        LogOut("[INPUT_MOTION] Failed to read input buffer index", true);
+    // Get the current input buffer index (2 bytes, uint16_t)
+    uint16_t currentIndex = 0;
+    if (!SafeReadMemory(playerBase + P1_INPUT_BUFFER_INDEX_OFFSET, &currentIndex, sizeof(uint16_t))) {
+        LogOut("[INPUT_MOTION] Failed to read input buffer index (2 bytes)", true);
         return false;
     }
 
     // Calculate the address to write the input
     // The buffer is at playerBase + P1_INPUT_BUFFER_OFFSET
-    // The current position is at index currentIndex
-    uintptr_t inputAddr = playerBase + P1_INPUT_BUFFER_OFFSET + currentIndex;
+    // The current position is at index currentIndex % 0x180
+    int writeIndex = currentIndex % 0x180;
+    uintptr_t inputAddr = playerBase + P1_INPUT_BUFFER_OFFSET + writeIndex;
     
     // For debugging, read the current value at this address
     uint8_t currentValue = 0;
@@ -452,6 +453,7 @@ bool WritePlayerInput(int playerNum, uint8_t inputMask) {
     LogOut("[INPUT_MOTION] Writing input mask 0x" + std::to_string((int)inputMask) + 
            " to buffer address 0x" + std::to_string(inputAddr) + 
            " (index: " + std::to_string((int)currentIndex) + 
+           ", writeIndex: " + std::to_string(writeIndex) + 
            ", current value: 0x" + std::to_string((int)currentValue) + ")", true);
     
     // Write the input to memory
@@ -459,19 +461,43 @@ bool WritePlayerInput(int playerNum, uint8_t inputMask) {
         LogOut("[INPUT_MOTION] Failed to write input to memory", true);
         return false;
     }
-    
+
+    // Advance the buffer index and write it back (simulate new input frame)
+    uint16_t newIndex = (currentIndex + 1) % 0x180;
+    if (!SafeWriteMemory(playerBase + P1_INPUT_BUFFER_INDEX_OFFSET, &newIndex, sizeof(uint16_t))) {
+        LogOut("[INPUT_MOTION] Failed to write new input buffer index", true);
+        return false;
+    }
+    LogOut("[INPUT_MOTION] Advanced buffer index to " + std::to_string((int)newIndex), true);
     return true;
 }
 
 void LogCurrentInputs() {
     uintptr_t base = GetEFZBase();
     if (!base) return;
-    
-    // Read P1 input
-    uint8_t p1Input = GetPlayerInputs(1);
-    // Read P2 input
-    uint8_t p2Input = GetPlayerInputs(2);
-    
+
+    // Helper to get the most recent input from the buffer
+    auto getRecentInput = [base](int playerNum) -> uint8_t {
+        uintptr_t playerOffset = (playerNum == 1) ? EFZ_BASE_OFFSET_P1 : EFZ_BASE_OFFSET_P2;
+        uintptr_t playerBase = 0;
+        if (!SafeReadMemory(base + playerOffset, &playerBase, sizeof(uintptr_t)) || !playerBase)
+            return 0;
+        // Use P1 offsets for both players if P2 offsets are not defined
+        uintptr_t bufferOffset = P1_INPUT_BUFFER_OFFSET;
+        uintptr_t indexOffset  = P1_INPUT_BUFFER_INDEX_OFFSET;
+        uint16_t currentIndex = 0;
+        if (!SafeReadMemory(playerBase + indexOffset, &currentIndex, sizeof(uint16_t)))
+            return 0;
+        int readIndex = (currentIndex - 1 + 0x180) % 0x180;
+        uint8_t inputValue = 0;
+        SafeReadMemory(playerBase + bufferOffset + readIndex, &inputValue, sizeof(uint8_t));
+        return inputValue;
+    };
+
+    // Read most recent P1 and P2 input from buffer
+    uint8_t p1Input = getRecentInput(1);
+    uint8_t p2Input = getRecentInput(2);
+
     // Format inputs as direction + buttons
     auto formatInput = [](uint8_t input) -> std::string {
         std::string result = "";
@@ -922,4 +948,25 @@ std::string DecodeInputMask(uint8_t inputMask) {
     if (inputMask & BUTTON_D) result += "D";
     
     return result;
+}
+
+// Improved test input logic: write a test input to the buffer using the new buffer/index logic
+void TestInputBufferWrite(int playerNum, uint8_t inputMask) {
+    uint8_t buffer[0x180] = {0};
+    int currentIndex = 0;
+    if (!ReadPlayerInputBuffer(playerNum, buffer, 0x180, currentIndex)) {
+        LogOut("[TEST_INPUT] Failed to read input buffer for P" + std::to_string(playerNum), true);
+        return;
+    }
+    // Write the input at the current index (wrap if needed)
+    int writeIndex = currentIndex % 0x180;
+    buffer[writeIndex] = inputMask;
+    LogOut("[TEST_INPUT] Writing input 0x" + std::to_string(inputMask) + " to buffer index " + std::to_string(writeIndex) + " for P" + std::to_string(playerNum), true);
+    // Actually write to game memory
+    uintptr_t base = GetEFZBase();
+    uintptr_t playerPtr = 0;
+    uintptr_t baseOffset = (playerNum == 1) ? EFZ_BASE_OFFSET_P1 : EFZ_BASE_OFFSET_P2;
+    if (!SafeReadMemory(base + baseOffset, &playerPtr, sizeof(uintptr_t)) || !playerPtr)
+        return;
+    SafeWriteMemory(playerPtr + 0x1AB + writeIndex, &inputMask, sizeof(uint8_t));
 }
