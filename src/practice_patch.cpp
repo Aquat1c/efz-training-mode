@@ -481,3 +481,48 @@ std::string GetDirectionName(uint8_t inputBits) {
     
     return result;
 }
+
+// Function to disable Player 2 controls in Practice mode
+bool DisablePlayer2InPracticeMode() {
+    LogOut("[PRACTICE_PATCH] Attempting to disable Player 2 controls in Practice mode...", true);
+
+    uintptr_t efzBase = GetEFZBase();
+    if (!efzBase) {
+        LogOut("[PRACTICE_PATCH] Failed to get EFZ base address", true);
+        return false;
+    }
+
+    uintptr_t gameStatePtr = 0;
+    if (!SafeReadMemory(efzBase + EFZ_BASE_OFFSET_GAME_STATE, &gameStatePtr, sizeof(uintptr_t))) {
+        LogOut("[PRACTICE_PATCH] Failed to read game state pointer", true);
+        return false;
+    }
+
+    // Set Player 2 to be CPU controlled (1 = CPU, 0 = human)
+    uint8_t cpuControlled = 1;
+    if (!SafeWriteMemory(gameStatePtr + P2_CPU_FLAG_OFFSET, &cpuControlled, sizeof(uint8_t))) {
+        LogOut("[PRACTICE_PATCH] Failed to restore Player 2 CPU flag", true);
+        return false;
+    }
+    LogOut("[PRACTICE_PATCH] Restored P2 CPU control flag to 1 (CPU controlled)", true);
+
+    // Restore the AI control flag for P2's character
+    uintptr_t p2CharPtr = 0;
+    if (!SafeReadMemory(efzBase + EFZ_BASE_OFFSET_P2, &p2CharPtr, sizeof(uintptr_t))) {
+        LogOut("[PRACTICE_PATCH] Failed to read Player 2 character pointer", true);
+        return false;
+    }
+    if (p2CharPtr) {
+        uint32_t aiControlFlag = 1; // 1 = AI controlled
+        if (!SafeWriteMemory(p2CharPtr + AI_CONTROL_FLAG_OFFSET, &aiControlFlag, sizeof(uint32_t))) {
+            LogOut("[PRACTICE_PATCH] Failed to restore Player 2 AI control flag", true);
+            return false;
+        }
+        LogOut("[PRACTICE_PATCH] Restored P2 AI control flag to 1 (AI controlled)", true);
+    } else {
+        LogOut("[PRACTICE_PATCH] Player 2 character not initialized yet, skipping AI flag restore", true);
+    }
+
+    DumpPracticeModeState();
+    return true;
+}

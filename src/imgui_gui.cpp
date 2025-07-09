@@ -710,8 +710,7 @@ namespace ImGuiGui {
             if (p2ControlsEnabled) {
                 p2PatchStatus = EnablePlayer2InPracticeMode();
             } else {
-                // Optionally: implement a disable/unpatch function if available
-                p2PatchStatus = false;
+                p2PatchStatus = DisablePlayer2InPracticeMode();
             }
         }
         if (p2ControlsEnabled) {
