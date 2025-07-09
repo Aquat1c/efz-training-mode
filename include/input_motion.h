@@ -104,3 +104,9 @@ void MonitorInputAddresses(int playerNum, int durationFrames);
 // Function to monitor the input buffer
 void MonitorInputBuffer(int playerNum, int frameCount);
 void TestInputSequence(int playerNum);
+
+// Helper to read the input buffer and current index for a player
+bool ReadPlayerInputBuffer(int playerNum, uint8_t* outBuffer, int bufferLen, int& outCurrentIndex);
+
+// Improved test input logic: write a test input to the buffer using the new buffer/index logic
+void TestInputBufferWrite(int playerNum, uint8_t inputMask);

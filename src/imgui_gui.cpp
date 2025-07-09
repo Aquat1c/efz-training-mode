@@ -794,6 +794,15 @@ namespace ImGuiGui {
                 MonitorInputBuffer(playerNum, 300);
             }).detach();
         }
+        
+        ImGui::Spacing();
+        ImGui::Text("Test Input Mask:");
+        ImGui::SameLine();
+        ImGui::InputScalar("##TestInputMask", ImGuiDataType_U8, &testMask, nullptr, nullptr, "%02X");
+        if (ImGui::Button("Send Test Input")) {
+            TestInputBufferWrite(testPlayer, testMask);
+        }
+        ImGui::Separator();
     }
 
     // Update the RenderGui function to include the new tab:

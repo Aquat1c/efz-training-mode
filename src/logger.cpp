@@ -13,6 +13,7 @@
 #include <atomic>
 #include <thread>
 #include "../include/game_state.h" // Add this include
+#include "../include/input_motion.h"
 
 std::mutex g_logMutex;
 std::atomic<bool> detailedTitleMode(false);
