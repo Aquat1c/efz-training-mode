@@ -71,7 +71,7 @@ void DelayedInitialization(HMODULE hModule) {
     std::thread(FrameDataMonitor).detach();
     std::thread(MonitorOnlineStatus).detach();
     // Start the practice mode patching thread
-    std::thread(MonitorAndPatchPracticeMode).detach();
+    // std::thread(MonitorAndPatchPracticeMode).detach(); // DISABLED: Only patch via ImGui now
     // The MonitorKeys thread is now started by EnableFeatures() when appropriate.
     LogOut("[SYSTEM] Essential background threads started.", true);
     
