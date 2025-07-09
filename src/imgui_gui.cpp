@@ -10,6 +10,7 @@
 #include "../include/character_settings.h"
 #include "../include/frame_monitor.h"
 #include "../include/input_motion.h"
+#include "../include/practice_patch.h"
 
 
 namespace ImGuiGui {
@@ -701,8 +702,26 @@ namespace ImGuiGui {
     void RenderDebugInputTab() {
         if (!ImGui::CollapsingHeader("Input Testing", ImGuiTreeNodeFlags_DefaultOpen))
             return;
-            
-        ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.0f, 1.0f), "Direct Input Testing");
+        
+        // --- P2 Controls Patch ---
+        static bool p2ControlsEnabled = false;
+        static bool p2PatchStatus = false;
+        if (ImGui::Checkbox("Enable P2 Controls in Practice Mode", &p2ControlsEnabled)) {
+            if (p2ControlsEnabled) {
+                p2PatchStatus = EnablePlayer2InPracticeMode();
+            } else {
+                // Optionally: implement a disable/unpatch function if available
+                p2PatchStatus = false;
+            }
+        }
+        if (p2ControlsEnabled) {
+            ImGui::SameLine();
+            if (p2PatchStatus) {
+                ImGui::TextColored(ImVec4(0.2f, 1.0f, 0.2f, 1.0f), "[Patched]");
+            } else {
+                ImGui::TextColored(ImVec4(1.0f, 0.2f, 0.2f, 1.0f), "[Patch failed]");
+            }
+        }
         ImGui::Separator();
         
         static int testPlayer = 1;
