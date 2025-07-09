@@ -7,6 +7,9 @@ std::string FormatHexAddress(uintptr_t address);
 // Function to enable Player 2 controls in Practice mode
 bool EnablePlayer2InPracticeMode();
 
+// Function to disable Player 2 controls in Practice mode
+bool DisablePlayer2InPracticeMode();
+
 // Thread function to continuously monitor and patch practice mode
 void MonitorAndPatchPracticeMode();
 
