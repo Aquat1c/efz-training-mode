@@ -36,6 +36,9 @@
 // Character name offset
 #define CHARACTER_NAME_OFFSET 0x94  // Character name offset from player base
 
+// Character facing direction offset
+#define FACING_DIRECTION_OFFSET 0x50  // 1 = facing right, 255 = facing left
+
 // Move IDs
 #define IDLE_MOVE_ID 0
 #define WALK_FWD_ID 1
@@ -316,9 +319,24 @@
 #define MISUZU_FEATHER_OFFSET 0x3464
 #define MISUZU_FEATHER_MAX 3 // Feather count ranges from 0-3
 
-// Add these definitions to your constants.h file
-
 // Player input buffer offsets
 #define P1_INPUT_BUFFER_OFFSET 0x1AB      // Base address of input buffer
 #define P1_INPUT_BUFFER_INDEX_OFFSET 0x260 // Offset to current buffer index
 #define P1_INPUT_BUFFER_SIZE 180          // Size of the circular buffer
+
+// Add these input offset constants after the existing offset definitions
+
+// Raw input offsets from player base (from Cheat Engine findings)
+#define HORIZONTAL_INPUT_OFFSET 0x188  // Left = 255, Right = 1, Neutral = 0
+#define VERTICAL_INPUT_OFFSET   0x189  // Up = 255, Down = 1, Neutral = 0
+#define BUTTON_A_OFFSET         0x190  // 0 = not pressed, 1 = pressed
+#define BUTTON_B_OFFSET         0x194
+#define BUTTON_C_OFFSET         0x198
+#define BUTTON_D_OFFSET         0x19C
+
+// Raw input values
+#define RAW_INPUT_UP    255
+#define RAW_INPUT_DOWN  1
+#define RAW_INPUT_LEFT  255
+#define RAW_INPUT_RIGHT 1
+#define RAW_INPUT_NEUTRAL 0

@@ -42,3 +42,6 @@ void StopRFFreeze();
 // Memory offset for player inputs (you'll need to update these with correct values)
 #define P1_INPUT_OFFSET 0xB8  // Input bitmask offset for P1
 //#define P2_INPUT_OFFSET 0x5678  // Unused for now.
+
+// Add this function declaration near the other function declarations
+bool GetPlayerFacingDirection(int playerNum);  // Returns true if facing right, false if facing left

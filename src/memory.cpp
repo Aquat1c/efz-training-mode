@@ -432,6 +432,41 @@ void LoadPlayerPositions(uintptr_t base) {
     }
 }
 
+// Add this function implementation at the end of the file
+uint8_t GetPlayerInputs(int playerNum) {
+    uintptr_t base = GetEFZBase();
+    if (!base) return 0;
+    
+    uintptr_t baseOffset = (playerNum == 1) ? EFZ_BASE_OFFSET_P1 : EFZ_BASE_OFFSET_P2;
+    uintptr_t playerPtr = 0;
+    if (!SafeReadMemory(base + baseOffset, &playerPtr, sizeof(uintptr_t)) || !playerPtr) {
+        return 0;
+    }
+    
+    // Read input from offset 0xB8
+    uint8_t inputs = 0;
+    SafeReadMemory(playerPtr + P1_INPUT_OFFSET, &inputs, sizeof(uint8_t));
+    return inputs;
+}
+
+bool GetPlayerFacingDirection(int playerNum) {
+    uintptr_t base = GetEFZBase();
+    if (!base) return true; // Default to facing right if can't read
+    
+    uintptr_t baseOffset = (playerNum == 1) ? EFZ_BASE_OFFSET_P1 : EFZ_BASE_OFFSET_P2;
+    uintptr_t facingAddr = ResolvePointer(base, baseOffset, FACING_DIRECTION_OFFSET);
+    
+    if (!facingAddr) return true; // Default to facing right if can't resolve
+    
+    uint8_t facingValue = 0;
+    if (!SafeReadMemory(facingAddr, &facingValue, sizeof(uint8_t))) {
+        return true; // Default to facing right if can't read
+    }
+    
+    // 1 = facing right, 255 (0xFF) = facing left
+    return facingValue == 1;
+}
+
 // Add this function that updates all values except RF
 void UpdatePlayerValuesExceptRF(uintptr_t base, uintptr_t baseOffsetP1, uintptr_t baseOffsetP2) {
     // Write values from displayData to game memory
@@ -454,33 +489,6 @@ void UpdatePlayerValuesExceptRF(uintptr_t base, uintptr_t baseOffsetP1, uintptr_
     if (meterAddr2) WriteGameMemory(meterAddr2, &displayData.meter2, sizeof(WORD));
     if (xAddr2) WriteGameMemory(xAddr2, &displayData.x2, sizeof(double));
     if (yAddr2) WriteGameMemory(yAddr2, &displayData.y2, sizeof(double));
-}
-
-uint8_t GetPlayerInputs(int playerNum) {
-    uintptr_t base = GetEFZBase();
-    if (!base) return 0;
-
-    uintptr_t playerOffset = (playerNum == 1) ? EFZ_BASE_OFFSET_P1 : EFZ_BASE_OFFSET_P2;
-    uintptr_t playerBase = 0;
-    
-    if (!SafeReadMemory(base + playerOffset, &playerBase, sizeof(uintptr_t)) || !playerBase) {
-        return 0;
-    }
-
-    // Get the current input buffer index
-    uint8_t currentIndex = 0;
-    if (!SafeReadMemory(playerBase + P1_INPUT_BUFFER_INDEX_OFFSET, &currentIndex, sizeof(uint8_t))) {
-        return 0;
-    }
-
-    // Calculate the address to read the current input
-    uintptr_t inputAddr = playerBase + P1_INPUT_BUFFER_OFFSET + currentIndex;
-    
-    // Read the current input value
-    uint8_t inputValue = 0;
-    SafeReadMemory(inputAddr, &inputValue, sizeof(uint8_t));
-    
-    return inputValue;
 }
 
 // Add near other global variables

@@ -27,9 +27,9 @@ namespace CharacterSettings {
         {"mio", CHAR_ID_MIO},
         {"mishio", CHAR_ID_MISHIO},
         {"misuzu", CHAR_ID_MISUZU},
-        {"nagamori", CHAR_ID_MIZUKA},    // Nagamori is actually Mizuka
+        {"nagamori", CHAR_ID_MIZUKA},    // Nagamori is actually Mizuka Nagamori
         {"nanase", CHAR_ID_NANASE},      // Nanase is Rumi
-        {"exnanase", CHAR_ID_EXNANASE},  // ExNanase is Doppel
+        {"exnanase", CHAR_ID_EXNANASE},  // ExNanase is Doppel Nanase
         {"nayuki", CHAR_ID_NAYUKIB},     // Nayuki is actually NayukiB, this one is Neyuki
         {"nayukib", CHAR_ID_NAYUKI},     // NayukiB is actually Nayuki
         {"shiori", CHAR_ID_SHIORI},

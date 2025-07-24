@@ -2,7 +2,8 @@
 #include <windows.h>
 #include <vector>
 #include <cstdint>
-#include <string>  // Add this for std::string
+#include <string>
+#include <atomic>
 
 // Motion input constants
 #define MOTION_NONE       0
@@ -24,9 +25,9 @@
 #define MOTION_214A       17  // QCB + A
 #define MOTION_214B       18  // QCB + B
 #define MOTION_214C       19  // QCB + C
-#define MOTION_421A       20  // Reverse DP + A
-#define MOTION_421B       21  // Reverse DP + B
-#define MOTION_421C       22  // Reverse DP + C
+#define MOTION_421A       20  // Half Circle Back Down + A
+#define MOTION_421B       21  // Half Circle Back Down + B
+#define MOTION_421C       22  // Half Circle Back Down + C
 #define MOTION_41236A     23  // Half Circle Forward + A
 #define MOTION_41236B     24  // Half Circle Forward + B
 #define MOTION_41236C     25  // Half Circle Forward + C
@@ -34,21 +35,19 @@
 #define MOTION_63214B     27  // Half Circle Back + B
 #define MOTION_63214C     28  // Half Circle Back + C
 
-/*// Update these constants near the top of the file
-#define INPUT_RIGHT  0x01
-#define INPUT_LEFT   0x02
-#define INPUT_DOWN   0x04
-#define INPUT_UP     0x08
-#define INPUT_A      0x10  // Light attack
-#define INPUT_B      0x20  // Medium attack
-#define INPUT_C      0x40  // Heavy attack
-#define INPUT_D      0x80  // Special*/
+// New constants for dashes
+#define ACTION_FORWARD_DASH 101
+#define ACTION_BACK_DASH    102
 
-// Use bit mask constants directly for buttons
-#define BUTTON_A    0x10  // INPUT_A = 0x10 (16 in decimal)
-#define BUTTON_B    0x20  // INPUT_B = 0x20 (32 in decimal)
-#define BUTTON_C    0x40  // INPUT_C = 0x40 (64 in decimal)
-#define BUTTON_D    0x80  // INPUT_D = 0x80 (128 in decimal)
+// Input direction/button constants
+#define MOTION_INPUT_RIGHT  0x01
+#define MOTION_INPUT_LEFT   0x02
+#define MOTION_INPUT_DOWN   0x04
+#define MOTION_INPUT_UP     0x08
+#define MOTION_BUTTON_A     0x10
+#define MOTION_BUTTON_B     0x20
+#define MOTION_BUTTON_C     0x40
+#define MOTION_BUTTON_D     0x80
 
 // Structure to represent a single frame of input
 struct InputFrame {
@@ -58,7 +57,7 @@ struct InputFrame {
     InputFrame(uint8_t mask, int duration) : inputMask(mask), durationFrames(duration) {}
 };
 
-// Global variables to store motion sequence data
+// Global variables for the input queue system
 extern std::vector<InputFrame> p1InputQueue;
 extern std::vector<InputFrame> p2InputQueue;
 extern int p1QueueIndex;
@@ -68,45 +67,34 @@ extern int p2FrameCounter;
 extern bool p1QueueActive;
 extern bool p2QueueActive;
 
-// Function to queue a motion input for automatic execution
+// --- Core API ---
+
+// Queues a sequence of inputs to perform a motion (e.g., a special move).
 bool QueueMotionInput(int playerNum, int motionType, int buttonMask);
 
-// Function to process queued inputs each frame
+// Processes the active input queues each frame. Called by the frame monitor.
 void ProcessInputQueues();
-
-// Function to write inputs directly to memory
+uintptr_t GetPlayerPointer(int playerNum);
+// Writes a single frame of input. Used by the input hook and for simple actions.
 bool WritePlayerInput(int playerNum, uint8_t inputMask);
+bool WritePlayerInputImmediate(int playerNum, uint8_t inputMask);
+bool WritePlayerInputToBuffer(int playerNum, uint8_t inputMask);
 
-// Helper function to convert an action type to motion type
-int ConvertActionToMotion(int actionType, int triggerType = 0);
+// --- Manual Override API (for debug tab / direct control) ---
 
-// Helper function to convert button type to button mask
-uint8_t ConvertButtonToMask(int buttonType);
-
-// Debug helper functions
-std::string GetMotionTypeName(int motionType);
+// Forces a player's inputs to a specific state until released.
+bool HoldWalkForward(int playerNum);
+bool HoldWalkBackward(int playerNum);
+bool HoldCrouch(int playerNum);
+bool HoldUp(int playerNum);
+bool HoldBackCrouch(int playerNum);
+// The following functions are being removed as they are replaced by a better system.
+// bool HoldButtonA(int playerNum);
+// bool HoldButtonB(int playerNum);
+// bool HoldButtonC(int playerNum);
+// bool HoldButtonD(int playerNum);
+bool ReleaseInputs(int playerNum);
+void DiagnoseInputSystem(int playerNum);
+int ConvertActionToMotion(int actionType, int triggerType);
+uint8_t DetermineButtonFromMotionType(int motionType);
 std::string DecodeInputMask(uint8_t inputMask);
-void LogCurrentInputs();
-
-// Direct input control for testing
-void ApplyDirectInput(int playerNum, uint8_t inputMask, int holdFrames);
-
-// Add these function declarations
-void GenerateRandomInputs(int playerNum, int durationFrames);
-void ScanForInputBytes(int playerNum);
-void TestMultipleInputOffsets(int playerNum, uint8_t inputMask);
-void AnalyzeInputStructure(int playerNum);
-void TestPromisingSingleInputAddress(int playerNum, uint8_t inputMask, int holdFrames);
-void MonitorInputAddresses(int playerNum, int durationFrames);
-
-// Add this function declaration
-
-// Function to monitor the input buffer
-void MonitorInputBuffer(int playerNum, int frameCount);
-void TestInputSequence(int playerNum);
-
-// Helper to read the input buffer and current index for a player
-bool ReadPlayerInputBuffer(int playerNum, uint8_t* outBuffer, int bufferLen, int& outCurrentIndex);
-
-// Improved test input logic: write a test input to the buffer using the new buffer/index logic
-void TestInputBufferWrite(int playerNum, uint8_t inputMask);

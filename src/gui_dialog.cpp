@@ -297,25 +297,21 @@ void ProcessFormData(HWND hDlg, HWND hPage1, HWND hPage3, DisplayData* pData) {
     pData->triggerAfterBlock = (IsDlgButtonChecked(hPage3, IDC_TRIGGER_AFTER_BLOCK_CHECK) == BST_CHECKED);
     pData->actionAfterBlock = ComboIndexToActionType[SendMessage(GetDlgItem(hPage3, IDC_TRIGGER_AFTER_BLOCK_ACTION), CB_GETCURSEL, 0, 0)];
     GetDlgItemText(hPage3, IDC_TRIGGER_AFTER_BLOCK_DELAY, buffer, 256); pData->delayAfterBlock = atoi(buffer);
-    GetDlgItemText(hPage3, IDC_TRIGGER_AFTER_BLOCK_CUSTOM, buffer, 256); pData->customAfterBlock = atoi(buffer);
 
     // After Hitstun
     pData->triggerAfterHitstun = (IsDlgButtonChecked(hPage3, IDC_TRIGGER_AFTER_HITSTUN_CHECK) == BST_CHECKED);
     pData->actionAfterHitstun = ComboIndexToActionType[SendMessage(GetDlgItem(hPage3, IDC_TRIGGER_AFTER_HITSTUN_ACTION), CB_GETCURSEL, 0, 0)];
     GetDlgItemText(hPage3, IDC_TRIGGER_AFTER_HITSTUN_DELAY, buffer, 256); pData->delayAfterHitstun = atoi(buffer);
-    GetDlgItemText(hPage3, IDC_TRIGGER_AFTER_HITSTUN_CUSTOM, buffer, 256); pData->customAfterHitstun = atoi(buffer);
 
     // On Wakeup
     pData->triggerOnWakeup = (IsDlgButtonChecked(hPage3, IDC_TRIGGER_ON_WAKEUP_CHECK) == BST_CHECKED);
     pData->actionOnWakeup = ComboIndexToActionType[SendMessage(GetDlgItem(hPage3, IDC_TRIGGER_ON_WAKEUP_ACTION), CB_GETCURSEL, 0, 0)];
     GetDlgItemText(hPage3, IDC_TRIGGER_ON_WAKEUP_DELAY, buffer, 256); pData->delayOnWakeup = atoi(buffer);
-    GetDlgItemText(hPage3, IDC_TRIGGER_ON_WAKEUP_CUSTOM, buffer, 256); pData->customOnWakeup = atoi(buffer);
 
     // After Airtech
     pData->triggerAfterAirtech = (IsDlgButtonChecked(hPage3, IDC_TRIGGER_AFTER_AIRTECH_CHECK) == BST_CHECKED);
     pData->actionAfterAirtech = ComboIndexToActionType[SendMessage(GetDlgItem(hPage3, IDC_TRIGGER_AFTER_AIRTECH_ACTION), CB_GETCURSEL, 0, 0)];
     GetDlgItemText(hPage3, IDC_TRIGGER_AFTER_AIRTECH_DELAY, buffer, 256); pData->delayAfterAirtech = atoi(buffer);
-    GetDlgItemText(hPage3, IDC_TRIGGER_AFTER_AIRTECH_CUSTOM, buffer, 256); pData->customAfterAirtech = atoi(buffer);
 }
 
 // Page subclass procedure

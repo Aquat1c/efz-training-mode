@@ -4,45 +4,57 @@
 #include "../include/utilities.h"
 #include "../include/memory.h"
 #include "../include/logger.h"
-
+#include "../include/input_motion.h"
 
 void ApplyJump(uintptr_t moveIDAddr, int playerNum, int jumpType) {
-    if (!moveIDAddr) {
-        LogOut("[AUTO-JUMP] Invalid moveID address for P" + std::to_string(playerNum), true);
-        return;
-    }
+    // Ignore moveIDAddr parameter - we won't use it anymore
+    LogOut("[AUTO-JUMP] Executing jump via input system for P" + std::to_string(playerNum), detailedLogging.load());
     
-    short jumpMoveID;
     std::string jumpTypeName;
+    uint8_t inputMask = MOTION_INPUT_UP; // Default to straight jump (UP)
+    
+    // Get the actual facing direction for this player
+    bool facingRight = GetPlayerFacingDirection(playerNum);
     
     switch (jumpType) {
         case 0: // Straight
-            jumpMoveID = STRAIGHT_JUMP_ID;
+            inputMask = MOTION_INPUT_UP;
             jumpTypeName = "straight";
             break;
         case 1: // Forward
-            jumpMoveID = FORWARD_JUMP_ID;
+            // Use actual facing direction
+            if (facingRight) {
+                inputMask = MOTION_INPUT_UP | MOTION_INPUT_RIGHT;
+            } else {
+                inputMask = MOTION_INPUT_UP | MOTION_INPUT_LEFT;
+            }
             jumpTypeName = "forward";
             break;
         case 2: // Backward
-            jumpMoveID = BACKWARD_JUMP_ID;
+            // Use actual facing direction
+            if (facingRight) {
+                inputMask = MOTION_INPUT_UP | MOTION_INPUT_LEFT;
+            } else {
+                inputMask = MOTION_INPUT_UP | MOTION_INPUT_RIGHT;
+            }
             jumpTypeName = "backward";
             break;
         default:
-            jumpMoveID = STRAIGHT_JUMP_ID;
+            inputMask = MOTION_INPUT_UP;
             jumpTypeName = "straight (default)";
             break;
     }
     
-    // Apply the jump moveID directly without excessive logging
-    if (SafeWriteMemory(moveIDAddr, &jumpMoveID, sizeof(short))) {
+    // Use the input system instead of writing moveID directly
+    if (WritePlayerInput(playerNum, inputMask)) {
         // Only log in detailed mode
         if (detailedLogging.load()) {
-            LogOut("[AUTO-JUMP] P" + std::to_string(playerNum) + " " + jumpTypeName + " jump applied", false);
+            LogOut("[AUTO-JUMP] Applied " + jumpTypeName + " jump input for P" + 
+                   std::to_string(playerNum) + " (facing " + (facingRight ? "right" : "left") + ")", true);
         }
     } else {
         // Only log failures
-        LogOut("[AUTO-JUMP] Failed to apply jump for P" + std::to_string(playerNum), true);
+        LogOut("[AUTO-JUMP] Failed to apply jump input for P" + std::to_string(playerNum), true);
     }
 }
 

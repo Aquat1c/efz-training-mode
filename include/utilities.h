@@ -111,6 +111,9 @@ struct DisplayData {
     // Blue IC/Red IC toggle
     bool p1BlueIC;
     bool p2BlueIC;
+
+    // NEW: Add this flag for P2 control
+    bool p2ControlEnabled;
     
     // Keep these for backward compatibility
     bool autoAction;
@@ -189,6 +192,11 @@ extern std::atomic<int> triggerAfterAirtechCustomID;
 // Add these after the other global state variables
 extern std::atomic<bool> g_efzWindowActive;
 extern std::atomic<bool> g_guiActive;
+
+// NEW: Add these for the debug tab's manual input override feature
+extern std::atomic<bool> g_manualInputOverride[3]; // Index 0 unused, 1 for P1, 2 for P2
+extern std::atomic<uint8_t> g_manualInputMask[3];
+extern std::atomic<bool> g_manualJumpHold[3]; // NEW: For continuous jump on hold
 
 // Add this function declaration
 void UpdateWindowActiveState();

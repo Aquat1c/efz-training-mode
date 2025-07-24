@@ -21,6 +21,16 @@
 #include <atomic>
 #include <iomanip>
 
+// File-scope static variables for state tracking
+static uint8_t p1LastFacing = 0;
+static uint8_t p2LastFacing = 0;
+static bool facingInitialized = false;
+
+// Button state tracking
+static uint8_t p1LastButtons[4] = {0, 0, 0, 0}; // A, B, C, D
+static uint8_t p2LastButtons[4] = {0, 0, 0, 0}; // A, B, C, D
+static bool buttonStateInitialized = false;
+
 MonitorState state = Idle;
 
 static GameMode s_previousGameMode = GameMode::Unknown;
@@ -161,12 +171,14 @@ void UpdateTriggerOverlay() {
 void FrameDataMonitor() {
     using clock = std::chrono::high_resolution_clock;
     
-    LogOut("[FRAME MONITOR] Starting frame monitoring with PRECISE subframe tracking", true);
+    LogOut("[FRAME MONITOR] Starting frame monitoring at 192fps for maximum precision", true);
     
     // CRITICAL: Set highest possible priority to prevent throttling
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
     
     short prevMoveID1 = -1, prevMoveID2 = -1;
+    // Update frame time to match 192fps instead of 60fps
+    // 1,000,000,000 / 192 = 5,208,333 nanoseconds per frame
     const auto targetFrameTime = std::chrono::nanoseconds(5208333);
     static uintptr_t cachedMoveIDAddr1 = 0;
     static uintptr_t cachedMoveIDAddr2 = 0;
@@ -174,9 +186,16 @@ void FrameDataMonitor() {
     auto lastLogTime = clock::now();
     int framesSinceLastLog = 0;
     extern std::atomic<bool> g_isShuttingDown;
+
     
     while (!g_isShuttingDown) {
-        auto frameStartTime = clock::now();
+        auto frameStart = clock::now();
+        
+        // Update frame counter first thing
+        frameCounter++;
+        
+        // Process any active input queues
+        ProcessInputQueues();
         
         // Update window state at the beginning of each frame
         UpdateWindowActiveState();
@@ -319,33 +338,13 @@ void FrameDataMonitor() {
             prevMoveID2 = moveID2;
         }
         
-        // Process input queues every frame
-        ProcessInputQueues();
+        // Sleep precisely for the remaining time to maintain exact 192fps
+        auto frameEnd = clock::now();
+        auto frameDuration = frameEnd - frameStart;
+        auto sleepTime = targetFrameTime - frameDuration;
         
-        // Ensure the loop runs at the target rate
-        auto frameEndTime = clock::now();
-        auto frameDuration = frameEndTime - frameStartTime;
-        
-        if (frameDuration < targetFrameTime) {
-            auto sleepTime = targetFrameTime - frameDuration;
-            
-            // Use high-precision spinning for very short waits
-            if (sleepTime < std::chrono::microseconds(100)) {
-                while (clock::now() - frameStartTime < targetFrameTime) {
-                    _mm_pause(); // Hint to CPU for spin-wait loop
-                }
-            } else {
-                // Use sleep for longer waits
-                std::this_thread::sleep_for(sleepTime);
-            }
-        } else {
-            // Log timing overruns for debugging
-            if (detailedLogging.load()) {
-                auto overrun = std::chrono::duration_cast<std::chrono::microseconds>(frameDuration - targetFrameTime);
-                if (overrun.count() > 1000) { // Only log significant overruns
-                    LogOut("[FRAME MONITOR] Timing overrun: " + std::to_string(overrun.count()) + "µs", false);
-                }
-            }
+        if (sleepTime > std::chrono::nanoseconds::zero()) {
+            std::this_thread::sleep_for(sleepTime);
         }
     }
     
@@ -561,4 +560,87 @@ void UpdateStatsDisplay() {
         DirectDrawHook::UpdatePermanentMessage(g_statsPositionId, positions.str(), textColor);
         DirectDrawHook::UpdatePermanentMessage(g_statsMoveIdId, moveIds.str(), textColor);
     }
+
+    // Add this code in the main while loop of FrameDataMonitor, after the moveID reading
+    // Add facing direction monitoring
+    if (base) {
+        // Check P1 facing
+        uintptr_t p1FacingAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P1, FACING_DIRECTION_OFFSET);
+        if (p1FacingAddr) {
+            uint8_t p1Facing = 0;
+            if (SafeReadMemory(p1FacingAddr, &p1Facing, sizeof(uint8_t))) {
+                if (facingInitialized && p1Facing != p1LastFacing) {
+                    LogOut("[FACING] P1 facing changed from " + 
+                           std::string(p1LastFacing == 1 ? "RIGHT" : "LEFT") + " to " + 
+                           std::string(p1Facing == 1 ? "RIGHT" : "LEFT"), true);
+                }
+                p1LastFacing = p1Facing;
+            }
+        }
+        
+        // Check P2 facing
+        uintptr_t p2FacingAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P2, FACING_DIRECTION_OFFSET);
+        if (p2FacingAddr) {
+            uint8_t p2Facing = 0;
+            if (SafeReadMemory(p2FacingAddr, &p2Facing, sizeof(uint8_t))) {
+                if (facingInitialized && p2Facing != p2LastFacing) {
+                    LogOut("[FACING] P2 facing changed from " + 
+                           std::string(p2LastFacing == 1 ? "RIGHT" : "LEFT") + " to " + 
+                           std::string(p2Facing == 1 ? "RIGHT" : "LEFT"), true);
+                }
+                p2LastFacing = p2Facing;
+            }
+        }
+        facingInitialized = true;
+        
+        // Monitor button state changes
+        // P1 buttons
+        uintptr_t p1ButtonAddrs[4] = {
+            ResolvePointer(base, EFZ_BASE_OFFSET_P1, 0x190), // A
+            ResolvePointer(base, EFZ_BASE_OFFSET_P1, 0x194), // B
+            ResolvePointer(base, EFZ_BASE_OFFSET_P1, 0x198), // C
+            ResolvePointer(base, EFZ_BASE_OFFSET_P1, 0x19C)  // D
+        };
+        
+        const char* buttonNames[4] = {"A", "B", "C", "D"};
+        
+        for (int i = 0; i < 4; i++) {
+            if (p1ButtonAddrs[i]) {
+                uint8_t buttonState = 0;
+                if (SafeReadMemory(p1ButtonAddrs[i], &buttonState, sizeof(uint8_t))) {
+                    if (buttonStateInitialized && buttonState != p1LastButtons[i]) {
+                        LogOut("[BUTTON] P1 " + std::string(buttonNames[i]) + " " + 
+                               (buttonState ? "PRESSED" : "RELEASED"), true);
+                    }
+                    p1LastButtons[i] = buttonState;
+                }
+            }
+        }
+        
+        // P2 buttons
+        uintptr_t p2ButtonAddrs[4] = {
+            ResolvePointer(base, EFZ_BASE_OFFSET_P2, 0x190), // A
+            ResolvePointer(base, EFZ_BASE_OFFSET_P2, 0x194), // B
+            ResolvePointer(base, EFZ_BASE_OFFSET_P2, 0x198), // C
+            ResolvePointer(base, EFZ_BASE_OFFSET_P2, 0x19C)  // D
+        };
+        
+        for (int i = 0; i < 4; i++) {
+            if (p2ButtonAddrs[i]) {
+                uint8_t buttonState = 0;
+                if (SafeReadMemory(p2ButtonAddrs[i], &buttonState, sizeof(uint8_t))) {
+                    if (buttonStateInitialized && buttonState != p2LastButtons[i]) {
+                        LogOut("[BUTTON] P2 " + std::string(buttonNames[i]) + " " + 
+                               (buttonState ? "PRESSED" : "RELEASED"), true);
+                    }
+                    p2LastButtons[i] = buttonState;
+                }
+            }
+        }
+        
+        buttonStateInitialized = true;
+    }
+
+    // Process any queued inputs
+    ProcessInputQueues();
 }

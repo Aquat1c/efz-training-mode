@@ -5,13 +5,29 @@
 #include "../include/memory.h"
 #include "../include/logger.h"
 #include "../include/gui.h"
-#include "../include/config.h" // Add this include for GetKeyName
-#include "../include/overlay.h" // Add this include for DirectDrawHook
+#include "../include/config.h"
+#include "../include/overlay.h"
 #include "../include/character_settings.h"
 #include "../include/frame_monitor.h"
 #include "../include/input_motion.h"
 #include "../include/practice_patch.h"
 
+// Add these constants at the top of the file after includes
+// These are from input_motion.cpp but we need them here
+const uint8_t GAME_INPUT_RIGHT = 0x01;
+const uint8_t GAME_INPUT_LEFT = 0x02;
+const uint8_t GAME_INPUT_DOWN = 0x04;
+const uint8_t GAME_INPUT_UP = 0x08;
+const uint8_t GAME_INPUT_A = 0x10;
+const uint8_t GAME_INPUT_B = 0x20;
+const uint8_t GAME_INPUT_C = 0x40;
+const uint8_t GAME_INPUT_D = 0x80;
+
+// Button constants
+#define BUTTON_A    GAME_INPUT_A
+#define BUTTON_B    GAME_INPUT_B
+#define BUTTON_C    GAME_INPUT_C
+#define BUTTON_D    GAME_INPUT_D
 
 namespace ImGuiGui {
     // Define static variable at namespace level
@@ -35,8 +51,8 @@ namespace ImGuiGui {
         ACTION_SUPER2,      // 13 = Super 2
         ACTION_JUMP,        // 14 = Jump
         ACTION_BACKDASH,    // 15 = Backdash
-        ACTION_BLOCK,       // 16 = Block
-        ACTION_CUSTOM       // 17 = Custom
+        ACTION_BLOCK        // 16 = Block
+        // REMOVED: ACTION_CUSTOM
     };
 
     // Helper function to convert action type to combo index
@@ -155,6 +171,16 @@ namespace ImGuiGui {
         ImGui::Columns(1);
         ImGui::Separator();
 
+        // NEW: Add P2 Control checkbox here, before other settings
+        ImGui::PushItemWidth(-1); // Make checkbox span width
+        ImGui::Checkbox("Enable P2 Control (Practice Mode Only)", &guiState.localData.p2ControlEnabled);
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("Gives you direct control over Player 2 in Practice Mode.\nThis is required for the Debug Input tab to work.\nApply changes to update the game.");
+        }
+        ImGui::PopItemWidth();
+        ImGui::Separator();
+
+
         // Action buttons
         if (ImGui::Button("Swap Positions", ImVec2(150, 30))) {
             // Swap X positions
@@ -215,11 +241,10 @@ namespace ImGuiGui {
         ImGui::Separator();
 
         // Create a table for the triggers
-        if (ImGui::BeginTable("AutoActionTable", 4, ImGuiTableFlags_Borders)) {
+        if (ImGui::BeginTable("AutoActionTable", 3, ImGuiTableFlags_Borders)) { // Changed from 4 columns to 3
             ImGui::TableSetupColumn("Trigger");
             ImGui::TableSetupColumn("Action");
             ImGui::TableSetupColumn("Delay");
-            ImGui::TableSetupColumn("Custom ID");
             ImGui::TableHeadersRow();
 
             // Common action items
@@ -227,7 +252,7 @@ namespace ImGuiGui {
                 "5A", "5B", "5C", "2A", "2B", "2C", 
                 "j.A", "j.B", "j.C",
                 "QCF", "DP", "QCB", "Super 1", "Super 2",
-                "Jump", "Backdash", "Block", "Custom" 
+                "Jump", "Backdash", "Block"
             };
             
             // Make sure the number of items matches the ComboIndexToActionType array
@@ -258,13 +283,7 @@ namespace ImGuiGui {
             }
             ImGui::PopItemWidth();
             
-            ImGui::TableNextColumn();
-            int customAfterBlock = guiState.localData.customAfterBlock;
-            ImGui::PushItemWidth(-1);
-            if (ImGui::InputInt("##CustomAfterBlock", &customAfterBlock)) {
-                guiState.localData.customAfterBlock = CLAMP(customAfterBlock, 0, 500);
-            }
-            ImGui::PopItemWidth();
+            // Removed custom moveID column and input
 
             // After Hitstun trigger
             ImGui::TableNextRow();
@@ -290,13 +309,7 @@ namespace ImGuiGui {
             }
             ImGui::PopItemWidth();
             
-            ImGui::TableNextColumn();
-            int customAfterHitstun = guiState.localData.customAfterHitstun;
-            ImGui::PushItemWidth(-1);
-            if (ImGui::InputInt("##CustomAfterHitstun", &customAfterHitstun)) {
-                guiState.localData.customAfterHitstun = CLAMP(customAfterHitstun, 0, 500);
-            }
-            ImGui::PopItemWidth();
+            // Removed custom moveID column and input
 
             // On Wakeup trigger
             ImGui::TableNextRow();
@@ -322,13 +335,7 @@ namespace ImGuiGui {
             }
             ImGui::PopItemWidth();
             
-            ImGui::TableNextColumn();
-            int customOnWakeup = guiState.localData.customOnWakeup;
-            ImGui::PushItemWidth(-1);
-            if (ImGui::InputInt("##CustomOnWakeup", &customOnWakeup)) {
-                guiState.localData.customOnWakeup = CLAMP(customOnWakeup, 0, 500);
-            }
-            ImGui::PopItemWidth();
+            // Removed custom moveID column and input
 
             // After Airtech trigger
             ImGui::TableNextRow();
@@ -354,13 +361,7 @@ namespace ImGuiGui {
             }
             ImGui::PopItemWidth();
             
-            ImGui::TableNextColumn();
-            int customAfterAirtech = guiState.localData.customAfterAirtech;
-            ImGui::PushItemWidth(-1);
-            if (ImGui::InputInt("##CustomAfterAirtech", &customAfterAirtech)) {
-                guiState.localData.customAfterAirtech = CLAMP(customAfterAirtech, 0, 500);
-            }
-            ImGui::PopItemWidth();
+            // Removed custom moveID column and input
 
             ImGui::EndTable();
         }
@@ -700,109 +701,76 @@ namespace ImGuiGui {
     
     // Add this new function to the ImGuiGui namespace:
     void RenderDebugInputTab() {
-        if (!ImGui::CollapsingHeader("Input Testing", ImGuiTreeNodeFlags_DefaultOpen))
-            return;
-        
-        // --- P2 Controls Patch ---
-        static bool p2ControlsEnabled = false;
-        static bool p2PatchStatus = false;
-        if (ImGui::Checkbox("Enable P2 Controls in Practice Mode", &p2ControlsEnabled)) {
-            if (p2ControlsEnabled) {
-                p2PatchStatus = EnablePlayer2InPracticeMode();
-            } else {
-                p2PatchStatus = DisablePlayer2InPracticeMode();
-            }
-        }
-        if (p2ControlsEnabled) {
-            ImGui::SameLine();
-            if (p2PatchStatus) {
-                ImGui::TextColored(ImVec4(0.2f, 1.0f, 0.2f, 1.0f), "[Patched]");
-            } else {
-                ImGui::TextColored(ImVec4(1.0f, 0.2f, 0.2f, 1.0f), "[Patch failed]");
-            }
-        }
+        ImGui::Text("Manual Input Override (P2)");
         ImGui::Separator();
+
+        ImGui::Text("Directions (Press to send a single frame input):");
         
-        static int testPlayer = 1;
-        static uint8_t testMask = 0x10; // Default to A button
-        
-        ImGui::RadioButton("Test P1 Input", &testPlayer, 1); ImGui::SameLine();
-        ImGui::RadioButton("Test P2 Input", &testPlayer, 2);
-        
-        // Display memory addresses
-        uintptr_t base = GetEFZBase();
-        if (base) {
-            uintptr_t p1Base = 0, p2Base = 0;
-            SafeReadMemory(base + EFZ_BASE_OFFSET_P1, &p1Base, sizeof(uintptr_t));
-            SafeReadMemory(base + EFZ_BASE_OFFSET_P2, &p2Base, sizeof(uintptr_t));
-            
-            ImGui::Text("Input Addresses:");
-            ImGui::Text("P1 Base: 0x%llX", p1Base);
-            ImGui::Text("P2 Base: 0x%llX", p2Base);
-            ImGui::Text("Input Buffer Offset: 0x%X", P1_INPUT_BUFFER_OFFSET);
-            ImGui::Text("Index Offset: 0x%X", P1_INPUT_BUFFER_INDEX_OFFSET);
-            
-            uint8_t p1Index = 0, p2Index = 0;
-            SafeReadMemory(p1Base + P1_INPUT_BUFFER_INDEX_OFFSET, &p1Index, sizeof(uint8_t));
-            SafeReadMemory(p2Base + P1_INPUT_BUFFER_INDEX_OFFSET, &p2Index, sizeof(uint8_t));
-            
-            ImGui::Text("Current Indices: P1=%d, P2=%d", p1Index, p2Index);
-        }
-        
-        // Display current inputs
-        uint8_t p1Input = GetPlayerInputs(1);
-        uint8_t p2Input = GetPlayerInputs(2);
-        
-        ImGui::Spacing();
-        ImGui::Text("Current Inputs:");
-        ImGui::Text("P1: 0x%02X | %s%s%s%s | %s%s%s%s", 
-            p1Input,
-            (p1Input & INPUT_UP) ? "↑" : " ",
-            (p1Input & INPUT_DOWN) ? "↓" : " ",
-            (p1Input & INPUT_LEFT) ? "←" : " ",
-            (p1Input & INPUT_RIGHT) ? "→" : " ",
-            (p1Input & INPUT_A) ? "A" : " ",
-            (p1Input & INPUT_B) ? "B" : " ",
-            (p1Input & INPUT_C) ? "C" : " ",
-            (p1Input & INPUT_D) ? "D" : " ");
-            
-        ImGui::Text("P2: 0x%02X | %s%s%s%s | %s%s%s%s", 
-            p2Input,
-            (p2Input & INPUT_UP) ? "↑" : " ",
-            (p2Input & INPUT_DOWN) ? "↓" : " ",
-            (p2Input & INPUT_LEFT) ? "←" : " ",
-            (p2Input & INPUT_RIGHT) ? "→" : " ",
-            (p2Input & INPUT_A) ? "A" : " ",
-            (p2Input & INPUT_B) ? "B" : " ",
-            (p2Input & INPUT_C) ? "C" : " ",
-            (p2Input & INPUT_D) ? "D" : " ");
-        
-        ImGui::Spacing();
-        
-        // Test full input sequence
-        if (ImGui::Button("Run Input Test Sequence")) {
-            int playerNum = testPlayer;
-            std::thread([playerNum]() {
-                TestInputSequence(playerNum);
-            }).detach();
-        }
-        
+        // --- CORRECTED GUI LOGIC ---
+        // All buttons now use the input queue for clean, single-frame injection.
+        // This prevents any state lock-ups.
+
+        ImGui::Dummy(ImVec2(40, 40)); ImGui::SameLine();
+        if (ImGui::Button("UP", ImVec2(40, 40))) { QueueMotionInput(2, MOTION_INPUT_UP, 0); }
+        ImGui::SameLine(); ImGui::Dummy(ImVec2(40, 40));
+
+        if (ImGui::Button("LEFT", ImVec2(40, 40))) { QueueMotionInput(2, MOTION_INPUT_LEFT, 0); }
         ImGui::SameLine();
-        if (ImGui::Button("Monitor Input Buffer")) {
-            int playerNum = testPlayer;
-            std::thread([playerNum]() {
-                MonitorInputBuffer(playerNum, 300);
-            }).detach();
-        }
-        
-        ImGui::Spacing();
-        ImGui::Text("Test Input Mask:");
+        if (ImGui::Button("NEUTRAL", ImVec2(40, 40))) { QueueMotionInput(2, MOTION_NONE, 0); }
         ImGui::SameLine();
-        ImGui::InputScalar("##TestInputMask", ImGuiDataType_U8, &testMask, nullptr, nullptr, "%02X");
-        if (ImGui::Button("Send Test Input")) {
-            TestInputBufferWrite(testPlayer, testMask);
-        }
+        if (ImGui::Button("RIGHT", ImVec2(40, 40))) { QueueMotionInput(2, MOTION_INPUT_RIGHT, 0); }
+
+        ImGui::Dummy(ImVec2(40, 40)); ImGui::SameLine();
+        if (ImGui::Button("DOWN", ImVec2(40, 40))) { QueueMotionInput(2, MOTION_INPUT_DOWN, 0); }
+        if (ImGui::IsItemDeactivated()) { ReleaseInputs(2); }
+
+        ImGui::SameLine(); ImGui::Dummy(ImVec2(40, 40));
+
         ImGui::Separator();
+        ImGui::Text("Press Buttons (P2):");
+
+        if (ImGui::Button("A")) {
+            g_manualInputMask[2].store(MOTION_BUTTON_A);
+            g_manualInputOverride[2].store(true);
+        }
+        if (ImGui::IsItemDeactivated()) {
+            g_manualInputOverride[2].store(false);
+        }
+        // Repeat for B, C, D
+        if (ImGui::Button("B")) {
+            g_manualInputMask[2].store(MOTION_BUTTON_B);
+            g_manualInputOverride[2].store(true);
+        }
+        if (ImGui::IsItemDeactivated()) {
+            g_manualInputOverride[2].store(false);
+        }
+        if (ImGui::Button("C")) {
+            g_manualInputMask[2].store(MOTION_BUTTON_C);
+            g_manualInputOverride[2].store(true);
+        }
+        if (ImGui::IsItemDeactivated()) {
+            g_manualInputOverride[2].store(false);
+        }
+        if (ImGui::Button("D")) {
+            g_manualInputMask[2].store(MOTION_BUTTON_D);
+            g_manualInputOverride[2].store(true);
+        }
+        if (ImGui::IsItemDeactivated()) {
+            g_manualInputOverride[2].store(false);
+        }
+
+        // --- END CORRECTION ---
+
+        ImGui::Separator();
+        if (ImGui::Button("Release All Inputs", ImVec2(200, 30))) {
+            ReleaseInputs(2); // This can still be useful to clear a stuck queue.
+        }
+
+        ImGui::Separator();
+        ImGui::Text("Input Diagnostics");
+        if (ImGui::Button("Diagnose P1 Inputs")) { DiagnoseInputSystem(1); }
+        ImGui::SameLine();
+        if (ImGui::Button("Diagnose P2 Inputs")) { DiagnoseInputSystem(2); }
     }
 
     // Update the RenderGui function to include the new tab:
@@ -970,7 +938,15 @@ namespace ImGuiGui {
             jumpDirection.store(displayData.jumpDirection);
             jumpTarget.store(displayData.jumpTarget);
             
-            // Add this to log character-specific settings being applied
+            // Apply the P2 control patch based on the checkbox state
+            if (displayData.p2ControlEnabled) {
+                EnablePlayer2InPracticeMode();
+            } else {
+                // CORRECTED: Call the existing function to disable P2 control.
+                DisablePlayer2InPracticeMode();
+            }
+            
+            // Add this to log character settings being applied
             LogOut("[IMGUI_GUI] Applying character settings - Blood Mode: " + 
                    std::to_string(displayData.infiniteBloodMode) + 
                    ", Feather Mode: " + std::to_string(displayData.infiniteFeatherMode) +
