@@ -15,7 +15,9 @@
 #include "../include/imgui_impl.h"
 #include "../include/imgui_gui.h"
 #include "../include/config.h"
-#include "../include/practice_patch.h" // Add the practice mode patch header
+#include "../include/practice_patch.h"
+#include "../include/input_hook.h" // Add this include
+#include "../3rdparty/minhook/include/MinHook.h" // Add this include
 
 // Forward declarations for functions in other files
 void MonitorKeys();
@@ -58,6 +60,16 @@ void DelayedInitialization(HMODULE hModule) {
     InitializeLogging();
     WriteStartupLog("Logging system initialized");
     
+    // NEW: Initialize MinHook once for the entire application.
+    if (MH_Initialize() != MH_OK) {
+        LogOut("[SYSTEM] MinHook initialization failed. Hooks will not be installed.", true);
+        return; // Early exit if MinHook fails
+    }
+    LogOut("[SYSTEM] MinHook initialized successfully.", true);
+
+    // Install the input hook after the game is stable
+    InstallInputHook();
+    
     LogOut("[SYSTEM] EFZ Training Mode - Delayed initialization starting", true);
     LogOut("[SYSTEM] Console initialized with code page: " + std::to_string(GetConsoleOutputCP()), true);
     LogOut("[SYSTEM] Current locale: C", true);
@@ -70,9 +82,8 @@ void DelayedInitialization(HMODULE hModule) {
     std::thread(UpdateConsoleTitle).detach();
     std::thread(FrameDataMonitor).detach();
     std::thread(MonitorOnlineStatus).detach();
-    // Start the practice mode patching thread
-    // std::thread(MonitorAndPatchPracticeMode).detach(); // DISABLED: Only patch via ImGui now
-    // The MonitorKeys thread is now started by EnableFeatures() when appropriate.
+    // REMOVED: The practice mode patch is no longer a persistent thread.
+    // std::thread(MonitorAndPatchPracticeMode).detach(); 
     LogOut("[SYSTEM] Essential background threads started.", true);
     
     // Use standard Windows input APIs instead of DirectInput
@@ -175,6 +186,9 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
         // Add a small delay to allow threads to notice the flag
         Sleep(100);
         
+        // Remove the input hook first
+        RemoveInputHook();
+        
         // First clean up ImGui to prevent rendering during shutdown
         ImGuiImpl::Shutdown();
         
@@ -183,6 +197,10 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
         
         // Finally clean up the overlay
         DirectDrawHook::Shutdown();
+
+        // NEW: Uninitialize MinHook once at the very end.
+        MH_Uninitialize();
+        LogOut("[SYSTEM] MinHook uninitialized.", true);
         
         LogOut("[SYSTEM] DLL detaching, cleanup complete", true);
     }

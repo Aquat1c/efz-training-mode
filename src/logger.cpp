@@ -191,7 +191,7 @@ void UpdateConsoleTitle() {
         
         SetConsoleTitleA(title);
         
-        // Keep the fast 250ms update as requested
-        Sleep(250);
+        // Keep the fast update rate as requested - every 100ms
+        Sleep(100);
     }
 }

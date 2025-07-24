@@ -142,4 +142,33 @@ namespace ImGuiImpl {
         
         return 0;
     }
+    
+    void RenderFrame() {
+        // Safety check
+        if (!g_imguiInitialized || !g_d3dDevice || g_isShuttingDown.load()) {
+            return;
+        }
+        
+        // Only render if visible
+        if (!g_imguiVisible) {
+            return;
+        }
+        
+        try {
+            // Start new ImGui frame
+            ImGui_ImplDX9_NewFrame();
+            ImGui_ImplWin32_NewFrame();
+            ImGui::NewFrame();
+            
+            // Render the GUI
+            ImGuiGui::RenderGui();
+            
+            // End frame and render
+            ImGui::EndFrame();
+            ImGui::Render();
+            ImGui_ImplDX9_RenderDrawData(ImGui::GetDrawData());
+        } catch (...) {
+            // Silently catch any exceptions during rendering to prevent crashes
+        }
+    }
 }

@@ -64,7 +64,7 @@ void AutoActionPage_CreateContent(HWND hParent, DisplayData* pData) {
     int yPos = 90;
     char delayText[8];
 
-    // After Block trigger
+    // After Block trigger - REMOVE Custom ID field
     HWND hAfterBlockCheck = CreateWindowEx(0, "BUTTON", "After Block:", 
         WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
         50, yPos, 120, 25, hParent, (HMENU)IDC_TRIGGER_AFTER_BLOCK_CHECK, GetModuleHandle(NULL), NULL);
@@ -96,7 +96,8 @@ void AutoActionPage_CreateContent(HWND hParent, DisplayData* pData) {
     SendMessage(hAfterBlockAction, CB_ADDSTRING, 0, (LPARAM)"Jump");
     SendMessage(hAfterBlockAction, CB_ADDSTRING, 0, (LPARAM)"Backdash");
     SendMessage(hAfterBlockAction, CB_ADDSTRING, 0, (LPARAM)"Block");
-    SendMessage(hAfterBlockAction, CB_ADDSTRING, 0, (LPARAM)"Custom");
+    // REMOVED: Custom option is removed since we don't support custom moveIDs anymore
+    
     SendMessage(hAfterBlockAction, CB_SETCURSEL, 
         ActionTypeToComboIndex(triggerAfterBlockAction.load()), 0);
 
@@ -108,13 +109,7 @@ void AutoActionPage_CreateContent(HWND hParent, DisplayData* pData) {
         WS_CHILD | WS_VISIBLE | WS_BORDER | ES_NUMBER,
         355, yPos, 40, 25, hParent, (HMENU)IDC_TRIGGER_AFTER_BLOCK_DELAY, GetModuleHandle(NULL), NULL);
 
-    // Add custom move ID field for After Block trigger
-    sprintf_s(delayText, "%d", triggerAfterBlockCustomID.load());
-    CreateWindowEx(0, "STATIC", "Custom ID:", WS_CHILD | WS_VISIBLE | SS_LEFT,
-        415, yPos, 60, 25, hParent, NULL, GetModuleHandle(NULL), NULL);
-    CreateWindowEx(WS_EX_CLIENTEDGE, "EDIT", delayText, 
-        WS_CHILD | WS_VISIBLE | WS_BORDER | ES_NUMBER,
-        480, yPos, 40, 25, hParent, (HMENU)IDC_TRIGGER_AFTER_BLOCK_CUSTOM, GetModuleHandle(NULL), NULL);
+    // REMOVED: Custom Move ID field
 
     // After Hitstun trigger
     yPos += 35;
@@ -147,7 +142,7 @@ void AutoActionPage_CreateContent(HWND hParent, DisplayData* pData) {
     SendMessage(hAfterHitstunAction, CB_ADDSTRING, 0, (LPARAM)"Jump");
     SendMessage(hAfterHitstunAction, CB_ADDSTRING, 0, (LPARAM)"Backdash");
     SendMessage(hAfterHitstunAction, CB_ADDSTRING, 0, (LPARAM)"Block");
-    SendMessage(hAfterHitstunAction, CB_ADDSTRING, 0, (LPARAM)"Custom");
+    // REMOVED: Custom option is removed since we don't support custom moveIDs anymore
     SendMessage(hAfterHitstunAction, CB_SETCURSEL, 
         ActionTypeToComboIndex(triggerAfterHitstunAction.load()), 0);
 
@@ -157,14 +152,6 @@ void AutoActionPage_CreateContent(HWND hParent, DisplayData* pData) {
     CreateWindowEx(WS_EX_CLIENTEDGE, "EDIT", delayText, 
         WS_CHILD | WS_VISIBLE | WS_BORDER | ES_NUMBER,
         355, yPos, 40, 25, hParent, (HMENU)IDC_TRIGGER_AFTER_HITSTUN_DELAY, GetModuleHandle(NULL), NULL);
-
-    // Add custom move ID field for After Hitstun trigger
-    sprintf_s(delayText, "%d", triggerAfterHitstunCustomID.load());
-    CreateWindowEx(0, "STATIC", "Custom ID:", WS_CHILD | WS_VISIBLE | SS_LEFT,
-        415, yPos, 60, 25, hParent, NULL, GetModuleHandle(NULL), NULL);
-    CreateWindowEx(WS_EX_CLIENTEDGE, "EDIT", delayText, 
-        WS_CHILD | WS_VISIBLE | WS_BORDER | ES_NUMBER,
-        480, yPos, 40, 25, hParent, (HMENU)IDC_TRIGGER_AFTER_HITSTUN_CUSTOM, GetModuleHandle(NULL), NULL);
 
     // On Wakeup trigger
     yPos += 35;
@@ -197,7 +184,7 @@ void AutoActionPage_CreateContent(HWND hParent, DisplayData* pData) {
     SendMessage(hOnWakeupAction, CB_ADDSTRING, 0, (LPARAM)"Jump");
     SendMessage(hOnWakeupAction, CB_ADDSTRING, 0, (LPARAM)"Backdash");
     SendMessage(hOnWakeupAction, CB_ADDSTRING, 0, (LPARAM)"Block");
-    SendMessage(hOnWakeupAction, CB_ADDSTRING, 0, (LPARAM)"Custom");
+    // REMOVED: Custom option is removed since we don't support custom moveIDs anymore
     SendMessage(hOnWakeupAction, CB_SETCURSEL, 
         ActionTypeToComboIndex(triggerOnWakeupAction.load()), 0);
 
@@ -207,14 +194,6 @@ void AutoActionPage_CreateContent(HWND hParent, DisplayData* pData) {
     CreateWindowEx(WS_EX_CLIENTEDGE, "EDIT", delayText, 
         WS_CHILD | WS_VISIBLE | WS_BORDER | ES_NUMBER,
         355, yPos, 40, 25, hParent, (HMENU)IDC_TRIGGER_ON_WAKEUP_DELAY, GetModuleHandle(NULL), NULL);
-
-    // Add custom move ID field for On Wakeup trigger
-    sprintf_s(delayText, "%d", triggerOnWakeupCustomID.load());
-    CreateWindowEx(0, "STATIC", "Custom ID:", WS_CHILD | WS_VISIBLE | SS_LEFT,
-        415, yPos, 60, 25, hParent, NULL, GetModuleHandle(NULL), NULL);
-    CreateWindowEx(WS_EX_CLIENTEDGE, "EDIT", delayText, 
-        WS_CHILD | WS_VISIBLE | WS_BORDER | ES_NUMBER,
-        480, yPos, 40, 25, hParent, (HMENU)IDC_TRIGGER_ON_WAKEUP_CUSTOM, GetModuleHandle(NULL), NULL);
 
     // After Airtech trigger
     yPos += 35;
@@ -249,7 +228,7 @@ void AutoActionPage_CreateContent(HWND hParent, DisplayData* pData) {
     SendMessage(hAfterAirtechAction, CB_ADDSTRING, 0, (LPARAM)"Jump");
     SendMessage(hAfterAirtechAction, CB_ADDSTRING, 0, (LPARAM)"Backdash");
     SendMessage(hAfterAirtechAction, CB_ADDSTRING, 0, (LPARAM)"Block");
-    SendMessage(hAfterAirtechAction, CB_ADDSTRING, 0, (LPARAM)"Custom");
+    // REMOVED: Custom option is removed since we don't support custom moveIDs anymore
     SendMessage(hAfterAirtechAction, CB_SETCURSEL, 
         ActionTypeToComboIndex(triggerAfterAirtechAction.load()), 0);
 
@@ -260,14 +239,6 @@ void AutoActionPage_CreateContent(HWND hParent, DisplayData* pData) {
     CreateWindowEx(WS_EX_CLIENTEDGE, "EDIT", delayText, 
         WS_CHILD | WS_VISIBLE | WS_BORDER | ES_NUMBER,
         355, yPos, 40, 25, hParent, (HMENU)IDC_TRIGGER_AFTER_AIRTECH_DELAY, GetModuleHandle(NULL), NULL);
-
-    // Add custom move ID field for After Airtech trigger
-    sprintf_s(delayText, "%d", triggerAfterAirtechCustomID.load());
-    CreateWindowEx(0, "STATIC", "Custom ID:", WS_CHILD | WS_VISIBLE | SS_LEFT,
-        415, yPos, 60, 25, hParent, NULL, GetModuleHandle(NULL), NULL);
-    CreateWindowEx(WS_EX_CLIENTEDGE, "EDIT", delayText, 
-        WS_CHILD | WS_VISIBLE | WS_BORDER | ES_NUMBER,
-        480, yPos, 40, 25, hParent, (HMENU)IDC_TRIGGER_AFTER_AIRTECH_CUSTOM, GetModuleHandle(NULL), NULL);
 
     // CRITICAL FIX: Use ActionTypeToComboIndex function instead of direct mapping
     // to properly handle air moves (j.A, j.B, j.C)

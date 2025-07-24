@@ -29,6 +29,11 @@
 std::atomic<bool> g_efzWindowActive(false);
 std::atomic<bool> g_guiActive(false);
 
+// NEW: Define the manual input override atomics
+std::atomic<bool> g_manualInputOverride[3] = {false, false, false};
+std::atomic<uint8_t> g_manualInputMask[3] = {0, 0, 0};
+std::atomic<bool> g_manualJumpHold[3] = {false, false, false}; // NEW: Definition for jump hold
+
 // NEW: Add feature management functions
 void EnableFeatures() {
     if (g_featuresEnabled.load())
@@ -176,10 +181,17 @@ DisplayData displayData = {
     "",                 // p2CharName
     0,                  // p1CharID
     0,                  // p2CharID
-    0, 0, 0, 0,         // p1IkumiBlood, p2IkumiBlood, p1IkumiGenocide, p2IkumiGenocide
+    0, 0, 0, 0,         // Ikumi settings
     false,              // infiniteBloodMode
-    0, 0,               // p1MisuzuFeathers, p2MisuzuFeathers
+    0, 0,               // Misuzu settings
     false,              // infiniteFeatherMode
+    false, false,       // Blue IC toggles
+    false,              // NEW: p2ControlEnabled
+    false,              // autoAction
+    ACTION_5A,          // autoActionType
+    200,                // autoActionCustomID
+    0,                  // autoActionPlayer
+    // ... rest of initialization
 };
 
 // Initialize key bindings with default values

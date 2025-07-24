@@ -597,12 +597,6 @@ bool DirectDrawHook::InitializeD3D9() {
         return true;
     }
     
-    // Initialize MinHook
-    if (MH_Initialize() != MH_OK) {
-        LogOut("[OVERLAY] Failed to initialize MinHook library", true);
-        return false;
-    }
-    
     // Find the game window
     HWND gameWindow = FindEFZWindow();
     if (!gameWindow) {
@@ -694,17 +688,40 @@ bool DirectDrawHook::InitializeD3D9() {
 }
 
 void DirectDrawHook::ShutdownD3D9() {
-    LogOut("[OVERLAY] Shutting down D3D9 hook...", true);
-    MH_DisableHook(MH_ALL_HOOKS);
-    MH_Uninitialize();
+    LogOut("[OVERLAY] Shutting down D3D9 hooks.", true);
+    // Disable both hooks
+    HMODULE hD3D9 = GetModuleHandleA("d3d9.dll");
+    if (hD3D9) {
+        void* pCreateFn = GetProcAddress(hD3D9, "Direct3DCreate9");
+        if (pCreateFn) {
+            MH_DisableHook(pCreateFn);
+            MH_RemoveHook(pCreateFn);
+        }
+    }
+    if (oEndScene) {
+        // To get the target address for EndScene, we need to re-resolve it briefly
+        // This is a bit ugly but necessary without storing the vTable address globally.
+        // A better long-term solution would be to store the vTable address.
+        // For now, this will work.
+        IDirect3D9* d3d9 = Direct3DCreate9(D3D_SDK_VERSION);
+        if (d3d9) {
+            D3DPRESENT_PARAMETERS d3dpp = {};
+            d3dpp.Windowed = TRUE;
+            d3dpp.SwapEffect = D3DSWAPEFFECT_DISCARD;
+            d3dpp.hDeviceWindow = FindEFZWindow();
+            IDirect3DDevice9* pDummyDevice = nullptr;
+            if (SUCCEEDED(d3d9->CreateDevice(D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, d3dpp.hDeviceWindow, D3DCREATE_SOFTWARE_VERTEXPROCESSING, &d3dpp, &pDummyDevice))) {
+                void** vTable = *reinterpret_cast<void***>(pDummyDevice);
+                MH_DisableHook(vTable[42]);
+                MH_RemoveHook(vTable[42]);
+                pDummyDevice->Release();
+            }
+            d3d9->Release();
+        }
+    }
+    
+    // REMOVED: MH_Uninitialize() is now called globally in dllmain.cpp
 }
-
-void DirectDrawHook::SetupWindowProcedures() {
-    // This function can be implemented later if needed for more complex input handling.
-    LogOut("[OVERLAY] SetupWindowProcedures called (currently a stub).", detailedLogging.load());
-}
-
-
 
 // NEW: Text fitting utility to prevent text from going off-screen
 std::string DirectDrawHook::FitTextToWidth(const std::string& text, int maxWidth, HDC hdc) {
