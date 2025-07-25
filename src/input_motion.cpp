@@ -12,6 +12,17 @@
 #include <atomic>
 #include <mutex>
 
+// Game's input encoding (verified from assembly)
+constexpr uint8_t GAME_INPUT_RIGHT = 0x01;  // Bit 0
+constexpr uint8_t GAME_INPUT_LEFT  = 0x02;  // Bit 1
+constexpr uint8_t GAME_INPUT_DOWN  = 0x04;  // Bit 2
+constexpr uint8_t GAME_INPUT_UP    = 0x08;  // Bit 3
+constexpr uint8_t GAME_INPUT_A     = 0x10;  // Bit 4
+constexpr uint8_t GAME_INPUT_B     = 0x20;  // Bit 5
+constexpr uint8_t GAME_INPUT_C     = 0x40;  // Bit 6
+constexpr uint8_t GAME_INPUT_D     = 0x80;  // Bit 7
+
+
 // Global variables for motion input system
 std::vector<InputFrame> p1InputQueue;
 std::vector<InputFrame> p2InputQueue;
@@ -27,15 +38,6 @@ const uint16_t INPUT_BUFFER_SIZE = 0x180;  // 384 bytes circular buffer
 const uintptr_t INPUT_BUFFER_OFFSET = 0x1AB;  // Buffer start offset in player struct
 const uintptr_t INPUT_BUFFER_INDEX_OFFSET = 0x260;  // Current buffer index offset
 
-// Game's input encoding (verified from assembly)
-const uint8_t GAME_INPUT_RIGHT = 0x01;  // Bit 0
-const uint8_t GAME_INPUT_LEFT = 0x02;   // Bit 1
-const uint8_t GAME_INPUT_DOWN = 0x04;   // Bit 2
-const uint8_t GAME_INPUT_UP = 0x08;     // Bit 3
-const uint8_t GAME_INPUT_A = 0x10;      // Bit 4
-const uint8_t GAME_INPUT_B = 0x20;      // Bit 5
-const uint8_t GAME_INPUT_C = 0x40;      // Bit 6
-const uint8_t GAME_INPUT_D = 0x80;      // Bit 7
 
 // Direction combinations for diagonals
 const uint8_t GAME_INPUT_DOWNRIGHT = GAME_INPUT_DOWN | GAME_INPUT_RIGHT;
@@ -75,6 +77,21 @@ const uintptr_t INPUT_BUTTON_B_OFFSET = 0x194;    // 1=pressed, 0=not pressed
 const uintptr_t INPUT_BUTTON_C_OFFSET = 0x198;    // 1=pressed, 0=not pressed
 const uintptr_t INPUT_BUTTON_D_OFFSET = 0x19C;    // 1=pressed, 0=not pressed
 
+// Returns the button mask for a given motion type (used for input queueing)
+uint8_t DetermineButtonFromMotionType(int motionType) {
+    switch (motionType) {
+        case MOTION_5A: case MOTION_2A: case MOTION_JA: case MOTION_236A: case MOTION_623A: case MOTION_214A:
+            return GAME_INPUT_A;
+        case MOTION_5B: case MOTION_2B: case MOTION_JB: case MOTION_236B: case MOTION_623B: case MOTION_214B:
+            return GAME_INPUT_B;
+        case MOTION_5C: case MOTION_2C: case MOTION_JC: case MOTION_236C: case MOTION_623C: case MOTION_214C:
+            return GAME_INPUT_C;
+        // Add D button motions if needed
+        default:
+            return 0;
+    }
+}
+
 // Helper function to get motion type name
 std::string GetMotionTypeName(int motionType) {
     switch (motionType) {
@@ -113,8 +130,8 @@ std::string GetMotionTypeName(int motionType) {
 
 // Decode input mask to readable string
 std::string DecodeInputMask(uint8_t inputMask) {
-    if (inputMask == 0) return "N";
-    
+    if (inputMask == 0)
+        return "N";
     std::string result;
     
     // Directions
@@ -155,7 +172,7 @@ uintptr_t GetPlayerPointer(int playerNum) {
     
     return playerPtr;
 }
-
+/*
 // Write to the immediate input registers (what the game reads THIS FRAME)
 bool WritePlayerInputImmediate(int playerNum, uint8_t inputMask) {
     uintptr_t playerPtr = GetPlayerPointer(playerNum);
@@ -237,7 +254,7 @@ bool WritePlayerInputImmediate(int playerNum, uint8_t inputMask) {
     
     return success;
 }
-
+*/
 // Write to the circular buffer (for move history/detection)
 bool WritePlayerInputToBuffer(int playerNum, uint8_t inputMask) {
     uintptr_t playerPtr = GetPlayerPointer(playerNum);
@@ -383,72 +400,83 @@ void DiagnoseInputSystem(int playerNum) {
 
 // REVISED: Fully implement QueueMotionInput
 bool QueueMotionInput(int playerNum, int motionType, int buttonMask) {
+    // New: Use InputFrame with separate direction and button fields
     std::vector<InputFrame> motionSequence;
-    const int DIR_FRAMES = 2; // How long to hold each directional input (2 internal frames is ~1 visual frame)
-    const int BTN_FRAMES = 3; // How long to hold the final button press
-    const int NEUTRAL_FRAMES = 2; // How long to rest at neutral after
+    const int DIR_FRAMES = 2;
+    const int BTN_FRAMES = 3;
+    const int NEUTRAL_FRAMES = 2;
 
-    // Support for direct direction/button presses (debug tab)
-    // MOTION_NONE = 0, so we can use it for direct button/direction
+    auto addInput = [&](uint8_t dirMask, uint8_t btnMask, int frames) {
+        motionSequence.push_back(InputFrame{static_cast<uint8_t>(dirMask | btnMask), frames});
+    };
+
     switch (motionType) {
         case MOTION_NONE:
-            // If only a button or direction is pressed, just queue that mask
             if (buttonMask != 0) {
-                motionSequence.emplace_back((uint8_t)buttonMask, BTN_FRAMES);
+                // If only a direction is pressed (no button)
+                if (buttonMask == GAME_INPUT_RIGHT) {
+                    addInput(GAME_INPUT_RIGHT, 0, DIR_FRAMES);
+                } else if (buttonMask == GAME_INPUT_DOWN) {
+                    addInput(GAME_INPUT_DOWN, 0, DIR_FRAMES);
+                } else if (buttonMask == GAME_INPUT_LEFT) {
+                    addInput(GAME_INPUT_LEFT, 0, DIR_FRAMES);
+                } else if (buttonMask == GAME_INPUT_UP) {
+                    addInput(GAME_INPUT_UP, 0, DIR_FRAMES);
+                } else if (buttonMask == GAME_INPUT_A || buttonMask == GAME_INPUT_B || buttonMask == GAME_INPUT_C || buttonMask == GAME_INPUT_D) {
+                    addInput(0, buttonMask, BTN_FRAMES);
+                } else if ((buttonMask & (GAME_INPUT_RIGHT | GAME_INPUT_LEFT | GAME_INPUT_UP | GAME_INPUT_DOWN)) && (buttonMask & (GAME_INPUT_A | GAME_INPUT_B | GAME_INPUT_C | GAME_INPUT_D))) {
+                    // Direction + button
+                    uint8_t dir = buttonMask & (GAME_INPUT_RIGHT | GAME_INPUT_LEFT | GAME_INPUT_UP | GAME_INPUT_DOWN);
+                    uint8_t btn = buttonMask & (GAME_INPUT_A | GAME_INPUT_B | GAME_INPUT_C | GAME_INPUT_D);
+                    addInput(dir, btn, BTN_FRAMES);
+                } else {
+                    addInput(0, 0, DIR_FRAMES);
+                }
             } else {
-                // Direction only (should be set in buttonMask)
-                motionSequence.emplace_back((uint8_t)buttonMask, DIR_FRAMES);
+                addInput(0, 0, DIR_FRAMES);
             }
             break;
-        // Dashes
         case ACTION_FORWARD_DASH:
-            motionSequence.emplace_back(MOTION_INPUT_RIGHT, DIR_FRAMES);
-            motionSequence.emplace_back(MOTION_NONE, NEUTRAL_FRAMES);
-            motionSequence.emplace_back(MOTION_INPUT_RIGHT, DIR_FRAMES);
+            addInput(GAME_INPUT_RIGHT, 0, DIR_FRAMES);
+            addInput(0, 0, NEUTRAL_FRAMES);
+            addInput(GAME_INPUT_RIGHT, 0, DIR_FRAMES);
             break;
         case ACTION_BACK_DASH:
-            motionSequence.emplace_back(MOTION_INPUT_LEFT, DIR_FRAMES);
-            motionSequence.emplace_back(MOTION_NONE, NEUTRAL_FRAMES);
-            motionSequence.emplace_back(MOTION_INPUT_LEFT, DIR_FRAMES);
+            addInput(GAME_INPUT_LEFT, 0, DIR_FRAMES);
+            addInput(0, 0, NEUTRAL_FRAMES);
+            addInput(GAME_INPUT_LEFT, 0, DIR_FRAMES);
             break;
-        // Special Moves
-        case MOTION_236A: case MOTION_236B: case MOTION_236C: // QCF
-            motionSequence.emplace_back(MOTION_INPUT_DOWN, DIR_FRAMES);
-            motionSequence.emplace_back((uint8_t)(MOTION_INPUT_DOWN | MOTION_INPUT_RIGHT), DIR_FRAMES);
-            motionSequence.emplace_back((uint8_t)(MOTION_INPUT_RIGHT | buttonMask), BTN_FRAMES);
+        case MOTION_236A: case MOTION_236B: case MOTION_236C:
+            addInput(GAME_INPUT_DOWN, 0, DIR_FRAMES);
+            addInput(GAME_INPUT_DOWN | GAME_INPUT_RIGHT, 0, DIR_FRAMES);
+            addInput(GAME_INPUT_RIGHT, buttonMask, BTN_FRAMES);
             break;
-        case MOTION_623A: case MOTION_623B: case MOTION_623C: // DP
-            motionSequence.emplace_back(MOTION_INPUT_RIGHT, DIR_FRAMES);
-            motionSequence.emplace_back(MOTION_NONE, NEUTRAL_FRAMES);
-            motionSequence.emplace_back(MOTION_INPUT_DOWN, DIR_FRAMES);
-            motionSequence.emplace_back((uint8_t)(MOTION_INPUT_DOWN | MOTION_INPUT_RIGHT | buttonMask), BTN_FRAMES);
+        case MOTION_623A: case MOTION_623B: case MOTION_623C:
+            addInput(GAME_INPUT_RIGHT, 0, DIR_FRAMES);
+            addInput(0, 0, NEUTRAL_FRAMES);
+            addInput(GAME_INPUT_DOWN, 0, DIR_FRAMES);
+            addInput(GAME_INPUT_DOWN | GAME_INPUT_RIGHT, buttonMask, BTN_FRAMES);
             break;
-        case MOTION_214A: case MOTION_214B: case MOTION_214C: // QCB
-            motionSequence.emplace_back(MOTION_INPUT_DOWN, DIR_FRAMES);
-            motionSequence.emplace_back((uint8_t)(MOTION_INPUT_DOWN | MOTION_INPUT_LEFT), DIR_FRAMES);
-            motionSequence.emplace_back((uint8_t)(MOTION_INPUT_LEFT | buttonMask), BTN_FRAMES);
+        case MOTION_214A: case MOTION_214B: case MOTION_214C:
+            addInput(GAME_INPUT_DOWN, 0, DIR_FRAMES);
+            addInput(GAME_INPUT_DOWN | GAME_INPUT_LEFT, 0, DIR_FRAMES);
+            addInput(GAME_INPUT_LEFT, buttonMask, BTN_FRAMES);
             break;
-        // Simple Normals
         case MOTION_5A: case MOTION_5B: case MOTION_5C:
-            motionSequence.emplace_back((uint8_t)buttonMask, BTN_FRAMES);
+            addInput(0, buttonMask, BTN_FRAMES);
             break;
         case MOTION_2A: case MOTION_2B: case MOTION_2C:
-            motionSequence.emplace_back((uint8_t)(MOTION_INPUT_DOWN | buttonMask), BTN_FRAMES);
+            addInput(GAME_INPUT_DOWN, buttonMask, BTN_FRAMES);
             break;
         case MOTION_JA: case MOTION_JB: case MOTION_JC:
-            motionSequence.emplace_back((uint8_t)(MOTION_INPUT_UP | buttonMask), BTN_FRAMES);
+            addInput(GAME_INPUT_UP, buttonMask, BTN_FRAMES);
             break;
         default:
-            // For all other cases (directions, buttons, or their combinations)
-            if ((motionType & (MOTION_INPUT_UP | MOTION_INPUT_DOWN | MOTION_INPUT_LEFT | MOTION_INPUT_RIGHT)) ||
-                (motionType & (MOTION_BUTTON_A | MOTION_BUTTON_B | MOTION_BUTTON_C | MOTION_BUTTON_D))) {
-                // If a button is also pressed, combine direction and button
-                if (buttonMask != 0) {
-                    motionSequence.emplace_back((uint8_t)(motionType | buttonMask), BTN_FRAMES);
-                } else {
-                    // If it's a direction only
-                    motionSequence.emplace_back((uint8_t)motionType, DIR_FRAMES);
-                }
+            if ((motionType & (GAME_INPUT_UP | GAME_INPUT_DOWN | GAME_INPUT_LEFT | GAME_INPUT_RIGHT)) ||
+                (motionType & (GAME_INPUT_A | GAME_INPUT_B | GAME_INPUT_C | GAME_INPUT_D))) {
+                uint8_t dir = motionType & (GAME_INPUT_UP | GAME_INPUT_DOWN | GAME_INPUT_LEFT | GAME_INPUT_RIGHT);
+                uint8_t btn = buttonMask & (GAME_INPUT_A | GAME_INPUT_B | GAME_INPUT_C | GAME_INPUT_D);
+                addInput(dir, btn, BTN_FRAMES);
             } else {
                 LogOut("[INPUT_MOTION] QueueMotionInput: Unknown motionType " + std::to_string(motionType), true);
                 return false;
@@ -456,10 +484,9 @@ bool QueueMotionInput(int playerNum, int motionType, int buttonMask) {
             break;
     }
 
-    // Add a final neutral frame to prevent stuck inputs
-    motionSequence.emplace_back(MOTION_NONE, NEUTRAL_FRAMES);
+    // Add a final neutral frame
+    addInput(0, 0, NEUTRAL_FRAMES);
 
-    // Assign the sequence to the correct player's queue
     if (playerNum == 1) {
         p1InputQueue = motionSequence;
         p1QueueIndex = 0;
@@ -495,6 +522,7 @@ bool ExecuteSimpleMove(int playerNum, int moveType) {
     return ExecuteSimpleMoveViaInputs(playerNum, moveType);
 }
 
+
 int ConvertActionToMotion(int actionType, int triggerType) {
     // Example mapping, adjust as needed for your game
     switch (actionType) {
@@ -508,76 +536,67 @@ int ConvertActionToMotion(int actionType, int triggerType) {
         default: return MOTION_NONE;
     }
 }
-
-uint8_t DetermineButtonFromMotionType(int motionType) {
-    switch (motionType) {
-        case MOTION_5A: case MOTION_2A: case MOTION_JA: return MOTION_BUTTON_A;
-        case MOTION_5B: case MOTION_2B: case MOTION_JB: return MOTION_BUTTON_B;
-        case MOTION_5C: case MOTION_2C: case MOTION_JC: return MOTION_BUTTON_C;
-        // Add more as needed
-        default: return 0;
+bool WritePlayerInputImmediate(int playerNum, uint8_t inputMask) {
+    uintptr_t playerPtr = GetPlayerPointer(playerNum);
+    if (!playerPtr) {
+        return false;
     }
-}
+    bool success = true;
+    uint8_t horizontal = RAW_INPUT_NEUTRAL;
+    uint8_t vertical = RAW_INPUT_NEUTRAL;
+    uint8_t btnA = 0, btnB = 0, btnC = 0, btnD = 0;
 
-void LogCurrentInputs() {
-    LogOut("[INPUT_DEBUG] P1 current input: " + DecodeInputMask(p1CurrentInput.load()) + 
-           " (0x" + std::to_string(p1CurrentInput.load()) + ")", true);
-    LogOut("[INPUT_DEBUG] P2 current input: " + DecodeInputMask(p2CurrentInput.load()) + 
-           " (0x" + std::to_string(p2CurrentInput.load()) + ")", true);
-}
+    // Decode horizontal direction
+    if (inputMask & GAME_INPUT_RIGHT) horizontal = RAW_INPUT_RIGHT;
+    else if (inputMask & GAME_INPUT_LEFT) horizontal = RAW_INPUT_LEFT;
 
-void TestInputSequence(int playerNum) {
-    // TODO: Implement test input sequence
-}
+    // Decode vertical direction
+    if (inputMask & GAME_INPUT_UP) vertical = RAW_INPUT_UP;
+    else if (inputMask & GAME_INPUT_DOWN) vertical = RAW_INPUT_DOWN;
 
-void MonitorInputBuffer(int playerNum, int frameCount) {
-    // TODO: Implement input buffer monitoring
-}
+    // Decode buttons
+    if (inputMask & GAME_INPUT_A) btnA = 1;
+    if (inputMask & GAME_INPUT_B) btnB = 1;
+    if (inputMask & GAME_INPUT_C) btnC = 1;
+    if (inputMask & GAME_INPUT_D) btnD = 1;
 
-void TestInputBufferWrite(int playerNum, uint8_t inputMask) {
-    // TODO: Implement test input buffer write
+    // Write the decoded values
+    if (!SafeWriteMemory(playerPtr + INPUT_HORIZONTAL_OFFSET, &horizontal, 1)) {
+        LogOut("[INPUT_IMMEDIATE] Failed to write horizontal input", true);
+        success = false;
+    }
+    if (!SafeWriteMemory(playerPtr + INPUT_VERTICAL_OFFSET, &vertical, 1)) {
+        LogOut("[INPUT_IMMEDIATE] Failed to write vertical input", true);
+        success = false;
+    }
+    if (!SafeWriteMemory(playerPtr + INPUT_BUTTON_A_OFFSET, &btnA, 1)) {
+        LogOut("[INPUT_IMMEDIATE] Failed to write button A", true);
+        success = false;
+    }
+    if (!SafeWriteMemory(playerPtr + INPUT_BUTTON_B_OFFSET, &btnB, 1)) {
+        LogOut("[INPUT_IMMEDIATE] Failed to write button B", true);
+        success = false;
+    }
+    if (!SafeWriteMemory(playerPtr + INPUT_BUTTON_C_OFFSET, &btnC, 1)) {
+        LogOut("[INPUT_IMMEDIATE] Failed to write button C", true);
+        success = false;
+    }
+    if (!SafeWriteMemory(playerPtr + INPUT_BUTTON_D_OFFSET, &btnD, 1)) {
+        LogOut("[INPUT_IMMEDIATE] Failed to write button D", true);
+        success = false;
+    }
+    if (success && detailedLogging.load()) {
+        LogOut("[INPUT_IMMEDIATE] P" + std::to_string(playerNum) +
+               " wrote: H=" + std::to_string((int)horizontal) +
+               " V=" + std::to_string((int)vertical) +
+               " A=" + std::to_string((int)btnA) +
+               " B=" + std::to_string((int)btnB) +
+               " C=" + std::to_string((int)btnC) +
+               " D=" + std::to_string((int)btnD) +
+               " (" + DecodeInputMask(inputMask) + ")", true);
+    }
+    return success;
 }
-
-bool ExecuteSimpleMoveDirectly(int playerNum, short moveID) {
-    // TODO: Implement direct move execution
-    return false;
-}
-
-short ConvertMotionTypeToMoveID(int motionType) {
-    // TODO: Implement motion type to move ID conversion
-    return 0;
-}
-
-bool ReadPlayerInputBuffer(int playerNum, uint8_t* outBuffer, int bufferLen, int& outCurrentIndex) {
-    // TODO: Implement input buffer reading
-    return false;
-}
-
-void DumpFullInputBuffer(int playerNum) {
-    // TODO: Implement full input buffer dump
-}
-
-bool HoldWalkForward(int playerNum) {
-    if (playerNum < 1 || playerNum > 2) return false;
-    g_manualInputMask[playerNum].store(MOTION_INPUT_RIGHT);
-    g_manualInputOverride[playerNum].store(true);
-    return true;
-}
-
-bool HoldWalkBackward(int playerNum) {
-    if (playerNum < 1 || playerNum > 2) return false;
-    g_manualInputMask[playerNum].store(MOTION_INPUT_LEFT);
-    g_manualInputOverride[playerNum].store(true);
-    return true;
-}
-
-bool HoldCrouch(int playerNum) {
-    if (playerNum < 1 || playerNum > 2) return false;
-    g_manualInputMask[playerNum].store(MOTION_INPUT_DOWN);
-    g_manualInputOverride[playerNum].store(true);
-    return true;
-}
-
 bool HoldUp(int playerNum) {
     if (playerNum < 1 || playerNum > 2) return false;
     g_manualInputMask[playerNum].store(MOTION_INPUT_UP);
@@ -593,6 +612,34 @@ bool HoldBackCrouch(int playerNum) {
 }
 
 // The HoldButton functions are being removed.
+
+bool HoldButtonA(int playerNum) {
+    if (playerNum < 1 || playerNum > 2) return false;
+    g_manualInputMask[playerNum].store(MOTION_BUTTON_A);
+    g_manualInputOverride[playerNum].store(true);
+    return true;
+}
+
+bool HoldButtonB(int playerNum) {
+    if (playerNum < 1 || playerNum > 2) return false;
+    g_manualInputMask[playerNum].store(MOTION_BUTTON_B);
+    g_manualInputOverride[playerNum].store(true);
+    return true;
+}
+
+bool HoldButtonC(int playerNum) {
+    if (playerNum < 1 || playerNum > 2) return false;
+    g_manualInputMask[playerNum].store(MOTION_BUTTON_C);
+    g_manualInputOverride[playerNum].store(true);
+    return true;
+}
+
+bool HoldButtonD(int playerNum) {
+    if (playerNum < 1 || playerNum > 2) return false;
+    g_manualInputMask[playerNum].store(MOTION_BUTTON_D);
+    g_manualInputOverride[playerNum].store(true);
+    return true;
+}
 
 bool ReleaseInputs(int playerNum) {
     if (playerNum < 1 || playerNum > 2) return false;

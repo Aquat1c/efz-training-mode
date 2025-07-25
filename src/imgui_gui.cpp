@@ -701,76 +701,38 @@ namespace ImGuiGui {
     
     // Add this new function to the ImGuiGui namespace:
     void RenderDebugInputTab() {
+        ImGui::Separator();
         ImGui::Text("Manual Input Override (P2)");
         ImGui::Separator();
 
-        ImGui::Text("Directions (Press to send a single frame input):");
-        
-        // --- CORRECTED GUI LOGIC ---
-        // All buttons now use the input queue for clean, single-frame injection.
-        // This prevents any state lock-ups.
-
-        ImGui::Dummy(ImVec2(40, 40)); ImGui::SameLine();
-        if (ImGui::Button("UP", ImVec2(40, 40))) { QueueMotionInput(2, MOTION_INPUT_UP, 0); }
-        ImGui::SameLine(); ImGui::Dummy(ImVec2(40, 40));
-
-        if (ImGui::Button("LEFT", ImVec2(40, 40))) { QueueMotionInput(2, MOTION_INPUT_LEFT, 0); }
+        ImGui::Text("Directions:");
+        if (ImGui::Button("UP")) { QueueMotionInput(2, MOTION_NONE, GAME_INPUT_UP); }
         ImGui::SameLine();
-        if (ImGui::Button("NEUTRAL", ImVec2(40, 40))) { QueueMotionInput(2, MOTION_NONE, 0); }
+        if (ImGui::Button("DOWN")) { QueueMotionInput(2, MOTION_NONE, GAME_INPUT_DOWN); }
         ImGui::SameLine();
-        if (ImGui::Button("RIGHT", ImVec2(40, 40))) { QueueMotionInput(2, MOTION_INPUT_RIGHT, 0); }
-
-        ImGui::Dummy(ImVec2(40, 40)); ImGui::SameLine();
-        if (ImGui::Button("DOWN", ImVec2(40, 40))) { QueueMotionInput(2, MOTION_INPUT_DOWN, 0); }
-        if (ImGui::IsItemDeactivated()) { ReleaseInputs(2); }
-
-        ImGui::SameLine(); ImGui::Dummy(ImVec2(40, 40));
+        if (ImGui::Button("LEFT")) { QueueMotionInput(2, MOTION_NONE, GAME_INPUT_LEFT); }
+        ImGui::SameLine();
+        if (ImGui::Button("RIGHT")) { QueueMotionInput(2, MOTION_NONE, GAME_INPUT_RIGHT); }
 
         ImGui::Separator();
-        ImGui::Text("Press Buttons (P2):");
-
-        if (ImGui::Button("A")) {
-            g_manualInputMask[2].store(MOTION_BUTTON_A);
-            g_manualInputOverride[2].store(true);
-        }
-        if (ImGui::IsItemDeactivated()) {
-            g_manualInputOverride[2].store(false);
-        }
-        // Repeat for B, C, D
-        if (ImGui::Button("B")) {
-            g_manualInputMask[2].store(MOTION_BUTTON_B);
-            g_manualInputOverride[2].store(true);
-        }
-        if (ImGui::IsItemDeactivated()) {
-            g_manualInputOverride[2].store(false);
-        }
-        if (ImGui::Button("C")) {
-            g_manualInputMask[2].store(MOTION_BUTTON_C);
-            g_manualInputOverride[2].store(true);
-        }
-        if (ImGui::IsItemDeactivated()) {
-            g_manualInputOverride[2].store(false);
-        }
-        if (ImGui::Button("D")) {
-            g_manualInputMask[2].store(MOTION_BUTTON_D);
-            g_manualInputOverride[2].store(true);
-        }
-        if (ImGui::IsItemDeactivated()) {
-            g_manualInputOverride[2].store(false);
-        }
-
-        // --- END CORRECTION ---
-
-        ImGui::Separator();
-        if (ImGui::Button("Release All Inputs", ImVec2(200, 30))) {
-            ReleaseInputs(2); // This can still be useful to clear a stuck queue.
-        }
-
-        ImGui::Separator();
-        ImGui::Text("Input Diagnostics");
-        if (ImGui::Button("Diagnose P1 Inputs")) { DiagnoseInputSystem(1); }
+        ImGui::Text("Attack Buttons:");
+        if (ImGui::Button("A")) { QueueMotionInput(2, MOTION_NONE, GAME_INPUT_A); }
         ImGui::SameLine();
-        if (ImGui::Button("Diagnose P2 Inputs")) { DiagnoseInputSystem(2); }
+        if (ImGui::Button("B")) { QueueMotionInput(2, MOTION_NONE, GAME_INPUT_B); }
+        ImGui::SameLine();
+        if (ImGui::Button("C")) { QueueMotionInput(2, MOTION_NONE, GAME_INPUT_C); }
+        ImGui::SameLine();
+        if (ImGui::Button("D")) { QueueMotionInput(2, MOTION_NONE, GAME_INPUT_D); }
+
+        ImGui::Separator();
+        ImGui::Text("Direction + Button:");
+        if (ImGui::Button("6A")) { QueueMotionInput(2, MOTION_NONE, GAME_INPUT_RIGHT | GAME_INPUT_A); }
+        ImGui::SameLine();
+        if (ImGui::Button("4B")) { QueueMotionInput(2, MOTION_NONE, GAME_INPUT_LEFT | GAME_INPUT_B); }
+        // ...add more as needed...
+
+        ImGui::Separator();
+        if (ImGui::Button("Release All Inputs")) { ReleaseInputs(2); }
     }
 
     // Update the RenderGui function to include the new tab:
