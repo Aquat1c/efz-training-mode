@@ -51,6 +51,7 @@ const uint8_t GAME_INPUT_UPLEFT = GAME_INPUT_UP | GAME_INPUT_LEFT;
 #define BUTTON_C    GAME_INPUT_C
 #define BUTTON_D    GAME_INPUT_D
 
+
 // Thread-safe input state tracking
 static std::atomic<uint8_t> p1CurrentInput(0);
 static std::atomic<uint8_t> p2CurrentInput(0);
@@ -172,89 +173,28 @@ uintptr_t GetPlayerPointer(int playerNum) {
     
     return playerPtr;
 }
-/*
-// Write to the immediate input registers (what the game reads THIS FRAME)
-bool WritePlayerInputImmediate(int playerNum, uint8_t inputMask) {
-    uintptr_t playerPtr = GetPlayerPointer(playerNum);
-    if (!playerPtr) {
-        return false;
-    }
-
-    bool success = true;
-    uint8_t horizontal = RAW_INPUT_NEUTRAL;
-    uint8_t vertical = RAW_INPUT_NEUTRAL;
-    uint8_t btnA = 0, btnB = 0, btnC = 0, btnD = 0;
-
-    // --- CORRECTED DECODING LOGIC ---
-
-    // Decode horizontal direction
-    if (inputMask & MOTION_INPUT_RIGHT) {
-        horizontal = RAW_INPUT_RIGHT;
-    } else if (inputMask & MOTION_INPUT_LEFT) {
-        horizontal = RAW_INPUT_LEFT;
-    }
-
-    // Decode vertical direction
-    if (inputMask & MOTION_INPUT_UP) {
-        vertical = RAW_INPUT_UP;
-    } else if (inputMask & MOTION_INPUT_DOWN) {
-        vertical = RAW_INPUT_DOWN;
-    }
-
-    // Decode buttons
-    if (inputMask & MOTION_BUTTON_A) btnA = 1;
-    if (inputMask & MOTION_BUTTON_B) btnB = 1;
-    if (inputMask & MOTION_BUTTON_C) btnC = 1;
-    if (inputMask & MOTION_BUTTON_D) btnD = 1;
-
-    // --- END CORRECTION ---
-
-    // Write the decoded values
-    if (!SafeWriteMemory(playerPtr + INPUT_HORIZONTAL_OFFSET, &horizontal, 1)) {
-        LogOut("[INPUT_IMMEDIATE] Failed to write horizontal input", true);
-        success = false;
-    }
-    
-    if (!SafeWriteMemory(playerPtr + INPUT_VERTICAL_OFFSET, &vertical, 1)) {
-        LogOut("[INPUT_IMMEDIATE] Failed to write vertical input", true);
-        success = false;
-    }
-    
-    // Write button states
-    if (!SafeWriteMemory(playerPtr + INPUT_BUTTON_A_OFFSET, &btnA, 1)) {
-        LogOut("[INPUT_IMMEDIATE] Failed to write button A", true);
-        success = false;
-    }
-    
-    if (!SafeWriteMemory(playerPtr + INPUT_BUTTON_B_OFFSET, &btnB, 1)) {
-        LogOut("[INPUT_IMMEDIATE] Failed to write button B", true);
-        success = false;
-    }
-    
-    if (!SafeWriteMemory(playerPtr + INPUT_BUTTON_C_OFFSET, &btnC, 1)) {
-        LogOut("[INPUT_IMMEDIATE] Failed to write button C", true);
-        success = false;
-    }
-    
-    if (!SafeWriteMemory(playerPtr + INPUT_BUTTON_D_OFFSET, &btnD, 1)) {
-        LogOut("[INPUT_IMMEDIATE] Failed to write button D", true);
-        success = false;
-    }
-    
-    if (success && detailedLogging.load()) {
-        LogOut("[INPUT_IMMEDIATE] P" + std::to_string(playerNum) + 
-               " wrote: H=" + std::to_string((int)horizontal) + 
-               " V=" + std::to_string((int)vertical) +
-               " A=" + std::to_string((int)btnA) +
-               " B=" + std::to_string((int)btnB) +
-               " C=" + std::to_string((int)btnC) +
-               " D=" + std::to_string((int)btnD) +
-               " (" + DecodeInputMask(inputMask) + ")", true);
-    }
-    
-    return success;
+// Logging helper for button presses
+void LogButtonPress(const char* buttonName, uintptr_t address, uint8_t value, const char* result) {
+    std::ostringstream oss;
+    oss << "[DEBUG_INPUT] Pressed " << buttonName << " | Addr: 0x" << std::hex << address << " | Value: 0x" << std::hex << (int)value << " | Result: " << result;
+    LogOut(oss.str(), true);
 }
-*/
+
+// Simulate spamming attack button for N frames
+void SpamAttackButton(uintptr_t playerBase, uint8_t button, int frames, const char* buttonName) {
+    uintptr_t buttonAddr = playerBase + 0x190; // Default: A
+    if (button == BUTTON_B) buttonAddr = playerBase + 0x194;
+    else if (button == BUTTON_C) buttonAddr = playerBase + 0x198;
+    else if (button == BUTTON_D) buttonAddr = playerBase + 0x19C;
+    for (int i = 0; i < frames; ++i) {
+        uint8_t press = button;
+        uint8_t release = 0x00;
+        SafeWriteMemory(buttonAddr, &press, 1);
+        LogButtonPress(buttonName, buttonAddr, button, "Write OK");
+        SafeWriteMemory(buttonAddr, &release, 1);
+        LogButtonPress(buttonName, buttonAddr, 0x00, "Release");
+    }
+}
 // Write to the circular buffer (for move history/detection)
 bool WritePlayerInputToBuffer(int playerNum, uint8_t inputMask) {
     uintptr_t playerPtr = GetPlayerPointer(playerNum);
@@ -613,31 +553,131 @@ bool HoldBackCrouch(int playerNum) {
 
 // The HoldButton functions are being removed.
 
+
+// Spam A button for debug menu: alternate press/release for 6 frames
 bool HoldButtonA(int playerNum) {
     if (playerNum < 1 || playerNum > 2) return false;
-    g_manualInputMask[playerNum].store(MOTION_BUTTON_A);
-    g_manualInputOverride[playerNum].store(true);
+    std::vector<InputFrame> spamSeq = {
+        InputFrame(MOTION_BUTTON_A, 1),
+        InputFrame(0, 1),
+        InputFrame(MOTION_BUTTON_A, 1),
+        InputFrame(0, 1),
+        InputFrame(MOTION_BUTTON_A, 1),
+        InputFrame(0, 1)
+    };
+    LogOut("[DEBUG] HoldButtonA called for P" + std::to_string(playerNum), true);
+    for (size_t i = 0; i < spamSeq.size(); ++i) {
+        LogOut("[DEBUG] Frame " + std::to_string(i) + ": mask=" + DecodeInputMask(spamSeq[i].inputMask) + ", duration=" + std::to_string(spamSeq[i].durationFrames), true);
+    }
+    if (playerNum == 1) {
+        p1InputQueue = spamSeq;
+        p1QueueIndex = 0;
+        p1FrameCounter = 0;
+        p1QueueActive = true;
+        LogOut("[DEBUG] P1 input queue set for HoldButtonA", true);
+    } else {
+        p2InputQueue = spamSeq;
+        p2QueueIndex = 0;
+        p2FrameCounter = 0;
+        p2QueueActive = true;
+        LogOut("[DEBUG] P2 input queue set for HoldButtonA", true);
+    }
     return true;
 }
 
+
+// Spam B button for debug menu
 bool HoldButtonB(int playerNum) {
     if (playerNum < 1 || playerNum > 2) return false;
-    g_manualInputMask[playerNum].store(MOTION_BUTTON_B);
-    g_manualInputOverride[playerNum].store(true);
+    std::vector<InputFrame> spamSeq = {
+        InputFrame(MOTION_BUTTON_B, 1),
+        InputFrame(0, 1),
+        InputFrame(MOTION_BUTTON_B, 1),
+        InputFrame(0, 1),
+        InputFrame(MOTION_BUTTON_B, 1),
+        InputFrame(0, 1)
+    };
+    LogOut("[DEBUG] HoldButtonB called for P" + std::to_string(playerNum), true);
+    for (size_t i = 0; i < spamSeq.size(); ++i) {
+        LogOut("[DEBUG] Frame " + std::to_string(i) + ": mask=" + DecodeInputMask(spamSeq[i].inputMask) + ", duration=" + std::to_string(spamSeq[i].durationFrames), true);
+    }
+    if (playerNum == 1) {
+        p1InputQueue = spamSeq;
+        p1QueueIndex = 0;
+        p1FrameCounter = 0;
+        p1QueueActive = true;
+        LogOut("[DEBUG] P1 input queue set for HoldButtonB", true);
+    } else {
+        p2InputQueue = spamSeq;
+        p2QueueIndex = 0;
+        p2FrameCounter = 0;
+        p2QueueActive = true;
+        LogOut("[DEBUG] P2 input queue set for HoldButtonB", true);
+    }
     return true;
 }
 
+
+// Spam C button for debug menu
 bool HoldButtonC(int playerNum) {
     if (playerNum < 1 || playerNum > 2) return false;
-    g_manualInputMask[playerNum].store(MOTION_BUTTON_C);
-    g_manualInputOverride[playerNum].store(true);
+    std::vector<InputFrame> spamSeq = {
+        InputFrame(MOTION_BUTTON_C, 1),
+        InputFrame(0, 1),
+        InputFrame(MOTION_BUTTON_C, 1),
+        InputFrame(0, 1),
+        InputFrame(MOTION_BUTTON_C, 1),
+        InputFrame(0, 1)
+    };
+    LogOut("[DEBUG] HoldButtonC called for P" + std::to_string(playerNum), true);
+    for (size_t i = 0; i < spamSeq.size(); ++i) {
+        LogOut("[DEBUG] Frame " + std::to_string(i) + ": mask=" + DecodeInputMask(spamSeq[i].inputMask) + ", duration=" + std::to_string(spamSeq[i].durationFrames), true);
+    }
+    if (playerNum == 1) {
+        p1InputQueue = spamSeq;
+        p1QueueIndex = 0;
+        p1FrameCounter = 0;
+        p1QueueActive = true;
+        LogOut("[DEBUG] P1 input queue set for HoldButtonC", true);
+    } else {
+        p2InputQueue = spamSeq;
+        p2QueueIndex = 0;
+        p2FrameCounter = 0;
+        p2QueueActive = true;
+        LogOut("[DEBUG] P2 input queue set for HoldButtonC", true);
+    }
     return true;
 }
 
+
+// Spam D button for debug menu
 bool HoldButtonD(int playerNum) {
     if (playerNum < 1 || playerNum > 2) return false;
-    g_manualInputMask[playerNum].store(MOTION_BUTTON_D);
-    g_manualInputOverride[playerNum].store(true);
+    std::vector<InputFrame> spamSeq = {
+        InputFrame(MOTION_BUTTON_D, 1),
+        InputFrame(0, 1),
+        InputFrame(MOTION_BUTTON_D, 1),
+        InputFrame(0, 1),
+        InputFrame(MOTION_BUTTON_D, 1),
+        InputFrame(0, 1)
+    };
+    LogOut("[DEBUG] HoldButtonD called for P" + std::to_string(playerNum), true);
+    for (size_t i = 0; i < spamSeq.size(); ++i) {
+        LogOut("[DEBUG] Frame " + std::to_string(i) + ": mask=" + DecodeInputMask(spamSeq[i].inputMask) + ", duration=" + std::to_string(spamSeq[i].durationFrames), true);
+    }
+    if (playerNum == 1) {
+        p1InputQueue = spamSeq;
+        p1QueueIndex = 0;
+        p1FrameCounter = 0;
+        p1QueueActive = true;
+        LogOut("[DEBUG] P1 input queue set for HoldButtonD", true);
+    } else {
+        p2InputQueue = spamSeq;
+        p2QueueIndex = 0;
+        p2FrameCounter = 0;
+        p2QueueActive = true;
+        LogOut("[DEBUG] P2 input queue set for HoldButtonD", true);
+    }
     return true;
 }
 

@@ -10,6 +10,10 @@
 #include "../include/character_settings.h"
 #include "../include/frame_monitor.h"
 #include "../include/input_motion.h"
+#include "../include/input_motion.h"
+
+// Forward declare SpamAttackButton so we can use it in this file
+extern void SpamAttackButton(uintptr_t playerBase, uint8_t button, int frames, const char* buttonName);
 #include "../include/practice_patch.h"
 
 // Add these constants at the top of the file after includes
@@ -715,20 +719,60 @@ namespace ImGuiGui {
         if (ImGui::Button("RIGHT")) { QueueMotionInput(2, MOTION_NONE, GAME_INPUT_RIGHT); }
 
         ImGui::Separator();
-        ImGui::Text("Attack Buttons:");
-        if (ImGui::Button("A")) { QueueMotionInput(2, MOTION_NONE, GAME_INPUT_A); }
+        ImGui::Text("Attack Buttons (spams for 4 frames):");
+        if (ImGui::Button("A")) {
+            uintptr_t playerPtr = GetPlayerPointer(2);
+            if (playerPtr) {
+                SpamAttackButton(playerPtr, GAME_INPUT_A, 4, "A");
+            } else {
+                LogOut("[DEBUG_INPUT] Failed to get P2 pointer for A", true);
+            }
+        }
         ImGui::SameLine();
-        if (ImGui::Button("B")) { QueueMotionInput(2, MOTION_NONE, GAME_INPUT_B); }
+        if (ImGui::Button("B")) {
+            uintptr_t playerPtr = GetPlayerPointer(2);
+            if (playerPtr) {
+                SpamAttackButton(playerPtr, GAME_INPUT_B, 4, "B");
+            } else {
+                LogOut("[DEBUG_INPUT] Failed to get P2 pointer for B", true);
+            }
+        }
         ImGui::SameLine();
-        if (ImGui::Button("C")) { QueueMotionInput(2, MOTION_NONE, GAME_INPUT_C); }
+        if (ImGui::Button("C")) {
+            uintptr_t playerPtr = GetPlayerPointer(2);
+            if (playerPtr) {
+                SpamAttackButton(playerPtr, GAME_INPUT_C, 4, "C");
+            } else {
+                LogOut("[DEBUG_INPUT] Failed to get P2 pointer for C", true);
+            }
+        }
         ImGui::SameLine();
-        if (ImGui::Button("D")) { QueueMotionInput(2, MOTION_NONE, GAME_INPUT_D); }
+        if (ImGui::Button("D")) {
+            uintptr_t playerPtr = GetPlayerPointer(2);
+            if (playerPtr) {
+                SpamAttackButton(playerPtr, GAME_INPUT_D, 4, "D");
+            } else {
+                LogOut("[DEBUG_INPUT] Failed to get P2 pointer for D", true);
+            }
+        }
 
         ImGui::Separator();
         ImGui::Text("Direction + Button:");
-        if (ImGui::Button("6A")) { QueueMotionInput(2, MOTION_NONE, GAME_INPUT_RIGHT | GAME_INPUT_A); }
+        if (ImGui::Button("6A")) {
+            QueueMotionInput(2, MOTION_NONE, GAME_INPUT_RIGHT | GAME_INPUT_A);
+            uintptr_t playerPtr = GetPlayerPointer(2);
+            if (playerPtr) {
+                SpamAttackButton(playerPtr, GAME_INPUT_A, 4, "6A");
+            }
+        }
         ImGui::SameLine();
-        if (ImGui::Button("4B")) { QueueMotionInput(2, MOTION_NONE, GAME_INPUT_LEFT | GAME_INPUT_B); }
+        if (ImGui::Button("4B")) {
+            QueueMotionInput(2, MOTION_NONE, GAME_INPUT_LEFT | GAME_INPUT_B);
+            uintptr_t playerPtr = GetPlayerPointer(2);
+            if (playerPtr) {
+                SpamAttackButton(playerPtr, GAME_INPUT_B, 4, "4B");
+            }
+        }
         // ...add more as needed...
 
         ImGui::Separator();
