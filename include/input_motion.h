@@ -88,11 +88,10 @@ bool HoldWalkBackward(int playerNum);
 bool HoldCrouch(int playerNum);
 bool HoldUp(int playerNum);
 bool HoldBackCrouch(int playerNum);
-// The following functions are being removed as they are replaced by a better system.
-// bool HoldButtonA(int playerNum);
-// bool HoldButtonB(int playerNum);
-// bool HoldButtonC(int playerNum);
-// bool HoldButtonD(int playerNum);
+bool HoldButtonA(int playerNum);
+bool HoldButtonB(int playerNum);
+bool HoldButtonC(int playerNum);
+bool HoldButtonD(int playerNum);
 bool ReleaseInputs(int playerNum);
 void DiagnoseInputSystem(int playerNum);
 int ConvertActionToMotion(int actionType, int triggerType);
