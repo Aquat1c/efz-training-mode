@@ -11,18 +11,6 @@
 #include <algorithm>
 #include <atomic>
 #include <mutex>
-
-// Game's input encoding (verified from assembly)
-constexpr uint8_t GAME_INPUT_RIGHT = 0x01;  // Bit 0
-constexpr uint8_t GAME_INPUT_LEFT  = 0x02;  // Bit 1
-constexpr uint8_t GAME_INPUT_DOWN  = 0x04;  // Bit 2
-constexpr uint8_t GAME_INPUT_UP    = 0x08;  // Bit 3
-constexpr uint8_t GAME_INPUT_A     = 0x10;  // Bit 4
-constexpr uint8_t GAME_INPUT_B     = 0x20;  // Bit 5
-constexpr uint8_t GAME_INPUT_C     = 0x40;  // Bit 6
-constexpr uint8_t GAME_INPUT_D     = 0x80;  // Bit 7
-
-
 // Global variables for motion input system
 std::vector<InputFrame> p1InputQueue;
 std::vector<InputFrame> p2InputQueue;
@@ -73,10 +61,10 @@ struct TestInput {
 // Input register offsets (from player base pointer)
 const uintptr_t INPUT_HORIZONTAL_OFFSET = 0x188;  // 1=right, 255=left, 0=neutral
 const uintptr_t INPUT_VERTICAL_OFFSET = 0x189;    // 1=down, 255=up, 0=neutral
-const uintptr_t INPUT_BUTTON_A_OFFSET = 0x190;    // 1=pressed, 0=not pressed
-const uintptr_t INPUT_BUTTON_B_OFFSET = 0x194;    // 1=pressed, 0=not pressed
-const uintptr_t INPUT_BUTTON_C_OFFSET = 0x198;    // 1=pressed, 0=not pressed
-const uintptr_t INPUT_BUTTON_D_OFFSET = 0x19C;    // 1=pressed, 0=not pressed
+const uintptr_t INPUT_BUTTON_A_OFFSET = 0x18A; // 394
+const uintptr_t INPUT_BUTTON_B_OFFSET = 0x18B; // 395
+const uintptr_t INPUT_BUTTON_C_OFFSET = 0x18C; // 396
+const uintptr_t INPUT_BUTTON_D_OFFSET = 0x18D; // 397
 
 // Returns the button mask for a given motion type (used for input queueing)
 uint8_t DetermineButtonFromMotionType(int motionType) {
