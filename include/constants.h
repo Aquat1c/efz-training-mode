@@ -161,12 +161,6 @@
 #define IDC_JUMP_TARGET       4021  // Combo box for jump target
 #define IDC_AIRTECH_DELAY     3020  // For the airtech delay field
 
-#define ACTION_QCF       14  // Quarter Circle Forward (236)
-#define ACTION_DP        15  // Dragon Punch (623)
-#define ACTION_QCB       16  // Quarter Circle Back (214)
-#define ACTION_SUPER1    17  // Super Move 1 (41236)
-#define ACTION_SUPER2    18  // Super Move 2 (63214)
-
 // Add these after your existing Move ID section
 // Attack level blockstun MoveIDs
 #define STANDING_BLOCK_LVL1 150
@@ -223,23 +217,24 @@
 
 // Auto-action types (keep existing)
 #define ACTION_NONE           0
-#define ACTION_5A             1
-#define ACTION_5B             2
-#define ACTION_5C             3
-#define ACTION_2A             4
-#define ACTION_2B             5
-#define ACTION_2C             6
-#define ACTION_JUMP           7
-#define ACTION_BACKDASH       8
-#define ACTION_BLOCK          9
-#define ACTION_CUSTOM        10
-
-// Add these new action types after the existing ones:
-
-#define ACTION_JA            11  // Jumping A
-#define ACTION_JB            12  // Jumping B  
-#define ACTION_JC            13  // Jumping C
-#define ACTION_AIRTHROW      14  // Air throw
+#define ACTION_5A             0
+#define ACTION_5B             1
+#define ACTION_5C             2
+#define ACTION_2A             3
+#define ACTION_2B             4
+#define ACTION_2C             5
+#define ACTION_JA             6
+#define ACTION_JB             7
+#define ACTION_JC             8
+#define ACTION_QCF            9
+#define ACTION_DP            10
+#define ACTION_QCB           11
+#define ACTION_SUPER1        12
+#define ACTION_SUPER2        13
+#define ACTION_JUMP          14
+#define ACTION_BACKDASH      15
+#define ACTION_BLOCK         16
+#define ACTION_CUSTOM        17
 
 // Default delay for triggers
 #define DEFAULT_TRIGGER_DELAY 0  // Default delay for all triggers
