@@ -19,6 +19,19 @@
 #include "../include/imgui_impl.h"
 #include "../include/overlay.h"  // Add this include for DirectDrawHook class
 #include "../include/config.h"
+#include "../include/input_motion.h" // For QueueMotionInput
+#ifndef VK_NUMPAD_ADD
+#define VK_NUMPAD_ADD      0x6B
+#endif
+#ifndef VK_NUMPAD_SUBTRACT
+#define VK_NUMPAD_SUBTRACT 0x6D
+#endif
+#ifndef VK_NUMPAD_MULTIPLY
+#define VK_NUMPAD_MULTIPLY 0x6A
+#endif
+#ifndef VK_NUMPAD_DIVIDE
+#define VK_NUMPAD_DIVIDE   0x6F
+#endif
 
 #pragma comment(lib, "dinput8.lib")
 #pragma comment(lib, "dxguid.lib")
@@ -324,6 +337,24 @@ void MonitorKeys() {
                 autoJumpEnabled = !autoJumpEnabled;
                 DirectDrawHook::AddMessage(autoJumpEnabled ? "Auto-Jump: ON" : "Auto-Jump: OFF", "SYSTEM", RGB(255, 165, 0), 1500, 0, 100);
                 keyHandled = true;
+            }
+
+            // --- P2 Attack Button Simulation ---
+            if (GetAsyncKeyState(VK_NUMPAD_ADD) & 0x8000) { // Numpad +
+                QueueMotionInput(2, MOTION_NONE, GAME_INPUT_A);
+                LogOut("[HOTKEY] Simulated P2 A button press (Numpad +)", true);
+            }
+            if (GetAsyncKeyState(VK_NUMPAD_SUBTRACT) & 0x8000) { // Numpad -
+                QueueMotionInput(2, MOTION_NONE, GAME_INPUT_B);
+                LogOut("[HOTKEY] Simulated P2 B button press (Numpad -)", true);
+            }
+            if (GetAsyncKeyState(VK_NUMPAD_MULTIPLY) & 0x8000) { // Numpad *
+                QueueMotionInput(2, MOTION_NONE, GAME_INPUT_C);
+                LogOut("[HOTKEY] Simulated P2 C button press (Numpad *)", true);
+            }
+            if (GetAsyncKeyState(VK_NUMPAD_DIVIDE) & 0x8000) { // Numpad /
+                QueueMotionInput(2, MOTION_NONE, GAME_INPUT_D);
+                LogOut("[HOTKEY] Simulated P2 D button press (Numpad /)", true);
             }
 
             // If a key was handled, wait for it to be released
@@ -830,3 +861,4 @@ void DetectKeyBindingsWithDI() {
     }
     prevInputs = currentInputs;
 }
+

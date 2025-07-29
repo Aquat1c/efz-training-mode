@@ -18,14 +18,6 @@ extern void SpamAttackButton(uintptr_t playerBase, uint8_t button, int frames, c
 
 // Add these constants at the top of the file after includes
 // These are from input_motion.cpp but we need them here
-const uint8_t GAME_INPUT_RIGHT = 0x01;
-const uint8_t GAME_INPUT_LEFT = 0x02;
-const uint8_t GAME_INPUT_DOWN = 0x04;
-const uint8_t GAME_INPUT_UP = 0x08;
-const uint8_t GAME_INPUT_A = 0x10;
-const uint8_t GAME_INPUT_B = 0x20;
-const uint8_t GAME_INPUT_C = 0x40;
-const uint8_t GAME_INPUT_D = 0x80;
 
 // Button constants
 #define BUTTON_A    GAME_INPUT_A
@@ -719,38 +711,43 @@ namespace ImGuiGui {
         if (ImGui::Button("RIGHT")) { QueueMotionInput(2, MOTION_NONE, GAME_INPUT_RIGHT); }
 
         ImGui::Separator();
-        ImGui::Text("Attack Buttons (spams for 4 frames):");
+        ImGui::Text("Attack Buttons (spams for 6 frames):");
+        uintptr_t playerPtr = GetPlayerPointer(2);
         if (ImGui::Button("A")) {
-            uintptr_t playerPtr = GetPlayerPointer(2);
+            LogOut("[IMGUI] Debug menu: Pressed A for P2, playerPtr=0x" + std::to_string(playerPtr), true);
             if (playerPtr) {
-                SpamAttackButton(playerPtr, GAME_INPUT_A, 4, "A");
+                HoldButtonA(2);
+                LogOut("[IMGUI] Called HoldButtonA for P2", true);
             } else {
                 LogOut("[DEBUG_INPUT] Failed to get P2 pointer for A", true);
             }
         }
         ImGui::SameLine();
         if (ImGui::Button("B")) {
-            uintptr_t playerPtr = GetPlayerPointer(2);
+            LogOut("[IMGUI] Debug menu: Pressed B for P2, playerPtr=0x" + std::to_string(playerPtr), true);
             if (playerPtr) {
-                SpamAttackButton(playerPtr, GAME_INPUT_B, 4, "B");
+                HoldButtonB(2);
+                LogOut("[IMGUI] Called HoldButtonB for P2", true);
             } else {
                 LogOut("[DEBUG_INPUT] Failed to get P2 pointer for B", true);
             }
         }
         ImGui::SameLine();
         if (ImGui::Button("C")) {
-            uintptr_t playerPtr = GetPlayerPointer(2);
+            LogOut("[IMGUI] Debug menu: Pressed C for P2, playerPtr=0x" + std::to_string(playerPtr), true);
             if (playerPtr) {
-                SpamAttackButton(playerPtr, GAME_INPUT_C, 4, "C");
+                HoldButtonC(2);
+                LogOut("[IMGUI] Called HoldButtonC for P2", true);
             } else {
                 LogOut("[DEBUG_INPUT] Failed to get P2 pointer for C", true);
             }
         }
         ImGui::SameLine();
         if (ImGui::Button("D")) {
-            uintptr_t playerPtr = GetPlayerPointer(2);
+            LogOut("[IMGUI] Debug menu: Pressed D for P2, playerPtr=0x" + std::to_string(playerPtr), true);
             if (playerPtr) {
-                SpamAttackButton(playerPtr, GAME_INPUT_D, 4, "D");
+                HoldButtonD(2);
+                LogOut("[IMGUI] Called HoldButtonD for P2", true);
             } else {
                 LogOut("[DEBUG_INPUT] Failed to get P2 pointer for D", true);
             }
@@ -760,17 +757,19 @@ namespace ImGuiGui {
         ImGui::Text("Direction + Button:");
         if (ImGui::Button("6A")) {
             QueueMotionInput(2, MOTION_NONE, GAME_INPUT_RIGHT | GAME_INPUT_A);
-            uintptr_t playerPtr = GetPlayerPointer(2);
+            LogOut("[IMGUI] Debug menu: Pressed 6A for P2, playerPtr=0x" + std::to_string(playerPtr), true);
             if (playerPtr) {
-                SpamAttackButton(playerPtr, GAME_INPUT_A, 4, "6A");
+                HoldButtonA(2);
+                LogOut("[IMGUI] Called HoldButtonA for P2 (6A)", true);
             }
         }
         ImGui::SameLine();
         if (ImGui::Button("4B")) {
             QueueMotionInput(2, MOTION_NONE, GAME_INPUT_LEFT | GAME_INPUT_B);
-            uintptr_t playerPtr = GetPlayerPointer(2);
+            LogOut("[IMGUI] Debug menu: Pressed 4B for P2, playerPtr=0x" + std::to_string(playerPtr), true);
             if (playerPtr) {
-                SpamAttackButton(playerPtr, GAME_INPUT_B, 4, "4B");
+                HoldButtonB(2);
+                LogOut("[IMGUI] Called HoldButtonB for P2 (4B)", true);
             }
         }
         // ...add more as needed...

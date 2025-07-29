@@ -49,6 +49,16 @@
 #define MOTION_BUTTON_C     0x40
 #define MOTION_BUTTON_D     0x80
 
+constexpr uint8_t GAME_INPUT_RIGHT = 0x01;  // Bit 0
+constexpr uint8_t GAME_INPUT_LEFT  = 0x02;  // Bit 1
+constexpr uint8_t GAME_INPUT_DOWN  = 0x04;  // Bit 2
+constexpr uint8_t GAME_INPUT_UP    = 0x08;  // Bit 3
+constexpr uint8_t GAME_INPUT_A     = 0x10;  // Bit 4
+constexpr uint8_t GAME_INPUT_B     = 0x20;  // Bit 5
+constexpr uint8_t GAME_INPUT_C     = 0x40;  // Bit 6
+constexpr uint8_t GAME_INPUT_D     = 0x80;  // Bit 7
+
+
 // Structure to represent a single frame of input
 struct InputFrame {
     uint8_t inputMask;
