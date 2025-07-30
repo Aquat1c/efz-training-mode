@@ -235,6 +235,7 @@
 #define ACTION_BACKDASH      15
 #define ACTION_BLOCK         16
 #define ACTION_CUSTOM        17
+#define ACTION_421           18 // or next available value
 
 // Default delay for triggers
 #define DEFAULT_TRIGGER_DELAY 0  // Default delay for all triggers

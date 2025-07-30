@@ -11,6 +11,9 @@
 #include <algorithm>
 #include <atomic>
 #include <mutex>
+#include "../include/practice_patch.h"
+#include <thread>
+#include <chrono>
 // Global variables for motion input system
 std::vector<InputFrame> p1InputQueue;
 std::vector<InputFrame> p2InputQueue;
@@ -26,6 +29,8 @@ const uint16_t INPUT_BUFFER_SIZE = 0x180;  // 384 bytes circular buffer
 const uintptr_t INPUT_BUFFER_OFFSET = 0x1AB;  // Buffer start offset in player struct
 const uintptr_t INPUT_BUFFER_INDEX_OFFSET = 0x260;  // Current buffer index offset
 
+// REVISED: Only use buffer injection for all motion inputs
+constexpr uintptr_t AI_CONTROL_FLAG_OFFSET = 164; // Confirmed from your codebase
 
 // Direction combinations for diagonals
 const uint8_t GAME_INPUT_DOWNRIGHT = GAME_INPUT_DOWN | GAME_INPUT_RIGHT;
@@ -229,11 +234,9 @@ void ProcessInputQueues() {
                 p1QueueIndex++;
             }
         } else {
-            // Queue is finished
             p1QueueActive = false;
             p1InputQueue.clear();
             p1QueueIndex = 0;
-            // Write a neutral input to prevent a "stuck" button state
             WritePlayerInputImmediate(1, 0);
         }
     }
@@ -241,18 +244,19 @@ void ProcessInputQueues() {
     // P2 Queue Logic
     if (p2QueueActive) {
         if (p2QueueIndex < p2InputQueue.size()) {
+            // Only write to the buffer for motion simulation
+            WritePlayerInputToBuffer(2, p2InputQueue[p2QueueIndex].inputMask);
             p2FrameCounter++;
             if (p2FrameCounter >= p2InputQueue[p2QueueIndex].durationFrames) {
                 p2FrameCounter = 0;
                 p2QueueIndex++;
             }
         } else {
-            // Queue is finished
             p2QueueActive = false;
             p2InputQueue.clear();
             p2QueueIndex = 0;
-            // Write a neutral input to prevent a "stuck" button state
-            WritePlayerInputImmediate(2, 0);
+            // Optionally write a neutral input to the buffer
+            WritePlayerInputToBuffer(2, 0);
         }
     }
 }
@@ -326,54 +330,27 @@ void DiagnoseInputSystem(int playerNum) {
     LogOut("[INPUT_DIAG] ==================", true);
 }
 
-// REVISED: Fully implement QueueMotionInput
+
+void ForceHumanControl(int playerNum) {
+    uintptr_t playerPtr = GetPlayerPointer(playerNum);
+    if (!playerPtr) return;
+    uint32_t aiFlag = 0;
+    SafeWriteMemory(playerPtr + AI_CONTROL_FLAG_OFFSET, &aiFlag, sizeof(uint32_t));
+}
+
 bool QueueMotionInput(int playerNum, int motionType, int buttonMask) {
-    // New: Use InputFrame with separate direction and button fields
-    std::vector<InputFrame> motionSequence;
+    std::vector<uint8_t> motionSequence;
     const int DIR_FRAMES = 2;
     const int BTN_FRAMES = 3;
     const int NEUTRAL_FRAMES = 2;
 
     auto addInput = [&](uint8_t dirMask, uint8_t btnMask, int frames) {
-        motionSequence.push_back(InputFrame{static_cast<uint8_t>(dirMask | btnMask), frames});
+        for (int i = 0; i < frames; ++i)
+            motionSequence.push_back(static_cast<uint8_t>(dirMask | btnMask));
     };
 
+    // Build the input sequence for each motion type
     switch (motionType) {
-        case MOTION_NONE:
-            if (buttonMask != 0) {
-                // If only a direction is pressed (no button)
-                if (buttonMask == GAME_INPUT_RIGHT) {
-                    addInput(GAME_INPUT_RIGHT, 0, DIR_FRAMES);
-                } else if (buttonMask == GAME_INPUT_DOWN) {
-                    addInput(GAME_INPUT_DOWN, 0, DIR_FRAMES);
-                } else if (buttonMask == GAME_INPUT_LEFT) {
-                    addInput(GAME_INPUT_LEFT, 0, DIR_FRAMES);
-                } else if (buttonMask == GAME_INPUT_UP) {
-                    addInput(GAME_INPUT_UP, 0, DIR_FRAMES);
-                } else if (buttonMask == GAME_INPUT_A || buttonMask == GAME_INPUT_B || buttonMask == GAME_INPUT_C || buttonMask == GAME_INPUT_D) {
-                    addInput(0, buttonMask, BTN_FRAMES);
-                } else if ((buttonMask & (GAME_INPUT_RIGHT | GAME_INPUT_LEFT | GAME_INPUT_UP | GAME_INPUT_DOWN)) && (buttonMask & (GAME_INPUT_A | GAME_INPUT_B | GAME_INPUT_C | GAME_INPUT_D))) {
-                    // Direction + button
-                    uint8_t dir = buttonMask & (GAME_INPUT_RIGHT | GAME_INPUT_LEFT | GAME_INPUT_UP | GAME_INPUT_DOWN);
-                    uint8_t btn = buttonMask & (GAME_INPUT_A | GAME_INPUT_B | GAME_INPUT_C | GAME_INPUT_D);
-                    addInput(dir, btn, BTN_FRAMES);
-                } else {
-                    addInput(0, 0, DIR_FRAMES);
-                }
-            } else {
-                addInput(0, 0, DIR_FRAMES);
-            }
-            break;
-        case ACTION_FORWARD_DASH:
-            addInput(GAME_INPUT_RIGHT, 0, DIR_FRAMES);
-            addInput(0, 0, NEUTRAL_FRAMES);
-            addInput(GAME_INPUT_RIGHT, 0, DIR_FRAMES);
-            break;
-        case ACTION_BACK_DASH:
-            addInput(GAME_INPUT_LEFT, 0, DIR_FRAMES);
-            addInput(0, 0, NEUTRAL_FRAMES);
-            addInput(GAME_INPUT_LEFT, 0, DIR_FRAMES);
-            break;
         case MOTION_236A: case MOTION_236B: case MOTION_236C:
             addInput(GAME_INPUT_DOWN, 0, DIR_FRAMES);
             addInput(GAME_INPUT_DOWN | GAME_INPUT_RIGHT, 0, DIR_FRAMES);
@@ -390,47 +367,73 @@ bool QueueMotionInput(int playerNum, int motionType, int buttonMask) {
             addInput(GAME_INPUT_DOWN | GAME_INPUT_LEFT, 0, DIR_FRAMES);
             addInput(GAME_INPUT_LEFT, buttonMask, BTN_FRAMES);
             break;
-        case MOTION_5A: case MOTION_5B: case MOTION_5C:
-            addInput(0, buttonMask, BTN_FRAMES);
+        case MOTION_41236A: case MOTION_41236B: case MOTION_41236C:
+            addInput(GAME_INPUT_LEFT, 0, DIR_FRAMES);
+            addInput(GAME_INPUT_DOWN | GAME_INPUT_LEFT, 0, DIR_FRAMES);
+            addInput(GAME_INPUT_DOWN, 0, DIR_FRAMES);
+            addInput(GAME_INPUT_DOWN | GAME_INPUT_RIGHT, 0, DIR_FRAMES);
+            addInput(GAME_INPUT_RIGHT, buttonMask, BTN_FRAMES);
             break;
-        case MOTION_2A: case MOTION_2B: case MOTION_2C:
-            addInput(GAME_INPUT_DOWN, buttonMask, BTN_FRAMES);
+        case MOTION_63214A: case MOTION_63214B: case MOTION_63214C:
+            addInput(GAME_INPUT_RIGHT, 0, DIR_FRAMES);
+            addInput(GAME_INPUT_DOWN | GAME_INPUT_RIGHT, 0, DIR_FRAMES);
+            addInput(GAME_INPUT_DOWN, 0, DIR_FRAMES);
+            addInput(GAME_INPUT_DOWN | GAME_INPUT_LEFT, 0, DIR_FRAMES);
+            addInput(GAME_INPUT_LEFT, buttonMask, BTN_FRAMES);
             break;
-        case MOTION_JA: case MOTION_JB: case MOTION_JC:
-            addInput(GAME_INPUT_UP, buttonMask, BTN_FRAMES);
+        case MOTION_421A: case MOTION_421B: case MOTION_421C:
+            addInput(GAME_INPUT_DOWN, 0, DIR_FRAMES);
+            addInput(GAME_INPUT_DOWN | GAME_INPUT_LEFT, 0, DIR_FRAMES);
+            addInput(GAME_INPUT_LEFT, buttonMask, BTN_FRAMES);
             break;
+        case ACTION_FORWARD_DASH:
+            addInput(GAME_INPUT_RIGHT, 0, DIR_FRAMES);
+            addInput(0, 0, NEUTRAL_FRAMES);
+            addInput(GAME_INPUT_RIGHT, 0, DIR_FRAMES);
+            break;
+        case ACTION_BACK_DASH:
+            addInput(GAME_INPUT_LEFT, 0, DIR_FRAMES);
+            addInput(0, 0, NEUTRAL_FRAMES);
+            addInput(GAME_INPUT_LEFT, 0, DIR_FRAMES);
+            break;
+        // Add other motion types here as needed
         default:
-            if ((motionType & (GAME_INPUT_UP | GAME_INPUT_DOWN | GAME_INPUT_LEFT | GAME_INPUT_RIGHT)) ||
-                (motionType & (GAME_INPUT_A | GAME_INPUT_B | GAME_INPUT_C | GAME_INPUT_D))) {
-                uint8_t dir = motionType & (GAME_INPUT_UP | GAME_INPUT_DOWN | GAME_INPUT_LEFT | GAME_INPUT_RIGHT);
-                uint8_t btn = buttonMask & (GAME_INPUT_A | GAME_INPUT_B | GAME_INPUT_C | GAME_INPUT_D);
-                addInput(dir, btn, BTN_FRAMES);
-            } else {
-                LogOut("[INPUT_MOTION] QueueMotionInput: Unknown motionType " + std::to_string(motionType), true);
-                return false;
+            // For normals, jump attacks, or simple directions/buttons, use the queue system
+            if (motionType == MOTION_5A || motionType == MOTION_5B || motionType == MOTION_5C ||
+                motionType == MOTION_2A || motionType == MOTION_2B || motionType == MOTION_2C ||
+                motionType == MOTION_JA || motionType == MOTION_JB || motionType == MOTION_JC) {
+                std::vector<InputFrame>& queue = (playerNum == 1) ? p1InputQueue : p2InputQueue;
+                queue.clear();
+                for (int i = 0; i < BTN_FRAMES; ++i) {
+                    queue.push_back(InputFrame(buttonMask, 1));
+                }
+                if (playerNum == 1) {
+                    p1QueueIndex = 0; p1FrameCounter = 0; p1QueueActive = true;
+                } else {
+                    p2QueueIndex = 0; p2FrameCounter = 0; p2QueueActive = true;
+                }
+                LogOut("[INPUT_MOTION] Queued normal/jump " + GetMotionTypeName(motionType) + " for P" + std::to_string(playerNum), detailedLogging.load());
+                return true;
             }
-            break;
+            // Unknown or unsupported motion
+            LogOut("[INPUT_MOTION] QueueMotionInput: Unknown or unsupported motionType " + std::to_string(motionType), true);
+            return false;
     }
 
-    // Add a final neutral frame
+    // Add a final neutral frame for all motion inputs
     addInput(0, 0, NEUTRAL_FRAMES);
 
-    if (playerNum == 1) {
-        p1InputQueue = motionSequence;
-        p1QueueIndex = 0;
-        p1FrameCounter = 0;
-        p1QueueActive = true;
-    } else if (playerNum == 2) {
-        p2InputQueue = motionSequence;
-        p2QueueIndex = 0;
-        p2FrameCounter = 0;
-        p2QueueActive = true;
-    } else {
-        return false;
-    }
+    // --- Always force AI flag to human before any input injection ---
+    SetAIControlFlag(playerNum, true);
 
-    LogOut("[INPUT_MOTION] Queued motion " + GetMotionTypeName(motionType) + " for P" + std::to_string(playerNum), detailedLogging.load());
-    return true;
+    // Inject for several consecutive frames to ensure sync
+    bool result = false;
+    for (int i = 0; i < 3; ++i) { // Try 3 frames for reliability
+        result = InjectMotionToBuffer(playerNum, motionSequence) || result;
+        Sleep(5); // ~1 frame at 192fps
+    }
+    LogOut("[INPUT_MOTION] Injected motion " + GetMotionTypeName(motionType) + " for P" + std::to_string(playerNum), detailedLogging.load());
+    return result;
 }
 
 // FIX: This function was calling an undefined function. It should call the new queue system.
@@ -452,16 +455,65 @@ bool ExecuteSimpleMove(int playerNum, int moveType) {
 
 
 int ConvertActionToMotion(int actionType, int triggerType) {
-    // Example mapping, adjust as needed for your game
+    // 0 = A, 1 = B, 2 = C
+    int strength = GetSpecialMoveStrength(actionType, triggerType);
+
     switch (actionType) {
-        case 0: return MOTION_5A;
-        case 1: return MOTION_5B;
-        case 2: return MOTION_5C;
-        case 3: return MOTION_2A;
-        case 4: return MOTION_2B;
-        case 5: return MOTION_2C;
-        // Add more as needed
-        default: return MOTION_NONE;
+        // Normals
+        case ACTION_5A:    return MOTION_5A;
+        case ACTION_5B:    return MOTION_5B;
+        case ACTION_5C:    return MOTION_5C;
+        case ACTION_2A:    return MOTION_2A;
+        case ACTION_2B:    return MOTION_2B;
+        case ACTION_2C:    return MOTION_2C;
+        case ACTION_JA:    return MOTION_JA;
+        case ACTION_JB:    return MOTION_JB;
+        case ACTION_JC:    return MOTION_JC;
+
+        // QCF (236)
+        case ACTION_QCF:
+            if (strength == 1) return MOTION_236B;
+            if (strength == 2) return MOTION_236C;
+            return MOTION_236A;
+
+        // DP (623)
+        case ACTION_DP:
+            if (strength == 1) return MOTION_623B;
+            if (strength == 2) return MOTION_623C;
+            return MOTION_623A;
+
+        // QCB (214)
+        case ACTION_QCB:
+            if (strength == 1) return MOTION_214B;
+            if (strength == 2) return MOTION_214C;
+            return MOTION_214A;
+
+        // 421 (HCB Down)
+        case ACTION_421:
+            if (strength == 1) return MOTION_421B;
+            if (strength == 2) return MOTION_421C;
+            return MOTION_421A;
+
+        // HCF (41236)
+        case ACTION_SUPER1:
+            if (strength == 1) return MOTION_41236B;
+            if (strength == 2) return MOTION_41236C;
+            return MOTION_41236A;
+
+        // HCB (63214)
+        case ACTION_SUPER2:
+            if (strength == 1) return MOTION_63214B;
+            if (strength == 2) return MOTION_63214C;
+            return MOTION_63214A;
+
+        // Dashes, jump, block
+        case ACTION_JUMP:      return MOTION_JA; // Or a dedicated jump motion if you have one
+        case ACTION_BACKDASH:  return ACTION_BACK_DASH;
+        case ACTION_FORWARD_DASH: return ACTION_FORWARD_DASH;
+        case ACTION_BLOCK:     return MOTION_NONE; // Or implement block input
+
+        default:
+            return MOTION_NONE;
     }
 }
 bool WritePlayerInputImmediate(int playerNum, uint8_t inputMask) {
@@ -693,3 +745,50 @@ void DebugCurrentInputState(int playerNum) {
     if (result.empty()) result = "N";
     return result;
 }*/
+
+// Write a motion sequence directly into the buffer, starting at current index + 1
+bool InjectMotionToBuffer(int playerNum, const std::vector<uint8_t>& motionSequence) {
+    uintptr_t playerPtr = GetPlayerPointer(playerNum);
+    if (!playerPtr) return false;
+
+    uint16_t currentIndex = 0;
+    if (!SafeReadMemory(playerPtr + INPUT_BUFFER_INDEX_OFFSET, &currentIndex, sizeof(uint16_t)))
+        return false;
+
+    for (size_t i = 0; i < motionSequence.size(); ++i) {
+        uint16_t writeIndex = (currentIndex + 1 + i) % INPUT_BUFFER_SIZE;
+        uintptr_t writeAddr = playerPtr + INPUT_BUFFER_OFFSET + writeIndex;
+        uint8_t input = motionSequence[i];
+        if (!SafeWriteMemory(writeAddr, &input, sizeof(uint8_t)))
+            return false;
+
+        LogOut("[DEBUG] InjectMotionToBuffer: Wrote mask=" + DecodeInputMask(input) +
+               " to index=" + std::to_string(writeIndex), true);
+    }
+    return true;
+}
+
+void SetAIControlFlag(int playerNum, bool human) {
+    uintptr_t playerPtr = GetPlayerPointer(playerNum);
+    if (!playerPtr) return;
+    uint32_t aiFlag = human ? 0 : 1;
+    SafeWriteMemory(playerPtr + AI_CONTROL_FLAG_OFFSET, &aiFlag, sizeof(uint32_t));
+}
+
+bool IsAIControlFlagHuman(int playerNum) {
+    uintptr_t playerPtr = GetPlayerPointer(playerNum);
+    if (!playerPtr) return false;
+    uint32_t aiFlag = 1;
+    SafeReadMemory(playerPtr + AI_CONTROL_FLAG_OFFSET, &aiFlag, sizeof(uint32_t));
+    return aiFlag == 0;
+}
+
+// Restore AI control if P2 control is not enabled in ImGui/config
+void RestoreAIControlIfNeeded(int playerNum) {
+    if (playerNum != 2) return;
+    extern DisplayData displayData;
+    if (!displayData.p2ControlEnabled) {
+        SetAIControlFlag(2, false);
+        LogOut("[INPUT_MOTION] Restored P2 AI flag to AI after input injection", detailedLogging.load());
+    }
+}

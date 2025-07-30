@@ -339,22 +339,22 @@ void MonitorKeys() {
                 keyHandled = true;
             }
 
-            // --- P2 Attack Button Simulation ---
+            // --- P2 Motion Input Debug Hotkeys ---
             if (GetAsyncKeyState(VK_NUMPAD_ADD) & 0x8000) { // Numpad +
-                QueueMotionInput(2, MOTION_NONE, GAME_INPUT_A);
-                LogOut("[HOTKEY] Simulated P2 A button press (Numpad +)", true);
+                QueueMotionInput(2, MOTION_236B, GAME_INPUT_B); // QCF+B
+                LogOut("[HOTKEY] Simulated P2 QCF+B (Numpad +)", true);
             }
             if (GetAsyncKeyState(VK_NUMPAD_SUBTRACT) & 0x8000) { // Numpad -
-                QueueMotionInput(2, MOTION_NONE, GAME_INPUT_B);
-                LogOut("[HOTKEY] Simulated P2 B button press (Numpad -)", true);
+                QueueMotionInput(2, MOTION_623B, GAME_INPUT_B); // DP+B
+                LogOut("[HOTKEY] Simulated P2 DP+B (Numpad -)", true);
             }
             if (GetAsyncKeyState(VK_NUMPAD_MULTIPLY) & 0x8000) { // Numpad *
-                QueueMotionInput(2, MOTION_NONE, GAME_INPUT_C);
-                LogOut("[HOTKEY] Simulated P2 C button press (Numpad *)", true);
+                QueueMotionInput(2, MOTION_214B, GAME_INPUT_B); // QCB+B
+                LogOut("[HOTKEY] Simulated P2 QCB+B (Numpad *)", true);
             }
             if (GetAsyncKeyState(VK_NUMPAD_DIVIDE) & 0x8000) { // Numpad /
-                QueueMotionInput(2, MOTION_NONE, GAME_INPUT_D);
-                LogOut("[HOTKEY] Simulated P2 D button press (Numpad /)", true);
+                QueueMotionInput(2, MOTION_41236C, GAME_INPUT_C); // Super1 (41236C)
+                LogOut("[HOTKEY] Simulated P2 Super1 (41236C) (Numpad /)", true);
             }
 
             // If a key was handled, wait for it to be released

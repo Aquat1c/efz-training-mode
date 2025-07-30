@@ -107,3 +107,7 @@ void DiagnoseInputSystem(int playerNum);
 int ConvertActionToMotion(int actionType, int triggerType);
 uint8_t DetermineButtonFromMotionType(int motionType);
 std::string DecodeInputMask(uint8_t inputMask);
+bool InjectMotionToBuffer(int playerNum, const std::vector<uint8_t>& motionSequence);
+void SetAIControlFlag(int playerNum, bool human);
+bool IsAIControlFlagHuman(int playerNum);
+void RestoreAIControlIfNeeded(int playerNum);
