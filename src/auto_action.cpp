@@ -337,27 +337,35 @@ void MonitorAutoActions() {
 
         // After Block trigger
         if (!shouldTrigger && triggerAfterBlockEnabled.load()) {
-            if (IsBlockstun(prevMoveID1) && IsActionable(moveID1)) {
+            bool wasInBlockstun = IsBlockstun(prevMoveID1);
+            bool nowNotInBlockstun = !IsBlockstun(moveID1);
+            bool wasNotActionable = !IsActionable(prevMoveID1);
+            bool isNowActionable = IsActionable(moveID1);
+            bool justBecameActionable = wasNotActionable && isNowActionable;
+
+            if (wasInBlockstun && nowNotInBlockstun && justBecameActionable) {
                 shouldTrigger = true;
                 triggerType = TRIGGER_AFTER_BLOCK;
                 delay = triggerAfterBlockDelay.load();
                 actionMoveID = GetActionMoveID(triggerAfterBlockAction.load(), TRIGGER_AFTER_BLOCK, 1);
-                
-                LogOut("[AUTO-ACTION] P1 After Block trigger activated", true);
+                LogOut("[AUTO-ACTION] P1 After Block trigger activated (just became actionable)", true);
             }
         }
         
         // After Hitstun trigger
         if (!shouldTrigger && triggerAfterHitstunEnabled.load()) {
-            if (IsHitstun(prevMoveID1) && !IsHitstun(moveID1) && !IsAirtech(moveID1)) {
-                // CRITICAL FIX: Only trigger if not going into airtech
-                if (IsActionable(moveID1)) {
-                    shouldTrigger = true;
-                    triggerType = TRIGGER_AFTER_HITSTUN;
-                    delay = triggerAfterHitstunDelay.load();
-                    actionMoveID = GetActionMoveID(triggerAfterHitstunAction.load(), TRIGGER_AFTER_HITSTUN, 1);
-                    LogOut("[AUTO-ACTION] P1 after hitstun trigger activated", true);
-                }
+            bool wasInHitstun = IsHitstun(prevMoveID1);
+            bool nowNotInHitstun = !IsHitstun(moveID1);
+            bool wasNotActionable = !IsActionable(prevMoveID1);
+            bool isNowActionable = IsActionable(moveID1);
+            bool justBecameActionable = wasNotActionable && isNowActionable;
+
+            if (wasInHitstun && nowNotInHitstun && justBecameActionable) {
+                shouldTrigger = true;
+                triggerType = TRIGGER_AFTER_HITSTUN;
+                delay = triggerAfterHitstunDelay.load();
+                actionMoveID = GetActionMoveID(triggerAfterHitstunAction.load(), TRIGGER_AFTER_HITSTUN, 1);
+                LogOut("[AUTO-ACTION] P1 After Hitstun trigger activated (just became actionable)", true);
             }
         }
         
