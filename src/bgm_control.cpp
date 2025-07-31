@@ -156,20 +156,15 @@ static std::thread g_bgmPollerThread;
 
 void BGMSuppressionPoller() {
     LogOut("[BGM] BGM suppression poller thread started", true);
-    bool wasSuppressed = false;
     while (g_bgmPollerRunning.load()) {
         if (IsBGMSuppressed()) {
             uintptr_t efzBase = GetEFZBase();
             uintptr_t gameStatePtr = 0;
             if (SafeReadMemory(efzBase + EFZ_BASE_OFFSET_GAME_STATE, &gameStatePtr, sizeof(uintptr_t)) && gameStatePtr) {
-                // Only call StopBGM if we just enabled suppression or if BGM might have restarted
                 StopBGM(gameStatePtr);
             }
-            wasSuppressed = true;
-        } else {
-            wasSuppressed = false;
         }
-        std::this_thread::sleep_for(std::chrono::milliseconds(250)); // Poll 4x per second
+        std::this_thread::sleep_for(std::chrono::milliseconds(1)); // Poll as fast as possible
     }
     LogOut("[BGM] BGM suppression poller thread stopped", true);
 }
