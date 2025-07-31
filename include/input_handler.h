@@ -25,6 +25,7 @@ extern bool g_directInputAvailable;
 
 // Add this flag to control DirectInput behavior
 extern bool g_directInputReadOnly;
+static std::atomic<bool> globalF1ThreadRunning{true};
 
 // Function declarations
 void MonitorKeys();
@@ -75,3 +76,4 @@ bool UpdateGamepadState(int gamepadIndex);
 bool IsGamepadButtonPressed(int gamepadIndex, int buttonIndex);
 bool IsGamepadButtonHeld(int gamepadIndex, int buttonIndex);
 bool IsGamepadAxisActive(int gamepadIndex, int axisIndex, int threshold = 500);
+void GlobalF1MonitorThread();

@@ -3,7 +3,6 @@
 #include <string>
 
 // BGM control API for EFZ Training Mode
-
 // Set BGM volume instantly (DirectSound scale: 0 = max, -10000 = mute)
 bool SetBGMVolume(uintptr_t gameStatePtr, int volume);
 
@@ -27,3 +26,15 @@ int GetBGMVolume(uintptr_t gameStatePtr);
 
 // Log current BGM state (slot, volume, etc)
 void LogBGMState(uintptr_t gameStatePtr);
+
+bool ToggleBGM(uintptr_t gameSystemPtr);
+void SetBGMSuppressed(bool suppress);
+bool IsBGMSuppressed();
+bool InstallBGMHook(uintptr_t efzBase);
+
+// Get/set last BGM track for toggling/resume
+unsigned short GetLastBgmTrack();
+void SetLastBgmTrack(unsigned short track);
+bool SetBGMVolumeViaGame(uintptr_t gameSystemPtr, int volumeLevel);
+void StartBGMSuppressionPoller();
+void StopBGMSuppressionPoller();
