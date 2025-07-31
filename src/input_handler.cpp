@@ -20,6 +20,8 @@
 #include "../include/overlay.h"  // Add this include for DirectDrawHook class
 #include "../include/config.h"
 #include "../include/input_motion.h" // For QueueMotionInput
+#include "../include/bgm_control.h"
+
 #ifndef VK_NUMPAD_ADD
 #define VK_NUMPAD_ADD      0x6B
 #endif
@@ -205,11 +207,39 @@ void MonitorKeys() {
         // Update window active state at the beginning of each loop
         UpdateWindowActiveState();
         
-        // Only process hotkeys if EFZ window is active AND we're not currently in a GUI
+        // --- F1 BGM suppression: always available ---
+        if (IsKeyPressed(VK_F1, false)) {
+            LogOut("BGM Mute button called", true);
+            SetBGMSuppressed(!IsBGMSuppressed());
+            DirectDrawHook::AddMessage(
+                IsBGMSuppressed() ? "BGM: OFF" : "BGM: ON",
+                "SYSTEM",
+                IsBGMSuppressed() ? RGB(255,100,100) : RGB(100,255,100),
+                1500, 0, 100
+            );
+            uintptr_t efzBase = GetEFZBase();
+            uintptr_t gameStatePtr = 0;
+            if (SafeReadMemory(efzBase + EFZ_BASE_OFFSET_GAME_STATE, &gameStatePtr, sizeof(uintptr_t)) && gameStatePtr) {
+                if (IsBGMSuppressed()) {
+                    StopBGM(gameStatePtr);
+                } else {
+                    unsigned short lastTrack = GetLastBgmTrack();
+                    if (lastTrack != 150 && lastTrack != 0) {
+                        PlayBGM(gameStatePtr, lastTrack);
+                        SetBGMVolumeViaGame(gameStatePtr, 0);
+                    }
+                }
+            } else {
+                LogOut("[BGM] No valid game state pointer for BGM action, will apply on next valid mode.", true);
+            }
+            Sleep(100); // Debounce
+            while (IsKeyPressed(VK_F1, true)) Sleep(10);
+            continue; // Skip the rest of the loop so F1 doesn't trigger other keys
+        }
+
+        // --- All other hotkeys: only when overlays/features are active ---
         if (g_efzWindowActive.load() && !g_guiActive.load()) {
             bool keyHandled = false;
-
-            // Check if the config menu should be opened
             if (IsKeyPressed(configMenuKey, false)) {
                 OpenMenu();
                 // Wait a bit to prevent multiple openings
@@ -338,7 +368,6 @@ void MonitorKeys() {
                 DirectDrawHook::AddMessage(autoJumpEnabled ? "Auto-Jump: ON" : "Auto-Jump: OFF", "SYSTEM", RGB(255, 165, 0), 1500, 0, 100);
                 keyHandled = true;
             }
-
             // --- P2 Motion Input Debug Hotkeys ---
             if (GetAsyncKeyState(VK_NUMPAD_ADD) & 0x8000) { // Numpad +
                 QueueMotionInput(2, MOTION_236B, GAME_INPUT_B); // QCF+B
@@ -860,5 +889,38 @@ void DetectKeyBindingsWithDI() {
         memcpy(prevKeyboardState, keyboardState, sizeof(prevKeyboardState));
     }
     prevInputs = currentInputs;
+}
+
+void GlobalF1MonitorThread() {
+    while (globalF1ThreadRunning.load()) {
+        if (IsKeyPressed(VK_F1, false)) {
+            LogOut("BGM Mute button called (global F1 thread)", true);
+            SetBGMSuppressed(!IsBGMSuppressed());
+            DirectDrawHook::AddMessage(
+                IsBGMSuppressed() ? "BGM: OFF" : "BGM: ON",
+                "SYSTEM",
+                IsBGMSuppressed() ? RGB(255,100,100) : RGB(100,255,100),
+                1500, 0, 100
+            );
+            uintptr_t efzBase = GetEFZBase();
+            uintptr_t gameStatePtr = 0;
+            if (SafeReadMemory(efzBase + EFZ_BASE_OFFSET_GAME_STATE, &gameStatePtr, sizeof(uintptr_t)) && gameStatePtr) {
+                if (IsBGMSuppressed()) {
+                    StopBGM(gameStatePtr);
+                } else {
+                    unsigned short lastTrack = GetLastBgmTrack();
+                    if (lastTrack != 150 && lastTrack != 0) {
+                        PlayBGM(gameStatePtr, lastTrack);
+                        SetBGMVolumeViaGame(gameStatePtr, 0);
+                    }
+                }
+            } else {
+                LogOut("[BGM] No valid game state pointer for BGM action, will apply on next valid mode.", true);
+            }
+            Sleep(100); // Debounce
+            while (IsKeyPressed(VK_F1, true)) Sleep(10);
+        }
+        Sleep(16); // ~60Hz polling
+    }
 }
 

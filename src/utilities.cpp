@@ -25,6 +25,8 @@
 #include <chrono>
 #include <vector>
 #include "../include/character_settings.h"
+#include "../include/game_state.h"
+#include "../include/bgm_control.h"
 
 std::atomic<bool> g_efzWindowActive(false);
 std::atomic<bool> g_guiActive(false);
@@ -38,7 +40,7 @@ std::atomic<bool> g_manualJumpHold[3] = {false, false, false}; // NEW: Definitio
 void EnableFeatures() {
     if (g_featuresEnabled.load())
         return;
-        
+
     LogOut("[SYSTEM] Game in valid mode. Enabling patches and overlays.", true);
 
     // Apply patches if the feature is enabled
@@ -47,7 +49,7 @@ void EnableFeatures() {
     }
 
     g_featuresEnabled.store(true);
-    
+
     // Only reinitialize overlays if characters are initialized and we're in a valid game mode
     if (DirectDrawHook::isHooked && AreCharactersInitialized()) {
         GameMode currentMode = GetCurrentGameMode();
@@ -62,7 +64,14 @@ void EnableFeatures() {
         }
     }
     
-    // Key monitoring will be handled separately by ManageKeyMonitoring()
+    // --- BGM suppression integration ---
+    uintptr_t efzBase = GetEFZBase();
+    uintptr_t gameStatePtr = 0;
+    if (SafeReadMemory(efzBase + EFZ_BASE_OFFSET_GAME_STATE, &gameStatePtr, sizeof(uintptr_t)) && gameStatePtr) {
+        if (IsBGMSuppressed()) {
+            StopBGM(gameStatePtr);
+        }
+    }
 }
 
 void DisableFeatures() {

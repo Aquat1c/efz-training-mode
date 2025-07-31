@@ -18,6 +18,7 @@
 #include "../include/practice_patch.h"
 #include "../include/input_hook.h" // Add this include
 #include "../3rdparty/minhook/include/MinHook.h" // Add this include
+#include "../include/bgm_control.h"
 
 // Forward declarations for functions in other files
 void MonitorKeys();
@@ -69,7 +70,8 @@ void DelayedInitialization(HMODULE hModule) {
 
     // Install the input hook after the game is stable
     InstallInputHook();
-    
+    StartBGMSuppressionPoller();
+
     LogOut("[SYSTEM] EFZ Training Mode - Delayed initialization starting", true);
     LogOut("[SYSTEM] Console initialized with code page: " + std::to_string(GetConsoleOutputCP()), true);
     LogOut("[SYSTEM] Current locale: C", true);
@@ -82,6 +84,7 @@ void DelayedInitialization(HMODULE hModule) {
     std::thread(UpdateConsoleTitle).detach();
     std::thread(FrameDataMonitor).detach();
     std::thread(MonitorOnlineStatus).detach();
+    std::thread(GlobalF1MonitorThread).detach();
     // REMOVED: The practice mode patch is no longer a persistent thread.
     // std::thread(MonitorAndPatchPracticeMode).detach(); 
     LogOut("[SYSTEM] Essential background threads started.", true);
@@ -188,10 +191,10 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
         
         // Remove the input hook first
         RemoveInputHook();
-        
+        globalF1ThreadRunning = false;
         // First clean up ImGui to prevent rendering during shutdown
         ImGuiImpl::Shutdown();
-        
+        StopBGMSuppressionPoller();
         // Then clean up the D3D9 hook
         DirectDrawHook::ShutdownD3D9();
         
