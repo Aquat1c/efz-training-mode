@@ -11,6 +11,7 @@
 #include "../include/frame_monitor.h"
 #include "../include/input_motion.h"
 #include "../include/input_motion.h"
+#include "../include/bgm_control.h"
 
 // Forward declare SpamAttackButton so we can use it in this file
 extern void SpamAttackButton(uintptr_t playerBase, uint8_t button, int frames, const char* buttonName);
@@ -776,6 +777,36 @@ namespace ImGuiGui {
 
         ImGui::Separator();
         if (ImGui::Button("Release All Inputs")) { ReleaseInputs(2); }
+
+        ImGui::Separator();
+        ImGui::Text("BGM Control");
+        uintptr_t efzBase = GetEFZBase();
+        uintptr_t gameStatePtr = 0;
+        if (SafeReadMemory(efzBase + EFZ_BASE_OFFSET_GAME_STATE, &gameStatePtr, sizeof(uintptr_t))) {
+            /*if (ImGui::Button("Mute BGM")) {
+                MuteBGM(gameStatePtr);
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Unmute BGM")) {
+                UnmuteBGM(gameStatePtr);
+            }*/
+            if (ImGui::Button("Stop BGM")) {
+                StopBGM(gameStatePtr);
+            }
+            ImGui::SameLine();
+            /*if (ImGui::Button("Log BGM State")) {
+                LogBGMState(gameStatePtr);
+            }*/
+            static int bgmSlot = 0;
+            ImGui::InputInt("Set BGM Slot (index)", &bgmSlot);
+            if (ImGui::Button("Set BGM Slot")) {
+                PlayBGM(gameStatePtr, static_cast<unsigned short>(bgmSlot));
+            }
+            ImGui::Text("Current BGM Slot: %d", GetBGMSlot(gameStatePtr));
+            ImGui::Text("Current BGM Volume: %d", GetBGMVolume(gameStatePtr));
+        } else {
+            ImGui::Text("Game state pointer not available.");
+        }
     }
 
     // Update the RenderGui function to include the new tab:

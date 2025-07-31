@@ -78,6 +78,7 @@ set(SOURCES
     src/input_motion.cpp
     src/input_hook.cpp     # Add this line
     src/auto_action_helpers.cpp
+    src/bgm_control.cpp
     ${IMGUI_SOURCES}
 )
 

@@ -732,19 +732,18 @@ void DebugCurrentInputState(int playerNum) {
     // ... implementation for debugging ...
 }
 
-/*std::string DecodeInputMask(uint8_t inputMask) {/
-    std::string result;
-    if (inputMask & MOTION_INPUT_UP) result += "U";
-    if (inputMask & MOTION_INPUT_DOWN) result += "D";
-    if (inputMask & MOTION_INPUT_LEFT) result += "L";
-    if (inputMask & MOTION_INPUT_RIGHT) result += "R";
-    if (inputMask & MOTION_BUTTON_A) result += "A";
-    if (inputMask & MOTION_BUTTON_B) result += "B";
-    if (inputMask & MOTION_BUTTON_C) result += "C";
-    if (inputMask & MOTION_BUTTON_D) result += "D";
-    if (result.empty()) result = "N";
-    return result;
-}*/
+void LogNextBufferValue(int playerNum) {
+    uintptr_t playerPtr = GetPlayerPointer(playerNum);
+    if (!playerPtr) return;
+    uint16_t currentIndex = 0;
+    if (!SafeReadMemory(playerPtr + INPUT_BUFFER_INDEX_OFFSET, &currentIndex, sizeof(uint16_t)))
+        return;
+    uint16_t nextIndex = (currentIndex + 1) % INPUT_BUFFER_SIZE;
+    uint8_t nextValue = 0;
+    SafeReadMemory(playerPtr + INPUT_BUFFER_OFFSET + nextIndex, &nextValue, 1);
+    LogOut("[DEBUG] Next buffer index (" + std::to_string(nextIndex) + ") value: 0x" +
+           std::to_string(nextValue) + " = " + DecodeInputMask(nextValue), true);
+}
 
 // Write a motion sequence directly into the buffer, starting at current index + 1
 bool InjectMotionToBuffer(int playerNum, const std::vector<uint8_t>& motionSequence) {
@@ -755,8 +754,9 @@ bool InjectMotionToBuffer(int playerNum, const std::vector<uint8_t>& motionSeque
     if (!SafeReadMemory(playerPtr + INPUT_BUFFER_INDEX_OFFSET, &currentIndex, sizeof(uint16_t)))
         return false;
 
+    // Inject starting 3 frames ahead
     for (size_t i = 0; i < motionSequence.size(); ++i) {
-        uint16_t writeIndex = (currentIndex + 1 + i) % INPUT_BUFFER_SIZE;
+        uint16_t writeIndex = (currentIndex + 3 + i) % INPUT_BUFFER_SIZE;
         uintptr_t writeAddr = playerPtr + INPUT_BUFFER_OFFSET + writeIndex;
         uint8_t input = motionSequence[i];
         if (!SafeWriteMemory(writeAddr, &input, sizeof(uint8_t)))
@@ -765,6 +765,8 @@ bool InjectMotionToBuffer(int playerNum, const std::vector<uint8_t>& motionSeque
         LogOut("[DEBUG] InjectMotionToBuffer: Wrote mask=" + DecodeInputMask(input) +
                " to index=" + std::to_string(writeIndex), true);
     }
+    // Log the value at the next buffer index after injection
+    LogNextBufferValue(playerNum);
     return true;
 }
 
