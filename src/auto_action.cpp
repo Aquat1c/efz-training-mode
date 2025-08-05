@@ -232,38 +232,41 @@ void StartTriggerDelay(int playerNum, int triggerType, short moveID, int delayFr
     if (playerNum == 1) {
         p1TriggerActive = true;
         p1TriggerCooldown = TRIGGER_COOLDOWN_FRAMES;
+        // CRITICAL FIX: Always update the trigger type in the delay state
+        p1DelayState.triggerType = triggerType;
     } else {
         p2TriggerActive = true;
         p2TriggerCooldown = TRIGGER_COOLDOWN_FRAMES;
+        // CRITICAL FIX: Always update the trigger type in the delay state
+        p2DelayState.triggerType = triggerType;
     }
     
     // If delay is 0, apply immediately
     if (delayFrames == 0) {
         // Get the player's move ID address - just to pass to ApplyAutoAction
-        // but the function won't actually use it to write moveIDs anymore
         uintptr_t moveIDAddr = (playerNum == 1) ? 
             ResolvePointer(GetEFZBase(), EFZ_BASE_OFFSET_P1, MOVE_ID_OFFSET) :
             ResolvePointer(GetEFZBase(), EFZ_BASE_OFFSET_P2, MOVE_ID_OFFSET);
         
         if (moveIDAddr) {
             // Call ApplyAutoAction which now uses input-based execution
-            ApplyAutoAction(playerNum, moveIDAddr, 0, 0); // moveID parameters are ignored now
+            ApplyAutoAction(playerNum, moveIDAddr, 0, 0);
         }
     }
-    // For delayed actions, use the existing delay system but don't store moveID
+    // For delayed actions, use the existing delay system
     else {
         int internalFrames = delayFrames * 3;
         
         if (playerNum == 1) {
             p1DelayState.isDelaying = true;
             p1DelayState.delayFramesRemaining = internalFrames;
-            p1DelayState.triggerType = triggerType;
-            p1DelayState.pendingMoveID = 0; // Not used anymore
+            // triggerType already set above
+            p1DelayState.pendingMoveID = 0;
         } else {
             p2DelayState.isDelaying = true;
             p2DelayState.delayFramesRemaining = internalFrames;
-            p2DelayState.triggerType = triggerType;
-            p2DelayState.pendingMoveID = 0; // Not used anymore
+            // triggerType already set above
+            p2DelayState.pendingMoveID = 0;
         }
     }
 }
@@ -552,13 +555,22 @@ void ApplyAutoAction(int playerNum, uintptr_t moveIDAddr, short currentMoveID, s
             break;
         default:
             actionType = ACTION_5A; // Default to 5A
+            break;
     }
 
+    // Debug: Log the selected action type to see if it's correct
+    LogOut("[AUTO-ACTION] Selected action type: " + std::to_string(actionType) + 
+           " for trigger type: " + std::to_string(triggerType), true);
+
     // Convert action type to motion input type and button
-    int motionType = ConvertActionToMotion(actionType, triggerType);
+    int motionType = ConvertTriggerActionToMotion(actionType, triggerType);
     uint8_t buttonMask = DetermineButtonFromMotionType(motionType);
     
-    // For all special moves, use buffer freezing for consistent execution
+    // Debug: Log the converted motion type
+    LogOut("[AUTO-ACTION] Converted to motion type: " + std::to_string(motionType) + 
+           " with button mask: " + std::to_string(buttonMask), true);
+    
+    // For special moves, use buffer freezing for consistent execution
     bool isSpecialMove = 
         (motionType == MOTION_236A || motionType == MOTION_236B || motionType == MOTION_236C ||
          motionType == MOTION_623A || motionType == MOTION_623B || motionType == MOTION_623C ||
@@ -579,18 +591,18 @@ void ApplyAutoAction(int playerNum, uintptr_t moveIDAddr, short currentMoveID, s
         
         LogOut("[AUTO-ACTION] Applied special move " + GetMotionTypeName(motionType) + 
                " via buffer freezing for P" + std::to_string(playerNum), true);
-        return;
-    }
-    
-    // For other actions, use the existing QueueMotionInput approach
-    QueueMotionInput(playerNum, motionType, buttonMask);
-    
-    // Mark action as applied
-    if (playerNum == 1) {
-        p1ActionApplied = true;
     } else {
-        p2ActionApplied = true;
+        // For other actions, use the existing QueueMotionInput approach
+        QueueMotionInput(playerNum, motionType, buttonMask);
+        
+        // Mark action as applied
+        if (playerNum == 1) {
+            p1ActionApplied = true;
+        } else {
+            p2ActionApplied = true;
+        }
+        
+        LogOut("[AUTO-ACTION] Applied action " + GetMotionTypeName(motionType) + 
+               " via input queue for P" + std::to_string(playerNum), true);
     }
-    
-    LogOut("[AUTO-ACTION] Applied action via input queue for P" + std::to_string(playerNum), true);
 }
