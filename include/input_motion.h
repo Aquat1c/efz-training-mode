@@ -40,6 +40,7 @@
 #define ACTION_BACK_DASH    102
 
 // Input direction/button constants
+#define MOTION_INPUT_NEUTRAL 0x00  // Add this line for neutral input
 #define MOTION_INPUT_RIGHT  0x01
 #define MOTION_INPUT_LEFT   0x02
 #define MOTION_INPUT_DOWN   0x04
@@ -49,6 +50,7 @@
 #define MOTION_BUTTON_C     0x40
 #define MOTION_BUTTON_D     0x80
 
+constexpr uint8_t GAME_INPUT_NEUTRAL = 0x00;  // Add this line
 constexpr uint8_t GAME_INPUT_RIGHT = 0x01;  // Bit 0
 constexpr uint8_t GAME_INPUT_LEFT  = 0x02;  // Bit 1
 constexpr uint8_t GAME_INPUT_DOWN  = 0x04;  // Bit 2
@@ -107,7 +109,20 @@ void DiagnoseInputSystem(int playerNum);
 int ConvertActionToMotion(int actionType, int triggerType);
 uint8_t DetermineButtonFromMotionType(int motionType);
 std::string DecodeInputMask(uint8_t inputMask);
-bool InjectMotionToBuffer(int playerNum, const std::vector<uint8_t>& motionSequence);
+bool InjectMotionToBuffer(int playerNum, const std::vector<uint8_t>& motionSequence, int offset = 0);
 void SetAIControlFlag(int playerNum, bool human);
 bool IsAIControlFlagHuman(int playerNum);
 void RestoreAIControlIfNeeded(int playerNum);
+
+// Add these declarations to the header file
+void DumpInputBuffer(int playerNum);
+std::string GetInputBufferVisualization(int playerNum, int window = 16);
+bool WriteSequentialInputs(int playerNum, const std::vector<InputFrame>& frames);
+bool CaptureAndFreezeBuffer(int playerNum, uint16_t startIndex, uint16_t length);
+bool FreezeBufferIndex(int playerNum, uint16_t indexValue);
+void StopBufferFreezing();
+bool FreezePerfectDragonPunch(int playerNum);
+bool FreezePerfectDragonPunchEnhanced(int playerNum);
+bool ComboFreezeDP(int playerNum);
+bool FreezeBufferForMotion(int playerNum, int motionType, int buttonMask);
+std::string GetMotionTypeName(int motionType);

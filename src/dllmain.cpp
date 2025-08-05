@@ -4,6 +4,7 @@
 #include <vector>
 #include <windows.h>
 #include <thread>
+#include <timeapi.h>
 #include "../include/memory.h"
 #include "../include/utilities.h"
 #include "../include/logger.h"
@@ -19,6 +20,8 @@
 #include "../include/input_hook.h" // Add this include
 #include "../3rdparty/minhook/include/MinHook.h" // Add this include
 #include "../include/bgm_control.h"
+
+#pragma comment(lib, "winmm.lib")
 
 // Forward declarations for functions in other files
 void MonitorKeys();
@@ -84,7 +87,7 @@ void DelayedInitialization(HMODULE hModule) {
     std::thread(UpdateConsoleTitle).detach();
     std::thread(FrameDataMonitor).detach();
     std::thread(MonitorOnlineStatus).detach();
-    std::thread(GlobalF1MonitorThread).detach();
+    //std::thread(GlobalF1MonitorThread).detach();
     // REMOVED: The practice mode patch is no longer a persistent thread.
     // std::thread(MonitorAndPatchPracticeMode).detach(); 
     LogOut("[SYSTEM] Essential background threads started.", true);
@@ -173,6 +176,9 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
             WriteStartupLog("Failed to set locale");
         }
         
+        // Request 1ms timer resolution at startup
+        timeBeginPeriod(1);
+        
         // Launch a delayed initialization thread
         WriteStartupLog("Starting delayed initialization thread");
         std::thread(DelayedInitialization, hModule).detach();
@@ -204,6 +210,9 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
         // NEW: Uninitialize MinHook once at the very end.
         MH_Uninitialize();
         LogOut("[SYSTEM] MinHook uninitialized.", true);
+        
+        // Request 1ms timer resolution at cleanup
+        timeEndPeriod(1);
         
         LogOut("[SYSTEM] DLL detaching, cleanup complete", true);
     }

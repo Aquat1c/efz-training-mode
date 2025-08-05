@@ -98,6 +98,10 @@ void InitializeLogging() {
     titleThread.detach();  // Let it run independently
 
     LogOut("EFZ DLL started", true);
+    LogOut("Debug Hotkeys:", true);
+    LogOut("Numpad 8 = Enhanced Dragon Punch Buffer Freeze with diagnostic info", true);
+    LogOut("Numpad 9 = Original Dragon Punch Buffer Freeze", true);
+    LogOut("Numpad 5 = Stop Buffer Freezing", true);
 }
 
 short GetCurrentMoveID(int player) {
