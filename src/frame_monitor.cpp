@@ -188,6 +188,11 @@ void FrameDataMonitor() {
     extern std::atomic<bool> g_isShuttingDown;
 
     
+    // Cache values that don't change frequently:
+    static bool detailedLogCached = false;
+    static int logCounter = 0;
+
+    
     while (!g_isShuttingDown) {
         auto frameStart = clock::now();
         
@@ -260,8 +265,12 @@ void FrameDataMonitor() {
                 auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(currentTime - lastLogTime);
                 if (elapsed.count() >= 1000) {
                     double actualFPS = framesSinceLastLog / (elapsed.count() / 1000.0);
-                    LogOut("[FRAME MONITOR] Actual FPS: " + std::to_string(actualFPS) + 
-                           " (target: 192.0)", detailedLogging.load());
+                    
+                    // Only log if fps is significantly off target or detailed logging is on
+                    if (detailedLogging.load() || fabs(actualFPS - 192.0) > 5.0) {
+                        LogOut("[FRAME MONITOR] Actual FPS: " + std::to_string(actualFPS) + 
+                               " (target: 192.0)", detailedLogging.load());
+                    }
                     lastLogTime = currentTime;
                     framesSinceLastLog = 0;
                 }
@@ -343,8 +352,28 @@ void FrameDataMonitor() {
         auto frameDuration = frameEnd - frameStart;
         auto sleepTime = targetFrameTime - frameDuration;
         
-        if (sleepTime > std::chrono::nanoseconds::zero()) {
-            std::this_thread::sleep_for(sleepTime);
+        // Replace this code:
+        // if (sleepTime > std::chrono::nanoseconds::zero()) {
+        //     std::this_thread::sleep_for(sleepTime);
+        // }
+
+        // With this spin-wait hybrid approach:
+        if (sleepTime > std::chrono::milliseconds(1)) {
+            // Sleep for most of the time
+            std::this_thread::sleep_for(sleepTime - std::chrono::milliseconds(1));
+            
+            // Spin-wait for the remaining sub-millisecond precision
+            auto spinStart = std::chrono::high_resolution_clock::now();
+            while (std::chrono::high_resolution_clock::now() - spinStart < std::chrono::milliseconds(1)) {
+                // Yield to allow other threads same priority to run but keep spinning
+                std::this_thread::yield();
+            }
+        } else if (sleepTime > std::chrono::nanoseconds::zero()) {
+            // For very short sleeps, just spin
+            auto spinStart = std::chrono::high_resolution_clock::now();
+            while (std::chrono::high_resolution_clock::now() - spinStart < sleepTime) {
+                std::this_thread::yield();
+            }
         }
     }
     

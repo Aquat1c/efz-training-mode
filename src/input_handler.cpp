@@ -347,13 +347,27 @@ void MonitorKeys() {
                 QueueMotionInput(2, MOTION_623B, GAME_INPUT_B); // DP+B
                 LogOut("[HOTKEY] Simulated P2 DP+B (Numpad -)", true);
             }
+            if (GetAsyncKeyState(VK_NUMPAD8) & 0x8000) { // Numpad 8
+                // Freeze buffer with perfect DP motion for Player 2 - Use enhanced version
+                FreezePerfectDragonPunchEnhanced(2);
+                LogOut("[HOTKEY] Activated Enhanced Dragon Punch buffer freeze for P2 (Numpad 8)", true);
+                // Wait for key release to avoid multiple triggers
+                while (GetAsyncKeyState(VK_NUMPAD8) & 0x8000) {
+                    Sleep(10);
+                }
+            }
+            if (GetAsyncKeyState(VK_NUMPAD9) & 0x8000) { // Numpad 9
+                ComboFreezeDP(2); // Use player 2
+                LogOut("[HOTKEY] Activated CheatEngine-style DP freeze (Numpad 9)", true);
+
+                // Wait for key release
+                while (GetAsyncKeyState(VK_NUMPAD9) & 0x8000) {
+                    Sleep(10);
+                }
+            }
             if (GetAsyncKeyState(VK_NUMPAD_MULTIPLY) & 0x8000) { // Numpad *
                 QueueMotionInput(2, MOTION_214B, GAME_INPUT_B); // QCB+B
                 LogOut("[HOTKEY] Simulated P2 QCB+B (Numpad *)", true);
-            }
-            if (GetAsyncKeyState(VK_NUMPAD_DIVIDE) & 0x8000) { // Numpad /
-                QueueMotionInput(2, MOTION_41236C, GAME_INPUT_C); // Super1 (41236C)
-                LogOut("[HOTKEY] Simulated P2 Super1 (41236C) (Numpad /)", true);
             }
 
             // If a key was handled, wait for it to be released

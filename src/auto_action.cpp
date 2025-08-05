@@ -532,41 +532,65 @@ void ClearDelayStatesIfNonActionable() {
 
 // Replace the entire ApplyAutoAction function with this implementation
 void ApplyAutoAction(int playerNum, uintptr_t moveIDAddr, short currentMoveID, short prevMoveID) {
-    // Determine which action to perform based on trigger type
-    int actionType = 0;
-    int triggerType = 0;
-    
-    if (playerNum == 1) {
-        triggerType = p1DelayState.triggerType;
-    } else {
-        triggerType = p2DelayState.triggerType;
-    }
+    // Get the trigger type from the delay state
+    int triggerType = (playerNum == 1) ? p1DelayState.triggerType : p2DelayState.triggerType;
 
+    // Use the correct action type based on the trigger
+    int actionType;
     switch (triggerType) {
-        case TRIGGER_AFTER_BLOCK:   actionType = triggerAfterBlockAction.load();   break;
-        case TRIGGER_ON_WAKEUP:     actionType = triggerOnWakeupAction.load();     break;
-        case TRIGGER_AFTER_HITSTUN: actionType = triggerAfterHitstunAction.load(); break;
-        case TRIGGER_AFTER_AIRTECH: actionType = triggerAfterAirtechAction.load(); break;
-        default: return; // Should not happen
+        case TRIGGER_AFTER_BLOCK:
+            actionType = triggerAfterBlockAction.load();
+            break;
+        case TRIGGER_ON_WAKEUP:
+            actionType = triggerOnWakeupAction.load();
+            break;
+        case TRIGGER_AFTER_HITSTUN:
+            actionType = triggerAfterHitstunAction.load();
+            break;
+        case TRIGGER_AFTER_AIRTECH:
+            actionType = triggerAfterAirtechAction.load();
+            break;
+        default:
+            actionType = ACTION_5A; // Default to 5A
     }
 
-    // Convert the generic action type to a specific motion for the input system
+    // Convert action type to motion input type and button
     int motionType = ConvertActionToMotion(actionType, triggerType);
-    if (motionType == MOTION_NONE) {
-        LogOut("[AUTO-ACTION] No valid motion found for actionType: " + std::to_string(actionType), true);
+    uint8_t buttonMask = DetermineButtonFromMotionType(motionType);
+    
+    // For all special moves, use buffer freezing for consistent execution
+    bool isSpecialMove = 
+        (motionType == MOTION_236A || motionType == MOTION_236B || motionType == MOTION_236C ||
+         motionType == MOTION_623A || motionType == MOTION_623B || motionType == MOTION_623C ||
+         motionType == MOTION_214A || motionType == MOTION_214B || motionType == MOTION_214C ||
+         motionType == MOTION_41236A || motionType == MOTION_41236B || motionType == MOTION_41236C ||
+         motionType == MOTION_63214A || motionType == MOTION_63214B || motionType == MOTION_63214C ||
+         motionType == MOTION_421A || motionType == MOTION_421B || motionType == MOTION_421C);
+    
+    if (isSpecialMove) {
+        FreezeBufferForMotion(playerNum, motionType, buttonMask);
+        
+        // Mark action as applied
+        if (playerNum == 1) {
+            p1ActionApplied = true;
+        } else {
+            p2ActionApplied = true;
+        }
+        
+        LogOut("[AUTO-ACTION] Applied special move " + GetMotionTypeName(motionType) + 
+               " via buffer freezing for P" + std::to_string(playerNum), true);
         return;
     }
-
-    uint8_t buttonMask = DetermineButtonFromMotionType(motionType);
-
-    // FIX: Use the correct, modern input queue system.
-    // This replaces the call to the undefined ExecuteSimpleMoveViaInputs function.
+    
+    // For other actions, use the existing QueueMotionInput approach
     QueueMotionInput(playerNum, motionType, buttonMask);
-
-    // Mark the action as applied for this player
+    
+    // Mark action as applied
     if (playerNum == 1) {
         p1ActionApplied = true;
     } else {
         p2ActionApplied = true;
     }
+    
+    LogOut("[AUTO-ACTION] Applied action via input queue for P" + std::to_string(playerNum), true);
 }
