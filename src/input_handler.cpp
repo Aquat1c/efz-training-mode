@@ -1,13 +1,14 @@
 #include <fstream>
 #include <iomanip>
 #include <chrono>
-#include "../include/input_handler.h"
-#include "../include/utilities.h"
-#include "../include/gui.h"
-#include "../include/logger.h"
-#include "../include/memory.h"
-#include "../include/constants.h"
-#include "../include/network.h"
+#include "../include/input/input_handler.h"
+#include "../include/utils/utilities.h"
+
+#include "../include/gui/gui.h"
+#include "../include/core/logger.h"
+#include "../include/core/memory.h"
+#include "../include/core/constants.h"
+#include "../include/utils/network.h"
 #include <windows.h>
 #include <thread>
 #include <atomic>
@@ -16,11 +17,12 @@
 #include <sstream>
 #include <string>
 #include <commctrl.h> // Add this include for Common Controls
-#include "../include/imgui_impl.h"
-#include "../include/overlay.h"  // Add this include for DirectDrawHook class
-#include "../include/config.h"
-#include "../include/input_motion.h" // For QueueMotionInput
-#include "../include/bgm_control.h"
+#include "../include/gui/imgui_impl.h"
+#include "../include/gui/overlay.h"  // Add this include for DirectDrawHook class
+#include "../include/utils/config.h"
+#include "../include/input/input_motion.h" // For QueueMotionInput
+#include "../include/utils/bgm_control.h"
+#include "../include/input/input_freeze.h"
 
 #ifndef VK_NUMPAD_ADD
 #define VK_NUMPAD_ADD      0x6B

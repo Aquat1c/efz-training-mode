@@ -1,11 +1,12 @@
-#include "../include/gui.h"
-#include "../include/constants.h"
-#include "../include/memory.h"
-#include "../include/utilities.h"
-#include "../include/logger.h"
-#include "../include/config.h"
-#include "../include/imgui_impl.h"  // Add this include
-#include "../include/character_settings.h" // Add this include for ImGui dialog
+#include "../include/gui/gui.h"
+#include "../include/core/constants.h"
+#include "../include/core/memory.h"
+#include "../include/utils/utilities.h"
+
+#include "../include/core/logger.h"
+#include "../include/utils/config.h"
+#include "../include/gui/imgui_impl.h"  // Add this include
+#include "../include/game/character_settings.h" // Add this include for ImGui dialog
 #include <windows.h>
 #include <string>
 #include <thread>

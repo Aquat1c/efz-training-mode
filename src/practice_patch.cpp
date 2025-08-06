@@ -2,17 +2,18 @@
 #include <string>
 #include <sstream>
 #include <iomanip>
-#include "../include/memory.h"
-#include "../include/logger.h"
-#include "../include/game_state.h"
-#include "../include/constants.h"
-#include "../include/utilities.h"
-#include "../include/practice_patch.h"
-#include "../include/input_motion.h"
+#include "../include/core/memory.h"
+#include "../include/core/logger.h"
+#include "../include/game/game_state.h"
+
+#include "../include/core/constants.h"
+#include "../include/utils/utilities.h"
+
+#include "../include/game/practice_patch.h"
+#include "../include/input/input_core.h"  // Include this to get AI_CONTROL_FLAG_OFFSET
 
 // Define constants for offsets
 const uintptr_t P2_CPU_FLAG_OFFSET = 4931;
-const uintptr_t AI_CONTROL_FLAG_OFFSET = 164;
 
 // Forward declarations for helper functions
 std::string FormatHexAddress(uintptr_t address);

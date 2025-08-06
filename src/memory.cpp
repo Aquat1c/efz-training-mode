@@ -1,10 +1,11 @@
 #include <fstream>
 #include <iomanip>
 #include <chrono>
-#include "../include/memory.h"
-#include "../include/constants.h"
-#include "../include/utilities.h"
-#include "../include/logger.h"
+#include "../include/core/memory.h"
+#include "../include/core/constants.h"
+#include "../include/utils/utilities.h"
+
+#include "../include/core/logger.h"
 #include <windows.h>
 #include <atomic>
 #include <thread>

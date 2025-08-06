@@ -1,9 +1,10 @@
-#include "../include/gui.h"
-#include "../include/constants.h"
-#include "../include/utilities.h"
+#include "../include/gui/gui.h"
+#include "../include/core/constants.h"
+#include "../include/utils/utilities.h"
+
 #include <windows.h>
 #include <commctrl.h>
-#include "../include/logger.h" // Make sure logger is included
+#include "../include/core/logger.h" // Make sure logger is included
 
 void GameValuesPage_CreateContent(HWND hParent, DisplayData* pData) {
     LogOut("[GUI_DEBUG] GameValuesPage_CreateContent: Called with hParent=" + Logger::hwndToString(hParent), true);

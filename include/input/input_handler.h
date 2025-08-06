@@ -4,12 +4,15 @@
 #include <atomic>
 #include <thread>
 #include <dinput.h>
+#include <vector>
+#include <string>
+#include <sstream>
 // DirectInput global objects
 extern LPDIRECTINPUT8 g_pDI;
 extern LPDIRECTINPUTDEVICE8 g_pKeyboard;
 
 // Add DirectInput-specific defines
-#include "../include/di_keycodes.h" // We'll create this from your shared file
+#include "../include/core/di_keycodes.h"// We'll create this from your shared file
 
 // Declare external variables
 extern std::atomic<bool> autoAirtechEnabled;

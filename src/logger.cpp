@@ -1,10 +1,11 @@
 #include <fstream>
 #include <iomanip>
 #include <chrono>
-#include "../include/logger.h"
-#include "../include/utilities.h"
-#include "../include/memory.h"
-#include "../include/constants.h"
+#include "../include/core/logger.h"
+#include "../include/utils/utilities.h"
+
+#include "../include/core/memory.h"
+#include "../include/core/constants.h"
 #include <iostream>
 #include <sstream> // Required for std::ostringstream
 #include <chrono>
@@ -12,8 +13,9 @@
 #include <windows.h>
 #include <atomic>
 #include <thread>
-#include "../include/game_state.h" // Add this include
-#include "../include/input_motion.h"
+#include "../include/game/game_state.h"
+ // Add this include
+#include "../include/input/input_motion.h"
 
 std::mutex g_logMutex;
 std::atomic<bool> detailedTitleMode(false);

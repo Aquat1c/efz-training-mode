@@ -1,0 +1,50 @@
+@echo off
+mkdir src\core
+mkdir src\game
+mkdir src\gui
+mkdir src\input
+mkdir src\utils
+
+REM Core files
+move src\logger.cpp src\core\
+move src\memory.cpp src\core\
+
+REM Game files
+move src\auto_action.cpp src\game\
+move src\auto_action_helpers.cpp src\game\
+move src\auto_airtech.cpp src\game\
+move src\auto_jump.cpp src\game\
+move src\character_settings.cpp src\game\
+move src\frame_advantage.cpp src\game\
+move src\frame_analysis.cpp src\game\
+move src\frame_monitor.cpp src\game\
+move src\game_state.cpp src\game\
+move src\practice_patch.cpp src\game\
+
+REM GUI files
+move src\gui.cpp src\gui\
+move src\gui_auto_action.cpp src\gui\
+move src\gui_dialog.cpp src\gui\
+move src\gui_game_values.cpp src\gui\
+move src\gui_movement.cpp src\gui\
+move src\imgui_gui.cpp src\gui\
+move src\imgui_impl.cpp src\gui\
+move src\overlay.cpp src\gui\
+
+REM Input files
+move src\input_buffer.cpp src\input\
+move src\input_core.cpp src\input\
+move src\input_debug.cpp src\input\
+move src\input_freeze.cpp src\input\
+move src\input_handler.cpp src\input\
+move src\input_hook.cpp src\input\
+move src\input_motion.cpp src\input\
+move src\motion_system.cpp src\input\
+
+REM Utilities files
+move src\bgm_control.cpp src\utils\
+move src\config.cpp src\utils\
+move src\network.cpp src\utils\
+move src\utilities.cpp src\utils\
+
+echo Done moving files

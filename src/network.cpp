@@ -10,9 +10,10 @@
 #include <thread>
 #include <vector>
 #include <chrono>
-#include "../include/network.h"
-#include "../include/logger.h"
-#include "../include/utilities.h"
+#include "../include/utils/network.h"
+#include "../include/core/logger.h"
+#include "../include/utils/utilities.h"
+
 
 #pragma comment(lib, "iphlpapi.lib")
 #pragma comment(lib, "ws2_32.lib")

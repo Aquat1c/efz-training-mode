@@ -4,21 +4,22 @@
 #include <vector>
 #include <thread>
 #include <atomic> // Add this for std::atomic
-#include "../include/overlay.h"
-#include "../include/logger.h"
-#include "../include/utilities.h"
-#include "../include/memory.h"   
-#include "../include/constants.h" 
+#include "../include/gui/overlay.h"
+#include "../include/core/logger.h"
+#include "../include/utils/utilities.h"
+
+#include "../include/core/memory.h"   
+#include "../include/core/constants.h" 
 #include "../3rdparty/detours/include/detours.h"
 #include <algorithm>
-#include "../include/imgui_impl.h"
+#include "../include/gui/imgui_impl.h"
 #include <d3d9.h>
 #include <mutex>
 #include <deque>
-#include "../include/imgui_gui.h"
+#include "../include/gui/imgui_gui.h"
 #include "../3rdparty/minhook/include/MinHook.h"
 // ADD these includes for the new rendering loop
-#include "../include/imgui_impl.h"
+#include "../include/gui/imgui_impl.h"
 
 // Global status message IDs
 int g_AirtechStatusId = -1;

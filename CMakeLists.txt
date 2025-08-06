@@ -76,7 +76,12 @@ set(SOURCES
     src/imgui_gui.cpp
     src/practice_patch.cpp
     src/input_motion.cpp
-    src/input_hook.cpp     # Add this line
+    src/input_core.cpp     # New file
+    src/motion_system.cpp  # New file
+    src/input_buffer.cpp   # New file
+    src/input_debug.cpp    # New file
+    src/input_hook.cpp
+    src/input_freeze.cpp   # Keep this file
     src/auto_action_helpers.cpp
     src/bgm_control.cpp
     ${IMGUI_SOURCES}

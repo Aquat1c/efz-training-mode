@@ -1,8 +1,8 @@
-#include "../include/bgm_control.h"
-#include "../include/logger.h"
-#include "../include/memory.h"
-#include "../include/constants.h"
-#include "../include/overlay.h"
+#include "../include/utils/bgm_control.h"
+#include "../include/core/logger.h"
+#include "../include/core/memory.h"
+#include "../include/core/constants.h"
+#include "../include/gui/overlay.h"
 #include "../3rdparty/minhook/include/MinHook.h"
 #include <atomic>
 #include <thread>

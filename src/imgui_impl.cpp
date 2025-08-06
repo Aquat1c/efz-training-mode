@@ -1,8 +1,9 @@
-#include "../include/utilities.h"
-#include "../include/imgui_impl.h"
-#include "../include/logger.h"
-#include "../include/imgui_gui.h"
-#include "../include/overlay.h" 
+#include "../include/utils/utilities.h"
+
+#include "../include/gui/imgui_impl.h"
+#include "../include/core/logger.h"
+#include "../include/gui/imgui_gui.h"
+#include "../include/gui/overlay.h" 
 #include <stdexcept>
 
 // Global reference to shutdown flag - MOVED OUTSIDE namespace

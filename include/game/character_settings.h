@@ -1,5 +1,6 @@
 #pragma once
-#include "../include/utilities.h"
+#include "../include/utils/utilities.h"
+
 #include <string>
 
 namespace CharacterSettings {

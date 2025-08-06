@@ -1,11 +1,12 @@
-#include "../include/input_hook.h"
-#include "../include/input_motion.h"
-#include "../include/memory.h"
-#include "../include/logger.h"
-#include "../include/constants.h"
-#include "../include/utilities.h"
+#include "../include/input/input_hook.h"
+#include "../include/input/input_motion.h"
+#include "../include/core/memory.h"
+#include "../include/core/logger.h"
+#include "../include/core/constants.h"
+#include "../include/utils/utilities.h"
+
 #include "../3rdparty/minhook/include/MinHook.h"
-#include "../include/practice_patch.h"
+#include "../include/game/practice_patch.h"
 #include <windows.h>
 #include <vector>
 #include <atomic>
