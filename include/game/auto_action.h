@@ -2,7 +2,7 @@
 #include <windows.h>
 #include <atomic>
 #include <string>  // Add this for std::string
-#include "../include/constants.h"
+#include "../include/core/constants.h"
 
 // Delay tracking structure
 struct TriggerDelayState {

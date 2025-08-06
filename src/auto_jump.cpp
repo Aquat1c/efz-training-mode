@@ -1,10 +1,11 @@
-#include "../include/auto_jump.h"
-#include "../include/auto_action.h"
-#include "../include/constants.h"
-#include "../include/utilities.h"
-#include "../include/memory.h"
-#include "../include/logger.h"
-#include "../include/input_motion.h"
+#include "../include/game/auto_jump.h"
+#include "../include/game/auto_action.h"
+#include "../include/core/constants.h"
+#include "../include/utils/utilities.h"
+
+#include "../include/core/memory.h"
+#include "../include/core/logger.h"
+#include "../include/input/input_motion.h"
 
 void ApplyJump(uintptr_t moveIDAddr, int playerNum, int jumpType) {
     // Ignore moveIDAddr parameter - we won't use it anymore

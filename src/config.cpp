@@ -1,6 +1,7 @@
-#include "../include/config.h"
-#include "../include/logger.h"
-#include "../include/utilities.h"
+#include "../include/utils/config.h"
+#include "../include/core/logger.h"
+#include "../include/utils/utilities.h"
+
 #include <fstream>
 #include <sstream>
 #include <filesystem>

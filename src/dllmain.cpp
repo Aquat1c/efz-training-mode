@@ -5,21 +5,22 @@
 #include <windows.h>
 #include <thread>
 #include <timeapi.h>
-#include "../include/memory.h"
-#include "../include/utilities.h"
-#include "../include/logger.h"
-#include "../include/frame_monitor.h"
-#include "../include/network.h"
-#include "../include/di_keycodes.h"
-#include "../include/input_handler.h"
-#include "../include/overlay.h"
-#include "../include/imgui_impl.h"
-#include "../include/imgui_gui.h"
-#include "../include/config.h"
-#include "../include/practice_patch.h"
-#include "../include/input_hook.h" // Add this include
+#include "../include/core/memory.h"
+#include "../include/utils/utilities.h"
+
+#include "../include/core/logger.h"
+#include "../include/game/frame_monitor.h"
+#include "../include/utils/network.h"
+#include "../include/core/di_keycodes.h"
+#include "../include/input/input_handler.h"
+#include "../include/gui/overlay.h"
+#include "../include/gui/imgui_impl.h"
+#include "../include/gui/imgui_gui.h"
+#include "../include/utils/config.h"
+#include "../include/game/practice_patch.h"
+#include "../include/input/input_hook.h" // Add this include
 #include "../3rdparty/minhook/include/MinHook.h" // Add this include
-#include "../include/bgm_control.h"
+#include "../include/utils/bgm_control.h"
 
 #pragma comment(lib, "winmm.lib")
 

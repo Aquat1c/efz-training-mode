@@ -1,6 +1,6 @@
 #pragma once
 #include "../3rdparty/imgui/imgui.h"
-#include "utilities.h"
+#include "../utils/utilities.h"
 
 namespace ImGuiGui {
     // Display the ImGui interface

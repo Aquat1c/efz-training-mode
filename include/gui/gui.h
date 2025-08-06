@@ -1,6 +1,6 @@
 #pragma once
 #include <windows.h>
-#include "utilities.h"
+#include "../utils/utilities.h"
 
 void OpenMenu();
 void ShowEditDataDialog(HWND hParent);

@@ -1,8 +1,9 @@
-#include "../include/gui.h"
-#include "../include/constants.h"
-#include "../include/memory.h"
-#include "../include/utilities.h"
-#include "../include/logger.h"
+#include "../include/gui/gui.h"
+#include "../include/core/constants.h"
+#include "../include/core/memory.h"
+#include "../include/utils/utilities.h"
+
+#include "../include/core/logger.h"
 #include <windows.h>
 #include <string>
 #include <thread>

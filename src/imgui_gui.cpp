@@ -1,21 +1,22 @@
-#include "../include/imgui_gui.h"
-#include "../include/imgui_impl.h"
-#include "../include/utilities.h"
-#include "../include/constants.h"
-#include "../include/memory.h"
-#include "../include/logger.h"
-#include "../include/gui.h"
-#include "../include/config.h"
-#include "../include/overlay.h"
-#include "../include/character_settings.h"
-#include "../include/frame_monitor.h"
-#include "../include/input_motion.h"
-#include "../include/input_motion.h"
-#include "../include/bgm_control.h"
+#include "../include/gui/imgui_gui.h"
+#include "../include/gui/imgui_impl.h"
+#include "../include/utils/utilities.h"
 
+#include "../include/core/constants.h"
+#include "../include/core/memory.h"
+#include "../include/core/logger.h"
+#include "../include/gui/gui.h"
+#include "../include/utils/config.h"
+#include "../include/gui/overlay.h"
+#include "../include/game/character_settings.h"
+#include "../include/game/frame_monitor.h"
+#include "../include/input/input_motion.h"
+#include "../include/input/input_motion.h"
+#include "../include/utils/bgm_control.h"
+#include "../include/input/input_debug.h"
 // Forward declare SpamAttackButton so we can use it in this file
 extern void SpamAttackButton(uintptr_t playerBase, uint8_t button, int frames, const char* buttonName);
-#include "../include/practice_patch.h"
+#include "../include/game/practice_patch.h"
 
 // Add these constants at the top of the file after includes
 // These are from input_motion.cpp but we need them here

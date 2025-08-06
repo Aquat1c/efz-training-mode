@@ -1,19 +1,20 @@
-#include "../include/utilities.h"
-#include "../include/constants.h"
-#include "../include/logger.h"
-#include "../include/memory.h"
-#include "../include/input_handler.h"
-#include "../include/di_keycodes.h"
-#include "../include/frame_analysis.h"    // ADD THIS - for IsBlockstunState
-#include "../include/frame_advantage.h"
-#include "../include/config.h"
-#include "../include/imgui_impl.h"
-#include "../include/imgui_gui.h"
-#include "../include/overlay.h"
-#include "../include/input_handler.h"
-#include "../include/auto_airtech.h"
-#include "../include/auto_action.h"
-#include "../include/frame_monitor.h"
+#include "../include/utils/utilities.h"
+
+#include "../include/core/constants.h"
+#include "../include/core/logger.h"
+#include "../include/core/memory.h"
+#include "../include/input/input_handler.h"
+#include "../include/core/di_keycodes.h"
+#include "../include/game/frame_analysis.h"    // ADD THIS - for IsBlockstunState
+#include "../include/game/frame_advantage.h"
+#include "../include/utils/config.h"
+#include "../include/gui/imgui_impl.h"
+#include "../include/gui/imgui_gui.h"
+#include "../include/gui/overlay.h"
+#include "../include/input/input_handler.h"
+#include "../include/game/auto_airtech.h"
+#include "../include/game/auto_action.h"
+#include "../include/game/frame_monitor.h"
 #include <sstream>
 #include <iomanip>
 #include <iostream>  // Add this include for std::cout and std::cerr
@@ -24,9 +25,10 @@
 #include <iomanip>
 #include <chrono>
 #include <vector>
-#include "../include/character_settings.h"
-#include "../include/game_state.h"
-#include "../include/bgm_control.h"
+#include "../include/game/character_settings.h"
+#include "../include/game/game_state.h"
+
+#include "../include/utils/bgm_control.h"
 
 std::atomic<bool> g_efzWindowActive(false);
 std::atomic<bool> g_guiActive(false);

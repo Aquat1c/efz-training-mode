@@ -1,10 +1,15 @@
-#include "../include/auto_action.h"
-#include "../include/constants.h"
-#include "../include/utilities.h"
-#include "../include/memory.h"
-#include "../include/logger.h"
-#include "../include/input_motion.h"
-#include "../include/auto_action_helpers.h"
+#include "../include/game/auto_action.h"
+#include "../include/core/constants.h"
+#include "../include/utils/utilities.h"
+
+#include "../include/core/memory.h"
+#include "../include/core/logger.h"
+#include "../include/input/input_core.h"        
+#include "../include/input/motion_system.h"     
+#include "../include/game/auto_action_helpers.h"
+#include "../include/input/motion_constants.h"  
+#include "../include/input/input_motion.h"      // Add this include
+#include "../include/input/input_freeze.h"     // Add this include near the top with the other includes
 
 // Define the motion input constants if they're not already defined
 #ifndef MOTION_INPUT_UP

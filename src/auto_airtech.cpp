@@ -1,8 +1,9 @@
-#include "../include/auto_airtech.h"
-#include "../include/constants.h"
-#include "../include/utilities.h"
-#include "../include/memory.h"
-#include "../include/logger.h"
+#include "../include/game/auto_airtech.h"
+#include "../include/core/constants.h"
+#include "../include/utils/utilities.h"
+
+#include "../include/core/memory.h"
+#include "../include/core/logger.h"
 #include <thread>
 #include <atomic>
 

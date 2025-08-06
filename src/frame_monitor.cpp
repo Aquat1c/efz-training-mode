@@ -1,17 +1,19 @@
-#include "../include/frame_monitor.h"
-#include "../include/auto_airtech.h"
-#include "../include/auto_jump.h"
-#include "../include/auto_action.h"
-#include "../include/frame_analysis.h"
-#include "../include/frame_advantage.h"
-#include "../include/constants.h"
-#include "../include/utilities.h"
-#include "../include/memory.h"
-#include "../include/logger.h"
-#include "../include/overlay.h"
-#include "../include/game_state.h"
-#include "../include/config.h"
-#include "../include/input_motion.h"
+#include "../include/game/frame_monitor.h"
+#include "../include/game/auto_airtech.h"
+#include "../include/game/auto_jump.h"
+#include "../include/game/auto_action.h"
+#include "../include/game/frame_analysis.h"
+#include "../include/game/frame_advantage.h"
+#include "../include/core/constants.h"
+#include "../include/utils/utilities.h"
+
+#include "../include/core/memory.h"
+#include "../include/core/logger.h"
+#include "../include/gui/overlay.h"
+#include "../include/game/game_state.h"
+
+#include "../include/utils/config.h"
+#include "../include/input/input_motion.h"
 #include <deque>
 #include <vector>
 #include <chrono>

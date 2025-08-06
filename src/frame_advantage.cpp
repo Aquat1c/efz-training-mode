@@ -1,11 +1,12 @@
-#include "../include/frame_advantage.h"
-#include "../include/constants.h"
-#include "../include/utilities.h"
-#include "../include/memory.h"
-#include "../include/logger.h"
-#include "../include/frame_analysis.h"
-#include "../include/frame_monitor.h"
-#include "../include/overlay.h"
+#include "../include/game/frame_advantage.h"
+#include "../include/core/constants.h"
+#include "../include/utils/utilities.h"
+
+#include "../include/core/memory.h"
+#include "../include/core/logger.h"
+#include "../include/game/frame_analysis.h"
+#include "../include/game/frame_monitor.h"
+#include "../include/gui/overlay.h"
 
 // Global state for frame advantage tracking
 FrameAdvantageState frameAdvState = {

@@ -1,8 +1,9 @@
-#include "../include/character_settings.h"
-#include "../include/constants.h"
-#include "../include/memory.h"
-#include "../include/logger.h"
-#include "../include/game_state.h"
+#include "../include/game/character_settings.h"
+#include "../include/core/constants.h"
+#include "../include/core/memory.h"
+#include "../include/core/logger.h"
+#include "../include/game/game_state.h"
+
 #include <algorithm>
 #include <cctype>
 #include <unordered_map>

@@ -1,8 +1,9 @@
 #pragma once
 #include <atomic>
 #include <string>
-#include "../include/constants.h"
-#include "../include/game_state.h"
+#include "../include/core/constants.h"
+#include "../include/game/game_state.h"
+
 
 // Update the monitor state enum
 enum MonitorState {
