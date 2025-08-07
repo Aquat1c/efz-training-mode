@@ -1,7 +1,7 @@
 #include "../include/game/auto_action.h"
 #include "../include/core/constants.h"
 #include "../include/utils/utilities.h"
-
+#include "../include/game/game_state.h"
 #include "../include/core/memory.h"
 #include "../include/core/logger.h"
 #include "../include/input/input_core.h"        
@@ -41,7 +41,16 @@ static bool p1TriggerActive = false;
 static bool p2TriggerActive = false;
 static int p1TriggerCooldown = 0;
 static int p2TriggerCooldown = 0;
-static const int TRIGGER_COOLDOWN_FRAMES = 20; // About 1/3 second cooldown
+static constexpr int TRIGGER_COOLDOWN_FRAMES = 60; // was larger
+bool g_p2ControlOverridden = false;
+uint32_t g_originalP2ControlFlag = 1; // Default to AI control
+
+// Add at the top with other global variables (around line 40)
+std::atomic<bool> g_pendingControlRestore(false);
+std::atomic<int> g_controlRestoreTimeout(0);
+std::atomic<short> g_lastP2MoveID(-1);
+const int CONTROL_RESTORE_TIMEOUT = 180; // 180 internal frames = 1 second
+
 
 bool IsCharacterGrounded(int playerNum) {
     uintptr_t base = GetEFZBase();
@@ -193,21 +202,24 @@ void ProcessTriggerDelays() {
         if (p2DelayState.delayFramesRemaining <= 0) {
             LogOut("[AUTO-ACTION] P2 delay expired, applying action", true);
             
-            // Get moveIDAddr just to pass to ApplyAutoAction - it won't be used to write to anymore
             uintptr_t moveIDAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P2, MOVE_ID_OFFSET);
             short currentMoveID = 0;
             
             if (moveIDAddr) {
-                SafeReadMemory(moveIDAddr, &currentMoveID, sizeof(short)); // Read just for logging
+                SafeReadMemory(moveIDAddr, &currentMoveID, sizeof(short));
                 
                 // Apply action via input system
-                ApplyAutoAction(2, moveIDAddr, 0, 0); // moveID parameters are ignored now
+                ApplyAutoAction(2, moveIDAddr, 0, 0);
                 
                 LogOut("[AUTO-ACTION] P2 action applied via input system", true);
                 
                 p2DelayState.isDelaying = false;
                 p2DelayState.triggerType = TRIGGER_NONE;
                 p2DelayState.pendingMoveID = 0;
+                p2ActionApplied = true;
+                
+                // Restore P2 control state if we changed it
+                RestoreP2ControlState();
             } else {
                 LogOut("[AUTO-ACTION] Failed to apply P2 action - invalid moveID address", true);
                 p2DelayState.isDelaying = false;
@@ -232,17 +244,20 @@ void StartTriggerDelay(int playerNum, int triggerType, short moveID, int delayFr
     LogOut("[AUTO-ACTION] StartTriggerDelay called: Player=" + std::to_string(playerNum) + 
            ", triggerType=" + std::to_string(triggerType) + 
            ", delay=" + std::to_string(delayFrames), true);
-    
-    // Set cooldown to prevent rapid re-triggering
+     // IMPORTANT: If targeting P2, ensure human control is enabled
+    if (playerNum == 2) {
+        // Add debug logs to track control state changes
+        LogOut("[AUTO-ACTION] Enabling human control for P2 auto-action", true);
+        EnableP2ControlForAutoAction();
+    }
+    // Set trigger cooldown to prevent rapid re-triggering
     if (playerNum == 1) {
         p1TriggerActive = true;
         p1TriggerCooldown = TRIGGER_COOLDOWN_FRAMES;
-        // CRITICAL FIX: Always update the trigger type in the delay state
         p1DelayState.triggerType = triggerType;
     } else {
         p2TriggerActive = true;
         p2TriggerCooldown = TRIGGER_COOLDOWN_FRAMES;
-        // CRITICAL FIX: Always update the trigger type in the delay state
         p2DelayState.triggerType = triggerType;
     }
     
@@ -276,19 +291,25 @@ void StartTriggerDelay(int playerNum, int triggerType, short moveID, int delayFr
     }
 }
 
-// Add this function to process cooldowns
+// Process trigger cooldowns to prevent rapid re-triggering
 void ProcessTriggerCooldowns() {
-    if (p1TriggerCooldown > 0) {
+    // P1 cooldown processing
+    if (p1TriggerActive && p1TriggerCooldown > 0) {
         p1TriggerCooldown--;
         if (p1TriggerCooldown <= 0) {
             p1TriggerActive = false;
+            LogOut("[AUTO-ACTION] P1 trigger cooldown expired, new triggers allowed", 
+                   detailedLogging.load());
         }
     }
     
-    if (p2TriggerCooldown > 0) {
+    // P2 cooldown processing
+    if (p2TriggerActive && p2TriggerCooldown > 0) {
         p2TriggerCooldown--;
         if (p2TriggerCooldown <= 0) {
             p2TriggerActive = false;
+            LogOut("[AUTO-ACTION] P2 trigger cooldown expired, new triggers allowed", 
+                   detailedLogging.load());
         }
     }
 }
@@ -297,7 +318,8 @@ void MonitorAutoActions() {
     if (!autoActionEnabled.load()) {
         return;
     }
-        ProcessTriggerCooldowns();
+    
+    ProcessTriggerCooldowns();
     
     uintptr_t base = GetEFZBase();
     if (!base) return;
@@ -417,14 +439,20 @@ void MonitorAutoActions() {
             }
         }
         // After Block trigger
-        if (!shouldTrigger && triggerAfterBlockEnabled.load()) {
+        if (!shouldTrigger && triggerAfterBlockEnabled.load() && !p2TriggerActive) {
             if (IsBlockstun(prevMoveID2) && IsActionable(moveID2)) {
-                shouldTrigger = true;
-                triggerType = TRIGGER_AFTER_BLOCK;
-                delay = triggerAfterBlockDelay.load();
-                actionMoveID = GetActionMoveID(triggerAfterBlockAction.load(), TRIGGER_AFTER_BLOCK, 2);
-                
-                LogOut("[AUTO-ACTION] P2 After Block trigger activated", true);
+                // Add a check to ensure we're not still in a trigger cooldown
+                if (p2TriggerCooldown <= 0) {
+                    shouldTrigger = true;
+                    triggerType = TRIGGER_AFTER_BLOCK;
+                    delay = triggerAfterBlockDelay.load();
+                    actionMoveID = GetActionMoveID(triggerAfterBlockAction.load(), TRIGGER_AFTER_BLOCK, 2);
+                    
+                    LogOut("[AUTO-ACTION] P2 After Block trigger activated", true);
+                } else {
+                    LogOut("[AUTO-ACTION] P2 After Block trigger condition met but cooldown active: " + 
+                           std::to_string(p2TriggerCooldown), detailedLogging.load());
+                }
             }
         }
         
@@ -487,11 +515,17 @@ void MonitorAutoActions() {
     
     prevMoveID1 = moveID1;
     prevMoveID2 = moveID2;
+
+    // Process auto control restore at the end of every monitor cycle
+    ProcessAutoControlRestore();
 }
 
 void ResetActionFlags() {
     p1ActionApplied = false;
     p2ActionApplied = false;
+
+    // If we're resetting action flags, also restore P2 control if needed
+    RestoreP2ControlState();
 }
 
 void ClearDelayStatesIfNonActionable() {
@@ -540,6 +574,24 @@ void ClearDelayStatesIfNonActionable() {
 
 // Replace the entire ApplyAutoAction function with this implementation
 void ApplyAutoAction(int playerNum, uintptr_t moveIDAddr, short currentMoveID, short prevMoveID) {
+    // Add extra debug info
+    LogOut("[AUTO-ACTION] ApplyAutoAction called for P" + std::to_string(playerNum) + 
+           " with moveID: " + std::to_string(currentMoveID), true);
+    
+    // If this is player 2, verify control state
+    if (playerNum == 2) {
+        uintptr_t base = GetEFZBase();
+        if (base) {
+            uintptr_t p2CharPtr = 0;
+            if (SafeReadMemory(base + EFZ_BASE_OFFSET_P2, &p2CharPtr, sizeof(uintptr_t)) && p2CharPtr) {
+                uint32_t aiFlag = 1;
+                SafeReadMemory(p2CharPtr + AI_CONTROL_FLAG_OFFSET, &aiFlag, sizeof(uint32_t));
+                LogOut("[AUTO-ACTION] P2 AI control flag at action time: " + std::to_string(aiFlag) + 
+                       " (should be 0 for human control)", true);
+            }
+        }
+    }
+    
     // Get the trigger type from the delay state
     int triggerType = (playerNum == 1) ? p1DelayState.triggerType : p2DelayState.triggerType;
 
@@ -592,6 +644,16 @@ void ApplyAutoAction(int playerNum, uintptr_t moveIDAddr, short currentMoveID, s
             p1ActionApplied = true;
         } else {
             p2ActionApplied = true;
+            
+            // IMPORTANT: For P2, setup control restoration by move tracking
+            short currentMoveID = 0;
+            if (moveIDAddr && SafeReadMemory(moveIDAddr, &currentMoveID, sizeof(short))) {
+                g_lastP2MoveID.store(currentMoveID);
+                g_pendingControlRestore.store(true);
+                g_controlRestoreTimeout.store(CONTROL_RESTORE_TIMEOUT);
+                LogOut("[AUTO-ACTION] Set up P2 control restoration monitoring: initial moveID=" + 
+                      std::to_string(currentMoveID), true);
+            }
         }
         
         LogOut("[AUTO-ACTION] Applied special move " + GetMotionTypeName(motionType) + 
@@ -609,5 +671,155 @@ void ApplyAutoAction(int playerNum, uintptr_t moveIDAddr, short currentMoveID, s
         
         LogOut("[AUTO-ACTION] Applied action " + GetMotionTypeName(motionType) + 
                " via input queue for P" + std::to_string(playerNum), true);
+    }
+}
+
+// Enable P2 human control for auto-action and save original state
+void EnableP2ControlForAutoAction() {
+    uintptr_t base = GetEFZBase();
+    if (!base) {
+        LogOut("[AUTO-ACTION] Failed to get EFZ base address", true);
+        return;
+    }
+    
+    uintptr_t p2CharPtr = 0;
+    if (!SafeReadMemory(base + EFZ_BASE_OFFSET_P2, &p2CharPtr, sizeof(uintptr_t)) || !p2CharPtr) {
+        LogOut("[AUTO-ACTION] Failed to get P2 pointer for control override", true);
+        return;
+    }
+    
+    // IMPORTANT: Always verify the ACTUAL control flag value
+    uint32_t currentAIFlag = 1;
+    if (!SafeReadMemory(p2CharPtr + AI_CONTROL_FLAG_OFFSET, &currentAIFlag, sizeof(uint32_t))) {
+        LogOut("[AUTO-ACTION] Failed to read P2 control state, aborting override", true);
+        return;
+    }
+    
+    // Only save the original flag the first time we override it
+    if (!g_p2ControlOverridden) {
+        g_originalP2ControlFlag = currentAIFlag;
+        LogOut("[AUTO-ACTION] Saving original P2 AI control flag: " + std::to_string(g_originalP2ControlFlag), true);
+    } else if (currentAIFlag != 0) {
+        // If flag was reset by the game, log it
+        LogOut("[AUTO-ACTION] P2 control flag was reset to " + std::to_string(currentAIFlag) + ", setting back to human control", true);
+    }
+    
+    // Always set to human control (0) regardless of our tracking variable
+    uint32_t humanControlFlag = 0;
+    if (SafeWriteMemory(p2CharPtr + AI_CONTROL_FLAG_OFFSET, &humanControlFlag, sizeof(uint32_t))) {
+        // Double-check that it was actually written
+        uint32_t verifyFlag = 1;
+        if (SafeReadMemory(p2CharPtr + AI_CONTROL_FLAG_OFFSET, &verifyFlag, sizeof(uint32_t)) && verifyFlag == 0) {
+            g_p2ControlOverridden = true;
+            LogOut("[AUTO-ACTION] P2 control successfully set to human (0) for auto-action", true);
+        } else {
+            LogOut("[AUTO-ACTION] P2 control write failed verification, flag still = " + 
+                  std::to_string(verifyFlag), true);
+        }
+    } else {
+        LogOut("[AUTO-ACTION] Failed to write human control flag to P2", true);
+    }
+}
+
+// Restore P2 to original control state
+void RestoreP2ControlState() {
+    if (g_p2ControlOverridden) {
+        // Make sure to stop any buffer freezing when restoring control
+        StopBufferFreezing();
+        
+        // IMPORTANT: Force a longer cooldown period to prevent immediate re-triggering
+        p2TriggerActive = true;
+        p2TriggerCooldown = TRIGGER_COOLDOWN_FRAMES; // now ~0.42s instead of previous large value
+        LogOut("[AUTO-ACTION] Enforcing extended trigger cooldown after control restore", true);
+        
+        uintptr_t base = GetEFZBase();
+        if (!base) {
+            LogOut("[AUTO-ACTION] Failed to get EFZ base for control restore, marking as restored anyway", true);
+            g_p2ControlOverridden = false; // Reset flag anyway to avoid getting stuck
+            return;
+        }
+        
+        uintptr_t p2CharPtr = 0;
+        if (!SafeReadMemory(base + EFZ_BASE_OFFSET_P2, &p2CharPtr, sizeof(uintptr_t)) || !p2CharPtr) {
+            LogOut("[AUTO-ACTION] Failed to get P2 pointer for control restore, marking as restored anyway", true);
+            g_p2ControlOverridden = false; // Reset flag anyway to avoid getting stuck
+            return;
+        }
+        
+        // Restore original control state
+        LogOut("[AUTO-ACTION] Restoring P2 control to original state: " + std::to_string(g_originalP2ControlFlag), true);
+        if (SafeWriteMemory(p2CharPtr + AI_CONTROL_FLAG_OFFSET, &g_originalP2ControlFlag, sizeof(uint32_t))) {
+            LogOut("[AUTO-ACTION] P2 control restored successfully", true);
+        } else {
+            LogOut("[AUTO-ACTION] Failed to write P2 control state for restore", true);
+        }
+        
+        // Reset flag regardless of write success to avoid getting stuck
+        g_p2ControlOverridden = false;
+    }
+}
+
+// Add this function to auto_action.h
+void ProcessAutoControlRestore() {
+    if (!IsMatchPhase()) {
+        if (g_pendingControlRestore.load()) {
+            LogOut("[AUTO-ACTION] Phase left MATCH during restore; forcing cleanup", true);
+            RestoreP2ControlState();
+            g_pendingControlRestore.store(false);
+        }
+        return;
+    }
+    if (g_pendingControlRestore.load()) {
+        // Get current P2 moveID
+        uintptr_t base = GetEFZBase();
+        if (!base) return;
+        
+        uintptr_t moveIDAddr2 = ResolvePointer(base, EFZ_BASE_OFFSET_P2, MOVE_ID_OFFSET);
+        short moveID2 = 0;
+        
+        if (moveIDAddr2) {
+            SafeReadMemory(moveIDAddr2, &moveID2, sizeof(short));
+        }
+        
+        // Decrement timeout counter (if we're using one)
+        int timeout = g_controlRestoreTimeout.fetch_sub(1);
+        
+        // Less frequent logging
+        if (timeout % 60 == 0) {
+            LogOut("[AUTO-ACTION] Monitoring move execution: MoveID=" + 
+                   std::to_string(moveID2) + ", LastMoveID=" + 
+                   std::to_string(g_lastP2MoveID.load()) + 
+                   ", Timeout=" + std::to_string(timeout), true);
+        }
+        
+        // Only consider a move change after we've seen a non-zero moveID first
+        // This prevents premature restoration due to staying in neutral (moveID=0)
+        static bool sawNonZeroMoveID = false;
+        if (moveID2 > 0) {
+            sawNonZeroMoveID = true;
+        }
+        
+        bool moveChanged = (moveID2 != g_lastP2MoveID.load() && moveID2 == 0 && sawNonZeroMoveID);
+        bool timeoutExpired = (timeout <= 0);
+        
+        if (moveChanged || timeoutExpired) {
+            LogOut("[AUTO-ACTION] Auto-restoring P2 control state after move execution", true);
+            LogOut("[AUTO-ACTION] Reason: " + 
+                   std::string(moveChanged ? "Move completed" : "Timeout expired") +
+                   ", MoveID: " + std::to_string(moveID2), true);
+            
+            RestoreP2ControlState();
+            g_pendingControlRestore.store(false);
+            g_lastP2MoveID.store(-1);
+            sawNonZeroMoveID = false;
+            
+            // Add a cooldown to prevent re-triggering immediately
+            p2TriggerCooldown = TRIGGER_COOLDOWN_FRAMES; // now ~0.42s instead of previous large value
+        } else {
+            // Update last moveID for tracking
+            if (moveID2 != 0) {
+                g_lastP2MoveID.store(moveID2);
+            }
+        }
     }
 }

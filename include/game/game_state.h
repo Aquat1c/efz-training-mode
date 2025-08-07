@@ -19,3 +19,22 @@ GameMode GetCurrentGameMode(uint8_t* rawValueOut = nullptr);
 
 // Function to get the name of a game mode
 std::string GetGameModeName(GameMode mode);
+void DebugDumpScreenState();
+bool IsInGameplayState();
+bool IsInCharacterSelectScreen();
+
+// Enum to represent the different game phases
+enum class GamePhase : uint8_t {
+    Unknown = 0,
+    Menu,          // Title / config / replay select
+    CharacterSelect,
+    Loading,
+    Match,         // Active fight (intros / round / result still with spawned chars)
+};
+
+// Phase query
+GamePhase GetCurrentGamePhase();
+
+// Fast inline helper
+inline bool IsMatchPhase() { return GetCurrentGamePhase() == GamePhase::Match; }
+void LogPhaseIfChanged();

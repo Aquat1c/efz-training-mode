@@ -88,12 +88,25 @@ bool ToggleBGM(uintptr_t gameSystemPtr) {
 // Our hook function
 void __fastcall HookedPlayBGM(uintptr_t gameSystemPtr, void*, unsigned short trackNumber) {
     SetLastBgmTrack(trackNumber);
-    if (g_bgmSuppressed.load()) {
-        LogOut("[BGM] playBackgroundMusic suppressed by toggle.", true);
-        DirectDrawHook::AddMessage("BGM: Suppressed", "SYSTEM", RGB(255, 100, 100), 1500, 0, 100);
+    
+    // Add safety check
+    if (!gameSystemPtr) {
+        LogOut("[BGM] Invalid gameSystemPtr in HookedPlayBGM, bypassing hook", true);
+        if (oPlayBGM) oPlayBGM(gameSystemPtr, trackNumber);
         return;
     }
-    oPlayBGM(gameSystemPtr, trackNumber);
+    
+    if (g_bgmSuppressed.load()) {
+        LogOut("[BGM] playBackgroundMusic suppressed by toggle.", true);
+        return;
+    }
+    
+    // Call original
+    if (oPlayBGM) {
+        oPlayBGM(gameSystemPtr, trackNumber);
+    } else {
+        LogOut("[BGM] Original playBackgroundMusic function pointer is null!", true);
+    }
 }
 
 bool InstallBGMHook(uintptr_t efzBase) {

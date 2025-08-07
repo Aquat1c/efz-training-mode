@@ -6,7 +6,10 @@
 #include "../include/core/constants.h"
 #include "../include/input/input_buffer.h"
 #include "../include/utils/utilities.h"
-  // For GetEFZBase()
+#include "../include/game/game_state.h"
+#include "../include/input/motion_system.h"
+#include "../include/input/input_motion.h"  // Add this include for motion functions
+#include "../include/game/frame_monitor.h" // Add this include for shared constants
 // These functions are implemented in input_buffer.cpp
 extern void FreezeBufferValuesThread(int playerNum);
 extern bool CaptureAndFreezeBuffer(int playerNum, uint16_t startIndex, uint16_t length);
@@ -242,6 +245,9 @@ bool FreezeBufferForMotion(int playerNum, int motionType, int buttonMask, int op
     // Stop any existing freeze thread
     StopBufferFreezing();
     
+    // Add a short delay to ensure previous thread is truly stopped
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    
     LogOut("[BUFFER_FREEZE] Starting buffer freeze for motion " + GetMotionTypeName(motionType) + " (P" + std::to_string(playerNum) + ")", true);
     
     uintptr_t playerPtr = GetPlayerPointer(playerNum);
@@ -452,14 +458,37 @@ bool FreezeBufferForMotion(int playerNum, int motionType, int buttonMask, int op
               GetMotionTypeName(motionType), true);
         
         uintptr_t playerPtr = GetPlayerPointer(playerNum);
-        if (!playerPtr) return;
+        if (!playerPtr) {
+            LogOut("[BUFFER_FREEZE] Failed to get player pointer, stopping freeze", true);
+            g_bufferFreezingActive = false;
+            return;
+        }
         
         int counter = 0;
         uint16_t lastIndex = 0;
         short lastMoveID = -1;
+        short moveID = 0;
+        bool moveDetected = false;
         
-        // Main freeze loop
-        while (g_bufferFreezingActive) {
+        // Add a timeout to ensure the thread doesn't run forever
+        int timeoutCounter = 0;
+        const int MAX_TIMEOUT = 300; // 5 seconds (60 frames per second)
+        
+        // Main freeze loop with multiple exit conditions
+        while (g_bufferFreezingActive && timeoutCounter++ < MAX_TIMEOUT) {
+            if (!IsMatchPhase()) {
+                LogOut("[BUFFER_FREEZE] Phase left MATCH, aborting freeze", true);
+                break;
+            }
+            
+            // Safety check - is the game still in a valid state?
+            if (GetCurrentGameMode() == GameMode::Unknown || 
+                !IsValidGameMode(GetCurrentGameMode())) {  // Use IsValidGameMode instead
+                LogOut("[BUFFER_FREEZE] Game state changed, stopping buffer freeze", true);
+                g_bufferFreezingActive = false;
+                break;
+            }
+            
             // Read current index and moveID for monitoring
             uint16_t currentIndex = 0;
             short moveID = 0;
@@ -472,12 +501,12 @@ bool FreezeBufferForMotion(int playerNum, int motionType, int buttonMask, int op
                 
             if (moveIDAddr) {
                 SafeReadMemory(moveIDAddr, &moveID, sizeof(short));
-                if (moveID != lastMoveID && moveID != 0) {
+                if (moveID != lastMoveID) {
                     LogOut("[BUFFER_FREEZE] MoveID changed: " + std::to_string(lastMoveID) + 
                           " → " + std::to_string(moveID), true);
                     
-                    // If the move is recognized (special move ID range), stop the freeze thread
-                    if (moveID >= 250 && moveID <= 300) {
+                    // If ANY move ID change happens, consider it a success after a short duration
+                    if (moveID > 0 && counter > 30) {  // Wait at least 30 frames (~1/6 second)
                         LogOut("[BUFFER_FREEZE] Motion recognized! Detected move with ID: " + 
                               std::to_string(moveID), true);
                         g_bufferFreezingActive = false;
@@ -529,12 +558,23 @@ bool FreezeBufferForMotion(int playerNum, int motionType, int buttonMask, int op
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
         
+        // Clear any buffer pattern we've written when exiting
+        if (playerPtr) {
+            uint8_t neutral = 0x00;
+            for (int i = 0; i < 16; i++) {
+                SafeWriteMemory(playerPtr + INPUT_BUFFER_OFFSET + i, &neutral, sizeof(uint8_t));
+            }
+        }
+        
+        g_bufferFreezingActive = false;
         LogOut("[BUFFER_FREEZE] Buffer freeze thread for " + GetMotionTypeName(motionType) + 
                " ended", true);
     });
-    g_bufferFreezeThread.detach();
     
-    LogOut("[BUFFER_FREEZE] " + GetMotionTypeName(motionType) + 
-           " buffer pattern freeze activated", true);
+    // Keep thread joinable instead of detaching it
+    if (g_bufferFreezeThread.joinable()) {
+        g_bufferFreezeThread.detach();
+    }
+    
     return true;
 }

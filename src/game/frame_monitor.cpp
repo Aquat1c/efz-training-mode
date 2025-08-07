@@ -6,12 +6,12 @@
 #include "../include/game/frame_advantage.h"
 #include "../include/core/constants.h"
 #include "../include/utils/utilities.h"
-
+#include "../include/utils/bgm_control.h"
 #include "../include/core/memory.h"
 #include "../include/core/logger.h"
 #include "../include/gui/overlay.h"
 #include "../include/game/game_state.h"
-
+#include "../include/input/input_buffer.h"
 #include "../include/utils/config.h"
 #include "../include/input/input_motion.h"
 #include <deque>
@@ -37,6 +37,7 @@ MonitorState state = Idle;
 
 static GameMode s_previousGameMode = GameMode::Unknown;
 static bool s_wasActive = false;
+static GamePhase s_lastPhase = GamePhase::Unknown;  // NEW phase tracker
 
 
 bool IsValidGameMode(GameMode mode) {
@@ -227,20 +228,41 @@ void FrameDataMonitor() {
         GameMode currentMode = GetCurrentGameMode();
         bool isValidGameMode = !Config::GetSettings().restrictToPracticeMode || (currentMode == GameMode::Practice);
 
-        // Detect when characters become initialized in a valid game mode
-        if (g_featuresEnabled.load() && isValidGameMode && isInitialized && !wasInitialized) {
-            LogOut("[FRAME MONITOR] Characters initialized in valid game mode, reinitializing overlays", true);
-            ReinitializeOverlays();
-        }
-
         // Track game mode transitions
         if (g_featuresEnabled.load() && currentMode != s_previousGameMode) {
-            // Coming from another game mode to valid mode when characters are initialized
+            // IMPORTANT: Add this section to handle transitions FROM valid modes
+            if (!isValidGameMode && IsValidGameMode(s_previousGameMode)) {
+                LogOut("[FRAME MONITOR] Detected exit from valid game mode, cleaning up resources", true);
+                
+                // Clean up BGM resources
+                uintptr_t base = GetEFZBase();
+                if (base) {
+                    uintptr_t gameStatePtr = 0;
+                    if (SafeReadMemory(base + EFZ_BASE_OFFSET_GAME_STATE, &gameStatePtr, sizeof(uintptr_t)) && gameStatePtr) {
+                        SetBGMSuppressed(false); // Ensure BGM isn't suppressed
+                    }
+                }
+                
+                // Stop any buffer freezing
+                StopBufferFreezing();
+                
+                // Reset action flags and restore P2 control state
+                ResetActionFlags();
+                
+                // Clear delay states
+                p1DelayState.isDelaying = false;
+                p1DelayState.triggerType = TRIGGER_NONE;
+                p2DelayState.isDelaying = false;
+                p2DelayState.triggerType = TRIGGER_NONE;
+            }
+            
+            // Existing code for transitions TO valid modes
             if (isValidGameMode && isInitialized && 
                 (s_previousGameMode != GameMode::Unknown && !IsValidGameMode(s_previousGameMode))) {
                 LogOut("[FRAME MONITOR] Detected return to valid game mode with initialized characters, reinitializing overlays", true);
                 ReinitializeOverlays();
             }
+            
             s_previousGameMode = currentMode;
         }
 
@@ -255,9 +277,57 @@ void FrameDataMonitor() {
             if (!base) {
                 continue;
             }
-            
+
+            // ==== PHASE / MATCH GATING BLOCK (NEW) =================================
+            GamePhase phase = GetCurrentGamePhase();   // updates cached phase
+            LogPhaseIfChanged();                       // optional debug (debounced)
+
+            // Handle phase transition once
+            if (phase != s_lastPhase) {
+                if (s_lastPhase == GamePhase::Match && phase != GamePhase::Match) {
+                    LogOut("[FRAME MONITOR] Leaving MATCH phase -> cleaning volatile systems", true);
+                    StopBufferFreezing();
+                    ResetActionFlags();
+                    p1DelayState.isDelaying = false;
+                    p2DelayState.isDelaying = false;
+                    p1DelayState.triggerType = TRIGGER_NONE;
+                    p2DelayState.triggerType = TRIGGER_NONE;
+                    g_pendingControlRestore.store(false);
+                    g_lastP2MoveID.store(-1);
+                }
+                if (phase == GamePhase::Match && s_lastPhase != GamePhase::Match) {
+                    LogOut("[FRAME MONITOR] Entering MATCH phase -> reinitializing transient state", true);
+                    // (Optional) zero previous move IDs so first real change is clean
+                    prevMoveID1 = -1;
+                    prevMoveID2 = -1;
+                }
+                s_lastPhase = phase;
+            }
+
+            // Lightweight ticking (cooldowns) always runs
+            auto lightweightTick = []() {
+                ProcessTriggerCooldowns(); // make sure cooldowns advance outside Match
+            };
+
+            bool skipHeavy = false;
+
+            // Outside actual gameplay -> only do lightweight logic
+            if (phase != GamePhase::Match) {
+                lightweightTick();
+                prevMoveID1 = 0;
+                prevMoveID2 = 0;
+                skipHeavy = true;
+            }
+            // =========================================================================
+
+            if (skipHeavy) {
+                // Still allow precise frame pacing / rest of loop tail
+                goto FRAME_MONITOR_FRAME_END;
+            }
+
+            // (EXISTING HEAVY LOGIC BELOW: address refresh, moveID reads, processing)
             // Refresh addresses periodically
-            if (addressCacheCounter++ >= 192) { // Refresh every second
+            if (addressCacheCounter++ >= 192) {
                 cachedMoveIDAddr1 = ResolvePointer(base, EFZ_BASE_OFFSET_P1, MOVE_ID_OFFSET);
                 cachedMoveIDAddr2 = ResolvePointer(base, EFZ_BASE_OFFSET_P2, MOVE_ID_OFFSET);
                 addressCacheCounter = 0;
@@ -349,6 +419,7 @@ void FrameDataMonitor() {
             prevMoveID2 = moveID2;
         }
         
+FRAME_MONITOR_FRAME_END:
         // Sleep precisely for the remaining time to maintain exact 192fps
         auto frameEnd = clock::now();
         auto frameDuration = frameEnd - frameStart;
@@ -572,106 +643,21 @@ void UpdateStatsDisplay() {
 
     // Set or update the display - MOVED DOWN from original position
     const int startX = 20;
-    const int startY = 100;  // Changed from 80 to 100 to position lower
-    const int lineHeight = 20;
-    COLORREF textColor = RGB(255, 255, 0); // Yellow
+    int startY = 100;  // Changed from 80 to 100 to avoid overlap with triggers
+    const int lineHeight = 15;
 
-    // Create or update the permanent messages
-    if (g_statsP1ValuesId == -1) {
-        // Leave a 20px margin on both sides for better visibility
-        g_statsP1ValuesId = DirectDrawHook::AddPermanentMessage(p1Values.str(), textColor, startX, startY);
-        g_statsP2ValuesId = DirectDrawHook::AddPermanentMessage(p2Values.str(), textColor, startX, startY + lineHeight);
-        g_statsPositionId = DirectDrawHook::AddPermanentMessage(positions.str(), textColor, startX, startY + lineHeight * 2);
-        g_statsMoveIdId = DirectDrawHook::AddPermanentMessage(moveIds.str(), textColor, startX, startY + lineHeight * 3);
-        
-        LogOut("[STATS] Created stats display messages", true);
-    } else {
-        DirectDrawHook::UpdatePermanentMessage(g_statsP1ValuesId, p1Values.str(), textColor);
-        DirectDrawHook::UpdatePermanentMessage(g_statsP2ValuesId, p2Values.str(), textColor);
-        DirectDrawHook::UpdatePermanentMessage(g_statsPositionId, positions.str(), textColor);
-        DirectDrawHook::UpdatePermanentMessage(g_statsMoveIdId, moveIds.str(), textColor);
-    }
-
-    // Add this code in the main while loop of FrameDataMonitor, after the moveID reading
-    // Add facing direction monitoring
-    if (base) {
-        // Check P1 facing
-        uintptr_t p1FacingAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P1, FACING_DIRECTION_OFFSET);
-        if (p1FacingAddr) {
-            uint8_t p1Facing = 0;
-            if (SafeReadMemory(p1FacingAddr, &p1Facing, sizeof(uint8_t))) {
-                if (facingInitialized && p1Facing != p1LastFacing) {
-                    LogOut("[FACING] P1 facing changed from " + 
-                           std::string(p1LastFacing == 1 ? "RIGHT" : "LEFT") + " to " + 
-                           std::string(p1Facing == 1 ? "RIGHT" : "LEFT"), true);
-                }
-                p1LastFacing = p1Facing;
-            }
-        }
-        
-        // Check P2 facing
-        uintptr_t p2FacingAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P2, FACING_DIRECTION_OFFSET);
-        if (p2FacingAddr) {
-            uint8_t p2Facing = 0;
-            if (SafeReadMemory(p2FacingAddr, &p2Facing, sizeof(uint8_t))) {
-                if (facingInitialized && p2Facing != p2LastFacing) {
-                    LogOut("[FACING] P2 facing changed from " + 
-                           std::string(p2LastFacing == 1 ? "RIGHT" : "LEFT") + " to " + 
-                           std::string(p2Facing == 1 ? "RIGHT" : "LEFT"), true);
-                }
-                p2LastFacing = p2Facing;
-            }
-        }
-        facingInitialized = true;
-        
-        // Monitor button state changes
-        // P1 buttons
-        uintptr_t p1ButtonAddrs[4] = {
-            ResolvePointer(base, EFZ_BASE_OFFSET_P1, 0x190), // A
-            ResolvePointer(base, EFZ_BASE_OFFSET_P1, 0x194), // B
-            ResolvePointer(base, EFZ_BASE_OFFSET_P1, 0x198), // C
-            ResolvePointer(base, EFZ_BASE_OFFSET_P1, 0x19C)  // D
-        };
-        
-        const char* buttonNames[4] = {"A", "B", "C", "D"};
-        
-        for (int i = 0; i < 4; i++) {
-            if (p1ButtonAddrs[i]) {
-                uint8_t buttonState = 0;
-                if (SafeReadMemory(p1ButtonAddrs[i], &buttonState, sizeof(uint8_t))) {
-                    if (buttonStateInitialized && buttonState != p1LastButtons[i]) {
-                        LogOut("[BUTTON] P1 " + std::string(buttonNames[i]) + " " + 
-                               (buttonState ? "PRESSED" : "RELEASED"), true);
-                    }
-                    p1LastButtons[i] = buttonState;
-                }
-            }
-        }
-        
-        // P2 buttons
-        uintptr_t p2ButtonAddrs[4] = {
-            ResolvePointer(base, EFZ_BASE_OFFSET_P2, 0x190), // A
-            ResolvePointer(base, EFZ_BASE_OFFSET_P2, 0x194), // B
-            ResolvePointer(base, EFZ_BASE_OFFSET_P2, 0x198), // C
-            ResolvePointer(base, EFZ_BASE_OFFSET_P2, 0x19C)  // D
-        };
-        
-        for (int i = 0; i < 4; i++) {
-            if (p2ButtonAddrs[i]) {
-                uint8_t buttonState = 0;
-                if (SafeReadMemory(p2ButtonAddrs[i], &buttonState, sizeof(uint8_t))) {
-                    if (buttonStateInitialized && buttonState != p2LastButtons[i]) {
-                        LogOut("[BUTTON] P2 " + std::string(buttonNames[i]) + " " + 
-                               (buttonState ? "PRESSED" : "RELEASED"), true);
-                    }
-                    p2LastButtons[i] = buttonState;
-                }
-            }
-        }
-        
-        buttonStateInitialized = true;
-    }
-
-    // Process any queued inputs
-    ProcessInputQueues();
+    // Player 1 values
+    g_statsP1ValuesId = DirectDrawHook::AddPermanentMessage(p1Values.str(), RGB(255, 255, 255), startX, startY);
+    startY += lineHeight;
+    
+    // Player 2 values
+    g_statsP2ValuesId = DirectDrawHook::AddPermanentMessage(p2Values.str(), RGB(255, 255, 255), startX, startY);
+    startY += lineHeight;
+    
+    // Positions
+    g_statsPositionId = DirectDrawHook::AddPermanentMessage(positions.str(), RGB(255, 255, 255), startX, startY);
+    startY += lineHeight;
+    
+    // Move IDs
+    g_statsMoveIdId = DirectDrawHook::AddPermanentMessage(moveIds.str(), RGB(255, 255, 255), startX, startY);
 }
