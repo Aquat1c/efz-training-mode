@@ -7,7 +7,7 @@
 #include <timeapi.h>
 #include "../include/core/memory.h"
 #include "../include/utils/utilities.h"
-
+#include "../include/input/input_buffer.h"
 #include "../include/core/logger.h"
 #include "../include/game/frame_monitor.h"
 #include "../include/utils/network.h"
@@ -21,7 +21,7 @@
 #include "../include/input/input_hook.h" // Add this include
 #include "../3rdparty/minhook/include/MinHook.h" // Add this include
 #include "../include/utils/bgm_control.h"
-
+#include "../include/game/game_state.h"
 #pragma comment(lib, "winmm.lib")
 
 // Forward declarations for functions in other files
@@ -143,6 +143,71 @@ void DelayedInitialization(HMODULE hModule) {
             Sleep(5000);
         }
     }).detach();
+    
+    // Add screen state monitoring thread
+    std::thread([]{
+        GameMode lastGameMode = GameMode::Unknown;
+        bool lastCharSelectState = false;
+        
+        LogOut("[SYSTEM] Starting screen state monitoring thread", true);
+        
+        // Keep monitoring while the DLL is loaded
+        while (!g_isShuttingDown.load()) {
+            GameMode currentMode = GetCurrentGameMode();
+            bool isCharSelect = IsInCharacterSelectScreen();
+            
+            // When any game mode changes or character select state changes
+            if (currentMode != lastGameMode || isCharSelect != lastCharSelectState) {
+                // Log the transition
+                LogOut("[SCREEN_MONITOR] Screen state changed - Mode: " + 
+                      GetGameModeName(lastGameMode) + " → " + GetGameModeName(currentMode) + 
+                      ", CharSelect: " + (lastCharSelectState ? "Yes" : "No") + " → " + 
+                      (isCharSelect ? "Yes" : "No"), true);
+                
+                // Call the debug dump function
+                DebugDumpScreenState();
+                
+                // Update tracking variables
+                lastGameMode = currentMode;
+                lastCharSelectState = isCharSelect;
+                
+                // Also check if we're exiting from gameplay to character select
+                if (IsInGameplayState() && isCharSelect) {
+                    LogOut("[SCREEN_MONITOR] Detected transition from gameplay to character select", true);
+                    
+                    // Ensure proper cleanup
+                    StopBufferFreezing();
+                    SetBGMSuppressed(false);
+                    
+                    // Additional logs to help diagnose buffer freeze issues
+                    LogOut("[BUFFER_STATE] g_bufferFreezingActive = " + 
+                          std::to_string(g_bufferFreezingActive), true);
+                    LogOut("[BUFFER_STATE] g_indexFreezingActive = " + 
+                          std::to_string(g_indexFreezingActive), true);
+                }
+            }
+            
+            GamePhase phase = GetCurrentGamePhase();
+            static GamePhase lastPhase = GamePhase::Unknown;
+            if (phase != lastPhase) {
+                LogOut("[SCREEN_MONITOR] Phase change: " + std::to_string((int)lastPhase) + " -> " + std::to_string((int)phase), true);
+                DebugDumpScreenState();
+
+                if (lastPhase == GamePhase::Match && phase != GamePhase::Match) {
+                    StopBufferFreezing();
+                    ResetActionFlags();
+                    g_bufferFreezingActive = false;
+                    g_indexFreezingActive = false;
+                }
+                lastPhase = phase;
+            }
+            
+            // Sleep to avoid high CPU usage (check every 100ms)
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+        
+        LogOut("[SCREEN_MONITOR] Screen state monitoring thread stopped", true);
+    }).detach();
 }
 
 // Implementation of the function
@@ -193,8 +258,12 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
         // Set shutdown flag to stop threads
         g_isShuttingDown.store(true);
         
-        // Add a small delay to allow threads to notice the flag
-        Sleep(100);
+        // Make sure to stop any active buffer freezing
+        g_bufferFreezingActive = false;
+        g_indexFreezingActive = false;
+        
+        // Wait a short time for threads to terminate
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
         
         // Remove the input hook first
         RemoveInputHook();

@@ -36,3 +36,21 @@ void ApplyAutoAction(int playerNum, uintptr_t moveIDAddr, short currentMoveID, s
 // Helper functions for motion selection
 int GetSpecialMoveStrength(int actionType, int triggerType);
 std::string GetTriggerName(int triggerType);
+
+// Variables to track P2 control state for auto-actions
+extern bool g_p2ControlOverridden;
+extern uint32_t g_originalP2ControlFlag;
+
+void RestoreP2ControlState();
+void EnableP2ControlForAutoAction();
+void ProcessAutoControlRestore();
+void ProcessTriggerCooldowns();
+
+// Existing forward declarations...
+extern std::atomic<bool> autoActionEnabled;
+extern std::atomic<int>  autoActionPlayer;
+
+// ADD these externs for control-restore globals defined in auto_action.cpp
+extern std::atomic<bool>  g_pendingControlRestore;
+extern std::atomic<int>   g_controlRestoreTimeout;
+extern std::atomic<short> g_lastP2MoveID;

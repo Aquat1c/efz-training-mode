@@ -218,6 +218,28 @@ void StopBufferFreezing() {
         // Wait for thread to terminate (small timeout)
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
         
-        LogOut("[INPUT_BUFFER] Buffer freezing stopped", true);
+        // IMPORTANT: Write neutral inputs to the last few buffer entries
+        // to prevent lingering input patterns from triggering moves
+        uintptr_t base = GetEFZBase();
+        if (base) {
+            for (int player = 1; player <= 2; player++) {
+                uintptr_t playerPtr = GetPlayerPointer(player);
+                if (playerPtr) {
+                    // Read current buffer index
+                    uint16_t currentIndex = 0;
+                    if (SafeReadMemory(playerPtr + INPUT_BUFFER_INDEX_OFFSET, &currentIndex, sizeof(uint16_t))) {
+                        // Write neutral (0x00) to the last 8 buffer entries
+                        uint8_t neutral = 0x00;
+                        for (int i = 0; i < 8; i++) {
+                            uint16_t writeIndex = (currentIndex - i) % INPUT_BUFFER_SIZE;
+                            if (writeIndex < 0) writeIndex += INPUT_BUFFER_SIZE;
+                            SafeWriteMemory(playerPtr + INPUT_BUFFER_OFFSET + writeIndex, &neutral, sizeof(uint8_t));
+                        }
+                    }
+                }
+            }
+        }
+        
+        LogOut("[INPUT_BUFFER] Buffer freezing stopped and buffer cleared", true);
     }
 }
