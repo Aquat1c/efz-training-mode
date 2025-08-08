@@ -39,6 +39,22 @@ static GameMode s_previousGameMode = GameMode::Unknown;
 static bool s_wasActive = false;
 static GamePhase s_lastPhase = GamePhase::Unknown;  // NEW phase tracker
 
+static uintptr_t fm_lastP1Ptr = 0;
+static uintptr_t fm_lastP2Ptr = 0;
+static uintptr_t fm_lastMoveAddr1 = 0;
+static uintptr_t fm_lastMoveAddr2 = 0;
+static bool      fm_lastCharsInit = false;
+static int       fm_moveReadFailStreak1 = 0;
+static int       fm_moveReadFailStreak2 = 0;
+static int       fm_overrunWarnCounter = 0;
+static GamePhase fm_lastLoggedPhase = GamePhase::Unknown;
+static int       fm_lastLoggedFrame = 0;
+
+static std::string FM_Hex(uintptr_t v) {
+    std::ostringstream oss;
+    oss << "0x" << std::hex << std::uppercase << v;
+    return oss.str();
+}
 
 bool IsValidGameMode(GameMode mode) {
     const Config::Settings& cfg = Config::GetSettings();
@@ -198,32 +214,26 @@ void FrameDataMonitor() {
     
     while (!g_isShuttingDown) {
         auto frameStart = clock::now();
-        
-        // Update frame counter first thing
-        frameCounter++;
-        
+
+        // SINGLE authoritative frame increment
+        int currentFrame = frameCounter.fetch_add(1) + 1;
+
         // Process any active input queues
         ProcessInputQueues();
-        
-        // Update window state at the beginning of each frame
+
         UpdateWindowActiveState();
-        
-        // Update stats display regardless of whether other features are enabled
         UpdateStatsDisplay();
-        
-        // Feature management logic (based on game mode, not window focus)
+
         bool shouldBeActive = ShouldFeaturesBeActive();
         if (shouldBeActive && !g_featuresEnabled.load()) {
             EnableFeatures();
         } else if (!shouldBeActive && g_featuresEnabled.load()) {
             DisableFeatures();
         }
-        
-        // Key monitoring management (based on window focus, separate from patches/overlays)
+
         ManageKeyMonitoring();
-        
-        // Track mode transitions and character initialization
-        static bool wasInitialized = false;
+
+        // Track initialization & mode
         bool isInitialized = AreCharactersInitialized();
         GameMode currentMode = GetCurrentGameMode();
         bool isValidGameMode = !Config::GetSettings().restrictToPracticeMode || (currentMode == GameMode::Practice);
@@ -267,7 +277,7 @@ void FrameDataMonitor() {
         }
 
         // Update initialization tracking
-        wasInitialized = isInitialized;
+        //wasInitialized = isInitialized;
         
         // Only run the main monitoring logic if features are enabled
         if (g_featuresEnabled.load()) {
@@ -275,33 +285,60 @@ void FrameDataMonitor() {
             UpdateStatsDisplay();
             uintptr_t base = GetEFZBase();
             if (!base) {
-                continue;
+                goto FRAME_MONITOR_FRAME_END;
             }
 
-            // ==== PHASE / MATCH GATING BLOCK (NEW) =================================
-            GamePhase phase = GetCurrentGamePhase();   // updates cached phase
-            LogPhaseIfChanged();                       // optional debug (debounced)
+            // Pointer change logging
+            uintptr_t p1Ptr = 0, p2Ptr = 0;
+            SafeReadMemory(base + EFZ_BASE_OFFSET_P1, &p1Ptr, sizeof(p1Ptr));
+            SafeReadMemory(base + EFZ_BASE_OFFSET_P2, &p2Ptr, sizeof(p2Ptr));
+            if ((p1Ptr != fm_lastP1Ptr || p2Ptr != fm_lastP2Ptr) && (p1Ptr || p2Ptr)) {
+                LogOut("[FRAME MONITOR][PTR] P1 " + FM_Hex(p1Ptr) + " (was " + FM_Hex(fm_lastP1Ptr) + ")  P2 " +
+                       FM_Hex(p2Ptr) + " (was " + FM_Hex(fm_lastP2Ptr) + ")", true);
+                fm_lastP1Ptr = p1Ptr;
+                fm_lastP2Ptr = p2Ptr;
+            }
 
-            // Handle phase transition once
-            if (phase != s_lastPhase) {
-                if (s_lastPhase == GamePhase::Match && phase != GamePhase::Match) {
-                    LogOut("[FRAME MONITOR] Leaving MATCH phase -> cleaning volatile systems", true);
+            // Initialization transition logging
+            if (isInitialized != fm_lastCharsInit) {
+                LogOut(std::string("[FRAME MONITOR][INIT] CharactersInitialized: ") +
+                       (fm_lastCharsInit ? "true" : "false") + " -> " +
+                       (isInitialized ? "true" : "false") +
+                       " frame=" + std::to_string(currentFrame), true);
+                fm_lastCharsInit = isInitialized;
+            }
+
+            // Phase gating
+            GamePhase phase = GetCurrentGamePhase();
+            if (phase != fm_lastLoggedPhase) {
+                LogOut("[FRAME MONITOR][PHASE] " + std::to_string((int)fm_lastLoggedPhase) + " -> " +
+                       std::to_string((int)phase) + " frame=" + std::to_string(currentFrame), true);
+                fm_lastLoggedPhase = phase;
+            }
+
+            // Handle enter/leave Match once
+            static GamePhase s_lastPhaseLocal = GamePhase::Unknown;
+            if (phase != s_lastPhaseLocal) {
+                if (s_lastPhaseLocal == GamePhase::Match && phase != GamePhase::Match) {
+                    LogOut("[FRAME MONITOR] Leaving MATCH phase -> cleanup", true);
                     StopBufferFreezing();
                     ResetActionFlags();
                     p1DelayState.isDelaying = false;
                     p2DelayState.isDelaying = false;
                     p1DelayState.triggerType = TRIGGER_NONE;
                     p2DelayState.triggerType = TRIGGER_NONE;
-                    g_pendingControlRestore.store(false);
+                    if (g_pendingControlRestore.load()) {
+                        LogOut("[CONTROL] Aborting pending control restore (phase exit)", true);
+                        g_pendingControlRestore.store(false);
+                    }
                     g_lastP2MoveID.store(-1);
                 }
-                if (phase == GamePhase::Match && s_lastPhase != GamePhase::Match) {
-                    LogOut("[FRAME MONITOR] Entering MATCH phase -> reinitializing transient state", true);
-                    // (Optional) zero previous move IDs so first real change is clean
+                if (phase == GamePhase::Match && s_lastPhaseLocal != GamePhase::Match) {
+                    LogOut("[FRAME MONITOR] Entering MATCH phase -> reinit transient state", true);
                     prevMoveID1 = -1;
                     prevMoveID2 = -1;
                 }
-                s_lastPhase = phase;
+                s_lastPhaseLocal = phase;
             }
 
             // Lightweight ticking (cooldowns) always runs
@@ -359,7 +396,6 @@ void FrameDataMonitor() {
             }
             
             // CRITICAL: Increment frame counter IMMEDIATELY for precise tracking
-            int currentFrame = frameCounter.fetch_add(1) + 1;
             framesSinceLastLog++;
             
             // Process features in order of priority - NO THROTTLING
@@ -643,21 +679,22 @@ void UpdateStatsDisplay() {
 
     // Set or update the display - MOVED DOWN from original position
     const int startX = 20;
-    int startY = 100;  // Changed from 80 to 100 to avoid overlap with triggers
+    int startY = 100;
     const int lineHeight = 15;
 
-    // Player 1 values
-    g_statsP1ValuesId = DirectDrawHook::AddPermanentMessage(p1Values.str(), RGB(255, 255, 255), startX, startY);
-    startY += lineHeight;
-    
-    // Player 2 values
-    g_statsP2ValuesId = DirectDrawHook::AddPermanentMessage(p2Values.str(), RGB(255, 255, 255), startX, startY);
-    startY += lineHeight;
-    
-    // Positions
-    g_statsPositionId = DirectDrawHook::AddPermanentMessage(positions.str(), RGB(255, 255, 255), startX, startY);
-    startY += lineHeight;
-    
-    // Move IDs
-    g_statsMoveIdId = DirectDrawHook::AddPermanentMessage(moveIds.str(), RGB(255, 255, 255), startX, startY);
+    auto upsert = [&](int &id, const std::string &text) {
+        if (id == -1) {
+            id = DirectDrawHook::AddPermanentMessage(text, RGB(255,255,255), startX, startY);
+        } else {
+            DirectDrawHook::UpdatePermanentMessage(id, text, RGB(255,255,255));
+        }
+        startY += lineHeight;
+    };
+
+    upsert(g_statsP1ValuesId, p1Values.str());
+    upsert(g_statsP2ValuesId, p2Values.str());
+    upsert(g_statsPositionId, positions.str());
+    upsert(g_statsMoveIdId, moveIds.str());
+
+    return;
 }
