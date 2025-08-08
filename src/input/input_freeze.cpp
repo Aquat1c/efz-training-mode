@@ -250,6 +250,14 @@ bool FreezeBufferForMotion(int playerNum, int motionType, int buttonMask, int op
     
     LogOut("[BUFFER_FREEZE] Starting buffer freeze for motion " + GetMotionTypeName(motionType) + " (P" + std::to_string(playerNum) + ")", true);
     
+    // OLD (caused error):
+    // BeginBufferFreezeSession(playerNum, GetMotionTypeName(motionType));
+    // FIX:
+    {
+        std::string motionLabel = GetMotionTypeName(motionType);
+        BeginBufferFreezeSession(playerNum, motionLabel.c_str());
+    }
+    
     uintptr_t playerPtr = GetPlayerPointer(playerNum);
     if (!playerPtr) {
         LogOut("[BUFFER_FREEZE] Failed to get player pointer", true);
@@ -509,7 +517,7 @@ bool FreezeBufferForMotion(int playerNum, int motionType, int buttonMask, int op
                     if (moveID > 0 && counter > 30) {  // Wait at least 30 frames (~1/6 second)
                         LogOut("[BUFFER_FREEZE] Motion recognized! Detected move with ID: " + 
                               std::to_string(moveID), true);
-                        g_bufferFreezingActive = false;
+                        EndBufferFreezeSession(playerNum, "motion recognized");
                         break;
                     }
                     
@@ -577,4 +585,73 @@ bool FreezeBufferForMotion(int playerNum, int motionType, int buttonMask, int op
     }
     
     return true;
+}
+
+namespace {
+    struct FreezeSessionState {
+        std::atomic<bool> active{false};
+        std::atomic<bool> threadRunning{false};
+        uint16_t originalIndex{0};
+        bool originalIndexValid{false};
+    };
+    FreezeSessionState g_freezeSession[3]; // 1,2 (ignore 0)
+}
+
+// Clear (zero) entire buffer + index safely
+void ClearPlayerInputBuffer(int playerNum) {
+    uintptr_t playerPtr = GetPlayerPointer(playerNum);
+    if (!playerPtr) return;
+    uint8_t zero = 0x00;
+    for (uint16_t i = 0; i < INPUT_BUFFER_SIZE; ++i) {
+        SafeWriteMemory(playerPtr + INPUT_BUFFER_OFFSET + i, &zero, sizeof(uint8_t));
+    }
+    uint16_t idxZero = 0;
+    SafeWriteMemory(playerPtr + INPUT_BUFFER_INDEX_OFFSET, &idxZero, sizeof(uint16_t));
+    LogOut(std::string("[BUFFER_FREEZE] Cleared full buffer & index for P") + std::to_string(playerNum), true);
+}
+
+void BeginBufferFreezeSession(int playerNum, std::string_view label) {
+    StopBufferFreezing();
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    auto &s = g_freezeSession[playerNum];
+    s.active.store(true);
+    s.threadRunning.store(false);
+    s.originalIndexValid = false;
+    uintptr_t playerPtr = GetPlayerPointer(playerNum);
+    if (playerPtr) {
+        uint16_t curIdx = 0;
+        if (SafeReadMemory(playerPtr + INPUT_BUFFER_INDEX_OFFSET, &curIdx, sizeof(uint16_t))) {
+            s.originalIndex = curIdx;
+            s.originalIndexValid = true;
+        }
+    }
+    LogOut(std::string("[BUFFER_FREEZE] Begin session (") + (label.empty() ? "" : std::string(label)) +
+           ") P" + std::to_string(playerNum), true);
+}
+
+void EndBufferFreezeSession(int playerNum, const char* reason, bool clearGlobals) {
+    auto &s = g_freezeSession[playerNum];
+    if (!s.active.load()) return;
+
+    // Signal stop
+    g_bufferFreezingActive = false;
+    g_indexFreezingActive  = false;
+
+    // Wait briefly if a thread may still be winding down
+    for (int i=0; i<20 && s.threadRunning.load(); ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+
+    ClearPlayerInputBuffer(playerNum);
+
+    s.active.store(false);
+    s.threadRunning.store(false);
+
+    if (clearGlobals) {
+        g_frozenBufferLength = 0;
+        g_frozenBufferValues.clear();
+    }
+
+    LogOut(std::string("[BUFFER_FREEZE] End session P") + std::to_string(playerNum) +
+           " (" + (reason?reason:"no reason") + ")", true);
 }

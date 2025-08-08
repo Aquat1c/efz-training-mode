@@ -8,6 +8,7 @@
 #include <sstream>
 #include <iomanip>
 #include <chrono>
+#include <string_view>
 
 // Project includes
 #include "../include/input/input_motion.h"
@@ -59,3 +60,10 @@ bool FreezeBufferForMotion(int playerNum, int motionType, int buttonMask, int op
 
 // Buffer visualization function
 std::string GetInputBufferVisualization(int playerNum, int window);
+
+// Session lifecycle helpers
+void BeginBufferFreezeSession(int playerNum, std::string_view label);
+void EndBufferFreezeSession(int playerNum, const char* reason, bool clearGlobals = true);
+
+// Utility: safely clear (neutralize) a player's input buffer (+ index) within bounds
+void ClearPlayerInputBuffer(int playerNum);
