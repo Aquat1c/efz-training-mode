@@ -106,18 +106,39 @@ bool WritePlayerInputToBuffer(int playerNum, uint8_t inputMask) {
     
     // Get current buffer index
     uint16_t currentIndex = 0;
-    if (!SafeReadMemory(playerPtr + INPUT_BUFFER_INDEX_OFFSET, &currentIndex, sizeof(uint16_t)))
+    if (!SafeReadMemory(playerPtr + INPUT_BUFFER_INDEX_OFFSET, &currentIndex, sizeof(uint16_t))) {
+        LogOut("[INPUT_CORE] Failed to read buffer index", true);
         return false;
+    }
     
-    // Write to current index in the buffer
+    // CRITICAL: Log the memory addresses we're about to write to
     uint16_t bufferIndex = currentIndex % INPUT_BUFFER_SIZE;
-    if (!SafeWriteMemory(playerPtr + INPUT_BUFFER_OFFSET + bufferIndex, &inputMask, sizeof(uint8_t)))
+    uintptr_t writeAddr = playerPtr + INPUT_BUFFER_OFFSET + bufferIndex;
+    
+    LogOut("[INPUT_CORE] P" + std::to_string(playerNum) + 
+           " Writing to buffer: PlayerPtr=0x" + ToHexString(playerPtr) +
+           " BufferOffset=0x" + ToHexString(INPUT_BUFFER_OFFSET) +
+           " Index=" + std::to_string(bufferIndex) +
+           " WriteAddr=0x" + ToHexString(writeAddr) +
+           " InputMask=0x" + ToHexString(inputMask), true);
+    
+    // Verify we're not writing to a suspicious address
+    // Sound-related structures typically start at different offsets
+    if (INPUT_BUFFER_OFFSET + bufferIndex >= 0x400) {
+        LogOut("[INPUT_CORE] WARNING: Buffer write address seems too high! Potential overflow", true);
+    }
+    
+    if (!SafeWriteMemory(writeAddr, &inputMask, sizeof(uint8_t))) {
+        LogOut("[INPUT_CORE] Failed to write to buffer", true);
         return false;
+    }
     
     // Increment buffer index
     currentIndex = (currentIndex + 1) % INPUT_BUFFER_SIZE;
-    if (!SafeWriteMemory(playerPtr + INPUT_BUFFER_INDEX_OFFSET, &currentIndex, sizeof(uint16_t)))
+    if (!SafeWriteMemory(playerPtr + INPUT_BUFFER_INDEX_OFFSET, &currentIndex, sizeof(uint16_t))) {
+        LogOut("[INPUT_CORE] Failed to update buffer index", true);
         return false;
+    }
     
     return true;
 }

@@ -210,3 +210,8 @@ extern int g_statsMoveIdId;
 
 // Window and key monitoring management
 void ManageKeyMonitoring();
+
+// Add this function declaration with the other utility functions
+std::string ToHexString(uintptr_t value);
+std::string ToHexString(uint8_t value);
+std::string ToHexString(uint16_t value);

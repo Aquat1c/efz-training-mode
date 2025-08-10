@@ -25,19 +25,33 @@ const uintptr_t PROCESS_INPUTS_FUNC_OFFSET = 0x11BE0;
 // Our custom function that will be called instead of the original.
 // We use __fastcall for __thiscall hooks from MinHook.
 int __fastcall HookedProcessCharacterInput(int characterPtr, int edx) {
-    // Determine if this is P1 or P2 by comparing the character object pointer.
+    // Add state validation
+    static int lastGameState = -1;
+    uintptr_t gameStateAddr = GetEFZBase() + 0x1A0000; // Example offset - adjust based on your findings
+    int currentGameState = 0;
+    SafeReadMemory(gameStateAddr, &currentGameState, sizeof(int));
     
-    // --- CORRECTED POINTER LOGIC ---
-    // Use the reliable GetPlayerPointer utility instead of reading from the base offsets directly.
+    if (currentGameState != lastGameState) {
+        LogOut("[HOOK] Game state changed: " + std::to_string(lastGameState) + 
+               " -> " + std::to_string(currentGameState), true);
+        lastGameState = currentGameState;
+    }
+    
+    // Determine if this is P1 or P2
     uintptr_t p1Ptr = GetPlayerPointer(1);
     uintptr_t p2Ptr = GetPlayerPointer(2);
-    // --- END CORRECTION ---
-
+    
     int playerNum = 0;
     if (characterPtr != 0 && characterPtr == p1Ptr) playerNum = 1;
     else if (characterPtr != 0 && characterPtr == p2Ptr) playerNum = 2;
-
-    // REVERTED LOGIC: The queue system now handles all injection states.
+    
+    // CRITICAL: Ensure we're not processing during wrong game states
+    // Game states where we should NOT inject inputs:
+    // - Menu screens
+    // - Loading screens  
+    // - Victory screens
+    // Add your game state checks here
+    
     bool shouldInject = false;
     if (playerNum > 0) {
         if (g_manualInputOverride[playerNum].load()) {
@@ -60,16 +74,21 @@ int __fastcall HookedProcessCharacterInput(int characterPtr, int edx) {
                 currentMask = queue[queueIndex].inputMask;
             }
         }
+        
+        // Write to both immediate input and buffer
         WritePlayerInputImmediate(playerNum, currentMask);
-        WritePlayerInputToBuffer(playerNum, currentMask);
+        
+        // CRITICAL: Only write to buffer if we're in active gameplay
+        if (currentGameState == 2 || currentGameState == 3) { // Adjust these values
+            WritePlayerInputToBuffer(playerNum, currentMask);
+        }
+        
         g_lastInjectedMask[playerNum] = currentMask;
-        return 0;
-    } 
+    }
     
-    // --- NORMAL MODE ---
-    // No input is queued for this player. Let the game run its original logic.
-    // Reset the last injected mask for this player to ensure a clean state on the next injection.
+    // Reset the last injected mask for this player
     g_lastInjectedMask[playerNum] = 0;
+    
     return oProcessCharacterInput(characterPtr);
 }
 

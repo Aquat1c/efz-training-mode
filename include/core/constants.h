@@ -317,7 +317,7 @@
 
 // Player input buffer offsets
 #define P1_INPUT_BUFFER_OFFSET 0x1AB      // Base address of input buffer
-#define P1_INPUT_BUFFER_INDEX_OFFSET 0x260 // Offset to current buffer index
+#define P1_INPUT_BUFFER_INDEX_OFFSET 0x328 // Offset to current buffer index
 #define P1_INPUT_BUFFER_SIZE 180          // Size of the circular buffer
 
 // Add these input offset constants after the existing offset definitions

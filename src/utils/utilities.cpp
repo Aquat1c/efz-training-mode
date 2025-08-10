@@ -702,3 +702,21 @@ void ManageKeyMonitoring() {
         keyMonitorRunning.store(false);
     }
 }
+
+std::string ToHexString(uintptr_t value) {
+    std::stringstream ss;
+    ss << std::hex << std::uppercase << value;
+    return ss.str();
+}
+
+std::string ToHexString(uint8_t value) {
+    std::stringstream ss;
+    ss << std::hex << std::uppercase << static_cast<int>(value);
+    return ss.str();
+}
+
+std::string ToHexString(uint16_t value) {
+    std::stringstream ss;
+    ss << std::hex << std::uppercase << value;
+    return ss.str();
+}

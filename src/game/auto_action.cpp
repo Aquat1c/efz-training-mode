@@ -41,7 +41,7 @@ static bool p1TriggerActive = false;
 static bool p2TriggerActive = false;
 static int p1TriggerCooldown = 0;
 static int p2TriggerCooldown = 0;
-static constexpr int TRIGGER_COOLDOWN_FRAMES = 60; // was larger
+static constexpr int TRIGGER_COOLDOWN_FRAMES = 10; // was larger
 bool g_p2ControlOverridden = false;
 uint32_t g_originalP2ControlFlag = 1; // Default to AI control
 
@@ -49,7 +49,7 @@ uint32_t g_originalP2ControlFlag = 1; // Default to AI control
 std::atomic<bool> g_pendingControlRestore(false);
 std::atomic<int> g_controlRestoreTimeout(0);
 std::atomic<short> g_lastP2MoveID(-1);
-const int CONTROL_RESTORE_TIMEOUT = 180; // 180 internal frames = 1 second
+const int CONTROL_RESTORE_TIMEOUT = 10; // 180 internal frames = 1 second
 
 
 bool IsCharacterGrounded(int playerNum) {
