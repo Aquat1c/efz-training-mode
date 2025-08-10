@@ -18,10 +18,12 @@
 #include "../include/gui/imgui_gui.h"
 #include "../include/utils/config.h"
 #include "../include/game/practice_patch.h"
+#include "../include/game/auto_action.h"  // ADD THIS INCLUDE
 #include "../include/input/input_hook.h" // Add this include
 #include "../3rdparty/minhook/include/MinHook.h" // Add this include
 #include "../include/utils/bgm_control.h"
 #include "../include/game/game_state.h"
+#include "../include/core/globals.h"  // Add this include
 #pragma comment(lib, "winmm.lib")
 
 // Forward declarations for functions in other files
@@ -35,11 +37,10 @@ extern std::atomic<bool> inStartupPhase;
 // Add this declaration before it's used
 void InitializeConfig();
 
-// Add this flag to track initialization state
-std::atomic<bool> g_initialized(false);
-
-// Add this near the top with other globals
+// Define the global flags (remove 'static' if present)
 std::atomic<bool> g_isShuttingDown(false);
+std::atomic<bool> g_initialized(false);
+std::atomic<bool> g_featuresEnabled(false);  // If this exists elsewhere, move it here
 
 // Delayed initialization function
 void DelayedInitialization(HMODULE hModule) {
@@ -226,65 +227,42 @@ void InitializeConfig() {
 
 // In the DllMain function, keep the existing code as is
 BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserved) {
-    if (ul_reason_for_call == DLL_PROCESS_ATTACH) {
-        // Begin minimal startup logging
-        WriteStartupLog("DLL_PROCESS_ATTACH");
-        WriteStartupLog("Module handle: " + std::to_string((uintptr_t)hModule));
-        
-        // Disable thread notifications
+    switch (ul_reason_for_call) {
+    case DLL_PROCESS_ATTACH:
         DisableThreadLibraryCalls(hModule);
+        std::thread(DelayedInitialization, hModule).detach();
+        break;
+    case DLL_PROCESS_DETACH:
+        // Signal shutdown to all threads
+        g_isShuttingDown = true;
+        g_featuresEnabled = false;
         
-        // Set up minimal locale settings
-        try {
-            std::locale::global(std::locale("C"));
-            WriteStartupLog("Set locale to C");
-        } catch (...) {
-            WriteStartupLog("Failed to set locale");
+        // CRITICAL: Stop buffer freezing FIRST
+        StopBufferFreezing();
+        
+        // Then restore P2 control
+        if (g_p2ControlOverridden) {
+            RestoreP2ControlState();
         }
         
-        // Request 1ms timer resolution at startup
-        timeBeginPeriod(1);
+        // Clean up hooks safely
+        try {
+            RemoveInputHook();
+            StopBGMSuppressionPoller();
+            // Stop any active overlay rendering
+            if (g_guiActive.load()) {
+                g_guiActive = false;
+            }
+        } catch (...) {
+            // Suppress exceptions during shutdown
+        }
         
-        // Launch a delayed initialization thread
-        WriteStartupLog("Starting delayed initialization thread");
-        std::thread(DelayedInitialization, hModule).detach();
-        WriteStartupLog("Delayed initialization thread started");
+        // Give threads a moment to clean up
+        Sleep(100);
         
-        // Return immediately to let the game continue loading
-        WriteStartupLog("DLL_PROCESS_ATTACH complete, returning control to game");
-        return TRUE;
-    }
-    else if (ul_reason_for_call == DLL_PROCESS_DETACH) {
-        // Set shutdown flag to stop threads
-        g_isShuttingDown.store(true);
-        
-        // Make sure to stop any active buffer freezing
-        g_bufferFreezingActive = false;
-        g_indexFreezingActive = false;
-        
-        // Wait a short time for threads to terminate
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
-        
-        // Remove the input hook first
-        RemoveInputHook();
-        globalF1ThreadRunning = false;
-        // First clean up ImGui to prevent rendering during shutdown
-        ImGuiImpl::Shutdown();
-        StopBGMSuppressionPoller();
-        // Then clean up the D3D9 hook
-        DirectDrawHook::ShutdownD3D9();
-        
-        // Finally clean up the overlay
-        DirectDrawHook::Shutdown();
-
-        // NEW: Uninitialize MinHook once at the very end.
+        // Uninitialize MinHook
         MH_Uninitialize();
-        LogOut("[SYSTEM] MinHook uninitialized.", true);
-        
-        // Request 1ms timer resolution at cleanup
-        timeEndPeriod(1);
-        
-        LogOut("[SYSTEM] DLL detaching, cleanup complete", true);
+        break;
     }
     return TRUE;
 }

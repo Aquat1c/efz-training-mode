@@ -175,7 +175,6 @@ std::atomic<int> jumpDirection(0);            // 0=straight, 1=forward, 2=backwa
 std::atomic<bool> p1Jumping(false);
 std::atomic<bool> p2Jumping(false);
 std::atomic<int> jumpTarget(3);
-std::atomic<bool> g_featuresEnabled(false); // Default to disabled
 DisplayData displayData = {
     9999, 9999,         // hp1, hp2
     3000, 3000,         // meter1, meter2

@@ -4,12 +4,13 @@
 #include "../include/core/memory.h"
 #include "../include/core/logger.h"
 #include "../include/utils/utilities.h"
-    // Add for GetEFZBase
 #include "../include/input/motion_constants.h"
+#include "../include/core/globals.h"
 #include "../include/input/shared_constants.h" // Add this include for shared constants
 #include "../include/input/input_debug.h"// Add this include for debug functions
 #include "../include/input/motion_system.h"
 #include "../include/input/input_motion.h"  // Add this include
+#include "../include/game/game_state.h"  // Add this include
 #include <vector>
 #include <sstream>
 #include <iomanip>
@@ -32,10 +33,12 @@ uint16_t g_frozenIndexValue = 0;
 // Define buffer functions
 void FreezeBufferValuesThread(int playerNum) {
     LogOut("[INPUT_BUFFER] Starting buffer freeze thread for P" + std::to_string(playerNum), true);
-    uintptr_t playerPtr = GetPlayerPointer(playerNum);
     
-    if (!playerPtr) {
-        LogOut("[INPUT_BUFFER] Failed to get player pointer for freezing", true);
+    // Store initial valid pointer for safety check
+    uintptr_t initialPlayerPtr = GetPlayerPointer(playerNum);
+    if (!initialPlayerPtr) {
+        LogOut("[INPUT_BUFFER] Invalid player pointer at thread start, aborting", true);
+        g_bufferFreezingActive = false;
         return;
     }
     
@@ -51,85 +54,62 @@ void FreezeBufferValuesThread(int playerNum) {
     int stabilityCounter = 0;
     std::vector<uint8_t> actualBufferValues(g_frozenBufferLength);
     
-    while (g_bufferFreezingActive) {
+    while (g_bufferFreezingActive && !g_isShuttingDown.load()) {
+        // CRITICAL FIX: Check if we're still in a valid game state
+        GamePhase currentPhase = GetCurrentGamePhase();
+        if (currentPhase != GamePhase::Match) {
+            LogOut("[INPUT_BUFFER] Game phase changed to " + std::to_string((int)currentPhase) + 
+                   ", stopping buffer freeze", true);
+            break;
+        }
+        
+        // CRITICAL FIX: Validate player pointer is still valid
+        uintptr_t currentPlayerPtr = GetPlayerPointer(playerNum);
+        if (!currentPlayerPtr || currentPlayerPtr != initialPlayerPtr) {
+            LogOut("[INPUT_BUFFER] Player pointer invalidated, stopping buffer freeze", true);
+            break;
+        }
+        
+        // Validate buffer addresses before access
+        if (!SafeReadMemory(currentPlayerPtr + INPUT_BUFFER_INDEX_OFFSET, &lastIndex, sizeof(uint16_t))) {
+            LogOut("[INPUT_BUFFER] Failed to read buffer index, stopping freeze", true);
+            break;
+        }
+        
+        // Write frozen values
+        for (size_t i = 0; i < g_frozenBufferLength; i++) {
+            uint16_t bufferPos = (g_frozenBufferStartIndex + i) % INPUT_BUFFER_SIZE;
+            uintptr_t addr = currentPlayerPtr + INPUT_BUFFER_OFFSET + bufferPos;
+            
+            if (!SafeWriteMemory(addr, &g_frozenBufferValues[i], sizeof(uint8_t))) {
+                LogOut("[INPUT_BUFFER] Failed to write to buffer, stopping freeze", true);
+                g_bufferFreezingActive = false;
+                break;
+            }
+        }
+        
+        // Freeze index if requested
+        if (g_indexFreezingActive) {
+            if (!SafeWriteMemory(currentPlayerPtr + INPUT_BUFFER_INDEX_OFFSET, 
+                                &g_frozenIndexValue, sizeof(uint16_t))) {
+                LogOut("[INPUT_BUFFER] Failed to freeze index, stopping", true);
+                break;
+            }
+        }
+        
         freezeCount++;
         
-        // First ensure human control flag is set (for reliability)
-        // This forces the game to use our injected inputs
-        SetAIControlFlag(playerNum, true);
-        
-        // Read current buffer index and move ID
-        uint16_t currentIndex = 0;
-        short currentMoveID = 0;
-        
-        bool indexRead = SafeReadMemory(playerPtr + INPUT_BUFFER_INDEX_OFFSET, &currentIndex, sizeof(uint16_t));
-        bool moveIDRead = moveIDAddr && SafeReadMemory(moveIDAddr, &currentMoveID, sizeof(short));
-        
-        // Check if values match what we're trying to set
-        bool indexMatch = (currentIndex == g_frozenIndexValue);
-        
-        // Read what's actually in buffer to verify our writes are taking effect
-        bool bufferMatch = true;
-        if (freezeCount % 30 == 0 || !indexMatch) {
-            for (size_t i = 0; i < g_frozenBufferLength; i++) {
-                uint16_t readIdx = (g_frozenBufferStartIndex + i) % INPUT_BUFFER_SIZE;
-                uint8_t value = 0;
-                SafeReadMemory(playerPtr + INPUT_BUFFER_OFFSET + readIdx, &value, sizeof(uint8_t));
-                actualBufferValues[i] = value;
-                if (value != g_frozenBufferValues[i]) {
-                    bufferMatch = false;
-                }
-            }
+        // Log periodically
+        if (freezeCount % 60 == 0) {
+            LogOut("[INPUT_BUFFER] Freeze active for " + std::to_string(freezeCount) + " frames", false);
         }
         
-        // Freeze the buffer index if requested
-        if (g_indexFreezingActive && indexRead) {
-            // If index changed, we need to reset stability counter
-            if (lastIndex != currentIndex && lastIndex != 0xFFFF) {
-                stabilityCounter = 0;
-            }
-            
-            // Write the frozen index
-            SafeWriteMemory(playerPtr + INPUT_BUFFER_INDEX_OFFSET, &g_frozenIndexValue, sizeof(uint16_t));
-            lastIndex = g_frozenIndexValue;
-        }
-        
-        // Freeze the buffer values
-        for (size_t i = 0; i < g_frozenBufferLength; i++) {
-            uint16_t writeIdx = (g_frozenBufferStartIndex + i) % INPUT_BUFFER_SIZE;
-            SafeWriteMemory(playerPtr + INPUT_BUFFER_OFFSET + writeIdx, &g_frozenBufferValues[i], sizeof(uint8_t));
-        }
-        
-        // Log stability and changes every few iterations
-        if (freezeCount % 60 == 0 && moveIDRead) {
-            if (lastMoveID != currentMoveID) {
-                LogOut("[INPUT_BUFFER] Move ID changed: " + std::to_string(lastMoveID) + 
-                      " -> " + std::to_string(currentMoveID), true);
-                lastMoveID = currentMoveID;
-                
-                // If move changed, we need to reset stability counter
-                stabilityCounter = 0;
-            }
-            
-            if (indexMatch && bufferMatch) {
-                stabilityCounter++;
-                if (stabilityCounter >= 5) {
-                    LogOut("[INPUT_BUFFER] Buffer freezing stable (" + 
-                          std::to_string(stabilityCounter) + " iterations)", true);
-                }
-            } else {
-                stabilityCounter = 0;
-                LogOut("[INPUT_BUFFER] Buffer freezing unstable - " +
-                      std::string(indexMatch ? "Index OK" : "Index MISMATCH") + ", " +
-                      std::string(bufferMatch ? "Values OK" : "Values MISMATCH"), true);
-            }
-        }
-        
-        // Sleep briefly to avoid hammering the CPU
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        Sleep(5); // ~192 FPS
     }
     
-    LogOut("[INPUT_BUFFER] Buffer freeze thread terminated", true);
+    LogOut("[INPUT_BUFFER] Buffer freeze thread terminated safely", true);
+    g_bufferFreezingActive = false;
+    g_indexFreezingActive = false;
 }
 
 // Capture current buffer section and begin freezing it

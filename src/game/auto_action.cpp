@@ -574,29 +574,17 @@ void ClearDelayStatesIfNonActionable() {
 
 // Replace the entire ApplyAutoAction function with this implementation
 void ApplyAutoAction(int playerNum, uintptr_t moveIDAddr, short currentMoveID, short prevMoveID) {
-    // Add extra debug info
-    LogOut("[AUTO-ACTION] ApplyAutoAction called for P" + std::to_string(playerNum) + 
-           " with moveID: " + std::to_string(currentMoveID), true);
+    // Get the action type for this trigger
+    int actionType = 0;
+    int triggerType = 0;
     
-    // If this is player 2, verify control state
-    if (playerNum == 2) {
-        uintptr_t base = GetEFZBase();
-        if (base) {
-            uintptr_t p2CharPtr = 0;
-            if (SafeReadMemory(base + EFZ_BASE_OFFSET_P2, &p2CharPtr, sizeof(uintptr_t)) && p2CharPtr) {
-                uint32_t aiFlag = 1;
-                SafeReadMemory(p2CharPtr + AI_CONTROL_FLAG_OFFSET, &aiFlag, sizeof(uint32_t));
-                LogOut("[AUTO-ACTION] P2 AI control flag at action time: " + std::to_string(aiFlag) + 
-                       " (should be 0 for human control)", true);
-            }
-        }
+    if (playerNum == 1) {
+        triggerType = p1DelayState.triggerType;
+    } else {
+        triggerType = p2DelayState.triggerType;
     }
     
-    // Get the trigger type from the delay state
-    int triggerType = (playerNum == 1) ? p1DelayState.triggerType : p2DelayState.triggerType;
-
-    // Use the correct action type based on the trigger
-    int actionType;
+    // Determine action type based on trigger
     switch (triggerType) {
         case TRIGGER_AFTER_BLOCK:
             actionType = triggerAfterBlockAction.load();
@@ -611,66 +599,95 @@ void ApplyAutoAction(int playerNum, uintptr_t moveIDAddr, short currentMoveID, s
             actionType = triggerAfterAirtechAction.load();
             break;
         default:
-            actionType = ACTION_5A; // Default to 5A
+            actionType = ACTION_5A;
             break;
     }
-
-    // Debug: Log the selected action type to see if it's correct
+    
     LogOut("[AUTO-ACTION] Selected action type: " + std::to_string(actionType) + 
            " for trigger type: " + std::to_string(triggerType), true);
-
-    // Convert action type to motion input type and button
-    int motionType = ConvertTriggerActionToMotion(actionType, triggerType);
-    uint8_t buttonMask = DetermineButtonFromMotionType(motionType);
     
-    // Debug: Log the converted motion type
+    // Convert to motion type
+    LogOut("[AUTO-ACTION] Converting action type " + std::to_string(actionType) + 
+           " for trigger type " + std::to_string(triggerType), true);
+    
+    int motionType = ConvertTriggerActionToMotion(actionType, triggerType);
+    
+    // CRITICAL FIX: Define buttonMask here
+    int buttonMask = 0;
+    
+    // Determine button mask based on action type
+    if (actionType >= ACTION_5A && actionType <= ACTION_2C) {
+        // Normal attacks
+        int button = (actionType - ACTION_5A) % 3;  // 0=A, 1=B, 2=C
+        buttonMask = (1 << (4 + button));  // A=16, B=32, C=64
+    } else if (actionType >= ACTION_JA && actionType <= ACTION_JC) {
+        // Jump attacks
+        int button = (actionType - ACTION_JA) % 3;  // 0=A, 1=B, 2=C
+        buttonMask = (1 << (4 + button));  // A=16, B=32, C=64
+    } else if (actionType >= ACTION_QCF && actionType <= ACTION_CUSTOM) {
+        // Special moves - get strength from helper function
+        int strength = GetSpecialMoveStrength(actionType, triggerType);
+        buttonMask = (1 << (4 + strength));  // 0=A(16), 1=B(32), 2=C(64)
+    }
+    
     LogOut("[AUTO-ACTION] Converted to motion type: " + std::to_string(motionType) + 
            " with button mask: " + std::to_string(buttonMask), true);
     
-    // For special moves, use buffer freezing for consistent execution
-    bool isSpecialMove = 
-        (motionType == MOTION_236A || motionType == MOTION_236B || motionType == MOTION_236C ||
-         motionType == MOTION_623A || motionType == MOTION_623B || motionType == MOTION_623C ||
-         motionType == MOTION_214A || motionType == MOTION_214B || motionType == MOTION_214C ||
-         motionType == MOTION_41236A || motionType == MOTION_41236B || motionType == MOTION_41236C ||
-         motionType == MOTION_63214A || motionType == MOTION_63214B || motionType == MOTION_63214C ||
-         motionType == MOTION_421A || motionType == MOTION_421B || motionType == MOTION_421C);
+    if (motionType == MOTION_NONE) {
+        LogOut("[AUTO-ACTION] No motion mapping for action type " + std::to_string(actionType), true);
+        return;
+    }
+    
+    // Check if it's a special move
+    bool isSpecialMove = (motionType >= MOTION_236A && motionType <= MOTION_CUSTOM_5) ||
+                        (motionType >= 200 && motionType <= 299);
+    
+    // Check if it's a normal attack (not a special/motion)
+    bool isNormalAttack = (actionType >= ACTION_5A && actionType <= ACTION_JC) || 
+                         actionType == ACTION_JUMP || 
+                         actionType == ACTION_BLOCK ||
+                         actionType == ACTION_BACKDASH;
     
     if (isSpecialMove) {
-        FreezeBufferForMotion(playerNum, motionType, buttonMask);
+        // Special move using buffer freeze
+        LogOut("[AUTO-ACTION] Applying special move " + GetMotionTypeName(motionType) + 
+               " via buffer freezing", true);
         
-        // Mark action as applied
-        if (playerNum == 1) {
-            p1ActionApplied = true;
-        } else {
-            p2ActionApplied = true;
+        // Define optimalIndex - let FreezeBufferForMotion calculate the optimal position
+        int optimalIndex = -1;  // -1 means "calculate automatically"
+        
+        if (FreezeBufferForMotion(playerNum, motionType, buttonMask, optimalIndex)) {
+            LogOut("[AUTO-ACTION] Set up P" + std::to_string(playerNum) + 
+                   " control restoration monitoring: initial moveID=" + std::to_string(currentMoveID), true);
             
-            // IMPORTANT: For P2, setup control restoration by move tracking
-            short currentMoveID = 0;
-            if (moveIDAddr && SafeReadMemory(moveIDAddr, &currentMoveID, sizeof(short))) {
-                g_lastP2MoveID.store(currentMoveID);
+            // Set restoration flag for P2
+            if (playerNum == 2) {
                 g_pendingControlRestore.store(true);
                 g_controlRestoreTimeout.store(CONTROL_RESTORE_TIMEOUT);
-                LogOut("[AUTO-ACTION] Set up P2 control restoration monitoring: initial moveID=" + 
-                      std::to_string(currentMoveID), true);
+                g_lastP2MoveID.store(currentMoveID);
             }
-        }
-        
-        LogOut("[AUTO-ACTION] Applied special move " + GetMotionTypeName(motionType) + 
-               " via buffer freezing for P" + std::to_string(playerNum), true);
-    } else {
-        // For other actions, use the existing QueueMotionInput approach
-        QueueMotionInput(playerNum, motionType, buttonMask);
-        
-        // Mark action as applied
-        if (playerNum == 1) {
-            p1ActionApplied = true;
+            
+            LogOut("[AUTO-ACTION] Applied special move " + GetMotionTypeName(motionType) + 
+                   " via buffer freezing for P" + std::to_string(playerNum), true);
         } else {
-            p2ActionApplied = true;
+            LogOut("[AUTO-ACTION] Failed to freeze buffer for special move", true);
         }
-        
-        LogOut("[AUTO-ACTION] Applied action " + GetMotionTypeName(motionType) + 
-               " via input queue for P" + std::to_string(playerNum), true);
+    } else {
+        // Normal attack or movement
+        if (QueueMotionInput(playerNum, motionType)) {
+            // CRITICAL FIX: Set control restore for ALL P2 actions, not just specials
+            if (playerNum == 2) {
+                g_pendingControlRestore.store(true);
+                g_controlRestoreTimeout.store(60); // Shorter timeout for normals (1 second)
+                g_lastP2MoveID.store(currentMoveID);
+                LogOut("[AUTO-ACTION] Set up P2 control restoration for normal attack", true);
+            }
+            
+            LogOut("[AUTO-ACTION] Applied action " + GetMotionTypeName(motionType) + 
+                   " via input queue for P" + std::to_string(playerNum), true);
+        } else {
+            LogOut("[AUTO-ACTION] Failed to queue motion input", true);
+        }
     }
 }
 
