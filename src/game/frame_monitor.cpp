@@ -214,7 +214,63 @@ void FrameDataMonitor() {
     
     while (!g_isShuttingDown) {
         auto frameStart = clock::now();
-
+        
+        // Check current game phase
+        GamePhase currentPhase = GetCurrentGamePhase();
+        
+        // CRITICAL FIX: Stop buffer freezing IMMEDIATELY if not in match
+        if (currentPhase != GamePhase::Match) {
+            // Check if buffer freezing is active and stop it
+            if (g_bufferFreezingActive.load()) {
+                LogOut("[FRAME MONITOR] Phase left Match, emergency stopping buffer freeze", true);
+                StopBufferFreezing();
+            }
+            
+            // Also clear any pending delays and restore control
+            if (p1DelayState.isDelaying || p2DelayState.isDelaying) {
+                p1DelayState.isDelaying = false;
+                p2DelayState.isDelaying = false;
+                p1DelayState.triggerType = TRIGGER_NONE;
+                p2DelayState.triggerType = TRIGGER_NONE;
+                LogOut("[FRAME MONITOR] Cleared delay states due to phase change", true);
+            }
+            
+            // Restore P2 control if it was overridden
+            if (g_p2ControlOverridden) {
+                RestoreP2ControlState();
+            }
+        }
+        
+        // Track phase changes
+        static GamePhase lastPhase = GamePhase::Unknown;
+        if (currentPhase != lastPhase) {
+            LogOut("[FRAME MONITOR] Phase changed: " + std::to_string((int)lastPhase) + 
+                   " -> " + std::to_string((int)currentPhase), true);
+            
+            // On ANY phase change away from Match, ensure cleanup
+            if (lastPhase == GamePhase::Match && currentPhase != GamePhase::Match) {
+                LogOut("[FRAME MONITOR] Exiting Match phase - performing full cleanup", true);
+                
+                // Force stop everything
+                StopBufferFreezing();
+                ResetActionFlags();
+                
+                // Clear all auto-action states
+                p1DelayState = {false, 0, TRIGGER_NONE, 0};
+                p2DelayState = {false, 0, TRIGGER_NONE, 0};
+                p1ActionApplied = false;
+                p2ActionApplied = false;
+                
+                // Restore P2 control
+                if (g_p2ControlOverridden) {
+                    RestoreP2ControlState();
+                    g_p2ControlOverridden = false;
+                }
+            }
+            
+            lastPhase = currentPhase;
+        }
+        
         // SINGLE authoritative frame increment
         int currentFrame = frameCounter.fetch_add(1) + 1;
 

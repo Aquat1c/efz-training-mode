@@ -57,6 +57,15 @@ file(GLOB GUI_SOURCES "src/gui/*.cpp")
 file(GLOB INPUT_SOURCES "src/input/*.cpp")
 file(GLOB UTILS_SOURCES "src/utils/*.cpp")
 
+# Remove duplicate legacy files
+list(REMOVE_ITEM ROOT_SOURCES
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/frame_advantage.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/frame_monitor.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/frame_analysis.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/utilities.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/input_handler.cpp"
+)
+
 # Create combined SOURCES variable
 set(SOURCES
     ${ROOT_SOURCES}

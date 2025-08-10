@@ -3,6 +3,7 @@
 #include "../include/core/memory.h"
 #include "../include/core/constants.h"
 #include "../include/gui/overlay.h"
+#include "../include/core/globals.h"  // Add this include
 #include "../3rdparty/minhook/include/MinHook.h"
 #include <atomic>
 #include <thread>
@@ -169,17 +170,23 @@ static std::thread g_bgmPollerThread;
 
 void BGMSuppressionPoller() {
     LogOut("[BGM] BGM suppression poller thread started", true);
-    while (g_bgmPollerRunning.load()) {
-        if (IsBGMSuppressed()) {
+    
+    while (g_bgmPollerRunning.load() && !g_isShuttingDown.load()) {  // Check shutdown flag
+        if (g_bgmSuppressed.load()) {
             uintptr_t efzBase = GetEFZBase();
             uintptr_t gameStatePtr = 0;
             if (SafeReadMemory(efzBase + EFZ_BASE_OFFSET_GAME_STATE, &gameStatePtr, sizeof(uintptr_t)) && gameStatePtr) {
                 StopBGM(gameStatePtr);
             }
         }
-        std::this_thread::sleep_for(std::chrono::milliseconds(1)); // Poll as fast as possible
+        
+        // Check shutdown more frequently
+        for (int i = 0; i < 10 && g_bgmPollerRunning.load() && !g_isShuttingDown.load(); i++) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
     }
-    LogOut("[BGM] BGM suppression poller thread stopped", true);
+    
+    LogOut("[BGM] BGM suppression poller thread ending", true);
 }
 
 void StartBGMSuppressionPoller() {

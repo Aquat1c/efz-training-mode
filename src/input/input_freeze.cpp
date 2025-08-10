@@ -1,5 +1,5 @@
 #include "../include/input/input_freeze.h"
-
+#include "../include/core/globals.h"
 #include "../include/input/input_core.h"
 #include "../include/core/memory.h"  
 #include "../include/core/logger.h"
@@ -460,8 +460,8 @@ bool FreezeBufferForMotion(int playerNum, int motionType, int buttonMask, int op
     g_indexFreezingActive = true;
     g_bufferFreezingActive = true;
     
-    // Start buffer freeze thread
-    g_bufferFreezeThread = std::thread([playerNum, motionPattern, motionType]() {
+    // Launch the freeze thread
+    g_bufferFreezeThread = std::thread([playerNum, motionType, motionPattern, optimalIndex]() {
         LogOut("[BUFFER_FREEZE] Starting pattern buffer freeze thread for " + 
               GetMotionTypeName(motionType), true);
         
@@ -471,6 +471,9 @@ bool FreezeBufferForMotion(int playerNum, int motionType, int buttonMask, int op
             g_bufferFreezingActive = false;
             return;
         }
+        
+        // Store initial player pointer for validation
+        uintptr_t initialPlayerPtr = playerPtr;
         
         int counter = 0;
         uint16_t lastIndex = 0;
@@ -483,41 +486,60 @@ bool FreezeBufferForMotion(int playerNum, int motionType, int buttonMask, int op
         const int MAX_TIMEOUT = 300; // 5 seconds (60 frames per second)
         
         // Main freeze loop with multiple exit conditions
-        while (g_bufferFreezingActive && timeoutCounter++ < MAX_TIMEOUT) {
-            if (!IsMatchPhase()) {
-                LogOut("[BUFFER_FREEZE] Phase left MATCH, aborting freeze", true);
+        while (g_bufferFreezingActive && timeoutCounter++ < MAX_TIMEOUT && !g_isShuttingDown.load()) {
+            // CRITICAL: Check game phase FIRST
+            GamePhase phase = GetCurrentGamePhase();
+            if (phase != GamePhase::Match) {
+                LogOut("[BUFFER_FREEZE] Game no longer in Match phase, aborting", true);
                 break;
             }
             
-            // Safety check - is the game still in a valid state?
-            if (GetCurrentGameMode() == GameMode::Unknown || 
-                !IsValidGameMode(GetCurrentGameMode())) {  // Use IsValidGameMode instead
-                LogOut("[BUFFER_FREEZE] Game state changed, stopping buffer freeze", true);
-                g_bufferFreezingActive = false;
+            // Validate player pointer hasn't changed
+            uintptr_t currentPlayerPtr = GetPlayerPointer(playerNum);
+            if (!currentPlayerPtr || currentPlayerPtr != initialPlayerPtr) {
+                LogOut("[BUFFER_FREEZE] Player pointer changed/invalidated, aborting", true);
                 break;
             }
             
-            // Read current index and moveID for monitoring
+            // Safety check game mode
+            if (!IsValidGameMode(GetCurrentGameMode())) {
+                LogOut("[BUFFER_FREEZE] Invalid game mode, aborting", true);
+                break;
+            }
+            
+            // Read current index
             uint16_t currentIndex = 0;
-            short moveID = 0;
-            SafeReadMemory(playerPtr + INPUT_BUFFER_INDEX_OFFSET, &currentIndex, sizeof(uint16_t));
+            if (!SafeReadMemory(playerPtr + INPUT_BUFFER_INDEX_OFFSET, &currentIndex, sizeof(uint16_t))) {
+                LogOut("[BUFFER_FREEZE] Failed to read buffer index, aborting", true);
+                break;
+            }
             
-            // Optional: Read moveID for logging
+            // Write the pattern
+            for (size_t i = 0; i < motionPattern.size(); i++) {
+                uint16_t writePos = (optimalIndex + i) % INPUT_BUFFER_SIZE;
+                uintptr_t addr = playerPtr + INPUT_BUFFER_OFFSET + writePos;
+                
+                if (!SafeWriteMemory(addr, &motionPattern[i], sizeof(uint8_t))) {
+                    LogOut("[BUFFER_FREEZE] Failed to write to buffer, aborting", true);
+                    g_bufferFreezingActive = false;
+                    break;
+                }
+            }
+            
+            // Check for move execution
             uintptr_t moveIDAddr = ResolvePointer(GetEFZBase(), 
                 (playerNum == 1) ? EFZ_BASE_OFFSET_P1 : EFZ_BASE_OFFSET_P2, 
                 MOVE_ID_OFFSET);
                 
-            if (moveIDAddr) {
-                SafeReadMemory(moveIDAddr, &moveID, sizeof(short));
+            if (moveIDAddr && SafeReadMemory(moveIDAddr, &moveID, sizeof(short))) {
                 if (moveID != lastMoveID) {
                     LogOut("[BUFFER_FREEZE] MoveID changed: " + std::to_string(lastMoveID) + 
                           " → " + std::to_string(moveID), true);
                     
-                    // If ANY move ID change happens, consider it a success after a short duration
-                    if (moveID > 0 && counter > 30) {  // Wait at least 30 frames (~1/6 second)
-                        LogOut("[BUFFER_FREEZE] Motion recognized! Detected move with ID: " + 
+                    // If move executed successfully, we can stop
+                    if (moveID > 0 && counter > 30) {
+                        LogOut("[BUFFER_FREEZE] Motion recognized! Move ID: " + 
                               std::to_string(moveID), true);
-                        EndBufferFreezeSession(playerNum, "motion recognized");
                         break;
                     }
                     
@@ -525,58 +547,16 @@ bool FreezeBufferForMotion(int playerNum, int motionType, int buttonMask, int op
                 }
             }
             
-            // Allow index to float in optimal range, only reset if it's outside
-            if (currentIndex < 147 || currentIndex > 152) {
-                SafeWriteMemory(playerPtr + INPUT_BUFFER_INDEX_OFFSET, &g_frozenIndexValue, sizeof(uint16_t));
-                currentIndex = g_frozenIndexValue;
-            }
-            
-            // Always write the pattern at multiple positions relative to the current index
-            // This ensures it's found no matter which exact index the game checks
-            for (int offset = -2; offset <= 2; offset++) {
-                int basePos = (currentIndex - motionPattern.size() / 2 + offset) % INPUT_BUFFER_SIZE;
-                if (basePos < 0) basePos += INPUT_BUFFER_SIZE;
-                
-                // Write the pattern
-                for (size_t i = 0; i < motionPattern.size(); i++) {
-                    uint16_t writeIndex = (basePos + i) % INPUT_BUFFER_SIZE;
-                    SafeWriteMemory(playerPtr + INPUT_BUFFER_OFFSET + writeIndex, 
-                                   &motionPattern[i], sizeof(uint8_t));
-                }
-            }
-            
-            // Also make sure we write the exact pattern at known good positions
-            const int knownGoodStart = 144;
-            for (size_t i = 0; i < motionPattern.size(); i++) {
-                SafeWriteMemory(playerPtr + INPUT_BUFFER_OFFSET + knownGoodStart + i, 
-                               &motionPattern[i], sizeof(uint8_t));
-            }
-            
-            // Log periodically or on index change
-            if (currentIndex != lastIndex || counter % 100 == 0) {
-                LogOut("[BUFFER_FREEZE] Maintaining " + GetMotionTypeName(motionType) + 
-                       " pattern at index: " + std::to_string(currentIndex), 
-                       detailedLogging.load());
-                lastIndex = currentIndex;
-            }
-            
             counter++;
-            
-            // Use short sleep for responsiveness
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
         
-        // Clear any buffer pattern we've written when exiting
-        if (playerPtr) {
-            uint8_t neutral = 0x00;
-            for (int i = 0; i < 16; i++) {
-                SafeWriteMemory(playerPtr + INPUT_BUFFER_OFFSET + i, &neutral, sizeof(uint8_t));
-            }
-        }
+        // Cleanup
+        LogOut("[BUFFER_FREEZE] Buffer freeze thread for " + GetMotionTypeName(motionType) + 
+               " ended (counter=" + std::to_string(counter) + ")", true);
         
         g_bufferFreezingActive = false;
-        LogOut("[BUFFER_FREEZE] Buffer freeze thread for " + GetMotionTypeName(motionType) + 
-               " ended", true);
+        EndBufferFreezeSession(playerNum, "thread ended");
     });
     
     // Keep thread joinable instead of detaching it

@@ -25,6 +25,8 @@
 #define MOTION_421B      210  // Down-Back-Down + B
 #define MOTION_421C      211  // Down-Back-Down + C
 
+
+
 // Super move motion constants
 #define MOTION_41236A    300  // HCF + A
 #define MOTION_41236B    301  // HCF + B
@@ -36,6 +38,15 @@
 // Dash motion constants
 #define ACTION_FORWARD_DASH  400
 #define ACTION_BACK_DASH     401
+
+
+
+// Custom move motion constants
+#define MOTION_CUSTOM_1  230
+#define MOTION_CUSTOM_2  231
+#define MOTION_CUSTOM_3  232
+#define MOTION_CUSTOM_4  233
+#define MOTION_CUSTOM_5  234
 
 // Utility constant
 #define MOTION_NONE      0
