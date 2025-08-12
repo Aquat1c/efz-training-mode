@@ -112,7 +112,8 @@ void UpdateTriggerOverlay() {
             actionType == ACTION_SUPER1 || 
             actionType == ACTION_SUPER2 ||
             actionType == ACTION_236236 ||
-            actionType == ACTION_214214) {
+            actionType == ACTION_214214 ||
+        actionType == ACTION_641236) {
             
             // Convert strength number to letter
             switch(strength) {
@@ -141,6 +142,7 @@ void UpdateTriggerOverlay() {
             case ACTION_SUPER2: return "63214" + strengthLetter; // HCB + strength
             case ACTION_236236: return "236236" + strengthLetter; // Double QCF + strength
             case ACTION_214214: return "214214" + strengthLetter; // Double QCB + strength
+            case ACTION_641236: return "641236" + strengthLetter; // Double QCF + strength
             case ACTION_JUMP: return "Jump";
             case ACTION_BACKDASH: return "Backdash";
             case ACTION_FORWARD_DASH: return "Forward Dash";
