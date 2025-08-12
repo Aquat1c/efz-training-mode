@@ -245,325 +245,149 @@ bool FreezeBufferForMotion(int playerNum, int motionType, int buttonMask, int op
     // Stop any existing freeze thread
     StopBufferFreezing();
     
-    // Add a short delay to ensure previous thread is truly stopped
-    std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    
-    LogOut("[BUFFER_FREEZE] Starting buffer freeze for motion " + GetMotionTypeName(motionType) + " (P" + std::to_string(playerNum) + ")", true);
-    
-    // OLD (caused error):
-    // BeginBufferFreezeSession(playerNum, GetMotionTypeName(motionType));
-    // FIX:
-    {
-        std::string motionLabel = GetMotionTypeName(motionType);
-        BeginBufferFreezeSession(playerNum, motionLabel.c_str());
-    }
-    
+    // Get player pointer and facing direction
     uintptr_t playerPtr = GetPlayerPointer(playerNum);
     if (!playerPtr) {
-        LogOut("[BUFFER_FREEZE] Failed to get player pointer", true);
+        LogOut("[BUFFER_FREEZE] Invalid player pointer", true);
         return false;
     }
-
-    // Read initial buffer state
-    uint16_t currentIndex = 0;
-    SafeReadMemory(playerPtr + INPUT_BUFFER_INDEX_OFFSET, &currentIndex, sizeof(uint16_t));
-    LogOut("[BUFFER_FREEZE] Initial buffer index: " + std::to_string(currentIndex), true);
     
-    // Get player's facing direction
+    // Log basic information
     bool facingRight = GetPlayerFacingDirection(playerNum);
+    LogOut("[BUFFER_FREEZE] Starting buffer freeze for motion " + GetMotionTypeName(motionType) + " (P" + std::to_string(playerNum) + ")", true);
+    LogOut("[BUFFER_FREEZE] Begin session (" + GetMotionTypeName(motionType) + ") P" + std::to_string(playerNum), true);
+    
+    // Define directions based on facing
+    uint8_t fwd = facingRight ? GAME_INPUT_RIGHT : GAME_INPUT_LEFT;
+    uint8_t back = facingRight ? GAME_INPUT_LEFT : GAME_INPUT_RIGHT;
+    uint8_t down = GAME_INPUT_DOWN;
+    uint8_t downFwd = down | fwd;
+    uint8_t downBack = down | back;
+    
+    std::string motionLabel = GetMotionTypeName(motionType);
     LogOut("[BUFFER_FREEZE] Player " + std::to_string(playerNum) + " facing " + (facingRight ? "right" : "left"), true);
     
-    // Generate buffer pattern based on motion type
-    std::vector<uint8_t> motionPattern;
+    // Initialize pattern with carefully optimized sequence
+    std::vector<uint8_t> pattern;
     
-    // Helper to adjust directions based on facing
-    auto adjustDirection = [facingRight](uint8_t dirMask) -> uint8_t {
-        if (facingRight) {
-            return dirMask;
-        } else {
-            // Flip horizontal directions when facing left
-            uint8_t result = dirMask & ~(GAME_INPUT_LEFT | GAME_INPUT_RIGHT); // Clear left/right bits
-            
-            // Swap left and right
-            if (dirMask & GAME_INPUT_LEFT) result |= GAME_INPUT_RIGHT;
-            if (dirMask & GAME_INPUT_RIGHT) result |= GAME_INPUT_LEFT;
-            
-            return result;
-        }
-    };
-    
-    // Populate the buffer pattern based on motion type
     switch (motionType) {
-        case MOTION_236A: case MOTION_236B: case MOTION_236C: {
-            // QCF: Down, Down-Forward, Forward + Button
-            uint8_t down = adjustDirection(GAME_INPUT_DOWN);
-            uint8_t downFwd = adjustDirection(GAME_INPUT_DOWN | GAME_INPUT_RIGHT);
-            uint8_t fwd = adjustDirection(GAME_INPUT_RIGHT);
-            uint8_t btn = buttonMask;
-            
-            // Pattern: Neutral → Down → Down-Forward → Forward+Button
-            motionPattern = {
-                u8(0x00), u8(0x00), u8(0x00), // Neutral padding
-                u8(down), u8(down), u8(down), // Down x3
-                u8(downFwd), u8(downFwd), u8(downFwd), // Down-Forward x3
-                u8(fwd | btn), u8(fwd | btn), u8(fwd | btn) // Forward+Button x3
-            };
-            break;
-        }
-        
         case MOTION_623A: case MOTION_623B: case MOTION_623C: {
-            // DP: Forward, Down, Down-Forward + Button
-            uint8_t fwd = adjustDirection(GAME_INPUT_RIGHT);
-            uint8_t down = adjustDirection(GAME_INPUT_DOWN);
-            uint8_t downFwd = adjustDirection(GAME_INPUT_DOWN | GAME_INPUT_RIGHT);
-            uint8_t btn = buttonMask;
-            
-            // Use the exact pattern that works from CheatEngine
-            motionPattern = {
-                u8(0x00), u8(0x00), u8(0x00), // Neutral padding
-                u8(fwd), u8(fwd), u8(fwd), // Forward x3
-                u8(down), u8(down), u8(down), // Down x3
-                u8(downFwd | btn), // Down-Forward+Button x1
-                u8(downFwd), u8(downFwd), u8(downFwd), u8(downFwd), // Down-Forward x4
-                u8(downFwd | btn), u8(downFwd | btn), u8(downFwd | btn), u8(downFwd | btn) // Down-Forward+Button x4
+            // Dragon Punch (623): Forward, Down, Down-Forward + Button
+            pattern = {
+                0x00, 0x00,                             // Neutral padding (2)
+                fwd, fwd, fwd,                          // Forward (3)
+                down, down,                             // Down (2)
+                downFwd, downFwd,                       // Down-Forward (2)
+                (uint8_t)(downFwd | buttonMask),        // Down-Forward+Button (1)
+                (uint8_t)(downFwd | buttonMask),        // Down-Forward+Button (1)
             };
             break;
         }
         
         case MOTION_214A: case MOTION_214B: case MOTION_214C: {
             // QCB: Down, Down-Back, Back + Button
-            uint8_t down = adjustDirection(GAME_INPUT_DOWN);
-            uint8_t downBack = adjustDirection(GAME_INPUT_DOWN | GAME_INPUT_LEFT);
-            uint8_t back = adjustDirection(GAME_INPUT_LEFT);
-            uint8_t btn = buttonMask;
-            
-            // Pattern: Neutral → Down → Down-Back → Back+Button
-            motionPattern = {
-                u8(0x00), u8(0x00), u8(0x00), // Neutral padding
-                u8(down), u8(down), u8(down), // Down x3
-                u8(downBack), u8(downBack), // Down-Back x2
-                u8(back | btn), u8(back | btn), u8(back | btn), u8(back | btn) // Back+Button x4
+            pattern = {
+                0x00, 0x00,                             // Neutral padding (2)
+                down, down, down,                       // Down (3)
+                downBack, downBack,                     // Down-Back (2)
+                back, back,                             // Back (2)
+                (uint8_t)(back | buttonMask),           // Back+Button (1)
+                (uint8_t)(back | buttonMask),           // Back+Button (1)
+            };
+            break;
+        }
+        
+        case MOTION_236A: case MOTION_236B: case MOTION_236C: {
+            // QCF: Down, Down-Forward, Forward + Button
+            pattern = {
+                0x00, 0x00,                             // Neutral padding (2)
+                down, down, down,                       // Down (3)
+                downFwd, downFwd,                       // Down-Forward (2)
+                fwd, fwd,                               // Forward (2)
+                (uint8_t)(fwd | buttonMask),            // Forward+Button (1)
+                (uint8_t)(fwd | buttonMask),            // Forward+Button (1)
             };
             break;
         }
         
         case MOTION_41236A: case MOTION_41236B: case MOTION_41236C: {
             // HCF: Back, Down-Back, Down, Down-Forward, Forward + Button
-            uint8_t back = adjustDirection(GAME_INPUT_LEFT);
-            uint8_t downBack = adjustDirection(GAME_INPUT_DOWN | GAME_INPUT_LEFT);
-            uint8_t down = adjustDirection(GAME_INPUT_DOWN);
-            uint8_t downFwd = adjustDirection(GAME_INPUT_DOWN | GAME_INPUT_RIGHT);
-            uint8_t fwd = adjustDirection(GAME_INPUT_RIGHT);
-            uint8_t btn = buttonMask;
-            
-            // Pattern for HCF
-            motionPattern = {
-                u8(back), u8(back), // Back x2
-                u8(downBack), u8(downBack), // Down-Back x2
-                u8(down), u8(down), // Down x2
-                u8(downFwd), u8(downFwd), // Down-Forward x2
-                u8(fwd | btn), u8(fwd | btn), u8(fwd | btn), u8(fwd | btn) // Forward+Button x4
+            pattern = {
+                0x00, 0x00,                             // Neutral padding (2)
+                back, back,                             // Back (2)
+                downBack, downBack,                     // Down-Back (2)
+                down, down,                             // Down (2)
+                downFwd, downFwd,                       // Down-Forward (2)
+                fwd,                                    // Forward (1)
+                (uint8_t)(fwd | buttonMask),            // Forward+Button (1)
+                (uint8_t)(fwd | buttonMask),            // Forward+Button (1)
             };
             break;
         }
         
         case MOTION_63214A: case MOTION_63214B: case MOTION_63214C: {
             // HCB: Forward, Down-Forward, Down, Down-Back, Back + Button
-            uint8_t fwd = adjustDirection(GAME_INPUT_RIGHT);
-            uint8_t downFwd = adjustDirection(GAME_INPUT_DOWN | GAME_INPUT_RIGHT);
-            uint8_t down = adjustDirection(GAME_INPUT_DOWN);
-            uint8_t downBack = adjustDirection(GAME_INPUT_DOWN | GAME_INPUT_LEFT);
-            uint8_t back = adjustDirection(GAME_INPUT_LEFT);
-            uint8_t btn = buttonMask;
-            
-            // Pattern for HCB
-            motionPattern = {
-                u8(fwd), u8(fwd), // Forward x2
-                u8(downFwd), u8(downFwd), // Down-Forward x2
-                u8(down), u8(down), // Down x2
-                u8(downBack), u8(downBack), // Down-Back x2
-                u8(back | btn), u8(back | btn), u8(back | btn), u8(back | btn) // Back+Button x4
-            };
-            break;
-        }
-        
-        case MOTION_421A: case MOTION_421B: case MOTION_421C: {
-            // Half Circle Back Down: Down, Down-Back, Back + Button
-            uint8_t down = adjustDirection(GAME_INPUT_DOWN);
-            uint8_t downBack = adjustDirection(GAME_INPUT_DOWN | GAME_INPUT_LEFT);
-            uint8_t back = adjustDirection(GAME_INPUT_LEFT);
-            uint8_t btn = buttonMask;
-            
-            // Pattern for 421
-            motionPattern = {
-                u8(0x00), u8(0x00), u8(0x00), // Neutral padding
-                u8(down), u8(down), u8(down), // Down x3
-                u8(downBack), u8(downBack), // Down-Back x2
-                u8(back | btn), u8(back | btn), u8(back | btn), u8(back | btn) // Back+Button x4
-            };
-            break;
-        }
-        
-        case ACTION_FORWARD_DASH: {
-            // Forward, Neutral, Forward
-            uint8_t fwd = adjustDirection(GAME_INPUT_RIGHT);
-            
-            motionPattern = {
-                u8(0x00), u8(0x00), u8(0x00), // Neutral padding
-                u8(fwd), u8(fwd), // Forward x2
-                u8(0x00), u8(0x00), // Neutral x2
-                u8(fwd), u8(fwd), u8(fwd), u8(fwd) // Forward x4
-            };
-            break;
-        }
-        
-        case ACTION_BACK_DASH: {
-            // Back, Neutral, Back
-            uint8_t back = adjustDirection(GAME_INPUT_LEFT);
-            
-            motionPattern = {
-                u8(0x00), u8(0x00), u8(0x00), // Neutral padding
-                u8(back), u8(back), // Back x2
-                u8(0x00), u8(0x00), // Neutral x2
-                u8(back), u8(back), u8(back), u8(back) // Back x4
+            pattern = {
+                0x00, 0x00,                             // Neutral padding (2)
+                fwd, fwd,                               // Forward (2)
+                downFwd, downFwd,                       // Down-Forward (2)
+                down, down,                             // Down (2)
+                downBack, downBack,                     // Down-Back (2)
+                back,                                   // Back (1)
+                (uint8_t)(back | buttonMask),           // Back+Button (1)
+                (uint8_t)(back | buttonMask),           // Back+Button (1)
             };
             break;
         }
         
         default:
-            // For unknown motion types, default to a simple forward+button pattern
-            uint8_t fwd = adjustDirection(GAME_INPUT_RIGHT);
-            motionPattern = {
-                u8(0x00), u8(0x00), u8(0x00), u8(0x00),
-                u8(fwd | buttonMask), u8(fwd | buttonMask), u8(fwd | buttonMask), u8(fwd | buttonMask)
-            };
-            LogOut("[BUFFER_FREEZE] Warning: Unknown motion type " + std::to_string(motionType) + 
-                  ", using default pattern", true);
+            LogOut("[BUFFER_FREEZE] Unsupported motion type: " + std::to_string(motionType), true);
+            return false;
     }
     
-    // Diagnostic logging of the motion pattern
+    // Log the pattern values with direction names for debugging
     std::stringstream ss;
-    ss << "[BUFFER_FREEZE] Pattern values for " << GetMotionTypeName(motionType) << ": ";
-    for (size_t i = 0; i < motionPattern.size(); i++) {
-        ss << std::hex << std::setw(2) << std::setfill('0') 
-           << static_cast<int>(motionPattern[i]) << "(" 
-           << DecodeInputMask(motionPattern[i]) << ") ";
+    ss << "[BUFFER_FREEZE] Pattern values for " << motionLabel << ": ";
+    for (size_t i = 0; i < pattern.size(); i++) {
+        ss << DecodeInputMask(pattern[i]) << " ";
     }
     LogOut(ss.str(), true);
     
-    // Target index where we want to maintain the pattern
-    g_frozenIndexValue = optimalIndex;
-    g_frozenBufferValues = motionPattern;
-    g_frozenBufferLength = motionPattern.size();
+    // OPTIMIZATION: Always place pattern at the beginning of the buffer (index 0)
+    const uint16_t startIndex = 0;
     
-    // Enable buffer and index manipulation
-    g_indexFreezingActive = true;
-    g_bufferFreezingActive = true;
+    // First clear the entire buffer section we'll use plus a few extra bytes for safety
+    const int clearPadding = 4;
+    const uint16_t clearLength = static_cast<uint16_t>(pattern.size() + clearPadding);
     
-    // Launch the freeze thread
-    g_bufferFreezeThread = std::thread([playerNum, motionType, motionPattern, optimalIndex]() {
-        LogOut("[BUFFER_FREEZE] Starting pattern buffer freeze thread for " + 
-              GetMotionTypeName(motionType), true);
-        
-        uintptr_t playerPtr = GetPlayerPointer(playerNum);
-        if (!playerPtr) {
-            LogOut("[BUFFER_FREEZE] Failed to get player pointer, stopping freeze", true);
-            g_bufferFreezingActive = false;
-            return;
-        }
-        
-        // Store initial player pointer for validation
-        uintptr_t initialPlayerPtr = playerPtr;
-        
-        int counter = 0;
-        uint16_t lastIndex = 0;
-        short lastMoveID = -1;
-        short moveID = 0;
-        bool moveDetected = false;
-        
-        // Add a timeout to ensure the thread doesn't run forever
-        int timeoutCounter = 0;
-        const int MAX_TIMEOUT = 300; // 5 seconds (60 frames per second)
-        
-        // Main freeze loop with multiple exit conditions
-        while (g_bufferFreezingActive && timeoutCounter++ < MAX_TIMEOUT && !g_isShuttingDown.load()) {
-            // CRITICAL: Check game phase FIRST
-            GamePhase phase = GetCurrentGamePhase();
-            if (phase != GamePhase::Match) {
-                LogOut("[BUFFER_FREEZE] Game no longer in Match phase, aborting", true);
-                break;
-            }
-            
-            // Validate player pointer hasn't changed
-            uintptr_t currentPlayerPtr = GetPlayerPointer(playerNum);
-            if (!currentPlayerPtr || currentPlayerPtr != initialPlayerPtr) {
-                LogOut("[BUFFER_FREEZE] Player pointer changed/invalidated, aborting", true);
-                break;
-            }
-            
-            // Safety check game mode
-            if (!IsValidGameMode(GetCurrentGameMode())) {
-                LogOut("[BUFFER_FREEZE] Invalid game mode, aborting", true);
-                break;
-            }
-            
-            // Read current index
-            uint16_t currentIndex = 0;
-            if (!SafeReadMemory(playerPtr + INPUT_BUFFER_INDEX_OFFSET, &currentIndex, sizeof(uint16_t))) {
-                LogOut("[BUFFER_FREEZE] Failed to read buffer index, aborting", true);
-                break;
-            }
-            
-            // Write the pattern
-            for (size_t i = 0; i < motionPattern.size(); i++) {
-                uint16_t writePos = (optimalIndex + i) % INPUT_BUFFER_SIZE;
-                uintptr_t addr = playerPtr + INPUT_BUFFER_OFFSET + writePos;
-                
-                if (!SafeWriteMemory(addr, &motionPattern[i], sizeof(uint8_t))) {
-                    LogOut("[BUFFER_FREEZE] Failed to write to buffer, aborting", true);
-                    g_bufferFreezingActive = false;
-                    break;
-                }
-            }
-            
-            // Check for move execution
-            uintptr_t moveIDAddr = ResolvePointer(GetEFZBase(), 
-                (playerNum == 1) ? EFZ_BASE_OFFSET_P1 : EFZ_BASE_OFFSET_P2, 
-                MOVE_ID_OFFSET);
-                
-            if (moveIDAddr && SafeReadMemory(moveIDAddr, &moveID, sizeof(short))) {
-                if (moveID != lastMoveID) {
-                    LogOut("[BUFFER_FREEZE] MoveID changed: " + std::to_string(lastMoveID) + 
-                          " → " + std::to_string(moveID), true);
-                    
-                    // If move executed successfully, we can stop
-                    if (moveID > 0 && counter > 30) {
-                        LogOut("[BUFFER_FREEZE] Motion recognized! Move ID: " + 
-                              std::to_string(moveID), true);
-                        break;
-                    }
-                    
-                    lastMoveID = moveID;
-                }
-            }
-            
-            counter++;
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
-        }
-        
-        // Cleanup
-        LogOut("[BUFFER_FREEZE] Buffer freeze thread for " + GetMotionTypeName(motionType) + 
-               " ended (counter=" + std::to_string(counter) + ")", true);
-        
-        g_bufferFreezingActive = false;
-        EndBufferFreezeSession(playerNum, "thread ended");
-    });
-    
-    // Keep thread joinable instead of detaching it
-    if (g_bufferFreezeThread.joinable()) {
-        g_bufferFreezeThread.detach();
+    for (uint16_t i = 0; i < clearLength; i++) {
+        uint16_t idx = (startIndex + i) % INPUT_BUFFER_SIZE;
+        uint8_t zero = 0;
+        SafeWriteMemory(playerPtr + INPUT_BUFFER_OFFSET + idx, &zero, sizeof(uint8_t));
     }
     
+    // Now write our pattern at the start of the buffer
+    for (size_t i = 0; i < pattern.size(); i++) {
+        uint16_t idx = (startIndex + i) % INPUT_BUFFER_SIZE;
+        SafeWriteMemory(playerPtr + INPUT_BUFFER_OFFSET + idx, &pattern[i], sizeof(uint8_t));
+    }
+    
+    // Set up globals for the freeze thread
+    g_frozenBufferValues = pattern;
+    g_frozenBufferStartIndex = startIndex;
+    g_frozenBufferLength = static_cast<uint16_t>(pattern.size());
+    
+    // Set index to point at the end of our pattern minus 1 (to ensure button press is read)
+    g_frozenIndexValue = (startIndex + g_frozenBufferLength - 1) % INPUT_BUFFER_SIZE;
+    g_indexFreezingActive = true;
+    
+    // Start freezing thread
+    g_bufferFreezingActive = true;
+    g_bufferFreezeThread = std::thread(FreezeBufferValuesThread, playerNum);
+    g_bufferFreezeThread.detach();
+    
+    LogOut("[BUFFER_FREEZE] Buffer freeze for " + motionLabel + " activated at index " + 
+           std::to_string(g_frozenIndexValue), true);
     return true;
 }
 
