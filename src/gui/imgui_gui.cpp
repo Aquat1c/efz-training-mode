@@ -249,7 +249,7 @@ namespace ImGuiGui {
             const char* actionItems[] = { 
                 "5A", "5B", "5C", "2A", "2B", "2C", 
                 "j.A", "j.B", "j.C",
-                "QCF", "DP", "QCB", "Super 1", "Super 2",
+                "236", "623", "214", "41236", "63214",
                 "Jump", "Backdash", "Block"
             };
             
