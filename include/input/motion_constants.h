@@ -30,12 +30,9 @@
 #define MOTION_214214A   215  // Double QCB + A (super)
 #define MOTION_214214B   216  // Double QCB + B (super)
 #define MOTION_214214C   217  // Double QCB + C (super)
-#define MOTION_CHARGE_BACK_FORWARD_A   220  // Charge [4]6+A
-#define MOTION_CHARGE_BACK_FORWARD_B   221  // Charge [4]6+B
-#define MOTION_CHARGE_BACK_FORWARD_C   222  // Charge [4]6+C
-#define MOTION_CHARGE_DOWN_UP_A        223  // Charge [2]8+A
-#define MOTION_CHARGE_DOWN_UP_B        224  // Charge [2]8+B
-#define MOTION_CHARGE_DOWN_UP_C        225  // Charge [2]8+C
+#define MOTION_641236A   220
+#define MOTION_641236B   221
+#define MOTION_641236C   222
 
 // Super move motion constants
 #define MOTION_41236A    300  // HCF + A
@@ -60,6 +57,7 @@
 #define MOTION_NONE      0
 
 // Additional motion constants
-#define ACTION_421          19    // Half-circle down (421)
+//#define ACTION_421          19    // Half-circle down (421)
 #define ACTION_236236       20    // Double QCF
 #define ACTION_214214       21    // Double QCB
+#define ACTION_641236       22    // 641236 Super

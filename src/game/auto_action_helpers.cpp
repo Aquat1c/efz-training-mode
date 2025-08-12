@@ -113,6 +113,12 @@ int ConvertTriggerActionToMotion(int actionType, int triggerType) {
             if (strength == 2) return MOTION_214214C;
             return MOTION_214214A;
 
+        // 641236 Super
+        case ACTION_641236:
+            if (strength == 1) return MOTION_641236B;
+            if (strength == 2) return MOTION_641236C;
+            return MOTION_641236A;
+
         // Other actions
         case ACTION_JUMP: return MOTION_JA;
         case ACTION_BACKDASH: return ACTION_BACK_DASH;

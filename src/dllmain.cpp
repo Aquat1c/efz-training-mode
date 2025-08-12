@@ -38,7 +38,7 @@ extern std::atomic<bool> inStartupPhase;
 void InitializeConfig();
 
 // Define the global flags (remove 'static' if present)
-std::atomic<bool> g_isShuttingDown(false);
+extern std::atomic<bool> g_isShuttingDown;  // Reference the one defined in globals.cpp
 std::atomic<bool> g_initialized(false);
 std::atomic<bool> g_featuresEnabled(false);  // If this exists elsewhere, move it here
 

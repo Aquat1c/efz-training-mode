@@ -309,7 +309,17 @@ bool FreezeBufferForMotion(int playerNum, int motionType, int buttonMask, int op
             };
             break;
         }
-        
+        case MOTION_421A: case MOTION_421B: case MOTION_421C: {
+            pattern = {
+                0x00, 0x00,                             // Neutral padding (2)
+                back, back,                             // Back (2)
+                down, down,                             // Down (2)
+                downBack, downBack,                     // Down-Back (2)
+                (uint8_t)(downBack | buttonMask),        // Down-Back+Button (1)
+                (uint8_t)(downBack | buttonMask),        // Down-Back+Button (1)
+            };
+            break;
+        }
         case MOTION_41236A: case MOTION_41236B: case MOTION_41236C: {
             // HCF: Back, Down-Back, Down, Down-Forward, Forward + Button
             pattern = {
@@ -324,7 +334,50 @@ bool FreezeBufferForMotion(int playerNum, int motionType, int buttonMask, int op
             };
             break;
         }
-        
+        case MOTION_214214A: case MOTION_214214B: case MOTION_214214C: {
+            // Double QCB: (Down, Down-Back, Back)x2 + Button
+            pattern = {
+                0x00, 0x00,                             // Neutral padding (2)
+                down, down, down,                       // Down (3)
+                downBack, downBack,                     // Down-Back (2)
+                back, back,                             // Back (2)
+                down, down, down,                       // Down (3)
+                downBack, downBack,                     // Down-Back (2)
+                back, back,                             // Back (2)
+                (uint8_t)(back | buttonMask),           // Back+Button (1)
+                (uint8_t)(back | buttonMask),           // Back+Button (1)
+            };
+            break;
+        }
+        case MOTION_236236A: case MOTION_236236B: case MOTION_236236C: {
+            // Double QCF: (Down, Down-Forward, Forward)x2 + Button
+            pattern = {
+                0x00, 0x00,                             // Neutral padding (2)
+                down, down, down,                       // Down (3)
+                downFwd, downFwd,                       // Down-Forward (2)
+                fwd, fwd,                               // Forward (2)
+                down, down, down,                       // Down (3)
+                downFwd, downFwd,                       // Down-Forward (2)
+                fwd, fwd,                               // Forward (2)
+                (uint8_t)(fwd | buttonMask),            // Forward+Button (1)
+                (uint8_t)(fwd | buttonMask),            // Forward+Button (1)
+            };
+            break;
+        }
+        case MOTION_641236A: case MOTION_641236B: case MOTION_641236C: {
+            pattern = {
+                0x00, 0x00,                             // Neutral padding (2)
+                fwd, fwd,                               // Forward (2)
+                back, back,                             // Back (2)
+                downBack, downBack,                     // Down-Back (2)
+                down, down,                             // Down (2)
+                downFwd, downFwd,                       // Down-Forward (2)
+                fwd,                                    // Forward (1)
+                (uint8_t)(fwd | buttonMask),            // Forward+Button (1)
+                (uint8_t)(fwd | buttonMask),            // Forward+Button (1)
+            };
+            break;
+        }
         case MOTION_63214A: case MOTION_63214B: case MOTION_63214C: {
             // HCB: Forward, Down-Forward, Down, Down-Back, Back + Button
             pattern = {

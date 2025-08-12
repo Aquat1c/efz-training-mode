@@ -43,15 +43,20 @@ namespace ImGuiGui {
         ACTION_JA,          // 6 = j.A 
         ACTION_JB,          // 7 = j.B
         ACTION_JC,          // 8 = j.C
-        ACTION_QCF,         // 9 = QCF
-        ACTION_DP,          // 10 = DP
-        ACTION_QCB,         // 11 = QCB
-        ACTION_SUPER1,      // 12 = Super 1
-        ACTION_SUPER2,      // 13 = Super 2
-        ACTION_JUMP,        // 14 = Jump
-        ACTION_BACKDASH,    // 15 = Backdash
-        ACTION_BLOCK        // 16 = Block
-        // REMOVED: ACTION_CUSTOM
+        ACTION_QCF,         // 9 = 236 (QCF)
+        ACTION_DP,          // 10 = 623 (DP)
+        ACTION_QCB,         // 11 = 214 (QCB)
+        ACTION_421,         // 12 = 421 (Half-circle Down)
+        ACTION_SUPER1,      // 13 = 41236 (HCF)
+        ACTION_SUPER2,      // 14 = 63214 (HCB)
+        ACTION_236236,      // 15 = 236236 (Double QCF)
+        ACTION_214214,      // 16 = 214214 (Double QCB)
+        ACTION_641236,      // 17 = 641236 (Half-Circle Forward + QCF)
+        ACTION_JUMP,        // 18 = Jump
+        ACTION_BACKDASH,    // 19 = Backdash
+        ACTION_FORWARD_DASH,// 20 = Forward Dash
+        ACTION_BLOCK,       // 21 = Block
+        ACTION_CUSTOM       // 22 = Custom ID
     };
 
     // Helper function to convert action type to combo index
@@ -268,7 +273,7 @@ namespace ImGuiGui {
             "j.A", "j.B", "j.C",
             "236 (QCF)", "623 (DP)", "214 (QCB)", "421 (Half-circle Down)",
             "41236 (HCF)", "63214 (HCB)", "236236 (Double QCF)", "214214 (Double QCB)",
-            "Jump", "Backdash", "Forward Dash", "Block",
+            "641236", "Jump", "Backdash", "Forward Dash", "Block",
             "Custom ID"
         };
         
@@ -313,7 +318,8 @@ namespace ImGuiGui {
                  *triggers[i].action == ACTION_SUPER1 || 
                  *triggers[i].action == ACTION_SUPER2 ||
                  *triggers[i].action == ACTION_236236 ||
-                 *triggers[i].action == ACTION_214214);
+                 *triggers[i].action == ACTION_214214 ||
+                 *triggers[i].action == ACTION_641236);
             
             if (isSpecialMove) {
                 ImGui::SameLine();
