@@ -7,7 +7,7 @@
 #include "../include/gui/overlay.h"
 #include "../include/core/logger.h"
 #include "../include/utils/utilities.h"
-
+#include "../include/core/globals.h"
 #include "../include/core/memory.h"   
 #include "../include/core/constants.h" 
 #include "../3rdparty/detours/include/detours.h"
@@ -80,38 +80,46 @@ HRESULT WINAPI DirectDrawHook::HookedFlip(IDirectDrawSurface7* This, IDirectDraw
 
 // --- REVISED AND CORRECTED D3D9 EndScene Hook ---
 HRESULT WINAPI HookedEndScene(LPDIRECT3DDEVICE9 pDevice) {
-    if (!pDevice) {
+    static bool imguiInitialized = false;
+    static int initFailCount = 0;
+    const int MAX_INIT_ATTEMPTS = 5;
+    
+    // Critical: Check if shutdown is in progress
+    if (g_isShuttingDown.load()) {
         return oEndScene(pDevice);
     }
-
-    static bool imguiInit = false;
-    if (!imguiInit) {
-        if (ImGuiImpl::Initialize(pDevice)) {
-            imguiInit = true;
-            LogOut("[OVERLAY] ImGui initialized from EndScene hook.", true);
-        } else {
-            LogOut("[OVERLAY] ImGui failed to initialize from EndScene hook.", true);
-            return oEndScene(pDevice); // Don't proceed if init fails
+    
+    // Only try to initialize if not already done
+    if (!imguiInitialized && initFailCount < MAX_INIT_ATTEMPTS) {
+        // Validate D3D device before initialization
+        if (pDevice) {
+            D3DDEVICE_CREATION_PARAMETERS params;
+            if (SUCCEEDED(pDevice->GetCreationParameters(&params))) {
+                if (ImGuiImpl::Initialize(pDevice)) {
+                    imguiInitialized = true;
+                    LogOut("[D3D9] ImGui initialized successfully in EndScene", true);
+                } else {
+                    initFailCount++;
+                    LogOut("[D3D9] ImGui initialization failed (attempt " + 
+                           std::to_string(initFailCount) + "/" + 
+                           std::to_string(MAX_INIT_ATTEMPTS) + ")", true);
+                }
+            }
         }
     }
-
-    // Start a new ImGui frame
-    ImGui_ImplDX9_NewFrame();
-    ImGui_ImplWin32_NewFrame();
-    ImGui::NewFrame();
-
-    // Render our custom text overlays using the background draw list
-    DirectDrawHook::RenderD3D9Overlays(pDevice);
-
-    // Render the main ImGui configuration window if it's visible
-    if (ImGuiImpl::IsVisible()) {
-        ImGuiGui::RenderGui();
+    
+    // Render ImGui if initialized and visible
+    if (imguiInitialized && ImGuiImpl::IsVisible()) {
+        // Extra safety: Validate ImGui context and style
+        if (ImGui::GetCurrentContext() != nullptr) {
+            ImGuiStyle& style = ImGui::GetStyle();
+            if (style.WindowMinSize.x < 1.0f || style.WindowMinSize.y < 1.0f) {
+                style.WindowMinSize.x = 100.0f;
+                style.WindowMinSize.y = 100.0f;
+            }
+            ImGuiImpl::RenderFrame();
+        }
     }
-
-    // End the frame and render all accumulated draw data
-    ImGui::EndFrame();
-    ImGui::Render();
-    ImGui_ImplDX9_RenderDrawData(ImGui::GetDrawData());
 
     return oEndScene(pDevice);
 }

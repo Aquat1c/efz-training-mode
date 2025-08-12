@@ -1,5 +1,9 @@
 #pragma once
 #define DIRECTINPUT_VERSION 0x0800
+
+// Add this include for chrono support
+#include <chrono>
+
 // Only include these for C++ compiler, not for RC compiler
 #ifndef RC_INVOKED
 
@@ -88,6 +92,11 @@
 #define EFZ_VISUAL_FPS 64.0
 #define SUBFRAMES_PER_VISUAL_FRAME 3.0
 #define INTERNAL_FRAMES_PER_SECOND (EFZ_VISUAL_FPS * SUBFRAMES_PER_VISUAL_FRAME)  // 192 internal frames per second
+
+// Frame constants - ONLY DEFINE ONCE (around line 97-99)
+constexpr int VISUAL_FPS = 64;  // Actual game FPS (not 60!)
+constexpr int INTERNAL_FPS = 192;  // 64 * 3
+constexpr auto TARGET_FRAME_TIME = std::chrono::nanoseconds(5208333); // 1,000,000,000 / 192
 
 // RG Constants
 #define RG_STAND_FREEZE_DEFENDER 20

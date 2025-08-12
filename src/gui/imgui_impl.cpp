@@ -48,7 +48,16 @@ namespace ImGuiImpl {
         ImGui::StyleColorsDark();
         
         ImGuiStyle& style = ImGui::GetStyle();
+        
+        // CRITICAL FIX: Ensure minimum window size is always valid
+        if (style.WindowMinSize.x < 1.0f) style.WindowMinSize.x = 100.0f;
+        if (style.WindowMinSize.y < 1.0f) style.WindowMinSize.y = 100.0f;
+        
         style.ScaleAllSizes(1.2f);
+        
+        // Ensure window min size remains valid after scaling
+        if (style.WindowMinSize.x < 1.0f) style.WindowMinSize.x = 100.0f;
+        if (style.WindowMinSize.y < 1.0f) style.WindowMinSize.y = 100.0f;
         
         HWND gameWindow = FindEFZWindow();
         if (!gameWindow) {
@@ -155,8 +164,16 @@ namespace ImGuiImpl {
             return;
         }
         
+        // CRITICAL: Validate style before rendering
+        ImGuiStyle* style = &ImGui::GetStyle();
+        if (style && (style->WindowMinSize.x < 1.0f || style->WindowMinSize.y < 1.0f)) {
+            // Fix invalid style values
+            style->WindowMinSize.x = 100.0f;
+            style->WindowMinSize.y = 100.0f;
+            LogOut("[IMGUI] WARNING: Fixed invalid WindowMinSize in RenderFrame", true);
+        }
+        
         try {
-            // Start new ImGui frame
             ImGui_ImplDX9_NewFrame();
             ImGui_ImplWin32_NewFrame();
             ImGui::NewFrame();
