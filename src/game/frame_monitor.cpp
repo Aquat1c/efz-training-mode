@@ -101,56 +101,68 @@ void UpdateTriggerOverlay() {
     const int yIncrement = 15;
     int targetPlayer = autoActionPlayer.load();
 
-    auto getActionName = [](int actionType, int customId) -> std::string {
+    auto getActionName = [](int actionType, int customId, int strength) -> std::string {
+        std::string strengthLetter = "";
+        
+        // Determine strength letter (A, B, C)
+        if (actionType == ACTION_QCF || 
+            actionType == ACTION_DP || 
+            actionType == ACTION_QCB ||
+            actionType == ACTION_421 ||
+            actionType == ACTION_SUPER1 || 
+            actionType == ACTION_SUPER2 ||
+            actionType == ACTION_236236 ||
+            actionType == ACTION_214214) {
+            
+            // Convert strength number to letter
+            switch(strength) {
+                case 0: strengthLetter = "A"; break;
+                case 1: strengthLetter = "B"; break;
+                case 2: strengthLetter = "C"; break;
+                default: strengthLetter = "A"; break;
+            }
+        }
+
         switch (actionType) {
-            case ACTION_5A:
-                return "5A";
-            case ACTION_5B:
-                return "5B";
-            case ACTION_5C:
-                return "5C";
-            case ACTION_2A:
-                return "2A";
-            case ACTION_2B:
-                return "2B";
-            case ACTION_2C:
-                return "2C";
-            case ACTION_JA:
-                return "j.A";
-            case ACTION_JB:
-                return "j.B";
-            case ACTION_JC:
-                return "j.C";
-            case ACTION_JUMP:
-                return "Jump";
-            case ACTION_BACKDASH:
-                return "Backdash";
-            case ACTION_BLOCK:
-                return "Block";
-            // Add these cases for special moves
-            case ACTION_QCF:
-                return "236";
-            case ACTION_DP:
-                return "623";
-            case ACTION_QCB:
-                return "214";
-            case ACTION_SUPER1:
-                return "41236";
-            case ACTION_SUPER2:
-                return "63214";
-            case ACTION_CUSTOM:
-                return "Custom (" + std::to_string(customId) + ")";
-            default:
-                return "Unknown (" + std::to_string(actionType) + ")";
+            case ACTION_5A: return "5A";
+            case ACTION_5B: return "5B";
+            case ACTION_5C: return "5C";
+            case ACTION_2A: return "2A";
+            case ACTION_2B: return "2B";
+            case ACTION_2C: return "2C";
+            case ACTION_JA: return "j.A";
+            case ACTION_JB: return "j.B";
+            case ACTION_JC: return "j.C";
+            case ACTION_QCF: return "236" + strengthLetter; // QCF + strength
+            case ACTION_DP: return "623" + strengthLetter;  // DP + strength
+            case ACTION_QCB: return "214" + strengthLetter; // QCB + strength
+            case ACTION_421: return "421" + strengthLetter; // Half-circle down + strength
+            case ACTION_SUPER1: return "41236" + strengthLetter; // HCF + strength
+            case ACTION_SUPER2: return "63214" + strengthLetter; // HCB + strength
+            case ACTION_236236: return "236236" + strengthLetter; // Double QCF + strength
+            case ACTION_214214: return "214214" + strengthLetter; // Double QCB + strength
+            case ACTION_JUMP: return "Jump";
+            case ACTION_BACKDASH: return "Backdash";
+            case ACTION_FORWARD_DASH: return "Forward Dash";
+            case ACTION_BLOCK: return "Block";
+            case ACTION_CUSTOM: return "Custom (" + std::to_string(customId) + ")";
+            default: return "Unknown (" + std::to_string(actionType) + ")";
         }
     };
 
-    auto update_line = [&](int& msgId, bool isEnabled, const std::string& label, int action, int customId, int delay, int triggerType) {
+    // Get last active trigger for highlighting
+    int lastActiveTrigger = g_lastActiveTriggerType.load();
+    int lastActiveFrame = g_lastActiveTriggerFrame.load();
+    int currentFrame = frameCounter.load();
+    const int activeHighlightDuration = 30; // How long to show active highlight
+
+    auto update_line = [&](int& msgId, bool isEnabled, const std::string& label, int action, 
+                          int customId, int delay, int strength, int triggerType) {
         if (isEnabled) {
-            std::string actionName = getActionName(action, customId);
+            std::string actionName = getActionName(action, customId, strength);
             std::string text = label + actionName;
             if (delay > 0) {
-                text += " (" + std::to_string(delay) + "f)";
+                text += " +" + std::to_string(delay);
             }
 
             bool isActive = false;
@@ -181,10 +193,21 @@ void UpdateTriggerOverlay() {
         }
     };
 
-    update_line(g_TriggerAfterBlockId, triggerAfterBlockEnabled.load(), "After Block: ", triggerAfterBlockAction.load(), triggerAfterBlockCustomID.load(), triggerAfterBlockDelay.load(), TRIGGER_AFTER_BLOCK);
-    update_line(g_TriggerOnWakeupId, triggerOnWakeupEnabled.load(), "On Wakeup: ", triggerOnWakeupAction.load(), triggerOnWakeupCustomID.load(), triggerOnWakeupDelay.load(), TRIGGER_ON_WAKEUP);
-    update_line(g_TriggerAfterHitstunId, triggerAfterHitstunEnabled.load(), "After Hitstun: ", triggerAfterHitstunAction.load(), triggerAfterHitstunCustomID.load(), triggerAfterHitstunDelay.load(), TRIGGER_AFTER_HITSTUN);
-    update_line(g_TriggerAfterAirtechId, triggerAfterAirtechEnabled.load(), "After Airtech: ", triggerAfterAirtechAction.load(), triggerAfterAirtechCustomID.load(), triggerAfterAirtechDelay.load(), TRIGGER_AFTER_AIRTECH);
+    update_line(g_TriggerAfterBlockId, triggerAfterBlockEnabled.load(), "After Block: ", 
+                triggerAfterBlockAction.load(), triggerAfterBlockCustomID.load(), 
+                triggerAfterBlockDelay.load(), triggerAfterBlockStrength.load(), TRIGGER_AFTER_BLOCK);
+    
+    update_line(g_TriggerOnWakeupId, triggerOnWakeupEnabled.load(), "On Wakeup: ", 
+                triggerOnWakeupAction.load(), triggerOnWakeupCustomID.load(), 
+                triggerOnWakeupDelay.load(), triggerOnWakeupStrength.load(), TRIGGER_ON_WAKEUP);
+    
+    update_line(g_TriggerAfterHitstunId, triggerAfterHitstunEnabled.load(), "After Hitstun: ", 
+                triggerAfterHitstunAction.load(), triggerAfterHitstunCustomID.load(), 
+                triggerAfterHitstunDelay.load(), triggerAfterHitstunStrength.load(), TRIGGER_AFTER_HITSTUN);
+    
+    update_line(g_TriggerAfterAirtechId, triggerAfterAirtechEnabled.load(), "After Airtech: ", 
+                triggerAfterAirtechAction.load(), triggerAfterAirtechCustomID.load(), 
+                triggerAfterAirtechDelay.load(), triggerAfterAirtechStrength.load(), TRIGGER_AFTER_AIRTECH);
 }
 
 void FrameDataMonitor() {
@@ -457,7 +480,7 @@ void FrameDataMonitor() {
             // Process features in order of priority - NO THROTTLING
             bool moveIDsChanged = (moveID1 != prevMoveID1) || (moveID2 != prevMoveID2);
             bool criticalFeaturesActive = autoJumpEnabled.load() || autoActionEnabled.load() || autoAirtechEnabled.load();
-            
+
             // ALWAYS process frame advantage for precise timing
             if (moveIDsChanged) {
                 MonitorFrameAdvantage(moveID1, moveID2, prevMoveID1, prevMoveID2);

@@ -261,6 +261,12 @@ std::atomic<int> triggerOnWakeupCustomID(BASE_ATTACK_5A);
 std::atomic<int> triggerAfterHitstunCustomID(BASE_ATTACK_5A);
 std::atomic<int> triggerAfterAirtechCustomID(BASE_ATTACK_JA);  // Default to jumping A for airtech
 
+// Individual strength settings (0=A, 1=B, 2=C)
+std::atomic<int> triggerAfterBlockStrength(0);
+std::atomic<int> triggerOnWakeupStrength(0);
+std::atomic<int> triggerAfterHitstunStrength(0);
+std::atomic<int> triggerAfterAirtechStrength(0);
+
 void EnsureLocaleConsistency() {
     static bool localeSet = false;
     if (!localeSet) {

@@ -154,6 +154,12 @@ void ApplySettings(DisplayData* data) {
         triggerAfterHitstunCustomID.store(data->customAfterHitstun);
         triggerAfterAirtechCustomID.store(data->customAfterAirtech);
         
+        // NEW: Store strength values
+        triggerAfterBlockStrength.store(data->strengthAfterBlock);
+        triggerOnWakeupStrength.store(data->strengthOnWakeup);
+        triggerAfterHitstunStrength.store(data->strengthAfterHitstun);
+        triggerAfterAirtechStrength.store(data->strengthAfterAirtech);
+        
         // Update the client memory
         uintptr_t base = GetEFZBase();
         if (base) {
