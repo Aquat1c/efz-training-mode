@@ -49,8 +49,6 @@
 #define ACTION_FORWARD_DASH  400
 #define ACTION_BACK_DASH     401
 
-
-
 // Custom move motion constants
 #define MOTION_CUSTOM_1  230
 #define MOTION_CUSTOM_2  231
@@ -60,3 +58,8 @@
 
 // Utility constant
 #define MOTION_NONE      0
+
+// Additional motion constants
+#define ACTION_421          19    // Half-circle down (421)
+#define ACTION_236236       20    // Double QCF
+#define ACTION_214214       21    // Double QCB

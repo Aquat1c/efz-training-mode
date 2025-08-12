@@ -14,6 +14,7 @@
 #include "../include/input/input_motion.h"
 #include "../include/utils/bgm_control.h"
 #include "../include/input/input_debug.h"
+#include <algorithm> // Add this for std::max
 // Forward declare SpamAttackButton so we can use it in this file
 extern void SpamAttackButton(uintptr_t playerBase, uint8_t button, int frames, const char* buttonName);
 #include "../include/game/practice_patch.h"
@@ -222,158 +223,135 @@ namespace ImGuiGui {
 
     // Auto Action Tab
     void RenderAutoActionTab() {
-        // Master enable checkbox
-        bool autoActionEnabled = guiState.localData.autoAction;
-        if (ImGui::Checkbox("Enable Auto Action System", &autoActionEnabled)) {
-            guiState.localData.autoAction = autoActionEnabled;
+        // Auto-action master toggle
+        bool enabled = guiState.localData.autoAction;
+        if (ImGui::Checkbox("Enable Auto Action System", &enabled)) {
+            guiState.localData.autoAction = enabled;
         }
-
-        // Player target (applies to all triggers)
-        ImGui::TextUnformatted("Apply To:");
-        const char* playerTargetItems[] = { "P1 Only", "P2 Only", "Both Players" };
-        int playerTarget = guiState.localData.autoActionPlayer - 1;
-        if (ImGui::Combo("##PlayerTarget", &playerTarget, playerTargetItems, IM_ARRAYSIZE(playerTargetItems))) {
-            guiState.localData.autoActionPlayer = playerTarget + 1;
+        
+        // Player target selector
+        ImGui::Text("Apply To:");
+        const char* playerItems[] = { "P1 Only", "P2 Only", "Both Players" };
+        int playerIndex = guiState.localData.autoActionPlayer - 1; // Convert 1-based to 0-based
+        if (ImGui::Combo("Target", &playerIndex, playerItems, IM_ARRAYSIZE(playerItems))) {
+            guiState.localData.autoActionPlayer = playerIndex + 1; // Convert back to 1-based
         }
-
+        
         ImGui::Separator();
-
-        // Create a table for the triggers
-        if (ImGui::BeginTable("AutoActionTable", 3, ImGuiTableFlags_Borders)) { // Changed from 4 columns to 3
-            ImGui::TableSetupColumn("Trigger");
-            ImGui::TableSetupColumn("Action");
-            ImGui::TableSetupColumn("Delay");
-            ImGui::TableHeadersRow();
-
-            // Common action items
-            const char* actionItems[] = { 
-                "5A", "5B", "5C", "2A", "2B", "2C", 
-                "j.A", "j.B", "j.C",
-                "236", "623", "214", "41236", "63214",
-                "Jump", "Backdash", "Block"
-            };
+        
+        // Define a struct for trigger settings to reduce code repetition
+        struct TriggerSettings {
+            const char* name;
+            bool* enabled;
+            int* action;
+            int* delay;
+            int* strength; // NEW: Add strength member
+            int* custom;
+        };
+        
+        // Define an array of trigger settings
+        TriggerSettings triggers[] = {
+            { "After Block", &guiState.localData.triggerAfterBlock, &guiState.localData.actionAfterBlock, 
+              &guiState.localData.delayAfterBlock, &guiState.localData.strengthAfterBlock, &guiState.localData.customAfterBlock },
+            { "On Wakeup", &guiState.localData.triggerOnWakeup, &guiState.localData.actionOnWakeup, 
+              &guiState.localData.delayOnWakeup, &guiState.localData.strengthOnWakeup, &guiState.localData.customOnWakeup },
+            { "After Hitstun", &guiState.localData.triggerAfterHitstun, &guiState.localData.actionAfterHitstun, 
+              &guiState.localData.delayAfterHitstun, &guiState.localData.strengthAfterHitstun, &guiState.localData.customAfterHitstun },
+            { "After Airtech", &guiState.localData.triggerAfterAirtech, &guiState.localData.actionAfterAirtech, 
+              &guiState.localData.delayAfterAirtech, &guiState.localData.strengthAfterAirtech, &guiState.localData.customAfterAirtech }
+        };
+        
+        // Create a string array for action types
+        const char* actionItems[] = {
+            "5A", "5B", "5C", 
+            "2A", "2B", "2C", 
+            "j.A", "j.B", "j.C",
+            "236 (QCF)", "623 (DP)", "214 (QCB)", "421 (Half-circle Down)",
+            "41236 (HCF)", "63214 (HCB)", "236236 (Double QCF)", "214214 (Double QCB)",
+            "Jump", "Backdash", "Forward Dash", "Block",
+            "Custom ID"
+        };
+        
+        // Create string array for strength options
+        const char* strengthItems[] = {
+            "A (Light)", "B (Medium)", "C (Heavy)"
+        };
+        
+        // Render each trigger's settings
+        for (int i = 0; i < IM_ARRAYSIZE(triggers); i++) {
+            ImGui::PushID(i);
             
-            // Make sure the number of items matches the ComboIndexToActionType array
-            static_assert(IM_ARRAYSIZE(actionItems) == IM_ARRAYSIZE(ComboIndexToActionType), 
-                         "Action items and action types must have the same number of elements");
-
-            // After Block trigger
-            ImGui::TableNextRow();
-            ImGui::TableNextColumn();
-            bool triggerAfterBlock = guiState.localData.triggerAfterBlock;
-            if (ImGui::Checkbox("After Block", &triggerAfterBlock)) {
-                guiState.localData.triggerAfterBlock = triggerAfterBlock;
+            // Create a unique label for the checkbox
+            std::string checkboxLabel = std::string(triggers[i].name) + ":";
+            if (ImGui::Checkbox(checkboxLabel.c_str(), triggers[i].enabled)) {
+                // When enabling a trigger, make sure it's configured with reasonable defaults
+                if (*triggers[i].enabled) {
+                    if (*triggers[i].action < 0) *triggers[i].action = 0;
+                    if (*triggers[i].delay < 0) *triggers[i].delay = 0;
+                    if (*triggers[i].strength < 0) *triggers[i].strength = 0; // Default to Light (A)
+                }
             }
             
-            ImGui::TableNextColumn();
-            int actionAfterBlock = ActionTypeToComboIndex(guiState.localData.actionAfterBlock);
-            ImGui::PushItemWidth(-1);
-            if (ImGui::Combo("##ActionAfterBlock", &actionAfterBlock, actionItems, IM_ARRAYSIZE(actionItems))) {
-                guiState.localData.actionAfterBlock = ComboIndexToActionType[actionAfterBlock];
-            }
-            ImGui::PopItemWidth();
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(150);
             
-            ImGui::TableNextColumn();
-            int delayAfterBlock = guiState.localData.delayAfterBlock;
-            ImGui::PushItemWidth(-1);
-            if (ImGui::InputInt("##DelayAfterBlock", &delayAfterBlock)) {
-                guiState.localData.delayAfterBlock = CLAMP(delayAfterBlock, 0, 60);
-            }
-            ImGui::PopItemWidth();
+            // Convert our internal action index to combo box index
+            int actionComboIndex = ActionTypeToComboIndex(*triggers[i].action);
             
-            // Removed custom moveID column and input
-
-            // After Hitstun trigger
-            ImGui::TableNextRow();
-            ImGui::TableNextColumn();
-            bool triggerAfterHitstun = guiState.localData.triggerAfterHitstun;
-            if (ImGui::Checkbox("After Hitstun", &triggerAfterHitstun)) {
-                guiState.localData.triggerAfterHitstun = triggerAfterHitstun;
+            // Action selection
+            if (ImGui::Combo("Action", &actionComboIndex, actionItems, IM_ARRAYSIZE(actionItems))) {
+                // Convert the combo index back to action type
+                *triggers[i].action = ComboIndexToActionType[actionComboIndex];
             }
             
-            ImGui::TableNextColumn();
-            int actionAfterHitstun = ActionTypeToComboIndex(guiState.localData.actionAfterHitstun);
-            ImGui::PushItemWidth(-1);
-            if (ImGui::Combo("##ActionAfterHitstun", &actionAfterHitstun, actionItems, IM_ARRAYSIZE(actionItems))) {
-                guiState.localData.actionAfterHitstun = ComboIndexToActionType[actionAfterHitstun];
-            }
-            ImGui::PopItemWidth();
+            // Only show strength selector for special move types (QCF, DP, etc)
+            bool isSpecialMove = 
+                (*triggers[i].action == ACTION_QCF || 
+                 *triggers[i].action == ACTION_DP || 
+                 *triggers[i].action == ACTION_QCB ||
+                 *triggers[i].action == ACTION_421 ||
+                 *triggers[i].action == ACTION_SUPER1 || 
+                 *triggers[i].action == ACTION_SUPER2 ||
+                 *triggers[i].action == ACTION_236236 ||
+                 *triggers[i].action == ACTION_214214);
             
-            ImGui::TableNextColumn();
-            int delayAfterHitstun = guiState.localData.delayAfterHitstun;
-            ImGui::PushItemWidth(-1);
-            if (ImGui::InputInt("##DelayAfterHitstun", &delayAfterHitstun)) {
-                guiState.localData.delayAfterHitstun = CLAMP(delayAfterHitstun, 0, 60);
-            }
-            ImGui::PopItemWidth();
-            
-            // Removed custom moveID column and input
-
-            // On Wakeup trigger
-            ImGui::TableNextRow();
-            ImGui::TableNextColumn();
-            bool triggerOnWakeup = guiState.localData.triggerOnWakeup;
-            if (ImGui::Checkbox("On Wakeup", &triggerOnWakeup)) {
-                guiState.localData.triggerOnWakeup = triggerOnWakeup;
+            if (isSpecialMove) {
+                ImGui::SameLine();
+                ImGui::SetNextItemWidth(100);
+                
+                // Fixed: Use a local variable for the combo
+                int strengthIndex = *triggers[i].strength;
+                if (ImGui::Combo("Strength", &strengthIndex, strengthItems, IM_ARRAYSIZE(strengthItems))) {
+                    *triggers[i].strength = strengthIndex;
+                }
             }
             
-            ImGui::TableNextColumn();
-            int actionOnWakeup = ActionTypeToComboIndex(guiState.localData.actionOnWakeup);
-            ImGui::PushItemWidth(-1);
-            if (ImGui::Combo("##ActionOnWakeup", &actionOnWakeup, actionItems, IM_ARRAYSIZE(actionItems))) {
-                guiState.localData.actionOnWakeup = ComboIndexToActionType[actionOnWakeup];
-            }
-            ImGui::PopItemWidth();
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(80);
             
-            ImGui::TableNextColumn();
-            int delayOnWakeup = guiState.localData.delayOnWakeup;
-            ImGui::PushItemWidth(-1);
-            if (ImGui::InputInt("##DelayOnWakeup", &delayOnWakeup)) {
-                guiState.localData.delayOnWakeup = CLAMP(delayOnWakeup, 0, 60);
-            }
-            ImGui::PopItemWidth();
-            
-            // Removed custom moveID column and input
-
-            // After Airtech trigger
-            ImGui::TableNextRow();
-            ImGui::TableNextColumn();
-            bool triggerAfterAirtech = guiState.localData.triggerAfterAirtech;
-            if (ImGui::Checkbox("After Airtech", &triggerAfterAirtech)) {
-                guiState.localData.triggerAfterAirtech = triggerAfterAirtech;
+            // Fixed: Use a local variable for InputInt
+            int delayValue = *triggers[i].delay;
+            if (ImGui::InputInt("Delay", &delayValue, 1, 5)) {
+                *triggers[i].delay = (std::max)(0, delayValue); // Add parentheses around std::max
             }
             
-            ImGui::TableNextColumn();
-            int actionAfterAirtech = ActionTypeToComboIndex(guiState.localData.actionAfterAirtech);
-            ImGui::PushItemWidth(-1);
-            if (ImGui::Combo("##ActionAfterAirtech", &actionAfterAirtech, actionItems, IM_ARRAYSIZE(actionItems))) {
-                guiState.localData.actionAfterAirtech = ComboIndexToActionType[actionAfterAirtech];
+            // Only show custom ID input for custom action type
+            if (*triggers[i].action == ACTION_CUSTOM) {
+                ImGui::SameLine();
+                ImGui::SetNextItemWidth(80);
+                
+                // Fixed: Use a local variable for InputInt
+                int customValue = *triggers[i].custom;
+                if (ImGui::InputInt("Move ID", &customValue, 1, 10)) {
+                    *triggers[i].custom = (std::max)(0, customValue); // Add parentheses around std::max
+                }
             }
-            ImGui::PopItemWidth();
             
-            ImGui::TableNextColumn();
-            int delayAfterAirtech = guiState.localData.delayAfterAirtech;
-            ImGui::PushItemWidth(-1);
-            if (ImGui::InputInt("##DelayAfterAirtech", &delayAfterAirtech)) {
-                guiState.localData.delayAfterAirtech = CLAMP(delayAfterAirtech, 0, 60);
-            }
-            ImGui::PopItemWidth();
-            
-            // Removed custom moveID column and input
-
-            ImGui::EndTable();
+            ImGui::PopID();
         }
-
-        // Help text
-        ImGui::Separator();
-        ImGui::TextWrapped(
-            "The Auto Action system allows you to set up automatic responses to various game situations.\n"
-            "Each trigger can have its own action, delay, and custom move ID (if applicable).\n"
-            "Delay is measured in visual frames (0 = instant)."
-        );
     }
 
-    // NEW: Help Tab implementation
+    // Help Tab implementation
     void RenderHelpTab() {
         ImGui::TextUnformatted("Hotkeys (can be changed in config.ini):");
         ImGui::Separator();

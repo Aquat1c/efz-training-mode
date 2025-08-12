@@ -144,6 +144,12 @@ struct DisplayData {
     int customOnWakeup;
     int customAfterHitstun;
     int customAfterAirtech;
+
+    // Add strength settings for each trigger
+    int strengthAfterBlock;
+    int strengthOnWakeup;
+    int strengthAfterHitstun;
+    int strengthAfterAirtech;
 };
 
 extern DisplayData displayData;
@@ -210,3 +216,9 @@ extern int g_statsMoveIdId;
 
 // Window and key monitoring management
 void ManageKeyMonitoring();
+
+// Individual strength settings (0=A, 1=B, 2=C) - ADD THESE DECLARATIONS
+extern std::atomic<int> triggerAfterBlockStrength;
+extern std::atomic<int> triggerOnWakeupStrength;
+extern std::atomic<int> triggerAfterHitstunStrength;
+extern std::atomic<int> triggerAfterAirtechStrength;
