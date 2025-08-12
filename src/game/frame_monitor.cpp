@@ -129,15 +129,15 @@ void UpdateTriggerOverlay() {
                 return "Block";
             // Add these cases for special moves
             case ACTION_QCF:
-                return "QCF";
+                return "236";
             case ACTION_DP:
-                return "DP";
+                return "623";
             case ACTION_QCB:
-                return "QCB";
+                return "214";
             case ACTION_SUPER1:
-                return "Super 1";
+                return "41236";
             case ACTION_SUPER2:
-                return "Super 2";
+                return "63214";
             case ACTION_CUSTOM:
                 return "Custom (" + std::to_string(customId) + ")";
             default:
