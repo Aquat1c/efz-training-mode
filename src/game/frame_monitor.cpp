@@ -14,6 +14,7 @@
 #include "../include/input/input_buffer.h"
 #include "../include/utils/config.h"
 #include "../include/input/input_motion.h"
+#include "../include/game/attack_reader.h"
 #include <deque>
 #include <vector>
 #include <chrono>
@@ -236,6 +237,9 @@ void FrameDataMonitor() {
     static bool detailedLogCached = false;
     static int logCounter = 0;
 
+    static short lastLoggedMoveID1 = -1;
+    static short lastLoggedMoveID2 = -1;
+    static std::atomic<int> moveLogCooldown{0};
     
     while (!g_isShuttingDown) {
         auto frameStart = clock::now();
@@ -534,6 +538,31 @@ void FrameDataMonitor() {
             
             prevMoveID1 = moveID1;
             prevMoveID2 = moveID2;
+
+            if (moveID1 != lastLoggedMoveID1 && IsAttackMove(moveID1)) {
+            // Don't log too frequently - enforce a cooldown
+            if (moveLogCooldown.load() <= 0) {
+                AttackReader::LogMoveData(1, moveID1);
+                lastLoggedMoveID1 = moveID1;
+                moveLogCooldown.store(30); // Don't log another move for 30 frames (about 0.5s)
+            }
+        }
+        
+        if (moveID2 != lastLoggedMoveID2 && IsAttackMove(moveID2)) {
+            // Don't log too frequently - enforce a cooldown
+            if (moveLogCooldown.load() <= 0) {
+                AttackReader::LogMoveData(2, moveID2);
+                lastLoggedMoveID2 = moveID2;
+                moveLogCooldown.store(30); // Don't log another move for 30 frames (about 0.5s)
+            }
+        }
+    }
+
+    // Process move change logging
+
+        // Decrement cooldown counter
+        if (moveLogCooldown.load() > 0) {
+            moveLogCooldown.store(moveLogCooldown.load() - 1);
         }
         
 FRAME_MONITOR_FRAME_END:

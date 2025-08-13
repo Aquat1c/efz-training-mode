@@ -222,3 +222,18 @@ extern std::atomic<int> triggerAfterBlockStrength;
 extern std::atomic<int> triggerOnWakeupStrength;
 extern std::atomic<int> triggerAfterHitstunStrength;
 extern std::atomic<int> triggerAfterAirtechStrength;
+
+// Attack data structure - NEW
+struct AttackData {
+    // Offset 0x38: Attack type flags (likely contains high/low data)
+    int attackType;  
+    
+    // Offset 0x3C: Active frames
+    short activeFrameStart;
+    short activeFrameEnd;
+    
+    // Other properties...
+    int damage;
+    int blockstun;
+    int hitstun;
+};
