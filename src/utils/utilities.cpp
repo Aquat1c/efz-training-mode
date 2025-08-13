@@ -100,6 +100,15 @@ void DisableFeatures() {
     g_statsP2ValuesId = -1;
     g_statsPositionId = -1;
     g_statsMoveIdId = -1;
+
+    // Also reset trigger/status overlay IDs so they get recreated on next update
+    g_TriggerAfterBlockId = -1;
+    g_TriggerOnWakeupId = -1;
+    g_TriggerAfterHitstunId = -1;
+    g_TriggerAfterAirtechId = -1;
+    g_AirtechStatusId = -1;
+    g_JumpStatusId = -1;
+    g_FrameAdvantageId = -1;
     
     // Close the menu if it's open
     if (ImGuiImpl::IsVisible()) {

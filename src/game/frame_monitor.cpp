@@ -39,6 +39,7 @@ MonitorState state = Idle;
 static GameMode s_previousGameMode = GameMode::Unknown;
 static bool s_wasActive = false;
 static GamePhase s_lastPhase = GamePhase::Unknown;  // NEW phase tracker
+static bool s_pendingOverlayReinit = false; // Set when we return to a valid mode but chars aren't initialized yet
 
 static uintptr_t fm_lastP1Ptr = 0;
 static uintptr_t fm_lastP2Ptr = 0;
@@ -349,6 +350,9 @@ void FrameDataMonitor() {
                 p1DelayState.triggerType = TRIGGER_NONE;
                 p2DelayState.isDelaying = false;
                 p2DelayState.triggerType = TRIGGER_NONE;
+
+                // No overlay reinit here to avoid re-adding messages while features are disabled.
+                s_pendingOverlayReinit = false; // cancel any pending reinit once we leave valid mode
             }
             
             // Existing code for transitions TO valid modes
@@ -356,6 +360,12 @@ void FrameDataMonitor() {
                 (s_previousGameMode != GameMode::Unknown && !IsValidGameMode(s_previousGameMode))) {
                 LogOut("[FRAME MONITOR] Detected return to valid game mode with initialized characters, reinitializing overlays", true);
                 ReinitializeOverlays();
+                s_pendingOverlayReinit = false;
+            } else if (isValidGameMode && !isInitialized &&
+                       (s_previousGameMode != GameMode::Unknown && !IsValidGameMode(s_previousGameMode))) {
+                // We returned to a valid mode but characters aren't initialized yet; defer reinit
+                LogOut("[FRAME MONITOR] Returned to valid game mode; waiting for character initialization to reinit overlays", true);
+                s_pendingOverlayReinit = true;
             }
             
             s_previousGameMode = currentMode;
@@ -386,11 +396,19 @@ void FrameDataMonitor() {
 
             // Initialization transition logging
             if (isInitialized != fm_lastCharsInit) {
+                bool wasInitialized = fm_lastCharsInit;
                 LogOut(std::string("[FRAME MONITOR][INIT] CharactersInitialized: ") +
                        (fm_lastCharsInit ? "true" : "false") + " -> " +
                        (isInitialized ? "true" : "false") +
                        " frame=" + std::to_string(currentFrame), true);
                 fm_lastCharsInit = isInitialized;
+
+                // If we were waiting for init in a valid mode, reinitialize overlays now
+                if (!wasInitialized && isInitialized && s_pendingOverlayReinit && isValidGameMode && g_featuresEnabled.load()) {
+                    LogOut("[FRAME MONITOR] Characters initialized in valid mode; reinitializing overlays now", true);
+                    ReinitializeOverlays();
+                    s_pendingOverlayReinit = false;
+                }
             }
 
             // Phase gating
