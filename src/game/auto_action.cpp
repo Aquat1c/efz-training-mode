@@ -10,7 +10,7 @@
 #include "../include/input/motion_constants.h"  
 #include "../include/input/input_motion.h"      // Add this include
 #include "../include/input/input_freeze.h"     // Add this include near the top with the other includes
-
+#include "../include/game/attack_reader.h"
 // Define the motion input constants if they're not already defined
 #ifndef MOTION_INPUT_UP
 #define MOTION_INPUT_UP INPUT_UP
@@ -695,6 +695,10 @@ void ApplyAutoAction(int playerNum, uintptr_t moveIDAddr, short currentMoveID, s
         LogOut("[AUTO-ACTION] Failed to apply move " + GetMotionTypeName(motionType), true);
         RestoreP2ControlState();
     }
+
+    // Log attack data for debugging
+    short moveID = GetActionMoveID(actionType, triggerType, playerNum);
+    AttackReader::LogMoveData(playerNum, moveID);
 }
 
 // Enable P2 human control for auto-action and save original state
@@ -845,4 +849,76 @@ void ProcessAutoControlRestore() {
             }
         }
     }
+}
+
+bool AutoGuard(int playerNum, int opponentPtr) {
+    uintptr_t playerPtr = GetPlayerPointer(playerNum);
+    if (!playerPtr || !opponentPtr)
+        return false;
+        
+    // Get opponent's current move ID
+    short moveID = 0;
+    if (!SafeReadMemory(opponentPtr + 0x8, &moveID, sizeof(short)) || moveID <= 0)
+        return false;
+        
+    // Log what move we're trying to block
+    LogOut("[AUTO_GUARD] Attempting to block move ID: " + std::to_string(moveID), true);
+    
+    // Get attack height
+    AttackHeight height = AttackReader::GetAttackHeight(opponentPtr, moveID);
+    
+    // Check if in air
+    double yPos = 0.0;
+    SafeReadMemory(playerPtr + 40, &yPos, sizeof(double));
+    bool inAir = (yPos < 0.0);
+    
+    // Determine block stance
+    bool playerFacingRight = GetPlayerFacingDirection(playerNum);
+    uint8_t blockInput = 0;
+    
+    LogOut("[AUTO_GUARD] Attack height: " + std::to_string(height) + 
+           ", Player in air: " + (inAir ? "yes" : "no"), true);
+    
+    switch (height) {
+        case ATTACK_HEIGHT_LOW:
+            // Must crouch block
+            blockInput = GAME_INPUT_DOWN | (playerFacingRight ? GAME_INPUT_LEFT : GAME_INPUT_RIGHT);
+            LogOut("[AUTO_GUARD] Using crouch block for low attack", true);
+            break;
+            
+        case ATTACK_HEIGHT_HIGH:
+            if (inAir) {
+                // Air block
+                blockInput = playerFacingRight ? GAME_INPUT_LEFT : GAME_INPUT_RIGHT;
+                LogOut("[AUTO_GUARD] Using air block for high attack", true);
+            } else {
+                // Stand block
+                blockInput = playerFacingRight ? GAME_INPUT_LEFT : GAME_INPUT_RIGHT;
+                LogOut("[AUTO_GUARD] Using stand block for high attack", true);
+            }
+            break;
+            
+        case ATTACK_HEIGHT_MID:
+            if (inAir) {
+                // Air block
+                blockInput = playerFacingRight ? GAME_INPUT_LEFT : GAME_INPUT_RIGHT;
+                LogOut("[AUTO_GUARD] Using air block for mid attack", true);
+            } else {
+                // Either stand or crouch block works, prefer crouch
+                blockInput = GAME_INPUT_DOWN | (playerFacingRight ? GAME_INPUT_LEFT : GAME_INPUT_RIGHT);
+                LogOut("[AUTO_GUARD] Using crouch block for mid attack", true);
+            }
+            break;
+            
+        case ATTACK_HEIGHT_THROW:
+            LogOut("[AUTO_GUARD] Cannot block unblockable attack", true);
+            return false;
+            
+        default:
+            LogOut("[AUTO_GUARD] Unknown attack height", true);
+            return false;
+    }
+    
+    // Apply block input
+    return WritePlayerInput(playerPtr, blockInput);
 }

@@ -24,6 +24,7 @@
 #include "../include/utils/bgm_control.h"
 #include "../include/game/game_state.h"
 #include "../include/core/globals.h"  // Add this include
+#include "../include/game/collision_hook.h"
 #pragma comment(lib, "winmm.lib")
 
 // Forward declarations for functions in other files
@@ -75,6 +76,7 @@ void DelayedInitialization(HMODULE hModule) {
 
     // Install the input hook after the game is stable
     InstallInputHook();
+    InstallCollisionHook();
     StartBGMSuppressionPoller();
 
     LogOut("[SYSTEM] EFZ Training Mode - Delayed initialization starting", true);
@@ -248,6 +250,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
         // Clean up hooks safely
         try {
             RemoveInputHook();
+            RemoveCollisionHook();
             StopBGMSuppressionPoller();
             // Stop any active overlay rendering
             if (g_guiActive.load()) {
