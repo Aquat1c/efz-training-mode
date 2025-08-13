@@ -38,6 +38,14 @@ std::atomic<bool> g_manualInputOverride[3] = {false, false, false};
 std::atomic<uint8_t> g_manualInputMask[3] = {0, 0, 0};
 std::atomic<bool> g_manualJumpHold[3] = {false, false, false}; // NEW: Definition for jump hold
 
+// Saved states for triggers and auto-action across mode transitions
+static bool s_prevAutoActionEnabled = false;
+static bool s_prevTriggerAfterBlock = false;
+static bool s_prevTriggerOnWakeup = false;
+static bool s_prevTriggerAfterHitstun = false;
+static bool s_prevTriggerAfterAirtech = false;
+static bool s_savedStatesValid = false;
+
 // NEW: Add feature management functions
 void EnableFeatures() {
     if (g_featuresEnabled.load())
@@ -52,6 +60,16 @@ void EnableFeatures() {
 
     g_featuresEnabled.store(true);
 
+    // Restore previously saved trigger toggles when re-enabling features
+    if (s_savedStatesValid) {
+        autoActionEnabled.store(s_prevAutoActionEnabled);
+        triggerAfterBlockEnabled.store(s_prevTriggerAfterBlock);
+        triggerOnWakeupEnabled.store(s_prevTriggerOnWakeup);
+        triggerAfterHitstunEnabled.store(s_prevTriggerAfterHitstun);
+        triggerAfterAirtechEnabled.store(s_prevTriggerAfterAirtech);
+        s_savedStatesValid = false; // one-shot restore
+    }
+
     // Only reinitialize overlays if characters are initialized and we're in a valid game mode
     if (DirectDrawHook::isHooked && AreCharactersInitialized()) {
         GameMode currentMode = GetCurrentGameMode();
@@ -60,6 +78,8 @@ void EnableFeatures() {
             if (g_statsDisplayEnabled.load()) {
                 UpdateStatsDisplay();
             }
+            // After reinit, ensure trigger overlay reflects current toggles
+            UpdateTriggerOverlay();
         } else {
             LogOut("[SYSTEM] Not initializing overlays - invalid game mode: " + 
                    GetGameModeName(currentMode), true);
@@ -91,6 +111,20 @@ void DisableFeatures() {
     // Remove any active patches
     RemoveAirtechPatches();
     CharacterSettings::RemoveCharacterPatches(); // Remove character-specific patches
+
+    // Save current trigger/auto-action toggles and then disable them while out of valid mode
+    s_prevAutoActionEnabled = autoActionEnabled.load();
+    s_prevTriggerAfterBlock = triggerAfterBlockEnabled.load();
+    s_prevTriggerOnWakeup = triggerOnWakeupEnabled.load();
+    s_prevTriggerAfterHitstun = triggerAfterHitstunEnabled.load();
+    s_prevTriggerAfterAirtech = triggerAfterAirtechEnabled.load();
+    s_savedStatesValid = true;
+
+    autoActionEnabled.store(false);
+    triggerAfterBlockEnabled.store(false);
+    triggerOnWakeupEnabled.store(false);
+    triggerAfterHitstunEnabled.store(false);
+    triggerAfterAirtechEnabled.store(false);
 
     // Clear ALL visual overlays
     DirectDrawHook::ClearAllMessages();

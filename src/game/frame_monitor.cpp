@@ -15,6 +15,7 @@
 #include "../include/utils/config.h"
 #include "../include/input/input_motion.h"
 #include "../include/game/attack_reader.h"
+#include "../include/game/practice_patch.h"
 #include <deque>
 #include <vector>
 #include <chrono>
@@ -440,6 +441,12 @@ void FrameDataMonitor() {
                     LogOut("[FRAME MONITOR] Entering MATCH phase -> reinit transient state", true);
                     prevMoveID1 = -1;
                     prevMoveID2 = -1;
+
+                    // Ensure default control flags (P1=Player, P2=AI) at match start in Practice mode
+                    GameMode modeAtMatch = GetCurrentGameMode();
+                    if (modeAtMatch == GameMode::Practice) {
+                        EnsureDefaultControlFlagsOnMatchStart();
+                    }
                 }
                 s_lastPhaseLocal = phase;
             }
