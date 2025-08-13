@@ -54,6 +54,10 @@ bool IsGroundtech(short moveID);
 bool IsFrozen(short moveID);
 bool IsSpecialStun(short moveID);
 
+// Explicitly clear all auto-action triggers (and auto-action) persistently.
+// Use when returning to Character Select so user can re-enable manually later.
+void ClearAllTriggersPersistently();
+
 // ADD THESE MISSING FUNCTION DECLARATIONS
 bool IsAttackMove(short moveID);      // From frame_advantage.cpp
 bool IsBlockstunState(short moveID);  // From frame_analysis.cpp

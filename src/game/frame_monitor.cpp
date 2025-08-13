@@ -274,7 +274,7 @@ void FrameDataMonitor() {
         
         // Track phase changes
         static GamePhase lastPhase = GamePhase::Unknown;
-        if (currentPhase != lastPhase) {
+    if (currentPhase != lastPhase) {
             LogOut("[FRAME MONITOR] Phase changed: " + std::to_string((int)lastPhase) + 
                    " -> " + std::to_string((int)currentPhase), true);
             
@@ -299,6 +299,11 @@ void FrameDataMonitor() {
                 }
             }
             
+            // If we just arrived at Character Select, clear all triggers persistently
+            if (currentPhase == GamePhase::CharacterSelect) {
+                ClearAllTriggersPersistently();
+            }
+
             lastPhase = currentPhase;
         }
         
