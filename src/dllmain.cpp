@@ -45,172 +45,175 @@ std::atomic<bool> g_featuresEnabled(false);  // If this exists elsewhere, move i
 
 // Delayed initialization function
 void DelayedInitialization(HMODULE hModule) {
-    // Remove the 5-second delay
-    // Sleep(5000);  <-- Replace this with a much shorter delay
-    Sleep(1500); // Just a small delay to ensure the game has started properly
-    
-    WriteStartupLog("Starting delayed initialization");
-    
-    // Create debug console with explicit visibility
-    WriteStartupLog("Creating debug console...");
-    CreateDebugConsole();
-    WriteStartupLog("CreateDebugConsole returned");
-    
-    // Explicitly make console visible
-    HWND consoleWnd = GetConsoleWindow();
-    if (consoleWnd) {
-        ShowWindow(consoleWnd, SW_SHOW);
-    }
-    
-    // Initialize logging system
-    WriteStartupLog("Initializing logging system...");
-    InitializeLogging();
-    WriteStartupLog("Logging system initialized");
-    
-    // NEW: Initialize MinHook once for the entire application.
-    if (MH_Initialize() != MH_OK) {
-        LogOut("[SYSTEM] MinHook initialization failed. Hooks will not be installed.", true);
-        return; // Early exit if MinHook fails
-    }
-    LogOut("[SYSTEM] MinHook initialized successfully.", true);
+    try {
+        // Short delay to ensure the game has started properly
+        Sleep(1500);
 
-    // Install the input hook after the game is stable
-    InstallInputHook();
-    InstallCollisionHook();
-    StartBGMSuppressionPoller();
+        WriteStartupLog("Starting delayed initialization");
 
-    LogOut("[SYSTEM] EFZ Training Mode - Delayed initialization starting", true);
-    LogOut("[SYSTEM] Console initialized with code page: " + std::to_string(GetConsoleOutputCP()), true);
-    LogOut("[SYSTEM] Current locale: C", true);
-    
-    // Initialize configuration system - ADD THIS LINE
-    InitializeConfig();
-    
-    // Start ESSENTIAL threads. Hotkey monitor is now managed by Enable/DisableFeatures.
-    LogOut("[SYSTEM] Starting background threads...", true);
-    std::thread(UpdateConsoleTitle).detach();
-    std::thread(FrameDataMonitor).detach();
-    std::thread(MonitorOnlineStatus).detach();
-    //std::thread(GlobalF1MonitorThread).detach();
-    // REMOVED: The practice mode patch is no longer a persistent thread.
-    // std::thread(MonitorAndPatchPracticeMode).detach(); 
-    LogOut("[SYSTEM] Essential background threads started.", true);
-    
-    // Use standard Windows input APIs instead of DirectInput
-    WriteStartupLog("Using standard Windows input APIs instead of DirectInput");
-    g_directInputAvailable = false;  // Ensure DirectInput is marked as unavailable
-    
-    WriteStartupLog("Reading key.ini file...");
-    ReadKeyMappingsFromIni();
-    WriteStartupLog("Key mappings read");
-    
-    LogOut("EFZ Training Mode initialized successfully", true);
-    WriteStartupLog("Delayed initialization complete");
-    
-    // REMOVED: Do not show help screen automatically on startup
-    // The user can open it with the configured help key.
-    
-    // RE-ADD: Initialize D3D9 hook for overlays once at startup
-    std::thread([]{
-        Sleep(2000); // Give the game a moment to be fully ready
-        if (DirectDrawHook::InitializeD3D9()) {
-            LogOut("[SYSTEM] D3D9 Overlay system initialized.", true);
-        } else {
-            LogOut("[SYSTEM] Failed to initialize D3D9 Overlay system.", true);
+        // Create debug console with explicit visibility
+        WriteStartupLog("Creating debug console...");
+        CreateDebugConsole();
+        WriteStartupLog("CreateDebugConsole returned");
+
+        // Explicitly make console visible
+        if (HWND consoleWnd = GetConsoleWindow()) {
+            ShowWindow(consoleWnd, SW_SHOW);
         }
-    }).detach();
-    
-    // Set initialization flag and stop startup logging
-    g_initialized = true;
-    inStartupPhase = false;
 
-    // Initialize RF freeze thread
-    InitRFFreezeThread();
-    
-    // Add ImGui monitoring thread
-    std::thread([]{
-        // Wait a bit for everything to initialize
-        Sleep(5000);
-        
-        // Log ImGui rendering status every few seconds
-        while (true) {
-            if (ImGuiImpl::IsInitialized()) {
-                // Change this line to respect the detailed logging flag
-                LogOut("[IMGUI_MONITOR] Status: Initialized=" + 
-                      std::to_string(ImGuiImpl::IsInitialized()) + 
-                      ", Visible=" + std::to_string(ImGuiImpl::IsVisible()), 
-                      detailedLogging.load()); // Only show if detailed logging is enabled
+        // Initialize logging system
+        WriteStartupLog("Initializing logging system...");
+        InitializeLogging();
+        WriteStartupLog("Logging system initialized");
+
+        // Initialize MinHook once for the entire application.
+        if (MH_Initialize() != MH_OK) {
+            LogOut("[SYSTEM] MinHook initialization failed. Hooks will not be installed.", true);
+            inStartupPhase = false; // ensure we don't stay stuck in startup state
+            return; // Early exit if MinHook fails
+        }
+        LogOut("[SYSTEM] MinHook initialized successfully.", true);
+
+        // Install hooks (with guards)
+        try {
+            InstallInputHook();
+        } catch (...) {
+            LogOut("[SYSTEM] Exception while installing input hook.", true);
+        }
+        try {
+            InstallCollisionHook();
+        } catch (...) {
+            LogOut("[SYSTEM] Exception while installing collision hook.", true);
+        }
+        try {
+            StartBGMSuppressionPoller();
+        } catch (...) {
+            LogOut("[SYSTEM] Exception while starting BGM suppression poller.", true);
+        }
+
+        LogOut("[SYSTEM] EFZ Training Mode - Delayed initialization starting", true);
+        LogOut("[SYSTEM] Console initialized with code page: " + std::to_string(GetConsoleOutputCP()), true);
+        LogOut("[SYSTEM] Current locale: C", true);
+
+        // Initialize configuration system
+        InitializeConfig();
+
+        // Start essential threads.
+        LogOut("[SYSTEM] Starting background threads...", true);
+        std::thread(UpdateConsoleTitle).detach();
+        std::thread(FrameDataMonitor).detach();
+        std::thread(MonitorOnlineStatus).detach();
+        LogOut("[SYSTEM] Essential background threads started.", true);
+
+        // Use standard Windows input APIs instead of DirectInput
+        WriteStartupLog("Using standard Windows input APIs instead of DirectInput");
+        g_directInputAvailable = false;  // Ensure DirectInput is marked as unavailable
+
+        WriteStartupLog("Reading key.ini file...");
+        ReadKeyMappingsFromIni();
+        WriteStartupLog("Key mappings read");
+
+        LogOut("EFZ Training Mode initialized successfully", true);
+        WriteStartupLog("Delayed initialization complete");
+
+        // Initialize D3D9 hook for overlays once at startup (on a separate thread)
+        std::thread([]{
+            Sleep(2000); // Give the game a moment to be fully ready
+            try {
+                if (DirectDrawHook::InitializeD3D9()) {
+                    LogOut("[SYSTEM] D3D9 Overlay system initialized.", true);
+                } else {
+                    LogOut("[SYSTEM] Failed to initialize D3D9 Overlay system.", true);
+                }
+            } catch (...) {
+                LogOut("[SYSTEM] Exception during D3D9 overlay initialization.", true);
             }
-            
-            // Check every 5 seconds
+        }).detach();
+
+        // Set initialization flag and stop startup logging
+        g_initialized = true;
+        inStartupPhase = false;
+
+        // Initialize RF freeze thread
+        InitRFFreezeThread();
+
+        // Add ImGui monitoring thread
+        std::thread([]{
+            // Wait a bit for everything to initialize
             Sleep(5000);
-        }
-    }).detach();
-    
-    // Add screen state monitoring thread
-    std::thread([]{
-        GameMode lastGameMode = GameMode::Unknown;
-        bool lastCharSelectState = false;
-        
-        LogOut("[SYSTEM] Starting screen state monitoring thread", true);
-        
-        // Keep monitoring while the DLL is loaded
-        while (!g_isShuttingDown.load()) {
-            GameMode currentMode = GetCurrentGameMode();
-            bool isCharSelect = IsInCharacterSelectScreen();
-            
-            // When any game mode changes or character select state changes
-            if (currentMode != lastGameMode || isCharSelect != lastCharSelectState) {
-                // Log the transition
-                LogOut("[SCREEN_MONITOR] Screen state changed - Mode: " + 
-                      GetGameModeName(lastGameMode) + " → " + GetGameModeName(currentMode) + 
-                      ", CharSelect: " + (lastCharSelectState ? "Yes" : "No") + " → " + 
-                      (isCharSelect ? "Yes" : "No"), true);
-                
-                // Call the debug dump function
-                DebugDumpScreenState();
-                
-                // Update tracking variables
-                lastGameMode = currentMode;
-                lastCharSelectState = isCharSelect;
-                
-                // Also check if we're exiting from gameplay to character select
-                if (IsInGameplayState() && isCharSelect) {
-                    LogOut("[SCREEN_MONITOR] Detected transition from gameplay to character select", true);
-                    
-                    // Ensure proper cleanup
-                    StopBufferFreezing();
-                    SetBGMSuppressed(false);
-                    
-                    // Additional logs to help diagnose buffer freeze issues
-                    LogOut("[BUFFER_STATE] g_bufferFreezingActive = " + 
-                          std::to_string(g_bufferFreezingActive), true);
-                    LogOut("[BUFFER_STATE] g_indexFreezingActive = " + 
-                          std::to_string(g_indexFreezingActive), true);
-                }
-            }
-            
-            GamePhase phase = GetCurrentGamePhase();
-            static GamePhase lastPhase = GamePhase::Unknown;
-            if (phase != lastPhase) {
-                LogOut("[SCREEN_MONITOR] Phase change: " + std::to_string((int)lastPhase) + " -> " + std::to_string((int)phase), true);
-                DebugDumpScreenState();
 
-                if (lastPhase == GamePhase::Match && phase != GamePhase::Match) {
-                    StopBufferFreezing();
-                    ResetActionFlags();
-                    g_bufferFreezingActive = false;
-                    g_indexFreezingActive = false;
+            // Log ImGui rendering status every few seconds
+            while (true) {
+                if (ImGuiImpl::IsInitialized()) {
+                    LogOut(
+                        std::string("[IMGUI_MONITOR] Status: Initialized=") +
+                        (ImGuiImpl::IsInitialized() ? "1" : "0") +
+                        ", Visible=" + (ImGuiImpl::IsVisible() ? "1" : "0"),
+                        detailedLogging.load());
                 }
-                lastPhase = phase;
+                // Check every 5 seconds
+                Sleep(5000);
             }
-            
-            // Sleep to avoid high CPU usage (check every 100ms)
-            std::this_thread::sleep_for(std::chrono::milliseconds(100));
-        }
-        
-        LogOut("[SCREEN_MONITOR] Screen state monitoring thread stopped", true);
-    }).detach();
+        }).detach();
+
+        // Screen state monitoring thread
+        std::thread([]{
+            GameMode lastGameMode = GameMode::Unknown;
+            bool lastCharSelectState = false;
+
+            LogOut("[SYSTEM] Starting screen state monitoring thread", true);
+
+            // Keep monitoring while the DLL is loaded
+            while (!g_isShuttingDown.load()) {
+                GameMode currentMode = GetCurrentGameMode();
+                bool isCharSelect = IsInCharacterSelectScreen();
+
+                // When any game mode changes or character select state changes
+                if (currentMode != lastGameMode || isCharSelect != lastCharSelectState) {
+                    LogOut("[SCREEN_MONITOR] Screen state changed - Mode: " +
+                              GetGameModeName(lastGameMode) + " → " + GetGameModeName(currentMode) +
+                              ", CharSelect: " + (lastCharSelectState ? "Yes" : "No") + " → " +
+                              (isCharSelect ? "Yes" : "No"),
+                          true);
+
+                    DebugDumpScreenState();
+                    lastGameMode = currentMode;
+                    lastCharSelectState = isCharSelect;
+
+                    if (IsInGameplayState() && isCharSelect) {
+                        LogOut("[SCREEN_MONITOR] Detected transition from gameplay to character select", true);
+                        StopBufferFreezing();
+                        SetBGMSuppressed(false);
+                        LogOut("[BUFFER_STATE] g_bufferFreezingActive = " + std::to_string(g_bufferFreezingActive), true);
+                        LogOut("[BUFFER_STATE] g_indexFreezingActive = " + std::to_string(g_indexFreezingActive), true);
+                    }
+                }
+
+                GamePhase phase = GetCurrentGamePhase();
+                static GamePhase lastPhase = GamePhase::Unknown;
+                if (phase != lastPhase) {
+                    LogOut("[SCREEN_MONITOR] Phase change: " + std::to_string((int)lastPhase) + " -> " + std::to_string((int)phase), true);
+                    DebugDumpScreenState();
+
+                    if (lastPhase == GamePhase::Match && phase != GamePhase::Match) {
+                        StopBufferFreezing();
+                        ResetActionFlags();
+                        g_bufferFreezingActive = false;
+                        g_indexFreezingActive = false;
+                    }
+                    lastPhase = phase;
+                }
+
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            }
+
+            LogOut("[SCREEN_MONITOR] Screen state monitoring thread stopped", true);
+        }).detach();
+    } catch (...) {
+        // Ensure we don't crash the game due to an unhandled exception during startup
+        LogOut("[SYSTEM] Exception during DelayedInitialization (top-level catch).", true);
+        inStartupPhase = false;
+    }
 }
 
 // Implementation of the function

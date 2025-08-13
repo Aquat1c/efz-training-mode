@@ -49,6 +49,7 @@ bool DirectDrawHook::isHooked = false;
 // --- D3D9 Hooking Globals ---
 typedef HRESULT(WINAPI* EndScene_t)(LPDIRECT3DDEVICE9);
 static EndScene_t oEndScene = nullptr;
+static void* g_EndSceneTarget = nullptr; // store target vtable entry for cleanup
 // --- End D3D9 Globals ---
 
 // --- FIX: Add missing implementations for obsolete DirectDraw hooks ---
@@ -100,6 +101,13 @@ HRESULT WINAPI HookedEndScene(LPDIRECT3DDEVICE9 pDevice) {
     ImGui_ImplWin32_NewFrame();
     ImGui::NewFrame();
 
+    // If the game window is minimized, skip rendering to avoid ImGui asserting on zero-size display
+    ImGuiIO& io = ImGui::GetIO();
+    if (io.DisplaySize.x <= 0.0f || io.DisplaySize.y <= 0.0f) {
+        ImGui::EndFrame();
+        return oEndScene(pDevice);
+    }
+
     // Render our custom text overlays using the background draw list
     DirectDrawHook::RenderD3D9Overlays(pDevice);
 
@@ -111,7 +119,10 @@ HRESULT WINAPI HookedEndScene(LPDIRECT3DDEVICE9 pDevice) {
     // End the frame and render all accumulated draw data
     ImGui::EndFrame();
     ImGui::Render();
-    ImGui_ImplDX9_RenderDrawData(ImGui::GetDrawData());
+    // Guard again in case size changed mid-frame
+    if (io.DisplaySize.x > 0.0f && io.DisplaySize.y > 0.0f) {
+        ImGui_ImplDX9_RenderDrawData(ImGui::GetDrawData());
+    }
 
     return oEndScene(pDevice);
 }
@@ -598,14 +609,13 @@ bool DirectDrawHook::InitializeD3D9() {
         return true;
     }
     
-    // Find the game window
+    // Find the game window (best-effort; not strictly required for dummy device)
     HWND gameWindow = FindEFZWindow();
-    if (!gameWindow) {
-        LogOut("[OVERLAY] Failed to find EFZ window", true);
-        return false;
+    if (gameWindow) {
+        LogOut("[OVERLAY] Found game window: " + Logger::hwndToString(gameWindow), true);
+    } else {
+        LogOut("[OVERLAY] EFZ window not found yet; proceeding with dummy device.", true);
     }
-    
-    LogOut("[OVERLAY] Found game window: " + Logger::hwndToString(gameWindow), true);
     
     // Get the D3D9 module handle
     HMODULE d3d9Module = GetModuleHandleA("d3d9.dll");
@@ -632,6 +642,15 @@ bool DirectDrawHook::InitializeD3D9() {
         return false;
     }
     
+    // Create a hidden dummy window to safely create a temporary device
+    WNDCLASSA wc = {};
+    wc.lpfnWndProc = DefWindowProcA;
+    wc.hInstance = GetModuleHandleA(nullptr);
+    wc.lpszClassName = "EFZ_TM_D3D9_DUMMY";
+    RegisterClassA(&wc);
+    HWND dummyWnd = CreateWindowExA(0, wc.lpszClassName, "efz_tm_dummy", WS_OVERLAPPEDWINDOW,
+                                    CW_USEDEFAULT, CW_USEDEFAULT, 100, 100, nullptr, nullptr, wc.hInstance, nullptr);
+
     // Set up present parameters
     D3DPRESENT_PARAMETERS d3dpp = {};
     d3dpp.Windowed = TRUE;
@@ -640,11 +659,12 @@ bool DirectDrawHook::InitializeD3D9() {
     d3dpp.BackBufferWidth = 2;
     d3dpp.BackBufferHeight = 2;
     d3dpp.PresentationInterval = D3DPRESENT_INTERVAL_IMMEDIATE;
-    
+    d3dpp.hDeviceWindow = dummyWnd;
+
     // Create a temporary device to get the VTable
     LPDIRECT3DDEVICE9 tempDevice;
     HRESULT hr = d3d9->CreateDevice(
-        D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, gameWindow,
+        D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, d3dpp.hDeviceWindow,
         D3DCREATE_SOFTWARE_VERTEXPROCESSING, &d3dpp, &tempDevice);
         
     if (FAILED(hr)) {
@@ -656,6 +676,7 @@ bool DirectDrawHook::InitializeD3D9() {
     // Get the function pointer for EndScene
     void** vTable = *reinterpret_cast<void***>(tempDevice);
     void* endSceneAddr = vTable[42]; // EndScene is at index 42
+    g_EndSceneTarget = endSceneAddr;
     
     // Create the hook using MinHook
     LogOut("[OVERLAY] Hooking EndScene", detailedLogging.load());
@@ -677,6 +698,10 @@ bool DirectDrawHook::InitializeD3D9() {
     // Clean up temporary objects
     tempDevice->Release();
     d3d9->Release();
+    if (dummyWnd) {
+        DestroyWindow(dummyWnd);
+        UnregisterClassA("EFZ_TM_D3D9_DUMMY", GetModuleHandleA(nullptr));
+    }
     
     isHooked = true;
     LogOut("[OVERLAY] D3D9 hook initialized successfully", detailedLogging.load());
@@ -690,35 +715,10 @@ bool DirectDrawHook::InitializeD3D9() {
 
 void DirectDrawHook::ShutdownD3D9() {
     LogOut("[OVERLAY] Shutting down D3D9 hooks.", true);
-    // Disable both hooks
-    HMODULE hD3D9 = GetModuleHandleA("d3d9.dll");
-    if (hD3D9) {
-        void* pCreateFn = GetProcAddress(hD3D9, "Direct3DCreate9");
-        if (pCreateFn) {
-            MH_DisableHook(pCreateFn);
-            MH_RemoveHook(pCreateFn);
-        }
-    }
-    if (oEndScene) {
-        // To get the target address for EndScene, we need to re-resolve it briefly
-        // This is a bit ugly but necessary without storing the vTable address globally.
-        // A better long-term solution would be to store the vTable address.
-        // For now, this will work.
-        IDirect3D9* d3d9 = Direct3DCreate9(D3D_SDK_VERSION);
-        if (d3d9) {
-            D3DPRESENT_PARAMETERS d3dpp = {};
-            d3dpp.Windowed = TRUE;
-            d3dpp.SwapEffect = D3DSWAPEFFECT_DISCARD;
-            d3dpp.hDeviceWindow = FindEFZWindow();
-            IDirect3DDevice9* pDummyDevice = nullptr;
-            if (SUCCEEDED(d3d9->CreateDevice(D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, d3dpp.hDeviceWindow, D3DCREATE_SOFTWARE_VERTEXPROCESSING, &d3dpp, &pDummyDevice))) {
-                void** vTable = *reinterpret_cast<void***>(pDummyDevice);
-                MH_DisableHook(vTable[42]);
-                MH_RemoveHook(vTable[42]);
-                pDummyDevice->Release();
-            }
-            d3d9->Release();
-        }
+    if (g_EndSceneTarget) {
+        MH_DisableHook(g_EndSceneTarget);
+        MH_RemoveHook(g_EndSceneTarget);
+        g_EndSceneTarget = nullptr;
     }
     
     // REMOVED: MH_Uninitialize() is now called globally in dllmain.cpp

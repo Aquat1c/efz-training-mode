@@ -47,8 +47,11 @@ namespace ImGuiImpl {
         
         ImGui::StyleColorsDark();
         
-        ImGuiStyle& style = ImGui::GetStyle();
-        style.ScaleAllSizes(1.2f);
+    ImGuiStyle& style = ImGui::GetStyle();
+    style.ScaleAllSizes(1.2f);
+    // Safety: ensure valid minimum window size to satisfy ImGui asserts
+    if (style.WindowMinSize.x < 1.0f) style.WindowMinSize.x = 16.0f;
+    if (style.WindowMinSize.y < 1.0f) style.WindowMinSize.y = 16.0f;
         
         HWND gameWindow = FindEFZWindow();
         if (!gameWindow) {
@@ -160,6 +163,12 @@ namespace ImGuiImpl {
             ImGui_ImplDX9_NewFrame();
             ImGui_ImplWin32_NewFrame();
             ImGui::NewFrame();
+            // Skip rendering if minimized to avoid style asserts (DisplaySize == 0)
+            ImGuiIO& io = ImGui::GetIO();
+            if (io.DisplaySize.x <= 0.0f || io.DisplaySize.y <= 0.0f) {
+                ImGui::EndFrame();
+                return;
+            }
             
             // Render the GUI
             ImGuiGui::RenderGui();
@@ -167,7 +176,9 @@ namespace ImGuiImpl {
             // End frame and render
             ImGui::EndFrame();
             ImGui::Render();
-            ImGui_ImplDX9_RenderDrawData(ImGui::GetDrawData());
+            if (io.DisplaySize.x > 0.0f && io.DisplaySize.y > 0.0f) {
+                ImGui_ImplDX9_RenderDrawData(ImGui::GetDrawData());
+            }
         } catch (...) {
             // Silently catch any exceptions during rendering to prevent crashes
         }
