@@ -941,6 +941,41 @@ namespace ImGuiGui {
 
         LogOut("[IMGUI] Refreshed local data from game memory. IC Colors: P1=" + 
                std::to_string(p1ICValue) + ", P2=" + std::to_string(p2ICValue), true);
+
+    // --- Sync auto-action and trigger settings from atomics into the GUI state ---
+    // Master auto-action
+    guiState.localData.autoAction = autoActionEnabled.load();
+    guiState.localData.autoActionPlayer = autoActionPlayer.load();
+
+    // Per-trigger enables
+    guiState.localData.triggerAfterBlock   = triggerAfterBlockEnabled.load();
+    guiState.localData.triggerOnWakeup     = triggerOnWakeupEnabled.load();
+    guiState.localData.triggerAfterHitstun = triggerAfterHitstunEnabled.load();
+    guiState.localData.triggerAfterAirtech = triggerAfterAirtechEnabled.load();
+
+    // Per-trigger delays
+    guiState.localData.delayAfterBlock     = triggerAfterBlockDelay.load();
+    guiState.localData.delayOnWakeup       = triggerOnWakeupDelay.load();
+    guiState.localData.delayAfterHitstun   = triggerAfterHitstunDelay.load();
+    guiState.localData.delayAfterAirtech   = triggerAfterAirtechDelay.load();
+
+    // Per-trigger actions
+    guiState.localData.actionAfterBlock    = triggerAfterBlockAction.load();
+    guiState.localData.actionOnWakeup      = triggerOnWakeupAction.load();
+    guiState.localData.actionAfterHitstun  = triggerAfterHitstunAction.load();
+    guiState.localData.actionAfterAirtech  = triggerAfterAirtechAction.load();
+
+    // Per-trigger custom IDs
+    guiState.localData.customAfterBlock    = triggerAfterBlockCustomID.load();
+    guiState.localData.customOnWakeup      = triggerOnWakeupCustomID.load();
+    guiState.localData.customAfterHitstun  = triggerAfterHitstunCustomID.load();
+    guiState.localData.customAfterAirtech  = triggerAfterAirtechCustomID.load();
+
+    // Per-trigger strengths
+    guiState.localData.strengthAfterBlock    = triggerAfterBlockStrength.load();
+    guiState.localData.strengthOnWakeup      = triggerOnWakeupStrength.load();
+    guiState.localData.strengthAfterHitstun  = triggerAfterHitstunStrength.load();
+    guiState.localData.strengthAfterAirtech  = triggerAfterAirtechStrength.load();
     }
 
     // Update ApplyImGuiSettings to include character-specific data
@@ -958,6 +993,40 @@ namespace ImGuiGui {
             autoJumpEnabled.store(displayData.autoJump);
             jumpDirection.store(displayData.jumpDirection);
             jumpTarget.store(displayData.jumpTarget);
+
+            // Auto-action master settings
+            autoActionEnabled.store(displayData.autoAction);
+            autoActionPlayer.store(displayData.autoActionPlayer);
+
+            // Per-trigger enables
+            triggerAfterBlockEnabled.store(displayData.triggerAfterBlock);
+            triggerOnWakeupEnabled.store(displayData.triggerOnWakeup);
+            triggerAfterHitstunEnabled.store(displayData.triggerAfterHitstun);
+            triggerAfterAirtechEnabled.store(displayData.triggerAfterAirtech);
+
+            // Per-trigger delays
+            triggerAfterBlockDelay.store(displayData.delayAfterBlock);
+            triggerOnWakeupDelay.store(displayData.delayOnWakeup);
+            triggerAfterHitstunDelay.store(displayData.delayAfterHitstun);
+            triggerAfterAirtechDelay.store(displayData.delayAfterAirtech);
+
+            // Per-trigger actions
+            triggerAfterBlockAction.store(displayData.actionAfterBlock);
+            triggerOnWakeupAction.store(displayData.actionOnWakeup);
+            triggerAfterHitstunAction.store(displayData.actionAfterHitstun);
+            triggerAfterAirtechAction.store(displayData.actionAfterAirtech);
+
+            // Per-trigger custom IDs
+            triggerAfterBlockCustomID.store(displayData.customAfterBlock);
+            triggerOnWakeupCustomID.store(displayData.customOnWakeup);
+            triggerAfterHitstunCustomID.store(displayData.customAfterHitstun);
+            triggerAfterAirtechCustomID.store(displayData.customAfterAirtech);
+
+            // Per-trigger strengths
+            triggerAfterBlockStrength.store(displayData.strengthAfterBlock);
+            triggerOnWakeupStrength.store(displayData.strengthOnWakeup);
+            triggerAfterHitstunStrength.store(displayData.strengthAfterHitstun);
+            triggerAfterAirtechStrength.store(displayData.strengthAfterAirtech);
             
             // Apply the P2 control patch based on the checkbox state
             if (displayData.p2ControlEnabled) {
@@ -981,6 +1050,8 @@ namespace ImGuiGui {
             uintptr_t base = GetEFZBase();
             if (base) {
                 ApplySettings(&displayData);
+                // Refresh trigger overlay text to reflect new settings immediately
+                UpdateTriggerOverlay();
             }
         }
     }

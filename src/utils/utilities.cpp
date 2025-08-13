@@ -160,6 +160,26 @@ void DisableFeatures() {
     // Key monitoring will be handled separately by ManageKeyMonitoring()
 }
 
+// Public helper: permanently clear all triggers so they stay disabled until user re-enables
+void ClearAllTriggersPersistently() {
+    LogOut("[SYSTEM] Clearing all triggers persistently (returning to Character Select)", true);
+    // Disable toggles
+    autoActionEnabled.store(false);
+    triggerAfterBlockEnabled.store(false);
+    triggerOnWakeupEnabled.store(false);
+    triggerAfterHitstunEnabled.store(false);
+    triggerAfterAirtechEnabled.store(false);
+
+    // Invalidate any saved states so re-enable won’t auto-restore
+    s_savedStatesValid = false;
+
+    // Remove any trigger overlay lines now
+    if (g_TriggerAfterBlockId != -1) { DirectDrawHook::RemovePermanentMessage(g_TriggerAfterBlockId); g_TriggerAfterBlockId = -1; }
+    if (g_TriggerOnWakeupId != -1) { DirectDrawHook::RemovePermanentMessage(g_TriggerOnWakeupId); g_TriggerOnWakeupId = -1; }
+    if (g_TriggerAfterHitstunId != -1) { DirectDrawHook::RemovePermanentMessage(g_TriggerAfterHitstunId); g_TriggerAfterHitstunId = -1; }
+    if (g_TriggerAfterAirtechId != -1) { DirectDrawHook::RemovePermanentMessage(g_TriggerAfterAirtechId); g_TriggerAfterAirtechId = -1; }
+}
+
 
 // Global flag to track if we're still in startup mode
 std::atomic<bool> inStartupPhase(true);
