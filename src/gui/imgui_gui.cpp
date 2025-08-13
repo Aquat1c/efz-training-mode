@@ -281,6 +281,35 @@ namespace ImGuiGui {
         const char* strengthItems[] = {
             "A (Light)", "B (Medium)", "C (Heavy)"
         };
+        // Button picker for normal attacks only
+        const char* attackButtonItems[] = { "A", "B", "C" };
+
+        // Helpers to detect and map normal attacks (5X/2X/jX)
+        auto IsNormalAttackAction = [](int action) {
+            return action == ACTION_5A || action == ACTION_5B || action == ACTION_5C ||
+                   action == ACTION_2A || action == ACTION_2B || action == ACTION_2C ||
+                   action == ACTION_JA || action == ACTION_JB || action == ACTION_JC;
+        };
+        auto AttackButtonIndexForAction = [](int action) -> int {
+            switch (action) {
+                case ACTION_5A: case ACTION_2A: case ACTION_JA: return 0;
+                case ACTION_5B: case ACTION_2B: case ACTION_JB: return 1;
+                case ACTION_5C: case ACTION_2C: case ACTION_JC: return 2;
+                default: return 0;
+            }
+        };
+        auto MapAttackButtonSamePosture = [](int action, int attackButtonIdx) -> int {
+            switch (action) {
+                case ACTION_5A: case ACTION_5B: case ACTION_5C:
+                    return attackButtonIdx == 0 ? ACTION_5A : (attackButtonIdx == 1 ? ACTION_5B : ACTION_5C);
+                case ACTION_2A: case ACTION_2B: case ACTION_2C:
+                    return attackButtonIdx == 0 ? ACTION_2A : (attackButtonIdx == 1 ? ACTION_2B : ACTION_2C);
+                case ACTION_JA: case ACTION_JB: case ACTION_JC:
+                    return attackButtonIdx == 0 ? ACTION_JA : (attackButtonIdx == 1 ? ACTION_JB : ACTION_JC);
+                default:
+                    return action;
+            }
+        };
         
         // Render each trigger's settings
         for (int i = 0; i < IM_ARRAYSIZE(triggers); i++) {
@@ -329,6 +358,16 @@ namespace ImGuiGui {
                 int strengthIndex = *triggers[i].strength;
                 if (ImGui::Combo("Strength", &strengthIndex, strengthItems, IM_ARRAYSIZE(strengthItems))) {
                     *triggers[i].strength = strengthIndex;
+                }
+            }
+
+            // If a normal attack is selected (5X/2X/jX), expose a simple Button (A/B/C)
+            if (IsNormalAttackAction(*triggers[i].action)) {
+                ImGui::SameLine();
+                ImGui::SetNextItemWidth(90);
+                int attackButtonIdx = AttackButtonIndexForAction(*triggers[i].action);
+                if (ImGui::Combo("Button", &attackButtonIdx, attackButtonItems, IM_ARRAYSIZE(attackButtonItems))) {
+                    *triggers[i].action = MapAttackButtonSamePosture(*triggers[i].action, attackButtonIdx);
                 }
             }
             
