@@ -23,6 +23,9 @@
 #include "../include/input/input_motion.h" // For QueueMotionInput
 #include "../include/utils/bgm_control.h"
 #include "../include/input/input_freeze.h"
+#include <Xinput.h>
+
+#pragma comment(lib, "xinput9_1_0.lib")
 
 #ifndef VK_NUMPAD_ADD
 #define VK_NUMPAD_ADD      0x6B
@@ -205,13 +208,75 @@ void MonitorKeys() {
     const double leftX = 43.6548, rightX = 595.425, teleportY = 0.0;
     const double p1StartX = 240.0, p2StartX = 400.0, startY = 0.0;
 
+    // XInput state for edge detection
+    XINPUT_STATE prevPad{};
+
     while (keyMonitorRunning) {
         // Update window active state at the beginning of each loop
         UpdateWindowActiveState();
+    XINPUT_STATE currentPad{};
 
         // --- All other hotkeys: only when overlays/features are active ---
         if (g_efzWindowActive.load() && !g_guiActive.load()) {
             bool keyHandled = false;
+
+        // Gamepad: poll XInput pad 0 for menu/teleport/save position
+        if (XInputGetState(0, &currentPad) == ERROR_SUCCESS) {
+                auto wentDown = [&](WORD mask) {
+            return (currentPad.Gamepad.wButtons & mask) && !(prevPad.Gamepad.wButtons & mask);
+                };
+
+                // Start -> open/toggle ImGui menu
+                if (wentDown(XINPUT_GAMEPAD_START)) {
+                    ImGuiImpl::ToggleVisibility();
+                    keyHandled = true;
+                }
+
+                // Back (Select) -> teleport actions (mirrors '1' hotkey logic)
+                if (wentDown(XINPUT_GAMEPAD_BACK)) {
+                    uintptr_t base = GetEFZBase();
+                    if (base) {
+                        // Use D-Pad modifiers similar to arrow-key combos
+                        if ((currentPad.Gamepad.wButtons & XINPUT_GAMEPAD_DPAD_DOWN) &&
+                            (currentPad.Gamepad.wButtons & XINPUT_GAMEPAD_A)) {
+                            // Round start positions
+                            SetPlayerPosition(base, EFZ_BASE_OFFSET_P1, p1StartX, startY);
+                            SetPlayerPosition(base, EFZ_BASE_OFFSET_P2, p2StartX, startY);
+                            DirectDrawHook::AddMessage("Round Start Position", "SYSTEM", RGB(100, 255, 100), 1500, 0, 100);
+                        } else if (currentPad.Gamepad.wButtons & XINPUT_GAMEPAD_DPAD_DOWN) {
+                            // Center players
+                            SetPlayerPosition(base, EFZ_BASE_OFFSET_P1, centerX, teleportY);
+                            SetPlayerPosition(base, EFZ_BASE_OFFSET_P2, centerX, teleportY);
+                            DirectDrawHook::AddMessage("Players Centered", "SYSTEM", RGB(100, 255, 100), 1500, 0, 100);
+                        } else if (currentPad.Gamepad.wButtons & XINPUT_GAMEPAD_DPAD_LEFT) {
+                            // Left corner
+                            SetPlayerPosition(base, EFZ_BASE_OFFSET_P1, leftX, teleportY);
+                            SetPlayerPosition(base, EFZ_BASE_OFFSET_P2, leftX, teleportY);
+                            DirectDrawHook::AddMessage("Left Corner", "SYSTEM", RGB(100, 255, 100), 1500, 0, 100);
+                        } else if (currentPad.Gamepad.wButtons & XINPUT_GAMEPAD_DPAD_RIGHT) {
+                            // Right corner
+                            SetPlayerPosition(base, EFZ_BASE_OFFSET_P1, rightX, teleportY);
+                            SetPlayerPosition(base, EFZ_BASE_OFFSET_P2, rightX, teleportY);
+                            DirectDrawHook::AddMessage("Right Corner", "SYSTEM", RGB(100, 255, 100), 1500, 0, 100);
+                        } else {
+                            // Load saved position
+                            LoadPlayerPositions(base);
+                            DirectDrawHook::AddMessage("Position Loaded", "SYSTEM", RGB(100, 255, 100), 1500, 0, 100);
+                        }
+                    }
+                    keyHandled = true;
+                }
+
+                // L3 (Left stick click) -> save position
+                if (wentDown(XINPUT_GAMEPAD_LEFT_THUMB)) {
+                    uintptr_t base = GetEFZBase();
+                    if (base) {
+                        SavePlayerPositions(base);
+                        DirectDrawHook::AddMessage("Position Saved", "SYSTEM", RGB(255, 255, 100), 1500, 0, 100);
+                    }
+                    keyHandled = true;
+                }
+            }
             if (IsKeyPressed(configMenuKey, false)) {
                 OpenMenu();
                 // Wait a bit to prevent multiple openings
@@ -385,6 +450,9 @@ void MonitorKeys() {
 
         // Sleep to avoid high CPU usage
         Sleep(16); // ~60Hz polling
+
+    // Update previous pad state after sleep (safe even if not connected)
+    prevPad = currentPad;
     }
     
     LogOut("[KEYBINDS] Key monitoring thread exiting", true);
