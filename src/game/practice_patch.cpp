@@ -261,7 +261,7 @@ void MonitorAndPatchPracticeMode() {
             uintptr_t efzBase = GetEFZBase();
             uintptr_t gameStatePtr = 0;
             uint8_t p2CpuFlag = 1; // Default to CPU controlled
-            
+
             if (efzBase && 
                 SafeReadMemory(efzBase + EFZ_BASE_OFFSET_GAME_STATE, &gameStatePtr, sizeof(uintptr_t)) &&
                 SafeReadMemory(gameStatePtr + P2_CPU_FLAG_OFFSET, &p2CpuFlag, sizeof(uint8_t))) {
@@ -526,4 +526,53 @@ bool DisablePlayer2InPracticeMode() {
 
     DumpPracticeModeState();
     return true;
+}
+
+// Ensure P1 is player-controlled and P2 is AI-controlled at match start
+void EnsureDefaultControlFlagsOnMatchStart() {
+    uintptr_t efzBase = GetEFZBase();
+    if (!efzBase) {
+        LogOut("[PRACTICE_PATCH] EnsureDefaultControlFlagsOnMatchStart: EFZ base missing", true);
+        return;
+    }
+
+    // 1) Set P2 to CPU at game state level
+    uintptr_t gameStatePtr = 0;
+    if (SafeReadMemory(efzBase + EFZ_BASE_OFFSET_GAME_STATE, &gameStatePtr, sizeof(uintptr_t)) && gameStatePtr) {
+        uint8_t p2Cpu = 1; // 1 = CPU, 0 = human
+        if (SafeWriteMemory(gameStatePtr + P2_CPU_FLAG_OFFSET, &p2Cpu, sizeof(uint8_t))) {
+            LogOut("[PRACTICE_PATCH] MatchStart: P2 CPU flag set to 1 (CPU)", true);
+        } else {
+            LogOut("[PRACTICE_PATCH] MatchStart: Failed to set P2 CPU flag", true);
+        }
+    } else {
+        LogOut("[PRACTICE_PATCH] MatchStart: Failed to read game state ptr", true);
+    }
+
+    // 2) Adjust per-character AI flags (affects in-match control)
+    uintptr_t p1CharPtr = 0, p2CharPtr = 0;
+    SafeReadMemory(efzBase + EFZ_BASE_OFFSET_P1, &p1CharPtr, sizeof(uintptr_t));
+    SafeReadMemory(efzBase + EFZ_BASE_OFFSET_P2, &p2CharPtr, sizeof(uintptr_t));
+
+    if (p1CharPtr) {
+        uint32_t p1Ai = 0; // 0 = player-controlled
+        if (SafeWriteMemory(p1CharPtr + AI_CONTROL_FLAG_OFFSET, &p1Ai, sizeof(uint32_t))) {
+            LogOut("[PRACTICE_PATCH] MatchStart: P1 AI flag set to 0 (Player)", true);
+        } else {
+            LogOut("[PRACTICE_PATCH] MatchStart: Failed to set P1 AI flag", true);
+        }
+    } else {
+        LogOut("[PRACTICE_PATCH] MatchStart: P1 character pointer invalid", true);
+    }
+
+    if (p2CharPtr) {
+        uint32_t p2Ai = 1; // 1 = AI-controlled
+        if (SafeWriteMemory(p2CharPtr + AI_CONTROL_FLAG_OFFSET, &p2Ai, sizeof(uint32_t))) {
+            LogOut("[PRACTICE_PATCH] MatchStart: P2 AI flag set to 1 (AI)", true);
+        } else {
+            LogOut("[PRACTICE_PATCH] MatchStart: Failed to set P2 AI flag", true);
+        }
+    } else {
+        LogOut("[PRACTICE_PATCH] MatchStart: P2 character pointer invalid", true);
+    }
 }

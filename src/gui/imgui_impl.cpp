@@ -5,6 +5,10 @@
 #include "../include/gui/imgui_gui.h"
 #include "../include/gui/overlay.h" 
 #include <stdexcept>
+#include <Xinput.h>
+#include <algorithm>
+
+#pragma comment(lib, "xinput9_1_0.lib")
 
 // Global reference to shutdown flag - MOVED OUTSIDE namespace
 extern std::atomic<bool> g_isShuttingDown;
@@ -14,6 +18,107 @@ static bool g_imguiInitialized = false;
 static bool g_imguiVisible = false;
 static IDirect3DDevice9* g_d3dDevice = nullptr;
 static WNDPROC g_originalWndProc = nullptr;
+
+// Virtual cursor/gamepad state
+static bool g_useVirtualCursor = false;
+static ImVec2 g_virtualCursorPos = ImVec2(200.0f, 200.0f);
+static bool g_lastLeftDown = false;
+static bool g_lastRightDown = false;
+
+static inline float ClampF(float v, float lo, float hi) {
+    if (v < lo) return lo;
+    if (v > hi) return hi;
+    return v;
+}
+
+// Helper: check if window is in fullscreen (covering its monitor)
+static bool IsFullscreen(HWND hwnd) {
+    if (!hwnd) return false;
+    WINDOWPLACEMENT wp{ sizeof(WINDOWPLACEMENT) };
+    if (!GetWindowPlacement(hwnd, &wp)) return false;
+    if (wp.showCmd != SW_SHOWMAXIMIZED && wp.showCmd != SW_SHOWNORMAL && wp.showCmd != SW_SHOW) {
+        // Still allow borderless popup fullscreen
+    }
+
+    RECT wndRect{};
+    if (!GetWindowRect(hwnd, &wndRect)) return false;
+    HMONITOR mon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTOPRIMARY);
+    MONITORINFO mi{ sizeof(MONITORINFO) };
+    if (!GetMonitorInfo(mon, &mi)) return false;
+    // Consider fullscreen if window rect matches monitor work area or monitor area
+    return EqualRect(&wndRect, &mi.rcMonitor) || EqualRect(&wndRect, &mi.rcWork);
+}
+
+// Poll XInput and update a software mouse cursor
+static void UpdateVirtualCursor(ImGuiIO& io) {
+    HWND hwnd = FindEFZWindow();
+    const bool want = g_imguiVisible && hwnd && IsFullscreen(hwnd);
+    bool wasActive = g_useVirtualCursor;
+    g_useVirtualCursor = want;
+
+    if (!g_useVirtualCursor) {
+        io.MouseDrawCursor = false;
+        return;
+    }
+
+    // Draw ImGui software cursor
+    io.MouseDrawCursor = true;
+
+    if (!wasActive) {
+        // Center cursor on first activation
+        g_virtualCursorPos = ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f);
+    }
+
+    XINPUT_STATE state{};
+    DWORD xr = XInputGetState(0, &state);
+    if (xr == ERROR_SUCCESS) {
+        // Analog stick movement
+        const SHORT lx = state.Gamepad.sThumbLX;
+        const SHORT ly = state.Gamepad.sThumbLY;
+        auto applyDeadzone = [](SHORT v, SHORT dz) -> float {
+            int iv = (int)v;
+            if (iv > dz) iv -= dz; else if (iv < -dz) iv += dz; else iv = 0;
+            float n = (float)iv / (32767.0f - dz);
+            if (n > 1.f) n = 1.f; if (n < -1.f) n = -1.f;
+            return n;
+        };
+
+        const float nx = applyDeadzone(lx, XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE);
+        const float ny = applyDeadzone(ly, XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE);
+
+        // DPAD provides discrete nudge
+        float dpadX = 0.f, dpadY = 0.f;
+        if (state.Gamepad.wButtons & XINPUT_GAMEPAD_DPAD_RIGHT) dpadX += 1.f;
+        if (state.Gamepad.wButtons & XINPUT_GAMEPAD_DPAD_LEFT)  dpadX -= 1.f;
+        if (state.Gamepad.wButtons & XINPUT_GAMEPAD_DPAD_UP)    dpadY -= 1.f;
+        if (state.Gamepad.wButtons & XINPUT_GAMEPAD_DPAD_DOWN)  dpadY += 1.f;
+
+        float dt = io.DeltaTime > 0.f ? io.DeltaTime : (1.f/60.f);
+        // Speed scaling
+        const bool fast = (state.Gamepad.wButtons & XINPUT_GAMEPAD_LEFT_SHOULDER) != 0;
+        const float baseSpeed = fast ? 1800.f : 900.f;  // pixels per second
+        const float dpadSpeed = 700.f;
+
+        g_virtualCursorPos.x += (nx * baseSpeed + dpadX * dpadSpeed) * dt;
+        g_virtualCursorPos.y += (-ny * baseSpeed + dpadY * dpadSpeed) * dt; // note: Y is inverted
+
+        // Clamp within display
+    g_virtualCursorPos.x = ClampF(g_virtualCursorPos.x, 0.0f, io.DisplaySize.x - 1.0f);
+    g_virtualCursorPos.y = ClampF(g_virtualCursorPos.y, 0.0f, io.DisplaySize.y - 1.0f);
+
+        // Buttons -> mouse clicks
+        bool leftDown = (state.Gamepad.wButtons & XINPUT_GAMEPAD_A) != 0;
+        bool rightDown = (state.Gamepad.wButtons & XINPUT_GAMEPAD_B) != 0;
+
+        io.MouseDown[0] = leftDown;
+        io.MouseDown[1] = rightDown;
+        g_lastLeftDown = leftDown;
+        g_lastRightDown = rightDown;
+    }
+
+    // Feed position
+    io.MousePos = g_virtualCursorPos;
+}
 
 // Custom WndProc to handle ImGui input
 LRESULT CALLBACK ImGuiWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
@@ -47,8 +152,11 @@ namespace ImGuiImpl {
         
         ImGui::StyleColorsDark();
         
-        ImGuiStyle& style = ImGui::GetStyle();
-        style.ScaleAllSizes(1.2f);
+    ImGuiStyle& style = ImGui::GetStyle();
+    style.ScaleAllSizes(1.2f);
+    // Safety: ensure valid minimum window size to satisfy ImGui asserts
+    if (style.WindowMinSize.x < 1.0f) style.WindowMinSize.x = 16.0f;
+    if (style.WindowMinSize.y < 1.0f) style.WindowMinSize.y = 16.0f;
         
         HWND gameWindow = FindEFZWindow();
         if (!gameWindow) {
@@ -160,14 +268,25 @@ namespace ImGuiImpl {
             ImGui_ImplDX9_NewFrame();
             ImGui_ImplWin32_NewFrame();
             ImGui::NewFrame();
+            // Skip rendering if minimized to avoid style asserts (DisplaySize == 0)
+            ImGuiIO& io = ImGui::GetIO();
+            if (io.DisplaySize.x <= 0.0f || io.DisplaySize.y <= 0.0f) {
+                ImGui::EndFrame();
+                return;
+            }
             
+            // Update virtual cursor from XInput when in fullscreen
+            UpdateVirtualCursor(io);
+
             // Render the GUI
             ImGuiGui::RenderGui();
             
             // End frame and render
             ImGui::EndFrame();
             ImGui::Render();
-            ImGui_ImplDX9_RenderDrawData(ImGui::GetDrawData());
+            if (io.DisplaySize.x > 0.0f && io.DisplaySize.y > 0.0f) {
+                ImGui_ImplDX9_RenderDrawData(ImGui::GetDrawData());
+            }
         } catch (...) {
             // Silently catch any exceptions during rendering to prevent crashes
         }

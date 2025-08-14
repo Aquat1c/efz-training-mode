@@ -1,24 +1,40 @@
 {
-    "version": "2.0.0",
-    "tasks": [
-        {
-            "label": "build-dll",
-            "type": "shell",
-            "command": "pwsh",
-            "args": [
-                "-ExecutionPolicy",
-                "Bypass",
-                "-File",
-                "${workspaceFolder}\\.vscode\\build-script.ps1"
-            ],
-            "group": {
-                "kind": "build",
-                "isDefault": true
-            },
-            "presentation": {
-                "reveal": "always"
-            },
-            "problemMatcher": "$msCompile"
-        }
-    ]
-}   
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "build-dll",
+			"type": "shell",
+			"command": "pwsh",
+			"args": [
+				"-ExecutionPolicy",
+				"Bypass",
+				"-File",
+				"${workspaceFolder}\\.vscode\\build-script.ps1"
+			],
+			"group": {
+				"kind": "build",
+				"isDefault": true
+			},
+			"presentation": {
+				"reveal": "always"
+			},
+			"problemMatcher": "$msCompile"
+		},
+		{
+			"label": "build-dll",
+			"type": "shell",
+			"command": "pwsh",
+			"args": [
+				"-ExecutionPolicy",
+				"Bypass",
+				"-File",
+				"${workspaceFolder}\\.vscode\\build-script.ps1"
+			],
+			"isBackground": false,
+			"problemMatcher": [
+				"$msbuild"
+			],
+			"group": "build"
+		}
+	]
+}

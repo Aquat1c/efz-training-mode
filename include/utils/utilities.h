@@ -54,6 +54,10 @@ bool IsGroundtech(short moveID);
 bool IsFrozen(short moveID);
 bool IsSpecialStun(short moveID);
 
+// Explicitly clear all auto-action triggers (and auto-action) persistently.
+// Use when returning to Character Select so user can re-enable manually later.
+void ClearAllTriggersPersistently();
+
 // ADD THESE MISSING FUNCTION DECLARATIONS
 bool IsAttackMove(short moveID);      // From frame_advantage.cpp
 bool IsBlockstunState(short moveID);  // From frame_analysis.cpp
@@ -222,3 +226,18 @@ extern std::atomic<int> triggerAfterBlockStrength;
 extern std::atomic<int> triggerOnWakeupStrength;
 extern std::atomic<int> triggerAfterHitstunStrength;
 extern std::atomic<int> triggerAfterAirtechStrength;
+
+// Attack data structure - NEW
+struct AttackData {
+    // Offset 0x38: Attack type flags (likely contains high/low data)
+    int attackType;  
+    
+    // Offset 0x3C: Active frames
+    short activeFrameStart;
+    short activeFrameEnd;
+    
+    // Other properties...
+    int damage;
+    int blockstun;
+    int hitstun;
+};

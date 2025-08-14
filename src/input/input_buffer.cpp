@@ -18,7 +18,9 @@
 #include <algorithm>
 
 // Define the buffer constants here
-const uint16_t INPUT_BUFFER_SIZE = 0x180;  // 384 bytes circular buffer
+// IMPORTANT: The actual input buffer is 180 bytes long. Using 0x180 (384)
+// would overwrite into other fields (including the index at 0x260), causing anomalies.
+const uint16_t INPUT_BUFFER_SIZE = 180;    // 180 bytes circular buffer (0xB4)
 const uintptr_t INPUT_BUFFER_OFFSET = 0x1AB;  // Buffer start offset in player struct
 const uintptr_t INPUT_BUFFER_INDEX_OFFSET = 0x260;  // Current buffer index offset
 
@@ -42,6 +44,26 @@ void FreezeBufferValuesThread(int playerNum) {
         return;
     }
     
+    // One-time sanity check: ensure buffer does not overlap index
+    static std::atomic<bool> s_layoutChecked{false};
+    if (!s_layoutChecked.load()) {
+        uintptr_t testPlayer = initialPlayerPtr;
+        if (testPlayer) {
+            uintptr_t bufStart = testPlayer + INPUT_BUFFER_OFFSET;
+            uintptr_t bufEnd   = bufStart + INPUT_BUFFER_SIZE - 1;
+            uintptr_t idxAddr  = testPlayer + INPUT_BUFFER_INDEX_OFFSET;
+            std::stringstream ss;
+            ss << "[INPUT_BUFFER] Layout: start=0x" << std::hex << bufStart
+               << " end=0x" << bufEnd << " index=0x" << idxAddr
+               << std::dec;
+            LogOut(ss.str(), true);
+            if (bufEnd >= idxAddr && idxAddr >= bufStart) {
+                LogOut("[INPUT_BUFFER][WARN] Buffer region overlaps index! Adjust sizes/offsets.", true);
+            }
+        }
+        s_layoutChecked.store(true);
+    }
+
     // Get the move ID address for monitoring move execution
     uintptr_t base = GetEFZBase();
     uintptr_t moveIDAddr = ResolvePointer(base, 
@@ -267,8 +289,11 @@ void StopBufferFreezing() {
                         // Write neutral (0x00) to the last 8 buffer entries
                         uint8_t neutral = 0x00;
                         for (int i = 0; i < 8; i++) {
-                            uint16_t writeIndex = (currentIndex - i) % INPUT_BUFFER_SIZE;
-                            if (writeIndex < 0) writeIndex += INPUT_BUFFER_SIZE;
+                            int w = static_cast<int>(currentIndex) - i;
+                            // wrap into [0, INPUT_BUFFER_SIZE)
+                            w %= static_cast<int>(INPUT_BUFFER_SIZE);
+                            if (w < 0) w += static_cast<int>(INPUT_BUFFER_SIZE);
+                            uint16_t writeIndex = static_cast<uint16_t>(w);
                             SafeWriteMemory(playerPtr + INPUT_BUFFER_OFFSET + writeIndex, &neutral, sizeof(uint8_t));
                         }
                     }

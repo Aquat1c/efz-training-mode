@@ -15,6 +15,10 @@
 #include "../include/utils/bgm_control.h"
 #include "../include/input/input_debug.h"
 #include <algorithm> // Add this for std::max
+// For opening links from Help tab
+#include <shellapi.h>
+#pragma comment(lib, "shell32.lib")
+#include "../include/gui/gif_player.h"
 // Forward declare SpamAttackButton so we can use it in this file
 extern void SpamAttackButton(uintptr_t playerBase, uint8_t button, int frames, const char* buttonName);
 #include "../include/game/practice_patch.h"
@@ -266,20 +270,88 @@ namespace ImGuiGui {
               &guiState.localData.delayAfterAirtech, &guiState.localData.strengthAfterAirtech, &guiState.localData.customAfterAirtech }
         };
         
-        // Create a string array for action types
-        const char* actionItems[] = {
-            "5A", "5B", "5C", 
-            "2A", "2B", "2C", 
-            "j.A", "j.B", "j.C",
+        // Motion list (includes directions/stances plus motions and utility actions)
+        const char* motionItems[] = {
+            "Standing", "Crouching", "Jumping",
             "236 (QCF)", "623 (DP)", "214 (QCB)", "421 (Half-circle Down)",
             "41236 (HCF)", "63214 (HCB)", "236236 (Double QCF)", "214214 (Double QCB)",
-            "641236", "Jump", "Backdash", "Forward Dash", "Block",
-            "Custom ID"
+            "641236", "Jump", "Backdash", "Forward Dash", "Block", "Custom ID"
         };
-        
-        // Create string array for strength options
-        const char* strengthItems[] = {
-            "A (Light)", "B (Medium)", "C (Heavy)"
+
+        // Button list (applies to both directions and motions)
+        const char* buttonItems[] = { "A", "B", "C", "D" };
+
+        // Helpers
+        auto IsNormalAttackAction = [](int action) {
+            return action == ACTION_5A || action == ACTION_5B || action == ACTION_5C ||
+                   action == ACTION_2A || action == ACTION_2B || action == ACTION_2C ||
+                   action == ACTION_JA || action == ACTION_JB || action == ACTION_JC;
+        };
+        auto IsSpecialMoveAction = [](int action) {
+            return action == ACTION_QCF || action == ACTION_DP || action == ACTION_QCB ||
+                   action == ACTION_421 || action == ACTION_SUPER1 || action == ACTION_SUPER2 ||
+                   action == ACTION_236236 || action == ACTION_214214 || action == ACTION_641236;
+        };
+        auto GetPostureIndexForAction = [](int action) -> int {
+            if (action == ACTION_5A || action == ACTION_5B || action == ACTION_5C) return 0; // Standing
+            if (action == ACTION_2A || action == ACTION_2B || action == ACTION_2C) return 1; // Crouching
+            if (action == ACTION_JA || action == ACTION_JB || action == ACTION_JC) return 2; // Jumping
+            return -1;
+        };
+        auto GetMotionIndexForAction = [&](int action) -> int {
+            int postureIdx = GetPostureIndexForAction(action);
+            if (postureIdx >= 0) return postureIdx; // 0..2
+            switch (action) {
+                case ACTION_QCF: return 3;
+                case ACTION_DP: return 4;
+                case ACTION_QCB: return 5;
+                case ACTION_421: return 6;
+                case ACTION_SUPER1: return 7; // 41236
+                case ACTION_SUPER2: return 8; // 63214
+                case ACTION_236236: return 9;
+                case ACTION_214214: return 10;
+                case ACTION_641236: return 11;
+                case ACTION_JUMP: return 12;
+                case ACTION_BACKDASH: return 13;
+                case ACTION_FORWARD_DASH: return 14;
+                case ACTION_BLOCK: return 15;
+                case ACTION_CUSTOM: return 16;
+                default: return 0; // default Standing
+            }
+        };
+        auto MapPostureAndButtonToAction = [](int postureIdx, int buttonIdx) -> int {
+            // buttonIdx: 0=A,1=B,2=C,3=D. D not supported in ACTION_* enums; map D->C for now.
+            int b = buttonIdx;
+            if (b > 2) b = 2; // clamp D to C for normals
+            switch (postureIdx) {
+                case 0: // Standing
+                    return b == 0 ? ACTION_5A : (b == 1 ? ACTION_5B : ACTION_5C);
+                case 1: // Crouching
+                    return b == 0 ? ACTION_2A : (b == 1 ? ACTION_2B : ACTION_2C);
+                case 2: // Jumping
+                    return b == 0 ? ACTION_JA : (b == 1 ? ACTION_JB : ACTION_JC);
+                default:
+                    return ACTION_5A;
+            }
+        };
+        auto MapMotionIndexToAction = [](int motionIdx) -> int {
+            switch (motionIdx) {
+                case 3: return ACTION_QCF;
+                case 4: return ACTION_DP;
+                case 5: return ACTION_QCB;
+                case 6: return ACTION_421;
+                case 7: return ACTION_SUPER1; // 41236
+                case 8: return ACTION_SUPER2; // 63214
+                case 9: return ACTION_236236;
+                case 10: return ACTION_214214;
+                case 11: return ACTION_641236;
+                case 12: return ACTION_JUMP;
+                case 13: return ACTION_BACKDASH;
+                case 14: return ACTION_FORWARD_DASH;
+                case 15: return ACTION_BLOCK;
+                case 16: return ACTION_CUSTOM;
+                default: return ACTION_5A; // For posture indices, action will be set via button mapping
+            }
         };
         
         // Render each trigger's settings
@@ -299,36 +371,62 @@ namespace ImGuiGui {
             
             ImGui::SameLine();
             ImGui::SetNextItemWidth(150);
-            
-            // Convert our internal action index to combo box index
-            int actionComboIndex = ActionTypeToComboIndex(*triggers[i].action);
-            
-            // Action selection
-            if (ImGui::Combo("Action", &actionComboIndex, actionItems, IM_ARRAYSIZE(actionItems))) {
-                // Convert the combo index back to action type
-                *triggers[i].action = ComboIndexToActionType[actionComboIndex];
+            // Determine current motion selection from action
+            int motionIndex = GetMotionIndexForAction(*triggers[i].action);
+            if (ImGui::Combo("Button", &motionIndex, motionItems, IM_ARRAYSIZE(motionItems))) {//Actually directions/motion inputs
+                // When motion changes, update action accordingly
+                if (motionIndex <= 2) {
+                    // Posture selected: use current button choice to pick specific normal
+                    int currentButtonIdx = 0;
+                    // For normals, derive from action; for specials, derive from strength
+                    if (IsNormalAttackAction(*triggers[i].action)) {
+                        // Map current action to button index A/B/C
+                        switch (*triggers[i].action) {
+                            case ACTION_5A: case ACTION_2A: case ACTION_JA: currentButtonIdx = 0; break;
+                            case ACTION_5B: case ACTION_2B: case ACTION_JB: currentButtonIdx = 1; break;
+                            case ACTION_5C: case ACTION_2C: case ACTION_JC: currentButtonIdx = 2; break;
+                            default: currentButtonIdx = 0; break;
+                        }
+                    } else {
+                        currentButtonIdx = *triggers[i].strength; // reuse strength slot
+                    }
+                    *triggers[i].action = MapPostureAndButtonToAction(motionIndex, currentButtonIdx);
+                } else {
+                    // Motion selected: set action directly
+                    *triggers[i].action = MapMotionIndexToAction(motionIndex);
+                }
             }
-            
-            // Only show strength selector for special move types (QCF, DP, etc)
-            bool isSpecialMove = 
-                (*triggers[i].action == ACTION_QCF || 
-                 *triggers[i].action == ACTION_DP || 
-                 *triggers[i].action == ACTION_QCB ||
-                 *triggers[i].action == ACTION_421 ||
-                 *triggers[i].action == ACTION_SUPER1 || 
-                 *triggers[i].action == ACTION_SUPER2 ||
-                 *triggers[i].action == ACTION_236236 ||
-                 *triggers[i].action == ACTION_214214 ||
-                 *triggers[i].action == ACTION_641236);
-            
-            if (isSpecialMove) {
-                ImGui::SameLine();
-                ImGui::SetNextItemWidth(100);
-                
-                // Fixed: Use a local variable for the combo
-                int strengthIndex = *triggers[i].strength;
-                if (ImGui::Combo("Strength", &strengthIndex, strengthItems, IM_ARRAYSIZE(strengthItems))) {
-                    *triggers[i].strength = strengthIndex;
+
+            // Separate Button combo applies to both directions and motions
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(90);
+            int buttonIdx = 0;
+            int postureIdx = GetPostureIndexForAction(*triggers[i].action);
+            if (postureIdx >= 0) {
+                // Derive button from current normal action
+                switch (*triggers[i].action) {
+                    case ACTION_5A: case ACTION_2A: case ACTION_JA: buttonIdx = 0; break;
+                    case ACTION_5B: case ACTION_2B: case ACTION_JB: buttonIdx = 1; break;
+                    case ACTION_5C: case ACTION_2C: case ACTION_JC: buttonIdx = 2; break;
+                    default: buttonIdx = 0; break;
+                }
+            } else if (IsSpecialMoveAction(*triggers[i].action)) {
+                // For specials, use strength value as button index (A/B/C). D will be clamped.
+                buttonIdx = *triggers[i].strength;
+            } else {
+                // For other actions (jump, dash, block, custom), keep buttonIdx but it won't affect action
+                buttonIdx = *triggers[i].strength;
+            }
+            if (ImGui::Combo("", &buttonIdx, buttonItems, IM_ARRAYSIZE(buttonItems))) {//Delay
+                if (postureIdx >= 0) {
+                    // Update to specific normal based on posture + button
+                    *triggers[i].action = MapPostureAndButtonToAction(postureIdx, buttonIdx);
+                } else if (IsSpecialMoveAction(*triggers[i].action)) {
+                    // Map button to strength (A/B/C). D maps to C.
+                    *triggers[i].strength = (buttonIdx > 2) ? 2 : buttonIdx;
+                } else {
+                    // For non-move actions, store selection in strength slot for consistency
+                    *triggers[i].strength = (buttonIdx > 2) ? 2 : buttonIdx;
                 }
             }
             
@@ -359,29 +457,44 @@ namespace ImGuiGui {
 
     // Help Tab implementation
     void RenderHelpTab() {
-        ImGui::TextUnformatted("Hotkeys (can be changed in config.ini):");
+    ImGui::TextUnformatted("Hotkeys (can be changed in config.ini):");
         ImGui::Separator();
 
         const Config::Settings& cfg = Config::GetSettings();
 
         ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.0f, 1.0f), "Core Hotkeys:");
-        ImGui::BulletText("Open/Close this Menu: %s", GetKeyName(cfg.toggleImGuiKey).c_str());
-        ImGui::BulletText("Load Position: %s", GetKeyName(cfg.teleportKey).c_str());
-        ImGui::BulletText("Save Position: %s", GetKeyName(cfg.recordKey).c_str());
-        ImGui::BulletText("Toggle Detailed Title: %s", GetKeyName(cfg.toggleTitleKey).c_str());
-        ImGui::BulletText("Reset Frame Counter: %s", GetKeyName(cfg.resetFrameCounterKey).c_str());
-        ImGui::BulletText("Show This Help Screen: %s", GetKeyName(cfg.helpKey).c_str());
+    ImGui::BulletText("Open/Close Menu: 3/%s (Gamepad: START)", GetKeyName(cfg.toggleImGuiKey).c_str());
+    ImGui::BulletText("Load Position: %s (Gamepad: BACK)", GetKeyName(cfg.teleportKey).c_str());
+    ImGui::BulletText("Save Position: %s (Gamepad: L3)", GetKeyName(cfg.recordKey).c_str());
+    ImGui::BulletText("Toggle Stats Display: %s", GetKeyName(cfg.toggleTitleKey).c_str());
+        //ImGui::BulletText("Reset Frame Counter: %s", GetKeyName(cfg.resetFrameCounterKey).c_str());
+        //ImGui::BulletText("Show This Help Screen: %s", GetKeyName(cfg.helpKey).c_str());
 
         ImGui::Separator();
-        ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.0f, 1.0f), "Positioning Hotkeys (Hold Load Key + ...):");
-        ImGui::BulletText("Swap Player Positions: %s + UP", GetKeyName(cfg.teleportKey).c_str());
-        ImGui::BulletText("Center Players: %s + DOWN", GetKeyName(cfg.teleportKey).c_str());
-        ImGui::BulletText("Players to Left Corner: %s + LEFT", GetKeyName(cfg.teleportKey).c_str());
-        ImGui::BulletText("Players to Right Corner: %s + RIGHT", GetKeyName(cfg.teleportKey).c_str());
-        ImGui::BulletText("Round Start Positions: %s + DOWN + A", GetKeyName(cfg.teleportKey).c_str());
+    ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.0f, 1.0f), "Positioning Hotkeys (Hold Load: Keyboard=%s, Gamepad=BACK, A/B/C/D = your attack keys):", GetKeyName(cfg.teleportKey).c_str());
+    ImGui::BulletText("Center Players: %s + DOWN (Gamepad: BACK + D-PAD DOWN)", GetKeyName(cfg.teleportKey).c_str());
+    ImGui::BulletText("Players to Left Corner: %s + LEFT (Gamepad: BACK + D-PAD LEFT)", GetKeyName(cfg.teleportKey).c_str());
+    ImGui::BulletText("Players to Right Corner: %s + RIGHT (Gamepad: BACK + D-PAD RIGHT)", GetKeyName(cfg.teleportKey).c_str());
+    ImGui::BulletText("Round Start Positions: %s + DOWN + A (keyboard only)", GetKeyName(cfg.teleportKey).c_str());
+    ImGui::BulletText("Swap Player Positions: %s + D (keyboard only)", GetKeyName(cfg.teleportKey).c_str());
+
+    ImGui::Separator();
+        
+        // Inline animated preview from embedded bytes
+        unsigned gw = 0, gh = 0;
+        if (IDirect3DTexture9* tex = GifPlayer::GetTexture(gw, gh)) {
+            // Clamp to a reasonable size in the help panel
+            const float maxW = 220.0f, maxH = 180.0f;
+            float w = (float)gw, h = (float)gh;
+            if (w > maxW) { float s = maxW / w; w *= s; h *= s; }
+            if (h > maxH) { float s = maxH / h; w *= s; h *= s; }
+            ImGui::Dummy(ImVec2(1, 6));
+            ImGui::Image((ImTextureID)tex, ImVec2(w, h));
+        } else {
+            ImGui::TextDisabled("(GIF not loaded yet)");
+        }
 
         ImGui::Separator();
-        ImGui::TextWrapped("Press the key again to close this help screen.");
     }
 
     // Add the implementation for the character tab
@@ -683,6 +796,11 @@ namespace ImGuiGui {
     
     // Add this new function to the ImGuiGui namespace:
     void RenderDebugInputTab() {
+        bool showBorders = g_ShowOverlayDebugBorders.load();
+        if (ImGui::Checkbox("Show overlay debug borders", &showBorders)) {
+            g_ShowOverlayDebugBorders.store(showBorders);
+        }
+    ImGui::Separator();
         ImGui::Separator();
         ImGui::Text("Manual Input Override (P2)");
         ImGui::Separator();
@@ -941,6 +1059,41 @@ namespace ImGuiGui {
 
         LogOut("[IMGUI] Refreshed local data from game memory. IC Colors: P1=" + 
                std::to_string(p1ICValue) + ", P2=" + std::to_string(p2ICValue), true);
+
+    // --- Sync auto-action and trigger settings from atomics into the GUI state ---
+    // Master auto-action
+    guiState.localData.autoAction = autoActionEnabled.load();
+    guiState.localData.autoActionPlayer = autoActionPlayer.load();
+
+    // Per-trigger enables
+    guiState.localData.triggerAfterBlock   = triggerAfterBlockEnabled.load();
+    guiState.localData.triggerOnWakeup     = triggerOnWakeupEnabled.load();
+    guiState.localData.triggerAfterHitstun = triggerAfterHitstunEnabled.load();
+    guiState.localData.triggerAfterAirtech = triggerAfterAirtechEnabled.load();
+
+    // Per-trigger delays
+    guiState.localData.delayAfterBlock     = triggerAfterBlockDelay.load();
+    guiState.localData.delayOnWakeup       = triggerOnWakeupDelay.load();
+    guiState.localData.delayAfterHitstun   = triggerAfterHitstunDelay.load();
+    guiState.localData.delayAfterAirtech   = triggerAfterAirtechDelay.load();
+
+    // Per-trigger actions
+    guiState.localData.actionAfterBlock    = triggerAfterBlockAction.load();
+    guiState.localData.actionOnWakeup      = triggerOnWakeupAction.load();
+    guiState.localData.actionAfterHitstun  = triggerAfterHitstunAction.load();
+    guiState.localData.actionAfterAirtech  = triggerAfterAirtechAction.load();
+
+    // Per-trigger custom IDs
+    guiState.localData.customAfterBlock    = triggerAfterBlockCustomID.load();
+    guiState.localData.customOnWakeup      = triggerOnWakeupCustomID.load();
+    guiState.localData.customAfterHitstun  = triggerAfterHitstunCustomID.load();
+    guiState.localData.customAfterAirtech  = triggerAfterAirtechCustomID.load();
+
+    // Per-trigger strengths
+    guiState.localData.strengthAfterBlock    = triggerAfterBlockStrength.load();
+    guiState.localData.strengthOnWakeup      = triggerOnWakeupStrength.load();
+    guiState.localData.strengthAfterHitstun  = triggerAfterHitstunStrength.load();
+    guiState.localData.strengthAfterAirtech  = triggerAfterAirtechStrength.load();
     }
 
     // Update ApplyImGuiSettings to include character-specific data
@@ -958,6 +1111,40 @@ namespace ImGuiGui {
             autoJumpEnabled.store(displayData.autoJump);
             jumpDirection.store(displayData.jumpDirection);
             jumpTarget.store(displayData.jumpTarget);
+
+            // Auto-action master settings
+            autoActionEnabled.store(displayData.autoAction);
+            autoActionPlayer.store(displayData.autoActionPlayer);
+
+            // Per-trigger enables
+            triggerAfterBlockEnabled.store(displayData.triggerAfterBlock);
+            triggerOnWakeupEnabled.store(displayData.triggerOnWakeup);
+            triggerAfterHitstunEnabled.store(displayData.triggerAfterHitstun);
+            triggerAfterAirtechEnabled.store(displayData.triggerAfterAirtech);
+
+            // Per-trigger delays
+            triggerAfterBlockDelay.store(displayData.delayAfterBlock);
+            triggerOnWakeupDelay.store(displayData.delayOnWakeup);
+            triggerAfterHitstunDelay.store(displayData.delayAfterHitstun);
+            triggerAfterAirtechDelay.store(displayData.delayAfterAirtech);
+
+            // Per-trigger actions
+            triggerAfterBlockAction.store(displayData.actionAfterBlock);
+            triggerOnWakeupAction.store(displayData.actionOnWakeup);
+            triggerAfterHitstunAction.store(displayData.actionAfterHitstun);
+            triggerAfterAirtechAction.store(displayData.actionAfterAirtech);
+
+            // Per-trigger custom IDs
+            triggerAfterBlockCustomID.store(displayData.customAfterBlock);
+            triggerOnWakeupCustomID.store(displayData.customOnWakeup);
+            triggerAfterHitstunCustomID.store(displayData.customAfterHitstun);
+            triggerAfterAirtechCustomID.store(displayData.customAfterAirtech);
+
+            // Per-trigger strengths
+            triggerAfterBlockStrength.store(displayData.strengthAfterBlock);
+            triggerOnWakeupStrength.store(displayData.strengthOnWakeup);
+            triggerAfterHitstunStrength.store(displayData.strengthAfterHitstun);
+            triggerAfterAirtechStrength.store(displayData.strengthAfterAirtech);
             
             // Apply the P2 control patch based on the checkbox state
             if (displayData.p2ControlEnabled) {
@@ -981,6 +1168,8 @@ namespace ImGuiGui {
             uintptr_t base = GetEFZBase();
             if (base) {
                 ApplySettings(&displayData);
+                // Refresh trigger overlay text to reflect new settings immediately
+                UpdateTriggerOverlay();
             }
         }
     }

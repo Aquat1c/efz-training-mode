@@ -24,3 +24,7 @@ void ScanForPotentialAIFlags();
 
 // Function to reset P2 character completely
 void ResetP2Character();
+
+// Ensure default control flags when entering a match in Practice:
+// - P1 player-controlled, P2 AI-controlled
+void EnsureDefaultControlFlagsOnMatchStart();
