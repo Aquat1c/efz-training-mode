@@ -101,6 +101,8 @@ target_link_libraries(efz_training_mode PRIVATE
     ws2_32
     iphlpapi
     comctl32
+    gdiplus
+    shlwapi
     ddraw
     dxguid
     d3d9
