@@ -24,6 +24,7 @@
 #include <Xinput.h>
 #pragma comment(lib, "xinput9_1_0.lib")
 #include <cmath>
+#include "../../include/gui/gif_player.h"
 
 // Avoid Windows min/max macro conflicts
 #ifdef min
@@ -136,12 +137,22 @@ HRESULT WINAPI HookedEndScene(LPDIRECT3DDEVICE9 pDevice) {
         return oEndScene(pDevice);
     }
 
+    // Initialize GIF player once the device is valid
+    static bool gifInit = false;
+    if (!gifInit) { gifInit = GifPlayer::Initialize(pDevice); }
+
     // Render our custom text overlays using the background draw list
     DirectDrawHook::RenderD3D9Overlays(pDevice);
 
     // Render the main ImGui configuration window if it's visible
     if (ImGuiImpl::IsVisible()) {
         ImGuiGui::RenderGui();
+    }
+
+    // Advance GIF animation timing
+    {
+        ImGuiIO& io = ImGui::GetIO();
+        GifPlayer::Update(io.DeltaTime > 0.f ? (double)io.DeltaTime : 1.0/60.0);
     }
 
     // End the frame and render all accumulated draw data
@@ -889,6 +900,7 @@ bool DirectDrawHook::InitializeD3D9() {
 
 void DirectDrawHook::ShutdownD3D9() {
     LogOut("[OVERLAY] Shutting down D3D9 hooks.", true);
+    GifPlayer::Shutdown();
     if (g_EndSceneTarget) {
         MH_DisableHook(g_EndSceneTarget);
         MH_RemoveHook(g_EndSceneTarget);

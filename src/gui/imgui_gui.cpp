@@ -15,6 +15,10 @@
 #include "../include/utils/bgm_control.h"
 #include "../include/input/input_debug.h"
 #include <algorithm> // Add this for std::max
+// For opening links from Help tab
+#include <shellapi.h>
+#pragma comment(lib, "shell32.lib")
+#include "../include/gui/gif_player.h"
 // Forward declare SpamAttackButton so we can use it in this file
 extern void SpamAttackButton(uintptr_t playerBase, uint8_t button, int frames, const char* buttonName);
 #include "../include/game/practice_patch.h"
@@ -453,29 +457,44 @@ namespace ImGuiGui {
 
     // Help Tab implementation
     void RenderHelpTab() {
-        ImGui::TextUnformatted("Hotkeys (can be changed in config.ini):");
+    ImGui::TextUnformatted("Hotkeys (can be changed in config.ini):");
         ImGui::Separator();
 
         const Config::Settings& cfg = Config::GetSettings();
 
         ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.0f, 1.0f), "Core Hotkeys:");
-        ImGui::BulletText("Open/Close this Menu: %s", GetKeyName(cfg.toggleImGuiKey).c_str());
-        ImGui::BulletText("Load Position: %s", GetKeyName(cfg.teleportKey).c_str());
-        ImGui::BulletText("Save Position: %s", GetKeyName(cfg.recordKey).c_str());
-        ImGui::BulletText("Toggle Detailed Title: %s", GetKeyName(cfg.toggleTitleKey).c_str());
-        ImGui::BulletText("Reset Frame Counter: %s", GetKeyName(cfg.resetFrameCounterKey).c_str());
-        ImGui::BulletText("Show This Help Screen: %s", GetKeyName(cfg.helpKey).c_str());
+    ImGui::BulletText("Open/Close Menu: 3/%s (Gamepad: START)", GetKeyName(cfg.toggleImGuiKey).c_str());
+    ImGui::BulletText("Load Position: %s (Gamepad: BACK)", GetKeyName(cfg.teleportKey).c_str());
+    ImGui::BulletText("Save Position: %s (Gamepad: L3)", GetKeyName(cfg.recordKey).c_str());
+    ImGui::BulletText("Toggle Stats Display: %s", GetKeyName(cfg.toggleTitleKey).c_str());
+        //ImGui::BulletText("Reset Frame Counter: %s", GetKeyName(cfg.resetFrameCounterKey).c_str());
+        //ImGui::BulletText("Show This Help Screen: %s", GetKeyName(cfg.helpKey).c_str());
 
         ImGui::Separator();
-        ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.0f, 1.0f), "Positioning Hotkeys (Hold Load Key + ...):");
-        ImGui::BulletText("Swap Player Positions: %s + UP", GetKeyName(cfg.teleportKey).c_str());
-        ImGui::BulletText("Center Players: %s + DOWN", GetKeyName(cfg.teleportKey).c_str());
-        ImGui::BulletText("Players to Left Corner: %s + LEFT", GetKeyName(cfg.teleportKey).c_str());
-        ImGui::BulletText("Players to Right Corner: %s + RIGHT", GetKeyName(cfg.teleportKey).c_str());
-        ImGui::BulletText("Round Start Positions: %s + DOWN + A", GetKeyName(cfg.teleportKey).c_str());
+    ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.0f, 1.0f), "Positioning Hotkeys (Hold Load: Keyboard=%s, Gamepad=BACK, A/B/C/D = your attack keys):", GetKeyName(cfg.teleportKey).c_str());
+    ImGui::BulletText("Center Players: %s + DOWN (Gamepad: BACK + D-PAD DOWN)", GetKeyName(cfg.teleportKey).c_str());
+    ImGui::BulletText("Players to Left Corner: %s + LEFT (Gamepad: BACK + D-PAD LEFT)", GetKeyName(cfg.teleportKey).c_str());
+    ImGui::BulletText("Players to Right Corner: %s + RIGHT (Gamepad: BACK + D-PAD RIGHT)", GetKeyName(cfg.teleportKey).c_str());
+    ImGui::BulletText("Round Start Positions: %s + DOWN + A (keyboard only)", GetKeyName(cfg.teleportKey).c_str());
+    ImGui::BulletText("Swap Player Positions: %s + D (keyboard only)", GetKeyName(cfg.teleportKey).c_str());
+
+    ImGui::Separator();
+        
+        // Inline animated preview from embedded bytes
+        unsigned gw = 0, gh = 0;
+        if (IDirect3DTexture9* tex = GifPlayer::GetTexture(gw, gh)) {
+            // Clamp to a reasonable size in the help panel
+            const float maxW = 220.0f, maxH = 180.0f;
+            float w = (float)gw, h = (float)gh;
+            if (w > maxW) { float s = maxW / w; w *= s; h *= s; }
+            if (h > maxH) { float s = maxH / h; w *= s; h *= s; }
+            ImGui::Dummy(ImVec2(1, 6));
+            ImGui::Image((ImTextureID)tex, ImVec2(w, h));
+        } else {
+            ImGui::TextDisabled("(GIF not loaded yet)");
+        }
 
         ImGui::Separator();
-        ImGui::TextWrapped("Press the key again to close this help screen.");
     }
 
     // Add the implementation for the character tab
