@@ -16,6 +16,7 @@
 #include <d3d9.h>
 #include <mutex>
 #include <deque>
+#include <unordered_set>
 #include "../include/gui/imgui_gui.h"
 #include "../3rdparty/minhook/include/MinHook.h"
 // ADD these includes for the new rendering loop
@@ -82,6 +83,20 @@ HRESULT WINAPI DirectDrawHook::HookedFlip(IDirectDrawSurface7* This, IDirectDraw
 // --- REVISED AND CORRECTED D3D9 EndScene Hook ---
 HRESULT WINAPI HookedEndScene(LPDIRECT3DDEVICE9 pDevice) {
     if (!pDevice) {
+        return oEndScene(pDevice);
+    }
+
+    // Determine the current render target size and only render UI on the 640x480 pass
+    UINT rtW = 0, rtH = 0;
+    if (IDirect3DSurface9* rt = nullptr; SUCCEEDED(pDevice->GetRenderTarget(0, &rt)) && rt) {
+        D3DSURFACE_DESC d{};
+        if (SUCCEEDED(rt->GetDesc(&d))) {
+            rtW = d.Width; rtH = d.Height;
+        }
+        rt->Release();
+    }
+    if (!(rtW == 640 && rtH == 480)) {
+        // Skip all ImGui work on non-game RTs (e.g., 1280x960 fullscreen border)
         return oEndScene(pDevice);
     }
 
@@ -282,6 +297,43 @@ void DirectDrawHook::RenderD3D9Overlays(LPDIRECT3DDEVICE9 pDevice) {
 
     std::lock_guard<std::mutex> lock(messagesMutex);
 
+    // --- DEBUG: Identify current D3D9 render target and draw borders ---
+    UINT rtW = 0, rtH = 0;
+    if (IDirect3DSurface9* rt = nullptr; SUCCEEDED(pDevice->GetRenderTarget(0, &rt)) && rt) {
+        D3DSURFACE_DESC d{};
+        if (SUCCEEDED(rt->GetDesc(&d))) {
+            rtW = d.Width; rtH = d.Height;
+        }
+        rt->Release();
+    }
+    if (rtW > 0 && rtH > 0) {
+        static UINT prevW = 0, prevH = 0;
+        if (rtW != prevW || rtH != prevH) {
+            prevW = rtW; prevH = rtH;
+            ImVec2 ds = ImGui::GetIO().DisplaySize;
+            LogOut("[OVERLAY][D3D9] RT size=" + std::to_string(rtW) + "x" + std::to_string(rtH) +
+                   " ImGui.DisplaySize=" + std::to_string((int)ds.x) + "x" + std::to_string((int)ds.y), true);
+        }
+        // Full render-target border (red)
+        drawList->AddRect(ImVec2(1.5f, 1.5f), ImVec2((float)rtW - 1.5f, (float)rtH - 1.5f), IM_COL32(255, 0, 0, 200), 0.0f, 0, 3.0f);
+        // Label
+        char lbl[64];
+        _snprintf_s(lbl, sizeof(lbl), _TRUNCATE, "D3D9 RT %ux%u", rtW, rtH);
+        drawList->AddText(ImVec2(8.0f, 8.0f), IM_COL32(255, 0, 0, 220), lbl);
+
+        // Inner game-area border assuming 640x480 letterbox (green)
+        const float baseW = 640.0f;
+        const float baseH = 480.0f;
+        const float sx = (float)rtW / baseW;
+        const float sy = (float)rtH / baseH;
+        const float scale = (sx < sy) ? sx : sy;
+        const float gw = baseW * scale;
+        const float gh = baseH * scale;
+        const float ox = ((float)rtW - gw) * 0.5f;
+        const float oy = ((float)rtH - gh) * 0.5f;
+        drawList->AddRect(ImVec2(ox + 1.0f, oy + 1.0f), ImVec2(ox + gw - 1.0f, oy + gh - 1.0f), IM_COL32(0, 255, 0, 200), 0.0f, 0, 2.0f);
+    }
+
     // Helper lambda to render a message with a background
     auto renderMessage = [&](const OverlayMessage& msg) {
         // Check if this is a trigger overlay by position
@@ -372,6 +424,20 @@ void DirectDrawHook::RenderAllMessages(IDirectDrawSurface7* surface) {
         }
     }
     
+    // --- DEBUG: Log unique surface and draw a border to visualize which surface we render to ---
+    static std::unordered_set<IDirectDrawSurface7*> s_seen;
+    if (s_seen.insert(surface).second) {
+        char ptrbuf[32] = {};
+        _snprintf_s(ptrbuf, sizeof(ptrbuf), _TRUNCATE, "%p", surface);
+        DDSURFACEDESC2 desc{}; desc.dwSize = sizeof(desc);
+        if (SUCCEEDED(surface->GetSurfaceDesc(&desc))) {
+            LogOut(std::string("[OVERLAY][DDRAW] First seen surface=") + ptrbuf +
+                   " size=" + std::to_string((int)desc.dwWidth) + "x" + std::to_string((int)desc.dwHeight), true);
+        } else {
+            LogOut(std::string("[OVERLAY][DDRAW] First seen surface=") + ptrbuf + " (GetSurfaceDesc failed)", true);
+        }
+    }
+
     // CRITICAL FIX: Use a more aggressive rendering approach
     HDC hdc;
     if (FAILED(surface->GetDC(&hdc))) {
@@ -382,6 +448,25 @@ void DirectDrawHook::RenderAllMessages(IDirectDrawSurface7* surface) {
     try {
         // Set up for high-visibility rendering
         SetBkMode(hdc, TRANSPARENT);
+
+        // Draw a thick magenta border and label around the whole surface for on-screen identification
+        DDSURFACEDESC2 desc{}; desc.dwSize = sizeof(desc);
+        if (SUCCEEDED(surface->GetSurfaceDesc(&desc))) {
+            HPEN pen = CreatePen(PS_SOLID, 4, RGB(255, 0, 255));
+            HBRUSH oldBrush = (HBRUSH)SelectObject(hdc, GetStockObject(HOLLOW_BRUSH));
+            HPEN oldPen = (HPEN)SelectObject(hdc, pen);
+            int w = (int)desc.dwWidth, h = (int)desc.dwHeight;
+            Rectangle(hdc, 1, 1, w - 1, h - 1);
+            // Label
+            SetTextColor(hdc, RGB(255, 0, 255));
+            char ptrbuf[32] = {};
+            _snprintf_s(ptrbuf, sizeof(ptrbuf), _TRUNCATE, "%p", surface);
+            std::string label = "DDRAW " + std::to_string(w) + "x" + std::to_string(h) + " " + ptrbuf;
+            TextOutA(hdc, 6, 6, label.c_str(), (int)label.size());
+            SelectObject(hdc, oldPen);
+            SelectObject(hdc, oldBrush);
+            DeleteObject(pen);
+        }
         
         // Render "Hello, world" text if characters are initialized
         if (showHelloWorld) {
