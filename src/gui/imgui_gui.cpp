@@ -777,6 +777,11 @@ namespace ImGuiGui {
     
     // Add this new function to the ImGuiGui namespace:
     void RenderDebugInputTab() {
+        bool showBorders = g_ShowOverlayDebugBorders.load();
+        if (ImGui::Checkbox("Show overlay debug borders", &showBorders)) {
+            g_ShowOverlayDebugBorders.store(showBorders);
+        }
+    ImGui::Separator();
         ImGui::Separator();
         ImGui::Text("Manual Input Override (P2)");
         ImGui::Separator();

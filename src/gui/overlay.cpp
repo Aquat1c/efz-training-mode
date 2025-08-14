@@ -32,6 +32,8 @@ int g_TriggerAfterBlockId = -1;
 int g_TriggerOnWakeupId = -1;
 int g_TriggerAfterHitstunId = -1;
 int g_TriggerAfterAirtechId = -1;
+// Debug borders toggle default off
+std::atomic<bool> g_ShowOverlayDebugBorders{false};
 
 // --- Define static members of DirectDrawHook ---
 DirectDrawCreateFunc DirectDrawHook::originalDirectDrawCreate = nullptr;
@@ -306,7 +308,7 @@ void DirectDrawHook::RenderD3D9Overlays(LPDIRECT3DDEVICE9 pDevice) {
         }
         rt->Release();
     }
-    if (rtW > 0 && rtH > 0) {
+    if (g_ShowOverlayDebugBorders.load() && rtW > 0 && rtH > 0) {
         static UINT prevW = 0, prevH = 0;
         if (rtW != prevW || rtH != prevH) {
             prevW = rtW; prevH = rtH;
@@ -331,7 +333,7 @@ void DirectDrawHook::RenderD3D9Overlays(LPDIRECT3DDEVICE9 pDevice) {
         const float gh = baseH * scale;
         const float ox = ((float)rtW - gw) * 0.5f;
         const float oy = ((float)rtH - gh) * 0.5f;
-        drawList->AddRect(ImVec2(ox + 1.0f, oy + 1.0f), ImVec2(ox + gw - 1.0f, oy + gh - 1.0f), IM_COL32(0, 255, 0, 200), 0.0f, 0, 2.0f);
+    drawList->AddRect(ImVec2(ox + 1.0f, oy + 1.0f), ImVec2(ox + gw - 1.0f, oy + gh - 1.0f), IM_COL32(0, 255, 0, 200), 0.0f, 0, 2.0f);
     }
 
     // Helper lambda to render a message with a background
@@ -450,22 +452,24 @@ void DirectDrawHook::RenderAllMessages(IDirectDrawSurface7* surface) {
         SetBkMode(hdc, TRANSPARENT);
 
         // Draw a thick magenta border and label around the whole surface for on-screen identification
-        DDSURFACEDESC2 desc{}; desc.dwSize = sizeof(desc);
-        if (SUCCEEDED(surface->GetSurfaceDesc(&desc))) {
-            HPEN pen = CreatePen(PS_SOLID, 4, RGB(255, 0, 255));
-            HBRUSH oldBrush = (HBRUSH)SelectObject(hdc, GetStockObject(HOLLOW_BRUSH));
-            HPEN oldPen = (HPEN)SelectObject(hdc, pen);
-            int w = (int)desc.dwWidth, h = (int)desc.dwHeight;
-            Rectangle(hdc, 1, 1, w - 1, h - 1);
-            // Label
-            SetTextColor(hdc, RGB(255, 0, 255));
-            char ptrbuf[32] = {};
-            _snprintf_s(ptrbuf, sizeof(ptrbuf), _TRUNCATE, "%p", surface);
-            std::string label = "DDRAW " + std::to_string(w) + "x" + std::to_string(h) + " " + ptrbuf;
-            TextOutA(hdc, 6, 6, label.c_str(), (int)label.size());
-            SelectObject(hdc, oldPen);
-            SelectObject(hdc, oldBrush);
-            DeleteObject(pen);
+        if (g_ShowOverlayDebugBorders.load()) {
+            DDSURFACEDESC2 desc{}; desc.dwSize = sizeof(desc);
+            if (SUCCEEDED(surface->GetSurfaceDesc(&desc))) {
+                HPEN pen = CreatePen(PS_SOLID, 4, RGB(255, 0, 255));
+                HBRUSH oldBrush = (HBRUSH)SelectObject(hdc, GetStockObject(HOLLOW_BRUSH));
+                HPEN oldPen = (HPEN)SelectObject(hdc, pen);
+                int w = (int)desc.dwWidth, h = (int)desc.dwHeight;
+                Rectangle(hdc, 1, 1, w - 1, h - 1);
+                // Label
+                SetTextColor(hdc, RGB(255, 0, 255));
+                char ptrbuf[32] = {};
+                _snprintf_s(ptrbuf, sizeof(ptrbuf), _TRUNCATE, "%p", surface);
+                std::string label = "DDRAW " + std::to_string(w) + "x" + std::to_string(h) + " " + ptrbuf;
+                TextOutA(hdc, 6, 6, label.c_str(), (int)label.size());
+                SelectObject(hdc, oldPen);
+                SelectObject(hdc, oldBrush);
+                DeleteObject(pen);
+            }
         }
         
         // Render "Hello, world" text if characters are initialized
