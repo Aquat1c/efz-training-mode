@@ -21,6 +21,17 @@
 #include "../3rdparty/minhook/include/MinHook.h"
 // ADD these includes for the new rendering loop
 #include "../include/gui/imgui_impl.h"
+#include <Xinput.h>
+#pragma comment(lib, "xinput9_1_0.lib")
+#include <cmath>
+
+// Avoid Windows min/max macro conflicts
+#ifdef min
+#undef min
+#endif
+#ifdef max
+#undef max
+#endif
 
 // Global status message IDs
 int g_AirtechStatusId = -1;
@@ -391,6 +402,77 @@ void DirectDrawHook::RenderD3D9Overlays(LPDIRECT3DDEVICE9 pDevice) {
         if (msg.expireTime > now) {
             renderMessage(msg);
         }
+    }
+
+    // --- Fullscreen cursor dot (mouse + gamepad) ---
+    // Helper: fullscreen check
+    auto isFullscreen = []() -> bool {
+        HWND hwnd = FindEFZWindow();
+        if (!hwnd) return false;
+        WINDOWPLACEMENT wp{ sizeof(WINDOWPLACEMENT) };
+        if (!GetWindowPlacement(hwnd, &wp)) return false;
+        RECT wndRect{};
+        if (!GetWindowRect(hwnd, &wndRect)) return false;
+        HMONITOR mon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTOPRIMARY);
+        MONITORINFO mi{ sizeof(MONITORINFO) };
+        if (!GetMonitorInfo(mon, &mi)) return false;
+        return EqualRect(&wndRect, &mi.rcMonitor) || EqualRect(&wndRect, &mi.rcWork);
+    };
+
+    if (isFullscreen() && ImGuiImpl::IsVisible()) {
+        ImGuiIO& io = ImGui::GetIO();
+        static ImVec2 padPos = ImVec2(320.f, 240.f);
+        static bool lastPadActive = false;
+
+        // Poll gamepad
+        bool padActive = false;
+        XINPUT_STATE state{};
+        if (XInputGetState(0, &state) == ERROR_SUCCESS) {
+            auto applyDeadzone = [](SHORT v, SHORT dz) -> float {
+                int iv = (int)v;
+                if (iv > dz) iv -= dz; else if (iv < -dz) iv += dz; else iv = 0;
+                float n = (float)iv / (32767.0f - dz);
+                if (n > 1.f) n = 1.f; if (n < -1.f) n = -1.f;
+                return n;
+            };
+            float nx = applyDeadzone(state.Gamepad.sThumbLX, XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE);
+            float ny = applyDeadzone(state.Gamepad.sThumbLY, XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE);
+            float dpadX = 0.f, dpadY = 0.f;
+            if (state.Gamepad.wButtons & XINPUT_GAMEPAD_DPAD_RIGHT) dpadX += 1.f;
+            if (state.Gamepad.wButtons & XINPUT_GAMEPAD_DPAD_LEFT)  dpadX -= 1.f;
+            if (state.Gamepad.wButtons & XINPUT_GAMEPAD_DPAD_UP)    dpadY -= 1.f;
+            if (state.Gamepad.wButtons & XINPUT_GAMEPAD_DPAD_DOWN)  dpadY += 1.f;
+
+            const float dt = io.DeltaTime > 0.f ? io.DeltaTime : (1.f/60.f);
+            const bool fast = (state.Gamepad.wButtons & XINPUT_GAMEPAD_LEFT_SHOULDER) != 0;
+            const float baseSpeed = fast ? 1800.f : 900.f;
+            const float dpadSpeed = 700.f;
+
+            if (fabsf(nx) > 0.02f || fabsf(ny) > 0.02f || dpadX != 0.f || dpadY != 0.f ||
+                (state.Gamepad.wButtons & (XINPUT_GAMEPAD_A | XINPUT_GAMEPAD_B | XINPUT_GAMEPAD_X | XINPUT_GAMEPAD_Y))) {
+                padActive = true;
+            }
+            if (padActive) {
+                padPos.x += (nx * baseSpeed + dpadX * dpadSpeed) * dt;
+                padPos.y += (-ny * baseSpeed + dpadY * dpadSpeed) * dt;
+                // Clamp to 640x480 (RT space)
+                padPos.x = (padPos.x < 0.0f ? 0.0f : (padPos.x > 639.0f ? 639.0f : padPos.x));
+                padPos.y = (padPos.y < 0.0f ? 0.0f : (padPos.y > 479.0f ? 479.0f : padPos.y));
+            }
+        }
+
+        // Choose position: prefer pad when active, otherwise use mouse
+        ImVec2 dot = padActive ? padPos : io.MousePos;
+        // Basic sanity clamp
+    dot.x = (dot.x < 0.0f ? 0.0f : (dot.x > 639.0f ? 639.0f : dot.x));
+    dot.y = (dot.y < 0.0f ? 0.0f : (dot.y > 479.0f ? 479.0f : dot.y));
+
+        // Draw dot (white filled with dark outline)
+        const float r = 4.0f;
+        drawList->AddCircleFilled(dot, r, IM_COL32(255, 255, 255, 230), 20);
+        drawList->AddCircle(dot, r + 1.2f, IM_COL32(0, 0, 0, 200), 24, 2.0f);
+
+        lastPadActive = padActive;
     }
 }
 
