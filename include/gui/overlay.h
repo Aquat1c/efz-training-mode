@@ -7,6 +7,7 @@
 #include <chrono>
 #include <mutex>
 #include <d3d9.h> // Add for LPDIRECT3DDEVICE9
+#include <atomic>
 
 // Function pointer types for DirectDraw
 typedef HRESULT(WINAPI* DirectDrawCreateFunc)(GUID*, LPVOID*, IUnknown*);
@@ -124,3 +125,6 @@ extern int g_TriggerAfterBlockId;
 extern int g_TriggerOnWakeupId;
 extern int g_TriggerAfterHitstunId;
 extern int g_TriggerAfterAirtechId;
+
+// Debug overlay borders toggle (controlled from ImGui)
+extern std::atomic<bool> g_ShowOverlayDebugBorders;

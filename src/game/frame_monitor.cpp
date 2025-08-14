@@ -14,6 +14,8 @@
 #include "../include/input/input_buffer.h"
 #include "../include/utils/config.h"
 #include "../include/input/input_motion.h"
+#include "../include/game/attack_reader.h"
+#include "../include/game/practice_patch.h"
 #include <deque>
 #include <vector>
 #include <chrono>
@@ -38,6 +40,7 @@ MonitorState state = Idle;
 static GameMode s_previousGameMode = GameMode::Unknown;
 static bool s_wasActive = false;
 static GamePhase s_lastPhase = GamePhase::Unknown;  // NEW phase tracker
+static bool s_pendingOverlayReinit = false; // Set when we return to a valid mode but chars aren't initialized yet
 
 static uintptr_t fm_lastP1Ptr = 0;
 static uintptr_t fm_lastP2Ptr = 0;
@@ -236,6 +239,9 @@ void FrameDataMonitor() {
     static bool detailedLogCached = false;
     static int logCounter = 0;
 
+    static short lastLoggedMoveID1 = -1;
+    static short lastLoggedMoveID2 = -1;
+    static std::atomic<int> moveLogCooldown{0};
     
     while (!g_isShuttingDown) {
         auto frameStart = clock::now();
@@ -268,7 +274,7 @@ void FrameDataMonitor() {
         
         // Track phase changes
         static GamePhase lastPhase = GamePhase::Unknown;
-        if (currentPhase != lastPhase) {
+    if (currentPhase != lastPhase) {
             LogOut("[FRAME MONITOR] Phase changed: " + std::to_string((int)lastPhase) + 
                    " -> " + std::to_string((int)currentPhase), true);
             
@@ -293,6 +299,11 @@ void FrameDataMonitor() {
                 }
             }
             
+            // If we just arrived at Character Select, clear all triggers persistently
+            if (currentPhase == GamePhase::CharacterSelect) {
+                ClearAllTriggersPersistently();
+            }
+
             lastPhase = currentPhase;
         }
         
@@ -345,6 +356,9 @@ void FrameDataMonitor() {
                 p1DelayState.triggerType = TRIGGER_NONE;
                 p2DelayState.isDelaying = false;
                 p2DelayState.triggerType = TRIGGER_NONE;
+
+                // No overlay reinit here to avoid re-adding messages while features are disabled.
+                s_pendingOverlayReinit = false; // cancel any pending reinit once we leave valid mode
             }
             
             // Existing code for transitions TO valid modes
@@ -352,6 +366,12 @@ void FrameDataMonitor() {
                 (s_previousGameMode != GameMode::Unknown && !IsValidGameMode(s_previousGameMode))) {
                 LogOut("[FRAME MONITOR] Detected return to valid game mode with initialized characters, reinitializing overlays", true);
                 ReinitializeOverlays();
+                s_pendingOverlayReinit = false;
+            } else if (isValidGameMode && !isInitialized &&
+                       (s_previousGameMode != GameMode::Unknown && !IsValidGameMode(s_previousGameMode))) {
+                // We returned to a valid mode but characters aren't initialized yet; defer reinit
+                LogOut("[FRAME MONITOR] Returned to valid game mode; waiting for character initialization to reinit overlays", true);
+                s_pendingOverlayReinit = true;
             }
             
             s_previousGameMode = currentMode;
@@ -382,11 +402,19 @@ void FrameDataMonitor() {
 
             // Initialization transition logging
             if (isInitialized != fm_lastCharsInit) {
+                bool wasInitialized = fm_lastCharsInit;
                 LogOut(std::string("[FRAME MONITOR][INIT] CharactersInitialized: ") +
                        (fm_lastCharsInit ? "true" : "false") + " -> " +
                        (isInitialized ? "true" : "false") +
                        " frame=" + std::to_string(currentFrame), true);
                 fm_lastCharsInit = isInitialized;
+
+                // If we were waiting for init in a valid mode, reinitialize overlays now
+                if (!wasInitialized && isInitialized && s_pendingOverlayReinit && isValidGameMode && g_featuresEnabled.load()) {
+                    LogOut("[FRAME MONITOR] Characters initialized in valid mode; reinitializing overlays now", true);
+                    ReinitializeOverlays();
+                    s_pendingOverlayReinit = false;
+                }
             }
 
             // Phase gating
@@ -418,6 +446,12 @@ void FrameDataMonitor() {
                     LogOut("[FRAME MONITOR] Entering MATCH phase -> reinit transient state", true);
                     prevMoveID1 = -1;
                     prevMoveID2 = -1;
+
+                    // Ensure default control flags (P1=Player, P2=AI) at match start in Practice mode
+                    GameMode modeAtMatch = GetCurrentGameMode();
+                    if (modeAtMatch == GameMode::Practice) {
+                        EnsureDefaultControlFlagsOnMatchStart();
+                    }
                 }
                 s_lastPhaseLocal = phase;
             }
@@ -534,6 +568,31 @@ void FrameDataMonitor() {
             
             prevMoveID1 = moveID1;
             prevMoveID2 = moveID2;
+
+            if (moveID1 != lastLoggedMoveID1 && IsAttackMove(moveID1)) {
+            // Don't log too frequently - enforce a cooldown
+            if (moveLogCooldown.load() <= 0) {
+                AttackReader::LogMoveData(1, moveID1);
+                lastLoggedMoveID1 = moveID1;
+                moveLogCooldown.store(30); // Don't log another move for 30 frames (about 0.5s)
+            }
+        }
+        
+        if (moveID2 != lastLoggedMoveID2 && IsAttackMove(moveID2)) {
+            // Don't log too frequently - enforce a cooldown
+            if (moveLogCooldown.load() <= 0) {
+                AttackReader::LogMoveData(2, moveID2);
+                lastLoggedMoveID2 = moveID2;
+                moveLogCooldown.store(30); // Don't log another move for 30 frames (about 0.5s)
+            }
+        }
+    }
+
+    // Process move change logging
+
+        // Decrement cooldown counter
+        if (moveLogCooldown.load() > 0) {
+            moveLogCooldown.store(moveLogCooldown.load() - 1);
         }
         
 FRAME_MONITOR_FRAME_END:

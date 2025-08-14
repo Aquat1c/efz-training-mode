@@ -16,10 +16,23 @@
 #include <d3d9.h>
 #include <mutex>
 #include <deque>
+#include <unordered_set>
 #include "../include/gui/imgui_gui.h"
 #include "../3rdparty/minhook/include/MinHook.h"
 // ADD these includes for the new rendering loop
 #include "../include/gui/imgui_impl.h"
+#include <Xinput.h>
+#pragma comment(lib, "xinput9_1_0.lib")
+#include <cmath>
+#include "../../include/gui/gif_player.h"
+
+// Avoid Windows min/max macro conflicts
+#ifdef min
+#undef min
+#endif
+#ifdef max
+#undef max
+#endif
 
 // Global status message IDs
 int g_AirtechStatusId = -1;
@@ -31,6 +44,8 @@ int g_TriggerAfterBlockId = -1;
 int g_TriggerOnWakeupId = -1;
 int g_TriggerAfterHitstunId = -1;
 int g_TriggerAfterAirtechId = -1;
+// Debug borders toggle default off
+std::atomic<bool> g_ShowOverlayDebugBorders{false};
 
 // --- Define static members of DirectDrawHook ---
 DirectDrawCreateFunc DirectDrawHook::originalDirectDrawCreate = nullptr;
@@ -49,6 +64,7 @@ bool DirectDrawHook::isHooked = false;
 // --- D3D9 Hooking Globals ---
 typedef HRESULT(WINAPI* EndScene_t)(LPDIRECT3DDEVICE9);
 static EndScene_t oEndScene = nullptr;
+static void* g_EndSceneTarget = nullptr; // store target vtable entry for cleanup
 // --- End D3D9 Globals ---
 
 // --- FIX: Add missing implementations for obsolete DirectDraw hooks ---
@@ -84,6 +100,20 @@ HRESULT WINAPI HookedEndScene(LPDIRECT3DDEVICE9 pDevice) {
         return oEndScene(pDevice);
     }
 
+    // Determine the current render target size and only render UI on the 640x480 pass
+    UINT rtW = 0, rtH = 0;
+    if (IDirect3DSurface9* rt = nullptr; SUCCEEDED(pDevice->GetRenderTarget(0, &rt)) && rt) {
+        D3DSURFACE_DESC d{};
+        if (SUCCEEDED(rt->GetDesc(&d))) {
+            rtW = d.Width; rtH = d.Height;
+        }
+        rt->Release();
+    }
+    if (!(rtW == 640 && rtH == 480)) {
+        // Skip all ImGui work on non-game RTs (e.g., 1280x960 fullscreen border)
+        return oEndScene(pDevice);
+    }
+
     static bool imguiInit = false;
     if (!imguiInit) {
         if (ImGuiImpl::Initialize(pDevice)) {
@@ -100,6 +130,17 @@ HRESULT WINAPI HookedEndScene(LPDIRECT3DDEVICE9 pDevice) {
     ImGui_ImplWin32_NewFrame();
     ImGui::NewFrame();
 
+    // If the game window is minimized, skip rendering to avoid ImGui asserting on zero-size display
+    ImGuiIO& io = ImGui::GetIO();
+    if (io.DisplaySize.x <= 0.0f || io.DisplaySize.y <= 0.0f) {
+        ImGui::EndFrame();
+        return oEndScene(pDevice);
+    }
+
+    // Initialize GIF player once the device is valid
+    static bool gifInit = false;
+    if (!gifInit) { gifInit = GifPlayer::Initialize(pDevice); }
+
     // Render our custom text overlays using the background draw list
     DirectDrawHook::RenderD3D9Overlays(pDevice);
 
@@ -108,10 +149,19 @@ HRESULT WINAPI HookedEndScene(LPDIRECT3DDEVICE9 pDevice) {
         ImGuiGui::RenderGui();
     }
 
+    // Advance GIF animation timing
+    {
+        ImGuiIO& io = ImGui::GetIO();
+        GifPlayer::Update(io.DeltaTime > 0.f ? (double)io.DeltaTime : 1.0/60.0);
+    }
+
     // End the frame and render all accumulated draw data
     ImGui::EndFrame();
     ImGui::Render();
-    ImGui_ImplDX9_RenderDrawData(ImGui::GetDrawData());
+    // Guard again in case size changed mid-frame
+    if (io.DisplaySize.x > 0.0f && io.DisplaySize.y > 0.0f) {
+        ImGui_ImplDX9_RenderDrawData(ImGui::GetDrawData());
+    }
 
     return oEndScene(pDevice);
 }
@@ -265,11 +315,49 @@ void DirectDrawHook::RenderSimpleText(IDirectDrawSurface7* surface, const std::s
 
 // NEW: Implement the D3D9 overlay renderer
 void DirectDrawHook::RenderD3D9Overlays(LPDIRECT3DDEVICE9 pDevice) {
-    auto drawList = ImGui::GetBackgroundDrawList();
-    if (!drawList)
+    // Use background list for borders/messages and foreground for the cursor so it draws above windows
+    auto bgList = ImGui::GetBackgroundDrawList();
+    if (!bgList)
         return;
 
     std::lock_guard<std::mutex> lock(messagesMutex);
+
+    // --- DEBUG: Identify current D3D9 render target and draw borders ---
+    UINT rtW = 0, rtH = 0;
+    if (IDirect3DSurface9* rt = nullptr; SUCCEEDED(pDevice->GetRenderTarget(0, &rt)) && rt) {
+        D3DSURFACE_DESC d{};
+        if (SUCCEEDED(rt->GetDesc(&d))) {
+            rtW = d.Width; rtH = d.Height;
+        }
+        rt->Release();
+    }
+    if (g_ShowOverlayDebugBorders.load() && rtW > 0 && rtH > 0) {
+        static UINT prevW = 0, prevH = 0;
+        if (rtW != prevW || rtH != prevH) {
+            prevW = rtW; prevH = rtH;
+            ImVec2 ds = ImGui::GetIO().DisplaySize;
+            LogOut("[OVERLAY][D3D9] RT size=" + std::to_string(rtW) + "x" + std::to_string(rtH) +
+                   " ImGui.DisplaySize=" + std::to_string((int)ds.x) + "x" + std::to_string((int)ds.y), true);
+        }
+        // Full render-target border (red)
+    bgList->AddRect(ImVec2(1.5f, 1.5f), ImVec2((float)rtW - 1.5f, (float)rtH - 1.5f), IM_COL32(255, 0, 0, 200), 0.0f, 0, 3.0f);
+        // Label
+        char lbl[64];
+        _snprintf_s(lbl, sizeof(lbl), _TRUNCATE, "D3D9 RT %ux%u", rtW, rtH);
+    bgList->AddText(ImVec2(8.0f, 8.0f), IM_COL32(255, 0, 0, 220), lbl);
+
+        // Inner game-area border assuming 640x480 letterbox (green)
+        const float baseW = 640.0f;
+        const float baseH = 480.0f;
+        const float sx = (float)rtW / baseW;
+        const float sy = (float)rtH / baseH;
+        const float scale = (sx < sy) ? sx : sy;
+        const float gw = baseW * scale;
+        const float gh = baseH * scale;
+        const float ox = ((float)rtW - gw) * 0.5f;
+        const float oy = ((float)rtH - gh) * 0.5f;
+    bgList->AddRect(ImVec2(ox + 1.0f, oy + 1.0f), ImVec2(ox + gw - 1.0f, oy + gh - 1.0f), IM_COL32(0, 255, 0, 200), 0.0f, 0, 2.0f);
+    }
 
     // Helper lambda to render a message with a background
     auto renderMessage = [&](const OverlayMessage& msg) {
@@ -292,14 +380,14 @@ void DirectDrawHook::RenderD3D9Overlays(LPDIRECT3DDEVICE9 pDevice) {
             }
             
             // Draw background with corrected position and width
-            drawList->AddRectFilled(
+            bgList->AddRectFilled(
                 ImVec2(textPos.x - 4, textPos.y - 2),
                 ImVec2(textPos.x + textSize.x + 4, textPos.y + textSize.y + 2),
                 IM_COL32(0, 0, 0, 180)
             );
         } else {
             // For normal messages, just draw background directly
-            drawList->AddRectFilled(
+            bgList->AddRectFilled(
                 ImVec2(textPos.x - 4, textPos.y - 2),
                 ImVec2(textPos.x + textSize.x + 4, textPos.y + textSize.y + 2),
                 IM_COL32(0, 0, 0, 180)
@@ -312,7 +400,7 @@ void DirectDrawHook::RenderD3D9Overlays(LPDIRECT3DDEVICE9 pDevice) {
         int b = ((msg.color >> 16) & 0xFF);
         
         // Draw text
-        drawList->AddText(ImVec2((float)textPos.x, (float)textPos.y), IM_COL32(r, g, b, 255), msg.text.c_str());
+    bgList->AddText(ImVec2((float)textPos.x, (float)textPos.y), IM_COL32(r, g, b, 255), msg.text.c_str());
     };
 
     // Render permanent messages
@@ -326,6 +414,79 @@ void DirectDrawHook::RenderD3D9Overlays(LPDIRECT3DDEVICE9 pDevice) {
         if (msg.expireTime > now) {
             renderMessage(msg);
         }
+    }
+
+    // --- Fullscreen cursor dot (mouse + gamepad) ---
+    // Helper: fullscreen check
+    auto isFullscreen = []() -> bool {
+        HWND hwnd = FindEFZWindow();
+        if (!hwnd) return false;
+        WINDOWPLACEMENT wp{ sizeof(WINDOWPLACEMENT) };
+        if (!GetWindowPlacement(hwnd, &wp)) return false;
+        RECT wndRect{};
+        if (!GetWindowRect(hwnd, &wndRect)) return false;
+        HMONITOR mon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTOPRIMARY);
+        MONITORINFO mi{ sizeof(MONITORINFO) };
+        if (!GetMonitorInfo(mon, &mi)) return false;
+        return EqualRect(&wndRect, &mi.rcMonitor) || EqualRect(&wndRect, &mi.rcWork);
+    };
+
+    if (isFullscreen() && ImGuiImpl::IsVisible()) {
+        ImGuiIO& io = ImGui::GetIO();
+        static ImVec2 padPos = ImVec2(320.f, 240.f);
+        static bool lastPadActive = false;
+
+        // Poll gamepad
+        bool padActive = false;
+        XINPUT_STATE state{};
+        if (XInputGetState(0, &state) == ERROR_SUCCESS) {
+            auto applyDeadzone = [](SHORT v, SHORT dz) -> float {
+                int iv = (int)v;
+                if (iv > dz) iv -= dz; else if (iv < -dz) iv += dz; else iv = 0;
+                float n = (float)iv / (32767.0f - dz);
+                if (n > 1.f) n = 1.f; if (n < -1.f) n = -1.f;
+                return n;
+            };
+            float nx = applyDeadzone(state.Gamepad.sThumbLX, XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE);
+            float ny = applyDeadzone(state.Gamepad.sThumbLY, XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE);
+            float dpadX = 0.f, dpadY = 0.f;
+            if (state.Gamepad.wButtons & XINPUT_GAMEPAD_DPAD_RIGHT) dpadX += 1.f;
+            if (state.Gamepad.wButtons & XINPUT_GAMEPAD_DPAD_LEFT)  dpadX -= 1.f;
+            if (state.Gamepad.wButtons & XINPUT_GAMEPAD_DPAD_UP)    dpadY -= 1.f;
+            if (state.Gamepad.wButtons & XINPUT_GAMEPAD_DPAD_DOWN)  dpadY += 1.f;
+
+            const float dt = io.DeltaTime > 0.f ? io.DeltaTime : (1.f/60.f);
+            const bool fast = (state.Gamepad.wButtons & XINPUT_GAMEPAD_LEFT_SHOULDER) != 0;
+            const float baseSpeed = fast ? 1800.f : 900.f;
+            const float dpadSpeed = 700.f;
+
+            if (fabsf(nx) > 0.02f || fabsf(ny) > 0.02f || dpadX != 0.f || dpadY != 0.f ||
+                (state.Gamepad.wButtons & (XINPUT_GAMEPAD_A | XINPUT_GAMEPAD_B | XINPUT_GAMEPAD_X | XINPUT_GAMEPAD_Y))) {
+                padActive = true;
+            }
+            if (padActive) {
+                padPos.x += (nx * baseSpeed + dpadX * dpadSpeed) * dt;
+                padPos.y += (-ny * baseSpeed + dpadY * dpadSpeed) * dt;
+                // Clamp to 640x480 (RT space)
+                padPos.x = (padPos.x < 0.0f ? 0.0f : (padPos.x > 639.0f ? 639.0f : padPos.x));
+                padPos.y = (padPos.y < 0.0f ? 0.0f : (padPos.y > 479.0f ? 479.0f : padPos.y));
+            }
+        }
+
+        // Choose position: prefer pad when active, otherwise use mouse
+        ImVec2 dot = padActive ? padPos : io.MousePos;
+        // Basic sanity clamp
+    dot.x = (dot.x < 0.0f ? 0.0f : (dot.x > 639.0f ? 639.0f : dot.x));
+    dot.y = (dot.y < 0.0f ? 0.0f : (dot.y > 479.0f ? 479.0f : dot.y));
+
+    // Draw dot (white filled with dark outline) on the foreground list so it appears above the ImGui menu
+    auto cursorList = ImGui::GetForegroundDrawList();
+    if (!cursorList) cursorList = bgList;
+        const float r = 4.0f;
+    cursorList->AddCircleFilled(dot, r, IM_COL32(255, 255, 255, 230), 20);
+    cursorList->AddCircle(dot, r + 1.2f, IM_COL32(0, 0, 0, 200), 24, 2.0f);
+
+        lastPadActive = padActive;
     }
 }
 
@@ -361,6 +522,20 @@ void DirectDrawHook::RenderAllMessages(IDirectDrawSurface7* surface) {
         }
     }
     
+    // --- DEBUG: Log unique surface and draw a border to visualize which surface we render to ---
+    static std::unordered_set<IDirectDrawSurface7*> s_seen;
+    if (s_seen.insert(surface).second) {
+        char ptrbuf[32] = {};
+        _snprintf_s(ptrbuf, sizeof(ptrbuf), _TRUNCATE, "%p", surface);
+        DDSURFACEDESC2 desc{}; desc.dwSize = sizeof(desc);
+        if (SUCCEEDED(surface->GetSurfaceDesc(&desc))) {
+            LogOut(std::string("[OVERLAY][DDRAW] First seen surface=") + ptrbuf +
+                   " size=" + std::to_string((int)desc.dwWidth) + "x" + std::to_string((int)desc.dwHeight), true);
+        } else {
+            LogOut(std::string("[OVERLAY][DDRAW] First seen surface=") + ptrbuf + " (GetSurfaceDesc failed)", true);
+        }
+    }
+
     // CRITICAL FIX: Use a more aggressive rendering approach
     HDC hdc;
     if (FAILED(surface->GetDC(&hdc))) {
@@ -371,6 +546,27 @@ void DirectDrawHook::RenderAllMessages(IDirectDrawSurface7* surface) {
     try {
         // Set up for high-visibility rendering
         SetBkMode(hdc, TRANSPARENT);
+
+        // Draw a thick magenta border and label around the whole surface for on-screen identification
+        if (g_ShowOverlayDebugBorders.load()) {
+            DDSURFACEDESC2 desc{}; desc.dwSize = sizeof(desc);
+            if (SUCCEEDED(surface->GetSurfaceDesc(&desc))) {
+                HPEN pen = CreatePen(PS_SOLID, 4, RGB(255, 0, 255));
+                HBRUSH oldBrush = (HBRUSH)SelectObject(hdc, GetStockObject(HOLLOW_BRUSH));
+                HPEN oldPen = (HPEN)SelectObject(hdc, pen);
+                int w = (int)desc.dwWidth, h = (int)desc.dwHeight;
+                Rectangle(hdc, 1, 1, w - 1, h - 1);
+                // Label
+                SetTextColor(hdc, RGB(255, 0, 255));
+                char ptrbuf[32] = {};
+                _snprintf_s(ptrbuf, sizeof(ptrbuf), _TRUNCATE, "%p", surface);
+                std::string label = "DDRAW " + std::to_string(w) + "x" + std::to_string(h) + " " + ptrbuf;
+                TextOutA(hdc, 6, 6, label.c_str(), (int)label.size());
+                SelectObject(hdc, oldPen);
+                SelectObject(hdc, oldBrush);
+                DeleteObject(pen);
+            }
+        }
         
         // Render "Hello, world" text if characters are initialized
         if (showHelloWorld) {
@@ -598,14 +794,13 @@ bool DirectDrawHook::InitializeD3D9() {
         return true;
     }
     
-    // Find the game window
+    // Find the game window (best-effort; not strictly required for dummy device)
     HWND gameWindow = FindEFZWindow();
-    if (!gameWindow) {
-        LogOut("[OVERLAY] Failed to find EFZ window", true);
-        return false;
+    if (gameWindow) {
+        LogOut("[OVERLAY] Found game window: " + Logger::hwndToString(gameWindow), true);
+    } else {
+        LogOut("[OVERLAY] EFZ window not found yet; proceeding with dummy device.", true);
     }
-    
-    LogOut("[OVERLAY] Found game window: " + Logger::hwndToString(gameWindow), true);
     
     // Get the D3D9 module handle
     HMODULE d3d9Module = GetModuleHandleA("d3d9.dll");
@@ -632,6 +827,15 @@ bool DirectDrawHook::InitializeD3D9() {
         return false;
     }
     
+    // Create a hidden dummy window to safely create a temporary device
+    WNDCLASSA wc = {};
+    wc.lpfnWndProc = DefWindowProcA;
+    wc.hInstance = GetModuleHandleA(nullptr);
+    wc.lpszClassName = "EFZ_TM_D3D9_DUMMY";
+    RegisterClassA(&wc);
+    HWND dummyWnd = CreateWindowExA(0, wc.lpszClassName, "efz_tm_dummy", WS_OVERLAPPEDWINDOW,
+                                    CW_USEDEFAULT, CW_USEDEFAULT, 100, 100, nullptr, nullptr, wc.hInstance, nullptr);
+
     // Set up present parameters
     D3DPRESENT_PARAMETERS d3dpp = {};
     d3dpp.Windowed = TRUE;
@@ -640,11 +844,12 @@ bool DirectDrawHook::InitializeD3D9() {
     d3dpp.BackBufferWidth = 2;
     d3dpp.BackBufferHeight = 2;
     d3dpp.PresentationInterval = D3DPRESENT_INTERVAL_IMMEDIATE;
-    
+    d3dpp.hDeviceWindow = dummyWnd;
+
     // Create a temporary device to get the VTable
     LPDIRECT3DDEVICE9 tempDevice;
     HRESULT hr = d3d9->CreateDevice(
-        D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, gameWindow,
+        D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, d3dpp.hDeviceWindow,
         D3DCREATE_SOFTWARE_VERTEXPROCESSING, &d3dpp, &tempDevice);
         
     if (FAILED(hr)) {
@@ -656,6 +861,7 @@ bool DirectDrawHook::InitializeD3D9() {
     // Get the function pointer for EndScene
     void** vTable = *reinterpret_cast<void***>(tempDevice);
     void* endSceneAddr = vTable[42]; // EndScene is at index 42
+    g_EndSceneTarget = endSceneAddr;
     
     // Create the hook using MinHook
     LogOut("[OVERLAY] Hooking EndScene", detailedLogging.load());
@@ -677,6 +883,10 @@ bool DirectDrawHook::InitializeD3D9() {
     // Clean up temporary objects
     tempDevice->Release();
     d3d9->Release();
+    if (dummyWnd) {
+        DestroyWindow(dummyWnd);
+        UnregisterClassA("EFZ_TM_D3D9_DUMMY", GetModuleHandleA(nullptr));
+    }
     
     isHooked = true;
     LogOut("[OVERLAY] D3D9 hook initialized successfully", detailedLogging.load());
@@ -690,35 +900,11 @@ bool DirectDrawHook::InitializeD3D9() {
 
 void DirectDrawHook::ShutdownD3D9() {
     LogOut("[OVERLAY] Shutting down D3D9 hooks.", true);
-    // Disable both hooks
-    HMODULE hD3D9 = GetModuleHandleA("d3d9.dll");
-    if (hD3D9) {
-        void* pCreateFn = GetProcAddress(hD3D9, "Direct3DCreate9");
-        if (pCreateFn) {
-            MH_DisableHook(pCreateFn);
-            MH_RemoveHook(pCreateFn);
-        }
-    }
-    if (oEndScene) {
-        // To get the target address for EndScene, we need to re-resolve it briefly
-        // This is a bit ugly but necessary without storing the vTable address globally.
-        // A better long-term solution would be to store the vTable address.
-        // For now, this will work.
-        IDirect3D9* d3d9 = Direct3DCreate9(D3D_SDK_VERSION);
-        if (d3d9) {
-            D3DPRESENT_PARAMETERS d3dpp = {};
-            d3dpp.Windowed = TRUE;
-            d3dpp.SwapEffect = D3DSWAPEFFECT_DISCARD;
-            d3dpp.hDeviceWindow = FindEFZWindow();
-            IDirect3DDevice9* pDummyDevice = nullptr;
-            if (SUCCEEDED(d3d9->CreateDevice(D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, d3dpp.hDeviceWindow, D3DCREATE_SOFTWARE_VERTEXPROCESSING, &d3dpp, &pDummyDevice))) {
-                void** vTable = *reinterpret_cast<void***>(pDummyDevice);
-                MH_DisableHook(vTable[42]);
-                MH_RemoveHook(vTable[42]);
-                pDummyDevice->Release();
-            }
-            d3d9->Release();
-        }
+    GifPlayer::Shutdown();
+    if (g_EndSceneTarget) {
+        MH_DisableHook(g_EndSceneTarget);
+        MH_RemoveHook(g_EndSceneTarget);
+        g_EndSceneTarget = nullptr;
     }
     
     // REMOVED: MH_Uninitialize() is now called globally in dllmain.cpp
