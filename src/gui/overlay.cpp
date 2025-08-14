@@ -304,8 +304,9 @@ void DirectDrawHook::RenderSimpleText(IDirectDrawSurface7* surface, const std::s
 
 // NEW: Implement the D3D9 overlay renderer
 void DirectDrawHook::RenderD3D9Overlays(LPDIRECT3DDEVICE9 pDevice) {
-    auto drawList = ImGui::GetBackgroundDrawList();
-    if (!drawList)
+    // Use background list for borders/messages and foreground for the cursor so it draws above windows
+    auto bgList = ImGui::GetBackgroundDrawList();
+    if (!bgList)
         return;
 
     std::lock_guard<std::mutex> lock(messagesMutex);
@@ -328,11 +329,11 @@ void DirectDrawHook::RenderD3D9Overlays(LPDIRECT3DDEVICE9 pDevice) {
                    " ImGui.DisplaySize=" + std::to_string((int)ds.x) + "x" + std::to_string((int)ds.y), true);
         }
         // Full render-target border (red)
-        drawList->AddRect(ImVec2(1.5f, 1.5f), ImVec2((float)rtW - 1.5f, (float)rtH - 1.5f), IM_COL32(255, 0, 0, 200), 0.0f, 0, 3.0f);
+    bgList->AddRect(ImVec2(1.5f, 1.5f), ImVec2((float)rtW - 1.5f, (float)rtH - 1.5f), IM_COL32(255, 0, 0, 200), 0.0f, 0, 3.0f);
         // Label
         char lbl[64];
         _snprintf_s(lbl, sizeof(lbl), _TRUNCATE, "D3D9 RT %ux%u", rtW, rtH);
-        drawList->AddText(ImVec2(8.0f, 8.0f), IM_COL32(255, 0, 0, 220), lbl);
+    bgList->AddText(ImVec2(8.0f, 8.0f), IM_COL32(255, 0, 0, 220), lbl);
 
         // Inner game-area border assuming 640x480 letterbox (green)
         const float baseW = 640.0f;
@@ -344,7 +345,7 @@ void DirectDrawHook::RenderD3D9Overlays(LPDIRECT3DDEVICE9 pDevice) {
         const float gh = baseH * scale;
         const float ox = ((float)rtW - gw) * 0.5f;
         const float oy = ((float)rtH - gh) * 0.5f;
-    drawList->AddRect(ImVec2(ox + 1.0f, oy + 1.0f), ImVec2(ox + gw - 1.0f, oy + gh - 1.0f), IM_COL32(0, 255, 0, 200), 0.0f, 0, 2.0f);
+    bgList->AddRect(ImVec2(ox + 1.0f, oy + 1.0f), ImVec2(ox + gw - 1.0f, oy + gh - 1.0f), IM_COL32(0, 255, 0, 200), 0.0f, 0, 2.0f);
     }
 
     // Helper lambda to render a message with a background
@@ -368,14 +369,14 @@ void DirectDrawHook::RenderD3D9Overlays(LPDIRECT3DDEVICE9 pDevice) {
             }
             
             // Draw background with corrected position and width
-            drawList->AddRectFilled(
+            bgList->AddRectFilled(
                 ImVec2(textPos.x - 4, textPos.y - 2),
                 ImVec2(textPos.x + textSize.x + 4, textPos.y + textSize.y + 2),
                 IM_COL32(0, 0, 0, 180)
             );
         } else {
             // For normal messages, just draw background directly
-            drawList->AddRectFilled(
+            bgList->AddRectFilled(
                 ImVec2(textPos.x - 4, textPos.y - 2),
                 ImVec2(textPos.x + textSize.x + 4, textPos.y + textSize.y + 2),
                 IM_COL32(0, 0, 0, 180)
@@ -388,7 +389,7 @@ void DirectDrawHook::RenderD3D9Overlays(LPDIRECT3DDEVICE9 pDevice) {
         int b = ((msg.color >> 16) & 0xFF);
         
         // Draw text
-        drawList->AddText(ImVec2((float)textPos.x, (float)textPos.y), IM_COL32(r, g, b, 255), msg.text.c_str());
+    bgList->AddText(ImVec2((float)textPos.x, (float)textPos.y), IM_COL32(r, g, b, 255), msg.text.c_str());
     };
 
     // Render permanent messages
@@ -467,10 +468,12 @@ void DirectDrawHook::RenderD3D9Overlays(LPDIRECT3DDEVICE9 pDevice) {
     dot.x = (dot.x < 0.0f ? 0.0f : (dot.x > 639.0f ? 639.0f : dot.x));
     dot.y = (dot.y < 0.0f ? 0.0f : (dot.y > 479.0f ? 479.0f : dot.y));
 
-        // Draw dot (white filled with dark outline)
+    // Draw dot (white filled with dark outline) on the foreground list so it appears above the ImGui menu
+    auto cursorList = ImGui::GetForegroundDrawList();
+    if (!cursorList) cursorList = bgList;
         const float r = 4.0f;
-        drawList->AddCircleFilled(dot, r, IM_COL32(255, 255, 255, 230), 20);
-        drawList->AddCircle(dot, r + 1.2f, IM_COL32(0, 0, 0, 200), 24, 2.0f);
+    cursorList->AddCircleFilled(dot, r, IM_COL32(255, 255, 255, 230), 20);
+    cursorList->AddCircle(dot, r + 1.2f, IM_COL32(0, 0, 0, 200), 24, 2.0f);
 
         lastPadActive = padActive;
     }
