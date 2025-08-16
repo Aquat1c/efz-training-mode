@@ -41,6 +41,8 @@ static GameMode s_previousGameMode = GameMode::Unknown;
 static bool s_wasActive = false;
 static GamePhase s_lastPhase = GamePhase::Unknown;  // NEW phase tracker
 static bool s_pendingOverlayReinit = false; // Set when we return to a valid mode but chars aren't initialized yet
+// NEW: Debounce for CharacterSelect trigger clearing to avoid false positives mid-match
+static int s_characterSelectPhaseFrames = 0; // counts consecutive frames seen as CharacterSelect
 
 static uintptr_t fm_lastP1Ptr = 0;
 static uintptr_t fm_lastP2Ptr = 0;
@@ -299,9 +301,32 @@ void FrameDataMonitor() {
                 }
             }
             
-            // If we just arrived at Character Select, clear all triggers persistently
+            // If we just arrived at Character Select, clear all triggers persistently AFTER stability check.
             if (currentPhase == GamePhase::CharacterSelect) {
-                ClearAllTriggersPersistently();
+                // Increment consecutive CS frames; only act after a debounce window (e.g. 120 frames ≈ 0.6s @192fps)
+                s_characterSelectPhaseFrames++;
+                if (s_characterSelectPhaseFrames == 1) {
+                    LogOut("[FRAME MONITOR] Detected CharacterSelect phase - starting debounce window", true);
+                }
+
+                if (s_characterSelectPhaseFrames >= 120) {
+                    // Additional safety: ensure we are NOT currently in a valid gameplay mode with initialized characters
+                    GameMode gmNow = GetCurrentGameMode();
+                    bool charsInit = AreCharactersInitialized();
+                    if (!charsInit) {
+                        LogOut("[FRAME MONITOR] CharacterSelect phase stable (>=120 frames) and characters not initialized -> clearing triggers", true);
+                        ClearAllTriggersPersistently();
+                        s_characterSelectPhaseFrames = 0; // reset after action
+                    } else {
+                        // Likely a false detection (e.g., transient phase glitch) – keep features
+                        LogOut("[FRAME MONITOR] CharacterSelect phase stable but characters still initialized; skipping trigger clear (possible false phase)", true);
+                    }
+                }
+            } else {
+                if (s_characterSelectPhaseFrames > 0 && currentPhase != GamePhase::CharacterSelect) {
+                    // Reset debounce counter if we left CharacterSelect before threshold
+                    s_characterSelectPhaseFrames = 0;
+                }
             }
 
             lastPhase = currentPhase;
