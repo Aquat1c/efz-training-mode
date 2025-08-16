@@ -162,6 +162,13 @@ void DisableFeatures() {
 
 // Public helper: permanently clear all triggers so they stay disabled until user re-enables
 void ClearAllTriggersPersistently() {
+    // Extra guard: avoid clearing if we're still in a valid active gameplay mode with initialized characters
+    GameMode gm = GetCurrentGameMode();
+    bool inValidMode = IsValidGameMode(gm);
+    if (inValidMode && AreCharactersInitialized()) {
+        LogOut("[SYSTEM] Suppressed persistent trigger clear (still in valid mode and characters initialized) - likely false phase", true);
+        return;
+    }
     LogOut("[SYSTEM] Clearing all triggers persistently (returning to Character Select)", true);
     // Disable toggles
     autoActionEnabled.store(false);
