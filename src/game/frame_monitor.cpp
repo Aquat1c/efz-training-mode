@@ -1,7 +1,7 @@
 #include "../include/game/frame_monitor.h"
 #include "../include/game/auto_airtech.h"
 #include "../include/game/auto_jump.h"
-#include "../include/game/auto_action.h"
+#include "../include/game/auto_action.h" // ensure ClearAllAutoActionTriggers declaration
 #include "../include/game/frame_analysis.h"
 #include "../include/game/frame_advantage.h"
 #include "../include/core/constants.h"
@@ -16,6 +16,10 @@
 #include "../include/input/input_motion.h"
 #include "../include/game/attack_reader.h"
 #include "../include/game/practice_patch.h"
+#ifndef CLEAR_ALL_AUTO_ACTION_TRIGGERS_FWD
+#define CLEAR_ALL_AUTO_ACTION_TRIGGERS_FWD
+void ClearAllAutoActionTriggers();
+#endif
 #include <deque>
 #include <vector>
 #include <chrono>
@@ -404,6 +408,9 @@ void FrameDataMonitor() {
                 p1DelayState.triggerType = TRIGGER_NONE;
                 p2DelayState.isDelaying = false;
                 p2DelayState.triggerType = TRIGGER_NONE;
+
+                // Hard clear of all auto-action trigger internals (cooldowns, last active, etc.)
+                ClearAllAutoActionTriggers();
 
                 // No overlay reinit here to avoid re-adding messages while features are disabled.
                 s_pendingOverlayReinit = false; // cancel any pending reinit once we leave valid mode

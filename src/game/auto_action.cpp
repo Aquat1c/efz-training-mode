@@ -922,3 +922,41 @@ bool AutoGuard(int playerNum, int opponentPtr) {
     // Apply block input
     return WritePlayerInput(playerPtr, blockInput);
 }
+
+// Hard reset of all auto-action trigger related runtime state
+void ClearAllAutoActionTriggers() {
+    LogOut("[AUTO-ACTION] Forcing full clear of trigger/delay/cooldown state", true);
+
+    // Reset delay states
+    p1DelayState = {false, 0, TRIGGER_NONE, 0};
+    p2DelayState = {false, 0, TRIGGER_NONE, 0};
+
+    // Reset action applied markers
+    p1ActionApplied = false;
+    p2ActionApplied = false;
+
+    // Reset last active trigger overlay feedback
+    g_lastActiveTriggerType.store(TRIGGER_NONE);
+    g_lastActiveTriggerFrame.store(0);
+
+    // Reset internal cooldown / active guards (static locals above)
+    extern bool p1TriggerActive; // forward reference to internal statics (same TU)
+    extern bool p2TriggerActive;
+    extern int  p1TriggerCooldown;
+    extern int  p2TriggerCooldown;
+    p1TriggerActive = false; p1TriggerCooldown = 0;
+    p2TriggerActive = false; p2TriggerCooldown = 0;
+
+    // Cancel any pending restore logic & control overrides
+    if (g_p2ControlOverridden) {
+        RestoreP2ControlState();
+    }
+    g_pendingControlRestore.store(false);
+    g_controlRestoreTimeout.store(0);
+    g_lastP2MoveID.store(-1);
+
+    // Ensure input buffer freeze (for special motions) is lifted
+    StopBufferFreezing();
+
+    LogOut("[AUTO-ACTION] All trigger states cleared", true);
+}

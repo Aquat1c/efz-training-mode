@@ -38,13 +38,7 @@ std::atomic<bool> g_manualInputOverride[3] = {false, false, false};
 std::atomic<uint8_t> g_manualInputMask[3] = {0, 0, 0};
 std::atomic<bool> g_manualJumpHold[3] = {false, false, false}; // NEW: Definition for jump hold
 
-// Saved states for triggers and auto-action across mode transitions
-static bool s_prevAutoActionEnabled = false;
-static bool s_prevTriggerAfterBlock = false;
-static bool s_prevTriggerOnWakeup = false;
-static bool s_prevTriggerAfterHitstun = false;
-static bool s_prevTriggerAfterAirtech = false;
-static bool s_savedStatesValid = false;
+// (Removed restoration of previous trigger states; triggers must always be manually re-enabled after mode changes)
 
 // NEW: Add feature management functions
 void EnableFeatures() {
@@ -60,15 +54,8 @@ void EnableFeatures() {
 
     g_featuresEnabled.store(true);
 
-    // Restore previously saved trigger toggles when re-enabling features
-    if (s_savedStatesValid) {
-        autoActionEnabled.store(s_prevAutoActionEnabled);
-        triggerAfterBlockEnabled.store(s_prevTriggerAfterBlock);
-        triggerOnWakeupEnabled.store(s_prevTriggerOnWakeup);
-        triggerAfterHitstunEnabled.store(s_prevTriggerAfterHitstun);
-        triggerAfterAirtechEnabled.store(s_prevTriggerAfterAirtech);
-        s_savedStatesValid = false; // one-shot restore
-    }
+    // No automatic restoration of triggers; user must re-enable manually
+    LogOut("[SYSTEM] Triggers remain disabled until manually re-enabled", true);
 
     // Only reinitialize overlays if characters are initialized and we're in a valid game mode
     if (DirectDrawHook::isHooked && AreCharactersInitialized()) {
@@ -112,19 +99,16 @@ void DisableFeatures() {
     RemoveAirtechPatches();
     CharacterSettings::RemoveCharacterPatches(); // Remove character-specific patches
 
-    // Save current trigger/auto-action toggles and then disable them while out of valid mode
-    s_prevAutoActionEnabled = autoActionEnabled.load();
-    s_prevTriggerAfterBlock = triggerAfterBlockEnabled.load();
-    s_prevTriggerOnWakeup = triggerOnWakeupEnabled.load();
-    s_prevTriggerAfterHitstun = triggerAfterHitstunEnabled.load();
-    s_prevTriggerAfterAirtech = triggerAfterAirtechEnabled.load();
-    s_savedStatesValid = true;
+    // Do NOT save states; we want a hard reset every time
 
     autoActionEnabled.store(false);
     triggerAfterBlockEnabled.store(false);
     triggerOnWakeupEnabled.store(false);
     triggerAfterHitstunEnabled.store(false);
     triggerAfterAirtechEnabled.store(false);
+
+    // Fully clear any in-flight auto-action internal state (delays, cooldowns, control overrides)
+    ClearAllAutoActionTriggers();
 
     // Clear ALL visual overlays
     DirectDrawHook::ClearAllMessages();
@@ -162,23 +146,19 @@ void DisableFeatures() {
 
 // Public helper: permanently clear all triggers so they stay disabled until user re-enables
 void ClearAllTriggersPersistently() {
-    // Extra guard: avoid clearing if we're still in a valid active gameplay mode with initialized characters
-    GameMode gm = GetCurrentGameMode();
-    bool inValidMode = IsValidGameMode(gm);
-    if (inValidMode && AreCharactersInitialized()) {
-        LogOut("[SYSTEM] Suppressed persistent trigger clear (still in valid mode and characters initialized) - likely false phase", true);
-        return;
-    }
-    LogOut("[SYSTEM] Clearing all triggers persistently (returning to Character Select)", true);
-    // Disable toggles
+    LogOut("[SYSTEM] Clearing all triggers persistently (Character Select / forced)", true);
+    // Disable toggles immediately so they will NOT be auto-restored
     autoActionEnabled.store(false);
     triggerAfterBlockEnabled.store(false);
     triggerOnWakeupEnabled.store(false);
     triggerAfterHitstunEnabled.store(false);
     triggerAfterAirtechEnabled.store(false);
 
-    // Invalidate any saved states so re-enable won’t auto-restore
-    s_savedStatesValid = false;
+    // Also wipe internal delay/cooldown state so nothing fires after returning
+    ClearAllAutoActionTriggers();
+
+    // Explicit hard reset message (nothing is saved anymore)
+    LogOut("[SYSTEM] Trigger states hard-reset (no restoration mechanism active)", true);
 
     // Remove any trigger overlay lines now
     if (g_TriggerAfterBlockId != -1) { DirectDrawHook::RemovePermanentMessage(g_TriggerAfterBlockId); g_TriggerAfterBlockId = -1; }
