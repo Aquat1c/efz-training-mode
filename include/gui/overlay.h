@@ -119,7 +119,7 @@ public:
 extern int g_AirtechStatusId;
 extern int g_JumpStatusId;
 extern int g_FrameAdvantageId;
-
+extern int g_FrameGapId;
 // NEW: Individual trigger message IDs
 extern int g_TriggerAfterBlockId;
 extern int g_TriggerOnWakeupId;

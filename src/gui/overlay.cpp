@@ -38,7 +38,7 @@
 int g_AirtechStatusId = -1;
 int g_JumpStatusId = -1;
 int g_FrameAdvantageId = -1;
-
+int g_FrameGapId = -1;
 // NEW: Individual trigger message IDs
 int g_TriggerAfterBlockId = -1;
 int g_TriggerOnWakeupId = -1;
