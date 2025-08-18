@@ -119,6 +119,10 @@ public:
 extern int g_AirtechStatusId;
 extern int g_JumpStatusId;
 extern int g_FrameAdvantageId;
+// Separate ID for gap display so it doesn't overwrite advantage text
+extern int g_FrameGapId;
+// Detailed per-interaction debug panel ID
+extern int g_FrameAdvDebugPanelId;
 
 // NEW: Individual trigger message IDs
 extern int g_TriggerAfterBlockId;

@@ -337,6 +337,9 @@ std::atomic<int> triggerOnWakeupStrength(0);
 std::atomic<int> triggerAfterHitstunStrength(0);
 std::atomic<int> triggerAfterAirtechStrength(0);
 
+// Deep frame advantage instrumentation toggle
+std::atomic<bool> g_deepFrameAdvDebug{false};
+
 void EnsureLocaleConsistency() {
     static bool localeSet = false;
     if (!localeSet) {
@@ -361,31 +364,37 @@ uintptr_t GetEFZBase() {
 
 // Add these helper functions to better detect state changes
 bool IsActionable(short moveID) {
-    // Character is actionable in these neutral states
-    if (moveID == IDLE_MOVE_ID || 
-        moveID == WALK_FWD_ID || 
-        moveID == WALK_BACK_ID || 
-        moveID == CROUCH_ID ||
-        moveID == CROUCH_TO_STAND_ID ||
-        moveID == LANDING_ID) {
-        return true;
+    // Explicit neutral whitelist
+    bool neutral = (moveID == IDLE_MOVE_ID || 
+                    moveID == WALK_FWD_ID || 
+                    moveID == WALK_BACK_ID || 
+                    moveID == CROUCH_ID ||
+                    moveID == CROUCH_TO_STAND_ID ||
+                    moveID == LANDING_ID);
+
+    if (neutral) return true;
+
+    bool prohibited = (IsAttackMove(moveID) || 
+                       IsBlockstunState(moveID) || 
+                       IsHitstun(moveID) || 
+                       IsLaunched(moveID) ||
+                       IsAirtech(moveID) || 
+                       IsGroundtech(moveID) ||
+                       IsFrozen(moveID) ||
+                       moveID == STAND_GUARD_ID || 
+                       moveID == CROUCH_GUARD_ID || 
+                       moveID == AIR_GUARD_ID);
+
+    if (prohibited) return false;
+
+    // Treat unknown states as NOT actionable by default (stricter) but allow debug override
+    static int unknownLogBudget = 0; // refilled periodically elsewhere if needed
+    bool result = false;
+    if (g_deepFrameAdvDebug.load() && unknownLogBudget < 200) { // limit spam
+        LogOut("[ACTIONABLE_DBG] Treating unknown moveID " + std::to_string(moveID) + " as NOT actionable", false);
+        ++unknownLogBudget;
     }
-    
-    // NOT actionable during these states
-    if (IsAttackMove(moveID) || 
-        IsBlockstunState(moveID) || 
-        IsHitstun(moveID) || 
-        IsLaunched(moveID) ||
-        IsAirtech(moveID) || 
-        IsGroundtech(moveID) ||
-        IsFrozen(moveID) ||
-        moveID == STAND_GUARD_ID || 
-        moveID == CROUCH_GUARD_ID || 
-        moveID == AIR_GUARD_ID) {
-        return false;
-    }
-    
-    return true; // Default to actionable for unknown states
+    return result;
 }
 
 bool IsBlockstun(short moveID) {
@@ -661,74 +670,38 @@ bool IsDashState(short moveID) {
 
 // Add this function after the IsEFZWindowActive() function
 HWND FindEFZWindow() {
+    // Cache & throttle enumeration: only re-enumerate every 120 internal frames or if handle invalid
+    static HWND cached = NULL;
+    static int lastRefreshFrame = -99999;
+    int currentInternal = frameCounter.load();
+    if (cached && IsWindow(cached)) {
+        // Fast path use cached
+        return cached;
+    }
+    if (currentInternal - lastRefreshFrame < 120) {
+        return cached; // avoid hammering EnumWindows()
+    }
+    lastRefreshFrame = currentInternal;
+
     HWND foundWindow = NULL;
-    static bool debugLogged = false;
-    
-    // Log debug info only once
-    if (!debugLogged) {
-        LogOut("[WINDOW] Searching for EFZ window...", true);
-        debugLogged = true;
-    }
-    
-    // Enumerate all windows to find EFZ
     EnumWindows([](HWND hwnd, LPARAM lParam) -> BOOL {
-        HWND* result = reinterpret_cast<HWND*>(lParam);
-        
-        // Skip invisible windows
-        if (!IsWindowVisible(hwnd)) {
-            return TRUE; // Continue enumeration
+        if (!IsWindowVisible(hwnd)) return TRUE;
+        WCHAR wideTitle[256] = {0};
+        GetWindowTextW(hwnd, wideTitle, 255);
+        if (wcslen(wideTitle) == 0) return TRUE;
+        WCHAR lower[256];
+        wcscpy_s(lower, wideTitle);
+        _wcslwr_s(lower);
+        if (wcsstr(lower, L"eternal fighter zero") || wcsstr(lower, L"efz.exe") || wcsstr(lower, L"revival")) {
+            *reinterpret_cast<HWND*>(lParam) = hwnd;
+            return FALSE;
         }
-        
-        // Get window title for debugging
-        char title[256] = { 0 };
-        GetWindowTextA(hwnd, title, sizeof(title) - 1);
-        
-        // Log visible windows (only log non-empty titles)
-        if (strlen(title) > 0) {
-            LogOut("[WINDOW] Found window: '" + std::string(title) + "'", true);
-        }
-        
-        // Try with Unicode API first
-        WCHAR wideTitle[256] = { 0 };
-        GetWindowTextW(hwnd, wideTitle, sizeof(wideTitle)/sizeof(WCHAR) - 1);
-        
-        // Make a copy for case-insensitive comparison
-        WCHAR wideTitleLower[256];
-        wcscpy_s(wideTitleLower, wideTitle);
-        _wcslwr_s(wideTitleLower);
-        
-        // Case-insensitive comparison for wide strings
-        if (_wcsicmp(wideTitle, L"ETERNAL FIGHTER ZERO") == 0 ||
-            wcsstr(wideTitleLower, L"efz.exe") != NULL ||
-            wcsstr(wideTitleLower, L"eternal fighter zero") != NULL ||
-            wcsstr(wideTitleLower, L"revival") != NULL) {
-            
-            LogOut("[WINDOW] Found EFZ window via Unicode: '" + std::string(title) + "'", true);
-            *result = hwnd;
-            return FALSE; // Stop enumeration
-        }
-        
-        // Fallback to ANSI for compatibility
-        std::string t(title);
-        std::transform(t.begin(), t.end(), t.begin(), ::toupper);
-        
-        if (t.find("ETERNAL FIGHTER ZERO") != std::string::npos ||
-            t.find("EFZ.EXE") != std::string::npos ||
-            t.find("REVIVAL") != std::string::npos) {
-            
-            LogOut("[WINDOW] Found EFZ window via ANSI: '" + std::string(title) + "'", true);
-            *result = hwnd;
-            return FALSE; // Stop enumeration
-        }
-        
-        return TRUE; // Continue enumeration
+        return TRUE;
     }, reinterpret_cast<LPARAM>(&foundWindow));
-    
-    if (!foundWindow) {
-        LogOut("[WINDOW] EFZ window not found", true);
+    if (foundWindow) {
+        cached = foundWindow;
     }
-    
-    return foundWindow;
+    return cached;
 }
 
 void UpdateWindowActiveState() {

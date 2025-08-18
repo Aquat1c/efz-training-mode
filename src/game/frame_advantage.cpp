@@ -7,6 +7,8 @@
 #include "../include/game/frame_analysis.h"
 #include "../include/game/frame_monitor.h"
 #include "../include/gui/overlay.h"
+// extern toggle
+extern std::atomic<bool> g_deepFrameAdvDebug;
 
 // Global state for frame advantage tracking
 FrameAdvantageState frameAdvState = {
@@ -62,6 +64,10 @@ void ResetFrameAdvantageState() {
     if (g_FrameAdvantageId != -1) {
         DirectDrawHook::RemovePermanentMessage(g_FrameAdvantageId);
         g_FrameAdvantageId = -1;
+    }
+    if (g_FrameGapId != -1) {
+        DirectDrawHook::RemovePermanentMessage(g_FrameGapId);
+        g_FrameGapId = -1;
     }
 }
 
@@ -121,9 +127,9 @@ bool IsAttackMove(short moveID) {
 void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, short prevMoveID2) {
     int currentInternalFrame = GetCurrentInternalFrame();
     
-    // For gap detection
-    static int p1_last_defender_free_frame = -1;
-    static int p2_last_defender_free_frame = -1;
+    // For gap detection (tracks last frame defender became ACTUALLY actionable)
+    static int p1_last_defender_actionable_frame = -1;
+    static int p2_last_defender_actionable_frame = -1;
     
     // Cooldowns for hit detection - REDUCED to improve string detection
     static int p1_hit_connect_cooldown = 0;
@@ -166,31 +172,23 @@ void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, shor
         if (neutralFrameCount > 30) { // 0.5 seconds
             ResetFrameAdvantageState();
             neutralFrameCount = 0;
-            // But keep these for gap detection
-            p1_last_defender_free_frame = -1;
-            p2_last_defender_free_frame = -1;
+            p1_last_defender_actionable_frame = -1;
+            p2_last_defender_actionable_frame = -1;
         }
     } else {
         neutralFrameCount = 0;
     }
     
-    // Detect when defender exits blockstun/hitstun (This is for gap detection)
-    bool p1_exiting_stun = (IsBlockstunState(prevMoveID1) || IsHitstun(prevMoveID1)) && 
-                           !(IsBlockstunState(moveID1) || IsHitstun(moveID1));
-    
-    bool p2_exiting_stun = (IsBlockstunState(prevMoveID2) || IsHitstun(prevMoveID2)) && 
-                           !(IsBlockstunState(moveID2) || IsHitstun(moveID2));
-    
-    if (p1_exiting_stun) {
-        p1_last_defender_free_frame = currentInternalFrame;
-        LogOut("[FRAME_ADV_DEBUG] P1 exited stun at frame " + std::to_string(currentInternalFrame), 
-               detailedLogging.load());
+    // Track defender actionable transitions explicitly (more reliable than just exiting stun IDs)
+    bool p1_wasNotActionable = !IsActionable(prevMoveID1);
+    bool p2_wasNotActionable = !IsActionable(prevMoveID2);
+    if (p1_wasNotActionable && p1Actionable) {
+        p1_last_defender_actionable_frame = currentInternalFrame;
+        LogOut("[FRAME_ADV_DEBUG] P1 became actionable (defender baseline) at frame " + std::to_string(currentInternalFrame), detailedLogging.load());
     }
-    
-    if (p2_exiting_stun) {
-        p2_last_defender_free_frame = currentInternalFrame;
-        LogOut("[FRAME_ADV_DEBUG] P2 exited stun at frame " + std::to_string(currentInternalFrame), 
-               detailedLogging.load());
+    if (p2_wasNotActionable && p2Actionable) {
+        p2_last_defender_actionable_frame = currentInternalFrame;
+        LogOut("[FRAME_ADV_DEBUG] P2 became actionable (defender baseline) at frame " + std::to_string(currentInternalFrame), detailedLogging.load());
     }
     
     // STEP 1: Detect if an attack connects (P1 attacking P2)
@@ -199,8 +197,8 @@ void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, shor
     
     if ((p2_entering_blockstun || p2_entering_hitstun) && p1_hit_connect_cooldown == 0) {
         // Check for gap between moves in a string
-        if (p2_last_defender_free_frame != -1) {
-            int gapFrames = currentInternalFrame - p2_last_defender_free_frame;
+        if (p2_last_defender_actionable_frame != -1) {
+            int gapFrames = currentInternalFrame - p2_last_defender_actionable_frame;
             
             // Only consider gaps that are reasonably small
             if (gapFrames > 0 && gapFrames <= 60) {
@@ -217,10 +215,10 @@ void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, shor
                     gapText += ".66";
                 }
                 
-                if (g_FrameAdvantageId != -1) {
-                    DirectDrawHook::UpdatePermanentMessage(g_FrameAdvantageId, gapText, RGB(255, 255, 0));
+                if (g_FrameGapId != -1) {
+                    DirectDrawHook::UpdatePermanentMessage(g_FrameGapId, gapText, RGB(255, 255, 0));
                 } else {
-                    g_FrameAdvantageId = DirectDrawHook::AddPermanentMessage(gapText, RGB(255, 255, 0), 305, 430);
+                    g_FrameGapId = DirectDrawHook::AddPermanentMessage(gapText, RGB(255, 255, 0), 305, 415);
                 }
                 
                 // Display for ~1/3 second (60 internal frames)
@@ -267,7 +265,7 @@ void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, shor
                detailedLogging.load());
         
         // Reset this for accurate gap detection in the next sequence
-        p2_last_defender_free_frame = -1;
+    p2_last_defender_actionable_frame = -1;
         
         // Apply a minimal cooldown (just 3 internal frames = 1 visual frame)
         p1_hit_connect_cooldown = 3;
@@ -279,8 +277,8 @@ void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, shor
     
     if ((p1_entering_blockstun || p1_entering_hitstun) && p2_hit_connect_cooldown == 0) {
         // Check for gap between moves in a string
-        if (p1_last_defender_free_frame != -1) {
-            int gapFrames = currentInternalFrame - p1_last_defender_free_frame;
+        if (p1_last_defender_actionable_frame != -1) {
+            int gapFrames = currentInternalFrame - p1_last_defender_actionable_frame;
             
             // Only consider gaps that are reasonably small
             if (gapFrames > 0 && gapFrames <= 60) {
@@ -297,10 +295,10 @@ void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, shor
                     gapText += ".66";
                 }
                 
-                if (g_FrameAdvantageId != -1) {
-                    DirectDrawHook::UpdatePermanentMessage(g_FrameAdvantageId, gapText, RGB(255, 255, 0));
+                if (g_FrameGapId != -1) {
+                    DirectDrawHook::UpdatePermanentMessage(g_FrameGapId, gapText, RGB(255, 255, 0));
                 } else {
-                    g_FrameAdvantageId = DirectDrawHook::AddPermanentMessage(gapText, RGB(255, 255, 0), 305, 430);
+                    g_FrameGapId = DirectDrawHook::AddPermanentMessage(gapText, RGB(255, 255, 0), 305, 415);
                 }
                 
                 // Display for ~1/3 second (60 internal frames)
@@ -347,50 +345,32 @@ void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, shor
                detailedLogging.load());
         
         // Reset this for accurate gap detection in the next sequence
-        p1_last_defender_free_frame = -1;
+    p1_last_defender_actionable_frame = -1;
         
         // Apply a minimal cooldown (just 3 internal frames = 1 visual frame)
         p2_hit_connect_cooldown = 3;
     }
     
     // STEP 3: Detect when attacker exits recovery
-    if (frameAdvState.p1Attacking && frameAdvState.p1ActionableInternalFrame == -1) {
-        if (!IsActionable(prevMoveID1) && IsActionable(moveID1)) {
-            frameAdvState.p1ActionableInternalFrame = currentInternalFrame;
-            LogOut("[FRAME_ADV_DEBUG] P1 attacker recovery ended at frame " + 
-                   std::to_string(currentInternalFrame), detailedLogging.load());
-        }
+    // Attacker recovery detection (use actionable transition, capture FIRST actionable frame)
+    if (frameAdvState.p1Attacking && frameAdvState.p1ActionableInternalFrame == -1 && !IsActionable(prevMoveID1) && IsActionable(moveID1)) {
+        frameAdvState.p1ActionableInternalFrame = currentInternalFrame; // This frame counts as attacker actionable
+        LogOut("[FRAME_ADV_DEBUG] P1 attacker actionable at frame " + std::to_string(currentInternalFrame), detailedLogging.load());
     }
-    
-    if (frameAdvState.p2Attacking && frameAdvState.p2ActionableInternalFrame == -1) {
-        if (!IsActionable(prevMoveID2) && IsActionable(moveID2)) {
-            frameAdvState.p2ActionableInternalFrame = currentInternalFrame;
-            LogOut("[FRAME_ADV_DEBUG] P2 attacker recovery ended at frame " + 
-                   std::to_string(currentInternalFrame), detailedLogging.load());
-        }
+    if (frameAdvState.p2Attacking && frameAdvState.p2ActionableInternalFrame == -1 && !IsActionable(prevMoveID2) && IsActionable(moveID2)) {
+        frameAdvState.p2ActionableInternalFrame = currentInternalFrame;
+        LogOut("[FRAME_ADV_DEBUG] P2 attacker actionable at frame " + std::to_string(currentInternalFrame), detailedLogging.load());
     }
     
     // STEP 4: Detect when defender exits blockstun/hitstun
-    if (frameAdvState.p2Defending && frameAdvState.p2DefenderFreeInternalFrame == -1) {
-        bool wasInStun = IsBlockstunState(prevMoveID2) || IsHitstun(prevMoveID2);
-        bool nowNotInStun = !IsBlockstunState(moveID2) && !IsHitstun(moveID2);
-        
-        if (wasInStun && nowNotInStun) {
-            frameAdvState.p2DefenderFreeInternalFrame = currentInternalFrame;
-            LogOut("[FRAME_ADV_DEBUG] P2 defender freed at frame " + 
-                   std::to_string(currentInternalFrame), detailedLogging.load());
-        }
+    // Defender free detection: use actionable transition instead of leaving stun IDs
+    if (frameAdvState.p2Defending && frameAdvState.p2DefenderFreeInternalFrame == -1 && !IsActionable(prevMoveID2) && IsActionable(moveID2)) {
+        frameAdvState.p2DefenderFreeInternalFrame = currentInternalFrame;
+        LogOut("[FRAME_ADV_DEBUG] P2 defender actionable at frame " + std::to_string(currentInternalFrame), detailedLogging.load());
     }
-    
-    if (frameAdvState.p1Defending && frameAdvState.p1DefenderFreeInternalFrame == -1) {
-        bool wasInStun = IsBlockstunState(prevMoveID1) || IsHitstun(prevMoveID1);
-        bool nowNotInStun = !IsBlockstunState(moveID1) && !IsHitstun(moveID1);
-        
-        if (wasInStun && nowNotInStun) {
-            frameAdvState.p1DefenderFreeInternalFrame = currentInternalFrame;
-            LogOut("[FRAME_ADV_DEBUG] P1 defender freed at frame " + 
-                   std::to_string(currentInternalFrame), detailedLogging.load());
-        }
+    if (frameAdvState.p1Defending && frameAdvState.p1DefenderFreeInternalFrame == -1 && !IsActionable(prevMoveID1) && IsActionable(moveID1)) {
+        frameAdvState.p1DefenderFreeInternalFrame = currentInternalFrame;
+        LogOut("[FRAME_ADV_DEBUG] P1 defender actionable at frame " + std::to_string(currentInternalFrame), detailedLogging.load());
     }
     
     // STEP 5: Calculate frame advantage when all necessary data is available
@@ -400,7 +380,7 @@ void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, shor
         // Calculate frame advantage (defender free - attacker actionable)
         // Positive: Attacker has advantage
         // Negative: Defender has advantage
-        int frameAdvantage = frameAdvState.p2DefenderFreeInternalFrame - frameAdvState.p1ActionableInternalFrame;
+    int frameAdvantage = frameAdvState.p2DefenderFreeInternalFrame - frameAdvState.p1ActionableInternalFrame;
         frameAdvState.p1FrameAdvantage = frameAdvantage;
         frameAdvState.p1AdvantageCalculated = true;
         
@@ -420,7 +400,21 @@ void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, shor
         // Set display duration (show for approximately 1 second)
         frameAdvState.displayUntilInternalFrame = currentInternalFrame + 192;
         
-        LogOut("[FRAME_ADV] P1->P2 Frame Advantage: " + frameAdvText, true);
+        LogOut("[FRAME_ADV] P1->P2 Frame Advantage: " + frameAdvText +
+               " (A_act=" + std::to_string(frameAdvState.p1ActionableInternalFrame) +
+               " D_act=" + std::to_string(frameAdvState.p2DefenderFreeInternalFrame) +
+               " Δi=" + std::to_string(frameAdvantage) + ")", true);
+        if (g_deepFrameAdvDebug.load()) {
+            std::string panel = "Hit A->D\nA act: " + std::to_string(frameAdvState.p1ActionableInternalFrame) +
+                                 "\nD act: " + std::to_string(frameAdvState.p2DefenderFreeInternalFrame) +
+                                 "\nΔi: " + std::to_string(frameAdvantage) +
+                                 " (Δv: " + FormatFrameAdvantage(frameAdvantage) + ")";
+            if (g_FrameAdvDebugPanelId == -1) {
+                g_FrameAdvDebugPanelId = DirectDrawHook::AddPermanentMessage(panel, RGB(173,216,230), 470, 300);
+            } else {
+                DirectDrawHook::UpdatePermanentMessage(g_FrameAdvDebugPanelId, panel, RGB(173,216,230));
+            }
+        }
         
         // Reset attack state for the next sequence while preserving defender state
         frameAdvState.p1Attacking = false;
@@ -432,7 +426,7 @@ void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, shor
         frameAdvState.p2ActionableInternalFrame != -1 && frameAdvState.p1DefenderFreeInternalFrame != -1) {
         
         // Calculate advantage (defender free - attacker actionable)
-        int frameAdvantage = frameAdvState.p1DefenderFreeInternalFrame - frameAdvState.p2ActionableInternalFrame;
+    int frameAdvantage = frameAdvState.p1DefenderFreeInternalFrame - frameAdvState.p2ActionableInternalFrame;
         frameAdvState.p2FrameAdvantage = frameAdvantage;
         frameAdvState.p2AdvantageCalculated = true;
         
@@ -453,6 +447,17 @@ void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, shor
         frameAdvState.displayUntilInternalFrame = currentInternalFrame + 192;
         
         LogOut("[FRAME_ADV] P2->P1 Frame Advantage: " + frameAdvText, true);
+        if (g_deepFrameAdvDebug.load()) {
+            std::string panel = "Hit B->A\nA act: " + std::to_string(frameAdvState.p2ActionableInternalFrame) +
+                                 "\nD act: " + std::to_string(frameAdvState.p1DefenderFreeInternalFrame) +
+                                 "\nΔi: " + std::to_string(frameAdvantage) +
+                                 " (Δv: " + FormatFrameAdvantage(frameAdvantage) + ")";
+            if (g_FrameAdvDebugPanelId == -1) {
+                g_FrameAdvDebugPanelId = DirectDrawHook::AddPermanentMessage(panel, RGB(173,216,230), 470, 300);
+            } else {
+                DirectDrawHook::UpdatePermanentMessage(g_FrameAdvDebugPanelId, panel, RGB(173,216,230));
+            }
+        }
         
         // Reset attack state for the next sequence while preserving defender state
         frameAdvState.p2Attacking = false;
@@ -474,8 +479,8 @@ void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, shor
             ResetFrameAdvantageState();
             staleFrameCounter = 0;
             // But keep these for gap detection
-            p1_last_defender_free_frame = -1;
-            p2_last_defender_free_frame = -1;
+            p1_last_defender_actionable_frame = -1;
+            p2_last_defender_actionable_frame = -1;
         }
     } else {
         staleFrameCounter = 0;
