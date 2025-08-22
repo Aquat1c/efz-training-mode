@@ -51,15 +51,7 @@ void DelayedInitialization(HMODULE hModule) {
 
         WriteStartupLog("Starting delayed initialization");
 
-        // Create debug console with explicit visibility
-        WriteStartupLog("Creating debug console...");
-        CreateDebugConsole();
-        WriteStartupLog("CreateDebugConsole returned");
-
-        // Explicitly make console visible
-        if (HWND consoleWnd = GetConsoleWindow()) {
-            ShowWindow(consoleWnd, SW_SHOW);
-        }
+    // Defer console creation until config is loaded (so enableConsole can decide)
 
         // Initialize logging system
         WriteStartupLog("Initializing logging system...");
@@ -97,6 +89,21 @@ void DelayedInitialization(HMODULE hModule) {
 
         // Initialize configuration system
         InitializeConfig();
+
+        // Create/hide console according to setting
+        if (Config::GetSettings().enableConsole) {
+            WriteStartupLog("Creating debug console as per settings...");
+            CreateDebugConsole();
+            if (HWND consoleWnd = GetConsoleWindow()) {
+                ShowWindow(consoleWnd, SW_SHOW);
+            }
+        } else {
+            // Ensure any inherited console is hidden; logs will be buffered
+            if (HWND consoleWnd = GetConsoleWindow()) {
+                ShowWindow(consoleWnd, SW_HIDE);
+            }
+            SetConsoleReady(false);
+        }
 
         // Start essential threads.
         LogOut("[SYSTEM] Starting background threads...", true);
@@ -224,6 +231,7 @@ void InitializeConfig() {
         
         // Apply settings
         detailedLogging = Config::GetSettings().detailedLogging;
+    // Console visibility will be handled post-init in DelayedInitialization
     }
     else {
         LogOut("[SYSTEM] Failed to initialize configuration, using defaults", true);

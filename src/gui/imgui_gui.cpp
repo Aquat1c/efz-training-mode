@@ -22,6 +22,7 @@
 // Forward declare SpamAttackButton so we can use it in this file
 extern void SpamAttackButton(uintptr_t playerBase, uint8_t button, int frames, const char* buttonName);
 #include "../include/game/practice_patch.h"
+#include "../include/gui/imgui_settings.h"
 
 // Add these constants at the top of the file after includes
 // These are from input_motion.cpp but we need them here
@@ -397,12 +398,22 @@ namespace ImGuiGui {
                 }
             }
 
-            // Separate Button combo applies to both directions and motions
+            // Separate Button/Direction combo: for Jump show Forward/Neutral/Backwards; hide for Dashes
             ImGui::SameLine();
             ImGui::SetNextItemWidth(90);
             int buttonIdx = 0;
             int postureIdx = GetPostureIndexForAction(*triggers[i].action);
-            if (postureIdx >= 0) {
+            if (*triggers[i].action == ACTION_JUMP) {
+                // Use strength field as direction selector for Jump
+                const char* dirItems[] = { "Neutral", "Forward", "Backwards" };
+                int dir = *triggers[i].strength;
+                if (ImGui::Combo("", &dir, dirItems, IM_ARRAYSIZE(dirItems))) {
+                    *triggers[i].strength = (dir < 0 ? 0 : (dir > 2 ? 2 : dir));
+                }
+            } else if (*triggers[i].action == ACTION_BACKDASH || *triggers[i].action == ACTION_FORWARD_DASH) {
+                // Hide button combo for dash actions
+                ImGui::Dummy(ImVec2(90, 0));
+            } else if (postureIdx >= 0) {
                 // Derive button from current normal action
                 switch (*triggers[i].action) {
                     case ACTION_5A: case ACTION_2A: case ACTION_JA: buttonIdx = 0; break;
@@ -410,23 +421,26 @@ namespace ImGuiGui {
                     case ACTION_5C: case ACTION_2C: case ACTION_JC: buttonIdx = 2; break;
                     default: buttonIdx = 0; break;
                 }
+                if (ImGui::Combo("", &buttonIdx, buttonItems, IM_ARRAYSIZE(buttonItems))) {//Delay
+                    // Update to specific normal based on posture + button
+                    *triggers[i].action = MapPostureAndButtonToAction(postureIdx, buttonIdx);
+                }
+                // Skip the generic handler below
+                ImGui::PopID();
+                ImGui::PushID(i);
             } else if (IsSpecialMoveAction(*triggers[i].action)) {
                 // For specials, use strength value as button index (A/B/C). D will be clamped.
                 buttonIdx = *triggers[i].strength;
+                if (ImGui::Combo("", &buttonIdx, buttonItems, IM_ARRAYSIZE(buttonItems))) {//Delay
+                    *triggers[i].strength = (buttonIdx > 2) ? 2 : buttonIdx;
+                }
             } else {
                 // For other actions (jump, dash, block, custom), keep buttonIdx but it won't affect action
                 buttonIdx = *triggers[i].strength;
-            }
-            if (ImGui::Combo("", &buttonIdx, buttonItems, IM_ARRAYSIZE(buttonItems))) {//Delay
-                if (postureIdx >= 0) {
-                    // Update to specific normal based on posture + button
-                    *triggers[i].action = MapPostureAndButtonToAction(postureIdx, buttonIdx);
-                } else if (IsSpecialMoveAction(*triggers[i].action)) {
-                    // Map button to strength (A/B/C). D maps to C.
-                    *triggers[i].strength = (buttonIdx > 2) ? 2 : buttonIdx;
-                } else {
-                    // For non-move actions, store selection in strength slot for consistency
-                    *triggers[i].strength = (buttonIdx > 2) ? 2 : buttonIdx;
+                if (*triggers[i].action != ACTION_BLOCK && *triggers[i].action != ACTION_CUSTOM) {
+                    if (ImGui::Combo("", &buttonIdx, buttonItems, IM_ARRAYSIZE(buttonItems))) {//Delay
+                        *triggers[i].strength = (buttonIdx > 2) ? 2 : buttonIdx;
+                    }
                 }
             }
             
@@ -951,6 +965,13 @@ namespace ImGuiGui {
                 if (ImGui::BeginTabItem("Auto Action")) {
                     guiState.currentTab = 1;
                     RenderAutoActionTab();
+                    ImGui::EndTabItem();
+                }
+
+                // Settings tab (new)
+                if (ImGui::BeginTabItem("Settings")) {
+                    guiState.currentTab = 5;
+                    ImGuiSettings::RenderSettingsTab();
                     ImGui::EndTabItem();
                 }
                 

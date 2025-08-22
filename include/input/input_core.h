@@ -3,7 +3,7 @@
 #include <cstdint>
 #include <string>
 
-// Core input constants
+// Core input constants(BUFFER VALUES)
 constexpr uint8_t GAME_INPUT_NEUTRAL = 0x00;
 constexpr uint8_t GAME_INPUT_RIGHT = 0x01;
 constexpr uint8_t GAME_INPUT_LEFT  = 0x02;
@@ -21,6 +21,8 @@ const uint8_t GAME_INPUT_DOWNRIGHT = GAME_INPUT_DOWN | GAME_INPUT_RIGHT;
 const uint8_t GAME_INPUT_DOWNLEFT = GAME_INPUT_DOWN | GAME_INPUT_LEFT;
 const uint8_t GAME_INPUT_UPRIGHT = GAME_INPUT_UP | GAME_INPUT_RIGHT;
 const uint8_t GAME_INPUT_UPLEFT = GAME_INPUT_UP | GAME_INPUT_LEFT;
+
+//Immediate button registers
 const uintptr_t INPUT_HORIZONTAL_OFFSET = 0x188;  // 1=right, 255=left, 0=neutral
 const uintptr_t INPUT_VERTICAL_OFFSET = 0x189;    // 1=down, 255=up, 0=neutral
 const uintptr_t INPUT_BUTTON_A_OFFSET = 0x18A; // 394

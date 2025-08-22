@@ -1,7 +1,7 @@
 #include "../include/game/frame_monitor.h"
 #include "../include/game/auto_airtech.h"
 #include "../include/game/auto_jump.h"
-#include "../include/game/auto_action.h"
+#include "../include/game/auto_action.h" // ensure ClearAllAutoActionTriggers declaration
 #include "../include/game/frame_analysis.h"
 #include "../include/game/frame_advantage.h"
 #include "../include/core/constants.h"
@@ -16,6 +16,10 @@
 #include "../include/input/input_motion.h"
 #include "../include/game/attack_reader.h"
 #include "../include/game/practice_patch.h"
+#ifndef CLEAR_ALL_AUTO_ACTION_TRIGGERS_FWD
+#define CLEAR_ALL_AUTO_ACTION_TRIGGERS_FWD
+void ClearAllAutoActionTriggers();
+#endif
 #include <deque>
 #include <vector>
 #include <chrono>
@@ -245,8 +249,31 @@ void FrameDataMonitor() {
     static short lastLoggedMoveID2 = -1;
     static std::atomic<int> moveLogCooldown{0};
     
+    // High precision timer resolution request
+    timeBeginPeriod(1);
+    // Timing diagnostics (per 960 internal frames)
+    long long driftAccum = 0; // sum of (actual - target) ns
+    long long absDriftAccum = 0;
+    long long maxLate = 0;
+    long long maxEarly = 0; // negative max
+    int driftSamples = 0;
+    int oversleepCount = 0; // frames that exceeded 2x target
+
+    // New: fine grained section timing (optional on demand)
+    bool sectionTiming = false; // toggle via debugger if needed
+    long long sec_mem = 0, sec_logic = 0, sec_features = 0; // accumulators
+    int sec_samples = 0;
+
+    // Improved scheduling target time (accumulative to avoid drift)
+    auto startTime = clock::now();
+    auto expectedNext = startTime + targetFrameTime; // next frame boundary
+
     while (!g_isShuttingDown) {
         auto frameStart = clock::now();
+        // Catch-up logic: if we are *very* late (> 10 frames), jump ahead to avoid cascading backlog
+        if (frameStart - expectedNext > targetFrameTime * 10) {
+            expectedNext = frameStart + targetFrameTime;
+        }
         
         // Check current game phase
         GamePhase currentPhase = GetCurrentGamePhase();
@@ -338,7 +365,7 @@ void FrameDataMonitor() {
         // Process any active input queues
         ProcessInputQueues();
 
-        UpdateWindowActiveState();
+    UpdateWindowActiveState();
         UpdateStatsDisplay();
 
         bool shouldBeActive = ShouldFeaturesBeActive();
@@ -381,6 +408,9 @@ void FrameDataMonitor() {
                 p1DelayState.triggerType = TRIGGER_NONE;
                 p2DelayState.isDelaying = false;
                 p2DelayState.triggerType = TRIGGER_NONE;
+
+                // Hard clear of all auto-action trigger internals (cooldowns, last active, etc.)
+                ClearAllAutoActionTriggers();
 
                 // No overlay reinit here to avoid re-adding messages while features are disabled.
                 s_pendingOverlayReinit = false; // cancel any pending reinit once we leave valid mode
@@ -621,37 +651,70 @@ void FrameDataMonitor() {
         }
         
 FRAME_MONITOR_FRAME_END:
-        // Sleep precisely for the remaining time to maintain exact 192fps
-        auto frameEnd = clock::now();
-        auto frameDuration = frameEnd - frameStart;
-        auto sleepTime = targetFrameTime - frameDuration;
-        
-        // Replace this code:
-        // if (sleepTime > std::chrono::nanoseconds::zero()) {
-        //     std::this_thread::sleep_for(sleepTime);
-        // }
+        // New paced sleep using accumulated schedule (expectedNext)
+        auto beforeSleep = clock::now();
+        while (beforeSleep < expectedNext) {
+            auto remaining = expectedNext - beforeSleep;
+            if (remaining > std::chrono::microseconds(200)) {
+                // Sleep all but ~200us, rely on timeBeginPeriod(1) for ~1ms granularity
+                auto sleepChunk = remaining - std::chrono::microseconds(200);
+                std::this_thread::sleep_for(sleepChunk);
+            } else {
+                // Final busy-wait for precision
+                while (clock::now() < expectedNext) {
+                    _mm_pause();
+                }
+                break;
+            }
+            beforeSleep = clock::now();
+        }
 
-        // With this spin-wait hybrid approach:
-        if (sleepTime > std::chrono::milliseconds(1)) {
-            // Sleep for most of the time
-            std::this_thread::sleep_for(sleepTime - std::chrono::milliseconds(1));
-            
-            // Spin-wait for the remaining sub-millisecond precision
-            auto spinStart = std::chrono::high_resolution_clock::now();
-            while (std::chrono::high_resolution_clock::now() - spinStart < std::chrono::milliseconds(1)) {
-                // Yield to allow other threads same priority to run but keep spinning
-                std::this_thread::yield();
+        auto frameEnd = clock::now();
+        long long actualNs = std::chrono::duration_cast<std::chrono::nanoseconds>(frameEnd - frameStart).count();
+        long long targetNs = targetFrameTime.count();
+        long long drift = actualNs - targetNs; // positive = late this frame
+        driftAccum += drift;
+        absDriftAccum += (drift < 0 ? -drift : drift);
+        if (drift > maxLate) maxLate = drift;
+        if (drift < maxEarly) maxEarly = drift;
+        if (actualNs > targetNs * 2) oversleepCount++;
+        driftSamples++;
+
+        // Advance schedule (even if we were late) to avoid accumulating latency
+        expectedNext += targetFrameTime;
+        // If we are more than 4 frames late, realign to now to prevent runaway catch-up loop
+        if (frameEnd - expectedNext > targetFrameTime * 4) {
+            expectedNext = frameEnd + targetFrameTime;
+        }
+
+        if (driftSamples >= 960) {
+            double avgDriftUs = (double)driftAccum / driftSamples / 1000.0;
+            double avgAbsDriftUs = (double)absDriftAccum / driftSamples / 1000.0;
+            LogOut("[FRAME_MONITOR][TIMING] samples=" + std::to_string(driftSamples) +
+                   " avgDrift(us)=" + std::to_string(avgDriftUs) +
+                   " avgAbs(us)=" + std::to_string(avgAbsDriftUs) +
+                   " maxLate(ms)=" + std::to_string(maxLate/1e6) +
+                   " maxEarly(ms)=" + std::to_string(maxEarly/1e6) +
+                   " oversleep>2x=" + std::to_string(oversleepCount), true);
+            if (sectionTiming && sec_samples > 0) {
+                LogOut("[FRAME_MONITOR][SECTIONS] samples=" + std::to_string(sec_samples) +
+                       " memAvg(us)=" + std::to_string((sec_mem / 1000.0)/sec_samples) +
+                       " logicAvg(us)=" + std::to_string((sec_logic / 1000.0)/sec_samples) +
+                       " featAvg(us)=" + std::to_string((sec_features / 1000.0)/sec_samples), true);
+                sec_mem = sec_logic = sec_features = 0;
+                sec_samples = 0;
             }
-        } else if (sleepTime > std::chrono::nanoseconds::zero()) {
-            // For very short sleeps, just spin
-            auto spinStart = std::chrono::high_resolution_clock::now();
-            while (std::chrono::high_resolution_clock::now() - spinStart < sleepTime) {
-                std::this_thread::yield();
-            }
+            driftAccum = 0;
+            absDriftAccum = 0;
+            maxLate = 0;
+            maxEarly = 0;
+            driftSamples = 0;
+            oversleepCount = 0;
         }
     }
     
     LogOut("[FRAME MONITOR] Shutting down frame monitor thread", true);
+    timeEndPeriod(1);
 }
 
 void ReinitializeOverlays() {
@@ -677,6 +740,10 @@ void ReinitializeOverlays() {
     if (g_FrameAdvantageId != -1) {
         DirectDrawHook::RemovePermanentMessage(g_FrameAdvantageId);
         g_FrameAdvantageId = -1;
+    }
+    if (g_FrameGapId != -1) {
+        DirectDrawHook::RemovePermanentMessage(g_FrameGapId);
+        g_FrameGapId = -1;
     }
     
     // Reset auto-tech and auto-jump status displays

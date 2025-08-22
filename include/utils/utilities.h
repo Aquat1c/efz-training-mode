@@ -44,6 +44,8 @@ bool IsRecoilGuard(short moveID);
 bool IsEFZWindowActive();
 HWND FindEFZWindow();
 void CreateDebugConsole();
+void DestroyDebugConsole(); // NEW: Free console and redirect handles
+void SetConsoleVisibility(bool visible); // NEW: Show/Hide console window
 void ResetFrameCounter();
 void ShowHotkeyInfo();
 std::string FormatPosition(double x, double y);
@@ -76,6 +78,9 @@ void DisableFeatures();
 
 // Add delay support for auto-airtech
 extern std::atomic<int> autoAirtechDelay; // 0=instant, 1+=frames to wait
+
+// For features that should inject only into immediate registers (skip buffer writes)
+extern std::atomic<bool> g_injectImmediateOnly[3]; // Index 0 unused, 1=P1, 2=P2
 
 // Display data structure
 struct DisplayData {
