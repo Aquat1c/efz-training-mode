@@ -362,22 +362,30 @@ void MonitorAutoActions() {
         int triggerType = TRIGGER_NONE;
         int delay = 0;
         short actionMoveID = 0;        
+        // Extra diagnostics for P1 trigger evaluation
+        LogOut("[TRIGGER_DIAG] P1 eval: prev=" + std::to_string(prevMoveID1) + 
+                   ", curr=" + std::to_string(moveID1) +
+                   ", trigActive=" + std::to_string(p1TriggerActive) +
+                   ", cooldown=" + std::to_string(p1TriggerCooldown) +
+               ", actionable(prev/curr)=" + std::to_string(IsActionable(prevMoveID1)) + "/" + std::to_string(IsActionable(moveID1)), detailedLogging.load());
         
         if (!shouldTrigger && triggerAfterAirtechEnabled.load()) {
             // Check if player was in airtech last frame
-            bool wasInAirtech = (prevMoveID1 == FORWARD_AIRTECH || prevMoveID1 == BACKWARD_AIRTECH);
-            
-            // Check if player is now in the first actionable frame after airtech
-            bool isNowActionable = (moveID1 == FALLING_ID);
-            
+            bool wasInAirtech = IsAirtech(prevMoveID1);
+            // Post-airtech actionable: allow either general actionable states or explicit FALLING
+            bool postAirtechNow = (!IsAirtech(moveID1)) && (IsActionable(moveID1) || moveID1 == FALLING_ID);
+            LogOut("[TRIGGER_DIAG] P1 AfterAirtech check: wasAirtech=" + std::to_string(wasInAirtech) +
+                   ", postAirtechNow=" + std::to_string(postAirtechNow) +
+                   ", targetPlayer=" + std::to_string(targetPlayer), detailedLogging.load());
+
             // P1 After-Airtech trigger condition
-            if (wasInAirtech && isNowActionable) {
+            if (wasInAirtech && postAirtechNow) {
                 LogOut("[AUTO-ACTION] P1 After Airtech trigger activated (from moveID " + 
                        std::to_string(prevMoveID1) + " to " + std::to_string(moveID1) + ")", true);
                 shouldTrigger = true;
                 triggerType = TRIGGER_AFTER_AIRTECH;
                 delay = triggerAfterAirtechDelay.load();
-                
+
                 // Get the appropriate action moveID for After Airtech trigger
                 int actionType = triggerAfterAirtechAction.load();
                 actionMoveID = GetActionMoveID(actionType, TRIGGER_AFTER_AIRTECH, 1);
@@ -451,16 +459,21 @@ void MonitorAutoActions() {
            ", actionable(prev/curr)=" + std::to_string(IsActionable(prevMoveID2)) + "/" + std::to_string(IsActionable(moveID2)), detailedLogging.load());
         
          // CRITICAL FIX: Complete implementation of After Airtech trigger for P2
-        if (!shouldTrigger && triggerAfterAirtechEnabled.load()) {
+    if (!shouldTrigger && triggerAfterAirtechEnabled.load()) {
             // Check for transition from airtech to actionable state
             bool wasAirtech = IsAirtech(prevMoveID2);
-            bool isNowActionable = IsActionable(moveID2);
-            
-            if (wasAirtech && isNowActionable) {
+            // Post-airtech actionable: allow either general actionable states or explicit FALLING
+            bool postAirtechNow = (!IsAirtech(moveID2)) && (IsActionable(moveID2) || moveID2 == FALLING_ID);
+            LogOut("[TRIGGER_DIAG] P2 AfterAirtech check: wasAirtech=" + std::to_string(wasAirtech) +
+                   ", postAirtechNow=" + std::to_string(postAirtechNow) +
+                   ", targetPlayer=" + std::to_string(targetPlayer), detailedLogging.load());
+
+            if (wasAirtech && postAirtechNow) {
                 LogOut("[AUTO-ACTION] P2 After Airtech trigger activated", true);
                 shouldTrigger = true;
                 triggerType = TRIGGER_AFTER_AIRTECH;
-                delay = triggerAfterAirtechDelay.load() * 3; // Convert to internal frames
+        // Pass visual frames; StartTriggerDelay converts to internal frames
+        delay = triggerAfterAirtechDelay.load();
                 actionMoveID = GetActionMoveID(triggerAfterAirtechAction.load(), TRIGGER_AFTER_AIRTECH, 2);
             }
         }
