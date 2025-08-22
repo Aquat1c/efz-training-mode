@@ -1,55 +1,63 @@
 # EFZ Training Mode
 
-A comprehensive training mode enhancement tool for Eternal Fighter Zero that provides frame data analysis, Recoil Guard (RG) timing information, and other essential training features.
+A comprehensive training mode enhancement tool for Eternal Fighter Zero. It provides frame data analysis, RG (Recoil Guard) timing, robust auto-actions, and a modern in-game ImGui overlay with live configuration.
 
 ## Features
 
-- **Real-time Frame Data Analysis**: Displays frame advantage information for blocked moves and RG situations
-- **Detailed RG Analysis**: Shows attack windows and timing differences between Stand, Crouch, and Air RG
-- **Position Manipulation**: Easily record and teleport player positions for setup practice
-- **Player Status Modification**: Adjust health, meter, RF values, and positions through an in-game menu
-- **Move ID Tracking**: Monitor character state transitions with detailed move ID logging
-- **Visual Frame Counter**: Track game frames with accurate internal and visual frame displays
-- **Smart Online Mode Detection**: Automatically detects online play and temporarily disables training features to prevent desyncs
-- **ImGui Overlay Interface**: Modern in-game overlay with configuration options and real-time data display
-- **Auto-Tech Options**: Configure automatic air-teching with directional control
-- **Auto-Action System**: Set up automatic responses after blocking, hitstun, or on wakeup
-- **Auto-Jump Configuration**: Customize automatic jump patterns with directional options
+- Real-time frame data: block advantage, RG advantage, gap timing
+- Detailed RG analysis: Stand/Crouch/Air windows and outcomes
+- Position tools: record and teleport with directional modifiers
+- Player status editor: HP, meter, RF, positions from the overlay
+- Move ID tracking and a visual frame counter
+- Smart online mode detection (auto-safe disable to prevent desyncs)
+- ImGui overlay UI with a dedicated Settings tab
+- Auto-tech options with direction and delay
+- Auto-action system: After Block, After Hitstun, On Wakeup, After Airtech
+- Auto-jump and dashes: jump via immediate input; dashes via buffer motions
+- New: Live hotkey rebinding in UI (press-to-bind) and on-disk config save/reload
+- New: Toggle the debug console from the UI (off by default); logs are buffered from startup so enabling later shows full history
 
 ## Installation
 
-1. Build the DLL using Visual Studio or CMake
-2. Place the generated `efz_training_mode.dll` in your EFZ mods directory.  
-3. Make sure to add `efz_training_mode=1` AT THE BOTTOM of the "EfzModManager.ini" file. You can download and install the EFZ Mod Manager here - [link](https://docs.google.com/spreadsheets/d/1r0nBAaQczj9K4RG5zAVV4uXperDeoSnXaqQBal2-8Us/edit?usp=sharing)
-4. A console window will appear with frame data information.
+1) Build the DLL or download a release
+- Build with CMake or Visual Studio (see Building below)
+
+2) Install the DLL
+- Place `efz_training_mode.dll` in your EFZ mods folder (same place you put other EFZ Mod Manager DLLs)
+- Add this line to the bottom of `EfzModManager.ini`:
+  - `efz_training_mode=1`
+  - EFZ Mod Manager download: [link](https://docs.google.com/spreadsheets/d/1r0nBAaQczj9K4RG5zAVV4uXperDeoSnXaqQBal2-8Us/edit?usp=sharing)
+
+3) First run
+- The overlay loads in-game; open the menu via the hotkey (default: 7)
+- A config file `efz_training_config.ini` is created next to the DLL
+- Console is OFF by default (you can enable it in Settings → General). All logs since startup are buffered and will appear when you enable it.
 
 ## Online Play Support
 
 The training mode now features automatic network detection:
 
 - When a connection to another player is detected, the tool will:
-  - Temporarily hide the console window (after a 3-second countdown)
-  - Disable all training mode hotkeys
-  - Prevent any accidental inputs that could cause desynchronization
-- When the online match ends, the console and hotkeys will be automatically closed.
+  - Temporarily hide the console window (after a short countdown)
+  - Disable training-mode hotkeys
+  - Prevent injected inputs that could cause desyncs
+- When the online match ends, the console/hotkeys restore automatically
 - This ensures a safe experience when switching between training and online play without needing to disable the mod
 
-## Controls
+## Controls (default hotkeys)
 
-The tool provides several hotkeys to control its functionality (automatically disabled during online play):
+These can be changed in Settings → Hotkeys (press-to-bind) or in the INI; they’re automatically disabled during online play.
 
-- **1**: Teleport players to recorded/default positions
-  - With **Left Arrow**: Move both players to left side
-  - With **Right Arrow**: Move both players to right side
-  - With **Up Arrow**: Swap P1 and P2 positions
-  - With **Down Arrow**: Place players close together at center
-  - With **Down Arrow + Z**: Place players at round start positions
-- **2**: Record current player positions
-- **3**: Open configuration menu: enable airtechs, jumps and change the values like positions, HP, RF and Eternity meter.
-- **4**: Toggle title display mode between detailed and standard
-- **5**: Reset frame counter
-- **6**: Show help information and clear console
-- **7**: Toggle ImGui overlay interface
+- 1: Teleport players to recorded/default positions
+  - With Left/Right: move both to that side
+  - With Up: swap P1 and P2
+  - With Down: place at center; with Down+Z: round-start positions
+- 2: Record current player positions
+- 3: Open config menu (overlay)
+- 4: Toggle detailed vs standard console title
+- 5: Reset frame counter
+- 6: Show help and clear console
+- 7: Toggle ImGui overlay
 
 ## Frame Data Monitoring
 
@@ -62,23 +70,19 @@ When active, the tool will automatically detect and display:
   - Frame advantage if RG stun isn't canceled
 - Frame gaps between defensive states
 
-### RG Frame Mechanics
-
-The tool tries to account for EFZ's specific RG system mechanics:
-- **Stand RG**: -0.33F disadvantage to defender (can attack after 20F freeze)
-- **Crouch RG**: -2.33F disadvantage to defender (can attack after 22F freeze)
-- **Air RG**: -2.00F disadvantage to defender (can attack after 22F freeze)
-
 ## Automated Training Features
 
 The tool includes advanced training features accessible through the in-game overlay:
 
-- **Auto-Airtech**: Configure automatic recovery from air hitstun with directional control
-- **Auto-Jump**: Set up automatic jumping patterns with customizable timing and directions
-- **Auto-Action System**:
-  - After Block: Automatically perform actions after blocking an attack
-  - After Hitstun: Execute specific moves when recovering from hitstun
-  - On Wakeup: Set automatic wakeup actions after knockdown
+- Auto-Airtech: automatic recovery using immediate inputs, with forward/back direction and optional delay; improved detection around FALLING/actionable states
+- Auto-Action system:
+  - After Block: perform actions after blocking
+  - After Hitstun: act on recovery from hitstun
+  - On Wakeup: automatic wakeup actions after knockdown
+  - After Airtech: act right after airtech becomes actionable
+- Jumps/Dashes:
+  - Jumps use immediate input injection with direction (Forward/Neutral/Back) respecting facing
+  - Dashes are queued to the input buffer as double-tap motions
 
 ## Known Issues
 
@@ -90,14 +94,29 @@ The tool includes advanced training features accessible through the in-game over
 
 4. **MoveID Tracking Limitations**: Some rare character-specific states may not be correctly identified.
 
+## Settings UI and Configuration
+
+- Open the overlay and switch to the Settings tab
+- General:
+  - Use ImGui UI (vs legacy dialog)
+  - Detailed logging (affects console verbosity)
+  - Restrict to Practice Mode
+  - Show debug console (off by default). Logs are buffered from startup so enabling later shows full history.
+- Hotkeys:
+  - Click “Bind” next to a hotkey and press a key to rebind instantly
+  - Or edit `efz_training_config.ini` (virtual-key codes, hex like 0x31)
+  - Save to disk / Reload from disk buttons included
+
+Config file location: created next to `efz_training_mode.dll` as `efz_training_config.ini`.
+
 ## Technical Implementation
 
 The project is built in C++ with CMake support and includes:
 
 - **Memory Management**: Read/write EFZ game memory for state tracking and modifications
 - **Frame Monitoring**: Track and analyze frame data in real-time
-- **Console UI**: Display frame data and debugging information
-- **ImGui Integration**: Modern in-game overlay interface with real-time configuration
+- **Console**: Optional console window for debugging; can be toggled at runtime; logs buffered until enabled
+- **ImGui Integration**: Modern in-game overlay with live configuration
 - **DirectX Hooking**: Reliable D3D9 hooking for graphical overlays
 - **Network Detection**: Monitor TCP/UDP connections to detect online matches and prevent desyncs
 
@@ -114,7 +133,7 @@ This project relies on several external libraries:
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/efz-training-mode.git
+git clone https://github.com/Aquat1c/efz-training-mode.git
 
 # Create build directory
 cd efz-training-mode
@@ -125,6 +144,8 @@ cmake ..
 
 # Build with your platform's build system
 cmake --build . --config Release
+
+Tip (Windows/VS): building the “ALL_BUILD” or project target produces `efz_training_mode.dll` in `build/bin/<Config>/`.
 ```
 
 ## Contributing
@@ -141,6 +162,16 @@ Special thanks goes to:
 - **fishshapedfish** - Initial CheatEngine tables for the character states and other things.
 - **Ev.Geniy**, **kolya_kaban**, **lazerock** and some other people I probably forgot - Testing and feedback.
 
+
+## Troubleshooting
+
+- The console doesn’t show anything when I enable it
+  - Ensure Settings → General → “Show debug console” is on; logs before enabling are buffered and should flush immediately
+- Hotkeys don’t respond
+  - Verify online mode isn’t active (features are disabled during online play)
+  - Check Settings → Hotkeys; rebind using “Bind” and try again
+- Overlay not visible
+  - Press the Toggle ImGui hotkey (default 7) or check that ImGui UI is enabled in Settings → General
 
 ## License
 This project is provided for educational purposes. Eternal Fighter Zero is property of Twilight Frontier and its respective owners.
