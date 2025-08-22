@@ -7,9 +7,19 @@
 
 #include "../3rdparty/minhook/include/MinHook.h"
 #include "../include/game/practice_patch.h"
+#include "../include/input/input_buffer.h" // for g_bufferFreezingActive
 #include <windows.h>
 #include <vector>
 #include <atomic>
+#include <sstream>
+#include <iomanip>
+
+// Local helper to format a single byte as two-digit hex (uppercase)
+static std::string FormatHexByte(uint8_t value) {
+    std::ostringstream oss;
+    oss << std::uppercase << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(value);
+    return oss.str();
+}
 // Add this static variable to track the previous frame's button mask for edge detection.
 static uint8_t g_lastInjectedMask[3] = {0, 0, 0}; // Index 0 unused, 1 for P1, 2 for P2
 
@@ -37,10 +47,28 @@ int __fastcall HookedProcessCharacterInput(int characterPtr, int edx) {
     if (characterPtr != 0 && characterPtr == p1Ptr) playerNum = 1;
     else if (characterPtr != 0 && characterPtr == p2Ptr) playerNum = 2;
 
+    // Safety: if we cannot identify the player, defer to the original immediately
+    if (playerNum == 0) {
+        return oProcessCharacterInput(characterPtr);
+    }
+
+    // Do not inject while a buffer-freeze is active for THIS player; let the game's
+    // original logic read the frozen buffer/index without interference.
+    if (g_bufferFreezingActive.load()) {
+        int freezeOwner = g_activeFreezePlayer.load();
+        if (freezeOwner == playerNum || freezeOwner == 0) {
+            if (freezeOwner == playerNum) {
+                LogOut(std::string("[INPUT_HOOK] Skipping injection for P") + std::to_string(playerNum) + " due to active buffer-freeze (owner=P" + std::to_string(freezeOwner) + ")", detailedLogging.load());
+            }
+            g_lastInjectedMask[playerNum] = 0;
+            return oProcessCharacterInput(characterPtr);
+        }
+    }
+
     // REVERTED LOGIC: The queue system now handles all injection states.
     bool shouldInject = false;
     if (playerNum > 0) {
-        if (g_manualInputOverride[playerNum].load()) {
+     if (g_manualInputOverride[playerNum].load()) {
             shouldInject = true;
         } else if (playerNum == 1 && p1QueueActive) {
             shouldInject = true;
@@ -60,7 +88,11 @@ int __fastcall HookedProcessCharacterInput(int characterPtr, int edx) {
                 currentMask = queue[queueIndex].inputMask;
             }
         }
-        WritePlayerInputImmediate(playerNum, currentMask);
+     if (g_lastInjectedMask[playerNum] != currentMask) {
+         LogOut(std::string("[INPUT_HOOK] Injecting for P") + std::to_string(playerNum) + 
+             " mask=0x" + FormatHexByte(currentMask), detailedLogging.load());
+     }
+     WritePlayerInputImmediate(playerNum, currentMask);
         WritePlayerInputToBuffer(playerNum, currentMask);
         g_lastInjectedMask[playerNum] = currentMask;
         return 0;

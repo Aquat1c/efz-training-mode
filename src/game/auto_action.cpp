@@ -41,7 +41,7 @@ static bool p1TriggerActive = false;
 static bool p2TriggerActive = false;
 static int p1TriggerCooldown = 0;
 static int p2TriggerCooldown = 0;
-static constexpr int TRIGGER_COOLDOWN_FRAMES = 60; // was larger
+static constexpr int TRIGGER_COOLDOWN_FRAMES = 12; // ~0.2s @60fps, lighter throttle
 bool g_p2ControlOverridden = false;
 uint32_t g_originalP2ControlFlag = 1; // Default to AI control
 
@@ -158,14 +158,16 @@ void ProcessTriggerDelays() {
 
     // P1 delay processing
     if (p1DelayState.isDelaying) {
-        p1DelayState.delayFramesRemaining--;
+     LogOut("[DELAY] P1 delaying: framesRemaining=" + std::to_string(p1DelayState.delayFramesRemaining) +
+         ", triggerType=" + std::to_string(p1DelayState.triggerType), detailedLogging.load());
+     p1DelayState.delayFramesRemaining--;
         
         if (p1DelayState.delayFramesRemaining % 64 == 0 && p1DelayState.delayFramesRemaining > 0) {
             LogOut("[AUTO-ACTION] P1 delay countdown: " + std::to_string(p1DelayState.delayFramesRemaining/3) + 
                    " visual frames remaining", detailedLogging.load());
         }
         
-        if (p1DelayState.delayFramesRemaining <= 0) {
+    if (p1DelayState.delayFramesRemaining <= 0) {
             LogOut("[AUTO-ACTION] P1 delay expired, applying action", true);
             
             // Get moveIDAddr just to pass to ApplyAutoAction - it won't be used to write to anymore
@@ -192,14 +194,16 @@ void ProcessTriggerDelays() {
     
     // P2 delay processing
     if (p2DelayState.isDelaying) {
-        p2DelayState.delayFramesRemaining--;
+     LogOut("[DELAY] P2 delaying: framesRemaining=" + std::to_string(p2DelayState.delayFramesRemaining) +
+         ", triggerType=" + std::to_string(p2DelayState.triggerType), detailedLogging.load());
+     p2DelayState.delayFramesRemaining--;
         
         if (p2DelayState.delayFramesRemaining % 64 == 0 && p2DelayState.delayFramesRemaining > 0) {
             LogOut("[AUTO-ACTION] P2 delay countdown: " + std::to_string(p2DelayState.delayFramesRemaining/3) + 
                    " visual frames remaining", detailedLogging.load());
         }
         
-        if (p2DelayState.delayFramesRemaining <= 0) {
+    if (p2DelayState.delayFramesRemaining <= 0) {
             LogOut("[AUTO-ACTION] P2 delay expired, applying action", true);
             
             uintptr_t moveIDAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P2, MOVE_ID_OFFSET);
@@ -231,9 +235,11 @@ void ProcessTriggerDelays() {
 void StartTriggerDelay(int playerNum, int triggerType, short moveID, int delayFrames) {
     // Check if the player is already in a trigger cooldown period
     if (playerNum == 1 && p1TriggerActive) {
+    LogOut("[AUTO-ACTION] P1 StartTriggerDelay ignored - trigger already active/cooldown=" + std::to_string(p1TriggerCooldown), detailedLogging.load());
         return;
     }
     if (playerNum == 2 && p2TriggerActive) {
+    LogOut("[AUTO-ACTION] P2 StartTriggerDelay ignored - trigger already active/cooldown=" + std::to_string(p2TriggerCooldown), detailedLogging.load());
         return;
     }
 
@@ -243,11 +249,17 @@ void StartTriggerDelay(int playerNum, int triggerType, short moveID, int delayFr
 
     LogOut("[AUTO-ACTION] StartTriggerDelay called: Player=" + std::to_string(playerNum) + 
            ", triggerType=" + std::to_string(triggerType) + 
-           ", delay=" + std::to_string(delayFrames), true);
+           ", delay=" + std::to_string(delayFrames) +
+           ", p1ActApplied=" + std::to_string(p1ActionApplied) +
+           ", p2ActApplied=" + std::to_string(p2ActionApplied) +
+           ", p1TrigActive=" + std::to_string(p1TriggerActive) +
+           ", p2TrigActive=" + std::to_string(p2TriggerActive) +
+           ", p1Cooldown=" + std::to_string(p1TriggerCooldown) +
+           ", p2Cooldown=" + std::to_string(p2TriggerCooldown), detailedLogging.load());
      // IMPORTANT: If targeting P2, ensure human control is enabled
     if (playerNum == 2) {
         // Add debug logs to track control state changes
-        LogOut("[AUTO-ACTION] Enabling human control for P2 auto-action", true);
+    LogOut("[AUTO-ACTION] Enabling human control for P2 auto-action", detailedLogging.load());
         EnableP2ControlForAutoAction();
     }
     // Set trigger cooldown to prevent rapid re-triggering
@@ -271,6 +283,7 @@ void StartTriggerDelay(int playerNum, int triggerType, short moveID, int delayFr
         if (moveIDAddr) {
             // Call ApplyAutoAction which now uses input-based execution
             ApplyAutoAction(playerNum, moveIDAddr, 0, 0);
+            LogOut(std::string("[AUTO-ACTION] Immediate apply done for P") + std::to_string(playerNum), detailedLogging.load());
         }
     }
     // For delayed actions, use the existing delay system
@@ -282,17 +295,24 @@ void StartTriggerDelay(int playerNum, int triggerType, short moveID, int delayFr
             p1DelayState.delayFramesRemaining = internalFrames;
             // triggerType already set above
             p1DelayState.pendingMoveID = 0;
+         LogOut("[DELAY] Armed P1 delay: internalFrames=" + std::to_string(internalFrames) +
+             ", triggerType=" + std::to_string(triggerType), detailedLogging.load());
         } else {
             p2DelayState.isDelaying = true;
             p2DelayState.delayFramesRemaining = internalFrames;
             // triggerType already set above
             p2DelayState.pendingMoveID = 0;
+            LogOut("[AUTO-ACTION] P2 delay armed: internalFrames=" + std::to_string(internalFrames), detailedLogging.load());
         }
     }
 }
 
 // Process trigger cooldowns to prevent rapid re-triggering
 void ProcessTriggerCooldowns() {
+    LogOut("[COOLDOWN] p1Active=" + std::to_string(p1TriggerActive) +
+           " p1CD=" + std::to_string(p1TriggerCooldown) +
+           " | p2Active=" + std::to_string(p2TriggerActive) +
+           " p2CD=" + std::to_string(p2TriggerCooldown), detailedLogging.load());
     // P1 cooldown processing
     if (p1TriggerActive && p1TriggerCooldown > 0) {
         p1TriggerCooldown--;
@@ -423,6 +443,12 @@ void MonitorAutoActions() {
         int triggerType = TRIGGER_NONE;
         int delay = 0;
         short actionMoveID = 0;
+        // Extra diagnostics for P2 trigger evaluation
+    LogOut("[TRIGGER_DIAG] P2 eval: prev=" + std::to_string(prevMoveID2) + 
+               ", curr=" + std::to_string(moveID2) +
+               ", trigActive=" + std::to_string(p2TriggerActive) +
+               ", cooldown=" + std::to_string(p2TriggerCooldown) +
+           ", actionable(prev/curr)=" + std::to_string(IsActionable(prevMoveID2)) + "/" + std::to_string(IsActionable(moveID2)), detailedLogging.load());
         
          // CRITICAL FIX: Complete implementation of After Airtech trigger for P2
         if (!shouldTrigger && triggerAfterAirtechEnabled.load()) {
@@ -450,10 +476,13 @@ void MonitorAutoActions() {
                     
                     LogOut("[AUTO-ACTION] P2 After Block trigger activated", true);
                 } else {
-                    LogOut("[AUTO-ACTION] P2 After Block trigger condition met but cooldown active: " + 
-                           std::to_string(p2TriggerCooldown), detailedLogging.load());
+                    LogOut("[AUTO-ACTION] P2 After Block condition met but cooldown active: " + 
+                           std::to_string(p2TriggerCooldown), true);
                 }
             }
+        }
+        if (!shouldTrigger && triggerAfterBlockEnabled.load() && p2TriggerActive) {
+            LogOut("[AUTO-ACTION] P2 After Block suppressed because p2TriggerActive=1", detailedLogging.load());
         }
         
         // After Hitstun trigger
@@ -483,6 +512,15 @@ void MonitorAutoActions() {
         
         if (shouldTrigger) {
             StartTriggerDelay(2, triggerType, actionMoveID, delay);
+        } else {
+            // Log why we didn't trigger when conditions are close
+            if (triggerAfterBlockEnabled.load()) {
+                bool wasInBlockstun = IsBlockstun(prevMoveID2);
+                bool nowActionable = IsActionable(moveID2);
+                if (wasInBlockstun && !nowActionable) {
+                    LogOut("[AUTO-ACTION] P2 After Block: now not actionable yet", true);
+                }
+            }
         }
     }
     
@@ -526,6 +564,7 @@ void ResetActionFlags() {
 
     // If we're resetting action flags, also restore P2 control if needed
     RestoreP2ControlState();
+    LogOut("[AUTO-ACTION] ResetActionFlags invoked (control restored if overridden)", true);
 }
 
 void ClearDelayStatesIfNonActionable() {
@@ -665,6 +704,17 @@ void ApplyAutoAction(int playerNum, uintptr_t moveIDAddr, short currentMoveID, s
             
             LogOut("[AUTO-ACTION] Released manual input override for P" + 
                    std::to_string(playerNum), true);
+
+            // Allow immediate re-trigger after manual override completes
+            if (playerNum == 2) {
+                p2TriggerActive = false;
+                p2TriggerCooldown = 0;
+                LogOut("[AUTO-ACTION] Cleared P2 trigger cooldown after manual override release", true);
+            } else if (playerNum == 1) {
+                p1TriggerActive = false;
+                p1TriggerCooldown = 0;
+                LogOut("[AUTO-ACTION] Cleared P1 trigger cooldown after manual override release", true);
+            }
         }).detach();
         
         success = true;
@@ -841,7 +891,9 @@ void ProcessAutoControlRestore() {
             sawNonZeroMoveID = false;
             
             // Add a cooldown to prevent re-triggering immediately
-            p2TriggerCooldown = TRIGGER_COOLDOWN_FRAMES; // now ~0.42s instead of previous large value
+            p2TriggerCooldown = 0; // allow prompt re-trigger after restoring
+            p2TriggerActive = false;
+            LogOut("[AUTO-ACTION] Cleared P2 trigger cooldown after restore", true);
         } else {
             // Update last moveID for tracking
             if (moveID2 != 0) {
@@ -939,11 +991,7 @@ void ClearAllAutoActionTriggers() {
     g_lastActiveTriggerType.store(TRIGGER_NONE);
     g_lastActiveTriggerFrame.store(0);
 
-    // Reset internal cooldown / active guards (static locals above)
-    extern bool p1TriggerActive; // forward reference to internal statics (same TU)
-    extern bool p2TriggerActive;
-    extern int  p1TriggerCooldown;
-    extern int  p2TriggerCooldown;
+    // Reset internal cooldown / active guards (file-scope statics in this TU)
     p1TriggerActive = false; p1TriggerCooldown = 0;
     p2TriggerActive = false; p2TriggerCooldown = 0;
 
