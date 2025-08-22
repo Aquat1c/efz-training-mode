@@ -93,7 +93,10 @@ int __fastcall HookedProcessCharacterInput(int characterPtr, int edx) {
              " mask=0x" + FormatHexByte(currentMask), detailedLogging.load());
      }
      WritePlayerInputImmediate(playerNum, currentMask);
-        WritePlayerInputToBuffer(playerNum, currentMask);
+        // Optional: skip buffer write if immediate-only mode is requested (e.g., auto airtech)
+        if (!g_injectImmediateOnly[playerNum].load()) {
+            WritePlayerInputToBuffer(playerNum, currentMask);
+        }
         g_lastInjectedMask[playerNum] = currentMask;
         return 0;
     } 
