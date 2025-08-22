@@ -184,24 +184,15 @@ std::atomic<bool> keyMonitorRunning(true);
 void MonitorKeys() {
     LogOut("[KEYBINDS] Key monitoring thread started", true);
     
-    // Get config settings for hotkeys
-    const Config::Settings& cfg = Config::GetSettings();
-    
-    // Log the hotkeys for debugging
-    LogOut("[KEYBINDS] Hotkey values from config:", true);
-    LogOut("[KEYBINDS] Teleport/Load key: " + GetKeyName(cfg.teleportKey), true);
-    LogOut("[KEYBINDS] Record/Save key: " + GetKeyName(cfg.recordKey), true);
-    LogOut("[KEYBINDS] Config Menu key: " + GetKeyName(cfg.configMenuKey), true);
-    LogOut("[KEYBINDS] Toggle ImGui key: " + GetKeyName(cfg.toggleImGuiKey), true);
-    
-    // Use configured hotkeys, with fallbacks for safety
-    int teleportKey = (cfg.teleportKey > 0) ? cfg.teleportKey : '1';
-    int recordKey = (cfg.recordKey > 0) ? cfg.recordKey : '2';
-    int configMenuKey = (cfg.configMenuKey > 0) ? cfg.configMenuKey : '3';
-    int toggleTitleKey = (cfg.toggleTitleKey > 0) ? cfg.toggleTitleKey : '4';
-    int resetFrameCounterKey = (cfg.resetFrameCounterKey > 0) ? cfg.resetFrameCounterKey : '5';
-    int helpKey = (cfg.helpKey > 0) ? cfg.helpKey : '6';
-    int toggleImGuiKey = (cfg.toggleImGuiKey > 0) ? cfg.toggleImGuiKey : VK_F12;
+    // Initial log of hotkeys
+    {
+        const Config::Settings& cfg0 = Config::GetSettings();
+        LogOut("[KEYBINDS] Hotkey values from config:", true);
+        LogOut("[KEYBINDS] Teleport/Load key: " + GetKeyName(cfg0.teleportKey), true);
+        LogOut("[KEYBINDS] Record/Save key: " + GetKeyName(cfg0.recordKey), true);
+        LogOut("[KEYBINDS] Config Menu key: " + GetKeyName(cfg0.configMenuKey), true);
+        LogOut("[KEYBINDS] Toggle ImGui key: " + GetKeyName(cfg0.toggleImGuiKey), true);
+    }
 
     // Constants for teleport positions
     const double centerX = 320.0;
@@ -212,8 +203,17 @@ void MonitorKeys() {
     XINPUT_STATE prevPad{};
 
     while (keyMonitorRunning) {
-        // Update window active state at the beginning of each loop
+    // Update window active state at the beginning of each loop
         UpdateWindowActiveState();
+    // Re-read hotkeys every frame so config UI changes apply instantly
+    const Config::Settings& cfg = Config::GetSettings();
+    int teleportKey = (cfg.teleportKey > 0) ? cfg.teleportKey : '1';
+    int recordKey = (cfg.recordKey > 0) ? cfg.recordKey : '2';
+    int configMenuKey = (cfg.configMenuKey > 0) ? cfg.configMenuKey : '3';
+    int toggleTitleKey = (cfg.toggleTitleKey > 0) ? cfg.toggleTitleKey : '4';
+    int resetFrameCounterKey = (cfg.resetFrameCounterKey > 0) ? cfg.resetFrameCounterKey : '5';
+    int helpKey = (cfg.helpKey > 0) ? cfg.helpKey : '6';
+    int toggleImGuiKey = (cfg.toggleImGuiKey > 0) ? cfg.toggleImGuiKey : VK_F12;
     XINPUT_STATE currentPad{};
 
         // --- All other hotkeys: only when overlays/features are active ---

@@ -38,13 +38,7 @@ std::atomic<bool> g_manualInputOverride[3] = {false, false, false};
 std::atomic<uint8_t> g_manualInputMask[3] = {0, 0, 0};
 std::atomic<bool> g_manualJumpHold[3] = {false, false, false}; // NEW: Definition for jump hold
 
-// Saved states for triggers and auto-action across mode transitions
-static bool s_prevAutoActionEnabled = false;
-static bool s_prevTriggerAfterBlock = false;
-static bool s_prevTriggerOnWakeup = false;
-static bool s_prevTriggerAfterHitstun = false;
-static bool s_prevTriggerAfterAirtech = false;
-static bool s_savedStatesValid = false;
+// (Removed restoration of previous trigger states; triggers must always be manually re-enabled after mode changes)
 
 // NEW: Add feature management functions
 void EnableFeatures() {
@@ -60,15 +54,8 @@ void EnableFeatures() {
 
     g_featuresEnabled.store(true);
 
-    // Restore previously saved trigger toggles when re-enabling features
-    if (s_savedStatesValid) {
-        autoActionEnabled.store(s_prevAutoActionEnabled);
-        triggerAfterBlockEnabled.store(s_prevTriggerAfterBlock);
-        triggerOnWakeupEnabled.store(s_prevTriggerOnWakeup);
-        triggerAfterHitstunEnabled.store(s_prevTriggerAfterHitstun);
-        triggerAfterAirtechEnabled.store(s_prevTriggerAfterAirtech);
-        s_savedStatesValid = false; // one-shot restore
-    }
+    // No automatic restoration of triggers; user must re-enable manually
+    LogOut("[SYSTEM] Triggers remain disabled until manually re-enabled", true);
 
     // Only reinitialize overlays if characters are initialized and we're in a valid game mode
     if (DirectDrawHook::isHooked && AreCharactersInitialized()) {
@@ -112,19 +99,16 @@ void DisableFeatures() {
     RemoveAirtechPatches();
     CharacterSettings::RemoveCharacterPatches(); // Remove character-specific patches
 
-    // Save current trigger/auto-action toggles and then disable them while out of valid mode
-    s_prevAutoActionEnabled = autoActionEnabled.load();
-    s_prevTriggerAfterBlock = triggerAfterBlockEnabled.load();
-    s_prevTriggerOnWakeup = triggerOnWakeupEnabled.load();
-    s_prevTriggerAfterHitstun = triggerAfterHitstunEnabled.load();
-    s_prevTriggerAfterAirtech = triggerAfterAirtechEnabled.load();
-    s_savedStatesValid = true;
+    // Do NOT save states; we want a hard reset every time
 
     autoActionEnabled.store(false);
     triggerAfterBlockEnabled.store(false);
     triggerOnWakeupEnabled.store(false);
     triggerAfterHitstunEnabled.store(false);
     triggerAfterAirtechEnabled.store(false);
+
+    // Fully clear any in-flight auto-action internal state (delays, cooldowns, control overrides)
+    ClearAllAutoActionTriggers();
 
     // Clear ALL visual overlays
     DirectDrawHook::ClearAllMessages();
@@ -162,23 +146,19 @@ void DisableFeatures() {
 
 // Public helper: permanently clear all triggers so they stay disabled until user re-enables
 void ClearAllTriggersPersistently() {
-    // Extra guard: avoid clearing if we're still in a valid active gameplay mode with initialized characters
-    GameMode gm = GetCurrentGameMode();
-    bool inValidMode = IsValidGameMode(gm);
-    if (inValidMode && AreCharactersInitialized()) {
-        LogOut("[SYSTEM] Suppressed persistent trigger clear (still in valid mode and characters initialized) - likely false phase", true);
-        return;
-    }
-    LogOut("[SYSTEM] Clearing all triggers persistently (returning to Character Select)", true);
-    // Disable toggles
+    LogOut("[SYSTEM] Clearing all triggers persistently (Character Select / forced)", true);
+    // Disable toggles immediately so they will NOT be auto-restored
     autoActionEnabled.store(false);
     triggerAfterBlockEnabled.store(false);
     triggerOnWakeupEnabled.store(false);
     triggerAfterHitstunEnabled.store(false);
     triggerAfterAirtechEnabled.store(false);
 
-    // Invalidate any saved states so re-enable won’t auto-restore
-    s_savedStatesValid = false;
+    // Also wipe internal delay/cooldown state so nothing fires after returning
+    ClearAllAutoActionTriggers();
+
+    // Explicit hard reset message (nothing is saved anymore)
+    LogOut("[SYSTEM] Trigger states hard-reset (no restoration mechanism active)", true);
 
     // Remove any trigger overlay lines now
     if (g_TriggerAfterBlockId != -1) { DirectDrawHook::RemovePermanentMessage(g_TriggerAfterBlockId); g_TriggerAfterBlockId = -1; }
@@ -319,6 +299,9 @@ std::atomic<int> triggerAfterAirtechDelay(DEFAULT_TRIGGER_DELAY);
 // Auto-airtech delay support
 std::atomic<int> autoAirtechDelay(0); // Default to instant activation
 
+// Immediate-only injection flags (index 0 unused)
+std::atomic<bool> g_injectImmediateOnly[3] = {false, false, false};
+
 // Individual action settings for each trigger
 std::atomic<int> triggerAfterBlockAction(ACTION_5A);
 std::atomic<int> triggerOnWakeupAction(ACTION_5A);
@@ -336,6 +319,9 @@ std::atomic<int> triggerAfterBlockStrength(0);
 std::atomic<int> triggerOnWakeupStrength(0);
 std::atomic<int> triggerAfterHitstunStrength(0);
 std::atomic<int> triggerAfterAirtechStrength(0);
+
+// Deep frame advantage instrumentation toggle
+std::atomic<bool> g_deepFrameAdvDebug{false};
 
 void EnsureLocaleConsistency() {
     static bool localeSet = false;
@@ -361,31 +347,37 @@ uintptr_t GetEFZBase() {
 
 // Add these helper functions to better detect state changes
 bool IsActionable(short moveID) {
-    // Character is actionable in these neutral states
-    if (moveID == IDLE_MOVE_ID || 
-        moveID == WALK_FWD_ID || 
-        moveID == WALK_BACK_ID || 
-        moveID == CROUCH_ID ||
-        moveID == CROUCH_TO_STAND_ID ||
-        moveID == LANDING_ID) {
-        return true;
+    // Explicit neutral whitelist
+    bool neutral = (moveID == IDLE_MOVE_ID || 
+                    moveID == WALK_FWD_ID || 
+                    moveID == WALK_BACK_ID || 
+                    moveID == CROUCH_ID ||
+                    moveID == CROUCH_TO_STAND_ID ||
+                    moveID == LANDING_ID);
+
+    if (neutral) return true;
+
+    bool prohibited = (IsAttackMove(moveID) || 
+                       IsBlockstunState(moveID) || 
+                       IsHitstun(moveID) || 
+                       IsLaunched(moveID) ||
+                       IsAirtech(moveID) || 
+                       IsGroundtech(moveID) ||
+                       IsFrozen(moveID) ||
+                       moveID == STAND_GUARD_ID || 
+                       moveID == CROUCH_GUARD_ID || 
+                       moveID == AIR_GUARD_ID);
+
+    if (prohibited) return false;
+
+    // Treat unknown states as NOT actionable by default (stricter) but allow debug override
+    static int unknownLogBudget = 0; // refilled periodically elsewhere if needed
+    bool result = false;
+    if (g_deepFrameAdvDebug.load() && unknownLogBudget < 200) { // limit spam
+        LogOut("[ACTIONABLE_DBG] Treating unknown moveID " + std::to_string(moveID) + " as NOT actionable", false);
+        ++unknownLogBudget;
     }
-    
-    // NOT actionable during these states
-    if (IsAttackMove(moveID) || 
-        IsBlockstunState(moveID) || 
-        IsHitstun(moveID) || 
-        IsLaunched(moveID) ||
-        IsAirtech(moveID) || 
-        IsGroundtech(moveID) ||
-        IsFrozen(moveID) ||
-        moveID == STAND_GUARD_ID || 
-        moveID == CROUCH_GUARD_ID || 
-        moveID == AIR_GUARD_ID) {
-        return false;
-    }
-    
-    return true; // Default to actionable for unknown states
+    return result;
 }
 
 bool IsBlockstun(short moveID) {
@@ -577,6 +569,28 @@ void CreateDebugConsole() {
     }
     
     WriteStartupLog("CreateDebugConsole() completed");
+    // Mark console ready for logging and flush pending logs
+    SetConsoleReady(true);
+}
+
+void DestroyDebugConsole() {
+    // Hide console first
+    HWND hWnd = GetConsoleWindow();
+    if (hWnd) {
+        ShowWindow(hWnd, SW_HIDE);
+    }
+    // Redirect stdout/stderr to NUL to avoid invalid handles
+    FILE* fp = nullptr;
+    freopen_s(&fp, "NUL", "w", stdout);
+    freopen_s(&fp, "NUL", "w", stderr);
+    // Free the console
+    FreeConsole();
+}
+
+void SetConsoleVisibility(bool visible) {
+    if (HWND hWnd = GetConsoleWindow()) {
+        ShowWindow(hWnd, visible ? SW_SHOW : SW_HIDE);
+    }
 }
 
 void ResetFrameCounter() {
@@ -661,74 +675,38 @@ bool IsDashState(short moveID) {
 
 // Add this function after the IsEFZWindowActive() function
 HWND FindEFZWindow() {
+    // Cache & throttle enumeration: only re-enumerate every 120 internal frames or if handle invalid
+    static HWND cached = NULL;
+    static int lastRefreshFrame = -99999;
+    int currentInternal = frameCounter.load();
+    if (cached && IsWindow(cached)) {
+        // Fast path use cached
+        return cached;
+    }
+    if (currentInternal - lastRefreshFrame < 120) {
+        return cached; // avoid hammering EnumWindows()
+    }
+    lastRefreshFrame = currentInternal;
+
     HWND foundWindow = NULL;
-    static bool debugLogged = false;
-    
-    // Log debug info only once
-    if (!debugLogged) {
-        LogOut("[WINDOW] Searching for EFZ window...", true);
-        debugLogged = true;
-    }
-    
-    // Enumerate all windows to find EFZ
     EnumWindows([](HWND hwnd, LPARAM lParam) -> BOOL {
-        HWND* result = reinterpret_cast<HWND*>(lParam);
-        
-        // Skip invisible windows
-        if (!IsWindowVisible(hwnd)) {
-            return TRUE; // Continue enumeration
+        if (!IsWindowVisible(hwnd)) return TRUE;
+        WCHAR wideTitle[256] = {0};
+        GetWindowTextW(hwnd, wideTitle, 255);
+        if (wcslen(wideTitle) == 0) return TRUE;
+        WCHAR lower[256];
+        wcscpy_s(lower, wideTitle);
+        _wcslwr_s(lower);
+        if (wcsstr(lower, L"eternal fighter zero") || wcsstr(lower, L"efz.exe") || wcsstr(lower, L"revival")) {
+            *reinterpret_cast<HWND*>(lParam) = hwnd;
+            return FALSE;
         }
-        
-        // Get window title for debugging
-        char title[256] = { 0 };
-        GetWindowTextA(hwnd, title, sizeof(title) - 1);
-        
-        // Log visible windows (only log non-empty titles)
-        if (strlen(title) > 0) {
-            LogOut("[WINDOW] Found window: '" + std::string(title) + "'", true);
-        }
-        
-        // Try with Unicode API first
-        WCHAR wideTitle[256] = { 0 };
-        GetWindowTextW(hwnd, wideTitle, sizeof(wideTitle)/sizeof(WCHAR) - 1);
-        
-        // Make a copy for case-insensitive comparison
-        WCHAR wideTitleLower[256];
-        wcscpy_s(wideTitleLower, wideTitle);
-        _wcslwr_s(wideTitleLower);
-        
-        // Case-insensitive comparison for wide strings
-        if (_wcsicmp(wideTitle, L"ETERNAL FIGHTER ZERO") == 0 ||
-            wcsstr(wideTitleLower, L"efz.exe") != NULL ||
-            wcsstr(wideTitleLower, L"eternal fighter zero") != NULL ||
-            wcsstr(wideTitleLower, L"revival") != NULL) {
-            
-            LogOut("[WINDOW] Found EFZ window via Unicode: '" + std::string(title) + "'", true);
-            *result = hwnd;
-            return FALSE; // Stop enumeration
-        }
-        
-        // Fallback to ANSI for compatibility
-        std::string t(title);
-        std::transform(t.begin(), t.end(), t.begin(), ::toupper);
-        
-        if (t.find("ETERNAL FIGHTER ZERO") != std::string::npos ||
-            t.find("EFZ.EXE") != std::string::npos ||
-            t.find("REVIVAL") != std::string::npos) {
-            
-            LogOut("[WINDOW] Found EFZ window via ANSI: '" + std::string(title) + "'", true);
-            *result = hwnd;
-            return FALSE; // Stop enumeration
-        }
-        
-        return TRUE; // Continue enumeration
+        return TRUE;
     }, reinterpret_cast<LPARAM>(&foundWindow));
-    
-    if (!foundWindow) {
-        LogOut("[WINDOW] EFZ window not found", true);
+    if (foundWindow) {
+        cached = foundWindow;
     }
-    
-    return foundWindow;
+    return cached;
 }
 
 void UpdateWindowActiveState() {

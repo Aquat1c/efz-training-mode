@@ -246,9 +246,14 @@ void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, shor
             frameAdvState.p2AdvantageCalculated = false;
         }
         
+        // Always clear previous calculation flags on a brand-new hit to avoid alternating suppression
+        frameAdvState.p1AdvantageCalculated = false;
+        frameAdvState.p2AdvantageCalculated = false;
+        
         // Set up new attack state
         frameAdvState.p1Attacking = true;
         frameAdvState.p2Defending = true;
+        frameAdvState.p1Defending = false; // Opponent is attacking, so P1 is not defending in this exchange
         frameAdvState.p1AttackStartInternalFrame = currentInternalFrame;
         frameAdvState.p2DefenderFreeInternalFrame = -1; // Reset only this defender variable
         
@@ -326,9 +331,14 @@ void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, shor
             frameAdvState.p2AdvantageCalculated = false;
         }
         
+        // Always clear previous calculation flags on a brand-new hit to avoid alternating suppression
+        frameAdvState.p1AdvantageCalculated = false;
+        frameAdvState.p2AdvantageCalculated = false;
+        
         // Set up new attack state
         frameAdvState.p2Attacking = true;
         frameAdvState.p1Defending = true;
+        frameAdvState.p2Defending = false; // Opponent is attacking, so P2 is not defending in this exchange
         frameAdvState.p2AttackStartInternalFrame = currentInternalFrame;
         frameAdvState.p1DefenderFreeInternalFrame = -1; // Reset only this defender variable
         

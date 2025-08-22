@@ -9,6 +9,7 @@ namespace Config {
         bool useImGui;
         bool detailedLogging;
         bool restrictToPracticeMode; // NEW: Restrict to practice mode
+    bool enableConsole;          // NEW: Show/Hide console window
         
         // Hotkey settings
         int teleportKey;

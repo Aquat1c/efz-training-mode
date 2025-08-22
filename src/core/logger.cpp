@@ -8,6 +8,7 @@
 #include "../include/core/constants.h"
 #include <iostream>
 #include <sstream> // Required for std::ostringstream
+#include <vector>
 #include <chrono>
 #include <iomanip>
 #include <windows.h>
@@ -20,6 +21,10 @@
 std::mutex g_logMutex;
 std::atomic<bool> detailedTitleMode(false);
 std::atomic<bool> detailedDebugOutput(false);
+
+// Buffer logs until console is ready so enabling console later shows early logs
+static std::vector<std::string> g_pendingConsoleLogs;
+std::atomic<bool> g_consoleReady{false};
 
 // NEW: Definition for Logger::hwndToString
 namespace Logger {
@@ -37,6 +42,11 @@ void LogOut(const std::string& msg, bool consoleOutput) {
     // Only output to console if requested
     if (consoleOutput) {
         std::lock_guard<std::mutex> lock(g_logMutex);
+        // Buffer until console window exists
+        if (!g_consoleReady.load() || GetConsoleWindow() == nullptr) {
+            g_pendingConsoleLogs.emplace_back(msg);
+            return;
+        }
         
         // Skip spacing logic for empty lines - this fixes most spacing issues
         if (msg.empty()) {
@@ -199,5 +209,44 @@ void UpdateConsoleTitle() {
         
         // Keep the fast update rate as requested - every 100ms
         Sleep(100);
+    }
+}
+
+void FlushPendingConsoleLogs() {
+    std::lock_guard<std::mutex> lock(g_logMutex);
+    if (g_consoleReady.load() && GetConsoleWindow() != nullptr) {
+        for (const auto& line : g_pendingConsoleLogs) {
+            // Reuse normal path but bypass re-buffering by writing directly
+            if (line.empty()) {
+                std::cout << std::endl;
+                continue;
+            }
+            // Filter by detailedLogging like normal LogOut does
+            size_t startBracket = line.find('[');
+            size_t endBracket = line.find(']', startBracket);
+            std::string currentCategory = "OTHER";
+            if (startBracket != std::string::npos && endBracket != std::string::npos) {
+                currentCategory = line.substr(startBracket + 1, endBracket - startBracket - 1);
+            }
+            bool isDetailedDebugMsg =
+                currentCategory == "WINDOW" ||
+                currentCategory == "OVERLAY" ||
+                currentCategory == "IMGUI" ||
+                currentCategory == "IMGUI_MONITOR" ||
+                currentCategory == "CONFIG" ||
+                currentCategory == "KEYBINDS";
+            if (isDetailedDebugMsg && !detailedLogging.load()) {
+                continue;
+            }
+            std::cout << line << std::endl;
+        }
+        g_pendingConsoleLogs.clear();
+    }
+}
+
+void SetConsoleReady(bool ready) {
+    g_consoleReady = ready;
+    if (ready) {
+        FlushPendingConsoleLogs();
     }
 }

@@ -119,8 +119,9 @@ int ConvertTriggerActionToMotion(int actionType, int triggerType) {
             if (strength == 2) return MOTION_641236C;
             return MOTION_641236A;
 
-        // Other actions
-        case ACTION_JUMP: return MOTION_JA;
+    // Other actions
+    // For Jump, we handle immediate input injection elsewhere; no motion mapping needed
+        case ACTION_JUMP: return MOTION_NONE;
         case ACTION_BACKDASH: return ACTION_BACK_DASH;
         case ACTION_FORWARD_DASH: return ACTION_FORWARD_DASH;
         case ACTION_BLOCK: return MOTION_NONE;
