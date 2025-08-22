@@ -44,6 +44,8 @@ bool IsRecoilGuard(short moveID);
 bool IsEFZWindowActive();
 HWND FindEFZWindow();
 void CreateDebugConsole();
+void DestroyDebugConsole(); // NEW: Free console and redirect handles
+void SetConsoleVisibility(bool visible); // NEW: Show/Hide console window
 void ResetFrameCounter();
 void ShowHotkeyInfo();
 std::string FormatPosition(double x, double y);
