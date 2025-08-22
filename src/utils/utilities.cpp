@@ -299,6 +299,9 @@ std::atomic<int> triggerAfterAirtechDelay(DEFAULT_TRIGGER_DELAY);
 // Auto-airtech delay support
 std::atomic<int> autoAirtechDelay(0); // Default to instant activation
 
+// Immediate-only injection flags (index 0 unused)
+std::atomic<bool> g_injectImmediateOnly[3] = {false, false, false};
+
 // Individual action settings for each trigger
 std::atomic<int> triggerAfterBlockAction(ACTION_5A);
 std::atomic<int> triggerOnWakeupAction(ACTION_5A);

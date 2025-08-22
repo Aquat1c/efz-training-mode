@@ -77,6 +77,9 @@ void DisableFeatures();
 // Add delay support for auto-airtech
 extern std::atomic<int> autoAirtechDelay; // 0=instant, 1+=frames to wait
 
+// For features that should inject only into immediate registers (skip buffer writes)
+extern std::atomic<bool> g_injectImmediateOnly[3]; // Index 0 unused, 1=P1, 2=P2
+
 // Display data structure
 struct DisplayData {
     int hp1, hp2;
