@@ -682,8 +682,71 @@ void ApplyAutoAction(int playerNum, uintptr_t moveIDAddr, short currentMoveID, s
     bool success = false;
     bool isRegularMove = (motionType >= MOTION_5A && motionType <= MOTION_JC);
     bool isSpecialMove = (motionType >= MOTION_236A);
+
+    // Special handling: Jump must be injected via immediate input register with direction
+    if (actionType == ACTION_JUMP) {
+        // Determine jump direction: 0=neutral, 1=forward, 2=backward from strength slot
+        int dir = 0;
+        switch (triggerType) {
+            case TRIGGER_AFTER_BLOCK: dir = triggerAfterBlockStrength.load(); break;
+            case TRIGGER_ON_WAKEUP: dir = triggerOnWakeupStrength.load(); break;
+            case TRIGGER_AFTER_HITSTUN: dir = triggerAfterHitstunStrength.load(); break;
+            case TRIGGER_AFTER_AIRTECH: dir = triggerAfterAirtechStrength.load(); break;
+            default: dir = 0; break;
+        }
+
+        // Build immediate mask: UP plus optional left/right based on facing and dir
+        uint8_t mask = GAME_INPUT_UP;
+        if (dir == 1 || dir == 2) {
+            bool facingRight = GetPlayerFacingDirection(playerNum);
+            if (dir == 1) {
+                // forward
+                mask |= (facingRight ? GAME_INPUT_RIGHT : GAME_INPUT_LEFT);
+            } else if (dir == 2) {
+                // backward
+                mask |= (facingRight ? GAME_INPUT_LEFT : GAME_INPUT_RIGHT);
+            }
+        }
+
+        LogOut("[AUTO-ACTION] Injecting Jump via immediate input (dir=" + std::to_string(dir) + ")", true);
+        // Ensure we don't taint the input buffer for jump
+        g_injectImmediateOnly[playerNum].store(true);
+        g_manualInputMask[playerNum].store(mask);
+        g_manualInputOverride[playerNum].store(true);
+
+        std::thread([playerNum]() {
+            // Hold for ~3 frames to register jump, then release
+            std::this_thread::sleep_for(std::chrono::milliseconds(17));
+            g_manualInputOverride[playerNum].store(false);
+            g_manualInputMask[playerNum].store(0);
+            g_injectImmediateOnly[playerNum].store(false);
+
+            // Clear cooldown so another trigger can occur soon after
+            if (playerNum == 2) { p2TriggerActive = false; p2TriggerCooldown = 0; }
+            else { p1TriggerActive = false; p1TriggerCooldown = 0; }
+            LogOut("[AUTO-ACTION] Released Jump immediate injection for P" + std::to_string(playerNum), true);
+        }).detach();
+
+        success = true;
+        // Control restore watcher
+        g_lastP2MoveID.store(currentMoveID);
+        g_pendingControlRestore.store(true);
+        g_controlRestoreTimeout.store(90);
+    }
+
+    // Special handling: Dashes should be executed by writing to the buffer via the queue
+    if (!success && (actionType == ACTION_BACKDASH || actionType == ACTION_FORWARD_DASH)) {
+        LogOut("[AUTO-ACTION] Queuing dash motion via buffer (" + GetMotionTypeName(motionType) + ")", true);
+        // Ensure immediate-only is disabled so buffer gets written
+        g_injectImmediateOnly[playerNum].store(false);
+        success = QueueMotionInput(playerNum, motionType, 0);
+        // Control restore monitor
+        g_lastP2MoveID.store(currentMoveID);
+        g_pendingControlRestore.store(true);
+        g_controlRestoreTimeout.store(90);
+    }
     
-    if (isRegularMove) {
+    if (!success && isRegularMove) {
         // For regular moves, use manual input override (this works correctly)
         LogOut("[AUTO-ACTION] Applying regular move " + GetMotionTypeName(motionType) + 
                " via manual input override", true);
@@ -732,7 +795,7 @@ void ApplyAutoAction(int playerNum, uintptr_t moveIDAddr, short currentMoveID, s
         
         success = true;
     }
-    else if (isSpecialMove) {
+    else if (!success && isSpecialMove) {
         // For special moves, use buffer freezing (this works better for motions)
         LogOut("[AUTO-ACTION] Applying special move " + GetMotionTypeName(motionType) + 
                " via buffer freeze", true);
