@@ -32,10 +32,15 @@ std::vector<uint8_t> g_frozenBufferValues;
 uint16_t g_frozenBufferStartIndex = 0;
 uint16_t g_frozenBufferLength = 0;
 uint16_t g_frozenIndexValue = 0;
+std::atomic<int> g_activeFreezePlayer{0};
 
 // Define buffer functions
 void FreezeBufferValuesThread(int playerNum) {
-    LogOut("[INPUT_BUFFER] Starting buffer freeze thread for P" + std::to_string(playerNum), true);
+    LogOut("[INPUT_BUFFER] Starting buffer freeze thread for P" + std::to_string(playerNum) +
+           " startIdx=" + std::to_string(g_frozenBufferStartIndex) +
+           " len=" + std::to_string(g_frozenBufferLength) +
+           " idxLock=" + (g_indexFreezingActive.load()?std::to_string(g_frozenIndexValue):std::string("off")), true);
+    g_activeFreezePlayer.store(playerNum);
     
     uintptr_t initialPlayerPtr = GetPlayerPointer(playerNum);
     if (!initialPlayerPtr) {
@@ -186,6 +191,7 @@ void FreezeBufferValuesThread(int playerNum) {
     
     g_bufferFreezingActive = false;
     g_indexFreezingActive = false;
+    g_activeFreezePlayer.store(0);
     
     LogOut("[BUFFER_FREEZE] End session P" + std::to_string(playerNum) + " (thread ended)", true);
 }
@@ -243,12 +249,14 @@ bool CaptureAndFreezeBuffer(int playerNum, uint16_t startIndex, uint16_t length)
     
     // Start freezing
     g_bufferFreezingActive = true;
+    g_activeFreezePlayer.store(playerNum);
     g_bufferFreezeThread = std::thread(FreezeBufferValuesThread, playerNum);
     g_bufferFreezeThread.detach();  // Detach to prevent termination
     
     LogOut("[INPUT_BUFFER] Buffer freezing activated for P" + std::to_string(playerNum) + 
            " starting at index " + std::to_string(startIndex) +
-           " with length " + std::to_string(length), true);
+           " with length " + std::to_string(length) +
+           ", owner=P" + std::to_string(g_activeFreezePlayer.load()), true);
     return true;
 }
 
@@ -272,6 +280,12 @@ void StopBufferFreezing() {
     if (g_bufferFreezingActive) {
         g_bufferFreezingActive = false;
         g_indexFreezingActive = false;
+        int owner = g_activeFreezePlayer.exchange(0);
+        if (owner != 0) {
+            LogOut("[INPUT_BUFFER] StopBufferFreezing() called (owner=P" + std::to_string(owner) + ")", true);
+        } else {
+            LogOut("[INPUT_BUFFER] StopBufferFreezing() called (no active owner)", true);
+        }
         
         // Wait for thread to terminate (small timeout)
         std::this_thread::sleep_for(std::chrono::milliseconds(100));

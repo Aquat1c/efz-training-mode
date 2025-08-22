@@ -18,6 +18,8 @@ extern std::vector<uint8_t> g_frozenBufferValues;
 extern uint16_t g_frozenBufferStartIndex;
 extern uint16_t g_frozenBufferLength;
 extern uint16_t g_frozenIndexValue;
+// Which player currently owns an active buffer-freeze session (0 = none)
+extern std::atomic<int> g_activeFreezePlayer;
 
 // Buffer freezing functions
 //bool FreezeBufferForMotion(int playerNum, int motionType, int buttonMask, int optimalIndex);
