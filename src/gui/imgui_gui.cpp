@@ -22,6 +22,7 @@
 // Forward declare SpamAttackButton so we can use it in this file
 extern void SpamAttackButton(uintptr_t playerBase, uint8_t button, int frames, const char* buttonName);
 #include "../include/game/practice_patch.h"
+#include "../include/gui/imgui_settings.h"
 
 // Add these constants at the top of the file after includes
 // These are from input_motion.cpp but we need them here
@@ -964,6 +965,13 @@ namespace ImGuiGui {
                 if (ImGui::BeginTabItem("Auto Action")) {
                     guiState.currentTab = 1;
                     RenderAutoActionTab();
+                    ImGui::EndTabItem();
+                }
+
+                // Settings tab (new)
+                if (ImGui::BeginTabItem("Settings")) {
+                    guiState.currentTab = 5;
+                    ImGuiSettings::RenderSettingsTab();
                     ImGui::EndTabItem();
                 }
                 

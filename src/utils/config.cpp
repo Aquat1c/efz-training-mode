@@ -5,6 +5,7 @@
 #include <fstream>
 #include <sstream>
 #include <filesystem>
+#include <algorithm>
 
 namespace Config {
     // Internal settings storage
@@ -20,16 +21,19 @@ namespace Config {
     void SetIniValue(const std::string& section, const std::string& key, const std::string& value);
     bool GetValueBool(const std::string& section, const std::string& key, bool defaultValue);
     int GetValueInt(const std::string& section, const std::string& key, int defaultValue);
+    bool LoadIniFromFile();
+    static std::string ToLower(std::string s) { std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c){ return (char)std::tolower(c); }); return s; }
     
     // Helper method implementations
     void SetIniValue(const std::string& section, const std::string& key, const std::string& value) {
-        iniData[section][key] = value;
+        // Normalize to lowercase section/key for consistent lookups
+        iniData[ToLower(section)][ToLower(key)] = value;
     }
     
     bool GetValueBool(const std::string& section, const std::string& key, bool defaultValue) {
-        auto sectionIt = iniData.find(section);
+        auto sectionIt = iniData.find(ToLower(section));
         if (sectionIt != iniData.end()) {
-            auto keyIt = sectionIt->second.find(key);
+            auto keyIt = sectionIt->second.find(ToLower(key));
             if (keyIt != sectionIt->second.end()) {
                 return keyIt->second == "1" || keyIt->second == "true" || keyIt->second == "yes";
             }
@@ -38,9 +42,9 @@ namespace Config {
     }
     
     int GetValueInt(const std::string& section, const std::string& key, int defaultValue) {
-        auto sectionIt = iniData.find(section);
+        auto sectionIt = iniData.find(ToLower(section));
         if (sectionIt != iniData.end()) {
-            auto keyIt = sectionIt->second.find(key);
+            auto keyIt = sectionIt->second.find(ToLower(key));
             if (keyIt != sectionIt->second.end()) {
                 return ParseKeyValue(keyIt->second);
             }
@@ -156,7 +160,10 @@ namespace Config {
                 }
             }
             
-            // Load settings
+            // Parse INI then load settings
+            if (!LoadIniFromFile()) {
+                LogOut("[CONFIG] Failed to parse ini file, continuing with defaults", true);
+            }
             bool loadResult = LoadSettings();
             LogOut("[CONFIG] LoadSettings result: " + std::to_string(loadResult), true);
             return loadResult;
@@ -249,7 +256,8 @@ namespace Config {
                     }
                     verifyFile.close();
                 }
-                
+                // Refresh in-memory iniData from defaults we just wrote
+                LoadIniFromFile();
                 return true;
             } else {
                 LogOut("[CONFIG] File creation appeared to succeed, but file does not exist!", true);
@@ -264,6 +272,8 @@ namespace Config {
     
     bool LoadSettings() {
         LogOut("[CONFIG] Loading settings from: " + configFilePath, true);
+        // Always refresh iniData from disk before reading
+        LoadIniFromFile();
         
         try {
             settings.useImGui = GetValueBool("General", "useImGui", true);
@@ -298,29 +308,52 @@ namespace Config {
     }
     
     bool SaveSettings() {
-        // Update the iniData structure with current settings
-        SetIniValue("General", "UseImGui", settings.useImGui ? "1" : "0");
-        SetIniValue("General", "DetailedLogging", settings.detailedLogging ? "1" : "0");
-        SetIniValue("General", "restrictToPracticeMode", settings.restrictToPracticeMode ? "1" : "0");
-        
-        // Convert to hex string with "0x" prefix
-        auto toHexString = [](int value) -> std::string {
-            std::ostringstream oss;
-            oss << "0x" << std::hex << value;
-            return oss.str();
-        };
-        
-        SetIniValue("Hotkeys", "TeleportKey", toHexString(settings.teleportKey));
-        SetIniValue("Hotkeys", "RecordKey", toHexString(settings.recordKey));
-        SetIniValue("Hotkeys", "ConfigMenuKey", toHexString(settings.configMenuKey));
-        SetIniValue("Hotkeys", "ToggleTitleKey", toHexString(settings.toggleTitleKey));
-        SetIniValue("Hotkeys", "ResetFrameCounterKey", toHexString(settings.resetFrameCounterKey));
-        SetIniValue("Hotkeys", "HelpKey", toHexString(settings.helpKey));
-        SetIniValue("Hotkeys", "ToggleImGuiKey", toHexString(settings.toggleImGuiKey));
-        
-        // Write to file, preserving comments if possible
-        // For simplicity, we'll just rewrite the file with default comments
-        return CreateDefaultConfig();
+        // Serialize current settings to disk with comments
+        try {
+            std::ofstream file(configFilePath, std::ios::trunc);
+            if (!file.is_open()) {
+                LogOut("[CONFIG] SaveSettings: failed to open file for writing", true);
+                return false;
+            }
+
+            auto toHexString = [](int value) -> std::string {
+                std::ostringstream oss;
+                oss << "0x" << std::hex << std::uppercase << value;
+                return oss.str();
+            };
+
+            file << "[General]\n";
+            file << "; Use the modern ImGui interface (1) or the legacy Win32 dialog (0)\n";
+            file << "useImGui = " << (settings.useImGui ? "1" : "0") << "\n";
+            file << "; Enable detailed debug messages in the console (1 = yes, 0 = no)\n";
+            file << "detailedLogging = " << (settings.detailedLogging ? "1" : "0") << "\n";
+            file << "; Restrict functionality to Practice Mode only (1 = yes, 0 = no)\n";
+            file << "restrictToPracticeMode = " << (settings.restrictToPracticeMode ? "1" : "0") << "\n\n";
+
+            file << "[Hotkeys]\n";
+            file << "; Use virtual-key codes (hexadecimal, e.g., 0x70 for F1)\n";
+            file << "TeleportKey=" << toHexString(settings.teleportKey) << "\n";
+            file << "RecordKey=" << toHexString(settings.recordKey) << "\n";
+            file << "ConfigMenuKey=" << toHexString(settings.configMenuKey) << "\n";
+            file << "ToggleTitleKey=" << toHexString(settings.toggleTitleKey) << "\n";
+            file << "ResetFrameCounterKey=" << toHexString(settings.resetFrameCounterKey) << "\n";
+            file << "HelpKey=" << toHexString(settings.helpKey) << "\n";
+            file << "ToggleImGuiKey=" << toHexString(settings.toggleImGuiKey) << "\n";
+
+            file.close();
+            if (file.fail()) {
+                LogOut("[CONFIG] SaveSettings: error when closing the file", true);
+                return false;
+            }
+
+            // Refresh iniData from what we wrote
+            LoadIniFromFile();
+            LogOut("[CONFIG] Settings saved to disk", true);
+            return true;
+        } catch (const std::exception& e) {
+            LogOut(std::string("[CONFIG] SaveSettings exception: ") + e.what(), true);
+            return false;
+        }
     }
     
     const Settings& GetSettings() {
@@ -328,23 +361,26 @@ namespace Config {
     }
     
     void SetSetting(const std::string& section, const std::string& key, const std::string& value) {
-        SetIniValue(section, key, value);
+        // Normalize for storage
+        std::string sec = ToLower(section);
+        std::string k = ToLower(key);
+        SetIniValue(sec, k, value);
         
-        // Update the appropriate setting
-        if (section == "General") {
-            if (key == "UseImGui") settings.useImGui = (value == "1");
-            if (key == "DetailedLogging") settings.detailedLogging = (value == "1");
-            if (key == "restrictToPracticeMode") settings.restrictToPracticeMode = (value == "1");
+        // Update the appropriate setting (case-insensitive keys)
+        if (sec == "general") {
+            if (k == "useimgui" || k == "useimgui ") settings.useImGui = (value == "1");
+            if (k == "detailedlogging") settings.detailedLogging = (value == "1");
+            if (k == "restricttopracticemode") settings.restrictToPracticeMode = (value == "1");
         }
-        else if (section == "Hotkeys") {
+        else if (sec == "hotkeys") {
             int intValue = ParseKeyValue(value);
-            if (key == "TeleportKey") settings.teleportKey = intValue;
-            if (key == "RecordKey") settings.recordKey = intValue;
-            if (key == "ConfigMenuKey") settings.configMenuKey = intValue;
-            if (key == "ToggleTitleKey") settings.toggleTitleKey = intValue;
-            if (key == "ResetFrameCounterKey") settings.resetFrameCounterKey = intValue;
-            if (key == "HelpKey") settings.helpKey = intValue;
-            if (key == "ToggleImGuiKey") settings.toggleImGuiKey = intValue;
+            if (k == "teleportkey") settings.teleportKey = intValue;
+            if (k == "recordkey") settings.recordKey = intValue;
+            if (k == "configmenukey") settings.configMenuKey = intValue;
+            if (k == "toggletitlekey") settings.toggleTitleKey = intValue;
+            if (k == "resetframecounterkey") settings.resetFrameCounterKey = intValue;
+            if (k == "helpkey") settings.helpKey = intValue;
+            if (k == "toggleimguikey") settings.toggleImGuiKey = intValue;
         }
     }
     
@@ -372,5 +408,55 @@ namespace Config {
     std::string GetKeyName(int keyCode) {
         // Reuse existing GetKeyName from utilities.cpp
         return ::GetKeyName(keyCode);
+    }
+
+    // Very simple INI parser to populate iniData from file
+    bool LoadIniFromFile() {
+        iniData.clear();
+        std::ifstream file(configFilePath);
+        if (!file.is_open()) {
+            LogOut("[CONFIG] LoadIniFromFile: failed to open ini file", true);
+            return false;
+        }
+        std::string line;
+        std::string currentSection;
+        while (std::getline(file, line)) {
+            // Trim whitespace
+            auto trim = [](std::string &s){
+                size_t start = s.find_first_not_of(" \t\r\n");
+                size_t end = s.find_last_not_of(" \t\r\n");
+                if (start == std::string::npos) { s.clear(); return; }
+                s = s.substr(start, end - start + 1);
+            };
+            trim(line);
+            if (line.empty()) continue;
+            // Skip comments
+            if (line[0] == ';' || line[0] == '#') continue;
+            if (line.front() == '[' && line.back() == ']') {
+                currentSection = ToLower(line.substr(1, line.size()-2));
+                continue;
+            }
+            // key=value; strip inline comments after '#' or ';'
+            size_t hashPos = line.find('#');
+            size_t semiPos = line.find(';');
+            auto minPos = [](size_t a, size_t b) -> size_t {
+                if (a == std::string::npos) return b;
+                if (b == std::string::npos) return a;
+                return (a < b) ? a : b;
+            };
+            size_t commentPos = minPos(hashPos, semiPos);
+            std::string kv = (commentPos == std::string::npos) ? line : line.substr(0, commentPos);
+            trim(kv);
+            if (kv.empty()) continue;
+            size_t eq = kv.find('=');
+            if (eq == std::string::npos) continue;
+            std::string key = kv.substr(0, eq);
+            std::string value = kv.substr(eq + 1);
+            trim(key); trim(value);
+            if (!currentSection.empty() && !key.empty()) {
+                SetIniValue(currentSection, key, value);
+            }
+        }
+        return true;
     }
 }
