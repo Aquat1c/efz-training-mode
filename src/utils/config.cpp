@@ -198,6 +198,8 @@ namespace Config {
             file << "useImGui = 1\n";
             file << "; Enable detailed debug messages in the console (1 = yes, 0 = no)\n";
             file << "detailedLogging = 0\n";
+            file << "; Show the debug console window (1 = yes, 0 = no)\n";
+            file << "enableConsole = 0\n";
             file << "; Restrict functionality to Practice Mode only (1 = yes, 0 = no)\n";
             file << "restrictToPracticeMode = 1\n\n";
             
@@ -278,6 +280,7 @@ namespace Config {
         try {
             settings.useImGui = GetValueBool("General", "useImGui", true);
             settings.detailedLogging = GetValueBool("General", "detailedLogging", false);
+            settings.enableConsole = GetValueBool("General", "enableConsole", false);
             settings.restrictToPracticeMode = GetValueBool("General", "restrictToPracticeMode", true);
             
             // Hotkey settings - REVERTED to number key defaults
@@ -291,6 +294,7 @@ namespace Config {
             LogOut("[CONFIG] Settings loaded successfully", true);
             LogOut("[CONFIG] UseImGui: " + std::to_string(settings.useImGui), true);
             LogOut("[CONFIG] DetailedLogging: " + std::to_string(settings.detailedLogging), true);
+            LogOut("[CONFIG] EnableConsole: " + std::to_string(settings.enableConsole), true);
             LogOut("[CONFIG] TeleportKey: " + std::to_string(settings.teleportKey) + " (" + GetKeyName(settings.teleportKey) + ")", true);
             LogOut("[CONFIG] RecordKey: " + std::to_string(settings.recordKey) + " (" + GetKeyName(settings.recordKey) + ")", true);
             LogOut("[CONFIG] ConfigMenuKey: " + std::to_string(settings.configMenuKey) + " (" + GetKeyName(settings.configMenuKey) + ")", true);
@@ -327,8 +331,16 @@ namespace Config {
             file << "useImGui = " << (settings.useImGui ? "1" : "0") << "\n";
             file << "; Enable detailed debug messages in the console (1 = yes, 0 = no)\n";
             file << "detailedLogging = " << (settings.detailedLogging ? "1" : "0") << "\n";
+            file << "; Show the debug console window (1 = yes, 0 = no)\n";
+            file << "enableConsole = " << (settings.enableConsole ? "1" : "0") << "\n";
             file << "; Restrict functionality to Practice Mode only (1 = yes, 0 = no)\n";
             file << "restrictToPracticeMode = " << (settings.restrictToPracticeMode ? "1" : "0") << "\n\n";
+            file << "; Show the debug console window (1 = yes, 0 = no)\n";
+            // Note: keep console toggle alongside General fields
+            // We append here for clarity; order doesn't matter for parsing
+            // but the default file includes it in the General section above too.
+            // To ensure it's in [General], write again before Hotkeys if missing.
+            // For simplicity, include it earlier with General fields.
 
             file << "[Hotkeys]\n";
             file << "; Use virtual-key codes (hexadecimal, e.g., 0x70 for F1)\n";
@@ -370,6 +382,7 @@ namespace Config {
         if (sec == "general") {
             if (k == "useimgui" || k == "useimgui ") settings.useImGui = (value == "1");
             if (k == "detailedlogging") settings.detailedLogging = (value == "1");
+            if (k == "enableconsole") settings.enableConsole = (value == "1");
             if (k == "restricttopracticemode") settings.restrictToPracticeMode = (value == "1");
         }
         else if (sec == "hotkeys") {

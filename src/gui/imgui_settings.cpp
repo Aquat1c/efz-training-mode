@@ -66,7 +66,8 @@ namespace ImGuiSettings {
         // We copy values locally so we can mutate with ImGui widgets
         bool useImGui = cfg.useImGui;
         bool logVerbose = cfg.detailedLogging;
-        bool restrictPractice = cfg.restrictToPracticeMode;
+    bool restrictPractice = cfg.restrictToPracticeMode;
+    bool enableConsole = cfg.enableConsole;
 
         if (ImGui::CollapsingHeader("General", ImGuiTreeNodeFlags_DefaultOpen)) {
             CheckboxApply("Use ImGui UI (else legacy dialog)", useImGui, "General", "UseImGui");
@@ -76,6 +77,23 @@ namespace ImGuiSettings {
             CheckboxApply("Detailed logging", logVerbose, "General", "DetailedLogging");
 
             CheckboxApply("Restrict features to Practice Mode", restrictPractice, "General", "restrictToPracticeMode");
+
+            // Console visibility toggle
+            if (ImGui::Checkbox("Show debug console (restart not required)", &enableConsole)) {
+                Config::SetSetting("General", "enableConsole", enableConsole ? "1" : "0");
+                if (enableConsole) {
+                    if (!GetConsoleWindow()) {
+                        CreateDebugConsole();
+                    } else {
+                        SetConsoleVisibility(true);
+                    }
+                    SetConsoleReady(true);
+                    FlushPendingConsoleLogs();
+                } else {
+                    // Hide instead of fully destroying to avoid handle churn
+                    SetConsoleVisibility(false);
+                }
+            }
         }
 
         if (ImGui::CollapsingHeader("Hotkeys", ImGuiTreeNodeFlags_DefaultOpen)) {

@@ -19,3 +19,6 @@ void LogOut(const std::string& msg, bool consoleOutput = false);
 void InitializeLogging();
 void UpdateConsoleTitle();
 short GetCurrentMoveID(int player);
+// Flush any pending console logs buffered before the console was created
+void FlushPendingConsoleLogs();
+void SetConsoleReady(bool ready);

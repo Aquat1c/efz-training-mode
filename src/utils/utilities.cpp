@@ -569,6 +569,28 @@ void CreateDebugConsole() {
     }
     
     WriteStartupLog("CreateDebugConsole() completed");
+    // Mark console ready for logging and flush pending logs
+    SetConsoleReady(true);
+}
+
+void DestroyDebugConsole() {
+    // Hide console first
+    HWND hWnd = GetConsoleWindow();
+    if (hWnd) {
+        ShowWindow(hWnd, SW_HIDE);
+    }
+    // Redirect stdout/stderr to NUL to avoid invalid handles
+    FILE* fp = nullptr;
+    freopen_s(&fp, "NUL", "w", stdout);
+    freopen_s(&fp, "NUL", "w", stderr);
+    // Free the console
+    FreeConsole();
+}
+
+void SetConsoleVisibility(bool visible) {
+    if (HWND hWnd = GetConsoleWindow()) {
+        ShowWindow(hWnd, visible ? SW_SHOW : SW_HIDE);
+    }
 }
 
 void ResetFrameCounter() {
