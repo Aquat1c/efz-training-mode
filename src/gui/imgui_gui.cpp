@@ -931,21 +931,24 @@ namespace ImGuiGui {
         if (!ImGuiImpl::IsVisible())
             return;
 
-        // Auto-refresh data when UI first becomes visible
+        // Refresh data once when UI becomes visible; avoid continuous auto-refresh to reduce work
         static bool lastVisible = false;
         bool currentVisible = ImGuiImpl::IsVisible();
         if (currentVisible && !lastVisible) {
-            // UI just became visible, refresh data
             RefreshLocalData();
         }
         lastVisible = currentVisible;
 
-        // Set window position and size
+    // Set window position and size
         ImGui::SetNextWindowPos(ImVec2(50, 50), ImGuiCond_FirstUseEver);
         ImGui::SetNextWindowSize(ImVec2(580, 520), ImGuiCond_FirstUseEver);
+    // Force fully-opaque background to avoid heavy alpha blending on low-end GPUs
+    ImGui::SetNextWindowBgAlpha(1.0f);
 
         // Main window
-        if (ImGui::Begin("EFZ Training Mode", nullptr, ImGuiWindowFlags_NoCollapse)) {
+    // Allow navigation (keyboard/gamepad) while keeping collapse disabled
+    ImGuiWindowFlags winFlags = ImGuiWindowFlags_NoCollapse;
+    if (ImGui::Begin("EFZ Training Mode", nullptr, winFlags)) {
             // Check if a specific tab has been requested
             if (guiState.requestedTab >= 0) {
                 guiState.currentTab = guiState.requestedTab;

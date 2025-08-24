@@ -9,6 +9,7 @@
 #include <unordered_map>
 #include <thread>
 #include <atomic>
+#include "../include/gui/imgui_impl.h"
 
 namespace CharacterSettings {
     // Track if character patches are currently applied
@@ -259,8 +260,8 @@ namespace CharacterSettings {
     void CharacterValueMonitoringThread() {
         LogOut("[CHAR] Starting character value monitoring thread", true);
         
-        // Sleep interval in milliseconds (60fps = ~16ms per frame, but we'll be more aggressive)
-        const int sleepInterval = 8; // ~120 fps for faster response
+    // Base sleep interval in ms; slightly relax when the ImGui menu is visible to reduce contention
+    const int baseSleepMs = 8;     // fast response during gameplay
         
         while (valueMonitoringActive) {
             uintptr_t base = GetEFZBase();
@@ -362,8 +363,9 @@ namespace CharacterSettings {
                 }
             }
             
-            // Sleep to avoid hammering the CPU
-            std::this_thread::sleep_for(std::chrono::milliseconds(sleepInterval));
+            // Sleep to avoid hammering the CPU; when menu is visible, back off a bit
+            const int intervalMs = ImGuiImpl::IsVisible() ? 16 : baseSleepMs;
+            std::this_thread::sleep_for(std::chrono::milliseconds(intervalMs));
         }
         
         LogOut("[CHAR] Character value monitoring thread stopped", true);

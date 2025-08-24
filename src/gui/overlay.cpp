@@ -102,12 +102,17 @@ HRESULT WINAPI HookedEndScene(LPDIRECT3DDEVICE9 pDevice) {
 
     // Determine the current render target size and only render UI on the 640x480 pass
     UINT rtW = 0, rtH = 0;
-    if (IDirect3DSurface9* rt = nullptr; SUCCEEDED(pDevice->GetRenderTarget(0, &rt)) && rt) {
-        D3DSURFACE_DESC d{};
-        if (SUCCEEDED(rt->GetDesc(&d))) {
-            rtW = d.Width; rtH = d.Height;
+    bool menuVisible = ImGuiImpl::IsVisible();
+    if (!menuVisible) {
+        if (IDirect3DSurface9* rt = nullptr; SUCCEEDED(pDevice->GetRenderTarget(0, &rt)) && rt) {
+            D3DSURFACE_DESC d{};
+            if (SUCCEEDED(rt->GetDesc(&d))) { rtW = d.Width; rtH = d.Height; }
+            rt->Release();
         }
-        rt->Release();
+    } else {
+        // Use ImGui display size as an approximation to avoid device queries when menu is up
+        ImVec2 ds = ImGui::GetIO().DisplaySize;
+        rtW = (UINT)ds.x; rtH = (UINT)ds.y;
     }
     if (!(rtW == 640 && rtH == 480)) {
         // Skip all ImGui work on non-game RTs (e.g., 1280x960 fullscreen border)
@@ -137,22 +142,65 @@ HRESULT WINAPI HookedEndScene(LPDIRECT3DDEVICE9 pDevice) {
         return oEndScene(pDevice);
     }
 
-    // Initialize GIF player once the device is valid
+    // Initialize GIF player only when UI is visible (used on Help tab)
     static bool gifInit = false;
-    if (!gifInit) { gifInit = GifPlayer::Initialize(pDevice); }
+    if (!gifInit && ImGuiImpl::IsVisible()) { gifInit = GifPlayer::Initialize(pDevice); }
 
     // Render our custom text overlays using the background draw list
     DirectDrawHook::RenderD3D9Overlays(pDevice);
 
     // Render the main ImGui configuration window if it's visible
     if (ImGuiImpl::IsVisible()) {
+        // Temporarily reduce style complexity and tessellation to lower DX9 draw cost
+        ImGuiStyle& style = ImGui::GetStyle();
+        const bool oldAAFill = style.AntiAliasedFill;
+        const bool oldAALines = style.AntiAliasedLines;
+        const float oldCurveTol = style.CurveTessellationTol;
+        const float oldWindowRounding = style.WindowRounding;
+        const float oldFrameRounding = style.FrameRounding;
+        const float oldPopupRounding = style.PopupRounding;
+        const float oldScrollbarRounding = style.ScrollbarRounding;
+        const float oldGrabRounding = style.GrabRounding;
+        const float oldWindowBorder = style.WindowBorderSize;
+        const float oldFrameBorder = style.FrameBorderSize;
+
+        style.AntiAliasedFill = false;
+        style.AntiAliasedLines = false;
+        style.CurveTessellationTol = 1.5f;      // fewer verts on curves
+        style.WindowRounding = 0.0f;
+        style.FrameRounding = 0.0f;
+        style.PopupRounding = 0.0f;
+        style.ScrollbarRounding = 0.0f;
+        style.GrabRounding = 0.0f;
+        style.WindowBorderSize = 0.0f;
+        style.FrameBorderSize = 0.0f;
+
         ImGuiGui::RenderGui();
+
+        // Restore style
+        style.AntiAliasedFill = oldAAFill;
+        style.AntiAliasedLines = oldAALines;
+        style.CurveTessellationTol = oldCurveTol;
+        style.WindowRounding = oldWindowRounding;
+        style.FrameRounding = oldFrameRounding;
+        style.PopupRounding = oldPopupRounding;
+        style.ScrollbarRounding = oldScrollbarRounding;
+        style.GrabRounding = oldGrabRounding;
+        style.WindowBorderSize = oldWindowBorder;
+        style.FrameBorderSize = oldFrameBorder;
     }
 
-    // Advance GIF animation timing
-    {
+    // Advance GIF animation timing at ~24 FPS only when UI is visible
+    if (gifInit && ImGuiImpl::IsVisible()) {
+        static double gifAccum = 0.0;
         ImGuiIO& io = ImGui::GetIO();
-        GifPlayer::Update(io.DeltaTime > 0.f ? (double)io.DeltaTime : 1.0/60.0);
+        double dt = io.DeltaTime > 0.f ? (double)io.DeltaTime : (1.0/60.0);
+        gifAccum += dt;
+        const double interval = 1.0 / 24.0;
+        if (gifAccum >= interval) {
+            GifPlayer::Update(gifAccum);
+            gifAccum = 0.0;
+        }
     }
 
     // End the frame and render all accumulated draw data
@@ -322,16 +370,33 @@ void DirectDrawHook::RenderD3D9Overlays(LPDIRECT3DDEVICE9 pDevice) {
 
     std::lock_guard<std::mutex> lock(messagesMutex);
 
+    // If the ImGui menu is visible and there are no debug borders requested and no messages to draw,
+    // skip all overlay work to reduce per-frame cost while the menu is open.
+    const bool menuVisibleNow = ImGuiImpl::IsVisible();
+    if (menuVisibleNow && !g_ShowOverlayDebugBorders.load()) {
+        if (permanentMessages.empty()) {
+            // Also check temporary messages that haven't expired
+            bool haveActiveTemp = false;
+            auto nowChk = std::chrono::steady_clock::now();
+            for (const auto& m : messages) { if (m.expireTime > nowChk) { haveActiveTemp = true; break; } }
+            if (!haveActiveTemp) return;
+        }
+    }
+
     // --- DEBUG: Identify current D3D9 render target and draw borders ---
     UINT rtW = 0, rtH = 0;
-    if (IDirect3DSurface9* rt = nullptr; SUCCEEDED(pDevice->GetRenderTarget(0, &rt)) && rt) {
-        D3DSURFACE_DESC d{};
-        if (SUCCEEDED(rt->GetDesc(&d))) {
-            rtW = d.Width; rtH = d.Height;
+    // Only query the render target if we actually intend to draw debug borders
+    if (g_ShowOverlayDebugBorders.load() && !menuVisibleNow) {
+        if (IDirect3DSurface9* rt = nullptr; SUCCEEDED(pDevice->GetRenderTarget(0, &rt)) && rt) {
+            D3DSURFACE_DESC d{};
+            if (SUCCEEDED(rt->GetDesc(&d))) {
+                rtW = d.Width; rtH = d.Height;
+            }
+            rt->Release();
         }
-        rt->Release();
     }
-    if (g_ShowOverlayDebugBorders.load() && rtW > 0 && rtH > 0) {
+    // If ImGui menu is visible, skip heavy debug borders to reduce draw load
+    if (g_ShowOverlayDebugBorders.load() && !menuVisibleNow && rtW > 0 && rtH > 0) {
         static UINT prevW = 0, prevH = 0;
         if (rtW != prevW || rtH != prevH) {
             prevW = rtW; prevH = rtH;
@@ -346,7 +411,7 @@ void DirectDrawHook::RenderD3D9Overlays(LPDIRECT3DDEVICE9 pDevice) {
         _snprintf_s(lbl, sizeof(lbl), _TRUNCATE, "D3D9 RT %ux%u", rtW, rtH);
     bgList->AddText(ImVec2(8.0f, 8.0f), IM_COL32(255, 0, 0, 220), lbl);
 
-        // Inner game-area border assuming 640x480 letterbox (green)
+    // Inner game-area border assuming 640x480 letterbox (green)
         const float baseW = 640.0f;
         const float baseH = 480.0f;
         const float sx = (float)rtW / baseW;
@@ -366,32 +431,34 @@ void DirectDrawHook::RenderD3D9Overlays(LPDIRECT3DDEVICE9 pDevice) {
         
         // Calculate starting position
         ImVec2 textPos(msg.xPos, msg.yPos);
-        ImVec2 textSize = ImGui::CalcTextSize(msg.text.c_str());
+        // Avoid CalcTextSize if we won't draw a background or adjust alignment
+        ImVec2 textSize(0.f, 0.f);
+        const bool needSize = (!ImGuiImpl::IsVisible()) || isTriggerOverlay;
+        if (needSize) {
+            textSize = ImGui::CalcTextSize(msg.text.c_str());
+        }
         
-        if (isTriggerOverlay) {
-            // For trigger overlays, adjust X position so text ends at screen edge
-            const float screenWidth = 640.0f;  // Standard EFZ window width
-            const float margin = 20.0f;        // Margin from screen edge
-            const float targetX = screenWidth - margin;  // Where we want text to end
-            
-            // If text would go off-screen, adjust position
-            if (textPos.x + textSize.x > targetX) {
-                textPos.x = targetX - textSize.x;
+        // Background quads are expensive in DX9; skip them when menu is up
+    if (!ImGuiImpl::IsVisible()) {
+            if (isTriggerOverlay) {
+                // For trigger overlays, adjust X position so text ends at screen edge
+                const float screenWidth = 640.0f;  // Standard EFZ window width
+                const float margin = 20.0f;        // Margin from screen edge
+                const float targetX = screenWidth - margin;  // Where we want text to end
+
+                // If text would go off-screen, adjust position
+                if (textPos.x + textSize.x > targetX) {
+                    textPos.x = targetX - textSize.x;
+                }
             }
-            
-            // Draw background with corrected position and width
-            bgList->AddRectFilled(
-                ImVec2(textPos.x - 4, textPos.y - 2),
-                ImVec2(textPos.x + textSize.x + 4, textPos.y + textSize.y + 2),
-                IM_COL32(0, 0, 0, 180)
-            );
-        } else {
-            // For normal messages, just draw background directly
-            bgList->AddRectFilled(
-                ImVec2(textPos.x - 4, textPos.y - 2),
-                ImVec2(textPos.x + textSize.x + 4, textPos.y + textSize.y + 2),
-                IM_COL32(0, 0, 0, 180)
-            );
+            // Draw background behind text only when menu is hidden
+            if (textSize.x > 0.f && textSize.y > 0.f) {
+                bgList->AddRectFilled(
+                    ImVec2(textPos.x - 4, textPos.y - 2),
+                    ImVec2(textPos.x + textSize.x + 4, textPos.y + textSize.y + 2),
+                    IM_COL32(0, 0, 0, 180)
+                );
+            }
         }
         
         // Extract color components
@@ -403,16 +470,23 @@ void DirectDrawHook::RenderD3D9Overlays(LPDIRECT3DDEVICE9 pDevice) {
     bgList->AddText(ImVec2((float)textPos.x, (float)textPos.y), IM_COL32(r, g, b, 255), msg.text.c_str());
     };
 
-    // Render permanent messages
+    // Render messages with a soft cap when menu is open to reduce draw calls
+    const bool limitMessages = ImGuiImpl::IsVisible();
+    const int cap = limitMessages ? 24 : INT_MAX;
+    int drawn = 0;
+    // Permanent first
     for (const auto& msg : permanentMessages) {
         renderMessage(msg);
+        if (++drawn >= cap) break;
     }
-
-    // Render temporary messages
-    auto now = std::chrono::steady_clock::now();
-    for (const auto& msg : messages) {
-        if (msg.expireTime > now) {
-            renderMessage(msg);
+    // Then temporary until cap
+    if (drawn < cap) {
+        const auto now = std::chrono::steady_clock::now();
+        for (const auto& msg : messages) {
+            if (msg.expireTime > now) {
+                renderMessage(msg);
+                if (++drawn >= cap) break;
+            }
         }
     }
 
@@ -431,7 +505,8 @@ void DirectDrawHook::RenderD3D9Overlays(LPDIRECT3DDEVICE9 pDevice) {
         return EqualRect(&wndRect, &mi.rcMonitor) || EqualRect(&wndRect, &mi.rcWork);
     };
 
-    if (isFullscreen() && ImGuiImpl::IsVisible()) {
+    // Draw the overlay cursor only when the menu is hidden to reduce draw cost during UI
+    if (isFullscreen() && !ImGuiImpl::IsVisible()) {
         ImGuiIO& io = ImGui::GetIO();
         static ImVec2 padPos = ImVec2(320.f, 240.f);
         static bool lastPadActive = false;
