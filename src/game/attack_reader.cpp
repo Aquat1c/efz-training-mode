@@ -9,13 +9,6 @@
 #include <string>
 #include <atomic>
 
-// Offsets based on decompiled code analysis
-// Decomp hints (byte offsets within attack data):
-//  +0xAA: attack flags (low/high/unblockable)
-//  +0xA8: damage (word)
-//  +0xB2: blockstun (word)
-//  +0xC2: hitstop (word)
-//  +0xEA: active frames remaining (word)
 #define ATTACK_FLAGS_OFFSET     0xAA
 #define ATTACK_DAMAGE_OFFSET    0xA8
 #define ATTACK_BLOCKSTUN_OFFSET 0xB2

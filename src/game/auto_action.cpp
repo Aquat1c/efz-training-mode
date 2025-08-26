@@ -307,12 +307,19 @@ void StartTriggerDelay(int playerNum, int triggerType, short moveID, int delayFr
     }
 }
 
-// Process trigger cooldowns to prevent rapid re-triggering
 void ProcessTriggerCooldowns() {
-    LogOut("[COOLDOWN] p1Active=" + std::to_string(p1TriggerActive) +
-           " p1CD=" + std::to_string(p1TriggerCooldown) +
-           " | p2Active=" + std::to_string(p2TriggerActive) +
-           " p2CD=" + std::to_string(p2TriggerCooldown), detailedLogging.load());
+    // Avoid building strings unless diagnostic logging is enabled, and throttle to ~5s
+    if (detailedLogging.load()) {
+        static int s_nextCooldownDiagFrame = 0; // 5s throttle at 192 fps => 960 frames
+        int now = frameCounter.load();
+        if (now >= s_nextCooldownDiagFrame) {
+            LogOut("[COOLDOWN] p1Active=" + std::to_string(p1TriggerActive) +
+                   " p1CD=" + std::to_string(p1TriggerCooldown) +
+                   " | p2Active=" + std::to_string(p2TriggerActive) +
+                   " p2CD=" + std::to_string(p2TriggerCooldown), true);
+            s_nextCooldownDiagFrame = now + 960;
+        }
+    }
     // P1 cooldown processing
     if (p1TriggerActive && p1TriggerCooldown > 0) {
         p1TriggerCooldown--;
@@ -334,27 +341,25 @@ void ProcessTriggerCooldowns() {
     }
 }
 
-void MonitorAutoActions() {
+// Core implementation that uses caller-provided move IDs for better cache locality
+static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveID1, short prevMoveID2) {
     if (!autoActionEnabled.load()) {
         return;
     }
     
     ProcessTriggerCooldowns();
     
-    uintptr_t base = GetEFZBase();
-    if (!base) return;
-    
-    // Get current moveIDs
-    short moveID1 = 0, moveID2 = 0;
-    uintptr_t moveIDAddr1 = ResolvePointer(base, EFZ_BASE_OFFSET_P1, MOVE_ID_OFFSET);
-    uintptr_t moveIDAddr2 = ResolvePointer(base, EFZ_BASE_OFFSET_P2, MOVE_ID_OFFSET);
-    
-    if (moveIDAddr1) SafeReadMemory(moveIDAddr1, &moveID1, sizeof(short));
-    if (moveIDAddr2) SafeReadMemory(moveIDAddr2, &moveID2, sizeof(short));
-    
-    static short prevMoveID1 = 0, prevMoveID2 = 0;
-    
     int targetPlayer = autoActionPlayer.load();
+    // Throttle trigger diagnostics to ~5s intervals
+    static int s_nextTrigDiagFrame = 0; // shared across P1/P2 logs
+    auto canLogTrigDiag = [&]() -> bool {
+        int now = frameCounter.load();
+        if (now >= s_nextTrigDiagFrame) {
+            s_nextTrigDiagFrame = now + 960; // 960 internal frames ~= 5 seconds @192fps
+            return true;
+        }
+        return false;
+    };
     
     // P1 triggers
     if ((targetPlayer == 1 || targetPlayer == 3) && !p1DelayState.isDelaying && !p1ActionApplied) {
@@ -363,20 +368,24 @@ void MonitorAutoActions() {
         int delay = 0;
         short actionMoveID = 0;        
         // Extra diagnostics for P1 trigger evaluation
-        LogOut("[TRIGGER_DIAG] P1 eval: prev=" + std::to_string(prevMoveID1) + 
-                   ", curr=" + std::to_string(moveID1) +
-                   ", trigActive=" + std::to_string(p1TriggerActive) +
-                   ", cooldown=" + std::to_string(p1TriggerCooldown) +
-               ", actionable(prev/curr)=" + std::to_string(IsActionable(prevMoveID1)) + "/" + std::to_string(IsActionable(moveID1)), detailedLogging.load());
+    if (detailedLogging.load() && canLogTrigDiag()) {
+            LogOut("[TRIGGER_DIAG] P1 eval: prev=" + std::to_string(prevMoveID1) + 
+                       ", curr=" + std::to_string(moveID1) +
+                       ", trigActive=" + std::to_string(p1TriggerActive) +
+                       ", cooldown=" + std::to_string(p1TriggerCooldown) +
+                   ", actionable(prev/curr)=" + std::to_string(IsActionable(prevMoveID1)) + "/" + std::to_string(IsActionable(moveID1)), true);
+        }
         
         if (!shouldTrigger && triggerAfterAirtechEnabled.load()) {
             // Check if player was in airtech last frame
             bool wasInAirtech = IsAirtech(prevMoveID1);
             // Post-airtech actionable: allow either general actionable states or explicit FALLING
             bool postAirtechNow = (!IsAirtech(moveID1)) && (IsActionable(moveID1) || moveID1 == FALLING_ID);
-            LogOut("[TRIGGER_DIAG] P1 AfterAirtech check: wasAirtech=" + std::to_string(wasInAirtech) +
-                   ", postAirtechNow=" + std::to_string(postAirtechNow) +
-                   ", targetPlayer=" + std::to_string(targetPlayer), detailedLogging.load());
+            if (detailedLogging.load() && canLogTrigDiag()) {
+                LogOut("[TRIGGER_DIAG] P1 AfterAirtech check: wasAirtech=" + std::to_string(wasInAirtech) +
+                       ", postAirtechNow=" + std::to_string(postAirtechNow) +
+                       ", targetPlayer=" + std::to_string(targetPlayer), true);
+            }
 
             // P1 After-Airtech trigger condition
             if (wasInAirtech && postAirtechNow) {
@@ -452,11 +461,13 @@ void MonitorAutoActions() {
         int delay = 0;
         short actionMoveID = 0;
         // Extra diagnostics for P2 trigger evaluation
-    LogOut("[TRIGGER_DIAG] P2 eval: prev=" + std::to_string(prevMoveID2) + 
-               ", curr=" + std::to_string(moveID2) +
-               ", trigActive=" + std::to_string(p2TriggerActive) +
-               ", cooldown=" + std::to_string(p2TriggerCooldown) +
-           ", actionable(prev/curr)=" + std::to_string(IsActionable(prevMoveID2)) + "/" + std::to_string(IsActionable(moveID2)), detailedLogging.load());
+    if (detailedLogging.load() && canLogTrigDiag()) {
+            LogOut("[TRIGGER_DIAG] P2 eval: prev=" + std::to_string(prevMoveID2) + 
+                       ", curr=" + std::to_string(moveID2) +
+                       ", trigActive=" + std::to_string(p2TriggerActive) +
+                       ", cooldown=" + std::to_string(p2TriggerCooldown) +
+                   ", actionable(prev/curr)=" + std::to_string(IsActionable(prevMoveID2)) + "/" + std::to_string(IsActionable(moveID2)), true);
+        }
         
          // CRITICAL FIX: Complete implementation of After Airtech trigger for P2
     if (!shouldTrigger && triggerAfterAirtechEnabled.load()) {
@@ -464,9 +475,11 @@ void MonitorAutoActions() {
             bool wasAirtech = IsAirtech(prevMoveID2);
             // Post-airtech actionable: allow either general actionable states or explicit FALLING
             bool postAirtechNow = (!IsAirtech(moveID2)) && (IsActionable(moveID2) || moveID2 == FALLING_ID);
-            LogOut("[TRIGGER_DIAG] P2 AfterAirtech check: wasAirtech=" + std::to_string(wasAirtech) +
-                   ", postAirtechNow=" + std::to_string(postAirtechNow) +
-                   ", targetPlayer=" + std::to_string(targetPlayer), detailedLogging.load());
+            if (detailedLogging.load() && canLogTrigDiag()) {
+                LogOut("[TRIGGER_DIAG] P2 AfterAirtech check: wasAirtech=" + std::to_string(wasAirtech) +
+                       ", postAirtechNow=" + std::to_string(postAirtechNow) +
+                       ", targetPlayer=" + std::to_string(targetPlayer), true);
+            }
 
             if (wasAirtech && postAirtechNow) {
                 LogOut("[AUTO-ACTION] P2 After Airtech trigger activated", true);
@@ -564,11 +577,32 @@ void MonitorAutoActions() {
         }
     }
     
-    prevMoveID1 = moveID1;
-    prevMoveID2 = moveID2;
-
+    // Note: prev handled by caller when using the optimized path
+    
     // Process auto control restore at the end of every monitor cycle
     ProcessAutoControlRestore();
+}
+
+// Back-compat wrapper: fetch move IDs once here (with basic caching) and forward to core
+void MonitorAutoActions() {
+    static short s_prevMoveID1 = 0, s_prevMoveID2 = 0;
+    uintptr_t base = GetEFZBase();
+    if (!base) return;
+    static uintptr_t addr1 = 0, addr2 = 0; static int cacheCtr = 0;
+    if (cacheCtr++ >= 192 || !addr1 || !addr2) {
+        addr1 = ResolvePointer(base, EFZ_BASE_OFFSET_P1, MOVE_ID_OFFSET);
+        addr2 = ResolvePointer(base, EFZ_BASE_OFFSET_P2, MOVE_ID_OFFSET);
+        cacheCtr = 0;
+    }
+    short m1 = 0, m2 = 0;
+    if (addr1) SafeReadMemory(addr1, &m1, sizeof(short));
+    if (addr2) SafeReadMemory(addr2, &m2, sizeof(short));
+    MonitorAutoActionsImpl(m1, m2, s_prevMoveID1, s_prevMoveID2);
+    s_prevMoveID1 = m1; s_prevMoveID2 = m2;
+}
+
+void MonitorAutoActions(short moveID1, short moveID2, short prevMoveID1, short prevMoveID2) {
+    MonitorAutoActionsImpl(moveID1, moveID2, prevMoveID1, prevMoveID2);
 }
 
 void ResetActionFlags() {
@@ -822,9 +856,9 @@ void ApplyAutoAction(int playerNum, uintptr_t moveIDAddr, short currentMoveID, s
         RestoreP2ControlState();
     }
 
-    // Log attack data for debugging
-    short moveID = GetActionMoveID(actionType, triggerType, playerNum);
-    AttackReader::LogMoveData(playerNum, moveID);
+    // AttackReader disabled to reduce CPU usage
+    // short moveID = GetActionMoveID(actionType, triggerType, playerNum);
+    // AttackReader::LogMoveData(playerNum, moveID);
 }
 
 // Enable P2 human control for auto-action and save original state
@@ -992,8 +1026,8 @@ bool AutoGuard(int playerNum, int opponentPtr) {
     // Log what move we're trying to block
     LogOut("[AUTO_GUARD] Attempting to block move ID: " + std::to_string(moveID), true);
     
-    // Get attack height
-    AttackHeight height = AttackReader::GetAttackHeight(opponentPtr, moveID);
+    // Get attack height (disabled AttackReader use: assume mid as a safe default)
+    AttackHeight height = ATTACK_HEIGHT_MID;
     
     // Check if in air
     double yPos = 0.0;

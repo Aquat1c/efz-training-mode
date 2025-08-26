@@ -13,6 +13,7 @@
 #include <thread>
 #include <atomic>
 #include <locale>
+#include <mutex>
 #include <dinput.h>
 #include <sstream>
 #include <string>
@@ -156,9 +157,12 @@ bool IsDIKeyPressed(BYTE* keyboardState, DWORD dikCode) {
 // Add this helper function at the top to handle keyboard input more reliably
 bool IsKeyPressed(int vKey, bool checkState) {
     SHORT keyState;
-    
-    // Force C locale for consistency
-    std::locale::global(std::locale("C"));
+    // Set C locale once to avoid repeated global locale churn
+    static bool s_localeSet = false;
+    if (!s_localeSet) {
+        try { std::locale::global(std::locale("C")); } catch (...) {}
+        s_localeSet = true;
+    }
     
     // Use both methods to increase reliability across keyboard layouts
     if (checkState) {
@@ -202,6 +206,9 @@ void MonitorKeys() {
     // XInput state for edge detection
     XINPUT_STATE prevPad{};
 
+    int sleepMs = 16;        // adaptive polling interval
+    int idleLoops = 0;       // counts consecutive idle loops
+    const int idleThreshold = 10; // after ~10 loops idle (~160ms), back off
     while (keyMonitorRunning) {
     // Update window active state at the beginning of each loop
         UpdateWindowActiveState();
@@ -217,7 +224,7 @@ void MonitorKeys() {
     XINPUT_STATE currentPad{};
 
         // --- All other hotkeys: only when overlays/features are active ---
-        if (g_efzWindowActive.load() && !g_guiActive.load()) {
+    if (g_efzWindowActive.load() && !g_guiActive.load()) {
             bool keyHandled = false;
 
         // Gamepad: poll XInput pad 0 for menu/teleport/save position
@@ -445,11 +452,42 @@ void MonitorKeys() {
                        IsKeyPressed(helpKey, true) || IsKeyPressed(VK_F8, true) || IsKeyPressed(VK_F9, true)) {
                     Sleep(10);
                 }
+                // Reset polling interval after handling input
+                sleepMs = 16; idleLoops = 0;
+            } else {
+                // No key handled this loop; check for any activity and adapt polling interval
+                bool anyKbDown =
+                    ((GetAsyncKeyState(teleportKey) & 0x8000) != 0) ||
+                    ((GetAsyncKeyState(recordKey) & 0x8000) != 0) ||
+                    ((GetAsyncKeyState(configMenuKey) & 0x8000) != 0) ||
+                    ((GetAsyncKeyState(toggleTitleKey) & 0x8000) != 0) ||
+                    ((GetAsyncKeyState(resetFrameCounterKey) & 0x8000) != 0) ||
+                    ((GetAsyncKeyState(helpKey) & 0x8000) != 0) ||
+                    ((GetAsyncKeyState(toggleImGuiKey) & 0x8000) != 0) ||
+                    ((GetAsyncKeyState(VK_F8) & 0x8000) != 0) ||
+                    ((GetAsyncKeyState(VK_F9) & 0x8000) != 0);
+                bool anyPadDown = (currentPad.dwPacketNumber != prevPad.dwPacketNumber) ||
+                                  (currentPad.Gamepad.wButtons != 0);
+
+                if (anyKbDown || anyPadDown) {
+                    sleepMs = 16; idleLoops = 0;
+                } else {
+                    if (++idleLoops > idleThreshold) {
+                        // Back off modestly when idle but focused
+                        sleepMs = 24; // ~41 Hz
+                        if (idleLoops > idleThreshold * 3) sleepMs = 32; // ~31 Hz
+                    }
+                }
             }
         }
 
-        // Sleep to avoid high CPU usage
-        Sleep(16); // ~60Hz polling
+        // Sleep to avoid high CPU usage (adaptive)
+        if (!g_efzWindowActive.load() || g_guiActive.load()) {
+            // When unfocused or GUI is open, back off more
+            Sleep(48);
+        } else {
+            Sleep(sleepMs);
+        }
 
     // Update previous pad state after sleep (safe even if not connected)
     prevPad = currentPad;
@@ -946,6 +984,8 @@ void DetectKeyBindingsWithDI() {
 }
 
 void GlobalF1MonitorThread() {
+    int sleepMs = 16;
+    int idleLoops = 0;
     while (globalF1ThreadRunning.load()) {
         if (IsKeyPressed(VK_F1, false)) {
             LogOut("BGM Mute button called (global F1 thread)", true);
@@ -976,8 +1016,12 @@ void GlobalF1MonitorThread() {
             }
             Sleep(100); // Debounce
             while (IsKeyPressed(VK_F1, true)) Sleep(10);
+            sleepMs = 16; idleLoops = 0;
         }
-        Sleep(16); // ~60Hz polling
+        // Adaptive backoff if idle
+        if (++idleLoops > 20) sleepMs = 24;  // ~41 Hz
+        if (idleLoops > 60) sleepMs = 32;    // ~31 Hz
+        Sleep(sleepMs);
     }
 }
 

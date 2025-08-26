@@ -10,6 +10,8 @@
 #include <atomic>
 #include <thread>
 #include <sstream>
+#include <algorithm>
+#include <cmath>
 
 // Add static variables for position saving
 static double saved_x1 = 240.0, saved_y1 = 0.0;
@@ -502,6 +504,13 @@ bool rfThreadRunning = false;
 // Improved RF freeze thread function with better error handling
 void RFFreezeThreadFunc() {
     rfThreadRunning = true;
+    int sleepMs = 10;                // default ~100 Hz when active
+    const int minSleepMs = 5;        // lower bound when values are drifting
+    const int maxSleepMs = 40;       // back off to ~25 Hz when stable
+    int stableIters = 0;
+    auto nearlyEqual = [](double a, double b) {
+        return fabs(a - b) < 1e-6;   // tiny tolerance for float write verification
+    };
     
     while (rfThreadRunning) {
         if (rfFreezing.load()) {
@@ -524,27 +533,51 @@ void RFFreezeThreadFunc() {
                         
                         // Validate these addresses using IsBadWritePtr
                         if (!IsBadWritePtr(p1RFAddr, sizeof(double)) && !IsBadWritePtr(p2RFAddr, sizeof(double))) {
-                            // Write values with memory protection handling
-                            DWORD oldProtect1, oldProtect2;
-                            
-                            // P1 RF write
-                            if (VirtualProtect(p1RFAddr, sizeof(double), PAGE_EXECUTE_READWRITE, &oldProtect1)) {
-                                *p1RFAddr = rfFreezeValueP1.load();
-                                VirtualProtect(p1RFAddr, sizeof(double), oldProtect1, &oldProtect1);
+                            // Only write if value changed to avoid constant page flips
+                            double targetP1 = rfFreezeValueP1.load();
+                            double targetP2 = rfFreezeValueP2.load();
+                            double curP1 = *p1RFAddr;
+                            double curP2 = *p2RFAddr;
+                            bool wrote = false;
+
+                            if (!nearlyEqual(curP1, targetP1)) {
+                                DWORD oldProtect1;
+                                if (VirtualProtect(p1RFAddr, sizeof(double), PAGE_EXECUTE_READWRITE, &oldProtect1)) {
+                                    *p1RFAddr = targetP1;
+                                    VirtualProtect(p1RFAddr, sizeof(double), oldProtect1, &oldProtect1);
+                                    wrote = true;
+                                }
                             }
-                            
-                            // P2 RF write
-                            if (VirtualProtect(p2RFAddr, sizeof(double), PAGE_EXECUTE_READWRITE, &oldProtect2)) {
-                                *p2RFAddr = rfFreezeValueP2.load();
-                                VirtualProtect(p2RFAddr, sizeof(double), oldProtect2, &oldProtect2);
+                            if (!nearlyEqual(curP2, targetP2)) {
+                                DWORD oldProtect2;
+                                if (VirtualProtect(p2RFAddr, sizeof(double), PAGE_EXECUTE_READWRITE, &oldProtect2)) {
+                                    *p2RFAddr = targetP2;
+                                    VirtualProtect(p2RFAddr, sizeof(double), oldProtect2, &oldProtect2);
+                                    wrote = true;
+                                }
+                            }
+
+                            // Adjust backoff
+                if (wrote) {
+                                sleepMs = minSleepMs;
+                                stableIters = 0;
+                            } else {
+                                stableIters++;
+                                if (stableIters > 3) {
+                    sleepMs = (std::min)(sleepMs * 2, maxSleepMs);
+                                }
                             }
                         }
                     }
                 }
             }
         }
+        else {
+            // When not freezing, back off considerably
+            sleepMs = maxSleepMs;
+        }
         
-        Sleep(10); // 100Hz update rate
+        Sleep(sleepMs);
     }
 }
 

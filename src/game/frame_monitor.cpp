@@ -14,6 +14,7 @@
 #include "../include/input/input_buffer.h"
 #include "../include/utils/config.h"
 #include "../include/input/input_motion.h"
+#define DISABLE_ATTACK_READER 1
 #include "../include/game/attack_reader.h"
 #include "../include/game/practice_patch.h"
 #ifndef CLEAR_ALL_AUTO_ACTION_TRIGGERS_FWD
@@ -224,10 +225,12 @@ void UpdateTriggerOverlay() {
 void FrameDataMonitor() {
     using clock = std::chrono::high_resolution_clock;
     
-    LogOut("[FRAME MONITOR] Starting frame monitoring at 192fps for maximum precision", true);
+    if (Config::GetSettings().enableFpsDiagnostics || detailedLogging.load()) {
+        LogOut("[FRAME MONITOR] Starting frame monitoring at 192fps for maximum precision", true);
+    }
     
-    // CRITICAL: Set highest possible priority to prevent throttling
-    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
+    // Use high (but not time-critical) priority to avoid starving DWM/GPU queues
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
     
     short prevMoveID1 = -1, prevMoveID2 = -1;
     // Update frame time to match 192fps instead of 60fps
@@ -249,8 +252,8 @@ void FrameDataMonitor() {
     static short lastLoggedMoveID2 = -1;
     static std::atomic<int> moveLogCooldown{0};
     
-    // High precision timer resolution request
-    timeBeginPeriod(1);
+    // High precision timer resolution (enable only during Match to reduce system-wide timer pressure)
+    bool highResActive = false;
     // Timing diagnostics (per 960 internal frames)
     long long driftAccum = 0; // sum of (actual - target) ns
     long long absDriftAccum = 0;
@@ -278,7 +281,7 @@ void FrameDataMonitor() {
         // Check current game phase
         GamePhase currentPhase = GetCurrentGamePhase();
         
-        // CRITICAL FIX: Stop buffer freezing IMMEDIATELY if not in match
+    // CRITICAL FIX: Stop buffer freezing IMMEDIATELY if not in match
         if (currentPhase != GamePhase::Match) {
             // Check if buffer freezing is active and stop it
             if (g_bufferFreezingActive.load()) {
@@ -299,6 +302,16 @@ void FrameDataMonitor() {
             if (g_p2ControlOverridden) {
                 RestoreP2ControlState();
             }
+        }
+
+        // Toggle high-resolution timers only when needed
+        bool needHighRes = (currentPhase == GamePhase::Match);
+        if (needHighRes && !highResActive) {
+            timeBeginPeriod(1);
+            highResActive = true;
+        } else if (!needHighRes && highResActive) {
+            timeEndPeriod(1);
+            highResActive = false;
         }
         
         // Track phase changes
@@ -359,14 +372,20 @@ void FrameDataMonitor() {
             lastPhase = currentPhase;
         }
         
-        // SINGLE authoritative frame increment
-        int currentFrame = frameCounter.fetch_add(1) + 1;
+    // SINGLE authoritative frame increment
+    int currentFrame = frameCounter.fetch_add(1) + 1;
 
         // Process any active input queues
         ProcessInputQueues();
 
-    UpdateWindowActiveState();
-        UpdateStatsDisplay();
+        UpdateWindowActiveState();
+        // Throttle stats overlay further to ~15-16 Hz to reduce churn and CPU
+        {
+            static int statsDecim = 0;
+            if ((statsDecim++ % 12) == 0) {
+                UpdateStatsDisplay();
+            }
+        }
 
         bool shouldBeActive = ShouldFeaturesBeActive();
         if (shouldBeActive && !g_featuresEnabled.load()) {
@@ -437,8 +456,11 @@ void FrameDataMonitor() {
         
         // Only run the main monitoring logic if features are enabled
         if (g_featuresEnabled.load()) {
-            UpdateTriggerOverlay();
-            UpdateStatsDisplay();
+            // Throttle trigger overlay to ~12-13 Hz (every 16 internal frames ~83ms)
+            static int trigDecim = 0;
+            if ((trigDecim++ % 16) == 0) {
+                UpdateTriggerOverlay();
+            }
             uintptr_t base = GetEFZBase();
             if (!base) {
                 goto FRAME_MONITOR_FRAME_END;
@@ -449,8 +471,8 @@ void FrameDataMonitor() {
             SafeReadMemory(base + EFZ_BASE_OFFSET_P1, &p1Ptr, sizeof(p1Ptr));
             SafeReadMemory(base + EFZ_BASE_OFFSET_P2, &p2Ptr, sizeof(p2Ptr));
             if ((p1Ptr != fm_lastP1Ptr || p2Ptr != fm_lastP2Ptr) && (p1Ptr || p2Ptr)) {
-                LogOut("[FRAME MONITOR][PTR] P1 " + FM_Hex(p1Ptr) + " (was " + FM_Hex(fm_lastP1Ptr) + ")  P2 " +
-                       FM_Hex(p2Ptr) + " (was " + FM_Hex(fm_lastP2Ptr) + ")", true);
+          LogOut("[FRAME_MONITOR][PTR] P1 " + FM_Hex(p1Ptr) + " (was " + FM_Hex(fm_lastP1Ptr) + ")  P2 " +
+              FM_Hex(p2Ptr) + " (was " + FM_Hex(fm_lastP2Ptr) + ")", detailedLogging.load());
                 fm_lastP1Ptr = p1Ptr;
                 fm_lastP2Ptr = p2Ptr;
             }
@@ -458,10 +480,10 @@ void FrameDataMonitor() {
             // Initialization transition logging
             if (isInitialized != fm_lastCharsInit) {
                 bool wasInitialized = fm_lastCharsInit;
-                LogOut(std::string("[FRAME MONITOR][INIT] CharactersInitialized: ") +
-                       (fm_lastCharsInit ? "true" : "false") + " -> " +
-                       (isInitialized ? "true" : "false") +
-                       " frame=" + std::to_string(currentFrame), true);
+          LogOut(std::string("[FRAME MONITOR][INIT] CharactersInitialized: ") +
+              (fm_lastCharsInit ? "true" : "false") + " -> " +
+              (isInitialized ? "true" : "false") +
+              " frame=" + std::to_string(currentFrame), detailedLogging.load());
                 fm_lastCharsInit = isInitialized;
 
                 // If we were waiting for init in a valid mode, reinitialize overlays now
@@ -539,14 +561,13 @@ void FrameDataMonitor() {
                 cachedMoveIDAddr2 = ResolvePointer(base, EFZ_BASE_OFFSET_P2, MOVE_ID_OFFSET);
                 addressCacheCounter = 0;
                 
-                // Log timing performance every second
+                // Log timing performance every second (config-gated)
                 auto currentTime = clock::now();
                 auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(currentTime - lastLogTime);
                 if (elapsed.count() >= 1000) {
                     double actualFPS = framesSinceLastLog / (elapsed.count() / 1000.0);
-                    
-                    // Only log if fps is significantly off target or detailed logging is on
-                    if (detailedLogging.load() || fabs(actualFPS - 192.0) > 5.0) {
+                    // Only log if enabled in config and either detailed logging is on or fps deviates
+                    if (Config::GetSettings().enableFpsDiagnostics && (detailedLogging.load() || fabs(actualFPS - 192.0) > 5.0)) {
                         LogOut("[FRAME MONITOR] Actual FPS: " + std::to_string(actualFPS) + 
                                " (target: 192.0)", detailedLogging.load());
                     }
@@ -580,7 +601,8 @@ void FrameDataMonitor() {
             if (moveIDsChanged || criticalFeaturesActive) {
                 // STEP 1: Process auto-actions FIRST (highest priority)
                 ProcessTriggerDelays();      // Handle pending delays
-                MonitorAutoActions();        // Check for new triggers
+                // Pass cached move IDs to avoid extra reads and enable lighter math inside
+                MonitorAutoActions(moveID1, moveID2, prevMoveID1, prevMoveID2);
                 
                 // STEP 2: Auto-jump logic with conflict detection
                 bool autoActionBusy = false;
@@ -624,7 +646,8 @@ void FrameDataMonitor() {
             prevMoveID1 = moveID1;
             prevMoveID2 = moveID2;
 
-            if (moveID1 != lastLoggedMoveID1 && IsAttackMove(moveID1)) {
+            // AttackReader disabled to reduce CPU usage
+            if (!DISABLE_ATTACK_READER && moveID1 != lastLoggedMoveID1 && IsAttackMove(moveID1)) {
             // Don't log too frequently - enforce a cooldown
             if (moveLogCooldown.load() <= 0) {
                 AttackReader::LogMoveData(1, moveID1);
@@ -633,7 +656,8 @@ void FrameDataMonitor() {
             }
         }
         
-        if (moveID2 != lastLoggedMoveID2 && IsAttackMove(moveID2)) {
+    // AttackReader disabled to reduce CPU usage
+    if (!DISABLE_ATTACK_READER && moveID2 != lastLoggedMoveID2 && IsAttackMove(moveID2)) {
             // Don't log too frequently - enforce a cooldown
             if (moveLogCooldown.load() <= 0) {
                 AttackReader::LogMoveData(2, moveID2);
@@ -655,14 +679,19 @@ FRAME_MONITOR_FRAME_END:
         auto beforeSleep = clock::now();
         while (beforeSleep < expectedNext) {
             auto remaining = expectedNext - beforeSleep;
-            if (remaining > std::chrono::microseconds(200)) {
-                // Sleep all but ~200us, rely on timeBeginPeriod(1) for ~1ms granularity
-                auto sleepChunk = remaining - std::chrono::microseconds(200);
+            if (remaining > std::chrono::microseconds(100)) {
+                // Sleep all but ~100us; rely on timeBeginPeriod(1) for ~1ms granularity when active
+                auto sleepChunk = remaining - std::chrono::microseconds(100);
                 std::this_thread::sleep_for(sleepChunk);
             } else {
-                // Final busy-wait for precision
+                // Final cooperative spin-wait for precision with occasional yields
+                int spinIters = 0;
                 while (clock::now() < expectedNext) {
                     _mm_pause();
+                    if ((++spinIters & 0xFF) == 0) {
+                        // Yield occasionally to avoid starving other threads
+                        SwitchToThread();
+                    }
                 }
                 break;
             }
@@ -690,17 +719,17 @@ FRAME_MONITOR_FRAME_END:
         if (driftSamples >= 960) {
             double avgDriftUs = (double)driftAccum / driftSamples / 1000.0;
             double avgAbsDriftUs = (double)absDriftAccum / driftSamples / 1000.0;
-            LogOut("[FRAME_MONITOR][TIMING] samples=" + std::to_string(driftSamples) +
-                   " avgDrift(us)=" + std::to_string(avgDriftUs) +
-                   " avgAbs(us)=" + std::to_string(avgAbsDriftUs) +
-                   " maxLate(ms)=" + std::to_string(maxLate/1e6) +
-                   " maxEarly(ms)=" + std::to_string(maxEarly/1e6) +
-                   " oversleep>2x=" + std::to_string(oversleepCount), true);
-            if (sectionTiming && sec_samples > 0) {
-                LogOut("[FRAME_MONITOR][SECTIONS] samples=" + std::to_string(sec_samples) +
-                       " memAvg(us)=" + std::to_string((sec_mem / 1000.0)/sec_samples) +
-                       " logicAvg(us)=" + std::to_string((sec_logic / 1000.0)/sec_samples) +
-                       " featAvg(us)=" + std::to_string((sec_features / 1000.0)/sec_samples), true);
+            if (Config::GetSettings().enableFpsDiagnostics) LogOut("[FRAME_MONITOR][TIMING] samples=" + std::to_string(driftSamples) +
+             " avgDrift(us)=" + std::to_string(avgDriftUs) +
+             " avgAbs(us)=" + std::to_string(avgAbsDriftUs) +
+             " maxLate(ms)=" + std::to_string(maxLate/1e6) +
+             " maxEarly(ms)=" + std::to_string(maxEarly/1e6) +
+             " oversleep>2x=" + std::to_string(oversleepCount), detailedLogging.load());
+            if (Config::GetSettings().enableFpsDiagnostics && sectionTiming && sec_samples > 0) {
+          LogOut("[FRAME_MONITOR][SECTIONS] samples=" + std::to_string(sec_samples) +
+              " memAvg(us)=" + std::to_string((sec_mem / 1000.0)/sec_samples) +
+              " logicAvg(us)=" + std::to_string((sec_logic / 1000.0)/sec_samples) +
+              " featAvg(us)=" + std::to_string((sec_features / 1000.0)/sec_samples), detailedLogging.load());
                 sec_mem = sec_logic = sec_features = 0;
                 sec_samples = 0;
             }
@@ -713,8 +742,12 @@ FRAME_MONITOR_FRAME_END:
         }
     }
     
-    LogOut("[FRAME MONITOR] Shutting down frame monitor thread", true);
-    timeEndPeriod(1);
+    if (Config::GetSettings().enableFpsDiagnostics || detailedLogging.load()) {
+        LogOut("[FRAME MONITOR] Shutting down frame monitor thread", true);
+    }
+    if (highResActive) {
+        timeEndPeriod(1);
+    }
 }
 
 void ReinitializeOverlays() {

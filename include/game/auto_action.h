@@ -27,6 +27,8 @@ short GetActionMoveID(int actionType, int triggerType = TRIGGER_NONE, int player
 void ProcessTriggerDelays();
 void StartTriggerDelay(int playerNum, int triggerType, short moveID, int delayFrames);
 void MonitorAutoActions();
+// Optimized overload: avoid per-frame memory reads by passing current/prev move IDs
+void MonitorAutoActions(short moveID1, short moveID2, short prevMoveID1, short prevMoveID2);
 void ResetActionFlags();
 void ClearDelayStatesIfNonActionable();
 
