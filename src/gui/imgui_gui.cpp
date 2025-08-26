@@ -940,14 +940,15 @@ namespace ImGuiGui {
         lastVisible = currentVisible;
 
     // Set window position and size
-        ImGui::SetNextWindowPos(ImVec2(50, 50), ImGuiCond_FirstUseEver);
+        // Use Appearing so the menu always resets to a visible spot when reopened (prevents off-screen in fullscreen)
+        ImGui::SetNextWindowPos(ImVec2(50, 50), ImGuiCond_Appearing);
         ImGui::SetNextWindowSize(ImVec2(580, 520), ImGuiCond_FirstUseEver);
     // Force fully-opaque background to avoid heavy alpha blending on low-end GPUs
     ImGui::SetNextWindowBgAlpha(1.0f);
 
         // Main window
-    // Allow navigation (keyboard/gamepad) while keeping collapse disabled
-    ImGuiWindowFlags winFlags = ImGuiWindowFlags_NoCollapse;
+        // Allow navigation (keyboard/gamepad), disable collapse and saved settings to avoid off-screen positions
+        ImGuiWindowFlags winFlags = ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings;
     if (ImGui::Begin("EFZ Training Mode", nullptr, winFlags)) {
             // Check if a specific tab has been requested
             if (guiState.requestedTab >= 0) {

@@ -100,22 +100,16 @@ HRESULT WINAPI HookedEndScene(LPDIRECT3DDEVICE9 pDevice) {
         return oEndScene(pDevice);
     }
 
-    // Determine the current render target size and only render UI on the 640x480 pass
+    // Determine current render target size
     UINT rtW = 0, rtH = 0;
-    bool menuVisible = ImGuiImpl::IsVisible();
-    if (!menuVisible) {
-        if (IDirect3DSurface9* rt = nullptr; SUCCEEDED(pDevice->GetRenderTarget(0, &rt)) && rt) {
-            D3DSURFACE_DESC d{};
-            if (SUCCEEDED(rt->GetDesc(&d))) { rtW = d.Width; rtH = d.Height; }
-            rt->Release();
-        }
-    } else {
-        // Use ImGui display size as an approximation to avoid device queries when menu is up
-        ImVec2 ds = ImGui::GetIO().DisplaySize;
-        rtW = (UINT)ds.x; rtH = (UINT)ds.y;
+    // Always query the device for RT size; do NOT touch ImGui IO before init
+    if (IDirect3DSurface9* rt = nullptr; SUCCEEDED(pDevice->GetRenderTarget(0, &rt)) && rt) {
+        D3DSURFACE_DESC d{};
+        if (SUCCEEDED(rt->GetDesc(&d))) { rtW = d.Width; rtH = d.Height; }
+        rt->Release();
     }
+    // Only render on the actual 640x480 game surface
     if (!(rtW == 640 && rtH == 480)) {
-        // Skip all ImGui work on non-game RTs (e.g., 1280x960 fullscreen border)
         return oEndScene(pDevice);
     }
 
@@ -140,6 +134,30 @@ HRESULT WINAPI HookedEndScene(LPDIRECT3DDEVICE9 pDevice) {
     if (io.DisplaySize.x <= 0.0f || io.DisplaySize.y <= 0.0f) {
         ImGui::EndFrame();
         return oEndScene(pDevice);
+    }
+
+    // Helper: fullscreen check
+    auto isFullscreen = []() -> bool {
+        HWND hwnd = FindEFZWindow();
+        if (!hwnd) return false;
+        WINDOWPLACEMENT wp{ sizeof(WINDOWPLACEMENT) };
+        if (!GetWindowPlacement(hwnd, &wp)) return false;
+        RECT wndRect{};
+        if (!GetWindowRect(hwnd, &wndRect)) return false;
+        HMONITOR mon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTOPRIMARY);
+        MONITORINFO mi{ sizeof(MONITORINFO) };
+        if (!GetMonitorInfo(mon, &mi)) return false;
+        return EqualRect(&wndRect, &mi.rcMonitor) || EqualRect(&wndRect, &mi.rcWork);
+    };
+    const bool fullscreenNow = isFullscreen();
+
+    // Ensure OS cursor is hidden only when the menu is visible and fullscreen; otherwise show OS cursor
+    if (ImGuiImpl::IsVisible() && fullscreenNow) {
+        io.MouseDrawCursor = true;                // backend hides OS cursor
+        ImGui::SetMouseCursor(ImGuiMouseCursor_None);
+    } else {
+        io.MouseDrawCursor = false;               // show OS cursor
+        ImGui::SetMouseCursor(ImGuiMouseCursor_Arrow);
     }
 
     // Initialize GIF player only when UI is visible (used on Help tab)
@@ -370,30 +388,41 @@ void DirectDrawHook::RenderD3D9Overlays(LPDIRECT3DDEVICE9 pDevice) {
 
     std::lock_guard<std::mutex> lock(messagesMutex);
 
-    // If the ImGui menu is visible and there are no debug borders requested and no messages to draw,
-    // skip all overlay work to reduce per-frame cost while the menu is open.
+    // If the ImGui menu is visible and there are no messages, skip message rendering only
+    // (but still allow the cursor to render on top of the UI)
     const bool menuVisibleNow = ImGuiImpl::IsVisible();
+    bool skipMessageRendering = false;
     if (menuVisibleNow && !g_ShowOverlayDebugBorders.load()) {
-        if (permanentMessages.empty()) {
-            // Also check temporary messages that haven't expired
-            bool haveActiveTemp = false;
-            auto nowChk = std::chrono::steady_clock::now();
-            for (const auto& m : messages) { if (m.expireTime > nowChk) { haveActiveTemp = true; break; } }
-            if (!haveActiveTemp) return;
+        bool haveActiveTemp = false;
+        auto nowChk = std::chrono::steady_clock::now();
+        for (const auto& m : messages) { if (m.expireTime > nowChk) { haveActiveTemp = true; break; } }
+        if (!haveActiveTemp && permanentMessages.empty()) {
+            skipMessageRendering = true; // do not return; we still want to draw the cursor
         }
     }
 
-    // --- DEBUG: Identify current D3D9 render target and draw borders ---
+    // --- Identify current D3D9 render target (needed for mapping to inner 4:3 area) ---
     UINT rtW = 0, rtH = 0;
-    // Only query the render target if we actually intend to draw debug borders
-    if (g_ShowOverlayDebugBorders.load() && !menuVisibleNow) {
-        if (IDirect3DSurface9* rt = nullptr; SUCCEEDED(pDevice->GetRenderTarget(0, &rt)) && rt) {
-            D3DSURFACE_DESC d{};
-            if (SUCCEEDED(rt->GetDesc(&d))) {
-                rtW = d.Width; rtH = d.Height;
-            }
-            rt->Release();
+    if (IDirect3DSurface9* rt = nullptr; SUCCEEDED(pDevice->GetRenderTarget(0, &rt)) && rt) {
+        D3DSURFACE_DESC d{};
+        if (SUCCEEDED(rt->GetDesc(&d))) {
+            rtW = d.Width; rtH = d.Height;
         }
+        rt->Release();
+    }
+
+    // Compute inner 4:3 game area within current RT (letterbox/pillarbox safe)
+    const float baseW = 640.0f;
+    const float baseH = 480.0f;
+    float ox = 0.0f, oy = 0.0f, gw = (float)rtW, gh = (float)rtH, scale = 1.0f;
+    if (rtW > 0 && rtH > 0) {
+        const float sx = (float)rtW / baseW;
+        const float sy = (float)rtH / baseH;
+        scale = (sx < sy) ? sx : sy;
+        gw = baseW * scale;
+        gh = baseH * scale;
+        ox = ((float)rtW - gw) * 0.5f;
+        oy = ((float)rtH - gh) * 0.5f;
     }
     // If ImGui menu is visible, skip heavy debug borders to reduce draw load
     if (g_ShowOverlayDebugBorders.load() && !menuVisibleNow && rtW > 0 && rtH > 0) {
@@ -405,23 +434,14 @@ void DirectDrawHook::RenderD3D9Overlays(LPDIRECT3DDEVICE9 pDevice) {
                    " ImGui.DisplaySize=" + std::to_string((int)ds.x) + "x" + std::to_string((int)ds.y), true);
         }
         // Full render-target border (red)
-    bgList->AddRect(ImVec2(1.5f, 1.5f), ImVec2((float)rtW - 1.5f, (float)rtH - 1.5f), IM_COL32(255, 0, 0, 200), 0.0f, 0, 3.0f);
+        bgList->AddRect(ImVec2(1.5f, 1.5f), ImVec2((float)rtW - 1.5f, (float)rtH - 1.5f), IM_COL32(255, 0, 0, 200), 0.0f, 0, 3.0f);
         // Label
         char lbl[64];
         _snprintf_s(lbl, sizeof(lbl), _TRUNCATE, "D3D9 RT %ux%u", rtW, rtH);
-    bgList->AddText(ImVec2(8.0f, 8.0f), IM_COL32(255, 0, 0, 220), lbl);
+        bgList->AddText(ImVec2(8.0f, 8.0f), IM_COL32(255, 0, 0, 220), lbl);
 
-    // Inner game-area border assuming 640x480 letterbox (green)
-        const float baseW = 640.0f;
-        const float baseH = 480.0f;
-        const float sx = (float)rtW / baseW;
-        const float sy = (float)rtH / baseH;
-        const float scale = (sx < sy) ? sx : sy;
-        const float gw = baseW * scale;
-        const float gh = baseH * scale;
-        const float ox = ((float)rtW - gw) * 0.5f;
-        const float oy = ((float)rtH - gh) * 0.5f;
-    bgList->AddRect(ImVec2(ox + 1.0f, oy + 1.0f), ImVec2(ox + gw - 1.0f, oy + gh - 1.0f), IM_COL32(0, 255, 0, 200), 0.0f, 0, 2.0f);
+        // Inner game-area border assuming 640x480 letterbox (green)
+        bgList->AddRect(ImVec2(ox + 1.0f, oy + 1.0f), ImVec2(ox + gw - 1.0f, oy + gh - 1.0f), IM_COL32(0, 255, 0, 200), 0.0f, 0, 2.0f);
     }
 
     // Helper lambda to render a message with a background
@@ -429,11 +449,11 @@ void DirectDrawHook::RenderD3D9Overlays(LPDIRECT3DDEVICE9 pDevice) {
         // Check if this is a trigger overlay by position
         bool isTriggerOverlay = (msg.xPos >= 510 && msg.yPos >= 140 && msg.yPos <= 200);
         
-        // Calculate starting position
-        ImVec2 textPos(msg.xPos, msg.yPos);
+    // Map starting position from 640x480 virtual space to inner game area within current RT
+    ImVec2 textPos(ox + msg.xPos * scale, oy + msg.yPos * scale);
         // Avoid CalcTextSize if we won't draw a background or adjust alignment
         ImVec2 textSize(0.f, 0.f);
-        const bool needSize = (!ImGuiImpl::IsVisible()) || isTriggerOverlay;
+    const bool needSize = (!ImGuiImpl::IsVisible()) || isTriggerOverlay;
         if (needSize) {
             textSize = ImGui::CalcTextSize(msg.text.c_str());
         }
@@ -441,12 +461,9 @@ void DirectDrawHook::RenderD3D9Overlays(LPDIRECT3DDEVICE9 pDevice) {
         // Background quads are expensive in DX9; skip them when menu is up
     if (!ImGuiImpl::IsVisible()) {
             if (isTriggerOverlay) {
-                // For trigger overlays, adjust X position so text ends at screen edge
-                const float screenWidth = 640.0f;  // Standard EFZ window width
-                const float margin = 20.0f;        // Margin from screen edge
-                const float targetX = screenWidth - margin;  // Where we want text to end
-
-                // If text would go off-screen, adjust position
+                // For trigger overlays, adjust X so text ends at right edge of inner game area
+                const float margin = 20.0f;        // Margin from screen edge in virtual space
+                const float targetX = ox + (baseW - margin) * scale;  // right edge inside inner area
                 if (textPos.x + textSize.x > targetX) {
                     textPos.x = targetX - textSize.x;
                 }
@@ -470,22 +487,24 @@ void DirectDrawHook::RenderD3D9Overlays(LPDIRECT3DDEVICE9 pDevice) {
     bgList->AddText(ImVec2((float)textPos.x, (float)textPos.y), IM_COL32(r, g, b, 255), msg.text.c_str());
     };
 
-    // Render messages with a soft cap when menu is open to reduce draw calls
-    const bool limitMessages = ImGuiImpl::IsVisible();
-    const int cap = limitMessages ? 24 : INT_MAX;
-    int drawn = 0;
-    // Permanent first
-    for (const auto& msg : permanentMessages) {
-        renderMessage(msg);
-        if (++drawn >= cap) break;
-    }
-    // Then temporary until cap
-    if (drawn < cap) {
-        const auto now = std::chrono::steady_clock::now();
-        for (const auto& msg : messages) {
-            if (msg.expireTime > now) {
-                renderMessage(msg);
-                if (++drawn >= cap) break;
+    // Render messages with a soft cap when menu is open (unless skipped to reduce draw calls)
+    if (!skipMessageRendering) {
+        const bool limitMessages = ImGuiImpl::IsVisible();
+        const int cap = limitMessages ? 24 : INT_MAX;
+        int drawn = 0;
+        // Permanent first
+        for (const auto& msg : permanentMessages) {
+            renderMessage(msg);
+            if (++drawn >= cap) break;
+        }
+        // Then temporary until cap
+        if (drawn < cap) {
+            const auto now = std::chrono::steady_clock::now();
+            for (const auto& msg : messages) {
+                if (msg.expireTime > now) {
+                    renderMessage(msg);
+                    if (++drawn >= cap) break;
+                }
             }
         }
     }
@@ -505,63 +524,75 @@ void DirectDrawHook::RenderD3D9Overlays(LPDIRECT3DDEVICE9 pDevice) {
         return EqualRect(&wndRect, &mi.rcMonitor) || EqualRect(&wndRect, &mi.rcWork);
     };
 
-    // Draw the overlay cursor only when the menu is hidden to reduce draw cost during UI
-    if (isFullscreen() && !ImGuiImpl::IsVisible()) {
-        ImGuiIO& io = ImGui::GetIO();
-        static ImVec2 padPos = ImVec2(320.f, 240.f);
-        static bool lastPadActive = false;
-
-        // Poll gamepad
-        bool padActive = false;
-        XINPUT_STATE state{};
-        if (XInputGetState(0, &state) == ERROR_SUCCESS) {
-            auto applyDeadzone = [](SHORT v, SHORT dz) -> float {
-                int iv = (int)v;
-                if (iv > dz) iv -= dz; else if (iv < -dz) iv += dz; else iv = 0;
-                float n = (float)iv / (32767.0f - dz);
-                if (n > 1.f) n = 1.f; if (n < -1.f) n = -1.f;
-                return n;
-            };
-            float nx = applyDeadzone(state.Gamepad.sThumbLX, XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE);
-            float ny = applyDeadzone(state.Gamepad.sThumbLY, XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE);
-            float dpadX = 0.f, dpadY = 0.f;
-            if (state.Gamepad.wButtons & XINPUT_GAMEPAD_DPAD_RIGHT) dpadX += 1.f;
-            if (state.Gamepad.wButtons & XINPUT_GAMEPAD_DPAD_LEFT)  dpadX -= 1.f;
-            if (state.Gamepad.wButtons & XINPUT_GAMEPAD_DPAD_UP)    dpadY -= 1.f;
-            if (state.Gamepad.wButtons & XINPUT_GAMEPAD_DPAD_DOWN)  dpadY += 1.f;
-
-            const float dt = io.DeltaTime > 0.f ? io.DeltaTime : (1.f/60.f);
-            const bool fast = (state.Gamepad.wButtons & XINPUT_GAMEPAD_LEFT_SHOULDER) != 0;
-            const float baseSpeed = fast ? 1800.f : 900.f;
-            const float dpadSpeed = 700.f;
-
-            if (fabsf(nx) > 0.02f || fabsf(ny) > 0.02f || dpadX != 0.f || dpadY != 0.f ||
-                (state.Gamepad.wButtons & (XINPUT_GAMEPAD_A | XINPUT_GAMEPAD_B | XINPUT_GAMEPAD_X | XINPUT_GAMEPAD_Y))) {
-                padActive = true;
+    // Draw the overlay cursor only when the ImGui menu is visible and fullscreen
+    if (ImGuiImpl::IsVisible()) {
+        const bool fullscreenNow_local = isFullscreen();
+        if (!fullscreenNow_local) {
+            // Do not draw dot in windowed mode
+            // (menu still works; OS cursor is visible in windowed)
+            // Continue without returning to allow any remaining overlay work after this block in future
+        } else {
+            ImGuiIO& io = ImGui::GetIO();
+            // Initialize pad cursor to screen center
+            static ImVec2 padPos = ImVec2(0.f, 0.f);
+            if (padPos.x == 0.f && padPos.y == 0.f) {
+                padPos = ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f);
             }
-            if (padActive) {
-                padPos.x += (nx * baseSpeed + dpadX * dpadSpeed) * dt;
-                padPos.y += (-ny * baseSpeed + dpadY * dpadSpeed) * dt;
-                // Clamp to 640x480 (RT space)
-                padPos.x = (padPos.x < 0.0f ? 0.0f : (padPos.x > 639.0f ? 639.0f : padPos.x));
-                padPos.y = (padPos.y < 0.0f ? 0.0f : (padPos.y > 479.0f ? 479.0f : padPos.y));
+
+            // Poll gamepad
+            bool padActive = false;
+            XINPUT_STATE state{};
+            if (XInputGetState(0, &state) == ERROR_SUCCESS) {
+                auto applyDeadzone = [](SHORT v, SHORT dz) -> float {
+                    int iv = (int)v;
+                    if (iv > dz) iv -= dz; else if (iv < -dz) iv += dz; else iv = 0;
+                    float n = (float)iv / (32767.0f - dz);
+                    if (n > 1.f) n = 1.f; if (n < -1.f) n = -1.f;
+                    return n;
+                };
+                float nx = applyDeadzone(state.Gamepad.sThumbLX, XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE);
+                float ny = applyDeadzone(state.Gamepad.sThumbLY, XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE);
+                float dpadX = 0.f, dpadY = 0.f;
+                if (state.Gamepad.wButtons & XINPUT_GAMEPAD_DPAD_RIGHT) dpadX += 1.f;
+                if (state.Gamepad.wButtons & XINPUT_GAMEPAD_DPAD_LEFT)  dpadX -= 1.f;
+                if (state.Gamepad.wButtons & XINPUT_GAMEPAD_DPAD_UP)    dpadY -= 1.f;
+                if (state.Gamepad.wButtons & XINPUT_GAMEPAD_DPAD_DOWN)  dpadY += 1.f;
+
+                const float dt = io.DeltaTime > 0.f ? io.DeltaTime : (1.f/60.f);
+                const bool fast = (state.Gamepad.wButtons & XINPUT_GAMEPAD_LEFT_SHOULDER) != 0;
+                const float baseSpeed = fast ? 1800.f : 900.f;
+                const float dpadSpeed = 700.f;
+
+                if (fabsf(nx) > 0.02f || fabsf(ny) > 0.02f || dpadX != 0.f || dpadY != 0.f ||
+                    (state.Gamepad.wButtons & (XINPUT_GAMEPAD_A | XINPUT_GAMEPAD_B | XINPUT_GAMEPAD_X | XINPUT_GAMEPAD_Y))) {
+                    padActive = true;
+                }
+                if (padActive) {
+                    padPos.x += (nx * baseSpeed + dpadX * dpadSpeed) * dt;
+                    padPos.y += (-ny * baseSpeed + dpadY * dpadSpeed) * dt;
+                }
             }
+
+            // Prefer real mouse position if it moved this frame; otherwise fall back to pad
+            const bool mouseMoved = (fabsf(io.MouseDelta.x) + fabsf(io.MouseDelta.y)) > 0.0001f;
+            ImVec2 dot = mouseMoved ? io.MousePos : (padActive ? padPos : io.MousePos);
+
+            // Clamp to ImGui display size (we render on 640x480 RT only)
+            float maxX = io.DisplaySize.x - 1.0f;
+            float maxY = io.DisplaySize.y - 1.0f;
+            if (maxX < 0.f) maxX = 0.f; if (maxY < 0.f) maxY = 0.f;
+            dot.x = (dot.x < 0.0f ? 0.0f : (dot.x > maxX ? maxX : dot.x));
+            dot.y = (dot.y < 0.0f ? 0.0f : (dot.y > maxY ? maxY : dot.y));
+
+            // Draw dot (white filled with dark outline) on the foreground list (above all windows)
+            auto cursorList = ImGui::GetForegroundDrawList();
+            if (!cursorList) cursorList = bgList;
+            const float r = 4.5f;
+            cursorList->PushClipRectFullScreen();
+            cursorList->AddCircleFilled(dot, r, IM_COL32(255, 255, 255, 230), 20);
+            cursorList->AddCircle(dot, r + 1.2f, IM_COL32(0, 0, 0, 200), 24, 2.0f);
+            cursorList->PopClipRect();
         }
-
-        // Choose position: prefer pad when active, otherwise use mouse
-        ImVec2 dot = padActive ? padPos : io.MousePos;
-        // Basic sanity clamp
-    dot.x = (dot.x < 0.0f ? 0.0f : (dot.x > 639.0f ? 639.0f : dot.x));
-    dot.y = (dot.y < 0.0f ? 0.0f : (dot.y > 479.0f ? 479.0f : dot.y));
-
-    // Draw dot (white filled with dark outline) on the foreground list so it appears above the ImGui menu
-    auto cursorList = ImGui::GetForegroundDrawList();
-    if (!cursorList) cursorList = bgList;
-        const float r = 4.0f;
-    cursorList->AddCircleFilled(dot, r, IM_COL32(255, 255, 255, 230), 20);
-    cursorList->AddCircle(dot, r + 1.2f, IM_COL32(0, 0, 0, 200), 24, 2.0f);
-
-        lastPadActive = padActive;
     }
 }
 
