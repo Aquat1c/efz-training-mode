@@ -14,6 +14,7 @@
 #include "../include/input/input_buffer.h"
 #include "../include/utils/config.h"
 #include "../include/input/input_motion.h"
+#define DISABLE_ATTACK_READER 1
 #include "../include/game/attack_reader.h"
 #include "../include/game/practice_patch.h"
 #ifndef CLEAR_ALL_AUTO_ACTION_TRIGGERS_FWD
@@ -635,7 +636,8 @@ void FrameDataMonitor() {
             prevMoveID1 = moveID1;
             prevMoveID2 = moveID2;
 
-            if (moveID1 != lastLoggedMoveID1 && IsAttackMove(moveID1)) {
+            // AttackReader disabled to reduce CPU usage
+            if (!DISABLE_ATTACK_READER && moveID1 != lastLoggedMoveID1 && IsAttackMove(moveID1)) {
             // Don't log too frequently - enforce a cooldown
             if (moveLogCooldown.load() <= 0) {
                 AttackReader::LogMoveData(1, moveID1);
@@ -644,7 +646,8 @@ void FrameDataMonitor() {
             }
         }
         
-        if (moveID2 != lastLoggedMoveID2 && IsAttackMove(moveID2)) {
+    // AttackReader disabled to reduce CPU usage
+    if (!DISABLE_ATTACK_READER && moveID2 != lastLoggedMoveID2 && IsAttackMove(moveID2)) {
             // Don't log too frequently - enforce a cooldown
             if (moveLogCooldown.load() <= 0) {
                 AttackReader::LogMoveData(2, moveID2);
