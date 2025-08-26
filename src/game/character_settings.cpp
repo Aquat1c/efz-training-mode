@@ -170,6 +170,20 @@ namespace CharacterSettings {
             LogOut("[CHAR] Read P2 Misuzu values: Feathers=" + std::to_string(data.p2MisuzuFeathers), 
                    detailedLogging.load());
         }
+
+        // Doppel Nanase (ExNanase) - read Enlightened flag (0/1)
+        if (data.p1CharID == CHAR_ID_EXNANASE) {
+            uintptr_t flagAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P1, DOPPEL_ENLIGHTENED_OFFSET);
+            int tmp = 0; if (flagAddr) SafeReadMemory(flagAddr, &tmp, sizeof(int));
+            data.p1DoppelEnlightened = (tmp != 0);
+            LogOut("[CHAR] Read P1 Doppel Enlightened=" + std::to_string(data.p1DoppelEnlightened), detailedLogging.load());
+        }
+        if (data.p2CharID == CHAR_ID_EXNANASE) {
+            uintptr_t flagAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P2, DOPPEL_ENLIGHTENED_OFFSET);
+            int tmp = 0; if (flagAddr) SafeReadMemory(flagAddr, &tmp, sizeof(int));
+            data.p2DoppelEnlightened = (tmp != 0);
+            LogOut("[CHAR] Read P2 Doppel Enlightened=" + std::to_string(data.p2DoppelEnlightened), detailedLogging.load());
+        }
     }
     
     void ApplyCharacterValues(uintptr_t base, const DisplayData& data) {
@@ -267,6 +281,24 @@ namespace CharacterSettings {
             
             LogOut("[CHAR] Applied P2 Misuzu values: Feathers=" + std::to_string(featherValue), 
                    detailedLogging.load());
+        }
+
+        // Doppel Enlightened: simple checkbox -> set flag 1 when checked, 0 when unchecked
+        if (data.p1CharID == CHAR_ID_EXNANASE) {
+            uintptr_t flagAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P1, DOPPEL_ENLIGHTENED_OFFSET);
+            if (flagAddr) {
+                int v = data.p1DoppelEnlightened ? 1 : 0;
+                SafeWriteMemory(flagAddr, &v, sizeof(int));
+                LogOut("[CHAR] Applied P1 Doppel Enlightened=" + std::to_string(v), detailedLogging.load());
+            }
+        }
+        if (data.p2CharID == CHAR_ID_EXNANASE) {
+            uintptr_t flagAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P2, DOPPEL_ENLIGHTENED_OFFSET);
+            if (flagAddr) {
+                int v = data.p2DoppelEnlightened ? 1 : 0;
+                SafeWriteMemory(flagAddr, &v, sizeof(int));
+                LogOut("[CHAR] Applied P2 Doppel Enlightened=" + std::to_string(v), detailedLogging.load());
+            }
         }
         
         // Apply Blue IC/Red IC toggle for both players
