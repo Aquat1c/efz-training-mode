@@ -245,6 +245,10 @@ DisplayData displayData = {
     false,              // infiniteBloodMode
     0, 0,               // Misuzu settings
     false,              // infiniteFeatherMode
+    0, 0,               // Mishio element (P1,P2)
+    0, 0,               // Mishio awakened timer (P1,P2)
+    false,              // infiniteMishioElement
+    false,              // infiniteMishioAwakened
     false, false,       // Blue IC toggles
     false,              // NEW: p2ControlEnabled
     false,              // autoAction

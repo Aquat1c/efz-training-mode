@@ -134,6 +134,24 @@ namespace CharacterSettings {
                    detailedLogging.load());
         }
         
+        // Read Mishio's values if either player is using her
+        if (data.p1CharID == CHAR_ID_MISHIO) {
+            uintptr_t elemAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P1, MISHIO_ELEMENT_OFFSET);
+            uintptr_t awAddr   = ResolvePointer(base, EFZ_BASE_OFFSET_P1, MISHIO_AWAKENED_TIMER_OFFSET);
+            if (elemAddr) SafeReadMemory(elemAddr, &data.p1MishioElement, sizeof(int));
+            if (awAddr)   SafeReadMemory(awAddr,   &data.p1MishioAwakenedTimer, sizeof(int));
+            LogOut("[CHAR] Read P1 Mishio values: Element=" + std::to_string(data.p1MishioElement) +
+                   ", AwTimer=" + std::to_string(data.p1MishioAwakenedTimer), detailedLogging.load());
+        }
+        if (data.p2CharID == CHAR_ID_MISHIO) {
+            uintptr_t elemAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P2, MISHIO_ELEMENT_OFFSET);
+            uintptr_t awAddr   = ResolvePointer(base, EFZ_BASE_OFFSET_P2, MISHIO_AWAKENED_TIMER_OFFSET);
+            if (elemAddr) SafeReadMemory(elemAddr, &data.p2MishioElement, sizeof(int));
+            if (awAddr)   SafeReadMemory(awAddr,   &data.p2MishioAwakenedTimer, sizeof(int));
+            LogOut("[CHAR] Read P2 Mishio values: Element=" + std::to_string(data.p2MishioElement) +
+                   ", AwTimer=" + std::to_string(data.p2MishioAwakenedTimer), detailedLogging.load());
+        }
+
         // Read Misuzu's values if either player is using her
         if (data.p1CharID == CHAR_ID_MISUZU) {
             uintptr_t featherAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P1, MISUZU_FEATHER_OFFSET);
@@ -175,6 +193,40 @@ namespace CharacterSettings {
                    detailedLogging.load());
         }
         
+        // Apply Mishio's values (element and awakened timer)
+        if (data.p1CharID == CHAR_ID_MISHIO) {
+            uintptr_t elemAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P1, MISHIO_ELEMENT_OFFSET);
+            uintptr_t awAddr   = ResolvePointer(base, EFZ_BASE_OFFSET_P1, MISHIO_AWAKENED_TIMER_OFFSET);
+            if (elemAddr) {
+                int elem = CLAMP(data.p1MishioElement, MISHIO_ELEM_NONE, MISHIO_ELEM_AWAKENED);
+                SafeWriteMemory(elemAddr, &elem, sizeof(int));
+            }
+            if (awAddr) {
+                int aw = data.p1MishioAwakenedTimer;
+                if (aw < 0) aw = 0;
+                if (aw > MISHIO_AWAKENED_TARGET) aw = MISHIO_AWAKENED_TARGET;
+                SafeWriteMemory(awAddr, &aw, sizeof(int));
+            }
+            LogOut("[CHAR] Applied P1 Mishio values: Elem=" + std::to_string(data.p1MishioElement) +
+                   ", AwTimer=" + std::to_string(data.p1MishioAwakenedTimer), detailedLogging.load());
+        }
+        if (data.p2CharID == CHAR_ID_MISHIO) {
+            uintptr_t elemAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P2, MISHIO_ELEMENT_OFFSET);
+            uintptr_t awAddr   = ResolvePointer(base, EFZ_BASE_OFFSET_P2, MISHIO_AWAKENED_TIMER_OFFSET);
+            if (elemAddr) {
+                int elem = CLAMP(data.p2MishioElement, MISHIO_ELEM_NONE, MISHIO_ELEM_AWAKENED);
+                SafeWriteMemory(elemAddr, &elem, sizeof(int));
+            }
+            if (awAddr) {
+                int aw = data.p2MishioAwakenedTimer;
+                if (aw < 0) aw = 0;
+                if (aw > MISHIO_AWAKENED_TARGET) aw = MISHIO_AWAKENED_TARGET;
+                SafeWriteMemory(awAddr, &aw, sizeof(int));
+            }
+            LogOut("[CHAR] Applied P2 Mishio values: Elem=" + std::to_string(data.p2MishioElement) +
+                   ", AwTimer=" + std::to_string(data.p2MishioAwakenedTimer), detailedLogging.load());
+        }
+
         // Fix for lines 158-159
         if (data.p2CharID == CHAR_ID_IKUMI) {
             uintptr_t bloodAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P2, IKUMI_BLOOD_OFFSET);
@@ -243,7 +295,7 @@ namespace CharacterSettings {
         // This ensures the monitoring thread is updated with the latest settings
         RemoveCharacterPatches();
         
-        if (data.infiniteBloodMode || data.infiniteFeatherMode || data.p1BlueIC || data.p2BlueIC) {
+    if (data.infiniteBloodMode || data.infiniteFeatherMode || data.infiniteMishioElement || data.infiniteMishioAwakened || data.p1BlueIC || data.p2BlueIC) {
             ApplyCharacterPatches(data);
         }
     }
@@ -255,6 +307,9 @@ namespace CharacterSettings {
     // Track previous values for Misuzu's feather count
     static int p1LastFeatherCount = 0;
     static int p2LastFeatherCount = 0;
+    // Track Mishio's last observed values for preservation logic
+    static int p1LastMishioElem = -1;
+    static int p2LastMishioElem = -1;
 
     // Function to continuously monitor and preserve character-specific values
     void CharacterValueMonitoringThread() {
@@ -304,6 +359,76 @@ namespace CharacterSettings {
                     }
                 }
                 
+                // Mishio's element preservation (freeze/restore chosen element)
+                if (localData.infiniteMishioElement) {
+                    if (localData.p1CharID == CHAR_ID_MISHIO) {
+                        uintptr_t elemAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P1, MISHIO_ELEMENT_OFFSET);
+                        if (elemAddr) {
+                            int current = 0;
+                            SafeReadMemory(elemAddr, &current, sizeof(int));
+                            int target = CLAMP(localData.p1MishioElement, MISHIO_ELEM_NONE, MISHIO_ELEM_AWAKENED);
+                            // Initialize last if first time
+                            if (p1LastMishioElem == -1) p1LastMishioElem = current;
+                            if (current != target) {
+                                SafeWriteMemory(elemAddr, &target, sizeof(int));
+                                p1LastMishioElem = target;
+                                didWriteThisLoop = true;
+                            }
+                        }
+                    } else {
+                        p1LastMishioElem = -1;
+                    }
+                    if (localData.p2CharID == CHAR_ID_MISHIO) {
+                        uintptr_t elemAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P2, MISHIO_ELEMENT_OFFSET);
+                        if (elemAddr) {
+                            int current = 0;
+                            SafeReadMemory(elemAddr, &current, sizeof(int));
+                            int target = CLAMP(localData.p2MishioElement, MISHIO_ELEM_NONE, MISHIO_ELEM_AWAKENED);
+                            if (p2LastMishioElem == -1) p2LastMishioElem = current;
+                            if (current != target) {
+                                SafeWriteMemory(elemAddr, &target, sizeof(int));
+                                p2LastMishioElem = target;
+                                didWriteThisLoop = true;
+                            }
+                        }
+                    } else {
+                        p2LastMishioElem = -1;
+                    }
+                } else {
+                    p1LastMishioElem = -1;
+                    p2LastMishioElem = -1;
+                }
+
+                // Mishio's awakened timer preservation (only while Awakened)
+                if (localData.infiniteMishioAwakened) {
+                    if (localData.p1CharID == CHAR_ID_MISHIO) {
+                        uintptr_t elemAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P1, MISHIO_ELEMENT_OFFSET);
+                        uintptr_t awAddr   = ResolvePointer(base, EFZ_BASE_OFFSET_P1, MISHIO_AWAKENED_TIMER_OFFSET);
+                        if (elemAddr && awAddr) {
+                            int elem=0, cur=0; SafeReadMemory(elemAddr, &elem, sizeof(int)); SafeReadMemory(awAddr, &cur, sizeof(int));
+                            if (elem == MISHIO_ELEM_AWAKENED) {
+                                int target = localData.p1MishioAwakenedTimer;
+                                if (target < MISHIO_AWAKENED_TARGET) target = MISHIO_AWAKENED_TARGET;
+                                if (target > MISHIO_AWAKENED_TARGET) target = MISHIO_AWAKENED_TARGET; // cap
+                                if (cur < target) { SafeWriteMemory(awAddr, &target, sizeof(int)); didWriteThisLoop = true; }
+                            }
+                        }
+                    }
+                    if (localData.p2CharID == CHAR_ID_MISHIO) {
+                        uintptr_t elemAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P2, MISHIO_ELEMENT_OFFSET);
+                        uintptr_t awAddr   = ResolvePointer(base, EFZ_BASE_OFFSET_P2, MISHIO_AWAKENED_TIMER_OFFSET);
+                        if (elemAddr && awAddr) {
+                            int elem=0, cur=0; SafeReadMemory(elemAddr, &elem, sizeof(int)); SafeReadMemory(awAddr, &cur, sizeof(int));
+                            if (elem == MISHIO_ELEM_AWAKENED) {
+                                int target = localData.p2MishioAwakenedTimer;
+                                if (target < MISHIO_AWAKENED_TARGET) target = MISHIO_AWAKENED_TARGET;
+                                if (target > MISHIO_AWAKENED_TARGET) target = MISHIO_AWAKENED_TARGET; // cap
+                                if (cur < target) { SafeWriteMemory(awAddr, &target, sizeof(int)); didWriteThisLoop = true; }
+                            }
+                        }
+                    }
+                }
+
                 // Misuzu's feather count - continuous overwrite approach (freeze functionality)
                 if (localData.infiniteFeatherMode) {
                     // P1 Misuzu feather preservation
@@ -424,8 +549,13 @@ namespace CharacterSettings {
                                 (data.p1CharID == CHAR_ID_MISUZU || data.p2CharID == CHAR_ID_MISUZU);
                                 
         bool shouldMonitorIC = data.p1BlueIC || data.p2BlueIC;
+
+        bool shouldMonitorMishioElem = data.infiniteMishioElement &&
+            (data.p1CharID == CHAR_ID_MISHIO || data.p2CharID == CHAR_ID_MISHIO);
+        bool shouldMonitorMishioAw   = data.infiniteMishioAwakened &&
+            (data.p1CharID == CHAR_ID_MISHIO || data.p2CharID == CHAR_ID_MISHIO);
         
-        if (!shouldMonitorIkumi && !shouldMonitorMisuzu && !shouldMonitorIC) {
+    if (!shouldMonitorIkumi && !shouldMonitorMisuzu && !shouldMonitorMishioElem && !shouldMonitorMishioAw && !shouldMonitorIC) {
             LogOut("[CHAR] No character monitoring needed - no infinite modes, Blue IC, or supported characters", true);
             return;
         }
@@ -457,6 +587,12 @@ namespace CharacterSettings {
                             LogOut("[CHAR] Initialized P2 feather count to: " + std::to_string(p2LastFeatherCount), true);
                         }
                     }
+                }
+
+                // Initialize Mishio last values if needed
+                if (shouldMonitorMishioElem || shouldMonitorMishioAw) {
+                    p1LastMishioElem = -1;
+                    p2LastMishioElem = -1;
                 }
             }
             

@@ -571,6 +571,32 @@ namespace ImGuiGui {
                 ImGui::EndTooltip();
             }
         }
+
+        // Mishio - Element controls and infinite modes
+        if (p1CharID == CHAR_ID_MISHIO || p2CharID == CHAR_ID_MISHIO) {
+            hasFeatures = true;
+
+            bool infElem = guiState.localData.infiniteMishioElement;
+            if (ImGui::Checkbox("Infinite Element (Mishio)", &infElem)) {
+                guiState.localData.infiniteMishioElement = infElem;
+            }
+            ImGui::SameLine();
+            bool infAw = guiState.localData.infiniteMishioAwakened;
+            if (ImGui::Checkbox("Infinite Awakened Timer (Mishio)", &infAw)) {
+                guiState.localData.infiniteMishioAwakened = infAw;
+            }
+            ImGui::SameLine();
+            ImGui::TextDisabled("(?)");
+            if (ImGui::IsItemHovered()) {
+                ImGui::BeginTooltip();
+                ImGui::PushTextWrapPos(ImGui::GetFontSize() * 35.0f);
+                ImGui::TextUnformatted("Element: 0=None, 1=Fire, 2=Lightning, 3=Awakened.\n"
+                                       "Infinite Element: keeps your selected element from being cleared.\n"
+                                       "Infinite Awakened: while Awakened, the hidden timer is topped up.");
+                ImGui::PopTextWrapPos();
+                ImGui::EndTooltip();
+            }
+        }
         
         // Blue IC/Red IC Toggle (universal for all characters)
         hasFeatures = true; // Always show this section since it works for all characters
@@ -628,7 +654,7 @@ namespace ImGuiGui {
         // Create two columns for P1 and P2
         ImGui::Columns(2, "playerColumns", true);
         
-        // --- P1 COLUMN ---
+    // --- P1 COLUMN ---
         ImGui::TextColored(ImVec4(0.5f, 0.8f, 1.0f, 1.0f), "P1: %s", 
                           CharacterSettings::GetCharacterName(p1CharID).c_str());
         
@@ -707,6 +733,34 @@ namespace ImGuiGui {
                 guiState.localData.p1MisuzuFeathers = 0;
             }
         }
+        // P1 Mishio Settings
+        else if (p1CharID == CHAR_ID_MISHIO) {
+            // Element selection
+            int prevElem = guiState.localData.p1MishioElement;
+            int elem = prevElem;
+            const char* items[] = { "None", "Fire", "Lightning", "Awakened" };
+            ImGui::Text("Element:");
+            ImGui::Combo("##P1MishioElem", &elem, items, IM_ARRAYSIZE(items));
+            guiState.localData.p1MishioElement = CLAMP(elem, MISHIO_ELEM_NONE, MISHIO_ELEM_AWAKENED);
+            // If switched to Awakened and infinite timer is OFF, set timer to full (4500)
+            if (elem != prevElem && elem == MISHIO_ELEM_AWAKENED && !guiState.localData.infiniteMishioAwakened) {
+                guiState.localData.p1MishioAwakenedTimer = MISHIO_AWAKENED_TARGET;
+            }
+
+            // Awakened timer (only editable while Awakened)
+            int aw = guiState.localData.p1MishioAwakenedTimer;
+            ImGui::Text("Awakened Timer (internal frames):");
+            bool p1Awakened = (guiState.localData.p1MishioElement == MISHIO_ELEM_AWAKENED);
+            if (!p1Awakened) ImGui::BeginDisabled();
+            if (ImGui::SliderInt("##P1MishioAw", &aw, 0, MISHIO_AWAKENED_TARGET)) {
+                guiState.localData.p1MishioAwakenedTimer = aw;
+            }
+            if (!p1Awakened) {
+                ImGui::EndDisabled();
+                ImGui::SameLine();
+                ImGui::TextDisabled("(set Element to Awakened to edit)");
+            }
+        }
         else {
             ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "No special settings available");
         }
@@ -716,7 +770,7 @@ namespace ImGuiGui {
         ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.5f, 1.0f), "P2: %s", 
                           CharacterSettings::GetCharacterName(p2CharID).c_str());
         
-        // P2 Ikumi Settings
+    // P2 Ikumi Settings
         if (p2CharID == CHAR_ID_IKUMI) {
             // Blood Level
             int p2Blood = guiState.localData.p2IkumiBlood;
@@ -763,7 +817,7 @@ namespace ImGuiGui {
             }
         }
         // P2 Misuzu Settings
-        else if (p2CharID == CHAR_ID_MISUZU) {
+    else if (p2CharID == CHAR_ID_MISUZU) {
             // Feather Count
             int p2Feathers = guiState.localData.p2MisuzuFeathers;
             float p2FeatherPercent = (float)p2Feathers / MISUZU_FEATHER_MAX;
@@ -791,6 +845,31 @@ namespace ImGuiGui {
                 guiState.localData.p2MisuzuFeathers = 0;
             }
         }
+        // P2 Mishio Settings
+        else if (p2CharID == CHAR_ID_MISHIO) {
+            int prevElem2 = guiState.localData.p2MishioElement;
+            int elem = prevElem2;
+            const char* items[] = { "None", "Fire", "Lightning", "Awakened" };
+            ImGui::Text("Element:");
+            ImGui::Combo("##P2MishioElem", &elem, items, IM_ARRAYSIZE(items));
+            guiState.localData.p2MishioElement = CLAMP(elem, MISHIO_ELEM_NONE, MISHIO_ELEM_AWAKENED);
+            if (elem != prevElem2 && elem == MISHIO_ELEM_AWAKENED && !guiState.localData.infiniteMishioAwakened) {
+                guiState.localData.p2MishioAwakenedTimer = MISHIO_AWAKENED_TARGET;
+            }
+
+            int aw = guiState.localData.p2MishioAwakenedTimer;
+            ImGui::Text("Awakened Timer (internal frames):");
+            bool p2Awakened = (guiState.localData.p2MishioElement == MISHIO_ELEM_AWAKENED);
+            if (!p2Awakened) ImGui::BeginDisabled();
+            if (ImGui::SliderInt("##P2MishioAw", &aw, 0, MISHIO_AWAKENED_TARGET)) {
+                guiState.localData.p2MishioAwakenedTimer = aw;
+            }
+            if (!p2Awakened) {
+                ImGui::EndDisabled();
+                ImGui::SameLine();
+                ImGui::TextDisabled("(set Element to Awakened to edit)");
+            }
+        }
         else {
             ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "No special settings available");
         }
@@ -802,7 +881,7 @@ namespace ImGuiGui {
         ImGui::Separator();
         ImGui::TextWrapped(
             "Character-specific settings allow you to modify special parameters unique to each character.\n"
-            "Currently supported characters: Ikumi (Blood Meter & Genocide Mode), Misuzu (Feather Count)");
+            "Currently supported: Ikumi (Blood/Genocide), Misuzu (Feathers), Mishio (Element/Awakened)");
     }
     
     // Add this new function to the ImGuiGui namespace:
@@ -1185,6 +1264,8 @@ namespace ImGuiGui {
             LogOut("[IMGUI_GUI] Applying character settings - Blood Mode: " + 
                    std::to_string(displayData.infiniteBloodMode) + 
                    ", Feather Mode: " + std::to_string(displayData.infiniteFeatherMode) +
+                   ", Mishio Elem Inf: " + std::to_string(displayData.infiniteMishioElement) +
+                   ", Mishio Awakened Inf: " + std::to_string(displayData.infiniteMishioAwakened) +
                    ", P1 Blue IC: " + std::to_string(displayData.p1BlueIC) + 
                    ", P2 Blue IC: " + std::to_string(displayData.p2BlueIC), true);
             

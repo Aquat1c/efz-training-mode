@@ -117,6 +117,14 @@ struct DisplayData {
     int p2MisuzuFeathers;
     bool infiniteFeatherMode; // Add this missing field
     
+    // Mishio
+    int p1MishioElement;       // 0=None, 1=Fire, 2=Lightning, 3=Awakened
+    int p2MishioElement;
+    int p1MishioAwakenedTimer; // internal frames
+    int p2MishioAwakenedTimer;
+    bool infiniteMishioElement;      // freeze/restore chosen element
+    bool infiniteMishioAwakened;     // keep awakened timer topped up when element==Awakened
+
     // Blue IC/Red IC toggle
     bool p1BlueIC;
     bool p2BlueIC;
