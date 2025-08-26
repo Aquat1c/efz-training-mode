@@ -315,6 +315,22 @@
 #define MISUZU_FEATHER_OFFSET 0x3464
 #define MISUZU_FEATHER_MAX 3 // Feather count ranges from 0-3
 
+// Mishio (Element system)
+// Offsets relative to player base (from reverse-engineering/CE)
+#define MISHIO_ELEMENT_OFFSET            0x3158  // 0=None, 1=Fire, 2=Lightning, 3=Awakened
+#define MISHIO_ELEMENT_COOLDOWN_OFFSET   0x315C  // Decrements while element active
+#define MISHIO_ELEMENT_CLOCK_OFFSET      0x3160  // Internal clock used for effects
+#define MISHIO_AWAKENED_TIMER_OFFSET     0x3168  // Counts down while Awakened; when <=0, element resets to 0
+
+// Mishio element values
+#define MISHIO_ELEM_NONE      0
+#define MISHIO_ELEM_FIRE      1
+#define MISHIO_ELEM_LIGHTNING 2
+#define MISHIO_ELEM_AWAKENED  3
+
+// Target top-up for infinite awakened timer
+#define MISHIO_AWAKENED_TARGET 4500
+
 // Player input buffer offsets
 #define P1_INPUT_BUFFER_OFFSET 0x1AB      // Base address of input buffer
 #define P1_INPUT_BUFFER_INDEX_OFFSET 0x260 // Offset to current buffer index
