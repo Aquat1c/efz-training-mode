@@ -622,7 +622,7 @@ void DirectDrawHook::RenderAllMessages(IDirectDrawSurface7* surface) {
                 showHelloWorld = (hp1 > 0 && hp2 > 0 && hp1 <= MAX_HP && hp2 <= MAX_HP);
                 
                 if (showHelloWorld) {
-                    LogOut("[OVERLAY] Showing Hello World - HP1: " + std::to_string(hp1) + ", HP2: " + std::to_string(hp2), true);
+                    LogOut("[OVERLAY] Showing Hello World - HP1: " + std::to_string(hp1) + ", HP2: " + std::to_string(hp2), detailedLogging.load());
                 }
             }
         }
@@ -635,17 +635,17 @@ void DirectDrawHook::RenderAllMessages(IDirectDrawSurface7* surface) {
         _snprintf_s(ptrbuf, sizeof(ptrbuf), _TRUNCATE, "%p", surface);
         DDSURFACEDESC2 desc{}; desc.dwSize = sizeof(desc);
         if (SUCCEEDED(surface->GetSurfaceDesc(&desc))) {
-            LogOut(std::string("[OVERLAY][DDRAW] First seen surface=") + ptrbuf +
-                   " size=" + std::to_string((int)desc.dwWidth) + "x" + std::to_string((int)desc.dwHeight), true);
+         LogOut(std::string("[OVERLAY][DDRAW] First seen surface=") + ptrbuf +
+             " size=" + std::to_string((int)desc.dwWidth) + "x" + std::to_string((int)desc.dwHeight), detailedLogging.load());
         } else {
-            LogOut(std::string("[OVERLAY][DDRAW] First seen surface=") + ptrbuf + " (GetSurfaceDesc failed)", true);
+            LogOut(std::string("[OVERLAY][DDRAW] First seen surface=") + ptrbuf + " (GetSurfaceDesc failed)", detailedLogging.load());
         }
     }
 
     // CRITICAL FIX: Use a more aggressive rendering approach
     HDC hdc;
     if (FAILED(surface->GetDC(&hdc))) {
-        LogOut("[OVERLAY] Failed to get surface DC", true);
+    LogOut("[OVERLAY] Failed to get surface DC", detailedLogging.load());
         return;
     }
     
@@ -722,7 +722,7 @@ void DirectDrawHook::RenderAllMessages(IDirectDrawSurface7* surface) {
             SelectObject(hdc, oldFont);
             DeleteObject(bigFont);
             
-            LogOut("[OVERLAY] Rendered Hello World with enhanced visibility", true);
+            LogOut("[OVERLAY] Rendered Hello World with enhanced visibility", detailedLogging.load());
         }
         
         // Render permanent messages
@@ -742,7 +742,7 @@ void DirectDrawHook::RenderAllMessages(IDirectDrawSurface7* surface) {
         }
         
     } catch (...) {
-        LogOut("[OVERLAY] Exception in RenderAllMessages", true);
+    LogOut("[OVERLAY] Exception in RenderAllMessages", detailedLogging.load());
     }
     
     // Release the device context
