@@ -229,8 +229,8 @@ void FrameDataMonitor() {
         LogOut("[FRAME MONITOR] Starting frame monitoring at 192fps for maximum precision", true);
     }
     
-    // CRITICAL: Set highest possible priority to prevent throttling
-    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
+    // Use high (but not time-critical) priority to avoid starving DWM/GPU queues
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
     
     short prevMoveID1 = -1, prevMoveID2 = -1;
     // Update frame time to match 192fps instead of 60fps
@@ -252,8 +252,8 @@ void FrameDataMonitor() {
     static short lastLoggedMoveID2 = -1;
     static std::atomic<int> moveLogCooldown{0};
     
-    // High precision timer resolution request
-    timeBeginPeriod(1);
+    // High precision timer resolution (enable only during Match to reduce system-wide timer pressure)
+    bool highResActive = false;
     // Timing diagnostics (per 960 internal frames)
     long long driftAccum = 0; // sum of (actual - target) ns
     long long absDriftAccum = 0;
@@ -281,7 +281,7 @@ void FrameDataMonitor() {
         // Check current game phase
         GamePhase currentPhase = GetCurrentGamePhase();
         
-        // CRITICAL FIX: Stop buffer freezing IMMEDIATELY if not in match
+    // CRITICAL FIX: Stop buffer freezing IMMEDIATELY if not in match
         if (currentPhase != GamePhase::Match) {
             // Check if buffer freezing is active and stop it
             if (g_bufferFreezingActive.load()) {
@@ -302,6 +302,16 @@ void FrameDataMonitor() {
             if (g_p2ControlOverridden) {
                 RestoreP2ControlState();
             }
+        }
+
+        // Toggle high-resolution timers only when needed
+        bool needHighRes = (currentPhase == GamePhase::Match);
+        if (needHighRes && !highResActive) {
+            timeBeginPeriod(1);
+            highResActive = true;
+        } else if (!needHighRes && highResActive) {
+            timeEndPeriod(1);
+            highResActive = false;
         }
         
         // Track phase changes
@@ -669,14 +679,19 @@ FRAME_MONITOR_FRAME_END:
         auto beforeSleep = clock::now();
         while (beforeSleep < expectedNext) {
             auto remaining = expectedNext - beforeSleep;
-            if (remaining > std::chrono::microseconds(200)) {
-                // Sleep all but ~200us, rely on timeBeginPeriod(1) for ~1ms granularity
-                auto sleepChunk = remaining - std::chrono::microseconds(200);
+            if (remaining > std::chrono::microseconds(100)) {
+                // Sleep all but ~100us; rely on timeBeginPeriod(1) for ~1ms granularity when active
+                auto sleepChunk = remaining - std::chrono::microseconds(100);
                 std::this_thread::sleep_for(sleepChunk);
             } else {
-                // Final busy-wait for precision
+                // Final cooperative spin-wait for precision with occasional yields
+                int spinIters = 0;
                 while (clock::now() < expectedNext) {
                     _mm_pause();
+                    if ((++spinIters & 0xFF) == 0) {
+                        // Yield occasionally to avoid starving other threads
+                        SwitchToThread();
+                    }
                 }
                 break;
             }
@@ -730,7 +745,9 @@ FRAME_MONITOR_FRAME_END:
     if (Config::GetSettings().enableFpsDiagnostics || detailedLogging.load()) {
         LogOut("[FRAME MONITOR] Shutting down frame monitor thread", true);
     }
-    timeEndPeriod(1);
+    if (highResActive) {
+        timeEndPeriod(1);
+    }
 }
 
 void ReinitializeOverlays() {
