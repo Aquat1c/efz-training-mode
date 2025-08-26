@@ -202,6 +202,8 @@ namespace Config {
             file << "enableConsole = 0\n";
             file << "; Restrict functionality to Practice Mode only (1 = yes, 0 = no)\n";
             file << "restrictToPracticeMode = 1\n\n";
+            file << "; Enable FPS/timing diagnostics in logs (1 = yes, 0 = no)\n";
+            file << "enableFpsDiagnostics = 0\n\n";
             
             file << "[Hotkeys]\n";
             file << "; Use virtual-key codes (hexadecimal, e.g., 0x70 for F1)\n";
@@ -282,6 +284,7 @@ namespace Config {
             settings.detailedLogging = GetValueBool("General", "detailedLogging", false);
             settings.enableConsole = GetValueBool("General", "enableConsole", false);
             settings.restrictToPracticeMode = GetValueBool("General", "restrictToPracticeMode", true);
+            settings.enableFpsDiagnostics = GetValueBool("General", "enableFpsDiagnostics", false);
             
             // Hotkey settings - REVERTED to number key defaults
             settings.teleportKey = GetValueInt("Hotkeys", "TeleportKey", 0x31);          // Default: '1'
@@ -302,6 +305,7 @@ namespace Config {
             LogOut("[CONFIG] ResetFrameCounterKey: " + std::to_string(settings.resetFrameCounterKey) + " (" + GetKeyName(settings.resetFrameCounterKey) + ")", true);
             LogOut("[CONFIG] HelpKey: " + std::to_string(settings.helpKey) + " (" + GetKeyName(settings.helpKey) + ")", true);
             LogOut("[CONFIG] ToggleImGuiKey: " + std::to_string(settings.toggleImGuiKey) + " (" + GetKeyName(settings.toggleImGuiKey) + ")", true);
+            LogOut("[CONFIG] enableFpsDiagnostics: " + std::to_string(settings.enableFpsDiagnostics), true);
             
             return true;
         }
@@ -335,6 +339,8 @@ namespace Config {
             file << "enableConsole = " << (settings.enableConsole ? "1" : "0") << "\n";
             file << "; Restrict functionality to Practice Mode only (1 = yes, 0 = no)\n";
             file << "restrictToPracticeMode = " << (settings.restrictToPracticeMode ? "1" : "0") << "\n\n";
+            file << "; Enable FPS/timing diagnostics in logs (1 = yes, 0 = no)\n";
+            file << "enableFpsDiagnostics = " << (settings.enableFpsDiagnostics ? "1" : "0") << "\n\n";
             file << "; Show the debug console window (1 = yes, 0 = no)\n";
             // Note: keep console toggle alongside General fields
             // We append here for clarity; order doesn't matter for parsing

@@ -261,7 +261,7 @@ namespace CharacterSettings {
         LogOut("[CHAR] Starting character value monitoring thread", true);
         
     // Base sleep interval in ms; slightly relax when the ImGui menu is visible to reduce contention
-    const int baseSleepMs = 8;     // fast response during gameplay
+    const int baseSleepMs = 16;     // relaxed to reduce CPU while maintaining responsiveness
         
         while (valueMonitoringActive) {
             uintptr_t base = GetEFZBase();
@@ -299,17 +299,17 @@ namespace CharacterSettings {
                             // If feathers have decreased, immediately restore
                             if (currentFeatherCount < p1LastFeatherCount) {
                                 SafeWriteMemory(featherAddr, &p1LastFeatherCount, sizeof(int));
-                                LogOut("[CHAR] Restored P1 Misuzu feathers from " + 
-                                      std::to_string(currentFeatherCount) + " to " + 
-                                      std::to_string(p1LastFeatherCount), 
-                                      detailedLogging.load());
+                      LogOut("[CHAR] Restored P1 Misuzu feathers from " + 
+                          std::to_string(currentFeatherCount) + " to " + 
+                          std::to_string(p1LastFeatherCount), 
+                          detailedLogging.load());
                             }
                             // Update tracking if feathers increased (player gained feathers)
                             else if (currentFeatherCount > p1LastFeatherCount) {
                                 p1LastFeatherCount = currentFeatherCount;
-                                LogOut("[CHAR] P1 Misuzu gained feathers, new count: " + 
-                                      std::to_string(p1LastFeatherCount), 
-                                      detailedLogging.load());
+                      LogOut("[CHAR] P1 Misuzu gained feathers, new count: " + 
+                          std::to_string(p1LastFeatherCount), 
+                          detailedLogging.load());
                             }
                         }
                     }
@@ -324,17 +324,17 @@ namespace CharacterSettings {
                             // If feathers have decreased, immediately restore
                             if (currentFeatherCount < p2LastFeatherCount) {
                                 SafeWriteMemory(featherAddr, &p2LastFeatherCount, sizeof(int));
-                                LogOut("[CHAR] Restored P2 Misuzu feathers from " + 
-                                      std::to_string(currentFeatherCount) + " to " + 
-                                      std::to_string(p2LastFeatherCount), 
-                                      detailedLogging.load());
+                      LogOut("[CHAR] Restored P2 Misuzu feathers from " + 
+                          std::to_string(currentFeatherCount) + " to " + 
+                          std::to_string(p2LastFeatherCount), 
+                          detailedLogging.load());
                             }
                             // Update tracking if feathers increased (player gained feathers)
                             else if (currentFeatherCount > p2LastFeatherCount) {
                                 p2LastFeatherCount = currentFeatherCount;
-                                LogOut("[CHAR] P2 Misuzu gained feathers, new count: " + 
-                                      std::to_string(p2LastFeatherCount), 
-                                      detailedLogging.load());
+                      LogOut("[CHAR] P2 Misuzu gained feathers, new count: " + 
+                          std::to_string(p2LastFeatherCount), 
+                          detailedLogging.load());
                             }
                         }
                     }
