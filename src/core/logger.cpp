@@ -131,6 +131,11 @@ short GetCurrentMoveID(int player) {
 void UpdateConsoleTitle() {
     // Keep this thread at normal priority since you want it to keep up with the game
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_NORMAL);
+    std::string lastTitle;
+    int sleepMs = 100; // fast when changing
+    const int minSleepMs = 100;
+    const int maxSleepMs = 250; // slower when idle/no match
+    int stableIters = 0;
     
     while (true) {
         // Check if the console window still exists
@@ -205,10 +210,19 @@ void UpdateConsoleTitle() {
         sprintf_s(modeBuffer, sizeof(modeBuffer), " | Mode: %s (%d)", modeName.c_str(), rawValue);
         strcat_s(title, sizeof(title), modeBuffer);
         
-        SetConsoleTitleA(title);
+        // Only update title if it changed
+        if (lastTitle != title) {
+            SetConsoleTitleA(title);
+            lastTitle = title;
+            sleepMs = minSleepMs;
+            stableIters = 0;
+        } else {
+            // Back off when no changes
+            stableIters++;
+            if (stableIters > 2) sleepMs = maxSleepMs;
+        }
         
-        // Keep the fast update rate as requested - every 100ms
-        Sleep(100);
+        Sleep(sleepMs);
     }
 }
 

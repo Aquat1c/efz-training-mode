@@ -64,8 +64,9 @@ namespace ImGuiSettings {
         const Config::Settings& cfg = Config::GetSettings();
 
         // We copy values locally so we can mutate with ImGui widgets
-        bool useImGui = cfg.useImGui;
-        bool logVerbose = cfg.detailedLogging;
+    bool useImGui = cfg.useImGui;
+    bool logVerbose = cfg.detailedLogging;
+    bool fpsDiag = cfg.enableFpsDiagnostics;
     bool restrictPractice = cfg.restrictToPracticeMode;
     bool enableConsole = cfg.enableConsole;
 
@@ -75,6 +76,8 @@ namespace ImGuiSettings {
             ImGui::TextDisabled("(applies on next menu open)");
 
             CheckboxApply("Detailed logging", logVerbose, "General", "DetailedLogging");
+
+            CheckboxApply("Enable FPS/timing diagnostics", fpsDiag, "General", "enableFpsDiagnostics");
 
             CheckboxApply("Restrict features to Practice Mode", restrictPractice, "General", "restrictToPracticeMode");
 

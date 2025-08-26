@@ -9,6 +9,7 @@
 #include <unordered_map>
 #include <thread>
 #include <atomic>
+#include "../include/gui/imgui_impl.h"
 
 namespace CharacterSettings {
     // Track if character patches are currently applied
@@ -259,21 +260,32 @@ namespace CharacterSettings {
     void CharacterValueMonitoringThread() {
         LogOut("[CHAR] Starting character value monitoring thread", true);
         
-        // Sleep interval in milliseconds (60fps = ~16ms per frame, but we'll be more aggressive)
-        const int sleepInterval = 8; // ~120 fps for faster response
+    // Adaptive sleep to reduce CPU when stable
+    static int currentSleepMs = 16;          // starts responsive
+    const int minSleepMs = 16;               // don't go faster than ~60 Hz
+    const int maxSleepMs = 64;               // back off up to ~15 Hz when stable
+    int consecutiveStableIters = 0;
         
         while (valueMonitoringActive) {
             uintptr_t base = GetEFZBase();
             if (base && g_featuresEnabled) {
                 DisplayData localData = displayData; // Make a local copy to work with
+                bool didWriteThisLoop = false;
                 
-                // Ikumi's genocide timer - continuous overwrite approach
+                // Ikumi's genocide timer - write-on-drift approach
                 if (localData.infiniteBloodMode) {
                     // P1 Ikumi genocide timer preservation
                     if (localData.p1CharID == CHAR_ID_IKUMI) {
                         uintptr_t genocideAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P1, IKUMI_GENOCIDE_OFFSET);
                         if (genocideAddr) {
-                            SafeWriteMemory(genocideAddr, &localData.p1IkumiGenocide, sizeof(int));
+                            // Keep timer near max, but avoid constant writes if already there
+                            int current = 0;
+                            SafeReadMemory(genocideAddr, &current, sizeof(int));
+                            const int target = IKUMI_GENOCIDE_MAX;
+                            if (current < target) {
+                                SafeWriteMemory(genocideAddr, &target, sizeof(int));
+                                didWriteThisLoop = true;
+                            }
                         }
                     }
                     
@@ -281,7 +293,13 @@ namespace CharacterSettings {
                     if (localData.p2CharID == CHAR_ID_IKUMI) {
                         uintptr_t genocideAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P2, IKUMI_GENOCIDE_OFFSET);
                         if (genocideAddr) {
-                            SafeWriteMemory(genocideAddr, &localData.p2IkumiGenocide, sizeof(int));
+                            int current = 0;
+                            SafeReadMemory(genocideAddr, &current, sizeof(int));
+                            const int target = IKUMI_GENOCIDE_MAX;
+                            if (current < target) {
+                                SafeWriteMemory(genocideAddr, &target, sizeof(int));
+                                didWriteThisLoop = true;
+                            }
                         }
                     }
                 }
@@ -298,17 +316,18 @@ namespace CharacterSettings {
                             // If feathers have decreased, immediately restore
                             if (currentFeatherCount < p1LastFeatherCount) {
                                 SafeWriteMemory(featherAddr, &p1LastFeatherCount, sizeof(int));
-                                LogOut("[CHAR] Restored P1 Misuzu feathers from " + 
-                                      std::to_string(currentFeatherCount) + " to " + 
-                                      std::to_string(p1LastFeatherCount), 
-                                      detailedLogging.load());
+                                didWriteThisLoop = true;
+                      LogOut("[CHAR] Restored P1 Misuzu feathers from " + 
+                          std::to_string(currentFeatherCount) + " to " + 
+                          std::to_string(p1LastFeatherCount), 
+                          detailedLogging.load());
                             }
                             // Update tracking if feathers increased (player gained feathers)
                             else if (currentFeatherCount > p1LastFeatherCount) {
                                 p1LastFeatherCount = currentFeatherCount;
-                                LogOut("[CHAR] P1 Misuzu gained feathers, new count: " + 
-                                      std::to_string(p1LastFeatherCount), 
-                                      detailedLogging.load());
+                      LogOut("[CHAR] P1 Misuzu gained feathers, new count: " + 
+                          std::to_string(p1LastFeatherCount), 
+                          detailedLogging.load());
                             }
                         }
                     }
@@ -323,17 +342,18 @@ namespace CharacterSettings {
                             // If feathers have decreased, immediately restore
                             if (currentFeatherCount < p2LastFeatherCount) {
                                 SafeWriteMemory(featherAddr, &p2LastFeatherCount, sizeof(int));
-                                LogOut("[CHAR] Restored P2 Misuzu feathers from " + 
-                                      std::to_string(currentFeatherCount) + " to " + 
-                                      std::to_string(p2LastFeatherCount), 
-                                      detailedLogging.load());
+                                didWriteThisLoop = true;
+                      LogOut("[CHAR] Restored P2 Misuzu feathers from " + 
+                          std::to_string(currentFeatherCount) + " to " + 
+                          std::to_string(p2LastFeatherCount), 
+                          detailedLogging.load());
                             }
                             // Update tracking if feathers increased (player gained feathers)
                             else if (currentFeatherCount > p2LastFeatherCount) {
                                 p2LastFeatherCount = currentFeatherCount;
-                                LogOut("[CHAR] P2 Misuzu gained feathers, new count: " + 
-                                      std::to_string(p2LastFeatherCount), 
-                                      detailedLogging.load());
+                      LogOut("[CHAR] P2 Misuzu gained feathers, new count: " + 
+                          std::to_string(p2LastFeatherCount), 
+                          detailedLogging.load());
                             }
                         }
                     }
@@ -344,26 +364,47 @@ namespace CharacterSettings {
                     p2LastFeatherCount = 0;
                 }
                 
-                // Blue IC/Red IC toggle - continuously apply when enabled
+                // Blue IC/Red IC toggle - apply only when needed
                 if (localData.p1BlueIC) {
                     uintptr_t icAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P1, IC_COLOR_OFFSET);
                     if (icAddr) {
-                        int icValue = 1; // 1 = Blue IC
-                        SafeWriteMemory(icAddr, &icValue, sizeof(int));
+                        int currentIC = 0;
+                        SafeReadMemory(icAddr, &currentIC, sizeof(int));
+                        if (currentIC != 1) {
+                            int icValue = 1; // 1 = Blue IC
+                            SafeWriteMemory(icAddr, &icValue, sizeof(int));
+                            didWriteThisLoop = true;
+                        }
                     }
                 }
                 
                 if (localData.p2BlueIC) {
                     uintptr_t icAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P2, IC_COLOR_OFFSET);
                     if (icAddr) {
-                        int icValue = 1; // 1 = Blue IC
-                        SafeWriteMemory(icAddr, &icValue, sizeof(int));
+                        int currentIC = 0;
+                        SafeReadMemory(icAddr, &currentIC, sizeof(int));
+                        if (currentIC != 1) {
+                            int icValue = 1; // 1 = Blue IC
+                            SafeWriteMemory(icAddr, &icValue, sizeof(int));
+                            didWriteThisLoop = true;
+                        }
+                    }
+                }
+                
+                // Adjust backoff based on whether we wrote this loop
+                if (didWriteThisLoop) {
+                    currentSleepMs = minSleepMs;
+                    consecutiveStableIters = 0;
+                } else {
+                    consecutiveStableIters++;
+                    if (consecutiveStableIters > 2) { // after a few stable ticks, back off
+                        currentSleepMs = (std::min)(currentSleepMs * 2, maxSleepMs);
                     }
                 }
             }
             
-            // Sleep to avoid hammering the CPU
-            std::this_thread::sleep_for(std::chrono::milliseconds(sleepInterval));
+            // Sleep to avoid hammering the CPU; adaptive backoff keeps things light when stable
+            std::this_thread::sleep_for(std::chrono::milliseconds(currentSleepMs));
         }
         
         LogOut("[CHAR] Character value monitoring thread stopped", true);

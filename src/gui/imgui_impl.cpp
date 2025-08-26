@@ -147,13 +147,19 @@ namespace ImGuiImpl {
         ImGui::CreateContext();
         ImGuiIO& io = ImGui::GetIO(); (void)io;
         
-        io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
-        io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
+    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+    // Re-enable gamepad navigation for ImGui
+    io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
+
+    // Make font atlas slightly cheaper to render (DX9)
+    io.Fonts->Flags |= ImFontAtlasFlags_NoPowerOfTwoHeight; // avoid unnecessary atlas stretch
+    io.Fonts->TexGlyphPadding = 1;
         
         ImGui::StyleColorsDark();
         
     ImGuiStyle& style = ImGui::GetStyle();
     style.ScaleAllSizes(1.2f);
+    style.Alpha = 1.0f; // prefer opaque rendering for cheaper blending
     // Safety: ensure valid minimum window size to satisfy ImGui asserts
     if (style.WindowMinSize.x < 1.0f) style.WindowMinSize.x = 16.0f;
     if (style.WindowMinSize.y < 1.0f) style.WindowMinSize.y = 16.0f;

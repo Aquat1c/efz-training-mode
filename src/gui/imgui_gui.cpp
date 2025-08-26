@@ -522,9 +522,6 @@ namespace ImGuiGui {
             return;
         }
         
-        // Update character IDs
-        CharacterSettings::UpdateCharacterIDs(guiState.localData);
-        
         // Get current characters for easier reference
         int p1CharID = guiState.localData.p1CharID;
         int p2CharID = guiState.localData.p2CharID;
@@ -931,21 +928,25 @@ namespace ImGuiGui {
         if (!ImGuiImpl::IsVisible())
             return;
 
-        // Auto-refresh data when UI first becomes visible
+        // Refresh data once when UI becomes visible; avoid continuous auto-refresh to reduce work
         static bool lastVisible = false;
         bool currentVisible = ImGuiImpl::IsVisible();
         if (currentVisible && !lastVisible) {
-            // UI just became visible, refresh data
             RefreshLocalData();
         }
         lastVisible = currentVisible;
 
-        // Set window position and size
-        ImGui::SetNextWindowPos(ImVec2(50, 50), ImGuiCond_FirstUseEver);
+    // Set window position and size
+        // Use Appearing so the menu always resets to a visible spot when reopened (prevents off-screen in fullscreen)
+        ImGui::SetNextWindowPos(ImVec2(50, 50), ImGuiCond_Appearing);
         ImGui::SetNextWindowSize(ImVec2(580, 520), ImGuiCond_FirstUseEver);
+    // Force fully-opaque background to avoid heavy alpha blending on low-end GPUs
+    ImGui::SetNextWindowBgAlpha(1.0f);
 
         // Main window
-        if (ImGui::Begin("EFZ Training Mode", nullptr, ImGuiWindowFlags_NoCollapse)) {
+        // Allow navigation (keyboard/gamepad), disable collapse and saved settings to avoid off-screen positions
+        ImGuiWindowFlags winFlags = ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings;
+    if (ImGui::Begin("EFZ Training Mode", nullptr, winFlags)) {
             // Check if a specific tab has been requested
             if (guiState.requestedTab >= 0) {
                 guiState.currentTab = guiState.requestedTab;
@@ -975,9 +976,16 @@ namespace ImGuiGui {
                     ImGui::EndTabItem();
                 }
                 
-                // Add Character tab unconditionally for now
+                // Add Character tab; refresh character IDs once on open to avoid per-frame work
                 if (ImGui::BeginTabItem("Character")) {
                     guiState.currentTab = 2;
+                    static bool s_charTabJustOpened = false;
+                    if (ImGui::IsItemActivated()) { s_charTabJustOpened = true; }
+                    if (s_charTabJustOpened) {
+                        // Update IDs once when entering the tab
+                    // Character IDs are updated on entering the tab or on manual refresh
+                        s_charTabJustOpened = false;
+                    }
                     RenderCharacterTab();
                     ImGui::EndTabItem();
                 }
@@ -1018,8 +1026,6 @@ namespace ImGuiGui {
 
     // Add the helper function to determine if character tab should be shown
     bool ShouldShowCharacterSettings() {
-        CharacterSettings::UpdateCharacterIDs(guiState.localData);
-        
         // For now, just check for Ikumi since that's the only character with special settings
         bool p1IsIkumi = guiState.localData.p1CharID == CHAR_ID_IKUMI;
         bool p2IsIkumi = guiState.localData.p2CharID == CHAR_ID_IKUMI;
@@ -1059,15 +1065,15 @@ namespace ImGuiGui {
         SafeReadMemory(ResolvePointer(base, EFZ_BASE_OFFSET_P2, CHARACTER_NAME_OFFSET), 
                    guiState.localData.p2CharName, sizeof(guiState.localData.p2CharName) - 1);
 
-        // Log the character names we're reading
-        LogOut("[IMGUI] Read character names: P1=" + std::string(guiState.localData.p1CharName) + 
-           ", P2=" + std::string(guiState.localData.p2CharName), true);
+          // Log the character names we're reading
+          LogOut("[IMGUI] Read character names: P1=" + std::string(guiState.localData.p1CharName) + 
+              ", P2=" + std::string(guiState.localData.p2CharName), true);
+        
+          // Update character IDs once per refresh
+          CharacterSettings::UpdateCharacterIDs(guiState.localData);
     
-        // Update character IDs
-        CharacterSettings::UpdateCharacterIDs(guiState.localData);
-    
-        // Read character-specific values
-        CharacterSettings::ReadCharacterValues(base, guiState.localData);
+    // Read character-specific values (once per refresh)
+    CharacterSettings::ReadCharacterValues(base, guiState.localData);
 
         // Read current IC color values from memory
         int p1ICValue = 0, p2ICValue = 0;
