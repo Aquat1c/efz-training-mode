@@ -331,6 +331,10 @@
 // Target top-up for infinite awakened timer
 #define MISHIO_AWAKENED_TARGET 4500
 
+// Doppel Nanase (ExNanase) - Enlightened Final Memory flag
+// From decomp: *(DWORD*)(playerBase + 13396) toggles 0/1 when Enlightened is active
+#define DOPPEL_ENLIGHTENED_OFFSET 0x3454
+
 // Player input buffer offsets
 #define P1_INPUT_BUFFER_OFFSET 0x1AB      // Base address of input buffer
 #define P1_INPUT_BUFFER_INDEX_OFFSET 0x260 // Offset to current buffer index

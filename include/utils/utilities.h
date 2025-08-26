@@ -167,6 +167,10 @@ struct DisplayData {
     int strengthOnWakeup;
     int strengthAfterHitstun;
     int strengthAfterAirtech;
+
+    // Doppel Nanase (ExNanase) - Enlightened FM checkbox state per player
+    bool p1DoppelEnlightened;
+    bool p2DoppelEnlightened;
 };
 
 extern DisplayData displayData;

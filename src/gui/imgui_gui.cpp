@@ -761,6 +761,14 @@ namespace ImGuiGui {
                 ImGui::TextDisabled("(set Element to Awakened to edit)");
             }
         }
+        // P1 Doppel (ExNanase) Settings
+        else if (p1CharID == CHAR_ID_EXNANASE) {
+            bool enlightened = guiState.localData.p1DoppelEnlightened;
+            if (ImGui::Checkbox("Enlightened (Final Memory)##p1Doppel", &enlightened)) {
+                guiState.localData.p1DoppelEnlightened = enlightened;
+            }
+            ImGui::TextDisabled("(sets internal flag to 1 when checked, 0 when unchecked)");
+        }
         else {
             ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "No special settings available");
         }
@@ -869,6 +877,14 @@ namespace ImGuiGui {
                 ImGui::SameLine();
                 ImGui::TextDisabled("(set Element to Awakened to edit)");
             }
+        }
+        // P2 Doppel (ExNanase) Settings
+        else if (p2CharID == CHAR_ID_EXNANASE) {
+            bool enlightened2 = guiState.localData.p2DoppelEnlightened;
+            if (ImGui::Checkbox("Enlightened (Final Memory)##p2Doppel", &enlightened2)) {
+                guiState.localData.p2DoppelEnlightened = enlightened2;
+            }
+            ImGui::TextDisabled("(sets internal flag to 1 when checked, 0 when unchecked)");
         }
         else {
             ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "No special settings available");
