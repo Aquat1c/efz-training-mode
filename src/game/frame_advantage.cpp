@@ -55,7 +55,9 @@ void ResetFrameAdvantageState() {
     frameAdvState.displayUntilInternalFrame = -1;
     
     if (detailedLogging.load()) {
-        LogOut("[FRAME_ADV_DEBUG] Frame advantage state reset", false);
+    #if defined(ENABLE_FRAME_ADV_DEBUG)
+    LogOut("[FRAME_ADV_DEBUG] Frame advantage state reset", false);
+    #endif
     }
 
     // Clear any existing display
@@ -136,13 +138,15 @@ void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, shor
     // Log the current state for debugging
     static int debugCounter = 0;
     if (detailedLogging.load() && ++debugCounter % 60 == 0) {
-        LogOut("[FRAME_ADV_DEBUG] State: p1Block=" + std::to_string(frameAdvState.p1InBlockstun) + 
+     #if defined(ENABLE_FRAME_ADV_DEBUG)
+     LogOut("[FRAME_ADV_DEBUG] State: p1Block=" + std::to_string(frameAdvState.p1InBlockstun) + 
                " p2Block=" + std::to_string(frameAdvState.p2InBlockstun) + 
                " p1Def=" + std::to_string(frameAdvState.p1Defending) + 
                " p2Def=" + std::to_string(frameAdvState.p2Defending) + 
                " p1Atk=" + std::to_string(frameAdvState.p1Attacking) + 
-               " p2Atk=" + std::to_string(frameAdvState.p2Attacking), 
-               false);
+         " p2Atk=" + std::to_string(frameAdvState.p2Attacking), 
+         false);
+     #endif
     }
     
     // Check if the display timer has expired
@@ -183,14 +187,18 @@ void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, shor
     
     if (p1_exiting_stun) {
         p1_last_defender_free_frame = currentInternalFrame;
-        LogOut("[FRAME_ADV_DEBUG] P1 exited stun at frame " + std::to_string(currentInternalFrame), 
-               detailedLogging.load());
+         #if defined(ENABLE_FRAME_ADV_DEBUG)
+         LogOut("[FRAME_ADV_DEBUG] P1 exited stun at frame " + std::to_string(currentInternalFrame), 
+             detailedLogging.load());
+         #endif
     }
     
     if (p2_exiting_stun) {
         p2_last_defender_free_frame = currentInternalFrame;
-        LogOut("[FRAME_ADV_DEBUG] P2 exited stun at frame " + std::to_string(currentInternalFrame), 
-               detailedLogging.load());
+         #if defined(ENABLE_FRAME_ADV_DEBUG)
+         LogOut("[FRAME_ADV_DEBUG] P2 exited stun at frame " + std::to_string(currentInternalFrame), 
+             detailedLogging.load());
+         #endif
     }
     
     // STEP 1: Detect if an attack connects (P1 attacking P2)
@@ -268,8 +276,10 @@ void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, shor
             frameAdvState.p2HitstunStartInternalFrame = currentInternalFrame;
         }
         
-        LogOut("[FRAME_ADV_DEBUG] P1->P2 hit connected at frame " + std::to_string(currentInternalFrame), 
-               detailedLogging.load());
+         #if defined(ENABLE_FRAME_ADV_DEBUG)
+         LogOut("[FRAME_ADV_DEBUG] P1->P2 hit connected at frame " + std::to_string(currentInternalFrame), 
+             detailedLogging.load());
+         #endif
         
         // Reset this for accurate gap detection in the next sequence
         p2_last_defender_free_frame = -1;
@@ -353,8 +363,10 @@ void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, shor
             frameAdvState.p1HitstunStartInternalFrame = currentInternalFrame;
         }
         
-        LogOut("[FRAME_ADV_DEBUG] P2->P1 hit connected at frame " + std::to_string(currentInternalFrame), 
-               detailedLogging.load());
+         #if defined(ENABLE_FRAME_ADV_DEBUG)
+         LogOut("[FRAME_ADV_DEBUG] P2->P1 hit connected at frame " + std::to_string(currentInternalFrame), 
+             detailedLogging.load());
+         #endif
         
         // Reset this for accurate gap detection in the next sequence
         p1_last_defender_free_frame = -1;
@@ -367,16 +379,20 @@ void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, shor
     if (frameAdvState.p1Attacking && frameAdvState.p1ActionableInternalFrame == -1) {
         if (!IsActionable(prevMoveID1) && IsActionable(moveID1)) {
             frameAdvState.p1ActionableInternalFrame = currentInternalFrame;
-            LogOut("[FRAME_ADV_DEBUG] P1 attacker recovery ended at frame " + 
-                   std::to_string(currentInternalFrame), detailedLogging.load());
+         #if defined(ENABLE_FRAME_ADV_DEBUG)
+         LogOut("[FRAME_ADV_DEBUG] P1 attacker recovery ended at frame " + 
+             std::to_string(currentInternalFrame), detailedLogging.load());
+         #endif
         }
     }
     
     if (frameAdvState.p2Attacking && frameAdvState.p2ActionableInternalFrame == -1) {
         if (!IsActionable(prevMoveID2) && IsActionable(moveID2)) {
             frameAdvState.p2ActionableInternalFrame = currentInternalFrame;
-            LogOut("[FRAME_ADV_DEBUG] P2 attacker recovery ended at frame " + 
-                   std::to_string(currentInternalFrame), detailedLogging.load());
+         #if defined(ENABLE_FRAME_ADV_DEBUG)
+         LogOut("[FRAME_ADV_DEBUG] P2 attacker recovery ended at frame " + 
+             std::to_string(currentInternalFrame), detailedLogging.load());
+         #endif
         }
     }
     
@@ -387,8 +403,10 @@ void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, shor
         
         if (wasInStun && nowNotInStun) {
             frameAdvState.p2DefenderFreeInternalFrame = currentInternalFrame;
-            LogOut("[FRAME_ADV_DEBUG] P2 defender freed at frame " + 
-                   std::to_string(currentInternalFrame), detailedLogging.load());
+         #if defined(ENABLE_FRAME_ADV_DEBUG)
+         LogOut("[FRAME_ADV_DEBUG] P2 defender freed at frame " + 
+             std::to_string(currentInternalFrame), detailedLogging.load());
+         #endif
         }
     }
     
@@ -398,8 +416,10 @@ void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, shor
         
         if (wasInStun && nowNotInStun) {
             frameAdvState.p1DefenderFreeInternalFrame = currentInternalFrame;
-            LogOut("[FRAME_ADV_DEBUG] P1 defender freed at frame " + 
-                   std::to_string(currentInternalFrame), detailedLogging.load());
+         #if defined(ENABLE_FRAME_ADV_DEBUG)
+         LogOut("[FRAME_ADV_DEBUG] P1 defender freed at frame " + 
+             std::to_string(currentInternalFrame), detailedLogging.load());
+         #endif
         }
     }
     

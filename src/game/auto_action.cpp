@@ -856,9 +856,9 @@ void ApplyAutoAction(int playerNum, uintptr_t moveIDAddr, short currentMoveID, s
         RestoreP2ControlState();
     }
 
-    // Log attack data for debugging
-    short moveID = GetActionMoveID(actionType, triggerType, playerNum);
-    AttackReader::LogMoveData(playerNum, moveID);
+    // AttackReader disabled to reduce CPU usage
+    // short moveID = GetActionMoveID(actionType, triggerType, playerNum);
+    // AttackReader::LogMoveData(playerNum, moveID);
 }
 
 // Enable P2 human control for auto-action and save original state
@@ -1026,8 +1026,8 @@ bool AutoGuard(int playerNum, int opponentPtr) {
     // Log what move we're trying to block
     LogOut("[AUTO_GUARD] Attempting to block move ID: " + std::to_string(moveID), true);
     
-    // Get attack height
-    AttackHeight height = AttackReader::GetAttackHeight(opponentPtr, moveID);
+    // Get attack height (disabled AttackReader use: assume mid as a safe default)
+    AttackHeight height = ATTACK_HEIGHT_MID;
     
     // Check if in air
     double yPos = 0.0;
