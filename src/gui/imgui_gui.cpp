@@ -259,6 +259,47 @@ namespace ImGuiGui {
                 ImGui::SetTooltip("Gives you direct control over Player 2 in Practice Mode.\nThis is required for the Debug Input tab to work.\nApply changes to update the game.");
             }
             ImGui::PopItemWidth();
+
+            ImGui::Dummy(ImVec2(1, 6));
+            ImGui::SeparatorText("Practice Dummy");
+            // Auto-Block (F7 equivalent)
+            bool ab = false; bool abOk = GetPracticeAutoBlockEnabled(ab);
+            if (abOk) {
+                bool abLocal = ab;
+                if (ImGui::Checkbox("Dummy Auto-Block (F7)", &abLocal)) {
+                    SetPracticeAutoBlockEnabled(abLocal);
+                }
+                if (ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip("Toggle the dummy's auto-block. Mirrors the in-game F7 toggle.\nWorks even when P2 is human-controlled.");
+                }
+            } else {
+                ImGui::BeginDisabled();
+                bool dummy = false; ImGui::Checkbox("Dummy Auto-Block (F7)", &dummy);
+                ImGui::EndDisabled();
+                if (ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip("Available only in Practice Mode.");
+                }
+            }
+
+            // State (F6 equivalent): 0=Standing, 1=Jumping, 2=Crouching
+            int mode = 0; bool modeOk = GetPracticeBlockMode(mode);
+            const char* stateNames[] = { "Standing", "Jumping", "Crouching" };
+            if (modeOk) {
+                int mLocal = (mode < 0 ? 0 : (mode > 2 ? 2 : mode));
+                if (ImGui::Combo("Dummy State (F6)", &mLocal, stateNames, IM_ARRAYSIZE(stateNames))) {
+                    SetPracticeBlockMode(mLocal);
+                }
+                if (ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip("Sets the dummy's posture/state: Standing, Jumping, or Crouching.\nWorks regardless of P2 control.");
+                }
+            } else {
+                ImGui::BeginDisabled();
+                int dummyState = 0; ImGui::Combo("Dummy State (F6)", &dummyState, stateNames, IM_ARRAYSIZE(stateNames));
+                ImGui::EndDisabled();
+                if (ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip("Available only in Practice Mode.");
+                }
+            }
         }
 
         ImGui::PopItemWidth();
