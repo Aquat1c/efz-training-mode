@@ -89,8 +89,14 @@ int __fastcall HookedProcessCharacterInput(int characterPtr, int edx) {
             }
         }
      if (g_lastInjectedMask[playerNum] != currentMask) {
-         LogOut(std::string("[INPUT_HOOK] Injecting for P") + std::to_string(playerNum) + 
-             " mask=0x" + FormatHexByte(currentMask), detailedLogging.load());
+         static std::chrono::steady_clock::time_point lastLogAt[3] = { {}, {}, {} };
+         auto now = std::chrono::steady_clock::now();
+         bool timeOk = (lastLogAt[playerNum].time_since_epoch().count() == 0) || ((now - lastLogAt[playerNum]) >= std::chrono::seconds(2));
+         if (detailedLogging.load() && timeOk) {
+             LogOut(std::string("[INPUT_HOOK] Injecting for P") + std::to_string(playerNum) + 
+                 " mask=0x" + FormatHexByte(currentMask), true);
+             lastLogAt[playerNum] = now;
+         }
      }
      WritePlayerInputImmediate(playerNum, currentMask);
         // Optional: skip buffer write if immediate-only mode is requested (e.g., auto airtech)
