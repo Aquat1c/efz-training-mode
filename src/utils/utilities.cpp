@@ -258,7 +258,10 @@ DisplayData displayData = {
     // ... rest of initialization
     false, false,       // p1DoppelEnlightened, p2DoppelEnlightened
     false, false,       // p1RumiBarehanded, p2RumiBarehanded
-    false, false        // p1RumiInfiniteShinai, p2RumiInfiniteShinai
+    false, false,       // p1RumiInfiniteShinai, p2RumiInfiniteShinai
+    false, false,       // p1RumiKimchiActive, p2RumiKimchiActive
+    0, 0,               // p1RumiKimchiTimer, p2RumiKimchiTimer
+    false, false        // p1RumiInfiniteKimchi, p2RumiInfiniteKimchi
 };
 
 // Initialize key bindings with default values

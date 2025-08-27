@@ -192,14 +192,20 @@ namespace CharacterSettings {
             const int baseOffset = (playerIndex == 1) ? EFZ_BASE_OFFSET_P1 : EFZ_BASE_OFFSET_P2;
             uintptr_t modeAddr = ResolvePointer(base, baseOffset, RUMI_MODE_BYTE_OFFSET);
             uintptr_t gateAddr = ResolvePointer(base, baseOffset, RUMI_WEAPON_GATE_OFFSET);
+            uintptr_t kimchiFlagAddr = ResolvePointer(base, baseOffset, RUMI_KIMCHI_ACTIVE_OFFSET);
+            uintptr_t kimchiTimerAddr = ResolvePointer(base, baseOffset, RUMI_KIMCHI_TIMER_OFFSET);
             uint8_t mode = 0, gate = 0;
             if (modeAddr) SafeReadMemory(modeAddr, &mode, sizeof(uint8_t));
             if (gateAddr) SafeReadMemory(gateAddr, &gate, sizeof(uint8_t));
             bool bare = (mode != 0) || (gate != 0);
             if (playerIndex == 1) {
                 data.p1RumiBarehanded = bare;
+                if (kimchiFlagAddr) { int f=0; SafeReadMemory(kimchiFlagAddr, &f, sizeof(int)); data.p1RumiKimchiActive = (f!=0); }
+                if (kimchiTimerAddr) { int t=0; SafeReadMemory(kimchiTimerAddr, &t, sizeof(int)); data.p1RumiKimchiTimer = t; }
             } else {
                 data.p2RumiBarehanded = bare;
+                if (kimchiFlagAddr) { int f=0; SafeReadMemory(kimchiFlagAddr, &f, sizeof(int)); data.p2RumiKimchiActive = (f!=0); }
+                if (kimchiTimerAddr) { int t=0; SafeReadMemory(kimchiTimerAddr, &t, sizeof(int)); data.p2RumiKimchiTimer = t; }
             }
             LogOut(std::string("[CHAR] Read Rumi state ") + (playerIndex==1?"P1":"P2") + ": mode=" + std::to_string((int)mode) + ", gate=" + std::to_string((int)gate), detailedLogging.load());
         };
@@ -432,10 +438,40 @@ namespace CharacterSettings {
             // Infinite Shinai overrides UI selection; force Shinai when enabled
             const bool wantBarehand = data.p1RumiInfiniteShinai ? false : data.p1RumiBarehanded;
             ApplyRumiMode(1, wantBarehand);
+            // Apply Kimchi activation/timer if fields are present
+            if (uintptr_t flag = ResolvePointer(base, EFZ_BASE_OFFSET_P1, RUMI_KIMCHI_ACTIVE_OFFSET)) {
+                int newV = data.p1RumiKimchiActive ? 1 : 0;
+                int curV = 0; SafeReadMemory(flag, &curV, sizeof(int));
+                if (curV != newV) { SafeWriteMemory(flag, &newV, sizeof(int)); }
+                // If activating now (rising edge), set MoveID to Kimchi (307) once
+                if (curV == 0 && newV == 1) {
+                    if (auto mvAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P1, MOVE_ID_OFFSET)) {
+                        short k = RUMI_KIMCHI_MOVE_ID; SafeWriteMemory(mvAddr, &k, sizeof(short));
+                        LogOut("[CHAR] P1 Kimchi activated -> set MoveID 307 once", true);
+                    }
+                }
+            }
+            if (uintptr_t tim = ResolvePointer(base, EFZ_BASE_OFFSET_P1, RUMI_KIMCHI_TIMER_OFFSET)) {
+                int t = data.p1RumiKimchiTimer; if (t < 0) t = 0; if (t > RUMI_KIMCHI_TARGET) t = RUMI_KIMCHI_TARGET; SafeWriteMemory(tim, &t, sizeof(int));
+            }
         }
         if (data.p2CharID == CHAR_ID_NANASE) {
             const bool wantBarehand = data.p2RumiInfiniteShinai ? false : data.p2RumiBarehanded;
             ApplyRumiMode(2, wantBarehand);
+            if (uintptr_t flag = ResolvePointer(base, EFZ_BASE_OFFSET_P2, RUMI_KIMCHI_ACTIVE_OFFSET)) {
+                int newV = data.p2RumiKimchiActive ? 1 : 0;
+                int curV = 0; SafeReadMemory(flag, &curV, sizeof(int));
+                if (curV != newV) { SafeWriteMemory(flag, &newV, sizeof(int)); }
+                if (curV == 0 && newV == 1) {
+                    if (auto mvAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P2, MOVE_ID_OFFSET)) {
+                        short k = RUMI_KIMCHI_MOVE_ID; SafeWriteMemory(mvAddr, &k, sizeof(short));
+                        LogOut("[CHAR] P2 Kimchi activated -> set MoveID 307 once", true);
+                    }
+                }
+            }
+            if (uintptr_t tim = ResolvePointer(base, EFZ_BASE_OFFSET_P2, RUMI_KIMCHI_TIMER_OFFSET)) {
+                int t = data.p2RumiKimchiTimer; if (t < 0) t = 0; if (t > RUMI_KIMCHI_TARGET) t = RUMI_KIMCHI_TARGET; SafeWriteMemory(tim, &t, sizeof(int));
+            }
         }
         
         // Apply any character-specific patches if enabled
@@ -443,8 +479,8 @@ namespace CharacterSettings {
         // This ensures the monitoring thread is updated with the latest settings
         RemoveCharacterPatches();
         
-        bool wantRumiMonitor = (data.p1CharID == CHAR_ID_NANASE && data.p1RumiInfiniteShinai) ||
-                                (data.p2CharID == CHAR_ID_NANASE && data.p2RumiInfiniteShinai);
+    bool wantRumiMonitor = (data.p1CharID == CHAR_ID_NANASE && (data.p1RumiInfiniteShinai || data.p1RumiInfiniteKimchi)) ||
+                (data.p2CharID == CHAR_ID_NANASE && (data.p2RumiInfiniteShinai || data.p2RumiInfiniteKimchi));
         if (data.infiniteBloodMode || data.infiniteFeatherMode || data.infiniteMishioElement || data.infiniteMishioAwakened ||
             data.p1BlueIC || data.p2BlueIC || wantRumiMonitor) {
             ApplyCharacterPatches(data);
@@ -711,6 +747,31 @@ namespace CharacterSettings {
                     EnforceRumiShinai(1);
                     EnforceRumiShinai(2);
                 }
+
+                // Rumi Kimchi enforcement:
+                // - If Infinite enabled: keep timer topped and ensure Active=1
+                auto EnforceRumiKimchi = [&](int playerIndex) {
+                    const bool isRumi = (playerIndex == 1) ? (localData.p1CharID == CHAR_ID_NANASE)
+                                                          : (localData.p2CharID == CHAR_ID_NANASE);
+                    if (!isRumi) return;
+                    const int baseOffset = (playerIndex == 1) ? EFZ_BASE_OFFSET_P1 : EFZ_BASE_OFFSET_P2;
+                    uintptr_t flagAddr = ResolvePointer(base, baseOffset, RUMI_KIMCHI_ACTIVE_OFFSET);
+                    uintptr_t timerAddr = ResolvePointer(base, baseOffset, RUMI_KIMCHI_TIMER_OFFSET);
+                    if (!timerAddr) return;
+                    // Infinite handling
+                    const bool wantInf = (playerIndex == 1) ? localData.p1RumiInfiniteKimchi : localData.p2RumiInfiniteKimchi;
+                    if (wantInf) {
+                        int curTimer = 0; SafeReadMemory(timerAddr, &curTimer, sizeof(int));
+                        int target = RUMI_KIMCHI_TARGET;
+                        if (curTimer < target) { SafeWriteMemory(timerAddr, &target, sizeof(int)); didWriteThisLoop = true; }
+                        if (flagAddr) {
+                            int curFlag = 0; SafeReadMemory(flagAddr, &curFlag, sizeof(int));
+                            if (!curFlag) { int one = 1; SafeWriteMemory(flagAddr, &one, sizeof(int)); didWriteThisLoop = true; }
+                        }
+                    }
+                };
+                EnforceRumiKimchi(1);
+                EnforceRumiKimchi(2);
                 
                 // Adjust backoff based on whether we wrote this loop
                 if (didWriteThisLoop) {
@@ -752,8 +813,11 @@ namespace CharacterSettings {
             (data.p1CharID == CHAR_ID_MISHIO || data.p2CharID == CHAR_ID_MISHIO);
     bool shouldMonitorRumiShinai = (data.p1CharID == CHAR_ID_NANASE && data.p1RumiInfiniteShinai) ||
                        (data.p2CharID == CHAR_ID_NANASE && data.p2RumiInfiniteShinai);
+    bool shouldMonitorRumiKimchi =
+        (data.p1CharID == CHAR_ID_NANASE && data.p1RumiInfiniteKimchi) ||
+        (data.p2CharID == CHAR_ID_NANASE && data.p2RumiInfiniteKimchi);
         
-    if (!shouldMonitorIkumi && !shouldMonitorMisuzu && !shouldMonitorMishioElem && !shouldMonitorMishioAw && !shouldMonitorIC && !shouldMonitorRumiShinai) {
+    if (!shouldMonitorIkumi && !shouldMonitorMisuzu && !shouldMonitorMishioElem && !shouldMonitorMishioAw && !shouldMonitorIC && !shouldMonitorRumiShinai && !shouldMonitorRumiKimchi) {
             LogOut("[CHAR] No character monitoring needed - no infinite modes, Blue IC, or supported characters", true);
             return;
         }
