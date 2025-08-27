@@ -97,7 +97,7 @@ namespace ImGuiGui {
         ImGui::PushItemWidth(120);
 
         // Section: Character Data
-        if (ImGui::CollapsingHeader("Character Data", ImGuiTreeNodeFlags_DefaultOpen)) {
+    if (ImGui::CollapsingHeader("Character Data")) {
             // Two-column layout for P1/P2
             ImGui::Columns(2, "playerColumns", false);
 
@@ -176,7 +176,7 @@ namespace ImGuiGui {
         ImGui::Separator();
 
         // Section: Player options (Auto-Airtech + Auto-Jump)
-        if (ImGui::CollapsingHeader("Player Options", ImGuiTreeNodeFlags_DefaultOpen)) {
+    if (ImGui::CollapsingHeader("Player Options")) {
             // Auto-Airtech
             ImGui::TextUnformatted("Auto-Airtech:");
             ImGui::SameLine();
@@ -240,7 +240,7 @@ namespace ImGuiGui {
         }
 
         // New Section: Game Settings
-        if (ImGui::CollapsingHeader("Game Settings", ImGuiTreeNodeFlags_DefaultOpen)) {
+    if (ImGui::CollapsingHeader("Game Settings")) {
             // FM bypass toggle (applies immediately, reversible)
             bool fmBypass = IsFinalMemoryBypassEnabled();
             if (ImGui::Checkbox("Final Memory: Allow at any HP", &fmBypass)) {
@@ -1159,7 +1159,7 @@ namespace ImGuiGui {
     // Set window position and size
         // Use Appearing so the menu always resets to a visible spot when reopened (prevents off-screen in fullscreen)
         ImGui::SetNextWindowPos(ImVec2(50, 50), ImGuiCond_Appearing);
-        ImGui::SetNextWindowSize(ImVec2(580, 520), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(520, 460), ImGuiCond_FirstUseEver);
     // Force fully-opaque background to avoid heavy alpha blending on low-end GPUs
     ImGui::SetNextWindowBgAlpha(1.0f);
 
