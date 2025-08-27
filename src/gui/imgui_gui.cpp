@@ -262,23 +262,27 @@ namespace ImGuiGui {
 
             ImGui::Dummy(ImVec2(1, 6));
             ImGui::SeparatorText("Practice Dummy");
-            // Auto-Block (F7 equivalent)
-            bool ab = false; bool abOk = GetPracticeAutoBlockEnabled(ab);
-            if (abOk) {
-                bool abLocal = ab;
-                if (ImGui::Checkbox("Dummy Auto-Block (F7)", &abLocal)) {
-                    SetPracticeAutoBlockEnabled(abLocal);
+            // Auto-Block Mode (F7 superset)
+            const char* abNames[] = { "None", "All (F7)", "First Hit (then off)", "After First Hit (then on)", "(deprecated)" };
+            if (GetCurrentGameMode() == GameMode::Practice) {
+                int abMode = GetDummyAutoBlockMode();
+                ImGui::SetNextItemWidth(200);
+                if (ImGui::Combo("Dummy Auto-Block", &abMode, abNames, 4)) { // only first 4 are valid now
+                    SetDummyAutoBlockMode(abMode);
                 }
                 if (ImGui::IsItemHovered()) {
-                    ImGui::SetTooltip("Toggle the dummy's auto-block. Mirrors the in-game F7 toggle.\nWorks even when P2 is human-controlled.");
+                    ImGui::SetTooltip("Dummy block behavior:\n- None\n- All: always auto-block (vanilla F7)\n- First Hit: after a block, autoblock is disabled for a short cooldown\n- After First Hit: after you get hit, autoblock is enabled briefly to block the next hit");
+                }
+                ImGui::SameLine();
+                bool adaptive = GetAdaptiveStanceEnabled();
+                if (ImGui::Checkbox("Adaptive stance", &adaptive)) {
+                    SetAdaptiveStanceEnabled(adaptive);
+                }
+                if (ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip("Forces dummy stance each frame: stand vs airborne attacker, crouch vs grounded.");
                 }
             } else {
-                ImGui::BeginDisabled();
-                bool dummy = false; ImGui::Checkbox("Dummy Auto-Block (F7)", &dummy);
-                ImGui::EndDisabled();
-                if (ImGui::IsItemHovered()) {
-                    ImGui::SetTooltip("Available only in Practice Mode.");
-                }
+                ImGui::BeginDisabled(); int dummyAB = 0; ImGui::Combo("Dummy Auto-Block", &dummyAB, abNames, 4); ImGui::EndDisabled();
             }
 
             // State (F6 equivalent): 0=Standing, 1=Jumping, 2=Crouching

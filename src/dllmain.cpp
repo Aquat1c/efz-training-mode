@@ -152,15 +152,29 @@ void DelayedInitialization(HMODULE hModule) {
             // Wait a bit for everything to initialize
             Sleep(5000);
 
-            // Log ImGui rendering status every few seconds
-            while (true) {
-                if (ImGuiImpl::IsInitialized()) {
-                    LogOut(
-                        std::string("[IMGUI_MONITOR] Status: Initialized=") +
-                        (ImGuiImpl::IsInitialized() ? "1" : "0") +
-                        ", Visible=" + (ImGuiImpl::IsVisible() ? "1" : "0"),
-                        detailedLogging.load());
+            bool prevInit = false;
+            bool prevVisible = false;
+            unsigned long long lastLog = 0;
+
+            // Log ImGui rendering status on change, at most once per 5 seconds
+            while (!g_isShuttingDown.load()) {
+                bool inited = ImGuiImpl::IsInitialized();
+                bool visible = inited && ImGuiImpl::IsVisible();
+                unsigned long long now = GetTickCount64();
+
+                if (inited && (inited != prevInit || visible != prevVisible)) {
+                    if (now - lastLog >= 5000ULL) {
+                        LogOut(
+                            std::string("[IMGUI_MONITOR] Status: Initialized=") +
+                            (inited ? "1" : "0") +
+                            ", Visible=" + (visible ? "1" : "0"),
+                            detailedLogging.load());
+                        lastLog = now;
+                    }
+                    prevInit = inited;
+                    prevVisible = visible;
                 }
+
                 // Check every 5 seconds
                 Sleep(5000);
             }

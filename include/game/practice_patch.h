@@ -38,3 +38,23 @@ bool GetPracticeAutoBlockEnabled(bool &enabledOut);
 bool SetPracticeBlockMode(int mode /*0..2*/);
 bool GetPracticeBlockMode(int &modeOut);
 bool CyclePracticeBlockMode();
+
+// Extended Dummy Auto-Block modes (superset of F7):
+// 0=None, 1=All (F7), 2=First Hit (disable after first block), 3=After First Hit (enable after first hit), 4=Adaptive
+enum DummyAutoBlockMode : int {
+	DAB_None = 0,
+	DAB_All = 1,
+	DAB_FirstHitThenOff = 2,
+	DAB_EnableAfterFirstHit = 3,
+	DAB_Adaptive = 4
+};
+
+void SetDummyAutoBlockMode(int mode);
+int  GetDummyAutoBlockMode();
+void ResetDummyAutoBlockState();
+// Called every frame (Match only) with current and previous move IDs
+void MonitorDummyAutoBlock(short p1MoveID, short p2MoveID, short prevP1MoveID, short prevP2MoveID);
+
+// New: Adaptive stance can be used with any mode
+void SetAdaptiveStanceEnabled(bool enabled);
+bool GetAdaptiveStanceEnabled();
