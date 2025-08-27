@@ -516,8 +516,8 @@ namespace ImGuiGui {
         ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.0f, 1.0f), "Character-Specific Settings");
         ImGui::Separator();
         
-        // Check if characters are valid
-        if (!AreCharactersInitialized()) {
+    // Check if characters are valid
+    if (!AreCharactersInitialized()) {
             ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.5f, 1.0f), "No valid characters detected.");
             return;
         }
@@ -769,6 +769,36 @@ namespace ImGuiGui {
             }
             ImGui::TextDisabled("(sets internal flag to 1 when checked, 0 when unchecked)");
         }
+        // P1 Nanase (Rumi) Settings
+    else if (p1CharID == CHAR_ID_NANASE) {
+            ImGui::Text("Rumi Mode:");
+            // Keep combobox in sync with current state and disable when Infinite Shinai is on
+            int modeIdx = guiState.localData.p1RumiBarehanded ? 1 : 0; // 0=Shinai, 1=Barehanded
+            const char* rumiModes[] = { "Shinai", "Barehanded" };
+            bool p1InfNow = guiState.localData.p1RumiInfiniteShinai;
+            if (p1InfNow) {
+                // While Infinite is on, force UI to show Shinai and keep local state Shinai
+                modeIdx = 0;
+                guiState.localData.p1RumiBarehanded = false;
+                ImGui::BeginDisabled(true);
+            }
+            if (ImGui::Combo("##p1RumiMode", &modeIdx, rumiModes, IM_ARRAYSIZE(rumiModes))) {
+                guiState.localData.p1RumiBarehanded = (modeIdx == 1);
+            }
+            if (p1InfNow) ImGui::EndDisabled();
+            bool infShinai = guiState.localData.p1RumiInfiniteShinai;
+            if (ImGui::Checkbox("Infinite Shinai (prevent dropping)##p1RumiInf", &infShinai)) {
+                guiState.localData.p1RumiInfiniteShinai = infShinai;
+                if (infShinai) {
+                    // Override UI intention: always Shinai when Infinite is on
+                    guiState.localData.p1RumiBarehanded = false;
+                }
+            }
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("When enabled, keeps Shinai equipped by forcing mode back to Shinai after specials/supers that drop it. Only applies when mode is Shinai.");
+            }
+            ImGui::TextDisabled("(Mode swap writes anim/move pointers and syncs gate/mode; safer when idle)");
+        }
         else {
             ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "No special settings available");
         }
@@ -885,6 +915,35 @@ namespace ImGuiGui {
                 guiState.localData.p2DoppelEnlightened = enlightened2;
             }
             ImGui::TextDisabled("(sets internal flag to 1 when checked, 0 when unchecked)");
+        }
+        // P2 Nanase (Rumi) Settings
+    else if (p2CharID == CHAR_ID_NANASE) {
+            ImGui::Text("Rumi Mode:");
+            // Keep combobox in sync with current state and disable when Infinite Shinai is on
+            int modeIdx2 = guiState.localData.p2RumiBarehanded ? 1 : 0; // 0=Shinai, 1=Barehanded
+            const char* rumiModes[] = { "Shinai", "Barehanded" };
+            bool p2InfNow = guiState.localData.p2RumiInfiniteShinai;
+            if (p2InfNow) {
+                // While Infinite is on, force UI to show Shinai and keep local state Shinai
+                modeIdx2 = 0;
+                guiState.localData.p2RumiBarehanded = false;
+                ImGui::BeginDisabled(true);
+            }
+            if (ImGui::Combo("##p2RumiMode", &modeIdx2, rumiModes, IM_ARRAYSIZE(rumiModes))) {
+                guiState.localData.p2RumiBarehanded = (modeIdx2 == 1);
+            }
+            if (p2InfNow) ImGui::EndDisabled();
+            bool infShinai2 = guiState.localData.p2RumiInfiniteShinai;
+            if (ImGui::Checkbox("Infinite Shinai (prevent dropping)##p2RumiInf", &infShinai2)) {
+                guiState.localData.p2RumiInfiniteShinai = infShinai2;
+                if (infShinai2) {
+                    guiState.localData.p2RumiBarehanded = false;
+                }
+            }
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("When enabled, keeps Shinai equipped by forcing mode back to Shinai after specials/supers that drop it. Only applies when mode is Shinai.");
+            }
+            ImGui::TextDisabled("(Mode swap writes anim/move pointers and syncs gate/mode; safer when idle)");
         }
         else {
             ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "No special settings available");
@@ -1136,6 +1195,12 @@ namespace ImGuiGui {
             return;
         }
 
+        // Hard gate: don't dereference player pointers until characters are initialized
+        if (!AreCharactersInitialized()) {
+            LogOut("[IMGUI] RefreshLocalData: Characters not initialized; skipping memory reads", true);
+            return;
+        }
+
         // P1
         SafeReadMemory(ResolvePointer(base, EFZ_BASE_OFFSET_P1, HP_OFFSET), &guiState.localData.hp1, sizeof(int));
         SafeReadMemory(ResolvePointer(base, EFZ_BASE_OFFSET_P1, METER_OFFSET), &guiState.localData.meter1, sizeof(int));
@@ -1168,6 +1233,7 @@ namespace ImGuiGui {
           CharacterSettings::UpdateCharacterIDs(guiState.localData);
     
     // Read character-specific values (once per refresh)
+    // Read character-specific values; Rumi path only reads mode/gate and is safe
     CharacterSettings::ReadCharacterValues(base, guiState.localData);
 
         // Read current IC color values from memory
@@ -1224,7 +1290,14 @@ namespace ImGuiGui {
             LogOut("[IMGUI_GUI] Applying settings from ImGui interface", true);
             
             DisplayData updatedData = guiState.localData;
+            // Normalize Rumi intent: Infinite Shinai overrides to Shinai mode
+            if (updatedData.p1RumiInfiniteShinai) updatedData.p1RumiBarehanded = false;
+            if (updatedData.p2RumiInfiniteShinai) updatedData.p2RumiBarehanded = false;
             displayData = updatedData;
+
+            // Ensure new Rumi flags are preserved
+            displayData.p1RumiInfiniteShinai = updatedData.p1RumiInfiniteShinai;
+            displayData.p2RumiInfiniteShinai = updatedData.p2RumiInfiniteShinai;
             
             // Update atomic variables from our local copy
             autoAirtechEnabled.store(displayData.autoAirtech);
@@ -1291,7 +1364,20 @@ namespace ImGuiGui {
             // Apply the settings to the game
             uintptr_t base = GetEFZBase();
             if (base) {
+                // Defer Rumi mode apply if not actionable to avoid unsafe engine calls
+                bool deferred = false;
+                if (displayData.p1CharID == CHAR_ID_NANASE) {
+                    short mv = 0; if (auto mvAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P1, MOVE_ID_OFFSET)) SafeReadMemory(mvAddr, &mv, sizeof(short));
+                    if (!IsActionable(mv)) deferred = true;
+                }
+                if (displayData.p2CharID == CHAR_ID_NANASE) {
+                    short mv = 0; if (auto mvAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P2, MOVE_ID_OFFSET)) SafeReadMemory(mvAddr, &mv, sizeof(short));
+                    if (!IsActionable(mv)) deferred = true;
+                }
                 ApplySettings(&displayData);
+                if (deferred) {
+                    LogOut("[IMGUI] Rumi mode change deferred; apply again when idle.", true);
+                }
                 // Refresh trigger overlay text to reflect new settings immediately
                 UpdateTriggerOverlay();
             }
