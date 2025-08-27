@@ -228,8 +228,7 @@ namespace ImGuiImpl {
         
         if (g_imguiVisible) {
             LogOut("[IMGUI] ImGui interface opened - will render continuously until closed", true);
-            
-            // Update our local copy of the display data by reading from memory
+            // Refresh local data now so UI reflects current state on first frame
             ImGuiGui::RefreshLocalData();
         } else {
             LogOut("[IMGUI] ImGui interface closed", true);

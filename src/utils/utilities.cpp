@@ -256,7 +256,9 @@ DisplayData displayData = {
     200,                // autoActionCustomID
     0,                  // autoActionPlayer
     // ... rest of initialization
-        false, false        // p1DoppelEnlightened, p2DoppelEnlightened
+    false, false,       // p1DoppelEnlightened, p2DoppelEnlightened
+    false, false,       // p1RumiBarehanded, p2RumiBarehanded
+    false, false        // p1RumiInfiniteShinai, p2RumiInfiniteShinai
 };
 
 // Initialize key bindings with default values

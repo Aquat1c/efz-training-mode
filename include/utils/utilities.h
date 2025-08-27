@@ -171,6 +171,14 @@ struct DisplayData {
     // Doppel Nanase (ExNanase) - Enlightened FM checkbox state per player
     bool p1DoppelEnlightened;
     bool p2DoppelEnlightened;
+
+    // Nanase (Rumi) – Barehanded mode (full swap of normals+specials)
+    bool p1RumiBarehanded;
+    bool p2RumiBarehanded;
+
+    // Nanase (Rumi) – Infinite Shinai: prevent weapon from being dropped (auto-restore to Shinai)
+    bool p1RumiInfiniteShinai;
+    bool p2RumiInfiniteShinai;
 };
 
 extern DisplayData displayData;

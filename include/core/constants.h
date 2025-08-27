@@ -335,6 +335,29 @@
 // From decomp: *(DWORD*)(playerBase + 13396) toggles 0/1 when Enlightened is active
 #define DOPPEL_ENLIGHTENED_OFFSET 0x3454
 
+// Nanase (Rumi) weapon/barehand mode swap
+// RVA of the engine's native toggleCharacterMode routine
+// Decomp VA: 0x0048E140; Module base: 0x00400000; RVA = 0x0008E140
+#define TOGGLE_CHARACTER_MODE_RVA 0x0008E140
+// Gate flag that enables barehand specials (1=barehand, 0=shinai)
+#define RUMI_WEAPON_GATE_OFFSET   0x344C
+// True mode byte toggled by in-game toggleCharacterMode (1=barehand/alternate, 0=shinai/normal)
+#define RUMI_MODE_BYTE_OFFSET     0x3458
+// Pointers to alternate resources (written during init)
+#define RUMI_ALT_ANIM_PTR_OFFSET  0x345C
+#define RUMI_ALT_MOVE_PTR_OFFSET  0x3460
+// Pointers to normal resources
+#define RUMI_NORM_ANIM_PTR_OFFSET 0x3474
+#define RUMI_NORM_MOVE_PTR_OFFSET 0x3478
+// Destination fields that the game swaps when changing modes
+#define RUMI_ACTIVE_ANIM_PTR_DST  0x0010
+#define RUMI_ACTIVE_MOVE_PTR_DST  0x0164
+
+// Nanase (Rumi) super that forcibly drops Shinai (moveIDs from reverse-engineering)
+#define RUMI_SUPER_TOSS_A 308
+#define RUMI_SUPER_TOSS_B 309
+#define RUMI_SUPER_TOSS_C 310
+
 // Player input buffer offsets
 #define P1_INPUT_BUFFER_OFFSET 0x1AB      // Base address of input buffer
 #define P1_INPUT_BUFFER_INDEX_OFFSET 0x260 // Offset to current buffer index
