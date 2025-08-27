@@ -286,15 +286,15 @@ namespace ImGuiGui {
             const char* stateNames[] = { "Standing", "Jumping", "Crouching" };
             if (modeOk) {
                 int mLocal = (mode < 0 ? 0 : (mode > 2 ? 2 : mode));
-                if (ImGui::Combo("Dummy State (F6)", &mLocal, stateNames, IM_ARRAYSIZE(stateNames))) {
+                if (ImGui::Combo("Dummy Stance (F6)", &mLocal, stateNames, IM_ARRAYSIZE(stateNames))) {
                     SetPracticeBlockMode(mLocal);
                 }
                 if (ImGui::IsItemHovered()) {
-                    ImGui::SetTooltip("Sets the dummy's posture/state: Standing, Jumping, or Crouching.\nWorks regardless of P2 control.");
+                    ImGui::SetTooltip("Sets the dummy's stance: Standing, Jumping, or Crouching.\nWorks regardless of P2 control.");
                 }
             } else {
                 ImGui::BeginDisabled();
-                int dummyState = 0; ImGui::Combo("Dummy State (F6)", &dummyState, stateNames, IM_ARRAYSIZE(stateNames));
+                int dummyState = 0; ImGui::Combo("Dummy Stance (F6)", &dummyState, stateNames, IM_ARRAYSIZE(stateNames));
                 ImGui::EndDisabled();
                 if (ImGui::IsItemHovered()) {
                     ImGui::SetTooltip("Available only in Practice Mode.");
