@@ -11,6 +11,7 @@
 
 #include "../include/game/practice_patch.h"
 #include "../include/input/input_core.h"  // Include this to get AI_CONTROL_FLAG_OFFSET
+#include "../include/input/input_motion.h" // for direction/stance constants
 
 // Define constants for offsets
 const uintptr_t P2_CPU_FLAG_OFFSET = 4931;
@@ -600,9 +601,13 @@ bool SetPracticeAutoBlockEnabled(bool enabled) {
     if (GetCurrentGameMode() != GameMode::Practice) return false;
     uintptr_t gs = 0; if (!GetGameStatePtr(gs)) return false;
     uint32_t val = enabled ? 1u : 0u;
+    // Read current to avoid redundant writes/logs
+    uint32_t cur = 0;
+    SafeReadMemory(gs + PRACTICE_AUTO_BLOCK_OFFSET, &cur, sizeof(cur));
+    if (cur == val) return true; // no change
     bool ok = SafeWriteMemory(gs + PRACTICE_AUTO_BLOCK_OFFSET, &val, sizeof(val));
     if (ok) {
-        LogOut(std::string("[PRACTICE_PATCH] Auto-Block ") + (enabled ? "ON" : "OFF"), true);
+        LogOut(std::string("[PRACTICE_PATCH] Auto-Block ") + (enabled ? "ON" : "OFF"), detailedLogging.load());
     }
     return ok;
 }
@@ -620,11 +625,14 @@ bool SetPracticeBlockMode(int mode) {
     if (GetCurrentGameMode() != GameMode::Practice) return false;
     if (mode < 0) mode = 0; if (mode > 2) mode = 2;
     uintptr_t gs = 0; if (!GetGameStatePtr(gs)) return false;
+    // Avoid redundant writes
+    uint8_t current = 0; SafeReadMemory(gs + PRACTICE_BLOCK_MODE_OFFSET, &current, sizeof(current));
     uint8_t v = (uint8_t)mode;
+    if (current == v) return true;
     bool ok = SafeWriteMemory(gs + PRACTICE_BLOCK_MODE_OFFSET, &v, sizeof(v));
     if (ok) {
         const char* names[] = {"None", "First", "All"};
-        LogOut(std::string("[PRACTICE_PATCH] Block Mode -> ") + names[v], true);
+        LogOut(std::string("[PRACTICE_PATCH] Block Mode -> ") + names[v], detailedLogging.load());
     }
     return ok;
 }
@@ -632,4 +640,195 @@ bool SetPracticeBlockMode(int mode) {
 bool CyclePracticeBlockMode() {
     int m = 0; if (!GetPracticeBlockMode(m)) return false;
     m = (m + 1) % 3; return SetPracticeBlockMode(m);
+}
+
+// ---- Extended Dummy Auto-Block modes implementation ----
+static std::atomic<int> g_dummyAutoBlockMode{0};
+static std::atomic<bool> g_firstEventSeen{false};
+// Note: Legacy detection using guardstun/hitstun counters proved unreliable across states; rely on moveIDs instead.
+static std::atomic<bool> g_abWindowActive{false};
+static std::atomic<unsigned long long> g_abWindowDeadlineMs{0};
+static std::atomic<bool> g_adaptiveStance{false};
+
+// Tunables (ms)
+static constexpr unsigned long long AB_DELAY_FIRST_HIT_THEN_OFF_MS = 2000ULL; // 2 seconds
+static constexpr unsigned long long AB_DELAY_AFTER_FIRST_HIT_MS    = 1000ULL; // 1 second
+
+void SetDummyAutoBlockMode(int mode) {
+    if (mode < 0) mode = 0; if (mode > 4) mode = 4;
+    // Migrate deprecated Adaptive mode to All + adaptive toggle
+    if (mode == DAB_Adaptive) {
+        g_adaptiveStance.store(true);
+        mode = DAB_All; // behave like All while stance is controlled by checkbox
+    }
+    g_dummyAutoBlockMode.store(mode);
+    ResetDummyAutoBlockState();
+    // Immediate base config for +4936 auto-block and stance
+    switch (mode) {
+        case DAB_All:
+            SetPracticeAutoBlockEnabled(true);
+            break;
+        case DAB_None:
+            // Turn off native autoblock
+            SetPracticeAutoBlockEnabled(false);
+            break;
+        case DAB_FirstHitThenOff:
+            // Start enabled so we can catch the first block
+            SetPracticeAutoBlockEnabled(true);
+            break;
+        case DAB_EnableAfterFirstHit:
+            // Start disabled until we detect first hit
+            SetPracticeAutoBlockEnabled(false);
+            break;
+        case DAB_Adaptive:
+            // Deprecated as a standalone mode; treat as All with adaptive checkbox controlling stance
+            SetPracticeAutoBlockEnabled(true);
+            break;
+    }
+}
+
+int GetDummyAutoBlockMode() { return g_dummyAutoBlockMode.load(); }
+
+void ResetDummyAutoBlockState() {
+    g_firstEventSeen.store(false);
+    // No counter history needed when using moveID edge detection
+    g_abWindowActive.store(false);
+    g_abWindowDeadlineMs.store(0);
+}
+
+void SetAdaptiveStanceEnabled(bool enabled) { g_adaptiveStance.store(enabled); }
+bool GetAdaptiveStanceEnabled() { return g_adaptiveStance.load(); }
+
+// Helper: read stance/direction fields for P2, and Y positions for attacker(P1)
+static bool ReadP2BlockFields(uint8_t &dirOut, uint8_t &stanceOut) {
+    uintptr_t base = GetEFZBase(); if (!base) return false;
+    uintptr_t p2 = 0; if (!SafeReadMemory(base + EFZ_BASE_OFFSET_P2, &p2, sizeof(p2)) || !p2) return false;
+    uint8_t dir=0, stance=0;
+    SafeReadMemory(p2 + 392, &dir, sizeof(dir));
+    SafeReadMemory(p2 + 393, &stance, sizeof(stance));
+    dirOut = dir; stanceOut = stance;
+    return true;
+}
+
+static bool WriteP2BlockStance(uint8_t stance) {
+    uintptr_t base = GetEFZBase(); if (!base) return false;
+    uintptr_t p2 = 0; if (!SafeReadMemory(base + EFZ_BASE_OFFSET_P2, &p2, sizeof(p2)) || !p2) return false;
+    return SafeWriteMemory(p2 + 393, &stance, sizeof(stance));
+}
+
+static bool ReadPositions(double &p1Y, double &p2Y) {
+    uintptr_t base = GetEFZBase(); if (!base) return false;
+    uintptr_t y1 = ResolvePointer(base, EFZ_BASE_OFFSET_P1, YPOS_OFFSET);
+    uintptr_t y2 = ResolvePointer(base, EFZ_BASE_OFFSET_P2, YPOS_OFFSET);
+    return y1 && y2 && SafeReadMemory(y1, &p1Y, sizeof(p1Y)) && SafeReadMemory(y2, &p2Y, sizeof(p2Y));
+}
+
+// Helper: classify common states by moveID
+static inline bool IsP2BlockingOrBlockstun(short moveId) {
+    // Inclusive range covers standing/crouching/air guard and early guardstun states
+    return (moveId >= 150 && moveId <= 156);
+}
+static inline bool IsP2InHitstun(short moveId) {
+    // Use constants.h ranges for hitstun (standing/crouch/launch/sweep)
+    if ((moveId >= STAND_HITSTUN_START && moveId <= STAND_HITSTUN_END) ||
+        (moveId >= CROUCH_HITSTUN_START && moveId <= CROUCH_HITSTUN_END) ||
+        (moveId >= LAUNCHED_HITSTUN_START && moveId <= LAUNCHED_HITSTUN_END) ||
+        (moveId == SWEEP_HITSTUN)) {
+        return true;
+    }
+    return false;
+}
+// Helper: detect transition into a blocking/guard state this frame from moveIDs
+static inline bool DidP2JustBlockThisFrame(short prevMoveId, short currMoveId) {
+    return (!IsP2BlockingOrBlockstun(prevMoveId) && IsP2BlockingOrBlockstun(currMoveId));
+}
+
+// Core per-frame monitor; call from frame monitor after move IDs are read
+void MonitorDummyAutoBlock(short p1MoveID, short p2MoveID, short prevP1MoveID, short prevP2MoveID) {
+    if (GetCurrentGameMode() != GameMode::Practice) return;
+    int mode = g_dummyAutoBlockMode.load();
+    // Transition log throttle (5s)
+    static unsigned long long s_lastAbLog = 0;
+    auto log_ab = [&](const std::string& msg){
+        unsigned long long now = GetTickCount64();
+        if (now - s_lastAbLog >= 5000ULL) {
+            LogOut("[DUMMY_AB] " + msg, true);
+            s_lastAbLog = now;
+        }
+    };
+    // Compute desired autoblock state (single write at end)
+    bool abOn = false;
+
+    // First-hit toggles
+    if (mode == DAB_FirstHitThenOff) {
+        // Enable initially; after the first successful block, keep enabled for a grace period (2s), then restore (disable)
+        // Behavior (repeatable): start ON; on each block, immediately turn OFF, then after 2s turn ON again.
+        bool justBlocked = DidP2JustBlockThisFrame(prevP2MoveID, p2MoveID);
+        if (justBlocked) {
+            // Immediately disable and start cooldown
+            abOn = false;
+            g_abWindowActive.store(true);
+            g_abWindowDeadlineMs.store(GetTickCount64() + AB_DELAY_FIRST_HIT_THEN_OFF_MS);
+            log_ab("FirstHitThenOff: blocked -> autoblock OFF, re-enable in 2s");
+        } else if (g_abWindowActive.load()) {
+            // During cooldown keep disabled until deadline
+            abOn = false;
+            if (GetTickCount64() >= g_abWindowDeadlineMs.load()) {
+                g_abWindowActive.store(false);
+                abOn = true;
+                log_ab("FirstHitThenOff: cooldown ended -> autoblock ON");
+            }
+        } else {
+            // Normal state: enabled, waiting for next block to start cooldown
+            abOn = true;
+        }
+    }
+    else if (mode == DAB_EnableAfterFirstHit) {
+        // Initially disabled; when we detect first hit (hitstun rising), enable for 1s to block the next hit, then restore
+        // Behavior (repeatable): idle OFF; when a hit occurs, enable for 1s or until a block occurs, then OFF again
+        bool hitNow = (!IsP2InHitstun(prevP2MoveID) && IsP2InHitstun(p2MoveID));
+        if (hitNow && !g_abWindowActive.load()) {
+            abOn = true;
+            g_abWindowActive.store(true);
+            g_abWindowDeadlineMs.store(GetTickCount64() + AB_DELAY_AFTER_FIRST_HIT_MS);
+            log_ab("AfterFirstHit: hit detected -> autoblock ON for 1s");
+        }
+        if (g_abWindowActive.load()) {
+            // Keep enabled during window and close on block/timeout
+            abOn = true;
+            if (DidP2JustBlockThisFrame(prevP2MoveID, p2MoveID) || GetTickCount64() >= g_abWindowDeadlineMs.load()) {
+                abOn = false;
+                g_abWindowActive.store(false);
+                log_ab("AfterFirstHit: window ended -> autoblock OFF");
+            }
+        } else {
+            abOn = false;
+        }
+    }
+
+    else if (mode == DAB_All) {
+        // Keep auto-block enabled; no per-frame stance forcing
+        abOn = true;
+    }
+    else if (mode == DAB_None) {
+        abOn = false;
+    }
+    else {
+        // Fallback safety
+        abOn = false;
+    }
+
+    // Apply desired autoblock state once
+    SetPracticeAutoBlockEnabled(abOn);
+
+    // Apply adaptive stance only when autoblock is actually ON
+    if (g_adaptiveStance.load() && abOn) {
+        double p1Y = 0.0, p2Y = 0.0;
+        if (ReadPositions(p1Y, p2Y)) {
+            bool attackerAir = (p1Y < 0.0);
+            uint8_t desiredStance = attackerAir ? 0 /*stand*/ : 1 /*crouch*/;
+            WriteP2BlockStance(desiredStance);
+            SetPracticeBlockMode(attackerAir ? 0 : 2);
+        }
+    }
 }

@@ -528,6 +528,8 @@ void FrameDataMonitor() {
                     GameMode modeAtMatch = GetCurrentGameMode();
                     if (modeAtMatch == GameMode::Practice) {
                         EnsureDefaultControlFlagsOnMatchStart();
+                        // Reset Dummy Auto-Block per-round state machine
+                        ResetDummyAutoBlockState();
                     }
                 }
                 s_lastPhaseLocal = phase;
@@ -613,6 +615,11 @@ void FrameDataMonitor() {
                 ClearDelayStatesIfNonActionable();     
             }
             
+            // Ensure Dummy Auto-Block monitor runs every frame during Match (not gated by move changes)
+            // Important: pass previous moveIDs before updating them
+            MonitorDummyAutoBlock(moveID1, moveID2, prevMoveID1, prevMoveID2);
+
+            // Now update previous moveIDs for next frame
             prevMoveID1 = moveID1;
             prevMoveID2 = moveID2;
 
