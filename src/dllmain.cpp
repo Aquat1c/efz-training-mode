@@ -18,6 +18,7 @@
 #include "../include/gui/imgui_gui.h"
 #include "../include/utils/config.h"
 #include "../include/game/practice_patch.h"
+#include "../include/game/final_memory_patch.h"
 #include "../include/game/auto_action.h"  // ADD THIS INCLUDE
 #include "../include/input/input_hook.h" // Add this include
 #include "../3rdparty/minhook/include/MinHook.h" // Add this include
@@ -82,6 +83,8 @@ void DelayedInitialization(HMODULE hModule) {
         } catch (...) {
             LogOut("[SYSTEM] Exception while starting BGM suppression poller.", true);
         }
+
+    // Final Memory HP bypass is now manual via Debug tab to avoid unintended changes.
 
         LogOut("[SYSTEM] EFZ Training Mode - Delayed initialization starting", true);
         LogOut("[SYSTEM] Console initialized with code page: " + std::to_string(GetConsoleOutputCP()), true);
