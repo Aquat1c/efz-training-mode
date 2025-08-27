@@ -14,6 +14,8 @@
 
 // Define constants for offsets
 const uintptr_t P2_CPU_FLAG_OFFSET = 4931;
+const uintptr_t PRACTICE_BLOCK_MODE_OFFSET = 4934;   // 0..2
+const uintptr_t PRACTICE_AUTO_BLOCK_OFFSET = 4936;   // dword, 0/1
 
 // Forward declarations for helper functions
 std::string FormatHexAddress(uintptr_t address);
@@ -575,4 +577,59 @@ void EnsureDefaultControlFlagsOnMatchStart() {
     } else {
         LogOut("[PRACTICE_PATCH] MatchStart: P2 character pointer invalid", true);
     }
+}
+
+// --- Practice dummy F6/F7 equivalents ---
+
+static bool GetGameStatePtr(uintptr_t &gameStateOut) {
+    uintptr_t base = GetEFZBase();
+    if (!base) return false;
+    return SafeReadMemory(base + EFZ_BASE_OFFSET_GAME_STATE, &gameStateOut, sizeof(uintptr_t)) && gameStateOut != 0;
+}
+
+bool GetPracticeAutoBlockEnabled(bool &enabledOut) {
+    enabledOut = false;
+    if (GetCurrentGameMode() != GameMode::Practice) return false;
+    uintptr_t gs = 0; if (!GetGameStatePtr(gs)) return false;
+    uint32_t val = 0; if (!SafeReadMemory(gs + PRACTICE_AUTO_BLOCK_OFFSET, &val, sizeof(val))) return false;
+    enabledOut = (val != 0);
+    return true;
+}
+
+bool SetPracticeAutoBlockEnabled(bool enabled) {
+    if (GetCurrentGameMode() != GameMode::Practice) return false;
+    uintptr_t gs = 0; if (!GetGameStatePtr(gs)) return false;
+    uint32_t val = enabled ? 1u : 0u;
+    bool ok = SafeWriteMemory(gs + PRACTICE_AUTO_BLOCK_OFFSET, &val, sizeof(val));
+    if (ok) {
+        LogOut(std::string("[PRACTICE_PATCH] Auto-Block ") + (enabled ? "ON" : "OFF"), true);
+    }
+    return ok;
+}
+
+bool GetPracticeBlockMode(int &modeOut) {
+    modeOut = 0;
+    if (GetCurrentGameMode() != GameMode::Practice) return false;
+    uintptr_t gs = 0; if (!GetGameStatePtr(gs)) return false;
+    uint8_t v = 0; if (!SafeReadMemory(gs + PRACTICE_BLOCK_MODE_OFFSET, &v, sizeof(v))) return false;
+    modeOut = (int)v; if (modeOut < 0 || modeOut > 2) modeOut = 0;
+    return true;
+}
+
+bool SetPracticeBlockMode(int mode) {
+    if (GetCurrentGameMode() != GameMode::Practice) return false;
+    if (mode < 0) mode = 0; if (mode > 2) mode = 2;
+    uintptr_t gs = 0; if (!GetGameStatePtr(gs)) return false;
+    uint8_t v = (uint8_t)mode;
+    bool ok = SafeWriteMemory(gs + PRACTICE_BLOCK_MODE_OFFSET, &v, sizeof(v));
+    if (ok) {
+        const char* names[] = {"None", "First", "All"};
+        LogOut(std::string("[PRACTICE_PATCH] Block Mode -> ") + names[v], true);
+    }
+    return ok;
+}
+
+bool CyclePracticeBlockMode() {
+    int m = 0; if (!GetPracticeBlockMode(m)) return false;
+    m = (m + 1) % 3; return SetPracticeBlockMode(m);
 }

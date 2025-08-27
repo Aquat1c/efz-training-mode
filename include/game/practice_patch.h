@@ -28,3 +28,13 @@ void ResetP2Character();
 // Ensure default control flags when entering a match in Practice:
 // - P1 player-controlled, P2 AI-controlled
 void EnsureDefaultControlFlagsOnMatchStart();
+
+// Practice dummy controls (expose F6/F7 equivalents via UI)
+// Auto-Block toggle (maps to game state +4936)
+bool SetPracticeAutoBlockEnabled(bool enabled);
+bool GetPracticeAutoBlockEnabled(bool &enabledOut);
+
+// Block Mode (maps to game state +4934): 0=None, 1=First, 2=All
+bool SetPracticeBlockMode(int mode /*0..2*/);
+bool GetPracticeBlockMode(int &modeOut);
+bool CyclePracticeBlockMode();
