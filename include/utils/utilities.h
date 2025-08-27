@@ -179,6 +179,14 @@ struct DisplayData {
     // Nanase (Rumi) – Infinite Shinai: prevent weapon from being dropped (auto-restore to Shinai)
     bool p1RumiInfiniteShinai;
     bool p2RumiInfiniteShinai;
+
+    // Nanase (Rumi) – Final Memory (Kimchi) state and controls
+    bool p1RumiKimchiActive;   // reflects activation flag at +0x3148
+    bool p2RumiKimchiActive;
+    int  p1RumiKimchiTimer;    // reflects timer at +0x314C
+    int  p2RumiKimchiTimer;
+    bool p1RumiInfiniteKimchi; // keep timer topped up
+    bool p2RumiInfiniteKimchi;
 };
 
 extern DisplayData displayData;

@@ -358,6 +358,16 @@
 #define RUMI_SUPER_TOSS_B 309
 #define RUMI_SUPER_TOSS_C 310
 
+// Nanase (Rumi) – Final Memory ("Kimchi") state
+// From decomp: *(DWORD*)(playerBase + 0x3148) toggles 0/1 around special state cases
+// The timer at +0x314C feeds the special gauge rendering
+#define RUMI_KIMCHI_TIMER_OFFSET  0x3148  // timer value used by render gauge
+#define RUMI_KIMCHI_ACTIVE_OFFSET 0x314C  // 0=inactive, 1=active
+// Clarified: starts at 3000 and decreases by 3 every visual frame
+#define RUMI_KIMCHI_TARGET 3000
+// Kimchi state MoveID observed to drive timer behavior
+#define RUMI_KIMCHI_MOVE_ID 307
+
 // Player input buffer offsets
 #define P1_INPUT_BUFFER_OFFSET 0x1AB      // Base address of input buffer
 #define P1_INPUT_BUFFER_INDEX_OFFSET 0x260 // Offset to current buffer index

@@ -769,7 +769,7 @@ namespace ImGuiGui {
             }
             ImGui::TextDisabled("(sets internal flag to 1 when checked, 0 when unchecked)");
         }
-        // P1 Nanase (Rumi) Settings
+    // P1 Nanase (Rumi) Settings
     else if (p1CharID == CHAR_ID_NANASE) {
             ImGui::Text("Rumi Mode:");
             // Keep combobox in sync with current state and disable when Infinite Shinai is on
@@ -798,6 +798,27 @@ namespace ImGuiGui {
                 ImGui::SetTooltip("When enabled, keeps Shinai equipped by forcing mode back to Shinai after specials/supers that drop it. Only applies when mode is Shinai.");
             }
             ImGui::TextDisabled("(Mode swap writes anim/move pointers and syncs gate/mode; safer when idle)");
+
+            ImGui::Separator();
+            ImGui::Text("Final Memory (Kimchi):");
+            bool kimchi = guiState.localData.p1RumiKimchiActive;
+            if (ImGui::Checkbox("Active##p1Kimchi", &kimchi)) {
+                guiState.localData.p1RumiKimchiActive = kimchi;
+                if (kimchi && guiState.localData.p1RumiKimchiTimer < RUMI_KIMCHI_TARGET)
+                    guiState.localData.p1RumiKimchiTimer = RUMI_KIMCHI_TARGET;
+            }
+            int kt = guiState.localData.p1RumiKimchiTimer;
+            if (ImGui::SliderInt("Timer##p1Kimchi", &kt, 0, RUMI_KIMCHI_TARGET)) {
+                guiState.localData.p1RumiKimchiTimer = kt;
+            }
+            bool infKimchi = guiState.localData.p1RumiInfiniteKimchi;
+            if (ImGui::Checkbox("Infinite Kimchi (freeze timer)##p1Kimchi", &infKimchi)) {
+                guiState.localData.p1RumiInfiniteKimchi = infKimchi;
+                if (infKimchi) {
+                    guiState.localData.p1RumiKimchiActive = true;
+                    guiState.localData.p1RumiKimchiTimer = RUMI_KIMCHI_TARGET;
+                }
+            }
         }
         else {
             ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "No special settings available");
@@ -916,7 +937,7 @@ namespace ImGuiGui {
             }
             ImGui::TextDisabled("(sets internal flag to 1 when checked, 0 when unchecked)");
         }
-        // P2 Nanase (Rumi) Settings
+    // P2 Nanase (Rumi) Settings
     else if (p2CharID == CHAR_ID_NANASE) {
             ImGui::Text("Rumi Mode:");
             // Keep combobox in sync with current state and disable when Infinite Shinai is on
@@ -944,6 +965,27 @@ namespace ImGuiGui {
                 ImGui::SetTooltip("When enabled, keeps Shinai equipped by forcing mode back to Shinai after specials/supers that drop it. Only applies when mode is Shinai.");
             }
             ImGui::TextDisabled("(Mode swap writes anim/move pointers and syncs gate/mode; safer when idle)");
+
+            ImGui::Separator();
+            ImGui::Text("Final Memory (Kimchi):");
+            bool kimchi2 = guiState.localData.p2RumiKimchiActive;
+            if (ImGui::Checkbox("Active##p2Kimchi", &kimchi2)) {
+                guiState.localData.p2RumiKimchiActive = kimchi2;
+                if (kimchi2 && guiState.localData.p2RumiKimchiTimer < RUMI_KIMCHI_TARGET)
+                    guiState.localData.p2RumiKimchiTimer = RUMI_KIMCHI_TARGET;
+            }
+            int kt2 = guiState.localData.p2RumiKimchiTimer;
+            if (ImGui::SliderInt("Timer##p2Kimchi", &kt2, 0, RUMI_KIMCHI_TARGET)) {
+                guiState.localData.p2RumiKimchiTimer = kt2;
+            }
+            bool infKimchi2 = guiState.localData.p2RumiInfiniteKimchi;
+            if (ImGui::Checkbox("Infinite Kimchi (freeze timer)##p2Kimchi", &infKimchi2)) {
+                guiState.localData.p2RumiInfiniteKimchi = infKimchi2;
+                if (infKimchi2) {
+                    guiState.localData.p2RumiKimchiActive = true;
+                    guiState.localData.p2RumiKimchiTimer = RUMI_KIMCHI_TARGET;
+                }
+            }
         }
         else {
             ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "No special settings available");
@@ -956,7 +998,7 @@ namespace ImGuiGui {
         ImGui::Separator();
         ImGui::TextWrapped(
             "Character-specific settings allow you to modify special parameters unique to each character.\n"
-            "Currently supported: Ikumi (Blood/Genocide), Misuzu (Feathers), Mishio (Element/Awakened)");
+            "Currently supported: Ikumi (Blood/Genocide), Misuzu (Feathers), Mishio (Element/Awakened), Rumi (Mode, Kimchi)");
     }
     
     // Add this new function to the ImGuiGui namespace:
@@ -1293,6 +1335,9 @@ namespace ImGuiGui {
             // Normalize Rumi intent: Infinite Shinai overrides to Shinai mode
             if (updatedData.p1RumiInfiniteShinai) updatedData.p1RumiBarehanded = false;
             if (updatedData.p2RumiInfiniteShinai) updatedData.p2RumiBarehanded = false;
+        // If Infinite Kimchi selected, ensure active and timer full on apply
+        if (updatedData.p1RumiInfiniteKimchi) { updatedData.p1RumiKimchiActive = true; updatedData.p1RumiKimchiTimer = RUMI_KIMCHI_TARGET; }
+        if (updatedData.p2RumiInfiniteKimchi) { updatedData.p2RumiKimchiActive = true; updatedData.p2RumiKimchiTimer = RUMI_KIMCHI_TARGET; }
             displayData = updatedData;
 
             // Ensure new Rumi flags are preserved
