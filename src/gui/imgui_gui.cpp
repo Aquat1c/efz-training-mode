@@ -95,138 +95,156 @@ namespace ImGuiGui {
     void RenderGameValuesTab() {
         ImGui::PushItemWidth(120);
 
-        // Layout with two columns
-        ImGui::Columns(2, "playerColumns", false);
+        // Section: Character Data
+        if (ImGui::CollapsingHeader("Character Data", ImGuiTreeNodeFlags_DefaultOpen)) {
+            // Two-column layout for P1/P2
+            ImGui::Columns(2, "playerColumns", false);
 
-        // P1 Column
-        ImGui::TextColored(ImVec4(0.5f, 0.8f, 1.0f, 1.0f), "Player 1 (%s)", 
-            guiState.localData.p1CharName[0] ? guiState.localData.p1CharName : "Unknown");
-        ImGui::Separator();
+            // P1 Column
+            ImGui::TextColored(ImVec4(0.5f, 0.8f, 1.0f, 1.0f), "Player 1 (%s)",
+                guiState.localData.p1CharName[0] ? guiState.localData.p1CharName : "Unknown");
+            ImGui::Separator();
 
-        // P1 HP
-        int hp1 = guiState.localData.hp1;
-        if (ImGui::InputInt("P1 HP", &hp1)) {
-            guiState.localData.hp1 = CLAMP(hp1, 0, MAX_HP);
-        }
+            int hp1 = guiState.localData.hp1;
+            if (ImGui::InputInt("P1 HP", &hp1)) {
+                guiState.localData.hp1 = CLAMP(hp1, 0, MAX_HP);
+            }
 
-        // P1 Meter
-        int meter1 = guiState.localData.meter1;
-        if (ImGui::InputInt("P1 Meter", &meter1)) {
-            guiState.localData.meter1 = CLAMP(meter1, 0, MAX_METER);
-        }
+            int meter1 = guiState.localData.meter1;
+            if (ImGui::InputInt("P1 Meter", &meter1)) {
+                guiState.localData.meter1 = CLAMP(meter1, 0, MAX_METER);
+            }
 
-        // P1 RF
-        float rf1 = (float)guiState.localData.rf1;
-        if (ImGui::InputFloat("P1 RF", &rf1, 0.1f, 1.0f, "%.1f")) {
-            guiState.localData.rf1 = CLAMP(rf1, 0.0f, MAX_RF);
-        }
+            float rf1 = (float)guiState.localData.rf1;
+            if (ImGui::InputFloat("P1 RF", &rf1, 0.1f, 1.0f, "%.1f")) {
+                guiState.localData.rf1 = CLAMP(rf1, 0.0f, MAX_RF);
+            }
 
-        // P1 Blue IC toggle
-        ImGui::Checkbox("P1 Blue IC", &guiState.localData.p1BlueIC);
-        if (ImGui::IsItemHovered()) {
-            ImGui::SetTooltip("Checked = Blue IC (forced), Unchecked = Red IC (normal)\nApply changes to update the game");
-        }
+            ImGui::Checkbox("P1 Blue IC", &guiState.localData.p1BlueIC);
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("Checked = Blue IC (forced), Unchecked = Red IC (normal)\nApply changes to update the game");
+            }
 
-        // P1 Position
-        float x1 = (float)guiState.localData.x1;
-        float y1 = (float)guiState.localData.y1;
-        if (ImGui::InputFloat("P1 X", &x1, 1.0f, 10.0f, "%.2f")) {
-            guiState.localData.x1 = x1;
-        }
-        if (ImGui::InputFloat("P1 Y", &y1, 1.0f, 10.0f, "%.2f")) {
-            guiState.localData.y1 = y1;
-        }
+            float x1 = (float)guiState.localData.x1;
+            float y1 = (float)guiState.localData.y1;
+            if (ImGui::InputFloat("P1 X", &x1, 1.0f, 10.0f, "%.2f")) {
+                guiState.localData.x1 = x1;
+            }
+            if (ImGui::InputFloat("P1 Y", &y1, 1.0f, 10.0f, "%.2f")) {
+                guiState.localData.y1 = y1;
+            }
 
-        // Next column (P2)
-        ImGui::NextColumn();
-        ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.5f, 1.0f), "Player 2 (%s)", 
-            guiState.localData.p2CharName[0] ? guiState.localData.p2CharName : "Unknown");
-        ImGui::Separator();
+            // P2 Column
+            ImGui::NextColumn();
+            ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.5f, 1.0f), "Player 2 (%s)",
+                guiState.localData.p2CharName[0] ? guiState.localData.p2CharName : "Unknown");
+            ImGui::Separator();
 
-        // P2 HP
-        int hp2 = guiState.localData.hp2;
-        if (ImGui::InputInt("P2 HP", &hp2)) {
-            guiState.localData.hp2 = CLAMP(hp2, 0, MAX_HP);
-        }
+            int hp2 = guiState.localData.hp2;
+            if (ImGui::InputInt("P2 HP", &hp2)) {
+                guiState.localData.hp2 = CLAMP(hp2, 0, MAX_HP);
+            }
 
-        // P2 Meter
-        int meter2 = guiState.localData.meter2;
-        if (ImGui::InputInt("P2 Meter", &meter2)) {
-            guiState.localData.meter2 = CLAMP(meter2, 0, MAX_METER);
-        }
+            int meter2 = guiState.localData.meter2;
+            if (ImGui::InputInt("P2 Meter", &meter2)) {
+                guiState.localData.meter2 = CLAMP(meter2, 0, MAX_METER);
+            }
 
-        // P2 RF
-        float rf2 = (float)guiState.localData.rf2;
-        if (ImGui::InputFloat("P2 RF", &rf2, 0.1f, 1.0f, "%.1f")) {
-            guiState.localData.rf2 = CLAMP(rf2, 0.0f, MAX_RF);
-        }
+            float rf2 = (float)guiState.localData.rf2;
+            if (ImGui::InputFloat("P2 RF", &rf2, 0.1f, 1.0f, "%.1f")) {
+                guiState.localData.rf2 = CLAMP(rf2, 0.0f, MAX_RF);
+            }
 
-        // P2 Blue IC toggle
-        ImGui::Checkbox("P2 Blue IC", &guiState.localData.p2BlueIC);
-        if (ImGui::IsItemHovered()) {
-            ImGui::SetTooltip("Checked = Blue IC (forced), Unchecked = Red IC (normal)\nApply changes to update the game");
-        }
+            ImGui::Checkbox("P2 Blue IC", &guiState.localData.p2BlueIC);
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("Checked = Blue IC (forced), Unchecked = Red IC (normal)\nApply changes to update the game");
+            }
 
-        // P2 Position
-        float x2 = (float)guiState.localData.x2;
-        float y2 = (float)guiState.localData.y2;
-        if (ImGui::InputFloat("P2 X", &x2, 1.0f, 10.0f, "%.2f")) {
-            guiState.localData.x2 = x2;
-        }
-        if (ImGui::InputFloat("P2 Y", &y2, 1.0f, 10.0f, "%.2f")) {
-            guiState.localData.y2 = y2;
-        }
+            float x2 = (float)guiState.localData.x2;
+            float y2 = (float)guiState.localData.y2;
+            if (ImGui::InputFloat("P2 X", &x2, 1.0f, 10.0f, "%.2f")) {
+                guiState.localData.x2 = x2;
+            }
+            if (ImGui::InputFloat("P2 Y", &y2, 1.0f, 10.0f, "%.2f")) {
+                guiState.localData.y2 = y2;
+            }
 
-        ImGui::Columns(1);
-        ImGui::Separator();
-
-        // NEW: Add P2 Control checkbox here, before other settings
-        ImGui::PushItemWidth(-1); // Make checkbox span width
-        ImGui::Checkbox("Enable P2 Control (Practice Mode Only)", &guiState.localData.p2ControlEnabled);
-        if (ImGui::IsItemHovered()) {
-            ImGui::SetTooltip("Gives you direct control over Player 2 in Practice Mode.\nThis is required for the Debug Input tab to work.\nApply changes to update the game.");
-        }
-        ImGui::PopItemWidth();
-        ImGui::Separator();
-
-
-        // Action buttons
-        if (ImGui::Button("Swap Positions", ImVec2(150, 30))) {
-            // Swap X positions
-            std::swap(guiState.localData.x1, guiState.localData.x2);
-        }
-        ImGui::SameLine();
-        if (ImGui::Button("Round Start", ImVec2(150, 30))) {
-            // Reset to round start positions
-            guiState.localData.x1 = 240.0;
-            guiState.localData.y1 = 0.0;
-            guiState.localData.x2 = 400.0;
-            guiState.localData.y2 = 0.0;
+            ImGui::Columns(1);
         }
 
         ImGui::Separator();
 
-        // Auto-Airtech Settings
-        ImGui::TextUnformatted("Auto-Airtech Direction:");
-        const char* airtechItems[] = { "Neutral (Disabled)", "Forward", "Backward" };
-        int airtechDir = guiState.localData.autoAirtech ? guiState.localData.airtechDirection + 1 : 0;
-        if (ImGui::Combo("##AirtechDir", &airtechDir, airtechItems, IM_ARRAYSIZE(airtechItems))) {
-            guiState.localData.autoAirtech = (airtechDir > 0);
-            guiState.localData.airtechDirection = airtechDir > 0 ? airtechDir - 1 : 0;
-        }
+        // Section: Player options (Auto-Airtech + Auto-Jump)
+        if (ImGui::CollapsingHeader("Player Options", ImGuiTreeNodeFlags_DefaultOpen)) {
+            // Auto-Airtech
+            ImGui::TextUnformatted("Auto-Airtech:");
+            ImGui::SameLine();
+            const char* airtechItems[] = { "Neutral (Disabled)", "Forward", "Backward" };
+            int airtechDir = guiState.localData.autoAirtech ? guiState.localData.airtechDirection + 1 : 0;
+            if (ImGui::Combo("##AirtechDir", &airtechDir, airtechItems, IM_ARRAYSIZE(airtechItems))) {
+                guiState.localData.autoAirtech = (airtechDir > 0);
+                guiState.localData.airtechDirection = airtechDir > 0 ? airtechDir - 1 : 0;
+            }
+            ImGui::SameLine();
+            ImGui::TextUnformatted("Delay:");
+            int airtechDelay = guiState.localData.airtechDelay;
+            ImGui::SameLine();
+            ImGui::PushItemWidth(60);
+            if (ImGui::InputInt("##AirtechDelay", &airtechDelay)) {
+                guiState.localData.airtechDelay = CLAMP(airtechDelay, 0, 60);
+            }
+            ImGui::SameLine();
+            ImGui::TextUnformatted("frames");
+            ImGui::PopItemWidth();
 
-        // Airtech delay
-        ImGui::SameLine();
-        ImGui::TextUnformatted("Delay:");
-        int airtechDelay = guiState.localData.airtechDelay;
-        ImGui::SameLine();
-        ImGui::PushItemWidth(60);
-        if (ImGui::InputInt("##AirtechDelay", &airtechDelay)) {
-            guiState.localData.airtechDelay = CLAMP(airtechDelay, 0, 60);
+            ImGui::Dummy(ImVec2(1, 6));
+
+            // Auto-Jump
+            bool aj = guiState.localData.autoJump;
+            if (ImGui::Checkbox("Enable Auto-Jump", &aj)) {
+                guiState.localData.autoJump = aj;
+            }
+            ImGui::SameLine();
+            ImGui::TextUnformatted("Direction:");
+            const char* jumpDirs[] = { "Neutral", "Forward", "Backward" };
+            int jdir = guiState.localData.jumpDirection;
+            ImGui::SameLine();
+            if (ImGui::Combo("##JumpDir", &jdir, jumpDirs, IM_ARRAYSIZE(jumpDirs))) {
+                guiState.localData.jumpDirection = (jdir < 0 ? 0 : (jdir > 2 ? 2 : jdir));
+            }
+            ImGui::SameLine();
+            ImGui::TextUnformatted("Apply To:");
+            const char* jumpTargets[] = { "P1 Only", "P2 Only", "Both Players" };
+            int jtarget = guiState.localData.jumpTarget - 1; // 0..2
+            ImGui::SameLine();
+            if (ImGui::Combo("##JumpTarget", &jtarget, jumpTargets, IM_ARRAYSIZE(jumpTargets))) {
+                guiState.localData.jumpTarget = (jtarget < 0 ? 1 : (jtarget > 2 ? 3 : jtarget + 1));
+            }
+
+            ImGui::Dummy(ImVec2(1, 8));
+            ImGui::SeparatorText("Helpers");
+
+            // P2 Control toggle
+            ImGui::PushItemWidth(-1);
+            ImGui::Checkbox("Enable P2 Control (Practice Mode Only)", &guiState.localData.p2ControlEnabled);
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("Gives you direct control over Player 2 in Practice Mode.\nThis is required for the Debug Input tab to work.\nApply changes to update the game.");
+            }
+            ImGui::PopItemWidth();
+
+            ImGui::Dummy(ImVec2(1, 4));
+            // Position helpers
+            if (ImGui::Button("Swap Positions", ImVec2(150, 30))) {
+                std::swap(guiState.localData.x1, guiState.localData.x2);
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Round Start", ImVec2(150, 30))) {
+                guiState.localData.x1 = 240.0;
+                guiState.localData.y1 = 0.0;
+                guiState.localData.x2 = 400.0;
+                guiState.localData.y2 = 0.0;
+            }
         }
-        ImGui::SameLine();
-        ImGui::TextUnformatted("frames");
-        ImGui::PopItemWidth();
 
         ImGui::PopItemWidth();
     }
@@ -598,34 +616,7 @@ namespace ImGuiGui {
             }
         }
         
-        // Blue IC/Red IC Toggle (universal for all characters)
-        hasFeatures = true; // Always show this section since it works for all characters
-        
-        ImGui::Text("IC Color Override:");
-        
-        bool p1BlueIC = guiState.localData.p1BlueIC;
-        if (ImGui::Checkbox("P1 Blue IC", &p1BlueIC)) {
-            guiState.localData.p1BlueIC = p1BlueIC;
-        }
-        
-        ImGui::SameLine();
-        
-        bool p2BlueIC = guiState.localData.p2BlueIC;
-        if (ImGui::Checkbox("P2 Blue IC", &p2BlueIC)) {
-            guiState.localData.p2BlueIC = p2BlueIC;
-        }
-        
-        ImGui::SameLine();
-        ImGui::TextDisabled("(?)");
-        if (ImGui::IsItemHovered()) {
-            ImGui::BeginTooltip();
-            ImGui::PushTextWrapPos(ImGui::GetFontSize() * 35.0f);
-            ImGui::TextUnformatted("Forces RF bar to Blue IC state (full RF special properties).\n"
-                                   "When unchecked, RF bar returns to normal Red IC state.\n"
-                                   "This affects all characters and works in all game modes.");
-            ImGui::PopTextWrapPos();
-            ImGui::EndTooltip();
-        }
+    // IC Color override moved to Game Values tab; no IC controls in Character tab
         
         if (hasFeatures) {
             ImGui::Separator();
@@ -998,7 +989,7 @@ namespace ImGuiGui {
         ImGui::Separator();
         ImGui::TextWrapped(
             "Character-specific settings allow you to modify special parameters unique to each character.\n"
-            "Currently supported: Ikumi (Blood/Genocide), Misuzu (Feathers), Mishio (Element/Awakened), Rumi (Mode, Kimchi)");
+            "Currently supported: Ikumi (Blood/Genocide), Misuzu (Feathers), Mishio (Element/Awakened), Rumi (Stance, Kimchi)");
     }
     
     // Add this new function to the ImGuiGui namespace:

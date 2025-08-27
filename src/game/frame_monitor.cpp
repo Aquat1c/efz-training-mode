@@ -604,39 +604,9 @@ void FrameDataMonitor() {
                 // Pass cached move IDs to avoid extra reads and enable lighter math inside
                 MonitorAutoActions(moveID1, moveID2, prevMoveID1, prevMoveID2);
                 
-                // STEP 2: Auto-jump logic with conflict detection
-                bool autoActionBusy = false;
-                
-                if (autoActionEnabled.load()) {
-                    int targetPlayer = autoActionPlayer.load();
-                    
-                    // Check if ANY trigger is enabled and could potentially activate
-                    bool anyTriggerEnabled = triggerAfterBlockEnabled.load() || 
-                                           triggerOnWakeupEnabled.load() || 
-                                           triggerAfterHitstunEnabled.load() || 
-                                           triggerAfterAirtechEnabled.load();
-                    
-                    if (anyTriggerEnabled) {
-                        // If auto-action is enabled with triggers, check for activity
-                        if (targetPlayer == 1 || targetPlayer == 3) {
-                            autoActionBusy = autoActionBusy || p1DelayState.isDelaying || p1ActionApplied;
-                        }
-                        if (targetPlayer == 2 || targetPlayer == 3) {
-                            autoActionBusy = autoActionBusy || p2DelayState.isDelaying || p2ActionApplied;
-                        }
-                    }
-                }
-                
-                // Auto-jump with conflict detection
-                if (!autoActionBusy && autoJumpEnabled.load()) {
-                    // Check if moveIDs indicate recent auto-action activity
-                    bool hasAttackMoves = (moveID1 >= 200 && moveID1 <= 350) ||
-                                         (moveID2 >= 200 && moveID2 <= 350);
-                    
-                    if (!hasAttackMoves) {
-                        MonitorAutoJump();
-                    }
-                }
+                // STEP 2: Auto-jump
+                // Always call to allow internal cleanup when toggled off; function self-checks enable state
+                MonitorAutoJump();
                 
                 // STEP 3: Auto-airtech (every frame for precision, no throttling)
                 MonitorAutoAirtech(moveID1, moveID2);  
