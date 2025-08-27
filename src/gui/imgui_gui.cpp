@@ -23,6 +23,7 @@
 extern void SpamAttackButton(uintptr_t playerBase, uint8_t button, int frames, const char* buttonName);
 #include "../include/game/practice_patch.h"
 #include "../include/gui/imgui_settings.h"
+#include "../include/game/final_memory_patch.h"
 
 // Add these constants at the top of the file after includes
 // These are from input_motion.cpp but we need them here
@@ -224,14 +225,6 @@ namespace ImGuiGui {
             ImGui::Dummy(ImVec2(1, 8));
             ImGui::SeparatorText("Helpers");
 
-            // P2 Control toggle
-            ImGui::PushItemWidth(-1);
-            ImGui::Checkbox("Enable P2 Control (Practice Mode Only)", &guiState.localData.p2ControlEnabled);
-            if (ImGui::IsItemHovered()) {
-                ImGui::SetTooltip("Gives you direct control over Player 2 in Practice Mode.\nThis is required for the Debug Input tab to work.\nApply changes to update the game.");
-            }
-            ImGui::PopItemWidth();
-
             ImGui::Dummy(ImVec2(1, 4));
             // Position helpers
             if (ImGui::Button("Swap Positions", ImVec2(150, 30))) {
@@ -244,6 +237,28 @@ namespace ImGuiGui {
                 guiState.localData.x2 = 400.0;
                 guiState.localData.y2 = 0.0;
             }
+        }
+
+        // New Section: Game Settings
+        if (ImGui::CollapsingHeader("Game Settings", ImGuiTreeNodeFlags_DefaultOpen)) {
+            // FM bypass toggle (applies immediately, reversible)
+            bool fmBypass = IsFinalMemoryBypassEnabled();
+            if (ImGui::Checkbox("Final Memory: Allow at any HP", &fmBypass)) {
+                int changed = SetFinalMemoryBypass(fmBypass);
+                LogOut(std::string("[IMGUI][FM] ") + (fmBypass ? "Enabled" : "Disabled") + " FM HP bypass.", true);
+            }
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("Removes the low-HP restriction for Final Memory for all characters.\nUncheck to restore the original threshold.");
+            }
+
+            ImGui::Dummy(ImVec2(1, 6));
+            // P2 Control toggle moved here (applied on Apply)
+            ImGui::PushItemWidth(-1);
+            ImGui::Checkbox("Enable P2 Control (Practice Mode Only)", &guiState.localData.p2ControlEnabled);
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("Gives you direct control over Player 2 in Practice Mode.\nThis is required for the Debug Input tab to work.\nApply changes to update the game.");
+            }
+            ImGui::PopItemWidth();
         }
 
         ImGui::PopItemWidth();
@@ -998,6 +1013,24 @@ namespace ImGuiGui {
         if (ImGui::Checkbox("Show overlay debug borders", &showBorders)) {
             g_ShowOverlayDebugBorders.store(showBorders);
         }
+        ImGui::Separator();
+        // Final Memory (FM) tools
+        ImGui::Text("Final Memory Tools:");
+        if (ImGui::Button("Apply FM HP bypass (allow FM at any HP)")) {
+            // Call runtime patcher once; log summary only
+            static uint64_t s_lastPatchLogTick = 0;
+            int sites = 0;
+            try {
+                sites = ::ApplyFinalMemoryHPBypass();
+            } catch (...) {
+                LogOut("[IMGUI][FM] Exception while applying FM bypass.", true);
+            }
+            uint64_t now = GetTickCount64();
+            if (now - s_lastPatchLogTick > 2000) { // throttle to 2s
+                LogOut(std::string("[IMGUI][FM] FM HP bypass applied. Sites patched: ") + std::to_string(sites), true);
+                s_lastPatchLogTick = now;
+            }
+        }
     ImGui::Separator();
         ImGui::Separator();
         ImGui::Text("Manual Input Override (P2)");
@@ -1376,6 +1409,10 @@ namespace ImGuiGui {
             triggerOnWakeupStrength.store(displayData.strengthOnWakeup);
             triggerAfterHitstunStrength.store(displayData.strengthAfterHitstun);
             triggerAfterAirtechStrength.store(displayData.strengthAfterAirtech);
+            
+            // Enforce FM bypass state to match UI selection (idempotent)
+            // We read current enabled state from the runtime and reapply to ensure consistency
+            SetFinalMemoryBypass(IsFinalMemoryBypassEnabled());
             
             // Apply the P2 control patch based on the checkbox state
             if (displayData.p2ControlEnabled) {
