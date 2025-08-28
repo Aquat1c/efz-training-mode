@@ -611,3 +611,11 @@ void StopRFFreeze() {
     rfFreezing.store(false);
     LogOut("[RF] Stopped freezing RF values", detailedLogging.load());
 }
+
+// Stop the RF freeze background thread entirely
+void StopRFFreezeThread() {
+    if (rfThreadRunning) {
+        rfThreadRunning = false;
+        LogOut("[RF] RF freeze thread signaled to stop", detailedLogging.load());
+    }
+}
