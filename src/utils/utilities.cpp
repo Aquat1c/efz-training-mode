@@ -15,6 +15,7 @@
 #include "../include/game/auto_airtech.h"
 #include "../include/game/auto_action.h"
 #include "../include/game/frame_monitor.h"
+#include "../include/input/input_freeze.h"
 #include <sstream>
 #include <iomanip>
 #include <iostream>  // Add this include for std::cout and std::cerr
@@ -32,6 +33,7 @@
 
 std::atomic<bool> g_efzWindowActive(false);
 std::atomic<bool> g_guiActive(false);
+std::atomic<bool> g_onlineModeActive(false);
 
 // NEW: Define the manual input override atomics
 std::atomic<bool> g_manualInputOverride[3] = {false, false, false};
@@ -144,6 +146,50 @@ void DisableFeatures() {
     // Key monitoring will be handled separately by ManageKeyMonitoring()
 }
 
+// Cooperatively stop mod activity when entering online play.
+void EnterOnlineMode() {
+    if (g_onlineModeActive.exchange(true)) return; // already active
+
+    LogOut("[ONLINE] Entering online mode: disabling mod features and threads", true);
+
+    // Stop any active buffer/index freezing immediately
+    StopBufferFreezing();
+    // Stop RF freezing loop from acting
+    StopRFFreeze();
+
+    // Disable auto features and clear triggers/state
+    autoActionEnabled.store(false);
+    triggerAfterBlockEnabled.store(false);
+    triggerOnWakeupEnabled.store(false);
+    triggerAfterHitstunEnabled.store(false);
+    triggerAfterAirtechEnabled.store(false);
+    ClearAllAutoActionTriggers();
+
+    // Disable features globally (turns off overlays, patches, etc.)
+    if (g_featuresEnabled.load()) {
+        DisableFeatures();
+    }
+
+    // Stop key monitoring
+    if (keyMonitorRunning.load()) {
+        keyMonitorRunning.store(false);
+    }
+    // Stop RF freeze worker thread entirely
+    StopRFFreezeThread();
+
+    // Stop BGM suppression poller
+    StopBGMSuppressionPoller();
+    SetBGMSuppressed(false);
+
+    // Hide overlays/GUI
+    if (ImGuiImpl::IsVisible()) {
+        ImGuiImpl::ToggleVisibility();
+    }
+    DirectDrawHook::ClearAllMessages();
+
+    LogOut("[ONLINE] Mod threads signaled to stop; overlays and features disabled", true);
+}
+
 // Public helper: permanently clear all triggers so they stay disabled until user re-enables
 void ClearAllTriggersPersistently() {
     LogOut("[SYSTEM] Clearing all triggers persistently (Character Select / forced)", true);
@@ -245,6 +291,10 @@ DisplayData displayData = {
     false,              // infiniteBloodMode
     0, 0,               // Misuzu settings
     false,              // infiniteFeatherMode
+    0, 0,               // Mishio element (P1,P2)
+    0, 0,               // Mishio awakened timer (P1,P2)
+    false,              // infiniteMishioElement
+    false,              // infiniteMishioAwakened
     false, false,       // Blue IC toggles
     false,              // NEW: p2ControlEnabled
     false,              // autoAction
@@ -252,6 +302,12 @@ DisplayData displayData = {
     200,                // autoActionCustomID
     0,                  // autoActionPlayer
     // ... rest of initialization
+    false, false,       // p1DoppelEnlightened, p2DoppelEnlightened
+    false, false,       // p1RumiBarehanded, p2RumiBarehanded
+    false, false,       // p1RumiInfiniteShinai, p2RumiInfiniteShinai
+    false, false,       // p1RumiKimchiActive, p2RumiKimchiActive
+    0, 0,               // p1RumiKimchiTimer, p2RumiKimchiTimer
+    false, false        // p1RumiInfiniteKimchi, p2RumiInfiniteKimchi
 };
 
 // Initialize key bindings with default values

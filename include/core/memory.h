@@ -28,6 +28,7 @@ void LoadPlayerPositions(uintptr_t base);
 void InitRFFreezeThread();
 void StartRFFreeze(double p1Value, double p2Value);
 void StopRFFreeze();
+void StopRFFreezeThread();
 
 // Input bitmask constants
 #define INPUT_UP     0x01

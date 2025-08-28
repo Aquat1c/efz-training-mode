@@ -23,6 +23,7 @@
 extern void SpamAttackButton(uintptr_t playerBase, uint8_t button, int frames, const char* buttonName);
 #include "../include/game/practice_patch.h"
 #include "../include/gui/imgui_settings.h"
+#include "../include/game/final_memory_patch.h"
 
 // Add these constants at the top of the file after includes
 // These are from input_motion.cpp but we need them here
@@ -95,138 +96,215 @@ namespace ImGuiGui {
     void RenderGameValuesTab() {
         ImGui::PushItemWidth(120);
 
-        // Layout with two columns
-        ImGui::Columns(2, "playerColumns", false);
+        // Section: Character Data
+    if (ImGui::CollapsingHeader("Character Data")) {
+            // Two-column layout for P1/P2
+            ImGui::Columns(2, "playerColumns", false);
 
-        // P1 Column
-        ImGui::TextColored(ImVec4(0.5f, 0.8f, 1.0f, 1.0f), "Player 1 (%s)", 
-            guiState.localData.p1CharName[0] ? guiState.localData.p1CharName : "Unknown");
-        ImGui::Separator();
+            // P1 Column
+            ImGui::TextColored(ImVec4(0.5f, 0.8f, 1.0f, 1.0f), "Player 1 (%s)",
+                guiState.localData.p1CharName[0] ? guiState.localData.p1CharName : "Unknown");
+            ImGui::Separator();
 
-        // P1 HP
-        int hp1 = guiState.localData.hp1;
-        if (ImGui::InputInt("P1 HP", &hp1)) {
-            guiState.localData.hp1 = CLAMP(hp1, 0, MAX_HP);
-        }
+            int hp1 = guiState.localData.hp1;
+            if (ImGui::InputInt("P1 HP", &hp1)) {
+                guiState.localData.hp1 = CLAMP(hp1, 0, MAX_HP);
+            }
 
-        // P1 Meter
-        int meter1 = guiState.localData.meter1;
-        if (ImGui::InputInt("P1 Meter", &meter1)) {
-            guiState.localData.meter1 = CLAMP(meter1, 0, MAX_METER);
-        }
+            int meter1 = guiState.localData.meter1;
+            if (ImGui::InputInt("P1 Meter", &meter1)) {
+                guiState.localData.meter1 = CLAMP(meter1, 0, MAX_METER);
+            }
 
-        // P1 RF
-        float rf1 = (float)guiState.localData.rf1;
-        if (ImGui::InputFloat("P1 RF", &rf1, 0.1f, 1.0f, "%.1f")) {
-            guiState.localData.rf1 = CLAMP(rf1, 0.0f, MAX_RF);
-        }
+            float rf1 = (float)guiState.localData.rf1;
+            if (ImGui::InputFloat("P1 RF", &rf1, 0.1f, 1.0f, "%.1f")) {
+                guiState.localData.rf1 = CLAMP(rf1, 0.0f, MAX_RF);
+            }
 
-        // P1 Blue IC toggle
-        ImGui::Checkbox("P1 Blue IC", &guiState.localData.p1BlueIC);
-        if (ImGui::IsItemHovered()) {
-            ImGui::SetTooltip("Checked = Blue IC (forced), Unchecked = Red IC (normal)\nApply changes to update the game");
-        }
+            ImGui::Checkbox("P1 Blue IC", &guiState.localData.p1BlueIC);
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("Checked = Blue IC (forced), Unchecked = Red IC (normal)\nApply changes to update the game");
+            }
 
-        // P1 Position
-        float x1 = (float)guiState.localData.x1;
-        float y1 = (float)guiState.localData.y1;
-        if (ImGui::InputFloat("P1 X", &x1, 1.0f, 10.0f, "%.2f")) {
-            guiState.localData.x1 = x1;
-        }
-        if (ImGui::InputFloat("P1 Y", &y1, 1.0f, 10.0f, "%.2f")) {
-            guiState.localData.y1 = y1;
-        }
+            float x1 = (float)guiState.localData.x1;
+            float y1 = (float)guiState.localData.y1;
+            if (ImGui::InputFloat("P1 X", &x1, 1.0f, 10.0f, "%.2f")) {
+                guiState.localData.x1 = x1;
+            }
+            if (ImGui::InputFloat("P1 Y", &y1, 1.0f, 10.0f, "%.2f")) {
+                guiState.localData.y1 = y1;
+            }
 
-        // Next column (P2)
-        ImGui::NextColumn();
-        ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.5f, 1.0f), "Player 2 (%s)", 
-            guiState.localData.p2CharName[0] ? guiState.localData.p2CharName : "Unknown");
-        ImGui::Separator();
+            // P2 Column
+            ImGui::NextColumn();
+            ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.5f, 1.0f), "Player 2 (%s)",
+                guiState.localData.p2CharName[0] ? guiState.localData.p2CharName : "Unknown");
+            ImGui::Separator();
 
-        // P2 HP
-        int hp2 = guiState.localData.hp2;
-        if (ImGui::InputInt("P2 HP", &hp2)) {
-            guiState.localData.hp2 = CLAMP(hp2, 0, MAX_HP);
-        }
+            int hp2 = guiState.localData.hp2;
+            if (ImGui::InputInt("P2 HP", &hp2)) {
+                guiState.localData.hp2 = CLAMP(hp2, 0, MAX_HP);
+            }
 
-        // P2 Meter
-        int meter2 = guiState.localData.meter2;
-        if (ImGui::InputInt("P2 Meter", &meter2)) {
-            guiState.localData.meter2 = CLAMP(meter2, 0, MAX_METER);
-        }
+            int meter2 = guiState.localData.meter2;
+            if (ImGui::InputInt("P2 Meter", &meter2)) {
+                guiState.localData.meter2 = CLAMP(meter2, 0, MAX_METER);
+            }
 
-        // P2 RF
-        float rf2 = (float)guiState.localData.rf2;
-        if (ImGui::InputFloat("P2 RF", &rf2, 0.1f, 1.0f, "%.1f")) {
-            guiState.localData.rf2 = CLAMP(rf2, 0.0f, MAX_RF);
-        }
+            float rf2 = (float)guiState.localData.rf2;
+            if (ImGui::InputFloat("P2 RF", &rf2, 0.1f, 1.0f, "%.1f")) {
+                guiState.localData.rf2 = CLAMP(rf2, 0.0f, MAX_RF);
+            }
 
-        // P2 Blue IC toggle
-        ImGui::Checkbox("P2 Blue IC", &guiState.localData.p2BlueIC);
-        if (ImGui::IsItemHovered()) {
-            ImGui::SetTooltip("Checked = Blue IC (forced), Unchecked = Red IC (normal)\nApply changes to update the game");
-        }
+            ImGui::Checkbox("P2 Blue IC", &guiState.localData.p2BlueIC);
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("Checked = Blue IC (forced), Unchecked = Red IC (normal)\nApply changes to update the game");
+            }
 
-        // P2 Position
-        float x2 = (float)guiState.localData.x2;
-        float y2 = (float)guiState.localData.y2;
-        if (ImGui::InputFloat("P2 X", &x2, 1.0f, 10.0f, "%.2f")) {
-            guiState.localData.x2 = x2;
-        }
-        if (ImGui::InputFloat("P2 Y", &y2, 1.0f, 10.0f, "%.2f")) {
-            guiState.localData.y2 = y2;
-        }
+            float x2 = (float)guiState.localData.x2;
+            float y2 = (float)guiState.localData.y2;
+            if (ImGui::InputFloat("P2 X", &x2, 1.0f, 10.0f, "%.2f")) {
+                guiState.localData.x2 = x2;
+            }
+            if (ImGui::InputFloat("P2 Y", &y2, 1.0f, 10.0f, "%.2f")) {
+                guiState.localData.y2 = y2;
+            }
 
-        ImGui::Columns(1);
-        ImGui::Separator();
-
-        // NEW: Add P2 Control checkbox here, before other settings
-        ImGui::PushItemWidth(-1); // Make checkbox span width
-        ImGui::Checkbox("Enable P2 Control (Practice Mode Only)", &guiState.localData.p2ControlEnabled);
-        if (ImGui::IsItemHovered()) {
-            ImGui::SetTooltip("Gives you direct control over Player 2 in Practice Mode.\nThis is required for the Debug Input tab to work.\nApply changes to update the game.");
-        }
-        ImGui::PopItemWidth();
-        ImGui::Separator();
-
-
-        // Action buttons
-        if (ImGui::Button("Swap Positions", ImVec2(150, 30))) {
-            // Swap X positions
-            std::swap(guiState.localData.x1, guiState.localData.x2);
-        }
-        ImGui::SameLine();
-        if (ImGui::Button("Round Start", ImVec2(150, 30))) {
-            // Reset to round start positions
-            guiState.localData.x1 = 240.0;
-            guiState.localData.y1 = 0.0;
-            guiState.localData.x2 = 400.0;
-            guiState.localData.y2 = 0.0;
+            ImGui::Columns(1);
         }
 
         ImGui::Separator();
 
-        // Auto-Airtech Settings
-        ImGui::TextUnformatted("Auto-Airtech Direction:");
-        const char* airtechItems[] = { "Neutral (Disabled)", "Forward", "Backward" };
-        int airtechDir = guiState.localData.autoAirtech ? guiState.localData.airtechDirection + 1 : 0;
-        if (ImGui::Combo("##AirtechDir", &airtechDir, airtechItems, IM_ARRAYSIZE(airtechItems))) {
-            guiState.localData.autoAirtech = (airtechDir > 0);
-            guiState.localData.airtechDirection = airtechDir > 0 ? airtechDir - 1 : 0;
+        // Section: Player options (Auto-Airtech + Auto-Jump)
+    if (ImGui::CollapsingHeader("Player Options")) {
+            // Auto-Airtech
+            ImGui::TextUnformatted("Auto-Airtech:");
+            ImGui::SameLine();
+            const char* airtechItems[] = { "Neutral (Disabled)", "Forward", "Backward" };
+            int airtechDir = guiState.localData.autoAirtech ? guiState.localData.airtechDirection + 1 : 0;
+            if (ImGui::Combo("##AirtechDir", &airtechDir, airtechItems, IM_ARRAYSIZE(airtechItems))) {
+                guiState.localData.autoAirtech = (airtechDir > 0);
+                guiState.localData.airtechDirection = airtechDir > 0 ? airtechDir - 1 : 0;
+            }
+            ImGui::SameLine();
+            ImGui::TextUnformatted("Delay:");
+            int airtechDelay = guiState.localData.airtechDelay;
+            ImGui::SameLine();
+            ImGui::PushItemWidth(60);
+            if (ImGui::InputInt("##AirtechDelay", &airtechDelay)) {
+                guiState.localData.airtechDelay = CLAMP(airtechDelay, 0, 60);
+            }
+            ImGui::SameLine();
+            ImGui::TextUnformatted("frames");
+            ImGui::PopItemWidth();
+
+            ImGui::Dummy(ImVec2(1, 6));
+
+            // Auto-Jump
+            bool aj = guiState.localData.autoJump;
+            if (ImGui::Checkbox("Enable Auto-Jump", &aj)) {
+                guiState.localData.autoJump = aj;
+            }
+            ImGui::SameLine();
+            ImGui::TextUnformatted("Direction:");
+            const char* jumpDirs[] = { "Neutral", "Forward", "Backward" };
+            int jdir = guiState.localData.jumpDirection;
+            ImGui::SameLine();
+            if (ImGui::Combo("##JumpDir", &jdir, jumpDirs, IM_ARRAYSIZE(jumpDirs))) {
+                guiState.localData.jumpDirection = (jdir < 0 ? 0 : (jdir > 2 ? 2 : jdir));
+            }
+            ImGui::SameLine();
+            ImGui::TextUnformatted("Apply To:");
+            const char* jumpTargets[] = { "P1 Only", "P2 Only", "Both Players" };
+            int jtarget = guiState.localData.jumpTarget - 1; // 0..2
+            ImGui::SameLine();
+            if (ImGui::Combo("##JumpTarget", &jtarget, jumpTargets, IM_ARRAYSIZE(jumpTargets))) {
+                guiState.localData.jumpTarget = (jtarget < 0 ? 1 : (jtarget > 2 ? 3 : jtarget + 1));
+            }
+
+            ImGui::Dummy(ImVec2(1, 8));
+            ImGui::SeparatorText("Helpers");
+
+            ImGui::Dummy(ImVec2(1, 4));
+            // Position helpers
+            if (ImGui::Button("Swap Positions", ImVec2(150, 30))) {
+                std::swap(guiState.localData.x1, guiState.localData.x2);
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Round Start", ImVec2(150, 30))) {
+                guiState.localData.x1 = 240.0;
+                guiState.localData.y1 = 0.0;
+                guiState.localData.x2 = 400.0;
+                guiState.localData.y2 = 0.0;
+            }
         }
 
-        // Airtech delay
-        ImGui::SameLine();
-        ImGui::TextUnformatted("Delay:");
-        int airtechDelay = guiState.localData.airtechDelay;
-        ImGui::SameLine();
-        ImGui::PushItemWidth(60);
-        if (ImGui::InputInt("##AirtechDelay", &airtechDelay)) {
-            guiState.localData.airtechDelay = CLAMP(airtechDelay, 0, 60);
+        // New Section: Game Settings
+    if (ImGui::CollapsingHeader("Game Settings")) {
+            // FM bypass toggle (applies immediately, reversible)
+            bool fmBypass = IsFinalMemoryBypassEnabled();
+            if (ImGui::Checkbox("Final Memory: Allow at any HP", &fmBypass)) {
+                int changed = SetFinalMemoryBypass(fmBypass);
+                LogOut(std::string("[IMGUI][FM] ") + (fmBypass ? "Enabled" : "Disabled") + " FM HP bypass.", true);
+            }
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("Removes the low-HP restriction for Final Memory for all characters.\nUncheck to restore the original threshold.");
+            }
+
+            ImGui::Dummy(ImVec2(1, 6));
+            // P2 Control toggle moved here (applied on Apply)
+            ImGui::PushItemWidth(-1);
+            ImGui::Checkbox("Enable P2 Control (Practice Mode Only)", &guiState.localData.p2ControlEnabled);
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("Gives you direct control over Player 2 in Practice Mode.\nThis is required for the Debug Input tab to work.\nApply changes to update the game.");
+            }
+            ImGui::PopItemWidth();
+
+            ImGui::Dummy(ImVec2(1, 6));
+            ImGui::SeparatorText("Practice Dummy");
+            // Auto-Block Mode (F7 superset)
+            const char* abNames[] = { "None", "All (F7)", "First Hit (then off)", "After First Hit (then on)", "(deprecated)" };
+            if (GetCurrentGameMode() == GameMode::Practice) {
+                int abMode = GetDummyAutoBlockMode();
+                ImGui::SetNextItemWidth(200);
+                if (ImGui::Combo("Dummy Auto-Block", &abMode, abNames, 4)) { // only first 4 are valid now
+                    SetDummyAutoBlockMode(abMode);
+                }
+                if (ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip("Dummy block behavior:\n- None\n- All: always auto-block (vanilla F7)\n- First Hit: after a block, autoblock is disabled for a short cooldown\n- After First Hit: after you get hit, autoblock is enabled briefly to block the next hit");
+                }
+                ImGui::SameLine();
+                bool adaptive = GetAdaptiveStanceEnabled();
+                if (ImGui::Checkbox("Adaptive stance", &adaptive)) {
+                    SetAdaptiveStanceEnabled(adaptive);
+                }
+                if (ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip("Forces dummy stance each frame: stand vs airborne attacker, crouch vs grounded.");
+                }
+            } else {
+                ImGui::BeginDisabled(); int dummyAB = 0; ImGui::Combo("Dummy Auto-Block", &dummyAB, abNames, 4); ImGui::EndDisabled();
+            }
+
+            // State (F6 equivalent): 0=Standing, 1=Jumping, 2=Crouching
+            int mode = 0; bool modeOk = GetPracticeBlockMode(mode);
+            const char* stateNames[] = { "Standing", "Jumping", "Crouching" };
+            if (modeOk) {
+                int mLocal = (mode < 0 ? 0 : (mode > 2 ? 2 : mode));
+                if (ImGui::Combo("Dummy Stance (F6)", &mLocal, stateNames, IM_ARRAYSIZE(stateNames))) {
+                    SetPracticeBlockMode(mLocal);
+                }
+                if (ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip("Sets the dummy's stance: Standing, Jumping, or Crouching.\nWorks regardless of P2 control.");
+                }
+            } else {
+                ImGui::BeginDisabled();
+                int dummyState = 0; ImGui::Combo("Dummy Stance (F6)", &dummyState, stateNames, IM_ARRAYSIZE(stateNames));
+                ImGui::EndDisabled();
+                if (ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip("Available only in Practice Mode.");
+                }
+            }
         }
-        ImGui::SameLine();
-        ImGui::TextUnformatted("frames");
-        ImGui::PopItemWidth();
 
         ImGui::PopItemWidth();
     }
@@ -516,8 +594,8 @@ namespace ImGuiGui {
         ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.0f, 1.0f), "Character-Specific Settings");
         ImGui::Separator();
         
-        // Check if characters are valid
-        if (!AreCharactersInitialized()) {
+    // Check if characters are valid
+    if (!AreCharactersInitialized()) {
             ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.5f, 1.0f), "No valid characters detected.");
             return;
         }
@@ -571,35 +649,34 @@ namespace ImGuiGui {
                 ImGui::EndTooltip();
             }
         }
-        
-        // Blue IC/Red IC Toggle (universal for all characters)
-        hasFeatures = true; // Always show this section since it works for all characters
-        
-        ImGui::Text("IC Color Override:");
-        
-        bool p1BlueIC = guiState.localData.p1BlueIC;
-        if (ImGui::Checkbox("P1 Blue IC", &p1BlueIC)) {
-            guiState.localData.p1BlueIC = p1BlueIC;
+
+        // Mishio - Element controls and infinite modes
+        if (p1CharID == CHAR_ID_MISHIO || p2CharID == CHAR_ID_MISHIO) {
+            hasFeatures = true;
+
+            bool infElem = guiState.localData.infiniteMishioElement;
+            if (ImGui::Checkbox("Infinite Element (Mishio)", &infElem)) {
+                guiState.localData.infiniteMishioElement = infElem;
+            }
+            ImGui::SameLine();
+            bool infAw = guiState.localData.infiniteMishioAwakened;
+            if (ImGui::Checkbox("Infinite Awakened Timer (Mishio)", &infAw)) {
+                guiState.localData.infiniteMishioAwakened = infAw;
+            }
+            ImGui::SameLine();
+            ImGui::TextDisabled("(?)");
+            if (ImGui::IsItemHovered()) {
+                ImGui::BeginTooltip();
+                ImGui::PushTextWrapPos(ImGui::GetFontSize() * 35.0f);
+                ImGui::TextUnformatted("Element: 0=None, 1=Fire, 2=Lightning, 3=Awakened.\n"
+                                       "Infinite Element: keeps your selected element from being cleared.\n"
+                                       "Infinite Awakened: while Awakened, the hidden timer is topped up.");
+                ImGui::PopTextWrapPos();
+                ImGui::EndTooltip();
+            }
         }
         
-        ImGui::SameLine();
-        
-        bool p2BlueIC = guiState.localData.p2BlueIC;
-        if (ImGui::Checkbox("P2 Blue IC", &p2BlueIC)) {
-            guiState.localData.p2BlueIC = p2BlueIC;
-        }
-        
-        ImGui::SameLine();
-        ImGui::TextDisabled("(?)");
-        if (ImGui::IsItemHovered()) {
-            ImGui::BeginTooltip();
-            ImGui::PushTextWrapPos(ImGui::GetFontSize() * 35.0f);
-            ImGui::TextUnformatted("Forces RF bar to Blue IC state (full RF special properties).\n"
-                                   "When unchecked, RF bar returns to normal Red IC state.\n"
-                                   "This affects all characters and works in all game modes.");
-            ImGui::PopTextWrapPos();
-            ImGui::EndTooltip();
-        }
+    // IC Color override moved to Game Values tab; no IC controls in Character tab
         
         if (hasFeatures) {
             ImGui::Separator();
@@ -628,7 +705,7 @@ namespace ImGuiGui {
         // Create two columns for P1 and P2
         ImGui::Columns(2, "playerColumns", true);
         
-        // --- P1 COLUMN ---
+    // --- P1 COLUMN ---
         ImGui::TextColored(ImVec4(0.5f, 0.8f, 1.0f, 1.0f), "P1: %s", 
                           CharacterSettings::GetCharacterName(p1CharID).c_str());
         
@@ -707,6 +784,93 @@ namespace ImGuiGui {
                 guiState.localData.p1MisuzuFeathers = 0;
             }
         }
+        // P1 Mishio Settings
+        else if (p1CharID == CHAR_ID_MISHIO) {
+            // Element selection
+            int prevElem = guiState.localData.p1MishioElement;
+            int elem = prevElem;
+            const char* items[] = { "None", "Fire", "Lightning", "Awakened" };
+            ImGui::Text("Element:");
+            ImGui::Combo("##P1MishioElem", &elem, items, IM_ARRAYSIZE(items));
+            guiState.localData.p1MishioElement = CLAMP(elem, MISHIO_ELEM_NONE, MISHIO_ELEM_AWAKENED);
+            // If switched to Awakened and infinite timer is OFF, set timer to full (4500)
+            if (elem != prevElem && elem == MISHIO_ELEM_AWAKENED && !guiState.localData.infiniteMishioAwakened) {
+                guiState.localData.p1MishioAwakenedTimer = MISHIO_AWAKENED_TARGET;
+            }
+
+            // Awakened timer (only editable while Awakened)
+            int aw = guiState.localData.p1MishioAwakenedTimer;
+            ImGui::Text("Awakened Timer (internal frames):");
+            bool p1Awakened = (guiState.localData.p1MishioElement == MISHIO_ELEM_AWAKENED);
+            if (!p1Awakened) ImGui::BeginDisabled();
+            if (ImGui::SliderInt("##P1MishioAw", &aw, 0, MISHIO_AWAKENED_TARGET)) {
+                guiState.localData.p1MishioAwakenedTimer = aw;
+            }
+            if (!p1Awakened) {
+                ImGui::EndDisabled();
+                ImGui::SameLine();
+                ImGui::TextDisabled("(set Element to Awakened to edit)");
+            }
+        }
+        // P1 Doppel (ExNanase) Settings
+        else if (p1CharID == CHAR_ID_EXNANASE) {
+            bool enlightened = guiState.localData.p1DoppelEnlightened;
+            if (ImGui::Checkbox("Enlightened (Final Memory)##p1Doppel", &enlightened)) {
+                guiState.localData.p1DoppelEnlightened = enlightened;
+            }
+            ImGui::TextDisabled("(sets internal flag to 1 when checked, 0 when unchecked)");
+        }
+    // P1 Nanase (Rumi) Settings
+    else if (p1CharID == CHAR_ID_NANASE) {
+            ImGui::Text("Rumi Mode:");
+            // Keep combobox in sync with current state and disable when Infinite Shinai is on
+            int modeIdx = guiState.localData.p1RumiBarehanded ? 1 : 0; // 0=Shinai, 1=Barehanded
+            const char* rumiModes[] = { "Shinai", "Barehanded" };
+            bool p1InfNow = guiState.localData.p1RumiInfiniteShinai;
+            if (p1InfNow) {
+                // While Infinite is on, force UI to show Shinai and keep local state Shinai
+                modeIdx = 0;
+                guiState.localData.p1RumiBarehanded = false;
+                ImGui::BeginDisabled(true);
+            }
+            if (ImGui::Combo("##p1RumiMode", &modeIdx, rumiModes, IM_ARRAYSIZE(rumiModes))) {
+                guiState.localData.p1RumiBarehanded = (modeIdx == 1);
+            }
+            if (p1InfNow) ImGui::EndDisabled();
+            bool infShinai = guiState.localData.p1RumiInfiniteShinai;
+            if (ImGui::Checkbox("Infinite Shinai (prevent dropping)##p1RumiInf", &infShinai)) {
+                guiState.localData.p1RumiInfiniteShinai = infShinai;
+                if (infShinai) {
+                    // Override UI intention: always Shinai when Infinite is on
+                    guiState.localData.p1RumiBarehanded = false;
+                }
+            }
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("When enabled, keeps Shinai equipped by forcing mode back to Shinai after specials/supers that drop it. Only applies when mode is Shinai.");
+            }
+            ImGui::TextDisabled("(Mode swap writes anim/move pointers and syncs gate/mode; safer when idle)");
+
+            ImGui::Separator();
+            ImGui::Text("Final Memory (Kimchi):");
+            bool kimchi = guiState.localData.p1RumiKimchiActive;
+            if (ImGui::Checkbox("Active##p1Kimchi", &kimchi)) {
+                guiState.localData.p1RumiKimchiActive = kimchi;
+                if (kimchi && guiState.localData.p1RumiKimchiTimer < RUMI_KIMCHI_TARGET)
+                    guiState.localData.p1RumiKimchiTimer = RUMI_KIMCHI_TARGET;
+            }
+            int kt = guiState.localData.p1RumiKimchiTimer;
+            if (ImGui::SliderInt("Timer##p1Kimchi", &kt, 0, RUMI_KIMCHI_TARGET)) {
+                guiState.localData.p1RumiKimchiTimer = kt;
+            }
+            bool infKimchi = guiState.localData.p1RumiInfiniteKimchi;
+            if (ImGui::Checkbox("Infinite Kimchi (freeze timer)##p1Kimchi", &infKimchi)) {
+                guiState.localData.p1RumiInfiniteKimchi = infKimchi;
+                if (infKimchi) {
+                    guiState.localData.p1RumiKimchiActive = true;
+                    guiState.localData.p1RumiKimchiTimer = RUMI_KIMCHI_TARGET;
+                }
+            }
+        }
         else {
             ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "No special settings available");
         }
@@ -716,7 +880,7 @@ namespace ImGuiGui {
         ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.5f, 1.0f), "P2: %s", 
                           CharacterSettings::GetCharacterName(p2CharID).c_str());
         
-        // P2 Ikumi Settings
+    // P2 Ikumi Settings
         if (p2CharID == CHAR_ID_IKUMI) {
             // Blood Level
             int p2Blood = guiState.localData.p2IkumiBlood;
@@ -763,7 +927,7 @@ namespace ImGuiGui {
             }
         }
         // P2 Misuzu Settings
-        else if (p2CharID == CHAR_ID_MISUZU) {
+    else if (p2CharID == CHAR_ID_MISUZU) {
             // Feather Count
             int p2Feathers = guiState.localData.p2MisuzuFeathers;
             float p2FeatherPercent = (float)p2Feathers / MISUZU_FEATHER_MAX;
@@ -791,6 +955,89 @@ namespace ImGuiGui {
                 guiState.localData.p2MisuzuFeathers = 0;
             }
         }
+        // P2 Mishio Settings
+        else if (p2CharID == CHAR_ID_MISHIO) {
+            int prevElem2 = guiState.localData.p2MishioElement;
+            int elem = prevElem2;
+            const char* items[] = { "None", "Fire", "Lightning", "Awakened" };
+            ImGui::Text("Element:");
+            ImGui::Combo("##P2MishioElem", &elem, items, IM_ARRAYSIZE(items));
+            guiState.localData.p2MishioElement = CLAMP(elem, MISHIO_ELEM_NONE, MISHIO_ELEM_AWAKENED);
+            if (elem != prevElem2 && elem == MISHIO_ELEM_AWAKENED && !guiState.localData.infiniteMishioAwakened) {
+                guiState.localData.p2MishioAwakenedTimer = MISHIO_AWAKENED_TARGET;
+            }
+
+            int aw = guiState.localData.p2MishioAwakenedTimer;
+            ImGui::Text("Awakened Timer (internal frames):");
+            bool p2Awakened = (guiState.localData.p2MishioElement == MISHIO_ELEM_AWAKENED);
+            if (!p2Awakened) ImGui::BeginDisabled();
+            if (ImGui::SliderInt("##P2MishioAw", &aw, 0, MISHIO_AWAKENED_TARGET)) {
+                guiState.localData.p2MishioAwakenedTimer = aw;
+            }
+            if (!p2Awakened) {
+                ImGui::EndDisabled();
+                ImGui::SameLine();
+                ImGui::TextDisabled("(set Element to Awakened to edit)");
+            }
+        }
+        // P2 Doppel (ExNanase) Settings
+        else if (p2CharID == CHAR_ID_EXNANASE) {
+            bool enlightened2 = guiState.localData.p2DoppelEnlightened;
+            if (ImGui::Checkbox("Enlightened (Final Memory)##p2Doppel", &enlightened2)) {
+                guiState.localData.p2DoppelEnlightened = enlightened2;
+            }
+            ImGui::TextDisabled("(sets internal flag to 1 when checked, 0 when unchecked)");
+        }
+    // P2 Nanase (Rumi) Settings
+    else if (p2CharID == CHAR_ID_NANASE) {
+            ImGui::Text("Rumi Mode:");
+            // Keep combobox in sync with current state and disable when Infinite Shinai is on
+            int modeIdx2 = guiState.localData.p2RumiBarehanded ? 1 : 0; // 0=Shinai, 1=Barehanded
+            const char* rumiModes[] = { "Shinai", "Barehanded" };
+            bool p2InfNow = guiState.localData.p2RumiInfiniteShinai;
+            if (p2InfNow) {
+                // While Infinite is on, force UI to show Shinai and keep local state Shinai
+                modeIdx2 = 0;
+                guiState.localData.p2RumiBarehanded = false;
+                ImGui::BeginDisabled(true);
+            }
+            if (ImGui::Combo("##p2RumiMode", &modeIdx2, rumiModes, IM_ARRAYSIZE(rumiModes))) {
+                guiState.localData.p2RumiBarehanded = (modeIdx2 == 1);
+            }
+            if (p2InfNow) ImGui::EndDisabled();
+            bool infShinai2 = guiState.localData.p2RumiInfiniteShinai;
+            if (ImGui::Checkbox("Infinite Shinai (prevent dropping)##p2RumiInf", &infShinai2)) {
+                guiState.localData.p2RumiInfiniteShinai = infShinai2;
+                if (infShinai2) {
+                    guiState.localData.p2RumiBarehanded = false;
+                }
+            }
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("When enabled, keeps Shinai equipped by forcing mode back to Shinai after specials/supers that drop it. Only applies when mode is Shinai.");
+            }
+            ImGui::TextDisabled("(Mode swap writes anim/move pointers and syncs gate/mode; safer when idle)");
+
+            ImGui::Separator();
+            ImGui::Text("Final Memory (Kimchi):");
+            bool kimchi2 = guiState.localData.p2RumiKimchiActive;
+            if (ImGui::Checkbox("Active##p2Kimchi", &kimchi2)) {
+                guiState.localData.p2RumiKimchiActive = kimchi2;
+                if (kimchi2 && guiState.localData.p2RumiKimchiTimer < RUMI_KIMCHI_TARGET)
+                    guiState.localData.p2RumiKimchiTimer = RUMI_KIMCHI_TARGET;
+            }
+            int kt2 = guiState.localData.p2RumiKimchiTimer;
+            if (ImGui::SliderInt("Timer##p2Kimchi", &kt2, 0, RUMI_KIMCHI_TARGET)) {
+                guiState.localData.p2RumiKimchiTimer = kt2;
+            }
+            bool infKimchi2 = guiState.localData.p2RumiInfiniteKimchi;
+            if (ImGui::Checkbox("Infinite Kimchi (freeze timer)##p2Kimchi", &infKimchi2)) {
+                guiState.localData.p2RumiInfiniteKimchi = infKimchi2;
+                if (infKimchi2) {
+                    guiState.localData.p2RumiKimchiActive = true;
+                    guiState.localData.p2RumiKimchiTimer = RUMI_KIMCHI_TARGET;
+                }
+            }
+        }
         else {
             ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "No special settings available");
         }
@@ -802,7 +1049,7 @@ namespace ImGuiGui {
         ImGui::Separator();
         ImGui::TextWrapped(
             "Character-specific settings allow you to modify special parameters unique to each character.\n"
-            "Currently supported characters: Ikumi (Blood Meter & Genocide Mode), Misuzu (Feather Count)");
+            "Currently supported: Ikumi (Blood/Genocide), Misuzu (Feathers), Mishio (Element/Awakened), Rumi (Stance, Kimchi)");
     }
     
     // Add this new function to the ImGuiGui namespace:
@@ -810,6 +1057,24 @@ namespace ImGuiGui {
         bool showBorders = g_ShowOverlayDebugBorders.load();
         if (ImGui::Checkbox("Show overlay debug borders", &showBorders)) {
             g_ShowOverlayDebugBorders.store(showBorders);
+        }
+        ImGui::Separator();
+        // Final Memory (FM) tools
+        ImGui::Text("Final Memory Tools:");
+        if (ImGui::Button("Apply FM HP bypass (allow FM at any HP)")) {
+            // Call runtime patcher once; log summary only
+            static uint64_t s_lastPatchLogTick = 0;
+            int sites = 0;
+            try {
+                sites = ::ApplyFinalMemoryHPBypass();
+            } catch (...) {
+                LogOut("[IMGUI][FM] Exception while applying FM bypass.", true);
+            }
+            uint64_t now = GetTickCount64();
+            if (now - s_lastPatchLogTick > 2000) { // throttle to 2s
+                LogOut(std::string("[IMGUI][FM] FM HP bypass applied. Sites patched: ") + std::to_string(sites), true);
+                s_lastPatchLogTick = now;
+            }
         }
     ImGui::Separator();
         ImGui::Separator();
@@ -939,7 +1204,7 @@ namespace ImGuiGui {
     // Set window position and size
         // Use Appearing so the menu always resets to a visible spot when reopened (prevents off-screen in fullscreen)
         ImGui::SetNextWindowPos(ImVec2(50, 50), ImGuiCond_Appearing);
-        ImGui::SetNextWindowSize(ImVec2(580, 520), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(520, 460), ImGuiCond_FirstUseEver);
     // Force fully-opaque background to avoid heavy alpha blending on low-end GPUs
     ImGui::SetNextWindowBgAlpha(1.0f);
 
@@ -1041,6 +1306,12 @@ namespace ImGuiGui {
             return;
         }
 
+        // Hard gate: don't dereference player pointers until characters are initialized
+        if (!AreCharactersInitialized()) {
+            LogOut("[IMGUI] RefreshLocalData: Characters not initialized; skipping memory reads", true);
+            return;
+        }
+
         // P1
         SafeReadMemory(ResolvePointer(base, EFZ_BASE_OFFSET_P1, HP_OFFSET), &guiState.localData.hp1, sizeof(int));
         SafeReadMemory(ResolvePointer(base, EFZ_BASE_OFFSET_P1, METER_OFFSET), &guiState.localData.meter1, sizeof(int));
@@ -1073,6 +1344,7 @@ namespace ImGuiGui {
           CharacterSettings::UpdateCharacterIDs(guiState.localData);
     
     // Read character-specific values (once per refresh)
+    // Read character-specific values; Rumi path only reads mode/gate and is safe
     CharacterSettings::ReadCharacterValues(base, guiState.localData);
 
         // Read current IC color values from memory
@@ -1129,7 +1401,17 @@ namespace ImGuiGui {
             LogOut("[IMGUI_GUI] Applying settings from ImGui interface", true);
             
             DisplayData updatedData = guiState.localData;
+            // Normalize Rumi intent: Infinite Shinai overrides to Shinai mode
+            if (updatedData.p1RumiInfiniteShinai) updatedData.p1RumiBarehanded = false;
+            if (updatedData.p2RumiInfiniteShinai) updatedData.p2RumiBarehanded = false;
+        // If Infinite Kimchi selected, ensure active and timer full on apply
+        if (updatedData.p1RumiInfiniteKimchi) { updatedData.p1RumiKimchiActive = true; updatedData.p1RumiKimchiTimer = RUMI_KIMCHI_TARGET; }
+        if (updatedData.p2RumiInfiniteKimchi) { updatedData.p2RumiKimchiActive = true; updatedData.p2RumiKimchiTimer = RUMI_KIMCHI_TARGET; }
             displayData = updatedData;
+
+            // Ensure new Rumi flags are preserved
+            displayData.p1RumiInfiniteShinai = updatedData.p1RumiInfiniteShinai;
+            displayData.p2RumiInfiniteShinai = updatedData.p2RumiInfiniteShinai;
             
             // Update atomic variables from our local copy
             autoAirtechEnabled.store(displayData.autoAirtech);
@@ -1173,6 +1455,10 @@ namespace ImGuiGui {
             triggerAfterHitstunStrength.store(displayData.strengthAfterHitstun);
             triggerAfterAirtechStrength.store(displayData.strengthAfterAirtech);
             
+            // Enforce FM bypass state to match UI selection (idempotent)
+            // We read current enabled state from the runtime and reapply to ensure consistency
+            SetFinalMemoryBypass(IsFinalMemoryBypassEnabled());
+            
             // Apply the P2 control patch based on the checkbox state
             if (displayData.p2ControlEnabled) {
                 EnablePlayer2InPracticeMode();
@@ -1185,6 +1471,8 @@ namespace ImGuiGui {
             LogOut("[IMGUI_GUI] Applying character settings - Blood Mode: " + 
                    std::to_string(displayData.infiniteBloodMode) + 
                    ", Feather Mode: " + std::to_string(displayData.infiniteFeatherMode) +
+                   ", Mishio Elem Inf: " + std::to_string(displayData.infiniteMishioElement) +
+                   ", Mishio Awakened Inf: " + std::to_string(displayData.infiniteMishioAwakened) +
                    ", P1 Blue IC: " + std::to_string(displayData.p1BlueIC) + 
                    ", P2 Blue IC: " + std::to_string(displayData.p2BlueIC), true);
             
@@ -1194,7 +1482,20 @@ namespace ImGuiGui {
             // Apply the settings to the game
             uintptr_t base = GetEFZBase();
             if (base) {
+                // Defer Rumi mode apply if not actionable to avoid unsafe engine calls
+                bool deferred = false;
+                if (displayData.p1CharID == CHAR_ID_NANASE) {
+                    short mv = 0; if (auto mvAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P1, MOVE_ID_OFFSET)) SafeReadMemory(mvAddr, &mv, sizeof(short));
+                    if (!IsActionable(mv)) deferred = true;
+                }
+                if (displayData.p2CharID == CHAR_ID_NANASE) {
+                    short mv = 0; if (auto mvAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P2, MOVE_ID_OFFSET)) SafeReadMemory(mvAddr, &mv, sizeof(short));
+                    if (!IsActionable(mv)) deferred = true;
+                }
                 ApplySettings(&displayData);
+                if (deferred) {
+                    LogOut("[IMGUI] Rumi mode change deferred; apply again when idle.", true);
+                }
                 // Refresh trigger overlay text to reflect new settings immediately
                 UpdateTriggerOverlay();
             }

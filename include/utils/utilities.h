@@ -117,6 +117,14 @@ struct DisplayData {
     int p2MisuzuFeathers;
     bool infiniteFeatherMode; // Add this missing field
     
+    // Mishio
+    int p1MishioElement;       // 0=None, 1=Fire, 2=Lightning, 3=Awakened
+    int p2MishioElement;
+    int p1MishioAwakenedTimer; // internal frames
+    int p2MishioAwakenedTimer;
+    bool infiniteMishioElement;      // freeze/restore chosen element
+    bool infiniteMishioAwakened;     // keep awakened timer topped up when element==Awakened
+
     // Blue IC/Red IC toggle
     bool p1BlueIC;
     bool p2BlueIC;
@@ -159,6 +167,26 @@ struct DisplayData {
     int strengthOnWakeup;
     int strengthAfterHitstun;
     int strengthAfterAirtech;
+
+    // Doppel Nanase (ExNanase) - Enlightened FM checkbox state per player
+    bool p1DoppelEnlightened;
+    bool p2DoppelEnlightened;
+
+    // Nanase (Rumi) – Barehanded mode (full swap of normals+specials)
+    bool p1RumiBarehanded;
+    bool p2RumiBarehanded;
+
+    // Nanase (Rumi) – Infinite Shinai: prevent weapon from being dropped (auto-restore to Shinai)
+    bool p1RumiInfiniteShinai;
+    bool p2RumiInfiniteShinai;
+
+    // Nanase (Rumi) – Final Memory (Kimchi) state and controls
+    bool p1RumiKimchiActive;   // reflects activation flag at +0x3148
+    bool p2RumiKimchiActive;
+    int  p1RumiKimchiTimer;    // reflects timer at +0x314C
+    int  p2RumiKimchiTimer;
+    bool p1RumiInfiniteKimchi; // keep timer topped up
+    bool p2RumiInfiniteKimchi;
 };
 
 extern DisplayData displayData;
@@ -207,6 +235,11 @@ extern std::atomic<int> triggerAfterAirtechCustomID;
 // Add these after the other global state variables
 extern std::atomic<bool> g_efzWindowActive;
 extern std::atomic<bool> g_guiActive;
+// Set when an online match is detected; used to terminate/pause mod threads
+extern std::atomic<bool> g_onlineModeActive;
+
+// Enter online-safe mode: cooperatively stop mod threads, disable hooks/features
+void EnterOnlineMode();
 
 // NEW: Add these for the debug tab's manual input override feature
 extern std::atomic<bool> g_manualInputOverride[3]; // Index 0 unused, 1 for P1, 2 for P2

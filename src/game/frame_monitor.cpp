@@ -272,6 +272,21 @@ void FrameDataMonitor() {
     auto expectedNext = startTime + targetFrameTime; // next frame boundary
 
     while (!g_isShuttingDown) {
+        // If online mode is active, park this thread in a lightweight loop
+        if (g_onlineModeActive.load()) {
+            // On first detection, perform one-time cleanup similar to phase exit
+            static bool cleanedForOnline = false;
+            if (!cleanedForOnline) {
+                LogOut("[FRAME MONITOR] Online mode active -> stopping features and cleaning up", true);
+                StopBufferFreezing();
+                ResetActionFlags();
+                p1DelayState = {false, 0, TRIGGER_NONE, 0};
+                p2DelayState = {false, 0, TRIGGER_NONE, 0};
+                cleanedForOnline = true;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+            continue;
+        }
         auto frameStart = clock::now();
         // Catch-up logic: if we are *very* late (> 10 frames), jump ahead to avoid cascading backlog
         if (frameStart - expectedNext > targetFrameTime * 10) {
@@ -528,6 +543,8 @@ void FrameDataMonitor() {
                     GameMode modeAtMatch = GetCurrentGameMode();
                     if (modeAtMatch == GameMode::Practice) {
                         EnsureDefaultControlFlagsOnMatchStart();
+                        // Reset Dummy Auto-Block per-round state machine
+                        ResetDummyAutoBlockState();
                     }
                 }
                 s_lastPhaseLocal = phase;
@@ -604,45 +621,20 @@ void FrameDataMonitor() {
                 // Pass cached move IDs to avoid extra reads and enable lighter math inside
                 MonitorAutoActions(moveID1, moveID2, prevMoveID1, prevMoveID2);
                 
-                // STEP 2: Auto-jump logic with conflict detection
-                bool autoActionBusy = false;
-                
-                if (autoActionEnabled.load()) {
-                    int targetPlayer = autoActionPlayer.load();
-                    
-                    // Check if ANY trigger is enabled and could potentially activate
-                    bool anyTriggerEnabled = triggerAfterBlockEnabled.load() || 
-                                           triggerOnWakeupEnabled.load() || 
-                                           triggerAfterHitstunEnabled.load() || 
-                                           triggerAfterAirtechEnabled.load();
-                    
-                    if (anyTriggerEnabled) {
-                        // If auto-action is enabled with triggers, check for activity
-                        if (targetPlayer == 1 || targetPlayer == 3) {
-                            autoActionBusy = autoActionBusy || p1DelayState.isDelaying || p1ActionApplied;
-                        }
-                        if (targetPlayer == 2 || targetPlayer == 3) {
-                            autoActionBusy = autoActionBusy || p2DelayState.isDelaying || p2ActionApplied;
-                        }
-                    }
-                }
-                
-                // Auto-jump with conflict detection
-                if (!autoActionBusy && autoJumpEnabled.load()) {
-                    // Check if moveIDs indicate recent auto-action activity
-                    bool hasAttackMoves = (moveID1 >= 200 && moveID1 <= 350) ||
-                                         (moveID2 >= 200 && moveID2 <= 350);
-                    
-                    if (!hasAttackMoves) {
-                        MonitorAutoJump();
-                    }
-                }
+                // STEP 2: Auto-jump
+                // Always call to allow internal cleanup when toggled off; function self-checks enable state
+                MonitorAutoJump();
                 
                 // STEP 3: Auto-airtech (every frame for precision, no throttling)
                 MonitorAutoAirtech(moveID1, moveID2);  
                 ClearDelayStatesIfNonActionable();     
             }
             
+            // Ensure Dummy Auto-Block monitor runs every frame during Match (not gated by move changes)
+            // Important: pass previous moveIDs before updating them
+            MonitorDummyAutoBlock(moveID1, moveID2, prevMoveID1, prevMoveID2);
+
+            // Now update previous moveIDs for next frame
             prevMoveID1 = moveID1;
             prevMoveID2 = moveID2;
 

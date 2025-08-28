@@ -20,6 +20,37 @@
 
 std::atomic<bool> isOnlineMatch(false);
 
+// Try to read the ONLINE state flag exposed by EfzRevival.dll at +0xA05D0
+OnlineState ReadEfzRevivalOnlineState() {
+    HMODULE hEfzRev = GetModuleHandleA("EfzRevival.dll");
+    if (!hEfzRev) return OnlineState::Unknown;
+
+    // Address is module base + 0xA05D0, 4-byte integer
+    uintptr_t base = reinterpret_cast<uintptr_t>(hEfzRev);
+    volatile int* pFlag = reinterpret_cast<volatile int*>(base + 0xA05D0);
+    __try {
+        int v = *pFlag;
+        if (v == 0) return OnlineState::Netplay;
+        if (v == 1) return OnlineState::Spectating;
+        if (v == 2) return OnlineState::Offline;
+        if (v == 3) return OnlineState::Tournament;
+        return OnlineState::Unknown;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return OnlineState::Unknown;
+    }
+}
+
+// Helper: human-readable name for OnlineState
+const char* OnlineStateName(OnlineState st) {
+    switch (st) {
+        case OnlineState::Netplay: return "Netplay";
+        case OnlineState::Spectating: return "Spectating";
+        case OnlineState::Offline: return "Offline";
+        case OnlineState::Tournament: return "Tournament";
+        default: return "Unknown";
+    }
+}
+
 // Helper function to get the EFZ process ID
 DWORD GetEFZProcessID() {
     DWORD processID = 0;
@@ -48,79 +79,17 @@ DWORD GetEFZProcessID() {
 
 // Check if the process has any network connections - improved for local network detection
 bool DetectOnlineMatch() {
-    DWORD processID = GetEFZProcessID();
-    if (processID == 0) {
-        return false;
-    }
-    
-    // Initialize Winsock
-    WSADATA wsaData;
-    if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
-        return false;
-    }
-    
-    // Get TCP table (connections)
-    MIB_TCPTABLE_OWNER_PID* pTcpTable = NULL;
-    DWORD dwSize = 0;
-    DWORD dwRetVal = 0;
-    
-    // First call to get the size of the table
-    dwRetVal = GetExtendedTcpTable(NULL, &dwSize, TRUE, AF_INET, TCP_TABLE_OWNER_PID_ALL, 0);
-    
-    if (dwRetVal == ERROR_INSUFFICIENT_BUFFER) {
-        pTcpTable = (MIB_TCPTABLE_OWNER_PID*)malloc(dwSize);
-        if (pTcpTable == NULL) {
-            WSACleanup();
-            return false;
+    // Only use EfzRevival.dll flag for detection (no TCP/UDP fallback)
+    static OnlineState s_lastLogged = OnlineState::Unknown;
+    OnlineState st = ReadEfzRevivalOnlineState();
+    if (st != OnlineState::Unknown) {
+        if (st != s_lastLogged) {
+            LogOut(std::string("[NETWORK] EfzRevival state detected: ") + OnlineStateName(st), true);
+            s_lastLogged = st;
         }
+        // Treat Tournament as online-safe (disable features) conservatively
+        return (st == OnlineState::Netplay || st == OnlineState::Spectating || st == OnlineState::Tournament);
     }
-    
-    // Second call to get the actual data
-    dwRetVal = GetExtendedTcpTable(pTcpTable, &dwSize, TRUE, AF_INET, TCP_TABLE_OWNER_PID_ALL, 0);
-    
-    if (dwRetVal == NO_ERROR) {
-        for (DWORD i = 0; i < pTcpTable->dwNumEntries; i++) {
-            if (pTcpTable->table[i].dwOwningPid == processID) {
-                if (pTcpTable->table[i].dwState == MIB_TCP_STATE_ESTAB || 
-                    pTcpTable->table[i].dwState == MIB_TCP_STATE_LISTEN) {
-                    free(pTcpTable);
-                    WSACleanup();
-                    return true;
-                }
-            }
-        }
-    }
-    
-    if (pTcpTable) free(pTcpTable);
-    WSACleanup();
-    
-    // Also check UDP connections
-    MIB_UDPTABLE_OWNER_PID* pUdpTable = NULL;
-    dwSize = 0;
-    
-    // First call to get the size of the table
-    dwRetVal = GetExtendedUdpTable(NULL, &dwSize, TRUE, AF_INET, UDP_TABLE_OWNER_PID, 0);
-    
-    if (dwRetVal == ERROR_INSUFFICIENT_BUFFER) {
-        pUdpTable = (MIB_UDPTABLE_OWNER_PID*)malloc(dwSize);
-        if (pUdpTable == NULL) {
-            return false;
-        }
-    }
-    
-    // Second call to get the actual data
-    dwRetVal = GetExtendedUdpTable(pUdpTable, &dwSize, TRUE, AF_INET, UDP_TABLE_OWNER_PID, 0);
-    
-    if (dwRetVal == NO_ERROR) {
-        for (DWORD i = 0; i < pUdpTable->dwNumEntries; i++) {
-            if (pUdpTable->table[i].dwOwningPid == processID) {
-                free(pUdpTable);
-                return true;
-            }
-        }
-    }
-    
-    if (pUdpTable) free(pUdpTable);
     return false;
 }
 
@@ -229,6 +198,11 @@ void MonitorOnlineStatus() {
     auto gameStartTime = std::chrono::steady_clock::now();
     
     while (true) {
+        // If we've already entered online mode globally, park this thread
+        if (g_onlineModeActive.load()) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+            continue;
+        }
         // Check if we should stop checking network status
         if (stopChecking) {
             // Just sleep and continue the loop without doing checks
@@ -268,6 +242,11 @@ void MonitorOnlineStatus() {
                 
                 // Reduce required checks from 3 to 2 for testing
                 if (consecutiveOnlineChecks >= 2) {
+                    // If available, log the exact EfzRevival state (0=netplay,1=spectating,2=offline,3=tournament)
+                    OnlineState st = ReadEfzRevivalOnlineState();
+                    if (st != OnlineState::Unknown) {
+                        LogOut(std::string("[NETWORK] EfzRevival state: ") + OnlineStateName(st), true);
+                    }
                     LogOut("[NETWORK] Online match confirmed", true);
                     
                     // Reduced countdown from 5 to 3 seconds
@@ -284,6 +263,9 @@ void MonitorOnlineStatus() {
                     
                     isOnlineMatch = true;
                     prevOnlineStatus = true;
+
+                    // Enter online-safe mode (terminate mod threads/features)
+                    EnterOnlineMode();
                     
                     // Add this to stop checking after confirming online
                     stopChecking = true;

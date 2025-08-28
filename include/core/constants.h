@@ -315,6 +315,59 @@
 #define MISUZU_FEATHER_OFFSET 0x3464
 #define MISUZU_FEATHER_MAX 3 // Feather count ranges from 0-3
 
+// Mishio (Element system)
+// Offsets relative to player base (from reverse-engineering/CE)
+#define MISHIO_ELEMENT_OFFSET            0x3158  // 0=None, 1=Fire, 2=Lightning, 3=Awakened
+#define MISHIO_ELEMENT_COOLDOWN_OFFSET   0x315C  // Decrements while element active
+#define MISHIO_ELEMENT_CLOCK_OFFSET      0x3160  // Internal clock used for effects
+#define MISHIO_AWAKENED_TIMER_OFFSET     0x3168  // Counts down while Awakened; when <=0, element resets to 0
+
+// Mishio element values
+#define MISHIO_ELEM_NONE      0
+#define MISHIO_ELEM_FIRE      1
+#define MISHIO_ELEM_LIGHTNING 2
+#define MISHIO_ELEM_AWAKENED  3
+
+// Target top-up for infinite awakened timer
+#define MISHIO_AWAKENED_TARGET 4500
+
+// Doppel Nanase (ExNanase) - Enlightened Final Memory flag
+// From decomp: *(DWORD*)(playerBase + 13396) toggles 0/1 when Enlightened is active
+#define DOPPEL_ENLIGHTENED_OFFSET 0x3454
+
+// Nanase (Rumi) weapon/barehand mode swap
+// RVA of the engine's native toggleCharacterMode routine
+// Decomp VA: 0x0048E140; Module base: 0x00400000; RVA = 0x0008E140
+#define TOGGLE_CHARACTER_MODE_RVA 0x0008E140
+// Gate flag that enables barehand specials (1=barehand, 0=shinai)
+#define RUMI_WEAPON_GATE_OFFSET   0x344C
+// True mode byte toggled by in-game toggleCharacterMode (1=barehand/alternate, 0=shinai/normal)
+#define RUMI_MODE_BYTE_OFFSET     0x3458
+// Pointers to alternate resources (written during init)
+#define RUMI_ALT_ANIM_PTR_OFFSET  0x345C
+#define RUMI_ALT_MOVE_PTR_OFFSET  0x3460
+// Pointers to normal resources
+#define RUMI_NORM_ANIM_PTR_OFFSET 0x3474
+#define RUMI_NORM_MOVE_PTR_OFFSET 0x3478
+// Destination fields that the game swaps when changing modes
+#define RUMI_ACTIVE_ANIM_PTR_DST  0x0010
+#define RUMI_ACTIVE_MOVE_PTR_DST  0x0164
+
+// Nanase (Rumi) super that forcibly drops Shinai (moveIDs from reverse-engineering)
+#define RUMI_SUPER_TOSS_A 308
+#define RUMI_SUPER_TOSS_B 309
+#define RUMI_SUPER_TOSS_C 310
+
+// Nanase (Rumi) – Final Memory ("Kimchi") state
+// From decomp: *(DWORD*)(playerBase + 0x3148) toggles 0/1 around special state cases
+// The timer at +0x314C feeds the special gauge rendering
+#define RUMI_KIMCHI_TIMER_OFFSET  0x3148  // timer value used by render gauge
+#define RUMI_KIMCHI_ACTIVE_OFFSET 0x314C  // 0=inactive, 1=active
+// Clarified: starts at 3000 and decreases by 3 every visual frame
+#define RUMI_KIMCHI_TARGET 3000
+// Kimchi state MoveID observed to drive timer behavior
+#define RUMI_KIMCHI_MOVE_ID 307
+
 // Player input buffer offsets
 #define P1_INPUT_BUFFER_OFFSET 0x1AB      // Base address of input buffer
 #define P1_INPUT_BUFFER_INDEX_OFFSET 0x260 // Offset to current buffer index
