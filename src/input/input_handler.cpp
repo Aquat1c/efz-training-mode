@@ -24,6 +24,8 @@
 #include "../include/input/input_motion.h" // For QueueMotionInput
 #include "../include/utils/bgm_control.h"
 #include "../include/input/input_freeze.h"
+#include "../include/game/practice_patch.h"
+#include "../include/game/game_state.h"
 #include <Xinput.h>
 
 #pragma comment(lib, "xinput9_1_0.lib")
@@ -400,6 +402,17 @@ void MonitorKeys() {
             } else if (IsKeyPressed(cfg.helpKey, false)) {
                 ShowHotkeyInfo();
                 keyHandled = true;
+            } else if (IsKeyPressed(VK_F7, false)) {
+                // Mirror in-game F7: toggle dummy autoblock mode between None and All
+                if (GetCurrentGameMode() == GameMode::Practice) {
+                    int mode = GetDummyAutoBlockMode();
+                    if (mode == DAB_All) {
+                        SetDummyAutoBlockMode(DAB_None);
+                    } else {
+                        SetDummyAutoBlockMode(DAB_All);
+                    }
+                }
+                keyHandled = true;
             } else if (IsKeyPressed(VK_F8, false)) {
                 std::string status = "OFF";
                 if (autoAirtechEnabled) {
@@ -449,7 +462,7 @@ void MonitorKeys() {
                 Sleep(100);
                 while (IsKeyPressed(teleportKey, true) || IsKeyPressed(recordKey, true) ||
                        IsKeyPressed(toggleTitleKey, true) || IsKeyPressed(resetFrameCounterKey, true) ||
-                       IsKeyPressed(helpKey, true) || IsKeyPressed(VK_F8, true) || IsKeyPressed(VK_F9, true)) {
+                       IsKeyPressed(helpKey, true) || IsKeyPressed(VK_F7, true) || IsKeyPressed(VK_F8, true) || IsKeyPressed(VK_F9, true)) {
                     Sleep(10);
                 }
                 // Reset polling interval after handling input
@@ -464,6 +477,7 @@ void MonitorKeys() {
                     ((GetAsyncKeyState(resetFrameCounterKey) & 0x8000) != 0) ||
                     ((GetAsyncKeyState(helpKey) & 0x8000) != 0) ||
                     ((GetAsyncKeyState(toggleImGuiKey) & 0x8000) != 0) ||
+                    ((GetAsyncKeyState(VK_F7) & 0x8000) != 0) ||
                     ((GetAsyncKeyState(VK_F8) & 0x8000) != 0) ||
                     ((GetAsyncKeyState(VK_F9) & 0x8000) != 0);
                 bool anyPadDown = (currentPad.dwPacketNumber != prevPad.dwPacketNumber) ||
