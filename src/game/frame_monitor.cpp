@@ -57,8 +57,7 @@ static bool      fm_lastCharsInit = false;
 static int       fm_moveReadFailStreak1 = 0;
 static int       fm_moveReadFailStreak2 = 0;
 static int       fm_overrunWarnCounter = 0;
-static GamePhase fm_lastLoggedPhase = GamePhase::Unknown;
-static int       fm_lastLoggedFrame = 0;
+// phase change logging is centralized; remove per-frame local trackers
 
 static std::string FM_Hex(uintptr_t v) {
     std::ostringstream oss;
@@ -293,8 +292,8 @@ void FrameDataMonitor() {
             expectedNext = frameStart + targetFrameTime;
         }
         
-        // Check current game phase
-        GamePhase currentPhase = GetCurrentGamePhase();
+    // Check current game phase (single authoritative call per loop)
+    GamePhase currentPhase = GetCurrentGamePhase();
         
     // CRITICAL FIX: Stop buffer freezing IMMEDIATELY if not in match
         if (currentPhase != GamePhase::Match) {
@@ -329,38 +328,50 @@ void FrameDataMonitor() {
             highResActive = false;
         }
         
-        // Track phase changes
+        // Track phase changes in one place and log once
         static GamePhase lastPhase = GamePhase::Unknown;
-    if (currentPhase != lastPhase) {
-            LogOut("[FRAME MONITOR] Phase changed: " + std::to_string((int)lastPhase) + 
-                   " -> " + std::to_string((int)currentPhase), true);
-            
+        if (currentPhase != lastPhase) {
+            // Log a single concise message on change
+            LogPhaseIfChanged();
+
             // On ANY phase change away from Match, ensure cleanup
             if (lastPhase == GamePhase::Match && currentPhase != GamePhase::Match) {
-                LogOut("[FRAME MONITOR] Exiting Match phase - performing full cleanup", true);
-                
                 // Force stop everything
                 StopBufferFreezing();
                 ResetActionFlags();
-                
+
                 // Clear all auto-action states
                 p1DelayState = {false, 0, TRIGGER_NONE, 0};
                 p2DelayState = {false, 0, TRIGGER_NONE, 0};
                 p1ActionApplied = false;
                 p2ActionApplied = false;
-                
+
                 // Restore P2 control
                 if (g_p2ControlOverridden) {
                     RestoreP2ControlState();
                     g_p2ControlOverridden = false;
                 }
             }
-            
+
+            // Entering MATCH phase -> reinit transient state
+            if (currentPhase == GamePhase::Match && lastPhase != GamePhase::Match) {
+                prevMoveID1 = -1;
+                prevMoveID2 = -1;
+
+                // Ensure default control flags (P1=Player, P2=AI) at match start in Practice mode
+                GameMode modeAtMatch = GetCurrentGameMode();
+                if (modeAtMatch == GameMode::Practice) {
+                    EnsureDefaultControlFlagsOnMatchStart();
+                    // Reset Dummy Auto-Block per-round state machine
+                    ResetDummyAutoBlockState();
+                }
+            }
+
             // If we just arrived at Character Select, clear all triggers persistently AFTER stability check.
             if (currentPhase == GamePhase::CharacterSelect) {
                 // Increment consecutive CS frames; only act after a debounce window (e.g. 120 frames ≈ 0.6s @192fps)
                 s_characterSelectPhaseFrames++;
-                if (s_characterSelectPhaseFrames == 1) {
+                if (s_characterSelectPhaseFrames == 1 && detailedLogging.load()) {
                     LogOut("[FRAME MONITOR] Detected CharacterSelect phase - starting debounce window", true);
                 }
 
@@ -372,16 +383,14 @@ void FrameDataMonitor() {
                         LogOut("[FRAME MONITOR] CharacterSelect phase stable (>=120 frames) and characters not initialized -> clearing triggers", true);
                         ClearAllTriggersPersistently();
                         s_characterSelectPhaseFrames = 0; // reset after action
-                    } else {
+                    } else if (detailedLogging.load()) {
                         // Likely a false detection (e.g., transient phase glitch) – keep features
                         LogOut("[FRAME MONITOR] CharacterSelect phase stable but characters still initialized; skipping trigger clear (possible false phase)", true);
                     }
                 }
-            } else {
-                if (s_characterSelectPhaseFrames > 0 && currentPhase != GamePhase::CharacterSelect) {
-                    // Reset debounce counter if we left CharacterSelect before threshold
-                    s_characterSelectPhaseFrames = 0;
-                }
+            } else if (s_characterSelectPhaseFrames > 0) {
+                // Reset debounce counter if we left CharacterSelect before threshold
+                s_characterSelectPhaseFrames = 0;
             }
 
             lastPhase = currentPhase;
@@ -509,46 +518,7 @@ void FrameDataMonitor() {
                 }
             }
 
-            // Phase gating
-            GamePhase phase = GetCurrentGamePhase();
-            if (phase != fm_lastLoggedPhase) {
-                LogOut("[FRAME MONITOR][PHASE] " + std::to_string((int)fm_lastLoggedPhase) + " -> " +
-                       std::to_string((int)phase) + " frame=" + std::to_string(currentFrame), true);
-                fm_lastLoggedPhase = phase;
-            }
-
-            // Handle enter/leave Match once
-            static GamePhase s_lastPhaseLocal = GamePhase::Unknown;
-            if (phase != s_lastPhaseLocal) {
-                if (s_lastPhaseLocal == GamePhase::Match && phase != GamePhase::Match) {
-                    LogOut("[FRAME MONITOR] Leaving MATCH phase -> cleanup", true);
-                    StopBufferFreezing();
-                    ResetActionFlags();
-                    p1DelayState.isDelaying = false;
-                    p2DelayState.isDelaying = false;
-                    p1DelayState.triggerType = TRIGGER_NONE;
-                    p2DelayState.triggerType = TRIGGER_NONE;
-                    if (g_pendingControlRestore.load()) {
-                        LogOut("[CONTROL] Aborting pending control restore (phase exit)", true);
-                        g_pendingControlRestore.store(false);
-                    }
-                    g_lastP2MoveID.store(-1);
-                }
-                if (phase == GamePhase::Match && s_lastPhaseLocal != GamePhase::Match) {
-                    LogOut("[FRAME MONITOR] Entering MATCH phase -> reinit transient state", true);
-                    prevMoveID1 = -1;
-                    prevMoveID2 = -1;
-
-                    // Ensure default control flags (P1=Player, P2=AI) at match start in Practice mode
-                    GameMode modeAtMatch = GetCurrentGameMode();
-                    if (modeAtMatch == GameMode::Practice) {
-                        EnsureDefaultControlFlagsOnMatchStart();
-                        // Reset Dummy Auto-Block per-round state machine
-                        ResetDummyAutoBlockState();
-                    }
-                }
-                s_lastPhaseLocal = phase;
-            }
+            // Phase gating: use currentPhase from above
 
             // Lightweight ticking (cooldowns) always runs
             auto lightweightTick = []() {
@@ -558,7 +528,7 @@ void FrameDataMonitor() {
             bool skipHeavy = false;
 
             // Outside actual gameplay -> only do lightweight logic
-            if (phase != GamePhase::Match) {
+            if (currentPhase != GamePhase::Match) {
                 lightweightTick();
                 prevMoveID1 = 0;
                 prevMoveID2 = 0;

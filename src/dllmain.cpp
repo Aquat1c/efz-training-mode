@@ -180,59 +180,7 @@ void DelayedInitialization(HMODULE hModule) {
             }
         }).detach();
 
-        // Screen state monitoring thread
-        std::thread([]{
-            GameMode lastGameMode = GameMode::Unknown;
-            bool lastCharSelectState = false;
-
-            LogOut("[SYSTEM] Starting screen state monitoring thread", true);
-
-            // Keep monitoring while the DLL is loaded
-            while (!g_isShuttingDown.load()) {
-                GameMode currentMode = GetCurrentGameMode();
-                bool isCharSelect = IsInCharacterSelectScreen();
-
-                // When any game mode changes or character select state changes
-                if (currentMode != lastGameMode || isCharSelect != lastCharSelectState) {
-                    LogOut("[SCREEN_MONITOR] Screen state changed - Mode: " +
-                              GetGameModeName(lastGameMode) + " → " + GetGameModeName(currentMode) +
-                              ", CharSelect: " + (lastCharSelectState ? "Yes" : "No") + " → " +
-                              (isCharSelect ? "Yes" : "No"),
-                          true);
-
-                    DebugDumpScreenState();
-                    lastGameMode = currentMode;
-                    lastCharSelectState = isCharSelect;
-
-                    if (IsInGameplayState() && isCharSelect) {
-                        LogOut("[SCREEN_MONITOR] Detected transition from gameplay to character select", true);
-                        StopBufferFreezing();
-                        SetBGMSuppressed(false);
-                        LogOut("[BUFFER_STATE] g_bufferFreezingActive = " + std::to_string(g_bufferFreezingActive), true);
-                        LogOut("[BUFFER_STATE] g_indexFreezingActive = " + std::to_string(g_indexFreezingActive), true);
-                    }
-                }
-
-                GamePhase phase = GetCurrentGamePhase();
-                static GamePhase lastPhase = GamePhase::Unknown;
-                if (phase != lastPhase) {
-                    LogOut("[SCREEN_MONITOR] Phase change: " + std::to_string((int)lastPhase) + " -> " + std::to_string((int)phase), true);
-                    DebugDumpScreenState();
-
-                    if (lastPhase == GamePhase::Match && phase != GamePhase::Match) {
-                        StopBufferFreezing();
-                        ResetActionFlags();
-                        g_bufferFreezingActive = false;
-                        g_indexFreezingActive = false;
-                    }
-                    lastPhase = phase;
-                }
-
-                std::this_thread::sleep_for(std::chrono::milliseconds(100));
-            }
-
-            LogOut("[SCREEN_MONITOR] Screen state monitoring thread stopped", true);
-        }).detach();
+    // Screen state monitoring thread removed to reduce overhead; phase changes are logged from FrameDataMonitor only
     } catch (...) {
         // Ensure we don't crash the game due to an unhandled exception during startup
         LogOut("[SYSTEM] Exception during DelayedInitialization (top-level catch).", true);

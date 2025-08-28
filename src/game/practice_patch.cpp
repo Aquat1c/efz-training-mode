@@ -10,6 +10,7 @@
 #include "../include/utils/utilities.h"
 
 #include "../include/game/practice_patch.h"
+#include "../include/gui/overlay.h"
 #include "../include/input/input_core.h"  // Include this to get AI_CONTROL_FLAG_OFFSET
 #include "../include/input/input_motion.h" // for direction/stance constants
 
@@ -22,6 +23,7 @@ const uintptr_t PRACTICE_AUTO_BLOCK_OFFSET = 4936;   // dword, 0/1
 std::string FormatHexAddress(uintptr_t address);
 void DumpPracticeModeState();
 void LogPlayerInputsInPracticeMode();
+static bool WriteP2BlockStance(uint8_t stance);
 
 // Patch to enable Player 2 controls in Practice mode
 bool EnablePlayer2InPracticeMode() {
@@ -608,6 +610,13 @@ bool SetPracticeAutoBlockEnabled(bool enabled) {
     bool ok = SafeWriteMemory(gs + PRACTICE_AUTO_BLOCK_OFFSET, &val, sizeof(val));
     if (ok) {
         LogOut(std::string("[PRACTICE_PATCH] Auto-Block ") + (enabled ? "ON" : "OFF"), detailedLogging.load());
+        // Show on-screen notification matching teleport style
+        DirectDrawHook::AddMessage(enabled ? "Block: ON" : "Block: OFF",
+                                   "SYSTEM",
+                                   enabled ? RGB(100, 255, 100) : RGB(255, 255, 100),
+                                   1500,
+                                   0,
+                                   100);
     }
     return ok;
 }
@@ -631,8 +640,18 @@ bool SetPracticeBlockMode(int mode) {
     if (current == v) return true;
     bool ok = SafeWriteMemory(gs + PRACTICE_BLOCK_MODE_OFFSET, &v, sizeof(v));
     if (ok) {
-        const char* names[] = {"None", "First", "All"};
-        LogOut(std::string("[PRACTICE_PATCH] Block Mode -> ") + names[v], detailedLogging.load());
+        // Map to stance semantics for 0/2; keep First for 1
+        if (v == 0) {
+            LogOut("[PRACTICE_PATCH] Block Stance -> Stand", detailedLogging.load());
+            // Also immediately set stance byte to stand
+            WriteP2BlockStance(0);
+        } else if (v == 2) {
+            LogOut("[PRACTICE_PATCH] Block Stance -> Crouch", detailedLogging.load());
+            // Also immediately set stance byte to crouch
+            WriteP2BlockStance(1);
+        } else {
+            LogOut("[PRACTICE_PATCH] Block Mode -> First", detailedLogging.load());
+        }
     }
     return ok;
 }
@@ -757,6 +776,7 @@ void MonitorDummyAutoBlock(short p1MoveID, short p2MoveID, short prevP1MoveID, s
         }
     };
     // Compute desired autoblock state (single write at end)
+    static bool s_lastAbOn = false; // avoid redundant writes
     bool abOn = false;
 
     // First-hit toggles
@@ -818,17 +838,42 @@ void MonitorDummyAutoBlock(short p1MoveID, short p2MoveID, short prevP1MoveID, s
         abOn = false;
     }
 
-    // Apply desired autoblock state once
-    SetPracticeAutoBlockEnabled(abOn);
+    // Apply desired autoblock state only on change
+    if (abOn != s_lastAbOn) {
+        SetPracticeAutoBlockEnabled(abOn);
+        s_lastAbOn = abOn;
+    }
 
-    // Apply adaptive stance only when autoblock is actually ON
+    // Apply adaptive stance only when autoblock is ON, with throttling and dedupe
     if (g_adaptiveStance.load() && abOn) {
-        double p1Y = 0.0, p2Y = 0.0;
-        if (ReadPositions(p1Y, p2Y)) {
-            bool attackerAir = (p1Y < 0.0);
-            uint8_t desiredStance = attackerAir ? 0 /*stand*/ : 1 /*crouch*/;
-            WriteP2BlockStance(desiredStance);
-            SetPracticeBlockMode(attackerAir ? 0 : 2);
+        static unsigned long long s_lastAdaptiveMs = 0;
+        static bool s_lastAttackerAir = false;
+
+        unsigned long long now = GetTickCount64();
+        // Throttle to ~30-60 Hz (every 16 ms by default); adjust if needed
+        const unsigned long long ADAPTIVE_INTERVAL_MS = 16ULL;
+        if (now - s_lastAdaptiveMs >= ADAPTIVE_INTERVAL_MS) {
+            double p1Y = 0.0, p2Y = 0.0;
+            if (ReadPositions(p1Y, p2Y)) {
+                bool attackerAir = (p1Y < 0.0);
+                if (attackerAir != s_lastAttackerAir) {
+                    // Only update if state changed since last application
+                    uint8_t desiredStance = attackerAir ? 0 /*stand*/ : 1 /*crouch*/;
+                    // Read current stance to avoid redundant writes
+                    uint8_t curDir=0, curStance=0;
+                    if (ReadP2BlockFields(curDir, curStance)) {
+                        if (curStance != desiredStance) {
+                            WriteP2BlockStance(desiredStance);
+                        }
+                    } else {
+                        WriteP2BlockStance(desiredStance);
+                    }
+                    // Also set practice stance indicator (0=Stand,2=Crouch) only when it changes
+                    SetPracticeBlockMode(attackerAir ? 0 : 2);
+                    s_lastAttackerAir = attackerAir;
+                }
+            }
+            s_lastAdaptiveMs = now;
         }
     }
 }

@@ -21,6 +21,9 @@
 #define EFZ_BASE_OFFSET_P1 0x390104
 #define EFZ_BASE_OFFSET_P2 0x390108
 #define EFZ_BASE_OFFSET_GAME_STATE 0x39010C // NEW: For game state
+// Screen/state byte (observed via Cheat Engine):
+// 0=Title, 1=Character Select, 2=Loading, 3=In-game, 5=Win screen, 6=Settings, 8=Replay select
+#define EFZ_BASE_OFFSET_SCREEN_STATE 0x390148
 #define XPOS_OFFSET 0x20
 #define YPOS_OFFSET 0x28
 #define HP_OFFSET 0x108
