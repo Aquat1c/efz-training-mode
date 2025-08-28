@@ -70,7 +70,7 @@ namespace ImGuiSettings {
     bool restrictPractice = cfg.restrictToPracticeMode;
     bool enableConsole = cfg.enableConsole;
 
-        if (ImGui::CollapsingHeader("General", ImGuiTreeNodeFlags_DefaultOpen)) {
+    if (ImGui::CollapsingHeader("General")) {
             CheckboxApply("Use ImGui UI (else legacy dialog)", useImGui, "General", "UseImGui");
             ImGui::SameLine();
             ImGui::TextDisabled("(applies on next menu open)");
@@ -99,7 +99,7 @@ namespace ImGuiSettings {
             }
         }
 
-        if (ImGui::CollapsingHeader("Hotkeys", ImGuiTreeNodeFlags_DefaultOpen)) {
+    if (ImGui::CollapsingHeader("Hotkeys")) {
             // Copy to locals
             int teleport = cfg.teleportKey;
             int record = cfg.recordKey;

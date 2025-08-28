@@ -18,6 +18,7 @@
 #include "../include/gui/imgui_gui.h"
 #include "../include/utils/config.h"
 #include "../include/game/practice_patch.h"
+#include "../include/game/final_memory_patch.h"
 #include "../include/game/auto_action.h"  // ADD THIS INCLUDE
 #include "../include/input/input_hook.h" // Add this include
 #include "../3rdparty/minhook/include/MinHook.h" // Add this include
@@ -82,6 +83,8 @@ void DelayedInitialization(HMODULE hModule) {
         } catch (...) {
             LogOut("[SYSTEM] Exception while starting BGM suppression poller.", true);
         }
+
+    // Final Memory HP bypass is now manual via Debug tab to avoid unintended changes.
 
         LogOut("[SYSTEM] EFZ Training Mode - Delayed initialization starting", true);
         LogOut("[SYSTEM] Console initialized with code page: " + std::to_string(GetConsoleOutputCP()), true);
@@ -149,15 +152,29 @@ void DelayedInitialization(HMODULE hModule) {
             // Wait a bit for everything to initialize
             Sleep(5000);
 
-            // Log ImGui rendering status every few seconds
-            while (true) {
-                if (ImGuiImpl::IsInitialized()) {
-                    LogOut(
-                        std::string("[IMGUI_MONITOR] Status: Initialized=") +
-                        (ImGuiImpl::IsInitialized() ? "1" : "0") +
-                        ", Visible=" + (ImGuiImpl::IsVisible() ? "1" : "0"),
-                        detailedLogging.load());
+            bool prevInit = false;
+            bool prevVisible = false;
+            unsigned long long lastLog = 0;
+
+            // Log ImGui rendering status on change, at most once per 5 seconds
+            while (!g_isShuttingDown.load()) {
+                bool inited = ImGuiImpl::IsInitialized();
+                bool visible = inited && ImGuiImpl::IsVisible();
+                unsigned long long now = GetTickCount64();
+
+                if (inited && (inited != prevInit || visible != prevVisible)) {
+                    if (now - lastLog >= 5000ULL) {
+                        LogOut(
+                            std::string("[IMGUI_MONITOR] Status: Initialized=") +
+                            (inited ? "1" : "0") +
+                            ", Visible=" + (visible ? "1" : "0"),
+                            detailedLogging.load());
+                        lastLog = now;
+                    }
+                    prevInit = inited;
+                    prevVisible = visible;
                 }
+
                 // Check every 5 seconds
                 Sleep(5000);
             }
