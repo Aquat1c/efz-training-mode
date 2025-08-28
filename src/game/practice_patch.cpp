@@ -609,14 +609,7 @@ bool SetPracticeAutoBlockEnabled(bool enabled) {
     if (cur == val) return true; // no change
     bool ok = SafeWriteMemory(gs + PRACTICE_AUTO_BLOCK_OFFSET, &val, sizeof(val));
     if (ok) {
-        LogOut(std::string("[PRACTICE_PATCH] Auto-Block ") + (enabled ? "ON" : "OFF"), detailedLogging.load());
-        // Show on-screen notification matching teleport style
-        DirectDrawHook::AddMessage(enabled ? "Block: ON" : "Block: OFF",
-                                   "SYSTEM",
-                                   enabled ? RGB(100, 255, 100) : RGB(255, 255, 100),
-                                   1500,
-                                   0,
-                                   100);
+    LogOut(std::string("[PRACTICE_PATCH] Auto-Block ") + (enabled ? "ON" : "OFF"), detailedLogging.load());
     }
     return ok;
 }
@@ -842,6 +835,33 @@ void MonitorDummyAutoBlock(short p1MoveID, short p2MoveID, short prevP1MoveID, s
     if (abOn != s_lastAbOn) {
         SetPracticeAutoBlockEnabled(abOn);
         s_lastAbOn = abOn;
+    }
+
+    // Watch the actual autoblock flag (+4936) at low frequency (1 Hz) and display overlay on any change
+    static int s_lastAbFlag = -1; // -1 = unknown, otherwise 0/1
+    static unsigned long long s_lastAbFlagCheckMs = 0;
+    unsigned long long nowMs = GetTickCount64();
+    if (nowMs - s_lastAbFlagCheckMs >= 1000ULL) {
+        uintptr_t gsWatch = 0;
+        if (GetGameStatePtr(gsWatch)) {
+            uint32_t flagVal = 0;
+            if (SafeReadMemory(gsWatch + PRACTICE_AUTO_BLOCK_OFFSET, &flagVal, sizeof(flagVal))) {
+                int curFlag = (flagVal != 0) ? 1 : 0;
+                if (s_lastAbFlag == -1) {
+                    s_lastAbFlag = curFlag; // initialize without showing a message
+                } else if (curFlag != s_lastAbFlag) {
+                    // Emit overlay once per actual memory change
+                    DirectDrawHook::AddMessage(curFlag ? "Block: ON" : "Block: OFF",
+                                               "SYSTEM",
+                                               curFlag ? RGB(100, 255, 100) : RGB(255, 255, 100),
+                                               1500,
+                                               0,
+                                               100);
+                    s_lastAbFlag = curFlag;
+                }
+            }
+        }
+        s_lastAbFlagCheckMs = nowMs;
     }
 
     // Apply adaptive stance only when autoblock is ON, with throttling and dedupe
