@@ -272,6 +272,21 @@ void FrameDataMonitor() {
     auto expectedNext = startTime + targetFrameTime; // next frame boundary
 
     while (!g_isShuttingDown) {
+        // If online mode is active, park this thread in a lightweight loop
+        if (g_onlineModeActive.load()) {
+            // On first detection, perform one-time cleanup similar to phase exit
+            static bool cleanedForOnline = false;
+            if (!cleanedForOnline) {
+                LogOut("[FRAME MONITOR] Online mode active -> stopping features and cleaning up", true);
+                StopBufferFreezing();
+                ResetActionFlags();
+                p1DelayState = {false, 0, TRIGGER_NONE, 0};
+                p2DelayState = {false, 0, TRIGGER_NONE, 0};
+                cleanedForOnline = true;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+            continue;
+        }
         auto frameStart = clock::now();
         // Catch-up logic: if we are *very* late (> 10 frames), jump ahead to avoid cascading backlog
         if (frameStart - expectedNext > targetFrameTime * 10) {

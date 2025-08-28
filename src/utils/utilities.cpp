@@ -15,6 +15,7 @@
 #include "../include/game/auto_airtech.h"
 #include "../include/game/auto_action.h"
 #include "../include/game/frame_monitor.h"
+#include "../include/input/input_freeze.h"
 #include <sstream>
 #include <iomanip>
 #include <iostream>  // Add this include for std::cout and std::cerr
@@ -32,6 +33,7 @@
 
 std::atomic<bool> g_efzWindowActive(false);
 std::atomic<bool> g_guiActive(false);
+std::atomic<bool> g_onlineModeActive(false);
 
 // NEW: Define the manual input override atomics
 std::atomic<bool> g_manualInputOverride[3] = {false, false, false};
@@ -142,6 +144,50 @@ void DisableFeatures() {
     g_featuresEnabled.store(false);
     
     // Key monitoring will be handled separately by ManageKeyMonitoring()
+}
+
+// Cooperatively stop mod activity when entering online play.
+void EnterOnlineMode() {
+    if (g_onlineModeActive.exchange(true)) return; // already active
+
+    LogOut("[ONLINE] Entering online mode: disabling mod features and threads", true);
+
+    // Stop any active buffer/index freezing immediately
+    StopBufferFreezing();
+    // Stop RF freezing loop from acting
+    StopRFFreeze();
+
+    // Disable auto features and clear triggers/state
+    autoActionEnabled.store(false);
+    triggerAfterBlockEnabled.store(false);
+    triggerOnWakeupEnabled.store(false);
+    triggerAfterHitstunEnabled.store(false);
+    triggerAfterAirtechEnabled.store(false);
+    ClearAllAutoActionTriggers();
+
+    // Disable features globally (turns off overlays, patches, etc.)
+    if (g_featuresEnabled.load()) {
+        DisableFeatures();
+    }
+
+    // Stop key monitoring
+    if (keyMonitorRunning.load()) {
+        keyMonitorRunning.store(false);
+    }
+    // Stop RF freeze worker thread entirely
+    StopRFFreezeThread();
+
+    // Stop BGM suppression poller
+    StopBGMSuppressionPoller();
+    SetBGMSuppressed(false);
+
+    // Hide overlays/GUI
+    if (ImGuiImpl::IsVisible()) {
+        ImGuiImpl::ToggleVisibility();
+    }
+    DirectDrawHook::ClearAllMessages();
+
+    LogOut("[ONLINE] Mod threads signaled to stop; overlays and features disabled", true);
 }
 
 // Public helper: permanently clear all triggers so they stay disabled until user re-enables

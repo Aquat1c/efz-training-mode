@@ -235,6 +235,11 @@ extern std::atomic<int> triggerAfterAirtechCustomID;
 // Add these after the other global state variables
 extern std::atomic<bool> g_efzWindowActive;
 extern std::atomic<bool> g_guiActive;
+// Set when an online match is detected; used to terminate/pause mod threads
+extern std::atomic<bool> g_onlineModeActive;
+
+// Enter online-safe mode: cooperatively stop mod threads, disable hooks/features
+void EnterOnlineMode();
 
 // NEW: Add these for the debug tab's manual input override feature
 extern std::atomic<bool> g_manualInputOverride[3]; // Index 0 unused, 1 for P1, 2 for P2
