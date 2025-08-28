@@ -1,5 +1,6 @@
 #include <windows.h>
 #include <string>
+#include <algorithm>
 #include <sstream>
 #include <iomanip>
 #include "../include/core/memory.h"
@@ -661,6 +662,15 @@ static std::atomic<bool> g_firstEventSeen{false};
 static std::atomic<bool> g_abWindowActive{false};
 static std::atomic<unsigned long long> g_abWindowDeadlineMs{0};
 static std::atomic<bool> g_adaptiveStance{false};
+static std::atomic<bool> g_abOverrideActive{false}; // when false, follow the game's autoblock flag
+
+// Internal: set mode without marking override or forcing baseline writes
+static void SetDummyAutoBlockModeFromSync(int mode) {
+    if (mode < 0) mode = 0; if (mode > 4) mode = 4;
+    if (mode == DAB_Adaptive) { g_adaptiveStance.store(true); mode = DAB_All; }
+    g_dummyAutoBlockMode.store(mode);
+    ResetDummyAutoBlockState();
+}
 
 // Tunables (ms)
 static constexpr unsigned long long AB_DELAY_FIRST_HIT_THEN_OFF_MS = 2000ULL; // 2 seconds
@@ -675,6 +685,7 @@ void SetDummyAutoBlockMode(int mode) {
     }
     g_dummyAutoBlockMode.store(mode);
     ResetDummyAutoBlockState();
+    g_abOverrideActive.store(true);
     // Immediate base config for +4936 auto-block and stance
     switch (mode) {
         case DAB_All:
@@ -758,6 +769,21 @@ static inline bool DidP2JustBlockThisFrame(short prevMoveId, short currMoveId) {
 // Core per-frame monitor; call from frame monitor after move IDs are read
 void MonitorDummyAutoBlock(short p1MoveID, short p2MoveID, short prevP1MoveID, short prevP2MoveID) {
     if (GetCurrentGameMode() != GameMode::Practice) return;
+    // Clear override when we return to Character Select (follow game's flag until user changes)
+    static GamePhase s_lastPhase = GamePhase::Unknown;
+    GamePhase phaseNow = GetCurrentGamePhase();
+    if (phaseNow != s_lastPhase) {
+        if (phaseNow == GamePhase::CharacterSelect) {
+            g_abOverrideActive.store(false);
+            // Sync displayed mode to current game flag
+            uintptr_t gs = 0; if (GetGameStatePtr(gs)) {
+                uint32_t f=0; if (SafeReadMemory(gs + PRACTICE_AUTO_BLOCK_OFFSET, &f, sizeof(f))) {
+                    SetDummyAutoBlockModeFromSync((f!=0) ? DAB_All : DAB_None);
+                }
+            }
+        }
+        s_lastPhase = phaseNow;
+    }
     int mode = g_dummyAutoBlockMode.load();
     // Transition log throttle (5s)
     static unsigned long long s_lastAbLog = 0;
@@ -768,8 +794,8 @@ void MonitorDummyAutoBlock(short p1MoveID, short p2MoveID, short prevP1MoveID, s
             s_lastAbLog = now;
         }
     };
-    // Compute desired autoblock state (single write at end)
-    static bool s_lastAbOn = false; // avoid redundant writes
+    // Compute desired autoblock state (single write at end when overridden)
+    static bool s_lastAbOn = false; // what we last wrote when overriding
     bool abOn = false;
 
     // First-hit toggles
@@ -820,7 +846,6 @@ void MonitorDummyAutoBlock(short p1MoveID, short p2MoveID, short prevP1MoveID, s
     }
 
     else if (mode == DAB_All) {
-        // Keep auto-block enabled; no per-frame stance forcing
         abOn = true;
     }
     else if (mode == DAB_None) {
@@ -831,8 +856,9 @@ void MonitorDummyAutoBlock(short p1MoveID, short p2MoveID, short prevP1MoveID, s
         abOn = false;
     }
 
-    // Apply desired autoblock state only on change
-    if (abOn != s_lastAbOn) {
+    // Apply desired autoblock state only if user override is active or custom modes require it
+    bool overrideEffective = g_abOverrideActive.load() || (mode == DAB_FirstHitThenOff) || (mode == DAB_EnableAfterFirstHit);
+    if (overrideEffective && abOn != s_lastAbOn) {
         SetPracticeAutoBlockEnabled(abOn);
         s_lastAbOn = abOn;
     }
@@ -848,7 +874,16 @@ void MonitorDummyAutoBlock(short p1MoveID, short p2MoveID, short prevP1MoveID, s
             if (SafeReadMemory(gsWatch + PRACTICE_AUTO_BLOCK_OFFSET, &flagVal, sizeof(flagVal))) {
                 int curFlag = (flagVal != 0) ? 1 : 0;
                 if (s_lastAbFlag == -1) {
-                    s_lastAbFlag = curFlag; // initialize without showing a message
+                    // First sample on entering Practice: initialize and sync display to actual flag (no announcement)
+                    s_lastAbFlag = curFlag;
+                    int curMode = g_dummyAutoBlockMode.load();
+                    if (curMode == DAB_All && curFlag == 0) {
+                        SetDummyAutoBlockModeFromSync(DAB_None);
+                        LogOut("[DUMMY_AB] Sync(init): Game autoblock OFF -> mode set to None", true);
+                    } else if (curMode == DAB_None && curFlag == 1) {
+                        SetDummyAutoBlockModeFromSync(DAB_All);
+                        LogOut("[DUMMY_AB] Sync(init): Game autoblock ON -> mode set to All", true);
+                    }
                 } else if (curFlag != s_lastAbFlag) {
                     // Emit overlay once per actual memory change
                     DirectDrawHook::AddMessage(curFlag ? "Block: ON" : "Block: OFF",
@@ -857,6 +892,15 @@ void MonitorDummyAutoBlock(short p1MoveID, short p2MoveID, short prevP1MoveID, s
                                                1500,
                                                0,
                                                100);
+                    // Keep UI combobox in sync with actual game flag, but only for the simple None/All modes
+                    int curMode = g_dummyAutoBlockMode.load();
+                    if (curMode == DAB_All && curFlag == 0) {
+                        SetDummyAutoBlockModeFromSync(DAB_None);
+                        LogOut("[DUMMY_AB] Sync: Game cleared autoblock -> mode set to None", true);
+                    } else if (curMode == DAB_None && curFlag == 1) {
+                        SetDummyAutoBlockModeFromSync(DAB_All);
+                        LogOut("[DUMMY_AB] Sync: Game enabled autoblock -> mode set to All", true);
+                    }
                     s_lastAbFlag = curFlag;
                 }
             }
@@ -865,12 +909,17 @@ void MonitorDummyAutoBlock(short p1MoveID, short p2MoveID, short prevP1MoveID, s
     }
 
     // Apply adaptive stance only when autoblock is ON, with throttling and dedupe
-    if (g_adaptiveStance.load() && abOn) {
+    // Determine whether autoblock is currently active for adaptive stance gate
+    bool gameFlagOn = false; {
+        uintptr_t gs=0; if (GetGameStatePtr(gs)) { uint32_t f=0; SafeReadMemory(gs + PRACTICE_AUTO_BLOCK_OFFSET, &f, sizeof(f)); gameFlagOn = (f!=0); }
+    }
+    bool activeAb = overrideEffective ? abOn : gameFlagOn;
+    if (g_adaptiveStance.load() && activeAb) {
         static unsigned long long s_lastAdaptiveMs = 0;
         static bool s_lastAttackerAir = false;
 
         unsigned long long now = GetTickCount64();
-        // Throttle to ~30-60 Hz (every 16 ms by default); adjust if needed
+        // Fixed cadence to keep CPU usage low and consistent
         const unsigned long long ADAPTIVE_INTERVAL_MS = 16ULL;
         if (now - s_lastAdaptiveMs >= ADAPTIVE_INTERVAL_MS) {
             double p1Y = 0.0, p2Y = 0.0;
