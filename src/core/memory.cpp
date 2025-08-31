@@ -621,3 +621,25 @@ void StopRFFreezeThread() {
         LogOut("[RF] RF freeze thread signaled to stop", detailedLogging.load());
     }
 }
+
+// Lightweight single-tick updater to be driven by FrameDataMonitor when desired
+void UpdateRFFreezeTick() {
+    if (!rfFreezing.load()) return;
+    uintptr_t base = GetEFZBase();
+    if (!base) return;
+    uintptr_t p1Base = 0, p2Base = 0;
+    if (!SafeReadMemory(base + EFZ_BASE_OFFSET_P1, &p1Base, sizeof(p1Base))) return;
+    if (!SafeReadMemory(base + EFZ_BASE_OFFSET_P2, &p2Base, sizeof(p2Base))) return;
+    if (!p1Base || !p2Base) return;
+    double* p1RFAddr = (double*)(p1Base + RF_OFFSET);
+    double* p2RFAddr = (double*)(p2Base + RF_OFFSET);
+    __try {
+        DWORD old1=0, old2=0;
+        double t1 = rfFreezeValueP1.load();
+        double t2 = rfFreezeValueP2.load();
+        if (p1RFAddr && VirtualProtect(p1RFAddr, sizeof(double), PAGE_EXECUTE_READWRITE, &old1)) { *p1RFAddr = t1; VirtualProtect(p1RFAddr, sizeof(double), old1, &old1); }
+        if (p2RFAddr && VirtualProtect(p2RFAddr, sizeof(double), PAGE_EXECUTE_READWRITE, &old2)) { *p2RFAddr = t2; VirtualProtect(p2RFAddr, sizeof(double), old2, &old2); }
+    } __except(EXCEPTION_EXECUTE_HANDLER) {
+        // Ignore access faults; tick is best-effort
+    }
+}

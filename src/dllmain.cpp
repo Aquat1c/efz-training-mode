@@ -124,10 +124,11 @@ void DelayedInitialization(HMODULE hModule) {
         LogOut("EFZ Training Mode initialized successfully", true);
         WriteStartupLog("Delayed initialization complete");
 
-        // Initialize D3D9 hook for overlays once at startup (on a separate thread)
-        std::thread([]{
+    // Initialize D3D9 hook for overlays once at startup (on a separate thread)
+    std::thread([]{
             Sleep(2000); // Give the game a moment to be fully ready
             try {
+        if (g_onlineModeActive.load()) return; // don't init if online already
                 if (DirectDrawHook::InitializeD3D9()) {
                     LogOut("[SYSTEM] D3D9 Overlay system initialized.", true);
                 } else {
@@ -142,8 +143,7 @@ void DelayedInitialization(HMODULE hModule) {
         g_initialized = true;
         inStartupPhase = false;
 
-        // Initialize RF freeze thread
-        InitRFFreezeThread();
+    // RF freeze now maintained inline by FrameDataMonitor; no background thread needed
 
     // ImGui status monitoring thread removed; window/key state managed by existing update paths
 

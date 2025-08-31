@@ -41,7 +41,8 @@ static bool p1TriggerActive = false;
 static bool p2TriggerActive = false;
 static int p1TriggerCooldown = 0;
 static int p2TriggerCooldown = 0;
-static constexpr int TRIGGER_COOLDOWN_FRAMES = 12; // ~0.2s @60fps, lighter throttle
+// Reduce cooldown to make triggers ready sooner (was 12)
+static constexpr int TRIGGER_COOLDOWN_FRAMES = 6; // ~0.03s @192fps visualized (2 visual frames)
 bool g_p2ControlOverridden = false;
 uint32_t g_originalP2ControlFlag = 1; // Default to AI control
 
@@ -50,6 +51,12 @@ std::atomic<bool> g_pendingControlRestore(false);
 std::atomic<int> g_controlRestoreTimeout(0);
 std::atomic<short> g_lastP2MoveID(-1);
 const int CONTROL_RESTORE_TIMEOUT = 180; // 180 internal frames = 1 second
+
+// Pre-arm flags for On Wakeup: buffer inputs during GROUNDTECH_RECOVERY to fire on wake
+static bool s_p1WakePrearmed = false;
+static bool s_p2WakePrearmed = false;
+static int  s_p1WakePrearmExpiry = 0;
+static int  s_p2WakePrearmExpiry = 0;
 
 
 bool IsCharacterGrounded(int playerNum) {
@@ -275,16 +282,16 @@ void StartTriggerDelay(int playerNum, int triggerType, short moveID, int delayFr
     
     // If delay is 0, apply immediately
     if (delayFrames == 0) {
-        // Get the player's move ID address - just to pass to ApplyAutoAction
-        uintptr_t moveIDAddr = (playerNum == 1) ? 
-            ResolvePointer(GetEFZBase(), EFZ_BASE_OFFSET_P1, MOVE_ID_OFFSET) :
-            ResolvePointer(GetEFZBase(), EFZ_BASE_OFFSET_P2, MOVE_ID_OFFSET);
-        
-        if (moveIDAddr) {
-            // Call ApplyAutoAction which now uses input-based execution
-            ApplyAutoAction(playerNum, moveIDAddr, 0, 0);
-            LogOut(std::string("[AUTO-ACTION] Immediate apply done for P") + std::to_string(playerNum), detailedLogging.load());
+        // Immediate apply path; ApplyAutoAction uses input system, so addr is informational only
+        uintptr_t base = GetEFZBase();
+        uintptr_t moveIDAddr = 0;
+        if (base) {
+            moveIDAddr = (playerNum == 1)
+                ? ResolvePointer(base, EFZ_BASE_OFFSET_P1, MOVE_ID_OFFSET)
+                : ResolvePointer(base, EFZ_BASE_OFFSET_P2, MOVE_ID_OFFSET);
         }
+        ApplyAutoAction(playerNum, moveIDAddr, 0, 0);
+        LogOut(std::string("[AUTO-ACTION] Immediate apply done for P") + std::to_string(playerNum), detailedLogging.load());
     }
     // For delayed actions, use the existing delay system
     else {
@@ -436,9 +443,49 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
             }
         }
         
-        // On Wakeup trigger
+        // On Wakeup pre-arm: buffer the motion on last groundtech step so it executes at wake
+    if (triggerOnWakeupEnabled.load() && !s_p1WakePrearmed) {
+            if (moveID1 == GROUNDTECH_RECOVERY) {
+                int actionType = triggerOnWakeupAction.load();
+                int motionType = ConvertTriggerActionToMotion(actionType, TRIGGER_ON_WAKEUP);
+                // Determine button mask (A/B/C) for specials
+                int buttonMask = 0;
+                if (actionType >= ACTION_5A && actionType <= ACTION_2C) {
+                    int button = (actionType - ACTION_5A) % 3;  // 0=A, 1=B, 2=C
+                    buttonMask = (1 << (4 + button));
+                } else if (actionType >= ACTION_JA && actionType <= ACTION_JC) {
+                    int button = (actionType - ACTION_JA) % 3;
+                    buttonMask = (1 << (4 + button));
+                } else if (actionType >= ACTION_QCF && actionType <= ACTION_CUSTOM) {
+                    int strength = GetSpecialMoveStrength(actionType, TRIGGER_ON_WAKEUP);
+                    buttonMask = (1 << (4 + strength));
+                }
+
+                bool prearmed = false;
+                // Queue normals and dashes; freeze buffer for specials. Skip jump pre-arm.
+                if (actionType == ACTION_BACKDASH || actionType == ACTION_FORWARD_DASH ||
+                    (motionType >= MOTION_5A && motionType <= MOTION_JC)) {
+                    prearmed = QueueMotionInput(1, motionType, 0);
+                } else if (motionType >= MOTION_236A) {
+                    prearmed = FreezeBufferForMotion(1, motionType, buttonMask);
+                }
+                if (prearmed) {
+                    s_p1WakePrearmed = true;
+                    s_p1WakePrearmExpiry = frameCounter.load() + 120; // ~0.6s safety window
+                    p1TriggerActive = true; // avoid duplicate fire when actionable
+                    p1TriggerCooldown = TRIGGER_COOLDOWN_FRAMES;
+                    LogOut("[AUTO-ACTION] P1 On Wakeup pre-armed at recovery (96)", true);
+                }
+            }
+        }
+
+        // On Wakeup trigger (fallback if not pre-armed or for normals/jumps)
         if (!shouldTrigger && triggerOnWakeupEnabled.load()) {
-            if (IsGroundtech(prevMoveID1) && IsActionable(moveID1)) {
+            if (s_p1WakePrearmed && IsGroundtech(prevMoveID1) && IsActionable(moveID1)) {
+                // We just woke; clear pre-arm flag so future cycles can re-arm
+                s_p1WakePrearmed = false;
+            }
+            if (!s_p1WakePrearmed && IsGroundtech(prevMoveID1) && IsActionable(moveID1)) {
                 shouldTrigger = true;
                 triggerType = TRIGGER_ON_WAKEUP;
                 delay = triggerOnWakeupDelay.load();
@@ -524,9 +571,53 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
             }
         }
         
-        // On Wakeup trigger
+        // On Wakeup pre-arm for P2: buffer during GROUNDTECH_RECOVERY (96)
+    if (triggerOnWakeupEnabled.load() && !s_p2WakePrearmed) {
+            if (moveID2 == GROUNDTECH_RECOVERY) {
+                int actionType = triggerOnWakeupAction.load();
+                int motionType = ConvertTriggerActionToMotion(actionType, TRIGGER_ON_WAKEUP);
+                int buttonMask = 0;
+                if (actionType >= ACTION_5A && actionType <= ACTION_2C) {
+                    int button = (actionType - ACTION_5A) % 3;  // 0=A, 1=B, 2=C
+                    buttonMask = (1 << (4 + button));
+                } else if (actionType >= ACTION_JA && actionType <= ACTION_JC) {
+                    int button = (actionType - ACTION_JA) % 3;
+                    buttonMask = (1 << (4 + button));
+                } else if (actionType >= ACTION_QCF && actionType <= ACTION_CUSTOM) {
+                    int strength = GetSpecialMoveStrength(actionType, TRIGGER_ON_WAKEUP);
+                    buttonMask = (1 << (4 + strength));
+                }
+
+                bool prearmed = false;
+                if (actionType == ACTION_BACKDASH || actionType == ACTION_FORWARD_DASH ||
+                    (motionType >= MOTION_5A && motionType <= MOTION_JC)) {
+                    prearmed = QueueMotionInput(2, motionType, 0);
+                } else if (motionType >= MOTION_236A) {
+                    prearmed = FreezeBufferForMotion(2, motionType, buttonMask);
+                }
+                if (prearmed) {
+                    // Ensure human control so the buffered motion executes reliably
+                    EnableP2ControlForAutoAction();
+                    s_p2WakePrearmed = true;
+                    s_p2WakePrearmExpiry = frameCounter.load() + 120;
+                    p2TriggerActive = true;
+                    p2TriggerCooldown = TRIGGER_COOLDOWN_FRAMES;
+                    LogOut("[AUTO-ACTION] P2 On Wakeup pre-armed at recovery (96)", true);
+
+                    // Start control-restore watcher similar to normal apply path
+                    g_lastP2MoveID.store(prevMoveID2);
+                    g_pendingControlRestore.store(true);
+                    g_controlRestoreTimeout.store(180);
+                }
+            }
+        }
+
+        // On Wakeup trigger (fallback when not pre-armed)
         if (!shouldTrigger && triggerOnWakeupEnabled.load()) {
-            if (IsGroundtech(prevMoveID2) && IsActionable(moveID2)) {
+            if (s_p2WakePrearmed && IsGroundtech(prevMoveID2) && IsActionable(moveID2)) {
+                s_p2WakePrearmed = false;
+            }
+            if (!s_p2WakePrearmed && IsGroundtech(prevMoveID2) && IsActionable(moveID2)) {
                 shouldTrigger = true;
                 triggerType = TRIGGER_ON_WAKEUP;
                 delay = triggerOnWakeupDelay.load();
@@ -581,6 +672,20 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
     
     // Process auto control restore at the end of every monitor cycle
     ProcessAutoControlRestore();
+
+    // Clear pre-arm flags when window passes to avoid sticking
+    int now = frameCounter.load();
+    if (s_p1WakePrearmed && now > s_p1WakePrearmExpiry) {
+        s_p1WakePrearmed = false;
+        // Allow immediate re-arm if nothing fired
+        p1TriggerActive = false;
+        p1TriggerCooldown = 0;
+    }
+    if (s_p2WakePrearmed && now > s_p2WakePrearmExpiry) {
+        s_p2WakePrearmed = false;
+        p2TriggerActive = false;
+        p2TriggerCooldown = 0;
+    }
 }
 
 // Back-compat wrapper: fetch move IDs once here (with basic caching) and forward to core
@@ -655,6 +760,9 @@ void ClearDelayStatesIfNonActionable() {
         p2DelayState.triggerType = TRIGGER_NONE;
         p2DelayState.pendingMoveID = 0;
         LogOut("[AUTO-ACTION] Cleared P2 delay - in bad state (moveID " + std::to_string(moveID2) + ")", true);
+        // Also clear trigger cooldown so next opportunity can re-arm promptly
+        p2TriggerActive = false;
+        p2TriggerCooldown = 0;
     }
 }
 

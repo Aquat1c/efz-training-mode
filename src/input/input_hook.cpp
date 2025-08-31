@@ -13,6 +13,7 @@
 #include <atomic>
 #include <sstream>
 #include <iomanip>
+#include <chrono>
 
 // Local helper to format a single byte as two-digit hex (uppercase)
 static std::string FormatHexByte(uint8_t value) {
@@ -58,7 +59,16 @@ int __fastcall HookedProcessCharacterInput(int characterPtr, int edx) {
         int freezeOwner = g_activeFreezePlayer.load();
         if (freezeOwner == playerNum || freezeOwner == 0) {
             if (freezeOwner == playerNum) {
-                LogOut(std::string("[INPUT_HOOK] Skipping injection for P") + std::to_string(playerNum) + " due to active buffer-freeze (owner=P" + std::to_string(freezeOwner) + ")", detailedLogging.load());
+                // Throttle this diagnostic to avoid spamming every frame while freeze is active
+                static std::chrono::steady_clock::time_point s_lastSkipLogAt[3] = { {}, {}, {} };
+                auto now = std::chrono::steady_clock::now();
+                bool timeOk = (s_lastSkipLogAt[playerNum].time_since_epoch().count() == 0) ||
+                              ((now - s_lastSkipLogAt[playerNum]) >= std::chrono::milliseconds(250));
+                if (detailedLogging.load() && timeOk) {
+                    LogOut(std::string("[INPUT_HOOK] Skipping injection for P") + std::to_string(playerNum) +
+                           " due to active buffer-freeze (owner=P" + std::to_string(freezeOwner) + ")", true);
+                    s_lastSkipLogAt[playerNum] = now;
+                }
             }
             g_lastInjectedMask[playerNum] = 0;
             return oProcessCharacterInput(characterPtr);

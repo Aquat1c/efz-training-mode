@@ -50,6 +50,7 @@ std::atomic<bool> g_manualJumpHold[3] = {false, false, false}; // NEW: Definitio
 
 // NEW: Add feature management functions
 void EnableFeatures() {
+    if (g_onlineModeActive.load()) return;
     if (g_featuresEnabled.load())
         return;
 
@@ -66,7 +67,7 @@ void EnableFeatures() {
     LogOut("[SYSTEM] Triggers remain disabled until manually re-enabled", true);
 
     // Only reinitialize overlays if characters are initialized and we're in a valid game mode
-    if (DirectDrawHook::isHooked && AreCharactersInitialized()) {
+    if (!g_onlineModeActive.load() && DirectDrawHook::isHooked && AreCharactersInitialized()) {
         GameMode currentMode = GetCurrentGameMode();
         if (IsValidGameMode(currentMode)) {
             ReinitializeOverlays();
@@ -105,7 +106,7 @@ void DisableFeatures() {
 
     // Remove any active patches
     RemoveAirtechPatches();
-    CharacterSettings::RemoveCharacterPatches(); // Remove character-specific patches
+    // Character-specific enforcement is inline; nothing to stop explicitly here
 
     // Do NOT save states; we want a hard reset every time
 
@@ -215,6 +216,10 @@ void EnterOnlineMode() {
         ImGuiImpl::ToggleVisibility();
     }
     DirectDrawHook::ClearAllMessages();
+
+    // Proactively destroy the debug console so nothing further prints and stop buffering
+    DestroyDebugConsole();
+    SetConsoleReady(false);
 
     // --- HARD STOP: Remove hooks and stop rendering ---
     // 1) Unhook EndScene and any D3D9 overlay work
@@ -839,6 +844,7 @@ HWND FindEFZWindow() {
 }
 
 void UpdateWindowActiveState() {
+    if (g_onlineModeActive.load()) return;
     HWND activeWindow = GetForegroundWindow();
     HWND efzWindow = FindEFZWindow();
     
@@ -864,6 +870,7 @@ void UpdateWindowActiveState() {
 
 // Separate function to manage key monitoring based on window focus
 void ManageKeyMonitoring() {
+    if (g_onlineModeActive.load()) { if (keyMonitorRunning.load()) keyMonitorRunning.store(false); return; }
     bool currentWindowActive = g_efzWindowActive.load();
     bool currentFeaturesEnabled = g_featuresEnabled.load();
     

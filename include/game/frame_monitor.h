@@ -4,6 +4,37 @@
 #include "../include/core/constants.h"
 #include "../include/game/game_state.h"
 
+// Lightweight per-frame snapshot for consumers; produced by FrameDataMonitor
+struct FrameSnapshot {
+    unsigned long long tickMs;  // GetTickCount64 at publish
+    GamePhase phase;
+    GameMode mode;
+    short p1Move;
+    short p2Move;
+    short prevP1Move;
+    short prevP2Move;
+    bool p2BlockEdge;   // transition into block/guard state this frame
+    bool p2HitstunEdge; // transition into hitstun this frame
+    // Positions
+    double p1X;
+    double p2X;
+    double p1Y;
+    double p2Y;
+    // Vital stats
+    int p1Hp;
+    int p2Hp;
+    int p1Meter;
+    int p2Meter;
+    double p1RF;
+    double p2RF;
+    // Character identity
+    int p1CharId;
+    int p2CharId;
+};
+
+// Read-mostly accessor; returns false if snapshot is missing or stale beyond maxAgeMs
+bool TryGetLatestSnapshot(FrameSnapshot &out, unsigned int maxAgeMs);
+
 
 // Update the monitor state enum
 enum MonitorState {

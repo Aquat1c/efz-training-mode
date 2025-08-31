@@ -7,6 +7,7 @@
 #include "../include/input/input_core.h" // for WritePlayerInputImmediate and GAME_INPUT_*
 #include <thread>
 #include <atomic>
+#include <chrono>
 
 // Legacy patching variables retained for cleanup but no longer used for operation
 char originalEnableBytes[2] = {0x74, 0x71};
@@ -17,6 +18,14 @@ bool patchesApplied = false;
 // Track if player is currently airteching
 bool p1IsAirteching = false;
 bool p2IsAirteching = false;
+
+// Public atomic flags (visible to other modules/UI)
+std::atomic<bool> g_airtechP1Active{false};
+std::atomic<bool> g_airtechP2Active{false};
+std::atomic<bool> g_airtechP1Airtechable{false};
+std::atomic<bool> g_airtechP2Airtechable{false};
+std::atomic<bool> g_airtechP1FacingRight{true};
+std::atomic<bool> g_airtechP2FacingRight{true};
 
 // Deprecated: No longer used. We now inject inputs directly.
 void ApplyAirtechPatches() {
@@ -65,10 +74,10 @@ bool IsPlayerAirtechable(short moveID, int playerNum) {
         SafeReadMemory(untechAddr, &untechValue, sizeof(short));
     }
     
-    // Check moveID for airtechable states
+    // Check moveID for airtechable states: launched hitstun or special stun only
+    // Do NOT include AIR_GUARD to avoid spurious triggers while air-blocking
     bool airtechableMoveID = (moveID >= LAUNCHED_HITSTUN_START && moveID <= LAUNCHED_HITSTUN_END) ||
-                            (moveID == FIRE_STATE || moveID == ELECTRIC_STATE) ||
-                            (moveID == AIR_GUARD_ID);
+                             (moveID == FIRE_STATE || moveID == ELECTRIC_STATE);
     
     // Untech value == 0 means player can tech
     // AND moveID should be in an airtechable state
@@ -94,6 +103,15 @@ void MonitorAutoAirtech(short moveID1, short moveID2) {
     // Short press windows (in internal frames) for immediate injection
     static int p1InjectRemaining = 0;
     static int p2InjectRemaining = 0;
+    // Armed flags to ensure we inject once per edge into airtechable
+    static bool p1Armed = false;
+    static bool p2Armed = false;
+
+    // Cache per-frame facing direction early (single reads per player)
+    bool p1FacingRightNow = GetPlayerFacingDirection(1);
+    bool p2FacingRightNow = GetPlayerFacingDirection(2);
+    g_airtechP1FacingRight.store(p1FacingRightNow);
+    g_airtechP2FacingRight.store(p2FacingRightNow);
 
     // Track if player is in airtech animation
     bool p1CurrentlyAirteching = IsAirtechAnimation(moveID1);
@@ -105,6 +123,7 @@ void MonitorAutoAirtech(short moveID1, short moveID2) {
         if (patchesApplied) RemoveAirtechPatches();
         p1DelayCounter = 0;
         p1InjectRemaining = 0;
+        p1Armed = false;
     }
     
     if (p2CurrentlyAirteching && !p2IsAirteching) {
@@ -112,21 +131,43 @@ void MonitorAutoAirtech(short moveID1, short moveID2) {
         if (patchesApplied) RemoveAirtechPatches();
         p2DelayCounter = 0;
         p2InjectRemaining = 0;
+        p2Armed = false;
     }
     
     // Update tracking variables
     p1IsAirteching = p1CurrentlyAirteching;
     p2IsAirteching = p2CurrentlyAirteching;
 
-    // Periodic status logging
-    if (++debugCounter % 120 == 0) {
+    // Update exported flags and log only on change (with a slow heartbeat)
+    static bool lastP1Active=false, lastP2Active=false, lastP1Able=false, lastP2Able=false;
+    static auto lastHeartbeat = std::chrono::steady_clock::now();
+    bool p1ActiveNow = p1IsAirteching;
+    bool p2ActiveNow = p2IsAirteching;
+    // Compute airtechable using helpers (untech + moveID classification)
+    bool p1AbleNow = IsPlayerAirtechable(moveID1, 1);
+    bool p2AbleNow = IsPlayerAirtechable(moveID2, 2);
+    g_airtechP1Active.store(p1ActiveNow);
+    g_airtechP2Active.store(p2ActiveNow);
+    g_airtechP1Airtechable.store(p1AbleNow);
+    g_airtechP2Airtechable.store(p2AbleNow);
+
+    bool changed = (p1ActiveNow!=lastP1Active) || (p2ActiveNow!=lastP2Active) ||
+                   (p1AbleNow!=lastP1Able) || (p2AbleNow!=lastP2Able);
+    auto nowTs = std::chrono::steady_clock::now();
+    bool heartbeat = (nowTs - lastHeartbeat) >= std::chrono::seconds(5);
+    if ((detailedLogging.load() && (changed || heartbeat))) {
         LogOut("[AUTO-AIRTECH] Status: Enabled=" + std::to_string(autoAirtechEnabled.load()) +
                ", Direction=" + std::to_string(autoAirtechDirection.load()) +
                ", Delay=" + std::to_string(autoAirtechDelay.load()) +
                ", Patches=" + (patchesApplied ? "YES" : "NO") +
-               ", P1Airteching=" + (p1IsAirteching ? "YES" : "NO") +
-               ", P2Airteching=" + (p2IsAirteching ? "YES" : "NO"), 
-               detailedLogging.load());
+               ", P1Active=" + std::string(p1ActiveNow?"YES":"NO") +
+               ", P2Active=" + std::string(p2ActiveNow?"YES":"NO") +
+               ", P1Able=" + std::string(p1AbleNow?"YES":"NO") +
+               ", P2Able=" + std::string(p2AbleNow?"YES":"NO"),
+               true);
+        lastP1Active=p1ActiveNow; lastP2Active=p2ActiveNow;
+        lastP1Able=p1AbleNow; lastP2Able=p2AbleNow;
+        if (heartbeat) lastHeartbeat = nowTs;
     }
 
     // Settings changed
@@ -155,7 +196,7 @@ void MonitorAutoAirtech(short moveID1, short moveID2) {
 
     // Helper to request injection via the central input hook (immediate-only path)
     auto requestAttackPlusDir = [](int playerNum) {
-        bool facingRight = GetPlayerFacingDirection(playerNum);
+        bool facingRight = (playerNum == 1) ? g_airtechP1FacingRight.load() : g_airtechP2FacingRight.load();
         bool forward = autoAirtechDirection.load() == 0;
         // Determine horizontal bit for buffer mask (used by hook to map to immediate regs)
         uint8_t horzMask = 0;
@@ -170,89 +211,89 @@ void MonitorAutoAirtech(short moveID1, short moveID2) {
         g_injectImmediateOnly[playerNum].store(true); // don’t push to buffer
     };
 
-    // If enabled and not currently airteching, manage delay and injection using immediate registers
-    if (autoAirtechEnabled.load() && !p1IsAirteching && !p2IsAirteching) {
-        // Check P1 airtechable state
-        bool p1Airtechable = IsPlayerAirtechable(moveID1, 1);
-        
-        // Detect when P1 BECOMES airtechable (start counting)
-        if (p1Airtechable && !p1WasAirtechable) {
-            p1DelayCounter = autoAirtechDelay.load();
-            // Read untech for richer diagnostics (one-time on transition)
-            short untechValue = 0;
-            uintptr_t base = GetEFZBase();
-            uintptr_t untechAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P1, UNTECH_OFFSET);
-            if (untechAddr) {
-                SafeReadMemory(untechAddr, &untechValue, sizeof(short));
+    // If enabled, manage delay/injection per player independently
+    if (autoAirtechEnabled.load()) {
+        // Pre-compute edge detection for this frame
+        bool p1Airtechable = p1AbleNow;
+        bool p2Airtechable = p2AbleNow;
+        bool p1JustBecameAirtechable = (p1Airtechable && !p1WasAirtechable);
+        bool p2JustBecameAirtechable = (p2Airtechable && !p2WasAirtechable);
+
+        // --- P1 ---
+    if (!p1IsAirteching) {
+            if (p1JustBecameAirtechable) {
+        p1DelayCounter = autoAirtechDelay.load();
+        p1Armed = true;
+                // Read untech for richer diagnostics (one-time on transition)
+                short untechValue = 0;
+                uintptr_t base = GetEFZBase();
+                uintptr_t untechAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P1, UNTECH_OFFSET);
+                if (untechAddr) {
+                    SafeReadMemory(untechAddr, &untechValue, sizeof(short));
+                }
+                LogOut("[AUTO-AIRTECH] P1 became airtechable (moveID=" + std::to_string(moveID1) +
+                       ", untech=" + std::to_string(untechValue) + "), starting delay: " + 
+                       std::to_string(autoAirtechDelay.load()) + " frames", detailedLogging.load());
             }
-            LogOut("[AUTO-AIRTECH] P1 became airtechable (moveID=" + std::to_string(moveID1) +
-                   ", untech=" + std::to_string(untechValue) + "), starting delay: " + 
-                   std::to_string(autoAirtechDelay.load()) + " frames", detailedLogging.load());
-        }
-        
-        // Count down P1's delay and inject input when it expires
-        if (p1DelayCounter > 0) {
-            p1DelayCounter--;
-            if (p1DelayCounter == 0 && p1Airtechable) {
-                p1InjectRemaining = 3; // press for ~1 visual frame
-                // Diagnostic context at injection start
-                bool facingRight = GetPlayerFacingDirection(1);
-                bool forward = autoAirtechDirection.load() == 0;
-                uint8_t horz = 0;
-                if (forward) horz = facingRight ? 1 : 255; else horz = facingRight ? 255 : 1;
-                const char* dirStr = forward ? "FORWARD" : "BACKWARD";
-                LogOut(std::string("[AUTO-AIRTECH] P1 delay expired -> injecting A+dir (dir=") + dirStr +
-                       ", facingRight=" + (facingRight ? "1" : "0") + ", horz=" + std::to_string(horz) + ")",
-                       true);
+            if (p1DelayCounter > 0) {
+                p1DelayCounter--;
+                if (p1DelayCounter == 0 && p1Airtechable && p1Armed) {
+                    p1InjectRemaining = 3; // press for ~1 visual frame
+                    p1Armed = false; // consume arm
+                    bool facingRight = p1FacingRightNow;
+                    bool forward = autoAirtechDirection.load() == 0;
+                    uint8_t horz = 0;
+                    if (forward) horz = facingRight ? 1 : 255; else horz = facingRight ? 255 : 1;
+                    const char* dirStr = forward ? "FORWARD" : "BACKWARD";
+                    LogOut(std::string("[AUTO-AIRTECH] P1 delay expired -> injecting A+dir (dir=") + dirStr +
+                           ", facingRight=" + (facingRight ? "1" : "0") + ", horz=" + std::to_string(horz) + ")",
+                           true);
+                }
             }
+            p1WasAirtechable = p1Airtechable;
         }
-        
-        // Check P2 airtechable state
-        bool p2Airtechable = IsPlayerAirtechable(moveID2, 2);
-        
-        // Detect when P2 BECOMES airtechable (start counting)
-        if (p2Airtechable && !p2WasAirtechable) {
-            p2DelayCounter = autoAirtechDelay.load();
-            // Read untech for richer diagnostics (one-time on transition)
-            short untechValue = 0;
-            uintptr_t base = GetEFZBase();
-            uintptr_t untechAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P2, UNTECH_OFFSET);
-            if (untechAddr) {
-                SafeReadMemory(untechAddr, &untechValue, sizeof(short));
+
+        // --- P2 ---
+    if (!p2IsAirteching) {
+            if (p2JustBecameAirtechable) {
+        p2DelayCounter = autoAirtechDelay.load();
+        p2Armed = true;
+                short untechValue = 0;
+                uintptr_t base = GetEFZBase();
+                uintptr_t untechAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P2, UNTECH_OFFSET);
+                if (untechAddr) {
+                    SafeReadMemory(untechAddr, &untechValue, sizeof(short));
+                }
+                LogOut("[AUTO-AIRTECH] P2 became airtechable (moveID=" + std::to_string(moveID2) +
+                       ", untech=" + std::to_string(untechValue) + "), starting delay: " + 
+                       std::to_string(autoAirtechDelay.load()) + " frames", detailedLogging.load());
             }
-            LogOut("[AUTO-AIRTECH] P2 became airtechable (moveID=" + std::to_string(moveID2) +
-                   ", untech=" + std::to_string(untechValue) + "), starting delay: " + 
-                   std::to_string(autoAirtechDelay.load()) + " frames", detailedLogging.load());
-        }
-        
-        // Count down P2's delay and inject input when it expires
-        if (p2DelayCounter > 0) {
-            p2DelayCounter--;
-            if (p2DelayCounter == 0 && p2Airtechable) {
-                p2InjectRemaining = 3; // press for ~1 visual frame
-                // Diagnostic context at injection start
-                bool facingRight = GetPlayerFacingDirection(2);
-                bool forward = autoAirtechDirection.load() == 0;
-                uint8_t horz = 0;
-                if (forward) horz = facingRight ? 1 : 255; else horz = facingRight ? 255 : 1;
-                const char* dirStr = forward ? "FORWARD" : "BACKWARD";
-                LogOut(std::string("[AUTO-AIRTECH] P2 delay expired -> injecting A+dir (dir=") + dirStr +
-                       ", facingRight=" + (facingRight ? "1" : "0") + ", horz=" + std::to_string(horz) + ")",
-                       true);
+            if (p2DelayCounter > 0) {
+                p2DelayCounter--;
+        if (p2DelayCounter == 0 && p2Airtechable && p2Armed) {
+                    p2InjectRemaining = 3; // press for ~1 visual frame
+            p2Armed = false;
+                    bool facingRight = p2FacingRightNow;
+                    bool forward = autoAirtechDirection.load() == 0;
+                    uint8_t horz = 0;
+                    if (forward) horz = facingRight ? 1 : 255; else horz = facingRight ? 255 : 1;
+                    const char* dirStr = forward ? "FORWARD" : "BACKWARD";
+                    LogOut(std::string("[AUTO-AIRTECH] P2 delay expired -> injecting A+dir (dir=") + dirStr +
+                           ", facingRight=" + (facingRight ? "1" : "0") + ", horz=" + std::to_string(horz) + ")",
+                           true);
+                }
             }
+            p2WasAirtechable = p2Airtechable;
         }
-        
-        // Update previous states
-        p1WasAirtechable = p1Airtechable;
-        p2WasAirtechable = p2Airtechable;
     }
 
     // Instant-mode or active inject windows: perform immediate input writes
     if (autoAirtechEnabled.load()) {
-        // If delay is zero and player is airtechable, start inject window immediately
-        if (autoAirtechDelay.load() == 0 && !p1IsAirteching && IsPlayerAirtechable(moveID1, 1) && p1InjectRemaining == 0) {
+    // If delay is zero, start inject window only on the edge when becoming airtechable
+    if (autoAirtechDelay.load() == 0 && !p1IsAirteching && p1InjectRemaining == 0 && p1Armed) {
             p1InjectRemaining = 3;
-            bool facingRight = GetPlayerFacingDirection(1);
+        p1Armed = false;
+        bool facingRight = p1FacingRightNow;
             bool forward = autoAirtechDirection.load() == 0;
             uint8_t horz = 0;
             if (forward) horz = facingRight ? 1 : 255; else horz = facingRight ? 255 : 1;
@@ -261,9 +302,10 @@ void MonitorAutoAirtech(short moveID1, short moveID2) {
                    ", facingRight=" + (facingRight ? "1" : "0") + ", horz=" + std::to_string(horz) + ")",
                    detailedLogging.load());
         }
-        if (autoAirtechDelay.load() == 0 && !p2IsAirteching && IsPlayerAirtechable(moveID2, 2) && p2InjectRemaining == 0) {
+    if (autoAirtechDelay.load() == 0 && !p2IsAirteching && p2InjectRemaining == 0 && p2Armed) {
             p2InjectRemaining = 3;
-            bool facingRight = GetPlayerFacingDirection(2);
+        p2Armed = false;
+        bool facingRight = p2FacingRightNow;
             bool forward = autoAirtechDirection.load() == 0;
             uint8_t horz = 0;
             if (forward) horz = facingRight ? 1 : 255; else horz = facingRight ? 255 : 1;
@@ -297,6 +339,26 @@ void MonitorAutoAirtech(short moveID1, short moveID2) {
             g_injectImmediateOnly[2].store(false);
             LogOut("[AUTO-AIRTECH] P2 released A+dir (end of inject window)", detailedLogging.load());
             p2WasInjecting = false;
+        }
+    } else {
+        // If disabled mid-window, ensure we release any active overrides cleanly
+        if (p1WasInjecting || g_manualInputOverride[1].load()) {
+            g_manualInputOverride[1].store(false);
+            g_manualInputMask[1].store(0);
+            g_injectImmediateOnly[1].store(false);
+            p1WasInjecting = false;
+            p1InjectRemaining = 0;
+            p1DelayCounter = 0;
+            p1Armed = false;
+        }
+        if (p2WasInjecting || g_manualInputOverride[2].load()) {
+            g_manualInputOverride[2].store(false);
+            g_manualInputMask[2].store(0);
+            g_injectImmediateOnly[2].store(false);
+            p2WasInjecting = false;
+            p2InjectRemaining = 0;
+            p2DelayCounter = 0;
+            p2Armed = false;
         }
     }
 }

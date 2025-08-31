@@ -18,6 +18,7 @@
 #define DISABLE_ATTACK_READER 1
 #include "../include/game/attack_reader.h"
 #include "../include/game/practice_patch.h"
+#include "../include/game/character_settings.h"
 #ifndef CLEAR_ALL_AUTO_ACTION_TRIGGERS_FWD
 #define CLEAR_ALL_AUTO_ACTION_TRIGGERS_FWD
 void ClearAllAutoActionTriggers();
@@ -64,6 +65,39 @@ static std::string FM_Hex(uintptr_t v) {
     std::ostringstream oss;
     oss << "0x" << std::hex << std::uppercase << v;
     return oss.str();
+}
+
+// --- Frame snapshot store (double-buffer, lock-free) ---
+namespace {
+    struct SnapBuf { FrameSnapshot snap; std::atomic<uint32_t> seq{0}; };
+    static SnapBuf g_snapA, g_snapB;
+    static std::atomic<SnapBuf*> g_writeBuf{&g_snapA};
+    static std::atomic<SnapBuf*> g_readBuf{&g_snapB};
+}
+
+static void PublishSnapshot(const FrameSnapshot &s) {
+    SnapBuf* wb = g_writeBuf.load(std::memory_order_relaxed);
+    uint32_t startSeq = wb->seq.load(std::memory_order_relaxed);
+    if ((startSeq & 1u) == 0u) startSeq++; // make it odd (writing)
+    wb->seq.store(startSeq, std::memory_order_release);
+    wb->snap = s; // POD copy
+    wb->seq.store(startSeq+1, std::memory_order_release); // even = stable
+    // swap read/write buffers for next time
+    SnapBuf* oldRead = g_readBuf.exchange(wb, std::memory_order_acq_rel);
+    g_writeBuf.store(oldRead, std::memory_order_release);
+}
+
+bool TryGetLatestSnapshot(FrameSnapshot &out, unsigned int maxAgeMs) {
+    SnapBuf* rb = g_readBuf.load(std::memory_order_acquire);
+    uint32_t s1 = rb->seq.load(std::memory_order_acquire);
+    if (s1 & 1u) return false; // being written
+    FrameSnapshot tmp = rb->snap; // copy
+    uint32_t s2 = rb->seq.load(std::memory_order_acquire);
+    if (s1 != s2 || (s2 & 1u)) return false; // changed mid-read
+    unsigned long long now = GetTickCount64();
+    if (tmp.tickMs == 0 || now - tmp.tickMs > maxAgeMs) return false;
+    out = tmp;
+    return true;
 }
 
 bool IsValidGameMode(GameMode mode) {
@@ -274,7 +308,6 @@ void FrameDataMonitor() {
     while (!g_isShuttingDown) {
         // If online mode is active, perform one-time cleanup then exit the thread
         if (g_onlineModeActive.load()) {
-            LogOut("[FRAME MONITOR] Online mode active -> stopping and exiting frame monitor", true);
             StopBufferFreezing();
             ResetActionFlags();
             p1DelayState = {false, 0, TRIGGER_NONE, 0};
@@ -305,16 +338,7 @@ void FrameDataMonitor() {
                     if (st == OnlineState::Netplay || st == OnlineState::Spectating || st == OnlineState::Tournament) {
                         ++consecutiveOnline;
                         if (consecutiveOnline >= 2) {
-                            LogOut(std::string("[NETWORK] EfzRevival state: ") + OnlineStateName(st), true);
-                            LogOut("[NETWORK] Online match confirmed", true);
-                            // Hide console quickly to avoid spam
-                            for (int i = 2; i > 0; --i) {
-                                LogOut("[NETWORK] Console will be hidden in " + std::to_string(i) + " seconds...", true);
-                                std::this_thread::sleep_for(std::chrono::seconds(1));
-                            }
-                            if (HWND consoleWnd = GetConsoleWindow()) {
-                                ShowWindow(consoleWnd, SW_HIDE);
-                            }
+                            // Immediately enter online mode; do not alter console visibility here
                             isOnlineMatch = true;
                             EnterOnlineMode();
                             // After EnterOnlineMode, loop will hit g_onlineModeActive guard and break
@@ -329,7 +353,6 @@ void FrameDataMonitor() {
                 auto elapsedSecs = std::chrono::duration_cast<std::chrono::seconds>(
                     std::chrono::steady_clock::now() - gameStartTime).count();
                 if (elapsedSecs > 10 && !isOnlineMatch.load()) {
-                    LogOut("[NETWORK] Stopped network monitoring (timeout)", false);
                     stopNetChecks = true;
                 }
             }
@@ -446,7 +469,8 @@ void FrameDataMonitor() {
         UpdateWindowActiveState();
         // Throttle stats overlay further to ~15-16 Hz to reduce churn and CPU
         {
-            static int statsDecim = 0;
+            static int statsDecim = -1; // prime to fire quickly after enable
+            if (statsDecim < 0) statsDecim = 11; // first iteration hits 0 modulo 12
             if ((statsDecim++ % 12) == 0) {
                 UpdateStatsDisplay();
             }
@@ -522,7 +546,8 @@ void FrameDataMonitor() {
         // Only run the main monitoring logic if features are enabled
         if (g_featuresEnabled.load()) {
             // Throttle trigger overlay to ~12-13 Hz (every 16 internal frames ~83ms)
-            static int trigDecim = 0;
+            static int trigDecim = -1; // prime to show overlay quickly after enable
+            if (trigDecim < 0) trigDecim = 15;
             if ((trigDecim++ % 16) == 0) {
                 UpdateTriggerOverlay();
             }
@@ -583,8 +608,8 @@ void FrameDataMonitor() {
             }
 
             // (EXISTING HEAVY LOGIC BELOW: address refresh, moveID reads, processing)
-            // Refresh addresses periodically
-            if (addressCacheCounter++ >= 192) {
+            // Refresh addresses periodically, and also on first use if not yet cached
+            if (addressCacheCounter++ >= 192 || !cachedMoveIDAddr1 || !cachedMoveIDAddr2) {
                 cachedMoveIDAddr1 = ResolvePointer(base, EFZ_BASE_OFFSET_P1, MOVE_ID_OFFSET);
                 cachedMoveIDAddr2 = ResolvePointer(base, EFZ_BASE_OFFSET_P2, MOVE_ID_OFFSET);
                 addressCacheCounter = 0;
@@ -645,6 +670,81 @@ void FrameDataMonitor() {
             // Important: pass previous moveIDs before updating them
             MonitorDummyAutoBlock(moveID1, moveID2, prevMoveID1, prevMoveID2);
 
+            // Publish a snapshot for other consumers at the end of logic section
+            {
+                // Resolve and cache addresses periodically to minimize ResolvePointer overhead
+                static uintptr_t s_p1YAddr = 0, s_p2YAddr = 0;
+                static uintptr_t s_p1XAddr = 0, s_p2XAddr = 0;
+                static uintptr_t s_p1HpAddr = 0, s_p2HpAddr = 0;
+                static uintptr_t s_p1MeterAddr = 0, s_p2MeterAddr = 0;
+                static uintptr_t s_p1RfAddr = 0, s_p2RfAddr = 0;
+                static uintptr_t s_p1CharNameAddr = 0, s_p2CharNameAddr = 0; // used to derive IDs if needed
+                static uintptr_t s_p1CharIdAddr = 0, s_p2CharIdAddr = 0; // if ID offset exists in struct (fallback to name->id map)
+                static int s_cacheCounter = 0;
+                if (++s_cacheCounter >= 192 || !s_p1YAddr || !s_p2YAddr || !s_p1XAddr || !s_p2XAddr ||
+                    !s_p1HpAddr || !s_p2HpAddr || !s_p1MeterAddr || !s_p2MeterAddr || !s_p1RfAddr || !s_p2RfAddr ||
+                    !s_p1CharNameAddr || !s_p2CharNameAddr) {
+                    s_p1YAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P1, YPOS_OFFSET);
+                    s_p2YAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P2, YPOS_OFFSET);
+                    s_p1XAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P1, XPOS_OFFSET);
+                    s_p2XAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P2, XPOS_OFFSET);
+                    s_p1HpAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P1, HP_OFFSET);
+                    s_p2HpAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P2, HP_OFFSET);
+                    s_p1MeterAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P1, METER_OFFSET);
+                    s_p2MeterAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P2, METER_OFFSET);
+                    s_p1RfAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P1, RF_OFFSET);
+                    s_p2RfAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P2, RF_OFFSET);
+                    s_p1CharNameAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P1, CHARACTER_NAME_OFFSET);
+                    s_p2CharNameAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P2, CHARACTER_NAME_OFFSET);
+                    s_cacheCounter = 0;
+                }
+
+                // Read values with best-effort safety
+                double p1Y=0.0, p2Y=0.0; if (s_p1YAddr) SafeReadMemory(s_p1YAddr, &p1Y, sizeof(p1Y)); if (s_p2YAddr) SafeReadMemory(s_p2YAddr, &p2Y, sizeof(p2Y));
+                double p1X=0.0, p2X=0.0; if (s_p1XAddr) SafeReadMemory(s_p1XAddr, &p1X, sizeof(p1X)); if (s_p2XAddr) SafeReadMemory(s_p2XAddr, &p2X, sizeof(p2X));
+                int p1Hp=0, p2Hp=0; if (s_p1HpAddr) SafeReadMemory(s_p1HpAddr, &p1Hp, sizeof(p1Hp)); if (s_p2HpAddr) SafeReadMemory(s_p2HpAddr, &p2Hp, sizeof(p2Hp));
+                int p1Meter=0, p2Meter=0; if (s_p1MeterAddr) SafeReadMemory(s_p1MeterAddr, &p1Meter, sizeof(p1Meter)); if (s_p2MeterAddr) SafeReadMemory(s_p2MeterAddr, &p2Meter, sizeof(p2Meter));
+                double p1Rf=0.0, p2Rf=0.0; if (s_p1RfAddr) SafeReadMemory(s_p1RfAddr, &p1Rf, sizeof(p1Rf)); if (s_p2RfAddr) SafeReadMemory(s_p2RfAddr, &p2Rf, sizeof(p2Rf));
+
+                FrameSnapshot snap{};
+                snap.tickMs = GetTickCount64();
+                snap.phase = currentPhase;
+                snap.mode = currentMode;
+                snap.p1Move = moveID1;
+                snap.p2Move = moveID2;
+                snap.prevP1Move = prevMoveID1;
+                snap.prevP2Move = prevMoveID2;
+                snap.p2BlockEdge = (IsBlockstun(prevMoveID2) && !IsBlockstun(moveID2) && IsActionable(moveID2));
+                snap.p2HitstunEdge = (!IsHitstun(prevMoveID2) && IsHitstun(moveID2));
+                snap.p1X = p1X; snap.p2X = p2X;
+                snap.p1Y = p1Y; snap.p2Y = p2Y;
+                snap.p1Hp = p1Hp; snap.p2Hp = p2Hp;
+                snap.p1Meter = p1Meter; snap.p2Meter = p2Meter;
+                snap.p1RF = p1Rf; snap.p2RF = p2Rf;
+                // Character IDs: derive from name if direct ID offset is unavailable
+                int pid1 = -1, pid2 = -1;
+                if (s_p1CharNameAddr) {
+                    char name1[16] = {0}; SafeReadMemory(s_p1CharNameAddr, &name1, sizeof(name1)-1);
+                    pid1 = CharacterSettings::GetCharacterID(std::string(name1));
+                }
+                if (s_p2CharNameAddr) {
+                    char name2[16] = {0}; SafeReadMemory(s_p2CharNameAddr, &name2, sizeof(name2)-1);
+                    pid2 = CharacterSettings::GetCharacterID(std::string(name2));
+                }
+                snap.p1CharId = pid1; snap.p2CharId = pid2;
+                PublishSnapshot(snap);
+
+                // Also read and enforce character-specific values in this centralized thread on a slower cadence (~16 Hz)
+                static int charDecim = 0;
+                if ((++charDecim % 12) == 0) {
+                    // Sync IDs into displayData for the read/enforcement functions
+                    if (snap.p1CharId >= 0) displayData.p1CharID = snap.p1CharId;
+                    if (snap.p2CharId >= 0) displayData.p2CharID = snap.p2CharId;
+                    CharacterSettings::ReadCharacterValues(base, displayData);
+                    CharacterSettings::TickCharacterEnforcements(base, displayData);
+                }
+            }
+
             // Now update previous moveIDs for next frame
             prevMoveID1 = moveID1;
             prevMoveID2 = moveID2;
@@ -704,6 +804,11 @@ FRAME_MONITOR_FRAME_END:
                 break;
             }
             beforeSleep = clock::now();
+        }
+
+        // Maintain RF freeze inline at a modest tick rate (~32 Hz)
+        {
+            static int rfDecim = 0; if ((rfDecim++ % 6) == 0) { UpdateRFFreezeTick(); }
         }
 
         auto frameEnd = clock::now();
@@ -879,64 +984,59 @@ void UpdateStatsDisplay() {
         return;
     }
 
-    // Read current game values
+    // Prefer live snapshot; fallback to minimal direct reads only when stale
+    FrameSnapshot snap{};
+    bool haveSnap = TryGetLatestSnapshot(snap, 300);
     uintptr_t base = GetEFZBase();
-    if (!base) return;
+    if (!base && !haveSnap) return;
 
-    // Cache memory addresses for efficiency
-    static uintptr_t p1HpAddr = 0, p1MeterAddr = 0, p1RfAddr = 0;
-    static uintptr_t p2HpAddr = 0, p2MeterAddr = 0, p2RfAddr = 0;
-    static uintptr_t p1XAddr = 0, p1YAddr = 0, p2XAddr = 0, p2YAddr = 0;
-    static uintptr_t p1MoveIdAddr = 0, p2MoveIdAddr = 0;
-    static int cacheCounter = 0;
+    int p1Hp = 0, p2Hp = 0, p1Meter = 0, p2Meter = 0; double p1Rf = 0.0, p2Rf = 0.0;
+    double p1X = 0.0, p1Y = 0.0, p2X = 0.0, p2Y = 0.0; short p1MoveId = 0, p2MoveId = 0;
 
-    // Refresh cache occasionally
-    if (cacheCounter++ >= 60 || !p1HpAddr) {
-        p1HpAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P1, HP_OFFSET);
-        p1MeterAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P1, METER_OFFSET);
-        p1RfAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P1, RF_OFFSET);
-        p1XAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P1, XPOS_OFFSET);
-        p1YAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P1, YPOS_OFFSET);
-        p1MoveIdAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P1, MOVE_ID_OFFSET);
-
-        p2HpAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P2, HP_OFFSET);
-        p2MeterAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P2, METER_OFFSET);
-        p2RfAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P2, RF_OFFSET);
-        p2XAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P2, XPOS_OFFSET);
-        p2YAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P2, YPOS_OFFSET);
-        p2MoveIdAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P2, MOVE_ID_OFFSET);
-        
-        cacheCounter = 0;
+    if (haveSnap) {
+        p1Hp = snap.p1Hp; p2Hp = snap.p2Hp;
+        p1Meter = snap.p1Meter; p2Meter = snap.p2Meter;
+        p1Rf = snap.p1RF; p2Rf = snap.p2RF;
+        p1X = snap.p1X; p2X = snap.p2X;
+        p1Y = snap.p1Y; p2Y = snap.p2Y;
+        p1MoveId = snap.p1Move; p2MoveId = snap.p2Move;
+    } else {
+        static uintptr_t p1HpAddr = 0, p1MeterAddr = 0, p1RfAddr = 0;
+        static uintptr_t p2HpAddr = 0, p2MeterAddr = 0, p2RfAddr = 0;
+        static uintptr_t p1XAddr = 0, p1YAddr = 0, p2XAddr = 0, p2YAddr = 0;
+        static uintptr_t p1MoveIdAddr = 0, p2MoveIdAddr = 0;
+        static int cacheCounter = 0;
+        if (cacheCounter++ >= 60 || !p1HpAddr) {
+            p1HpAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P1, HP_OFFSET);
+            p1MeterAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P1, METER_OFFSET);
+            p1RfAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P1, RF_OFFSET);
+            p1XAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P1, XPOS_OFFSET);
+            p1YAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P1, YPOS_OFFSET);
+            p1MoveIdAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P1, MOVE_ID_OFFSET);
+            p2HpAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P2, HP_OFFSET);
+            p2MeterAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P2, METER_OFFSET);
+            p2RfAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P2, RF_OFFSET);
+            p2XAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P2, XPOS_OFFSET);
+            p2YAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P2, YPOS_OFFSET);
+            p2MoveIdAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P2, MOVE_ID_OFFSET);
+            cacheCounter = 0;
+        }
+        if (p1HpAddr) SafeReadMemory(p1HpAddr, &p1Hp, sizeof(int));
+        if (p1MeterAddr) SafeReadMemory(p1MeterAddr, &p1Meter, sizeof(int));
+        if (p1RfAddr) SafeReadMemory(p1RfAddr, &p1Rf, sizeof(double));
+        if (p2HpAddr) SafeReadMemory(p2HpAddr, &p2Hp, sizeof(int));
+        if (p2MeterAddr) SafeReadMemory(p2MeterAddr, &p2Meter, sizeof(int));
+        if (p2RfAddr) SafeReadMemory(p2RfAddr, &p2Rf, sizeof(double));
+        if (p1XAddr) SafeReadMemory(p1XAddr, &p1X, sizeof(double));
+        if (p1YAddr) SafeReadMemory(p1YAddr, &p1Y, sizeof(double));
+        if (p2XAddr) SafeReadMemory(p2XAddr, &p2X, sizeof(double));
+        if (p2YAddr) SafeReadMemory(p2YAddr, &p2Y, sizeof(double));
+        if (p1MoveIdAddr) SafeReadMemory(p1MoveIdAddr, &p1MoveId, sizeof(short));
+        if (p2MoveIdAddr) SafeReadMemory(p2MoveIdAddr, &p2MoveId, sizeof(short));
     }
 
-    // Read values
-    int p1Hp = 0, p1Meter = 0;
-    double p1Rf = 0;
-    if (p1HpAddr) SafeReadMemory(p1HpAddr, &p1Hp, sizeof(int));
-    if (p1MeterAddr) SafeReadMemory(p1MeterAddr, &p1Meter, sizeof(int));
-    if (p1RfAddr) SafeReadMemory(p1RfAddr, &p1Rf, sizeof(double));
-
-    int p2Hp = 0, p2Meter = 0;
-    double p2Rf = 0;
-    if (p2HpAddr) SafeReadMemory(p2HpAddr, &p2Hp, sizeof(int));
-    if (p2MeterAddr) SafeReadMemory(p2MeterAddr, &p2Meter, sizeof(int));
-    if (p2RfAddr) SafeReadMemory(p2RfAddr, &p2Rf, sizeof(double));
-
-    double p1X = 0, p1Y = 0, p2X = 0, p2Y = 0;
-    if (p1XAddr) SafeReadMemory(p1XAddr, &p1X, sizeof(double));
-    if (p1YAddr) SafeReadMemory(p1YAddr, &p1Y, sizeof(double));
-    if (p2XAddr) SafeReadMemory(p2XAddr, &p2X, sizeof(double));
-    if (p2YAddr) SafeReadMemory(p2YAddr, &p2Y, sizeof(double));
-
-    // Feed lightweight shared positions cache for other systems (e.g., adaptive autoblock)
-    // This is called at ~15-16 Hz; consumers should enforce a freshness bound.
-    if (p1YAddr && p2YAddr) {
-        UpdatePositionCache(p1X, p1Y, p2X, p2Y);
-    }
-
-    short p1MoveId = 0, p2MoveId = 0;
-    if (p1MoveIdAddr) SafeReadMemory(p1MoveIdAddr, &p1MoveId, sizeof(short));
-    if (p2MoveIdAddr) SafeReadMemory(p2MoveIdAddr, &p2MoveId, sizeof(short));
+    // Feed positions cache for other systems
+    UpdatePositionCache(p1X, p1Y, p2X, p2Y);
 
     // Format the strings
     std::stringstream p1Values, p2Values, positions, moveIds;

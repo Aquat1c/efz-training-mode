@@ -50,13 +50,8 @@ const char* OnlineStateName(OnlineState st) {
 // Check if the process has any network connections - improved for local network detection
 bool DetectOnlineMatch() {
     // Only use EfzRevival.dll flag for detection (no TCP/UDP fallback)
-    static OnlineState s_lastLogged = OnlineState::Unknown;
     OnlineState st = ReadEfzRevivalOnlineState();
     if (st != OnlineState::Unknown) {
-        if (st != s_lastLogged) {
-            LogOut(std::string("[NETWORK] EfzRevival state detected: ") + OnlineStateName(st), true);
-            s_lastLogged = st;
-        }
         // Treat Tournament as online-safe (disable features) conservatively
         return (st == OnlineState::Netplay || st == OnlineState::Spectating || st == OnlineState::Tournament);
     }
