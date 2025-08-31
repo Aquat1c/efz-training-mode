@@ -86,6 +86,7 @@ void FreezeBufferValuesThread(int playerNum) {
     // AGGRESSIVE PHASE: Write very frequently at the start
     const int aggressivePhaseFrames = 15;
     for (int i = 0; i < aggressivePhaseFrames && g_bufferFreezingActive; i++) {
+        if (g_onlineModeActive.load()) { g_bufferFreezingActive = false; break; }
         // Check player pointer validity
         uintptr_t playerPtr = GetPlayerPointer(playerNum);
         if (!playerPtr || playerPtr != initialPlayerPtr) {
@@ -125,6 +126,7 @@ void FreezeBufferValuesThread(int playerNum) {
     // NORMAL PHASE: Continue with standard frequency
     int freezeCount = aggressivePhaseFrames;
     while (g_bufferFreezingActive && freezeCount < freezeLimit && !g_isShuttingDown.load()) {
+        if (g_onlineModeActive.load()) { LogOut("[INPUT_BUFFER] Online mode active, stopping buffer freeze", true); break; }
         // Check game state and player pointer validity
         GamePhase currentPhase = GetCurrentGamePhase();
         if (currentPhase != GamePhase::Match) {

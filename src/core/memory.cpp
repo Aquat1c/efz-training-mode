@@ -12,6 +12,8 @@
 #include <sstream>
 #include <algorithm>
 #include <cmath>
+// For global shutdown flag
+#include "../include/core/globals.h"
 
 // Add static variables for position saving
 static double saved_x1 = 240.0, saved_y1 = 0.0;
@@ -512,7 +514,7 @@ void RFFreezeThreadFunc() {
         return fabs(a - b) < 1e-6;   // tiny tolerance for float write verification
     };
     
-    while (rfThreadRunning) {
+    while (rfThreadRunning && !g_isShuttingDown.load()) {
         if (rfFreezing.load()) {
             uintptr_t base = GetEFZBase();
             if (base) {
@@ -573,7 +575,7 @@ void RFFreezeThreadFunc() {
             }
         }
         else {
-            // When not freezing, back off considerably
+            // When not freezing, back off considerably and avoid memory touching
             sleepMs = maxSleepMs;
         }
         

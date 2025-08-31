@@ -30,18 +30,7 @@
 
 #pragma comment(lib, "xinput9_1_0.lib")
 
-#ifndef VK_NUMPAD_ADD
-#define VK_NUMPAD_ADD      0x6B
-#endif
-#ifndef VK_NUMPAD_SUBTRACT
-#define VK_NUMPAD_SUBTRACT 0x6D
-#endif
-#ifndef VK_NUMPAD_MULTIPLY
-#define VK_NUMPAD_MULTIPLY 0x6A
-#endif
-#ifndef VK_NUMPAD_DIVIDE
-#define VK_NUMPAD_DIVIDE   0x6F
-#endif
+// Removed VK_NUMPAD_* dev hotkey defines (no longer used)
 
 #pragma comment(lib, "dinput8.lib")
 #pragma comment(lib, "dxguid.lib")
@@ -425,37 +414,7 @@ void MonitorKeys() {
                 DirectDrawHook::AddMessage(autoJumpEnabled ? "Auto-Jump: ON" : "Auto-Jump: OFF", "SYSTEM", RGB(255, 165, 0), 1500, 0, 100);
                 keyHandled = true;
             }
-            // --- P2 Motion Input Debug Hotkeys ---
-            if (GetAsyncKeyState(VK_NUMPAD_ADD) & 0x8000) { // Numpad +
-                QueueMotionInput(2, MOTION_236B, GAME_INPUT_B); // QCF+B
-                LogOut("[HOTKEY] Simulated P2 QCF+B (Numpad +)", true);
-            }
-            if (GetAsyncKeyState(VK_NUMPAD_SUBTRACT) & 0x8000) { // Numpad -
-                QueueMotionInput(2, MOTION_623B, GAME_INPUT_B); // DP+B
-                LogOut("[HOTKEY] Simulated P2 DP+B (Numpad -)", true);
-            }
-            if (GetAsyncKeyState(VK_NUMPAD8) & 0x8000) { // Numpad 8
-                // Freeze buffer with perfect DP motion for Player 2 - Use enhanced version
-                FreezePerfectDragonPunchEnhanced(2);
-                LogOut("[HOTKEY] Activated Enhanced Dragon Punch buffer freeze for P2 (Numpad 8)", true);
-                // Wait for key release to avoid multiple triggers
-                while (GetAsyncKeyState(VK_NUMPAD8) & 0x8000) {
-                    Sleep(10);
-                }
-            }
-            if (GetAsyncKeyState(VK_NUMPAD9) & 0x8000) { // Numpad 9
-                ComboFreezeDP(2); // Use player 2
-                LogOut("[HOTKEY] Activated CheatEngine-style DP freeze (Numpad 9)", true);
-
-                // Wait for key release
-                while (GetAsyncKeyState(VK_NUMPAD9) & 0x8000) {
-                    Sleep(10);
-                }
-            }
-            if (GetAsyncKeyState(VK_NUMPAD_MULTIPLY) & 0x8000) { // Numpad *
-                QueueMotionInput(2, MOTION_214B, GAME_INPUT_B); // QCB+B
-                LogOut("[HOTKEY] Simulated P2 QCB+B (Numpad *)", true);
-            }
+            // Developer motion-debug hotkeys removed
 
             // If a key was handled, wait for it to be released
             if (keyHandled) {
@@ -490,6 +449,7 @@ void MonitorKeys() {
                         // Back off modestly when idle but focused
                         sleepMs = 24; // ~41 Hz
                         if (idleLoops > idleThreshold * 3) sleepMs = 32; // ~31 Hz
+                        if (idleLoops > idleThreshold * 6) sleepMs = 48; // ~21 Hz
                     }
                 }
             }
@@ -498,7 +458,7 @@ void MonitorKeys() {
         // Sleep to avoid high CPU usage (adaptive)
         if (!g_efzWindowActive.load() || g_guiActive.load()) {
             // When unfocused or GUI is open, back off more
-            Sleep(48);
+            Sleep(64);
         } else {
             Sleep(sleepMs);
         }
@@ -1001,6 +961,15 @@ void GlobalF1MonitorThread() {
     int sleepMs = 16;
     int idleLoops = 0;
     while (globalF1ThreadRunning.load()) {
+        // Park in online mode and reduce work when window inactive
+        if (g_onlineModeActive.load()) {
+            break; // exit thread permanently once online mode is active
+        }
+        if (!g_efzWindowActive.load()) {
+            // Back off heavily when game window not focused
+            Sleep(96);
+            continue;
+        }
         if (IsKeyPressed(VK_F1, false)) {
             LogOut("BGM Mute button called (global F1 thread)", true);
             SetBGMSuppressed(!IsBGMSuppressed());
@@ -1034,7 +1003,8 @@ void GlobalF1MonitorThread() {
         }
         // Adaptive backoff if idle
         if (++idleLoops > 20) sleepMs = 24;  // ~41 Hz
-        if (idleLoops > 60) sleepMs = 32;    // ~31 Hz
+    if (idleLoops > 60) sleepMs = 32;    // ~31 Hz
+    if (idleLoops > 120) sleepMs = 48;   // ~21 Hz
         Sleep(sleepMs);
     }
 }

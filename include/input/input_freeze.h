@@ -44,8 +44,7 @@ void StopBufferFreezing();
 
 // Special move patterns
 bool FreezePerfectDragonPunch(int playerNum);
-bool FreezePerfectDragonPunchEnhanced(int playerNum);
-bool ComboFreezeDP(int playerNum);
+// Developer-only motion freeze helpers removed from public API
 
 /**
  * Freezes the input buffer with a pattern for a specific motion input.

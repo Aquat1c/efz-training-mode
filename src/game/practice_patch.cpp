@@ -662,12 +662,14 @@ static std::atomic<bool> g_firstEventSeen{false};
 static std::atomic<bool> g_abWindowActive{false};
 static std::atomic<unsigned long long> g_abWindowDeadlineMs{0};
 static std::atomic<bool> g_adaptiveStance{false};
+static std::atomic<bool> g_adaptiveForceTick{false}; // force immediate evaluation on enable
 static std::atomic<bool> g_abOverrideActive{false}; // when false, follow the game's autoblock flag
 
 // Internal: set mode without marking override or forcing baseline writes
 static void SetDummyAutoBlockModeFromSync(int mode) {
     if (mode < 0) mode = 0; if (mode > 4) mode = 4;
-    if (mode == DAB_Adaptive) { g_adaptiveStance.store(true); mode = DAB_All; }
+    // Do not auto-enable adaptive monitoring from deprecated mode; map to All only
+    if (mode == DAB_Adaptive) { mode = DAB_All; }
     g_dummyAutoBlockMode.store(mode);
     ResetDummyAutoBlockState();
 }
@@ -678,11 +680,8 @@ static constexpr unsigned long long AB_DELAY_AFTER_FIRST_HIT_MS    = 1000ULL; //
 
 void SetDummyAutoBlockMode(int mode) {
     if (mode < 0) mode = 0; if (mode > 4) mode = 4;
-    // Migrate deprecated Adaptive mode to All + adaptive toggle
-    if (mode == DAB_Adaptive) {
-        g_adaptiveStance.store(true);
-        mode = DAB_All; // behave like All while stance is controlled by checkbox
-    }
+    // Migrate deprecated Adaptive mode to All; checkbox now controls monitoring
+    if (mode == DAB_Adaptive) { mode = DAB_All; }
     g_dummyAutoBlockMode.store(mode);
     ResetDummyAutoBlockState();
     g_abOverrideActive.store(true);
@@ -719,7 +718,13 @@ void ResetDummyAutoBlockState() {
     g_abWindowDeadlineMs.store(0);
 }
 
-void SetAdaptiveStanceEnabled(bool enabled) { g_adaptiveStance.store(enabled); }
+void SetAdaptiveStanceEnabled(bool enabled) {
+    g_adaptiveStance.store(enabled);
+    if (enabled) {
+        // Force the next MonitorDummyAutoBlock pass to evaluate immediately
+        g_adaptiveForceTick.store(true);
+    }
+}
 bool GetAdaptiveStanceEnabled() { return g_adaptiveStance.load(); }
 
 // Helper: read stance/direction fields for P2, and Y positions for attacker(P1)
@@ -919,16 +924,15 @@ void MonitorDummyAutoBlock(short p1MoveID, short p2MoveID, short prevP1MoveID, s
         static bool s_lastAttackerAir = false;
 
         unsigned long long now = GetTickCount64();
-        // Fixed cadence to keep CPU usage low and consistent
-        const unsigned long long ADAPTIVE_INTERVAL_MS = 16ULL;
-        if (now - s_lastAdaptiveMs >= ADAPTIVE_INTERVAL_MS) {
+        const unsigned long long ADAPTIVE_INTERVAL_MS = 16ULL; // ~60 Hz when enabled
+        bool due = (now - s_lastAdaptiveMs >= ADAPTIVE_INTERVAL_MS) || g_adaptiveForceTick.load();
+        if (due) {
             double p1Y = 0.0, p2Y = 0.0;
             if (ReadPositions(p1Y, p2Y)) {
                 bool attackerAir = (p1Y < 0.0);
-                if (attackerAir != s_lastAttackerAir) {
-                    // Only update if state changed since last application
+                bool changed = g_adaptiveForceTick.load() || (attackerAir != s_lastAttackerAir);
+                if (changed) {
                     uint8_t desiredStance = attackerAir ? 0 /*stand*/ : 1 /*crouch*/;
-                    // Read current stance to avoid redundant writes
                     uint8_t curDir=0, curStance=0;
                     if (ReadP2BlockFields(curDir, curStance)) {
                         if (curStance != desiredStance) {
@@ -937,12 +941,12 @@ void MonitorDummyAutoBlock(short p1MoveID, short p2MoveID, short prevP1MoveID, s
                     } else {
                         WriteP2BlockStance(desiredStance);
                     }
-                    // Also set practice stance indicator (0=Stand,2=Crouch) only when it changes
                     SetPracticeBlockMode(attackerAir ? 0 : 2);
                     s_lastAttackerAir = attackerAir;
                 }
             }
             s_lastAdaptiveMs = now;
+            g_adaptiveForceTick.store(false);
         }
     }
 }

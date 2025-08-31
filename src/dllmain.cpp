@@ -108,10 +108,10 @@ void DelayedInitialization(HMODULE hModule) {
             SetConsoleReady(false);
         }
 
-        // Start essential threads.
-        LogOut("[SYSTEM] Starting background threads...", true);
-        std::thread(UpdateConsoleTitle).detach();
-        std::thread(FrameDataMonitor).detach();
+    // Start essential threads.
+    LogOut("[SYSTEM] Starting background threads...", true);
+    // Note: UpdateConsoleTitle thread is already started by InitializeLogging(); don't start a duplicate here.
+    std::thread(FrameDataMonitor).detach();
         std::thread(MonitorOnlineStatus).detach();
         LogOut("[SYSTEM] Essential background threads started.", true);
 
@@ -207,6 +207,8 @@ void InitializeConfig() {
 BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserved) {
     switch (ul_reason_for_call) {
     case DLL_PROCESS_ATTACH:
+    // Remember our own module for safe self-unload later
+    g_hSelfModule = hModule;
         DisableThreadLibraryCalls(hModule);
         std::thread(DelayedInitialization, hModule).detach();
         break;

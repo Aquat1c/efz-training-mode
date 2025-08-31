@@ -646,14 +646,19 @@ FRAME_MONITOR_FRAME_END:
                 auto sleepChunk = remaining - std::chrono::microseconds(100);
                 std::this_thread::sleep_for(sleepChunk);
             } else {
-                // Final cooperative spin-wait for precision with occasional yields
-                int spinIters = 0;
-                while (clock::now() < expectedNext) {
-                    _mm_pause();
-                    if ((++spinIters & 0xFF) == 0) {
-                        // Yield occasionally to avoid starving other threads
-                        SwitchToThread();
+                // Only do tight spin precision in Match; otherwise yield-friendly sleep
+                if (currentPhase == GamePhase::Match) {
+                    int spinIters = 0;
+                    while (clock::now() < expectedNext) {
+                        _mm_pause();
+                        if ((++spinIters & 0xFF) == 0) {
+                            // Yield occasionally to avoid starving other threads
+                            SwitchToThread();
+                        }
                     }
+                } else {
+                    // Outside matches, just sleep the small remainder to avoid CPU churn
+                    std::this_thread::sleep_for(std::chrono::microseconds(100));
                 }
                 break;
             }
