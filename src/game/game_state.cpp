@@ -52,6 +52,13 @@ GameMode GetCurrentGameMode(uint8_t* rawValueOut) {
 
     // If the raw byte value has changed, log it to the console.
     if (rawValue != prevRawValue) {
+        // Do not log anything about mode changes after we've entered online mode
+        extern std::atomic<bool> g_onlineModeActive;
+        if (g_onlineModeActive.load()) {
+            prevRawValue = rawValue; // advance to avoid repeated comparisons
+            if (rawValueOut) { *rawValueOut = rawValue; }
+            return currentMode;
+        }
         // --- DETAILED DEBUG LOGGING FOR POINTER RESOLUTION ---
         std::ostringstream oss;
         oss << std::hex << std::uppercase;

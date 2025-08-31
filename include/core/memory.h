@@ -29,6 +29,8 @@ void InitRFFreezeThread();
 void StartRFFreeze(double p1Value, double p2Value);
 void StopRFFreeze();
 void StopRFFreezeThread();
+// New: single-tick RF freeze maintenance (when folding thread into main loop)
+void UpdateRFFreezeTick();
 
 // Input bitmask constants
 #define INPUT_UP     0x01

@@ -681,21 +681,12 @@ namespace ImGuiGui {
         if (hasFeatures) {
             ImGui::Separator();
             
-            // Debug information for character features
-            if (guiState.localData.infiniteBloodMode || guiState.localData.infiniteFeatherMode) {
-                ImGui::Text("Debug Status:");
-                ImGui::SameLine();
-                if (CharacterSettings::IsMonitoringThreadActive()) {
-                    ImGui::TextColored(ImVec4(0, 1, 0, 1), "Thread Active");
-                } else {
-                    ImGui::TextColored(ImVec4(1, 0, 0, 1), "Thread Inactive");
-                }
-                
-                if (guiState.localData.infiniteFeatherMode) {
-                    int p1Count, p2Count;
-                    CharacterSettings::GetFeatherCounts(p1Count, p2Count);
-                    ImGui::Text("Feather Tracking: P1=%d, P2=%d", p1Count, p2Count);
-                }
+            // Debug info: enforcement is inline via FrameDataMonitor at ~16 Hz
+            if (guiState.localData.infiniteBloodMode || guiState.localData.infiniteFeatherMode ||
+                guiState.localData.infiniteMishioElement || guiState.localData.infiniteMishioAwakened ||
+                guiState.localData.p1RumiInfiniteShinai || guiState.localData.p2RumiInfiniteShinai ||
+                guiState.localData.p1RumiInfiniteKimchi || guiState.localData.p2RumiInfiniteKimchi) {
+                ImGui::TextColored(ImVec4(0.6f, 0.8f, 1.0f, 1.0f), "Enforcement: inline (~16 Hz)");
             }
             
             ImGui::Separator();
@@ -1493,6 +1484,8 @@ namespace ImGuiGui {
                     if (!IsActionable(mv)) deferred = true;
                 }
                 ApplySettings(&displayData);
+                // Run one enforcement tick immediately so infinite toggles take effect without waiting for the next cadence
+                CharacterSettings::TickCharacterEnforcements(base, displayData);
                 if (deferred) {
                     LogOut("[IMGUI] Rumi mode change deferred; apply again when idle.", true);
                 }

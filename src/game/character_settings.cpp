@@ -15,10 +15,19 @@
 #include <thread>
 #include <atomic>
 #include "../include/gui/imgui_impl.h"
+#include <chrono>
 
 namespace CharacterSettings {
     // Track if character patches are currently applied
     static bool ikumiBloodPatchApplied = false;
+    // Throttle/decimate Ikumi read logs: log on change or heartbeat only
+    static int s_lastP1IkumiBlood = -1;
+    static int s_lastP1IkumiGenocide = -1;
+    static int s_lastP2IkumiBlood = -1;
+    static int s_lastP2IkumiGenocide = -1;
+    static std::chrono::steady_clock::time_point s_lastIkumiLogP1{};
+    static std::chrono::steady_clock::time_point s_lastIkumiLogP2{};
+    static constexpr std::chrono::seconds IKUMI_LOG_HEARTBEAT{5};
     
     // Updated character name mapping with correct display names
     static const std::unordered_map<std::string, int> characterNameMap = {
@@ -121,10 +130,17 @@ namespace CharacterSettings {
             
             if (bloodAddr) SafeReadMemory(bloodAddr, &data.p1IkumiBlood, sizeof(int));
             if (genocideAddr) SafeReadMemory(genocideAddr, &data.p1IkumiGenocide, sizeof(int));
-            
-            LogOut("[CHAR] Read P1 Ikumi values: Blood=" + std::to_string(data.p1IkumiBlood) + 
-                   ", Genocide=" + std::to_string(data.p1IkumiGenocide), 
-                   detailedLogging.load());
+            // Change-only logging with periodic heartbeat
+            bool changed = (data.p1IkumiBlood != s_lastP1IkumiBlood) || (data.p1IkumiGenocide != s_lastP1IkumiGenocide);
+            auto now = std::chrono::steady_clock::now();
+            bool heartbeat = (s_lastIkumiLogP1.time_since_epoch().count() == 0) || ((now - s_lastIkumiLogP1) >= IKUMI_LOG_HEARTBEAT);
+            if (detailedLogging.load() && (changed || heartbeat)) {
+                LogOut("[CHAR] Read P1 Ikumi values: Blood=" + std::to_string(data.p1IkumiBlood) +
+                       ", Genocide=" + std::to_string(data.p1IkumiGenocide), true);
+                s_lastIkumiLogP1 = now;
+            }
+            s_lastP1IkumiBlood = data.p1IkumiBlood;
+            s_lastP1IkumiGenocide = data.p1IkumiGenocide;
         }
         
         if (data.p2CharID == CHAR_ID_IKUMI) {
@@ -133,10 +149,17 @@ namespace CharacterSettings {
             
             if (bloodAddr) SafeReadMemory(bloodAddr, &data.p2IkumiBlood, sizeof(int));
             if (genocideAddr) SafeReadMemory(genocideAddr, &data.p2IkumiGenocide, sizeof(int));
-            
-            LogOut("[CHAR] Read P2 Ikumi values: Blood=" + std::to_string(data.p2IkumiBlood) + 
-                   ", Genocide=" + std::to_string(data.p2IkumiGenocide), 
-                   detailedLogging.load());
+            // Change-only logging with periodic heartbeat
+            bool changed = (data.p2IkumiBlood != s_lastP2IkumiBlood) || (data.p2IkumiGenocide != s_lastP2IkumiGenocide);
+            auto now = std::chrono::steady_clock::now();
+            bool heartbeat = (s_lastIkumiLogP2.time_since_epoch().count() == 0) || ((now - s_lastIkumiLogP2) >= IKUMI_LOG_HEARTBEAT);
+            if (detailedLogging.load() && (changed || heartbeat)) {
+                LogOut("[CHAR] Read P2 Ikumi values: Blood=" + std::to_string(data.p2IkumiBlood) +
+                       ", Genocide=" + std::to_string(data.p2IkumiGenocide), true);
+                s_lastIkumiLogP2 = now;
+            }
+            s_lastP2IkumiBlood = data.p2IkumiBlood;
+            s_lastP2IkumiGenocide = data.p2IkumiGenocide;
         }
         
         // Read Mishio's values if either player is using her
@@ -477,440 +500,130 @@ namespace CharacterSettings {
             }
         }
         
-        // Apply any character-specific patches if enabled
-        // Always restart character patches when applying values
-        // This ensures the monitoring thread is updated with the latest settings
-        RemoveCharacterPatches();
-        
-    bool wantRumiMonitor = (data.p1CharID == CHAR_ID_NANASE && (data.p1RumiInfiniteShinai || data.p1RumiInfiniteKimchi)) ||
-                (data.p2CharID == CHAR_ID_NANASE && (data.p2RumiInfiniteShinai || data.p2RumiInfiniteKimchi));
-        if (data.infiniteBloodMode || data.infiniteFeatherMode || data.infiniteMishioElement || data.infiniteMishioAwakened ||
-            data.p1BlueIC || data.p2BlueIC || wantRumiMonitor) {
-            ApplyCharacterPatches(data);
-        }
+        // No background threads anymore; enforcement happens inline via TickCharacterEnforcements()
     }
     
-    // Track if character value monitoring thread is active
-    static std::atomic<bool> valueMonitoringActive(false);
-    static std::thread valueMonitoringThread;
-    
-    // Track previous values for Misuzu's feather count
+    // Track previous values (used by inline enforcement)
     static int p1LastFeatherCount = 0;
     static int p2LastFeatherCount = 0;
-    // Track Mishio's last observed values for preservation logic
     static int p1LastMishioElem = -1;
     static int p2LastMishioElem = -1;
 
-    // Function to continuously monitor and preserve character-specific values
-    void CharacterValueMonitoringThread() {
-        LogOut("[CHAR] Starting character value monitoring thread", true);
-        
-    // Adaptive sleep to reduce CPU when stable
-    static int currentSleepMs = 16;          // starts responsive
-    const int minSleepMs = 16;               // don't go faster than ~60 Hz
-    const int maxSleepMs = 64;               // back off up to ~15 Hz when stable
-    int consecutiveStableIters = 0;
-        
-    while (valueMonitoringActive && !g_isShuttingDown.load()) {
-            if (g_onlineModeActive.load()) {
-                // Park when online; features disabled elsewhere
-                std::this_thread::sleep_for(std::chrono::milliseconds(1000));
-                continue;
-            }
-            // If not in Practice, back off heavily and skip work
-            if (GetCurrentGameMode() != GameMode::Practice) {
-                std::this_thread::sleep_for(std::chrono::milliseconds(1000));
-                continue;
-            }
-            uintptr_t base = GetEFZBase();
-            if (base && g_featuresEnabled) {
-                DisplayData localData = displayData; // Make a local copy to work with
-                bool didWriteThisLoop = false;
-                
-                // Ikumi's genocide timer - write-on-drift approach
-                if (localData.infiniteBloodMode) {
-                    // P1 Ikumi genocide timer preservation
-                    if (localData.p1CharID == CHAR_ID_IKUMI) {
-                        uintptr_t genocideAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P1, IKUMI_GENOCIDE_OFFSET);
-                        if (genocideAddr) {
-                            // Keep timer near max, but avoid constant writes if already there
-                            int current = 0;
-                            SafeReadMemory(genocideAddr, &current, sizeof(int));
-                            const int target = IKUMI_GENOCIDE_MAX;
-                            if (current < target) {
-                                SafeWriteMemory(genocideAddr, &target, sizeof(int));
-                                didWriteThisLoop = true;
-                            }
-                        }
-                    }
-                    
-                    // P2 Ikumi genocide timer preservation
-                    if (localData.p2CharID == CHAR_ID_IKUMI) {
-                        uintptr_t genocideAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P2, IKUMI_GENOCIDE_OFFSET);
-                        if (genocideAddr) {
-                            int current = 0;
-                            SafeReadMemory(genocideAddr, &current, sizeof(int));
-                            const int target = IKUMI_GENOCIDE_MAX;
-                            if (current < target) {
-                                SafeWriteMemory(genocideAddr, &target, sizeof(int));
-                                didWriteThisLoop = true;
-                            }
-                        }
-                    }
-                }
-                
-                // Mishio's element preservation (freeze/restore chosen element)
-                if (localData.infiniteMishioElement) {
-                    if (localData.p1CharID == CHAR_ID_MISHIO) {
-                        uintptr_t elemAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P1, MISHIO_ELEMENT_OFFSET);
-                        if (elemAddr) {
-                            int current = 0;
-                            SafeReadMemory(elemAddr, &current, sizeof(int));
-                            int target = CLAMP(localData.p1MishioElement, MISHIO_ELEM_NONE, MISHIO_ELEM_AWAKENED);
-                            // Initialize last if first time
-                            if (p1LastMishioElem == -1) p1LastMishioElem = current;
-                            if (current != target) {
-                                SafeWriteMemory(elemAddr, &target, sizeof(int));
-                                p1LastMishioElem = target;
-                                didWriteThisLoop = true;
-                            }
-                        }
-                    } else {
-                        p1LastMishioElem = -1;
-                    }
-                    if (localData.p2CharID == CHAR_ID_MISHIO) {
-                        uintptr_t elemAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P2, MISHIO_ELEMENT_OFFSET);
-                        if (elemAddr) {
-                            int current = 0;
-                            SafeReadMemory(elemAddr, &current, sizeof(int));
-                            int target = CLAMP(localData.p2MishioElement, MISHIO_ELEM_NONE, MISHIO_ELEM_AWAKENED);
-                            if (p2LastMishioElem == -1) p2LastMishioElem = current;
-                            if (current != target) {
-                                SafeWriteMemory(elemAddr, &target, sizeof(int));
-                                p2LastMishioElem = target;
-                                didWriteThisLoop = true;
-                            }
-                        }
-                    } else {
-                        p2LastMishioElem = -1;
-                    }
-                } else {
-                    p1LastMishioElem = -1;
-                    p2LastMishioElem = -1;
-                }
+    // Inline per-tick enforcement (call at low cadence from FrameDataMonitor)
+    void TickCharacterEnforcements(uintptr_t base, const DisplayData& localData) {
+        if (!base) return;
+        if (!g_featuresEnabled.load()) return;
+        if (g_onlineModeActive.load()) return; // never enforcements online
+        if (GetCurrentGameMode() != GameMode::Practice) return;
 
-                // Mishio's awakened timer preservation (only while Awakened)
-                if (localData.infiniteMishioAwakened) {
-                    if (localData.p1CharID == CHAR_ID_MISHIO) {
-                        uintptr_t elemAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P1, MISHIO_ELEMENT_OFFSET);
-                        uintptr_t awAddr   = ResolvePointer(base, EFZ_BASE_OFFSET_P1, MISHIO_AWAKENED_TIMER_OFFSET);
-                        if (elemAddr && awAddr) {
-                            int elem=0, cur=0; SafeReadMemory(elemAddr, &elem, sizeof(int)); SafeReadMemory(awAddr, &cur, sizeof(int));
-                            if (elem == MISHIO_ELEM_AWAKENED) {
-                                int target = localData.p1MishioAwakenedTimer;
-                                if (target < MISHIO_AWAKENED_TARGET) target = MISHIO_AWAKENED_TARGET;
-                                if (target > MISHIO_AWAKENED_TARGET) target = MISHIO_AWAKENED_TARGET; // cap
-                                if (cur < target) { SafeWriteMemory(awAddr, &target, sizeof(int)); didWriteThisLoop = true; }
-                            }
-                        }
-                    }
-                    if (localData.p2CharID == CHAR_ID_MISHIO) {
-                        uintptr_t elemAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P2, MISHIO_ELEMENT_OFFSET);
-                        uintptr_t awAddr   = ResolvePointer(base, EFZ_BASE_OFFSET_P2, MISHIO_AWAKENED_TIMER_OFFSET);
-                        if (elemAddr && awAddr) {
-                            int elem=0, cur=0; SafeReadMemory(elemAddr, &elem, sizeof(int)); SafeReadMemory(awAddr, &cur, sizeof(int));
-                            if (elem == MISHIO_ELEM_AWAKENED) {
-                                int target = localData.p2MishioAwakenedTimer;
-                                if (target < MISHIO_AWAKENED_TARGET) target = MISHIO_AWAKENED_TARGET;
-                                if (target > MISHIO_AWAKENED_TARGET) target = MISHIO_AWAKENED_TARGET; // cap
-                                if (cur < target) { SafeWriteMemory(awAddr, &target, sizeof(int)); didWriteThisLoop = true; }
-                            }
-                        }
-                    }
-                }
+        bool didWriteThisTick = false;
 
-                // Misuzu's feather count - continuous overwrite approach (freeze functionality)
-                if (localData.infiniteFeatherMode) {
-                    // P1 Misuzu feather preservation
-                    if (localData.p1CharID == CHAR_ID_MISUZU && p1LastFeatherCount > 0) {
-                        uintptr_t featherAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P1, MISUZU_FEATHER_OFFSET);
-                        if (featherAddr) {
-                            int currentFeatherCount = 0;
-                            SafeReadMemory(featherAddr, &currentFeatherCount, sizeof(int));
-                            
-                            // If feathers have decreased, immediately restore
-                            if (currentFeatherCount < p1LastFeatherCount) {
-                                SafeWriteMemory(featherAddr, &p1LastFeatherCount, sizeof(int));
-                                didWriteThisLoop = true;
-                      LogOut("[CHAR] Restored P1 Misuzu feathers from " + 
-                          std::to_string(currentFeatherCount) + " to " + 
-                          std::to_string(p1LastFeatherCount), 
-                          detailedLogging.load());
-                            }
-                            // Update tracking if feathers increased (player gained feathers)
-                            else if (currentFeatherCount > p1LastFeatherCount) {
-                                p1LastFeatherCount = currentFeatherCount;
-                      LogOut("[CHAR] P1 Misuzu gained feathers, new count: " + 
-                          std::to_string(p1LastFeatherCount), 
-                          detailedLogging.load());
-                            }
-                        }
-                    }
-                    
-                    // P2 Misuzu feather preservation
-                    if (localData.p2CharID == CHAR_ID_MISUZU && p2LastFeatherCount > 0) {
-                        uintptr_t featherAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P2, MISUZU_FEATHER_OFFSET);
-                        if (featherAddr) {
-                            int currentFeatherCount = 0;
-                            SafeReadMemory(featherAddr, &currentFeatherCount, sizeof(int));
-                            
-                            // If feathers have decreased, immediately restore
-                            if (currentFeatherCount < p2LastFeatherCount) {
-                                SafeWriteMemory(featherAddr, &p2LastFeatherCount, sizeof(int));
-                                didWriteThisLoop = true;
-                      LogOut("[CHAR] Restored P2 Misuzu feathers from " + 
-                          std::to_string(currentFeatherCount) + " to " + 
-                          std::to_string(p2LastFeatherCount), 
-                          detailedLogging.load());
-                            }
-                            // Update tracking if feathers increased (player gained feathers)
-                            else if (currentFeatherCount > p2LastFeatherCount) {
-                                p2LastFeatherCount = currentFeatherCount;
-                      LogOut("[CHAR] P2 Misuzu gained feathers, new count: " + 
-                          std::to_string(p2LastFeatherCount), 
-                          detailedLogging.load());
-                            }
-                        }
-                    }
-                } 
-                else {
-                    // Reset the stored values when feature is disabled
-                    p1LastFeatherCount = 0;
-                    p2LastFeatherCount = 0;
-                }
-                
-                // Blue IC/Red IC toggle - apply only when needed
-                if (localData.p1BlueIC) {
-                    uintptr_t icAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P1, IC_COLOR_OFFSET);
-                    if (icAddr) {
-                        int currentIC = 0;
-                        SafeReadMemory(icAddr, &currentIC, sizeof(int));
-                        if (currentIC != 1) {
-                            int icValue = 1; // 1 = Blue IC
-                            SafeWriteMemory(icAddr, &icValue, sizeof(int));
-                            didWriteThisLoop = true;
-                        }
-                    }
-                }
-                
-                if (localData.p2BlueIC) {
-                    uintptr_t icAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P2, IC_COLOR_OFFSET);
-                    if (icAddr) {
-                        int currentIC = 0;
-                        SafeReadMemory(icAddr, &currentIC, sizeof(int));
-                        if (currentIC != 1) {
-                            int icValue = 1; // 1 = Blue IC
-                            SafeWriteMemory(icAddr, &icValue, sizeof(int));
-                            didWriteThisLoop = true;
-                        }
-                    }
-                }
-
-                // Rumi Infinite Shinai: keep gate at 0 always, and restore mode via engine when safe
-                // Avoid engine toggles during problematic supers (4123641236x, 308-310); delay restore briefly after
-                static int p1RestoreDelay = 0;
-                static int p2RestoreDelay = 0;
-                auto EnforceRumiShinai = [&](int playerIndex) {
-                    const bool wantInf = (playerIndex == 1) ? (localData.p1RumiInfiniteShinai && localData.p1CharID == CHAR_ID_NANASE)
-                                                           : (localData.p2RumiInfiniteShinai && localData.p2CharID == CHAR_ID_NANASE);
-                    if (!wantInf) return;
-                    const int baseOffset = (playerIndex == 1) ? EFZ_BASE_OFFSET_P1 : EFZ_BASE_OFFSET_P2;
-                    uintptr_t modeByteAddr  = ResolvePointer(base, baseOffset, RUMI_MODE_BYTE_OFFSET);
-                    uintptr_t gateAddr      = ResolvePointer(base, baseOffset, RUMI_WEAPON_GATE_OFFSET);
-                    if (!modeByteAddr || !gateAddr) return;
-                    uint8_t curMode=0, curGate=0; SafeReadMemory(modeByteAddr, &curMode, sizeof(uint8_t)); SafeReadMemory(gateAddr, &curGate, sizeof(uint8_t));
-                    // Always keep gate = 0 to block entering barehand specials mid-move
-                    if (curGate != 0) { uint8_t zero = 0; SafeWriteMemory(gateAddr, &zero, sizeof(uint8_t)); didWriteThisLoop = true; }
-
-                    // If mode is barehanded, restore to Shinai when actionable, but skip during toss supers
-                    short mv = 0; if (auto mvAddr = ResolvePointer(base, baseOffset, MOVE_ID_OFFSET)) SafeReadMemory(mvAddr, &mv, sizeof(short));
-                    bool inTossSuper = (mv == RUMI_SUPER_TOSS_A || mv == RUMI_SUPER_TOSS_B || mv == RUMI_SUPER_TOSS_C);
-                    int& delayRef = (playerIndex == 1) ? p1RestoreDelay : p2RestoreDelay;
-                    if (inTossSuper) {
-                        // While super active, never toggle; just ensure gate is 0 and set a short post delay
-                        delayRef = 60; // ~20 visual frames grace
-                        return;
-                    }
-
-                    if (delayRef > 0) { delayRef--; return; }
-
-                    if (curMode != 0 && IsActionable(mv)) {
-                        using ToggleModeFn = int(__fastcall*)(uintptr_t, int, char);
-                        uintptr_t gameBase = GetEFZBase();
-                        ToggleModeFn ToggleCharacterMode = reinterpret_cast<ToggleModeFn>(gameBase + TOGGLE_CHARACTER_MODE_RVA);
-                        uintptr_t playerThis = 0;
-                        SafeReadMemory(gameBase + ((playerIndex == 1) ? EFZ_BASE_OFFSET_P1 : EFZ_BASE_OFFSET_P2), &playerThis, sizeof(uintptr_t));
-                        if (!playerThis) return;
-                        ToggleCharacterMode(playerThis, 0, 0);
-                        uint8_t zero2 = 0; SafeWriteMemory(gateAddr, &zero2, sizeof(uint8_t));
-                        didWriteThisLoop = true;
-                    }
-                };
-                if (AreCharactersInitialized()) {
-                    EnforceRumiShinai(1);
-                    EnforceRumiShinai(2);
-                }
-
-                // Rumi Kimchi enforcement:
-                // - If Infinite enabled: keep timer topped and ensure Active=1
-                auto EnforceRumiKimchi = [&](int playerIndex) {
-                    const bool isRumi = (playerIndex == 1) ? (localData.p1CharID == CHAR_ID_NANASE)
-                                                          : (localData.p2CharID == CHAR_ID_NANASE);
-                    if (!isRumi) return;
-                    const int baseOffset = (playerIndex == 1) ? EFZ_BASE_OFFSET_P1 : EFZ_BASE_OFFSET_P2;
-                    uintptr_t flagAddr = ResolvePointer(base, baseOffset, RUMI_KIMCHI_ACTIVE_OFFSET);
-                    uintptr_t timerAddr = ResolvePointer(base, baseOffset, RUMI_KIMCHI_TIMER_OFFSET);
-                    if (!timerAddr) return;
-                    // Infinite handling
-                    const bool wantInf = (playerIndex == 1) ? localData.p1RumiInfiniteKimchi : localData.p2RumiInfiniteKimchi;
-                    if (wantInf) {
-                        int curTimer = 0; SafeReadMemory(timerAddr, &curTimer, sizeof(int));
-                        int target = RUMI_KIMCHI_TARGET;
-                        if (curTimer < target) { SafeWriteMemory(timerAddr, &target, sizeof(int)); didWriteThisLoop = true; }
-                        if (flagAddr) {
-                            int curFlag = 0; SafeReadMemory(flagAddr, &curFlag, sizeof(int));
-                            if (!curFlag) { int one = 1; SafeWriteMemory(flagAddr, &one, sizeof(int)); didWriteThisLoop = true; }
-                        }
-                    }
-                };
-                EnforceRumiKimchi(1);
-                EnforceRumiKimchi(2);
-                
-                // Adjust backoff based on whether we wrote this loop
-                if (didWriteThisLoop) {
-                    currentSleepMs = minSleepMs;
-                    consecutiveStableIters = 0;
-                } else {
-                    consecutiveStableIters++;
-                    if (consecutiveStableIters > 2) { // after a few stable ticks, back off
-                        currentSleepMs = (std::min)(currentSleepMs * 2, maxSleepMs);
-                    }
+        // Ikumi genocide timer keeper
+        if (localData.infiniteBloodMode) {
+            if (localData.p1CharID == CHAR_ID_IKUMI) {
+                if (auto addr = ResolvePointer(base, EFZ_BASE_OFFSET_P1, IKUMI_GENOCIDE_OFFSET)) {
+                    int cur=0; SafeReadMemory(addr, &cur, sizeof(int));
+                    const int target = IKUMI_GENOCIDE_MAX; if (cur < target) { SafeWriteMemory(addr, &target, sizeof(int)); didWriteThisTick = true; }
                 }
             }
-            
-            // Sleep to avoid hammering the CPU; adaptive backoff keeps things light when stable
-            // Back off more when window not focused
-            int extra = g_efzWindowActive.load() ? 0 : 32;
-            std::this_thread::sleep_for(std::chrono::milliseconds(currentSleepMs + extra));
-        }
-        
-        LogOut("[CHAR] Character value monitoring thread stopped", true);
-    }
-
-    // Update ApplyCharacterPatches to start the monitoring thread
-    void ApplyCharacterPatches(const DisplayData& data) {
-        // Only apply monitoring if:
-        // 1. Any infinite mode is enabled OR Blue IC is enabled
-        // 2. At least one player is using a supported character (for infinite modes)
-        // 3. We're in a valid game mode (practice mode)
-        
-    bool shouldMonitorIkumi = data.infiniteBloodMode && 
-                               (data.p1CharID == CHAR_ID_IKUMI || data.p2CharID == CHAR_ID_IKUMI);
-        
-        bool shouldMonitorMisuzu = data.infiniteFeatherMode &&
-                                (data.p1CharID == CHAR_ID_MISUZU || data.p2CharID == CHAR_ID_MISUZU);
-                                
-        bool shouldMonitorIC = data.p1BlueIC || data.p2BlueIC;
-
-    bool shouldMonitorMishioElem = data.infiniteMishioElement &&
-            (data.p1CharID == CHAR_ID_MISHIO || data.p2CharID == CHAR_ID_MISHIO);
-        bool shouldMonitorMishioAw   = data.infiniteMishioAwakened &&
-            (data.p1CharID == CHAR_ID_MISHIO || data.p2CharID == CHAR_ID_MISHIO);
-    bool shouldMonitorRumiShinai = (data.p1CharID == CHAR_ID_NANASE && data.p1RumiInfiniteShinai) ||
-                       (data.p2CharID == CHAR_ID_NANASE && data.p2RumiInfiniteShinai);
-    bool shouldMonitorRumiKimchi =
-        (data.p1CharID == CHAR_ID_NANASE && data.p1RumiInfiniteKimchi) ||
-        (data.p2CharID == CHAR_ID_NANASE && data.p2RumiInfiniteKimchi);
-        
-    if (!shouldMonitorIkumi && !shouldMonitorMisuzu && !shouldMonitorMishioElem && !shouldMonitorMishioAw && !shouldMonitorIC && !shouldMonitorRumiShinai && !shouldMonitorRumiKimchi) {
-            LogOut("[CHAR] No character monitoring needed - no infinite modes, Blue IC, or supported characters", true);
-            return;
-        }
-        
-        // Verify we're in a valid game state before monitoring
-        GameMode currentMode = GetCurrentGameMode();
-        if (currentMode != GameMode::Practice) {
-            LogOut("[CHAR] Not applying character monitoring - not in practice mode", true);
-            return;
-        }
-        
-        // Start value monitoring thread if not already running
-        if (!valueMonitoringActive) {
-            // Initialize the tracking variables with current values
-            uintptr_t base = GetEFZBase();
-            if (base) {
-                if (data.infiniteFeatherMode) {
-                    if (data.p1CharID == CHAR_ID_MISUZU) {
-                        uintptr_t featherAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P1, MISUZU_FEATHER_OFFSET);
-                        if (featherAddr) {
-                            SafeReadMemory(featherAddr, &p1LastFeatherCount, sizeof(int));
-                            LogOut("[CHAR] Initialized P1 feather count to: " + std::to_string(p1LastFeatherCount), true);
-                        }
-                    }
-                    if (data.p2CharID == CHAR_ID_MISUZU) {
-                        uintptr_t featherAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P2, MISUZU_FEATHER_OFFSET);
-                        if (featherAddr) {
-                            SafeReadMemory(featherAddr, &p2LastFeatherCount, sizeof(int));
-                            LogOut("[CHAR] Initialized P2 feather count to: " + std::to_string(p2LastFeatherCount), true);
-                        }
-                    }
-                }
-
-                // Initialize Mishio last values if needed
-                if (shouldMonitorMishioElem || shouldMonitorMishioAw) {
-                    p1LastMishioElem = -1;
-                    p2LastMishioElem = -1;
+            if (localData.p2CharID == CHAR_ID_IKUMI) {
+                if (auto addr = ResolvePointer(base, EFZ_BASE_OFFSET_P2, IKUMI_GENOCIDE_OFFSET)) {
+                    int cur=0; SafeReadMemory(addr, &cur, sizeof(int));
+                    const int target = IKUMI_GENOCIDE_MAX; if (cur < target) { SafeWriteMemory(addr, &target, sizeof(int)); didWriteThisTick = true; }
                 }
             }
-            
-            // Initialize the thread
-            valueMonitoringActive = true;
-            valueMonitoringThread = std::thread(CharacterValueMonitoringThread);
-            LogOut("[CHAR] Started character value monitoring thread", true);
         }
-    }
 
-    // Update RemoveCharacterPatches to stop the monitoring thread
-    void RemoveCharacterPatches() {
-        // Stop the value monitoring thread if it's running
-        if (valueMonitoringActive) {
-            valueMonitoringActive = false;
-            
-            if (valueMonitoringThread.joinable()) {
-                valueMonitoringThread.join();
+        // Mishio element freeze
+        if (localData.infiniteMishioElement) {
+            if (localData.p1CharID == CHAR_ID_MISHIO) {
+                if (auto addr = ResolvePointer(base, EFZ_BASE_OFFSET_P1, MISHIO_ELEMENT_OFFSET)) {
+                    int cur=0; SafeReadMemory(addr, &cur, sizeof(int));
+                    int target = CLAMP(localData.p1MishioElement, MISHIO_ELEM_NONE, MISHIO_ELEM_AWAKENED);
+                    if (p1LastMishioElem == -1) p1LastMishioElem = cur;
+                    if (cur != target) { SafeWriteMemory(addr, &target, sizeof(int)); p1LastMishioElem = target; didWriteThisTick = true; }
+                }
+            } else { p1LastMishioElem = -1; }
+            if (localData.p2CharID == CHAR_ID_MISHIO) {
+                if (auto addr = ResolvePointer(base, EFZ_BASE_OFFSET_P2, MISHIO_ELEMENT_OFFSET)) {
+                    int cur=0; SafeReadMemory(addr, &cur, sizeof(int));
+                    int target = CLAMP(localData.p2MishioElement, MISHIO_ELEM_NONE, MISHIO_ELEM_AWAKENED);
+                    if (p2LastMishioElem == -1) p2LastMishioElem = cur;
+                    if (cur != target) { SafeWriteMemory(addr, &target, sizeof(int)); p2LastMishioElem = target; didWriteThisTick = true; }
+                }
+            } else { p2LastMishioElem = -1; }
+        } else { p1LastMishioElem = -1; p2LastMishioElem = -1; }
+
+        // Mishio awakened timer top-up (only when awakened)
+        if (localData.infiniteMishioAwakened) {
+            auto tickAw = [&](int pi){
+                const int off = (pi==1)?EFZ_BASE_OFFSET_P1:EFZ_BASE_OFFSET_P2;
+                auto e = ResolvePointer(base, off, MISHIO_ELEMENT_OFFSET);
+                auto t = ResolvePointer(base, off, MISHIO_AWAKENED_TIMER_OFFSET);
+                if (!(e && t)) return;
+                int elem=0, cur=0; SafeReadMemory(e,&elem,sizeof(int)); SafeReadMemory(t,&cur,sizeof(int));
+                if (elem == MISHIO_ELEM_AWAKENED) { int tgt = (pi==1)?localData.p1MishioAwakenedTimer:localData.p2MishioAwakenedTimer; if (tgt < MISHIO_AWAKENED_TARGET) tgt = MISHIO_AWAKENED_TARGET; if (tgt > MISHIO_AWAKENED_TARGET) tgt = MISHIO_AWAKENED_TARGET; if (cur < tgt) { SafeWriteMemory(t,&tgt,sizeof(int)); didWriteThisTick = true; } }
+            };
+            tickAw(1); tickAw(2);
+        }
+
+        // Misuzu feather freeze
+        if (localData.infiniteFeatherMode) {
+            auto keepFeathers = [&](int pi){
+                if ((pi==1 && localData.p1CharID != CHAR_ID_MISUZU) || (pi==2 && localData.p2CharID != CHAR_ID_MISUZU)) return;
+                const int off = (pi==1)?EFZ_BASE_OFFSET_P1:EFZ_BASE_OFFSET_P2;
+                if (auto addr = ResolvePointer(base, off, MISUZU_FEATHER_OFFSET)) {
+                    int cur=0; SafeReadMemory(addr,&cur,sizeof(int));
+                    int &last = (pi==1)?p1LastFeatherCount:p2LastFeatherCount;
+                    if (last == 0) last = cur; // initialize
+                    if (cur < last) { SafeWriteMemory(addr,&last,sizeof(int)); didWriteThisTick = true; }
+                    else if (cur > last) { last = cur; }
+                }
+            }; keepFeathers(1); keepFeathers(2);
+        } else { p1LastFeatherCount = 0; p2LastFeatherCount = 0; }
+
+        // IC color override (Blue IC = 1)
+        auto enforceIC = [&](int pi){
+            bool wantBlue = (pi==1)?localData.p1BlueIC:localData.p2BlueIC; if (!wantBlue) return;
+            const int off = (pi==1)?EFZ_BASE_OFFSET_P1:EFZ_BASE_OFFSET_P2;
+            if (auto addr = ResolvePointer(base, off, IC_COLOR_OFFSET)) { int cur=0; SafeReadMemory(addr,&cur,sizeof(int)); if (cur != 1) { int v=1; SafeWriteMemory(addr,&v,sizeof(int)); didWriteThisTick = true; } }
+        }; enforceIC(1); enforceIC(2);
+
+        // Rumi Infinite Shinai (keep gate=0 and restore Shinai mode when safe)
+        static int p1RestoreDelay = 0, p2RestoreDelay = 0;
+        auto enforceRumi = [&](int pi){
+            bool wantInf = (pi==1)?(localData.p1RumiInfiniteShinai && localData.p1CharID==CHAR_ID_NANASE)
+                                  :(localData.p2RumiInfiniteShinai && localData.p2CharID==CHAR_ID_NANASE);
+            if (!wantInf) return;
+            const int off = (pi==1)?EFZ_BASE_OFFSET_P1:EFZ_BASE_OFFSET_P2;
+            auto modeAddr = ResolvePointer(base, off, RUMI_MODE_BYTE_OFFSET);
+            auto gateAddr = ResolvePointer(base, off, RUMI_WEAPON_GATE_OFFSET);
+            if (!(modeAddr && gateAddr)) return;
+            uint8_t curMode=0, curGate=0; SafeReadMemory(modeAddr,&curMode,sizeof(uint8_t)); SafeReadMemory(gateAddr,&curGate,sizeof(uint8_t));
+            if (curGate != 0) { uint8_t z=0; SafeWriteMemory(gateAddr,&z,sizeof(uint8_t)); didWriteThisTick = true; }
+            short mv=0; if (auto mvAddr = ResolvePointer(base, off, MOVE_ID_OFFSET)) SafeReadMemory(mvAddr,&mv,sizeof(short));
+            bool inTossSuper = (mv == RUMI_SUPER_TOSS_A || mv == RUMI_SUPER_TOSS_B || mv == RUMI_SUPER_TOSS_C);
+            int &delayRef = (pi==1)?p1RestoreDelay:p2RestoreDelay;
+            if (inTossSuper) { delayRef = 60; return; }
+            if (delayRef > 0) { delayRef--; return; }
+            if (curMode != 0 && IsActionable(mv)) {
+                using ToggleModeFn = int(__fastcall*)(uintptr_t, int, char);
+                uintptr_t gameBase = GetEFZBase();
+                ToggleModeFn ToggleCharacterMode = reinterpret_cast<ToggleModeFn>(gameBase + TOGGLE_CHARACTER_MODE_RVA);
+                uintptr_t playerThis = 0; SafeReadMemory(gameBase + ((pi==1)?EFZ_BASE_OFFSET_P1:EFZ_BASE_OFFSET_P2), &playerThis, sizeof(uintptr_t));
+                if (!playerThis) return; ToggleCharacterMode(playerThis, 0, 0); uint8_t z2=0; SafeWriteMemory(gateAddr,&z2,sizeof(uint8_t)); didWriteThisTick = true;
             }
-            
-            LogOut("[CHAR] Stopped character value monitoring thread", true);
-        }
-    }
-    
-    // Implementation for Misuzu-specific patches
-    void RemoveMisuzuPatches() {
-        // We're using value monitoring instead of code patching,
-        // so we don't need specific removal code for Misuzu
-        // Just reset the tracking variables
-        p1LastFeatherCount = 0;
-        p2LastFeatherCount = 0;
-    }
+        }; if (AreCharactersInitialized()) { enforceRumi(1); enforceRumi(2); }
 
-    // Function to get the status of the monitoring thread for debugging
-    bool IsMonitoringThreadActive() {
-        return valueMonitoringActive.load();
-    }
-    
-    // Function to get the current feather counts for debugging
-    void GetFeatherCounts(int& p1Count, int& p2Count) {
-        p1Count = p1LastFeatherCount;
-        p2Count = p2LastFeatherCount;
+        // Rumi Kimchi infinite: keep timer topped and flag active
+        auto enforceKimchi = [&](int pi){
+            bool isRumi = (pi==1)?(localData.p1CharID==CHAR_ID_NANASE):(localData.p2CharID==CHAR_ID_NANASE);
+            if (!isRumi) return; bool wantInf = (pi==1)?localData.p1RumiInfiniteKimchi:localData.p2RumiInfiniteKimchi; if (!wantInf) return;
+            const int off = (pi==1)?EFZ_BASE_OFFSET_P1:EFZ_BASE_OFFSET_P2; auto flag = ResolvePointer(base, off, RUMI_KIMCHI_ACTIVE_OFFSET); auto tim = ResolvePointer(base, off, RUMI_KIMCHI_TIMER_OFFSET); if (!tim) return;
+            int curT=0; SafeReadMemory(tim,&curT,sizeof(int)); int tgt = RUMI_KIMCHI_TARGET; if (curT < tgt) { SafeWriteMemory(tim,&tgt,sizeof(int)); didWriteThisTick = true; }
+            if (flag) { int curF=0; SafeReadMemory(flag,&curF,sizeof(int)); if (!curF) { int one=1; SafeWriteMemory(flag,&one,sizeof(int)); didWriteThisTick = true; } }
+        }; enforceKimchi(1); enforceKimchi(2);
+
+        (void)didWriteThisTick; // reserved for future backoff tuning/logging
     }
 }
