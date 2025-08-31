@@ -32,7 +32,6 @@
 void MonitorKeys();
 void FrameDataMonitor();
 void UpdateConsoleTitle();
-void MonitorOnlineStatus();
 void WriteStartupLog(const std::string& message);
 extern std::atomic<bool> inStartupPhase;
 
@@ -112,7 +111,6 @@ void DelayedInitialization(HMODULE hModule) {
     LogOut("[SYSTEM] Starting background threads...", true);
     // Note: UpdateConsoleTitle thread is already started by InitializeLogging(); don't start a duplicate here.
     std::thread(FrameDataMonitor).detach();
-        std::thread(MonitorOnlineStatus).detach();
         LogOut("[SYSTEM] Essential background threads started.", true);
 
         // Use standard Windows input APIs instead of DirectInput
@@ -147,38 +145,7 @@ void DelayedInitialization(HMODULE hModule) {
         // Initialize RF freeze thread
         InitRFFreezeThread();
 
-        // Add ImGui monitoring thread
-        std::thread([]{
-            // Wait a bit for everything to initialize
-            Sleep(5000);
-
-            bool prevInit = false;
-            bool prevVisible = false;
-            unsigned long long lastLog = 0;
-
-            // Log ImGui rendering status on change, at most once per 5 seconds
-            while (!g_isShuttingDown.load()) {
-                bool inited = ImGuiImpl::IsInitialized();
-                bool visible = inited && ImGuiImpl::IsVisible();
-                unsigned long long now = GetTickCount64();
-
-                if (inited && (inited != prevInit || visible != prevVisible)) {
-                    if (now - lastLog >= 5000ULL) {
-                        LogOut(
-                            std::string("[IMGUI_MONITOR] Status: Initialized=") +
-                            (inited ? "1" : "0") +
-                            ", Visible=" + (visible ? "1" : "0"),
-                            detailedLogging.load());
-                        lastLog = now;
-                    }
-                    prevInit = inited;
-                    prevVisible = visible;
-                }
-
-                // Check every 5 seconds
-                Sleep(5000);
-            }
-        }).detach();
+    // ImGui status monitoring thread removed; window/key state managed by existing update paths
 
     // Screen state monitoring thread removed to reduce overhead; phase changes are logged from FrameDataMonitor only
     } catch (...) {

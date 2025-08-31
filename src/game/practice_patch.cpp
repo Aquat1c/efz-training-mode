@@ -745,10 +745,31 @@ static bool WriteP2BlockStance(uint8_t stance) {
 }
 
 static bool ReadPositions(double &p1Y, double &p2Y) {
-    uintptr_t base = GetEFZBase(); if (!base) return false;
-    uintptr_t y1 = ResolvePointer(base, EFZ_BASE_OFFSET_P1, YPOS_OFFSET);
-    uintptr_t y2 = ResolvePointer(base, EFZ_BASE_OFFSET_P2, YPOS_OFFSET);
-    return y1 && y2 && SafeReadMemory(y1, &p1Y, sizeof(p1Y)) && SafeReadMemory(y2, &p2Y, sizeof(p2Y));
+    static uintptr_t s_p1YAddr = 0;
+    static uintptr_t s_p2YAddr = 0;
+    static int s_cacheCounter = 0;
+
+    uintptr_t base = GetEFZBase();
+    if (!base) { s_p1YAddr = s_p2YAddr = 0; return false; }
+
+    // Refresh cached addresses occasionally or if missing
+    if (!s_p1YAddr || !s_p2YAddr || (++s_cacheCounter >= 192)) {
+        s_p1YAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P1, YPOS_OFFSET);
+        s_p2YAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P2, YPOS_OFFSET);
+        s_cacheCounter = 0;
+    }
+
+    if (!s_p1YAddr || !s_p2YAddr) return false;
+
+    bool ok1 = SafeReadMemory(s_p1YAddr, &p1Y, sizeof(p1Y));
+    bool ok2 = SafeReadMemory(s_p2YAddr, &p2Y, sizeof(p2Y));
+    if (!ok1 || !ok2) {
+        // Invalidate cache on failure so we’ll resolve next call
+        if (!ok1) s_p1YAddr = 0;
+        if (!ok2) s_p2YAddr = 0;
+        return false;
+    }
+    return true;
 }
 
 // Helper: classify common states by moveID
@@ -928,7 +949,15 @@ void MonitorDummyAutoBlock(short p1MoveID, short p2MoveID, short prevP1MoveID, s
         bool due = (now - s_lastAdaptiveMs >= ADAPTIVE_INTERVAL_MS) || g_adaptiveForceTick.load();
         if (due) {
             double p1Y = 0.0, p2Y = 0.0;
-            if (ReadPositions(p1Y, p2Y)) {
+            // Prefer shared cache with freshness bound; fall back to direct reads.
+            const unsigned int kFreshMs = 200; // require <=200ms old to avoid stale stance flips
+            bool haveCached = TryGetCachedYPositions(p1Y, p2Y, kFreshMs);
+            if (!haveCached && ReadPositions(p1Y, p2Y)) {
+                // No cached data; we read directly. Consider pushing to cache too.
+                UpdatePositionCache(0.0, p1Y, 0.0, p2Y);
+                haveCached = true;
+            }
+            if (haveCached) {
                 bool attackerAir = (p1Y < 0.0);
                 bool changed = g_adaptiveForceTick.load() || (attackerAir != s_lastAttackerAir);
                 if (changed) {
