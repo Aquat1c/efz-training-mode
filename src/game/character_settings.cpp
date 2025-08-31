@@ -5,6 +5,9 @@
 #include "../include/game/game_state.h"
 #include "../include/game/frame_monitor.h"
 #include "../include/utils/utilities.h"
+#include "../include/core/globals.h"
+#include <atomic>
+#pragma message("[build] compiling updated character_settings.cpp")
 
 #include <algorithm>
 #include <cctype>
@@ -508,7 +511,17 @@ namespace CharacterSettings {
     const int maxSleepMs = 64;               // back off up to ~15 Hz when stable
     int consecutiveStableIters = 0;
         
-        while (valueMonitoringActive) {
+    while (valueMonitoringActive && !g_isShuttingDown.load()) {
+            if (g_onlineModeActive.load()) {
+                // Park when online; features disabled elsewhere
+                std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+                continue;
+            }
+            // If not in Practice, back off heavily and skip work
+            if (GetCurrentGameMode() != GameMode::Practice) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+                continue;
+            }
             uintptr_t base = GetEFZBase();
             if (base && g_featuresEnabled) {
                 DisplayData localData = displayData; // Make a local copy to work with
@@ -786,7 +799,9 @@ namespace CharacterSettings {
             }
             
             // Sleep to avoid hammering the CPU; adaptive backoff keeps things light when stable
-            std::this_thread::sleep_for(std::chrono::milliseconds(currentSleepMs));
+            // Back off more when window not focused
+            int extra = g_efzWindowActive.load() ? 0 : 32;
+            std::this_thread::sleep_for(std::chrono::milliseconds(currentSleepMs + extra));
         }
         
         LogOut("[CHAR] Character value monitoring thread stopped", true);

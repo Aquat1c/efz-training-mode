@@ -5,6 +5,7 @@
 #include "../include/input/input_core.h"
 #include "../3rdparty/minhook/include/MinHook.h"
 #include "../include/game/practice_patch.h"
+#include "../include/core/globals.h"
 #include <windows.h>
 #include <atomic>
 #include <array>

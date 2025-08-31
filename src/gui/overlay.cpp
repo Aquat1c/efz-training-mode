@@ -113,6 +113,11 @@ HRESULT WINAPI HookedEndScene(LPDIRECT3DDEVICE9 pDevice) {
         return oEndScene(pDevice);
     }
 
+    // Hard gate: do not render any UI/overlays during online play
+    if (g_onlineModeActive.load()) {
+        return oEndScene(pDevice);
+    }
+
     static bool imguiInit = false;
     if (!imguiInit) {
         if (ImGuiImpl::Initialize(pDevice)) {
@@ -820,6 +825,15 @@ void DirectDrawHook::Shutdown() {
         permanentMessages.clear();
     }
     ShutdownD3D9();
+    // Detach DirectDrawCreate detour if installed
+    if (originalDirectDrawCreate) {
+        DetourTransactionBegin();
+        DetourUpdateThread(GetCurrentThread());
+        DetourDetach(&(PVOID&)originalDirectDrawCreate, HookedDirectDrawCreate);
+        DetourTransactionCommit();
+        isHooked = false;
+        LogOut("[OVERLAY] DirectDrawCreate detour detached", true);
+    }
 }
 
 // Add a temporary message

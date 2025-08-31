@@ -15,6 +15,8 @@
 #include <atomic>
 #include <thread>
 #include "../include/game/game_state.h"
+// For global shutdown flag
+#include "../include/core/globals.h"
  // Add this include
 #include "../include/input/input_motion.h"
 
@@ -110,10 +112,7 @@ void InitializeLogging() {
     titleThread.detach();  // Let it run independently
 
     LogOut("EFZ DLL started", true);
-    LogOut("Debug Hotkeys:", true);
-    LogOut("Numpad 8 = Enhanced Dragon Punch Buffer Freeze with diagnostic info", true);
-    LogOut("Numpad 9 = Original Dragon Punch Buffer Freeze", true);
-    LogOut("Numpad 5 = Stop Buffer Freezing", true);
+    // Developer motion-debug hotkey banner removed
 }
 
 short GetCurrentMoveID(int player) {
@@ -138,9 +137,14 @@ void UpdateConsoleTitle() {
     int stableIters = 0;
     
     while (true) {
-        // Check if the console window still exists
-        if (GetConsoleWindow() == nullptr) {
-            break;
+        // Exit if shutting down
+        if (g_isShuttingDown.load()) break;
+
+        // If the console window isn't present or visible, back off and try later
+        HWND hWnd = GetConsoleWindow();
+        if (hWnd == nullptr || !IsWindow(hWnd) || !IsWindowVisible(hWnd)) {
+            Sleep(500);
+            continue;
         }
 
         char title[512];
@@ -222,7 +226,7 @@ void UpdateConsoleTitle() {
             if (stableIters > 2) sleepMs = maxSleepMs;
         }
         
-        Sleep(sleepMs);
+    Sleep(sleepMs);
     }
 }
 

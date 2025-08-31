@@ -28,12 +28,18 @@
 #include <vector>
 #include "../include/game/character_settings.h"
 #include "../include/game/game_state.h"
+#include "../include/input/input_hook.h"          // For RemoveInputHook
+#include "../include/game/collision_hook.h"       // For RemoveCollisionHook
+#include "../3rdparty/minhook/include/MinHook.h"  // For MH_DisableHook(MH_ALL_HOOKS)
 
 #include "../include/utils/bgm_control.h"
+#include "../include/core/globals.h"
 
 std::atomic<bool> g_efzWindowActive(false);
 std::atomic<bool> g_guiActive(false);
 std::atomic<bool> g_onlineModeActive(false);
+// Sticky, one-way hard stop once online is confirmed
+static std::atomic<bool> g_hardStoppedOnce{false};
 
 // NEW: Define the manual input override atomics
 std::atomic<bool> g_manualInputOverride[3] = {false, false, false};
@@ -146,11 +152,13 @@ void DisableFeatures() {
     // Key monitoring will be handled separately by ManageKeyMonitoring()
 }
 
-// Cooperatively stop mod activity when entering online play.
+// Cooperatively stop mod activity when entering online play, then hard-stop all hooks/threads.
 void EnterOnlineMode() {
-    if (g_onlineModeActive.exchange(true)) return; // already active
+    // Ensure we only run once
+    bool wasOnline = g_onlineModeActive.exchange(true);
+    if (g_hardStoppedOnce.load()) return;
 
-    LogOut("[ONLINE] Entering online mode: disabling mod features and threads", true);
+    LogOut("[ONLINE] Entering online mode: disabling mod features, unhooking, and stopping threads", true);
 
     // Stop any active buffer/index freezing immediately
     StopBufferFreezing();
@@ -187,7 +195,51 @@ void EnterOnlineMode() {
     }
     DirectDrawHook::ClearAllMessages();
 
-    LogOut("[ONLINE] Mod threads signaled to stop; overlays and features disabled", true);
+    // --- HARD STOP: Remove hooks and stop rendering ---
+    // 1) Unhook EndScene and any D3D9 overlay work
+    try {
+        DirectDrawHook::ShutdownD3D9();
+    } catch (...) { /* swallow */ }
+
+    // 2) Remove input and collision hooks
+    try {
+        RemoveInputHook();
+    } catch (...) { /* swallow */ }
+    try {
+        RemoveCollisionHook();
+    } catch (...) { /* swallow */ }
+
+    // 3) Disable any remaining MinHook hooks (belt-and-suspenders)
+    // Avoid Uninitialize at runtime; just disable all hooks safely.
+    MH_DisableHook(MH_ALL_HOOKS);
+
+    // 4) Ensure any UI/overlay state is fully cleared
+    try {
+        DirectDrawHook::Shutdown(); // clears message queues as well
+    } catch (...) { /* swallow */ }
+
+    // 5) Prevent any re-initialization attempts for the rest of the process lifetime
+    g_hardStoppedOnce.store(true);
+
+    LogOut("[ONLINE] Hard stop complete: hooks removed, threads parked, overlays cleared", true);
+
+    // Optional: Self-unload the DLL to fully detach from the process once we're safely quiesced
+    // Guard: only if we have a module handle available
+    if (g_hSelfModule) {
+        try {
+            std::thread([]{
+                // Small grace delay to ensure any tail work finishes
+                Sleep(250);
+                HMODULE h = g_hSelfModule;
+                // Use FreeLibraryAndExitThread to safely unload this module from a non-DllMain context
+                FreeLibraryAndExitThread(h, 0);
+            }).detach();
+            LogOut("[ONLINE] Self-unload initiated", true);
+        } catch (...) {
+            // If spawning fails, we simply remain loaded but inert
+            LogOut("[ONLINE] Self-unload spawn failed; remaining parked", true);
+        }
+    }
 }
 
 // Public helper: permanently clear all triggers so they stay disabled until user re-enables

@@ -120,7 +120,7 @@ bool FreezePerfectDragonPunchEnhanced(int playerNum) {
     // Start freezing thread
     g_bufferFreezingActive = true;
     g_bufferFreezeThread = std::thread([playerNum]() {
-        LogOut("[BUFFER_DEBUG] Enhanced freeze thread starting - won't terminate until Numpad 5 pressed", true);
+    LogOut("[BUFFER_DEBUG] Enhanced freeze thread starting", true);
         FreezeBufferValuesThread(playerNum);
     });
     g_bufferFreezeThread.detach();  // Detach to prevent termination
@@ -170,69 +170,76 @@ bool ComboFreezeDP(int playerNum) {
         LogOut("[BUFFER_COMBO] Starting DP pattern buffer freeze thread", true);
         uintptr_t playerPtr = GetPlayerPointer(playerNum);
         if (!playerPtr) return;
-        
+
+        const unsigned long long startMs = GetTickCount64();
+        unsigned long long lastLogMs = startMs;
         int counter = 0;
         uint16_t lastIndex = 0;
         short lastMoveID = -1;
-        
+        int sleepMs = 2;           // brief aggressive phase
+        const int maxSleepMs = 4;  // then back off
+
         // Main freeze loop
         while (g_bufferFreezingActive) {
+            if (g_onlineModeActive.load()) break;                   // never operate online
+            if (GetCurrentGamePhase() != GamePhase::Match) break;   // only in match
+            unsigned long long now = GetTickCount64();
+            if (now - startMs > 4000ULL) break;                     // safety timeout ~4s
+
             // Read current index and moveID for monitoring
             uint16_t currentIndex = 0;
             short moveID = 0;
             SafeReadMemory(playerPtr + INPUT_BUFFER_INDEX_OFFSET, &currentIndex, sizeof(uint16_t));
-            
-            // Optional: Read moveID for logging
-            uintptr_t moveIDAddr = ResolvePointer(GetEFZBase(), 
-                (playerNum == 1) ? EFZ_BASE_OFFSET_P1 : EFZ_BASE_OFFSET_P2, 
+
+            // Optional: Read moveID for sparse logging
+            uintptr_t moveIDAddr = ResolvePointer(GetEFZBase(),
+                (playerNum == 1) ? EFZ_BASE_OFFSET_P1 : EFZ_BASE_OFFSET_P2,
                 MOVE_ID_OFFSET);
             if (moveIDAddr) {
                 SafeReadMemory(moveIDAddr, &moveID, sizeof(short));
                 if (moveID != lastMoveID && moveID != 0) {
-                    LogOut("[BUFFER_COMBO] MoveID changed: " + std::to_string(lastMoveID) + 
-                          " → " + std::to_string(moveID), true);
+                    if (now - lastLogMs >= 250ULL) { // throttle
+                        LogOut("[BUFFER_COMBO] MoveID: " + std::to_string(lastMoveID) + " -> " + std::to_string(moveID), true);
+                        lastLogMs = now;
+                    }
                     lastMoveID = moveID;
                 }
             }
-            
+
             // Allow index to float in 149-152 range, only reset if it's outside
             if (currentIndex < 147 || currentIndex > 152) {
                 SafeWriteMemory(playerPtr + INPUT_BUFFER_INDEX_OFFSET, &g_frozenIndexValue, sizeof(uint16_t));
                 currentIndex = g_frozenIndexValue;
             }
-            
-            // Always write the pattern at multiple positions relative to the current index
-            // This ensures it's found no matter which exact index the game checks
-            for (int offset = -2; offset <= 2; offset++) {
-                int basePos = (currentIndex - dpMotion.size() / 2 + offset) % INPUT_BUFFER_SIZE;
+
+            // Write the pattern near the current index with smaller spread (-1..1)
+            for (int offset = -1; offset <= 1; offset++) {
+                int basePos = (currentIndex - static_cast<int>(dpMotion.size()) / 2 + offset) % INPUT_BUFFER_SIZE;
                 if (basePos < 0) basePos += INPUT_BUFFER_SIZE;
-                
-                // Write the pattern
                 for (size_t i = 0; i < dpMotion.size(); i++) {
-                    uint16_t writeIndex = (basePos + i) % INPUT_BUFFER_SIZE;
-                    SafeWriteMemory(playerPtr + INPUT_BUFFER_OFFSET + writeIndex, 
-                                  &dpMotion[i], sizeof(uint8_t));
+                    uint16_t writeIndex = static_cast<uint16_t>((basePos + static_cast<int>(i)) % INPUT_BUFFER_SIZE);
+                    SafeWriteMemory(playerPtr + INPUT_BUFFER_OFFSET + writeIndex, &dpMotion[i], sizeof(uint8_t));
                 }
             }
-            
-            // Also make sure we write the exact pattern at fixed locations that are known to work
-            const int knownGoodStart = 144;
-            for (size_t i = 0; i < dpMotion.size(); i++) {
-                SafeWriteMemory(playerPtr + INPUT_BUFFER_OFFSET + knownGoodStart + i, 
-                              &dpMotion[i], sizeof(uint8_t));
+
+            // Write the known-good location less frequently
+            if ((counter % 10) == 0) {
+                const int knownGoodStart = 144;
+                for (size_t i = 0; i < dpMotion.size(); i++) {
+                    SafeWriteMemory(playerPtr + INPUT_BUFFER_OFFSET + knownGoodStart + static_cast<int>(i), &dpMotion[i], sizeof(uint8_t));
+                }
             }
-            
-            // Log periodically or on index change
-            if (currentIndex != lastIndex || counter % 100 == 0) {
-                LogOut("[BUFFER_COMBO] Maintaining buffer pattern at index: " + 
-                      std::to_string(currentIndex), true);
+
+            // Sparse status log
+            if ((currentIndex != lastIndex) && (now - lastLogMs >= 250ULL)) {
+                LogOut("[BUFFER_COMBO] Maintaining at index " + std::to_string(currentIndex), true);
                 lastIndex = currentIndex;
+                lastLogMs = now;
             }
-            
+
             counter++;
-            
-            // Use short sleep for responsiveness
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            if (sleepMs < maxSleepMs && (now - startMs) > 250ULL) sleepMs = maxSleepMs;
+            std::this_thread::sleep_for(std::chrono::milliseconds(sleepMs));
         }
     });
     g_bufferFreezeThread.detach();
