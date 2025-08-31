@@ -186,6 +186,8 @@ void UpdateConsoleTitle() {
             if (cachedAddresses[9]) SafeReadMemory(cachedAddresses[9], &displayData.x2, sizeof(double));
             if (cachedAddresses[10]) SafeReadMemory(cachedAddresses[10], &displayData.y2, sizeof(double));
             if (cachedAddresses[11]) SafeReadMemory(cachedAddresses[11], &displayData.p2CharName, sizeof(displayData.p2CharName) - 1);
+            // Feed the shared positions cache when we have both Y values
+            UpdatePositionCache(displayData.x1, displayData.y1, displayData.x2, displayData.y2);
         }
         
         // Check if we can access game data or if all values are default/zero

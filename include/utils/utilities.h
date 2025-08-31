@@ -279,3 +279,10 @@ struct AttackData {
     int blockstun;
     int hitstun;
 };
+
+// Lightweight shared positions cache (fed by stats overlay)
+// - Call UpdatePositionCache from the stats update path when fresh values are read.
+// - Consumers can use TryGetCachedYPositions with a maxAgeMs freshness bound; they should
+//   fall back to direct memory reads if this returns false.
+void UpdatePositionCache(double p1X, double p1Y, double p2X, double p2Y);
+bool TryGetCachedYPositions(double &p1Y, double &p2Y, unsigned int maxAgeMs);

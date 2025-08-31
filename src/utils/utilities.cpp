@@ -152,6 +152,27 @@ void DisableFeatures() {
     // Key monitoring will be handled separately by ManageKeyMonitoring()
 }
 
+// --- Lightweight shared positions cache -------------------------------
+static std::atomic<double> s_cachedP1Y{0.0};
+static std::atomic<double> s_cachedP2Y{0.0};
+static std::atomic<unsigned long long> s_posCacheTickMs{0};
+
+void UpdatePositionCache(double /*p1X*/, double p1Y, double /*p2X*/, double p2Y) {
+    s_cachedP1Y.store(p1Y, std::memory_order_relaxed);
+    s_cachedP2Y.store(p2Y, std::memory_order_relaxed);
+    s_posCacheTickMs.store(GetTickCount64(), std::memory_order_relaxed);
+}
+
+bool TryGetCachedYPositions(double &p1Y, double &p2Y, unsigned int maxAgeMs) {
+    unsigned long long t = s_posCacheTickMs.load(std::memory_order_relaxed);
+    if (t == 0) return false;
+    unsigned long long now = GetTickCount64();
+    if (now - t > static_cast<unsigned long long>(maxAgeMs)) return false;
+    p1Y = s_cachedP1Y.load(std::memory_order_relaxed);
+    p2Y = s_cachedP2Y.load(std::memory_order_relaxed);
+    return true;
+}
+
 // Cooperatively stop mod activity when entering online play, then hard-stop all hooks/threads.
 void EnterOnlineMode() {
     // Ensure we only run once

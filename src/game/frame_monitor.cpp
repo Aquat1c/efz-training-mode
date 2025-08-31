@@ -14,6 +14,7 @@
 #include "../include/input/input_buffer.h"
 #include "../include/utils/config.h"
 #include "../include/input/input_motion.h"
+#include "../include/utils/network.h"
 #define DISABLE_ATTACK_READER 1
 #include "../include/game/attack_reader.h"
 #include "../include/game/practice_patch.h"
@@ -271,20 +272,14 @@ void FrameDataMonitor() {
     auto expectedNext = startTime + targetFrameTime; // next frame boundary
 
     while (!g_isShuttingDown) {
-        // If online mode is active, park this thread in a lightweight loop
+        // If online mode is active, perform one-time cleanup then exit the thread
         if (g_onlineModeActive.load()) {
-            // On first detection, perform one-time cleanup similar to phase exit
-            static bool cleanedForOnline = false;
-            if (!cleanedForOnline) {
-                LogOut("[FRAME MONITOR] Online mode active -> stopping features and cleaning up", true);
-                StopBufferFreezing();
-                ResetActionFlags();
-                p1DelayState = {false, 0, TRIGGER_NONE, 0};
-                p2DelayState = {false, 0, TRIGGER_NONE, 0};
-                cleanedForOnline = true;
-            }
-            std::this_thread::sleep_for(std::chrono::milliseconds(200));
-            continue;
+            LogOut("[FRAME MONITOR] Online mode active -> stopping and exiting frame monitor", true);
+            StopBufferFreezing();
+            ResetActionFlags();
+            p1DelayState = {false, 0, TRIGGER_NONE, 0};
+            p2DelayState = {false, 0, TRIGGER_NONE, 0};
+            break; // exit thread to allow safe self-unload
         }
         auto frameStart = clock::now();
         // Catch-up logic: if we are *very* late (> 10 frames), jump ahead to avoid cascading backlog
@@ -294,6 +289,52 @@ void FrameDataMonitor() {
         
     // Check current game phase (single authoritative call per loop)
     GamePhase currentPhase = GetCurrentGamePhase();
+
+    // Lightweight, integrated online detection (replaces separate network thread)
+    {
+        static int netCheckCounter = 0;              // frames since last check
+        static int consecutiveOnline = 0;            // consecutive positive detections
+        static bool stopNetChecks = false;           // stop after timeout / confirmation
+        static auto gameStartTime = std::chrono::steady_clock::now();
+        if (!stopNetChecks) {
+            // 2.5s cadence at 192 Hz ~ 480 frames
+            if (++netCheckCounter >= 480) {
+                netCheckCounter = 0;
+                OnlineState st = ReadEfzRevivalOnlineState();
+                if (st != OnlineState::Unknown) {
+                    if (st == OnlineState::Netplay || st == OnlineState::Spectating || st == OnlineState::Tournament) {
+                        ++consecutiveOnline;
+                        if (consecutiveOnline >= 2) {
+                            LogOut(std::string("[NETWORK] EfzRevival state: ") + OnlineStateName(st), true);
+                            LogOut("[NETWORK] Online match confirmed", true);
+                            // Hide console quickly to avoid spam
+                            for (int i = 2; i > 0; --i) {
+                                LogOut("[NETWORK] Console will be hidden in " + std::to_string(i) + " seconds...", true);
+                                std::this_thread::sleep_for(std::chrono::seconds(1));
+                            }
+                            if (HWND consoleWnd = GetConsoleWindow()) {
+                                ShowWindow(consoleWnd, SW_HIDE);
+                            }
+                            isOnlineMatch = true;
+                            EnterOnlineMode();
+                            // After EnterOnlineMode, loop will hit g_onlineModeActive guard and break
+                            stopNetChecks = true;
+                        }
+                    } else {
+                        consecutiveOnline = 0;
+                    }
+                }
+
+                // Stop checking after 10s if nothing detected
+                auto elapsedSecs = std::chrono::duration_cast<std::chrono::seconds>(
+                    std::chrono::steady_clock::now() - gameStartTime).count();
+                if (elapsedSecs > 10 && !isOnlineMatch.load()) {
+                    LogOut("[NETWORK] Stopped network monitoring (timeout)", false);
+                    stopNetChecks = true;
+                }
+            }
+        }
+    }
         
     // CRITICAL FIX: Stop buffer freezing IMMEDIATELY if not in match
         if (currentPhase != GamePhase::Match) {
@@ -886,6 +927,12 @@ void UpdateStatsDisplay() {
     if (p1YAddr) SafeReadMemory(p1YAddr, &p1Y, sizeof(double));
     if (p2XAddr) SafeReadMemory(p2XAddr, &p2X, sizeof(double));
     if (p2YAddr) SafeReadMemory(p2YAddr, &p2Y, sizeof(double));
+
+    // Feed lightweight shared positions cache for other systems (e.g., adaptive autoblock)
+    // This is called at ~15-16 Hz; consumers should enforce a freshness bound.
+    if (p1YAddr && p2YAddr) {
+        UpdatePositionCache(p1X, p1Y, p2X, p2Y);
+    }
 
     short p1MoveId = 0, p2MoveId = 0;
     if (p1MoveIdAddr) SafeReadMemory(p1MoveIdAddr, &p1MoveId, sizeof(short));
