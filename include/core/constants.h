@@ -381,10 +381,11 @@
 // Raw input offsets from player base (from Cheat Engine findings)
 #define HORIZONTAL_INPUT_OFFSET 0x188  // Left = 255, Right = 1, Neutral = 0
 #define VERTICAL_INPUT_OFFSET   0x189  // Up = 255, Down = 1, Neutral = 0
-#define BUTTON_A_OFFSET         0x190  // 0 = not pressed, 1 = pressed
-#define BUTTON_B_OFFSET         0x194
-#define BUTTON_C_OFFSET         0x198
-#define BUTTON_D_OFFSET         0x19C
+// Immediate button registers are contiguous bytes after vertical input
+#define BUTTON_A_OFFSET         0x18A  // 0 = not pressed, 1 = pressed
+#define BUTTON_B_OFFSET         0x18B
+#define BUTTON_C_OFFSET         0x18C
+#define BUTTON_D_OFFSET         0x18D
 
 // Raw input values
 #define RAW_INPUT_UP    255

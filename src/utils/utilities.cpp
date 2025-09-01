@@ -31,6 +31,7 @@
 #include "../include/input/input_hook.h"          // For RemoveInputHook
 #include "../include/game/collision_hook.h"       // For RemoveCollisionHook
 #include "../3rdparty/minhook/include/MinHook.h"  // For MH_DisableHook(MH_ALL_HOOKS)
+#include "../include/input/immediate_input.h"
 
 #include "../include/utils/bgm_control.h"
 #include "../include/core/globals.h"
@@ -55,6 +56,8 @@ void EnableFeatures() {
         return;
 
     LogOut("[SYSTEM] Game in valid mode. Enabling patches and overlays.", true);
+    // Start centralized immediate input writer (64fps)
+    ImmediateInput::Start();
 
     // Apply patches if the feature is enabled
     if (autoAirtechEnabled.load()) {
@@ -97,6 +100,8 @@ void DisableFeatures() {
         return;
     
     LogOut("[SYSTEM] Game left valid mode. Disabling patches and overlays.", true);
+    // Stop immediate input writer
+    ImmediateInput::Stop();
 
     // Stop key monitoring when leaving valid game mode
     if (keyMonitorRunning.load()) {
@@ -181,6 +186,8 @@ void EnterOnlineMode() {
     if (g_hardStoppedOnce.load()) return;
 
     LogOut("[ONLINE] Entering online mode: disabling mod features, unhooking, and stopping threads", true);
+    // Stop immediate input writer
+    ImmediateInput::Stop();
 
     // Stop any active buffer/index freezing immediately
     StopBufferFreezing();

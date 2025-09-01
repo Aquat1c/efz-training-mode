@@ -11,6 +11,7 @@
 #include "../include/input/input_motion.h"      // Add this include
 #include "../include/input/input_freeze.h"     // Add this include near the top with the other includes
 #include "../include/game/attack_reader.h"
+#include "../include/input/immediate_input.h"
 // Define the motion input constants if they're not already defined
 #ifndef MOTION_INPUT_UP
 #define MOTION_INPUT_UP INPUT_UP
@@ -39,10 +40,13 @@ std::atomic<int> g_lastActiveTriggerFrame(0);
 
 static bool p1TriggerActive = false;
 static bool p2TriggerActive = false;
+// Log throttles to avoid spamming the console during tight loops
+static bool p2AfterBlockLoggedInflight = false;     // logs "in-flight override/restore" once per in-flight window
+static bool p2AfterBlockLoggedNotActionable = false; // logs "now not actionable yet" once per not-actionable window
 static int p1TriggerCooldown = 0;
 static int p2TriggerCooldown = 0;
-// Reduce cooldown to make triggers ready sooner (was 12)
-static constexpr int TRIGGER_COOLDOWN_FRAMES = 6; // ~0.03s @192fps visualized (2 visual frames)
+// Further reduce cooldown to re-arm triggers faster (was 6)
+static constexpr int TRIGGER_COOLDOWN_FRAMES = 3; // ~0.016s @192fps (~1 visual frame)
 bool g_p2ControlOverridden = false;
 uint32_t g_originalP2ControlFlag = 1; // Default to AI control
 
@@ -57,6 +61,87 @@ static bool s_p1WakePrearmed = false;
 static bool s_p2WakePrearmed = false;
 static int  s_p1WakePrearmExpiry = 0;
 static int  s_p2WakePrearmExpiry = 0;
+
+// Lightweight stun/wakeup timing trackers for diagnostics
+struct StunTimers {
+    // Start frames for current stuns (-1 if not in that state)
+    int blockStart = -1;
+    int hitStart   = -1;
+    int wakeMarker = -1;   // Last seen GROUNDTECH_RECOVERY frame before wake
+    // Last measured durations (frames)
+    int lastBlockDuration = 0;
+    int lastHitDuration   = 0;
+    int lastWakeDelay     = 0; // Frames from recovery marker (96) to actionable
+    // Since-end counters (frames since leaving respective states)
+    int sinceBlockEnd = -1;
+    int sinceHitEnd   = -1;
+    int sinceWake     = -1;    // Frames since actionable after wake
+};
+
+static StunTimers s_p1Timers;
+static StunTimers s_p2Timers;
+
+static inline void UpdateStunTimersForPlayer(StunTimers& t, short prevMoveID, short currMoveID) {
+    int now = frameCounter.load();
+
+    // Blockstun entry/exit
+    bool wasBlk = IsBlockstun(prevMoveID);
+    bool isBlk  = IsBlockstun(currMoveID);
+    if (!wasBlk && isBlk) {
+        t.blockStart = now;
+        t.sinceBlockEnd = -1;
+    } else if (wasBlk && !isBlk) {
+        if (t.blockStart >= 0) t.lastBlockDuration = now - t.blockStart;
+        t.blockStart = -1;
+        t.sinceBlockEnd = 0;
+    } else if (!isBlk && t.sinceBlockEnd >= 0) {
+        t.sinceBlockEnd++;
+    }
+
+    // Hitstun entry/exit
+    bool wasHit = IsHitstun(prevMoveID);
+    bool isHit  = IsHitstun(currMoveID);
+    if (!wasHit && isHit) {
+        t.hitStart = now;
+        t.sinceHitEnd = -1;
+    } else if (wasHit && !isHit) {
+        if (t.hitStart >= 0) t.lastHitDuration = now - t.hitStart;
+        t.hitStart = -1;
+        t.sinceHitEnd = 0;
+    } else if (!isHit && t.sinceHitEnd >= 0) {
+        t.sinceHitEnd++;
+    }
+
+    // Wakeup: remember last recovery marker (96), and when we become actionable from groundtech, compute delay
+    bool wasGtech = IsGroundtech(prevMoveID);
+    bool isGtech  = IsGroundtech(currMoveID);
+    bool actionableNow = IsActionable(currMoveID);
+    if (currMoveID == GROUNDTECH_RECOVERY) {
+        t.wakeMarker = now;
+        t.sinceWake = -1;
+    }
+    if (wasGtech && actionableNow && !isGtech) {
+        // Became actionable after groundtech
+        if (t.wakeMarker >= 0) t.lastWakeDelay = now - t.wakeMarker;
+        t.sinceWake = 0;
+        t.wakeMarker = -1;
+    } else if (t.sinceWake >= 0 && actionableNow) {
+        t.sinceWake++;
+    }
+}
+// Lightweight check to skip all auto-action work when nothing can or should run
+static inline bool AutoActionWorkPending() {
+    if (!autoActionEnabled.load()) return false;
+    // If any triggers are enabled, we may need to evaluate
+    bool triggersEnabled = triggerAfterBlockEnabled.load() || triggerOnWakeupEnabled.load() ||
+                           triggerAfterHitstunEnabled.load() || triggerAfterAirtechEnabled.load();
+    // If a delay is active, wakeup is pre-armed, cooldowns are running, or restore is pending, keep running
+    bool delaysActive = p1DelayState.isDelaying || p2DelayState.isDelaying;
+    bool cooldownsActive = p1TriggerActive || p2TriggerActive || (p1TriggerCooldown > 0) || (p2TriggerCooldown > 0);
+    bool wakePrearmed = s_p1WakePrearmed || s_p2WakePrearmed;
+    bool restorePending = g_pendingControlRestore.load();
+    return triggersEnabled || delaysActive || cooldownsActive || wakePrearmed || restorePending;
+}
 
 
 bool IsCharacterGrounded(int playerNum) {
@@ -327,23 +412,35 @@ void ProcessTriggerCooldowns() {
             s_nextCooldownDiagFrame = now + 960;
         }
     }
+    // Keep triggers locked while an injection/control-restore is in-flight to avoid re-triggers
+    bool p1InFlight = g_manualInputOverride[1].load();
+    bool p2InFlight = g_manualInputOverride[2].load() || g_pendingControlRestore.load();
+
     // P1 cooldown processing
-    if (p1TriggerActive && p1TriggerCooldown > 0) {
-        p1TriggerCooldown--;
-        if (p1TriggerCooldown <= 0) {
-            p1TriggerActive = false;
-            LogOut("[AUTO-ACTION] P1 trigger cooldown expired, new triggers allowed", 
-                   detailedLogging.load());
+    if (p1TriggerActive) {
+        if (p1InFlight) {
+            // Hold active; don't let cooldown expire mid-override
+            if (p1TriggerCooldown <= 1) p1TriggerCooldown = 1;
+        } else if (p1TriggerCooldown > 0) {
+            p1TriggerCooldown--;
+            if (p1TriggerCooldown <= 0) {
+                p1TriggerActive = false;
+                LogOut("[AUTO-ACTION] P1 trigger cooldown expired, new triggers allowed", detailedLogging.load());
+            }
         }
     }
     
     // P2 cooldown processing
-    if (p2TriggerActive && p2TriggerCooldown > 0) {
-        p2TriggerCooldown--;
-        if (p2TriggerCooldown <= 0) {
-            p2TriggerActive = false;
-            LogOut("[AUTO-ACTION] P2 trigger cooldown expired, new triggers allowed", 
-                   detailedLogging.load());
+    if (p2TriggerActive) {
+        if (p2InFlight) {
+            // Hold active; don't let cooldown expire mid-override/restore
+            if (p2TriggerCooldown <= 1) p2TriggerCooldown = 1;
+        } else if (p2TriggerCooldown > 0) {
+            p2TriggerCooldown--;
+            if (p2TriggerCooldown <= 0) {
+                p2TriggerActive = false;
+                LogOut("[AUTO-ACTION] P2 trigger cooldown expired, new triggers allowed", detailedLogging.load());
+            }
         }
     }
 }
@@ -354,7 +451,15 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
         return;
     }
     
+    // Fast-path out when there's definitively no work to do this frame
+    if (!AutoActionWorkPending()) {
+        return;
+    }
     ProcessTriggerCooldowns();
+
+    // Update timing trackers once per tick for both players
+    UpdateStunTimersForPlayer(s_p1Timers, prevMoveID1, moveID1);
+    UpdateStunTimersForPlayer(s_p2Timers, prevMoveID2, moveID2);
     
     int targetPlayer = autoActionPlayer.load();
     // Throttle trigger diagnostics to ~5s intervals
@@ -397,7 +502,7 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
             // P1 After-Airtech trigger condition
             if (wasInAirtech && postAirtechNow) {
                 LogOut("[AUTO-ACTION] P1 After Airtech trigger activated (from moveID " + 
-                       std::to_string(prevMoveID1) + " to " + std::to_string(moveID1) + ")", true);
+                       std::to_string(prevMoveID1) + " to " + std::to_string(moveID1) + ")", detailedLogging.load());
                 shouldTrigger = true;
                 triggerType = TRIGGER_AFTER_AIRTECH;
                 delay = triggerAfterAirtechDelay.load();
@@ -423,6 +528,11 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
                 delay = triggerAfterBlockDelay.load();
                 actionMoveID = GetActionMoveID(triggerAfterBlockAction.load(), TRIGGER_AFTER_BLOCK, 1);
                 LogOut("[AUTO-ACTION] P1 After Block trigger activated (just became actionable)", true);
+                if (detailedLogging.load()) {
+                    LogOut("[AUTO-ACTION] P1 After Block trigger activated (just became actionable)", true);
+                    LogOut("[TRIGGER_TIMING] P1 blockstun dur=" + std::to_string(s_p1Timers.lastBlockDuration) +
+                           ", sinceEnd=" + std::to_string(s_p1Timers.sinceBlockEnd), true);
+                }
             }
         }
         
@@ -440,6 +550,11 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
                 delay = triggerAfterHitstunDelay.load();
                 actionMoveID = GetActionMoveID(triggerAfterHitstunAction.load(), TRIGGER_AFTER_HITSTUN, 1);
                 LogOut("[AUTO-ACTION] P1 After Hitstun trigger activated (just became actionable)", true);
+                if (detailedLogging.load()) {
+                    LogOut("[AUTO-ACTION] P1 After Hitstun trigger activated (just became actionable)", true);
+                    LogOut("[TRIGGER_TIMING] P1 hitstun dur=" + std::to_string(s_p1Timers.lastHitDuration) +
+                           ", sinceEnd=" + std::to_string(s_p1Timers.sinceHitEnd), true);
+                }
             }
         }
         
@@ -475,6 +590,7 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
                     p1TriggerActive = true; // avoid duplicate fire when actionable
                     p1TriggerCooldown = TRIGGER_COOLDOWN_FRAMES;
                     LogOut("[AUTO-ACTION] P1 On Wakeup pre-armed at recovery (96)", true);
+                    LogOut("[AUTO-ACTION] P1 On Wakeup pre-armed at recovery (96)", detailedLogging.load());
                 }
             }
         }
@@ -492,6 +608,10 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
                 actionMoveID = GetActionMoveID(triggerOnWakeupAction.load(), TRIGGER_ON_WAKEUP, 1);
                 
                 LogOut("[AUTO-ACTION] P1 On Wakeup trigger activated", true);
+                if (detailedLogging.load()) {
+                    LogOut("[TRIGGER_TIMING] P1 wake delay=" + std::to_string(s_p1Timers.lastWakeDelay) +
+                           ", sinceWake=" + std::to_string(s_p1Timers.sinceWake), true);
+                }
             }
         }
         
@@ -529,7 +649,7 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
             }
 
             if (wasAirtech && postAirtechNow) {
-                LogOut("[AUTO-ACTION] P2 After Airtech trigger activated", true);
+                LogOut("[AUTO-ACTION] P2 After Airtech trigger activated", detailedLogging.load());
                 shouldTrigger = true;
                 triggerType = TRIGGER_AFTER_AIRTECH;
         // Pass visual frames; StartTriggerDelay converts to internal frames
@@ -537,8 +657,17 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
                 actionMoveID = GetActionMoveID(triggerAfterAirtechAction.load(), TRIGGER_AFTER_AIRTECH, 2);
             }
         }
-        // After Block trigger
-        if (!shouldTrigger && triggerAfterBlockEnabled.load() && !p2TriggerActive) {
+    // After Block trigger (do not suppress when p2TriggerActive is true)
+    if (!shouldTrigger && triggerAfterBlockEnabled.load()) {
+        // Block new trigger if an override/restore is in-flight
+        if (g_manualInputOverride[2].load() || g_pendingControlRestore.load()) {
+            if (detailedLogging.load() && !p2AfterBlockLoggedInflight) {
+                LogOut("[AUTO-ACTION] P2 After Block suppressed (in-flight override/restore)", true);
+                p2AfterBlockLoggedInflight = true;
+            }
+            // Reset the other throttle so it can log once when state changes
+            p2AfterBlockLoggedNotActionable = false;
+        } else {
             if (IsBlockstun(prevMoveID2) && IsActionable(moveID2)) {
                 // Add a check to ensure we're not still in a trigger cooldown
                 if (p2TriggerCooldown <= 0) {
@@ -546,17 +675,30 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
                     triggerType = TRIGGER_AFTER_BLOCK;
                     delay = triggerAfterBlockDelay.load();
                     actionMoveID = GetActionMoveID(triggerAfterBlockAction.load(), TRIGGER_AFTER_BLOCK, 2);
-                    
-                    LogOut("[AUTO-ACTION] P2 After Block trigger activated", true);
+
+                    // Reset throttles on trigger
+                    p2AfterBlockLoggedInflight = false;
+                    p2AfterBlockLoggedNotActionable = false;
+
+                    if (detailedLogging.load()) {
+                        LogOut("[AUTO-ACTION] P2 After Block trigger activated", true);
+                        LogOut("[TRIGGER_TIMING] P2 blockstun dur=" + std::to_string(s_p2Timers.lastBlockDuration) +
+                               ", sinceEnd=" + std::to_string(s_p2Timers.sinceBlockEnd), true);
+                    }
                 } else {
                     LogOut("[AUTO-ACTION] P2 After Block condition met but cooldown active: " + 
-                           std::to_string(p2TriggerCooldown), true);
+                           std::to_string(p2TriggerCooldown), detailedLogging.load());
+                }
+            } else {
+                // Not actionable yet: log once until state changes
+                p2AfterBlockLoggedInflight = false;
+                if (detailedLogging.load() && !p2AfterBlockLoggedNotActionable && IsBlockstun(prevMoveID2) && !IsActionable(moveID2)) {
+                    LogOut("[AUTO-ACTION] P2 After Block: now not actionable yet", true);
+                    p2AfterBlockLoggedNotActionable = true;
                 }
             }
         }
-        if (!shouldTrigger && triggerAfterBlockEnabled.load() && p2TriggerActive) {
-            LogOut("[AUTO-ACTION] P2 After Block suppressed because p2TriggerActive=1", detailedLogging.load());
-        }
+    }
         
         // After Hitstun trigger
         if (!shouldTrigger && triggerAfterHitstunEnabled.load()) {
@@ -567,6 +709,10 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
                     delay = triggerAfterHitstunDelay.load();
                     actionMoveID = GetActionMoveID(triggerAfterHitstunAction.load(), TRIGGER_AFTER_HITSTUN, 2);
                     LogOut("[AUTO-ACTION] P2 after hitstun trigger activated", true);
+                    if (detailedLogging.load()) {
+                        LogOut("[TRIGGER_TIMING] P2 hitstun dur=" + std::to_string(s_p2Timers.lastHitDuration) +
+                               ", sinceEnd=" + std::to_string(s_p2Timers.sinceHitEnd), true);
+                    }
                 }
             }
         }
@@ -623,21 +769,18 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
                 delay = triggerOnWakeupDelay.load();
                 actionMoveID = GetActionMoveID(triggerOnWakeupAction.load(), TRIGGER_ON_WAKEUP, 2);
                 
-                LogOut("[AUTO-ACTION] P2 On Wakeup trigger activated", true);
+                LogOut("[AUTO-ACTION] P2 On Wakeup trigger activated", detailedLogging.load());
+                if (detailedLogging.load()) {
+                    LogOut("[TRIGGER_TIMING] P2 wake delay=" + std::to_string(s_p2Timers.lastWakeDelay) +
+                           ", sinceWake=" + std::to_string(s_p2Timers.sinceWake), true);
+                }
             }
         }
         
         if (shouldTrigger) {
             StartTriggerDelay(2, triggerType, actionMoveID, delay);
         } else {
-            // Log why we didn't trigger when conditions are close
-            if (triggerAfterBlockEnabled.load()) {
-                bool wasInBlockstun = IsBlockstun(prevMoveID2);
-                bool nowActionable = IsActionable(moveID2);
-                if (wasInBlockstun && !nowActionable) {
-                    LogOut("[AUTO-ACTION] P2 After Block: now not actionable yet", true);
-                }
-            }
+            // Don't spam repetitive diagnostics; throttling handled above
         }
     }
     
@@ -850,24 +993,13 @@ void ApplyAutoAction(int playerNum, uintptr_t moveIDAddr, short currentMoveID, s
             }
         }
 
-        LogOut("[AUTO-ACTION] Injecting Jump via immediate input (dir=" + std::to_string(dir) + ")", true);
-        // Ensure we don't taint the input buffer for jump
-        g_injectImmediateOnly[playerNum].store(true);
-        g_manualInputMask[playerNum].store(mask);
-        g_manualInputOverride[playerNum].store(true);
-
-        std::thread([playerNum]() {
-            // Hold for ~3 frames to register jump, then release
-            std::this_thread::sleep_for(std::chrono::milliseconds(17));
-            g_manualInputOverride[playerNum].store(false);
-            g_manualInputMask[playerNum].store(0);
-            g_injectImmediateOnly[playerNum].store(false);
-
-            // Clear cooldown so another trigger can occur soon after
-            if (playerNum == 2) { p2TriggerActive = false; p2TriggerCooldown = 0; }
-            else { p1TriggerActive = false; p1TriggerCooldown = 0; }
-            LogOut("[AUTO-ACTION] Released Jump immediate injection for P" + std::to_string(playerNum), true);
-        }).detach();
+    LogOut("[AUTO-ACTION] Injecting Jump via immediate writer (dir=" + std::to_string(dir) + ")", true);
+    // Press for ~3 visual frames (64fps): enough to register jump, then auto-neutral
+    ImmediateInput::PressFor(playerNum, mask, 3);
+    // Clear cooldown so another trigger can occur soon after
+    if (playerNum == 2) { p2TriggerActive = false; p2TriggerCooldown = 0; }
+    else { p1TriggerActive = false; p1TriggerCooldown = 0; }
+    LogOut("[AUTO-ACTION] Jump press scheduled for P" + std::to_string(playerNum), true);
 
         success = true;
         // Control restore watcher
@@ -889,52 +1021,28 @@ void ApplyAutoAction(int playerNum, uintptr_t moveIDAddr, short currentMoveID, s
     }
     
     if (!success && isRegularMove) {
-        // For regular moves, use manual input override (this works correctly)
-        LogOut("[AUTO-ACTION] Applying regular move " + GetMotionTypeName(motionType) + 
-               " via manual input override", true);
-               
-        // Get the input mask for this move type
-        uint8_t inputMask = 0x00; // Start with neutral
-        
-        // Handle different move types
-        if (motionType >= MOTION_5A && motionType <= MOTION_5C) {
-            inputMask = buttonMask; // Just the button press
-        } 
-        else if (motionType >= MOTION_2A && motionType <= MOTION_2C) {
-            inputMask = GAME_INPUT_DOWN | buttonMask; // Down + button
-        } 
-        else if (motionType >= MOTION_JA && motionType <= MOTION_JC) {
-            inputMask = buttonMask; // Just button in air
-        }
-        
-        // Set up manual override to hold this input for several frames
-        g_manualInputMask[playerNum].store(inputMask);
-        g_manualInputOverride[playerNum].store(true);
-        
-        // Create a thread to release the override after a short time
-        std::thread([playerNum]() {
-            // Hold the input for ~6 frames (30ms) which is enough for most moves to register
-            std::this_thread::sleep_for(std::chrono::milliseconds(30));
-            
-            // Clear the override
-            g_manualInputOverride[playerNum].store(false);
-            g_manualInputMask[playerNum].store(0);
-            
-            LogOut("[AUTO-ACTION] Released manual input override for P" + 
-                   std::to_string(playerNum), true);
+        // For regular moves, use a simple manual-override hold; DO allow buffer writes (do not set immediate-only)
+        LogOut("[AUTO-ACTION] Applying regular move " + GetMotionTypeName(motionType) +
+               " via manual hold (buffered)", detailedLogging.load());
 
-            // Allow immediate re-trigger after manual override completes
-            if (playerNum == 2) {
-                p2TriggerActive = false;
-                p2TriggerCooldown = 0;
-                LogOut("[AUTO-ACTION] Cleared P2 trigger cooldown after manual override release", true);
-            } else if (playerNum == 1) {
-                p1TriggerActive = false;
-                p1TriggerCooldown = 0;
-                LogOut("[AUTO-ACTION] Cleared P1 trigger cooldown after manual override release", true);
-            }
-        }).detach();
-        
+        // Build the mask for this normal
+        uint8_t inputMask = GAME_INPUT_NEUTRAL;
+        if (motionType >= MOTION_5A && motionType <= MOTION_5C) {
+            inputMask = buttonMask; // Neutral + button
+        } else if (motionType >= MOTION_2A && motionType <= MOTION_2C) {
+            inputMask = GAME_INPUT_DOWN | buttonMask; // Down + button
+        } else if (motionType >= MOTION_JA && motionType <= MOTION_JC) {
+            inputMask = buttonMask; // Air normals: button only
+        }
+
+    // Use immediate writer for the button (A/B/C) and optionally direction DOWN for 2A/2B/2C.
+    // Do not push to buffer here; motions and freezes remain buffer-driven.
+    ImmediateInput::PressFor(playerNum, inputMask, 2); // ~2 visual ticks press
+
+    // Allow immediate re-trigger after button press completes
+    if (playerNum == 2) { p2TriggerActive = false; p2TriggerCooldown = 0; }
+    else { p1TriggerActive = false; p1TriggerCooldown = 0; }
+
         success = true;
     }
     else if (!success && isSpecialMove) {
@@ -952,12 +1060,17 @@ void ApplyAutoAction(int playerNum, uintptr_t moveIDAddr, short currentMoveID, s
             g_lastP2MoveID.store(currentMoveID);
             g_pendingControlRestore.store(true);
             g_controlRestoreTimeout.store(60); // Shorter timeout for normal attacks
+                // Keep trigger marked active while executing to prevent re-triggers
+                p2TriggerActive = true;
+                if (p2TriggerCooldown <= 1) p2TriggerCooldown = 1;
         } else {
             LogOut("[AUTO-ACTION] Set up P2 control restoration monitoring: initial moveID=" + 
                    std::to_string(currentMoveID), true);
             g_lastP2MoveID.store(currentMoveID);
             g_pendingControlRestore.store(true);
             g_controlRestoreTimeout.store(180); // Longer timeout for special moves
+                p2TriggerActive = true;
+                if (p2TriggerCooldown <= 1) p2TriggerCooldown = 1;
         }
     } else {
         LogOut("[AUTO-ACTION] Failed to apply move " + GetMotionTypeName(motionType), true);
@@ -1024,7 +1137,7 @@ void RestoreP2ControlState() {
         
         // IMPORTANT: Force a longer cooldown period to prevent immediate re-triggering
         p2TriggerActive = true;
-        p2TriggerCooldown = TRIGGER_COOLDOWN_FRAMES; // now ~0.42s instead of previous large value
+    p2TriggerCooldown = TRIGGER_COOLDOWN_FRAMES;
         LogOut("[AUTO-ACTION] Enforcing extended trigger cooldown after control restore", true);
         
         uintptr_t base = GetEFZBase();
@@ -1065,55 +1178,52 @@ void ProcessAutoControlRestore() {
         return;
     }
     if (g_pendingControlRestore.load()) {
-        // Get current P2 moveID
+        // Cache address and throttle to every other frame to reduce CPU
+        static uintptr_t moveIDAddr2 = 0;
+        static int s_throttle = 0;
+        if ((s_throttle++ & 1) != 0) return; // 96 Hz sampling is sufficient
+
         uintptr_t base = GetEFZBase();
         if (!base) return;
-        
-        uintptr_t moveIDAddr2 = ResolvePointer(base, EFZ_BASE_OFFSET_P2, MOVE_ID_OFFSET);
+        if (!moveIDAddr2) moveIDAddr2 = ResolvePointer(base, EFZ_BASE_OFFSET_P2, MOVE_ID_OFFSET);
+
         short moveID2 = 0;
-        
         if (moveIDAddr2) {
             SafeReadMemory(moveIDAddr2, &moveID2, sizeof(short));
         }
-        
-        // Decrement timeout counter (if we're using one)
+
         int timeout = g_controlRestoreTimeout.fetch_sub(1);
-        
-        // Less frequent logging
-        if (timeout % 60 == 0) {
-            LogOut("[AUTO-ACTION] Monitoring move execution: MoveID=" + 
-                   std::to_string(moveID2) + ", LastMoveID=" + 
-                   std::to_string(g_lastP2MoveID.load()) + 
-                   ", Timeout=" + std::to_string(timeout), true);
+        // Less frequent logging (once per second @192 fps => ~96 cycles after throttle)
+        if ((timeout % 192) == 0) {
+            LogOut("[AUTO-ACTION] Monitoring move execution: MoveID=" +
+                   std::to_string(moveID2) + ", LastMoveID=" +
+                   std::to_string(g_lastP2MoveID.load()) +
+                   ", Timeout=" + std::to_string(timeout), detailedLogging.load());
         }
-        
-        // Only consider a move change after we've seen a non-zero moveID first
-        // This prevents premature restoration due to staying in neutral (moveID=0)
+
         static bool sawNonZeroMoveID = false;
         if (moveID2 > 0) {
             sawNonZeroMoveID = true;
         }
-        
+
         bool moveChanged = (moveID2 != g_lastP2MoveID.load() && moveID2 == 0 && sawNonZeroMoveID);
         bool timeoutExpired = (timeout <= 0);
-        
+
         if (moveChanged || timeoutExpired) {
-            LogOut("[AUTO-ACTION] Auto-restoring P2 control state after move execution", true);
-            LogOut("[AUTO-ACTION] Reason: " + 
+            LogOut("[AUTO-ACTION] Auto-restoring P2 control state after move execution", detailedLogging.load());
+            LogOut("[AUTO-ACTION] Reason: " +
                    std::string(moveChanged ? "Move completed" : "Timeout expired") +
-                   ", MoveID: " + std::to_string(moveID2), true);
-            
+                   ", MoveID: " + std::to_string(moveID2), detailedLogging.load());
+
             RestoreP2ControlState();
             g_pendingControlRestore.store(false);
             g_lastP2MoveID.store(-1);
             sawNonZeroMoveID = false;
-            
-            // Add a cooldown to prevent re-triggering immediately
+
             p2TriggerCooldown = 0; // allow prompt re-trigger after restoring
             p2TriggerActive = false;
-            LogOut("[AUTO-ACTION] Cleared P2 trigger cooldown after restore", true);
+            LogOut("[AUTO-ACTION] Cleared P2 trigger cooldown after restore", detailedLogging.load());
         } else {
-            // Update last moveID for tracking
             if (moveID2 != 0) {
                 g_lastP2MoveID.store(moveID2);
             }
