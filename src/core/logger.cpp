@@ -51,9 +51,21 @@ void LogOut(const std::string& msg, bool consoleOutput) {
     // Only output to console if requested
     if (consoleOutput) {
         std::lock_guard<std::mutex> lock(g_logMutex);
-        // Buffer until console window exists
+        // Build a timestamp prefix without brackets (so category [..] remains the first bracketed token)
+        auto now = std::chrono::system_clock::now();
+        auto timeT = std::chrono::system_clock::to_time_t(now);
+        tm timeInfo{};
+        localtime_s(&timeInfo, &timeT);
+        auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()) % 1000;
+        char ts[32];
+        std::strftime(ts, sizeof(ts), "%H:%M:%S", &timeInfo);
+        std::ostringstream tsoss; tsoss << ts << "." << std::setw(3) << std::setfill('0') << ms.count() << " ";
+        std::string prefix = tsoss.str();
+        std::string formatted = msg.empty() ? std::string() : (prefix + msg);
+
+        // Buffer until console window exists (store formatted with timestamp)
         if (!g_consoleReady.load() || GetConsoleWindow() == nullptr) {
-            g_pendingConsoleLogs.emplace_back(msg);
+            g_pendingConsoleLogs.emplace_back(formatted);
             return;
         }
         
@@ -63,7 +75,7 @@ void LogOut(const std::string& msg, bool consoleOutput) {
             return;
         }
         
-        // Track message categories for proper spacing
+    // Track message categories for proper spacing
         static std::string lastCategory = "";
         static bool wasEmptyLine = false;
         std::string currentCategory = "OTHER"; // Default
@@ -100,8 +112,12 @@ void LogOut(const std::string& msg, bool consoleOutput) {
             std::cout << std::endl;
         }
         
-        // Output the message
-        std::cout << msg << std::endl;
+        // Output the message (with timestamp prefix)
+        if (msg.empty()) {
+            std::cout << std::endl;
+        } else {
+            std::cout << formatted << std::endl;
+        }
         
         // Update tracking variables
         wasEmptyLine = msg.empty();
@@ -267,7 +283,7 @@ void FlushPendingConsoleLogs() {
     std::lock_guard<std::mutex> lock(g_logMutex);
     if (g_consoleReady.load() && GetConsoleWindow() != nullptr) {
         for (const auto& line : g_pendingConsoleLogs) {
-            // Reuse normal path but bypass re-buffering by writing directly
+            // Already stored with timestamp prefix above; write directly
             if (line.empty()) {
                 std::cout << std::endl;
                 continue;
