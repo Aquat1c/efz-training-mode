@@ -193,6 +193,8 @@ struct DisplayData {
     int  p2AkikoBulletCycle;
     int  p1AkikoTimeslowTrigger; // 0=inactive,1=A,2=B,3=C,4=infinite
     int  p2AkikoTimeslowTrigger;
+    bool p1AkikoFreezeCycle;     // keep bullet cycle fixed at selected value
+    bool p2AkikoFreezeCycle;
 };
 
 extern DisplayData displayData;

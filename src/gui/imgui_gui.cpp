@@ -805,11 +805,26 @@ namespace ImGuiGui {
         }
         // P1 Akiko (Minase) Settings
         else if (p1CharID == CHAR_ID_AKIKO) {
-            ImGui::Text("236A/236B Bullet Cycle:");
+            ImGui::Text("Bullet Cycle (shared A/B):");
+            const char* cycleItems[] = {
+                "0: A=Egg,     B=Tuna",
+                "1: A=Carrot,  B=Radish",
+                "2: A=Sardine, B=Duriah"
+            };
             int bc1 = guiState.localData.p1AkikoBulletCycle;
-            if (ImGui::InputInt("##P1AkikoBullet", &bc1)) {
-                if (bc1 < 0) bc1 = 0;
+            bc1 = (bc1 < 0) ? 0 : (bc1 > 2 ? 2 : bc1);
+            if (ImGui::Combo("##P1AkikoBullet", &bc1, cycleItems, IM_ARRAYSIZE(cycleItems))) {
                 guiState.localData.p1AkikoBulletCycle = bc1;
+            }
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("Sequence advances on use. Value is shared across A and B: A then B yields Egg→Radish for 0, etc.");
+            }
+            bool freeze1 = guiState.localData.p1AkikoFreezeCycle;
+            if (ImGui::Checkbox("Freeze bullet cycle##p1Akiko", &freeze1)) {
+                guiState.localData.p1AkikoFreezeCycle = freeze1;
+            }
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("Keeps the bullet cycle fixed at the selected value even after using the skill.");
             }
             ImGui::Text("Time-Slow Trigger:");
             const char* tsItems1[] = { "Inactive", "A Version", "B Version", "C Version", "Infinite timer" };
@@ -991,11 +1006,26 @@ namespace ImGuiGui {
         }
         // P2 Akiko (Minase) Settings
         else if (p2CharID == CHAR_ID_AKIKO) {
-            ImGui::Text("236A/236B Bullet Cycle:");
+            ImGui::Text("Bullet Cycle (shared A/B):");
+            const char* cycleItems2[] = {
+                "0: A=Egg,     B=Tuna",
+                "1: A=Carrot,  B=Radish",
+                "2: A=Sardine, B=Duriah"
+            };
             int bc2 = guiState.localData.p2AkikoBulletCycle;
-            if (ImGui::InputInt("##P2AkikoBullet", &bc2)) {
-                if (bc2 < 0) bc2 = 0;
+            bc2 = (bc2 < 0) ? 0 : (bc2 > 2 ? 2 : bc2);
+            if (ImGui::Combo("##P2AkikoBullet", &bc2, cycleItems2, IM_ARRAYSIZE(cycleItems2))) {
                 guiState.localData.p2AkikoBulletCycle = bc2;
+            }
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("Sequence advances on use. Value is shared across A and B: A then B yields Egg→Radish for 0, etc.");
+            }
+            bool freeze2 = guiState.localData.p2AkikoFreezeCycle;
+            if (ImGui::Checkbox("Freeze bullet cycle##p2Akiko", &freeze2)) {
+                guiState.localData.p2AkikoFreezeCycle = freeze2;
+            }
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("Keeps the bullet cycle fixed at the selected value even after using the skill.");
             }
             ImGui::Text("Time-Slow Trigger:");
             const char* tsItems2[] = { "Inactive", "A Version", "B Version", "C Version", "Infinite timer" };
@@ -1003,6 +1033,10 @@ namespace ImGuiGui {
             ts2 = CLAMP(ts2, AKIKO_TIMESLOW_INACTIVE, AKIKO_TIMESLOW_INFINITE);
             if (ImGui::Combo("##P2AkikoTimeslow", &ts2, tsItems2, IM_ARRAYSIZE(tsItems2))) {
                 guiState.localData.p2AkikoTimeslowTrigger = ts2;
+            }
+            ImGui::Checkbox("Keep bullet cycle fixed", &guiState.localData.p2AkikoFreezeCycle);
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("If enabled, the cycle stays at the selected index even after using 236A/236B.");
             }
             ImGui::TextDisabled("(Akiko: bullet routes and clock-slow)");
         }

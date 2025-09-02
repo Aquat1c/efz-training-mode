@@ -46,6 +46,12 @@ namespace CharacterSettings {
     static std::chrono::steady_clock::time_point s_lastAkikoLogP1{};
     static std::chrono::steady_clock::time_point s_lastAkikoLogP2{};
     static constexpr std::chrono::seconds AKIKO_LOG_HEARTBEAT{5};
+
+    // Akiko bullet cycle freeze: store captured cycle on enable (rising edge)
+    static bool s_prevP1AkikoFreeze = false;
+    static bool s_prevP2AkikoFreeze = false;
+    static int  s_p1AkikoFrozenCycle = 0;
+    static int  s_p2AkikoFrozenCycle = 0;
     
     // Updated character name mapping with correct display names
     static const std::unordered_map<std::string, int> characterNameMap = {
@@ -289,6 +295,9 @@ namespace CharacterSettings {
             uintptr_t bulletAddr = ResolvePointer(base, off, AKIKO_BULLET_CYCLE_OFFSET);
             uintptr_t timeAddr   = ResolvePointer(base, off, AKIKO_TIMESLOW_TRIGGER_OFFSET);
             int bullet=0, t=0; if (bulletAddr) SafeReadMemory(bulletAddr,&bullet,sizeof(int)); if (timeAddr) SafeReadMemory(timeAddr,&t,sizeof(int));
+            // Clamp bullet cycle to valid range [0..2]; timeslow is [0..4]
+            bullet = CLAMP(bullet, 0, 2);
+            t = CLAMP(t, AKIKO_TIMESLOW_INACTIVE, AKIKO_TIMESLOW_INFINITE);
             auto now = std::chrono::steady_clock::now();
             if (playerIndex==1) {
                 data.p1AkikoBulletCycle = bullet; data.p1AkikoTimeslowTrigger = t;
@@ -580,6 +589,8 @@ namespace CharacterSettings {
             uintptr_t timeAddr   = ResolvePointer(base, off, AKIKO_TIMESLOW_TRIGGER_OFFSET);
             int bullet = (pi==1)?data.p1AkikoBulletCycle:data.p2AkikoBulletCycle;
             int t      = (pi==1)?data.p1AkikoTimeslowTrigger:data.p2AkikoTimeslowTrigger;
+            bullet = CLAMP(bullet, 0, 2);
+            t = CLAMP(t, AKIKO_TIMESLOW_INACTIVE, AKIKO_TIMESLOW_INFINITE);
             if (bulletAddr) SafeWriteMemory(bulletAddr,&bullet,sizeof(int));
             if (timeAddr)   SafeWriteMemory(timeAddr,&t,sizeof(int));
             LogOut(std::string("[CHAR] Applied ") + (pi==1?"P1":"P2") + " Akiko: BulletCycle=" + std::to_string(bullet) + ", TimeSlow=" + std::to_string(t), detailedLogging.load());
@@ -709,10 +720,43 @@ namespace CharacterSettings {
 
         (void)didWriteThisTick; // reserved for future backoff tuning/logging
 
+        // Akiko: freeze bullet cycle when requested, and enforce infinite timeslow when set
+        auto enforceAkikoCycle = [&](int pi){
+            bool isAkiko = (pi==1)?(localData.p1CharID==CHAR_ID_AKIKO):(localData.p2CharID==CHAR_ID_AKIKO);
+            if (!isAkiko) return;
+            bool wantFreeze = (pi==1)?localData.p1AkikoFreezeCycle:localData.p2AkikoFreezeCycle;
+            if (!wantFreeze) return;
+            const int off = (pi==1)?EFZ_BASE_OFFSET_P1:EFZ_BASE_OFFSET_P2;
+            auto cycAddr = ResolvePointer(base, off, AKIKO_BULLET_CYCLE_OFFSET);
+            if (!cycAddr) return;
+            int cur=0; SafeReadMemory(cycAddr,&cur,sizeof(int));
+            int target = CLAMP((pi==1)?localData.p1AkikoBulletCycle:localData.p2AkikoBulletCycle, 0, 2);
+            if (cur != target) { SafeWriteMemory(cycAddr,&target,sizeof(int)); didWriteThisTick = true; }
+        }; enforceAkikoCycle(1); enforceAkikoCycle(2);
+
         // Akiko: enforce infinite timeslow when set to AKIKO_TIMESLOW_INFINITE (4)
         auto enforceAkiko = [&](int pi){
             if ((pi==1 && localData.p1CharID != CHAR_ID_AKIKO) || (pi==2 && localData.p2CharID != CHAR_ID_AKIKO)) return;
             const int off = (pi==1)?EFZ_BASE_OFFSET_P1:EFZ_BASE_OFFSET_P2;
+            // Freeze bullet cycle: capture once on rising edge, then restore only if diverged
+            bool keepCycle = (pi==1)?localData.p1AkikoFreezeCycle:localData.p2AkikoFreezeCycle;
+            bool &prevFreeze = (pi==1)?s_prevP1AkikoFreeze:s_prevP2AkikoFreeze;
+            int  &frozenVal  = (pi==1)?s_p1AkikoFrozenCycle:s_p2AkikoFrozenCycle;
+            if (keepCycle && !prevFreeze) {
+                if (auto bAddr = ResolvePointer(base, off, AKIKO_BULLET_CYCLE_OFFSET)) {
+                    int cur=0; SafeReadMemory(bAddr,&cur,sizeof(int)); frozenVal = CLAMP(cur, 0, 2);
+                } else {
+                    // Fallback to GUI value if address missing
+                    frozenVal = CLAMP((pi==1)?localData.p1AkikoBulletCycle:localData.p2AkikoBulletCycle, 0, 2);
+                }
+            }
+            prevFreeze = keepCycle;
+            if (keepCycle) {
+                if (auto bAddr = ResolvePointer(base, off, AKIKO_BULLET_CYCLE_OFFSET)) {
+                    int cur=0; SafeReadMemory(bAddr,&cur,sizeof(int));
+                    if (cur != frozenVal) { SafeWriteMemory(bAddr,&frozenVal,sizeof(int)); }
+                }
+            }
             auto tAddr = ResolvePointer(base, off, AKIKO_TIMESLOW_TRIGGER_OFFSET);
             if (!tAddr) return; int cur=0; SafeReadMemory(tAddr,&cur,sizeof(int));
             if (cur != AKIKO_TIMESLOW_INFINITE && ((pi==1 && localData.p1AkikoTimeslowTrigger==AKIKO_TIMESLOW_INFINITE) || (pi==2 && localData.p2AkikoTimeslowTrigger==AKIKO_TIMESLOW_INFINITE))) {
