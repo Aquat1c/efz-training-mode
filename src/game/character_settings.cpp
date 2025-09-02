@@ -28,6 +28,15 @@ namespace CharacterSettings {
     static std::chrono::steady_clock::time_point s_lastIkumiLogP1{};
     static std::chrono::steady_clock::time_point s_lastIkumiLogP2{};
     static constexpr std::chrono::seconds IKUMI_LOG_HEARTBEAT{5};
+
+    // Rumi (Nanase) change-only logging with heartbeat
+    static int s_lastRumiModeP1 = -1;
+    static int s_lastRumiGateP1 = -1;
+    static int s_lastRumiModeP2 = -1;
+    static int s_lastRumiGateP2 = -1;
+    static std::chrono::steady_clock::time_point s_lastRumiLogP1{};
+    static std::chrono::steady_clock::time_point s_lastRumiLogP2{};
+    static constexpr std::chrono::seconds RUMI_LOG_HEARTBEAT{5};
     
     // Updated character name mapping with correct display names
     static const std::unordered_map<std::string, int> characterNameMap = {
@@ -233,7 +242,29 @@ namespace CharacterSettings {
                 if (kimchiFlagAddr) { int f=0; SafeReadMemory(kimchiFlagAddr, &f, sizeof(int)); data.p2RumiKimchiActive = (f!=0); }
                 if (kimchiTimerAddr) { int t=0; SafeReadMemory(kimchiTimerAddr, &t, sizeof(int)); data.p2RumiKimchiTimer = t; }
             }
-            LogOut(std::string("[CHAR] Read Rumi state ") + (playerIndex==1?"P1":"P2") + ": mode=" + std::to_string((int)mode) + ", gate=" + std::to_string((int)gate), detailedLogging.load());
+            // Change-only logging with periodic heartbeat
+            auto now = std::chrono::steady_clock::now();
+            bool changed = false;
+            bool heartbeat = false;
+            if (playerIndex == 1) {
+                changed = (s_lastRumiModeP1 != (int)mode) || (s_lastRumiGateP1 != (int)gate);
+                heartbeat = (s_lastRumiLogP1.time_since_epoch().count() == 0) || ((now - s_lastRumiLogP1) >= RUMI_LOG_HEARTBEAT);
+                if (detailedLogging.load() && (changed || heartbeat)) {
+                    LogOut(std::string("[CHAR] Read Rumi state P1: mode=") + std::to_string((int)mode) + ", gate=" + std::to_string((int)gate) +
+                           ", KimchiActive=" + std::to_string((int)data.p1RumiKimchiActive) + ", KimchiTimer=" + std::to_string((int)data.p1RumiKimchiTimer), true);
+                    s_lastRumiLogP1 = now;
+                }
+                s_lastRumiModeP1 = (int)mode; s_lastRumiGateP1 = (int)gate;
+            } else {
+                changed = (s_lastRumiModeP2 != (int)mode) || (s_lastRumiGateP2 != (int)gate);
+                heartbeat = (s_lastRumiLogP2.time_since_epoch().count() == 0) || ((now - s_lastRumiLogP2) >= RUMI_LOG_HEARTBEAT);
+                if (detailedLogging.load() && (changed || heartbeat)) {
+                    LogOut(std::string("[CHAR] Read Rumi state P2: mode=") + std::to_string((int)mode) + ", gate=" + std::to_string((int)gate) +
+                           ", KimchiActive=" + std::to_string((int)data.p2RumiKimchiActive) + ", KimchiTimer=" + std::to_string((int)data.p2RumiKimchiTimer), true);
+                    s_lastRumiLogP2 = now;
+                }
+                s_lastRumiModeP2 = (int)mode; s_lastRumiGateP2 = (int)gate;
+            }
         };
 
         if (data.p1CharID == CHAR_ID_NANASE) {

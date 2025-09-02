@@ -174,9 +174,12 @@ bool IsKeyPressed(int vKey, bool checkState) {
 }
 
 // Add a flag to track if the monitor thread is running
-std::atomic<bool> keyMonitorRunning(true);
+// Start disabled; ManageKeyMonitoring will spawn the thread when appropriate.
+std::atomic<bool> keyMonitorRunning(false);
 
 void MonitorKeys() {
+    // Mark as running in case the thread was spawned externally
+    keyMonitorRunning.store(true);
     LogOut("[KEYBINDS] Key monitoring thread started", true);
     
     // Initial log of hotkeys
@@ -200,7 +203,7 @@ void MonitorKeys() {
     int sleepMs = 16;        // adaptive polling interval
     int idleLoops = 0;       // counts consecutive idle loops
     const int idleThreshold = 10; // after ~10 loops idle (~160ms), back off
-    while (keyMonitorRunning) {
+    while (keyMonitorRunning.load()) {
     // Update window active state at the beginning of each loop
         UpdateWindowActiveState();
     // Re-read hotkeys every frame so config UI changes apply instantly
@@ -474,11 +477,12 @@ void MonitorKeys() {
 void RestartKeyMonitoring() {
     LogOut("[KEYBINDS] Restarting key monitoring system", true);
     
-    // Signal existing thread to exit
-    keyMonitorRunning = false;
-    
-    // Give it time to exit cleanly
-    Sleep(100);
+    // If already running, signal existing thread to exit
+    if (keyMonitorRunning.load()) {
+        keyMonitorRunning.store(false);
+        // Give it time to exit cleanly
+        Sleep(100);
+    }
     
     // Reset state
     p1Jumping = false;
@@ -486,7 +490,7 @@ void RestartKeyMonitoring() {
     // Reset any other state variables...
     
     // Start new monitoring thread
-    keyMonitorRunning = true;
+    keyMonitorRunning.store(true);
     std::thread(MonitorKeys).detach();
     
     LogOut("[KEYBINDS] Key monitoring system restarted", true);
@@ -962,9 +966,7 @@ void GlobalF1MonitorThread() {
     int idleLoops = 0;
     while (globalF1ThreadRunning.load()) {
         // Park in online mode and reduce work when window inactive
-        if (g_onlineModeActive.load()) {
-            break; // exit thread permanently once online mode is active
-        }
+    if (g_onlineModeActive.load()) { keyMonitorRunning.store(false); break; }
         if (!g_efzWindowActive.load()) {
             // Back off heavily when game window not focused
             Sleep(96);

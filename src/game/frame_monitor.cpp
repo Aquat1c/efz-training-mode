@@ -734,14 +734,27 @@ void FrameDataMonitor() {
                 snap.p1CharId = pid1; snap.p2CharId = pid2;
                 PublishSnapshot(snap);
 
-                // Also read and enforce character-specific values in this centralized thread on a slower cadence (~16 Hz)
-                static int charDecim = 0;
-                if ((++charDecim % 12) == 0) {
-                    // Sync IDs into displayData for the read/enforcement functions
+                // Enforce character-specific settings on a modest cadence (~16 Hz)
+                static int charEnfDecim = 0;
+                if ((++charEnfDecim % 12) == 0) {
+                    // Keep IDs fresh for enforcement decisions
                     if (snap.p1CharId >= 0) displayData.p1CharID = snap.p1CharId;
                     if (snap.p2CharId >= 0) displayData.p2CharID = snap.p2CharId;
-                    CharacterSettings::ReadCharacterValues(base, displayData);
                     CharacterSettings::TickCharacterEnforcements(base, displayData);
+                }
+
+                // Read character-specific values infrequently (~every 2 seconds)
+                {
+                    using clock = std::chrono::steady_clock;
+                    static clock::time_point lastCharRead = clock::time_point{};
+                    auto now = clock::now();
+                    if (lastCharRead.time_since_epoch().count() == 0 || (now - lastCharRead) >= std::chrono::seconds(2)) {
+                        // Sync IDs for ReadCharacterValues
+                        if (snap.p1CharId >= 0) displayData.p1CharID = snap.p1CharId;
+                        if (snap.p2CharId >= 0) displayData.p2CharID = snap.p2CharId;
+                        CharacterSettings::ReadCharacterValues(base, displayData);
+                        lastCharRead = now;
+                    }
                 }
             }
 
