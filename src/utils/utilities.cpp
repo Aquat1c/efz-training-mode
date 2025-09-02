@@ -132,6 +132,7 @@ void DisableFeatures() {
     g_statsP2ValuesId = -1;
     g_statsPositionId = -1;
     g_statsMoveIdId = -1;
+    g_statsCleanHitId = -1;
 
     // Also reset trigger/status overlay IDs so they get recreated on next update
     g_TriggerAfterBlockId = -1;
@@ -392,7 +393,12 @@ DisplayData displayData = {
     false, false,       // p1RumiInfiniteShinai, p2RumiInfiniteShinai
     false, false,       // p1RumiKimchiActive, p2RumiKimchiActive
     0, 0,               // p1RumiKimchiTimer, p2RumiKimchiTimer
-    false, false        // p1RumiInfiniteKimchi, p2RumiInfiniteKimchi
+    false, false,       // p1RumiInfiniteKimchi, p2RumiInfiniteKimchi
+    // Akiko defaults
+    0, 0,               // p1AkikoBulletCycle, p2AkikoBulletCycle
+    0, 0,               // p1AkikoTimeslowTrigger, p2AkikoTimeslowTrigger
+    false, false,       // p1AkikoFreezeCycle, p2AkikoFreezeCycle
+    false, false        // p1AkikoShowCleanHit, p2AkikoShowCleanHit
 };
 
 // Initialize key bindings with default values
@@ -418,6 +424,7 @@ int g_statsP1ValuesId = -1;
 int g_statsP2ValuesId = -1;
 int g_statsPositionId = -1;
 int g_statsMoveIdId = -1;
+int g_statsCleanHitId = -1;
 
 // Auto-action settings - replace single trigger with individual triggers
 std::atomic<bool> autoActionEnabled(false);

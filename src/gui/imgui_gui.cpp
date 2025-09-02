@@ -826,6 +826,10 @@ namespace ImGuiGui {
             if (ImGui::IsItemHovered()) {
                 ImGui::SetTooltip("Keeps the bullet cycle fixed at the selected value even after using the skill.");
             }
+            bool showCH1 = guiState.localData.p1AkikoShowCleanHit;
+            if (ImGui::Checkbox("Show Clean Hit helper##p1Akiko", &showCH1)) {
+                guiState.localData.p1AkikoShowCleanHit = showCH1;
+            }
             ImGui::Text("Time-Slow Trigger:");
             const char* tsItems1[] = { "Inactive", "A Version", "B Version", "C Version", "Infinite timer" };
             int ts1 = guiState.localData.p1AkikoTimeslowTrigger;
@@ -1027,16 +1031,16 @@ namespace ImGuiGui {
             if (ImGui::IsItemHovered()) {
                 ImGui::SetTooltip("Keeps the bullet cycle fixed at the selected value even after using the skill.");
             }
+            bool showCH2 = guiState.localData.p2AkikoShowCleanHit;
+            if (ImGui::Checkbox("Show Clean Hit helper##p2Akiko", &showCH2)) {
+                guiState.localData.p2AkikoShowCleanHit = showCH2;
+            }
             ImGui::Text("Time-Slow Trigger:");
             const char* tsItems2[] = { "Inactive", "A Version", "B Version", "C Version", "Infinite timer" };
             int ts2 = guiState.localData.p2AkikoTimeslowTrigger;
             ts2 = CLAMP(ts2, AKIKO_TIMESLOW_INACTIVE, AKIKO_TIMESLOW_INFINITE);
             if (ImGui::Combo("##P2AkikoTimeslow", &ts2, tsItems2, IM_ARRAYSIZE(tsItems2))) {
                 guiState.localData.p2AkikoTimeslowTrigger = ts2;
-            }
-            ImGui::Checkbox("Keep bullet cycle fixed", &guiState.localData.p2AkikoFreezeCycle);
-            if (ImGui::IsItemHovered()) {
-                ImGui::SetTooltip("If enabled, the cycle stays at the selected index even after using 236A/236B.");
             }
             ImGui::TextDisabled("(Akiko: bullet routes and clock-slow)");
         }
@@ -1469,6 +1473,12 @@ namespace ImGuiGui {
         if (updatedData.p1RumiInfiniteKimchi) { updatedData.p1RumiKimchiActive = true; updatedData.p1RumiKimchiTimer = RUMI_KIMCHI_TARGET; }
         if (updatedData.p2RumiInfiniteKimchi) { updatedData.p2RumiKimchiActive = true; updatedData.p2RumiKimchiTimer = RUMI_KIMCHI_TARGET; }
             displayData = updatedData;
+
+            // Ensure Akiko Clean Hit helper flags propagate immediately
+         displayData.p1AkikoShowCleanHit = updatedData.p1AkikoShowCleanHit;
+         displayData.p2AkikoShowCleanHit = updatedData.p2AkikoShowCleanHit;
+         LogOut("[IMGUI_GUI] CleanHit flags applied: P1=" + std::to_string((int)displayData.p1AkikoShowCleanHit) +
+             " P2=" + std::to_string((int)displayData.p2AkikoShowCleanHit), true);
 
             // Ensure new Rumi flags are preserved
             displayData.p1RumiInfiniteShinai = updatedData.p1RumiInfiniteShinai;

@@ -681,6 +681,9 @@ void FrameDataMonitor() {
                 static uintptr_t s_p1CharNameAddr = 0, s_p2CharNameAddr = 0; // used to derive IDs if needed
                 static uintptr_t s_p1CharIdAddr = 0, s_p2CharIdAddr = 0; // if ID offset exists in struct (fallback to name->id map)
                 static int s_cacheCounter = 0;
+                // Clean Hit helper state (HP-based, one-shot)
+                static int s_prevHpP1 = -1, s_prevHpP2 = -1;
+                static int s_cleanHitSuppress = 0; // small cooldown in frames to avoid dupes
                 if (++s_cacheCounter >= 192 || !s_p1YAddr || !s_p2YAddr || !s_p1XAddr || !s_p2XAddr ||
                     !s_p1HpAddr || !s_p2HpAddr || !s_p1MeterAddr || !s_p2MeterAddr || !s_p1RfAddr || !s_p2RfAddr ||
                     !s_p1CharNameAddr || !s_p2CharNameAddr) {
@@ -732,6 +735,73 @@ void FrameDataMonitor() {
                     pid2 = CharacterSettings::GetCharacterID(std::string(name2));
                 }
                 snap.p1CharId = pid1; snap.p2CharId = pid2;
+
+                // One-shot Akiko Clean Hit helper (frame-monitor based): trigger on HP drop of defender
+                if (currentPhase == GamePhase::Match && DirectDrawHook::isHooked) {
+                    if (s_prevHpP1 < 0 || s_prevHpP2 < 0) { s_prevHpP1 = p1Hp; s_prevHpP2 = p2Hp; }
+                    bool p1Dropped = (p1Hp < s_prevHpP1);
+                    bool p2Dropped = (p2Hp < s_prevHpP2);
+                    if (s_cleanHitSuppress > 0) { s_cleanHitSuppress--; }
+
+                    int atkPlayer = 0, defPlayer = 0;
+                    if (p2Dropped && !p1Dropped) { atkPlayer = 1; defPlayer = 2; }
+                    else if (p1Dropped && !p2Dropped) { atkPlayer = 2; defPlayer = 1; }
+
+                    if (atkPlayer != 0 && s_cleanHitSuppress == 0) {
+                        // Gating: attacker must be Akiko, and user enabled per-player flag
+                        bool akikoAtk = (atkPlayer == 1) ? (displayData.p1CharID == CHAR_ID_AKIKO)
+                                                         : (displayData.p2CharID == CHAR_ID_AKIKO);
+                        bool userEnabled = (atkPlayer == 1) ? displayData.p1AkikoShowCleanHit
+                                                            : displayData.p2AkikoShowCleanHit;
+                        if (akikoAtk && userEnabled) {
+                            // Move gating: only last hit of 623 (259 for A/B, 254 for C)
+                            short atkMove = (atkPlayer == 1) ? moveID1 : moveID2;
+                            bool isLastAB = (atkMove == AKIKO_MOVE_623_LAST_AB);
+                            bool isLastC  = (atkMove == AKIKO_MOVE_623_LAST_C);
+                            if (isLastAB || isLastC) {
+                                // Compute dY using current positions
+                                double atkY = (atkPlayer == 1) ? p1Y : p2Y;
+                                double defY = (defPlayer == 1) ? p1Y : p2Y;
+                                double diff = atkY - defY;
+
+                                std::stringstream ss; ss.setf(std::ios::fixed); ss << std::setprecision(2);
+                                ss << "Akiko 623 last hit dY=" << diff << "  ";
+                                if (isLastC) {
+                                    if (diff > 47.0 && diff < 53.0) {
+                                        ss << "FULL CLEAN HIT!";
+                                    } else if (diff > 40.0 && diff < 60.0) {
+                                        ss << "PARTIAL CLEAN HIT!";
+                                        if (diff >= 47.0) ss << " (Enemy's too high for FULL by " << (diff - 53.0) << ")";
+                                        else ss << " (Enemy's too low for FULL by " << (47.0 - diff) << ")";
+                                    } else {
+                                        if (diff >= 40.0) ss << "Enemy's too high for PARTIAL by " << (diff - 60.0);
+                                        else ss << "Enemy's too low for PARTIAL by " << (40.0 - diff);
+                                    }
+                                } else {
+                                    if (diff > 32.0 && diff < 48.0) {
+                                        ss << "CLEAN HIT!";
+                                    } else if (diff >= 48.0) {
+                                        ss << "Enemy's too high by " << (diff - 48.0);
+                                    } else {
+                                        ss << "Enemy's too low by " << (32.0 - diff);
+                                    }
+                                }
+
+                                LogOut(std::string("[CLEANHIT][FM] atk=P") + std::to_string(atkPlayer) +
+                                       " def=P" + std::to_string(defPlayer) +
+                                       " move=" + std::to_string((int)atkMove) +
+                                       " diffY=" + std::to_string(diff) +
+                                       " -> " + ss.str(), true);
+                                DirectDrawHook::AddMessage(ss.str(), "SYSTEM", RGB(255, 255, 0), 1500, 0, 100);
+                                s_cleanHitSuppress = 8; // ~40ms at 192fps
+                            }
+                        }
+                    }
+
+                    // Update previous HPs after detection pass
+                    s_prevHpP1 = p1Hp; s_prevHpP2 = p2Hp;
+                }
+
                 PublishSnapshot(snap);
 
                 // Enforce character-specific settings on a modest cadence (~16 Hz)
@@ -965,9 +1035,9 @@ bool AreCharactersInitialized() {
 }
 
 void UpdateStatsDisplay() {
-    // Return early if stats display is disabled or DirectDraw hook isn't initialized
-    if (!g_statsDisplayEnabled.load() || !DirectDrawHook::isHooked) {
-        // Clear existing messages if display is disabled
+    // Always require overlay hook; allow Clean Hit helper to run even if stats are disabled
+    if (!DirectDrawHook::isHooked) {
+        // Clear any existing messages when overlay is unavailable
         if (g_statsP1ValuesId != -1) {
             DirectDrawHook::RemovePermanentMessage(g_statsP1ValuesId);
             DirectDrawHook::RemovePermanentMessage(g_statsP2ValuesId);
@@ -978,7 +1048,27 @@ void UpdateStatsDisplay() {
             g_statsPositionId = -1;
             g_statsMoveIdId = -1;
         }
+        if (g_statsCleanHitId != -1) {
+            DirectDrawHook::RemovePermanentMessage(g_statsCleanHitId);
+            g_statsCleanHitId = -1;
+        }
         return;
+    }
+
+    // Stats can be toggled off; keep Clean Hit helper independent of this
+    bool statsOn = g_statsDisplayEnabled.load();
+    if (!statsOn) {
+        // Clear stats lines if they exist while stats are disabled
+        if (g_statsP1ValuesId != -1) {
+            DirectDrawHook::RemovePermanentMessage(g_statsP1ValuesId);
+            DirectDrawHook::RemovePermanentMessage(g_statsP2ValuesId);
+            DirectDrawHook::RemovePermanentMessage(g_statsPositionId);
+            DirectDrawHook::RemovePermanentMessage(g_statsMoveIdId);
+            g_statsP1ValuesId = -1;
+            g_statsP2ValuesId = -1;
+            g_statsPositionId = -1;
+            g_statsMoveIdId = -1;
+        }
     }
 
     // Check for valid game state - return early if not in a valid state
@@ -993,6 +1083,10 @@ void UpdateStatsDisplay() {
             g_statsP2ValuesId = -1;
             g_statsPositionId = -1;
             g_statsMoveIdId = -1;
+        }
+        if (g_statsCleanHitId != -1) {
+            DirectDrawHook::RemovePermanentMessage(g_statsCleanHitId);
+            g_statsCleanHitId = -1;
         }
         return;
     }
@@ -1083,10 +1177,15 @@ void UpdateStatsDisplay() {
         startY += lineHeight;
     };
 
-    upsert(g_statsP1ValuesId, p1Values.str());
-    upsert(g_statsP2ValuesId, p2Values.str());
-    upsert(g_statsPositionId, positions.str());
-    upsert(g_statsMoveIdId, moveIds.str());
+    if (statsOn) {
+        upsert(g_statsP1ValuesId, p1Values.str());
+        upsert(g_statsP2ValuesId, p2Values.str());
+        upsert(g_statsPositionId, positions.str());
+    }
+
+    if (statsOn) {
+        upsert(g_statsMoveIdId, moveIds.str());
+    }
 
     return;
 }
