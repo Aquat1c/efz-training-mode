@@ -37,6 +37,15 @@ namespace CharacterSettings {
     static std::chrono::steady_clock::time_point s_lastRumiLogP1{};
     static std::chrono::steady_clock::time_point s_lastRumiLogP2{};
     static constexpr std::chrono::seconds RUMI_LOG_HEARTBEAT{5};
+
+    // Akiko change-only logging heartbeat
+    static int s_lastAkikoBulletP1 = -1;
+    static int s_lastAkikoBulletP2 = -1;
+    static int s_lastAkikoTimeP1 = -1;
+    static int s_lastAkikoTimeP2 = -1;
+    static std::chrono::steady_clock::time_point s_lastAkikoLogP1{};
+    static std::chrono::steady_clock::time_point s_lastAkikoLogP2{};
+    static constexpr std::chrono::seconds AKIKO_LOG_HEARTBEAT{5};
     
     // Updated character name mapping with correct display names
     static const std::unordered_map<std::string, int> characterNameMap = {
@@ -273,6 +282,36 @@ namespace CharacterSettings {
         if (data.p2CharID == CHAR_ID_NANASE) {
             ReadRumiState(2);
         }
+
+        // Akiko (Minase) – bullet cycle and timeslow trigger
+        auto ReadAkiko = [&](int playerIndex){
+            const int off = (playerIndex==1)?EFZ_BASE_OFFSET_P1:EFZ_BASE_OFFSET_P2;
+            uintptr_t bulletAddr = ResolvePointer(base, off, AKIKO_BULLET_CYCLE_OFFSET);
+            uintptr_t timeAddr   = ResolvePointer(base, off, AKIKO_TIMESLOW_TRIGGER_OFFSET);
+            int bullet=0, t=0; if (bulletAddr) SafeReadMemory(bulletAddr,&bullet,sizeof(int)); if (timeAddr) SafeReadMemory(timeAddr,&t,sizeof(int));
+            auto now = std::chrono::steady_clock::now();
+            if (playerIndex==1) {
+                data.p1AkikoBulletCycle = bullet; data.p1AkikoTimeslowTrigger = t;
+                bool changed = (s_lastAkikoBulletP1!=bullet)||(s_lastAkikoTimeP1!=t);
+                bool heartbeat = (s_lastAkikoLogP1.time_since_epoch().count()==0)||((now - s_lastAkikoLogP1) >= AKIKO_LOG_HEARTBEAT);
+                if (detailedLogging.load() && (changed || heartbeat)) {
+                    LogOut("[CHAR] Read P1 Akiko: BulletCycle=" + std::to_string(bullet) + ", TimeSlow=" + std::to_string(t), true);
+                    s_lastAkikoLogP1 = now;
+                }
+                s_lastAkikoBulletP1=bullet; s_lastAkikoTimeP1=t;
+            } else {
+                data.p2AkikoBulletCycle = bullet; data.p2AkikoTimeslowTrigger = t;
+                bool changed = (s_lastAkikoBulletP2!=bullet)||(s_lastAkikoTimeP2!=t);
+                bool heartbeat = (s_lastAkikoLogP2.time_since_epoch().count()==0)||((now - s_lastAkikoLogP2) >= AKIKO_LOG_HEARTBEAT);
+                if (detailedLogging.load() && (changed || heartbeat)) {
+                    LogOut("[CHAR] Read P2 Akiko: BulletCycle=" + std::to_string(bullet) + ", TimeSlow=" + std::to_string(t), true);
+                    s_lastAkikoLogP2 = now;
+                }
+                s_lastAkikoBulletP2=bullet; s_lastAkikoTimeP2=t;
+            }
+        };
+        if (data.p1CharID == CHAR_ID_AKIKO) ReadAkiko(1);
+        if (data.p2CharID == CHAR_ID_AKIKO) ReadAkiko(2);
     }
     
     void ApplyCharacterValues(uintptr_t base, const DisplayData& data) {
@@ -532,6 +571,19 @@ namespace CharacterSettings {
         }
         
         // No background threads anymore; enforcement happens inline via TickCharacterEnforcements()
+
+        // Apply Akiko values directly when set in DisplayData
+        auto ApplyAkiko = [&](int pi){
+            if ((pi==1 && data.p1CharID != CHAR_ID_AKIKO) || (pi==2 && data.p2CharID != CHAR_ID_AKIKO)) return;
+            const int off = (pi==1)?EFZ_BASE_OFFSET_P1:EFZ_BASE_OFFSET_P2;
+            uintptr_t bulletAddr = ResolvePointer(base, off, AKIKO_BULLET_CYCLE_OFFSET);
+            uintptr_t timeAddr   = ResolvePointer(base, off, AKIKO_TIMESLOW_TRIGGER_OFFSET);
+            int bullet = (pi==1)?data.p1AkikoBulletCycle:data.p2AkikoBulletCycle;
+            int t      = (pi==1)?data.p1AkikoTimeslowTrigger:data.p2AkikoTimeslowTrigger;
+            if (bulletAddr) SafeWriteMemory(bulletAddr,&bullet,sizeof(int));
+            if (timeAddr)   SafeWriteMemory(timeAddr,&t,sizeof(int));
+            LogOut(std::string("[CHAR] Applied ") + (pi==1?"P1":"P2") + " Akiko: BulletCycle=" + std::to_string(bullet) + ", TimeSlow=" + std::to_string(t), detailedLogging.load());
+        }; ApplyAkiko(1); ApplyAkiko(2);
     }
     
     // Track previous values (used by inline enforcement)
@@ -656,5 +708,16 @@ namespace CharacterSettings {
         }; enforceKimchi(1); enforceKimchi(2);
 
         (void)didWriteThisTick; // reserved for future backoff tuning/logging
+
+        // Akiko: enforce infinite timeslow when set to AKIKO_TIMESLOW_INFINITE (4)
+        auto enforceAkiko = [&](int pi){
+            if ((pi==1 && localData.p1CharID != CHAR_ID_AKIKO) || (pi==2 && localData.p2CharID != CHAR_ID_AKIKO)) return;
+            const int off = (pi==1)?EFZ_BASE_OFFSET_P1:EFZ_BASE_OFFSET_P2;
+            auto tAddr = ResolvePointer(base, off, AKIKO_TIMESLOW_TRIGGER_OFFSET);
+            if (!tAddr) return; int cur=0; SafeReadMemory(tAddr,&cur,sizeof(int));
+            if (cur != AKIKO_TIMESLOW_INFINITE && ((pi==1 && localData.p1AkikoTimeslowTrigger==AKIKO_TIMESLOW_INFINITE) || (pi==2 && localData.p2AkikoTimeslowTrigger==AKIKO_TIMESLOW_INFINITE))) {
+                int inf = AKIKO_TIMESLOW_INFINITE; SafeWriteMemory(tAddr,&inf,sizeof(int));
+            }
+        }; enforceAkiko(1); enforceAkiko(2);
     }
 }

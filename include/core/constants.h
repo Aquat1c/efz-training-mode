@@ -393,3 +393,15 @@
 #define RAW_INPUT_LEFT  255
 #define RAW_INPUT_RIGHT 1
 #define RAW_INPUT_NEUTRAL 0
+
+// Akiko (Minase) – character-specific offsets
+// From CE table and wiki:
+// - Bullet cycle used by 236A/236B routes (integer)
+// - Time-slow trigger: 0=inactive, 1=A, 2=B, 3=C, 4=Infinite timer
+#define AKIKO_BULLET_CYCLE_OFFSET        0x3150
+#define AKIKO_TIMESLOW_TRIGGER_OFFSET    0x0160
+#define AKIKO_TIMESLOW_INACTIVE          0
+#define AKIKO_TIMESLOW_A                 1
+#define AKIKO_TIMESLOW_B                 2
+#define AKIKO_TIMESLOW_C                 3
+#define AKIKO_TIMESLOW_INFINITE          4
