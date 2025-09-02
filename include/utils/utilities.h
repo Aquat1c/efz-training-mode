@@ -195,6 +195,8 @@ struct DisplayData {
     int  p2AkikoTimeslowTrigger;
     bool p1AkikoFreezeCycle;     // keep bullet cycle fixed at selected value
     bool p2AkikoFreezeCycle;
+    bool p1AkikoShowCleanHit;    // show Clean Hit helper overlay when Akiko is P1
+    bool p2AkikoShowCleanHit;    // show Clean Hit helper overlay when Akiko is P2
 };
 
 extern DisplayData displayData;
@@ -263,6 +265,7 @@ extern int g_statsP1ValuesId;
 extern int g_statsP2ValuesId;
 extern int g_statsPositionId;
 extern int g_statsMoveIdId;
+extern int g_statsCleanHitId; // New: Akiko Clean Hit helper line id
 
 // Window and key monitoring management
 void ManageKeyMonitoring();

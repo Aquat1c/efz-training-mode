@@ -405,3 +405,8 @@
 #define AKIKO_TIMESLOW_B                 2
 #define AKIKO_TIMESLOW_C                 3
 #define AKIKO_TIMESLOW_INFINITE          4
+
+// Akiko – Clean Hit helper last-hit Move IDs for 623 rekka
+// A/B: 3rd hit ends at moveId 259; C: 6th hit ends at moveId 254
+#define AKIKO_MOVE_623_LAST_AB           259
+#define AKIKO_MOVE_623_LAST_C            254
