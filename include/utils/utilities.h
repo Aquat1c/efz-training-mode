@@ -187,6 +187,12 @@ struct DisplayData {
     int  p2RumiKimchiTimer;
     bool p1RumiInfiniteKimchi; // keep timer topped up
     bool p2RumiInfiniteKimchi;
+
+    // Akiko (Minase)
+    int  p1AkikoBulletCycle;
+    int  p2AkikoBulletCycle;
+    int  p1AkikoTimeslowTrigger; // 0=inactive,1=A,2=B,3=C,4=infinite
+    int  p2AkikoTimeslowTrigger;
 };
 
 extern DisplayData displayData;

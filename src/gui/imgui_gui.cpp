@@ -775,7 +775,7 @@ namespace ImGuiGui {
                 guiState.localData.p1MisuzuFeathers = 0;
             }
         }
-        // P1 Mishio Settings
+    // P1 Mishio Settings
         else if (p1CharID == CHAR_ID_MISHIO) {
             // Element selection
             int prevElem = guiState.localData.p1MishioElement;
@@ -803,6 +803,24 @@ namespace ImGuiGui {
                 ImGui::TextDisabled("(set Element to Awakened to edit)");
             }
         }
+        // P1 Akiko (Minase) Settings
+        else if (p1CharID == CHAR_ID_AKIKO) {
+            ImGui::Text("236A/236B Bullet Cycle:");
+            int bc1 = guiState.localData.p1AkikoBulletCycle;
+            if (ImGui::InputInt("##P1AkikoBullet", &bc1)) {
+                if (bc1 < 0) bc1 = 0;
+                guiState.localData.p1AkikoBulletCycle = bc1;
+            }
+            ImGui::Text("Time-Slow Trigger:");
+            const char* tsItems1[] = { "Inactive", "A Version", "B Version", "C Version", "Infinite timer" };
+            int ts1 = guiState.localData.p1AkikoTimeslowTrigger;
+            ts1 = CLAMP(ts1, AKIKO_TIMESLOW_INACTIVE, AKIKO_TIMESLOW_INFINITE);
+            if (ImGui::Combo("##P1AkikoTimeslow", &ts1, tsItems1, IM_ARRAYSIZE(tsItems1))) {
+                guiState.localData.p1AkikoTimeslowTrigger = ts1;
+            }
+            ImGui::TextDisabled("(Akiko: bullet routes and clock-slow)");
+        }
+
         // P1 Doppel (ExNanase) Settings
         else if (p1CharID == CHAR_ID_EXNANASE) {
             bool enlightened = guiState.localData.p1DoppelEnlightened;
@@ -946,7 +964,7 @@ namespace ImGuiGui {
                 guiState.localData.p2MisuzuFeathers = 0;
             }
         }
-        // P2 Mishio Settings
+    // P2 Mishio Settings
         else if (p2CharID == CHAR_ID_MISHIO) {
             int prevElem2 = guiState.localData.p2MishioElement;
             int elem = prevElem2;
@@ -971,6 +989,24 @@ namespace ImGuiGui {
                 ImGui::TextDisabled("(set Element to Awakened to edit)");
             }
         }
+        // P2 Akiko (Minase) Settings
+        else if (p2CharID == CHAR_ID_AKIKO) {
+            ImGui::Text("236A/236B Bullet Cycle:");
+            int bc2 = guiState.localData.p2AkikoBulletCycle;
+            if (ImGui::InputInt("##P2AkikoBullet", &bc2)) {
+                if (bc2 < 0) bc2 = 0;
+                guiState.localData.p2AkikoBulletCycle = bc2;
+            }
+            ImGui::Text("Time-Slow Trigger:");
+            const char* tsItems2[] = { "Inactive", "A Version", "B Version", "C Version", "Infinite timer" };
+            int ts2 = guiState.localData.p2AkikoTimeslowTrigger;
+            ts2 = CLAMP(ts2, AKIKO_TIMESLOW_INACTIVE, AKIKO_TIMESLOW_INFINITE);
+            if (ImGui::Combo("##P2AkikoTimeslow", &ts2, tsItems2, IM_ARRAYSIZE(tsItems2))) {
+                guiState.localData.p2AkikoTimeslowTrigger = ts2;
+            }
+            ImGui::TextDisabled("(Akiko: bullet routes and clock-slow)");
+        }
+
         // P2 Doppel (ExNanase) Settings
         else if (p2CharID == CHAR_ID_EXNANASE) {
             bool enlightened2 = guiState.localData.p2DoppelEnlightened;
@@ -1040,7 +1076,7 @@ namespace ImGuiGui {
         ImGui::Separator();
         ImGui::TextWrapped(
             "Character-specific settings allow you to modify special parameters unique to each character.\n"
-            "Currently supported: Ikumi (Blood/Genocide), Misuzu (Feathers), Mishio (Element/Awakened), Rumi (Stance, Kimchi)");
+            "Currently supported: Ikumi (Blood/Genocide), Misuzu (Feathers), Mishio (Element/Awakened), Rumi (Stance, Kimchi), Akiko (Bullet Cycle/Time-Slow)");
     }
     
     // Add this new function to the ImGuiGui namespace:
