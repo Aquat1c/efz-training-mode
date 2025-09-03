@@ -638,6 +638,114 @@ void FrameDataMonitor() {
             if (cachedMoveIDAddr2 && !SafeReadMemory(cachedMoveIDAddr2, &moveID2, sizeof(short))) {
                 cachedMoveIDAddr2 = ResolvePointer(base, EFZ_BASE_OFFSET_P2, MOVE_ID_OFFSET);
             }
+
+    // DEBUG: sampler for block-related values; trigger only on attacks (move/state >= 200 and not idle)
+    // Disabled (kept for potential future diagnostics)
+            {
+        constexpr bool kEnableBlockDbg = false;
+                if (kEnableBlockDbg && detailedLogging.load() && currentPhase == GamePhase::Match) {
+                    bool p1Trig = (moveID1 >= 200 && moveID1 != IDLE_MOVE_ID);
+                    bool p2Trig = (moveID2 >= 200 && moveID2 != IDLE_MOVE_ID);
+            // Only sample when at least one player is in an attack/state >= 200
+            bool shouldSample = p1Trig || p2Trig;
+                    if (shouldSample) {
+                        uintptr_t p1PtrDbg = 0, p2PtrDbg = 0;
+                        SafeReadMemory(base + EFZ_BASE_OFFSET_P1, &p1PtrDbg, sizeof(p1PtrDbg));
+                        SafeReadMemory(base + EFZ_BASE_OFFSET_P2, &p2PtrDbg, sizeof(p2PtrDbg));
+                        // Determine attacker for this log line
+                        int atkId = p1Trig ? 1 : (p2Trig ? 2 : ((moveID1 >= 200) ? 1 : ((moveID2 >= 200) ? 2 : 0)));
+                        bool atkHasReq = false;
+                        auto samplePlayer = [&](int pid, uintptr_t pBase, bool showAddr, bool* hasReqOut) {
+                            if (!pBase) return std::string("P") + std::to_string(pid) + ": <null>";
+                            // Read direction/stance (raw inputs)
+                            int8_t dir = 0; uint8_t stance = 0;
+                            SafeReadMemory(pBase + BLOCK_DIRECTION_OFFSET, &dir, sizeof(dir));
+                            SafeReadMemory(pBase + BLOCK_STANCE_OFFSET, &stance, sizeof(stance));
+                            // Compute frameBlock pointer
+                            uint16_t state = 0, frame = 0; uintptr_t animTab = 0, framesPtr = 0, frameBlock = 0;
+                            SafeReadMemory(pBase + MOVE_ID_OFFSET, &state, sizeof(state)); // move/state at +0x8
+                            SafeReadMemory(pBase + CURRENT_FRAME_INDEX_OFFSET, &frame, sizeof(frame));
+                            SafeReadMemory(pBase + ANIM_TABLE_OFFSET, &animTab, sizeof(animTab));
+                            if (animTab) {
+                                uintptr_t entryAddr = animTab + (static_cast<uintptr_t>(state) * ANIM_ENTRY_STRIDE) + ANIM_ENTRY_FRAMES_PTR_OFFSET;
+                                SafeReadMemory(entryAddr, &framesPtr, sizeof(framesPtr));
+                                if (framesPtr) {
+                                    frameBlock = framesPtr + (static_cast<uintptr_t>(frame) * FRAME_BLOCK_STRIDE);
+                                }
+                            }
+                            uint16_t atk=0, hit=0, grd=0;
+                            if (frameBlock) {
+                                SafeReadMemory(frameBlock + FRAME_ATTACK_PROPS_OFFSET, &atk, sizeof(atk));
+                                SafeReadMemory(frameBlock + FRAME_HIT_PROPS_OFFSET, &hit, sizeof(hit));
+                                SafeReadMemory(frameBlock + FRAME_GUARD_PROPS_OFFSET, &grd, sizeof(grd));
+                            }
+                            bool isAttacker = (pid == atkId);
+                            // Decode only for attacker to avoid confusion
+                            const char* level = "N/A";
+                            bool blockable = false;
+                            // Hidden probes kept for future validation; set to true locally when needed
+                            constexpr bool kShowProbeBits = false;
+                            bool blockable10 = false, blockable01 = false, blockable2000 = false;
+                            if (isAttacker) {
+                                bool isHigh = (atk & 0x1) != 0;
+                                bool isLow  = (atk & 0x2) != 0;
+                // Treat guardable frames with no HIGH/LOW bits as ANY
+                if (isHigh && isLow) level = "ANY";
+                else if (isHigh) level = "HIGH";
+                else if (isLow) level = "LOW";
+                else if (grd != 0) level = "ANY";
+                else level = "NONE";
+                if (hasReqOut) { *hasReqOut = (isHigh || isLow || (grd != 0)); }
+                                // Prefer GuardProps presence as practical blockable indicator (nonzero => guardable window)
+                                blockable = (grd != 0);
+                                // Keep probes available for quick toggling if needed
+                                blockable10   = (hit & 0x10)   != 0;   // bit4 probe
+                                blockable01   = (hit & 0x01)   != 0;   // bit0 probe (expected)
+                                blockable2000 = (hit & 0x2000) != 0;   // bit13 probe
+                            }
+                            std::ostringstream os; os << (isAttacker ? "ATK " : "DEF ") << "P" << pid
+                                << " dir=" << (int)dir
+                                << " stance=" << (int)stance
+                                << " move=" << state
+                                << " frame=" << frame
+                                << " atk=0x" << std::hex << std::uppercase << atk
+                                << " hit=0x" << hit
+                                << " grd=0x" << grd
+                                << std::dec;
+                            if (isAttacker) {
+                                          os << " req=" << level
+                                              << " blk=" << (blockable ? "BLOCKABLE" : "UNBLOCKABLE") << "[GRD]";
+                                if (kShowProbeBits) {
+                                    os << " (p10=" << (blockable10 ? "Y" : "N")
+                                       << ", p01=" << (blockable01 ? "Y" : "N")
+                                       << ", p2000=" << (blockable2000 ? "Y" : "N")
+                                       << ")";
+                                }
+                            }
+                            if (showAddr && frameBlock) {
+                                os << " fb=" << FM_Hex(frameBlock);
+                            }
+                            return os.str();
+                        };
+                        bool showAddr = (p1Trig || p2Trig);
+                        std::string l1 = samplePlayer(1, p1PtrDbg, showAddr, &atkHasReq);
+                        std::string l2 = samplePlayer(2, p2PtrDbg, showAddr, &atkHasReq);
+                        std::string prefix = "[BLOCKDBG]";
+            if ((p1Trig || p2Trig) && !atkHasReq) {
+                            // Attacker has no guard requirement yet; skip logs for this move frame
+                            (void)0;
+                        } else {
+                            if (p1Trig || p2Trig) {
+                            prefix += " [TRIG";
+                                if (p1Trig) prefix += " P1";
+                                if (p2Trig) prefix += " P2";
+                            prefix += "]";
+                            }
+                            LogOut(prefix + std::string(" ") + l1 + " | " + l2, true);
+                        }
+                    }
+                }
+            }
             
             // CRITICAL: Increment frame counter IMMEDIATELY for precise tracking
             framesSinceLastLog++;
@@ -651,6 +759,9 @@ void FrameDataMonitor() {
                 MonitorFrameAdvantage(moveID1, moveID2, prevMoveID1, prevMoveID2);
             }
             
+            // Run dummy auto-block stance early for minimal latency (uses current move IDs)
+            MonitorDummyAutoBlock(moveID1, moveID2, prevMoveID1, prevMoveID2);
+
             if (moveIDsChanged || criticalFeaturesActive) {
                 // STEP 1: Process auto-actions FIRST (highest priority)
                 ProcessTriggerDelays();      // Handle pending delays
@@ -666,9 +777,7 @@ void FrameDataMonitor() {
                 ClearDelayStatesIfNonActionable();     
             }
             
-            // Ensure Dummy Auto-Block monitor runs every frame during Match (not gated by move changes)
-            // Important: pass previous moveIDs before updating them
-            MonitorDummyAutoBlock(moveID1, moveID2, prevMoveID1, prevMoveID2);
+            // (Removed duplicate late call to MonitorDummyAutoBlock; it now runs once early each frame.)
 
             // Publish a snapshot for other consumers at the end of logic section
             {
@@ -1160,8 +1269,42 @@ void UpdateStatsDisplay() {
               << "]  P2 [X: " << std::fixed << std::setprecision(2) << p2X 
               << ", Y: " << std::fixed << std::setprecision(2) << p2Y << "]";
     
-    // Move IDs
-    moveIds << "MoveID:  P1: " << p1MoveId << "  P2: " << p2MoveId;
+    // Move IDs with P1 guard requirement (HIGH/LOW/ANY) appended when available
+    std::string p1ReqStr;
+    if (statsOn) {
+        // Sample P1's current frame flags to decode guard requirement
+        if (base) {
+            uintptr_t p1BasePtr = 0;
+            if (SafeReadMemory(base + EFZ_BASE_OFFSET_P1, &p1BasePtr, sizeof(p1BasePtr)) && p1BasePtr) {
+                uint16_t st = 0, fr = 0; uintptr_t animTab = 0;
+                if (SafeReadMemory(p1BasePtr + MOVE_ID_OFFSET, &st, sizeof(st)) &&
+                    SafeReadMemory(p1BasePtr + CURRENT_FRAME_INDEX_OFFSET, &fr, sizeof(fr)) &&
+                    SafeReadMemory(p1BasePtr + ANIM_TABLE_OFFSET, &animTab, sizeof(animTab)) && animTab) {
+                    uintptr_t framesPtr = 0;
+                    uintptr_t entryAddr = animTab + (static_cast<uintptr_t>(st) * ANIM_ENTRY_STRIDE) + ANIM_ENTRY_FRAMES_PTR_OFFSET;
+                    if (SafeReadMemory(entryAddr, &framesPtr, sizeof(framesPtr)) && framesPtr) {
+                        uintptr_t frameBlock = framesPtr + (static_cast<uintptr_t>(fr) * FRAME_BLOCK_STRIDE);
+                        uint16_t atk=0, grd=0, hit=0;
+                        if (SafeReadMemory(frameBlock + FRAME_ATTACK_PROPS_OFFSET, &atk, sizeof(atk))) {
+                            // GuardProps preferred for blockable window; use AttackProps to decide HIGH/LOW
+                            SafeReadMemory(frameBlock + FRAME_GUARD_PROPS_OFFSET, &grd, sizeof(grd));
+                            SafeReadMemory(frameBlock + FRAME_HIT_PROPS_OFFSET, &hit, sizeof(hit));
+                            bool isHigh = (atk & 0x1) != 0;
+                            bool isLow  = (atk & 0x2) != 0;
+                            if (isHigh && isLow) p1ReqStr = "ANY";
+                            else if (isHigh)     p1ReqStr = "HIGH";
+                            else if (isLow)      p1ReqStr = "LOW";
+                            else if (grd != 0)   p1ReqStr = "ANY"; // guardable with no explicit high/low
+                            // else: leave empty when not guardable
+                        }
+                    }
+                }
+            }
+        }
+    }
+    moveIds << "MoveID:  P1: " << p1MoveId;
+    if (!p1ReqStr.empty()) moveIds << " [" << p1ReqStr << "]";
+    moveIds << "  P2: " << p2MoveId;
 
     // Set or update the display - MOVED DOWN from original position
     const int startX = 20;

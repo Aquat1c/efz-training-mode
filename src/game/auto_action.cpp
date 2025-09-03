@@ -12,6 +12,7 @@
 #include "../include/input/input_freeze.h"     // Add this include near the top with the other includes
 #include "../include/game/attack_reader.h"
 #include "../include/input/immediate_input.h"
+#include <cmath>
 // Define the motion input constants if they're not already defined
 #ifndef MOTION_INPUT_UP
 #define MOTION_INPUT_UP INPUT_UP
@@ -911,6 +912,10 @@ void ClearDelayStatesIfNonActionable() {
 
 // Replace the ApplyAutoAction function with this implementation:
 void ApplyAutoAction(int playerNum, uintptr_t moveIDAddr, short currentMoveID, short prevMoveID) {
+    // If caller didn't provide current move id, try to read it for better restore tracking
+    if (currentMoveID == 0 && moveIDAddr != 0) {
+        SafeReadMemory(moveIDAddr, &currentMoveID, sizeof(short));
+    }
     // Get the trigger type from the player's delay state
     int triggerType = (playerNum == 1) ? p1DelayState.triggerType : p2DelayState.triggerType;
 
@@ -1002,10 +1007,12 @@ void ApplyAutoAction(int playerNum, uintptr_t moveIDAddr, short currentMoveID, s
     LogOut("[AUTO-ACTION] Jump press scheduled for P" + std::to_string(playerNum), true);
 
         success = true;
-        // Control restore watcher
-        g_lastP2MoveID.store(currentMoveID);
-        g_pendingControlRestore.store(true);
-        g_controlRestoreTimeout.store(90);
+        // Control restore watcher (only applicable for P2 overrides)
+        if (playerNum == 2) {
+            g_lastP2MoveID.store(currentMoveID);
+            g_pendingControlRestore.store(true);
+            g_controlRestoreTimeout.store(90);
+        }
     }
 
     // Special handling: Dashes should be executed by writing to the buffer via the queue
@@ -1014,10 +1021,12 @@ void ApplyAutoAction(int playerNum, uintptr_t moveIDAddr, short currentMoveID, s
         // Ensure immediate-only is disabled so buffer gets written
         g_injectImmediateOnly[playerNum].store(false);
         success = QueueMotionInput(playerNum, motionType, 0);
-        // Control restore monitor
-        g_lastP2MoveID.store(currentMoveID);
-        g_pendingControlRestore.store(true);
-        g_controlRestoreTimeout.store(90);
+        // Control restore monitor (only P2)
+        if (playerNum == 2) {
+            g_lastP2MoveID.store(currentMoveID);
+            g_pendingControlRestore.store(true);
+            g_controlRestoreTimeout.store(90);
+        }
     }
     
     if (!success && isRegularMove) {
@@ -1057,18 +1066,22 @@ void ApplyAutoAction(int playerNum, uintptr_t moveIDAddr, short currentMoveID, s
     if (success) {
         if (isRegularMove) {
             LogOut("[AUTO-ACTION] Set up P2 control restoration for normal attack", true);
-            g_lastP2MoveID.store(currentMoveID);
-            g_pendingControlRestore.store(true);
-            g_controlRestoreTimeout.store(60); // Shorter timeout for normal attacks
+            if (playerNum == 2) {
+                g_lastP2MoveID.store(currentMoveID);
+                g_pendingControlRestore.store(true);
+                g_controlRestoreTimeout.store(60); // Shorter timeout for normal attacks
+            }
                 // Keep trigger marked active while executing to prevent re-triggers
                 p2TriggerActive = true;
                 if (p2TriggerCooldown <= 1) p2TriggerCooldown = 1;
         } else {
             LogOut("[AUTO-ACTION] Set up P2 control restoration monitoring: initial moveID=" + 
                    std::to_string(currentMoveID), true);
-            g_lastP2MoveID.store(currentMoveID);
-            g_pendingControlRestore.store(true);
-            g_controlRestoreTimeout.store(180); // Longer timeout for special moves
+            if (playerNum == 2) {
+                g_lastP2MoveID.store(currentMoveID);
+                g_pendingControlRestore.store(true);
+                g_controlRestoreTimeout.store(180); // Longer timeout for special moves
+            }
                 p2TriggerActive = true;
                 if (p2TriggerCooldown <= 1) p2TriggerCooldown = 1;
         }
