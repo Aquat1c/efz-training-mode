@@ -47,6 +47,10 @@ bool IsGroundedOverhead(int charId, int moveId, uintptr_t attackerBase) {
             // Mio: 236236X (303-305)
             if (InRange(moveId, 303, 305)) return true;
             break;
+        case CHAR_ID_MISUZU:
+            // Misuzu: 6C (moveId 211), failsafe since the move can hit if she's on the ground already.
+            if (moveId == 211) return true;
+            break;
         case CHAR_ID_NAYUKIB:
             // Nayuki (awake): 662C (moveId 235)
             if (moveId == 235) return true;
