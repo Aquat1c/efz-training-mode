@@ -387,6 +387,20 @@
 #define BUTTON_C_OFFSET         0x18C
 #define BUTTON_D_OFFSET         0x18D
 
+// Block helper aliases (same raw slots as inputs)
+#define BLOCK_DIRECTION_OFFSET  HORIZONTAL_INPUT_OFFSET // signed: -1 (left) / +1 (right) / 0 neutral
+#define BLOCK_STANCE_OFFSET     VERTICAL_INPUT_OFFSET   // 0=stand, 1=crouch (down held)
+
+// Animation/Frame data traversal (for per-frame block flags)
+#define ANIM_TABLE_OFFSET                 0x164   // pointer to animation table
+#define CURRENT_FRAME_INDEX_OFFSET        0x0A    // current frame index within state
+#define ANIM_ENTRY_STRIDE                 8       // bytes per state entry in anim table
+#define ANIM_ENTRY_FRAMES_PTR_OFFSET      4       // within entry, pointer to frames array
+#define FRAME_BLOCK_STRIDE                200     // bytes per frame block (0xC8)
+#define FRAME_ATTACK_PROPS_OFFSET         170     // word: high/low/any bits (0xAA)
+#define FRAME_HIT_PROPS_OFFSET            176     // word: blockable bit at 0x10 (0xB0)
+#define FRAME_GUARD_PROPS_OFFSET          178     // word: extra guard metadata (0xB2)
+
 // Raw input values
 #define RAW_INPUT_UP    255
 #define RAW_INPUT_DOWN  1

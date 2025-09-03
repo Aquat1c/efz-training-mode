@@ -14,6 +14,8 @@
 #include "../include/gui/overlay.h"
 #include "../include/input/input_core.h"  // Include this to get AI_CONTROL_FLAG_OFFSET
 #include "../include/input/input_motion.h" // for direction/stance constants
+#include "../include/game/guard_overrides.h" // character/move grounded overheads
+#include "../include/game/character_settings.h" // character ID from name
 
 // Define constants for offsets
 const uintptr_t P2_CPU_FLAG_OFFSET = 4931;
@@ -665,6 +667,99 @@ static std::atomic<bool> g_adaptiveStance{false};
 static std::atomic<bool> g_adaptiveForceTick{false}; // force immediate evaluation on enable
 static std::atomic<bool> g_abOverrideActive{false}; // when false, follow the game's autoblock flag
 
+// Lightweight sampler for attacker frame flags (AttackProps/HitProps) to drive adaptive stance
+// Returns true if sampled successfully; outputs:
+//   level: 0=None, 1=High, 2=Low, 3=Any
+//   blockable: true if HitProps bit0 is set
+static bool SampleAttackerFrameFlags(int attacker /*1=P1, 2=P2*/, int &level, bool &blockable,
+                                    uint16_t* outAtk=nullptr, uint16_t* outHit=nullptr, uint16_t* outGrd=nullptr,
+                                    uint16_t* outState=nullptr, uint16_t* outFrame=nullptr,
+                                    int* outNextLevel=nullptr, bool* outNextBlockable=nullptr,
+                                    int* outNext2Level=nullptr, bool* outNext2Blockable=nullptr) {
+    // Per-attacker caches to minimize ResolvePointer/reads
+    static uintptr_t s_lastPBase[3]      = {0, 0, 0};
+    static uintptr_t s_lastAnimTab[3]    = {0, 0, 0};
+    static uint16_t  s_lastState[3]      = {0xFFFF, 0xFFFF, 0xFFFF};
+    static uintptr_t s_lastFramesPtr[3]  = {0, 0, 0};
+
+    uintptr_t base = GetEFZBase(); if (!base) return false;
+    uintptr_t pBase = 0; if (attacker == 1) { SafeReadMemory(base + EFZ_BASE_OFFSET_P1, &pBase, sizeof(pBase)); }
+                           else if (attacker == 2) { SafeReadMemory(base + EFZ_BASE_OFFSET_P2, &pBase, sizeof(pBase)); }
+                           else { return false; }
+    if (!pBase) return false;
+    // Resolve anim frames table and frame block with caching
+    uint16_t state = 0, frame = 0; uintptr_t animTab = 0, framesPtr = 0, frameBlock = 0;
+    if (!SafeReadMemory(pBase + MOVE_ID_OFFSET, &state, sizeof(state))) return false;
+    if (!SafeReadMemory(pBase + CURRENT_FRAME_INDEX_OFFSET, &frame, sizeof(frame))) return false;
+    if (!SafeReadMemory(pBase + ANIM_TABLE_OFFSET, &animTab, sizeof(animTab))) return false;
+    if (!animTab) return false;
+
+    // Invalidate cache if base/anim changed
+    if (s_lastPBase[attacker] != pBase || s_lastAnimTab[attacker] != animTab) {
+        s_lastPBase[attacker] = pBase;
+        s_lastAnimTab[attacker] = animTab;
+        s_lastState[attacker] = 0xFFFF;
+        s_lastFramesPtr[attacker] = 0;
+    }
+    if (s_lastState[attacker] != state || s_lastFramesPtr[attacker] == 0) {
+        uintptr_t entryAddr = animTab + (static_cast<uintptr_t>(state) * ANIM_ENTRY_STRIDE) + ANIM_ENTRY_FRAMES_PTR_OFFSET;
+        if (!SafeReadMemory(entryAddr, &framesPtr, sizeof(framesPtr)) || !framesPtr) return false;
+        s_lastState[attacker] = state;
+        s_lastFramesPtr[attacker] = framesPtr;
+    } else {
+        framesPtr = s_lastFramesPtr[attacker];
+    }
+    frameBlock = framesPtr + (static_cast<uintptr_t>(frame) * FRAME_BLOCK_STRIDE);
+    uint16_t atk=0, hit=0, grd=0; if (!SafeReadMemory(frameBlock + FRAME_ATTACK_PROPS_OFFSET, &atk, sizeof(atk))) return false;
+    SafeReadMemory(frameBlock + FRAME_HIT_PROPS_OFFSET, &hit, sizeof(hit));
+    SafeReadMemory(frameBlock + FRAME_GUARD_PROPS_OFFSET, &grd, sizeof(grd));
+    if (outAtk) *outAtk = atk; if (outHit) *outHit = hit; if (outGrd) *outGrd = grd;
+    if (outState) *outState = state; if (outFrame) *outFrame = frame;
+    // Decode
+    bool isHigh = (atk & 0x1) != 0;
+    bool isLow  = (atk & 0x2) != 0;
+    level = isHigh && isLow ? 3 : (isHigh ? 1 : (isLow ? 2 : 0));
+    // Prefer GuardProps presence for practical blockable window
+    blockable = (grd != 0);
+    // If there's a guardable window but no explicit HIGH/LOW bit, treat it as ANY to preserve stance
+    if (level == 0 && blockable) {
+        level = 3; // ANY
+    }
+
+    // Optional: 1-frame lookahead to detect imminent HIGH/LOW to preempt stance switch
+    if (outNextLevel || outNextBlockable || outNext2Level || outNext2Blockable) {
+        int nextLevel = -1; bool nextBlk = false;
+        uintptr_t nextFrameBlock = framesPtr + (static_cast<uintptr_t>(frame + 1) * FRAME_BLOCK_STRIDE);
+        uint16_t nAtk=0, nHit=0, nGrd=0;
+        if (SafeReadMemory(nextFrameBlock + FRAME_ATTACK_PROPS_OFFSET, &nAtk, sizeof(nAtk))) {
+            SafeReadMemory(nextFrameBlock + FRAME_HIT_PROPS_OFFSET, &nHit, sizeof(nHit));
+            SafeReadMemory(nextFrameBlock + FRAME_GUARD_PROPS_OFFSET, &nGrd, sizeof(nGrd));
+            bool nHigh = (nAtk & 0x1) != 0;
+            bool nLow  = (nAtk & 0x2) != 0;
+            nextLevel = nHigh && nLow ? 3 : (nHigh ? 1 : (nLow ? 2 : 0));
+            nextBlk = (nGrd != 0);
+            if (nextLevel == 0 && nextBlk) nextLevel = 3;
+        }
+        int next2Level = -1; bool next2Blk = false;
+        uintptr_t next2FrameBlock = framesPtr + (static_cast<uintptr_t>(frame + 2) * FRAME_BLOCK_STRIDE);
+        uint16_t n2Atk=0, n2Hit=0, n2Grd=0;
+        if (SafeReadMemory(next2FrameBlock + FRAME_ATTACK_PROPS_OFFSET, &n2Atk, sizeof(n2Atk))) {
+            SafeReadMemory(next2FrameBlock + FRAME_HIT_PROPS_OFFSET, &n2Hit, sizeof(n2Hit));
+            SafeReadMemory(next2FrameBlock + FRAME_GUARD_PROPS_OFFSET, &n2Grd, sizeof(n2Grd));
+            bool n2High = (n2Atk & 0x1) != 0;
+            bool n2Low  = (n2Atk & 0x2) != 0;
+            next2Level = n2High && n2Low ? 3 : (n2High ? 1 : (n2Low ? 2 : 0));
+            next2Blk = (n2Grd != 0);
+            if (next2Level == 0 && next2Blk) next2Level = 3;
+        }
+        if (outNextLevel) *outNextLevel = nextLevel;
+        if (outNextBlockable) *outNextBlockable = nextBlk;
+        if (outNext2Level) *outNext2Level = next2Level;
+        if (outNext2Blockable) *outNext2Blockable = next2Blk;
+    }
+    return true;
+}
+
 // Internal: set mode without marking override or forcing baseline writes
 static void SetDummyAutoBlockModeFromSync(int mode) {
     if (mode < 0) mode = 0; if (mode > 4) mode = 4;
@@ -742,6 +837,41 @@ static bool WriteP2BlockStance(uint8_t stance) {
     uintptr_t base = GetEFZBase(); if (!base) return false;
     uintptr_t p2 = 0; if (!SafeReadMemory(base + EFZ_BASE_OFFSET_P2, &p2, sizeof(p2)) || !p2) return false;
     return SafeWriteMemory(p2 + 393, &stance, sizeof(stance));
+}
+
+// Assist: lightly nudge P2 direction to match stance for faster recognition by engine
+// For crouch: set DOWN bit, clear UP; for stand: clear DOWN (leave other bits intact)
+// Assist guard by holding BACK (and optionally DOWN) relative to P2 facing
+// guardLevel: 0=None, 1=High, 2=Low, 3=Any
+static void AssistP2DirectionForStance(uint8_t desiredStance, bool wantGuard, int guardLevel) {
+    uintptr_t base = GetEFZBase(); if (!base) return;
+    uintptr_t p2 = 0; if (!SafeReadMemory(base + EFZ_BASE_OFFSET_P2, &p2, sizeof(p2)) || !p2) return;
+    uint8_t dir = 0; SafeReadMemory(p2 + 392, &dir, sizeof(dir));
+    // Stance vertical assist
+    if (desiredStance == 1) {
+        // crouch
+        dir &= ~INPUT_UP;           // clear UP
+        dir |= INPUT_DOWN;          // set DOWN
+    } else {
+        // stand
+        dir &= ~INPUT_DOWN;         // clear DOWN
+    }
+
+    // Guard horizontal assist: press BACK relative to facing if a guard window is active/imminent
+    if (wantGuard) {
+        bool facingRight = GetPlayerFacingDirection(2); // true = facing right
+        uint8_t backBit = facingRight ? INPUT_LEFT : INPUT_RIGHT;
+        uint8_t fwdBit  = facingRight ? INPUT_RIGHT : INPUT_LEFT;
+        // Clear forward, set back
+        dir &= ~fwdBit;
+        dir |= backBit;
+        // For low guard (or if crouch desired), ensure DOWN is set (down-back)
+        if (guardLevel == 2 || desiredStance == 1) {
+            dir |= INPUT_DOWN;
+            dir &= ~INPUT_UP;
+        }
+    }
+    SafeWriteMemory(p2 + 392, &dir, sizeof(dir));
 }
 
 static bool ReadPositions(double &p1Y, double &p2Y) {
@@ -940,40 +1070,71 @@ void MonitorDummyAutoBlock(short p1MoveID, short p2MoveID, short prevP1MoveID, s
         uintptr_t gs=0; if (GetGameStatePtr(gs)) { uint32_t f=0; SafeReadMemory(gs + PRACTICE_AUTO_BLOCK_OFFSET, &f, sizeof(f)); gameFlagOn = (f!=0); }
     }
     bool activeAb = overrideEffective ? abOn : gameFlagOn;
+    static bool s_prevActiveAb = false;
     if (g_adaptiveStance.load() && activeAb) {
         static unsigned long long s_lastAdaptiveMs = 0;
-        static bool s_lastAttackerAir = false;
-
         unsigned long long now = GetTickCount64();
-        const unsigned long long ADAPTIVE_INTERVAL_MS = 16ULL; // ~60 Hz when enabled
+        const unsigned long long ADAPTIVE_INTERVAL_MS = 0ULL; // every frame
         bool due = (now - s_lastAdaptiveMs >= ADAPTIVE_INTERVAL_MS) || g_adaptiveForceTick.load();
         if (due) {
-            double p1Y = 0.0, p2Y = 0.0;
-            // Prefer shared cache with freshness bound; fall back to direct reads.
-            const unsigned int kFreshMs = 200; // require <=200ms old to avoid stale stance flips
-            bool haveCached = TryGetCachedYPositions(p1Y, p2Y, kFreshMs);
+            // Stats/diagnostics sampling (not used for stance): keep per-frame guard decoding for UI
+            int dummyLevel=-1; bool dummyBlk=false; int dummyNL=-1; bool dummyNB=false; int dummyN2L=-1; bool dummyN2B=false;
+            uint16_t atkFlags=0, hitFlags=0, grdFlags=0, st=0, fr=0;
+            SampleAttackerFrameFlags(1, dummyLevel, dummyBlk, &atkFlags, &hitFlags, &grdFlags, &st, &fr, &dummyNL, &dummyNB, &dummyN2L, &dummyN2B);
+
+            // Determine base stance: ground=crouch, air=stand
+            double p1Y=0.0, p2Y=0.0; bool haveCached = TryGetCachedYPositions(p1Y, p2Y, 200);
             if (!haveCached && ReadPositions(p1Y, p2Y)) {
-                // No cached data; we read directly. Consider pushing to cache too.
                 UpdatePositionCache(0.0, p1Y, 0.0, p2Y);
                 haveCached = true;
             }
-            if (haveCached) {
-                bool attackerAir = (p1Y < 0.0);
-                bool changed = g_adaptiveForceTick.load() || (attackerAir != s_lastAttackerAir);
-                if (changed) {
-                    uint8_t desiredStance = attackerAir ? 0 /*stand*/ : 1 /*crouch*/;
-                    uint8_t curDir=0, curStance=0;
-                    if (ReadP2BlockFields(curDir, curStance)) {
-                        if (curStance != desiredStance) {
-                            WriteP2BlockStance(desiredStance);
-                        }
-                    } else {
-                        WriteP2BlockStance(desiredStance);
-                    }
-                    SetPracticeBlockMode(attackerAir ? 0 : 2);
-                    s_lastAttackerAir = attackerAir;
+            bool attackerAir = haveCached ? (p1Y < 0.0) : false;
+
+            // Character-specific overrides: certain grounded moves are overheads => stand
+            static int s_p1CharID = -1;
+            static unsigned long long s_lastCharRefresh = 0;
+            if (now - s_lastCharRefresh > 500ULL || s_p1CharID < 0) {
+                uintptr_t base = GetEFZBase();
+                char nameBuf[32] = {0};
+                SafeReadMemory(ResolvePointer(base, EFZ_BASE_OFFSET_P1, CHARACTER_NAME_OFFSET), nameBuf, sizeof(nameBuf)-1);
+                s_p1CharID = CharacterSettings::GetCharacterID(std::string(nameBuf));
+                s_lastCharRefresh = now;
+            }
+
+            uint8_t desiredStance = attackerAir ? 0 : 1; // 0=stand,1=crouch
+            if (!attackerAir && s_p1CharID >= 0) {
+                uintptr_t p1Base = 0; SafeReadMemory(GetEFZBase() + EFZ_BASE_OFFSET_P1, &p1Base, sizeof(p1Base));
+                if (GuardOverrides::IsGroundedOverhead(s_p1CharID, static_cast<int>(st), p1Base)) {
+                    desiredStance = 0;
                 }
             }
+
+            // Write if changed
+            uint8_t curDir=0, curStance=0;
+            if (ReadP2BlockFields(curDir, curStance)) {
+                if (curStance != desiredStance) {
+                    WriteP2BlockStance(desiredStance);
+                    SetPracticeBlockMode(desiredStance == 0 ? 0 : 2);
+                    if (detailedLogging.load()) {
+                        std::ostringstream os;
+                        os << "[ADAPTIVE] stance change: P2 "
+                           << (curStance==1?"crouch":"stand") << " -> "
+                           << (desiredStance==1?"crouch":"stand")
+                           << " | move=" << st
+                           << " frame=" << fr
+                           << " atk=0x" << std::hex << std::uppercase << atkFlags
+                           << " hit=0x" << hitFlags
+                           << " grd=0x" << grdFlags
+                           << std::dec
+                           << " t=" << GetTickCount64();
+                        LogOut(os.str(), true);
+                    }
+                }
+            } else {
+                WriteP2BlockStance(desiredStance);
+                SetPracticeBlockMode(desiredStance == 0 ? 0 : 2);
+            }
+
             s_lastAdaptiveMs = now;
             g_adaptiveForceTick.store(false);
         }
