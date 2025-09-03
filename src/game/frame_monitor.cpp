@@ -639,6 +639,204 @@ void FrameDataMonitor() {
                 cachedMoveIDAddr2 = ResolvePointer(base, EFZ_BASE_OFFSET_P2, MOVE_ID_OFFSET);
             }
 
+            // --- Recoil Guard (RG) analysis: detect edges and compute freeze/advantage ---
+            struct RGAnalysis {
+                bool active = false;   // any RG event currently being tracked for this defender
+                int defender = 0;      // 1 or 2
+                short rgMove = 0;      // 168/169/170
+                // Freeze/stun durations in visual frames (as per wiki)
+                double defFreezeF = 0.0;
+                double atkFreezeF = 0.0;
+                double rgStunF   = 0.0; // universal 20F (except Sayuri nuance)
+                double netAdvF   = 0.0; // attacker recovers earlier by this many visual frames
+                // Frame advantage presentation
+                double fa1F      = 0.0; // immediate FA from freeze timings (visual frames)
+                double fa2ThF    = 0.0; // theoretical FA2 = FA1 + RG stun (visual frames)
+                double fa2F      = 0.0; // measured FA until both actionable again (visual frames)
+                bool   fa2Ready  = false;
+                // Tracking for cRG window
+                int attacker = 0;          // 1 or 2
+                short attackerMoveAtEvent = -1;
+                bool cRGOpen = false;
+                int openedAtFrame = 0;     // internal frameCounter when opened
+                // Actionability timestamps (internal frames @192Hz)
+                int atkActionableAt = -1;
+                int defActionableAt = -1;
+                bool fa2Announced = false;
+            };
+            static RGAnalysis s_rgP1; // last RG where P1 was the defender
+            static RGAnalysis s_rgP2; // last RG where P2 was the defender
+
+         auto computeRGInfo = [](short rgMove, double &defF, double &atkF, double &stunF, double &advF) {
+                // Values sourced from wiki: EFZ Strategy/Game Mechanics pages
+                if (rgMove == RG_STAND_ID) {
+                    defF = RG_STAND_FREEZE_DEFENDER;
+                    atkF = RG_STAND_FREEZE_ATTACKER;
+                } else if (rgMove == RG_CROUCH_ID) {
+                    defF = RG_CROUCH_FREEZE_DEFENDER;
+                    atkF = RG_CROUCH_FREEZE_ATTACKER;
+                } else { // RG_AIR_ID
+                    defF = RG_AIR_FREEZE_DEFENDER;
+                    atkF = RG_AIR_FREEZE_ATTACKER;
+                }
+                stunF = RG_STUN_DURATION; // universal defender RG stun length (Sayuri exception ignored for now)
+                advF = defF - atkF; // positive means attacker earlier by advF
+            };
+
+            auto emitRGMessage = [&](const RGAnalysis &rg) {
+                const char* kind = (rg.rgMove == RG_STAND_ID) ? "Stand" : ((rg.rgMove == RG_CROUCH_ID) ? "Crouch" : "Air");
+                std::ostringstream os; os.setf(std::ios::fixed); os << std::setprecision(2);
+            os << "RG: P" << rg.defender << " " << kind
+             << "  defFreeze=" << rg.defFreezeF << "F"
+             << "  atkFreeze=" << rg.atkFreezeF << "F"
+         << "  netAdv(att)=" << rg.netAdvF << "F"
+             << "  RGstun=" << rg.rgStunF << "F"
+         << "  FA1(endFreeze)=" << rg.fa1F << "F"
+         << "  FA2(th)=" << rg.fa2ThF << "F"
+             << "  cRG window: until attacker recovers/cancels";
+                LogOut(std::string("[RG][FM] ") + os.str(), true);
+                // One-shot overlay toast (gated by debug flag)
+                if (g_ShowRGDebugToasts.load()) {
+                    DirectDrawHook::AddMessage(os.str(), "RG", RGB(120, 200, 255), 1500, 0, 140);
+                }
+            };
+
+            auto closeCRGIfOver = [&](RGAnalysis &rg) {
+                if (!rg.active || !rg.cRGOpen) return;
+                // Determine current attacker move/actionable state
+                short atkMoveNow = (rg.attacker == 1) ? moveID1 : moveID2;
+                bool atkActionable = IsActionable(atkMoveNow);
+                // Close when attacker becomes actionable or cancels out of their move
+                if (atkActionable || atkMoveNow != rg.attackerMoveAtEvent) {
+                    rg.cRGOpen = false;
+                    std::ostringstream os; os.setf(std::ios::fixed); os << std::setprecision(2);
+                    os << "RG: cRG window closed for P" << rg.defender << " (attacker now actionable/cancelled)";
+                    LogOut(std::string("[RG][FM] ") + os.str(), detailedLogging.load());
+                    // No overlay toast on close to reduce noise
+                }
+            };
+
+            // Update actionability times and announce FA2 once both are known
+            auto updateRGFA = [&](RGAnalysis &rg) {
+                if (!rg.active) return;
+                const double kIntToVis = 60.0 / 192.0; // convert internal 192 Hz frames to visual frames
+
+                // Track attacker actionable timestamp
+                if (rg.atkActionableAt < 0) {
+                    short atkMoveNow = (rg.attacker == 1) ? moveID1 : moveID2;
+                    if (IsActionable(atkMoveNow)) {
+                        rg.atkActionableAt = frameCounter.load();
+                    }
+                }
+                // Track defender actionable timestamp
+                if (rg.defActionableAt < 0) {
+                    short defMoveNow = (rg.defender == 1) ? moveID1 : moveID2;
+                    if (IsActionable(defMoveNow)) {
+                        rg.defActionableAt = frameCounter.load();
+                    }
+                }
+
+                // When both are known, compute FA2 (only once)
+                if (!rg.fa2Announced && rg.atkActionableAt >= 0 && rg.defActionableAt >= 0) {
+                    int deltaInt = rg.defActionableAt - rg.atkActionableAt; // positive => attacker earlier
+                    rg.fa2F = deltaInt * kIntToVis;
+                    rg.fa2Ready = true;
+                    rg.fa2Announced = true;
+
+                    std::ostringstream os; os.setf(std::ios::fixed); os << std::setprecision(2);
+                          os << "RG: P" << rg.defender
+                              << "  FA1(endFreeze)=" << rg.fa1F << "F"
+                              << "  FA2(meas)=" << rg.fa2F << "F";
+                    LogOut(std::string("[RG][FM] ") + os.str(), true);
+                    if (g_ShowRGDebugToasts.load()) {
+                        DirectDrawHook::AddMessage(os.str(), "RG", RGB(120, 200, 255), 1500, 0, 156);
+                    }
+
+                    // Update standard overlay with FA1/FA2(meas) [endFreeze]
+                    auto toIntFrames = [](double visF) {
+                        return (visF >= 0.0) ? (int)(visF * 3.0 + 0.5) : (int)(visF * 3.0 - 0.5);
+                    };
+                    int fa1Int = toIntFrames(rg.fa1F);
+                    int fa2Int = toIntFrames(rg.fa2F);
+                    std::string fa1Text = FormatFrameAdvantage(fa1Int);
+                    std::string fa2Text = FormatFrameAdvantage(fa2Int);
+                    // Show numeric end-of-freeze duration (visual frames) with subframe precision [.00/.33/.66]
+                    double endFreezeVis = (rg.defFreezeF >= rg.atkFreezeF) ? rg.defFreezeF : rg.atkFreezeF;
+                    auto fmtUnsignedVis = [](double visF) {
+                        int internal = (visF >= 0.0) ? (int)(visF * 3.0 + 0.5) : (int)(visF * 3.0 - 0.5);
+                        int whole = internal / 3;
+                        int sub = std::abs(internal % 3);
+                        const char* frac = (sub == 1) ? ".33" : (sub == 2) ? ".66" : ".00";
+                        return std::to_string(whole) + std::string(frac);
+                    };
+                    std::string endFreezeStr = fmtUnsignedVis(endFreezeVis);
+                    // New format: "[FA1]/FA2" with separate colors per value
+                    std::string leftText = "[" + fa1Text + "]";
+                    std::string rightText = "/" + fa2Text; // leading slash stays with right segment
+                    COLORREF leftColor = (fa1Int >= 0) ? RGB(0, 255, 0) : RGB(255, 0, 0);
+                    COLORREF rightColor = (fa2Int >= 0) ? RGB(0, 255, 0) : RGB(255, 0, 0);
+                    // Clear any previous regular FA display window to ensure RG takes precedence
+                    frameAdvState.displayUntilInternalFrame = -1;
+                    // Suppress regular FA overlay updates briefly (e.g., for ~1s)
+                    int nowInt = frameCounter.load();
+                    g_SkipRegularFAOverlayUntilFrame.store(nowInt + 192);
+                    // Render as two messages placed side-by-side. Keep baseline Y and compute X for right.
+                    // We’ll approximate widths by measuring when menu is hidden; otherwise keep coarse spacing.
+                    const int baseX = 305;
+                    const int baseY = 430;
+                    // Update left segment
+                    if (g_FrameAdvantageId != -1) {
+                        DirectDrawHook::UpdatePermanentMessage(g_FrameAdvantageId, leftText, leftColor);
+                    } else {
+                        g_FrameAdvantageId = DirectDrawHook::AddPermanentMessage(leftText, leftColor, baseX, baseY);
+                    }
+                    // Update right segment: place a few characters to the right; conservative offset of 60px
+                    // Since our overlay draws a background box sized to text, small spacing avoids overlap.
+                    int rightX = baseX + 60;
+                    if (g_FrameAdvantage2Id != -1) {
+                        DirectDrawHook::UpdatePermanentMessage(g_FrameAdvantage2Id, rightText, rightColor);
+                    } else {
+                        g_FrameAdvantage2Id = DirectDrawHook::AddPermanentMessage(rightText, rightColor, rightX, baseY);
+                    }
+
+                    // After FA2 is known, we can stop tracking this RG instance
+                    rg.active = false;
+                }
+            };
+
+            auto onRGEdge = [&](int defender, short rgMove) {
+                RGAnalysis &slot = (defender == 1) ? s_rgP1 : s_rgP2;
+                slot = RGAnalysis{}; // reset
+                slot.active = true;
+                slot.defender = defender;
+                slot.rgMove = rgMove;
+                computeRGInfo(rgMove, slot.defFreezeF, slot.atkFreezeF, slot.rgStunF, slot.netAdvF);
+                slot.fa1F = slot.netAdvF; // FA1 = freeze-based net advantage
+                slot.fa2ThF = slot.fa1F + slot.rgStunF; // FA2 theoretical = FA1 + RG stun
+                // Determine attacker side and their move at event
+                slot.attacker = (defender == 1) ? 2 : 1;
+                slot.attackerMoveAtEvent = (slot.attacker == 1) ? moveID1 : moveID2;
+                slot.cRGOpen = true;
+                slot.openedAtFrame = frameCounter.load();
+                emitRGMessage(slot);
+            };
+
+            // Detect RG state edges for both players
+            if (IsRecoilGuard(moveID1) && !IsRecoilGuard(prevMoveID1)) {
+                onRGEdge(1, moveID1);
+            }
+            if (IsRecoilGuard(moveID2) && !IsRecoilGuard(prevMoveID2)) {
+                onRGEdge(2, moveID2);
+            }
+
+            // Maintain cRG windows succinctly
+            closeCRGIfOver(s_rgP1);
+            closeCRGIfOver(s_rgP2);
+
+            // Update and announce FA2 when both sides become actionable again
+            updateRGFA(s_rgP1);
+            updateRGFA(s_rgP2);
+
     // DEBUG: sampler for block-related values; trigger only on attacks (move/state >= 200 and not idle)
     // Disabled (kept for potential future diagnostics)
             {
@@ -1031,7 +1229,7 @@ FRAME_MONITOR_FRAME_END:
              " maxEarly(ms)=" + std::to_string(maxEarly/1e6) +
              " oversleep>2x=" + std::to_string(oversleepCount), detailedLogging.load());
             if (Config::GetSettings().enableFpsDiagnostics && sectionTiming && sec_samples > 0) {
-          LogOut("[FRAME_MONITOR][SECTIONS] samples=" + std::to_string(sec_samples) +
+          LogOut("[FRAME MONITOR][SECTIONS] samples=" + std::to_string(sec_samples) +
               " memAvg(us)=" + std::to_string((sec_mem / 1000.0)/sec_samples) +
               " logicAvg(us)=" + std::to_string((sec_logic / 1000.0)/sec_samples) +
               " featAvg(us)=" + std::to_string((sec_features / 1000.0)/sec_samples), detailedLogging.load());
@@ -1078,6 +1276,10 @@ void ReinitializeOverlays() {
     if (g_FrameAdvantageId != -1) {
         DirectDrawHook::RemovePermanentMessage(g_FrameAdvantageId);
         g_FrameAdvantageId = -1;
+    }
+    if (g_FrameAdvantage2Id != -1) {
+        DirectDrawHook::RemovePermanentMessage(g_FrameAdvantage2Id);
+        g_FrameAdvantage2Id = -1;
     }
     if (g_FrameGapId != -1) {
         DirectDrawHook::RemovePermanentMessage(g_FrameGapId);

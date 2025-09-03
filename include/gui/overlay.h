@@ -119,6 +119,8 @@ public:
 extern int g_AirtechStatusId;
 extern int g_JumpStatusId;
 extern int g_FrameAdvantageId;
+// Additional ID for right-hand FA segment when split coloring is used
+extern int g_FrameAdvantage2Id;
 extern int g_FrameGapId;
 // NEW: Individual trigger message IDs
 extern int g_TriggerAfterBlockId;
@@ -128,3 +130,5 @@ extern int g_TriggerAfterAirtechId;
 
 // Debug overlay borders toggle (controlled from ImGui)
 extern std::atomic<bool> g_ShowOverlayDebugBorders;
+// Gate RG debug toasts via ImGui Debug tab
+extern std::atomic<bool> g_ShowRGDebugToasts;
