@@ -1163,86 +1163,11 @@ namespace ImGuiGui {
                 s_lastPatchLogTick = now;
             }
         }
-    ImGui::Separator();
         ImGui::Separator();
-        ImGui::Text("Manual Input Override (P2)");
-        ImGui::Separator();
-
-        ImGui::Text("Directions:");
-        if (ImGui::Button("UP")) { QueueMotionInput(2, MOTION_NONE, GAME_INPUT_UP); }
-        ImGui::SameLine();
-        if (ImGui::Button("DOWN")) { QueueMotionInput(2, MOTION_NONE, GAME_INPUT_DOWN); }
-        ImGui::SameLine();
-        if (ImGui::Button("LEFT")) { QueueMotionInput(2, MOTION_NONE, GAME_INPUT_LEFT); }
-        ImGui::SameLine();
-        if (ImGui::Button("RIGHT")) { QueueMotionInput(2, MOTION_NONE, GAME_INPUT_RIGHT); }
-
-        ImGui::Separator();
-        ImGui::Text("Attack Buttons (spams for 6 frames):");
-        uintptr_t playerPtr = GetPlayerPointer(2);
-        if (ImGui::Button("A")) {
-            LogOut("[IMGUI] Debug menu: Pressed A for P2, playerPtr=0x" + std::to_string(playerPtr), true);
-            if (playerPtr) {
-                HoldButtonA(2);
-                LogOut("[IMGUI] Called HoldButtonA for P2", true);
-            } else {
-                LogOut("[DEBUG_INPUT] Failed to get P2 pointer for A", true);
-            }
+        bool showRGToasts = g_ShowRGDebugToasts.load();
+        if (ImGui::Checkbox("Show RG debug toasts", &showRGToasts)) {
+            g_ShowRGDebugToasts.store(showRGToasts);
         }
-        ImGui::SameLine();
-        if (ImGui::Button("B")) {
-            LogOut("[IMGUI] Debug menu: Pressed B for P2, playerPtr=0x" + std::to_string(playerPtr), true);
-            if (playerPtr) {
-                HoldButtonB(2);
-                LogOut("[IMGUI] Called HoldButtonB for P2", true);
-            } else {
-                LogOut("[DEBUG_INPUT] Failed to get P2 pointer for B", true);
-            }
-        }
-        ImGui::SameLine();
-        if (ImGui::Button("C")) {
-            LogOut("[IMGUI] Debug menu: Pressed C for P2, playerPtr=0x" + std::to_string(playerPtr), true);
-            if (playerPtr) {
-                HoldButtonC(2);
-                LogOut("[IMGUI] Called HoldButtonC for P2", true);
-            } else {
-                LogOut("[DEBUG_INPUT] Failed to get P2 pointer for C", true);
-            }
-        }
-        ImGui::SameLine();
-        if (ImGui::Button("D")) {
-            LogOut("[IMGUI] Debug menu: Pressed D for P2, playerPtr=0x" + std::to_string(playerPtr), true);
-            if (playerPtr) {
-                HoldButtonD(2);
-                LogOut("[IMGUI] Called HoldButtonD for P2", true);
-            } else {
-                LogOut("[DEBUG_INPUT] Failed to get P2 pointer for D", true);
-            }
-        }
-
-        ImGui::Separator();
-        ImGui::Text("Direction + Button:");
-        if (ImGui::Button("6A")) {
-            QueueMotionInput(2, MOTION_NONE, GAME_INPUT_RIGHT | GAME_INPUT_A);
-            LogOut("[IMGUI] Debug menu: Pressed 6A for P2, playerPtr=0x" + std::to_string(playerPtr), true);
-            if (playerPtr) {
-                HoldButtonA(2);
-                LogOut("[IMGUI] Called HoldButtonA for P2 (6A)", true);
-            }
-        }
-        ImGui::SameLine();
-        if (ImGui::Button("4B")) {
-            QueueMotionInput(2, MOTION_NONE, GAME_INPUT_LEFT | GAME_INPUT_B);
-            LogOut("[IMGUI] Debug menu: Pressed 4B for P2, playerPtr=0x" + std::to_string(playerPtr), true);
-            if (playerPtr) {
-                HoldButtonB(2);
-                LogOut("[IMGUI] Called HoldButtonB for P2 (4B)", true);
-            }
-        }
-        // ...add more as needed...
-
-        ImGui::Separator();
-        if (ImGui::Button("Release All Inputs")) { ReleaseInputs(2); }
 
         ImGui::Separator();
         ImGui::Text("BGM Control");
