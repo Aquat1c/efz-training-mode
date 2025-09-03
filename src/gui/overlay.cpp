@@ -451,6 +451,38 @@ void DirectDrawHook::RenderD3D9Overlays(LPDIRECT3DDEVICE9 pDevice) {
         bgList->AddRect(ImVec2(ox + 1.0f, oy + 1.0f), ImVec2(ox + gw - 1.0f, oy + gh - 1.0f), IM_COL32(0, 255, 0, 200), 0.0f, 0, 2.0f);
     }
 
+    // Optional: draw a single combined background for split frame-advantage messages
+    bool faCombinedBgDrawn = false;
+    if (!ImGuiImpl::IsVisible()) {
+        if (g_FrameAdvantageId != -1 && g_FrameAdvantage2Id != -1) {
+            const OverlayMessage* faLeft = nullptr;
+            const OverlayMessage* faRight = nullptr;
+            for (const auto& pm : permanentMessages) {
+                if (pm.id == g_FrameAdvantageId) faLeft = &pm;
+                else if (pm.id == g_FrameAdvantage2Id) faRight = &pm;
+            }
+            if (faLeft && faRight) {
+                // Map positions
+                ImVec2 leftPos(ox + faLeft->xPos * scale, oy + faLeft->yPos * scale);
+                ImVec2 rightPos(ox + faRight->xPos * scale, oy + faRight->yPos * scale);
+                // Measure text sizes (no additional scaling, consistent with existing renderer)
+                ImVec2 leftSize = ImGui::CalcTextSize(faLeft->text.c_str());
+                ImVec2 rightSize = ImGui::CalcTextSize(faRight->text.c_str());
+                // Build union background rect with same padding as individual messages
+                ImVec2 ul(
+                    (leftPos.x < rightPos.x ? leftPos.x : rightPos.x) - 4.0f,
+                    (leftPos.y < rightPos.y ? leftPos.y : rightPos.y) - 2.0f
+                );
+                ImVec2 lr(
+                    (leftPos.x + leftSize.x > rightPos.x + rightSize.x ? leftPos.x + leftSize.x : rightPos.x + rightSize.x) + 4.0f,
+                    (leftPos.y + leftSize.y > rightPos.y + rightSize.y ? leftPos.y + leftSize.y : rightPos.y + rightSize.y) + 2.0f
+                );
+                bgList->AddRectFilled(ul, lr, IM_COL32(0, 0, 0, 180));
+                faCombinedBgDrawn = true;
+            }
+        }
+    }
+
     // Helper lambda to render a message with a background
     auto renderMessage = [&](const OverlayMessage& msg) {
         // Check if this is a trigger overlay by position
@@ -467,6 +499,10 @@ void DirectDrawHook::RenderD3D9Overlays(LPDIRECT3DDEVICE9 pDevice) {
         
         // Background quads are expensive in DX9; skip them when menu is up
     if (!ImGuiImpl::IsVisible()) {
+            // If we already drew a combined FA background, skip individual bgs for those ids
+            if (faCombinedBgDrawn && (msg.id == g_FrameAdvantageId || msg.id == g_FrameAdvantage2Id)) {
+                // no per-message background
+            } else {
             if (isTriggerOverlay) {
                 // For trigger overlays, adjust X so text ends at right edge of inner game area
                 const float margin = 20.0f;        // Margin from screen edge in virtual space
@@ -482,6 +518,7 @@ void DirectDrawHook::RenderD3D9Overlays(LPDIRECT3DDEVICE9 pDevice) {
                     ImVec2(textPos.x + textSize.x + 4, textPos.y + textSize.y + 2),
                     IM_COL32(0, 0, 0, 180)
                 );
+            }
             }
         }
         
