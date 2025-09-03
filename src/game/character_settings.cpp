@@ -70,8 +70,8 @@ namespace CharacterSettings {
         {"nagamori", CHAR_ID_MIZUKA},    // Nagamori is actually Mizuka Nagamori
         {"nanase", CHAR_ID_NANASE},      // Nanase is Rumi
         {"exnanase", CHAR_ID_EXNANASE},  // ExNanase is Doppel Nanase
-        {"nayuki", CHAR_ID_NAYUKIB},     // Nayuki is actually NayukiB, this one is Neyuki
-        {"nayukib", CHAR_ID_NAYUKI},     // NayukiB is actually Nayuki
+        {"nayuki",  CHAR_ID_NAYUKI},     //  "nayuki" is Sleepy variant (Neyuki)
+        {"nayukib", CHAR_ID_NAYUKIB},    //  "nayukib" is Awake variant (Nayuki)
         {"shiori", CHAR_ID_SHIORI},
         {"ayu", CHAR_ID_AYU},
         {"mai", CHAR_ID_MAI},
@@ -98,8 +98,8 @@ namespace CharacterSettings {
             case CHAR_ID_NAGAMORI: return "Nagamori";
             case CHAR_ID_NANASE:   return "Rumi";        // Nanase in files
             case CHAR_ID_EXNANASE: return "Doppel";      // ExNanase in files
-            case CHAR_ID_NAYUKI:   return "Neyuki";      // NayukiB in files
-            case CHAR_ID_NAYUKIB:  return "Nayuki";      // Nayuki in files
+            case CHAR_ID_NAYUKI:   return "Neyuki";   // Sleepy Nayuki (nayuki in files)
+            case CHAR_ID_NAYUKIB:  return "Nayuki";   // Awake Nayuki (nayukib in files) 
             case CHAR_ID_SHIORI:   return "Shiori";
             case CHAR_ID_AYU:      return "Ayu";
             case CHAR_ID_MAI:      return "Mai";
@@ -185,6 +185,19 @@ namespace CharacterSettings {
             s_lastP2IkumiBlood = data.p2IkumiBlood;
             s_lastP2IkumiGenocide = data.p2IkumiGenocide;
         }
+
+        // Read Neyuki (Sleepy Nayuki) jam count (0..9)
+        auto ReadNeyuki = [&](int playerIndex){
+            const int off = (playerIndex==1)?EFZ_BASE_OFFSET_P1:EFZ_BASE_OFFSET_P2;
+            uintptr_t jamAddr = ResolvePointer(base, off, NEYUKI_JAM_COUNT_OFFSET);
+            if (!jamAddr) return;
+            int jam = 0; SafeReadMemory(jamAddr, &jam, sizeof(int));
+            if (jam < 0) jam = 0; else if (jam > NEYUKI_JAM_COUNT_MAX) jam = NEYUKI_JAM_COUNT_MAX;
+            if (playerIndex==1) data.p1NeyukiJamCount = jam; else data.p2NeyukiJamCount = jam;
+            LogOut(std::string("[CHAR] Read ") + (playerIndex==1?"P1":"P2") + " Neyuki: JamCount=" + std::to_string(jam), detailedLogging.load());
+        };
+        if (data.p1CharID == CHAR_ID_NAYUKI) ReadNeyuki(1);
+        if (data.p2CharID == CHAR_ID_NAYUKI) ReadNeyuki(2);
         
         // Read Mishio's values if either player is using her
         if (data.p1CharID == CHAR_ID_MISHIO) {
@@ -595,6 +608,18 @@ namespace CharacterSettings {
             if (timeAddr)   SafeWriteMemory(timeAddr,&t,sizeof(int));
             LogOut(std::string("[CHAR] Applied ") + (pi==1?"P1":"P2") + " Akiko: BulletCycle=" + std::to_string(bullet) + ", TimeSlow=" + std::to_string(t), detailedLogging.load());
         }; ApplyAkiko(1); ApplyAkiko(2);
+
+        // Apply Neyuki jam count if present
+        auto ApplyNeyuki = [&](int pi){
+            if ((pi==1 && data.p1CharID != CHAR_ID_NAYUKI) || (pi==2 && data.p2CharID != CHAR_ID_NAYUKI)) return;
+            const int off = (pi==1)?EFZ_BASE_OFFSET_P1:EFZ_BASE_OFFSET_P2;
+            if (uintptr_t jamAddr = ResolvePointer(base, off, NEYUKI_JAM_COUNT_OFFSET)) {
+                int jam = (pi==1)? data.p1NeyukiJamCount : data.p2NeyukiJamCount;
+                if (jam < 0) jam = 0; else if (jam > NEYUKI_JAM_COUNT_MAX) jam = NEYUKI_JAM_COUNT_MAX;
+                SafeWriteMemory(jamAddr, &jam, sizeof(int));
+                LogOut(std::string("[CHAR] Applied ") + (pi==1?"P1":"P2") + " Neyuki: JamCount=" + std::to_string(jam), detailedLogging.load());
+            }
+        }; ApplyNeyuki(1); ApplyNeyuki(2);
     }
     
     // Track previous values (used by inline enforcement)
