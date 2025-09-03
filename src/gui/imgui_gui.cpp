@@ -803,7 +803,7 @@ namespace ImGuiGui {
                 ImGui::TextDisabled("(set Element to Awakened to edit)");
             }
         }
-        // P1 Akiko (Minase) Settings
+    // P1 Akiko (Minase) Settings
         else if (p1CharID == CHAR_ID_AKIKO) {
             ImGui::Text("Bullet Cycle (shared A/B):");
             const char* cycleItems[] = {
@@ -838,6 +838,17 @@ namespace ImGuiGui {
                 guiState.localData.p1AkikoTimeslowTrigger = ts1;
             }
             ImGui::TextDisabled("(Akiko: bullet routes and clock-slow)");
+        }
+
+        // P1 Neyuki (Sleepy Nayuki) Settings
+        else if (p1CharID == CHAR_ID_NAYUKI) {
+            int jam = guiState.localData.p1NeyukiJamCount;
+            jam = CLAMP(jam, 0, NEYUKI_JAM_COUNT_MAX);
+            ImGui::Text("Jam Count:");
+            if (ImGui::SliderInt("##P1NeyukiJam", &jam, 0, NEYUKI_JAM_COUNT_MAX)) {
+                guiState.localData.p1NeyukiJamCount = jam;
+            }
+            ImGui::TextDisabled("(Neyuki only)");
         }
 
         // P1 Doppel (ExNanase) Settings
@@ -1045,6 +1056,17 @@ namespace ImGuiGui {
             ImGui::TextDisabled("(Akiko: bullet routes and clock-slow)");
         }
 
+        // P2 Neyuki (Sleepy Nayuki) Settings
+        else if (p2CharID == CHAR_ID_NAYUKI) {
+            int jam2 = guiState.localData.p2NeyukiJamCount;
+            jam2 = CLAMP(jam2, 0, NEYUKI_JAM_COUNT_MAX);
+            ImGui::Text("Jam Count:");
+            if (ImGui::SliderInt("##P2NeyukiJam", &jam2, 0, NEYUKI_JAM_COUNT_MAX)) {
+                guiState.localData.p2NeyukiJamCount = jam2;
+            }
+            ImGui::TextDisabled("(Neyuki only)");
+        }
+
         // P2 Doppel (ExNanase) Settings
         else if (p2CharID == CHAR_ID_EXNANASE) {
             bool enlightened2 = guiState.localData.p2DoppelEnlightened;
@@ -1114,7 +1136,7 @@ namespace ImGuiGui {
         ImGui::Separator();
         ImGui::TextWrapped(
             "Character-specific settings allow you to modify special parameters unique to each character.\n"
-            "Currently supported: Ikumi (Blood/Genocide), Misuzu (Feathers), Mishio (Element/Awakened), Rumi (Stance, Kimchi), Akiko (Bullet Cycle/Time-Slow)");
+            "Currently supported: Ikumi (Blood/Genocide), Misuzu (Feathers), Mishio (Element/Awakened), Rumi (Stance, Kimchi), Akiko (Bullet Cycle/Time-Slow), Neyuki (Jam Count 0-9)");
     }
     
     // Add this new function to the ImGuiGui namespace:

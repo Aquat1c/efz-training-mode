@@ -410,3 +410,8 @@
 // A/B: 3rd hit ends at moveId 259; C: 6th hit ends at moveId 254
 #define AKIKO_MOVE_623_LAST_AB           259
 #define AKIKO_MOVE_623_LAST_C            254
+
+// Neyuki (Sleepy Nayuki Minase) – Jam count
+// From CE/decomp: integer at +0x3148 on the player struct (same slot other chars repurpose)
+#define NEYUKI_JAM_COUNT_OFFSET          0x3148
+#define NEYUKI_JAM_COUNT_MAX             9

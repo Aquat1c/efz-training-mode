@@ -197,6 +197,10 @@ struct DisplayData {
     bool p2AkikoFreezeCycle;
     bool p1AkikoShowCleanHit;    // show Clean Hit helper overlay when Akiko is P1
     bool p2AkikoShowCleanHit;    // show Clean Hit helper overlay when Akiko is P2
+
+    // Neyuki (Sleepy Nayuki) – Jam count (0..9)
+    int  p1NeyukiJamCount;
+    int  p2NeyukiJamCount;
 };
 
 extern DisplayData displayData;
