@@ -169,32 +169,7 @@ bool IsCharacterGrounded(int playerNum) {
 }
 
 short GetActionMoveID(int actionType, int triggerType, int playerNum) {
-    // First check if it's a custom action
-    if (actionType == ACTION_CUSTOM) {
-        short customID = 0;
-        // Move custom moveID selection logs to detailed mode
-        switch (triggerType) {
-            case TRIGGER_AFTER_AIRTECH:
-                customID = triggerAfterAirtechCustomID.load();
-                LogOut("[AUTO-ACTION] Using After Airtech custom moveID: " + std::to_string(customID), detailedLogging.load());
-                return customID;
-            case TRIGGER_AFTER_BLOCK:
-                customID = triggerAfterBlockCustomID.load();
-                LogOut("[AUTO-ACTION] Using After Block custom moveID: " + std::to_string(customID), detailedLogging.load());
-                return customID;
-            case TRIGGER_ON_WAKEUP:
-                customID = triggerOnWakeupCustomID.load();
-                LogOut("[AUTO-ACTION] Using On Wakeup custom moveID: " + std::to_string(customID), detailedLogging.load());
-                return customID;
-            case TRIGGER_AFTER_HITSTUN:
-                customID = triggerAfterHitstunCustomID.load();
-                LogOut("[AUTO-ACTION] Using After Hitstun custom moveID: " + std::to_string(customID), detailedLogging.load());
-                return customID;
-            default:
-                LogOut("[AUTO-ACTION] Using default custom moveID: 200", detailedLogging.load());
-                return 200; // Default to 5A if no trigger specified
-        }
-    }
+    // Custom action deprecated; proceed directly to contextual resolution
     
     // Check character ground/air state for context-specific moves
     bool isGrounded = IsCharacterGrounded(playerNum);
@@ -559,14 +534,33 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
                 } else if (actionType >= ACTION_JA && actionType <= ACTION_JC) {
                     int button = (actionType - ACTION_JA) % 3;
                     buttonMask = (1 << (4 + button));
-                } else if (actionType >= ACTION_QCF && actionType <= ACTION_CUSTOM) {
+                } else if (actionType >= ACTION_QCF && actionType <= ACTION_641236) {
                     int strength = GetSpecialMoveStrength(actionType, TRIGGER_ON_WAKEUP);
                     buttonMask = (1 << (4 + strength));
                 }
 
                 bool prearmed = false;
                 // Conditional wake buffering: if disabled, NEVER freeze early; inject on first actionable frame
-                if (g_wakeBufferingEnabled.load()) {
+                if (actionType == ACTION_FINAL_MEMORY) {
+                    // Treat FM like a special: allow early buffer freeze when wake buffering enabled.
+                    int charId = displayData.p1CharID;
+                    if (g_wakeBufferingEnabled.load()) {
+                        // Early freeze pattern now so it is resident on first actionable frame.
+                        bool fmOk = ExecuteFinalMemory(1, charId);
+                        if (fmOk) {
+                            prearmed = true;
+                            s_p1WakePrearmIsSpecial = true; // skip duplicate inject at wake
+                            LogOut("[AUTO-ACTION][FM] P1 wake FM buffered early (toggle=ON)", true);
+                        } else if (detailedLogging.load()) {
+                            LogOut("[AUTO-ACTION][FM] P1 wake FM early buffer gate failed", true);
+                        }
+                    } else {
+                        // Frame1 injection path: mark prearmed metadata only; inject FM at wake exec.
+                        prearmed = true;
+                        s_p1WakePrearmIsSpecial = false; // cause ApplyAutoAction path at wake
+                        LogOut("[AUTO-ACTION][FM] P1 wake FM scheduled for frame1 inject (toggle=OFF)", true);
+                    }
+                } else if (g_wakeBufferingEnabled.load()) {
                     if (motionType >= MOTION_236A) {
                         prearmed = FreezeBufferForMotion(1, motionType, buttonMask);
                         s_p1WakePrearmIsSpecial = true;
@@ -624,33 +618,36 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
                 // If it was NOT an early-buffered special, inject now (special already handled by freeze thread)
                 if (!s_p1WakePrearmIsSpecial && s_p1WakePrearmActionType >= 0) {
                     int at = s_p1WakePrearmActionType;
-                    int motionType = ConvertTriggerActionToMotion(at, TRIGGER_ON_WAKEUP);
-                    int buttonMask = 0;
-                    if (at >= ACTION_5A && at <= ACTION_2C) {
-                        int button = (at - ACTION_5A) % 3;
-                        buttonMask = (1 << (4 + button));
-                    } else if (at >= ACTION_JA && at <= ACTION_JC) {
-                        int button = (at - ACTION_JA) % 3;
-                        buttonMask = (1 << (4 + button));
-                    }
-                    if (at == ACTION_BACKDASH || at == ACTION_FORWARD_DASH) {
-                        // Dash: queue motion now
-                        QueueMotionInput(1, motionType, 0);
-                    } else if (motionType >= MOTION_5A && motionType <= MOTION_5C) {
-                        ImmediateInput::PressFor(1, buttonMask, 2);
-                    } else if (motionType >= MOTION_2A && motionType <= MOTION_2C) {
-                        ImmediateInput::PressFor(1, GAME_INPUT_DOWN | buttonMask, 2);
-                    } else if (motionType >= MOTION_236A) {
-                        // Frame1 special injection path (toggle OFF): compute button mask (was missing -> produced no button, failing motion)
-                        if (buttonMask == 0) {
-                            // Reconstruct button mask for specials/supers just like pre-arm phase
-                            int atStrength = GetSpecialMoveStrength(at, TRIGGER_ON_WAKEUP); // 0=A 1=B 2=C
-                            buttonMask = (1 << (4 + atStrength));
+                    if (at == ACTION_FINAL_MEMORY) {
+                        int charId = displayData.p1CharID;
+                        bool ok = ExecuteFinalMemory(1, charId);
+                        LogOut(std::string("[AUTO-ACTION][FM] P1 wake frame1 FM inject ") + (ok?"ok":"fail"), true);
+                        // Clear trigger immediately regardless outcome
+                        p1TriggerActive = false; p1TriggerCooldown = 0;
+                        s_p1WakePrearmed = false; s_p1WakePrearmActionType = -1;
+                    } else {
+                        int motionType = ConvertTriggerActionToMotion(at, TRIGGER_ON_WAKEUP);
+                        int buttonMask = 0;
+                        if (at >= ACTION_5A && at <= ACTION_2C) {
+                            int button = (at - ACTION_5A) % 3;
+                            buttonMask = (1 << (4 + button));
+                        } else if (at >= ACTION_JA && at <= ACTION_JC) {
+                            int button = (at - ACTION_JA) % 3;
+                            buttonMask = (1 << (4 + button));
                         }
-                        FreezeBufferForMotion(1, motionType, buttonMask);
-                        {
-                            std::stringstream bm; bm << std::hex << buttonMask;
-                            LogOut(std::string("[AUTO-ACTION] P1 wake special frame1 buffer applied (index frozen) btnMask=0x") + bm.str(), true);
+                        if (at == ACTION_BACKDASH || at == ACTION_FORWARD_DASH) {
+                            QueueMotionInput(1, motionType, 0);
+                        } else if (motionType >= MOTION_5A && motionType <= MOTION_5C) {
+                            ImmediateInput::PressFor(1, buttonMask, 2);
+                        } else if (motionType >= MOTION_2A && motionType <= MOTION_2C) {
+                            ImmediateInput::PressFor(1, GAME_INPUT_DOWN | buttonMask, 2);
+                        } else if (motionType >= MOTION_236A) {
+                            if (buttonMask == 0) {
+                                int atStrength = GetSpecialMoveStrength(at, TRIGGER_ON_WAKEUP);
+                                buttonMask = (1 << (4 + atStrength));
+                            }
+                            FreezeBufferForMotion(1, motionType, buttonMask);
+                            { std::stringstream bm; bm << std::hex << buttonMask; LogOut(std::string("[AUTO-ACTION] P1 wake special frame1 buffer applied (index frozen) btnMask=0x") + bm.str(), true); }
                         }
                     }
                 }
@@ -753,13 +750,30 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
                 } else if (actionType >= ACTION_JA && actionType <= ACTION_JC) {
                     int button = (actionType - ACTION_JA) % 3;
                     buttonMask = (1 << (4 + button));
-                } else if (actionType >= ACTION_QCF && actionType <= ACTION_CUSTOM) {
+                } else if (actionType >= ACTION_QCF && actionType <= ACTION_641236) {
                     int strength = GetSpecialMoveStrength(actionType, TRIGGER_ON_WAKEUP);
                     buttonMask = (1 << (4 + strength));
                 }
 
                 bool prearmed = false;
-                if (g_wakeBufferingEnabled.load()) {
+                if (actionType == ACTION_FINAL_MEMORY) {
+                    int charId = displayData.p2CharID;
+                    if (g_wakeBufferingEnabled.load()) {
+                        bool fmOk = ExecuteFinalMemory(2, charId);
+                        if (fmOk) {
+                            prearmed = true;
+                            s_p2WakePrearmIsSpecial = true;
+                            EnableP2ControlForAutoAction(); // ensure buffer progression semantics
+                            LogOut("[AUTO-ACTION][FM] P2 wake FM buffered early (toggle=ON)", true);
+                        } else if (detailedLogging.load()) {
+                            LogOut("[AUTO-ACTION][FM] P2 wake FM early buffer gate failed", true);
+                        }
+                    } else {
+                        prearmed = true; // frame1 path
+                        s_p2WakePrearmIsSpecial = false; // inject at wake exec via ApplyAutoAction
+                        LogOut("[AUTO-ACTION][FM] P2 wake FM scheduled for frame1 inject (toggle=OFF)", true);
+                    }
+                } else if (g_wakeBufferingEnabled.load()) {
                     if (motionType >= MOTION_236A) {
                         prearmed = FreezeBufferForMotion(2, motionType, buttonMask);
                         if (prearmed) LogOut("[AUTO-ACTION] P2 wake special buffered early (toggle=ON)", true);
@@ -814,33 +828,37 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
                 g_lastActiveTriggerFrame.store(frameCounter.load());
                 if (!s_p2WakePrearmIsSpecial && s_p2WakePrearmActionType >= 0) {
                     int at = s_p2WakePrearmActionType;
-                    int motionType = ConvertTriggerActionToMotion(at, TRIGGER_ON_WAKEUP);
-                    int buttonMask = 0;
-                    if (at >= ACTION_5A && at <= ACTION_2C) {
-                        int button = (at - ACTION_5A) % 3;
-                        buttonMask = (1 << (4 + button));
-                    } else if (at >= ACTION_JA && at <= ACTION_JC) {
-                        int button = (at - ACTION_JA) % 3;
-                        buttonMask = (1 << (4 + button));
-                    }
-                    if (at == ACTION_BACKDASH || at == ACTION_FORWARD_DASH) {
-                        // Dash frame1 inject
-                        QueueMotionInput(2, motionType, 0);
-                    } else if (motionType >= MOTION_5A && motionType <= MOTION_5C) {
-                        ImmediateInput::PressFor(2, buttonMask, 2);
-                    } else if (motionType >= MOTION_2A && motionType <= MOTION_2C) {
-                        ImmediateInput::PressFor(2, GAME_INPUT_DOWN | buttonMask, 2);
-                    } else if (motionType >= MOTION_236A) {
-                        // Frame1 special injection path: compute missing button mask then freeze
-                        if (buttonMask == 0) {
-                            int atStrength = GetSpecialMoveStrength(at, TRIGGER_ON_WAKEUP);
-                            buttonMask = (1 << (4 + atStrength));
-                        }
+                    if (at == ACTION_FINAL_MEMORY) {
+                        int charId = displayData.p2CharID;
                         EnableP2ControlForAutoAction();
-                        FreezeBufferForMotion(2, motionType, buttonMask);
-                        {
-                            std::stringstream bm; bm << std::hex << buttonMask;
-                            LogOut(std::string("[AUTO-ACTION] P2 wake special frame1 buffer applied (index frozen) btnMask=0x") + bm.str(), true);
+                        bool ok = ExecuteFinalMemory(2, charId);
+                        LogOut(std::string("[AUTO-ACTION][FM] P2 wake frame1 FM inject ") + (ok?"ok":"fail"), true);
+                        p2TriggerActive = false; p2TriggerCooldown = 0;
+                        s_p2WakePrearmed = false; s_p2WakePrearmActionType = -1;
+                    } else {
+                        int motionType = ConvertTriggerActionToMotion(at, TRIGGER_ON_WAKEUP);
+                        int buttonMask = 0;
+                        if (at >= ACTION_5A && at <= ACTION_2C) {
+                            int button = (at - ACTION_5A) % 3;
+                            buttonMask = (1 << (4 + button));
+                        } else if (at >= ACTION_JA && at <= ACTION_JC) {
+                            int button = (at - ACTION_JA) % 3;
+                            buttonMask = (1 << (4 + button));
+                        }
+                        if (at == ACTION_BACKDASH || at == ACTION_FORWARD_DASH) {
+                            QueueMotionInput(2, motionType, 0);
+                        } else if (motionType >= MOTION_5A && motionType <= MOTION_5C) {
+                            ImmediateInput::PressFor(2, buttonMask, 2);
+                        } else if (motionType >= MOTION_2A && motionType <= MOTION_2C) {
+                            ImmediateInput::PressFor(2, GAME_INPUT_DOWN | buttonMask, 2);
+                        } else if (motionType >= MOTION_236A) {
+                            if (buttonMask == 0) {
+                                int atStrength = GetSpecialMoveStrength(at, TRIGGER_ON_WAKEUP);
+                                buttonMask = (1 << (4 + atStrength));
+                            }
+                            EnableP2ControlForAutoAction();
+                            FreezeBufferForMotion(2, motionType, buttonMask);
+                            { std::stringstream bm; bm << std::hex << buttonMask; LogOut(std::string("[AUTO-ACTION] P2 wake special frame1 buffer applied (index frozen) btnMask=0x") + bm.str(), true); }
                         }
                     }
                 }

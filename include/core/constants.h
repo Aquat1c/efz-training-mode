@@ -237,9 +237,8 @@
 #define ACTION_JUMP          14
 #define ACTION_BACKDASH      15
 #define ACTION_BLOCK         16
-#define ACTION_CUSTOM        17
-#define ACTION_421           18 // or next available value
-#define ACTION_FINAL_MEMORY  19 // Virtual action to request per-character Final Memory
+#define ACTION_421           17 // Half-circle down
+#define ACTION_FINAL_MEMORY  18 // Virtual action to request per-character Final Memory
 
 // Default delay for triggers
 #define DEFAULT_TRIGGER_DELAY 0  // Default delay for all triggers
@@ -247,7 +246,7 @@
 // Control IDs for auto-action UI
 #define IDC_AUTOACTION_ENABLE     5001
 #define IDC_AUTOACTION_ACTION     5003
-#define IDC_AUTOACTION_CUSTOM_ID  5004
+#define IDC_AUTOACTION_CUSTOM_ID  5004 // (deprecated/no-op)
 #define IDC_AUTOACTION_PLAYER     5005
 
 // Add trigger checkboxes and delay controls
@@ -269,10 +268,10 @@
 #define IDC_TRIGGER_AFTER_AIRTECH_ACTION   5021
 
 // Custom action IDs for each trigger
-#define IDC_TRIGGER_AFTER_BLOCK_CUSTOM     5022
-#define IDC_TRIGGER_ON_WAKEUP_CUSTOM       5023
-#define IDC_TRIGGER_AFTER_HITSTUN_CUSTOM   5024
-#define IDC_TRIGGER_AFTER_AIRTECH_CUSTOM   5025
+#define IDC_TRIGGER_AFTER_BLOCK_CUSTOM     5022 // deprecated
+#define IDC_TRIGGER_ON_WAKEUP_CUSTOM       5023 // deprecated
+#define IDC_TRIGGER_AFTER_HITSTUN_CUSTOM   5024 // deprecated
+#define IDC_TRIGGER_AFTER_AIRTECH_CUSTOM   5025 // deprecated
 
 // Debug/experimental: wake buffering toggle checkbox
 #define IDC_TRIGGER_WAKE_BUFFER_CHECK      5026
