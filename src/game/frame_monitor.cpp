@@ -191,7 +191,7 @@ void UpdateTriggerOverlay() {
             case ACTION_BACKDASH: return "Backdash";
             case ACTION_FORWARD_DASH: return "Forward Dash";
             case ACTION_BLOCK: return "Block";
-            case ACTION_CUSTOM: return "Custom (" + std::to_string(customId) + ")";
+            case ACTION_FINAL_MEMORY: return "Final Memory";
             default: return "Unknown (" + std::to_string(actionType) + ")";
         }
     };

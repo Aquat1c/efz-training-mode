@@ -63,8 +63,7 @@ namespace ImGuiGui {
         ACTION_BACKDASH,    // 19 = Backdash
         ACTION_FORWARD_DASH,// 20 = Forward Dash
         ACTION_BLOCK,       // 21 = Block
-    ACTION_CUSTOM,      // 22 = Custom ID
-    ACTION_FINAL_MEMORY // 23 = Final Memory (per-character)
+        ACTION_FINAL_MEMORY // 22 = Final Memory (per-character)
     };
 
     // Helper function to convert action type to combo index
@@ -366,7 +365,7 @@ namespace ImGuiGui {
             "Standing", "Crouching", "Jumping",
             "236 (QCF)", "623 (DP)", "214 (QCB)", "421 (Half-circle Down)",
             "41236 (HCF)", "63214 (HCB)", "236236 (Double QCF)", "214214 (Double QCB)",
-            "641236", "Jump", "Backdash", "Forward Dash", "Block", "Custom ID", "Final Memory"
+            "641236", "Jump", "Backdash", "Forward Dash", "Block", "Final Memory"
         };
 
         // Button list (applies to both directions and motions)
@@ -406,8 +405,7 @@ namespace ImGuiGui {
                 case ACTION_BACKDASH: return 13;
                 case ACTION_FORWARD_DASH: return 14;
                 case ACTION_BLOCK: return 15;
-                case ACTION_CUSTOM: return 16;
-                case ACTION_FINAL_MEMORY: return 17; // maps to Final Memory entry
+                case ACTION_FINAL_MEMORY: return 16; // maps to Final Memory entry
                 default: return 0; // default Standing
             }
         };
@@ -441,8 +439,7 @@ namespace ImGuiGui {
                 case 13: return ACTION_BACKDASH;
                 case 14: return ACTION_FORWARD_DASH;
                 case 15: return ACTION_BLOCK;
-                case 16: return ACTION_CUSTOM;
-                case 17: return ACTION_FINAL_MEMORY;
+                case 16: return ACTION_FINAL_MEMORY;
                 default: return ACTION_5A; // For posture indices, action will be set via button mapping
             }
         };
@@ -529,7 +526,7 @@ namespace ImGuiGui {
             } else {
                 // For other actions (jump, dash, block, custom), keep buttonIdx but it won't affect action
                 buttonIdx = *triggers[i].strength;
-                if (*triggers[i].action != ACTION_BLOCK && *triggers[i].action != ACTION_CUSTOM) {
+                if (*triggers[i].action != ACTION_BLOCK) {
                     if (ImGui::Combo("", &buttonIdx, buttonItems, IM_ARRAYSIZE(buttonItems))) {//Delay
                         *triggers[i].strength = (buttonIdx > 2) ? 2 : buttonIdx;
                     }
@@ -545,17 +542,7 @@ namespace ImGuiGui {
                 *triggers[i].delay = (std::max)(0, delayValue); // Add parentheses around std::max
             }
             
-            // Only show custom ID input for custom action type
-            if (*triggers[i].action == ACTION_CUSTOM) {
-                ImGui::SameLine();
-                ImGui::SetNextItemWidth(80);
-                
-                // Fixed: Use a local variable for InputInt
-                int customValue = *triggers[i].custom;
-                if (ImGui::InputInt("Move ID", &customValue, 1, 10)) {
-                    *triggers[i].custom = (std::max)(0, customValue); // Add parentheses around std::max
-                }
-            }
+            // Custom action removed; no custom ID field rendered
             
             ImGui::PopID();
         }

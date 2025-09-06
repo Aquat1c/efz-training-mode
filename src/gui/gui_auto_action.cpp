@@ -32,7 +32,7 @@ extern "C" const int ComboIndexToActionType[] = {
     ACTION_BACKDASH,    // 18 = Backdash
     ACTION_FORWARD_DASH,// 19 = Forward Dash
     ACTION_BLOCK,       // 20 = Block
-    ACTION_CUSTOM       // 21 = Custom ID
+    ACTION_FINAL_MEMORY // 21 = Final Memory
 };
 
 // Helper function to convert action type to combobox index

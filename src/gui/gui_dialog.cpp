@@ -214,14 +214,10 @@ INT_PTR CALLBACK EditDataDlgProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM 
             int selectedIndex = SendMessage(ctrlHwnd, CB_GETCURSEL, 0, 0);
             
             // Find the Custom MoveID edit control
+            // Custom MoveID deprecated; ensure field (if present) stays disabled
             HWND hCustomIDEdit = GetDlgItem(hPage3, IDC_AUTOACTION_CUSTOM_ID);
             if (hCustomIDEdit) {
-                // Enable Custom MoveID edit when "Custom MoveID" (index 9) is selected
-                bool enableCustomEdit = (selectedIndex == 9);
-                EnableWindow(hCustomIDEdit, enableCustomEdit);
-                
-                LogOut("[GUI] Action type changed to index " + std::to_string(selectedIndex) + 
-                       ", Custom MoveID field " + (enableCustomEdit ? "enabled" : "disabled"), true);
+                EnableWindow(hCustomIDEdit, FALSE);
             }
             return TRUE;
         }
