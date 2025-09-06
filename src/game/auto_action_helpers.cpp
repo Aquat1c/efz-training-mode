@@ -125,6 +125,7 @@ int ConvertTriggerActionToMotion(int actionType, int triggerType) {
         case ACTION_BACKDASH: return ACTION_BACK_DASH;
         case ACTION_FORWARD_DASH: return ACTION_FORWARD_DASH;
         case ACTION_BLOCK: return MOTION_NONE;
+    case ACTION_FINAL_MEMORY: return MOTION_NONE; // Handled by FM subsystem
 
         default:
             LogOut("[AUTO-ACTION] WARNING: Unknown action type " + std::to_string(actionType) + 

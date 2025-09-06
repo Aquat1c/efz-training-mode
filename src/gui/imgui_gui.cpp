@@ -24,6 +24,7 @@ extern void SpamAttackButton(uintptr_t playerBase, uint8_t button, int frames, c
 #include "../include/game/practice_patch.h"
 #include "../include/gui/imgui_settings.h"
 #include "../include/game/final_memory_patch.h"
+#include "../include/game/fm_commands.h"
 
 // Add these constants at the top of the file after includes
 // These are from input_motion.cpp but we need them here
@@ -62,7 +63,8 @@ namespace ImGuiGui {
         ACTION_BACKDASH,    // 19 = Backdash
         ACTION_FORWARD_DASH,// 20 = Forward Dash
         ACTION_BLOCK,       // 21 = Block
-        ACTION_CUSTOM       // 22 = Custom ID
+    ACTION_CUSTOM,      // 22 = Custom ID
+    ACTION_FINAL_MEMORY // 23 = Final Memory (per-character)
     };
 
     // Helper function to convert action type to combo index
@@ -364,7 +366,7 @@ namespace ImGuiGui {
             "Standing", "Crouching", "Jumping",
             "236 (QCF)", "623 (DP)", "214 (QCB)", "421 (Half-circle Down)",
             "41236 (HCF)", "63214 (HCB)", "236236 (Double QCF)", "214214 (Double QCB)",
-            "641236", "Jump", "Backdash", "Forward Dash", "Block", "Custom ID"
+            "641236", "Jump", "Backdash", "Forward Dash", "Block", "Custom ID", "Final Memory"
         };
 
         // Button list (applies to both directions and motions)
@@ -405,6 +407,7 @@ namespace ImGuiGui {
                 case ACTION_FORWARD_DASH: return 14;
                 case ACTION_BLOCK: return 15;
                 case ACTION_CUSTOM: return 16;
+                case ACTION_FINAL_MEMORY: return 17; // maps to Final Memory entry
                 default: return 0; // default Standing
             }
         };
@@ -439,6 +442,7 @@ namespace ImGuiGui {
                 case 14: return ACTION_FORWARD_DASH;
                 case 15: return ACTION_BLOCK;
                 case 16: return ACTION_CUSTOM;
+                case 17: return ACTION_FINAL_MEMORY;
                 default: return ACTION_5A; // For posture indices, action will be set via button mapping
             }
         };
@@ -1208,6 +1212,15 @@ namespace ImGuiGui {
         } else {
             ImGui::Text("Game state pointer not available.");
         }
+
+        ImGui::Separator();
+        ImGui::Text("Final Memory (manual execute)");
+        int p1Char = guiState.localData.p1CharID;
+        int p2Char = guiState.localData.p2CharID;
+        if (ImGui::Button("Run P1 FM")) { ExecuteFinalMemory(1, p1Char); }
+        ImGui::SameLine();
+        if (ImGui::Button("Run P2 FM")) { ExecuteFinalMemory(2, p2Char); }
+        ImGui::Separator();
     }
 
     // Update the RenderGui function to include the new tab:

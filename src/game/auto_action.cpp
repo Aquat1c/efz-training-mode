@@ -12,6 +12,7 @@
 #include "../include/input/input_freeze.h"     // Add this include near the top with the other includes
 #include "../include/game/attack_reader.h"
 #include "../include/input/immediate_input.h"
+#include "../include/game/fm_commands.h" // Final Memory execution
 #include <cmath>
 // Define the motion input constants if they're not already defined
 #ifndef MOTION_INPUT_UP
@@ -1015,6 +1016,39 @@ void ApplyAutoAction(int playerNum, uintptr_t moveIDAddr, short currentMoveID, s
         default:
             actionType = ACTION_5A; // Default to 5A
             break;
+    }
+
+    // Special early handling: Final Memory bypasses motion mapping and injects bespoke pattern
+    if (actionType == ACTION_FINAL_MEMORY) {
+        int charId = (playerNum == 1) ? displayData.p1CharID : displayData.p2CharID;
+        if (charId < 0) {
+            LogOut("[AUTO-ACTION][FM] Aborting: unknown character id", true);
+        } else {
+            LogOut("[AUTO-ACTION][FM] Attempting Final Memory for player " + std::to_string(playerNum) +
+                   " charId=" + std::to_string(charId), true);
+            // For P2 we must force human control so buffer writes advance like specials/supers
+            if (playerNum == 2) {
+                EnableP2ControlForAutoAction();
+            }
+            bool ok = ExecuteFinalMemory(playerNum, charId);
+            if (ok) {
+                if (playerNum == 2) {
+                    p2TriggerActive = false; p2TriggerCooldown = 0; 
+                    // Mirror special-move restore flow so AI control is returned after FM executes
+                    g_lastP2MoveID.store(currentMoveID); // starting move id baseline
+                    g_pendingControlRestore.store(true);
+                    g_controlRestoreTimeout.store(240); // a little longer for FM sequences
+                    LogOut("[AUTO-ACTION][FM] Scheduled P2 control restore (timeout=240)", true);
+                } else {
+                    p1TriggerActive = false; p1TriggerCooldown = 0; 
+                }
+                LogOut("[AUTO-ACTION][FM] Final Memory pattern frozen", true);
+                return; // Fully handled
+            } else {
+                LogOut("[AUTO-ACTION][FM] Gate failed or pattern apply error", true);
+            }
+        }
+        // Fall through to normal handling if FM failed; do NOT early return
     }
 
     // Determine strength BEFORE converting to motion; strength drives motionType selection

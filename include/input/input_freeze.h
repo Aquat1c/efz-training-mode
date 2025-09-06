@@ -57,6 +57,13 @@ bool FreezePerfectDragonPunch(int playerNum);
  */
 bool FreezeBufferForMotion(int playerNum, int motionType, int buttonMask, int optimalIndex = -1);
 
+// Generic pattern freeze (used for complex Final Memory inputs that don't map to a single motionType)
+// Writes an arbitrary already-direction/button encoded pattern (values are the unified GAME_INPUT_* bitmasks)
+// Pattern is placed starting at buffer index 0 (same policy as FreezeBufferForMotion) and the index is
+// frozen at the last element so the terminating button press remains resident for recognition.
+// Returns true if successfully started.
+bool FreezeBufferWithPattern(int playerNum, const std::vector<uint8_t>& pattern);
+
 // Buffer visualization function
 std::string GetInputBufferVisualization(int playerNum, int window);
 

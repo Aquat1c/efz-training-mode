@@ -239,6 +239,7 @@
 #define ACTION_BLOCK         16
 #define ACTION_CUSTOM        17
 #define ACTION_421           18 // or next available value
+#define ACTION_FINAL_MEMORY  19 // Virtual action to request per-character Final Memory
 
 // Default delay for triggers
 #define DEFAULT_TRIGGER_DELAY 0  // Default delay for all triggers

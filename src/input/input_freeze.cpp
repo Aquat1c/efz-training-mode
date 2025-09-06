@@ -519,3 +519,35 @@ void EndBufferFreezeSession(int playerNum, const char* reason, bool clearGlobals
     LogOut(std::string("[BUFFER_FREEZE] End session P") + std::to_string(playerNum) +
            " (" + (reason?reason:"no reason") + ")", true);
 }
+
+// Generic pattern freeze for bespoke sequences (Final Memory, multi-phase inputs, etc.)
+bool FreezeBufferWithPattern(int playerNum, const std::vector<uint8_t>& patternIn) {
+    StopBufferFreezing();
+    if (patternIn.empty()) return false;
+    uintptr_t playerPtr = GetPlayerPointer(playerNum);
+    if (!playerPtr) return false;
+    // Sanitize: cap extremely large patterns
+    std::vector<uint8_t> pattern = patternIn;
+    if (pattern.size() > 120) pattern.resize(120); // safety cap
+
+    // Clear target region first (pattern + small padding)
+    const uint16_t startIndex = 0;
+    const uint16_t clearLength = static_cast<uint16_t>(pattern.size() + 4);
+    for (uint16_t i = 0; i < clearLength; ++i) {
+        uint8_t z = 0; SafeWriteMemory(playerPtr + INPUT_BUFFER_OFFSET + ((startIndex + i) % INPUT_BUFFER_SIZE), &z, 1);
+    }
+    // Write pattern
+    for (size_t i = 0; i < pattern.size(); ++i) {
+        SafeWriteMemory(playerPtr + INPUT_BUFFER_OFFSET + ((startIndex + i) % INPUT_BUFFER_SIZE), &pattern[i], 1);
+    }
+    g_frozenBufferValues = pattern;
+    g_frozenBufferStartIndex = startIndex;
+    g_frozenBufferLength = static_cast<uint16_t>(pattern.size());
+    g_frozenIndexValue = (startIndex + g_frozenBufferLength - 1) % INPUT_BUFFER_SIZE;
+    g_indexFreezingActive = true;
+    g_bufferFreezingActive = true;
+    g_bufferFreezeThread = std::thread(FreezeBufferValuesThread, playerNum);
+    g_bufferFreezeThread.detach();
+    LogOut("[BUFFER_FREEZE] Generic pattern freeze active (len=" + std::to_string(pattern.size()) + ") P" + std::to_string(playerNum), true);
+    return true;
+}
