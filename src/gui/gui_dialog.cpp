@@ -235,6 +235,14 @@ INT_PTR CALLBACK EditDataDlgProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM 
             LogOut("[GUI] Confirm button clicked, settings applied", true);
             return TRUE;
         }
+
+        // Wake buffering toggle (debug)
+        if (cmdID == IDC_TRIGGER_WAKE_BUFFER_CHECK) {
+            bool checked = (IsDlgButtonChecked(hPage3, IDC_TRIGGER_WAKE_BUFFER_CHECK) == BST_CHECKED);
+            g_wakeBufferingEnabled.store(checked);
+            LogOut(std::string("[GUI] Wake buffering toggle set to ") + (checked ? "ENABLED (pre-buffer specials/dashes)" : "DISABLED (frame1 inject specials/dashes)"), true);
+            return TRUE;
+        }
         
         if (cmdID == IDC_BTN_CANCEL) { // Changed to 'if' from 'else if' to be safe, though 'else if' is fine here.
             LogOut("[GUI_DEBUG] EditDataDlgProc: IDC_BTN_CANCEL detected.", true);

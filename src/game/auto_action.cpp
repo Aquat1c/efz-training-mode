@@ -42,12 +42,11 @@ std::atomic<int> g_lastActiveTriggerFrame(0);
 static bool p1TriggerActive = false;
 static bool p2TriggerActive = false;
 // Log throttles to avoid spamming the console during tight loops
-static bool p2AfterBlockLoggedInflight = false;     // logs "in-flight override/restore" once per in-flight window
-static bool p2AfterBlockLoggedNotActionable = false; // logs "now not actionable yet" once per not-actionable window
+// (Removed per-trigger throttles for P2 After Block in refactor)
 static int p1TriggerCooldown = 0;
 static int p2TriggerCooldown = 0;
 // Further reduce cooldown to re-arm triggers faster (was 6)
-static constexpr int TRIGGER_COOLDOWN_FRAMES = 3; // ~0.016s @192fps (~1 visual frame)
+static constexpr int TRIGGER_COOLDOWN_FRAMES = 6; // modest base cooldown; simplified logic allows reliable expiry
 bool g_p2ControlOverridden = false;
 uint32_t g_originalP2ControlFlag = 1; // Default to AI control
 
@@ -58,10 +57,15 @@ std::atomic<short> g_lastP2MoveID(-1);
 const int CONTROL_RESTORE_TIMEOUT = 180; // 180 internal frames = 1 second
 
 // Pre-arm flags for On Wakeup: buffer inputs during GROUNDTECH_RECOVERY to fire on wake
-static bool s_p1WakePrearmed = false;
-static bool s_p2WakePrearmed = false;
+static bool s_p1WakePrearmed = false; // wake pre-arm without early triggerActive
+static bool s_p2WakePrearmed = false; // same
 static int  s_p1WakePrearmExpiry = 0;
 static int  s_p2WakePrearmExpiry = 0;
+// Wake pre-arm action metadata (so we can execute normals/dashes at the actionable frame)
+static int  s_p1WakePrearmActionType = -1;
+static int  s_p2WakePrearmActionType = -1;
+static bool s_p1WakePrearmIsSpecial = false; // specials rely on buffer freeze; normals/dashes injected later
+static bool s_p2WakePrearmIsSpecial = false;
 
 // Lightweight stun/wakeup timing trackers for diagnostics
 struct StunTimers {
@@ -349,12 +353,10 @@ void StartTriggerDelay(int playerNum, int triggerType, short moveID, int delayFr
            ", p2TrigActive=" + std::to_string(p2TriggerActive) +
            ", p1Cooldown=" + std::to_string(p1TriggerCooldown) +
            ", p2Cooldown=" + std::to_string(p2TriggerCooldown), detailedLogging.load());
-     // IMPORTANT: If targeting P2, ensure human control is enabled
-    if (playerNum == 2) {
-        // Add debug logs to track control state changes
-    LogOut("[AUTO-ACTION] Enabling human control for P2 auto-action", detailedLogging.load());
-        EnableP2ControlForAutoAction();
-    }
+    // NOTE: We no longer unconditionally override P2 control here. Override is now done
+    // just-in-time only for specials/supers inside ApplyAutoAction (and wake pre-arm
+    // when freezing a special). Normals/jumps/dashes use immediate inputs and do not
+    // require AI flag changes.
     // Set trigger cooldown to prevent rapid re-triggering
     if (playerNum == 1) {
         p1TriggerActive = true;
@@ -413,35 +415,19 @@ void ProcessTriggerCooldowns() {
             s_nextCooldownDiagFrame = now + 960;
         }
     }
-    // Keep triggers locked while an injection/control-restore is in-flight to avoid re-triggers
-    bool p1InFlight = g_manualInputOverride[1].load();
-    bool p2InFlight = g_manualInputOverride[2].load() || g_pendingControlRestore.load();
-
-    // P1 cooldown processing
-    if (p1TriggerActive) {
-        if (p1InFlight) {
-            // Hold active; don't let cooldown expire mid-override
-            if (p1TriggerCooldown <= 1) p1TriggerCooldown = 1;
-        } else if (p1TriggerCooldown > 0) {
-            p1TriggerCooldown--;
-            if (p1TriggerCooldown <= 0) {
-                p1TriggerActive = false;
-                LogOut("[AUTO-ACTION] P1 trigger cooldown expired, new triggers allowed", detailedLogging.load());
-            }
+    // Simplified cooldown progression (no pinning) to avoid deadlocks
+    if (p1TriggerActive && p1TriggerCooldown > 0) {
+        p1TriggerCooldown--;
+        if (p1TriggerCooldown <= 0) {
+            p1TriggerActive = false;
+            LogOut("[AUTO-ACTION] P1 trigger cooldown expired, new triggers allowed", detailedLogging.load());
         }
     }
-    
-    // P2 cooldown processing
-    if (p2TriggerActive) {
-        if (p2InFlight) {
-            // Hold active; don't let cooldown expire mid-override/restore
-            if (p2TriggerCooldown <= 1) p2TriggerCooldown = 1;
-        } else if (p2TriggerCooldown > 0) {
-            p2TriggerCooldown--;
-            if (p2TriggerCooldown <= 0) {
-                p2TriggerActive = false;
-                LogOut("[AUTO-ACTION] P2 trigger cooldown expired, new triggers allowed", detailedLogging.load());
-            }
+    if (p2TriggerActive && p2TriggerCooldown > 0) {
+        p2TriggerCooldown--;
+        if (p2TriggerCooldown <= 0) {
+            p2TriggerActive = false;
+            LogOut("[AUTO-ACTION] P2 trigger cooldown expired, new triggers allowed", detailedLogging.load());
         }
     }
 }
@@ -578,20 +564,48 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
                 }
 
                 bool prearmed = false;
-                // Queue normals and dashes; freeze buffer for specials. Skip jump pre-arm.
-                if (actionType == ACTION_BACKDASH || actionType == ACTION_FORWARD_DASH ||
-                    (motionType >= MOTION_5A && motionType <= MOTION_JC)) {
-                    prearmed = QueueMotionInput(1, motionType, 0);
-                } else if (motionType >= MOTION_236A) {
-                    prearmed = FreezeBufferForMotion(1, motionType, buttonMask);
+                // Conditional wake buffering: if disabled, NEVER freeze early; inject on first actionable frame
+                if (g_wakeBufferingEnabled.load()) {
+                    if (motionType >= MOTION_236A) {
+                        prearmed = FreezeBufferForMotion(1, motionType, buttonMask);
+                        s_p1WakePrearmIsSpecial = true;
+                        if (prearmed) {
+                            LogOut("[AUTO-ACTION] P1 wake special buffered early (toggle=ON)", true);
+                        }
+                    } else if (actionType == ACTION_BACKDASH || actionType == ACTION_FORWARD_DASH) {
+                        // Allow early queue for dash only when buffering enabled
+                        prearmed = QueueMotionInput(1, motionType, 0);
+                        s_p1WakePrearmIsSpecial = false; // dash executes on wake via queue
+                        if (prearmed) {
+                            LogOut("[AUTO-ACTION] P1 wake dash queued early (toggle=ON)", true);
+                        }
+                    } else if (motionType >= MOTION_5A && motionType <= MOTION_JC) {
+                        // Normals never need early queue; mark as prearmed metadata only
+                        prearmed = true;
+                        s_p1WakePrearmIsSpecial = false;
+                    }
+                } else {
+                    // Frame1 injection path: just mark as prearmed metadata for all supported actions
+                    if (motionType >= MOTION_5A && motionType <= MOTION_JC) {
+                        prearmed = true; s_p1WakePrearmIsSpecial = false;
+                    } else if (actionType == ACTION_BACKDASH || actionType == ACTION_FORWARD_DASH) {
+                        prearmed = true; s_p1WakePrearmIsSpecial = false; // inject dash on wake
+                    } else if (motionType >= MOTION_236A) {
+                        prearmed = true; s_p1WakePrearmIsSpecial = false; // treat special like normal for frame1 inject
+                        LogOut("[AUTO-ACTION] P1 wake special set for frame1 inject (toggle=OFF)", true);
+                    }
                 }
                 if (prearmed) {
                     s_p1WakePrearmed = true;
-                    s_p1WakePrearmExpiry = frameCounter.load() + 120; // ~0.6s safety window
-                    p1TriggerActive = true; // avoid duplicate fire when actionable
-                    p1TriggerCooldown = TRIGGER_COOLDOWN_FRAMES;
-                    LogOut("[AUTO-ACTION] P1 On Wakeup pre-armed at recovery (96)", true);
-                    LogOut("[AUTO-ACTION] P1 On Wakeup pre-armed at recovery (96)", detailedLogging.load());
+                    s_p1WakePrearmExpiry = frameCounter.load() + 120;
+                    s_p1WakePrearmActionType = actionType;
+                    LogOut("[AUTO-ACTION] P1 wake prearm stored: action=" + std::to_string(actionType) +
+                           " motion=" + std::to_string(motionType) +
+                           " special=" + std::to_string(s_p1WakePrearmIsSpecial) +
+                           " currMoveID=" + std::to_string(moveID1) +
+                           " frame=" + std::to_string(frameCounter.load()), true);
+                } else if (detailedLogging.load()) {
+                    LogOut("[AUTO-ACTION] P1 wake pre-arm failed", true);
                 }
             }
         }
@@ -599,8 +613,48 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
         // On Wakeup trigger (fallback if not pre-armed or for normals/jumps)
         if (!shouldTrigger && triggerOnWakeupEnabled.load()) {
             if (s_p1WakePrearmed && IsGroundtech(prevMoveID1) && IsActionable(moveID1)) {
-                // We just woke; clear pre-arm flag so future cycles can re-arm
+                LogOut("[AUTO-ACTION] P1 wake exec: action=" + std::to_string(s_p1WakePrearmActionType) +
+                       " special=" + std::to_string(s_p1WakePrearmIsSpecial) +
+                       " prevMoveID=" + std::to_string(prevMoveID1) +
+                       " currMoveID=" + std::to_string(moveID1) +
+                       " frame=" + std::to_string(frameCounter.load()), true);
+                g_lastActiveTriggerType.store(TRIGGER_ON_WAKEUP);
+                g_lastActiveTriggerFrame.store(frameCounter.load());
+                // If it was NOT an early-buffered special, inject now (special already handled by freeze thread)
+                if (!s_p1WakePrearmIsSpecial && s_p1WakePrearmActionType >= 0) {
+                    int at = s_p1WakePrearmActionType;
+                    int motionType = ConvertTriggerActionToMotion(at, TRIGGER_ON_WAKEUP);
+                    int buttonMask = 0;
+                    if (at >= ACTION_5A && at <= ACTION_2C) {
+                        int button = (at - ACTION_5A) % 3;
+                        buttonMask = (1 << (4 + button));
+                    } else if (at >= ACTION_JA && at <= ACTION_JC) {
+                        int button = (at - ACTION_JA) % 3;
+                        buttonMask = (1 << (4 + button));
+                    }
+                    if (at == ACTION_BACKDASH || at == ACTION_FORWARD_DASH) {
+                        // Dash: queue motion now
+                        QueueMotionInput(1, motionType, 0);
+                    } else if (motionType >= MOTION_5A && motionType <= MOTION_5C) {
+                        ImmediateInput::PressFor(1, buttonMask, 2);
+                    } else if (motionType >= MOTION_2A && motionType <= MOTION_2C) {
+                        ImmediateInput::PressFor(1, GAME_INPUT_DOWN | buttonMask, 2);
+                    } else if (motionType >= MOTION_236A) {
+                        // Frame1 special injection path (toggle OFF): compute button mask (was missing -> produced no button, failing motion)
+                        if (buttonMask == 0) {
+                            // Reconstruct button mask for specials/supers just like pre-arm phase
+                            int atStrength = GetSpecialMoveStrength(at, TRIGGER_ON_WAKEUP); // 0=A 1=B 2=C
+                            buttonMask = (1 << (4 + atStrength));
+                        }
+                        FreezeBufferForMotion(1, motionType, buttonMask);
+                        {
+                            std::stringstream bm; bm << std::hex << buttonMask;
+                            LogOut(std::string("[AUTO-ACTION] P1 wake special frame1 buffer applied (index frozen) btnMask=0x") + bm.str(), true);
+                        }
+                    }
+                }
                 s_p1WakePrearmed = false;
+                s_p1WakePrearmActionType = -1;
             }
             if (!s_p1WakePrearmed && IsGroundtech(prevMoveID1) && IsActionable(moveID1)) {
                 shouldTrigger = true;
@@ -658,46 +712,14 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
                 actionMoveID = GetActionMoveID(triggerAfterAirtechAction.load(), TRIGGER_AFTER_AIRTECH, 2);
             }
         }
-    // After Block trigger (do not suppress when p2TriggerActive is true)
+    // Simplified P2 After Block trigger
     if (!shouldTrigger && triggerAfterBlockEnabled.load()) {
-        // Block new trigger if an override/restore is in-flight
-        if (g_manualInputOverride[2].load() || g_pendingControlRestore.load()) {
-            if (detailedLogging.load() && !p2AfterBlockLoggedInflight) {
-                LogOut("[AUTO-ACTION] P2 After Block suppressed (in-flight override/restore)", true);
-                p2AfterBlockLoggedInflight = true;
-            }
-            // Reset the other throttle so it can log once when state changes
-            p2AfterBlockLoggedNotActionable = false;
-        } else {
-            if (IsBlockstun(prevMoveID2) && IsActionable(moveID2)) {
-                // Add a check to ensure we're not still in a trigger cooldown
-                if (p2TriggerCooldown <= 0) {
-                    shouldTrigger = true;
-                    triggerType = TRIGGER_AFTER_BLOCK;
-                    delay = triggerAfterBlockDelay.load();
-                    actionMoveID = GetActionMoveID(triggerAfterBlockAction.load(), TRIGGER_AFTER_BLOCK, 2);
-
-                    // Reset throttles on trigger
-                    p2AfterBlockLoggedInflight = false;
-                    p2AfterBlockLoggedNotActionable = false;
-
-                    if (detailedLogging.load()) {
-                        LogOut("[AUTO-ACTION] P2 After Block trigger activated", true);
-                        LogOut("[TRIGGER_TIMING] P2 blockstun dur=" + std::to_string(s_p2Timers.lastBlockDuration) +
-                               ", sinceEnd=" + std::to_string(s_p2Timers.sinceBlockEnd), true);
-                    }
-                } else {
-                    LogOut("[AUTO-ACTION] P2 After Block condition met but cooldown active: " + 
-                           std::to_string(p2TriggerCooldown), detailedLogging.load());
-                }
-            } else {
-                // Not actionable yet: log once until state changes
-                p2AfterBlockLoggedInflight = false;
-                if (detailedLogging.load() && !p2AfterBlockLoggedNotActionable && IsBlockstun(prevMoveID2) && !IsActionable(moveID2)) {
-                    LogOut("[AUTO-ACTION] P2 After Block: now not actionable yet", true);
-                    p2AfterBlockLoggedNotActionable = true;
-                }
-            }
+        if (IsBlockstun(prevMoveID2) && IsActionable(moveID2) && !p2TriggerActive && p2TriggerCooldown <= 0) {
+            shouldTrigger = true;
+            triggerType = TRIGGER_AFTER_BLOCK;
+            delay = triggerAfterBlockDelay.load();
+            actionMoveID = GetActionMoveID(triggerAfterBlockAction.load(), TRIGGER_AFTER_BLOCK, 2);
+            LogOut("[AUTO-ACTION] P2 After Block trigger", true);
         }
     }
         
@@ -736,25 +758,45 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
                 }
 
                 bool prearmed = false;
-                if (actionType == ACTION_BACKDASH || actionType == ACTION_FORWARD_DASH ||
-                    (motionType >= MOTION_5A && motionType <= MOTION_JC)) {
-                    prearmed = QueueMotionInput(2, motionType, 0);
-                } else if (motionType >= MOTION_236A) {
-                    prearmed = FreezeBufferForMotion(2, motionType, buttonMask);
+                if (g_wakeBufferingEnabled.load()) {
+                    if (motionType >= MOTION_236A) {
+                        prearmed = FreezeBufferForMotion(2, motionType, buttonMask);
+                        if (prearmed) LogOut("[AUTO-ACTION] P2 wake special buffered early (toggle=ON)", true);
+                    } else if (actionType == ACTION_BACKDASH || actionType == ACTION_FORWARD_DASH) {
+                        prearmed = QueueMotionInput(2, motionType, 0);
+                        if (prearmed) LogOut("[AUTO-ACTION] P2 wake dash queued early (toggle=ON)", true);
+                    } else if (motionType >= MOTION_5A && motionType <= MOTION_JC) {
+                        // Normals metadata only
+                        prearmed = true;
+                    }
+                } else {
+                    // Frame1 injection path
+                    if (motionType >= MOTION_5A && motionType <= MOTION_JC) {
+                        prearmed = true;
+                    } else if (actionType == ACTION_BACKDASH || actionType == ACTION_FORWARD_DASH) {
+                        prearmed = true; // inject on wake
+                    } else if (motionType >= MOTION_236A) {
+                        prearmed = true; // special to inject frame1
+                        LogOut("[AUTO-ACTION] P2 wake special set for frame1 inject (toggle=OFF)", true);
+                    }
                 }
                 if (prearmed) {
-                    // Ensure human control so the buffered motion executes reliably
-                    EnableP2ControlForAutoAction();
+                    if (g_wakeBufferingEnabled.load() && motionType >= MOTION_236A) {
+                        EnableP2ControlForAutoAction();
+                        s_p2WakePrearmIsSpecial = true;
+                    } else {
+                        s_p2WakePrearmIsSpecial = false;
+                    }
                     s_p2WakePrearmed = true;
                     s_p2WakePrearmExpiry = frameCounter.load() + 120;
-                    p2TriggerActive = true;
-                    p2TriggerCooldown = TRIGGER_COOLDOWN_FRAMES;
-                    LogOut("[AUTO-ACTION] P2 On Wakeup pre-armed at recovery (96)", true);
-
-                    // Start control-restore watcher similar to normal apply path
-                    g_lastP2MoveID.store(prevMoveID2);
-                    g_pendingControlRestore.store(true);
-                    g_controlRestoreTimeout.store(180);
+                    s_p2WakePrearmActionType = actionType;
+                    LogOut("[AUTO-ACTION] P2 wake prearm stored: action=" + std::to_string(actionType) +
+                           " motion=" + std::to_string(motionType) +
+                           " special=" + std::to_string(s_p2WakePrearmIsSpecial) +
+                           " currMoveID=" + std::to_string(moveID2) +
+                           " frame=" + std::to_string(frameCounter.load()), true);
+                } else if (detailedLogging.load()) {
+                    LogOut("[AUTO-ACTION] P2 wake pre-arm failed", true);
                 }
             }
         }
@@ -762,9 +804,48 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
         // On Wakeup trigger (fallback when not pre-armed)
         if (!shouldTrigger && triggerOnWakeupEnabled.load()) {
             if (s_p2WakePrearmed && IsGroundtech(prevMoveID2) && IsActionable(moveID2)) {
+                LogOut("[AUTO-ACTION] P2 wake exec: action=" + std::to_string(s_p2WakePrearmActionType) +
+                       " special=" + std::to_string(s_p2WakePrearmIsSpecial) +
+                       " prevMoveID=" + std::to_string(prevMoveID2) +
+                       " currMoveID=" + std::to_string(moveID2) +
+                       " frame=" + std::to_string(frameCounter.load()), true);
+                g_lastActiveTriggerType.store(TRIGGER_ON_WAKEUP);
+                g_lastActiveTriggerFrame.store(frameCounter.load());
+                if (!s_p2WakePrearmIsSpecial && s_p2WakePrearmActionType >= 0) {
+                    int at = s_p2WakePrearmActionType;
+                    int motionType = ConvertTriggerActionToMotion(at, TRIGGER_ON_WAKEUP);
+                    int buttonMask = 0;
+                    if (at >= ACTION_5A && at <= ACTION_2C) {
+                        int button = (at - ACTION_5A) % 3;
+                        buttonMask = (1 << (4 + button));
+                    } else if (at >= ACTION_JA && at <= ACTION_JC) {
+                        int button = (at - ACTION_JA) % 3;
+                        buttonMask = (1 << (4 + button));
+                    }
+                    if (at == ACTION_BACKDASH || at == ACTION_FORWARD_DASH) {
+                        // Dash frame1 inject
+                        QueueMotionInput(2, motionType, 0);
+                    } else if (motionType >= MOTION_5A && motionType <= MOTION_5C) {
+                        ImmediateInput::PressFor(2, buttonMask, 2);
+                    } else if (motionType >= MOTION_2A && motionType <= MOTION_2C) {
+                        ImmediateInput::PressFor(2, GAME_INPUT_DOWN | buttonMask, 2);
+                    } else if (motionType >= MOTION_236A) {
+                        // Frame1 special injection path: compute missing button mask then freeze
+                        if (buttonMask == 0) {
+                            int atStrength = GetSpecialMoveStrength(at, TRIGGER_ON_WAKEUP);
+                            buttonMask = (1 << (4 + atStrength));
+                        }
+                        EnableP2ControlForAutoAction();
+                        FreezeBufferForMotion(2, motionType, buttonMask);
+                        {
+                            std::stringstream bm; bm << std::hex << buttonMask;
+                            LogOut(std::string("[AUTO-ACTION] P2 wake special frame1 buffer applied (index frozen) btnMask=0x") + bm.str(), true);
+                        }
+                    }
+                }
                 s_p2WakePrearmed = false;
-            }
-            if (!s_p2WakePrearmed && IsGroundtech(prevMoveID2) && IsActionable(moveID2)) {
+                s_p2WakePrearmActionType = -1;
+            } else if (!s_p2WakePrearmed && IsGroundtech(prevMoveID2) && IsActionable(moveID2)) {
                 shouldTrigger = true;
                 triggerType = TRIGGER_ON_WAKEUP;
                 delay = triggerOnWakeupDelay.load();
@@ -820,15 +901,12 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
     // Clear pre-arm flags when window passes to avoid sticking
     int now = frameCounter.load();
     if (s_p1WakePrearmed && now > s_p1WakePrearmExpiry) {
+        LogOut("[AUTO-ACTION] P1 wake pre-arm expired (no execution)", detailedLogging.load());
         s_p1WakePrearmed = false;
-        // Allow immediate re-arm if nothing fired
-        p1TriggerActive = false;
-        p1TriggerCooldown = 0;
     }
     if (s_p2WakePrearmed && now > s_p2WakePrearmExpiry) {
+        LogOut("[AUTO-ACTION] P2 wake pre-arm expired (no execution)", detailedLogging.load());
         s_p2WakePrearmed = false;
-        p2TriggerActive = false;
-        p2TriggerCooldown = 0;
     }
 }
 
@@ -939,6 +1017,8 @@ void ApplyAutoAction(int playerNum, uintptr_t moveIDAddr, short currentMoveID, s
             break;
     }
 
+    // Determine strength BEFORE converting to motion; strength drives motionType selection
+    int resolvedStrength = GetSpecialMoveStrength(actionType, triggerType); // 0=A 1=B 2=C
     // Convert action to motion type and determine button mask
     int motionType = ConvertTriggerActionToMotion(actionType, triggerType);
     int buttonMask = 0;
@@ -952,21 +1032,39 @@ void ApplyAutoAction(int playerNum, uintptr_t moveIDAddr, short currentMoveID, s
         // Jump attacks
         int button = (actionType - ACTION_JA) % 3;  // 0=A, 1=B, 2=C
         buttonMask = (1 << (4 + button));  // A=16, B=32, C=64
-    } else if (actionType >= ACTION_QCF && actionType <= ACTION_CUSTOM) {
-        // Special moves - get strength from helper function
-        int strength = GetSpecialMoveStrength(actionType, triggerType);
-        buttonMask = (1 << (4 + strength));  // 0=A(16), 1=B(32), 2=C(64)
+    } else if (actionType >= ACTION_QCF) {
+        // Strength-based actions only (exclude jump/dash/block/custom)
+        switch (actionType) {
+            case ACTION_QCF:
+            case ACTION_DP:
+            case ACTION_QCB:
+            case ACTION_421:
+            case ACTION_SUPER1:
+            case ACTION_SUPER2:
+            case ACTION_236236:
+            case ACTION_214214:
+            case ACTION_641236: {
+                int strength = GetSpecialMoveStrength(actionType, triggerType); // 0=A 1=B 2=C
+                buttonMask = (1 << (4 + strength));
+                break; }
+            default: break;
+        }
     }
 
-    LogOut("[AUTO-ACTION] Converting action type " + std::to_string(actionType) + 
-           " for trigger type " + std::to_string(triggerType), true);
-    LogOut("[AUTO-ACTION] Converted to motion type: " + std::to_string(motionType) + 
-           " with button mask: " + std::to_string(buttonMask), true);
+    LogOut("[AUTO-ACTION] Converting action=" + std::to_string(actionType) +
+           " trigger=" + std::to_string(triggerType) +
+           " strength=" + std::to_string(resolvedStrength) +
+           " => motionType=" + std::to_string(motionType) +
+           " prelimButtonMask=" + std::to_string(buttonMask), true);
 
     // If buttonMask is zero, use default
     if (buttonMask == 0) {
-        LogOut("[AUTO-ACTION] Using default button mask (A) for motion", true);
-        buttonMask = 0x10; // Default to A button (16)
+        LogOut("[AUTO-ACTION] Button mask was 0; defaulting to A (likely non-button action)", true);
+        buttonMask = GAME_INPUT_A; // Default to A button (16)
+    }
+    else {
+        LogOut("[AUTO-ACTION] Final buttonMask=" + std::to_string(buttonMask) +
+               " (A=16,B=32,C=64)", true);
     }
     
     bool success = false;
@@ -999,20 +1097,14 @@ void ApplyAutoAction(int playerNum, uintptr_t moveIDAddr, short currentMoveID, s
         }
 
     LogOut("[AUTO-ACTION] Injecting Jump via immediate writer (dir=" + std::to_string(dir) + ")", true);
-    // Press for ~3 visual frames (64fps): enough to register jump, then auto-neutral
     ImmediateInput::PressFor(playerNum, mask, 3);
-    // Clear cooldown so another trigger can occur soon after
+    // Jump is transient: free trigger immediately
     if (playerNum == 2) { p2TriggerActive = false; p2TriggerCooldown = 0; }
     else { p1TriggerActive = false; p1TriggerCooldown = 0; }
-    LogOut("[AUTO-ACTION] Jump press scheduled for P" + std::to_string(playerNum), true);
+    LogOut("[AUTO-ACTION] Jump scheduled (cooldown cleared)", true);
 
         success = true;
-        // Control restore watcher (only applicable for P2 overrides)
-        if (playerNum == 2) {
-            g_lastP2MoveID.store(currentMoveID);
-            g_pendingControlRestore.store(true);
-            g_controlRestoreTimeout.store(90);
-        }
+    // No control override needed for jumps
     }
 
     // Special handling: Dashes should be executed by writing to the buffer via the queue
@@ -1020,13 +1112,11 @@ void ApplyAutoAction(int playerNum, uintptr_t moveIDAddr, short currentMoveID, s
         LogOut("[AUTO-ACTION] Queuing dash motion via buffer (" + GetMotionTypeName(motionType) + ")", true);
         // Ensure immediate-only is disabled so buffer gets written
         g_injectImmediateOnly[playerNum].store(false);
-        success = QueueMotionInput(playerNum, motionType, 0);
-        // Control restore monitor (only P2)
         if (playerNum == 2) {
-            g_lastP2MoveID.store(currentMoveID);
-            g_pendingControlRestore.store(true);
-            g_controlRestoreTimeout.store(90);
+            EnableP2ControlForAutoAction();
         }
+        success = QueueMotionInput(playerNum, motionType, 0);
+    // Dashes use immediate input/queue only; no control override required
     }
     
     if (!success && isRegularMove) {
@@ -1046,44 +1136,29 @@ void ApplyAutoAction(int playerNum, uintptr_t moveIDAddr, short currentMoveID, s
 
     // Use immediate writer for the button (A/B/C) and optionally direction DOWN for 2A/2B/2C.
     // Do not push to buffer here; motions and freezes remain buffer-driven.
-    ImmediateInput::PressFor(playerNum, inputMask, 2); // ~2 visual ticks press
-
-    // Allow immediate re-trigger after button press completes
+    ImmediateInput::PressFor(playerNum, inputMask, 2);
+    // Normals quick: free trigger for chaining
     if (playerNum == 2) { p2TriggerActive = false; p2TriggerCooldown = 0; }
     else { p1TriggerActive = false; p1TriggerCooldown = 0; }
 
         success = true;
     }
     else if (!success && isSpecialMove) {
-        // For special moves, use buffer freezing (this works better for motions)
-        LogOut("[AUTO-ACTION] Applying special move " + GetMotionTypeName(motionType) + 
+        // For special moves, switch to human control (P2 only) and use buffer freezing
+        if (playerNum == 2) {
+            EnableP2ControlForAutoAction();
+        }
+        LogOut("[AUTO-ACTION] Applying special move " + GetMotionTypeName(motionType) +
                " via buffer freeze", true);
-        
-        // Use the FreezeBufferForMotion function from input_freeze.cpp
         success = FreezeBufferForMotion(playerNum, motionType, buttonMask);
     }
     
     if (success) {
-        if (isRegularMove) {
-            LogOut("[AUTO-ACTION] Set up P2 control restoration for normal attack", true);
-            if (playerNum == 2) {
-                g_lastP2MoveID.store(currentMoveID);
-                g_pendingControlRestore.store(true);
-                g_controlRestoreTimeout.store(60); // Shorter timeout for normal attacks
-            }
-                // Keep trigger marked active while executing to prevent re-triggers
-                p2TriggerActive = true;
-                if (p2TriggerCooldown <= 1) p2TriggerCooldown = 1;
-        } else {
-            LogOut("[AUTO-ACTION] Set up P2 control restoration monitoring: initial moveID=" + 
-                   std::to_string(currentMoveID), true);
-            if (playerNum == 2) {
-                g_lastP2MoveID.store(currentMoveID);
-                g_pendingControlRestore.store(true);
-                g_controlRestoreTimeout.store(180); // Longer timeout for special moves
-            }
-                p2TriggerActive = true;
-                if (p2TriggerCooldown <= 1) p2TriggerCooldown = 1;
+    if (playerNum == 2 && isSpecialMove) {
+            LogOut("[AUTO-ACTION] Tracking P2 special for restore", true);
+            g_lastP2MoveID.store(currentMoveID);
+            g_pendingControlRestore.store(true);
+            g_controlRestoreTimeout.store(180);
         }
     } else {
         LogOut("[AUTO-ACTION] Failed to apply move " + GetMotionTypeName(motionType), true);

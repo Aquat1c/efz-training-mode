@@ -273,6 +273,9 @@
 #define IDC_TRIGGER_AFTER_HITSTUN_CUSTOM   5024
 #define IDC_TRIGGER_AFTER_AIRTECH_CUSTOM   5025
 
+// Debug/experimental: wake buffering toggle checkbox
+#define IDC_TRIGGER_WAKE_BUFFER_CHECK      5026
+
 // After your existing character constants, add:
 
 // Character IDs - corrected to match internal game IDs

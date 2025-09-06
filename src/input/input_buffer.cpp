@@ -183,13 +183,27 @@ void FreezeBufferValuesThread(int playerNum) {
         std::this_thread::sleep_for(std::chrono::milliseconds(4));
     }
     
-    // Cleanup phase - clear buffer and reset state
-    LogOut("[BUFFER_FREEZE] Buffer freeze thread ended (counter=" + 
-           std::to_string(freezeCount) + ")", true);
-    
-    ClearPlayerInputBuffer(playerNum);
-    LogOut("[BUFFER_FREEZE] Cleared full buffer & index for P" + 
-           std::to_string(playerNum), true);
+    // Cleanup phase - DO NOT forcibly wipe entire buffer here; just neutralize trailing inputs
+    LogOut("[BUFFER_FREEZE] Buffer freeze thread ended (counter=" + std::to_string(freezeCount) + ")", true);
+    if (g_frozenBufferLength > 0) {
+        uintptr_t playerPtr = GetPlayerPointer(playerNum);
+        if (playerPtr) {
+            // Overwrite pattern region with neutral to avoid ghost follow‑ups
+            uint8_t zero = 0x00;
+            for (uint16_t i = 0; i < g_frozenBufferLength; ++i) {
+                uint16_t idx = (g_frozenBufferStartIndex + i) % INPUT_BUFFER_SIZE;
+                SafeWriteMemory(playerPtr + INPUT_BUFFER_OFFSET + idx, &zero, sizeof(uint8_t));
+            }
+            // Push a few neutral frames at index tail
+            uint16_t curIdx = 0;
+            SafeReadMemory(playerPtr + INPUT_BUFFER_INDEX_OFFSET, &curIdx, sizeof(uint16_t));
+            for (int n=0; n<4; ++n) {
+                uint16_t w = (curIdx + INPUT_BUFFER_SIZE - n) % INPUT_BUFFER_SIZE;
+                uint8_t z = 0x00;
+                SafeWriteMemory(playerPtr + INPUT_BUFFER_OFFSET + w, &z, sizeof(uint8_t));
+            }
+        }
+    }
     
     g_bufferFreezingActive = false;
     g_indexFreezingActive = false;

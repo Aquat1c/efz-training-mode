@@ -25,16 +25,19 @@ uint8_t DetermineButtonFromMotionType(int motionType) {
         case MOTION_5A: case MOTION_2A: case MOTION_JA: 
         case MOTION_236A: case MOTION_623A: case MOTION_214A:
         case MOTION_421A: case MOTION_41236A: case MOTION_63214A:
+    case MOTION_236236A: case MOTION_214214A: case MOTION_641236A:
             return GAME_INPUT_A;
             
         case MOTION_5B: case MOTION_2B: case MOTION_JB: 
         case MOTION_236B: case MOTION_623B: case MOTION_214B:
         case MOTION_421B: case MOTION_41236B: case MOTION_63214B:
+    case MOTION_236236B: case MOTION_214214B: case MOTION_641236B:
             return GAME_INPUT_B;
             
         case MOTION_5C: case MOTION_2C: case MOTION_JC: 
         case MOTION_236C: case MOTION_623C: case MOTION_214C:
         case MOTION_421C: case MOTION_41236C: case MOTION_63214C:
+    case MOTION_236236C: case MOTION_214214C: case MOTION_641236C:
             return GAME_INPUT_C;
             
         default:
