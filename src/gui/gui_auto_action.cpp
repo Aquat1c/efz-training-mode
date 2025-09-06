@@ -161,6 +161,14 @@ void AutoActionPage_CreateContent(HWND hParent, DisplayData* pData) {
         WS_CHILD | WS_VISIBLE | WS_BORDER | ES_NUMBER,
         355, yPos, 40, 25, hParent, (HMENU)IDC_TRIGGER_AFTER_HITSTUN_DELAY, GetModuleHandle(NULL), NULL);
 
+    // Debug: Wake buffering toggle (before On Wakeup trigger section)
+    HWND hWakeBufferCheck = CreateWindowExA(0, "BUTTON", "Pre-buffer wake specials/dashes", 
+        WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
+        50, yPos, 220, 25,
+        hParent, (HMENU)IDC_TRIGGER_WAKE_BUFFER_CHECK, GetModuleHandle(NULL), NULL);
+    SendMessage(hWakeBufferCheck, BM_SETCHECK, g_wakeBufferingEnabled.load() ? BST_CHECKED : BST_UNCHECKED, 0);
+    yPos += 30;
+
     // On Wakeup trigger
     yPos += 35;
     HWND hOnWakeupCheck = CreateWindowExA(0, "BUTTON", "On Wakeup:", 

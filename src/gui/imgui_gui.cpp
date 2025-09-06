@@ -316,6 +316,16 @@ namespace ImGuiGui {
         if (ImGui::Checkbox("Enable Auto Action System", &enabled)) {
             guiState.localData.autoAction = enabled;
         }
+
+        // Wake buffering toggle (debug): pre-buffer wake specials/dashes vs frame1 inject
+        bool wakeBuf = g_wakeBufferingEnabled.load();
+        if (ImGui::Checkbox("Pre-buffer wake specials/dashes", &wakeBuf)) {
+            g_wakeBufferingEnabled.store(wakeBuf);
+            LogOut(std::string("[IMGUI] Wake buffering mode: ") + (wakeBuf ? "BUFFERED (early freeze)" : "FRAME1 (no early freeze)"), true);
+        }
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("When enabled: wake specials/supers/dashes are buffered early (original behavior).\nWhen disabled: they execute on the first actionable wake frame (no early motion freeze).\nHelps test strict wake timing.");
+        }
         
         // Player target selector
         ImGui::Text("Apply To:");
@@ -1476,6 +1486,9 @@ namespace ImGuiGui {
             // Enforce FM bypass state to match UI selection (idempotent)
             // We read current enabled state from the runtime and reapply to ensure consistency
             SetFinalMemoryBypass(IsFinalMemoryBypassEnabled());
+
+            // Persist wake buffering toggle (already live-updated, but ensure consistency on Apply)
+            // No additional action needed; atomic already updated through checkbox interaction.
             
             // Apply the P2 control patch based on the checkbox state
             if (displayData.p2ControlEnabled) {

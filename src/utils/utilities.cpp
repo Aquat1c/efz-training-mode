@@ -469,6 +469,9 @@ std::atomic<int> triggerOnWakeupStrength(0);
 std::atomic<int> triggerAfterHitstunStrength(0);
 std::atomic<int> triggerAfterAirtechStrength(0);
 
+// Debug/experimental: allow buffering (pre-freeze) of wakeup specials/supers/dashes instead of f1 injection
+std::atomic<bool> g_wakeBufferingEnabled{false};
+
 // Deep frame advantage instrumentation toggle
 std::atomic<bool> g_deepFrameAdvDebug{false};
 
