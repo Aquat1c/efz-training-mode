@@ -132,38 +132,52 @@ const std::vector<FinalMemoryCommand>& GetFinalMemoryCommands() {
     // Approx: hold 2, neutral gap, neutral+A, hold 2, neutral gap, neutral+B, neutral gap, neutral+C
     // Tunable counts (*values) chosen to mirror Minagi style gaps (2 holds ~6f, neutral gaps 3f, buttons 6f) - TESTED
     cmds.push_back({CHAR_ID_AKIKO, "Akiko", BuildPattern({"2*6","5*3","5A*6","2*6","5*3","5B*6","5*3","5C*6"}, facingRight), GateAlways, "Provisional release windows"});
-    // Ayu
-    cmds.push_back({CHAR_ID_AYU, "Ayu", BuildPattern({"5A","5A","4*3","5B","5C"}, facingRight), GateAlways, nullptr});
+    // Ayu: A A 4 B C with distinct neutral gaps (buffer sample shows single-frame presses & 3 left holds)
+    // Use short button holds (*2) and neutral separators (5*3) to mirror snapshot
+    cmds.push_back({CHAR_ID_AYU, "Ayu", BuildPattern({"5A*2","5*3","5A*2","5*3","4*3","5*3","5B*2","5*3","5C*2"}, facingRight), GateAlways, nullptr});
     // Ikumi 236x3 C - TESTED
     cmds.push_back({CHAR_ID_IKUMI, "Ikumi", BuildPattern({"2","3","6","2","3","6","2","3","6","5C"}, facingRight), GateAlways, nullptr});
-    // Kaori 666S (triple forward then D) with sustained forward holds - NEW
+    // Kaori 666S (triple forward then D) with sustained forward holds - TESTED
     // Use forward holds to ensure recognition; pattern: 6*6 6*6 6*6 6S*6
-    cmds.push_back({CHAR_ID_KAORI, "Kaori", BuildPattern({"6*6","6*6","6*6","6S*6"}, facingRight), GateAlways, nullptr});
+        cmds.push_back({CHAR_ID_KAORI, "Kaori", BuildPattern({"6*6","5*3","6*6","5*3","6*6","6S*6"}, facingRight), GateAlways, nullptr});
     // Kanna 236236C - TESTED
     cmds.push_back({CHAR_ID_KANNA, "Kanna", BuildPattern({"2","3","6","2","3","6","5C"}, facingRight), GateAlways, nullptr});
     // Kano 214236S gated by recoil guard - No way to test since we don't have RG implemented yet
     cmds.push_back({CHAR_ID_KANO, "Kano", BuildPattern({"2","1","4","2","3","6","S"}, facingRight), GateKanoRG, "Requires recoil guard state"});
-    // Mai (two contexts, same input for now)
+    // Mai (two contexts, same input for now) - TESTED
     cmds.push_back({CHAR_ID_MAI, "Mai", BuildPattern({"2","3","6","2","3","6","S"}, facingRight), GateMaiAwakening, "Awakening context not enforced"});
     // Makoto 263S - TESTED
     cmds.push_back({CHAR_ID_MAKOTO, "Makoto", BuildPattern({"2","6","3","S"}, facingRight), GateAlways, nullptr});
-    // Mayu 23693S (9 and 3 already diagonal handled)
+    // Mayu 23693S (9 and 3 already diagonal handled) - TESTED
     cmds.push_back({CHAR_ID_MAYU, "Mayu", BuildPattern({"2","3","6","9","3","S"}, facingRight), GateAlways, nullptr});
     // Minagi 222S with sustained holds and neutral gaps (tight example provided):
     // Approx pattern: 2 (hold) gap neutral, repeat clusters, final 2 + D press.
     // Using *counts: 2*3 neutral*3 2*3 neutral*3 2*3 2D*6 (tunable) - TESTED
     cmds.push_back({CHAR_ID_MINAGI, "Minagi", BuildPattern({"2*3","5*3","2*3","5*3","2*3","2S*6"}, facingRight), GateAlways, "Provisional hold timing"});
-    // Mio short variant only for now
-    cmds.push_back({CHAR_ID_MIO, "MioShort", BuildPattern({"6","4","1","2","3","6","5C","5A","5B","5C","5A","5B","5C","S","2","3","6","5C"}, facingRight), GateAlways, "Long range variant pending"});
+    // Mio (short) snapshot shows directional preamble (6 4 1 2 3 6) then C, we can't do the follow-ups for it yet since they required precise timings - TESTED
+    cmds.push_back({CHAR_ID_MIO, "MioShort", BuildPattern({
+        "6*3","4*3","1*3","2*3","3*3","6*3", // directional chain
+        "5C*2" // C button, we don't care about others since they're handled by immediate input registers
+    }, facingRight), GateAlways, "Short variant refined from buffer"});
     // Misaki 222S - TESTED
     cmds.push_back({CHAR_ID_MISAKI, "Misaki", BuildPattern({"2*3","5*3","2*3","5*3","2*3","2S*6"}, facingRight), GateAlways, nullptr});
-    // Mishio: B 2 B 5 C A -> add holds & neutral gaps for reliability around standalone neutral '5'
-    cmds.push_back({CHAR_ID_MISHIO, "Mishio", BuildPattern({"5B*6","2*6","5*3","5B*6","5*3","5C*6","5A*6"}, facingRight), GateAlways, "Added neutral gaps"});
+    // Mishio buffer snapshot: B gap B gap 2 cluster gap C gap A - TESTED
+    cmds.push_back({CHAR_ID_MISHIO, "Mishio", BuildPattern({
+        "5B*2","5*3","5B*2","5*3","2*3","5*3","5C*2","5*3","5A*2"
+    }, facingRight), GateAlways, "Refined from buffer"});
     // Misuzu AA2B2C (given AA2BC spec but using 2B 2C per list)
     cmds.push_back({CHAR_ID_MISUZU, "Misuzu", BuildPattern({"5A","5*3","5A","5*3","2B","5*3","2C"}, facingRight), GateAlways, nullptr});
-    // Mizuka 6 B A 6 A - TESTED
-    cmds.push_back({CHAR_ID_MIZUKA, "Mizuka", BuildPattern({"6","5B","5A","6","5A"}, facingRight), GateAlways, nullptr});
-    // Neyuki (Sleep) C then 236236
+    // Mizuka refined (CE loop): 6(hold) gap B gap A gap A gap 6(hold) gap A
+    // Use explicit *1 for single-frame button presses to avoid default 6f hold.
+    // Advance index a few neutral frames after last A so game logic that looks at distance from current index
+    // to trailing inputs still sees final sequence as recent. - TESTED
+    {
+        FinalMemoryCommand fm {CHAR_ID_MIZUKA, "Mizuka", BuildPattern({
+            "6*3","5*2","5B*1","5*5","5A*1","5*5","5A*1","5*5","6*3","5*5","5A*1"
+        }, facingRight), GateAlways, "Refined from CE loop (single-frame presses)", 4};
+        cmds.push_back(fm);
+    }
+    // Neyuki (Sleep) C then 236236 - TESTED
     cmds.push_back({CHAR_ID_NAYUKI, "NeyukiSleep", BuildPattern({"5C","5*3","2","3","6","2","3","6"}, facingRight), GateAlways, nullptr});
     // Nayuki Awake 236236S - TESTED
     cmds.push_back({CHAR_ID_NAYUKIB, "NayukiAwake", BuildPattern({"2","3","6","2","3","6","S"}, facingRight), GateAlways, nullptr});
@@ -173,8 +187,10 @@ const std::vector<FinalMemoryCommand>& GetFinalMemoryCommands() {
     cmds.push_back({CHAR_ID_SAYURI, "Sayuri", BuildPattern({"2*6","5*3","2A*6","5*3","5S*6"}, facingRight), GateAlways, "Added neutral gaps"});
     // Shiori sequential B C - TESTED
     cmds.push_back({CHAR_ID_SHIORI, "Shiori", BuildPattern({"2","3","6","2","3","6","5B","5C"}, facingRight), GateAlways, nullptr});
-    // Unknown (MizukaB)
-    cmds.push_back({CHAR_ID_MIZUKAB, "Unknown", BuildPattern({"5C","5B","5*3","6*3","5*3","5A","5A"}, facingRight), GateAlways, nullptr});
+    // Unknown snapshot: C gap B gap forward cluster gap A gap A - TESTED
+    cmds.push_back({CHAR_ID_MIZUKAB, "Unknown", BuildPattern({
+        "5C*2","5*3","5B*2","5*3","6*3","5*3","5A*2","5*3","5A*2"
+    }, facingRight), GateAlways, "Refined from buffer"});
     return cmds;
 }
 
@@ -208,7 +224,13 @@ bool ExecuteFinalMemory(int playerNum, int characterId) {
                    (facingRight ? " FR" : " FL") +
                    " pattern=" + postMirrorDesc +
                    (facingRight ? "" : std::string(" (src=") + preMirrorDesc + ")"), true);
-            bool ok = FreezeBufferWithPattern(playerNum, pat);
+            bool ok = false;
+            // Use index advance if defined for this FM to virtually place current index later.
+            if (c.indexAdvance > 0) {
+                ok = FreezeBufferWithPattern(playerNum, pat, c.indexAdvance);
+            } else {
+                ok = FreezeBufferWithPattern(playerNum, pat);
+            }
             if (!ok) {
                 LogOut(std::string("[FM] Failed to freeze buffer for ") + c.name, true);
             } else {
