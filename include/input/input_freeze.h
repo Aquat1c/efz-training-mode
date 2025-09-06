@@ -63,6 +63,10 @@ bool FreezeBufferForMotion(int playerNum, int motionType, int buttonMask, int op
 // frozen at the last element so the terminating button press remains resident for recognition.
 // Returns true if successfully started.
 bool FreezeBufferWithPattern(int playerNum, const std::vector<uint8_t>& pattern);
+// Variant that allows advancing the frozen index past the final written element by extraNeutralFrames
+// (used for patterns where recognition logic expects the index to have progressed further than the
+// last non-neutral input; extraNeutralFrames worth of neutral (0) bytes are implicitly assumed.)
+bool FreezeBufferWithPattern(int playerNum, const std::vector<uint8_t>& pattern, int extraNeutralFrames);
 
 // Buffer visualization function
 std::string GetInputBufferVisualization(int playerNum, int window);

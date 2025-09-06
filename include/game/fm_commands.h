@@ -13,6 +13,7 @@ struct FinalMemoryCommand {
     std::vector<uint8_t> pattern; // Encoded input pattern (already includes buttons)
     bool (*gate)(int playerNum);  // Optional gating predicate (nullptr = always allowed)
     const char* gateDesc;         // Human-readable gating description (for logs/UI)
+    int indexAdvance{0};          // Extra neutral frames to advance frozen index beyond last pattern element (0 = legacy behavior)
 };
 
 // Builds (or returns cached) FM pattern list (excluding characters with none like Doppel).

@@ -551,3 +551,36 @@ bool FreezeBufferWithPattern(int playerNum, const std::vector<uint8_t>& patternI
     LogOut("[BUFFER_FREEZE] Generic pattern freeze active (len=" + std::to_string(pattern.size()) + ") P" + std::to_string(playerNum), true);
     return true;
 }
+
+// Overload with index advance capability.
+bool FreezeBufferWithPattern(int playerNum, const std::vector<uint8_t>& patternIn, int extraNeutralFrames) {
+    if (extraNeutralFrames <= 0) {
+        return FreezeBufferWithPattern(playerNum, patternIn);
+    }
+    StopBufferFreezing();
+    if (patternIn.empty()) return false;
+    uintptr_t playerPtr = GetPlayerPointer(playerNum);
+    if (!playerPtr) return false;
+    std::vector<uint8_t> pattern = patternIn;
+    if (pattern.size() > 120) pattern.resize(120);
+    // Cap extra neutrals so total stays sane
+    if (extraNeutralFrames > 30) extraNeutralFrames = 30;
+    const uint16_t startIndex = 0;
+    const uint16_t clearLength = static_cast<uint16_t>(pattern.size() + extraNeutralFrames + 4);
+    for (uint16_t i = 0; i < clearLength; ++i) {
+        uint8_t z = 0; SafeWriteMemory(playerPtr + INPUT_BUFFER_OFFSET + ((startIndex + i) % INPUT_BUFFER_SIZE), &z, 1);
+    }
+    for (size_t i = 0; i < pattern.size(); ++i) {
+        SafeWriteMemory(playerPtr + INPUT_BUFFER_OFFSET + ((startIndex + i) % INPUT_BUFFER_SIZE), &pattern[i], 1);
+    }
+    g_frozenBufferValues = pattern; // store only real pattern (neutrals virtual)
+    g_frozenBufferStartIndex = startIndex;
+    g_frozenBufferLength = static_cast<uint16_t>(pattern.size());
+    g_frozenIndexValue = (startIndex + g_frozenBufferLength + extraNeutralFrames - 1) % INPUT_BUFFER_SIZE;
+    g_indexFreezingActive = true;
+    g_bufferFreezingActive = true;
+    g_bufferFreezeThread = std::thread(FreezeBufferValuesThread, playerNum);
+    g_bufferFreezeThread.detach();
+    LogOut("[BUFFER_FREEZE] Pattern freeze+advance (len=" + std::to_string(pattern.size()) + "+" + std::to_string(extraNeutralFrames) + ") idx=" + std::to_string(g_frozenIndexValue) + " P" + std::to_string(playerNum), true);
+    return true;
+}
