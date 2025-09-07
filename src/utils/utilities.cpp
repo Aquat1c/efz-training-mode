@@ -399,7 +399,11 @@ DisplayData displayData = {
     0, 0,               // p1AkikoTimeslowTrigger, p2AkikoTimeslowTrigger
     false, false,       // p1AkikoFreezeCycle, p2AkikoFreezeCycle
     false, false,       // p1AkikoShowCleanHit, p2AkikoShowCleanHit
-    0, 0                // p1NeyukiJamCount, p2NeyukiJamCount
+    0, 0,               // p1NeyukiJamCount, p2NeyukiJamCount
+    0, 0,               // p1MioStance, p2MioStance (default Short)
+    false, false,       // p1MioLockStance, p2MioLockStance
+    0, 0,               // p1KanoMagic, p2KanoMagic
+    false, false        // p1KanoLockMagic, p2KanoLockMagic
 };
 
 // Initialize key bindings with default values

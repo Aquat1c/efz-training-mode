@@ -348,6 +348,29 @@ namespace CharacterSettings {
         // Update previous character IDs at the end of read
         s_prevCharIDP1 = data.p1CharID;
         s_prevCharIDP2 = data.p2CharID;
+
+        // Mio stance (simple byte/int at shared offset 0x3150; 0=Short,1=Long)
+        auto ReadMio = [&](int playerIndex){
+            const int off = (playerIndex==1)?EFZ_BASE_OFFSET_P1:EFZ_BASE_OFFSET_P2;
+            if ((playerIndex==1 && data.p1CharID!=CHAR_ID_MIO) || (playerIndex==2 && data.p2CharID!=CHAR_ID_MIO)) return;
+            uintptr_t stanceAddr = ResolvePointer(base, off, MIO_STANCE_OFFSET);
+            if (!stanceAddr) return;
+            int stance=0; SafeReadMemory(stanceAddr,&stance,sizeof(int)); stance = (stance==MIO_STANCE_LONG)?MIO_STANCE_LONG:MIO_STANCE_SHORT;
+            if (playerIndex==1) data.p1MioStance = stance; else data.p2MioStance = stance;
+            LogOut(std::string("[CHAR] Read ") + (playerIndex==1?"P1":"P2") + " Mio stance=" + (stance==MIO_STANCE_LONG?"Long":"Short"), detailedLogging.load());
+        }; ReadMio(1); ReadMio(2);
+
+        // Kano magic meter (0..10000) at same 0x3150 slot
+        auto ReadKano = [&](int playerIndex){
+            const int off = (playerIndex==1)?EFZ_BASE_OFFSET_P1:EFZ_BASE_OFFSET_P2;
+            if ((playerIndex==1 && data.p1CharID!=CHAR_ID_KANO) || (playerIndex==2 && data.p2CharID!=CHAR_ID_KANO)) return;
+            uintptr_t magicAddr = ResolvePointer(base, off, KANO_MAGIC_OFFSET);
+            if (!magicAddr) return;
+            int val=0; SafeReadMemory(magicAddr,&val,sizeof(int));
+            val = CLAMP(val, 0, KANO_MAGIC_MAX);
+            if (playerIndex==1) data.p1KanoMagic = val; else data.p2KanoMagic = val;
+            LogOut(std::string("[CHAR] Read ") + (playerIndex==1?"P1":"P2") + " Kano magic=" + std::to_string(val), detailedLogging.load());
+        }; ReadKano(1); ReadKano(2);
     }
     
     void ApplyCharacterValues(uintptr_t base, const DisplayData& data) {
@@ -638,6 +661,36 @@ namespace CharacterSettings {
                 LogOut(std::string("[CHAR] Applied ") + (pi==1?"P1":"P2") + " Neyuki: JamCount=" + std::to_string(jam), detailedLogging.load());
             }
         }; ApplyNeyuki(1); ApplyNeyuki(2);
+
+        // Mio stance application (only write when user changed value; locking handled in TickCharacterEnforcements)
+        auto ApplyMio = [&](int pi){
+            if ((pi==1 && data.p1CharID != CHAR_ID_MIO) || (pi==2 && data.p2CharID != CHAR_ID_MIO)) return;
+            const int off = (pi==1)?EFZ_BASE_OFFSET_P1:EFZ_BASE_OFFSET_P2;
+            if (uintptr_t stanceAddr = ResolvePointer(base, off, MIO_STANCE_OFFSET)) {
+                int desired = (pi==1)?data.p1MioStance:data.p2MioStance;
+                desired = (desired==MIO_STANCE_LONG)?MIO_STANCE_LONG:MIO_STANCE_SHORT;
+                int cur=0; SafeReadMemory(stanceAddr,&cur,sizeof(int));
+                if (cur != desired) {
+                    SafeWriteMemory(stanceAddr,&desired,sizeof(int));
+                    LogOut(std::string("[CHAR] Applied ") + (pi==1?"P1":"P2") + " Mio stance=" + (desired==MIO_STANCE_LONG?"Long":"Short"), detailedLogging.load());
+                }
+            }
+        }; ApplyMio(1); ApplyMio(2);
+
+        // Kano magic meter (respect user value; locking handled per-tick)
+        auto ApplyKano = [&](int pi){
+            if ((pi==1 && data.p1CharID != CHAR_ID_KANO) || (pi==2 && data.p2CharID != CHAR_ID_KANO)) return;
+            const int off = (pi==1)?EFZ_BASE_OFFSET_P1:EFZ_BASE_OFFSET_P2;
+            if (uintptr_t magicAddr = ResolvePointer(base, off, KANO_MAGIC_OFFSET)) {
+                int desired = (pi==1)?data.p1KanoMagic:data.p2KanoMagic;
+                desired = CLAMP(desired,0,KANO_MAGIC_MAX);
+                int cur=0; SafeReadMemory(magicAddr,&cur,sizeof(int));
+                if (cur != desired) {
+                    SafeWriteMemory(magicAddr,&desired,sizeof(int));
+                    LogOut(std::string("[CHAR] Applied ") + (pi==1?"P1":"P2") + " Kano magic=" + std::to_string(desired), detailedLogging.load());
+                }
+            }
+        }; ApplyKano(1); ApplyKano(2);
     }
     
     // Track previous values (used by inline enforcement)
@@ -810,5 +863,29 @@ namespace CharacterSettings {
                 if (cur == AKIKO_TIMESLOW_INFINITE) { int z = AKIKO_TIMESLOW_INACTIVE; SafeWriteMemory(tAddr,&z,sizeof(int)); }
             }
         }; enforceAkiko(1); enforceAkiko(2);
+
+        // Mio stance lock
+        auto enforceMio = [&](int pi){
+            bool lock = (pi==1)?localData.p1MioLockStance:localData.p2MioLockStance;
+            if (!lock) return;
+            if ((pi==1 && localData.p1CharID != CHAR_ID_MIO) || (pi==2 && localData.p2CharID != CHAR_ID_MIO)) return;
+            const int off = (pi==1)?EFZ_BASE_OFFSET_P1:EFZ_BASE_OFFSET_P2;
+            auto addr = ResolvePointer(base, off, MIO_STANCE_OFFSET); if (!addr) return;
+            int want = (pi==1)?localData.p1MioStance:localData.p2MioStance; want = (want==MIO_STANCE_LONG)?MIO_STANCE_LONG:MIO_STANCE_SHORT;
+            int cur=0; SafeReadMemory(addr,&cur,sizeof(int));
+            if (cur != want) { SafeWriteMemory(addr,&want,sizeof(int)); }
+        }; enforceMio(1); enforceMio(2);
+
+        // Kano magic lock
+        auto enforceKano = [&](int pi){
+            bool lock = (pi==1)?localData.p1KanoLockMagic:localData.p2KanoLockMagic;
+            if (!lock) return;
+            if ((pi==1 && localData.p1CharID != CHAR_ID_KANO) || (pi==2 && localData.p2CharID != CHAR_ID_KANO)) return;
+            const int off = (pi==1)?EFZ_BASE_OFFSET_P1:EFZ_BASE_OFFSET_P2;
+            auto addr = ResolvePointer(base, off, KANO_MAGIC_OFFSET); if (!addr) return;
+            int want = (pi==1)?localData.p1KanoMagic:localData.p2KanoMagic; want = CLAMP(want,0,KANO_MAGIC_MAX);
+            int cur=0; SafeReadMemory(addr,&cur,sizeof(int)); if (cur != want) { SafeWriteMemory(addr,&want,sizeof(int)); }
+        }; enforceKano(1); enforceKano(2);
+
     }
 }
