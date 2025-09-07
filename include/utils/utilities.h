@@ -201,6 +201,18 @@ struct DisplayData {
     // Neyuki (Sleepy Nayuki) – Jam count (0..9)
     int  p1NeyukiJamCount;
     int  p2NeyukiJamCount;
+
+    // Mio – stance control (0=Short,1=Long) and optional lock
+    int  p1MioStance;      // cached current stance
+    int  p2MioStance;
+    bool p1MioLockStance;  // when true, enforce chosen stance every tick
+    bool p2MioLockStance;
+
+    // Kano – magic meter (0..10000) and locking
+    int  p1KanoMagic;
+    int  p2KanoMagic;
+    bool p1KanoLockMagic;
+    bool p2KanoLockMagic;
 };
 
 extern DisplayData displayData;

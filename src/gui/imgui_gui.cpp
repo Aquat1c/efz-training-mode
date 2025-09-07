@@ -840,6 +840,38 @@ namespace ImGuiGui {
             }
             ImGui::TextDisabled("(Akiko: bullet routes and clock-slow)");
         }
+        // P1 Kano Settings
+        else if (p1CharID == CHAR_ID_KANO) {
+            int magic = guiState.localData.p1KanoMagic;
+            magic = CLAMP(magic, 0, KANO_MAGIC_MAX);
+            float pct = (float)magic / (float)KANO_MAGIC_MAX;
+            ImGui::Text("Magic Meter:");
+            ImGui::ProgressBar(pct, ImVec2(-1,0), (std::to_string(magic) + "/" + std::to_string(KANO_MAGIC_MAX)).c_str());
+            if (ImGui::SliderInt("##P1KanoMagic", &magic, 0, KANO_MAGIC_MAX)) {
+                guiState.localData.p1KanoMagic = magic;
+            }
+            if (ImGui::Button("Max##P1KanoMagic")) { guiState.localData.p1KanoMagic = KANO_MAGIC_MAX; }
+            ImGui::SameLine();
+            if (ImGui::Button("Zero##P1KanoMagic")) { guiState.localData.p1KanoMagic = 0; }
+            bool lock = guiState.localData.p1KanoLockMagic;
+            if (ImGui::Checkbox("Lock magic##p1Kano", &lock)) { guiState.localData.p1KanoLockMagic = lock; }
+            ImGui::TextDisabled("(Kano: magic meter at +0x3150)");
+        }
+        // P1 Mio Settings
+        else if (p1CharID == CHAR_ID_MIO) {
+            ImGui::Text("Mio Stance:");
+            int stance = guiState.localData.p1MioStance;
+            stance = (stance==MIO_STANCE_LONG)?MIO_STANCE_LONG:MIO_STANCE_SHORT;
+            const char* mioStances[] = { "Short", "Long" };
+            if (ImGui::Combo("##P1MioStance", &stance, mioStances, IM_ARRAYSIZE(mioStances))) {
+                guiState.localData.p1MioStance = stance;
+            }
+            bool lock = guiState.localData.p1MioLockStance;
+            if (ImGui::Checkbox("Lock stance##p1Mio", &lock)) {
+                guiState.localData.p1MioLockStance = lock;
+            }
+            ImGui::TextDisabled("(Mio: stance byte at +0x3150, 0=Short,1=Long)");
+        }
 
         // P1 Neyuki (Sleepy Nayuki) Settings
         else if (p1CharID == CHAR_ID_NAYUKI) {
@@ -1055,6 +1087,38 @@ namespace ImGuiGui {
                 guiState.localData.p2AkikoTimeslowTrigger = ts2;
             }
             ImGui::TextDisabled("(Akiko: bullet routes and clock-slow)");
+        }
+        // P2 Kano Settings
+        else if (p2CharID == CHAR_ID_KANO) {
+            int magic2 = guiState.localData.p2KanoMagic;
+            magic2 = CLAMP(magic2, 0, KANO_MAGIC_MAX);
+            float pct2 = (float)magic2 / (float)KANO_MAGIC_MAX;
+            ImGui::Text("Magic Meter:");
+            ImGui::ProgressBar(pct2, ImVec2(-1,0), (std::to_string(magic2) + "/" + std::to_string(KANO_MAGIC_MAX)).c_str());
+            if (ImGui::SliderInt("##P2KanoMagic", &magic2, 0, KANO_MAGIC_MAX)) {
+                guiState.localData.p2KanoMagic = magic2;
+            }
+            if (ImGui::Button("Max##P2KanoMagic")) { guiState.localData.p2KanoMagic = KANO_MAGIC_MAX; }
+            ImGui::SameLine();
+            if (ImGui::Button("Zero##P2KanoMagic")) { guiState.localData.p2KanoMagic = 0; }
+            bool lock2 = guiState.localData.p2KanoLockMagic;
+            if (ImGui::Checkbox("Lock magic##p2Kano", &lock2)) { guiState.localData.p2KanoLockMagic = lock2; }
+            ImGui::TextDisabled("(Kano: magic meter at +0x3150)");
+        }
+        // P2 Mio Settings
+        else if (p2CharID == CHAR_ID_MIO) {
+            ImGui::Text("Mio Stance:");
+            int stance2 = guiState.localData.p2MioStance;
+            stance2 = (stance2==MIO_STANCE_LONG)?MIO_STANCE_LONG:MIO_STANCE_SHORT;
+            const char* mioStances2[] = { "Short", "Long" };
+            if (ImGui::Combo("##P2MioStance", &stance2, mioStances2, IM_ARRAYSIZE(mioStances2))) {
+                guiState.localData.p2MioStance = stance2;
+            }
+            bool lock2 = guiState.localData.p2MioLockStance;
+            if (ImGui::Checkbox("Lock stance##p2Mio", &lock2)) {
+                guiState.localData.p2MioLockStance = lock2;
+            }
+            ImGui::TextDisabled("(Mio: stance byte at +0x3150, 0=Short,1=Long)");
         }
 
         // P2 Neyuki (Sleepy Nayuki) Settings

@@ -423,6 +423,17 @@
 #define AKIKO_TIMESLOW_C                 3
 #define AKIKO_TIMESLOW_INFINITE          4
 
+// Mio – stance (short vs long) reuses the shared 0x3150 slot used by other characters for their
+// own mechanics (e.g., Ikumi genocide / Akiko bullet cycle). Safe to alias by character ID.
+// Observed values: 0 = Short stance, 1 = Long stance.
+#define MIO_STANCE_OFFSET                0x3150
+#define MIO_STANCE_SHORT                 0
+#define MIO_STANCE_LONG                  1
+
+// Kano – magic meter (0..10000) shares 0x3150 slot (character-specific reuse)
+#define KANO_MAGIC_OFFSET                0x3150
+#define KANO_MAGIC_MAX                   10000
+
 // Akiko – Clean Hit helper last-hit Move IDs for 623 rekka
 // A/B: 3rd hit ends at moveId 259; C: 6th hit ends at moveId 254
 #define AKIKO_MOVE_623_LAST_AB           259
