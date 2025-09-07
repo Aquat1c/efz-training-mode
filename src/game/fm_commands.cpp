@@ -159,6 +159,10 @@ const std::vector<FinalMemoryCommand>& GetFinalMemoryCommands() {
         "6*3","4*3","1*3","2*3","3*3","6*3", // directional chain
         "5C*2" // C button, we don't care about others since they're handled by immediate input registers
     }, facingRight), GateAlways, "Short variant refined from buffer"});
+    // Mio (long) variant FM: 5B A 2 A B (neutral presses with small neutral gaps). Using modest holds (*2) and neutral gaps (5*3) for reliability.
+    cmds.push_back({CHAR_ID_MIO, "MioLong", BuildPattern({
+        "5B*2","5*3","5A*2","5*3","2*3","5*3","5A*2","5*3","5B*2"
+    }, facingRight), GateAlways, "Long stance variant"});
     // Misaki 222S - TESTED
     cmds.push_back({CHAR_ID_MISAKI, "Misaki", BuildPattern({"2*3","5*3","2*3","5*3","2*3","2S*6"}, facingRight), GateAlways, nullptr});
     // Mishio buffer snapshot: B gap B gap 2 cluster gap C gap A - TESTED
@@ -198,9 +202,23 @@ bool ExecuteFinalMemory(int playerNum, int characterId) {
     uintptr_t playerPtr = GetPlayerPointer(playerNum);
     if (!playerPtr) return false;
     bool facingRight = GetPlayerFacingDirection(playerNum);
+    // Mio stance aware adjustment: swap target command name based on stance
+    std::string forcedName;
+    if (characterId == CHAR_ID_MIO) {
+        // Read stance directly (safer than relying on cached displayData which may be stale)
+        uintptr_t efzBase = GetEFZBase();
+        uintptr_t playerBase = 0;
+        SafeReadMemory(efzBase + (playerNum==1?EFZ_BASE_OFFSET_P1:EFZ_BASE_OFFSET_P2), &playerBase, sizeof(uintptr_t));
+        if (playerBase) {
+            int stance=0; SafeReadMemory(playerBase + MIO_STANCE_OFFSET, &stance, sizeof(int));
+            stance = (stance==MIO_STANCE_LONG)?MIO_STANCE_LONG:MIO_STANCE_SHORT;
+            forcedName = (stance==MIO_STANCE_LONG)?"MioLong":"MioShort";
+        }
+    }
     const auto& list = GetFinalMemoryCommands();
     for (const auto& c : list) {
         if (c.characterId == characterId) {
+            if (!forcedName.empty() && c.name != forcedName) continue; // skip non-matching Mio variant
             if (c.gate && !c.gate(playerNum)) {
                 std::string msg = std::string("[FM] Gate failed for ") + c.name;
                 if (c.gateDesc) { msg += " ("; msg += c.gateDesc; msg += ")"; }
