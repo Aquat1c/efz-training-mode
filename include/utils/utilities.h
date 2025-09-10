@@ -231,6 +231,24 @@ struct DisplayData {
     bool p2MaiInfiniteAwakening;
     bool p1MaiNoChargeCD;   // force charge timer to 1 when entering status 3
     bool p2MaiNoChargeCD;
+    // Mai control actions (one-shot GUI triggers)
+    bool p1MaiForceSummon;   // when set true by GUI, attempt safe ghost summon then auto-clear
+    bool p2MaiForceSummon;
+    bool p1MaiForceDespawn;  // force unsummon transition
+    bool p2MaiForceDespawn;
+    bool p1MaiAggressiveOverride; // allow summon even during transitional (status=2) states
+    bool p2MaiAggressiveOverride;
+
+    // Runtime (read-only) Mini-Mai ghost world coordinates (updated via RefreshLocalData scan)
+    double p1MaiGhostX; // NaN if not present
+    double p1MaiGhostY;
+    double p2MaiGhostX; // NaN if not present
+    double p2MaiGhostY;
+    // Editable ghost position targets (user-entered). Not auto-synced; Apply button writes them.
+    double p1MaiGhostSetX;
+    double p1MaiGhostSetY;
+    double p2MaiGhostSetX;
+    double p2MaiGhostSetY;
 };
 
 extern DisplayData displayData;

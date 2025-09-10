@@ -878,8 +878,33 @@ namespace ImGuiGui {
             ImGui::SameLine(); ImGui::Checkbox("Inf Awakening##P1MaiInfA", &infAw); guiState.localData.p1MaiInfiniteAwakening = infAw;
             bool noCD1 = guiState.localData.p1MaiNoChargeCD;
             if (ImGui::Checkbox("No CD (fast charge)##P1MaiNoCD", &noCD1)) guiState.localData.p1MaiNoChargeCD = noCD1;
-            if (ImGui::IsItemHovered()) ImGui::SetTooltip("When entering Charging (status 3), forces timer to 1 (skip cooldown).");
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Effective only while Charging (status 3): forces charge timer to 1 each tick.");
             ImGui::TextDisabled("(Mai: status @0x3144, multi-timer @0x3148 – meaning depends on status)");
+            // Ghost coordinate edit controls
+            double setGX = guiState.localData.p1MaiGhostSetX;
+            double setGY = guiState.localData.p1MaiGhostSetY;
+            if (std::isnan(setGX) && !std::isnan(guiState.localData.p1MaiGhostX)) setGX = guiState.localData.p1MaiGhostX;
+            if (std::isnan(setGY) && !std::isnan(guiState.localData.p1MaiGhostY)) setGY = guiState.localData.p1MaiGhostY;
+            ImGui::Text("Ghost Position Override:");
+            ImGui::SetNextItemWidth(100); ImGui::InputDouble("X##P1MaiGhostX", &setGX, 1.0, 10.0, "%.1f"); ImGui::SameLine();
+            ImGui::SetNextItemWidth(100); ImGui::InputDouble("Y##P1MaiGhostY", &setGY, 1.0, 10.0, "%.1f");
+            if (setGX != guiState.localData.p1MaiGhostSetX) guiState.localData.p1MaiGhostSetX = setGX;
+            if (setGY != guiState.localData.p1MaiGhostSetY) guiState.localData.p1MaiGhostSetY = setGY;
+            if (ImGui::Button("Apply Ghost Pos##P1MaiGhost")) {
+                // Will be written on ApplyImGuiSettings via new logic
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("P1 Pos##P1MaiGhostUseP1")) {
+                // Copy current P1 position into override targets
+                guiState.localData.p1MaiGhostSetX = guiState.localData.x1;
+                guiState.localData.p1MaiGhostSetY = guiState.localData.y1;
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("P2 Pos##P1MaiGhostUseP2")) {
+                // Copy current P2 position into override targets (useful for mirroring setups)
+                guiState.localData.p1MaiGhostSetX = guiState.localData.x2;
+                guiState.localData.p1MaiGhostSetY = guiState.localData.y2;
+            }
         }
         // P1 Kano Settings
         else if (p1CharID == CHAR_ID_KANO) {
@@ -1156,8 +1181,30 @@ namespace ImGuiGui {
             ImGui::SameLine(); bool infAw2 = guiState.localData.p2MaiInfiniteAwakening; ImGui::Checkbox("Inf Awakening##P2MaiInfA", &infAw2); guiState.localData.p2MaiInfiniteAwakening = infAw2;
             bool noCD2 = guiState.localData.p2MaiNoChargeCD;
             if (ImGui::Checkbox("No CD (fast charge)##P2MaiNoCD", &noCD2)) guiState.localData.p2MaiNoChargeCD = noCD2;
-            if (ImGui::IsItemHovered()) ImGui::SetTooltip("When entering Charging (status 3), forces timer to 1 (skip cooldown).");
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Effective only while Charging (status 3): forces charge timer to 1 each tick.");
             ImGui::TextDisabled("(Mai: status @0x3144, multi-timer @0x3148 – meaning depends on status)");
+            double setGX2 = guiState.localData.p2MaiGhostSetX;
+            double setGY2 = guiState.localData.p2MaiGhostSetY;
+            if (std::isnan(setGX2) && !std::isnan(guiState.localData.p2MaiGhostX)) setGX2 = guiState.localData.p2MaiGhostX;
+            if (std::isnan(setGY2) && !std::isnan(guiState.localData.p2MaiGhostY)) setGY2 = guiState.localData.p2MaiGhostY;
+            ImGui::Text("Ghost Position Override:");
+            ImGui::SetNextItemWidth(100); ImGui::InputDouble("X##P2MaiGhostX", &setGX2, 1.0, 10.0, "%.1f"); ImGui::SameLine();
+            ImGui::SetNextItemWidth(100); ImGui::InputDouble("Y##P2MaiGhostY", &setGY2, 1.0, 10.0, "%.1f");
+            if (setGX2 != guiState.localData.p2MaiGhostSetX) guiState.localData.p2MaiGhostSetX = setGX2;
+            if (setGY2 != guiState.localData.p2MaiGhostSetY) guiState.localData.p2MaiGhostSetY = setGY2;
+            if (ImGui::Button("Apply Ghost Pos##P2MaiGhost")) {
+                // Will be written on ApplyImGuiSettings
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("P2 Pos##P2MaiGhostUseP2")) {
+                guiState.localData.p2MaiGhostSetX = guiState.localData.x2;
+                guiState.localData.p2MaiGhostSetY = guiState.localData.y2;
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("P1 Pos##P2MaiGhostUseP1")) {
+                guiState.localData.p2MaiGhostSetX = guiState.localData.x1;
+                guiState.localData.p2MaiGhostSetY = guiState.localData.y1;
+            }
         }
         // P2 Kano Settings
         else if (p2CharID == CHAR_ID_KANO) {
@@ -1343,6 +1390,37 @@ namespace ImGuiGui {
         ImGui::SameLine();
         if (ImGui::Button("Run P2 FM")) { ExecuteFinalMemory(2, p2Char); }
         ImGui::Separator();
+        // Mai debug controls (relocated): show only if Mai present on either side
+        if (guiState.localData.p1CharID == CHAR_ID_MAI || guiState.localData.p2CharID == CHAR_ID_MAI) {
+            ImGui::SeparatorText("Mai Control");
+            ImGui::TextDisabled("Authentic summon/despawn helpers (debug)");
+            if (guiState.localData.p1CharID == CHAR_ID_MAI) {
+                ImGui::Text("P1 Mai:"); ImGui::SameLine();
+                if (ImGui::Button("Force Summon##DbgP1Mai")) guiState.localData.p1MaiForceSummon = true;
+                ImGui::SameLine(); if (ImGui::Button("Force Despawn##DbgP1Mai")) guiState.localData.p1MaiForceDespawn = true;
+                bool agg1 = guiState.localData.p1MaiAggressiveOverride;
+                if (ImGui::Checkbox("Aggressive##DbgP1MaiAgg", &agg1)) guiState.localData.p1MaiAggressiveOverride = agg1;
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("When enabled, Force Summon overrides transitional (status=2) states.");
+                if (!std::isnan(guiState.localData.p1MaiGhostX)) {
+                    ImGui::Text("Ghost Pos: (%.1f, %.1f)", guiState.localData.p1MaiGhostX, guiState.localData.p1MaiGhostY);
+                } else {
+                    ImGui::TextDisabled("Ghost Pos: (not active)");
+                }
+            }
+            if (guiState.localData.p2CharID == CHAR_ID_MAI) {
+                ImGui::Text("P2 Mai:"); ImGui::SameLine();
+                if (ImGui::Button("Force Summon##DbgP2Mai")) guiState.localData.p2MaiForceSummon = true;
+                ImGui::SameLine(); if (ImGui::Button("Force Despawn##DbgP2Mai")) guiState.localData.p2MaiForceDespawn = true;
+                bool agg2 = guiState.localData.p2MaiAggressiveOverride;
+                if (ImGui::Checkbox("Aggressive##DbgP2MaiAgg", &agg2)) guiState.localData.p2MaiAggressiveOverride = agg2;
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("When enabled, Force Summon overrides transitional (status=2) states.");
+                if (!std::isnan(guiState.localData.p2MaiGhostX)) {
+                    ImGui::Text("Ghost Pos: (%.1f, %.1f)", guiState.localData.p2MaiGhostX, guiState.localData.p2MaiGhostY);
+                } else {
+                    ImGui::TextDisabled("Ghost Pos: (not active)");
+                }
+            }
+        }
     }
 
     // Update the RenderGui function to include the new tab:
@@ -1503,6 +1581,28 @@ namespace ImGuiGui {
     // Read character-specific values (once per refresh)
     // Read character-specific values; Rumi path only reads mode/gate and is safe
     CharacterSettings::ReadCharacterValues(base, guiState.localData);
+
+    // Scan Mai ghost slots (Mini-Mai) for each player if character is Mai
+    auto ScanMaiGhost = [&](int playerIdx){
+        if (!((playerIdx==1 && guiState.localData.p1CharID==CHAR_ID_MAI) || (playerIdx==2 && guiState.localData.p2CharID==CHAR_ID_MAI))) return;
+        uintptr_t pBase = ResolvePointer(base, (playerIdx==1)?EFZ_BASE_OFFSET_P1:EFZ_BASE_OFFSET_P2, 0);
+        double nanv = std::numeric_limits<double>::quiet_NaN();
+        double gx = nanv, gy = nanv;
+        if (pBase) {
+            for (int i=0;i<MAI_GHOST_SLOT_MAX_SCAN;i++) {
+                uintptr_t slot = pBase + MAI_GHOST_SLOTS_BASE + (uintptr_t)i*MAI_GHOST_SLOT_STRIDE;
+                unsigned short id=0; if (!SafeReadMemory(slot + MAI_GHOST_SLOT_ID_OFFSET, &id, sizeof(id))) break;
+                if (id == 401) {
+                    // Read positions
+                    SafeReadMemory(slot + MAI_GHOST_SLOT_X_OFFSET, &gx, sizeof(double));
+                    SafeReadMemory(slot + MAI_GHOST_SLOT_Y_OFFSET, &gy, sizeof(double));
+                    break;
+                }
+            }
+        }
+        if (playerIdx==1) { guiState.localData.p1MaiGhostX = gx; guiState.localData.p1MaiGhostY = gy; }
+        else { guiState.localData.p2MaiGhostX = gx; guiState.localData.p2MaiGhostY = gy; }
+    }; ScanMaiGhost(1); ScanMaiGhost(2);
 
         // Read current IC color values from memory
         int p1ICValue = 0, p2ICValue = 0;

@@ -467,3 +467,34 @@
 #define MAI_GHOST_TIME_MAX               10000
 #define MAI_GHOST_CHARGE_MAX             1200
 #define MAI_AWAKENING_MAX                10000
+// Additional Mai internal helper flags (observed in decomp region 0x191 state machine):
+//  +0x314C : transient int used when entering charge (we saw 12620 cleared) – treat as CHARGE_HELPER
+//  +0x3150 : one-shot summon flash flag (12624) reused by multiple characters; when set to 1 before
+//            first tick of active (0x191) causes an effect spawn then auto-clears. We expose for
+//            Force Summon to mimic natural spawn visuals without needing deep engine calls.
+#define MAI_CHARGE_HELPER_OFFSET         0x314C
+#define MAI_SUMMON_FLASH_FLAG_OFFSET     0x3150
+// Native summon script moveID (case 0x104 in decomp) – use to trigger authentic spawn sequence
+#define MAI_SUMMON_MOVE_ID                0x0104  // 260 decimal
+// Internal per-state counters (observed at +0x0A / +0x0C) used by engine switch logic
+#define STATE_FRAME_INDEX_OFFSET          0x0A    // already synonymous with CURRENT_FRAME_INDEX_OFFSET
+#define STATE_SUBFRAME_COUNTER_OFFSET     0x0C
+
+// Mini-Mai (ghost) runtime slot array (reverse-engineered from decomp case 0x191 region):
+// Player struct contains an array of small slot structs starting at +0x04D0 (1232) with stride 152 (0x98).
+// For Mai, one of these slots (ID == 401) represents the active Mini-Mai entity. Fields (relative to slot start):
+//   +0x00 : uint16 id (401 = Mini-Mai, other values reused by engine scripts)
+//   +0x02 : uint16 frame index / state counter (matches *(_WORD*)(...+1234))
+//   +0x04 : uint16 subframe counter (matches *(_WORD*)(...+1236))
+//   +0x18 : double X position  (offset 1256 = 1232 + 0x18)
+//   +0x20 : double Y position  (offset 1264 = 1232 + 0x20)
+// Additional arrays parallel to slots exist (e.g., int arrays at +0x3158 etc) but not needed for position readout.
+// We scan a conservative number of slots (MAX 12) to locate ID 401 each refresh.
+#define MAI_GHOST_SLOTS_BASE              0x04D0
+#define MAI_GHOST_SLOT_STRIDE             152      // 0x98
+#define MAI_GHOST_SLOT_ID_OFFSET          0x00
+#define MAI_GHOST_SLOT_FRAME_OFFSET       0x02
+#define MAI_GHOST_SLOT_SUBFRAME_OFFSET    0x04
+#define MAI_GHOST_SLOT_X_OFFSET           0x18
+#define MAI_GHOST_SLOT_Y_OFFSET           0x20
+#define MAI_GHOST_SLOT_MAX_SCAN           12       // Safety cap (engine likely uses fewer)
