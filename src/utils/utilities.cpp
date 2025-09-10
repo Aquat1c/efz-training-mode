@@ -26,6 +26,7 @@
 #include <iomanip>
 #include <chrono>
 #include <vector>
+#include <limits>
 #include "../include/game/character_settings.h"
 #include "../include/game/game_state.h"
 #include "../include/input/input_hook.h"          // For RemoveInputHook
@@ -404,6 +405,27 @@ DisplayData displayData = {
     false, false,       // p1MioLockStance, p2MioLockStance
     0, 0,               // p1KanoMagic, p2KanoMagic
     false, false        // p1KanoLockMagic, p2KanoLockMagic
+    ,
+    // Mai defaults
+    0,                  // p1MaiStatus
+    0,                  // p1MaiGhostTime
+    0,                  // p1MaiGhostCharge
+    0,                  // p1MaiAwakeningTime
+    0,                  // p2MaiStatus
+    0,                  // p2MaiGhostTime
+    0,                  // p2MaiGhostCharge
+    0,                  // p2MaiAwakeningTime
+    false, false,       // p1MaiInfiniteGhost, p2MaiInfiniteGhost
+    false, false,       // p1MaiInfiniteCharge, p2MaiInfiniteCharge
+    false, false,       // p1MaiInfiniteAwakening, p2MaiInfiniteAwakening
+    false, false,       // p1MaiNoChargeCD, p2MaiNoChargeCD
+    false, false,       // p1MaiForceSummon, p2MaiForceSummon
+    false, false,       // p1MaiForceDespawn, p2MaiForceDespawn
+    false, false,       // p1MaiAggressiveOverride, p2MaiAggressiveOverride
+    std::numeric_limits<double>::quiet_NaN(), std::numeric_limits<double>::quiet_NaN(), // p1MaiGhostX/Y
+    std::numeric_limits<double>::quiet_NaN(), std::numeric_limits<double>::quiet_NaN(), // p2MaiGhostX/Y
+    std::numeric_limits<double>::quiet_NaN(), std::numeric_limits<double>::quiet_NaN(), // p1MaiGhostSetX/Y
+    std::numeric_limits<double>::quiet_NaN(), std::numeric_limits<double>::quiet_NaN()  // p2MaiGhostSetX/Y
 };
 
 // Initialize key bindings with default values

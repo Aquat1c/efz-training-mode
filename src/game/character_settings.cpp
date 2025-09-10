@@ -744,20 +744,66 @@ namespace CharacterSettings {
             const int off = (pi==1)?EFZ_BASE_OFFSET_P1:EFZ_BASE_OFFSET_P2;
             int status = (pi==1)?data.p1MaiStatus:data.p2MaiStatus;
             status = CLAMP(status,0,4);
+            bool forceSummon = (pi==1)?data.p1MaiForceSummon:data.p2MaiForceSummon;
+            bool forceDespawn = (pi==1)?data.p1MaiForceDespawn:data.p2MaiForceDespawn;
+            bool aggressive = (pi==1)?data.p1MaiAggressiveOverride:data.p2MaiAggressiveOverride;
             // Determine desired timer source based on status
             int desiredTimer = 0;
             bool infGhost   = (pi==1)?data.p1MaiInfiniteGhost:data.p2MaiInfiniteGhost;
             bool infCharge  = (pi==1)?data.p1MaiInfiniteCharge:data.p2MaiInfiniteCharge;
             bool infAw      = (pi==1)?data.p1MaiInfiniteAwakening:data.p2MaiInfiniteAwakening;
             bool noCD       = (pi==1)?data.p1MaiNoChargeCD:data.p2MaiNoChargeCD;
+
+            // Read live status/timer for decision logic
+            int liveStatus = 0; int liveTimer = 0;
+            if (auto sAddrLive = ResolvePointer(base, off, MAI_STATUS_OFFSET)) { uint8_t ls=0; SafeReadMemory(sAddrLive,&ls,sizeof(uint8_t)); liveStatus = ls; }
+            if (auto tAddrLive = ResolvePointer(base, off, MAI_MULTI_TIMER_OFFSET)) { SafeReadMemory(tAddrLive,&liveTimer,sizeof(int)); }
+
+            // Handle Force Despawn: convert to unsummon path (simulate timer out)
+            if (forceDespawn) {
+                // Only if currently active (1) or awakening (4); otherwise just clear request
+                if (liveStatus == 1 || liveStatus == 4) {
+                    if (auto tAddr = ResolvePointer(base, off, MAI_MULTI_TIMER_OFFSET)) {
+                        int zero = 0; SafeWriteMemory(tAddr,&zero,sizeof(int));
+                    }
+                    // Let natural state machine shift to unsummon (will set status=2)
+                }
+                // Clear flag
+                if (pi==1) { ((DisplayData&)data).p1MaiForceDespawn = false; } else { ((DisplayData&)data).p2MaiForceDespawn = false; }
+            }
+
+            // Handle Force Summon (safe path): only if not already active OR aggressive override
+            if (forceSummon) {
+                bool canSummon = (liveStatus==0 || liveStatus==3 || liveStatus==4 || (aggressive && liveStatus==2));
+                if (canSummon) {
+                    // Authentic summon: trigger native summon move (0x104) so engine performs all side effects.
+                    if (auto mvAddr = ResolvePointer(base, off, MOVE_ID_OFFSET)) {
+                        short summonMove = (short)MAI_SUMMON_MOVE_ID; SafeWriteMemory(mvAddr, &summonMove, sizeof(short));
+                    }
+                    // Reset frame index and subframe counters (engine uses +0x0A/+0x0C) so script starts clean.
+                    if (auto frameIdxAddr = ResolvePointer(base, off, STATE_FRAME_INDEX_OFFSET)) {
+                        unsigned short z=0; SafeWriteMemory(frameIdxAddr,&z,sizeof(unsigned short));
+                    }
+                    if (auto subFrameAddr = ResolvePointer(base, off, STATE_SUBFRAME_COUNTER_OFFSET)) {
+                        unsigned short z=0; SafeWriteMemory(subFrameAddr,&z,sizeof(unsigned short));
+                    }
+                    // Seed flash flag (duplicate write harmless; engine sets it first tick).
+                    if (auto flashAddr = ResolvePointer(base, off, MAI_SUMMON_FLASH_FLAG_OFFSET)) { int one=1; SafeWriteMemory(flashAddr,&one,sizeof(int)); }
+                    // Cache desired timer target for later infinite enforcement once status becomes 1.
+                    int desired = (pi==1)?data.p1MaiGhostTime:data.p2MaiGhostTime; desired = CLAMP(desired,1,MAI_GHOST_TIME_MAX);
+                    if (infGhost && desired < MAI_GHOST_TIME_MAX) desired = MAI_GHOST_TIME_MAX;
+                    if (pi==1) { ((DisplayData&)data).p1MaiGhostTime = desired; } else { ((DisplayData&)data).p2MaiGhostTime = desired; }
+                }
+                // Clear request flag regardless (so button acts edge-triggered)
+                if (pi==1) { ((DisplayData&)data).p1MaiForceSummon = false; } else { ((DisplayData&)data).p2MaiForceSummon = false; }
+            }
+            static bool p1MaiNoCDArmed=false, p2MaiNoCDArmed=false;
+            // No CD now simply handled per-tick when status==3 (charge) in enforcement; no one-shot logic needed here.
+
             if (status == 1) {
                 desiredTimer = (pi==1)?data.p1MaiGhostTime:data.p2MaiGhostTime; desiredTimer = CLAMP(desiredTimer,0,MAI_GHOST_TIME_MAX);
             } else if (status == 3) {
-                if (noCD) {
-                    desiredTimer = 1; // near-ready
-                } else {
-                    desiredTimer = (pi==1)?data.p1MaiGhostCharge:data.p2MaiGhostCharge; desiredTimer = CLAMP(desiredTimer,0,MAI_GHOST_CHARGE_MAX);
-                }
+                desiredTimer = (pi==1)?data.p1MaiGhostCharge:data.p2MaiGhostCharge; desiredTimer = CLAMP(desiredTimer,0,MAI_GHOST_CHARGE_MAX);
             } else if (status == 4) {
                 desiredTimer = (pi==1)?data.p1MaiAwakeningTime:data.p2MaiAwakeningTime; desiredTimer = CLAMP(desiredTimer,0,MAI_AWAKENING_MAX);
             } else {
@@ -776,8 +822,25 @@ namespace CharacterSettings {
                     int cur=0; SafeReadMemory(tAddr,&cur,sizeof(int)); if (cur!=desiredTimer) SafeWriteMemory(tAddr,&desiredTimer,sizeof(int));
                 }
             }
+            // Optional ghost coordinate override write when ghost active and user set values
+            double setX = (pi==1)?data.p1MaiGhostSetX:data.p2MaiGhostSetX;
+            double setY = (pi==1)?data.p1MaiGhostSetY:data.p2MaiGhostSetY;
+            if (!std::isnan(setX) && !std::isnan(setY)) {
+                // Find ghost slot and write X/Y directly
+                if (auto basePtr = ResolvePointer(base, off, 0)) {
+                    for (int i=0;i<MAI_GHOST_SLOT_MAX_SCAN;i++) {
+                        uintptr_t slot = basePtr + MAI_GHOST_SLOTS_BASE + (uintptr_t)i*MAI_GHOST_SLOT_STRIDE;
+                        unsigned short id=0; if (!SafeReadMemory(slot + MAI_GHOST_SLOT_ID_OFFSET,&id,sizeof(id))) break;
+                        if (id==401) {
+                            SafeWriteMemory(slot + MAI_GHOST_SLOT_X_OFFSET,&setX,sizeof(double));
+                            SafeWriteMemory(slot + MAI_GHOST_SLOT_Y_OFFSET,&setY,sizeof(double));
+                            break;
+                        }
+                    }
+                }
+            }
             if (detailedLogging.load()) {
-                LogOut(std::string("[CHAR] Applied ") + (pi==1?"P1":"P2") + " Mai: Status=" + std::to_string(status) + ", Timer=" + std::to_string(desiredTimer), true);
+                LogOut(std::string("[CHAR] Applied ") + (pi==1?"P1":"P2") + " Mai: Status=" + std::to_string(status) + ", Timer=" + std::to_string(desiredTimer) + (noCD?" (NoCD armed)":""), true);
             }
         }; ApplyMai(1); ApplyMai(2);
     }
@@ -987,7 +1050,7 @@ namespace CharacterSettings {
             bool infCharge  = (pi==1)?localData.p1MaiInfiniteCharge:localData.p2MaiInfiniteCharge;
             bool infAw      = (pi==1)?localData.p1MaiInfiniteAwakening:localData.p2MaiInfiniteAwakening;
             bool noCD       = (pi==1)?localData.p1MaiNoChargeCD:localData.p2MaiNoChargeCD;
-            bool anyInf = infGhost || infCharge || infAw;
+            bool anyInf = infGhost || infCharge || infAw || noCD; // treat No CD as needing enforcement pass
             if (!anyInf) { if (pi==1){s_p1MaiFrozenTimer=-1; s_p1MaiFrozenStatus=-1;} else {s_p2MaiFrozenTimer=-1; s_p2MaiFrozenStatus=-1;} return; }
             auto tAddr = ResolvePointer(base, off, MAI_MULTI_TIMER_OFFSET);
             auto sAddr = ResolvePointer(base, off, MAI_STATUS_OFFSET);
@@ -995,17 +1058,30 @@ namespace CharacterSettings {
             // Read current raw timer & status
             uint8_t curStatus=0; SafeReadMemory(sAddr,&curStatus,sizeof(uint8_t));
             int curTimer=0; SafeReadMemory(tAddr,&curTimer,sizeof(int));
-            // No CD handling: if charging, forcibly keep timer at 1 and skip freeze caching
+            // No CD handling: if charging (status 3) and No CD enabled, force timer to 1 every tick; allow other inf (e.g., infCharge) to stack if user chooses
             if (curStatus == 3 && noCD) {
-                if (curTimer > 1) { int one=1; SafeWriteMemory(tAddr,&one,sizeof(int)); }
+                if (curTimer != 1) { int one=1; SafeWriteMemory(tAddr,&one,sizeof(int)); }
+                // Don't return if infCharge also active; we still want infCharge semantics to set/hold a user value (but No CD should dominate to 1)
+                if (!infCharge && !infGhost && !infAw) {
+                    // Pure No CD case: clear caches and return early
+                    if (pi==1){s_p1MaiFrozenTimer=-1; s_p1MaiFrozenStatus=-1;} else {s_p2MaiFrozenTimer=-1; s_p2MaiFrozenStatus=-1;}
+                    return;
+                }
+            }
+            // Infinite Ghost: always top up to max (hard set) when status is Active (1)
+            if (curStatus == 1 && infGhost) {
+                const int target = MAI_GHOST_TIME_MAX; // full duration
+                if (curTimer != target) { SafeWriteMemory(tAddr,&target,sizeof(int)); }
+                // Keep frozen caches clear so switching to other statuses reinitializes appropriately
                 if (pi==1){s_p1MaiFrozenTimer=-1; s_p1MaiFrozenStatus=-1;} else {s_p2MaiFrozenTimer=-1; s_p2MaiFrozenStatus=-1;}
-                return;
+                return; // skip rest (charge/awakening logic not relevant here)
             }
             int desiredStatus = (int)curStatus; // default keep
             int desiredTimer = curTimer;
             // Determine which infinite applies based on current status *only*; never force value for a different mode
             if (curStatus == 1 && infGhost) {
-                desiredTimer = (pi==1)?localData.p1MaiGhostTime:localData.p2MaiGhostTime; desiredTimer = CLAMP(desiredTimer,0,MAI_GHOST_TIME_MAX);
+                // Handled earlier (hard set to max); unreachable, but keep for clarity
+                desiredTimer = MAI_GHOST_TIME_MAX;
             } else if (curStatus == 3 && infCharge) {
                 desiredTimer = (pi==1)?localData.p1MaiGhostCharge:localData.p2MaiGhostCharge; desiredTimer = CLAMP(desiredTimer,0,MAI_GHOST_CHARGE_MAX);
             } else if (curStatus == 4 && infAw) {
