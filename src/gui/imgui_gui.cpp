@@ -840,6 +840,47 @@ namespace ImGuiGui {
             }
             ImGui::TextDisabled("(Akiko: bullet routes and clock-slow)");
         }
+        // P1 Mai (Kawasumi) Settings
+        else if (p1CharID == CHAR_ID_MAI) {
+            // Status selector
+            const char* statusItems[] = { "0: Inactive", "1: Active Ghost", "2: Unsummon", "3: Charging", "4: Awakening" };
+            int st = guiState.localData.p1MaiStatus; st = CLAMP(st,0,4);
+            ImGui::Text("Status:");
+            ImGui::Combo("##P1MaiStatus", &st, statusItems, IM_ARRAYSIZE(statusItems));
+            guiState.localData.p1MaiStatus = st;
+            // Determine which timer meaning is active
+            int maxVal = (st==3)?MAI_GHOST_CHARGE_MAX:MAI_GHOST_TIME_MAX; // ghost time & awakening share 10000; charge 1200
+            if (st==4) maxVal = MAI_AWAKENING_MAX;
+            int *activePtr = nullptr;
+            const char* label = "Timer";
+            if (st==1) { activePtr = &guiState.localData.p1MaiGhostTime; label = "Ghost Time"; }
+            else if (st==3) { activePtr = &guiState.localData.p1MaiGhostCharge; label = "Ghost Charge"; }
+            else if (st==4) { activePtr = &guiState.localData.p1MaiAwakeningTime; label = "Awakening"; }
+            if (activePtr) {
+                int val = *activePtr; val = CLAMP(val,0,maxVal);
+                float pct = (float)val / (float)maxVal;
+                ImGui::Text("%s:", label);
+                ImGui::ProgressBar(pct, ImVec2(-1,0), (std::to_string(val) + "/" + std::to_string(maxVal)).c_str());
+                if (ImGui::SliderInt("##P1MaiActiveTimer", &val, 0, maxVal)) { *activePtr = val; }
+                // Quick set row
+                if (ImGui::Button("Max##P1MaiTimer")) { *activePtr = maxVal; }
+                ImGui::SameLine();
+                if (ImGui::Button("Zero##P1MaiTimer")) { *activePtr = 0; }
+            } else {
+                ImGui::TextDisabled("No active timer for this status.");
+            }
+            // Infinite toggles contextual
+            bool infGhost = guiState.localData.p1MaiInfiniteGhost;
+            bool infCharge = guiState.localData.p1MaiInfiniteCharge;
+            bool infAw = guiState.localData.p1MaiInfiniteAwakening;
+            ImGui::Checkbox("Inf Ghost##P1MaiInfG", &infGhost); guiState.localData.p1MaiInfiniteGhost = infGhost;
+            ImGui::SameLine(); ImGui::Checkbox("Inf Charge##P1MaiInfC", &infCharge); guiState.localData.p1MaiInfiniteCharge = infCharge;
+            ImGui::SameLine(); ImGui::Checkbox("Inf Awakening##P1MaiInfA", &infAw); guiState.localData.p1MaiInfiniteAwakening = infAw;
+            bool noCD1 = guiState.localData.p1MaiNoChargeCD;
+            if (ImGui::Checkbox("No CD (fast charge)##P1MaiNoCD", &noCD1)) guiState.localData.p1MaiNoChargeCD = noCD1;
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("When entering Charging (status 3), forces timer to 1 (skip cooldown).");
+            ImGui::TextDisabled("(Mai: status @0x3144, multi-timer @0x3148 – meaning depends on status)");
+        }
         // P1 Kano Settings
         else if (p1CharID == CHAR_ID_KANO) {
             int magic = guiState.localData.p1KanoMagic;
@@ -1088,6 +1129,36 @@ namespace ImGuiGui {
             }
             ImGui::TextDisabled("(Akiko: bullet routes and clock-slow)");
         }
+        // P2 Mai (Kawasumi) Settings
+        else if (p2CharID == CHAR_ID_MAI) {
+            const char* statusItems[] = { "0: Inactive", "1: Active Ghost", "2: Unsummon", "3: Charging", "4: Awakening" };
+            int st2 = guiState.localData.p2MaiStatus; st2 = CLAMP(st2,0,4);
+            ImGui::Text("Status:");
+            ImGui::Combo("##P2MaiStatus", &st2, statusItems, IM_ARRAYSIZE(statusItems));
+            guiState.localData.p2MaiStatus = st2;
+            int maxVal2 = (st2==3)?MAI_GHOST_CHARGE_MAX:MAI_GHOST_TIME_MAX; if (st2==4) maxVal2 = MAI_AWAKENING_MAX;
+            int *activePtr2 = nullptr; const char* label2 = "Timer";
+            if (st2==1) { activePtr2 = &guiState.localData.p2MaiGhostTime; label2 = "Ghost Time"; }
+            else if (st2==3) { activePtr2 = &guiState.localData.p2MaiGhostCharge; label2 = "Ghost Charge"; }
+            else if (st2==4) { activePtr2 = &guiState.localData.p2MaiAwakeningTime; label2 = "Awakening"; }
+            if (activePtr2) {
+                int val2 = *activePtr2; val2 = CLAMP(val2,0,maxVal2); float pct2 = (float)val2 / (float)maxVal2;
+                ImGui::Text("%s:", label2);
+                ImGui::ProgressBar(pct2, ImVec2(-1,0), (std::to_string(val2) + "/" + std::to_string(maxVal2)).c_str());
+                if (ImGui::SliderInt("##P2MaiActiveTimer", &val2, 0, maxVal2)) { *activePtr2 = val2; }
+                if (ImGui::Button("Max##P2MaiTimer")) { *activePtr2 = maxVal2; }
+                ImGui::SameLine(); if (ImGui::Button("Zero##P2MaiTimer")) { *activePtr2 = 0; }
+            } else {
+                ImGui::TextDisabled("No active timer for this status.");
+            }
+            bool infGhost2 = guiState.localData.p2MaiInfiniteGhost; ImGui::Checkbox("Inf Ghost##P2MaiInfG", &infGhost2); guiState.localData.p2MaiInfiniteGhost = infGhost2;
+            ImGui::SameLine(); bool infCharge2 = guiState.localData.p2MaiInfiniteCharge; ImGui::Checkbox("Inf Charge##P2MaiInfC", &infCharge2); guiState.localData.p2MaiInfiniteCharge = infCharge2;
+            ImGui::SameLine(); bool infAw2 = guiState.localData.p2MaiInfiniteAwakening; ImGui::Checkbox("Inf Awakening##P2MaiInfA", &infAw2); guiState.localData.p2MaiInfiniteAwakening = infAw2;
+            bool noCD2 = guiState.localData.p2MaiNoChargeCD;
+            if (ImGui::Checkbox("No CD (fast charge)##P2MaiNoCD", &noCD2)) guiState.localData.p2MaiNoChargeCD = noCD2;
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("When entering Charging (status 3), forces timer to 1 (skip cooldown).");
+            ImGui::TextDisabled("(Mai: status @0x3144, multi-timer @0x3148 – meaning depends on status)");
+        }
         // P2 Kano Settings
         else if (p2CharID == CHAR_ID_KANO) {
             int magic2 = guiState.localData.p2KanoMagic;
@@ -1201,7 +1272,7 @@ namespace ImGuiGui {
         ImGui::Separator();
         ImGui::TextWrapped(
             "Character-specific settings allow you to modify special parameters unique to each character.\n"
-            "Currently supported: Ikumi (Blood/Genocide), Misuzu (Feathers), Mishio (Element/Awakened), Rumi (Stance, Kimchi), Akiko (Bullet Cycle/Time-Slow), Neyuki (Jam Count 0-9)");
+            "Supported: Ikumi (Blood/Genocide), Misuzu (Feathers), Mishio (Element/Awakened), Rumi (Stance, Kimchi), Akiko (Bullet/Time-Slow), Neyuki (Jam 0-9), Kano (Magic), Mio (Stance), Doppel (Enlightened), Mai (Ghost/Awakening)");
     }
     
     // Add this new function to the ImGuiGui namespace:
