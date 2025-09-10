@@ -443,3 +443,27 @@
 // From CE/decomp: integer at +0x3148 on the player struct (same slot other chars repurpose)
 #define NEYUKI_JAM_COUNT_OFFSET          0x3148
 #define NEYUKI_JAM_COUNT_MAX             9
+
+// Mai (Kawasumi) – Mini-Mai system (single multi-purpose timer + status byte)
+// Findings (Cheat Engine + decomp correlation):
+//   +0x3144 : status byte
+//              0 = inactive
+//              1 = Mini-Mai active (summoned)
+//              2 = Unsummon sequence
+//              3 = Charging (cooldown before next summon)
+//              4 = Awakening install
+//   +0x3148 : multi-use timer (int). Ranges depend on status:
+//              - Active (1)      : up to 10000
+//              - Charge (3)      : up to 1200
+//              - Awakening (4)   : up to 10000
+// We keep legacy field names (ghost/charge/awakening) in DisplayData but they all map to the same timer based on status.
+#define MAI_STATUS_OFFSET                0x3144  // byte
+#define MAI_MULTI_TIMER_OFFSET           0x3148  // int (shared)
+// Backwards compatibility aliases (all point to multi-timer; code paths choose by status)
+#define MAI_GHOST_TIME_OFFSET            MAI_MULTI_TIMER_OFFSET
+#define MAI_GHOST_CHARGE_OFFSET          MAI_MULTI_TIMER_OFFSET
+#define MAI_AWAKENING_TIMER_OFFSET       MAI_MULTI_TIMER_OFFSET
+// Status-specific maxima
+#define MAI_GHOST_TIME_MAX               10000
+#define MAI_GHOST_CHARGE_MAX             1200
+#define MAI_AWAKENING_MAX                10000

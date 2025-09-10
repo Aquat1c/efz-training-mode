@@ -371,6 +371,52 @@ namespace CharacterSettings {
             if (playerIndex==1) data.p1KanoMagic = val; else data.p2KanoMagic = val;
             LogOut(std::string("[CHAR] Read ") + (playerIndex==1?"P1":"P2") + " Kano magic=" + std::to_string(val), detailedLogging.load());
         }; ReadKano(1); ReadKano(2);
+
+        // Mai (Kawasumi) – Unified status + single multi-purpose timer model
+        // Status byte @ MAI_STATUS_OFFSET (0=inactive,1=active ghost,2=unsummon,3=charging,4=awakening)
+        // Multi timer  @ MAI_MULTI_TIMER_OFFSET
+        auto ReadMai = [&](int playerIndex){
+            if ((playerIndex==1 && data.p1CharID!=CHAR_ID_MAI) || (playerIndex==2 && data.p2CharID!=CHAR_ID_MAI)) return;
+            const int off = (playerIndex==1)?EFZ_BASE_OFFSET_P1:EFZ_BASE_OFFSET_P2;
+            uint8_t status = 0; int multi=0;
+            if (auto sAddr = ResolvePointer(base, off, MAI_STATUS_OFFSET)) {
+                SafeReadMemory(sAddr, &status, sizeof(uint8_t));
+            }
+            if (auto tAddr = ResolvePointer(base, off, MAI_MULTI_TIMER_OFFSET)) {
+                SafeReadMemory(tAddr, &multi, sizeof(int));
+            }
+            int displayGhost=0, displayCharge=0, displayAw=0; // populate only the active meaning
+            switch (status) {
+                case 1: // active ghost time (0..10000)
+                    multi = CLAMP(multi, 0, MAI_GHOST_TIME_MAX);
+                    displayGhost = multi; break;
+                case 3: // charging (0..1200)
+                    multi = CLAMP(multi, 0, MAI_GHOST_CHARGE_MAX);
+                    displayCharge = multi; break;
+                case 4: // awakening active (0..10000)
+                    multi = CLAMP(multi, 0, MAI_AWAKENING_MAX);
+                    displayAw = multi; break;
+                default:
+                    multi = CLAMP(multi, 0, MAI_GHOST_TIME_MAX); // clamp generically but don't map
+                    break;
+            }
+            if (playerIndex==1) {
+                data.p1MaiStatus = (int)status;
+                data.p1MaiGhostTime = displayGhost; // retain old fields for GUI compatibility
+                data.p1MaiGhostCharge = displayCharge;
+                data.p1MaiAwakeningTime = displayAw;
+            } else {
+                data.p2MaiStatus = (int)status;
+                data.p2MaiGhostTime = displayGhost;
+                data.p2MaiGhostCharge = displayCharge;
+                data.p2MaiAwakeningTime = displayAw;
+            }
+            if (detailedLogging.load()) {
+                LogOut(std::string("[CHAR] Read ") + (playerIndex==1?"P1":"P2") + " Mai: Status=" + std::to_string((int)status) +
+                       ", Timer=" + std::to_string(multi) + " (ghost=" + std::to_string(displayGhost) +
+                       ", charge=" + std::to_string(displayCharge) + ", awakening=" + std::to_string(displayAw) + ")", true);
+            }
+        }; ReadMai(1); ReadMai(2);
     }
     
     void ApplyCharacterValues(uintptr_t base, const DisplayData& data) {
@@ -691,6 +737,49 @@ namespace CharacterSettings {
                 }
             }
         }; ApplyKano(1); ApplyKano(2);
+
+        // Mai – apply status + unified timer
+        auto ApplyMai = [&](int pi){
+            if ((pi==1 && data.p1CharID!=CHAR_ID_MAI) || (pi==2 && data.p2CharID!=CHAR_ID_MAI)) return;
+            const int off = (pi==1)?EFZ_BASE_OFFSET_P1:EFZ_BASE_OFFSET_P2;
+            int status = (pi==1)?data.p1MaiStatus:data.p2MaiStatus;
+            status = CLAMP(status,0,4);
+            // Determine desired timer source based on status
+            int desiredTimer = 0;
+            bool infGhost   = (pi==1)?data.p1MaiInfiniteGhost:data.p2MaiInfiniteGhost;
+            bool infCharge  = (pi==1)?data.p1MaiInfiniteCharge:data.p2MaiInfiniteCharge;
+            bool infAw      = (pi==1)?data.p1MaiInfiniteAwakening:data.p2MaiInfiniteAwakening;
+            bool noCD       = (pi==1)?data.p1MaiNoChargeCD:data.p2MaiNoChargeCD;
+            if (status == 1) {
+                desiredTimer = (pi==1)?data.p1MaiGhostTime:data.p2MaiGhostTime; desiredTimer = CLAMP(desiredTimer,0,MAI_GHOST_TIME_MAX);
+            } else if (status == 3) {
+                if (noCD) {
+                    desiredTimer = 1; // near-ready
+                } else {
+                    desiredTimer = (pi==1)?data.p1MaiGhostCharge:data.p2MaiGhostCharge; desiredTimer = CLAMP(desiredTimer,0,MAI_GHOST_CHARGE_MAX);
+                }
+            } else if (status == 4) {
+                desiredTimer = (pi==1)?data.p1MaiAwakeningTime:data.p2MaiAwakeningTime; desiredTimer = CLAMP(desiredTimer,0,MAI_AWAKENING_MAX);
+            } else {
+                // Avoid wiping underlying timer if an infinite toggle is active; leave as-is
+                if (infGhost || infCharge || infAw) {
+                    desiredTimer = -1; // sentinel skip write
+                } else {
+                    desiredTimer = 0;
+                }
+            }
+            if (auto sAddr = ResolvePointer(base, off, MAI_STATUS_OFFSET)) {
+                uint8_t cur=0; SafeReadMemory(sAddr,&cur,sizeof(uint8_t)); uint8_t st = (uint8_t)status; if (cur!=st) SafeWriteMemory(sAddr,&st,sizeof(uint8_t));
+            }
+            if (desiredTimer != -1) {
+                if (auto tAddr = ResolvePointer(base, off, MAI_MULTI_TIMER_OFFSET)) {
+                    int cur=0; SafeReadMemory(tAddr,&cur,sizeof(int)); if (cur!=desiredTimer) SafeWriteMemory(tAddr,&desiredTimer,sizeof(int));
+                }
+            }
+            if (detailedLogging.load()) {
+                LogOut(std::string("[CHAR] Applied ") + (pi==1?"P1":"P2") + " Mai: Status=" + std::to_string(status) + ", Timer=" + std::to_string(desiredTimer), true);
+            }
+        }; ApplyMai(1); ApplyMai(2);
     }
     
     // Track previous values (used by inline enforcement)
@@ -886,6 +975,60 @@ namespace CharacterSettings {
             int want = (pi==1)?localData.p1KanoMagic:localData.p2KanoMagic; want = CLAMP(want,0,KANO_MAGIC_MAX);
             int cur=0; SafeReadMemory(addr,&cur,sizeof(int)); if (cur != want) { SafeWriteMemory(addr,&want,sizeof(int)); }
         }; enforceKano(1); enforceKano(2);
+
+        // Mai – per-tick enforcement for infinite modes (status-aware)
+        static int s_p1MaiFrozenTimer = -1, s_p2MaiFrozenTimer = -1;
+        static int s_p1MaiFrozenStatus = -1, s_p2MaiFrozenStatus = -1;
+        auto enforceMai = [&](int pi){
+            if ((pi==1 && localData.p1CharID!=CHAR_ID_MAI) || (pi==2 && localData.p2CharID!=CHAR_ID_MAI)) return;
+            const int off = (pi==1)?EFZ_BASE_OFFSET_P1:EFZ_BASE_OFFSET_P2;
+            int status = (pi==1)?localData.p1MaiStatus:localData.p2MaiStatus;
+            bool infGhost   = (pi==1)?localData.p1MaiInfiniteGhost:localData.p2MaiInfiniteGhost;
+            bool infCharge  = (pi==1)?localData.p1MaiInfiniteCharge:localData.p2MaiInfiniteCharge;
+            bool infAw      = (pi==1)?localData.p1MaiInfiniteAwakening:localData.p2MaiInfiniteAwakening;
+            bool noCD       = (pi==1)?localData.p1MaiNoChargeCD:localData.p2MaiNoChargeCD;
+            bool anyInf = infGhost || infCharge || infAw;
+            if (!anyInf) { if (pi==1){s_p1MaiFrozenTimer=-1; s_p1MaiFrozenStatus=-1;} else {s_p2MaiFrozenTimer=-1; s_p2MaiFrozenStatus=-1;} return; }
+            auto tAddr = ResolvePointer(base, off, MAI_MULTI_TIMER_OFFSET);
+            auto sAddr = ResolvePointer(base, off, MAI_STATUS_OFFSET);
+            if (!(tAddr && sAddr)) return;
+            // Read current raw timer & status
+            uint8_t curStatus=0; SafeReadMemory(sAddr,&curStatus,sizeof(uint8_t));
+            int curTimer=0; SafeReadMemory(tAddr,&curTimer,sizeof(int));
+            // No CD handling: if charging, forcibly keep timer at 1 and skip freeze caching
+            if (curStatus == 3 && noCD) {
+                if (curTimer > 1) { int one=1; SafeWriteMemory(tAddr,&one,sizeof(int)); }
+                if (pi==1){s_p1MaiFrozenTimer=-1; s_p1MaiFrozenStatus=-1;} else {s_p2MaiFrozenTimer=-1; s_p2MaiFrozenStatus=-1;}
+                return;
+            }
+            int desiredStatus = (int)curStatus; // default keep
+            int desiredTimer = curTimer;
+            // Determine which infinite applies based on current status *only*; never force value for a different mode
+            if (curStatus == 1 && infGhost) {
+                desiredTimer = (pi==1)?localData.p1MaiGhostTime:localData.p2MaiGhostTime; desiredTimer = CLAMP(desiredTimer,0,MAI_GHOST_TIME_MAX);
+            } else if (curStatus == 3 && infCharge) {
+                desiredTimer = (pi==1)?localData.p1MaiGhostCharge:localData.p2MaiGhostCharge; desiredTimer = CLAMP(desiredTimer,0,MAI_GHOST_CHARGE_MAX);
+            } else if (curStatus == 4 && infAw) {
+                desiredTimer = (pi==1)?localData.p1MaiAwakeningTime:localData.p2MaiAwakeningTime; desiredTimer = CLAMP(desiredTimer,0,MAI_AWAKENING_MAX);
+            } else {
+                // No matching infinite for current status; clear frozen cache for this player
+                if (pi==1){s_p1MaiFrozenTimer=-1; s_p1MaiFrozenStatus=-1;} else {s_p2MaiFrozenTimer=-1; s_p2MaiFrozenStatus=-1;}
+                return;
+            }
+            // Initialize / update frozen cache
+            int &frozenTimer = (pi==1)?s_p1MaiFrozenTimer:s_p2MaiFrozenTimer;
+            int &frozenStatus = (pi==1)?s_p1MaiFrozenStatus:s_p2MaiFrozenStatus;
+            if (frozenTimer == -1 || frozenStatus != (int)curStatus) {
+                frozenTimer = desiredTimer; frozenStatus = (int)curStatus;
+            }
+            // For Ghost & Charge we want a hard freeze (write back frozen value if it drifts)
+            if (curStatus == 1 || curStatus == 3) {
+                if (curTimer != frozenTimer) { SafeWriteMemory(tAddr,&frozenTimer,sizeof(int)); }
+            } else if (curStatus == 4) {
+                // Awakening: treat as top-up (if game decrements below target, push back up)
+                if (curTimer < frozenTimer) { SafeWriteMemory(tAddr,&frozenTimer,sizeof(int)); }
+            }
+        }; enforceMai(1); enforceMai(2);
 
     }
 }

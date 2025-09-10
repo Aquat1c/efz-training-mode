@@ -213,6 +213,24 @@ struct DisplayData {
     int  p2KanoMagic;
     bool p1KanoLockMagic;
     bool p2KanoLockMagic;
+
+    // Mai (Kawasumi) – Ghost assist gauges and Awakening install
+    int  p1MaiStatus;        // status byte (0=inactive,1=active,2=unsummon,3=charge,4=awakening)
+    int  p1MaiGhostTime;      // remaining time of active ghost
+    int  p1MaiGhostCharge;    // cooldown/charge until ghost can be summoned again
+    int  p1MaiAwakeningTime;  // remaining Awakening install timer
+    int  p2MaiStatus;        // status byte
+    int  p2MaiGhostTime;
+    int  p2MaiGhostCharge;
+    int  p2MaiAwakeningTime;
+    bool p1MaiInfiniteGhost;  // keep ghost time frozen at selected value
+    bool p2MaiInfiniteGhost;
+    bool p1MaiInfiniteCharge; // keep charge (or instantly recharge) when enabled
+    bool p2MaiInfiniteCharge;
+    bool p1MaiInfiniteAwakening; // keep awakening timer topped
+    bool p2MaiInfiniteAwakening;
+    bool p1MaiNoChargeCD;   // force charge timer to 1 when entering status 3
+    bool p2MaiNoChargeCD;
 };
 
 extern DisplayData displayData;
