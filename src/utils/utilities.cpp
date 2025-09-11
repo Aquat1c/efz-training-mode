@@ -392,7 +392,31 @@ DisplayData displayData = {
     ACTION_5A,          // autoActionType
     200,                // autoActionCustomID
     0,                  // autoActionPlayer
-    // ... rest of initialization
+    // Individual trigger settings (defaults)
+    false,              // triggerAfterBlock
+    false,              // triggerOnWakeup
+    false,              // triggerAfterHitstun
+    false,              // triggerAfterAirtech
+    // Delay settings (frames)
+    0,                  // delayAfterBlock
+    0,                  // delayOnWakeup
+    0,                  // delayAfterHitstun
+    0,                  // delayAfterAirtech
+    // Individual action settings for each trigger
+    ACTION_5A,          // actionAfterBlock
+    ACTION_5A,          // actionOnWakeup
+    ACTION_5A,          // actionAfterHitstun
+    ACTION_5A,          // actionAfterAirtech
+    // Custom action IDs for each trigger
+    BASE_ATTACK_5A,     // customAfterBlock
+    BASE_ATTACK_5A,     // customOnWakeup
+    BASE_ATTACK_5A,     // customAfterHitstun
+    BASE_ATTACK_JA,     // customAfterAirtech
+    // Strength settings (0=A,1=B,2=C)
+    0,                  // strengthAfterBlock
+    0,                  // strengthOnWakeup
+    0,                  // strengthAfterHitstun
+    0,                  // strengthAfterAirtech
     false, false,       // p1DoppelEnlightened, p2DoppelEnlightened
     false, false,       // p1RumiBarehanded, p2RumiBarehanded
     false, false,       // p1RumiInfiniteShinai, p2RumiInfiniteShinai
@@ -431,9 +455,30 @@ DisplayData displayData = {
     std::numeric_limits<double>::quiet_NaN(), std::numeric_limits<double>::quiet_NaN(), // p1MaiGhostSetX/Y
     std::numeric_limits<double>::quiet_NaN(), std::numeric_limits<double>::quiet_NaN()  // p2MaiGhostSetX/Y
     ,
+    // Mai one-shot apply flags
+    false, false
+    ,
     // Nayuki (Awake) defaults
     0, 0,               // p1NayukiSnowbunnies, p2NayukiSnowbunnies
     false, false        // p1NayukiInfiniteSnow, p2NayukiInfiniteSnow
+    ,
+    // Minagi puppet defaults
+    std::numeric_limits<double>::quiet_NaN(), std::numeric_limits<double>::quiet_NaN(), // p1MinagiPuppetX/Y
+    std::numeric_limits<double>::quiet_NaN(), std::numeric_limits<double>::quiet_NaN(), // p2MinagiPuppetX/Y
+    // Michiru position override targets (user-entered)
+    std::numeric_limits<double>::quiet_NaN(), std::numeric_limits<double>::quiet_NaN(), // p1MinagiPuppetSetX/Y
+    std::numeric_limits<double>::quiet_NaN(), std::numeric_limits<double>::quiet_NaN(), // p2MinagiPuppetSetX/Y
+    // One-shot apply flags
+    false, false
+    ,
+    // Minagi debug & control defaults
+    false,              // minagiConvertNewProjectiles
+    false, false,       // p1MinagiAlwaysReadied, p2MinagiAlwaysReadied
+    -1, -1,             // p1MichiruCurrentId, p2MichiruCurrentId
+    std::numeric_limits<double>::quiet_NaN(), std::numeric_limits<double>::quiet_NaN(), // p1MichiruLastX/Y
+    std::numeric_limits<double>::quiet_NaN(), std::numeric_limits<double>::quiet_NaN(), // p2MichiruLastX/Y
+    // Michiru frame/subframe defaults
+    -1, -1, -1, -1
 };
 
 // Initialize key bindings with default values
@@ -466,6 +511,7 @@ int g_statsMishioId = -1;
 int g_statsRumiId = -1;
 int g_statsIkumiId = -1;
 int g_statsMaiId = -1;
+int g_statsMinagiId = -1;
 
 // Auto-action settings - replace single trigger with individual triggers
 std::atomic<bool> autoActionEnabled(false);

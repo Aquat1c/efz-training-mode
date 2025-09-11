@@ -1310,6 +1310,7 @@ void ReinitializeOverlays() {
             if (g_statsRumiId != -1) { DirectDrawHook::RemovePermanentMessage(g_statsRumiId); g_statsRumiId = -1; }
             if (g_statsIkumiId != -1) { DirectDrawHook::RemovePermanentMessage(g_statsIkumiId); g_statsIkumiId = -1; }
             if (g_statsMaiId != -1) { DirectDrawHook::RemovePermanentMessage(g_statsMaiId); g_statsMaiId = -1; }
+            if (g_statsMinagiId != -1) { DirectDrawHook::RemovePermanentMessage(g_statsMinagiId); g_statsMinagiId = -1; }
             g_statsP1ValuesId = -1;
             g_statsP2ValuesId = -1;
             g_statsPositionId = -1;
@@ -1393,6 +1394,10 @@ void UpdateStatsDisplay() {
             DirectDrawHook::RemovePermanentMessage(g_statsMaiId);
             g_statsMaiId = -1;
         }
+        if (g_statsMinagiId != -1) {
+            DirectDrawHook::RemovePermanentMessage(g_statsMinagiId);
+            g_statsMinagiId = -1;
+        }
         return;
     }
 
@@ -1434,6 +1439,10 @@ void UpdateStatsDisplay() {
         if (g_statsMaiId != -1) {
             DirectDrawHook::RemovePermanentMessage(g_statsMaiId);
             g_statsMaiId = -1;
+        }
+        if (g_statsMinagiId != -1) {
+            DirectDrawHook::RemovePermanentMessage(g_statsMinagiId);
+            g_statsMinagiId = -1;
         }
     }
 
@@ -1477,6 +1486,10 @@ void UpdateStatsDisplay() {
         if (g_statsMaiId != -1) {
             DirectDrawHook::RemovePermanentMessage(g_statsMaiId);
             g_statsMaiId = -1;
+        }
+        if (g_statsMinagiId != -1) {
+            DirectDrawHook::RemovePermanentMessage(g_statsMinagiId);
+            g_statsMinagiId = -1;
         }
         return;
     }
@@ -1795,6 +1808,80 @@ void UpdateStatsDisplay() {
             upsert(g_statsMaiId, maiLine.str());
         } else {
             if (g_statsMaiId != -1) { DirectDrawHook::RemovePermanentMessage(g_statsMaiId); g_statsMaiId = -1; }
+        }
+
+        // Character-specific: Minagi – Puppet (Michiru) coordinates and current entity id (sticky)
+        bool showMinagi = (displayData.p1CharID == CHAR_ID_MINAGI) || (displayData.p2CharID == CHAR_ID_MINAGI);
+        if (showMinagi) {
+            auto scanPuppet = [&](int playerIndex, uintptr_t playerBase, double &outX, double &outY, int &outId, double &lastX, double &lastY) {
+                // Default to prior sticky values
+                outX = lastX;
+                outY = lastY;
+                outId = -1;
+                if (!playerBase) return;
+                for (int i = 0; i < MINAGI_PUPPET_SLOT_MAX_SCAN; ++i) {
+                    uintptr_t slotBase = playerBase + MINAGI_PUPPET_SLOTS_BASE + static_cast<uintptr_t>(i) * MINAGI_PUPPET_SLOT_STRIDE;
+                    uint16_t id = 0;
+                    if (!SafeReadMemory(slotBase + MINAGI_PUPPET_SLOT_ID_OFFSET, &id, sizeof(id))) continue;
+                    // Track any non-zero entity id in this slot range; prefer Michiru when present (both 400=unreadied, 401=readied)
+                    if (id != 0) {
+                        outId = id;
+                        double x = 0.0, y = 0.0;
+                        SafeReadMemory(slotBase + MINAGI_PUPPET_SLOT_X_OFFSET, &x, sizeof(x));
+                        SafeReadMemory(slotBase + MINAGI_PUPPET_SLOT_Y_OFFSET, &y, sizeof(y));
+                        // Update sticky coords only when a valid entity is present
+                        lastX = x; lastY = y; outX = x; outY = y;
+                        // Also capture frame/subframe for monitoring
+                        uint16_t fr = 0, sub = 0;
+                        SafeReadMemory(slotBase + MINAGI_PUPPET_SLOT_FRAME_OFFSET, &fr, sizeof(fr));
+                        SafeReadMemory(slotBase + MINAGI_PUPPET_SLOT_SUBFRAME_OFFSET, &sub, sizeof(sub));
+                        if (playerIndex == 1) { displayData.p1MichiruFrame = (int)fr; displayData.p1MichiruSubframe = (int)sub; }
+                        else { displayData.p2MichiruFrame = (int)fr; displayData.p2MichiruSubframe = (int)sub; }
+                        if (id == MINAGI_PUPPET_ENTITY_ID || id == 401) break; // Found Michiru (400 unreadied or 401 readied); stop early
+                    }
+                }
+            };
+            uintptr_t p1Base = 0, p2Base = 0;
+            if (base) {
+                SafeReadMemory(base + EFZ_BASE_OFFSET_P1, &p1Base, sizeof(p1Base));
+                SafeReadMemory(base + EFZ_BASE_OFFSET_P2, &p2Base, sizeof(p2Base));
+            }
+            if (displayData.p1CharID == CHAR_ID_MINAGI) {
+                scanPuppet(1, p1Base, displayData.p1MinagiPuppetX, displayData.p1MinagiPuppetY, displayData.p1MichiruCurrentId, displayData.p1MichiruLastX, displayData.p1MichiruLastY);
+            } else { displayData.p1MichiruCurrentId = -1; }
+            if (displayData.p2CharID == CHAR_ID_MINAGI) {
+                scanPuppet(2, p2Base, displayData.p2MinagiPuppetX, displayData.p2MinagiPuppetY, displayData.p2MichiruCurrentId, displayData.p2MichiruLastX, displayData.p2MichiruLastY);
+            } else { displayData.p2MichiruCurrentId = -1; }
+
+            std::stringstream minagiLine; minagiLine.setf(std::ios::fixed); minagiLine << std::setprecision(2);
+            minagiLine << "Michiru: ";
+            auto fmtState = [](int fr, int sub){
+                if (fr < 0) return std::string("");
+                if (fr <= 1) return std::string(" [Ready]");
+                std::stringstream s; s << " [Anim " << fr << ":" << sub << "]"; return s.str();
+            };
+            // Indicate when conversion gating is active for debugging visibility
+            auto convActive = [&](short mv){ return displayData.minagiConvertNewProjectiles && mv >= 400 && mv <= 469; };
+            if (displayData.p1CharID == CHAR_ID_MINAGI && !std::isnan(displayData.p1MichiruLastX)) {
+                minagiLine << "P1 [" << displayData.p1MichiruLastX << ", " << displayData.p1MichiruLastY << "]";
+                if (displayData.p1MichiruCurrentId > 0) minagiLine << " (ID " << displayData.p1MichiruCurrentId << ")";
+                minagiLine << fmtState(displayData.p1MichiruFrame, displayData.p1MichiruSubframe);
+                if (convActive(p1MoveId)) minagiLine << " {Conv}";
+            } else {
+                minagiLine << "P1 -";
+            }
+            minagiLine << "  ";
+            if (displayData.p2CharID == CHAR_ID_MINAGI && !std::isnan(displayData.p2MichiruLastX)) {
+                minagiLine << "P2 [" << displayData.p2MichiruLastX << ", " << displayData.p2MichiruLastY << "]";
+                if (displayData.p2MichiruCurrentId > 0) minagiLine << " (ID " << displayData.p2MichiruCurrentId << ")";
+                minagiLine << fmtState(displayData.p2MichiruFrame, displayData.p2MichiruSubframe);
+                if (convActive(p2MoveId)) minagiLine << " {Conv}";
+            } else {
+                minagiLine << "P2 -";
+            }
+            upsert(g_statsMinagiId, minagiLine.str());
+        } else {
+            if (g_statsMinagiId != -1) { DirectDrawHook::RemovePermanentMessage(g_statsMinagiId); g_statsMinagiId = -1; }
         }
     }
 
