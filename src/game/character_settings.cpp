@@ -152,17 +152,20 @@ namespace CharacterSettings {
     void ReadCharacterValues(uintptr_t base, DisplayData& data) {
         // Read Ikumi's values if either player is using her
         if (data.p1CharID == CHAR_ID_IKUMI) {
-            uintptr_t bloodAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P1, IKUMI_BLOOD_OFFSET);
-            uintptr_t genocideAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P1, IKUMI_GENOCIDE_OFFSET);
-            
-            if (bloodAddr) SafeReadMemory(bloodAddr, &data.p1IkumiBlood, sizeof(int));
-            if (genocideAddr) SafeReadMemory(genocideAddr, &data.p1IkumiGenocide, sizeof(int));
+            uintptr_t levelAddr   = ResolvePointer(base, EFZ_BASE_OFFSET_P1, IKUMI_LEVEL_GAUGE_OFFSET);
+            uintptr_t bloodAddr   = ResolvePointer(base, EFZ_BASE_OFFSET_P1, IKUMI_BLOOD_OFFSET);
+            uintptr_t genocideAddr= ResolvePointer(base, EFZ_BASE_OFFSET_P1, IKUMI_GENOCIDE_OFFSET);
+
+            if (levelAddr)   { SafeReadMemory(levelAddr,   &data.p1IkumiLevelGauge, sizeof(int)); data.p1IkumiLevelGauge = CLAMP(data.p1IkumiLevelGauge, 0, 99); }
+            if (bloodAddr)   SafeReadMemory(bloodAddr,   &data.p1IkumiBlood, sizeof(int));
+            if (genocideAddr)SafeReadMemory(genocideAddr,&data.p1IkumiGenocide, sizeof(int));
             // Change-only logging with periodic heartbeat
             bool changed = (data.p1IkumiBlood != s_lastP1IkumiBlood) || (data.p1IkumiGenocide != s_lastP1IkumiGenocide);
             auto now = std::chrono::steady_clock::now();
             bool heartbeat = (s_lastIkumiLogP1.time_since_epoch().count() == 0) || ((now - s_lastIkumiLogP1) >= IKUMI_LOG_HEARTBEAT);
             if (detailedLogging.load() && (changed || heartbeat)) {
-                LogOut("[CHAR] Read P1 Ikumi values: Blood=" + std::to_string(data.p1IkumiBlood) +
+                LogOut("[CHAR] Read P1 Ikumi values: Lvl=" + std::to_string(data.p1IkumiLevelGauge) +
+                       ", Blood=" + std::to_string(data.p1IkumiBlood) +
                        ", Genocide=" + std::to_string(data.p1IkumiGenocide), true);
                 s_lastIkumiLogP1 = now;
             }
@@ -171,17 +174,20 @@ namespace CharacterSettings {
         }
         
         if (data.p2CharID == CHAR_ID_IKUMI) {
-            uintptr_t bloodAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P2, IKUMI_BLOOD_OFFSET);
-            uintptr_t genocideAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P2, IKUMI_GENOCIDE_OFFSET);
-            
-            if (bloodAddr) SafeReadMemory(bloodAddr, &data.p2IkumiBlood, sizeof(int));
-            if (genocideAddr) SafeReadMemory(genocideAddr, &data.p2IkumiGenocide, sizeof(int));
+            uintptr_t levelAddr   = ResolvePointer(base, EFZ_BASE_OFFSET_P2, IKUMI_LEVEL_GAUGE_OFFSET);
+            uintptr_t bloodAddr   = ResolvePointer(base, EFZ_BASE_OFFSET_P2, IKUMI_BLOOD_OFFSET);
+            uintptr_t genocideAddr= ResolvePointer(base, EFZ_BASE_OFFSET_P2, IKUMI_GENOCIDE_OFFSET);
+
+            if (levelAddr)   { SafeReadMemory(levelAddr,   &data.p2IkumiLevelGauge, sizeof(int)); data.p2IkumiLevelGauge = CLAMP(data.p2IkumiLevelGauge, 0, 99); }
+            if (bloodAddr)   SafeReadMemory(bloodAddr,   &data.p2IkumiBlood, sizeof(int));
+            if (genocideAddr)SafeReadMemory(genocideAddr,&data.p2IkumiGenocide, sizeof(int));
             // Change-only logging with periodic heartbeat
             bool changed = (data.p2IkumiBlood != s_lastP2IkumiBlood) || (data.p2IkumiGenocide != s_lastP2IkumiGenocide);
             auto now = std::chrono::steady_clock::now();
             bool heartbeat = (s_lastIkumiLogP2.time_since_epoch().count() == 0) || ((now - s_lastIkumiLogP2) >= IKUMI_LOG_HEARTBEAT);
             if (detailedLogging.load() && (changed || heartbeat)) {
-                LogOut("[CHAR] Read P2 Ikumi values: Blood=" + std::to_string(data.p2IkumiBlood) +
+                LogOut("[CHAR] Read P2 Ikumi values: Lvl=" + std::to_string(data.p2IkumiLevelGauge) +
+                       ", Blood=" + std::to_string(data.p2IkumiBlood) +
                        ", Genocide=" + std::to_string(data.p2IkumiGenocide), true);
                 s_lastIkumiLogP2 = now;
             }
@@ -223,19 +229,31 @@ namespace CharacterSettings {
         // Read Misuzu's values if either player is using her
         if (data.p1CharID == CHAR_ID_MISUZU) {
             uintptr_t featherAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P1, MISUZU_FEATHER_OFFSET);
+         uintptr_t poisonTimerAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P1, MISUZU_POISON_TIMER_OFFSET);
+         uintptr_t poisonLevelAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P1, MISUZU_POISON_LEVEL_OFFSET);
             
             if (featherAddr) SafeReadMemory(featherAddr, &data.p1MisuzuFeathers, sizeof(int));
+         if (poisonTimerAddr) { SafeReadMemory(poisonTimerAddr, &data.p1MisuzuPoisonTimer, sizeof(int)); data.p1MisuzuPoisonTimer = CLAMP(data.p1MisuzuPoisonTimer, 0, MISUZU_POISON_TIMER_MAX); }
+         if (poisonLevelAddr)  SafeReadMemory(poisonLevelAddr, &data.p1MisuzuPoisonLevel, sizeof(int));
             
-            LogOut("[CHAR] Read P1 Misuzu values: Feathers=" + std::to_string(data.p1MisuzuFeathers), 
+         LogOut("[CHAR] Read P1 Misuzu values: Feathers=" + std::to_string(data.p1MisuzuFeathers) +
+             ", PoisonTimer=" + std::to_string(data.p1MisuzuPoisonTimer) +
+             ", PoisonLvl=" + std::to_string(data.p1MisuzuPoisonLevel), 
                    detailedLogging.load());
         }
         
         if (data.p2CharID == CHAR_ID_MISUZU) {
             uintptr_t featherAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P2, MISUZU_FEATHER_OFFSET);
+         uintptr_t poisonTimerAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P2, MISUZU_POISON_TIMER_OFFSET);
+         uintptr_t poisonLevelAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P2, MISUZU_POISON_LEVEL_OFFSET);
             
             if (featherAddr) SafeReadMemory(featherAddr, &data.p2MisuzuFeathers, sizeof(int));
+         if (poisonTimerAddr) { SafeReadMemory(poisonTimerAddr, &data.p2MisuzuPoisonTimer, sizeof(int)); data.p2MisuzuPoisonTimer = CLAMP(data.p2MisuzuPoisonTimer, 0, MISUZU_POISON_TIMER_MAX); }
+         if (poisonLevelAddr)  SafeReadMemory(poisonLevelAddr, &data.p2MisuzuPoisonLevel, sizeof(int));
             
-            LogOut("[CHAR] Read P2 Misuzu values: Feathers=" + std::to_string(data.p2MisuzuFeathers), 
+         LogOut("[CHAR] Read P2 Misuzu values: Feathers=" + std::to_string(data.p2MisuzuFeathers) +
+             ", PoisonTimer=" + std::to_string(data.p2MisuzuPoisonTimer) +
+             ", PoisonLvl=" + std::to_string(data.p2MisuzuPoisonLevel), 
                    detailedLogging.load());
         }
 
@@ -372,6 +390,17 @@ namespace CharacterSettings {
             LogOut(std::string("[CHAR] Read ") + (playerIndex==1?"P1":"P2") + " Kano magic=" + std::to_string(val), detailedLogging.load());
         }; ReadKano(1); ReadKano(2);
 
+        // Nayuki (Awake) – Snowbunnies timer at shared 0x3150 (0..3000)
+        auto ReadNayukiB = [&](int playerIndex){
+            if ((playerIndex==1 && data.p1CharID!=CHAR_ID_NAYUKIB) || (playerIndex==2 && data.p2CharID!=CHAR_ID_NAYUKIB)) return;
+            const int off = (playerIndex==1)?EFZ_BASE_OFFSET_P1:EFZ_BASE_OFFSET_P2;
+            uintptr_t snowAddr = ResolvePointer(base, off, NAYUKIB_SNOWBUNNY_TIMER_OFFSET);
+            if (!snowAddr) return;
+            int v=0; SafeReadMemory(snowAddr,&v,sizeof(int)); v = CLAMP(v,0,NAYUKIB_SNOWBUNNY_MAX);
+            if (playerIndex==1) data.p1NayukiSnowbunnies = v; else data.p2NayukiSnowbunnies = v;
+            LogOut(std::string("[CHAR] Read ") + (playerIndex==1?"P1":"P2") + " Nayuki(Awake) snowbunnies=" + std::to_string(v), detailedLogging.load());
+        }; ReadNayukiB(1); ReadNayukiB(2);
+
         // Mai (Kawasumi) – Unified status + single multi-purpose timer model
         // Status byte @ MAI_STATUS_OFFSET (0=inactive,1=active ghost,2=unsummon,3=charging,4=awakening)
         // Multi timer  @ MAI_MULTI_TIMER_OFFSET
@@ -420,27 +449,22 @@ namespace CharacterSettings {
     }
     
     void ApplyCharacterValues(uintptr_t base, const DisplayData& data) {
-        // Apply Ikumi's values if either player is using her
+        // Apply Ikumi's values (P1)
         if (data.p1CharID == CHAR_ID_IKUMI) {
             uintptr_t bloodAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P1, IKUMI_BLOOD_OFFSET);
             uintptr_t genocideAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P1, IKUMI_GENOCIDE_OFFSET);
-            
-            // Fix: Add explicit template parameters to std::max and std::min
             int bloodValue = std::max<int>(0, std::min<int>(IKUMI_BLOOD_MAX, data.p1IkumiBlood));
-            // For infinite mode, set genocide timer to max, otherwise use the provided value
-            int genocideValue = data.infiniteBloodMode ? IKUMI_GENOCIDE_MAX : 
-                              std::max<int>(0, std::min<int>(IKUMI_GENOCIDE_MAX, data.p1IkumiGenocide));
-            
+            int genocideValue = data.infiniteBloodMode ? IKUMI_GENOCIDE_MAX
+                                                       : std::max<int>(0, std::min<int>(IKUMI_GENOCIDE_MAX, data.p1IkumiGenocide));
             if (bloodAddr) SafeWriteMemory(bloodAddr, &bloodValue, sizeof(int));
             if (genocideAddr) SafeWriteMemory(genocideAddr, &genocideValue, sizeof(int));
-            
-            LogOut("[CHAR] Applied P1 Ikumi values: Blood=" + std::to_string(bloodValue) + 
-                   ", Genocide=" + std::to_string(genocideValue) + " (infinite: " + 
-                   (data.infiniteBloodMode ? "ON" : "OFF") + ")", 
+            LogOut("[CHAR] Applied P1 Ikumi values: Blood=" + std::to_string(bloodValue) +
+                   ", Genocide=" + std::to_string(genocideValue) + " (infinite: " +
+                   (data.infiniteBloodMode ? "ON" : "OFF") + ")",
                    detailedLogging.load());
         }
         
-        // Apply Mishio's values (element and awakened timer)
+        // Apply Mishio's values (P1 element and awakened timer)
         if (data.p1CharID == CHAR_ID_MISHIO) {
             uintptr_t elemAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P1, MISHIO_ELEMENT_OFFSET);
             uintptr_t awAddr   = ResolvePointer(base, EFZ_BASE_OFFSET_P1, MISHIO_AWAKENED_TIMER_OFFSET);
@@ -493,26 +517,38 @@ namespace CharacterSettings {
                    detailedLogging.load());
         }
         
-        // Apply Misuzu's values if either player is using her
-        if (data.p1CharID == CHAR_ID_MISUZU) {
+     // Apply Misuzu's values if either player is using her
+          if (data.p1CharID == CHAR_ID_MISUZU) {
             uintptr_t featherAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P1, MISUZU_FEATHER_OFFSET);
+         uintptr_t poisonTimerAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P1, MISUZU_POISON_TIMER_OFFSET);
+         uintptr_t poisonLevelAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P1, MISUZU_POISON_LEVEL_OFFSET);
             
             int featherValue = std::max<int>(0, std::min<int>(MISUZU_FEATHER_MAX, data.p1MisuzuFeathers));
             
             if (featherAddr) SafeWriteMemory(featherAddr, &featherValue, sizeof(int));
+            if (poisonTimerAddr) { int t = CLAMP(data.p1MisuzuPoisonTimer, 0, MISUZU_POISON_TIMER_MAX); if (data.p1MisuzuInfinitePoison) t = MISUZU_POISON_TIMER_MAX; SafeWriteMemory(poisonTimerAddr, &t, sizeof(int)); }
+         if (poisonLevelAddr)  { int l = data.p1MisuzuPoisonLevel; SafeWriteMemory(poisonLevelAddr, &l, sizeof(int)); }
             
-            LogOut("[CHAR] Applied P1 Misuzu values: Feathers=" + std::to_string(featherValue), 
+         LogOut("[CHAR] Applied P1 Misuzu values: Feathers=" + std::to_string(featherValue) +
+             ", PoisonTimer=" + std::to_string(data.p1MisuzuPoisonTimer) +
+             ", PoisonLvl=" + std::to_string(data.p1MisuzuPoisonLevel), 
                    detailedLogging.load());
         }
         
-        if (data.p2CharID == CHAR_ID_MISUZU) {
+          if (data.p2CharID == CHAR_ID_MISUZU) {
             uintptr_t featherAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P2, MISUZU_FEATHER_OFFSET);
+         uintptr_t poisonTimerAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P2, MISUZU_POISON_TIMER_OFFSET);
+         uintptr_t poisonLevelAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P2, MISUZU_POISON_LEVEL_OFFSET);
             
             int featherValue = std::max<int>(0, std::min<int>(MISUZU_FEATHER_MAX, data.p2MisuzuFeathers));
             
             if (featherAddr) SafeWriteMemory(featherAddr, &featherValue, sizeof(int));
-            
-            LogOut("[CHAR] Applied P2 Misuzu values: Feathers=" + std::to_string(featherValue), 
+            if (poisonTimerAddr) { int t = CLAMP(data.p2MisuzuPoisonTimer, 0, MISUZU_POISON_TIMER_MAX); if (data.p2MisuzuInfinitePoison) t = MISUZU_POISON_TIMER_MAX; SafeWriteMemory(poisonTimerAddr, &t, sizeof(int)); }
+         if (poisonLevelAddr)  { int l = data.p2MisuzuPoisonLevel; SafeWriteMemory(poisonLevelAddr, &l, sizeof(int)); }
+
+         LogOut("[CHAR] Applied P2 Misuzu values: Feathers=" + std::to_string(featherValue) +
+             ", PoisonTimer=" + std::to_string(data.p2MisuzuPoisonTimer) +
+             ", PoisonLvl=" + std::to_string(data.p2MisuzuPoisonLevel), 
                    detailedLogging.load());
         }
 
@@ -738,6 +774,23 @@ namespace CharacterSettings {
             }
         }; ApplyKano(1); ApplyKano(2);
 
+        // Nayuki (Awake) – apply snowbunnies timer
+        auto ApplyNayukiB = [&](int pi){
+            if ((pi==1 && data.p1CharID != CHAR_ID_NAYUKIB) || (pi==2 && data.p2CharID != CHAR_ID_NAYUKIB)) return;
+            const int off = (pi==1)?EFZ_BASE_OFFSET_P1:EFZ_BASE_OFFSET_P2;
+            if (auto addr = ResolvePointer(base, off, NAYUKIB_SNOWBUNNY_TIMER_OFFSET)) {
+                int desired = (pi==1)?data.p1NayukiSnowbunnies:data.p2NayukiSnowbunnies;
+                // If Infinite is enabled, force to 3000 immediately here as well
+                bool wantInf = (pi==1)?data.p1NayukiInfiniteSnow:data.p2NayukiInfiniteSnow;
+                if (wantInf) desired = NAYUKIB_SNOWBUNNY_MAX;
+                desired = CLAMP(desired,0,NAYUKIB_SNOWBUNNY_MAX);
+                int cur=0; SafeReadMemory(addr,&cur,sizeof(int));
+                if (cur != desired) { SafeWriteMemory(addr,&desired,sizeof(int));
+                    LogOut(std::string("[CHAR] Applied ") + (pi==1?"P1":"P2") + " Nayuki(Awake) snowbunnies=" + std::to_string(desired), detailedLogging.load());
+                }
+            }
+        }; ApplyNayukiB(1); ApplyNayukiB(2);
+
         // Mai – apply status + unified timer
         auto ApplyMai = [&](int pi){
             if ((pi==1 && data.p1CharID!=CHAR_ID_MAI) || (pi==2 && data.p2CharID!=CHAR_ID_MAI)) return;
@@ -924,6 +977,18 @@ namespace CharacterSettings {
             }; keepFeathers(1); keepFeathers(2);
         } else { p1LastFeatherCount = 0; p2LastFeatherCount = 0; }
 
+        // Misuzu: Infinite Poison timer — hard-set to max every tick for selected side(s)
+        auto enforceMisuzuPoison = [&](int pi){
+            bool isMisuzu = (pi==1)?(localData.p1CharID==CHAR_ID_MISUZU):(localData.p2CharID==CHAR_ID_MISUZU);
+            bool wantInf = (pi==1)?localData.p1MisuzuInfinitePoison:localData.p2MisuzuInfinitePoison;
+            if (!(isMisuzu && wantInf)) return;
+            const int off = (pi==1)?EFZ_BASE_OFFSET_P1:EFZ_BASE_OFFSET_P2;
+            auto tAddr = ResolvePointer(base, off, MISUZU_POISON_TIMER_OFFSET); if (!tAddr) return;
+            int cur=0; SafeReadMemory(tAddr,&cur,sizeof(int));
+            const int target = MISUZU_POISON_TIMER_MAX;
+            if (cur != target) { SafeWriteMemory(tAddr,&target,sizeof(int)); }
+        }; enforceMisuzuPoison(1); enforceMisuzuPoison(2);
+
         // IC color override (Blue IC = 1)
         auto enforceIC = [&](int pi){
             bool wantBlue = (pi==1)?localData.p1BlueIC:localData.p2BlueIC; if (!wantBlue) return;
@@ -1038,6 +1103,19 @@ namespace CharacterSettings {
             int want = (pi==1)?localData.p1KanoMagic:localData.p2KanoMagic; want = CLAMP(want,0,KANO_MAGIC_MAX);
             int cur=0; SafeReadMemory(addr,&cur,sizeof(int)); if (cur != want) { SafeWriteMemory(addr,&want,sizeof(int)); }
         }; enforceKano(1); enforceKano(2);
+
+        // Nayuki (Awake) – infinite snowbunnies: hard-set to max (3000) every tick to prevent any decay
+        auto enforceNayukiB = [&](int pi){
+            bool isAwake = (pi==1)?(localData.p1CharID==CHAR_ID_NAYUKIB):(localData.p2CharID==CHAR_ID_NAYUKIB);
+            bool wantInf = (pi==1)?localData.p1NayukiInfiniteSnow:localData.p2NayukiInfiniteSnow;
+            if (!(isAwake && wantInf)) return;
+            const int off = (pi==1)?EFZ_BASE_OFFSET_P1:EFZ_BASE_OFFSET_P2;
+            auto addr = ResolvePointer(base, off, NAYUKIB_SNOWBUNNY_TIMER_OFFSET); if (!addr) return;
+            int cur=0; SafeReadMemory(addr,&cur,sizeof(int));
+            // Always force to absolute max; this acts as both freeze and set-to-3k behavior.
+            const int target = NAYUKIB_SNOWBUNNY_MAX;
+            if (cur != target) { SafeWriteMemory(addr,&target,sizeof(int)); }
+        }; enforceNayukiB(1); enforceNayukiB(2);
 
         // Mai – per-tick enforcement for infinite modes (status-aware)
         static int s_p1MaiFrozenTimer = -1, s_p2MaiFrozenTimer = -1;

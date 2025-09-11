@@ -1304,6 +1304,12 @@ void ReinitializeOverlays() {
             DirectDrawHook::RemovePermanentMessage(g_statsP2ValuesId);
             DirectDrawHook::RemovePermanentMessage(g_statsPositionId);
             DirectDrawHook::RemovePermanentMessage(g_statsMoveIdId);
+            if (g_statsNayukiId != -1) { DirectDrawHook::RemovePermanentMessage(g_statsNayukiId); g_statsNayukiId = -1; }
+            if (g_statsMisuzuId != -1) { DirectDrawHook::RemovePermanentMessage(g_statsMisuzuId); g_statsMisuzuId = -1; }
+            if (g_statsMishioId != -1) { DirectDrawHook::RemovePermanentMessage(g_statsMishioId); g_statsMishioId = -1; }
+            if (g_statsRumiId != -1) { DirectDrawHook::RemovePermanentMessage(g_statsRumiId); g_statsRumiId = -1; }
+            if (g_statsIkumiId != -1) { DirectDrawHook::RemovePermanentMessage(g_statsIkumiId); g_statsIkumiId = -1; }
+            if (g_statsMaiId != -1) { DirectDrawHook::RemovePermanentMessage(g_statsMaiId); g_statsMaiId = -1; }
             g_statsP1ValuesId = -1;
             g_statsP2ValuesId = -1;
             g_statsPositionId = -1;
@@ -1363,6 +1369,30 @@ void UpdateStatsDisplay() {
             DirectDrawHook::RemovePermanentMessage(g_statsCleanHitId);
             g_statsCleanHitId = -1;
         }
+        if (g_statsNayukiId != -1) {
+            DirectDrawHook::RemovePermanentMessage(g_statsNayukiId);
+            g_statsNayukiId = -1;
+        }
+        if (g_statsMisuzuId != -1) {
+            DirectDrawHook::RemovePermanentMessage(g_statsMisuzuId);
+            g_statsMisuzuId = -1;
+        }
+        if (g_statsMishioId != -1) {
+            DirectDrawHook::RemovePermanentMessage(g_statsMishioId);
+            g_statsMishioId = -1;
+        }
+        if (g_statsRumiId != -1) {
+            DirectDrawHook::RemovePermanentMessage(g_statsRumiId);
+            g_statsRumiId = -1;
+        }
+        if (g_statsIkumiId != -1) {
+            DirectDrawHook::RemovePermanentMessage(g_statsIkumiId);
+            g_statsIkumiId = -1;
+        }
+        if (g_statsMaiId != -1) {
+            DirectDrawHook::RemovePermanentMessage(g_statsMaiId);
+            g_statsMaiId = -1;
+        }
         return;
     }
 
@@ -1379,6 +1409,31 @@ void UpdateStatsDisplay() {
             g_statsP2ValuesId = -1;
             g_statsPositionId = -1;
             g_statsMoveIdId = -1;
+        }
+        // Also clear any character-specific stat lines (Nayuki/Misuzu)
+        if (g_statsNayukiId != -1) {
+            DirectDrawHook::RemovePermanentMessage(g_statsNayukiId);
+            g_statsNayukiId = -1;
+        }
+        if (g_statsMisuzuId != -1) {
+            DirectDrawHook::RemovePermanentMessage(g_statsMisuzuId);
+            g_statsMisuzuId = -1;
+        }
+        if (g_statsMishioId != -1) {
+            DirectDrawHook::RemovePermanentMessage(g_statsMishioId);
+            g_statsMishioId = -1;
+        }
+        if (g_statsRumiId != -1) {
+            DirectDrawHook::RemovePermanentMessage(g_statsRumiId);
+            g_statsRumiId = -1;
+        }
+        if (g_statsIkumiId != -1) {
+            DirectDrawHook::RemovePermanentMessage(g_statsIkumiId);
+            g_statsIkumiId = -1;
+        }
+        if (g_statsMaiId != -1) {
+            DirectDrawHook::RemovePermanentMessage(g_statsMaiId);
+            g_statsMaiId = -1;
         }
     }
 
@@ -1398,6 +1453,30 @@ void UpdateStatsDisplay() {
         if (g_statsCleanHitId != -1) {
             DirectDrawHook::RemovePermanentMessage(g_statsCleanHitId);
             g_statsCleanHitId = -1;
+        }
+        if (g_statsNayukiId != -1) {
+            DirectDrawHook::RemovePermanentMessage(g_statsNayukiId);
+            g_statsNayukiId = -1;
+        }
+        if (g_statsMisuzuId != -1) {
+            DirectDrawHook::RemovePermanentMessage(g_statsMisuzuId);
+            g_statsMisuzuId = -1;
+        }
+        if (g_statsMishioId != -1) {
+            DirectDrawHook::RemovePermanentMessage(g_statsMishioId);
+            g_statsMishioId = -1;
+        }
+        if (g_statsRumiId != -1) {
+            DirectDrawHook::RemovePermanentMessage(g_statsRumiId);
+            g_statsRumiId = -1;
+        }
+        if (g_statsIkumiId != -1) {
+            DirectDrawHook::RemovePermanentMessage(g_statsIkumiId);
+            g_statsIkumiId = -1;
+        }
+        if (g_statsMaiId != -1) {
+            DirectDrawHook::RemovePermanentMessage(g_statsMaiId);
+            g_statsMaiId = -1;
         }
         return;
     }
@@ -1526,6 +1605,197 @@ void UpdateStatsDisplay() {
         upsert(g_statsP1ValuesId, p1Values.str());
         upsert(g_statsP2ValuesId, p2Values.str());
         upsert(g_statsPositionId, positions.str());
+
+        // Character-specific: Nayuki (Awake) snowbunnies timer line
+        // Show when either side is Nayuki(Awake); include Infinite indicator per side
+        bool showNayuki = (displayData.p1CharID == CHAR_ID_NAYUKIB) || (displayData.p2CharID == CHAR_ID_NAYUKIB);
+        if (showNayuki) {
+            std::stringstream nayukiLine;
+            nayukiLine << "Nayuki Snow: ";
+            if (displayData.p1CharID == CHAR_ID_NAYUKIB) {
+                nayukiLine << "P1 " << displayData.p1NayukiSnowbunnies;
+                if (displayData.p1NayukiInfiniteSnow) nayukiLine << " (Inf)";
+            } else {
+                nayukiLine << "P1 -";
+            }
+            nayukiLine << "  ";
+            if (displayData.p2CharID == CHAR_ID_NAYUKIB) {
+                nayukiLine << "P2 " << displayData.p2NayukiSnowbunnies;
+                if (displayData.p2NayukiInfiniteSnow) nayukiLine << " (Inf)";
+            } else {
+                nayukiLine << "P2 -";
+            }
+            upsert(g_statsNayukiId, nayukiLine.str());
+        } else {
+            if (g_statsNayukiId != -1) { DirectDrawHook::RemovePermanentMessage(g_statsNayukiId); g_statsNayukiId = -1; }
+        }
+
+        // Character-specific: Misuzu Poison timer/level line
+        bool showMisuzu = (displayData.p1CharID == CHAR_ID_MISUZU) || (displayData.p2CharID == CHAR_ID_MISUZU);
+        if (showMisuzu) {
+            std::stringstream misuzuLine;
+            misuzuLine << "Misuzu Poison: ";
+            if (displayData.p1CharID == CHAR_ID_MISUZU) {
+                misuzuLine << "P1 " << displayData.p1MisuzuPoisonTimer;
+                if (displayData.p1MisuzuInfinitePoison) misuzuLine << " (Inf)";
+                misuzuLine << " [Lvl " << displayData.p1MisuzuPoisonLevel << "]";
+            } else {
+                misuzuLine << "P1 -";
+            }
+            misuzuLine << "  ";
+            if (displayData.p2CharID == CHAR_ID_MISUZU) {
+                misuzuLine << "P2 " << displayData.p2MisuzuPoisonTimer;
+                if (displayData.p2MisuzuInfinitePoison) misuzuLine << " (Inf)";
+                misuzuLine << " [Lvl " << displayData.p2MisuzuPoisonLevel << "]";
+            } else {
+                misuzuLine << "P2 -";
+            }
+            upsert(g_statsMisuzuId, misuzuLine.str());
+        } else {
+            if (g_statsMisuzuId != -1) { DirectDrawHook::RemovePermanentMessage(g_statsMisuzuId); g_statsMisuzuId = -1; }
+        }
+
+        // Character-specific: Mishio element and awakened timer
+        bool showMishio = (displayData.p1CharID == CHAR_ID_MISHIO) || (displayData.p2CharID == CHAR_ID_MISHIO);
+        if (showMishio) {
+            auto elemName = [](int e){
+                switch (e) {
+                    case MISHIO_ELEM_NONE: return "None";
+                    case MISHIO_ELEM_FIRE: return "Fire";
+                    case MISHIO_ELEM_LIGHTNING: return "Lightning";
+                    case MISHIO_ELEM_AWAKENED: return "Awakened";
+                    default: return "?";
+                }
+            };
+            std::stringstream mishioLine;
+            mishioLine << "Mishio: ";
+            if (displayData.p1CharID == CHAR_ID_MISHIO) {
+                mishioLine << "P1 " << elemName(displayData.p1MishioElement) << "  Aw: " << displayData.p1MishioAwakenedTimer;
+                if (displayData.infiniteMishioElement || displayData.infiniteMishioAwakened) mishioLine << " (Inf)";
+            } else {
+                mishioLine << "P1 -";
+            }
+            mishioLine << "  ";
+            if (displayData.p2CharID == CHAR_ID_MISHIO) {
+                mishioLine << "P2 " << elemName(displayData.p2MishioElement) << "  Aw: " << displayData.p2MishioAwakenedTimer;
+                if (displayData.infiniteMishioElement || displayData.infiniteMishioAwakened) mishioLine << " (Inf)";
+            } else {
+                mishioLine << "P2 -";
+            }
+            upsert(g_statsMishioId, mishioLine.str());
+        } else {
+            if (g_statsMishioId != -1) { DirectDrawHook::RemovePermanentMessage(g_statsMishioId); g_statsMishioId = -1; }
+        }
+
+        // Character-specific: Rumi (Nanase) – Barehand, Shinai, Kimchi
+        bool showRumi = (displayData.p1CharID == CHAR_ID_NANASE) || (displayData.p2CharID == CHAR_ID_NANASE);
+        if (showRumi) {
+            std::stringstream rumiLine;
+            rumiLine << "Rumi: ";
+            if (displayData.p1CharID == CHAR_ID_NANASE) {
+                rumiLine << "P1 " << (displayData.p1RumiBarehanded ? "Bare" : "Shinai");
+                rumiLine << "  Kimchi: " << (displayData.p1RumiKimchiActive ? "On" : "Off")
+                         << " (" << displayData.p1RumiKimchiTimer << ")";
+                if (displayData.p1RumiInfiniteKimchi || displayData.p1RumiInfiniteShinai) rumiLine << " (Inf)";
+            } else {
+                rumiLine << "P1 -";
+            }
+            rumiLine << "  ";
+            if (displayData.p2CharID == CHAR_ID_NANASE) {
+                rumiLine << "P2 " << (displayData.p2RumiBarehanded ? "Bare" : "Shinai");
+                rumiLine << "  Kimchi: " << (displayData.p2RumiKimchiActive ? "On" : "Off")
+                         << " (" << displayData.p2RumiKimchiTimer << ")";
+                if (displayData.p2RumiInfiniteKimchi || displayData.p2RumiInfiniteShinai) rumiLine << " (Inf)";
+            } else {
+                rumiLine << "P2 -";
+            }
+            upsert(g_statsRumiId, rumiLine.str());
+        } else {
+            if (g_statsRumiId != -1) { DirectDrawHook::RemovePermanentMessage(g_statsRumiId); g_statsRumiId = -1; }
+        }
+
+        // Character-specific: Ikumi – Blood, Genocide, and Level Gauge (0..99)
+        bool showIkumi = (displayData.p1CharID == CHAR_ID_IKUMI) || (displayData.p2CharID == CHAR_ID_IKUMI);
+        if (showIkumi) {
+            std::stringstream ikumiLine;
+            ikumiLine << "Ikumi: ";
+            if (displayData.p1CharID == CHAR_ID_IKUMI) {
+                ikumiLine << "P1 Blood Value " << displayData.p1IkumiLevelGauge
+                          << "  Lvl " << displayData.p1IkumiBlood
+                          << "  Genocide Timer " << displayData.p1IkumiGenocide;
+                if (displayData.infiniteBloodMode) ikumiLine << " (Inf)";
+            } else {
+                ikumiLine << "P1 -";
+            }
+            ikumiLine << "  ";
+            if (displayData.p2CharID == CHAR_ID_IKUMI) {
+                ikumiLine << "P2 Blood Value " << displayData.p2IkumiLevelGauge
+                          << "  Lvl " << displayData.p2IkumiBlood
+                          << "  Genocide Timer " << displayData.p2IkumiGenocide;
+                if (displayData.infiniteBloodMode) ikumiLine << " (Inf)";
+            } else {
+                ikumiLine << "P2 -";
+            }
+            upsert(g_statsIkumiId, ikumiLine.str());
+        } else {
+            if (g_statsIkumiId != -1) { DirectDrawHook::RemovePermanentMessage(g_statsIkumiId); g_statsIkumiId = -1; }
+        }
+
+        // Character-specific: Mai – Status-derived timer display with Infinite markers
+        bool showMai = (displayData.p1CharID == CHAR_ID_MAI) || (displayData.p2CharID == CHAR_ID_MAI);
+        if (showMai) {
+            auto statusName = [](int st){
+                switch (st) {
+                    case 1: return "Ghost";
+                    case 2: return "Unsummon";
+                    case 3: return "Charge";
+                    case 4: return "Awakening";
+                    default: return "Inactive";
+                }
+            };
+            std::stringstream maiLine;
+            maiLine << "Mai: ";
+            if (displayData.p1CharID == CHAR_ID_MAI) {
+                maiLine << "P1 " << statusName(displayData.p1MaiStatus) << " ";
+                if (displayData.p1MaiStatus == 1) {
+                    maiLine << displayData.p1MaiGhostTime;
+                    if (displayData.p1MaiInfiniteGhost) maiLine << " (Inf)";
+                } else if (displayData.p1MaiStatus == 3) {
+                    maiLine << displayData.p1MaiGhostCharge;
+                    if (displayData.p1MaiInfiniteCharge) maiLine << " (Inf)";
+                    if (displayData.p1MaiNoChargeCD) maiLine << " [NoCD]";
+                } else if (displayData.p1MaiStatus == 4) {
+                    maiLine << displayData.p1MaiAwakeningTime;
+                    if (displayData.p1MaiInfiniteAwakening) maiLine << " (Inf)";
+                } else {
+                    maiLine << "-";
+                }
+            } else {
+                maiLine << "P1 -";
+            }
+            maiLine << "  ";
+            if (displayData.p2CharID == CHAR_ID_MAI) {
+                maiLine << "P2 " << statusName(displayData.p2MaiStatus) << " ";
+                if (displayData.p2MaiStatus == 1) {
+                    maiLine << displayData.p2MaiGhostTime;
+                    if (displayData.p2MaiInfiniteGhost) maiLine << " (Inf)";
+                } else if (displayData.p2MaiStatus == 3) {
+                    maiLine << displayData.p2MaiGhostCharge;
+                    if (displayData.p2MaiInfiniteCharge) maiLine << " (Inf)";
+                    if (displayData.p2MaiNoChargeCD) maiLine << " [NoCD]";
+                } else if (displayData.p2MaiStatus == 4) {
+                    maiLine << displayData.p2MaiAwakeningTime;
+                    if (displayData.p2MaiInfiniteAwakening) maiLine << " (Inf)";
+                } else {
+                    maiLine << "-";
+                }
+            } else {
+                maiLine << "P2 -";
+            }
+            upsert(g_statsMaiId, maiLine.str());
+        } else {
+            if (g_statsMaiId != -1) { DirectDrawHook::RemovePermanentMessage(g_statsMaiId); g_statsMaiId = -1; }
+        }
     }
 
     if (statsOn) {

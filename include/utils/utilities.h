@@ -110,12 +110,21 @@ struct DisplayData {
     int p2IkumiBlood;
     int p1IkumiGenocide;
     int p2IkumiGenocide;
+    int p1IkumiLevelGauge; // 0..99 (100 triggers level up)
+    int p2IkumiLevelGauge;
     bool infiniteBloodMode;  // Enables freeze patch for blood
     
     // Misuzu
     int p1MisuzuFeathers;
     int p2MisuzuFeathers;
     bool infiniteFeatherMode; // Add this missing field
+    // Misuzu poison
+    int  p1MisuzuPoisonTimer; // 0..3000
+    int  p2MisuzuPoisonTimer; // 0..3000
+    int  p1MisuzuPoisonLevel; // 0=inactive, nonzero=active
+    int  p2MisuzuPoisonLevel; // 0=inactive, nonzero=active
+    bool p1MisuzuInfinitePoison; // keep poison timer topped up
+    bool p2MisuzuInfinitePoison; // keep poison timer topped up
     
     // Mishio
     int p1MishioElement;       // 0=None, 1=Fire, 2=Lightning, 3=Awakened
@@ -249,6 +258,12 @@ struct DisplayData {
     double p1MaiGhostSetY;
     double p2MaiGhostSetX;
     double p2MaiGhostSetY;
+
+    // Nayuki (Awake) – Snowbunnies timer (uses +0x3150) and infinite toggle
+    int  p1NayukiSnowbunnies;   // 0..NAYUKIB_SNOWBUNNY_MAX
+    int  p2NayukiSnowbunnies;   // 0..NAYUKIB_SNOWBUNNY_MAX
+    bool p1NayukiInfiniteSnow;  // keep timer topped/frozen
+    bool p2NayukiInfiniteSnow;
 };
 
 extern DisplayData displayData;
@@ -318,6 +333,15 @@ extern int g_statsP2ValuesId;
 extern int g_statsPositionId;
 extern int g_statsMoveIdId;
 extern int g_statsCleanHitId; // New: Akiko Clean Hit helper line id
+// New: character-specific stats line (currently used for Nayuki(Awake) snowbunnies)
+extern int g_statsNayukiId;
+extern int g_statsMisuzuId;
+// New: character-specific stats lines for Mishio and Rumi (Nanase)
+extern int g_statsMishioId;
+extern int g_statsRumiId;
+// New: character-specific stats lines for Ikumi and Mai
+extern int g_statsIkumiId;
+extern int g_statsMaiId;
 
 // Window and key monitoring management
 void ManageKeyMonitoring();

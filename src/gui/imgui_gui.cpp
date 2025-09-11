@@ -775,6 +775,25 @@ namespace ImGuiGui {
             if (ImGui::Button("No Feathers##p1")) {
                 guiState.localData.p1MisuzuFeathers = 0;
             }
+
+            // Poison Timer & Level
+            int p1Poison = guiState.localData.p1MisuzuPoisonTimer;
+            p1Poison = CLAMP(p1Poison, 0, MISUZU_POISON_TIMER_MAX);
+            ImGui::Text("Poison Timer:");
+            if (ImGui::SliderInt("##P1MisuzuPoison", &p1Poison, 0, MISUZU_POISON_TIMER_MAX)) {
+                guiState.localData.p1MisuzuPoisonTimer = p1Poison;
+            }
+            bool p1InfPoison = guiState.localData.p1MisuzuInfinitePoison;
+            if (ImGui::Checkbox("Infinite Poison Timer##p1Misuzu", &p1InfPoison)) {
+                guiState.localData.p1MisuzuInfinitePoison = p1InfPoison;
+                if (p1InfPoison) guiState.localData.p1MisuzuPoisonTimer = MISUZU_POISON_TIMER_MAX;
+            }
+            int p1PoisonLvl = guiState.localData.p1MisuzuPoisonLevel;
+            if (ImGui::InputInt("Poison Level##p1", &p1PoisonLvl)) {
+                // No cap: write raw value as requested
+                guiState.localData.p1MisuzuPoisonLevel = p1PoisonLvl;
+            }
+            ImGui::TextDisabled("(Misuzu: feathers @+0x3148, poison timer @+0x345C, level @+0x3460)");
         }
     // P1 Mishio Settings
         else if (p1CharID == CHAR_ID_MISHIO) {
@@ -922,6 +941,20 @@ namespace ImGuiGui {
             bool lock = guiState.localData.p1KanoLockMagic;
             if (ImGui::Checkbox("Lock magic##p1Kano", &lock)) { guiState.localData.p1KanoLockMagic = lock; }
             ImGui::TextDisabled("(Kano: magic meter at +0x3150)");
+        }
+        // P1 Nayuki (Awake) Settings
+        else if (p1CharID == CHAR_ID_NAYUKIB) {
+            int t = guiState.localData.p1NayukiSnowbunnies;
+            t = CLAMP(t, 0, NAYUKIB_SNOWBUNNY_MAX);
+            float pct = (float)t / (float)NAYUKIB_SNOWBUNNY_MAX;
+            ImGui::Text("Snowbunnies Timer:");
+            ImGui::ProgressBar(pct, ImVec2(-1,0), (std::to_string(t) + "/" + std::to_string(NAYUKIB_SNOWBUNNY_MAX)).c_str());
+            if (ImGui::SliderInt("##P1NayukiSnow", &t, 0, NAYUKIB_SNOWBUNNY_MAX)) {
+                guiState.localData.p1NayukiSnowbunnies = t;
+            }
+            bool inf = guiState.localData.p1NayukiInfiniteSnow;
+            if (ImGui::Checkbox("Infinite timer##p1Nayuki", &inf)) guiState.localData.p1NayukiInfiniteSnow = inf;
+            ImGui::TextDisabled("(Nayuki: snowbunnies timer at +0x3150)");
         }
         // P1 Mio Settings
         else if (p1CharID == CHAR_ID_MIO) {
@@ -1092,6 +1125,25 @@ namespace ImGuiGui {
             if (ImGui::Button("No Feathers##p2")) {
                 guiState.localData.p2MisuzuFeathers = 0;
             }
+
+            // Poison Timer & Level
+            int p2Poison = guiState.localData.p2MisuzuPoisonTimer;
+            p2Poison = CLAMP(p2Poison, 0, MISUZU_POISON_TIMER_MAX);
+            ImGui::Text("Poison Timer:");
+            if (ImGui::SliderInt("##P2MisuzuPoison", &p2Poison, 0, MISUZU_POISON_TIMER_MAX)) {
+                guiState.localData.p2MisuzuPoisonTimer = p2Poison;
+            }
+            bool p2InfPoison = guiState.localData.p2MisuzuInfinitePoison;
+            if (ImGui::Checkbox("Infinite Poison Timer##p2Misuzu", &p2InfPoison)) {
+                guiState.localData.p2MisuzuInfinitePoison = p2InfPoison;
+                if (p2InfPoison) guiState.localData.p2MisuzuPoisonTimer = MISUZU_POISON_TIMER_MAX;
+            }
+            int p2PoisonLvl = guiState.localData.p2MisuzuPoisonLevel;
+            if (ImGui::InputInt("Poison Level##p2", &p2PoisonLvl)) {
+                // No cap: write raw value as requested
+                guiState.localData.p2MisuzuPoisonLevel = p2PoisonLvl;
+            }
+            ImGui::TextDisabled("(Misuzu: feathers @+0x3148, poison timer @+0x345C, level @+0x3460)");
         }
     // P2 Mishio Settings
         else if (p2CharID == CHAR_ID_MISHIO) {
@@ -1222,6 +1274,20 @@ namespace ImGuiGui {
             bool lock2 = guiState.localData.p2KanoLockMagic;
             if (ImGui::Checkbox("Lock magic##p2Kano", &lock2)) { guiState.localData.p2KanoLockMagic = lock2; }
             ImGui::TextDisabled("(Kano: magic meter at +0x3150)");
+        }
+        // P2 Nayuki (Awake) Settings
+        else if (p2CharID == CHAR_ID_NAYUKIB) {
+            int t2 = guiState.localData.p2NayukiSnowbunnies;
+            t2 = CLAMP(t2, 0, NAYUKIB_SNOWBUNNY_MAX);
+            float pct2 = (float)t2 / (float)NAYUKIB_SNOWBUNNY_MAX;
+            ImGui::Text("Snowbunnies Timer:");
+            ImGui::ProgressBar(pct2, ImVec2(-1,0), (std::to_string(t2) + "/" + std::to_string(NAYUKIB_SNOWBUNNY_MAX)).c_str());
+            if (ImGui::SliderInt("##P2NayukiSnow", &t2, 0, NAYUKIB_SNOWBUNNY_MAX)) {
+                guiState.localData.p2NayukiSnowbunnies = t2;
+            }
+            bool inf2 = guiState.localData.p2NayukiInfiniteSnow;
+            if (ImGui::Checkbox("Infinite timer##p2Nayuki", &inf2)) guiState.localData.p2NayukiInfiniteSnow = inf2;
+            ImGui::TextDisabled("(Nayuki: snowbunnies timer at +0x3150)");
         }
         // P2 Mio Settings
         else if (p2CharID == CHAR_ID_MIO) {
