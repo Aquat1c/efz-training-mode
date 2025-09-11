@@ -306,6 +306,7 @@
 
 // Character-specific offsets
 // Ikumi's blood meter and genocide timer
+#define IKUMI_LEVEL_GAUGE_OFFSET 0x3148  // 0..99 (100 triggers blood level up)
 #define IKUMI_BLOOD_OFFSET   0x314C  // Blood meter (0-8)
 #define IKUMI_GENOCIDE_OFFSET 0x3150  // Genocide timer
 
@@ -320,6 +321,10 @@
 //Misuzu
 #define MISUZU_FEATHER_OFFSET 0x3464
 #define MISUZU_FEATHER_MAX 3 // Feather count ranges from 0-3
+// Misuzu Poison (timer and level)
+#define MISUZU_POISON_TIMER_OFFSET 0x345C  // Counts down 3000->0 while poisoned
+#define MISUZU_POISON_LEVEL_OFFSET 0x3460  // 0=inactive, nonzero=active (any value)
+#define MISUZU_POISON_TIMER_MAX    3000
 
 // Mishio (Element system)
 // Offsets relative to player base (from reverse-engineering/CE)
@@ -433,6 +438,11 @@
 // Kano – magic meter (0..10000) shares 0x3150 slot (character-specific reuse)
 #define KANO_MAGIC_OFFSET                0x3150
 #define KANO_MAGIC_MAX                   10000
+
+// Nayuki (Awake) – Snowbunnies timer uses the shared 0x3150 slot
+// Observed behavior (CE): counts down from ~3000 to 0 while active
+#define NAYUKIB_SNOWBUNNY_TIMER_OFFSET   0x3150
+#define NAYUKIB_SNOWBUNNY_MAX            3000
 
 // Akiko – Clean Hit helper last-hit Move IDs for 623 rekka
 // A/B: 3rd hit ends at moveId 259; C: 6th hit ends at moveId 254

@@ -374,10 +374,14 @@ DisplayData displayData = {
     "",                 // p2CharName
     0,                  // p1CharID
     0,                  // p2CharID
-    0, 0, 0, 0,         // Ikumi settings
+    0, 0, 0, 0,         // Ikumi blood/genocide
+    0, 0,               // Ikumi level gauge (P1,P2)
     false,              // infiniteBloodMode
     0, 0,               // Misuzu settings
     false,              // infiniteFeatherMode
+    0, 0,               // p1MisuzuPoisonTimer, p2MisuzuPoisonTimer
+    0, 0,               // p1MisuzuPoisonLevel, p2MisuzuPoisonLevel
+    false, false,       // p1MisuzuInfinitePoison, p2MisuzuInfinitePoison
     0, 0,               // Mishio element (P1,P2)
     0, 0,               // Mishio awakened timer (P1,P2)
     false,              // infiniteMishioElement
@@ -426,6 +430,10 @@ DisplayData displayData = {
     std::numeric_limits<double>::quiet_NaN(), std::numeric_limits<double>::quiet_NaN(), // p2MaiGhostX/Y
     std::numeric_limits<double>::quiet_NaN(), std::numeric_limits<double>::quiet_NaN(), // p1MaiGhostSetX/Y
     std::numeric_limits<double>::quiet_NaN(), std::numeric_limits<double>::quiet_NaN()  // p2MaiGhostSetX/Y
+    ,
+    // Nayuki (Awake) defaults
+    0, 0,               // p1NayukiSnowbunnies, p2NayukiSnowbunnies
+    false, false        // p1NayukiInfiniteSnow, p2NayukiInfiniteSnow
 };
 
 // Initialize key bindings with default values
@@ -452,6 +460,12 @@ int g_statsP2ValuesId = -1;
 int g_statsPositionId = -1;
 int g_statsMoveIdId = -1;
 int g_statsCleanHitId = -1;
+int g_statsNayukiId = -1;
+int g_statsMisuzuId = -1;
+int g_statsMishioId = -1;
+int g_statsRumiId = -1;
+int g_statsIkumiId = -1;
+int g_statsMaiId = -1;
 
 // Auto-action settings - replace single trigger with individual triggers
 std::atomic<bool> autoActionEnabled(false);
