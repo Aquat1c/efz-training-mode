@@ -875,11 +875,11 @@ namespace CharacterSettings {
                     int cur=0; SafeReadMemory(tAddr,&cur,sizeof(int)); if (cur!=desiredTimer) SafeWriteMemory(tAddr,&desiredTimer,sizeof(int));
                 }
             }
-            // Optional ghost coordinate override write when ghost active and user set values
+            // Ghost coordinate override write (one-shot): write only when Apply is pressed
             double setX = (pi==1)?data.p1MaiGhostSetX:data.p2MaiGhostSetX;
             double setY = (pi==1)?data.p1MaiGhostSetY:data.p2MaiGhostSetY;
-            if (!std::isnan(setX) && !std::isnan(setY)) {
-                // Find ghost slot and write X/Y directly
+            bool applyGhost = (pi==1)?data.p1MaiApplyGhostPos:data.p2MaiApplyGhostPos;
+            if (applyGhost && !std::isnan(setX) && !std::isnan(setY)) {
                 if (auto basePtr = ResolvePointer(base, off, 0)) {
                     for (int i=0;i<MAI_GHOST_SLOT_MAX_SCAN;i++) {
                         uintptr_t slot = basePtr + MAI_GHOST_SLOTS_BASE + (uintptr_t)i*MAI_GHOST_SLOT_STRIDE;
@@ -887,6 +887,9 @@ namespace CharacterSettings {
                         if (id==401) {
                             SafeWriteMemory(slot + MAI_GHOST_SLOT_X_OFFSET,&setX,sizeof(double));
                             SafeWriteMemory(slot + MAI_GHOST_SLOT_Y_OFFSET,&setY,sizeof(double));
+                            // Clear the apply flag (one-shot semantics)
+                            if (pi==1) { const_cast<DisplayData&>(data).p1MaiApplyGhostPos = false; }
+                            else { const_cast<DisplayData&>(data).p2MaiApplyGhostPos = false; }
                             break;
                         }
                     }
@@ -1183,6 +1186,89 @@ namespace CharacterSettings {
                 if (curTimer < frozenTimer) { SafeWriteMemory(tAddr,&frozenTimer,sizeof(int)); }
             }
         }; enforceMai(1); enforceMai(2);
+
+        // Minagi – Always Readied: when Minagi is selected and Michiru puppet is idle & unreadied (ID 400), set to 401 (readied).
+        auto enforceMinagiReadied = [&](int pi){
+            bool isMinagi = (pi==1)?(localData.p1CharID==CHAR_ID_MINAGI):(localData.p2CharID==CHAR_ID_MINAGI);
+            bool wantReadied = (pi==1)?localData.p1MinagiAlwaysReadied:localData.p2MinagiAlwaysReadied;
+            if (!(isMinagi && wantReadied)) return;
+            const int off = (pi==1)?EFZ_BASE_OFFSET_P1:EFZ_BASE_OFFSET_P2;
+            uintptr_t playerBase = 0; SafeReadMemory(base + off, &playerBase, sizeof(playerBase)); if (!playerBase) return;
+            for (int i=0;i<MINAGI_PUPPET_SLOT_MAX_SCAN;i++) {
+                uintptr_t slot = playerBase + MINAGI_PUPPET_SLOTS_BASE + (uintptr_t)i*MINAGI_PUPPET_SLOT_STRIDE;
+                uint16_t id=0; if (!SafeReadMemory(slot + MINAGI_PUPPET_SLOT_ID_OFFSET, &id, sizeof(id))) continue;
+                if (id == MINAGI_PUPPET_ENTITY_ID) {
+                    // ID 400 = unreadied idle. If currently idle-ish, promote to 401 (readied) without freezing animation.
+                    uint16_t frame=0, sub=0; SafeReadMemory(slot + MINAGI_PUPPET_SLOT_FRAME_OFFSET,&frame,sizeof(frame)); SafeReadMemory(slot + MINAGI_PUPPET_SLOT_SUBFRAME_OFFSET,&sub,sizeof(sub));
+                    if (frame <= 1) {
+                        uint16_t readyId = 401; SafeWriteMemory(slot + MINAGI_PUPPET_SLOT_ID_OFFSET, &readyId, sizeof(readyId));
+                    }
+                    break;
+                }
+            }
+        }; enforceMinagiReadied(1); enforceMinagiReadied(2);
+
+        // Minagi – Debug: Convert select Minagi projectiles to Michiru (ID 400) for non-character entities.
+        // Implementation: sweep the slot array and rewrite ID on entries where id != 0/400/401.
+        // Gate strictly by the requested move ID groups only:
+        //  - 429–432 (41236)
+        //  - 440–443 (bubble: 641236)
+        //  - 447–452 (stars)
+        //  - 453     (airthrow animation)
+        //  - 463–465 (236236 particles)
+        if (localData.minagiConvertNewProjectiles) {
+            auto convertSlots = [&](int pi){
+                bool isMinagi = (pi==1)?(localData.p1CharID==CHAR_ID_MINAGI):(localData.p2CharID==CHAR_ID_MINAGI);
+                if (!isMinagi) return;
+                const int off = (pi==1)?EFZ_BASE_OFFSET_P1:EFZ_BASE_OFFSET_P2;
+                uintptr_t playerBase = 0; SafeReadMemory(base + off, &playerBase, sizeof(playerBase)); if (!playerBase) return;
+                short moveId=0; if (auto mv = ResolvePointer(base, off, MOVE_ID_OFFSET)) SafeReadMemory(mv,&moveId,sizeof(moveId));
+                // Only act during the specified animations to avoid touching character core states
+                auto isConversionMove = [](short mv)->bool {
+                    return (mv >= 429 && mv <= 432) ||
+                           (mv >= 440 && mv <= 443) ||
+                           (mv >= 447 && mv <= 452) ||
+                           (mv == 453) ||
+                           (mv >= 463 && mv <= 465);
+                };
+                if (!isConversionMove(moveId)) return;
+                for (int i=0;i<MINAGI_PUPPET_SLOT_MAX_SCAN;i++) {
+                    uintptr_t slot = playerBase + MINAGI_PUPPET_SLOTS_BASE + (uintptr_t)i*MINAGI_PUPPET_SLOT_STRIDE;
+                    uint16_t id=0; if (!SafeReadMemory(slot + MINAGI_PUPPET_SLOT_ID_OFFSET, &id, sizeof(id))) continue;
+                    if (id == 0) continue; // empty slot
+                    if (id == MINAGI_PUPPET_ENTITY_ID) continue; // already Michiru (400)
+                    if (id == 401) continue; // readied Michiru stays readied; do not downgrade to 400
+                    // Reassign to Michiru entity
+                    uint16_t newId = (uint16_t)MINAGI_PUPPET_ENTITY_ID; SafeWriteMemory(slot + MINAGI_PUPPET_SLOT_ID_OFFSET, &newId, sizeof(newId));
+                }
+            }; convertSlots(1); convertSlots(2);
+        }
+
+        // Minagi – Position override (one-shot): write to Michiru slot only when Apply is pressed
+        auto enforceMinagiPos = [&](int pi){
+            bool isMinagi = (pi==1)?(localData.p1CharID==CHAR_ID_MINAGI):(localData.p2CharID==CHAR_ID_MINAGI);
+            if (!isMinagi) return;
+            double setX = (pi==1)?localData.p1MinagiPuppetSetX:localData.p2MinagiPuppetSetX;
+            double setY = (pi==1)?localData.p1MinagiPuppetSetY:localData.p2MinagiPuppetSetY;
+            bool applyNow = (pi==1)?localData.p1MinagiApplyPos:localData.p2MinagiApplyPos;
+            if (!applyNow) return;
+            if (std::isnan(setX) || std::isnan(setY)) return;
+            const int off = (pi==1)?EFZ_BASE_OFFSET_P1:EFZ_BASE_OFFSET_P2;
+            uintptr_t playerBase = 0; SafeReadMemory(base + off, &playerBase, sizeof(playerBase)); if (!playerBase) return;
+            for (int i=0;i<MINAGI_PUPPET_SLOT_MAX_SCAN;i++) {
+                uintptr_t slot = playerBase + MINAGI_PUPPET_SLOTS_BASE + (uintptr_t)i*MINAGI_PUPPET_SLOT_STRIDE;
+                uint16_t id=0; if (!SafeReadMemory(slot + MINAGI_PUPPET_SLOT_ID_OFFSET, &id, sizeof(id))) continue;
+                if (id == 0) continue;
+                if (id == MINAGI_PUPPET_ENTITY_ID || id == 401) {
+                    SafeWriteMemory(slot + MINAGI_PUPPET_SLOT_X_OFFSET,&setX,sizeof(double));
+                    SafeWriteMemory(slot + MINAGI_PUPPET_SLOT_Y_OFFSET,&setY,sizeof(double));
+                    // Clear the apply flag (one-shot semantics)
+                    if (pi==1) { const_cast<DisplayData&>(localData).p1MinagiApplyPos = false; }
+                    else { const_cast<DisplayData&>(localData).p2MinagiApplyPos = false; }
+                    break;
+                }
+            }
+        }; enforceMinagiPos(1); enforceMinagiPos(2);
 
     }
 }

@@ -258,12 +258,49 @@ struct DisplayData {
     double p1MaiGhostSetY;
     double p2MaiGhostSetX;
     double p2MaiGhostSetY;
+    // One-shot apply flags for Mai ghost position writes (set by UI buttons)
+    bool   p1MaiApplyGhostPos;
+    bool   p2MaiApplyGhostPos;
 
     // Nayuki (Awake) – Snowbunnies timer (uses +0x3150) and infinite toggle
     int  p1NayukiSnowbunnies;   // 0..NAYUKIB_SNOWBUNNY_MAX
     int  p2NayukiSnowbunnies;   // 0..NAYUKIB_SNOWBUNNY_MAX
     bool p1NayukiInfiniteSnow;  // keep timer topped/frozen
     bool p2NayukiInfiniteSnow;
+
+    // Minagi – Puppet (Michiru) runtime world coordinates (found by scanning slots for ID 400)
+    double p1MinagiPuppetX; // NaN if not present
+    double p1MinagiPuppetY;
+    double p2MinagiPuppetX; // NaN if not present
+    double p2MinagiPuppetY;
+
+    // Editable Michiru position targets (user-entered). Not auto-synced; Apply/enforcement writes them when set.
+    double p1MinagiPuppetSetX;
+    double p1MinagiPuppetSetY;
+    double p2MinagiPuppetSetX;
+    double p2MinagiPuppetSetY;
+
+    // One-shot apply flags for Michiru position writes (set by UI buttons)
+    bool   p1MinagiApplyPos;
+    bool   p2MinagiApplyPos;
+
+    // Minagi – Debug and control
+    bool  minagiConvertNewProjectiles; // Practice-only: convert new Minagi projectiles to Michiru (ID 400)
+    bool  p1MinagiAlwaysReadied;       // Keep Michiru in Readied stance when idle (P1 Minagi)
+    bool  p2MinagiAlwaysReadied;       // Same for P2 Minagi
+
+    // Runtime cache: last observed Michiru slot per side (for sticky coordinates and state)
+    int   p1MichiruCurrentId;          // current entity id in cached slot (or -1)
+    int   p2MichiruCurrentId;
+    double p1MichiruLastX;             // last known X (sticky)
+    double p1MichiruLastY;
+    double p2MichiruLastX;
+    double p2MichiruLastY;
+    // Michiru slot state (frame/subframe) for monitoring
+    int   p1MichiruFrame;
+    int   p1MichiruSubframe;
+    int   p2MichiruFrame;
+    int   p2MichiruSubframe;
 };
 
 extern DisplayData displayData;
@@ -342,6 +379,8 @@ extern int g_statsRumiId;
 // New: character-specific stats lines for Ikumi and Mai
 extern int g_statsIkumiId;
 extern int g_statsMaiId;
+// New: character-specific stats line for Minagi (Michiru puppet)
+extern int g_statsMinagiId;
 
 // Window and key monitoring management
 void ManageKeyMonitoring();

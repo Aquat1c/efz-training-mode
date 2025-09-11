@@ -508,3 +508,16 @@
 #define MAI_GHOST_SLOT_X_OFFSET           0x18
 #define MAI_GHOST_SLOT_Y_OFFSET           0x20
 #define MAI_GHOST_SLOT_MAX_SCAN           12       // Safety cap (engine likely uses fewer)
+
+// Minagi (Tono Minagi) – Puppet (Michiru) entity uses the same slot array layout as Mini-Mai
+// Entity ID for Michiru puppet observed via CE/decomp: 400
+// Reuse the same slot base/stride/offsets; only the ID differs
+#define MINAGI_PUPPET_ENTITY_ID           400
+#define MINAGI_PUPPET_SLOTS_BASE          MAI_GHOST_SLOTS_BASE
+#define MINAGI_PUPPET_SLOT_STRIDE         MAI_GHOST_SLOT_STRIDE
+#define MINAGI_PUPPET_SLOT_ID_OFFSET      MAI_GHOST_SLOT_ID_OFFSET
+#define MINAGI_PUPPET_SLOT_FRAME_OFFSET   MAI_GHOST_SLOT_FRAME_OFFSET
+#define MINAGI_PUPPET_SLOT_SUBFRAME_OFFSET MAI_GHOST_SLOT_SUBFRAME_OFFSET
+#define MINAGI_PUPPET_SLOT_X_OFFSET       MAI_GHOST_SLOT_X_OFFSET
+#define MINAGI_PUPPET_SLOT_Y_OFFSET       MAI_GHOST_SLOT_Y_OFFSET
+#define MINAGI_PUPPET_SLOT_MAX_SCAN       MAI_GHOST_SLOT_MAX_SCAN

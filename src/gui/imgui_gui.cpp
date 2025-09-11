@@ -608,6 +608,7 @@ namespace ImGuiGui {
         bool hasFeatures = false;
         
         // ---------- GLOBAL SETTINGS SECTION (TOP) ----------
+        // (Minagi conversion checkbox moved to Debug tab)
         
         // Ikumi - Infinite Blood Mode
         if (p1CharID == CHAR_ID_IKUMI || p2CharID == CHAR_ID_IKUMI) {
@@ -701,7 +702,7 @@ namespace ImGuiGui {
         ImGui::TextColored(ImVec4(0.5f, 0.8f, 1.0f, 1.0f), "P1: %s", 
                           CharacterSettings::GetCharacterName(p1CharID).c_str());
         
-        // P1 Ikumi Settings
+    // P1 Ikumi Settings
         if (p1CharID == CHAR_ID_IKUMI) {
             // Blood Level
             int p1Blood = guiState.localData.p1IkumiBlood;
@@ -746,7 +747,7 @@ namespace ImGuiGui {
             if (ImGui::Button("Reset Genocide##p1")) {
                 guiState.localData.p1IkumiGenocide = 0;
             }
-        }
+    }
         // P1 Misuzu Settings
         else if (p1CharID == CHAR_ID_MISUZU) {
             // Feather Count
@@ -858,7 +859,7 @@ namespace ImGuiGui {
                 guiState.localData.p1AkikoTimeslowTrigger = ts1;
             }
             ImGui::TextDisabled("(Akiko: bullet routes and clock-slow)");
-        }
+    }
         // P1 Mai (Kawasumi) Settings
         else if (p1CharID == CHAR_ID_MAI) {
             // Status selector
@@ -902,15 +903,23 @@ namespace ImGuiGui {
             // Ghost coordinate edit controls
             double setGX = guiState.localData.p1MaiGhostSetX;
             double setGY = guiState.localData.p1MaiGhostSetY;
-            if (std::isnan(setGX) && !std::isnan(guiState.localData.p1MaiGhostX)) setGX = guiState.localData.p1MaiGhostX;
-            if (std::isnan(setGY) && !std::isnan(guiState.localData.p1MaiGhostY)) setGY = guiState.localData.p1MaiGhostY;
+            if (std::isnan(setGX)) { setGX = !std::isnan(guiState.localData.p1MaiGhostX) ? guiState.localData.p1MaiGhostX : guiState.localData.x1; }
+            if (std::isnan(setGY)) { setGY = !std::isnan(guiState.localData.p1MaiGhostY) ? guiState.localData.p1MaiGhostY : guiState.localData.y1; }
             ImGui::Text("Ghost Position Override:");
             ImGui::SetNextItemWidth(100); ImGui::InputDouble("X##P1MaiGhostX", &setGX, 1.0, 10.0, "%.1f"); ImGui::SameLine();
             ImGui::SetNextItemWidth(100); ImGui::InputDouble("Y##P1MaiGhostY", &setGY, 1.0, 10.0, "%.1f");
             if (setGX != guiState.localData.p1MaiGhostSetX) guiState.localData.p1MaiGhostSetX = setGX;
             if (setGY != guiState.localData.p1MaiGhostSetY) guiState.localData.p1MaiGhostSetY = setGY;
             if (ImGui::Button("Apply Ghost Pos##P1MaiGhost")) {
-                // Will be written on ApplyImGuiSettings via new logic
+                // Commit immediately without needing bottom Apply
+                displayData.p1MaiGhostSetX = guiState.localData.p1MaiGhostSetX;
+                displayData.p1MaiGhostSetY = guiState.localData.p1MaiGhostSetY;
+                displayData.p1MaiApplyGhostPos = true;
+                displayData.p1CharID = guiState.localData.p1CharID;
+                displayData.p2CharID = guiState.localData.p2CharID;
+                if (auto baseNow = GetEFZBase()) {
+                    CharacterSettings::TickCharacterEnforcements(baseNow, displayData);
+                }
             }
             ImGui::SameLine();
             if (ImGui::Button("P1 Pos##P1MaiGhostUseP1")) {
@@ -924,7 +933,7 @@ namespace ImGuiGui {
                 guiState.localData.p1MaiGhostSetX = guiState.localData.x2;
                 guiState.localData.p1MaiGhostSetY = guiState.localData.y2;
             }
-        }
+    }
         // P1 Kano Settings
         else if (p1CharID == CHAR_ID_KANO) {
             int magic = guiState.localData.p1KanoMagic;
@@ -941,7 +950,7 @@ namespace ImGuiGui {
             bool lock = guiState.localData.p1KanoLockMagic;
             if (ImGui::Checkbox("Lock magic##p1Kano", &lock)) { guiState.localData.p1KanoLockMagic = lock; }
             ImGui::TextDisabled("(Kano: magic meter at +0x3150)");
-        }
+    }
         // P1 Nayuki (Awake) Settings
         else if (p1CharID == CHAR_ID_NAYUKIB) {
             int t = guiState.localData.p1NayukiSnowbunnies;
@@ -955,7 +964,7 @@ namespace ImGuiGui {
             bool inf = guiState.localData.p1NayukiInfiniteSnow;
             if (ImGui::Checkbox("Infinite timer##p1Nayuki", &inf)) guiState.localData.p1NayukiInfiniteSnow = inf;
             ImGui::TextDisabled("(Nayuki: snowbunnies timer at +0x3150)");
-        }
+    }
         // P1 Mio Settings
         else if (p1CharID == CHAR_ID_MIO) {
             ImGui::Text("Mio Stance:");
@@ -970,7 +979,7 @@ namespace ImGuiGui {
                 guiState.localData.p1MioLockStance = lock;
             }
             ImGui::TextDisabled("(Mio: stance byte at +0x3150, 0=Short,1=Long)");
-        }
+    }
 
         // P1 Neyuki (Sleepy Nayuki) Settings
         else if (p1CharID == CHAR_ID_NAYUKI) {
@@ -981,7 +990,7 @@ namespace ImGuiGui {
                 guiState.localData.p1NeyukiJamCount = jam;
             }
             ImGui::TextDisabled("(Neyuki only)");
-        }
+    }
 
         // P1 Doppel (ExNanase) Settings
         else if (p1CharID == CHAR_ID_EXNANASE) {
@@ -1040,6 +1049,63 @@ namespace ImGuiGui {
                     guiState.localData.p1RumiKimchiActive = true;
                     guiState.localData.p1RumiKimchiTimer = RUMI_KIMCHI_TARGET;
                 }
+            }
+        }
+        // P1 Minagi Settings
+        else if (p1CharID == CHAR_ID_MINAGI) {
+            bool readied1 = guiState.localData.p1MinagiAlwaysReadied;
+            if (ImGui::Checkbox("Always readied##p1Minagi", &readied1)) {
+                guiState.localData.p1MinagiAlwaysReadied = readied1;
+            }
+            ImGui::TextDisabled("(Sets Michiru to ID 401 when idle/unreadied; Practice only)");
+            // Michiru position override controls
+            double setMX = guiState.localData.p1MinagiPuppetSetX;
+            double setMY = guiState.localData.p1MinagiPuppetSetY;
+            if (std::isnan(setMX)) {
+                if (!std::isnan(guiState.localData.p1MinagiPuppetX)) setMX = guiState.localData.p1MinagiPuppetX; else setMX = guiState.localData.x1;
+            }
+            if (std::isnan(setMY)) {
+                if (!std::isnan(guiState.localData.p1MinagiPuppetY)) setMY = guiState.localData.p1MinagiPuppetY; else setMY = guiState.localData.y1;
+            }
+            ImGui::Text("Michiru Position Override:");
+            ImGui::SetNextItemWidth(100); ImGui::InputDouble("X##P1MinagiMichiruX", &setMX, 1.0, 10.0, "%.1f"); ImGui::SameLine();
+            ImGui::SetNextItemWidth(100); ImGui::InputDouble("Y##P1MinagiMichiruY", &setMY, 1.0, 10.0, "%.1f");
+            if (setMX != guiState.localData.p1MinagiPuppetSetX) guiState.localData.p1MinagiPuppetSetX = setMX;
+            if (setMY != guiState.localData.p1MinagiPuppetSetY) guiState.localData.p1MinagiPuppetSetY = setMY;
+            if (ImGui::Button("Apply Michiru Pos##P1Minagi")) {
+                // Commit immediately without needing bottom Apply
+                displayData.p1MinagiPuppetSetX = guiState.localData.p1MinagiPuppetSetX;
+                displayData.p1MinagiPuppetSetY = guiState.localData.p1MinagiPuppetSetY;
+                displayData.p1MinagiApplyPos = true;
+                // Ensure character ID is correct for enforcement predicate
+                displayData.p1CharID = guiState.localData.p1CharID;
+                displayData.p2CharID = guiState.localData.p2CharID;
+                if (auto baseNow = GetEFZBase()) {
+                    CharacterSettings::TickCharacterEnforcements(baseNow, displayData);
+                }
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("P1 Pos##P1MinagiUseP1")) {
+                guiState.localData.p1MinagiPuppetSetX = guiState.localData.x1;
+                guiState.localData.p1MinagiPuppetSetY = guiState.localData.y1;
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("P2 Pos##P2MinagiUseP2")) {
+                // Copy P2 player position into P1's Michiru override
+                guiState.localData.p1MinagiPuppetSetX = guiState.localData.x2;
+                guiState.localData.p1MinagiPuppetSetY = guiState.localData.y2;
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Michiru Pos##P1MinagiUseMichiru")) {
+                if (!std::isnan(guiState.localData.p1MinagiPuppetX) && !std::isnan(guiState.localData.p1MinagiPuppetY)) {
+                    guiState.localData.p1MinagiPuppetSetX = guiState.localData.p1MinagiPuppetX;
+                    guiState.localData.p1MinagiPuppetSetY = guiState.localData.p1MinagiPuppetY;
+                }
+            }
+            if (!std::isnan(guiState.localData.p1MinagiPuppetX)) {
+                ImGui::TextDisabled("Current: (%.1f, %.1f)", guiState.localData.p1MinagiPuppetX, guiState.localData.p1MinagiPuppetY);
+            } else {
+                ImGui::TextDisabled("Current: (not present)");
             }
         }
         else {
@@ -1169,7 +1235,7 @@ namespace ImGuiGui {
                 ImGui::SameLine();
                 ImGui::TextDisabled("(set Element to Awakened to edit)");
             }
-        }
+    }
         // P2 Akiko (Minase) Settings
         else if (p2CharID == CHAR_ID_AKIKO) {
             ImGui::Text("Bullet Cycle (shared A/B):");
@@ -1205,7 +1271,7 @@ namespace ImGuiGui {
                 guiState.localData.p2AkikoTimeslowTrigger = ts2;
             }
             ImGui::TextDisabled("(Akiko: bullet routes and clock-slow)");
-        }
+    }
         // P2 Mai (Kawasumi) Settings
         else if (p2CharID == CHAR_ID_MAI) {
             const char* statusItems[] = { "0: Inactive", "1: Active Ghost", "2: Unsummon", "3: Charging", "4: Awakening" };
@@ -1237,15 +1303,23 @@ namespace ImGuiGui {
             ImGui::TextDisabled("(Mai: status @0x3144, multi-timer @0x3148 – meaning depends on status)");
             double setGX2 = guiState.localData.p2MaiGhostSetX;
             double setGY2 = guiState.localData.p2MaiGhostSetY;
-            if (std::isnan(setGX2) && !std::isnan(guiState.localData.p2MaiGhostX)) setGX2 = guiState.localData.p2MaiGhostX;
-            if (std::isnan(setGY2) && !std::isnan(guiState.localData.p2MaiGhostY)) setGY2 = guiState.localData.p2MaiGhostY;
+            if (std::isnan(setGX2)) { setGX2 = !std::isnan(guiState.localData.p2MaiGhostX) ? guiState.localData.p2MaiGhostX : guiState.localData.x2; }
+            if (std::isnan(setGY2)) { setGY2 = !std::isnan(guiState.localData.p2MaiGhostY) ? guiState.localData.p2MaiGhostY : guiState.localData.y2; }
             ImGui::Text("Ghost Position Override:");
             ImGui::SetNextItemWidth(100); ImGui::InputDouble("X##P2MaiGhostX", &setGX2, 1.0, 10.0, "%.1f"); ImGui::SameLine();
             ImGui::SetNextItemWidth(100); ImGui::InputDouble("Y##P2MaiGhostY", &setGY2, 1.0, 10.0, "%.1f");
             if (setGX2 != guiState.localData.p2MaiGhostSetX) guiState.localData.p2MaiGhostSetX = setGX2;
             if (setGY2 != guiState.localData.p2MaiGhostSetY) guiState.localData.p2MaiGhostSetY = setGY2;
             if (ImGui::Button("Apply Ghost Pos##P2MaiGhost")) {
-                // Will be written on ApplyImGuiSettings
+                // Commit immediately without needing bottom Apply
+                displayData.p2MaiGhostSetX = guiState.localData.p2MaiGhostSetX;
+                displayData.p2MaiGhostSetY = guiState.localData.p2MaiGhostSetY;
+                displayData.p2MaiApplyGhostPos = true;
+                displayData.p1CharID = guiState.localData.p1CharID;
+                displayData.p2CharID = guiState.localData.p2CharID;
+                if (auto baseNow = GetEFZBase()) {
+                    CharacterSettings::TickCharacterEnforcements(baseNow, displayData);
+                }
             }
             ImGui::SameLine();
             if (ImGui::Button("P2 Pos##P2MaiGhostUseP2")) {
@@ -1257,7 +1331,7 @@ namespace ImGuiGui {
                 guiState.localData.p2MaiGhostSetX = guiState.localData.x1;
                 guiState.localData.p2MaiGhostSetY = guiState.localData.y1;
             }
-        }
+    }
         // P2 Kano Settings
         else if (p2CharID == CHAR_ID_KANO) {
             int magic2 = guiState.localData.p2KanoMagic;
@@ -1274,7 +1348,7 @@ namespace ImGuiGui {
             bool lock2 = guiState.localData.p2KanoLockMagic;
             if (ImGui::Checkbox("Lock magic##p2Kano", &lock2)) { guiState.localData.p2KanoLockMagic = lock2; }
             ImGui::TextDisabled("(Kano: magic meter at +0x3150)");
-        }
+    }
         // P2 Nayuki (Awake) Settings
         else if (p2CharID == CHAR_ID_NAYUKIB) {
             int t2 = guiState.localData.p2NayukiSnowbunnies;
@@ -1288,7 +1362,7 @@ namespace ImGuiGui {
             bool inf2 = guiState.localData.p2NayukiInfiniteSnow;
             if (ImGui::Checkbox("Infinite timer##p2Nayuki", &inf2)) guiState.localData.p2NayukiInfiniteSnow = inf2;
             ImGui::TextDisabled("(Nayuki: snowbunnies timer at +0x3150)");
-        }
+    }
         // P2 Mio Settings
         else if (p2CharID == CHAR_ID_MIO) {
             ImGui::Text("Mio Stance:");
@@ -1303,7 +1377,7 @@ namespace ImGuiGui {
                 guiState.localData.p2MioLockStance = lock2;
             }
             ImGui::TextDisabled("(Mio: stance byte at +0x3150, 0=Short,1=Long)");
-        }
+    }
 
         // P2 Neyuki (Sleepy Nayuki) Settings
         else if (p2CharID == CHAR_ID_NAYUKI) {
@@ -1314,7 +1388,7 @@ namespace ImGuiGui {
                 guiState.localData.p2NeyukiJamCount = jam2;
             }
             ImGui::TextDisabled("(Neyuki only)");
-        }
+    }
 
         // P2 Doppel (ExNanase) Settings
         else if (p2CharID == CHAR_ID_EXNANASE) {
@@ -1374,6 +1448,62 @@ namespace ImGuiGui {
                 }
             }
         }
+        // P2 Minagi Settings
+        else if (p2CharID == CHAR_ID_MINAGI) {
+            bool readied2 = guiState.localData.p2MinagiAlwaysReadied;
+            if (ImGui::Checkbox("Always readied##p2Minagi", &readied2)) {
+                guiState.localData.p2MinagiAlwaysReadied = readied2;
+            }
+            ImGui::TextDisabled("(Sets Michiru to ID 401 when idle/unreadied; Practice only)");
+            // Michiru position override controls (P2)
+            double setMX2 = guiState.localData.p2MinagiPuppetSetX;
+            double setMY2 = guiState.localData.p2MinagiPuppetSetY;
+            if (std::isnan(setMX2)) {
+                if (!std::isnan(guiState.localData.p2MinagiPuppetX)) setMX2 = guiState.localData.p2MinagiPuppetX; else setMX2 = guiState.localData.x2;
+            }
+            if (std::isnan(setMY2)) {
+                if (!std::isnan(guiState.localData.p2MinagiPuppetY)) setMY2 = guiState.localData.p2MinagiPuppetY; else setMY2 = guiState.localData.y2;
+            }
+            ImGui::Text("Michiru Position Override:");
+            ImGui::SetNextItemWidth(100); ImGui::InputDouble("X##P2MinagiMichiruX", &setMX2, 1.0, 10.0, "%.1f"); ImGui::SameLine();
+            ImGui::SetNextItemWidth(100); ImGui::InputDouble("Y##P2MinagiMichiruY", &setMY2, 1.0, 10.0, "%.1f");
+            if (setMX2 != guiState.localData.p2MinagiPuppetSetX) guiState.localData.p2MinagiPuppetSetX = setMX2;
+            if (setMY2 != guiState.localData.p2MinagiPuppetSetY) guiState.localData.p2MinagiPuppetSetY = setMY2;
+            if (ImGui::Button("Apply Michiru Pos##P2Minagi")) {
+                // Commit immediately without needing bottom Apply
+                displayData.p2MinagiPuppetSetX = guiState.localData.p2MinagiPuppetSetX;
+                displayData.p2MinagiPuppetSetY = guiState.localData.p2MinagiPuppetSetY;
+                displayData.p2MinagiApplyPos = true;
+                // Ensure character ID is correct for enforcement predicate
+                displayData.p1CharID = guiState.localData.p1CharID;
+                displayData.p2CharID = guiState.localData.p2CharID;
+                if (auto baseNow = GetEFZBase()) {
+                    CharacterSettings::TickCharacterEnforcements(baseNow, displayData);
+                }
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("P2 Pos##P2MinagiUseP2")) {
+                guiState.localData.p2MinagiPuppetSetX = guiState.localData.x2;
+                guiState.localData.p2MinagiPuppetSetY = guiState.localData.y2;
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("P1 Pos##P2MinagiUseP1")) {
+                guiState.localData.p2MinagiPuppetSetX = guiState.localData.x1;
+                guiState.localData.p2MinagiPuppetSetY = guiState.localData.y1;
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Michiru Pos##P2MinagiUseMichiru")) {
+                if (!std::isnan(guiState.localData.p2MinagiPuppetX) && !std::isnan(guiState.localData.p2MinagiPuppetY)) {
+                    guiState.localData.p2MinagiPuppetSetX = guiState.localData.p2MinagiPuppetX;
+                    guiState.localData.p2MinagiPuppetSetY = guiState.localData.p2MinagiPuppetY;
+                }
+            }
+            if (!std::isnan(guiState.localData.p2MinagiPuppetX)) {
+                ImGui::TextDisabled("Current: (%.1f, %.1f)", guiState.localData.p2MinagiPuppetX, guiState.localData.p2MinagiPuppetY);
+            } else {
+                ImGui::TextDisabled("Current: (not present)");
+            }
+        }
         else {
             ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "No special settings available");
         }
@@ -1385,7 +1515,7 @@ namespace ImGuiGui {
         ImGui::Separator();
         ImGui::TextWrapped(
             "Character-specific settings allow you to modify special parameters unique to each character.\n"
-            "Supported: Ikumi (Blood/Genocide), Misuzu (Feathers), Mishio (Element/Awakened), Rumi (Stance, Kimchi), Akiko (Bullet/Time-Slow), Neyuki (Jam 0-9), Kano (Magic), Mio (Stance), Doppel (Enlightened), Mai (Ghost/Awakening)");
+            "Supported: Ikumi (Blood/Genocide), Misuzu (Feathers), Mishio (Element/Awakened), Rumi (Stance, Kimchi), Akiko (Bullet/Time-Slow), Neyuki (Jam 0-9), Kano (Magic), Mio (Stance), Doppel (Enlightened), Mai (Ghost/Awakening), Minagi (Michiru debug + Always readied)");
     }
     
     // Add this new function to the ImGuiGui namespace:
@@ -1485,6 +1615,32 @@ namespace ImGuiGui {
                 } else {
                     ImGui::TextDisabled("Ghost Pos: (not active)");
                 }
+            }
+        }
+
+        // Minagi debug controls: conversion toggle shown only when Minagi is present
+        if (guiState.localData.p1CharID == CHAR_ID_MINAGI || guiState.localData.p2CharID == CHAR_ID_MINAGI) {
+            ImGui::SeparatorText("Minagi Control");
+            bool convert = guiState.localData.minagiConvertNewProjectiles;
+            if (ImGui::Checkbox("Convert new Minagi projectiles to Michiru (Practice only)", &convert)) {
+                guiState.localData.minagiConvertNewProjectiles = convert;
+                // Immediate sync to shared displayData so overlay/enforcement pick it up without needing Apply
+                displayData.minagiConvertNewProjectiles = convert;
+                // Kick one enforcement tick now for responsiveness
+                uintptr_t baseNow = GetEFZBase();
+                if (baseNow && AreCharactersInitialized()) {
+                    CharacterSettings::TickCharacterEnforcements(baseNow, displayData);
+                }
+            }
+            ImGui::SameLine();
+            ImGui::TextDisabled("(?)");
+            if (ImGui::IsItemHovered()) {
+                ImGui::BeginTooltip();
+                ImGui::PushTextWrapPos(ImGui::GetFontSize() * 35.0f);
+                ImGui::TextUnformatted("When enabled and Minagi is selected, any newly initialized Minagi projectiles (non-character, non-Michiru)\n"
+                                       "are rewritten to use Michiru (entity ID 400). This is enforced only in Practice Mode.");
+                ImGui::PopTextWrapPos();
+                ImGui::EndTooltip();
             }
         }
     }
@@ -1669,6 +1825,27 @@ namespace ImGuiGui {
         if (playerIdx==1) { guiState.localData.p1MaiGhostX = gx; guiState.localData.p1MaiGhostY = gy; }
         else { guiState.localData.p2MaiGhostX = gx; guiState.localData.p2MaiGhostY = gy; }
     }; ScanMaiGhost(1); ScanMaiGhost(2);
+
+        // Scan Michiru (Minagi) puppet slots for each player if Minagi is selected.
+        auto ScanMichiru = [&](int playerIdx){
+            if (!((playerIdx==1 && guiState.localData.p1CharID==CHAR_ID_MINAGI) || (playerIdx==2 && guiState.localData.p2CharID==CHAR_ID_MINAGI))) return;
+            uintptr_t pBase = ResolvePointer(base, (playerIdx==1)?EFZ_BASE_OFFSET_P1:EFZ_BASE_OFFSET_P2, 0);
+            double nanv = std::numeric_limits<double>::quiet_NaN();
+            double mx = nanv, my = nanv;
+            if (pBase) {
+                for (int i=0;i<MINAGI_PUPPET_SLOT_MAX_SCAN;i++) {
+                    uintptr_t slot = pBase + MINAGI_PUPPET_SLOTS_BASE + (uintptr_t)i*MINAGI_PUPPET_SLOT_STRIDE;
+                    unsigned short id=0; if (!SafeReadMemory(slot + MINAGI_PUPPET_SLOT_ID_OFFSET, &id, sizeof(id))) break;
+                    if (id == MINAGI_PUPPET_ENTITY_ID || id == 401) {
+                        SafeReadMemory(slot + MINAGI_PUPPET_SLOT_X_OFFSET, &mx, sizeof(double));
+                        SafeReadMemory(slot + MINAGI_PUPPET_SLOT_Y_OFFSET, &my, sizeof(double));
+                        break;
+                    }
+                }
+            }
+            if (playerIdx==1) { guiState.localData.p1MinagiPuppetX = mx; guiState.localData.p1MinagiPuppetY = my; }
+            else { guiState.localData.p2MinagiPuppetX = mx; guiState.localData.p2MinagiPuppetY = my; }
+        }; ScanMichiru(1); ScanMichiru(2);
 
         // Read current IC color values from memory
         int p1ICValue = 0, p2ICValue = 0;
