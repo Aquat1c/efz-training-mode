@@ -428,6 +428,15 @@
 #define AKIKO_TIMESLOW_C                 3
 #define AKIKO_TIMESLOW_INFINITE          4
 
+// Akiko time-slow on-screen counter digits (observed as XYZ). When set to 000, time-slow persists.
+// These are 4-byte integers at the following offsets relative to the player base:
+//  - Third number (X):   +0x3154
+//  - Second number (Y):  +0x3158
+//  - First number (Z):   +0x315C
+#define AKIKO_TIMESLOW_THIRD_OFFSET      0x3154
+#define AKIKO_TIMESLOW_SECOND_OFFSET     0x3158
+#define AKIKO_TIMESLOW_FIRST_OFFSET      0x315C
+
 // Mio – stance (short vs long) reuses the shared 0x3150 slot used by other characters for their
 // own mechanics (e.g., Ikumi genocide / Akiko bullet cycle). Safe to alias by character ID.
 // Observed values: 0 = Short stance, 1 = Long stance.

@@ -428,6 +428,7 @@ DisplayData displayData = {
     0, 0,               // p1AkikoTimeslowTrigger, p2AkikoTimeslowTrigger
     false, false,       // p1AkikoFreezeCycle, p2AkikoFreezeCycle
     false, false,       // p1AkikoShowCleanHit, p2AkikoShowCleanHit
+    false, false,       // p1AkikoInfiniteTimeslow, p2AkikoInfiniteTimeslow
     0, 0,               // p1NeyukiJamCount, p2NeyukiJamCount
     0, 0,               // p1MioStance, p2MioStance (default Short)
     false, false,       // p1MioLockStance, p2MioLockStance

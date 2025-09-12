@@ -851,14 +851,14 @@ namespace ImGuiGui {
             if (ImGui::Checkbox("Show Clean Hit helper##p1Akiko", &showCH1)) {
                 guiState.localData.p1AkikoShowCleanHit = showCH1;
             }
-            ImGui::Text("Time-Slow Trigger:");
-            const char* tsItems1[] = { "Inactive", "A Version", "B Version", "C Version", "Infinite timer" };
+            const char* tsItems1[] = { "Inactive", "A Version", "B Version", "C Version" };
             int ts1 = guiState.localData.p1AkikoTimeslowTrigger;
-            ts1 = CLAMP(ts1, AKIKO_TIMESLOW_INACTIVE, AKIKO_TIMESLOW_INFINITE);
-            if (ImGui::Combo("##P1AkikoTimeslow", &ts1, tsItems1, IM_ARRAYSIZE(tsItems1))) {
-                guiState.localData.p1AkikoTimeslowTrigger = ts1;
+            ts1 = CLAMP(ts1, AKIKO_TIMESLOW_INACTIVE, AKIKO_TIMESLOW_C);
+            bool inf1 = guiState.localData.p1AkikoInfiniteTimeslow;
+            if (ImGui::Checkbox("Infinite timeslow (freeze 000)##p1Akiko", &inf1)) {
+                guiState.localData.p1AkikoInfiniteTimeslow = inf1;
             }
-            ImGui::TextDisabled("(Akiko: bullet routes and clock-slow)");
+            ImGui::TextDisabled("(Akiko: bullet routes and clock-slow; 'Infinite' now freezes the XYZ digits to 000)");
     }
         // P1 Mai (Kawasumi) Settings
         else if (p1CharID == CHAR_ID_MAI) {
@@ -1264,13 +1264,17 @@ namespace ImGuiGui {
                 guiState.localData.p2AkikoShowCleanHit = showCH2;
             }
             ImGui::Text("Time-Slow Trigger:");
-            const char* tsItems2[] = { "Inactive", "A Version", "B Version", "C Version", "Infinite timer" };
+            const char* tsItems2[] = { "Inactive", "A Version", "B Version", "C Version" };
             int ts2 = guiState.localData.p2AkikoTimeslowTrigger;
-            ts2 = CLAMP(ts2, AKIKO_TIMESLOW_INACTIVE, AKIKO_TIMESLOW_INFINITE);
+            ts2 = CLAMP(ts2, AKIKO_TIMESLOW_INACTIVE, AKIKO_TIMESLOW_C);
             if (ImGui::Combo("##P2AkikoTimeslow", &ts2, tsItems2, IM_ARRAYSIZE(tsItems2))) {
                 guiState.localData.p2AkikoTimeslowTrigger = ts2;
             }
-            ImGui::TextDisabled("(Akiko: bullet routes and clock-slow)");
+            bool inf2 = guiState.localData.p2AkikoInfiniteTimeslow;
+            if (ImGui::Checkbox("Infinite timeslow (freeze 000)##p2Akiko", &inf2)) {
+                guiState.localData.p2AkikoInfiniteTimeslow = inf2;
+            }
+            ImGui::TextDisabled("(Akiko: bullet routes and clock-slow; 'Infinite' now freezes the XYZ digits to 000)");
     }
         // P2 Mai (Kawasumi) Settings
         else if (p2CharID == CHAR_ID_MAI) {

@@ -200,12 +200,15 @@ struct DisplayData {
     // Akiko (Minase)
     int  p1AkikoBulletCycle;
     int  p2AkikoBulletCycle;
-    int  p1AkikoTimeslowTrigger; // 0=inactive,1=A,2=B,3=C,4=infinite
+    int  p1AkikoTimeslowTrigger; // 0=inactive,1=A,2=B,3=C (legacy 4=Infinite removed)
     int  p2AkikoTimeslowTrigger;
     bool p1AkikoFreezeCycle;     // keep bullet cycle fixed at selected value
     bool p2AkikoFreezeCycle;
     bool p1AkikoShowCleanHit;    // show Clean Hit helper overlay when Akiko is P1
     bool p2AkikoShowCleanHit;    // show Clean Hit helper overlay when Akiko is P2
+    // Akiko: new model for Infinite timeslow (freeze on-screen XYZ digits at 000)
+    bool p1AkikoInfiniteTimeslow;
+    bool p2AkikoInfiniteTimeslow;
 
     // Neyuki (Sleepy Nayuki) – Jam count (0..9)
     int  p1NeyukiJamCount;
