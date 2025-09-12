@@ -324,7 +324,7 @@ namespace CharacterSettings {
         }
 
         // Akiko (Minase) – bullet cycle and timeslow trigger
-        // If switching to Akiko, reset the timeslow trigger to Inactive to avoid stale "Infinite" carry-over
+        // If switching to Akiko, reset the timeslow trigger to Inactive to avoid stale carry-over
         bool p1JustSwitchedToAkiko = (data.p1CharID == CHAR_ID_AKIKO && s_prevCharIDP1 != CHAR_ID_AKIKO);
         bool p2JustSwitchedToAkiko = (data.p2CharID == CHAR_ID_AKIKO && s_prevCharIDP2 != CHAR_ID_AKIKO);
         auto ReadAkiko = [&](int playerIndex){
@@ -332,9 +332,9 @@ namespace CharacterSettings {
             uintptr_t bulletAddr = ResolvePointer(base, off, AKIKO_BULLET_CYCLE_OFFSET);
             uintptr_t timeAddr   = ResolvePointer(base, off, AKIKO_TIMESLOW_TRIGGER_OFFSET);
             int bullet=0, t=0; if (bulletAddr) SafeReadMemory(bulletAddr,&bullet,sizeof(int)); if (timeAddr) SafeReadMemory(timeAddr,&t,sizeof(int));
-            // Clamp bullet cycle to valid range [0..2]; timeslow is [0..4]
+            // Clamp bullet cycle to valid range [0..2]; timeslow is [0..3] (0=Inactive,1=A,2=B,3=C)
             bullet = CLAMP(bullet, 0, 2);
-            t = CLAMP(t, AKIKO_TIMESLOW_INACTIVE, AKIKO_TIMESLOW_INFINITE);
+            if (t < AKIKO_TIMESLOW_INACTIVE || t > AKIKO_TIMESLOW_C) t = AKIKO_TIMESLOW_INACTIVE;
             // On first switch to Akiko, prefer Inactive regardless of what's in memory
             if ((playerIndex==1 && p1JustSwitchedToAkiko) || (playerIndex==2 && p2JustSwitchedToAkiko)) {
                 t = AKIKO_TIMESLOW_INACTIVE;
@@ -718,17 +718,12 @@ namespace CharacterSettings {
             if ((pi==1 && data.p1CharID != CHAR_ID_AKIKO) || (pi==2 && data.p2CharID != CHAR_ID_AKIKO)) return;
             const int off = (pi==1)?EFZ_BASE_OFFSET_P1:EFZ_BASE_OFFSET_P2;
             uintptr_t bulletAddr = ResolvePointer(base, off, AKIKO_BULLET_CYCLE_OFFSET);
-            uintptr_t timeAddr   = ResolvePointer(base, off, AKIKO_TIMESLOW_TRIGGER_OFFSET);
             int bullet = (pi==1)?data.p1AkikoBulletCycle:data.p2AkikoBulletCycle;
             int t      = (pi==1)?data.p1AkikoTimeslowTrigger:data.p2AkikoTimeslowTrigger;
             bullet = CLAMP(bullet, 0, 2);
-            t = CLAMP(t, AKIKO_TIMESLOW_INACTIVE, AKIKO_TIMESLOW_INFINITE);
-            // If user explicitly chose Inactive, force write Inactive (0) to clear any Infinite flag lingering
-            if (t == AKIKO_TIMESLOW_INACTIVE) {
-                if (timeAddr) SafeWriteMemory(timeAddr, &t, sizeof(int));
-            }
+            // Timeslow trigger respects only 0..3 now; any other value becomes Inactive
+            if (t < AKIKO_TIMESLOW_INACTIVE || t > AKIKO_TIMESLOW_C) t = AKIKO_TIMESLOW_INACTIVE;
             if (bulletAddr) SafeWriteMemory(bulletAddr,&bullet,sizeof(int));
-            if (timeAddr)   SafeWriteMemory(timeAddr,&t,sizeof(int));
             LogOut(std::string("[CHAR] Applied ") + (pi==1?"P1":"P2") + " Akiko: BulletCycle=" + std::to_string(bullet) + ", TimeSlow=" + std::to_string(t), detailedLogging.load());
         }; ApplyAkiko(1); ApplyAkiko(2);
 
@@ -1050,7 +1045,7 @@ namespace CharacterSettings {
             if (cur != target) { SafeWriteMemory(cycAddr,&target,sizeof(int)); didWriteThisTick = true; }
         }; enforceAkikoCycle(1); enforceAkikoCycle(2);
 
-        // Akiko: enforce infinite timeslow when set to AKIKO_TIMESLOW_INFINITE (4)
+        // Akiko: enforce Infinite by freezing on-screen timer digits to 000 when the checkbox is enabled
         auto enforceAkiko = [&](int pi){
             if ((pi==1 && localData.p1CharID != CHAR_ID_AKIKO) || (pi==2 && localData.p2CharID != CHAR_ID_AKIKO)) return;
             const int off = (pi==1)?EFZ_BASE_OFFSET_P1:EFZ_BASE_OFFSET_P2;
@@ -1073,14 +1068,13 @@ namespace CharacterSettings {
                     if (cur != frozenVal) { SafeWriteMemory(bAddr,&frozenVal,sizeof(int)); }
                 }
             }
-            auto tAddr = ResolvePointer(base, off, AKIKO_TIMESLOW_TRIGGER_OFFSET);
-            if (!tAddr) return; int cur=0; SafeReadMemory(tAddr,&cur,sizeof(int));
-            int want = (pi==1)?localData.p1AkikoTimeslowTrigger:localData.p2AkikoTimeslowTrigger;
-            // If GUI wants Infinite, enforce Infinite; otherwise ensure not Infinite (set Inactive)
-            if (want == AKIKO_TIMESLOW_INFINITE) {
-                if (cur != AKIKO_TIMESLOW_INFINITE) { int inf = AKIKO_TIMESLOW_INFINITE; SafeWriteMemory(tAddr,&inf,sizeof(int)); }
-            } else {
-                if (cur == AKIKO_TIMESLOW_INFINITE) { int z = AKIKO_TIMESLOW_INACTIVE; SafeWriteMemory(tAddr,&z,sizeof(int)); }
+            // Only digits are controlled when Infinite is enabled; no writes to trigger value at all
+            const bool wantInf = (pi==1)?localData.p1AkikoInfiniteTimeslow:localData.p2AkikoInfiniteTimeslow;
+            if (wantInf) {
+                // Continuously write zeros to the three on-screen digits to prevent any countdown
+                if (auto d3 = ResolvePointer(base, off, AKIKO_TIMESLOW_THIRD_OFFSET)) { int z=0; SafeWriteMemory(d3,&z,sizeof(int)); }
+                if (auto d2 = ResolvePointer(base, off, AKIKO_TIMESLOW_SECOND_OFFSET)) { int z=0; SafeWriteMemory(d2,&z,sizeof(int)); }
+                if (auto d1 = ResolvePointer(base, off, AKIKO_TIMESLOW_FIRST_OFFSET)) { int z=0; SafeWriteMemory(d1,&z,sizeof(int)); }
             }
         }; enforceAkiko(1); enforceAkiko(2);
 
