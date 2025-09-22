@@ -93,6 +93,16 @@ static int  s_p1RGExpiry = 0;
 static bool s_p2RGPending = false;
 static int  s_p2RGExpiry = 0;
 
+// New: Pre-arm specials/FM at RG entry when user delay is 0
+static bool s_p1RGPrearmed = false;
+static bool s_p2RGPrearmed = false;
+static bool s_p1RGPrearmIsSpecial = false; // true when we early-froze a special/FM
+static bool s_p2RGPrearmIsSpecial = false;
+static int  s_p1RGPrearmActionType = -1;   // store action to help skip duplicate inject
+static int  s_p2RGPrearmActionType = -1;
+static int  s_p1RGPrearmExpiry = 0;        // safety expiry (internal frames)
+static int  s_p2RGPrearmExpiry = 0;
+
 static inline void UpdateStunTimersForPlayer(StunTimers& t, short prevMoveID, short currMoveID) {
     int now = frameCounter.load();
 
@@ -301,9 +311,13 @@ void ProcessTriggerDelays() {
                 p2DelayState.triggerType = TRIGGER_NONE;
                 p2DelayState.pendingMoveID = 0;
                 p2ActionApplied = true;
-                
-                // Restore P2 control state if we changed it
-                RestoreP2ControlState();
+                // Do NOT restore P2 control immediately here; specials/supers use
+                // buffer freezing and set g_pendingControlRestore to return control
+                // after execution or timeout. Immediate restore would cancel the buffer.
+                if (detailedLogging.load()) {
+                    LogOut(std::string("[AUTO-ACTION] P2 delayed action applied; pendingRestore=") +
+                           (g_pendingControlRestore.load()?"true":"false"), true);
+                }
             } else {
                 LogOut("[AUTO-ACTION] Failed to apply P2 action - invalid moveID address", true);
                 p2DelayState.isDelaying = false;
@@ -521,6 +535,46 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
                        "F + user=" + std::to_string(userDelayF) + "F => total=" + std::to_string(totalDelayF) + "F", true);
                 // Schedule execution exactly at RG stun end (converted to internal frames in StartTriggerDelay)
                 StartTriggerDelay(1, TRIGGER_ON_RG, 0, totalDelayF);
+
+                // If user requested 0F delay and action is a special/FM, pre-arm now so motion exists on the first actionable frame
+                if (userDelayF == 0 && !s_p1RGPrearmed) {
+                    int at = triggerOnRGAction.load();
+                    int motion = ConvertTriggerActionToMotion(at, TRIGGER_ON_RG);
+                    int buttonMask = 0;
+                    if (at >= ACTION_5A && at <= ACTION_2C) {
+                        int button = (at - ACTION_5A) % 3;  // 0=A,1=B,2=C
+                        buttonMask = (1 << (4 + button));
+                    } else if (at >= ACTION_JA && at <= ACTION_JC) {
+                        int button = (at - ACTION_JA) % 3;
+                        buttonMask = (1 << (4 + button));
+                    } else if (at >= ACTION_QCF && at <= ACTION_641236) {
+                        int strength = GetSpecialMoveStrength(at, TRIGGER_ON_RG);
+                        buttonMask = (1 << (4 + strength));
+                    }
+                    bool preOk = false;
+                    bool isSpec = (motion >= MOTION_236A) || (at == ACTION_FINAL_MEMORY);
+                    if (isSpec) {
+                        if (at == ACTION_FINAL_MEMORY) {
+                            int charId = displayData.p1CharID;
+                            preOk = ExecuteFinalMemory(1, charId);
+                            s_p1RGPrearmIsSpecial = true;
+                        } else {
+                            // Ensure buffer writes allowed
+                            g_injectImmediateOnly[1].store(false);
+                            preOk = FreezeBufferForMotion(1, motion, buttonMask);
+                            s_p1RGPrearmIsSpecial = true;
+                        }
+                    }
+                    if (preOk) {
+                        s_p1RGPrearmed = true;
+                        s_p1RGPrearmActionType = at;
+                        s_p1RGPrearmExpiry = frameCounter.load() + (baseDelayF * 3) + 90; // small guard window after actionable
+                        LogOut("[AUTO-ACTION][RG] P1 pre-armed at RG entry: action=" + std::to_string(at) +
+                               " motion=" + std::to_string(motion) + " btnMask=" + std::to_string(buttonMask), true);
+                    } else if (isSpec) {
+                        LogOut("[AUTO-ACTION][RG] P1 pre-arm failed; will attempt on delay expiry", true);
+                    }
+                }
             }
         }
         
@@ -760,6 +814,55 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
             LogOut("[TRIGGER_DIAG] P2 entered RG (" + std::to_string(moveID2) + ") baseDelay=" + std::to_string(baseDelayF) +
                    "F + user=" + std::to_string(userDelayF) + "F => total=" + std::to_string(totalDelayF) + "F", true);
             StartTriggerDelay(2, TRIGGER_ON_RG, 0, totalDelayF);
+
+            // If user delay is 0 and action is special/FM, pre-arm now; ensure P2 control override for buffer progression
+            if (userDelayF == 0 && !s_p2RGPrearmed) {
+                int at = triggerOnRGAction.load();
+                int motion = ConvertTriggerActionToMotion(at, TRIGGER_ON_RG);
+                int buttonMask = 0;
+                if (at >= ACTION_5A && at <= ACTION_2C) {
+                    int button = (at - ACTION_5A) % 3;
+                    buttonMask = (1 << (4 + button));
+                } else if (at >= ACTION_JA && at <= ACTION_JC) {
+                    int button = (at - ACTION_JA) % 3;
+                    buttonMask = (1 << (4 + button));
+                } else if (at >= ACTION_QCF && at <= ACTION_641236) {
+                    int strength = GetSpecialMoveStrength(at, TRIGGER_ON_RG);
+                    buttonMask = (1 << (4 + strength));
+                }
+                bool preOk = false;
+                bool isSpec = (motion >= MOTION_236A) || (at == ACTION_FINAL_MEMORY);
+                if (isSpec) {
+                    EnableP2ControlForAutoAction();
+                    if (at == ACTION_FINAL_MEMORY) {
+                        int charId = displayData.p2CharID;
+                        preOk = ExecuteFinalMemory(2, charId);
+                        s_p2RGPrearmIsSpecial = true;
+                        // longer timeout for FM sequences
+                        g_lastP2MoveID.store(moveID2);
+                        g_pendingControlRestore.store(true);
+                        g_controlRestoreTimeout.store(240);
+                    } else {
+                        // Allow buffer writes
+                        g_injectImmediateOnly[2].store(false);
+                        preOk = FreezeBufferForMotion(2, motion, buttonMask);
+                        s_p2RGPrearmIsSpecial = true;
+                        g_lastP2MoveID.store(moveID2);
+                        g_pendingControlRestore.store(true);
+                        g_controlRestoreTimeout.store(180);
+                    }
+                }
+                if (preOk) {
+                    s_p2RGPrearmed = true;
+                    s_p2RGPrearmActionType = at;
+                    s_p2RGPrearmExpiry = frameCounter.load() + (baseDelayF * 3) + 90;
+                    LogOut("[AUTO-ACTION][RG] P2 pre-armed at RG entry: action=" + std::to_string(at) +
+                           " motion=" + std::to_string(motion) + " btnMask=" + std::to_string(buttonMask) +
+                           " (control overridden)", true);
+                } else if (isSpec) {
+                    LogOut("[AUTO-ACTION][RG] P2 pre-arm failed; will attempt on delay expiry", true);
+                }
+            }
         }
     }
         
@@ -969,6 +1072,15 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
         LogOut("[AUTO-ACTION] P2 wake pre-arm expired (no execution)", detailedLogging.load());
         s_p2WakePrearmed = false;
     }
+    // Clear RG pre-arm flags if window passed without execution
+    if (s_p1RGPrearmed && now > s_p1RGPrearmExpiry) {
+        LogOut("[AUTO-ACTION][RG] P1 RG pre-arm expired (no execution)", detailedLogging.load());
+        s_p1RGPrearmed = false; s_p1RGPrearmIsSpecial = false; s_p1RGPrearmActionType = -1;
+    }
+    if (s_p2RGPrearmed && now > s_p2RGPrearmExpiry) {
+        LogOut("[AUTO-ACTION][RG] P2 RG pre-arm expired (no execution)", detailedLogging.load());
+        s_p2RGPrearmed = false; s_p2RGPrearmIsSpecial = false; s_p2RGPrearmActionType = -1;
+    }
 }
 
 // Back-compat wrapper: fetch move IDs once here (with basic caching) and forward to core
@@ -1114,6 +1226,23 @@ void ApplyAutoAction(int playerNum, uintptr_t moveIDAddr, short currentMoveID, s
         // Fall through to normal handling if FM failed; do NOT early return
     }
 
+    // If this is an RG-triggered execution and we already pre-armed a special/FM at RG entry,
+    // avoid double-injecting. Just clear trigger/cooldown and return.
+    if (triggerType == TRIGGER_ON_RG) {
+        if (playerNum == 1 && s_p1RGPrearmed && s_p1RGPrearmIsSpecial) {
+            LogOut("[AUTO-ACTION][RG] P1 was pre-armed; skipping duplicate ApplyAutoAction", true);
+            p1TriggerActive = false; p1TriggerCooldown = 0;
+            s_p1RGPrearmed = false; s_p1RGPrearmIsSpecial = false; s_p1RGPrearmActionType = -1;
+            return;
+        }
+        if (playerNum == 2 && s_p2RGPrearmed && s_p2RGPrearmIsSpecial) {
+            LogOut("[AUTO-ACTION][RG] P2 was pre-armed; skipping duplicate ApplyAutoAction", true);
+            p2TriggerActive = false; p2TriggerCooldown = 0;
+            s_p2RGPrearmed = false; s_p2RGPrearmIsSpecial = false; s_p2RGPrearmActionType = -1;
+            return;
+        }
+    }
+
     // Determine strength BEFORE converting to motion; strength drives motionType selection
     int resolvedStrength = GetSpecialMoveStrength(actionType, triggerType); // 0=A 1=B 2=C
     // Convert action to motion type and determine button mask
@@ -1248,6 +1377,8 @@ void ApplyAutoAction(int playerNum, uintptr_t moveIDAddr, short currentMoveID, s
         }
         LogOut("[AUTO-ACTION] Applying special move " + GetMotionTypeName(motionType) +
                " via buffer freeze", true);
+        // Ensure immediate-only is disabled so buffer writes progress
+        g_injectImmediateOnly[playerNum].store(false);
         success = FreezeBufferForMotion(playerNum, motionType, buttonMask);
     }
     
@@ -1523,6 +1654,10 @@ void ClearAllAutoActionTriggers() {
     // Clear RG pending windows
     s_p1RGPending = false; s_p1RGExpiry = 0;
     s_p2RGPending = false; s_p2RGExpiry = 0;
+
+    // Clear RG pre-arm state
+    s_p1RGPrearmed = false; s_p1RGPrearmIsSpecial = false; s_p1RGPrearmActionType = -1; s_p1RGPrearmExpiry = 0;
+    s_p2RGPrearmed = false; s_p2RGPrearmIsSpecial = false; s_p2RGPrearmActionType = -1; s_p2RGPrearmExpiry = 0;
 
     LogOut("[AUTO-ACTION] All trigger states cleared", true);
 }
