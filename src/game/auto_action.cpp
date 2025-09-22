@@ -56,6 +56,8 @@ std::atomic<bool> g_pendingControlRestore(false);
 std::atomic<int> g_controlRestoreTimeout(0);
 std::atomic<short> g_lastP2MoveID(-1);
 const int CONTROL_RESTORE_TIMEOUT = 180; // 180 internal frames = 1 second
+// Counter-RG fast restore: when active, restore AI control as soon as the special actually starts
+std::atomic<bool> g_crgFastRestore(false);
 
 // Pre-arm flags for On Wakeup: buffer inputs during GROUNDTECH_RECOVERY to fire on wake
 static bool s_p1WakePrearmed = false; // wake pre-arm without early triggerActive
@@ -444,6 +446,8 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
     // Update timing trackers once per tick for both players
     UpdateStunTimersForPlayer(s_p1Timers, prevMoveID1, moveID1);
     UpdateStunTimersForPlayer(s_p2Timers, prevMoveID2, moveID2);
+
+    // Note: Do NOT restore on RG exit; we must keep buffer-freeze active until the special actually begins.
     
     int targetPlayer = autoActionPlayer.load();
     // Throttle trigger diagnostics to ~5s intervals
@@ -859,6 +863,8 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
                     LogOut("[AUTO-ACTION][RG] P2 pre-armed at RG entry: action=" + std::to_string(at) +
                            " motion=" + std::to_string(motion) + " btnMask=" + std::to_string(buttonMask) +
                            " (control overridden)", true);
+                    // Enable fast restore so we hand back control as soon as the move actually starts
+                    g_crgFastRestore.store(true);
                 } else if (isSpec) {
                     LogOut("[AUTO-ACTION][RG] P2 pre-arm failed; will attempt on delay expiry", true);
                 }
@@ -1380,6 +1386,10 @@ void ApplyAutoAction(int playerNum, uintptr_t moveIDAddr, short currentMoveID, s
         // Ensure immediate-only is disabled so buffer writes progress
         g_injectImmediateOnly[playerNum].store(false);
         success = FreezeBufferForMotion(playerNum, motionType, buttonMask);
+        // If this came from an On RG trigger, enable fast restore
+        if (success && triggerType == TRIGGER_ON_RG && playerNum == 2) {
+            g_crgFastRestore.store(true);
+        }
     }
     
     if (success) {
@@ -1484,6 +1494,19 @@ void RestoreP2ControlState() {
     }
 }
 
+// Restore only the P2 control flag without touching buffer freezing.
+// Used for Counter RG so the motion buffer remains active while giving control back.
+static void RestoreP2ControlFlagOnly() {
+    if (!g_p2ControlOverridden) return;
+    uintptr_t base = GetEFZBase();
+    if (!base) return;
+    uintptr_t p2CharPtr = 0;
+    if (!SafeReadMemory(base + EFZ_BASE_OFFSET_P2, &p2CharPtr, sizeof(uintptr_t)) || !p2CharPtr) return;
+    LogOut("[AUTO-ACTION] Restoring P2 control flag only (preserve buffer freeze)", true);
+    SafeWriteMemory(p2CharPtr + AI_CONTROL_FLAG_OFFSET, &g_originalP2ControlFlag, sizeof(uint32_t));
+    g_p2ControlOverridden = false;
+}
+
 // Add this function to auto_action.h
 void ProcessAutoControlRestore() {
     if (!IsMatchPhase()) {
@@ -1496,17 +1519,26 @@ void ProcessAutoControlRestore() {
     }
     if (g_pendingControlRestore.load()) {
         // Cache address and throttle to every other frame to reduce CPU
-        static uintptr_t moveIDAddr2 = 0;
+        static uintptr_t moveIDAddr2 = 0; // our player (P2)
+        static uintptr_t moveIDAddr1 = 0; // opponent (P1)
         static int s_throttle = 0;
-        if ((s_throttle++ & 1) != 0) return; // 96 Hz sampling is sufficient
+        // While CRG is active, sample every frame for fastest possible restore
+        if (!g_crgFastRestore.load()) {
+            if ((s_throttle++ & 1) != 0) return; // 96 Hz sampling when not in CRG mode
+        }
 
         uintptr_t base = GetEFZBase();
         if (!base) return;
         if (!moveIDAddr2) moveIDAddr2 = ResolvePointer(base, EFZ_BASE_OFFSET_P2, MOVE_ID_OFFSET);
+        if (!moveIDAddr1) moveIDAddr1 = ResolvePointer(base, EFZ_BASE_OFFSET_P1, MOVE_ID_OFFSET);
 
         short moveID2 = 0;
+        short oppMoveID = 0;
         if (moveIDAddr2) {
             SafeReadMemory(moveIDAddr2, &moveID2, sizeof(short));
+        }
+        if (moveIDAddr1) {
+            SafeReadMemory(moveIDAddr1, &oppMoveID, sizeof(short));
         }
 
         int timeout = g_controlRestoreTimeout.fetch_sub(1);
@@ -1523,6 +1555,42 @@ void ProcessAutoControlRestore() {
             sawNonZeroMoveID = true;
         }
 
+        // Counter RG fast-restore: if opponent enters attack frames (>=200) AND we are actionable,
+        // restore immediately with control-flag-only to preserve the buffered special. Fallback: if
+        // our move starts (non-RG state), perform full restore.
+        if (g_crgFastRestore.load()) {
+            bool opponentAttacking = (oppMoveID >= 200);
+            bool moveStarted = (moveID2 > 0 && moveID2 != RG_STAND_ID && moveID2 != RG_CROUCH_ID && moveID2 != RG_AIR_ID);
+            bool p2ActionableNow = IsActionable(moveID2);
+            bool isRGPrearmedSpecial = s_p2RGPrearmIsSpecial; // true when we pre-armed a special at RG entry
+            if (opponentAttacking && p2ActionableNow) {
+                if (!isRGPrearmedSpecial) {
+                    LogOut("[AUTO-ACTION][CRG] Early restore: opponent entered attack frames", true);
+                    RestoreP2ControlFlagOnly();
+                    g_pendingControlRestore.store(false);
+                    g_crgFastRestore.store(false);
+                    g_lastP2MoveID.store(-1);
+                    sawNonZeroMoveID = false;
+                    return;
+                } else {
+                    // For specials, defer restore until the move actually starts to avoid losing the final button press
+                    if (detailedLogging.load()) {
+                        LogOut("[AUTO-ACTION][CRG] Opponent attacking, but special pre-armed: deferring restore until move starts", true);
+                    }
+                }
+            }
+            if (moveStarted) {
+                LogOut("[AUTO-ACTION][CRG] Early restore: special started after RG", true);
+                RestoreP2ControlState();
+                g_pendingControlRestore.store(false);
+                g_crgFastRestore.store(false);
+                g_lastP2MoveID.store(-1);
+                sawNonZeroMoveID = false;
+                p2TriggerCooldown = 0; p2TriggerActive = false;
+                return;
+            }
+        }
+
         bool moveChanged = (moveID2 != g_lastP2MoveID.load() && moveID2 == 0 && sawNonZeroMoveID);
         bool timeoutExpired = (timeout <= 0);
 
@@ -1534,6 +1602,7 @@ void ProcessAutoControlRestore() {
 
             RestoreP2ControlState();
             g_pendingControlRestore.store(false);
+            g_crgFastRestore.store(false);
             g_lastP2MoveID.store(-1);
             sawNonZeroMoveID = false;
 
@@ -1647,6 +1716,7 @@ void ClearAllAutoActionTriggers() {
     g_pendingControlRestore.store(false);
     g_controlRestoreTimeout.store(0);
     g_lastP2MoveID.store(-1);
+    g_crgFastRestore.store(false);
 
     // Ensure input buffer freeze (for special motions) is lifted
     StopBufferFreezing();
