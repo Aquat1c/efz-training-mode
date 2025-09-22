@@ -45,6 +45,7 @@ int g_TriggerAfterBlockId = -1;
 int g_TriggerOnWakeupId = -1;
 int g_TriggerAfterHitstunId = -1;
 int g_TriggerAfterAirtechId = -1;
+int g_TriggerOnRGId = -1;
 // Debug borders toggle default off
 std::atomic<bool> g_ShowOverlayDebugBorders{false};
 std::atomic<bool> g_ShowRGDebugToasts{false};

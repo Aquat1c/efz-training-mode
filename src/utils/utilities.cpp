@@ -140,6 +140,7 @@ void DisableFeatures() {
     g_TriggerOnWakeupId = -1;
     g_TriggerAfterHitstunId = -1;
     g_TriggerAfterAirtechId = -1;
+    g_TriggerOnRGId = -1;
     g_AirtechStatusId = -1;
     g_JumpStatusId = -1;
     g_FrameAdvantageId = -1;
@@ -298,6 +299,7 @@ void ClearAllTriggersPersistently() {
     if (g_TriggerOnWakeupId != -1) { DirectDrawHook::RemovePermanentMessage(g_TriggerOnWakeupId); g_TriggerOnWakeupId = -1; }
     if (g_TriggerAfterHitstunId != -1) { DirectDrawHook::RemovePermanentMessage(g_TriggerAfterHitstunId); g_TriggerAfterHitstunId = -1; }
     if (g_TriggerAfterAirtechId != -1) { DirectDrawHook::RemovePermanentMessage(g_TriggerAfterAirtechId); g_TriggerAfterAirtechId = -1; }
+    if (g_TriggerOnRGId != -1) { DirectDrawHook::RemovePermanentMessage(g_TriggerOnRGId); g_TriggerOnRGId = -1; }
 }
 
 
@@ -397,26 +399,31 @@ DisplayData displayData = {
     false,              // triggerOnWakeup
     false,              // triggerAfterHitstun
     false,              // triggerAfterAirtech
+    false,              // triggerOnRG
     // Delay settings (frames)
     0,                  // delayAfterBlock
     0,                  // delayOnWakeup
     0,                  // delayAfterHitstun
     0,                  // delayAfterAirtech
+    0,                  // delayOnRG
     // Individual action settings for each trigger
     ACTION_5A,          // actionAfterBlock
     ACTION_5A,          // actionOnWakeup
     ACTION_5A,          // actionAfterHitstun
     ACTION_5A,          // actionAfterAirtech
+    ACTION_5A,          // actionOnRG
     // Custom action IDs for each trigger
     BASE_ATTACK_5A,     // customAfterBlock
     BASE_ATTACK_5A,     // customOnWakeup
     BASE_ATTACK_5A,     // customAfterHitstun
     BASE_ATTACK_JA,     // customAfterAirtech
+    BASE_ATTACK_5A,     // customOnRG
     // Strength settings (0=A,1=B,2=C)
     0,                  // strengthAfterBlock
     0,                  // strengthOnWakeup
     0,                  // strengthAfterHitstun
     0,                  // strengthAfterAirtech
+    0,                  // strengthOnRG
     false, false,       // p1DoppelEnlightened, p2DoppelEnlightened
     false, false,       // p1RumiBarehanded, p2RumiBarehanded
     false, false,       // p1RumiInfiniteShinai, p2RumiInfiniteShinai
@@ -525,12 +532,14 @@ std::atomic<bool> triggerAfterBlockEnabled(false);
 std::atomic<bool> triggerOnWakeupEnabled(false);
 std::atomic<bool> triggerAfterHitstunEnabled(false);
 std::atomic<bool> triggerAfterAirtechEnabled(false);
+std::atomic<bool> triggerOnRGEnabled(false);
 
 // Delay settings (in visual frames)
 std::atomic<int> triggerAfterBlockDelay(DEFAULT_TRIGGER_DELAY);
 std::atomic<int> triggerOnWakeupDelay(DEFAULT_TRIGGER_DELAY);
 std::atomic<int> triggerAfterHitstunDelay(DEFAULT_TRIGGER_DELAY);
 std::atomic<int> triggerAfterAirtechDelay(DEFAULT_TRIGGER_DELAY);
+std::atomic<int> triggerOnRGDelay(DEFAULT_TRIGGER_DELAY);
 
 // Auto-airtech delay support
 std::atomic<int> autoAirtechDelay(0); // Default to instant activation
@@ -543,18 +552,21 @@ std::atomic<int> triggerAfterBlockAction(ACTION_5A);
 std::atomic<int> triggerOnWakeupAction(ACTION_5A);
 std::atomic<int> triggerAfterHitstunAction(ACTION_5A);
 std::atomic<int> triggerAfterAirtechAction(ACTION_5A);
+std::atomic<int> triggerOnRGAction(ACTION_5A);
 
 // Custom action IDs for each trigger
 std::atomic<int> triggerAfterBlockCustomID(BASE_ATTACK_5A);
 std::atomic<int> triggerOnWakeupCustomID(BASE_ATTACK_5A);
 std::atomic<int> triggerAfterHitstunCustomID(BASE_ATTACK_5A);
 std::atomic<int> triggerAfterAirtechCustomID(BASE_ATTACK_JA);  // Default to jumping A for airtech
+std::atomic<int> triggerOnRGCustomID(BASE_ATTACK_5A);
 
 // Individual strength settings (0=A, 1=B, 2=C)
 std::atomic<int> triggerAfterBlockStrength(0);
 std::atomic<int> triggerOnWakeupStrength(0);
 std::atomic<int> triggerAfterHitstunStrength(0);
 std::atomic<int> triggerAfterAirtechStrength(0);
+std::atomic<int> triggerOnRGStrength(0);
 
 // Debug/experimental: allow buffering (pre-freeze) of wakeup specials/supers/dashes instead of f1 injection
 std::atomic<bool> g_wakeBufferingEnabled{false};

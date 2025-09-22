@@ -217,6 +217,7 @@
 #define TRIGGER_ON_WAKEUP     2
 #define TRIGGER_AFTER_HITSTUN 3
 #define TRIGGER_AFTER_AIRTECH 4  // New trigger
+#define TRIGGER_ON_RG         5  // New: On Recoil Guard actionable
 
 // Auto-action types (keep existing)
 #define ACTION_NONE           0

@@ -29,12 +29,16 @@ extern std::atomic<bool> triggerAfterBlockEnabled;
 extern std::atomic<bool> triggerOnWakeupEnabled;
 extern std::atomic<bool> triggerAfterHitstunEnabled;
 extern std::atomic<bool> triggerAfterAirtechEnabled;
+// New: On Recoil Guard trigger
+extern std::atomic<bool> triggerOnRGEnabled;
 
 // Delay settings (in visual frames) - ADD THESE MISSING DECLARATIONS
 extern std::atomic<int> triggerAfterBlockDelay;
 extern std::atomic<int> triggerOnWakeupDelay;
 extern std::atomic<int> triggerAfterHitstunDelay;
 extern std::atomic<int> triggerAfterAirtechDelay;
+// New: On RG delay
+extern std::atomic<int> triggerOnRGDelay;
 
 // Function declarations
 uintptr_t GetEFZBase();
@@ -152,30 +156,35 @@ struct DisplayData {
     bool triggerOnWakeup;
     bool triggerAfterHitstun;
     bool triggerAfterAirtech;
+    bool triggerOnRG; // new
     
     // Delay settings
     int delayAfterBlock;
     int delayOnWakeup;
     int delayAfterHitstun;
     int delayAfterAirtech;
+    int delayOnRG;
     
     // Individual action settings for each trigger
     int actionAfterBlock;
     int actionOnWakeup;
     int actionAfterHitstun;
     int actionAfterAirtech;
+    int actionOnRG;
     
     // Custom action IDs for each trigger
     int customAfterBlock;
     int customOnWakeup;
     int customAfterHitstun;
     int customAfterAirtech;
+    int customOnRG;
 
     // Add strength settings for each trigger
     int strengthAfterBlock;
     int strengthOnWakeup;
     int strengthAfterHitstun;
     int strengthAfterAirtech;
+    int strengthOnRG;
 
     // Doppel Nanase (ExNanase) - Enlightened FM checkbox state per player
     bool p1DoppelEnlightened;
@@ -339,12 +348,14 @@ extern std::atomic<int> triggerAfterBlockAction;
 extern std::atomic<int> triggerOnWakeupAction;
 extern std::atomic<int> triggerAfterHitstunAction;
 extern std::atomic<int> triggerAfterAirtechAction;
+extern std::atomic<int> triggerOnRGAction;
 
 // Custom action IDs for each trigger
 extern std::atomic<int> triggerAfterBlockCustomID;
 extern std::atomic<int> triggerOnWakeupCustomID;
 extern std::atomic<int> triggerAfterHitstunCustomID;
 extern std::atomic<int> triggerAfterAirtechCustomID;
+extern std::atomic<int> triggerOnRGCustomID;
 
 // Add a missing constant that utilities.cpp needs
 #define DEFAULT_TRIGGER_DELAY 0
@@ -393,6 +404,7 @@ extern std::atomic<int> triggerAfterBlockStrength;
 extern std::atomic<int> triggerOnWakeupStrength;
 extern std::atomic<int> triggerAfterHitstunStrength;
 extern std::atomic<int> triggerAfterAirtechStrength;
+extern std::atomic<int> triggerOnRGStrength;
 
 // Debug toggle: enable pre-buffering (freeze) of wakeup specials/supers/dashes
 extern std::atomic<bool> g_wakeBufferingEnabled;

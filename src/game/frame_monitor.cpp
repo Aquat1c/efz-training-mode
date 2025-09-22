@@ -135,6 +135,7 @@ void UpdateTriggerOverlay() {
         if (g_TriggerOnWakeupId != -1) { DirectDrawHook::RemovePermanentMessage(g_TriggerOnWakeupId); g_TriggerOnWakeupId = -1; }
         if (g_TriggerAfterHitstunId != -1) { DirectDrawHook::RemovePermanentMessage(g_TriggerAfterHitstunId); g_TriggerAfterHitstunId = -1; }
         if (g_TriggerAfterAirtechId != -1) { DirectDrawHook::RemovePermanentMessage(g_TriggerAfterAirtechId); g_TriggerAfterAirtechId = -1; }
+        if (g_TriggerOnRGId != -1) { DirectDrawHook::RemovePermanentMessage(g_TriggerOnRGId); g_TriggerOnRGId = -1; }
     };
 
     if (!autoActionEnabled.load()) {
@@ -255,6 +256,11 @@ void UpdateTriggerOverlay() {
     update_line(g_TriggerAfterAirtechId, triggerAfterAirtechEnabled.load(), "After Airtech: ", 
                 triggerAfterAirtechAction.load(), triggerAfterAirtechCustomID.load(), 
                 triggerAfterAirtechDelay.load(), triggerAfterAirtechStrength.load(), TRIGGER_AFTER_AIRTECH);
+
+    // New: On RG trigger line
+    update_line(g_TriggerOnRGId, triggerOnRGEnabled.load(), "On RG: ",
+                triggerOnRGAction.load(), triggerOnRGCustomID.load(),
+                triggerOnRGDelay.load(), triggerOnRGStrength.load(), TRIGGER_ON_RG);
 }
 
 void FrameDataMonitor() {
@@ -727,6 +733,15 @@ void FrameDataMonitor() {
                     short atkMoveNow = (rg.attacker == 1) ? moveID1 : moveID2;
                     if (IsActionable(atkMoveNow)) {
                         rg.atkActionableAt = frameCounter.load();
+                        // Debug signal for verification
+                        {
+                            std::ostringstream os; os.setf(std::ios::fixed); os << std::setprecision(2);
+                            os << "RG: Attacker actionable (P" << rg.attacker << ")";
+                            LogOut(std::string("[RG][FM] ") + os.str(), true);
+                            if (g_ShowRGDebugToasts.load()) {
+                                DirectDrawHook::AddMessage(os.str(), "RG", RGB(160, 255, 160), 1200, 0, 156);
+                            }
+                        }
                     }
                 }
                 // Track defender actionable timestamp
@@ -734,6 +749,15 @@ void FrameDataMonitor() {
                     short defMoveNow = (rg.defender == 1) ? moveID1 : moveID2;
                     if (IsActionable(defMoveNow)) {
                         rg.defActionableAt = frameCounter.load();
+                        // Debug signal for verification
+                        {
+                            std::ostringstream os; os.setf(std::ios::fixed); os << std::setprecision(2);
+                            os << "RG: Defender actionable (P" << rg.defender << ")";
+                            LogOut(std::string("[RG][FM] ") + os.str(), true);
+                            if (g_ShowRGDebugToasts.load()) {
+                                DirectDrawHook::AddMessage(os.str(), "RG", RGB(255, 240, 160), 1200, 0, 156);
+                            }
+                        }
                     }
                 }
 
@@ -1275,6 +1299,10 @@ void ReinitializeOverlays() {
         DirectDrawHook::RemovePermanentMessage(g_TriggerAfterAirtechId);
         g_TriggerAfterAirtechId = -1;
     }
+    if (g_TriggerOnRGId != -1) {
+        DirectDrawHook::RemovePermanentMessage(g_TriggerOnRGId);
+        g_TriggerOnRGId = -1;
+    }
     
     // Reset frame advantage display
     if (g_FrameAdvantageId != -1) {
@@ -1628,7 +1656,7 @@ void UpdateStatsDisplay() {
         bool showNayuki = (displayData.p1CharID == CHAR_ID_NAYUKIB) || (displayData.p2CharID == CHAR_ID_NAYUKIB);
         if (showNayuki) {
             std::stringstream nayukiLine;
-            nayukiLine << "Nayuki Snow: ";
+            nayukiLine << "Snowbunnies: ";
             if (displayData.p1CharID == CHAR_ID_NAYUKIB) {
                 nayukiLine << "P1 " << displayData.p1NayukiSnowbunnies;
                 if (displayData.p1NayukiInfiniteSnow) nayukiLine << " (Inf)";

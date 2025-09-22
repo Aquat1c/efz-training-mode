@@ -87,6 +87,12 @@ struct StunTimers {
 static StunTimers s_p1Timers;
 static StunTimers s_p2Timers;
 
+// (Deprecated) Pending window for On RG: retained for state reset only
+static bool s_p1RGPending = false;
+static int  s_p1RGExpiry = 0;
+static bool s_p2RGPending = false;
+static int  s_p2RGExpiry = 0;
+
 static inline void UpdateStunTimersForPlayer(StunTimers& t, short prevMoveID, short currMoveID) {
     int now = frameCounter.load();
 
@@ -140,7 +146,8 @@ static inline bool AutoActionWorkPending() {
     if (!autoActionEnabled.load()) return false;
     // If any triggers are enabled, we may need to evaluate
     bool triggersEnabled = triggerAfterBlockEnabled.load() || triggerOnWakeupEnabled.load() ||
-                           triggerAfterHitstunEnabled.load() || triggerAfterAirtechEnabled.load();
+                           triggerAfterHitstunEnabled.load() || triggerAfterAirtechEnabled.load() ||
+                           triggerOnRGEnabled.load();
     // If a delay is active, wakeup is pre-armed, cooldowns are running, or restore is pending, keep running
     bool delaysActive = p1DelayState.isDelaying || p2DelayState.isDelaying;
     bool cooldownsActive = p1TriggerActive || p2TriggerActive || (p1TriggerCooldown > 0) || (p2TriggerCooldown > 0);
@@ -478,7 +485,7 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
 
 
         // After Block trigger
-        if (!shouldTrigger && triggerAfterBlockEnabled.load()) {
+    if (!shouldTrigger && triggerAfterBlockEnabled.load()) {
             bool wasInBlockstun = IsBlockstun(prevMoveID1);
             bool nowNotInBlockstun = !IsBlockstun(moveID1);
             bool wasNotActionable = !IsActionable(prevMoveID1);
@@ -496,6 +503,24 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
                     LogOut("[TRIGGER_TIMING] P1 blockstun dur=" + std::to_string(s_p1Timers.lastBlockDuration) +
                            ", sinceEnd=" + std::to_string(s_p1Timers.sinceBlockEnd), true);
                 }
+            }
+        }
+
+        // On RG trigger: arm at RG entry and schedule for RG stun end (stand/crouch/air specific)
+        if (!shouldTrigger && triggerOnRGEnabled.load()) {
+            bool enteredRG = (!IsRecoilGuard(prevMoveID1) && IsRecoilGuard(moveID1));
+            if (enteredRG) {
+                int baseDelayF = 20; // fallback in visual frames
+                if (moveID1 == RG_STAND_ID) baseDelayF = RG_STAND_FREEZE_DEFENDER; // 20F
+                else if (moveID1 == RG_CROUCH_ID) baseDelayF = RG_CROUCH_FREEZE_DEFENDER; // 22F
+                else if (moveID1 == RG_AIR_ID) baseDelayF = RG_AIR_FREEZE_DEFENDER; // 22F
+                int userDelayF = triggerOnRGDelay.load();
+                int totalDelayF = baseDelayF + userDelayF;
+                if (totalDelayF < 0) totalDelayF = 0; // do not allow negative
+                LogOut("[TRIGGER_DIAG] P1 entered RG (" + std::to_string(moveID1) + ") baseDelay=" + std::to_string(baseDelayF) +
+                       "F + user=" + std::to_string(userDelayF) + "F => total=" + std::to_string(totalDelayF) + "F", true);
+                // Schedule execution exactly at RG stun end (converted to internal frames in StartTriggerDelay)
+                StartTriggerDelay(1, TRIGGER_ON_RG, 0, totalDelayF);
             }
         }
         
@@ -718,6 +743,23 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
             delay = triggerAfterBlockDelay.load();
             actionMoveID = GetActionMoveID(triggerAfterBlockAction.load(), TRIGGER_AFTER_BLOCK, 2);
             LogOut("[AUTO-ACTION] P2 After Block trigger", true);
+        }
+    }
+
+    // P2: On RG trigger at RG entry (independent of After Block): schedule for RG stun end
+    if (!shouldTrigger && triggerOnRGEnabled.load()) {
+        bool enteredRG2 = (!IsRecoilGuard(prevMoveID2) && IsRecoilGuard(moveID2));
+        if (enteredRG2) {
+            int baseDelayF = 20;
+            if (moveID2 == RG_STAND_ID) baseDelayF = RG_STAND_FREEZE_DEFENDER;
+            else if (moveID2 == RG_CROUCH_ID) baseDelayF = RG_CROUCH_FREEZE_DEFENDER;
+            else if (moveID2 == RG_AIR_ID) baseDelayF = RG_AIR_FREEZE_DEFENDER;
+            int userDelayF = triggerOnRGDelay.load();
+            int totalDelayF = baseDelayF + userDelayF;
+            if (totalDelayF < 0) totalDelayF = 0;
+            LogOut("[TRIGGER_DIAG] P2 entered RG (" + std::to_string(moveID2) + ") baseDelay=" + std::to_string(baseDelayF) +
+                   "F + user=" + std::to_string(userDelayF) + "F => total=" + std::to_string(totalDelayF) + "F", true);
+            StartTriggerDelay(2, TRIGGER_ON_RG, 0, totalDelayF);
         }
     }
         
@@ -1031,6 +1073,9 @@ void ApplyAutoAction(int playerNum, uintptr_t moveIDAddr, short currentMoveID, s
         case TRIGGER_AFTER_AIRTECH:
             actionType = triggerAfterAirtechAction.load();
             break;
+        case TRIGGER_ON_RG:
+            actionType = triggerOnRGAction.load();
+            break;
         default:
             actionType = ACTION_5A; // Default to 5A
             break;
@@ -1132,6 +1177,7 @@ void ApplyAutoAction(int playerNum, uintptr_t moveIDAddr, short currentMoveID, s
             case TRIGGER_ON_WAKEUP: dir = triggerOnWakeupStrength.load(); break;
             case TRIGGER_AFTER_HITSTUN: dir = triggerAfterHitstunStrength.load(); break;
             case TRIGGER_AFTER_AIRTECH: dir = triggerAfterAirtechStrength.load(); break;
+            case TRIGGER_ON_RG: dir = triggerOnRGStrength.load(); break;
             default: dir = 0; break;
         }
 
@@ -1473,6 +1519,10 @@ void ClearAllAutoActionTriggers() {
 
     // Ensure input buffer freeze (for special motions) is lifted
     StopBufferFreezing();
+
+    // Clear RG pending windows
+    s_p1RGPending = false; s_p1RGExpiry = 0;
+    s_p2RGPending = false; s_p2RGExpiry = 0;
 
     LogOut("[AUTO-ACTION] All trigger states cleared", true);
 }
