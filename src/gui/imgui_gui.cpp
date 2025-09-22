@@ -25,6 +25,8 @@ extern void SpamAttackButton(uintptr_t playerBase, uint8_t button, int frames, c
 #include "../include/gui/imgui_settings.h"
 #include "../include/game/final_memory_patch.h"
 #include "../include/game/fm_commands.h"
+// Always RG control
+#include "../include/game/always_rg.h"
 
 // Add these constants at the top of the file after includes
 // These are from input_motion.cpp but we need them here
@@ -1550,6 +1552,20 @@ namespace ImGuiGui {
         bool showRGToasts = g_ShowRGDebugToasts.load();
         if (ImGui::Checkbox("Show RG debug toasts", &showRGToasts)) {
             g_ShowRGDebugToasts.store(showRGToasts);
+        }
+
+        // Always RG toggle (Practice Match only; enforcement lives in FrameDataMonitor)
+        bool alwaysRG = AlwaysRG::IsEnabled();
+        if (ImGui::Checkbox("Always Recoil Guard (Practice)", &alwaysRG)) {
+            AlwaysRG::SetEnabled(alwaysRG);
+            LogOut(std::string("[IMGUI][AlwaysRG] ") + (alwaysRG ? "Enabled" : "Disabled"), true);
+            if (g_ShowRGDebugToasts.load()) {
+                DirectDrawHook::AddMessage(std::string("Always RG: ") + (alwaysRG ? "ON" : "OFF"), "ALWAYS_RG", RGB(200,220,255), 1500, 12, 72);
+            }
+        }
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("Keeps the dummy's RG armed by writing [P2+0x334]=0x3C each frame.\n"
+                              "Active only during Practice -> Match. Does not force blocking; normal rules apply.");
         }
 
         ImGui::Separator();

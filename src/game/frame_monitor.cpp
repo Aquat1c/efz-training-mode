@@ -19,6 +19,7 @@
 #include "../include/game/attack_reader.h"
 #include "../include/game/practice_patch.h"
 #include "../include/game/character_settings.h"
+#include "../include/game/always_rg.h"
 #ifndef CLEAR_ALL_AUTO_ACTION_TRIGGERS_FWD
 #define CLEAR_ALL_AUTO_ACTION_TRIGGERS_FWD
 void ClearAllAutoActionTriggers();
@@ -959,6 +960,9 @@ void FrameDataMonitor() {
             
             // Run dummy auto-block stance early for minimal latency (uses current move IDs)
             MonitorDummyAutoBlock(moveID1, moveID2, prevMoveID1, prevMoveID2);
+
+            // Practice-only: arm Recoil Guard for the dummy when enabled
+            AlwaysRG::Tick(moveID1, moveID2);
 
             if (moveIDsChanged || criticalFeaturesActive) {
                 // STEP 1: Process auto-actions FIRST (highest priority)
