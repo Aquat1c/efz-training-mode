@@ -235,9 +235,10 @@ namespace SwitchPlayers {
                 LogRW<uint8_t>("engine.activePlayer[+4930]", gameStatePtr + GAMESTATE_OFF_ACTIVE_PLAYER, activePlayer);
                 LogRW<uint8_t>("engine.P2_CPU_FLAG[+4931]", gameStatePtr + GAMESTATE_OFF_P2_CPU_FLAG, p2CpuFlag);
                 LogRW<uint8_t>("engine.P1_CPU_FLAG[+4932]", gameStatePtr + GAMESTATE_OFF_P1_CPU_FLAG, p1CpuFlag);
-                // Mirror EfzRevival gating: *(practice + 36) = (p2CpuFlag == 0)
-                uint32_t p2HumanGate = (p2CpuFlag == 0) ? 1u : 0u;
-                LogRW<uint32_t>("practice.P2_HUMAN_GATE[+0x24]", (uintptr_t)practice + PRACTICE_OFF_P2_HUMAN_GATE, p2HumanGate);
+                // Update GUI/buffer display position: *(practice+0x24) = 1 when P1 local, 0 when P2 local
+                // CE observed as "Current GUI position"; EfzRevival writes here too (sete -> mov [esi+24], eax)
+                uint8_t guiPos = (desiredLocal == 0) ? 1u : 0u;
+                LogRW<uint8_t>("practice.GUI_POS[+0x24]", (uintptr_t)practice + PRACTICE_OFF_GUI_POS, guiPos);
             }
             else {
                 LogOut("[SWITCH] Game state pointer not available; engine flags not updated", true);
@@ -267,9 +268,9 @@ namespace SwitchPlayers {
         bool p1Human = IsAIControlFlagHuman(1);
         bool p2Human = IsAIControlFlagHuman(2);
         LogOut(std::string("[SWITCH] AI flags after toggle: P1=") + (p1Human?"Human":"AI") + ", P2=" + (p2Human?"Human":"AI"), true);
-        // Verify Practice human gate at +0x24
-        uint32_t gate = 0; SafeReadMemory((uintptr_t)practice + PRACTICE_OFF_P2_HUMAN_GATE, &gate, sizeof(gate));
-        LogOut(std::string("[SWITCH] Practice +0x24 gate (P2 human): ") + (gate?"1":"0"), true);
+    // Verify GUI/buffer display position at +0x24
+    uint8_t guiPosR = 0; SafeReadMemory((uintptr_t)practice + PRACTICE_OFF_GUI_POS, &guiPosR, sizeof(guiPosR));
+    LogOut(std::string("[SWITCH] Practice +0x24 GUI pos (1=P1,0=P2): ") + (guiPosR?"1":"0"), true);
 
         // Inspect shared input vector slots that may select which handle is considered active
         uintptr_t slot0 = 0, slot1 = 0;

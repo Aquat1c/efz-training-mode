@@ -119,10 +119,15 @@
 #define PRACTICE_OFF_SHARED_INPUT_VEC 0x1240 // base of shared input slots (InputP1/InputP2), if needed
 #endif
 
-// Additional gate observed in EfzRevival: *(this + 36) = (P2_CPU_FLAG == 0)
-// When true, Practice treats P2 as human-controlled for certain input paths.
+// Current GUI/buffer display position used by EfzRevival
+// Observed at EfzRevival.dll+75A98: mov [esi+0x24], eax after a sete -> value is 1 when P1, 0 when P2.
+#ifndef PRACTICE_OFF_GUI_POS
+#define PRACTICE_OFF_GUI_POS            0x24  // dword/byte: 1 = P1, 0 = P2 (GUI position)
+#endif
+
+// Deprecated alias: previously misnamed as a P2 human gate; kept for compatibility in code references.
 #ifndef PRACTICE_OFF_P2_HUMAN_GATE
-#define PRACTICE_OFF_P2_HUMAN_GATE     0x24  // dword: 1 if P2 is human, 0 if CPU
+#define PRACTICE_OFF_P2_HUMAN_GATE      PRACTICE_OFF_GUI_POS
 #endif
 
 // ======================================
