@@ -1,6 +1,8 @@
 #include "../include/gui/imgui_settings.h"
 #include "../include/utils/config.h"
 #include "../include/core/logger.h"
+#include "../include/utils/switch_players.h"
+#include "../include/game/game_state.h"
 #include <windows.h>
 
 namespace ImGuiSettings {
@@ -132,5 +134,7 @@ namespace ImGuiSettings {
 
         ImGui::Separator();
         ImGui::TextDisabled("Config file: %s", Config::GetConfigFilePath().c_str());
+
+        // Switch Players control moved to Debug tab
     }
 }

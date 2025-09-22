@@ -264,7 +264,7 @@ void MonitorAndPatchPracticeMode() {
             DumpPracticeModeState();
         }
         
-        if (currentMode == GameMode::Practice) {
+    if (currentMode == GameMode::Practice) {
             // Check current P2 CPU flag and AI flag before patching
             uintptr_t efzBase = GetEFZBase();
             uintptr_t gameStatePtr = 0;
@@ -284,72 +284,38 @@ void MonitorAndPatchPracticeMode() {
                     lastP2CpuControlled = p2CpuControlled;
                 }
                 
-                // Always check the AI flag status, even if CPU flag is already human
+                // Keep P2 character AI flag aligned with the game state's CPU flag.
+                // If CPU flag says human (0), ensure AI flag = 0. If CPU flag says CPU (1), ensure AI flag = 1.
                 uintptr_t p2CharPtr = 0;
                 uint32_t p2AIFlag = 1; // Default to AI controlled
                 bool p2CharacterInitialized = false;
-                
+
                 if (SafeReadMemory(efzBase + EFZ_BASE_OFFSET_P2, &p2CharPtr, sizeof(uintptr_t)) && p2CharPtr) {
                     p2CharacterInitialized = true;
                     SafeReadMemory(p2CharPtr + AI_CONTROL_FLAG_OFFSET, &p2AIFlag, sizeof(uint32_t));
-                    
+
                     bool p2AIControlled = (p2AIFlag != 0);
-                    
-                    // Log when P2 AI control state changes
+
                     if (p2AIControlled != lastP2AIControlled && p2CharacterInitialized) {
-                        LogOut("[PRACTICE_PATCH] P2 AI control state changed: " + 
-                               std::string(lastP2AIControlled ? "AI" : "Human") + " -> " + 
+                        LogOut("[PRACTICE_PATCH] P2 AI control state changed: " +
+                               std::string(lastP2AIControlled ? "AI" : "Human") + " -> " +
                                std::string(p2AIControlled ? "AI" : "Human"), true);
-                        
-                        // If AI control was human but got switched back to AI, log this as a significant event
-                        if (!lastP2AIControlled && p2AIControlled) {
-                            LogOut("[PRACTICE_PATCH] IMPORTANT: AI control flag was reset to 1 by the game!", true);
-                            LogOut("[PRACTICE_PATCH] This suggests the flag is actively maintained by game code", true);
-                            
-                            // Add timestamp to help track when this happens
-                            auto now = std::chrono::system_clock::now();
-                            auto now_time_t = std::chrono::system_clock::to_time_t(now);
-                            std::stringstream ss;
-                            ss << "[PRACTICE_PATCH] Time of AI flag reset: " << std::ctime(&now_time_t);
-                            LogOut(ss.str(), true);
-                            
-                            // Dump full state when this happens
-                            DumpPracticeModeState();
-                        }
-                        
                         lastP2AIControlled = p2AIControlled;
                     }
-                    
-                    // Always force the AI flag to 0 in Practice mode if it's not already
-                    if (p2AIControlled && p2CharacterInitialized) {
-                        LogOut("[PRACTICE_PATCH] P2 is AI controlled, applying AI flag patch...", detailedLogging.load());
-                        uint32_t humanAIFlag = 0;
-                        if (SafeWriteMemory(p2CharPtr + AI_CONTROL_FLAG_OFFSET, &humanAIFlag, sizeof(uint32_t))) {
-                            LogOut("[PRACTICE_PATCH] Successfully patched P2 AI flag to 0 (human controlled)", detailedLogging.load());
+
+                    // Desired AI flag follows the game state's CPU flag
+                    uint32_t desiredAIFlag = p2CpuControlled ? 1u : 0u;
+                    if (p2AIFlag != desiredAIFlag) {
+                        if (SafeWriteMemory(p2CharPtr + AI_CONTROL_FLAG_OFFSET, &desiredAIFlag, sizeof(uint32_t))) {
+                            LogOut(std::string("[PRACTICE_PATCH] Sync P2 AI flag -> ") + (desiredAIFlag ? "AI(1)" : "Human(0)"), detailedLogging.load());
                         } else {
-                            LogOut("[PRACTICE_PATCH] Failed to patch P2 AI flag", true);
+                            LogOut("[PRACTICE_PATCH] Failed to sync P2 AI flag to match CPU flag", true);
                         }
                     }
                 }
-                
-                // Apply full patch if P2 is still CPU controlled at the game state level
-                if (p2CpuControlled) {
-                    LogOut("[PRACTICE_PATCH] P2 is CPU controlled, applying full patch...", true);
-                    bool success = EnablePlayer2InPracticeMode();
-                    
-                    if (!success) {
-                        consecutiveFailures++;
-                        if (consecutiveFailures >= 5) {
-                            LogOut("[PRACTICE_PATCH] WARNING: Failed to apply patch 5 times in a row", true);
-                            DumpPracticeModeState(); // Dump state after repeated failures
-                            consecutiveFailures = 0; // Reset counter to prevent spam
-                        }
-                    } else {
-                        consecutiveFailures = 0;
-                    }
-                } else {
-                    LogOut("[PRACTICE_PATCH] P2 is already human controlled at game state level", detailedLogging.load());
-                }
+
+                // Do not auto-toggle the P2 CPU flag here. That is controlled by UI actions and SwitchPlayers.
+                // This avoids fighting with side switching logic and eliminates the uncontrollable toggles.
             }
             
             // Periodically dump state in practice mode (every 30 cycles = ~15 seconds)
