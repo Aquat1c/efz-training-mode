@@ -358,8 +358,10 @@ namespace ImGuiGui {
               &guiState.localData.delayOnWakeup, &guiState.localData.strengthOnWakeup, &guiState.localData.customOnWakeup },
             { "After Hitstun", &guiState.localData.triggerAfterHitstun, &guiState.localData.actionAfterHitstun, 
               &guiState.localData.delayAfterHitstun, &guiState.localData.strengthAfterHitstun, &guiState.localData.customAfterHitstun },
-            { "After Airtech", &guiState.localData.triggerAfterAirtech, &guiState.localData.actionAfterAirtech, 
-              &guiState.localData.delayAfterAirtech, &guiState.localData.strengthAfterAirtech, &guiState.localData.customAfterAirtech }
+                        { "After Airtech", &guiState.localData.triggerAfterAirtech, &guiState.localData.actionAfterAirtech, 
+                            &guiState.localData.delayAfterAirtech, &guiState.localData.strengthAfterAirtech, &guiState.localData.customAfterAirtech },
+                        { "On RG", &guiState.localData.triggerOnRG, &guiState.localData.actionOnRG,
+                            &guiState.localData.delayOnRG, &guiState.localData.strengthOnRG, &guiState.localData.customOnRG }
         };
         
         // Motion list (includes directions/stances plus motions and utility actions)
@@ -1889,30 +1891,35 @@ namespace ImGuiGui {
     guiState.localData.triggerOnWakeup     = triggerOnWakeupEnabled.load();
     guiState.localData.triggerAfterHitstun = triggerAfterHitstunEnabled.load();
     guiState.localData.triggerAfterAirtech = triggerAfterAirtechEnabled.load();
+    guiState.localData.triggerOnRG         = triggerOnRGEnabled.load();
 
     // Per-trigger delays
     guiState.localData.delayAfterBlock     = triggerAfterBlockDelay.load();
     guiState.localData.delayOnWakeup       = triggerOnWakeupDelay.load();
     guiState.localData.delayAfterHitstun   = triggerAfterHitstunDelay.load();
     guiState.localData.delayAfterAirtech   = triggerAfterAirtechDelay.load();
+    guiState.localData.delayOnRG           = triggerOnRGDelay.load();
 
     // Per-trigger actions
     guiState.localData.actionAfterBlock    = triggerAfterBlockAction.load();
     guiState.localData.actionOnWakeup      = triggerOnWakeupAction.load();
     guiState.localData.actionAfterHitstun  = triggerAfterHitstunAction.load();
     guiState.localData.actionAfterAirtech  = triggerAfterAirtechAction.load();
+    guiState.localData.actionOnRG          = triggerOnRGAction.load();
 
     // Per-trigger custom IDs
     guiState.localData.customAfterBlock    = triggerAfterBlockCustomID.load();
     guiState.localData.customOnWakeup      = triggerOnWakeupCustomID.load();
     guiState.localData.customAfterHitstun  = triggerAfterHitstunCustomID.load();
     guiState.localData.customAfterAirtech  = triggerAfterAirtechCustomID.load();
+    guiState.localData.customOnRG          = triggerOnRGCustomID.load();
 
     // Per-trigger strengths
     guiState.localData.strengthAfterBlock    = triggerAfterBlockStrength.load();
     guiState.localData.strengthOnWakeup      = triggerOnWakeupStrength.load();
     guiState.localData.strengthAfterHitstun  = triggerAfterHitstunStrength.load();
     guiState.localData.strengthAfterAirtech  = triggerAfterAirtechStrength.load();
+    guiState.localData.strengthOnRG          = triggerOnRGStrength.load();
     }
 
     // Update ApplyImGuiSettings to include character-specific data
@@ -1956,30 +1963,35 @@ namespace ImGuiGui {
             triggerOnWakeupEnabled.store(displayData.triggerOnWakeup);
             triggerAfterHitstunEnabled.store(displayData.triggerAfterHitstun);
             triggerAfterAirtechEnabled.store(displayData.triggerAfterAirtech);
+            triggerOnRGEnabled.store(displayData.triggerOnRG);
 
             // Per-trigger delays
             triggerAfterBlockDelay.store(displayData.delayAfterBlock);
             triggerOnWakeupDelay.store(displayData.delayOnWakeup);
             triggerAfterHitstunDelay.store(displayData.delayAfterHitstun);
             triggerAfterAirtechDelay.store(displayData.delayAfterAirtech);
+            triggerOnRGDelay.store(displayData.delayOnRG);
 
             // Per-trigger actions
             triggerAfterBlockAction.store(displayData.actionAfterBlock);
             triggerOnWakeupAction.store(displayData.actionOnWakeup);
             triggerAfterHitstunAction.store(displayData.actionAfterHitstun);
             triggerAfterAirtechAction.store(displayData.actionAfterAirtech);
+            triggerOnRGAction.store(displayData.actionOnRG);
 
             // Per-trigger custom IDs
             triggerAfterBlockCustomID.store(displayData.customAfterBlock);
             triggerOnWakeupCustomID.store(displayData.customOnWakeup);
             triggerAfterHitstunCustomID.store(displayData.customAfterHitstun);
             triggerAfterAirtechCustomID.store(displayData.customAfterAirtech);
+            triggerOnRGCustomID.store(displayData.customOnRG);
 
             // Per-trigger strengths
             triggerAfterBlockStrength.store(displayData.strengthAfterBlock);
             triggerOnWakeupStrength.store(displayData.strengthOnWakeup);
             triggerAfterHitstunStrength.store(displayData.strengthAfterHitstun);
             triggerAfterAirtechStrength.store(displayData.strengthAfterAirtech);
+            triggerOnRGStrength.store(displayData.strengthOnRG);
             
             // Enforce FM bypass state to match UI selection (idempotent)
             // We read current enabled state from the runtime and reapply to ensure consistency

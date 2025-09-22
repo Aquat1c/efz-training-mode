@@ -26,6 +26,8 @@ int GetSpecialMoveStrength(int actionType, int triggerType) {
         
         case TRIGGER_AFTER_AIRTECH:
             return triggerAfterAirtechStrength.load();
+        case TRIGGER_ON_RG:
+            return triggerOnRGStrength.load();
         
         default:
             // Default to medium (B) strength if no specific trigger
@@ -44,6 +46,8 @@ std::string GetTriggerName(int triggerType) {
             return "After Hitstun";
         case TRIGGER_AFTER_AIRTECH:
             return "After Airtech";
+        case TRIGGER_ON_RG:
+            return "On RG";
         default:
             return "Unknown Trigger";
     }
