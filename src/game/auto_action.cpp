@@ -864,7 +864,9 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
                            " motion=" + std::to_string(motion) + " btnMask=" + std::to_string(buttonMask) +
                            " (control overridden)", true);
                     // Enable fast restore so we hand back control as soon as the move actually starts
-                    g_crgFastRestore.store(true);
+                    if (g_counterRGEnabled.load()) {
+                        g_crgFastRestore.store(true);
+                    }
                 } else if (isSpec) {
                     LogOut("[AUTO-ACTION][RG] P2 pre-arm failed; will attempt on delay expiry", true);
                 }
@@ -1388,7 +1390,9 @@ void ApplyAutoAction(int playerNum, uintptr_t moveIDAddr, short currentMoveID, s
         success = FreezeBufferForMotion(playerNum, motionType, buttonMask);
         // If this came from an On RG trigger, enable fast restore
         if (success && triggerType == TRIGGER_ON_RG && playerNum == 2) {
-            g_crgFastRestore.store(true);
+            if (g_counterRGEnabled.load()) {
+                g_crgFastRestore.store(true);
+            }
         }
     }
     
@@ -1558,7 +1562,7 @@ void ProcessAutoControlRestore() {
         // Counter RG fast-restore: if opponent enters attack frames (>=200) AND we are actionable,
         // restore immediately with control-flag-only to preserve the buffered special. Fallback: if
         // our move starts (non-RG state), perform full restore.
-        if (g_crgFastRestore.load()) {
+        if (g_crgFastRestore.load() && g_counterRGEnabled.load()) {
             bool opponentAttacking = (oppMoveID >= 200);
             bool moveStarted = (moveID2 > 0 && moveID2 != RG_STAND_ID && moveID2 != RG_CROUCH_ID && moveID2 != RG_AIR_ID);
             bool p2ActionableNow = IsActionable(moveID2);

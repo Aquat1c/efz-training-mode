@@ -409,6 +409,9 @@ extern std::atomic<int> triggerOnRGStrength;
 // Debug toggle: enable pre-buffering (freeze) of wakeup specials/supers/dashes
 extern std::atomic<bool> g_wakeBufferingEnabled;
 
+// Global toggle: enable/disable Counter RG early-restore behavior
+extern std::atomic<bool> g_counterRGEnabled;
+
 // Attack data structure - NEW
 struct AttackData {
     // Offset 0x38: Attack type flags (likely contains high/low data)

@@ -264,6 +264,32 @@ namespace ImGuiGui {
             ImGui::PopItemWidth();
 
             ImGui::Dummy(ImVec2(1, 6));
+            ImGui::SeparatorText("Recoil Guard");
+            // Always RG toggle (Practice Match only; enforcement lives in FrameDataMonitor)
+            bool alwaysRG = AlwaysRG::IsEnabled();
+            if (ImGui::Checkbox("Always Recoil Guard (Practice)", &alwaysRG)) {
+                AlwaysRG::SetEnabled(alwaysRG);
+                LogOut(std::string("[IMGUI][AlwaysRG] ") + (alwaysRG ? "Enabled" : "Disabled"), true);
+                if (g_ShowRGDebugToasts.load()) {
+                    DirectDrawHook::AddMessage(std::string("Always RG: ") + (alwaysRG ? "ON" : "OFF"), "ALWAYS_RG", RGB(200,220,255), 1500, 12, 72);
+                }
+            }
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("Keeps the dummy's RG armed by writing [P2+0x334]=0x3C each frame.\n"
+                                  "Active only during Practice -> Match. Does not force blocking; normal rules apply.");
+            }
+
+            // Counter RG fast-restore toggle
+            bool crg = g_counterRGEnabled.load();
+            if (ImGui::Checkbox("Enable Counter RG (fast restore)", &crg)) {
+                g_counterRGEnabled.store(crg);
+                LogOut(std::string("[IMGUI] Counter RG: ") + (crg ? "ENABLED" : "DISABLED"), true);
+            }
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("When enabled: on On RG specials, returns P2 control as soon as safe (opponent attack frames or our move starts).\nWhen disabled: restores control only after move completes or timeout.");
+            }
+
+            ImGui::Dummy(ImVec2(1, 6));
             ImGui::SeparatorText("Practice Dummy");
             // Auto-Block Mode (F7 superset)
             const char* abNames[] = { "None", "All (F7)", "First Hit (then off)", "After First Hit (then on)", "(deprecated)" };
@@ -329,6 +355,8 @@ namespace ImGuiGui {
         if (ImGui::IsItemHovered()) {
             ImGui::SetTooltip("When enabled: wake specials/supers/dashes are buffered early (original behavior).\nWhen disabled: they execute on the first actionable wake frame (no early motion freeze).\nHelps test strict wake timing.");
         }
+
+        // Counter RG toggle moved to Game Settings
         
         // Player target selector
         ImGui::Text("Apply To:");
@@ -1556,19 +1584,7 @@ namespace ImGuiGui {
             g_ShowRGDebugToasts.store(showRGToasts);
         }
 
-        // Always RG toggle (Practice Match only; enforcement lives in FrameDataMonitor)
-        bool alwaysRG = AlwaysRG::IsEnabled();
-        if (ImGui::Checkbox("Always Recoil Guard (Practice)", &alwaysRG)) {
-            AlwaysRG::SetEnabled(alwaysRG);
-            LogOut(std::string("[IMGUI][AlwaysRG] ") + (alwaysRG ? "Enabled" : "Disabled"), true);
-            if (g_ShowRGDebugToasts.load()) {
-                DirectDrawHook::AddMessage(std::string("Always RG: ") + (alwaysRG ? "ON" : "OFF"), "ALWAYS_RG", RGB(200,220,255), 1500, 12, 72);
-            }
-        }
-        if (ImGui::IsItemHovered()) {
-            ImGui::SetTooltip("Keeps the dummy's RG armed by writing [P2+0x334]=0x3C each frame.\n"
-                              "Active only during Practice -> Match. Does not force blocking; normal rules apply.");
-        }
+        // Always RG toggle moved to Game Settings
 
         ImGui::Separator();
         ImGui::Text("BGM Control");
