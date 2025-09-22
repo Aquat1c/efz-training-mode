@@ -7,6 +7,7 @@
 #include <stdexcept>
 #include <Xinput.h>
 #include <algorithm>
+#include "../include/utils/pause_integration.h"
 
 #pragma comment(lib, "xinput9_1_0.lib")
 
@@ -237,6 +238,9 @@ namespace ImGuiImpl {
             // Use global namespace resolution operator (::) to access the global variable
             ::menuOpen.store(false);
         }
+
+        // Practice Pause integration: mirror EfzRevival pause when menu visible
+        PauseIntegration::OnMenuVisibilityChanged(g_imguiVisible);
         
         // Ensure the visibility state persists by setting it in a global
         static bool stateLogged = false;
