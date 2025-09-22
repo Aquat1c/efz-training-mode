@@ -615,6 +615,7 @@ bool IsActionable(short moveID) {
                        IsAirtech(moveID) || 
                        IsGroundtech(moveID) ||
                        IsFrozen(moveID) ||
+                       IsRecoilGuard(moveID) ||
                        moveID == STAND_GUARD_ID || 
                        moveID == CROUCH_GUARD_ID || 
                        moveID == AIR_GUARD_ID);
