@@ -124,3 +124,22 @@
 #ifndef PRACTICE_OFF_P2_HUMAN_GATE
 #define PRACTICE_OFF_P2_HUMAN_GATE     0x24  // dword: 1 if P2 is human, 0 if CPU
 #endif
+
+// ======================================
+// Engine game state (efz.exe) offsets
+// ======================================
+// These offsets are relative to the game state pointer stored at
+// [efz.exe + EFZ_BASE_OFFSET_GAME_STATE].
+
+// Active player index (used by some HUD/practice logic)
+#ifndef GAMESTATE_OFF_ACTIVE_PLAYER
+#define GAMESTATE_OFF_ACTIVE_PLAYER     4930 // byte: 0=P1, 1=P2
+#endif
+
+// Per-side CPU flags (1 = CPU, 0 = Human)
+#ifndef GAMESTATE_OFF_P2_CPU_FLAG
+#define GAMESTATE_OFF_P2_CPU_FLAG       4931 // byte: P2 CPU/Human
+#endif
+#ifndef GAMESTATE_OFF_P1_CPU_FLAG
+#define GAMESTATE_OFF_P1_CPU_FLAG       4932 // byte: P1 CPU/Human
+#endif
