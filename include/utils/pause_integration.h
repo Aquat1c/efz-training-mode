@@ -8,4 +8,10 @@
 namespace PauseIntegration {
     // Notify of menu visibility change; applies/removes pause accordingly (Practice mode only)
     void OnMenuVisibilityChanged(bool visible);
+    // Ensure the Practice pointer capture hook is installed (no-op if already)
+    void EnsurePracticePointerCapture();
+    // Returns the current Practice controller pointer (or nullptr if not yet captured)
+    void* GetPracticeControllerPtr();
+    // While the menu is visible, keep the freeze enforced in gameplay (guards against external unfreeze)
+    void MaintainFreezeWhileMenuVisible();
 }

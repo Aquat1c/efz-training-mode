@@ -27,6 +27,10 @@ extern void SpamAttackButton(uintptr_t playerBase, uint8_t button, int frames, c
 #include "../include/game/fm_commands.h"
 // Always RG control
 #include "../include/game/always_rg.h"
+// Switch players
+#include "../include/utils/switch_players.h"
+#include "../include/utils/pause_integration.h"
+#include "../include/game/practice_offsets.h"
 
 // Add these constants at the top of the file after includes
 // These are from input_motion.cpp but we need them here
@@ -1556,6 +1560,91 @@ namespace ImGuiGui {
     
     // Add this new function to the ImGuiGui namespace:
     void RenderDebugInputTab() {
+        // Practice Switch Players control
+        if (GetCurrentGameMode() == GameMode::Practice) {
+            ImGui::SeparatorText("Switch Players (Practice)");
+            int curLocal = -1;
+            PauseIntegration::EnsurePracticePointerCapture();
+            if (void* p = PauseIntegration::GetPracticeControllerPtr()) {
+                SafeReadMemory((uintptr_t)p + PRACTICE_OFF_LOCAL_SIDE_IDX, &curLocal, sizeof(curLocal));
+            }
+            if (ImGui::Button("Toggle Switch Players")) {
+                bool ok = SwitchPlayers::ToggleLocalSide();
+                if (!ok) {
+                    LogOut("[DEBUG/UI] SwitchPlayers toggle failed (Practice controller not ready?)", true);
+                    DirectDrawHook::AddMessage("Switch Players: FAILED", "SYSTEM", RGB(255,100,100), 1500, 0, 100);
+                } else {
+                    // Re-read after toggle for display
+                    curLocal = -1;
+                    if (void* p2 = PauseIntegration::GetPracticeControllerPtr()) {
+                        SafeReadMemory((uintptr_t)p2 + PRACTICE_OFF_LOCAL_SIDE_IDX, &curLocal, sizeof(curLocal));
+                    }
+                    DirectDrawHook::AddMessage(curLocal == 0 ? "Local: P1" : (curLocal == 1 ? "Local: P2" : "Local: ?"),
+                                               "SYSTEM", RGB(100,255,100), 1500, 0, 100);
+                }
+            }
+            ImGui::SameLine();
+            ImGui::TextDisabled("Swap which side is local input (P1/P2)");
+            if (curLocal == 0) {
+                ImGui::Text("Current Local: P1");
+            } else if (curLocal == 1) {
+                ImGui::Text("Current Local: P2");
+            } else {
+                ImGui::TextDisabled("Current Local: (unknown)");
+            }
+
+            // AI/Human flags and Practice CPU flag status
+            ImGui::Separator();
+            ImGui::Text("AI Control Flags: ");
+            bool p1Human = IsAIControlFlagHuman(1);
+            bool p2Human = IsAIControlFlagHuman(2);
+            ImGui::BulletText("P1: %s", p1Human ? "Human" : "AI");
+            ImGui::BulletText("P2: %s", p2Human ? "Human" : "AI");
+
+            // Practice P2 CPU flag at gameState + 4931 (1=CPU, 0=Human)
+            uintptr_t efzBase = GetEFZBase();
+            uint8_t p2CpuFlag = 0xFF;
+            if (efzBase) {
+                uintptr_t gameStatePtr = 0;
+                if (SafeReadMemory(efzBase + EFZ_BASE_OFFSET_GAME_STATE, &gameStatePtr, sizeof(gameStatePtr)) && gameStatePtr) {
+                    SafeReadMemory(gameStatePtr + 4931, &p2CpuFlag, sizeof(p2CpuFlag));
+                }
+            }
+            if (p2CpuFlag != 0xFF) {
+                ImGui::BulletText("Practice P2 CPU flag: %s (byte=%u)", (p2CpuFlag ? "CPU" : "Human"), (unsigned)p2CpuFlag);
+            } else {
+                ImGui::BulletText("Practice P2 CPU flag: unknown");
+            }
+
+            // Current gamespeed for pause troubleshooting
+            // efz.exe + 0x39010C -> [ptr] + 0xF7FF8
+            uint8_t curSpeed = 0xFF;
+            if (efzBase) {
+                // Use the same chain described in the cheat table
+                uintptr_t basePtr = 0;
+                if (SafeReadMemory(efzBase + EFZ_BASE_OFFSET_GAME_STATE, &basePtr, sizeof(basePtr)) && basePtr) {
+                    // We don't know if [+0xF7FF8] lives off game state or a sibling object; use PauseIntegration's chain if needed
+                    // but for UI we try the CE chain explicitly:
+                    HMODULE hEfz = GetModuleHandleA("efz.exe");
+                    if (hEfz) {
+                        uintptr_t efzBaseVA = reinterpret_cast<uintptr_t>(hEfz);
+                        uint32_t rootPtr = 0;
+                        if (SafeReadMemory(efzBaseVA + 0x39010C, &rootPtr, sizeof(rootPtr)) && rootPtr) {
+                            uint8_t spd = 0xFF;
+                            if (SafeReadMemory(static_cast<uintptr_t>(rootPtr) + 0xF7FF8, &spd, sizeof(spd))) {
+                                curSpeed = spd;
+                            }
+                        }
+                    }
+                }
+            }
+            if (curSpeed != 0xFF) {
+                ImGui::BulletText("Gamespeed: %u (0=freeze, 3=normal)", (unsigned)curSpeed);
+            } else {
+                ImGui::BulletText("Gamespeed: unknown");
+            }
+        }
+
         bool showBorders = g_ShowOverlayDebugBorders.load();
         if (ImGui::Checkbox("Show overlay debug borders", &showBorders)) {
             g_ShowOverlayDebugBorders.store(showBorders);

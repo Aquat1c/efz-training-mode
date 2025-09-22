@@ -1,0 +1,126 @@
+// practice_offsets.h
+// Centralized EfzRevival RVAs and Practice controller offsets used by the mod.
+// This replaces the previous inclusion of out/efz_practice_offsets.h.
+
+#pragma once
+
+#include <stdint.h>
+
+// Helper: convert module base + RVA to VA
+#ifndef EFZ_RVA_TO_VA
+#define EFZ_RVA_TO_VA(hmod, rva) (reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(hmod) + static_cast<uintptr_t>(rva)))
+#endif
+
+// ==============================
+// EfzRevival.dll RVAs (x86)
+// ==============================
+
+// Practice tick (thiscall ECX=this) — we hook this to capture the Practice controller pointer
+#ifndef EFZREV_RVA_PRACTICE_TICK
+#define EFZREV_RVA_PRACTICE_TICK 0x0074F70
+#endif
+
+// Global array: pointers to game mode structs (index * 4 + 0x790110)
+// Index 3 corresponds to Practice/Training environment; the pointer at
+// [EfzRevival.dll + 0x790110 + 3*4] is the Practice controller 'this'.
+#ifndef EFZREV_RVA_GAME_MODE_PTR_ARRAY
+#define EFZREV_RVA_GAME_MODE_PTR_ARRAY 0x790110
+#endif
+
+// Pause toggle function (not directly used by current code but kept for reference)
+#ifndef EFZREV_RVA_TOGGLE_PAUSE
+#define EFZREV_RVA_TOGGLE_PAUSE 0x0075720
+#endif
+
+// Central patch toggler context/function (used internally by EfzRevival)
+#ifndef EFZREV_RVA_PATCH_TOGGLER
+#define EFZREV_RVA_PATCH_TOGGLER 0x006B2A0
+#endif
+
+// Optional: patch context struct in EfzRevival (address passed to patch toggler)
+#ifndef EFZREV_RVA_PATCH_CTX
+#define EFZREV_RVA_PATCH_CTX 0x00A0760
+#endif
+
+// Mapping reset used by init after switching sides: sub_1006D640((char **)(this + 8 * (local + 104)))
+#ifndef EFZREV_RVA_MAP_RESET
+#define EFZREV_RVA_MAP_RESET 0x006D640
+#endif
+
+// Cleanup pair called after switching to local==1 during init: EFZ_Obj_SubStruct448_CleanupPair(&dword_100A0760)
+#ifndef EFZREV_RVA_CLEANUP_PAIR
+#define EFZREV_RVA_CLEANUP_PAIR 0x006CAD0
+#endif
+
+// Copies 0x20 bytes of mapping block from EFZ patch ctx into Practice (+4..+0x24 region)
+// qmemcpy((this+4), EFZ_Obj_GetSubStructOffset448(&dword_100A0760), 0x20)
+#ifndef EFZREV_RVA_REFRESH_MAPPING_BLOCK
+#define EFZREV_RVA_REFRESH_MAPPING_BLOCK 0x0075100
+#endif
+
+// ======================================
+// Practice controller layout (offsets)
+// Offsets are relative to the Practice controller "this" pointer captured from tick.
+// ======================================
+
+// Pause/Step core fields
+#ifndef PRACTICE_OFF_STEP_FLAG
+#define PRACTICE_OFF_STEP_FLAG        0xAC   // byte: 1 = advance one frame next tick (while paused)
+#endif
+
+#ifndef PRACTICE_OFF_STEP_COUNTER
+#define PRACTICE_OFF_STEP_COUNTER     0xB0   // dword: increments each single-frame step
+#endif
+
+#ifndef PRACTICE_OFF_PAUSE_FLAG
+#define PRACTICE_OFF_PAUSE_FLAG       0xB4   // byte: 1 = paused
+#endif
+
+// Optional: speed scalar double at +0xC0/+0xC4 (not used directly by code here)
+#ifndef PRACTICE_OFF_SPEED_DBL_HI
+#define PRACTICE_OFF_SPEED_DBL_HI     0xC0
+#endif
+#ifndef PRACTICE_OFF_SPEED_DBL_LO
+#define PRACTICE_OFF_SPEED_DBL_LO     0xC4
+#endif
+
+// Hotkey command codes (from Practice config)
+#ifndef PRACTICE_OFF_PAUSE_KEY
+#define PRACTICE_OFF_PAUSE_KEY        0x1D4  // dword
+#endif
+#ifndef PRACTICE_OFF_STEP_KEY
+#define PRACTICE_OFF_STEP_KEY         0x1D8  // dword
+#endif
+
+// Side switching and input routing
+#ifndef PRACTICE_OFF_LOCAL_SIDE_IDX
+#define PRACTICE_OFF_LOCAL_SIDE_IDX   0x680  // dword: 0 = P1, 1 = P2
+#endif
+#ifndef PRACTICE_OFF_REMOTE_SIDE_IDX
+#define PRACTICE_OFF_REMOTE_SIDE_IDX  0x684  // dword: companion of local index
+#endif
+#ifndef PRACTICE_OFF_SIDE_BUF_PRIMARY
+#define PRACTICE_OFF_SIDE_BUF_PRIMARY 0x824  // ptr: primary side buffer (tracks LOCAL)
+#endif
+#ifndef PRACTICE_OFF_SIDE_BUF_SECONDARY
+#define PRACTICE_OFF_SIDE_BUF_SECONDARY 0x828 // ptr: secondary side buffer (tracks REMOTE)
+#endif
+// Internal buffer blocks used during init to wire side buffers
+#ifndef PRACTICE_OFF_BUF_LOCAL_BASE
+#define PRACTICE_OFF_BUF_LOCAL_BASE    0x788  // when local==P1, primary points here
+#endif
+#ifndef PRACTICE_OFF_BUF_REMOTE_BASE
+#define PRACTICE_OFF_BUF_REMOTE_BASE   0x800  // when local==P2, primary points here
+#endif
+#ifndef PRACTICE_OFF_INIT_SOURCE_SIDE
+#define PRACTICE_OFF_INIT_SOURCE_SIDE 0x944  // dword: remembered init source side
+#endif
+#ifndef PRACTICE_OFF_SHARED_INPUT_VEC
+#define PRACTICE_OFF_SHARED_INPUT_VEC 0x1240 // base of shared input slots (InputP1/InputP2), if needed
+#endif
+
+// Additional gate observed in EfzRevival: *(this + 36) = (P2_CPU_FLAG == 0)
+// When true, Practice treats P2 as human-controlled for certain input paths.
+#ifndef PRACTICE_OFF_P2_HUMAN_GATE
+#define PRACTICE_OFF_P2_HUMAN_GATE     0x24  // dword: 1 if P2 is human, 0 if CPU
+#endif

@@ -283,6 +283,8 @@ namespace ImGuiImpl {
                 ImGui::EndFrame();
                 return;
             }
+            // Maintain pause while menu is visible (guards against stray unfreeze)
+            PauseIntegration::MaintainFreezeWhileMenuVisible();
             
             // Update virtual cursor from XInput when in fullscreen
             UpdateVirtualCursor(io);

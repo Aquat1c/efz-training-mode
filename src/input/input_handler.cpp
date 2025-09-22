@@ -26,6 +26,7 @@
 #include "../include/input/input_freeze.h"
 #include "../include/game/practice_patch.h"
 #include "../include/game/game_state.h"
+#include "../include/utils/switch_players.h"
 #include <Xinput.h>
 
 #pragma comment(lib, "xinput9_1_0.lib")
@@ -289,6 +290,17 @@ void MonitorKeys() {
             if (IsKeyPressed(toggleImGuiKey, false)) {
                 ImGuiImpl::ToggleVisibility();
                 keyHandled = true;
+            } else if (IsKeyPressed('L', false)) {
+                // Debug hotkey: Toggle local/remote players in Practice
+                if (GetCurrentGameMode() == GameMode::Practice && !g_guiActive.load()) {
+                    bool ok = SwitchPlayers::ToggleLocalSide();
+                    if (ok) {
+                        DirectDrawHook::AddMessage("Switch Players: toggled", "SYSTEM", RGB(100,255,100), 1200, 0, 100);
+                    } else {
+                        DirectDrawHook::AddMessage("Switch Players: failed", "SYSTEM", RGB(255,100,100), 1200, 0, 100);
+                    }
+                    keyHandled = true;
+                }
             } else if (IsKeyPressed(teleportKey, true)) {
                 // Round start positions
                 if (IsKeyPressed(VK_DOWN, true) && IsKeyPressed('A', true)) {
