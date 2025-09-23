@@ -9,6 +9,7 @@
 #include "../include/game/practice_patch.h"
 #include "../include/input/input_buffer.h" // for g_bufferFreezingActive
 #include "../include/input/immediate_input.h"
+#include "../include/input/injection_control.h"
 #include <windows.h>
 #include <vector>
 #include <atomic>
@@ -28,6 +29,13 @@ static uint8_t g_lastInjectedMask[3] = {0, 0, 0}; // Index 0 unused, 1 for P1, 2
 // Track whether we were bypassing original (buffered injection) last frame per player.
 static bool g_wasBypassBuffered[3] = { false, false, false };
 
+// Global control to force authoritative buffered injection (macro playback, etc.)
+std::atomic<bool> g_forceBypass[3] = { false, false, false };
+
+// Poll override: when active, our poll hook returns this mask instead of device state (index 0 unused).
+std::atomic<bool> g_pollOverrideActive[3] = { false, false, false };
+std::atomic<uint8_t> g_pollOverrideMask[3] = { 0, 0, 0 };
+
 // Function pointer for the original game function we are hooking.
 typedef int(__thiscall* tProcessCharacterInput)(int characterPtr);
 tProcessCharacterInput oProcessCharacterInput = nullptr;
@@ -36,6 +44,25 @@ tProcessCharacterInput oProcessCharacterInput = nullptr;
 // This is the entry point for a character's input processing for the frame.
 // CORRECTED ADDRESS: 0x411BE0 -> relative offset 0x11BE0
 const uintptr_t PROCESS_INPUTS_FUNC_OFFSET = 0x11BE0;
+
+// Hook: pollPlayerInputState(inputManager, playerIndex) → returns 8-bit unified mask
+// RVA from efz.exe base: 0x0040CD00 → offset 0x0CD00
+typedef int(__thiscall* tPollPlayerInputState)(int inputManagerPtr, unsigned int playerIndex);
+static tPollPlayerInputState oPollPlayerInputState = nullptr;
+static const uintptr_t POLL_INPUT_STATE_FUNC_OFFSET = 0x0CD00;
+
+// Our poll hook. Use __fastcall to match __thiscall trampoline signature.
+static int __fastcall HookedPollPlayerInputState(int inputManagerPtr, int /*edx*/, unsigned int playerIndex)
+{
+    // Engine uses 0 for P1 and 1 for P2; our globals use 1=P1, 2=P2.
+    unsigned int idx = (playerIndex <= 1) ? (playerIndex + 1) : 0;
+    if (idx <= 2) {
+        if (g_pollOverrideActive[idx].load(std::memory_order_relaxed)) {
+            return static_cast<int>(g_pollOverrideMask[idx].load(std::memory_order_relaxed));
+        }
+    }
+    return oPollPlayerInputState ? oPollPlayerInputState(inputManagerPtr, playerIndex) : 0;
+}
 
 // Our custom function that will be called instead of the original.
 // We use __fastcall for __thiscall hooks from MinHook.
@@ -82,7 +109,7 @@ int __fastcall HookedProcessCharacterInput(int characterPtr, int edx) {
     // REVERTED LOGIC: The queue system now handles all injection states.
     bool shouldInject = false;
     if (playerNum > 0) {
-     if (g_manualInputOverride[playerNum].load()) {
+        if (g_manualInputOverride[playerNum].load()) {
             shouldInject = true;
         } else if (playerNum == 1 && p1QueueActive) {
             shouldInject = true;
@@ -117,20 +144,24 @@ int __fastcall HookedProcessCharacterInput(int characterPtr, int edx) {
         // Split behavior based on injection mode:
         //  - immediate-only: call original first so the game updates its own state, then override immediate regs.
         //  - buffered (queue/manual hold): bypass original to avoid buffer double-advance and write both immediate+buffer.
-        if (g_injectImmediateOnly[playerNum].load()) {
-            // For immediate-only, write before calling the game's processor so it sees our input this frame.
-            WritePlayerInputImmediate(playerNum, currentMask);
-            int ret = oProcessCharacterInput(characterPtr);
-            g_lastInjectedMask[playerNum] = currentMask;
-            g_wasBypassBuffered[playerNum] = false;
-            return ret;
-        } else {
+        // If forced bypass is enabled, always perform authoritative buffered injection.
+        if (g_forceBypass[playerNum].load() || !g_injectImmediateOnly[playerNum].load()) {
             // Authoritative buffered injection: bypass original.
             WritePlayerInputImmediate(playerNum, currentMask);
             WritePlayerInputToBuffer(playerNum, currentMask);
             g_lastInjectedMask[playerNum] = currentMask;
             g_wasBypassBuffered[playerNum] = true;
             return 0;
+        } else {
+            // For immediate-only, write before AND after calling the game's processor.
+            // Some parts of the original function can overwrite immediate registers mid-frame.
+            // Pre-write ensures the game reads our state; post-write stabilizes the final state for this tick.
+            WritePlayerInputImmediate(playerNum, currentMask);
+            int ret = oProcessCharacterInput(characterPtr);
+            WritePlayerInputImmediate(playerNum, currentMask);
+            g_lastInjectedMask[playerNum] = currentMask;
+            g_wasBypassBuffered[playerNum] = false;
+            return ret;
         }
     } 
     
@@ -184,30 +215,52 @@ void InstallInputHook() {
 
     // The actual address in memory is the game's base + the relative offset.
     uintptr_t targetAddr = base + PROCESS_INPUTS_FUNC_OFFSET;
+    uintptr_t pollAddr   = base + POLL_INPUT_STATE_FUNC_OFFSET;
 
     // REMOVED: MH_Initialize() is now called globally in dllmain.cpp
 
-    // Create the hook.
+    // Create the hooks.
     if (MH_CreateHook((LPVOID)targetAddr, &HookedProcessCharacterInput, (LPVOID*)&oProcessCharacterInput) != MH_OK) {
         LogOut("[INPUT_HOOK] Failed to create hook at address " + FormatHexAddress(targetAddr), true);
         return;
     }
 
-    // Enable the hook.
-    if (MH_EnableHook((LPVOID)targetAddr) != MH_OK) {
-        LogOut("[INPUT_HOOK] Failed to enable hook.", true);
+    if (MH_CreateHook((LPVOID)pollAddr, &HookedPollPlayerInputState, (LPVOID*)&oPollPlayerInputState) != MH_OK) {
+        LogOut("[INPUT_HOOK] Failed to create poll hook at address " + FormatHexAddress(pollAddr), true);
+        // Clean up previously created hook to avoid partial state
+        MH_RemoveHook((LPVOID)targetAddr);
         return;
     }
 
-    LogOut("[INPUT_HOOK] Successfully hooked game's input processing function at " + FormatHexAddress(targetAddr), true);
+    // Enable the hooks.
+    if (MH_EnableHook((LPVOID)targetAddr) != MH_OK) {
+        LogOut("[INPUT_HOOK] Failed to enable hook.", true);
+        MH_RemoveHook((LPVOID)targetAddr);
+        MH_RemoveHook((LPVOID)pollAddr);
+        return;
+    }
+
+    if (MH_EnableHook((LPVOID)pollAddr) != MH_OK) {
+        LogOut("[INPUT_HOOK] Failed to enable poll hook.", true);
+        MH_DisableHook((LPVOID)targetAddr);
+        MH_RemoveHook((LPVOID)targetAddr);
+        MH_RemoveHook((LPVOID)pollAddr);
+        return;
+    }
+
+    LogOut("[INPUT_HOOK] Hooked processCharacterInput at " + FormatHexAddress(targetAddr), true);
+    LogOut("[INPUT_HOOK] Hooked pollPlayerInputState at " + FormatHexAddress(pollAddr), true);
 }
 
 void RemoveInputHook() {
     uintptr_t base = GetEFZBase();
     if (base) {
         uintptr_t targetAddr = base + PROCESS_INPUTS_FUNC_OFFSET;
+        uintptr_t pollAddr   = base + POLL_INPUT_STATE_FUNC_OFFSET;
         MH_DisableHook((LPVOID)targetAddr);
         MH_RemoveHook((LPVOID)targetAddr); // Also explicitly remove the hook
+        MH_DisableHook((LPVOID)pollAddr);
+        MH_RemoveHook((LPVOID)pollAddr);
     }
     // REMOVED: MH_Uninitialize() is now called globally in dllmain.cpp
     LogOut("[INPUT_HOOK] Input hook removed.", true);

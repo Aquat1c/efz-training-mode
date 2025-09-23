@@ -23,6 +23,8 @@ struct SlotStats {
     int spanCount;
     int totalTicks;
     int bufEntries;
+    int bufTicks;
+    int bufIndexTicks; // number of per-tick buffer index samples captured
     uint16_t bufStartIdx;
     uint16_t bufEndIdx;
     bool hasData;
