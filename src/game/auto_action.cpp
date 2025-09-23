@@ -1508,20 +1508,21 @@ void EnableP2ControlForAutoAction() {
         LogOut("[AUTO-ACTION] P2 control flag was reset to " + std::to_string(currentAIFlag) + ", setting back to human control", true);
     }
     
-    // Always set to human control (0) regardless of our tracking variable
+    // Always set to human control (0) regardless of our tracking variable, with audit logging
     uint32_t humanControlFlag = 0;
-    if (SafeWriteMemory(p2CharPtr + AI_CONTROL_FLAG_OFFSET, &humanControlFlag, sizeof(uint32_t))) {
-        // Double-check that it was actually written
-        uint32_t verifyFlag = 1;
-        if (SafeReadMemory(p2CharPtr + AI_CONTROL_FLAG_OFFSET, &verifyFlag, sizeof(uint32_t)) && verifyFlag == 0) {
-            g_p2ControlOverridden = true;
-            LogOut("[AUTO-ACTION] P2 control successfully set to human (0) for auto-action", true);
-        } else {
-            LogOut("[AUTO-ACTION] P2 control write failed verification, flag still = " + 
-                  std::to_string(verifyFlag), true);
-        }
+    uint32_t before = 0xFFFFFFFFu, after = 0xFFFFFFFFu;
+    SafeReadMemory(p2CharPtr + AI_CONTROL_FLAG_OFFSET, &before, sizeof(uint32_t));
+    bool okWrite = SafeWriteMemory(p2CharPtr + AI_CONTROL_FLAG_OFFSET, &humanControlFlag, sizeof(uint32_t));
+    SafeReadMemory(p2CharPtr + AI_CONTROL_FLAG_OFFSET, &after, sizeof(uint32_t));
+    std::ostringstream oss; oss << "[AUDIT][AI] EnableP2ControlForAutoAction @0x" << std::hex << (p2CharPtr + AI_CONTROL_FLAG_OFFSET)
+                                << std::dec << " before=" << before << " write=0 after=" << after
+                                << " okWrite=" << (okWrite?"1":"0");
+    LogOut(oss.str(), true);
+    if (okWrite && after == 0) {
+        g_p2ControlOverridden = true;
+        LogOut("[AUTO-ACTION] P2 control successfully set to human (0) for auto-action", true);
     } else {
-        LogOut("[AUTO-ACTION] Failed to write human control flag to P2", true);
+        LogOut("[AUTO-ACTION] P2 control write failed verification, flag still = " + std::to_string(after), true);
     }
 }
 
@@ -1550,10 +1551,17 @@ void RestoreP2ControlState() {
             return;
         }
         
-        // Restore original control state
-        LogOut("[AUTO-ACTION] Restoring P2 control to original state: " + std::to_string(g_originalP2ControlFlag), true);
-        if (SafeWriteMemory(p2CharPtr + AI_CONTROL_FLAG_OFFSET, &g_originalP2ControlFlag, sizeof(uint32_t))) {
-            LogOut("[AUTO-ACTION] P2 control restored successfully", true);
+        // Restore original control state with audit logging
+        uint32_t before = 0xFFFFFFFFu, after = 0xFFFFFFFFu;
+        SafeReadMemory(p2CharPtr + AI_CONTROL_FLAG_OFFSET, &before, sizeof(uint32_t));
+        bool okWrite = SafeWriteMemory(p2CharPtr + AI_CONTROL_FLAG_OFFSET, &g_originalP2ControlFlag, sizeof(uint32_t));
+        SafeReadMemory(p2CharPtr + AI_CONTROL_FLAG_OFFSET, &after, sizeof(uint32_t));
+        std::ostringstream oss; oss << "[AUDIT][AI] RestoreP2ControlState @0x" << std::hex << (p2CharPtr + AI_CONTROL_FLAG_OFFSET)
+                                    << std::dec << " before=" << before << " write=" << g_originalP2ControlFlag
+                                    << " after=" << after << " okWrite=" << (okWrite?"1":"0");
+        LogOut(oss.str(), true);
+        if (okWrite) {
+            LogOut("[AUTO-ACTION] P2 control restored (requested=" + std::to_string(g_originalP2ControlFlag) + ")", true);
         } else {
             LogOut("[AUTO-ACTION] Failed to write P2 control state for restore", true);
         }
@@ -1571,8 +1579,14 @@ static void RestoreP2ControlFlagOnly() {
     if (!base) return;
     uintptr_t p2CharPtr = 0;
     if (!SafeReadMemory(base + EFZ_BASE_OFFSET_P2, &p2CharPtr, sizeof(uintptr_t)) || !p2CharPtr) return;
-    LogOut("[AUTO-ACTION] Restoring P2 control flag only (preserve buffer freeze)", true);
-    SafeWriteMemory(p2CharPtr + AI_CONTROL_FLAG_OFFSET, &g_originalP2ControlFlag, sizeof(uint32_t));
+    uint32_t before = 0xFFFFFFFFu, after = 0xFFFFFFFFu;
+    SafeReadMemory(p2CharPtr + AI_CONTROL_FLAG_OFFSET, &before, sizeof(uint32_t));
+    bool okWrite = SafeWriteMemory(p2CharPtr + AI_CONTROL_FLAG_OFFSET, &g_originalP2ControlFlag, sizeof(uint32_t));
+    SafeReadMemory(p2CharPtr + AI_CONTROL_FLAG_OFFSET, &after, sizeof(uint32_t));
+    std::ostringstream oss; oss << "[AUDIT][AI] RestoreP2ControlFlagOnly @0x" << std::hex << (p2CharPtr + AI_CONTROL_FLAG_OFFSET)
+                                << std::dec << " before=" << before << " write=" << g_originalP2ControlFlag
+                                << " after=" << after << " okWrite=" << (okWrite?"1":"0");
+    LogOut(oss.str(), true);
     g_p2ControlOverridden = false;
 }
 
