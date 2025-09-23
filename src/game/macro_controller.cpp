@@ -46,7 +46,7 @@ namespace {
     constexpr int kMaxSlots = 8; // simple ring of slots
     // Overlay placement for macro state banners (avoid overlapping status overlays)
     constexpr int kBannerX = 20;
-    constexpr int kBannerY = 260;
+    constexpr int kBannerY = 160;
     std::atomic<MacroController::State> s_state{ MacroController::State::Idle };
     Slot s_slots[kMaxSlots];
     std::atomic<int> s_curSlot{1}; // 1-based
@@ -270,6 +270,11 @@ namespace {
         g_injectImmediateOnly[2].store(false);
         g_manualInputOverride[1].store(false);
         g_manualInputOverride[2].store(false);
+        // Ensure poll override is fully cleared for both players
+        g_pollOverrideActive[1].store(false);
+        g_pollOverrideActive[2].store(false);
+        g_pollOverrideMask[1].store(0);
+        g_pollOverrideMask[2].store(0);
     }
 
     void FinishRecording() {
@@ -704,6 +709,10 @@ void Play() {
         return;
     }
     ResetPlayback();
+    // Ensure player control: we control P1 locally while P2 is macro-driven.
+    if (GetCurrentGameMode() == GameMode::Practice) {
+        SwitchPlayers::SetLocalSide(0); // P1 is local side
+    }
     // Precompute per-tick recorded facing for stream playback from RLE spans
     if (!s_slots[slotIdx].macroStream.empty() && !s_slots[slotIdx].spans.empty()) {
         size_t total = s_slots[slotIdx].macroStream.size();
@@ -761,6 +770,8 @@ void Stop() {
     ResetPlayback();
     g_manualInputOverride[2].store(false);
     g_forceBypass[2].store(false);
+    g_pollOverrideActive[2].store(false);
+    g_pollOverrideMask[2].store(0);
     // Remove banner and restore side
     if (s_macroBannerId != -1) { DirectDrawHook::RemovePermanentMessage(s_macroBannerId); s_macroBannerId = -1; }
     if (g_p2ControlOverridden) RestoreP2ControlState();
