@@ -268,6 +268,11 @@
 #define IDC_TRIGGER_AFTER_HITSTUN_ACTION   5020
 #define IDC_TRIGGER_AFTER_AIRTECH_ACTION   5021
 
+// New: On Recoil Guard trigger controls
+#define IDC_TRIGGER_ON_RG_CHECK            5027
+#define IDC_TRIGGER_ON_RG_DELAY            5028
+#define IDC_TRIGGER_ON_RG_ACTION           5029
+
 // Custom action IDs for each trigger
 #define IDC_TRIGGER_AFTER_BLOCK_CUSTOM     5022 // deprecated
 #define IDC_TRIGGER_ON_WAKEUP_CUSTOM       5023 // deprecated
@@ -276,6 +281,13 @@
 
 // Debug/experimental: wake buffering toggle checkbox
 #define IDC_TRIGGER_WAKE_BUFFER_CHECK      5026
+
+// Macro selection combo boxes for each trigger ("None" + Slot 1..N)
+#define IDC_TRIGGER_AFTER_BLOCK_MACRO      5030
+#define IDC_TRIGGER_ON_WAKEUP_MACRO        5031
+#define IDC_TRIGGER_AFTER_HITSTUN_MACRO    5032
+#define IDC_TRIGGER_AFTER_AIRTECH_MACRO    5033
+#define IDC_TRIGGER_ON_RG_MACRO            5034
 
 // After your existing character constants, add:
 

@@ -92,11 +92,20 @@ void OpenMenu() {
             displayData.triggerOnWakeup = triggerOnWakeupEnabled.load();
             displayData.triggerAfterHitstun = triggerAfterHitstunEnabled.load();
             displayData.triggerAfterAirtech = triggerAfterAirtechEnabled.load();
+            displayData.triggerOnRG = triggerOnRGEnabled.load();
             
             displayData.delayAfterBlock = triggerAfterBlockDelay.load();
             displayData.delayOnWakeup = triggerOnWakeupDelay.load();
             displayData.delayAfterHitstun = triggerAfterHitstunDelay.load();
             displayData.delayAfterAirtech = triggerAfterAirtechDelay.load();
+            displayData.delayOnRG = triggerOnRGDelay.load();
+
+            // Macro slot selections
+            displayData.macroSlotAfterBlock = triggerAfterBlockMacroSlot.load();
+            displayData.macroSlotOnWakeup = triggerOnWakeupMacroSlot.load();
+            displayData.macroSlotAfterHitstun = triggerAfterHitstunMacroSlot.load();
+            displayData.macroSlotAfterAirtech = triggerAfterAirtechMacroSlot.load();
+            displayData.macroSlotOnRG = triggerOnRGMacroSlot.load();
         }
         else {
             LogOut("[GUI] Failed to get game base address", true);
@@ -135,18 +144,28 @@ void ApplySettings(DisplayData* data) {
         triggerOnWakeupEnabled.store(data->triggerOnWakeup);
         triggerAfterHitstunEnabled.store(data->triggerAfterHitstun);
         triggerAfterAirtechEnabled.store(data->triggerAfterAirtech);
+    triggerOnRGEnabled.store(data->triggerOnRG);
         
         // Individual action settings
         triggerAfterBlockAction.store(data->actionAfterBlock);
         triggerOnWakeupAction.store(data->actionOnWakeup);
         triggerAfterHitstunAction.store(data->actionAfterHitstun);
         triggerAfterAirtechAction.store(data->actionAfterAirtech);
+    triggerOnRGAction.store(data->actionOnRG);
         
         // Individual delay settings
         triggerAfterBlockDelay.store(data->delayAfterBlock);
         triggerOnWakeupDelay.store(data->delayOnWakeup);
         triggerAfterHitstunDelay.store(data->delayAfterHitstun);
         triggerAfterAirtechDelay.store(data->delayAfterAirtech);
+    triggerOnRGDelay.store(data->delayOnRG);
+
+    // Macro slot selections
+    triggerAfterBlockMacroSlot.store(data->macroSlotAfterBlock);
+    triggerOnWakeupMacroSlot.store(data->macroSlotOnWakeup);
+    triggerAfterHitstunMacroSlot.store(data->macroSlotAfterHitstun);
+    triggerAfterAirtechMacroSlot.store(data->macroSlotAfterAirtech);
+    triggerOnRGMacroSlot.store(data->macroSlotOnRG);
         
         // MISSING CODE: Store custom moveID values
         triggerAfterBlockCustomID.store(data->customAfterBlock);

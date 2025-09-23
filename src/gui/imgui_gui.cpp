@@ -15,6 +15,7 @@
 #include "../include/utils/bgm_control.h"
 #include "../include/input/input_debug.h"
 #include <algorithm> // Add this for std::max
+#include <vector>
 // For opening links from Help tab
 #include <shellapi.h>
 #pragma comment(lib, "shell32.lib")
@@ -381,23 +382,24 @@ namespace ImGuiGui {
             int* delay;
             int* strength; // NEW: Add strength member
             int* custom;
+            int* macroSlot; // NEW: Per-trigger macro selection (0=None, 1..Max)
         };
         
         // Define an array of trigger settings
-        TriggerSettings triggers[] = {
-            { "After Block", &guiState.localData.triggerAfterBlock, &guiState.localData.actionAfterBlock, 
-              &guiState.localData.delayAfterBlock, &guiState.localData.strengthAfterBlock, &guiState.localData.customAfterBlock },
-            { "On Wakeup", &guiState.localData.triggerOnWakeup, &guiState.localData.actionOnWakeup, 
-              &guiState.localData.delayOnWakeup, &guiState.localData.strengthOnWakeup, &guiState.localData.customOnWakeup },
-            { "After Hitstun", &guiState.localData.triggerAfterHitstun, &guiState.localData.actionAfterHitstun, 
-              &guiState.localData.delayAfterHitstun, &guiState.localData.strengthAfterHitstun, &guiState.localData.customAfterHitstun },
+                TriggerSettings triggers[] = {
+                        { "After Block", &guiState.localData.triggerAfterBlock, &guiState.localData.actionAfterBlock, 
+                            &guiState.localData.delayAfterBlock, &guiState.localData.strengthAfterBlock, &guiState.localData.customAfterBlock, &guiState.localData.macroSlotAfterBlock },
+                        { "On Wakeup", &guiState.localData.triggerOnWakeup, &guiState.localData.actionOnWakeup, 
+                            &guiState.localData.delayOnWakeup, &guiState.localData.strengthOnWakeup, &guiState.localData.customOnWakeup, &guiState.localData.macroSlotOnWakeup },
+                        { "After Hitstun", &guiState.localData.triggerAfterHitstun, &guiState.localData.actionAfterHitstun, 
+                            &guiState.localData.delayAfterHitstun, &guiState.localData.strengthAfterHitstun, &guiState.localData.customAfterHitstun, &guiState.localData.macroSlotAfterHitstun },
                         { "After Airtech", &guiState.localData.triggerAfterAirtech, &guiState.localData.actionAfterAirtech, 
-                            &guiState.localData.delayAfterAirtech, &guiState.localData.strengthAfterAirtech, &guiState.localData.customAfterAirtech },
+                            &guiState.localData.delayAfterAirtech, &guiState.localData.strengthAfterAirtech, &guiState.localData.customAfterAirtech, &guiState.localData.macroSlotAfterAirtech },
                         { "On RG", &guiState.localData.triggerOnRG, &guiState.localData.actionOnRG,
-                            &guiState.localData.delayOnRG, &guiState.localData.strengthOnRG, &guiState.localData.customOnRG }
-        };
+                            &guiState.localData.delayOnRG, &guiState.localData.strengthOnRG, &guiState.localData.customOnRG, &guiState.localData.macroSlotOnRG }
+                };
         
-        // Motion list (includes directions/stances plus motions and utility actions)
+        // Motion list (includes directions/stances plus motions and utility actions); we'll append dynamic Macro entries per slot below.
         const char* motionItems[] = {
             "Standing", "Crouching", "Jumping",
             "236 (QCF)", "623 (DP)", "214 (QCB)", "421 (Half-circle Down)",
@@ -497,30 +499,42 @@ namespace ImGuiGui {
             }
             
             ImGui::SameLine();
-            ImGui::SetNextItemWidth(150);
-            // Determine current motion selection from action
-            int motionIndex = GetMotionIndexForAction(*triggers[i].action);
-            if (ImGui::Combo("Button", &motionIndex, motionItems, IM_ARRAYSIZE(motionItems))) {//Actually directions/motion inputs
-                // When motion changes, update action accordingly
-                if (motionIndex <= 2) {
-                    // Posture selected: use current button choice to pick specific normal
-                    int currentButtonIdx = 0;
-                    // For normals, derive from action; for specials, derive from strength
-                    if (IsNormalAttackAction(*triggers[i].action)) {
-                        // Map current action to button index A/B/C
-                        switch (*triggers[i].action) {
-                            case ACTION_5A: case ACTION_2A: case ACTION_JA: currentButtonIdx = 0; break;
-                            case ACTION_5B: case ACTION_2B: case ACTION_JB: currentButtonIdx = 1; break;
-                            case ACTION_5C: case ACTION_2C: case ACTION_JC: currentButtonIdx = 2; break;
-                            default: currentButtonIdx = 0; break;
-                        }
-                    } else {
-                        currentButtonIdx = *triggers[i].strength; // reuse strength slot
+            ImGui::SetNextItemWidth(220);
+            // Build list: base motions + single Macro entry
+            std::vector<const char*> items;
+            items.reserve(IM_ARRAYSIZE(motionItems) + 1);
+            for (int k = 0; k < IM_ARRAYSIZE(motionItems); ++k) items.push_back(motionItems[k]);
+            const int macroIndex = (int)items.size();
+            items.push_back("Macro");
+            // Determine current selection index
+            int motionIndex = (*triggers[i].macroSlot > 0) ? macroIndex : GetMotionIndexForAction(*triggers[i].action);
+            if (ImGui::Combo("Action", &motionIndex, items.data(), (int)items.size())) { // primary selector
+                if (motionIndex == macroIndex) {
+                    // Macro chosen: ensure we have a default slot if none selected yet
+                    int slots = MacroController::GetSlotCount();
+                    if (*triggers[i].macroSlot == 0 && slots > 0) {
+                        *triggers[i].macroSlot = 1;
                     }
-                    *triggers[i].action = MapPostureAndButtonToAction(motionIndex, currentButtonIdx);
                 } else {
-                    // Motion selected: set action directly
-                    *triggers[i].action = MapMotionIndexToAction(motionIndex);
+                    // Non-macro: clear macro and set action
+                    *triggers[i].macroSlot = 0;
+                    if (motionIndex <= 2) {
+                        // Posture selected: use current button choice to pick specific normal
+                        int currentButtonIdx = 0;
+                        if (IsNormalAttackAction(*triggers[i].action)) {
+                            switch (*triggers[i].action) {
+                                case ACTION_5A: case ACTION_2A: case ACTION_JA: currentButtonIdx = 0; break;
+                                case ACTION_5B: case ACTION_2B: case ACTION_JB: currentButtonIdx = 1; break;
+                                case ACTION_5C: case ACTION_2C: case ACTION_JC: currentButtonIdx = 2; break;
+                                default: currentButtonIdx = 0; break;
+                            }
+                        } else {
+                            currentButtonIdx = *triggers[i].strength; // reuse strength slot
+                        }
+                        *triggers[i].action = MapPostureAndButtonToAction(motionIndex, currentButtonIdx);
+                    } else {
+                        *triggers[i].action = MapMotionIndexToAction(motionIndex);
+                    }
                 }
             }
 
@@ -529,7 +543,27 @@ namespace ImGuiGui {
             ImGui::SetNextItemWidth(90);
             int buttonIdx = 0;
             int postureIdx = GetPostureIndexForAction(*triggers[i].action);
-            if (*triggers[i].action == ACTION_JUMP) {
+            bool macroSelected = (*triggers[i].macroSlot > 0);
+            if (macroSelected) {
+                // Render slot selector instead of button/direction
+                int slots = MacroController::GetSlotCount();
+                int zeroBased = (*triggers[i].macroSlot > 0) ? (*triggers[i].macroSlot - 1) : 0;
+                // Build simple labels: Slot 1..N
+                std::vector<std::string> labels; labels.reserve((size_t)slots);
+                for (int s = 1; s <= slots; ++s) labels.emplace_back(std::string("Slot ") + std::to_string(s));
+                std::vector<const char*> citems; citems.reserve(labels.size());
+                for (auto &s : labels) citems.push_back(s.c_str());
+                ImGui::SetNextItemWidth(110);
+                if (slots <= 0) {
+                    ImGui::BeginDisabled();
+                    int dummy = 0; ImGui::Combo("Slot", &dummy, (const char* const*)nullptr, 0);
+                    ImGui::EndDisabled();
+                } else {
+                    if (ImGui::Combo("Slot", &zeroBased, citems.data(), (int)citems.size())) {
+                        *triggers[i].macroSlot = zeroBased + 1;
+                    }
+                }
+            } else if (*triggers[i].action == ACTION_JUMP) {
                 // Use strength field as direction selector for Jump
                 const char* dirItems[] = { "Neutral", "Forward", "Backwards" };
                 int dir = *triggers[i].strength;
@@ -2064,6 +2098,13 @@ namespace ImGuiGui {
     guiState.localData.strengthAfterHitstun  = triggerAfterHitstunStrength.load();
     guiState.localData.strengthAfterAirtech  = triggerAfterAirtechStrength.load();
     guiState.localData.strengthOnRG          = triggerOnRGStrength.load();
+
+    // Per-trigger macro slot selections
+    guiState.localData.macroSlotAfterBlock   = triggerAfterBlockMacroSlot.load();
+    guiState.localData.macroSlotOnWakeup     = triggerOnWakeupMacroSlot.load();
+    guiState.localData.macroSlotAfterHitstun = triggerAfterHitstunMacroSlot.load();
+    guiState.localData.macroSlotAfterAirtech = triggerAfterAirtechMacroSlot.load();
+    guiState.localData.macroSlotOnRG         = triggerOnRGMacroSlot.load();
     }
 
     // Update ApplyImGuiSettings to include character-specific data
@@ -2136,6 +2177,13 @@ namespace ImGuiGui {
             triggerAfterHitstunStrength.store(displayData.strengthAfterHitstun);
             triggerAfterAirtechStrength.store(displayData.strengthAfterAirtech);
             triggerOnRGStrength.store(displayData.strengthOnRG);
+
+            // Per-trigger macro slots
+            triggerAfterBlockMacroSlot.store(displayData.macroSlotAfterBlock);
+            triggerOnWakeupMacroSlot.store(displayData.macroSlotOnWakeup);
+            triggerAfterHitstunMacroSlot.store(displayData.macroSlotAfterHitstun);
+            triggerAfterAirtechMacroSlot.store(displayData.macroSlotAfterAirtech);
+            triggerOnRGMacroSlot.store(displayData.macroSlotOnRG);
             
             // Enforce FM bypass state to match UI selection (idempotent)
             // We read current enabled state from the runtime and reapply to ensure consistency

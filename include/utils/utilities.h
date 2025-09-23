@@ -186,6 +186,13 @@ struct DisplayData {
     int strengthAfterAirtech;
     int strengthOnRG;
 
+    // Per-trigger macro selection (0=None, 1..MaxSlots)
+    int macroSlotAfterBlock;
+    int macroSlotOnWakeup;
+    int macroSlotAfterHitstun;
+    int macroSlotAfterAirtech;
+    int macroSlotOnRG;
+
     // Doppel Nanase (ExNanase) - Enlightened FM checkbox state per player
     bool p1DoppelEnlightened;
     bool p2DoppelEnlightened;
@@ -405,6 +412,13 @@ extern std::atomic<int> triggerOnWakeupStrength;
 extern std::atomic<int> triggerAfterHitstunStrength;
 extern std::atomic<int> triggerAfterAirtechStrength;
 extern std::atomic<int> triggerOnRGStrength;
+
+// Per-trigger macro slot selections (0=None, 1..MaxSlots)
+extern std::atomic<int> triggerAfterBlockMacroSlot;
+extern std::atomic<int> triggerOnWakeupMacroSlot;
+extern std::atomic<int> triggerAfterHitstunMacroSlot;
+extern std::atomic<int> triggerAfterAirtechMacroSlot;
+extern std::atomic<int> triggerOnRGMacroSlot;
 
 // Debug toggle: enable pre-buffering (freeze) of wakeup specials/supers/dashes
 extern std::atomic<bool> g_wakeBufferingEnabled;

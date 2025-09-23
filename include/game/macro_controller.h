@@ -45,6 +45,7 @@ void NextSlot();                 // advance slot (wraps)
 void PrevSlot();                 // optional: go back (wraps)
 int  GetSlotCount();
 bool IsSlotEmpty(int slot);
+inline bool IsCurrentSlotEmpty() { return IsSlotEmpty(GetCurrentSlot()); }
 
 // Status for overlays/diagnostics
 State GetState();
