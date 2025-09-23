@@ -642,6 +642,11 @@ void Tick() {
 }
 
 void ToggleRecord() {
+    // Guard: only during live match
+    if (GetCurrentGamePhase() != GamePhase::Match || !AreCharactersInitialized()) {
+        DirectDrawHook::AddMessage("Macro controls available only during Match", "MACRO", RGB(255, 180, 120), 900, 0, 120);
+        return;
+    }
     State st = s_state.load();
     if (st == State::Idle) {
         // Enter PreRecord: swap controls to make P2 local and remember current side
@@ -714,6 +719,11 @@ void ToggleRecord() {
 }
 
 void Play() {
+    // Guard: only during live match
+    if (GetCurrentGamePhase() != GamePhase::Match || !AreCharactersInitialized()) {
+        DirectDrawHook::AddMessage("Macro controls available only during Match", "MACRO", RGB(255, 180, 120), 900, 0, 120);
+        return;
+    }
     // If currently recording, finish first
     if (s_state.load() == State::Recording) FinishRecording();
     // Prepare playback
@@ -778,6 +788,7 @@ void Play() {
 }
 
 void Stop() {
+    // Stop can be called anytime; no gating so it can clean up if needed
     State st = s_state.load();
     if (st == State::Recording) FinishRecording();
     s_state.store(State::Idle);
@@ -825,10 +836,12 @@ SlotStats GetSlotStats(int slot) {
 }
 
 void NextSlot() {
+    if (GetCurrentGamePhase() != GamePhase::Match || !AreCharactersInitialized()) return;
     int cur = s_curSlot.load();
     cur++; if (cur > kMaxSlots) cur = 1; s_curSlot.store(cur);
 }
 void PrevSlot() {
+    if (GetCurrentGamePhase() != GamePhase::Match || !AreCharactersInitialized()) return;
     int cur = s_curSlot.load();
     cur--; if (cur < 1) cur = kMaxSlots; s_curSlot.store(cur);
 }
