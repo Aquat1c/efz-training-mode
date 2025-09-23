@@ -642,7 +642,36 @@ namespace ImGuiGui {
     ImGui::BulletText("Round Start Positions: %s + DOWN + A (keyboard only)", GetKeyName(cfg.teleportKey).c_str());
     ImGui::BulletText("Swap Player Positions: %s + D (keyboard only)", GetKeyName(cfg.teleportKey).c_str());
 
+    
     ImGui::Separator();
+    ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.8f, 1.0f), "Practice/Macros:");
+    ImGui::BulletText("Switch Players (Practice): %s", GetKeyName(cfg.switchPlayersKey).c_str());
+    ImGui::BulletText("Macro Record (two-press): %s", GetKeyName(cfg.macroRecordKey).c_str());
+    ImGui::BulletText("Macro Play: %s", GetKeyName(cfg.macroPlayKey).c_str());
+    ImGui::BulletText("Macro Next Slot: %s", GetKeyName(cfg.macroSlotKey).c_str());
+
+        ImGui::Dummy(ImVec2(1, 6));
+        ImGui::SeparatorText("Macros – how they work");
+        ImGui::TextWrapped(
+            "Macros let you record inputs and play them back on the dummy with engine-accurate timing. \n"
+            "They record both immediate inputs (buttons) and the real input buffer (directions/motions).\n"
+        );
+        ImGui::BulletText("Slots: Macros are stored in numbered slots. Use '%s' to cycle slots.", GetKeyName(cfg.macroSlotKey).c_str());
+        ImGui::BulletText("Record: Press '%s' to arm, then press it again to start recording. Press again to stop.", GetKeyName(cfg.macroRecordKey).c_str());
+        ImGui::BulletText("Play: Press '%s' to play the current slot. Playback drives P2 while you keep controlling P1.", GetKeyName(cfg.macroPlayKey).c_str());
+        ImGui::BulletText("Facing-aware: Directions are flipped automatically based on P2 facing.");
+        ImGui::BulletText("Triggers: In Auto Action, choose 'Macro' in the Action combo and pick a Slot to run on that trigger.");
+        ImGui::BulletText("Overlay: Trigger overlay will show 'Macro Slot #X' when a macro is configured.");
+
+        ImGui::Dummy(ImVec2(1, 4));
+        ImGui::SeparatorText("Recording tips");
+        ImGui::TextWrapped(
+            "Timing: Recording samples at 64 Hz and plays back at the game\'s input poll rate for accuracy. \n"
+            "Buttons are merged per-tick, while directions/motions are taken from the live input buffer.");
+        ImGui::BulletText("Frame-step aware: If the game is frozen (Practice pause/frame-step via EfzRevival), recording only advances when a frame is actually stepped. This avoids long held directions.");
+        ImGui::BulletText("Empty slots: Attempting to play an empty slot does nothing.");
+
+        ImGui::Separator();
         
         // Inline animated preview from embedded bytes
         unsigned gw = 0, gh = 0;
@@ -658,12 +687,6 @@ namespace ImGuiGui {
             ImGui::TextDisabled("(GIF not loaded yet)");
         }
 
-    ImGui::Separator();
-    ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.8f, 1.0f), "Practice/Macros:");
-    ImGui::BulletText("Switch Players (Practice): %s", GetKeyName(cfg.switchPlayersKey).c_str());
-    ImGui::BulletText("Macro Record (two-press): %s", GetKeyName(cfg.macroRecordKey).c_str());
-    ImGui::BulletText("Macro Play: %s", GetKeyName(cfg.macroPlayKey).c_str());
-    ImGui::BulletText("Macro Next Slot: %s", GetKeyName(cfg.macroSlotKey).c_str());
     }
 
     // Add the implementation for the character tab
