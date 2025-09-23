@@ -166,9 +166,14 @@ namespace SwitchPlayers {
             LogOut("[SWITCH] Local side already set; no changes", true);
             return true;
         }
-
-        EFZFreezeGuard guard; // freeze world updates during the swap
-        guard.freeze();
+        // If the game is already paused/frozen (either via Practice pause flag or gamespeed freeze),
+        // skip toggling the EfzRevival freeze to avoid redundant ON/OFF logs and keep the current pause state.
+        EFZFreezeGuard guard; // used only if needed
+        if (!PauseIntegration::IsPausedOrFrozen()) {
+            guard.freeze();
+        } else {
+            LogOut("[SWITCH] Detected paused/frozen state; skipping additional Freeze ON/OFF", true);
+        }
 
         // Log practice base for CE watch setup
         {

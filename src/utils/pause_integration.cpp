@@ -205,6 +205,23 @@ namespace PauseIntegration {
             }
         }
     }
+    bool IsPracticePaused() {
+        bool paused = false;
+        if (ReadPracticePauseFlag(paused)) return paused;
+        return false;
+    }
+    bool IsGameSpeedFrozen() {
+        uint8_t cur = 0;
+        if (ReadGamespeed(cur)) return cur == 0;
+        return false;
+    }
+    bool IsPausedOrFrozen() {
+        // If either the practice flag says paused or the global gamespeed is frozen, treat as paused.
+        // Avoid forcing pointer capture; queries are best-effort.
+        if (IsPracticePaused()) return true;
+        if (IsGameSpeedFrozen()) return true;
+        return false;
+    }
     void OnMenuVisibilityChanged(bool visible) {
         // Prefer Practice-mode pause flag; fall back to gamespeed freeze during active gameplay
         GameMode mode = GetCurrentGameMode();
