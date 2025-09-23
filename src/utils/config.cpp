@@ -207,6 +207,8 @@ namespace Config {
             file << "restrictToPracticeMode = 1\n\n";
             file << "; Enable FPS/timing diagnostics in logs (1 = yes, 0 = no)\n";
             file << "enableFpsDiagnostics = 0\n\n";
+            file << "; Log active player / CPU flags during Character Select (1 = yes, 0 = no)\n";
+            file << "enableCharacterSelectLogger = 1\n\n";
 
             file << "; UI scale for ImGui window (0.80 - 1.20 recommended)\n";
             file << "uiScale = 0.90\n\n";
@@ -304,6 +306,8 @@ namespace Config {
             settings.enableConsole = GetValueBool("General", "enableConsole", false);
             settings.restrictToPracticeMode = GetValueBool("General", "restrictToPracticeMode", true);
             settings.enableFpsDiagnostics = GetValueBool("General", "enableFpsDiagnostics", false);
+            // Default ON so older configs without this key enable it automatically
+            settings.enableCharacterSelectLogger = GetValueBool("General", "enableCharacterSelectLogger", true);
             {
                 // Clamp scale to a sensible range
                 int raw = 0; // we parse as int/float via string later; reuse GetValueInt if needed
@@ -403,6 +407,8 @@ namespace Config {
             file << "restrictToPracticeMode = " << (settings.restrictToPracticeMode ? "1" : "0") << "\n\n";
             file << "; Enable FPS/timing diagnostics in logs (1 = yes, 0 = no)\n";
             file << "enableFpsDiagnostics = " << (settings.enableFpsDiagnostics ? "1" : "0") << "\n\n";
+            file << "; Log active player / CPU flags during Character Select (1 = yes, 0 = no)\n";
+            file << "enableCharacterSelectLogger = " << (settings.enableCharacterSelectLogger ? "1" : "0") << "\n\n";
             file << "; UI scale for ImGui window (0.80 - 1.20 recommended)\n";
             file << "uiScale = " << settings.uiScale << "\n\n";
             file << "; UI font: 0 = ImGui default font, 1 = Segoe UI (Windows)\n";

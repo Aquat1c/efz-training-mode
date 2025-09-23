@@ -56,6 +56,18 @@ static GamePhase s_lastPhase = GamePhase::Unknown;  // NEW phase tracker
 static bool s_pendingOverlayReinit = false; // Set when we return to a valid mode but chars aren't initialized yet
 // NEW: Debounce for CharacterSelect trigger clearing to avoid false positives mid-match
 static int s_characterSelectPhaseFrames = 0; // counts consecutive frames seen as CharacterSelect
+// Character Select live logger (config-gated)
+static uint8_t s_csLastActive = 0xFF;
+static uint8_t s_csLastP2Cpu = 0xFF;
+static uint8_t s_csLastP1Cpu = 0xFF;
+static uint32_t s_csLastP1Ai = 0xFFFFFFFFu;
+static uint32_t s_csLastP2Ai = 0xFFFFFFFFu;
+static int s_csLogDecim = 0; // throttle
+// Character Select input edge logger (active player's A/B/C/D press edges)
+static bool s_csBtnInit = false;
+static uint8_t s_csPrevBtns[4] = {0,0,0,0}; // A,B,C,D for active player last sample
+// Character Select CPU-flag guard (fixes post-Practice return when both flags become 1)
+static bool s_csDidCpuGuard = false;
 
 static uintptr_t fm_lastP1Ptr = 0;
 static uintptr_t fm_lastP2Ptr = 0;
@@ -154,6 +166,74 @@ static void LogCharacterSelectDiagnostics() {
     LogOut("[CS][DIAG] ---------------------------------------", true);
 }
 
+// Per-frame Character Select logger: samples engine and per-character flags; emits only on change
+static void CharacterSelectLiveLoggerTick() {
+    if (!Config::GetSettings().enableCharacterSelectLogger) return;
+    // Throttle to ~10 Hz to keep logs readable
+    if ((++s_csLogDecim % 19) != 0) return; // 192/19 ~= 10 Hz
+    uintptr_t base = GetEFZBase(); if (!base) return;
+    uintptr_t gs = 0; if (!SafeReadMemory(base + EFZ_BASE_OFFSET_GAME_STATE, &gs, sizeof(gs)) || !gs) return;
+    uint8_t active=0xFF, p2cpu=0xFF, p1cpu=0xFF;
+    SafeReadMemory(gs + GAMESTATE_OFF_ACTIVE_PLAYER, &active, sizeof(active));
+    SafeReadMemory(gs + GAMESTATE_OFF_P2_CPU_FLAG, &p2cpu, sizeof(p2cpu));
+    SafeReadMemory(gs + GAMESTATE_OFF_P1_CPU_FLAG, &p1cpu, sizeof(p1cpu));
+    uintptr_t p1=0, p2=0; SafeReadMemory(base + EFZ_BASE_OFFSET_P1, &p1, sizeof(p1)); SafeReadMemory(base + EFZ_BASE_OFFSET_P2, &p2, sizeof(p2));
+    uint32_t a1=0xFFFFFFFFu, a2=0xFFFFFFFFu;
+    if (p1) SafeReadMemory(p1 + AI_CONTROL_FLAG_OFFSET, &a1, sizeof(a1));
+    if (p2) SafeReadMemory(p2 + AI_CONTROL_FLAG_OFFSET, &a2, sizeof(a2));
+    bool changed = (active!=s_csLastActive) || (p2cpu!=s_csLastP2Cpu) || (p1cpu!=s_csLastP1Cpu) || (a1!=s_csLastP1Ai) || (a2!=s_csLastP2Ai);
+    if (changed) {
+        std::ostringstream os;
+        os << "[CS][LIVE] +4930 active=" << (int)active
+           << "  +4931 P2CPU=" << (int)p2cpu
+           << "  +4932 P1CPU=" << (int)p1cpu
+           << "  P1.AI=" << (p1? (int)a1 : -1)
+           << "  P2.AI=" << (p2? (int)a2 : -1);
+        LogOut(os.str(), true);
+        s_csLastActive = active; s_csLastP2Cpu = p2cpu; s_csLastP1Cpu = p1cpu; s_csLastP1Ai = a1; s_csLastP2Ai = a2;
+    }
+}
+
+// Log down-edges for A/B/C/D buttons for the active player on Character Select
+static void CharacterSelectInputEdgeLoggerTick() {
+    if (!Config::GetSettings().enableCharacterSelectLogger) return;
+    uintptr_t base = GetEFZBase(); if (!base) return;
+    // Determine active player and resolve struct
+    uintptr_t gs = 0; if (!SafeReadMemory(base + EFZ_BASE_OFFSET_GAME_STATE, &gs, sizeof(gs)) || !gs) return;
+    uint8_t active = 0; SafeReadMemory(gs + GAMESTATE_OFF_ACTIVE_PLAYER, &active, sizeof(active));
+    uintptr_t pStructPtrAddr = (active == 0) ? (base + EFZ_BASE_OFFSET_P1) : (base + EFZ_BASE_OFFSET_P2);
+    uintptr_t pStruct = 0; if (!SafeReadMemory(pStructPtrAddr, &pStruct, sizeof(pStruct)) || !pStruct) return;
+    // Sample immediate input registers
+    uint8_t a=0,b=0,c=0,d=0;
+    SafeReadMemory(pStruct + INPUT_BUTTON_A_OFFSET, &a, sizeof(a));
+    SafeReadMemory(pStruct + INPUT_BUTTON_B_OFFSET, &b, sizeof(b));
+    SafeReadMemory(pStruct + INPUT_BUTTON_C_OFFSET, &c, sizeof(c));
+    SafeReadMemory(pStruct + INPUT_BUTTON_D_OFFSET, &d, sizeof(d));
+    uint8_t cur[4] = { a ? 1u : 0u, b ? 1u : 0u, c ? 1u : 0u, d ? 1u : 0u };
+    if (!s_csBtnInit) {
+        for (int i=0;i<4;++i) s_csPrevBtns[i] = cur[i];
+        s_csBtnInit = true;
+        return;
+    }
+    // Detect down edges
+    const char* names[4] = {"A","B","C","D"};
+    bool any = false;
+    std::ostringstream os;
+    for (int i=0;i<4;++i) {
+        if (s_csPrevBtns[i] == 0 && cur[i] != 0) {
+            if (!any) {
+                os << "[CS][INPUT] P" << (int)(active+1) << " pressed:";
+                any = true;
+            }
+            os << " " << names[i];
+        }
+    }
+    if (any) {
+        LogOut(os.str(), true);
+    }
+    for (int i=0;i<4;++i) s_csPrevBtns[i] = cur[i];
+}
+
 static void ResetControlOnCharacterSelect() {
     // Clear any residual input overrides and freezes
     if (g_bufferFreezingActive.load()) {
@@ -174,8 +254,9 @@ static void ResetControlOnCharacterSelect() {
         g_injectImmediateOnly[i].store(false);
         g_manualInputOverride[i].store(false);
     }
-    // At Character Select, only ensure the active player focus is P1.
-    // Avoid touching CPU flags here (interferes with join/pick). We enforce CPU defaults at match start.
+    // At Character Select, ensure sane defaults without interfering with join/pick:
+    //  - Force active focus to P1
+    //  - Do NOT mutate CPU flags here (we observed that doing so can disable Cancel/picking)
     uintptr_t base = GetEFZBase();
     uintptr_t gs = 0;
     if (base && SafeReadMemory(base + EFZ_BASE_OFFSET_GAME_STATE, &gs, sizeof(gs)) && gs) {
@@ -189,6 +270,18 @@ static void ResetControlOnCharacterSelect() {
             LogOut(os.str(), true);
         } else if (detailedLogging.load()) {
             LogOut("[CS][RESET] +4930(active): already 0 (P1)", true);
+        }
+        // Diagnostic only: if both CPU flags match (both 0 or both 1), note it for later analysis.
+        // We intentionally avoid writing here due to side-effects on Cancel/join behavior.
+        if (detailedLogging.load()) {
+            uint8_t p1Cpu = 0xFF, p2Cpu = 0xFF;
+            SafeReadMemory(gs + GAMESTATE_OFF_P1_CPU_FLAG, &p1Cpu, sizeof(p1Cpu));
+            SafeReadMemory(gs + GAMESTATE_OFF_P2_CPU_FLAG, &p2Cpu, sizeof(p2Cpu));
+            if (p1Cpu == p2Cpu) {
+                std::ostringstream os; os << "[CS][RESET][WARN] CPU flags equal at entry (P1CPU="
+                                          << (int)p1Cpu << ", P2CPU=" << (int)p2Cpu << ")";
+                LogOut(os.str(), true);
+            }
         }
     }
 }
@@ -578,6 +671,13 @@ void FrameDataMonitor() {
             if (currentPhase == GamePhase::CharacterSelect && lastPhase != GamePhase::CharacterSelect) {
                 LogCharacterSelectDiagnostics();
                 ResetControlOnCharacterSelect();
+                // Reset live logger state on entry so first sample prints
+                s_csLastActive = 0xFF; s_csLastP2Cpu = 0xFF; s_csLastP1Cpu = 0xFF;
+                s_csLastP1Ai = 0xFFFFFFFFu; s_csLastP2Ai = 0xFFFFFFFFu; s_csLogDecim = 0;
+                // Reset input-edge logger state
+                s_csBtnInit = false; for (int i=0;i<4;++i) s_csPrevBtns[i] = 0;
+                // Reset CPU-flag guard
+                s_csDidCpuGuard = false;
             }
 
             lastPhase = currentPhase;
@@ -585,9 +685,33 @@ void FrameDataMonitor() {
 
         // Character Select debounce: run per-frame, not only on phase-change edge
         if (currentPhase == GamePhase::CharacterSelect) {
+            CharacterSelectLiveLoggerTick();
+            CharacterSelectInputEdgeLoggerTick();
             s_characterSelectPhaseFrames++;
             if (s_characterSelectPhaseFrames == 1 && detailedLogging.load()) {
                 LogOut("[FRAME MONITOR] Detected CharacterSelect phase - starting debounce window", true);
+            }
+            // Guard: after a short debounce, if we're in Practice and both CPU flags are 1 (broken state),
+            // set to the known-good pattern observed on first CS: P2CPU=0, P1CPU=1. Do this once per CS entry.
+            if (!s_csDidCpuGuard && s_characterSelectPhaseFrames >= 30 && GetCurrentGameMode() == GameMode::Practice) {
+                uintptr_t base = GetEFZBase(); uintptr_t gs = 0;
+                if (base && SafeReadMemory(base + EFZ_BASE_OFFSET_GAME_STATE, &gs, sizeof(gs)) && gs) {
+                    uint8_t p1cpu=0xFF, p2cpu=0xFF;
+                    SafeReadMemory(gs + GAMESTATE_OFF_P1_CPU_FLAG, &p1cpu, sizeof(p1cpu));
+                    SafeReadMemory(gs + GAMESTATE_OFF_P2_CPU_FLAG, &p2cpu, sizeof(p2cpu));
+                    if (p1cpu == 1u && p2cpu == 1u) {
+                        uint8_t newP2 = 0u; // make P2 human/selectable
+                        uint8_t newP1 = 1u; // keep P1 as in working first-CS pattern
+                        bool ok1 = SafeWriteMemory(gs + GAMESTATE_OFF_P2_CPU_FLAG, &newP2, sizeof(newP2));
+                        bool ok2 = SafeWriteMemory(gs + GAMESTATE_OFF_P1_CPU_FLAG, &newP1, sizeof(newP1));
+                        uint8_t p1aft=0xFF, p2aft=0xFF; SafeReadMemory(gs + GAMESTATE_OFF_P1_CPU_FLAG, &p1aft, sizeof(p1aft));
+                        SafeReadMemory(gs + GAMESTATE_OFF_P2_CPU_FLAG, &p2aft, sizeof(p2aft));
+                        std::ostringstream os; os << "[CS][GUARD] CPU flags 1/1 -> set P2CPU 1->" << (int)p2aft
+                                                  << ", P1CPU 1->" << (int)p1aft << (ok1 && ok2 ? "" : " (partial)");
+                        LogOut(os.str(), true);
+                        s_csDidCpuGuard = true;
+                    }
+                }
             }
             if (s_characterSelectPhaseFrames >= 120) {
                 GameMode gmNow = GetCurrentGameMode();

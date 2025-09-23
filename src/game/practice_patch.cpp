@@ -310,6 +310,12 @@ void MonitorAndPatchPracticeMode() {
                     // Desired AI flag follows the game state's CPU flag
                     uint32_t desiredAIFlag = p2CpuControlled ? 1u : 0u;
                     if (p2AIFlag != desiredAIFlag) {
+                        // Do not perform writes unless we are firmly in Match phase to avoid affecting menus/CS
+                        if (GetCurrentGamePhase() != GamePhase::Match) {
+                            // Just observe; avoid writing during Character Select or other non-match phases
+                            lastP2AIControlled = (p2AIFlag != 0);
+                        } else
+                        
                         if (g_p2ControlOverridden) {
                             // During auto-action/macro control override, do not fight temporary human control.
                             if (detailedLogging.load()) {
