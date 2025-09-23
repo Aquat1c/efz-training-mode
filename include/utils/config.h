@@ -12,6 +12,7 @@ namespace Config {
     bool enableConsole;          // NEW: Show/Hide console window
     bool enableFpsDiagnostics;   // NEW: Enable FPS/timing diagnostics output
     float uiScale;               // NEW: UI scale for ImGui window (e.g., 0.80..1.20)
+    int uiFontMode;              // NEW: UI font selection (0=ImGui default, 1=Segoe UI)
 
     // (Practice tuning removed)
         

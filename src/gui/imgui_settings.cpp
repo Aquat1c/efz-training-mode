@@ -72,6 +72,7 @@ namespace ImGuiSettings {
     bool restrictPractice = cfg.restrictToPracticeMode;
     bool enableConsole = cfg.enableConsole;
     float uiScale = cfg.uiScale;
+    int uiFontMode = cfg.uiFontMode; // 0=Default, 1=Segoe UI
 
     if (ImGui::CollapsingHeader("General")) {
             CheckboxApply("Use ImGui UI (else legacy dialog)", useImGui, "General", "UseImGui");
@@ -94,6 +95,17 @@ namespace ImGuiSettings {
             if (ImGui::Button("Reset##UiScale")) {
                 uiScale = 0.90f;
                 Config::SetSetting("General", "uiScale", "0.90");
+            }
+            ImGui::SameLine();
+            ImGui::TextDisabled("(applies immediately)");
+
+            // UI Font selection
+            ImGui::Text("UI Font:");
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(180);
+            const char* fontItems[] = { "Default (ImGui)", "Segoe UI (Windows)" };
+            if (ImGui::Combo("##UiFont", &uiFontMode, fontItems, IM_ARRAYSIZE(fontItems))) {
+                Config::SetSetting("General", "uiFont", std::to_string(uiFontMode));
             }
             ImGui::SameLine();
             ImGui::TextDisabled("(applies immediately)");

@@ -632,8 +632,37 @@ namespace ImGuiGui {
 
     // Help Tab implementation
     void RenderHelpTab() {
+        // Wrap help content in a scrollable child so keyboard/gamepad nav can scroll it
+        ImGuiWindowFlags helpFlags = ImGuiWindowFlags_NoSavedSettings;
+        ImVec2 avail = ImGui::GetContentRegionAvail();
+        if (ImGui::BeginChild("##HelpScroll", ImVec2(avail.x, avail.y), true, helpFlags)) {
+            // Ensure the child can be focused for keyboard/gamepad scrolling
+            if (!ImGui::IsWindowFocused(ImGuiFocusedFlags_ChildWindows)) {
+                ImGui::SetItemDefaultFocus();
+            }
+            // Small hint so users know how to scroll without a mouse
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 1.0f, 0.8f, 0.85f));
+            ImGui::TextDisabled("Hint: Use Up/Down/PageUp/PageDown or D-Pad to scroll this Help.");
+            ImGui::PopStyleColor();
+            // Provide explicit key/gamepad scrolling when the child has focus
+            if (ImGui::IsWindowFocused()) {
+                ImGuiIO& io = ImGui::GetIO();
+                const float line = ImGui::GetTextLineHeightWithSpacing();
+                const float page = ImGui::GetWindowHeight() * 0.85f;
+                float scroll = 0.0f;
+                if (ImGui::IsKeyDown(ImGuiKey_DownArrow)) scroll += line;
+                if (ImGui::IsKeyDown(ImGuiKey_UpArrow)) scroll -= line;
+                if (ImGui::IsKeyPressed(ImGuiKey_PageDown)) scroll += page;
+                if (ImGui::IsKeyPressed(ImGuiKey_PageUp)) scroll -= page;
+                // Gamepad DPAD
+                if (ImGui::IsKeyDown(ImGuiKey_GamepadDpadDown)) scroll += line * 1.5f;
+                if (ImGui::IsKeyDown(ImGuiKey_GamepadDpadUp)) scroll -= line * 1.5f;
+                if (scroll != 0.0f) {
+                    ImGui::SetScrollY(ImGui::GetScrollY() + scroll);
+                }
+            }
     ImGui::TextUnformatted("Hotkeys (can be changed in config.ini):");
-        ImGui::Separator();
+    ImGui::Separator();
 
         const Config::Settings& cfg = Config::GetSettings();
 
@@ -697,7 +726,8 @@ namespace ImGuiGui {
         } else {
             ImGui::TextDisabled("(GIF not loaded yet)");
         }
-
+        }
+        ImGui::EndChild();
     }
 
     // Add the implementation for the character tab
@@ -1973,7 +2003,7 @@ namespace ImGuiGui {
                         ImGui::BulletText("Next Slot: %s", GetKeyName(cfg.macroSlotKey).c_str());
                         ImGui::EndTabItem();
                     }
-                    if (ImGui::BeginTabItem("Help")) {
+                    if (ImGui::BeginTabItem("Help", nullptr, ImGuiTabItemFlags_NoCloseWithMiddleMouseButton)) {
                         guiState.currentTab = 4;
                         RenderHelpTab();
                         ImGui::EndTabItem();
