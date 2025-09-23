@@ -16,6 +16,10 @@
 #include "../include/input/input_motion.h" // for direction/stance constants
 #include "../include/game/guard_overrides.h" // character/move grounded overheads
 #include "../include/game/character_settings.h" // character ID from name
+#include "../include/game/auto_action.h" // g_p2ControlOverridden
+// EfzRevival practice controller offsets and pause integration (for GUI_POS fix at match start)
+#include "../include/game/practice_offsets.h"
+#include "../include/utils/pause_integration.h"
 
 // Define constants for offsets
 const uintptr_t P2_CPU_FLAG_OFFSET = 4931;
@@ -284,7 +288,7 @@ void MonitorAndPatchPracticeMode() {
                     lastP2CpuControlled = p2CpuControlled;
                 }
                 
-                // Keep P2 character AI flag aligned with the game state's CPU flag.
+                // Keep P2 character AI flag aligned with the game state's CPU flag (when not temporarily overridden).
                 // If CPU flag says human (0), ensure AI flag = 0. If CPU flag says CPU (1), ensure AI flag = 1.
                 uintptr_t p2CharPtr = 0;
                 uint32_t p2AIFlag = 1; // Default to AI controlled
@@ -306,10 +310,21 @@ void MonitorAndPatchPracticeMode() {
                     // Desired AI flag follows the game state's CPU flag
                     uint32_t desiredAIFlag = p2CpuControlled ? 1u : 0u;
                     if (p2AIFlag != desiredAIFlag) {
-                        if (SafeWriteMemory(p2CharPtr + AI_CONTROL_FLAG_OFFSET, &desiredAIFlag, sizeof(uint32_t))) {
-                            LogOut(std::string("[PRACTICE_PATCH] Sync P2 AI flag -> ") + (desiredAIFlag ? "AI(1)" : "Human(0)"), detailedLogging.load());
+                        if (g_p2ControlOverridden) {
+                            // During auto-action/macro control override, do not fight temporary human control.
+                            if (detailedLogging.load()) {
+                                LogOut("[PRACTICE_PATCH] Skip AI sync (override active)", true);
+                            }
                         } else {
-                            LogOut("[PRACTICE_PATCH] Failed to sync P2 AI flag to match CPU flag", true);
+                            // Audit before/after for attribution
+                            uint32_t before = 0xFFFFFFFF, after = 0xFFFFFFFF;
+                            SafeReadMemory(p2CharPtr + AI_CONTROL_FLAG_OFFSET, &before, sizeof(before));
+                            bool okWrite = SafeWriteMemory(p2CharPtr + AI_CONTROL_FLAG_OFFSET, &desiredAIFlag, sizeof(uint32_t));
+                            SafeReadMemory(p2CharPtr + AI_CONTROL_FLAG_OFFSET, &after, sizeof(after));
+                            std::ostringstream oss; oss << "[AUDIT][AI] PracticeSync P2 @0x" << std::hex << (p2CharPtr + AI_CONTROL_FLAG_OFFSET)
+                                                        << " " << std::dec << before << "->" << after
+                                                        << " (want " << desiredAIFlag << ")" << (okWrite?"":" (fail)");
+                            LogOut(oss.str(), true);
                         }
                     }
                 }
@@ -548,6 +563,21 @@ void EnsureDefaultControlFlagsOnMatchStart() {
         }
     } else {
         LogOut("[PRACTICE_PATCH] MatchStart: P2 character pointer invalid", true);
+    }
+
+    // 3) Align EfzRevival Practice GUI position to P1 (same as SwitchPlayers logic)
+    //    GUI_POS(+0x24) expects 1 when P1 is local/human and 0 when P2 is local.
+    //    Our default enforcement makes P1 human at match start, so set GUI_POS = 1.
+    PauseIntegration::EnsurePracticePointerCapture();
+    void* practice = PauseIntegration::GetPracticeControllerPtr();
+    if (practice) {
+        uint8_t guiPos = 1u; // P1
+        bool okWrite = SafeWriteMemory((uintptr_t)practice + PRACTICE_OFF_GUI_POS, &guiPos, sizeof(guiPos));
+        uint8_t verify = 0xFF; SafeReadMemory((uintptr_t)practice + PRACTICE_OFF_GUI_POS, &verify, sizeof(verify));
+        std::ostringstream oss; oss << "[PRACTICE_PATCH] MatchStart: GUI_POS(+0x24) set to " << (int)verify << (okWrite?"":" (fail)");
+        LogOut(oss.str(), true);
+    } else {
+        LogOut("[PRACTICE_PATCH] MatchStart: Practice controller unavailable, GUI_POS not updated", true);
     }
 }
 

@@ -15,12 +15,16 @@
 #include "../include/utils/config.h"
 #include "../include/input/input_motion.h"
 #include "../include/utils/network.h"
+#include "../include/utils/pause_integration.h" // PauseIntegration::EnsurePracticePointerCapture/GetPracticeControllerPtr
 #define DISABLE_ATTACK_READER 1
 #include "../include/game/attack_reader.h"
 #include "../include/game/practice_patch.h"
 #include "../include/game/character_settings.h"
 #include "../include/game/macro_controller.h"
 #include "../include/game/always_rg.h"
+#include "../include/game/practice_offsets.h"   // GAMESTATE_OFF_* and practice controller offsets
+#include "../include/input/injection_control.h"  // g_forceBypass/g_injectImmediateOnly/g_pollOverride*
+#include "../include/input/input_core.h"         // AI_CONTROL_FLAG_OFFSET
 #ifndef CLEAR_ALL_AUTO_ACTION_TRIGGERS_FWD
 #define CLEAR_ALL_AUTO_ACTION_TRIGGERS_FWD
 void ClearAllAutoActionTriggers();
@@ -67,6 +71,126 @@ static std::string FM_Hex(uintptr_t v) {
     std::ostringstream oss;
     oss << "0x" << std::hex << std::uppercase << v;
     return oss.str();
+}
+
+// --- Character Select diagnostics & reset helpers ---
+static void LogCharacterSelectDiagnostics() {
+    LogOut("[CS][DIAG] ---- Enter Character Select ----", true);
+    uintptr_t base = GetEFZBase();
+    if (!base) {
+        LogOut("[CS][DIAG] efz base: <null>", true);
+        return;
+    }
+    std::ostringstream os;
+    os << "[CS][DIAG] efz base: " << FM_Hex(base);
+    LogOut(os.str(), true); os.str(""); os.clear();
+
+    uintptr_t gs = 0;
+    if (SafeReadMemory(base + EFZ_BASE_OFFSET_GAME_STATE, &gs, sizeof(gs)) && gs) {
+        uint8_t active=0xFF, p2cpu=0xFF, p1cpu=0xFF;
+        SafeReadMemory(gs + GAMESTATE_OFF_ACTIVE_PLAYER, &active, sizeof(active));
+        SafeReadMemory(gs + GAMESTATE_OFF_P2_CPU_FLAG, &p2cpu, sizeof(p2cpu));
+        SafeReadMemory(gs + GAMESTATE_OFF_P1_CPU_FLAG, &p1cpu, sizeof(p1cpu));
+        os << "[CS][DIAG] gameState=" << FM_Hex(gs)
+           << "  [+4930 active=" << (int)active
+           << "] [+4931 P2CPU=" << (int)p2cpu
+           << "] [+4932 P1CPU=" << (int)p1cpu << "]";
+        LogOut(os.str(), true); os.str(""); os.clear();
+    } else {
+        LogOut("[CS][DIAG] gameState: <unavailable>", true);
+    }
+
+    // Player base pointers and AI flags (if available)
+    uintptr_t p1=0, p2=0; SafeReadMemory(base + EFZ_BASE_OFFSET_P1, &p1, sizeof(p1)); SafeReadMemory(base + EFZ_BASE_OFFSET_P2, &p2, sizeof(p2));
+    os << "[CS][DIAG] P1=" << FM_Hex(p1) << "  P2=" << FM_Hex(p2);
+    LogOut(os.str(), true); os.str(""); os.clear();
+    if (p1) {
+        uint32_t a1=0xDEADBEEF; SafeReadMemory(p1 + AI_CONTROL_FLAG_OFFSET, &a1, sizeof(a1));
+        os << "[CS][DIAG] P1 AI(+0xA4): " << a1;
+        LogOut(os.str(), true); os.str(""); os.clear();
+    }
+    if (p2) {
+        uint32_t a2=0xDEADBEEF; SafeReadMemory(p2 + AI_CONTROL_FLAG_OFFSET, &a2, sizeof(a2));
+        os << "[CS][DIAG] P2 AI(+0xA4): " << a2;
+        LogOut(os.str(), true); os.str(""); os.clear();
+    }
+
+    // Practice controller diagnostics (best-effort)
+    PauseIntegration::EnsurePracticePointerCapture();
+    void* prac = PauseIntegration::GetPracticeControllerPtr();
+    if (prac) {
+        uint8_t* pr = reinterpret_cast<uint8_t*>(prac);
+        int local=-1, remote=-1; uintptr_t prim=0, sec=0; int initSrc=-1; uint8_t guiPos=0xFF;
+        SafeReadMemory((uintptr_t)pr + PRACTICE_OFF_LOCAL_SIDE_IDX, &local, sizeof(local));
+        SafeReadMemory((uintptr_t)pr + PRACTICE_OFF_REMOTE_SIDE_IDX, &remote, sizeof(remote));
+        SafeReadMemory((uintptr_t)pr + PRACTICE_OFF_SIDE_BUF_PRIMARY, &prim, sizeof(prim));
+        SafeReadMemory((uintptr_t)pr + PRACTICE_OFF_SIDE_BUF_SECONDARY, &sec, sizeof(sec));
+        SafeReadMemory((uintptr_t)pr + PRACTICE_OFF_INIT_SOURCE_SIDE, &initSrc, sizeof(initSrc));
+        SafeReadMemory((uintptr_t)pr + PRACTICE_OFF_GUI_POS, &guiPos, sizeof(guiPos));
+        os << "[CS][DIAG] Practice.this=" << FM_Hex((uintptr_t)pr)
+           << "  local=" << local << " remote=" << remote
+           << "  primary=" << FM_Hex(prim) << " secondary=" << FM_Hex(sec)
+           << "  initSrc=" << initSrc << "  GUI_POS(+0x24)=" << (int)guiPos;
+        LogOut(os.str(), true); os.str(""); os.clear();
+    } else {
+        LogOut("[CS][DIAG] Practice controller: <unavailable>", true);
+    }
+
+    // Our override/patch states
+    os << "[CS][DIAG] overrides: p2Overridden=" << (g_p2ControlOverridden?"1":"0")
+       << "  pendingRestore=" << (g_pendingControlRestore.load()?"1":"0")
+       << "  restoreTimeout=" << g_controlRestoreTimeout.load();
+    LogOut(os.str(), true); os.str(""); os.clear();
+
+    os << "[CS][DIAG] bufferFreezeActive=" << (g_bufferFreezingActive.load()?"1":"0")
+       << " activeFreezePlayer=" << g_activeFreezePlayer.load();
+    LogOut(os.str(), true); os.str(""); os.clear();
+
+    bool po1 = g_pollOverrideActive[1].load();
+    bool po2 = g_pollOverrideActive[2].load();
+    os << "[CS][DIAG] pollOverride P1=" << (po1?"1":"0") << " P2=" << (po2?"1":"0");
+    LogOut(os.str(), true); os.str(""); os.clear();
+
+    LogOut("[CS][DIAG] ---------------------------------------", true);
+}
+
+static void ResetControlOnCharacterSelect() {
+    // Clear any residual input overrides and freezes
+    if (g_bufferFreezingActive.load()) {
+        StopBufferFreezing();
+    }
+    // Restore P2 control if our override is active
+    if (g_p2ControlOverridden) {
+        RestoreP2ControlState();
+    }
+    g_pendingControlRestore.store(false);
+    g_controlRestoreTimeout.store(0);
+
+    // Clear poll override/injection flags for both players
+    for (int i = 1; i <= 2; ++i) {
+        g_pollOverrideActive[i].store(false);
+        g_pollOverrideMask[i].store(0);
+        g_forceBypass[i].store(false);
+        g_injectImmediateOnly[i].store(false);
+        g_manualInputOverride[i].store(false);
+    }
+    // At Character Select, only ensure the active player focus is P1.
+    // Avoid touching CPU flags here (interferes with join/pick). We enforce CPU defaults at match start.
+    uintptr_t base = GetEFZBase();
+    uintptr_t gs = 0;
+    if (base && SafeReadMemory(base + EFZ_BASE_OFFSET_GAME_STATE, &gs, sizeof(gs)) && gs) {
+        uint8_t activeBefore = 0xFF, activeAfter = 0xFF;
+        SafeReadMemory(gs + GAMESTATE_OFF_ACTIVE_PLAYER, &activeBefore, sizeof(activeBefore));
+        if (activeBefore != 0u) {
+            uint8_t zero = 0u;
+            bool ok = SafeWriteMemory(gs + GAMESTATE_OFF_ACTIVE_PLAYER, &zero, sizeof(zero));
+            SafeReadMemory(gs + GAMESTATE_OFF_ACTIVE_PLAYER, &activeAfter, sizeof(activeAfter));
+            std::ostringstream os; os << "[CS][RESET] +4930(active): " << (int)activeBefore << "->" << (int)activeAfter << (ok?"":" (fail)");
+            LogOut(os.str(), true);
+        } else if (detailedLogging.load()) {
+            LogOut("[CS][RESET] +4930(active): already 0 (P1)", true);
+        }
+    }
 }
 
 // --- Frame snapshot store (double-buffer, lock-free) ---
@@ -450,33 +574,34 @@ void FrameDataMonitor() {
                 }
             }
 
-            // If we just arrived at Character Select, clear all triggers persistently AFTER stability check.
-            if (currentPhase == GamePhase::CharacterSelect) {
-                // Increment consecutive CS frames; only act after a debounce window (e.g. 120 frames ≈ 0.6s @192fps)
-                s_characterSelectPhaseFrames++;
-                if (s_characterSelectPhaseFrames == 1 && detailedLogging.load()) {
-                    LogOut("[FRAME MONITOR] Detected CharacterSelect phase - starting debounce window", true);
-                }
-
-                if (s_characterSelectPhaseFrames >= 120) {
-                    // Additional safety: ensure we are NOT currently in a valid gameplay mode with initialized characters
-                    GameMode gmNow = GetCurrentGameMode();
-                    bool charsInit = AreCharactersInitialized();
-                    if (!charsInit) {
-                        LogOut("[FRAME MONITOR] CharacterSelect phase stable (>=120 frames) and characters not initialized -> clearing triggers", true);
-                        ClearAllTriggersPersistently();
-                        s_characterSelectPhaseFrames = 0; // reset after action
-                    } else if (detailedLogging.load()) {
-                        // Likely a false detection (e.g., transient phase glitch) – keep features
-                        LogOut("[FRAME MONITOR] CharacterSelect phase stable but characters still initialized; skipping trigger clear (possible false phase)", true);
-                    }
-                }
-            } else if (s_characterSelectPhaseFrames > 0) {
-                // Reset debounce counter if we left CharacterSelect before threshold
-                s_characterSelectPhaseFrames = 0;
+            // If we just arrived at Character Select: diagnostics + safe reset
+            if (currentPhase == GamePhase::CharacterSelect && lastPhase != GamePhase::CharacterSelect) {
+                LogCharacterSelectDiagnostics();
+                ResetControlOnCharacterSelect();
             }
 
             lastPhase = currentPhase;
+        }
+
+        // Character Select debounce: run per-frame, not only on phase-change edge
+        if (currentPhase == GamePhase::CharacterSelect) {
+            s_characterSelectPhaseFrames++;
+            if (s_characterSelectPhaseFrames == 1 && detailedLogging.load()) {
+                LogOut("[FRAME MONITOR] Detected CharacterSelect phase - starting debounce window", true);
+            }
+            if (s_characterSelectPhaseFrames >= 120) {
+                GameMode gmNow = GetCurrentGameMode();
+                bool charsInit = AreCharactersInitialized();
+                if (!charsInit) {
+                    LogOut("[FRAME MONITOR] CharacterSelect phase stable (>=120 frames) and characters not initialized -> clearing triggers", true);
+                    ClearAllTriggersPersistently();
+                    s_characterSelectPhaseFrames = 0; // reset after action
+                } else if (detailedLogging.load()) {
+                    LogOut("[FRAME MONITOR] CharacterSelect phase stable but characters still initialized; skipping trigger clear (possible false phase)", true);
+                }
+            }
+        } else if (s_characterSelectPhaseFrames > 0) {
+            s_characterSelectPhaseFrames = 0;
         }
         
     // SINGLE authoritative frame increment

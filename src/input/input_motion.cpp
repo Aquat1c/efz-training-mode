@@ -55,9 +55,23 @@ void SetAIControlFlag(int playerNum, bool human) {
         return;
     }
     
-    // Write the AI control flag (0 = human, 1 = AI)
-    uint32_t controlFlag = human ? 0 : 1;
-    SafeWriteMemory(playerPtr + AI_CONTROL_FLAG_OFFSET, &controlFlag, sizeof(uint32_t));
+    // Write the AI control flag (0 = human, 1 = AI) with audit logging
+    uint32_t desired = human ? 0u : 1u;
+    uint32_t before = 0xFFFFFFFFu, after = 0xFFFFFFFFu;
+    SafeReadMemory(playerPtr + AI_CONTROL_FLAG_OFFSET, &before, sizeof(uint32_t));
+    bool okWrite = SafeWriteMemory(playerPtr + AI_CONTROL_FLAG_OFFSET, &desired, sizeof(uint32_t));
+    SafeReadMemory(playerPtr + AI_CONTROL_FLAG_OFFSET, &after, sizeof(uint32_t));
+    if (before != after || !okWrite) {
+        std::ostringstream oss;
+        oss << "[AUDIT][AI] SetAIControlFlag P" << playerNum
+            << " @0x" << std::hex << (playerPtr + AI_CONTROL_FLAG_OFFSET)
+            << std::dec
+            << " before=" << before
+            << " write=" << desired
+            << " after=" << after
+            << " okWrite=" << (okWrite?"1":"0");
+        LogOut(oss.str(), true);
+    }
 }
 
 bool IsAIControlFlagHuman(int playerNum) {
