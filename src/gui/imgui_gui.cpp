@@ -29,6 +29,7 @@ extern void SpamAttackButton(uintptr_t playerBase, uint8_t button, int frames, c
 #include "../include/game/always_rg.h"
 // Switch players
 #include "../include/utils/switch_players.h"
+#include "../include/game/macro_controller.h"
 #include "../include/utils/pause_integration.h"
 #include "../include/game/practice_offsets.h"
 
@@ -623,7 +624,12 @@ namespace ImGuiGui {
             ImGui::TextDisabled("(GIF not loaded yet)");
         }
 
-        ImGui::Separator();
+    ImGui::Separator();
+    ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.8f, 1.0f), "Practice/Macros:");
+    ImGui::BulletText("Switch Players (Practice): %s", GetKeyName(cfg.switchPlayersKey).c_str());
+    ImGui::BulletText("Macro Record (two-press): %s", GetKeyName(cfg.macroRecordKey).c_str());
+    ImGui::BulletText("Macro Play: %s", GetKeyName(cfg.macroPlayKey).c_str());
+    ImGui::BulletText("Macro Next Slot: %s", GetKeyName(cfg.macroSlotKey).c_str());
     }
 
     // Add the implementation for the character tab
@@ -1847,6 +1853,39 @@ namespace ImGuiGui {
                 }
                 
                 // Help tab
+                if (ImGui::BeginTabItem("Macros")) {
+                    const auto& cfg = Config::GetSettings();
+                    ImGui::SeparatorText("Macro Controller");
+                    ImGui::Text("State: %s", MacroController::GetStatusLine().c_str());
+                    ImGui::Text("Current Slot: %d / %d", MacroController::GetCurrentSlot(), MacroController::GetSlotCount());
+                    bool empty = MacroController::IsSlotEmpty(MacroController::GetCurrentSlot());
+                    ImGui::Text("Slot Empty: %s", empty ? "Yes" : "No");
+                    // Debug stats for validation
+                    {
+                        auto stats = MacroController::GetSlotStats(MacroController::GetCurrentSlot());
+                        ImGui::SeparatorText("Slot Stats");
+                        ImGui::BulletText("Spans: %d", stats.spanCount);
+                        ImGui::BulletText("Total Ticks: %d (~%.2fs)", stats.totalTicks, stats.totalTicks / 64.0f);
+                        ImGui::BulletText("Buffer Entries: %d", stats.bufEntries);
+                        ImGui::BulletText("Buf Idx Start: %u", (unsigned)stats.bufStartIdx);
+                        ImGui::BulletText("Buf Idx End: %u", (unsigned)stats.bufEndIdx);
+                        ImGui::BulletText("Has Data: %s", stats.hasData ? "Yes" : "No");
+                    }
+                    if (ImGui::Button("Toggle Record")) { MacroController::ToggleRecord(); }
+                    ImGui::SameLine();
+                    if (ImGui::Button("Play")) { MacroController::Play(); }
+                    ImGui::SameLine();
+                    if (ImGui::Button("Stop")) { MacroController::Stop(); }
+                    if (ImGui::Button("Prev Slot")) { MacroController::PrevSlot(); }
+                    ImGui::SameLine();
+                    if (ImGui::Button("Next Slot")) { MacroController::NextSlot(); }
+                    ImGui::Spacing();
+                    ImGui::SeparatorText("Hotkeys");
+                    ImGui::BulletText("Record: %s", GetKeyName(cfg.macroRecordKey).c_str());
+                    ImGui::BulletText("Play: %s", GetKeyName(cfg.macroPlayKey).c_str());
+                    ImGui::BulletText("Next Slot: %s", GetKeyName(cfg.macroSlotKey).c_str());
+                    ImGui::EndTabItem();
+                }
                 if (ImGui::BeginTabItem("Help")) {
                     guiState.currentTab = 4;
                     RenderHelpTab();

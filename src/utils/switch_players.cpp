@@ -88,13 +88,13 @@ namespace {
             if (ctx && toggle && !active) {
                 bool ok = SehSafeToggle(toggle, ctx, 0);
                 active = ok;
-                LogOut(ok ? "[SWITCH] Freeze ON via EfzRevival patch toggler" : "[SWITCH] Freeze ON threw exception", true);
+                LogOut(ok ? "[SWITCH] Freeze ON" : "[SWITCH] Freeze ON threw exception", true);
             }
         }
         void unfreeze() {
             if (ctx && toggle && active) {
                 bool ok = SehSafeToggle(toggle, ctx, 1);
-                LogOut(ok ? "[SWITCH] Freeze OFF via EfzRevival patch toggler" : "[SWITCH] Freeze OFF threw exception", true);
+                LogOut(ok ? "[SWITCH] Freeze OFF" : "[SWITCH] Freeze OFF threw exception", true);
                 active = false;
             }
         }
