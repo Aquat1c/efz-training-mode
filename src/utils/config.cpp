@@ -205,6 +205,9 @@ namespace Config {
             file << "; Enable FPS/timing diagnostics in logs (1 = yes, 0 = no)\n";
             file << "enableFpsDiagnostics = 0\n\n";
 
+            file << "; UI scale for ImGui window (0.80 - 1.20 recommended)\n";
+            file << "uiScale = 0.90\n\n";
+
             // (Practice-specific tuning is hardcoded now)
             
             file << "[Hotkeys]\n";
@@ -296,6 +299,23 @@ namespace Config {
             settings.enableConsole = GetValueBool("General", "enableConsole", false);
             settings.restrictToPracticeMode = GetValueBool("General", "restrictToPracticeMode", true);
             settings.enableFpsDiagnostics = GetValueBool("General", "enableFpsDiagnostics", false);
+            {
+                // Clamp scale to a sensible range
+                int raw = 0; // we parse as int/float via string later; reuse GetValueInt if needed
+                auto sectionIt = iniData.find("general");
+                float scale = 0.90f;
+                if (sectionIt != iniData.end()) {
+                    auto keyIt = sectionIt->second.find("uiscale");
+                    if (keyIt != sectionIt->second.end()) {
+                        try {
+                            scale = std::stof(keyIt->second);
+                        } catch (...) { scale = 0.90f; }
+                    }
+                }
+                if (scale < 0.70f) scale = 0.70f;
+                if (scale > 1.50f) scale = 1.50f;
+                settings.uiScale = scale;
+            }
 
             // Practice: no runtime-tunable settings
             
@@ -328,6 +348,7 @@ namespace Config {
             LogOut("[CONFIG] MacroPlayKey: " + std::to_string(settings.macroPlayKey) + " (" + GetKeyName(settings.macroPlayKey) + ")", true);
             LogOut("[CONFIG] MacroSlotKey: " + std::to_string(settings.macroSlotKey) + " (" + GetKeyName(settings.macroSlotKey) + ")", true);
             LogOut("[CONFIG] enableFpsDiagnostics: " + std::to_string(settings.enableFpsDiagnostics), true);
+            LogOut("[CONFIG] uiScale: " + std::to_string(settings.uiScale), true);
             
             return true;
         }
@@ -363,6 +384,8 @@ namespace Config {
             file << "restrictToPracticeMode = " << (settings.restrictToPracticeMode ? "1" : "0") << "\n\n";
             file << "; Enable FPS/timing diagnostics in logs (1 = yes, 0 = no)\n";
             file << "enableFpsDiagnostics = " << (settings.enableFpsDiagnostics ? "1" : "0") << "\n\n";
+            file << "; UI scale for ImGui window (0.80 - 1.20 recommended)\n";
+            file << "uiScale = " << settings.uiScale << "\n\n";
 
             // (Practice tuning omitted)
             file << "; Show the debug console window (1 = yes, 0 = no)\n";
@@ -418,6 +441,9 @@ namespace Config {
             if (k == "detailedlogging") settings.detailedLogging = (value == "1");
             if (k == "enableconsole") settings.enableConsole = (value == "1");
             if (k == "restricttopracticemode") settings.restrictToPracticeMode = (value == "1");
+            if (k == "uiscale") {
+                try { settings.uiScale = std::stof(value); } catch (...) {}
+            }
         }
         else if (sec == "hotkeys") {
             int intValue = ParseKeyValue(value);

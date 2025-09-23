@@ -8,6 +8,10 @@
 #include <Xinput.h>
 #include <algorithm>
 #include "../include/utils/pause_integration.h"
+// Read UI scale from config to build crisp fonts at the right size
+#include "../include/utils/config.h"
+// Math helpers
+#include <cmath>
 
 #pragma comment(lib, "xinput9_1_0.lib")
 
@@ -25,6 +29,9 @@ static bool g_useVirtualCursor = false;
 static ImVec2 g_virtualCursorPos = ImVec2(200.0f, 200.0f);
 static bool g_lastLeftDown = false;
 static bool g_lastRightDown = false;
+
+// Track applied font scale to rebuild atlas only when needed
+static float g_lastFontScaleApplied = 0.0f; // 0 = uninitialized
 
 static inline float ClampF(float v, float lo, float hi) {
     if (v < lo) return lo;
@@ -131,6 +138,52 @@ LRESULT CALLBACK ImGuiWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 }
 
 namespace ImGuiImpl {
+    // Rebuild font atlas for crisp text at a given UI scale. Safe to call multiple times.
+    static void UpdateFontAtlasForScale(float uiScale)
+    {
+        if (!ImGui::GetCurrentContext()) return;
+        ImGuiIO& io = ImGui::GetIO();
+
+        // Clamp and round to nearest hundredth to avoid thrashing on tiny changes
+        float s = uiScale;
+        if (s < 0.70f) s = 0.70f; else if (s > 1.50f) s = 1.50f;
+        float sRounded = floorf(s * 100.0f + 0.5f) / 100.0f;
+        if (fabsf(sRounded - g_lastFontScaleApplied) < 0.01f) {
+            return; // no significant change
+        }
+
+    // Rebuild fonts at scaled pixel size for sharp rendering
+    // Start from ImGui's default base of ~13 px
+    const float basePx = 13.0f;
+    const float targetPx = roundf(basePx * sRounded);
+
+        // Invalidate DX9 objects before changing fonts
+        ImGui_ImplDX9_InvalidateDeviceObjects();
+
+    io.Fonts->Clear();
+    // Keep atlas flags consistent for DX9
+    io.Fonts->Flags |= ImFontAtlasFlags_NoPowerOfTwoHeight;
+    io.Fonts->TexGlyphPadding = 1;
+
+    ImFontConfig cfg;
+        cfg.OversampleH = 2; // light oversampling for clarity
+        cfg.OversampleV = 2;
+        cfg.PixelSnapH = true; // helps DX9 rasterization crispness
+    cfg.SizePixels = targetPx; // set explicit pixel size for crisp text
+    ImFont* defaultFont = io.Fonts->AddFontDefault(&cfg);
+    io.FontDefault = defaultFont;
+
+        // Recreate device objects with the new atlas
+        if (!ImGui_ImplDX9_CreateDeviceObjects()) {
+            // If recreation fails, keep previous state and avoid updating the applied marker
+            LogOut("[IMGUI] Warning: Failed to recreate DX9 device objects after font rebuild.", true);
+            return;
+        }
+
+        g_lastFontScaleApplied = sRounded;
+        LogOut((std::string("[IMGUI] Rebuilt font atlas for UI scale ") + std::to_string(sRounded) +
+                ", size=" + std::to_string((int)targetPx) + "px").c_str(), true);
+    }
     bool Initialize(IDirect3DDevice9* device) {
         if (g_imguiInitialized)
             return true;
@@ -180,6 +233,12 @@ namespace ImGuiImpl {
             LogOut("[IMGUI] Error: ImGui_ImplDX9_Init failed", true);
             ImGui_ImplWin32_Shutdown();
             return false;
+        }
+
+        // Build crisp font atlas at the configured UI scale right after backend init
+        {
+            float initScale = Config::GetSettings().uiScale;
+            UpdateFontAtlasForScale(initScale);
         }
         
         g_originalWndProc = (WNDPROC)SetWindowLongPtr(gameWindow, GWLP_WNDPROC, (LONG_PTR)ImGuiWndProc);
@@ -288,6 +347,9 @@ namespace ImGuiImpl {
             
             // Update virtual cursor from XInput when in fullscreen
             UpdateVirtualCursor(io);
+
+            // Keep font atlas in sync with current UI scale for crisp text
+            UpdateFontAtlasForScale(Config::GetSettings().uiScale);
 
             // Render the GUI
             ImGuiGui::RenderGui();
