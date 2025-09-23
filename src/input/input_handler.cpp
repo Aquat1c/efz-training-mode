@@ -28,6 +28,7 @@
 #include "../include/game/game_state.h"
 #include "../include/utils/switch_players.h"
 #include "../include/game/macro_controller.h"
+#include "../include/game/frame_monitor.h" // AreCharactersInitialized, GamePhase
 #include <Xinput.h>
 
 #pragma comment(lib, "xinput9_1_0.lib")
@@ -430,18 +431,31 @@ void MonitorKeys() {
                 DirectDrawHook::AddMessage(autoJumpEnabled ? "Auto-Jump: ON" : "Auto-Jump: OFF", "SYSTEM", RGB(255, 165, 0), 1500, 0, 100);
                 keyHandled = true;
             } else if (IsKeyPressed(cfg.macroRecordKey > 0 ? cfg.macroRecordKey : 'I', false)) {
-                // Macro: two-press record (PreRecord -> Recording -> stop)
-                MacroController::ToggleRecord();
-                DirectDrawHook::AddMessage(MacroController::GetStatusLine().c_str(), "MACRO", RGB(200, 220, 255), 900, 0, 120);
+                // Macro controls are Match-only
+                if (GetCurrentGamePhase() == GamePhase::Match && AreCharactersInitialized()) {
+                    MacroController::ToggleRecord();
+                    DirectDrawHook::AddMessage(MacroController::GetStatusLine().c_str(), "MACRO", RGB(200, 220, 255), 900, 0, 120);
+                } else {
+                    DirectDrawHook::AddMessage("Macro controls available only during Match", "MACRO", RGB(255, 180, 120), 900, 0, 120);
+                }
                 keyHandled = true;
             } else if (IsKeyPressed(cfg.macroPlayKey > 0 ? cfg.macroPlayKey : 'O', false)) {
-                // Macro: replay current slot
-                MacroController::Play();
-                DirectDrawHook::AddMessage(MacroController::GetStatusLine().c_str(), "MACRO", RGB(180, 255, 180), 900, 0, 120);
+                // Macro controls are Match-only
+                if (GetCurrentGamePhase() == GamePhase::Match && AreCharactersInitialized()) {
+                    MacroController::Play();
+                    DirectDrawHook::AddMessage(MacroController::GetStatusLine().c_str(), "MACRO", RGB(180, 255, 180), 900, 0, 120);
+                } else {
+                    DirectDrawHook::AddMessage("Macro controls available only during Match", "MACRO", RGB(255, 180, 120), 900, 0, 120);
+                }
                 keyHandled = true;
             } else if (IsKeyPressed(cfg.macroSlotKey > 0 ? cfg.macroSlotKey : 'K', false)) {
-                MacroController::NextSlot();
-                DirectDrawHook::AddMessage((std::string("Macro: Slot ") + std::to_string(MacroController::GetCurrentSlot())).c_str(), "MACRO", RGB(230, 230, 120), 800, 0, 120);
+                // Slot changes are Match-only to avoid CS/menu side effects
+                if (GetCurrentGamePhase() == GamePhase::Match && AreCharactersInitialized()) {
+                    MacroController::NextSlot();
+                    DirectDrawHook::AddMessage((std::string("Macro: Slot ") + std::to_string(MacroController::GetCurrentSlot())).c_str(), "MACRO", RGB(230, 230, 120), 800, 0, 120);
+                } else {
+                    DirectDrawHook::AddMessage("Macro controls available only during Match", "MACRO", RGB(255, 180, 120), 900, 0, 120);
+                }
                 keyHandled = true;
             }
             // Developer motion-debug hotkeys removed
