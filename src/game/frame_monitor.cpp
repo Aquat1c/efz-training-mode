@@ -19,6 +19,7 @@
 #include "../include/game/attack_reader.h"
 #include "../include/game/practice_patch.h"
 #include "../include/game/character_settings.h"
+#include "../include/game/macro_controller.h"
 #include "../include/game/always_rg.h"
 #ifndef CLEAR_ALL_AUTO_ACTION_TRIGGERS_FWD
 #define CLEAR_ALL_AUTO_ACTION_TRIGGERS_FWD
@@ -615,6 +616,8 @@ void FrameDataMonitor() {
             }
 
             // (EXISTING HEAVY LOGIC BELOW: address refresh, moveID reads, processing)
+            // First: tick practice macro controller before processing inputs/motions
+            MacroController::Tick();
             // Refresh addresses periodically, and also on first use if not yet cached
             if (addressCacheCounter++ >= 192 || !cachedMoveIDAddr1 || !cachedMoveIDAddr2) {
                 cachedMoveIDAddr1 = ResolvePointer(base, EFZ_BASE_OFFSET_P1, MOVE_ID_OFFSET);

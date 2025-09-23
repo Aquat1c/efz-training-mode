@@ -22,6 +22,12 @@ namespace Config {
         int resetFrameCounterKey;
         int helpKey;
         int toggleImGuiKey;
+
+        // Practice/macro hotkeys (configurable)
+        int switchPlayersKey;   // Default: 'L'
+        int macroRecordKey;     // Default: 'I'
+        int macroPlayKey;       // Default: 'O'
+        int macroSlotKey;       // NEW: Cycle macro slot (Default: 'K')
     };
     
     // Initialize configuration system

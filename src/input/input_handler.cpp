@@ -27,6 +27,7 @@
 #include "../include/game/practice_patch.h"
 #include "../include/game/game_state.h"
 #include "../include/utils/switch_players.h"
+#include "../include/game/macro_controller.h"
 #include <Xinput.h>
 
 #pragma comment(lib, "xinput9_1_0.lib")
@@ -290,7 +291,7 @@ void MonitorKeys() {
             if (IsKeyPressed(toggleImGuiKey, false)) {
                 ImGuiImpl::ToggleVisibility();
                 keyHandled = true;
-            } else if (IsKeyPressed('L', false)) {
+            } else if (IsKeyPressed(cfg.switchPlayersKey > 0 ? cfg.switchPlayersKey : 'L', false)) {
                 // Debug hotkey: Toggle local/remote players in Practice
                 if (GetCurrentGameMode() == GameMode::Practice && !g_guiActive.load()) {
                     bool ok = SwitchPlayers::ToggleLocalSide();
@@ -428,15 +429,32 @@ void MonitorKeys() {
                 autoJumpEnabled = !autoJumpEnabled;
                 DirectDrawHook::AddMessage(autoJumpEnabled ? "Auto-Jump: ON" : "Auto-Jump: OFF", "SYSTEM", RGB(255, 165, 0), 1500, 0, 100);
                 keyHandled = true;
+            } else if (IsKeyPressed(cfg.macroRecordKey > 0 ? cfg.macroRecordKey : 'I', false)) {
+                // Macro: two-press record (PreRecord -> Recording -> stop)
+                MacroController::ToggleRecord();
+                DirectDrawHook::AddMessage(MacroController::GetStatusLine().c_str(), "MACRO", RGB(200, 220, 255), 900, 0, 120);
+                keyHandled = true;
+            } else if (IsKeyPressed(cfg.macroPlayKey > 0 ? cfg.macroPlayKey : 'O', false)) {
+                // Macro: replay current slot
+                MacroController::Play();
+                DirectDrawHook::AddMessage(MacroController::GetStatusLine().c_str(), "MACRO", RGB(180, 255, 180), 900, 0, 120);
+                keyHandled = true;
+            } else if (IsKeyPressed(cfg.macroSlotKey > 0 ? cfg.macroSlotKey : 'K', false)) {
+                MacroController::NextSlot();
+                DirectDrawHook::AddMessage((std::string("Macro: Slot ") + std::to_string(MacroController::GetCurrentSlot())).c_str(), "MACRO", RGB(230, 230, 120), 800, 0, 120);
+                keyHandled = true;
             }
             // Developer motion-debug hotkeys removed
 
             // If a key was handled, wait for it to be released
             if (keyHandled) {
                 Sleep(100);
-                while (IsKeyPressed(teleportKey, true) || IsKeyPressed(recordKey, true) ||
-                       IsKeyPressed(toggleTitleKey, true) || IsKeyPressed(resetFrameCounterKey, true) ||
-                       IsKeyPressed(helpKey, true) || IsKeyPressed(VK_F7, true) || IsKeyPressed(VK_F8, true) || IsKeyPressed(VK_F9, true)) {
+          while (IsKeyPressed(teleportKey, true) || IsKeyPressed(recordKey, true) ||
+              IsKeyPressed(toggleTitleKey, true) || IsKeyPressed(resetFrameCounterKey, true) ||
+              IsKeyPressed(helpKey, true) || IsKeyPressed(VK_F7, true) || IsKeyPressed(VK_F8, true) || IsKeyPressed(VK_F9, true) ||
+              IsKeyPressed(cfg.switchPlayersKey > 0 ? cfg.switchPlayersKey : 'L', true) ||
+              IsKeyPressed(cfg.macroRecordKey > 0 ? cfg.macroRecordKey : 'I', true) ||
+              IsKeyPressed(cfg.macroPlayKey > 0 ? cfg.macroPlayKey : 'O', true)) {
                     Sleep(10);
                 }
                 // Reset polling interval after handling input
@@ -453,7 +471,11 @@ void MonitorKeys() {
                     ((GetAsyncKeyState(toggleImGuiKey) & 0x8000) != 0) ||
                     ((GetAsyncKeyState(VK_F7) & 0x8000) != 0) ||
                     ((GetAsyncKeyState(VK_F8) & 0x8000) != 0) ||
-                    ((GetAsyncKeyState(VK_F9) & 0x8000) != 0);
+                    ((GetAsyncKeyState(VK_F9) & 0x8000) != 0) ||
+                    ((GetAsyncKeyState(cfg.switchPlayersKey > 0 ? cfg.switchPlayersKey : 'L') & 0x8000) != 0) ||
+                    ((GetAsyncKeyState(cfg.macroRecordKey > 0 ? cfg.macroRecordKey : 'I') & 0x8000) != 0) ||
+                    ((GetAsyncKeyState(cfg.macroPlayKey > 0 ? cfg.macroPlayKey : 'O') & 0x8000) != 0) ||
+                    ((GetAsyncKeyState(cfg.macroSlotKey > 0 ? cfg.macroSlotKey : 'K') & 0x8000) != 0);
                 bool anyPadDown = (currentPad.dwPacketNumber != prevPad.dwPacketNumber) ||
                                   (currentPad.Gamepad.wButtons != 0);
 

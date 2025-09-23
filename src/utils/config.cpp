@@ -235,6 +235,15 @@ namespace Config {
             
             file << "; Toggle ImGui overlay\n";
             file << "ToggleImGuiKey=0x37 # Default: '7' key\n";
+
+            file << "\n; Practice: Switch Players toggle (Practice only)\n";
+            file << "SwitchPlayersKey=0x4C  # Default: 'L' key\n";
+            file << "; Macro: Record (two-press)\n";
+            file << "MacroRecordKey=0x49     # Default: 'I' key\n";
+            file << "; Macro: Play (replay)\n";
+            file << "MacroPlayKey=0x4F       # Default: 'O' key\n";
+            file << "; Macro: Cycle Slot (next)\n";
+            file << "MacroSlotKey=0x4B       # Default: 'K' key\n";
             
             file.close();
             
@@ -298,6 +307,11 @@ namespace Config {
             settings.resetFrameCounterKey = GetValueInt("Hotkeys", "ResetFrameCounterKey", 0x35); // Default: '5'
             settings.helpKey = GetValueInt("Hotkeys", "HelpKey", 0x36);                // Default: '6'
             settings.toggleImGuiKey = GetValueInt("Hotkeys", "ToggleImGuiKey", 0x37);      // Default: '7'            
+            // Additional configurable hotkeys
+            settings.switchPlayersKey = GetValueInt("Hotkeys", "SwitchPlayersKey", 0x4C); // 'L'
+            settings.macroRecordKey   = GetValueInt("Hotkeys", "MacroRecordKey",   0x49); // 'I'
+            settings.macroPlayKey     = GetValueInt("Hotkeys", "MacroPlayKey",     0x4F); // 'O'
+            settings.macroSlotKey     = GetValueInt("Hotkeys", "MacroSlotKey",     0x4B); // 'K'
             LogOut("[CONFIG] Settings loaded successfully", true);
             LogOut("[CONFIG] UseImGui: " + std::to_string(settings.useImGui), true);
             LogOut("[CONFIG] DetailedLogging: " + std::to_string(settings.detailedLogging), true);
@@ -309,6 +323,10 @@ namespace Config {
             LogOut("[CONFIG] ResetFrameCounterKey: " + std::to_string(settings.resetFrameCounterKey) + " (" + GetKeyName(settings.resetFrameCounterKey) + ")", true);
             LogOut("[CONFIG] HelpKey: " + std::to_string(settings.helpKey) + " (" + GetKeyName(settings.helpKey) + ")", true);
             LogOut("[CONFIG] ToggleImGuiKey: " + std::to_string(settings.toggleImGuiKey) + " (" + GetKeyName(settings.toggleImGuiKey) + ")", true);
+            LogOut("[CONFIG] SwitchPlayersKey: " + std::to_string(settings.switchPlayersKey) + " (" + GetKeyName(settings.switchPlayersKey) + ")", true);
+            LogOut("[CONFIG] MacroRecordKey: " + std::to_string(settings.macroRecordKey) + " (" + GetKeyName(settings.macroRecordKey) + ")", true);
+            LogOut("[CONFIG] MacroPlayKey: " + std::to_string(settings.macroPlayKey) + " (" + GetKeyName(settings.macroPlayKey) + ")", true);
+            LogOut("[CONFIG] MacroSlotKey: " + std::to_string(settings.macroSlotKey) + " (" + GetKeyName(settings.macroSlotKey) + ")", true);
             LogOut("[CONFIG] enableFpsDiagnostics: " + std::to_string(settings.enableFpsDiagnostics), true);
             
             return true;
@@ -363,6 +381,10 @@ namespace Config {
             file << "ResetFrameCounterKey=" << toHexString(settings.resetFrameCounterKey) << "\n";
             file << "HelpKey=" << toHexString(settings.helpKey) << "\n";
             file << "ToggleImGuiKey=" << toHexString(settings.toggleImGuiKey) << "\n";
+            file << "SwitchPlayersKey=" << toHexString(settings.switchPlayersKey) << "\n";
+            file << "MacroRecordKey=" << toHexString(settings.macroRecordKey) << "\n";
+            file << "MacroPlayKey=" << toHexString(settings.macroPlayKey) << "\n";
+            file << "MacroSlotKey=" << toHexString(settings.macroSlotKey) << "\n";
 
             file.close();
             if (file.fail()) {
@@ -406,6 +428,10 @@ namespace Config {
             if (k == "resetframecounterkey") settings.resetFrameCounterKey = intValue;
             if (k == "helpkey") settings.helpKey = intValue;
             if (k == "toggleimguikey") settings.toggleImGuiKey = intValue;
+            if (k == "switchplayerskey") settings.switchPlayersKey = intValue;
+            if (k == "macrorecordkey") settings.macroRecordKey = intValue;
+            if (k == "macroplaykey") settings.macroPlayKey = intValue;
+            if (k == "macroslotkey") settings.macroSlotKey = intValue;
         }
     // Practice: no mutable settings currently
     }
