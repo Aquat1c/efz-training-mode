@@ -407,6 +407,15 @@ namespace ImGuiGui {
             "641236", "Jump", "Backdash", "Forward Dash", "Block", "Final Memory"
         };
 
+        // Compute a compact width that fits the longest action label (plus arrow/padding), so combos aren't overly wide
+        ImGuiStyle& _style = ImGui::GetStyle();
+        // Keep combobox compact: make it just wide enough for "Final Memory" (longest we care to fully show)
+        const float _labelFinalMemory = ImGui::CalcTextSize("Final Memory").x;
+        const float _labelMacro = ImGui::CalcTextSize("Macro").x;
+        const float _baseline = (std::max)(_labelFinalMemory, _labelMacro);
+        // Add room for the combo arrow (roughly frame height), frame padding, and small breathing space
+        const float actionComboWidth = _baseline + ImGui::GetFrameHeight() + _style.FramePadding.x * 3.0f + _style.ItemInnerSpacing.x;
+
         // Button list (applies to both directions and motions)
         const char* buttonItems[] = { "A", "B", "C", "D" };
 
@@ -499,7 +508,7 @@ namespace ImGuiGui {
             }
             
             ImGui::SameLine();
-            ImGui::SetNextItemWidth(220);
+            ImGui::SetNextItemWidth(actionComboWidth);
             // Build list: base motions + single Macro entry
             std::vector<const char*> items;
             items.reserve(IM_ARRAYSIZE(motionItems) + 1);
@@ -553,13 +562,15 @@ namespace ImGuiGui {
                 for (int s = 1; s <= slots; ++s) labels.emplace_back(std::string("Slot ") + std::to_string(s));
                 std::vector<const char*> citems; citems.reserve(labels.size());
                 for (auto &s : labels) citems.push_back(s.c_str());
+                ImGui::TextUnformatted("Slot");
+                ImGui::SameLine();
                 ImGui::SetNextItemWidth(110);
                 if (slots <= 0) {
                     ImGui::BeginDisabled();
-                    int dummy = 0; ImGui::Combo("Slot", &dummy, (const char* const*)nullptr, 0);
+                    int dummy = 0; ImGui::Combo("##MacroSlot", &dummy, (const char* const*)nullptr, 0);
                     ImGui::EndDisabled();
                 } else {
-                    if (ImGui::Combo("Slot", &zeroBased, citems.data(), (int)citems.size())) {
+                    if (ImGui::Combo("##MacroSlot", &zeroBased, citems.data(), (int)citems.size())) {
                         *triggers[i].macroSlot = zeroBased + 1;
                     }
                 }
@@ -1840,6 +1851,15 @@ namespace ImGuiGui {
         if (!ImGuiImpl::IsVisible())
             return;
 
+    // Apply a smaller UI scale locally for this window only
+    // (shrink widgets via style; text uses crisp font atlas sized in impl)
+    ImGuiStyle& __style = ImGui::GetStyle();
+    ImGuiStyle __backupStyle = __style; // restore at end of this function
+    float __uiScale = Config::GetSettings().uiScale;
+    if (__uiScale < 0.70f) __uiScale = 0.70f;
+    if (__uiScale > 1.50f) __uiScale = 1.50f;
+        __style.ScaleAllSizes(__uiScale);
+
         // Refresh data once when UI becomes visible; avoid continuous auto-refresh to reduce work
         static bool lastVisible = false;
         bool currentVisible = ImGuiImpl::IsVisible();
@@ -1851,7 +1871,8 @@ namespace ImGuiGui {
     // Set window position and size
         // Use Appearing so the menu always resets to a visible spot when reopened (prevents off-screen in fullscreen)
         ImGui::SetNextWindowPos(ImVec2(50, 50), ImGuiCond_Appearing);
-    ImGui::SetNextWindowSize(ImVec2(520, 460), ImGuiCond_FirstUseEver);
+    // Slightly smaller default window size
+    ImGui::SetNextWindowSize(ImVec2(500, 440), ImGuiCond_FirstUseEver);
     // Force fully-opaque background to avoid heavy alpha blending on low-end GPUs
     ImGui::SetNextWindowBgAlpha(1.0f);
 
@@ -1859,100 +1880,111 @@ namespace ImGuiGui {
         // Allow navigation (keyboard/gamepad), disable collapse and saved settings to avoid off-screen positions
         ImGuiWindowFlags winFlags = ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings;
     if (ImGui::Begin("EFZ Training Mode", nullptr, winFlags)) {
+            // Text already crisp-scaled via font atlas; keep per-window font scale at 1.0
+            ImGui::SetWindowFontScale(1.0f);
+
             // Check if a specific tab has been requested
             if (guiState.requestedTab >= 0) {
                 guiState.currentTab = guiState.requestedTab;
                 guiState.requestedTab = -1; // Reset request
             }
-            
-            // Tab bar at the top
-            if (ImGui::BeginTabBar("##Tabs", ImGuiTabBarFlags_None)) {
-                // Game Values tab
-                if (ImGui::BeginTabItem("Game Values")) {
-                    guiState.currentTab = 0;
-                    RenderGameValuesTab();
-                    ImGui::EndTabItem();
-                }
-                
-                // Auto Action tab
-                if (ImGui::BeginTabItem("Auto Action")) {
-                    guiState.currentTab = 1;
-                    RenderAutoActionTab();
-                    ImGui::EndTabItem();
-                }
+            // Create a scrollable content region with a fixed-height footer for action buttons
+            ImVec2 avail = ImGui::GetContentRegionAvail();
+            float footerHeight = ImGui::GetFrameHeightWithSpacing() + ImGui::GetStyle().ItemSpacing.y + ImGui::GetStyle().WindowPadding.y;
+            // Guard against tiny windows
+            if (footerHeight < 32.0f) footerHeight = 32.0f;
 
-                // Settings tab (new)
-                if (ImGui::BeginTabItem("Settings")) {
-                    guiState.currentTab = 5;
-                    ImGuiSettings::RenderSettingsTab();
-                    ImGui::EndTabItem();
-                }
-                
-                // Add Character tab; refresh character IDs once on open to avoid per-frame work
-                if (ImGui::BeginTabItem("Character")) {
-                    guiState.currentTab = 2;
-                    static bool s_charTabJustOpened = false;
-                    if (ImGui::IsItemActivated()) { s_charTabJustOpened = true; }
-                    if (s_charTabJustOpened) {
-                        // Update IDs once when entering the tab
-                    // Character IDs are updated on entering the tab or on manual refresh
-                        s_charTabJustOpened = false;
+            if (ImGui::BeginChild("##MainContent", ImVec2(avail.x, avail.y - footerHeight), true)) {
+                // Tab bar at the top
+                if (ImGui::BeginTabBar("##Tabs", ImGuiTabBarFlags_None)) {
+                    // Game Values tab
+                    if (ImGui::BeginTabItem("Game Values")) {
+                        guiState.currentTab = 0;
+                        RenderGameValuesTab();
+                        ImGui::EndTabItem();
                     }
-                    RenderCharacterTab();
-                    ImGui::EndTabItem();
-                }
-                
-                // Debug tab
-                if (ImGui::BeginTabItem("Debug")) {
-                    guiState.currentTab = 3;
-                    RenderDebugInputTab();
-                    ImGui::EndTabItem();
-                }
-                
-                // Help tab
-                if (ImGui::BeginTabItem("Macros")) {
-                    const auto& cfg = Config::GetSettings();
-                    ImGui::SeparatorText("Macro Controller");
-                    ImGui::Text("State: %s", MacroController::GetStatusLine().c_str());
-                    ImGui::Text("Current Slot: %d / %d", MacroController::GetCurrentSlot(), MacroController::GetSlotCount());
-                    bool empty = MacroController::IsSlotEmpty(MacroController::GetCurrentSlot());
-                    ImGui::Text("Slot Empty: %s", empty ? "Yes" : "No");
-                    // Debug stats for validation
-                    {
-                        auto stats = MacroController::GetSlotStats(MacroController::GetCurrentSlot());
-                        ImGui::SeparatorText("Slot Stats");
-                        ImGui::BulletText("Spans: %d", stats.spanCount);
-                        ImGui::BulletText("Total Ticks: %d (~%.2fs)", stats.totalTicks, stats.totalTicks / 64.0f);
-                        ImGui::BulletText("Buffer Entries: %d", stats.bufEntries);
-                        ImGui::BulletText("Buf Idx Start: %u", (unsigned)stats.bufStartIdx);
-                        ImGui::BulletText("Buf Idx End: %u", (unsigned)stats.bufEndIdx);
-                        ImGui::BulletText("Has Data: %s", stats.hasData ? "Yes" : "No");
+                    
+                    // Auto Action tab
+                    if (ImGui::BeginTabItem("Auto Action")) {
+                        guiState.currentTab = 1;
+                        RenderAutoActionTab();
+                        ImGui::EndTabItem();
                     }
-                    if (ImGui::Button("Toggle Record")) { MacroController::ToggleRecord(); }
-                    ImGui::SameLine();
-                    if (ImGui::Button("Play")) { MacroController::Play(); }
-                    ImGui::SameLine();
-                    if (ImGui::Button("Stop")) { MacroController::Stop(); }
-                    if (ImGui::Button("Prev Slot")) { MacroController::PrevSlot(); }
-                    ImGui::SameLine();
-                    if (ImGui::Button("Next Slot")) { MacroController::NextSlot(); }
-                    ImGui::Spacing();
-                    ImGui::SeparatorText("Hotkeys");
-                    ImGui::BulletText("Record: %s", GetKeyName(cfg.macroRecordKey).c_str());
-                    ImGui::BulletText("Play: %s", GetKeyName(cfg.macroPlayKey).c_str());
-                    ImGui::BulletText("Next Slot: %s", GetKeyName(cfg.macroSlotKey).c_str());
-                    ImGui::EndTabItem();
+
+                    // Settings tab (new)
+                    if (ImGui::BeginTabItem("Settings")) {
+                        guiState.currentTab = 5;
+                        ImGuiSettings::RenderSettingsTab();
+                        ImGui::EndTabItem();
+                    }
+                    
+                    // Add Character tab; refresh character IDs once on open to avoid per-frame work
+                    if (ImGui::BeginTabItem("Character")) {
+                        guiState.currentTab = 2;
+                        static bool s_charTabJustOpened = false;
+                        if (ImGui::IsItemActivated()) { s_charTabJustOpened = true; }
+                        if (s_charTabJustOpened) {
+                            // Update IDs once when entering the tab
+                            // Character IDs are updated on entering the tab or on manual refresh
+                            s_charTabJustOpened = false;
+                        }
+                        RenderCharacterTab();
+                        ImGui::EndTabItem();
+                    }
+                    
+                    // Debug tab
+                    if (ImGui::BeginTabItem("Debug")) {
+                        guiState.currentTab = 3;
+                        RenderDebugInputTab();
+                        ImGui::EndTabItem();
+                    }
+                    
+                    // Help tab(s)
+                    if (ImGui::BeginTabItem("Macros")) {
+                        const auto& cfg = Config::GetSettings();
+                        ImGui::SeparatorText("Macro Controller");
+                        ImGui::Text("State: %s", MacroController::GetStatusLine().c_str());
+                        ImGui::Text("Current Slot: %d / %d", MacroController::GetCurrentSlot(), MacroController::GetSlotCount());
+                        bool empty = MacroController::IsSlotEmpty(MacroController::GetCurrentSlot());
+                        ImGui::Text("Slot Empty: %s", empty ? "Yes" : "No");
+                        // Debug stats for validation
+                        {
+                            auto stats = MacroController::GetSlotStats(MacroController::GetCurrentSlot());
+                            ImGui::SeparatorText("Slot Stats");
+                            ImGui::BulletText("Spans: %d", stats.spanCount);
+                            ImGui::BulletText("Total Ticks: %d (~%.2fs)", stats.totalTicks, stats.totalTicks / 64.0f);
+                            ImGui::BulletText("Buffer Entries: %d", stats.bufEntries);
+                            ImGui::BulletText("Buf Idx Start: %u", (unsigned)stats.bufStartIdx);
+                            ImGui::BulletText("Buf Idx End: %u", (unsigned)stats.bufEndIdx);
+                            ImGui::BulletText("Has Data: %s", stats.hasData ? "Yes" : "No");
+                        }
+                        if (ImGui::Button("Toggle Record")) { MacroController::ToggleRecord(); }
+                        ImGui::SameLine();
+                        if (ImGui::Button("Play")) { MacroController::Play(); }
+                        ImGui::SameLine();
+                        if (ImGui::Button("Stop")) { MacroController::Stop(); }
+                        if (ImGui::Button("Prev Slot")) { MacroController::PrevSlot(); }
+                        ImGui::SameLine();
+                        if (ImGui::Button("Next Slot")) { MacroController::NextSlot(); }
+                        ImGui::Spacing();
+                        ImGui::SeparatorText("Hotkeys");
+                        ImGui::BulletText("Record: %s", GetKeyName(cfg.macroRecordKey).c_str());
+                        ImGui::BulletText("Play: %s", GetKeyName(cfg.macroPlayKey).c_str());
+                        ImGui::BulletText("Next Slot: %s", GetKeyName(cfg.macroSlotKey).c_str());
+                        ImGui::EndTabItem();
+                    }
+                    if (ImGui::BeginTabItem("Help")) {
+                        guiState.currentTab = 4;
+                        RenderHelpTab();
+                        ImGui::EndTabItem();
+                    }
+                    
+                    ImGui::EndTabBar();
                 }
-                if (ImGui::BeginTabItem("Help")) {
-                    guiState.currentTab = 4;
-                    RenderHelpTab();
-                    ImGui::EndTabItem();
-                }
-                
-                ImGui::EndTabBar();
             }
+            ImGui::EndChild();
 
-            // Add action buttons at the bottom
+            // Fixed footer (always visible)
             ImGui::Separator();
             if (ImGui::Button("Apply", ImVec2(120, 0))) {
                 ApplyImGuiSettings();
@@ -1967,6 +1999,9 @@ namespace ImGuiGui {
             }
         }
         ImGui::End();
+
+        // Restore global style after rendering our window to avoid affecting other overlays
+        ImGui::GetStyle() = __backupStyle;
     }
 
     // Add the helper function to determine if character tab should be shown

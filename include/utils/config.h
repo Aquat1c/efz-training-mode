@@ -11,6 +11,7 @@ namespace Config {
         bool restrictToPracticeMode; // NEW: Restrict to practice mode
     bool enableConsole;          // NEW: Show/Hide console window
     bool enableFpsDiagnostics;   // NEW: Enable FPS/timing diagnostics output
+    float uiScale;               // NEW: UI scale for ImGui window (e.g., 0.80..1.20)
 
     // (Practice tuning removed)
         

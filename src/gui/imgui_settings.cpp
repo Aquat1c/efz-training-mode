@@ -71,6 +71,7 @@ namespace ImGuiSettings {
     bool fpsDiag = cfg.enableFpsDiagnostics;
     bool restrictPractice = cfg.restrictToPracticeMode;
     bool enableConsole = cfg.enableConsole;
+    float uiScale = cfg.uiScale;
 
     if (ImGui::CollapsingHeader("General")) {
             CheckboxApply("Use ImGui UI (else legacy dialog)", useImGui, "General", "UseImGui");
@@ -80,6 +81,22 @@ namespace ImGuiSettings {
             CheckboxApply("Detailed logging", logVerbose, "General", "DetailedLogging");
 
             CheckboxApply("Enable FPS/timing diagnostics", fpsDiag, "General", "enableFpsDiagnostics");
+
+            // UI Scale slider (live-applied)
+            ImGui::Text("UI Scale:");
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(140);
+            if (ImGui::SliderFloat("##UiScale", &uiScale, 0.70f, 1.50f, "%.2f")) {
+                // Persist to config store
+                Config::SetSetting("General", "uiScale", std::to_string(uiScale));
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Reset##UiScale")) {
+                uiScale = 0.90f;
+                Config::SetSetting("General", "uiScale", "0.90");
+            }
+            ImGui::SameLine();
+            ImGui::TextDisabled("(applies immediately)");
 
             CheckboxApply("Restrict features to Practice Mode", restrictPractice, "General", "restrictToPracticeMode");
 
