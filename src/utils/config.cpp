@@ -10,6 +10,9 @@
 namespace Config {
     // Internal settings storage
     static Settings settings;
+    // Initialize defaults for safety
+    // Note: remaining fields are populated by LoadSettings/CreateDefaultConfig
+    
     
     // Path to config file
     static std::string configFilePath;
@@ -207,6 +210,8 @@ namespace Config {
 
             file << "; UI scale for ImGui window (0.80 - 1.20 recommended)\n";
             file << "uiScale = 0.90\n\n";
+            file << "; UI font: 0 = ImGui default font, 1 = Segoe UI (Windows)\n";
+            file << "uiFont = 0\n\n";
 
             // (Practice-specific tuning is hardcoded now)
             
@@ -317,6 +322,19 @@ namespace Config {
                 settings.uiScale = scale;
             }
 
+            // Load UI font mode (0=default, 1=Segoe UI)
+            settings.uiFontMode = 0;
+            {
+                auto sectionIt = iniData.find("general");
+                if (sectionIt != iniData.end()) {
+                    auto keyIt = sectionIt->second.find("uifont");
+                    if (keyIt != sectionIt->second.end()) {
+                        try { settings.uiFontMode = std::stoi(keyIt->second); } catch (...) { settings.uiFontMode = 0; }
+                        if (settings.uiFontMode < 0 || settings.uiFontMode > 1) settings.uiFontMode = 0;
+                    }
+                }
+            }
+
             // Practice: no runtime-tunable settings
             
             // Hotkey settings - REVERTED to number key defaults
@@ -349,6 +367,7 @@ namespace Config {
             LogOut("[CONFIG] MacroSlotKey: " + std::to_string(settings.macroSlotKey) + " (" + GetKeyName(settings.macroSlotKey) + ")", true);
             LogOut("[CONFIG] enableFpsDiagnostics: " + std::to_string(settings.enableFpsDiagnostics), true);
             LogOut("[CONFIG] uiScale: " + std::to_string(settings.uiScale), true);
+            LogOut("[CONFIG] uiFontMode: " + std::to_string(settings.uiFontMode), true);
             
             return true;
         }
@@ -386,6 +405,8 @@ namespace Config {
             file << "enableFpsDiagnostics = " << (settings.enableFpsDiagnostics ? "1" : "0") << "\n\n";
             file << "; UI scale for ImGui window (0.80 - 1.20 recommended)\n";
             file << "uiScale = " << settings.uiScale << "\n\n";
+            file << "; UI font: 0 = ImGui default font, 1 = Segoe UI (Windows)\n";
+            file << "uiFont = " << settings.uiFontMode << "\n\n";
 
             // (Practice tuning omitted)
             file << "; Show the debug console window (1 = yes, 0 = no)\n";
@@ -443,6 +464,10 @@ namespace Config {
             if (k == "restricttopracticemode") settings.restrictToPracticeMode = (value == "1");
             if (k == "uiscale") {
                 try { settings.uiScale = std::stof(value); } catch (...) {}
+            }
+            if (k == "uifont") {
+                try { settings.uiFontMode = std::stoi(value); } catch (...) {}
+                if (settings.uiFontMode < 0 || settings.uiFontMode > 1) settings.uiFontMode = 0;
             }
         }
         else if (sec == "hotkeys") {

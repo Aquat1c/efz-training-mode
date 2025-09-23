@@ -32,6 +32,7 @@ static bool g_lastRightDown = false;
 
 // Track applied font scale to rebuild atlas only when needed
 static float g_lastFontScaleApplied = 0.0f; // 0 = uninitialized
+static int   g_lastFontModeApplied  = -1;   // -1 = uninitialized
 
 static inline float ClampF(float v, float lo, float hi) {
     if (v < lo) return lo;
@@ -144,13 +145,16 @@ namespace ImGuiImpl {
         if (!ImGui::GetCurrentContext()) return;
         ImGuiIO& io = ImGui::GetIO();
 
+        // Check desired font mode from config
+        const int fontMode = Config::GetSettings().uiFontMode; // 0=Default, 1=Segoe UI
+
         // Clamp and round to nearest hundredth to avoid thrashing on tiny changes
         float s = uiScale;
         if (s < 0.70f) s = 0.70f; else if (s > 1.50f) s = 1.50f;
         float sRounded = floorf(s * 100.0f + 0.5f) / 100.0f;
-        if (fabsf(sRounded - g_lastFontScaleApplied) < 0.01f) {
-            return; // no significant change
-        }
+        const bool scaleChanged = !(fabsf(sRounded - g_lastFontScaleApplied) < 0.01f);
+        const bool fontChanged  = (fontMode != g_lastFontModeApplied);
+        if (!scaleChanged && !fontChanged) return;
 
     // Rebuild fonts at scaled pixel size for sharp rendering
     // Start from ImGui's default base of ~13 px
@@ -160,8 +164,8 @@ namespace ImGuiImpl {
         // Invalidate DX9 objects before changing fonts
         ImGui_ImplDX9_InvalidateDeviceObjects();
 
-    io.Fonts->Clear();
-    // Keep atlas flags consistent for DX9
+        io.Fonts->Clear();
+        // Keep atlas flags consistent for DX9
     io.Fonts->Flags |= ImFontAtlasFlags_NoPowerOfTwoHeight;
     io.Fonts->TexGlyphPadding = 1;
 
@@ -169,8 +173,21 @@ namespace ImGuiImpl {
         cfg.OversampleH = 2; // light oversampling for clarity
         cfg.OversampleV = 2;
         cfg.PixelSnapH = true; // helps DX9 rasterization crispness
-    cfg.SizePixels = targetPx; // set explicit pixel size for crisp text
-    ImFont* defaultFont = io.Fonts->AddFontDefault(&cfg);
+        cfg.SizePixels = targetPx; // set explicit pixel size for crisp text
+
+        // Choose font per config: 0=ImGui default, 1=Segoe UI (if available)
+        ImFont* defaultFont = nullptr;
+        if (fontMode == 1) {
+            const char* segoePath = "C:\\Windows\\Fonts\\segoeui.ttf";
+            DWORD fa = GetFileAttributesA(segoePath);
+            if (fa != INVALID_FILE_ATTRIBUTES && !(fa & FILE_ATTRIBUTE_DIRECTORY)) {
+                defaultFont = io.Fonts->AddFontFromFileTTF(segoePath, targetPx, &cfg);
+            }
+        }
+        if (!defaultFont) {
+            // Default path: ImGui built-in font
+            defaultFont = io.Fonts->AddFontDefault(&cfg);
+        }
     io.FontDefault = defaultFont;
 
         // Recreate device objects with the new atlas
@@ -180,9 +197,10 @@ namespace ImGuiImpl {
             return;
         }
 
-        g_lastFontScaleApplied = sRounded;
-        LogOut((std::string("[IMGUI] Rebuilt font atlas for UI scale ") + std::to_string(sRounded) +
-                ", size=" + std::to_string((int)targetPx) + "px").c_str(), true);
+    g_lastFontScaleApplied = sRounded;
+    g_lastFontModeApplied  = fontMode;
+    LogOut((std::string("[IMGUI] Rebuilt font atlas: scale=") + std::to_string(sRounded) +
+        ", px=" + std::to_string((int)targetPx) + ", font=" + (fontMode==0?"Default":"Segoe UI")).c_str(), true);
     }
     bool Initialize(IDirect3DDevice9* device) {
         if (g_imguiInitialized)
@@ -212,7 +230,8 @@ namespace ImGuiImpl {
         ImGui::StyleColorsDark();
         
     ImGuiStyle& style = ImGui::GetStyle();
-    style.ScaleAllSizes(1.2f);
+    // Avoid baseline upscaling here; per-window UI scale is applied in imgui_gui.cpp
+    // Keeping default metrics ensures more integer-aligned sizes and reduces blur
     style.Alpha = 1.0f; // prefer opaque rendering for cheaper blending
     // Safety: ensure valid minimum window size to satisfy ImGui asserts
     if (style.WindowMinSize.x < 1.0f) style.WindowMinSize.x = 16.0f;
