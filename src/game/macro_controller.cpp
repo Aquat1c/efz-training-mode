@@ -83,16 +83,11 @@ namespace {
     // Progress pacing: we step at the 64 Hz ImmediateInput cadence by counting internal frames (192 Hz)
     int s_frameDiv = 0; // 0..2 cycles; advance when hits 0
 
-    // Gamespeed probe (0 = frozen)
+    // Gamespeed probe (0 = frozen). Uses PauseIntegration's gamespeed reader.
     bool ReadGamespeedFrozen() {
-        // Reuse the helper from pause_integration indirectly via memory: read via known chain is not exposed here.
-        // Fallback: when not in Match or characters uninitialized, treat as frozen for macro progression.
+        // Outside of a live match, treat as frozen to avoid progressing.
         if (GetCurrentGamePhase() != GamePhase::Match) return true;
-        uintptr_t base = GetEFZBase();
-        if (!base) return true;
-        // If base exists, assume not frozen; our FrameMonitor pacing continues anyway.
-        // We rely on frameDiv pacing to approximate 64Hz and pause behavior handled by Match gating above.
-        return false;
+        return PauseIntegration::IsGameSpeedFrozen();
     }
 
     inline int ClampSlot(int s){ if (s < 1) return 1; if (s > kMaxSlots) return kMaxSlots; return s; }
@@ -412,8 +407,27 @@ void Tick() {
 
     State st = s_state.load();
     if (st == State::Recording) {
-        if (s_frameDiv != 0) return; // only advance recording every 3rd internal frame
-        if (ReadGamespeedFrozen()) return; // pause-safe
+        // Frame-step aware progression:
+        // - When not frozen: advance every 3rd internal frame (approx 64 Hz).
+        // - When frozen (paused): only advance when P2's input buffer index has advanced (indicates a stepped frame).
+        const bool frozen = ReadGamespeedFrozen();
+        // Probe current buffer index once up front to decide whether to progress while frozen
+        uint16_t idxProbe = 0; bool haveIdx = false; bool bufAdvanced = false;
+        {
+            uintptr_t p2PtrProbe = GetPlayerPointer(2);
+            if (p2PtrProbe && SafeReadMemory(p2PtrProbe + INPUT_BUFFER_INDEX_OFFSET, &idxProbe, sizeof(idxProbe))) {
+                haveIdx = true;
+                if (s_recPrevBufIdx >= 0 && (uint16_t)s_recPrevBufIdx != idxProbe) bufAdvanced = true;
+            }
+        }
+        bool shouldAdvance = false;
+        if (!frozen) {
+            shouldAdvance = (s_frameDiv == 0);
+        } else {
+            // When frozen, only advance on observed buffer movement (frame-step)
+            shouldAdvance = bufAdvanced;
+        }
+        if (!shouldAdvance) return;
         // If buffer-freeze is active for P2, avoid progressing to keep streams aligned
         if (g_bufferFreezingActive.load() && (g_activeFreezePlayer.load() == 2 || g_activeFreezePlayer.load() == 0)) return;
         uint8_t immMask = ReadRecordSourceMask();
