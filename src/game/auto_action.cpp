@@ -13,6 +13,7 @@
 #include "../include/game/attack_reader.h"
 #include "../include/input/immediate_input.h"
 #include "../include/game/fm_commands.h" // Final Memory execution
+#include "../include/game/macro_controller.h" // Integrate macros with triggers
 #include <cmath>
 // Define the motion input constants if they're not already defined
 #ifndef MOTION_INPUT_UP
@@ -156,6 +157,10 @@ static inline void UpdateStunTimersForPlayer(StunTimers& t, short prevMoveID, sh
 // Lightweight check to skip all auto-action work when nothing can or should run
 static inline bool AutoActionWorkPending() {
     if (!autoActionEnabled.load()) return false;
+    // If macro playback is active, suppress P2 auto-action work to avoid conflicts.
+    if (MacroController::GetState() == MacroController::State::Replaying) {
+        return false;
+    }
     // If any triggers are enabled, we may need to evaluate
     bool triggersEnabled = triggerAfterBlockEnabled.load() || triggerOnWakeupEnabled.load() ||
                            triggerAfterHitstunEnabled.load() || triggerAfterAirtechEnabled.load() ||
@@ -297,18 +302,50 @@ void ProcessTriggerDelays() {
         
     if (p2DelayState.delayFramesRemaining <= 0) {
             LogOut("[AUTO-ACTION] P2 delay expired, applying action", true);
-            
+
+            // If a macro is selected for this trigger and has data, prefer playing it
+            int sel = 0;
+            switch (p2DelayState.triggerType) {
+                case TRIGGER_AFTER_BLOCK: sel = triggerAfterBlockMacroSlot.load(); break;
+                case TRIGGER_ON_WAKEUP: sel = triggerOnWakeupMacroSlot.load(); break;
+                case TRIGGER_AFTER_HITSTUN: sel = triggerAfterHitstunMacroSlot.load(); break;
+                case TRIGGER_AFTER_AIRTECH: sel = triggerAfterAirtechMacroSlot.load(); break;
+                case TRIGGER_ON_RG: sel = triggerOnRGMacroSlot.load(); break;
+                default: sel = 0; break;
+            }
+            if (sel > 0 && MacroController::GetState() != MacroController::State::Recording) {
+                sel = CLAMP(sel, 1, MacroController::GetSlotCount());
+                if (!MacroController::IsSlotEmpty(sel)) {
+                    MacroController::SetCurrentSlot(sel);
+                    if (MacroController::GetState() != MacroController::State::Replaying) {
+                        LogOut("[AUTO-ACTION][MACRO] Starting macro playback (slot=" + std::to_string(sel) + ") for P2 on trigger expiry", true);
+                        MacroController::Play();
+                        // Clear the delay state and exit
+                        p2DelayState.isDelaying = false;
+                        p2DelayState.triggerType = TRIGGER_NONE;
+                        p2DelayState.pendingMoveID = 0;
+                        return;
+                    }
+                }
+            }
+
+            // Fallback: apply the configured single action via input system
             uintptr_t moveIDAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P2, MOVE_ID_OFFSET);
             short currentMoveID = 0;
-            
+
             if (moveIDAddr) {
                 SafeReadMemory(moveIDAddr, &currentMoveID, sizeof(short));
-                
+
                 // Apply action via input system
-                ApplyAutoAction(2, moveIDAddr, 0, 0);
-                
+                // If macro is currently playing, do not inject conflicting actions for P2.
+                if (MacroController::GetState() != MacroController::State::Replaying) {
+                    ApplyAutoAction(2, moveIDAddr, 0, 0);
+                } else {
+                    LogOut("[AUTO-ACTION][MACRO] P2 macro active; skipping ApplyAutoAction", detailedLogging.load());
+                }
+
                 LogOut("[AUTO-ACTION] P2 action applied via input system", true);
-                
+
                 p2DelayState.isDelaying = false;
                 p2DelayState.triggerType = TRIGGER_NONE;
                 p2DelayState.pendingMoveID = 0;
@@ -329,6 +366,11 @@ void ProcessTriggerDelays() {
 }
 
 void StartTriggerDelay(int playerNum, int triggerType, short moveID, int delayFrames) {
+    // Do not queue P2 trigger delays while a macro is playing; they would fight the macro.
+    if (playerNum == 2 && MacroController::GetState() == MacroController::State::Replaying) {
+        LogOut("[AUTO-ACTION][MACRO] Suppressing P2 StartTriggerDelay during macro playback", detailedLogging.load());
+        return;
+    }
     // Check if the player is already in a trigger cooldown period
     if (playerNum == 1 && p1TriggerActive) {
     LogOut("[AUTO-ACTION] P1 StartTriggerDelay ignored - trigger already active/cooldown=" + std::to_string(p1TriggerCooldown), detailedLogging.load());
@@ -376,6 +418,29 @@ void StartTriggerDelay(int playerNum, int triggerType, short moveID, int delayFr
             moveIDAddr = (playerNum == 1)
                 ? ResolvePointer(base, EFZ_BASE_OFFSET_P1, MOVE_ID_OFFSET)
                 : ResolvePointer(base, EFZ_BASE_OFFSET_P2, MOVE_ID_OFFSET);
+        }
+        // For P2: if a macro slot is selected for this trigger, play it instead
+        if (playerNum == 2) {
+            int sel = 0;
+            switch (triggerType) {
+                case TRIGGER_AFTER_BLOCK: sel = triggerAfterBlockMacroSlot.load(); break;
+                case TRIGGER_ON_WAKEUP: sel = triggerOnWakeupMacroSlot.load(); break;
+                case TRIGGER_AFTER_HITSTUN: sel = triggerAfterHitstunMacroSlot.load(); break;
+                case TRIGGER_AFTER_AIRTECH: sel = triggerAfterAirtechMacroSlot.load(); break;
+                case TRIGGER_ON_RG: sel = triggerOnRGMacroSlot.load(); break;
+                default: sel = 0; break;
+            }
+            if (sel > 0 && MacroController::GetState() != MacroController::State::Recording) {
+                sel = CLAMP(sel, 1, MacroController::GetSlotCount());
+                if (!MacroController::IsSlotEmpty(sel)) {
+                    MacroController::SetCurrentSlot(sel);
+                    if (MacroController::GetState() != MacroController::State::Replaying) {
+                        LogOut("[AUTO-ACTION][MACRO] Starting macro playback (slot=" + std::to_string(sel) + ") for P2 (immediate)", true);
+                        MacroController::Play();
+                        return;
+                    }
+                }
+            }
         }
         ApplyAutoAction(playerNum, moveIDAddr, 0, 0);
         LogOut(std::string("[AUTO-ACTION] Immediate apply done for P") + std::to_string(playerNum), detailedLogging.load());

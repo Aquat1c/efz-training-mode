@@ -208,7 +208,18 @@ void UpdateTriggerOverlay() {
     auto update_line = [&](int& msgId, bool isEnabled, const std::string& label, int action, 
                           int customId, int delay, int strength, int triggerType) {
         if (isEnabled) {
-            std::string actionName = getActionName(action, customId, strength);
+            // If a macro slot is set for this trigger, display it as Macro S# instead of a default move name
+            int macroSlot = 0;
+            switch (triggerType) {
+                case TRIGGER_AFTER_BLOCK: macroSlot = triggerAfterBlockMacroSlot.load(); break;
+                case TRIGGER_ON_WAKEUP: macroSlot = triggerOnWakeupMacroSlot.load(); break;
+                case TRIGGER_AFTER_HITSTUN: macroSlot = triggerAfterHitstunMacroSlot.load(); break;
+                case TRIGGER_AFTER_AIRTECH: macroSlot = triggerAfterAirtechMacroSlot.load(); break;
+                case TRIGGER_ON_RG: macroSlot = triggerOnRGMacroSlot.load(); break;
+                default: break;
+            }
+            std::string actionName = (macroSlot > 0) ? (std::string("Macro Slot #") + std::to_string(macroSlot))
+                                                     : getActionName(action, customId, strength);
             std::string text = label + actionName;
             if (delay > 0) {
                 text += " +" + std::to_string(delay);

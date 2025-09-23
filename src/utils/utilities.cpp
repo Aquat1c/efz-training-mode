@@ -486,7 +486,9 @@ DisplayData displayData = {
     std::numeric_limits<double>::quiet_NaN(), std::numeric_limits<double>::quiet_NaN(), // p1MichiruLastX/Y
     std::numeric_limits<double>::quiet_NaN(), std::numeric_limits<double>::quiet_NaN(), // p2MichiruLastX/Y
     // Michiru frame/subframe defaults
-    -1, -1, -1, -1
+    -1, -1, -1, -1,
+    // Per-trigger macro slots (0=None)
+    0, 0, 0, 0, 0
 };
 
 // Initialize key bindings with default values
@@ -567,6 +569,13 @@ std::atomic<int> triggerOnWakeupStrength(0);
 std::atomic<int> triggerAfterHitstunStrength(0);
 std::atomic<int> triggerAfterAirtechStrength(0);
 std::atomic<int> triggerOnRGStrength(0);
+
+// Per-trigger macro slot selections (0=None, 1..MaxSlots)
+std::atomic<int> triggerAfterBlockMacroSlot(0);
+std::atomic<int> triggerOnWakeupMacroSlot(0);
+std::atomic<int> triggerAfterHitstunMacroSlot(0);
+std::atomic<int> triggerAfterAirtechMacroSlot(0);
+std::atomic<int> triggerOnRGMacroSlot(0);
 
 // Debug/experimental: allow buffering (pre-freeze) of wakeup specials/supers/dashes instead of f1 injection
 std::atomic<bool> g_wakeBufferingEnabled{false};

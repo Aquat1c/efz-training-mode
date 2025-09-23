@@ -6,6 +6,7 @@
 #include "../include/input/motion_constants.h"
 #include "../include/core/logger.h"
 #include "../include/core/memory.h"
+#include "../include/game/macro_controller.h"
 #include <windows.h>
 #include <commctrl.h>
 
@@ -70,6 +71,23 @@ void AutoActionPage_CreateContent(HWND hParent, DisplayData* pData) {
     int yPos = 90;
     char delayText[8];
 
+    // Helper to populate a macro combo with slot labels
+    auto PopulateMacroCombo = [](HWND hCombo){
+        SendMessageA(hCombo, CB_RESETCONTENT, 0, 0);
+        SendMessageA(hCombo, CB_ADDSTRING, 0, (LPARAM)"None");
+        int slots = MacroController::GetSlotCount();
+        for (int i = 1; i <= slots; ++i) {
+            MacroController::SlotStats st = MacroController::GetSlotStats(i);
+            char label[128];
+            if (st.hasData) {
+                sprintf_s(label, sizeof(label), "Slot %d (%dt, %de)", i, st.totalTicks, st.bufEntries);
+            } else {
+                sprintf_s(label, sizeof(label), "Slot %d (empty)", i);
+            }
+            SendMessageA(hCombo, CB_ADDSTRING, 0, (LPARAM)label);
+        }
+    };
+
     // After Block trigger - REMOVE Custom ID field
     HWND hAfterBlockCheck = CreateWindowExA(0, "BUTTON", "After Block:", 
         WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
@@ -116,6 +134,15 @@ void AutoActionPage_CreateContent(HWND hParent, DisplayData* pData) {
         WS_CHILD | WS_VISIBLE | WS_BORDER | ES_NUMBER,
         355, yPos, 40, 25, hParent, (HMENU)IDC_TRIGGER_AFTER_BLOCK_DELAY, GetModuleHandle(NULL), NULL);
 
+    // Macro selection for After Block
+    CreateWindowExA(0, "STATIC", "Macro:", WS_CHILD | WS_VISIBLE | SS_LEFT,
+        405, yPos, 45, 25, hParent, NULL, GetModuleHandle(NULL), NULL);
+    HWND hAfterBlockMacro = CreateWindowExA(0, "COMBOBOX", "",
+        WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | WS_VSCROLL,
+        455, yPos, 150, 200, hParent, (HMENU)IDC_TRIGGER_AFTER_BLOCK_MACRO, GetModuleHandle(NULL), NULL);
+    PopulateMacroCombo(hAfterBlockMacro);
+    SendMessage(hAfterBlockMacro, CB_SETCURSEL, CLAMP(pData->macroSlotAfterBlock,0, MacroController::GetSlotCount()), 0);
+
     // REMOVED: Custom Move ID field
 
     // After Hitstun trigger
@@ -160,6 +187,15 @@ void AutoActionPage_CreateContent(HWND hParent, DisplayData* pData) {
     CreateWindowExA(WS_EX_CLIENTEDGE, "EDIT", delayText, 
         WS_CHILD | WS_VISIBLE | WS_BORDER | ES_NUMBER,
         355, yPos, 40, 25, hParent, (HMENU)IDC_TRIGGER_AFTER_HITSTUN_DELAY, GetModuleHandle(NULL), NULL);
+
+    // Macro selection for After Hitstun
+    CreateWindowExA(0, "STATIC", "Macro:", WS_CHILD | WS_VISIBLE | SS_LEFT,
+        405, yPos, 45, 25, hParent, NULL, GetModuleHandle(NULL), NULL);
+    HWND hAfterHitstunMacro = CreateWindowExA(0, "COMBOBOX", "",
+        WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | WS_VSCROLL,
+        455, yPos, 150, 200, hParent, (HMENU)IDC_TRIGGER_AFTER_HITSTUN_MACRO, GetModuleHandle(NULL), NULL);
+    PopulateMacroCombo(hAfterHitstunMacro);
+    SendMessage(hAfterHitstunMacro, CB_SETCURSEL, CLAMP(pData->macroSlotAfterHitstun,0, MacroController::GetSlotCount()), 0);
 
     // Debug: Wake buffering toggle (before On Wakeup trigger section)
     HWND hWakeBufferCheck = CreateWindowExA(0, "BUTTON", "Pre-buffer wake specials/dashes", 
@@ -212,6 +248,15 @@ void AutoActionPage_CreateContent(HWND hParent, DisplayData* pData) {
         WS_CHILD | WS_VISIBLE | WS_BORDER | ES_NUMBER,
         355, yPos, 40, 25, hParent, (HMENU)IDC_TRIGGER_ON_WAKEUP_DELAY, GetModuleHandle(NULL), NULL);
 
+    // Macro selection for On Wakeup
+    CreateWindowExA(0, "STATIC", "Macro:", WS_CHILD | WS_VISIBLE | SS_LEFT,
+        405, yPos, 45, 25, hParent, NULL, GetModuleHandle(NULL), NULL);
+    HWND hOnWakeupMacro = CreateWindowExA(0, "COMBOBOX", "",
+        WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | WS_VSCROLL,
+        455, yPos, 150, 200, hParent, (HMENU)IDC_TRIGGER_ON_WAKEUP_MACRO, GetModuleHandle(NULL), NULL);
+    PopulateMacroCombo(hOnWakeupMacro);
+    SendMessage(hOnWakeupMacro, CB_SETCURSEL, CLAMP(pData->macroSlotOnWakeup,0, MacroController::GetSlotCount()), 0);
+
     // After Airtech trigger
     yPos += 35;
     HWND hAfterAirtechCheck = CreateWindowExA(0, "BUTTON", "After Airtech:", 
@@ -258,6 +303,62 @@ void AutoActionPage_CreateContent(HWND hParent, DisplayData* pData) {
         WS_CHILD | WS_VISIBLE | WS_BORDER | ES_NUMBER,
         355, yPos, 40, 25, hParent, (HMENU)IDC_TRIGGER_AFTER_AIRTECH_DELAY, GetModuleHandle(NULL), NULL);
 
+    // Macro selection for After Airtech
+    CreateWindowExA(0, "STATIC", "Macro:", WS_CHILD | WS_VISIBLE | SS_LEFT,
+        405, yPos, 45, 25, hParent, NULL, GetModuleHandle(NULL), NULL);
+    HWND hAfterAirtechMacro = CreateWindowExA(0, "COMBOBOX", "",
+        WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | WS_VSCROLL,
+        455, yPos, 150, 200, hParent, (HMENU)IDC_TRIGGER_AFTER_AIRTECH_MACRO, GetModuleHandle(NULL), NULL);
+    PopulateMacroCombo(hAfterAirtechMacro);
+    SendMessage(hAfterAirtechMacro, CB_SETCURSEL, CLAMP(pData->macroSlotAfterAirtech,0, MacroController::GetSlotCount()), 0);
+
+    // On Recoil Guard (RG) trigger
+    yPos += 35;
+    HWND hOnRGCheck = CreateWindowExA(0, "BUTTON", "On RG:",
+        WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
+        50, yPos, 120, 25, hParent, (HMENU)IDC_TRIGGER_ON_RG_CHECK, GetModuleHandle(NULL), NULL);
+    SendMessage(hOnRGCheck, BM_SETCHECK, triggerOnRGEnabled.load() ? BST_CHECKED : BST_UNCHECKED, 0);
+
+    HWND hOnRGAction = CreateWindowExA(0, "COMBOBOX", "",
+        WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | WS_VSCROLL,
+        180, yPos, 120, 200, hParent, (HMENU)IDC_TRIGGER_ON_RG_ACTION, GetModuleHandle(NULL), NULL);
+    // Reuse standard action list
+    SendMessageA(hOnRGAction, CB_ADDSTRING, 0, (LPARAM)"5A");
+    SendMessageA(hOnRGAction, CB_ADDSTRING, 0, (LPARAM)"5B");
+    SendMessageA(hOnRGAction, CB_ADDSTRING, 0, (LPARAM)"5C");
+    SendMessageA(hOnRGAction, CB_ADDSTRING, 0, (LPARAM)"2A");
+    SendMessageA(hOnRGAction, CB_ADDSTRING, 0, (LPARAM)"2B");
+    SendMessageA(hOnRGAction, CB_ADDSTRING, 0, (LPARAM)"2C");
+    SendMessageA(hOnRGAction, CB_ADDSTRING, 0, (LPARAM)"j.A");
+    SendMessageA(hOnRGAction, CB_ADDSTRING, 0, (LPARAM)"j.B");
+    SendMessageA(hOnRGAction, CB_ADDSTRING, 0, (LPARAM)"j.C");
+    SendMessageA(hOnRGAction, CB_ADDSTRING, 0, (LPARAM)"QCF");
+    SendMessageA(hOnRGAction, CB_ADDSTRING, 0, (LPARAM)"DP");
+    SendMessageA(hOnRGAction, CB_ADDSTRING, 0, (LPARAM)"QCB");
+    SendMessageA(hOnRGAction, CB_ADDSTRING, 0, (LPARAM)"Super 1");
+    SendMessageA(hOnRGAction, CB_ADDSTRING, 0, (LPARAM)"Super 2");
+    SendMessageA(hOnRGAction, CB_ADDSTRING, 0, (LPARAM)"641236 Super");
+    SendMessageA(hOnRGAction, CB_ADDSTRING, 0, (LPARAM)"Jump");
+    SendMessageA(hOnRGAction, CB_ADDSTRING, 0, (LPARAM)"Backdash");
+    SendMessageA(hOnRGAction, CB_ADDSTRING, 0, (LPARAM)"Block");
+    SendMessage(hOnRGAction, CB_SETCURSEL, ActionTypeToComboIndex(triggerOnRGAction.load()), 0);
+
+    CreateWindowExA(0, "STATIC", "Delay:", WS_CHILD | WS_VISIBLE | SS_LEFT,
+        310, yPos, 40, 25, hParent, NULL, GetModuleHandle(NULL), NULL);
+    sprintf_s(delayText, "%d", triggerOnRGDelay.load());
+    CreateWindowExA(WS_EX_CLIENTEDGE, "EDIT", delayText,
+        WS_CHILD | WS_VISIBLE | WS_BORDER | ES_NUMBER,
+        355, yPos, 40, 25, hParent, (HMENU)IDC_TRIGGER_ON_RG_DELAY, GetModuleHandle(NULL), NULL);
+
+    // Macro selection for On RG
+    CreateWindowExA(0, "STATIC", "Macro:", WS_CHILD | WS_VISIBLE | SS_LEFT,
+        405, yPos, 45, 25, hParent, NULL, GetModuleHandle(NULL), NULL);
+    HWND hOnRGMacro = CreateWindowExA(0, "COMBOBOX", "",
+        WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | WS_VSCROLL,
+        455, yPos, 150, 200, hParent, (HMENU)IDC_TRIGGER_ON_RG_MACRO, GetModuleHandle(NULL), NULL);
+    PopulateMacroCombo(hOnRGMacro);
+    SendMessage(hOnRGMacro, CB_SETCURSEL, CLAMP(pData->macroSlotOnRG,0, MacroController::GetSlotCount()), 0);
+
     // CRITICAL FIX: Use ActionTypeToComboIndex function instead of direct mapping
     // to properly handle air moves (j.A, j.B, j.C)
 
@@ -280,4 +381,9 @@ void AutoActionPage_CreateContent(HWND hParent, DisplayData* pData) {
     int afterAirtechActionType = triggerAfterAirtechAction.load();
     int afterAirtechComboIndex = ActionTypeToComboIndex(afterAirtechActionType);
     SendMessage(hAfterAirtechAction, CB_SETCURSEL, afterAirtechComboIndex, 0);
+
+    // For On RG
+    int onRGActionType = triggerOnRGAction.load();
+    int onRGComboIndex = ActionTypeToComboIndex(onRGActionType);
+    SendMessage(hOnRGAction, CB_SETCURSEL, onRGComboIndex, 0);
 }
