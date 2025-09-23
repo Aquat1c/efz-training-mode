@@ -14,4 +14,12 @@ namespace PauseIntegration {
     void* GetPracticeControllerPtr();
     // While the menu is visible, keep the freeze enforced in gameplay (guards against external unfreeze)
     void MaintainFreezeWhileMenuVisible();
+
+    // Queries for paused/frozen state. Best-effort and safe to call anytime.
+    // - IsPracticePaused: true if we can read the Practice pause flag and it's set.
+    // - IsGameSpeedFrozen: true if gamespeed byte resolves and equals 0 (frozen time).
+    // - IsPausedOrFrozen: convenience OR of the above.
+    bool IsPracticePaused();
+    bool IsGameSpeedFrozen();
+    bool IsPausedOrFrozen();
 }
