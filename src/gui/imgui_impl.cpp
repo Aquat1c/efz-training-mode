@@ -60,10 +60,26 @@ static bool IsFullscreen(HWND hwnd) {
 
 // Poll XInput and update a software mouse cursor
 static void UpdateVirtualCursor(ImGuiIO& io) {
+    const auto& cfg = Config::GetSettings();
+    if (!cfg.enableVirtualCursor) {
+        g_useVirtualCursor = false;
+        io.MouseDrawCursor = false;
+        return;
+    }
     HWND hwnd = FindEFZWindow();
-    const bool want = g_imguiVisible && hwnd && IsFullscreen(hwnd);
+    bool fullscreen = hwnd && IsFullscreen(hwnd);
+    const bool want = g_imguiVisible && hwnd && (fullscreen || cfg.virtualCursorAllowWindowed);
     bool wasActive = g_useVirtualCursor;
     g_useVirtualCursor = want;
+
+    // Track focus transitions to allow recenter on refocus
+    static bool s_lastWindowFocused = false;
+    bool focusedNow = (hwnd && GetForegroundWindow() == hwnd);
+    bool regainedFocus = (focusedNow && !s_lastWindowFocused);
+    s_lastWindowFocused = focusedNow;
+    // Track edge states for additional user-triggered recenters
+    static bool s_lastMiddleDown = false;       // mouse middle button
+    static bool s_lastLThumbDown = false;       // gamepad left stick click
 
     if (!g_useVirtualCursor) {
         io.MouseDrawCursor = false;
@@ -73,14 +89,46 @@ static void UpdateVirtualCursor(ImGuiIO& io) {
     // Draw ImGui software cursor
     io.MouseDrawCursor = true;
 
-    if (!wasActive) {
-        // Center cursor on first activation
-        g_virtualCursorPos = ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f);
+    // Determine current client rect for clamping and centering
+    float clientW = io.DisplaySize.x;
+    float clientH = io.DisplaySize.y;
+    if (hwnd) {
+        RECT rc{}; if (GetClientRect(hwnd, &rc)) { clientW = (float)(rc.right - rc.left); clientH = (float)(rc.bottom - rc.top); }
+    }
+
+    if (!wasActive || regainedFocus) {
+        // Center cursor on first activation OR when window regains focus
+        g_virtualCursorPos = ImVec2(clientW * 0.5f, clientH * 0.5f);
+    }
+
+    // Middle mouse (hardware) recenter when ImGui visible & window focused
+    if (focusedNow && g_imguiVisible) {
+        SHORT mm = GetAsyncKeyState(VK_MBUTTON);
+        bool middleDown = (mm & 0x8000) != 0;
+        bool middlePressed = middleDown && !s_lastMiddleDown;
+        if (middlePressed) {
+            g_virtualCursorPos = ImVec2(clientW * 0.5f, clientH * 0.5f);
+            // If we are NOT drawing software cursor (possible future toggle), also move OS cursor
+            if (!g_useVirtualCursor) {
+                POINT pt{ (LONG)(clientW * 0.5f), (LONG)(clientH * 0.5f) };
+                ClientToScreen(hwnd, &pt);
+                SetCursorPos(pt.x, pt.y);
+            }
+        }
+        s_lastMiddleDown = middleDown;
     }
 
     XINPUT_STATE state{};
     DWORD xr = XInputGetState(0, &state);
     if (xr == ERROR_SUCCESS) {
+        // Edge detection for left stick click (L3) to recenter
+        bool lThumbDown = (state.Gamepad.wButtons & XINPUT_GAMEPAD_LEFT_THUMB) != 0;
+        bool lThumbPressed = lThumbDown && !s_lastLThumbDown && focusedNow && g_imguiVisible;
+        if (lThumbPressed) {
+            g_virtualCursorPos = ImVec2(clientW * 0.5f, clientH * 0.5f);
+        }
+        s_lastLThumbDown = lThumbDown;
+        // ...continue with normal analog handling
         // Analog stick movement
         const SHORT lx = state.Gamepad.sThumbLX;
         const SHORT ly = state.Gamepad.sThumbLY;
@@ -92,8 +140,20 @@ static void UpdateVirtualCursor(ImGuiIO& io) {
             return n;
         };
 
-        const float nx = applyDeadzone(lx, XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE);
-        const float ny = applyDeadzone(ly, XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE);
+        float nx = applyDeadzone(lx, XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE);
+        float ny = applyDeadzone(ly, XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE);
+
+        // Apply acceleration/response curve (exponent >1 softens near center for precision)
+        if (cfg.virtualCursorAccelPower != 1.0f) {
+            auto curve = [&](float v) {
+                float sign = (v >= 0.f) ? 1.f : -1.f;
+                float mag = fabsf(v);
+                mag = powf(mag, cfg.virtualCursorAccelPower); // stable for mag in [0,1]
+                return sign * mag;
+            };
+            nx = curve(nx);
+            ny = curve(ny);
+        }
 
         // DPAD provides discrete nudge
         float dpadX = 0.f, dpadY = 0.f;
@@ -104,16 +164,18 @@ static void UpdateVirtualCursor(ImGuiIO& io) {
 
         float dt = io.DeltaTime > 0.f ? io.DeltaTime : (1.f/60.f);
         // Speed scaling
-        const bool fast = (state.Gamepad.wButtons & XINPUT_GAMEPAD_LEFT_SHOULDER) != 0;
-        const float baseSpeed = fast ? 1800.f : 900.f;  // pixels per second
-        const float dpadSpeed = 700.f;
+    const bool fast = (state.Gamepad.wButtons & XINPUT_GAMEPAD_LEFT_SHOULDER) != 0;
+    float baseSpeed = fast ? cfg.virtualCursorFastSpeed : cfg.virtualCursorBaseSpeed;  // pixels per second
+    float dpadSpeed = cfg.virtualCursorDpadSpeed;
+    if (baseSpeed < 50.f) baseSpeed = 50.f; if (baseSpeed > 8000.f) baseSpeed = 8000.f;
+    if (dpadSpeed < 10.f) dpadSpeed = 10.f; if (dpadSpeed > 4000.f) dpadSpeed = 4000.f;
 
         g_virtualCursorPos.x += (nx * baseSpeed + dpadX * dpadSpeed) * dt;
         g_virtualCursorPos.y += (-ny * baseSpeed + dpadY * dpadSpeed) * dt; // note: Y is inverted
 
-        // Clamp within display
-    g_virtualCursorPos.x = ClampF(g_virtualCursorPos.x, 0.0f, io.DisplaySize.x - 1.0f);
-    g_virtualCursorPos.y = ClampF(g_virtualCursorPos.y, 0.0f, io.DisplaySize.y - 1.0f);
+        // Clamp within client region size
+        g_virtualCursorPos.x = ClampF(g_virtualCursorPos.x, 0.0f, clientW - 1.0f);
+        g_virtualCursorPos.y = ClampF(g_virtualCursorPos.y, 0.0f, clientH - 1.0f);
 
         // Buttons -> mouse clicks
         bool leftDown = (state.Gamepad.wButtons & XINPUT_GAMEPAD_A) != 0;

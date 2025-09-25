@@ -215,6 +215,18 @@ namespace Config {
             file << "; UI font: 0 = ImGui default font, 1 = Segoe UI (Windows)\n";
             file << "uiFont = 0\n\n";
 
+            file << "; Virtual Cursor (software controller-driven cursor) settings\n";
+            file << "; Master enable (1=on,0=off)\n";
+            file << "enableVirtualCursor = 1\n";
+            file << "; Allow virtual cursor while windowed (1=yes,0=only fullscreen)\n";
+            file << "virtualCursorAllowWindowed = 0\n";
+            file << "; Movement speeds in pixels/second (base, fast/shoulder, dpad nudge)\n";
+            file << "virtualCursorBaseSpeed = 900\n";
+            file << "virtualCursorFastSpeed = 1800\n";
+            file << "virtualCursorDpadSpeed = 700\n";
+            file << "; Analog stick acceleration exponent (1.0=linear, 1.5=gentler near center)\n";
+            file << "virtualCursorAccelPower = 1.35\n\n";
+
             // (Practice-specific tuning is hardcoded now)
             
             file << "[Hotkeys]\n";
@@ -254,6 +266,11 @@ namespace Config {
             file << "MacroPlayKey=0x4F       # Default: 'O' key\n";
             file << "; Macro: Cycle Slot (next)\n";
             file << "MacroSlotKey=0x4B       # Default: 'K' key\n";
+            file << "\n; UI footer actions (Apply / Refresh / Exit)\n";
+            file << "; Avoid using in-game bound keys (Enter/Escape/Space). Defaults: E, R, Q.\n";
+            file << "UIAcceptKey=0x45        # 'E' (Apply)\n";
+            file << "UIRefreshKey=0x52       # 'R' (Refresh)\n";
+            file << "UIExitKey=0x51          # 'Q' (Exit)\n";
             
             file.close();
             
@@ -340,6 +357,24 @@ namespace Config {
             }
 
             // Practice: no runtime-tunable settings
+            // Virtual cursor settings
+            settings.enableVirtualCursor = GetValueBool("General", "enableVirtualCursor", true);
+            settings.virtualCursorAllowWindowed = GetValueBool("General", "virtualCursorAllowWindowed", false);
+            settings.virtualCursorBaseSpeed = (float)GetValueInt("General", "virtualCursorBaseSpeed", 900);
+            settings.virtualCursorFastSpeed = (float)GetValueInt("General", "virtualCursorFastSpeed", 1800);
+            settings.virtualCursorDpadSpeed = (float)GetValueInt("General", "virtualCursorDpadSpeed", 700);
+            {
+                auto sectionIt = iniData.find("general");
+                float p = 1.35f;
+                if (sectionIt != iniData.end()) {
+                    auto keyIt = sectionIt->second.find("virtualcursoraccelpower");
+                    if (keyIt != sectionIt->second.end()) {
+                        try { p = std::stof(keyIt->second); } catch (...) { p = 1.35f; }
+                    }
+                }
+                if (p < 0.5f) p = 0.5f; if (p > 3.0f) p = 3.0f;
+                settings.virtualCursorAccelPower = p;
+            }
             
             // Hotkey settings - REVERTED to number key defaults
             settings.teleportKey = GetValueInt("Hotkeys", "TeleportKey", 0x31);          // Default: '1'
@@ -354,6 +389,9 @@ namespace Config {
             settings.macroRecordKey   = GetValueInt("Hotkeys", "MacroRecordKey",   0x49); // 'I'
             settings.macroPlayKey     = GetValueInt("Hotkeys", "MacroPlayKey",     0x4F); // 'O'
             settings.macroSlotKey     = GetValueInt("Hotkeys", "MacroSlotKey",     0x4B); // 'K'
+            settings.uiAcceptKey      = GetValueInt("Hotkeys", "UIAcceptKey",     0x45); // 'E'
+            settings.uiRefreshKey     = GetValueInt("Hotkeys", "UIRefreshKey",    0x52); // 'R'
+            settings.uiExitKey        = GetValueInt("Hotkeys", "UIExitKey",       0x51); // 'Q'
             LogOut("[CONFIG] Settings loaded successfully", true);
             LogOut("[CONFIG] UseImGui: " + std::to_string(settings.useImGui), true);
             LogOut("[CONFIG] DetailedLogging: " + std::to_string(settings.detailedLogging), true);
@@ -369,6 +407,9 @@ namespace Config {
             LogOut("[CONFIG] MacroRecordKey: " + std::to_string(settings.macroRecordKey) + " (" + GetKeyName(settings.macroRecordKey) + ")", true);
             LogOut("[CONFIG] MacroPlayKey: " + std::to_string(settings.macroPlayKey) + " (" + GetKeyName(settings.macroPlayKey) + ")", true);
             LogOut("[CONFIG] MacroSlotKey: " + std::to_string(settings.macroSlotKey) + " (" + GetKeyName(settings.macroSlotKey) + ")", true);
+            LogOut("[CONFIG] UIAcceptKey: " + std::to_string(settings.uiAcceptKey) + " (" + GetKeyName(settings.uiAcceptKey) + ")", true);
+            LogOut("[CONFIG] UIRefreshKey: " + std::to_string(settings.uiRefreshKey) + " (" + GetKeyName(settings.uiRefreshKey) + ")", true);
+            LogOut("[CONFIG] UIExitKey: " + std::to_string(settings.uiExitKey) + " (" + GetKeyName(settings.uiExitKey) + ")", true);
             LogOut("[CONFIG] enableFpsDiagnostics: " + std::to_string(settings.enableFpsDiagnostics), true);
             LogOut("[CONFIG] uiScale: " + std::to_string(settings.uiScale), true);
             LogOut("[CONFIG] uiFontMode: " + std::to_string(settings.uiFontMode), true);
@@ -413,6 +454,13 @@ namespace Config {
             file << "uiScale = " << settings.uiScale << "\n\n";
             file << "; UI font: 0 = ImGui default font, 1 = Segoe UI (Windows)\n";
             file << "uiFont = " << settings.uiFontMode << "\n\n";
+            file << "; Virtual Cursor settings\n";
+            file << "enableVirtualCursor = " << (settings.enableVirtualCursor?"1":"0") << "\n";
+            file << "virtualCursorAllowWindowed = " << (settings.virtualCursorAllowWindowed?"1":"0") << "\n";
+            file << "virtualCursorBaseSpeed = " << (int)settings.virtualCursorBaseSpeed << "\n";
+            file << "virtualCursorFastSpeed = " << (int)settings.virtualCursorFastSpeed << "\n";
+            file << "virtualCursorDpadSpeed = " << (int)settings.virtualCursorDpadSpeed << "\n";
+            file << "virtualCursorAccelPower = " << settings.virtualCursorAccelPower << "\n\n";
 
             // (Practice tuning omitted)
             file << "; Show the debug console window (1 = yes, 0 = no)\n";
@@ -435,6 +483,9 @@ namespace Config {
             file << "MacroRecordKey=" << toHexString(settings.macroRecordKey) << "\n";
             file << "MacroPlayKey=" << toHexString(settings.macroPlayKey) << "\n";
             file << "MacroSlotKey=" << toHexString(settings.macroSlotKey) << "\n";
+            file << "UIAcceptKey=" << toHexString(settings.uiAcceptKey) << "\n";
+            file << "UIRefreshKey=" << toHexString(settings.uiRefreshKey) << "\n";
+            file << "UIExitKey=" << toHexString(settings.uiExitKey) << "\n";
 
             file.close();
             if (file.fail()) {
@@ -475,6 +526,12 @@ namespace Config {
                 try { settings.uiFontMode = std::stoi(value); } catch (...) {}
                 if (settings.uiFontMode < 0 || settings.uiFontMode > 1) settings.uiFontMode = 0;
             }
+            if (k == "enablevirtualcursor") settings.enableVirtualCursor = (value == "1");
+            if (k == "virtualcursorallowwindowed") settings.virtualCursorAllowWindowed = (value == "1");
+            if (k == "virtualcursorbasespeed") { try { settings.virtualCursorBaseSpeed = std::stof(value); } catch(...){} }
+            if (k == "virtualcursorfastspeed") { try { settings.virtualCursorFastSpeed = std::stof(value); } catch(...){} }
+            if (k == "virtualcursordpadspeed") { try { settings.virtualCursorDpadSpeed = std::stof(value); } catch(...){} }
+            if (k == "virtualcursoraccelpower") { try { settings.virtualCursorAccelPower = std::stof(value); } catch(...){} }
         }
         else if (sec == "hotkeys") {
             int intValue = ParseKeyValue(value);
@@ -489,6 +546,9 @@ namespace Config {
             if (k == "macrorecordkey") settings.macroRecordKey = intValue;
             if (k == "macroplaykey") settings.macroPlayKey = intValue;
             if (k == "macroslotkey") settings.macroSlotKey = intValue;
+            if (k == "uiacceptkey") settings.uiAcceptKey = intValue;
+            if (k == "uirefreshkey") settings.uiRefreshKey = intValue;
+            if (k == "uiexitkey") settings.uiExitKey = intValue;
         }
     // Practice: no mutable settings currently
     }
