@@ -3,6 +3,7 @@
 #include "../include/gui/imgui_impl.h"
 #include "../include/core/logger.h"
 #include "../include/gui/imgui_gui.h"
+#include "../include/gui/pause_menu.h"
 #include "../include/gui/overlay.h" 
 #include <stdexcept>
 #include <Xinput.h>
@@ -330,7 +331,8 @@ namespace ImGuiImpl {
             return false;
         }
         
-        ImGuiGui::Initialize();
+    ImGuiGui::Initialize();
+    // Pause menu intentionally not force-initialized here: it is an alternative path and lazily prepares itself
         
         g_imguiInitialized = true;
         LogOut("[IMGUI] ImGui initialized successfully", true);
@@ -407,8 +409,11 @@ namespace ImGuiImpl {
             return;
         }
         
-        // Only render if visible
-        if (!g_imguiVisible) {
+        // Poll pause menu input every frame (even if main GUI hidden)
+        PauseMenu::TickInput();
+
+        // If neither the training GUI nor the pause menu are visible, skip
+        if (!g_imguiVisible && !PauseMenu::IsVisible()) {
             return;
         }
         
@@ -432,8 +437,10 @@ namespace ImGuiImpl {
             // Keep font atlas in sync with current UI scale for crisp text
             UpdateFontAtlasForScale(Config::GetSettings().uiScale);
 
-            // Render the GUI
-            ImGuiGui::RenderGui();
+            // Render the GUI(s)
+            if (g_imguiVisible)
+                ImGuiGui::RenderGui();
+            PauseMenu::Render();
             
             // End frame and render
             ImGui::EndFrame();

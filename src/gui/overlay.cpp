@@ -25,6 +25,7 @@
 #pragma comment(lib, "xinput9_1_0.lib")
 #include <cmath>
 #include "../../include/gui/gif_player.h"
+#include "../include/gui/native_pause_menu.h"
 
 // Avoid Windows min/max macro conflicts
 #ifdef min
@@ -132,6 +133,9 @@ HRESULT WINAPI HookedEndScene(LPDIRECT3DDEVICE9 pDevice) {
         }
     }
 
+    // Native pause menu input (independent from ImGui windows); F1 handled in global thread toggling visibility
+    NativePauseMenu::TickInput();
+
     // Start a new ImGui frame
     ImGui_ImplDX9_NewFrame();
     ImGui_ImplWin32_NewFrame();
@@ -235,6 +239,11 @@ HRESULT WINAPI HookedEndScene(LPDIRECT3DDEVICE9 pDevice) {
     // Guard again in case size changed mid-frame
     if (io.DisplaySize.x > 0.0f && io.DisplaySize.y > 0.0f) {
         ImGui_ImplDX9_RenderDrawData(ImGui::GetDrawData());
+    }
+
+    // Draw native pause overlay after ImGui so it can fully obscure gameplay if desired
+    if (NativePauseMenu::IsVisible()) {
+        NativePauseMenu::RenderD3D9(pDevice);
     }
 
     return oEndScene(pDevice);
