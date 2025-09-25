@@ -122,6 +122,28 @@ void MonitorAutoAirtech(short moveID1, short moveID2) {
     g_airtechP1FacingRight.store(p1FacingRightNow);
     g_airtechP2FacingRight.store(p2FacingRightNow);
 
+    // FAST-PATH: If feature is disabled and we are not in detailed diagnostics, avoid all heavy work.
+    // This skips: untech/moveID classification, delay/injection state machines, and heartbeat/status logs.
+    // We still honor a very slow (30s) diagnostic heartbeat if detailedLogging is enabled so the user
+    // can confirm the system is idle without flooding the log.
+    if (!autoAirtechEnabled.load()) {
+        // Ensure exported flags reflect idle state
+        g_airtechP1Active.store(false);
+        g_airtechP2Active.store(false);
+        g_airtechP1Airtechable.store(false);
+        g_airtechP2Airtechable.store(false);
+        // Release any lingering manual overrides (paranoia)
+        if (g_manualInputOverride[1].load()) { g_manualInputOverride[1].store(false); g_manualInputMask[1].store(0); }
+        if (g_manualInputOverride[2].load()) { g_manualInputOverride[2].store(false); g_manualInputMask[2].store(0); }
+        static auto s_lastDisabledBeat = std::chrono::steady_clock::now();
+        auto nowBeat = std::chrono::steady_clock::now();
+        if (detailedLogging.load() && (nowBeat - s_lastDisabledBeat) >= std::chrono::seconds(30)) {
+            LogOut("[AUTO-AIRTECH] Idle (disabled) - skipping per-frame processing", true);
+            s_lastDisabledBeat = nowBeat;
+        }
+        return; // nothing else to do while disabled
+    }
+
     // Track if player is in airtech animation
     bool p1CurrentlyAirteching = IsAirtechAnimation(moveID1);
     bool p2CurrentlyAirteching = IsAirtechAnimation(moveID2);
@@ -165,8 +187,9 @@ void MonitorAutoAirtech(short moveID1, short moveID2) {
     bool changed = (p1ActiveNow!=lastP1Active) || (p2ActiveNow!=lastP2Active) ||
                    (p1AbleNow!=lastP1Able) || (p2AbleNow!=lastP2Able);
     auto nowTs = std::chrono::steady_clock::now();
-    bool heartbeat = (nowTs - lastHeartbeat) >= std::chrono::seconds(5);
-    if ((detailedLogging.load() && (changed || heartbeat))) {
+    // Heartbeat only when enabled & something interesting happened recently OR players are in/near an airtech window.
+    bool heartbeat = (nowTs - lastHeartbeat) >= std::chrono::seconds(5) && (p1ActiveNow || p2ActiveNow || p1AbleNow || p2AbleNow);
+    if (detailedLogging.load() && (changed || heartbeat)) {
         LogOut("[AUTO-AIRTECH] Status: Enabled=" + std::to_string(autoAirtechEnabled.load()) +
                ", Direction=" + std::to_string(autoAirtechDirection.load()) +
                ", Delay=" + std::to_string(autoAirtechDelay.load()) +

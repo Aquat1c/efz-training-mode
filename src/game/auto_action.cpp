@@ -1159,6 +1159,20 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
 // Back-compat wrapper: fetch move IDs once here (with basic caching) and forward to core
 void MonitorAutoActions() {
     static short s_prevMoveID1 = 0, s_prevMoveID2 = 0;
+    // Fast-path: if nothing could possibly generate work (feature disabled, no triggers, no delays,
+    // cooldowns, wake prearms, or pending control restores) skip all memory reads & processing.
+    if (!AutoActionWorkPending()) {
+        if (detailedLogging.load()) {
+            static int s_lastIdleLogFrame = 0;
+            int nowF = frameCounter.load();
+            // Roughly every 30 real seconds at 192fps (192 * 30 = 5760)
+            if (nowF - s_lastIdleLogFrame >= 5760) {
+                LogOut("[AUTO-ACTION] Idle (disabled/no triggers) - skipping per-frame processing", true);
+                s_lastIdleLogFrame = nowF;
+            }
+        }
+        return;
+    }
     uintptr_t base = GetEFZBase();
     if (!base) return;
     static uintptr_t addr1 = 0, addr2 = 0; static int cacheCtr = 0;
@@ -1774,7 +1788,15 @@ bool AutoGuard(int playerNum, int opponentPtr) {
 
 // Hard reset of all auto-action trigger related runtime state
 void ClearAllAutoActionTriggers() {
-    LogOut("[AUTO-ACTION] Forcing full clear of trigger/delay/cooldown state", true);
+    // Throttle repeated full-clear logs (can fire rapidly during Character Select stability scans)
+    static int s_lastClearFrame = -1000000;
+    int nowF = frameCounter.load();
+    extern std::atomic<bool> g_suppressAutoActionClearLogging; // declared in frame_monitor.cpp
+    bool logThis = !g_suppressAutoActionClearLogging.load() && (nowF - s_lastClearFrame) >= 480; // ~2.5s at 192fps
+    if (logThis) {
+        LogOut("[AUTO-ACTION] Forcing full clear of trigger/delay/cooldown state", true);
+        s_lastClearFrame = nowF;
+    }
 
     // Reset delay states
     p1DelayState = {false, 0, TRIGGER_NONE, 0};
@@ -1812,5 +1834,7 @@ void ClearAllAutoActionTriggers() {
     s_p1RGPrearmed = false; s_p1RGPrearmIsSpecial = false; s_p1RGPrearmActionType = -1; s_p1RGPrearmExpiry = 0;
     s_p2RGPrearmed = false; s_p2RGPrearmIsSpecial = false; s_p2RGPrearmActionType = -1; s_p2RGPrearmExpiry = 0;
 
-    LogOut("[AUTO-ACTION] All trigger states cleared", true);
+    if (logThis) {
+        LogOut("[AUTO-ACTION] All trigger states cleared", true);
+    }
 }
