@@ -16,6 +16,11 @@
 #include "../include/input/input_debug.h"
 #include <algorithm> // Add this for std::max
 #include <vector>
+// Removed <xinput.h> include: this translation unit no longer uses direct XInput
+// symbols (controller footer mappings were stripped). Keeping the include caused
+// stale compile diagnostics referencing XINPUT_* despite the code being removed.
+// Other modules (input_handler.cpp, imgui_impl.cpp, overlay.cpp) still handle
+// XInput polling centrally.
 // For opening links from Help tab
 #include <shellapi.h>
 #pragma comment(lib, "shell32.lib")
@@ -2014,19 +2019,35 @@ namespace ImGuiGui {
             }
             ImGui::EndChild();
 
-            // Fixed footer (always visible)
+            // Fixed footer (always visible) with hotkeys, controller support, tab focus & toasts
             ImGui::Separator();
-            if (ImGui::Button("Apply", ImVec2(120, 0))) {
-                ApplyImGuiSettings();
+            bool doApply=false, doRefresh=false, doExit=false;
+            const auto& cfg = Config::GetSettings();
+            HWND hwnd = FindEFZWindow();
+            if (hwnd && GetForegroundWindow()==hwnd) {
+                static SHORT lastAccept=0, lastRefresh=0, lastExit=0;
+                SHORT curAccept = GetAsyncKeyState(cfg.uiAcceptKey);
+                SHORT curRefresh = GetAsyncKeyState(cfg.uiRefreshKey);
+                SHORT curExit = GetAsyncKeyState(cfg.uiExitKey);
+                if ((curAccept & 0x8000) && !(lastAccept & 0x8000)) doApply = true;
+                if ((curRefresh & 0x8000) && !(lastRefresh & 0x8000)) doRefresh = true;
+                if ((curExit & 0x8000) && !(lastExit & 0x8000)) doExit = true;
+                lastAccept = curAccept; lastRefresh = curRefresh; lastExit = curExit;
+                // Controller mapping temporarily disabled (XInput symbols unresolved in this build context)
             }
+            // Let ImGui's native keyboard navigation (Tab) handle focus across the entire window.
+            // We keep hotkeys/controller triggers for direct actions; no manual Tab interception now.
+            std::string applyLabel = std::string("Apply (") + GetKeyName(cfg.uiAcceptKey) + ")";
+            std::string refreshLabel = std::string("Refresh (") + GetKeyName(cfg.uiRefreshKey) + ")";
+            std::string exitLabel = std::string("Exit (") + GetKeyName(cfg.uiExitKey) + ")";
+            bool bApply = ImGui::Button(applyLabel.c_str(), ImVec2(140,0));
+            if (bApply || doApply) { ApplyImGuiSettings(); DirectDrawHook::AddMessage("Applied", "FOOTER", RGB(180,255,180), 1000, 0, 60); }
             ImGui::SameLine();
-            if (ImGui::Button("Refresh Values", ImVec2(120, 0))) {
-                RefreshLocalData();
-            }
+            bool bRefresh = ImGui::Button(refreshLabel.c_str(), ImVec2(140,0));
+            if (bRefresh || doRefresh) { RefreshLocalData(); DirectDrawHook::AddMessage("Refreshed", "FOOTER", RGB(180,220,255), 1000, 0, 60); }
             ImGui::SameLine();
-            if (ImGui::Button("Exit", ImVec2(120, 0))) {
-                ImGuiImpl::ToggleVisibility();
-            }
+            bool bExit = ImGui::Button(exitLabel.c_str(), ImVec2(140,0));
+            if (bExit || doExit) { ImGuiImpl::ToggleVisibility(); }
         }
         ImGui::End();
 

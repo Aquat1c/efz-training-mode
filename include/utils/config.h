@@ -15,6 +15,14 @@ namespace Config {
     float uiScale;               // NEW: UI scale for ImGui window (e.g., 0.80..1.20)
     int uiFontMode;              // NEW: UI font selection (0=ImGui default, 1=Segoe UI)
 
+    // Virtual cursor (software cursor driven by gamepad) settings
+    bool enableVirtualCursor;          // Master enable/disable
+    bool virtualCursorAllowWindowed;   // Allow usage when not fullscreen
+    float virtualCursorBaseSpeed;      // Base movement speed (px/sec)
+    float virtualCursorFastSpeed;      // Fast (shoulder) speed (px/sec)
+    float virtualCursorDpadSpeed;      // Dpad nudge speed (px/sec)
+    float virtualCursorAccelPower;     // Analog curve exponent (1.0 = linear, >1 slower near center)
+
     // (Practice tuning removed)
         
         // Hotkey settings
@@ -31,6 +39,11 @@ namespace Config {
         int macroRecordKey;     // Default: 'I'
         int macroPlayKey;       // Default: 'O'
         int macroSlotKey;       // NEW: Cycle macro slot (Default: 'K')
+
+        // ImGui footer action hotkeys (keyboard access without cursor)
+        int uiAcceptKey;        // Apply changes
+        int uiRefreshKey;       // Refresh values
+        int uiExitKey;          // Close menu
     };
     
     // Initialize configuration system

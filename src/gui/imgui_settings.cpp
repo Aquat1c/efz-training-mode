@@ -62,6 +62,39 @@ namespace ImGuiSettings {
         return false;
     }
 
+    // Specialized footer hotkey rebinder that blocks Enter/Escape/Space and duplicates
+    static void FooterHotkeyRebind(const char* actionLabel, int& keyCode, const char* cfgKey) {
+        ImGui::TextUnformatted(actionLabel);
+        ImGui::SameLine();
+        ImGui::TextDisabled("[%s]", GetKeyName(keyCode).c_str());
+        ImGui::SameLine();
+        std::string btnId = std::string("Rebind##") + cfgKey;
+        static bool capturing = false; // shared (only one at a time)
+        static std::string which;
+        if (!capturing) {
+            if (ImGui::Button(btnId.c_str())) { capturing = true; which = cfgKey; }
+        } else if (capturing && which == cfgKey) {
+            ImGui::SameLine();
+            ImGui::TextColored(ImVec4(1,1,0,1), "Press a key (no Enter/Escape/Space)...");
+            for (int vk = 0x01; vk <= 0xFE; ++vk) {
+                SHORT st = GetAsyncKeyState(vk);
+                if (st & 0x8000) {
+                    if (vk == VK_RETURN || vk == VK_ESCAPE || vk == VK_SPACE) {
+                        LogOut("[CONFIG/UI] Disallowed footer key (Enter/Escape/Space) ignored", false);
+                        capturing = false; which.clear();
+                        break;
+                    }
+                    keyCode = vk;
+                    char hexBuf[16]; snprintf(hexBuf, sizeof(hexBuf), "0x%X", keyCode);
+                    Config::SetSetting("Hotkeys", cfgKey, hexBuf);
+                    LogOut(std::string("[CONFIG/UI] ") + cfgKey + " footer key -> " + GetKeyName(keyCode), false);
+                    capturing = false; which.clear();
+                    break;
+                }
+            }
+        }
+    }
+
     void RenderSettingsTab() {
         const Config::Settings& cfg = Config::GetSettings();
 
@@ -159,6 +192,16 @@ namespace ImGuiSettings {
                 detailedLogging.store(Config::GetSettings().detailedLogging);
                 LogOut("[CONFIG/UI] Settings reloaded from ini", false);
             }
+
+            ImGui::Dummy(ImVec2(1,6));
+            ImGui::SeparatorText("Footer Hotkeys");
+            int accept = cfg.uiAcceptKey;
+            int refresh = cfg.uiRefreshKey;
+            int exitK = cfg.uiExitKey;
+            FooterHotkeyRebind("Apply", accept, "UIAcceptKey");
+            FooterHotkeyRebind("Refresh", refresh, "UIRefreshKey");
+            FooterHotkeyRebind("Exit", exitK, "UIExitKey");
+            ImGui::TextDisabled("Disallowed: Enter / Escape / Space");
         }
 
         ImGui::Separator();
