@@ -38,6 +38,11 @@ void ClearAllAutoActionTriggers();
 #include <atomic>
 #include <iomanip>
 
+// Compile-time gate for verbose Character Select diagnostics (set to 1 locally when needed)
+#ifndef ENABLE_CS_DEBUG_LOGS
+#define ENABLE_CS_DEBUG_LOGS 0
+#endif
+
 // File-scope static variables for state tracking
 static uint8_t p1LastFacing = 0;
 static uint8_t p2LastFacing = 0;
@@ -68,6 +73,11 @@ static bool s_csBtnInit = false;
 static uint8_t s_csPrevBtns[4] = {0,0,0,0}; // A,B,C,D for active player last sample
 // Character Select CPU-flag guard (fixes post-Practice return when both flags become 1)
 static bool s_csDidCpuGuard = false;
+// One-shot persistent trigger clear guard per Character Select entry
+static bool s_csDidPersistentTriggerClear = false;
+
+// Global (extern defined elsewhere) suppression flag for auto-action clear logging; declare if missing
+extern std::atomic<bool> g_suppressAutoActionClearLogging;
 
 static uintptr_t fm_lastP1Ptr = 0;
 static uintptr_t fm_lastP2Ptr = 0;
@@ -667,28 +677,34 @@ void FrameDataMonitor() {
                 }
             }
 
-            // If we just arrived at Character Select: diagnostics + safe reset
+            // If we just arrived at Character Select: (suppress legacy diagnostics by default) + safe reset
             if (currentPhase == GamePhase::CharacterSelect && lastPhase != GamePhase::CharacterSelect) {
+#if ENABLE_CS_DEBUG_LOGS
                 LogCharacterSelectDiagnostics();
+#endif
                 ResetControlOnCharacterSelect();
-                // Reset live logger state on entry so first sample prints
+                // Reset live logger state on entry so first sample prints (only used when debug logs enabled)
                 s_csLastActive = 0xFF; s_csLastP2Cpu = 0xFF; s_csLastP1Cpu = 0xFF;
                 s_csLastP1Ai = 0xFFFFFFFFu; s_csLastP2Ai = 0xFFFFFFFFu; s_csLogDecim = 0;
                 // Reset input-edge logger state
                 s_csBtnInit = false; for (int i=0;i<4;++i) s_csPrevBtns[i] = 0;
                 // Reset CPU-flag guard
                 s_csDidCpuGuard = false;
+                // NEW: mark that we have not yet performed our one-shot persistent trigger clear this CS entry
+                s_csDidPersistentTriggerClear = false;
             }
 
             lastPhase = currentPhase;
         }
 
-        // Character Select debounce: run per-frame, not only on phase-change edge
+        // Character Select handling: run per-frame, not only on phase-change edge
         if (currentPhase == GamePhase::CharacterSelect) {
+#if ENABLE_CS_DEBUG_LOGS
             CharacterSelectLiveLoggerTick();
             CharacterSelectInputEdgeLoggerTick();
+#endif
             s_characterSelectPhaseFrames++;
-            if (s_characterSelectPhaseFrames == 1 && detailedLogging.load()) {
+            if (s_characterSelectPhaseFrames == 1 && (detailedLogging.load() || !g_reducedLogging.load())) {
                 LogOut("[FRAME MONITOR] Detected CharacterSelect phase - starting debounce window", true);
             }
             // Guard: after a short debounce, if we're in Practice and both CPU flags are 1 (broken state),
@@ -714,14 +730,22 @@ void FrameDataMonitor() {
                 }
             }
             if (s_characterSelectPhaseFrames >= 120) {
-                GameMode gmNow = GetCurrentGameMode();
                 bool charsInit = AreCharactersInitialized();
-                if (!charsInit) {
-                    LogOut("[FRAME MONITOR] CharacterSelect phase stable (>=120 frames) and characters not initialized -> clearing triggers", true);
+                if (!charsInit && !s_csDidPersistentTriggerClear) {
+                    if (!g_reducedLogging.load() || detailedLogging.load()) {
+                        LogOut("[FRAME MONITOR] CharacterSelect phase stable (>=120 frames) and characters not initialized -> clearing triggers", true);
+                    }
+                    // Suppress nested auto-action clear logging for this one-shot CS clear
+                    g_suppressAutoActionClearLogging.store(true);
                     ClearAllTriggersPersistently();
-                    s_characterSelectPhaseFrames = 0; // reset after action
-                } else if (detailedLogging.load()) {
-                    LogOut("[FRAME MONITOR] CharacterSelect phase stable but characters still initialized; skipping trigger clear (possible false phase)", true);
+                    g_suppressAutoActionClearLogging.store(false);
+                    s_csDidPersistentTriggerClear = true; // one-shot per CS entry
+                } else if (charsInit) {
+#if ENABLE_CS_DEBUG_LOGS
+                    if (detailedLogging.load() && !g_reducedLogging.load()) {
+                        LogOut("[FRAME MONITOR] CharacterSelect phase stable but characters still initialized; skipping trigger clear (possible false phase)", true);
+                    }
+#endif
                 }
             }
         } else if (s_characterSelectPhaseFrames > 0) {

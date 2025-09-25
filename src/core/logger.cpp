@@ -26,6 +26,7 @@
 std::mutex g_logMutex;
 std::atomic<bool> detailedTitleMode(false);
 std::atomic<bool> detailedDebugOutput(false);
+std::atomic<bool> g_reducedLogging(true);
 
 // Buffer logs until console is ready so enabling console later shows early logs
 static std::vector<std::string> g_pendingConsoleLogs;
@@ -112,7 +113,48 @@ void LogOut(const std::string& msg, bool consoleOutput) {
             std::cout << std::endl;
         }
         
-        // Output the message (with timestamp prefix)
+        // Reduced logging duplicate suppression & lightweight category throttling
+        if (g_reducedLogging.load()) {
+            // Maintain a tiny ring of last few messages to collapse duplicates within a window
+            struct DupEntry { std::string text; int count; std::chrono::steady_clock::time_point first; };
+            static std::vector<DupEntry> recent; // intentionally small
+            static const size_t kMaxDupEntries = 16;
+            static const auto kWindow = std::chrono::seconds(3); // collapse duplicates over 3s
+            auto nowSteady = std::chrono::steady_clock::now();
+            // Expire old entries
+            recent.erase(std::remove_if(recent.begin(), recent.end(), [&](const DupEntry &e){return (nowSteady - e.first) > kWindow;}), recent.end());
+            // Key off raw msg (without timestamp)
+            bool suppressed = false;
+            for (auto &e : recent) {
+                if (e.text == msg) {
+                    e.count++;
+                    suppressed = true;
+                    break;
+                }
+            }
+            if (!suppressed) {
+                if (recent.size() >= kMaxDupEntries) recent.erase(recent.begin());
+                recent.push_back({msg,1,nowSteady});
+            }
+            // Periodically flush accumulated counts (once per second)
+            static auto lastFlush = nowSteady;
+            if (nowSteady - lastFlush >= std::chrono::seconds(1)) {
+                for (auto &e : recent) {
+                    if (e.count > 1) {
+                        std::cout << prefix << e.text << " (x" << e.count << ")" << std::endl;
+                    } else if (e.count == 1) {
+                        std::cout << prefix << e.text << std::endl;
+                    }
+                }
+                recent.clear();
+                lastFlush = nowSteady;
+            }
+            if (suppressed) {
+                return; // defer actual printing to periodic flush
+            }
+        }
+
+        // Output the message immediately (non-reduced or first occurrence)
         if (msg.empty()) {
             std::cout << std::endl;
         } else {
@@ -316,4 +358,8 @@ void SetConsoleReady(bool ready) {
     if (ready) {
         FlushPendingConsoleLogs();
     }
+}
+
+void SetReducedLogging(bool reduced) {
+    g_reducedLogging.store(reduced);
 }

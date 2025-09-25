@@ -40,6 +40,8 @@
 std::atomic<bool> g_efzWindowActive(false);
 std::atomic<bool> g_guiActive(false);
 std::atomic<bool> g_onlineModeActive(false);
+// Suppress auto-action clear logging (used for one-shot CS persistent clear)
+std::atomic<bool> g_suppressAutoActionClearLogging(false);
 // Sticky, one-way hard stop once online is confirmed
 static std::atomic<bool> g_hardStoppedOnce{false};
 
@@ -280,7 +282,13 @@ void EnterOnlineMode() {
 
 // Public helper: permanently clear all triggers so they stay disabled until user re-enables
 void ClearAllTriggersPersistently() {
-    LogOut("[SYSTEM] Clearing all triggers persistently (Character Select / forced)", true);
+    static uint64_t s_lastClearTick = 0; // throttle identical spam bursts
+    uint64_t nowTick = GetTickCount64();
+    bool willLogPrimary = (nowTick - s_lastClearTick > 750); // at most ~1 log per 750ms
+    if (willLogPrimary) {
+        LogOut("[SYSTEM] Clearing all triggers persistently (Character Select / forced)", true);
+        s_lastClearTick = nowTick;
+    }
     // Disable toggles immediately so they will NOT be auto-restored
     autoActionEnabled.store(false);
     triggerAfterBlockEnabled.store(false);
@@ -291,8 +299,10 @@ void ClearAllTriggersPersistently() {
     // Also wipe internal delay/cooldown state so nothing fires after returning
     ClearAllAutoActionTriggers();
 
-    // Explicit hard reset message (nothing is saved anymore)
-    LogOut("[SYSTEM] Trigger states hard-reset (no restoration mechanism active)", true);
+    // Explicit hard reset message only if we emitted the primary (avoid paired duplicates)
+    if (willLogPrimary) {
+        LogOut("[SYSTEM] Trigger states hard-reset (no restoration mechanism active)", true);
+    }
 
     // Remove any trigger overlay lines now
     if (g_TriggerAfterBlockId != -1) { DirectDrawHook::RemovePermanentMessage(g_TriggerAfterBlockId); g_TriggerAfterBlockId = -1; }
