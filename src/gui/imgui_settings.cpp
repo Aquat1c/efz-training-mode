@@ -4,6 +4,8 @@
 #include "../include/utils/switch_players.h"
 #include "../include/game/game_state.h"
 #include <windows.h>
+#include <Xinput.h>
+#pragma comment(lib, "xinput9_1_0.lib")
 
 namespace ImGuiSettings {
     static void CheckboxApply(const char* label, bool& value, const char* section, const char* key) {
@@ -202,6 +204,63 @@ namespace ImGuiSettings {
             FooterHotkeyRebind("Refresh", refresh, "UIRefreshKey");
             FooterHotkeyRebind("Exit", exitK, "UIExitKey");
             ImGui::TextDisabled("Disallowed: Enter / Escape / Space");
+        }
+
+        if (ImGui::CollapsingHeader("Gamepad Bindings")) {
+            const char* help = "Rebind: capture next button (or LT/RT trigger). Disable: set -1. Holds persist after Save.";
+            ImGui::TextWrapped("%s", help);
+            ImGui::Separator();
+            struct Row { const char* label; const char* key; int val; };
+            Row rows[] = {
+                {"Teleport / Load", "gpTeleportButton", cfg.gpTeleportButton},
+                {"Save Position",   "gpSavePositionButton", cfg.gpSavePositionButton},
+                {"Switch Players",  "gpSwitchPlayersButton", cfg.gpSwitchPlayersButton},
+                {"Swap Positions",  "gpSwapPositionsButton", cfg.gpSwapPositionsButton},
+                {"Macro Record",    "gpMacroRecordButton", cfg.gpMacroRecordButton},
+                {"Macro Play",      "gpMacroPlayButton", cfg.gpMacroPlayButton},
+                {"Macro Slot Next", "gpMacroSlotButton", cfg.gpMacroSlotButton},
+                {"Toggle Menu",     "gpToggleMenuButton", cfg.gpToggleMenuButton},
+                {"Toggle Overlay",  "gpToggleImGuiButton", cfg.gpToggleImGuiButton}
+            };
+            static bool capturing = false; static std::string which; static WORD lastButtons = 0; static bool prevLT=false, prevRT=false;
+            for (auto &r : rows) {
+                ImGui::PushID(r.key);
+                ImGui::TextUnformatted(r.label); ImGui::SameLine();
+                ImGui::TextDisabled("[%s]", Config::GetGamepadButtonName(r.val).c_str()); ImGui::SameLine();
+                std::string btn = std::string("Rebind##") + r.key;
+                if (!capturing) {
+                    if (ImGui::SmallButton(btn.c_str())) { capturing = true; which = r.key; lastButtons = 0; prevLT=false; prevRT=false; }
+                    ImGui::SameLine();
+                    if (ImGui::SmallButton("Disable")) {
+                        Config::SetSetting("Hotkeys", r.key, "-1");
+                    }
+                } else if (capturing && which == r.key) {
+                    ImGui::TextColored(ImVec4(1,1,0,1), "Press a controller button..."); ImGui::SameLine();
+                    if (ImGui::SmallButton("Cancel")) { capturing=false; which.clear(); }
+                    // Poll controller 0 (qualify with :: to avoid any local shadowing)
+                    ::XINPUT_STATE st{}; if (::XInputGetState(0, &st) == ERROR_SUCCESS) {
+                        WORD newly = st.Gamepad.wButtons & ~lastButtons;
+                        int assignMask = 0;
+                        if (newly) assignMask = newly; // take first new pressed combination as mask
+                        bool lt = st.Gamepad.bLeftTrigger > 30; bool rt = st.Gamepad.bRightTrigger > 30;
+                        int trigMask = 0; if (lt && !prevLT) trigMask |= 0x10000; if (rt && !prevRT) trigMask |= 0x20000;
+                        prevLT = lt; prevRT = rt;
+                        if (trigMask) assignMask |= trigMask;
+                        if (assignMask) {
+                            std::string name = Config::GetGamepadButtonName(assignMask);
+                            Config::SetSetting("Hotkeys", which, name);
+                            capturing=false; which.clear();
+                        }
+                        lastButtons = st.Gamepad.wButtons;
+                    } else {
+                        ImGui::SameLine(); ImGui::TextDisabled("(controller not found)");
+                    }
+                }
+                ImGui::PopID();
+            }
+            ImGui::Separator();
+            if (ImGui::Button("Save Gamepad Binds")) { Config::SaveSettings(); LogOut("[CONFIG/UI] Gamepad binds saved", false); }
+            ImGui::SameLine(); if (ImGui::Button("Reload")) { Config::LoadSettings(); LogOut("[CONFIG/UI] Gamepad binds reloaded", false); }
         }
 
         ImGui::Separator();

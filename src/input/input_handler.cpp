@@ -224,67 +224,152 @@ void MonitorKeys() {
     if (g_efzWindowActive.load() && !g_guiActive.load()) {
             bool keyHandled = false;
 
-        // Gamepad: poll XInput pad 0 for menu/teleport/save position
+        // Gamepad: poll XInput pad 0 and process configurable mappings
         if (XInputGetState(0, &currentPad) == ERROR_SUCCESS) {
-                auto wentDown = [&](WORD mask) {
-            return (currentPad.Gamepad.wButtons & mask) && !(prevPad.Gamepad.wButtons & mask);
-                };
+            // Helper: edge detect (just-pressed) for standard buttons & pseudo trigger bits
+            constexpr int LT_MASK = 0x10000; // pseudo masks defined in config parser
+            constexpr int RT_MASK = 0x20000;
+            constexpr int TRIGGER_THRESHOLD = 50; // configurable later if needed
+            auto gpWentDown = [&](int mask) -> bool {
+                if (mask < 0) return false; // disabled
+                if (mask == LT_MASK) {
+                    bool now = currentPad.Gamepad.bLeftTrigger >= TRIGGER_THRESHOLD;
+                    bool prev = prevPad.Gamepad.bLeftTrigger >= TRIGGER_THRESHOLD;
+                    return now && !prev;
+                }
+                if (mask == RT_MASK) {
+                    bool now = currentPad.Gamepad.bRightTrigger >= TRIGGER_THRESHOLD;
+                    bool prev = prevPad.Gamepad.bRightTrigger >= TRIGGER_THRESHOLD;
+                    return now && !prev;
+                }
+                WORD wMask = static_cast<WORD>(mask & 0xFFFF);
+                return (currentPad.Gamepad.wButtons & wMask) && !(prevPad.Gamepad.wButtons & wMask);
+            };
 
-                // Start -> open/toggle ImGui menu
-                if (wentDown(XINPUT_GAMEPAD_START)) {
+            // Local helpers for repeated memory operations
+            auto savePositions = [&]() {
+                uintptr_t base = GetEFZBase();
+                if (base) {
+                    SavePlayerPositions(base);
+                    DirectDrawHook::AddMessage("Position Saved", "SYSTEM", RGB(255, 255, 100), 1500, 0, 100);
+                }
+            };
+            auto teleportOrLoad = [&]() {
+                uintptr_t base = GetEFZBase();
+                if (!base) return;
+                if ((currentPad.Gamepad.wButtons & XINPUT_GAMEPAD_DPAD_DOWN) && (currentPad.Gamepad.wButtons & XINPUT_GAMEPAD_A)) {
+                    SetPlayerPosition(base, EFZ_BASE_OFFSET_P1, p1StartX, startY);
+                    SetPlayerPosition(base, EFZ_BASE_OFFSET_P2, p2StartX, startY);
+                    DirectDrawHook::AddMessage("Round Start Position", "SYSTEM", RGB(100, 255, 100), 1500, 0, 100);
+                } else if (currentPad.Gamepad.wButtons & XINPUT_GAMEPAD_DPAD_DOWN) {
+                    SetPlayerPosition(base, EFZ_BASE_OFFSET_P1, centerX, teleportY);
+                    SetPlayerPosition(base, EFZ_BASE_OFFSET_P2, centerX, teleportY);
+                    DirectDrawHook::AddMessage("Players Centered", "SYSTEM", RGB(100, 255, 100), 1500, 0, 100);
+                } else if (currentPad.Gamepad.wButtons & XINPUT_GAMEPAD_DPAD_LEFT) {
+                    SetPlayerPosition(base, EFZ_BASE_OFFSET_P1, leftX, teleportY);
+                    SetPlayerPosition(base, EFZ_BASE_OFFSET_P2, leftX, teleportY);
+                    DirectDrawHook::AddMessage("Left Corner", "SYSTEM", RGB(100, 255, 100), 1500, 0, 100);
+                } else if (currentPad.Gamepad.wButtons & XINPUT_GAMEPAD_DPAD_RIGHT) {
+                    SetPlayerPosition(base, EFZ_BASE_OFFSET_P1, rightX, teleportY);
+                    SetPlayerPosition(base, EFZ_BASE_OFFSET_P2, rightX, teleportY);
+                    DirectDrawHook::AddMessage("Right Corner", "SYSTEM", RGB(100, 255, 100), 1500, 0, 100);
+                } else {
+                    LoadPlayerPositions(base);
+                    DirectDrawHook::AddMessage("Position Loaded", "SYSTEM", RGB(100, 255, 100), 1500, 0, 100);
+                }
+            };
+            auto swapPositions = [&]() {
+                uintptr_t base = GetEFZBase();
+                if (!base) return;
+                double x1=0,y1=0,x2=0,y2=0;
+                uintptr_t xAddr1 = ResolvePointer(base, EFZ_BASE_OFFSET_P1, XPOS_OFFSET);
+                uintptr_t yAddr1 = ResolvePointer(base, EFZ_BASE_OFFSET_P1, YPOS_OFFSET);
+                uintptr_t xAddr2 = ResolvePointer(base, EFZ_BASE_OFFSET_P2, XPOS_OFFSET);
+                uintptr_t yAddr2 = ResolvePointer(base, EFZ_BASE_OFFSET_P2, YPOS_OFFSET);
+                if (xAddr1 && yAddr1 && xAddr2 && yAddr2) {
+                    SafeReadMemory(xAddr1, &x1, sizeof(double));
+                    SafeReadMemory(yAddr1, &y1, sizeof(double));
+                    SafeReadMemory(xAddr2, &x2, sizeof(double));
+                    SafeReadMemory(yAddr2, &y2, sizeof(double));
+                    SetPlayerPosition(base, EFZ_BASE_OFFSET_P1, x2, y2);
+                    SetPlayerPosition(base, EFZ_BASE_OFFSET_P2, x1, y1);
+                    DirectDrawHook::AddMessage("Positions Swapped", "SYSTEM", RGB(100, 255, 100), 1500, 0, 100);
+                } else {
+                    DirectDrawHook::AddMessage("Swap Failed: Can't read positions", "SYSTEM", RGB(255,100,100), 1500, 0, 100);
+                }
+            };
+
+            // Read config each frame so UI changes apply immediately
+            const auto &cgp = cfg; // alias
+
+            // Process in priority order (single action per press)
+            // Unified menu toggle: gpToggleMenuButton now acts as open/close (ImGui preferred path)
+            if (!keyHandled && gpWentDown(cgp.gpToggleMenuButton)) {
+                if (!ImGuiImpl::IsVisible()) {
+                    // Open using existing OpenMenu() path so pause integration + state setup occurs
+                    OpenMenu();
+                } else {
+                    // Close via direct ImGui toggle (this also resets ::menuOpen in ImGuiImpl)
                     ImGuiImpl::ToggleVisibility();
-                    keyHandled = true;
                 }
-
-                // Back (Select) -> teleport actions (mirrors '1' hotkey logic)
-                if (wentDown(XINPUT_GAMEPAD_BACK)) {
-                    uintptr_t base = GetEFZBase();
-                    if (base) {
-                        // Use D-Pad modifiers similar to arrow-key combos
-                        if ((currentPad.Gamepad.wButtons & XINPUT_GAMEPAD_DPAD_DOWN) &&
-                            (currentPad.Gamepad.wButtons & XINPUT_GAMEPAD_A)) {
-                            // Round start positions
-                            SetPlayerPosition(base, EFZ_BASE_OFFSET_P1, p1StartX, startY);
-                            SetPlayerPosition(base, EFZ_BASE_OFFSET_P2, p2StartX, startY);
-                            DirectDrawHook::AddMessage("Round Start Position", "SYSTEM", RGB(100, 255, 100), 1500, 0, 100);
-                        } else if (currentPad.Gamepad.wButtons & XINPUT_GAMEPAD_DPAD_DOWN) {
-                            // Center players
-                            SetPlayerPosition(base, EFZ_BASE_OFFSET_P1, centerX, teleportY);
-                            SetPlayerPosition(base, EFZ_BASE_OFFSET_P2, centerX, teleportY);
-                            DirectDrawHook::AddMessage("Players Centered", "SYSTEM", RGB(100, 255, 100), 1500, 0, 100);
-                        } else if (currentPad.Gamepad.wButtons & XINPUT_GAMEPAD_DPAD_LEFT) {
-                            // Left corner
-                            SetPlayerPosition(base, EFZ_BASE_OFFSET_P1, leftX, teleportY);
-                            SetPlayerPosition(base, EFZ_BASE_OFFSET_P2, leftX, teleportY);
-                            DirectDrawHook::AddMessage("Left Corner", "SYSTEM", RGB(100, 255, 100), 1500, 0, 100);
-                        } else if (currentPad.Gamepad.wButtons & XINPUT_GAMEPAD_DPAD_RIGHT) {
-                            // Right corner
-                            SetPlayerPosition(base, EFZ_BASE_OFFSET_P1, rightX, teleportY);
-                            SetPlayerPosition(base, EFZ_BASE_OFFSET_P2, rightX, teleportY);
-                            DirectDrawHook::AddMessage("Right Corner", "SYSTEM", RGB(100, 255, 100), 1500, 0, 100);
-                        } else {
-                            // Load saved position
-                            LoadPlayerPositions(base);
-                            DirectDrawHook::AddMessage("Position Loaded", "SYSTEM", RGB(100, 255, 100), 1500, 0, 100);
-                        }
+                keyHandled = true;
+            } else if (!keyHandled && gpWentDown(cgp.gpToggleImGuiButton)) {
+                // Secondary explicit ImGui visibility toggle (can be disabled in config)
+                ImGuiImpl::ToggleVisibility();
+                keyHandled = true;
+            } else if (!keyHandled && gpWentDown(cgp.gpTeleportButton)) {
+                teleportOrLoad();
+                keyHandled = true;
+            } else if (!keyHandled && gpWentDown(cgp.gpSavePositionButton)) {
+                savePositions();
+                keyHandled = true;
+            } else if (!keyHandled && gpWentDown(cgp.gpSwapPositionsButton)) {
+                swapPositions();
+                keyHandled = true;
+            } else if (!keyHandled && gpWentDown(cgp.gpSwitchPlayersButton)) {
+                if (GetCurrentGameMode() == GameMode::Practice) {
+                    if (SwitchPlayers::ToggleLocalSide()) {
+                        DirectDrawHook::AddMessage("Switch Players: toggled", "SYSTEM", RGB(100,255,100), 1200, 0, 100);
+                    } else {
+                        DirectDrawHook::AddMessage("Switch Players: failed", "SYSTEM", RGB(255,100,100), 1200, 0, 100);
                     }
-                    keyHandled = true;
                 }
-
-                // L3 (Left stick click) -> save position
-                if (wentDown(XINPUT_GAMEPAD_LEFT_THUMB)) {
-                    uintptr_t base = GetEFZBase();
-                    if (base) {
-                        SavePlayerPositions(base);
-                        DirectDrawHook::AddMessage("Position Saved", "SYSTEM", RGB(255, 255, 100), 1500, 0, 100);
-                    }
-                    keyHandled = true;
+                keyHandled = true;
+            } else if (!keyHandled && gpWentDown(cgp.gpMacroRecordButton)) {
+                if (GetCurrentGamePhase() == GamePhase::Match && AreCharactersInitialized()) {
+                    MacroController::ToggleRecord();
+                    DirectDrawHook::AddMessage(MacroController::GetStatusLine().c_str(), "MACRO", RGB(200,220,255), 900, 0, 120);
+                } else {
+                    DirectDrawHook::AddMessage("Macro controls available only during Match", "MACRO", RGB(255,180,120), 900, 0, 120);
                 }
+                keyHandled = true;
+            } else if (!keyHandled && gpWentDown(cgp.gpMacroPlayButton)) {
+                if (GetCurrentGamePhase() == GamePhase::Match && AreCharactersInitialized()) {
+                    MacroController::Play();
+                    DirectDrawHook::AddMessage(MacroController::GetStatusLine().c_str(), "MACRO", RGB(180,255,180), 900, 0, 120);
+                } else {
+                    DirectDrawHook::AddMessage("Macro controls available only during Match", "MACRO", RGB(255,180,120), 900, 0, 120);
+                }
+                keyHandled = true;
+            } else if (!keyHandled && gpWentDown(cgp.gpMacroSlotButton)) {
+                if (GetCurrentGamePhase() == GamePhase::Match && AreCharactersInitialized()) {
+                    MacroController::NextSlot();
+                    DirectDrawHook::AddMessage((std::string("Macro: Slot ") + std::to_string(MacroController::GetCurrentSlot())).c_str(), "MACRO", RGB(230,230,120), 800, 0, 120);
+                } else {
+                    DirectDrawHook::AddMessage("Macro controls available only during Match", "MACRO", RGB(255,180,120), 900, 0, 120);
+                }
+                keyHandled = true;
             }
+        }
+            // Keyboard menu key: unify with gamepad behavior (toggle open/close)
             if (IsKeyPressed(configMenuKey, false)) {
-                OpenMenu();
-                // Wait a bit to prevent multiple openings
-                Sleep(500);
+                if (!ImGuiImpl::IsVisible()) {
+                    OpenMenu();
+                } else {
+                    ImGuiImpl::ToggleVisibility();
+                }
+                // Debounce to avoid rapid flicker
+                Sleep(300);
                 continue;
             }
 

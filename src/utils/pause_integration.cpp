@@ -222,6 +222,40 @@ namespace PauseIntegration {
         if (IsGameSpeedFrozen()) return true;
         return false;
     }
+    // Official pause byte discovered via EfzRevival analysis:
+    //   sub_10075720 toggles *(practicePtr + 0x180) and calls sub_1006B2A0(&dword_100A0760, 0/1)
+    //   When the byte transitions 0 -> 1 the engine enters pause (game logic halts) instead of relying
+    //   purely on gamespeed writes. We replicate that behavior directly when the Practice controller
+    //   pointer is known, falling back to previous gamespeed freeze logic otherwise.
+    static std::atomic<bool> s_usedOfficialToggle{false};
+
+    static bool ReadOfficialPauseFlag(bool &out) {
+        void* p = s_practicePtr.load();
+        if (!p) return false;
+        uint8_t v = 0;
+    if (!SafeReadMemory((uintptr_t)p + 0x180, &v, sizeof(v))) return false;
+        out = (v != 0); // 1 means paused after 0->1 toggle per sub_10075720 analysis
+        return true;
+    }
+
+    typedef int (__thiscall *tRevivalTogglePause)(void* thisPtr);
+    static tRevivalTogglePause GetOfficialToggleFn() {
+        // Resolve EfzRevival module directly (same pattern used by hook installer above)
+        HMODULE hRev = GetModuleHandleA("EfzRevival.dll");
+        if (!hRev) return nullptr;
+        void* addr = EFZ_RVA_TO_VA(hRev, EFZREV_RVA_TOGGLE_PAUSE);
+        return reinterpret_cast<tRevivalTogglePause>(addr);
+    }
+
+    static bool InvokeOfficialPauseToggle() {
+        void* p = s_practicePtr.load();
+        if (!p) return false;
+        auto fn = GetOfficialToggleFn();
+        if (!fn) return false;
+        __try { fn(p); } __except(EXCEPTION_EXECUTE_HANDLER) { return false; }
+        return true;
+    }
+
     void OnMenuVisibilityChanged(bool visible) {
         // Prefer Practice-mode pause flag; fall back to gamespeed freeze during active gameplay
         GameMode mode = GetCurrentGameMode();
@@ -240,95 +274,79 @@ namespace PauseIntegration {
 
         if (visible) {
             bool frozeSomething = false;
-
-            // 1) If we're in Practice, prefer the Practice pause flag
-            if (mode == GameMode::Practice) {
-                if (revivalLoaded && s_practicePtr.load()) {
-                    bool alreadyPaused = false; (void)ReadPracticePauseFlag(alreadyPaused);
-                    if (alreadyPaused) {
-                        LogOut("[PAUSE] Menu opened: Practice already paused; leaving flag unchanged", true);
-                        s_menuPausedByUs.store(false);
-                    } else if (WritePracticePauseFlag(true)) {
-                        {
-                            void* p = s_practicePtr.load();
-                            std::ostringstream oss; oss << "[PAUSE] Menu opened: set Practice pause flag = 1 at 0x" << std::hex << (reinterpret_cast<uintptr_t>(p) + PRACTICE_OFF_PAUSE_FLAG);
-                            LogOut(oss.str(), true);
+            bool usedOfficial = false;
+            if (s_practicePtr.load()) {
+                bool alreadyPaused = false;
+                if (ReadOfficialPauseFlag(alreadyPaused) && alreadyPaused) {
+                    LogOut("[PAUSE] Menu opened: official pause already active", true);
+                } else {
+                    if (InvokeOfficialPauseToggle()) {
+                        bool nowPaused=false; ReadOfficialPauseFlag(nowPaused);
+                        if (nowPaused) {
+                            LogOut("[PAUSE] Menu opened: applied official toggle (byte +0x180 -> 1)", true);
+                            s_usedOfficialToggle.store(true);
+                            usedOfficial = true; frozeSomething = true;
+                        } else {
+                            LogOut("[PAUSE] Menu opened: official toggle invoked but state not confirmed, will fallback", true);
                         }
+                    } else {
+                        LogOut("[PAUSE] Menu opened: failed invoking official pause toggle, will fallback", true);
+                    }
+                }
+            }
+            // Fallback path (legacy) if official toggle unavailable or failed
+            if (!usedOfficial) {
+                if (mode == GameMode::Practice && revivalLoaded && s_practicePtr.load()) {
+                    bool alreadyPaused = false; (void)ReadPracticePauseFlag(alreadyPaused);
+                    if (!alreadyPaused && WritePracticePauseFlag(true)) {
+                        void* p = s_practicePtr.load();
+                        std::ostringstream oss; oss << "[PAUSE] Fallback: set Practice pause flag = 1 at 0x" << std::hex << ((uintptr_t)p + PRACTICE_OFF_PAUSE_FLAG);
+                        LogOut(oss.str(), true);
                         s_menuPausedByUs.store(true);
                         frozeSomething = true;
-                    } else {
-                        LogOut("[PAUSE] Menu opened: failed to write Practice pause flag", true);
                     }
-                } else {
-                    LogOut("[PAUSE] Menu opened: Practice pointer not available; will rely on gamespeed freeze", true);
                 }
-            }
-
-            // 2) Apply gamespeed freeze in any active match (covers practice fallback and non-practice gameplay)
-            if (inGameplay) {
-                uint8_t curSpeed = 0;
-                if (ReadGamespeed(curSpeed)) {
-                    if (curSpeed != 0) {
+                if (inGameplay) {
+                    uint8_t curSpeed=0; if (ReadGamespeed(curSpeed) && curSpeed!=0) {
                         s_prevGamespeed.store(curSpeed);
                         uintptr_t addr=0; ResolveGamespeedAddress(addr);
-                        {
-                            std::ostringstream oss; oss << "[PAUSE] Menu opened: freeze gamespeed at 0x" << std::hex << addr << ", cur=" << std::dec << (int)curSpeed;
-                            LogOut(oss.str(), true);
-                        }
-                        if (WriteGamespeed(0)) {
-                            s_speedPausedByUs.store(true);
-                            frozeSomething = true;
-                        } else {
-                            LogOut("[PAUSE] Menu opened: failed to write gamespeed", true);
-                        }
-                    } else {
-                        LogOut("[PAUSE] Menu opened: gamespeed already 0; leaving as-is", true);
-                        s_speedPausedByUs.store(false);
+                        std::ostringstream oss; oss << "[PAUSE] Fallback: freeze gamespeed at 0x" << std::hex << addr << ", cur=" << std::dec << (int)curSpeed;
+                        LogOut(oss.str(), true);
+                        if (WriteGamespeed(0)) { s_speedPausedByUs.store(true); frozeSomething = true; }
                     }
-                } else {
-                    LogOut("[PAUSE] Menu opened: could not resolve gamespeed address", true);
                 }
-            } else {
-                LogOut("[PAUSE] Menu opened: not in gameplay; skipping gamespeed freeze", true);
             }
-
-            if (!frozeSomething) {
-                LogOut("[PAUSE] Menu opened: no freeze applied (state already paused or not applicable)", true);
-            }
+            if (!frozeSomething) LogOut("[PAUSE] Menu opened: no pause action taken (already paused or unsupported)", true);
         } else {
             // Closing menu: unfreeze only if we froze it.
-            if (s_menuPausedByUs.load()) {
-                bool isPaused = false; (void)ReadPracticePauseFlag(isPaused);
-                if (isPaused) {
+            bool handled = false;
+            if (s_usedOfficialToggle.load() && s_practicePtr.load()) {
+                bool paused=false; if (ReadOfficialPauseFlag(paused) && paused) {
+                    if (InvokeOfficialPauseToggle()) {
+                        LogOut("[PAUSE] Menu closed: reverted official pause toggle (byte +0x180 -> 0)", true);
+                        handled = true;
+                    }
+                }
+                s_usedOfficialToggle.store(false);
+            }
+            // Legacy cleanup
+            if (!handled && s_menuPausedByUs.load()) {
+                bool isPaused=false; if (ReadPracticePauseFlag(isPaused) && isPaused) {
                     if (WritePracticePauseFlag(false)) {
                         void* p = s_practicePtr.load();
-                        std::ostringstream oss; oss << "[PAUSE] Menu closed: cleared Practice pause flag at 0x" << std::hex << (reinterpret_cast<uintptr_t>(p) + PRACTICE_OFF_PAUSE_FLAG);
+                        std::ostringstream oss; oss << "[PAUSE] Menu closed: cleared Practice pause flag at 0x" << std::hex << ((uintptr_t)p + PRACTICE_OFF_PAUSE_FLAG);
                         LogOut(oss.str(), true);
-                    } else {
-                        LogOut("[PAUSE] Menu closed: failed to clear Practice pause flag", true);
                     }
-                } else {
-                    LogOut("[PAUSE] Menu closed: Practice already unpaused; no action", true);
                 }
                 s_menuPausedByUs.store(false);
             }
             if (s_speedPausedByUs.load()) {
-                uint8_t cur = 0; if (ReadGamespeed(cur)) {
-                    // Only restore if the value is still what we set (0)
-                    if (cur == 0) {
-                        const uint8_t prev = s_prevGamespeed.load();
-                        uintptr_t addr=0; ResolveGamespeedAddress(addr);
-                        {
-                            std::ostringstream oss; oss << "[PAUSE] Menu closed: restore gamespeed at 0x" << std::hex << addr << ", prev=" << std::dec << (int)prev;
-                            LogOut(oss.str(), true);
-                        }
-                        if (WriteGamespeed(prev)) {
-                        } else {
-                            LogOut("[PAUSE] Menu closed: failed to restore gamespeed", true);
-                        }
-                    } else {
-                        LogOut("[PAUSE] Menu closed: gamespeed changed externally; not restoring", true);
-                    }
+                uint8_t cur=0; if (ReadGamespeed(cur) && cur==0) {
+                    const uint8_t prev = s_prevGamespeed.load();
+                    uintptr_t addr=0; ResolveGamespeedAddress(addr);
+                    std::ostringstream oss; oss << "[PAUSE] Menu closed: restore gamespeed at 0x" << std::hex << addr << ", prev=" << std::dec << (int)prev;
+                    LogOut(oss.str(), true);
+                    WriteGamespeed(prev);
                 }
                 s_speedPausedByUs.store(false);
             }
