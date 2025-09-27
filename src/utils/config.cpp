@@ -6,6 +6,9 @@
 #include <sstream>
 #include <filesystem>
 #include <algorithm>
+#include <cctype>
+#include <map>
+#include <xinput.h>
 
 namespace Config {
     // Internal settings storage
@@ -271,6 +274,20 @@ namespace Config {
             file << "UIAcceptKey=0x45        # 'E' (Apply)\n";
             file << "UIRefreshKey=0x52       # 'R' (Refresh)\n";
             file << "UIExitKey=0x51          # 'Q' (Exit)\n";
+
+            // --- Gamepad binding defaults ---
+            file << "\n; Gamepad bindings (XInput) \n";
+            file << "; Use symbolic names (e.g. A, B, X, Y, LB, RB, BACK, START, L3, R3, DPAD_UP, DPAD_DOWN, DPAD_LEFT, DPAD_RIGHT) or hex mask (e.g. 0x2000). -1 disables.\n";
+            file << "; Triggers (LT, RT) are treated as virtual buttons (threshold based).\n";
+            file << "gpTeleportButton=BACK\n";       // Teleport
+            file << "gpSavePositionButton=L3\n";     // Save current positions
+            file << "gpSwitchPlayersButton=RB\n";    // Toggle local side (practice)
+            file << "gpSwapPositionsButton=Y\n";     // Swap player coordinates
+            file << "gpMacroRecordButton=X\n";       // Macro record
+            file << "gpMacroPlayButton=A\n";         // Macro play
+            file << "gpMacroSlotButton=B\n";         // Cycle macro slot
+            file << "gpToggleMenuButton=START\n";     // Open training menu
+            file << "gpToggleImGuiButton=-1\n";      // Toggle overlay (disabled by default)
             
             file.close();
             
@@ -392,6 +409,24 @@ namespace Config {
             settings.uiAcceptKey      = GetValueInt("Hotkeys", "UIAcceptKey",     0x45); // 'E'
             settings.uiRefreshKey     = GetValueInt("Hotkeys", "UIRefreshKey",    0x52); // 'R'
             settings.uiExitKey        = GetValueInt("Hotkeys", "UIExitKey",       0x51); // 'Q'
+            // Gamepad bindings (defaults mirror CreateDefaultConfig)
+            auto getPad = [&](const char* name, const char* defStr){
+                auto sectionIt = iniData.find("hotkeys");
+                if (sectionIt != iniData.end()) {
+                    auto keyIt = sectionIt->second.find(std::string(name));
+                    if (keyIt != sectionIt->second.end()) return ParseGamepadButton(keyIt->second);
+                }
+                return ParseGamepadButton(defStr);
+            };
+            settings.gpTeleportButton       = getPad("gpteleportbutton", "BACK");
+            settings.gpSavePositionButton   = getPad("gpsavepositionbutton", "L3");
+            settings.gpSwitchPlayersButton  = getPad("gpswitchplayersbutton", "RB");
+            settings.gpSwapPositionsButton  = getPad("gpswappositionsbutton", "Y");
+            settings.gpMacroRecordButton    = getPad("gpmacrorecordbutton", "X");
+            settings.gpMacroPlayButton      = getPad("gpmacroplaybutton", "A");
+            settings.gpMacroSlotButton      = getPad("gpmacroslotbutton", "B");
+            settings.gpToggleMenuButton     = getPad("gptogglemenubutton", "START");
+            settings.gpToggleImGuiButton    = getPad("gptoggleimguibutton", "-1");
             LogOut("[CONFIG] Settings loaded successfully", true);
             LogOut("[CONFIG] UseImGui: " + std::to_string(settings.useImGui), true);
             LogOut("[CONFIG] DetailedLogging: " + std::to_string(settings.detailedLogging), true);
@@ -410,6 +445,15 @@ namespace Config {
             LogOut("[CONFIG] UIAcceptKey: " + std::to_string(settings.uiAcceptKey) + " (" + GetKeyName(settings.uiAcceptKey) + ")", true);
             LogOut("[CONFIG] UIRefreshKey: " + std::to_string(settings.uiRefreshKey) + " (" + GetKeyName(settings.uiRefreshKey) + ")", true);
             LogOut("[CONFIG] UIExitKey: " + std::to_string(settings.uiExitKey) + " (" + GetKeyName(settings.uiExitKey) + ")", true);
+            LogOut("[CONFIG] gpTeleportButton: " + GetGamepadButtonName(settings.gpTeleportButton), true);
+            LogOut("[CONFIG] gpSavePositionButton: " + GetGamepadButtonName(settings.gpSavePositionButton), true);
+            LogOut("[CONFIG] gpSwitchPlayersButton: " + GetGamepadButtonName(settings.gpSwitchPlayersButton), true);
+            LogOut("[CONFIG] gpSwapPositionsButton: " + GetGamepadButtonName(settings.gpSwapPositionsButton), true);
+            LogOut("[CONFIG] gpMacroRecordButton: " + GetGamepadButtonName(settings.gpMacroRecordButton), true);
+            LogOut("[CONFIG] gpMacroPlayButton: " + GetGamepadButtonName(settings.gpMacroPlayButton), true);
+            LogOut("[CONFIG] gpMacroSlotButton: " + GetGamepadButtonName(settings.gpMacroSlotButton), true);
+            LogOut("[CONFIG] gpToggleMenuButton: " + GetGamepadButtonName(settings.gpToggleMenuButton), true);
+            LogOut("[CONFIG] gpToggleImGuiButton: " + GetGamepadButtonName(settings.gpToggleImGuiButton), true);
             LogOut("[CONFIG] enableFpsDiagnostics: " + std::to_string(settings.enableFpsDiagnostics), true);
             LogOut("[CONFIG] uiScale: " + std::to_string(settings.uiScale), true);
             LogOut("[CONFIG] uiFontMode: " + std::to_string(settings.uiFontMode), true);
@@ -487,6 +531,20 @@ namespace Config {
             file << "UIRefreshKey=" << toHexString(settings.uiRefreshKey) << "\n";
             file << "UIExitKey=" << toHexString(settings.uiExitKey) << "\n";
 
+            file << "\n; Gamepad bindings (symbolic names or hex). -1 disables.\n";
+            auto writePad = [&](const char* key, int mask){
+                file << key << "=" << GetGamepadButtonName(mask) << "\n";
+            };
+            writePad("gpTeleportButton", settings.gpTeleportButton);
+            writePad("gpSavePositionButton", settings.gpSavePositionButton);
+            writePad("gpSwitchPlayersButton", settings.gpSwitchPlayersButton);
+            writePad("gpSwapPositionsButton", settings.gpSwapPositionsButton);
+            writePad("gpMacroRecordButton", settings.gpMacroRecordButton);
+            writePad("gpMacroPlayButton", settings.gpMacroPlayButton);
+            writePad("gpMacroSlotButton", settings.gpMacroSlotButton);
+            writePad("gpToggleMenuButton", settings.gpToggleMenuButton);
+            writePad("gpToggleImGuiButton", settings.gpToggleImGuiButton);
+
             file.close();
             if (file.fail()) {
                 LogOut("[CONFIG] SaveSettings: error when closing the file", true);
@@ -549,6 +607,16 @@ namespace Config {
             if (k == "uiacceptkey") settings.uiAcceptKey = intValue;
             if (k == "uirefreshkey") settings.uiRefreshKey = intValue;
             if (k == "uiexitkey") settings.uiExitKey = intValue;
+            // Gamepad button updates (these accept names or hex values)
+            if (k == "gpteleportbutton") settings.gpTeleportButton = ParseGamepadButton(value);
+            if (k == "gpsavepositionbutton") settings.gpSavePositionButton = ParseGamepadButton(value);
+            if (k == "gpswitchplayersbutton") settings.gpSwitchPlayersButton = ParseGamepadButton(value);
+            if (k == "gpswappositionsbutton") settings.gpSwapPositionsButton = ParseGamepadButton(value);
+            if (k == "gpmacrorecordbutton") settings.gpMacroRecordButton = ParseGamepadButton(value);
+            if (k == "gpmacroplaybutton") settings.gpMacroPlayButton = ParseGamepadButton(value);
+            if (k == "gpmacroslotbutton") settings.gpMacroSlotButton = ParseGamepadButton(value);
+            if (k == "gptogglemenubutton") settings.gpToggleMenuButton = ParseGamepadButton(value);
+            if (k == "gptoggleimguibutton") settings.gpToggleImGuiButton = ParseGamepadButton(value);
         }
     // Practice: no mutable settings currently
     }
@@ -577,6 +645,70 @@ namespace Config {
     std::string GetKeyName(int keyCode) {
         // Reuse existing GetKeyName from utilities.cpp
         return ::GetKeyName(keyCode);
+    }
+
+    // --- Gamepad parsing helpers ---
+    int ParseGamepadButton(const std::string& value) {
+        std::string v = value;
+        // Trim
+        auto trim = [](std::string &s){
+            size_t a = s.find_first_not_of(" \t\r\n");
+            size_t b = s.find_last_not_of(" \t\r\n");
+            if (a == std::string::npos) { s.clear(); return; }
+            s = s.substr(a, b - a + 1);
+        };
+        trim(v);
+        if (v.empty()) return -1;
+        // Hex / decimal numeric
+        if (v.size() > 2 && (v[0]=='0') && (v[1]=='x' || v[1]=='X')) {
+            try { return std::stoi(v.substr(2), nullptr, 16); } catch(...) { return -1; }
+        }
+        bool numeric = std::all_of(v.begin(), v.end(), [](unsigned char c){ return std::isdigit(c) || c=='-'; });
+        if (numeric) {
+            try { return std::stoi(v); } catch(...) { return -1; }
+        }
+        // Upper-case symbolic
+        std::string u; u.reserve(v.size());
+        for (char c: v) u.push_back((char)std::toupper((unsigned char)c));
+        static const std::unordered_map<std::string,int> map = {
+            {"A", XINPUT_GAMEPAD_A}, {"B", XINPUT_GAMEPAD_B}, {"X", XINPUT_GAMEPAD_X}, {"Y", XINPUT_GAMEPAD_Y},
+            {"LB", XINPUT_GAMEPAD_LEFT_SHOULDER}, {"RB", XINPUT_GAMEPAD_RIGHT_SHOULDER},
+            {"BACK", XINPUT_GAMEPAD_BACK}, {"START", XINPUT_GAMEPAD_START},
+            {"L3", XINPUT_GAMEPAD_LEFT_THUMB}, {"R3", XINPUT_GAMEPAD_RIGHT_THUMB},
+            {"DPAD_UP", XINPUT_GAMEPAD_DPAD_UP}, {"DPAD_DOWN", XINPUT_GAMEPAD_DPAD_DOWN},
+            {"DPAD_LEFT", XINPUT_GAMEPAD_DPAD_LEFT}, {"DPAD_RIGHT", XINPUT_GAMEPAD_DPAD_RIGHT},
+            // Virtual trigger pseudo-bits (outside wButtons range to avoid collision)
+            {"LT", 0x10000}, {"RT", 0x20000}
+        };
+        auto it = map.find(u);
+        if (it != map.end()) return it->second;
+        return -1;
+    }
+
+    std::string GetGamepadButtonName(int mask) {
+        if (mask < 0) return "-1"; // disabled
+        // Recognize pseudo trigger bits first
+        if (mask == 0x10000) return "LT";
+        if (mask == 0x20000) return "RT";
+        switch(mask) {
+            case XINPUT_GAMEPAD_A: return "A";
+            case XINPUT_GAMEPAD_B: return "B";
+            case XINPUT_GAMEPAD_X: return "X";
+            case XINPUT_GAMEPAD_Y: return "Y";
+            case XINPUT_GAMEPAD_LEFT_SHOULDER: return "LB";
+            case XINPUT_GAMEPAD_RIGHT_SHOULDER: return "RB";
+            case XINPUT_GAMEPAD_BACK: return "BACK";
+            case XINPUT_GAMEPAD_START: return "START";
+            case XINPUT_GAMEPAD_LEFT_THUMB: return "L3";
+            case XINPUT_GAMEPAD_RIGHT_THUMB: return "R3";
+            case XINPUT_GAMEPAD_DPAD_UP: return "DPAD_UP";
+            case XINPUT_GAMEPAD_DPAD_DOWN: return "DPAD_DOWN";
+            case XINPUT_GAMEPAD_DPAD_LEFT: return "DPAD_LEFT";
+            case XINPUT_GAMEPAD_DPAD_RIGHT: return "DPAD_RIGHT";
+            default: {
+                std::ostringstream oss; oss << "0x" << std::hex << std::uppercase << mask; return oss.str();
+            }
+        }
     }
 
     // Very simple INI parser to populate iniData from file

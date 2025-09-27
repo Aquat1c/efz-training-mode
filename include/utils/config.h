@@ -44,6 +44,17 @@ namespace Config {
         int uiAcceptKey;        // Apply changes
         int uiRefreshKey;       // Refresh values
         int uiExitKey;          // Close menu
+
+        // Gamepad binding settings (XInput button bitmasks; -1 = disabled)
+        int gpTeleportButton;       // Default: XINPUT_GAMEPAD_BACK
+        int gpSavePositionButton;   // Default: XINPUT_GAMEPAD_LEFT_THUMB
+        int gpSwitchPlayersButton;  // Default: XINPUT_GAMEPAD_RIGHT_SHOULDER
+        int gpSwapPositionsButton;  // Default: XINPUT_GAMEPAD_Y
+        int gpMacroRecordButton;    // Default: XINPUT_GAMEPAD_X
+        int gpMacroPlayButton;      // Default: XINPUT_GAMEPAD_A
+        int gpMacroSlotButton;      // Default: XINPUT_GAMEPAD_B
+        int gpToggleMenuButton;     // Default: XINPUT_GAMEPAD_START
+        int gpToggleImGuiButton;    // Default: -1 (disabled)
     };
     
     // Initialize configuration system
@@ -70,6 +81,8 @@ namespace Config {
     // Helper methods
     int ParseKeyValue(const std::string& value);
     std::string GetKeyName(int keyCode);
+    int ParseGamepadButton(const std::string& value); // parse textual/hex controller button
+    std::string GetGamepadButtonName(int mask);       // friendly name for controller button
     
     // Get the current working directory
     std::string GetCurrentWorkingDirectory();

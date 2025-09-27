@@ -38,6 +38,14 @@ namespace {
         std::vector<uint16_t> bufCountsPerTick;
         // Snapshot of the engine's buffer index each 64 Hz recorder tick
         std::vector<uint16_t> bufIndexPerTick;
+        // Optional diagnostics: reason code per tick (U=unfrozen frameDiv, B=frozen buf advance, S=frozen step, X=frozen both)
+        std::vector<char> tickReason;
+        // Raw immediate mask sampled at start of each recorder tick BEFORE any merging / union logic.
+        std::vector<uint8_t> immPerTick;
+        // Latest buffer entry value (ring[idx-1]) as observed this tick BEFORE any synthetic write insertion.
+        std::vector<uint8_t> bufLatestPerTick;
+        // Optional: full snapshot of the entire input buffer ring each tick (heavy, gated by constant below).
+        std::vector<std::vector<uint8_t>> fullBufferSnapshots;
         uint16_t bufStartIdx = 0; // buffer index at recording start
         uint16_t bufEndIdx = 0;   // buffer index at recording end
         bool hasData = false;
@@ -61,6 +69,7 @@ namespace {
     int s_recLastBuf = 0;      // last buffer mask captured
     int s_recPrevBufIdx = -1;  // previous observed circular buffer index
     int s_recLastFacing = 0;   // -1 left, +1 right, 0 unknown
+    char s_recLastReason = '?'; // reason code for current span
     size_t s_playIndex = 0;    // index into spans
     int s_playSpanRemaining = 0;
     // Stream playback cursor (EfzRevival-style byte-per-frame macro buffer)
@@ -82,12 +91,41 @@ namespace {
 
     // Progress pacing: we step at the 64 Hz ImmediateInput cadence by counting internal frames (192 Hz)
     int s_frameDiv = 0; // 0..2 cycles; advance when hits 0
+    // Diagnostics: detect abnormal cycle lengths (should always be 3 calls between div0 events if Tick called once per internal frame)
+    static int s_callsSinceDiv0 = 0;
+    static bool s_firstDiv0Seen = false;
 
-    // Gamespeed probe (0 = frozen). Uses PauseIntegration's gamespeed reader.
+    // Gating constants for heavy diagnostics
+    constexpr bool kEnableFullBufferSnapshots = true; // set false if memory/log size becomes an issue
+
+    // Unified freeze detector for macro timing.
+    // Treat as frozen when:
+    //  * Not in Match phase (avoid progressing during intros / menus)
+    //  * Practice pause flag is set
+    //  * Gamespeed byte is 0 (engine globally frozen)
+    // We intentionally do NOT require both pause flag and gamespeed=0 because
+    // some pause paths (official toggle) may leave gamespeed non‑zero while a
+    // patch-based or flag-only pause is active, and vice versa for emergency
+    // gamespeed freezes without the flag. Macros should stall in all of those.
     bool ReadGamespeedFrozen() {
-        // Outside of a live match, treat as frozen to avoid progressing.
-        if (GetCurrentGamePhase() != GamePhase::Match) return true;
-        return PauseIntegration::IsGameSpeedFrozen();
+        const GamePhase phase = GetCurrentGamePhase();
+        bool phaseFrozen = (phase != GamePhase::Match);
+        bool pauseFlag  = PauseIntegration::IsPracticePaused();
+        bool speedFrozen = PauseIntegration::IsGameSpeedFrozen();
+        bool frozen = phaseFrozen || pauseFlag || speedFrozen;
+        // One-shot transition log (helps verify correctness without log spam)
+        static bool s_lastFrozen = frozen;
+        if (frozen != s_lastFrozen) {
+            std::ostringstream oss;
+            oss << "[MACRO][FRZ] " << (frozen ? "ENTER" : "EXIT")
+                << " freeze phase=" << (int)phase
+                << " phaseFrozen=" << (phaseFrozen?1:0)
+                << " practicePause=" << (pauseFlag?1:0)
+                << " gamespeedFrozen=" << (speedFrozen?1:0);
+            LogOut(oss.str(), true);
+            s_lastFrozen = frozen;
+        }
+        return frozen;
     }
 
     inline int ClampSlot(int s){ if (s < 1) return 1; if (s > kMaxSlots) return kMaxSlots; return s; }
@@ -159,6 +197,25 @@ namespace {
         if (count > 0) {
             LogOut(line.str(), true);
         }
+    }
+
+    static void LogTickReasons(const char* phase, int slot, const std::vector<char>& reasons) {
+        std::ostringstream line;
+        line << "[MACRO][DUMP] slot=" << slot << " " << phase << " tickReason (" << reasons.size() << "):";
+        LogOut(line.str(), true);
+        line.str(""); line.clear();
+        size_t perLine = 64; size_t count = 0;
+        for (size_t i = 0; i < reasons.size(); ++i) {
+            if (count == 0) line << "[MACRO][DUMP]   ";
+            line << reasons[i];
+            if (i + 1 < reasons.size()) line << ' ';
+            if (++count >= perLine) {
+                LogOut(line.str(), true);
+                line.str(""); line.clear();
+                count = 0;
+            }
+        }
+        if (count > 0) LogOut(line.str(), true);
     }
 
     static void LogPerTickOverview(int slot, const char* phase, const std::vector<uint8_t>& macroStream,
@@ -337,7 +394,27 @@ namespace {
         LogVectorHex("bufStream", slotNum, "rec-finish", s_slots[slotIdx].bufStream);
         LogVectorU16("bufCountsPerTick", slotNum, "rec-finish", s_slots[slotIdx].bufCountsPerTick);
         LogVectorU16("bufIndexPerTick", slotNum, "rec-finish", s_slots[slotIdx].bufIndexPerTick);
+                LogTickReasons("rec-finish", slotNum, s_slots[slotIdx].tickReason);
         LogPerTickOverview(slotNum, "rec-finish", s_slots[slotIdx].macroStream, s_slots[slotIdx].bufCountsPerTick, s_slots[slotIdx].bufIndexPerTick);
+        LogVectorHex("immPerTick(raw)", slotNum, "rec-finish", s_slots[slotIdx].immPerTick);
+        LogVectorHex("bufLatestPerTick", slotNum, "rec-finish", s_slots[slotIdx].bufLatestPerTick);
+        if (kEnableFullBufferSnapshots) {
+            std::ostringstream ss; ss << "[MACRO][DUMP] slot=" << slotNum << " rec-finish fullBufferSnapshots count=" << s_slots[slotIdx].fullBufferSnapshots.size() << " (each=" << (int)INPUT_BUFFER_SIZE << ")"; LogOut(ss.str(), true);
+            // To avoid massive spam, dump only first and last snapshot (if distinct)
+            if (!s_slots[slotIdx].fullBufferSnapshots.empty()) {
+                auto dumpSnap = [&](size_t i, const char* tag){
+                    const auto &snap = s_slots[slotIdx].fullBufferSnapshots[i];
+                    std::ostringstream hdr; hdr << "[MACRO][DUMP]   snapshot[" << i << "](" << tag << "):"; LogOut(hdr.str(), true);
+                    std::ostringstream line; size_t count=0; for (size_t b=0;b<snap.size();++b){ if(count==0){ line<<"[MACRO][DUMP]     "; }
+                        line<< std::hex << std::uppercase << std::setfill('0') << std::setw(2) << (int)snap[b]; if (b+1<snap.size()) line<<' ';
+                        if(++count>=32){ LogOut(line.str(), true); line.str(""); line.clear(); count=0; }
+                    }
+                    if(count>0) LogOut(line.str(), true);
+                };
+                dumpSnap(0, "first");
+                if (s_slots[slotIdx].fullBufferSnapshots.size() > 1) dumpSnap(s_slots[slotIdx].fullBufferSnapshots.size()-1, "last");
+            }
+        }
       }
         s_state.store(MacroController::State::Idle);
     // Restore P2 control if we overrode it during pre-record
@@ -403,14 +480,25 @@ void Tick() {
     if (GetCurrentGamePhase() != GamePhase::Match || !AreCharactersInitialized()) return;
 
     // Pace counter for 64 Hz logical ticks using 192 Hz internal frames
-    if (++s_frameDiv >= 3) s_frameDiv = 0;
+    if (++s_frameDiv >= 3) {
+        s_frameDiv = 0;
+        if (s_firstDiv0Seen) {
+            if (s_callsSinceDiv0 != 3) {
+                LogOut("[MACRO][DIAG] frameDiv cycleLen=" + std::to_string(s_callsSinceDiv0) + " (expected 3) -- possible double Tick invocation", true);
+            }
+        } else {
+            s_firstDiv0Seen = true;
+        }
+        s_callsSinceDiv0 = 0;
+    }
+    ++s_callsSinceDiv0;
 
     State st = s_state.load();
     if (st == State::Recording) {
         // Frame-step aware progression:
         // - When not frozen: advance every 3rd internal frame (approx 64 Hz).
         // - When frozen (paused): only advance when P2's input buffer index has advanced (indicates a stepped frame).
-        const bool frozen = ReadGamespeedFrozen();
+    const bool frozen = ReadGamespeedFrozen();
         // Probe current buffer index once up front to decide whether to progress while frozen
         uint16_t idxProbe = 0; bool haveIdx = false; bool bufAdvanced = false;
         {
@@ -420,19 +508,38 @@ void Tick() {
                 if (s_recPrevBufIdx >= 0 && (uint16_t)s_recPrevBufIdx != idxProbe) bufAdvanced = true;
             }
         }
+        // Frame-step counter (practice step advance) – captures a manual single-frame advance even if
+        // the input buffer ring did not write a new entry (e.g. pure neutral frame).
+        bool stepAdvanced = false;
+        if (frozen) {
+            stepAdvanced = PauseIntegration::ConsumeStepAdvance();
+        }
         bool shouldAdvance = false;
         if (!frozen) {
             shouldAdvance = (s_frameDiv == 0);
         } else {
-            // When frozen, only advance on observed buffer movement (frame-step)
-            shouldAdvance = bufAdvanced;
+            // When frozen (paused), advance if either the buffer index moved OR a step counter increment occurred.
+            // This preserves neutral delay frames during frame stepping that previously were dropped when the
+            // engine skipped writing a redundant neutral buffer entry.
+            shouldAdvance = (bufAdvanced || stepAdvanced);
+            if (shouldAdvance && stepAdvanced && !bufAdvanced) {
+                LogOut("[MACRO][REC] step-advance tick (no buffer write)", true);
+            }
         }
         if (!shouldAdvance) return;
+        char reasonCode='?';
+        if (!frozen) reasonCode='U';
+        else if (bufAdvanced && stepAdvanced) reasonCode='X';
+        else if (bufAdvanced) reasonCode='B';
+        else if (stepAdvanced) reasonCode='S';
         // If buffer-freeze is active for P2, avoid progressing to keep streams aligned
         if (g_bufferFreezingActive.load() && (g_activeFreezePlayer.load() == 2 || g_activeFreezePlayer.load() == 0)) return;
         uint8_t immMask = ReadRecordSourceMask();
+        uint8_t immMaskRaw = immMask; // preserve original before any merging
         int facing = ReadFacingSign(2);
         uint8_t buf  = 0;
+        bool noWritesThisTick = false; // track if engine produced zero buffer writes (pre-synthesis)
+        uint8_t latestBufValPreSynth = ReadP2BufferLatestMask();
         // Capture all new buffer entries since last tick
         {
             uintptr_t p2Ptr = GetPlayerPointer(2);
@@ -462,10 +569,23 @@ void Tick() {
                         immMask = (uint8_t)((immMask & (GAME_INPUT_UP | GAME_INPUT_DOWN | GAME_INPUT_LEFT | GAME_INPUT_RIGHT))
                                   | (immButtons | addedBtnUnion));
                     }
+                } else {
+                    noWritesThisTick = true;
                 }
             }
         }
         if (buf == 0) buf = ReadP2BufferLatestMask();
+        // If we advanced due to a frame-step (no buffer writes, likely neutral delay) and the immediate
+        // differs from the last recorded mask, treat immediate as authoritative for this logical tick.
+        // This prevents neutral delays being merged into the prior action span because the last buffer
+        // entry still held previous button bits.
+        if (noWritesThisTick) {
+            // Compare against last recorded span mask (s_recLastMask) only if we already have progress.
+            uint8_t lastMask = (s_recSpanTicks > 0) ? (uint8_t)(s_recLastMask & 0xFF) : 0xFF; // 0xFF sentinel so first span always sets
+            if (s_recSpanTicks == 0 || immMask != lastMask) {
+                buf = immMask; // override with immediate state to create/extend proper neutral span
+            }
+        }
         // Combine: use buffer's directional bits (authoritative) + union of buffer/immediate button bits (A-D)
         const uint8_t DIR_MASK = (GAME_INPUT_UP | GAME_INPUT_DOWN | GAME_INPUT_LEFT | GAME_INPUT_RIGHT); // 0x0F
         const uint8_t BTN_MASK = (GAME_INPUT_A | GAME_INPUT_B | GAME_INPUT_C | GAME_INPUT_D);            // 0xF0
@@ -476,10 +596,43 @@ void Tick() {
         {
             int slotIdx = ClampSlot(s_curSlot.load()) - 1;
             s_slots[slotIdx].macroStream.push_back(mask);
+            if (s_slots[slotIdx].tickReason.size() < s_slots[slotIdx].macroStream.size()) {
+                s_slots[slotIdx].tickReason.push_back(reasonCode);
+            }
+            // Per-tick raw immediate & latest buffer (pre-synthetic) capture
+            s_slots[slotIdx].immPerTick.push_back(immMaskRaw);
+            s_slots[slotIdx].bufLatestPerTick.push_back(latestBufValPreSynth);
+            if (kEnableFullBufferSnapshots) {
+                uintptr_t p2PtrSnap = GetPlayerPointer(2);
+                std::vector<uint8_t> snap;
+                if (p2PtrSnap) {
+                    snap.resize(INPUT_BUFFER_SIZE, 0);
+                    for (size_t bi = 0; bi < snap.size(); ++bi) {
+                        uint8_t v=0; SafeReadMemory(p2PtrSnap + INPUT_BUFFER_OFFSET + (uintptr_t)bi, &v, sizeof(v)); snap[bi]=v;
+                    }
+                }
+                s_slots[slotIdx].fullBufferSnapshots.push_back(std::move(snap));
+            }
+        }
+        // Ensure we "capture the buffer" every recorder tick: if the engine produced
+        // zero new raw buffer writes this tick (common for neutral frame-steps), synthesize
+        // one entry so playback can reproduce a per-tick buffer cadence and precise delays.
+        {
+            int slotIdx = ClampSlot(s_curSlot.load()) - 1;
+            if (!s_slots[slotIdx].bufCountsPerTick.empty() && s_slots[slotIdx].bufCountsPerTick.back() == 0) {
+                s_slots[slotIdx].bufStream.push_back(mask); // synthetic neutral/held state
+                s_slots[slotIdx].bufCountsPerTick.back() = 1;
+                buf = mask; // treat buffer value as this synthetic entry for span comparison logic
+                LogOut(std::string("[MACRO][REC] synthetic-buf write (neutral tick) reason=") + reasonCode, true);
+            }
         }
         if (s_recSpanTicks == 0) {
-            s_recLastMask = mask; s_recLastBuf = mask; s_recLastFacing = facing; s_recSpanTicks = 1;
+            s_recLastMask = mask; s_recLastBuf = mask; s_recLastFacing = facing; s_recSpanTicks = 1; s_recLastReason = reasonCode;
         } else if (mask == s_recLastMask && buf == s_recLastBuf && facing == s_recLastFacing) {
+            // Merge regardless of reason; if provenance differs mark as Mixed 'M'. This allows
+            // a contiguous neutral delay built from step (S) and unfrozen (U) ticks to compress into
+            // a single span length, restoring the expected large delay counts (e.g. 24).
+            if (s_recLastReason != reasonCode) s_recLastReason = 'M';
             s_recSpanTicks++;
         } else {
             int slotIdx = ClampSlot(s_curSlot.load()) - 1;
@@ -489,8 +642,8 @@ void Tick() {
             LogOut(std::string("[MACRO][REC] span imm=0x") + ToHexString((int)(s_recLastMask & 0xFF), 2) +
                    " (" + MaskToButtons((Mask)(s_recLastMask & 0xFF)) + ") buf=0x" + ToHexString((int)(s_recLastBuf & 0xFF), 2) +
                    " (" + MaskToButtons((Mask)(s_recLastBuf & 0xFF)) + ") ticks=" + std::to_string(s_recSpanTicks) +
-                   " facing=" + std::to_string(s_recLastFacing), true);
-            s_recLastMask = mask; s_recLastBuf = mask; s_recLastFacing = facing; s_recSpanTicks = 1;
+                   " facing=" + std::to_string(s_recLastFacing) + " reason=" + s_recLastReason, true);
+            s_recLastMask = mask; s_recLastBuf = mask; s_recLastFacing = facing; s_recSpanTicks = 1; s_recLastReason = reasonCode;
         }
     } else if (st == State::Replaying) {
         // Replay runs every internal frame to better match engine read cadence
@@ -680,6 +833,10 @@ void ToggleRecord() {
             s_slots[slotIdx].bufStream.clear();
             s_slots[slotIdx].bufCountsPerTick.clear();
             s_slots[slotIdx].bufIndexPerTick.clear();
+            s_slots[slotIdx].tickReason.clear();
+            s_slots[slotIdx].immPerTick.clear();
+            s_slots[slotIdx].bufLatestPerTick.clear();
+            s_slots[slotIdx].fullBufferSnapshots.clear();
             s_slots[slotIdx].bufStartIdx = 0;
             s_slots[slotIdx].bufEndIdx = 0;
             s_recLastMask = 0; s_recSpanTicks = 0; s_frameDiv = 0;
