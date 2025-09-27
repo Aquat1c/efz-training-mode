@@ -32,6 +32,12 @@
 #define EFZREV_RVA_TOGGLE_PAUSE 0x0075720
 #endif
 
+// Battle screen render (thiscall battleContext) – we hook this to capture battleContext
+// Name in decompile: renderBattleScreen, original label sub_7642A0
+#ifndef EFZ_RVA_RENDER_BATTLE_SCREEN
+#define EFZ_RVA_RENDER_BATTLE_SCREEN 0x007642A0
+#endif
+
 // Central patch toggler context/function (used internally by EfzRevival)
 #ifndef EFZREV_RVA_PATCH_TOGGLER
 #define EFZREV_RVA_PATCH_TOGGLER 0x006B2A0

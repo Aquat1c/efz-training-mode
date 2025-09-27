@@ -22,4 +22,12 @@ namespace PauseIntegration {
     bool IsPracticePaused();
     bool IsGameSpeedFrozen();
     bool IsPausedOrFrozen();
+
+    // Frame-step support:
+    // Exposes the Practice step counter (+0xB0) which increments each single-frame advance while paused.
+    // Returns true if we could read the counter; outCounter unchanged on failure.
+    bool ReadStepCounter(uint32_t &outCounter);
+    // Returns true if (a) paused and (b) the internal step counter advanced since last call to this function.
+    // Safe to call every tick; internally debounces using a static snapshot.
+    bool ConsumeStepAdvance();
 }

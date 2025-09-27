@@ -672,18 +672,18 @@ namespace ImGuiGui {
         const Config::Settings& cfg = Config::GetSettings();
 
         ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.0f, 1.0f), "Core Hotkeys:");
-    ImGui::BulletText("Open/Close Menu: 3/%s (Gamepad: START)", GetKeyName(cfg.toggleImGuiKey).c_str());
-    ImGui::BulletText("Load Position: %s (Gamepad: BACK)", GetKeyName(cfg.teleportKey).c_str());
-    ImGui::BulletText("Save Position: %s (Gamepad: L3)", GetKeyName(cfg.recordKey).c_str());
+    ImGui::BulletText("Open/Close Menu: 3/%s (Gamepad: %s)", GetKeyName(cfg.toggleImGuiKey).c_str(), Config::GetGamepadButtonName(cfg.gpToggleMenuButton).c_str());
+    ImGui::BulletText("Load Position: %s (Gamepad: %s)", GetKeyName(cfg.teleportKey).c_str(), Config::GetGamepadButtonName(cfg.gpTeleportButton).c_str());
+    ImGui::BulletText("Save Position: %s (Gamepad: %s)", GetKeyName(cfg.recordKey).c_str(), Config::GetGamepadButtonName(cfg.gpSavePositionButton).c_str());
     ImGui::BulletText("Toggle Stats Display: %s", GetKeyName(cfg.toggleTitleKey).c_str());
         //ImGui::BulletText("Reset Frame Counter: %s", GetKeyName(cfg.resetFrameCounterKey).c_str());
         //ImGui::BulletText("Show This Help Screen: %s", GetKeyName(cfg.helpKey).c_str());
 
         ImGui::Separator();
-    ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.0f, 1.0f), "Positioning Hotkeys (Hold Load: Keyboard=%s, Gamepad=BACK, A/B/C/D = your attack keys):", GetKeyName(cfg.teleportKey).c_str());
-    ImGui::BulletText("Center Players: %s + DOWN (Gamepad: BACK + D-PAD DOWN)", GetKeyName(cfg.teleportKey).c_str());
-    ImGui::BulletText("Players to Left Corner: %s + LEFT (Gamepad: BACK + D-PAD LEFT)", GetKeyName(cfg.teleportKey).c_str());
-    ImGui::BulletText("Players to Right Corner: %s + RIGHT (Gamepad: BACK + D-PAD RIGHT)", GetKeyName(cfg.teleportKey).c_str());
+    ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.0f, 1.0f), "Positioning Hotkeys (Hold Load: Keyboard=%s, Gamepad=%s, A/B/C/D = your attack keys):", GetKeyName(cfg.teleportKey).c_str(), Config::GetGamepadButtonName(cfg.gpTeleportButton).c_str());
+    ImGui::BulletText("Center Players: %s + DOWN (Gamepad: %s + D-PAD DOWN)", GetKeyName(cfg.teleportKey).c_str(), Config::GetGamepadButtonName(cfg.gpTeleportButton).c_str());
+    ImGui::BulletText("Players to Left Corner: %s + LEFT (Gamepad: %s + D-PAD LEFT)", GetKeyName(cfg.teleportKey).c_str(), Config::GetGamepadButtonName(cfg.gpTeleportButton).c_str());
+    ImGui::BulletText("Players to Right Corner: %s + RIGHT (Gamepad: %s + D-PAD RIGHT)", GetKeyName(cfg.teleportKey).c_str(), Config::GetGamepadButtonName(cfg.gpTeleportButton).c_str());
     ImGui::BulletText("Round Start Positions: %s + DOWN + A (keyboard only)", GetKeyName(cfg.teleportKey).c_str());
     ImGui::BulletText("Swap Player Positions: %s + D (keyboard only)", GetKeyName(cfg.teleportKey).c_str());
 

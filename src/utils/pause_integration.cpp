@@ -1,4 +1,4 @@
-#include "../include/utils/pause_integration.h"
+#include "../../include/utils/pause_integration.h"
 #include "../include/core/logger.h"
 #include "../include/game/game_state.h"
 #include "../include/utils/utilities.h" // FindEFZWindow
@@ -14,13 +14,20 @@
 #include <sstream>
 
 namespace {
-    std::atomic<bool> s_menuPausedByUs{false};
+    // === State tracking ===
     std::atomic<bool> s_menuVisible{false};
-    std::atomic<bool> s_hookInstalled{false};
     std::atomic<void*> s_practicePtr{nullptr};
-    // Gamespeed fallback (0 = freeze, 3 = normal). Resolved from efz.exe+0x39010C -> [ptr] + 0xF7FF8
-    std::atomic<uintptr_t> s_gamespeedAddr{0};
-    std::atomic<bool> s_speedPausedByUs{false};
+    std::atomic<bool> s_practiceHooksInstalled{false};
+
+    // Official pause ownership: did WE invoke the real toggle (sub_10075720) when opening the menu?
+    std::atomic<bool> s_weUsedOfficialToggle{false};
+    // Fallback ownership (only used if official path fails): did we manually assert pause flag & patch freeze?
+    std::atomic<bool> s_weForcedFlagPause{false};
+    std::atomic<bool> s_weAppliedPatchFreeze{false};
+
+    // Gamespeed emergency fallback (should rarely trigger – only if neither official nor flag+patch succeeds)
+    std::atomic<void*> s_battleContext{nullptr};
+    std::atomic<bool> s_weFrozeGamespeed{false};
     std::atomic<uint8_t> s_prevGamespeed{3};
     
     bool IsEfzRevivalLoaded() {
@@ -60,278 +67,219 @@ namespace {
     }
 
     void EnsurePracticePtrHookInstalled() {
-        // First, attempt static resolution to avoid depending on Pause or Tick timing
-        void* resolved = nullptr;
-        if (!s_practicePtr.load() && TryResolvePracticePtrFromModeArray(resolved)) {
-            s_practicePtr.store(resolved, std::memory_order_relaxed);
-            LogOut("[PAUSE] Resolved Practice pointer from mode array (no hooks)", true);
-        }
-        if (s_hookInstalled.load()) return;
-        HMODULE hRev = GetModuleHandleA("EfzRevival.dll");
-        if (!hRev) return;
-        void* tickTarget = EFZ_RVA_TO_VA(hRev, EFZREV_RVA_PRACTICE_TICK);
-        if (!tickTarget) return;
-        if (MH_CreateHook(tickTarget, &HookedPracticeTick, reinterpret_cast<void**>(&oPracticeTick)) != MH_OK) {
-            LogOut("[PAUSE] Failed to create PracticeTick hook (pointer capture)", true);
-            return;
-        }
-        if (MH_EnableHook(tickTarget) != MH_OK) {
-            LogOut("[PAUSE] Failed to enable PracticeTick hook (pointer capture)", true);
-            // Best-effort cleanup
-            MH_RemoveHook(tickTarget);
-            return;
-        }
-        // Install secondary capture at Pause toggle (sub_10075720) to catch ECX when user toggles pause via hotkey
-        void* pauseTarget = EFZ_RVA_TO_VA(hRev, EFZREV_RVA_TOGGLE_PAUSE);
-        if (pauseTarget) {
-            if (MH_CreateHook(pauseTarget, &HookedTogglePause, reinterpret_cast<void**>(&oTogglePause)) != MH_OK) {
-                LogOut("[PAUSE] Failed to create TogglePause hook (pointer capture)", true);
-            } else if (MH_EnableHook(pauseTarget) != MH_OK) {
-                LogOut("[PAUSE] Failed to enable TogglePause hook (pointer capture)", true);
-                MH_RemoveHook(pauseTarget);
-            } else {
-                LogOut("[PAUSE] TogglePause hook installed (secondary capture)", true);
+        // Attempt direct resolution first (fast path, no hooks needed once valid)
+        if (!s_practicePtr.load()) {
+            void* resolved = nullptr;
+            if (TryResolvePracticePtrFromModeArray(resolved)) {
+                s_practicePtr.store(resolved, std::memory_order_relaxed);
+                LogOut("[PAUSE] Practice ptr resolved via mode array", true);
             }
         }
-        s_hookInstalled.store(true);
-        LogOut("[PAUSE] PracticeTick hook installed (capturing Practice controller pointer)", true);
+        if (s_practiceHooksInstalled.load()) return;
+        HMODULE hRev = GetModuleHandleA("EfzRevival.dll");
+        if (!hRev) return; // wait for injection
+        void* tickTarget  = EFZ_RVA_TO_VA(hRev, EFZREV_RVA_PRACTICE_TICK);
+        void* pauseTarget = EFZ_RVA_TO_VA(hRev, EFZREV_RVA_TOGGLE_PAUSE);
+        bool anyHook = false;
+        if (tickTarget && MH_CreateHook(tickTarget, &HookedPracticeTick, reinterpret_cast<void**>(&oPracticeTick)) == MH_OK && MH_EnableHook(tickTarget) == MH_OK) {
+            anyHook = true; LogOut("[PAUSE] PracticeTick hook active", true);
+        }
+        if (pauseTarget && MH_CreateHook(pauseTarget, &HookedTogglePause, reinterpret_cast<void**>(&oTogglePause)) == MH_OK && MH_EnableHook(pauseTarget) == MH_OK) {
+            anyHook = true; LogOut("[PAUSE] TogglePause hook active", true);
+        }
+        if (anyHook) s_practiceHooksInstalled.store(true);
     }
 
-    // Helpers to read/write the Practice pause flag safely
+    // Practice pause flag helpers (flag semantics: 1 = paused, 0 = running)
     bool ReadPracticePauseFlag(bool &outPaused) {
-        void* p = s_practicePtr.load();
-        if (!p) return false;
-        uint8_t v = 0;
-        if (!SafeReadMemory(reinterpret_cast<uintptr_t>(p) + PRACTICE_OFF_PAUSE_FLAG, &v, sizeof(v))) return false;
-        outPaused = (v != 0);
-        return true;
+        void* p = s_practicePtr.load(); if (!p) return false;
+        uint8_t v = 0; if (!SafeReadMemory(reinterpret_cast<uintptr_t>(p) + PRACTICE_OFF_PAUSE_FLAG, &v, sizeof(v))) return false;
+        outPaused = (v != 0); return true;
     }
     bool WritePracticePauseFlag(bool paused) {
-        void* p = s_practicePtr.load();
-        if (!p) return false;
-        uint8_t v = paused ? 1u : 0u;
-        return SafeWriteMemory(reinterpret_cast<uintptr_t>(p) + PRACTICE_OFF_PAUSE_FLAG, &v, sizeof(v));
+        void* p = s_practicePtr.load(); if (!p) return false;
+        uint8_t v = paused ? 1u : 0u; return SafeWriteMemory(reinterpret_cast<uintptr_t>(p) + PRACTICE_OFF_PAUSE_FLAG, &v, sizeof(v));
     }
 
-    // Resolve and access the global gamespeed byte using the pointer chain provided.
-    // Address chain: efz.exe + 0x39010C -> [basePtr] + 0xF7FF8 yields a BYTE: 0 = freeze, 3 = normal.
-    bool ResolveGamespeedAddress(uintptr_t &outAddr) {
-        uintptr_t cached = s_gamespeedAddr.load();
-        if (cached) { outAddr = cached; return true; }
-        // Use the host executable base (NULL) for reliability
-        HMODULE hEfz = GetModuleHandleA(NULL);
-        if (!hEfz) return false;
-        uintptr_t base = reinterpret_cast<uintptr_t>(hEfz);
-        uintptr_t ptrLoc = base + 0x39010C;
-        uint32_t basePtr = 0;
-        if (!SafeReadMemory(ptrLoc, &basePtr, sizeof(basePtr)) || !basePtr) return false;
-
-        // Two observed candidates differ by 0x18: +0xF7FF8 (older) vs +0xF7FE0 (earlier).
-        uintptr_t addr1 = static_cast<uintptr_t>(basePtr) + 0xF7FF8; // our previous
-        uintptr_t addr2 = static_cast<uintptr_t>(basePtr) + 0xF7FE0; // reported correct
-        uint8_t v1 = 0, v2 = 0; bool ok1 = SafeReadMemory(addr1, &v1, sizeof(v1)); bool ok2 = SafeReadMemory(addr2, &v2, sizeof(v2));
-
-        // Choose the address whose value looks like a valid speed (0..3). Prefer addr2 if both are plausible.
-        auto isPlausible = [](uint8_t v){ return v <= 3; };
-        uintptr_t chosen = 0; uint8_t chosenVal = 0;
-        if (ok1 && ok2) {
-            if (isPlausible(v2)) { chosen = addr2; chosenVal = v2; }
-            else if (isPlausible(v1)) { chosen = addr1; chosenVal = v1; }
-            else { chosen = addr2; chosenVal = v2; }
-        } else if (ok2) {
-            chosen = addr2; chosenVal = v2;
-        } else if (ok1) {
-            chosen = addr1; chosenVal = v1;
-        } else {
-            return false;
-        }
-
-        s_gamespeedAddr.store(chosen);
-        outAddr = chosen;
-        {
-            std::ostringstream oss; oss << "[PAUSE] Resolved gamespeed candidates: base=0x" << std::hex << base
-                << ", ptrLoc=0x" << (base + 0x39010C) << ", basePtr=0x" << static_cast<uintptr_t>(basePtr)
-                << ", addr1(+0xF7FF8)=0x" << addr1 << " val=" << std::dec << (ok1 ? (int)v1 : -1)
-                << ", addr2(+0xF7FE0)=0x" << std::hex << addr2 << " val=" << std::dec << (ok2 ? (int)v2 : -1)
-                << ", chosen=0x" << std::hex << chosen << " (val=" << std::dec << (int)chosenVal << ")";
-            LogOut(oss.str(), true);
-        }
-        return true;
+    // Hook battle screen render to capture battleContext pointer.
+    typedef BOOL (__thiscall *tRenderBattleScreen)(void* battleContext);
+    static tRenderBattleScreen oRenderBattleScreen = nullptr;
+    static BOOL __fastcall HookedRenderBattleScreen(void* battleContext, void* /*edx*/) {
+        if (battleContext) s_battleContext.store(battleContext, std::memory_order_relaxed);
+        return oRenderBattleScreen ? oRenderBattleScreen(battleContext) : FALSE;
     }
+
+    void EnsureBattleContextHook() {
+        static std::atomic<bool> installed{false};
+        if (installed.load()) return;
+        HMODULE hRev = GetModuleHandleA("EfzRevival.dll");
+        if (!hRev) return; // wait until injected
+        void* target = EFZ_RVA_TO_VA(hRev, EFZ_RVA_RENDER_BATTLE_SCREEN);
+        if (!target) return;
+        if (MH_CreateHook(target, &HookedRenderBattleScreen, reinterpret_cast<void**>(&oRenderBattleScreen)) != MH_OK) {
+            LogOut("[PAUSE] Failed to create RenderBattleScreen hook (battleContext capture)", true);
+            return;
+        }
+        if (MH_EnableHook(target) != MH_OK) {
+            LogOut("[PAUSE] Failed to enable RenderBattleScreen hook (battleContext capture)", true);
+            MH_RemoveHook(target);
+            return;
+        }
+        installed.store(true);
+        LogOut("[PAUSE] RenderBattleScreen hook installed (capturing battleContext)", true);
+    }
+
+    // Read/write game speed from battleContext + 0x1400
     bool ReadGamespeed(uint8_t &out) {
-        uintptr_t addr = 0; if (!ResolveGamespeedAddress(addr)) return false;
-        return SafeReadMemory(addr, &out, sizeof(out));
+        void* bc = s_battleContext.load();
+        if (!bc) return false;
+        return SafeReadMemory(reinterpret_cast<uintptr_t>(bc) + 0x1400, &out, sizeof(out));
     }
     bool WriteGamespeed(uint8_t v) {
-        uintptr_t addr = 0; if (!ResolveGamespeedAddress(addr)) return false;
+        void* bc = s_battleContext.load();
+        if (!bc) return false;
+        uintptr_t addr = reinterpret_cast<uintptr_t>(bc) + 0x1400;
         bool ok = SafeWriteMemory(addr, &v, sizeof(v));
-        std::ostringstream oss; oss << "[PAUSE] WriteGamespeed at 0x" << std::hex << addr << ": " << std::dec << (int)v << (ok ? " (OK)" : " (FAIL)");
+        std::ostringstream oss; oss << "[PAUSE] WriteGamespeed battleContext+0x1400 at 0x" << std::hex << addr << ": " << std::dec << (int)v << (ok ? " (OK)" : " (FAIL)");
         LogOut(oss.str(), true);
         return ok;
+    }
+
+    // === Patch toggler (sub_1006B2A0) wrapper ===
+    typedef int (__cdecl *tPatchToggle)(void* patchCtx, char enable);
+    tPatchToggle GetPatchToggleFn() {
+        HMODULE hRev = GetModuleHandleA("EfzRevival.dll"); if (!hRev) return nullptr;
+        return reinterpret_cast<tPatchToggle>(EFZ_RVA_TO_VA(hRev, EFZREV_RVA_PATCH_TOGGLER));
+    }
+    void* GetPatchCtxPtr() {
+        HMODULE hRev = GetModuleHandleA("EfzRevival.dll"); if (!hRev) return nullptr;
+        return EFZ_RVA_TO_VA(hRev, EFZREV_RVA_PATCH_CTX);
+    }
+    bool ApplyPatchFreeze(bool freeze) {
+        auto fn = GetPatchToggleFn(); void* ctx = GetPatchCtxPtr(); if (!fn || !ctx) return false;
+        // Engine semantics: enable=0 => apply NOP patches (freeze); enable=1 => restore (run)
+        char enable = freeze ? 0 : 1;
+        __try { fn(ctx, enable); } __except(EXCEPTION_EXECUTE_HANDLER) { return false; }
+        return true;
+    }
+    
+    // Official pause toggle (sub_10075720)
+    typedef int (__thiscall *tOfficialToggle)(void* thisPtr);
+    tOfficialToggle GetOfficialToggleFn() {
+        HMODULE hRev = GetModuleHandleA("EfzRevival.dll"); if (!hRev) return nullptr;
+        return reinterpret_cast<tOfficialToggle>(EFZ_RVA_TO_VA(hRev, EFZREV_RVA_TOGGLE_PAUSE));
+    }
+    bool InvokeOfficialToggle() {
+        void* p = s_practicePtr.load(); if (!p) return false; auto fn = GetOfficialToggleFn(); if (!fn) return false;
+        __try { fn(p); } __except(EXCEPTION_EXECUTE_HANDLER) { return false; }
+        return true;
     }
 }
 
 namespace PauseIntegration {
     void EnsurePracticePointerCapture() { EnsurePracticePtrHookInstalled(); }
     void* GetPracticeControllerPtr() { return s_practicePtr.load(); }
+
+    bool IsPracticePaused() { bool p=false; if (ReadPracticePauseFlag(p)) return p; return false; }
+    bool __cdecl IsGameSpeedFrozen() { uint8_t v=3; if (ReadGamespeed(v)) return v==0; return false; }
+    bool IsPausedOrFrozen() { return IsPracticePaused() || IsGameSpeedFrozen(); }
+
+    // No periodic maintenance required for official path; fallback paths are one-shot.
     void MaintainFreezeWhileMenuVisible() {
-        // If the menu isn't visible, nothing to maintain.
         if (!s_menuVisible.load()) return;
-
-        // 1) Maintain Practice pause flag while visible (if we are in Practice and have the pointer)
-        if (GetCurrentGameMode() == GameMode::Practice) {
-            void* p = s_practicePtr.load();
-            if (p) {
-                bool isPaused = false;
-                if (ReadPracticePauseFlag(isPaused) && !isPaused) {
-                    // Re-assert pause if something cleared it while our menu is open
-                    if (WritePracticePauseFlag(true)) {
-                        LogOut("[PAUSE] Maintain: re-setting Practice pause flag during menu", true);
-                        // Track that pause came from us so we clear on close
-                        s_menuPausedByUs.store(true);
-                    }
-                }
-            }
+        if (s_weFrozeGamespeed.load()) {
+            uint8_t cur=3; if (ReadGamespeed(cur) && cur!=0) WriteGamespeed(0);
         }
-
-        // 2) Maintain gamespeed freeze while in gameplay states
-        if (s_speedPausedByUs.load() && IsInGameplayState()) {
-            uint8_t cur = 3;
-            if (ReadGamespeed(cur) && cur != 0) {
-                // Someone unfroze time; re-freeze to maintain menu pause behavior
-                if (WriteGamespeed(0)) {
-                    LogOut("[PAUSE] Maintain: re-applying gamespeed freeze during menu", true);
-                }
-            }
+        if (s_weForcedFlagPause.load()) {
+            bool p=false; if (ReadPracticePauseFlag(p) && !p) WritePracticePauseFlag(true);
         }
     }
-    bool IsPracticePaused() {
-        bool paused = false;
-        if (ReadPracticePauseFlag(paused)) return paused;
-        return false;
-    }
-    bool IsGameSpeedFrozen() {
-        uint8_t cur = 0;
-        if (ReadGamespeed(cur)) return cur == 0;
-        return false;
-    }
-    bool IsPausedOrFrozen() {
-        // If either the practice flag says paused or the global gamespeed is frozen, treat as paused.
-        // Avoid forcing pointer capture; queries are best-effort.
-        if (IsPracticePaused()) return true;
-        if (IsGameSpeedFrozen()) return true;
-        return false;
-    }
+
     void OnMenuVisibilityChanged(bool visible) {
-        // Prefer Practice-mode pause flag; fall back to gamespeed freeze during active gameplay
-        GameMode mode = GetCurrentGameMode();
-        const bool inGameplay = IsInGameplayState();
-        LogOut(std::string("[PAUSE] Menu toggle: visible=") + (visible ? "1" : "0") + 
-               ", mode=" + GetGameModeName(mode) + 
-               ", gameplay=" + (inGameplay ? "1" : "0"), true);
-
         s_menuVisible.store(visible);
-
-        // Practice pause flag control requires EfzRevival + captured pointer; gamespeed fallback does not.
-        const bool revivalLoaded = IsEfzRevivalLoaded();
-        if (revivalLoaded) {
-            EnsurePracticePtrHookInstalled();
-        }
+        EnsurePracticePtrHookInstalled();
+        GameMode mode = GetCurrentGameMode();
+        const bool inPractice = (mode == GameMode::Practice);
+        const bool revivalLoaded = (GetModuleHandleA("EfzRevival.dll") != nullptr);
+        std::ostringstream log; log << "[PAUSE] Menu=" << (visible?"open":"close") << " practice=" << (inPractice?1:0);
+        LogOut(log.str(), true);
 
         if (visible) {
-            bool frozeSomething = false;
+            // CLEAR previous ownership (defensive) – we re-detect each open.
+            s_weUsedOfficialToggle.store(false);
+            s_weForcedFlagPause.store(false);
+            s_weAppliedPatchFreeze.store(false);
+            s_weFrozeGamespeed.store(false);
 
-            // 1) If we're in Practice, prefer the Practice pause flag
-            if (mode == GameMode::Practice) {
-                if (revivalLoaded && s_practicePtr.load()) {
-                    bool alreadyPaused = false; (void)ReadPracticePauseFlag(alreadyPaused);
-                    if (alreadyPaused) {
-                        LogOut("[PAUSE] Menu opened: Practice already paused; leaving flag unchanged", true);
-                        s_menuPausedByUs.store(false);
-                    } else if (WritePracticePauseFlag(true)) {
-                        {
-                            void* p = s_practicePtr.load();
-                            std::ostringstream oss; oss << "[PAUSE] Menu opened: set Practice pause flag = 1 at 0x" << std::hex << (reinterpret_cast<uintptr_t>(p) + PRACTICE_OFF_PAUSE_FLAG);
-                            LogOut(oss.str(), true);
+            if (revivalLoaded && inPractice && s_practicePtr.load()) {
+                bool alreadyPaused=false; ReadPracticePauseFlag(alreadyPaused);
+                if (!alreadyPaused) {
+                    // Try official toggle
+                    if (InvokeOfficialToggle()) {
+                        bool nowPaused=false; if (ReadPracticePauseFlag(nowPaused) && nowPaused) {
+                            s_weUsedOfficialToggle.store(true);
+                            LogOut("[PAUSE] Official toggle succeeded", true);
+                            return;
                         }
-                        s_menuPausedByUs.store(true);
-                        frozeSomething = true;
+                        LogOut("[PAUSE] Official toggle returned but state not paused; attempting fallback", true);
                     } else {
-                        LogOut("[PAUSE] Menu opened: failed to write Practice pause flag", true);
+                        LogOut("[PAUSE] Official toggle call failed; attempting fallback", true);
                     }
                 } else {
-                    LogOut("[PAUSE] Menu opened: Practice pointer not available; will rely on gamespeed freeze", true);
+                    LogOut("[PAUSE] Already paused before menu; will not auto-unpause", true);
+                    return; // respect external pause
                 }
             }
-
-            // 2) Apply gamespeed freeze in any active match (covers practice fallback and non-practice gameplay)
-            if (inGameplay) {
-                uint8_t curSpeed = 0;
-                if (ReadGamespeed(curSpeed)) {
-                    if (curSpeed != 0) {
-                        s_prevGamespeed.store(curSpeed);
-                        uintptr_t addr=0; ResolveGamespeedAddress(addr);
-                        {
-                            std::ostringstream oss; oss << "[PAUSE] Menu opened: freeze gamespeed at 0x" << std::hex << addr << ", cur=" << std::dec << (int)curSpeed;
-                            LogOut(oss.str(), true);
-                        }
-                        if (WriteGamespeed(0)) {
-                            s_speedPausedByUs.store(true);
-                            frozeSomething = true;
-                        } else {
-                            LogOut("[PAUSE] Menu opened: failed to write gamespeed", true);
-                        }
-                    } else {
-                        LogOut("[PAUSE] Menu opened: gamespeed already 0; leaving as-is", true);
-                        s_speedPausedByUs.store(false);
-                    }
-                } else {
-                    LogOut("[PAUSE] Menu opened: could not resolve gamespeed address", true);
-                }
-            } else {
-                LogOut("[PAUSE] Menu opened: not in gameplay; skipping gamespeed freeze", true);
+            // Fallback 1: direct practice flag + patch freeze (mirrors paused state) if we have ptr & patch toggler
+            bool appliedAny=false;
+            if (revivalLoaded && s_practicePtr.load()) {
+                bool p=false; ReadPracticePauseFlag(p);
+                if (!p && WritePracticePauseFlag(true)) { s_weForcedFlagPause.store(true); appliedAny=true; LogOut("[PAUSE] Fallback: pause flag set", true); }
+                if (ApplyPatchFreeze(true)) { s_weAppliedPatchFreeze.store(true); appliedAny=true; LogOut("[PAUSE] Fallback: patch freeze applied", true); }
             }
-
-            if (!frozeSomething) {
-                LogOut("[PAUSE] Menu opened: no freeze applied (state already paused or not applicable)", true);
+            // Fallback 2: brute gamespeed (last resort)
+            if (!appliedAny) {
+                uint8_t cur=3; if (ReadGamespeed(cur) && cur!=0) { s_prevGamespeed.store(cur); if (WriteGamespeed(0)) { s_weFrozeGamespeed.store(true); LogOut("[PAUSE] Emergency fallback: gamespeed frozen", true); } }
             }
-        } else {
-            // Closing menu: unfreeze only if we froze it.
-            if (s_menuPausedByUs.load()) {
-                bool isPaused = false; (void)ReadPracticePauseFlag(isPaused);
-                if (isPaused) {
-                    if (WritePracticePauseFlag(false)) {
-                        void* p = s_practicePtr.load();
-                        std::ostringstream oss; oss << "[PAUSE] Menu closed: cleared Practice pause flag at 0x" << std::hex << (reinterpret_cast<uintptr_t>(p) + PRACTICE_OFF_PAUSE_FLAG);
-                        LogOut(oss.str(), true);
-                    } else {
-                        LogOut("[PAUSE] Menu closed: failed to clear Practice pause flag", true);
-                    }
-                } else {
-                    LogOut("[PAUSE] Menu closed: Practice already unpaused; no action", true);
+        } else { // closing menu
+            // Unwind in reverse priority order of what we actually used
+            if (s_weUsedOfficialToggle.load()) {
+                bool stillPaused=false; ReadPracticePauseFlag(stillPaused);
+                if (stillPaused) {
+                    if (InvokeOfficialToggle()) LogOut("[PAUSE] Official unpause", true);
+                    else LogOut("[PAUSE] Failed to invoke official unpause", true);
                 }
-                s_menuPausedByUs.store(false);
+                s_weUsedOfficialToggle.store(false);
             }
-            if (s_speedPausedByUs.load()) {
-                uint8_t cur = 0; if (ReadGamespeed(cur)) {
-                    // Only restore if the value is still what we set (0)
-                    if (cur == 0) {
-                        const uint8_t prev = s_prevGamespeed.load();
-                        uintptr_t addr=0; ResolveGamespeedAddress(addr);
-                        {
-                            std::ostringstream oss; oss << "[PAUSE] Menu closed: restore gamespeed at 0x" << std::hex << addr << ", prev=" << std::dec << (int)prev;
-                            LogOut(oss.str(), true);
-                        }
-                        if (WriteGamespeed(prev)) {
-                        } else {
-                            LogOut("[PAUSE] Menu closed: failed to restore gamespeed", true);
-                        }
-                    } else {
-                        LogOut("[PAUSE] Menu closed: gamespeed changed externally; not restoring", true);
-                    }
-                }
-                s_speedPausedByUs.store(false);
+            if (s_weAppliedPatchFreeze.load()) {
+                ApplyPatchFreeze(false); // ignore result
+                s_weAppliedPatchFreeze.store(false);
+            }
+            if (s_weForcedFlagPause.load()) {
+                bool p=false; if (ReadPracticePauseFlag(p) && p) WritePracticePauseFlag(false);
+                s_weForcedFlagPause.store(false);
+            }
+            if (s_weFrozeGamespeed.load()) {
+                uint8_t cur=0; if (ReadGamespeed(cur) && cur==0) WriteGamespeed(s_prevGamespeed.load());
+                s_weFrozeGamespeed.store(false);
             }
         }
+    }
+
+    bool ReadStepCounter(uint32_t &outCounter) {
+        void* p = s_practicePtr.load(); if (!p) return false;
+        return SafeReadMemory(reinterpret_cast<uintptr_t>(p) + PRACTICE_OFF_STEP_COUNTER, &outCounter, sizeof(outCounter));
+    }
+
+    bool ConsumeStepAdvance() {
+        static uint32_t s_lastStep = 0;
+        uint32_t cur = 0;
+        if (!IsPracticePaused()) return false;
+        if (!ReadStepCounter(cur)) return false;
+        if (cur != s_lastStep) {
+            s_lastStep = cur;
+            return true;
+        }
+        return false;
     }
 }
