@@ -282,11 +282,12 @@ namespace Config {
             file << "gpTeleportButton=BACK\n";       // Teleport
             file << "gpSavePositionButton=L3\n";     // Save current positions
             file << "gpSwitchPlayersButton=RB\n";    // Toggle local side (practice)
-            file << "gpSwapPositionsButton=Y\n";     // Swap player coordinates
-            file << "gpMacroRecordButton=X\n";       // Macro record
-            file << "gpMacroPlayButton=A\n";         // Macro play
-            file << "gpMacroSlotButton=B\n";         // Cycle macro slot
-            file << "gpToggleMenuButton=START\n";     // Open training menu
+            // ABXY reserved for UI (A=confirm, B=back). Use shoulders/triggers/sticks instead.
+            file << "gpSwapPositionsButton=R3\n";    // Swap player coordinates (was Y)
+            file << "gpMacroRecordButton=LB\n";      // Macro record (was X)
+            file << "gpMacroPlayButton=RT\n";        // Macro play (was A)
+            file << "gpMacroSlotButton=LT\n";        // Cycle macro slot (was B)
+            file << "gpToggleMenuButton=START\n";    // Open training menu
             file << "gpToggleImGuiButton=-1\n";      // Toggle overlay (disabled by default)
             
             file.close();
@@ -421,10 +422,11 @@ namespace Config {
             settings.gpTeleportButton       = getPad("gpteleportbutton", "BACK");
             settings.gpSavePositionButton   = getPad("gpsavepositionbutton", "L3");
             settings.gpSwitchPlayersButton  = getPad("gpswitchplayersbutton", "RB");
-            settings.gpSwapPositionsButton  = getPad("gpswappositionsbutton", "Y");
-            settings.gpMacroRecordButton    = getPad("gpmacrorecordbutton", "X");
-            settings.gpMacroPlayButton      = getPad("gpmacroplaybutton", "A");
-            settings.gpMacroSlotButton      = getPad("gpmacroslotbutton", "B");
+            // New non-ABXY defaults
+            settings.gpSwapPositionsButton  = getPad("gpswappositionsbutton", "R3");
+            settings.gpMacroRecordButton    = getPad("gpmacrorecordbutton", "LB");
+            settings.gpMacroPlayButton      = getPad("gpmacroplaybutton", "RT");
+            settings.gpMacroSlotButton      = getPad("gpmacroslotbutton", "LT");
             settings.gpToggleMenuButton     = getPad("gptogglemenubutton", "START");
             settings.gpToggleImGuiButton    = getPad("gptoggleimguibutton", "-1");
             LogOut("[CONFIG] Settings loaded successfully", true);
@@ -532,6 +534,7 @@ namespace Config {
             file << "UIExitKey=" << toHexString(settings.uiExitKey) << "\n";
 
             file << "\n; Gamepad bindings (symbolic names or hex). -1 disables.\n";
+            file << "; NOTE: ABXY reserved: A=UI confirm, B=UI back. Defaults map actions to shoulders/triggers/sticks.\n";
             auto writePad = [&](const char* key, int mask){
                 file << key << "=" << GetGamepadButtonName(mask) << "\n";
             };
