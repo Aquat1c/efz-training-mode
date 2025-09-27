@@ -48,11 +48,12 @@ namespace Config {
         // Gamepad binding settings (XInput button bitmasks; -1 = disabled)
         int gpTeleportButton;       // Default: XINPUT_GAMEPAD_BACK
         int gpSavePositionButton;   // Default: XINPUT_GAMEPAD_LEFT_THUMB
-        int gpSwitchPlayersButton;  // Default: XINPUT_GAMEPAD_RIGHT_SHOULDER
-        int gpSwapPositionsButton;  // Default: XINPUT_GAMEPAD_Y
-        int gpMacroRecordButton;    // Default: XINPUT_GAMEPAD_X
-        int gpMacroPlayButton;      // Default: XINPUT_GAMEPAD_A
-        int gpMacroSlotButton;      // Default: XINPUT_GAMEPAD_B
+    int gpSwitchPlayersButton;  // Default: XINPUT_GAMEPAD_RIGHT_SHOULDER (RB)
+    // ABXY freed for UI confirm/back: new defaults avoid using A/B/X/Y
+    int gpSwapPositionsButton;  // Default: XINPUT_GAMEPAD_RIGHT_THUMB (R3)
+    int gpMacroRecordButton;    // Default: XINPUT_GAMEPAD_LEFT_SHOULDER (LB)
+    int gpMacroPlayButton;      // Default: RT (virtual trigger 0x20000)
+    int gpMacroSlotButton;      // Default: LT (virtual trigger 0x10000)
         int gpToggleMenuButton;     // Default: XINPUT_GAMEPAD_START
         int gpToggleImGuiButton;    // Default: -1 (disabled)
     };
