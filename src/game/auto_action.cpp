@@ -616,7 +616,7 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
                     } else if (at >= ACTION_JA && at <= ACTION_JC) {
                         int button = (at - ACTION_JA) % 3;
                         buttonMask = (1 << (4 + button));
-                    } else if (at >= ACTION_QCF && at <= ACTION_641236) {
+                    } else if (at >= ACTION_QCF && at <= ACTION_6321463214) {
                         int strength = GetSpecialMoveStrength(at, TRIGGER_ON_RG);
                         buttonMask = (1 << (4 + strength));
                     }
@@ -682,7 +682,7 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
                 } else if (actionType >= ACTION_JA && actionType <= ACTION_JC) {
                     int button = (actionType - ACTION_JA) % 3;
                     buttonMask = (1 << (4 + button));
-                } else if (actionType >= ACTION_QCF && actionType <= ACTION_641236) {
+                } else if (actionType >= ACTION_QCF && actionType <= ACTION_6321463214) {
                     int strength = GetSpecialMoveStrength(actionType, TRIGGER_ON_WAKEUP);
                     buttonMask = (1 << (4 + strength));
                 }
@@ -895,7 +895,7 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
                 } else if (at >= ACTION_JA && at <= ACTION_JC) {
                     int button = (at - ACTION_JA) % 3;
                     buttonMask = (1 << (4 + button));
-                } else if (at >= ACTION_QCF && at <= ACTION_641236) {
+                } else if (at >= ACTION_QCF && at <= ACTION_6321463214) {
                     int strength = GetSpecialMoveStrength(at, TRIGGER_ON_RG);
                     buttonMask = (1 << (4 + strength));
                 }
@@ -968,7 +968,7 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
                 } else if (actionType >= ACTION_JA && actionType <= ACTION_JC) {
                     int button = (actionType - ACTION_JA) % 3;
                     buttonMask = (1 << (4 + button));
-                } else if (actionType >= ACTION_QCF && actionType <= ACTION_641236) {
+                } else if (actionType >= ACTION_QCF && actionType <= ACTION_6321463214) {
                     int strength = GetSpecialMoveStrength(actionType, TRIGGER_ON_WAKEUP);
                     buttonMask = (1 << (4 + strength));
                 }

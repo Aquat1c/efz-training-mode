@@ -219,7 +219,8 @@
 #define TRIGGER_AFTER_AIRTECH 4  // New trigger
 #define TRIGGER_ON_RG         5  // New: On Recoil Guard actionable
 
-// Auto-action types (keep existing)
+// Auto-action types
+// IMPORTANT: These numeric IDs are persisted (GUI combo indices map to them). Maintain order.
 #define ACTION_NONE           0
 #define ACTION_5A             0
 #define ACTION_5B             1
@@ -233,13 +234,22 @@
 #define ACTION_QCF            9
 #define ACTION_DP            10
 #define ACTION_QCB           11
-#define ACTION_SUPER1        12
-#define ACTION_SUPER2        13
-#define ACTION_JUMP          14
-#define ACTION_BACKDASH      15
-#define ACTION_BLOCK         16
-#define ACTION_421           17 // Half-circle down
-#define ACTION_FINAL_MEMORY  18 // Virtual action to request per-character Final Memory
+#define ACTION_421           12  // Half-circle down (421)
+#define ACTION_SUPER1        13  // 41236 (HCF)
+#define ACTION_SUPER2        14  // 214236 hybrid (replaces removed 63214)
+#define ACTION_236236        15  // Double QCF
+#define ACTION_214214        16  // Double QCB
+#define ACTION_JUMP          17
+#define ACTION_BACKDASH      18
+#define ACTION_FORWARD_DASH  19
+#define ACTION_BLOCK         20
+#define ACTION_FINAL_MEMORY  21  // Virtual action to request per-character Final Memory
+#define ACTION_641236        22  // 641236 Super
+#define ACTION_463214        23
+#define ACTION_412           24
+#define ACTION_22            25
+#define ACTION_4123641236    26
+#define ACTION_6321463214    27
 
 // Default delay for triggers
 #define DEFAULT_TRIGGER_DELAY 0  // Default delay for all triggers

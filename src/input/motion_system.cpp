@@ -24,20 +24,26 @@ uint8_t DetermineButtonFromMotionType(int motionType) {
     switch (motionType) {
         case MOTION_5A: case MOTION_2A: case MOTION_JA: 
         case MOTION_236A: case MOTION_623A: case MOTION_214A:
-        case MOTION_421A: case MOTION_41236A: case MOTION_63214A:
+        case MOTION_421A: case MOTION_41236A:
     case MOTION_236236A: case MOTION_214214A: case MOTION_641236A:
+        case MOTION_412A: case MOTION_22A: case MOTION_214236A:
+        case MOTION_463214A: case MOTION_4123641236A: case MOTION_6321463214A:
             return GAME_INPUT_A;
             
         case MOTION_5B: case MOTION_2B: case MOTION_JB: 
         case MOTION_236B: case MOTION_623B: case MOTION_214B:
-        case MOTION_421B: case MOTION_41236B: case MOTION_63214B:
+        case MOTION_421B: case MOTION_41236B:
     case MOTION_236236B: case MOTION_214214B: case MOTION_641236B:
+        case MOTION_412B: case MOTION_22B: case MOTION_214236B:
+        case MOTION_463214B: case MOTION_4123641236B: case MOTION_6321463214B:
             return GAME_INPUT_B;
             
         case MOTION_5C: case MOTION_2C: case MOTION_JC: 
         case MOTION_236C: case MOTION_623C: case MOTION_214C:
-        case MOTION_421C: case MOTION_41236C: case MOTION_63214C:
+        case MOTION_421C: case MOTION_41236C:
     case MOTION_236236C: case MOTION_214214C: case MOTION_641236C:
+        case MOTION_412C: case MOTION_22C: case MOTION_214236C:
+        case MOTION_463214C: case MOTION_4123641236C: case MOTION_6321463214C:
             return GAME_INPUT_C;
             
         default:
@@ -72,11 +78,35 @@ std::string GetMotionTypeName(int motionType) {
         case MOTION_41236A: return "41236A";
         case MOTION_41236B: return "41236B";
         case MOTION_41236C: return "41236C";
-        case MOTION_63214A: return "63214A";
-        case MOTION_63214B: return "63214B";
-        case MOTION_63214C: return "63214C";
-        case ACTION_FORWARD_DASH: return "Forward Dash";
-        case ACTION_BACK_DASH: return "Back Dash";
+        case MOTION_236236A: return "236236A";
+        case MOTION_236236B: return "236236B";
+        case MOTION_236236C: return "236236C";
+        case MOTION_214214A: return "214214A";
+        case MOTION_214214B: return "214214B";
+        case MOTION_214214C: return "214214C";
+        case MOTION_641236A: return "641236A";
+        case MOTION_641236B: return "641236B";
+        case MOTION_641236C: return "641236C";
+        case MOTION_412A: return "412A";
+        case MOTION_412B: return "412B";
+        case MOTION_412C: return "412C";
+        case MOTION_22A: return "22A";
+        case MOTION_22B: return "22B";
+        case MOTION_22C: return "22C";
+        case MOTION_214236A: return "214236A";
+        case MOTION_214236B: return "214236B";
+        case MOTION_214236C: return "214236C";
+        case MOTION_463214A: return "463214A";
+        case MOTION_463214B: return "463214B";
+        case MOTION_463214C: return "463214C";
+        case MOTION_4123641236A: return "4123641236A";
+        case MOTION_4123641236B: return "4123641236B";
+        case MOTION_4123641236C: return "4123641236C";
+    case MOTION_6321463214A: return "6321463214A";
+    case MOTION_6321463214B: return "6321463214B";
+    case MOTION_6321463214C: return "6321463214C";
+    case MOTION_FORWARD_DASH: return "Forward Dash";
+    case MOTION_BACK_DASH: return "Back Dash";
         default: return "Unknown";
     }
 }
@@ -139,6 +169,11 @@ bool QueueMotionInput(int playerNum, int motionType, int buttonMask) {
     // Clear any existing input queue for this player
     std::vector<InputFrame>& queue = (playerNum == 1) ? p1InputQueue : p2InputQueue;
     queue.clear();
+
+    // If caller passed 0, infer button from motion type (prevents accidental no-button sequences)
+    if (buttonMask == 0) {
+        buttonMask = DetermineButtonFromMotionType(motionType);
+    }
     
     // Frame timing constants
     const int DIR_FRAMES = 3;     // Duration for directional inputs
@@ -201,13 +236,100 @@ bool QueueMotionInput(int playerNum, int motionType, int buttonMask) {
             addInput(GAME_INPUT_RIGHT, buttonMask, BTN_FRAMES);
             break;
             
-        case MOTION_63214A: case MOTION_63214B: case MOTION_63214C:
-            // HCB: Forward, Down-Forward, Down, Down-Back, Back + Button
-            addInput(GAME_INPUT_RIGHT, 0, DIR_FRAMES);
+        // (63214*) single half-circle back removed per updated requirements
+
+        case MOTION_236236A: case MOTION_236236B: case MOTION_236236C:
+            // Double QCF: (Down, Down-Forward, Forward) x2 + Button on final Forward
+            addInput(GAME_INPUT_DOWN, 0, DIR_FRAMES);
             addInput(GAME_INPUT_DOWN | GAME_INPUT_RIGHT, 0, DIR_FRAMES);
+            addInput(GAME_INPUT_RIGHT, 0, DIR_FRAMES);
+            addInput(GAME_INPUT_DOWN, 0, DIR_FRAMES);
+            addInput(GAME_INPUT_DOWN | GAME_INPUT_RIGHT, 0, DIR_FRAMES);
+            addInput(GAME_INPUT_RIGHT, buttonMask, BTN_FRAMES);
+            break;
+
+        case MOTION_214214A: case MOTION_214214B: case MOTION_214214C:
+            // Double QCB: (Down, Down-Back, Back) x2 + Button on final Back
+            addInput(GAME_INPUT_DOWN, 0, DIR_FRAMES);
+            addInput(GAME_INPUT_DOWN | GAME_INPUT_LEFT, 0, DIR_FRAMES);
+            addInput(GAME_INPUT_LEFT, 0, DIR_FRAMES);
             addInput(GAME_INPUT_DOWN, 0, DIR_FRAMES);
             addInput(GAME_INPUT_DOWN | GAME_INPUT_LEFT, 0, DIR_FRAMES);
             addInput(GAME_INPUT_LEFT, buttonMask, BTN_FRAMES);
+            break;
+
+        case MOTION_641236A: case MOTION_641236B: case MOTION_641236C:
+            // 641236 (pretzel-like) : Forward, Back, Down-Back, Down, Down-Forward, Forward + Button
+            addInput(GAME_INPUT_RIGHT, 0, DIR_FRAMES);          // 6
+            addInput(GAME_INPUT_LEFT, 0, DIR_FRAMES);           // 4
+            addInput(GAME_INPUT_DOWN | GAME_INPUT_LEFT, 0, DIR_FRAMES);  // 1
+            addInput(GAME_INPUT_DOWN, 0, DIR_FRAMES);           // 2
+            addInput(GAME_INPUT_DOWN | GAME_INPUT_RIGHT, 0, DIR_FRAMES); // 3
+            addInput(GAME_INPUT_RIGHT, buttonMask, BTN_FRAMES); // 6 + button
+            break;
+
+        case MOTION_412A: case MOTION_412B: case MOTION_412C:
+            // 412: Back, Down-Back, Down + Button
+            addInput(GAME_INPUT_LEFT, 0, DIR_FRAMES);                // 4
+            addInput(GAME_INPUT_DOWN | GAME_INPUT_LEFT, 0, DIR_FRAMES); // 1
+            addInput(GAME_INPUT_DOWN, buttonMask, BTN_FRAMES);       // 2 + button
+            break;
+
+        case MOTION_22A: case MOTION_22B: case MOTION_22C:
+            // 22: Down, (neutral optional), Down + Button
+            addInput(GAME_INPUT_DOWN, 0, DIR_FRAMES);                // 2
+            addInput(0, 0, NEUTRAL_FRAMES);                         // small neutral (can tweak)
+            addInput(GAME_INPUT_DOWN, buttonMask, BTN_FRAMES);       // 2 + button
+            break;
+
+        case MOTION_214236A: case MOTION_214236B: case MOTION_214236C:
+            // 214236: QCB then QCF (Down, Down-Back, Back, Down, Down-Forward, Forward + Button)
+            addInput(GAME_INPUT_DOWN, 0, DIR_FRAMES);                // 2
+            addInput(GAME_INPUT_DOWN | GAME_INPUT_LEFT, 0, DIR_FRAMES); // 1
+            addInput(GAME_INPUT_LEFT, 0, DIR_FRAMES);                // 4
+            addInput(GAME_INPUT_DOWN, 0, DIR_FRAMES);                // 2
+            addInput(GAME_INPUT_DOWN | GAME_INPUT_RIGHT, 0, DIR_FRAMES); // 3
+            addInput(GAME_INPUT_RIGHT, buttonMask, BTN_FRAMES);      // 6 + button
+            break;
+
+        case MOTION_463214A: case MOTION_463214B: case MOTION_463214C:
+            // 463214: Left, Right, Down-Right, Down, Down-Left, Left + Button
+            addInput(GAME_INPUT_LEFT, 0, DIR_FRAMES);                // 4
+            addInput(GAME_INPUT_RIGHT, 0, DIR_FRAMES);               // 6
+            addInput(GAME_INPUT_DOWN | GAME_INPUT_RIGHT, 0, DIR_FRAMES); // 3
+            addInput(GAME_INPUT_DOWN, 0, DIR_FRAMES);                // 2
+            addInput(GAME_INPUT_DOWN | GAME_INPUT_LEFT, 0, DIR_FRAMES);  // 1
+            addInput(GAME_INPUT_LEFT, buttonMask, BTN_FRAMES);       // 4 + button
+            break;
+
+        case MOTION_4123641236A: case MOTION_4123641236B: case MOTION_4123641236C:
+            // 4123641236: (41236) x2 without button until final Forward
+            // First 41236
+            addInput(GAME_INPUT_LEFT, 0, DIR_FRAMES);                // 4
+            addInput(GAME_INPUT_DOWN | GAME_INPUT_LEFT, 0, DIR_FRAMES); // 1
+            addInput(GAME_INPUT_DOWN, 0, DIR_FRAMES);                // 2
+            addInput(GAME_INPUT_DOWN | GAME_INPUT_RIGHT, 0, DIR_FRAMES); // 3
+            addInput(GAME_INPUT_RIGHT, 0, DIR_FRAMES);               // 6
+            // Second 41236 with button at end
+            addInput(GAME_INPUT_LEFT, 0, DIR_FRAMES);                // 4
+            addInput(GAME_INPUT_DOWN | GAME_INPUT_LEFT, 0, DIR_FRAMES); // 1
+            addInput(GAME_INPUT_DOWN, 0, DIR_FRAMES);                // 2
+            addInput(GAME_INPUT_DOWN | GAME_INPUT_RIGHT, 0, DIR_FRAMES); // 3
+            addInput(GAME_INPUT_RIGHT, buttonMask, BTN_FRAMES);      // 6 + button
+            break;
+
+        case MOTION_6321463214A: case MOTION_6321463214B: case MOTION_6321463214C:
+            // 6321463214: 6,3,2,1,4,6,3,2,1,4 + Button
+            addInput(GAME_INPUT_RIGHT, 0, DIR_FRAMES);               // 6
+            addInput(GAME_INPUT_DOWN | GAME_INPUT_RIGHT, 0, DIR_FRAMES); // 3
+            addInput(GAME_INPUT_DOWN, 0, DIR_FRAMES);                // 2
+            addInput(GAME_INPUT_DOWN | GAME_INPUT_LEFT, 0, DIR_FRAMES); // 1
+            addInput(GAME_INPUT_LEFT, 0, DIR_FRAMES);                // 4
+            addInput(GAME_INPUT_RIGHT, 0, DIR_FRAMES);               // 6
+            addInput(GAME_INPUT_DOWN | GAME_INPUT_RIGHT, 0, DIR_FRAMES); // 3
+            addInput(GAME_INPUT_DOWN, 0, DIR_FRAMES);                // 2
+            addInput(GAME_INPUT_DOWN | GAME_INPUT_LEFT, 0, DIR_FRAMES); // 1
+            addInput(GAME_INPUT_LEFT, buttonMask, BTN_FRAMES);       // 4 + button
             break;
             
         case MOTION_421A: case MOTION_421B: case MOTION_421C:
@@ -217,14 +339,14 @@ bool QueueMotionInput(int playerNum, int motionType, int buttonMask) {
             addInput(GAME_INPUT_LEFT, buttonMask, BTN_FRAMES);
             break;
             
-        case ACTION_FORWARD_DASH:
+        case MOTION_FORWARD_DASH:
             // Forward, Neutral, Forward
             addInput(GAME_INPUT_RIGHT, 0, DIR_FRAMES);
             addInput(0, 0, NEUTRAL_FRAMES);
             addInput(GAME_INPUT_RIGHT, 0, DIR_FRAMES);
             break;
             
-        case ACTION_BACK_DASH:
+        case MOTION_BACK_DASH:
             // Back, Neutral, Back
             addInput(GAME_INPUT_LEFT, 0, DIR_FRAMES);
             addInput(0, 0, NEUTRAL_FRAMES);

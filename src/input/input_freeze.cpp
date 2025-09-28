@@ -385,17 +385,91 @@ bool FreezeBufferForMotion(int playerNum, int motionType, int buttonMask, int op
             };
             break;
         }
-        case MOTION_63214A: case MOTION_63214B: case MOTION_63214C: {
-            // HCB: Forward, Down-Forward, Down, Down-Back, Back + Button
+        case MOTION_412A: case MOTION_412B: case MOTION_412C: {
+            // 412: Back, Down-Back, Down + Button
             pattern = {
-                0x00, 0x00,                             // Neutral padding (2)
-                fwd, fwd,                               // Forward (2)
-                downFwd, downFwd,                       // Down-Forward (2)
-                down, down,                             // Down (2)
-                downBack, downBack,                     // Down-Back (2)
-                back,                                   // Back (1)
-                (uint8_t)(back | buttonMask),           // Back+Button (1)
-                (uint8_t)(back | buttonMask),           // Back+Button (1)
+                0x00, 0x00,
+                back, back,
+                downBack, downBack,
+                down,
+                (uint8_t)(down | buttonMask),
+                (uint8_t)(down | buttonMask),
+            };
+            break;
+        }
+        case MOTION_22A: case MOTION_22B: case MOTION_22C: {
+            // 22: Down, (small neutral), Down + Button
+            pattern = {
+                0x00, 0x00,
+                down, down,
+                0x00, 0x00, // neutral pause
+                down,
+                (uint8_t)(down | buttonMask),
+                (uint8_t)(down | buttonMask),
+            };
+            break;
+        }
+        case MOTION_214236A: case MOTION_214236B: case MOTION_214236C: {
+            // 214236: Down, Down-Back, Back, Down, Down-Forward, Forward + Button
+            pattern = {
+                0x00, 0x00,
+                down, down,
+                downBack, downBack,
+                back, back,
+                down, down,
+                downFwd, downFwd,
+                fwd,
+                (uint8_t)(fwd | buttonMask),
+                (uint8_t)(fwd | buttonMask),
+            };
+            break;
+        }
+        case MOTION_463214A: case MOTION_463214B: case MOTION_463214C: {
+            // 463214: Left, Right, Down-Right, Down, Down-Left, Left + Button
+            // Using back=fwd swap logic later for facing; here we build canonical facing-right pattern
+            pattern = {
+                0x00, 0x00,
+                back, back,          // 4 (treat 'back' as initial left when facing right)
+                fwd, fwd,            // 6
+                downFwd, downFwd,    // 3
+                down, down,          // 2
+                downBack, downBack,  // 1
+                back,
+                (uint8_t)(back | buttonMask),
+                (uint8_t)(back | buttonMask),
+            };
+            break;
+        }
+        case MOTION_4123641236A: case MOTION_4123641236B: case MOTION_4123641236C: {
+            // 41236 41236: Back, Down-Back, Down, Down-Forward, Forward x2 + Button only at final Forward
+            pattern = {
+                0x00, 0x00,
+                back, back, downBack, downBack, down, down, downFwd, downFwd, fwd, fwd, // first 41236
+                back, back, downBack, downBack, down, down, downFwd, downFwd, fwd,      // second 41236 up to final forward
+                (uint8_t)(fwd | buttonMask),
+                (uint8_t)(fwd | buttonMask),
+            };
+            break;
+        }
+        case MOTION_6321463214A: case MOTION_6321463214B: case MOTION_6321463214C: {
+            // 6321463214: Fwd, Down-Fwd, Down, Down-Back, Back, Fwd, Down-Fwd, Down, Down-Back, Back + Button (represented with diagonals)
+            // Using canonical facing-right mapping of digits; adapt using fwd/back variables.
+            // Sequence digits: 6,3,2,1,4,6,3,2,1,4 + Button
+            // Map: 6=fwd, 3=downFwd, 2=down, 1=downBack, 4=back
+            pattern = {
+                0x00, 0x00,
+                fwd, fwd,
+                downFwd, downFwd,
+                down, down,
+                downBack, downBack,
+                back, back,
+                fwd, fwd,
+                downFwd, downFwd,
+                down, down,
+                downBack, downBack,
+                back,
+                (uint8_t)(back | buttonMask),
+                (uint8_t)(back | buttonMask),
             };
             break;
         }

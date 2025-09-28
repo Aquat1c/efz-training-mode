@@ -788,7 +788,7 @@ int MapEFZKeyToVK(unsigned short efzKey) {
     }
 }
 
-// REMOVED redundant ShowConfigMenu function. The functionality is handled by OpenMenu() in gui.cpp
+
 
 void DetectKeyBindings() {
     // First, try to read from the INI file
