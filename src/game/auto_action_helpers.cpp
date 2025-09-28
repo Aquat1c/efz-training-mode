@@ -99,11 +99,11 @@ int ConvertTriggerActionToMotion(int actionType, int triggerType) {
             if (strength == 2) return MOTION_41236C;
             return MOTION_41236A;
 
-        // Half-circle back (63214)
+        // Previously Half-circle back (63214) removed. Remapped ACTION_SUPER2 to 214236 hybrid
         case ACTION_SUPER2:
-            if (strength == 1) return MOTION_63214B;
-            if (strength == 2) return MOTION_63214C;
-            return MOTION_63214A;
+            if (strength == 1) return MOTION_214236B;
+            if (strength == 2) return MOTION_214236C;
+            return MOTION_214236A;
 
         // Double QCF (236236)
         case ACTION_236236:
@@ -123,11 +123,36 @@ int ConvertTriggerActionToMotion(int actionType, int triggerType) {
             if (strength == 2) return MOTION_641236C;
             return MOTION_641236A;
 
+        case ACTION_463214:
+            if (strength == 1) return MOTION_463214B;
+            if (strength == 2) return MOTION_463214C;
+            return MOTION_463214A;
+
+        case ACTION_412:
+            if (strength == 1) return MOTION_412B;
+            if (strength == 2) return MOTION_412C;
+            return MOTION_412A;
+
+        case ACTION_22:
+            if (strength == 1) return MOTION_22B;
+            if (strength == 2) return MOTION_22C;
+            return MOTION_22A;
+
+        case ACTION_4123641236:
+            if (strength == 1) return MOTION_4123641236B;
+            if (strength == 2) return MOTION_4123641236C;
+            return MOTION_4123641236A;
+
+        case ACTION_6321463214:
+            if (strength == 1) return MOTION_6321463214B;
+            if (strength == 2) return MOTION_6321463214C;
+            return MOTION_6321463214A;
+
     // Other actions
     // For Jump, we handle immediate input injection elsewhere; no motion mapping needed
-        case ACTION_JUMP: return MOTION_NONE;
-        case ACTION_BACKDASH: return ACTION_BACK_DASH;
-        case ACTION_FORWARD_DASH: return ACTION_FORWARD_DASH;
+    case ACTION_JUMP: return MOTION_NONE;
+    case ACTION_BACKDASH: return MOTION_BACK_DASH;       // explicit back dash motion token
+    case ACTION_FORWARD_DASH: return MOTION_FORWARD_DASH; // explicit forward dash motion token
         case ACTION_BLOCK: return MOTION_NONE;
     case ACTION_FINAL_MEMORY: return MOTION_NONE; // Handled by FM subsystem
 

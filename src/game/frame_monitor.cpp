@@ -379,15 +379,20 @@ void UpdateTriggerOverlay() {
         std::string strengthLetter = "";
         
         // Determine strength letter (A, B, C)
-        if (actionType == ACTION_QCF || 
-            actionType == ACTION_DP || 
+        if (actionType == ACTION_QCF ||
+            actionType == ACTION_DP ||
             actionType == ACTION_QCB ||
             actionType == ACTION_421 ||
-            actionType == ACTION_SUPER1 || 
+            actionType == ACTION_SUPER1 ||
             actionType == ACTION_SUPER2 ||
             actionType == ACTION_236236 ||
             actionType == ACTION_214214 ||
-        actionType == ACTION_641236) {
+            actionType == ACTION_641236 ||
+            actionType == ACTION_463214 ||
+            actionType == ACTION_412 ||
+            actionType == ACTION_22 ||
+            actionType == ACTION_4123641236 ||
+            actionType == ACTION_6321463214) {
             
             // Convert strength number to letter
             switch(strength) {
@@ -413,10 +418,15 @@ void UpdateTriggerOverlay() {
             case ACTION_QCB: return "214" + strengthLetter; // QCB + strength
             case ACTION_421: return "421" + strengthLetter; // Half-circle down + strength
             case ACTION_SUPER1: return "41236" + strengthLetter; // HCF + strength
-            case ACTION_SUPER2: return "63214" + strengthLetter; // HCB + strength
+            case ACTION_SUPER2: return "214236" + strengthLetter; // Hybrid replaces removed 63214
             case ACTION_236236: return "236236" + strengthLetter; // Double QCF + strength
             case ACTION_214214: return "214214" + strengthLetter; // Double QCB + strength
-            case ACTION_641236: return "641236" + strengthLetter; // Double QCF + strength
+            case ACTION_641236: return "641236" + strengthLetter; // Pretzel variant
+            case ACTION_463214: return "463214" + strengthLetter; // Reverse roll
+            case ACTION_412: return "412" + strengthLetter;       // 4,1,2 partial roll
+            case ACTION_22: return "22" + strengthLetter;         // Down-Down
+            case ACTION_4123641236: return "4123641236" + strengthLetter; // Double 41236
+            case ACTION_6321463214: return "6321463214" + strengthLetter; // Extended pretzel
             case ACTION_JUMP: return "Jump";
             case ACTION_BACKDASH: return "Backdash";
             case ACTION_FORWARD_DASH: return "Forward Dash";

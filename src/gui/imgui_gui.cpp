@@ -68,15 +68,20 @@ namespace ImGuiGui {
         ACTION_QCB,         // 11 = 214 (QCB)
         ACTION_421,         // 12 = 421 (Half-circle Down)
         ACTION_SUPER1,      // 13 = 41236 (HCF)
-        ACTION_SUPER2,      // 14 = 63214 (HCB)
-        ACTION_236236,      // 15 = 236236 (Double QCF)
-        ACTION_214214,      // 16 = 214214 (Double QCB)
-        ACTION_641236,      // 17 = 641236 (Half-Circle Forward + QCF)
-        ACTION_JUMP,        // 18 = Jump
-        ACTION_BACKDASH,    // 19 = Backdash
-        ACTION_FORWARD_DASH,// 20 = Forward Dash
-        ACTION_BLOCK,       // 21 = Block
-        ACTION_FINAL_MEMORY // 22 = Final Memory (per-character)
+    ACTION_SUPER2,      // 14 = 214236 Hybrid (replaces removed 63214)
+    ACTION_236236,      // 15 = 236236 (Double QCF)
+    ACTION_214214,      // 16 = 214214 (Double QCB)
+    ACTION_JUMP,        // 17 = Jump
+    ACTION_BACKDASH,    // 18 = Backdash
+    ACTION_FORWARD_DASH,// 19 = Forward Dash
+    ACTION_BLOCK,       // 20 = Block
+    ACTION_FINAL_MEMORY,// 21 = Final Memory (per-character)
+    ACTION_641236,      // 22 = 641236 Super
+    ACTION_463214,      // 23 = 463214 Reverse Roll
+    ACTION_412,         // 24 = 412 Partial Roll
+    ACTION_22,          // 25 = 22 Down-Down
+    ACTION_4123641236,  // 26 = 4123641236 Double Roll
+    ACTION_6321463214   // 27 = 6321463214 Extended Pretzel
     };
 
     // Helper function to convert action type to combo index
@@ -408,9 +413,10 @@ namespace ImGuiGui {
         const char* motionItems[] = {
             "Standing", "Crouching", "Jumping",
             "236 (QCF)", "623 (DP)", "214 (QCB)", "421 (Half-circle Down)",
-            "41236 (HCF)", "63214 (HCB)", "236236 (Double QCF)", "214214 (Double QCB)",
-            "641236", "Jump", "Backdash", "Forward Dash", "Block", "Final Memory"
-        };
+            "41236 (HCF)", "214236 (Hybrid)", "236236 (Double QCF)", "214214 (Double QCB)",
+            "641236", "463214", "412", "22", "4123641236", "6321463214",
+            "Jump", "Backdash", "Forward Dash", "Block", "Final Memory"
+        }; // NOTE: mapping functions below must stay in sync
 
         // Compute a compact width that fits the longest action label (plus arrow/padding), so combos aren't overly wide
         ImGuiStyle& _style = ImGui::GetStyle();
@@ -433,7 +439,9 @@ namespace ImGuiGui {
         auto IsSpecialMoveAction = [](int action) {
             return action == ACTION_QCF || action == ACTION_DP || action == ACTION_QCB ||
                    action == ACTION_421 || action == ACTION_SUPER1 || action == ACTION_SUPER2 ||
-                   action == ACTION_236236 || action == ACTION_214214 || action == ACTION_641236;
+                   action == ACTION_236236 || action == ACTION_214214 || action == ACTION_641236 ||
+                   action == ACTION_463214 || action == ACTION_412 || action == ACTION_22 ||
+                   action == ACTION_4123641236 || action == ACTION_6321463214;
         };
         auto GetPostureIndexForAction = [](int action) -> int {
             if (action == ACTION_5A || action == ACTION_5B || action == ACTION_5C) return 0; // Standing
@@ -445,20 +453,25 @@ namespace ImGuiGui {
             int postureIdx = GetPostureIndexForAction(action);
             if (postureIdx >= 0) return postureIdx; // 0..2
             switch (action) {
-                case ACTION_QCF: return 3;
-                case ACTION_DP: return 4;
-                case ACTION_QCB: return 5;
-                case ACTION_421: return 6;
-                case ACTION_SUPER1: return 7; // 41236
-                case ACTION_SUPER2: return 8; // 63214
-                case ACTION_236236: return 9;
-                case ACTION_214214: return 10;
-                case ACTION_641236: return 11;
-                case ACTION_JUMP: return 12;
-                case ACTION_BACKDASH: return 13;
-                case ACTION_FORWARD_DASH: return 14;
-                case ACTION_BLOCK: return 15;
-                case ACTION_FINAL_MEMORY: return 16; // maps to Final Memory entry
+                case ACTION_QCF: return 3;            // 236
+                case ACTION_DP: return 4;             // 623
+                case ACTION_QCB: return 5;            // 214
+                case ACTION_421: return 6;            // 421
+                case ACTION_SUPER1: return 7;         // 41236
+                case ACTION_SUPER2: return 8;         // 214236 hybrid
+                case ACTION_236236: return 9;         // 236236
+                case ACTION_214214: return 10;        // 214214
+                case ACTION_641236: return 11;        // 641236
+                case ACTION_463214: return 12;        // 463214
+                case ACTION_412: return 13;           // 412
+                case ACTION_22: return 14;            // 22
+                case ACTION_4123641236: return 15;    // 4123641236
+                case ACTION_6321463214: return 16;    // 6321463214
+                case ACTION_JUMP: return 17;          // Jump
+                case ACTION_BACKDASH: return 18;      // Backdash
+                case ACTION_FORWARD_DASH: return 19;  // Forward Dash
+                case ACTION_BLOCK: return 20;         // Block
+                case ACTION_FINAL_MEMORY: return 21;  // Final Memory
                 default: return 0; // default Standing
             }
         };
@@ -479,21 +492,26 @@ namespace ImGuiGui {
         };
         auto MapMotionIndexToAction = [](int motionIdx) -> int {
             switch (motionIdx) {
-                case 3: return ACTION_QCF;
-                case 4: return ACTION_DP;
-                case 5: return ACTION_QCB;
-                case 6: return ACTION_421;
-                case 7: return ACTION_SUPER1; // 41236
-                case 8: return ACTION_SUPER2; // 63214
-                case 9: return ACTION_236236;
-                case 10: return ACTION_214214;
-                case 11: return ACTION_641236;
-                case 12: return ACTION_JUMP;
-                case 13: return ACTION_BACKDASH;
-                case 14: return ACTION_FORWARD_DASH;
-                case 15: return ACTION_BLOCK;
-                case 16: return ACTION_FINAL_MEMORY;
-                default: return ACTION_5A; // For posture indices, action will be set via button mapping
+                case 3: return ACTION_QCF;             // 236
+                case 4: return ACTION_DP;              // 623
+                case 5: return ACTION_QCB;             // 214
+                case 6: return ACTION_421;             // 421
+                case 7: return ACTION_SUPER1;          // 41236
+                case 8: return ACTION_SUPER2;          // 214236 hybrid
+                case 9: return ACTION_236236;          // 236236
+                case 10: return ACTION_214214;         // 214214
+                case 11: return ACTION_641236;         // 641236
+                case 12: return ACTION_463214;         // 463214
+                case 13: return ACTION_412;            // 412
+                case 14: return ACTION_22;             // 22
+                case 15: return ACTION_4123641236;     // 4123641236
+                case 16: return ACTION_6321463214;     // 6321463214
+                case 17: return ACTION_JUMP;           // Jump
+                case 18: return ACTION_BACKDASH;       // Backdash
+                case 19: return ACTION_FORWARD_DASH;   // Forward Dash
+                case 20: return ACTION_BLOCK;          // Block
+                case 21: return ACTION_FINAL_MEMORY;   // Final Memory
+                default: return ACTION_5A; // For posture indices 0..2, action set later
             }
         };
         
