@@ -1734,7 +1734,30 @@ void EnableP2ControlForAutoAction() {
     }
 }
 
-// Restore P2 to original control state
+// ==================================================================================
+// RESTORE P2 CONTROL STATE (FULL RESTORE)
+// ==================================================================================
+// This is the STANDARD restore function used for most auto-actions.
+// 
+// What it does:
+//   1. Stops buffer freezing (allows input to flow normally)
+//   2. Clears input buffer completely (prevents AI from reading stale patterns)
+//   3. Clears immediate input registers
+//   4. Restores CPU control flag at game state level (gameStatePtr + 4931)
+//   5. Restores AI control flag at character level (p2CharPtr + 0x42C)
+//   6. Starts grace period to prevent immediate re-triggering
+//
+// When to use:
+//   ✅ Forward/backward dashes (after dash completes)
+//   ✅ Specials and supers (after move executes or times out)
+//   ✅ Normal attacks (after attack completes)
+//   ✅ Any action where you want a CLEAN state transition back to AI control
+//   ✅ Any action where stale inputs could cause problems (dash infinite loops, etc.)
+//
+// When NOT to use:
+//   ❌ Counter RG scenarios where you want the pre-armed special to execute
+//      (use RestoreP2ControlFlagOnly instead)
+// ==================================================================================
 void RestoreP2ControlState() {
     if (g_p2ControlOverridden) {
         // Make sure to stop any buffer freezing when restoring control
@@ -1803,14 +1826,60 @@ void RestoreP2ControlState() {
     }
 }
 
-// Restore only the P2 control flag without touching buffer freezing.
-// Used for Counter RG so the motion buffer remains active while giving control back.
+// ==================================================================================
+// RESTORE P2 CONTROL FLAGS ONLY (PARTIAL RESTORE - PRESERVES BUFFER)
+// ==================================================================================
+// This is a SPECIALIZED restore function for Counter RG scenarios.
+//
+// What it does:
+//   1. DOES NOT stop buffer freezing (keeps motion buffer active)
+//   2. DOES NOT clear input buffer (preserves pre-armed special motion)
+//   3. Restores CPU control flag at game state level (gameStatePtr + 4931)
+//   4. Restores AI control flag at character level (p2CharPtr + 0x42C)
+//
+// When to use:
+//   ✅ Counter RG fast-restore (opponent attacks, need to return control but keep special queued)
+//   ✅ Any scenario where you need to return control WITHOUT clearing buffered inputs
+//
+// When NOT to use:
+//   ❌ Dashes (stale dash pattern causes infinite dash loops)
+//   ❌ Regular specials/supers (stale inputs cause move repetition)
+//   ❌ Normal attacks (buffer should be cleared for clean transitions)
+//   ❌ Most standard auto-actions (use RestoreP2ControlState instead)
+//
+// CRITICAL: Still restores BOTH CPU and AI control flags to fully return control to AI.
+// The only difference from RestoreP2ControlState is that it preserves the input buffer.
+// ==================================================================================
 static void RestoreP2ControlFlagOnly() {
     if (!g_p2ControlOverridden) return;
     uintptr_t base = GetEFZBase();
     if (!base) return;
+    
+    // CRITICAL: Get game state pointer to restore CPU control flag
+    uintptr_t gameStatePtr = 0;
+    if (!SafeReadMemory(base + EFZ_BASE_OFFSET_GAME_STATE, &gameStatePtr, sizeof(uintptr_t)) || !gameStatePtr) {
+        LogOut("[AUTO-ACTION] RestoreP2ControlFlagOnly: Failed to get game state pointer", true);
+        g_p2ControlOverridden = false;
+        return;
+    }
+    
     uintptr_t p2CharPtr = 0;
-    if (!SafeReadMemory(base + EFZ_BASE_OFFSET_P2, &p2CharPtr, sizeof(uintptr_t)) || !p2CharPtr) return;
+    if (!SafeReadMemory(base + EFZ_BASE_OFFSET_P2, &p2CharPtr, sizeof(uintptr_t)) || !p2CharPtr) {
+        g_p2ControlOverridden = false;
+        return;
+    }
+    
+    // CRITICAL: Restore CPU control flag at game state level FIRST
+    // This is what actually determines if the character is under player or AI control
+    const uintptr_t P2_CPU_FLAG_OFFSET = 4931;
+    uint8_t cpuControlled = 1; // 1 = CPU/AI controlled
+    if (SafeWriteMemory(gameStatePtr + P2_CPU_FLAG_OFFSET, &cpuControlled, sizeof(uint8_t))) {
+        LogOut("[AUTO-ACTION] RestoreP2ControlFlagOnly: Restored P2 CPU control flag to 1 (AI controlled)", true);
+    } else {
+        LogOut("[AUTO-ACTION] RestoreP2ControlFlagOnly: Failed to restore P2 CPU control flag", true);
+    }
+    
+    // Restore character-level AI control flag
     uint32_t before = 0xFFFFFFFFu, after = 0xFFFFFFFFu;
     SafeReadMemory(p2CharPtr + AI_CONTROL_FLAG_OFFSET, &before, sizeof(uint32_t));
     bool okWrite = SafeWriteMemory(p2CharPtr + AI_CONTROL_FLAG_OFFSET, &g_originalP2ControlFlag, sizeof(uint32_t));
@@ -1819,9 +1888,11 @@ static void RestoreP2ControlFlagOnly() {
                                 << std::dec << " before=" << before << " write=" << g_originalP2ControlFlag
                                 << " after=" << after << " okWrite=" << (okWrite?"1":"0");
     LogOut(oss.str(), true);
-    // Also clear buffer here – even though we keep motion buffer logic alive for specials, when we explicitly give control back
-    // we don't want residual inputs to leak.
-    ClearPlayerInputBuffer(2, true);
+    
+    // NOTE: We deliberately DO NOT clear the input buffer here because Counter RG needs the
+    // pre-armed special motion to remain in the buffer so it can execute after RG completes.
+    // The buffer will be cleared naturally when the special executes or times out.
+    
     g_p2ControlOverridden = false;
 }
 
