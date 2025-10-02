@@ -979,7 +979,7 @@ void FrameDataMonitor() {
             static RGAnalysis s_rgP1; // last RG where P1 was the defender
             static RGAnalysis s_rgP2; // last RG where P2 was the defender
 
-         auto computeRGInfo = [](short rgMove, double &defF, double &atkF, double &stunF, double &advF) {
+         auto computeRGInfo = [](short rgMove, double &defF, double &atkF, double &stunF, double &advF, int defenderCharId) {
                 // Values sourced from wiki: EFZ Strategy/Game Mechanics pages
                 if (rgMove == RG_STAND_ID) {
                     defF = RG_STAND_FREEZE_DEFENDER;
@@ -991,7 +991,14 @@ void FrameDataMonitor() {
                     defF = RG_AIR_FREEZE_DEFENDER;
                     atkF = RG_AIR_FREEZE_ATTACKER;
                 }
-                stunF = RG_STUN_DURATION; // universal defender RG stun length (Sayuri exception ignored for now)
+                // Base universal RG stun value
+                stunF = RG_STUN_DURATION;
+                // Character specific quirk: Sayuri defender experiences ~21.66F (65 internal frames @192Hz)
+                // Convert 65 internal frames -> visual frames: 65 * 60/192 = 65 * 0.3125 = 20.3125? (But provided value 21.66)
+                // Using provided authoritative value 21.66F (approx 65 internal * 60/180?); keep as explicit constant.
+                if (defenderCharId == CHAR_ID_SAYURI) {
+                    stunF = 21.66; // documented anomaly
+                }
                 advF = defF - atkF; // positive means attacker earlier by advF
             };
 
@@ -1140,7 +1147,9 @@ void FrameDataMonitor() {
                 slot.active = true;
                 slot.defender = defender;
                 slot.rgMove = rgMove;
-                computeRGInfo(rgMove, slot.defFreezeF, slot.atkFreezeF, slot.rgStunF, slot.netAdvF);
+                // Determine defender character ID (live displayData may still have last snapshot IDs)
+                int defCharId = (defender == 1) ? displayData.p1CharID : displayData.p2CharID;
+                computeRGInfo(rgMove, slot.defFreezeF, slot.atkFreezeF, slot.rgStunF, slot.netAdvF, defCharId);
                 slot.fa1F = slot.netAdvF; // FA1 = freeze-based net advantage
                 slot.fa2ThF = slot.fa1F + slot.rgStunF; // FA2 theoretical = FA1 + RG stun
                 // Determine attacker side and their move at event
