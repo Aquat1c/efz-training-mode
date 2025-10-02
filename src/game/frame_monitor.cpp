@@ -413,6 +413,12 @@ void UpdateTriggerOverlay() {
             case ACTION_JA: return "j.A";
             case ACTION_JB: return "j.B";
             case ACTION_JC: return "j.C";
+            case ACTION_6A: return "6A";
+            case ACTION_6B: return "6B";
+            case ACTION_6C: return "6C";
+            case ACTION_4A: return "4A";
+            case ACTION_4B: return "4B";
+            case ACTION_4C: return "4C";
             case ACTION_QCF: return "236" + strengthLetter; // QCF + strength
             case ACTION_DP: return "623" + strengthLetter;  // DP + strength
             case ACTION_QCB: return "214" + strengthLetter; // QCB + strength
@@ -426,7 +432,7 @@ void UpdateTriggerOverlay() {
             case ACTION_412: return "412" + strengthLetter;       // 4,1,2 partial roll
             case ACTION_22: return "22" + strengthLetter;         // Down-Down
             case ACTION_4123641236: return "4123641236" + strengthLetter; // Double 41236
-            case ACTION_6321463214: return "6321463214" + strengthLetter; // Extended pretzel
+            case ACTION_6321463214: return "6321463214" + strengthLetter;
             case ACTION_JUMP: return "Jump";
             case ACTION_BACKDASH: return "Backdash";
             case ACTION_FORWARD_DASH: return "Forward Dash";
@@ -510,6 +516,8 @@ void UpdateTriggerOverlay() {
     update_line(g_TriggerOnRGId, triggerOnRGEnabled.load(), "On RG: ",
                 triggerOnRGAction.load(), triggerOnRGCustomID.load(),
                 triggerOnRGDelay.load(), triggerOnRGStrength.load(), TRIGGER_ON_RG);
+
+    // (Removed) AI control flag overlay: now shown only in the Stats/ImGui panel to declutter on-screen HUD.
 }
 
 void FrameDataMonitor() {
@@ -1727,6 +1735,10 @@ void UpdateStatsDisplay() {
             DirectDrawHook::RemovePermanentMessage(g_statsMinagiId);
             g_statsMinagiId = -1;
         }
+        if (g_statsAIFlagsId != -1) {
+            DirectDrawHook::RemovePermanentMessage(g_statsAIFlagsId);
+            g_statsAIFlagsId = -1;
+        }
         return;
     }
 
@@ -1772,6 +1784,10 @@ void UpdateStatsDisplay() {
         if (g_statsMinagiId != -1) {
             DirectDrawHook::RemovePermanentMessage(g_statsMinagiId);
             g_statsMinagiId = -1;
+        }
+        if (g_statsAIFlagsId != -1) {
+            DirectDrawHook::RemovePermanentMessage(g_statsAIFlagsId);
+            g_statsAIFlagsId = -1;
         }
     }
 
@@ -1819,6 +1835,10 @@ void UpdateStatsDisplay() {
         if (g_statsMinagiId != -1) {
             DirectDrawHook::RemovePermanentMessage(g_statsMinagiId);
             g_statsMinagiId = -1;
+        }
+        if (g_statsAIFlagsId != -1) {
+            DirectDrawHook::RemovePermanentMessage(g_statsAIFlagsId);
+            g_statsAIFlagsId = -1;
         }
         return;
     }
@@ -2212,6 +2232,30 @@ void UpdateStatsDisplay() {
         } else {
             if (g_statsMinagiId != -1) { DirectDrawHook::RemovePermanentMessage(g_statsMinagiId); g_statsMinagiId = -1; }
         }
+
+        // AI Control Flags line (moved from trigger overlay). Only show when stats are on and match phase.
+        if (statsOn) {
+            GamePhase phase = GetCurrentGamePhase();
+            if (phase == GamePhase::Match) {
+                uintptr_t p1BasePtr = 0, p2BasePtr = 0; uint32_t p1AI=0, p2AI=0; bool haveP1=false, haveP2=false;
+                if (base) {
+                    if (SafeReadMemory(base + EFZ_BASE_OFFSET_P1, &p1BasePtr, sizeof(p1BasePtr)) && p1BasePtr) {
+                        haveP1 = SafeReadMemory(p1BasePtr + AI_CONTROL_FLAG_OFFSET, &p1AI, sizeof(p1AI));
+                    }
+                    if (SafeReadMemory(base + EFZ_BASE_OFFSET_P2, &p2BasePtr, sizeof(p2BasePtr)) && p2BasePtr) {
+                        haveP2 = SafeReadMemory(p2BasePtr + AI_CONTROL_FLAG_OFFSET, &p2AI, sizeof(p2AI));
+                    }
+                }
+                std::stringstream aiLine;
+                aiLine << "AI: P1=" << (haveP1 ? (p1AI?"1":"0") : "-") << " P2=" << (haveP2 ? (p2AI?"1":"0") : "-");
+                // Indicate when P2 control is temporarily overridden by automation
+                if (g_p2ControlOverridden) aiLine << " [Override]";
+                upsert(g_statsAIFlagsId, aiLine.str());
+            } else {
+                if (g_statsAIFlagsId != -1) { DirectDrawHook::RemovePermanentMessage(g_statsAIFlagsId); g_statsAIFlagsId = -1; }
+            }
+        }
+        else if (g_statsAIFlagsId != -1) { DirectDrawHook::RemovePermanentMessage(g_statsAIFlagsId); g_statsAIFlagsId = -1; }
     }
 
     if (statsOn) {

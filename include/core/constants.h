@@ -177,6 +177,7 @@
 // Dash states
 #define FORWARD_DASH_START_ID 163
 #define FORWARD_DASH_RECOVERY_ID 164
+#define FORWARD_DASH_RECOVERY_SENTINEL_ID 178 // New: variant recovery state used for clean control handoff
 #define BACKWARD_DASH_START_ID 165
 #define BACKWARD_DASH_RECOVERY_ID 166
 
@@ -250,6 +251,13 @@
 #define ACTION_22            25
 #define ACTION_4123641236    26
 #define ACTION_6321463214    27
+// Directional normals (forward/back) appended to preserve existing ordering
+#define ACTION_6A             28
+#define ACTION_6B             29
+#define ACTION_6C             30
+#define ACTION_4A             31
+#define ACTION_4B             32
+#define ACTION_4C             33
 
 // Default delay for triggers
 #define DEFAULT_TRIGGER_DELAY 0  // Default delay for all triggers

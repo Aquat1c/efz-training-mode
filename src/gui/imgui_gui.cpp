@@ -82,6 +82,12 @@ namespace ImGuiGui {
     ACTION_22,          // 25 = 22 Down-Down
     ACTION_4123641236,  // 26 = 4123641236 Double Roll
     ACTION_6321463214   // 27 = 6321463214 Extended Pretzel
+    ,ACTION_6A          // 28 = 6A (Forward A)
+    ,ACTION_6B          // 29 = 6B
+    ,ACTION_6C          // 30 = 6C
+    ,ACTION_4A          // 31 = 4A (Back A)
+    ,ACTION_4B          // 32 = 4B
+    ,ACTION_4C          // 33 = 4C
     };
 
     // Helper function to convert action type to combo index
@@ -415,7 +421,8 @@ namespace ImGuiGui {
             "236 (QCF)", "623 (DP)", "214 (QCB)", "421 (Half-circle Down)",
             "41236 (HCF)", "214236 (Hybrid)", "236236 (Double QCF)", "214214 (Double QCB)",
             "641236", "463214", "412", "22", "4123641236", "6321463214",
-            "Jump", "Backdash", "Forward Dash", "Block", "Final Memory"
+            "Jump", "Backdash", "Forward Dash", "Block", "Final Memory",
+            "Forward Normal", "Back Normal"
         }; // NOTE: mapping functions below must stay in sync
 
         // Compute a compact width that fits the longest action label (plus arrow/padding), so combos aren't overly wide
@@ -434,7 +441,9 @@ namespace ImGuiGui {
         auto IsNormalAttackAction = [](int action) {
             return action == ACTION_5A || action == ACTION_5B || action == ACTION_5C ||
                    action == ACTION_2A || action == ACTION_2B || action == ACTION_2C ||
-                   action == ACTION_JA || action == ACTION_JB || action == ACTION_JC;
+                   action == ACTION_JA || action == ACTION_JB || action == ACTION_JC ||
+                   action == ACTION_6A || action == ACTION_6B || action == ACTION_6C ||
+                   action == ACTION_4A || action == ACTION_4B || action == ACTION_4C;
         };
         auto IsSpecialMoveAction = [](int action) {
             return action == ACTION_QCF || action == ACTION_DP || action == ACTION_QCB ||
@@ -472,6 +481,12 @@ namespace ImGuiGui {
                 case ACTION_FORWARD_DASH: return 19;  // Forward Dash
                 case ACTION_BLOCK: return 20;         // Block
                 case ACTION_FINAL_MEMORY: return 21;  // Final Memory
+                case ACTION_6A:
+                case ACTION_6B:
+                case ACTION_6C: return 22; // Forward Normal group
+                case ACTION_4A:
+                case ACTION_4B:
+                case ACTION_4C: return 23; // Back Normal group
                 default: return 0; // default Standing
             }
         };
@@ -511,6 +526,8 @@ namespace ImGuiGui {
                 case 19: return ACTION_FORWARD_DASH;   // Forward Dash
                 case 20: return ACTION_BLOCK;          // Block
                 case 21: return ACTION_FINAL_MEMORY;   // Final Memory
+                case 22: return ACTION_6A; // default A for forward group (button selection remaps later)
+                case 23: return ACTION_4A; // default A for back group
                 default: return ACTION_5A; // For posture indices 0..2, action set later
             }
         };
@@ -607,6 +624,26 @@ namespace ImGuiGui {
             } else if (*triggers[i].action == ACTION_BACKDASH || *triggers[i].action == ACTION_FORWARD_DASH) {
                 // Hide button combo for dash actions
                 ImGui::Dummy(ImVec2(90, 0));
+                if (*triggers[i].action == ACTION_FORWARD_DASH) {
+                    ImGui::SameLine();
+                    ImGui::SetNextItemWidth(150);
+                    int fdf = forwardDashFollowup.load();
+                    const char* fdItems[] = { "No Follow-up", "5A", "5B", "5C", "2A", "2B", "2C" };
+                    if (ImGui::Combo("##FDFollow", &fdf, fdItems, IM_ARRAYSIZE(fdItems))) {
+                        if (fdf < 0) fdf = 0; if (fdf > 6) fdf = 6; forwardDashFollowup.store(fdf);
+                    }
+                    if (ImGui::IsItemHovered()) {
+                        ImGui::SetTooltip("Optional normal to press on the first actionable dash frame.\nA/ B/ C standing or crouching versions.");
+                    }
+                    ImGui::SameLine();
+                    bool dashMode = forwardDashFollowupDashMode.load();
+                    if (ImGui::Checkbox("DashAtk", &dashMode)) {
+                        forwardDashFollowupDashMode.store(dashMode);
+                    }
+                    if (ImGui::IsItemHovered()) {
+                        ImGui::SetTooltip("Enable to attempt dash-normal timing (inject during dash).\nDisable for post-dash follow-up.");
+                    }
+                }
             } else if (postureIdx >= 0) {
                 // Derive button from current normal action
                 switch (*triggers[i].action) {
@@ -627,6 +664,23 @@ namespace ImGuiGui {
                 buttonIdx = *triggers[i].strength;
                 if (ImGui::Combo("", &buttonIdx, buttonItems, IM_ARRAYSIZE(buttonItems))) {//Delay
                     *triggers[i].strength = (buttonIdx > 2) ? 2 : buttonIdx;
+                }
+            } else if (GetMotionIndexForAction(*triggers[i].action) == 22 || GetMotionIndexForAction(*triggers[i].action) == 23) {
+                // Forward / Back Normal group: map button selection to 6A/B/C or 4A/B/C
+                int groupIndex = GetMotionIndexForAction(*triggers[i].action); // 22 forward, 23 back
+                // Derive current button
+                switch (*triggers[i].action) {
+                    case ACTION_6A: case ACTION_4A: buttonIdx = 0; break;
+                    case ACTION_6B: case ACTION_4B: buttonIdx = 1; break;
+                    case ACTION_6C: case ACTION_4C: buttonIdx = 2; break;
+                    default: buttonIdx = 0; break;
+                }
+                if (ImGui::Combo("", &buttonIdx, buttonItems, 3)) {
+                    if (groupIndex == 22) {
+                        *triggers[i].action = (buttonIdx==0)?ACTION_6A:(buttonIdx==1)?ACTION_6B:ACTION_6C;
+                    } else {
+                        *triggers[i].action = (buttonIdx==0)?ACTION_4A:(buttonIdx==1)?ACTION_4B:ACTION_4C;
+                    }
                 }
             } else {
                 // For other actions (jump, dash, block, custom), keep buttonIdx but it won't affect action
