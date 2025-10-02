@@ -148,7 +148,15 @@ int __fastcall HookedProcessCharacterInput(int characterPtr, int edx) {
         if (g_forceBypass[playerNum].load() || !g_injectImmediateOnly[playerNum].load()) {
             // Authoritative buffered injection: bypass original.
             WritePlayerInputImmediate(playerNum, currentMask);
-            WritePlayerInputToBuffer(playerNum, currentMask);
+            
+            // CRITICAL FIX: Skip buffer writes for dash motions - they're written all at once when queued.
+            // Frame-by-frame writes are too slow and get contaminated by neutral inputs from the game.
+            int currentMotion = (playerNum == 1) ? p1CurrentMotionType : p2CurrentMotionType;
+            bool isDashMotion = (currentMotion == MOTION_FORWARD_DASH || currentMotion == MOTION_BACK_DASH);
+            if (!isDashMotion) {
+                WritePlayerInputToBuffer(playerNum, currentMask);
+            }
+            
             g_lastInjectedMask[playerNum] = currentMask;
             g_wasBypassBuffered[playerNum] = true;
             return 0;

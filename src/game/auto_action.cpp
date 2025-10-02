@@ -15,6 +15,7 @@
 #include "../include/game/fm_commands.h" // Final Memory execution
 #include "../include/game/macro_controller.h" // Integrate macros with triggers
 #include <cmath>
+#include <algorithm>
 // Define the motion input constants if they're not already defined
 #ifndef MOTION_INPUT_UP
 #define MOTION_INPUT_UP INPUT_UP
@@ -49,8 +50,112 @@ static int p1TriggerCooldown = 0;
 static int p2TriggerCooldown = 0;
 // Further reduce cooldown to re-arm triggers faster (was 6)
 static constexpr int TRIGGER_COOLDOWN_FRAMES = 6; // modest base cooldown; simplified logic allows reliable expiry
+static constexpr int RESTORE_GRACE_PERIOD = 12; // frames to wait before clearing g_pendingControlRestore to prevent immediate re-trigger
+static int g_restoreGraceCounter = 0; // counts down from RESTORE_GRACE_PERIOD after control restore
 bool g_p2ControlOverridden = false;
 uint32_t g_originalP2ControlFlag = 1; // Default to AI control
+
+// ---------------------------------------------------------------------------
+// Forward dash follow-up deferral (moved out of ApplyAutoAction so we can fire
+// on the exact frame the dash window is satisfied, even if no new trigger fires)
+// mode: 0 = post-dash (inject first frame AFTER queue inactive)
+//       1 = dash-normal timing (inject first frame queue becomes active)
+// stage (internal): for post-dash, stage advances to 1 once we have seen the
+//                   queue active at least one frame; then we wait for inactive.
+//                   for dash-normal, stage remains 0 until we fire while active.
+struct DashFollowDeferred {
+    // We only need: which follow-up (1..6), which player, and whether we've latched dash start.
+    std::atomic<int> pendingSel{0};
+    std::atomic<int> player{0};
+    std::atomic<int> dashStartLatched{0}; // 0 = not yet, 1 = latched & fired, -1 = latched but failed to fire (safety)
+};
+static DashFollowDeferred g_dashDeferred; // single slot (only one forward dash follow-up expected at a time)
+
+static void ScheduleForwardDashFollowup(int playerNum, int sel, bool /*dashModeIgnored*/) {
+    if (g_dashDeferred.pendingSel.load() > 0) {
+        LogOut(std::string("[AUTO-ACTION] Forward dash follow-up schedule ignored; pending sel=") + std::to_string(g_dashDeferred.pendingSel.load()), true);
+        return;
+    }
+    g_dashDeferred.pendingSel.store(sel);
+    g_dashDeferred.player.store(playerNum);
+    g_dashDeferred.dashStartLatched.store(0);
+    LogOut(std::string("[AUTO-ACTION] Forward dash follow-up armed (sel=") + std::to_string(sel) + ")", true);
+    if (playerNum == 2) {
+        EnableP2ControlForAutoAction();
+        if (!g_pendingControlRestore.load()) {
+            g_lastP2MoveID.store(-1);
+            g_controlRestoreTimeout.store(120); // generous window; we'll restore shortly after injection
+            g_pendingControlRestore.store(true);
+            LogOut("[AUTO-ACTION][DASH] Armed control restore monitor (simple dash-normal)", true);
+        }
+    }
+}
+
+// Refactored: use authoritative moveID transitions (163->164) instead of queue heuristics.
+// current/prev move IDs for both players are passed each frame for precise detection.
+static void ProcessDeferredDashFollowups(short curP1, short prevP1, short curP2, short prevP2) {
+    int sel = g_dashDeferred.pendingSel.load();
+    if (sel <= 0) return;
+    int targetP = g_dashDeferred.player.load();
+    short prev = (targetP == 1) ? prevP1 : prevP2;
+    short curr = (targetP == 1) ? curP1  : curP2;
+    
+    // Debug: Log MoveID transitions while waiting for dash
+    static short lastLoggedP1 = -999;
+    static short lastLoggedP2 = -999;
+    if (targetP == 1 && curr != lastLoggedP1) {
+        LogOut("[DASH_DEBUG] P1 MoveID: " + std::to_string(prev) + " -> " + std::to_string(curr) + 
+               " (waiting for " + std::to_string(FORWARD_DASH_START_ID) + ")", true);
+        lastLoggedP1 = curr;
+        if (curr == FORWARD_DASH_START_ID) {
+            DumpInputBuffer(1, "DASH_START_DETECTED");
+        }
+    }
+    if (targetP == 2 && curr != lastLoggedP2) {
+        LogOut("[DASH_DEBUG] P2 MoveID: " + std::to_string(prev) + " -> " + std::to_string(curr) + 
+               " (waiting for " + std::to_string(FORWARD_DASH_START_ID) + ")", true);
+        lastLoggedP2 = curr;
+        if (curr == FORWARD_DASH_START_ID) {
+            DumpInputBuffer(2, "DASH_START_DETECTED");
+        }
+    }
+    
+    // Fire exactly on first frame we see FORWARD_DASH_START_ID.
+    if (curr == FORWARD_DASH_START_ID && prev != FORWARD_DASH_START_ID) {
+        bool facingRight = GetPlayerFacingDirection(targetP);
+        uint8_t forwardDir = facingRight ? GAME_INPUT_RIGHT : GAME_INPUT_LEFT;
+        uint8_t mask = 0;
+        switch (sel) {
+            case 1: mask = forwardDir | GAME_INPUT_A; break; // dash A
+            case 2: mask = forwardDir | GAME_INPUT_B; break; // dash B
+            case 3: mask = forwardDir | GAME_INPUT_C; break; // dash C
+            case 4: mask = (forwardDir | GAME_INPUT_DOWN) | GAME_INPUT_A; break; // dash 2A variant
+            case 5: mask = (forwardDir | GAME_INPUT_DOWN) | GAME_INPUT_B; break; // dash 2B
+            case 6: mask = (forwardDir | GAME_INPUT_DOWN) | GAME_INPUT_C; break; // dash 2C
+            default: break;
+        }
+        if (mask) {
+            ImmediateInput::PressFor(targetP, mask, 2);
+            LogOut(std::string("[AUTO-ACTION] Dash-normal injected sel=") + std::to_string(sel) + " frame=0 of dash", true);
+            
+            // CRITICAL: Clear the dash pattern from buffer immediately after injecting the normal.
+            // Otherwise the dash pattern (L,L,L,N,N,L,L,L) remains in buffer and re-triggers after attack ends.
+            ClearPlayerInputBuffer(targetP, true);
+            WritePlayerInputImmediate(targetP, 0x00);
+            LogOut("[AUTO-ACTION] Cleared dash pattern from buffer after dash normal injection", true);
+            
+            g_dashDeferred.pendingSel.store(0);
+            g_dashDeferred.dashStartLatched.store(1);
+            if (targetP == 2) { if (p2TriggerCooldown < 6) p2TriggerCooldown = 6; }
+            else { if (p1TriggerCooldown < 6) p1TriggerCooldown = 6; }
+        } else {
+            // Safety: if something invalid, clear so we don't spin forever.
+            g_dashDeferred.pendingSel.store(0);
+            g_dashDeferred.dashStartLatched.store(-1);
+            LogOut("[AUTO-ACTION] Dash follow-up selection invalid, clearing", true);
+        }
+    }
+}
 
 // Add at the top with other global variables (around line 40)
 std::atomic<bool> g_pendingControlRestore(false);
@@ -59,6 +164,9 @@ std::atomic<short> g_lastP2MoveID(-1);
 const int CONTROL_RESTORE_TIMEOUT = 180; // 180 internal frames = 1 second
 // Counter-RG fast restore: when active, restore AI control as soon as the special actually starts
 std::atomic<bool> g_crgFastRestore(false);
+// Forward dash tracking to prevent premature restore before MoveID 163 appears
+static std::atomic<bool> g_recentDashQueued(false);
+static std::atomic<int> g_recentDashQueuedFrame(0);
 
 // Pre-arm flags for On Wakeup: buffer inputs during GROUNDTECH_RECOVERY to fire on wake
 static bool s_p1WakePrearmed = false; // wake pre-arm without early triggerActive
@@ -507,6 +615,7 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
         return;
     }
     ProcessTriggerCooldowns();
+    // (Deferred dash follow-ups handled after we have moveID context below)
 
     // Update timing trackers once per tick for both players
     UpdateStunTimersForPlayer(s_p1Timers, prevMoveID1, moveID1);
@@ -610,8 +719,14 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
                     int at = triggerOnRGAction.load();
                     int motion = ConvertTriggerActionToMotion(at, TRIGGER_ON_RG);
                     int buttonMask = 0;
-                    if (at >= ACTION_5A && at <= ACTION_2C) {
-                        int button = (at - ACTION_5A) % 3;  // 0=A,1=B,2=C
+                    if ((at >= ACTION_5A && at <= ACTION_2C) || (at >= ACTION_6A && at <= ACTION_4C)) {
+                        int button;
+                        if (at >= ACTION_5A && at <= ACTION_2C) {
+                            button = (at - ACTION_5A) % 3;
+                        } else { // directional normals contiguous groups 6A..6C then 4A..4C
+                            int offset = at - ACTION_6A; // 0..5
+                            button = offset % 3; // 0=A,1=B,2=C
+                        }
                         buttonMask = (1 << (4 + button));
                     } else if (at >= ACTION_JA && at <= ACTION_JC) {
                         int button = (at - ACTION_JA) % 3;
@@ -676,7 +791,7 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
                 int motionType = ConvertTriggerActionToMotion(actionType, TRIGGER_ON_WAKEUP);
                 // Determine button mask (A/B/C) for specials
                 int buttonMask = 0;
-                if (actionType >= ACTION_5A && actionType <= ACTION_2C) {
+                if ((actionType >= ACTION_5A && actionType <= ACTION_2C) || (actionType >= ACTION_6A && actionType <= ACTION_4C)) {
                     int button = (actionType - ACTION_5A) % 3;  // 0=A, 1=B, 2=C
                     buttonMask = (1 << (4 + button));
                 } else if (actionType >= ACTION_JA && actionType <= ACTION_JC) {
@@ -776,8 +891,14 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
                     } else {
                         int motionType = ConvertTriggerActionToMotion(at, TRIGGER_ON_WAKEUP);
                         int buttonMask = 0;
-                        if (at >= ACTION_5A && at <= ACTION_2C) {
-                            int button = (at - ACTION_5A) % 3;
+                        if ((at >= ACTION_5A && at <= ACTION_2C) || (at >= ACTION_6A && at <= ACTION_4C)) {
+                            int button;
+                            if (at >= ACTION_5A && at <= ACTION_2C) {
+                                button = (at - ACTION_5A) % 3;
+                            } else {
+                                int offset = at - ACTION_6A;
+                                button = offset % 3;
+                            }
                             buttonMask = (1 << (4 + button));
                         } else if (at >= ACTION_JA && at <= ACTION_JC) {
                             int button = (at - ACTION_JA) % 3;
@@ -785,7 +906,7 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
                         }
                         if (at == ACTION_BACKDASH || at == ACTION_FORWARD_DASH) {
                             QueueMotionInput(1, motionType, 0);
-                        } else if (motionType >= MOTION_5A && motionType <= MOTION_5C) {
+                        } else if ((motionType >= MOTION_5A && motionType <= MOTION_5C) || (motionType >= MOTION_6A && motionType <= MOTION_4C)) {
                             ImmediateInput::PressFor(1, buttonMask, 2);
                         } else if (motionType >= MOTION_2A && motionType <= MOTION_2C) {
                             ImmediateInput::PressFor(1, GAME_INPUT_DOWN | buttonMask, 2);
@@ -839,6 +960,8 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
         
          // CRITICAL FIX: Complete implementation of After Airtech trigger for P2
     if (!shouldTrigger && triggerAfterAirtechEnabled.load()) {
+            // CRITICAL: Don't fire if control restore is pending from previous action
+            bool restorePending = g_pendingControlRestore.load();
             // Check for transition from airtech to actionable state
             bool wasAirtech = IsAirtech(prevMoveID2);
             // Post-airtech actionable: allow either general actionable states or explicit FALLING
@@ -846,10 +969,11 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
             if (detailedLogging.load() && canLogTrigDiag()) {
                 LogOut("[TRIGGER_DIAG] P2 AfterAirtech check: wasAirtech=" + std::to_string(wasAirtech) +
                        ", postAirtechNow=" + std::to_string(postAirtechNow) +
+                       ", restorePending=" + std::to_string(restorePending) +
                        ", targetPlayer=" + std::to_string(targetPlayer), true);
             }
 
-            if (wasAirtech && postAirtechNow) {
+            if (!restorePending && wasAirtech && postAirtechNow) {
                 LogOut("[AUTO-ACTION] P2 After Airtech trigger activated", detailedLogging.load());
                 shouldTrigger = true;
                 triggerType = TRIGGER_AFTER_AIRTECH;
@@ -860,7 +984,17 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
         }
     // Simplified P2 After Block trigger
     if (!shouldTrigger && triggerAfterBlockEnabled.load()) {
-        if (IsBlockstun(prevMoveID2) && IsActionable(moveID2) && !p2TriggerActive && p2TriggerCooldown <= 0) {
+        // Suppress After Block trigger if a forward dash follow-up is already pending but not yet fired
+        bool dashFollowPending = (g_dashDeferred.pendingSel.load() > 0);
+        // CRITICAL: Also suppress if a control restore is pending (we're still executing previous action)
+        bool restorePending = g_pendingControlRestore.load();
+        if (dashFollowPending && detailedLogging.load() && canLogTrigDiag()) {
+            LogOut("[TRIGGER_DIAG] Suppressing P2 After Block: dash follow-up pending", true);
+        }
+        if (restorePending && detailedLogging.load() && canLogTrigDiag()) {
+            LogOut("[TRIGGER_DIAG] Suppressing P2 After Block: control restore pending", true);
+        }
+        if (!dashFollowPending && !restorePending && IsBlockstun(prevMoveID2) && IsActionable(moveID2) && !p2TriggerActive && p2TriggerCooldown <= 0) {
             shouldTrigger = true;
             triggerType = TRIGGER_AFTER_BLOCK;
             delay = triggerAfterBlockDelay.load();
@@ -889,8 +1023,8 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
                 int at = triggerOnRGAction.load();
                 int motion = ConvertTriggerActionToMotion(at, TRIGGER_ON_RG);
                 int buttonMask = 0;
-                if (at >= ACTION_5A && at <= ACTION_2C) {
-                    int button = (at - ACTION_5A) % 3;
+                if ((at >= ACTION_5A && at <= ACTION_2C) || (at >= ACTION_6A && at <= ACTION_4C)) {
+                    int button = (at >= ACTION_5A && at <= ACTION_2C) ? ((at - ACTION_5A) % 3) : ((at - ACTION_6A) % 3);
                     buttonMask = (1 << (4 + button));
                 } else if (at >= ACTION_JA && at <= ACTION_JC) {
                     int button = (at - ACTION_JA) % 3;
@@ -941,7 +1075,12 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
         
         // After Hitstun trigger
         if (!shouldTrigger && triggerAfterHitstunEnabled.load()) {
-            if (IsHitstun(prevMoveID2) && !IsHitstun(moveID2) && !IsAirtech(moveID2)) {
+            // CRITICAL: Don't fire if control restore is pending from previous action
+            bool restorePending = g_pendingControlRestore.load();
+            if (restorePending && detailedLogging.load() && canLogTrigDiag()) {
+                LogOut("[TRIGGER_DIAG] Suppressing P2 After Hitstun: control restore pending", true);
+            }
+            if (!restorePending && IsHitstun(prevMoveID2) && !IsHitstun(moveID2) && !IsAirtech(moveID2)) {
                 if (IsActionable(moveID2)) {
                     shouldTrigger = true;
                     triggerType = TRIGGER_AFTER_HITSTUN;
@@ -1056,8 +1195,8 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
                     } else {
                         int motionType = ConvertTriggerActionToMotion(at, TRIGGER_ON_WAKEUP);
                         int buttonMask = 0;
-                        if (at >= ACTION_5A && at <= ACTION_2C) {
-                            int button = (at - ACTION_5A) % 3;
+                        if ((at >= ACTION_5A && at <= ACTION_2C) || (at >= ACTION_6A && at <= ACTION_4C)) {
+                            int button = (at >= ACTION_5A && at <= ACTION_2C) ? ((at - ACTION_5A) % 3) : ((at - ACTION_6A) % 3);
                             buttonMask = (1 << (4 + button));
                         } else if (at >= ACTION_JA && at <= ACTION_JC) {
                             int button = (at - ACTION_JA) % 3;
@@ -1065,7 +1204,7 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
                         }
                         if (at == ACTION_BACKDASH || at == ACTION_FORWARD_DASH) {
                             QueueMotionInput(2, motionType, 0);
-                        } else if (motionType >= MOTION_5A && motionType <= MOTION_5C) {
+                        } else if ((motionType >= MOTION_5A && motionType <= MOTION_5C) || (motionType >= MOTION_6A && motionType <= MOTION_4C)) {
                             ImmediateInput::PressFor(2, buttonMask, 2);
                         } else if (motionType >= MOTION_2A && motionType <= MOTION_2C) {
                             ImmediateInput::PressFor(2, GAME_INPUT_DOWN | buttonMask, 2);
@@ -1134,6 +1273,9 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
     
     // Process auto control restore at the end of every monitor cycle
     ProcessAutoControlRestore();
+
+    // Now that all moveID-based transitions processed, handle any deferred dash follow-ups
+    ProcessDeferredDashFollowups(moveID1, prevMoveID1, moveID2, prevMoveID2);
 
     // Clear pre-arm flags when window passes to avoid sticking
     int now = frameCounter.load();
@@ -1338,13 +1480,17 @@ void ApplyAutoAction(int playerNum, uintptr_t moveIDAddr, short currentMoveID, s
     
     // Determine button mask based on action type
     if (actionType >= ACTION_5A && actionType <= ACTION_2C) {
-        // Normal attacks
+        // Neutral and crouching normals (5A/B/C,2A/B/C)
         int button = (actionType - ACTION_5A) % 3;  // 0=A, 1=B, 2=C
         buttonMask = (1 << (4 + button));  // A=16, B=32, C=64
     } else if (actionType >= ACTION_JA && actionType <= ACTION_JC) {
         // Jump attacks
         int button = (actionType - ACTION_JA) % 3;  // 0=A, 1=B, 2=C
         buttonMask = (1 << (4 + button));  // A=16, B=32, C=64
+    } else if (actionType >= ACTION_6A && actionType <= ACTION_4C) {
+        // Directional forward/back normals (6A/B/C, 4A/B/C)
+        int button = (actionType - ACTION_6A) % 3; // groups of 3
+        buttonMask = (1 << (4 + button));
     } else if (actionType >= ACTION_QCF) {
         // Strength-based actions only (exclude jump/dash/block/custom)
         switch (actionType) {
@@ -1381,8 +1527,12 @@ void ApplyAutoAction(int playerNum, uintptr_t moveIDAddr, short currentMoveID, s
     }
     
     bool success = false;
-    bool isRegularMove = (motionType >= MOTION_5A && motionType <= MOTION_JC);
+    bool isRegularMove = (motionType >= MOTION_5A && motionType <= MOTION_JC) || (motionType >= MOTION_6A && motionType <= MOTION_4C);
     bool isSpecialMove = (motionType >= MOTION_236A);
+    // Exclude dashes from being treated as specials for restore/control tracking
+    if (actionType == ACTION_FORWARD_DASH || actionType == ACTION_BACKDASH || actionType == ACTION_BACK_DASH) {
+        isSpecialMove = false;
+    }
 
     // Special handling: Jump must be injected via immediate input register with direction
     if (actionType == ACTION_JUMP) {
@@ -1424,13 +1574,47 @@ void ApplyAutoAction(int playerNum, uintptr_t moveIDAddr, short currentMoveID, s
     // Special handling: Dashes should be executed by writing to the buffer via the queue
     if (!success && (actionType == ACTION_BACKDASH || actionType == ACTION_FORWARD_DASH)) {
         LogOut("[AUTO-ACTION] Queuing dash motion via buffer (" + GetMotionTypeName(motionType) + ")", true);
-        // Ensure immediate-only is disabled so buffer gets written
         g_injectImmediateOnly[playerNum].store(false);
+        bool isForwardDash = (actionType == ACTION_FORWARD_DASH);
         if (playerNum == 2) {
+            // Revert: always override P2 control for any auto dash so that subsequent immediate
+            // injections (dash normals) occur under human control. This addresses reliability
+            // concerns when AI logic might otherwise consume/alter buffered inputs.
             EnableP2ControlForAutoAction();
         }
+        // CRITICAL FIX: Reset buffer index to 0 before writing dash pattern.
+        // Game's dash detector only checks last 5 buffer positions (index-5 to index).
+        // Without reset, dash pattern lands at arbitrary position causing recognition failures.
+        // Dash follow-ups use immediate registers, not buffer, so this is safe.
+        ResetPlayerInputBufferIndex(playerNum);
         success = QueueMotionInput(playerNum, motionType, 0);
-    // Dashes use immediate input/queue only; no control override required
+        if (success && isForwardDash) {
+            if (playerNum == 2) {
+                g_recentDashQueued.store(true);
+                g_recentDashQueuedFrame.store(frameCounter.load());
+            }
+            int fdf = forwardDashFollowup.load();
+            bool dashMode = forwardDashFollowupDashMode.load();
+            if (fdf > 0) {
+                // Always treat as dash-normal; ignore previous dashMode toggle for now.
+                ScheduleForwardDashFollowup(playerNum, fdf, true);
+            }
+            // Always arm restore monitor for P2 so control returns after dash (or dash+follow-up)
+            if (playerNum == 2 && !g_pendingControlRestore.load()) {
+                g_lastP2MoveID.store(-1);
+                // If follow-up configured, give slightly longer window for dash-normal injection
+                g_controlRestoreTimeout.store(fdf > 0 ? 120 : 90);
+                g_pendingControlRestore.store(true);
+                LogOut(std::string("[AUTO-ACTION][DASH] Armed control restore monitor (") + (fdf>0?"follow-up":"no follow-up") + ")", true);
+            }
+        } else if (success && actionType == ACTION_BACKDASH) {
+            if (playerNum == 2 && !g_pendingControlRestore.load()) {
+                g_lastP2MoveID.store(-1);
+                g_controlRestoreTimeout.store(90);
+                g_pendingControlRestore.store(true);
+                LogOut("[AUTO-ACTION][DASH] Armed control restore monitor (backdash)", true);
+            }
+        }
     }
     
     if (!success && isRegularMove) {
@@ -1438,14 +1622,22 @@ void ApplyAutoAction(int playerNum, uintptr_t moveIDAddr, short currentMoveID, s
         LogOut("[AUTO-ACTION] Applying regular move " + GetMotionTypeName(motionType) +
                " via manual hold (buffered)", detailedLogging.load());
 
-        // Build the mask for this normal
+        // Build the mask for this normal (directional variants need direction bits)
         uint8_t inputMask = GAME_INPUT_NEUTRAL;
+        bool facingRight = GetPlayerFacingDirection(playerNum);
+        uint8_t forwardDir = facingRight ? GAME_INPUT_RIGHT : GAME_INPUT_LEFT;
+        uint8_t backDir    = facingRight ? GAME_INPUT_LEFT  : GAME_INPUT_RIGHT;
+
         if (motionType >= MOTION_5A && motionType <= MOTION_5C) {
-            inputMask = buttonMask; // Neutral + button
+            inputMask = buttonMask; // Neutral ground normals
         } else if (motionType >= MOTION_2A && motionType <= MOTION_2C) {
-            inputMask = GAME_INPUT_DOWN | buttonMask; // Down + button
+            inputMask = GAME_INPUT_DOWN | buttonMask; // Crouching normals
         } else if (motionType >= MOTION_JA && motionType <= MOTION_JC) {
-            inputMask = buttonMask; // Air normals: button only
+            inputMask = buttonMask; // Air normals (jump direction handled separately at jump time)
+        } else if (motionType >= MOTION_6A && motionType <= MOTION_6C) {
+            inputMask = forwardDir | buttonMask; // Forward direction + button
+        } else if (motionType >= MOTION_4A && motionType <= MOTION_4C) {
+            inputMask = backDir | buttonMask; // Back direction + button
         }
 
     // Use immediate writer for the button (A/B/C) and optionally direction DOWN for 2A/2B/2C.
@@ -1475,6 +1667,8 @@ void ApplyAutoAction(int playerNum, uintptr_t moveIDAddr, short currentMoveID, s
         }
     }
     
+    // (Deferred dash follow-ups processed centrally each frame now)
+
     if (success) {
     if (playerNum == 2 && isSpecialMove) {
             LogOut("[AUTO-ACTION] Tracking P2 special for restore", true);
@@ -1558,6 +1752,14 @@ void RestoreP2ControlState() {
             return;
         }
         
+        // CRITICAL: Get game state pointer to restore CPU control flag
+        uintptr_t gameStatePtr = 0;
+        if (!SafeReadMemory(base + EFZ_BASE_OFFSET_GAME_STATE, &gameStatePtr, sizeof(uintptr_t)) || !gameStatePtr) {
+            LogOut("[AUTO-ACTION] Failed to get game state pointer for control restore", true);
+            g_p2ControlOverridden = false;
+            return;
+        }
+        
         uintptr_t p2CharPtr = 0;
         if (!SafeReadMemory(base + EFZ_BASE_OFFSET_P2, &p2CharPtr, sizeof(uintptr_t)) || !p2CharPtr) {
             LogOut("[AUTO-ACTION] Failed to get P2 pointer for control restore, marking as restored anyway", true);
@@ -1565,7 +1767,23 @@ void RestoreP2ControlState() {
             return;
         }
         
-        // Restore original control state with audit logging
+        // CRITICAL: Clear buffer and immediate registers BEFORE restoring AI control
+        // to prevent AI from reading stale input patterns and re-executing moves
+        ClearPlayerInputBuffer(2);
+        WritePlayerInputImmediate(2, 0x00);
+        LogOut("[AUTO-ACTION] Cleared buffer and immediate registers before AI restore", true);
+        
+        // CRITICAL: Restore CPU control flag at game state level FIRST
+        // This is what actually determines if the character is under player or AI control
+        const uintptr_t P2_CPU_FLAG_OFFSET = 4931;
+        uint8_t cpuControlled = 1; // 1 = CPU/AI controlled
+        if (SafeWriteMemory(gameStatePtr + P2_CPU_FLAG_OFFSET, &cpuControlled, sizeof(uint8_t))) {
+            LogOut("[AUTO-ACTION] Restored P2 CPU control flag to 1 (AI controlled)", true);
+        } else {
+            LogOut("[AUTO-ACTION] Failed to restore P2 CPU control flag", true);
+        }
+        
+        // Restore character-level AI control flag
         uint32_t before = 0xFFFFFFFFu, after = 0xFFFFFFFFu;
         SafeReadMemory(p2CharPtr + AI_CONTROL_FLAG_OFFSET, &before, sizeof(uint32_t));
         bool okWrite = SafeWriteMemory(p2CharPtr + AI_CONTROL_FLAG_OFFSET, &g_originalP2ControlFlag, sizeof(uint32_t));
@@ -1601,6 +1819,9 @@ static void RestoreP2ControlFlagOnly() {
                                 << std::dec << " before=" << before << " write=" << g_originalP2ControlFlag
                                 << " after=" << after << " okWrite=" << (okWrite?"1":"0");
     LogOut(oss.str(), true);
+    // Also clear buffer here – even though we keep motion buffer logic alive for specials, when we explicitly give control back
+    // we don't want residual inputs to leak.
+    ClearPlayerInputBuffer(2, true);
     g_p2ControlOverridden = false;
 }
 
@@ -1611,14 +1832,28 @@ void ProcessAutoControlRestore() {
             LogOut("[AUTO-ACTION] Phase left MATCH during restore; forcing cleanup", true);
             RestoreP2ControlState();
             g_pendingControlRestore.store(false);
+            g_restoreGraceCounter = 0;
         }
         return;
     }
+    
+    // CRITICAL: Handle grace period countdown. This prevents triggers from firing
+    // immediately after control restore, giving character time to stabilize.
+    if (g_restoreGraceCounter > 0) {
+        g_restoreGraceCounter--;
+        if (g_restoreGraceCounter == 0) {
+            LogOut("[AUTO-ACTION] Grace period expired, clearing g_pendingControlRestore", true);
+            g_pendingControlRestore.store(false);
+        }
+        // Don't return yet - still process restore logic in case of new interrupts
+    }
+    
     if (g_pendingControlRestore.load()) {
         // Cache address and throttle to every other frame to reduce CPU
         static uintptr_t moveIDAddr2 = 0; // our player (P2)
         static uintptr_t moveIDAddr1 = 0; // opponent (P1)
         static int s_throttle = 0;
+        static short s_prevMoveID2 = 0; // track previous for dash entry detection
         // While CRG is active, sample every frame for fastest possible restore
         if (!g_crgFastRestore.load()) {
             if ((s_throttle++ & 1) != 0) return; // 96 Hz sampling when not in CRG mode
@@ -1638,6 +1873,105 @@ void ProcessAutoControlRestore() {
             SafeReadMemory(moveIDAddr1, &oppMoveID, sizeof(short));
         }
 
+        // DASH RESTORE RULES:
+        // 1. If we just entered forward/back dash start and no follow-up configured -> immediate restore
+        // 2. If any normal (>=200) starts after a dash-follow sequence -> restore
+        // 3. If dash cancelled into blockstun/hitstun/airtech -> restore
+        // 4. Fallback to existing timeout / move completion logic
+        bool dashStartNow = (moveID2 == FORWARD_DASH_START_ID || moveID2 == BACKWARD_DASH_START_ID);
+        bool dashStartJustEntered = dashStartNow && (s_prevMoveID2 != moveID2);
+        bool dashNormalStarted = (moveID2 >= 200); // normals/specials share threshold per user heuristic
+    bool moveIsDash = (moveID2 == FORWARD_DASH_START_ID || moveID2 == FORWARD_DASH_RECOVERY_ID ||
+               moveID2 == FORWARD_DASH_RECOVERY_SENTINEL_ID || moveID2 == BACKWARD_DASH_START_ID ||
+               moveID2 == BACKWARD_DASH_RECOVERY_ID);
+    bool dashCancelled = (!moveIsDash) && (IsBlockstun(moveID2) || IsHitstun(moveID2) || IsAirtech(moveID2));
+    
+    // CRITICAL: If we queued a dash with follow-up but got interrupted BEFORE dash started (never reached 163/165),
+    // clear the pending follow-up so the generic restore path can execute and clear the buffer.
+    if (g_dashDeferred.pendingSel.load() > 0 && dashCancelled && !g_recentDashQueued.load()) {
+        LogOut("[AUTO-ACTION][DASH] Dash follow-up cancelled by interrupt before dash started", true);
+        g_dashDeferred.pendingSel.store(0);
+        g_dashDeferred.dashStartLatched.store(-1);
+    }
+        int fdfSel = forwardDashFollowup.load();
+        // CRITICAL FIX: Don't restore immediately when dash starts (163/165).
+        // Wait until we've LEFT the dash state entirely, regardless of what state we transition to:
+        // - Natural completion: 163 → 0/1/2 (idle/walk)
+        // - Dash normal: 163 → attack moveID (200+)
+        // - Interrupted by hit: 163 → hitstun (50-71)
+        // - Canceled into special: 163 → special moveID
+        bool wasDashing = (s_prevMoveID2 == FORWARD_DASH_START_ID || s_prevMoveID2 == BACKWARD_DASH_START_ID);
+        bool stillDashing = (moveID2 == FORWARD_DASH_START_ID || moveID2 == BACKWARD_DASH_START_ID ||
+                             moveID2 == FORWARD_DASH_RECOVERY_ID || moveID2 == BACKWARD_DASH_RECOVERY_ID);
+        bool leftDashState = wasDashing && !stillDashing;
+        
+        bool doDashRestore = false;
+        
+        // PRIORITY 1: If we left the dash state entirely (163/165 → anything else), restore immediately.
+        // This handles all transitions: natural completion, dash normals, cancels, interrupts, etc.
+        if (leftDashState) {
+            LogOut("[AUTO-ACTION][DASH] Restore: left dash state (163/165 → " + std::to_string(moveID2) + ")", true);
+            doDashRestore = true;
+        }
+        // PRIORITY 2: Legacy paths for edge cases
+        else if (dashNormalStarted && (s_prevMoveID2 == FORWARD_DASH_START_ID || s_prevMoveID2 == BACKWARD_DASH_START_ID || g_dashDeferred.pendingSel.load()==0)) {
+            LogOut("[AUTO-ACTION][DASH] Restore: dash normal detected (moveID=" + std::to_string(moveID2) + ")", true);
+            doDashRestore = true;
+        } else if (dashCancelled && (s_prevMoveID2 == FORWARD_DASH_START_ID || s_prevMoveID2 == BACKWARD_DASH_START_ID)) {
+            LogOut("[AUTO-ACTION][DASH] Restore: dash cancelled by state (moveID=" + std::to_string(moveID2) + ")", true);
+            doDashRestore = true;
+        } else if (moveID2 == FORWARD_DASH_RECOVERY_SENTINEL_ID) {
+            LogOut("[AUTO-ACTION][DASH] Restore: sentinel recovery ID detected (178)", true);
+            doDashRestore = true;
+        }
+
+        if (doDashRestore) {
+            RestoreP2ControlState();
+            // CRITICAL: Don't clear g_pendingControlRestore immediately. Start grace period counter
+            // to prevent triggers from firing again during hitstun recovery.
+            g_restoreGraceCounter = RESTORE_GRACE_PERIOD;
+            g_crgFastRestore.store(false);
+            g_lastP2MoveID.store(-1);
+            s_prevMoveID2 = moveID2; // update before return
+            return;
+        }
+
+        // PRE-DASH START GUARD: if we queued a forward dash but haven't seen any non-zero move yet, delay restore
+        static bool sawNonZeroMoveID = false; // moved up earlier but redefine local scope safe
+        int timeoutSnapshot = g_controlRestoreTimeout.load();
+        if (g_recentDashQueued.load() && moveID2 == 0 && !sawNonZeroMoveID) {
+            int age = frameCounter.load() - g_recentDashQueuedFrame.load();
+            extern int p2CurrentMotionType; extern bool p2QueueActive; extern int p2QueueIndex; extern int p2FrameCounter; extern std::vector<InputFrame> p2InputQueue;
+            int qSize = (int)p2InputQueue.size();
+            if ((age % 4) == 0) {
+                LogOut(std::string("[AUTO-ACTION][DASH][TRACE] waiting age=") + std::to_string(age) +
+                       " queueActive=" + (p2QueueActive?"1":"0") +
+                       " qIdx=" + std::to_string(p2QueueIndex) + "/" + std::to_string(qSize) +
+                       " frameInStep=" + std::to_string(p2FrameCounter) +
+                       " motionType=" + std::to_string(p2CurrentMotionType) +
+                       " timeout=" + std::to_string(timeoutSnapshot), true);
+                if (p2QueueActive && p2QueueIndex < qSize) {
+                    uint8_t mask = p2InputQueue[p2QueueIndex].inputMask;
+                    LogOut(std::string("[AUTO-ACTION][DASH][TRACE] current mask=") + std::to_string((int)mask), true);
+                }
+            }
+            if (age < 120) {
+                if (timeoutSnapshot < 90) { g_controlRestoreTimeout.store(90); }
+                s_prevMoveID2 = moveID2; return; // hold restore
+            } else if (age == 120) {
+                LogOut("[AUTO-ACTION][DASH] Requeue forward dash after 120f no-start", true);
+                QueueMotionInput(2, MOTION_FORWARD_DASH, 0);
+                g_recentDashQueuedFrame.store(frameCounter.load());
+                if (timeoutSnapshot < 120) g_controlRestoreTimeout.store(120);
+                s_prevMoveID2 = moveID2; return;
+            } else if (age < 160) {
+                s_prevMoveID2 = moveID2; return; // continue holding
+            } else {
+                LogOut("[AUTO-ACTION][DASH] Abandon wait; dash never produced non-zero moveID", true);
+                g_recentDashQueued.store(false);
+            }
+        }
+
         int timeout = g_controlRestoreTimeout.fetch_sub(1);
         // Less frequent logging (once per second @192 fps => ~96 cycles after throttle)
         if ((timeout % 192) == 0) {
@@ -1647,10 +1981,7 @@ void ProcessAutoControlRestore() {
                    ", Timeout=" + std::to_string(timeout), detailedLogging.load());
         }
 
-        static bool sawNonZeroMoveID = false;
-        if (moveID2 > 0) {
-            sawNonZeroMoveID = true;
-        }
+        if (moveID2 > 0) { sawNonZeroMoveID = true; g_recentDashQueued.store(false); }
 
         // Counter RG fast-restore: if opponent enters attack frames (>=200) AND we are actionable,
         // restore immediately with control-flag-only to preserve the buffered special. Fallback: if
@@ -1664,7 +1995,8 @@ void ProcessAutoControlRestore() {
                 if (!isRGPrearmedSpecial) {
                     LogOut("[AUTO-ACTION][CRG] Early restore: opponent entered attack frames", true);
                     RestoreP2ControlFlagOnly();
-                    g_pendingControlRestore.store(false);
+                    // CRITICAL: Don't clear immediately, start grace period
+                    g_restoreGraceCounter = RESTORE_GRACE_PERIOD;
                     g_crgFastRestore.store(false);
                     g_lastP2MoveID.store(-1);
                     sawNonZeroMoveID = false;
@@ -1679,7 +2011,8 @@ void ProcessAutoControlRestore() {
             if (moveStarted) {
                 LogOut("[AUTO-ACTION][CRG] Early restore: special started after RG", true);
                 RestoreP2ControlState();
-                g_pendingControlRestore.store(false);
+                // CRITICAL: Don't clear immediately, start grace period
+                g_restoreGraceCounter = RESTORE_GRACE_PERIOD;
                 g_crgFastRestore.store(false);
                 g_lastP2MoveID.store(-1);
                 sawNonZeroMoveID = false;
@@ -1688,21 +2021,39 @@ void ProcessAutoControlRestore() {
             }
         }
 
-        bool moveChanged = (moveID2 != g_lastP2MoveID.load() && moveID2 == 0 && sawNonZeroMoveID);
+    // A dash-specific guard: if we queued a forward/back dash and never observed ANY non-zero move id yet,
+    // treat the transition back to 0 as non-completion (prevents premature restore destroying dash attempt).
+    bool queuedDashNoStart = g_recentDashQueued.load() && !sawNonZeroMoveID && moveID2 == 0;
+    bool moveChangedCandidate = (moveID2 != g_lastP2MoveID.load() && moveID2 == 0 && sawNonZeroMoveID);
+    bool dashFollowPending = (g_dashDeferred.pendingSel.load() > 0);
+    bool suppressGenericRestore = (moveChangedCandidate && dashFollowPending);
+        if (suppressGenericRestore) {
+            // Diagnostic: show we deliberately ignored a generic completion while a dash follow-up is pending
+            LogOut("[AUTO-ACTION][DASH] Suppressing generic restore (pending follow-up active)", detailedLogging.load());
+        }
+        bool moveChanged = moveChangedCandidate && !suppressGenericRestore;
         bool timeoutExpired = (timeout <= 0);
+        
+        // CRITICAL: Don't fire generic restore if dash-specific restore is active (g_pendingControlRestore)
+        // This prevents premature restore before dash executes
+        bool dashRestoreActive = g_pendingControlRestore.load();
 
-        if (moveChanged || timeoutExpired) {
+        if ((moveChanged || timeoutExpired) && !dashFollowPending && !queuedDashNoStart && !dashRestoreActive) {
             LogOut("[AUTO-ACTION] Auto-restoring P2 control state after move execution", detailedLogging.load());
             LogOut("[AUTO-ACTION] Reason: " +
                    std::string(moveChanged ? "Move completed" : "Timeout expired") +
                    ", MoveID: " + std::to_string(moveID2), detailedLogging.load());
 
             RestoreP2ControlState();
-            g_pendingControlRestore.store(false);
+            // CRITICAL: Don't clear g_pendingControlRestore immediately. Start grace period counter.
+            g_restoreGraceCounter = RESTORE_GRACE_PERIOD;
             g_crgFastRestore.store(false);
             g_lastP2MoveID.store(-1);
             sawNonZeroMoveID = false;
 
+            // If we just restored after a dash and a forward dash follow-up is still pending,
+            // keep a minimal cooldown (1 *internal* frame => ~instant visually) so we do not
+            // immediately retrigger the same After Block while the dash follow-up logic runs.
             p2TriggerCooldown = 0; // allow prompt re-trigger after restoring
             p2TriggerActive = false;
             LogOut("[AUTO-ACTION] Cleared P2 trigger cooldown after restore", detailedLogging.load());
@@ -1710,7 +2061,16 @@ void ProcessAutoControlRestore() {
             if (moveID2 != 0) {
                 g_lastP2MoveID.store(moveID2);
             }
+            if (dashFollowPending && moveChangedCandidate) {
+                if (detailedLogging.load()) {
+                    LogOut("[AUTO-ACTION][DASH] Suppressed restore while follow-up pending (moveID2=0)", true);
+                }
+            }
+            if (queuedDashNoStart && detailedLogging.load()) {
+                LogOut("[AUTO-ACTION][DASH] Holding restore: dash queue completed but no dash start MoveID observed yet", true);
+            }
         }
+        s_prevMoveID2 = moveID2; // remember last sampled
     }
 }
 

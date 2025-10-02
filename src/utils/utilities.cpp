@@ -136,6 +136,7 @@ void DisableFeatures() {
     g_statsPositionId = -1;
     g_statsMoveIdId = -1;
     g_statsCleanHitId = -1;
+    g_statsAIFlagsId = -1;
 
     // Also reset trigger/status overlay IDs so they get recreated on next update
     g_TriggerAfterBlockId = -1;
@@ -532,6 +533,7 @@ int g_statsRumiId = -1;
 int g_statsIkumiId = -1;
 int g_statsMaiId = -1;
 int g_statsMinagiId = -1;
+int g_statsAIFlagsId = -1; // new: AI control flags line in stats overlay
 
 // Auto-action settings - replace single trigger with individual triggers
 std::atomic<bool> autoActionEnabled(false);
@@ -565,6 +567,11 @@ std::atomic<int> triggerOnWakeupAction(ACTION_5A);
 std::atomic<int> triggerAfterHitstunAction(ACTION_5A);
 std::atomic<int> triggerAfterAirtechAction(ACTION_5A);
 std::atomic<int> triggerOnRGAction(ACTION_5A);
+
+// Forward dash follow-up selection (0=None, 1=5A,2=5B,3=5C,4=2A,5=2B,6=2C)
+std::atomic<int> forwardDashFollowup(0);
+// 0 = post-dash injection (existing behavior), 1 = dash-normal timing (inject during dash state window)
+std::atomic<bool> forwardDashFollowupDashMode(false);
 
 // Custom action IDs for each trigger
 std::atomic<int> triggerAfterBlockCustomID(BASE_ATTACK_5A);
@@ -666,10 +673,20 @@ bool IsBlockstun(short moveID) {
         return true;
     }
     
-    // Check the range that includes standing blockstun states
+    // Check the range that includes many standing blockstun states BUT explicitly
+    // exclude dash related IDs (forward/back dash start & recovery + sentinel) so the
+    // auto-action dash follow-up & restore logic does not treat active dashes as stun.
     if (moveID == 150 || moveID == 152 || 
         (moveID >= 140 && moveID <= 149) ||
         (moveID >= 153 && moveID <= 165)) {
+        // Forward/back dash IDs must not be blockstun.
+        if (moveID == FORWARD_DASH_START_ID ||
+            moveID == FORWARD_DASH_RECOVERY_ID ||
+            moveID == FORWARD_DASH_RECOVERY_SENTINEL_ID ||
+            moveID == BACKWARD_DASH_START_ID ||
+            moveID == BACKWARD_DASH_RECOVERY_ID) {
+            return false; // explicitly exclude
+        }
         return true;
     }
     

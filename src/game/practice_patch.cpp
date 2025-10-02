@@ -1074,6 +1074,18 @@ void MonitorDummyAutoBlock(short p1MoveID, short p2MoveID, short prevP1MoveID, s
     bool activeAb = overrideEffective ? abOn : gameFlagOn;
     static bool s_prevActiveAb = false;
     if (g_adaptiveStance.load() && activeAb) {
+        // Gate adaptive stance on P2 actually being AI controlled. If we've forced P2 to human (0) for auto-actions,
+        // we should skip adaptive stance adjustments to avoid log spam and unintended stance overwrites.
+        uintptr_t baseAI = 0; SafeReadMemory(GetEFZBase() + EFZ_BASE_OFFSET_P2, &baseAI, sizeof(baseAI));
+        if (!baseAI) return; // can't evaluate
+        uint32_t aiFlag = 1; SafeReadMemory(baseAI + AI_CONTROL_FLAG_OFFSET, &aiFlag, sizeof(aiFlag));
+        if (aiFlag == 0) {
+            // Suppressed; optional throttled debug
+            static int s_aiGateDbg = 0; if (detailedLogging.load() && (s_aiGateDbg++ & 0x3F) == 0) {
+                LogOut("[ADAPTIVE] Skipping stance logic (P2 under player control)", true);
+            }
+            return;
+        }
         static unsigned long long s_lastAdaptiveMs = 0;
         unsigned long long now = GetTickCount64();
         const unsigned long long ADAPTIVE_INTERVAL_MS = 0ULL; // every frame

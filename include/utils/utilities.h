@@ -357,6 +357,10 @@ extern std::atomic<int> triggerAfterHitstunAction;
 extern std::atomic<int> triggerAfterAirtechAction;
 extern std::atomic<int> triggerOnRGAction;
 
+// Forward dash follow-up (0=None, 1=5A,2=5B,3=5C,4=2A,5=2B,6=2C)
+extern std::atomic<int> forwardDashFollowup;
+extern std::atomic<bool> forwardDashFollowupDashMode;
+
 // Custom action IDs for each trigger
 extern std::atomic<int> triggerAfterBlockCustomID;
 extern std::atomic<int> triggerOnWakeupCustomID;
@@ -402,6 +406,8 @@ extern int g_statsIkumiId;
 extern int g_statsMaiId;
 // New: character-specific stats line for Minagi (Michiru puppet)
 extern int g_statsMinagiId;
+// New: AI control flags stats line id
+extern int g_statsAIFlagsId;
 
 // Window and key monitoring management
 void ManageKeyMonitoring();

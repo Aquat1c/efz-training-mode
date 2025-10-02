@@ -11,6 +11,14 @@
 #define MOTION_JB        107
 #define MOTION_JC        108
 
+// Directional normal motion constants (forward/back normals)
+#define MOTION_6A        109
+#define MOTION_6B        110
+#define MOTION_6C        111
+#define MOTION_4A        112
+#define MOTION_4B        113
+#define MOTION_4C        114
+
 // Special move motion constants
 #define MOTION_236A      200  // QCF + A
 #define MOTION_236B      201  // QCF + B

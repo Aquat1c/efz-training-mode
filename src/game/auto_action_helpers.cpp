@@ -68,6 +68,12 @@ int ConvertTriggerActionToMotion(int actionType, int triggerType) {
         case ACTION_JA: return MOTION_JA;
         case ACTION_JB: return MOTION_JB;
         case ACTION_JC: return MOTION_JC;
+    case ACTION_6A: return MOTION_6A;
+    case ACTION_6B: return MOTION_6B;
+    case ACTION_6C: return MOTION_6C;
+    case ACTION_4A: return MOTION_4A;
+    case ACTION_4B: return MOTION_4B;
+    case ACTION_4C: return MOTION_4C;
 
         // QCF (236)
         case ACTION_QCF:

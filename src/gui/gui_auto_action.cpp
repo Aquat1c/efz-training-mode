@@ -40,6 +40,12 @@ extern "C" const int ComboIndexToActionType[] = {
     ACTION_22,          // 25 = 22 Down-Down
     ACTION_4123641236,  // 26 = 4123641236 Double Roll
     ACTION_6321463214   // 27 = 6321463214 Extended Pretzel
+    ,ACTION_6A          // 28
+    ,ACTION_6B          // 29
+    ,ACTION_6C          // 30
+    ,ACTION_4A          // 31
+    ,ACTION_4B          // 32
+    ,ACTION_4C          // 33
 };
 
 // Helper function to convert action type to combobox index
@@ -128,6 +134,12 @@ void AutoActionPage_CreateContent(HWND hParent, DisplayData* pData) {
     SendMessageA(hAfterBlockAction, CB_ADDSTRING, 0, (LPARAM)"22");
     SendMessageA(hAfterBlockAction, CB_ADDSTRING, 0, (LPARAM)"4123641236 Double");
     SendMessageA(hAfterBlockAction, CB_ADDSTRING, 0, (LPARAM)"6321463214 Ultra");
+    SendMessageA(hAfterBlockAction, CB_ADDSTRING, 0, (LPARAM)"6A");
+    SendMessageA(hAfterBlockAction, CB_ADDSTRING, 0, (LPARAM)"6B");
+    SendMessageA(hAfterBlockAction, CB_ADDSTRING, 0, (LPARAM)"6C");
+    SendMessageA(hAfterBlockAction, CB_ADDSTRING, 0, (LPARAM)"4A");
+    SendMessageA(hAfterBlockAction, CB_ADDSTRING, 0, (LPARAM)"4B");
+    SendMessageA(hAfterBlockAction, CB_ADDSTRING, 0, (LPARAM)"4C");
     
     // Then add the remaining options
     SendMessageA(hAfterBlockAction, CB_ADDSTRING, 0, (LPARAM)"Jump");
@@ -190,6 +202,12 @@ void AutoActionPage_CreateContent(HWND hParent, DisplayData* pData) {
     SendMessageA(hAfterHitstunAction, CB_ADDSTRING, 0, (LPARAM)"22");
     SendMessageA(hAfterHitstunAction, CB_ADDSTRING, 0, (LPARAM)"4123641236 Double");
     SendMessageA(hAfterHitstunAction, CB_ADDSTRING, 0, (LPARAM)"6321463214 Ultra");
+    SendMessageA(hAfterHitstunAction, CB_ADDSTRING, 0, (LPARAM)"6A");
+    SendMessageA(hAfterHitstunAction, CB_ADDSTRING, 0, (LPARAM)"6B");
+    SendMessageA(hAfterHitstunAction, CB_ADDSTRING, 0, (LPARAM)"6C");
+    SendMessageA(hAfterHitstunAction, CB_ADDSTRING, 0, (LPARAM)"4A");
+    SendMessageA(hAfterHitstunAction, CB_ADDSTRING, 0, (LPARAM)"4B");
+    SendMessageA(hAfterHitstunAction, CB_ADDSTRING, 0, (LPARAM)"4C");
     
     // Then add the remaining options
     SendMessageA(hAfterHitstunAction, CB_ADDSTRING, 0, (LPARAM)"Jump");
@@ -256,6 +274,12 @@ void AutoActionPage_CreateContent(HWND hParent, DisplayData* pData) {
     SendMessageA(hOnWakeupAction, CB_ADDSTRING, 0, (LPARAM)"22");
     SendMessageA(hOnWakeupAction, CB_ADDSTRING, 0, (LPARAM)"4123641236 Double");
     SendMessageA(hOnWakeupAction, CB_ADDSTRING, 0, (LPARAM)"6321463214 Ultra");
+    SendMessageA(hOnWakeupAction, CB_ADDSTRING, 0, (LPARAM)"6A");
+    SendMessageA(hOnWakeupAction, CB_ADDSTRING, 0, (LPARAM)"6B");
+    SendMessageA(hOnWakeupAction, CB_ADDSTRING, 0, (LPARAM)"6C");
+    SendMessageA(hOnWakeupAction, CB_ADDSTRING, 0, (LPARAM)"4A");
+    SendMessageA(hOnWakeupAction, CB_ADDSTRING, 0, (LPARAM)"4B");
+    SendMessageA(hOnWakeupAction, CB_ADDSTRING, 0, (LPARAM)"4C");
     
     // Then add the remaining options
     SendMessageA(hOnWakeupAction, CB_ADDSTRING, 0, (LPARAM)"Jump");
@@ -316,6 +340,12 @@ void AutoActionPage_CreateContent(HWND hParent, DisplayData* pData) {
     SendMessageA(hAfterAirtechAction, CB_ADDSTRING, 0, (LPARAM)"22");
     SendMessageA(hAfterAirtechAction, CB_ADDSTRING, 0, (LPARAM)"4123641236 Double");
     SendMessageA(hAfterAirtechAction, CB_ADDSTRING, 0, (LPARAM)"6321463214 Ultra");
+    SendMessageA(hAfterAirtechAction, CB_ADDSTRING, 0, (LPARAM)"6A");
+    SendMessageA(hAfterAirtechAction, CB_ADDSTRING, 0, (LPARAM)"6B");
+    SendMessageA(hAfterAirtechAction, CB_ADDSTRING, 0, (LPARAM)"6C");
+    SendMessageA(hAfterAirtechAction, CB_ADDSTRING, 0, (LPARAM)"4A");
+    SendMessageA(hAfterAirtechAction, CB_ADDSTRING, 0, (LPARAM)"4B");
+    SendMessageA(hAfterAirtechAction, CB_ADDSTRING, 0, (LPARAM)"4C");
     
     // Then add the remaining options
     SendMessageA(hAfterAirtechAction, CB_ADDSTRING, 0, (LPARAM)"Jump");
@@ -374,6 +404,12 @@ void AutoActionPage_CreateContent(HWND hParent, DisplayData* pData) {
     SendMessageA(hOnRGAction, CB_ADDSTRING, 0, (LPARAM)"22");
     SendMessageA(hOnRGAction, CB_ADDSTRING, 0, (LPARAM)"4123641236 Double");
     SendMessageA(hOnRGAction, CB_ADDSTRING, 0, (LPARAM)"6321463214 Ultra");
+    SendMessageA(hOnRGAction, CB_ADDSTRING, 0, (LPARAM)"6A");
+    SendMessageA(hOnRGAction, CB_ADDSTRING, 0, (LPARAM)"6B");
+    SendMessageA(hOnRGAction, CB_ADDSTRING, 0, (LPARAM)"6C");
+    SendMessageA(hOnRGAction, CB_ADDSTRING, 0, (LPARAM)"4A");
+    SendMessageA(hOnRGAction, CB_ADDSTRING, 0, (LPARAM)"4B");
+    SendMessageA(hOnRGAction, CB_ADDSTRING, 0, (LPARAM)"4C");
     SendMessageA(hOnRGAction, CB_ADDSTRING, 0, (LPARAM)"Jump");
     SendMessageA(hOnRGAction, CB_ADDSTRING, 0, (LPARAM)"Backdash");
     SendMessageA(hOnRGAction, CB_ADDSTRING, 0, (LPARAM)"Block");

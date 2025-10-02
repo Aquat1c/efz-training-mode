@@ -65,3 +65,15 @@ std::string DecodeInputMask(uint8_t inputMask);
 bool WritePlayerInput(int playerNum, uint8_t inputMask);
 bool WritePlayerInputImmediate(int playerNum, uint8_t inputMask);
 bool WritePlayerInputToBuffer(int playerNum, uint8_t inputMask);
+// Utility: forcibly reset the player's circular input buffer index to 0.
+// Used before queuing certain motion sequences (e.g., forward dash + chained normal)
+// to create a deterministic starting window for the engine's dash recognition.
+// Returns true on success.
+bool ResetPlayerInputBufferIndex(int playerNum);
+// Clear entire circular input buffer (set every byte to 0) and optionally reset index.
+// Used when returning control to AI so stale patterns cannot accidentally trigger motions.
+bool ClearPlayerInputBuffer(int playerNum, bool resetIndex);
+// Dump buffer contents for debugging (shows last 15 positions and recognition window)
+void DumpInputBuffer(int playerNum, const std::string& context);
+// Read the current MoveID value (offset 610 = 0x262)
+uint16_t GetPlayerMoveID(int playerNum);
