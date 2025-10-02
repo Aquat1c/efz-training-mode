@@ -483,6 +483,7 @@
 // Observed behavior (CE): counts down from ~3000 to 0 while active
 #define NAYUKIB_SNOWBUNNY_TIMER_OFFSET   0x3150
 #define NAYUKIB_SNOWBUNNY_MAX            3000
+#define NAYUKIB_SNOWBUNNY_ACTIVE_FLAGS_BASE  0x3154  // Array: +0x3154 + (4*index) for 8 snowbunnies
 
 // Akiko – Clean Hit helper last-hit Move IDs for 623 rekka
 // A/B: 3rd hit ends at moveId 259; C: 6th hit ends at moveId 254

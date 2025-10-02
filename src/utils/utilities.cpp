@@ -52,6 +52,197 @@ std::atomic<bool> g_manualJumpHold[3] = {false, false, false}; // NEW: Definitio
 
 // (Removed restoration of previous trigger states; triggers must always be manually re-enabled after mode changes)
 
+// Reset DisplayData to default values (called on startup and character switches)
+void ResetDisplayDataToDefaults() {
+    // Simply copy the default initialization values
+    displayData.hp1 = 9999;
+    displayData.hp2 = 9999;
+    displayData.meter1 = 3000;
+    displayData.meter2 = 3000;
+    displayData.rf1 = 1000.0;
+    displayData.rf2 = 1000.0;
+    displayData.x1 = 240.0;
+    displayData.y1 = 0.0;
+    displayData.x2 = 400.0;
+    displayData.y2 = 0.0;
+    displayData.autoAirtech = false;
+    displayData.airtechDirection = 0;
+    displayData.airtechDelay = 0;
+    displayData.autoJump = false;
+    displayData.jumpDirection = 0;
+    displayData.jumpTarget = 3;
+    displayData.p1CharName[0] = '\0';
+    displayData.p2CharName[0] = '\0';
+    displayData.p1CharID = 0;
+    displayData.p2CharID = 0;
+    // Ikumi
+    displayData.p1IkumiBlood = 0;
+    displayData.p2IkumiBlood = 0;
+    displayData.p1IkumiGenocide = 0;
+    displayData.p2IkumiGenocide = 0;
+    displayData.p1IkumiLevelGauge = 0;
+    displayData.p2IkumiLevelGauge = 0;
+    displayData.infiniteBloodMode = false;
+    // Misuzu
+    displayData.p1MisuzuFeathers = 0;
+    displayData.p2MisuzuFeathers = 0;
+    displayData.infiniteFeatherMode = false;
+    displayData.p1MisuzuPoisonTimer = 0;
+    displayData.p2MisuzuPoisonTimer = 0;
+    displayData.p1MisuzuPoisonLevel = 0;
+    displayData.p2MisuzuPoisonLevel = 0;
+    displayData.p1MisuzuInfinitePoison = false;
+    displayData.p2MisuzuInfinitePoison = false;
+    // Mishio
+    displayData.p1MishioElement = 0;
+    displayData.p2MishioElement = 0;
+    displayData.p1MishioAwakenedTimer = 0;
+    displayData.p2MishioAwakenedTimer = 0;
+    displayData.infiniteMishioElement = false;
+    displayData.infiniteMishioAwakened = false;
+    // IC
+    displayData.p1BlueIC = false;
+    displayData.p2BlueIC = false;
+    displayData.p2ControlEnabled = false;
+    // Auto-action
+    displayData.autoAction = false;
+    displayData.autoActionType = ACTION_5A;
+    displayData.autoActionCustomID = 200;
+    displayData.autoActionPlayer = 0;
+    displayData.triggerAfterBlock = false;
+    displayData.triggerOnWakeup = false;
+    displayData.triggerAfterHitstun = false;
+    displayData.triggerAfterAirtech = false;
+    displayData.triggerOnRG = false;
+    displayData.delayAfterBlock = 0;
+    displayData.delayOnWakeup = 0;
+    displayData.delayAfterHitstun = 0;
+    displayData.delayAfterAirtech = 0;
+    displayData.delayOnRG = 0;
+    displayData.actionAfterBlock = ACTION_5A;
+    displayData.actionOnWakeup = ACTION_5A;
+    displayData.actionAfterHitstun = ACTION_5A;
+    displayData.actionAfterAirtech = ACTION_5A;
+    displayData.actionOnRG = ACTION_5A;
+    displayData.customAfterBlock = BASE_ATTACK_5A;
+    displayData.customOnWakeup = BASE_ATTACK_5A;
+    displayData.customAfterHitstun = BASE_ATTACK_5A;
+    displayData.customAfterAirtech = BASE_ATTACK_JA;
+    displayData.customOnRG = BASE_ATTACK_5A;
+    displayData.strengthAfterBlock = 0;
+    displayData.strengthOnWakeup = 0;
+    displayData.strengthAfterHitstun = 0;
+    displayData.strengthAfterAirtech = 0;
+    displayData.strengthOnRG = 0;
+    displayData.macroSlotAfterBlock = 0;
+    displayData.macroSlotOnWakeup = 0;
+    displayData.macroSlotAfterHitstun = 0;
+    displayData.macroSlotAfterAirtech = 0;
+    displayData.macroSlotOnRG = 0;
+    // Doppel
+    displayData.p1DoppelEnlightened = false;
+    displayData.p2DoppelEnlightened = false;
+    // Rumi
+    displayData.p1RumiBarehanded = false;
+    displayData.p2RumiBarehanded = false;
+    displayData.p1RumiInfiniteShinai = false;
+    displayData.p2RumiInfiniteShinai = false;
+    displayData.p1RumiKimchiActive = false;
+    displayData.p2RumiKimchiActive = false;
+    displayData.p1RumiKimchiTimer = 0;
+    displayData.p2RumiKimchiTimer = 0;
+    displayData.p1RumiInfiniteKimchi = false;
+    displayData.p2RumiInfiniteKimchi = false;
+    // Akiko
+    displayData.p1AkikoBulletCycle = 0;
+    displayData.p2AkikoBulletCycle = 0;
+    displayData.p1AkikoTimeslowTrigger = 0;
+    displayData.p2AkikoTimeslowTrigger = 0;
+    displayData.p1AkikoFreezeCycle = false;
+    displayData.p2AkikoFreezeCycle = false;
+    displayData.p1AkikoShowCleanHit = false;
+    displayData.p2AkikoShowCleanHit = false;
+    displayData.p1AkikoInfiniteTimeslow = false;
+    displayData.p2AkikoInfiniteTimeslow = false;
+    // Neyuki
+    displayData.p1NeyukiJamCount = 0;
+    displayData.p2NeyukiJamCount = 0;
+    // Mio
+    displayData.p1MioStance = 0;
+    displayData.p2MioStance = 0;
+    displayData.p1MioLockStance = false;
+    displayData.p2MioLockStance = false;
+    // Kano
+    displayData.p1KanoMagic = 0;
+    displayData.p2KanoMagic = 0;
+    displayData.p1KanoLockMagic = false;
+    displayData.p2KanoLockMagic = false;
+    // Mai
+    displayData.p1MaiStatus = 0;
+    displayData.p1MaiGhostTime = 0;
+    displayData.p1MaiGhostCharge = 0;
+    displayData.p1MaiAwakeningTime = 0;
+    displayData.p2MaiStatus = 0;
+    displayData.p2MaiGhostTime = 0;
+    displayData.p2MaiGhostCharge = 0;
+    displayData.p2MaiAwakeningTime = 0;
+    displayData.p1MaiInfiniteGhost = false;
+    displayData.p2MaiInfiniteGhost = false;
+    displayData.p1MaiInfiniteCharge = false;
+    displayData.p2MaiInfiniteCharge = false;
+    displayData.p1MaiInfiniteAwakening = false;
+    displayData.p2MaiInfiniteAwakening = false;
+    displayData.p1MaiNoChargeCD = false;
+    displayData.p2MaiNoChargeCD = false;
+    displayData.p1MaiForceSummon = false;
+    displayData.p2MaiForceSummon = false;
+    displayData.p1MaiForceDespawn = false;
+    displayData.p2MaiForceDespawn = false;
+    displayData.p1MaiAggressiveOverride = false;
+    displayData.p2MaiAggressiveOverride = false;
+    displayData.p1MaiGhostX = std::numeric_limits<double>::quiet_NaN();
+    displayData.p1MaiGhostY = std::numeric_limits<double>::quiet_NaN();
+    displayData.p2MaiGhostX = std::numeric_limits<double>::quiet_NaN();
+    displayData.p2MaiGhostY = std::numeric_limits<double>::quiet_NaN();
+    displayData.p1MaiGhostSetX = std::numeric_limits<double>::quiet_NaN();
+    displayData.p1MaiGhostSetY = std::numeric_limits<double>::quiet_NaN();
+    displayData.p2MaiGhostSetX = std::numeric_limits<double>::quiet_NaN();
+    displayData.p2MaiGhostSetY = std::numeric_limits<double>::quiet_NaN();
+    displayData.p1MaiApplyGhostPos = false;
+    displayData.p2MaiApplyGhostPos = false;
+    // Nayuki (Awake)
+    displayData.p1NayukiSnowbunnies = 0;
+    displayData.p2NayukiSnowbunnies = 0;
+    displayData.p1NayukiInfiniteSnow = false;
+    displayData.p2NayukiInfiniteSnow = false;
+    // Minagi
+    displayData.p1MinagiPuppetX = std::numeric_limits<double>::quiet_NaN();
+    displayData.p1MinagiPuppetY = std::numeric_limits<double>::quiet_NaN();
+    displayData.p2MinagiPuppetX = std::numeric_limits<double>::quiet_NaN();
+    displayData.p2MinagiPuppetY = std::numeric_limits<double>::quiet_NaN();
+    displayData.p1MinagiPuppetSetX = std::numeric_limits<double>::quiet_NaN();
+    displayData.p1MinagiPuppetSetY = std::numeric_limits<double>::quiet_NaN();
+    displayData.p2MinagiPuppetSetX = std::numeric_limits<double>::quiet_NaN();
+    displayData.p2MinagiPuppetSetY = std::numeric_limits<double>::quiet_NaN();
+    displayData.p1MinagiApplyPos = false;
+    displayData.p2MinagiApplyPos = false;
+    displayData.minagiConvertNewProjectiles = false;
+    displayData.p1MinagiAlwaysReadied = false;
+    displayData.p2MinagiAlwaysReadied = false;
+    displayData.p1MichiruCurrentId = -1;
+    displayData.p2MichiruCurrentId = -1;
+    displayData.p1MichiruLastX = std::numeric_limits<double>::quiet_NaN();
+    displayData.p1MichiruLastY = std::numeric_limits<double>::quiet_NaN();
+    displayData.p2MichiruLastX = std::numeric_limits<double>::quiet_NaN();
+    displayData.p2MichiruLastY = std::numeric_limits<double>::quiet_NaN();
+    displayData.p1MichiruFrame = -1;
+    displayData.p1MichiruSubframe = -1;
+    displayData.p2MichiruFrame = -1;
+    displayData.p2MichiruSubframe = -1;
+    
+    LogOut("[SYSTEM] DisplayData reset to defaults", true);
+}
+
 // NEW: Add feature management functions
 void EnableFeatures() {
     if (g_onlineModeActive.load()) return;
@@ -59,6 +250,9 @@ void EnableFeatures() {
         return;
 
     LogOut("[SYSTEM] Game in valid mode. Enabling patches and overlays.", true);
+    
+    // Reset display data to defaults when entering valid mode
+    ResetDisplayDataToDefaults();
     // Start centralized immediate input writer (64fps)
     ImmediateInput::Start();
 

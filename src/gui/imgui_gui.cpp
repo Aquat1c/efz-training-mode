@@ -1384,7 +1384,7 @@ namespace ImGuiGui {
             ImGui::SetNextItemWidth(100); ImGui::InputDouble("Y##P1MinagiMichiruY", &setMY, 1.0, 10.0, "%.1f");
             if (setMX != guiState.localData.p1MinagiPuppetSetX) guiState.localData.p1MinagiPuppetSetX = setMX;
             if (setMY != guiState.localData.p1MinagiPuppetSetY) guiState.localData.p1MinagiPuppetSetY = setMY;
-            if (ImGui::Button("Apply Michiru Pos##P1Minagi")) {
+            if (ImGui::Button("Apply Pos##P1Minagi")) {
                 // Commit immediately without needing bottom Apply
                 displayData.p1MinagiPuppetSetX = guiState.localData.p1MinagiPuppetSetX;
                 displayData.p1MinagiPuppetSetY = guiState.localData.p1MinagiPuppetSetY;
@@ -1407,13 +1407,13 @@ namespace ImGuiGui {
                 guiState.localData.p1MinagiPuppetSetX = guiState.localData.x2;
                 guiState.localData.p1MinagiPuppetSetY = guiState.localData.y2;
             }
-            ImGui::SameLine();
-            if (ImGui::Button("Michiru Pos##P1MinagiUseMichiru")) {
-                if (!std::isnan(guiState.localData.p1MinagiPuppetX) && !std::isnan(guiState.localData.p1MinagiPuppetY)) {
-                    guiState.localData.p1MinagiPuppetSetX = guiState.localData.p1MinagiPuppetX;
-                    guiState.localData.p1MinagiPuppetSetY = guiState.localData.p1MinagiPuppetY;
-                }
-            }
+            // ImGui::SameLine();
+            // if (ImGui::Button("Michiru Pos##P1MinagiUseMichiru")) {
+            //     if (!std::isnan(guiState.localData.p1MinagiPuppetX) && !std::isnan(guiState.localData.p1MinagiPuppetY)) {
+            //         guiState.localData.p1MinagiPuppetSetX = guiState.localData.p1MinagiPuppetX;
+            //         guiState.localData.p1MinagiPuppetSetY = guiState.localData.p1MinagiPuppetY;
+            //     }
+            // }
             if (!std::isnan(guiState.localData.p1MinagiPuppetX)) {
                 ImGui::TextDisabled("Current: (%.1f, %.1f)", guiState.localData.p1MinagiPuppetX, guiState.localData.p1MinagiPuppetY);
             } else {
@@ -1785,7 +1785,7 @@ namespace ImGuiGui {
             ImGui::SetNextItemWidth(100); ImGui::InputDouble("Y##P2MinagiMichiruY", &setMY2, 1.0, 10.0, "%.1f");
             if (setMX2 != guiState.localData.p2MinagiPuppetSetX) guiState.localData.p2MinagiPuppetSetX = setMX2;
             if (setMY2 != guiState.localData.p2MinagiPuppetSetY) guiState.localData.p2MinagiPuppetSetY = setMY2;
-            if (ImGui::Button("Apply Michiru Pos##P2Minagi")) {
+            if (ImGui::Button("Apply Pos##P2Minagi")) {
                 // Commit immediately without needing bottom Apply
                 displayData.p2MinagiPuppetSetX = guiState.localData.p2MinagiPuppetSetX;
                 displayData.p2MinagiPuppetSetY = guiState.localData.p2MinagiPuppetSetY;
@@ -1807,13 +1807,13 @@ namespace ImGuiGui {
                 guiState.localData.p2MinagiPuppetSetX = guiState.localData.x1;
                 guiState.localData.p2MinagiPuppetSetY = guiState.localData.y1;
             }
-            ImGui::SameLine();
-            if (ImGui::Button("Michiru Pos##P2MinagiUseMichiru")) {
-                if (!std::isnan(guiState.localData.p2MinagiPuppetX) && !std::isnan(guiState.localData.p2MinagiPuppetY)) {
-                    guiState.localData.p2MinagiPuppetSetX = guiState.localData.p2MinagiPuppetX;
-                    guiState.localData.p2MinagiPuppetSetY = guiState.localData.p2MinagiPuppetY;
-                }
-            }
+            // ImGui::SameLine();
+            // if (ImGui::Button("Michiru Pos##P2MinagiUseMichiru")) {
+            //     if (!std::isnan(guiState.localData.p2MinagiPuppetX) && !std::isnan(guiState.localData.p2MinagiPuppetY)) {
+            //         guiState.localData.p2MinagiPuppetSetX = guiState.localData.p2MinagiPuppetX;
+            //         guiState.localData.p2MinagiPuppetSetY = guiState.localData.p2MinagiPuppetY;
+            //     }
+            // }
             if (!std::isnan(guiState.localData.p2MinagiPuppetX)) {
                 ImGui::TextDisabled("Current: (%.1f, %.1f)", guiState.localData.p2MinagiPuppetX, guiState.localData.p2MinagiPuppetY);
             } else {
@@ -2022,7 +2022,7 @@ namespace ImGuiGui {
         }
 
         // Minagi debug controls: conversion toggle shown only when Minagi is present
-        if (guiState.localData.p1CharID == CHAR_ID_MINAGI || guiState.localData.p2CharID == CHAR_ID_MINAGI) {
+        /*if (guiState.localData.p1CharID == CHAR_ID_MINAGI || guiState.localData.p2CharID == CHAR_ID_MINAGI) {
             ImGui::SeparatorText("Minagi Control");
             bool convert = guiState.localData.minagiConvertNewProjectiles;
             if (ImGui::Checkbox("Convert new Minagi projectiles to Michiru (Practice only)", &convert)) {
@@ -2045,7 +2045,7 @@ namespace ImGuiGui {
                 ImGui::PopTextWrapPos();
                 ImGui::EndTooltip();
             }
-        }
+        }*/
     }
 
     // Update the RenderGui function to include the new tab:
@@ -2381,6 +2381,40 @@ namespace ImGuiGui {
     guiState.localData.macroSlotAfterHitstun = triggerAfterHitstunMacroSlot.load();
     guiState.localData.macroSlotAfterAirtech = triggerAfterAirtechMacroSlot.load();
     guiState.localData.macroSlotOnRG         = triggerOnRGMacroSlot.load();
+
+    // Copy character-specific settings from displayData (which may have been reset)
+    // This ensures GUI checkboxes reflect the current state after ResetDisplayDataToDefaults()
+    guiState.localData.p1NayukiSnowbunnies = displayData.p1NayukiSnowbunnies;
+    guiState.localData.p2NayukiSnowbunnies = displayData.p2NayukiSnowbunnies;
+    guiState.localData.p1NayukiInfiniteSnow = displayData.p1NayukiInfiniteSnow;
+    guiState.localData.p2NayukiInfiniteSnow = displayData.p2NayukiInfiniteSnow;
+    guiState.localData.infiniteBloodMode = displayData.infiniteBloodMode;
+    guiState.localData.p1MaiInfiniteGhost = displayData.p1MaiInfiniteGhost;
+    guiState.localData.p1MaiInfiniteCharge = displayData.p1MaiInfiniteCharge;
+    guiState.localData.p1MaiInfiniteAwakening = displayData.p1MaiInfiniteAwakening;
+    guiState.localData.p2MaiInfiniteCharge = displayData.p2MaiInfiniteCharge;
+    guiState.localData.p2MaiInfiniteAwakening = displayData.p2MaiInfiniteAwakening;
+    guiState.localData.p1MisuzuInfinitePoison = displayData.p1MisuzuInfinitePoison;
+    guiState.localData.p2MisuzuInfinitePoison = displayData.p2MisuzuInfinitePoison;
+    guiState.localData.infiniteMishioElement = displayData.infiniteMishioElement;
+    guiState.localData.infiniteMishioAwakened = displayData.infiniteMishioAwakened;
+    guiState.localData.p1RumiInfiniteShinai = displayData.p1RumiInfiniteShinai;
+    guiState.localData.p2RumiInfiniteShinai = displayData.p2RumiInfiniteShinai;
+    guiState.localData.p1RumiInfiniteKimchi = displayData.p1RumiInfiniteKimchi;
+    guiState.localData.p2RumiInfiniteKimchi = displayData.p2RumiInfiniteKimchi;
+    guiState.localData.p1AkikoInfiniteTimeslow = displayData.p1AkikoInfiniteTimeslow;
+    guiState.localData.p2AkikoInfiniteTimeslow = displayData.p2AkikoInfiniteTimeslow;
+    // Minagi (puppet settings and flags)
+    guiState.localData.p1MinagiAlwaysReadied = displayData.p1MinagiAlwaysReadied;
+    guiState.localData.p2MinagiAlwaysReadied = displayData.p2MinagiAlwaysReadied;
+    guiState.localData.minagiConvertNewProjectiles = displayData.minagiConvertNewProjectiles;
+    guiState.localData.p1MinagiApplyPos = displayData.p1MinagiApplyPos;
+    guiState.localData.p2MinagiApplyPos = displayData.p2MinagiApplyPos;
+    guiState.localData.p1MinagiPuppetSetX = displayData.p1MinagiPuppetSetX;
+    guiState.localData.p1MinagiPuppetSetY = displayData.p1MinagiPuppetSetY;
+    guiState.localData.p2MinagiPuppetSetX = displayData.p2MinagiPuppetSetX;
+    guiState.localData.p2MinagiPuppetSetY = displayData.p2MinagiPuppetSetY;
+    // Note: p1MinagiPuppetX/Y and p2MinagiPuppetX/Y are read from memory by ScanMichiru above
     }
 
     // Update ApplyImGuiSettings to include character-specific data
