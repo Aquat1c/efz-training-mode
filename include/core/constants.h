@@ -180,6 +180,9 @@
 #define FORWARD_DASH_RECOVERY_SENTINEL_ID 178 // New: variant recovery state used for clean control handoff
 #define BACKWARD_DASH_START_ID 165
 #define BACKWARD_DASH_RECOVERY_ID 166
+// Character-specific exceptions
+// Kaori's forward dash start state uses MoveID 250 instead of the universal 163.
+#define KAORI_FORWARD_DASH_START_ID 250
 
 // Frame advantage constants (internal frames)
 #define FRAME_ADV_LVL1_BLOCK 9
