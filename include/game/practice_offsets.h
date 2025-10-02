@@ -32,6 +32,27 @@
 #define EFZREV_RVA_TOGGLE_PAUSE 0x0075720
 #endif
 
+// Practice hotkey evaluation function (scans and dispatches Pause/Step/Record/etc.).
+// Initial RVA determined via reverse engineering of clustered reads of offsets 0x1D4..0x230
+// and calls to sub_10075720 (official pause). If this shifts in later versions, the
+// runtime scanner in practice_hotkey_gate.cpp can recover; keep this as a fast-path.
+#ifndef EFZREV_RVA_PRACTICE_HOTKEY_EVAL
+#define EFZREV_RVA_PRACTICE_HOTKEY_EVAL 0x00773A0
+#endif
+
+// Overlay / display toggle tiny stubs (cmp/sete/mov/ret patterns)
+#ifndef EFZREV_RVA_TOGGLE_HURTBOXES
+#define EFZREV_RVA_TOGGLE_HURTBOXES 0x0075140
+#endif
+#ifndef EFZREV_RVA_TOGGLE_HITBOXES
+#define EFZREV_RVA_TOGGLE_HITBOXES 0x0075160
+#endif
+#ifndef EFZREV_RVA_TOGGLE_DISPLAY
+#define EFZREV_RVA_TOGGLE_DISPLAY 0x00756E0
+#endif
+
+// Step logic is embedded near PracticeTick; we neutralize via PracticeTick hook rather than separate RVA.
+
 // Battle screen render (thiscall battleContext) – we hook this to capture battleContext
 // Name in decompile: renderBattleScreen, original label sub_7642A0
 #ifndef EFZ_RVA_RENDER_BATTLE_SCREEN

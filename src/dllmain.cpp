@@ -26,6 +26,10 @@
 #include "../include/game/game_state.h"
 #include "../include/core/globals.h"  // Add this include
 #include "../include/game/collision_hook.h"
+#include "../include/game/practice_hotkey_gate.h"
+#include "../include/game/practice_offsets.h"
+// forward declaration for overlay gate
+namespace PracticeOverlayGate { void EnsureInstalled(); void SetMenuVisible(bool); }
 #pragma comment(lib, "winmm.lib")
 
 // Forward declarations for functions in other files
@@ -65,6 +69,19 @@ void DelayedInitialization(HMODULE hModule) {
             return; // Early exit if MinHook fails
         }
         LogOut("[SYSTEM] MinHook initialized successfully.", true);
+
+        // Attempt to install Practice hotkey gate (will succeed only after EfzRevival.dll present)
+        try {
+            if (PracticeHotkeyGate::Install()) {
+                LogOut("[HOTKEY] Practice hotkey gate active (menu suppression)", true);
+            } else {
+                LogOut("[HOTKEY] Practice hotkey gate not installed yet (EfzRevival may not be loaded)", true);
+            }
+            // Also install overlay toggle hooks (will silently do nothing if module not loaded yet)
+            PracticeOverlayGate::EnsureInstalled();
+        } catch (...) {
+            LogOut("[HOTKEY] Exception while installing practice hotkey gate", true);
+        }
 
         // Install hooks (with guards)
         try {
