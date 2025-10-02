@@ -398,7 +398,21 @@ namespace CharacterSettings {
             if (!snowAddr) return;
             int v=0; SafeReadMemory(snowAddr,&v,sizeof(int)); v = CLAMP(v,0,NAYUKIB_SNOWBUNNY_MAX);
             if (playerIndex==1) data.p1NayukiSnowbunnies = v; else data.p2NayukiSnowbunnies = v;
-            LogOut(std::string("[CHAR] Read ") + (playerIndex==1?"P1":"P2") + " Nayuki(Awake) snowbunnies=" + std::to_string(v), detailedLogging.load());
+            
+            // Read snowbunny active flags array (8 snowbunnies, each flag is 4 bytes at +0x3154 + 4*i)
+            int activeFlags[8] = {0};
+            std::string flagsStr = "";
+            for (int i = 0; i < 8; i++) {
+                uintptr_t flagAddr = ResolvePointer(base, off, NAYUKIB_SNOWBUNNY_ACTIVE_FLAGS_BASE + (4 * i));
+                if (flagAddr) {
+                    SafeReadMemory(flagAddr, &activeFlags[i], sizeof(int));
+                    flagsStr += std::to_string(activeFlags[i]);
+                    if (i < 7) flagsStr += ",";
+                }
+            }
+            
+            LogOut(std::string("[CHAR] ") + (playerIndex==1?"P1":"P2") + " Nayuki(Awake) timer=" + std::to_string(v) + 
+                   " active=[" + flagsStr + "]", detailedLogging.load());
         }; ReadNayukiB(1); ReadNayukiB(2);
 
         // Mai (Kawasumi) – Unified status + single multi-purpose timer model

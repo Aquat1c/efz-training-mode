@@ -79,6 +79,7 @@ bool CanAirtech(short moveID); // Add this missing declaration
 extern std::atomic<bool> g_featuresEnabled;
 void EnableFeatures();
 void DisableFeatures();
+void ResetDisplayDataToDefaults();
 
 // Add delay support for auto-airtech
 extern std::atomic<int> autoAirtechDelay; // 0=instant, 1+=frames to wait
