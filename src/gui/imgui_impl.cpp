@@ -3,6 +3,8 @@
 #include "../include/gui/imgui_impl.h"
 #include "../include/core/logger.h"
 #include "../include/gui/imgui_gui.h"
+#include "../include/game/practice_hotkey_gate.h"
+namespace PracticeOverlayGate { void SetMenuVisible(bool); }
 #include "../include/gui/overlay.h" 
 #include <stdexcept>
 #include <Xinput.h>
@@ -20,7 +22,8 @@ extern std::atomic<bool> g_isShuttingDown;
 
 // Global state
 static bool g_imguiInitialized = false;
-static bool g_imguiVisible = false;
+// Made non-static to satisfy legacy external references during LTCG; accessor functions should be preferred.
+bool g_imguiVisible = false;
 static IDirect3DDevice9* g_d3dDevice = nullptr;
 static WNDPROC g_originalWndProc = nullptr;
 
@@ -422,7 +425,9 @@ namespace ImGuiImpl {
         }
 
         // Practice Pause integration: mirror EfzRevival pause when menu visible
-        PauseIntegration::OnMenuVisibilityChanged(g_imguiVisible);
+    PauseIntegration::OnMenuVisibilityChanged(g_imguiVisible);
+    PracticeHotkeyGate::NotifyMenuVisibility(g_imguiVisible);
+    PracticeOverlayGate::SetMenuVisible(g_imguiVisible);
         
         // Ensure the visibility state persists by setting it in a global
         static bool stateLogged = false;

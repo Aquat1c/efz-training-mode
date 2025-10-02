@@ -55,14 +55,37 @@ namespace {
     // We use __fastcall for __thiscall hooks (ECX=this, EDX=unused)
     static int __fastcall HookedPracticeTick(void* thisPtr, void* /*edx*/) {
         s_practicePtr.store(thisPtr, std::memory_order_relaxed);
-        return oPracticeTick ? oPracticeTick(thisPtr) : 0;
+        // Capture pre-step counter if menu visible (so we can neutralize any increment)
+        uint32_t before = 0;
+        bool wantNeutralize = false;
+        if (s_menuVisible.load(std::memory_order_relaxed)) {
+            SafeReadMemory(reinterpret_cast<uintptr_t>(thisPtr)+PRACTICE_OFF_STEP_COUNTER, &before, sizeof(before));
+            wantNeutralize = true;
+        }
+        int ret = oPracticeTick ? oPracticeTick(thisPtr) : 0;
+        if (wantNeutralize) {
+            uint32_t after = before;
+            if (SafeReadMemory(reinterpret_cast<uintptr_t>(thisPtr)+PRACTICE_OFF_STEP_COUNTER, &after, sizeof(after))) {
+                if (after == before + 1) {
+                    // Roll back the step advance
+                    SafeWriteMemory(reinterpret_cast<uintptr_t>(thisPtr)+PRACTICE_OFF_STEP_COUNTER, &before, sizeof(before));
+                }
+            }
+        }
+        return ret;
     }
 
     // Also capture pointer via Pause toggle entry (sub_10075720) when the user presses Space/P
     typedef int (__thiscall *tTogglePause)(void* thisPtr);
     static tTogglePause oTogglePause = nullptr;
+    // Internal bypass lets us invoke the official toggle even while menu visible
+    static std::atomic<bool> s_internalPauseBypass{false};
     static int __fastcall HookedTogglePause(void* thisPtr, void* /*edx*/) {
         if (thisPtr) s_practicePtr.store(thisPtr, std::memory_order_relaxed);
+        if (s_menuVisible.load(std::memory_order_relaxed) && !s_internalPauseBypass.load(std::memory_order_relaxed)) {
+            // Suppress user-initiated pause/unpause while menu open
+            return 0;
+        }
         return oTogglePause ? oTogglePause(thisPtr) : 0;
     }
 
@@ -171,8 +194,12 @@ namespace {
     }
     bool InvokeOfficialToggle() {
         void* p = s_practicePtr.load(); if (!p) return false; auto fn = GetOfficialToggleFn(); if (!fn) return false;
-        __try { fn(p); } __except(EXCEPTION_EXECUTE_HANDLER) { return false; }
-        return true;
+        // Temporarily bypass suppression so HookedTogglePause calls through
+        s_internalPauseBypass.store(true, std::memory_order_relaxed);
+        bool ok = false;
+        __try { fn(p); ok = true; } __except(EXCEPTION_EXECUTE_HANDLER) { ok = false; }
+        s_internalPauseBypass.store(false, std::memory_order_relaxed);
+        return ok;
     }
 }
 
