@@ -201,6 +201,41 @@ LRESULT CALLBACK ImGuiWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 }
 
 namespace ImGuiImpl {
+    // Get DPI scale factor for the window
+    static float GetDpiScale() {
+        HWND hwnd = FindEFZWindow();
+        if (!hwnd) {
+            LogOut("[IMGUI] GetDpiScale: No EFZ window found, returning 1.0", true);
+            return 1.0f;
+        }
+        
+        // Try to get DPI for the window (Windows 10+)
+        typedef UINT(WINAPI* GetDpiForWindowFunc)(HWND);
+        HMODULE user32 = GetModuleHandleA("user32.dll");
+        if (user32) {
+            GetDpiForWindowFunc pGetDpiForWindow = (GetDpiForWindowFunc)GetProcAddress(user32, "GetDpiForWindow");
+            if (pGetDpiForWindow) {
+                UINT dpi = pGetDpiForWindow(hwnd);
+                float scale = (float)dpi / 96.0f;
+                LogOut((std::string("[IMGUI] DPI detected: ") + std::to_string(dpi) + " (scale=" + std::to_string(scale) + ")").c_str(), true);
+                return scale; // 96 DPI is 100% scaling
+            }
+        }
+        
+        // Fallback: Get DPI from DC
+        HDC hdc = GetDC(hwnd);
+        if (hdc) {
+            int dpiX = GetDeviceCaps(hdc, LOGPIXELSX);
+            ReleaseDC(hwnd, hdc);
+            float scale = (float)dpiX / 96.0f;
+            LogOut((std::string("[IMGUI] DPI detected (fallback): ") + std::to_string(dpiX) + " (scale=" + std::to_string(scale) + ")").c_str(), true);
+            return scale;
+        }
+        
+        LogOut("[IMGUI] GetDpiScale: Could not detect DPI, returning 1.0", true);
+        return 1.0f;
+    }
+
     // Rebuild font atlas for crisp text at a given UI scale. Safe to call multiple times.
     static void UpdateFontAtlasForScale(float uiScale)
     {
@@ -210,9 +245,12 @@ namespace ImGuiImpl {
         // Check desired font mode from config
         const int fontMode = Config::GetSettings().uiFontMode; // 0=Default, 1=Segoe UI
 
+        // Get DPI scale factor
+        float dpiScale = GetDpiScale();
+
         // Clamp and round to nearest hundredth to avoid thrashing on tiny changes
-        float s = uiScale;
-        if (s < 0.70f) s = 0.70f; else if (s > 1.50f) s = 1.50f;
+        float s = uiScale * dpiScale; // Combine UI scale with DPI scale
+        if (s < 0.70f) s = 0.70f; else if (s > 2.50f) s = 2.50f;
         float sRounded = floorf(s * 100.0f + 0.5f) / 100.0f;
         const bool scaleChanged = !(fabsf(sRounded - g_lastFontScaleApplied) < 0.01f);
         const bool fontChanged  = (fontMode != g_lastFontModeApplied);
@@ -232,9 +270,9 @@ namespace ImGuiImpl {
     io.Fonts->TexGlyphPadding = 1;
 
     ImFontConfig cfg;
-        cfg.OversampleH = 2; // light oversampling for clarity
-        cfg.OversampleV = 2;
-        cfg.PixelSnapH = true; // helps DX9 rasterization crispness
+        cfg.OversampleH = 3; // Higher oversampling for smoother edges at high DPI
+        cfg.OversampleV = 3;
+        cfg.PixelSnapH = false; // Allow subpixel positioning for smoother text
         cfg.SizePixels = targetPx; // set explicit pixel size for crisp text
 
         // Choose font per config: 0=ImGui default, 1=Segoe UI (if available)
@@ -274,6 +312,10 @@ namespace ImGuiImpl {
             LogOut("[IMGUI] Error: No valid D3D device provided", true);
             return false;
         }
+        
+        // Enable DPI awareness for crisp rendering
+        ImGui_ImplWin32_EnableDpiAwareness();
+        LogOut("[IMGUI] Enabled DPI awareness", true);
         
         g_d3dDevice = device;
 

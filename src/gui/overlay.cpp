@@ -64,6 +64,34 @@ int DirectDrawHook::nextMessageId = 0;
 bool DirectDrawHook::isHooked = false;
 // --- End static member definitions ---
 
+// --- DPI Awareness Helper ---
+static float GetDpiScale() {
+    HWND hwnd = FindWindow(NULL, "Eternal Fighter Zero");
+    if (!hwnd) return 1.0f;
+    
+    // Try Windows 10+ API first
+    typedef UINT(WINAPI* GetDpiForWindowFunc)(HWND);
+    HMODULE user32 = GetModuleHandleA("user32.dll");
+    if (user32) {
+        GetDpiForWindowFunc pGetDpiForWindow = (GetDpiForWindowFunc)GetProcAddress(user32, "GetDpiForWindow");
+        if (pGetDpiForWindow) {
+            UINT dpi = pGetDpiForWindow(hwnd);
+            return (float)dpi / 96.0f; // 96 DPI = 100% scaling
+        }
+    }
+    
+    // Fallback to DC method
+    HDC hdc = GetDC(hwnd);
+    if (hdc) {
+        int dpiX = GetDeviceCaps(hdc, LOGPIXELSX);
+        ReleaseDC(hwnd, hdc);
+        return (float)dpiX / 96.0f;
+    }
+    
+    return 1.0f;
+}
+// --- End DPI Helper ---
+
 // --- D3D9 Hooking Globals ---
 typedef HRESULT(WINAPI* EndScene_t)(LPDIRECT3DDEVICE9);
 static EndScene_t oEndScene = nullptr;
@@ -248,9 +276,12 @@ void DirectDrawHook::RenderText(HDC hdc, const std::string& text, int x, int y, 
     // Set up the text properties
     SetBkMode(hdc, TRANSPARENT);
     
-    // Create a better font for our overlay - FIX THE CreateFont CALL
+    // Create a better font for our overlay - DPI-aware scaling
+    float dpiScale = GetDpiScale();
+    int fontSize = (int)(20.0f * dpiScale); // Scale font size with DPI
+    
     HFONT font = CreateFont(
-        20,                        // Height
+        fontSize,                  // Height (DPI-scaled)
         0,                         // Width
         0,                         // Escapement
         0,                         // Orientation
@@ -259,10 +290,10 @@ void DirectDrawHook::RenderText(HDC hdc, const std::string& text, int x, int y, 
         FALSE,                     // Underline
         FALSE,                     // StrikeOut
         DEFAULT_CHARSET,           // CharSet
-        OUT_OUTLINE_PRECIS,        // OutPrecision
+        OUT_TT_PRECIS,             // OutPrecision (use TrueType for better quality)
         CLIP_DEFAULT_PRECIS,       // ClipPrecision
-        ANTIALIASED_QUALITY,       // Quality
-        DEFAULT_PITCH | FF_SWISS,  // PitchAndFamily - FIX: Use FF_SWISS
+        CLEARTYPE_QUALITY,         // Quality (ClearType for smoother text)
+        DEFAULT_PITCH | FF_SWISS,  // PitchAndFamily
         "Arial"                    // FaceName
     );
     
@@ -321,9 +352,12 @@ void DirectDrawHook::RenderSimpleText(IDirectDrawSurface7* surface, const std::s
         // Set up text properties similar to EFZ's style
         SetBkMode(hdc, TRANSPARENT);
         
-        // Create a font that should be compatible with EFZ - FIX THE CreateFont CALL
+        // Create a font that should be compatible with EFZ - DPI-aware scaling
+        float dpiScale = GetDpiScale();
+        int fontSize = (int)(14.0f * dpiScale); // Scale font size with DPI
+        
         HFONT font = CreateFont(
-            14,                        // Height - smaller for less interference
+            fontSize,                  // Height - DPI-scaled
             0,                         // Width (auto)
             0,                         // Escapement
             0,                         // Orientation
@@ -332,11 +366,11 @@ void DirectDrawHook::RenderSimpleText(IDirectDrawSurface7* surface, const std::s
             FALSE,                     // Underline
             FALSE,                     // StrikeOut
             DEFAULT_CHARSET,           // CharSet
-            OUT_DEFAULT_PRECIS,        // OutputPrecision
+            OUT_TT_PRECIS,             // OutputPrecision (TrueType for better quality)
             CLIP_DEFAULT_PRECIS,       // ClipPrecision
-            DEFAULT_QUALITY,           // Quality - use default instead of antialiased
-            DEFAULT_PITCH | FF_DONTCARE, // PitchAndFamily - FIX: Use FF_DONTCARE
-            "MS Sans Serif"            // Face name - this is the 14th parameter
+            CLEARTYPE_QUALITY,         // Quality (ClearType for smoother text)
+            DEFAULT_PITCH | FF_DONTCARE, // PitchAndFamily
+            "MS Sans Serif"            // Face name
         );
         
         HFONT oldFont = (HFONT)SelectObject(hdc, font);
@@ -1083,11 +1117,14 @@ std::string DirectDrawHook::FitTextToWidth(const std::string& text, int maxWidth
         needToReleaseDC = true;
     }
     
-    // Create and select font to measure text accurately
+    // Create and select font to measure text accurately - DPI-aware
+    float dpiScale = GetDpiScale();
+    int fontSize = (int)(20.0f * dpiScale);
+    
     HFONT font = CreateFont(
-        20, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
-        DEFAULT_CHARSET, OUT_OUTLINE_PRECIS, CLIP_DEFAULT_PRECIS,
-        ANTIALIASED_QUALITY, DEFAULT_PITCH | FF_SWISS, "Arial"
+        fontSize, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
+        DEFAULT_CHARSET, OUT_TT_PRECIS, CLIP_DEFAULT_PRECIS,
+        CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, "Arial"
     );
     HFONT oldFont = (HFONT)SelectObject(tempDC, font);
     
@@ -1159,11 +1196,14 @@ std::string DirectDrawHook::FitTextToWidthFromLeft(const std::string& text, int 
         needToReleaseDC = true;
     }
     
-    // Create and select font to measure text accurately
+    // Create and select font to measure text accurately - DPI-aware
+    float dpiScale = GetDpiScale();
+    int fontSize = (int)(20.0f * dpiScale);
+    
     HFONT font = CreateFont(
-        20, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
-        DEFAULT_CHARSET, OUT_OUTLINE_PRECIS, CLIP_DEFAULT_PRECIS,
-        ANTIALIASED_QUALITY, DEFAULT_PITCH | FF_SWISS, "Arial"
+        fontSize, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
+        DEFAULT_CHARSET, OUT_TT_PRECIS, CLIP_DEFAULT_PRECIS,
+        CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, "Arial"
     );
     HFONT oldFont = (HFONT)SelectObject(tempDC, font);
     
