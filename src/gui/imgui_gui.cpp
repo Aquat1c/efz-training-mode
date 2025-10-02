@@ -415,7 +415,55 @@ namespace ImGuiGui {
                             &guiState.localData.delayOnRG, &guiState.localData.strengthOnRG, &guiState.localData.customOnRG, &guiState.localData.macroSlotOnRG }
                 };
         
-        // Motion list (includes directions/stances plus motions and utility actions); we'll append dynamic Macro entries per slot below.
+        // Motion list with categories - NOTE: mapping functions below must stay in sync
+        struct MotionItem {
+            const char* label;
+            int motionIndex;      // Index for mapping
+            bool isCategory;      // True for category headers (non-selectable)
+            bool isSeparator;     // True for visual separator lines
+        };
+        
+        const MotionItem motionItemsWithCategories[] = {
+            // Normals category
+            { "NORMALS", -1, true, false },
+            { "  Standing", 0, false, false },
+            { "  Crouching", 1, false, false },
+            { "  Jumping", 2, false, false },
+            { "  Forward", 22, false, false },
+            { "  Back", 23, false, false },
+            { "", -1, false, true }, // Separator
+            
+            // Specials category
+            { "SPECIALS", -1, true, false },
+            { "  236 (QCF)", 3, false, false },
+            { "  623 (DP)", 4, false, false },
+            { "  214 (QCB)", 5, false, false },
+            { "  41236 (HCF)", 7, false, false },
+            { "  421 (Half-circle Down)", 6, false, false },
+            { "  412", 13, false, false },
+            { "  22", 14, false, false },
+            { "", -1, false, true }, // Separator
+            
+            // Supers category
+            { "SUPERS", -1, true, false },
+            { "  214236 (Hybrid)", 8, false, false },
+            { "  236236 (Double QCF)", 9, false, false },
+            { "  214214 (Double QCB)", 10, false, false },
+            { "  641236", 11, false, false },
+            { "  463214", 12, false, false },
+            { "  4123641236", 15, false, false },
+            { "  6321463214", 16, false, false },
+            { "  Final Memory", 21, false, false },
+            { "", -1, false, true }, // Separator
+            
+            // Others category
+            { "OTHERS", -1, true, false },
+            { "  Jump", 17, false, false },
+            { "  Dash", 19, false, false },
+            { "  Backdash", 18, false, false }
+        };
+        
+        // Keep old flat list for backwards compatibility with some functions
         const char* motionItems[] = {
             "Standing", "Crouching", "Jumping",
             "236 (QCF)", "623 (DP)", "214 (QCB)", "421 (Half-circle Down)",
@@ -423,7 +471,7 @@ namespace ImGuiGui {
             "641236", "463214", "412", "22", "4123641236", "6321463214",
             "Jump", "Backdash", "Forward Dash", "Block", "Final Memory",
             "Forward Normal", "Back Normal"
-        }; // NOTE: mapping functions below must stay in sync
+        };
 
         // Compute a compact width that fits the longest action label (plus arrow/padding), so combos aren't overly wide
         ImGuiStyle& _style = ImGui::GetStyle();
@@ -549,16 +597,64 @@ namespace ImGuiGui {
             
             ImGui::SameLine();
             ImGui::SetNextItemWidth(actionComboWidth);
-            // Build list: base motions + single Macro entry
-            std::vector<const char*> items;
-            items.reserve(IM_ARRAYSIZE(motionItems) + 1);
-            for (int k = 0; k < IM_ARRAYSIZE(motionItems); ++k) items.push_back(motionItems[k]);
-            const int macroIndex = (int)items.size();
-            items.push_back("Macro");
-            // Determine current selection index
-            int motionIndex = (*triggers[i].macroSlot > 0) ? macroIndex : GetMotionIndexForAction(*triggers[i].action);
-            if (ImGui::Combo("Action", &motionIndex, items.data(), (int)items.size())) { // primary selector
-                if (motionIndex == macroIndex) {
+            
+            // Determine current selection
+            int currentMotionIndex = (*triggers[i].macroSlot > 0) ? -2 : GetMotionIndexForAction(*triggers[i].action);
+            const char* currentLabel = (*triggers[i].macroSlot > 0) ? "Macro" : "Unknown";
+            if (currentMotionIndex >= 0) {
+                // Find label from categorized list
+                for (const auto& item : motionItemsWithCategories) {
+                    if (!item.isCategory && !item.isSeparator && item.motionIndex == currentMotionIndex) {
+                        currentLabel = item.label;
+                        break;
+                    }
+                }
+            }
+            
+            // Custom combo with categories
+            bool selectionChanged = false;
+            int newMotionIndex = currentMotionIndex;
+            bool newMacroSelected = false;
+            
+            if (ImGui::BeginCombo("Action", currentLabel)) {
+                // Render categorized items
+                for (const auto& item : motionItemsWithCategories) {
+                    if (item.isCategory) {
+                        // Category header - colored, non-selectable
+                        ImGui::TextColored(ImVec4(0.7f, 0.9f, 1.0f, 1.0f), "%s", item.label);
+                    } else if (item.isSeparator) {
+                        // Visual separator
+                        ImGui::Separator();
+                    } else {
+                        // Selectable item
+                        bool isSelected = (item.motionIndex == currentMotionIndex);
+                        if (ImGui::Selectable(item.label, isSelected)) {
+                            newMotionIndex = item.motionIndex;
+                            selectionChanged = true;
+                        }
+                        if (isSelected) {
+                            ImGui::SetItemDefaultFocus();
+                        }
+                    }
+                }
+                
+                // Add Macro option at the end (no category)
+                ImGui::Separator();
+                bool isMacroSelected = (*triggers[i].macroSlot > 0);
+                if (ImGui::Selectable("Macro", isMacroSelected)) {
+                    newMacroSelected = true;
+                    selectionChanged = true;
+                }
+                if (isMacroSelected) {
+                    ImGui::SetItemDefaultFocus();
+                }
+                
+                ImGui::EndCombo();
+            }
+            
+            // Handle selection changes
+            if (selectionChanged) {
+                if (newMacroSelected) {
                     // Macro chosen: ensure we have a default slot if none selected yet
                     int slots = MacroController::GetSlotCount();
                     if (*triggers[i].macroSlot == 0 && slots > 0) {
@@ -567,7 +663,7 @@ namespace ImGuiGui {
                 } else {
                     // Non-macro: clear macro and set action
                     *triggers[i].macroSlot = 0;
-                    if (motionIndex <= 2) {
+                    if (newMotionIndex <= 2) {
                         // Posture selected: use current button choice to pick specific normal
                         int currentButtonIdx = 0;
                         if (IsNormalAttackAction(*triggers[i].action)) {
@@ -580,9 +676,9 @@ namespace ImGuiGui {
                         } else {
                             currentButtonIdx = *triggers[i].strength; // reuse strength slot
                         }
-                        *triggers[i].action = MapPostureAndButtonToAction(motionIndex, currentButtonIdx);
+                        *triggers[i].action = MapPostureAndButtonToAction(newMotionIndex, currentButtonIdx);
                     } else {
-                        *triggers[i].action = MapMotionIndexToAction(motionIndex);
+                        *triggers[i].action = MapMotionIndexToAction(newMotionIndex);
                     }
                 }
             }
@@ -621,28 +717,27 @@ namespace ImGuiGui {
                 if (ImGui::Combo("", &dir, dirItems, IM_ARRAYSIZE(dirItems))) {
                     *triggers[i].strength = (dir < 0 ? 0 : (dir > 2 ? 2 : dir));
                 }
-            } else if (*triggers[i].action == ACTION_BACKDASH || *triggers[i].action == ACTION_FORWARD_DASH) {
-                // Hide button combo for dash actions
+            } else if (*triggers[i].action == ACTION_BACKDASH) {
+                // Hide button combo for backdash
                 ImGui::Dummy(ImVec2(90, 0));
-                if (*triggers[i].action == ACTION_FORWARD_DASH) {
-                    ImGui::SameLine();
-                    ImGui::SetNextItemWidth(150);
-                    int fdf = forwardDashFollowup.load();
-                    const char* fdItems[] = { "No Follow-up", "5A", "5B", "5C", "2A", "2B", "2C" };
-                    if (ImGui::Combo("##FDFollow", &fdf, fdItems, IM_ARRAYSIZE(fdItems))) {
-                        if (fdf < 0) fdf = 0; if (fdf > 6) fdf = 6; forwardDashFollowup.store(fdf);
-                    }
-                    if (ImGui::IsItemHovered()) {
-                        ImGui::SetTooltip("Optional normal to press on the first actionable dash frame.\nA/ B/ C standing or crouching versions.");
-                    }
-                    ImGui::SameLine();
-                    bool dashMode = forwardDashFollowupDashMode.load();
-                    if (ImGui::Checkbox("DashAtk", &dashMode)) {
-                        forwardDashFollowupDashMode.store(dashMode);
-                    }
-                    if (ImGui::IsItemHovered()) {
-                        ImGui::SetTooltip("Enable to attempt dash-normal timing (inject during dash).\nDisable for post-dash follow-up.");
-                    }
+            } else if (*triggers[i].action == ACTION_FORWARD_DASH) {
+                // Forward dash follow-up options (no dummy needed)
+                ImGui::SetNextItemWidth(150);
+                int fdf = forwardDashFollowup.load();
+                const char* fdItems[] = { "No Follow-up", "5A", "5B", "5C", "2A", "2B", "2C" };
+                if (ImGui::Combo("##FDFollow", &fdf, fdItems, IM_ARRAYSIZE(fdItems))) {
+                    if (fdf < 0) fdf = 0; if (fdf > 6) fdf = 6; forwardDashFollowup.store(fdf);
+                }
+                if (ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip("Optional normal to press on the first actionable dash frame.\nA/ B/ C standing or crouching versions.");
+                }
+                ImGui::SameLine();
+                bool dashMode = forwardDashFollowupDashMode.load();
+                if (ImGui::Checkbox("DashAtk", &dashMode)) {
+                    forwardDashFollowupDashMode.store(dashMode);
+                }
+                if (ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip("Enable to attempt dash-normal timing (inject during dash).\nDisable for post-dash follow-up.");
                 }
             } else if (postureIdx >= 0) {
                 // Derive button from current normal action
