@@ -276,7 +276,7 @@ namespace Config {
             file << "UIExitKey=0x51          # 'Q' (Exit)\n";
 
             // --- Gamepad binding defaults ---
-            file << "\n; Gamepad bindings (XInput) \n";
+            file << "\n; Controller bindings (XInput) \n";
             file << "; Use symbolic names (e.g. A, B, X, Y, LB, RB, BACK, START, L3, R3, DPAD_UP, DPAD_DOWN, DPAD_LEFT, DPAD_RIGHT) or hex mask (e.g. 0x2000). -1 disables.\n";
             file << "; Triggers (LT, RT) are treated as virtual buttons (threshold based).\n";
             file << "gpTeleportButton=BACK\n";       // Teleport
@@ -533,7 +533,7 @@ namespace Config {
             file << "UIRefreshKey=" << toHexString(settings.uiRefreshKey) << "\n";
             file << "UIExitKey=" << toHexString(settings.uiExitKey) << "\n";
 
-            file << "\n; Gamepad bindings (symbolic names or hex). -1 disables.\n";
+            file << "\n; Controller bindings (symbolic names or hex). -1 disables.\n";
             file << "; NOTE: ABXY reserved: A=UI confirm, B=UI back. Defaults map actions to shoulders/triggers/sticks.\n";
             auto writePad = [&](const char* key, int mask){
                 file << key << "=" << GetGamepadButtonName(mask) << "\n";

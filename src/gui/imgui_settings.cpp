@@ -206,7 +206,7 @@ namespace ImGuiSettings {
             ImGui::TextDisabled("Disallowed: Enter / Escape / Space");
         }
 
-        if (ImGui::CollapsingHeader("Gamepad Bindings")) {
+        if (ImGui::CollapsingHeader("Controller Bindings")) {
             const char* help = "Rebind: capture next button (or LT/RT trigger). Disable: set -1. Holds persist after Save.";
             ImGui::TextWrapped("%s", help);
             ImGui::Separator();
@@ -259,8 +259,8 @@ namespace ImGuiSettings {
                 ImGui::PopID();
             }
             ImGui::Separator();
-            if (ImGui::Button("Save Gamepad Binds")) { Config::SaveSettings(); LogOut("[CONFIG/UI] Gamepad binds saved", false); }
-            ImGui::SameLine(); if (ImGui::Button("Reload")) { Config::LoadSettings(); LogOut("[CONFIG/UI] Gamepad binds reloaded", false); }
+            if (ImGui::Button("Save Controller Binds")) { Config::SaveSettings(); LogOut("[CONFIG/UI] Controller binds saved", false); }
+            ImGui::SameLine(); if (ImGui::Button("Reload")) { Config::LoadSettings(); LogOut("[CONFIG/UI] Controller binds reloaded", false); }
         }
 
         ImGui::Separator();
