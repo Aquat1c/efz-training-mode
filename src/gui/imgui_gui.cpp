@@ -743,12 +743,73 @@ namespace ImGuiGui {
         }
     }
 
+    // Small helper: wrapped bullet text that respects current wrap width
+    static void BulletTextWrapped(const char* fmt, ...) {
+        char buf[1024];
+        va_list args;
+        va_start(args, fmt);
+        vsnprintf(buf, sizeof(buf), fmt, args);
+        va_end(args);
+        ImGui::Bullet();
+        ImGui::SameLine();
+        ImGui::TextWrapped("%s", buf);
+    }
+
+    // Clickable link helper (blue text, hand cursor, opens URL)
+    static void Link(const char* label, const char* url) {
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.35f, 0.65f, 1.0f, 1.0f));
+        ImGui::TextUnformatted(label);
+        ImGui::PopStyleColor();
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("%s", url);
+            ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+        }
+        if (ImGui::IsItemClicked(ImGuiMouseButton_Left)) {
+            ShellExecuteA(nullptr, "open", url, nullptr, nullptr, SW_SHOWNORMAL);
+        }
+    }
+
+    // Map character IDs to canonical EFZ wiki pages (explicit list provided by user)
+    static const char* GetCharacterWikiPathByID(int charId) {
+        switch (charId) {
+            case CHAR_ID_AKANE:    return "Akane_Satomura";
+            case CHAR_ID_AKIKO:    return "Akiko_Minase";
+            case CHAR_ID_AYU:      return "Ayu_Tsukimiya";
+            case CHAR_ID_EXNANASE: return "Doppel_Nanase";
+            case CHAR_ID_IKUMI:    return "Ikumi_Amasawa";
+            case CHAR_ID_KANNA:    return "Kanna";
+            case CHAR_ID_KANO:     return "Kano_Kirishima";
+            case CHAR_ID_KAORI:    return "Kaori_Misaka";
+            case CHAR_ID_MAI:      return "Mai_Kawasumi";
+            case CHAR_ID_MAKOTO:   return "Makoto_Sawatari";
+            case CHAR_ID_MAYU:     return "Mayu_Shiina";
+            case CHAR_ID_MINAGI:   return "Minagi_Tohno";
+            case CHAR_ID_MIO:      return "Mio_Kouzuki";
+            case CHAR_ID_MISAKI:   return "Misaki_Kawana";
+            case CHAR_ID_MISHIO:   return "Mishio_Amano";
+            case CHAR_ID_MISUZU:   return "Misuzu_Kamio";
+            case CHAR_ID_MIZUKA:   return "Mizuka_Nagamori";   // Mizuka
+            case CHAR_ID_NAGAMORI: return "Mizuka_Nagamori";   // Nagamori maps to same page
+            case CHAR_ID_NANASE:   return "Rumi_Nanase";       // Rumi
+            case CHAR_ID_SAYURI:   return "Sayuri_Kurata";
+            case CHAR_ID_SHIORI:   return "Shiori_Misaka";
+            case CHAR_ID_NAYUKI:   return "Nayuki_Minase_(asleep)"; // Sleepy
+            case CHAR_ID_NAYUKIB:  return "Nayuki_Minase_(awake)";  // Awake
+            case CHAR_ID_MIZUKAB:  return "UNKNOWN";                // Unknown
+            default: return nullptr;
+        }
+    }
+
     // Help Tab implementation
     void RenderHelpTab() {
         // Wrap help content in a scrollable child so keyboard/gamepad nav can scroll it
         ImGuiWindowFlags helpFlags = ImGuiWindowFlags_NoSavedSettings;
         ImVec2 avail = ImGui::GetContentRegionAvail();
         if (ImGui::BeginChild("##HelpScroll", ImVec2(avail.x, avail.y), true, helpFlags)) {
+            // Enable word-wrap against child width
+            ImGui::PushTextWrapPos(0.0f);
+            // Read current hotkey/gamepad settings once for display
+            const auto& cfg = Config::GetSettings();
             // Ensure the child can be focused for keyboard/gamepad scrolling
             if (!ImGui::IsWindowFocused(ImGuiFocusedFlags_ChildWindows)) {
                 ImGui::SetItemDefaultFocus();
@@ -757,88 +818,143 @@ namespace ImGuiGui {
             ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 1.0f, 0.8f, 0.85f));
             ImGui::TextDisabled("Hint: Use Up/Down/PageUp/PageDown or D-Pad to scroll this Help.");
             ImGui::PopStyleColor();
-            // Provide explicit key/gamepad scrolling when the child has focus
-            if (ImGui::IsWindowFocused()) {
-                ImGuiIO& io = ImGui::GetIO();
-                const float line = ImGui::GetTextLineHeightWithSpacing();
-                const float page = ImGui::GetWindowHeight() * 0.85f;
-                float scroll = 0.0f;
-                if (ImGui::IsKeyDown(ImGuiKey_DownArrow)) scroll += line;
-                if (ImGui::IsKeyDown(ImGuiKey_UpArrow)) scroll -= line;
-                if (ImGui::IsKeyPressed(ImGuiKey_PageDown)) scroll += page;
-                if (ImGui::IsKeyPressed(ImGuiKey_PageUp)) scroll -= page;
-                // Gamepad DPAD
-                if (ImGui::IsKeyDown(ImGuiKey_GamepadDpadDown)) scroll += line * 1.5f;
-                if (ImGui::IsKeyDown(ImGuiKey_GamepadDpadUp)) scroll -= line * 1.5f;
-                if (scroll != 0.0f) {
-                    ImGui::SetScrollY(ImGui::GetScrollY() + scroll);
+            // Short intro before collapsible sections
+            ImGui::TextWrapped("This Help covers the overlay features, hotkeys, and training tools. While the menu is open, practice hotkeys are gated and the game auto-pauses; it resumes on close. Expand the sections below for details.");
+            ImGui::Dummy(ImVec2(1, 4));
+            // Quick start
+            if (ImGui::CollapsingHeader("Quick start", ImGuiTreeNodeFlags_DefaultOpen)) {
+                ImGui::TextWrapped("Open the overlay, set options, then press Apply at the bottom. The game auto-pauses while the menu is open and resumes on close.");
+                BulletTextWrapped("Toggle Overlay: %s (Gamepad: %s)", GetKeyName(cfg.toggleImGuiKey).c_str(), Config::GetGamepadButtonName(cfg.gpToggleMenuButton).c_str());
+                BulletTextWrapped("Load Position: %s (Gamepad: %s)", GetKeyName(cfg.teleportKey).c_str(), Config::GetGamepadButtonName(cfg.gpTeleportButton).c_str());
+                BulletTextWrapped("Save Position: %s (Gamepad: %s)", GetKeyName(cfg.recordKey).c_str(), Config::GetGamepadButtonName(cfg.gpSavePositionButton).c_str());
+                BulletTextWrapped("Toggle Stats Display: %s", GetKeyName(cfg.toggleTitleKey).c_str());
+            }
+            // Game Resources (moved higher)
+            if (ImGui::CollapsingHeader("Game Resources", ImGuiTreeNodeFlags_DefaultOpen)) {
+                BulletTextWrapped("Open helpful external resources in your browser:");
+                ImGui::Indent();
+                Link("Eternal Fighter Zero Wiki", "https://wiki.gbl.gg/w/Eternal_Fighter_Zero");
+                Link("Training Mode (EFZ)", "https://wiki.gbl.gg/w/Eternal_Fighter_Zero/Training_Mode");
+                Link("EFZ Global Discord", "https://discord.gg/aUgqXAt");
+                ImGui::Unindent();
+
+                // Character-specific wiki pages
+                int p1Id = guiState.localData.p1CharID;
+                int p2Id = guiState.localData.p2CharID;
+                std::string p1Name = CharacterSettings::GetCharacterName(p1Id);
+                std::string p2Name = CharacterSettings::GetCharacterName(p2Id);
+                const char* p1Path = GetCharacterWikiPathByID(p1Id);
+                if (!p1Name.empty() && p1Name != "Unknown" && p1Path) {
+                    std::string url = std::string("https://wiki.gbl.gg/w/Eternal_Fighter_Zero/") + p1Path;
+                    ImGui::Separator();
+                    ImGui::TextWrapped("P1: %s", p1Name.c_str());
+                    Link("Open character wiki (P1)", url.c_str());
+                }
+                const char* p2Path = GetCharacterWikiPathByID(p2Id);
+                if (!p2Name.empty() && p2Name != "Unknown" && p2Path) {
+                    std::string url = std::string("https://wiki.gbl.gg/w/Eternal_Fighter_Zero/") + p2Path;
+                    if (p1Name.empty() || p1Name == "Unknown") ImGui::Separator();
+                    ImGui::TextWrapped("P2: %s", p2Name.c_str());
+                    Link("Open character wiki (P2)", url.c_str());
                 }
             }
-    ImGui::TextUnformatted("Hotkeys (can be changed in config.ini):");
-    ImGui::Separator();
+            // Position tools
+            if (ImGui::CollapsingHeader("Position tools (hold Load)", ImGuiTreeNodeFlags_DefaultOpen)) {
+                ImGui::TextDisabled("Hold the Load key: Keyboard=%s, Gamepad=%s", GetKeyName(cfg.teleportKey).c_str(), Config::GetGamepadButtonName(cfg.gpTeleportButton).c_str());
+                BulletTextWrapped("Center Both: Load + Down (Gamepad: + D-Pad Down)");
+                BulletTextWrapped("Left Corner: Load + Left (Gamepad: + D-Pad Left)");
+                BulletTextWrapped("Right Corner: Load + Right (Gamepad: + D-Pad Right)");
+                BulletTextWrapped("Round Start: Load + Down + A (keyboard only)");
+                BulletTextWrapped("Swap Sides: Load + D (keyboard only)");
+            }
 
-        const Config::Settings& cfg = Config::GetSettings();
+            // Practice basics
+            if (ImGui::CollapsingHeader("Practice basics", ImGuiTreeNodeFlags_DefaultOpen)) {
+                BulletTextWrapped("Switch Players: %s (Practice only)", GetKeyName(cfg.switchPlayersKey).c_str());
+                BulletTextWrapped("P2 Control: lets you play P2. While ON, the game's F6 (stance) and F7 (auto-block) keys won't work.");
+                BulletTextWrapped("Dummy Auto-Block: Off / Block All / Only First Hit / Start After First Hit.");
+                BulletTextWrapped("Adaptive stance: auto-picks high vs air, low vs grounded. Disables manual stance while ON.");
+                // Overlay & UI
+                ImGui::Separator();
+                ImGui::TextDisabled("Overlay & UI");
+                BulletTextWrapped("UI Scale and Font are configurable (General section in config). If text feels too small/large, adjust uiScale or uiFont.");
+                BulletTextWrapped("Footer hotkeys: Apply=%s, Refresh=%s, Exit=%s (customizable in [Hotkeys]).",
+                    GetKeyName(cfg.uiAcceptKey).c_str(), GetKeyName(cfg.uiRefreshKey).c_str(), GetKeyName(cfg.uiExitKey).c_str());
+                BulletTextWrapped("Virtual Cursor (optional): navigate menus with a gamepad-only setup; speeds/behavior tunable in config.");
+            }
+            // (Mechanics quick facts removed per request)
+            // Tools explained
+            if (ImGui::CollapsingHeader("Tools explained", ImGuiTreeNodeFlags_DefaultOpen)) {
+                BulletTextWrapped("Always Recoil Guard: keeps the 10f RG window always armed for the dummy.");
+                BulletTextWrapped("Counter RG: tries to RG back after getting RG'd where the game allows it.");
+                BulletTextWrapped("Auto-Airtech: auto air-recover Forward/Backward; 'Delay' adds frames before the tech.");
+                BulletTextWrapped("Auto-Jump: make selected side(s) jump Neutral/Forward/Backward when able.");
+                BulletTextWrapped("Final Memory (Global): 'Allow at any HP' lets FM be used regardless of life.");
+            }
+            // Auto Action overview
+            if (ImGui::CollapsingHeader("Auto Action (overview)", ImGuiTreeNodeFlags_DefaultOpen)) {
+                ImGui::TextWrapped("Create simple reactions to events like Wakeup, After Block, After Hitstun, After Airtech, or On RG.");
+                BulletTextWrapped("Target: choose P1, P2, or Both.");
+                BulletTextWrapped("Action: pick a normal, specials/supers, macros and others(dash/backdash/jump/block.). Dash can have an optional follow-up normal.");
+                BulletTextWrapped("Delay/Strength: delay in frames; strength maps to A/B/C keys.");
+                BulletTextWrapped("Macro: choose 'Macro' as the action and select a Slot to play your recording.");
+                BulletTextWrapped("Gating: triggers have per-attempt gating to avoid spam; clear triggers to reset.");
+            }
+            // Macros quick how-to
+            if (ImGui::CollapsingHeader("Macros – quick how-to", ImGuiTreeNodeFlags_DefaultOpen)) {
+                BulletTextWrapped("Slots: cycle with %s.", GetKeyName(cfg.macroSlotKey).c_str());
+                BulletTextWrapped("Record: press %s to arm, press again to start, press again to stop.", GetKeyName(cfg.macroRecordKey).c_str());
+                BulletTextWrapped("Play: press %s to play current slot (drives P2).", GetKeyName(cfg.macroPlayKey).c_str());
+                BulletTextWrapped("Facing-aware: directions flip automatically based on P2 facing.");
+                BulletTextWrapped("Frame-step aware: you can use Revival's default keys for framestepping (by defaults it's SPACE and P keys for the pause and frame advance respectively).");
+                BulletTextWrapped("Empty slots: playing an empty slot does nothing.");
+            }
 
-        ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.0f, 1.0f), "Core Hotkeys:");
-    ImGui::BulletText("Open/Close Menu: 3/%s (Gamepad: %s)", GetKeyName(cfg.toggleImGuiKey).c_str(), Config::GetGamepadButtonName(cfg.gpToggleMenuButton).c_str());
-    ImGui::BulletText("Load Position: %s (Gamepad: %s)", GetKeyName(cfg.teleportKey).c_str(), Config::GetGamepadButtonName(cfg.gpTeleportButton).c_str());
-    ImGui::BulletText("Save Position: %s (Gamepad: %s)", GetKeyName(cfg.recordKey).c_str(), Config::GetGamepadButtonName(cfg.gpSavePositionButton).c_str());
-    ImGui::BulletText("Toggle Stats Display: %s", GetKeyName(cfg.toggleTitleKey).c_str());
-        //ImGui::BulletText("Reset Frame Counter: %s", GetKeyName(cfg.resetFrameCounterKey).c_str());
-        //ImGui::BulletText("Show This Help Screen: %s", GetKeyName(cfg.helpKey).c_str());
+            // Character helpers (summary)
+            if (ImGui::CollapsingHeader("Character helpers (summary)", ImGuiTreeNodeFlags_DefaultOpen)) {
+                ImGui::TextWrapped("Per-character training helpers live in the Character tab when that character is present:");
+                BulletTextWrapped("Ikumi: Infinite Blood / Genocide timer tweaks (Practice only).");
+                BulletTextWrapped("Misuzu: Feathers, Poison timer/level with optional freeze.");
+                BulletTextWrapped("Mishio: Element (None/Fire/Lightning/Awakened) and Awakened timer controls, Infinite Awakening and element toggles.");
+                BulletTextWrapped("Akiko: Bullet cycle lock, Clean Hit helper, Timeslow trigger.");
+                BulletTextWrapped("Mai: Ghost/Charge/Awakening timers, 'No CD', Ghost position override.");
+                BulletTextWrapped("Kano: Magic meter controls with optional value lock.");
+                BulletTextWrapped("Nayuki (Awake): Snowbunnies timer with infinite toggle.");
+                BulletTextWrapped("Mio: Stance (Short/Long) with lock.");
+                BulletTextWrapped("Sleepy Nayuki: Jam count.");
+                BulletTextWrapped("Doppel: Golden Doppel toggle.");
+                BulletTextWrapped("Nanase (Rumi): Shinai/Barehanded, Infinite Shinai, Final Memory (Kimchi) timer controls.");
+                BulletTextWrapped("Minagi: Always readied Michiru toggle and Michiru position override.");
+            }
 
-        ImGui::Separator();
-    ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.0f, 1.0f), "Positioning Hotkeys (Hold Load: Keyboard=%s, Gamepad=%s, A/B/C/D = your attack keys):", GetKeyName(cfg.teleportKey).c_str(), Config::GetGamepadButtonName(cfg.gpTeleportButton).c_str());
-    ImGui::BulletText("Center Players: %s + DOWN (Gamepad: %s + D-PAD DOWN)", GetKeyName(cfg.teleportKey).c_str(), Config::GetGamepadButtonName(cfg.gpTeleportButton).c_str());
-    ImGui::BulletText("Players to Left Corner: %s + LEFT (Gamepad: %s + D-PAD LEFT)", GetKeyName(cfg.teleportKey).c_str(), Config::GetGamepadButtonName(cfg.gpTeleportButton).c_str());
-    ImGui::BulletText("Players to Right Corner: %s + RIGHT (Gamepad: %s + D-PAD RIGHT)", GetKeyName(cfg.teleportKey).c_str(), Config::GetGamepadButtonName(cfg.gpTeleportButton).c_str());
-    ImGui::BulletText("Round Start Positions: %s + DOWN + A (keyboard only)", GetKeyName(cfg.teleportKey).c_str());
-    ImGui::BulletText("Swap Player Positions: %s + D (keyboard only)", GetKeyName(cfg.teleportKey).c_str());
+            // (Resources block moved higher as 'Game Resources')
+            // Config and notes
+            if (ImGui::CollapsingHeader("Config & notes", ImGuiTreeNodeFlags_DefaultOpen)) {
+                BulletTextWrapped("Config file path: %s", Config::GetConfigFilePath().c_str());
+                BulletTextWrapped("Menu behavior: training hotkeys are gated while the menu is open; game unpauses on close.");
+                BulletTextWrapped("Overlays: trigger/status overlays update automatically; they reset when leaving Practice or on reinit.");
+                //BulletTextWrapped("BGM suppression: training mode can stop background music while features are active (configurable).\nIf BGM is suppressed, it is resumed when features are disabled.");
+                BulletTextWrapped("Network: this tool targets offline training. Online/netplay behavior should not be affected in any way.");
 
-    
-    ImGui::Separator();
-    ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.8f, 1.0f), "Practice/Macros:");
-    ImGui::BulletText("Switch Players (Practice): %s", GetKeyName(cfg.switchPlayersKey).c_str());
-    ImGui::BulletText("Macro Record (two-press): %s", GetKeyName(cfg.macroRecordKey).c_str());
-    ImGui::BulletText("Macro Play: %s", GetKeyName(cfg.macroPlayKey).c_str());
-    ImGui::BulletText("Macro Next Slot: %s", GetKeyName(cfg.macroSlotKey).c_str());
+            }
+            // (end collapsible sections)
 
-        ImGui::Dummy(ImVec2(1, 6));
-        ImGui::SeparatorText("Macros – how they work");
-        ImGui::TextWrapped(
-            "Record inputs and play them back on the dummy with game-accurate timing.\n"
-            "Captures buttons and the input buffer (directions/motions).\n"
-        );
-        ImGui::BulletText("Slots: Macros are stored in numbered slots. Use '%s' to cycle slots.", GetKeyName(cfg.macroSlotKey).c_str());
-        ImGui::BulletText("Record: Press '%s' to arm, then press it again to start recording. Press again to stop.", GetKeyName(cfg.macroRecordKey).c_str());
-        ImGui::BulletText("Play: Press '%s' to play the current slot. Playback drives P2 while you keep controlling P1.", GetKeyName(cfg.macroPlayKey).c_str());
-        ImGui::BulletText("Facing-aware: Directions are flipped automatically based on P2 facing.");
-        ImGui::BulletText("Triggers: In Auto Action, choose 'Macro' in the Action combo and pick a Slot to run on that trigger.");
-        ImGui::BulletText("Overlay: Trigger overlay will show 'Macro Slot #X' when a macro is configured.");
+            ImGui::Separator();
 
-        ImGui::Dummy(ImVec2(1, 4));
-        ImGui::SeparatorText("Recording tips");
-        ImGui::TextWrapped(
-            "Sampling at 64 Hz; playback uses the game\'s polling for accuracy.\n"
-            "Buttons merge per tick; directions/motions come from the live input buffer.");
-        ImGui::BulletText("Frame-step aware: If the game is frozen (Practice pause/frame-step via EfzRevival), recording only advances when a frame is actually stepped. This avoids long held directions.");
-        ImGui::BulletText("Empty slots: Attempting to play an empty slot does nothing.");
-
-        ImGui::Separator();
-        
-        // Inline animated preview from embedded bytes
-        unsigned gw = 0, gh = 0;
-        if (IDirect3DTexture9* tex = GifPlayer::GetTexture(gw, gh)) {
-            // Clamp to a reasonable size in the help panel
-            const float maxW = 220.0f, maxH = 180.0f;
-            float w = (float)gw, h = (float)gh;
-            if (w > maxW) { float s = maxW / w; w *= s; h *= s; }
-            if (h > maxH) { float s = maxH / h; w *= s; h *= s; }
-            ImGui::Dummy(ImVec2(1, 6));
-            ImGui::Image((ImTextureID)tex, ImVec2(w, h));
-        } else {
-            ImGui::TextDisabled("(GIF not loaded yet)");
-        }
+            // Inline animated preview from embedded bytes
+            unsigned gw = 0, gh = 0;
+            if (IDirect3DTexture9* tex = GifPlayer::GetTexture(gw, gh)) {
+                // Clamp to a reasonable size in the help panel
+                const float maxW = 220.0f, maxH = 180.0f;
+                float w = (float)gw, h = (float)gh;
+                if (w > maxW) { float s = maxW / w; w *= s; h *= s; }
+                if (h > maxH) { float s = maxH / h; w *= s; h *= s; }
+                ImGui::Dummy(ImVec2(1, 6));
+                ImGui::Image((ImTextureID)tex, ImVec2(w, h));
+            } else {
+                ImGui::TextDisabled("(GIF not loaded yet)");
+            }
+            ImGui::PopTextWrapPos();
         }
         ImGui::EndChild();
     }
