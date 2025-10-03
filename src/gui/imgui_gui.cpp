@@ -802,15 +802,15 @@ namespace ImGuiGui {
 
     // Help Tab implementation
     void RenderHelpTab() {
-        // Wrap help content in a scrollable child so keyboard/gamepad nav can scroll it
+    // Wrap help content in a scrollable child so keyboard/controller nav can scroll it
         ImGuiWindowFlags helpFlags = ImGuiWindowFlags_NoSavedSettings;
         ImVec2 avail = ImGui::GetContentRegionAvail();
         if (ImGui::BeginChild("##HelpScroll", ImVec2(avail.x, avail.y), true, helpFlags)) {
             // Enable word-wrap against child width
             ImGui::PushTextWrapPos(0.0f);
-            // Read current hotkey/gamepad settings once for display
+            // Read current hotkey/controller settings once for display
             const auto& cfg = Config::GetSettings();
-            // Ensure the child can be focused for keyboard/gamepad scrolling
+            // Ensure the child can be focused for keyboard/controller scrolling
             if (!ImGui::IsWindowFocused(ImGuiFocusedFlags_ChildWindows)) {
                 ImGui::SetItemDefaultFocus();
             }
@@ -824,9 +824,9 @@ namespace ImGuiGui {
             // Quick start
             if (ImGui::CollapsingHeader("Quick start", ImGuiTreeNodeFlags_DefaultOpen)) {
                 ImGui::TextWrapped("Open the overlay, set options, then press Apply at the bottom. The game auto-pauses while the menu is open and resumes on close.");
-                BulletTextWrapped("Toggle Overlay: %s (Gamepad: %s)", GetKeyName(cfg.toggleImGuiKey).c_str(), Config::GetGamepadButtonName(cfg.gpToggleMenuButton).c_str());
-                BulletTextWrapped("Load Position: %s (Gamepad: %s)", GetKeyName(cfg.teleportKey).c_str(), Config::GetGamepadButtonName(cfg.gpTeleportButton).c_str());
-                BulletTextWrapped("Save Position: %s (Gamepad: %s)", GetKeyName(cfg.recordKey).c_str(), Config::GetGamepadButtonName(cfg.gpSavePositionButton).c_str());
+                BulletTextWrapped("Toggle Overlay: %s (Controller: %s)", GetKeyName(cfg.toggleImGuiKey).c_str(), Config::GetGamepadButtonName(cfg.gpToggleMenuButton).c_str());
+                BulletTextWrapped("Load Position: %s (Controller: %s)", GetKeyName(cfg.teleportKey).c_str(), Config::GetGamepadButtonName(cfg.gpTeleportButton).c_str());
+                BulletTextWrapped("Save Position: %s (Controller: %s)", GetKeyName(cfg.recordKey).c_str(), Config::GetGamepadButtonName(cfg.gpSavePositionButton).c_str());
                 BulletTextWrapped("Toggle Stats Display: %s", GetKeyName(cfg.toggleTitleKey).c_str());
             }
             // Game Resources (moved higher)
@@ -860,17 +860,17 @@ namespace ImGuiGui {
             }
             // Position tools
             if (ImGui::CollapsingHeader("Position tools (hold Load)", ImGuiTreeNodeFlags_DefaultOpen)) {
-                ImGui::TextDisabled("Hold the Load key: Keyboard=%s, Gamepad=%s", GetKeyName(cfg.teleportKey).c_str(), Config::GetGamepadButtonName(cfg.gpTeleportButton).c_str());
-                BulletTextWrapped("Center Both: Load + Down (Gamepad: + D-Pad Down)");
-                BulletTextWrapped("Left Corner: Load + Left (Gamepad: + D-Pad Left)");
-                BulletTextWrapped("Right Corner: Load + Right (Gamepad: + D-Pad Right)");
-                BulletTextWrapped("Round Start: Load + Down + A (keyboard only)");
-                BulletTextWrapped("Swap Sides: Load + D (keyboard only)");
+                ImGui::TextDisabled("Hold the Load key: Keyboard=%s, Controller=%s", GetKeyName(cfg.teleportKey).c_str(), Config::GetGamepadButtonName(cfg.gpTeleportButton).c_str());
+                BulletTextWrapped("Center Both: Load + Down (Controller: D-Pad Down + Load)");
+                BulletTextWrapped("Left Corner: Load + Left (Controller: D-Pad Left + Load)");
+                BulletTextWrapped("Right Corner: Load + Right (Controller: D-Pad Right + Load)");
+                BulletTextWrapped("Round Start: Load + Down + A (Controller: hold D-Pad Down + A, then press Load)");
+                BulletTextWrapped("Swap Positions: Load + D (Controller: %s)", Config::GetGamepadButtonName(cfg.gpSwapPositionsButton).c_str());
             }
 
             // Practice basics
             if (ImGui::CollapsingHeader("Practice basics", ImGuiTreeNodeFlags_DefaultOpen)) {
-                BulletTextWrapped("Switch Players: %s (Practice only)", GetKeyName(cfg.switchPlayersKey).c_str());
+                BulletTextWrapped("Switch Players: %s (Controller: %s, Practice only)", GetKeyName(cfg.switchPlayersKey).c_str(), Config::GetGamepadButtonName(cfg.gpSwitchPlayersButton).c_str());
                 BulletTextWrapped("P2 Control: lets you play P2. While ON, the game's F6 (stance) and F7 (auto-block) keys won't work.");
                 BulletTextWrapped("Dummy Auto-Block: Off / Block All / Only First Hit / Start After First Hit.");
                 BulletTextWrapped("Adaptive stance: auto-picks high vs air, low vs grounded. Disables manual stance while ON.");
@@ -880,12 +880,12 @@ namespace ImGuiGui {
                 BulletTextWrapped("UI Scale and Font are configurable (General section in config). If text feels too small/large, adjust uiScale or uiFont.");
                 BulletTextWrapped("Footer hotkeys: Apply=%s, Refresh=%s, Exit=%s (customizable in [Hotkeys]).",
                     GetKeyName(cfg.uiAcceptKey).c_str(), GetKeyName(cfg.uiRefreshKey).c_str(), GetKeyName(cfg.uiExitKey).c_str());
-                BulletTextWrapped("Virtual Cursor (optional): navigate menus with a gamepad-only setup; speeds/behavior tunable in config.");
+                BulletTextWrapped("Virtual Cursor (optional): navigate menus with a controller-only setup; speeds/behavior tunable in config.");
             }
             // (Mechanics quick facts removed per request)
             // Tools explained
             if (ImGui::CollapsingHeader("Tools explained", ImGuiTreeNodeFlags_DefaultOpen)) {
-                BulletTextWrapped("Always Recoil Guard: keeps the 10f RG window always armed for the dummy.");
+                BulletTextWrapped("Always Recoil Guard: makes the dummy RG instead of blocking. Blocking should be enabled beforehand.");
                 BulletTextWrapped("Counter RG: tries to RG back after getting RG'd where the game allows it.");
                 BulletTextWrapped("Auto-Airtech: auto air-recover Forward/Backward; 'Delay' adds frames before the tech.");
                 BulletTextWrapped("Auto-Jump: make selected side(s) jump Neutral/Forward/Backward when able.");
