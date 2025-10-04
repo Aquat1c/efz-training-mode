@@ -979,6 +979,13 @@ void FrameDataMonitor() {
             static RGAnalysis s_rgP1; // last RG where P1 was the defender
             static RGAnalysis s_rgP2; // last RG where P2 was the defender
 
+            // Transient Counter RG assist:
+            // When the human (P1) RGs the dummy, briefly enable dummy autoblock and arm RG for P2
+            // so it can counter-RG without requiring Always RG to be enabled globally.
+            static bool s_crgAssistActive = false;
+            static bool s_crgSavedAutoBlock = false;
+            static bool s_crgSavedAutoBlockValid = false;
+
          auto computeRGInfo = [](short rgMove, double &defF, double &atkF, double &stunF, double &advF, int defenderCharId) {
                 // Values sourced from wiki: EFZ Strategy/Game Mechanics pages
                 if (rgMove == RG_STAND_ID) {
@@ -1158,6 +1165,27 @@ void FrameDataMonitor() {
                 slot.cRGOpen = true;
                 slot.openedAtFrame = frameCounter.load();
                 emitRGMessage(slot);
+
+                // If P1 (human) just RG'd and Counter RG is enabled, prepare P2 to counter-RG
+                if (defender == 1) {
+                    if (g_counterRGEnabled.load() && !AlwaysRG::IsEnabled() && GetCurrentGameMode() == GameMode::Practice) {
+                        bool curAB = false;
+                        if (GetPracticeAutoBlockEnabled(curAB)) {
+                            s_crgSavedAutoBlock = curAB;
+                            s_crgSavedAutoBlockValid = true;
+                        } else {
+                            s_crgSavedAutoBlockValid = false;
+                        }
+                        // Ensure autoblock is ON during the counter-RG window
+                        if (!curAB) {
+                            SetPracticeAutoBlockEnabled(true);
+                        }
+                        s_crgAssistActive = true;
+                        if (detailedLogging.load()) {
+                            LogOut("[CRG][ASSIST] Activated: enabling dummy autoblock and arming RG during window", true);
+                        }
+                    }
+                }
             };
 
             // Detect RG state edges for both players
@@ -1175,6 +1203,32 @@ void FrameDataMonitor() {
             // Update and announce FA2 when both sides become actionable again
             updateRGFA(s_rgP1);
             updateRGFA(s_rgP2);
+
+            // Counter RG assist maintenance: arm P2 RG while the P1 RG window is open
+            if (s_crgAssistActive) {
+                bool windowOpen = (s_rgP1.active && s_rgP1.cRGOpen);
+                bool p2RgEdge = (IsRecoilGuard(moveID2) && !IsRecoilGuard(prevMoveID2));
+                bool stopAssist = !windowOpen || p2RgEdge || (GetCurrentGamePhase() != GamePhase::Match) || (GetCurrentGameMode() != GameMode::Practice);
+                if (stopAssist) {
+                    // Restore previous autoblock setting if we changed it
+                    if (s_crgSavedAutoBlockValid && !s_crgSavedAutoBlock) {
+                        SetPracticeAutoBlockEnabled(false);
+                    }
+                    s_crgAssistActive = false;
+                    s_crgSavedAutoBlockValid = false;
+                    if (detailedLogging.load()) {
+                        LogOut("[CRG][ASSIST] Deactivated: restoring autoblock state", true);
+                    }
+                } else {
+                    // Arm RG for P2 by writing 0x3C to [P2 + 334]
+                    uintptr_t baseNow = GetEFZBase();
+                    uintptr_t p2Ptr = 0;
+                    if (baseNow && SafeReadMemory(baseNow + EFZ_BASE_OFFSET_P2, &p2Ptr, sizeof(p2Ptr)) && p2Ptr) {
+                        uint8_t arm = 0x3C;
+                        SafeWriteMemory(p2Ptr + 334, &arm, sizeof(arm));
+                    }
+                }
+            }
 
     // DEBUG: sampler for block-related values; trigger only on attacks (move/state >= 200 and not idle)
     // Disabled (kept for potential future diagnostics)

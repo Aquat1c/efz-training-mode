@@ -988,7 +988,7 @@ namespace ImGuiGui {
             // Tools explained
             if (ImGui::CollapsingHeader("Tools explained", ImGuiTreeNodeFlags_DefaultOpen)) {
                 BulletTextWrapped("Always Recoil Guard: makes the dummy RG instead of blocking. Blocking should be enabled beforehand.");
-                BulletTextWrapped("Counter RG: tries to RG back after getting RG'd where the game allows it.");
+                BulletTextWrapped("Counter RG: tries to RG back after getting RG'd where the game allows it. Default: OFF.");
                 BulletTextWrapped("Auto-Airtech: auto air-recover Forward/Backward; 'Delay' adds frames before the tech.");
                 BulletTextWrapped("Auto-Jump: make selected side(s) jump Neutral/Forward/Backward when able.");
                 BulletTextWrapped("Final Memory (Global): 'Allow at any HP' lets FM be used regardless of life.");
