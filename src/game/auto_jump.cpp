@@ -10,6 +10,56 @@
 #include <chrono>
 #include <cmath>
 
+// Robust forward-right determination with hysteresis:
+// - Prefer relative X positions (opponent vs self) when separation exceeds a small epsilon
+// - While within epsilon (near overlap/crossover), stick to the last known direction instead of relying on
+//   the facing flag, which can lag a few frames during side swaps.
+static bool ForwardIsRightForPlayer(int p) {
+    // Cache X position addresses to avoid repeated ResolvePointer calls
+    static uintptr_t cachedBase = 0;
+    static uintptr_t xAddr[3] = { 0, 0, 0 }; // [1]=P1, [2]=P2
+    uintptr_t baseNow = GetEFZBase();
+    if (baseNow != 0 && baseNow != cachedBase) {
+        cachedBase = baseNow;
+        xAddr[1] = ResolvePointer(baseNow, EFZ_BASE_OFFSET_P1, XPOS_OFFSET);
+        xAddr[2] = ResolvePointer(baseNow, EFZ_BASE_OFFSET_P2, XPOS_OFFSET);
+    }
+
+    auto getXPos = [&](int player) -> double {
+        double x = 0.0;
+        if (player >= 1 && player <= 2 && xAddr[player]) {
+            SafeReadMemory(xAddr[player], &x, sizeof(double));
+        }
+        return x;
+    };
+
+    static bool s_lastForwardRight[3] = { true, true, true }; // default forward->right
+    static bool s_init[3] = { false, false, false };
+
+    int opp = (p == 1 ? 2 : 1);
+    double selfX = getXPos(p);
+    double oppX = getXPos(opp);
+    double dx = oppX - selfX;
+
+    // Tunable epsilon: EFZ coordinates are in pixels; a small threshold avoids indecision at overlap
+    constexpr double kEpsilon = 2.0; // pixels
+
+    if (std::fabs(dx) >= kEpsilon) {
+        bool fr = dx > 0.0; // forward is toward opponent
+        s_lastForwardRight[p] = fr;
+        s_init[p] = true;
+        return fr;
+    }
+
+    // Ambiguous: if we have a last value, stick with it; otherwise seed with facing flag
+    if (s_init[p]) return s_lastForwardRight[p];
+
+    bool facingRight = GetPlayerFacingDirection(p);
+    s_lastForwardRight[p] = facingRight; // seed
+    s_init[p] = true;
+    return s_lastForwardRight[p];
+}
+
 void ApplyJump(uintptr_t moveIDAddr, int playerNum, int jumpType) {
     // Ignore moveIDAddr parameter - we won't use it anymore
     using clock = std::chrono::steady_clock;
@@ -25,35 +75,7 @@ void ApplyJump(uintptr_t moveIDAddr, int playerNum, int jumpType) {
     std::string jumpTypeName;
     uint8_t inputMask = MOTION_INPUT_UP; // Default to straight jump (UP)
 
-    // Determine direction dynamically; prefer relative position to opponent to avoid a stray backward jump after side switch
-    // Cache X position addresses to avoid repeated ResolvePointer calls
-    static uintptr_t cachedBase = 0;
-    static uintptr_t xAddr[3] = { 0, 0, 0 }; // [1]=P1, [2]=P2
-    {
-        uintptr_t baseNow = GetEFZBase();
-        if (baseNow != 0 && baseNow != cachedBase) {
-            cachedBase = baseNow;
-            xAddr[1] = ResolvePointer(baseNow, EFZ_BASE_OFFSET_P1, XPOS_OFFSET);
-            xAddr[2] = ResolvePointer(baseNow, EFZ_BASE_OFFSET_P2, XPOS_OFFSET);
-        }
-    }
-    auto getXPos = [&](int p) -> double {
-        double x = 0.0;
-        if (p >= 1 && p <= 2 && xAddr[p]) {
-            SafeReadMemory(xAddr[p], &x, sizeof(double));
-        }
-        return x;
-    };
-    auto forwardRightFor = [&](int p) -> bool {
-        int opp = (p == 1 ? 2 : 1);
-        double selfX = getXPos(p);
-        double oppX = getXPos(opp);
-        if (fabs(selfX - oppX) > 0.5) {
-            return oppX > selfX; // forward is toward opponent
-        }
-        // Fallback to facing flag if positions are ambiguous
-        return GetPlayerFacingDirection(p);
-    };
+    // Determine direction using robust forward/right helper
 
     switch (jumpType) {
         case 0: // Straight
@@ -61,7 +83,7 @@ void ApplyJump(uintptr_t moveIDAddr, int playerNum, int jumpType) {
             jumpTypeName = "straight";
             break;
         case 1: // Forward
-            if (forwardRightFor(playerNum)) {
+            if (ForwardIsRightForPlayer(playerNum)) {
                 inputMask = MOTION_INPUT_UP | MOTION_INPUT_RIGHT;
             } else {
                 inputMask = MOTION_INPUT_UP | MOTION_INPUT_LEFT;
@@ -69,7 +91,7 @@ void ApplyJump(uintptr_t moveIDAddr, int playerNum, int jumpType) {
             jumpTypeName = "forward";
             break;
         case 2: // Backward
-            if (forwardRightFor(playerNum)) {
+            if (ForwardIsRightForPlayer(playerNum)) {
                 inputMask = MOTION_INPUT_UP | MOTION_INPUT_LEFT;
             } else {
                 inputMask = MOTION_INPUT_UP | MOTION_INPUT_RIGHT;
@@ -193,7 +215,12 @@ void MonitorAutoJump() {
             bool grounded = isGrounded(1);
             bool landing = grounded && !s_wasGrounded[1];
             s_wasGrounded[1] = grounded;
-            uint8_t wantMask = MOTION_INPUT_UP | (direction == 1 ? MOTION_INPUT_RIGHT : (direction == 2 ? MOTION_INPUT_LEFT : 0));
+            bool fwdRight = ForwardIsRightForPlayer(1);
+            uint8_t wantMask = MOTION_INPUT_UP | (
+                direction == 0 ? 0 :
+                (direction == 1 ? (fwdRight ? MOTION_INPUT_RIGHT : MOTION_INPUT_LEFT)
+                                 : (fwdRight ? MOTION_INPUT_LEFT  : MOTION_INPUT_RIGHT))
+            );
             uint8_t curMask = ImmediateInput::GetCurrentDesired(1);
 
             if (landing) {
@@ -224,7 +251,12 @@ void MonitorAutoJump() {
             bool grounded = isGrounded(2);
             bool landing = grounded && !s_wasGrounded[2];
             s_wasGrounded[2] = grounded;
-            uint8_t wantMask = MOTION_INPUT_UP | (direction == 1 ? MOTION_INPUT_RIGHT : (direction == 2 ? MOTION_INPUT_LEFT : 0));
+            bool fwdRight = ForwardIsRightForPlayer(2);
+            uint8_t wantMask = MOTION_INPUT_UP | (
+                direction == 0 ? 0 :
+                (direction == 1 ? (fwdRight ? MOTION_INPUT_RIGHT : MOTION_INPUT_LEFT)
+                                 : (fwdRight ? MOTION_INPUT_LEFT  : MOTION_INPUT_RIGHT))
+            );
             uint8_t curMask = ImmediateInput::GetCurrentDesired(2);
 
             if (landing) {
