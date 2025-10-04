@@ -718,8 +718,8 @@ std::atomic<int> triggerOnRGMacroSlot{ 0 };
 // Debug/experimental: allow buffering (pre-freeze) of wakeup specials/supers/dashes instead of f1 injection
 std::atomic<bool> g_wakeBufferingEnabled{false};
 
-// Global toggle: enable/disable Counter RG early-restore behavior (default ON to preserve behavior)
-std::atomic<bool> g_counterRGEnabled{true};
+// Global toggle: enable/disable Counter RG early-restore behavior (default OFF)
+std::atomic<bool> g_counterRGEnabled{false};
 
 // Deep frame advantage instrumentation toggle
 std::atomic<bool> g_deepFrameAdvDebug{false};
