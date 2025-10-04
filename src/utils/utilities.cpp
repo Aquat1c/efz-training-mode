@@ -50,6 +50,35 @@ std::atomic<bool> g_manualInputOverride[3] = {false, false, false};
 std::atomic<uint8_t> g_manualInputMask[3] = {0, 0, 0};
 std::atomic<bool> g_manualJumpHold[3] = {false, false, false}; // NEW: Definition for jump hold
 
+// Continuous Recovery runtime settings (defaults)
+std::atomic<bool> g_contRecoveryEnabled{false};
+std::atomic<int>  g_contRecoveryApplyTo{3}; // default Both
+std::atomic<int>  g_contRecHpMode{0};
+std::atomic<int>  g_contRecHpCustom{MAX_HP};
+std::atomic<int>  g_contRecMeterMode{0};
+std::atomic<int>  g_contRecMeterCustom{MAX_METER};
+std::atomic<int>  g_contRecRfMode{0};
+std::atomic<double> g_contRecRfCustom{MAX_RF};
+std::atomic<bool> g_contRecRfForceBlueIC{false};
+
+// NEW: Per-player Continuous Recovery runtime settings (defaults OFF)
+std::atomic<bool> g_contRecEnabledP1{false};
+std::atomic<int>  g_contRecHpModeP1{0};
+std::atomic<int>  g_contRecHpCustomP1{MAX_HP};
+std::atomic<int>  g_contRecMeterModeP1{0};
+std::atomic<int>  g_contRecMeterCustomP1{MAX_METER};
+std::atomic<int>  g_contRecRfModeP1{0};
+std::atomic<double> g_contRecRfCustomP1{MAX_RF};
+std::atomic<bool> g_contRecRfForceBlueICP1{false};
+std::atomic<bool> g_contRecEnabledP2{false};
+std::atomic<int>  g_contRecHpModeP2{0};
+std::atomic<int>  g_contRecHpCustomP2{MAX_HP};
+std::atomic<int>  g_contRecMeterModeP2{0};
+std::atomic<int>  g_contRecMeterCustomP2{MAX_METER};
+std::atomic<int>  g_contRecRfModeP2{0};
+std::atomic<double> g_contRecRfCustomP2{MAX_RF};
+std::atomic<bool> g_contRecRfForceBlueICP2{false};
+
 // (Removed restoration of previous trigger states; triggers must always be manually re-enabled after mode changes)
 
 // Reset DisplayData to default values (called on startup and character switches)
@@ -200,6 +229,33 @@ void ResetDisplayDataToDefaults() {
     displayData.p2MaiForceDespawn = false;
     displayData.p1MaiAggressiveOverride = false;
     displayData.p2MaiAggressiveOverride = false;
+    // Continuous Recovery defaults
+    displayData.continuousRecoveryEnabled = false;
+    displayData.continuousRecoveryApplyTo = 3; // Both
+    displayData.recoveryHpMode = 0;
+    displayData.recoveryHpCustom = MAX_HP;
+    displayData.recoveryMeterMode = 0;
+    displayData.recoveryMeterCustom = MAX_METER;
+    displayData.recoveryRfMode = 0;
+    displayData.recoveryRfCustom = MAX_RF;
+    displayData.recoveryRfForceBlueIC = false;
+    // Per-player Continuous Recovery defaults (OFF)
+    displayData.p1ContinuousRecoveryEnabled = false;
+    displayData.p1RecoveryHpMode = 0;
+    displayData.p1RecoveryHpCustom = MAX_HP;
+    displayData.p1RecoveryMeterMode = 0;
+    displayData.p1RecoveryMeterCustom = MAX_METER;
+    displayData.p1RecoveryRfMode = 0;
+    displayData.p1RecoveryRfCustom = MAX_RF;
+    displayData.p1RecoveryRfForceBlueIC = false;
+    displayData.p2ContinuousRecoveryEnabled = false;
+    displayData.p2RecoveryHpMode = 0;
+    displayData.p2RecoveryHpCustom = MAX_HP;
+    displayData.p2RecoveryMeterMode = 0;
+    displayData.p2RecoveryMeterCustom = MAX_METER;
+    displayData.p2RecoveryRfMode = 0;
+    displayData.p2RecoveryRfCustom = MAX_RF;
+    displayData.p2RecoveryRfForceBlueIC = false;
     displayData.p1MaiGhostX = std::numeric_limits<double>::quiet_NaN();
     displayData.p1MaiGhostY = std::numeric_limits<double>::quiet_NaN();
     displayData.p2MaiGhostX = std::numeric_limits<double>::quiet_NaN();
@@ -565,136 +621,7 @@ std::atomic<int> jumpDirection(0);            // 0=straight, 1=forward, 2=backwa
 std::atomic<bool> p1Jumping(false);
 std::atomic<bool> p2Jumping(false);
 std::atomic<int> jumpTarget(3);
-DisplayData displayData = {
-    9999, 9999,         // hp1, hp2
-    3000, 3000,         // meter1, meter2
-    1000.0, 1000.0,     // rf1, rf2
-    240.0, 0.0,         // x1, y1
-    400.0, 0.0,         // x2, y2
-    false,              // autoAirtech
-    0,                  // airtechDirection
-    0,                  // airtechDelay
-    false,              // autoJump
-    0,                  // jumpDirection
-    3,                  // jumpTarget
-    "",                 // p1CharName
-    "",                 // p2CharName
-    0,                  // p1CharID
-    0,                  // p2CharID
-    0, 0, 0, 0,         // Ikumi blood/genocide
-    0, 0,               // Ikumi level gauge (P1,P2)
-    false,              // infiniteBloodMode
-    0, 0,               // Misuzu settings
-    false,              // infiniteFeatherMode
-    0, 0,               // p1MisuzuPoisonTimer, p2MisuzuPoisonTimer
-    0, 0,               // p1MisuzuPoisonLevel, p2MisuzuPoisonLevel
-    false, false,       // p1MisuzuInfinitePoison, p2MisuzuInfinitePoison
-    0, 0,               // Mishio element (P1,P2)
-    0, 0,               // Mishio awakened timer (P1,P2)
-    false,              // infiniteMishioElement
-    false,              // infiniteMishioAwakened
-    false, false,       // Blue IC toggles
-    false,              // NEW: p2ControlEnabled
-    false,              // autoAction
-    ACTION_5A,          // autoActionType
-    200,                // autoActionCustomID
-    0,                  // autoActionPlayer
-    // Individual trigger settings (defaults)
-    false,              // triggerAfterBlock
-    false,              // triggerOnWakeup
-    false,              // triggerAfterHitstun
-    false,              // triggerAfterAirtech
-    false,              // triggerOnRG
-    // Delay settings (frames)
-    0,                  // delayAfterBlock
-    0,                  // delayOnWakeup
-    0,                  // delayAfterHitstun
-    0,                  // delayAfterAirtech
-    0,                  // delayOnRG
-    // Individual action settings for each trigger
-    ACTION_5A,          // actionAfterBlock
-    ACTION_5A,          // actionOnWakeup
-    ACTION_5A,          // actionAfterHitstun
-    ACTION_5A,          // actionAfterAirtech
-    ACTION_5A,          // actionOnRG
-    // Custom action IDs for each trigger
-    BASE_ATTACK_5A,     // customAfterBlock
-    BASE_ATTACK_5A,     // customOnWakeup
-    BASE_ATTACK_5A,     // customAfterHitstun
-    BASE_ATTACK_JA,     // customAfterAirtech
-    BASE_ATTACK_5A,     // customOnRG
-    // Strength settings (0=A,1=B,2=C)
-    0,                  // strengthAfterBlock
-    0,                  // strengthOnWakeup
-    0,                  // strengthAfterHitstun
-    0,                  // strengthAfterAirtech
-    0,                  // strengthOnRG
-    false, false,       // p1DoppelEnlightened, p2DoppelEnlightened
-    false, false,       // p1RumiBarehanded, p2RumiBarehanded
-    false, false,       // p1RumiInfiniteShinai, p2RumiInfiniteShinai
-    false, false,       // p1RumiKimchiActive, p2RumiKimchiActive
-    0, 0,               // p1RumiKimchiTimer, p2RumiKimchiTimer
-    false, false,       // p1RumiInfiniteKimchi, p2RumiInfiniteKimchi
-    // Akiko defaults
-    0, 0,               // p1AkikoBulletCycle, p2AkikoBulletCycle
-    0, 0,               // p1AkikoTimeslowTrigger, p2AkikoTimeslowTrigger
-    false, false,       // p1AkikoFreezeCycle, p2AkikoFreezeCycle
-    false, false,       // p1AkikoShowCleanHit, p2AkikoShowCleanHit
-    false, false,       // p1AkikoInfiniteTimeslow, p2AkikoInfiniteTimeslow
-    0, 0,               // p1NeyukiJamCount, p2NeyukiJamCount
-    0, 0,               // p1MioStance, p2MioStance (default Short)
-    false, false,       // p1MioLockStance, p2MioLockStance
-    0, 0,               // p1KanoMagic, p2KanoMagic
-    false, false        // p1KanoLockMagic, p2KanoLockMagic
-    ,
-    // Mai defaults
-    0,                  // p1MaiStatus
-    0,                  // p1MaiGhostTime
-    0,                  // p1MaiGhostCharge
-    0,                  // p1MaiAwakeningTime
-    0,                  // p2MaiStatus
-    0,                  // p2MaiGhostTime
-    0,                  // p2MaiGhostCharge
-    0,                  // p2MaiAwakeningTime
-    false, false,       // p1MaiInfiniteGhost, p2MaiInfiniteGhost
-    false, false,       // p1MaiInfiniteCharge, p2MaiInfiniteCharge
-    false, false,       // p1MaiInfiniteAwakening, p2MaiInfiniteAwakening
-    false, false,       // p1MaiNoChargeCD, p2MaiNoChargeCD
-    false, false,       // p1MaiForceSummon, p2MaiForceSummon
-    false, false,       // p1MaiForceDespawn, p2MaiForceDespawn
-    false, false,       // p1MaiAggressiveOverride, p2MaiAggressiveOverride
-    std::numeric_limits<double>::quiet_NaN(), std::numeric_limits<double>::quiet_NaN(), // p1MaiGhostX/Y
-    std::numeric_limits<double>::quiet_NaN(), std::numeric_limits<double>::quiet_NaN(), // p2MaiGhostX/Y
-    std::numeric_limits<double>::quiet_NaN(), std::numeric_limits<double>::quiet_NaN(), // p1MaiGhostSetX/Y
-    std::numeric_limits<double>::quiet_NaN(), std::numeric_limits<double>::quiet_NaN()  // p2MaiGhostSetX/Y
-    ,
-    // Mai one-shot apply flags
-    false, false
-    ,
-    // Nayuki (Awake) defaults
-    0, 0,               // p1NayukiSnowbunnies, p2NayukiSnowbunnies
-    false, false        // p1NayukiInfiniteSnow, p2NayukiInfiniteSnow
-    ,
-    // Minagi puppet defaults
-    std::numeric_limits<double>::quiet_NaN(), std::numeric_limits<double>::quiet_NaN(), // p1MinagiPuppetX/Y
-    std::numeric_limits<double>::quiet_NaN(), std::numeric_limits<double>::quiet_NaN(), // p2MinagiPuppetX/Y
-    // Michiru position override targets (user-entered)
-    std::numeric_limits<double>::quiet_NaN(), std::numeric_limits<double>::quiet_NaN(), // p1MinagiPuppetSetX/Y
-    std::numeric_limits<double>::quiet_NaN(), std::numeric_limits<double>::quiet_NaN(), // p2MinagiPuppetSetX/Y
-    // One-shot apply flags
-    false, false
-    ,
-    // Minagi debug & control defaults
-    false,              // minagiConvertNewProjectiles
-    false, false,       // p1MinagiAlwaysReadied, p2MinagiAlwaysReadied
-    -1, -1,             // p1MichiruCurrentId, p2MichiruCurrentId
-    std::numeric_limits<double>::quiet_NaN(), std::numeric_limits<double>::quiet_NaN(), // p1MichiruLastX/Y
-    std::numeric_limits<double>::quiet_NaN(), std::numeric_limits<double>::quiet_NaN(), // p2MichiruLastX/Y
-    // Michiru frame/subframe defaults
-    -1, -1, -1, -1,
-    // Per-trigger macro slots (0=None)
-    0, 0, 0, 0, 0
-};
+DisplayData displayData{};
 
 // Initialize key bindings with default values
 KeyBindings detectedBindings = {
@@ -768,11 +695,11 @@ std::atomic<int> forwardDashFollowup(0);
 std::atomic<bool> forwardDashFollowupDashMode(false);
 
 // Custom action IDs for each trigger
-std::atomic<int> triggerAfterBlockCustomID(BASE_ATTACK_5A);
-std::atomic<int> triggerOnWakeupCustomID(BASE_ATTACK_5A);
-std::atomic<int> triggerAfterHitstunCustomID(BASE_ATTACK_5A);
-std::atomic<int> triggerAfterAirtechCustomID(BASE_ATTACK_JA);  // Default to jumping A for airtech
-std::atomic<int> triggerOnRGCustomID(BASE_ATTACK_5A);
+std::atomic<int> triggerAfterBlockCustomID{ (int)BASE_ATTACK_5A };
+std::atomic<int> triggerOnWakeupCustomID{ (int)BASE_ATTACK_5A };
+std::atomic<int> triggerAfterHitstunCustomID{ (int)BASE_ATTACK_5A };
+std::atomic<int> triggerAfterAirtechCustomID{ (int)BASE_ATTACK_JA };  // Default to jumping A for airtech
+std::atomic<int> triggerOnRGCustomID{ (int)BASE_ATTACK_5A };
 
 // Individual strength settings (0=A, 1=B, 2=C)
 std::atomic<int> triggerAfterBlockStrength(0);
@@ -782,11 +709,11 @@ std::atomic<int> triggerAfterAirtechStrength(0);
 std::atomic<int> triggerOnRGStrength(0);
 
 // Per-trigger macro slot selections (0=None, 1..MaxSlots)
-std::atomic<int> triggerAfterBlockMacroSlot(0);
-std::atomic<int> triggerOnWakeupMacroSlot(0);
-std::atomic<int> triggerAfterHitstunMacroSlot(0);
-std::atomic<int> triggerAfterAirtechMacroSlot(0);
-std::atomic<int> triggerOnRGMacroSlot(0);
+std::atomic<int> triggerAfterBlockMacroSlot{ 0 };
+std::atomic<int> triggerOnWakeupMacroSlot{ 0 };
+std::atomic<int> triggerAfterHitstunMacroSlot{ 0 };
+std::atomic<int> triggerAfterAirtechMacroSlot{ 0 };
+std::atomic<int> triggerOnRGMacroSlot{ 0 };
 
 // Debug/experimental: allow buffering (pre-freeze) of wakeup specials/supers/dashes instead of f1 injection
 std::atomic<bool> g_wakeBufferingEnabled{false};

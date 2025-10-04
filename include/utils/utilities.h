@@ -321,6 +321,38 @@ struct DisplayData {
     int   p1MichiruSubframe;
     int   p2MichiruFrame;
     int   p2MichiruSubframe;
+
+    // Continuous Recovery (UI-configurable presets; applied on neutral return)
+    // LEGACY global controls (kept for backward-compat; unused when per-player settings are used)
+    bool  continuousRecoveryEnabled; // default false
+    int   continuousRecoveryApplyTo; // 1=P1, 2=P2, 3=Both
+    int   recoveryHpMode;            // 0=Off, 1=Max, 2=FM preset (3332), 3=Custom
+    int   recoveryHpCustom;
+    int   recoveryMeterMode;         // 0=Off, 1=0, 2=1000, 3=2000, 4=3000, 5=Custom
+    int   recoveryMeterCustom;
+    int   recoveryRfMode;            // 0=Off, 1=0, 2=1000, 3=500, 4=999, 5=Custom
+    double  recoveryRfCustom;
+    bool  recoveryRfForceBlueIC;     // Force IC Blue when restoring RF
+
+    // NEW: Per-player Continuous Recovery settings (preferred)
+    // P1
+    bool  p1ContinuousRecoveryEnabled; // default false
+    int   p1RecoveryHpMode;            // 0=Off, 1=Max, 2=FM(3332), 3=Custom
+    int   p1RecoveryHpCustom;
+    int   p1RecoveryMeterMode;         // 0=Off, 1=0, 2=1000, 3=2000, 4=3000, 5=Custom
+    int   p1RecoveryMeterCustom;
+    int   p1RecoveryRfMode;            // 0=Off, 1=0, 2=1000, 3=500, 4=999, 5=Custom
+    double p1RecoveryRfCustom;
+    bool  p1RecoveryRfForceBlueIC;
+    // P2
+    bool  p2ContinuousRecoveryEnabled; // default false
+    int   p2RecoveryHpMode;
+    int   p2RecoveryHpCustom;
+    int   p2RecoveryMeterMode;
+    int   p2RecoveryMeterCustom;
+    int   p2RecoveryRfMode;
+    double p2RecoveryRfCustom;
+    bool  p2RecoveryRfForceBlueIC;
 };
 
 extern DisplayData displayData;
@@ -454,3 +486,35 @@ struct AttackData {
 //   fall back to direct memory reads if this returns false.
 void UpdatePositionCache(double p1X, double p1Y, double p2X, double p2Y);
 bool TryGetCachedYPositions(double &p1Y, double &p2Y, unsigned int maxAgeMs);
+
+// Continuous Recovery runtime settings (atomics)
+// Legacy global atomics (kept for compatibility; superseded by per-player below)
+extern std::atomic<bool> g_contRecoveryEnabled;       // master enable (legacy)
+extern std::atomic<int>  g_contRecoveryApplyTo;       // 1=P1,2=P2,3=Both (legacy)
+extern std::atomic<int>  g_contRecHpMode;             // legacy
+extern std::atomic<int>  g_contRecHpCustom;           // legacy
+extern std::atomic<int>  g_contRecMeterMode;          // legacy
+extern std::atomic<int>  g_contRecMeterCustom;        // legacy
+extern std::atomic<int>  g_contRecRfMode;             // legacy
+extern std::atomic<double> g_contRecRfCustom;         // legacy
+extern std::atomic<bool> g_contRecRfForceBlueIC;      // legacy
+
+// NEW: Per-player Continuous Recovery atomics
+// P1
+extern std::atomic<bool> g_contRecEnabledP1;
+extern std::atomic<int>  g_contRecHpModeP1;
+extern std::atomic<int>  g_contRecHpCustomP1;
+extern std::atomic<int>  g_contRecMeterModeP1;
+extern std::atomic<int>  g_contRecMeterCustomP1;
+extern std::atomic<int>  g_contRecRfModeP1;
+extern std::atomic<double> g_contRecRfCustomP1;
+extern std::atomic<bool> g_contRecRfForceBlueICP1;
+// P2
+extern std::atomic<bool> g_contRecEnabledP2;
+extern std::atomic<int>  g_contRecHpModeP2;
+extern std::atomic<int>  g_contRecHpCustomP2;
+extern std::atomic<int>  g_contRecMeterModeP2;
+extern std::atomic<int>  g_contRecMeterCustomP2;
+extern std::atomic<int>  g_contRecRfModeP2;
+extern std::atomic<double> g_contRecRfCustomP2;
+extern std::atomic<bool> g_contRecRfForceBlueICP2;

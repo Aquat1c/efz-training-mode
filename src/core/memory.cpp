@@ -4,6 +4,7 @@
 #include "../include/core/memory.h"
 #include "../include/core/constants.h"
 #include "../include/utils/utilities.h"
+#include "../include/utils/config.h"
 
 #include "../include/core/logger.h"
 #include <windows.h>
@@ -498,6 +499,8 @@ void UpdatePlayerValuesExceptRF(uintptr_t base, uintptr_t baseOffsetP1, uintptr_
 
 // Add near other global variables
 std::atomic<bool> rfFreezing(false);
+std::atomic<bool> rfFreezeP1Active(false);
+std::atomic<bool> rfFreezeP2Active(false);
 std::atomic<double> rfFreezeValueP1(0.0);
 std::atomic<double> rfFreezeValueP2(0.0);
 std::thread rfFreezeThread;
@@ -542,7 +545,7 @@ void RFFreezeThreadFunc() {
                             double curP2 = *p2RFAddr;
                             bool wrote = false;
 
-                            if (!nearlyEqual(curP1, targetP1)) {
+                            if (rfFreezeP1Active.load() && !nearlyEqual(curP1, targetP1)) {
                                 DWORD oldProtect1;
                                 if (VirtualProtect(p1RFAddr, sizeof(double), PAGE_EXECUTE_READWRITE, &oldProtect1)) {
                                     *p1RFAddr = targetP1;
@@ -550,7 +553,7 @@ void RFFreezeThreadFunc() {
                                     wrote = true;
                                 }
                             }
-                            if (!nearlyEqual(curP2, targetP2)) {
+                            if (rfFreezeP2Active.load() && !nearlyEqual(curP2, targetP2)) {
                                 DWORD oldProtect2;
                                 if (VirtualProtect(p2RFAddr, sizeof(double), PAGE_EXECUTE_READWRITE, &oldProtect2)) {
                                     *p2RFAddr = targetP2;
@@ -603,15 +606,51 @@ void StartRFFreeze(double p1Value, double p2Value) {
     
     // Enable freezing
     rfFreezing.store(true);
+    rfFreezeP1Active.store(true);
+    rfFreezeP2Active.store(true);
     
     LogOut("[RF] Started freezing RF values: P1=" + std::to_string(p1Value) + 
            ", P2=" + std::to_string(p2Value), detailedLogging.load());
 }
 
+// Start freezing for one player only
+void StartRFFreezeOne(int player, double value) {
+    if (player == 1) {
+        rfFreezeValueP1.store(value);
+        rfFreezeP1Active.store(true);
+    } else if (player == 2) {
+        rfFreezeValueP2.store(value);
+        rfFreezeP2Active.store(true);
+    } else {
+        return;
+    }
+    // Ensure global switch is on if any side is active
+    rfFreezing.store(rfFreezeP1Active.load() || rfFreezeP2Active.load());
+    LogOut(std::string("[RF] Started single-side RF freeze for P") + (player==1?"1":"2") +
+           " value=" + std::to_string(value), detailedLogging.load());
+}
+
 // Stop freezing RF values
 void StopRFFreeze() {
     rfFreezing.store(false);
+    rfFreezeP1Active.store(false);
+    rfFreezeP2Active.store(false);
     LogOut("[RF] Stopped freezing RF values", detailedLogging.load());
+}
+
+void StopRFFreezePlayer(int player) {
+    if (player == 1) {
+        rfFreezeP1Active.store(false);
+    } else if (player == 2) {
+        rfFreezeP2Active.store(false);
+    } else {
+        return;
+    }
+    // If neither side is active, flip the global switch off
+    if (!rfFreezeP1Active.load() && !rfFreezeP2Active.load()) {
+        rfFreezing.store(false);
+    }
+    LogOut(std::string("[RF] Stopped RF freeze for P") + (player==1?"1":"2"), detailedLogging.load());
 }
 
 // Stop the RF freeze background thread entirely
@@ -620,6 +659,14 @@ void StopRFFreezeThread() {
         rfThreadRunning = false;
         LogOut("[RF] RF freeze thread signaled to stop", detailedLogging.load());
     }
+}
+
+// Allow external modules to toggle neutral-only RF freeze behavior
+void SetRFFreezeNeutralOnly(bool enabled) {
+    // Settings are already read inside UpdateRFFreezeTick via Config::GetSettings(),
+    // but this setter is kept for compatibility and potential future caching.
+    // If a cached flag is introduced later, wire it here.
+    (void)enabled; // no-op for now
 }
 
 // Lightweight single-tick updater to be driven by FrameDataMonitor when desired
@@ -633,12 +680,24 @@ void UpdateRFFreezeTick() {
     if (!p1Base || !p2Base) return;
     double* p1RFAddr = (double*)(p1Base + RF_OFFSET);
     double* p2RFAddr = (double*)(p2Base + RF_OFFSET);
+    // Optional neutral-only gating
+    bool neutralOnly = Config::GetSettings().freezeRFOnlyWhenNeutral;
+    auto isAllowedNeutral = [](short m){ return (m==0 || m==1 || m==2 || m==3 || m==4 || m==7 || m==8 || m==9 || m==13); };
+    short m1=0, m2=0;
+    if (neutralOnly) {
+        short t1=0, t2=0;
+        SafeReadMemory(p1Base + MOVE_ID_OFFSET, &t1, sizeof(t1));
+        SafeReadMemory(p2Base + MOVE_ID_OFFSET, &t2, sizeof(t2));
+        m1 = t1; m2 = t2;
+    }
     __try {
         DWORD old1=0, old2=0;
         double t1 = rfFreezeValueP1.load();
         double t2 = rfFreezeValueP2.load();
-        if (p1RFAddr && VirtualProtect(p1RFAddr, sizeof(double), PAGE_EXECUTE_READWRITE, &old1)) { *p1RFAddr = t1; VirtualProtect(p1RFAddr, sizeof(double), old1, &old1); }
-        if (p2RFAddr && VirtualProtect(p2RFAddr, sizeof(double), PAGE_EXECUTE_READWRITE, &old2)) { *p2RFAddr = t2; VirtualProtect(p2RFAddr, sizeof(double), old2, &old2); }
+        bool canP1 = rfFreezeP1Active.load() && (!neutralOnly || isAllowedNeutral(m1));
+        bool canP2 = rfFreezeP2Active.load() && (!neutralOnly || isAllowedNeutral(m2));
+        if (canP1 && p1RFAddr && VirtualProtect(p1RFAddr, sizeof(double), PAGE_EXECUTE_READWRITE, &old1)) { *p1RFAddr = t1; VirtualProtect(p1RFAddr, sizeof(double), old1, &old1); }
+        if (canP2 && p2RFAddr && VirtualProtect(p2RFAddr, sizeof(double), PAGE_EXECUTE_READWRITE, &old2)) { *p2RFAddr = t2; VirtualProtect(p2RFAddr, sizeof(double), old2, &old2); }
     } __except(EXCEPTION_EXECUTE_HANDLER) {
         // Ignore access faults; tick is best-effort
     }
