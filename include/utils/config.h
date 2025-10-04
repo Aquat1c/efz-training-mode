@@ -56,6 +56,10 @@ namespace Config {
     int gpMacroSlotButton;      // Default: LT (virtual trigger 0x10000)
         int gpToggleMenuButton;     // Default: XINPUT_GAMEPAD_START
         int gpToggleImGuiButton;    // Default: -1 (disabled)
+
+        // RF freeze behavior
+        bool freezeRFAfterContRec;       // Start RF freeze after Continuous Recovery enforcement
+        bool freezeRFOnlyWhenNeutral;    // Maintain RF freeze only while in neutral states
     };
     
     // Initialize configuration system

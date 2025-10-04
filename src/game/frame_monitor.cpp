@@ -1316,6 +1316,140 @@ void FrameDataMonitor() {
                 MonitorAutoAirtech(moveID1, moveID2);  
                 ClearDelayStatesIfNonActionable();     
             }
+
+            // Continuous Recovery: restore values on return to neutral/crouch/jump/landing (per-player)
+            {
+                // Track RF freezes we started due to Continuous Recovery (per-side)
+                static bool s_crRFFreezeP1 = false;
+                static bool s_crRFFreezeP2 = false;
+                auto isAllowedNeutral = [](short m){
+                    // Allowed MoveIDs: 0,1,2,3,4,7,8,9,13
+                    return (m == 0 || m == 1 || m == 2 || m == 3 || m == 4 || m == 7 || m == 8 || m == 9 || m == 13);
+                };
+                auto transitionedToAllowed = [&](short prevM, short curM){
+                    // Only when previously not actionable and now in allowed neutral set
+                    bool wasBad = !IsActionable(prevM);
+                    return wasBad && isAllowedNeutral(curM);
+                };
+                auto resolveTargets = [](bool isP1) {
+                    struct T { int hp; int meter; double rf; bool bic; bool hpOn; bool meterOn; bool rfOn; bool wantRedIC; } t; t={0,0,0.0,false,false,false,false,false};
+                    // HP
+                    int hpm = isP1 ? g_contRecHpModeP1.load() : g_contRecHpModeP2.load();
+                    if (hpm > 0) {
+                        t.hpOn = true;
+                        if (hpm == 1) t.hp = MAX_HP;
+                        else if (hpm == 2) t.hp = 3332; // FM preset
+                        else if (hpm == 3) t.hp = CLAMP((isP1? g_contRecHpCustomP1.load() : g_contRecHpCustomP2.load()), 0, MAX_HP);
+                    }
+                    // Meter
+                    int mm = isP1 ? g_contRecMeterModeP1.load() : g_contRecMeterModeP2.load();
+                    if (mm > 0) {
+                        t.meterOn = true;
+                        if (mm == 1) t.meter = 0;
+                        else if (mm == 2) t.meter = 1000;
+                        else if (mm == 3) t.meter = 2000;
+                        else if (mm == 4) t.meter = 3000;
+                        else if (mm == 5) t.meter = CLAMP((isP1? g_contRecMeterCustomP1.load() : g_contRecMeterCustomP2.load()), 0, MAX_METER);
+                    }
+                    // RF
+                    int rm = isP1 ? g_contRecRfModeP1.load() : g_contRecRfModeP2.load();
+                    if (rm > 0) {
+                        t.rfOn = true;
+                        if (rm == 1) t.rf = 0.0;
+                        else if (rm == 2) t.rf = 1000.0;
+                        else if (rm == 3) t.rf = 500.0;
+                        else if (rm == 4) t.rf = 999.0;
+                        else if (rm == 5) t.rf = (double)CLAMP((int)(isP1? g_contRecRfCustomP1.load() : g_contRecRfCustomP2.load()), 0, (int)MAX_RF);
+                        // Red != BIC: only honor BIC flag when using Custom RF mode
+                        if (rm == 5) {
+                            t.bic = isP1 ? g_contRecRfForceBlueICP1.load() : g_contRecRfForceBlueICP2.load();
+                        } else {
+                            t.bic = false;
+                        }
+                        // If using Red presets (500 or 999), ensure IC is not Blue for that side
+                        t.wantRedIC = (rm == 3 || rm == 4);
+                    }
+                    return t;
+                };
+                auto applyForPlayer = [&](int p){
+                    bool enabled = (p==1)? g_contRecEnabledP1.load() : g_contRecEnabledP2.load();
+                    if (!enabled) return;
+                    short prevM = (p==1? prevMoveID1 : prevMoveID2);
+                    short curM  = (p==1? moveID1     : moveID2);
+                    if (!transitionedToAllowed(prevM, curM)) return;
+                    uintptr_t baseNow = GetEFZBase(); if (!baseNow) return;
+                    uintptr_t pBase=0; SafeReadMemory(baseNow + (p==1?EFZ_BASE_OFFSET_P1:EFZ_BASE_OFFSET_P2), &pBase, sizeof(pBase)); if (!pBase) return;
+                    auto tg = resolveTargets(p==1);
+                    bool wrote = false;
+                    if (tg.hpOn) {
+                        uintptr_t hpA = pBase + HP_OFFSET;
+                        int curFull=0; SafeReadMemory(hpA, &curFull, sizeof(curFull));
+                        WORD cur = (WORD)(curFull & 0xFFFF);
+                        WORD tgt = (WORD)CLAMP(tg.hp, 0, MAX_HP);
+                        if (cur != tgt) { SafeWriteMemory(hpA, &tgt, sizeof(tgt)); wrote = true; }
+                    }
+                    if (tg.meterOn) {
+                        uintptr_t mA = pBase + METER_OFFSET;
+                        int curFull=0; SafeReadMemory(mA, &curFull, sizeof(curFull));
+                        WORD cur = (WORD)(curFull & 0xFFFF);
+                        WORD tgt = (WORD)CLAMP(tg.meter, 0, MAX_METER);
+                        if (cur != tgt) { SafeWriteMemory(mA, &tgt, sizeof(tgt)); wrote = true; }
+                    }
+                    if (tg.rfOn) {
+                        // Use robust setter for both players to avoid desync; read other side first
+                        double p1rf=0.0, p2rf=0.0; uintptr_t p1B=0, p2B=0;
+                        SafeReadMemory(baseNow + EFZ_BASE_OFFSET_P1, &p1B, sizeof(p1B));
+                        SafeReadMemory(baseNow + EFZ_BASE_OFFSET_P2, &p2B, sizeof(p2B));
+                        if (p1B) SafeReadMemory(p1B + RF_OFFSET, &p1rf, sizeof(p1rf));
+                        if (p2B) SafeReadMemory(p2B + RF_OFFSET, &p2rf, sizeof(p2rf));
+                        if (p==1) p1rf = tg.rf; else p2rf = tg.rf;
+                        (void)SetRFValuesDirect(p1rf, p2rf); // best-effort write; freeze handles persistence
+                        if (Config::GetSettings().freezeRFAfterContRec) {
+                            StartRFFreezeOne(p, tg.rf);
+                            if (p==1) s_crRFFreezeP1 = true; else s_crRFFreezeP2 = true;
+                        }
+                    }
+                    if (tg.bic) {
+                        // Set IC color to blue for restored side only; preserve the other side
+                        uintptr_t p1B=0, p2B=0; int ic1=1, ic2=1;
+                        SafeReadMemory(baseNow + EFZ_BASE_OFFSET_P1, &p1B, sizeof(p1B));
+                        SafeReadMemory(baseNow + EFZ_BASE_OFFSET_P2, &p2B, sizeof(p2B));
+                        if (p1B) SafeReadMemory(p1B + IC_COLOR_OFFSET, &ic1, sizeof(ic1));
+                        if (p2B) SafeReadMemory(p2B + IC_COLOR_OFFSET, &ic2, sizeof(ic2));
+                        bool p1Blue = (p==1)? true : (ic1 != 0);
+                        bool p2Blue = (p==2)? true : (ic2 != 0);
+                        SetICColorDirect(p1Blue, p2Blue);
+                    } else if (tg.wantRedIC) {
+                        // Red RF preset chosen: ensure this side is not Blue IC (flip to Red if needed)
+                        uintptr_t p1B=0, p2B=0; int ic1=0, ic2=0;
+                        SafeReadMemory(baseNow + EFZ_BASE_OFFSET_P1, &p1B, sizeof(p1B));
+                        SafeReadMemory(baseNow + EFZ_BASE_OFFSET_P2, &p2B, sizeof(p2B));
+                        if (p1B) SafeReadMemory(p1B + IC_COLOR_OFFSET, &ic1, sizeof(ic1));
+                        if (p2B) SafeReadMemory(p2B + IC_COLOR_OFFSET, &ic2, sizeof(ic2));
+                        bool p1Blue = (ic1 != 0);
+                        bool p2Blue = (ic2 != 0);
+                        if ((p==1 && p1Blue) || (p==2 && p2Blue)) {
+                            // Force this side to Red (false), keep the other side as-is
+                            bool newP1Blue = (p==1) ? false : p1Blue;
+                            bool newP2Blue = (p==2) ? false : p2Blue;
+                            SetICColorDirect(newP1Blue, newP2Blue);
+                        }
+                    }
+                    if (wrote) {
+                        // Optional: log in detailed mode
+                        LogOut(std::string("[FM][ContRec] Restored values for P") + (p==1?"1":"2"), detailedLogging.load());
+                    }
+                };
+                if (moveIDsChanged) {
+                    applyForPlayer(1);
+                    applyForPlayer(2);
+                    // Stop per-side RF freeze only if we started it via Continuous Recovery and it's no longer active
+                    bool p1RFActive = g_contRecEnabledP1.load() && (g_contRecRfModeP1.load() > 0);
+                    bool p2RFActive = g_contRecEnabledP2.load() && (g_contRecRfModeP2.load() > 0);
+                    if (s_crRFFreezeP1 && !p1RFActive) { StopRFFreezePlayer(1); s_crRFFreezeP1 = false; }
+                    if (s_crRFFreezeP2 && !p2RFActive) { StopRFFreezePlayer(2); s_crRFFreezeP2 = false; }
+                }
+            }
             
             // (Removed duplicate late call to MonitorDummyAutoBlock; it now runs once early each frame.)
 
@@ -1538,9 +1672,12 @@ FRAME_MONITOR_FRAME_END:
             beforeSleep = clock::now();
         }
 
-        // Maintain RF freeze inline at a modest tick rate (~32 Hz)
-        {
+        // Maintain RF freeze inline only during Match. Outside Match, avoid repeated stop spam.
+        if (currentPhase == GamePhase::Match) {
+            // ~32 Hz maintenance
             static int rfDecim = 0; if ((rfDecim++ % 6) == 0) { UpdateRFFreezeTick(); }
+        } else {
+            // Outside Match: do not maintain or force-stop; CR will handle start/stop explicitly
         }
 
         auto frameEnd = clock::now();

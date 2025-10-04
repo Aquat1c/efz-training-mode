@@ -27,8 +27,14 @@ void LoadPlayerPositions(uintptr_t base);
 // Add these declarations with the other function declarations
 void InitRFFreezeThread();
 void StartRFFreeze(double p1Value, double p2Value);
+// New: freeze RF for only one player (1 or 2)
+void StartRFFreezeOne(int player, double value);
 void StopRFFreeze();
+// New: stop RF freeze for one player (1 or 2)
+void StopRFFreezePlayer(int player);
 void StopRFFreezeThread();
+// Configure whether RF freeze writes only apply when player is in neutral
+void SetRFFreezeNeutralOnly(bool enabled);
 // New: single-tick RF freeze maintenance (when folding thread into main loop)
 void UpdateRFFreezeTick();
 

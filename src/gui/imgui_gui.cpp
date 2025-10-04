@@ -142,8 +142,12 @@ namespace ImGuiGui {
                 float rf1 = (float)guiState.localData.rf1;
                 if (ImGui::InputFloat("RF##p1", &rf1, 0.1f, 1.0f, "%.1f")) { guiState.localData.rf1 = CLAMP(rf1, 0.0f, MAX_RF); }
 
-                ImGui::Checkbox("Blue IC##p1", &guiState.localData.p1BlueIC);
-                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Force IC color for testing (Blue vs Red).\nClick Apply to commit.");
+                // Replace Blue IC checkbox with explicit Red/Blue swap buttons to avoid accidental forcing
+                ImGui::TextUnformatted("IC Color:"); ImGui::SameLine();
+                if (ImGui::Button("Red##p1IC")) { guiState.localData.p1BlueIC = false; }
+                ImGui::SameLine();
+                if (ImGui::Button("Blue##p1IC")) { guiState.localData.p1BlueIC = true; }
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Swap P1 IC gauge color without using a toggle.\nFinal color is applied when you press Apply.");
 
                 float x1 = (float)guiState.localData.x1, y1 = (float)guiState.localData.y1;
                 if (ImGui::InputFloat("X##p1", &x1, 1.0f, 10.0f, "%.2f")) { guiState.localData.x1 = x1; }
@@ -165,8 +169,11 @@ namespace ImGuiGui {
                 float rf2 = (float)guiState.localData.rf2;
                 if (ImGui::InputFloat("RF##p2", &rf2, 0.1f, 1.0f, "%.1f")) { guiState.localData.rf2 = CLAMP(rf2, 0.0f, MAX_RF); }
 
-                ImGui::Checkbox("Blue IC##p2", &guiState.localData.p2BlueIC);
-                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Force IC color for testing (Blue vs Red).\nClick Apply to commit.");
+                ImGui::TextUnformatted("IC Color:"); ImGui::SameLine();
+                if (ImGui::Button("Red##p2IC")) { guiState.localData.p2BlueIC = false; }
+                ImGui::SameLine();
+                if (ImGui::Button("Blue##p2IC")) { guiState.localData.p2BlueIC = true; }
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Swap P2 IC gauge color without using a toggle.\nFinal color is applied when you press Apply.");
 
                 float x2 = (float)guiState.localData.x2, y2 = (float)guiState.localData.y2;
                 if (ImGui::InputFloat("X##p2", &x2, 1.0f, 10.0f, "%.2f")) { guiState.localData.x2 = x2; }
@@ -282,7 +289,7 @@ namespace ImGuiGui {
                 }
             }
 
-            ImGui::Dummy(ImVec2(1, 4));
+            // (Continuous Recovery moved to Global)
         }
 
         // ==========================
@@ -290,6 +297,100 @@ namespace ImGuiGui {
         // ==========================
         ImGui::SetNextItemOpen(true, ImGuiCond_Once);
         if (ImGui::CollapsingHeader("Global")) {
+            // Continuous Recovery (Per-Player)
+            ImGui::SeparatorText("Continuous Recovery");
+            ImGui::TextWrapped("Restores values when returning to neutral/crouch/jump. Per-player; defaults OFF.");
+            if (ImGui::IsItemHovered()) {
+                ImGui::BeginTooltip();
+                ImGui::PushTextWrapPos(ImGui::GetFontSize() * 35.0f);
+                ImGui::TextUnformatted("On transitions from unactionable states into neutral/crouch/jump, restore HP/Meter/RF to chosen targets. ");//Gated to MoveIDs 0,1,2,3,4,7,8,9,13.
+                ImGui::PopTextWrapPos();
+                ImGui::EndTooltip();
+            }
+
+            auto renderContRecFor = [&](int player){
+                const bool isP1 = (player==1);
+                // Row: Enable
+                bool en = isP1 ? guiState.localData.p1ContinuousRecoveryEnabled : guiState.localData.p2ContinuousRecoveryEnabled;
+                if (ImGui::Checkbox(isP1?"Enable (P1)##contrecp1":"Enable (P2)##contrecp2", &en)) {
+                    if (isP1) guiState.localData.p1ContinuousRecoveryEnabled = en; else guiState.localData.p2ContinuousRecoveryEnabled = en;
+                }
+                // HP presets
+                ImGui::TextUnformatted("HP:"); ImGui::SameLine();
+                const char* hpItems[] = { "Off", "Full (9999)", "FM (3332)", "Custom" };
+                ImGui::SetNextItemWidth(140);
+                int hpMode = isP1 ? guiState.localData.p1RecoveryHpMode : guiState.localData.p2RecoveryHpMode;
+                if (ImGui::Combo(isP1?"##contrec_hp_p1":"##contrec_hp_p2", &hpMode, hpItems, IM_ARRAYSIZE(hpItems))) {
+                    if (isP1) guiState.localData.p1RecoveryHpMode = hpMode; else guiState.localData.p2RecoveryHpMode = hpMode;
+                }
+                if (hpMode == 3) {
+                    int hpVal = isP1 ? guiState.localData.p1RecoveryHpCustom : guiState.localData.p2RecoveryHpCustom;
+                    ImGui::SetNextItemWidth(120);
+                    if (ImGui::InputInt(isP1?"##contrec_hp_custom_p1":"##contrec_hp_custom_p2", &hpVal)) {
+                        hpVal = CLAMP(hpVal, 0, MAX_HP);
+                        if (isP1) guiState.localData.p1RecoveryHpCustom = hpVal; else guiState.localData.p2RecoveryHpCustom = hpVal;
+                    }
+                }
+                // Meter presets
+                ImGui::TextUnformatted("Meter:"); ImGui::SameLine();
+                const char* mItems[] = { "Off", "0", "1000", "2000", "3000", "Custom" };
+                ImGui::SetNextItemWidth(140);
+                int mMode = isP1 ? guiState.localData.p1RecoveryMeterMode : guiState.localData.p2RecoveryMeterMode;
+                if (ImGui::Combo(isP1?"##contrec_meter_p1":"##contrec_meter_p2", &mMode, mItems, IM_ARRAYSIZE(mItems))) {
+                    if (isP1) guiState.localData.p1RecoveryMeterMode = mMode; else guiState.localData.p2RecoveryMeterMode = mMode;
+                }
+                if (mMode == 5) {
+                    int mVal = isP1 ? guiState.localData.p1RecoveryMeterCustom : guiState.localData.p2RecoveryMeterCustom;
+                    ImGui::SetNextItemWidth(120);
+                    if (ImGui::InputInt(isP1?"##contrec_meter_custom_p1":"##contrec_meter_custom_p2", &mVal)) {
+                        mVal = CLAMP(mVal, 0, MAX_METER);
+                        if (isP1) guiState.localData.p1RecoveryMeterCustom = mVal; else guiState.localData.p2RecoveryMeterCustom = mVal;
+                    }
+                }
+                // RF presets
+                ImGui::TextUnformatted("RF:"); ImGui::SameLine();
+                const char* rfItems[] = { "Off", "Zero", "Full (1000)", "Red (500)", "Red Max (999)", "Custom" };
+                ImGui::SetNextItemWidth(160);
+                int rfMode = isP1 ? guiState.localData.p1RecoveryRfMode : guiState.localData.p2RecoveryRfMode;
+                if (ImGui::Combo(isP1?"##contrec_rf_p1":"##contrec_rf_p2", &rfMode, rfItems, IM_ARRAYSIZE(rfItems))) {
+                    if (isP1) guiState.localData.p1RecoveryRfMode = rfMode; else guiState.localData.p2RecoveryRfMode = rfMode;
+                    // Red != BIC: ensure BIC flag is cleared when choosing Red presets (500 or 999)
+                    if (rfMode == 3 || rfMode == 4) {
+                        if (isP1) guiState.localData.p1RecoveryRfForceBlueIC = false; else guiState.localData.p2RecoveryRfForceBlueIC = false;
+                    }
+                }
+                if (rfMode == 5) {
+                    float rfVal = isP1 ? (float)guiState.localData.p1RecoveryRfCustom : (float)guiState.localData.p2RecoveryRfCustom;
+                    ImGui::SetNextItemWidth(120);
+                    if (ImGui::InputFloat(isP1?"##contrec_rf_custom_p1":"##contrec_rf_custom_p2", &rfVal, 0.1f, 1.0f, "%.1f")) {
+                        rfVal = CLAMP(rfVal, 0.0f, MAX_RF);
+                        if (isP1) guiState.localData.p1RecoveryRfCustom = rfVal; else guiState.localData.p2RecoveryRfCustom = rfVal;
+                    }
+                    bool bic = isP1 ? guiState.localData.p1RecoveryRfForceBlueIC : guiState.localData.p2RecoveryRfForceBlueIC;
+                    if (ImGui::Checkbox(isP1?"BIC##contrec_p1":"BIC##contrec_p2", &bic)) {
+                        if (isP1) guiState.localData.p1RecoveryRfForceBlueIC = bic; else guiState.localData.p2RecoveryRfForceBlueIC = bic;
+                    }
+                    if (ImGui::IsItemHovered()) {
+                        ImGui::BeginTooltip();
+                        ImGui::PushTextWrapPos(ImGui::GetFontSize() * 35.0f);
+                        ImGui::TextUnformatted("Force Blue IC when applying Custom RF.");
+                        ImGui::PopTextWrapPos();
+                        ImGui::EndTooltip();
+                    }
+                }
+            };
+
+            // Two columns: P1 and P2
+            ImGui::Columns(2, "contrec_cols", false);
+            ImGui::TextColored(ImVec4(0.5f,0.8f,1.0f,1.0f), "P1");
+            renderContRecFor(1);
+            ImGui::NextColumn();
+            ImGui::TextColored(ImVec4(1.0f,0.5f,0.5f,1.0f), "P2");
+            renderContRecFor(2);
+            ImGui::Columns(1);
+
+            ImGui::Dummy(ImVec2(1, 4));
+
             bool fmBypass = IsFinalMemoryBypassEnabled();
             if (ImGui::Checkbox("Final Memory: Allow at any HP", &fmBypass)) {
                 (void)SetFinalMemoryBypass(fmBypass);
@@ -874,6 +975,7 @@ namespace ImGuiGui {
                 BulletTextWrapped("P2 Control: lets you play P2. While ON, the game's F6 (stance) and F7 (auto-block) keys won't work.");
                 BulletTextWrapped("Dummy Auto-Block: Off / Block All / Only First Hit / Start After First Hit.");
                 BulletTextWrapped("Adaptive stance: auto-picks high vs air, low vs grounded. Disables manual stance while ON.");
+               //BulletTextWrapped("Note: EFZ's built-in Recovery mode keys (F4/F5) can interfere with Continuous Recovery. If your recovery looks broken, press F4 or F5 to cycle the game's recovery back to Normal (default cycle: normal -> full -> FM values -> normal).");
                 // Overlay & UI
                 ImGui::Separator();
                 ImGui::TextDisabled("Overlay & UI");
@@ -890,6 +992,16 @@ namespace ImGuiGui {
                 BulletTextWrapped("Auto-Airtech: auto air-recover Forward/Backward; 'Delay' adds frames before the tech.");
                 BulletTextWrapped("Auto-Jump: make selected side(s) jump Neutral/Forward/Backward when able.");
                 BulletTextWrapped("Final Memory (Global): 'Allow at any HP' lets FM be used regardless of life.");
+            }
+
+            // Continuous Recovery help (short version)
+            if (ImGui::CollapsingHeader("Continuous Recovery (per-player)", ImGuiTreeNodeFlags_DefaultOpen)) {
+                ImGui::TextWrapped("Restores HP/Meter/RF when a side returns to neutral. Configure P1/P2 in Global → Continuous Recovery.");
+                BulletTextWrapped("HP/Meter: Off, presets, or Custom.");
+                BulletTextWrapped("RF: presets or Custom. BIC (force Blue IC) is only under RF → Custom; Red presets flip IC back to Red.");
+                BulletTextWrapped("RF Freeze (optional): if enabled in config, starts only when CR sets RF and stops when CR RF is off.");
+                BulletTextWrapped("Defaults: CR is OFF per-player. Maintenance runs in matches; can be neutral-only (config).");
+                BulletTextWrapped("Tip: EFZ's F4/F5 Recovery can interfere. If things look wrong, press F4/F5 to cycle back to Normal.");
             }
             // Auto Action overview
             if (ImGui::CollapsingHeader("Auto Action (overview)", ImGuiTreeNodeFlags_DefaultOpen)) {
@@ -920,8 +1032,8 @@ namespace ImGuiGui {
                 BulletTextWrapped("Mai: Ghost/Charge/Awakening timers, 'No CD', Ghost position override.");
                 BulletTextWrapped("Kano: Magic meter controls with optional value lock.");
                 BulletTextWrapped("Nayuki (Awake): Snowbunnies timer with infinite toggle.");
+                BulletTextWrapped("Nayuki (Asleep): Jam count.");
                 BulletTextWrapped("Mio: Stance (Short/Long) with lock.");
-                BulletTextWrapped("Sleepy Nayuki: Jam count.");
                 BulletTextWrapped("Doppel: Golden Doppel toggle.");
                 BulletTextWrapped("Nanase (Rumi): Shinai/Barehanded, Infinite Shinai, Final Memory (Kimchi) timer controls.");
                 BulletTextWrapped("Minagi: Always readied Michiru toggle and Michiru position override.");
@@ -933,7 +1045,6 @@ namespace ImGuiGui {
                 BulletTextWrapped("Config file path: %s", Config::GetConfigFilePath().c_str());
                 BulletTextWrapped("Menu behavior: training hotkeys are gated while the menu is open; game unpauses on close.");
                 BulletTextWrapped("Overlays: trigger/status overlays update automatically; they reset when leaving Practice or on reinit.");
-                //BulletTextWrapped("BGM suppression: training mode can stop background music while features are active (configurable).\nIf BGM is suppressed, it is resumed when features are disabled.");
                 BulletTextWrapped("Network: this tool targets offline training. Online/netplay behavior should not be affected in any way.");
 
             }
@@ -2600,6 +2711,124 @@ namespace ImGuiGui {
                 }
                 // Refresh trigger overlay text to reflect new settings immediately
                 UpdateTriggerOverlay();
+
+                // One-shot Continuous Recovery enforcement on Apply (per-player)
+                auto resolveTargets = [&](bool isP1){
+                    struct T { int hp; int meter; double rf; bool bic; bool hpOn; bool meterOn; bool rfOn; bool wantRedIC; } t;
+                    t = {0,0,0.0,false,false,false,false,false};
+                    if (isP1) {
+                        // HP
+                        if (displayData.p1RecoveryHpMode > 0) {
+                            t.hpOn = true;
+                            if (displayData.p1RecoveryHpMode == 1) t.hp = MAX_HP;
+                            else if (displayData.p1RecoveryHpMode == 2) t.hp = 3332;
+                            else if (displayData.p1RecoveryHpMode == 3) t.hp = CLAMP(displayData.p1RecoveryHpCustom, 0, MAX_HP);
+                        }
+                        // Meter
+                        if (displayData.p1RecoveryMeterMode > 0) {
+                            t.meterOn = true;
+                            if (displayData.p1RecoveryMeterMode == 1) t.meter = 0;
+                            else if (displayData.p1RecoveryMeterMode == 2) t.meter = 1000;
+                            else if (displayData.p1RecoveryMeterMode == 3) t.meter = 2000;
+                            else if (displayData.p1RecoveryMeterMode == 4) t.meter = 3000;
+                            else if (displayData.p1RecoveryMeterMode == 5) t.meter = CLAMP(displayData.p1RecoveryMeterCustom, 0, MAX_METER);
+                        }
+                        // RF
+                        if (displayData.p1RecoveryRfMode > 0) {
+                            t.rfOn = true;
+                            if (displayData.p1RecoveryRfMode == 1) t.rf = 0.0;
+                            else if (displayData.p1RecoveryRfMode == 2) t.rf = 1000.0;
+                            else if (displayData.p1RecoveryRfMode == 3) t.rf = 500.0;
+                            else if (displayData.p1RecoveryRfMode == 4) t.rf = 999.0;
+                            else if (displayData.p1RecoveryRfMode == 5) t.rf = (double)CLAMP((int)displayData.p1RecoveryRfCustom, 0, (int)MAX_RF);
+                            if (displayData.p1RecoveryRfMode == 5) t.bic = displayData.p1RecoveryRfForceBlueIC; else t.bic = false;
+                            t.wantRedIC = (displayData.p1RecoveryRfMode == 3 || displayData.p1RecoveryRfMode == 4);
+                        }
+                    } else {
+                        if (displayData.p2RecoveryHpMode > 0) {
+                            t.hpOn = true;
+                            if (displayData.p2RecoveryHpMode == 1) t.hp = MAX_HP;
+                            else if (displayData.p2RecoveryHpMode == 2) t.hp = 3332;
+                            else if (displayData.p2RecoveryHpMode == 3) t.hp = CLAMP(displayData.p2RecoveryHpCustom, 0, MAX_HP);
+                        }
+                        if (displayData.p2RecoveryMeterMode > 0) {
+                            t.meterOn = true;
+                            if (displayData.p2RecoveryMeterMode == 1) t.meter = 0;
+                            else if (displayData.p2RecoveryMeterMode == 2) t.meter = 1000;
+                            else if (displayData.p2RecoveryMeterMode == 3) t.meter = 2000;
+                            else if (displayData.p2RecoveryMeterMode == 4) t.meter = 3000;
+                            else if (displayData.p2RecoveryMeterMode == 5) t.meter = CLAMP(displayData.p2RecoveryMeterCustom, 0, MAX_METER);
+                        }
+                        if (displayData.p2RecoveryRfMode > 0) {
+                            t.rfOn = true;
+                            if (displayData.p2RecoveryRfMode == 1) t.rf = 0.0;
+                            else if (displayData.p2RecoveryRfMode == 2) t.rf = 1000.0;
+                            else if (displayData.p2RecoveryRfMode == 3) t.rf = 500.0;
+                            else if (displayData.p2RecoveryRfMode == 4) t.rf = 999.0;
+                            else if (displayData.p2RecoveryRfMode == 5) t.rf = (double)CLAMP((int)displayData.p2RecoveryRfCustom, 0, (int)MAX_RF);
+                            if (displayData.p2RecoveryRfMode == 5) t.bic = displayData.p2RecoveryRfForceBlueIC; else t.bic = false;
+                            t.wantRedIC = (displayData.p2RecoveryRfMode == 3 || displayData.p2RecoveryRfMode == 4);
+                        }
+                    }
+                    return t;
+                };
+
+                auto enforceForPlayer = [&](int p){
+                    bool enabled = (p==1) ? displayData.p1ContinuousRecoveryEnabled : displayData.p2ContinuousRecoveryEnabled;
+                    if (!enabled) return;
+                    // Resolve player bases once
+                    uintptr_t p1B=0, p2B=0; SafeReadMemory(base + EFZ_BASE_OFFSET_P1, &p1B, sizeof(p1B)); SafeReadMemory(base + EFZ_BASE_OFFSET_P2, &p2B, sizeof(p2B));
+                    if (!p1B || !p2B) return;
+                    auto tg = resolveTargets(p==1);
+                    bool wrote = false;
+                    uintptr_t pB = (p==1)? p1B : p2B;
+                    if (tg.hpOn) {
+                        WORD tgt = (WORD)CLAMP(tg.hp, 0, MAX_HP);
+                        SafeWriteMemory(pB + HP_OFFSET, &tgt, sizeof(tgt));
+                        wrote = true;
+                    }
+                    if (tg.meterOn) {
+                        WORD tgt = (WORD)CLAMP(tg.meter, 0, MAX_METER);
+                        SafeWriteMemory(pB + METER_OFFSET, &tgt, sizeof(tgt));
+                        wrote = true;
+                    }
+                    if (tg.rfOn) {
+                        double p1rf=0.0, p2rf=0.0;
+                        SafeReadMemory(p1B + RF_OFFSET, &p1rf, sizeof(p1rf));
+                        SafeReadMemory(p2B + RF_OFFSET, &p2rf, sizeof(p2rf));
+                        if (p==1) p1rf = tg.rf; else p2rf = tg.rf;
+                        (void)SetRFValuesDirect(p1rf, p2rf);
+                        if (Config::GetSettings().freezeRFAfterContRec) {
+                            StartRFFreezeOne(p, tg.rf);
+                        }
+                        // BIC (Blue IC) only under Custom RF
+                        if (tg.bic) {
+                            int ic1=1, ic2=1; SafeReadMemory(p1B + IC_COLOR_OFFSET, &ic1, sizeof(ic1)); SafeReadMemory(p2B + IC_COLOR_OFFSET, &ic2, sizeof(ic2));
+                            bool p1Blue = (p==1)? true : (ic1 != 0);
+                            bool p2Blue = (p==2)? true : (ic2 != 0);
+                            SetICColorDirect(p1Blue, p2Blue);
+                        } else if (tg.wantRedIC) {
+                            int ic1=0, ic2=0; SafeReadMemory(p1B + IC_COLOR_OFFSET, &ic1, sizeof(ic1)); SafeReadMemory(p2B + IC_COLOR_OFFSET, &ic2, sizeof(ic2));
+                            bool p1Blue = (ic1 != 0), p2Blue = (ic2 != 0);
+                            if ((p==1 && p1Blue) || (p==2 && p2Blue)) {
+                                bool newP1Blue = (p==1) ? false : p1Blue;
+                                bool newP2Blue = (p==2) ? false : p2Blue;
+                                SetICColorDirect(newP1Blue, newP2Blue);
+                            }
+                        }
+                    }
+                    if (wrote) {
+                        LogOut(std::string("[IMGUI][ContRec] One-shot restore for P") + (p==1?"1":"2"), detailedLogging.load());
+                    }
+                };
+
+                // Stop per-side RF freeze immediately if CR is disabled or RF mode is Off
+                if (!displayData.p1ContinuousRecoveryEnabled || displayData.p1RecoveryRfMode <= 0) { StopRFFreezePlayer(1); }
+                if (!displayData.p2ContinuousRecoveryEnabled || displayData.p2RecoveryRfMode <= 0) { StopRFFreezePlayer(2); }
+
+                // Apply one-shot enforcement now (only for sides with CR enabled)
+                enforceForPlayer(1);
+                enforceForPlayer(2);
             }
         }
     }

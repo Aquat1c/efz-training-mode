@@ -194,6 +194,37 @@ void ApplySettings(DisplayData* data) {
                 StartRFFreeze(data->rf1, data->rf2);
             }
         }
+
+    // Continuous Recovery (legacy globals retained for compatibility)
+    g_contRecoveryEnabled.store(data->continuousRecoveryEnabled);
+    g_contRecoveryApplyTo.store(data->continuousRecoveryApplyTo);
+    g_contRecHpMode.store(data->recoveryHpMode);
+    g_contRecHpCustom.store(data->recoveryHpCustom);
+    g_contRecMeterMode.store(data->recoveryMeterMode);
+    g_contRecMeterCustom.store(data->recoveryMeterCustom);
+    g_contRecRfMode.store(data->recoveryRfMode);
+    g_contRecRfCustom.store(data->recoveryRfCustom);
+    g_contRecRfForceBlueIC.store(data->recoveryRfForceBlueIC);
+
+    // NEW: Per-player Continuous Recovery atomics
+    // P1
+    g_contRecEnabledP1.store(data->p1ContinuousRecoveryEnabled);
+    g_contRecHpModeP1.store(data->p1RecoveryHpMode);
+    g_contRecHpCustomP1.store(data->p1RecoveryHpCustom);
+    g_contRecMeterModeP1.store(data->p1RecoveryMeterMode);
+    g_contRecMeterCustomP1.store(data->p1RecoveryMeterCustom);
+    g_contRecRfModeP1.store(data->p1RecoveryRfMode);
+    g_contRecRfCustomP1.store(data->p1RecoveryRfCustom);
+    g_contRecRfForceBlueICP1.store(data->p1RecoveryRfForceBlueIC);
+    // P2
+    g_contRecEnabledP2.store(data->p2ContinuousRecoveryEnabled);
+    g_contRecHpModeP2.store(data->p2RecoveryHpMode);
+    g_contRecHpCustomP2.store(data->p2RecoveryHpCustom);
+    g_contRecMeterModeP2.store(data->p2RecoveryMeterMode);
+    g_contRecMeterCustomP2.store(data->p2RecoveryMeterCustom);
+    g_contRecRfModeP2.store(data->p2RecoveryRfMode);
+    g_contRecRfCustomP2.store(data->p2RecoveryRfCustom);
+    g_contRecRfForceBlueICP2.store(data->p2RecoveryRfForceBlueIC);
         
         LogOut("[GUI] All settings applied successfully", detailedLogging.load()); // Use detailed logging
     } catch (const std::exception& e) {

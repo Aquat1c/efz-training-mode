@@ -218,6 +218,13 @@ namespace Config {
             file << "; UI font: 0 = ImGui default font, 1 = Segoe UI (Windows)\n";
             file << "uiFont = 0\n\n";
 
+            // RF freeze behavior
+            file << "; RF freeze behavior (after Continuous Recovery)\n";
+            file << "; Start freezing RF after enforcement (1=yes, 0=no)\n";
+            file << "freezeRFAfterContRec = 1\n";
+            file << "; Maintain RF freeze only when neutral (allowed MoveIDs) (1=yes, 0=no)\n";
+            file << "freezeRFOnlyWhenNeutral = 1\n\n";
+
             file << "; Virtual Cursor (software controller-driven cursor) settings\n";
             file << "; Master enable (1=on,0=off)\n";
             file << "enableVirtualCursor = 1\n";
@@ -393,6 +400,10 @@ namespace Config {
                 if (p < 0.5f) p = 0.5f; if (p > 3.0f) p = 3.0f;
                 settings.virtualCursorAccelPower = p;
             }
+
+            // RF freeze behavior (defaults: enabled and neutral-only)
+            settings.freezeRFAfterContRec = GetValueBool("General", "freezeRFAfterContRec", true);
+            settings.freezeRFOnlyWhenNeutral = GetValueBool("General", "freezeRFOnlyWhenNeutral", true);
             
             // Hotkey settings - REVERTED to number key defaults
             settings.teleportKey = GetValueInt("Hotkeys", "TeleportKey", 0x31);          // Default: '1'
@@ -500,6 +511,10 @@ namespace Config {
             file << "uiScale = " << settings.uiScale << "\n\n";
             file << "; UI font: 0 = ImGui default font, 1 = Segoe UI (Windows)\n";
             file << "uiFont = " << settings.uiFontMode << "\n\n";
+            // RF freeze behavior
+            file << "; RF freeze behavior (after Continuous Recovery)\n";
+            file << "freezeRFAfterContRec = " << (settings.freezeRFAfterContRec?"1":"0") << "\n";
+            file << "freezeRFOnlyWhenNeutral = " << (settings.freezeRFOnlyWhenNeutral?"1":"0") << "\n\n";
             file << "; Virtual Cursor settings\n";
             file << "enableVirtualCursor = " << (settings.enableVirtualCursor?"1":"0") << "\n";
             file << "virtualCursorAllowWindowed = " << (settings.virtualCursorAllowWindowed?"1":"0") << "\n";
@@ -593,6 +608,8 @@ namespace Config {
             if (k == "virtualcursorfastspeed") { try { settings.virtualCursorFastSpeed = std::stof(value); } catch(...){} }
             if (k == "virtualcursordpadspeed") { try { settings.virtualCursorDpadSpeed = std::stof(value); } catch(...){} }
             if (k == "virtualcursoraccelpower") { try { settings.virtualCursorAccelPower = std::stof(value); } catch(...){} }
+            if (k == "freezerfaftercontrec") settings.freezeRFAfterContRec = (value == "1");
+            if (k == "freezerfonlywhenneutral") settings.freezeRFOnlyWhenNeutral = (value == "1");
         }
         else if (sec == "hotkeys") {
             int intValue = ParseKeyValue(value);
