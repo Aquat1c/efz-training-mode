@@ -19,6 +19,13 @@ namespace ImGuiImpl {
     // NEW: Consolidated render function
     void RenderFrame();
     
+    // Feed pre-NewFrame inputs (XInput aggregation + virtual cursor) and emit debug logs.
+    // Call this after backend NewFrame calls and before ImGui::NewFrame() in the active render loop.
+    void PreNewFrameInputs();
+    
+    // (Diagnostics removed) Placeholder to avoid dangling references if any.
+    inline void PostNewFrameDiagnostics() {}
+    
     // Check if ImGui is initialized
     bool IsInitialized();
     

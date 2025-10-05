@@ -23,6 +23,10 @@ namespace Config {
     float virtualCursorDpadSpeed;      // Dpad nudge speed (px/sec)
     float virtualCursorAccelPower;     // Analog curve exponent (1.0 = linear, >1 slower near center)
 
+    // Controller selection
+    // -1 = All controllers, 0..3 = specific XInput user index
+    int controllerIndex;
+
     // (Practice tuning removed)
         
         // Hotkey settings
