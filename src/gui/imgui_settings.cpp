@@ -1,4 +1,5 @@
 #include "../include/gui/imgui_settings.h"
+#include "../include/utils/controller_names.h"
 #include "../include/utils/config.h"
 #include "../include/core/logger.h"
 #include "../include/utils/switch_players.h"
@@ -237,8 +238,10 @@ namespace ImGuiSettings {
                 } else if (capturing && which == r.key) {
                     ImGui::TextColored(ImVec4(1,1,0,1), "Press a controller button..."); ImGui::SameLine();
                     if (ImGui::SmallButton("Cancel")) { capturing=false; which.clear(); }
-                    // Poll controller 0 (qualify with :: to avoid any local shadowing)
-                    ::XINPUT_STATE st{}; if (::XInputGetState(0, &st) == ERROR_SUCCESS) {
+                    // Poll all controllers for capture
+                    ::XINPUT_STATE st{}; bool have=false; int picked=-1;
+                    for (int i=0;i<4;++i){ if (::XInputGetState(i,&st)==ERROR_SUCCESS){ picked=i; have=true; break; } }
+                    if (have) {
                         WORD newly = st.Gamepad.wButtons & ~lastButtons;
                         int assignMask = 0;
                         if (newly) assignMask = newly; // take first new pressed combination as mask
@@ -252,8 +255,9 @@ namespace ImGuiSettings {
                             capturing=false; which.clear();
                         }
                         lastButtons = st.Gamepad.wButtons;
+                        ImGui::SameLine(); ImGui::TextDisabled("(from pad %d)", picked);
                     } else {
-                        ImGui::SameLine(); ImGui::TextDisabled("(controller not found)");
+                        ImGui::SameLine(); ImGui::TextDisabled("(no controller found)");
                     }
                 }
                 ImGui::PopID();
@@ -264,6 +268,33 @@ namespace ImGuiSettings {
         }
 
         ImGui::Separator();
+        // Controller selection (XInput)
+        {
+            int idx = Config::GetSettings().controllerIndex;
+            int current = idx; // -1 = All
+            // Friendly names for XInput devices (global function)
+            std::string labelAll = "All (Any)";
+            std::string lbl0 = ::GetControllerNameForIndex(0);
+            std::string lbl1 = ::GetControllerNameForIndex(1);
+            std::string lbl2 = ::GetControllerNameForIndex(2);
+            std::string lbl3 = ::GetControllerNameForIndex(3);
+            const char* items[] = { labelAll.c_str(), lbl0.c_str(), lbl1.c_str(), lbl2.c_str(), lbl3.c_str() };
+            // Map -1..3 to 0..4 for combo
+            int comboIndex = (current < 0) ? 0 : (current + 1);
+            ImGui::TextUnformatted("Controller for mod inputs"); ImGui::SameLine();
+            if (ImGui::BeginCombo("##controllerIndex", items[comboIndex])) {
+                for (int i = 0; i < 5; ++i) {
+                    bool sel = (i == comboIndex);
+                    if (ImGui::Selectable(items[i], sel)) {
+                        int newVal = (i == 0) ? -1 : (i - 1);
+                        Config::SetSetting("General", "controllerIndex", std::to_string(newVal));
+                    }
+                    if (sel) ImGui::SetItemDefaultFocus();
+                }
+                ImGui::EndCombo();
+            }
+            ImGui::SameLine(); if (ImGui::SmallButton("Save Controller")) { Config::SaveSettings(); }
+        }
         ImGui::TextDisabled("Config file: %s", Config::GetConfigFilePath().c_str());
 
         // Switch Players control moved to Debug tab

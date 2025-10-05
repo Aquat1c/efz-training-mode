@@ -237,6 +237,10 @@ namespace Config {
             file << "; Analog stick acceleration exponent (1.0=linear, 1.5=gentler near center)\n";
             file << "virtualCursorAccelPower = 1.35\n\n";
 
+            // Controller selection (XInput)
+            file << "; Controller selection: -1 = All, 0..3 = XInput user index\n";
+            file << "controllerIndex = -1\n\n";
+
             // (Practice-specific tuning is hardcoded now)
             
             file << "[Hotkeys]\n";
@@ -401,6 +405,19 @@ namespace Config {
                 settings.virtualCursorAccelPower = p;
             }
 
+            // Controller index (which XInput device controls the mod / virtual cursor)
+            settings.controllerIndex = -1; // default: all
+            {
+                auto sectionIt = iniData.find("general");
+                if (sectionIt != iniData.end()) {
+                    auto keyIt = sectionIt->second.find("controllerindex");
+                    if (keyIt != sectionIt->second.end()) {
+                        try { settings.controllerIndex = std::stoi(keyIt->second); } catch (...) { settings.controllerIndex = -1; }
+                    }
+                }
+                if (settings.controllerIndex < -1 || settings.controllerIndex > 3) settings.controllerIndex = -1;
+            }
+
             // RF freeze behavior (defaults: enabled and neutral-only)
             settings.freezeRFAfterContRec = GetValueBool("General", "freezeRFAfterContRec", true);
             settings.freezeRFOnlyWhenNeutral = GetValueBool("General", "freezeRFOnlyWhenNeutral", true);
@@ -523,6 +540,10 @@ namespace Config {
             file << "virtualCursorDpadSpeed = " << (int)settings.virtualCursorDpadSpeed << "\n";
             file << "virtualCursorAccelPower = " << settings.virtualCursorAccelPower << "\n\n";
 
+            // Controller selection
+            file << "; Controller selection: -1 = All, 0..3 = XInput user index\n";
+            file << "controllerIndex = " << settings.controllerIndex << "\n\n";
+
             // (Practice tuning omitted)
             file << "; Show the debug console window (1 = yes, 0 = no)\n";
             // Note: keep console toggle alongside General fields
@@ -608,6 +629,7 @@ namespace Config {
             if (k == "virtualcursorfastspeed") { try { settings.virtualCursorFastSpeed = std::stof(value); } catch(...){} }
             if (k == "virtualcursordpadspeed") { try { settings.virtualCursorDpadSpeed = std::stof(value); } catch(...){} }
             if (k == "virtualcursoraccelpower") { try { settings.virtualCursorAccelPower = std::stof(value); } catch(...){} }
+            if (k == "controllerindex") { try { settings.controllerIndex = std::stoi(value); } catch(...) { settings.controllerIndex = -1; } if (settings.controllerIndex < -1 || settings.controllerIndex > 3) settings.controllerIndex = -1; }
             if (k == "freezerfaftercontrec") settings.freezeRFAfterContRec = (value == "1");
             if (k == "freezerfonlywhenneutral") settings.freezeRFOnlyWhenNeutral = (value == "1");
         }

@@ -200,8 +200,11 @@ void MonitorKeys() {
     const double leftX = 43.6548, rightX = 595.425, teleportY = 0.0;
     const double p1StartX = 240.0, p2StartX = 400.0, startY = 0.0;
 
-    // XInput state for edge detection
-    XINPUT_STATE prevPad{};
+    // XInput state for edge detection (per-controller for multi-pad support)
+    XINPUT_STATE prevPads[4]{};
+    // Cached connectivity info to avoid polling all 4 pads every frame
+    DWORD lastConnScanTick = 0;
+    unsigned connectedMask = 0; // bit i => pad i connected
 
     int sleepMs = 16;        // adaptive polling interval
     int idleLoops = 0;       // counts consecutive idle loops
@@ -218,166 +221,213 @@ void MonitorKeys() {
     int resetFrameCounterKey = (cfg.resetFrameCounterKey > 0) ? cfg.resetFrameCounterKey : '5';
     int helpKey = (cfg.helpKey > 0) ? cfg.helpKey : '6';
     int toggleImGuiKey = (cfg.toggleImGuiKey > 0) ? cfg.toggleImGuiKey : VK_F12;
-    XINPUT_STATE currentPad{};
+    XINPUT_STATE currentPad{}; // kept for clarity; not used for idle scan
 
         // --- All other hotkeys: only when overlays/features are active ---
     if (g_efzWindowActive.load() && !g_guiActive.load()) {
             bool keyHandled = false;
 
-        // Gamepad: poll XInput pad 0 and process configurable mappings
-        if (XInputGetState(0, &currentPad) == ERROR_SUCCESS) {
-            // Helper: edge detect (just-pressed) for standard buttons & pseudo trigger bits
-            constexpr int LT_MASK = 0x10000; // pseudo masks defined in config parser
-            constexpr int RT_MASK = 0x20000;
-            constexpr int TRIGGER_THRESHOLD = 50; // configurable later if needed
-            auto gpWentDown = [&](int mask) -> bool {
-                if (mask < 0) return false; // disabled
-                if (mask == LT_MASK) {
-                    bool now = currentPad.Gamepad.bLeftTrigger >= TRIGGER_THRESHOLD;
-                    bool prev = prevPad.Gamepad.bLeftTrigger >= TRIGGER_THRESHOLD;
-                    return now && !prev;
-                }
-                if (mask == RT_MASK) {
-                    bool now = currentPad.Gamepad.bRightTrigger >= TRIGGER_THRESHOLD;
-                    bool prev = prevPad.Gamepad.bRightTrigger >= TRIGGER_THRESHOLD;
-                    return now && !prev;
-                }
-                WORD wMask = static_cast<WORD>(mask & 0xFFFF);
-                return (currentPad.Gamepad.wButtons & wMask) && !(prevPad.Gamepad.wButtons & wMask);
-            };
-
-            // Local helpers for repeated memory operations
-            auto savePositions = [&]() {
-                uintptr_t base = GetEFZBase();
-                if (base) {
-                    SavePlayerPositions(base);
-                    DirectDrawHook::AddMessage("Position Saved", "SYSTEM", RGB(255, 255, 100), 1500, 0, 100);
-                }
-            };
-            auto teleportOrLoad = [&]() {
-                uintptr_t base = GetEFZBase();
-                if (!base) return;
-                if ((currentPad.Gamepad.wButtons & XINPUT_GAMEPAD_DPAD_DOWN) && (currentPad.Gamepad.wButtons & XINPUT_GAMEPAD_A)) {
-                    SetPlayerPosition(base, EFZ_BASE_OFFSET_P1, p1StartX, startY);
-                    SetPlayerPosition(base, EFZ_BASE_OFFSET_P2, p2StartX, startY);
-                    DirectDrawHook::AddMessage("Round Start Position", "SYSTEM", RGB(100, 255, 100), 1500, 0, 100);
-                } else if (currentPad.Gamepad.wButtons & XINPUT_GAMEPAD_DPAD_DOWN) {
-                    SetPlayerPosition(base, EFZ_BASE_OFFSET_P1, centerX, teleportY);
-                    SetPlayerPosition(base, EFZ_BASE_OFFSET_P2, centerX, teleportY);
-                    DirectDrawHook::AddMessage("Players Centered", "SYSTEM", RGB(100, 255, 100), 1500, 0, 100);
-                } else if (currentPad.Gamepad.wButtons & XINPUT_GAMEPAD_DPAD_LEFT) {
-                    SetPlayerPosition(base, EFZ_BASE_OFFSET_P1, leftX, teleportY);
-                    SetPlayerPosition(base, EFZ_BASE_OFFSET_P2, leftX, teleportY);
-                    DirectDrawHook::AddMessage("Left Corner", "SYSTEM", RGB(100, 255, 100), 1500, 0, 100);
-                } else if (currentPad.Gamepad.wButtons & XINPUT_GAMEPAD_DPAD_RIGHT) {
-                    SetPlayerPosition(base, EFZ_BASE_OFFSET_P1, rightX, teleportY);
-                    SetPlayerPosition(base, EFZ_BASE_OFFSET_P2, rightX, teleportY);
-                    DirectDrawHook::AddMessage("Right Corner", "SYSTEM", RGB(100, 255, 100), 1500, 0, 100);
-                } else {
-                    LoadPlayerPositions(base);
-                    DirectDrawHook::AddMessage("Position Loaded", "SYSTEM", RGB(100, 255, 100), 1500, 0, 100);
-                }
-            };
-            auto swapPositions = [&]() {
-                uintptr_t base = GetEFZBase();
-                if (!base) return;
-                double x1=0,y1=0,x2=0,y2=0;
-                uintptr_t xAddr1 = ResolvePointer(base, EFZ_BASE_OFFSET_P1, XPOS_OFFSET);
-                uintptr_t yAddr1 = ResolvePointer(base, EFZ_BASE_OFFSET_P1, YPOS_OFFSET);
-                uintptr_t xAddr2 = ResolvePointer(base, EFZ_BASE_OFFSET_P2, XPOS_OFFSET);
-                uintptr_t yAddr2 = ResolvePointer(base, EFZ_BASE_OFFSET_P2, YPOS_OFFSET);
-                if (xAddr1 && yAddr1 && xAddr2 && yAddr2) {
-                    SafeReadMemory(xAddr1, &x1, sizeof(double));
-                    SafeReadMemory(yAddr1, &y1, sizeof(double));
-                    SafeReadMemory(xAddr2, &x2, sizeof(double));
-                    SafeReadMemory(yAddr2, &y2, sizeof(double));
-                    SetPlayerPosition(base, EFZ_BASE_OFFSET_P1, x2, y2);
-                    SetPlayerPosition(base, EFZ_BASE_OFFSET_P2, x1, y1);
-                    DirectDrawHook::AddMessage("Positions Swapped", "SYSTEM", RGB(100, 255, 100), 1500, 0, 100);
-                } else {
-                    DirectDrawHook::AddMessage("Swap Failed: Can't read positions", "SYSTEM", RGB(255,100,100), 1500, 0, 100);
-                }
-            };
-
-            // Read config each frame so UI changes apply immediately
-            const auto &cgp = cfg; // alias
-
-            // Process in priority order (single action per press)
-            // Unified menu toggle: gpToggleMenuButton now acts as open/close (ImGui preferred path)
-            if (!keyHandled && gpWentDown(cgp.gpToggleMenuButton)) {
-                if (!ImGuiImpl::IsVisible()) {
-                    // Open using existing OpenMenu() path so pause integration + state setup occurs
-                    OpenMenu();
-                } else {
-                    // Close via direct ImGui toggle (this also resets ::menuOpen in ImGuiImpl)
-                    ImGuiImpl::ToggleVisibility();
-                }
-                keyHandled = true;
-            } else if (!keyHandled && gpWentDown(cgp.gpToggleImGuiButton)) {
-                // Secondary explicit ImGui visibility toggle (can be disabled in config)
-                ImGuiImpl::ToggleVisibility();
-                keyHandled = true;
-            } else if (!keyHandled && gpWentDown(cgp.gpTeleportButton)) {
-                teleportOrLoad();
-                keyHandled = true;
-            } else if (!keyHandled && gpWentDown(cgp.gpSavePositionButton)) {
-                savePositions();
-                keyHandled = true;
-            } else if (!keyHandled && gpWentDown(cgp.gpSwapPositionsButton)) {
-                swapPositions();
-                keyHandled = true;
-            } else if (!keyHandled && gpWentDown(cgp.gpSwitchPlayersButton)) {
-                if (GetCurrentGameMode() == GameMode::Practice) {
-                    if (SwitchPlayers::ToggleLocalSide()) {
-                        DirectDrawHook::AddMessage("Switch Players: toggled", "SYSTEM", RGB(100,255,100), 1200, 0, 100);
-                    } else {
-                        DirectDrawHook::AddMessage("Switch Players: failed", "SYSTEM", RGB(255,100,100), 1200, 0, 100);
+            // Helpers
+            auto pollPad = [](int idx, XINPUT_STATE& out) { ZeroMemory(&out, sizeof(out)); return XInputGetState(idx, &out) == ERROR_SUCCESS; };
+            auto processActionsForPad = [&](int padIndex, const XINPUT_STATE& cur, XINPUT_STATE& prev) -> bool {
+                // Helper: edge detect (just-pressed) for standard buttons & pseudo trigger bits
+                constexpr int LT_MASK = 0x10000; // pseudo masks defined in config parser
+                constexpr int RT_MASK = 0x20000;
+                constexpr int TRIGGER_THRESHOLD = 50; // configurable later if needed
+                auto gpWentDown = [&](int mask) -> bool {
+                    if (mask < 0) return false; // disabled
+                    if (mask == LT_MASK) {
+                        bool now = cur.Gamepad.bLeftTrigger >= TRIGGER_THRESHOLD;
+                        bool was = prev.Gamepad.bLeftTrigger >= TRIGGER_THRESHOLD;
+                        return now && !was;
                     }
+                    if (mask == RT_MASK) {
+                        bool now = cur.Gamepad.bRightTrigger >= TRIGGER_THRESHOLD;
+                        bool was = prev.Gamepad.bRightTrigger >= TRIGGER_THRESHOLD;
+                        return now && !was;
+                    }
+                    WORD wMask = static_cast<WORD>(mask & 0xFFFF);
+                    return (cur.Gamepad.wButtons & wMask) && !(prev.Gamepad.wButtons & wMask);
+                };
+
+                // Local helpers for repeated memory operations
+                auto savePositions = [&]() {
+                    uintptr_t base = GetEFZBase();
+                    if (base) {
+                        SavePlayerPositions(base);
+                        DirectDrawHook::AddMessage("Position Saved", "SYSTEM", RGB(255, 255, 100), 1500, 0, 100);
+                    }
+                };
+                auto teleportOrLoad = [&]() {
+                    uintptr_t base = GetEFZBase();
+                    if (!base) return;
+                    if ((cur.Gamepad.wButtons & XINPUT_GAMEPAD_DPAD_DOWN) && (cur.Gamepad.wButtons & XINPUT_GAMEPAD_A)) {
+                        SetPlayerPosition(base, EFZ_BASE_OFFSET_P1, p1StartX, startY);
+                        SetPlayerPosition(base, EFZ_BASE_OFFSET_P2, p2StartX, startY);
+                        DirectDrawHook::AddMessage("Round Start Position", "SYSTEM", RGB(100, 255, 100), 1500, 0, 100);
+                    } else if (cur.Gamepad.wButtons & XINPUT_GAMEPAD_DPAD_DOWN) {
+                        SetPlayerPosition(base, EFZ_BASE_OFFSET_P1, centerX, teleportY);
+                        SetPlayerPosition(base, EFZ_BASE_OFFSET_P2, centerX, teleportY);
+                        DirectDrawHook::AddMessage("Players Centered", "SYSTEM", RGB(100, 255, 100), 1500, 0, 100);
+                    } else if (cur.Gamepad.wButtons & XINPUT_GAMEPAD_DPAD_LEFT) {
+                        SetPlayerPosition(base, EFZ_BASE_OFFSET_P1, leftX, teleportY);
+                        SetPlayerPosition(base, EFZ_BASE_OFFSET_P2, leftX, teleportY);
+                        DirectDrawHook::AddMessage("Left Corner", "SYSTEM", RGB(100, 255, 100), 1500, 0, 100);
+                    } else if (cur.Gamepad.wButtons & XINPUT_GAMEPAD_DPAD_RIGHT) {
+                        SetPlayerPosition(base, EFZ_BASE_OFFSET_P1, rightX, teleportY);
+                        SetPlayerPosition(base, EFZ_BASE_OFFSET_P2, rightX, teleportY);
+                        DirectDrawHook::AddMessage("Right Corner", "SYSTEM", RGB(100, 255, 100), 1500, 0, 100);
+                    } else {
+                        LoadPlayerPositions(base);
+                        DirectDrawHook::AddMessage("Position Loaded", "SYSTEM", RGB(100, 255, 100), 1500, 0, 100);
+                    }
+                };
+                auto swapPositions = [&]() {
+                    uintptr_t base = GetEFZBase();
+                    if (!base) return;
+                    double x1=0,y1=0,x2=0,y2=0;
+                    uintptr_t xAddr1 = ResolvePointer(base, EFZ_BASE_OFFSET_P1, XPOS_OFFSET);
+                    uintptr_t yAddr1 = ResolvePointer(base, EFZ_BASE_OFFSET_P1, YPOS_OFFSET);
+                    uintptr_t xAddr2 = ResolvePointer(base, EFZ_BASE_OFFSET_P2, XPOS_OFFSET);
+                    uintptr_t yAddr2 = ResolvePointer(base, EFZ_BASE_OFFSET_P2, YPOS_OFFSET);
+                    if (xAddr1 && yAddr1 && xAddr2 && yAddr2) {
+                        SafeReadMemory(xAddr1, &x1, sizeof(double));
+                        SafeReadMemory(yAddr1, &y1, sizeof(double));
+                        SafeReadMemory(xAddr2, &x2, sizeof(double));
+                        SafeReadMemory(yAddr2, &y2, sizeof(double));
+                        SetPlayerPosition(base, EFZ_BASE_OFFSET_P1, x2, y2);
+                        SetPlayerPosition(base, EFZ_BASE_OFFSET_P2, x1, y1);
+                        DirectDrawHook::AddMessage("Positions Swapped", "SYSTEM", RGB(100, 255, 100), 1500, 0, 100);
+                    } else {
+                        DirectDrawHook::AddMessage("Swap Failed: Can't read positions", "SYSTEM", RGB(255,100,100), 1500, 0, 100);
+                    }
+                };
+
+                // Read config each frame so UI changes apply immediately
+                const auto &cgp = cfg; // alias
+
+                bool handled = false;
+                // Process in priority order (single action per press)
+                // Unified menu toggle: gpToggleMenuButton now acts as open/close (ImGui preferred path)
+                if (!handled && gpWentDown(cgp.gpToggleMenuButton)) {
+                    if (!ImGuiImpl::IsVisible()) {
+                        OpenMenu();
+                    } else {
+                        ImGuiImpl::ToggleVisibility();
+                    }
+                    handled = true;
+                } else if (!handled && gpWentDown(cgp.gpToggleImGuiButton)) {
+                    ImGuiImpl::ToggleVisibility();
+                    handled = true;
+                } else if (!handled && gpWentDown(cgp.gpTeleportButton)) {
+                    teleportOrLoad();
+                    handled = true;
+                } else if (!handled && gpWentDown(cgp.gpSavePositionButton)) {
+                    savePositions();
+                    handled = true;
+                } else if (!handled && gpWentDown(cgp.gpSwapPositionsButton)) {
+                    swapPositions();
+                    handled = true;
+                } else if (!handled && gpWentDown(cgp.gpSwitchPlayersButton)) {
+                    if (GetCurrentGameMode() == GameMode::Practice) {
+                        bool ok = SwitchPlayers::ToggleLocalSide();
+                        if (ok) {
+                            DirectDrawHook::AddMessage("Switch Players: toggled", "SYSTEM", RGB(100,255,100), 1200, 0, 100);
+                        } else {
+                            DirectDrawHook::AddMessage("Switch Players: failed", "SYSTEM", RGB(255,100,100), 1200, 0, 100);
+                        }
+                    }
+                    handled = true;
+                } else if (!handled && gpWentDown(cgp.gpMacroRecordButton)) {
+                    if (GetCurrentGamePhase() == GamePhase::Match && AreCharactersInitialized()) {
+                        MacroController::ToggleRecord();
+                        DirectDrawHook::AddMessage(MacroController::GetStatusLine().c_str(), "MACRO", RGB(200,220,255), 900, 0, 120);
+                    } else {
+                        DirectDrawHook::AddMessage("Macro controls available only during Match", "MACRO", RGB(255,180,120), 900, 0, 120);
+                    }
+                    handled = true;
+                } else if (!handled && gpWentDown(cgp.gpMacroPlayButton)) {
+                    if (GetCurrentGamePhase() == GamePhase::Match && AreCharactersInitialized()) {
+                        MacroController::Play();
+                        DirectDrawHook::AddMessage(MacroController::GetStatusLine().c_str(), "MACRO", RGB(180,255,180), 900, 0, 120);
+                    } else {
+                        DirectDrawHook::AddMessage("Macro controls available only during Match", "MACRO", RGB(255,180,120), 900, 0, 120);
+                    }
+                    handled = true;
+                } else if (!handled && gpWentDown(cgp.gpMacroSlotButton)) {
+                    if (GetCurrentGamePhase() == GamePhase::Match && AreCharactersInitialized()) {
+                        MacroController::NextSlot();
+                        DirectDrawHook::AddMessage((std::string("Macro: Slot ") + std::to_string(MacroController::GetCurrentSlot())).c_str(), "MACRO", RGB(230,230,120), 800, 0, 120);
+                    } else {
+                        DirectDrawHook::AddMessage("Macro controls available only during Match", "MACRO", RGB(255,180,120), 900, 0, 120);
+                    }
+                    handled = true;
                 }
-                keyHandled = true;
-            } else if (!keyHandled && gpWentDown(cgp.gpMacroRecordButton)) {
-                if (GetCurrentGamePhase() == GamePhase::Match && AreCharactersInitialized()) {
-                    MacroController::ToggleRecord();
-                    DirectDrawHook::AddMessage(MacroController::GetStatusLine().c_str(), "MACRO", RGB(200,220,255), 900, 0, 120);
-                } else {
-                    DirectDrawHook::AddMessage("Macro controls available only during Match", "MACRO", RGB(255,180,120), 900, 0, 120);
-                }
-                keyHandled = true;
-            } else if (!keyHandled && gpWentDown(cgp.gpMacroPlayButton)) {
-                if (GetCurrentGamePhase() == GamePhase::Match && AreCharactersInitialized()) {
-                    MacroController::Play();
-                    DirectDrawHook::AddMessage(MacroController::GetStatusLine().c_str(), "MACRO", RGB(180,255,180), 900, 0, 120);
-                } else {
-                    DirectDrawHook::AddMessage("Macro controls available only during Match", "MACRO", RGB(255,180,120), 900, 0, 120);
-                }
-                keyHandled = true;
-            } else if (!keyHandled && gpWentDown(cgp.gpMacroSlotButton)) {
-                if (GetCurrentGamePhase() == GamePhase::Match && AreCharactersInitialized()) {
-                    MacroController::NextSlot();
-                    DirectDrawHook::AddMessage((std::string("Macro: Slot ") + std::to_string(MacroController::GetCurrentSlot())).c_str(), "MACRO", RGB(230,230,120), 800, 0, 120);
-                } else {
-                    DirectDrawHook::AddMessage("Macro controls available only during Match", "MACRO", RGB(255,180,120), 900, 0, 120);
-                }
-                keyHandled = true;
-            }
-        }
-            // Keyboard menu key: unify with gamepad behavior (toggle open/close)
+
+                // Update prev state for this pad each loop
+                prev = cur;
+                return handled;
+            };
+
+            // 1) Keyboard menu/overlay toggles first (avoids conflicts)
             if (IsKeyPressed(configMenuKey, false)) {
                 if (!ImGuiImpl::IsVisible()) {
                     OpenMenu();
                 } else {
                     ImGuiImpl::ToggleVisibility();
                 }
-                // Debounce to avoid rapid flicker
-                Sleep(300);
+                Sleep(300); // debounce
+                continue;
+            }
+            if (IsKeyPressed(toggleImGuiKey, false)) {
+                ImGuiImpl::ToggleVisibility();
+                Sleep(150); // debounce
                 continue;
             }
 
-            // Check if ImGui should be toggled
-            if (IsKeyPressed(toggleImGuiKey, false)) {
-                ImGuiImpl::ToggleVisibility();
-                keyHandled = true;
-            } else if (IsKeyPressed(cfg.switchPlayersKey > 0 ? cfg.switchPlayersKey : 'L', false)) {
+            // 2) Gamepad processing (selected controller or all)
+            auto refreshConnectionsIfNeeded = [&]() {
+                DWORD now = GetTickCount();
+                if ((now - lastConnScanTick) < 1000) return; // 1s cadence
+                lastConnScanTick = now;
+                unsigned mask = 0;
+                for (int i = 0; i < 4; ++i) {
+                    XINPUT_STATE tmp{};
+                    if (XInputGetState(i, &tmp) == ERROR_SUCCESS) mask |= (1u << i);
+                }
+                connectedMask = mask;
+            };
+            refreshConnectionsIfNeeded();
+            int cfgIdx = cfg.controllerIndex;
+            if (cfgIdx >= 0 && cfgIdx <= 3) {
+                XINPUT_STATE cur{};
+                if (pollPad(cfgIdx, cur)) {
+                    if (processActionsForPad(cfgIdx, cur, prevPads[cfgIdx])) {
+                        keyHandled = true;
+                    }
+                }
+            } else {
+                // All controllers: process in index order but handle at most one action per frame
+                unsigned mask = connectedMask;
+                if (mask == 0) {
+                    // Fallback: if no cached connections, do a light probe this frame
+                    for (int i = 0; i < 4; ++i) {
+                        XINPUT_STATE tmp{}; if (XInputGetState(i, &tmp) == ERROR_SUCCESS) { mask |= (1u << i); }
+                    }
+                    connectedMask = mask;
+                }
+                for (int i = 0; i < 4 && !keyHandled; ++i) {
+                    if (((mask >> i) & 1u) == 0) continue; // skip disconnected
+                    XINPUT_STATE cur{}; if (!pollPad(i, cur)) continue;
+                    if (processActionsForPad(i, cur, prevPads[i])) {
+                        keyHandled = true; break;
+                    }
+                }
+            }
+
+            // 3) Remaining keyboard-only actions
+            if (!keyHandled) {
+                if (IsKeyPressed(cfg.switchPlayersKey > 0 ? cfg.switchPlayersKey : 'L', false)) {
                 // Debug hotkey: Toggle local/remote players in Practice
                 if (GetCurrentGameMode() == GameMode::Practice && !g_guiActive.load()) {
                     bool ok = SwitchPlayers::ToggleLocalSide();
@@ -543,6 +593,7 @@ void MonitorKeys() {
                 }
                 keyHandled = true;
             }
+            }
             // Developer motion-debug hotkeys removed
 
             // If a key was handled, wait for it to be released
@@ -575,8 +626,20 @@ void MonitorKeys() {
                     ((GetAsyncKeyState(cfg.macroRecordKey > 0 ? cfg.macroRecordKey : 'I') & 0x8000) != 0) ||
                     ((GetAsyncKeyState(cfg.macroPlayKey > 0 ? cfg.macroPlayKey : 'O') & 0x8000) != 0) ||
                     ((GetAsyncKeyState(cfg.macroSlotKey > 0 ? cfg.macroSlotKey : 'K') & 0x8000) != 0);
-                bool anyPadDown = (currentPad.dwPacketNumber != prevPad.dwPacketNumber) ||
-                                  (currentPad.Gamepad.wButtons != 0);
+                auto anyControllerActive = [&]() -> bool {
+                    unsigned mask = connectedMask;
+                    if (mask == 0) return false; // nobody connected; don’t poll
+                    for (int i = 0; i < 4; ++i) {
+                        if (((mask >> i) & 1u) == 0) continue;
+                        XINPUT_STATE cur{};
+                        if (XInputGetState(i, &cur) != ERROR_SUCCESS) continue;
+                        if (cur.dwPacketNumber != prevPads[i].dwPacketNumber) return true;
+                        if (cur.Gamepad.wButtons != 0) return true;
+                        if (cur.Gamepad.bLeftTrigger || cur.Gamepad.bRightTrigger) return true;
+                    }
+                    return false;
+                };
+                bool anyPadDown = anyControllerActive();
 
                 if (anyKbDown || anyPadDown) {
                     sleepMs = 16; idleLoops = 0;
@@ -599,8 +662,7 @@ void MonitorKeys() {
             Sleep(sleepMs);
         }
 
-    // Update previous pad state after sleep (safe even if not connected)
-    prevPad = currentPad;
+    // prevPads are updated per-pad inside processActionsForPad
     }
     
     LogOut("[KEYBINDS] Key monitoring thread exiting", true);

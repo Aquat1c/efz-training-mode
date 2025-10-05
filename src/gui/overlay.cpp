@@ -160,10 +160,14 @@ HRESULT WINAPI HookedEndScene(LPDIRECT3DDEVICE9 pDevice) {
         }
     }
 
-    // Start a new ImGui frame
+    // Start a new ImGui frame and feed inputs before NewFrame
     ImGui_ImplDX9_NewFrame();
     ImGui_ImplWin32_NewFrame();
+    // Feed controller/virtual-cursor inputs before NewFrame so they apply this frame
+    ImGuiImpl::PreNewFrameInputs();
     ImGui::NewFrame();
+    // Post-NewFrame snapshot for diagnostics (throttled)
+    ImGuiImpl::PostNewFrameDiagnostics();
 
     // If the game window is minimized, skip rendering to avoid ImGui asserting on zero-size display
     ImGuiIO& io = ImGui::GetIO();
