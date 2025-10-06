@@ -37,4 +37,11 @@ namespace ImGuiImpl {
 
     // Handle WndProc messages
     LRESULT WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
+
+    // Provide the current overlay window center (in ImGui screen coordinates)
+    // so recenter actions (middle-click/L3) can snap to the UI instead of the raw client center.
+    void SetOverlayCenter(const ImVec2& center);
+
+    // Request focusing the main overlay window next frame (consumed in RenderGui).
+    bool ConsumeOverlayFocusRequest();
 }
