@@ -38,6 +38,13 @@ void SetRFFreezeNeutralOnly(bool enabled);
 // New: single-tick RF freeze maintenance (when folding thread into main loop)
 void UpdateRFFreezeTick();
 
+// New: write IC color for only one player without touching the other
+bool SetICColorPlayer(int player, bool blueIC);
+
+// New: configure whether to also lock IC color while RF Freeze is active for a player
+// enabled=false disables color enforcement for that player. If enabled=true, blueIC selects Red(false)/Blue(true)
+void SetRFFreezeColorDesired(int player, bool enabled, bool blueIC);
+
 // Input bitmask constants
 #define INPUT_UP     0x01
 #define INPUT_DOWN   0x02
