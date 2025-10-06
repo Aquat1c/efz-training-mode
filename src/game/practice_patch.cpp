@@ -1,5 +1,6 @@
 #include <windows.h>
 #include <string>
+#include <algorithm>
 #include <sstream>
 #include <iomanip>
 #include "../include/core/memory.h"
@@ -10,8 +11,15 @@
 #include "../include/utils/utilities.h"
 
 #include "../include/game/practice_patch.h"
+#include "../include/gui/overlay.h"
 #include "../include/input/input_core.h"  // Include this to get AI_CONTROL_FLAG_OFFSET
 #include "../include/input/input_motion.h" // for direction/stance constants
+#include "../include/game/guard_overrides.h" // character/move grounded overheads
+#include "../include/game/character_settings.h" // character ID from name
+#include "../include/game/auto_action.h" // g_p2ControlOverridden
+// EfzRevival practice controller offsets and pause integration (for GUI_POS fix at match start)
+#include "../include/game/practice_offsets.h"
+#include "../include/utils/pause_integration.h"
 
 // Define constants for offsets
 const uintptr_t P2_CPU_FLAG_OFFSET = 4931;
@@ -22,6 +30,7 @@ const uintptr_t PRACTICE_AUTO_BLOCK_OFFSET = 4936;   // dword, 0/1
 std::string FormatHexAddress(uintptr_t address);
 void DumpPracticeModeState();
 void LogPlayerInputsInPracticeMode();
+static bool WriteP2BlockStance(uint8_t stance);
 
 // Patch to enable Player 2 controls in Practice mode
 bool EnablePlayer2InPracticeMode() {
@@ -259,7 +268,7 @@ void MonitorAndPatchPracticeMode() {
             DumpPracticeModeState();
         }
         
-        if (currentMode == GameMode::Practice) {
+    if (currentMode == GameMode::Practice) {
             // Check current P2 CPU flag and AI flag before patching
             uintptr_t efzBase = GetEFZBase();
             uintptr_t gameStatePtr = 0;
@@ -279,72 +288,55 @@ void MonitorAndPatchPracticeMode() {
                     lastP2CpuControlled = p2CpuControlled;
                 }
                 
-                // Always check the AI flag status, even if CPU flag is already human
+                // Keep P2 character AI flag aligned with the game state's CPU flag (when not temporarily overridden).
+                // If CPU flag says human (0), ensure AI flag = 0. If CPU flag says CPU (1), ensure AI flag = 1.
                 uintptr_t p2CharPtr = 0;
                 uint32_t p2AIFlag = 1; // Default to AI controlled
                 bool p2CharacterInitialized = false;
-                
+
                 if (SafeReadMemory(efzBase + EFZ_BASE_OFFSET_P2, &p2CharPtr, sizeof(uintptr_t)) && p2CharPtr) {
                     p2CharacterInitialized = true;
                     SafeReadMemory(p2CharPtr + AI_CONTROL_FLAG_OFFSET, &p2AIFlag, sizeof(uint32_t));
-                    
+
                     bool p2AIControlled = (p2AIFlag != 0);
-                    
-                    // Log when P2 AI control state changes
+
                     if (p2AIControlled != lastP2AIControlled && p2CharacterInitialized) {
-                        LogOut("[PRACTICE_PATCH] P2 AI control state changed: " + 
-                               std::string(lastP2AIControlled ? "AI" : "Human") + " -> " + 
+                        LogOut("[PRACTICE_PATCH] P2 AI control state changed: " +
+                               std::string(lastP2AIControlled ? "AI" : "Human") + " -> " +
                                std::string(p2AIControlled ? "AI" : "Human"), true);
-                        
-                        // If AI control was human but got switched back to AI, log this as a significant event
-                        if (!lastP2AIControlled && p2AIControlled) {
-                            LogOut("[PRACTICE_PATCH] IMPORTANT: AI control flag was reset to 1 by the game!", true);
-                            LogOut("[PRACTICE_PATCH] This suggests the flag is actively maintained by game code", true);
-                            
-                            // Add timestamp to help track when this happens
-                            auto now = std::chrono::system_clock::now();
-                            auto now_time_t = std::chrono::system_clock::to_time_t(now);
-                            std::stringstream ss;
-                            ss << "[PRACTICE_PATCH] Time of AI flag reset: " << std::ctime(&now_time_t);
-                            LogOut(ss.str(), true);
-                            
-                            // Dump full state when this happens
-                            DumpPracticeModeState();
-                        }
-                        
                         lastP2AIControlled = p2AIControlled;
                     }
-                    
-                    // Always force the AI flag to 0 in Practice mode if it's not already
-                    if (p2AIControlled && p2CharacterInitialized) {
-                        LogOut("[PRACTICE_PATCH] P2 is AI controlled, applying AI flag patch...", detailedLogging.load());
-                        uint32_t humanAIFlag = 0;
-                        if (SafeWriteMemory(p2CharPtr + AI_CONTROL_FLAG_OFFSET, &humanAIFlag, sizeof(uint32_t))) {
-                            LogOut("[PRACTICE_PATCH] Successfully patched P2 AI flag to 0 (human controlled)", detailedLogging.load());
+
+                    // Desired AI flag follows the game state's CPU flag
+                    uint32_t desiredAIFlag = p2CpuControlled ? 1u : 0u;
+                    if (p2AIFlag != desiredAIFlag) {
+                        // Do not perform writes unless we are firmly in Match phase to avoid affecting menus/CS
+                        if (GetCurrentGamePhase() != GamePhase::Match) {
+                            // Just observe; avoid writing during Character Select or other non-match phases
+                            lastP2AIControlled = (p2AIFlag != 0);
+                        } else
+                        
+                        if (g_p2ControlOverridden) {
+                            // During auto-action/macro control override, do not fight temporary human control.
+                            if (detailedLogging.load()) {
+                                LogOut("[PRACTICE_PATCH] Skip AI sync (override active)", true);
+                            }
                         } else {
-                            LogOut("[PRACTICE_PATCH] Failed to patch P2 AI flag", true);
+                            // Audit before/after for attribution
+                            uint32_t before = 0xFFFFFFFF, after = 0xFFFFFFFF;
+                            SafeReadMemory(p2CharPtr + AI_CONTROL_FLAG_OFFSET, &before, sizeof(before));
+                            bool okWrite = SafeWriteMemory(p2CharPtr + AI_CONTROL_FLAG_OFFSET, &desiredAIFlag, sizeof(uint32_t));
+                            SafeReadMemory(p2CharPtr + AI_CONTROL_FLAG_OFFSET, &after, sizeof(after));
+                            std::ostringstream oss; oss << "[AUDIT][AI] PracticeSync P2 @0x" << std::hex << (p2CharPtr + AI_CONTROL_FLAG_OFFSET)
+                                                        << " " << std::dec << before << "->" << after
+                                                        << " (want " << desiredAIFlag << ")" << (okWrite?"":" (fail)");
+                            LogOut(oss.str(), true);
                         }
                     }
                 }
-                
-                // Apply full patch if P2 is still CPU controlled at the game state level
-                if (p2CpuControlled) {
-                    LogOut("[PRACTICE_PATCH] P2 is CPU controlled, applying full patch...", true);
-                    bool success = EnablePlayer2InPracticeMode();
-                    
-                    if (!success) {
-                        consecutiveFailures++;
-                        if (consecutiveFailures >= 5) {
-                            LogOut("[PRACTICE_PATCH] WARNING: Failed to apply patch 5 times in a row", true);
-                            DumpPracticeModeState(); // Dump state after repeated failures
-                            consecutiveFailures = 0; // Reset counter to prevent spam
-                        }
-                    } else {
-                        consecutiveFailures = 0;
-                    }
-                } else {
-                    LogOut("[PRACTICE_PATCH] P2 is already human controlled at game state level", detailedLogging.load());
-                }
+
+                // Do not auto-toggle the P2 CPU flag here. That is controlled by UI actions and SwitchPlayers.
+                // This avoids fighting with side switching logic and eliminates the uncontrollable toggles.
             }
             
             // Periodically dump state in practice mode (every 30 cycles = ~15 seconds)
@@ -578,6 +570,21 @@ void EnsureDefaultControlFlagsOnMatchStart() {
     } else {
         LogOut("[PRACTICE_PATCH] MatchStart: P2 character pointer invalid", true);
     }
+
+    // 3) Align EfzRevival Practice GUI position to P1 (same as SwitchPlayers logic)
+    //    GUI_POS(+0x24) expects 1 when P1 is local/human and 0 when P2 is local.
+    //    Our default enforcement makes P1 human at match start, so set GUI_POS = 1.
+    PauseIntegration::EnsurePracticePointerCapture();
+    void* practice = PauseIntegration::GetPracticeControllerPtr();
+    if (practice) {
+        uint8_t guiPos = 1u; // P1
+        bool okWrite = SafeWriteMemory((uintptr_t)practice + PRACTICE_OFF_GUI_POS, &guiPos, sizeof(guiPos));
+        uint8_t verify = 0xFF; SafeReadMemory((uintptr_t)practice + PRACTICE_OFF_GUI_POS, &verify, sizeof(verify));
+        std::ostringstream oss; oss << "[PRACTICE_PATCH] MatchStart: GUI_POS(+0x24) set to " << (int)verify << (okWrite?"":" (fail)");
+        LogOut(oss.str(), true);
+    } else {
+        LogOut("[PRACTICE_PATCH] MatchStart: Practice controller unavailable, GUI_POS not updated", true);
+    }
 }
 
 // --- Practice dummy F6/F7 equivalents ---
@@ -607,7 +614,7 @@ bool SetPracticeAutoBlockEnabled(bool enabled) {
     if (cur == val) return true; // no change
     bool ok = SafeWriteMemory(gs + PRACTICE_AUTO_BLOCK_OFFSET, &val, sizeof(val));
     if (ok) {
-        LogOut(std::string("[PRACTICE_PATCH] Auto-Block ") + (enabled ? "ON" : "OFF"), detailedLogging.load());
+    LogOut(std::string("[PRACTICE_PATCH] Auto-Block ") + (enabled ? "ON" : "OFF"), detailedLogging.load());
     }
     return ok;
 }
@@ -631,8 +638,18 @@ bool SetPracticeBlockMode(int mode) {
     if (current == v) return true;
     bool ok = SafeWriteMemory(gs + PRACTICE_BLOCK_MODE_OFFSET, &v, sizeof(v));
     if (ok) {
-        const char* names[] = {"None", "First", "All"};
-        LogOut(std::string("[PRACTICE_PATCH] Block Mode -> ") + names[v], detailedLogging.load());
+        // Map to stance semantics for 0/2; keep First for 1
+        if (v == 0) {
+            LogOut("[PRACTICE_PATCH] Block Stance -> Stand", detailedLogging.load());
+            // Also immediately set stance byte to stand
+            WriteP2BlockStance(0);
+        } else if (v == 2) {
+            LogOut("[PRACTICE_PATCH] Block Stance -> Crouch", detailedLogging.load());
+            // Also immediately set stance byte to crouch
+            WriteP2BlockStance(1);
+        } else {
+            LogOut("[PRACTICE_PATCH] Block Mode -> First", detailedLogging.load());
+        }
     }
     return ok;
 }
@@ -649,6 +666,110 @@ static std::atomic<bool> g_firstEventSeen{false};
 static std::atomic<bool> g_abWindowActive{false};
 static std::atomic<unsigned long long> g_abWindowDeadlineMs{0};
 static std::atomic<bool> g_adaptiveStance{false};
+static std::atomic<bool> g_adaptiveForceTick{false}; // force immediate evaluation on enable
+static std::atomic<bool> g_abOverrideActive{false}; // when false, follow the game's autoblock flag
+
+// Lightweight sampler for attacker frame flags (AttackProps/HitProps) to drive adaptive stance
+// Returns true if sampled successfully; outputs:
+//   level: 0=None, 1=High, 2=Low, 3=Any
+//   blockable: true if HitProps bit0 is set
+static bool SampleAttackerFrameFlags(int attacker /*1=P1, 2=P2*/, int &level, bool &blockable,
+                                    uint16_t* outAtk=nullptr, uint16_t* outHit=nullptr, uint16_t* outGrd=nullptr,
+                                    uint16_t* outState=nullptr, uint16_t* outFrame=nullptr,
+                                    int* outNextLevel=nullptr, bool* outNextBlockable=nullptr,
+                                    int* outNext2Level=nullptr, bool* outNext2Blockable=nullptr) {
+    // Per-attacker caches to minimize ResolvePointer/reads
+    static uintptr_t s_lastPBase[3]      = {0, 0, 0};
+    static uintptr_t s_lastAnimTab[3]    = {0, 0, 0};
+    static uint16_t  s_lastState[3]      = {0xFFFF, 0xFFFF, 0xFFFF};
+    static uintptr_t s_lastFramesPtr[3]  = {0, 0, 0};
+
+    uintptr_t base = GetEFZBase(); if (!base) return false;
+    uintptr_t pBase = 0; if (attacker == 1) { SafeReadMemory(base + EFZ_BASE_OFFSET_P1, &pBase, sizeof(pBase)); }
+                           else if (attacker == 2) { SafeReadMemory(base + EFZ_BASE_OFFSET_P2, &pBase, sizeof(pBase)); }
+                           else { return false; }
+    if (!pBase) return false;
+    // Resolve anim frames table and frame block with caching
+    uint16_t state = 0, frame = 0; uintptr_t animTab = 0, framesPtr = 0, frameBlock = 0;
+    if (!SafeReadMemory(pBase + MOVE_ID_OFFSET, &state, sizeof(state))) return false;
+    if (!SafeReadMemory(pBase + CURRENT_FRAME_INDEX_OFFSET, &frame, sizeof(frame))) return false;
+    if (!SafeReadMemory(pBase + ANIM_TABLE_OFFSET, &animTab, sizeof(animTab))) return false;
+    if (!animTab) return false;
+
+    // Invalidate cache if base/anim changed
+    if (s_lastPBase[attacker] != pBase || s_lastAnimTab[attacker] != animTab) {
+        s_lastPBase[attacker] = pBase;
+        s_lastAnimTab[attacker] = animTab;
+        s_lastState[attacker] = 0xFFFF;
+        s_lastFramesPtr[attacker] = 0;
+    }
+    if (s_lastState[attacker] != state || s_lastFramesPtr[attacker] == 0) {
+        uintptr_t entryAddr = animTab + (static_cast<uintptr_t>(state) * ANIM_ENTRY_STRIDE) + ANIM_ENTRY_FRAMES_PTR_OFFSET;
+        if (!SafeReadMemory(entryAddr, &framesPtr, sizeof(framesPtr)) || !framesPtr) return false;
+        s_lastState[attacker] = state;
+        s_lastFramesPtr[attacker] = framesPtr;
+    } else {
+        framesPtr = s_lastFramesPtr[attacker];
+    }
+    frameBlock = framesPtr + (static_cast<uintptr_t>(frame) * FRAME_BLOCK_STRIDE);
+    uint16_t atk=0, hit=0, grd=0; if (!SafeReadMemory(frameBlock + FRAME_ATTACK_PROPS_OFFSET, &atk, sizeof(atk))) return false;
+    SafeReadMemory(frameBlock + FRAME_HIT_PROPS_OFFSET, &hit, sizeof(hit));
+    SafeReadMemory(frameBlock + FRAME_GUARD_PROPS_OFFSET, &grd, sizeof(grd));
+    if (outAtk) *outAtk = atk; if (outHit) *outHit = hit; if (outGrd) *outGrd = grd;
+    if (outState) *outState = state; if (outFrame) *outFrame = frame;
+    // Decode
+    bool isHigh = (atk & 0x1) != 0;
+    bool isLow  = (atk & 0x2) != 0;
+    level = isHigh && isLow ? 3 : (isHigh ? 1 : (isLow ? 2 : 0));
+    // Prefer GuardProps presence for practical blockable window
+    blockable = (grd != 0);
+    // If there's a guardable window but no explicit HIGH/LOW bit, treat it as ANY to preserve stance
+    if (level == 0 && blockable) {
+        level = 3; // ANY
+    }
+
+    // Optional: 1-frame lookahead to detect imminent HIGH/LOW to preempt stance switch
+    if (outNextLevel || outNextBlockable || outNext2Level || outNext2Blockable) {
+        int nextLevel = -1; bool nextBlk = false;
+        uintptr_t nextFrameBlock = framesPtr + (static_cast<uintptr_t>(frame + 1) * FRAME_BLOCK_STRIDE);
+        uint16_t nAtk=0, nHit=0, nGrd=0;
+        if (SafeReadMemory(nextFrameBlock + FRAME_ATTACK_PROPS_OFFSET, &nAtk, sizeof(nAtk))) {
+            SafeReadMemory(nextFrameBlock + FRAME_HIT_PROPS_OFFSET, &nHit, sizeof(nHit));
+            SafeReadMemory(nextFrameBlock + FRAME_GUARD_PROPS_OFFSET, &nGrd, sizeof(nGrd));
+            bool nHigh = (nAtk & 0x1) != 0;
+            bool nLow  = (nAtk & 0x2) != 0;
+            nextLevel = nHigh && nLow ? 3 : (nHigh ? 1 : (nLow ? 2 : 0));
+            nextBlk = (nGrd != 0);
+            if (nextLevel == 0 && nextBlk) nextLevel = 3;
+        }
+        int next2Level = -1; bool next2Blk = false;
+        uintptr_t next2FrameBlock = framesPtr + (static_cast<uintptr_t>(frame + 2) * FRAME_BLOCK_STRIDE);
+        uint16_t n2Atk=0, n2Hit=0, n2Grd=0;
+        if (SafeReadMemory(next2FrameBlock + FRAME_ATTACK_PROPS_OFFSET, &n2Atk, sizeof(n2Atk))) {
+            SafeReadMemory(next2FrameBlock + FRAME_HIT_PROPS_OFFSET, &n2Hit, sizeof(n2Hit));
+            SafeReadMemory(next2FrameBlock + FRAME_GUARD_PROPS_OFFSET, &n2Grd, sizeof(n2Grd));
+            bool n2High = (n2Atk & 0x1) != 0;
+            bool n2Low  = (n2Atk & 0x2) != 0;
+            next2Level = n2High && n2Low ? 3 : (n2High ? 1 : (n2Low ? 2 : 0));
+            next2Blk = (n2Grd != 0);
+            if (next2Level == 0 && next2Blk) next2Level = 3;
+        }
+        if (outNextLevel) *outNextLevel = nextLevel;
+        if (outNextBlockable) *outNextBlockable = nextBlk;
+        if (outNext2Level) *outNext2Level = next2Level;
+        if (outNext2Blockable) *outNext2Blockable = next2Blk;
+    }
+    return true;
+}
+
+// Internal: set mode without marking override or forcing baseline writes
+static void SetDummyAutoBlockModeFromSync(int mode) {
+    if (mode < 0) mode = 0; if (mode > 4) mode = 4;
+    // Do not auto-enable adaptive monitoring from deprecated mode; map to All only
+    if (mode == DAB_Adaptive) { mode = DAB_All; }
+    g_dummyAutoBlockMode.store(mode);
+    ResetDummyAutoBlockState();
+}
 
 // Tunables (ms)
 static constexpr unsigned long long AB_DELAY_FIRST_HIT_THEN_OFF_MS = 2000ULL; // 2 seconds
@@ -656,13 +777,11 @@ static constexpr unsigned long long AB_DELAY_AFTER_FIRST_HIT_MS    = 1000ULL; //
 
 void SetDummyAutoBlockMode(int mode) {
     if (mode < 0) mode = 0; if (mode > 4) mode = 4;
-    // Migrate deprecated Adaptive mode to All + adaptive toggle
-    if (mode == DAB_Adaptive) {
-        g_adaptiveStance.store(true);
-        mode = DAB_All; // behave like All while stance is controlled by checkbox
-    }
+    // Migrate deprecated Adaptive mode to All; checkbox now controls monitoring
+    if (mode == DAB_Adaptive) { mode = DAB_All; }
     g_dummyAutoBlockMode.store(mode);
     ResetDummyAutoBlockState();
+    g_abOverrideActive.store(true);
     // Immediate base config for +4936 auto-block and stance
     switch (mode) {
         case DAB_All:
@@ -696,7 +815,13 @@ void ResetDummyAutoBlockState() {
     g_abWindowDeadlineMs.store(0);
 }
 
-void SetAdaptiveStanceEnabled(bool enabled) { g_adaptiveStance.store(enabled); }
+void SetAdaptiveStanceEnabled(bool enabled) {
+    g_adaptiveStance.store(enabled);
+    if (enabled) {
+        // Force the next MonitorDummyAutoBlock pass to evaluate immediately
+        g_adaptiveForceTick.store(true);
+    }
+}
 bool GetAdaptiveStanceEnabled() { return g_adaptiveStance.load(); }
 
 // Helper: read stance/direction fields for P2, and Y positions for attacker(P1)
@@ -716,11 +841,67 @@ static bool WriteP2BlockStance(uint8_t stance) {
     return SafeWriteMemory(p2 + 393, &stance, sizeof(stance));
 }
 
+// Assist: lightly nudge P2 direction to match stance for faster recognition by engine
+// For crouch: set DOWN bit, clear UP; for stand: clear DOWN (leave other bits intact)
+// Assist guard by holding BACK (and optionally DOWN) relative to P2 facing
+// guardLevel: 0=None, 1=High, 2=Low, 3=Any
+static void AssistP2DirectionForStance(uint8_t desiredStance, bool wantGuard, int guardLevel) {
+    uintptr_t base = GetEFZBase(); if (!base) return;
+    uintptr_t p2 = 0; if (!SafeReadMemory(base + EFZ_BASE_OFFSET_P2, &p2, sizeof(p2)) || !p2) return;
+    uint8_t dir = 0; SafeReadMemory(p2 + 392, &dir, sizeof(dir));
+    // Stance vertical assist
+    if (desiredStance == 1) {
+        // crouch
+        dir &= ~INPUT_UP;           // clear UP
+        dir |= INPUT_DOWN;          // set DOWN
+    } else {
+        // stand
+        dir &= ~INPUT_DOWN;         // clear DOWN
+    }
+
+    // Guard horizontal assist: press BACK relative to facing if a guard window is active/imminent
+    if (wantGuard) {
+        bool facingRight = GetPlayerFacingDirection(2); // true = facing right
+        uint8_t backBit = facingRight ? INPUT_LEFT : INPUT_RIGHT;
+        uint8_t fwdBit  = facingRight ? INPUT_RIGHT : INPUT_LEFT;
+        // Clear forward, set back
+        dir &= ~fwdBit;
+        dir |= backBit;
+        // For low guard (or if crouch desired), ensure DOWN is set (down-back)
+        if (guardLevel == 2 || desiredStance == 1) {
+            dir |= INPUT_DOWN;
+            dir &= ~INPUT_UP;
+        }
+    }
+    SafeWriteMemory(p2 + 392, &dir, sizeof(dir));
+}
+
 static bool ReadPositions(double &p1Y, double &p2Y) {
-    uintptr_t base = GetEFZBase(); if (!base) return false;
-    uintptr_t y1 = ResolvePointer(base, EFZ_BASE_OFFSET_P1, YPOS_OFFSET);
-    uintptr_t y2 = ResolvePointer(base, EFZ_BASE_OFFSET_P2, YPOS_OFFSET);
-    return y1 && y2 && SafeReadMemory(y1, &p1Y, sizeof(p1Y)) && SafeReadMemory(y2, &p2Y, sizeof(p2Y));
+    static uintptr_t s_p1YAddr = 0;
+    static uintptr_t s_p2YAddr = 0;
+    static int s_cacheCounter = 0;
+
+    uintptr_t base = GetEFZBase();
+    if (!base) { s_p1YAddr = s_p2YAddr = 0; return false; }
+
+    // Refresh cached addresses occasionally or if missing
+    if (!s_p1YAddr || !s_p2YAddr || (++s_cacheCounter >= 192)) {
+        s_p1YAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P1, YPOS_OFFSET);
+        s_p2YAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P2, YPOS_OFFSET);
+        s_cacheCounter = 0;
+    }
+
+    if (!s_p1YAddr || !s_p2YAddr) return false;
+
+    bool ok1 = SafeReadMemory(s_p1YAddr, &p1Y, sizeof(p1Y));
+    bool ok2 = SafeReadMemory(s_p2YAddr, &p2Y, sizeof(p2Y));
+    if (!ok1 || !ok2) {
+        // Invalidate cache on failure so we’ll resolve next call
+        if (!ok1) s_p1YAddr = 0;
+        if (!ok2) s_p2YAddr = 0;
+        return false;
+    }
+    return true;
 }
 
 // Helper: classify common states by moveID
@@ -746,6 +927,21 @@ static inline bool DidP2JustBlockThisFrame(short prevMoveId, short currMoveId) {
 // Core per-frame monitor; call from frame monitor after move IDs are read
 void MonitorDummyAutoBlock(short p1MoveID, short p2MoveID, short prevP1MoveID, short prevP2MoveID) {
     if (GetCurrentGameMode() != GameMode::Practice) return;
+    // Clear override when we return to Character Select (follow game's flag until user changes)
+    static GamePhase s_lastPhase = GamePhase::Unknown;
+    GamePhase phaseNow = GetCurrentGamePhase();
+    if (phaseNow != s_lastPhase) {
+        if (phaseNow == GamePhase::CharacterSelect) {
+            g_abOverrideActive.store(false);
+            // Sync displayed mode to current game flag
+            uintptr_t gs = 0; if (GetGameStatePtr(gs)) {
+                uint32_t f=0; if (SafeReadMemory(gs + PRACTICE_AUTO_BLOCK_OFFSET, &f, sizeof(f))) {
+                    SetDummyAutoBlockModeFromSync((f!=0) ? DAB_All : DAB_None);
+                }
+            }
+        }
+        s_lastPhase = phaseNow;
+    }
     int mode = g_dummyAutoBlockMode.load();
     // Transition log throttle (5s)
     static unsigned long long s_lastAbLog = 0;
@@ -756,7 +952,8 @@ void MonitorDummyAutoBlock(short p1MoveID, short p2MoveID, short prevP1MoveID, s
             s_lastAbLog = now;
         }
     };
-    // Compute desired autoblock state (single write at end)
+    // Compute desired autoblock state (single write at end when overridden)
+    static bool s_lastAbOn = false; // what we last wrote when overriding
     bool abOn = false;
 
     // First-hit toggles
@@ -807,7 +1004,6 @@ void MonitorDummyAutoBlock(short p1MoveID, short p2MoveID, short prevP1MoveID, s
     }
 
     else if (mode == DAB_All) {
-        // Keep auto-block enabled; no per-frame stance forcing
         abOn = true;
     }
     else if (mode == DAB_None) {
@@ -818,17 +1014,143 @@ void MonitorDummyAutoBlock(short p1MoveID, short p2MoveID, short prevP1MoveID, s
         abOn = false;
     }
 
-    // Apply desired autoblock state once
-    SetPracticeAutoBlockEnabled(abOn);
+    // Apply desired autoblock state only if user override is active or custom modes require it
+    bool overrideEffective = g_abOverrideActive.load() || (mode == DAB_FirstHitThenOff) || (mode == DAB_EnableAfterFirstHit);
+    if (overrideEffective && abOn != s_lastAbOn) {
+        SetPracticeAutoBlockEnabled(abOn);
+        s_lastAbOn = abOn;
+    }
 
-    // Apply adaptive stance only when autoblock is actually ON
-    if (g_adaptiveStance.load() && abOn) {
-        double p1Y = 0.0, p2Y = 0.0;
-        if (ReadPositions(p1Y, p2Y)) {
-            bool attackerAir = (p1Y < 0.0);
-            uint8_t desiredStance = attackerAir ? 0 /*stand*/ : 1 /*crouch*/;
-            WriteP2BlockStance(desiredStance);
-            SetPracticeBlockMode(attackerAir ? 0 : 2);
+    // Watch the actual autoblock flag (+4936) at low frequency (1 Hz) and display overlay on any change
+    static int s_lastAbFlag = -1; // -1 = unknown, otherwise 0/1
+    static unsigned long long s_lastAbFlagCheckMs = 0;
+    unsigned long long nowMs = GetTickCount64();
+    if (nowMs - s_lastAbFlagCheckMs >= 1000ULL) {
+        uintptr_t gsWatch = 0;
+        if (GetGameStatePtr(gsWatch)) {
+            uint32_t flagVal = 0;
+            if (SafeReadMemory(gsWatch + PRACTICE_AUTO_BLOCK_OFFSET, &flagVal, sizeof(flagVal))) {
+                int curFlag = (flagVal != 0) ? 1 : 0;
+                if (s_lastAbFlag == -1) {
+                    // First sample on entering Practice: initialize and sync display to actual flag (no announcement)
+                    s_lastAbFlag = curFlag;
+                    int curMode = g_dummyAutoBlockMode.load();
+                    if (curMode == DAB_All && curFlag == 0) {
+                        SetDummyAutoBlockModeFromSync(DAB_None);
+                        LogOut("[DUMMY_AB] Sync(init): Game autoblock OFF -> mode set to None", true);
+                    } else if (curMode == DAB_None && curFlag == 1) {
+                        SetDummyAutoBlockModeFromSync(DAB_All);
+                        LogOut("[DUMMY_AB] Sync(init): Game autoblock ON -> mode set to All", true);
+                    }
+                } else if (curFlag != s_lastAbFlag) {
+                    // Emit overlay once per actual memory change
+                    DirectDrawHook::AddMessage(curFlag ? "Block: ON" : "Block: OFF",
+                                               "SYSTEM",
+                                               curFlag ? RGB(100, 255, 100) : RGB(255, 255, 100),
+                                               1500,
+                                               0,
+                                               100);
+                    // Keep UI combobox in sync with actual game flag, but only for the simple None/All modes
+                    int curMode = g_dummyAutoBlockMode.load();
+                    if (curMode == DAB_All && curFlag == 0) {
+                        SetDummyAutoBlockModeFromSync(DAB_None);
+                        LogOut("[DUMMY_AB] Sync: Game cleared autoblock -> mode set to None", true);
+                    } else if (curMode == DAB_None && curFlag == 1) {
+                        SetDummyAutoBlockModeFromSync(DAB_All);
+                        LogOut("[DUMMY_AB] Sync: Game enabled autoblock -> mode set to All", true);
+                    }
+                    s_lastAbFlag = curFlag;
+                }
+            }
+        }
+        s_lastAbFlagCheckMs = nowMs;
+    }
+
+    // Apply adaptive stance only when autoblock is ON, with throttling and dedupe
+    // Determine whether autoblock is currently active for adaptive stance gate
+    bool gameFlagOn = false; {
+        uintptr_t gs=0; if (GetGameStatePtr(gs)) { uint32_t f=0; SafeReadMemory(gs + PRACTICE_AUTO_BLOCK_OFFSET, &f, sizeof(f)); gameFlagOn = (f!=0); }
+    }
+    bool activeAb = overrideEffective ? abOn : gameFlagOn;
+    static bool s_prevActiveAb = false;
+    if (g_adaptiveStance.load() && activeAb) {
+        // Gate adaptive stance on P2 actually being AI controlled. If we've forced P2 to human (0) for auto-actions,
+        // we should skip adaptive stance adjustments to avoid log spam and unintended stance overwrites.
+        uintptr_t baseAI = 0; SafeReadMemory(GetEFZBase() + EFZ_BASE_OFFSET_P2, &baseAI, sizeof(baseAI));
+        if (!baseAI) return; // can't evaluate
+        uint32_t aiFlag = 1; SafeReadMemory(baseAI + AI_CONTROL_FLAG_OFFSET, &aiFlag, sizeof(aiFlag));
+        if (aiFlag == 0) {
+            // Suppressed; optional throttled debug
+            static int s_aiGateDbg = 0; if (detailedLogging.load() && (s_aiGateDbg++ & 0x3F) == 0) {
+                LogOut("[ADAPTIVE] Skipping stance logic (P2 under player control)", true);
+            }
+            return;
+        }
+        static unsigned long long s_lastAdaptiveMs = 0;
+        unsigned long long now = GetTickCount64();
+        const unsigned long long ADAPTIVE_INTERVAL_MS = 0ULL; // every frame
+        bool due = (now - s_lastAdaptiveMs >= ADAPTIVE_INTERVAL_MS) || g_adaptiveForceTick.load();
+        if (due) {
+            // Stats/diagnostics sampling (not used for stance): keep per-frame guard decoding for UI
+            int dummyLevel=-1; bool dummyBlk=false; int dummyNL=-1; bool dummyNB=false; int dummyN2L=-1; bool dummyN2B=false;
+            uint16_t atkFlags=0, hitFlags=0, grdFlags=0, st=0, fr=0;
+            SampleAttackerFrameFlags(1, dummyLevel, dummyBlk, &atkFlags, &hitFlags, &grdFlags, &st, &fr, &dummyNL, &dummyNB, &dummyN2L, &dummyN2B);
+
+            // Determine base stance: ground=crouch, air=stand
+            double p1Y=0.0, p2Y=0.0; bool haveCached = TryGetCachedYPositions(p1Y, p2Y, 200);
+            if (!haveCached && ReadPositions(p1Y, p2Y)) {
+                UpdatePositionCache(0.0, p1Y, 0.0, p2Y);
+                haveCached = true;
+            }
+            bool attackerAir = haveCached ? (p1Y < 0.0) : false;
+
+            // Character-specific overrides: certain grounded moves are overheads => stand
+            static int s_p1CharID = -1;
+            static unsigned long long s_lastCharRefresh = 0;
+            if (now - s_lastCharRefresh > 500ULL || s_p1CharID < 0) {
+                uintptr_t base = GetEFZBase();
+                char nameBuf[32] = {0};
+                SafeReadMemory(ResolvePointer(base, EFZ_BASE_OFFSET_P1, CHARACTER_NAME_OFFSET), nameBuf, sizeof(nameBuf)-1);
+                s_p1CharID = CharacterSettings::GetCharacterID(std::string(nameBuf));
+                s_lastCharRefresh = now;
+            }
+
+            uint8_t desiredStance = attackerAir ? 0 : 1; // 0=stand,1=crouch
+            if (!attackerAir && s_p1CharID >= 0) {
+                uintptr_t p1Base = 0; SafeReadMemory(GetEFZBase() + EFZ_BASE_OFFSET_P1, &p1Base, sizeof(p1Base));
+                if (GuardOverrides::IsGroundedOverhead(s_p1CharID, static_cast<int>(st), p1Base)) {
+                    desiredStance = 0;
+                }
+            }
+
+            // Write if changed
+            uint8_t curDir=0, curStance=0;
+            if (ReadP2BlockFields(curDir, curStance)) {
+                if (curStance != desiredStance) {
+                    WriteP2BlockStance(desiredStance);
+                    SetPracticeBlockMode(desiredStance == 0 ? 0 : 2);
+                    if (detailedLogging.load()) {
+                        std::ostringstream os;
+                        os << "[ADAPTIVE] stance change: P2 "
+                           << (curStance==1?"crouch":"stand") << " -> "
+                           << (desiredStance==1?"crouch":"stand")
+                           << " | move=" << st
+                           << " frame=" << fr
+                           << " atk=0x" << std::hex << std::uppercase << atkFlags
+                           << " hit=0x" << hitFlags
+                           << " grd=0x" << grdFlags
+                           << std::dec
+                           << " t=" << GetTickCount64();
+                        LogOut(os.str(), true);
+                    }
+                }
+            } else {
+                WriteP2BlockStance(desiredStance);
+                SetPracticeBlockMode(desiredStance == 0 ? 0 : 2);
+            }
+
+            s_lastAdaptiveMs = now;
+            g_adaptiveForceTick.store(false);
         }
     }
 }

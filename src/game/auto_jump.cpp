@@ -6,7 +6,59 @@
 #include "../include/core/memory.h"
 #include "../include/core/logger.h"
 #include "../include/input/input_motion.h"
+#include "../include/input/immediate_input.h"
 #include <chrono>
+#include <cmath>
+
+// Robust forward-right determination with hysteresis:
+// - Prefer relative X positions (opponent vs self) when separation exceeds a small epsilon
+// - While within epsilon (near overlap/crossover), stick to the last known direction instead of relying on
+//   the facing flag, which can lag a few frames during side swaps.
+static bool ForwardIsRightForPlayer(int p) {
+    // Cache X position addresses to avoid repeated ResolvePointer calls
+    static uintptr_t cachedBase = 0;
+    static uintptr_t xAddr[3] = { 0, 0, 0 }; // [1]=P1, [2]=P2
+    uintptr_t baseNow = GetEFZBase();
+    if (baseNow != 0 && baseNow != cachedBase) {
+        cachedBase = baseNow;
+        xAddr[1] = ResolvePointer(baseNow, EFZ_BASE_OFFSET_P1, XPOS_OFFSET);
+        xAddr[2] = ResolvePointer(baseNow, EFZ_BASE_OFFSET_P2, XPOS_OFFSET);
+    }
+
+    auto getXPos = [&](int player) -> double {
+        double x = 0.0;
+        if (player >= 1 && player <= 2 && xAddr[player]) {
+            SafeReadMemory(xAddr[player], &x, sizeof(double));
+        }
+        return x;
+    };
+
+    static bool s_lastForwardRight[3] = { true, true, true }; // default forward->right
+    static bool s_init[3] = { false, false, false };
+
+    int opp = (p == 1 ? 2 : 1);
+    double selfX = getXPos(p);
+    double oppX = getXPos(opp);
+    double dx = oppX - selfX;
+
+    // Tunable epsilon: EFZ coordinates are in pixels; a small threshold avoids indecision at overlap
+    constexpr double kEpsilon = 2.0; // pixels
+
+    if (std::fabs(dx) >= kEpsilon) {
+        bool fr = dx > 0.0; // forward is toward opponent
+        s_lastForwardRight[p] = fr;
+        s_init[p] = true;
+        return fr;
+    }
+
+    // Ambiguous: if we have a last value, stick with it; otherwise seed with facing flag
+    if (s_init[p]) return s_lastForwardRight[p];
+
+    bool facingRight = GetPlayerFacingDirection(p);
+    s_lastForwardRight[p] = facingRight; // seed
+    s_init[p] = true;
+    return s_lastForwardRight[p];
+}
 
 void ApplyJump(uintptr_t moveIDAddr, int playerNum, int jumpType) {
     // Ignore moveIDAddr parameter - we won't use it anymore
@@ -23,35 +75,7 @@ void ApplyJump(uintptr_t moveIDAddr, int playerNum, int jumpType) {
     std::string jumpTypeName;
     uint8_t inputMask = MOTION_INPUT_UP; // Default to straight jump (UP)
 
-    // Determine direction dynamically; prefer relative position to opponent to avoid a stray backward jump after side switch
-    // Cache X position addresses to avoid repeated ResolvePointer calls
-    static uintptr_t cachedBase = 0;
-    static uintptr_t xAddr[3] = { 0, 0, 0 }; // [1]=P1, [2]=P2
-    {
-        uintptr_t baseNow = GetEFZBase();
-        if (baseNow != 0 && baseNow != cachedBase) {
-            cachedBase = baseNow;
-            xAddr[1] = ResolvePointer(baseNow, EFZ_BASE_OFFSET_P1, XPOS_OFFSET);
-            xAddr[2] = ResolvePointer(baseNow, EFZ_BASE_OFFSET_P2, XPOS_OFFSET);
-        }
-    }
-    auto getXPos = [&](int p) -> double {
-        double x = 0.0;
-        if (p >= 1 && p <= 2 && xAddr[p]) {
-            SafeReadMemory(xAddr[p], &x, sizeof(double));
-        }
-        return x;
-    };
-    auto forwardRightFor = [&](int p) -> bool {
-        int opp = (p == 1 ? 2 : 1);
-        double selfX = getXPos(p);
-        double oppX = getXPos(opp);
-        if (fabs(selfX - oppX) > 0.5) {
-            return oppX > selfX; // forward is toward opponent
-        }
-        // Fallback to facing flag if positions are ambiguous
-        return GetPlayerFacingDirection(p);
-    };
+    // Determine direction using robust forward/right helper
 
     switch (jumpType) {
         case 0: // Straight
@@ -59,7 +83,7 @@ void ApplyJump(uintptr_t moveIDAddr, int playerNum, int jumpType) {
             jumpTypeName = "straight";
             break;
         case 1: // Forward
-            if (forwardRightFor(playerNum)) {
+            if (ForwardIsRightForPlayer(playerNum)) {
                 inputMask = MOTION_INPUT_UP | MOTION_INPUT_RIGHT;
             } else {
                 inputMask = MOTION_INPUT_UP | MOTION_INPUT_LEFT;
@@ -67,7 +91,7 @@ void ApplyJump(uintptr_t moveIDAddr, int playerNum, int jumpType) {
             jumpTypeName = "forward";
             break;
         case 2: // Backward
-            if (forwardRightFor(playerNum)) {
+            if (ForwardIsRightForPlayer(playerNum)) {
                 inputMask = MOTION_INPUT_UP | MOTION_INPUT_LEFT;
             } else {
                 inputMask = MOTION_INPUT_UP | MOTION_INPUT_RIGHT;
@@ -80,10 +104,8 @@ void ApplyJump(uintptr_t moveIDAddr, int playerNum, int jumpType) {
             break;
     }
 
-    // Engage immediate-only manual override; release is handled by MonitorAutoJump timing
-    g_injectImmediateOnly[playerNum].store(true);
-    g_manualInputMask[playerNum].store(inputMask);
-    g_manualInputOverride[playerNum].store(true);
+    // Use centralized 64fps immediate writer
+    ImmediateInput::Set(playerNum, inputMask);
 
     if (shouldLog) {
         LogOut("[AUTO-JUMP] Holding " + jumpTypeName + " jump input for P" +
@@ -126,16 +148,36 @@ bool IsAutoActionActiveForPlayer(int playerNum) {
 
 void MonitorAutoJump() {
     using clock = std::chrono::steady_clock;
+    // We now hold the UP input continuously while enabled; timers retained for compatibility but not required
     static clock::time_point holdUntil[3] = { clock::time_point(), clock::time_point(), clock::time_point() };
     static clock::time_point nextApplyAt[3] = { clock::time_point(), clock::time_point(), clock::time_point() };
 
+    // Landing-edge handling: we must present a neutral frame between jumps so the game sees a new UP press.
+    static bool s_wasGrounded[3] = { true, true, true };
+    static int  s_forceNeutralFrames[3] = { 0, 0, 0 }; // when >0, inject neutral for that many monitor ticks
+
+    // Lightweight grounded check using Y position; cache addresses for speed
+    auto isGrounded = [](int p) -> bool {
+        static uintptr_t s_cachedBase = 0;
+        static uintptr_t s_yAddr[3] = { 0, 0, 0 };
+        uintptr_t baseNow = GetEFZBase();
+        if (baseNow != 0 && baseNow != s_cachedBase) {
+            s_cachedBase = baseNow;
+            s_yAddr[1] = ResolvePointer(baseNow, EFZ_BASE_OFFSET_P1, YPOS_OFFSET);
+            s_yAddr[2] = ResolvePointer(baseNow, EFZ_BASE_OFFSET_P2, YPOS_OFFSET);
+        }
+        double y = 0.0;
+        if (p >= 1 && p <= 2 && s_yAddr[p]) {
+            SafeReadMemory(s_yAddr[p], &y, sizeof(double));
+        }
+        return (y <= 0.1); // grounded when very close to 0
+    };
+
     auto releaseIfOurJump = [](int p) {
-        uint8_t mask = g_manualInputMask[p].load();
+        uint8_t mask = ImmediateInput::GetCurrentDesired(p);
         bool looksLikeJump = (mask & MOTION_INPUT_UP) && ((mask & MOTION_INPUT_BUTTON) == 0);
-        if (g_manualInputOverride[p].load() && g_injectImmediateOnly[p].load() && looksLikeJump) {
-            g_manualInputOverride[p].store(false);
-            g_manualInputMask[p].store(0);
-            g_injectImmediateOnly[p].store(false);
+        if (looksLikeJump) {
+            ImmediateInput::Clear(p);
         }
     };
 
@@ -148,24 +190,8 @@ void MonitorAutoJump() {
         return;
     }
 
-    // Micro-throttle: avoid heavy work more than once every ~8 ms
-    static clock::time_point lastRun = clock::time_point();
+    // Keep a light throttle to ~192 Hz caller; no extra self-throttle necessary
     const auto now = clock::now();
-    if (lastRun != clock::time_point() && (now - lastRun) < std::chrono::milliseconds(8)) {
-        // Still allow releases if our hold expired
-        for (int p = 1; p <= 2; ++p) {
-            if (g_manualInputOverride[p].load() && now >= holdUntil[p]) {
-                uint8_t mask = g_manualInputMask[p].load();
-                bool looksLikeJump = (mask & MOTION_INPUT_UP) && ((mask & MOTION_INPUT_BUTTON) == 0);
-                if (g_injectImmediateOnly[p].load() && looksLikeJump) {
-                    g_manualInputOverride[p].store(false);
-                    g_manualInputMask[p].store(0);
-                    g_injectImmediateOnly[p].store(false);
-                }
-            }
-        }
-        return;
-    }
 
     // We no longer need game addresses here; ApplyJump ignores the address argument.
     uintptr_t moveIDAddr1 = 0;
@@ -175,19 +201,44 @@ void MonitorAutoJump() {
     int direction = jumpDirection.load();
 
     // 'now' already computed above
-    const auto holdDuration = std::chrono::milliseconds(50); // ~3 visual frames
-    const auto reapplyInterval = std::chrono::milliseconds(80); // small spacing to avoid constant hold
+    // Continuous-hold behavior: no periodic reapply gaps
+    const auto holdDuration = std::chrono::milliseconds(1000); // unused in continuous mode
+    const auto reapplyInterval = std::chrono::milliseconds(1000); // unused in continuous mode
 
     // Apply every frame; extend hold window for targeted players
     // P1: prioritize auto-actions; if busy, ensure our manual override is released
     if (targetPlayer == 1 || targetPlayer == 3) {
         if (IsAutoActionActiveForPlayer(1)) {
             releaseIfOurJump(1);
-        } else if (!g_manualInputOverride[1].load()) {
-            if (nextApplyAt[1] == clock::time_point() || now >= nextApplyAt[1]) {
-                ApplyJump(moveIDAddr1, 1, direction);
-                holdUntil[1] = now + holdDuration;
-                nextApplyAt[1] = now + reapplyInterval;
+        } else {
+            // Edge-based auto-jump: neutral on landing, then UP on next tick
+            bool grounded = isGrounded(1);
+            bool landing = grounded && !s_wasGrounded[1];
+            s_wasGrounded[1] = grounded;
+            bool fwdRight = ForwardIsRightForPlayer(1);
+            uint8_t wantMask = MOTION_INPUT_UP | (
+                direction == 0 ? 0 :
+                (direction == 1 ? (fwdRight ? MOTION_INPUT_RIGHT : MOTION_INPUT_LEFT)
+                                 : (fwdRight ? MOTION_INPUT_LEFT  : MOTION_INPUT_RIGHT))
+            );
+            uint8_t curMask = ImmediateInput::GetCurrentDesired(1);
+
+            if (landing) {
+                // Force a brief neutral to create a clean edge
+                s_forceNeutralFrames[1] = 1;
+            }
+
+            if (s_forceNeutralFrames[1] > 0) {
+                // Hold neutral for this tick
+                ImmediateInput::Set(1, 0);
+                s_forceNeutralFrames[1]--;
+            } else {
+                // Apply/refresh desired UP mask
+                bool needApply = curMask != wantMask || curMask == 0;
+                if (needApply) {
+                    ApplyJump(moveIDAddr1, 1, direction);
+                    holdUntil[1] = now + holdDuration;
+                }
             }
         }
     }
@@ -196,29 +247,36 @@ void MonitorAutoJump() {
     if (targetPlayer == 2 || targetPlayer == 3) {
         if (IsAutoActionActiveForPlayer(2)) {
             releaseIfOurJump(2);
-        } else if (!g_manualInputOverride[2].load()) {
-            if (nextApplyAt[2] == clock::time_point() || now >= nextApplyAt[2]) {
-                ApplyJump(moveIDAddr2, 2, direction);
-                holdUntil[2] = now + holdDuration;
-                nextApplyAt[2] = now + reapplyInterval;
+        } else {
+            bool grounded = isGrounded(2);
+            bool landing = grounded && !s_wasGrounded[2];
+            s_wasGrounded[2] = grounded;
+            bool fwdRight = ForwardIsRightForPlayer(2);
+            uint8_t wantMask = MOTION_INPUT_UP | (
+                direction == 0 ? 0 :
+                (direction == 1 ? (fwdRight ? MOTION_INPUT_RIGHT : MOTION_INPUT_LEFT)
+                                 : (fwdRight ? MOTION_INPUT_LEFT  : MOTION_INPUT_RIGHT))
+            );
+            uint8_t curMask = ImmediateInput::GetCurrentDesired(2);
+
+            if (landing) {
+                s_forceNeutralFrames[2] = 1;
+            }
+
+            if (s_forceNeutralFrames[2] > 0) {
+                ImmediateInput::Set(2, 0);
+                s_forceNeutralFrames[2]--;
+            } else {
+                bool needApply = curMask != wantMask || curMask == 0;
+                if (needApply) {
+                    ApplyJump(moveIDAddr2, 2, direction);
+                    holdUntil[2] = now + holdDuration;
+                }
             }
         }
     }
 
-    // Release overrides when their hold windows elapse
-    for (int p = 1; p <= 2; ++p) {
-        if (g_manualInputOverride[p].load() && now >= holdUntil[p]) {
-            // Only release if it's our jump hold
-            uint8_t mask = g_manualInputMask[p].load();
-            bool looksLikeJump = (mask & MOTION_INPUT_UP) && ((mask & MOTION_INPUT_BUTTON) == 0);
-            if (g_injectImmediateOnly[p].load() && looksLikeJump) {
-                g_manualInputOverride[p].store(false);
-                g_manualInputMask[p].store(0);
-                g_injectImmediateOnly[p].store(false);
-            }
-        }
-    }
-    lastRun = now;
+    // In continuous mode we don't auto-release; releases occur when disabled or when auto-action takes over
 }
 
 void AutoJumpReleaseForPlayer(int playerNum) {

@@ -29,3 +29,7 @@ extern int p1FrameCounter;
 extern int p2FrameCounter;
 extern bool p1QueueActive;
 extern bool p2QueueActive;
+
+// Track the last motion type queued for each player (for diagnostics / conditional logic)
+extern int p1CurrentMotionType;
+extern int p2CurrentMotionType;

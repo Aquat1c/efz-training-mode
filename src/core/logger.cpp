@@ -15,12 +15,18 @@
 #include <atomic>
 #include <thread>
 #include "../include/game/game_state.h"
+// For global shutdown flag
+#include "../include/core/globals.h"
  // Add this include
 #include "../include/input/input_motion.h"
+// Snapshot access for light reads
+#include "../include/game/frame_monitor.h"
+#include "../include/game/character_settings.h"
 
 std::mutex g_logMutex;
 std::atomic<bool> detailedTitleMode(false);
 std::atomic<bool> detailedDebugOutput(false);
+std::atomic<bool> g_reducedLogging(true);
 
 // Buffer logs until console is ready so enabling console later shows early logs
 static std::vector<std::string> g_pendingConsoleLogs;
@@ -39,12 +45,28 @@ namespace Logger {
 }
 
 void LogOut(const std::string& msg, bool consoleOutput) {
+    // After online hard-stop or during shutdown, suppress all logging entirely
+    if (g_onlineModeActive.load() || g_isShuttingDown.load()) {
+        return;
+    }
     // Only output to console if requested
     if (consoleOutput) {
         std::lock_guard<std::mutex> lock(g_logMutex);
-        // Buffer until console window exists
+        // Build a timestamp prefix without brackets (so category [..] remains the first bracketed token)
+        auto now = std::chrono::system_clock::now();
+        auto timeT = std::chrono::system_clock::to_time_t(now);
+        tm timeInfo{};
+        localtime_s(&timeInfo, &timeT);
+        auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()) % 1000;
+        char ts[32];
+        std::strftime(ts, sizeof(ts), "%H:%M:%S", &timeInfo);
+        std::ostringstream tsoss; tsoss << ts << "." << std::setw(3) << std::setfill('0') << ms.count() << " ";
+        std::string prefix = tsoss.str();
+        std::string formatted = msg.empty() ? std::string() : (prefix + msg);
+
+        // Buffer until console window exists (store formatted with timestamp)
         if (!g_consoleReady.load() || GetConsoleWindow() == nullptr) {
-            g_pendingConsoleLogs.emplace_back(msg);
+            g_pendingConsoleLogs.emplace_back(formatted);
             return;
         }
         
@@ -54,7 +76,7 @@ void LogOut(const std::string& msg, bool consoleOutput) {
             return;
         }
         
-        // Track message categories for proper spacing
+    // Track message categories for proper spacing
         static std::string lastCategory = "";
         static bool wasEmptyLine = false;
         std::string currentCategory = "OTHER"; // Default
@@ -91,8 +113,53 @@ void LogOut(const std::string& msg, bool consoleOutput) {
             std::cout << std::endl;
         }
         
-        // Output the message
-        std::cout << msg << std::endl;
+        // Reduced logging duplicate suppression & lightweight category throttling
+        if (g_reducedLogging.load()) {
+            // Maintain a tiny ring of last few messages to collapse duplicates within a window
+            struct DupEntry { std::string text; int count; std::chrono::steady_clock::time_point first; };
+            static std::vector<DupEntry> recent; // intentionally small
+            static const size_t kMaxDupEntries = 16;
+            static const auto kWindow = std::chrono::seconds(3); // collapse duplicates over 3s
+            auto nowSteady = std::chrono::steady_clock::now();
+            // Expire old entries
+            recent.erase(std::remove_if(recent.begin(), recent.end(), [&](const DupEntry &e){return (nowSteady - e.first) > kWindow;}), recent.end());
+            // Key off raw msg (without timestamp)
+            bool suppressed = false;
+            for (auto &e : recent) {
+                if (e.text == msg) {
+                    e.count++;
+                    suppressed = true;
+                    break;
+                }
+            }
+            if (!suppressed) {
+                if (recent.size() >= kMaxDupEntries) recent.erase(recent.begin());
+                recent.push_back({msg,1,nowSteady});
+            }
+            // Periodically flush accumulated counts (once per second)
+            static auto lastFlush = nowSteady;
+            if (nowSteady - lastFlush >= std::chrono::seconds(1)) {
+                for (auto &e : recent) {
+                    if (e.count > 1) {
+                        std::cout << prefix << e.text << " (x" << e.count << ")" << std::endl;
+                    } else if (e.count == 1) {
+                        std::cout << prefix << e.text << std::endl;
+                    }
+                }
+                recent.clear();
+                lastFlush = nowSteady;
+            }
+            if (suppressed) {
+                return; // defer actual printing to periodic flush
+            }
+        }
+
+        // Output the message immediately (non-reduced or first occurrence)
+        if (msg.empty()) {
+            std::cout << std::endl;
+        } else {
+            std::cout << formatted << std::endl;
+        }
         
         // Update tracking variables
         wasEmptyLine = msg.empty();
@@ -110,10 +177,7 @@ void InitializeLogging() {
     titleThread.detach();  // Let it run independently
 
     LogOut("EFZ DLL started", true);
-    LogOut("Debug Hotkeys:", true);
-    LogOut("Numpad 8 = Enhanced Dragon Punch Buffer Freeze with diagnostic info", true);
-    LogOut("Numpad 9 = Original Dragon Punch Buffer Freeze", true);
-    LogOut("Numpad 5 = Stop Buffer Freezing", true);
+    // Developer motion-debug hotkey banner removed
 }
 
 short GetCurrentMoveID(int player) {
@@ -138,9 +202,20 @@ void UpdateConsoleTitle() {
     int stableIters = 0;
     
     while (true) {
-        // Check if the console window still exists
-        if (GetConsoleWindow() == nullptr) {
+        // Exit if shutting down
+        if (g_isShuttingDown.load()) break;
+        // Exit immediately when entering online/hard-stopped mode to silence all activity
+        if (g_onlineModeActive.load()) {
+            // Proactively destroy console so no further output appears
+            DestroyDebugConsole();
             break;
+        }
+
+        // If the console window isn't present or visible, back off and try later
+        HWND hWnd = GetConsoleWindow();
+        if (hWnd == nullptr || !IsWindow(hWnd) || !IsWindowVisible(hWnd)) {
+            Sleep(500);
+            continue;
         }
 
         char title[512];
@@ -148,40 +223,60 @@ void UpdateConsoleTitle() {
         
         // Keep the fast update rate as requested - every 250ms
         if (base != 0) {
-            // Cache memory addresses to avoid repeated ResolvePointer calls
-            static uintptr_t cachedAddresses[12] = {0};
-            static int titleCacheCounter = 0;
-            
-            // Refresh cached addresses every 20 iterations (5 seconds)
-            if (titleCacheCounter++ >= 20) {
-                titleCacheCounter = 0;
-                cachedAddresses[0] = ResolvePointer(base, EFZ_BASE_OFFSET_P1, HP_OFFSET);
-                cachedAddresses[1] = ResolvePointer(base, EFZ_BASE_OFFSET_P1, METER_OFFSET);
-                cachedAddresses[2] = ResolvePointer(base, EFZ_BASE_OFFSET_P1, RF_OFFSET);
-                cachedAddresses[3] = ResolvePointer(base, EFZ_BASE_OFFSET_P1, XPOS_OFFSET);
-                cachedAddresses[4] = ResolvePointer(base, EFZ_BASE_OFFSET_P1, YPOS_OFFSET);
-                cachedAddresses[5] = ResolvePointer(base, EFZ_BASE_OFFSET_P1, CHARACTER_NAME_OFFSET);
-                cachedAddresses[6] = ResolvePointer(base, EFZ_BASE_OFFSET_P2, HP_OFFSET);
-                cachedAddresses[7] = ResolvePointer(base, EFZ_BASE_OFFSET_P2, METER_OFFSET);
-                cachedAddresses[8] = ResolvePointer(base, EFZ_BASE_OFFSET_P2, RF_OFFSET);
-                cachedAddresses[9] = ResolvePointer(base, EFZ_BASE_OFFSET_P2, XPOS_OFFSET);
-                cachedAddresses[10] = ResolvePointer(base, EFZ_BASE_OFFSET_P2, YPOS_OFFSET);
-                cachedAddresses[11] = ResolvePointer(base, EFZ_BASE_OFFSET_P2, CHARACTER_NAME_OFFSET);
+            // Prefer snapshot for fast reads
+            FrameSnapshot snap{};
+            bool haveSnap = TryGetLatestSnapshot(snap, 500);
+
+            if (haveSnap) {
+                displayData.hp1 = snap.p1Hp; displayData.hp2 = snap.p2Hp;
+                displayData.meter1 = snap.p1Meter; displayData.meter2 = snap.p2Meter;
+                displayData.rf1 = snap.p1RF; displayData.rf2 = snap.p2RF;
+                displayData.x1 = snap.p1X; displayData.y1 = snap.p1Y;
+                displayData.x2 = snap.p2X; displayData.y2 = snap.p2Y;
+                // Fill char names via ID mapping when available
+                if (snap.p1CharId >= 0) {
+                    auto n1 = CharacterSettings::GetCharacterName(snap.p1CharId);
+                    strncpy_s(displayData.p1CharName, n1.c_str(), sizeof(displayData.p1CharName)-1);
+                }
+                if (snap.p2CharId >= 0) {
+                    auto n2 = CharacterSettings::GetCharacterName(snap.p2CharId);
+                    strncpy_s(displayData.p2CharName, n2.c_str(), sizeof(displayData.p2CharName)-1);
+                }
+            } else {
+                // Minimal fallback: refresh addresses occasionally and read values (including names)
+                static uintptr_t cachedAddresses[12] = {0};
+                static int titleCacheCounter = 0;
+                if (titleCacheCounter++ >= 20) {
+                    titleCacheCounter = 0;
+                    cachedAddresses[0] = ResolvePointer(base, EFZ_BASE_OFFSET_P1, HP_OFFSET);
+                    cachedAddresses[1] = ResolvePointer(base, EFZ_BASE_OFFSET_P1, METER_OFFSET);
+                    cachedAddresses[2] = ResolvePointer(base, EFZ_BASE_OFFSET_P1, RF_OFFSET);
+                    cachedAddresses[3] = ResolvePointer(base, EFZ_BASE_OFFSET_P1, XPOS_OFFSET);
+                    cachedAddresses[4] = ResolvePointer(base, EFZ_BASE_OFFSET_P1, YPOS_OFFSET);
+                    cachedAddresses[5] = ResolvePointer(base, EFZ_BASE_OFFSET_P1, CHARACTER_NAME_OFFSET);
+                    cachedAddresses[6] = ResolvePointer(base, EFZ_BASE_OFFSET_P2, HP_OFFSET);
+                    cachedAddresses[7] = ResolvePointer(base, EFZ_BASE_OFFSET_P2, METER_OFFSET);
+                    cachedAddresses[8] = ResolvePointer(base, EFZ_BASE_OFFSET_P2, RF_OFFSET);
+                    cachedAddresses[9] = ResolvePointer(base, EFZ_BASE_OFFSET_P2, XPOS_OFFSET);
+                    cachedAddresses[10] = ResolvePointer(base, EFZ_BASE_OFFSET_P2, YPOS_OFFSET);
+                    cachedAddresses[11] = ResolvePointer(base, EFZ_BASE_OFFSET_P2, CHARACTER_NAME_OFFSET);
+                }
+                if (cachedAddresses[0]) SafeReadMemory(cachedAddresses[0], &displayData.hp1, sizeof(int));
+                if (cachedAddresses[1]) SafeReadMemory(cachedAddresses[1], &displayData.meter1, sizeof(int));
+                if (cachedAddresses[2]) SafeReadMemory(cachedAddresses[2], &displayData.rf1, sizeof(double));
+                if (cachedAddresses[3]) SafeReadMemory(cachedAddresses[3], &displayData.x1, sizeof(double));
+                if (cachedAddresses[4]) SafeReadMemory(cachedAddresses[4], &displayData.y1, sizeof(double));
+                if (cachedAddresses[5]) SafeReadMemory(cachedAddresses[5], &displayData.p1CharName, sizeof(displayData.p1CharName) - 1);
+                if (cachedAddresses[6]) SafeReadMemory(cachedAddresses[6], &displayData.hp2, sizeof(int));
+                if (cachedAddresses[7]) SafeReadMemory(cachedAddresses[7], &displayData.meter2, sizeof(int));
+                if (cachedAddresses[8]) SafeReadMemory(cachedAddresses[8], &displayData.rf2, sizeof(double));
+                if (cachedAddresses[9]) SafeReadMemory(cachedAddresses[9], &displayData.x2, sizeof(double));
+                if (cachedAddresses[10]) SafeReadMemory(cachedAddresses[10], &displayData.y2, sizeof(double));
+                if (cachedAddresses[11]) SafeReadMemory(cachedAddresses[11], &displayData.p2CharName, sizeof(displayData.p2CharName) - 1);
             }
-            
-            // Read values from cached addresses
-            if (cachedAddresses[0]) SafeReadMemory(cachedAddresses[0], &displayData.hp1, sizeof(int));
-            if (cachedAddresses[1]) SafeReadMemory(cachedAddresses[1], &displayData.meter1, sizeof(int));
-            if (cachedAddresses[2]) SafeReadMemory(cachedAddresses[2], &displayData.rf1, sizeof(double));
-            if (cachedAddresses[3]) SafeReadMemory(cachedAddresses[3], &displayData.x1, sizeof(double));
-            if (cachedAddresses[4]) SafeReadMemory(cachedAddresses[4], &displayData.y1, sizeof(double));
-            if (cachedAddresses[5]) SafeReadMemory(cachedAddresses[5], &displayData.p1CharName, sizeof(displayData.p1CharName) - 1);
-            if (cachedAddresses[6]) SafeReadMemory(cachedAddresses[6], &displayData.hp2, sizeof(int));
-            if (cachedAddresses[7]) SafeReadMemory(cachedAddresses[7], &displayData.meter2, sizeof(int));
-            if (cachedAddresses[8]) SafeReadMemory(cachedAddresses[8], &displayData.rf2, sizeof(double));
-            if (cachedAddresses[9]) SafeReadMemory(cachedAddresses[9], &displayData.x2, sizeof(double));
-            if (cachedAddresses[10]) SafeReadMemory(cachedAddresses[10], &displayData.y2, sizeof(double));
-            if (cachedAddresses[11]) SafeReadMemory(cachedAddresses[11], &displayData.p2CharName, sizeof(displayData.p2CharName) - 1);
+
+            // Feed the shared positions cache
+            UpdatePositionCache(displayData.x1, displayData.y1, displayData.x2, displayData.y2);
         }
         
         // Check if we can access game data or if all values are default/zero
@@ -222,7 +317,7 @@ void UpdateConsoleTitle() {
             if (stableIters > 2) sleepMs = maxSleepMs;
         }
         
-        Sleep(sleepMs);
+    Sleep(sleepMs);
     }
 }
 
@@ -230,7 +325,7 @@ void FlushPendingConsoleLogs() {
     std::lock_guard<std::mutex> lock(g_logMutex);
     if (g_consoleReady.load() && GetConsoleWindow() != nullptr) {
         for (const auto& line : g_pendingConsoleLogs) {
-            // Reuse normal path but bypass re-buffering by writing directly
+            // Already stored with timestamp prefix above; write directly
             if (line.empty()) {
                 std::cout << std::endl;
                 continue;
@@ -263,4 +358,8 @@ void SetConsoleReady(bool ready) {
     if (ready) {
         FlushPendingConsoleLogs();
     }
+}
+
+void SetReducedLogging(bool reduced) {
+    g_reducedLogging.store(reduced);
 }

@@ -19,6 +19,13 @@ namespace ImGuiImpl {
     // NEW: Consolidated render function
     void RenderFrame();
     
+    // Feed pre-NewFrame inputs (XInput aggregation + virtual cursor) and emit debug logs.
+    // Call this after backend NewFrame calls and before ImGui::NewFrame() in the active render loop.
+    void PreNewFrameInputs();
+    
+    // (Diagnostics removed) Placeholder to avoid dangling references if any.
+    inline void PostNewFrameDiagnostics() {}
+    
     // Check if ImGui is initialized
     bool IsInitialized();
     
@@ -30,4 +37,11 @@ namespace ImGuiImpl {
 
     // Handle WndProc messages
     LRESULT WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
+
+    // Provide the current overlay window center (in ImGui screen coordinates)
+    // so recenter actions (middle-click/L3) can snap to the UI instead of the raw client center.
+    void SetOverlayCenter(const ImVec2& center);
+
+    // Request focusing the main overlay window next frame (consumed in RenderGui).
+    bool ConsumeOverlayFocusRequest();
 }

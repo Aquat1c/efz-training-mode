@@ -10,6 +10,7 @@
 
 static std::atomic<GamePhase> g_phaseCache{ GamePhase::Unknown };
 static std::atomic<int> g_phaseStableFrames{0};
+static std::atomic<uint8_t> g_lastRawScreenState{ 255 };
 
 // REVISED: Now takes an optional out parameter.
 GameMode GetCurrentGameMode(uint8_t* rawValueOut) {
@@ -51,6 +52,13 @@ GameMode GetCurrentGameMode(uint8_t* rawValueOut) {
 
     // If the raw byte value has changed, log it to the console.
     if (rawValue != prevRawValue) {
+        // Do not log anything about mode changes after we've entered online mode
+        extern std::atomic<bool> g_onlineModeActive;
+        if (g_onlineModeActive.load()) {
+            prevRawValue = rawValue; // advance to avoid repeated comparisons
+            if (rawValueOut) { *rawValueOut = rawValue; }
+            return currentMode;
+        }
         // --- DETAILED DEBUG LOGGING FOR POINTER RESOLUTION ---
         std::ostringstream oss;
         oss << std::hex << std::uppercase;
@@ -98,97 +106,26 @@ std::string GetGameModeName(GameMode mode) {
     }
 }
 
-// Rolling counters for heuristic
-static std::atomic<int> g_spawnedConfirmFrames{0};
-static std::atomic<int> g_unspawnedConfirmFrames{0};
-
-// Helper: try read an int safely (returns false if addr invalid)
-static bool TryReadInt(uintptr_t addr, int &out) {
-    if (!addr) return false;
-    return SafeReadMemory(addr, &out, sizeof(int));
-}
-
-// Helper: read double (position)
-static bool TryReadDouble(uintptr_t addr, double &out) {
-    if (!addr) return false;
-    return SafeReadMemory(addr, &out, sizeof(double));
-}
-
-// Determine if player structs look “spawned”
-static bool IsPlayerStructSpawned(int playerNum) {
+// Replace screen/phase with direct screen-state byte
+static uint8_t ReadRawScreenState() {
     uintptr_t base = GetEFZBase();
-    if (!base) return false;
-    uintptr_t playerOffset = (playerNum == 1) ? EFZ_BASE_OFFSET_P1 : EFZ_BASE_OFFSET_P2;
-
-    uintptr_t pPtr = 0;
-    if (!SafeReadMemory(base + playerOffset, &pPtr, sizeof(uintptr_t)) || !pPtr)
-        return false;
-
-    // HP
-    int hp = 0;
-    uintptr_t hpAddr = ResolvePointer(base, playerOffset, HP_OFFSET);
-    if (!hpAddr || !SafeReadMemory(hpAddr, &hp, sizeof(int)))
-        return false;
-
-    // MoveID (often 0 initially but address must be valid)
-    short moveID = 0;
-    uintptr_t moveAddr = ResolvePointer(base, playerOffset, MOVE_ID_OFFSET);
-    if (!moveAddr || !SafeReadMemory(moveAddr, &moveID, sizeof(short)))
-        return false;
-
-    // X position (should become non‑zero / change from strict 0 after spawn)
-    double xPos = 0.0;
-    uintptr_t xAddr = ResolvePointer(base, playerOffset, XPOS_OFFSET);
-    if (!xAddr || !TryReadDouble(xAddr, xPos))
-        return false;
-
-    // Heuristic acceptance:
-    //   HP > 0  OR (HP == 0 but moveID != 0) (some intro moves may start with 0 HP very briefly)
-    //   AND xPos not exactly 0.0 for several frames (we tolerate 0 first frames)
-    return (hp > 0 || moveID != 0) && (fabs(xPos) > 0.01);
+    uint8_t v = 255;
+    if (!base) return v;
+    // Direct byte read at efz.exe+0x390148
+    SafeReadMemory(base + EFZ_BASE_OFFSET_SCREEN_STATE, &v, sizeof(v));
+    return v;
 }
 
-bool AreCharactersSpawned() {
-    bool p1 = IsPlayerStructSpawned(1);
-    bool p2 = IsPlayerStructSpawned(2);
-
-    if (p1 && p2) {
-        int c = g_spawnedConfirmFrames.fetch_add(1) + 1;
-        g_unspawnedConfirmFrames.store(0);
-        return c >= 2; // require 2 consecutive confirmations to stabilize
-    } else {
-        g_unspawnedConfirmFrames.fetch_add(1);
-        g_spawnedConfirmFrames.store(0);
-        return false;
-    }
-}
-
-// New: robust character select detection
+// Character Select quick check using the raw byte
 bool IsInCharacterSelectScreen() {
-    GameMode m = GetCurrentGameMode();
-    // Only care for modes that have a pre‑match selection (Arcade / VsCpu / VsHuman)
-    if (!(m == GameMode::Arcade || m == GameMode::VsCpu || m == GameMode::VsHuman))
-        return false;
-
-    // Not spawned for several frames ⇒ treat as character select / loading
-    if (!AreCharactersSpawned()) {
-        if (g_unspawnedConfirmFrames.load() >= 4)  // small debounce
-            return true;
-    }
-    return false;
+    uint8_t st = ReadRawScreenState();
+    return st == 1; // 1 = Character Select
 }
 
-// Improved gameplay state
+// Gameplay state: rely on raw byte 3 (in-game) conservatively
 bool IsInGameplayState() {
-    GameMode mode = GetCurrentGameMode();
-    if (!(mode == GameMode::Practice || mode == GameMode::Arcade ||
-          mode == GameMode::VsCpu    || mode == GameMode::VsHuman))
-        return false;
-
-    if (IsInCharacterSelectScreen())
-        return false;
-
-    return AreCharactersSpawned();
+    uint8_t st = ReadRawScreenState();
+    return st == 3; // 3 = In-game
 }
 
 // Enhanced debug dump: log first 0x40 bytes (byte granularity)
@@ -221,48 +158,40 @@ void DebugDumpScreenState() {
         LogOut("[SCREEN_STATE] " + line, true);
 
     // Summaries
+    uint8_t rawScr = ReadRawScreenState();
     LogOut("[SCREEN_STATE] Mode=" + GetGameModeName(GetCurrentGameMode()) +
-           " Spawned=" + std::to_string(AreCharactersSpawned()) +
+           " ScreenByte=" + std::to_string(rawScr) +
            " CharSelect=" + std::to_string(IsInCharacterSelectScreen()), true);
     LogOut("[SCREEN_STATE] ------------------------------------------", true);
 }
 
 
 
-// Improve spawn heuristic: require both HP > 0 AND move addr readable AND index buffer not all 0 for N frames
-static bool PlayersLikelySpawned() {
-    if (!AreCharactersSpawned()) return false;
-    // Extra guard: read a known runtime-changing value (e.g. MoveID P1)
-    uintptr_t base = GetEFZBase();
-    if (!base) return false;
-    short mv = 0;
-    auto mvAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P1, MOVE_ID_OFFSET);
-    if (!mvAddr || !SafeReadMemory(mvAddr, &mv, sizeof(mv))) return false;
-    return true;
-}
-
 GamePhase GetCurrentGamePhase() {
-    // Determine raw mode first
-    GameMode mode = GetCurrentGameMode();
-    bool spawned = PlayersLikelySpawned();
-
+    // Map efz.exe+0x390148 directly to our phases with minimal debounce
+    uint8_t st = ReadRawScreenState();
+    g_lastRawScreenState.store(st);
     GamePhase derived = GamePhase::Unknown;
 
-    // 1. If no known gameplay modes -> menu-ish
-    if (!(mode == GameMode::Arcade || mode == GameMode::Practice ||
-          mode == GameMode::VsCpu  || mode == GameMode::VsHuman ||
-          mode == GameMode::Replay || mode == GameMode::AutoReplay)) {
-        derived = GamePhase::Menu;
-    } else {
-        // We are in a gameplay-capable mode
-        if (!spawned) {
-            // Distinguish CharacterSelect vs Loading: use unspawned duration
-            int unspawnFrames = g_unspawnedConfirmFrames.load();
-            if (unspawnFrames > 30)       derived = GamePhase::CharacterSelect; // stayed unspawned longer
-            else                          derived = GamePhase::Loading;
-        } else {
+    switch (st) {
+        case 0: // Title
+        case 6: // Settings
+        case 8: // Replay selection
+        case 5: // Win screen (disable features; not relevant for Practice)
+            derived = GamePhase::Menu;
+            break;
+        case 1: // Character Select
+            derived = GamePhase::CharacterSelect;
+            break;
+        case 2: // Loading
+            derived = GamePhase::Loading;
+            break;
+        case 3: // In-game
             derived = GamePhase::Match;
-        }
+            break;
+        default:
+            derived = GamePhase::Unknown;
+            break;
     }
 
     // Debounce: require 3 consecutive frames before committing

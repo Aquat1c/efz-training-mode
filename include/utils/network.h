@@ -17,8 +17,6 @@ enum class OnlineState : int {
 // Function to check if EFZ is in an online match
 bool DetectOnlineMatch();
 
-// Function to handle online match detection and console management
-void MonitorOnlineStatus();
 
 // Optional: read state directly from EfzRevival.dll if available
 OnlineState ReadEfzRevivalOnlineState();

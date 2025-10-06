@@ -26,28 +26,291 @@
 #include <iomanip>
 #include <chrono>
 #include <vector>
+#include <limits>
 #include "../include/game/character_settings.h"
 #include "../include/game/game_state.h"
+#include "../include/input/input_hook.h"          // For RemoveInputHook
+#include "../include/game/collision_hook.h"       // For RemoveCollisionHook
+#include "../3rdparty/minhook/include/MinHook.h"  // For MH_DisableHook(MH_ALL_HOOKS)
+#include "../include/input/immediate_input.h"
 
 #include "../include/utils/bgm_control.h"
+#include "../include/core/globals.h"
 
 std::atomic<bool> g_efzWindowActive(false);
 std::atomic<bool> g_guiActive(false);
 std::atomic<bool> g_onlineModeActive(false);
+// Suppress auto-action clear logging (used for one-shot CS persistent clear)
+std::atomic<bool> g_suppressAutoActionClearLogging(false);
+// Sticky, one-way hard stop once online is confirmed
+static std::atomic<bool> g_hardStoppedOnce{false};
 
 // NEW: Define the manual input override atomics
 std::atomic<bool> g_manualInputOverride[3] = {false, false, false};
 std::atomic<uint8_t> g_manualInputMask[3] = {0, 0, 0};
 std::atomic<bool> g_manualJumpHold[3] = {false, false, false}; // NEW: Definition for jump hold
 
+// Continuous Recovery runtime settings (defaults)
+std::atomic<bool> g_contRecoveryEnabled{false};
+std::atomic<int>  g_contRecoveryApplyTo{3}; // default Both
+std::atomic<int>  g_contRecHpMode{0};
+std::atomic<int>  g_contRecHpCustom{MAX_HP};
+std::atomic<int>  g_contRecMeterMode{0};
+std::atomic<int>  g_contRecMeterCustom{MAX_METER};
+std::atomic<int>  g_contRecRfMode{0};
+std::atomic<double> g_contRecRfCustom{MAX_RF};
+std::atomic<bool> g_contRecRfForceBlueIC{false};
+
+// NEW: Per-player Continuous Recovery runtime settings (defaults OFF)
+std::atomic<bool> g_contRecEnabledP1{false};
+std::atomic<int>  g_contRecHpModeP1{0};
+std::atomic<int>  g_contRecHpCustomP1{MAX_HP};
+std::atomic<int>  g_contRecMeterModeP1{0};
+std::atomic<int>  g_contRecMeterCustomP1{MAX_METER};
+std::atomic<int>  g_contRecRfModeP1{0};
+std::atomic<double> g_contRecRfCustomP1{MAX_RF};
+std::atomic<bool> g_contRecRfForceBlueICP1{false};
+std::atomic<bool> g_contRecEnabledP2{false};
+std::atomic<int>  g_contRecHpModeP2{0};
+std::atomic<int>  g_contRecHpCustomP2{MAX_HP};
+std::atomic<int>  g_contRecMeterModeP2{0};
+std::atomic<int>  g_contRecMeterCustomP2{MAX_METER};
+std::atomic<int>  g_contRecRfModeP2{0};
+std::atomic<double> g_contRecRfCustomP2{MAX_RF};
+std::atomic<bool> g_contRecRfForceBlueICP2{false};
+
 // (Removed restoration of previous trigger states; triggers must always be manually re-enabled after mode changes)
+
+// Reset DisplayData to default values (called on startup and character switches)
+void ResetDisplayDataToDefaults() {
+    // Simply copy the default initialization values
+    displayData.hp1 = 9999;
+    displayData.hp2 = 9999;
+    displayData.meter1 = 3000;
+    displayData.meter2 = 3000;
+    displayData.rf1 = 1000.0;
+    displayData.rf2 = 1000.0;
+    displayData.x1 = 240.0;
+    displayData.y1 = 0.0;
+    displayData.x2 = 400.0;
+    displayData.y2 = 0.0;
+    displayData.autoAirtech = false;
+    displayData.airtechDirection = 0;
+    displayData.airtechDelay = 0;
+    displayData.autoJump = false;
+    displayData.jumpDirection = 0;
+    displayData.jumpTarget = 3;
+    displayData.p1CharName[0] = '\0';
+    displayData.p2CharName[0] = '\0';
+    displayData.p1CharID = 0;
+    displayData.p2CharID = 0;
+    // Ikumi
+    displayData.p1IkumiBlood = 0;
+    displayData.p2IkumiBlood = 0;
+    displayData.p1IkumiGenocide = 0;
+    displayData.p2IkumiGenocide = 0;
+    displayData.p1IkumiLevelGauge = 0;
+    displayData.p2IkumiLevelGauge = 0;
+    displayData.infiniteBloodMode = false;
+    // Misuzu
+    displayData.p1MisuzuFeathers = 0;
+    displayData.p2MisuzuFeathers = 0;
+    displayData.infiniteFeatherMode = false;
+    displayData.p1MisuzuPoisonTimer = 0;
+    displayData.p2MisuzuPoisonTimer = 0;
+    displayData.p1MisuzuPoisonLevel = 0;
+    displayData.p2MisuzuPoisonLevel = 0;
+    displayData.p1MisuzuInfinitePoison = false;
+    displayData.p2MisuzuInfinitePoison = false;
+    // Mishio
+    displayData.p1MishioElement = 0;
+    displayData.p2MishioElement = 0;
+    displayData.p1MishioAwakenedTimer = 0;
+    displayData.p2MishioAwakenedTimer = 0;
+    displayData.infiniteMishioElement = false;
+    displayData.infiniteMishioAwakened = false;
+    // IC
+    displayData.p1BlueIC = false;
+    displayData.p2BlueIC = false;
+    displayData.p2ControlEnabled = false;
+    // Auto-action
+    displayData.autoAction = false;
+    displayData.autoActionType = ACTION_5A;
+    displayData.autoActionCustomID = 200;
+    displayData.autoActionPlayer = 0;
+    displayData.triggerAfterBlock = false;
+    displayData.triggerOnWakeup = false;
+    displayData.triggerAfterHitstun = false;
+    displayData.triggerAfterAirtech = false;
+    displayData.triggerOnRG = false;
+    displayData.delayAfterBlock = 0;
+    displayData.delayOnWakeup = 0;
+    displayData.delayAfterHitstun = 0;
+    displayData.delayAfterAirtech = 0;
+    displayData.delayOnRG = 0;
+    displayData.actionAfterBlock = ACTION_5A;
+    displayData.actionOnWakeup = ACTION_5A;
+    displayData.actionAfterHitstun = ACTION_5A;
+    displayData.actionAfterAirtech = ACTION_5A;
+    displayData.actionOnRG = ACTION_5A;
+    displayData.customAfterBlock = BASE_ATTACK_5A;
+    displayData.customOnWakeup = BASE_ATTACK_5A;
+    displayData.customAfterHitstun = BASE_ATTACK_5A;
+    displayData.customAfterAirtech = BASE_ATTACK_JA;
+    displayData.customOnRG = BASE_ATTACK_5A;
+    displayData.strengthAfterBlock = 0;
+    displayData.strengthOnWakeup = 0;
+    displayData.strengthAfterHitstun = 0;
+    displayData.strengthAfterAirtech = 0;
+    displayData.strengthOnRG = 0;
+    displayData.macroSlotAfterBlock = 0;
+    displayData.macroSlotOnWakeup = 0;
+    displayData.macroSlotAfterHitstun = 0;
+    displayData.macroSlotAfterAirtech = 0;
+    displayData.macroSlotOnRG = 0;
+    // Doppel
+    displayData.p1DoppelEnlightened = false;
+    displayData.p2DoppelEnlightened = false;
+    // Rumi
+    displayData.p1RumiBarehanded = false;
+    displayData.p2RumiBarehanded = false;
+    displayData.p1RumiInfiniteShinai = false;
+    displayData.p2RumiInfiniteShinai = false;
+    displayData.p1RumiKimchiActive = false;
+    displayData.p2RumiKimchiActive = false;
+    displayData.p1RumiKimchiTimer = 0;
+    displayData.p2RumiKimchiTimer = 0;
+    displayData.p1RumiInfiniteKimchi = false;
+    displayData.p2RumiInfiniteKimchi = false;
+    // Akiko
+    displayData.p1AkikoBulletCycle = 0;
+    displayData.p2AkikoBulletCycle = 0;
+    displayData.p1AkikoTimeslowTrigger = 0;
+    displayData.p2AkikoTimeslowTrigger = 0;
+    displayData.p1AkikoFreezeCycle = false;
+    displayData.p2AkikoFreezeCycle = false;
+    displayData.p1AkikoShowCleanHit = false;
+    displayData.p2AkikoShowCleanHit = false;
+    displayData.p1AkikoInfiniteTimeslow = false;
+    displayData.p2AkikoInfiniteTimeslow = false;
+    // Neyuki
+    displayData.p1NeyukiJamCount = 0;
+    displayData.p2NeyukiJamCount = 0;
+    // Mio
+    displayData.p1MioStance = 0;
+    displayData.p2MioStance = 0;
+    displayData.p1MioLockStance = false;
+    displayData.p2MioLockStance = false;
+    // Kano
+    displayData.p1KanoMagic = 0;
+    displayData.p2KanoMagic = 0;
+    displayData.p1KanoLockMagic = false;
+    displayData.p2KanoLockMagic = false;
+    // Mai
+    displayData.p1MaiStatus = 0;
+    displayData.p1MaiGhostTime = 0;
+    displayData.p1MaiGhostCharge = 0;
+    displayData.p1MaiAwakeningTime = 0;
+    displayData.p2MaiStatus = 0;
+    displayData.p2MaiGhostTime = 0;
+    displayData.p2MaiGhostCharge = 0;
+    displayData.p2MaiAwakeningTime = 0;
+    displayData.p1MaiInfiniteGhost = false;
+    displayData.p2MaiInfiniteGhost = false;
+    displayData.p1MaiInfiniteCharge = false;
+    displayData.p2MaiInfiniteCharge = false;
+    displayData.p1MaiInfiniteAwakening = false;
+    displayData.p2MaiInfiniteAwakening = false;
+    displayData.p1MaiNoChargeCD = false;
+    displayData.p2MaiNoChargeCD = false;
+    displayData.p1MaiForceSummon = false;
+    displayData.p2MaiForceSummon = false;
+    displayData.p1MaiForceDespawn = false;
+    displayData.p2MaiForceDespawn = false;
+    displayData.p1MaiAggressiveOverride = false;
+    displayData.p2MaiAggressiveOverride = false;
+    // Continuous Recovery defaults
+    displayData.continuousRecoveryEnabled = false;
+    displayData.continuousRecoveryApplyTo = 3; // Both
+    displayData.recoveryHpMode = 0;
+    displayData.recoveryHpCustom = MAX_HP;
+    displayData.recoveryMeterMode = 0;
+    displayData.recoveryMeterCustom = MAX_METER;
+    displayData.recoveryRfMode = 0;
+    displayData.recoveryRfCustom = MAX_RF;
+    displayData.recoveryRfForceBlueIC = false;
+    // Per-player Continuous Recovery defaults (OFF)
+    displayData.p1ContinuousRecoveryEnabled = false;
+    displayData.p1RecoveryHpMode = 0;
+    displayData.p1RecoveryHpCustom = MAX_HP;
+    displayData.p1RecoveryMeterMode = 0;
+    displayData.p1RecoveryMeterCustom = MAX_METER;
+    displayData.p1RecoveryRfMode = 0;
+    displayData.p1RecoveryRfCustom = MAX_RF;
+    displayData.p1RecoveryRfForceBlueIC = false;
+    displayData.p2ContinuousRecoveryEnabled = false;
+    displayData.p2RecoveryHpMode = 0;
+    displayData.p2RecoveryHpCustom = MAX_HP;
+    displayData.p2RecoveryMeterMode = 0;
+    displayData.p2RecoveryMeterCustom = MAX_METER;
+    displayData.p2RecoveryRfMode = 0;
+    displayData.p2RecoveryRfCustom = MAX_RF;
+    displayData.p2RecoveryRfForceBlueIC = false;
+    displayData.p1MaiGhostX = std::numeric_limits<double>::quiet_NaN();
+    displayData.p1MaiGhostY = std::numeric_limits<double>::quiet_NaN();
+    displayData.p2MaiGhostX = std::numeric_limits<double>::quiet_NaN();
+    displayData.p2MaiGhostY = std::numeric_limits<double>::quiet_NaN();
+    displayData.p1MaiGhostSetX = std::numeric_limits<double>::quiet_NaN();
+    displayData.p1MaiGhostSetY = std::numeric_limits<double>::quiet_NaN();
+    displayData.p2MaiGhostSetX = std::numeric_limits<double>::quiet_NaN();
+    displayData.p2MaiGhostSetY = std::numeric_limits<double>::quiet_NaN();
+    displayData.p1MaiApplyGhostPos = false;
+    displayData.p2MaiApplyGhostPos = false;
+    // Nayuki (Awake)
+    displayData.p1NayukiSnowbunnies = 0;
+    displayData.p2NayukiSnowbunnies = 0;
+    displayData.p1NayukiInfiniteSnow = false;
+    displayData.p2NayukiInfiniteSnow = false;
+    // Minagi
+    displayData.p1MinagiPuppetX = std::numeric_limits<double>::quiet_NaN();
+    displayData.p1MinagiPuppetY = std::numeric_limits<double>::quiet_NaN();
+    displayData.p2MinagiPuppetX = std::numeric_limits<double>::quiet_NaN();
+    displayData.p2MinagiPuppetY = std::numeric_limits<double>::quiet_NaN();
+    displayData.p1MinagiPuppetSetX = std::numeric_limits<double>::quiet_NaN();
+    displayData.p1MinagiPuppetSetY = std::numeric_limits<double>::quiet_NaN();
+    displayData.p2MinagiPuppetSetX = std::numeric_limits<double>::quiet_NaN();
+    displayData.p2MinagiPuppetSetY = std::numeric_limits<double>::quiet_NaN();
+    displayData.p1MinagiApplyPos = false;
+    displayData.p2MinagiApplyPos = false;
+    displayData.minagiConvertNewProjectiles = false;
+    displayData.p1MinagiAlwaysReadied = false;
+    displayData.p2MinagiAlwaysReadied = false;
+    displayData.p1MichiruCurrentId = -1;
+    displayData.p2MichiruCurrentId = -1;
+    displayData.p1MichiruLastX = std::numeric_limits<double>::quiet_NaN();
+    displayData.p1MichiruLastY = std::numeric_limits<double>::quiet_NaN();
+    displayData.p2MichiruLastX = std::numeric_limits<double>::quiet_NaN();
+    displayData.p2MichiruLastY = std::numeric_limits<double>::quiet_NaN();
+    displayData.p1MichiruFrame = -1;
+    displayData.p1MichiruSubframe = -1;
+    displayData.p2MichiruFrame = -1;
+    displayData.p2MichiruSubframe = -1;
+    
+    LogOut("[SYSTEM] DisplayData reset to defaults", true);
+}
 
 // NEW: Add feature management functions
 void EnableFeatures() {
+    if (g_onlineModeActive.load()) return;
     if (g_featuresEnabled.load())
         return;
 
     LogOut("[SYSTEM] Game in valid mode. Enabling patches and overlays.", true);
+    
+    // Reset display data to defaults when entering valid mode
+    ResetDisplayDataToDefaults();
+    // Start centralized immediate input writer (64fps)
+    ImmediateInput::Start();
 
     // Apply patches if the feature is enabled
     if (autoAirtechEnabled.load()) {
@@ -60,7 +323,7 @@ void EnableFeatures() {
     LogOut("[SYSTEM] Triggers remain disabled until manually re-enabled", true);
 
     // Only reinitialize overlays if characters are initialized and we're in a valid game mode
-    if (DirectDrawHook::isHooked && AreCharactersInitialized()) {
+    if (!g_onlineModeActive.load() && DirectDrawHook::isHooked && AreCharactersInitialized()) {
         GameMode currentMode = GetCurrentGameMode();
         if (IsValidGameMode(currentMode)) {
             ReinitializeOverlays();
@@ -90,6 +353,8 @@ void DisableFeatures() {
         return;
     
     LogOut("[SYSTEM] Game left valid mode. Disabling patches and overlays.", true);
+    // Stop immediate input writer
+    ImmediateInput::Stop();
 
     // Stop key monitoring when leaving valid game mode
     if (keyMonitorRunning.load()) {
@@ -99,7 +364,7 @@ void DisableFeatures() {
 
     // Remove any active patches
     RemoveAirtechPatches();
-    CharacterSettings::RemoveCharacterPatches(); // Remove character-specific patches
+    // Character-specific enforcement is inline; nothing to stop explicitly here
 
     // Do NOT save states; we want a hard reset every time
 
@@ -120,12 +385,15 @@ void DisableFeatures() {
     g_statsP2ValuesId = -1;
     g_statsPositionId = -1;
     g_statsMoveIdId = -1;
+    g_statsCleanHitId = -1;
+    g_statsAIFlagsId = -1;
 
     // Also reset trigger/status overlay IDs so they get recreated on next update
     g_TriggerAfterBlockId = -1;
     g_TriggerOnWakeupId = -1;
     g_TriggerAfterHitstunId = -1;
     g_TriggerAfterAirtechId = -1;
+    g_TriggerOnRGId = -1;
     g_AirtechStatusId = -1;
     g_JumpStatusId = -1;
     g_FrameAdvantageId = -1;
@@ -146,11 +414,36 @@ void DisableFeatures() {
     // Key monitoring will be handled separately by ManageKeyMonitoring()
 }
 
-// Cooperatively stop mod activity when entering online play.
-void EnterOnlineMode() {
-    if (g_onlineModeActive.exchange(true)) return; // already active
+// --- Lightweight shared positions cache -------------------------------
+static std::atomic<double> s_cachedP1Y{0.0};
+static std::atomic<double> s_cachedP2Y{0.0};
+static std::atomic<unsigned long long> s_posCacheTickMs{0};
 
-    LogOut("[ONLINE] Entering online mode: disabling mod features and threads", true);
+void UpdatePositionCache(double /*p1X*/, double p1Y, double /*p2X*/, double p2Y) {
+    s_cachedP1Y.store(p1Y, std::memory_order_relaxed);
+    s_cachedP2Y.store(p2Y, std::memory_order_relaxed);
+    s_posCacheTickMs.store(GetTickCount64(), std::memory_order_relaxed);
+}
+
+bool TryGetCachedYPositions(double &p1Y, double &p2Y, unsigned int maxAgeMs) {
+    unsigned long long t = s_posCacheTickMs.load(std::memory_order_relaxed);
+    if (t == 0) return false;
+    unsigned long long now = GetTickCount64();
+    if (now - t > static_cast<unsigned long long>(maxAgeMs)) return false;
+    p1Y = s_cachedP1Y.load(std::memory_order_relaxed);
+    p2Y = s_cachedP2Y.load(std::memory_order_relaxed);
+    return true;
+}
+
+// Cooperatively stop mod activity when entering online play, then hard-stop all hooks/threads.
+void EnterOnlineMode() {
+    // Ensure we only run once
+    bool wasOnline = g_onlineModeActive.exchange(true);
+    if (g_hardStoppedOnce.load()) return;
+
+    LogOut("[ONLINE] Entering online mode: disabling mod features, unhooking, and stopping threads", true);
+    // Stop immediate input writer
+    ImmediateInput::Stop();
 
     // Stop any active buffer/index freezing immediately
     StopBufferFreezing();
@@ -187,12 +480,66 @@ void EnterOnlineMode() {
     }
     DirectDrawHook::ClearAllMessages();
 
-    LogOut("[ONLINE] Mod threads signaled to stop; overlays and features disabled", true);
+    // Proactively destroy the debug console so nothing further prints and stop buffering
+    DestroyDebugConsole();
+    SetConsoleReady(false);
+
+    // --- HARD STOP: Remove hooks and stop rendering ---
+    // 1) Unhook EndScene and any D3D9 overlay work
+    try {
+        DirectDrawHook::ShutdownD3D9();
+    } catch (...) { /* swallow */ }
+
+    // 2) Remove input and collision hooks
+    try {
+        RemoveInputHook();
+    } catch (...) { /* swallow */ }
+    try {
+        RemoveCollisionHook();
+    } catch (...) { /* swallow */ }
+
+    // 3) Disable any remaining MinHook hooks (belt-and-suspenders)
+    // Avoid Uninitialize at runtime; just disable all hooks safely.
+    MH_DisableHook(MH_ALL_HOOKS);
+
+    // 4) Ensure any UI/overlay state is fully cleared
+    try {
+        DirectDrawHook::Shutdown(); // clears message queues as well
+    } catch (...) { /* swallow */ }
+
+    // 5) Prevent any re-initialization attempts for the rest of the process lifetime
+    g_hardStoppedOnce.store(true);
+
+    LogOut("[ONLINE] Hard stop complete: hooks removed, threads parked, overlays cleared", true);
+
+    // Optional: Self-unload the DLL to fully detach from the process once we're safely quiesced
+    // Guard: only if we have a module handle available
+    if (g_hSelfModule) {
+        try {
+            std::thread([]{
+                // Small grace delay to ensure any tail work finishes
+                Sleep(250);
+                HMODULE h = g_hSelfModule;
+                // Use FreeLibraryAndExitThread to safely unload this module from a non-DllMain context
+                FreeLibraryAndExitThread(h, 0);
+            }).detach();
+            LogOut("[ONLINE] Self-unload initiated", true);
+        } catch (...) {
+            // If spawning fails, we simply remain loaded but inert
+            LogOut("[ONLINE] Self-unload spawn failed; remaining parked", true);
+        }
+    }
 }
 
 // Public helper: permanently clear all triggers so they stay disabled until user re-enables
 void ClearAllTriggersPersistently() {
-    LogOut("[SYSTEM] Clearing all triggers persistently (Character Select / forced)", true);
+    static uint64_t s_lastClearTick = 0; // throttle identical spam bursts
+    uint64_t nowTick = GetTickCount64();
+    bool willLogPrimary = (nowTick - s_lastClearTick > 750); // at most ~1 log per 750ms
+    if (willLogPrimary) {
+        LogOut("[SYSTEM] Clearing all triggers persistently (Character Select / forced)", true);
+        s_lastClearTick = nowTick;
+    }
     // Disable toggles immediately so they will NOT be auto-restored
     autoActionEnabled.store(false);
     triggerAfterBlockEnabled.store(false);
@@ -203,14 +550,17 @@ void ClearAllTriggersPersistently() {
     // Also wipe internal delay/cooldown state so nothing fires after returning
     ClearAllAutoActionTriggers();
 
-    // Explicit hard reset message (nothing is saved anymore)
-    LogOut("[SYSTEM] Trigger states hard-reset (no restoration mechanism active)", true);
+    // Explicit hard reset message only if we emitted the primary (avoid paired duplicates)
+    if (willLogPrimary) {
+        LogOut("[SYSTEM] Trigger states hard-reset (no restoration mechanism active)", true);
+    }
 
     // Remove any trigger overlay lines now
     if (g_TriggerAfterBlockId != -1) { DirectDrawHook::RemovePermanentMessage(g_TriggerAfterBlockId); g_TriggerAfterBlockId = -1; }
     if (g_TriggerOnWakeupId != -1) { DirectDrawHook::RemovePermanentMessage(g_TriggerOnWakeupId); g_TriggerOnWakeupId = -1; }
     if (g_TriggerAfterHitstunId != -1) { DirectDrawHook::RemovePermanentMessage(g_TriggerAfterHitstunId); g_TriggerAfterHitstunId = -1; }
     if (g_TriggerAfterAirtechId != -1) { DirectDrawHook::RemovePermanentMessage(g_TriggerAfterAirtechId); g_TriggerAfterAirtechId = -1; }
+    if (g_TriggerOnRGId != -1) { DirectDrawHook::RemovePermanentMessage(g_TriggerOnRGId); g_TriggerOnRGId = -1; }
 }
 
 
@@ -271,44 +621,7 @@ std::atomic<int> jumpDirection(0);            // 0=straight, 1=forward, 2=backwa
 std::atomic<bool> p1Jumping(false);
 std::atomic<bool> p2Jumping(false);
 std::atomic<int> jumpTarget(3);
-DisplayData displayData = {
-    9999, 9999,         // hp1, hp2
-    3000, 3000,         // meter1, meter2
-    1000.0, 1000.0,     // rf1, rf2
-    240.0, 0.0,         // x1, y1
-    400.0, 0.0,         // x2, y2
-    false,              // autoAirtech
-    0,                  // airtechDirection
-    0,                  // airtechDelay
-    false,              // autoJump
-    0,                  // jumpDirection
-    3,                  // jumpTarget
-    "",                 // p1CharName
-    "",                 // p2CharName
-    0,                  // p1CharID
-    0,                  // p2CharID
-    0, 0, 0, 0,         // Ikumi settings
-    false,              // infiniteBloodMode
-    0, 0,               // Misuzu settings
-    false,              // infiniteFeatherMode
-    0, 0,               // Mishio element (P1,P2)
-    0, 0,               // Mishio awakened timer (P1,P2)
-    false,              // infiniteMishioElement
-    false,              // infiniteMishioAwakened
-    false, false,       // Blue IC toggles
-    false,              // NEW: p2ControlEnabled
-    false,              // autoAction
-    ACTION_5A,          // autoActionType
-    200,                // autoActionCustomID
-    0,                  // autoActionPlayer
-    // ... rest of initialization
-    false, false,       // p1DoppelEnlightened, p2DoppelEnlightened
-    false, false,       // p1RumiBarehanded, p2RumiBarehanded
-    false, false,       // p1RumiInfiniteShinai, p2RumiInfiniteShinai
-    false, false,       // p1RumiKimchiActive, p2RumiKimchiActive
-    0, 0,               // p1RumiKimchiTimer, p2RumiKimchiTimer
-    false, false        // p1RumiInfiniteKimchi, p2RumiInfiniteKimchi
-};
+DisplayData displayData{};
 
 // Initialize key bindings with default values
 KeyBindings detectedBindings = {
@@ -333,6 +646,15 @@ int g_statsP1ValuesId = -1;
 int g_statsP2ValuesId = -1;
 int g_statsPositionId = -1;
 int g_statsMoveIdId = -1;
+int g_statsCleanHitId = -1;
+int g_statsNayukiId = -1;
+int g_statsMisuzuId = -1;
+int g_statsMishioId = -1;
+int g_statsRumiId = -1;
+int g_statsIkumiId = -1;
+int g_statsMaiId = -1;
+int g_statsMinagiId = -1;
+int g_statsAIFlagsId = -1; // new: AI control flags line in stats overlay
 
 // Auto-action settings - replace single trigger with individual triggers
 std::atomic<bool> autoActionEnabled(false);
@@ -345,12 +667,14 @@ std::atomic<bool> triggerAfterBlockEnabled(false);
 std::atomic<bool> triggerOnWakeupEnabled(false);
 std::atomic<bool> triggerAfterHitstunEnabled(false);
 std::atomic<bool> triggerAfterAirtechEnabled(false);
+std::atomic<bool> triggerOnRGEnabled(false);
 
 // Delay settings (in visual frames)
 std::atomic<int> triggerAfterBlockDelay(DEFAULT_TRIGGER_DELAY);
 std::atomic<int> triggerOnWakeupDelay(DEFAULT_TRIGGER_DELAY);
 std::atomic<int> triggerAfterHitstunDelay(DEFAULT_TRIGGER_DELAY);
 std::atomic<int> triggerAfterAirtechDelay(DEFAULT_TRIGGER_DELAY);
+std::atomic<int> triggerOnRGDelay(DEFAULT_TRIGGER_DELAY);
 
 // Auto-airtech delay support
 std::atomic<int> autoAirtechDelay(0); // Default to instant activation
@@ -363,18 +687,42 @@ std::atomic<int> triggerAfterBlockAction(ACTION_5A);
 std::atomic<int> triggerOnWakeupAction(ACTION_5A);
 std::atomic<int> triggerAfterHitstunAction(ACTION_5A);
 std::atomic<int> triggerAfterAirtechAction(ACTION_5A);
+std::atomic<int> triggerOnRGAction(ACTION_5A);
+
+// Forward dash follow-up selection (0=None, 1=5A,2=5B,3=5C,4=2A,5=2B,6=2C)
+std::atomic<int> forwardDashFollowup(0);
+// 0 = post-dash injection (existing behavior), 1 = dash-normal timing (inject during dash state window)
+std::atomic<bool> forwardDashFollowupDashMode(false);
 
 // Custom action IDs for each trigger
-std::atomic<int> triggerAfterBlockCustomID(BASE_ATTACK_5A);
-std::atomic<int> triggerOnWakeupCustomID(BASE_ATTACK_5A);
-std::atomic<int> triggerAfterHitstunCustomID(BASE_ATTACK_5A);
-std::atomic<int> triggerAfterAirtechCustomID(BASE_ATTACK_JA);  // Default to jumping A for airtech
+std::atomic<int> triggerAfterBlockCustomID{ (int)BASE_ATTACK_5A };
+std::atomic<int> triggerOnWakeupCustomID{ (int)BASE_ATTACK_5A };
+std::atomic<int> triggerAfterHitstunCustomID{ (int)BASE_ATTACK_5A };
+std::atomic<int> triggerAfterAirtechCustomID{ (int)BASE_ATTACK_JA };  // Default to jumping A for airtech
+std::atomic<int> triggerOnRGCustomID{ (int)BASE_ATTACK_5A };
 
 // Individual strength settings (0=A, 1=B, 2=C)
 std::atomic<int> triggerAfterBlockStrength(0);
 std::atomic<int> triggerOnWakeupStrength(0);
 std::atomic<int> triggerAfterHitstunStrength(0);
 std::atomic<int> triggerAfterAirtechStrength(0);
+std::atomic<int> triggerOnRGStrength(0);
+
+// Per-trigger macro slot selections (0=None, 1..MaxSlots)
+std::atomic<int> triggerAfterBlockMacroSlot{ 0 };
+std::atomic<int> triggerOnWakeupMacroSlot{ 0 };
+std::atomic<int> triggerAfterHitstunMacroSlot{ 0 };
+std::atomic<int> triggerAfterAirtechMacroSlot{ 0 };
+std::atomic<int> triggerOnRGMacroSlot{ 0 };
+
+// Debug/experimental: allow buffering (pre-freeze) of wakeup specials/supers/dashes instead of f1 injection
+std::atomic<bool> g_wakeBufferingEnabled{false};
+
+// Global toggle: enable/disable Counter RG early-restore behavior (default OFF)
+std::atomic<bool> g_counterRGEnabled{false};
+
+// UI: gate for the regular Frame Advantage overlay (default OFF)
+std::atomic<bool> g_showFrameAdvantageOverlay{false};
 
 // Deep frame advantage instrumentation toggle
 std::atomic<bool> g_deepFrameAdvDebug{false};
@@ -420,6 +768,7 @@ bool IsActionable(short moveID) {
                        IsAirtech(moveID) || 
                        IsGroundtech(moveID) ||
                        IsFrozen(moveID) ||
+                       IsRecoilGuard(moveID) ||
                        moveID == STAND_GUARD_ID || 
                        moveID == CROUCH_GUARD_ID || 
                        moveID == AIR_GUARD_ID);
@@ -448,10 +797,20 @@ bool IsBlockstun(short moveID) {
         return true;
     }
     
-    // Check the range that includes standing blockstun states
+    // Check the range that includes many standing blockstun states BUT explicitly
+    // exclude dash related IDs (forward/back dash start & recovery + sentinel) so the
+    // auto-action dash follow-up & restore logic does not treat active dashes as stun.
     if (moveID == 150 || moveID == 152 || 
         (moveID >= 140 && moveID <= 149) ||
         (moveID >= 153 && moveID <= 165)) {
+        // Forward/back dash IDs must not be blockstun.
+        if (moveID == FORWARD_DASH_START_ID ||
+            moveID == FORWARD_DASH_RECOVERY_ID ||
+            moveID == FORWARD_DASH_RECOVERY_SENTINEL_ID ||
+            moveID == BACKWARD_DASH_START_ID ||
+            moveID == BACKWARD_DASH_RECOVERY_ID) {
+            return false; // explicitly exclude
+        }
         return true;
     }
     
@@ -766,6 +1125,7 @@ HWND FindEFZWindow() {
 }
 
 void UpdateWindowActiveState() {
+    if (g_onlineModeActive.load()) return;
     HWND activeWindow = GetForegroundWindow();
     HWND efzWindow = FindEFZWindow();
     
@@ -791,6 +1151,7 @@ void UpdateWindowActiveState() {
 
 // Separate function to manage key monitoring based on window focus
 void ManageKeyMonitoring() {
+    if (g_onlineModeActive.load()) { if (keyMonitorRunning.load()) keyMonitorRunning.store(false); return; }
     bool currentWindowActive = g_efzWindowActive.load();
     bool currentFeaturesEnabled = g_featuresEnabled.load();
     

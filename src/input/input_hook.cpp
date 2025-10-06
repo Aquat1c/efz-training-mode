@@ -8,11 +8,15 @@
 #include "../3rdparty/minhook/include/MinHook.h"
 #include "../include/game/practice_patch.h"
 #include "../include/input/input_buffer.h" // for g_bufferFreezingActive
+#include "../include/input/immediate_input.h"
+#include "../include/input/injection_control.h"
 #include <windows.h>
 #include <vector>
 #include <atomic>
 #include <sstream>
 #include <iomanip>
+#include <chrono>
+#include "../include/input/immediate_input.h"
 
 // Local helper to format a single byte as two-digit hex (uppercase)
 static std::string FormatHexByte(uint8_t value) {
@@ -22,6 +26,15 @@ static std::string FormatHexByte(uint8_t value) {
 }
 // Add this static variable to track the previous frame's button mask for edge detection.
 static uint8_t g_lastInjectedMask[3] = {0, 0, 0}; // Index 0 unused, 1 for P1, 2 for P2
+// Track whether we were bypassing original (buffered injection) last frame per player.
+static bool g_wasBypassBuffered[3] = { false, false, false };
+
+// Global control to force authoritative buffered injection (macro playback, etc.)
+std::atomic<bool> g_forceBypass[3] = { false, false, false };
+
+// Poll override: when active, our poll hook returns this mask instead of device state (index 0 unused).
+std::atomic<bool> g_pollOverrideActive[3] = { false, false, false };
+std::atomic<uint8_t> g_pollOverrideMask[3] = { 0, 0, 0 };
 
 // Function pointer for the original game function we are hooking.
 typedef int(__thiscall* tProcessCharacterInput)(int characterPtr);
@@ -31,6 +44,25 @@ tProcessCharacterInput oProcessCharacterInput = nullptr;
 // This is the entry point for a character's input processing for the frame.
 // CORRECTED ADDRESS: 0x411BE0 -> relative offset 0x11BE0
 const uintptr_t PROCESS_INPUTS_FUNC_OFFSET = 0x11BE0;
+
+// Hook: pollPlayerInputState(inputManager, playerIndex) → returns 8-bit unified mask
+// RVA from efz.exe base: 0x0040CD00 → offset 0x0CD00
+typedef int(__thiscall* tPollPlayerInputState)(int inputManagerPtr, unsigned int playerIndex);
+static tPollPlayerInputState oPollPlayerInputState = nullptr;
+static const uintptr_t POLL_INPUT_STATE_FUNC_OFFSET = 0x0CD00;
+
+// Our poll hook. Use __fastcall to match __thiscall trampoline signature.
+static int __fastcall HookedPollPlayerInputState(int inputManagerPtr, int /*edx*/, unsigned int playerIndex)
+{
+    // Engine uses 0 for P1 and 1 for P2; our globals use 1=P1, 2=P2.
+    unsigned int idx = (playerIndex <= 1) ? (playerIndex + 1) : 0;
+    if (idx <= 2) {
+        if (g_pollOverrideActive[idx].load(std::memory_order_relaxed)) {
+            return static_cast<int>(g_pollOverrideMask[idx].load(std::memory_order_relaxed));
+        }
+    }
+    return oPollPlayerInputState ? oPollPlayerInputState(inputManagerPtr, playerIndex) : 0;
+}
 
 // Our custom function that will be called instead of the original.
 // We use __fastcall for __thiscall hooks from MinHook.
@@ -58,7 +90,16 @@ int __fastcall HookedProcessCharacterInput(int characterPtr, int edx) {
         int freezeOwner = g_activeFreezePlayer.load();
         if (freezeOwner == playerNum || freezeOwner == 0) {
             if (freezeOwner == playerNum) {
-                LogOut(std::string("[INPUT_HOOK] Skipping injection for P") + std::to_string(playerNum) + " due to active buffer-freeze (owner=P" + std::to_string(freezeOwner) + ")", detailedLogging.load());
+                // Throttle this diagnostic to avoid spamming every frame while freeze is active
+                static std::chrono::steady_clock::time_point s_lastSkipLogAt[3] = { {}, {}, {} };
+                auto now = std::chrono::steady_clock::now();
+                bool timeOk = (s_lastSkipLogAt[playerNum].time_since_epoch().count() == 0) ||
+                              ((now - s_lastSkipLogAt[playerNum]) >= std::chrono::milliseconds(250));
+                if (detailedLogging.load() && timeOk) {
+                    LogOut(std::string("[INPUT_HOOK] Skipping injection for P") + std::to_string(playerNum) +
+                           " due to active buffer-freeze (owner=P" + std::to_string(freezeOwner) + ")", true);
+                    s_lastSkipLogAt[playerNum] = now;
+                }
             }
             g_lastInjectedMask[playerNum] = 0;
             return oProcessCharacterInput(characterPtr);
@@ -68,7 +109,7 @@ int __fastcall HookedProcessCharacterInput(int characterPtr, int edx) {
     // REVERTED LOGIC: The queue system now handles all injection states.
     bool shouldInject = false;
     if (playerNum > 0) {
-     if (g_manualInputOverride[playerNum].load()) {
+        if (g_manualInputOverride[playerNum].load()) {
             shouldInject = true;
         } else if (playerNum == 1 && p1QueueActive) {
             shouldInject = true;
@@ -88,29 +129,88 @@ int __fastcall HookedProcessCharacterInput(int characterPtr, int edx) {
                 currentMask = queue[queueIndex].inputMask;
             }
         }
-     if (g_lastInjectedMask[playerNum] != currentMask) {
-         static std::chrono::steady_clock::time_point lastLogAt[3] = { {}, {}, {} };
-         auto now = std::chrono::steady_clock::now();
-         bool timeOk = (lastLogAt[playerNum].time_since_epoch().count() == 0) || ((now - lastLogAt[playerNum]) >= std::chrono::seconds(2));
-         if (detailedLogging.load() && timeOk) {
-             LogOut(std::string("[INPUT_HOOK] Injecting for P") + std::to_string(playerNum) + 
-                 " mask=0x" + FormatHexByte(currentMask), true);
-             lastLogAt[playerNum] = now;
-         }
-     }
-     WritePlayerInputImmediate(playerNum, currentMask);
-        // Optional: skip buffer write if immediate-only mode is requested (e.g., auto airtech)
-        if (!g_injectImmediateOnly[playerNum].load()) {
-            WritePlayerInputToBuffer(playerNum, currentMask);
+        if (g_lastInjectedMask[playerNum] != currentMask) {
+            static std::chrono::steady_clock::time_point lastLogAt[3] = { {}, {}, {} };
+            auto now = std::chrono::steady_clock::now();
+            bool timeOk = (lastLogAt[playerNum].time_since_epoch().count() == 0) || ((now - lastLogAt[playerNum]) >= std::chrono::seconds(2));
+            if (detailedLogging.load() && timeOk) {
+                LogOut(std::string("[INPUT_HOOK] Injecting for P") + std::to_string(playerNum) +
+                       " mask=0x" + FormatHexByte(currentMask) +
+                       (g_injectImmediateOnly[playerNum].load() ? " (immediate-only)" : " (buffered)"), true);
+                lastLogAt[playerNum] = now;
+            }
         }
-        g_lastInjectedMask[playerNum] = currentMask;
-        return 0;
+
+        // Split behavior based on injection mode:
+        //  - immediate-only: call original first so the game updates its own state, then override immediate regs.
+        //  - buffered (queue/manual hold): bypass original to avoid buffer double-advance and write both immediate+buffer.
+        // If forced bypass is enabled, always perform authoritative buffered injection.
+        if (g_forceBypass[playerNum].load() || !g_injectImmediateOnly[playerNum].load()) {
+            // Authoritative buffered injection: bypass original.
+            WritePlayerInputImmediate(playerNum, currentMask);
+            
+            // CRITICAL FIX: Skip buffer writes for dash motions - they're written all at once when queued.
+            // Frame-by-frame writes are too slow and get contaminated by neutral inputs from the game.
+            int currentMotion = (playerNum == 1) ? p1CurrentMotionType : p2CurrentMotionType;
+            bool isDashMotion = (currentMotion == MOTION_FORWARD_DASH || currentMotion == MOTION_BACK_DASH);
+            if (!isDashMotion) {
+                WritePlayerInputToBuffer(playerNum, currentMask);
+            }
+            
+            g_lastInjectedMask[playerNum] = currentMask;
+            g_wasBypassBuffered[playerNum] = true;
+            return 0;
+        } else {
+            // For immediate-only, write before AND after calling the game's processor.
+            // Some parts of the original function can overwrite immediate registers mid-frame.
+            // Pre-write ensures the game reads our state; post-write stabilizes the final state for this tick.
+            WritePlayerInputImmediate(playerNum, currentMask);
+            int ret = oProcessCharacterInput(characterPtr);
+            WritePlayerInputImmediate(playerNum, currentMask);
+            g_lastInjectedMask[playerNum] = currentMask;
+            g_wasBypassBuffered[playerNum] = false;
+            return ret;
+        }
     } 
     
+    // If no manual/queue injection is active, enforce the centralized immediate writer's desired mask
+    // so that short presses/holds from ImmediateInput are not lost if the game overwrites registers.
+    // We write before calling the game's processor (so it can see inputs this frame) and once more
+    // after (to guard against late overwrites inside the function).
+    {
+        static uint8_t s_lastDesired[3] = {0, 0, 0};
+        uint8_t desired = ImmediateInput::GetCurrentDesired(playerNum);
+        bool haveDesired = (desired != 0) || (s_lastDesired[playerNum] != 0);
+        if (haveDesired) {
+            // Pre-write desired state
+            WritePlayerInputImmediate(playerNum, desired);
+            int ret = oProcessCharacterInput(characterPtr);
+            // Post-write to ensure final state for this tick
+            WritePlayerInputImmediate(playerNum, desired);
+            s_lastDesired[playerNum] = desired;
+            g_lastInjectedMask[playerNum] = desired;
+            g_wasBypassBuffered[playerNum] = false;
+            return ret;
+        }
+    }
+    
     // --- NORMAL MODE ---
-    // No input is queued for this player. Let the game run its original logic.
-    // Reset the last injected mask for this player to ensure a clean state on the next injection.
-    g_lastInjectedMask[playerNum] = 0;
+    // No input is queued for this player.
+    // If we were bypassing last frame (buffered injection), force a one-time neutral clear to avoid latched immediate state.
+    if (g_wasBypassBuffered[playerNum]) {
+        WritePlayerInputImmediate(playerNum, 0);
+        g_wasBypassBuffered[playerNum] = false;
+    }
+    // If the immediate input service has a desired mask, apply it just before original processing
+    // so the game sees the current immediate inputs this frame (no buffer writes here).
+    uint8_t desired = ImmediateInput::GetCurrentDesired(playerNum);
+    if (desired != 0) {
+        WritePlayerInputImmediate(playerNum, desired);
+        g_lastInjectedMask[playerNum] = desired;
+    } else {
+        // Reset the last injected mask for this player to ensure a clean state on the next injection.
+        g_lastInjectedMask[playerNum] = 0;
+    }
     return oProcessCharacterInput(characterPtr);
 }
 
@@ -123,30 +223,52 @@ void InstallInputHook() {
 
     // The actual address in memory is the game's base + the relative offset.
     uintptr_t targetAddr = base + PROCESS_INPUTS_FUNC_OFFSET;
+    uintptr_t pollAddr   = base + POLL_INPUT_STATE_FUNC_OFFSET;
 
     // REMOVED: MH_Initialize() is now called globally in dllmain.cpp
 
-    // Create the hook.
+    // Create the hooks.
     if (MH_CreateHook((LPVOID)targetAddr, &HookedProcessCharacterInput, (LPVOID*)&oProcessCharacterInput) != MH_OK) {
         LogOut("[INPUT_HOOK] Failed to create hook at address " + FormatHexAddress(targetAddr), true);
         return;
     }
 
-    // Enable the hook.
-    if (MH_EnableHook((LPVOID)targetAddr) != MH_OK) {
-        LogOut("[INPUT_HOOK] Failed to enable hook.", true);
+    if (MH_CreateHook((LPVOID)pollAddr, &HookedPollPlayerInputState, (LPVOID*)&oPollPlayerInputState) != MH_OK) {
+        LogOut("[INPUT_HOOK] Failed to create poll hook at address " + FormatHexAddress(pollAddr), true);
+        // Clean up previously created hook to avoid partial state
+        MH_RemoveHook((LPVOID)targetAddr);
         return;
     }
 
-    LogOut("[INPUT_HOOK] Successfully hooked game's input processing function at " + FormatHexAddress(targetAddr), true);
+    // Enable the hooks.
+    if (MH_EnableHook((LPVOID)targetAddr) != MH_OK) {
+        LogOut("[INPUT_HOOK] Failed to enable hook.", true);
+        MH_RemoveHook((LPVOID)targetAddr);
+        MH_RemoveHook((LPVOID)pollAddr);
+        return;
+    }
+
+    if (MH_EnableHook((LPVOID)pollAddr) != MH_OK) {
+        LogOut("[INPUT_HOOK] Failed to enable poll hook.", true);
+        MH_DisableHook((LPVOID)targetAddr);
+        MH_RemoveHook((LPVOID)targetAddr);
+        MH_RemoveHook((LPVOID)pollAddr);
+        return;
+    }
+
+    LogOut("[INPUT_HOOK] Hooked processCharacterInput at " + FormatHexAddress(targetAddr), true);
+    LogOut("[INPUT_HOOK] Hooked pollPlayerInputState at " + FormatHexAddress(pollAddr), true);
 }
 
 void RemoveInputHook() {
     uintptr_t base = GetEFZBase();
     if (base) {
         uintptr_t targetAddr = base + PROCESS_INPUTS_FUNC_OFFSET;
+        uintptr_t pollAddr   = base + POLL_INPUT_STATE_FUNC_OFFSET;
         MH_DisableHook((LPVOID)targetAddr);
         MH_RemoveHook((LPVOID)targetAddr); // Also explicitly remove the hook
+        MH_DisableHook((LPVOID)pollAddr);
+        MH_RemoveHook((LPVOID)pollAddr);
     }
     // REMOVED: MH_Uninitialize() is now called globally in dllmain.cpp
     LogOut("[INPUT_HOOK] Input hook removed.", true);

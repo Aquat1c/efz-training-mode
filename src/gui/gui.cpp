@@ -92,11 +92,20 @@ void OpenMenu() {
             displayData.triggerOnWakeup = triggerOnWakeupEnabled.load();
             displayData.triggerAfterHitstun = triggerAfterHitstunEnabled.load();
             displayData.triggerAfterAirtech = triggerAfterAirtechEnabled.load();
+            displayData.triggerOnRG = triggerOnRGEnabled.load();
             
             displayData.delayAfterBlock = triggerAfterBlockDelay.load();
             displayData.delayOnWakeup = triggerOnWakeupDelay.load();
             displayData.delayAfterHitstun = triggerAfterHitstunDelay.load();
             displayData.delayAfterAirtech = triggerAfterAirtechDelay.load();
+            displayData.delayOnRG = triggerOnRGDelay.load();
+
+            // Macro slot selections
+            displayData.macroSlotAfterBlock = triggerAfterBlockMacroSlot.load();
+            displayData.macroSlotOnWakeup = triggerOnWakeupMacroSlot.load();
+            displayData.macroSlotAfterHitstun = triggerAfterHitstunMacroSlot.load();
+            displayData.macroSlotAfterAirtech = triggerAfterAirtechMacroSlot.load();
+            displayData.macroSlotOnRG = triggerOnRGMacroSlot.load();
         }
         else {
             LogOut("[GUI] Failed to get game base address", true);
@@ -135,18 +144,28 @@ void ApplySettings(DisplayData* data) {
         triggerOnWakeupEnabled.store(data->triggerOnWakeup);
         triggerAfterHitstunEnabled.store(data->triggerAfterHitstun);
         triggerAfterAirtechEnabled.store(data->triggerAfterAirtech);
+    triggerOnRGEnabled.store(data->triggerOnRG);
         
         // Individual action settings
         triggerAfterBlockAction.store(data->actionAfterBlock);
         triggerOnWakeupAction.store(data->actionOnWakeup);
         triggerAfterHitstunAction.store(data->actionAfterHitstun);
         triggerAfterAirtechAction.store(data->actionAfterAirtech);
+    triggerOnRGAction.store(data->actionOnRG);
         
         // Individual delay settings
         triggerAfterBlockDelay.store(data->delayAfterBlock);
         triggerOnWakeupDelay.store(data->delayOnWakeup);
         triggerAfterHitstunDelay.store(data->delayAfterHitstun);
         triggerAfterAirtechDelay.store(data->delayAfterAirtech);
+    triggerOnRGDelay.store(data->delayOnRG);
+
+    // Macro slot selections
+    triggerAfterBlockMacroSlot.store(data->macroSlotAfterBlock);
+    triggerOnWakeupMacroSlot.store(data->macroSlotOnWakeup);
+    triggerAfterHitstunMacroSlot.store(data->macroSlotAfterHitstun);
+    triggerAfterAirtechMacroSlot.store(data->macroSlotAfterAirtech);
+    triggerOnRGMacroSlot.store(data->macroSlotOnRG);
         
         // MISSING CODE: Store custom moveID values
         triggerAfterBlockCustomID.store(data->customAfterBlock);
@@ -175,6 +194,37 @@ void ApplySettings(DisplayData* data) {
                 StartRFFreeze(data->rf1, data->rf2);
             }
         }
+
+    // Continuous Recovery (legacy globals retained for compatibility)
+    g_contRecoveryEnabled.store(data->continuousRecoveryEnabled);
+    g_contRecoveryApplyTo.store(data->continuousRecoveryApplyTo);
+    g_contRecHpMode.store(data->recoveryHpMode);
+    g_contRecHpCustom.store(data->recoveryHpCustom);
+    g_contRecMeterMode.store(data->recoveryMeterMode);
+    g_contRecMeterCustom.store(data->recoveryMeterCustom);
+    g_contRecRfMode.store(data->recoveryRfMode);
+    g_contRecRfCustom.store(data->recoveryRfCustom);
+    g_contRecRfForceBlueIC.store(data->recoveryRfForceBlueIC);
+
+    // NEW: Per-player Continuous Recovery atomics
+    // P1
+    g_contRecEnabledP1.store(data->p1ContinuousRecoveryEnabled);
+    g_contRecHpModeP1.store(data->p1RecoveryHpMode);
+    g_contRecHpCustomP1.store(data->p1RecoveryHpCustom);
+    g_contRecMeterModeP1.store(data->p1RecoveryMeterMode);
+    g_contRecMeterCustomP1.store(data->p1RecoveryMeterCustom);
+    g_contRecRfModeP1.store(data->p1RecoveryRfMode);
+    g_contRecRfCustomP1.store(data->p1RecoveryRfCustom);
+    g_contRecRfForceBlueICP1.store(data->p1RecoveryRfForceBlueIC);
+    // P2
+    g_contRecEnabledP2.store(data->p2ContinuousRecoveryEnabled);
+    g_contRecHpModeP2.store(data->p2RecoveryHpMode);
+    g_contRecHpCustomP2.store(data->p2RecoveryHpCustom);
+    g_contRecMeterModeP2.store(data->p2RecoveryMeterMode);
+    g_contRecMeterCustomP2.store(data->p2RecoveryMeterCustom);
+    g_contRecRfModeP2.store(data->p2RecoveryRfMode);
+    g_contRecRfCustomP2.store(data->p2RecoveryRfCustom);
+    g_contRecRfForceBlueICP2.store(data->p2RecoveryRfForceBlueIC);
         
         LogOut("[GUI] All settings applied successfully", detailedLogging.load()); // Use detailed logging
     } catch (const std::exception& e) {

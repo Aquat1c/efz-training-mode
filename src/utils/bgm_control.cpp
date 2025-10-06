@@ -172,15 +172,19 @@ void BGMSuppressionPoller() {
     LogOut("[BGM] BGM suppression poller thread started", true);
     
     while (g_bgmPollerRunning.load() && !g_isShuttingDown.load()) {  // Check shutdown flag
-        if (g_bgmSuppressed.load()) {
-            uintptr_t efzBase = GetEFZBase();
-            uintptr_t gameStatePtr = 0;
-            if (SafeReadMemory(efzBase + EFZ_BASE_OFFSET_GAME_STATE, &gameStatePtr, sizeof(uintptr_t)) && gameStatePtr) {
-                StopBGM(gameStatePtr);
-            }
+        // If suppression isn't enabled, sleep longer and skip work
+        if (!g_bgmSuppressed.load()) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+            continue;
         }
-        
-        // Check shutdown more frequently
+
+        uintptr_t efzBase = GetEFZBase();
+        uintptr_t gameStatePtr = 0;
+        if (efzBase && SafeReadMemory(efzBase + EFZ_BASE_OFFSET_GAME_STATE, &gameStatePtr, sizeof(uintptr_t)) && gameStatePtr) {
+            StopBGM(gameStatePtr);
+        }
+
+        // Check shutdown more frequently and back off a bit between enforcement attempts
         for (int i = 0; i < 10 && g_bgmPollerRunning.load() && !g_isShuttingDown.load(); i++) {
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
         }

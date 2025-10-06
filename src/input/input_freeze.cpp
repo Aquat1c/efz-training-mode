@@ -120,7 +120,7 @@ bool FreezePerfectDragonPunchEnhanced(int playerNum) {
     // Start freezing thread
     g_bufferFreezingActive = true;
     g_bufferFreezeThread = std::thread([playerNum]() {
-        LogOut("[BUFFER_DEBUG] Enhanced freeze thread starting - won't terminate until Numpad 5 pressed", true);
+    LogOut("[BUFFER_DEBUG] Enhanced freeze thread starting", true);
         FreezeBufferValuesThread(playerNum);
     });
     g_bufferFreezeThread.detach();  // Detach to prevent termination
@@ -170,69 +170,76 @@ bool ComboFreezeDP(int playerNum) {
         LogOut("[BUFFER_COMBO] Starting DP pattern buffer freeze thread", true);
         uintptr_t playerPtr = GetPlayerPointer(playerNum);
         if (!playerPtr) return;
-        
+
+        const unsigned long long startMs = GetTickCount64();
+        unsigned long long lastLogMs = startMs;
         int counter = 0;
         uint16_t lastIndex = 0;
         short lastMoveID = -1;
-        
+        int sleepMs = 2;           // brief aggressive phase
+        const int maxSleepMs = 4;  // then back off
+
         // Main freeze loop
         while (g_bufferFreezingActive) {
+            if (g_onlineModeActive.load()) break;                   // never operate online
+            if (GetCurrentGamePhase() != GamePhase::Match) break;   // only in match
+            unsigned long long now = GetTickCount64();
+            if (now - startMs > 4000ULL) break;                     // safety timeout ~4s
+
             // Read current index and moveID for monitoring
             uint16_t currentIndex = 0;
             short moveID = 0;
             SafeReadMemory(playerPtr + INPUT_BUFFER_INDEX_OFFSET, &currentIndex, sizeof(uint16_t));
-            
-            // Optional: Read moveID for logging
-            uintptr_t moveIDAddr = ResolvePointer(GetEFZBase(), 
-                (playerNum == 1) ? EFZ_BASE_OFFSET_P1 : EFZ_BASE_OFFSET_P2, 
+
+            // Optional: Read moveID for sparse logging
+            uintptr_t moveIDAddr = ResolvePointer(GetEFZBase(),
+                (playerNum == 1) ? EFZ_BASE_OFFSET_P1 : EFZ_BASE_OFFSET_P2,
                 MOVE_ID_OFFSET);
             if (moveIDAddr) {
                 SafeReadMemory(moveIDAddr, &moveID, sizeof(short));
                 if (moveID != lastMoveID && moveID != 0) {
-                    LogOut("[BUFFER_COMBO] MoveID changed: " + std::to_string(lastMoveID) + 
-                          " → " + std::to_string(moveID), true);
+                    if (now - lastLogMs >= 250ULL) { // throttle
+                        LogOut("[BUFFER_COMBO] MoveID: " + std::to_string(lastMoveID) + " -> " + std::to_string(moveID), true);
+                        lastLogMs = now;
+                    }
                     lastMoveID = moveID;
                 }
             }
-            
+
             // Allow index to float in 149-152 range, only reset if it's outside
             if (currentIndex < 147 || currentIndex > 152) {
                 SafeWriteMemory(playerPtr + INPUT_BUFFER_INDEX_OFFSET, &g_frozenIndexValue, sizeof(uint16_t));
                 currentIndex = g_frozenIndexValue;
             }
-            
-            // Always write the pattern at multiple positions relative to the current index
-            // This ensures it's found no matter which exact index the game checks
-            for (int offset = -2; offset <= 2; offset++) {
-                int basePos = (currentIndex - dpMotion.size() / 2 + offset) % INPUT_BUFFER_SIZE;
+
+            // Write the pattern near the current index with smaller spread (-1..1)
+            for (int offset = -1; offset <= 1; offset++) {
+                int basePos = (currentIndex - static_cast<int>(dpMotion.size()) / 2 + offset) % INPUT_BUFFER_SIZE;
                 if (basePos < 0) basePos += INPUT_BUFFER_SIZE;
-                
-                // Write the pattern
                 for (size_t i = 0; i < dpMotion.size(); i++) {
-                    uint16_t writeIndex = (basePos + i) % INPUT_BUFFER_SIZE;
-                    SafeWriteMemory(playerPtr + INPUT_BUFFER_OFFSET + writeIndex, 
-                                  &dpMotion[i], sizeof(uint8_t));
+                    uint16_t writeIndex = static_cast<uint16_t>((basePos + static_cast<int>(i)) % INPUT_BUFFER_SIZE);
+                    SafeWriteMemory(playerPtr + INPUT_BUFFER_OFFSET + writeIndex, &dpMotion[i], sizeof(uint8_t));
                 }
             }
-            
-            // Also make sure we write the exact pattern at fixed locations that are known to work
-            const int knownGoodStart = 144;
-            for (size_t i = 0; i < dpMotion.size(); i++) {
-                SafeWriteMemory(playerPtr + INPUT_BUFFER_OFFSET + knownGoodStart + i, 
-                              &dpMotion[i], sizeof(uint8_t));
+
+            // Write the known-good location less frequently
+            if ((counter % 10) == 0) {
+                const int knownGoodStart = 144;
+                for (size_t i = 0; i < dpMotion.size(); i++) {
+                    SafeWriteMemory(playerPtr + INPUT_BUFFER_OFFSET + knownGoodStart + static_cast<int>(i), &dpMotion[i], sizeof(uint8_t));
+                }
             }
-            
-            // Log periodically or on index change
-            if (currentIndex != lastIndex || counter % 100 == 0) {
-                LogOut("[BUFFER_COMBO] Maintaining buffer pattern at index: " + 
-                      std::to_string(currentIndex), true);
+
+            // Sparse status log
+            if ((currentIndex != lastIndex) && (now - lastLogMs >= 250ULL)) {
+                LogOut("[BUFFER_COMBO] Maintaining at index " + std::to_string(currentIndex), true);
                 lastIndex = currentIndex;
+                lastLogMs = now;
             }
-            
+
             counter++;
-            
-            // Use short sleep for responsiveness
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            if (sleepMs < maxSleepMs && (now - startMs) > 250ULL) sleepMs = maxSleepMs;
+            std::this_thread::sleep_for(std::chrono::milliseconds(sleepMs));
         }
     });
     g_bufferFreezeThread.detach();
@@ -378,17 +385,91 @@ bool FreezeBufferForMotion(int playerNum, int motionType, int buttonMask, int op
             };
             break;
         }
-        case MOTION_63214A: case MOTION_63214B: case MOTION_63214C: {
-            // HCB: Forward, Down-Forward, Down, Down-Back, Back + Button
+        case MOTION_412A: case MOTION_412B: case MOTION_412C: {
+            // 412: Back, Down-Back, Down + Button
             pattern = {
-                0x00, 0x00,                             // Neutral padding (2)
-                fwd, fwd,                               // Forward (2)
-                downFwd, downFwd,                       // Down-Forward (2)
-                down, down,                             // Down (2)
-                downBack, downBack,                     // Down-Back (2)
-                back,                                   // Back (1)
-                (uint8_t)(back | buttonMask),           // Back+Button (1)
-                (uint8_t)(back | buttonMask),           // Back+Button (1)
+                0x00, 0x00,
+                back, back,
+                downBack, downBack,
+                down,
+                (uint8_t)(down | buttonMask),
+                (uint8_t)(down | buttonMask),
+            };
+            break;
+        }
+        case MOTION_22A: case MOTION_22B: case MOTION_22C: {
+            // 22: Down, (small neutral), Down + Button
+            pattern = {
+                0x00, 0x00,
+                down, down,
+                0x00, 0x00, // neutral pause
+                down,
+                (uint8_t)(down | buttonMask),
+                (uint8_t)(down | buttonMask),
+            };
+            break;
+        }
+        case MOTION_214236A: case MOTION_214236B: case MOTION_214236C: {
+            // 214236: Down, Down-Back, Back, Down, Down-Forward, Forward + Button
+            pattern = {
+                0x00, 0x00,
+                down, down,
+                downBack, downBack,
+                back, back,
+                down, down,
+                downFwd, downFwd,
+                fwd,
+                (uint8_t)(fwd | buttonMask),
+                (uint8_t)(fwd | buttonMask),
+            };
+            break;
+        }
+        case MOTION_463214A: case MOTION_463214B: case MOTION_463214C: {
+            // 463214: Left, Right, Down-Right, Down, Down-Left, Left + Button
+            // Using back=fwd swap logic later for facing; here we build canonical facing-right pattern
+            pattern = {
+                0x00, 0x00,
+                back, back,          // 4 (treat 'back' as initial left when facing right)
+                fwd, fwd,            // 6
+                downFwd, downFwd,    // 3
+                down, down,          // 2
+                downBack, downBack,  // 1
+                back,
+                (uint8_t)(back | buttonMask),
+                (uint8_t)(back | buttonMask),
+            };
+            break;
+        }
+        case MOTION_4123641236A: case MOTION_4123641236B: case MOTION_4123641236C: {
+            // 41236 41236: Back, Down-Back, Down, Down-Forward, Forward x2 + Button only at final Forward
+            pattern = {
+                0x00, 0x00,
+                back, back, downBack, downBack, down, down, downFwd, downFwd, fwd, fwd, // first 41236
+                back, back, downBack, downBack, down, down, downFwd, downFwd, fwd,      // second 41236 up to final forward
+                (uint8_t)(fwd | buttonMask),
+                (uint8_t)(fwd | buttonMask),
+            };
+            break;
+        }
+        case MOTION_6321463214A: case MOTION_6321463214B: case MOTION_6321463214C: {
+            // 6321463214: Fwd, Down-Fwd, Down, Down-Back, Back, Fwd, Down-Fwd, Down, Down-Back, Back + Button (represented with diagonals)
+            // Using canonical facing-right mapping of digits; adapt using fwd/back variables.
+            // Sequence digits: 6,3,2,1,4,6,3,2,1,4 + Button
+            // Map: 6=fwd, 3=downFwd, 2=down, 1=downBack, 4=back
+            pattern = {
+                0x00, 0x00,
+                fwd, fwd,
+                downFwd, downFwd,
+                down, down,
+                downBack, downBack,
+                back, back,
+                fwd, fwd,
+                downFwd, downFwd,
+                down, down,
+                downBack, downBack,
+                back,
+                (uint8_t)(back | buttonMask),
+                (uint8_t)(back | buttonMask),
             };
             break;
         }
@@ -511,4 +592,69 @@ void EndBufferFreezeSession(int playerNum, const char* reason, bool clearGlobals
 
     LogOut(std::string("[BUFFER_FREEZE] End session P") + std::to_string(playerNum) +
            " (" + (reason?reason:"no reason") + ")", true);
+}
+
+// Generic pattern freeze for bespoke sequences (Final Memory, multi-phase inputs, etc.)
+bool FreezeBufferWithPattern(int playerNum, const std::vector<uint8_t>& patternIn) {
+    StopBufferFreezing();
+    if (patternIn.empty()) return false;
+    uintptr_t playerPtr = GetPlayerPointer(playerNum);
+    if (!playerPtr) return false;
+    // Sanitize: cap extremely large patterns
+    std::vector<uint8_t> pattern = patternIn;
+    if (pattern.size() > 120) pattern.resize(120); // safety cap
+
+    // Clear target region first (pattern + small padding)
+    const uint16_t startIndex = 0;
+    const uint16_t clearLength = static_cast<uint16_t>(pattern.size() + 4);
+    for (uint16_t i = 0; i < clearLength; ++i) {
+        uint8_t z = 0; SafeWriteMemory(playerPtr + INPUT_BUFFER_OFFSET + ((startIndex + i) % INPUT_BUFFER_SIZE), &z, 1);
+    }
+    // Write pattern
+    for (size_t i = 0; i < pattern.size(); ++i) {
+        SafeWriteMemory(playerPtr + INPUT_BUFFER_OFFSET + ((startIndex + i) % INPUT_BUFFER_SIZE), &pattern[i], 1);
+    }
+    g_frozenBufferValues = pattern;
+    g_frozenBufferStartIndex = startIndex;
+    g_frozenBufferLength = static_cast<uint16_t>(pattern.size());
+    g_frozenIndexValue = (startIndex + g_frozenBufferLength - 1) % INPUT_BUFFER_SIZE;
+    g_indexFreezingActive = true;
+    g_bufferFreezingActive = true;
+    g_bufferFreezeThread = std::thread(FreezeBufferValuesThread, playerNum);
+    g_bufferFreezeThread.detach();
+    LogOut("[BUFFER_FREEZE] Generic pattern freeze active (len=" + std::to_string(pattern.size()) + ") P" + std::to_string(playerNum), true);
+    return true;
+}
+
+// Overload with index advance capability.
+bool FreezeBufferWithPattern(int playerNum, const std::vector<uint8_t>& patternIn, int extraNeutralFrames) {
+    if (extraNeutralFrames <= 0) {
+        return FreezeBufferWithPattern(playerNum, patternIn);
+    }
+    StopBufferFreezing();
+    if (patternIn.empty()) return false;
+    uintptr_t playerPtr = GetPlayerPointer(playerNum);
+    if (!playerPtr) return false;
+    std::vector<uint8_t> pattern = patternIn;
+    if (pattern.size() > 120) pattern.resize(120);
+    // Cap extra neutrals so total stays sane
+    if (extraNeutralFrames > 30) extraNeutralFrames = 30;
+    const uint16_t startIndex = 0;
+    const uint16_t clearLength = static_cast<uint16_t>(pattern.size() + extraNeutralFrames + 4);
+    for (uint16_t i = 0; i < clearLength; ++i) {
+        uint8_t z = 0; SafeWriteMemory(playerPtr + INPUT_BUFFER_OFFSET + ((startIndex + i) % INPUT_BUFFER_SIZE), &z, 1);
+    }
+    for (size_t i = 0; i < pattern.size(); ++i) {
+        SafeWriteMemory(playerPtr + INPUT_BUFFER_OFFSET + ((startIndex + i) % INPUT_BUFFER_SIZE), &pattern[i], 1);
+    }
+    g_frozenBufferValues = pattern; // store only real pattern (neutrals virtual)
+    g_frozenBufferStartIndex = startIndex;
+    g_frozenBufferLength = static_cast<uint16_t>(pattern.size());
+    g_frozenIndexValue = (startIndex + g_frozenBufferLength + extraNeutralFrames - 1) % INPUT_BUFFER_SIZE;
+    g_indexFreezingActive = true;
+    g_bufferFreezingActive = true;
+    g_bufferFreezeThread = std::thread(FreezeBufferValuesThread, playerNum);
+    g_bufferFreezeThread.detach();
+    LogOut("[BUFFER_FREEZE] Pattern freeze+advance (len=" + std::to_string(pattern.size()) + "+" + std::to_string(extraNeutralFrames) + ") idx=" + std::to_string(g_frozenIndexValue) + " P" + std::to_string(playerNum), true);
+    return true;
 }

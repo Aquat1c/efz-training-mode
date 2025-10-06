@@ -19,6 +19,8 @@
 #include "../include/game/practice_patch.h"
 #include <thread>
 #include <chrono>
+// For global shutdown flag
+#include "../include/core/globals.h"
 
 #ifdef max
 #undef max // Undefine any existing max macro
@@ -53,9 +55,23 @@ void SetAIControlFlag(int playerNum, bool human) {
         return;
     }
     
-    // Write the AI control flag (0 = human, 1 = AI)
-    uint32_t controlFlag = human ? 0 : 1;
-    SafeWriteMemory(playerPtr + AI_CONTROL_FLAG_OFFSET, &controlFlag, sizeof(uint32_t));
+    // Write the AI control flag (0 = human, 1 = AI) with audit logging
+    uint32_t desired = human ? 0u : 1u;
+    uint32_t before = 0xFFFFFFFFu, after = 0xFFFFFFFFu;
+    SafeReadMemory(playerPtr + AI_CONTROL_FLAG_OFFSET, &before, sizeof(uint32_t));
+    bool okWrite = SafeWriteMemory(playerPtr + AI_CONTROL_FLAG_OFFSET, &desired, sizeof(uint32_t));
+    SafeReadMemory(playerPtr + AI_CONTROL_FLAG_OFFSET, &after, sizeof(uint32_t));
+    if (before != after || !okWrite) {
+        std::ostringstream oss;
+        oss << "[AUDIT][AI] SetAIControlFlag P" << playerNum
+            << " @0x" << std::hex << (playerPtr + AI_CONTROL_FLAG_OFFSET)
+            << std::dec
+            << " before=" << before
+            << " write=" << desired
+            << " after=" << after
+            << " okWrite=" << (okWrite?"1":"0");
+        LogOut(oss.str(), true);
+    }
 }
 
 bool IsAIControlFlagHuman(int playerNum) {
@@ -96,13 +112,23 @@ void ForceHumanControl(int playerNum) {
 
 void ForceHumanControlThread(int playerNum) {
     LogOut("[INPUT_MOTION] Starting human control force thread for P" + std::to_string(playerNum), true);
-    
-    while (g_forceHumanControlActive.load()) {
-        // Set to human control
-        SetAIControlFlag(playerNum, true);
-        
-        // Sleep briefly to avoid hammering CPU
-        std::this_thread::sleep_for(std::chrono::milliseconds(16));
+    int sleepMs = 16;
+    int stableIters = 0;
+    while (g_forceHumanControlActive.load() && !g_isShuttingDown.load() && !g_onlineModeActive.load()) {
+        // Read current flag to avoid unnecessary writes
+        bool alreadyHuman = IsAIControlFlagHuman(playerNum);
+        if (!alreadyHuman) {
+            SetAIControlFlag(playerNum, true);
+            sleepMs = 16;
+            stableIters = 0;
+        } else {
+            // Back off progressively when stable
+            stableIters++;
+            if (stableIters > 15) sleepMs = 32;   // ~31 Hz
+            if (stableIters > 60) sleepMs = 64;   // ~16 Hz
+            if (stableIters > 180) sleepMs = 128; // ~8 Hz
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(sleepMs));
     }
     
     LogOut("[INPUT_MOTION] Human control force thread terminated", true);

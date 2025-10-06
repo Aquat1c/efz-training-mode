@@ -21,20 +21,8 @@ namespace CharacterSettings {
     
     // Apply character-specific values to memory
     void ApplyCharacterValues(uintptr_t base, const DisplayData& data);
-    
-    // Apply character-specific patches (e.g. infinite blood)
-    void ApplyCharacterPatches(const DisplayData& data);
-    
-    // Remove character-specific patches
-    void RemoveCharacterPatches();
-    
-    // Check if any character patches are applied
-    bool AreCharacterPatchesApplied();
 
-    // Character value monitoring thread
-    void CharacterValueMonitoringThread();
-
-    // Debugging functions
-    bool IsMonitoringThreadActive();
-    void GetFeatherCounts(int& p1Count, int& p2Count);
+    // Inline per-tick enforcement of character-specific features (no threads)
+    // Call this periodically (e.g., ~16 Hz) from the main monitor thread.
+    void TickCharacterEnforcements(uintptr_t base, const DisplayData& data);
 }

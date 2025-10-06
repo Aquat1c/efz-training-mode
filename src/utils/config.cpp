@@ -6,10 +6,16 @@
 #include <sstream>
 #include <filesystem>
 #include <algorithm>
+#include <cctype>
+#include <map>
+#include <xinput.h>
 
 namespace Config {
     // Internal settings storage
     static Settings settings;
+    // Initialize defaults for safety
+    // Note: remaining fields are populated by LoadSettings/CreateDefaultConfig
+    
     
     // Path to config file
     static std::string configFilePath;
@@ -204,6 +210,38 @@ namespace Config {
             file << "restrictToPracticeMode = 1\n\n";
             file << "; Enable FPS/timing diagnostics in logs (1 = yes, 0 = no)\n";
             file << "enableFpsDiagnostics = 0\n\n";
+            file << "; Log active player / CPU flags during Character Select (1 = yes, 0 = no)\n";
+            file << "enableCharacterSelectLogger = 1\n\n";
+
+            file << "; UI scale for ImGui window (0.80 - 1.20 recommended)\n";
+            file << "uiScale = 0.90\n\n";
+            file << "; UI font: 0 = ImGui default font, 1 = Segoe UI (Windows)\n";
+            file << "uiFont = 0\n\n";
+
+            // RF freeze behavior
+            file << "; RF freeze behavior (after Continuous Recovery)\n";
+            file << "; Start freezing RF after enforcement (1=yes, 0=no)\n";
+            file << "freezeRFAfterContRec = 1\n";
+            file << "; Maintain RF freeze only when neutral (allowed MoveIDs) (1=yes, 0=no)\n";
+            file << "freezeRFOnlyWhenNeutral = 1\n\n";
+
+            file << "; Virtual Cursor (software controller-driven cursor) settings\n";
+            file << "; Master enable (1=on,0=off)\n";
+            file << "enableVirtualCursor = 1\n";
+            file << "; Allow virtual cursor while windowed (1=yes,0=only fullscreen)\n";
+            file << "virtualCursorAllowWindowed = 0\n";
+            file << "; Movement speeds in pixels/second (base, fast/shoulder, dpad nudge)\n";
+            file << "virtualCursorBaseSpeed = 900\n";
+            file << "virtualCursorFastSpeed = 1800\n";
+            file << "virtualCursorDpadSpeed = 700\n";
+            file << "; Analog stick acceleration exponent (1.0=linear, 1.5=gentler near center)\n";
+            file << "virtualCursorAccelPower = 1.35\n\n";
+
+            // Controller selection (XInput)
+            file << "; Controller selection: -1 = All, 0..3 = XInput user index\n";
+            file << "controllerIndex = -1\n\n";
+
+            // (Practice-specific tuning is hardcoded now)
             
             file << "[Hotkeys]\n";
             file << "; Use virtual-key codes (hexadecimal, e.g., 0x70 for F1)\n";
@@ -233,6 +271,35 @@ namespace Config {
             
             file << "; Toggle ImGui overlay\n";
             file << "ToggleImGuiKey=0x37 # Default: '7' key\n";
+
+            file << "\n; Practice: Switch Players toggle (Practice only)\n";
+            file << "SwitchPlayersKey=0x4C  # Default: 'L' key\n";
+            file << "; Macro: Record (two-press)\n";
+            file << "MacroRecordKey=0x49     # Default: 'I' key\n";
+            file << "; Macro: Play (replay)\n";
+            file << "MacroPlayKey=0x4F       # Default: 'O' key\n";
+            file << "; Macro: Cycle Slot (next)\n";
+            file << "MacroSlotKey=0x4B       # Default: 'K' key\n";
+            file << "\n; UI footer actions (Apply / Refresh / Exit)\n";
+            file << "; Avoid using in-game bound keys (Enter/Escape/Space). Defaults: E, R, Q.\n";
+            file << "UIAcceptKey=0x45        # 'E' (Apply)\n";
+            file << "UIRefreshKey=0x52       # 'R' (Refresh)\n";
+            file << "UIExitKey=0x51          # 'Q' (Exit)\n";
+
+            // --- Gamepad binding defaults ---
+            file << "\n; Controller bindings (XInput) \n";
+            file << "; Use symbolic names (e.g. A, B, X, Y, LB, RB, BACK, START, L3, R3, DPAD_UP, DPAD_DOWN, DPAD_LEFT, DPAD_RIGHT) or hex mask (e.g. 0x2000). -1 disables.\n";
+            file << "; Triggers (LT, RT) are treated as virtual buttons (threshold based).\n";
+            file << "gpTeleportButton=BACK\n";       // Teleport
+            file << "gpSavePositionButton=L3\n";     // Save current positions
+            file << "gpSwitchPlayersButton=RB\n";    // Toggle local side (practice)
+            // ABXY reserved for UI (A=confirm, B=back). Use shoulders/triggers/sticks instead.
+            file << "gpSwapPositionsButton=R3\n";    // Swap player coordinates (was Y)
+            file << "gpMacroRecordButton=LB\n";      // Macro record (was X)
+            file << "gpMacroPlayButton=RT\n";        // Macro play (was A)
+            file << "gpMacroSlotButton=LT\n";        // Cycle macro slot (was B)
+            file << "gpToggleMenuButton=START\n";    // Open training menu
+            file << "gpToggleImGuiButton=-1\n";      // Toggle overlay (disabled by default)
             
             file.close();
             
@@ -285,6 +352,75 @@ namespace Config {
             settings.enableConsole = GetValueBool("General", "enableConsole", false);
             settings.restrictToPracticeMode = GetValueBool("General", "restrictToPracticeMode", true);
             settings.enableFpsDiagnostics = GetValueBool("General", "enableFpsDiagnostics", false);
+            // Default ON so older configs without this key enable it automatically
+            settings.enableCharacterSelectLogger = GetValueBool("General", "enableCharacterSelectLogger", true);
+            {
+                // Clamp scale to a sensible range
+                int raw = 0; // we parse as int/float via string later; reuse GetValueInt if needed
+                auto sectionIt = iniData.find("general");
+                float scale = 0.90f;
+                if (sectionIt != iniData.end()) {
+                    auto keyIt = sectionIt->second.find("uiscale");
+                    if (keyIt != sectionIt->second.end()) {
+                        try {
+                            scale = std::stof(keyIt->second);
+                        } catch (...) { scale = 0.90f; }
+                    }
+                }
+                if (scale < 0.70f) scale = 0.70f;
+                if (scale > 1.50f) scale = 1.50f;
+                settings.uiScale = scale;
+            }
+
+            // Load UI font mode (0=default, 1=Segoe UI)
+            settings.uiFontMode = 0;
+            {
+                auto sectionIt = iniData.find("general");
+                if (sectionIt != iniData.end()) {
+                    auto keyIt = sectionIt->second.find("uifont");
+                    if (keyIt != sectionIt->second.end()) {
+                        try { settings.uiFontMode = std::stoi(keyIt->second); } catch (...) { settings.uiFontMode = 0; }
+                        if (settings.uiFontMode < 0 || settings.uiFontMode > 1) settings.uiFontMode = 0;
+                    }
+                }
+            }
+
+            // Practice: no runtime-tunable settings
+            // Virtual cursor settings
+            settings.enableVirtualCursor = GetValueBool("General", "enableVirtualCursor", true);
+            settings.virtualCursorAllowWindowed = GetValueBool("General", "virtualCursorAllowWindowed", false);
+            settings.virtualCursorBaseSpeed = (float)GetValueInt("General", "virtualCursorBaseSpeed", 900);
+            settings.virtualCursorFastSpeed = (float)GetValueInt("General", "virtualCursorFastSpeed", 1800);
+            settings.virtualCursorDpadSpeed = (float)GetValueInt("General", "virtualCursorDpadSpeed", 700);
+            {
+                auto sectionIt = iniData.find("general");
+                float p = 1.35f;
+                if (sectionIt != iniData.end()) {
+                    auto keyIt = sectionIt->second.find("virtualcursoraccelpower");
+                    if (keyIt != sectionIt->second.end()) {
+                        try { p = std::stof(keyIt->second); } catch (...) { p = 1.35f; }
+                    }
+                }
+                if (p < 0.5f) p = 0.5f; if (p > 3.0f) p = 3.0f;
+                settings.virtualCursorAccelPower = p;
+            }
+
+            // Controller index (which XInput device controls the mod / virtual cursor)
+            settings.controllerIndex = -1; // default: all
+            {
+                auto sectionIt = iniData.find("general");
+                if (sectionIt != iniData.end()) {
+                    auto keyIt = sectionIt->second.find("controllerindex");
+                    if (keyIt != sectionIt->second.end()) {
+                        try { settings.controllerIndex = std::stoi(keyIt->second); } catch (...) { settings.controllerIndex = -1; }
+                    }
+                }
+                if (settings.controllerIndex < -1 || settings.controllerIndex > 3) settings.controllerIndex = -1;
+            }
+
+            // RF freeze behavior (defaults: enabled and neutral-only)
+            settings.freezeRFAfterContRec = GetValueBool("General", "freezeRFAfterContRec", true);
+            settings.freezeRFOnlyWhenNeutral = GetValueBool("General", "freezeRFOnlyWhenNeutral", true);
             
             // Hotkey settings - REVERTED to number key defaults
             settings.teleportKey = GetValueInt("Hotkeys", "TeleportKey", 0x31);          // Default: '1'
@@ -294,6 +430,33 @@ namespace Config {
             settings.resetFrameCounterKey = GetValueInt("Hotkeys", "ResetFrameCounterKey", 0x35); // Default: '5'
             settings.helpKey = GetValueInt("Hotkeys", "HelpKey", 0x36);                // Default: '6'
             settings.toggleImGuiKey = GetValueInt("Hotkeys", "ToggleImGuiKey", 0x37);      // Default: '7'            
+            // Additional configurable hotkeys
+            settings.switchPlayersKey = GetValueInt("Hotkeys", "SwitchPlayersKey", 0x4C); // 'L'
+            settings.macroRecordKey   = GetValueInt("Hotkeys", "MacroRecordKey",   0x49); // 'I'
+            settings.macroPlayKey     = GetValueInt("Hotkeys", "MacroPlayKey",     0x4F); // 'O'
+            settings.macroSlotKey     = GetValueInt("Hotkeys", "MacroSlotKey",     0x4B); // 'K'
+            settings.uiAcceptKey      = GetValueInt("Hotkeys", "UIAcceptKey",     0x45); // 'E'
+            settings.uiRefreshKey     = GetValueInt("Hotkeys", "UIRefreshKey",    0x52); // 'R'
+            settings.uiExitKey        = GetValueInt("Hotkeys", "UIExitKey",       0x51); // 'Q'
+            // Gamepad bindings (defaults mirror CreateDefaultConfig)
+            auto getPad = [&](const char* name, const char* defStr){
+                auto sectionIt = iniData.find("hotkeys");
+                if (sectionIt != iniData.end()) {
+                    auto keyIt = sectionIt->second.find(std::string(name));
+                    if (keyIt != sectionIt->second.end()) return ParseGamepadButton(keyIt->second);
+                }
+                return ParseGamepadButton(defStr);
+            };
+            settings.gpTeleportButton       = getPad("gpteleportbutton", "BACK");
+            settings.gpSavePositionButton   = getPad("gpsavepositionbutton", "L3");
+            settings.gpSwitchPlayersButton  = getPad("gpswitchplayersbutton", "RB");
+            // New non-ABXY defaults
+            settings.gpSwapPositionsButton  = getPad("gpswappositionsbutton", "R3");
+            settings.gpMacroRecordButton    = getPad("gpmacrorecordbutton", "LB");
+            settings.gpMacroPlayButton      = getPad("gpmacroplaybutton", "RT");
+            settings.gpMacroSlotButton      = getPad("gpmacroslotbutton", "LT");
+            settings.gpToggleMenuButton     = getPad("gptogglemenubutton", "START");
+            settings.gpToggleImGuiButton    = getPad("gptoggleimguibutton", "-1");
             LogOut("[CONFIG] Settings loaded successfully", true);
             LogOut("[CONFIG] UseImGui: " + std::to_string(settings.useImGui), true);
             LogOut("[CONFIG] DetailedLogging: " + std::to_string(settings.detailedLogging), true);
@@ -305,7 +468,25 @@ namespace Config {
             LogOut("[CONFIG] ResetFrameCounterKey: " + std::to_string(settings.resetFrameCounterKey) + " (" + GetKeyName(settings.resetFrameCounterKey) + ")", true);
             LogOut("[CONFIG] HelpKey: " + std::to_string(settings.helpKey) + " (" + GetKeyName(settings.helpKey) + ")", true);
             LogOut("[CONFIG] ToggleImGuiKey: " + std::to_string(settings.toggleImGuiKey) + " (" + GetKeyName(settings.toggleImGuiKey) + ")", true);
+            LogOut("[CONFIG] SwitchPlayersKey: " + std::to_string(settings.switchPlayersKey) + " (" + GetKeyName(settings.switchPlayersKey) + ")", true);
+            LogOut("[CONFIG] MacroRecordKey: " + std::to_string(settings.macroRecordKey) + " (" + GetKeyName(settings.macroRecordKey) + ")", true);
+            LogOut("[CONFIG] MacroPlayKey: " + std::to_string(settings.macroPlayKey) + " (" + GetKeyName(settings.macroPlayKey) + ")", true);
+            LogOut("[CONFIG] MacroSlotKey: " + std::to_string(settings.macroSlotKey) + " (" + GetKeyName(settings.macroSlotKey) + ")", true);
+            LogOut("[CONFIG] UIAcceptKey: " + std::to_string(settings.uiAcceptKey) + " (" + GetKeyName(settings.uiAcceptKey) + ")", true);
+            LogOut("[CONFIG] UIRefreshKey: " + std::to_string(settings.uiRefreshKey) + " (" + GetKeyName(settings.uiRefreshKey) + ")", true);
+            LogOut("[CONFIG] UIExitKey: " + std::to_string(settings.uiExitKey) + " (" + GetKeyName(settings.uiExitKey) + ")", true);
+            LogOut("[CONFIG] gpTeleportButton: " + GetGamepadButtonName(settings.gpTeleportButton), true);
+            LogOut("[CONFIG] gpSavePositionButton: " + GetGamepadButtonName(settings.gpSavePositionButton), true);
+            LogOut("[CONFIG] gpSwitchPlayersButton: " + GetGamepadButtonName(settings.gpSwitchPlayersButton), true);
+            LogOut("[CONFIG] gpSwapPositionsButton: " + GetGamepadButtonName(settings.gpSwapPositionsButton), true);
+            LogOut("[CONFIG] gpMacroRecordButton: " + GetGamepadButtonName(settings.gpMacroRecordButton), true);
+            LogOut("[CONFIG] gpMacroPlayButton: " + GetGamepadButtonName(settings.gpMacroPlayButton), true);
+            LogOut("[CONFIG] gpMacroSlotButton: " + GetGamepadButtonName(settings.gpMacroSlotButton), true);
+            LogOut("[CONFIG] gpToggleMenuButton: " + GetGamepadButtonName(settings.gpToggleMenuButton), true);
+            LogOut("[CONFIG] gpToggleImGuiButton: " + GetGamepadButtonName(settings.gpToggleImGuiButton), true);
             LogOut("[CONFIG] enableFpsDiagnostics: " + std::to_string(settings.enableFpsDiagnostics), true);
+            LogOut("[CONFIG] uiScale: " + std::to_string(settings.uiScale), true);
+            LogOut("[CONFIG] uiFontMode: " + std::to_string(settings.uiFontMode), true);
             
             return true;
         }
@@ -341,6 +522,29 @@ namespace Config {
             file << "restrictToPracticeMode = " << (settings.restrictToPracticeMode ? "1" : "0") << "\n\n";
             file << "; Enable FPS/timing diagnostics in logs (1 = yes, 0 = no)\n";
             file << "enableFpsDiagnostics = " << (settings.enableFpsDiagnostics ? "1" : "0") << "\n\n";
+            file << "; Log active player / CPU flags during Character Select (1 = yes, 0 = no)\n";
+            file << "enableCharacterSelectLogger = " << (settings.enableCharacterSelectLogger ? "1" : "0") << "\n\n";
+            file << "; UI scale for ImGui window (0.80 - 1.20 recommended)\n";
+            file << "uiScale = " << settings.uiScale << "\n\n";
+            file << "; UI font: 0 = ImGui default font, 1 = Segoe UI (Windows)\n";
+            file << "uiFont = " << settings.uiFontMode << "\n\n";
+            // RF freeze behavior
+            file << "; RF freeze behavior (after Continuous Recovery)\n";
+            file << "freezeRFAfterContRec = " << (settings.freezeRFAfterContRec?"1":"0") << "\n";
+            file << "freezeRFOnlyWhenNeutral = " << (settings.freezeRFOnlyWhenNeutral?"1":"0") << "\n\n";
+            file << "; Virtual Cursor settings\n";
+            file << "enableVirtualCursor = " << (settings.enableVirtualCursor?"1":"0") << "\n";
+            file << "virtualCursorAllowWindowed = " << (settings.virtualCursorAllowWindowed?"1":"0") << "\n";
+            file << "virtualCursorBaseSpeed = " << (int)settings.virtualCursorBaseSpeed << "\n";
+            file << "virtualCursorFastSpeed = " << (int)settings.virtualCursorFastSpeed << "\n";
+            file << "virtualCursorDpadSpeed = " << (int)settings.virtualCursorDpadSpeed << "\n";
+            file << "virtualCursorAccelPower = " << settings.virtualCursorAccelPower << "\n\n";
+
+            // Controller selection
+            file << "; Controller selection: -1 = All, 0..3 = XInput user index\n";
+            file << "controllerIndex = " << settings.controllerIndex << "\n\n";
+
+            // (Practice tuning omitted)
             file << "; Show the debug console window (1 = yes, 0 = no)\n";
             // Note: keep console toggle alongside General fields
             // We append here for clarity; order doesn't matter for parsing
@@ -357,6 +561,28 @@ namespace Config {
             file << "ResetFrameCounterKey=" << toHexString(settings.resetFrameCounterKey) << "\n";
             file << "HelpKey=" << toHexString(settings.helpKey) << "\n";
             file << "ToggleImGuiKey=" << toHexString(settings.toggleImGuiKey) << "\n";
+            file << "SwitchPlayersKey=" << toHexString(settings.switchPlayersKey) << "\n";
+            file << "MacroRecordKey=" << toHexString(settings.macroRecordKey) << "\n";
+            file << "MacroPlayKey=" << toHexString(settings.macroPlayKey) << "\n";
+            file << "MacroSlotKey=" << toHexString(settings.macroSlotKey) << "\n";
+            file << "UIAcceptKey=" << toHexString(settings.uiAcceptKey) << "\n";
+            file << "UIRefreshKey=" << toHexString(settings.uiRefreshKey) << "\n";
+            file << "UIExitKey=" << toHexString(settings.uiExitKey) << "\n";
+
+            file << "\n; Controller bindings (symbolic names or hex). -1 disables.\n";
+            file << "; NOTE: ABXY reserved: A=UI confirm, B=UI back. Defaults map actions to shoulders/triggers/sticks.\n";
+            auto writePad = [&](const char* key, int mask){
+                file << key << "=" << GetGamepadButtonName(mask) << "\n";
+            };
+            writePad("gpTeleportButton", settings.gpTeleportButton);
+            writePad("gpSavePositionButton", settings.gpSavePositionButton);
+            writePad("gpSwitchPlayersButton", settings.gpSwitchPlayersButton);
+            writePad("gpSwapPositionsButton", settings.gpSwapPositionsButton);
+            writePad("gpMacroRecordButton", settings.gpMacroRecordButton);
+            writePad("gpMacroPlayButton", settings.gpMacroPlayButton);
+            writePad("gpMacroSlotButton", settings.gpMacroSlotButton);
+            writePad("gpToggleMenuButton", settings.gpToggleMenuButton);
+            writePad("gpToggleImGuiButton", settings.gpToggleImGuiButton);
 
             file.close();
             if (file.fail()) {
@@ -390,6 +616,22 @@ namespace Config {
             if (k == "detailedlogging") settings.detailedLogging = (value == "1");
             if (k == "enableconsole") settings.enableConsole = (value == "1");
             if (k == "restricttopracticemode") settings.restrictToPracticeMode = (value == "1");
+            if (k == "uiscale") {
+                try { settings.uiScale = std::stof(value); } catch (...) {}
+            }
+            if (k == "uifont") {
+                try { settings.uiFontMode = std::stoi(value); } catch (...) {}
+                if (settings.uiFontMode < 0 || settings.uiFontMode > 1) settings.uiFontMode = 0;
+            }
+            if (k == "enablevirtualcursor") settings.enableVirtualCursor = (value == "1");
+            if (k == "virtualcursorallowwindowed") settings.virtualCursorAllowWindowed = (value == "1");
+            if (k == "virtualcursorbasespeed") { try { settings.virtualCursorBaseSpeed = std::stof(value); } catch(...){} }
+            if (k == "virtualcursorfastspeed") { try { settings.virtualCursorFastSpeed = std::stof(value); } catch(...){} }
+            if (k == "virtualcursordpadspeed") { try { settings.virtualCursorDpadSpeed = std::stof(value); } catch(...){} }
+            if (k == "virtualcursoraccelpower") { try { settings.virtualCursorAccelPower = std::stof(value); } catch(...){} }
+            if (k == "controllerindex") { try { settings.controllerIndex = std::stoi(value); } catch(...) { settings.controllerIndex = -1; } if (settings.controllerIndex < -1 || settings.controllerIndex > 3) settings.controllerIndex = -1; }
+            if (k == "freezerfaftercontrec") settings.freezeRFAfterContRec = (value == "1");
+            if (k == "freezerfonlywhenneutral") settings.freezeRFOnlyWhenNeutral = (value == "1");
         }
         else if (sec == "hotkeys") {
             int intValue = ParseKeyValue(value);
@@ -400,7 +642,25 @@ namespace Config {
             if (k == "resetframecounterkey") settings.resetFrameCounterKey = intValue;
             if (k == "helpkey") settings.helpKey = intValue;
             if (k == "toggleimguikey") settings.toggleImGuiKey = intValue;
+            if (k == "switchplayerskey") settings.switchPlayersKey = intValue;
+            if (k == "macrorecordkey") settings.macroRecordKey = intValue;
+            if (k == "macroplaykey") settings.macroPlayKey = intValue;
+            if (k == "macroslotkey") settings.macroSlotKey = intValue;
+            if (k == "uiacceptkey") settings.uiAcceptKey = intValue;
+            if (k == "uirefreshkey") settings.uiRefreshKey = intValue;
+            if (k == "uiexitkey") settings.uiExitKey = intValue;
+            // Gamepad button updates (these accept names or hex values)
+            if (k == "gpteleportbutton") settings.gpTeleportButton = ParseGamepadButton(value);
+            if (k == "gpsavepositionbutton") settings.gpSavePositionButton = ParseGamepadButton(value);
+            if (k == "gpswitchplayersbutton") settings.gpSwitchPlayersButton = ParseGamepadButton(value);
+            if (k == "gpswappositionsbutton") settings.gpSwapPositionsButton = ParseGamepadButton(value);
+            if (k == "gpmacrorecordbutton") settings.gpMacroRecordButton = ParseGamepadButton(value);
+            if (k == "gpmacroplaybutton") settings.gpMacroPlayButton = ParseGamepadButton(value);
+            if (k == "gpmacroslotbutton") settings.gpMacroSlotButton = ParseGamepadButton(value);
+            if (k == "gptogglemenubutton") settings.gpToggleMenuButton = ParseGamepadButton(value);
+            if (k == "gptoggleimguibutton") settings.gpToggleImGuiButton = ParseGamepadButton(value);
         }
+    // Practice: no mutable settings currently
     }
     
     std::string GetConfigFilePath() {
@@ -427,6 +687,70 @@ namespace Config {
     std::string GetKeyName(int keyCode) {
         // Reuse existing GetKeyName from utilities.cpp
         return ::GetKeyName(keyCode);
+    }
+
+    // --- Gamepad parsing helpers ---
+    int ParseGamepadButton(const std::string& value) {
+        std::string v = value;
+        // Trim
+        auto trim = [](std::string &s){
+            size_t a = s.find_first_not_of(" \t\r\n");
+            size_t b = s.find_last_not_of(" \t\r\n");
+            if (a == std::string::npos) { s.clear(); return; }
+            s = s.substr(a, b - a + 1);
+        };
+        trim(v);
+        if (v.empty()) return -1;
+        // Hex / decimal numeric
+        if (v.size() > 2 && (v[0]=='0') && (v[1]=='x' || v[1]=='X')) {
+            try { return std::stoi(v.substr(2), nullptr, 16); } catch(...) { return -1; }
+        }
+        bool numeric = std::all_of(v.begin(), v.end(), [](unsigned char c){ return std::isdigit(c) || c=='-'; });
+        if (numeric) {
+            try { return std::stoi(v); } catch(...) { return -1; }
+        }
+        // Upper-case symbolic
+        std::string u; u.reserve(v.size());
+        for (char c: v) u.push_back((char)std::toupper((unsigned char)c));
+        static const std::unordered_map<std::string,int> map = {
+            {"A", XINPUT_GAMEPAD_A}, {"B", XINPUT_GAMEPAD_B}, {"X", XINPUT_GAMEPAD_X}, {"Y", XINPUT_GAMEPAD_Y},
+            {"LB", XINPUT_GAMEPAD_LEFT_SHOULDER}, {"RB", XINPUT_GAMEPAD_RIGHT_SHOULDER},
+            {"BACK", XINPUT_GAMEPAD_BACK}, {"START", XINPUT_GAMEPAD_START},
+            {"L3", XINPUT_GAMEPAD_LEFT_THUMB}, {"R3", XINPUT_GAMEPAD_RIGHT_THUMB},
+            {"DPAD_UP", XINPUT_GAMEPAD_DPAD_UP}, {"DPAD_DOWN", XINPUT_GAMEPAD_DPAD_DOWN},
+            {"DPAD_LEFT", XINPUT_GAMEPAD_DPAD_LEFT}, {"DPAD_RIGHT", XINPUT_GAMEPAD_DPAD_RIGHT},
+            // Virtual trigger pseudo-bits (outside wButtons range to avoid collision)
+            {"LT", 0x10000}, {"RT", 0x20000}
+        };
+        auto it = map.find(u);
+        if (it != map.end()) return it->second;
+        return -1;
+    }
+
+    std::string GetGamepadButtonName(int mask) {
+        if (mask < 0) return "-1"; // disabled
+        // Recognize pseudo trigger bits first
+        if (mask == 0x10000) return "LT";
+        if (mask == 0x20000) return "RT";
+        switch(mask) {
+            case XINPUT_GAMEPAD_A: return "A";
+            case XINPUT_GAMEPAD_B: return "B";
+            case XINPUT_GAMEPAD_X: return "X";
+            case XINPUT_GAMEPAD_Y: return "Y";
+            case XINPUT_GAMEPAD_LEFT_SHOULDER: return "LB";
+            case XINPUT_GAMEPAD_RIGHT_SHOULDER: return "RB";
+            case XINPUT_GAMEPAD_BACK: return "BACK";
+            case XINPUT_GAMEPAD_START: return "START";
+            case XINPUT_GAMEPAD_LEFT_THUMB: return "L3";
+            case XINPUT_GAMEPAD_RIGHT_THUMB: return "R3";
+            case XINPUT_GAMEPAD_DPAD_UP: return "DPAD_UP";
+            case XINPUT_GAMEPAD_DPAD_DOWN: return "DPAD_DOWN";
+            case XINPUT_GAMEPAD_DPAD_LEFT: return "DPAD_LEFT";
+            case XINPUT_GAMEPAD_DPAD_RIGHT: return "DPAD_RIGHT";
+            default: {
+                std::ostringstream oss; oss << "0x" << std::hex << std::uppercase << mask; return oss.str();
+            }
+        }
     }
 
     // Very simple INI parser to populate iniData from file
