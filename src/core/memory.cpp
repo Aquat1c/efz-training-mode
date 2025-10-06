@@ -326,6 +326,30 @@ bool SetICColorDirect(bool p1BlueIC, bool p2BlueIC) {
     return success;
 }
 
+// Write IC color for only one player while preserving the other's current color
+bool SetICColorPlayer(int player, bool blueIC) {
+    uintptr_t base = GetEFZBase();
+    if (!base) return false;
+
+    // Read current IC colors so we don't clobber the other side
+    int p1IC = 0, p2IC = 0;
+    uintptr_t p1ICAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P1, IC_COLOR_OFFSET);
+    uintptr_t p2ICAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P2, IC_COLOR_OFFSET);
+    if (p1ICAddr) SafeReadMemory(p1ICAddr, &p1IC, sizeof(p1IC));
+    if (p2ICAddr) SafeReadMemory(p2ICAddr, &p2IC, sizeof(p2IC));
+
+    bool p1Blue = (p1IC != 0);
+    bool p2Blue = (p2IC != 0);
+    if (player == 1) {
+        p1Blue = blueIC;
+    } else if (player == 2) {
+        p2Blue = blueIC;
+    } else {
+        return false;
+    }
+    return SetICColorDirect(p1Blue, p2Blue);
+}
+
 void UpdatePlayerValues(uintptr_t base, uintptr_t baseOffsetP1, uintptr_t baseOffsetP2) {
     // This function applies values from the displayData struct to the game
     // (Used by the GUI dialogs)
@@ -505,6 +529,11 @@ std::atomic<double> rfFreezeValueP1(0.0);
 std::atomic<double> rfFreezeValueP2(0.0);
 std::thread rfFreezeThread;
 bool rfThreadRunning = false;
+// Desired RF-freeze IC color lock settings (optional)
+static bool rfFreezeColorP1Enabled = false;
+static bool rfFreezeColorP1Blue = false;
+static bool rfFreezeColorP2Enabled = false;
+static bool rfFreezeColorP2Blue = false;
 
 // Improved RF freeze thread function with better error handling
 void RFFreezeThreadFunc() {
@@ -698,7 +727,24 @@ void UpdateRFFreezeTick() {
         bool canP2 = rfFreezeP2Active.load() && (!neutralOnly || isAllowedNeutral(m2));
         if (canP1 && p1RFAddr && VirtualProtect(p1RFAddr, sizeof(double), PAGE_EXECUTE_READWRITE, &old1)) { *p1RFAddr = t1; VirtualProtect(p1RFAddr, sizeof(double), old1, &old1); }
         if (canP2 && p2RFAddr && VirtualProtect(p2RFAddr, sizeof(double), PAGE_EXECUTE_READWRITE, &old2)) { *p2RFAddr = t2; VirtualProtect(p2RFAddr, sizeof(double), old2, &old2); }
+        // Optional: enforce IC color while RF is frozen (per-player)
+        if (rfFreezeP1Active.load() && rfFreezeColorP1Enabled) {
+            SetICColorPlayer(1, rfFreezeColorP1Blue);
+        }
+        if (rfFreezeP2Active.load() && rfFreezeColorP2Enabled) {
+            SetICColorPlayer(2, rfFreezeColorP2Blue);
+        }
     } __except(EXCEPTION_EXECUTE_HANDLER) {
         // Ignore access faults; tick is best-effort
+    }
+}
+
+void SetRFFreezeColorDesired(int player, bool enabled, bool blueIC) {
+    if (player == 1) {
+        rfFreezeColorP1Enabled = enabled;
+        rfFreezeColorP1Blue = blueIC;
+    } else if (player == 2) {
+        rfFreezeColorP2Enabled = enabled;
+        rfFreezeColorP2Blue = blueIC;
     }
 }

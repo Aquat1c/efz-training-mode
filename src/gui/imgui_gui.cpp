@@ -232,7 +232,15 @@ namespace ImGuiGui {
             // Values sub-tab (P1/P2 values)
             if (ImGui::BeginTabItem("Values")) {
                 if (ImGui::BeginTable("values_table", 3, ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_SizingStretchProp)) {
-                    ImGui::TableSetupColumn("Label", ImGuiTableColumnFlags_WidthFixed, 120.0f);
+                    // Compute a compact label column width based on the longest label text
+                    const char* labelTexts[] = { "HP", "Meter", "RF", "Freeze RF", "RF color", "X", "Y" };
+                    float maxLabelW = 0.0f;
+                    for (const char* s : labelTexts) {
+                        maxLabelW = (std::max)(maxLabelW, ImGui::CalcTextSize(s).x);
+                    }
+                    const ImGuiStyle& st = ImGui::GetStyle();
+                    const float labelColWidth = maxLabelW + st.CellPadding.x * 2.0f + 6.0f; // small breathing space
+                    ImGui::TableSetupColumn("Label", ImGuiTableColumnFlags_WidthFixed, labelColWidth);
                     ImGui::TableSetupColumn("P1");
                     ImGui::TableSetupColumn("P2");
 
@@ -250,20 +258,76 @@ namespace ImGuiGui {
                     // HP
                     ImGui::TableNextRow();
                     ImGui::TableNextColumn(); ImGui::TextUnformatted("HP");
-                    ImGui::TableNextColumn(); { int v = guiState.localData.hp1; if (ImGui::InputInt("##hp_p1", &v)) guiState.localData.hp1 = CLAMP(v, 0, MAX_HP); }
-                    ImGui::TableNextColumn(); { int v = guiState.localData.hp2; if (ImGui::InputInt("##hp_p2", &v)) guiState.localData.hp2 = CLAMP(v, 0, MAX_HP); }
+                    ImGui::TableNextColumn(); {
+                        int v = guiState.localData.hp1; if (ImGui::InputInt("##hp_p1", &v)) guiState.localData.hp1 = CLAMP(v, 0, MAX_HP);
+                        ImGui::SameLine(); if (ImGui::SmallButton("Max##hp_p1")) guiState.localData.hp1 = MAX_HP;
+                        ImGui::SameLine(); if (ImGui::SmallButton("Zero##hp_p1")) guiState.localData.hp1 = 0;
+                    }
+                    ImGui::TableNextColumn(); {
+                        int v = guiState.localData.hp2; if (ImGui::InputInt("##hp_p2", &v)) guiState.localData.hp2 = CLAMP(v, 0, MAX_HP);
+                        ImGui::SameLine(); if (ImGui::SmallButton("Max##hp_p2")) guiState.localData.hp2 = MAX_HP;
+                        ImGui::SameLine(); if (ImGui::SmallButton("Zero##hp_p2")) guiState.localData.hp2 = 0;
+                    }
 
                     // Meter
                     ImGui::TableNextRow();
                     ImGui::TableNextColumn(); ImGui::TextUnformatted("Meter");
-                    ImGui::TableNextColumn(); { int v = guiState.localData.meter1; if (ImGui::InputInt("##meter_p1", &v)) guiState.localData.meter1 = CLAMP(v, 0, MAX_METER); }
-                    ImGui::TableNextColumn(); { int v = guiState.localData.meter2; if (ImGui::InputInt("##meter_p2", &v)) guiState.localData.meter2 = CLAMP(v, 0, MAX_METER); }
+                    ImGui::TableNextColumn(); {
+                        int v = guiState.localData.meter1; if (ImGui::InputInt("##meter_p1", &v)) guiState.localData.meter1 = CLAMP(v, 0, MAX_METER);
+                        ImGui::SameLine(); if (ImGui::SmallButton("Max##meter_p1")) guiState.localData.meter1 = MAX_METER;
+                        ImGui::SameLine(); if (ImGui::SmallButton("Zero##meter_p1")) guiState.localData.meter1 = 0;
+                    }
+                    ImGui::TableNextColumn(); {
+                        int v = guiState.localData.meter2; if (ImGui::InputInt("##meter_p2", &v)) guiState.localData.meter2 = CLAMP(v, 0, MAX_METER);
+                        ImGui::SameLine(); if (ImGui::SmallButton("Max##meter_p2")) guiState.localData.meter2 = MAX_METER;
+                        ImGui::SameLine(); if (ImGui::SmallButton("Zero##meter_p2")) guiState.localData.meter2 = 0;
+                    }
 
                     // RF
                     ImGui::TableNextRow();
                     ImGui::TableNextColumn(); ImGui::TextUnformatted("RF");
-                    ImGui::TableNextColumn(); { float v = (float)guiState.localData.rf1; if (ImGui::InputFloat("##rf_p1", &v, 0.1f, 1.0f, "%.1f")) guiState.localData.rf1 = CLAMP(v, 0.0f, MAX_RF); }
-                    ImGui::TableNextColumn(); { float v = (float)guiState.localData.rf2; if (ImGui::InputFloat("##rf_p2", &v, 0.1f, 1.0f, "%.1f")) guiState.localData.rf2 = CLAMP(v, 0.0f, MAX_RF); }
+                    ImGui::TableNextColumn(); {
+                        float v = (float)guiState.localData.rf1; if (ImGui::InputFloat("##rf_p1", &v, 0.1f, 1.0f, "%.1f")) guiState.localData.rf1 = CLAMP(v, 0.0f, MAX_RF);
+                        ImGui::SameLine(); if (ImGui::SmallButton("Max##rf_p1")) guiState.localData.rf1 = MAX_RF;
+                        ImGui::SameLine(); if (ImGui::SmallButton("Zero##rf_p1")) guiState.localData.rf1 = 0.0f;
+                    }
+                    ImGui::TableNextColumn(); {
+                        float v = (float)guiState.localData.rf2; if (ImGui::InputFloat("##rf_p2", &v, 0.1f, 1.0f, "%.1f")) guiState.localData.rf2 = CLAMP(v, 0.0f, MAX_RF);
+                        ImGui::SameLine(); if (ImGui::SmallButton("Max##rf_p2")) guiState.localData.rf2 = MAX_RF;
+                        ImGui::SameLine(); if (ImGui::SmallButton("Zero##rf_p2")) guiState.localData.rf2 = 0.0f;
+                    }
+
+                    // Freeze RF + Lock color (placed directly below RF)
+                    ImGui::TableNextRow();
+                    ImGui::TableNextColumn(); ImGui::TextUnformatted("Freeze RF");
+                    ImGui::TableNextColumn();
+                    {
+                        static bool s_uiFreezeP1 = false; static bool s_uiFreezeP1ColorBlue = true;
+                        bool fr1 = s_uiFreezeP1; if (ImGui::Checkbox("Freeze##rf_p1", &fr1)) {
+                            s_uiFreezeP1 = fr1;
+                            if (fr1) { StartRFFreezeOne(1, guiState.localData.rf1); }
+                            else { StopRFFreezePlayer(1); }
+                        }
+                        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Continuously holds RF at the current value.");
+                        ImGui::SameLine(); ImGui::TextDisabled("Lock:"); ImGui::SameLine();
+                        bool lockBlue1 = s_uiFreezeP1ColorBlue; if (ImGui::RadioButton("Red##p1Lock", !lockBlue1)) { s_uiFreezeP1ColorBlue = false; }
+                        ImGui::SameLine(); if (ImGui::RadioButton("Blue##p1Lock", lockBlue1)) { s_uiFreezeP1ColorBlue = true; }
+                        SetRFFreezeColorDesired(1, s_uiFreezeP1, s_uiFreezeP1ColorBlue);
+                    }
+                    ImGui::TableNextColumn();
+                    {
+                        static bool s_uiFreezeP2 = false; static bool s_uiFreezeP2ColorBlue = true;
+                        bool fr2 = s_uiFreezeP2; if (ImGui::Checkbox("Freeze##rf_p2", &fr2)) {
+                            s_uiFreezeP2 = fr2;
+                            if (fr2) { StartRFFreezeOne(2, guiState.localData.rf2); }
+                            else { StopRFFreezePlayer(2); }
+                        }
+                        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Continuously holds RF at the current value.");
+                        ImGui::SameLine(); ImGui::TextDisabled("Lock:"); ImGui::SameLine();
+                        bool lockBlue2 = s_uiFreezeP2ColorBlue; if (ImGui::RadioButton("Red##p2Lock", !lockBlue2)) { s_uiFreezeP2ColorBlue = false; }
+                        ImGui::SameLine(); if (ImGui::RadioButton("Blue##p2Lock", lockBlue2)) { s_uiFreezeP2ColorBlue = true; }
+                        SetRFFreezeColorDesired(2, s_uiFreezeP2, s_uiFreezeP2ColorBlue);
+                    }
 
                     // RF color (formerly IC Color)
                     ImGui::TableNextRow();
