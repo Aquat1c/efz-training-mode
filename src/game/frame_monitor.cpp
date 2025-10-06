@@ -1128,19 +1128,25 @@ void FrameDataMonitor() {
                     // We’ll approximate widths by measuring when menu is hidden; otherwise keep coarse spacing.
                     const int baseX = 305;
                     const int baseY = 430;
-                    // Update left segment
-                    if (g_FrameAdvantageId != -1) {
-                        DirectDrawHook::UpdatePermanentMessage(g_FrameAdvantageId, leftText, leftColor);
+                    if (g_showFrameAdvantageOverlay.load()) {
+                        // Update left segment
+                        if (g_FrameAdvantageId != -1) {
+                            DirectDrawHook::UpdatePermanentMessage(g_FrameAdvantageId, leftText, leftColor);
+                        } else {
+                            g_FrameAdvantageId = DirectDrawHook::AddPermanentMessage(leftText, leftColor, baseX, baseY);
+                        }
+                        // Update right segment: place a few characters to the right; conservative offset of 60px
+                        // Since our overlay draws a background box sized to text, small spacing avoids overlap.
+                        int rightX = baseX + 60;
+                        if (g_FrameAdvantage2Id != -1) {
+                            DirectDrawHook::UpdatePermanentMessage(g_FrameAdvantage2Id, rightText, rightColor);
+                        } else {
+                            g_FrameAdvantage2Id = DirectDrawHook::AddPermanentMessage(rightText, rightColor, rightX, baseY);
+                        }
                     } else {
-                        g_FrameAdvantageId = DirectDrawHook::AddPermanentMessage(leftText, leftColor, baseX, baseY);
-                    }
-                    // Update right segment: place a few characters to the right; conservative offset of 60px
-                    // Since our overlay draws a background box sized to text, small spacing avoids overlap.
-                    int rightX = baseX + 60;
-                    if (g_FrameAdvantage2Id != -1) {
-                        DirectDrawHook::UpdatePermanentMessage(g_FrameAdvantage2Id, rightText, rightColor);
-                    } else {
-                        g_FrameAdvantage2Id = DirectDrawHook::AddPermanentMessage(rightText, rightColor, rightX, baseY);
+                        // If hidden, ensure any existing FA messages are cleared
+                        if (g_FrameAdvantageId != -1) { DirectDrawHook::RemovePermanentMessage(g_FrameAdvantageId); g_FrameAdvantageId = -1; }
+                        if (g_FrameAdvantage2Id != -1) { DirectDrawHook::RemovePermanentMessage(g_FrameAdvantage2Id); g_FrameAdvantage2Id = -1; }
                     }
 
                     // After FA2 is known, we can stop tracking this RG instance

@@ -446,7 +446,7 @@ void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, shor
         std::string frameAdvText = FormatFrameAdvantage(frameAdvantage);
         
         // Display the calculated advantage (unless suppressed by RG overlay takeover)
-        if (currentInternalFrame >= g_SkipRegularFAOverlayUntilFrame.load()) {
+        if (g_showFrameAdvantageOverlay.load() && currentInternalFrame >= g_SkipRegularFAOverlayUntilFrame.load()) {
             if (g_FrameAdvantageId != -1) {
                 DirectDrawHook::UpdatePermanentMessage(g_FrameAdvantageId, frameAdvText, 
                     frameAdvantage >= 0 ? RGB(0, 255, 0) : RGB(255, 0, 0));
@@ -484,7 +484,7 @@ void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, shor
         std::string frameAdvText = FormatFrameAdvantage(frameAdvantage);
         
         // Display the calculated advantage (unless suppressed by RG overlay takeover)
-        if (currentInternalFrame >= g_SkipRegularFAOverlayUntilFrame.load()) {
+        if (g_showFrameAdvantageOverlay.load() && currentInternalFrame >= g_SkipRegularFAOverlayUntilFrame.load()) {
             if (g_FrameAdvantageId != -1) {
                 DirectDrawHook::UpdatePermanentMessage(g_FrameAdvantageId, frameAdvText, 
                     frameAdvantage >= 0 ? RGB(0, 255, 0) : RGB(255, 0, 0));

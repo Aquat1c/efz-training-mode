@@ -468,6 +468,18 @@ namespace ImGuiGui {
                 }
                 if (ImGui::IsItemHovered()) ImGui::SetTooltip("Let any character use FM regardless of HP.");
 
+                // Frame Advantage overlay visibility
+                bool showFA = g_showFrameAdvantageOverlay.load();
+                if (ImGui::Checkbox("Show Frame Advantage Overlay", &showFA)) {
+                    g_showFrameAdvantageOverlay.store(showFA);
+                    // If turning off, immediately clear any existing FA messages
+                    if (!showFA) {
+                        if (g_FrameAdvantageId != -1) { DirectDrawHook::RemovePermanentMessage(g_FrameAdvantageId); g_FrameAdvantageId = -1; }
+                        if (g_FrameAdvantage2Id != -1) { DirectDrawHook::RemovePermanentMessage(g_FrameAdvantage2Id); g_FrameAdvantage2Id = -1; }
+                    }
+                }
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Toggles the numeric frame advantage readout (including RG FA1/FA2).");
+
                 ImGui::EndTabItem();
             }
 
