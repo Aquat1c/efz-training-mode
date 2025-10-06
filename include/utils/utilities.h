@@ -462,6 +462,9 @@ extern std::atomic<int> triggerOnRGMacroSlot;
 // Debug toggle: enable pre-buffering (freeze) of wakeup specials/supers/dashes
 extern std::atomic<bool> g_wakeBufferingEnabled;
 
+// UI: Show/hide the on-screen Frame Advantage overlay (default OFF)
+extern std::atomic<bool> g_showFrameAdvantageOverlay;
+
 // Global toggle: enable/disable Counter RG early-restore behavior
 extern std::atomic<bool> g_counterRGEnabled;
 

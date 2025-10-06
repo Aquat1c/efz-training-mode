@@ -721,6 +721,9 @@ std::atomic<bool> g_wakeBufferingEnabled{false};
 // Global toggle: enable/disable Counter RG early-restore behavior (default OFF)
 std::atomic<bool> g_counterRGEnabled{false};
 
+// UI: gate for the regular Frame Advantage overlay (default OFF)
+std::atomic<bool> g_showFrameAdvantageOverlay{false};
+
 // Deep frame advantage instrumentation toggle
 std::atomic<bool> g_deepFrameAdvDebug{false};
 
