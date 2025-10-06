@@ -84,6 +84,22 @@ The tool includes advanced training features accessible through the in-game over
   - Jumps use immediate input injection with direction (Forward/Neutral/Back) respecting facing
   - Dashes are queued to the input buffer as double-tap motions
 
+## Macros
+
+Record and play back inputs with engine-accurate timing. Macros capture both immediate button presses and the real in-game input buffer (for directions and motions).
+
+- Slots: Macros live in numbered slots. Use the hotkey to switch slots (default: K). The current slot is also shown in the Macros tab in the overlay.
+- Record flow: Press the Record hotkey (default: I) once to arm; press again to start recording; press again to stop. Recording is sampled at 64 Hz and stores both buttons and the buffer state.
+- Play: Press the Play hotkey (default: O) to play the current slot. While a macro is playing, you continue controlling P1 and the macro controls P2. Directions automatically flip based on P2 facing.
+- Triggers integration: In the Auto Action tab, choose "Macro" in the first Action combo and then select the Slot. This runs the macro whenever that trigger fires (After Block, On Wakeup, etc.). The overlay will show "Macro Slot #X" when active.
+- Frame-step aware: If you pause Practice and frame-step, recording only advances when the game actually consumes a new input buffer frame so you don’t end up with long held directions.
+
+Default macro hotkeys (configurable in Settings → Hotkeys or in the INI):
+
+- Record: I
+- Play: O
+- Next Slot: K
+
 ## Known Issues
 
 1. **RG Frame Advantage Calculations**: The frame advantage displayed for some moves may be slightly off due to complexities in EFZ's RG system.

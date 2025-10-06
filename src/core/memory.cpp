@@ -4,6 +4,7 @@
 #include "../include/core/memory.h"
 #include "../include/core/constants.h"
 #include "../include/utils/utilities.h"
+#include "../include/utils/config.h"
 
 #include "../include/core/logger.h"
 #include <windows.h>
@@ -12,6 +13,8 @@
 #include <sstream>
 #include <algorithm>
 #include <cmath>
+// For global shutdown flag
+#include "../include/core/globals.h"
 
 // Add static variables for position saving
 static double saved_x1 = 240.0, saved_y1 = 0.0;
@@ -323,6 +326,30 @@ bool SetICColorDirect(bool p1BlueIC, bool p2BlueIC) {
     return success;
 }
 
+// Write IC color for only one player while preserving the other's current color
+bool SetICColorPlayer(int player, bool blueIC) {
+    uintptr_t base = GetEFZBase();
+    if (!base) return false;
+
+    // Read current IC colors so we don't clobber the other side
+    int p1IC = 0, p2IC = 0;
+    uintptr_t p1ICAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P1, IC_COLOR_OFFSET);
+    uintptr_t p2ICAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P2, IC_COLOR_OFFSET);
+    if (p1ICAddr) SafeReadMemory(p1ICAddr, &p1IC, sizeof(p1IC));
+    if (p2ICAddr) SafeReadMemory(p2ICAddr, &p2IC, sizeof(p2IC));
+
+    bool p1Blue = (p1IC != 0);
+    bool p2Blue = (p2IC != 0);
+    if (player == 1) {
+        p1Blue = blueIC;
+    } else if (player == 2) {
+        p2Blue = blueIC;
+    } else {
+        return false;
+    }
+    return SetICColorDirect(p1Blue, p2Blue);
+}
+
 void UpdatePlayerValues(uintptr_t base, uintptr_t baseOffsetP1, uintptr_t baseOffsetP2) {
     // This function applies values from the displayData struct to the game
     // (Used by the GUI dialogs)
@@ -496,10 +523,17 @@ void UpdatePlayerValuesExceptRF(uintptr_t base, uintptr_t baseOffsetP1, uintptr_
 
 // Add near other global variables
 std::atomic<bool> rfFreezing(false);
+std::atomic<bool> rfFreezeP1Active(false);
+std::atomic<bool> rfFreezeP2Active(false);
 std::atomic<double> rfFreezeValueP1(0.0);
 std::atomic<double> rfFreezeValueP2(0.0);
 std::thread rfFreezeThread;
 bool rfThreadRunning = false;
+// Desired RF-freeze IC color lock settings (optional)
+static bool rfFreezeColorP1Enabled = false;
+static bool rfFreezeColorP1Blue = false;
+static bool rfFreezeColorP2Enabled = false;
+static bool rfFreezeColorP2Blue = false;
 
 // Improved RF freeze thread function with better error handling
 void RFFreezeThreadFunc() {
@@ -512,7 +546,7 @@ void RFFreezeThreadFunc() {
         return fabs(a - b) < 1e-6;   // tiny tolerance for float write verification
     };
     
-    while (rfThreadRunning) {
+    while (rfThreadRunning && !g_isShuttingDown.load()) {
         if (rfFreezing.load()) {
             uintptr_t base = GetEFZBase();
             if (base) {
@@ -540,7 +574,7 @@ void RFFreezeThreadFunc() {
                             double curP2 = *p2RFAddr;
                             bool wrote = false;
 
-                            if (!nearlyEqual(curP1, targetP1)) {
+                            if (rfFreezeP1Active.load() && !nearlyEqual(curP1, targetP1)) {
                                 DWORD oldProtect1;
                                 if (VirtualProtect(p1RFAddr, sizeof(double), PAGE_EXECUTE_READWRITE, &oldProtect1)) {
                                     *p1RFAddr = targetP1;
@@ -548,7 +582,7 @@ void RFFreezeThreadFunc() {
                                     wrote = true;
                                 }
                             }
-                            if (!nearlyEqual(curP2, targetP2)) {
+                            if (rfFreezeP2Active.load() && !nearlyEqual(curP2, targetP2)) {
                                 DWORD oldProtect2;
                                 if (VirtualProtect(p2RFAddr, sizeof(double), PAGE_EXECUTE_READWRITE, &oldProtect2)) {
                                     *p2RFAddr = targetP2;
@@ -573,7 +607,7 @@ void RFFreezeThreadFunc() {
             }
         }
         else {
-            // When not freezing, back off considerably
+            // When not freezing, back off considerably and avoid memory touching
             sleepMs = maxSleepMs;
         }
         
@@ -601,15 +635,51 @@ void StartRFFreeze(double p1Value, double p2Value) {
     
     // Enable freezing
     rfFreezing.store(true);
+    rfFreezeP1Active.store(true);
+    rfFreezeP2Active.store(true);
     
     LogOut("[RF] Started freezing RF values: P1=" + std::to_string(p1Value) + 
            ", P2=" + std::to_string(p2Value), detailedLogging.load());
 }
 
+// Start freezing for one player only
+void StartRFFreezeOne(int player, double value) {
+    if (player == 1) {
+        rfFreezeValueP1.store(value);
+        rfFreezeP1Active.store(true);
+    } else if (player == 2) {
+        rfFreezeValueP2.store(value);
+        rfFreezeP2Active.store(true);
+    } else {
+        return;
+    }
+    // Ensure global switch is on if any side is active
+    rfFreezing.store(rfFreezeP1Active.load() || rfFreezeP2Active.load());
+    LogOut(std::string("[RF] Started single-side RF freeze for P") + (player==1?"1":"2") +
+           " value=" + std::to_string(value), detailedLogging.load());
+}
+
 // Stop freezing RF values
 void StopRFFreeze() {
     rfFreezing.store(false);
+    rfFreezeP1Active.store(false);
+    rfFreezeP2Active.store(false);
     LogOut("[RF] Stopped freezing RF values", detailedLogging.load());
+}
+
+void StopRFFreezePlayer(int player) {
+    if (player == 1) {
+        rfFreezeP1Active.store(false);
+    } else if (player == 2) {
+        rfFreezeP2Active.store(false);
+    } else {
+        return;
+    }
+    // If neither side is active, flip the global switch off
+    if (!rfFreezeP1Active.load() && !rfFreezeP2Active.load()) {
+        rfFreezing.store(false);
+    }
+    LogOut(std::string("[RF] Stopped RF freeze for P") + (player==1?"1":"2"), detailedLogging.load());
 }
 
 // Stop the RF freeze background thread entirely
@@ -617,5 +687,64 @@ void StopRFFreezeThread() {
     if (rfThreadRunning) {
         rfThreadRunning = false;
         LogOut("[RF] RF freeze thread signaled to stop", detailedLogging.load());
+    }
+}
+
+// Allow external modules to toggle neutral-only RF freeze behavior
+void SetRFFreezeNeutralOnly(bool enabled) {
+    // Settings are already read inside UpdateRFFreezeTick via Config::GetSettings(),
+    // but this setter is kept for compatibility and potential future caching.
+    // If a cached flag is introduced later, wire it here.
+    (void)enabled; // no-op for now
+}
+
+// Lightweight single-tick updater to be driven by FrameDataMonitor when desired
+void UpdateRFFreezeTick() {
+    if (!rfFreezing.load()) return;
+    uintptr_t base = GetEFZBase();
+    if (!base) return;
+    uintptr_t p1Base = 0, p2Base = 0;
+    if (!SafeReadMemory(base + EFZ_BASE_OFFSET_P1, &p1Base, sizeof(p1Base))) return;
+    if (!SafeReadMemory(base + EFZ_BASE_OFFSET_P2, &p2Base, sizeof(p2Base))) return;
+    if (!p1Base || !p2Base) return;
+    double* p1RFAddr = (double*)(p1Base + RF_OFFSET);
+    double* p2RFAddr = (double*)(p2Base + RF_OFFSET);
+    // Optional neutral-only gating
+    bool neutralOnly = Config::GetSettings().freezeRFOnlyWhenNeutral;
+    auto isAllowedNeutral = [](short m){ return (m==0 || m==1 || m==2 || m==3 || m==4 || m==7 || m==8 || m==9 || m==13); };
+    short m1=0, m2=0;
+    if (neutralOnly) {
+        short t1=0, t2=0;
+        SafeReadMemory(p1Base + MOVE_ID_OFFSET, &t1, sizeof(t1));
+        SafeReadMemory(p2Base + MOVE_ID_OFFSET, &t2, sizeof(t2));
+        m1 = t1; m2 = t2;
+    }
+    __try {
+        DWORD old1=0, old2=0;
+        double t1 = rfFreezeValueP1.load();
+        double t2 = rfFreezeValueP2.load();
+        bool canP1 = rfFreezeP1Active.load() && (!neutralOnly || isAllowedNeutral(m1));
+        bool canP2 = rfFreezeP2Active.load() && (!neutralOnly || isAllowedNeutral(m2));
+        if (canP1 && p1RFAddr && VirtualProtect(p1RFAddr, sizeof(double), PAGE_EXECUTE_READWRITE, &old1)) { *p1RFAddr = t1; VirtualProtect(p1RFAddr, sizeof(double), old1, &old1); }
+        if (canP2 && p2RFAddr && VirtualProtect(p2RFAddr, sizeof(double), PAGE_EXECUTE_READWRITE, &old2)) { *p2RFAddr = t2; VirtualProtect(p2RFAddr, sizeof(double), old2, &old2); }
+        // Optional: enforce IC color while RF is frozen (per-player)
+        if (rfFreezeP1Active.load() && rfFreezeColorP1Enabled) {
+            SetICColorPlayer(1, rfFreezeColorP1Blue);
+        }
+        if (rfFreezeP2Active.load() && rfFreezeColorP2Enabled) {
+            SetICColorPlayer(2, rfFreezeColorP2Blue);
+        }
+    } __except(EXCEPTION_EXECUTE_HANDLER) {
+        // Ignore access faults; tick is best-effort
+    }
+}
+
+void SetRFFreezeColorDesired(int player, bool enabled, bool blueIC) {
+    if (player == 1) {
+        rfFreezeColorP1Enabled = enabled;
+        rfFreezeColorP1Blue = blueIC;
+    } else if (player == 2) {
+        rfFreezeColorP2Enabled = enabled;
+        rfFreezeColorP2Blue = blueIC;
     }
 }

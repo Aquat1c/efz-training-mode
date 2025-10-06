@@ -26,13 +26,16 @@
 #include "../include/game/game_state.h"
 #include "../include/core/globals.h"  // Add this include
 #include "../include/game/collision_hook.h"
+#include "../include/game/practice_hotkey_gate.h"
+#include "../include/game/practice_offsets.h"
+// forward declaration for overlay gate
+namespace PracticeOverlayGate { void EnsureInstalled(); void SetMenuVisible(bool); }
 #pragma comment(lib, "winmm.lib")
 
 // Forward declarations for functions in other files
 void MonitorKeys();
 void FrameDataMonitor();
 void UpdateConsoleTitle();
-void MonitorOnlineStatus();
 void WriteStartupLog(const std::string& message);
 extern std::atomic<bool> inStartupPhase;
 
@@ -66,6 +69,19 @@ void DelayedInitialization(HMODULE hModule) {
             return; // Early exit if MinHook fails
         }
         LogOut("[SYSTEM] MinHook initialized successfully.", true);
+
+        // Attempt to install Practice hotkey gate (will succeed only after EfzRevival.dll present)
+        try {
+            if (PracticeHotkeyGate::Install()) {
+                LogOut("[HOTKEY] Practice hotkey gate active (menu suppression)", true);
+            } else {
+                LogOut("[HOTKEY] Practice hotkey gate not installed yet (EfzRevival may not be loaded)", true);
+            }
+            // Also install overlay toggle hooks (will silently do nothing if module not loaded yet)
+            PracticeOverlayGate::EnsureInstalled();
+        } catch (...) {
+            LogOut("[HOTKEY] Exception while installing practice hotkey gate", true);
+        }
 
         // Install hooks (with guards)
         try {
@@ -108,11 +124,10 @@ void DelayedInitialization(HMODULE hModule) {
             SetConsoleReady(false);
         }
 
-        // Start essential threads.
-        LogOut("[SYSTEM] Starting background threads...", true);
-        std::thread(UpdateConsoleTitle).detach();
-        std::thread(FrameDataMonitor).detach();
-        std::thread(MonitorOnlineStatus).detach();
+    // Start essential threads.
+    LogOut("[SYSTEM] Starting background threads...", true);
+    // Note: UpdateConsoleTitle thread is already started by InitializeLogging(); don't start a duplicate here.
+    std::thread(FrameDataMonitor).detach();
         LogOut("[SYSTEM] Essential background threads started.", true);
 
         // Use standard Windows input APIs instead of DirectInput
@@ -126,10 +141,11 @@ void DelayedInitialization(HMODULE hModule) {
         LogOut("EFZ Training Mode initialized successfully", true);
         WriteStartupLog("Delayed initialization complete");
 
-        // Initialize D3D9 hook for overlays once at startup (on a separate thread)
-        std::thread([]{
+    // Initialize D3D9 hook for overlays once at startup (on a separate thread)
+    std::thread([]{
             Sleep(2000); // Give the game a moment to be fully ready
             try {
+        if (g_onlineModeActive.load()) return; // don't init if online already
                 if (DirectDrawHook::InitializeD3D9()) {
                     LogOut("[SYSTEM] D3D9 Overlay system initialized.", true);
                 } else {
@@ -144,95 +160,11 @@ void DelayedInitialization(HMODULE hModule) {
         g_initialized = true;
         inStartupPhase = false;
 
-        // Initialize RF freeze thread
-        InitRFFreezeThread();
+    // RF freeze now maintained inline by FrameDataMonitor; no background thread needed
 
-        // Add ImGui monitoring thread
-        std::thread([]{
-            // Wait a bit for everything to initialize
-            Sleep(5000);
+    // ImGui status monitoring thread removed; window/key state managed by existing update paths
 
-            bool prevInit = false;
-            bool prevVisible = false;
-            unsigned long long lastLog = 0;
-
-            // Log ImGui rendering status on change, at most once per 5 seconds
-            while (!g_isShuttingDown.load()) {
-                bool inited = ImGuiImpl::IsInitialized();
-                bool visible = inited && ImGuiImpl::IsVisible();
-                unsigned long long now = GetTickCount64();
-
-                if (inited && (inited != prevInit || visible != prevVisible)) {
-                    if (now - lastLog >= 5000ULL) {
-                        LogOut(
-                            std::string("[IMGUI_MONITOR] Status: Initialized=") +
-                            (inited ? "1" : "0") +
-                            ", Visible=" + (visible ? "1" : "0"),
-                            detailedLogging.load());
-                        lastLog = now;
-                    }
-                    prevInit = inited;
-                    prevVisible = visible;
-                }
-
-                // Check every 5 seconds
-                Sleep(5000);
-            }
-        }).detach();
-
-        // Screen state monitoring thread
-        std::thread([]{
-            GameMode lastGameMode = GameMode::Unknown;
-            bool lastCharSelectState = false;
-
-            LogOut("[SYSTEM] Starting screen state monitoring thread", true);
-
-            // Keep monitoring while the DLL is loaded
-            while (!g_isShuttingDown.load()) {
-                GameMode currentMode = GetCurrentGameMode();
-                bool isCharSelect = IsInCharacterSelectScreen();
-
-                // When any game mode changes or character select state changes
-                if (currentMode != lastGameMode || isCharSelect != lastCharSelectState) {
-                    LogOut("[SCREEN_MONITOR] Screen state changed - Mode: " +
-                              GetGameModeName(lastGameMode) + " → " + GetGameModeName(currentMode) +
-                              ", CharSelect: " + (lastCharSelectState ? "Yes" : "No") + " → " +
-                              (isCharSelect ? "Yes" : "No"),
-                          true);
-
-                    DebugDumpScreenState();
-                    lastGameMode = currentMode;
-                    lastCharSelectState = isCharSelect;
-
-                    if (IsInGameplayState() && isCharSelect) {
-                        LogOut("[SCREEN_MONITOR] Detected transition from gameplay to character select", true);
-                        StopBufferFreezing();
-                        SetBGMSuppressed(false);
-                        LogOut("[BUFFER_STATE] g_bufferFreezingActive = " + std::to_string(g_bufferFreezingActive), true);
-                        LogOut("[BUFFER_STATE] g_indexFreezingActive = " + std::to_string(g_indexFreezingActive), true);
-                    }
-                }
-
-                GamePhase phase = GetCurrentGamePhase();
-                static GamePhase lastPhase = GamePhase::Unknown;
-                if (phase != lastPhase) {
-                    LogOut("[SCREEN_MONITOR] Phase change: " + std::to_string((int)lastPhase) + " -> " + std::to_string((int)phase), true);
-                    DebugDumpScreenState();
-
-                    if (lastPhase == GamePhase::Match && phase != GamePhase::Match) {
-                        StopBufferFreezing();
-                        ResetActionFlags();
-                        g_bufferFreezingActive = false;
-                        g_indexFreezingActive = false;
-                    }
-                    lastPhase = phase;
-                }
-
-                std::this_thread::sleep_for(std::chrono::milliseconds(100));
-            }
-
-            LogOut("[SCREEN_MONITOR] Screen state monitoring thread stopped", true);
-        }).detach();
+    // Screen state monitoring thread removed to reduce overhead; phase changes are logged from FrameDataMonitor only
     } catch (...) {
         // Ensure we don't crash the game due to an unhandled exception during startup
         LogOut("[SYSTEM] Exception during DelayedInitialization (top-level catch).", true);
@@ -259,6 +191,8 @@ void InitializeConfig() {
 BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserved) {
     switch (ul_reason_for_call) {
     case DLL_PROCESS_ATTACH:
+    // Remember our own module for safe self-unload later
+    g_hSelfModule = hModule;
         DisableThreadLibraryCalls(hModule);
         std::thread(DelayedInitialization, hModule).detach();
         break;

@@ -21,6 +21,9 @@
 #define EFZ_BASE_OFFSET_P1 0x390104
 #define EFZ_BASE_OFFSET_P2 0x390108
 #define EFZ_BASE_OFFSET_GAME_STATE 0x39010C // NEW: For game state
+// Screen/state byte (observed via Cheat Engine):
+// 0=Title, 1=Character Select, 2=Loading, 3=In-game, 5=Win screen, 6=Settings, 8=Replay select
+#define EFZ_BASE_OFFSET_SCREEN_STATE 0x390148
 #define XPOS_OFFSET 0x20
 #define YPOS_OFFSET 0x28
 #define HP_OFFSET 0x108
@@ -174,8 +177,12 @@
 // Dash states
 #define FORWARD_DASH_START_ID 163
 #define FORWARD_DASH_RECOVERY_ID 164
+#define FORWARD_DASH_RECOVERY_SENTINEL_ID 178 // New: variant recovery state used for clean control handoff
 #define BACKWARD_DASH_START_ID 165
 #define BACKWARD_DASH_RECOVERY_ID 166
+// Character-specific exceptions
+// Kaori's forward dash start state uses MoveID 250 instead of the universal 163.
+#define KAORI_FORWARD_DASH_START_ID 250
 
 // Frame advantage constants (internal frames)
 #define FRAME_ADV_LVL1_BLOCK 9
@@ -214,8 +221,10 @@
 #define TRIGGER_ON_WAKEUP     2
 #define TRIGGER_AFTER_HITSTUN 3
 #define TRIGGER_AFTER_AIRTECH 4  // New trigger
+#define TRIGGER_ON_RG         5  // New: On Recoil Guard actionable
 
-// Auto-action types (keep existing)
+// Auto-action types
+// IMPORTANT: These numeric IDs are persisted (GUI combo indices map to them). Maintain order.
 #define ACTION_NONE           0
 #define ACTION_5A             0
 #define ACTION_5B             1
@@ -229,13 +238,29 @@
 #define ACTION_QCF            9
 #define ACTION_DP            10
 #define ACTION_QCB           11
-#define ACTION_SUPER1        12
-#define ACTION_SUPER2        13
-#define ACTION_JUMP          14
-#define ACTION_BACKDASH      15
-#define ACTION_BLOCK         16
-#define ACTION_CUSTOM        17
-#define ACTION_421           18 // or next available value
+#define ACTION_421           12  // Half-circle down (421)
+#define ACTION_SUPER1        13  // 41236 (HCF)
+#define ACTION_SUPER2        14  // 214236 hybrid (replaces removed 63214)
+#define ACTION_236236        15  // Double QCF
+#define ACTION_214214        16  // Double QCB
+#define ACTION_JUMP          17
+#define ACTION_BACKDASH      18
+#define ACTION_FORWARD_DASH  19
+#define ACTION_BLOCK         20
+#define ACTION_FINAL_MEMORY  21  // Virtual action to request per-character Final Memory
+#define ACTION_641236        22  // 641236 Super
+#define ACTION_463214        23
+#define ACTION_412           24
+#define ACTION_22            25
+#define ACTION_4123641236    26
+#define ACTION_6321463214    27
+// Directional normals (forward/back) appended to preserve existing ordering
+#define ACTION_6A             28
+#define ACTION_6B             29
+#define ACTION_6C             30
+#define ACTION_4A             31
+#define ACTION_4B             32
+#define ACTION_4C             33
 
 // Default delay for triggers
 #define DEFAULT_TRIGGER_DELAY 0  // Default delay for all triggers
@@ -243,7 +268,7 @@
 // Control IDs for auto-action UI
 #define IDC_AUTOACTION_ENABLE     5001
 #define IDC_AUTOACTION_ACTION     5003
-#define IDC_AUTOACTION_CUSTOM_ID  5004
+#define IDC_AUTOACTION_CUSTOM_ID  5004 // (deprecated/no-op)
 #define IDC_AUTOACTION_PLAYER     5005
 
 // Add trigger checkboxes and delay controls
@@ -264,11 +289,26 @@
 #define IDC_TRIGGER_AFTER_HITSTUN_ACTION   5020
 #define IDC_TRIGGER_AFTER_AIRTECH_ACTION   5021
 
+// New: On Recoil Guard trigger controls
+#define IDC_TRIGGER_ON_RG_CHECK            5027
+#define IDC_TRIGGER_ON_RG_DELAY            5028
+#define IDC_TRIGGER_ON_RG_ACTION           5029
+
 // Custom action IDs for each trigger
-#define IDC_TRIGGER_AFTER_BLOCK_CUSTOM     5022
-#define IDC_TRIGGER_ON_WAKEUP_CUSTOM       5023
-#define IDC_TRIGGER_AFTER_HITSTUN_CUSTOM   5024
-#define IDC_TRIGGER_AFTER_AIRTECH_CUSTOM   5025
+#define IDC_TRIGGER_AFTER_BLOCK_CUSTOM     5022 // deprecated
+#define IDC_TRIGGER_ON_WAKEUP_CUSTOM       5023 // deprecated
+#define IDC_TRIGGER_AFTER_HITSTUN_CUSTOM   5024 // deprecated
+#define IDC_TRIGGER_AFTER_AIRTECH_CUSTOM   5025 // deprecated
+
+// Debug/experimental: wake buffering toggle checkbox
+#define IDC_TRIGGER_WAKE_BUFFER_CHECK      5026
+
+// Macro selection combo boxes for each trigger ("None" + Slot 1..N)
+#define IDC_TRIGGER_AFTER_BLOCK_MACRO      5030
+#define IDC_TRIGGER_ON_WAKEUP_MACRO        5031
+#define IDC_TRIGGER_AFTER_HITSTUN_MACRO    5032
+#define IDC_TRIGGER_AFTER_AIRTECH_MACRO    5033
+#define IDC_TRIGGER_ON_RG_MACRO            5034
 
 // After your existing character constants, add:
 
@@ -300,6 +340,7 @@
 
 // Character-specific offsets
 // Ikumi's blood meter and genocide timer
+#define IKUMI_LEVEL_GAUGE_OFFSET 0x3148  // 0..99 (100 triggers blood level up)
 #define IKUMI_BLOOD_OFFSET   0x314C  // Blood meter (0-8)
 #define IKUMI_GENOCIDE_OFFSET 0x3150  // Genocide timer
 
@@ -314,6 +355,10 @@
 //Misuzu
 #define MISUZU_FEATHER_OFFSET 0x3464
 #define MISUZU_FEATHER_MAX 3 // Feather count ranges from 0-3
+// Misuzu Poison (timer and level)
+#define MISUZU_POISON_TIMER_OFFSET 0x345C  // Counts down 3000->0 while poisoned
+#define MISUZU_POISON_LEVEL_OFFSET 0x3460  // 0=inactive, nonzero=active (any value)
+#define MISUZU_POISON_TIMER_MAX    3000
 
 // Mishio (Element system)
 // Offsets relative to player base (from reverse-engineering/CE)
@@ -378,10 +423,25 @@
 // Raw input offsets from player base (from Cheat Engine findings)
 #define HORIZONTAL_INPUT_OFFSET 0x188  // Left = 255, Right = 1, Neutral = 0
 #define VERTICAL_INPUT_OFFSET   0x189  // Up = 255, Down = 1, Neutral = 0
-#define BUTTON_A_OFFSET         0x190  // 0 = not pressed, 1 = pressed
-#define BUTTON_B_OFFSET         0x194
-#define BUTTON_C_OFFSET         0x198
-#define BUTTON_D_OFFSET         0x19C
+// Immediate button registers are contiguous bytes after vertical input
+#define BUTTON_A_OFFSET         0x18A  // 0 = not pressed, 1 = pressed
+#define BUTTON_B_OFFSET         0x18B
+#define BUTTON_C_OFFSET         0x18C
+#define BUTTON_D_OFFSET         0x18D
+
+// Block helper aliases (same raw slots as inputs)
+#define BLOCK_DIRECTION_OFFSET  HORIZONTAL_INPUT_OFFSET // signed: -1 (left) / +1 (right) / 0 neutral
+#define BLOCK_STANCE_OFFSET     VERTICAL_INPUT_OFFSET   // 0=stand, 1=crouch (down held)
+
+// Animation/Frame data traversal (for per-frame block flags)
+#define ANIM_TABLE_OFFSET                 0x164   // pointer to animation table
+#define CURRENT_FRAME_INDEX_OFFSET        0x0A    // current frame index within state
+#define ANIM_ENTRY_STRIDE                 8       // bytes per state entry in anim table
+#define ANIM_ENTRY_FRAMES_PTR_OFFSET      4       // within entry, pointer to frames array
+#define FRAME_BLOCK_STRIDE                200     // bytes per frame block (0xC8)
+#define FRAME_ATTACK_PROPS_OFFSET         170     // word: high/low/any bits (0xAA)
+#define FRAME_HIT_PROPS_OFFSET            176     // word: blockable bit at 0x10 (0xB0)
+#define FRAME_GUARD_PROPS_OFFSET          178     // word: extra guard metadata (0xB2)
 
 // Raw input values
 #define RAW_INPUT_UP    255
@@ -389,3 +449,119 @@
 #define RAW_INPUT_LEFT  255
 #define RAW_INPUT_RIGHT 1
 #define RAW_INPUT_NEUTRAL 0
+
+// Akiko (Minase) – character-specific offsets
+// From CE table and wiki:
+// - Bullet cycle used by 236A/236B routes (integer)
+// - Time-slow trigger: 0=inactive, 1=A, 2=B, 3=C, 4=Infinite timer
+#define AKIKO_BULLET_CYCLE_OFFSET        0x3150
+#define AKIKO_TIMESLOW_TRIGGER_OFFSET    0x0160
+#define AKIKO_TIMESLOW_INACTIVE          0
+#define AKIKO_TIMESLOW_A                 1
+#define AKIKO_TIMESLOW_B                 2
+#define AKIKO_TIMESLOW_C                 3
+#define AKIKO_TIMESLOW_INFINITE          4
+
+// Akiko time-slow on-screen counter digits (observed as XYZ). When set to 000, time-slow persists.
+// These are 4-byte integers at the following offsets relative to the player base:
+//  - Third number (X):   +0x3154
+//  - Second number (Y):  +0x3158
+//  - First number (Z):   +0x315C
+#define AKIKO_TIMESLOW_THIRD_OFFSET      0x3154
+#define AKIKO_TIMESLOW_SECOND_OFFSET     0x3158
+#define AKIKO_TIMESLOW_FIRST_OFFSET      0x315C
+
+// Mio – stance (short vs long) reuses the shared 0x3150 slot used by other characters for their
+// own mechanics (e.g., Ikumi genocide / Akiko bullet cycle). Safe to alias by character ID.
+// Observed values: 0 = Short stance, 1 = Long stance.
+#define MIO_STANCE_OFFSET                0x3150
+#define MIO_STANCE_SHORT                 0
+#define MIO_STANCE_LONG                  1
+
+// Kano – magic meter (0..10000) shares 0x3150 slot (character-specific reuse)
+#define KANO_MAGIC_OFFSET                0x3150
+#define KANO_MAGIC_MAX                   10000
+
+// Nayuki (Awake) – Snowbunnies timer uses the shared 0x3150 slot
+// Observed behavior (CE): counts down from ~3000 to 0 while active
+#define NAYUKIB_SNOWBUNNY_TIMER_OFFSET   0x3150
+#define NAYUKIB_SNOWBUNNY_MAX            3000
+#define NAYUKIB_SNOWBUNNY_ACTIVE_FLAGS_BASE  0x3154  // Array: +0x3154 + (4*index) for 8 snowbunnies
+
+// Akiko – Clean Hit helper last-hit Move IDs for 623 rekka
+// A/B: 3rd hit ends at moveId 259; C: 6th hit ends at moveId 254
+#define AKIKO_MOVE_623_LAST_AB           259
+#define AKIKO_MOVE_623_LAST_C            254
+
+// Neyuki (Sleepy Nayuki Minase) – Jam count
+// From CE/decomp: integer at +0x3148 on the player struct (same slot other chars repurpose)
+#define NEYUKI_JAM_COUNT_OFFSET          0x3148
+#define NEYUKI_JAM_COUNT_MAX             9
+
+// Mai (Kawasumi) – Mini-Mai system (single multi-purpose timer + status byte)
+// Findings (Cheat Engine + decomp correlation):
+//   +0x3144 : status byte
+//              0 = inactive
+//              1 = Mini-Mai active (summoned)
+//              2 = Unsummon sequence
+//              3 = Charging (cooldown before next summon)
+//              4 = Awakening install
+//   +0x3148 : multi-use timer (int). Ranges depend on status:
+//              - Active (1)      : up to 10000
+//              - Charge (3)      : up to 1200
+//              - Awakening (4)   : up to 10000
+// We keep legacy field names (ghost/charge/awakening) in DisplayData but they all map to the same timer based on status.
+#define MAI_STATUS_OFFSET                0x3144  // byte
+#define MAI_MULTI_TIMER_OFFSET           0x3148  // int (shared)
+// Backwards compatibility aliases (all point to multi-timer; code paths choose by status)
+#define MAI_GHOST_TIME_OFFSET            MAI_MULTI_TIMER_OFFSET
+#define MAI_GHOST_CHARGE_OFFSET          MAI_MULTI_TIMER_OFFSET
+#define MAI_AWAKENING_TIMER_OFFSET       MAI_MULTI_TIMER_OFFSET
+// Status-specific maxima
+#define MAI_GHOST_TIME_MAX               10000
+#define MAI_GHOST_CHARGE_MAX             1200
+#define MAI_AWAKENING_MAX                10000
+// Additional Mai internal helper flags (observed in decomp region 0x191 state machine):
+//  +0x314C : transient int used when entering charge (we saw 12620 cleared) – treat as CHARGE_HELPER
+//  +0x3150 : one-shot summon flash flag (12624) reused by multiple characters; when set to 1 before
+//            first tick of active (0x191) causes an effect spawn then auto-clears. We expose for
+//            Force Summon to mimic natural spawn visuals without needing deep engine calls.
+#define MAI_CHARGE_HELPER_OFFSET         0x314C
+#define MAI_SUMMON_FLASH_FLAG_OFFSET     0x3150
+// Native summon script moveID (case 0x104 in decomp) – use to trigger authentic spawn sequence
+#define MAI_SUMMON_MOVE_ID                0x0104  // 260 decimal
+// Internal per-state counters (observed at +0x0A / +0x0C) used by engine switch logic
+#define STATE_FRAME_INDEX_OFFSET          0x0A    // already synonymous with CURRENT_FRAME_INDEX_OFFSET
+#define STATE_SUBFRAME_COUNTER_OFFSET     0x0C
+
+// Mini-Mai (ghost) runtime slot array (reverse-engineered from decomp case 0x191 region):
+// Player struct contains an array of small slot structs starting at +0x04D0 (1232) with stride 152 (0x98).
+// For Mai, one of these slots (ID == 401) represents the active Mini-Mai entity. Fields (relative to slot start):
+//   +0x00 : uint16 id (401 = Mini-Mai, other values reused by engine scripts)
+//   +0x02 : uint16 frame index / state counter (matches *(_WORD*)(...+1234))
+//   +0x04 : uint16 subframe counter (matches *(_WORD*)(...+1236))
+//   +0x18 : double X position  (offset 1256 = 1232 + 0x18)
+//   +0x20 : double Y position  (offset 1264 = 1232 + 0x20)
+// Additional arrays parallel to slots exist (e.g., int arrays at +0x3158 etc) but not needed for position readout.
+// We scan a conservative number of slots (MAX 12) to locate ID 401 each refresh.
+#define MAI_GHOST_SLOTS_BASE              0x04D0
+#define MAI_GHOST_SLOT_STRIDE             152      // 0x98
+#define MAI_GHOST_SLOT_ID_OFFSET          0x00
+#define MAI_GHOST_SLOT_FRAME_OFFSET       0x02
+#define MAI_GHOST_SLOT_SUBFRAME_OFFSET    0x04
+#define MAI_GHOST_SLOT_X_OFFSET           0x18
+#define MAI_GHOST_SLOT_Y_OFFSET           0x20
+#define MAI_GHOST_SLOT_MAX_SCAN           12       // Safety cap (engine likely uses fewer)
+
+// Minagi (Tono Minagi) – Puppet (Michiru) entity uses the same slot array layout as Mini-Mai
+// Entity ID for Michiru puppet observed via CE/decomp: 400
+// Reuse the same slot base/stride/offsets; only the ID differs
+#define MINAGI_PUPPET_ENTITY_ID           400
+#define MINAGI_PUPPET_SLOTS_BASE          MAI_GHOST_SLOTS_BASE
+#define MINAGI_PUPPET_SLOT_STRIDE         MAI_GHOST_SLOT_STRIDE
+#define MINAGI_PUPPET_SLOT_ID_OFFSET      MAI_GHOST_SLOT_ID_OFFSET
+#define MINAGI_PUPPET_SLOT_FRAME_OFFSET   MAI_GHOST_SLOT_FRAME_OFFSET
+#define MINAGI_PUPPET_SLOT_SUBFRAME_OFFSET MAI_GHOST_SLOT_SUBFRAME_OFFSET
+#define MINAGI_PUPPET_SLOT_X_OFFSET       MAI_GHOST_SLOT_X_OFFSET
+#define MINAGI_PUPPET_SLOT_Y_OFFSET       MAI_GHOST_SLOT_Y_OFFSET
+#define MINAGI_PUPPET_SLOT_MAX_SCAN       MAI_GHOST_SLOT_MAX_SCAN

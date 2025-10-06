@@ -5,10 +5,15 @@
 #include "../include/input/input_core.h"
 #include "../3rdparty/minhook/include/MinHook.h"
 #include "../include/game/practice_patch.h"
+#include "../include/core/globals.h"
 #include <windows.h>
 #include <atomic>
 #include <array>
 #include <string>
+#include <sstream>
+#include <iomanip>
+#include "../include/core/constants.h"
+#include "../include/gui/overlay.h"
 
 // EFZ address of handlePlayerToPlayerCollision relative to module base (from decomp notes)
 // Absolute: 0x00767F60, module base is 0x00400000, so relative offset is 0x00367F60
@@ -51,44 +56,50 @@ static int __fastcall HookedHandleP2PCollision(void* gameSystem, void* /*edx*/, 
     // Cache last seen frame-data pointer unconditionally; AttackReader will resolve nested attack-data.
     if (attackerPtr && attackerFrameData) {
         uintptr_t frameData = (uintptr_t)attackerFrameData;
-        // Sanity range check, skip if not a plausible pointer
-        if (frameData < 0x00400000 || frameData > 0x0FFFFFFF) {
-            return oHandleP2PCollision(gameSystem, attackerPtr, defenderPtr, attackerFrameData, defenderFrameData);
-        }
-        int playerNum = 0; int fdOff = -1;
-        IdentifyPlayerByFrameData(frameData, playerNum, fdOff);
-        if (playerNum == 0) {
-            // fallback by comparing attackerPtr directly
-            uintptr_t p1b = GetPlayerPointer(1);
-            uintptr_t p2b = GetPlayerPointer(2);
-            if ((uintptr_t)attackerPtr == p1b) playerNum = 1; else if ((uintptr_t)attackerPtr == p2b) playerNum = 2;
-        }
-        if (playerNum == 1) {
-            uintptr_t prev = g_lastAttackDataP1.exchange(frameData);
-            if (frameData && frameData != prev) {
-                LogOut(std::string("[COLLISION_HOOK] P1 frameData=") + FormatHexAddress(frameData), true);
+        // Sanity range check, skip caching if not a plausible pointer, but DO NOT early-return
+        if (frameData >= 0x00400000 && frameData <= 0x0FFFFFFF) {
+            int playerNum = 0; int fdOff = -1;
+            IdentifyPlayerByFrameData(frameData, playerNum, fdOff);
+            if (playerNum == 0) {
+                // fallback by comparing attackerPtr directly
+                uintptr_t p1b = GetPlayerPointer(1);
+                uintptr_t p2b = GetPlayerPointer(2);
+                if ((uintptr_t)attackerPtr == p1b) playerNum = 1; else if ((uintptr_t)attackerPtr == p2b) playerNum = 2;
             }
-            if (fdOff >= 0 && g_attackDataOffsetP1.load() < 0) {
-                g_attackDataOffsetP1.store(fdOff);
-                LogOut("[COLLISION_HOOK] Discovered frameData offset P1: " + std::to_string(fdOff), true);
-            }
-        } else if (playerNum == 2) {
-            uintptr_t prev = g_lastAttackDataP2.exchange(frameData);
-            if (frameData && frameData != prev) {
-                LogOut(std::string("[COLLISION_HOOK] P2 frameData=") + FormatHexAddress(frameData), true);
-            }
-            if (fdOff >= 0 && g_attackDataOffsetP2.load() < 0) {
-                g_attackDataOffsetP2.store(fdOff);
-                LogOut("[COLLISION_HOOK] Discovered frameData offset P2: " + std::to_string(fdOff), true);
+            if (playerNum == 1) {
+                uintptr_t prev = g_lastAttackDataP1.exchange(frameData);
+                if (frameData && frameData != prev) {
+                    LogOut(std::string("[COLLISION_HOOK] P1 frameData=") + FormatHexAddress(frameData), true);
+                }
+                if (fdOff >= 0 && g_attackDataOffsetP1.load() < 0) {
+                    g_attackDataOffsetP1.store(fdOff);
+                    LogOut("[COLLISION_HOOK] Discovered frameData offset P1: " + std::to_string(fdOff), true);
+                }
+            } else if (playerNum == 2) {
+                uintptr_t prev = g_lastAttackDataP2.exchange(frameData);
+                if (frameData && frameData != prev) {
+                    LogOut(std::string("[COLLISION_HOOK] P2 frameData=") + FormatHexAddress(frameData), true);
+                }
+                if (fdOff >= 0 && g_attackDataOffsetP2.load() < 0) {
+                    g_attackDataOffsetP2.store(fdOff);
+                    LogOut("[COLLISION_HOOK] Discovered frameData offset P2: " + std::to_string(fdOff), true);
+                }
             }
         }
     }
 
-    // Optional: tiny sanity log when detailed logging enabled
-    // uint8_t flags = 0; SafeReadMemory((uintptr_t)attackerFrameData + 0xAA, &flags, 1);
-    // LogOut("[COLLISION_HOOK] attacker=" + FormatHexAddress(attackerPtr) + " frameData=" + FormatHexAddress((uintptr_t)attackerFrameData) + " flags=" + std::to_string(flags), detailedLogging.load());
+    // Read pre-call defender HP to detect damage that happens during the call
+    uintptr_t p1b = GetPlayerPointer(1);
+    uintptr_t p2b = GetPlayerPointer(2);
+    int preHpP1 = 0, preHpP2 = 0;
+    if (p1b) { SafeReadMemory(p1b + HP_OFFSET, &preHpP1, sizeof(preHpP1)); }
+    if (p2b) { SafeReadMemory(p2b + HP_OFFSET, &preHpP2, sizeof(preHpP2)); }
 
-    return oHandleP2PCollision(gameSystem, attackerPtr, defenderPtr, attackerFrameData, defenderFrameData);
+    int ret = oHandleP2PCollision(gameSystem, attackerPtr, defenderPtr, attackerFrameData, defenderFrameData);
+
+        // Clean Hit rendering handled in frame_monitor via HP-drop detection; no-op here to avoid duplication
+
+    return ret;
 }
 
 void InstallCollisionHook() {

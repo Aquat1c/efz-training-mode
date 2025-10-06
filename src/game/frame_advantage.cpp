@@ -25,6 +25,9 @@ FrameAdvantageState frameAdvState = {
     -1                             // displayUntilInternalFrame
 };
 
+// Suppress regular FA overlay updates until this internal frame (0 = off)
+std::atomic<int> g_SkipRegularFAOverlayUntilFrame{0};
+
 void ResetFrameAdvantageState() {
     frameAdvState.p1InBlockstun = false;
     frameAdvState.p2InBlockstun = false;
@@ -64,6 +67,10 @@ void ResetFrameAdvantageState() {
     if (g_FrameAdvantageId != -1) {
         DirectDrawHook::RemovePermanentMessage(g_FrameAdvantageId);
         g_FrameAdvantageId = -1;
+    }
+    if (g_FrameAdvantage2Id != -1) {
+        DirectDrawHook::RemovePermanentMessage(g_FrameAdvantage2Id);
+        g_FrameAdvantage2Id = -1;
     }
 }
 
@@ -438,17 +445,23 @@ void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, shor
         // FormatFrameAdvantage already includes the "+" for positive values
         std::string frameAdvText = FormatFrameAdvantage(frameAdvantage);
         
-        // Display the calculated advantage
-        if (g_FrameAdvantageId != -1) {
-            DirectDrawHook::UpdatePermanentMessage(g_FrameAdvantageId, frameAdvText, 
-                frameAdvantage >= 0 ? RGB(0, 255, 0) : RGB(255, 0, 0));
-        } else {
-            g_FrameAdvantageId = DirectDrawHook::AddPermanentMessage(frameAdvText, 
-                frameAdvantage >= 0 ? RGB(0, 255, 0) : RGB(255, 0, 0), 305, 430);
+        // Display the calculated advantage (unless suppressed by RG overlay takeover)
+        if (g_showFrameAdvantageOverlay.load() && currentInternalFrame >= g_SkipRegularFAOverlayUntilFrame.load()) {
+            if (g_FrameAdvantageId != -1) {
+                DirectDrawHook::UpdatePermanentMessage(g_FrameAdvantageId, frameAdvText, 
+                    frameAdvantage >= 0 ? RGB(0, 255, 0) : RGB(255, 0, 0));
+            } else {
+                g_FrameAdvantageId = DirectDrawHook::AddPermanentMessage(frameAdvText, 
+                    frameAdvantage >= 0 ? RGB(0, 255, 0) : RGB(255, 0, 0), 305, 430);
+            }
+            // Ensure any secondary RG segment is removed when regular FA takes over
+            if (g_FrameAdvantage2Id != -1) {
+                DirectDrawHook::RemovePermanentMessage(g_FrameAdvantage2Id);
+                g_FrameAdvantage2Id = -1;
+            }
+            // Set display duration (show for approximately 1 second)
+            frameAdvState.displayUntilInternalFrame = currentInternalFrame + 192;
         }
-        
-        // Set display duration (show for approximately 1 second)
-        frameAdvState.displayUntilInternalFrame = currentInternalFrame + 192;
         
         LogOut("[FRAME_ADV] P1->P2 Frame Advantage: " + frameAdvText, true);
         
@@ -470,17 +483,23 @@ void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, shor
         // FormatFrameAdvantage already includes the "+" for positive values
         std::string frameAdvText = FormatFrameAdvantage(frameAdvantage);
         
-        // Display the calculated advantage
-        if (g_FrameAdvantageId != -1) {
-            DirectDrawHook::UpdatePermanentMessage(g_FrameAdvantageId, frameAdvText, 
-                frameAdvantage >= 0 ? RGB(0, 255, 0) : RGB(255, 0, 0));
-        } else {
-            g_FrameAdvantageId = DirectDrawHook::AddPermanentMessage(frameAdvText, 
-                frameAdvantage >= 0 ? RGB(0, 255, 0) : RGB(255, 0, 0), 305, 430);
+        // Display the calculated advantage (unless suppressed by RG overlay takeover)
+        if (g_showFrameAdvantageOverlay.load() && currentInternalFrame >= g_SkipRegularFAOverlayUntilFrame.load()) {
+            if (g_FrameAdvantageId != -1) {
+                DirectDrawHook::UpdatePermanentMessage(g_FrameAdvantageId, frameAdvText, 
+                    frameAdvantage >= 0 ? RGB(0, 255, 0) : RGB(255, 0, 0));
+            } else {
+                g_FrameAdvantageId = DirectDrawHook::AddPermanentMessage(frameAdvText, 
+                    frameAdvantage >= 0 ? RGB(0, 255, 0) : RGB(255, 0, 0), 305, 430);
+            }
+            // Ensure any secondary RG segment is removed when regular FA takes over
+            if (g_FrameAdvantage2Id != -1) {
+                DirectDrawHook::RemovePermanentMessage(g_FrameAdvantage2Id);
+                g_FrameAdvantage2Id = -1;
+            }
+            // Set display duration (show for approximately 1 second)
+            frameAdvState.displayUntilInternalFrame = currentInternalFrame + 192;
         }
-        
-        // Set display duration (show for approximately 1 second)
-        frameAdvState.displayUntilInternalFrame = currentInternalFrame + 192;
         
         LogOut("[FRAME_ADV] P2->P1 Frame Advantage: " + frameAdvText, true);
         

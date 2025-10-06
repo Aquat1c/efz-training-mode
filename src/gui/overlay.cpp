@@ -38,14 +38,17 @@
 int g_AirtechStatusId = -1;
 int g_JumpStatusId = -1;
 int g_FrameAdvantageId = -1;
+int g_FrameAdvantage2Id = -1;
 int g_FrameGapId = -1;
 // NEW: Individual trigger message IDs
 int g_TriggerAfterBlockId = -1;
 int g_TriggerOnWakeupId = -1;
 int g_TriggerAfterHitstunId = -1;
 int g_TriggerAfterAirtechId = -1;
+int g_TriggerOnRGId = -1;
 // Debug borders toggle default off
 std::atomic<bool> g_ShowOverlayDebugBorders{false};
+std::atomic<bool> g_ShowRGDebugToasts{false};
 
 // --- Define static members of DirectDrawHook ---
 DirectDrawCreateFunc DirectDrawHook::originalDirectDrawCreate = nullptr;
@@ -60,6 +63,34 @@ std::vector<OverlayMessage> DirectDrawHook::permanentMessages;
 int DirectDrawHook::nextMessageId = 0;
 bool DirectDrawHook::isHooked = false;
 // --- End static member definitions ---
+
+// --- DPI Awareness Helper ---
+static float GetDpiScale() {
+    HWND hwnd = FindWindow(NULL, "Eternal Fighter Zero");
+    if (!hwnd) return 1.0f;
+    
+    // Try Windows 10+ API first
+    typedef UINT(WINAPI* GetDpiForWindowFunc)(HWND);
+    HMODULE user32 = GetModuleHandleA("user32.dll");
+    if (user32) {
+        GetDpiForWindowFunc pGetDpiForWindow = (GetDpiForWindowFunc)GetProcAddress(user32, "GetDpiForWindow");
+        if (pGetDpiForWindow) {
+            UINT dpi = pGetDpiForWindow(hwnd);
+            return (float)dpi / 96.0f; // 96 DPI = 100% scaling
+        }
+    }
+    
+    // Fallback to DC method
+    HDC hdc = GetDC(hwnd);
+    if (hdc) {
+        int dpiX = GetDeviceCaps(hdc, LOGPIXELSX);
+        ReleaseDC(hwnd, hdc);
+        return (float)dpiX / 96.0f;
+    }
+    
+    return 1.0f;
+}
+// --- End DPI Helper ---
 
 // --- D3D9 Hooking Globals ---
 typedef HRESULT(WINAPI* EndScene_t)(LPDIRECT3DDEVICE9);
@@ -113,6 +144,11 @@ HRESULT WINAPI HookedEndScene(LPDIRECT3DDEVICE9 pDevice) {
         return oEndScene(pDevice);
     }
 
+    // Hard gate: do not render any UI/overlays during online play
+    if (g_onlineModeActive.load()) {
+        return oEndScene(pDevice);
+    }
+
     static bool imguiInit = false;
     if (!imguiInit) {
         if (ImGuiImpl::Initialize(pDevice)) {
@@ -124,10 +160,14 @@ HRESULT WINAPI HookedEndScene(LPDIRECT3DDEVICE9 pDevice) {
         }
     }
 
-    // Start a new ImGui frame
+    // Start a new ImGui frame and feed inputs before NewFrame
     ImGui_ImplDX9_NewFrame();
     ImGui_ImplWin32_NewFrame();
+    // Feed controller/virtual-cursor inputs before NewFrame so they apply this frame
+    ImGuiImpl::PreNewFrameInputs();
     ImGui::NewFrame();
+    // Post-NewFrame snapshot for diagnostics (throttled)
+    ImGuiImpl::PostNewFrameDiagnostics();
 
     // If the game window is minimized, skip rendering to avoid ImGui asserting on zero-size display
     ImGuiIO& io = ImGui::GetIO();
@@ -240,9 +280,12 @@ void DirectDrawHook::RenderText(HDC hdc, const std::string& text, int x, int y, 
     // Set up the text properties
     SetBkMode(hdc, TRANSPARENT);
     
-    // Create a better font for our overlay - FIX THE CreateFont CALL
+    // Create a better font for our overlay - DPI-aware scaling
+    float dpiScale = GetDpiScale();
+    int fontSize = (int)(20.0f * dpiScale); // Scale font size with DPI
+    
     HFONT font = CreateFont(
-        20,                        // Height
+        fontSize,                  // Height (DPI-scaled)
         0,                         // Width
         0,                         // Escapement
         0,                         // Orientation
@@ -251,10 +294,10 @@ void DirectDrawHook::RenderText(HDC hdc, const std::string& text, int x, int y, 
         FALSE,                     // Underline
         FALSE,                     // StrikeOut
         DEFAULT_CHARSET,           // CharSet
-        OUT_OUTLINE_PRECIS,        // OutPrecision
+        OUT_TT_PRECIS,             // OutPrecision (use TrueType for better quality)
         CLIP_DEFAULT_PRECIS,       // ClipPrecision
-        ANTIALIASED_QUALITY,       // Quality
-        DEFAULT_PITCH | FF_SWISS,  // PitchAndFamily - FIX: Use FF_SWISS
+        CLEARTYPE_QUALITY,         // Quality (ClearType for smoother text)
+        DEFAULT_PITCH | FF_SWISS,  // PitchAndFamily
         "Arial"                    // FaceName
     );
     
@@ -313,9 +356,12 @@ void DirectDrawHook::RenderSimpleText(IDirectDrawSurface7* surface, const std::s
         // Set up text properties similar to EFZ's style
         SetBkMode(hdc, TRANSPARENT);
         
-        // Create a font that should be compatible with EFZ - FIX THE CreateFont CALL
+        // Create a font that should be compatible with EFZ - DPI-aware scaling
+        float dpiScale = GetDpiScale();
+        int fontSize = (int)(14.0f * dpiScale); // Scale font size with DPI
+        
         HFONT font = CreateFont(
-            14,                        // Height - smaller for less interference
+            fontSize,                  // Height - DPI-scaled
             0,                         // Width (auto)
             0,                         // Escapement
             0,                         // Orientation
@@ -324,11 +370,11 @@ void DirectDrawHook::RenderSimpleText(IDirectDrawSurface7* surface, const std::s
             FALSE,                     // Underline
             FALSE,                     // StrikeOut
             DEFAULT_CHARSET,           // CharSet
-            OUT_DEFAULT_PRECIS,        // OutputPrecision
+            OUT_TT_PRECIS,             // OutputPrecision (TrueType for better quality)
             CLIP_DEFAULT_PRECIS,       // ClipPrecision
-            DEFAULT_QUALITY,           // Quality - use default instead of antialiased
-            DEFAULT_PITCH | FF_DONTCARE, // PitchAndFamily - FIX: Use FF_DONTCARE
-            "MS Sans Serif"            // Face name - this is the 14th parameter
+            CLEARTYPE_QUALITY,         // Quality (ClearType for smoother text)
+            DEFAULT_PITCH | FF_DONTCARE, // PitchAndFamily
+            "MS Sans Serif"            // Face name
         );
         
         HFONT oldFont = (HFONT)SelectObject(hdc, font);
@@ -444,6 +490,38 @@ void DirectDrawHook::RenderD3D9Overlays(LPDIRECT3DDEVICE9 pDevice) {
         bgList->AddRect(ImVec2(ox + 1.0f, oy + 1.0f), ImVec2(ox + gw - 1.0f, oy + gh - 1.0f), IM_COL32(0, 255, 0, 200), 0.0f, 0, 2.0f);
     }
 
+    // Optional: draw a single combined background for split frame-advantage messages
+    bool faCombinedBgDrawn = false;
+    if (!ImGuiImpl::IsVisible()) {
+        if (g_FrameAdvantageId != -1 && g_FrameAdvantage2Id != -1) {
+            const OverlayMessage* faLeft = nullptr;
+            const OverlayMessage* faRight = nullptr;
+            for (const auto& pm : permanentMessages) {
+                if (pm.id == g_FrameAdvantageId) faLeft = &pm;
+                else if (pm.id == g_FrameAdvantage2Id) faRight = &pm;
+            }
+            if (faLeft && faRight) {
+                // Map positions
+                ImVec2 leftPos(ox + faLeft->xPos * scale, oy + faLeft->yPos * scale);
+                ImVec2 rightPos(ox + faRight->xPos * scale, oy + faRight->yPos * scale);
+                // Measure text sizes (no additional scaling, consistent with existing renderer)
+                ImVec2 leftSize = ImGui::CalcTextSize(faLeft->text.c_str());
+                ImVec2 rightSize = ImGui::CalcTextSize(faRight->text.c_str());
+                // Build union background rect with same padding as individual messages
+                ImVec2 ul(
+                    (leftPos.x < rightPos.x ? leftPos.x : rightPos.x) - 4.0f,
+                    (leftPos.y < rightPos.y ? leftPos.y : rightPos.y) - 2.0f
+                );
+                ImVec2 lr(
+                    (leftPos.x + leftSize.x > rightPos.x + rightSize.x ? leftPos.x + leftSize.x : rightPos.x + rightSize.x) + 4.0f,
+                    (leftPos.y + leftSize.y > rightPos.y + rightSize.y ? leftPos.y + leftSize.y : rightPos.y + rightSize.y) + 2.0f
+                );
+                bgList->AddRectFilled(ul, lr, IM_COL32(0, 0, 0, 180));
+                faCombinedBgDrawn = true;
+            }
+        }
+    }
+
     // Helper lambda to render a message with a background
     auto renderMessage = [&](const OverlayMessage& msg) {
         // Check if this is a trigger overlay by position
@@ -460,6 +538,10 @@ void DirectDrawHook::RenderD3D9Overlays(LPDIRECT3DDEVICE9 pDevice) {
         
         // Background quads are expensive in DX9; skip them when menu is up
     if (!ImGuiImpl::IsVisible()) {
+            // If we already drew a combined FA background, skip individual bgs for those ids
+            if (faCombinedBgDrawn && (msg.id == g_FrameAdvantageId || msg.id == g_FrameAdvantage2Id)) {
+                // no per-message background
+            } else {
             if (isTriggerOverlay) {
                 // For trigger overlays, adjust X so text ends at right edge of inner game area
                 const float margin = 20.0f;        // Margin from screen edge in virtual space
@@ -475,6 +557,7 @@ void DirectDrawHook::RenderD3D9Overlays(LPDIRECT3DDEVICE9 pDevice) {
                     ImVec2(textPos.x + textSize.x + 4, textPos.y + textSize.y + 2),
                     IM_COL32(0, 0, 0, 180)
                 );
+            }
             }
         }
         
@@ -820,6 +903,15 @@ void DirectDrawHook::Shutdown() {
         permanentMessages.clear();
     }
     ShutdownD3D9();
+    // Detach DirectDrawCreate detour if installed
+    if (originalDirectDrawCreate) {
+        DetourTransactionBegin();
+        DetourUpdateThread(GetCurrentThread());
+        DetourDetach(&(PVOID&)originalDirectDrawCreate, HookedDirectDrawCreate);
+        DetourTransactionCommit();
+        isHooked = false;
+        LogOut("[OVERLAY] DirectDrawCreate detour detached", true);
+    }
 }
 
 // Add a temporary message
@@ -1029,11 +1121,14 @@ std::string DirectDrawHook::FitTextToWidth(const std::string& text, int maxWidth
         needToReleaseDC = true;
     }
     
-    // Create and select font to measure text accurately
+    // Create and select font to measure text accurately - DPI-aware
+    float dpiScale = GetDpiScale();
+    int fontSize = (int)(20.0f * dpiScale);
+    
     HFONT font = CreateFont(
-        20, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
-        DEFAULT_CHARSET, OUT_OUTLINE_PRECIS, CLIP_DEFAULT_PRECIS,
-        ANTIALIASED_QUALITY, DEFAULT_PITCH | FF_SWISS, "Arial"
+        fontSize, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
+        DEFAULT_CHARSET, OUT_TT_PRECIS, CLIP_DEFAULT_PRECIS,
+        CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, "Arial"
     );
     HFONT oldFont = (HFONT)SelectObject(tempDC, font);
     
@@ -1105,11 +1200,14 @@ std::string DirectDrawHook::FitTextToWidthFromLeft(const std::string& text, int 
         needToReleaseDC = true;
     }
     
-    // Create and select font to measure text accurately
+    // Create and select font to measure text accurately - DPI-aware
+    float dpiScale = GetDpiScale();
+    int fontSize = (int)(20.0f * dpiScale);
+    
     HFONT font = CreateFont(
-        20, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
-        DEFAULT_CHARSET, OUT_OUTLINE_PRECIS, CLIP_DEFAULT_PRECIS,
-        ANTIALIASED_QUALITY, DEFAULT_PITCH | FF_SWISS, "Arial"
+        fontSize, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
+        DEFAULT_CHARSET, OUT_TT_PRECIS, CLIP_DEFAULT_PRECIS,
+        CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, "Arial"
     );
     HFONT oldFont = (HFONT)SelectObject(tempDC, font);
     

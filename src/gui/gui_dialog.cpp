@@ -214,14 +214,10 @@ INT_PTR CALLBACK EditDataDlgProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM 
             int selectedIndex = SendMessage(ctrlHwnd, CB_GETCURSEL, 0, 0);
             
             // Find the Custom MoveID edit control
+            // Custom MoveID deprecated; ensure field (if present) stays disabled
             HWND hCustomIDEdit = GetDlgItem(hPage3, IDC_AUTOACTION_CUSTOM_ID);
             if (hCustomIDEdit) {
-                // Enable Custom MoveID edit when "Custom MoveID" (index 9) is selected
-                bool enableCustomEdit = (selectedIndex == 9);
-                EnableWindow(hCustomIDEdit, enableCustomEdit);
-                
-                LogOut("[GUI] Action type changed to index " + std::to_string(selectedIndex) + 
-                       ", Custom MoveID field " + (enableCustomEdit ? "enabled" : "disabled"), true);
+                EnableWindow(hCustomIDEdit, FALSE);
             }
             return TRUE;
         }
@@ -233,6 +229,14 @@ INT_PTR CALLBACK EditDataDlgProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM 
             EndDialog(hDlg, IDOK); 
             menuOpen = false;
             LogOut("[GUI] Confirm button clicked, settings applied", true);
+            return TRUE;
+        }
+
+        // Wake buffering toggle (debug)
+        if (cmdID == IDC_TRIGGER_WAKE_BUFFER_CHECK) {
+            bool checked = (IsDlgButtonChecked(hPage3, IDC_TRIGGER_WAKE_BUFFER_CHECK) == BST_CHECKED);
+            g_wakeBufferingEnabled.store(checked);
+            LogOut(std::string("[GUI] Wake buffering toggle set to ") + (checked ? "ENABLED (pre-buffer specials/dashes)" : "DISABLED (frame1 inject specials/dashes)"), true);
             return TRUE;
         }
         
@@ -298,21 +302,32 @@ void ProcessFormData(HWND hDlg, HWND hPage1, HWND hPage3, DisplayData* pData) {
     pData->triggerAfterBlock = (IsDlgButtonChecked(hPage3, IDC_TRIGGER_AFTER_BLOCK_CHECK) == BST_CHECKED);
     pData->actionAfterBlock = ComboIndexToActionType[SendMessage(GetDlgItem(hPage3, IDC_TRIGGER_AFTER_BLOCK_ACTION), CB_GETCURSEL, 0, 0)];
     GetDlgItemText(hPage3, IDC_TRIGGER_AFTER_BLOCK_DELAY, buffer, 256); pData->delayAfterBlock = atoi(buffer);
+    // Macro slot (0=None, else 1..N)
+    pData->macroSlotAfterBlock = SendMessage(GetDlgItem(hPage3, IDC_TRIGGER_AFTER_BLOCK_MACRO), CB_GETCURSEL, 0, 0);
 
     // After Hitstun
     pData->triggerAfterHitstun = (IsDlgButtonChecked(hPage3, IDC_TRIGGER_AFTER_HITSTUN_CHECK) == BST_CHECKED);
     pData->actionAfterHitstun = ComboIndexToActionType[SendMessage(GetDlgItem(hPage3, IDC_TRIGGER_AFTER_HITSTUN_ACTION), CB_GETCURSEL, 0, 0)];
     GetDlgItemText(hPage3, IDC_TRIGGER_AFTER_HITSTUN_DELAY, buffer, 256); pData->delayAfterHitstun = atoi(buffer);
+    pData->macroSlotAfterHitstun = SendMessage(GetDlgItem(hPage3, IDC_TRIGGER_AFTER_HITSTUN_MACRO), CB_GETCURSEL, 0, 0);
 
     // On Wakeup
     pData->triggerOnWakeup = (IsDlgButtonChecked(hPage3, IDC_TRIGGER_ON_WAKEUP_CHECK) == BST_CHECKED);
     pData->actionOnWakeup = ComboIndexToActionType[SendMessage(GetDlgItem(hPage3, IDC_TRIGGER_ON_WAKEUP_ACTION), CB_GETCURSEL, 0, 0)];
     GetDlgItemText(hPage3, IDC_TRIGGER_ON_WAKEUP_DELAY, buffer, 256); pData->delayOnWakeup = atoi(buffer);
+    pData->macroSlotOnWakeup = SendMessage(GetDlgItem(hPage3, IDC_TRIGGER_ON_WAKEUP_MACRO), CB_GETCURSEL, 0, 0);
 
     // After Airtech
     pData->triggerAfterAirtech = (IsDlgButtonChecked(hPage3, IDC_TRIGGER_AFTER_AIRTECH_CHECK) == BST_CHECKED);
     pData->actionAfterAirtech = ComboIndexToActionType[SendMessage(GetDlgItem(hPage3, IDC_TRIGGER_AFTER_AIRTECH_ACTION), CB_GETCURSEL, 0, 0)];
     GetDlgItemText(hPage3, IDC_TRIGGER_AFTER_AIRTECH_DELAY, buffer, 256); pData->delayAfterAirtech = atoi(buffer);
+    pData->macroSlotAfterAirtech = SendMessage(GetDlgItem(hPage3, IDC_TRIGGER_AFTER_AIRTECH_MACRO), CB_GETCURSEL, 0, 0);
+
+    // On Recoil Guard
+    pData->triggerOnRG = (IsDlgButtonChecked(hPage3, IDC_TRIGGER_ON_RG_CHECK) == BST_CHECKED);
+    pData->actionOnRG = ComboIndexToActionType[SendMessage(GetDlgItem(hPage3, IDC_TRIGGER_ON_RG_ACTION), CB_GETCURSEL, 0, 0)];
+    GetDlgItemText(hPage3, IDC_TRIGGER_ON_RG_DELAY, buffer, 256); pData->delayOnRG = atoi(buffer);
+    pData->macroSlotOnRG = SendMessage(GetDlgItem(hPage3, IDC_TRIGGER_ON_RG_MACRO), CB_GETCURSEL, 0, 0);
 }
 
 // Page subclass procedure

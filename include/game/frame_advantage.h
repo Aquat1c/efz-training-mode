@@ -1,6 +1,7 @@
 #pragma once
 #include <windows.h>
 #include <string>
+#include <atomic>
 
 // Structure to track frame advantage state with subframe precision
 struct FrameAdvantageState {
@@ -48,6 +49,8 @@ struct FrameAdvantageState {
 
 // Global frame advantage state
 extern FrameAdvantageState frameAdvState;
+// When set to a future internal frame, regular FA overlay updates are suppressed
+extern std::atomic<int> g_SkipRegularFAOverlayUntilFrame;
 
 // Function declarations
 void ResetFrameAdvantageState();
