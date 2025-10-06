@@ -30,6 +30,8 @@ static WNDPROC g_originalWndProc = nullptr;
 // Virtual cursor/gamepad state
 static bool g_useVirtualCursor = false;
 static ImVec2 g_virtualCursorPos = ImVec2(200.0f, 200.0f);
+static ImVec2 g_overlayCenter = ImVec2(0.0f, 0.0f);
+static bool g_requestOverlayFocus = false;
 static bool g_lastLeftDown = false;
 static bool g_lastRightDown = false;
 
@@ -77,6 +79,8 @@ static void UpdateVirtualCursor(ImGuiIO& io) {
     s_lastWindowFocused = focusedNow;
     // Track edge states for additional user-triggered recenters
     static bool s_lastMiddleDown = false;       // mouse middle button
+    static bool s_ignoreMiddleUntilUp = false;  // latch to ignore held MMB after recenter
+    static int  s_unstickFrames = 0;            // frames to force-release mouse buttons after recenter
     static bool s_lastLThumbDown = false;       // gamepad left stick click
 
     // We'll always attempt to provide ImGui gamepad nav inputs when the menu is visible,
@@ -91,22 +95,65 @@ static void UpdateVirtualCursor(ImGuiIO& io) {
 
     if (g_useVirtualCursor && (!wasActive || regainedFocus)) {
         // Center cursor on first activation OR when window regains focus
-        g_virtualCursorPos = ImVec2(clientW * 0.5f, clientH * 0.5f);
+        ImVec2 target = (g_overlayCenter.x > 0.f && g_overlayCenter.y > 0.f)
+            ? g_overlayCenter
+            : ImVec2(clientW * 0.5f, clientH * 0.5f);
+        g_virtualCursorPos = target;
     }
 
     // Middle mouse (hardware) recenter when ImGui visible & window focused
-    if (g_useVirtualCursor && focusedNow && g_imguiVisible) {
+    if (focusedNow && g_imguiVisible) {
         SHORT mm = GetAsyncKeyState(VK_MBUTTON);
         bool middleDown = (mm & 0x8000) != 0;
         bool middlePressed = middleDown && !s_lastMiddleDown;
         if (middlePressed) {
-            g_virtualCursorPos = ImVec2(clientW * 0.5f, clientH * 0.5f);
-            // If we are NOT drawing software cursor (possible future toggle), also move OS cursor
-            if (!g_useVirtualCursor) {
-                POINT pt{ (LONG)(clientW * 0.5f), (LONG)(clientH * 0.5f) };
-                ClientToScreen(hwnd, &pt);
-                SetCursorPos(pt.x, pt.y);
+            ImVec2 target = (g_overlayCenter.x > 0.f && g_overlayCenter.y > 0.f)
+                ? g_overlayCenter
+                : ImVec2(clientW * 0.5f, clientH * 0.5f);
+            g_virtualCursorPos = target;
+            // Bring EFZ to foreground to ensure subsequent input goes to the game
+            if (hwnd) {
+                // Try to ensure EFZ is foreground before moving the cursor
+                ShowWindow(hwnd, SW_RESTORE);
+                BringWindowToTop(hwnd);
+                SetForegroundWindow(hwnd);
+                SetActiveWindow(hwnd);
+                SetFocus(hwnd);
             }
+            // Also move OS cursor so both cursors converge to the same point
+            POINT pt{ (LONG)target.x, (LONG)target.y };
+            ClientToScreen(hwnd, &pt);
+            SetCursorPos(pt.x, pt.y);
+            // Important: release any OS mouse capture and ensure ImGui doesn't think middle button is held
+            // This prevents the virtual cursor from feeling "stuck" immediately after recentering.
+            ReleaseCapture();
+            // Force-release all mouse buttons for a short period to clear any drag/pan states.
+            io.AddMouseButtonEvent(0, false); // left up
+            io.AddMouseButtonEvent(1, false); // right up
+            io.AddMouseButtonEvent(2, false); // middle up
+            s_ignoreMiddleUntilUp = true;
+            s_unstickFrames = 2; // force-release for a couple frames
+            // Re-emit current virtual cursor position so ImGui updates this frame
+            io.AddMousePosEvent(g_virtualCursorPos.x, g_virtualCursorPos.y);
+            // Ask GUI to focus the overlay window so keyboard/gamepad nav starts at center
+            g_requestOverlayFocus = true;
+        }
+        // While the physical middle button remains down after recenter, keep it logically up for ImGui
+        if (s_ignoreMiddleUntilUp) {
+            if (middleDown) {
+                io.AddMouseButtonEvent(2, false);
+            } else {
+                s_ignoreMiddleUntilUp = false;
+            }
+        }
+        // Briefly force-release left/right to break any drag captures that might freeze the cursor
+        if (s_unstickFrames > 0) {
+            io.AddMouseButtonEvent(0, false);
+            io.AddMouseButtonEvent(1, false);
+            io.AddMouseButtonEvent(2, false);
+            // Re-emit position to ensure the software cursor is updated during the debounce
+            io.AddMousePosEvent(g_virtualCursorPos.x, g_virtualCursorPos.y);
+            --s_unstickFrames;
         }
         s_lastMiddleDown = middleDown;
     }
@@ -287,7 +334,12 @@ static void UpdateVirtualCursor(ImGuiIO& io) {
         bool lThumbDown = (selGp.wButtons & XINPUT_GAMEPAD_LEFT_THUMB) != 0;
         bool lThumbPressed = lThumbDown && !s_lastLThumbDown && focusedNow && g_imguiVisible;
         if (lThumbPressed) {
-            g_virtualCursorPos = ImVec2(clientW * 0.5f, clientH * 0.5f);
+            ImVec2 target = (g_overlayCenter.x > 0.f && g_overlayCenter.y > 0.f)
+                ? g_overlayCenter
+                : ImVec2(clientW * 0.5f, clientH * 0.5f);
+            g_virtualCursorPos = target;
+            // Do not yank OS mouse on L3; only snap virtual cursor. Still request overlay focus.
+            g_requestOverlayFocus = true;
         }
         s_lastLThumbDown = lThumbDown;
 
@@ -552,10 +604,11 @@ namespace ImGuiImpl {
             return false;
         }
         
-    // Let ImGui know we can provide mouse + keyboard + gamepad inputs
+    // Let ImGui know we can provide inputs. Disable HasSetMousePos so ImGui doesn't warp OS cursor,
+    // we manage OS cursor explicitly (e.g., on middle-click).
     io.BackendFlags |= ImGuiBackendFlags_HasMouseCursors;
-    io.BackendFlags |= ImGuiBackendFlags_HasSetMousePos;
     io.BackendFlags |= ImGuiBackendFlags_HasGamepad;
+    io.BackendFlags &= ~ImGuiBackendFlags_HasSetMousePos;
 
     ImGuiGui::Initialize();
         
@@ -668,8 +721,7 @@ namespace ImGuiImpl {
     void PreNewFrameInputs() {
         if (!g_imguiInitialized || g_isShuttingDown.load()) return;
         if (!ImGui::GetCurrentContext()) return;
-        ImGuiIO& io = ImGui::GetIO();
-        UpdateVirtualCursor(io);
+        // Defer virtual cursor and input aggregation to RenderFrame after backend NewFrame
     }
 
     // (PostNewFrameDiagnostics removed)
@@ -689,7 +741,8 @@ namespace ImGuiImpl {
             // Prepare backend new-frame data first
             ImGui_ImplDX9_NewFrame();
             ImGui_ImplWin32_NewFrame();
-            // Feed our gamepad/virtual cursor inputs BEFORE ImGui::NewFrame so events apply this frame
+            // Feed our gamepad/virtual cursor inputs AFTER backend NewFrame so our events
+            // override OS mouse position provided by the backend, then before ImGui::NewFrame
             {
                 ImGuiIO& io = ImGui::GetIO();
                 UpdateVirtualCursor(io);
@@ -722,5 +775,15 @@ namespace ImGuiImpl {
         } catch (...) {
             // Silently catch any exceptions during rendering to prevent crashes
         }
+    }
+
+    void SetOverlayCenter(const ImVec2& center) {
+        g_overlayCenter = center;
+    }
+
+    bool ConsumeOverlayFocusRequest() {
+        bool v = g_requestOverlayFocus;
+        g_requestOverlayFocus = false;
+        return v;
     }
 }
