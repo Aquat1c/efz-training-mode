@@ -800,6 +800,101 @@ void FrameDataMonitor() {
         GameMode currentMode = GetCurrentGameMode();
         bool isValidGameMode = !Config::GetSettings().restrictToPracticeMode || (currentMode == GameMode::Practice);
 
+        // Lightweight global Practice frame-step tracker overlay
+        // Now wired to Frame Advantage lifecycle to avoid bloated values:
+        // - Only counts while FA tracking is actively awaiting timings (attacker actionable and/or defender free).
+        // - Resets on FA start (rising edge) and clears when FA completes/aborts (falling edge).
+        // - Still uses ReadStepCounter with local debouncing to avoid interfering with MacroController's consumption.
+        {
+            static bool s_prevPaused = false;
+            static bool s_haveLast = false;
+            static uint32_t s_lastStep = 0;
+            static int s_stepsSincePause = 0;
+            static int s_stepMsgId = -1;
+            static bool s_prevFAInProgress = false; // FA waiting window last frame
+
+            const bool inPractice = (currentMode == GameMode::Practice);
+            const bool overlayReady = DirectDrawHook::isHooked;
+            bool paused = PauseIntegration::IsPracticePaused();
+
+            // Reset counters across mode changes away from Practice
+            if (!inPractice || !overlayReady) {
+                if (s_stepMsgId != -1) { DirectDrawHook::RemovePermanentMessage(s_stepMsgId); s_stepMsgId = -1; }
+                s_prevPaused = false; s_haveLast = false; s_stepsSincePause = 0; s_prevFAInProgress = false;
+            } else {
+                // Practice mode with overlay available
+                if (paused) {
+                    // Determine whether FA tracking is actively waiting for timings
+                    bool faInProgress = false;
+                    {
+                        // Requires frame_advantage.h available in this TU
+                        FrameAdvantageState fas = GetFrameAdvantageState();
+                        bool faActive = fas.p1Attacking || fas.p2Attacking || fas.p1Defending || fas.p2Defending;
+                        bool waitingAtk = (fas.p1Attacking && fas.p1ActionableInternalFrame == -1) ||
+                                          (fas.p2Attacking && fas.p2ActionableInternalFrame == -1);
+                        bool waitingDef = (fas.p1Defending && fas.p1DefenderFreeInternalFrame == -1) ||
+                                          (fas.p2Defending && fas.p2DefenderFreeInternalFrame == -1);
+                        faInProgress = faActive && (waitingAtk || waitingDef);
+                    }
+
+                    if (!s_prevPaused) {
+                        // Just entered pause: defer reset to FA start edge below to preserve pre-pause hit confirm
+                        s_haveLast = false;
+                    }
+
+                    // On FA start (rising edge), reset the step counter and seed last counter
+                    if (faInProgress && !s_prevFAInProgress) {
+                        s_stepsSincePause = 0;
+                        s_haveLast = false; // force reseed from current counter below
+                    }
+
+                    uint32_t cur = 0;
+                    if (faInProgress) {
+                        if (PauseIntegration::ReadStepCounter(cur)) {
+                            if (!s_haveLast) {
+                                s_lastStep = cur; s_haveLast = true;
+                            } else if (cur != s_lastStep) {
+                                // Handle wrap naturally via unsigned subtraction
+                                uint32_t delta = cur - s_lastStep;
+                                if (delta > 1000u) delta = 1u; // sanity clamp
+                                s_stepsSincePause += (int)delta;
+                                s_lastStep = cur;
+                            }
+                        }
+                        // Render or update while FA is in progress
+                        const int x = 20, y = 200; // left side, under macro banner region
+                        char buf[64] = {};
+                        _snprintf_s(buf, sizeof(buf), _TRUNCATE, "Step Advances: %d", s_stepsSincePause);
+                        if (s_stepMsgId == -1) {
+                            s_stepMsgId = DirectDrawHook::AddPermanentMessage(buf, RGB(200, 255, 255), x, y);
+                        } else {
+                            DirectDrawHook::UpdatePermanentMessage(s_stepMsgId, buf, RGB(200, 255, 255));
+                        }
+                    } else {
+                        // FA not in progress while paused: clear overlay to avoid misleading accumulation
+                        if (s_stepMsgId != -1) { DirectDrawHook::RemovePermanentMessage(s_stepMsgId); s_stepMsgId = -1; }
+                        s_haveLast = false; // drop seed; next FA will reseed and reset counter on edge
+                    }
+                } else {
+                    // Not paused: clear overlay and reset per-session trackers
+                    if (s_stepMsgId != -1) { DirectDrawHook::RemovePermanentMessage(s_stepMsgId); s_stepMsgId = -1; }
+                    s_haveLast = false;
+                    s_stepsSincePause = 0;
+                }
+                s_prevPaused = paused;
+                // Track FA in-progress state for edge detection
+                {
+                    FrameAdvantageState fas = GetFrameAdvantageState();
+                    bool faActive = fas.p1Attacking || fas.p2Attacking || fas.p1Defending || fas.p2Defending;
+                    bool waitingAtk = (fas.p1Attacking && fas.p1ActionableInternalFrame == -1) ||
+                                      (fas.p2Attacking && fas.p2ActionableInternalFrame == -1);
+                    bool waitingDef = (fas.p1Defending && fas.p1DefenderFreeInternalFrame == -1) ||
+                                      (fas.p2Defending && fas.p2DefenderFreeInternalFrame == -1);
+                    s_prevFAInProgress = faActive && (waitingAtk || waitingDef);
+                }
+            }
+        }
+
         // Track game mode transitions
         if (g_featuresEnabled.load() && currentMode != s_previousGameMode) {
             // IMPORTANT: Add this section to handle transitions FROM valid modes
