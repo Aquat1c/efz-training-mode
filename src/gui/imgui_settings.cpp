@@ -3,6 +3,7 @@
 //
 
 #include "../include/gui/imgui_settings.h"
+#include "../include/gui/imgui_gui.h"
 #include "../include/utils/controller_names.h"
 #include "../include/utils/config.h"
 #include "../include/core/logger.h"
@@ -132,7 +133,7 @@ namespace ImGuiSettings {
         float uiScale = cfg.uiScale;
         int uiFontMode = cfg.uiFontMode; // 0=Default, 1=Segoe UI
 
-        if (ImGui::BeginTabBar("##SettingsTabs")) {
+    if (ImGui::BeginTabBar("##SettingsTabs")) {
             if (ImGui::BeginTabItem("General")) {
                 CheckboxApply("Use ImGui UI (else legacy dialog)", useImGui, "General", "UseImGui");
                 ImGui::SameLine();
@@ -323,6 +324,12 @@ namespace ImGuiSettings {
                     ImGui::SameLine(); if (ImGui::SmallButton("Save Controller")) { Config::SaveSettings(); }
                 }
 
+                ImGui::EndTabItem();
+            }
+
+            // New: Debug sub-tab (moved from main tabs)
+            if (ImGui::BeginTabItem("Debug")) {
+                ImGuiGui::RenderDebugInputTab();
                 ImGui::EndTabItem();
             }
 

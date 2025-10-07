@@ -2431,12 +2431,7 @@ namespace ImGuiGui {
                         ImGui::EndTabItem();
                     }
                     
-                    // Debug tab
-                    if (ImGui::BeginTabItem("Debug")) {
-                        guiState.currentTab = 3;
-                        RenderDebugInputTab();
-                        ImGui::EndTabItem();
-                    }
+                    // Debug tab moved under Settings -> Debug sub-tab
                     
                     // Help tab(s)
                     if (ImGui::BeginTabItem("Macros")) {
