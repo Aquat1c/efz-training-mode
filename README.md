@@ -42,7 +42,6 @@ The training mode now features automatic network detection:
   - Disable training-mode hotkeys
   - Prevent injected inputs that could cause desyncs
 - When the online match ends, the console/hotkeys restore automatically
-- This ensures a safe experience when switching between training and online play without needing to disable the mod
 
 ## Controls (default hotkeys)
 
