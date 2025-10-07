@@ -757,18 +757,28 @@ bool IsActionable(short moveID) {
                     moveID == WALK_BACK_ID || 
                     moveID == CROUCH_ID ||
                     moveID == CROUCH_TO_STAND_ID ||
-                    moveID == LANDING_ID);
+                    // Treat landing variants as actionable immediately
+                    moveID == LANDING_ID || moveID == LANDING_1_ID || moveID == LANDING_2_ID || moveID == LANDING_3_ID);
 
     if (neutral) return true;
+
+    // Explicit inactionable groups from engine
+    bool isDash = (moveID == FORWARD_DASH_START_ID || moveID == FORWARD_DASH_RECOVERY_ID ||
+                   moveID == BACKWARD_DASH_START_ID || moveID == BACKWARD_DASH_RECOVERY_ID ||
+                   moveID == FORWARD_DASH_RECOVERY_SENTINEL_ID);
+    bool isGroundTechSeq = (moveID == GROUNDTECH_RECOVERY || moveID == GROUNDTECH_PRE || moveID == GROUNDTECH_START || moveID == GROUNDTECH_END);
+    bool isSuperflash = (moveID == GROUND_IC_ID || moveID == AIR_IC_ID);
 
     bool prohibited = (IsAttackMove(moveID) || 
                        IsBlockstunState(moveID) || 
                        IsHitstun(moveID) || 
                        IsLaunched(moveID) ||
+                       IsThrown(moveID) ||
                        IsAirtech(moveID) || 
                        IsGroundtech(moveID) ||
                        IsFrozen(moveID) ||
                        IsRecoilGuard(moveID) ||
+                       isDash || isGroundTechSeq || isSuperflash ||
                        moveID == STAND_GUARD_ID || 
                        moveID == CROUCH_GUARD_ID || 
                        moveID == AIR_GUARD_ID);

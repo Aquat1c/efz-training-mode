@@ -59,6 +59,7 @@ bool IsAirtech(short moveID);
 bool IsGroundtech(short moveID);
 bool IsFrozen(short moveID);
 bool IsSpecialStun(short moveID);
+bool IsThrown(short moveID);
 
 // Explicitly clear all auto-action triggers (and auto-action) persistently.
 // Use when returning to Character Select so user can re-enable manually later.

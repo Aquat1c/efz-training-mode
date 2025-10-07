@@ -185,34 +185,32 @@ void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, shor
         neutralFrameCount = 0;
     }
     
-    // Detect when defender exits blockstun/hitstun (This is for gap detection)
-    bool p1_exiting_stun = (IsBlockstunState(prevMoveID1) || IsHitstun(prevMoveID1)) && 
-                           !(IsBlockstunState(moveID1) || IsHitstun(moveID1));
-    
-    bool p2_exiting_stun = (IsBlockstunState(prevMoveID2) || IsHitstun(prevMoveID2)) && 
-                           !(IsBlockstunState(moveID2) || IsHitstun(moveID2));
-    
-    if (p1_exiting_stun) {
+    // Detect when defender becomes actionable again (robust vs knockdown/tech/wakeup) for gap detection
+    bool p1_becomes_actionable = !IsActionable(prevMoveID1) && IsActionable(moveID1);
+    bool p2_becomes_actionable = !IsActionable(prevMoveID2) && IsActionable(moveID2);
+
+    if (p1_becomes_actionable) {
         p1_last_defender_free_frame = currentInternalFrame;
-         #if defined(ENABLE_FRAME_ADV_DEBUG)
-         LogOut("[FRAME_ADV_DEBUG] P1 exited stun at frame " + std::to_string(currentInternalFrame), 
-             detailedLogging.load());
-         #endif
+        #if defined(ENABLE_FRAME_ADV_DEBUG)
+        LogOut("[FRAME_ADV_DEBUG] P1 became actionable at frame " + std::to_string(currentInternalFrame), 
+            detailedLogging.load());
+        #endif
     }
-    
-    if (p2_exiting_stun) {
+
+    if (p2_becomes_actionable) {
         p2_last_defender_free_frame = currentInternalFrame;
-         #if defined(ENABLE_FRAME_ADV_DEBUG)
-         LogOut("[FRAME_ADV_DEBUG] P2 exited stun at frame " + std::to_string(currentInternalFrame), 
-             detailedLogging.load());
-         #endif
+        #if defined(ENABLE_FRAME_ADV_DEBUG)
+        LogOut("[FRAME_ADV_DEBUG] P2 became actionable at frame " + std::to_string(currentInternalFrame), 
+            detailedLogging.load());
+        #endif
     }
     
     // STEP 1: Detect if an attack connects (P1 attacking P2)
     bool p2_entering_blockstun = IsBlockstunState(moveID2) && !IsBlockstunState(prevMoveID2);
     bool p2_entering_hitstun = IsHitstun(moveID2) && !IsHitstun(prevMoveID2);
+    bool p2_entering_thrown   = IsThrown(moveID2)    && !IsThrown(prevMoveID2);
     
-    if ((p2_entering_blockstun || p2_entering_hitstun) && p1_hit_connect_cooldown == 0) {
+    if ((p2_entering_blockstun || p2_entering_hitstun || p2_entering_thrown) && p1_hit_connect_cooldown == 0) {
         // Check for gap between moves in a string
         if (p2_last_defender_free_frame != -1) {
             int gapFrames = currentInternalFrame - p2_last_defender_free_frame;
@@ -232,10 +230,19 @@ void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, shor
                     gapText += ".66";
                 }
                 
-                if (g_FrameAdvantageId != -1) {
-                    DirectDrawHook::UpdatePermanentMessage(g_FrameAdvantageId, gapText, RGB(255, 255, 0));
+                // Respect the same visibility gate as the Frame Advantage overlay
+                if (g_showFrameAdvantageOverlay.load()) {
+                    if (g_FrameAdvantageId != -1) {
+                        DirectDrawHook::UpdatePermanentMessage(g_FrameAdvantageId, gapText, RGB(255, 255, 0));
+                    } else {
+                        g_FrameAdvantageId = DirectDrawHook::AddPermanentMessage(gapText, RGB(255, 255, 0), 305, 430);
+                    }
                 } else {
-                    g_FrameAdvantageId = DirectDrawHook::AddPermanentMessage(gapText, RGB(255, 255, 0), 305, 430);
+                    // If hidden, ensure any existing message is cleared immediately
+                    if (g_FrameAdvantageId != -1) {
+                        DirectDrawHook::RemovePermanentMessage(g_FrameAdvantageId);
+                        g_FrameAdvantageId = -1;
+                    }
                 }
                 
                 // Display for ~1/3 second (60 internal frames)
@@ -277,10 +284,14 @@ void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, shor
             frameAdvState.p2InHitstun = false;
             frameAdvState.p2BlockstunStartInternalFrame = currentInternalFrame;
             frameAdvState.p2InitialBlockstunMoveID = moveID2;
-        } else {
+        } else if (p2_entering_hitstun) {
             frameAdvState.p2InBlockstun = false;
             frameAdvState.p2InHitstun = true;
             frameAdvState.p2HitstunStartInternalFrame = currentInternalFrame;
+        } else if (p2_entering_thrown) {
+            // Thrown: treat as a connect without setting block/hitstun flags; timings will resolve on actionable
+            frameAdvState.p2InBlockstun = false;
+            frameAdvState.p2InHitstun = false;
         }
         
          #if defined(ENABLE_FRAME_ADV_DEBUG)
@@ -298,8 +309,9 @@ void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, shor
     // STEP 2: Detect if an attack connects (P2 attacking P1) - mirror of P1 logic
     bool p1_entering_blockstun = IsBlockstunState(moveID1) && !IsBlockstunState(prevMoveID1);
     bool p1_entering_hitstun = IsHitstun(moveID1) && !IsHitstun(prevMoveID1);
+    bool p1_entering_thrown   = IsThrown(moveID1)    && !IsThrown(prevMoveID1);
     
-    if ((p1_entering_blockstun || p1_entering_hitstun) && p2_hit_connect_cooldown == 0) {
+    if ((p1_entering_blockstun || p1_entering_hitstun || p1_entering_thrown) && p2_hit_connect_cooldown == 0) {
         // Check for gap between moves in a string
         if (p1_last_defender_free_frame != -1) {
             int gapFrames = currentInternalFrame - p1_last_defender_free_frame;
@@ -319,10 +331,19 @@ void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, shor
                     gapText += ".66";
                 }
                 
-                if (g_FrameAdvantageId != -1) {
-                    DirectDrawHook::UpdatePermanentMessage(g_FrameAdvantageId, gapText, RGB(255, 255, 0));
+                // Respect the same visibility gate as the Frame Advantage overlay
+                if (g_showFrameAdvantageOverlay.load()) {
+                    if (g_FrameAdvantageId != -1) {
+                        DirectDrawHook::UpdatePermanentMessage(g_FrameAdvantageId, gapText, RGB(255, 255, 0));
+                    } else {
+                        g_FrameAdvantageId = DirectDrawHook::AddPermanentMessage(gapText, RGB(255, 255, 0), 305, 430);
+                    }
                 } else {
-                    g_FrameAdvantageId = DirectDrawHook::AddPermanentMessage(gapText, RGB(255, 255, 0), 305, 430);
+                    // If hidden, ensure any existing message is cleared immediately
+                    if (g_FrameAdvantageId != -1) {
+                        DirectDrawHook::RemovePermanentMessage(g_FrameAdvantageId);
+                        g_FrameAdvantageId = -1;
+                    }
                 }
                 
                 // Display for ~1/3 second (60 internal frames)
@@ -364,10 +385,13 @@ void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, shor
             frameAdvState.p1InHitstun = false;
             frameAdvState.p1BlockstunStartInternalFrame = currentInternalFrame;
             frameAdvState.p1InitialBlockstunMoveID = moveID1;
-        } else {
+        } else if (p1_entering_hitstun) {
             frameAdvState.p1InBlockstun = false;
             frameAdvState.p1InHitstun = true;
             frameAdvState.p1HitstunStartInternalFrame = currentInternalFrame;
+        } else if (p1_entering_thrown) {
+            frameAdvState.p1InBlockstun = false;
+            frameAdvState.p1InHitstun = false;
         }
         
          #if defined(ENABLE_FRAME_ADV_DEBUG)
@@ -403,30 +427,28 @@ void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, shor
         }
     }
     
-    // STEP 4: Detect when defender exits blockstun/hitstun
+    // STEP 4: Detect when defender becomes actionable (covers knockdowns, ground/air tech, wakeup)
     if (frameAdvState.p2Defending && frameAdvState.p2DefenderFreeInternalFrame == -1) {
-        bool wasInStun = IsBlockstunState(prevMoveID2) || IsHitstun(prevMoveID2);
-        bool nowNotInStun = !IsBlockstunState(moveID2) && !IsHitstun(moveID2);
-        
-        if (wasInStun && nowNotInStun) {
+        bool nowActionable = IsActionable(moveID2);
+        bool wasNotActionable = !IsActionable(prevMoveID2);
+        if (wasNotActionable && nowActionable) {
             frameAdvState.p2DefenderFreeInternalFrame = currentInternalFrame;
-         #if defined(ENABLE_FRAME_ADV_DEBUG)
-         LogOut("[FRAME_ADV_DEBUG] P2 defender freed at frame " + 
-             std::to_string(currentInternalFrame), detailedLogging.load());
-         #endif
+            #if defined(ENABLE_FRAME_ADV_DEBUG)
+            LogOut("[FRAME_ADV_DEBUG] P2 defender actionable at frame " + 
+                std::to_string(currentInternalFrame), detailedLogging.load());
+            #endif
         }
     }
-    
+
     if (frameAdvState.p1Defending && frameAdvState.p1DefenderFreeInternalFrame == -1) {
-        bool wasInStun = IsBlockstunState(prevMoveID1) || IsHitstun(prevMoveID1);
-        bool nowNotInStun = !IsBlockstunState(moveID1) && !IsHitstun(moveID1);
-        
-        if (wasInStun && nowNotInStun) {
+        bool nowActionable = IsActionable(moveID1);
+        bool wasNotActionable = !IsActionable(prevMoveID1);
+        if (wasNotActionable && nowActionable) {
             frameAdvState.p1DefenderFreeInternalFrame = currentInternalFrame;
-         #if defined(ENABLE_FRAME_ADV_DEBUG)
-         LogOut("[FRAME_ADV_DEBUG] P1 defender freed at frame " + 
-             std::to_string(currentInternalFrame), detailedLogging.load());
-         #endif
+            #if defined(ENABLE_FRAME_ADV_DEBUG)
+            LogOut("[FRAME_ADV_DEBUG] P1 defender actionable at frame " + 
+                std::to_string(currentInternalFrame), detailedLogging.load());
+            #endif
         }
     }
     
@@ -509,17 +531,32 @@ void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, shor
         frameAdvState.p2ActionableInternalFrame = -1;
     }
     
-    // STEP 6: Add timeout detection for stale states
+    // STEP 6: Timeout detection for stale states (reworked to tolerate long throw/tech sequences)
+    // Only increment the stale counter when we're not still waiting for required actionable/free events.
     static int staleFrameCounter = 0;
-    bool hasActiveTracking = (frameAdvState.p1Attacking && !frameAdvState.p1AdvantageCalculated) || 
+    bool hasActiveTracking = (frameAdvState.p1Attacking && !frameAdvState.p1AdvantageCalculated) ||
                              (frameAdvState.p2Attacking && !frameAdvState.p2AdvantageCalculated);
-                             
+
+    auto stillWaitingForTimings = [&](short curP1, short curP2) -> bool {
+        // If attacker actionable time isn't known yet and attacker isn't actionable now, we're still waiting.
+        bool waitingP1Atk = frameAdvState.p1Attacking && frameAdvState.p1ActionableInternalFrame == -1 && !IsActionable(curP1);
+        bool waitingP2Atk = frameAdvState.p2Attacking && frameAdvState.p2ActionableInternalFrame == -1 && !IsActionable(curP2);
+        // If defender free time isn't known yet and defender isn't actionable now, we're still waiting.
+        bool waitingP1Def = frameAdvState.p1Defending && frameAdvState.p1DefenderFreeInternalFrame == -1 && !IsActionable(curP1);
+        bool waitingP2Def = frameAdvState.p2Defending && frameAdvState.p2DefenderFreeInternalFrame == -1 && !IsActionable(curP2);
+        return waitingP1Atk || waitingP2Atk || waitingP1Def || waitingP2Def;
+    };
+
     if (hasActiveTracking) {
-        staleFrameCounter++;
-        // If we've been tracking a state for more than 3 seconds without resolving it,
-        // something probably went wrong - reset to avoid getting stuck
-        if (staleFrameCounter > 576) {  // ~3 seconds
-            LogOut("[FRAME_ADV] Stale state detected, resetting", true);
+        // Pause the stale counter during any non-actionable lockout we're explicitly waiting to resolve
+        if (stillWaitingForTimings(moveID1, moveID2)) {
+            staleFrameCounter = 0; // actively waiting: don't consider this stale
+        } else {
+            staleFrameCounter++;
+        }
+        // If we've been tracking without progress for more than 6 seconds, reset to avoid getting stuck
+        if (staleFrameCounter > 1152) {  // ~6 seconds at 192 fps
+            LogOut("[FRAME_ADV] Stale state detected (no progress), resetting", true);
             ResetFrameAdvantageState();
             staleFrameCounter = 0;
             // But keep these for gap detection

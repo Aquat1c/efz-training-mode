@@ -15,6 +15,10 @@
 #include "../include/game/fm_commands.h" // Final Memory execution
 #include "../include/game/macro_controller.h" // Integrate macros with triggers
 #include "../include/game/character_settings.h" // For authoritative character ID mapping
+#include "../include/game/frame_analysis.h" // For IsThrown/IsHitstun/IsLaunched helpers
+
+// Safety forward declarations (in case of include-order differences in some build phases)
+bool IsThrown(short moveID);
 #include <cmath>
 #include <algorithm>
 // Define the motion input constants if they're not already defined
@@ -1409,8 +1413,8 @@ void ClearDelayStatesIfNonActionable() {
     
     // CRITICAL FIX: Don't clear delays if the player is in the middle of executing the action we just applied
     // Only clear if they're in clearly bad states (hitstun, blockstun, etc.)
-    bool p1InBadState = IsBlockstun(moveID1) || IsHitstun(moveID1) || IsFrozen(moveID1);
-    bool p2InBadState = IsBlockstun(moveID2) || IsHitstun(moveID2) || IsFrozen(moveID2);
+    bool p1InBadState = IsBlockstun(moveID1) || IsHitstun(moveID1) || IsFrozen(moveID1) || IsThrown(moveID1) || IsLaunched(moveID1) || IsAirtech(moveID1) || IsGroundtech(moveID1);
+    bool p2InBadState = IsBlockstun(moveID2) || IsHitstun(moveID2) || IsFrozen(moveID2) || IsThrown(moveID2) || IsLaunched(moveID2) || IsAirtech(moveID2) || IsGroundtech(moveID2);
     
     if (p1DelayState.isDelaying && p1InBadState) {
         p1DelayState.isDelaying = false;

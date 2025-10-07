@@ -72,6 +72,8 @@
 #define BACKWARD_AIRTECH 158
 #define GROUNDTECH_START 98
 #define GROUNDTECH_END 99
+// Some engine logic references state 97 as a pre-tech/startup marker; include as alias for safety
+#define GROUNDTECH_PRE 97
 #define GROUNDTECH_RECOVERY 96  // Add this new constant for the recovery state
 
 // Jump Move IDs - add these after the Tech Move IDs section
@@ -79,6 +81,10 @@
 #define FORWARD_JUMP_ID 5
 #define BACKWARD_JUMP_ID 6
 #define FALLING_ID 9
+// From engine decompile: multiple landing variants 10/11/12 are used; keep 13 as legacy/alt
+#define LANDING_1_ID 10
+#define LANDING_2_ID 11
+#define LANDING_3_ID 12
 #define LANDING_ID 13 
 
 // Special Stun States
@@ -86,6 +92,11 @@
 #define ELECTRIC_STATE 82
 #define FROZEN_STATE_START 83
 #define FROZEN_STATE_END 86
+
+// Thrown states (defender pre-hit/airborne during throw). Ranges can vary slightly by character.
+// Observed example path (Ayu): 110 -> 100 -> 59 (launch hitstun). Cover the conservative window 100..110.
+#define THROWN_STATE_START 100
+#define THROWN_STATE_END   110
 
 // Game frame rate settings
 #define EFZ_VISUAL_FPS 64.0
