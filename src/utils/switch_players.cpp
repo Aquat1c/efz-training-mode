@@ -4,6 +4,7 @@
 #include "../include/game/game_state.h"
 #include "../include/utils/pause_integration.h"
 #include "../include/game/practice_offsets.h"
+#include "../include/game/efzrevival_addrs.h"
 #include "../include/input/input_motion.h" // SetAIControlFlag
 #include "../include/utils/utilities.h" // GetEFZBase
 #include <windows.h>
@@ -76,8 +77,16 @@ namespace {
         EFZFreezeGuard() {
             HMODULE h = GetModuleHandleA("EfzRevival.dll");
             if (!h) return;
-            ctx = reinterpret_cast<void*>((uintptr_t)h + EFZREV_RVA_PATCH_CTX);
-            toggle = reinterpret_cast<int(__thiscall*)(void*, int)>((uintptr_t)h + EFZREV_RVA_PATCH_TOGGLER);
+            uintptr_t ctxRva = EFZ_RVA_PatchCtx();
+            uintptr_t togRva = EFZ_RVA_PatchToggler();
+            if (!ctxRva || !togRva) return;
+            ctx = reinterpret_cast<void*>((uintptr_t)h + ctxRva);
+            toggle = reinterpret_cast<int(__thiscall*)(void*, int)>((uintptr_t)h + togRva);
+            {
+                std::ostringstream oss; oss << "[SWITCH] FreezeGuard init ctx=0x" << std::hex << (uintptr_t)ctx
+                    << " toggle=0x" << (uintptr_t)toggle;
+                LogOut(oss.str(), true);
+            }
         }
         static bool SehSafeToggle(int(__thiscall* fn)(void*, int), void* ctx, int val) {
             if (!fn || !ctx) return false;
@@ -93,7 +102,7 @@ namespace {
         }
         void unfreeze() {
             if (ctx && toggle && active) {
-                bool ok = SehSafeToggle(toggle, ctx, 1);
+                bool ok = SehSafeToggle(toggle, ctx, EFZ_PatchToggleUnfreezeParam());
                 LogOut(ok ? "[SWITCH] Freeze OFF" : "[SWITCH] Freeze OFF threw exception", true);
                 active = false;
             }
@@ -106,13 +115,21 @@ namespace {
     // In practice, flipping LOCAL/REMOTE and swapping the two side buffer pointers suffices for input routing.
     // If further fixes are needed, we can introduce a lightweight refresh by touching the shared input vector.
     void PostSwitchRefresh(uint8_t* practice) {
-        if (!practice) return;
+    if (!practice) return;
         // Mirror init: sub_1006D640((char **)(this + 8 * (*[this+0x680] + 104)))
         int local = 0;
         if (!SafeReadMemory((uintptr_t)practice + PRACTICE_OFF_LOCAL_SIDE_IDX, &local, sizeof(local))) return;
         uintptr_t efzrevBase = (uintptr_t)GetModuleHandleA("EfzRevival.dll");
         if (!efzrevBase) return;
-        auto mapReset = (bool(__thiscall*)(char**))(efzrevBase + EFZREV_RVA_MAP_RESET);
+    uintptr_t mapRva = EFZ_RVA_MapReset();
+        {
+            std::ostringstream oss; oss << "[SWITCH] PostSwitchRefresh local=" << local
+                << " base=0x" << std::hex << efzrevBase
+                << " mapRVA=0x" << mapRva << " cleanupRVA=0x" << EFZ_RVA_CleanupPair()
+                << " refreshRVA=0x" << EFZ_RVA_RefreshMappingBlock();
+            LogOut(oss.str(), true);
+        }
+    auto mapReset = mapRva ? (bool(__thiscall*)(char**))(efzrevBase + mapRva) : nullptr;
         // Compute (this + 8 * (local + 104)) as char**
         char** mapPtr = (char**)((uintptr_t)practice + (uintptr_t)(8 * (local + 104)));
         if (!s_disableMapReset && mapReset) {
@@ -130,8 +147,10 @@ namespace {
         // Call EFZ_Obj_SubStruct448_CleanupPair for either direction to ensure device/pair rebind
         // Always rebind pair so the active pairing follows the current local side
         {
-            auto cleanupPair = (int(__thiscall*)(void*))(efzrevBase + EFZREV_RVA_CLEANUP_PAIR);
-            void* patchCtx = (void*)(efzrevBase + EFZREV_RVA_PATCH_CTX);
+            uintptr_t cleanRva = EFZ_RVA_CleanupPair();
+            uintptr_t ctxRva = EFZ_RVA_PatchCtx();
+            auto cleanupPair = cleanRva ? (int(__thiscall*)(void*))(efzrevBase + cleanRva) : nullptr;
+            void* patchCtx = ctxRva ? (void*)(efzrevBase + ctxRva) : nullptr;
             if (cleanupPair && patchCtx) {
                 int rc = 0; bool sehOk = SehSafe_CleanupPair(cleanupPair, patchCtx, &rc);
                 std::ostringstream oss; oss << "[SWITCH] CleanupPair(local=" << local << ") -> " << (sehOk?"rc=":"EXCEPTION rc=") << rc;
@@ -143,7 +162,8 @@ namespace {
 
         // Refresh mapping block into Practice (+4..+0x24) from EfzRevival patch ctx (best-effort)
         {
-            auto refreshMap = (int(__thiscall*)(void*))(efzrevBase + EFZREV_RVA_REFRESH_MAPPING_BLOCK);
+            uintptr_t refreshRva = EFZ_RVA_RefreshMappingBlock();
+            auto refreshMap = refreshRva ? (int(__thiscall*)(void*))(efzrevBase + refreshRva) : nullptr;
             if (refreshMap) {
                 int rc2 = 0; bool sehOk2 = SehSafe_CleanupPair(refreshMap, practice, &rc2); // reuse wrapper for __thiscall(void*)
                 std::ostringstream oss; oss << "[SWITCH] RefreshMappingBlock() -> " << (sehOk2?"rc=":"EXCEPTION rc=") << rc2;
@@ -300,7 +320,10 @@ namespace SwitchPlayers {
         }
         PauseIntegration::EnsurePracticePointerCapture();
         void* p = PauseIntegration::GetPracticeControllerPtr();
-        if (!p) { LogOut("[SWITCH] Practice controller not available", true); return false; }
+        if (!p) {
+            LogOut("[SWITCH] Practice controller not available", true);
+            return false;
+        }
         uint8_t* practice = reinterpret_cast<uint8_t*>(p);
         int curLocal = 0; if (!SafeReadMemory((uintptr_t)practice + PRACTICE_OFF_LOCAL_SIDE_IDX, &curLocal, sizeof(curLocal))) return false;
         int desired = (curLocal == 0) ? 1 : 0;

@@ -6,6 +6,8 @@
 #include "../include/core/memory.h"
 // RVAs and Practice offsets (local header)
 #include "../include/game/practice_offsets.h"
+#include "../include/game/efzrevival_addrs.h"
+#include "../include/utils/network.h" // GetEfzRevivalVersion, EfzRevivalVersion
 // MinHook for capturing Practice controller pointer
 #include "../3rdparty/minhook/include/MinHook.h"
 #include <windows.h>
@@ -14,6 +16,9 @@
 #include <sstream>
 
 namespace {
+    static inline bool IsHVersion() {
+        return GetEfzRevivalVersion() == EfzRevivalVersion::Revival102h;
+    }
     // === State tracking ===
     std::atomic<bool> s_menuVisible{false};
     std::atomic<void*> s_practicePtr{nullptr};
@@ -37,37 +42,110 @@ namespace {
     // Try to resolve Practice controller pointer directly from EfzRevival's mode array
     // EFZ_GameMode_GetStructByIndex(idx) = *(int*)(EfzRevivalBase + 0x790110 + 4*idx)
     // Practice index observed as 3 in decompile; guard for nulls and mode mismatch.
+    static bool ValidatePracticeCandidate(uintptr_t cand) {
+        if (!cand) return false;
+        int side = -1; uint8_t pauseFlag = 0xFF; uintptr_t primary = 0;
+        SafeReadMemory(cand + PRACTICE_OFF_LOCAL_SIDE_IDX, &side, sizeof(side));
+        SafeReadMemory(cand + PRACTICE_OFF_PAUSE_FLAG, &pauseFlag, sizeof(pauseFlag));
+        SafeReadMemory(cand + PRACTICE_OFF_SIDE_BUF_PRIMARY, &primary, sizeof(primary));
+        bool sideOk = (side == 0 || side == 1);
+        bool pauseOk = (pauseFlag == 0 || pauseFlag == 1);
+        bool bufOk = (primary == (cand + PRACTICE_OFF_BUF_LOCAL_BASE)) || (primary == (cand + PRACTICE_OFF_BUF_REMOTE_BASE));
+        return sideOk && pauseOk && bufOk;
+    }
+
     bool TryResolvePracticePtrFromModeArray(void*& outPtr) {
         HMODULE hRev = GetModuleHandleA("EfzRevival.dll");
         if (!hRev) return false;
-        auto base = reinterpret_cast<uintptr_t>(hRev);
-        uintptr_t slotAddr = base + EFZREV_RVA_GAME_MODE_PTR_ARRAY + 4 * 3; // index 3
-        uint32_t slotVal = 0;
-        if (!SafeReadMemory(slotAddr, &slotVal, sizeof(slotVal))) return false;
-        if (slotVal == 0) return false;
-        outPtr = reinterpret_cast<void*>(static_cast<uintptr_t>(slotVal));
-        return true;
+    auto base = reinterpret_cast<uintptr_t>(hRev);
+    uintptr_t gm = EFZ_RVA_GameModePtrArray();
+    if (!gm) return false;
+        // Try current game mode index first
+        uint8_t rawMode = 255; GetCurrentGameMode(&rawMode);
+        int tryIdx[3] = { (int)rawMode, 1, 3 }; // prefer current mode, then common Practice(1), then legacy(3)
+        for (int t = 0; t < 3; ++t) {
+            int idx = tryIdx[t]; if (idx < 0 || idx > 15) continue;
+            uintptr_t slotAddr = base + gm + 4 * idx;
+            uintptr_t cand = 0;
+            if (!SafeReadMemory(slotAddr, &cand, sizeof(cand)) || !cand) continue;
+            if (!ValidatePracticeCandidate(cand)) continue;
+            outPtr = reinterpret_cast<void*>(cand);
+            std::ostringstream oss; oss << "[PAUSE] ModeArray idx=" << std::dec << idx << " resolved practice=0x" << std::hex << cand;
+            LogOut(oss.str(), true);
+            return true;
+        }
+        return false;
     }
 
-    // Lightweight hook to capture Practice controller pointer (ECX of Practice tick)
-    typedef int (__thiscall *tPracticeTick)(void* thisPtr);
-    static tPracticeTick oPracticeTick = nullptr;
-    // We use __fastcall for __thiscall hooks (ECX=this, EDX=unused)
-    static int __fastcall HookedPracticeTick(void* thisPtr, void* /*edx*/) {
+    // Heuristic scan: iterate a small range of mode slots to find a struct that looks like Practice by invariants.
+    bool TryResolvePracticePtrByScan(void*& outPtr) {
+        HMODULE hRev = GetModuleHandleA("EfzRevival.dll");
+        if (!hRev) return false;
+        auto base = reinterpret_cast<uintptr_t>(hRev);
+        uintptr_t gm = EFZ_RVA_GameModePtrArray();
+        if (!gm) return false;
+        for (int idx = 0; idx < 16; ++idx) {
+            uintptr_t slotAddr = base + gm + 4 * idx;
+            uintptr_t cand = 0;
+            if (!SafeReadMemory(slotAddr, &cand, sizeof(cand)) || !cand) continue;
+            if (ValidatePracticeCandidate(cand)) {
+                outPtr = reinterpret_cast<void*>(cand);
+                std::ostringstream oss; oss << "[PAUSE] Heuristic scan resolved practice=0x" << std::hex << cand << " (slot=" << std::dec << idx << ")";
+                LogOut(oss.str(), true);
+                return true;
+            }
+        }
+        LogOut("[PAUSE] Heuristic scan failed to resolve Practice controller", true);
+        return false;
+    }
+
+    // Lightweight hooks to capture Practice controller pointer (ECX of Practice tick)
+    // 1.02e: sub_10074F70(int this) -> we use (void*) and no extra arg
+    typedef int (__thiscall *tPracticeTickE)(void* thisPtr);
+    static tPracticeTickE oPracticeTickE = nullptr;
+    static int __fastcall HookedPracticeTickE(void* thisPtr, void* /*edx*/) {
         s_practicePtr.store(thisPtr, std::memory_order_relaxed);
+        {
+            std::ostringstream oss; oss << "[PAUSE] HookedPracticeTickE ECX=0x" << std::hex << (uintptr_t)thisPtr;
+            LogOut(oss.str(), false);
+        }
         // Capture pre-step counter if menu visible (so we can neutralize any increment)
-        uint32_t before = 0;
-        bool wantNeutralize = false;
+        uint32_t before = 0; bool wantNeutralize = false;
         if (s_menuVisible.load(std::memory_order_relaxed)) {
             SafeReadMemory(reinterpret_cast<uintptr_t>(thisPtr)+PRACTICE_OFF_STEP_COUNTER, &before, sizeof(before));
             wantNeutralize = true;
         }
-        int ret = oPracticeTick ? oPracticeTick(thisPtr) : 0;
+        int ret = oPracticeTickE ? oPracticeTickE(thisPtr) : 0;
         if (wantNeutralize) {
             uint32_t after = before;
             if (SafeReadMemory(reinterpret_cast<uintptr_t>(thisPtr)+PRACTICE_OFF_STEP_COUNTER, &after, sizeof(after))) {
                 if (after == before + 1) {
-                    // Roll back the step advance
+                    SafeWriteMemory(reinterpret_cast<uintptr_t>(thisPtr)+PRACTICE_OFF_STEP_COUNTER, &before, sizeof(before));
+                }
+            }
+        }
+        return ret;
+    }
+
+    // 1.02h: sub_10074F40(int this, int a2) -> we must accept the extra int argument
+    typedef char (__thiscall *tPracticeTickH)(void* thisPtr, int a2);
+    static tPracticeTickH oPracticeTickH = nullptr;
+    static char __fastcall HookedPracticeTickH(void* thisPtr, void* /*edx*/, int a2) {
+        s_practicePtr.store(thisPtr, std::memory_order_relaxed);
+        {
+            std::ostringstream oss; oss << "[PAUSE] HookedPracticeTickH ECX=0x" << std::hex << (uintptr_t)thisPtr << " a2=" << std::dec << a2;
+            LogOut(oss.str(), false);
+        }
+        uint32_t before = 0; bool wantNeutralize = false;
+        if (s_menuVisible.load(std::memory_order_relaxed)) {
+            SafeReadMemory(reinterpret_cast<uintptr_t>(thisPtr)+PRACTICE_OFF_STEP_COUNTER, &before, sizeof(before));
+            wantNeutralize = true;
+        }
+        char ret = oPracticeTickH ? oPracticeTickH(thisPtr, a2) : 0;
+        if (wantNeutralize) {
+            uint32_t after = before;
+            if (SafeReadMemory(reinterpret_cast<uintptr_t>(thisPtr)+PRACTICE_OFF_STEP_COUNTER, &after, sizeof(after))) {
+                if (after == before + 1) {
                     SafeWriteMemory(reinterpret_cast<uintptr_t>(thisPtr)+PRACTICE_OFF_STEP_COUNTER, &before, sizeof(before));
                 }
             }
@@ -82,6 +160,12 @@ namespace {
     static std::atomic<bool> s_internalPauseBypass{false};
     static int __fastcall HookedTogglePause(void* thisPtr, void* /*edx*/) {
         if (thisPtr) s_practicePtr.store(thisPtr, std::memory_order_relaxed);
+        {
+            std::ostringstream oss; oss << "[PAUSE] HookedTogglePause ECX=0x" << std::hex << (uintptr_t)thisPtr
+                << " menuVisible=" << (s_menuVisible.load()?1:0)
+                << " bypass=" << (s_internalPauseBypass.load()?1:0);
+            LogOut(oss.str(), true);
+        }
         if (s_menuVisible.load(std::memory_order_relaxed) && !s_internalPauseBypass.load(std::memory_order_relaxed)) {
             // Suppress user-initiated pause/unpause while menu open
             return 0;
@@ -96,16 +180,35 @@ namespace {
             if (TryResolvePracticePtrFromModeArray(resolved)) {
                 s_practicePtr.store(resolved, std::memory_order_relaxed);
                 LogOut("[PAUSE] Practice ptr resolved via mode array", true);
+            } else if (TryResolvePracticePtrByScan(resolved)) {
+                s_practicePtr.store(resolved, std::memory_order_relaxed);
+                LogOut("[PAUSE] Practice ptr resolved via heuristic scan", true);
             }
         }
         if (s_practiceHooksInstalled.load()) return;
         HMODULE hRev = GetModuleHandleA("EfzRevival.dll");
         if (!hRev) return; // wait for injection
-        void* tickTarget  = EFZ_RVA_TO_VA(hRev, EFZREV_RVA_PRACTICE_TICK);
-        void* pauseTarget = EFZ_RVA_TO_VA(hRev, EFZREV_RVA_TOGGLE_PAUSE);
+        uintptr_t rvaTick = EFZ_RVA_PracticeTick();
+        uintptr_t rvaPause = EFZ_RVA_TogglePause();
+        void* tickTarget  = rvaTick ? EFZ_RVA_TO_VA(hRev, rvaTick) : nullptr;
+        void* pauseTarget = rvaPause ? EFZ_RVA_TO_VA(hRev, rvaPause) : nullptr;
+        {
+            std::ostringstream oss; oss << "[PAUSE] Installing hooks: PracticeTick=0x" << std::hex << (uintptr_t)tickTarget
+                << " TogglePause=0x" << (uintptr_t)pauseTarget;
+            LogOut(oss.str(), true);
+        }
         bool anyHook = false;
-        if (tickTarget && MH_CreateHook(tickTarget, &HookedPracticeTick, reinterpret_cast<void**>(&oPracticeTick)) == MH_OK && MH_EnableHook(tickTarget) == MH_OK) {
-            anyHook = true; LogOut("[PAUSE] PracticeTick hook active", true);
+        // Select the correct PracticeTick hook based on version/signature
+        if (tickTarget) {
+            if (IsEfzRevivalLoaded() && IsHVersion()) {
+                if (MH_CreateHook(tickTarget, &HookedPracticeTickH, reinterpret_cast<void**>(&oPracticeTickH)) == MH_OK && MH_EnableHook(tickTarget) == MH_OK) {
+                    anyHook = true; LogOut("[PAUSE] PracticeTick hook active (1.02h)", true);
+                }
+            } else {
+                if (MH_CreateHook(tickTarget, &HookedPracticeTickE, reinterpret_cast<void**>(&oPracticeTickE)) == MH_OK && MH_EnableHook(tickTarget) == MH_OK) {
+                    anyHook = true; LogOut("[PAUSE] PracticeTick hook active (1.02e)", true);
+                }
+            }
         }
         if (pauseTarget && MH_CreateHook(pauseTarget, &HookedTogglePause, reinterpret_cast<void**>(&oTogglePause)) == MH_OK && MH_EnableHook(pauseTarget) == MH_OK) {
             anyHook = true; LogOut("[PAUSE] TogglePause hook active", true);
@@ -124,11 +227,30 @@ namespace {
         uint8_t v = paused ? 1u : 0u; return SafeWriteMemory(reinterpret_cast<uintptr_t>(p) + PRACTICE_OFF_PAUSE_FLAG, &v, sizeof(v));
     }
 
+    // Reset the Practice step counter (+0xB0) to 0, mirroring the official toggle behavior
+    // seen in 1.02h (sub_10076170 sets *(this+176)=0 after toggling pause state).
+    bool ResetPracticeStepCounterToZero() {
+        void* p = s_practicePtr.load(); if (!p) return false;
+        uint32_t zero = 0;
+        bool ok = SafeWriteMemory(reinterpret_cast<uintptr_t>(p) + PRACTICE_OFF_STEP_COUNTER, &zero, sizeof(zero));
+        if (ok) {
+            std::ostringstream oss; oss << "[PAUSE] Reset step counter to 0 at +0xB0 for Practice=0x" << std::hex << (uintptr_t)p;
+            LogOut(oss.str(), true);
+        } else {
+            LogOut("[PAUSE] Failed to reset step counter (Practice ptr missing or write failed)", true);
+        }
+        return ok;
+    }
+
     // Hook battle screen render to capture battleContext pointer.
     typedef BOOL (__thiscall *tRenderBattleScreen)(void* battleContext);
     static tRenderBattleScreen oRenderBattleScreen = nullptr;
     static BOOL __fastcall HookedRenderBattleScreen(void* battleContext, void* /*edx*/) {
         if (battleContext) s_battleContext.store(battleContext, std::memory_order_relaxed);
+        {
+            std::ostringstream oss; oss << "[PAUSE] RenderBattleScreen bc=0x" << std::hex << (uintptr_t)battleContext;
+            LogOut(oss.str(), false);
+        }
         return oRenderBattleScreen ? oRenderBattleScreen(battleContext) : FALSE;
     }
 
@@ -137,14 +259,21 @@ namespace {
         if (installed.load()) return;
         HMODULE hRev = GetModuleHandleA("EfzRevival.dll");
         if (!hRev) return; // wait until injected
-        void* target = EFZ_RVA_TO_VA(hRev, EFZ_RVA_RENDER_BATTLE_SCREEN);
+    uintptr_t rva = EFZ_RVA_RenderBattleScreen();
+    void* target = rva ? EFZ_RVA_TO_VA(hRev, rva) : nullptr;
         if (!target) return;
         if (MH_CreateHook(target, &HookedRenderBattleScreen, reinterpret_cast<void**>(&oRenderBattleScreen)) != MH_OK) {
-            LogOut("[PAUSE] Failed to create RenderBattleScreen hook (battleContext capture)", true);
+            {
+                std::ostringstream oss; oss << "[PAUSE] Failed to create RenderBattleScreen hook at VA=0x" << std::hex << (uintptr_t)target;
+                LogOut(oss.str(), true);
+            }
             return;
         }
         if (MH_EnableHook(target) != MH_OK) {
-            LogOut("[PAUSE] Failed to enable RenderBattleScreen hook (battleContext capture)", true);
+            {
+                std::ostringstream oss; oss << "[PAUSE] Failed to enable RenderBattleScreen hook at VA=0x" << std::hex << (uintptr_t)target;
+                LogOut(oss.str(), true);
+            }
             MH_RemoveHook(target);
             return;
         }
@@ -168,43 +297,63 @@ namespace {
         return ok;
     }
 
-    // === Patch toggler (sub_1006B2A0) wrapper ===
-    typedef int (__cdecl *tPatchToggle)(void* patchCtx, char enable);
+    // === Patch toggler (sub_1006B2A0 / sub_1006BB00) wrapper ===
+    // Both 1.02e and 1.02h are __thiscall: int func(void* this, char enable)
+    typedef int (__thiscall *tPatchToggle)(void* patchCtx, char enable);
+    // Official pause toggle (sub_10075720)
+    typedef int (__thiscall *tOfficialToggle)(void* thisPtr);
+
+    // SEH helpers must avoid C++ objects with destructors in scope
+    static bool SehCall_PatchToggle(void* ctx, tPatchToggle fn, char enable) {
+        __try { fn(ctx, enable); return true; } __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+    }
+    static bool SehCall_OfficialToggle(void* thisPtr, tOfficialToggle fn) {
+        __try { fn(thisPtr); return true; } __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+    }
+
     tPatchToggle GetPatchToggleFn() {
         HMODULE hRev = GetModuleHandleA("EfzRevival.dll"); if (!hRev) return nullptr;
-        return reinterpret_cast<tPatchToggle>(EFZ_RVA_TO_VA(hRev, EFZREV_RVA_PATCH_TOGGLER));
+        uintptr_t rva = EFZ_RVA_PatchToggler();
+        if (!rva) return nullptr;
+        return reinterpret_cast<tPatchToggle>(EFZ_RVA_TO_VA(hRev, rva));
     }
     void* GetPatchCtxPtr() {
         HMODULE hRev = GetModuleHandleA("EfzRevival.dll"); if (!hRev) return nullptr;
-        return EFZ_RVA_TO_VA(hRev, EFZREV_RVA_PATCH_CTX);
+        uintptr_t rva = EFZ_RVA_PatchCtx();
+        if (!rva) return nullptr;
+        return EFZ_RVA_TO_VA(hRev, rva);
     }
     bool ApplyPatchFreeze(bool freeze) {
         auto fn = GetPatchToggleFn(); void* ctx = GetPatchCtxPtr(); if (!fn || !ctx) return false;
-        // Engine semantics: enable=0 => apply NOP patches (freeze); enable=1 => restore (run)
-        char enable = freeze ? 0 : 1;
-        __try { fn(ctx, enable); } __except(EXCEPTION_EXECUTE_HANDLER) { return false; }
-        return true;
+        // Engine semantics differ by version.
+        char enable = freeze ? 0 : (char)EFZ_PatchToggleUnfreezeParam();
+        {
+            std::ostringstream oss; oss << "[PAUSE] PatchToggle freeze=" << (freeze?1:0) << " param=" << (int)enable
+                << " ctx=0x" << std::hex << (uintptr_t)ctx;
+            LogOut(oss.str(), true);
+        }
+        return SehCall_PatchToggle(ctx, fn, enable);
     }
-    
-    // Official pause toggle (sub_10075720)
-    typedef int (__thiscall *tOfficialToggle)(void* thisPtr);
     tOfficialToggle GetOfficialToggleFn() {
         HMODULE hRev = GetModuleHandleA("EfzRevival.dll"); if (!hRev) return nullptr;
-        return reinterpret_cast<tOfficialToggle>(EFZ_RVA_TO_VA(hRev, EFZREV_RVA_TOGGLE_PAUSE));
+    uintptr_t rva = EFZ_RVA_TogglePause();
+    if (!rva) return nullptr;
+    return reinterpret_cast<tOfficialToggle>(EFZ_RVA_TO_VA(hRev, rva));
     }
     bool InvokeOfficialToggle() {
         void* p = s_practicePtr.load(); if (!p) return false; auto fn = GetOfficialToggleFn(); if (!fn) return false;
         // Temporarily bypass suppression so HookedTogglePause calls through
         s_internalPauseBypass.store(true, std::memory_order_relaxed);
         bool ok = false;
-        __try { fn(p); ok = true; } __except(EXCEPTION_EXECUTE_HANDLER) { ok = false; }
+        ok = SehCall_OfficialToggle(p, fn);
+        LogOut(std::string("[PAUSE] InvokeOfficialToggle -> ") + (ok?"OK":"EXCEPTION"), true);
         s_internalPauseBypass.store(false, std::memory_order_relaxed);
         return ok;
     }
 }
 
 namespace PauseIntegration {
-    void EnsurePracticePointerCapture() { EnsurePracticePtrHookInstalled(); }
+    void EnsurePracticePointerCapture() { EnsurePracticePtrHookInstalled(); EnsureBattleContextHook(); }
     void* GetPracticeControllerPtr() { return s_practicePtr.load(); }
 
     bool IsPracticePaused() { bool p=false; if (ReadPracticePauseFlag(p)) return p; return false; }
@@ -228,7 +377,8 @@ namespace PauseIntegration {
         GameMode mode = GetCurrentGameMode();
         const bool inPractice = (mode == GameMode::Practice);
         const bool revivalLoaded = (GetModuleHandleA("EfzRevival.dll") != nullptr);
-        std::ostringstream log; log << "[PAUSE] Menu=" << (visible?"open":"close") << " practice=" << (inPractice?1:0);
+        std::ostringstream log; log << "[PAUSE] Menu=" << (visible?"open":"close") << " practice=" << (inPractice?1:0)
+            << " prx=0x" << std::hex << (uintptr_t)s_practicePtr.load();
         LogOut(log.str(), true);
 
         if (visible) {
@@ -257,12 +407,18 @@ namespace PauseIntegration {
                     return; // respect external pause
                 }
             }
-            // Fallback 1: direct practice flag + patch freeze (mirrors paused state) if we have ptr & patch toggler
+            // Fallback 1: apply patch freeze unconditionally if EfzRevival is present, and set practice pause flag if pointer is known
             bool appliedAny=false;
-            if (revivalLoaded && s_practicePtr.load()) {
-                bool p=false; ReadPracticePauseFlag(p);
-                if (!p && WritePracticePauseFlag(true)) { s_weForcedFlagPause.store(true); appliedAny=true; LogOut("[PAUSE] Fallback: pause flag set", true); }
+            if (revivalLoaded) {
+                // Try patch freeze first; it doesn't require the practice pointer
                 if (ApplyPatchFreeze(true)) { s_weAppliedPatchFreeze.store(true); appliedAny=true; LogOut("[PAUSE] Fallback: patch freeze applied", true); }
+                // If we already have the practice pointer, mirror engine state by setting its pause flag
+                if (s_practicePtr.load()) {
+                    bool p=false; ReadPracticePauseFlag(p);
+                    if (!p && WritePracticePauseFlag(true)) { s_weForcedFlagPause.store(true); appliedAny=true; LogOut("[PAUSE] Fallback: pause flag set", true); }
+                    // Mirror official behavior: reset step counter when toggling pause via fallback
+                    ResetPracticeStepCounterToZero();
+                }
             }
             // Fallback 2: brute gamespeed (last resort)
             if (!appliedAny) {
@@ -280,6 +436,8 @@ namespace PauseIntegration {
             }
             if (s_weAppliedPatchFreeze.load()) {
                 ApplyPatchFreeze(false); // ignore result
+                // Mirror official behavior on unfreeze: reset step counter to 0 as well
+                ResetPracticeStepCounterToZero();
                 s_weAppliedPatchFreeze.store(false);
             }
             if (s_weForcedFlagPause.load()) {
