@@ -22,7 +22,8 @@
 // ADD these includes for the new rendering loop
 #include "../include/gui/imgui_impl.h"
 #include <Xinput.h>
-#pragma comment(lib, "xinput9_1_0.lib")
+// XInput loaded dynamically via XInputShim
+#include "../include/utils/xinput_shim.h"
 #include <cmath>
 #include "../../include/gui/gif_player.h"
 
@@ -96,6 +97,8 @@ static float GetDpiScale() {
 typedef HRESULT(WINAPI* EndScene_t)(LPDIRECT3DDEVICE9);
 static EndScene_t oEndScene = nullptr;
 static void* g_EndSceneTarget = nullptr; // store target vtable entry for cleanup
+// Track if our EndScene hook has ever been called (for diagnostics)
+static std::atomic<bool> g_EndSceneObserved{ false };
 // --- End D3D9 Globals ---
 
 // --- FIX: Add missing implementations for obsolete DirectDraw hooks ---
@@ -127,6 +130,8 @@ HRESULT WINAPI DirectDrawHook::HookedFlip(IDirectDrawSurface7* This, IDirectDraw
 
 // --- REVISED AND CORRECTED D3D9 EndScene Hook ---
 HRESULT WINAPI HookedEndScene(LPDIRECT3DDEVICE9 pDevice) {
+    // Mark that EndScene was observed at least once
+    if (!g_EndSceneObserved.load()) g_EndSceneObserved.store(true);
     if (!pDevice) {
         return oEndScene(pDevice);
     }
@@ -625,7 +630,7 @@ void DirectDrawHook::RenderD3D9Overlays(LPDIRECT3DDEVICE9 pDevice) {
             // Poll gamepad
             bool padActive = false;
             XINPUT_STATE state{};
-            if (XInputGetState(0, &state) == ERROR_SUCCESS) {
+            if (XInputShim::GetState(0, &state) == ERROR_SUCCESS) {
                 auto applyDeadzone = [](SHORT v, SHORT dz) -> float {
                     int iv = (int)v;
                     if (iv > dz) iv -= dz; else if (iv < -dz) iv += dz; else iv = 0;
@@ -1010,12 +1015,27 @@ bool DirectDrawHook::InitializeD3D9() {
             return false;
         }
     }
+    // Log the module path for d3d9.dll
+    {
+        char pathBuf[MAX_PATH] = {0};
+        DWORD n = GetModuleFileNameA(d3d9Module, pathBuf, MAX_PATH);
+        if (n > 0) {
+            LogOut(std::string("[OVERLAY][D3D9] Using d3d9 module: ") + pathBuf, true);
+        } else {
+            LogOut("[OVERLAY][D3D9] GetModuleFileNameA(d3d9.dll) failed", detailedLogging.load());
+        }
+    }
     
     // Get the address of Direct3DCreate9
     auto Direct3DCreate9_fn = (LPDIRECT3D9(WINAPI*)(UINT))(GetProcAddress(d3d9Module, "Direct3DCreate9"));
     if (!Direct3DCreate9_fn) {
         LogOut("[OVERLAY] Failed to get Direct3DCreate9 address", true);
         return false;
+    }
+    else {
+        char ptrbuf[32] = {};
+        _snprintf_s(ptrbuf, sizeof(ptrbuf), _TRUNCATE, "%p", (void*)Direct3DCreate9_fn);
+        LogOut(std::string("[OVERLAY][D3D9] Direct3DCreate9 at ") + ptrbuf, detailedLogging.load());
     }
     
     // Create a D3D9 object
@@ -1024,15 +1044,36 @@ bool DirectDrawHook::InitializeD3D9() {
         LogOut("[OVERLAY] Failed to create D3D9 object", true);
         return false;
     }
+
+    // Log adapter information for diagnostics
+    UINT adapterCount = d3d9->GetAdapterCount();
+    LogOut("[OVERLAY][D3D9] Adapter count: " + std::to_string((unsigned)adapterCount), detailedLogging.load());
+    D3DADAPTER_IDENTIFIER9 ident{};
+    if (SUCCEEDED(d3d9->GetAdapterIdentifier(D3DADAPTER_DEFAULT, 0, &ident))) {
+        LogOut(std::string("[OVERLAY][D3D9] Default adapter: ") + ident.Description, detailedLogging.load());
+        char idbuf[128] = {};
+        _snprintf_s(idbuf, sizeof(idbuf), _TRUNCATE, "VendorID=0x%04X DeviceID=0x%04X SubSysID=0x%08X Revision=%u",
+            ident.VendorId, ident.DeviceId, ident.SubSysId, ident.Revision);
+        LogOut(std::string("[OVERLAY][D3D9] ") + idbuf, detailedLogging.load());
+    } else {
+        LogOut("[OVERLAY][D3D9] GetAdapterIdentifier failed", detailedLogging.load());
+    }
     
     // Create a hidden dummy window to safely create a temporary device
     WNDCLASSA wc = {};
     wc.lpfnWndProc = DefWindowProcA;
     wc.hInstance = GetModuleHandleA(nullptr);
     wc.lpszClassName = "EFZ_TM_D3D9_DUMMY";
-    RegisterClassA(&wc);
+    if (!RegisterClassA(&wc)) {
+        DWORD le = GetLastError();
+        LogOut("[OVERLAY][D3D9] RegisterClassA failed: " + std::to_string((unsigned)le), detailedLogging.load());
+    }
     HWND dummyWnd = CreateWindowExA(0, wc.lpszClassName, "efz_tm_dummy", WS_OVERLAPPEDWINDOW,
                                     CW_USEDEFAULT, CW_USEDEFAULT, 100, 100, nullptr, nullptr, wc.hInstance, nullptr);
+    if (!dummyWnd) {
+        DWORD le = GetLastError();
+        LogOut("[OVERLAY][D3D9] CreateWindowExA(dummy) failed: " + std::to_string((unsigned)le), true);
+    }
 
     // Set up present parameters
     D3DPRESENT_PARAMETERS d3dpp = {};
@@ -1051,7 +1092,10 @@ bool DirectDrawHook::InitializeD3D9() {
         D3DCREATE_SOFTWARE_VERTEXPROCESSING, &d3dpp, &tempDevice);
         
     if (FAILED(hr)) {
-        LogOut("[OVERLAY] Failed to create temp D3D9 device: " + std::to_string(hr), true);
+        // Log HRESULT in hex and decimal for easier lookup
+        char hrbuf[64] = {};
+        _snprintf_s(hrbuf, sizeof(hrbuf), _TRUNCATE, "0x%08lX (%ld)", (unsigned long)hr, (long)hr);
+        LogOut(std::string("[OVERLAY] Failed to create temp D3D9 device: ") + hrbuf, true);
         d3d9->Release();
         return false;
     }
@@ -1059,20 +1103,30 @@ bool DirectDrawHook::InitializeD3D9() {
     // Get the function pointer for EndScene
     void** vTable = *reinterpret_cast<void***>(tempDevice);
     void* endSceneAddr = vTable[42]; // EndScene is at index 42
+    {
+        char ptrbuf1[32] = {}, ptrbuf2[32] = {};
+        _snprintf_s(ptrbuf1, sizeof(ptrbuf1), _TRUNCATE, "%p", (void*)vTable);
+        _snprintf_s(ptrbuf2, sizeof(ptrbuf2), _TRUNCATE, "%p", endSceneAddr);
+        LogOut(std::string("[OVERLAY][D3D9] Device VTable=") + ptrbuf1 + " EndScene@42=" + ptrbuf2, true);
+    }
     g_EndSceneTarget = endSceneAddr;
     
     // Create the hook using MinHook
     LogOut("[OVERLAY] Hooking EndScene", detailedLogging.load());
-    if (MH_CreateHook(endSceneAddr, HookedEndScene, reinterpret_cast<void**>(&oEndScene)) != MH_OK) {
-        LogOut("[OVERLAY] Failed to create hook for EndScene", true);
+    MH_STATUS cr = MH_CreateHook(endSceneAddr, HookedEndScene, reinterpret_cast<void**>(&oEndScene));
+    if (cr != MH_OK) {
+        const char* es = MH_StatusToString(cr);
+        LogOut(std::string("[OVERLAY] Failed to create hook for EndScene: ") + (es ? es : "<unknown>"), true);
         tempDevice->Release();
         d3d9->Release();
         return false;
     }
     
     // Enable the hook
-    if (MH_EnableHook(endSceneAddr) != MH_OK) {
-        LogOut("[OVERLAY] Failed to enable EndScene hook", true);
+    MH_STATUS er = MH_EnableHook(endSceneAddr);
+    if (er != MH_OK) {
+        const char* es = MH_StatusToString(er);
+        LogOut(std::string("[OVERLAY] Failed to enable EndScene hook: ") + (es ? es : "<unknown>"), true);
         tempDevice->Release();
         d3d9->Release();
         return false;
@@ -1093,6 +1147,15 @@ bool DirectDrawHook::InitializeD3D9() {
     LogOut("[IMGUI] ImGui initialization succeeded", detailedLogging.load());
     LogOut("[IMGUI_GUI] GUI state initialized", detailedLogging.load());
     LogOut("[OVERLAY] D3D9 EndScene hook installed successfully.", true);
+
+    // Diagnostic: Verify EndScene is observed soon; otherwise log hints why overlay might appear missing
+    std::thread([]{
+        Sleep(6000);
+        if (!g_EndSceneObserved.load()) {
+            LogOut("[OVERLAY][D3D9] EndScene not observed within 6s after hook enable.", true);
+            LogOut("[OVERLAY][D3D9] Possible causes: EFZ is not rendering via D3D9 yet (no wrapper), game not yet in a render loop, or another overlay modified the vtable.", true);
+        }
+    }).detach();
     return true;
 }
 

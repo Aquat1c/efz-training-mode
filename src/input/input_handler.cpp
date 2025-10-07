@@ -31,7 +31,8 @@
 #include "../include/game/frame_monitor.h" // AreCharactersInitialized, GamePhase
 #include <Xinput.h>
 
-#pragma comment(lib, "xinput9_1_0.lib")
+// XInput DLL is loaded dynamically via XInputShim
+#include "../include/utils/xinput_shim.h"
 
 // Removed VK_NUMPAD_* dev hotkey defines (no longer used)
 
@@ -228,7 +229,7 @@ void MonitorKeys() {
             bool keyHandled = false;
 
             // Helpers
-            auto pollPad = [](int idx, XINPUT_STATE& out) { ZeroMemory(&out, sizeof(out)); return XInputGetState(idx, &out) == ERROR_SUCCESS; };
+            auto pollPad = [](int idx, XINPUT_STATE& out) { ZeroMemory(&out, sizeof(out)); return XInputShim::GetState(idx, &out) == ERROR_SUCCESS; };
             auto processActionsForPad = [&](int padIndex, const XINPUT_STATE& cur, XINPUT_STATE& prev) -> bool {
                 // Helper: edge detect (just-pressed) for standard buttons & pseudo trigger bits
                 constexpr int LT_MASK = 0x10000; // pseudo masks defined in config parser
@@ -393,7 +394,7 @@ void MonitorKeys() {
                 unsigned mask = 0;
                 for (int i = 0; i < 4; ++i) {
                     XINPUT_STATE tmp{};
-                    if (XInputGetState(i, &tmp) == ERROR_SUCCESS) mask |= (1u << i);
+                    if (XInputShim::GetState(i, &tmp) == ERROR_SUCCESS) mask |= (1u << i);
                 }
                 connectedMask = mask;
             };
@@ -412,7 +413,7 @@ void MonitorKeys() {
                 if (mask == 0) {
                     // Fallback: if no cached connections, do a light probe this frame
                     for (int i = 0; i < 4; ++i) {
-                        XINPUT_STATE tmp{}; if (XInputGetState(i, &tmp) == ERROR_SUCCESS) { mask |= (1u << i); }
+                        XINPUT_STATE tmp{}; if (XInputShim::GetState(i, &tmp) == ERROR_SUCCESS) { mask |= (1u << i); }
                     }
                     connectedMask = mask;
                 }
@@ -632,7 +633,7 @@ void MonitorKeys() {
                     for (int i = 0; i < 4; ++i) {
                         if (((mask >> i) & 1u) == 0) continue;
                         XINPUT_STATE cur{};
-                        if (XInputGetState(i, &cur) != ERROR_SUCCESS) continue;
+                        if (XInputShim::GetState(i, &cur) != ERROR_SUCCESS) continue;
                         if (cur.dwPacketNumber != prevPads[i].dwPacketNumber) return true;
                         if (cur.Gamepad.wButtons != 0) return true;
                         if (cur.Gamepad.bLeftTrigger || cur.Gamepad.bRightTrigger) return true;

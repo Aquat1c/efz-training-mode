@@ -7,7 +7,8 @@
 #include <setupapi.h>
 #include <devguid.h>
 #include <cfgmgr32.h>
-#pragma comment(lib, "xinput9_1_0.lib")
+#include "../include/utils/xinput_shim.h"
+// XInput dynamic load via shim
 #pragma comment(lib, "hid.lib")
 #pragma comment(lib, "setupapi.lib")
 
@@ -69,7 +70,7 @@ std::string GetControllerNameForIndex(int userIndex) {
 
     // If not connected, report clearly
     XINPUT_STATE st{};
-    if (XInputGetState(userIndex, &st) != ERROR_SUCCESS) {
+        if (XInputShim::GetState(userIndex, &st) != ERROR_SUCCESS) {
         return std::string("(Disconnected) Pad ") + std::to_string(userIndex);
     }
 
@@ -78,7 +79,7 @@ std::string GetControllerNameForIndex(int userIndex) {
 
     // Prefer a stable name based on XInput capabilities (avoids Raw Input mislabeling headsets/duplicates)
     XINPUT_CAPABILITIES caps{};
-    if (XInputGetCapabilities(userIndex, XINPUT_FLAG_GAMEPAD, &caps) == ERROR_SUCCESS) {
+        if (XInputShim::GetCapabilities(userIndex, XINPUT_FLAG_GAMEPAD, &caps) == ERROR_SUCCESS) {
         std::string base;
         switch (caps.SubType) {
             case XINPUT_DEVSUBTYPE_GAMEPAD:       base = "XInput Gamepad"; break;
