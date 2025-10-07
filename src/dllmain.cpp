@@ -55,12 +55,43 @@ void DelayedInitialization(HMODULE hModule) {
 
         WriteStartupLog("Starting delayed initialization");
 
-    // Defer console creation until config is loaded (so enableConsole can decide)
-
-        // Initialize logging system
+        // Initialize logging system (starts title updater thread)
         WriteStartupLog("Initializing logging system...");
         InitializeLogging();
         WriteStartupLog("Logging system initialized");
+
+        // Initialize configuration system early so console behavior is known
+        InitializeConfig();
+
+        // Create/hide console according to setting
+        if (Config::GetSettings().enableConsole) {
+            WriteStartupLog("Creating debug console as per settings...");
+            CreateDebugConsole();
+            if (HWND consoleWnd = GetConsoleWindow()) {
+                ShowWindow(consoleWnd, SW_SHOW);
+            }
+        } else {
+            // Ensure any inherited console is hidden; logs will be buffered
+            if (HWND consoleWnd = GetConsoleWindow()) {
+                ShowWindow(consoleWnd, SW_HIDE);
+            }
+            SetConsoleReady(false);
+        }
+
+        // Early gate: if online at startup, do NOT initialize hooks/threads/overlays
+        // Leave the console (per settings) and exit initialization immediately.
+        bool onlineAtStart = false;
+        try {
+            onlineAtStart = DetectOnlineMatch();
+        } catch (...) {
+            onlineAtStart = false; // be conservative; if unknown, continue
+        }
+        if (onlineAtStart) {
+            LogOut("[SYSTEM] Online mode detected at startup; skipping hooks, threads, and overlays.", true);
+            LogOut("[SYSTEM] Console state left as configured; no initialization will proceed while online.", true);
+            inStartupPhase = false;
+            return; // do not install hooks or start background workers
+        }
 
         // Initialize MinHook once for the entire application.
         if (MH_Initialize() != MH_OK) {
@@ -106,24 +137,6 @@ void DelayedInitialization(HMODULE hModule) {
         LogOut("[SYSTEM] Console initialized with code page: " + std::to_string(GetConsoleOutputCP()), true);
         LogOut("[SYSTEM] Current locale: C", true);
 
-        // Initialize configuration system
-        InitializeConfig();
-
-        // Create/hide console according to setting
-        if (Config::GetSettings().enableConsole) {
-            WriteStartupLog("Creating debug console as per settings...");
-            CreateDebugConsole();
-            if (HWND consoleWnd = GetConsoleWindow()) {
-                ShowWindow(consoleWnd, SW_SHOW);
-            }
-        } else {
-            // Ensure any inherited console is hidden; logs will be buffered
-            if (HWND consoleWnd = GetConsoleWindow()) {
-                ShowWindow(consoleWnd, SW_HIDE);
-            }
-            SetConsoleReady(false);
-        }
-
     // Start essential threads.
     LogOut("[SYSTEM] Starting background threads...", true);
     // Note: UpdateConsoleTitle thread is already started by InitializeLogging(); don't start a duplicate here.
@@ -150,6 +163,18 @@ void DelayedInitialization(HMODULE hModule) {
                     LogOut("[SYSTEM] D3D9 Overlay system initialized.", true);
                 } else {
                     LogOut("[SYSTEM] Failed to initialize D3D9 Overlay system.", true);
+                    static bool s_warnedNoD3D9 = false;
+                    if (!s_warnedNoD3D9) {
+                        s_warnedNoD3D9 = true;
+                        // Show a one-time guidance message to help users (esp. on Linux/Wine)
+                        const char* msg =
+                            "EFZ Training Mode: D3D9 overlay not detected.\n\n"
+                            "This disables on-screen overlays (frame advantage, triggers, etc.).\n\n"
+                            "If you're running under Linux/Wine: open winecfg and add an override for ddraw.dll\n"
+                            "(set it to native, then builtin), or set WINEDLLOVERRIDES=ddraw=n,b before launching the game.\n\n"
+                            "If you're on Windows: ensure d3d9.dll is available and not blocked by overlays from other apps.";
+                        MessageBoxA(FindEFZWindow(), msg, "EFZ Training Mode", MB_OK | MB_ICONWARNING | MB_SETFOREGROUND);
+                    }
                 }
             } catch (...) {
                 LogOut("[SYSTEM] Exception during D3D9 overlay initialization.", true);

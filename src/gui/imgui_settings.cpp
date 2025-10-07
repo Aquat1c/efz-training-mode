@@ -11,7 +11,8 @@
 #include "../include/game/game_state.h"
 #include <windows.h>
 #include <Xinput.h>
-#pragma comment(lib, "xinput9_1_0.lib")
+#include "../include/utils/xinput_shim.h"
+// XInput is loaded dynamically via XInputShim
 
 namespace ImGuiSettings {
     // Pseudo-bits for triggers when mapping to a button mask
@@ -77,7 +78,7 @@ namespace ImGuiSettings {
         uint32_t connected = 0;
         for (int i = 0; i < 4; ++i) {
             XINPUT_STATE st{};
-            if (XInputGetState(i, &st) == ERROR_SUCCESS) {
+            if (XInputShim::GetState(i, &st) == ERROR_SUCCESS) {
                 connected |= (1u << i);
                 agg |= st.Gamepad.wButtons;
                 if (st.Gamepad.bLeftTrigger > GP_TRIGGER_THRESH) agg |= GP_LT_BIT;

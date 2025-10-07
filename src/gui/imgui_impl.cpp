@@ -1,6 +1,7 @@
 #include "../include/utils/utilities.h"
 
 #include "../include/gui/imgui_impl.h"
+#include "../include/utils/xinput_shim.h"
 #include "../include/core/logger.h"
 #include "../include/gui/imgui_gui.h"
 #include "../include/game/practice_hotkey_gate.h"
@@ -15,7 +16,7 @@ namespace PracticeOverlayGate { void SetMenuVisible(bool); }
 // Math helpers
 #include <cmath>
 
-#pragma comment(lib, "xinput9_1_0.lib")
+// XInput linked dynamically via XInputShim for Wine compatibility
 
 // Global reference to shutdown flag - MOVED OUTSIDE namespace
 extern std::atomic<bool> g_isShuttingDown;
@@ -161,7 +162,7 @@ static void UpdateVirtualCursor(ImGuiIO& io) {
     // Poll all controllers and aggregate for ImGui nav; keep selected/last-active for virtual cursor
     auto pollController = [](int index, XINPUT_STATE& out) -> bool {
         ZeroMemory(&out, sizeof(out));
-        DWORD r = XInputGetState(index, &out);
+    DWORD r = XInputShim::GetState(index, &out);
         return (r == ERROR_SUCCESS);
     };
 
@@ -654,7 +655,7 @@ namespace ImGuiImpl {
                 ImGuiIO& io = ImGui::GetIO();
                 // Also take an immediate XInput snapshot
                 unsigned mask = 0; XINPUT_STATE s; ZeroMemory(&s, sizeof(s));
-                for (int i = 0; i < 4; ++i) { if (XInputGetState(i, &s) == ERROR_SUCCESS) mask |= (1u << i); }
+                for (int i = 0; i < 4; ++i) { if (XInputShim::GetState(i, &s) == ERROR_SUCCESS) mask |= (1u << i); }
                 char buf[256];
                 // Force-enable nav flags on open for reliability
                 io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
