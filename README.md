@@ -99,13 +99,12 @@ Default macro hotkeys (configurable in Settings → Hotkeys or in the INI):
 
 ## Known Issues
 
-1. **RG Frame Advantage Calculations**: The frame advantage displayed for some moves may be slightly off due to complexities in EFZ's RG system.
+1. **Frame Advantage Calculations**: The frame advantage displayed for some moves may be slightly off due to not handling all available states when the character is hurt.
 
-2. **Move Cancellation Detection**: The tool doesn't perfectly account for all cancel options when calculating potential advantages.
+2. **Buffer injection timing and controls switch desync**: Because of the complexity of how the buffer and cpu/player controls work sometimes the dummy can peform the trigger actions from the auto-action menu repeatedly.
+To fix this, you can either enable then disable P2 controls manually in the config menu or switch player controls.
 
-3. **Defender Actionable Frame Detection**: In some cases, the precise frame when a defender becomes actionable may be missed.
-
-4. **MoveID Tracking Limitations**: Some rare character-specific states may not be correctly identified.
+3. **Performance issues**: On older/lower-end devices the mod can cause fps drops. Disabling the EfzRevival GUI(use Enter as a default key) might fix the situation.
 
 ## Settings UI and Configuration
 
@@ -173,7 +172,7 @@ Special thanks goes to:
   - Verify online mode isn’t active (features are disabled during online play)
   - Check Settings → Hotkeys; rebind using “Bind” and try again
 - Overlay not visible
-  - Press the Toggle ImGui hotkey (default 7) or check that ImGui UI is enabled in Settings → General
+  - Press the Toggle ImGui hotkey (default 3) or check that ImGui UI is enabled in Settings → General
 
 ## License
 This project is provided for educational purposes. Eternal Fighter Zero is property of Twilight Frontier and its respective owners.
