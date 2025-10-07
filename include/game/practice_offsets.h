@@ -14,6 +14,9 @@
 // ==============================
 // EfzRevival.dll RVAs (x86)
 // ==============================
+// NOTE: New code should prefer the version-aware accessors in efzrevival_addrs.h.
+// These macros remain for reference, docs, and places that have not yet been migrated
+// or are known-stable across builds.
 
 // Practice tick (thiscall ECX=this) — we hook this to capture the Practice controller pointer
 #ifndef EFZREV_RVA_PRACTICE_TICK

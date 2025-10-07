@@ -1,4 +1,5 @@
 #include "../../include/game/practice_offsets.h"
+#include "../../include/game/efzrevival_addrs.h" // future: version-aware toggles
 #include "../../include/core/logger.h"
 #include "../../include/game/practice_hotkey_gate.h" // for menu visibility notification if needed
 #include "../../3rdparty/minhook/include/MinHook.h"

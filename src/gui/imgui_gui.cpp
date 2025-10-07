@@ -39,6 +39,7 @@ extern void SpamAttackButton(uintptr_t playerBase, uint8_t button, int frames, c
 #include "../include/utils/pause_integration.h"
 #include "../include/game/practice_offsets.h"
 #include "../include/core/version.h"
+#include "../include/utils/network.h"
 
 // Add these constants at the top of the file after includes
 // These are from input_motion.cpp but we need them here
@@ -1172,6 +1173,23 @@ namespace ImGuiGui {
                     ImGui::SeparatorText("EFZ Training Mode");
                     ImGui::TextWrapped("Version: %s", EFZ_TRAINING_MODE_VERSION);
                     ImGui::TextWrapped("Build: %s %s", EFZ_TRAINING_MODE_BUILD_DATE, EFZ_TRAINING_MODE_BUILD_TIME);
+                    // Show detected EfzRevival version and support status (stub)
+                    {
+                        EfzRevivalVersion rv = GetEfzRevivalVersion();
+                        const char* rvName = EfzRevivalVersionName(rv);
+                        bool supported = IsEfzRevivalVersionSupported(rv);
+                        ImGui::Dummy(ImVec2(1, 4));
+                        ImGui::SeparatorText("Game/Revival Version");
+                        ImGui::Text("Detected: %s", rvName);
+                        if (!supported) {
+                            ImGui::SameLine();
+                            ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.2f, 1.0f), "(unsupported)");
+                            ImGui::TextDisabled("Some features are gated. Online detection and certain offsets may be unavailable.");
+                        } else {
+                            ImGui::SameLine();
+                            ImGui::TextDisabled("(supported)");
+                        }
+                    }
                     ImGui::Dummy(ImVec2(1, 4));
                     ImGui::SeparatorText("Overview");
                     ImGui::TextWrapped("A comprehensive training mode enhancement tool for Eternal Fighter Zero. It provides frame data analysis, RG timing, robust auto-actions, and a modern in-game ImGui overlay with live configuration.");
