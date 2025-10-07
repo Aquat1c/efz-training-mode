@@ -40,9 +40,13 @@ bool IsSpecialStun(short moveID) {
 
 bool IsThrown(short moveID) {
     // Many characters place defenders into a temporary "thrown" sequence before transitioning to
-    // hit/launch states. From the decomp and field observations (e.g., Ayu), we see sequences like
-    // 110 -> 100 -> 59. We conservatively treat 100..110 as thrown.
-    return moveID >= THROWN_STATE_START && moveID <= THROWN_STATE_END;
+    // hit/launch states. Known windows include 100..110 (common) and 121..122 (Akiko continuation).
+    if (moveID >= THROWN_STATE_START && moveID <= THROWN_STATE_END) return true;
+    if (moveID >= THROWN2_STATE_START && moveID <= THROWN2_STATE_END) return true;
+    if (moveID >= THROWN3_STATE_START && moveID <= THROWN3_STATE_END) return true;
+    if (moveID >= THROWN4_STATE_START && moveID <= THROWN4_STATE_END) return true;
+    if (moveID >= THROWN5_STATE_START && moveID <= THROWN5_STATE_END) return true;
+    return false;
 }
 
 bool IsBlockstunState(short moveID) {
