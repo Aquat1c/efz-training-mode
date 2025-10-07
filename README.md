@@ -29,7 +29,7 @@ A comprehensive training mode enhancement tool for Eternal Fighter Zero. It prov
   - EFZ Mod Manager download: [link](https://docs.google.com/spreadsheets/d/1r0nBAaQczj9K4RG5zAVV4uXperDeoSnXaqQBal2-8Us/edit?usp=sharing)
 
 3) First run
-- The overlay loads in-game; open the menu via the hotkey (default: 7)
+- The overlay loads in-game; open the menu via the hotkey (default: 3)
 - A config file `efz_training_config.ini` is created next to the DLL
 - Console is OFF by default (you can enable it in Settings → General). All logs since startup are buffered and will appear when you enable it.
 
@@ -52,17 +52,15 @@ These can be changed in Settings → Hotkeys (press-to-bind) or in the INI; they
   - With Up: swap P1 and P2
   - With Down: place at center; with Down+Z: round-start positions
 - 2: Record current player positions
-- 3: Open config menu (overlay)
-- 4: Toggle detailed vs standard console title
-- 5: Reset frame counter
-- 6: Show help and clear console
+- 3: Open config menu (ImGui overlay)
+- 4: Toggle stats
 - 7: Toggle ImGui overlay
 
-## Frame Data Monitoring
+## Frame Advantage
 
 When active, the tool will automatically detect and display:
 
-- Frame advantage on block
+- Frame advantage on block/hit
 - RG frame advantage including:
   - RG type (Stand/Crouch/Air)
   - Immediate attack window after RG freeze
@@ -123,17 +121,6 @@ Default macro hotkeys (configurable in Settings → Hotkeys or in the INI):
   - Save to disk / Reload from disk buttons included
 
 Config file location: created next to `efz_training_mode.dll` as `efz_training_config.ini`.
-
-## Technical Implementation
-
-The project is built in C++ with CMake support and includes:
-
-- **Memory Management**: Read/write EFZ game memory for state tracking and modifications
-- **Frame Monitoring**: Track and analyze frame data in real-time
-- **Console**: Optional console window for debugging; can be toggled at runtime; logs buffered until enabled
-- **ImGui Integration**: Modern in-game overlay with live configuration
-- **DirectX Hooking**: Reliable D3D9 hooking for graphical overlays
-- **Network Detection**: Monitor TCP/UDP connections to detect online matches and prevent desyncs
 
 ## External Libraries
 
