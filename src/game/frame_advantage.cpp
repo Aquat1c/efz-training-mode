@@ -7,6 +7,7 @@
 #include "../include/game/frame_analysis.h"
 #include "../include/game/frame_monitor.h"
 #include "../include/gui/overlay.h"
+#include "../include/utils/pause_integration.h"
 
 // Global state for frame advantage tracking
 FrameAdvantageState frameAdvState = {
@@ -75,7 +76,56 @@ void ResetFrameAdvantageState() {
 }
 
 int GetCurrentInternalFrame() {
-    return frameCounter.load();
+    // Pause-aware internal frame counter for FA timings:
+    // - When not paused (or not in Practice), mirror the global frameCounter.
+    // - When paused in Practice, advance only when the Practice step counter increments
+    //   (each step is one visual frame = 3 internal frames).
+    static bool s_initialized = false;
+    static int s_faInternal = 0;
+    static bool s_prevPaused = false;
+    static uint32_t s_lastStep = 0;
+
+    int fcNow = frameCounter.load();
+    GameMode mode = GetCurrentGameMode();
+    bool inPractice = (mode == GameMode::Practice);
+    bool paused = PauseIntegration::IsPracticePaused();
+
+    if (!s_initialized) {
+        s_faInternal = fcNow;
+        s_initialized = true;
+        s_prevPaused = paused;
+        s_lastStep = 0;
+        // Try to seed last step value if available
+        uint32_t seed = 0; if (PauseIntegration::ReadStepCounter(seed)) s_lastStep = seed;
+        return s_faInternal;
+    }
+
+    if (!inPractice || !paused) {
+        // Unpaused or not in Practice: follow real time and keep in sync
+        s_faInternal = fcNow;
+        // Reset step debouncer on transition out of pause
+        if (s_prevPaused && !paused) {
+            s_lastStep = 0; uint32_t seed = 0; if (PauseIntegration::ReadStepCounter(seed)) s_lastStep = seed;
+        }
+        s_prevPaused = paused;
+        return s_faInternal;
+    }
+
+    // Paused in Practice: advance on step increments only
+    uint32_t cur = 0;
+    if (PauseIntegration::ReadStepCounter(cur)) {
+        if (s_lastStep == 0) {
+            s_lastStep = cur;
+        } else if (cur != s_lastStep) {
+            uint32_t delta = cur - s_lastStep; // handles wrap naturally
+            if (delta > 1000u) delta = 1u;     // sanity clamp
+            // Each step = 1 visual frame = 3 internal frames
+            s_faInternal += static_cast<int>(delta) * 3;
+            s_lastStep = cur;
+        }
+    }
+    s_prevPaused = paused;
+    return s_faInternal;
 }
 
 double GetCurrentVisualFrame() {
@@ -133,6 +183,9 @@ void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, shor
     // For gap detection
     static int p1_last_defender_free_frame = -1;
     static int p2_last_defender_free_frame = -1;
+    // Accumulate freeze frames between defender free and next connect (subtract from gap)
+    static int p1_freeze_accum_since_free = 0;
+    static int p2_freeze_accum_since_free = 0;
     
     // Cooldowns for hit detection - REDUCED to improve string detection
     static int p1_hit_connect_cooldown = 0;
@@ -141,6 +194,14 @@ void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, shor
     // Reduce cooldowns
     if (p1_hit_connect_cooldown > 0) p1_hit_connect_cooldown--;
     if (p2_hit_connect_cooldown > 0) p2_hit_connect_cooldown--;
+
+    // Track recent attack start edges to allow fallback arming when defender becomes non-actionable
+    static int p1_last_attack_edge_frame = -1;
+    static int p2_last_attack_edge_frame = -1;
+    const bool p1_attack_edge = IsAttackMove(moveID1) && !IsAttackMove(prevMoveID1);
+    const bool p2_attack_edge = IsAttackMove(moveID2) && !IsAttackMove(prevMoveID2);
+    if (p1_attack_edge) p1_last_attack_edge_frame = currentInternalFrame;
+    if (p2_attack_edge) p2_last_attack_edge_frame = currentInternalFrame;
     
     // Log the current state for debugging
     static int debugCounter = 0;
@@ -191,6 +252,7 @@ void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, shor
 
     if (p1_becomes_actionable) {
         p1_last_defender_free_frame = currentInternalFrame;
+        p1_freeze_accum_since_free = 0;
         #if defined(ENABLE_FRAME_ADV_DEBUG)
         LogOut("[FRAME_ADV_DEBUG] P1 became actionable at frame " + std::to_string(currentInternalFrame), 
             detailedLogging.load());
@@ -199,21 +261,44 @@ void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, shor
 
     if (p2_becomes_actionable) {
         p2_last_defender_free_frame = currentInternalFrame;
+        p2_freeze_accum_since_free = 0;
         #if defined(ENABLE_FRAME_ADV_DEBUG)
         LogOut("[FRAME_ADV_DEBUG] P2 became actionable at frame " + std::to_string(currentInternalFrame), 
             detailedLogging.load());
         #endif
+    }
+
+    // While waiting for the next connect, accumulate freeze frames to remove from "gap"
+    auto isFreezeFrame = [&]() -> bool {
+        // Consider global game-speed freeze and per-side special/frozen states
+        if (PauseIntegration::IsGameSpeedFrozen()) return true;
+        if (IsFrozen(moveID1) || IsFrozen(moveID2)) return true;
+        if (IsSpecialStun(moveID1) || IsSpecialStun(moveID2)) return true;
+        return false;
+    };
+    if (p1_last_defender_free_frame != -1 && isFreezeFrame()) {
+        p1_freeze_accum_since_free++;
+    }
+    if (p2_last_defender_free_frame != -1 && isFreezeFrame()) {
+        p2_freeze_accum_since_free++;
     }
     
     // STEP 1: Detect if an attack connects (P1 attacking P2)
     bool p2_entering_blockstun = IsBlockstunState(moveID2) && !IsBlockstunState(prevMoveID2);
     bool p2_entering_hitstun = IsHitstun(moveID2) && !IsHitstun(prevMoveID2);
     bool p2_entering_thrown   = IsThrown(moveID2)    && !IsThrown(prevMoveID2);
+    // Fallback: treat transition from actionable->non-actionable as a connect if it occurs shortly after an attack edge
+    bool p2_entering_nonactionable = IsActionable(prevMoveID2) && !IsActionable(moveID2);
+    bool p1_recent_attack_window = (p1_last_attack_edge_frame >= 0) && (currentInternalFrame - p1_last_attack_edge_frame <= 60);
     
-    if ((p2_entering_blockstun || p2_entering_hitstun || p2_entering_thrown) && p1_hit_connect_cooldown == 0) {
+    if (((p2_entering_blockstun || p2_entering_hitstun || p2_entering_thrown || (p2_entering_nonactionable && p1_recent_attack_window))
+         || (p1_attack_edge && !IsActionable(moveID2)))
+        && p1_hit_connect_cooldown == 0) {
         // Check for gap between moves in a string
         if (p2_last_defender_free_frame != -1) {
-            int gapFrames = currentInternalFrame - p2_last_defender_free_frame;
+            int gapFramesRaw = currentInternalFrame - p2_last_defender_free_frame;
+            int gapFrames = gapFramesRaw - p2_freeze_accum_since_free;
+            if (gapFrames < 0) gapFrames = 0;
             
             // Only consider gaps that are reasonably small
             if (gapFrames > 0 && gapFrames <= 60) {
@@ -248,7 +333,11 @@ void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, shor
                 // Display for ~1/3 second (60 internal frames)
                 frameAdvState.displayUntilInternalFrame = currentInternalFrame + 60;
                 
-                LogOut("[FRAME_ADV] Gap detected: " + gapText, true);
+                if (detailedLogging.load()) {
+                    LogOut(std::string("[FRAME_ADV] Gap detected: ") + gapText +
+                           " (raw=" + std::to_string(gapFramesRaw) +
+                           ", freeze-removed=" + std::to_string(p2_freeze_accum_since_free) + ")", true);
+                }
             }
         }
         
@@ -292,6 +381,10 @@ void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, shor
             // Thrown: treat as a connect without setting block/hitstun flags; timings will resolve on actionable
             frameAdvState.p2InBlockstun = false;
             frameAdvState.p2InHitstun = false;
+        } else {
+            // Non-actionable fallback (e.g., knockdown transition not classified as hit/throw)
+            frameAdvState.p2InBlockstun = false;
+            frameAdvState.p2InHitstun = false;
         }
         
          #if defined(ENABLE_FRAME_ADV_DEBUG)
@@ -300,7 +393,8 @@ void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, shor
          #endif
         
         // Reset this for accurate gap detection in the next sequence
-        p2_last_defender_free_frame = -1;
+    p2_last_defender_free_frame = -1;
+    p2_freeze_accum_since_free = 0;
         
         // Apply a minimal cooldown (just 3 internal frames = 1 visual frame)
         p1_hit_connect_cooldown = 3;
@@ -310,11 +404,17 @@ void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, shor
     bool p1_entering_blockstun = IsBlockstunState(moveID1) && !IsBlockstunState(prevMoveID1);
     bool p1_entering_hitstun = IsHitstun(moveID1) && !IsHitstun(prevMoveID1);
     bool p1_entering_thrown   = IsThrown(moveID1)    && !IsThrown(prevMoveID1);
+    bool p1_entering_nonactionable = IsActionable(prevMoveID1) && !IsActionable(moveID1);
+    bool p2_recent_attack_window = (p2_last_attack_edge_frame >= 0) && (currentInternalFrame - p2_last_attack_edge_frame <= 60);
     
-    if ((p1_entering_blockstun || p1_entering_hitstun || p1_entering_thrown) && p2_hit_connect_cooldown == 0) {
+    if (((p1_entering_blockstun || p1_entering_hitstun || p1_entering_thrown || (p1_entering_nonactionable && p2_recent_attack_window))
+         || (p2_attack_edge && !IsActionable(moveID1)))
+        && p2_hit_connect_cooldown == 0) {
         // Check for gap between moves in a string
         if (p1_last_defender_free_frame != -1) {
-            int gapFrames = currentInternalFrame - p1_last_defender_free_frame;
+            int gapFramesRaw = currentInternalFrame - p1_last_defender_free_frame;
+            int gapFrames = gapFramesRaw - p1_freeze_accum_since_free;
+            if (gapFrames < 0) gapFrames = 0;
             
             // Only consider gaps that are reasonably small
             if (gapFrames > 0 && gapFrames <= 60) {
@@ -349,7 +449,11 @@ void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, shor
                 // Display for ~1/3 second (60 internal frames)
                 frameAdvState.displayUntilInternalFrame = currentInternalFrame + 60;
                 
-                LogOut("[FRAME_ADV] Gap detected: " + gapText, true);
+                if (detailedLogging.load()) {
+                    LogOut(std::string("[FRAME_ADV] Gap detected: ") + gapText +
+                           " (raw=" + std::to_string(gapFramesRaw) +
+                           ", freeze-removed=" + std::to_string(p1_freeze_accum_since_free) + ")", true);
+                }
             }
         }
         
@@ -392,6 +496,10 @@ void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, shor
         } else if (p1_entering_thrown) {
             frameAdvState.p1InBlockstun = false;
             frameAdvState.p1InHitstun = false;
+        } else {
+            // Non-actionable fallback
+            frameAdvState.p1InBlockstun = false;
+            frameAdvState.p1InHitstun = false;
         }
         
          #if defined(ENABLE_FRAME_ADV_DEBUG)
@@ -400,7 +508,8 @@ void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, shor
          #endif
         
         // Reset this for accurate gap detection in the next sequence
-        p1_last_defender_free_frame = -1;
+    p1_last_defender_free_frame = -1;
+    p1_freeze_accum_since_free = 0;
         
         // Apply a minimal cooldown (just 3 internal frames = 1 visual frame)
         p2_hit_connect_cooldown = 3;
