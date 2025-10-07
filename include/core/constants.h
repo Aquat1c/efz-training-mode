@@ -94,9 +94,26 @@
 #define FROZEN_STATE_END 86
 
 // Thrown states (defender pre-hit/airborne during throw). Ranges can vary slightly by character.
-// Observed example path (Ayu): 110 -> 100 -> 59 (launch hitstun). Cover the conservative window 100..110.
+// Observed examples:
+//  - Ayu:   110 -> 100 -> 59 (launch)
+//  - Akiko: 110 -> 121 -> 122 -> 59 (launch) -> knockdown
+//  - Mai:   108 -> 103 -> 117 -> knockdown (117 is a continuation outside 100..110)
+//  - Rumi:  107 -> 101 -> 118 -> 105 -> knockdown (118 continuation outside 100..110)
+//  - Unknown: (throw start) 59 -> 113 -> 64 -> 70 (wallbounce) -> knockdown (113 continuation outside 100..110)
+// We cover a conservative primary window 100..110 and include known outliers 121..122 and 117, 118, 113.
 #define THROWN_STATE_START 100
 #define THROWN_STATE_END   110
+#define THROWN2_STATE_START 121
+#define THROWN2_STATE_END   122
+// Single-ID continuation observed for Mai
+#define THROWN3_STATE_START 117
+#define THROWN3_STATE_END   117
+// Single-ID continuation observed for Rumi
+#define THROWN4_STATE_START 118
+#define THROWN4_STATE_END   118
+// Single-ID continuation observed for UNKNOWN and Mizuka
+#define THROWN5_STATE_START 113
+#define THROWN5_STATE_END   113
 
 // Game frame rate settings
 #define EFZ_VISUAL_FPS 64.0
