@@ -226,6 +226,20 @@ namespace ImGuiGui {
                     }
                 }
 
+                // When checking Frame Advantage via frame stepping in Practice, show step count here (no HUD spam)
+                if (GetCurrentGameMode() == GameMode::Practice) {
+                    FrameStepDebugInfo fs = GetFrameStepDebugInfo();
+                    if (fs.active && fs.steps >= 0) {
+                        ImGui::Separator();
+                        ImGui::TextDisabled("Frame Advantage check (paused):");
+                        ImGui::SameLine();
+                        ImGui::Text("Step advances: %d", fs.steps);
+                        if (ImGui::IsItemHovered()) {
+                            ImGui::SetTooltip("Counts frame-step presses since the FA timing window started.\nOnly updates while paused and FA timing is waiting.");
+                        }
+                    }
+                }
+
                 ImGui::EndTabItem();
             }
 

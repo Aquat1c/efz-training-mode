@@ -66,6 +66,15 @@ void MonitorAutoJump();
 
 void FrameDataMonitor();
 
+// Lightweight debug info for Practice framestep when checking Frame Advantage
+struct FrameStepDebugInfo {
+    bool active; // true when paused in Practice and FA wait window is active
+    int steps;   // number of step advances since the FA start edge while paused; -1 if inactive
+};
+
+// Thread-safe snapshot of current framestep debug state
+FrameStepDebugInfo GetFrameStepDebugInfo();
+
 // Blockstun and attack level detection
 extern short initialBlockstunMoveID;
 bool IsBlockstunState(short moveID);

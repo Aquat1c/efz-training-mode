@@ -95,6 +95,17 @@ static std::string FM_Hex(uintptr_t v) {
     return oss.str();
 }
 
+// Framestep debug state (visible via ImGui only)
+static std::atomic<int> g_fsdbgSteps{-1};
+static std::atomic<bool> g_fsdbgActive{false};
+
+FrameStepDebugInfo GetFrameStepDebugInfo() {
+    FrameStepDebugInfo info{};
+    info.active = g_fsdbgActive.load(std::memory_order_relaxed);
+    info.steps = g_fsdbgSteps.load(std::memory_order_relaxed);
+    return info;
+}
+
 // --- Character Select diagnostics & reset helpers ---
 static void LogCharacterSelectDiagnostics() {
     LogOut("[CS][DIAG] ---- Enter Character Select ----", true);
@@ -800,34 +811,27 @@ void FrameDataMonitor() {
         GameMode currentMode = GetCurrentGameMode();
         bool isValidGameMode = !Config::GetSettings().restrictToPracticeMode || (currentMode == GameMode::Practice);
 
-        // Lightweight global Practice frame-step tracker overlay
-        // Now wired to Frame Advantage lifecycle to avoid bloated values:
-        // - Only counts while FA tracking is actively awaiting timings (attacker actionable and/or defender free).
-        // - Resets on FA start (rising edge) and clears when FA completes/aborts (falling edge).
-        // - Still uses ReadStepCounter with local debouncing to avoid interfering with MacroController's consumption.
+        // Lightweight global Practice framestep tracker (no on-screen overlay)
+        // - Tracks step count only while FA timing is actively waiting during pause in Practice.
+        // - Exposes state via GetFrameStepDebugInfo() for ImGui to render in the debug menu.
         {
             static bool s_prevPaused = false;
             static bool s_haveLast = false;
             static uint32_t s_lastStep = 0;
             static int s_stepsSincePause = 0;
-            static int s_stepMsgId = -1;
             static bool s_prevFAInProgress = false; // FA waiting window last frame
 
             const bool inPractice = (currentMode == GameMode::Practice);
-            const bool overlayReady = DirectDrawHook::isHooked;
             bool paused = PauseIntegration::IsPracticePaused();
 
             // Reset counters across mode changes away from Practice
-            if (!inPractice || !overlayReady) {
-                if (s_stepMsgId != -1) { DirectDrawHook::RemovePermanentMessage(s_stepMsgId); s_stepMsgId = -1; }
+            if (!inPractice) {
                 s_prevPaused = false; s_haveLast = false; s_stepsSincePause = 0; s_prevFAInProgress = false;
             } else {
-                // Practice mode with overlay available
                 if (paused) {
                     // Determine whether FA tracking is actively waiting for timings
                     bool faInProgress = false;
                     {
-                        // Requires frame_advantage.h available in this TU
                         FrameAdvantageState fas = GetFrameAdvantageState();
                         bool faActive = fas.p1Attacking || fas.p2Attacking || fas.p1Defending || fas.p2Defending;
                         bool waitingAtk = (fas.p1Attacking && fas.p1ActionableInternalFrame == -1) ||
@@ -838,14 +842,13 @@ void FrameDataMonitor() {
                     }
 
                     if (!s_prevPaused) {
-                        // Just entered pause: defer reset to FA start edge below to preserve pre-pause hit confirm
-                        s_haveLast = false;
+                        s_haveLast = false; // seed will be re-captured on first FA step read
                     }
 
                     // On FA start (rising edge), reset the step counter and seed last counter
                     if (faInProgress && !s_prevFAInProgress) {
                         s_stepsSincePause = 0;
-                        s_haveLast = false; // force reseed from current counter below
+                        s_haveLast = false;
                     }
 
                     uint32_t cur = 0;
@@ -854,30 +857,18 @@ void FrameDataMonitor() {
                             if (!s_haveLast) {
                                 s_lastStep = cur; s_haveLast = true;
                             } else if (cur != s_lastStep) {
-                                // Handle wrap naturally via unsigned subtraction
                                 uint32_t delta = cur - s_lastStep;
                                 if (delta > 1000u) delta = 1u; // sanity clamp
                                 s_stepsSincePause += (int)delta;
                                 s_lastStep = cur;
                             }
                         }
-                        // Render or update while FA is in progress
-                        const int x = 20, y = 200; // left side, under macro banner region
-                        char buf[64] = {};
-                        _snprintf_s(buf, sizeof(buf), _TRUNCATE, "Step Advances: %d", s_stepsSincePause);
-                        if (s_stepMsgId == -1) {
-                            s_stepMsgId = DirectDrawHook::AddPermanentMessage(buf, RGB(200, 255, 255), x, y);
-                        } else {
-                            DirectDrawHook::UpdatePermanentMessage(s_stepMsgId, buf, RGB(200, 255, 255));
-                        }
                     } else {
-                        // FA not in progress while paused: clear overlay to avoid misleading accumulation
-                        if (s_stepMsgId != -1) { DirectDrawHook::RemovePermanentMessage(s_stepMsgId); s_stepMsgId = -1; }
-                        s_haveLast = false; // drop seed; next FA will reseed and reset counter on edge
+                        // FA not in progress while paused: drop seed; next FA will reseed
+                        s_haveLast = false;
                     }
                 } else {
-                    // Not paused: clear overlay and reset per-session trackers
-                    if (s_stepMsgId != -1) { DirectDrawHook::RemovePermanentMessage(s_stepMsgId); s_stepMsgId = -1; }
+                    // Not paused: reset per-session trackers
                     s_haveLast = false;
                     s_stepsSincePause = 0;
                 }
@@ -893,6 +884,11 @@ void FrameDataMonitor() {
                     s_prevFAInProgress = faActive && (waitingAtk || waitingDef);
                 }
             }
+
+            // Publish debug snapshot for ImGui (global atomics)
+            bool faActiveNow = s_prevFAInProgress && inPractice && paused;
+            g_fsdbgActive.store(faActiveNow, std::memory_order_relaxed);
+            g_fsdbgSteps.store(faActiveNow ? s_stepsSincePause : -1, std::memory_order_relaxed);
         }
 
         // Track game mode transitions
