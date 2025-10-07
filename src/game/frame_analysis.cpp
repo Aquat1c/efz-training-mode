@@ -23,9 +23,10 @@ bool IsAirtech(short moveID) {
 }
 
 bool IsGroundtech(short moveID) {
-    return moveID == GROUNDTECH_START || 
+    return moveID == GROUNDTECH_PRE ||
+           moveID == GROUNDTECH_START ||
            moveID == GROUNDTECH_END || 
-           moveID == 96; // Recovery state
+           moveID == GROUNDTECH_RECOVERY; // Recovery state
 }
 
 bool IsFrozen(short moveID) {
@@ -35,6 +36,13 @@ bool IsFrozen(short moveID) {
 bool IsSpecialStun(short moveID) {
     return moveID == FIRE_STATE || moveID == ELECTRIC_STATE || 
            (moveID >= FROZEN_STATE_START && moveID <= FROZEN_STATE_END);
+}
+
+bool IsThrown(short moveID) {
+    // Many characters place defenders into a temporary "thrown" sequence before transitioning to
+    // hit/launch states. From the decomp and field observations (e.g., Ayu), we see sequences like
+    // 110 -> 100 -> 59. We conservatively treat 100..110 as thrown.
+    return moveID >= THROWN_STATE_START && moveID <= THROWN_STATE_END;
 }
 
 bool IsBlockstunState(short moveID) {

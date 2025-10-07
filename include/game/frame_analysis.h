@@ -12,6 +12,7 @@ bool IsAirtech(short moveID);
 bool IsGroundtech(short moveID);
 bool IsFrozen(short moveID);
 bool IsSpecialStun(short moveID);
+bool IsThrown(short moveID);
 bool IsBlockstunState(short moveID);    // Make sure this is declared
 int GetAttackLevel(short blockstunMoveID);
 std::string GetBlockStateType(short blockstunMoveID);
