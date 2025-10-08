@@ -149,15 +149,16 @@ namespace {
             LogOut("[SWITCH] sub_1006D640 symbol missing; skipped", true);
         }
 
-        // Call EFZ_Obj_SubStruct448_CleanupPair only when local==1 (P2 becomes local),
-        // mirroring the 1.02e init branch that logs "Switch inputs" and rebinds the pair.
-        if (local == 1) {
-            LogOut("[SWITCH] (parity) Switch inputs", true);
+        // Always call EFZ_Obj_SubStruct448_CleanupPair so the active input pair tracks the current local side.
+        // Previously this was gated to local==1, which could leave controls mapped to P2 when switching back to P1.
+        {
             uintptr_t cleanRva = EFZ_RVA_CleanupPair();
             uintptr_t ctxRva = EFZ_RVA_PatchCtx();
             auto cleanupPair = cleanRva ? (int(__thiscall*)(void*))(efzrevBase + cleanRva) : nullptr;
             void* patchCtx = ctxRva ? (void*)(efzrevBase + ctxRva) : nullptr;
             if (cleanupPair && patchCtx) {
+                std::ostringstream pre; pre << "[SWITCH] Rebinding input pair via CleanupPair (local=" << local << ")";
+                LogOut(pre.str(), true);
                 int rc = 0; bool sehOk = SehSafe_CleanupPair(cleanupPair, patchCtx, &rc);
                 std::ostringstream oss; oss << "[SWITCH] CleanupPair(local=" << local << ") -> " << (sehOk?"rc=":"EXCEPTION rc=") << rc;
                 LogOut(oss.str(), true);
