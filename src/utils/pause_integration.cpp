@@ -17,7 +17,16 @@
 
 namespace {
     static inline bool IsHVersion() {
-        return GetEfzRevivalVersion() == EfzRevivalVersion::Revival102h;
+        EfzRevivalVersion v = GetEfzRevivalVersion();
+        return v == EfzRevivalVersion::Revival102h || v == EfzRevivalVersion::Revival102i;
+    }
+    // SEH-safe wrapper for calling EfzRevival's GetModeStruct in 1.02i
+    typedef void* (__stdcall *tGetModeStruct)(int idx);
+    static void* Seh_GetModeStruct(tGetModeStruct fn, int idx) {
+        void* candPtr = nullptr;
+        __try { candPtr = fn ? fn(idx) : nullptr; }
+        __except (EXCEPTION_EXECUTE_HANDLER) { candPtr = nullptr; }
+        return candPtr;
     }
     // === State tracking ===
     std::atomic<bool> s_menuVisible{false};
@@ -46,7 +55,9 @@ namespace {
         if (!cand) return false;
         int side = -1; uint8_t pauseFlag = 0xFF; uintptr_t primary = 0;
         SafeReadMemory(cand + PRACTICE_OFF_LOCAL_SIDE_IDX, &side, sizeof(side));
-        SafeReadMemory(cand + PRACTICE_OFF_PAUSE_FLAG, &pauseFlag, sizeof(pauseFlag));
+        // Use version-aware offset for pause flag
+        uintptr_t pauseOff = EFZ_Practice_PauseFlagOffset();
+        SafeReadMemory(cand + pauseOff, &pauseFlag, sizeof(pauseFlag));
         SafeReadMemory(cand + PRACTICE_OFF_SIDE_BUF_PRIMARY, &primary, sizeof(primary));
         bool sideOk = (side == 0 || side == 1);
         bool pauseOk = (pauseFlag == 0 || pauseFlag == 1);
@@ -57,9 +68,32 @@ namespace {
     bool TryResolvePracticePtrFromModeArray(void*& outPtr) {
         HMODULE hRev = GetModuleHandleA("EfzRevival.dll");
         if (!hRev) return false;
-    auto base = reinterpret_cast<uintptr_t>(hRev);
-    uintptr_t gm = EFZ_RVA_GameModePtrArray();
-    if (!gm) return false;
+        auto base = reinterpret_cast<uintptr_t>(hRev);
+
+        // For 1.02i, prefer calling sub_1006C040(idx) to fetch the mode struct
+        EfzRevivalVersion ver = GetEfzRevivalVersion();
+        if (ver == EfzRevivalVersion::Revival102i) {
+            tGetModeStruct getMode = reinterpret_cast<tGetModeStruct>(base + 0x006C040);
+            // Try current, then likely practice slots
+            uint8_t rawMode = 255; GetCurrentGameMode(&rawMode);
+            int tryIdx[3] = { (int)rawMode, 1, 3 };
+            for (int t = 0; t < 3; ++t) {
+                int idx = tryIdx[t]; if (idx < 0 || idx > 15) continue;
+                void* candPtr = Seh_GetModeStruct(getMode, idx);
+                uintptr_t cand = reinterpret_cast<uintptr_t>(candPtr);
+                if (!cand) continue;
+                if (!ValidatePracticeCandidate(cand)) continue;
+                outPtr = reinterpret_cast<void*>(cand);
+                std::ostringstream oss; oss << "[PAUSE] GetModeStruct idx=" << std::dec << idx << " resolved practice=0x" << std::hex << cand;
+                LogOut(oss.str(), true);
+                return true;
+            }
+            return false;
+        }
+
+        // Otherwise, try the global mode array RVA fast-path
+        uintptr_t gm = EFZ_RVA_GameModePtrArray();
+        if (!gm) return false;
         // Try current game mode index first
         uint8_t rawMode = 255; GetCurrentGameMode(&rawMode);
         int tryIdx[3] = { (int)rawMode, 1, 3 }; // prefer current mode, then common Practice(1), then legacy(3)
@@ -112,15 +146,17 @@ namespace {
         // Capture pre-step counter if menu visible (so we can neutralize any increment)
         uint32_t before = 0; bool wantNeutralize = false;
         if (s_menuVisible.load(std::memory_order_relaxed)) {
-            SafeReadMemory(reinterpret_cast<uintptr_t>(thisPtr)+PRACTICE_OFF_STEP_COUNTER, &before, sizeof(before));
+            uintptr_t stepCounterOff = EFZ_Practice_StepCounterOffset();
+            SafeReadMemory(reinterpret_cast<uintptr_t>(thisPtr)+stepCounterOff, &before, sizeof(before));
             wantNeutralize = true;
         }
         int ret = oPracticeTickE ? oPracticeTickE(thisPtr) : 0;
         if (wantNeutralize) {
             uint32_t after = before;
-            if (SafeReadMemory(reinterpret_cast<uintptr_t>(thisPtr)+PRACTICE_OFF_STEP_COUNTER, &after, sizeof(after))) {
+            uintptr_t stepCounterOff = EFZ_Practice_StepCounterOffset();
+            if (SafeReadMemory(reinterpret_cast<uintptr_t>(thisPtr)+stepCounterOff, &after, sizeof(after))) {
                 if (after == before + 1) {
-                    SafeWriteMemory(reinterpret_cast<uintptr_t>(thisPtr)+PRACTICE_OFF_STEP_COUNTER, &before, sizeof(before));
+                    SafeWriteMemory(reinterpret_cast<uintptr_t>(thisPtr)+stepCounterOff, &before, sizeof(before));
                 }
             }
         }
@@ -138,15 +174,17 @@ namespace {
         }
         uint32_t before = 0; bool wantNeutralize = false;
         if (s_menuVisible.load(std::memory_order_relaxed)) {
-            SafeReadMemory(reinterpret_cast<uintptr_t>(thisPtr)+PRACTICE_OFF_STEP_COUNTER, &before, sizeof(before));
+            uintptr_t stepCounterOff = EFZ_Practice_StepCounterOffset();
+            SafeReadMemory(reinterpret_cast<uintptr_t>(thisPtr)+stepCounterOff, &before, sizeof(before));
             wantNeutralize = true;
         }
         char ret = oPracticeTickH ? oPracticeTickH(thisPtr, a2) : 0;
         if (wantNeutralize) {
             uint32_t after = before;
-            if (SafeReadMemory(reinterpret_cast<uintptr_t>(thisPtr)+PRACTICE_OFF_STEP_COUNTER, &after, sizeof(after))) {
+            uintptr_t stepCounterOff = EFZ_Practice_StepCounterOffset();
+            if (SafeReadMemory(reinterpret_cast<uintptr_t>(thisPtr)+stepCounterOff, &after, sizeof(after))) {
                 if (after == before + 1) {
-                    SafeWriteMemory(reinterpret_cast<uintptr_t>(thisPtr)+PRACTICE_OFF_STEP_COUNTER, &before, sizeof(before));
+                    SafeWriteMemory(reinterpret_cast<uintptr_t>(thisPtr)+stepCounterOff, &before, sizeof(before));
                 }
             }
         }
@@ -202,7 +240,7 @@ namespace {
         if (tickTarget) {
             if (IsEfzRevivalLoaded() && IsHVersion()) {
                 if (MH_CreateHook(tickTarget, &HookedPracticeTickH, reinterpret_cast<void**>(&oPracticeTickH)) == MH_OK && MH_EnableHook(tickTarget) == MH_OK) {
-                    anyHook = true; LogOut("[PAUSE] PracticeTick hook active (1.02h)", true);
+                    anyHook = true; LogOut("[PAUSE] PracticeTick hook active (1.02h/1.02i)", true);
                 }
             } else {
                 if (MH_CreateHook(tickTarget, &HookedPracticeTickE, reinterpret_cast<void**>(&oPracticeTickE)) == MH_OK && MH_EnableHook(tickTarget) == MH_OK) {
@@ -219,22 +257,26 @@ namespace {
     // Practice pause flag helpers (flag semantics: 1 = paused, 0 = running)
     bool ReadPracticePauseFlag(bool &outPaused) {
         void* p = s_practicePtr.load(); if (!p) return false;
-        uint8_t v = 0; if (!SafeReadMemory(reinterpret_cast<uintptr_t>(p) + PRACTICE_OFF_PAUSE_FLAG, &v, sizeof(v))) return false;
+        uintptr_t pauseOff = EFZ_Practice_PauseFlagOffset();
+        uint8_t v = 0; if (!SafeReadMemory(reinterpret_cast<uintptr_t>(p) + pauseOff, &v, sizeof(v))) return false;
         outPaused = (v != 0); return true;
     }
     bool WritePracticePauseFlag(bool paused) {
         void* p = s_practicePtr.load(); if (!p) return false;
-        uint8_t v = paused ? 1u : 0u; return SafeWriteMemory(reinterpret_cast<uintptr_t>(p) + PRACTICE_OFF_PAUSE_FLAG, &v, sizeof(v));
+        uintptr_t pauseOff = EFZ_Practice_PauseFlagOffset();
+        uint8_t v = paused ? 1u : 0u; return SafeWriteMemory(reinterpret_cast<uintptr_t>(p) + pauseOff, &v, sizeof(v));
     }
 
-    // Reset the Practice step counter (+0xB0) to 0, mirroring the official toggle behavior
-    // seen in 1.02h (sub_10076170 sets *(this+176)=0 after toggling pause state).
+    // Reset the Practice step counter to 0, mirroring the official toggle behavior
+    // 1.02e: +0xB0, 1.02h/i: +0x176
     bool ResetPracticeStepCounterToZero() {
         void* p = s_practicePtr.load(); if (!p) return false;
         uint32_t zero = 0;
-        bool ok = SafeWriteMemory(reinterpret_cast<uintptr_t>(p) + PRACTICE_OFF_STEP_COUNTER, &zero, sizeof(zero));
+        uintptr_t stepCounterOff = EFZ_Practice_StepCounterOffset();
+        bool ok = SafeWriteMemory(reinterpret_cast<uintptr_t>(p) + stepCounterOff, &zero, sizeof(zero));
         if (ok) {
-            std::ostringstream oss; oss << "[PAUSE] Reset step counter to 0 at +0xB0 for Practice=0x" << std::hex << (uintptr_t)p;
+            std::ostringstream oss; oss << "[PAUSE] Reset step counter to 0 at +0x" << std::hex << stepCounterOff 
+                << " for Practice=0x" << (uintptr_t)p;
             LogOut(oss.str(), true);
         } else {
             LogOut("[PAUSE] Failed to reset step counter (Practice ptr missing or write failed)", true);
@@ -297,16 +339,18 @@ namespace {
         return ok;
     }
 
-    // === Patch toggler (sub_1006B2A0 / sub_1006BB00) wrapper ===
-    // Both 1.02e and 1.02h are __thiscall: int func(void* this, char enable)
+    // === Patch toggler wrapper ===
+    // All supported versions (1.02e/h/i) use __thiscall: int func(void* this, char enable)
+    // Unfreeze parameter varies by version (1 for 1.02e, 3 for 1.02h/i). See EFZ_PatchToggleUnfreezeParam().
     typedef int (__thiscall *tPatchToggle)(void* patchCtx, char enable);
     // Official pause toggle (sub_10075720)
     typedef int (__thiscall *tOfficialToggle)(void* thisPtr);
 
     // SEH helpers must avoid C++ objects with destructors in scope
-    static bool SehCall_PatchToggle(void* ctx, tPatchToggle fn, char enable) {
+    static bool SehCall_PatchToggleThis(void* ctx, tPatchToggle fn, char enable) {
         __try { fn(ctx, enable); return true; } __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
     }
+    // No stdcall variant required anymore (1.02i is also __thiscall)
     static bool SehCall_OfficialToggle(void* thisPtr, tOfficialToggle fn) {
         __try { fn(thisPtr); return true; } __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
     }
@@ -317,6 +361,7 @@ namespace {
         if (!rva) return nullptr;
         return reinterpret_cast<tPatchToggle>(EFZ_RVA_TO_VA(hRev, rva));
     }
+    // No stdcall getter required
     void* GetPatchCtxPtr() {
         HMODULE hRev = GetModuleHandleA("EfzRevival.dll"); if (!hRev) return nullptr;
         uintptr_t rva = EFZ_RVA_PatchCtx();
@@ -324,15 +369,15 @@ namespace {
         return EFZ_RVA_TO_VA(hRev, rva);
     }
     bool ApplyPatchFreeze(bool freeze) {
-        auto fn = GetPatchToggleFn(); void* ctx = GetPatchCtxPtr(); if (!fn || !ctx) return false;
-        // Engine semantics differ by version.
-        char enable = freeze ? 0 : (char)EFZ_PatchToggleUnfreezeParam();
+        void* ctx = GetPatchCtxPtr(); if (!ctx) return false;
+        int enableParam = freeze ? 0 : EFZ_PatchToggleUnfreezeParam();
         {
-            std::ostringstream oss; oss << "[PAUSE] PatchToggle freeze=" << (freeze?1:0) << " param=" << (int)enable
+            std::ostringstream oss; oss << "[PAUSE] PatchToggle freeze=" << (freeze?1:0) << " param=" << enableParam
                 << " ctx=0x" << std::hex << (uintptr_t)ctx;
             LogOut(oss.str(), true);
         }
-        return SehCall_PatchToggle(ctx, fn, enable);
+        auto fn = GetPatchToggleFn(); if (!fn) return false;
+        return SehCall_PatchToggleThis(ctx, fn, (char)enableParam);
     }
     tOfficialToggle GetOfficialToggleFn() {
         HMODULE hRev = GetModuleHandleA("EfzRevival.dll"); if (!hRev) return nullptr;
@@ -453,7 +498,8 @@ namespace PauseIntegration {
 
     bool ReadStepCounter(uint32_t &outCounter) {
         void* p = s_practicePtr.load(); if (!p) return false;
-        return SafeReadMemory(reinterpret_cast<uintptr_t>(p) + PRACTICE_OFF_STEP_COUNTER, &outCounter, sizeof(outCounter));
+        uintptr_t stepCounterOff = EFZ_Practice_StepCounterOffset();
+        return SafeReadMemory(reinterpret_cast<uintptr_t>(p) + stepCounterOff, &outCounter, sizeof(outCounter));
     }
 
     bool ConsumeStepAdvance() {

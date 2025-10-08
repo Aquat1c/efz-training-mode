@@ -94,16 +94,21 @@
 // ======================================
 
 // Pause/Step core fields
+// ⚠️ WARNING: These offsets are VERSION-SPECIFIC!
+// 1.02e uses: +0xAC (step), +0xB0 (counter), +0xB4 (pause)
+// 1.02h/i use: +0x172 (step), +0x176 (counter), +0x180 (pause)
+// ALWAYS use EFZ_Practice_*Offset() functions from efzrevival_addrs.h for runtime access!
+
 #ifndef PRACTICE_OFF_STEP_FLAG
-#define PRACTICE_OFF_STEP_FLAG        0xAC   // byte: 1 = advance one frame next tick (while paused)
+#define PRACTICE_OFF_STEP_FLAG        0xAC   // byte: 1.02e ONLY! Use EFZ_Practice_StepFlagOffset()
 #endif
 
 #ifndef PRACTICE_OFF_STEP_COUNTER
-#define PRACTICE_OFF_STEP_COUNTER     0xB0   // dword: increments each single-frame step
+#define PRACTICE_OFF_STEP_COUNTER     0xB0   // dword: 1.02e ONLY! Use EFZ_Practice_StepCounterOffset()
 #endif
 
 #ifndef PRACTICE_OFF_PAUSE_FLAG
-#define PRACTICE_OFF_PAUSE_FLAG       0xB4   // byte: 1 = paused
+#define PRACTICE_OFF_PAUSE_FLAG       0xB4   // byte: 1.02e ONLY! Use EFZ_Practice_PauseFlagOffset()
 #endif
 
 // Optional: speed scalar double at +0xC0/+0xC4 (not used directly by code here)
