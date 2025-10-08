@@ -1189,6 +1189,9 @@ namespace ImGuiGui {
                             ImGui::SameLine();
                             ImGui::TextDisabled("(supported)");
                         }
+                        ImGui::Dummy(ImVec2(1, 4));
+                        ImGui::SeparatorText("Compatibility");
+                        ImGui::TextWrapped("Supported EfzRevival builds: Vanilla EFZ (no Revival), EfzRevival 1.02e, 1.02h, 1.02i.");
                     }
                     ImGui::Dummy(ImVec2(1, 4));
                     ImGui::SeparatorText("Overview");

@@ -204,6 +204,8 @@ namespace Config {
             file << "useImGui = 1\n";
             file << "; Enable detailed debug messages in the console (1 = yes, 0 = no)\n";
             file << "detailedLogging = 0\n";
+            file << "; Enable writing efz_training_debug.log (1 = yes, 0 = no)\n";
+            file << "enableDebugFileLog = 0\n";
             file << "; Show the debug console window (1 = yes, 0 = no)\n";
             file << "enableConsole = 0\n";
             file << "; Restrict functionality to Practice Mode only (1 = yes, 0 = no)\n";
@@ -349,6 +351,7 @@ namespace Config {
         try {
             settings.useImGui = GetValueBool("General", "useImGui", true);
             settings.detailedLogging = GetValueBool("General", "detailedLogging", false);
+            settings.enableDebugFileLog = GetValueBool("General", "enableDebugFileLog", false);
             settings.enableConsole = GetValueBool("General", "enableConsole", false);
             settings.restrictToPracticeMode = GetValueBool("General", "restrictToPracticeMode", true);
             settings.enableFpsDiagnostics = GetValueBool("General", "enableFpsDiagnostics", false);
@@ -460,6 +463,7 @@ namespace Config {
             LogOut("[CONFIG] Settings loaded successfully", true);
             LogOut("[CONFIG] UseImGui: " + std::to_string(settings.useImGui), true);
             LogOut("[CONFIG] DetailedLogging: " + std::to_string(settings.detailedLogging), true);
+            LogOut("[CONFIG] EnableDebugFileLog: " + std::to_string(settings.enableDebugFileLog), true);
             LogOut("[CONFIG] EnableConsole: " + std::to_string(settings.enableConsole), true);
             LogOut("[CONFIG] TeleportKey: " + std::to_string(settings.teleportKey) + " (" + GetKeyName(settings.teleportKey) + ")", true);
             LogOut("[CONFIG] RecordKey: " + std::to_string(settings.recordKey) + " (" + GetKeyName(settings.recordKey) + ")", true);
@@ -516,6 +520,8 @@ namespace Config {
             file << "useImGui = " << (settings.useImGui ? "1" : "0") << "\n";
             file << "; Enable detailed debug messages in the console (1 = yes, 0 = no)\n";
             file << "detailedLogging = " << (settings.detailedLogging ? "1" : "0") << "\n";
+            file << "; Enable writing efz_training_debug.log (1 = yes, 0 = no)\n";
+            file << "enableDebugFileLog = " << (settings.enableDebugFileLog ? "1" : "0") << "\n";
             file << "; Show the debug console window (1 = yes, 0 = no)\n";
             file << "enableConsole = " << (settings.enableConsole ? "1" : "0") << "\n";
             file << "; Restrict functionality to Practice Mode only (1 = yes, 0 = no)\n";
@@ -614,6 +620,7 @@ namespace Config {
         if (sec == "general") {
             if (k == "useimgui" || k == "useimgui ") settings.useImGui = (value == "1");
             if (k == "detailedlogging") settings.detailedLogging = (value == "1");
+            if (k == "enabledebugfilelog") settings.enableDebugFileLog = (value == "1");
             if (k == "enableconsole") settings.enableConsole = (value == "1");
             if (k == "restricttopracticemode") settings.restrictToPracticeMode = (value == "1");
             if (k == "uiscale") {
