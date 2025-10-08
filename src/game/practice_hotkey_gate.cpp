@@ -1,5 +1,6 @@
 #include "../../include/game/practice_hotkey_gate.h"
 #include "../../include/game/practice_offsets.h"
+#include "../../include/game/efzrevival_addrs.h" // version-aware RVAs
 #include "../../include/core/logger.h"
 #include "../../include/core/constants.h"
 #include "../../include/core/memory.h"
@@ -15,7 +16,9 @@ static bool Gate_IsMenuVisible() { return s_menuVisibleForGate.load(std::memory_
 
 namespace {
     static std::string ToHex(uint32_t v){ std::ostringstream oss; oss<<std::hex<<v; return oss.str(); }
-    using HotkeyEvalFn = void (__thiscall*)(void* self);
+    // Target is a method (original __thiscall). It compares incoming key (a2) against configured hotkeys.
+    // Prototype: char/bool return, takes (this, int a2). We detour as __fastcall and forward correctly.
+    using HotkeyEvalFn = char (__thiscall*)(void* self, int a2);
     HotkeyEvalFn oHotkeyEval = nullptr;
     std::atomic<bool> s_installed{false};
     std::atomic<uint64_t> s_suppressedFrames{0};
@@ -24,26 +27,37 @@ namespace {
     // Forward declaration of scanner (fallback). Returns 0 if not found.
     uintptr_t ScanForHotkeyEvaluator();
 
-    void __fastcall HookedHotkeyEval(void* self, void* /*edx*/) {
+    char __fastcall HookedHotkeyEval(void* self, void* /*edx*/, int a2) {
         if (Gate_IsMenuVisible()) {
             // Suppress all practice hotkey side-effects this frame
             s_suppressedFrames.fetch_add(1, std::memory_order_relaxed);
-            return; // early exit
+            return 0; // early exit, indicate not handled
         }
-        if (oHotkeyEval) oHotkeyEval(self);
+        return oHotkeyEval ? oHotkeyEval(self, a2) : 0;
     }
 
     uintptr_t ResolveHotkeyEvaluatorRva() {
         HMODULE mod = GetModuleHandleA("EfzRevival.dll");
         if (!mod) return 0;
-        // Fast path: use known RVA constant
-        uintptr_t candidate = reinterpret_cast<uintptr_t>(mod) + static_cast<uintptr_t>(EFZREV_RVA_PRACTICE_HOTKEY_EVAL);
-        // Basic sanity: attempt to read first bytes safely
-        uint8_t firstBytes[5] = {0};
-        if (SafeReadMemory(candidate, firstBytes, sizeof(firstBytes))) {
-            // Heuristic: function should start with typical prologue 55 8B EC or push/ mov patterns.
-            if (firstBytes[0] == 0x55 || firstBytes[0] == 0x8B || firstBytes[0] == 0x53) {
+        // Version-aware fast path: use dispatcher RVA per build
+        uintptr_t rva = EFZ_RVA_PracticeDispatcher();
+        if (rva) {
+            uintptr_t candidate = reinterpret_cast<uintptr_t>(mod) + rva;
+            uint8_t firstBytes[5] = {0};
+            if (SafeReadMemory(candidate, firstBytes, sizeof(firstBytes))) {
+                // Accept if readable; additional signature checks can be added if needed
                 return candidate;
+            }
+        }
+        // Fallback: try legacy constant fast-path (previously stable across builds used by this project)
+        {
+            uintptr_t candidate = reinterpret_cast<uintptr_t>(mod) + static_cast<uintptr_t>(EFZREV_RVA_PRACTICE_HOTKEY_EVAL);
+            uint8_t firstBytes[5] = {0};
+            if (SafeReadMemory(candidate, firstBytes, sizeof(firstBytes))) {
+                // Heuristic: typical function prologue or push/mov pattern
+                if (firstBytes[0] == 0x55 || firstBytes[0] == 0x8B || firstBytes[0] == 0x53) {
+                    return candidate;
+                }
             }
         }
         // Fallback: pattern scan (not fully implemented; stub for future upgrade)

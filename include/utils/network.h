@@ -10,8 +10,8 @@ enum class EfzRevivalVersion : int {
 	Unknown = 0,
 	Vanilla,     // No "-Revival-" marker or no version tag
 	Revival102e, // Eternal Fighter Zero -Revival- 1.02e
-	Revival102h, // Eternal Fighter Zero -Revival- 1.02h (unsupported for now)
-	Revival102i, // Eternal Fighter Zero -Revival- 1.02i (treat like 1.02h for RVAs)
+	Revival102h, // Eternal Fighter Zero -Revival- 1.02h (supported; shares RVAs/semantics with 1.02i where noted)
+	Revival102i, // Eternal Fighter Zero -Revival- 1.02i (treated like 1.02h for RVAs except where explicitly different)
 	Other        // Some other Revival build
 };
 

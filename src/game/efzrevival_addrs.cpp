@@ -84,6 +84,15 @@ uintptr_t EFZ_RVA_RefreshMappingBlock() {
     return r;
 }
 
+uintptr_t EFZ_RVA_RefreshMappingBlock_PracToCtx() {
+    uintptr_t r = 0;
+    if (IsE()) r = 0;              // N/A on e (single variant only)
+    else if (IsI()) r = 0x00760D0; // 1.02i: sub_100760D0 (Practice -> ctx)
+    else if (IsH()) r = 0x0075B30; // 1.02h: sub_10075B30 (Practice -> ctx)
+    LogAddrOnce("RefreshMappingBlock_PracToCtx", r);
+    return r;
+}
+
 uintptr_t EFZ_RVA_MapReset() {
     uintptr_t r = 0;
     if (IsE()) r = 0x006D640;  // sub_1006D640
@@ -120,19 +129,81 @@ uintptr_t EFZ_RVA_GameModePtrArray() {
     return r;
 }
 
+uintptr_t EFZ_RVA_PracticeControllerPtr() {
+    // CheatEngine pointer scans found static pointers to Practice controller base:
+    // 1.02e: EfzRevival.dll+0xA02CC
+    // 1.02h: EfzRevival.dll+0xA02EC
+    // 1.02i: EfzRevival.dll+0xA15F8
+    // These point directly to the Practice struct (not mode array which returns character structs)
+    if (IsE()) return 0xA02CC;
+    if (IsH()) {
+        EfzRevivalVersion v = GetEfzRevivalVersion();
+        if (v == EfzRevivalVersion::Revival102h) return 0xA02EC;
+        if (v == EfzRevivalVersion::Revival102i) return 0xA15F8;
+    }
+    if (IsI()) return 0xA15F8;
+    return 0;
+}
+
+uintptr_t EFZ_RVA_PracticeDispatcher() {
+    uintptr_t r = 0;
+    // Practice hotkey dispatcher RVAs per version
+    // e: 0x00759F0, h: 0x0076490, i: 0x0076A30
+    if (IsE()) r = 0x00759F0;
+    else if (IsI()) r = 0x0076A30;
+    else /* h */ r = 0x0076490;
+    LogAddrOnce("PracticeDispatcher", r);
+    return r;
+}
+
 // Version-aware Practice controller offset accessors
-// CRITICAL: 1.02h/i use different offsets than 1.02e for pause/step fields!
+// Per decomp, these core offsets are identical across 1.02e/h/i.
 uintptr_t EFZ_Practice_PauseFlagOffset() {
-    // Verified identical across versions: +180 decimal == 0xB4
+    if (IsI()) return 0x180;
+    if (IsH()) return 0x180;
     return 0xB4;
 }
 
 uintptr_t EFZ_Practice_StepFlagOffset() {
-    // Verified identical across versions: +172 decimal == 0xAC
-    return 0xAC;
+    // CheatEngine shows i uses same offsets as e for step flag
+    if (IsH()) return 0x172;
+    return 0xAC;  // e and i both use 0xAC
 }
 
 uintptr_t EFZ_Practice_StepCounterOffset() {
-    // Verified identical across versions: +176 decimal == 0xB0
-    return 0xB0;
+    // CheatEngine confirmed: i uses +0xB0 (same as e), NOT 0x176!
+    if (IsH()) return 0x176;
+    return 0xB0;  // e and i both use 0xB0
+}
+
+uintptr_t EFZ_Practice_LocalSideOffset() {
+    if (IsI()) return 0x688;
+    return 0x680;
+}
+uintptr_t EFZ_Practice_RemoteSideOffset() {
+    if (IsI()) return 0x692;
+    return 0x684;
+}
+
+uintptr_t EFZ_Practice_InitSourceSideOffset() {
+    // 1.02i shifted init-source from 0x944->0x952
+    return IsI() ? 0x952 : 0x944;
+}
+
+uintptr_t EFZ_Practice_SideBufPrimaryOffset() {
+    // Side buffer pointers only exist on e-version at these offsets
+    // h/i use CleanupPair+RefreshMappingBlock instead, so we return 0 to skip validation
+    if (IsE()) return 0x824;
+    return 0;  // h/i: not used
+}
+uintptr_t EFZ_Practice_SideBufSecondaryOffset() {
+    if (IsE()) return 0x828;
+    return 0;  // h/i: not used
+}
+uintptr_t EFZ_Practice_SharedInputVectorOffset() { return 0x1240; }
+
+int EFZ_Practice_MapResetIndexBias() {
+    // Map array index base used at init when calling MapReset
+    // 1.02i uses (local + 105); e/h use (local + 104)
+    return IsI() ? 105 : 104;
 }

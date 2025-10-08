@@ -5,6 +5,8 @@
 #pragma once
 
 #include <stdint.h>
+// Version-aware accessors for RVAs and Practice controller offsets
+#include "efzrevival_addrs.h"
 
 // Helper: convert module base + RVA to VA
 #ifndef EFZ_RVA_TO_VA
@@ -100,15 +102,15 @@
 // ALWAYS use EFZ_Practice_*Offset() functions from efzrevival_addrs.h for runtime access!
 
 #ifndef PRACTICE_OFF_STEP_FLAG
-#define PRACTICE_OFF_STEP_FLAG        0xAC   // byte: 1.02e ONLY! Use EFZ_Practice_StepFlagOffset()
+#define PRACTICE_OFF_STEP_FLAG        (EFZ_Practice_StepFlagOffset())
 #endif
 
 #ifndef PRACTICE_OFF_STEP_COUNTER
-#define PRACTICE_OFF_STEP_COUNTER     0xB0   // dword: 1.02e ONLY! Use EFZ_Practice_StepCounterOffset()
+#define PRACTICE_OFF_STEP_COUNTER     (EFZ_Practice_StepCounterOffset())
 #endif
 
 #ifndef PRACTICE_OFF_PAUSE_FLAG
-#define PRACTICE_OFF_PAUSE_FLAG       0xB4   // byte: 1.02e ONLY! Use EFZ_Practice_PauseFlagOffset()
+#define PRACTICE_OFF_PAUSE_FLAG       (EFZ_Practice_PauseFlagOffset())
 #endif
 
 // Optional: speed scalar double at +0xC0/+0xC4 (not used directly by code here)
@@ -129,16 +131,16 @@
 
 // Side switching and input routing
 #ifndef PRACTICE_OFF_LOCAL_SIDE_IDX
-#define PRACTICE_OFF_LOCAL_SIDE_IDX   0x680  // dword: 0 = P1, 1 = P2
+#define PRACTICE_OFF_LOCAL_SIDE_IDX   (EFZ_Practice_LocalSideOffset())
 #endif
 #ifndef PRACTICE_OFF_REMOTE_SIDE_IDX
-#define PRACTICE_OFF_REMOTE_SIDE_IDX  0x684  // dword: companion of local index
+#define PRACTICE_OFF_REMOTE_SIDE_IDX  (EFZ_Practice_RemoteSideOffset())
 #endif
 #ifndef PRACTICE_OFF_SIDE_BUF_PRIMARY
-#define PRACTICE_OFF_SIDE_BUF_PRIMARY 0x832  // ptr: primary side buffer (tracks LOCAL)
+#define PRACTICE_OFF_SIDE_BUF_PRIMARY (EFZ_Practice_SideBufPrimaryOffset())
 #endif
 #ifndef PRACTICE_OFF_SIDE_BUF_SECONDARY
-#define PRACTICE_OFF_SIDE_BUF_SECONDARY 0x836 // ptr: secondary side buffer (tracks REMOTE)
+#define PRACTICE_OFF_SIDE_BUF_SECONDARY (EFZ_Practice_SideBufSecondaryOffset())
 #endif
 // Internal buffer blocks used during init to wire side buffers (the actual buffer memory does not move)
 #ifndef PRACTICE_OFF_BUF_LOCAL_BASE
@@ -148,10 +150,10 @@
 #define PRACTICE_OFF_BUF_REMOTE_BASE   0x808  // P2 buffer base (when local==P2, primary points here)
 #endif
 #ifndef PRACTICE_OFF_INIT_SOURCE_SIDE
-#define PRACTICE_OFF_INIT_SOURCE_SIDE 0x944  // dword: remembered init source side
+#define PRACTICE_OFF_INIT_SOURCE_SIDE (EFZ_Practice_InitSourceSideOffset())
 #endif
 #ifndef PRACTICE_OFF_SHARED_INPUT_VEC
-#define PRACTICE_OFF_SHARED_INPUT_VEC 0x1240 // base of shared input slots (InputP1/InputP2), if needed
+#define PRACTICE_OFF_SHARED_INPUT_VEC (EFZ_Practice_SharedInputVectorOffset())
 #endif
 
 // Current GUI/buffer display position used by EfzRevival
@@ -163,6 +165,12 @@
 // Deprecated alias: previously misnamed as a P2 human gate; kept for compatibility in code references.
 #ifndef PRACTICE_OFF_P2_HUMAN_GATE
 #define PRACTICE_OFF_P2_HUMAN_GATE      PRACTICE_OFF_GUI_POS
+#endif
+
+// MapReset index bias used when selecting the per-side map pointer during init/swap
+// e/h use (local + 104); i uses (local + 105)
+#ifndef EFZ_PRACTICE_MAPRESET_INDEX_BIAS
+#define EFZ_PRACTICE_MAPRESET_INDEX_BIAS (EFZ_Practice_MapResetIndexBias())
 #endif
 
 // ======================================
