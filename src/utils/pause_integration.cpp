@@ -53,16 +53,38 @@ namespace {
     // Practice index observed as 3 in decompile; guard for nulls and mode mismatch.
     static bool ValidatePracticeCandidate(uintptr_t cand) {
         if (!cand) return false;
-        int side = -1; uint8_t pauseFlag = 0xFF; uintptr_t primary = 0;
-        SafeReadMemory(cand + PRACTICE_OFF_LOCAL_SIDE_IDX, &side, sizeof(side));
+        EfzRevivalVersion ver = GetEfzRevivalVersion();
+        {
+            std::ostringstream oss; oss << "[PAUSE] Validate candidate=0x" << std::hex << cand
+                << " ver=" << (EfzRevivalVersionName(ver) ? EfzRevivalVersionName(ver) : "?")
+                << " localOff=0x" << PRACTICE_OFF_LOCAL_SIDE_IDX
+                << " remoteOff=0x" << PRACTICE_OFF_REMOTE_SIDE_IDX
+                << " pauseOff=0x" << EFZ_Practice_PauseFlagOffset();
+            LogOut(oss.str(), true);
+        }
+        int local = -1;
+        uint8_t pauseFlag = 0xFF;
+        (void)SafeReadMemory(cand + PRACTICE_OFF_LOCAL_SIDE_IDX, &local, sizeof(local));
         // Use version-aware offset for pause flag
         uintptr_t pauseOff = EFZ_Practice_PauseFlagOffset();
-        SafeReadMemory(cand + pauseOff, &pauseFlag, sizeof(pauseFlag));
-        SafeReadMemory(cand + PRACTICE_OFF_SIDE_BUF_PRIMARY, &primary, sizeof(primary));
-        bool sideOk = (side == 0 || side == 1);
-        bool pauseOk = (pauseFlag == 0 || pauseFlag == 1);
-    bool bufOk = (primary == (cand + PRACTICE_OFF_BUF_LOCAL_BASE)) || (primary == (cand + PRACTICE_OFF_BUF_REMOTE_BASE)); // expects +0x832 -> (+0x796 or +0x808)
-        return sideOk && pauseOk && bufOk;
+        if (pauseOff) (void)SafeReadMemory(cand + pauseOff, &pauseFlag, sizeof(pauseFlag));
+        bool sideOk = (local == 0 || local == 1);
+        bool pauseOk = (pauseOff == 0 || pauseFlag == 0 || pauseFlag == 1);
+
+        // On 1.02e we additionally validate that the primary side buffer points to one of the known
+        // base blocks embedded in the Practice struct. These offsets do not hold across h/i, so skip there.
+        if (ver == EfzRevivalVersion::Revival102e) {
+            uintptr_t primary = 0;
+            (void)SafeReadMemory(cand + PRACTICE_OFF_SIDE_BUF_PRIMARY, &primary, sizeof(primary));
+            bool bufOk = (primary == (cand + PRACTICE_OFF_BUF_LOCAL_BASE)) || (primary == (cand + PRACTICE_OFF_BUF_REMOTE_BASE));
+            return sideOk && pauseOk && bufOk;
+        } else {
+            // For 1.02h/1.02i, rely on the basic invariants and optionally cross-check GUI_POS when present (0 or 1)
+            uint8_t guiPos = 0xFF;
+            (void)SafeReadMemory(cand + PRACTICE_OFF_GUI_POS, &guiPos, sizeof(guiPos));
+            bool guiOk = (guiPos == 0 || guiPos == 1);
+            return sideOk && (pauseOk || guiOk);
+        }
     }
 
     bool TryResolvePracticePtrFromModeArray(void*& outPtr) {
@@ -70,27 +92,21 @@ namespace {
         if (!hRev) return false;
         auto base = reinterpret_cast<uintptr_t>(hRev);
 
-        // For 1.02i, prefer calling sub_1006C040(idx) to fetch the mode struct
+        // For all versions (e/h/i), use direct static pointer (CheatEngine found all three)
         EfzRevivalVersion ver = GetEfzRevivalVersion();
-        if (ver == EfzRevivalVersion::Revival102i) {
-            tGetModeStruct getMode = reinterpret_cast<tGetModeStruct>(base + 0x006C040);
-            // Try current, then likely practice slots
-            uint8_t rawMode = 255; GetCurrentGameMode(&rawMode);
-            int tryIdx[3] = { (int)rawMode, 1, 3 };
-            for (int t = 0; t < 3; ++t) {
-                int idx = tryIdx[t]; if (idx < 0 || idx > 15) continue;
-                void* candPtr = Seh_GetModeStruct(getMode, idx);
-                uintptr_t cand = reinterpret_cast<uintptr_t>(candPtr);
-                if (!cand) continue;
-                if (!ValidatePracticeCandidate(cand)) continue;
-                outPtr = reinterpret_cast<void*>(cand);
-                std::ostringstream oss; oss << "[PAUSE] GetModeStruct idx=" << std::dec << idx << " resolved practice=0x" << std::hex << cand;
-                LogOut(oss.str(), true);
-                return true;
+        uintptr_t ptrRva = EFZ_RVA_PracticeControllerPtr();
+        if (ptrRva) {
+            uintptr_t ptrAddr = base + ptrRva;
+            uintptr_t cand = 0;
+            if (SafeReadMemory(ptrAddr, &cand, sizeof(cand)) && cand) {
+                if (ValidatePracticeCandidate(cand)) {
+                    outPtr = reinterpret_cast<void*>(cand);
+                    std::ostringstream oss; oss << "[PAUSE] Direct ptr @+0x" << std::hex << ptrRva << " resolved practice=0x" << cand;
+                    LogOut(oss.str(), true);
+                    return true;
+                }
             }
-            return false;
         }
-
         // Otherwise, try the global mode array RVA fast-path
         uintptr_t gm = EFZ_RVA_GameModePtrArray();
         if (!gm) return false;
@@ -306,19 +322,17 @@ namespace {
         uintptr_t rva = EFZ_RVA_RenderBattleScreen();
         void* target = rva ? reinterpret_cast<void*>(efzBase + rva) : nullptr;
         if (!target) return;
-        if (MH_CreateHook(target, &HookedRenderBattleScreen, reinterpret_cast<void**>(&oRenderBattleScreen)) != MH_OK) {
-            {
-                std::ostringstream oss; oss << "[PAUSE] Failed to create RenderBattleScreen hook at VA=0x" << std::hex << (uintptr_t)target;
-                LogOut(oss.str(), true);
-            }
+        auto rcCreate = MH_CreateHook(target, &HookedRenderBattleScreen, reinterpret_cast<void**>(&oRenderBattleScreen));
+        if (rcCreate != MH_OK && rcCreate != MH_ERROR_ALREADY_CREATED) {
+            std::ostringstream oss; oss << "[PAUSE] Failed to create RenderBattleScreen hook at VA=0x" << std::hex << (uintptr_t)target;
+            LogOut(oss.str(), true);
             return;
         }
-        if (MH_EnableHook(target) != MH_OK) {
-            {
-                std::ostringstream oss; oss << "[PAUSE] Failed to enable RenderBattleScreen hook at VA=0x" << std::hex << (uintptr_t)target;
-                LogOut(oss.str(), true);
-            }
-            MH_RemoveHook(target);
+        auto rcEnable = MH_EnableHook(target);
+        if (rcEnable != MH_OK && rcEnable != MH_ERROR_ENABLED) {
+            std::ostringstream oss; oss << "[PAUSE] Failed to enable RenderBattleScreen hook at VA=0x" << std::hex << (uintptr_t)target;
+            LogOut(oss.str(), true);
+            // Don't remove the hook if it was already created; just bail
             return;
         }
         installed.store(true);
