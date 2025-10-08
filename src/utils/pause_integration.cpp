@@ -16,9 +16,9 @@
 #include <sstream>
 
 namespace {
-    static inline bool IsHVersion() {
-        EfzRevivalVersion v = GetEfzRevivalVersion();
-        return v == EfzRevivalVersion::Revival102h || v == EfzRevivalVersion::Revival102i;
+    // Helper to check for 1.02h specifically (only h uses the two-arg PracticeTick signature)
+    static inline bool IsHOnly() {
+        return GetEfzRevivalVersion() == EfzRevivalVersion::Revival102h;
     }
     // SEH-safe wrapper for calling EfzRevival's GetModeStruct in 1.02i
     typedef void* (__stdcall *tGetModeStruct)(int idx);
@@ -61,7 +61,7 @@ namespace {
         SafeReadMemory(cand + PRACTICE_OFF_SIDE_BUF_PRIMARY, &primary, sizeof(primary));
         bool sideOk = (side == 0 || side == 1);
         bool pauseOk = (pauseFlag == 0 || pauseFlag == 1);
-        bool bufOk = (primary == (cand + PRACTICE_OFF_BUF_LOCAL_BASE)) || (primary == (cand + PRACTICE_OFF_BUF_REMOTE_BASE));
+    bool bufOk = (primary == (cand + PRACTICE_OFF_BUF_LOCAL_BASE)) || (primary == (cand + PRACTICE_OFF_BUF_REMOTE_BASE)); // expects +0x832 -> (+0x796 or +0x808)
         return sideOk && pauseOk && bufOk;
     }
 
@@ -238,13 +238,14 @@ namespace {
         bool anyHook = false;
         // Select the correct PracticeTick hook based on version/signature
         if (tickTarget) {
-            if (IsEfzRevivalLoaded() && IsHVersion()) {
+            EfzRevivalVersion ver = GetEfzRevivalVersion();
+            if (IsEfzRevivalLoaded() && ver == EfzRevivalVersion::Revival102h) {
                 if (MH_CreateHook(tickTarget, &HookedPracticeTickH, reinterpret_cast<void**>(&oPracticeTickH)) == MH_OK && MH_EnableHook(tickTarget) == MH_OK) {
-                    anyHook = true; LogOut("[PAUSE] PracticeTick hook active (1.02h/1.02i)", true);
+                    anyHook = true; LogOut("[PAUSE] PracticeTick hook active (1.02h)", true);
                 }
             } else {
                 if (MH_CreateHook(tickTarget, &HookedPracticeTickE, reinterpret_cast<void**>(&oPracticeTickE)) == MH_OK && MH_EnableHook(tickTarget) == MH_OK) {
-                    anyHook = true; LogOut("[PAUSE] PracticeTick hook active (1.02e)", true);
+                    anyHook = true; LogOut("[PAUSE] PracticeTick hook active (1.02e/1.02i)", true);
                 }
             }
         }
@@ -299,10 +300,11 @@ namespace {
     void EnsureBattleContextHook() {
         static std::atomic<bool> installed{false};
         if (installed.load()) return;
-        HMODULE hRev = GetModuleHandleA("EfzRevival.dll");
-        if (!hRev) return; // wait until injected
-    uintptr_t rva = EFZ_RVA_RenderBattleScreen();
-    void* target = rva ? EFZ_RVA_TO_VA(hRev, rva) : nullptr;
+        // RenderBattleScreen lives in efz.exe, not EfzRevival.dll
+        uintptr_t efzBase = GetEFZBase();
+        if (!efzBase) return;
+        uintptr_t rva = EFZ_RVA_RenderBattleScreen();
+        void* target = rva ? reinterpret_cast<void*>(efzBase + rva) : nullptr;
         if (!target) return;
         if (MH_CreateHook(target, &HookedRenderBattleScreen, reinterpret_cast<void**>(&oRenderBattleScreen)) != MH_OK) {
             {

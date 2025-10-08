@@ -242,7 +242,7 @@ bool CaptureAndFreezeBuffer(int playerNum, uint16_t startIndex, uint16_t length)
     g_frozenBufferLength = length;
     
     bool readSuccess = true;
-    for (size_t i = 0; i < length; i++) {
+    for (size_t i = 0; i < static_cast<size_t>(length); i++) {
         uint16_t readIdx = (startIndex + i) % INPUT_BUFFER_SIZE;
         if (!SafeReadMemory(playerPtr + INPUT_BUFFER_OFFSET + readIdx, &g_frozenBufferValues[i], sizeof(uint8_t))) {
             readSuccess = false;
@@ -257,9 +257,9 @@ bool CaptureAndFreezeBuffer(int playerNum, uint16_t startIndex, uint16_t length)
     // Output the captured values
     std::stringstream ss;
     ss << "[INPUT_BUFFER] Captured values: ";
-    for (size_t i = 0; i < length; i++) {
+    for (size_t i = 0; i < static_cast<size_t>(length); i++) {
         ss << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(g_frozenBufferValues[i]);
-        if (i < length - 1) ss << " ";
+        if (i + 1 < static_cast<size_t>(length)) ss << " ";
     }
     LogOut(ss.str(), true);
     

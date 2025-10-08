@@ -105,7 +105,8 @@ uintptr_t EFZ_RVA_CleanupPair() {
 uintptr_t EFZ_RVA_RenderBattleScreen() {
     uintptr_t r = 0;
     if (IsE()) r = 0x007642A0;
-    else if (IsH()) r = 0x007642A0; // assume stable for 1.02h/1.02i
+    else if (IsH()) r = 0x007642A0; // stable for 1.02h
+    else if (IsI()) r = 0x007642A0; // stable for 1.02i
     LogAddrOnce("RenderBattleScreen", r);
     return r;
 }
@@ -113,7 +114,8 @@ uintptr_t EFZ_RVA_RenderBattleScreen() {
 uintptr_t EFZ_RVA_GameModePtrArray() {
     uintptr_t r = 0;
     if (IsE()) r = 0x790110;
-    else if (IsH()) r = 0x790110; // likely unchanged for 1.02h/1.02i; fast-path only
+    else if (IsH()) r = 0x790110; // likely unchanged for 1.02h
+    else if (IsI()) r = 0x790110; // likely unchanged for 1.02i; fast-path only
     LogAddrOnce("GameModePtrArray", r);
     return r;
 }
@@ -121,19 +123,16 @@ uintptr_t EFZ_RVA_GameModePtrArray() {
 // Version-aware Practice controller offset accessors
 // CRITICAL: 1.02h/i use different offsets than 1.02e for pause/step fields!
 uintptr_t EFZ_Practice_PauseFlagOffset() {
-    // 1.02e: +0xB4, 1.02h/i: +0x180
-    if (IsH()) return 0x180;  // 1.02h/i
-    return 0xB4;              // 1.02e (default)
+    // Verified identical across versions: +180 decimal == 0xB4
+    return 0xB4;
 }
 
 uintptr_t EFZ_Practice_StepFlagOffset() {
-    // 1.02e: +0xAC, 1.02h/i: +0x172
-    if (IsH()) return 0x172;  // 1.02h/i
-    return 0xAC;              // 1.02e (default)
+    // Verified identical across versions: +172 decimal == 0xAC
+    return 0xAC;
 }
 
 uintptr_t EFZ_Practice_StepCounterOffset() {
-    // 1.02e: +0xB0, 1.02h/i: +0x176 (note: also exists at +0xB0 per docs)
-    if (IsH()) return 0x176;  // 1.02h/i
-    return 0xB0;              // 1.02e (default)
+    // Verified identical across versions: +176 decimal == 0xB0
+    return 0xB0;
 }
