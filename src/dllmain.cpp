@@ -28,6 +28,7 @@
 #include "../include/game/collision_hook.h"
 #include "../include/game/practice_hotkey_gate.h"
 #include "../include/game/practice_offsets.h"
+#include "../include/utils/debug_log.h"
 // forward declaration for overlay gate
 namespace PracticeOverlayGate { void EnsureInstalled(); void SetMenuVisible(bool); }
 #pragma comment(lib, "winmm.lib")
@@ -59,6 +60,11 @@ void DelayedInitialization(HMODULE hModule) {
         WriteStartupLog("Initializing logging system...");
         InitializeLogging();
         WriteStartupLog("Logging system initialized");
+        
+        // Initialize debug log file
+        WriteStartupLog("Initializing debug log file...");
+        DebugLog::Initialize();
+        WriteStartupLog("Debug log file initialized");
 
         // Initialize configuration system early so console behavior is known
         InitializeConfig();
@@ -225,6 +231,9 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
         // Signal shutdown to all threads
         g_isShuttingDown = true;
         g_featuresEnabled = false;
+        
+        // Shutdown debug log
+        DebugLog::Shutdown();
         
         // CRITICAL: Stop buffer freezing FIRST
         StopBufferFreezing();
