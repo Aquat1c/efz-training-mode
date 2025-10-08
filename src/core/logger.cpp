@@ -22,6 +22,7 @@
 // Snapshot access for light reads
 #include "../include/game/frame_monitor.h"
 #include "../include/game/character_settings.h"
+#include "../include/utils/debug_log.h"
 
 std::mutex g_logMutex;
 std::atomic<bool> detailedTitleMode(false);
@@ -49,6 +50,15 @@ void LogOut(const std::string& msg, bool consoleOutput) {
     if (g_onlineModeActive.load() || g_isShuttingDown.load()) {
         return;
     }
+    
+    // Always write to debug log if it's a switch-related message
+    if (msg.find("[SWITCH]") != std::string::npos || 
+        msg.find("[FREEZE]") != std::string::npos ||
+        msg.find("[AI]") != std::string::npos ||
+        msg.find("[ENGINE]") != std::string::npos) {
+        DebugLog::Write(msg);
+    }
+    
     // Only output to console if requested
     if (consoleOutput) {
         std::lock_guard<std::mutex> lock(g_logMutex);

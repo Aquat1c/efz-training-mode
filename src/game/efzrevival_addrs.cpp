@@ -157,48 +157,41 @@ uintptr_t EFZ_RVA_PracticeDispatcher() {
 }
 
 // Version-aware Practice controller offset accessors
-// Per decomp, these core offsets are identical across 1.02e/h/i.
+// CheatEngine confirmed: Practice struct layout is IDENTICAL across e/h/i
+// Only the static pointer location differs (e: +0xA02CC, h: +0xA02EC, i: +0xA15F8)
 uintptr_t EFZ_Practice_PauseFlagOffset() {
-    if (IsI()) return 0x180;
-    if (IsH()) return 0x180;
-    return 0xB4;
+    return 0xB4;  // All versions
 }
 
 uintptr_t EFZ_Practice_StepFlagOffset() {
-    // CheatEngine shows i uses same offsets as e for step flag
-    if (IsH()) return 0x172;
-    return 0xAC;  // e and i both use 0xAC
+    return 0xAC;  // All versions
 }
 
 uintptr_t EFZ_Practice_StepCounterOffset() {
-    // CheatEngine confirmed: i uses +0xB0 (same as e), NOT 0x176!
-    if (IsH()) return 0x176;
-    return 0xB0;  // e and i both use 0xB0
+    return 0xB0;  // All versions (CheatEngine confirmed: inc [edi+0xB0])
 }
 
 uintptr_t EFZ_Practice_LocalSideOffset() {
-    if (IsI()) return 0x688;
-    return 0x680;
+    // 1.02i shifts a few Practice fields by +8 relative to e/h per decompilation
+    return IsI() ? 0x688 : 0x680;
 }
 uintptr_t EFZ_Practice_RemoteSideOffset() {
-    if (IsI()) return 0x692;
-    return 0x684;
+    return IsI() ? 0x692 : 0x684;
 }
 
 uintptr_t EFZ_Practice_InitSourceSideOffset() {
-    // 1.02i shifted init-source from 0x944->0x952
     return IsI() ? 0x952 : 0x944;
 }
 
 uintptr_t EFZ_Practice_SideBufPrimaryOffset() {
-    // Side buffer pointers only exist on e-version at these offsets
-    // h/i use CleanupPair+RefreshMappingBlock instead, so we return 0 to skip validation
-    if (IsE()) return 0x824;
-    return 0;  // h/i: not used
+    // Side buffer pointers - ALL VERSIONS use these during init
+    // IDA shows decimal offsets, so 824 decimal = 0x338 hex
+    // Verified in h-version decompilation at line 76084: *(_DWORD *)(this + 824) = v5;
+    // Where v5 = this + 788, and 824/828 are buffer pointer slots
+    return 0x338;  // 824 decimal = 0x338 hex (ALL VERSIONS)
 }
 uintptr_t EFZ_Practice_SideBufSecondaryOffset() {
-    if (IsE()) return 0x828;
-    return 0;  // h/i: not used
+    return 0x33C;  // 828 decimal = 0x33C hex (ALL VERSIONS)
 }
 uintptr_t EFZ_Practice_SharedInputVectorOffset() { return 0x1240; }
 

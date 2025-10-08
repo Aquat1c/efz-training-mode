@@ -8,11 +8,114 @@
 #include "../include/input/input_motion.h" // SetAIControlFlag
 #include "../include/utils/utilities.h" // GetEFZBase
 #include "../include/utils/network.h" // GetEfzRevivalVersion
+#include "../include/utils/debug_log.h"
 #include <windows.h>
 #include <sstream>
 #include <iomanip>
 
 namespace {
+    // Dump a region of memory as hex for detailed analysis
+    static void DumpMemoryRegion(const char* label, uintptr_t address, size_t size) {
+        if (!address || size == 0 || size > 256) return; // Safety limit
+        
+        uint8_t buffer[256];
+        if (!SafeReadMemory(address, buffer, size)) {
+            DebugLog::Write(std::string(label) + " - Failed to read memory");
+            return;
+        }
+        
+        std::ostringstream oss;
+        oss << label << " @0x" << std::hex << std::uppercase << address << " [" << std::dec << size << " bytes]:";
+        for (size_t i = 0; i < size; ++i) {
+            if (i % 16 == 0) oss << "\n  ";
+            oss << std::hex << std::setw(2) << std::setfill('0') << (int)buffer[i] << " ";
+        }
+        DebugLog::Write(oss.str());
+    }
+    
+    // Dump critical Practice controller fields with memory dumps
+    static void DumpPracticeStateDetailed(uint8_t* practice, const char* tag) {
+        if (!practice) { 
+            DebugLog::Write(std::string("[DUMP] ") + (tag ? tag : "state") + " - practice pointer is NULL");
+            return; 
+        }
+        
+        EfzRevivalVersion ver = GetEfzRevivalVersion();
+        const char* verName = EfzRevivalVersionName(ver);
+        
+        DebugLog::Write("========================================");
+        DebugLog::Write(std::string("PRACTICE CONTROLLER DUMP: ") + (tag ? tag : "state"));
+        DebugLog::Write("========================================");
+        
+        std::ostringstream ossBasic;
+        ossBasic << "Version: " << (verName ? verName : "unknown")
+                 << " | Practice base: 0x" << std::hex << std::uppercase << (uintptr_t)practice;
+        DebugLog::Write(ossBasic.str());
+        
+        // Read all critical fields
+        int local=-1, remote=-1, initSrc=-1;
+        uint8_t guiPos=0xFF;
+        uintptr_t primary=0, secondary=0;
+        
+        SafeReadMemory((uintptr_t)practice + EFZ_Practice_LocalSideOffset(), &local, sizeof(local));
+        SafeReadMemory((uintptr_t)practice + EFZ_Practice_RemoteSideOffset(), &remote, sizeof(remote));
+        SafeReadMemory((uintptr_t)practice + PRACTICE_OFF_GUI_POS, &guiPos, sizeof(guiPos));
+        SafeReadMemory((uintptr_t)practice + EFZ_Practice_InitSourceSideOffset(), &initSrc, sizeof(initSrc));
+        SafeReadMemory((uintptr_t)practice + PRACTICE_OFF_SIDE_BUF_PRIMARY, &primary, sizeof(primary));
+        SafeReadMemory((uintptr_t)practice + PRACTICE_OFF_SIDE_BUF_SECONDARY, &secondary, sizeof(secondary));
+        
+        DebugLog::Write("--- Core Fields ---");
+        DebugLog::LogRead("local side", (uintptr_t)practice + EFZ_Practice_LocalSideOffset(), local);
+        DebugLog::LogRead("remote side", (uintptr_t)practice + EFZ_Practice_RemoteSideOffset(), remote);
+        DebugLog::LogRead("GUI position", (uintptr_t)practice + PRACTICE_OFF_GUI_POS, guiPos);
+        DebugLog::LogRead("init source", (uintptr_t)practice + EFZ_Practice_InitSourceSideOffset(), initSrc);
+        DebugLog::LogRead("primary buffer ptr", (uintptr_t)practice + PRACTICE_OFF_SIDE_BUF_PRIMARY, primary);
+        DebugLog::LogRead("secondary buffer ptr", (uintptr_t)practice + PRACTICE_OFF_SIDE_BUF_SECONDARY, secondary);
+        
+        // Calculate expected buffer addresses based on version
+        uintptr_t baseLocal, baseRemote;
+        if (ver == EfzRevivalVersion::Revival102e) {
+            baseLocal = (uintptr_t)practice + PRACTICE_OFF_BUF_LOCAL_BASE;
+            baseRemote = (uintptr_t)practice + PRACTICE_OFF_BUF_REMOTE_BASE;
+        } else {
+            baseLocal = (uintptr_t)practice + 0x314;  // h/i: 788 decimal
+            baseRemote = (uintptr_t)practice + 0x320; // h/i: 800 decimal
+        }
+        
+        std::ostringstream ossExpected;
+        ossExpected << "Expected buffers - Local: 0x" << std::hex << std::uppercase << baseLocal
+                    << " | Remote: 0x" << baseRemote;
+        DebugLog::Write(ossExpected.str());
+        
+        // Dump memory around buffer pointer storage
+        DebugLog::Write("--- Memory Dumps ---");
+        DumpMemoryRegion("Buffer pointers region [+0x330 to +0x350]", 
+                        (uintptr_t)practice + 0x330, 32);
+        
+        // Dump the actual buffer contents if pointers are valid
+        if (primary != 0 && primary > 0x10000) {
+            DumpMemoryRegion("Primary buffer content", primary, 64);
+        } else {
+            DebugLog::Write("Primary buffer pointer invalid or NULL");
+        }
+        
+        if (secondary != 0 && secondary > 0x10000) {
+            DumpMemoryRegion("Secondary buffer content", secondary, 64);
+        } else {
+            DebugLog::Write("Secondary buffer pointer invalid or NULL");
+        }
+        
+        // Dump local and remote buffer areas
+        DumpMemoryRegion("Local buffer area", baseLocal, 64);
+        DumpMemoryRegion("Remote buffer area", baseRemote, 64);
+        
+        // Dump the area around local/remote side values
+        DumpMemoryRegion("Side values region [+0x680 to +0x690]",
+                        (uintptr_t)practice + 0x680, 16);
+        
+        DebugLog::Write("========================================");
+    }
+    
     // Dump a comprehensive snapshot of the Practice controller to help debug switches
     static void DumpPracticeState(uint8_t* practice, const char* tag) {
         if (!practice) { LogOut("[SWITCH][DUMP] practice=null", true); return; }
@@ -182,6 +285,14 @@ namespace {
             << " after=" << (okReadAfter ? std::to_string((uint64_t)after) : std::string("?"))
             << " okWrite=" << (okWrite ? "1" : "0");
         LogOut(oss.str(), true);
+        
+        // Also log to debug file
+        if (okReadBefore) {
+            DebugLog::LogWrite(label, addr, before, valueToWrite);
+        }
+        if (okReadAfter && okWrite) {
+            DebugLog::LogRead(std::string(label) + " [verified]", addr, after);
+        }
     }
 
     // Overload for pointers/addresses to log in hex
@@ -199,6 +310,14 @@ namespace {
             << std::dec
             << " okWrite=" << (okWrite ? "1" : "0");
         LogOut(oss.str(), true);
+        
+        // Also log to debug file
+        if (okReadBefore) {
+            DebugLog::LogWrite(label, addr, before, valueToWrite);
+        }
+        if (okReadAfter && okWrite) {
+            DebugLog::LogRead(std::string(label) + " [verified]", addr, after);
+        }
     }
 
     // Freeze guard: uses EfzRevival's internal patch toggler to temporarily freeze gameplay
@@ -224,27 +343,65 @@ namespace {
                 LogOut(oss.str(), true);
             }
         }
+        // Plain C-style function to avoid C++ object unwinding issues with SEH
+        static bool SehSafeToggleThisImpl(void* fn, void* c, int val) {
+            if (!fn || !c) return false;
+            typedef int(__thiscall* ToggleFn)(void*, char);
+            ToggleFn toggleFn = (ToggleFn)fn;
+            __try { 
+                toggleFn(c, (char)val); 
+                return true;
+            }
+            __except (EXCEPTION_EXECUTE_HANDLER) { 
+                return false;
+            }
+        }
+        
         static bool SehSafeToggleThis(int(__thiscall* fn)(void*, char), void* c, char val) {
             if (!fn || !c) return false;
-            __try { fn(c, val); return true; }
-            __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+            // Log before/after SEH block
+            char logBuf[128];
+            sprintf_s(logBuf, "Calling PatchToggler with param=%d", (int)val);
+            DebugLog::Write(logBuf);
+            
+            bool success = SehSafeToggleThisImpl((void*)fn, c, (int)val);
+            
+            DebugLog::Write(success ? "PatchToggler returned successfully" : "PatchToggler threw exception!");
+            return success;
         }
         void freeze() {
             if (!ctx || active) return;
+            DebugLog::Write("--- FREEZE BEGIN ---");
+            std::ostringstream oss;
+            oss << "Freezing game - ctx=0x" << std::hex << std::uppercase << (uintptr_t)ctx 
+                << " toggleThis=0x" << (uintptr_t)toggleThis;
+            DebugLog::Write(oss.str());
             bool ok = false;
             if (toggleThis) ok = SehSafeToggleThis(toggleThis, ctx, (char)0);
             active = ok;
+            DebugLog::Write(ok ? "Freeze ON - SUCCESS" : "Freeze ON - FAILED");
             LogOut(ok ? "[SWITCH] Freeze ON" : "[SWITCH] Freeze ON threw exception", true);
         }
         void unfreeze() {
             if (!ctx || !active) return;
-            bool ok = false;
+            DebugLog::Write("--- UNFREEZE BEGIN ---");
             int unfreezeParam = EFZ_PatchToggleUnfreezeParam(); // 1 for e, 3 for h/i
+            std::ostringstream oss;
+            oss << "Unfreezing game - ctx=0x" << std::hex << std::uppercase << (uintptr_t)ctx 
+                << " param=" << std::dec << unfreezeParam;
+            DebugLog::Write(oss.str());
+            bool ok = false;
             if (toggleThis) ok = SehSafeToggleThis(toggleThis, ctx, (char)unfreezeParam);
+            DebugLog::Write(ok ? "Freeze OFF - SUCCESS" : "Freeze OFF - FAILED");
             LogOut(ok ? "[SWITCH] Freeze OFF" : "[SWITCH] Freeze OFF threw exception", true);
             active = false;
         }
-        ~EFZFreezeGuard() { unfreeze(); }
+        ~EFZFreezeGuard() { 
+            if (active) {
+                DebugLog::Write("--- FREEZE GUARD DESTRUCTOR (auto-unfreeze) ---");
+                unfreeze(); 
+            }
+        }
     };
 
     // Helper to reset per-side mapping like sub_1006D640((char **)(this + 8 * (*[this+0x680] + 104)))
@@ -252,15 +409,24 @@ namespace {
     // In practice, flipping LOCAL/REMOTE and swapping the two side buffer pointers suffices for input routing.
     // If further fixes are needed, we can introduce a lightweight refresh by touching the shared input vector.
     void PostSwitchRefresh(uint8_t* practice) {
+        DebugLog::Write("--- POST SWITCH REFRESH BEGIN ---");
+        
         // Attempt to use the official helpers first (works across e/h/i):
         // sub_1006D640 (e), sub_1006DEC0 (h), sub_1006E190 (i)
         // and call CleanupPair when local == 1 (P2) to mirror init path.
         do {
-            if (!practice) break;
+            if (!practice) {
+                DebugLog::Write("PostSwitchRefresh: practice is NULL");
+                break;
+            }
             // Resolve local side
             int local = -1;
             (void)SafeReadMemory((uintptr_t)practice + PRACTICE_OFF_LOCAL_SIDE_IDX, &local, sizeof(local));
-            if (local != 0 && local != 1) break;
+            DebugLog::LogRead("PostSwitchRefresh: local side", (uintptr_t)practice + PRACTICE_OFF_LOCAL_SIDE_IDX, local);
+            if (local != 0 && local != 1) {
+                DebugLog::Write("PostSwitchRefresh: invalid local side value");
+                break;
+            }
 
             // Compute per-side map pointer: (char**)(this + 8 * (local + 104))
             char** mapPtr = reinterpret_cast<char**>((uintptr_t)practice + (8 * (local + 104)));
@@ -403,20 +569,50 @@ namespace SwitchPlayers {
         if (!practice) return false;
         if (desiredLocal != 0 && desiredLocal != 1) return false;
 
+        // Start debug log session with full context
+        DebugLog::Write("========================================");
+        DebugLog::Write("SWITCH PLAYER OPERATION START");
+        DebugLog::Write("========================================");
+        
+        EfzRevivalVersion ver = GetEfzRevivalVersion();
+        const char* verName = EfzRevivalVersionName(ver);
+        std::ostringstream ossHeader;
+        ossHeader << "Version: " << (verName ? verName : "unknown") 
+                  << " | Practice base: 0x" << std::hex << std::uppercase << (uintptr_t)practice
+                  << " | Desired local: " << std::dec << desiredLocal;
+        DebugLog::Write(ossHeader.str());
+        
+        // Log EfzRevival.dll base for reference
+        HMODULE hEfz = GetModuleHandleA("EfzRevival.dll");
+        if (hEfz) {
+            std::ostringstream ossEfz;
+            ossEfz << "EfzRevival.dll base: 0x" << std::hex << std::uppercase << (uintptr_t)hEfz;
+            DebugLog::Write(ossEfz.str());
+        }
+        
         // Read current
     int curLocal = 0; SafeReadMemory((uintptr_t)practice + EFZ_Practice_LocalSideOffset(), &curLocal, sizeof(curLocal));
+        DebugLog::LogRead("practice.localSide[INITIAL]", (uintptr_t)practice + EFZ_Practice_LocalSideOffset(), curLocal);
+        
+        // Dump DETAILED state before any changes
+        DumpPracticeStateDetailed(practice, "BEFORE SWITCH");
         DumpPracticeState(practice, "before");
+        
         if (curLocal == desiredLocal) {
             LogOut("[SWITCH] Local side already set; no changes", true);
+            DebugLog::Write("No changes needed - already at desired local side");
+            DebugLog::Write("========================================");
             return true;
         }
-        // If the game is already paused/frozen (either via Practice pause flag or gamespeed freeze),
-        // skip toggling the EfzRevival freeze to avoid redundant ON/OFF logs and keep the current pause state.
-        EFZFreezeGuard guard; // used only if needed
-        if (!PauseIntegration::IsPausedOrFrozen()) {
-            guard.freeze();
-        } else {
-            LogOut("[SWITCH] Detected paused/frozen state; skipping additional Freeze ON/OFF", true);
+        // Only freeze around E-path edits; H/I path will emulate engine hotkey without extra bracketing.
+        EFZFreezeGuard guard; // used for 1.02e only
+        bool useFreeze = (ver == EfzRevivalVersion::Revival102e);
+        if (useFreeze) {
+            if (!PauseIntegration::IsPausedOrFrozen()) {
+                guard.freeze();
+            } else {
+                LogOut("[SWITCH] Detected paused/frozen state; skipping additional Freeze ON/OFF", true);
+            }
         }
 
         // Log practice base for CE watch setup
@@ -425,48 +621,133 @@ namespace SwitchPlayers {
             LogOut(oss.str(), true);
         }
 
+        // For 1.02e we update Practice fields directly; for h/i we do not touch these.
         int newRemote = (desiredLocal == 0) ? 1 : 0;
-        // Write LOCAL and REMOTE with full before/after logs
-        LogRW<int>("practice.localSide[+0x680]", (uintptr_t)practice + PRACTICE_OFF_LOCAL_SIDE_IDX, desiredLocal);
-        LogRW<int>("practice.remoteSide[+0x684]", (uintptr_t)practice + PRACTICE_OFF_REMOTE_SIDE_IDX, newRemote);
+        if (ver == EfzRevivalVersion::Revival102e) {
+            LogRW<int>("practice.localSide[+0x680]", (uintptr_t)practice + PRACTICE_OFF_LOCAL_SIDE_IDX, desiredLocal);
+            LogRW<int>("practice.remoteSide[+0x684]", (uintptr_t)practice + PRACTICE_OFF_REMOTE_SIDE_IDX, newRemote);
+        }
 
-        // Wire side buffer pointers exactly as init does on 1.02e. On 1.02h/i, the layout differs
-        // so we avoid direct pointer writes and rely on engine CleanupPair + RefreshMappingBlock.
+        // VERSION SPECIFIC BEHAVIOR - CRITICAL DIFFERENCE:
+        //
+        // E-version: Manual live swap by writing buffer pointers
+        //   - Writes buffer pointers at +0x338/+0x33C to game exe addresses
+        //   - Immediately swaps input routing without reinitialization
+        //
+        // H/I-version: Official switch mechanism using flag at +36
+        //   - Setting *(Practice+36)=1 triggers full reinitialization on next tick
+        //   - Engine handles ALL state updates (buffers, pointers, etc.)
+        //   - From decompilation (h): if (*(_DWORD *)(this + 36) == 1) { sub_1006D320(...); *(_DWORD *)(this + 36) = 0; }
+        //
         {
             EfzRevivalVersion ver = GetEfzRevivalVersion();
+            
             if (ver == EfzRevivalVersion::Revival102e) {
-                uintptr_t baseLocal = (uintptr_t)practice + PRACTICE_OFF_BUF_LOCAL_BASE;   // +0x796
-                uintptr_t baseRemote = (uintptr_t)practice + PRACTICE_OFF_BUF_REMOTE_BASE; // +0x808
-                uintptr_t primary = (desiredLocal == 0) ? baseLocal : baseRemote;
-                uintptr_t secondary = (desiredLocal == 0) ? baseRemote : baseLocal;
-                LogRWPtr("practice.sideBuf.primary[+0x832]", (uintptr_t)practice + PRACTICE_OFF_SIDE_BUF_PRIMARY, primary);
-                LogRWPtr("practice.sideBuf.secondary[+0x836]", (uintptr_t)practice + PRACTICE_OFF_SIDE_BUF_SECONDARY, secondary);
-                // Optional: mirror init by updating INIT_SOURCE too (so next reinit stays consistent)
+                // E-version: Manual buffer pointer swap
+                uintptr_t efzBase = GetEFZBase();
+                uintptr_t bufP1 = efzBase + 0x390104;  // P1 buffer in game exe
+                uintptr_t bufP2 = efzBase + 0x390108;  // P2 buffer in game exe
+                
+                std::ostringstream ossBuffers;
+                ossBuffers << "[SWITCH] Game executable buffers - P1: 0x" << std::hex << std::uppercase << bufP1
+                           << " | P2: 0x" << bufP2 << " (efz.exe base: 0x" << efzBase << ")";
+                LogOut(ossBuffers.str(), true);
+                DebugLog::Write(ossBuffers.str());
+                
+                uintptr_t primary = (desiredLocal == 0) ? bufP1 : bufP2;
+                uintptr_t secondary = (desiredLocal == 0) ? bufP2 : bufP1;
+                
+                LogRWPtr("practice.sideBuf.primary[+0x338]", (uintptr_t)practice + PRACTICE_OFF_SIDE_BUF_PRIMARY, primary);
+                LogRWPtr("practice.sideBuf.secondary[+0x33C]", (uintptr_t)practice + PRACTICE_OFF_SIDE_BUF_SECONDARY, secondary);
+                
+                // Mirror init by updating INIT_SOURCE too (so next reinit stays consistent)
                 LogRW<int>("practice.initSource[+0x944]", (uintptr_t)practice + PRACTICE_OFF_INIT_SOURCE_SIDE, desiredLocal);
             } else {
-                LogOut("[SWITCH] Skipping direct side-buffer/initSource writes on 1.02h/i; using engine refresh", true);
+                // H/I-version: Make the other side local and swap mapping once, matching engine init semantics.
+                // Steps:
+                // 1) Update Practice local/remote to desired/newRemote
+                // 2) Clear the engine switch flag (+36) to prevent a second swap in the tail
+                // 3) Call CleanupPair(ctx) exactly once (engine swap helper)
+                // 4) Update engine-facing flags (active player, CPU) and GUI pos so UI/control roles match
+                // 5) Return (no further map reset/refresh here)
+
+                // Clear switch-needed flag to prevent tail double-swap; we'll perform a single immediate swap here.
+                LogRW<int>("practice.switchFlag[+36]", (uintptr_t)practice + 36, 0);
+
+                // First commit new local/remote indices to reflect the chosen local side
+                uintptr_t offLocal  = (uintptr_t)practice + EFZ_Practice_LocalSideOffset();
+                uintptr_t offRemote = (uintptr_t)practice + EFZ_Practice_RemoteSideOffset();
+                LogRW<int>("practice.localSide[h/i]", offLocal, desiredLocal);
+                LogRW<int>("practice.remoteSide[h/i]", offRemote, newRemote);
+
+                // Then perform a single swap via CleanupPair on patch ctx so the new local gets the previous local's controls
+                HMODULE hMod = GetModuleHandleA("EfzRevival.dll");
+                uintptr_t ctxRva = EFZ_RVA_PatchCtx();
+                uintptr_t cleanRva = EFZ_RVA_CleanupPair(); // sub_1006D320(h) / sub_1006D5F0(i)
+                if (hMod && ctxRva && cleanRva) {
+                    auto fnCleanup = reinterpret_cast<int(__thiscall*)(void*)>(reinterpret_cast<uintptr_t>(hMod) + cleanRva);
+                    void* patchCtx = reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(hMod) + ctxRva);
+                    int rc = 0;
+                    bool ok = SehSafe_CleanupPair(fnCleanup, patchCtx, &rc);
+                    std::ostringstream oss; oss << "[SWITCH][H/I] CleanupPair(ctx) -> "
+                        << (ok?"rc=":"EXC rc=") << rc << " ctx=0x" << std::hex << (uintptr_t)patchCtx;
+                    LogOut(oss.str(), true);
+                } else {
+                    LogOut("[SWITCH][H/I] CleanupPair or ctx not available; skipped", true);
+                }
+
+                // Update engine-facing flags and GUI to reflect the new local side
+                uintptr_t efzBase = GetEFZBase();
+                if (efzBase) {
+                    uintptr_t gameStatePtr = 0;
+                    if (SafeReadMemory(efzBase + EFZ_BASE_OFFSET_GAME_STATE, &gameStatePtr, sizeof(gameStatePtr)) && gameStatePtr) {
+                        uint8_t activePlayer = (uint8_t)desiredLocal;        // 0=P1, 1=P2
+                        uint8_t p2CpuFlag    = (desiredLocal == 1) ? 0u : 1u; // P2 human when local==1
+                        uint8_t p1CpuFlag    = (uint8_t)(1u - p2CpuFlag);
+                        LogRW<uint8_t>("engine.activePlayer[+4930]", gameStatePtr + GAMESTATE_OFF_ACTIVE_PLAYER, activePlayer);
+                        LogRW<uint8_t>("engine.P2_CPU_FLAG[+4931]", gameStatePtr + GAMESTATE_OFF_P2_CPU_FLAG, p2CpuFlag);
+                        LogRW<uint8_t>("engine.P1_CPU_FLAG[+4932]", gameStatePtr + GAMESTATE_OFF_P1_CPU_FLAG, p1CpuFlag);
+                        uint8_t guiPos = (desiredLocal == 0) ? 1u : 0u; // 1 when P1 local, 0 when P2 local
+                        LogRW<uint8_t>("practice.GUI_POS[+0x24]", (uintptr_t)practice + PRACTICE_OFF_GUI_POS, guiPos);
+                    } else {
+                        LogOut("[SWITCH][H/I] Game state pointer not available; engine flags not updated", true);
+                    }
+                }
+
+                // Align our AI control flags with the new local side (local = Human, remote = AI)
+                if (desiredLocal == 1) {
+                    SetAIControlFlag(1, /*human=*/false); // P1 AI
+                    SetAIControlFlag(2, /*human=*/true);  // P2 Human
+                    LogOut("[SWITCH][H/I] Control roles: P1=AI, P2=Human", true);
+                } else {
+                    SetAIControlFlag(1, /*human=*/true);  // P1 Human
+                    SetAIControlFlag(2, /*human=*/false); // P2 AI
+                    LogOut("[SWITCH][H/I] Control roles: P1=Human, P2=AI", true);
+                }
+
+                DebugLog::Write("[SWITCH][H/I] Single-swap path finished; returning");
+                DebugLog::Write("========================================");
+                return true;
             }
         }
 
-    // Ensure control roles match the new local side immediately to avoid double-toggle
+        // Ensure control roles match the new local side (E only). H/I path returns earlier above.
         // desiredLocal == 0 -> P1 Human, P2 AI
         // desiredLocal == 1 -> P2 Human, P1 AI
-        bool p1HumanBefore = IsAIControlFlagHuman(1);
-        bool p2HumanBefore = IsAIControlFlagHuman(2);
-        if (desiredLocal == 1) {
-            // Local is P2
-            SetAIControlFlag(1, /*human=*/false); // P1 AI
-            SetAIControlFlag(2, /*human=*/true);  // P2 Human
-            LogOut("[SWITCH] Control roles: P1=AI, P2=Human", true);
-        } else {
-            // Local is P1
-            SetAIControlFlag(1, /*human=*/true);  // P1 Human
-            SetAIControlFlag(2, /*human=*/false); // P2 AI
-            LogOut("[SWITCH] Control roles: P1=Human, P2=AI", true);
-        }
-        bool p1HumanAfter = IsAIControlFlagHuman(1);
-        bool p2HumanAfter = IsAIControlFlagHuman(2);
-        {
+        if (ver == EfzRevivalVersion::Revival102e) {
+            bool p1HumanBefore = IsAIControlFlagHuman(1);
+            bool p2HumanBefore = IsAIControlFlagHuman(2);
+            if (desiredLocal == 1) {
+                SetAIControlFlag(1, /*human=*/false);
+                SetAIControlFlag(2, /*human=*/true);
+                LogOut("[SWITCH] Control roles: P1=AI, P2=Human", true);
+            } else {
+                SetAIControlFlag(1, /*human=*/true);
+                SetAIControlFlag(2, /*human=*/false);
+                LogOut("[SWITCH] Control roles: P1=Human, P2=AI", true);
+            }
+            bool p1HumanAfter = IsAIControlFlagHuman(1);
+            bool p2HumanAfter = IsAIControlFlagHuman(2);
             std::ostringstream oss;
             oss << "[SWITCH][AI] P1 before=" << (p1HumanBefore?"Human":"AI")
                 << " after=" << (p1HumanAfter?"Human":"AI")
@@ -481,35 +762,33 @@ namespace SwitchPlayers {
         //  - gameState + GAMESTATE_OFF_P1_CPU_FLAG (byte) controls P1 CPU (1=CPU, 0=Human)
         //  - gameState + GAMESTATE_OFF_ACTIVE_PLAYER (byte) is 0 for P1, 1 for P2
         // Keep these in sync so the engine doesn't revert our AI/Human assignment next tick.
-        uintptr_t efzBase = GetEFZBase();
-        if (efzBase) {
-            uintptr_t gameStatePtr = 0;
-            if (SafeReadMemory(efzBase + EFZ_BASE_OFFSET_GAME_STATE, &gameStatePtr, sizeof(gameStatePtr)) && gameStatePtr) {
-                uint8_t p2CpuFlag = (desiredLocal == 1) ? 0u : 1u; // local P2 -> human (0), local P1 -> CPU (1)
-                uint8_t p1CpuFlag = (uint8_t)(1u - p2CpuFlag);    // opposite of P2
-                uint8_t activePlayer = (uint8_t)desiredLocal;      // 0=P1, 1=P2
-                {
+        if (ver == EfzRevivalVersion::Revival102e) {
+            uintptr_t efzBase = GetEFZBase();
+            if (efzBase) {
+                uintptr_t gameStatePtr = 0;
+                if (SafeReadMemory(efzBase + EFZ_BASE_OFFSET_GAME_STATE, &gameStatePtr, sizeof(gameStatePtr)) && gameStatePtr) {
+                    uint8_t p2CpuFlag = (desiredLocal == 1) ? 0u : 1u;
+                    uint8_t p1CpuFlag = (uint8_t)(1u - p2CpuFlag);
+                    uint8_t activePlayer = (uint8_t)desiredLocal;
                     std::ostringstream oss; oss << "[SWITCH][ENGINE] gameState=0x" << std::hex << gameStatePtr
                         << " write active=" << std::dec << (int)activePlayer
                         << " P2CPU=" << (int)p2CpuFlag << " P1CPU=" << (int)p1CpuFlag;
                     LogOut(oss.str(), true);
+                    LogRW<uint8_t>("engine.activePlayer[+4930]", gameStatePtr + GAMESTATE_OFF_ACTIVE_PLAYER, activePlayer);
+                    LogRW<uint8_t>("engine.P2_CPU_FLAG[+4931]", gameStatePtr + GAMESTATE_OFF_P2_CPU_FLAG, p2CpuFlag);
+                    LogRW<uint8_t>("engine.P1_CPU_FLAG[+4932]", gameStatePtr + GAMESTATE_OFF_P1_CPU_FLAG, p1CpuFlag);
+                    uint8_t guiPos = (desiredLocal == 0) ? 1u : 0u;
+                    LogRW<uint8_t>("practice.GUI_POS[+0x24]", (uintptr_t)practice + PRACTICE_OFF_GUI_POS, guiPos);
+                } else {
+                    LogOut("[SWITCH] Game state pointer not available; engine flags not updated", true);
                 }
-                LogRW<uint8_t>("engine.activePlayer[+4930]", gameStatePtr + GAMESTATE_OFF_ACTIVE_PLAYER, activePlayer);
-                LogRW<uint8_t>("engine.P2_CPU_FLAG[+4931]", gameStatePtr + GAMESTATE_OFF_P2_CPU_FLAG, p2CpuFlag);
-                LogRW<uint8_t>("engine.P1_CPU_FLAG[+4932]", gameStatePtr + GAMESTATE_OFF_P1_CPU_FLAG, p1CpuFlag);
-                // Update GUI/buffer display position: *(practice+0x24) = 1 when P1 local, 0 when P2 local
-                // CE observed as "Current GUI position"; EfzRevival writes here too (sete -> mov [esi+24], eax)
-                uint8_t guiPos = (desiredLocal == 0) ? 1u : 0u;
-                LogRW<uint8_t>("practice.GUI_POS[+0x24]", (uintptr_t)practice + PRACTICE_OFF_GUI_POS, guiPos);
-            }
-            else {
-                LogOut("[SWITCH] Game state pointer not available; engine flags not updated", true);
             }
         }
 
         // Now that engine/practice flags reflect the intended human side, reset per-side mapping and cleanup input pair
         // so that the rebind logic observes the correct target (fixes third-press misassignment).
-        PostSwitchRefresh(practice);
+    // 1.02e only; H/I returned earlier.
+    PostSwitchRefresh(practice);
 
         // Diagnostics: verify final values
         int checkLocal = -1, checkRemote = -1;
@@ -556,6 +835,28 @@ namespace SwitchPlayers {
 
         // Done; unfreeze on scope exit
         DumpPracticeState(practice, "after");
+        
+        // Final verification logging with DETAILED dump
+        DebugLog::Write("========================================");
+        DebugLog::Write("FINAL STATE VERIFICATION");
+        DebugLog::Write("========================================");
+        DebugLog::LogRead("practice.localSide[FINAL]", (uintptr_t)practice + EFZ_Practice_LocalSideOffset(), checkLocal);
+        DebugLog::LogRead("practice.remoteSide[FINAL]", (uintptr_t)practice + EFZ_Practice_RemoteSideOffset(), checkRemote);
+        DebugLog::LogRead("practice.GUI_POS[FINAL]", (uintptr_t)practice + PRACTICE_OFF_GUI_POS, guiPosR);
+        
+        std::ostringstream ossFinal;
+        ossFinal << "AI Control: P1=" << (p1Human ? "Human" : "AI") 
+                 << ", P2=" << (p2Human ? "Human" : "AI");
+        DebugLog::Write(ossFinal.str());
+        
+        // Dump detailed state after changes
+        DumpPracticeStateDetailed(practice, "AFTER SWITCH");
+        
+        DebugLog::Write("========================================");
+        DebugLog::Write("SWITCH PLAYER OPERATION COMPLETE - SUCCESS");
+        DebugLog::Write("========================================");
+        DebugLog::Flush();
+        
         return true;
     }
 
