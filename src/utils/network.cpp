@@ -50,6 +50,7 @@ EfzRevivalVersion GetEfzRevivalVersion() {
         // Has Revival marker; check for known tags
         if (lower.find("1.02e") != std::string::npos) v = EfzRevivalVersion::Revival102e;
         else if (lower.find("1.02h") != std::string::npos) v = EfzRevivalVersion::Revival102h;
+        else if (lower.find("1.02i") != std::string::npos) v = EfzRevivalVersion::Revival102i;
         else v = EfzRevivalVersion::Other;
     } else {
         // No Revival marker -> vanilla or unknown
@@ -65,6 +66,7 @@ const char* EfzRevivalVersionName(EfzRevivalVersion v) {
         case EfzRevivalVersion::Vanilla: return "Vanilla";
         case EfzRevivalVersion::Revival102e: return "Revival 1.02e";
         case EfzRevivalVersion::Revival102h: return "Revival 1.02h";
+        case EfzRevivalVersion::Revival102i: return "Revival 1.02i";
         case EfzRevivalVersion::Other: return "Revival (Other)";
         default: return "(invalid)";
     }
@@ -86,7 +88,10 @@ OnlineState ReadEfzRevivalOnlineState() {
     uintptr_t rva = 0;
     switch (vv) {
         case EfzRevivalVersion::Revival102e: rva = 0x00A05D0; break;
-        case EfzRevivalVersion::Revival102h: rva = 0x00A05F0; break; // wired for online-state only
+        case EfzRevivalVersion::Revival102h:
+            rva = 0x00A05F0; break; // 1.02h
+        case EfzRevivalVersion::Revival102i:
+            rva = 0x00A15FC; break; // 1.02i (confirmed in docs)
         default:
             return OnlineState::Unknown; // Vanilla/Other/Unknown: don't probe
     }

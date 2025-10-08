@@ -7,6 +7,7 @@
 #include "../include/game/efzrevival_addrs.h"
 #include "../include/input/input_motion.h" // SetAIControlFlag
 #include "../include/utils/utilities.h" // GetEFZBase
+#include "../include/utils/network.h" // GetEfzRevivalVersion
 #include <windows.h>
 #include <sstream>
 #include <iomanip>
@@ -72,7 +73,8 @@ namespace {
     // while we rewire side pointers and flags. This mirrors the engine's own safety during init.
     struct EFZFreezeGuard {
         void* ctx{nullptr};
-        int (__thiscall *toggle)(void*, int){nullptr};
+        // All versions use __thiscall (ctx, char)
+        int (__thiscall *toggleThis)(void*, char){nullptr};
         bool active{false};
         EFZFreezeGuard() {
             HMODULE h = GetModuleHandleA("EfzRevival.dll");
@@ -81,31 +83,34 @@ namespace {
             uintptr_t togRva = EFZ_RVA_PatchToggler();
             if (!ctxRva || !togRva) return;
             ctx = reinterpret_cast<void*>((uintptr_t)h + ctxRva);
-            toggle = reinterpret_cast<int(__thiscall*)(void*, int)>((uintptr_t)h + togRva);
+            // Single path: __thiscall for e/h/i
+            toggleThis = reinterpret_cast<int(__thiscall*)(void*, char)>((uintptr_t)h + togRva);
             {
                 std::ostringstream oss; oss << "[SWITCH] FreezeGuard init ctx=0x" << std::hex << (uintptr_t)ctx
-                    << " toggle=0x" << (uintptr_t)toggle;
+                    << " toggle=0x" << (uintptr_t)(void*)toggleThis
+                    << " conv=thiscall";
                 LogOut(oss.str(), true);
             }
         }
-        static bool SehSafeToggle(int(__thiscall* fn)(void*, int), void* ctx, int val) {
-            if (!fn || !ctx) return false;
-            __try { fn(ctx, val); return true; }
+        static bool SehSafeToggleThis(int(__thiscall* fn)(void*, char), void* c, char val) {
+            if (!fn || !c) return false;
+            __try { fn(c, val); return true; }
             __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
         }
         void freeze() {
-            if (ctx && toggle && !active) {
-                bool ok = SehSafeToggle(toggle, ctx, 0);
-                active = ok;
-                LogOut(ok ? "[SWITCH] Freeze ON" : "[SWITCH] Freeze ON threw exception", true);
-            }
+            if (!ctx || active) return;
+            bool ok = false;
+            if (toggleThis) ok = SehSafeToggleThis(toggleThis, ctx, (char)0);
+            active = ok;
+            LogOut(ok ? "[SWITCH] Freeze ON" : "[SWITCH] Freeze ON threw exception", true);
         }
         void unfreeze() {
-            if (ctx && toggle && active) {
-                bool ok = SehSafeToggle(toggle, ctx, EFZ_PatchToggleUnfreezeParam());
-                LogOut(ok ? "[SWITCH] Freeze OFF" : "[SWITCH] Freeze OFF threw exception", true);
-                active = false;
-            }
+            if (!ctx || !active) return;
+            bool ok = false;
+            int unfreezeParam = EFZ_PatchToggleUnfreezeParam(); // 1 for e, 3 for h/i
+            if (toggleThis) ok = SehSafeToggleThis(toggleThis, ctx, (char)unfreezeParam);
+            LogOut(ok ? "[SWITCH] Freeze OFF" : "[SWITCH] Freeze OFF threw exception", true);
+            active = false;
         }
         ~EFZFreezeGuard() { unfreeze(); }
     };
@@ -144,9 +149,10 @@ namespace {
             LogOut("[SWITCH] sub_1006D640 symbol missing; skipped", true);
         }
 
-        // Call EFZ_Obj_SubStruct448_CleanupPair for either direction to ensure device/pair rebind
-        // Always rebind pair so the active pairing follows the current local side
-        {
+        // Call EFZ_Obj_SubStruct448_CleanupPair only when local==1 (P2 becomes local),
+        // mirroring the 1.02e init branch that logs "Switch inputs" and rebinds the pair.
+        if (local == 1) {
+            LogOut("[SWITCH] (parity) Switch inputs", true);
             uintptr_t cleanRva = EFZ_RVA_CleanupPair();
             uintptr_t ctxRva = EFZ_RVA_PatchCtx();
             auto cleanupPair = cleanRva ? (int(__thiscall*)(void*))(efzrevBase + cleanRva) : nullptr;
@@ -161,15 +167,23 @@ namespace {
         }
 
         // Refresh mapping block into Practice (+4..+0x24) from EfzRevival patch ctx (best-effort)
+        // NOTE: EFZ_RVA_RefreshMappingBlock() returns the ctx→Prac variant for 1.02h/i; call with patchCtx as 'this'.
         {
             uintptr_t refreshRva = EFZ_RVA_RefreshMappingBlock();
             auto refreshMap = refreshRva ? (int(__thiscall*)(void*))(efzrevBase + refreshRva) : nullptr;
-            if (refreshMap) {
-                int rc2 = 0; bool sehOk2 = SehSafe_CleanupPair(refreshMap, practice, &rc2); // reuse wrapper for __thiscall(void*)
-                std::ostringstream oss; oss << "[SWITCH] RefreshMappingBlock() -> " << (sehOk2?"rc=":"EXCEPTION rc=") << rc2;
+            // Resolve patch ctx to use as receiver
+            void* patchCtx = nullptr;
+            uintptr_t ctxRva = EFZ_RVA_PatchCtx();
+            if (ctxRva) patchCtx = (void*)(efzrevBase + ctxRva);
+            if (refreshMap && patchCtx) {
+                int rc2 = 0; bool sehOk2 = SehSafe_CleanupPair(refreshMap, patchCtx, &rc2); // reuse wrapper for __thiscall(void*)
+                std::ostringstream oss; oss << "[SWITCH] RefreshMappingBlock(ctx→Prac) -> " << (sehOk2?"rc=":"EXCEPTION rc=") << rc2
+                    << " ctx=0x" << std::hex << (uintptr_t)patchCtx;
                 LogOut(oss.str(), true);
-            } else {
+            } else if (!refreshMap) {
                 LogOut("[SWITCH] RefreshMappingBlock symbol missing; skipped", true);
+            } else {
+                LogOut("[SWITCH] RefreshMappingBlock ctx missing; skipped", true);
             }
         }
     }
