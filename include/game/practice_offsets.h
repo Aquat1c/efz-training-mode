@@ -135,17 +135,17 @@
 #define PRACTICE_OFF_REMOTE_SIDE_IDX  0x684  // dword: companion of local index
 #endif
 #ifndef PRACTICE_OFF_SIDE_BUF_PRIMARY
-#define PRACTICE_OFF_SIDE_BUF_PRIMARY 0x824  // ptr: primary side buffer (tracks LOCAL)
+#define PRACTICE_OFF_SIDE_BUF_PRIMARY 0x832  // ptr: primary side buffer (tracks LOCAL)
 #endif
 #ifndef PRACTICE_OFF_SIDE_BUF_SECONDARY
-#define PRACTICE_OFF_SIDE_BUF_SECONDARY 0x828 // ptr: secondary side buffer (tracks REMOTE)
+#define PRACTICE_OFF_SIDE_BUF_SECONDARY 0x836 // ptr: secondary side buffer (tracks REMOTE)
 #endif
-// Internal buffer blocks used during init to wire side buffers
+// Internal buffer blocks used during init to wire side buffers (the actual buffer memory does not move)
 #ifndef PRACTICE_OFF_BUF_LOCAL_BASE
-#define PRACTICE_OFF_BUF_LOCAL_BASE    0x788  // when local==P1, primary points here
+#define PRACTICE_OFF_BUF_LOCAL_BASE    0x796  // P1 buffer base (when local==P1, primary points here)
 #endif
 #ifndef PRACTICE_OFF_BUF_REMOTE_BASE
-#define PRACTICE_OFF_BUF_REMOTE_BASE   0x800  // when local==P2, primary points here
+#define PRACTICE_OFF_BUF_REMOTE_BASE   0x808  // P2 buffer base (when local==P2, primary points here)
 #endif
 #ifndef PRACTICE_OFF_INIT_SOURCE_SIDE
 #define PRACTICE_OFF_INIT_SOURCE_SIDE 0x944  // dword: remembered init source side

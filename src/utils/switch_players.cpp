@@ -166,8 +166,9 @@ namespace {
             }
         }
 
-        // Refresh mapping block into Practice (+4..+0x24) from EfzRevival patch ctx (best-effort)
-        // NOTE: EFZ_RVA_RefreshMappingBlock() returns the ctx→Prac variant for 1.02h/i; call with patchCtx as 'this'.
+        // Refresh mapping block into Practice (+4..+0x24). Use version-aware receiver:
+        //  - 1.02e: call with Practice as 'this' (legacy signature)
+        //  - 1.02h/i: call with patch ctx as 'this' (ctx→Prac variant per doc)
         {
             uintptr_t refreshRva = EFZ_RVA_RefreshMappingBlock();
             auto refreshMap = refreshRva ? (int(__thiscall*)(void*))(efzrevBase + refreshRva) : nullptr;
@@ -175,15 +176,28 @@ namespace {
             void* patchCtx = nullptr;
             uintptr_t ctxRva = EFZ_RVA_PatchCtx();
             if (ctxRva) patchCtx = (void*)(efzrevBase + ctxRva);
-            if (refreshMap && patchCtx) {
-                int rc2 = 0; bool sehOk2 = SehSafe_CleanupPair(refreshMap, patchCtx, &rc2); // reuse wrapper for __thiscall(void*)
-                std::ostringstream oss; oss << "[SWITCH] RefreshMappingBlock(ctx→Prac) -> " << (sehOk2?"rc=":"EXCEPTION rc=") << rc2
-                    << " ctx=0x" << std::hex << (uintptr_t)patchCtx;
-                LogOut(oss.str(), true);
-            } else if (!refreshMap) {
+            EfzRevivalVersion ver = GetEfzRevivalVersion();
+            if (!refreshMap) {
                 LogOut("[SWITCH] RefreshMappingBlock symbol missing; skipped", true);
             } else {
-                LogOut("[SWITCH] RefreshMappingBlock ctx missing; skipped", true);
+                int rc2 = 0; bool sehOk2 = false;
+                if (ver == EfzRevivalVersion::Revival102e) {
+                    // 1.02e: call with Practice as receiver
+                    sehOk2 = SehSafe_CleanupPair(refreshMap, practice, &rc2);
+                    std::ostringstream oss; oss << "[SWITCH] RefreshMappingBlock(Practice) -> " << (sehOk2?"rc=":"EXCEPTION rc=") << rc2
+                        << " practice=0x" << std::hex << (uintptr_t)practice;
+                    LogOut(oss.str(), true);
+                } else {
+                    // 1.02h/i: call with patch ctx as receiver
+                    if (!patchCtx) {
+                        LogOut("[SWITCH] RefreshMappingBlock ctx missing; skipped", true);
+                    } else {
+                        sehOk2 = SehSafe_CleanupPair(refreshMap, patchCtx, &rc2);
+                        std::ostringstream oss; oss << "[SWITCH] RefreshMappingBlock(ctx→Prac) -> " << (sehOk2?"rc=":"EXCEPTION rc=") << rc2
+                            << " ctx=0x" << std::hex << (uintptr_t)patchCtx;
+                        LogOut(oss.str(), true);
+                    }
+                }
             }
         }
     }
@@ -221,12 +235,12 @@ namespace SwitchPlayers {
         LogRW<int>("practice.remoteSide[+0x684]", (uintptr_t)practice + PRACTICE_OFF_REMOTE_SIDE_IDX, newRemote);
 
         // Wire side buffer pointers exactly as init does, based on desiredLocal
-        uintptr_t baseLocal = (uintptr_t)practice + PRACTICE_OFF_BUF_LOCAL_BASE;   // +0x788
-        uintptr_t baseRemote = (uintptr_t)practice + PRACTICE_OFF_BUF_REMOTE_BASE; // +0x800
+    uintptr_t baseLocal = (uintptr_t)practice + PRACTICE_OFF_BUF_LOCAL_BASE;   // +0x796
+    uintptr_t baseRemote = (uintptr_t)practice + PRACTICE_OFF_BUF_REMOTE_BASE; // +0x808
         uintptr_t primary = (desiredLocal == 0) ? baseLocal : baseRemote;
         uintptr_t secondary = (desiredLocal == 0) ? baseRemote : baseLocal;
-        LogRWPtr("practice.sideBuf.primary[+0x824]", (uintptr_t)practice + PRACTICE_OFF_SIDE_BUF_PRIMARY, primary);
-        LogRWPtr("practice.sideBuf.secondary[+0x828]", (uintptr_t)practice + PRACTICE_OFF_SIDE_BUF_SECONDARY, secondary);
+    LogRWPtr("practice.sideBuf.primary[+0x832]", (uintptr_t)practice + PRACTICE_OFF_SIDE_BUF_PRIMARY, primary);
+    LogRWPtr("practice.sideBuf.secondary[+0x836]", (uintptr_t)practice + PRACTICE_OFF_SIDE_BUF_SECONDARY, secondary);
 
         // Optional: mirror init by updating INIT_SOURCE too (so next reinit stays consistent)
         LogRW<int>("practice.initSource[+0x944]", (uintptr_t)practice + PRACTICE_OFF_INIT_SOURCE_SIDE, desiredLocal);
