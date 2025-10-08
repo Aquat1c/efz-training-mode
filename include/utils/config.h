@@ -8,6 +8,7 @@ namespace Config {
         // General settings
         bool useImGui;
         bool detailedLogging;
+        bool enableDebugFileLog;   // NEW: Enable writing efz_training_debug.log (file debug logging)
         bool restrictToPracticeMode; // NEW: Restrict to practice mode
     bool enableConsole;          // NEW: Show/Hide console window
     bool enableFpsDiagnostics;   // NEW: Enable FPS/timing diagnostics output

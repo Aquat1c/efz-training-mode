@@ -74,8 +74,16 @@ const char* EfzRevivalVersionName(EfzRevivalVersion v) {
 
 bool IsEfzRevivalVersionSupported(EfzRevivalVersion v /*=detected*/) {
     EfzRevivalVersion vv = (v == (EfzRevivalVersion)0) ? GetEfzRevivalVersion() : v;
-    // Stub policy: Support Vanilla and 1.02e. For any other Revival builds (e.g., 1.02h), mark unsupported.
-    return (vv == EfzRevivalVersion::Vanilla) || (vv == EfzRevivalVersion::Revival102e);
+    // Supported builds: Vanilla EFZ and EfzRevival 1.02e, 1.02h, 1.02i
+    switch (vv) {
+        case EfzRevivalVersion::Vanilla:
+        case EfzRevivalVersion::Revival102e:
+        case EfzRevivalVersion::Revival102h:
+        case EfzRevivalVersion::Revival102i:
+            return true;
+        default:
+            return false;
+    }
 }
 
 // Try to read the ONLINE state flag exposed by EfzRevival.dll.

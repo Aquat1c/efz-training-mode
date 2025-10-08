@@ -60,14 +60,19 @@ void DelayedInitialization(HMODULE hModule) {
         WriteStartupLog("Initializing logging system...");
         InitializeLogging();
         WriteStartupLog("Logging system initialized");
-        
-        // Initialize debug log file
-        WriteStartupLog("Initializing debug log file...");
-        DebugLog::Initialize();
-        WriteStartupLog("Debug log file initialized");
 
-        // Initialize configuration system early so console behavior is known
+        // Initialize configuration system first so we can gate file logging
         InitializeConfig();
+
+    // Gate file debug logging behind dedicated config flag (separate from console verbosity)
+    DebugLog::g_EnableDebugLog = Config::GetSettings().enableDebugFileLog;
+        if (DebugLog::g_EnableDebugLog) {
+            WriteStartupLog("Initializing debug log file (enabled by config)...");
+        } else {
+            WriteStartupLog("Debug log file disabled by config");
+        }
+        DebugLog::Initialize();
+        WriteStartupLog("Debug log initialization step complete");
 
         // Create/hide console according to setting
         if (Config::GetSettings().enableConsole) {
@@ -211,6 +216,8 @@ void InitializeConfig() {
         
         // Apply settings
         detailedLogging = Config::GetSettings().detailedLogging;
+    // Keep file debug logging in sync with config flag
+    DebugLog::g_EnableDebugLog = Config::GetSettings().enableDebugFileLog;
     // Console visibility will be handled post-init in DelayedInitialization
     }
     else {

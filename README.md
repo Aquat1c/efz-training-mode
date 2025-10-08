@@ -149,6 +149,16 @@ cmake --build . --config Release
 Tip (Windows/VS): building the “ALL_BUILD” or project target produces `efz_training_mode.dll` in `build/bin/<Config>/`.
 ```
 
+## Compatibility
+
+Supported EFZ builds:
+- Vanilla EFZ (no Revival)
+- Eternal Fighter Zero -Revival- 1.02e
+- Eternal Fighter Zero -Revival- 1.02h!!!
+- Eternal Fighter Zero -Revival- 1.02i!!!
+
+If you run a different EfzRevival build, the mod will load but some features may be disabled for safety.
+
 ## Contributing
 Contributions are welcome! Major areas that need improvement:
 
