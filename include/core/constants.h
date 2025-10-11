@@ -144,6 +144,10 @@
 // Untech memory offset
 #define UNTECH_OFFSET 0x124
 
+// Blockstun/guard freeze counter (short)
+// As per CE entry: [efz.exe + EFZ_BASE_OFFSET_P1/P2] + 0x14A
+#define BLOCKSTUN_OFFSET 0x14A
+
 // Tech recovery frames
 #define AIRTECH_VULNERABLE_FRAMES 16
 #define RUMI_AIRTECH_DOUBLEJUMP_LOCKOUT 31

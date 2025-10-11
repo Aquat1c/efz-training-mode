@@ -272,13 +272,13 @@ void UpdateConsoleTitle() {
                     cachedAddresses[11] = ResolvePointer(base, EFZ_BASE_OFFSET_P2, CHARACTER_NAME_OFFSET);
                 }
                 if (cachedAddresses[0]) SafeReadMemory(cachedAddresses[0], &displayData.hp1, sizeof(int));
-                if (cachedAddresses[1]) SafeReadMemory(cachedAddresses[1], &displayData.meter1, sizeof(int));
+                if (cachedAddresses[1]) { unsigned short w=0; SafeReadMemory(cachedAddresses[1], &w, sizeof(w)); displayData.meter1 = (int)w; }
                 if (cachedAddresses[2]) SafeReadMemory(cachedAddresses[2], &displayData.rf1, sizeof(double));
                 if (cachedAddresses[3]) SafeReadMemory(cachedAddresses[3], &displayData.x1, sizeof(double));
                 if (cachedAddresses[4]) SafeReadMemory(cachedAddresses[4], &displayData.y1, sizeof(double));
                 if (cachedAddresses[5]) SafeReadMemory(cachedAddresses[5], &displayData.p1CharName, sizeof(displayData.p1CharName) - 1);
                 if (cachedAddresses[6]) SafeReadMemory(cachedAddresses[6], &displayData.hp2, sizeof(int));
-                if (cachedAddresses[7]) SafeReadMemory(cachedAddresses[7], &displayData.meter2, sizeof(int));
+                if (cachedAddresses[7]) { unsigned short w=0; SafeReadMemory(cachedAddresses[7], &w, sizeof(w)); displayData.meter2 = (int)w; }
                 if (cachedAddresses[8]) SafeReadMemory(cachedAddresses[8], &displayData.rf2, sizeof(double));
                 if (cachedAddresses[9]) SafeReadMemory(cachedAddresses[9], &displayData.x2, sizeof(double));
                 if (cachedAddresses[10]) SafeReadMemory(cachedAddresses[10], &displayData.y2, sizeof(double));

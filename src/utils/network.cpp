@@ -86,35 +86,71 @@ bool IsEfzRevivalVersionSupported(EfzRevivalVersion v /*=detected*/) {
     }
 }
 
-// Try to read the ONLINE state flag exposed by EfzRevival.dll.
-// Known RVAs (module-relative):
-//  - Revival 1.02e: 0x00A05D0
-//  - Revival 1.02h: 0x00A05F0
+// Try to read the ONLINE state exposed by EfzRevival.dll.
+// Preferred path (CE-confirmed):
+//   ctxPtr = *(void**)(EfzRevival.dll + 0x26A4)
+//   state  = *(int*)(ctxPtr + 0x370)   // 1.02e/1.02h
+//   state  = *(int*)(ctxPtr + 0x37C)   // 1.02i
+// Fallback path: legacy fixed RVAs (module-relative) returning a 32-bit int.
 OnlineState ReadEfzRevivalOnlineState() {
-    // Select RVA strictly by known versions to avoid false positives on unknown builds.
+    auto mapState = [](int v) -> OnlineState {
+        switch (v) {
+            case 0: return OnlineState::Netplay;
+            case 1: return OnlineState::Spectating;
+            case 2: return OnlineState::Offline;
+            case 3: return OnlineState::Tournament;
+            default: return OnlineState::Unknown;
+        }
+    };
+
     EfzRevivalVersion vv = GetEfzRevivalVersion();
+    if (vv == EfzRevivalVersion::Unknown || vv == EfzRevivalVersion::Vanilla || vv == EfzRevivalVersion::Other)
+        return OnlineState::Unknown;
+
+    HMODULE hEfzRev = GetModuleHandleA("EfzRevival.dll");
+    if (!hEfzRev) return OnlineState::Unknown;
+    uintptr_t base = reinterpret_cast<uintptr_t>(hEfzRev);
+
+    // Pointer-based path first (more stable across sub-versions)
+    __try {
+        uintptr_t ctxPtrAddr = base + 0x26A4; // module global: pointer to net/rollback context
+        uintptr_t ctx = *reinterpret_cast<uintptr_t*>(ctxPtrAddr);
+        if (ctx) {
+            const size_t candidates[2] = { 0x370, 0x37C }; // e/h then i; probe both to be safe
+            for (size_t i = 0; i < 2; ++i) {
+                size_t off = candidates[i];
+                volatile int* pState = reinterpret_cast<volatile int*>(ctx + off);
+                int raw = *pState;
+                // Primary attempt: exact enum 0..3
+                OnlineState st = mapState(raw);
+                if (st != OnlineState::Unknown) return st;
+                // Secondary attempt: some builds store in a byte or low bits
+                st = mapState(raw & 0xFF);
+                if (st != OnlineState::Unknown) return st;
+                st = mapState(raw & 0x03);
+                if (st != OnlineState::Unknown) return st;
+            }
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        // fall through to legacy fixed-RVA path
+    }
+
+    // Legacy fixed-RVA ints (keep as fallback)
     uintptr_t rva = 0;
     switch (vv) {
         case EfzRevivalVersion::Revival102e: rva = 0x00A05D0; break;
-        case EfzRevivalVersion::Revival102h:
-            rva = 0x00A05F0; break; // 1.02h
-        case EfzRevivalVersion::Revival102i:
-            rva = 0x00A15FC; break; // 1.02i (confirmed in docs)
-        default:
-            return OnlineState::Unknown; // Vanilla/Other/Unknown: don't probe
+        case EfzRevivalVersion::Revival102h: rva = 0x00A05F0; break;
+        case EfzRevivalVersion::Revival102i: rva = 0x00A15FC; break;
+        default: return OnlineState::Unknown;
     }
-    HMODULE hEfzRev = GetModuleHandleA("EfzRevival.dll");
-    if (!hEfzRev) return OnlineState::Unknown;
-
-    // Address is module base + rva, 4-byte integer
-    uintptr_t base = reinterpret_cast<uintptr_t>(hEfzRev);
-    volatile int* pFlag = reinterpret_cast<volatile int*>(base + rva);
     __try {
-        int v = *pFlag;
-        if (v == 0) return OnlineState::Netplay;
-        if (v == 1) return OnlineState::Spectating;
-        if (v == 2) return OnlineState::Offline;
-        if (v == 3) return OnlineState::Tournament;
+        int raw = *reinterpret_cast<volatile int*>(base + rva);
+        OnlineState st = mapState(raw);
+        if (st != OnlineState::Unknown) return st;
+        st = mapState(raw & 0xFF);
+        if (st != OnlineState::Unknown) return st;
+        st = mapState(raw & 0x03);
+        if (st != OnlineState::Unknown) return st;
         return OnlineState::Unknown;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         return OnlineState::Unknown;

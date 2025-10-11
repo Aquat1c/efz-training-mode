@@ -20,6 +20,9 @@
 // EfzRevival practice controller offsets and pause integration (for GUI_POS fix at match start)
 #include "../include/game/practice_offsets.h"
 #include "../include/utils/pause_integration.h"
+#include "../include/utils/config.h"
+// For blockstun counter accessor used to gate autoblock disable
+#include "../include/game/frame_analysis.h"
 
 // Define constants for offsets
 const uintptr_t P2_CPU_FLAG_OFFSET = 4931;
@@ -604,7 +607,7 @@ bool GetPracticeAutoBlockEnabled(bool &enabledOut) {
     return true;
 }
 
-bool SetPracticeAutoBlockEnabled(bool enabled) {
+bool SetPracticeAutoBlockEnabled(bool enabled, const char* reason) {
     if (GetCurrentGameMode() != GameMode::Practice) return false;
     uintptr_t gs = 0; if (!GetGameStatePtr(gs)) return false;
     uint32_t val = enabled ? 1u : 0u;
@@ -614,10 +617,18 @@ bool SetPracticeAutoBlockEnabled(bool enabled) {
     if (cur == val) return true; // no change
     bool ok = SafeWriteMemory(gs + PRACTICE_AUTO_BLOCK_OFFSET, &val, sizeof(val));
     if (ok) {
-    LogOut(std::string("[PRACTICE_PATCH] Auto-Block ") + (enabled ? "ON" : "OFF"), detailedLogging.load());
+        std::ostringstream oss;
+        oss << "Auto-Block " << (enabled ? "ON" : "OFF")
+            << " (was " << (cur ? "ON" : "OFF") << ")";
+        if (reason && *reason) {
+            oss << " [reason: " << reason << "]";
+        }
+        LogOut(std::string("[PRACTICE_PATCH] ") + oss.str(), true);
     }
     return ok;
 }
+
+// (moved below static variables and helper definitions)
 
 bool GetPracticeBlockMode(int &modeOut) {
     modeOut = 0;
@@ -668,6 +679,18 @@ static std::atomic<unsigned long long> g_abWindowDeadlineMs{0};
 static std::atomic<bool> g_adaptiveStance{false};
 static std::atomic<bool> g_adaptiveForceTick{false}; // force immediate evaluation on enable
 static std::atomic<bool> g_abOverrideActive{false}; // when false, follow the game's autoblock flag
+
+// Helper: human-readable name for Dummy Auto-Block modes
+static const char* GetDabModeName(int mode) {
+    switch (mode) {
+        case DAB_None:                 return "None";
+        case DAB_All:                  return "All";
+        case DAB_FirstHitThenOff:      return "FirstHitThenOff";
+        case DAB_EnableAfterFirstHit:  return "EnableAfterFirstHit";
+        case DAB_Adaptive:             return "Adaptive (deprecated)";
+        default:                       return "Unknown";
+    }
+}
 
 // Lightweight sampler for attacker frame flags (AttackProps/HitProps) to drive adaptive stance
 // Returns true if sampled successfully; outputs:
@@ -767,7 +790,12 @@ static void SetDummyAutoBlockModeFromSync(int mode) {
     if (mode < 0) mode = 0; if (mode > 4) mode = 4;
     // Do not auto-enable adaptive monitoring from deprecated mode; map to All only
     if (mode == DAB_Adaptive) { mode = DAB_All; }
+    int prev = g_dummyAutoBlockMode.load();
     g_dummyAutoBlockMode.store(mode);
+    if (prev != mode) {
+        std::ostringstream oss; oss << "Sync: mode " << GetDabModeName(prev) << " -> " << GetDabModeName(mode);
+        LogOut(std::string("[DUMMY_AB] ") + oss.str(), true);
+    }
     ResetDummyAutoBlockState();
 }
 
@@ -779,34 +807,54 @@ void SetDummyAutoBlockMode(int mode) {
     if (mode < 0) mode = 0; if (mode > 4) mode = 4;
     // Migrate deprecated Adaptive mode to All; checkbox now controls monitoring
     if (mode == DAB_Adaptive) { mode = DAB_All; }
+    int prev = g_dummyAutoBlockMode.load();
     g_dummyAutoBlockMode.store(mode);
+    if (prev != mode) {
+        std::ostringstream oss; oss << "Set: mode " << GetDabModeName(prev) << " -> " << GetDabModeName(mode);
+        LogOut(std::string("[DUMMY_AB] ") + oss.str(), true);
+    }
     ResetDummyAutoBlockState();
-    g_abOverrideActive.store(true);
+    // Only take over the game's autoblock flag for the two custom modes that programmatically toggle it.
+    // For None/All, leave override disabled so in-game F7 (and our F7 mirror) remain authoritative.
+    bool wantOverride = (mode == DAB_FirstHitThenOff) || (mode == DAB_EnableAfterFirstHit);
+    g_abOverrideActive.store(wantOverride);
     // Immediate base config for +4936 auto-block and stance
     switch (mode) {
         case DAB_All:
-            SetPracticeAutoBlockEnabled(true);
+            SetPracticeAutoBlockEnabled(true, "SetDummyAutoBlockMode: DAB_All baseline");
             break;
         case DAB_None:
             // Turn off native autoblock
-            SetPracticeAutoBlockEnabled(false);
+            SetPracticeAutoBlockEnabled(false, "SetDummyAutoBlockMode: DAB_None baseline");
             break;
         case DAB_FirstHitThenOff:
             // Start enabled so we can catch the first block
-            SetPracticeAutoBlockEnabled(true);
+            SetPracticeAutoBlockEnabled(true, "SetDummyAutoBlockMode: DAB_FirstHitThenOff baseline");
             break;
         case DAB_EnableAfterFirstHit:
             // Start disabled until we detect first hit
-            SetPracticeAutoBlockEnabled(false);
+            SetPracticeAutoBlockEnabled(false, "SetDummyAutoBlockMode: DAB_EnableAfterFirstHit baseline");
             break;
         case DAB_Adaptive:
             // Deprecated as a standalone mode; treat as All with adaptive checkbox controlling stance
-            SetPracticeAutoBlockEnabled(true);
+            SetPracticeAutoBlockEnabled(true, "SetDummyAutoBlockMode: DAB_Adaptive->All baseline");
             break;
     }
 }
 
 int GetDummyAutoBlockMode() { return g_dummyAutoBlockMode.load(); }
+
+bool SyncAutoBlockModeFromGameFlag(bool clearOverride) {
+    if (GetCurrentGameMode() != GameMode::Practice) return false;
+    uintptr_t gs = 0; if (!GetGameStatePtr(gs)) return false;
+    uint32_t f = 0; if (!SafeReadMemory(gs + PRACTICE_AUTO_BLOCK_OFFSET, &f, sizeof(f))) return false;
+    // Update our mode to mirror the flag (None/All only), without engaging override
+    SetDummyAutoBlockModeFromSync((f != 0) ? DAB_All : DAB_None);
+    if (clearOverride) {
+        g_abOverrideActive.store(false);
+    }
+    return true;
+}
 
 void ResetDummyAutoBlockState() {
     g_firstEventSeen.store(false);
@@ -955,50 +1003,118 @@ void MonitorDummyAutoBlock(short p1MoveID, short p2MoveID, short prevP1MoveID, s
     // Compute desired autoblock state (single write at end when overridden)
     static bool s_lastAbOn = false; // what we last wrote when overriding
     bool abOn = false;
+    static bool s_pendingAbOff = false; // defer turning OFF until blockstun ends/actionable
 
-    // First-hit toggles
+    // Shared event detectors
+    const bool justBlocked = DidP2JustBlockThisFrame(prevP2MoveID, p2MoveID);
+    const bool hitNow = (!IsP2InHitstun(prevP2MoveID) && IsP2InHitstun(p2MoveID));
+    auto isAllowedNeutral = [](short m){
+        // Allowed MoveIDs: 0,1,2,3,4,7,8,9,13 (same as Continuous Recovery)
+        return (m == 0 || m == 1 || m == 2 || m == 3 || m == 4 || m == 7 || m == 8 || m == 9 || m == 13);
+    };
+    const bool neutralNow = isAllowedNeutral(p2MoveID);
+    const bool transitionedToNeutral = (!isAllowedNeutral(prevP2MoveID) && neutralNow);
+    int neutralTimeoutMs = Config::GetSettings().autoBlockNeutralTimeoutMs;
+    if (neutralTimeoutMs < 0) neutralTimeoutMs = 0; // clamp
+    const unsigned long long curMs = GetTickCount64();
+
+    // Reset per-mode state when mode changes
+    static int s_lastMode = -999;
+    static bool s_waitForHitAfterBlock = false; // DAB_FirstHitThenOff
+    static bool s_waitForBlockAfterHit = false; // DAB_EnableAfterFirstHit
+    static unsigned long long s_neutralStartMs = 0ULL; // continuous neutral timer while waiting
+    if (mode != s_lastMode) {
+        s_waitForHitAfterBlock = false;
+        s_waitForBlockAfterHit = false;
+        s_neutralStartMs = 0ULL;
+        g_abWindowActive.store(false);
+        // Force immediate reevaluation log with explicit names
+        {
+            std::ostringstream oss; oss << "Mode changed: " << GetDabModeName(s_lastMode) << " -> "
+                                        << GetDabModeName(mode) << "; resetting autoblock state machine";
+            log_ab(oss.str());
+        }
+        s_lastMode = mode;
+    }
+
+    // First-hit toggles (event-driven)
     if (mode == DAB_FirstHitThenOff) {
-        // Enable initially; after the first successful block, keep enabled for a grace period (2s), then restore (disable)
-        // Behavior (repeatable): start ON; on each block, immediately turn OFF, then after 2s turn ON again.
-        bool justBlocked = DidP2JustBlockThisFrame(prevP2MoveID, p2MoveID);
+        // Start ON; on first block, turn OFF and wait until we detect a hit OR a safe neutral edge, then turn ON again.
         if (justBlocked) {
-            // Immediately disable and start cooldown
             abOn = false;
-            g_abWindowActive.store(true);
-            g_abWindowDeadlineMs.store(GetTickCount64() + AB_DELAY_FIRST_HIT_THEN_OFF_MS);
-            log_ab("FirstHitThenOff: blocked -> autoblock OFF, re-enable in 2s");
-        } else if (g_abWindowActive.load()) {
-            // During cooldown keep disabled until deadline
+            s_waitForHitAfterBlock = true;
+            s_neutralStartMs = 0ULL;
+            log_ab("FirstHitThenOff: blocked -> autoblock OFF (waiting for hit or neutral)");
+        } else if (s_waitForHitAfterBlock) {
+            // Keep OFF while waiting; re-enable when we observe a hit OR a neutral reset
             abOn = false;
-            if (GetTickCount64() >= g_abWindowDeadlineMs.load()) {
-                g_abWindowActive.store(false);
+            if (hitNow) {
                 abOn = true;
-                log_ab("FirstHitThenOff: cooldown ended -> autoblock ON");
+                s_waitForHitAfterBlock = false;
+                s_neutralStartMs = 0ULL;
+                log_ab("FirstHitThenOff: got hit -> autoblock ON");
+            } else {
+                if (neutralTimeoutMs == 0) {
+                    if (transitionedToNeutral) {
+                        abOn = true;
+                        s_waitForHitAfterBlock = false;
+                        s_neutralStartMs = 0ULL;
+                        log_ab("FirstHitThenOff: neutral edge -> autoblock ON");
+                    }
+                } else if (neutralNow) {
+                    if (s_neutralStartMs == 0ULL) s_neutralStartMs = curMs;
+                    if (curMs - s_neutralStartMs >= (unsigned long long)neutralTimeoutMs) {
+                        abOn = true;
+                        s_waitForHitAfterBlock = false;
+                        s_neutralStartMs = 0ULL;
+                        log_ab("FirstHitThenOff: neutral timeout -> autoblock ON");
+                    }
+                } else {
+                    s_neutralStartMs = 0ULL; // lost neutral, reset timer
+                }
             }
         } else {
-            // Normal state: enabled, waiting for next block to start cooldown
+            // Normal armed state
             abOn = true;
         }
     }
     else if (mode == DAB_EnableAfterFirstHit) {
-        // Initially disabled; when we detect first hit (hitstun rising), enable for 1s to block the next hit, then restore
-        // Behavior (repeatable): idle OFF; when a hit occurs, enable for 1s or until a block occurs, then OFF again
-        bool hitNow = (!IsP2InHitstun(prevP2MoveID) && IsP2InHitstun(p2MoveID));
-        if (hitNow && !g_abWindowActive.load()) {
+        // Start OFF; on first hit, turn ON as soon as possible, and keep ON until a block occurs (or neutral timeout), then turn OFF.
+        if (hitNow && !s_waitForBlockAfterHit) {
             abOn = true;
-            g_abWindowActive.store(true);
-            g_abWindowDeadlineMs.store(GetTickCount64() + AB_DELAY_AFTER_FIRST_HIT_MS);
-            log_ab("AfterFirstHit: hit detected -> autoblock ON for 1s");
+            s_waitForBlockAfterHit = true;
+            s_neutralStartMs = 0ULL;
+            log_ab("AfterFirstHit: hit detected -> autoblock ON (waiting for block)");
         }
-        if (g_abWindowActive.load()) {
-            // Keep enabled during window and close on block/timeout
+        if (s_waitForBlockAfterHit) {
             abOn = true;
-            if (DidP2JustBlockThisFrame(prevP2MoveID, p2MoveID) || GetTickCount64() >= g_abWindowDeadlineMs.load()) {
+            if (justBlocked) {
                 abOn = false;
-                g_abWindowActive.store(false);
-                log_ab("AfterFirstHit: window ended -> autoblock OFF");
+                s_waitForBlockAfterHit = false;
+                s_neutralStartMs = 0ULL;
+                log_ab("AfterFirstHit: blocked -> autoblock OFF");
+            } else {
+                if (neutralTimeoutMs == 0) {
+                    if (transitionedToNeutral) {
+                        abOn = false;
+                        s_waitForBlockAfterHit = false;
+                        s_neutralStartMs = 0ULL;
+                        log_ab("AfterFirstHit: neutral edge -> autoblock OFF");
+                    }
+                } else if (neutralNow) {
+                    if (s_neutralStartMs == 0ULL) s_neutralStartMs = curMs;
+                    if (curMs - s_neutralStartMs >= (unsigned long long)neutralTimeoutMs) {
+                        // Safety: if the sequence ends without a block, time out cleanly on neutral for configured duration
+                        abOn = false;
+                        s_waitForBlockAfterHit = false;
+                        s_neutralStartMs = 0ULL;
+                        log_ab("AfterFirstHit: neutral timeout -> autoblock OFF");
+                    }
+                } else {
+                    s_neutralStartMs = 0ULL; // lost neutral, reset timer
+                }
             }
-        } else {
+        } else if (!hitNow) {
             abOn = false;
         }
     }
@@ -1014,10 +1130,60 @@ void MonitorDummyAutoBlock(short p1MoveID, short p2MoveID, short prevP1MoveID, s
         abOn = false;
     }
 
+    // Gate turning OFF until guard ends only for custom modes that programmatically toggle OFF
+    if (mode == DAB_FirstHitThenOff || mode == DAB_EnableAfterFirstHit) {
+        // Read P2 blockstun counter (decrements by 3 per visual frame) and guard state
+        short p2Blockstun = 0;
+        {
+            uintptr_t base = GetEFZBase();
+            if (base) {
+                p2Blockstun = GetBlockstunValue(base, 2);
+            }
+        }
+        const bool inGuardNow = IsP2BlockingOrBlockstun(p2MoveID) || (p2Blockstun > 0);
+        const bool actionableNow = IsActionable(p2MoveID);
+        const bool leftGuardNow = (IsP2BlockingOrBlockstun(prevP2MoveID) && !IsP2BlockingOrBlockstun(p2MoveID));
+
+        // If we want to turn OFF while guarding, defer until safe
+        if (!abOn) {
+            if (inGuardNow || !actionableNow) {
+                // Defer the OFF toggle; keep autoblock ON until safe
+                s_pendingAbOff = true;
+                abOn = true;
+            }
+        }
+        // If previously pending OFF, check if conditions cleared
+        if (s_pendingAbOff) {
+            // Try to disable on guard-end edge if actionable (even if counter still > 0)
+            if ((leftGuardNow && actionableNow) || (!inGuardNow && actionableNow)) {
+                // Safe to finally disable
+                abOn = false;
+                s_pendingAbOff = false;
+                if (detailedLogging.load()) {
+                    LogOut("[DUMMY_AB] OFF on guard end edge (moveID)", true);
+                }
+            } else {
+                // Continue holding ON while waiting
+                abOn = true;
+            }
+        }
+    } else {
+        // All/None should not auto-disable; clear any stale pending flag
+        s_pendingAbOff = false;
+    }
+
     // Apply desired autoblock state only if user override is active or custom modes require it
     bool overrideEffective = g_abOverrideActive.load() || (mode == DAB_FirstHitThenOff) || (mode == DAB_EnableAfterFirstHit);
     if (overrideEffective && abOn != s_lastAbOn) {
-        SetPracticeAutoBlockEnabled(abOn);
+        const char* why = nullptr;
+        if (mode == DAB_FirstHitThenOff) {
+            why = abOn ? "FirstHitThenOff: re-enable (hit/neutral)" : "FirstHitThenOff: disable (block)";
+        } else if (mode == DAB_EnableAfterFirstHit) {
+            why = abOn ? "EnableAfterFirstHit: enable (hit)" : "EnableAfterFirstHit: disable (block/neutral)";
+        } else {
+            why = "OverrideEffective write";
+        }
+        SetPracticeAutoBlockEnabled(abOn, why);
         s_lastAbOn = abOn;
     }
 
@@ -1127,8 +1293,27 @@ void MonitorDummyAutoBlock(short p1MoveID, short p2MoveID, short prevP1MoveID, s
             uint8_t curDir=0, curStance=0;
             if (ReadP2BlockFields(curDir, curStance)) {
                 if (curStance != desiredStance) {
+                    // Preserve P2 guard context (blockstun + blocking MoveID) so stance/mode tweaks don't cut guard
+                    uintptr_t base = GetEFZBase(); uintptr_t p2=0; short prevBlk=0; short prevMove=0;
+                    bool prevWasBlocking=false;
+                    if (base && SafeReadMemory(base + EFZ_BASE_OFFSET_P2, &p2, sizeof(p2)) && p2) {
+                        SafeReadMemory(p2 + BLOCKSTUN_OFFSET, &prevBlk, sizeof(prevBlk));
+                        SafeReadMemory(p2 + MOVE_ID_OFFSET, &prevMove, sizeof(prevMove));
+                        prevWasBlocking = IsP2BlockingOrBlockstun(prevMove);
+                    }
                     WriteP2BlockStance(desiredStance);
                     SetPracticeBlockMode(desiredStance == 0 ? 0 : 2);
+                    if (p2) {
+                        if (prevBlk > 0) {
+                            SafeWriteMemory(p2 + BLOCKSTUN_OFFSET, &prevBlk, sizeof(prevBlk));
+                        }
+                        if (prevWasBlocking) {
+                            short curMove=0; SafeReadMemory(p2 + MOVE_ID_OFFSET, &curMove, sizeof(curMove));
+                            if (!IsP2BlockingOrBlockstun(curMove)) {
+                                SafeWriteMemory(p2 + MOVE_ID_OFFSET, &prevMove, sizeof(prevMove));
+                            }
+                        }
+                    }
                     if (detailedLogging.load()) {
                         std::ostringstream os;
                         os << "[ADAPTIVE] stance change: P2 "
@@ -1145,8 +1330,26 @@ void MonitorDummyAutoBlock(short p1MoveID, short p2MoveID, short prevP1MoveID, s
                     }
                 }
             } else {
+                // Best-effort preservation when fields can't be read
+                uintptr_t base = GetEFZBase(); uintptr_t p2=0; short prevBlk=0; short prevMove=0; bool prevWasBlocking=false;
+                if (base && SafeReadMemory(base + EFZ_BASE_OFFSET_P2, &p2, sizeof(p2)) && p2) {
+                    SafeReadMemory(p2 + BLOCKSTUN_OFFSET, &prevBlk, sizeof(prevBlk));
+                    SafeReadMemory(p2 + MOVE_ID_OFFSET, &prevMove, sizeof(prevMove));
+                    prevWasBlocking = IsP2BlockingOrBlockstun(prevMove);
+                }
                 WriteP2BlockStance(desiredStance);
                 SetPracticeBlockMode(desiredStance == 0 ? 0 : 2);
+                if (p2) {
+                    if (prevBlk > 0) {
+                        SafeWriteMemory(p2 + BLOCKSTUN_OFFSET, &prevBlk, sizeof(prevBlk));
+                    }
+                    if (prevWasBlocking) {
+                        short curMove=0; SafeReadMemory(p2 + MOVE_ID_OFFSET, &curMove, sizeof(curMove));
+                        if (!IsP2BlockingOrBlockstun(curMove)) {
+                            SafeWriteMemory(p2 + MOVE_ID_OFFSET, &prevMove, sizeof(prevMove));
+                        }
+                    }
+                }
             }
 
             s_lastAdaptiveMs = now;

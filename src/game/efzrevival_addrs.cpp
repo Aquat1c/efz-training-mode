@@ -113,9 +113,9 @@ uintptr_t EFZ_RVA_CleanupPair() {
 
 uintptr_t EFZ_RVA_RenderBattleScreen() {
     uintptr_t r = 0;
-    if (IsE()) r = 0x007642A0;
-    else if (IsH()) r = 0x007642A0; // stable for 1.02h
-    else if (IsI()) r = 0x007642A0; // stable for 1.02i
+    // RVA lives in efz.exe; observed stable across e/h/i at 0x007642A0.
+    // For vanilla, try the same RVA; if a build differs, we can swap to AOB later.
+    r = 0x007642A0;
     LogAddrOnce("RenderBattleScreen", r);
     return r;
 }

@@ -18,3 +18,6 @@ int GetAttackLevel(short blockstunMoveID);
 std::string GetBlockStateType(short blockstunMoveID);
 int GetExpectedFrameAdvantage(int attackLevel, bool isAirBlock, bool isHit = false);
 short GetUntechValue(uintptr_t base, int player);
+
+// Read blockstun/guard-freeze counter (short) at BLOCKSTUN_OFFSET
+short GetBlockstunValue(uintptr_t base, int player);

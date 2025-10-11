@@ -180,6 +180,7 @@ bool IsKeyPressed(int vKey, bool checkState) {
 // Add a flag to track if the monitor thread is running
 // Start disabled; ManageKeyMonitoring will spawn the thread when appropriate.
 std::atomic<bool> keyMonitorRunning(false);
+std::mutex keyMonitorMutex;
 
 void MonitorKeys() {
     // Mark as running in case the thread was spawned externally
@@ -504,7 +505,7 @@ void MonitorKeys() {
                             SetPlayerPosition(base, EFZ_BASE_OFFSET_P2, tempX1, tempY1);
                             DirectDrawHook::AddMessage("Positions Swapped", "SYSTEM", RGB(100, 255, 100), 1500, 0, 100);
                         } else {
-                            DirectDrawHook::AddMessage("Swap Failed: Can't read positions", "SYSTEM", RGB(255, 100, 100), 1500, 0, 100);
+                            DirectDrawHook::AddMessage("Swap Failed: Can't read positions", "SYSTEM", RGB(255,100,100), 1500, 0, 100);
                         }
                     }
                     keyHandled = true;
@@ -543,17 +544,6 @@ void MonitorKeys() {
                 keyHandled = true;
             } else if (IsKeyPressed(cfg.helpKey, false)) {
                 ShowHotkeyInfo();
-                keyHandled = true;
-            } else if (IsKeyPressed(VK_F7, false)) {
-                // Mirror in-game F7: toggle dummy autoblock mode between None and All
-                if (GetCurrentGameMode() == GameMode::Practice) {
-                    int mode = GetDummyAutoBlockMode();
-                    if (mode == DAB_All) {
-                        SetDummyAutoBlockMode(DAB_None);
-                    } else {
-                        SetDummyAutoBlockMode(DAB_All);
-                    }
-                }
                 keyHandled = true;
             } else if (IsKeyPressed(VK_F8, false)) {
                 std::string status = "OFF";
@@ -673,6 +663,7 @@ void MonitorKeys() {
 void RestartKeyMonitoring() {
     LogOut("[KEYBINDS] Restarting key monitoring system", true);
     
+    std::lock_guard<std::mutex> guard(keyMonitorMutex);
     // If already running, signal existing thread to exit
     if (keyMonitorRunning.load()) {
         keyMonitorRunning.store(false);
