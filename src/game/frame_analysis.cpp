@@ -130,3 +130,13 @@ short GetUntechValue(uintptr_t base, int player) {
     
     return untechValue;
 }
+
+short GetBlockstunValue(uintptr_t base, int player) {
+    short v = 0;
+    uintptr_t baseOffset = (player == 1) ? EFZ_BASE_OFFSET_P1 : EFZ_BASE_OFFSET_P2;
+    uintptr_t addr = ResolvePointer(base, baseOffset, BLOCKSTUN_OFFSET);
+    if (addr) {
+        SafeReadMemory(addr, &v, sizeof(v));
+    }
+    return v;
+}

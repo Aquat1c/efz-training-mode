@@ -73,6 +73,7 @@
         "bitset": "cpp",
         "map": "cpp",
         "set": "cpp",
-        "xtree": "cpp"
+        "xtree": "cpp",
+        "regex": "cpp"
     }
 }

@@ -442,6 +442,9 @@ extern int g_statsMaiId;
 extern int g_statsMinagiId;
 // New: AI control flags stats line id
 extern int g_statsAIFlagsId;
+// New: Blockstun/Hitstun counters line id
+extern int g_statsBlockstunId; // Blockstun (logical frames)
+extern int g_statsUntechId;    // Hitstun/Untech (logical frames)
 
 // Window and key monitoring management
 void ManageKeyMonitoring();

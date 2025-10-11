@@ -227,6 +227,12 @@ namespace Config {
             file << "; Maintain RF freeze only when neutral (allowed MoveIDs) (1=yes, 0=no)\n";
             file << "freezeRFOnlyWhenNeutral = 1\n\n";
 
+            // Practice options
+            file << "; Practice: Dummy Auto-Block neutral timeout (ms) for First Hit/After First Hit modes.\n";
+            file << "; When waiting to re-arm/disable, require this many milliseconds of continuous neutral before toggling.\n";
+            file << "; Default: 10000 (10 seconds). Set 0 to toggle immediately on any neutral edge.\n";
+            file << "autoBlockNeutralTimeoutMs = 10000\n\n";
+
             file << "; Virtual Cursor (software controller-driven cursor) settings\n";
             file << "; Master enable (1=on,0=off)\n";
             file << "enableVirtualCursor = 1\n";
@@ -424,6 +430,8 @@ namespace Config {
             // RF freeze behavior (defaults: enabled and neutral-only)
             settings.freezeRFAfterContRec = GetValueBool("General", "freezeRFAfterContRec", true);
             settings.freezeRFOnlyWhenNeutral = GetValueBool("General", "freezeRFOnlyWhenNeutral", true);
+            // Practice: neutral timeout for dummy auto-block modes (ms)
+            settings.autoBlockNeutralTimeoutMs = GetValueInt("General", "autoBlockNeutralTimeoutMs", 10000);
             
             // Hotkey settings - REVERTED to number key defaults
             settings.teleportKey = GetValueInt("Hotkeys", "TeleportKey", 0x31);          // Default: '1'
@@ -538,6 +546,9 @@ namespace Config {
             file << "; RF freeze behavior (after Continuous Recovery)\n";
             file << "freezeRFAfterContRec = " << (settings.freezeRFAfterContRec?"1":"0") << "\n";
             file << "freezeRFOnlyWhenNeutral = " << (settings.freezeRFOnlyWhenNeutral?"1":"0") << "\n\n";
+            // Practice options
+            file << "; Practice: Dummy Auto-Block neutral timeout (ms) for First Hit/After First Hit modes.\n";
+            file << "autoBlockNeutralTimeoutMs = " << settings.autoBlockNeutralTimeoutMs << "\n\n";
             file << "; Virtual Cursor settings\n";
             file << "enableVirtualCursor = " << (settings.enableVirtualCursor?"1":"0") << "\n";
             file << "virtualCursorAllowWindowed = " << (settings.virtualCursorAllowWindowed?"1":"0") << "\n";
@@ -639,6 +650,7 @@ namespace Config {
             if (k == "controllerindex") { try { settings.controllerIndex = std::stoi(value); } catch(...) { settings.controllerIndex = -1; } if (settings.controllerIndex < -1 || settings.controllerIndex > 3) settings.controllerIndex = -1; }
             if (k == "freezerfaftercontrec") settings.freezeRFAfterContRec = (value == "1");
             if (k == "freezerfonlywhenneutral") settings.freezeRFOnlyWhenNeutral = (value == "1");
+            if (k == "autoblockneutraltimeoutms") { try { settings.autoBlockNeutralTimeoutMs = std::stoi(value); } catch(...) { settings.autoBlockNeutralTimeoutMs = 10000; } }
         }
         else if (sec == "hotkeys") {
             int intValue = ParseKeyValue(value);

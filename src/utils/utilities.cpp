@@ -387,6 +387,8 @@ void DisableFeatures() {
     g_statsMoveIdId = -1;
     g_statsCleanHitId = -1;
     g_statsAIFlagsId = -1;
+    g_statsBlockstunId = -1;
+    g_statsUntechId = -1;
 
     // Also reset trigger/status overlay IDs so they get recreated on next update
     g_TriggerAfterBlockId = -1;
@@ -655,6 +657,8 @@ int g_statsIkumiId = -1;
 int g_statsMaiId = -1;
 int g_statsMinagiId = -1;
 int g_statsAIFlagsId = -1; // new: AI control flags line in stats overlay
+int g_statsBlockstunId = -1; // new: Blockstun counters line
+int g_statsUntechId = -1;    // new: Hitstun/Untech counters line
 
 // Auto-action settings - replace single trigger with individual triggers
 std::atomic<bool> autoActionEnabled(false);

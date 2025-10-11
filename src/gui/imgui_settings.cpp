@@ -180,6 +180,26 @@ namespace ImGuiSettings {
                     }
                 }
 
+                ImGui::Separator();
+                ImGui::SeparatorText("Practice Options");
+                {
+                    int abTimeoutMs = cfg.autoBlockNeutralTimeoutMs;
+                    int abTimeoutSec = (abTimeoutMs + 500) / 1000; // round to nearest second for UI
+                    ImGui::SetNextItemWidth(200);
+                    if (ImGui::SliderInt("Auto-Block neutral timeout (s)", &abTimeoutSec, 0, 60, "%d")) {
+                        if (abTimeoutSec < 0) abTimeoutSec = 0; if (abTimeoutSec > 600) abTimeoutSec = 600; // hard cap
+                        int ms = abTimeoutSec * 1000;
+                        Config::SetSetting("General", "autoBlockNeutralTimeoutMs", std::to_string(ms));
+                    }
+                    if (ImGui::IsItemHovered()) {
+                        ImGui::SetTooltip("When using First Hit/After First Hit modes, require this much continuous neutral before re-arming/disabling. 0 = toggle on the first neutral frame.");
+                    }
+                    ImGui::SameLine();
+                    if (ImGui::SmallButton("Reset##abTimeout")) {
+                        Config::SetSetting("General", "autoBlockNeutralTimeoutMs", "10000");
+                    }
+                }
+
                 ImGui::EndTabItem();
             }
 

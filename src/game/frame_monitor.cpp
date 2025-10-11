@@ -1640,7 +1640,7 @@ void FrameDataMonitor() {
                 double p1Y=0.0, p2Y=0.0; if (s_p1YAddr) SafeReadMemory(s_p1YAddr, &p1Y, sizeof(p1Y)); if (s_p2YAddr) SafeReadMemory(s_p2YAddr, &p2Y, sizeof(p2Y));
                 double p1X=0.0, p2X=0.0; if (s_p1XAddr) SafeReadMemory(s_p1XAddr, &p1X, sizeof(p1X)); if (s_p2XAddr) SafeReadMemory(s_p2XAddr, &p2X, sizeof(p2X));
                 int p1Hp=0, p2Hp=0; if (s_p1HpAddr) SafeReadMemory(s_p1HpAddr, &p1Hp, sizeof(p1Hp)); if (s_p2HpAddr) SafeReadMemory(s_p2HpAddr, &p2Hp, sizeof(p2Hp));
-                int p1Meter=0, p2Meter=0; if (s_p1MeterAddr) SafeReadMemory(s_p1MeterAddr, &p1Meter, sizeof(p1Meter)); if (s_p2MeterAddr) SafeReadMemory(s_p2MeterAddr, &p2Meter, sizeof(p2Meter));
+                int p1Meter=0, p2Meter=0; if (s_p1MeterAddr) { unsigned short w=0; SafeReadMemory(s_p1MeterAddr, &w, sizeof(w)); p1Meter=(int)w; } if (s_p2MeterAddr) { unsigned short w=0; SafeReadMemory(s_p2MeterAddr, &w, sizeof(w)); p2Meter=(int)w; }
                 double p1Rf=0.0, p2Rf=0.0; if (s_p1RfAddr) SafeReadMemory(s_p1RfAddr, &p1Rf, sizeof(p1Rf)); if (s_p2RfAddr) SafeReadMemory(s_p2RfAddr, &p2Rf, sizeof(p2Rf));
 
                 FrameSnapshot snap{};
@@ -1938,6 +1938,8 @@ void ReinitializeOverlays() {
             DirectDrawHook::RemovePermanentMessage(g_statsP2ValuesId);
             DirectDrawHook::RemovePermanentMessage(g_statsPositionId);
             DirectDrawHook::RemovePermanentMessage(g_statsMoveIdId);
+            if (g_statsBlockstunId != -1) { DirectDrawHook::RemovePermanentMessage(g_statsBlockstunId); g_statsBlockstunId = -1; }
+            if (g_statsUntechId != -1) { DirectDrawHook::RemovePermanentMessage(g_statsUntechId); g_statsUntechId = -1; }
             if (g_statsNayukiId != -1) { DirectDrawHook::RemovePermanentMessage(g_statsNayukiId); g_statsNayukiId = -1; }
             if (g_statsMisuzuId != -1) { DirectDrawHook::RemovePermanentMessage(g_statsMisuzuId); g_statsMisuzuId = -1; }
             if (g_statsMishioId != -1) { DirectDrawHook::RemovePermanentMessage(g_statsMishioId); g_statsMishioId = -1; }
@@ -1949,6 +1951,8 @@ void ReinitializeOverlays() {
             g_statsP2ValuesId = -1;
             g_statsPositionId = -1;
             g_statsMoveIdId = -1;
+            if (g_statsBlockstunId != -1) { DirectDrawHook::RemovePermanentMessage(g_statsBlockstunId); g_statsBlockstunId = -1; }
+            if (g_statsUntechId != -1) { DirectDrawHook::RemovePermanentMessage(g_statsUntechId); g_statsUntechId = -1; }
         }
     }
     
@@ -1999,6 +2003,8 @@ void UpdateStatsDisplay() {
             g_statsP2ValuesId = -1;
             g_statsPositionId = -1;
             g_statsMoveIdId = -1;
+            if (g_statsBlockstunId != -1) { DirectDrawHook::RemovePermanentMessage(g_statsBlockstunId); g_statsBlockstunId = -1; }
+            if (g_statsUntechId != -1) { DirectDrawHook::RemovePermanentMessage(g_statsUntechId); g_statsUntechId = -1; }
         }
         if (g_statsCleanHitId != -1) {
             DirectDrawHook::RemovePermanentMessage(g_statsCleanHitId);
@@ -2036,6 +2042,8 @@ void UpdateStatsDisplay() {
             DirectDrawHook::RemovePermanentMessage(g_statsAIFlagsId);
             g_statsAIFlagsId = -1;
         }
+        if (g_statsBlockstunId != -1) { DirectDrawHook::RemovePermanentMessage(g_statsBlockstunId); g_statsBlockstunId = -1; }
+        if (g_statsUntechId != -1) { DirectDrawHook::RemovePermanentMessage(g_statsUntechId); g_statsUntechId = -1; }
         return;
     }
 
@@ -2052,6 +2060,8 @@ void UpdateStatsDisplay() {
             g_statsP2ValuesId = -1;
             g_statsPositionId = -1;
             g_statsMoveIdId = -1;
+            if (g_statsBlockstunId != -1) { DirectDrawHook::RemovePermanentMessage(g_statsBlockstunId); g_statsBlockstunId = -1; }
+            if (g_statsUntechId != -1) { DirectDrawHook::RemovePermanentMessage(g_statsUntechId); g_statsUntechId = -1; }
         }
         // Also clear any character-specific stat lines (Nayuki/Misuzu)
         if (g_statsNayukiId != -1) {
@@ -2086,6 +2096,8 @@ void UpdateStatsDisplay() {
             DirectDrawHook::RemovePermanentMessage(g_statsAIFlagsId);
             g_statsAIFlagsId = -1;
         }
+        if (g_statsBlockstunId != -1) { DirectDrawHook::RemovePermanentMessage(g_statsBlockstunId); g_statsBlockstunId = -1; }
+        if (g_statsUntechId != -1) { DirectDrawHook::RemovePermanentMessage(g_statsUntechId); g_statsUntechId = -1; }
     }
 
     // Check for valid game state - return early if not in a valid state
@@ -2137,6 +2149,8 @@ void UpdateStatsDisplay() {
             DirectDrawHook::RemovePermanentMessage(g_statsAIFlagsId);
             g_statsAIFlagsId = -1;
         }
+        if (g_statsBlockstunId != -1) { DirectDrawHook::RemovePermanentMessage(g_statsBlockstunId); g_statsBlockstunId = -1; }
+        if (g_statsUntechId != -1) { DirectDrawHook::RemovePermanentMessage(g_statsUntechId); g_statsUntechId = -1; }
         return;
     }
 
@@ -2178,10 +2192,10 @@ void UpdateStatsDisplay() {
             cacheCounter = 0;
         }
         if (p1HpAddr) SafeReadMemory(p1HpAddr, &p1Hp, sizeof(int));
-        if (p1MeterAddr) SafeReadMemory(p1MeterAddr, &p1Meter, sizeof(int));
+    if (p1MeterAddr) { unsigned short w=0; SafeReadMemory(p1MeterAddr, &w, sizeof(w)); p1Meter=(int)w; }
         if (p1RfAddr) SafeReadMemory(p1RfAddr, &p1Rf, sizeof(double));
         if (p2HpAddr) SafeReadMemory(p2HpAddr, &p2Hp, sizeof(int));
-        if (p2MeterAddr) SafeReadMemory(p2MeterAddr, &p2Meter, sizeof(int));
+    if (p2MeterAddr) { unsigned short w=0; SafeReadMemory(p2MeterAddr, &w, sizeof(w)); p2Meter=(int)w; }
         if (p2RfAddr) SafeReadMemory(p2RfAddr, &p2Rf, sizeof(double));
         if (p1XAddr) SafeReadMemory(p1XAddr, &p1X, sizeof(double));
         if (p1YAddr) SafeReadMemory(p1YAddr, &p1Y, sizeof(double));
@@ -2241,6 +2255,8 @@ void UpdateStatsDisplay() {
                 }
             }
         }
+        if (g_statsBlockstunId != -1) { DirectDrawHook::RemovePermanentMessage(g_statsBlockstunId); g_statsBlockstunId = -1; }
+        if (g_statsUntechId != -1) { DirectDrawHook::RemovePermanentMessage(g_statsUntechId); g_statsUntechId = -1; }
     }
     moveIds << "MoveID:  P1: " << p1MoveId;
     if (!p1ReqStr.empty()) moveIds << " [" << p1ReqStr << "]";
@@ -2264,6 +2280,43 @@ void UpdateStatsDisplay() {
         upsert(g_statsP1ValuesId, p1Values.str());
         upsert(g_statsP2ValuesId, p2Values.str());
         upsert(g_statsPositionId, positions.str());
+
+        // New: Separate Blockstun and Untech counters (raw internal values)
+        auto readStunCounters = [&]() {
+            uintptr_t baseNow = GetEFZBase(); if (!baseNow) return std::tuple<int,int,int,int>(-1,-1,-1,-1);
+            uintptr_t p1=0,p2=0; SafeReadMemory(baseNow + EFZ_BASE_OFFSET_P1, &p1, sizeof(p1)); SafeReadMemory(baseNow + EFZ_BASE_OFFSET_P2, &p2, sizeof(p2));
+            short p1Blk=0, p2Blk=0, p1Hit=0, p2Hit=0;
+            if (p1) { SafeReadMemory(p1 + BLOCKSTUN_OFFSET, &p1Blk, sizeof(p1Blk)); SafeReadMemory(p1 + UNTECH_OFFSET, &p1Hit, sizeof(p1Hit)); }
+            if (p2) { SafeReadMemory(p2 + BLOCKSTUN_OFFSET, &p2Blk, sizeof(p2Blk)); SafeReadMemory(p2 + UNTECH_OFFSET, &p2Hit, sizeof(p2Hit)); }
+            // Return raw counters as integers; clamp negatives to zero for display neatness
+            auto clamp0 = [](int v){ return v < 0 ? 0 : v; };
+            return std::tuple<int,int,int,int>(clamp0((int)p1Blk), clamp0((int)p1Hit), clamp0((int)p2Blk), clamp0((int)p2Hit));
+        };
+        {
+            int p1BlkLF=0, p1HitLF=0, p2BlkLF=0, p2HitLF=0;
+            std::tie(p1BlkLF, p1HitLF, p2BlkLF, p2HitLF) = readStunCounters();
+            std::stringstream blkLine, hitLine;
+            blkLine << "Blockstun:  P1 " << p1BlkLF << "  P2 " << p2BlkLF;
+            hitLine << "Untech:    P1 " << p1HitLF << "  P2 " << p2HitLF;
+            upsert(g_statsBlockstunId, blkLine.str());
+            upsert(g_statsUntechId, hitLine.str());
+        }
+
+        // TEMP diagnostic: probe adjacent offset (+0x14C) to validate blockstun pointer choice.
+        // Remove after confirming correct address in live testing.
+        {
+            uintptr_t baseNow = GetEFZBase();
+            uintptr_t p1=0,p2=0; short p1Cand=0, p2Cand=0;
+            if (baseNow) {
+                SafeReadMemory(baseNow + EFZ_BASE_OFFSET_P1, &p1, sizeof(p1));
+                SafeReadMemory(baseNow + EFZ_BASE_OFFSET_P2, &p2, sizeof(p2));
+                if (p1) { SafeReadMemory(p1 + BLOCKSTUN_OFFSET + 2, &p1Cand, sizeof(p1Cand)); }
+                if (p2) { SafeReadMemory(p2 + BLOCKSTUN_OFFSET + 2, &p2Cand, sizeof(p2Cand)); }
+            }
+            std::stringstream diag;
+            diag << "Blk?(+0x14C): P1 " << (int)(p1Cand < 0 ? 0 : p1Cand) << "  P2 " << (int)(p2Cand < 0 ? 0 : p2Cand);
+            upsert(g_statsAIFlagsId, diag.str()); // reuse AI flags line position temporarily below character lines
+        }
 
         // Character-specific: Nayuki (Awake) snowbunnies timer line
         // Show when either side is Nayuki(Awake); include Infinite indicator per side
@@ -2552,7 +2605,9 @@ void UpdateStatsDisplay() {
                 if (g_statsAIFlagsId != -1) { DirectDrawHook::RemovePermanentMessage(g_statsAIFlagsId); g_statsAIFlagsId = -1; }
             }
         }
-        else if (g_statsAIFlagsId != -1) { DirectDrawHook::RemovePermanentMessage(g_statsAIFlagsId); g_statsAIFlagsId = -1; }
+    else if (g_statsAIFlagsId != -1) { DirectDrawHook::RemovePermanentMessage(g_statsAIFlagsId); g_statsAIFlagsId = -1; }
+    if (!statsOn && g_statsBlockstunId != -1) { DirectDrawHook::RemovePermanentMessage(g_statsBlockstunId); g_statsBlockstunId = -1; }
+    if (!statsOn && g_statsUntechId != -1) { DirectDrawHook::RemovePermanentMessage(g_statsUntechId); g_statsUntechId = -1; }
     }
 
     if (statsOn) {

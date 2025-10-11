@@ -65,6 +65,10 @@ namespace Config {
         // RF freeze behavior
         bool freezeRFAfterContRec;       // Start RF freeze after Continuous Recovery enforcement
         bool freezeRFOnlyWhenNeutral;    // Maintain RF freeze only while in neutral states
+
+        // Practice: Dummy Auto-Block behavior
+        // Continuous neutral timeout used by event-driven modes (ms). Defaults to 10000 (10s).
+        int autoBlockNeutralTimeoutMs;
     };
     
     // Initialize configuration system
