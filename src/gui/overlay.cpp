@@ -174,8 +174,23 @@ HRESULT WINAPI HookedEndScene(LPDIRECT3DDEVICE9 pDevice) {
     // Post-NewFrame snapshot for diagnostics (throttled)
     ImGuiImpl::PostNewFrameDiagnostics();
 
-    // If the game window is minimized, skip rendering to avoid ImGui asserting on zero-size display
+    // Force ImGui to our fixed RT size to avoid mouse/display mismatch when window is scaled
     ImGuiIO& io = ImGui::GetIO();
+    io.DisplaySize = ImVec2(640.0f, 480.0f);
+    io.DisplayFramebufferScale = ImVec2(1.0f, 1.0f);
+    {
+        // Optional diagnostic to confirm sizes occasionally
+        static int s_logCounter = 0;
+        if ((++s_logCounter % 240) == 0) {
+            char buf[160];
+            _snprintf_s(buf, sizeof(buf), _TRUNCATE,
+                "[OVERLAY][D3D9] RT size=%ux%u ImGui.DisplaySize=%dx%d",
+                640, 480, (int)io.DisplaySize.x, (int)io.DisplaySize.y);
+            LogOut(buf, detailedLogging.load());
+        }
+    }
+
+    // If the game window is minimized, skip rendering to avoid ImGui asserting on zero-size display
     if (io.DisplaySize.x <= 0.0f || io.DisplaySize.y <= 0.0f) {
         ImGui::EndFrame();
         return oEndScene(pDevice);
