@@ -722,7 +722,60 @@ namespace ImGuiImpl {
     void PreNewFrameInputs() {
         if (!g_imguiInitialized || g_isShuttingDown.load()) return;
         if (!ImGui::GetCurrentContext()) return;
-        // Defer virtual cursor and input aggregation to RenderFrame after backend NewFrame
+
+        // Align ImGui IO to the game's fixed 640x480 render target and remap mouse to RT space
+        // This fixes mouse misalignment when the window client area is larger than 640x480.
+        ImGuiIO& io = ImGui::GetIO();
+
+        // Base game backbuffer size
+        const float baseW = 640.0f;
+        const float baseH = 480.0f;
+
+        // Always force ImGui to render against the backbuffer size (not the window size)
+        io.DisplaySize = ImVec2(baseW, baseH);
+        io.DisplayFramebufferScale = ImVec2(1.0f, 1.0f);
+
+        // Remap OS mouse to backbuffer coordinates (letterbox/pillarbox aware)
+        HWND hwnd = FindEFZWindow();
+        if (hwnd) {
+            RECT rc{};
+            if (GetClientRect(hwnd, &rc)) {
+                const float cw = (float)(rc.right - rc.left);
+                const float ch = (float)(rc.bottom - rc.top);
+                if (cw > 0.0f && ch > 0.0f) {
+                    // Scale to preserve 4:3 inside client area
+                    const float sx = cw / baseW;
+                    const float sy = ch / baseH;
+                    const float scale = (sx < sy) ? sx : sy;
+                    const float gw = baseW * scale;
+                    const float gh = baseH * scale;
+                    const float ox = (cw - gw) * 0.5f;
+                    const float oy = (ch - gh) * 0.5f;
+
+                    // Query current cursor position in client coordinates
+                    POINT pt{};
+                    if (GetCursorPos(&pt)) {
+                        ScreenToClient(hwnd, &pt);
+                        float mx = (float)pt.x;
+                        float my = (float)pt.y;
+                        // Map into the game viewport then into 640x480 space
+                        if (scale > 0.0f) {
+                            mx = (mx - ox) / scale;
+                            my = (my - oy) / scale;
+                        }
+                        // Clamp to RT bounds
+                        if (mx < 0.0f) mx = 0.0f; else if (mx > baseW - 1.0f) mx = baseW - 1.0f;
+                        if (my < 0.0f) my = 0.0f; else if (my > baseH - 1.0f) my = baseH - 1.0f;
+
+                        // Feed corrected mouse position to ImGui (after backend NewFrame)
+                        io.AddMousePosEvent(mx, my);
+                    }
+                }
+            }
+        }
+
+        // Note: Virtual cursor/gamepad aggregation happens later in UpdateVirtualCursor during
+        // the alternate RenderFrame path, and for the EndScene path we only need OS mouse remap here.
     }
 
     // (PostNewFrameDiagnostics removed)
