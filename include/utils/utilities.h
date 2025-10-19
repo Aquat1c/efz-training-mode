@@ -31,6 +31,8 @@ extern std::atomic<bool> triggerAfterHitstunEnabled;
 extern std::atomic<bool> triggerAfterAirtechEnabled;
 // New: On Recoil Guard trigger
 extern std::atomic<bool> triggerOnRGEnabled;
+// Global: when ON, each trigger attempt has a 50% chance to fire
+extern std::atomic<bool> triggerRandomizeEnabled;
 
 // Delay settings (in visual frames) - ADD THESE MISSING DECLARATIONS
 extern std::atomic<int> triggerAfterBlockDelay;
@@ -159,6 +161,8 @@ struct DisplayData {
     bool triggerAfterHitstun;
     bool triggerAfterAirtech;
     bool triggerOnRG; // new
+    // Global randomization for triggers (coin flip per attempt)
+    bool randomizeTriggers;
     
     // Delay settings
     int delayAfterBlock;

@@ -40,6 +40,23 @@ namespace RandomBlock {
             bool curOn = false; GetPracticeAutoBlockEnabled(curOn);
             wantWindow = curOn;
         }
+        // Special-case: FirstHitThenOff should HOLD ON deterministically until the first block occurs
+        // (i.e., while wantWindow==true for this mode). Do not randomize in this phase.
+        int dabMode = GetDummyAutoBlockMode();
+        if (dabMode == DAB_FirstHitThenOff && wantWindow) {
+            bool curOn = false; if (!GetPracticeAutoBlockEnabled(curOn)) return;
+            if (!curOn || g_lastApplied.load() != 1) {
+                SetExternalAutoBlockController(true);
+                if (SetPracticeAutoBlockEnabled(true, "RandomBlock: force ON (FirstHitThenOff window)")) {
+                    g_lastApplied.store(1);
+                }
+                SetExternalAutoBlockController(false);
+            }
+            // Ensure no pending OFF while in the hold-ON window
+            g_pendingOff.store(false);
+            return;
+        }
+
         if (!wantWindow) {
             // If the mode does not want AB now, ensure OFF (with safety deferral) and skip randomizing
             bool curOn = false; if (!GetPracticeAutoBlockEnabled(curOn)) return;
