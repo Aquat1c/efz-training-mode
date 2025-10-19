@@ -1,4 +1,5 @@
 #include "../include/game/efzrevival_addrs.h"
+#include "../include/game/efzrevival_scanner.h"
 #include "../include/utils/network.h" // GetEfzRevivalVersion
 #include "../include/core/logger.h"
 #include <atomic>
@@ -14,6 +15,16 @@ static inline bool IsH() {
 }
 static inline bool IsI() {
     return GetEfzRevivalVersion() == EfzRevivalVersion::Revival102i;
+}
+
+static bool ForceScan() {
+    static int s = -1;
+    if (s < 0) {
+        char buf[8] = {0};
+        DWORD n = GetEnvironmentVariableA("EFZ_SCAN_FORCE", buf, sizeof(buf));
+        s = (n > 0 && buf[0] == '1') ? 1 : 0;
+    }
+    return s == 1;
 }
 
 static void LogAddrOnce(const char* label, uintptr_t rva) {
@@ -34,6 +45,26 @@ static void LogAddrOnce(const char* label, uintptr_t rva) {
     LogOut(oss.str(), true);
 }
 
+// Debug utility: compare version constants with scanner results
+void EFZ_Debug_LogScannerComparison() {
+    if (!EfzSigScanner::IsEfzRevivalLoaded()) return;
+    EfzSigScanner::EnsureScanned();
+    const auto& s = EfzSigScanner::Get();
+    std::ostringstream oss;
+    oss << "[ADDR-DEBUG] Version constants vs Scan:\n"
+        << "  PatchToggler    ver=0x" << std::hex << EFZ_RVA_PatchToggler() << " scan=0x" << s.patchTogglerRva << "\n"
+        << "  PatchCtx        ver=0x" << EFZ_RVA_PatchCtx() << " scan=0x" << s.patchCtxRva << "\n"
+        << "  TogglePause     ver=0x" << EFZ_RVA_TogglePause() << " scan=0x" << s.togglePauseRva << "\n"
+        << "  PracticeTick    ver=0x" << EFZ_RVA_PracticeTick() << " scan=0x" << s.practiceTickRva << "\n"
+        << "  PracticePtr     ver=0x" << EFZ_RVA_PracticeControllerPtr() << " scan=0x" << s.practiceControllerPtrRva << "\n"
+        << "  RefreshMap      ver=0x" << EFZ_RVA_RefreshMappingBlock() << " scan=0x" << s.refreshMappingBlockRva << "\n"
+        << "  RefreshMapAlt   ver=0x" << EFZ_RVA_RefreshMappingBlock_PracToCtx() << " scan=0x" << s.refreshMappingBlockPracToCtxRva << "\n"
+        << "  GameModeArray   ver=0x" << EFZ_RVA_GameModePtrArray() << " scan=0x" << s.gameModePtrArrayRva << "\n"
+        << "  MapReset        ver=0x" << EFZ_RVA_MapReset() << " scan=0x" << s.mapResetRva << "\n"
+        << "  CleanupPair     ver=0x" << EFZ_RVA_CleanupPair() << " scan=0x" << s.cleanupPairRva;
+    LogOut(oss.str(), true);
+}
+
 int EFZ_PatchToggleUnfreezeParam() {
     if (IsH()) return 3; // 1.02h/1.02i use 0=freeze, 3=unfreeze
     return 1;            // 1.02e uses 0=freeze, 1=unfreeze
@@ -44,6 +75,13 @@ uintptr_t EFZ_RVA_PatchToggler() {
     if (IsE()) r = 0x006B2A0;
     else if (IsI()) r = 0x006BD50; // 1.02i: sub_1006BD50(ctx, 0/3) - DIFFERENT from 1.02h!
     else if (IsH()) r = 0x006BB00; // 1.02h: sub_1006BB00(ctx, 0/3)
+    // Fallback to signature scan for unknown versions
+        if (r == 0 || ForceScan()) {
+        if (EfzSigScanner::EnsureScanned()) {
+            r = EfzSigScanner::Get().patchTogglerRva;
+            if (r) LogOut("[ADDR] PatchToggler resolved via signature scan", true);
+        }
+    }
     LogAddrOnce("PatchToggler", r);
     return r;
 }
@@ -53,6 +91,13 @@ uintptr_t EFZ_RVA_PatchCtx() {
     if (IsE()) r = 0x00A0760;
     else if (IsI()) r = 0x00A1790; // 1.02i: dword_100A1790 (corrected)
     else if (IsH()) r = 0x00A0780; // 1.02h: dword_100A0780
+    // Fallback to signature scan for unknown versions
+        if (r == 0 || ForceScan()) {
+        if (EfzSigScanner::EnsureScanned()) {
+            r = EfzSigScanner::Get().patchCtxRva;
+            if (r) LogOut("[ADDR] PatchCtx resolved via signature scan", true);
+        }
+    }
     LogAddrOnce("PatchCtx", r);
     return r;
 }
@@ -62,6 +107,12 @@ uintptr_t EFZ_RVA_TogglePause() {
     if (IsE()) r = 0x0075720;  // sub_10075720
     else if (IsI()) r = 0x0076710;  // 1.02i: sub_10076710
     else if (IsH()) r = 0x0076170;  // 1.02h: sub_10076170
+        if (r == 0 || ForceScan()) {
+        if (EfzSigScanner::EnsureScanned()) {
+            r = EfzSigScanner::Get().togglePauseRva;
+            if (r) LogOut("[ADDR] TogglePause resolved via signature scan", true);
+        }
+    }
     LogAddrOnce("TogglePause", r);
     return r;
 }
@@ -71,6 +122,12 @@ uintptr_t EFZ_RVA_PracticeTick() {
     if (IsE()) r = 0x0074F70;  // sub_10074F70
     else if (IsI()) r = 0x0074FF0;  // 1.02i: sub_10074FF0
     else if (IsH()) r = 0x0074F40;  // 1.02h: sub_10074F40
+        if (r == 0 || ForceScan()) {
+        if (EfzSigScanner::EnsureScanned()) {
+            r = EfzSigScanner::Get().practiceTickRva;
+            if (r) LogOut("[ADDR] PracticeTick resolved via signature scan", true);
+        }
+    }
     LogAddrOnce("PracticeTick", r);
     return r;
 }
@@ -80,6 +137,12 @@ uintptr_t EFZ_RVA_RefreshMappingBlock() {
     if (IsE()) r = 0x0075100;  // sub_10075100
     else if (IsI()) r = 0x00760F0;  // 1.02i: sub_100760F0 (ctx -> Practice)
     else if (IsH()) r = 0x0075B50;  // 1.02h: sub_10075B50 (ctx -> Practice)
+        if (r == 0 || ForceScan()) {
+        if (EfzSigScanner::EnsureScanned()) {
+            r = EfzSigScanner::Get().refreshMappingBlockRva;
+            if (r) LogOut("[ADDR] RefreshMappingBlock resolved via signature scan", true);
+        }
+    }
     LogAddrOnce("RefreshMappingBlock", r);
     return r;
 }
@@ -89,6 +152,12 @@ uintptr_t EFZ_RVA_RefreshMappingBlock_PracToCtx() {
     if (IsE()) r = 0;              // N/A on e (single variant only)
     else if (IsI()) r = 0x00760D0; // 1.02i: sub_100760D0 (Practice -> ctx)
     else if (IsH()) r = 0x0075B30; // 1.02h: sub_10075B30 (Practice -> ctx)
+        if (r == 0 || ForceScan()) {
+        if (EfzSigScanner::EnsureScanned()) {
+            r = EfzSigScanner::Get().refreshMappingBlockPracToCtxRva;
+            if (r) LogOut("[ADDR] RefreshMappingBlock_PracToCtx resolved via signature scan", true);
+        }
+    }
     LogAddrOnce("RefreshMappingBlock_PracToCtx", r);
     return r;
 }
@@ -125,6 +194,12 @@ uintptr_t EFZ_RVA_GameModePtrArray() {
     if (IsE()) r = 0x790110;
     else if (IsH()) r = 0x790110; // likely unchanged for 1.02h
     else if (IsI()) r = 0x790110; // likely unchanged for 1.02i; fast-path only
+        if (r == 0 || ForceScan()) {
+        if (EfzSigScanner::EnsureScanned()) {
+            r = EfzSigScanner::Get().gameModePtrArrayRva;
+            if (r) LogOut("[ADDR] GameModePtrArray resolved via signature scan", true);
+        }
+    }
     LogAddrOnce("GameModePtrArray", r);
     return r;
 }
@@ -142,6 +217,12 @@ uintptr_t EFZ_RVA_PracticeControllerPtr() {
         if (v == EfzRevivalVersion::Revival102i) return 0xA15F8;
     }
     if (IsI()) return 0xA15F8;
+    // Fallback: signature scan
+    if (EfzSigScanner::EnsureScanned()) {
+        uintptr_t r = EfzSigScanner::Get().practiceControllerPtrRva;
+        if (r) LogAddrOnce("PracticeControllerPtr(sig)", r);
+        return r;
+    }
     return 0;
 }
 

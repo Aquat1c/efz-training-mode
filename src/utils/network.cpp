@@ -8,6 +8,7 @@
 #include "../include/utils/network.h"
 #include "../include/core/logger.h"
 #include "../include/utils/utilities.h"
+#include "../include/core/memory.h"
 // For global shutdown flag
 #include "../include/core/globals.h"
 extern std::atomic<bool> g_isShuttingDown;
@@ -112,15 +113,14 @@ OnlineState ReadEfzRevivalOnlineState() {
     uintptr_t base = reinterpret_cast<uintptr_t>(hEfzRev);
 
     // Pointer-based path first (more stable across sub-versions)
-    __try {
+    {
+        uintptr_t ctx = 0; 
         uintptr_t ctxPtrAddr = base + 0x26A4; // module global: pointer to net/rollback context
-        uintptr_t ctx = *reinterpret_cast<uintptr_t*>(ctxPtrAddr);
-        if (ctx) {
+        if (SafeReadMemory(ctxPtrAddr, &ctx, sizeof(ctx)) && ctx) {
             const size_t candidates[2] = { 0x370, 0x37C }; // e/h then i; probe both to be safe
             for (size_t i = 0; i < 2; ++i) {
-                size_t off = candidates[i];
-                volatile int* pState = reinterpret_cast<volatile int*>(ctx + off);
-                int raw = *pState;
+                int raw = 0; 
+                if (!SafeReadMemory(ctx + candidates[i], &raw, sizeof(raw))) continue;
                 // Primary attempt: exact enum 0..3
                 OnlineState st = mapState(raw);
                 if (st != OnlineState::Unknown) return st;
@@ -131,8 +131,6 @@ OnlineState ReadEfzRevivalOnlineState() {
                 if (st != OnlineState::Unknown) return st;
             }
         }
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        // fall through to legacy fixed-RVA path
     }
 
     // Legacy fixed-RVA ints (keep as fallback)
@@ -143,18 +141,17 @@ OnlineState ReadEfzRevivalOnlineState() {
         case EfzRevivalVersion::Revival102i: rva = 0x00A15FC; break;
         default: return OnlineState::Unknown;
     }
-    __try {
-        int raw = *reinterpret_cast<volatile int*>(base + rva);
-        OnlineState st = mapState(raw);
-        if (st != OnlineState::Unknown) return st;
-        st = mapState(raw & 0xFF);
-        if (st != OnlineState::Unknown) return st;
-        st = mapState(raw & 0x03);
-        if (st != OnlineState::Unknown) return st;
-        return OnlineState::Unknown;
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
+    int raw = 0; 
+    if (!SafeReadMemory(base + rva, &raw, sizeof(raw))) {
         return OnlineState::Unknown;
     }
+    OnlineState st = mapState(raw);
+    if (st != OnlineState::Unknown) return st;
+    st = mapState(raw & 0xFF);
+    if (st != OnlineState::Unknown) return st;
+    st = mapState(raw & 0x03);
+    if (st != OnlineState::Unknown) return st;
+    return OnlineState::Unknown;
 }
 
 // Helper: human-readable name for OnlineState
