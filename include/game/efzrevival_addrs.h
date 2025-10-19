@@ -43,3 +43,6 @@ uintptr_t EFZ_Practice_SharedInputVectorOffset(); // 0x1240 (stable)
 // MapReset index bias when selecting map pointer from the array during init/swap
 // 1.02e/h use (local + 104), 1.02i uses (local + 105)
 int EFZ_Practice_MapResetIndexBias();
+
+// Debug/testing: log scanner vs version constants and optionally force scanner usage via env (EFZ_SCAN_FORCE=1)
+void EFZ_Debug_LogScannerComparison();

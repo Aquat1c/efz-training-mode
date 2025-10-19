@@ -174,10 +174,8 @@ HRESULT WINAPI HookedEndScene(LPDIRECT3DDEVICE9 pDevice) {
     // Post-NewFrame snapshot for diagnostics (throttled)
     ImGuiImpl::PostNewFrameDiagnostics();
 
-    // Force ImGui to our fixed RT size to avoid mouse/display mismatch when window is scaled
+    // PreNewFrameInputs already set DisplaySize to 640x480; only log occasionally
     ImGuiIO& io = ImGui::GetIO();
-    io.DisplaySize = ImVec2(640.0f, 480.0f);
-    io.DisplayFramebufferScale = ImVec2(1.0f, 1.0f);
     {
         // Optional diagnostic to confirm sizes occasionally
         static int s_logCounter = 0;

@@ -735,33 +735,47 @@ namespace ImGuiImpl {
         io.DisplaySize = ImVec2(baseW, baseH);
         io.DisplayFramebufferScale = ImVec2(1.0f, 1.0f);
 
-        // Remap OS mouse to backbuffer coordinates (letterbox/pillarbox aware)
+        // Remap OS mouse to backbuffer coordinates (letterbox/pillarbox aware, DPI-robust)
         HWND hwnd = FindEFZWindow();
         if (hwnd) {
-            RECT rc{};
-            if (GetClientRect(hwnd, &rc)) {
-                const float cw = (float)(rc.right - rc.left);
-                const float ch = (float)(rc.bottom - rc.top);
-                if (cw > 0.0f && ch > 0.0f) {
-                    // Scale to preserve 4:3 inside client area
-                    const float sx = cw / baseW;
-                    const float sy = ch / baseH;
+            RECT rcClient{};
+            if (GetClientRect(hwnd, &rcClient)) {
+                // Convert client rect to screen space to obtain physical pixel size under DPI scaling
+                POINT tl{rcClient.left, rcClient.top};
+                POINT br{rcClient.right, rcClient.bottom};
+                ClientToScreen(hwnd, &tl);
+                ClientToScreen(hwnd, &br);
+                const float cw_px = float(br.x - tl.x);
+                const float ch_px = float(br.y - tl.y);
+                if (cw_px > 0.0f && ch_px > 0.0f) {
+                    // Compute scaling from 640x480 to current client; allow anisotropic fill if aspect deviates
+                    const float sx = cw_px / baseW;
+                    const float sy = ch_px / baseH;
+                    const float aspectClient = cw_px / ch_px;
+                    const float aspectBase = baseW / baseH; // 4:3
+                    const float aspectDelta = fabsf(aspectClient - aspectBase) / aspectBase;
+                    const bool useUniformLetterbox = (aspectDelta < 0.02f); // within ~2% of 4:3 -> assume letterbox/pillarbox
                     const float scale = (sx < sy) ? sx : sy;
                     const float gw = baseW * scale;
                     const float gh = baseH * scale;
-                    const float ox = (cw - gw) * 0.5f;
-                    const float oy = (ch - gh) * 0.5f;
+                    const float ox = (cw_px - gw) * 0.5f;
+                    const float oy = (ch_px - gh) * 0.5f;
 
-                    // Query current cursor position in client coordinates
+                    // Current cursor in screen space (physical pixels)
                     POINT pt{};
                     if (GetCursorPos(&pt)) {
-                        ScreenToClient(hwnd, &pt);
-                        float mx = (float)pt.x;
-                        float my = (float)pt.y;
-                        // Map into the game viewport then into 640x480 space
-                        if (scale > 0.0f) {
-                            mx = (mx - ox) / scale;
-                            my = (my - oy) / scale;
+                        // Convert to client-relative physical pixels
+                        const float cx = float(pt.x - tl.x);
+                        const float cy = float(pt.y - tl.y);
+                        float mx, my;
+                        if (useUniformLetterbox) {
+                            // Uniform scale with centered inner 4:3 region
+                            mx = (cx - ox) / (scale > 0.0f ? scale : 1.0f);
+                            my = (cy - oy) / (scale > 0.0f ? scale : 1.0f);
+                        } else {
+                            // Content is stretched to fill client non-uniformly (windowed mode). Map axis independently.
+                            mx = cx / (sx > 0.0f ? sx : 1.0f);
+                            my = cy / (sy > 0.0f ? sy : 1.0f);
                         }
                         // Clamp to RT bounds
                         if (mx < 0.0f) mx = 0.0f; else if (mx > baseW - 1.0f) mx = baseW - 1.0f;
