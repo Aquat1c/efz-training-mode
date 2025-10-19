@@ -33,6 +33,8 @@ extern void SpamAttackButton(uintptr_t playerBase, uint8_t button, int frames, c
 #include "../include/game/fm_commands.h"
 // Always RG control
 #include "../include/game/always_rg.h"
+// Random RG control
+#include "../include/game/random_rg.h"
 // Switch players
 #include "../include/utils/switch_players.h"
 #include "../include/game/macro_controller.h"
@@ -154,7 +156,10 @@ namespace ImGuiGui {
 
                 // RG aids
                 bool alwaysRG = AlwaysRG::IsEnabled();
+                bool randomRG = RandomRG::IsEnabled();
                 if (ImGui::Checkbox("Always Recoil Guard", &alwaysRG)) {
+                    // Mutually exclusive with Random RG
+                    if (alwaysRG && randomRG) { RandomRG::SetEnabled(false); randomRG = false; }
                     AlwaysRG::SetEnabled(alwaysRG);
                     LogOut(std::string("[IMGUI][AlwaysRG] ") + (alwaysRG ? "Enabled" : "Disabled"), true);
                     if (g_ShowRGDebugToasts.load()) {
@@ -162,6 +167,18 @@ namespace ImGuiGui {
                     }
                 }
                 if (ImGui::IsItemHovered()) ImGui::SetTooltip("Keeps the 10f Recoil Guard window always armed so the dummy will RG if possible.");
+
+                ImGui::SameLine();
+                if (ImGui::Checkbox("Random RG", &randomRG)) {
+                    // Mutually exclusive with Always RG
+                    if (randomRG && alwaysRG) { AlwaysRG::SetEnabled(false); alwaysRG = false; }
+                    RandomRG::SetEnabled(randomRG);
+                    LogOut(std::string("[IMGUI][RandomRG] ") + (randomRG ? "Enabled" : "Disabled"), true);
+                    if (g_ShowRGDebugToasts.load()) {
+                        DirectDrawHook::AddMessage(std::string("Random RG: ") + (randomRG ? "ON" : "OFF"), "RANDOM_RG", RGB(200,255,200), 1500, 12, 90);
+                    }
+                }
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("EfzRevival parity: each frame flips a coin; 50% chance to arm RG window.");
 
                 ImGui::SameLine();
                 bool crg = g_counterRGEnabled.load();
