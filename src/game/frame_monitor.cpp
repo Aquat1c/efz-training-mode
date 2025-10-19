@@ -23,6 +23,7 @@
 #include "../include/game/macro_controller.h"
 #include "../include/game/always_rg.h"
 #include "../include/game/random_rg.h"
+#include "../include/game/random_block.h"
 #include "../include/game/practice_offsets.h"   // GAMESTATE_OFF_* and practice controller offsets
 #include "../include/input/injection_control.h"  // g_forceBypass/g_injectImmediateOnly/g_pollOverride*
 #include "../include/input/input_core.h"         // AI_CONTROL_FLAG_OFFSET
@@ -1451,10 +1452,12 @@ void FrameDataMonitor() {
             // Run dummy auto-block stance early for minimal latency (uses current move IDs)
             MonitorDummyAutoBlock(moveID1, moveID2, prevMoveID1, prevMoveID2);
 
-            // Practice-only: RG helpers
+            // Practice-only: Defense helpers
             // Always RG takes effect when enabled; Random RG mimics Revival's per-frame coin flip.
             AlwaysRG::Tick(moveID1, moveID2);
             RandomRG::Tick(moveID1, moveID2);
+            // Random Block: per-frame coin flip for the autoblock flag with safe OFF deferral
+            RandomBlock::Tick(moveID1, moveID2);
 
             if (moveIDsChanged || criticalFeaturesActive) {
                 // STEP 1: Process auto-actions FIRST (highest priority)

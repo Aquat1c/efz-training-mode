@@ -679,6 +679,10 @@ static std::atomic<unsigned long long> g_abWindowDeadlineMs{0};
 static std::atomic<bool> g_adaptiveStance{false};
 static std::atomic<bool> g_adaptiveForceTick{false}; // force immediate evaluation on enable
 static std::atomic<bool> g_abOverrideActive{false}; // when false, follow the game's autoblock flag
+// Expose the current desired autoblock state evaluated each frame by MonitorDummyAutoBlock
+static std::atomic<bool> g_desiredAbOn{false};
+// When true, MonitorDummyAutoBlock will not write to +4936 (Random Block or other controller will own writes)
+static std::atomic<bool> g_externalAbController{false};
 
 // Helper: human-readable name for Dummy Auto-Block modes
 static const char* GetDabModeName(int mode) {
@@ -861,6 +865,7 @@ void ResetDummyAutoBlockState() {
     // No counter history needed when using moveID edge detection
     g_abWindowActive.store(false);
     g_abWindowDeadlineMs.store(0);
+    g_desiredAbOn.store(false);
 }
 
 void SetAdaptiveStanceEnabled(bool enabled) {
@@ -871,6 +876,16 @@ void SetAdaptiveStanceEnabled(bool enabled) {
     }
 }
 bool GetAdaptiveStanceEnabled() { return g_adaptiveStance.load(); }
+
+bool GetCurrentDesiredAutoBlockOn(bool &onOut) {
+    if (GetCurrentGameMode() != GameMode::Practice) { onOut = false; return false; }
+    onOut = g_desiredAbOn.load();
+    return true;
+}
+
+void SetExternalAutoBlockController(bool enabled) {
+    g_externalAbController.store(enabled);
+}
 
 // Helper: read stance/direction fields for P2, and Y positions for attacker(P1)
 static bool ReadP2BlockFields(uint8_t &dirOut, uint8_t &stanceOut) {
@@ -1172,9 +1187,13 @@ void MonitorDummyAutoBlock(short p1MoveID, short p2MoveID, short prevP1MoveID, s
         s_pendingAbOff = false;
     }
 
-    // Apply desired autoblock state only if user override is active or custom modes require it
+    // Publish desired AB state for other systems (e.g., Random Block)
+    g_desiredAbOn.store(abOn);
+
+    // Apply desired autoblock state only if user override is active or custom modes require it,
+    // and no external controller is currently managing writes to +4936
     bool overrideEffective = g_abOverrideActive.load() || (mode == DAB_FirstHitThenOff) || (mode == DAB_EnableAfterFirstHit);
-    if (overrideEffective && abOn != s_lastAbOn) {
+    if (overrideEffective && !g_externalAbController.load() && abOn != s_lastAbOn) {
         const char* why = nullptr;
         if (mode == DAB_FirstHitThenOff) {
             why = abOn ? "FirstHitThenOff: re-enable (hit/neutral)" : "FirstHitThenOff: disable (block)";

@@ -35,6 +35,8 @@ extern void SpamAttackButton(uintptr_t playerBase, uint8_t button, int frames, c
 #include "../include/game/always_rg.h"
 // Random RG control
 #include "../include/game/random_rg.h"
+// Random Block control
+#include "../include/game/random_block.h"
 // Switch players
 #include "../include/utils/switch_players.h"
 #include "../include/game/macro_controller.h"
@@ -144,14 +146,30 @@ namespace ImGuiGui {
                 if (GetCurrentGameMode() == GameMode::Practice) {
                     int abMode = GetDummyAutoBlockMode();
                     ImGui::SetNextItemWidth(200);
-                    if (ImGui::Combo("Dummy Auto-Block", &abMode, abNames, 4)) { SetDummyAutoBlockMode(abMode); }
-                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("How the dummy blocks: Off / Block All / Block Only First Hit / Start Blocking After First Hit.");
+                    // Unlabeled combo; keep ID stable with a hidden label
+                    if (ImGui::Combo("##RandomBlockMode", &abMode, abNames, 4)) { SetDummyAutoBlockMode(abMode); }
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("How the dummy blocks: Off / Block All / Block Only First Hit / Start Blocking After First Hit.\nRandom Block flips a coin each frame during the mode's ON window; OFF toggles are deferred while guarding.");
+                    // After the combo: Random Block and Adaptive Stance checkboxes
+                    bool randomBlock = RandomBlock::IsEnabled();
+                    if (ImGui::Checkbox("Random Block", &randomBlock)) {
+                        // Random Block toggles the game's autoblock flag per frame; avoid conflicts with RG modes
+                        bool alwaysRG = AlwaysRG::IsEnabled();
+                        bool randomRG = RandomRG::IsEnabled();
+                        if (randomBlock && alwaysRG) { AlwaysRG::SetEnabled(false); }
+                        if (randomBlock && randomRG) { RandomRG::SetEnabled(false); }
+                        RandomBlock::SetEnabled(randomBlock);
+                        LogOut(std::string("[IMGUI][RandomBlock] ") + (randomBlock ? "Enabled" : "Disabled"), true);
+                        if (g_ShowRGDebugToasts.load()) {
+                            DirectDrawHook::AddMessage(std::string("Random Block: ") + (randomBlock ? "ON" : "OFF"), "RANDOM_BLOCK", RGB(220,200,255), 1500, 12, 108);
+                        }
+                    }
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Each frame flips a coin; 50% chance to set autoblock ON during the mode's ON window. OFF defers while guarding.");
                     ImGui::SameLine();
                     bool adaptive = GetAdaptiveStanceEnabled();
                     if (ImGui::Checkbox("Adaptive stance", &adaptive)) { SetAdaptiveStanceEnabled(adaptive); }
                     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Auto pick high vs air attacks, low vs grounded attacks.");
                 } else {
-                    ImGui::BeginDisabled(); int dummyAB = 0; ImGui::Combo("Dummy Auto-Block", &dummyAB, abNames, 4); ImGui::EndDisabled();
+                    ImGui::BeginDisabled(); int dummyAB = 0; ImGui::Combo("##RandomBlockMode", &dummyAB, abNames, 4); if (ImGui::IsItemHovered()) ImGui::SetTooltip("How the dummy blocks: Off / Block All / Block Only First Hit / Start Blocking After First Hit.\nRandom Block flips a coin each frame during the mode's ON window; OFF toggles are deferred while guarding."); ImGui::EndDisabled();
                 }
 
                 // RG aids
@@ -160,6 +178,7 @@ namespace ImGuiGui {
                 if (ImGui::Checkbox("Always Recoil Guard", &alwaysRG)) {
                     // Mutually exclusive with Random RG
                     if (alwaysRG && randomRG) { RandomRG::SetEnabled(false); randomRG = false; }
+                    if (alwaysRG && RandomBlock::IsEnabled()) { RandomBlock::SetEnabled(false); }
                     AlwaysRG::SetEnabled(alwaysRG);
                     LogOut(std::string("[IMGUI][AlwaysRG] ") + (alwaysRG ? "Enabled" : "Disabled"), true);
                     if (g_ShowRGDebugToasts.load()) {
@@ -172,6 +191,7 @@ namespace ImGuiGui {
                 if (ImGui::Checkbox("Random RG", &randomRG)) {
                     // Mutually exclusive with Always RG
                     if (randomRG && alwaysRG) { AlwaysRG::SetEnabled(false); alwaysRG = false; }
+                    if (randomRG && RandomBlock::IsEnabled()) { RandomBlock::SetEnabled(false); }
                     RandomRG::SetEnabled(randomRG);
                     LogOut(std::string("[IMGUI][RandomRG] ") + (randomRG ? "Enabled" : "Disabled"), true);
                     if (g_ShowRGDebugToasts.load()) {

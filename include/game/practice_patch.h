@@ -64,3 +64,12 @@ void MonitorDummyAutoBlock(short p1MoveID, short p2MoveID, short prevP1MoveID, s
 // New: Adaptive stance can be used with any mode
 void SetAdaptiveStanceEnabled(bool enabled);
 bool GetAdaptiveStanceEnabled();
+
+// Current desired autoblock window computed by MonitorDummyAutoBlock each frame.
+// When true, the mode logic wants autoblock ON (e.g., All mode, or post-hit window in AfterFirstHit).
+// Useful for features like Random Block to randomize ON only during these allowed windows.
+bool GetCurrentDesiredAutoBlockOn(bool &onOut);
+
+// Hint that an external controller (e.g., Random Block) will perform the +4936 write this frame,
+// so MonitorDummyAutoBlock should skip its own write.
+void SetExternalAutoBlockController(bool enabled);
