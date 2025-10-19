@@ -694,7 +694,7 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
                    ", actionable(prev/curr)=" + std::to_string(IsActionable(prevMoveID1)) + "/" + std::to_string(IsActionable(moveID1)), true);
         }
         
-        if (!shouldTrigger && triggerAfterAirtechEnabled.load()) {
+    if (!shouldTrigger && triggerAfterAirtechEnabled.load()) {
             // Check if player was in airtech last frame
             bool wasInAirtech = IsAirtech(prevMoveID1);
             // Post-airtech actionable: allow either general actionable states or explicit FALLING
@@ -707,6 +707,7 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
 
             // P1 After-Airtech trigger condition
             if (wasInAirtech && postAirtechNow) {
+                if (triggerRandomizeEnabled.load()) { if ((rand() & 1) == 0) { if (detailedLogging.load() && canLogTrigDiag()) LogOut("[AUTO-ACTION] P1 After Airtech skipped by random gate", true); goto p1_after_airtech_done; } }
                 LogOut("[AUTO-ACTION] P1 After Airtech trigger activated (from moveID " + 
                        std::to_string(prevMoveID1) + " to " + std::to_string(moveID1) + ")", detailedLogging.load());
                 shouldTrigger = true;
@@ -717,6 +718,7 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
                 int actionType = triggerAfterAirtechAction.load();
                 actionMoveID = GetActionMoveID(actionType, TRIGGER_AFTER_AIRTECH, 1);
             }
+        p1_after_airtech_done: ;
         }
 
 
@@ -729,6 +731,7 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
             bool justBecameActionable = wasNotActionable && isNowActionable;
 
             if (wasInBlockstun && nowNotInBlockstun && justBecameActionable) {
+                if (triggerRandomizeEnabled.load()) { if ((rand() & 1) == 0) { if (detailedLogging.load() && canLogTrigDiag()) LogOut("[AUTO-ACTION] P1 After Block skipped by random gate", true); goto p1_after_block_done; } }
                 shouldTrigger = true;
                 triggerType = TRIGGER_AFTER_BLOCK;
                 delay = triggerAfterBlockDelay.load();
@@ -740,12 +743,14 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
                            ", sinceEnd=" + std::to_string(s_p1Timers.sinceBlockEnd), true);
                 }
             }
+        p1_after_block_done: ;
         }
 
         // On RG trigger: arm at RG entry and schedule for RG stun end (stand/crouch/air specific)
-        if (!shouldTrigger && triggerOnRGEnabled.load()) {
+    if (!shouldTrigger && triggerOnRGEnabled.load()) {
             bool enteredRG = (!IsRecoilGuard(prevMoveID1) && IsRecoilGuard(moveID1));
             if (enteredRG) {
+        if (triggerRandomizeEnabled.load()) { if ((rand() & 1) == 0) { if (detailedLogging.load() && canLogTrigDiag()) LogOut("[AUTO-ACTION] P1 On RG skipped by random gate", true); goto p1_onrg_done; } }
                 int baseDelayF = 20; // fallback in visual frames
                 if (moveID1 == RG_STAND_ID) baseDelayF = RG_STAND_FREEZE_DEFENDER; // 20F
                 else if (moveID1 == RG_CROUCH_ID) baseDelayF = RG_CROUCH_FREEZE_DEFENDER; // 22F
@@ -804,10 +809,11 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
                     }
                 }
             }
+        p1_onrg_done: ;
         }
         
         // After Hitstun trigger
-        if (!shouldTrigger && triggerAfterHitstunEnabled.load()) {
+    if (!shouldTrigger && triggerAfterHitstunEnabled.load()) {
             bool wasInHitstun = IsHitstun(prevMoveID1);
             bool nowNotInHitstun = !IsHitstun(moveID1);
             bool wasNotActionable = !IsActionable(prevMoveID1);
@@ -815,6 +821,7 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
             bool justBecameActionable = wasNotActionable && isNowActionable;
 
             if (wasInHitstun && nowNotInHitstun && justBecameActionable) {
+                if (triggerRandomizeEnabled.load()) { if ((rand() & 1) == 0) { if (detailedLogging.load() && canLogTrigDiag()) LogOut("[AUTO-ACTION] P1 After Hitstun skipped by random gate", true); goto p1_after_hitstun_done; } }
                 shouldTrigger = true;
                 triggerType = TRIGGER_AFTER_HITSTUN;
                 delay = triggerAfterHitstunDelay.load();
@@ -826,11 +833,13 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
                            ", sinceEnd=" + std::to_string(s_p1Timers.sinceHitEnd), true);
                 }
             }
+        p1_after_hitstun_done: ;
         }
         
         // On Wakeup pre-arm: buffer the motion on last groundtech step so it executes at wake
     if (triggerOnWakeupEnabled.load() && !s_p1WakePrearmed) {
             if (moveID1 == GROUNDTECH_RECOVERY) {
+                if (triggerRandomizeEnabled.load()) { if ((rand() & 1) == 0) { if (detailedLogging.load() && canLogTrigDiag()) LogOut("[AUTO-ACTION] P1 Wake prearm skipped by random gate", true); goto p1_wake_prearm_done; } }
                 int actionType = triggerOnWakeupAction.load();
                 int motionType = ConvertTriggerActionToMotion(actionType, TRIGGER_ON_WAKEUP);
                 // Determine button mask (A/B/C) for specials
@@ -909,6 +918,7 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
                 } else if (detailedLogging.load()) {
                     LogOut("[AUTO-ACTION] P1 wake pre-arm failed", true);
                 }
+            p1_wake_prearm_done: ;
             }
         }
 
@@ -968,6 +978,7 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
                 s_p1WakePrearmActionType = -1;
             }
             if (!s_p1WakePrearmed && IsGroundtech(prevMoveID1) && IsActionable(moveID1)) {
+                if (triggerRandomizeEnabled.load()) { if ((rand() & 1) == 0) { if (detailedLogging.load() && canLogTrigDiag()) LogOut("[AUTO-ACTION] P1 On Wakeup skipped by random gate", true); goto p1_wakeup_done; } }
                 shouldTrigger = true;
                 triggerType = TRIGGER_ON_WAKEUP;
                 delay = triggerOnWakeupDelay.load();
@@ -979,6 +990,7 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
                            ", sinceWake=" + std::to_string(s_p1Timers.sinceWake), true);
                 }
             }
+        p1_wakeup_done: ;
         }
         
         // Apply the trigger if any condition was met
@@ -1018,6 +1030,7 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
             }
 
             if (!restorePending && wasAirtech && postAirtechNow) {
+                if (triggerRandomizeEnabled.load()) { if ((rand() & 1) == 0) { if (detailedLogging.load() && canLogTrigDiag()) LogOut("[AUTO-ACTION] P2 After Airtech skipped by random gate", true); goto p2_after_airtech_done; } }
                 LogOut("[AUTO-ACTION] P2 After Airtech trigger activated", detailedLogging.load());
                 shouldTrigger = true;
                 triggerType = TRIGGER_AFTER_AIRTECH;
@@ -1025,6 +1038,7 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
         delay = triggerAfterAirtechDelay.load();
                 actionMoveID = GetActionMoveID(triggerAfterAirtechAction.load(), TRIGGER_AFTER_AIRTECH, 2);
             }
+        p2_after_airtech_done: ;
         }
     // Simplified P2 After Block trigger
     if (!shouldTrigger && triggerAfterBlockEnabled.load()) {
@@ -1039,18 +1053,21 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
             LogOut("[TRIGGER_DIAG] Suppressing P2 After Block: control restore pending", true);
         }
         if (!dashFollowPending && !restorePending && IsBlockstun(prevMoveID2) && IsActionable(moveID2) && !p2TriggerActive && p2TriggerCooldown <= 0) {
+            if (triggerRandomizeEnabled.load()) { if ((rand() & 1) == 0) { if (detailedLogging.load() && canLogTrigDiag()) LogOut("[AUTO-ACTION] P2 After Block skipped by random gate", true); goto p2_after_block_done; } }
             shouldTrigger = true;
             triggerType = TRIGGER_AFTER_BLOCK;
             delay = triggerAfterBlockDelay.load();
             actionMoveID = GetActionMoveID(triggerAfterBlockAction.load(), TRIGGER_AFTER_BLOCK, 2);
             LogOut("[AUTO-ACTION] P2 After Block trigger", true);
         }
+    p2_after_block_done: ;
     }
 
     // P2: On RG trigger at RG entry (independent of After Block): schedule for RG stun end
     if (!shouldTrigger && triggerOnRGEnabled.load()) {
         bool enteredRG2 = (!IsRecoilGuard(prevMoveID2) && IsRecoilGuard(moveID2));
         if (enteredRG2) {
+            if (triggerRandomizeEnabled.load()) { if ((rand() & 1) == 0) { if (detailedLogging.load() && canLogTrigDiag()) LogOut("[AUTO-ACTION] P2 On RG skipped by random gate", true); goto p2_onrg_done; } }
             int baseDelayF = 20;
             if (moveID2 == RG_STAND_ID) baseDelayF = RG_STAND_FREEZE_DEFENDER;
             else if (moveID2 == RG_CROUCH_ID) baseDelayF = RG_CROUCH_FREEZE_DEFENDER;
@@ -1115,17 +1132,19 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
                 }
             }
         }
+    p2_onrg_done: ;
     }
         
         // After Hitstun trigger
-        if (!shouldTrigger && triggerAfterHitstunEnabled.load()) {
+    if (!shouldTrigger && triggerAfterHitstunEnabled.load()) {
             // CRITICAL: Don't fire if control restore is pending from previous action
             bool restorePending = g_pendingControlRestore.load();
             if (restorePending && detailedLogging.load() && canLogTrigDiag()) {
                 LogOut("[TRIGGER_DIAG] Suppressing P2 After Hitstun: control restore pending", true);
             }
-            if (!restorePending && IsHitstun(prevMoveID2) && !IsHitstun(moveID2) && !IsAirtech(moveID2)) {
+                if (!restorePending && IsHitstun(prevMoveID2) && !IsHitstun(moveID2) && !IsAirtech(moveID2)) {
                 if (IsActionable(moveID2)) {
+                        if (triggerRandomizeEnabled.load()) { if ((rand() & 1) == 0) { if (detailedLogging.load() && canLogTrigDiag()) LogOut("[AUTO-ACTION] P2 After Hitstun skipped by random gate", true); goto p2_after_hitstun_done; } }
                     shouldTrigger = true;
                     triggerType = TRIGGER_AFTER_HITSTUN;
                     delay = triggerAfterHitstunDelay.load();
@@ -1137,11 +1156,13 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
                     }
                 }
             }
+        p2_after_hitstun_done: ;
         }
         
         // On Wakeup pre-arm for P2: buffer during GROUNDTECH_RECOVERY (96)
     if (triggerOnWakeupEnabled.load() && !s_p2WakePrearmed) {
             if (moveID2 == GROUNDTECH_RECOVERY) {
+                if (triggerRandomizeEnabled.load()) { if ((rand() & 1) == 0) { if (detailedLogging.load() && canLogTrigDiag()) LogOut("[AUTO-ACTION] P2 Wake prearm skipped by random gate", true); goto p2_wake_prearm_done; } }
                 int actionType = triggerOnWakeupAction.load();
                 int motionType = ConvertTriggerActionToMotion(actionType, TRIGGER_ON_WAKEUP);
                 int buttonMask = 0;
@@ -1214,6 +1235,7 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
                 } else if (detailedLogging.load()) {
                     LogOut("[AUTO-ACTION] P2 wake pre-arm failed", true);
                 }
+            p2_wake_prearm_done: ;
             }
         }
 
@@ -1266,6 +1288,7 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
                 s_p2WakePrearmed = false;
                 s_p2WakePrearmActionType = -1;
             } else if (!s_p2WakePrearmed && IsGroundtech(prevMoveID2) && IsActionable(moveID2)) {
+                if (triggerRandomizeEnabled.load()) { if ((rand() & 1) == 0) { if (detailedLogging.load() && canLogTrigDiag()) LogOut("[AUTO-ACTION] P2 On Wakeup skipped by random gate", true); goto p2_wakeup_done; } }
                 shouldTrigger = true;
                 triggerType = TRIGGER_ON_WAKEUP;
                 delay = triggerOnWakeupDelay.load();
@@ -1277,6 +1300,7 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
                            ", sinceWake=" + std::to_string(s_p2Timers.sinceWake), true);
                 }
             }
+        p2_wakeup_done: ;
         }
         
         if (shouldTrigger) {

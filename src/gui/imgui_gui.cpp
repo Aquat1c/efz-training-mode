@@ -559,6 +559,15 @@ namespace ImGuiGui {
             ImGui::SetTooltip("On: buffer wake moves slightly early. Off: do them on the first actionable frame.\nUseful for testing tight wakeup timing.");
         }
 
+        // Global: Randomize all triggers toggle (placed with master/wake settings)
+        {
+            bool randTrig = guiState.localData.randomizeTriggers;
+            if (ImGui::Checkbox("Randomize chance to fire the trigger", &randTrig)) {
+                guiState.localData.randomizeTriggers = randTrig;
+            }
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("When ON, each trigger attempt has a 50% chance to be skipped.");
+        }
+
         // Counter RG toggle moved to Game Settings
         
         // Player target selector
@@ -570,7 +579,7 @@ namespace ImGuiGui {
         }
         
         ImGui::Separator();
-        
+
         // Define a struct for trigger settings to reduce code repetition
         struct TriggerSettings {
             const char* name;
@@ -2720,6 +2729,7 @@ namespace ImGuiGui {
     guiState.localData.triggerAfterHitstun = triggerAfterHitstunEnabled.load();
     guiState.localData.triggerAfterAirtech = triggerAfterAirtechEnabled.load();
     guiState.localData.triggerOnRG         = triggerOnRGEnabled.load();
+    guiState.localData.randomizeTriggers   = triggerRandomizeEnabled.load();
 
     // Per-trigger delays
     guiState.localData.delayAfterBlock     = triggerAfterBlockDelay.load();
@@ -2833,6 +2843,7 @@ namespace ImGuiGui {
             triggerAfterHitstunEnabled.store(displayData.triggerAfterHitstun);
             triggerAfterAirtechEnabled.store(displayData.triggerAfterAirtech);
             triggerOnRGEnabled.store(displayData.triggerOnRG);
+            triggerRandomizeEnabled.store(displayData.randomizeTriggers);
 
             // Per-trigger delays
             triggerAfterBlockDelay.store(displayData.delayAfterBlock);

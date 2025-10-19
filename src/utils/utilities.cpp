@@ -672,6 +672,8 @@ std::atomic<bool> triggerOnWakeupEnabled(false);
 std::atomic<bool> triggerAfterHitstunEnabled(false);
 std::atomic<bool> triggerAfterAirtechEnabled(false);
 std::atomic<bool> triggerOnRGEnabled(false);
+// Global trigger randomization toggle (default OFF)
+std::atomic<bool> triggerRandomizeEnabled(false);
 
 // Delay settings (in visual frames)
 std::atomic<int> triggerAfterBlockDelay(DEFAULT_TRIGGER_DELAY);
