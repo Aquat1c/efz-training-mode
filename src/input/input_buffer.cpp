@@ -294,6 +294,8 @@ bool FreezeBufferIndex(int playerNum, uint16_t indexValue) {
 // Function to stop buffer freezing
 void StopBufferFreezing() {
     if (g_bufferFreezingActive) {
+        using clock = std::chrono::steady_clock;
+        auto tStart = clock::now();
         g_bufferFreezingActive = false;
         g_indexFreezingActive = false;
         int owner = g_activeFreezePlayer.exchange(0);
@@ -303,11 +305,14 @@ void StopBufferFreezing() {
             LogOut("[INPUT_BUFFER] StopBufferFreezing() called (no active owner)", true);
         }
         
-        // Wait for thread to terminate (small timeout)
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    // Wait briefly for thread to wind down (keep minimal to avoid frame hitch)
+    auto tWaitStart = clock::now();
+    std::this_thread::sleep_for(std::chrono::milliseconds(8));
+    auto tWaitEnd = clock::now();
         
         // IMPORTANT: Write neutral inputs to the last few buffer entries
         // to prevent lingering input patterns from triggering moves
+        auto tCleanStart = clock::now();
         uintptr_t base = GetEFZBase();
         if (base) {
             for (int player = 1; player <= 2; player++) {
@@ -330,7 +335,14 @@ void StopBufferFreezing() {
                 }
             }
         }
-        
-        LogOut("[INPUT_BUFFER] Buffer freezing stopped and buffer cleared", true);
+        auto tCleanEnd = clock::now();
+
+        auto waitMs = std::chrono::duration_cast<std::chrono::milliseconds>(tWaitEnd - tWaitStart).count();
+        auto cleanMs = std::chrono::duration_cast<std::chrono::milliseconds>(tCleanEnd - tCleanStart).count();
+        auto totalMs = std::chrono::duration_cast<std::chrono::milliseconds>(tCleanEnd - tStart).count();
+        LogOut(std::string("[INPUT_BUFFER] Buffer freezing stopped ") +
+               "wait=" + std::to_string(waitMs) + "ms " +
+               "clean=" + std::to_string(cleanMs) + "ms " +
+               "total=" + std::to_string(totalMs) + "ms", true);
     }
 }

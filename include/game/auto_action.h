@@ -60,3 +60,13 @@ extern std::atomic<short> g_lastP2MoveID;
 // Control restore / cleanup helpers
 void ProcessAutoControlRestore();
 void ClearAllAutoActionTriggers();
+
+// Tick-integrated execution
+// When enabled, auto-actions are evaluated once per internal engine tick from the input hook
+// (right before the engine consumes inputs for that tick). The frame monitor will skip
+// running its copy to avoid double-processing.
+extern std::atomic<bool> g_tickIntegratedAutoActions;
+
+// Lightweight tick entry called from the input hook (once per sub-tick, before P1 processing).
+// It executes only the auto-action path using provided move IDs to avoid extra memory reads.
+void AutoActionsTick_Inline(short moveID1, short moveID2);

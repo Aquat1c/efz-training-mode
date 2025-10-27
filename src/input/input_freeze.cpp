@@ -571,16 +571,53 @@ void EndBufferFreezeSession(int playerNum, const char* reason, bool clearGlobals
     auto &s = g_freezeSession[playerNum];
     if (!s.active.load()) return;
 
+    using clock = std::chrono::steady_clock;
+    auto tStart = clock::now();
+
     // Signal stop
     g_bufferFreezingActive = false;
     g_indexFreezingActive  = false;
 
     // Wait briefly if a thread may still be winding down
+    auto tWaitStart = clock::now();
     for (int i=0; i<20 && s.threadRunning.load(); ++i) {
         std::this_thread::sleep_for(std::chrono::milliseconds(5));
     }
+    auto tWaitEnd = clock::now();
 
-    ClearPlayerInputBuffer(playerNum);
+    // Light-weight cleanup: neutralize only the region we wrote (if any) and a small tail near the current index.
+    // Avoid clearing the entire buffer which can cause a brief frame hitch.
+    auto tCleanStart = clock::now();
+    uintptr_t playerPtr = GetPlayerPointer(playerNum);
+    if (playerPtr) {
+        // Neutralize frozen pattern region
+        if (g_frozenBufferLength > 0) {
+            uint8_t zero = 0x00;
+            for (uint16_t i = 0; i < g_frozenBufferLength; ++i) {
+                uint16_t idx = (g_frozenBufferStartIndex + i) % INPUT_BUFFER_SIZE;
+                SafeWriteMemory(playerPtr + INPUT_BUFFER_OFFSET + idx, &zero, sizeof(uint8_t));
+            }
+        }
+
+        // Neutralize a small sliding window behind the current index to prevent ghost follow-ups
+        uint16_t curIdx = 0;
+        if (SafeReadMemory(playerPtr + INPUT_BUFFER_INDEX_OFFSET, &curIdx, sizeof(uint16_t))) {
+            uint8_t zero = 0x00;
+            for (int i = 0; i < 8; ++i) {
+                int w = static_cast<int>(curIdx) - i;
+                w %= static_cast<int>(INPUT_BUFFER_SIZE);
+                if (w < 0) w += static_cast<int>(INPUT_BUFFER_SIZE);
+                uint16_t idx = static_cast<uint16_t>(w);
+                SafeWriteMemory(playerPtr + INPUT_BUFFER_OFFSET + idx, &zero, sizeof(uint8_t));
+            }
+        }
+
+        // Optionally restore the original index if we captured it at session begin
+        if (s.originalIndexValid) {
+            SafeWriteMemory(playerPtr + INPUT_BUFFER_INDEX_OFFSET, &s.originalIndex, sizeof(uint16_t));
+        }
+    }
+    auto tCleanEnd = clock::now();
 
     s.active.store(false);
     s.threadRunning.store(false);
@@ -590,8 +627,15 @@ void EndBufferFreezeSession(int playerNum, const char* reason, bool clearGlobals
         g_frozenBufferValues.clear();
     }
 
+    auto tEnd = clock::now();
+    auto waitMs = std::chrono::duration_cast<std::chrono::milliseconds>(tWaitEnd - tWaitStart).count();
+    auto cleanMs = std::chrono::duration_cast<std::chrono::milliseconds>(tCleanEnd - tCleanStart).count();
+    auto totalMs = std::chrono::duration_cast<std::chrono::milliseconds>(tEnd - tStart).count();
     LogOut(std::string("[BUFFER_FREEZE] End session P") + std::to_string(playerNum) +
-           " (" + (reason?reason:"no reason") + ")", true);
+           " (" + (reason?reason:"no reason") + ")" +
+           " wait=" + std::to_string(waitMs) + "ms" +
+           " clean=" + std::to_string(cleanMs) + "ms" +
+           " total=" + std::to_string(totalMs) + "ms", true);
 }
 
 // Generic pattern freeze for bespoke sequences (Final Memory, multi-phase inputs, etc.)

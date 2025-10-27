@@ -1658,6 +1658,18 @@
 			],
 			"isBackground": false,
 			"group": "build"
+		},
+		{
+			"label": "build-dll",
+			"type": "shell",
+			"command": "pwsh",
+			"args": [
+				"-ExecutionPolicy",
+				"Bypass",
+				"-File",
+				"${workspaceFolder}\\.vscode\\build-script.ps1"
+			],
+			"group": "build"
 		}
 	]
 }

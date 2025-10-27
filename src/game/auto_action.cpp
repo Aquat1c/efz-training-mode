@@ -10,6 +10,7 @@
 #include "../include/input/motion_constants.h"  
 #include "../include/input/input_motion.h"      // Add this include
 #include "../include/input/input_freeze.h"     // Add this include near the top with the other includes
+#include "../include/input/input_buffer.h"     // For g_activeFreezePlayer owner check
 #include "../include/game/attack_reader.h"
 #include "../include/input/immediate_input.h"
 #include "../include/game/fm_commands.h" // Final Memory execution
@@ -247,6 +248,29 @@ static bool s_p1RGPending = false;
 static int  s_p1RGExpiry = 0;
 static bool s_p2RGPending = false;
 static int  s_p2RGExpiry = 0;
+
+// Enable tick-integrated auto-actions by default; the frame monitor will defer when this is on.
+std::atomic<bool> g_tickIntegratedAutoActions{ true };
+
+// Lightweight per-tick entry from input hook: evaluates auto-actions once per internal tick
+void AutoActionsTick_Inline(short moveID1, short moveID2) {
+    // Online mode hard stop (never operate in netplay)
+    if (g_onlineModeActive.load()) return;
+    if (!autoActionEnabled.load()) return;
+
+    // Static prevs to compute edges without extra memory traffic
+    static short prevMoveID1 = -1;
+    static short prevMoveID2 = -1;
+
+    // Process any armed delays first, then evaluate triggers against current moves
+    ProcessTriggerDelays();
+    MonitorAutoActions(moveID1, moveID2, prevMoveID1, prevMoveID2);
+    ClearDelayStatesIfNonActionable();
+
+    // Update prevs for next tick
+    prevMoveID1 = moveID1;
+    prevMoveID2 = moveID2;
+}
 
 // New: Pre-arm specials/FM at RG entry when user delay is 0
 static bool s_p1RGPrearmed = false;
@@ -836,7 +860,7 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
         p1_after_hitstun_done: ;
         }
         
-        // On Wakeup pre-arm: buffer the motion on last groundtech step so it executes at wake
+        // On Wakeup pre-arm: if user delay == 0 and action is a special/FM, buffer during 96 so it executes at wake
     if (triggerOnWakeupEnabled.load() && !s_p1WakePrearmed) {
             if (moveID1 == GROUNDTECH_RECOVERY) {
                 if (triggerRandomizeEnabled.load()) { if ((rand() & 1) == 0) { if (detailedLogging.load() && canLogTrigDiag()) LogOut("[AUTO-ACTION] P1 Wake prearm skipped by random gate", true); goto p1_wake_prearm_done; } }
@@ -854,56 +878,24 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
                     int strength = GetSpecialMoveStrength(actionType, TRIGGER_ON_WAKEUP);
                     buttonMask = (1 << (4 + strength));
                 }
-
+                // Only pre-buffer when delay==0 AND action is a special/Final Memory
+                int userDelayF = triggerOnWakeupDelay.load();
                 bool prearmed = false;
-                // Conditional wake buffering: if disabled, NEVER freeze early; inject on first actionable frame
-                if (actionType == ACTION_FINAL_MEMORY) {
-                    // Treat FM like a special: allow early buffer freeze when wake buffering enabled.
-                    int charId = displayData.p1CharID;
-                    if (g_wakeBufferingEnabled.load()) {
-                        // Early freeze pattern now so it is resident on first actionable frame.
+                if (userDelayF == 0) {
+                    if (actionType == ACTION_FINAL_MEMORY) {
+                        int charId = displayData.p1CharID;
                         bool fmOk = ExecuteFinalMemory(1, charId);
                         if (fmOk) {
                             prearmed = true;
-                            s_p1WakePrearmIsSpecial = true; // skip duplicate inject at wake
-                            LogOut("[AUTO-ACTION][FM] P1 wake FM buffered early (toggle=ON)", true);
-                        } else if (detailedLogging.load()) {
-                            LogOut("[AUTO-ACTION][FM] P1 wake FM early buffer gate failed", true);
+                            s_p1WakePrearmIsSpecial = true;
+                            LogOut("[AUTO-ACTION][FM] P1 wake FM buffered early (delay=0)", true);
                         }
-                    } else {
-                        // Frame1 injection path: mark prearmed metadata only; inject FM at wake exec.
-                        prearmed = true;
-                        s_p1WakePrearmIsSpecial = false; // cause ApplyAutoAction path at wake
-                        LogOut("[AUTO-ACTION][FM] P1 wake FM scheduled for frame1 inject (toggle=OFF)", true);
-                    }
-                } else if (g_wakeBufferingEnabled.load()) {
-                    if (motionType >= MOTION_236A) {
-                        prearmed = FreezeBufferForMotion(1, motionType, buttonMask);
-                        s_p1WakePrearmIsSpecial = true;
-                        if (prearmed) {
-                            LogOut("[AUTO-ACTION] P1 wake special buffered early (toggle=ON)", true);
-                        }
-                    } else if (actionType == ACTION_BACKDASH || actionType == ACTION_FORWARD_DASH) {
-                        // Allow early queue for dash only when buffering enabled
-                        prearmed = QueueMotionInput(1, motionType, 0);
-                        s_p1WakePrearmIsSpecial = false; // dash executes on wake via queue
-                        if (prearmed) {
-                            LogOut("[AUTO-ACTION] P1 wake dash queued early (toggle=ON)", true);
-                        }
-                    } else if (motionType >= MOTION_5A && motionType <= MOTION_JC) {
-                        // Normals never need early queue; mark as prearmed metadata only
-                        prearmed = true;
-                        s_p1WakePrearmIsSpecial = false;
-                    }
-                } else {
-                    // Frame1 injection path: just mark as prearmed metadata for all supported actions
-                    if (motionType >= MOTION_5A && motionType <= MOTION_JC) {
-                        prearmed = true; s_p1WakePrearmIsSpecial = false;
-                    } else if (actionType == ACTION_BACKDASH || actionType == ACTION_FORWARD_DASH) {
-                        prearmed = true; s_p1WakePrearmIsSpecial = false; // inject dash on wake
                     } else if (motionType >= MOTION_236A) {
-                        prearmed = true; s_p1WakePrearmIsSpecial = false; // treat special like normal for frame1 inject
-                        LogOut("[AUTO-ACTION] P1 wake special set for frame1 inject (toggle=OFF)", true);
+                        prearmed = FreezeBufferForMotion(1, motionType, buttonMask);
+                        if (prearmed) {
+                            s_p1WakePrearmIsSpecial = true;
+                            LogOut("[AUTO-ACTION] P1 wake special buffered early (delay=0)", true);
+                        }
                     }
                 }
                 if (prearmed) {
@@ -916,7 +908,7 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
                            " currMoveID=" + std::to_string(moveID1) +
                            " frame=" + std::to_string(frameCounter.load()), true);
                 } else if (detailedLogging.load()) {
-                    LogOut("[AUTO-ACTION] P1 wake pre-arm failed", true);
+                    LogOut("[AUTO-ACTION] P1 wake pre-arm skipped (delay!=0 or non-special)", true);
                 }
             p1_wake_prearm_done: ;
             }
@@ -981,7 +973,10 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
                 if (triggerRandomizeEnabled.load()) { if ((rand() & 1) == 0) { if (detailedLogging.load() && canLogTrigDiag()) LogOut("[AUTO-ACTION] P1 On Wakeup skipped by random gate", true); goto p1_wakeup_done; } }
                 shouldTrigger = true;
                 triggerType = TRIGGER_ON_WAKEUP;
-                delay = triggerOnWakeupDelay.load();
+                {
+                    int userDelay = triggerOnWakeupDelay.load();
+                    delay = (userDelay <= 1) ? 0 : (userDelay - 1);
+                }
                 actionMoveID = GetActionMoveID(triggerOnWakeupAction.load(), TRIGGER_ON_WAKEUP, 1);
                 
                 LogOut("[AUTO-ACTION] P1 On Wakeup trigger activated", true);
@@ -1159,7 +1154,7 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
         p2_after_hitstun_done: ;
         }
         
-        // On Wakeup pre-arm for P2: buffer during GROUNDTECH_RECOVERY (96)
+        // On Wakeup pre-arm for P2: if delay==0 and action is special/FM, buffer during 96
     if (triggerOnWakeupEnabled.load() && !s_p2WakePrearmed) {
             if (moveID2 == GROUNDTECH_RECOVERY) {
                 if (triggerRandomizeEnabled.load()) { if ((rand() & 1) == 0) { if (detailedLogging.load() && canLogTrigDiag()) LogOut("[AUTO-ACTION] P2 Wake prearm skipped by random gate", true); goto p2_wake_prearm_done; } }
@@ -1176,54 +1171,36 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
                     int strength = GetSpecialMoveStrength(actionType, TRIGGER_ON_WAKEUP);
                     buttonMask = (1 << (4 + strength));
                 }
-
+                // Only pre-buffer when delay==0 AND action is a special/Final Memory
+                int userDelayF = triggerOnWakeupDelay.load();
                 bool prearmed = false;
-                if (actionType == ACTION_FINAL_MEMORY) {
-                    int charId = displayData.p2CharID;
-                    if (g_wakeBufferingEnabled.load()) {
+                if (userDelayF == 0) {
+                    if (actionType == ACTION_FINAL_MEMORY) {
+                        int charId = displayData.p2CharID;
                         bool fmOk = ExecuteFinalMemory(2, charId);
                         if (fmOk) {
                             prearmed = true;
                             s_p2WakePrearmIsSpecial = true;
-                            EnableP2ControlForAutoAction(); // ensure buffer progression semantics
-                            LogOut("[AUTO-ACTION][FM] P2 wake FM buffered early (toggle=ON)", true);
-                        } else if (detailedLogging.load()) {
-                            LogOut("[AUTO-ACTION][FM] P2 wake FM early buffer gate failed", true);
+                            EnableP2ControlForAutoAction();
+                            // Track restore similarly to specials
+                            g_lastP2MoveID.store(moveID2);
+                            g_pendingControlRestore.store(true);
+                            g_controlRestoreTimeout.store(240);
+                            LogOut("[AUTO-ACTION][FM] P2 wake FM buffered early (delay=0)", true);
                         }
-                    } else {
-                        prearmed = true; // frame1 path
-                        s_p2WakePrearmIsSpecial = false; // inject at wake exec via ApplyAutoAction
-                        LogOut("[AUTO-ACTION][FM] P2 wake FM scheduled for frame1 inject (toggle=OFF)", true);
-                    }
-                } else if (g_wakeBufferingEnabled.load()) {
-                    if (motionType >= MOTION_236A) {
-                        prearmed = FreezeBufferForMotion(2, motionType, buttonMask);
-                        if (prearmed) LogOut("[AUTO-ACTION] P2 wake special buffered early (toggle=ON)", true);
-                    } else if (actionType == ACTION_BACKDASH || actionType == ACTION_FORWARD_DASH) {
-                        prearmed = QueueMotionInput(2, motionType, 0);
-                        if (prearmed) LogOut("[AUTO-ACTION] P2 wake dash queued early (toggle=ON)", true);
-                    } else if (motionType >= MOTION_5A && motionType <= MOTION_JC) {
-                        // Normals metadata only
-                        prearmed = true;
-                    }
-                } else {
-                    // Frame1 injection path
-                    if (motionType >= MOTION_5A && motionType <= MOTION_JC) {
-                        prearmed = true;
-                    } else if (actionType == ACTION_BACKDASH || actionType == ACTION_FORWARD_DASH) {
-                        prearmed = true; // inject on wake
                     } else if (motionType >= MOTION_236A) {
-                        prearmed = true; // special to inject frame1
-                        LogOut("[AUTO-ACTION] P2 wake special set for frame1 inject (toggle=OFF)", true);
+                        EnableP2ControlForAutoAction();
+                        prearmed = FreezeBufferForMotion(2, motionType, buttonMask);
+                        if (prearmed) {
+                            s_p2WakePrearmIsSpecial = true;
+                            g_lastP2MoveID.store(moveID2);
+                            g_pendingControlRestore.store(true);
+                            g_controlRestoreTimeout.store(180);
+                            LogOut("[AUTO-ACTION] P2 wake special buffered early (delay=0)", true);
+                        }
                     }
                 }
                 if (prearmed) {
-                    if (g_wakeBufferingEnabled.load() && motionType >= MOTION_236A) {
-                        EnableP2ControlForAutoAction();
-                        s_p2WakePrearmIsSpecial = true;
-                    } else {
-                        s_p2WakePrearmIsSpecial = false;
-                    }
                     s_p2WakePrearmed = true;
                     s_p2WakePrearmExpiry = frameCounter.load() + 120;
                     s_p2WakePrearmActionType = actionType;
@@ -1233,7 +1210,7 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
                            " currMoveID=" + std::to_string(moveID2) +
                            " frame=" + std::to_string(frameCounter.load()), true);
                 } else if (detailedLogging.load()) {
-                    LogOut("[AUTO-ACTION] P2 wake pre-arm failed", true);
+                    LogOut("[AUTO-ACTION] P2 wake pre-arm skipped (delay!=0 or non-special)", true);
                 }
             p2_wake_prearm_done: ;
             }
@@ -1281,6 +1258,10 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
                             }
                             EnableP2ControlForAutoAction();
                             FreezeBufferForMotion(2, motionType, buttonMask);
+                            // Ensure pending restore tracking is active for specials queued this way,
+                            // so cleanup logic doesn't immediately revert control.
+                            g_pendingControlRestore.store(true);
+                            g_controlRestoreTimeout.store(180);
                             { std::stringstream bm; bm << std::hex << buttonMask; LogOut(std::string("[AUTO-ACTION] P2 wake special frame1 buffer applied (index frozen) btnMask=0x") + bm.str(), true); }
                         }
                     }
@@ -1291,7 +1272,10 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
                 if (triggerRandomizeEnabled.load()) { if ((rand() & 1) == 0) { if (detailedLogging.load() && canLogTrigDiag()) LogOut("[AUTO-ACTION] P2 On Wakeup skipped by random gate", true); goto p2_wakeup_done; } }
                 shouldTrigger = true;
                 triggerType = TRIGGER_ON_WAKEUP;
-                delay = triggerOnWakeupDelay.load();
+                {
+                    int userDelay = triggerOnWakeupDelay.load();
+                    delay = (userDelay <= 1) ? 0 : (userDelay - 1);
+                }
                 actionMoveID = GetActionMoveID(triggerOnWakeupAction.load(), TRIGGER_ON_WAKEUP, 2);
                 
                 LogOut("[AUTO-ACTION] P2 On Wakeup trigger activated", detailedLogging.load());
@@ -1976,6 +1960,16 @@ void ProcessAutoControlRestore() {
             g_restoreGraceCounter = 0;
         }
         return;
+    }
+
+    // If a macro just ended and we still have human override but no restore pending,
+    // force a cleanup to avoid lingering override.
+    if (MacroController::GetState() != MacroController::State::Replaying &&
+        g_p2ControlOverridden && !g_pendingControlRestore.load() &&
+        !(g_bufferFreezingActive.load() && g_activeFreezePlayer.load() == 2)) {
+        LogOut("[AUTO-ACTION][MACRO] Macro inactive but override present; forcing control restore", true);
+        RestoreP2ControlState();
+        g_restoreGraceCounter = RESTORE_GRACE_PERIOD;
     }
     
     // CRITICAL: Handle grace period countdown. This prevents triggers from firing

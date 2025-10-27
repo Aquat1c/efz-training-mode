@@ -801,6 +801,9 @@ bool IsActionable(short moveID) {
     return result;
 }
 
+// Note: Wakeup triggers use IsActionable directly; CROUCH_TO_STAND_ID (7) is considered
+// actionable so wake actions can fire ASAP when state 96 ends.
+
 bool IsBlockstun(short moveID) {
     std::locale::global(std::locale("C")); 
     

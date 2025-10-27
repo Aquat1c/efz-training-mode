@@ -45,6 +45,8 @@ extern std::atomic<int> triggerOnRGDelay;
 // Function declarations
 uintptr_t GetEFZBase();
 bool IsActionable(short moveID);
+// Wakeup-specific actionable check: treat CROUCH_TO_STAND_ID (7) as non-actionable for wake triggers
+// to ensure execution occurs on the true neutral frame (e.g., 96 -> 7 -> 0 sequences).
 bool IsBlockstun(short moveID);
 bool IsRecoilGuard(short moveID);
 bool IsEFZWindowActive();
