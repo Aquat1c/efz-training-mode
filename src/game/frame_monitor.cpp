@@ -1461,9 +1461,13 @@ void FrameDataMonitor() {
 
             if (moveIDsChanged || criticalFeaturesActive) {
                 // STEP 1: Process auto-actions FIRST (highest priority)
-                ProcessTriggerDelays();      // Handle pending delays
-                // Pass cached move IDs to avoid extra reads and enable lighter math inside
-                MonitorAutoActions(moveID1, moveID2, prevMoveID1, prevMoveID2);
+                // When tick-integrated mode is active, auto-actions are driven directly from the
+                // engine's per-tick input hook; skip here to avoid double-processing.
+                if (!g_tickIntegratedAutoActions.load()) {
+                    ProcessTriggerDelays();      // Handle pending delays
+                    // Pass cached move IDs to avoid extra reads and enable lighter math inside
+                    MonitorAutoActions(moveID1, moveID2, prevMoveID1, prevMoveID2);
+                }
                 
                 // STEP 2: Auto-jump
                 // Always call to allow internal cleanup when toggled off; function self-checks enable state

@@ -9,6 +9,7 @@
 #include "../include/game/practice_patch.h"
 #include "../include/input/input_buffer.h" // for g_bufferFreezingActive
 #include "../include/input/immediate_input.h"
+#include "../include/game/auto_action.h"
 #include "../include/input/injection_control.h"
 #include <windows.h>
 #include <vector>
@@ -82,6 +83,20 @@ int __fastcall HookedProcessCharacterInput(int characterPtr, int edx) {
     // Safety: if we cannot identify the player, defer to the original immediately
     if (playerNum == 0) {
         return oProcessCharacterInput(characterPtr);
+    }
+
+    // Tick-integrated auto-actions: run once per internal sub-tick before P1 processing
+    if (g_tickIntegratedAutoActions.load() && playerNum == 1) {
+        short move1 = 0, move2 = 0;
+        // Read move IDs directly from character structs (word at +MOVE_ID_OFFSET)
+        (void)SafeReadMemory((uintptr_t)characterPtr + MOVE_ID_OFFSET, &move1, sizeof(move1));
+        uintptr_t otherPtr = (characterPtr == (int)p1Ptr) ? p2Ptr : p1Ptr;
+        if (otherPtr) {
+            (void)SafeReadMemory(otherPtr + MOVE_ID_OFFSET, &move2, sizeof(move2));
+        } else {
+            move2 = -1;
+        }
+        AutoActionsTick_Inline(move1, move2);
     }
 
     // Do not inject while a buffer-freeze is active for THIS player; let the game's
