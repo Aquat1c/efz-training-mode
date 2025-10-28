@@ -10,6 +10,11 @@ struct TriggerDelayState {
     int delayFramesRemaining;
     int triggerType;
     short pendingMoveID;
+    // Chosen per-execution overrides (used when a per-trigger option row was selected)
+    int  chosenAction;     // ACTION_* or -1 if not set
+    int  chosenStrength;   // 0..2 or -1 if not set
+    int  chosenMacroSlot;  // 0=None or slot index
+    int  chosenCustomId;   // optional, default -1
 };
 
 // Global variables

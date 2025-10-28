@@ -93,6 +93,20 @@ extern std::atomic<int> autoAirtechDelay; // 0=instant, 1+=frames to wait
 extern std::atomic<bool> g_injectImmediateOnly[3]; // Index 0 unused, 1=P1, 2=P2
 
 // Display data structure
+// Max number of per-trigger option rows for randomized selection
+#ifndef MAX_TRIGGER_OPTIONS
+#define MAX_TRIGGER_OPTIONS 8
+#endif
+
+// A single row entry for a trigger: action choice with its own strength/button, delay and optional macro/custom
+struct TriggerOption {
+    bool enabled;     // whether this row participates in random selection
+    int  action;      // ACTION_* enum
+    int  strength;    // A/B/C or direction index for Jump; 0..2
+    int  delay;       // visual frames (0 = immediate)
+    int  customId;    // for custom actions (if used)
+    int  macroSlot;   // 0=None, 1..MaxSlots
+};
 struct DisplayData {
     int hp1, hp2;
     int meter1, meter2;
@@ -360,6 +374,32 @@ struct DisplayData {
     int   p2RecoveryRfMode;
     double p2RecoveryRfCustom;
     bool  p2RecoveryRfForceBlueIC;
+
+    // Multi-action pools per trigger (UI selects a set of actions; engine will pick one at random)
+    // Bitmask mapping follows the motion index space used by the UI (0..23). Bit set => eligible.
+    // These are UI-facing snapshots; runtime atomics mirror these for execution.
+    uint32_t afterBlockActionPoolMask;
+    uint32_t onWakeupActionPoolMask;
+    uint32_t afterHitstunActionPoolMask;
+    uint32_t afterAirtechActionPoolMask;
+    uint32_t onRGActionPoolMask;
+    bool     afterBlockUseActionPool;
+    bool     onWakeupUseActionPool;
+    bool     afterHitstunUseActionPool;
+    bool     afterAirtechUseActionPool;
+    bool     onRGUseActionPool;
+
+    // Per-trigger multi-row options (randomly pick one on trigger fire)
+    int           afterBlockOptionCount;
+    TriggerOption afterBlockOptions[MAX_TRIGGER_OPTIONS];
+    int           onWakeupOptionCount;
+    TriggerOption onWakeupOptions[MAX_TRIGGER_OPTIONS];
+    int           afterHitstunOptionCount;
+    TriggerOption afterHitstunOptions[MAX_TRIGGER_OPTIONS];
+    int           afterAirtechOptionCount;
+    TriggerOption afterAirtechOptions[MAX_TRIGGER_OPTIONS];
+    int           onRGOptionCount;
+    TriggerOption onRGOptions[MAX_TRIGGER_OPTIONS];
 };
 
 extern DisplayData displayData;
@@ -396,6 +436,31 @@ extern std::atomic<int> triggerOnWakeupAction;
 extern std::atomic<int> triggerAfterHitstunAction;
 extern std::atomic<int> triggerAfterAirtechAction;
 extern std::atomic<int> triggerOnRGAction;
+
+// Per-trigger multi-action pool configuration
+// Bitmask uses UI motion indices (0..23). When enabled and mask!=0, engine picks one randomly at fire time.
+extern std::atomic<uint32_t> triggerAfterBlockActionPoolMask;
+extern std::atomic<uint32_t> triggerOnWakeupActionPoolMask;
+extern std::atomic<uint32_t> triggerAfterHitstunActionPoolMask;
+extern std::atomic<uint32_t> triggerAfterAirtechActionPoolMask;
+extern std::atomic<uint32_t> triggerOnRGActionPoolMask;
+extern std::atomic<bool>     triggerAfterBlockUsePool;
+extern std::atomic<bool>     triggerOnWakeupUsePool;
+extern std::atomic<bool>     triggerAfterHitstunUsePool;
+extern std::atomic<bool>     triggerAfterAirtechUsePool;
+extern std::atomic<bool>     triggerOnRGUsePool;
+
+// Runtime copies of per-trigger option rows (populated on Apply)
+extern int           g_afterBlockOptionCount;
+extern TriggerOption g_afterBlockOptions[MAX_TRIGGER_OPTIONS];
+extern int           g_onWakeupOptionCount;
+extern TriggerOption g_onWakeupOptions[MAX_TRIGGER_OPTIONS];
+extern int           g_afterHitstunOptionCount;
+extern TriggerOption g_afterHitstunOptions[MAX_TRIGGER_OPTIONS];
+extern int           g_afterAirtechOptionCount;
+extern TriggerOption g_afterAirtechOptions[MAX_TRIGGER_OPTIONS];
+extern int           g_onRGOptionCount;
+extern TriggerOption g_onRGOptions[MAX_TRIGGER_OPTIONS];
 
 // Forward dash follow-up (0=None, 1=5A,2=5B,3=5C,4=2A,5=2B,6=2C)
 extern std::atomic<int> forwardDashFollowup;

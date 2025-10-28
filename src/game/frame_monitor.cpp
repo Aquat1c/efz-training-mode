@@ -587,8 +587,8 @@ void FrameDataMonitor() {
         if (g_onlineModeActive.load()) {
             StopBufferFreezing();
             ResetActionFlags();
-            p1DelayState = {false, 0, TRIGGER_NONE, 0};
-            p2DelayState = {false, 0, TRIGGER_NONE, 0};
+            p1DelayState = {false, 0, TRIGGER_NONE, 0, -1, -1, 0, -1};
+            p2DelayState = {false, 0, TRIGGER_NONE, 0, -1, -1, 0, -1};
             break; // exit thread to allow safe self-unload
         }
         auto frameStart = clock::now();
@@ -682,8 +682,8 @@ void FrameDataMonitor() {
                 ResetActionFlags();
 
                 // Clear all auto-action states
-                p1DelayState = {false, 0, TRIGGER_NONE, 0};
-                p2DelayState = {false, 0, TRIGGER_NONE, 0};
+                p1DelayState = {false, 0, TRIGGER_NONE, 0, -1, -1, 0, -1};
+                p2DelayState = {false, 0, TRIGGER_NONE, 0, -1, -1, 0, -1};
                 p1ActionApplied = false;
                 p2ActionApplied = false;
 
