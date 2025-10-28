@@ -2581,13 +2581,22 @@ void ClearAllAutoActionTriggers() {
 // -------------------------
 static inline bool HasEnabledRows(int triggerType) {
     auto countEnabled = [](const TriggerOption* arr, int cnt){ int n=0; for (int i=0;i<cnt;i++) if (arr[i].enabled) ++n; return n; };
+    bool mainEnabled = false;
     switch (triggerType) {
-        case TRIGGER_AFTER_BLOCK:   return countEnabled(g_afterBlockOptions, g_afterBlockOptionCount) > 0;
-        case TRIGGER_ON_WAKEUP:     return countEnabled(g_onWakeupOptions, g_onWakeupOptionCount) > 0;
-        case TRIGGER_AFTER_HITSTUN: return countEnabled(g_afterHitstunOptions, g_afterHitstunOptionCount) > 0;
-        case TRIGGER_AFTER_AIRTECH: return countEnabled(g_afterAirtechOptions, g_afterAirtechOptionCount) > 0;
-        case TRIGGER_ON_RG:         return countEnabled(g_onRGOptions, g_onRGOptionCount) > 0;
-        default: return false;
+        case TRIGGER_AFTER_BLOCK:   mainEnabled = triggerAfterBlockEnabled.load(); break;
+        case TRIGGER_ON_WAKEUP:     mainEnabled = triggerOnWakeupEnabled.load(); break;
+        case TRIGGER_AFTER_HITSTUN: mainEnabled = triggerAfterHitstunEnabled.load(); break;
+        case TRIGGER_AFTER_AIRTECH: mainEnabled = triggerAfterAirtechEnabled.load(); break;
+        case TRIGGER_ON_RG:         mainEnabled = triggerOnRGEnabled.load(); break;
+        default: mainEnabled = false; break;
+    }
+    switch (triggerType) {
+        case TRIGGER_AFTER_BLOCK:   return mainEnabled || countEnabled(g_afterBlockOptions, g_afterBlockOptionCount) > 0;
+        case TRIGGER_ON_WAKEUP:     return mainEnabled || countEnabled(g_onWakeupOptions, g_onWakeupOptionCount) > 0;
+        case TRIGGER_AFTER_HITSTUN: return mainEnabled || countEnabled(g_afterHitstunOptions, g_afterHitstunOptionCount) > 0;
+        case TRIGGER_AFTER_AIRTECH: return mainEnabled || countEnabled(g_afterAirtechOptions, g_afterAirtechOptionCount) > 0;
+        case TRIGGER_ON_RG:         return mainEnabled || countEnabled(g_onRGOptions, g_onRGOptionCount) > 0;
+        default: return mainEnabled;
     }
 }
 
@@ -2601,12 +2610,39 @@ static inline bool PickRandomRow(int triggerType, TriggerOption &out) {
         case TRIGGER_ON_RG:         arr = g_onRGOptions;         cnt = g_onRGOptionCount; break;
         default: return false;
     }
-    if (!arr || cnt <= 0) return false;
-    int idxs[MAX_TRIGGER_OPTIONS]; int n=0;
-    for (int i=0;i<cnt && i<MAX_TRIGGER_OPTIONS;i++) if (arr[i].enabled) idxs[n++] = i;
+
+    // Build candidate list from enabled rows and include the main trigger row as an implicit candidate
+    TriggerOption cands[MAX_TRIGGER_OPTIONS + 1];
+    int n = 0;
+    for (int i = 0; i < cnt && i < MAX_TRIGGER_OPTIONS; ++i) {
+        if (arr[i].enabled) cands[n++] = arr[i];
+    }
+
+    // Append main trigger row (always considered a candidate when the trigger is enabled)
+    TriggerOption mainOpt{};
+    switch (triggerType) {
+        case TRIGGER_AFTER_BLOCK:
+            mainOpt = { true, triggerAfterBlockAction.load(), triggerAfterBlockStrength.load(), triggerAfterBlockDelay.load(), triggerAfterBlockCustomID.load(), triggerAfterBlockMacroSlot.load() };
+            break;
+        case TRIGGER_ON_WAKEUP:
+            mainOpt = { true, triggerOnWakeupAction.load(), triggerOnWakeupStrength.load(), triggerOnWakeupDelay.load(), triggerOnWakeupCustomID.load(), triggerOnWakeupMacroSlot.load() };
+            break;
+        case TRIGGER_AFTER_HITSTUN:
+            mainOpt = { true, triggerAfterHitstunAction.load(), triggerAfterHitstunStrength.load(), triggerAfterHitstunDelay.load(), triggerAfterHitstunCustomID.load(), triggerAfterHitstunMacroSlot.load() };
+            break;
+        case TRIGGER_AFTER_AIRTECH:
+            mainOpt = { true, triggerAfterAirtechAction.load(), triggerAfterAirtechStrength.load(), triggerAfterAirtechDelay.load(), triggerAfterAirtechCustomID.load(), triggerAfterAirtechMacroSlot.load() };
+            break;
+        case TRIGGER_ON_RG:
+            mainOpt = { true, triggerOnRGAction.load(), triggerOnRGStrength.load(), triggerOnRGDelay.load(), triggerOnRGCustomID.load(), triggerOnRGMacroSlot.load() };
+            break;
+        default: break;
+    }
+    cands[n++] = mainOpt;
+
     if (n <= 0) return false;
     int seed = frameCounter.load() + triggerType * 13;
     int pick = (seed < 0 ? -seed : seed) % n;
-    out = arr[idxs[pick]];
+    out = cands[pick];
     return true;
 }
