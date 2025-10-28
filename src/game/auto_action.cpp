@@ -20,8 +20,12 @@
 
 // Safety forward declarations (in case of include-order differences in some build phases)
 bool IsThrown(short moveID);
+// Forward declarations for row selection helpers used in StartTriggerDelay
+static inline bool HasEnabledRows(int triggerType);
+static inline bool PickRandomRow(int triggerType, TriggerOption &out);
 #include <cmath>
 #include <algorithm>
+#include <vector>
 // Define the motion input constants if they're not already defined
 #ifndef MOTION_INPUT_UP
 #define MOTION_INPUT_UP INPUT_UP
@@ -39,8 +43,8 @@ bool IsThrown(short moveID);
 void ApplyAutoAction(int playerNum, uintptr_t moveIDAddr, short currentMoveID, short prevMoveID);
 
 // Initialize delay states
-TriggerDelayState p1DelayState = {false, 0, TRIGGER_NONE, 0};
-TriggerDelayState p2DelayState = {false, 0, TRIGGER_NONE, 0};
+TriggerDelayState p1DelayState = {false, 0, TRIGGER_NONE, 0, -1, -1, 0, -1};
+TriggerDelayState p2DelayState = {false, 0, TRIGGER_NONE, 0, -1, -1, 0, -1};
 bool p1ActionApplied = false;
 bool p2ActionApplied = false;
 
@@ -458,6 +462,10 @@ void ProcessTriggerDelays() {
                 p1DelayState.isDelaying = false;
                 p1DelayState.triggerType = TRIGGER_NONE;
                 p1DelayState.pendingMoveID = 0;
+                p1DelayState.chosenAction = -1;
+                p1DelayState.chosenStrength = -1;
+                p1DelayState.chosenMacroSlot = 0;
+                p1DelayState.chosenCustomId = -1;
             } else {
                 LogOut("[AUTO-ACTION] Failed to apply P1 action - invalid moveID address", true);
                 p1DelayState.isDelaying = false;
@@ -489,6 +497,8 @@ void ProcessTriggerDelays() {
                 case TRIGGER_ON_RG: sel = triggerOnRGMacroSlot.load(); break;
                 default: sel = 0; break;
             }
+            // Prefer row-specific macro slot if set
+            if (p2DelayState.chosenMacroSlot > 0) sel = p2DelayState.chosenMacroSlot;
             if (sel > 0 && MacroController::GetState() != MacroController::State::Recording) {
                 sel = CLAMP(sel, 1, MacroController::GetSlotCount());
                 if (!MacroController::IsSlotEmpty(sel)) {
@@ -500,6 +510,10 @@ void ProcessTriggerDelays() {
                         p2DelayState.isDelaying = false;
                         p2DelayState.triggerType = TRIGGER_NONE;
                         p2DelayState.pendingMoveID = 0;
+                        p2DelayState.chosenAction = -1;
+                        p2DelayState.chosenStrength = -1;
+                        p2DelayState.chosenMacroSlot = 0;
+                        p2DelayState.chosenCustomId = -1;
                         return;
                     }
                 }
@@ -585,6 +599,50 @@ void StartTriggerDelay(int playerNum, int triggerType, short moveID, int delayFr
         p2DelayState.triggerType = triggerType;
     }
     
+    // If there are per-trigger option rows configured, pick one now and override
+    // both the chosen action parameters and the delay as needed.
+    if (HasEnabledRows(triggerType)) {
+        // Clear any stale chosen values before setting
+        TriggerDelayState& dstate = (playerNum == 1) ? p1DelayState : p2DelayState;
+        dstate.chosenAction = -1;
+        dstate.chosenStrength = -1;
+        dstate.chosenMacroSlot = 0;
+        dstate.chosenCustomId = -1;
+        TriggerOption picked{};
+        if (PickRandomRow(triggerType, picked)) {
+            // Stash chosen params on the appropriate delay state so ApplyAutoAction can consume them
+            dstate.chosenAction    = picked.action;
+            dstate.chosenStrength  = picked.strength;
+            dstate.chosenMacroSlot = picked.macroSlot;
+            dstate.chosenCustomId  = picked.customId;
+            // Adjust delay according to trigger semantics
+            int newDelay = delayFrames;
+            switch (triggerType) {
+                case TRIGGER_ON_WAKEUP: {
+                    // Wakeup uses a special mapping: 0/1 => 0, else (n-1)
+                    int user = picked.delay;
+                    newDelay = (user <= 1) ? 0 : (user - 1);
+                    break;
+                }
+                case TRIGGER_ON_RG: {
+                    // Caller passed baseDelayF + userDelayF; replace user part with row delay
+                    int userCfg = triggerOnRGDelay.load();
+                    newDelay = delayFrames - userCfg + picked.delay;
+                    if (newDelay < 0) newDelay = 0;
+                    break;
+                }
+                default:
+                    newDelay = picked.delay; // direct replacement in visual frames
+                    break;
+            }
+            delayFrames = newDelay;
+            LogOut("[AUTO-ACTION] Row-selected option applied: action=" + std::to_string(picked.action) +
+                   " strength=" + std::to_string(picked.strength) +
+                   " macroSlot=" + std::to_string(picked.macroSlot) +
+                   " delayF=" + std::to_string(delayFrames), true);
+        }
+    }
+
     // If delay is 0, apply immediately
     if (delayFrames == 0) {
         // Immediate apply path; ApplyAutoAction uses input system, so addr is informational only
@@ -605,6 +663,16 @@ void StartTriggerDelay(int playerNum, int triggerType, short moveID, int delayFr
                 case TRIGGER_AFTER_AIRTECH: sel = triggerAfterAirtechMacroSlot.load(); break;
                 case TRIGGER_ON_RG: sel = triggerOnRGMacroSlot.load(); break;
                 default: sel = 0; break;
+            }
+            // Prefer a row-specific macro slot when present
+            if (playerNum == 2) {
+                if ((triggerType == TRIGGER_AFTER_BLOCK && p2DelayState.chosenMacroSlot > 0) ||
+                    (triggerType == TRIGGER_ON_WAKEUP && p2DelayState.chosenMacroSlot > 0) ||
+                    (triggerType == TRIGGER_AFTER_HITSTUN && p2DelayState.chosenMacroSlot > 0) ||
+                    (triggerType == TRIGGER_AFTER_AIRTECH && p2DelayState.chosenMacroSlot > 0) ||
+                    (triggerType == TRIGGER_ON_RG && p2DelayState.chosenMacroSlot > 0)) {
+                    sel = p2DelayState.chosenMacroSlot;
+                }
             }
             if (sel > 0 && MacroController::GetState() != MacroController::State::Recording) {
                 sel = CLAMP(sel, 1, MacroController::GetSlotCount());
@@ -1428,6 +1496,10 @@ void ClearDelayStatesIfNonActionable() {
         p1DelayState.isDelaying = false;
         p1DelayState.triggerType = TRIGGER_NONE;
         p1DelayState.pendingMoveID = 0;
+        p1DelayState.chosenAction = -1;
+        p1DelayState.chosenStrength = -1;
+        p1DelayState.chosenMacroSlot = 0;
+        p1DelayState.chosenCustomId = -1;
         LogOut("[AUTO-ACTION] Cleared P1 delay - in bad state (moveID " + std::to_string(moveID1) + ")", true);
     }
     
@@ -1435,6 +1507,10 @@ void ClearDelayStatesIfNonActionable() {
         p2DelayState.isDelaying = false;
         p2DelayState.triggerType = TRIGGER_NONE;
         p2DelayState.pendingMoveID = 0;
+        p2DelayState.chosenAction = -1;
+        p2DelayState.chosenStrength = -1;
+        p2DelayState.chosenMacroSlot = 0;
+        p2DelayState.chosenCustomId = -1;
         LogOut("[AUTO-ACTION] Cleared P2 delay - in bad state (moveID " + std::to_string(moveID2) + ")", true);
         // Also clear trigger cooldown so next opportunity can re-arm promptly
         p2TriggerActive = false;
@@ -1444,6 +1520,51 @@ void ClearDelayStatesIfNonActionable() {
 
 // Replace the ApplyAutoAction function with this implementation:
 void ApplyAutoAction(int playerNum, uintptr_t moveIDAddr, short currentMoveID, short prevMoveID) {
+    // Helper: map UI motion index to action type (uses per-trigger strength for normals)
+    auto MapMotionIndexToActionType = [&](int idx, int triggerType)->int {
+        int strength = GetSpecialMoveStrength(ACTION_5A, triggerType); // 0=A,1=B,2=C
+        switch (idx) {
+            case 0: return (strength==0?ACTION_5A:(strength==1?ACTION_5B:ACTION_5C));
+            case 1: return (strength==0?ACTION_2A:(strength==1?ACTION_2B:ACTION_2C));
+            case 2: return (strength==0?ACTION_JA:(strength==1?ACTION_JB:ACTION_JC));
+            case 3: return ACTION_QCF; case 4: return ACTION_DP; case 5: return ACTION_QCB; case 6: return ACTION_421;
+            case 7: return ACTION_SUPER1; case 8: return ACTION_SUPER2; case 9: return ACTION_236236; case 10: return ACTION_214214;
+            case 11: return ACTION_641236; case 12: return ACTION_463214; case 13: return ACTION_412; case 14: return ACTION_22;
+            case 15: return ACTION_4123641236; case 16: return ACTION_6321463214; case 17: return ACTION_JUMP; case 18: return ACTION_BACKDASH;
+            case 19: return ACTION_FORWARD_DASH; case 20: return ACTION_BLOCK; case 21: return ACTION_FINAL_MEMORY;
+            case 22: return (strength==0?ACTION_6A:(strength==1?ACTION_6B:ACTION_6C));
+            case 23: return (strength==0?ACTION_4A:(strength==1?ACTION_4B:ACTION_4C));
+            default: return ACTION_5A;
+        }
+    };
+
+    // Helper: try select a random action type from the pool for this trigger
+    auto TryPickFromPool = [&](int triggerType, int player)->std::pair<bool,int> {
+        uint32_t mask = 0; bool usePool = false;
+        switch (triggerType) {
+            case TRIGGER_AFTER_BLOCK:   mask = triggerAfterBlockActionPoolMask.load(); usePool = triggerAfterBlockUsePool.load(); break;
+            case TRIGGER_ON_WAKEUP:     mask = triggerOnWakeupActionPoolMask.load();   usePool = triggerOnWakeupUsePool.load(); break;
+            case TRIGGER_AFTER_HITSTUN: mask = triggerAfterHitstunActionPoolMask.load(); usePool = triggerAfterHitstunUsePool.load(); break;
+            case TRIGGER_AFTER_AIRTECH: mask = triggerAfterAirtechActionPoolMask.load(); usePool = triggerAfterAirtechUsePool.load(); break;
+            case TRIGGER_ON_RG:         mask = triggerOnRGActionPoolMask.load();       usePool = triggerOnRGUsePool.load(); break;
+            default: break;
+        }
+        if (!usePool || mask == 0) return {false, 0};
+        std::vector<int> candidates;
+        candidates.reserve(8);
+        for (int bit = 0; bit < 24; ++bit) {
+            if (mask & (1u << bit)) {
+                candidates.push_back(MapMotionIndexToActionType(bit, triggerType));
+            }
+        }
+        if (candidates.empty()) return {false, 0};
+        int r = 0;
+        int n = (int)candidates.size();
+        int seed = frameCounter.load() + player*31;
+        if (n > 0) r = (seed < 0 ? -seed : seed) % n;
+        return {true, candidates[r]};
+    };
+
     // If caller didn't provide current move id, try to read it for better restore tracking
     if (currentMoveID == 0 && moveIDAddr != 0) {
         SafeReadMemory(moveIDAddr, &currentMoveID, sizeof(short));
@@ -1453,25 +1574,37 @@ void ApplyAutoAction(int playerNum, uintptr_t moveIDAddr, short currentMoveID, s
 
     // Get the appropriate action for this trigger
     int actionType = 0;
-    switch (triggerType) {
-        case TRIGGER_AFTER_BLOCK:
-            actionType = triggerAfterBlockAction.load();
-            break;
-        case TRIGGER_ON_WAKEUP:
-            actionType = triggerOnWakeupAction.load();
-            break;
-        case TRIGGER_AFTER_HITSTUN:
-            actionType = triggerAfterHitstunAction.load();
-            break;
-        case TRIGGER_AFTER_AIRTECH:
-            actionType = triggerAfterAirtechAction.load();
-            break;
-        case TRIGGER_ON_RG:
-            actionType = triggerOnRGAction.load();
-            break;
-        default:
-            actionType = ACTION_5A; // Default to 5A
-            break;
+    // Prefer row-based chosen action if one was set at arming time
+    const TriggerDelayState& dstate = (playerNum == 1) ? p1DelayState : p2DelayState;
+    if (dstate.chosenAction >= 0) {
+        actionType = dstate.chosenAction;
+    } else {
+        // Else prefer multi-pool selection if enabled and configured
+        auto poolPick = TryPickFromPool(triggerType, playerNum);
+        if (poolPick.first) {
+            actionType = poolPick.second;
+        } else {
+            switch (triggerType) {
+                case TRIGGER_AFTER_BLOCK:
+                    actionType = triggerAfterBlockAction.load();
+                    break;
+                case TRIGGER_ON_WAKEUP:
+                    actionType = triggerOnWakeupAction.load();
+                    break;
+                case TRIGGER_AFTER_HITSTUN:
+                    actionType = triggerAfterHitstunAction.load();
+                    break;
+                case TRIGGER_AFTER_AIRTECH:
+                    actionType = triggerAfterAirtechAction.load();
+                    break;
+                case TRIGGER_ON_RG:
+                    actionType = triggerOnRGAction.load();
+                    break;
+                default:
+                    actionType = ACTION_5A; // Default to 5A
+                    break;
+            }
+        }
     }
 
     // Special early handling: Final Memory bypasses motion mapping and injects bespoke pattern
@@ -1525,7 +1658,7 @@ void ApplyAutoAction(int playerNum, uintptr_t moveIDAddr, short currentMoveID, s
     }
 
     // Determine strength BEFORE converting to motion; strength drives motionType selection
-    int resolvedStrength = GetSpecialMoveStrength(actionType, triggerType); // 0=A 1=B 2=C
+    int resolvedStrength = (dstate.chosenStrength >= 0) ? dstate.chosenStrength : GetSpecialMoveStrength(actionType, triggerType); // 0=A 1=B 2=C
     // Convert action to motion type and determine button mask
     int motionType = ConvertTriggerActionToMotion(actionType, triggerType);
     int buttonMask = 0;
@@ -1589,14 +1722,16 @@ void ApplyAutoAction(int playerNum, uintptr_t moveIDAddr, short currentMoveID, s
     // Special handling: Jump must be injected via immediate input register with direction
     if (actionType == ACTION_JUMP) {
         // Determine jump direction: 0=neutral, 1=forward, 2=backward from strength slot
-        int dir = 0;
-        switch (triggerType) {
-            case TRIGGER_AFTER_BLOCK: dir = triggerAfterBlockStrength.load(); break;
-            case TRIGGER_ON_WAKEUP: dir = triggerOnWakeupStrength.load(); break;
-            case TRIGGER_AFTER_HITSTUN: dir = triggerAfterHitstunStrength.load(); break;
-            case TRIGGER_AFTER_AIRTECH: dir = triggerAfterAirtechStrength.load(); break;
-            case TRIGGER_ON_RG: dir = triggerOnRGStrength.load(); break;
-            default: dir = 0; break;
+        int dir = (dstate.chosenStrength >= 0) ? dstate.chosenStrength : 0;
+        if (dstate.chosenStrength < 0) {
+            switch (triggerType) {
+                case TRIGGER_AFTER_BLOCK: dir = triggerAfterBlockStrength.load(); break;
+                case TRIGGER_ON_WAKEUP: dir = triggerOnWakeupStrength.load(); break;
+                case TRIGGER_AFTER_HITSTUN: dir = triggerAfterHitstunStrength.load(); break;
+                case TRIGGER_AFTER_AIRTECH: dir = triggerAfterAirtechStrength.load(); break;
+                case TRIGGER_ON_RG: dir = triggerOnRGStrength.load(); break;
+                default: dir = 0; break;
+            }
         }
 
         // Build immediate mask: UP plus optional left/right based on facing and dir
@@ -2398,9 +2533,9 @@ void ClearAllAutoActionTriggers() {
         s_lastClearFrame = nowF;
     }
 
-    // Reset delay states
-    p1DelayState = {false, 0, TRIGGER_NONE, 0};
-    p2DelayState = {false, 0, TRIGGER_NONE, 0};
+    // Reset delay states (including chosen row fields)
+    p1DelayState = {false, 0, TRIGGER_NONE, 0, -1, -1, 0, -1};
+    p2DelayState = {false, 0, TRIGGER_NONE, 0, -1, -1, 0, -1};
 
     // Reset action applied markers
     p1ActionApplied = false;
@@ -2439,4 +2574,39 @@ void ClearAllAutoActionTriggers() {
     }
     // Invalidate cached character IDs since a full clear typically aligns with character select transitions
     InvalidateCachedCharacterIDs("trigger clear");
+}
+
+// -------------------------
+// Row selection helpers
+// -------------------------
+static inline bool HasEnabledRows(int triggerType) {
+    auto countEnabled = [](const TriggerOption* arr, int cnt){ int n=0; for (int i=0;i<cnt;i++) if (arr[i].enabled) ++n; return n; };
+    switch (triggerType) {
+        case TRIGGER_AFTER_BLOCK:   return countEnabled(g_afterBlockOptions, g_afterBlockOptionCount) > 0;
+        case TRIGGER_ON_WAKEUP:     return countEnabled(g_onWakeupOptions, g_onWakeupOptionCount) > 0;
+        case TRIGGER_AFTER_HITSTUN: return countEnabled(g_afterHitstunOptions, g_afterHitstunOptionCount) > 0;
+        case TRIGGER_AFTER_AIRTECH: return countEnabled(g_afterAirtechOptions, g_afterAirtechOptionCount) > 0;
+        case TRIGGER_ON_RG:         return countEnabled(g_onRGOptions, g_onRGOptionCount) > 0;
+        default: return false;
+    }
+}
+
+static inline bool PickRandomRow(int triggerType, TriggerOption &out) {
+    const TriggerOption* arr = nullptr; int cnt = 0;
+    switch (triggerType) {
+        case TRIGGER_AFTER_BLOCK:   arr = g_afterBlockOptions;   cnt = g_afterBlockOptionCount; break;
+        case TRIGGER_ON_WAKEUP:     arr = g_onWakeupOptions;     cnt = g_onWakeupOptionCount; break;
+        case TRIGGER_AFTER_HITSTUN: arr = g_afterHitstunOptions; cnt = g_afterHitstunOptionCount; break;
+        case TRIGGER_AFTER_AIRTECH: arr = g_afterAirtechOptions; cnt = g_afterAirtechOptionCount; break;
+        case TRIGGER_ON_RG:         arr = g_onRGOptions;         cnt = g_onRGOptionCount; break;
+        default: return false;
+    }
+    if (!arr || cnt <= 0) return false;
+    int idxs[MAX_TRIGGER_OPTIONS]; int n=0;
+    for (int i=0;i<cnt && i<MAX_TRIGGER_OPTIONS;i++) if (arr[i].enabled) idxs[n++] = i;
+    if (n <= 0) return false;
+    int seed = frameCounter.load() + triggerType * 13;
+    int pick = (seed < 0 ? -seed : seed) % n;
+    out = arr[idxs[pick]];
+    return true;
 }

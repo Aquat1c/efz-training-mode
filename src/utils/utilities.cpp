@@ -295,6 +295,31 @@ void ResetDisplayDataToDefaults() {
     displayData.p1MichiruSubframe = -1;
     displayData.p2MichiruFrame = -1;
     displayData.p2MichiruSubframe = -1;
+    // Multi-action pools (defaults: disabled, empty masks)
+    displayData.afterBlockActionPoolMask   = 0;
+    displayData.onWakeupActionPoolMask     = 0;
+    displayData.afterHitstunActionPoolMask = 0;
+    displayData.afterAirtechActionPoolMask = 0;
+    displayData.onRGActionPoolMask         = 0;
+    displayData.afterBlockUseActionPool    = false;
+    displayData.onWakeupUseActionPool      = false;
+    displayData.afterHitstunUseActionPool  = false;
+    displayData.afterAirtechUseActionPool  = false;
+    displayData.onRGUseActionPool          = false;
+
+    // Per-trigger option rows (randomized selection)
+    displayData.afterBlockOptionCount = 0;
+    displayData.onWakeupOptionCount = 0;
+    displayData.afterHitstunOptionCount = 0;
+    displayData.afterAirtechOptionCount = 0;
+    displayData.onRGOptionCount = 0;
+    for (int i = 0; i < MAX_TRIGGER_OPTIONS; ++i) {
+        displayData.afterBlockOptions[i]   = { false, ACTION_5A, 0, 0, (int)BASE_ATTACK_5A, 0 };
+        displayData.onWakeupOptions[i]     = { false, ACTION_5A, 0, 0, (int)BASE_ATTACK_5A, 0 };
+        displayData.afterHitstunOptions[i] = { false, ACTION_5A, 0, 0, (int)BASE_ATTACK_5A, 0 };
+        displayData.afterAirtechOptions[i] = { false, ACTION_JA, 0, 0, (int)BASE_ATTACK_JA, 0 };
+        displayData.onRGOptions[i]         = { false, ACTION_5A, 0, 0, (int)BASE_ATTACK_5A, 0 };
+    }
     
     LogOut("[SYSTEM] DisplayData reset to defaults", true);
 }
@@ -408,8 +433,8 @@ void DisableFeatures() {
     // Reset all core logic states
     ResetFrameAdvantageState();
     ResetActionFlags();
-    p1DelayState = {false, 0, TRIGGER_NONE, 0};
-    p2DelayState = {false, 0, TRIGGER_NONE, 0};
+    p1DelayState = {false, 0, TRIGGER_NONE, 0, -1, -1, 0, -1};
+    p2DelayState = {false, 0, TRIGGER_NONE, 0, -1, -1, 0, -1};
 
     g_featuresEnabled.store(false);
     
@@ -694,6 +719,30 @@ std::atomic<int> triggerOnWakeupAction(ACTION_5A);
 std::atomic<int> triggerAfterHitstunAction(ACTION_5A);
 std::atomic<int> triggerAfterAirtechAction(ACTION_5A);
 std::atomic<int> triggerOnRGAction(ACTION_5A);
+
+// Multi-action pools per trigger (disabled by default)
+std::atomic<uint32_t> triggerAfterBlockActionPoolMask{0};
+std::atomic<uint32_t> triggerOnWakeupActionPoolMask{0};
+std::atomic<uint32_t> triggerAfterHitstunActionPoolMask{0};
+std::atomic<uint32_t> triggerAfterAirtechActionPoolMask{0};
+std::atomic<uint32_t> triggerOnRGActionPoolMask{0};
+std::atomic<bool>     triggerAfterBlockUsePool{false};
+std::atomic<bool>     triggerOnWakeupUsePool{false};
+std::atomic<bool>     triggerAfterHitstunUsePool{false};
+std::atomic<bool>     triggerAfterAirtechUsePool{false};
+std::atomic<bool>     triggerOnRGUsePool{false};
+
+// Runtime per-trigger option rows (populated on Apply)
+int           g_afterBlockOptionCount = 0;
+TriggerOption g_afterBlockOptions[MAX_TRIGGER_OPTIONS] = {};
+int           g_onWakeupOptionCount = 0;
+TriggerOption g_onWakeupOptions[MAX_TRIGGER_OPTIONS] = {};
+int           g_afterHitstunOptionCount = 0;
+TriggerOption g_afterHitstunOptions[MAX_TRIGGER_OPTIONS] = {};
+int           g_afterAirtechOptionCount = 0;
+TriggerOption g_afterAirtechOptions[MAX_TRIGGER_OPTIONS] = {};
+int           g_onRGOptionCount = 0;
+TriggerOption g_onRGOptions[MAX_TRIGGER_OPTIONS] = {};
 
 // Forward dash follow-up selection (0=None, 1=5A,2=5B,3=5C,4=2A,5=2B,6=2C)
 std::atomic<int> forwardDashFollowup(0);
