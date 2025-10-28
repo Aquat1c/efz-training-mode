@@ -559,6 +559,9 @@ namespace ImGuiGui {
     void RenderAutoActionTab() {
         // Sub-tabs: Triggers | Macros
     if (ImGui::BeginTabBar("##AutoActionTabs", ImGuiTabBarFlags_None)) {
+                // Track Macros tab open/close to trigger reload on entry
+                static bool s_macrosActivePrev = false;
+                bool macrosActiveThisFrame = false;
                 int rq2 = guiState.requestedAutoActionSubTab; guiState.requestedAutoActionSubTab = -1;
                 // Triggers sub-tab
                 ImGuiTabItemFlags _setTrig = (rq2 == 0) ? ImGuiTabItemFlags_SetSelected : 0;
@@ -1034,6 +1037,8 @@ namespace ImGuiGui {
             // Macros sub-tab (moved from main tab bar)
             ImGuiTabItemFlags _setMacros = (rq2 == 1) ? ImGuiTabItemFlags_SetSelected : 0;
             if (ImGui::BeginTabItem("Macros", nullptr, _setMacros)) {
+                bool enteringMacros = !s_macrosActivePrev;
+                macrosActiveThisFrame = true;
                 guiState.autoActionSubTab = 1;
                 const auto& cfg = Config::GetSettings();
                 ImGui::SeparatorText("Macro Controller");
@@ -1061,6 +1066,284 @@ namespace ImGuiGui {
                 ImGui::SameLine();
                 if (ImGui::Button("Next Slot")) { MacroController::NextSlot(); }
                 ImGui::Spacing();
+                // Serialized editor + history
+                static bool s_includeBuffers = true;
+                static int s_lastSlot = -1;
+                static bool s_lastInclude = true;
+                static std::string s_macroText;
+                static std::vector<char> s_textBuf; // large buffer for editing
+                static std::string s_applyError;
+                static std::vector<std::string> s_undoStack;
+                static std::vector<std::string> s_redoStack;
+                static std::string s_prevText; // last committed text for change detection
+                static bool s_forceReload = false;
+                auto ensureBufferFromText = [&](const std::string& txt){
+                    const size_t minCap = 8192; // 8KB editing space
+                    size_t cap = (txt.size() + 1024 > minCap) ? (txt.size() + 1024) : minCap;
+                    s_textBuf.assign(cap, '\0');
+                    if (!txt.empty()) memcpy(s_textBuf.data(), txt.data(), txt.size());
+                };
+                int curSlot = MacroController::GetCurrentSlot();
+                if (enteringMacros) s_forceReload = true;
+                // Reload text when slot changes or includeBuffers toggles
+                if (s_forceReload || s_lastSlot != curSlot || s_lastInclude != s_includeBuffers) {
+                    s_macroText = MacroController::SerializeSlot(curSlot, s_includeBuffers);
+                    ensureBufferFromText(s_macroText);
+                    s_undoStack.clear(); s_redoStack.clear(); s_prevText = s_macroText; s_applyError.clear();
+                    s_lastSlot = curSlot; s_lastInclude = s_includeBuffers;
+                    s_forceReload = false;
+                }
+                ImGui::SeparatorText("Serialized Macro");
+                ImGui::Checkbox("Include Buffers", &s_includeBuffers);
+                ImGui::SameLine();
+                if (ImGui::SmallButton("Reload from Slot")) {
+                    s_macroText = MacroController::SerializeSlot(curSlot, s_includeBuffers);
+                    ensureBufferFromText(s_macroText);
+                    s_undoStack.clear(); s_redoStack.clear(); s_prevText = s_macroText; s_applyError.clear();
+                }
+                ImGui::SameLine();
+                if (ImGui::SmallButton("Apply to Slot")) {
+                    std::string err;
+                    // Get text from buffer
+                    std::string textToApply = s_textBuf.data();
+                    if (!MacroController::DeserializeSlot(curSlot, textToApply, err)) {
+                        s_applyError = err;
+                    } else {
+                        s_applyError.clear();
+                        // Refresh serialized text from parsed slot for canonical formatting
+                        s_macroText = MacroController::SerializeSlot(curSlot, s_includeBuffers);
+                        ensureBufferFromText(s_macroText);
+                        s_undoStack.clear(); s_redoStack.clear(); s_prevText = s_macroText;
+                        DirectDrawHook::AddMessage("Applied macro to slot", "MACRO", RGB(180,255,180), 1000, 0, 120);
+                    }
+                }
+                // Second row of controls
+                ImGui::Dummy(ImVec2(1, 2));
+                if (ImGui::SmallButton("Clear Slot")) {
+                    std::string err;
+                    if (MacroController::DeserializeSlot(curSlot, std::string(), err)) {
+                        s_macroText = MacroController::SerializeSlot(curSlot, s_includeBuffers);
+                        ensureBufferFromText(s_macroText);
+                        s_undoStack.clear(); s_redoStack.clear(); s_prevText = s_macroText; s_applyError.clear();
+                        DirectDrawHook::AddMessage("Cleared macro slot", "MACRO", RGB(255,220,120), 900, 0, 120);
+                    } else {
+                        s_applyError = err;
+                    }
+                }
+                ImGui::SameLine();
+                bool canUndo = !s_undoStack.empty();
+                bool canRedo = !s_redoStack.empty();
+                if (!canUndo) ImGui::BeginDisabled();
+                if (ImGui::SmallButton("Undo")) {
+                    if (!s_undoStack.empty()) {
+                        s_redoStack.push_back(s_macroText);
+                        s_macroText = s_undoStack.back(); s_undoStack.pop_back();
+                        ensureBufferFromText(s_macroText);
+                        s_prevText = s_macroText;
+                    }
+                }
+                if (!canUndo) ImGui::EndDisabled();
+                ImGui::SameLine();
+                if (!canRedo) ImGui::BeginDisabled();
+                if (ImGui::SmallButton("Redo")) {
+                    if (!s_redoStack.empty()) {
+                        s_undoStack.push_back(s_macroText);
+                        s_macroText = s_redoStack.back(); s_redoStack.pop_back();
+                        ensureBufferFromText(s_macroText);
+                        s_prevText = s_macroText;
+                    }
+                }
+                if (!canRedo) ImGui::EndDisabled();
+                ImGui::SameLine();
+                if (ImGui::SmallButton("Insert Sample")) {
+                    // Sample: 5A, wait 3f, 5B, wait 3f, 5C, wait 3f, then 2,3,6B
+                    std::string sample = "EFZMACRO 1 5A 5x3 5B 5x3 5C 5x3 2 3 6B";
+                    // Push current into undo and clear redo
+                    s_undoStack.push_back(s_macroText);
+                    s_redoStack.clear();
+                    s_macroText = sample;
+                    ensureBufferFromText(s_macroText);
+                    s_prevText = s_macroText;
+                    s_applyError.clear();
+                }
+                if (!s_applyError.empty()) {
+                    ImGui::TextColored(ImVec4(1.0f,0.4f,0.4f,1.0f), "Error: %s", s_applyError.c_str());
+                }
+                ImVec2 availEd = ImGui::GetContentRegionAvail();
+                // Reserve space for hint text and hotkeys section at bottom (~100px), ensure minimum 200px editor height
+                float editorH = (std::max)(200.0f, availEd.y - 100.0f);
+                float editorW = availEd.x;
+                
+                // Custom word-wrapped editor with manual line breaking
+                ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.10f, 0.10f, 0.10f, 0.94f));
+                ImGui::BeginChild("##macro_editor_wrapper", ImVec2(editorW, editorH), true);
+                
+                // Calculate wrapped lines for display
+                auto wrapText = [](const std::string& text, float wrapWidth, ImFont* font, float fontSize) -> std::vector<std::string> {
+                    std::vector<std::string> lines;
+                    if (text.empty()) {
+                        lines.push_back("");
+                        return lines;
+                    }
+                    
+                    std::string currentLine;
+                    std::string word;
+                    
+                    for (size_t i = 0; i < text.size(); ++i) {
+                        char c = text[i];
+                        
+                        if (c == '\n') {
+                            // Explicit newline
+                            currentLine += word;
+                            lines.push_back(currentLine);
+                            currentLine.clear();
+                            word.clear();
+                        } else if (c == ' ') {
+                            // Space - potential break point
+                            std::string testLine = currentLine + word + " ";
+                            ImVec2 size = font->CalcTextSizeA(fontSize, FLT_MAX, 0.0f, testLine.c_str());
+                            
+                            if (size.x > wrapWidth && !currentLine.empty()) {
+                                // Line too long, break before this word
+                                lines.push_back(currentLine);
+                                currentLine = word + " ";
+                            } else {
+                                currentLine += word + " ";
+                            }
+                            word.clear();
+                        } else {
+                            word += c;
+                        }
+                    }
+                    
+                    // Add remaining text
+                    currentLine += word;
+                    if (!currentLine.empty()) {
+                        lines.push_back(currentLine);
+                    }
+                    
+                    return lines;
+                };
+                
+                static bool s_editMode = false;
+                ImFont* font = ImGui::GetFont();
+                float fontSize = ImGui::GetFontSize();
+                float contentWidth = ImGui::GetContentRegionAvail().x - 10.0f;
+                
+                if (!s_editMode) {
+                    // Display mode with proper word wrapping
+                    auto wrappedLines = wrapText(s_macroText, contentWidth, font, fontSize);
+                    
+                    for (const auto& line : wrappedLines) {
+                        ImGui::TextUnformatted(line.c_str());
+                    }
+                    
+                    // Click to enter edit mode
+                    if (ImGui::IsWindowHovered() && ImGui::IsMouseClicked(0)) {
+                        s_editMode = true;
+                        // When entering edit mode, insert newlines for visual wrapping
+                        auto wrappedLines = wrapText(s_macroText, contentWidth, font, fontSize);
+                        std::string wrappedText;
+                        for (size_t i = 0; i < wrappedLines.size(); ++i) {
+                            wrappedText += wrappedLines[i];
+                            if (i < wrappedLines.size() - 1) {
+                                // Add newline if the line doesn't already end with one
+                                if (!wrappedLines[i].empty() && wrappedLines[i].back() != '\n') {
+                                    wrappedText += '\n';
+                                }
+                            }
+                        }
+                        s_macroText = wrappedText;
+                        strncpy_s(s_textBuf.data(), s_textBuf.size(), s_macroText.c_str(), _TRUNCATE);
+                    }
+                } else {
+                    // Edit mode - use InputTextMultiline
+                    ImGui::PushItemWidth(-1);
+                    ImGuiInputTextFlags editorFlags = ImGuiInputTextFlags_AllowTabInput;
+                    
+                    // Auto-focus on first frame of edit mode
+                    static bool s_needsFocus = false;
+                    if (s_needsFocus) {
+                        ImGui::SetKeyboardFocusHere();
+                        s_needsFocus = false;
+                    }
+                    
+                    if (ImGui::InputTextMultiline("##macro_edit", s_textBuf.data(), s_textBuf.size(), 
+                        ImVec2(-1, -1), editorFlags)) {
+                        std::string newText = s_textBuf.data();
+                        if (newText != s_macroText) {
+                            s_undoStack.push_back(s_macroText);
+                            s_redoStack.clear();
+                            s_macroText = newText;
+                            s_prevText = s_macroText;
+                        }
+                    }
+                    
+                    ImGui::PopItemWidth();
+                    
+                    // Exit edit mode on Escape or when losing focus
+                    if (ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+                        s_editMode = false;
+                        // When exiting edit mode, remove newlines but preserve single spaces
+                        std::string unwrapped;
+                        bool prevWasSpace = false;
+                        for (char c : s_macroText) {
+                            if (c == '\n') {
+                                if (!prevWasSpace && !unwrapped.empty()) {
+                                    unwrapped += ' ';
+                                    prevWasSpace = true;
+                                }
+                            } else if (c == ' ') {
+                                if (!prevWasSpace) {
+                                    unwrapped += ' ';
+                                    prevWasSpace = true;
+                                }
+                            } else {
+                                unwrapped += c;
+                                prevWasSpace = false;
+                            }
+                        }
+                        s_macroText = unwrapped;
+                        strncpy_s(s_textBuf.data(), s_textBuf.size(), s_macroText.c_str(), _TRUNCATE);
+                    }
+                    if (!ImGui::IsItemActive() && !ImGui::IsItemFocused() && ImGui::IsMouseClicked(0) && !ImGui::IsItemHovered()) {
+                        s_editMode = false;
+                        // When exiting edit mode, remove newlines but preserve single spaces
+                        std::string unwrapped;
+                        bool prevWasSpace = false;
+                        for (char c : s_macroText) {
+                            if (c == '\n') {
+                                if (!prevWasSpace && !unwrapped.empty()) {
+                                    unwrapped += ' ';
+                                    prevWasSpace = true;
+                                }
+                            } else if (c == ' ') {
+                                if (!prevWasSpace) {
+                                    unwrapped += ' ';
+                                    prevWasSpace = true;
+                                }
+                            } else {
+                                unwrapped += c;
+                                prevWasSpace = false;
+                            }
+                        }
+                        s_macroText = unwrapped;
+                        strncpy_s(s_textBuf.data(), s_textBuf.size(), s_macroText.c_str(), _TRUNCATE);
+                    }
+                }
+                
+                ImGui::EndChild();
+                ImGui::PopStyleColor();
+                
+                if (!s_editMode) {
+                    ImGui::TextDisabled("(Click text to edit)");
+                }
+                {
+                    ImVec4 disabled = ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled);
+                    ImGui::PushStyleColor(ImGuiCol_Text, disabled);
+                    ImGui::TextWrapped("Hint: Use numpad directions with A/B/C/D and repeats, e.g. 5Ax50, 6, or 2 3 6C. Optional per-tick buffers: {3: 5 0x9A 6A}");
+                    ImGui::PopStyleColor();
+                }
                 ImGui::SeparatorText("Hotkeys");
                 ImGui::BulletText("Record: %s", GetKeyName(cfg.macroRecordKey).c_str());
                 ImGui::BulletText("Play: %s", GetKeyName(cfg.macroPlayKey).c_str());
@@ -1069,6 +1352,8 @@ namespace ImGuiGui {
             }
 
             ImGui::EndTabBar();
+            // Remember whether Macros tab was active this frame
+            s_macrosActivePrev = macrosActiveThisFrame;
         }
     }
 
