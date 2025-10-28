@@ -16,6 +16,15 @@ namespace Config {
     float uiScale;               // NEW: UI scale for ImGui window (e.g., 0.80..1.20)
     int uiFontMode;              // NEW: UI font selection (0=ImGui default, 1=Segoe UI)
 
+    // ImGui navigation tuning
+    float guiNavAnalogThreshold; // Analog threshold (0..1) to treat stick as a digital dpad for fallback nav
+    float guiNavRepeatDelay;     // Seconds before key repeat starts for nav
+    float guiNavRepeatRate;      // Seconds between repeats once repeating
+
+    // ImGui scrolling via right stick
+    bool  guiScrollRightStickEnable; // Enable right-stick to mouse-wheel mapping in GUI
+    float guiScrollRightStickScale;  // Notches per second at full tilt (vertical & horizontal)
+
     // Virtual cursor (software cursor driven by gamepad) settings
     bool enableVirtualCursor;          // Master enable/disable
     bool virtualCursorAllowWindowed;   // Allow usage when not fullscreen
@@ -61,6 +70,14 @@ namespace Config {
     int gpMacroSlotButton;      // Default: LT (virtual trigger 0x10000)
         int gpToggleMenuButton;     // Default: XINPUT_GAMEPAD_START
         int gpToggleImGuiButton;    // Default: -1 (disabled)
+
+    // UI navigation/controller bindings (rebindable)
+    // Top-level tabs cycle (logical order: Main, Auto Action, Settings, Character, Help)
+    int gpUiTopTabPrev;         // Default: LB
+    int gpUiTopTabNext;         // Default: RB
+    // Active sub-tab cycle within current tab (e.g., Help pages, Main Menu sub-tabs)
+    int gpUiSubTabPrev;         // Default: LT
+    int gpUiSubTabNext;         // Default: RT
 
         // RF freeze behavior
         bool freezeRFAfterContRec;       // Start RF freeze after Continuous Recovery enforcement

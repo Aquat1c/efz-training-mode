@@ -220,6 +220,20 @@ namespace Config {
             file << "; UI font: 0 = ImGui default font, 1 = Segoe UI (Windows)\n";
             file << "uiFont = 0\n\n";
 
+            // ImGui navigation tuning
+            file << "; ImGui navigation tuning\n";
+            file << "; Analog threshold for keyboard-fallback nav (0..1). Default 0.45\n";
+            file << "guiNavAnalogThreshold = 0.45\n";
+            file << "; Key repeat timings (seconds). Defaults 0.30 delay, 0.06 rate\n";
+            file << "guiNavRepeatDelay = 0.30\n";
+            file << "guiNavRepeatRate = 0.06\n\n";
+
+            // Right-stick scrolling
+            file << "; Right-stick to mouse wheel (GUI)\n";
+            file << "guiScrollRightStickEnable = 1\n";
+            file << "; Notches per second at full tilt (both axes). Default 10.0\n";
+            file << "guiScrollRightStickScale = 10.0\n\n";
+
             // RF freeze behavior
             file << "; RF freeze behavior (after Continuous Recovery)\n";
             file << "; Start freezing RF after enforcement (1=yes, 0=no)\n";
@@ -308,6 +322,14 @@ namespace Config {
             file << "gpMacroSlotButton=LT\n";        // Cycle macro slot (was B)
             file << "gpToggleMenuButton=START\n";    // Open training menu
             file << "gpToggleImGuiButton=-1\n";      // Toggle overlay (disabled by default)
+
+            // UI navigation bindings (controller)
+            file << "; UI navigation: cycle tabs/sub-tabs (rebindable)\n";
+            file << "; Defaults: LB/RB = previous/next top-level tab; LT/RT = previous/next active sub-tab\n";
+            file << "gpUiTopTabPrev=LB\n";
+            file << "gpUiTopTabNext=RB\n";
+            file << "gpUiSubTabPrev=LT\n";
+            file << "gpUiSubTabNext=RT\n";
             
             file.close();
             
@@ -414,6 +436,43 @@ namespace Config {
                 settings.virtualCursorAccelPower = p;
             }
 
+            // ImGui navigation tuning
+            {
+                auto sectionIt = iniData.find("general");
+                float thr = 0.45f;
+                float repDelay = 0.30f;
+                float repRate = 0.06f;
+                bool scrollEnable = true;
+                float scrollScale = 10.0f;
+                if (sectionIt != iniData.end()) {
+                    auto getf = [&](const char* k, float defv){
+                        auto it = sectionIt->second.find(k);
+                        if (it != sectionIt->second.end()) { try { return std::stof(it->second); } catch (...) {} }
+                        return defv;
+                    };
+                    auto geti = [&](const char* k, bool defv){
+                        auto it = sectionIt->second.find(k);
+                        if (it != sectionIt->second.end()) { return it->second == "1" || it->second == "true"; }
+                        return defv;
+                    };
+                    thr = getf("guinavanalogthreshold", 0.45f);
+                    repDelay = getf("guinavrepeatdelay", 0.30f);
+                    repRate = getf("guinavrepeatrate", 0.06f);
+                    scrollEnable = geti("guiscrollrightstickenable", true);
+                    scrollScale = getf("guiscrollrightstickscale", 10.0f);
+                }
+                // Clamp sensible ranges
+                if (thr < 0.05f) thr = 0.05f; if (thr > 0.95f) thr = 0.95f;
+                if (repDelay < 0.05f) repDelay = 0.05f; if (repDelay > 1.00f) repDelay = 1.00f;
+                if (repRate < 0.01f) repRate = 0.01f; if (repRate > 0.50f) repRate = 0.50f;
+                if (scrollScale < 1.0f) scrollScale = 1.0f; if (scrollScale > 50.0f) scrollScale = 50.0f;
+                settings.guiNavAnalogThreshold = thr;
+                settings.guiNavRepeatDelay = repDelay;
+                settings.guiNavRepeatRate = repRate;
+                settings.guiScrollRightStickEnable = scrollEnable;
+                settings.guiScrollRightStickScale = scrollScale;
+            }
+
             // Controller index (which XInput device controls the mod / virtual cursor)
             settings.controllerIndex = -1; // default: all
             {
@@ -468,6 +527,11 @@ namespace Config {
             settings.gpMacroSlotButton      = getPad("gpmacroslotbutton", "LT");
             settings.gpToggleMenuButton     = getPad("gptogglemenubutton", "START");
             settings.gpToggleImGuiButton    = getPad("gptoggleimguibutton", "-1");
+            // UI navigation bindings (controller)
+            settings.gpUiTopTabPrev         = getPad("gpuitoptabprev", "LB");
+            settings.gpUiTopTabNext         = getPad("gpuitoptabnext", "RB");
+            settings.gpUiSubTabPrev         = getPad("gpuisubtabprev", "LT");
+            settings.gpUiSubTabNext         = getPad("gpuisubtabnext", "RT");
             LogOut("[CONFIG] Settings loaded successfully", true);
             LogOut("[CONFIG] UseImGui: " + std::to_string(settings.useImGui), true);
             LogOut("[CONFIG] DetailedLogging: " + std::to_string(settings.detailedLogging), true);
@@ -496,6 +560,10 @@ namespace Config {
             LogOut("[CONFIG] gpMacroSlotButton: " + GetGamepadButtonName(settings.gpMacroSlotButton), true);
             LogOut("[CONFIG] gpToggleMenuButton: " + GetGamepadButtonName(settings.gpToggleMenuButton), true);
             LogOut("[CONFIG] gpToggleImGuiButton: " + GetGamepadButtonName(settings.gpToggleImGuiButton), true);
+            LogOut("[CONFIG] gpUiTopTabPrev: " + GetGamepadButtonName(settings.gpUiTopTabPrev), true);
+            LogOut("[CONFIG] gpUiTopTabNext: " + GetGamepadButtonName(settings.gpUiTopTabNext), true);
+            LogOut("[CONFIG] gpUiSubTabPrev: " + GetGamepadButtonName(settings.gpUiSubTabPrev), true);
+            LogOut("[CONFIG] gpUiSubTabNext: " + GetGamepadButtonName(settings.gpUiSubTabNext), true);
             LogOut("[CONFIG] enableFpsDiagnostics: " + std::to_string(settings.enableFpsDiagnostics), true);
             LogOut("[CONFIG] uiScale: " + std::to_string(settings.uiScale), true);
             LogOut("[CONFIG] uiFontMode: " + std::to_string(settings.uiFontMode), true);
@@ -542,6 +610,15 @@ namespace Config {
             file << "uiScale = " << settings.uiScale << "\n\n";
             file << "; UI font: 0 = ImGui default font, 1 = Segoe UI (Windows)\n";
             file << "uiFont = " << settings.uiFontMode << "\n\n";
+            // ImGui navigation tuning
+            file << "; ImGui navigation tuning\n";
+            file << "guiNavAnalogThreshold = " << settings.guiNavAnalogThreshold << "\n";
+            file << "guiNavRepeatDelay = " << settings.guiNavRepeatDelay << "\n";
+            file << "guiNavRepeatRate = " << settings.guiNavRepeatRate << "\n\n";
+            // Right-stick scrolling
+            file << "; Right-stick to mouse wheel (GUI)\n";
+            file << "guiScrollRightStickEnable = " << (settings.guiScrollRightStickEnable?"1":"0") << "\n";
+            file << "guiScrollRightStickScale = " << settings.guiScrollRightStickScale << "\n\n";
             // RF freeze behavior
             file << "; RF freeze behavior (after Continuous Recovery)\n";
             file << "freezeRFAfterContRec = " << (settings.freezeRFAfterContRec?"1":"0") << "\n";
@@ -600,6 +677,10 @@ namespace Config {
             writePad("gpMacroSlotButton", settings.gpMacroSlotButton);
             writePad("gpToggleMenuButton", settings.gpToggleMenuButton);
             writePad("gpToggleImGuiButton", settings.gpToggleImGuiButton);
+            writePad("gpUiTopTabPrev", settings.gpUiTopTabPrev);
+            writePad("gpUiTopTabNext", settings.gpUiTopTabNext);
+            writePad("gpUiSubTabPrev", settings.gpUiSubTabPrev);
+            writePad("gpUiSubTabNext", settings.gpUiSubTabNext);
 
             file.close();
             if (file.fail()) {
@@ -641,6 +722,11 @@ namespace Config {
                 try { settings.uiFontMode = std::stoi(value); } catch (...) {}
                 if (settings.uiFontMode < 0 || settings.uiFontMode > 1) settings.uiFontMode = 0;
             }
+            if (k == "guinavanalogthreshold") { try { settings.guiNavAnalogThreshold = std::stof(value); } catch(...){} }
+            if (k == "guinavrepeatdelay") { try { settings.guiNavRepeatDelay = std::stof(value); } catch(...){} }
+            if (k == "guinavrepeatrate") { try { settings.guiNavRepeatRate = std::stof(value); } catch(...){} }
+            if (k == "guiscrollrightstickenable") settings.guiScrollRightStickEnable = (value == "1");
+            if (k == "guiscrollrightstickscale") { try { settings.guiScrollRightStickScale = std::stof(value); } catch(...){} }
             if (k == "enablevirtualcursor") settings.enableVirtualCursor = (value == "1");
             if (k == "virtualcursorallowwindowed") settings.virtualCursorAllowWindowed = (value == "1");
             if (k == "virtualcursorbasespeed") { try { settings.virtualCursorBaseSpeed = std::stof(value); } catch(...){} }
@@ -678,6 +764,10 @@ namespace Config {
             if (k == "gpmacroslotbutton") settings.gpMacroSlotButton = ParseGamepadButton(value);
             if (k == "gptogglemenubutton") settings.gpToggleMenuButton = ParseGamepadButton(value);
             if (k == "gptoggleimguibutton") settings.gpToggleImGuiButton = ParseGamepadButton(value);
+            if (k == "gpuitoptabprev") settings.gpUiTopTabPrev = ParseGamepadButton(value);
+            if (k == "gpuitoptabnext") settings.gpUiTopTabNext = ParseGamepadButton(value);
+            if (k == "gpuisubtabprev") settings.gpUiSubTabPrev = ParseGamepadButton(value);
+            if (k == "gpuisubtabnext") settings.gpUiSubTabNext = ParseGamepadButton(value);
         }
     // Practice: no mutable settings currently
     }

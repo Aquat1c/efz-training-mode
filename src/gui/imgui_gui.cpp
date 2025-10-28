@@ -111,6 +111,12 @@ namespace ImGuiGui {
         false,  // visible
         0,      // currentTab
         -1,     // requestedTab
+        0,      // mainMenuSubTab (Opponent)
+        0,      // autoActionSubTab (Triggers)
+        0,      // helpSubTab (first help tab)
+        -1,     // requestedMainMenuSubTab
+        -1,     // requestedAutoActionSubTab
+        -1,     // requestedHelpSubTab
         {}      // localData (initialized with default values)
     };
 
@@ -128,8 +134,12 @@ namespace ImGuiGui {
         ImGui::PushItemWidth(120);
 
         if (ImGui::BeginTabBar("##MainMenuSubTabs", ImGuiTabBarFlags_None)) {
+            // Apply any requested sub-tab selection once
+            int rq = guiState.requestedMainMenuSubTab; guiState.requestedMainMenuSubTab = -1;
             // Opponent sub-tab (Practice Dummy controls)
-            if (ImGui::BeginTabItem("Opponent")) {
+            ImGuiTabItemFlags _setOpp = (rq == 0) ? ImGuiTabItemFlags_SetSelected : 0;
+            if (ImGui::BeginTabItem("Opponent", nullptr, _setOpp)) {
+                guiState.mainMenuSubTab = 0;
                 // Control (requires Apply)
                 ImGui::Checkbox("Enable P2 Control (Practice Only)", &guiState.localData.p2ControlEnabled);
                 if (ImGui::IsItemHovered()) ImGui::SetTooltip("Let you play P2 in Practice.\nClick Apply to enable/disable.");
@@ -282,7 +292,9 @@ namespace ImGuiGui {
             }
 
             // Values sub-tab (P1/P2 values)
-            if (ImGui::BeginTabItem("Values")) {
+            ImGuiTabItemFlags _setVals = (rq == 1) ? ImGuiTabItemFlags_SetSelected : 0;
+            if (ImGui::BeginTabItem("Values", nullptr, _setVals)) {
+                guiState.mainMenuSubTab = 1;
                 if (ImGui::BeginTable("values_table", 3, ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_SizingStretchProp)) {
                     // Compute a compact label column width based on the longest label text
                     const char* labelTexts[] = { "HP", "Meter", "RF", "Freeze RF", "RF color", "X", "Y" };
@@ -418,7 +430,9 @@ namespace ImGuiGui {
             }
 
             // Options sub-tab
-            if (ImGui::BeginTabItem("Options")) {
+            ImGuiTabItemFlags _setOpts = (rq == 2) ? ImGuiTabItemFlags_SetSelected : 0;
+            if (ImGui::BeginTabItem("Options", nullptr, _setOpts)) {
+                guiState.mainMenuSubTab = 2;
                 // Continuous Recovery (Per-Player)
                 ImGui::SeparatorText("Continuous Recovery");
                 ImGui::TextWrapped("Restores values when returning to neutral/crouch/jump. Per-player; defaults OFF.");
@@ -544,9 +558,12 @@ namespace ImGuiGui {
     // Auto Action Tab
     void RenderAutoActionTab() {
         // Sub-tabs: Triggers | Macros
-        if (ImGui::BeginTabBar("##AutoActionTabs", ImGuiTabBarFlags_None)) {
-            // Triggers sub-tab
-            if (ImGui::BeginTabItem("Triggers")) {
+    if (ImGui::BeginTabBar("##AutoActionTabs", ImGuiTabBarFlags_None)) {
+                int rq2 = guiState.requestedAutoActionSubTab; guiState.requestedAutoActionSubTab = -1;
+                // Triggers sub-tab
+                ImGuiTabItemFlags _setTrig = (rq2 == 0) ? ImGuiTabItemFlags_SetSelected : 0;
+                if (ImGui::BeginTabItem("Triggers", nullptr, _setTrig)) {
+                    guiState.autoActionSubTab = 0;
                 // Auto-action master toggle
                 bool enabled = guiState.localData.autoAction;
                 if (ImGui::Checkbox("Enable Auto Action System", &enabled)) {
@@ -1015,7 +1032,9 @@ namespace ImGuiGui {
             }
 
             // Macros sub-tab (moved from main tab bar)
-            if (ImGui::BeginTabItem("Macros")) {
+            ImGuiTabItemFlags _setMacros = (rq2 == 1) ? ImGuiTabItemFlags_SetSelected : 0;
+            if (ImGui::BeginTabItem("Macros", nullptr, _setMacros)) {
+                guiState.autoActionSubTab = 1;
                 const auto& cfg = Config::GetSettings();
                 ImGui::SeparatorText("Macro Controller");
                 ImGui::Text("State: %s", MacroController::GetStatusLine().c_str());
@@ -1133,6 +1152,7 @@ namespace ImGuiGui {
             ImGui::Dummy(ImVec2(1, 4));
 
             if (ImGui::BeginTabBar("##HelpTabs", ImGuiTabBarFlags_None)) {
+                int rq3 = guiState.requestedHelpSubTab; guiState.requestedHelpSubTab = -1;
                 // Overview
                /* if (ImGui::BeginTabItem("Overview")) {
                     ImGui::SeparatorText("Quick start");
@@ -1154,7 +1174,9 @@ namespace ImGuiGui {
                 }*/
 
                 // Basics
-                if (ImGui::BeginTabItem("Controls and Basics")) {
+                ImGuiTabItemFlags _setHelp0 = (rq3 == 0) ? ImGuiTabItemFlags_SetSelected : 0;
+                if (ImGui::BeginTabItem("Controls and Basics", nullptr, _setHelp0)) {
+                    guiState.helpSubTab = 0;
                     ImGui::SeparatorText("Basic controls");
                     ImGui::TextWrapped("Open the overlay, set options, then press Apply at the bottom. The game auto-pauses while the menu is open and resumes on close.");
                     BulletTextWrapped("Toggle Overlay: %s (Controller: %s)", GetKeyName(cfg.toggleImGuiKey).c_str(), Config::GetGamepadButtonName(cfg.gpToggleMenuButton).c_str());
@@ -1187,7 +1209,9 @@ namespace ImGuiGui {
                 }
 
                 // Tools - Training
-                if (ImGui::BeginTabItem("Tools")) {
+                ImGuiTabItemFlags _setHelp1 = (rq3 == 1) ? ImGuiTabItemFlags_SetSelected : 0;
+                if (ImGui::BeginTabItem("Tools", nullptr, _setHelp1)) {
+                    guiState.helpSubTab = 1;
                     ImGui::SeparatorText("Options");
                     BulletTextWrapped("Always Recoil Guard: makes the dummy RG instead of blocking. Blocking should be enabled beforehand.");
                     BulletTextWrapped("Counter RG: tries to RG back after getting RG'd where the game allows it. Default: OFF. Turning this ON without Always RG will make opponent counter RG.");
@@ -1205,7 +1229,9 @@ namespace ImGuiGui {
                     BulletTextWrapped("Tip: EFZ's F4/F5 Recovery can interfere. If things look wrong, press F4/F5 to cycle back to Normal.");
                     ImGui::EndTabItem();
                 }
-                if (ImGui::BeginTabItem("Characters")) {
+                                ImGuiTabItemFlags _setHelp2 = (rq3 == 2) ? ImGuiTabItemFlags_SetSelected : 0;
+                                if (ImGui::BeginTabItem("Characters", nullptr, _setHelp2)) {
+                                    guiState.helpSubTab = 2;
                   ImGui::SeparatorText("Character-specific settings");
                     ImGui::TextWrapped("These settings appear only whenever the proper characters are selected. You can find the characters and the available settings for the below:");
                     BulletTextWrapped("Ikumi: Infinite Blood / Genocide timer tweaks (Practice only).");
@@ -1223,7 +1249,9 @@ namespace ImGuiGui {
                                     ImGui::EndTabItem();
                                 }
                 // Tools - Automation
-                if (ImGui::BeginTabItem("Auto Actions & Macros")) {
+                ImGuiTabItemFlags _setHelp3 = (rq3 == 3) ? ImGuiTabItemFlags_SetSelected : 0;
+                if (ImGui::BeginTabItem("Auto Actions & Macros", nullptr, _setHelp3)) {
+                    guiState.helpSubTab = 3;
                     ImGui::SeparatorText("Auto Action");
                     ImGui::TextWrapped("Creates a simple trigger to events like Wakeup, After Block, After Hitstun, After Airtech, or Recoil.");
                     BulletTextWrapped("Target: choose P1, P2, or Both.");
@@ -1244,7 +1272,9 @@ namespace ImGuiGui {
                 }
 
                 // Resources
-                if (ImGui::BeginTabItem("Resources")) {
+                ImGuiTabItemFlags _setHelp4 = (rq3 == 4) ? ImGuiTabItemFlags_SetSelected : 0;
+                if (ImGui::BeginTabItem("Resources", nullptr, _setHelp4)) {
+                    guiState.helpSubTab = 4;
                     ImGui::SeparatorText("Game Resources");
                     BulletTextWrapped("Open helpful external resources in your browser:");
                     ImGui::Indent();
@@ -1259,16 +1289,16 @@ namespace ImGuiGui {
                     std::string p1Name = CharacterSettings::GetCharacterName(p1Id);
                     std::string p2Name = CharacterSettings::GetCharacterName(p2Id);
                     const char* p1Path = GetCharacterWikiPathByID(p1Id);
-                    if (!p1Name.empty() && p1Name != "Unknown" && p1Path) {
+                    if (p1Path) {
                         std::string url = std::string("https://wiki.gbl.gg/w/Eternal_Fighter_Zero/") + p1Path;
                         ImGui::Separator();
                         ImGui::TextWrapped("P1: %s", p1Name.c_str());
                         Link("Open character wiki (P1)", url.c_str());
                     }
                     const char* p2Path = GetCharacterWikiPathByID(p2Id);
-                    if (!p2Name.empty() && p2Name != "Unknown" && p2Path) {
+                    if (p2Path) {
                         std::string url = std::string("https://wiki.gbl.gg/w/Eternal_Fighter_Zero/") + p2Path;
-                        if (p1Name.empty() || p1Name == "Unknown") ImGui::Separator();
+                        if (!p1Path) ImGui::Separator();
                         ImGui::TextWrapped("P2: %s", p2Name.c_str());
                         Link("Open character wiki (P2)", url.c_str());
                     }
@@ -1276,7 +1306,9 @@ namespace ImGuiGui {
                 }
 
                 // About (moved to end)
-                if (ImGui::BeginTabItem("About")) {
+                ImGuiTabItemFlags _setHelp5 = (rq3 == 5) ? ImGuiTabItemFlags_SetSelected : 0;
+                if (ImGui::BeginTabItem("About", nullptr, _setHelp5)) {
+                    guiState.helpSubTab = 5;
                     ImGui::SeparatorText("EFZ Training Mode");
                     ImGui::TextWrapped("Version: %s", EFZ_TRAINING_MODE_VERSION);
                     ImGui::TextWrapped("Build: %s %s", EFZ_TRAINING_MODE_BUILD_DATE, EFZ_TRAINING_MODE_BUILD_TIME);
@@ -2524,10 +2556,11 @@ namespace ImGuiGui {
                 ImGui::SetItemDefaultFocus();
             }
 
-            // Check if a specific tab has been requested
+            // Capture any requested top-level tab selection; we'll apply it via SetSelected flags below
+            int requestedTopTab = -1;
             if (guiState.requestedTab >= 0) {
-                guiState.currentTab = guiState.requestedTab;
-                guiState.requestedTab = -1; // Reset request
+                requestedTopTab = guiState.requestedTab;
+                guiState.requestedTab = -1; // consume request
             }
             // Create a scrollable content region with a fixed-height footer for action buttons
             ImVec2 avail = ImGui::GetContentRegionAvail();
@@ -2538,29 +2571,29 @@ namespace ImGuiGui {
             if (ImGui::BeginChild("##MainContent", ImVec2(avail.x, avail.y - footerHeight), true)) {
                 // Tab bar at the top
                 if (ImGui::BeginTabBar("##Tabs", ImGuiTabBarFlags_None)) {
+                    // Precompute selection flags for programmatic tab switching
+                    ImGuiTabItemFlags __mainFlags = (requestedTopTab == 0) ? ImGuiTabItemFlags_SetSelected : 0;
+                    ImGuiTabItemFlags __autoFlags = (requestedTopTab == 1) ? ImGuiTabItemFlags_SetSelected : 0;
+                    ImGuiTabItemFlags __settingsFlags = (requestedTopTab == 5) ? ImGuiTabItemFlags_SetSelected : 0;
+                    ImGuiTabItemFlags __charFlags = (requestedTopTab == 2) ? ImGuiTabItemFlags_SetSelected : 0;
+                    ImGuiTabItemFlags __helpFlags = ImGuiTabItemFlags_NoCloseWithMiddleMouseButton | ((requestedTopTab == 4) ? ImGuiTabItemFlags_SetSelected : 0);
+
                     // Main Menu tab
-                    if (ImGui::BeginTabItem("Main Menu")) {
+                    if (ImGui::BeginTabItem("Main Menu", nullptr, __mainFlags)) {
                         guiState.currentTab = 0;
                         RenderGameValuesTab();
                         ImGui::EndTabItem();
                     }
                     
-                    // Auto Action tab
-                    if (ImGui::BeginTabItem("Auto Action")) {
+                    // Auto Actions tab
+                    if (ImGui::BeginTabItem("Auto Actions", nullptr, __autoFlags)) {
                         guiState.currentTab = 1;
                         RenderAutoActionTab();
                         ImGui::EndTabItem();
                     }
 
-                    // Settings tab (new)
-                    if (ImGui::BeginTabItem("Settings")) {
-                        guiState.currentTab = 5;
-                        ImGuiSettings::RenderSettingsTab();
-                        ImGui::EndTabItem();
-                    }
-                    
-                    // Add Character tab; refresh character IDs once on open to avoid per-frame work
-                    if (ImGui::BeginTabItem("Character")) {
+                    // Characters tab; refresh character IDs once on open to avoid per-frame work
+                    if (ImGui::BeginTabItem("Characters", nullptr, __charFlags)) {
                         guiState.currentTab = 2;
                         static bool s_charTabJustOpened = false;
                         if (ImGui::IsItemActivated()) { s_charTabJustOpened = true; }
@@ -2573,10 +2606,17 @@ namespace ImGuiGui {
                         ImGui::EndTabItem();
                     }
                     
+                    // Settings tab (moved after Characters)
+                    if (ImGui::BeginTabItem("Settings", nullptr, __settingsFlags)) {
+                        guiState.currentTab = 5;
+                        ImGuiSettings::RenderSettingsTab();
+                        ImGui::EndTabItem();
+                    }
+                    
                     // Debug tab moved under Settings -> Debug sub-tab
                     
                     // Help tab(s)
-                    if (ImGui::BeginTabItem("Help", nullptr, ImGuiTabItemFlags_NoCloseWithMiddleMouseButton)) {
+                    if (ImGui::BeginTabItem("Help", nullptr, __helpFlags)) {
                         guiState.currentTab = 4;
                         RenderHelpTab();
                         ImGui::EndTabItem();
@@ -3115,3 +3155,64 @@ namespace ImGuiGui {
         }
     }
 }
+    // Programmatic navigation helpers implementation
+    namespace ImGuiGui {
+        // Logical order mapping for top-level tabs
+        static int TopTabLogicalToActual(int logicalIndex) {
+            // Map (requested order): Main, Auto Actions, Characters, Settings, Help -> actual IDs 0,1,2,5,4
+            static const int map[5] = { 0, 1, 2, 5, 4 };
+            if (logicalIndex < 0) logicalIndex = 0; if (logicalIndex > 4) logicalIndex = 4;
+            return map[logicalIndex];
+        }
+        static int TopTabActualToLogical(int actual) {
+            switch (actual) {
+                case 0: return 0; // Main
+                case 1: return 1; // Auto Actions
+                case 2: return 2; // Characters
+                case 5: return 3; // Settings
+                case 4: return 4; // Help
+                default: return 0;
+            }
+        }
+
+        void RequestTopTabAbsolute(int logicalIndex) {
+            if (logicalIndex < 0) logicalIndex = 0; if (logicalIndex > 4) logicalIndex = 4;
+            guiState.requestedTab = TopTabLogicalToActual(logicalIndex);
+        }
+
+        void RequestTopTabCycle(int direction) {
+            int curLogical = TopTabActualToLogical(guiState.currentTab);
+            int next = (curLogical + (direction >= 0 ? 1 : -1));
+            if (next < 0) next = 4; else if (next > 4) next = 0;
+            guiState.requestedTab = TopTabLogicalToActual(next);
+        }
+
+        void RequestActiveSubTabCycle(int direction) {
+            // Determine which sub-tab group is active based on the current top-level tab
+            const int dir = (direction >= 0) ? 1 : -1;
+            if (guiState.currentTab == 0) {
+                // Main Menu: 3 sub-tabs
+                int idx = guiState.mainMenuSubTab;
+                int count = 3;
+                idx = (idx + dir) % count; if (idx < 0) idx += count;
+                guiState.mainMenuSubTab = idx;
+                guiState.requestedMainMenuSubTab = idx;
+            } else if (guiState.currentTab == 1) {
+                // Auto Action: 2 sub-tabs
+                int idx = guiState.autoActionSubTab;
+                int count = 2;
+                idx = (idx + dir) % count; if (idx < 0) idx += count;
+                guiState.autoActionSubTab = idx;
+                guiState.requestedAutoActionSubTab = idx;
+            } else if (guiState.currentTab == 4) {
+                // Help: 6 sub-tabs
+                int idx = guiState.helpSubTab;
+                int count = 6;
+                idx = (idx + dir) % count; if (idx < 0) idx += count;
+                guiState.helpSubTab = idx;
+                guiState.requestedHelpSubTab = idx;
+            } else {
+                // No sub-tabs for Settings/Character; do nothing
+            }
+        }
+    }
