@@ -2173,12 +2173,16 @@ void ProcessAutoControlRestore() {
         bool isKaori = (g_cachedP2CharID == CHAR_ID_KAORI);
 
         if (!g_crgFastRestore.load()) {
-            // Only apply throttle if NOT Kaori (or once we've already seen her dash start). We can't reference
-            // sawNonZeroMoveID yet (declared later) so we just blanket disable throttle for Kaori.
-            if (!isKaori) {
-                if ((s_throttle++ & 1) != 0) return; // 96 Hz sampling for non-Kaori normal path
-            } else if ((s_throttle % 192) == 0 && detailedLogging.load()) {
-                LogOut("[AUTO-ACTION][DASH][KAORI] Full-rate sampling active (disabling throttle to catch ID 250)", true);
+            // While a dash was just queued and we're waiting for dash start, sample every frame to avoid missing
+            // short-lived start IDs (e.g., immediate transitions). Kaori also remains unthrottled.
+            bool waitingDash = g_recentDashQueued.load();
+            if (!waitingDash) {
+                // Only apply throttle if NOT Kaori. Kaori remains unthrottled due to ID 250 being very brief.
+                if (!isKaori) {
+                    if ((s_throttle++ & 1) != 0) return; // 96 Hz sampling for non-Kaori normal path
+                } else if ((s_throttle % 192) == 0 && detailedLogging.load()) {
+                    LogOut("[AUTO-ACTION][DASH][KAORI] Full-rate sampling active (disabling throttle to catch ID 250)", true);
+                }
             }
         }
 
@@ -2206,13 +2210,36 @@ void ProcessAutoControlRestore() {
         LogOut("[AUTO-ACTION][DASH] Holding restore (pre-start): queuedDash & dashStart not yet observed", true);
     }
     
-    // CRITICAL: If we queued a dash with follow-up but got interrupted BEFORE dash started (never reached 163/165),
-    // clear the pending follow-up so the generic restore path can execute and clear the buffer.
-    if (g_dashDeferred.pendingSel.load() > 0 && dashCancelled && !g_recentDashQueued.load()) {
-        LogOut("[AUTO-ACTION][DASH] Dash follow-up cancelled by interrupt before dash started", true);
-        g_dashDeferred.pendingSel.store(0);
-        g_dashDeferred.dashStartLatched.store(-1);
-    }
+        // CRITICAL: If we queued a dash and got INTERRUPTED BEFORE any dash start ID (163/165/250) appears,
+        // immediately restore control and clear the queued-dash guard. This avoids an infinite pre-start hold
+        // when we are put into blockstun/hitstun/airtech or other non-dash states by the opponent.
+        if (g_recentDashQueued.load() && !dashStartNow && dashCancelled) {
+            LogOut("[AUTO-ACTION][DASH] Pre-start interrupted (hit/block/airtech) — cancelling dash and restoring control", true);
+            // Cancel any pending follow-up as it will never fire now
+            if (g_dashDeferred.pendingSel.load() > 0) {
+                g_dashDeferred.pendingSel.store(0);
+                g_dashDeferred.dashStartLatched.store(-1);
+            }
+            g_recentDashQueued.store(false);
+            RestoreP2ControlState();
+            // Allow immediate re-arming on the next actionable window (second hit scenario):
+            // clear trigger active/cooldown so After Block/Hitstun can fire even if the gap is small (3-4F).
+            p2TriggerActive = false;
+            p2TriggerCooldown = 0;
+            g_restoreGraceCounter = RESTORE_GRACE_PERIOD;
+            g_crgFastRestore.store(false);
+            g_lastP2MoveID.store(-1);
+            // Clear pending restore so we don't keep sampling in a dead loop
+            g_pendingControlRestore.store(false);
+            s_prevMoveID2 = moveID2;
+            return;
+        }
+        // If we had only scheduled a follow-up but no longer waiting a queued dash, clear follow-up quietly.
+        if (g_dashDeferred.pendingSel.load() > 0 && dashCancelled && !g_recentDashQueued.load()) {
+            LogOut("[AUTO-ACTION][DASH] Dash follow-up cancelled by interrupt before dash started", true);
+            g_dashDeferred.pendingSel.store(0);
+            g_dashDeferred.dashStartLatched.store(-1);
+        }
         int fdfSel = forwardDashFollowup.load();
         // CRITICAL FIX: Don't restore immediately when dash starts (163/165).
         // Wait until we've LEFT the dash state entirely, regardless of what state we transition to:
