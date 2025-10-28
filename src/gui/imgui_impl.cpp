@@ -307,10 +307,11 @@ static void UpdateVirtualCursor(ImGuiIO& io) {
     // Keyboard fallback: mirror aggregated nav into arrow/enter/escape keys
     // This helps when ImGui ignores gamepad events due to backend quirks.
     {
-        bool navLeft  = kDpadL || (aLLeft  > 0.45f);
-        bool navRight = kDpadR || (aLRight > 0.45f);
-        bool navUp    = kDpadU || (aLUp    > 0.45f);
-        bool navDown  = kDpadD || (aLDown  > 0.45f);
+        const float navThr = ClampF(Config::GetSettings().guiNavAnalogThreshold, 0.05f, 0.95f);
+        bool navLeft  = kDpadL || (aLLeft  > navThr);
+        bool navRight = kDpadR || (aLRight > navThr);
+        bool navUp    = kDpadU || (aLUp    > navThr);
+        bool navDown  = kDpadD || (aLDown  > navThr);
         io.AddKeyEvent(ImGuiKey_LeftArrow,  navLeft);
         io.AddKeyEvent(ImGuiKey_RightArrow, navRight);
         io.AddKeyEvent(ImGuiKey_UpArrow,    navUp);
@@ -331,7 +332,7 @@ static void UpdateVirtualCursor(ImGuiIO& io) {
     }
 
     if (selPad >= 0 && selPad <= 3 && connected[selPad]) {
-        const auto& selGp = states[selPad].Gamepad;
+    const auto& selGp = states[selPad].Gamepad;
         bool lThumbDown = (selGp.wButtons & XINPUT_GAMEPAD_LEFT_THUMB) != 0;
         bool lThumbPressed = lThumbDown && !s_lastLThumbDown && focusedNow && g_imguiVisible;
         if (lThumbPressed) {
@@ -344,6 +345,36 @@ static void UpdateVirtualCursor(ImGuiIO& io) {
         }
         s_lastLThumbDown = lThumbDown;
 
+        // UI tab/sub-tab controller bindings (edge-detected)
+        {
+            const auto& cfg2 = Config::GetSettings();
+            auto isBindingDown = [&](int mask)->bool {
+                if (mask < 0) return false;
+                if (mask == 0x10000) return selGp.bLeftTrigger > 30;  // LT threshold
+                if (mask == 0x20000) return selGp.bRightTrigger > 30; // RT threshold
+                return (selGp.wButtons & (WORD)mask) != 0;
+            };
+            static bool s_lastTopPrev=false, s_lastTopNext=false, s_lastSubPrev=false, s_lastSubNext=false;
+            bool nowTopPrev = isBindingDown(cfg2.gpUiTopTabPrev);
+            bool nowTopNext = isBindingDown(cfg2.gpUiTopTabNext);
+            bool nowSubPrev = isBindingDown(cfg2.gpUiSubTabPrev);
+            bool nowSubNext = isBindingDown(cfg2.gpUiSubTabNext);
+            bool pressTopPrev = nowTopPrev && !s_lastTopPrev;
+            bool pressTopNext = nowTopNext && !s_lastTopNext;
+            bool pressSubPrev = nowSubPrev && !s_lastSubPrev;
+            bool pressSubNext = nowSubNext && !s_lastSubNext;
+            if (g_imguiVisible) {
+                if (pressTopPrev) ImGuiGui::RequestTopTabCycle(-1);
+                if (pressTopNext) ImGuiGui::RequestTopTabCycle(+1);
+                if (pressSubPrev) ImGuiGui::RequestActiveSubTabCycle(-1);
+                if (pressSubNext) ImGuiGui::RequestActiveSubTabCycle(+1);
+            }
+            s_lastTopPrev = nowTopPrev;
+            s_lastTopNext = nowTopNext;
+            s_lastSubPrev = nowSubPrev;
+            s_lastSubNext = nowSubNext;
+        }
+
         // Analog stick movement for virtual cursor only from selected pad
         auto applyDeadzone = [](SHORT v, SHORT dz) -> float {
             int iv = (int)v;
@@ -353,8 +384,8 @@ static void UpdateVirtualCursor(ImGuiIO& io) {
             return n;
         };
 
-        float nx = applyDeadzone(selGp.sThumbLX, XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE);
-        float ny = applyDeadzone(selGp.sThumbLY, XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE);
+    float nx = applyDeadzone(selGp.sThumbLX, XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE);
+    float ny = applyDeadzone(selGp.sThumbLY, XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE);
 
         // Apply acceleration/response curve (exponent >1 softens near center for precision)
         if (cfg.virtualCursorAccelPower != 1.0f) {
@@ -397,6 +428,24 @@ static void UpdateVirtualCursor(ImGuiIO& io) {
             io.AddMouseButtonEvent(1, rightDown);
             g_lastLeftDown = leftDown;
             g_lastRightDown = rightDown;
+        }
+
+        // Right-stick -> mouse wheel (scroll) for GUI navigation
+        if (Config::GetSettings().guiScrollRightStickEnable) {
+            float rx = applyDeadzone(selGp.sThumbRX, XINPUT_GAMEPAD_RIGHT_THUMB_DEADZONE);
+            float ry = applyDeadzone(selGp.sThumbRY, XINPUT_GAMEPAD_RIGHT_THUMB_DEADZONE);
+            // Small deadzone to avoid noise
+            const float dz = 0.15f;
+            if (fabsf(rx) < dz) rx = 0.0f;
+            if (fabsf(ry) < dz) ry = 0.0f;
+            if (rx != 0.0f || ry != 0.0f) {
+                float scale = Config::GetSettings().guiScrollRightStickScale;
+                // Negative ry scrolls down (ImGui expects positive up), invert to match UI expectations
+                float wheelX = rx * scale * dt;      // horizontal wheel
+                float wheelY = -ry * scale * dt;     // vertical wheel
+                // Use event API to report wheel motion (both axes)
+                io.AddMouseWheelEvent(wheelX, wheelY);
+            }
         }
     } else {
         // release L3 edge tracker if nothing connected
@@ -559,6 +608,13 @@ namespace ImGuiImpl {
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
     // Re-enable gamepad navigation for ImGui
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
+
+    // Apply configurable nav repeat timings
+    {
+        const auto& cfg = Config::GetSettings();
+        io.KeyRepeatDelay = ClampF(cfg.guiNavRepeatDelay, 0.05f, 1.0f);
+        io.KeyRepeatRate  = ClampF(cfg.guiNavRepeatRate,  0.01f, 0.50f);
+    }
 
     // Make font atlas slightly cheaper to render (DX9)
     io.Fonts->Flags |= ImFontAtlasFlags_NoPowerOfTwoHeight; // avoid unnecessary atlas stretch
@@ -813,6 +869,9 @@ namespace ImGuiImpl {
             // override OS mouse position provided by the backend, then before ImGui::NewFrame
             {
                 ImGuiIO& io = ImGui::GetIO();
+                // Keep nav repeat settings in sync with config per-frame
+                io.KeyRepeatDelay = ClampF(Config::GetSettings().guiNavRepeatDelay, 0.05f, 1.0f);
+                io.KeyRepeatRate  = ClampF(Config::GetSettings().guiNavRepeatRate,  0.01f, 0.50f);
                 UpdateVirtualCursor(io);
             }
             ImGui::NewFrame();
