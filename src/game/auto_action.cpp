@@ -78,6 +78,7 @@ struct DashFollowDeferred {
     std::atomic<int> pendingSel{0};
     std::atomic<int> player{0};
     std::atomic<int> dashStartLatched{0}; // 0 = not yet, 1 = latched & fired, -1 = latched but failed to fire (safety)
+    std::atomic<int> isBack{0};           // 0 = forward dash, 1 = backdash
 };
 static DashFollowDeferred g_dashDeferred; // single slot (only one forward dash follow-up expected at a time)
 
@@ -128,16 +129,25 @@ static void ScheduleForwardDashFollowup(int playerNum, int sel, bool /*dashModeI
     g_dashDeferred.pendingSel.store(sel);
     g_dashDeferred.player.store(playerNum);
     g_dashDeferred.dashStartLatched.store(0);
+    g_dashDeferred.isBack.store(0);
     LogOut(std::string("[AUTO-ACTION] Forward dash follow-up armed (sel=") + std::to_string(sel) + ")", true);
-    if (playerNum == 2) {
-        EnableP2ControlForAutoAction();
-        if (!g_pendingControlRestore.load()) {
-            g_lastP2MoveID.store(-1);
-            g_controlRestoreTimeout.store(120); // generous window; we'll restore shortly after injection
-            g_pendingControlRestore.store(true);
-            LogOut("[AUTO-ACTION][DASH] Armed control restore monitor (simple dash-normal)", true);
-        }
+    // Note: Do NOT arm control-restore here. The actual dash action path will
+    // set up override/restore timing when the dash is queued successfully.
+}
+
+// Mirror of forward follow-up: schedule for backdash
+static void ScheduleBackDashFollowup(int playerNum, int sel) {
+    if (g_dashDeferred.pendingSel.load() > 0) {
+        LogOut(std::string("[AUTO-ACTION] Backdash follow-up schedule ignored; pending sel=") + std::to_string(g_dashDeferred.pendingSel.load()), true);
+        return;
     }
+    g_dashDeferred.pendingSel.store(sel);
+    g_dashDeferred.player.store(playerNum);
+    g_dashDeferred.dashStartLatched.store(0);
+    g_dashDeferred.isBack.store(1);
+    LogOut(std::string("[AUTO-ACTION] Backdash follow-up armed (sel=") + std::to_string(sel) + ")", true);
+    // Note: Do NOT arm control-restore here. The actual backdash action path will
+    // set up override/restore timing when the dash is queued successfully.
 }
 
 // Refactored: use authoritative moveID transitions (163->164) instead of queue heuristics.
@@ -148,39 +158,42 @@ static void ProcessDeferredDashFollowups(short curP1, short prevP1, short curP2,
     int targetP = g_dashDeferred.player.load();
     short prev = (targetP == 1) ? prevP1 : prevP2;
     short curr = (targetP == 1) ? curP1  : curP2;
+    bool back = (g_dashDeferred.isBack.load() != 0);
     
     // Debug: Log MoveID transitions while waiting for dash
     static short lastLoggedP1 = -999;
     static short lastLoggedP2 = -999;
     if (targetP == 1 && curr != lastLoggedP1) {
         LogOut("[DASH_DEBUG] P1 MoveID: " + std::to_string(prev) + " -> " + std::to_string(curr) + 
-               " (waiting for " + std::to_string(FORWARD_DASH_START_ID) + ")", true);
+               std::string(" (waiting for ") + std::to_string(back ? BACKWARD_DASH_START_ID : FORWARD_DASH_START_ID) + ")", true);
         lastLoggedP1 = curr;
-        if (curr == FORWARD_DASH_START_ID) {
+        if ((back && curr == BACKWARD_DASH_START_ID) || (!back && curr == FORWARD_DASH_START_ID)) {
             DumpInputBuffer(1, "DASH_START_DETECTED");
         }
     }
     if (targetP == 2 && curr != lastLoggedP2) {
         LogOut("[DASH_DEBUG] P2 MoveID: " + std::to_string(prev) + " -> " + std::to_string(curr) + 
-               " (waiting for " + std::to_string(FORWARD_DASH_START_ID) + ")", true);
+               std::string(" (waiting for ") + std::to_string(back ? BACKWARD_DASH_START_ID : FORWARD_DASH_START_ID) + ")", true);
         lastLoggedP2 = curr;
-        if (curr == FORWARD_DASH_START_ID) {
+        if ((back && curr == BACKWARD_DASH_START_ID) || (!back && curr == FORWARD_DASH_START_ID)) {
             DumpInputBuffer(2, "DASH_START_DETECTED");
         }
     }
     
-    // Fire exactly on first frame we see FORWARD_DASH_START_ID.
-    if (curr == FORWARD_DASH_START_ID && prev != FORWARD_DASH_START_ID) {
+    // Fire exactly on first frame we see the dash start ID (forward or back).
+    if (((!back && curr == FORWARD_DASH_START_ID && prev != FORWARD_DASH_START_ID) ||
+         ( back && curr == BACKWARD_DASH_START_ID && prev != BACKWARD_DASH_START_ID))) {
         bool facingRight = GetPlayerFacingDirection(targetP);
         uint8_t forwardDir = facingRight ? GAME_INPUT_RIGHT : GAME_INPUT_LEFT;
+        uint8_t backDir    = facingRight ? GAME_INPUT_LEFT  : GAME_INPUT_RIGHT;
         uint8_t mask = 0;
         switch (sel) {
-            case 1: mask = forwardDir | GAME_INPUT_A; break; // dash A
-            case 2: mask = forwardDir | GAME_INPUT_B; break; // dash B
-            case 3: mask = forwardDir | GAME_INPUT_C; break; // dash C
-            case 4: mask = (forwardDir | GAME_INPUT_DOWN) | GAME_INPUT_A; break; // dash 2A variant
-            case 5: mask = (forwardDir | GAME_INPUT_DOWN) | GAME_INPUT_B; break; // dash 2B
-            case 6: mask = (forwardDir | GAME_INPUT_DOWN) | GAME_INPUT_C; break; // dash 2C
+            case 1: mask = (back ? backDir : forwardDir) | GAME_INPUT_A; break; // dash A/B/C
+            case 2: mask = (back ? backDir : forwardDir) | GAME_INPUT_B; break;
+            case 3: mask = (back ? backDir : forwardDir) | GAME_INPUT_C; break;
+            case 4: mask = ((back ? backDir : forwardDir) | GAME_INPUT_DOWN) | GAME_INPUT_A; break; // dash 2A/2B/2C
+            case 5: mask = ((back ? backDir : forwardDir) | GAME_INPUT_DOWN) | GAME_INPUT_B; break;
+            case 6: mask = ((back ? backDir : forwardDir) | GAME_INPUT_DOWN) | GAME_INPUT_C; break;
             default: break;
         }
         if (mask) {
@@ -1795,11 +1808,21 @@ void ApplyAutoAction(int playerNum, uintptr_t moveIDAddr, short currentMoveID, s
                 LogOut(std::string("[AUTO-ACTION][DASH] Armed control restore monitor (") + (fdf>0?"follow-up":"no follow-up") + ")", true);
             }
         } else if (success && actionType == ACTION_BACKDASH) {
+            // Treat backdash like forward dash for restore guarding: mark as recently queued
+            if (playerNum == 2) {
+                g_recentDashQueued.store(true);
+                g_recentDashQueuedFrame.store(frameCounter.load());
+            }
+            int fdf = forwardDashFollowup.load();
+            if (fdf > 0) {
+                ScheduleBackDashFollowup(playerNum, fdf);
+            }
             if (playerNum == 2 && !g_pendingControlRestore.load()) {
                 g_lastP2MoveID.store(-1);
-                g_controlRestoreTimeout.store(90);
+                // Slightly longer if a follow-up is configured
+                g_controlRestoreTimeout.store(fdf > 0 ? 120 : 90);
                 g_pendingControlRestore.store(true);
-                LogOut("[AUTO-ACTION][DASH] Armed control restore monitor (backdash)", true);
+                LogOut(std::string("[AUTO-ACTION][DASH] Armed control restore monitor (backdash ") + (fdf>0?"+ follow-up)":"no follow-up)"), true);
             }
         }
     }
@@ -2158,6 +2181,7 @@ void ProcessAutoControlRestore() {
                 LogOut("[AUTO-ACTION][DASH][KAORI] Full-rate sampling active (disabling throttle to catch ID 250)", true);
             }
         }
+
         // DASH RESTORE RULES:
         // 1. If we just entered forward/back dash start and no follow-up configured -> immediate restore
         // 2. If any normal (>=200) starts after a dash-follow sequence -> restore
@@ -2175,6 +2199,12 @@ void ProcessAutoControlRestore() {
     // Recompute dashNormalStarted excluding any dash state (prevents Kaori 250 from being misclassified)
     if (dashNormalStarted && moveIsDash) dashNormalStarted = false;
     bool dashCancelled = (!moveIsDash) && (IsBlockstun(moveID2) || IsHitstun(moveID2) || IsAirtech(moveID2));
+    // HARD GUARD (informational): If we just queued a dash and have NOT yet observed the dash start ID
+    // (163 forward, 165 back, or 250 Kaori), we will suppress generic restore later. Keep timeout >=90.
+    bool waitingDashStart = g_recentDashQueued.load() && !dashStartNow;
+    if (waitingDashStart && detailedLogging.load()) {
+        LogOut("[AUTO-ACTION][DASH] Holding restore (pre-start): queuedDash & dashStart not yet observed", true);
+    }
     
     // CRITICAL: If we queued a dash with follow-up but got interrupted BEFORE dash started (never reached 163/165),
     // clear the pending follow-up so the generic restore path can execute and clear the buffer.
@@ -2190,10 +2220,14 @@ void ProcessAutoControlRestore() {
         // - Dash normal: 163 → attack moveID (200+)
         // - Interrupted by hit: 163 → hitstun (50-71)
         // - Canceled into special: 163 → special moveID
-    bool wasDashing = (s_prevMoveID2 == FORWARD_DASH_START_ID || s_prevMoveID2 == BACKWARD_DASH_START_ID || (isKaori && s_prevMoveID2 == KAORI_FORWARD_DASH_START_ID));
+    // Consider both start and recovery IDs as "dashing" so we can detect leaving the entire dash state cleanly
+    bool wasDashing = (s_prevMoveID2 == FORWARD_DASH_START_ID || s_prevMoveID2 == FORWARD_DASH_RECOVERY_ID ||
+                       s_prevMoveID2 == FORWARD_DASH_RECOVERY_SENTINEL_ID ||
+                       s_prevMoveID2 == BACKWARD_DASH_START_ID || s_prevMoveID2 == BACKWARD_DASH_RECOVERY_ID ||
+                       (isKaori && s_prevMoveID2 == KAORI_FORWARD_DASH_START_ID));
     bool stillDashing = (moveID2 == FORWARD_DASH_START_ID || moveID2 == BACKWARD_DASH_START_ID ||
-                 moveID2 == FORWARD_DASH_RECOVERY_ID || moveID2 == BACKWARD_DASH_RECOVERY_ID ||
-                 (isKaori && moveID2 == KAORI_FORWARD_DASH_START_ID));
+                         moveID2 == FORWARD_DASH_RECOVERY_ID || moveID2 == BACKWARD_DASH_RECOVERY_ID ||
+                         (isKaori && moveID2 == KAORI_FORWARD_DASH_START_ID));
         bool leftDashState = wasDashing && !stillDashing;
         
         bool doDashRestore = false;
@@ -2251,7 +2285,7 @@ void ProcessAutoControlRestore() {
             }
         }
         int timeoutSnapshot = g_controlRestoreTimeout.load();
-        if (g_recentDashQueued.load() && moveID2 == 0 && !sawNonZeroMoveID) {
+    if (g_recentDashQueued.load() && moveID2 == 0 && !sawNonZeroMoveID) {
             int age = frameCounter.load() - g_recentDashQueuedFrame.load();
             extern int p2CurrentMotionType; extern bool p2QueueActive; extern int p2QueueIndex; extern int p2FrameCounter; extern std::vector<InputFrame> p2InputQueue;
             int qSize = (int)p2InputQueue.size();
@@ -2271,8 +2305,11 @@ void ProcessAutoControlRestore() {
                 if (timeoutSnapshot < 90) { g_controlRestoreTimeout.store(90); }
                 s_prevMoveID2 = moveID2; return; // hold restore
             } else if (age == 120) {
-                LogOut("[AUTO-ACTION][DASH] Requeue forward dash after 120f no-start", true);
-                QueueMotionInput(2, MOTION_FORWARD_DASH, 0);
+                // Requeue the same dash type that was attempted (forward or back)
+                extern int p2CurrentMotionType;
+                bool wasBack = (p2CurrentMotionType == MOTION_BACK_DASH);
+                LogOut(std::string("[AUTO-ACTION][DASH] Requeue ") + (wasBack?"backdash":"forward dash") + " after 120f no-start", true);
+                QueueMotionInput(2, wasBack ? MOTION_BACK_DASH : MOTION_FORWARD_DASH, 0);
                 g_recentDashQueuedFrame.store(frameCounter.load());
                 if (timeoutSnapshot < 120) g_controlRestoreTimeout.store(120);
                 s_prevMoveID2 = moveID2; return;
@@ -2283,6 +2320,7 @@ void ProcessAutoControlRestore() {
                 g_recentDashQueued.store(false);
             }
         }
+        // (Reverted timing expansion) Do not add extra pre-start requeue/abandon paths here.
 
         int timeout = g_controlRestoreTimeout.load();
         if (timeout > 0) {
@@ -2324,7 +2362,13 @@ void ProcessAutoControlRestore() {
             }
         }
 
-        if (moveID2 > 0) { sawNonZeroMoveID = true; g_recentDashQueued.store(false); }
+        if (moveID2 > 0) {
+            sawNonZeroMoveID = true;
+            // Only clear the queued-dash guard once we actually see a dash start ID.
+            if (dashStartNow) {
+                g_recentDashQueued.store(false);
+            }
+        }
 
         // Counter RG fast-restore: if opponent enters attack frames (>=200) AND we are actionable,
         // restore immediately with control-flag-only to preserve the buffered special. Fallback: if
@@ -2366,7 +2410,12 @@ void ProcessAutoControlRestore() {
 
     // A dash-specific guard: if we queued a forward/back dash and never observed ANY non-zero move id yet,
     // treat the transition back to 0 as non-completion (prevents premature restore destroying dash attempt).
-    bool queuedDashNoStart = g_recentDashQueued.load() && !sawNonZeroMoveID && moveID2 == 0;
+    // Updated: treat any queued-dash prior to actual dash start as a no-restore condition,
+    // even if the engine briefly shows non-zero idle/actionable states.
+    bool queuedDashNoStart = waitingDashStart;
+    // Also suppress generic restore while the dash motion queue is actively writing frames.
+    extern bool p2QueueActive;
+    bool dashQueueActiveNow = p2QueueActive;
     bool moveChangedCandidate = (moveID2 != g_lastP2MoveID.load() && moveID2 == 0 && sawNonZeroMoveID);
     bool dashFollowPending = (g_dashDeferred.pendingSel.load() > 0);
     bool suppressGenericRestore = (moveChangedCandidate && dashFollowPending);
@@ -2394,6 +2443,8 @@ void ProcessAutoControlRestore() {
     bool baseRestoreCond = (moveChanged || timeoutExpired) &&
                 !dashFollowPending &&
                 !queuedDashNoStart &&
+                !g_recentDashQueued.load() &&
+                !dashQueueActiveNow &&
                 restorePendingNow &&
                 (g_p2ControlOverridden || haveTrackableMove);
     bool shouldGenericRestore = baseRestoreCond && (frameCounter.load() != s_lastGenericRestoreFrame);
@@ -2431,7 +2482,9 @@ void ProcessAutoControlRestore() {
                        " override=" + (g_p2ControlOverridden?"1":"0") +
                        " lastMoveValid=" + (haveTrackableMove?"1":"0") +
                        " dashFollow=" + (dashFollowPending?"1":"0") +
-                       " queuedDashNoStart=" + (queuedDashNoStart?"1":"0"), true);
+                       " queuedDashNoStart=" + (queuedDashNoStart?"1":"0") +
+                       " recentDashQueued=" + (g_recentDashQueued.load()?"1":"0") +
+                       " dashQueueActive=" + (dashQueueActiveNow?"1":"0"), true);
             }
             if (moveID2 != 0) {
                 g_lastP2MoveID.store(moveID2);
