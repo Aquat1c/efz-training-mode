@@ -464,7 +464,47 @@ void UpdateTriggerOverlay() {
     auto update_line = [&](int& msgId, bool isEnabled, const std::string& label, int action, 
                           int customId, int delay, int strength, int triggerType) {
         if (isEnabled) {
-            // If a macro slot is set for this trigger, display it as Macro S# instead of a default move name
+            // Helper: build a compact token for a single TriggerOption
+            auto tokenFor = [&](int act, int str, int macro) -> std::string {
+                if (macro > 0) {
+                    return std::string("Macro ") + std::to_string(macro);
+                }
+                auto letter = [&](int s)->char { return (s<=0)?'a':(s==1?'b':'c'); };
+                switch (act) {
+                    case ACTION_5A: return "5a"; case ACTION_5B: return "5b"; case ACTION_5C: return "5c";
+                    case ACTION_2A: return "2a"; case ACTION_2B: return "2b"; case ACTION_2C: return "2c";
+                    case ACTION_JA: return "ja"; case ACTION_JB: return "jb"; case ACTION_JC: return "jc";
+                    case ACTION_6A: return "6a"; case ACTION_6B: return "6b"; case ACTION_6C: return "6c";
+                    case ACTION_4A: return "4a"; case ACTION_4B: return "4b"; case ACTION_4C: return "4c";
+                    case ACTION_QCF: return std::string("236") + letter(str);
+                    case ACTION_DP:  return std::string("623") + letter(str);
+                    case ACTION_QCB: return std::string("214") + letter(str);
+                    case ACTION_421: return std::string("421") + letter(str);
+                    case ACTION_SUPER1: return std::string("41236") + letter(str);
+                    case ACTION_SUPER2: return std::string("214236") + letter(str);
+                    case ACTION_236236: return std::string("236236") + letter(str);
+                    case ACTION_214214: return std::string("214214") + letter(str);
+                    case ACTION_641236: return std::string("641236") + letter(str);
+                    case ACTION_463214: return std::string("463214") + letter(str);
+                    case ACTION_412: return std::string("412") + letter(str);
+                    case ACTION_22:  return std::string("22") + letter(str);
+                    case ACTION_4123641236: return std::string("4123641236") + letter(str);
+                    case ACTION_6321463214: return std::string("6321463214") + letter(str);
+                    case ACTION_JUMP: {
+                        // strength: 0=neutral(8), 1=forward(9), 2=back(7)
+                        int s = (str < 0 ? 0 : (str > 2 ? 2 : str));
+                        const char* dir = (s==0?"8":(s==1?"9":"7"));
+                        return std::string("j-") + dir;
+                    }
+                    case ACTION_BACKDASH: return "44";
+                    case ACTION_FORWARD_DASH: return "66";
+                    case ACTION_BLOCK: return "[4]";
+                    case ACTION_FINAL_MEMORY: return "fm";
+                    default: return "?";
+                }
+            };
+
+            // Determine macro slot for main row display and build slash-separated summary including main row
             int macroSlot = 0;
             switch (triggerType) {
                 case TRIGGER_AFTER_BLOCK: macroSlot = triggerAfterBlockMacroSlot.load(); break;
@@ -474,11 +514,37 @@ void UpdateTriggerOverlay() {
                 case TRIGGER_ON_RG: macroSlot = triggerOnRGMacroSlot.load(); break;
                 default: break;
             }
-            std::string actionName = (macroSlot > 0) ? (std::string("Macro Slot #") + std::to_string(macroSlot))
-                                                     : getActionName(action, customId, strength);
-            std::string text = label + actionName;
-            if (delay > 0) {
-                text += " +" + std::to_string(delay);
+
+            std::string combined;
+            const TriggerOption* opts = nullptr; int optCount = 0;
+            switch (triggerType) {
+                case TRIGGER_AFTER_BLOCK: opts = g_afterBlockOptions; optCount = g_afterBlockOptionCount; break;
+                case TRIGGER_ON_WAKEUP: opts = g_onWakeupOptions; optCount = g_onWakeupOptionCount; break;
+                case TRIGGER_AFTER_HITSTUN: opts = g_afterHitstunOptions; optCount = g_afterHitstunOptionCount; break;
+                case TRIGGER_AFTER_AIRTECH: opts = g_afterAirtechOptions; optCount = g_afterAirtechOptionCount; break;
+                case TRIGGER_ON_RG: opts = g_onRGOptions; optCount = g_onRGOptionCount; break;
+                default: break;
+            }
+            // Always start with the main trigger row token
+            combined = tokenFor(action, strength, macroSlot);
+            // Then append any enabled sub-rows in order
+            if (opts && optCount > 0) {
+                for (int i = 0; i < optCount; ++i) {
+                    if (!opts[i].enabled) continue;
+                    combined += "/";
+                    combined += tokenFor(opts[i].action, opts[i].strength, opts[i].macroSlot);
+                }
+            }
+
+            // If no row summary was produced, use legacy single-action display (with optional macro and delay)
+            std::string text;
+            if (!combined.empty()) {
+                text = label + combined;
+            } else {
+                std::string actionName = (macroSlot > 0) ? (std::string("Macro Slot #") + std::to_string(macroSlot))
+                                                         : getActionName(action, customId, strength);
+                text = label + actionName;
+                if (delay > 0) { text += " +" + std::to_string(delay); }
             }
 
             bool isActive = false;
