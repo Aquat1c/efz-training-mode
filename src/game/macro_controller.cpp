@@ -19,6 +19,8 @@
 #include <atomic>
 #include <sstream>
 #include <iomanip>
+#include <cctype>
+#include <algorithm>
 
 // Forward decls in case headers aren't visible due to include order in some TU configs
 extern uintptr_t GetEFZBase();
@@ -134,6 +136,75 @@ namespace {
         std::ostringstream oss;
         oss << std::hex << std::uppercase << std::setfill('0') << std::setw(width) << value;
         return oss.str();
+    }
+
+    // Direction mask <-> numpad helpers
+    static char DirMaskToNumpad(uint8_t m) {
+        bool u = (m & GAME_INPUT_UP) != 0;
+        bool d = (m & GAME_INPUT_DOWN) != 0;
+        bool l = (m & GAME_INPUT_LEFT) != 0;
+        bool r = (m & GAME_INPUT_RIGHT) != 0;
+        // Resolve invalid combos by neutral (5)
+        if ((u && d) || (l && r)) return '5';
+        if (u && r) return '9';
+        if (u && l) return '7';
+        if (d && r) return '3';
+        if (d && l) return '1';
+        if (u) return '8';
+        if (d) return '2';
+        if (r) return '6';
+        if (l) return '4';
+        return '5';
+    }
+
+    static uint8_t NumpadCharToDirMask(char c) {
+        switch (c) {
+            case '1': return (GAME_INPUT_DOWN | GAME_INPUT_LEFT);
+            case '2': return (GAME_INPUT_DOWN);
+            case '3': return (GAME_INPUT_DOWN | GAME_INPUT_RIGHT);
+            case '4': return (GAME_INPUT_LEFT);
+            case '5': return 0;
+            case '6': return (GAME_INPUT_RIGHT);
+            case '7': return (GAME_INPUT_UP | GAME_INPUT_LEFT);
+            case '8': return (GAME_INPUT_UP);
+            case '9': return (GAME_INPUT_UP | GAME_INPUT_RIGHT);
+            case 'N': return 0; // alias
+            default:  return 0xFF; // invalid sentinel
+        }
+    }
+
+    static std::string MaskToToken(uint8_t m) {
+        uint8_t dir = m & (GAME_INPUT_UP | GAME_INPUT_DOWN | GAME_INPUT_LEFT | GAME_INPUT_RIGHT);
+        std::string t;
+        t.push_back(DirMaskToNumpad(dir));
+        // Append buttons in A..D order
+        if (m & GAME_INPUT_A) t.push_back('A');
+        if (m & GAME_INPUT_B) t.push_back('B');
+        if (m & GAME_INPUT_C) t.push_back('C');
+        if (m & GAME_INPUT_D) t.push_back('D');
+        return t;
+    }
+
+    static bool TryTokenToMask(const std::string& tok, uint8_t& outMask) {
+        if (tok.empty()) return false;
+        // Accept 'N' or 'n' as neutral
+        if (tok.size() == 1 && (tok[0] == 'N' || tok[0] == 'n')) { outMask = 0; return true; }
+        char d = tok[0];
+        if (d >= 'a' && d <= 'z') d = (char)std::toupper((unsigned char)d);
+        uint8_t dir = NumpadCharToDirMask(d);
+        if (dir == 0xFF) return false;
+        uint8_t btn = 0;
+        for (size_t i = 1; i < tok.size(); ++i) {
+            char c = tok[i];
+            if (c >= 'a' && c <= 'z') c = (char)std::toupper((unsigned char)c);
+            if (c == 'A') btn |= GAME_INPUT_A;
+            else if (c == 'B') btn |= GAME_INPUT_B;
+            else if (c == 'C') btn |= GAME_INPUT_C;
+            else if (c == 'D') btn |= GAME_INPUT_D;
+            else return false; // unexpected char
+        }
+        outMask = (dir | btn);
+        return true;
     }
 
     static std::string MaskToButtons(Mask m) {
@@ -967,7 +1038,13 @@ void Stop() {
 int GetCurrentSlot() { return s_curSlot.load(); }
 void SetCurrentSlot(int slot) { s_curSlot.store(ClampSlot(slot)); }
 int GetSlotCount() { return kMaxSlots; }
-bool IsSlotEmpty(int slot) { slot = ClampSlot(slot) - 1; return !s_slots[slot].hasData || s_slots[slot].spans.empty(); }
+bool IsSlotEmpty(int slot) {
+    slot = ClampSlot(slot) - 1;
+    const Slot& s = s_slots[slot];
+    // Consider either spans or stream as data; require hasData true
+    bool hasAny = (!s.spans.empty() || !s.macroStream.empty());
+    return !(s.hasData && hasAny);
+}
 MacroController::State GetState() { return s_state.load(); }
 
 std::string GetStatusLine() {
@@ -988,7 +1065,7 @@ SlotStats GetSlotStats(int slot) {
     stats.bufIndexTicks = static_cast<int>(s.bufIndexPerTick.size());
     stats.bufStartIdx = s.bufStartIdx;
     stats.bufEndIdx = s.bufEndIdx;
-    stats.hasData = s.hasData && !s.spans.empty();
+    stats.hasData = s.hasData && (!s.spans.empty() || !s.macroStream.empty());
     return stats;
 }
 
@@ -1001,6 +1078,278 @@ void PrevSlot() {
     if (GetCurrentGamePhase() != GamePhase::Match || !AreCharactersInitialized()) return;
     int cur = s_curSlot.load();
     cur--; if (cur < 1) cur = kMaxSlots; s_curSlot.store(cur);
+}
+
+} // namespace MacroController
+
+// ---- Serialization / Deserialization implementation ----
+namespace MacroController {
+
+std::string SerializeSlot(int slot, bool includeBuffers) {
+    slot = ClampSlot(slot);
+    const Slot& s = s_slots[slot - 1];
+    // Build per-tick macro masks
+    std::vector<uint8_t> ticks;
+    if (!s.macroStream.empty()) {
+        ticks = s.macroStream; // copy
+    } else {
+        // Expand spans
+        for (const auto& sp : s.spans) {
+            for (int t = 0; t < sp.ticks; ++t) ticks.push_back(sp.mask);
+        }
+    }
+    std::ostringstream out;
+    out << "EFZMACRO 1";
+    if (ticks.empty()) return out.str();
+
+    // Prepare per-tick buffer slices if requested
+    size_t bufPos = 0;
+    auto buildBufToken = [&](size_t tickIndex) {
+        std::ostringstream bt;
+        uint16_t k = 0;
+        if (tickIndex < s.bufCountsPerTick.size()) k = s.bufCountsPerTick[tickIndex];
+        bt << "{" << k << ":";
+        if (k > 0) bt << ' ';
+        for (uint16_t i = 0; i < k && bufPos < s.bufStream.size(); ++i) {
+            uint8_t v = s.bufStream[bufPos++];
+            // Prefer token form when it matches our mapping; fallback to hex otherwise
+            std::string valTok = MaskToToken(v);
+            // No way to disambiguate invalid combos, but MaskToToken always yields something;
+            // Emit hex when v has impossible combinations (both U&D or L&R)
+            bool u = (v & GAME_INPUT_UP) != 0, d = (v & GAME_INPUT_DOWN) != 0, l = (v & GAME_INPUT_LEFT) != 0, r = (v & GAME_INPUT_RIGHT) != 0;
+            if ((u && d) || (l && r)) {
+                bt << "0x" << ToHexString((int)v, 2);
+            } else {
+                bt << valTok;
+            }
+            if (i + 1 < k) bt << ' ';
+        }
+        bt << "}";
+        return bt.str();
+    };
+
+    // Build tokens with optional RLE compression
+    std::vector<std::string> perTick;
+    perTick.reserve(ticks.size());
+    for (size_t i = 0; i < ticks.size(); ++i) {
+        std::string tok = MaskToToken(ticks[i]);
+        if (includeBuffers) {
+            tok += ' ';
+            tok += buildBufToken(i);
+        }
+        perTick.push_back(std::move(tok));
+    }
+    // RLE compress only identical full tokens
+    std::ostringstream seq;
+    seq << ' ';
+    size_t i = 0;
+    while (i < perTick.size()) {
+        size_t j = i + 1;
+        while (j < perTick.size() && perTick[j] == perTick[i]) ++j;
+        size_t run = j - i;
+        seq << perTick[i];
+        if (run > 1) seq << 'x' << run;
+        if (j < perTick.size()) seq << ' ';
+        i = j;
+    }
+    out << seq.str();
+    return out.str();
+}
+
+static void ClearSlotForImport(Slot& s) {
+    s.spans.clear();
+    s.macroStream.clear();
+    s.bufStream.clear();
+    s.bufCountsPerTick.clear();
+    s.bufIndexPerTick.clear();
+    s.tickReason.clear();
+    s.immPerTick.clear();
+    s.bufLatestPerTick.clear();
+    s.fullBufferSnapshots.clear();
+    s.bufStartIdx = 0;
+    s.bufEndIdx = 0;
+    s.hasData = false;
+}
+
+static void BuildSpansFromStream(Slot& s) {
+    s.spans.clear();
+    if (s.macroStream.empty()) return;
+    uint8_t last = s.macroStream[0];
+    int count = 1;
+    for (size_t i = 1; i < s.macroStream.size(); ++i) {
+        if (s.macroStream[i] == last) {
+            ++count;
+        } else {
+            s.spans.push_back({ last, last, count, 0 });
+            last = s.macroStream[i];
+            count = 1;
+        }
+    }
+    s.spans.push_back({ last, last, count, 0 });
+}
+
+bool DeserializeSlot(int slot, const std::string& text, std::string& errorOut) {
+    errorOut.clear();
+    slot = ClampSlot(slot);
+    Slot& dst = s_slots[slot - 1];
+
+    // Tokenize with brace-aware scanning
+    std::vector<std::string> tokens;
+    tokens.reserve(256);
+    size_t n = text.size();
+    size_t p = 0;
+    auto skipSpace = [&](size_t& i){ while (i < n && std::isspace((unsigned char)text[i])) ++i; };
+    skipSpace(p);
+    // Optional header "EFZMACRO 1"
+    if (p < n) {
+        size_t hdrEnd = p;
+        // Read first two non-space tokens to check header
+        std::string t1, t2;
+        while (hdrEnd < n && !std::isspace((unsigned char)text[hdrEnd])) ++hdrEnd;
+        t1 = text.substr(p, hdrEnd - p);
+        p = hdrEnd; skipSpace(p);
+        hdrEnd = p; while (hdrEnd < n && !std::isspace((unsigned char)text[hdrEnd])) ++hdrEnd;
+        t2 = text.substr(p, hdrEnd - p);
+        if (!t1.empty() && !t2.empty() && (_stricmp(t1.c_str(), "EFZMACRO") == 0)) {
+            // Verify version
+            if (t2 != "1") { errorOut = "Unsupported macro version: " + t2; return false; }
+            p = hdrEnd; // move beyond version
+        } else {
+            // No header; reset to start to parse normally
+            p = 0;
+        }
+    }
+    skipSpace(p);
+    while (p < n) {
+        if (std::isspace((unsigned char)text[p])) { ++p; continue; }
+        size_t start = p;
+        if (text[p] == '{') {
+            // Should not start with group; groups attach to preceding tick token
+            errorOut = "Unexpected '{' without preceding tick token";
+            return false;
+        }
+        // Read until whitespace OR brace start (we'll include following group as part of this token pack)
+        while (p < n && !std::isspace((unsigned char)text[p])) {
+            if (text[p] == '{') break;
+            ++p;
+        }
+        size_t baseEnd = p;
+        // Capture any attached brace group including spaces inside until matching '}'
+        int brace = 0;
+        if (p < n && text[p] == '{') {
+            brace = 1; ++p;
+            while (p < n && brace > 0) {
+                if (text[p] == '{') ++brace;
+                else if (text[p] == '}') --brace;
+                ++p;
+            }
+            if (brace != 0) { errorOut = "Unterminated buffer group"; return false; }
+        }
+        size_t end = p;
+        tokens.push_back(text.substr(start, end - start));
+        skipSpace(p);
+    }
+
+    if (tokens.empty()) {
+        // Allow clearing slot
+        ClearSlotForImport(dst);
+        return true;
+    }
+
+    // Parse sequence
+    std::vector<uint8_t> macro;
+    std::vector<uint16_t> counts;
+    std::vector<uint8_t> buf;
+
+    auto parseUInt = [](const std::string& s, size_t i, uint32_t& out)->size_t{
+        out = 0; size_t start = i; while (i < s.size() && std::isdigit((unsigned char)s[i])) { out = out*10 + (s[i]-'0'); ++i; }
+        return (i > start) ? i : start;
+    };
+
+    for (size_t iTok = 0; iTok < tokens.size(); ++iTok) {
+        const std::string& pack = tokens[iTok];
+        // Split into base and optional group
+        size_t bracePos = pack.find('{');
+        std::string base = (bracePos == std::string::npos) ? pack : pack.substr(0, bracePos);
+        std::string group = (bracePos == std::string::npos) ? std::string() : pack.substr(bracePos);
+        // Trim trailing spaces from base
+        while (!base.empty() && std::isspace((unsigned char)base.back())) base.pop_back();
+        // Extract repeat suffix xN from base if present
+        size_t xPos = base.find_last_of('x');
+        size_t xPos2 = base.find_last_of('X');
+        if (xPos == std::string::npos || (xPos2 != std::string::npos && xPos2 > xPos)) xPos = xPos2;
+        uint32_t repeat = 1;
+        std::string baseTok = base;
+        if (xPos != std::string::npos) {
+            uint32_t val = 0; size_t j = xPos + 1; j = parseUInt(base, j, val);
+            if (j == xPos + 1 || val == 0) { errorOut = "Invalid repeat suffix in '" + base + "'"; return false; }
+            repeat = val;
+            baseTok = base.substr(0, xPos);
+            while (!baseTok.empty() && std::isspace((unsigned char)baseTok.back())) baseTok.pop_back();
+        }
+        // Parse base token mask
+        uint8_t baseMask = 0;
+        if (!TryTokenToMask(baseTok, baseMask)) { errorOut = "Bad tick token: '" + baseTok + "'"; return false; }
+
+        // Optional group parsing {k: v1 v2 ...}
+        std::vector<uint8_t> thisTickBuf;
+        uint16_t thisTickK = 0;
+        if (!group.empty()) {
+            // Strip braces
+            if (group.front() != '{' || group.back() != '}') { errorOut = "Malformed buffer group in '" + pack + "'"; return false; }
+            std::string inner = group.substr(1, group.size()-2);
+            // Parse k:
+            size_t q = 0; while (q < inner.size() && std::isspace((unsigned char)inner[q])) ++q;
+            uint32_t kVal = 0; size_t q2 = parseUInt(inner, q, kVal);
+            if (q2 == q) { errorOut = "Buffer group missing count in '" + pack + "'"; return false; }
+            while (q2 < inner.size() && std::isspace((unsigned char)inner[q2])) ++q2;
+            if (q2 >= inner.size() || inner[q2] != ':') { errorOut = "Buffer group missing ':' in '" + pack + "'"; return false; }
+            q = q2 + 1;
+            // Parse values
+            while (q < inner.size()) {
+                while (q < inner.size() && std::isspace((unsigned char)inner[q])) ++q;
+                if (q >= inner.size()) break;
+                // Read next token until space
+                size_t start = q; while (q < inner.size() && !std::isspace((unsigned char)inner[q])) ++q;
+                std::string vtok = inner.substr(start, q - start);
+                if (vtok.empty()) break;
+                uint8_t vmask = 0;
+                if (vtok.size() >= 3 && (vtok[0] == '0') && (vtok[1] == 'x' || vtok[1] == 'X')) {
+                    // Hex
+                    uint32_t vv = 0;
+                    std::stringstream ss; ss << std::hex << vtok; ss >> vv;
+                    vmask = (uint8_t)(vv & 0xFF);
+                } else {
+                    if (!TryTokenToMask(vtok, vmask)) { errorOut = "Bad buffer value token: '" + vtok + "'"; return false; }
+                }
+                thisTickBuf.push_back(vmask);
+            }
+            thisTickK = (uint16_t)kVal;
+            if (thisTickK != thisTickBuf.size()) {
+                errorOut = "Buffer group count mismatch (k!=values) in '" + pack + "'";
+                return false;
+            }
+        } else {
+            // Default: one write equal to tick mask
+            thisTickK = 1; thisTickBuf.push_back(baseMask);
+        }
+
+        // Emit repeat
+        for (uint32_t r = 0; r < repeat; ++r) {
+            macro.push_back(baseMask);
+            counts.push_back(thisTickK);
+            buf.insert(buf.end(), thisTickBuf.begin(), thisTickBuf.end());
+        }
+    }
+
+    // Commit to slot
+    ClearSlotForImport(dst);
+    dst.macroStream = std::move(macro);
+    dst.bufCountsPerTick = std::move(counts);
+    dst.bufStream = std::move(buf);
+    dst.hasData = !dst.macroStream.empty();
+    BuildSpansFromStream(dst);
+    return true;
 }
 
 } // namespace MacroController

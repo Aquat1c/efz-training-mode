@@ -361,8 +361,8 @@
 #define CHAR_ID_NAGAMORI  13
 #define CHAR_ID_NANASE    14  // Actually Rumi in files
 #define CHAR_ID_EXNANASE  15  // Actually Doppel in files
-#define CHAR_ID_NAYUKI    16  // Actually NayukiB (Neyuki) in files
-#define CHAR_ID_NAYUKIB   17  // Actually Nayuki in files
+#define CHAR_ID_NAYUKI    16  // Actually Nayuki (Neyuki) in files
+#define CHAR_ID_NAYUKIB   17  // Actually NayukiB in files
 #define CHAR_ID_SHIORI    18
 #define CHAR_ID_AYU       19
 #define CHAR_ID_MAI       20
