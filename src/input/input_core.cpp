@@ -165,13 +165,18 @@ bool ResetPlayerInputBufferIndex(int playerNum) {
     return true;
 }
 
-// Read MoveID (offset 610 = 0x262)
+// Read MoveID using authoritative offset (MOVE_ID_OFFSET)
 uint16_t GetPlayerMoveID(int playerNum) {
     uintptr_t playerPtr = GetPlayerPointer(playerNum);
-    if (!playerPtr) return 99; // Default "no move" value
-    
-    uint16_t moveID = 99;
-    SafeReadMemory(playerPtr + 610, &moveID, sizeof(uint16_t));
+    if (!playerPtr) {
+        LogOut("[BUFFER_DUMP] GetPlayerMoveID: null playerPtr for P" + std::to_string(playerNum), true);
+        return 0; // safest fallback: idle
+    }
+    uint16_t moveID = 0;
+    if (!SafeReadMemory(playerPtr + MOVE_ID_OFFSET, &moveID, sizeof(uint16_t))) {
+        LogOut("[BUFFER_DUMP] GetPlayerMoveID: failed to read MoveID for P" + std::to_string(playerNum), true);
+        return 0;
+    }
     return moveID;
 }
 
@@ -190,16 +195,13 @@ void DumpInputBuffer(int playerNum, const std::string& context) {
     // Read MoveID
     uint16_t moveID = GetPlayerMoveID(playerNum);
     
-    // Read current move animation ID (offset 8 = 0x08)
-    uint16_t currentMove = 0;
-    SafeReadMemory(playerPtr + 8, &currentMove, sizeof(uint16_t));
+    // MoveID is authoritative; drop the duplicate/ambiguous CurrentAnim read
     
     // Read last 15 positions (game checks last 5 for dash, but we want more context)
     std::stringstream ss;
     ss << "[BUFFER_DUMP][" << context << "] P" << playerNum 
        << " Index=" << bufferIndex 
-       << " MoveID=" << moveID
-       << " CurrentAnim=" << currentMove
+    << " MoveID=" << moveID
        << " Last15=[";
     
     int startPos = (bufferIndex >= 15) ? (bufferIndex - 15) : 0;
