@@ -253,3 +253,14 @@ bool ClearPlayerInputBuffer(int playerNum, bool resetIndex) {
     LogOut(std::string("[INPUT] Cleared input buffer for P") + std::to_string(playerNum) + (resetIndex?" (index reset)":""), true);
     return ok;
 }
+
+// Clear engine command flags (command buffer and dash command) to avoid post-macro transitions
+bool ClearPlayerCommandFlags(int playerNum) {
+    uintptr_t playerPtr = GetPlayerPointer(playerNum);
+    if (!playerPtr) return false;
+    uint8_t zero = 0;
+    bool ok1 = SafeWriteMemory(playerPtr + COMMAND_BUFFER_OFFSET, &zero, sizeof(uint8_t));
+    bool ok2 = SafeWriteMemory(playerPtr + DASH_COMMAND_OFFSET, &zero, sizeof(uint8_t));
+    LogOut(std::string("[INPUT] Cleared command/dash flags for P") + std::to_string(playerNum), true);
+    return ok1 && ok2;
+}

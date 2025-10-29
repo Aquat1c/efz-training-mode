@@ -461,6 +461,13 @@
 #define BUTTON_C_OFFSET         0x18C
 #define BUTTON_D_OFFSET         0x18D
 
+// Engine command flags observed in decomp (authoritative for post-input transitions)
+// These bytes sit just before the circular input buffer region and are toggled by
+// the engine when a motion/command or dash pattern is recognized. Clearing them
+// prevents residual moveID transitions after external input injection completes.
+#define COMMAND_BUFFER_OFFSET   0x1A8  // Byte flag used by command recognizers
+#define DASH_COMMAND_OFFSET     0x1A9  // Byte flag for dash recognition/state
+
 // Block helper aliases (same raw slots as inputs)
 #define BLOCK_DIRECTION_OFFSET  HORIZONTAL_INPUT_OFFSET // signed: -1 (left) / +1 (right) / 0 neutral
 #define BLOCK_STANCE_OFFSET     VERTICAL_INPUT_OFFSET   // 0=stand, 1=crouch (down held)
