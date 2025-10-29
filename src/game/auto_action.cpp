@@ -164,25 +164,31 @@ static void ProcessDeferredDashFollowups(short curP1, short prevP1, short curP2,
     static short lastLoggedP1 = -999;
     static short lastLoggedP2 = -999;
     if (targetP == 1 && curr != lastLoggedP1) {
+        bool targIsKaori = (g_cachedP1CharID == CHAR_ID_KAORI);
+        int waitId = back ? BACKWARD_DASH_START_ID : (targIsKaori ? KAORI_FORWARD_DASH_START_ID : FORWARD_DASH_START_ID);
         LogOut("[DASH_DEBUG] P1 MoveID: " + std::to_string(prev) + " -> " + std::to_string(curr) + 
-               std::string(" (waiting for ") + std::to_string(back ? BACKWARD_DASH_START_ID : FORWARD_DASH_START_ID) + ")", true);
+               std::string(" (waiting for ") + std::to_string(waitId) + ")", true);
         lastLoggedP1 = curr;
-        if ((back && curr == BACKWARD_DASH_START_ID) || (!back && curr == FORWARD_DASH_START_ID)) {
+        if ((back && curr == BACKWARD_DASH_START_ID) || (!back && (curr == FORWARD_DASH_START_ID || (targIsKaori && curr == KAORI_FORWARD_DASH_START_ID)))) {
             DumpInputBuffer(1, "DASH_START_DETECTED");
         }
     }
     if (targetP == 2 && curr != lastLoggedP2) {
+        bool targIsKaori = (g_cachedP2CharID == CHAR_ID_KAORI);
+        int waitId = back ? BACKWARD_DASH_START_ID : (targIsKaori ? KAORI_FORWARD_DASH_START_ID : FORWARD_DASH_START_ID);
         LogOut("[DASH_DEBUG] P2 MoveID: " + std::to_string(prev) + " -> " + std::to_string(curr) + 
-               std::string(" (waiting for ") + std::to_string(back ? BACKWARD_DASH_START_ID : FORWARD_DASH_START_ID) + ")", true);
+               std::string(" (waiting for ") + std::to_string(waitId) + ")", true);
         lastLoggedP2 = curr;
-        if ((back && curr == BACKWARD_DASH_START_ID) || (!back && curr == FORWARD_DASH_START_ID)) {
+        if ((back && curr == BACKWARD_DASH_START_ID) || (!back && (curr == FORWARD_DASH_START_ID || (targIsKaori && curr == KAORI_FORWARD_DASH_START_ID)))) {
             DumpInputBuffer(2, "DASH_START_DETECTED");
         }
     }
     
     // Fire exactly on first frame we see the dash start ID (forward or back).
-    if (((!back && curr == FORWARD_DASH_START_ID && prev != FORWARD_DASH_START_ID) ||
-         ( back && curr == BACKWARD_DASH_START_ID && prev != BACKWARD_DASH_START_ID))) {
+    bool targIsKaori = (targetP == 1 ? (g_cachedP1CharID == CHAR_ID_KAORI) : (g_cachedP2CharID == CHAR_ID_KAORI));
+    bool forwardDashStart = (!back && (curr == FORWARD_DASH_START_ID || (targIsKaori && curr == KAORI_FORWARD_DASH_START_ID)));
+    bool backDashStart = (back && curr == BACKWARD_DASH_START_ID);
+    if ((forwardDashStart && prev != curr) || (backDashStart && prev != BACKWARD_DASH_START_ID)) {
         bool facingRight = GetPlayerFacingDirection(targetP);
         uint8_t forwardDir = facingRight ? GAME_INPUT_RIGHT : GAME_INPUT_LEFT;
         uint8_t backDir    = facingRight ? GAME_INPUT_LEFT  : GAME_INPUT_RIGHT;
@@ -2203,7 +2209,7 @@ void ProcessAutoControlRestore() {
     // Recompute dashNormalStarted excluding any dash state (prevents Kaori 250 from being misclassified)
     if (dashNormalStarted && moveIsDash) dashNormalStarted = false;
     bool dashCancelled = (!moveIsDash) && (IsBlockstun(moveID2) || IsHitstun(moveID2) || IsAirtech(moveID2));
-    // HARD GUARD (informational): If we just queued a dash and have NOT yet observed the dash start ID
+        // HARD GUARD (informational): If we just queued a dash and have NOT yet observed the dash start ID
     // (163 forward, 165 back, or 250 Kaori), we will suppress generic restore later. Keep timeout >=90.
     bool waitingDashStart = g_recentDashQueued.load() && !dashStartNow;
     if (waitingDashStart && detailedLogging.load()) {
@@ -2349,7 +2355,7 @@ void ProcessAutoControlRestore() {
         }
         // (Reverted timing expansion) Do not add extra pre-start requeue/abandon paths here.
 
-        int timeout = g_controlRestoreTimeout.load();
+    int timeout = g_controlRestoreTimeout.load();
         if (timeout > 0) {
             // Only decrement while positive to avoid unbounded negative underflow
             int prev = g_controlRestoreTimeout.fetch_sub(1);
@@ -2461,6 +2467,33 @@ void ProcessAutoControlRestore() {
             g_pendingControlRestore.store(false);
             s_prevMoveID2 = moveID2;
             return;
+        }
+
+        // PRE-START CANCEL FALLBACK (covers Kaori and brief dash-start cases):
+        // If we queued a dash, the queue is now inactive, and we've seen a sustained non-dash, non-zero state
+        // for a short window without ever observing a dash start ID, cancel and restore to avoid indefinite hold.
+        if (waitingDashStart && !dashQueueActiveNow && moveID2 != 0 && !moveIsDash) {
+            int ageSinceQueue = frameCounter.load() - g_recentDashQueuedFrame.load();
+            if (ageSinceQueue >= 12) { // ~1/6 sec at 192 Hz; enough to rule out 1F start IDs
+                LogOut("[AUTO-ACTION][DASH] Pre-start cancelled (no start observed, non-dash state persisted) — restoring", true);
+                // Cancel any pending follow-up as it will never fire now
+                if (g_dashDeferred.pendingSel.load() > 0) {
+                    g_dashDeferred.pendingSel.store(0);
+                    g_dashDeferred.dashStartLatched.store(-1);
+                }
+                g_recentDashQueued.store(false);
+                RestoreP2ControlState();
+                g_restoreGraceCounter = RESTORE_GRACE_PERIOD;
+                g_crgFastRestore.store(false);
+                g_lastP2MoveID.store(-1);
+                g_pendingControlRestore.store(false);
+                s_prevMoveID2 = moveID2;
+                return;
+            } else {
+                // Briefly hold to see if dash start appears
+                s_prevMoveID2 = moveID2;
+                return;
+            }
         }
 
         // Generic restore: require pending flag + valid context to avoid repeated restores when already clean.
