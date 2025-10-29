@@ -1077,6 +1077,7 @@ namespace ImGuiGui {
                 static std::vector<std::string> s_redoStack;
                 static std::string s_prevText; // last committed text for change detection
                 static bool s_forceReload = false;
+                static bool s_editMode = false; // edit/display toggle for macro editor
                 auto ensureBufferFromText = [&](const std::string& txt){
                     const size_t minCap = 8192; // 8KB editing space
                     size_t cap = (txt.size() + 1024 > minCap) ? (txt.size() + 1024) : minCap;
@@ -1100,6 +1101,20 @@ namespace ImGuiGui {
                     s_macroText = MacroController::SerializeSlot(curSlot, s_includeBuffers);
                     ensureBufferFromText(s_macroText);
                     s_undoStack.clear(); s_redoStack.clear(); s_prevText = s_macroText; s_applyError.clear();
+                }
+                ImGui::SameLine();
+                if (ImGui::SmallButton("Prev Slot##serialized")) {
+                    MacroController::PrevSlot();
+                    // Force refresh and leave edit mode so the new slot shows immediately
+                    s_forceReload = true;
+                    s_editMode = false;
+                }
+                ImGui::SameLine();
+                if (ImGui::SmallButton("Next Slot##serialized")) {
+                    MacroController::NextSlot();
+                    // Force refresh and leave edit mode so the new slot shows immediately
+                    s_forceReload = true;
+                    s_editMode = false;
                 }
                 ImGui::SameLine();
                 if (ImGui::SmallButton("Apply to Slot")) {
@@ -1177,9 +1192,32 @@ namespace ImGuiGui {
                 }
                 if (!canRedo) ImGui::EndDisabled();
                 ImGui::SameLine();
+                if (ImGui::SmallButton("Copy")) {
+                    ImGui::SetClipboardText(s_textBuf.data());
+                    DirectDrawHook::AddMessage("Copied macro text", "MACRO", RGB(180,255,220), 700, 0, 120);
+                }
+                ImGui::SameLine();
+                if (ImGui::SmallButton("Paste")) {
+                    const char* clip = ImGui::GetClipboardText();
+                    if (clip && *clip) {
+                        s_undoStack.push_back(s_macroText);
+                        s_redoStack.clear();
+                        s_macroText = std::string(clip);
+                        ensureBufferFromText(s_macroText);
+                        s_prevText = s_macroText;
+                        s_applyError.clear();
+                        // Enter edit mode so user can see/adjust pasted content immediately
+                        s_editMode = true;
+                    }
+                }
+                ImGui::SameLine();
                 if (ImGui::SmallButton("Insert Sample")) {
-                    // Sample: 5A, wait 3f, 5B, wait 3f, 5C, wait 3f, then 2,3,6B
-                    std::string sample = "EFZMACRO 1 5A 5x3 5B 5x3 5C 5x3 2 3 6B";
+                    // Sample: 5A, wait 3f, 5B, wait 3f, 5C, then a 623B written with per-tick buffer groups
+                    // 623 example provided by user: 6 {3: 6 6 6} 2 {3: 2 2 2} 3 {3: 3 3 3} 5B {3: 5B 5 5}
+                    std::string sample =
+                        "EFZMACRO 1 "
+                        "5A 5x3 5B 5x3 5C "
+                        "6 {3: 6 6 6} 2 {3: 2 2 2} 3 {3: 3 3 3} 5B {3: 5B 5 5}";
                     // Push current into undo and clear redo
                     s_undoStack.push_back(s_macroText);
                     s_redoStack.clear();
@@ -1266,7 +1304,6 @@ namespace ImGuiGui {
                     return lines;
                 };
                 
-                static bool s_editMode = false;
                 ImFont* font = ImGui::GetFont();
                 float fontSize = ImGui::GetFontSize();
                 float contentWidth = ImGui::GetContentRegionAvail().x - 10.0f;
@@ -1594,6 +1631,39 @@ namespace ImGuiGui {
                     BulletTextWrapped("Facing-aware: directions flip automatically based on P2 facing.");
                     BulletTextWrapped("Frame-step aware: you can use Revival's default keys for framestepping (by defaults it's SPACE and P keys for the pause and frame advance respectively).");
                     BulletTextWrapped("Empty slots: playing an empty slot does nothing.");
+
+                    ImGui::Separator();
+                    ImGui::SeparatorText("Macro notation (text)");
+                    ImGui::TextWrapped("Macros can be written and edited as plain text. The recommended format starts with a header and then a sequence of tick tokens:");
+                    ImGui::Indent();
+                    BulletTextWrapped("Header: 'EFZMACRO 1' (version 1). The header is optional when importing, but added on save.");
+                    BulletTextWrapped("Tick token: a numpad direction (1..9 or 5 for neutral) optionally followed by buttons A/B/C/D. Examples: 5A, 2, 6B, 236C -> '2 3 6C'. Case-insensitive; 'N' is an alias for neutral.");
+                    BulletTextWrapped("Repeat: append 'xN' to repeat a token pack N times. Spaces are allowed: '5Ax50', '5A x50', or '5A {1: 5A} x50'. The repeat applies to the whole pack (base plus optional group).");
+                    BulletTextWrapped("Per-tick buffer group (optional): '{k: v1 v2 ... vK}' attaches to the preceding tick token and describes the K raw input-buffer writes the engine made during that 1/64s tick (k=K). Values inside are tokens (like 6, 5B) or hex bytes (0x??) when needed.");
+                    BulletTextWrapped("Default when group omitted: '{1: <tickMask>}' is assumed, i.e., one buffer write equal to that tick's mask.");
+                    BulletTextWrapped("Whitespace: flexible. You can put spaces between the base token and '{...}'. On apply, text is normalized to a canonical form.");
+                    BulletTextWrapped("Facing rule: always write as if P1 is facing right (6=forward, 4=back). Playback flips 4/6 automatically for the current P2 facing.");
+                    ImGui::Unindent();
+
+                    ImGui::Dummy(ImVec2(1, 2));
+                    ImGui::TextDisabled("Example (header + simple chain + 623B with groups):");
+                    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.8f, 0.95f, 1.0f, 1.0f));
+                    ImGui::TextWrapped("EFZMACRO 1 5A 5x3 5B 5x3 5C 6 {3: 6 6 6} 2 {3: 2 2 2} 3 {3: 3 3 3} 5B {3: 5B 5 5}");
+                    ImGui::PopStyleColor();
+                    ImGui::Indent();
+                    BulletTextWrapped("5A 5x3 5B 5x3 5C: press 5A, wait ~3 ticks, then 5B, wait ~3, then 5C. The 'x3' repeats full neutral ticks after each attack.");
+                    BulletTextWrapped("6 {3: 6 6 6}: a tick whose engine history wrote three entries, all '6' (forward). We record and reproduce those writes precisely.");
+                    BulletTextWrapped("2 {3: 2 2 2} -> 3 {3: 3 3 3}: continue the dragon-motion with three writes per tick.");
+                    BulletTextWrapped("5B {3: 5B 5 5}: the attack tick had three writes: first '5B' (neutral+B) then two neutrals. This is exactly how the engine history looked when recording.");
+                    ImGui::Unindent();
+
+                    ImGui::Dummy(ImVec2(1, 2));
+                    ImGui::TextDisabled("Tips");
+                    ImGui::Indent();
+                    BulletTextWrapped("You usually don't need groups for simple macros; '2 3 6C' works. Groups let you match engine write cadence for strict timing.");
+                    BulletTextWrapped("If you paste text from outside, use Apply to Slot to validate and normalize. Parser accepts 'xN' with or without a space and braces with spaces.");
+                    BulletTextWrapped("Remember: write directions for P1-facing; replay flips automatically for P2-facing.");
+                    ImGui::Unindent();
                     ImGui::EndTabItem();
                 }
 
