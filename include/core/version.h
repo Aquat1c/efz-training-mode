@@ -1,8 +1,7 @@
 #pragma once
 
 // EFZ Training Mode version information
-// Update this when bumping the release version or automate via CMake in the future.
-#define EFZ_TRAINING_MODE_VERSION "0.8.6"
+#define EFZ_TRAINING_MODE_VERSION "0.8.7"
 
 // Build timestamp (from compiler)
 #define EFZ_TRAINING_MODE_BUILD_DATE __DATE__
