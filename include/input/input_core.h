@@ -77,3 +77,7 @@ bool ClearPlayerInputBuffer(int playerNum, bool resetIndex);
 void DumpInputBuffer(int playerNum, const std::string& context);
 // Read the current MoveID value (offset 610 = 0x262)
 uint16_t GetPlayerMoveID(int playerNum);
+
+// Clear engine command flags (command buffer and dash command) for a player.
+// This helps prevent the engine from initiating a move after our macro/queue finishes.
+bool ClearPlayerCommandFlags(int playerNum);

@@ -93,6 +93,12 @@ namespace {
     bool s_finishing = false;
     int  s_finishNeutralFrames = 0; // number of neutral frames to inject for a full clear tick (3 subframes)
     bool s_finishPendingClearTick = false; // wait until next tick boundary (s_frameDiv==0) to start neutral clear tick
+    // After the neutral clear tick, hold a short guard window to wait for the engine
+    // to commit a detected command into a MoveID (special/super/dash) before we
+    // restore control. This mitigates repeats caused by restoring too early.
+    bool s_finishGuardActive = false;
+    int  s_finishGuardFramesLeft = 0;  // internal frames (192 Hz)
+    uint16_t s_finishGuardStartMoveId = 0;
     // Baseline immediate mask for the current 64 Hz tick
     uint8_t s_baselineMask = 0;
 
@@ -141,6 +147,16 @@ namespace {
         std::ostringstream oss;
         oss << std::hex << std::uppercase << std::setfill('0') << std::setw(width) << value;
         return oss.str();
+    }
+
+    // Helper: classify activation-worthy MoveIDs to gate control restore
+    static bool IsActivationMove(uint16_t mv) {
+        // Supers (>=300), specials (>=250), dash starts (explicit), Kaori dash special-case
+        if (mv >= 300) return true;           // supers
+        if (mv >= 250) return true;           // specials and Kaori forward dash start (250)
+        if (mv == FORWARD_DASH_START_ID) return true;   // 163
+        if (mv == BACKWARD_DASH_START_ID) return true;  // 165
+        return false;
     }
 
     // Direction mask <-> numpad helpers
@@ -391,6 +407,7 @@ namespace {
         s_bufWriteQueue.clear(); s_bufQueueHead = 0; s_baselineMask = 0;
         s_tickBufQueue.clear(); s_tickBufHead = 0; s_writesLeftThisTick = 0;
         s_finishing = false; s_finishNeutralFrames = 0; s_finishPendingClearTick = false;
+        s_finishGuardActive = false; s_finishGuardFramesLeft = 0; s_finishGuardStartMoveId = 0;
         ImmediateInput::Clear(2);
         // Default hook behavior
         g_forceBypass[1].store(false);
@@ -723,6 +740,38 @@ void Tick() {
             s_recLastMask = mask; s_recLastBuf = mask; s_recLastFacing = facing; s_recSpanTicks = 1; s_recLastReason = reasonCode;
         }
     } else if (st == State::Replaying) {
+        // Finish guard: after neutral clear tick, hold neutral until moveID activation or timeout
+        if (s_finishGuardActive) {
+            // Keep neutral override while guarding
+            g_pollOverrideMask[2].store(0, std::memory_order_relaxed);
+            g_pollOverrideActive[2].store(true, std::memory_order_relaxed);
+            // Probe current MoveID
+            uint16_t mv = GetPlayerMoveID(2);
+            bool activated = IsActivationMove(mv);
+            if (activated || s_finishGuardFramesLeft <= 0) {
+                // Finalize: restore control and cleanup
+                s_finishGuardActive = false;
+                s_state.store(State::Idle);
+                ImmediateInput::Clear(2);
+                (void)ClearPlayerCommandFlags(2);
+                g_pollOverrideActive[2].store(false, std::memory_order_relaxed);
+                g_forceBypass[2].store(false);
+                g_injectImmediateOnly[2].store(false);
+                if (s_macroBannerId != -1) { DirectDrawHook::RemovePermanentMessage(s_macroBannerId); s_macroBannerId = -1; }
+                if (g_p2ControlOverridden) RestoreP2ControlState();
+                int slotIdx = ClampSlot(s_curSlot.load()) - 1;
+                LogOut(std::string("[MACRO][PLAY] finish-guard exit ") + (activated?"on-activation":"on-timeout") +
+                       " slot=" + std::to_string(s_curSlot.load()) +
+                       " lastMoveID=" + std::to_string((int)mv) +
+                       " streamBytes=" + std::to_string((int)s_slots[slotIdx].macroStream.size()) +
+                       " bufWrites=" + std::to_string((int)s_slots[slotIdx].bufStream.size()), true);
+                DirectDrawHook::AddMessage("Macro: Replay finished", "MACRO", RGB(180,255,180), 1200, 0, 120);
+                return;
+            }
+            // Count down guard frames
+            if (s_finishGuardFramesLeft > 0) s_finishGuardFramesLeft--;
+            return;
+        }
         // If we are in or pending the finishing phase, handle the neutral clear tick.
         if (s_finishPendingClearTick && s_frameDiv == 0) {
             // Start a full neutral clear tick at the next 64 Hz boundary (3 subframes)
@@ -735,6 +784,12 @@ void Tick() {
             s_writesLeftThisTick = 0;
             s_baselineMask = 0;
         }
+        // While waiting for the next boundary, maintain neutral override to avoid tail holds
+        if (s_finishPendingClearTick && s_frameDiv != 0) {
+            g_pollOverrideMask[2].store(0, std::memory_order_relaxed);
+            g_pollOverrideActive[2].store(true, std::memory_order_relaxed);
+            return;
+        }
         if (s_finishing) {
             // Drive a neutral poll override for the duration of the clear tick
             g_pollOverrideMask[2].store(0, std::memory_order_relaxed);
@@ -743,20 +798,14 @@ void Tick() {
                 s_finishNeutralFrames--;
                 return; // keep neutral for remaining subframes
             }
-            // Finalize after the neutral clear tick: clear immediate and disable overrides, return control
-            s_state.store(State::Idle);
-            ImmediateInput::Clear(2);
-            g_pollOverrideActive[2].store(false, std::memory_order_relaxed);
-            g_forceBypass[2].store(false);
-            g_injectImmediateOnly[2].store(false);
-            if (s_macroBannerId != -1) { DirectDrawHook::RemovePermanentMessage(s_macroBannerId); s_macroBannerId = -1; }
-            if (g_p2ControlOverridden) RestoreP2ControlState();
-            int slotIdx = ClampSlot(s_curSlot.load()) - 1;
-            LogOut("[MACRO][PLAY] finished slot=" + std::to_string(s_curSlot.load()) +
-                   " streamBytes=" + std::to_string((int)s_slots[slotIdx].macroStream.size()) +
-                   " bufWrites=" + std::to_string((int)s_slots[slotIdx].bufStream.size()), true);
-            DirectDrawHook::AddMessage("Macro: Replay finished", "MACRO", RGB(180,255,180), 1200, 0, 120);
+            // After the neutral clear tick, enter a short guard window waiting for MoveID activation
             s_finishing = false;
+            s_finishGuardActive = true;
+            // Default guard window: 6 internal frames (~2 visual frames)
+            s_finishGuardFramesLeft = 6;
+            s_finishGuardStartMoveId = GetPlayerMoveID(2);
+            // Keep neutral override active during guard and clear command flags once
+            (void)ClearPlayerCommandFlags(2);
             return;
         }
         // Replay runs every internal frame to better match engine read cadence
@@ -770,6 +819,7 @@ void Tick() {
             // Nothing to play
             s_state.store(State::Idle);
             ImmediateInput::Clear(2);
+            (void)ClearPlayerCommandFlags(2);
             g_manualInputOverride[2].store(false);
             g_forceBypass[2].store(false);
             g_injectImmediateOnly[2].store(false);
@@ -843,8 +893,14 @@ void Tick() {
             g_injectImmediateOnly[2].store(false);
             // End condition: after last tick and queue drained
             if (s_playStreamIndex >= s_slots[slotIdx].macroStream.size() && s_tickBufHead >= s_tickBufQueue.size() && s_writesLeftThisTick == 0) {
-                // Defer to the next tick boundary, then inject a full neutral clear tick
+                // Defer to the next tick boundary, then inject a full neutral clear tick.
+                // IMPORTANT: Neutralize immediately so we don't keep holding the last mask for leftover subframes.
                 s_finishPendingClearTick = true;
+                s_baselineMask = 0;
+                g_pollOverrideMask[2].store(0, std::memory_order_relaxed);
+                g_pollOverrideActive[2].store(true, std::memory_order_relaxed);
+                // Early clear of command flags as we enter finish sequence
+                (void)ClearPlayerCommandFlags(2);
                 return;
             }
         } else {
@@ -853,6 +909,8 @@ void Tick() {
                 if (s_playIndex >= s_slots[slotIdx].spans.size()) {
                     // End via spans: defer to next tick boundary then perform full neutral clear tick
                     s_finishPendingClearTick = true;
+                    // Early clear of command flags as we enter finish sequence (spans path)
+                    (void)ClearPlayerCommandFlags(2);
                     return;
                 }
                 const RLESpan &sp = s_slots[slotIdx].spans[s_playIndex++];
@@ -1046,6 +1104,8 @@ void Stop() {
     g_forceBypass[2].store(false);
     g_pollOverrideActive[2].store(false);
     g_pollOverrideMask[2].store(0);
+    // Ensure engine command flags are cleared on manual stop
+    (void)ClearPlayerCommandFlags(2);
     // Remove banner and restore side
     if (s_macroBannerId != -1) { DirectDrawHook::RemovePermanentMessage(s_macroBannerId); s_macroBannerId = -1; }
     if (g_p2ControlOverridden) RestoreP2ControlState();
