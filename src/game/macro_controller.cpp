@@ -781,12 +781,13 @@ void Tick() {
             if (s_frameDiv == 0) {
                 if (s_playStreamIndex < s_slots[slotIdx].macroStream.size()) {
                     uint8_t mask = s_slots[slotIdx].macroStream[s_playStreamIndex];
-                    if (!s_streamFacingPerTick.empty() && s_playStreamIndex < s_streamFacingPerTick.size()) {
-                        int8_t recFacing = s_streamFacingPerTick[s_playStreamIndex];
-                        int curFacing = ReadFacingSign(2);
-                        if (recFacing != 0 && curFacing != 0 && recFacing != curFacing) {
-                            mask = FlipMaskHoriz(mask);
-                        }
+                    // Facing-aware: if recorded facing is unknown (0), assume P1-facing (+1)
+                    int8_t recFacing = 0;
+                    if (!s_streamFacingPerTick.empty() && s_playStreamIndex < s_streamFacingPerTick.size()) recFacing = s_streamFacingPerTick[s_playStreamIndex];
+                    if (recFacing == 0) recFacing = +1;
+                    int curFacing = ReadFacingSign(2);
+                    if (curFacing != 0 && recFacing != curFacing) {
+                        mask = FlipMaskHoriz(mask);
                     }
                     s_baselineMask = mask;
                     // Prepare per-tick queue of recorded raw buffer bytes
@@ -798,12 +799,12 @@ void Tick() {
                         s_writesLeftThisTick = writesThisTick;
                         for (uint16_t i = 0; i < writesThisTick && s_playBufStreamIndex < s_slots[slotIdx].bufStream.size(); ++i) {
                             uint8_t raw = s_slots[slotIdx].bufStream[s_playBufStreamIndex++];
-                            if (!s_streamFacingPerTick.empty() && s_playStreamIndex < s_streamFacingPerTick.size()) {
-                                int8_t recFacing = s_streamFacingPerTick[s_playStreamIndex];
-                                int curFacing = ReadFacingSign(2);
-                                if (recFacing != 0 && curFacing != 0 && recFacing != curFacing) {
-                                    raw = FlipMaskHoriz(raw);
-                                }
+                            int8_t recFacingRaw = 0;
+                            if (!s_streamFacingPerTick.empty() && s_playStreamIndex < s_streamFacingPerTick.size()) recFacingRaw = s_streamFacingPerTick[s_playStreamIndex];
+                            if (recFacingRaw == 0) recFacingRaw = +1;
+                            int curFacingRaw = ReadFacingSign(2);
+                            if (curFacingRaw != 0 && recFacingRaw != curFacingRaw) {
+                                raw = FlipMaskHoriz(raw);
                             }
                             s_tickBufQueue.push_back(raw);
                         }
@@ -859,7 +860,8 @@ void Tick() {
                 // Determine current facing and flip if needed
                 int curFacing = ReadFacingSign(2);
                 uint8_t maskToApply = sp.mask;
-                if (sp.facing != 0 && curFacing != 0 && sp.facing != curFacing) {
+                int recFacing = (sp.facing == 0) ? +1 : sp.facing;
+                if (curFacing != 0 && recFacing != curFacing) {
                     maskToApply = FlipMaskHoriz(maskToApply);
                 }
                 // For RLE fallback, also use poll override so engine cadence is preserved
@@ -1109,13 +1111,29 @@ std::string SerializeSlot(int slot, bool includeBuffers) {
     const Slot& s = s_slots[slot - 1];
     // Build per-tick macro masks
     std::vector<uint8_t> ticks;
+    std::vector<int8_t> faces; // recorded facing per tick (-1 left, +1 right, 0 unknown)
     if (!s.macroStream.empty()) {
         ticks = s.macroStream; // copy
+        // Try to derive per-tick facing from spans if available
+        if (!s.spans.empty()) {
+            faces.reserve(ticks.size());
+            for (const auto& sp : s.spans) {
+                for (int t = 0; t < sp.ticks && faces.size() < ticks.size(); ++t) faces.push_back(sp.facing);
+                if (faces.size() >= ticks.size()) break;
+            }
+            while (faces.size() < ticks.size()) faces.push_back(0);
+        } else {
+            faces.assign(ticks.size(), 0);
+        }
     } else {
         // Expand spans
         for (const auto& sp : s.spans) {
-            for (int t = 0; t < sp.ticks; ++t) ticks.push_back(sp.mask);
+            for (int t = 0; t < sp.ticks; ++t) {
+                ticks.push_back(sp.mask);
+                faces.push_back(sp.facing);
+            }
         }
+        if (faces.size() < ticks.size()) faces.resize(ticks.size(), 0);
     }
     std::ostringstream out;
     out << "EFZMACRO 1";
@@ -1131,6 +1149,9 @@ std::string SerializeSlot(int slot, bool includeBuffers) {
         if (k > 0) bt << ' ';
         for (uint16_t i = 0; i < k && bufPos < s.bufStream.size(); ++i) {
             uint8_t v = s.bufStream[bufPos++];
+            // Normalize buffer value to P1-facing if we know recorded facing for this tick
+            int8_t f = (tickIndex < faces.size()) ? faces[tickIndex] : 0;
+            if (f == -1) v = FlipMaskHoriz(v);
             // Prefer token form when it matches our mapping; fallback to hex otherwise
             std::string valTok = MaskToToken(v);
             // No way to disambiguate invalid combos, but MaskToToken always yields something;
@@ -1151,7 +1172,11 @@ std::string SerializeSlot(int slot, bool includeBuffers) {
     std::vector<std::string> perTick;
     perTick.reserve(ticks.size());
     for (size_t i = 0; i < ticks.size(); ++i) {
-        std::string tok = MaskToToken(ticks[i]);
+        uint8_t m = ticks[i];
+        // Normalize to P1-facing in text: if recorded facing was left, flip 4/6 (and diagonals)
+        int8_t f = (i < faces.size()) ? faces[i] : 0;
+        if (f == -1) m = FlipMaskHoriz(m);
+        std::string tok = MaskToToken(m);
         if (includeBuffers) {
             tok += ' ';
             tok += buildBufToken(i);
