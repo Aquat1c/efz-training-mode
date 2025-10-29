@@ -1234,6 +1234,16 @@ bool DeserializeSlot(int slot, const std::string& text, std::string& errorOut) {
             ++p;
         }
         size_t baseEnd = p;
+        // Allow optional whitespace between base token and its attached brace group
+        // Example: "5 {3: ...}" should be treated as a single pack just like "5{3: ...}"
+        if (p < n && std::isspace((unsigned char)text[p])) {
+            size_t q = p;
+            // Peek past spaces to see if a brace group follows
+            while (q < n && std::isspace((unsigned char)text[q])) ++q;
+            if (q < n && text[q] == '{') {
+                p = q; // Attach the upcoming brace group to this pack
+            }
+        }
         // Capture any attached brace group including spaces inside until matching '}'
         int brace = 0;
         if (p < n && text[p] == '{') {
@@ -1244,6 +1254,21 @@ bool DeserializeSlot(int slot, const std::string& text, std::string& errorOut) {
                 ++p;
             }
             if (brace != 0) { errorOut = "Unterminated buffer group"; return false; }
+        }
+        // Attach an immediate or space-separated repeat suffix xN/XN to this pack
+        // Example forms to accept: "5C}x12", "5C} x12", and even "5C x12" (no group)
+        if (p < n) {
+            size_t qx = p;
+            // Skip any spaces between token and suffix
+            while (qx < n && std::isspace((unsigned char)text[qx])) ++qx;
+            if (qx < n && (text[qx] == 'x' || text[qx] == 'X')) {
+                size_t r = qx + 1;
+                size_t rStart = r;
+                while (r < n && std::isdigit((unsigned char)text[r])) ++r;
+                if (r > rStart) {
+                    p = r; // consume suffix into this token pack
+                }
+            }
         }
         size_t end = p;
         tokens.push_back(text.substr(start, end - start));
@@ -1267,27 +1292,34 @@ bool DeserializeSlot(int slot, const std::string& text, std::string& errorOut) {
     };
 
     for (size_t iTok = 0; iTok < tokens.size(); ++iTok) {
-        const std::string& pack = tokens[iTok];
-        // Split into base and optional group
+        const std::string& packFull = tokens[iTok];
+        // Handle trailing repeat suffix xN or XN at end of pack (applies to both base-only and base+group forms)
+        uint32_t repeat = 1;
+        std::string pack = packFull;
+        if (!pack.empty()) {
+            size_t end = pack.size();
+            size_t j = end;
+            // Move j back over trailing digits
+            while (j > 0 && std::isdigit((unsigned char)pack[j - 1])) --j;
+            if (j > 0 && j < end && (pack[j - 1] == 'x' || pack[j - 1] == 'X')) {
+                // Parse repeat
+                uint32_t val = 0; size_t k = j; k = parseUInt(pack, k, val);
+                if (k == j || val == 0) { errorOut = "Invalid repeat suffix in '" + pack + "'"; return false; }
+                repeat = val;
+                // Remove the suffix from the working pack
+                pack = pack.substr(0, j - 1);
+                // Trim trailing spaces
+                while (!pack.empty() && std::isspace((unsigned char)pack.back())) pack.pop_back();
+            }
+        }
+        // Split into base and optional group on the adjusted pack (without trailing xN)
         size_t bracePos = pack.find('{');
         std::string base = (bracePos == std::string::npos) ? pack : pack.substr(0, bracePos);
         std::string group = (bracePos == std::string::npos) ? std::string() : pack.substr(bracePos);
         // Trim trailing spaces from base
         while (!base.empty() && std::isspace((unsigned char)base.back())) base.pop_back();
-        // Extract repeat suffix xN from base if present
-        size_t xPos = base.find_last_of('x');
-        size_t xPos2 = base.find_last_of('X');
-        if (xPos == std::string::npos || (xPos2 != std::string::npos && xPos2 > xPos)) xPos = xPos2;
-        uint32_t repeat = 1;
         std::string baseTok = base;
-        if (xPos != std::string::npos) {
-            uint32_t val = 0; size_t j = xPos + 1; j = parseUInt(base, j, val);
-            if (j == xPos + 1 || val == 0) { errorOut = "Invalid repeat suffix in '" + base + "'"; return false; }
-            repeat = val;
-            baseTok = base.substr(0, xPos);
-            while (!baseTok.empty() && std::isspace((unsigned char)baseTok.back())) baseTok.pop_back();
-        }
-        // Parse base token mask
+    // Parse base token mask
         uint8_t baseMask = 0;
         if (!TryTokenToMask(baseTok, baseMask)) { errorOut = "Bad tick token: '" + baseTok + "'"; return false; }
 
@@ -1296,7 +1328,8 @@ bool DeserializeSlot(int slot, const std::string& text, std::string& errorOut) {
         uint16_t thisTickK = 0;
         if (!group.empty()) {
             // Strip braces
-            if (group.front() != '{' || group.back() != '}') { errorOut = "Malformed buffer group in '" + pack + "'"; return false; }
+            if (group.front() != '{') { errorOut = "Malformed buffer group in '" + packFull + "'"; return false; }
+            if (group.back() != '}') { errorOut = "Malformed buffer group in '" + packFull + "'"; return false; }
             std::string inner = group.substr(1, group.size()-2);
             // Parse k:
             size_t q = 0; while (q < inner.size() && std::isspace((unsigned char)inner[q])) ++q;

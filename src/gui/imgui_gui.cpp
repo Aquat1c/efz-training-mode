@@ -1104,9 +1104,31 @@ namespace ImGuiGui {
                 ImGui::SameLine();
                 if (ImGui::SmallButton("Apply to Slot")) {
                     std::string err;
-                    // Get text from buffer
+                    // Get text from buffer and clean up newlines/spaces
                     std::string textToApply = s_textBuf.data();
-                    if (!MacroController::DeserializeSlot(curSlot, textToApply, err)) {
+                    
+                    // Remove newlines and collapse multiple spaces into single spaces
+                    std::string cleaned;
+                    bool prevWasSpace = false;
+                    for (char c : textToApply) {
+                        if (c == '\n' || c == '\r') {
+                            // Convert newlines to spaces
+                            if (!prevWasSpace && !cleaned.empty()) {
+                                cleaned += ' ';
+                                prevWasSpace = true;
+                            }
+                        } else if (c == ' ') {
+                            if (!prevWasSpace) {
+                                cleaned += ' ';
+                                prevWasSpace = true;
+                            }
+                        } else {
+                            cleaned += c;
+                            prevWasSpace = false;
+                        }
+                    }
+                    
+                    if (!MacroController::DeserializeSlot(curSlot, cleaned, err)) {
                         s_applyError = err;
                     } else {
                         s_applyError.clear();
@@ -1187,37 +1209,56 @@ namespace ImGuiGui {
                     }
                     
                     std::string currentLine;
-                    std::string word;
+                    std::string token;
+                    bool inBraces = false;
+                    int braceDepth = 0;
                     
                     for (size_t i = 0; i < text.size(); ++i) {
                         char c = text[i];
                         
                         if (c == '\n') {
                             // Explicit newline
-                            currentLine += word;
+                            currentLine += token;
                             lines.push_back(currentLine);
                             currentLine.clear();
-                            word.clear();
-                        } else if (c == ' ') {
-                            // Space - potential break point
-                            std::string testLine = currentLine + word + " ";
+                            token.clear();
+                            inBraces = false;
+                            braceDepth = 0;
+                        } else if (c == '{') {
+                            // Start of buffer group - keep with current token
+                            token += c;
+                            inBraces = true;
+                            braceDepth++;
+                        } else if (c == '}') {
+                            // End of buffer group
+                            token += c;
+                            braceDepth--;
+                            if (braceDepth <= 0) {
+                                inBraces = false;
+                                braceDepth = 0;
+                            }
+                        } else if (c == ' ' && !inBraces) {
+                            // Space outside braces - this is a break point
+                            // But first, check if adding this token would exceed width
+                            std::string testLine = currentLine + token + " ";
                             ImVec2 size = font->CalcTextSizeA(fontSize, FLT_MAX, 0.0f, testLine.c_str());
                             
                             if (size.x > wrapWidth && !currentLine.empty()) {
-                                // Line too long, break before this word
+                                // Line too long, break before this token
                                 lines.push_back(currentLine);
-                                currentLine = word + " ";
+                                currentLine = token + " ";
                             } else {
-                                currentLine += word + " ";
+                                currentLine += token + " ";
                             }
-                            word.clear();
+                            token.clear();
                         } else {
-                            word += c;
+                            // Regular character or space inside braces
+                            token += c;
                         }
                     }
                     
                     // Add remaining text
-                    currentLine += word;
+                    currentLine += token;
                     if (!currentLine.empty()) {
                         lines.push_back(currentLine);
                     }
