@@ -88,6 +88,11 @@ namespace {
     std::vector<uint8_t> s_tickBufQueue;
     size_t s_tickBufHead = 0;
     uint16_t s_writesLeftThisTick = 0; // how many buffer writes remain to issue in the current 64 Hz tick
+    // When finishing playback, we optionally inject one neutral frame (poll override = 0)
+    // to guarantee the engine writes a neutral value into the input history immediately.
+    bool s_finishing = false;
+    int  s_finishNeutralFrames = 0; // number of neutral frames to inject for a full clear tick (3 subframes)
+    bool s_finishPendingClearTick = false; // wait until next tick boundary (s_frameDiv==0) to start neutral clear tick
     // Baseline immediate mask for the current 64 Hz tick
     uint8_t s_baselineMask = 0;
 
@@ -385,6 +390,7 @@ namespace {
         s_streamFacingPerTick.clear();
         s_bufWriteQueue.clear(); s_bufQueueHead = 0; s_baselineMask = 0;
         s_tickBufQueue.clear(); s_tickBufHead = 0; s_writesLeftThisTick = 0;
+        s_finishing = false; s_finishNeutralFrames = 0; s_finishPendingClearTick = false;
         ImmediateInput::Clear(2);
         // Default hook behavior
         g_forceBypass[1].store(false);
@@ -717,6 +723,42 @@ void Tick() {
             s_recLastMask = mask; s_recLastBuf = mask; s_recLastFacing = facing; s_recSpanTicks = 1; s_recLastReason = reasonCode;
         }
     } else if (st == State::Replaying) {
+        // If we are in or pending the finishing phase, handle the neutral clear tick.
+        if (s_finishPendingClearTick && s_frameDiv == 0) {
+            // Start a full neutral clear tick at the next 64 Hz boundary (3 subframes)
+            s_finishPendingClearTick = false;
+            s_finishing = true;
+            s_finishNeutralFrames = 3; // full tick at 192 Hz pacing
+            // Clear any residual queues/baseline
+            s_tickBufQueue.clear();
+            s_tickBufHead = 0;
+            s_writesLeftThisTick = 0;
+            s_baselineMask = 0;
+        }
+        if (s_finishing) {
+            // Drive a neutral poll override for the duration of the clear tick
+            g_pollOverrideMask[2].store(0, std::memory_order_relaxed);
+            g_pollOverrideActive[2].store(true, std::memory_order_relaxed);
+            if (s_finishNeutralFrames > 0) {
+                s_finishNeutralFrames--;
+                return; // keep neutral for remaining subframes
+            }
+            // Finalize after the neutral clear tick: clear immediate and disable overrides, return control
+            s_state.store(State::Idle);
+            ImmediateInput::Clear(2);
+            g_pollOverrideActive[2].store(false, std::memory_order_relaxed);
+            g_forceBypass[2].store(false);
+            g_injectImmediateOnly[2].store(false);
+            if (s_macroBannerId != -1) { DirectDrawHook::RemovePermanentMessage(s_macroBannerId); s_macroBannerId = -1; }
+            if (g_p2ControlOverridden) RestoreP2ControlState();
+            int slotIdx = ClampSlot(s_curSlot.load()) - 1;
+            LogOut("[MACRO][PLAY] finished slot=" + std::to_string(s_curSlot.load()) +
+                   " streamBytes=" + std::to_string((int)s_slots[slotIdx].macroStream.size()) +
+                   " bufWrites=" + std::to_string((int)s_slots[slotIdx].bufStream.size()), true);
+            DirectDrawHook::AddMessage("Macro: Replay finished", "MACRO", RGB(180,255,180), 1200, 0, 120);
+            s_finishing = false;
+            return;
+        }
         // Replay runs every internal frame to better match engine read cadence
         if (ReadGamespeedFrozen()) return; // pause-safe
         // Pause while buffer-freeze is active for P2 to avoid fighting the engine
@@ -800,39 +842,16 @@ void Tick() {
             g_injectImmediateOnly[2].store(false);
             // End condition: after last tick and queue drained
             if (s_playStreamIndex >= s_slots[slotIdx].macroStream.size() && s_tickBufHead >= s_tickBufQueue.size() && s_writesLeftThisTick == 0) {
-                s_state.store(State::Idle);
-          ImmediateInput::Clear(2);
-          g_pollOverrideActive[2].store(false, std::memory_order_relaxed);
-          g_forceBypass[2].store(false);
-          g_injectImmediateOnly[2].store(false);
-                if (s_macroBannerId != -1) { DirectDrawHook::RemovePermanentMessage(s_macroBannerId); s_macroBannerId = -1; }
-                if (g_p2ControlOverridden) RestoreP2ControlState();
-                LogOut("[MACRO][PLAY] finished slot=" + std::to_string(s_curSlot.load()) +
-                       " streamBytes=" + std::to_string((int)s_slots[slotIdx].macroStream.size()) +
-                       " bufWrites=" + std::to_string((int)s_slots[slotIdx].bufStream.size()), true);
-                DirectDrawHook::AddMessage("Macro: Replay finished", "MACRO", RGB(180,255,180), 1200, 0, 120);
+                // Defer to the next tick boundary, then inject a full neutral clear tick
+                s_finishPendingClearTick = true;
                 return;
             }
         } else {
             // Fallback to existing RLE span playback (legacy path)
             if (s_frameDiv == 0 && s_playSpanRemaining <= 0) {
                 if (s_playIndex >= s_slots[slotIdx].spans.size()) {
-                    // End
-                    s_state.store(State::Idle);
-                    ImmediateInput::Clear(2);
-                    g_manualInputOverride[2].store(false);
-                    g_forceBypass[2].store(false);
-                    g_injectImmediateOnly[2].store(false);
-                    // Remove banner on finish
-                    if (s_macroBannerId != -1) { DirectDrawHook::RemovePermanentMessage(s_macroBannerId); s_macroBannerId = -1; }
-                    // Restore P2 control if we overrode it for playback
-                    if (g_p2ControlOverridden) RestoreP2ControlState();
-                    // Summary
-                    int totalTicks = 0; for (auto &sp : s_slots[slotIdx].spans) totalTicks += sp.ticks;
-                    LogOut("[MACRO][PLAY] finished slot=" + std::to_string(s_curSlot.load()) +
-                           " spans=" + std::to_string((int)s_slots[slotIdx].spans.size()) +
-                           " ticks=" + std::to_string(totalTicks), true);
-                    DirectDrawHook::AddMessage("Macro: Replay finished", "MACRO", RGB(180,255,180), 1200, 0, 120);
+                    // End via spans: defer to next tick boundary then perform full neutral clear tick
+                    s_finishPendingClearTick = true;
                     return;
                 }
                 const RLESpan &sp = s_slots[slotIdx].spans[s_playIndex++];
