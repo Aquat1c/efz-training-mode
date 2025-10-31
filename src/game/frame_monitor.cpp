@@ -277,22 +277,15 @@ static void ResetControlOnCharacterSelect() {
         g_injectImmediateOnly[i].store(false);
         g_manualInputOverride[i].store(false);
     }
-    // At Character Select, ensure sane defaults without interfering with join/pick:
-    //  - Force active focus to P1
-    //  - Do NOT mutate CPU flags here (we observed that doing so can disable Cancel/picking)
+    // At Character Select: diagnostics only; do NOT mutate game/practice control state here.
     uintptr_t base = GetEFZBase();
     uintptr_t gs = 0;
     if (base && SafeReadMemory(base + EFZ_BASE_OFFSET_GAME_STATE, &gs, sizeof(gs)) && gs) {
-        uint8_t activeBefore = 0xFF, activeAfter = 0xFF;
-        SafeReadMemory(gs + GAMESTATE_OFF_ACTIVE_PLAYER, &activeBefore, sizeof(activeBefore));
-        if (activeBefore != 0u) {
-            uint8_t zero = 0u;
-            bool ok = SafeWriteMemory(gs + GAMESTATE_OFF_ACTIVE_PLAYER, &zero, sizeof(zero));
-            SafeReadMemory(gs + GAMESTATE_OFF_ACTIVE_PLAYER, &activeAfter, sizeof(activeAfter));
-            std::ostringstream os; os << "[CS][RESET] +4930(active): " << (int)activeBefore << "->" << (int)activeAfter << (ok?"":" (fail)");
+        uint8_t activeNow = 0xFF;
+        SafeReadMemory(gs + GAMESTATE_OFF_ACTIVE_PLAYER, &activeNow, sizeof(activeNow));
+        if (detailedLogging.load()) {
+            std::ostringstream os; os << "[CS][RESET][DIAG] +4930(active)=" << (int)activeNow;
             LogOut(os.str(), true);
-        } else if (detailedLogging.load()) {
-            LogOut("[CS][RESET] +4930(active): already 0 (P1)", true);
         }
         // Diagnostic only: if both CPU flags match (both 0 or both 1), note it for later analysis.
         // We intentionally avoid writing here due to side-effects on Cancel/join behavior.

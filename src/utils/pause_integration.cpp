@@ -60,7 +60,7 @@ namespace {
                 << " localOff=0x" << PRACTICE_OFF_LOCAL_SIDE_IDX
                 << " remoteOff=0x" << PRACTICE_OFF_REMOTE_SIDE_IDX
                 << " pauseOff=0x" << EFZ_Practice_PauseFlagOffset();
-            LogOut(oss.str(), true);
+            LogOut(oss.str(), detailedLogging.load());
         }
         int local = -1;
         uint8_t pauseFlag = 0xFF;
@@ -102,7 +102,7 @@ namespace {
                 if (ValidatePracticeCandidate(cand)) {
                     outPtr = reinterpret_cast<void*>(cand);
                     std::ostringstream oss; oss << "[PAUSE] Direct ptr @+0x" << std::hex << ptrRva << " resolved practice=0x" << cand;
-                    LogOut(oss.str(), true);
+                    LogOut(oss.str(), detailedLogging.load());
                     return true;
                 }
             }
@@ -121,7 +121,7 @@ namespace {
             if (!ValidatePracticeCandidate(cand)) continue;
             outPtr = reinterpret_cast<void*>(cand);
             std::ostringstream oss; oss << "[PAUSE] ModeArray idx=" << std::dec << idx << " resolved practice=0x" << std::hex << cand;
-            LogOut(oss.str(), true);
+            LogOut(oss.str(), detailedLogging.load());
             return true;
         }
         return false;
@@ -141,11 +141,11 @@ namespace {
             if (ValidatePracticeCandidate(cand)) {
                 outPtr = reinterpret_cast<void*>(cand);
                 std::ostringstream oss; oss << "[PAUSE] Heuristic scan resolved practice=0x" << std::hex << cand << " (slot=" << std::dec << idx << ")";
-                LogOut(oss.str(), true);
+                LogOut(oss.str(), detailedLogging.load());
                 return true;
             }
         }
-        LogOut("[PAUSE] Heuristic scan failed to resolve Practice controller", true);
+        LogOut("[PAUSE] Heuristic scan failed to resolve Practice controller", detailedLogging.load());
         return false;
     }
 
@@ -218,7 +218,7 @@ namespace {
             std::ostringstream oss; oss << "[PAUSE] HookedTogglePause ECX=0x" << std::hex << (uintptr_t)thisPtr
                 << " menuVisible=" << (s_menuVisible.load()?1:0)
                 << " bypass=" << (s_internalPauseBypass.load()?1:0);
-            LogOut(oss.str(), true);
+            LogOut(oss.str(), detailedLogging.load());
         }
         if (s_menuVisible.load(std::memory_order_relaxed) && !s_internalPauseBypass.load(std::memory_order_relaxed)) {
             // Suppress user-initiated pause/unpause while menu open
@@ -249,7 +249,7 @@ namespace {
         {
             std::ostringstream oss; oss << "[PAUSE] Installing hooks: PracticeTick=0x" << std::hex << (uintptr_t)tickTarget
                 << " TogglePause=0x" << (uintptr_t)pauseTarget;
-            LogOut(oss.str(), true);
+            LogOut(oss.str(), detailedLogging.load());
         }
         bool anyHook = false;
         // Select the correct PracticeTick hook based on version/signature
@@ -257,16 +257,16 @@ namespace {
             EfzRevivalVersion ver = GetEfzRevivalVersion();
             if (IsEfzRevivalLoaded() && ver == EfzRevivalVersion::Revival102h) {
                 if (MH_CreateHook(tickTarget, &HookedPracticeTickH, reinterpret_cast<void**>(&oPracticeTickH)) == MH_OK && MH_EnableHook(tickTarget) == MH_OK) {
-                    anyHook = true; LogOut("[PAUSE] PracticeTick hook active (1.02h)", true);
+                    anyHook = true; LogOut("[PAUSE] PracticeTick hook active (1.02h)", detailedLogging.load());
                 }
             } else {
                 if (MH_CreateHook(tickTarget, &HookedPracticeTickE, reinterpret_cast<void**>(&oPracticeTickE)) == MH_OK && MH_EnableHook(tickTarget) == MH_OK) {
-                    anyHook = true; LogOut("[PAUSE] PracticeTick hook active (1.02e/1.02i)", true);
+                    anyHook = true; LogOut("[PAUSE] PracticeTick hook active (1.02e/1.02i)", detailedLogging.load());
                 }
             }
         }
         if (pauseTarget && MH_CreateHook(pauseTarget, &HookedTogglePause, reinterpret_cast<void**>(&oTogglePause)) == MH_OK && MH_EnableHook(pauseTarget) == MH_OK) {
-            anyHook = true; LogOut("[PAUSE] TogglePause hook active", true);
+            anyHook = true; LogOut("[PAUSE] TogglePause hook active", detailedLogging.load());
         }
         if (anyHook) s_practiceHooksInstalled.store(true);
     }
@@ -335,8 +335,8 @@ namespace {
             // Don't remove the hook if it was already created; just bail
             return;
         }
-        installed.store(true);
-        LogOut("[PAUSE] RenderBattleScreen hook installed (capturing battleContext)", true);
+    installed.store(true);
+    LogOut("[PAUSE] RenderBattleScreen hook installed (capturing battleContext)", detailedLogging.load());
     }
 
     // Read/write game speed from battleContext + 0x1400
