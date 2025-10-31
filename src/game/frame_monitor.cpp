@@ -74,7 +74,15 @@ static int s_csLogDecim = 0; // throttle
 static bool s_csBtnInit = false;
 static uint8_t s_csPrevBtns[4] = {0,0,0,0}; // A,B,C,D for active player last sample
 // Character Select CPU-flag guard (fixes post-Practice return when both flags become 1)
-static bool s_csDidCpuGuard = false;
+// Snapshot/restore state for Character Select control flags (Practice mode)
+struct CSCtrlSnapshot {
+    bool     valid{false};
+    uint8_t  active{0xFF};   // GAMESTATE_OFF_ACTIVE_PLAYER (0=P1,1=P2)
+    uint8_t  p1Cpu{0xFF};    // GAMESTATE_OFF_P1_CPU_FLAG (1=CPU,0=Human)
+    uint8_t  p2Cpu{0xFF};    // GAMESTATE_OFF_P2_CPU_FLAG (1=CPU,0=Human)
+};
+static CSCtrlSnapshot s_csBaseline{};      // captured on first stable CS in Practice
+static bool s_csDidSnapshotApply = false;  // per-CS-entry guard to apply at most once
 // One-shot persistent trigger clear guard per Character Select entry
 static bool s_csDidPersistentTriggerClear = false;
 
@@ -778,8 +786,8 @@ void FrameDataMonitor() {
                 s_csLastP1Ai = 0xFFFFFFFFu; s_csLastP2Ai = 0xFFFFFFFFu; s_csLogDecim = 0;
                 // Reset input-edge logger state
                 s_csBtnInit = false; for (int i=0;i<4;++i) s_csPrevBtns[i] = 0;
-                // Reset CPU-flag guard
-                s_csDidCpuGuard = false;
+                // Reset per-entry snapshot apply guard
+                s_csDidSnapshotApply = false;
                 // NEW: mark that we have not yet performed our one-shot persistent trigger clear this CS entry
                 s_csDidPersistentTriggerClear = false;
             }
@@ -797,25 +805,44 @@ void FrameDataMonitor() {
             if (s_characterSelectPhaseFrames == 1 && (detailedLogging.load() || !g_reducedLogging.load())) {
                 LogOut("[FRAME MONITOR] Detected CharacterSelect phase - starting debounce window", true);
             }
-            // Guard: after a short debounce, if we're in Practice and both CPU flags are 1 (broken state),
-            // set to the known-good pattern observed on first CS: P2CPU=0, P1CPU=1. Do this once per CS entry.
-            if (!s_csDidCpuGuard && s_characterSelectPhaseFrames >= 30 && GetCurrentGameMode() == GameMode::Practice) {
+            // Snapshot/restore: after a short debounce, capture first-CS baseline or restore on later CS entries
+            if (s_characterSelectPhaseFrames >= 30 && GetCurrentGameMode() == GameMode::Practice) {
                 uintptr_t base = GetEFZBase(); uintptr_t gs = 0;
                 if (base && SafeReadMemory(base + EFZ_BASE_OFFSET_GAME_STATE, &gs, sizeof(gs)) && gs) {
-                    uint8_t p1cpu=0xFF, p2cpu=0xFF;
+                    uint8_t active=0xFF, p1cpu=0xFF, p2cpu=0xFF;
+                    SafeReadMemory(gs + GAMESTATE_OFF_ACTIVE_PLAYER, &active, sizeof(active));
                     SafeReadMemory(gs + GAMESTATE_OFF_P1_CPU_FLAG, &p1cpu, sizeof(p1cpu));
                     SafeReadMemory(gs + GAMESTATE_OFF_P2_CPU_FLAG, &p2cpu, sizeof(p2cpu));
-                    if (p1cpu == 1u && p2cpu == 1u) {
-                        uint8_t newP2 = 0u; // make P2 human/selectable
-                        uint8_t newP1 = 1u; // keep P1 as in working first-CS pattern
-                        bool ok1 = SafeWriteMemory(gs + GAMESTATE_OFF_P2_CPU_FLAG, &newP2, sizeof(newP2));
-                        bool ok2 = SafeWriteMemory(gs + GAMESTATE_OFF_P1_CPU_FLAG, &newP1, sizeof(newP1));
-                        uint8_t p1aft=0xFF, p2aft=0xFF; SafeReadMemory(gs + GAMESTATE_OFF_P1_CPU_FLAG, &p1aft, sizeof(p1aft));
-                        SafeReadMemory(gs + GAMESTATE_OFF_P2_CPU_FLAG, &p2aft, sizeof(p2aft));
-                        std::ostringstream os; os << "[CS][GUARD] CPU flags 1/1 -> set P2CPU 1->" << (int)p2aft
-                                                  << ", P1CPU 1->" << (int)p1aft << (ok1 && ok2 ? "" : " (partial)");
-                        LogOut(os.str(), true);
-                        s_csDidCpuGuard = true;
+                    bool flagsAreSane = (p1cpu != p2cpu) && (active == 0u || active == 1u);
+                    if (!s_csBaseline.valid && flagsAreSane) {
+                        s_csBaseline.valid = true;
+                        s_csBaseline.active = active;
+                        s_csBaseline.p1Cpu = p1cpu;
+                        s_csBaseline.p2Cpu = p2cpu;
+                        if (detailedLogging.load()) {
+                            std::ostringstream os; os << "[CS][SNAP] Captured baseline: active=" << (int)active
+                                                      << " P1CPU=" << (int)p1cpu << " P2CPU=" << (int)p2cpu;
+                            LogOut(os.str(), true);
+                        }
+                    } else if (s_csBaseline.valid && !s_csDidSnapshotApply) {
+                        // Apply baseline if current differs; write once per CS entry
+                        if (active != s_csBaseline.active || p1cpu != s_csBaseline.p1Cpu || p2cpu != s_csBaseline.p2Cpu) {
+                            uint8_t wantActive = s_csBaseline.active;
+                            uint8_t wantP1 = s_csBaseline.p1Cpu;
+                            uint8_t wantP2 = s_csBaseline.p2Cpu;
+                            bool okA = SafeWriteMemory(gs + GAMESTATE_OFF_ACTIVE_PLAYER, &wantActive, sizeof(wantActive));
+                            bool ok1 = SafeWriteMemory(gs + GAMESTATE_OFF_P1_CPU_FLAG, &wantP1, sizeof(wantP1));
+                            bool ok2 = SafeWriteMemory(gs + GAMESTATE_OFF_P2_CPU_FLAG, &wantP2, sizeof(wantP2));
+                            if (detailedLogging.load()) {
+                                std::ostringstream os; os << "[CS][RESTORE] Applied baseline: active=" << (int)wantActive
+                                                          << " P1CPU=" << (int)wantP1 << " P2CPU=" << (int)wantP2
+                                                          << " okA=" << (okA?"1":"0")
+                                                          << " ok1=" << (ok1?"1":"0")
+                                                          << " ok2=" << (ok2?"1":"0");
+                                LogOut(os.str(), true);
+                            }
+                        }
+                        s_csDidSnapshotApply = true;
                     }
                 }
             }
