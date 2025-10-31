@@ -6,6 +6,7 @@
 #include "../include/game/practice_offsets.h"
 #include "../include/game/efzrevival_addrs.h"
 #include "../include/input/input_motion.h" // SetAIControlFlag
+#include "../include/input/input_hook.h" // SetVanillaSwapInputRouting
 #include "../include/utils/utilities.h" // GetEFZBase
 #include "../include/utils/network.h" // GetEfzRevivalVersion
 #include "../include/utils/debug_log.h"
@@ -599,6 +600,10 @@ namespace SwitchPlayers {
             SetAIControlFlag(2, /*human=*/false); // P2 AI
             LogOut("[SWITCH][VANILLA] Control roles: P1=Human, P2=AI", true);
         }
+
+        // Critical: swap control routing in vanilla so that when P2 is local, P2 uses P1's controls.
+        // enable=true when desiredLocal==1 (P2 local), disable when desiredLocal==0 (P1 local)
+        SetVanillaSwapInputRouting(desiredLocal == 1);
 
         std::ostringstream oss;
         oss << "[SWITCH][VANILLA] Engine-only swap -> active=" << (int)activePlayer
