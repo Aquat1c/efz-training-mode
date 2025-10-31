@@ -197,6 +197,20 @@ void MonitorKeys() {
         LogOut("[KEYBINDS] Toggle ImGui key: " + GetKeyName(cfg0.toggleImGuiKey), true);
     }
 
+    // Ensure we honor EFZ keyconfig for A/B/C/D by loading key.ini once up front.
+    // If it fails (no file or unreadable), we'll retry periodically while idle.
+    static bool s_iniTriedOnce = false;
+    static DWORD s_nextIniRetryTick = 0; // GetTickCount scheduling
+    if (!s_iniTriedOnce) {
+        if (ReadKeyMappingsFromIni()) {
+            LogOut("[KEYBINDS] Loaded EFZ key bindings from key.ini (D swap will use configured key)", true);
+        } else {
+            LogOut("[KEYBINDS] key.ini not found or unreadable; will fall back to defaults and retry later", true);
+            s_nextIniRetryTick = GetTickCount() + 5000; // retry in ~5s
+        }
+        s_iniTriedOnce = true;
+    }
+
     // Constants for teleport positions
     const double centerX = 320.0;
     const double leftX = 43.6548, rightX = 595.425, teleportY = 0.0;
@@ -214,6 +228,21 @@ void MonitorKeys() {
     while (keyMonitorRunning.load()) {
     // Update window active state at the beginning of each loop
         UpdateWindowActiveState();
+
+    // Opportunistically retry loading key.ini if we don't have attacks detected or D is unset
+    if (GetTickCount() >= s_nextIniRetryTick) {
+        if (!detectedBindings.attacksDetected || detectedBindings.dButton == 0) {
+            if (ReadKeyMappingsFromIni()) {
+                LogOut("[KEYBINDS] Loaded EFZ key bindings from key.ini on retry", true);
+            } else {
+                // Backoff retries to avoid spam
+                s_nextIniRetryTick = GetTickCount() + 10000; // retry in ~10s
+            }
+        } else {
+            // We already have a valid mapping; no need to keep retrying
+            s_nextIniRetryTick = GetTickCount() + 60000; // park for a minute
+        }
+    }
     // Re-read hotkeys every frame so config UI changes apply instantly
     const Config::Settings& cfg = Config::GetSettings();
     int teleportKey = (cfg.teleportKey > 0) ? cfg.teleportKey : '1';
@@ -482,7 +511,7 @@ void MonitorKeys() {
                     keyHandled = true;
                 }
                 // Swap player positions
-                else if (IsKeyPressed(detectedBindings.dButton, true)) {
+                else if (IsKeyPressed(detectedBindings.dButton != 0 ? detectedBindings.dButton : 'D', true)) {
                     uintptr_t base = GetEFZBase();
                     if (base) {
                         double tempX1 = 0.0, tempY1 = 0.0;
@@ -815,31 +844,21 @@ bool ReadDirectInputKeyboardState(BYTE* keyboardState) {
 
 // Implementation of MapEFZKeyToVK
 int MapEFZKeyToVK(unsigned short efzKey) {
+    // Handle a few known extended EFZ encodings that aren't plain DIK codes
     switch (efzKey) {
-        case 0xCB: return VK_LEFT;
-        case 0xCD: return VK_RIGHT;
-        case 0xC8: return VK_UP;
-        case 0xD0: return VK_DOWN;
-        case 0x2C: return 'Z';
-        case 0x2D: return 'X';
-        case 0x2E: return 'C';
-        case 0x2F: return 'V';
-        case 0x1E: return 'A';
-        case 0x1F: return 'S';
-        case 0x20: return 'D';
-        case 0x21: return 'F';
-        case 0x39: return VK_SPACE;
-        case 0x1C: return VK_RETURN;
-        
-        // Handle specific joystick buttons based on config_EN.exe
-        case 0x13:  return VK_LEFT;     // Joystick Left
-        case 0x114: return VK_RIGHT;    // Joystick Right
-        case 0x111: return VK_UP;       // Joystick Up
-        case 0x112: return VK_DOWN;     // Joystick Down
-        
-        default:
-            return 0;
+        case 0x114: return VK_RIGHT; // Joystick Right (extended)
+        case 0x111: return VK_UP;    // Joystick Up
+        case 0x112: return VK_DOWN;  // Joystick Down
+        case 0x113: return VK_LEFT;  // Joystick Left
     }
+
+    // Prefer centralized DI scancode -> VK mapping from di_keycodes
+    int vk = MapDIKToVK(static_cast<int>(efzKey));
+    if (vk != 0) return vk;
+
+    // Fallback to Windows API conversion if not covered
+    UINT apiVk = MapVirtualKey(efzKey, MAPVK_VSC_TO_VK);
+    return apiVk ? static_cast<int>(apiVk) : 0;
 }
 
 
@@ -896,18 +915,7 @@ bool UpdateGamepadState(int gamepadIndex) {
     return true;
 }
 
-// Add this implementation:
-std::string GetDIKeyName(int dikCode) {
-    // Look up the key in our mappings array
-    for (const auto& mapping : KeyMappings) {
-        if (mapping.dikCode == dikCode) {
-            return mapping.keyName;
-        }
-    }
-    
-    // If not found, return a generic name
-    return "Key(" + std::to_string(dikCode) + ")";
-}
+// GetDIKeyName is now implemented centrally in di_keycodes.cpp
 
 void DetectKeyBindingsWithDI() {
     static BYTE prevKeyboardState[256] = {0};

@@ -12,7 +12,7 @@ extern LPDIRECTINPUT8 g_pDI;
 extern LPDIRECTINPUTDEVICE8 g_pKeyboard;
 
 // Add DirectInput-specific defines
-#include "../include/core/di_keycodes.h"// We'll create this from your shared file
+#include "../core/di_keycodes.h"
 
 // Declare external variables
 extern std::atomic<bool> autoAirtechEnabled;
@@ -40,9 +40,7 @@ bool IsDIKeyPressed(BYTE* keyboardState, DWORD dikCode);
 bool InitDirectInputReadOnly(HINSTANCE hInstance);
 bool PollDirectInputState(BYTE* keyboardState);
 
-// DirectInput helper functions
-int MapDIKToVK(int dikCode);
-std::string GetDIKeyName(int dikCode);
+// DirectInput helper functions (declared in core/di_keycodes.h)
 void DetectKeyBindingsWithDI();
 void DetectKeyBindingsWithWinAPI();
 
