@@ -221,6 +221,15 @@ namespace ImGuiSettings {
                 InputKeyHex("Toggle ImGui Overlay", toggleImGui, "ToggleImGuiKey");
 
                 ImGui::Separator();
+                ImGui::SeparatorText("Swap Positions");
+                bool swapEnabled = cfg.swapCustomEnabled;
+                if (ImGui::Checkbox("Enable custom swap key", &swapEnabled)) {
+                    Config::SetSetting("Hotkeys", "SwapCustomEnabled", swapEnabled ? "1" : "0");
+                }
+                int swapKey = cfg.swapCustomKey;
+                InputKeyHex("Custom swap key", swapKey, "SwapCustomKey");
+
+                ImGui::Separator();
                 if (ImGui::Button("Save to disk")) {
                     Config::SaveSettings();
                     LogOut("[CONFIG/UI] Settings saved to ini", false);

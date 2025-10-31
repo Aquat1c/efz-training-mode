@@ -308,6 +308,13 @@ namespace Config {
             file << "UIRefreshKey=0x52       # 'R' (Refresh)\n";
             file << "UIExitKey=0x51          # 'Q' (Exit)\n";
 
+            // Swap Positions custom binding
+            file << "\n; Swap Positions custom binding\n";
+            file << "; Enable a dedicated key for swapping positions (1=yes,0=no)\n";
+            file << "SwapCustomEnabled=0\n";
+            file << "; Dedicated key (hex VK) for swapping positions when enabled (-1 disables)\n";
+            file << "SwapCustomKey=-1\n";
+
             // --- Gamepad binding defaults ---
             file << "\n; Controller bindings (XInput) \n";
             file << "; Use symbolic names (e.g. A, B, X, Y, LB, RB, BACK, START, L3, R3, DPAD_UP, DPAD_DOWN, DPAD_LEFT, DPAD_RIGHT) or hex mask (e.g. 0x2000). -1 disables.\n";
@@ -508,6 +515,9 @@ namespace Config {
             settings.uiAcceptKey      = GetValueInt("Hotkeys", "UIAcceptKey",     0x45); // 'E'
             settings.uiRefreshKey     = GetValueInt("Hotkeys", "UIRefreshKey",    0x52); // 'R'
             settings.uiExitKey        = GetValueInt("Hotkeys", "UIExitKey",       0x51); // 'Q'
+            // Swap custom binding
+            settings.swapCustomEnabled = GetValueBool("Hotkeys", "SwapCustomEnabled", false);
+            settings.swapCustomKey     = GetValueInt("Hotkeys", "SwapCustomKey", -1);
             // Gamepad bindings (defaults mirror CreateDefaultConfig)
             auto getPad = [&](const char* name, const char* defStr){
                 auto sectionIt = iniData.find("hotkeys");
@@ -551,6 +561,8 @@ namespace Config {
             LogOut("[CONFIG] UIAcceptKey: " + std::to_string(settings.uiAcceptKey) + " (" + GetKeyName(settings.uiAcceptKey) + ")", true);
             LogOut("[CONFIG] UIRefreshKey: " + std::to_string(settings.uiRefreshKey) + " (" + GetKeyName(settings.uiRefreshKey) + ")", true);
             LogOut("[CONFIG] UIExitKey: " + std::to_string(settings.uiExitKey) + " (" + GetKeyName(settings.uiExitKey) + ")", true);
+            LogOut("[CONFIG] SwapCustomEnabled: " + std::to_string(settings.swapCustomEnabled), true);
+            LogOut("[CONFIG] SwapCustomKey: " + GetKeyName(settings.swapCustomKey), true);
             LogOut("[CONFIG] gpTeleportButton: " + GetGamepadButtonName(settings.gpTeleportButton), true);
             LogOut("[CONFIG] gpSavePositionButton: " + GetGamepadButtonName(settings.gpSavePositionButton), true);
             LogOut("[CONFIG] gpSwitchPlayersButton: " + GetGamepadButtonName(settings.gpSwitchPlayersButton), true);
@@ -663,6 +675,11 @@ namespace Config {
             file << "UIRefreshKey=" << toHexString(settings.uiRefreshKey) << "\n";
             file << "UIExitKey=" << toHexString(settings.uiExitKey) << "\n";
 
+            // Swap custom binding
+            file << "\n; Swap Positions custom binding\n";
+            file << "SwapCustomEnabled=" << (settings.swapCustomEnabled ? "1" : "0") << "\n";
+            file << "SwapCustomKey=" << toHexString(settings.swapCustomKey) << "\n";
+
             file << "\n; Controller bindings (symbolic names or hex). -1 disables.\n";
             file << "; NOTE: ABXY reserved: A=UI confirm, B=UI back. Defaults map actions to shoulders/triggers/sticks.\n";
             auto writePad = [&](const char* key, int mask){
@@ -754,6 +771,8 @@ namespace Config {
             if (k == "uiacceptkey") settings.uiAcceptKey = intValue;
             if (k == "uirefreshkey") settings.uiRefreshKey = intValue;
             if (k == "uiexitkey") settings.uiExitKey = intValue;
+            if (k == "swapcustomenabled") settings.swapCustomEnabled = (value == "1" || value == "true");
+            if (k == "swapcustomkey") settings.swapCustomKey = intValue;
             // Gamepad button updates (these accept names or hex values)
             if (k == "gpteleportbutton") settings.gpTeleportButton = ParseGamepadButton(value);
             if (k == "gpsavepositionbutton") settings.gpSavePositionButton = ParseGamepadButton(value);
