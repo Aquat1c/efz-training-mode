@@ -957,11 +957,18 @@ void ToggleRecord() {
             PauseIntegration::EnsurePracticePointerCapture();
             void* p = PauseIntegration::GetPracticeControllerPtr();
             int curLocal = 0;
-            if (p && SafeReadMemory((uintptr_t)p + PRACTICE_OFF_LOCAL_SIDE_IDX, &curLocal, sizeof(curLocal))) {
+            bool readOk = (p && SafeReadMemory((uintptr_t)p + PRACTICE_OFF_LOCAL_SIDE_IDX, &curLocal, sizeof(curLocal)));
+            if (readOk) {
                 s_prevLocalSide.store(curLocal);
                 if (curLocal != 1) {
                     SwitchPlayers::SetLocalSide(1); // make P2 local for easier recording
                 }
+            } else {
+                // Vanilla fallback: if we can't read the practice controller local side,
+                // still force P2 local so the user controls P2 during macro recording.
+                // This path does not touch Revival-specific state and uses our unified
+                // side-switcher which already guards Revival vs vanilla under the hood.
+                SwitchPlayers::SetLocalSide(1);
             }
             EnableP2ControlForAutoAction(); // ensure P2 is human-controlled
         }
