@@ -458,6 +458,45 @@ void MonitorKeys() {
 
             // 3) Remaining keyboard-only actions
             if (!keyHandled) {
+                // New: configurable Swap Positions bindings (single key or chord)
+                {
+                    const bool swapEnabled = cfg.swapCustomEnabled;
+                    const int swapKey = cfg.swapCustomKey;
+                    bool didSwap = false;
+                    auto doSwap = [&]() {
+                        uintptr_t base = GetEFZBase();
+                        if (!base) return;
+                        double x1=0,y1=0,x2=0,y2=0;
+                        uintptr_t xAddr1 = ResolvePointer(base, EFZ_BASE_OFFSET_P1, XPOS_OFFSET);
+                        uintptr_t yAddr1 = ResolvePointer(base, EFZ_BASE_OFFSET_P1, YPOS_OFFSET);
+                        uintptr_t xAddr2 = ResolvePointer(base, EFZ_BASE_OFFSET_P2, XPOS_OFFSET);
+                        uintptr_t yAddr2 = ResolvePointer(base, EFZ_BASE_OFFSET_P2, YPOS_OFFSET);
+                        if (xAddr1 && yAddr1 && xAddr2 && yAddr2) {
+                            SafeReadMemory(xAddr1, &x1, sizeof(double));
+                            SafeReadMemory(yAddr1, &y1, sizeof(double));
+                            SafeReadMemory(xAddr2, &x2, sizeof(double));
+                            SafeReadMemory(yAddr2, &y2, sizeof(double));
+                            SetPlayerPosition(base, EFZ_BASE_OFFSET_P1, x2, y2);
+                            SetPlayerPosition(base, EFZ_BASE_OFFSET_P2, x1, y1);
+                            DirectDrawHook::AddMessage("Positions Swapped", "SYSTEM", RGB(100, 255, 100), 1500, 0, 100);
+                        } else {
+                            DirectDrawHook::AddMessage("Swap Failed: Can't read positions", "SYSTEM", RGB(255,100,100), 1500, 0, 100);
+                        }
+                    };
+                    // Dedicated custom key when enabled
+                    if (swapEnabled && swapKey > 0 && IsKeyPressed(swapKey, false)) {
+                        if (GetCurrentGameMode() == GameMode::Practice) {
+                            doSwap(); didSwap = true; keyHandled = true;
+                        } else {
+                            DirectDrawHook::AddMessage("Swap available only in Practice", "SYSTEM", RGB(255,180,120), 1200, 0, 110);
+                            didSwap = true; keyHandled = true;
+                        }
+                    }
+                    if (didSwap) {
+                        // Basic debounce: wait a short time and until keys released
+                        Sleep(80);
+                    }
+                }
                 if (IsKeyPressed(cfg.switchPlayersKey > 0 ? cfg.switchPlayersKey : 'L', false)) {
                 // Debug hotkey: Toggle local/remote players in Practice
                 if (GetCurrentGameMode() == GameMode::Practice && !g_guiActive.load()) {

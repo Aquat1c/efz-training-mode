@@ -58,6 +58,9 @@ namespace Config {
         int uiAcceptKey;        // Apply changes
         int uiRefreshKey;       // Refresh values
         int uiExitKey;          // Close menu
+    // Swap Positions custom binding (simple)
+    bool swapCustomEnabled;     // Enable dedicated swap key
+    int  swapCustomKey;         // VK for dedicated swap key
 
         // Gamepad binding settings (XInput button bitmasks; -1 = disabled)
         int gpTeleportButton;       // Default: XINPUT_GAMEPAD_BACK
