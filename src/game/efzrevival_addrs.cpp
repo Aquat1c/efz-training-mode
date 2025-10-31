@@ -45,9 +45,22 @@ static void LogAddrOnce(const char* label, uintptr_t rva) {
     LogOut(oss.str(), true);
 }
 
+// Local helper: read EFZ_SIG_DEBUG environment toggle (1 enables extra address/scanner logs)
+static bool SigDebug() {
+    static int s = -1;
+    if (s < 0) {
+        char buf[8] = {0};
+        DWORD n = GetEnvironmentVariableA("EFZ_SIG_DEBUG", buf, sizeof(buf));
+        s = (n > 0 && buf[0] == '1') ? 1 : 0;
+    }
+    return s == 1;
+}
+
 // Debug utility: compare version constants with scanner results
 void EFZ_Debug_LogScannerComparison() {
     if (!EfzSigScanner::IsEfzRevivalLoaded()) return;
+    // Only emit this heavy diagnostic when explicitly requested
+    if (!SigDebug()) return;
     EfzSigScanner::EnsureScanned();
     const auto& s = EfzSigScanner::Get();
     std::ostringstream oss;

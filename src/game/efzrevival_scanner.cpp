@@ -1114,21 +1114,23 @@ namespace EfzSigScanner {
 
         g_scanned.store(true);
 
-        char buf[256];
-        _snprintf_s(buf, sizeof(buf), _TRUNCATE,
-            "[EFZ-SIG] scan results: toggler=0x%08lX ctx=0x%08lX online=0x%08lX pracPtr=0x%08lX refMap=0x%08lX refMapAlt=0x%08lX togglePause=0x%08lX pracTick=0x%08lX gmArray=0x%08lX mapReset=0x%08lX cleanupPair=0x%08lX",
-            (unsigned long)g_results.patchTogglerRva,
-            (unsigned long)g_results.patchCtxRva,
-            (unsigned long)g_results.onlineStatusRva,
-            (unsigned long)g_results.practiceControllerPtrRva,
-            (unsigned long)g_results.refreshMappingBlockRva,
-            (unsigned long)g_results.refreshMappingBlockPracToCtxRva,
-            (unsigned long)g_results.togglePauseRva,
-            (unsigned long)g_results.practiceTickRva,
-            (unsigned long)g_results.gameModePtrArrayRva,
-            (unsigned long)g_results.mapResetRva,
-            (unsigned long)g_results.cleanupPairRva);
-        LogOut(buf, true);
+        if (SigDebug()) {
+            char buf[256];
+            _snprintf_s(buf, sizeof(buf), _TRUNCATE,
+                "[EFZ-SIG] scan results: toggler=0x%08lX ctx=0x%08lX online=0x%08lX pracPtr=0x%08lX refMap=0x%08lX refMapAlt=0x%08lX togglePause=0x%08lX pracTick=0x%08lX gmArray=0x%08lX mapReset=0x%08lX cleanupPair=0x%08lX",
+                (unsigned long)g_results.patchTogglerRva,
+                (unsigned long)g_results.patchCtxRva,
+                (unsigned long)g_results.onlineStatusRva,
+                (unsigned long)g_results.practiceControllerPtrRva,
+                (unsigned long)g_results.refreshMappingBlockRva,
+                (unsigned long)g_results.refreshMappingBlockPracToCtxRva,
+                (unsigned long)g_results.togglePauseRva,
+                (unsigned long)g_results.practiceTickRva,
+                (unsigned long)g_results.gameModePtrArrayRva,
+                (unsigned long)g_results.mapResetRva,
+                (unsigned long)g_results.cleanupPairRva);
+            LogOut(buf, true);
+        }
 
     // Optional deep-dive diagnostics, enabled with EFZ_SIG_DEBUG=1
         if (SigDebug()) {
@@ -1260,14 +1262,8 @@ namespace EfzSigScanner {
                 }
             }
         }
-        // Anchor collection logs: enabled by default when our debug flags are on
-        // Gated behind code flags (detailedLogging or detailedDebugOutput) or EFZ_SIG_DEBUG
-        auto AnchorsDebug = [](){
-            // Prefer code-driven flags; still allow EFZ_SIG_DEBUG env as a quick override
-            if (detailedLogging.load() || detailedDebugOutput.load()) return true;
-            return SigDebug();
-        };
-        if (AnchorsDebug()) {
+        // Anchor collection logs: emit only when EFZ_SIG_DEBUG=1 to avoid default spam
+        if (SigDebug()) {
             AnchorCollection ac{};
             if (CollectAnchors(ac)) {
                 LogAnchors(ac);
