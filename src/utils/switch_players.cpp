@@ -14,6 +14,10 @@
 #include <iomanip>
 
 namespace {
+    // Simple presence check for EfzRevival
+    static inline bool IsRevivalLoaded() {
+        return GetModuleHandleA("EfzRevival.dll") != nullptr;
+    }
     // Dump a region of memory as hex for detailed analysis
     static void DumpMemoryRegion(const char* label, uintptr_t address, size_t size) {
         if (!address || size == 0 || size > 256) return; // Safety limit
@@ -565,6 +569,45 @@ namespace {
 }
 
 namespace SwitchPlayers {
+    // Minimal vanilla path: no EfzRevival. Update engine flags only and align AI roles.
+    static bool ApplyEngineOnlySet(int desiredLocal) {
+        if (desiredLocal != 0 && desiredLocal != 1) return false;
+        // Only during Practice match to avoid side effects in other modes
+        if (GetCurrentGameMode() != GameMode::Practice || !IsMatchPhase()) return false;
+
+        uintptr_t efzBase = GetEFZBase();
+        if (!efzBase) return false;
+        uintptr_t gameStatePtr = 0;
+        if (!SafeReadMemory(efzBase + EFZ_BASE_OFFSET_GAME_STATE, &gameStatePtr, sizeof(gameStatePtr)) || !gameStatePtr)
+            return false;
+
+        uint8_t activePlayer = static_cast<uint8_t>(desiredLocal); // 0=P1,1=P2
+        uint8_t p2CpuFlag    = (desiredLocal == 1) ? 0u : 1u;       // human when local
+        uint8_t p1CpuFlag    = (uint8_t)(1u - p2CpuFlag);
+
+        bool okA = SafeWriteMemory(gameStatePtr + GAMESTATE_OFF_ACTIVE_PLAYER, &activePlayer, sizeof(activePlayer));
+        bool ok1 = SafeWriteMemory(gameStatePtr + GAMESTATE_OFF_P1_CPU_FLAG, &p1CpuFlag, sizeof(p1CpuFlag));
+        bool ok2 = SafeWriteMemory(gameStatePtr + GAMESTATE_OFF_P2_CPU_FLAG, &p2CpuFlag, sizeof(p2CpuFlag));
+
+        // Align our AI control hooks with the new local side (local = Human, remote = AI)
+        if (desiredLocal == 1) {
+            SetAIControlFlag(1, /*human=*/false); // P1 AI
+            SetAIControlFlag(2, /*human=*/true);  // P2 Human
+            LogOut("[SWITCH][VANILLA] Control roles: P1=AI, P2=Human", true);
+        } else {
+            SetAIControlFlag(1, /*human=*/true);  // P1 Human
+            SetAIControlFlag(2, /*human=*/false); // P2 AI
+            LogOut("[SWITCH][VANILLA] Control roles: P1=Human, P2=AI", true);
+        }
+
+        std::ostringstream oss;
+        oss << "[SWITCH][VANILLA] Engine-only swap -> active=" << (int)activePlayer
+            << " P1CPU=" << (int)p1CpuFlag << " P2CPU=" << (int)p2CpuFlag
+            << " gameState=0x" << std::hex << gameStatePtr;
+        LogOut(oss.str(), true);
+
+        return okA && ok1 && ok2;
+    }
     static bool ApplySet(uint8_t* practice, int desiredLocal) {
         if (!practice) return false;
         if (desiredLocal != 0 && desiredLocal != 1) return false;
@@ -867,6 +910,15 @@ namespace SwitchPlayers {
             LogOut("[SWITCH] Ignored toggle outside of match phase", true);
             return false;
         }
+        // Vanilla path: if EfzRevival is not loaded, operate on engine flags only
+        if (!IsRevivalLoaded()) {
+            uintptr_t efzBase = GetEFZBase();
+            if (!efzBase) return false;
+            uintptr_t gs = 0; if (!SafeReadMemory(efzBase + EFZ_BASE_OFFSET_GAME_STATE, &gs, sizeof(gs)) || !gs) return false;
+            uint8_t curActive = 0; SafeReadMemory(gs + GAMESTATE_OFF_ACTIVE_PLAYER, &curActive, sizeof(curActive));
+            int desired = (curActive == 0) ? 1 : 0;
+            return ApplyEngineOnlySet(desired);
+        }
         PauseIntegration::EnsurePracticePointerCapture();
         void* p = PauseIntegration::GetPracticeControllerPtr();
         if (!p) {
@@ -874,7 +926,13 @@ namespace SwitchPlayers {
             uint8_t* fb = ResolvePracticePtrFallback();
             if (!fb) {
                 LogOut("[SWITCH] Practice controller not available", true);
-                return false;
+                // As a last resort, perform an engine-only swap even though Revival is present but practice is missing
+                uintptr_t efzBase = GetEFZBase();
+                if (!efzBase) return false; uintptr_t gs=0; 
+                if (!SafeReadMemory(efzBase + EFZ_BASE_OFFSET_GAME_STATE, &gs, sizeof(gs)) || !gs) return false;
+                uint8_t curActive=0; SafeReadMemory(gs + GAMESTATE_OFF_ACTIVE_PLAYER, &curActive, sizeof(curActive));
+                int desired = (curActive == 0) ? 1 : 0;
+                return ApplyEngineOnlySet(desired);
             }
             LogOut("[SWITCH] Practice pointer resolved via fallback (GameModePtrArray)", true);
             p = fb;
@@ -891,11 +949,18 @@ namespace SwitchPlayers {
             LogOut("[SWITCH] Ignored set outside of match phase", true);
             return false;
         }
+        if (!IsRevivalLoaded()) {
+            return ApplyEngineOnlySet(sideIdx);
+        }
         PauseIntegration::EnsurePracticePointerCapture();
         void* p = PauseIntegration::GetPracticeControllerPtr();
         if (!p) {
             uint8_t* fb = ResolvePracticePtrFallback();
-            if (!fb) { LogOut("[SWITCH] Practice controller not available", true); return false; }
+            if (!fb) {
+                LogOut("[SWITCH] Practice controller not available", true);
+                // Fallback to engine-only path
+                return ApplyEngineOnlySet(sideIdx);
+            }
             LogOut("[SWITCH] Practice pointer resolved via fallback (GameModePtrArray)", true);
             p = fb;
         }

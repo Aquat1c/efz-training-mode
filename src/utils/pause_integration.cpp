@@ -43,14 +43,16 @@ namespace {
     std::atomic<void*> s_battleContext{nullptr};
     std::atomic<bool> s_weFrozeGamespeed{false};
     std::atomic<uint8_t> s_prevGamespeed{3};
+    // Direct gamespeed byte address resolved from efz.exe GameMode array (CE-confirmed)
+    std::atomic<uintptr_t> s_gamespeedAddr{0};
+    // Vanilla EFZ pause ownership (engine pause via battleContext+0x1416)
+    std::atomic<bool> s_weVanillaEnginePause{false};
     
     bool IsEfzRevivalLoaded() {
         return GetModuleHandleA("EfzRevival.dll") != nullptr;
     }
 
-    // Try to resolve Practice controller pointer directly from EfzRevival's mode array
-    // EFZ_GameMode_GetStructByIndex(idx) = *(int*)(EfzRevivalBase + 0x790110 + 4*idx)
-    // Practice index observed as 3 in decompile; guard for nulls and mode mismatch.
+    // Validate a candidate Practice controller pointer by checking key invariants
     static bool ValidatePracticeCandidate(uintptr_t cand) {
         if (!cand) return false;
         EfzRevivalVersion ver = GetEfzRevivalVersion();
@@ -88,11 +90,15 @@ namespace {
     }
 
     bool TryResolvePracticePtrFromModeArray(void*& outPtr) {
+        // Note: EfzRevival's EFZ_GameMode_GetStructByIndex returns engine mode objects
+        // (e.g., battle context at idx=3), not the Practice controller. We therefore
+        // do NOT use the game mode array to find Practice. Keep only the direct static
+        // pointer fast-path; otherwise rely on lightweight hooks to capture ECX.
         HMODULE hRev = GetModuleHandleA("EfzRevival.dll");
         if (!hRev) return false;
         auto base = reinterpret_cast<uintptr_t>(hRev);
 
-        // For all versions (e/h/i), use direct static pointer (CheatEngine found all three)
+        // For all versions (e/h/i), prefer the direct static pointer (CheatEngine found all three)
         EfzRevivalVersion ver = GetEfzRevivalVersion();
         uintptr_t ptrRva = EFZ_RVA_PracticeControllerPtr();
         if (ptrRva) {
@@ -106,23 +112,6 @@ namespace {
                     return true;
                 }
             }
-        }
-        // Otherwise, try the global mode array RVA fast-path
-        uintptr_t gm = EFZ_RVA_GameModePtrArray();
-        if (!gm) return false;
-        // Try current game mode index first
-        uint8_t rawMode = 255; GetCurrentGameMode(&rawMode);
-        int tryIdx[3] = { (int)rawMode, 1, 3 }; // prefer current mode, then common Practice(1), then legacy(3)
-        for (int t = 0; t < 3; ++t) {
-            int idx = tryIdx[t]; if (idx < 0 || idx > 15) continue;
-            uintptr_t slotAddr = base + gm + 4 * idx;
-            uintptr_t cand = 0;
-            if (!SafeReadMemory(slotAddr, &cand, sizeof(cand)) || !cand) continue;
-            if (!ValidatePracticeCandidate(cand)) continue;
-            outPtr = reinterpret_cast<void*>(cand);
-            std::ostringstream oss; oss << "[PAUSE] ModeArray idx=" << std::dec << idx << " resolved practice=0x" << std::hex << cand;
-            LogOut(oss.str(), detailedLogging.load());
-            return true;
         }
         return false;
     }
@@ -301,7 +290,7 @@ namespace {
         return ok;
     }
 
-    // Hook battle screen render to capture battleContext pointer.
+    // Hook battle screen render to capture battleContext pointer (legacy path).
     typedef BOOL (__thiscall *tRenderBattleScreen)(void* battleContext);
     static tRenderBattleScreen oRenderBattleScreen = nullptr;
     static BOOL __fastcall HookedRenderBattleScreen(void* battleContext, void* /*edx*/) {
@@ -313,8 +302,57 @@ namespace {
         return oRenderBattleScreen ? oRenderBattleScreen(battleContext) : FALSE;
     }
 
+    // Revival uses EFZ_GameMode_GetStructByIndex(3) to fetch the battle context. Mirror that here
+    // to avoid fragile render hooks in vanilla.
+    static bool RefreshBattleContextFromGameModeArray() {
+        uintptr_t efzBase = GetEFZBase(); if (!efzBase) return false;
+        constexpr uintptr_t RVA_GameModeArray = 0x00790110; // efz.exe absolute RVA
+        void* bc = nullptr;
+        uintptr_t slot3 = efzBase + RVA_GameModeArray + 4 * 3; // index 3 = battle context
+        if (!SafeReadMemory(slot3, &bc, sizeof(bc)) || !bc) return false;
+        s_battleContext.store(bc, std::memory_order_relaxed);
+        return true;
+    }
+
+    // Resolve the gamespeed byte address from efz.exe GameMode array.
+    // Cheat table pointers confirm three equivalent paths ending at the same address:
+    //   *(efz+0x390114) + 0x0F20 -> byte
+    //   *(efz+0x390118) + 0x09B8 -> byte
+    //   *(efz+0x39011C) + 0x0578 -> byte (slot 3 = battle)
+    static bool ResolveGamespeedAddr() {
+        if (s_gamespeedAddr.load()) return true;
+        uintptr_t efzBase = GetEFZBase(); if (!efzBase) return false;
+        constexpr uintptr_t RVA_GameModeArray = 0x00390110; // same as 0x00790110 RVA; we add base
+        struct Path { int idx; uintptr_t off; } paths[] = {
+            { 1, 0x0F20 },
+            { 2, 0x09B8 },
+            { 3, 0x0578 },
+        };
+        for (const auto &p : paths) {
+            uintptr_t slot = efzBase + RVA_GameModeArray + 4u * (uintptr_t)p.idx;
+            uintptr_t basePtr = 0;
+            if (!SafeReadMemory(slot, &basePtr, sizeof(basePtr)) || !basePtr) continue;
+            uintptr_t cand = basePtr + p.off;
+            uint8_t probe = 0xFF;
+            if (SafeReadMemory(cand, &probe, sizeof(probe))) {
+                // Valid speeds observed in engine: 0 (frozen), 3 (normal)
+                if (probe <= 3) {
+                    s_gamespeedAddr.store(cand, std::memory_order_relaxed);
+                    std::ostringstream oss; oss << "[PAUSE][ADDR] Gamespeed addr=0x" << std::hex << cand
+                        << " via slot=" << std::dec << p.idx << " off=0x" << std::hex << p.off
+                        << " val=" << std::dec << (int)probe;
+                    LogOut(oss.str(), true);
+                    return true;
+                }
+            }
+        }
+        LogOut("[PAUSE][ADDR] Failed to resolve gamespeed address from GameMode array", true);
+        return false;
+    }
+
     void EnsureBattleContextHook() {
         static std::atomic<bool> installed{false};
+        static std::atomic<bool> loggedFail{false};
         if (installed.load()) return;
         // RenderBattleScreen lives in efz.exe, not EfzRevival.dll
         uintptr_t efzBase = GetEFZBase();
@@ -324,14 +362,18 @@ namespace {
         if (!target) return;
         auto rcCreate = MH_CreateHook(target, &HookedRenderBattleScreen, reinterpret_cast<void**>(&oRenderBattleScreen));
         if (rcCreate != MH_OK && rcCreate != MH_ERROR_ALREADY_CREATED) {
-            std::ostringstream oss; oss << "[PAUSE] Failed to create RenderBattleScreen hook at VA=0x" << std::hex << (uintptr_t)target;
-            LogOut(oss.str(), true);
+            if (!loggedFail.exchange(true)) {
+                std::ostringstream oss; oss << "[PAUSE] Failed to create RenderBattleScreen hook at VA=0x" << std::hex << (uintptr_t)target;
+                LogOut(oss.str(), true);
+            }
             return;
         }
         auto rcEnable = MH_EnableHook(target);
         if (rcEnable != MH_OK && rcEnable != MH_ERROR_ENABLED) {
-            std::ostringstream oss; oss << "[PAUSE] Failed to enable RenderBattleScreen hook at VA=0x" << std::hex << (uintptr_t)target;
-            LogOut(oss.str(), true);
+            if (!loggedFail.exchange(true)) {
+                std::ostringstream oss; oss << "[PAUSE] Failed to enable RenderBattleScreen hook at VA=0x" << std::hex << (uintptr_t)target;
+                LogOut(oss.str(), true);
+            }
             // Don't remove the hook if it was already created; just bail
             return;
         }
@@ -339,18 +381,52 @@ namespace {
     LogOut("[PAUSE] RenderBattleScreen hook installed (capturing battleContext)", detailedLogging.load());
     }
 
-    // Read/write game speed from battleContext + 0x1400
+    // Read/write engine pause flag from battleContext + 0x1416 (int, toggled by in-engine input)
+    bool ReadEnginePauseFlag(bool &outPaused) {
+        void* bc = s_battleContext.load(); if (!bc) return false;
+        uint32_t v = 0; if (!SafeReadMemory(reinterpret_cast<uintptr_t>(bc) + 0x1416, &v, sizeof(v))) return false;
+        outPaused = (v != 0); return true;
+    }
+    bool WriteEnginePauseFlag(bool paused) {
+        void* bc = s_battleContext.load(); if (!bc) return false;
+        uint32_t v = paused ? 1u : 0u;
+        uintptr_t addr = reinterpret_cast<uintptr_t>(bc) + 0x1416;
+        bool ok = SafeWriteMemory(addr, &v, sizeof(v));
+        std::ostringstream oss; oss << "[PAUSE][VANILLA] WriteEnginePause battleContext+0x1416 at 0x" << std::hex << addr
+            << ": " << std::dec << (paused?1:0) << (ok?" (OK)":" (FAIL)");
+        LogOut(oss.str(), true);
+        return ok;
+    }
+
+    // Read/write game speed via CE-confirmed slot address (preferred), fallback to legacy bc+0x1400 if unresolved
     bool ReadGamespeed(uint8_t &out) {
-        void* bc = s_battleContext.load();
-        if (!bc) return false;
+        // Try direct resolved address first
+        uintptr_t addr = s_gamespeedAddr.load();
+        if (addr || ResolveGamespeedAddr()) {
+            addr = s_gamespeedAddr.load();
+            if (addr && SafeReadMemory(addr, &out, sizeof(out))) return true;
+        }
+        // Legacy: battleContext + 0x1400 (kept as best-effort fallback)
+        void* bc = s_battleContext.load(); if (!bc) return false;
         return SafeReadMemory(reinterpret_cast<uintptr_t>(bc) + 0x1400, &out, sizeof(out));
     }
     bool WriteGamespeed(uint8_t v) {
-        void* bc = s_battleContext.load();
-        if (!bc) return false;
-        uintptr_t addr = reinterpret_cast<uintptr_t>(bc) + 0x1400;
-        bool ok = SafeWriteMemory(addr, &v, sizeof(v));
-        std::ostringstream oss; oss << "[PAUSE] WriteGamespeed battleContext+0x1400 at 0x" << std::hex << addr << ": " << std::dec << (int)v << (ok ? " (OK)" : " (FAIL)");
+        // Try direct resolved address first
+        uintptr_t addr = s_gamespeedAddr.load();
+        if (!addr && !ResolveGamespeedAddr()) {
+            // Legacy fallback: battleContext + 0x1400
+            void* bc = s_battleContext.load(); if (!bc) return false;
+            addr = reinterpret_cast<uintptr_t>(bc) + 0x1400;
+            bool ok = SafeWriteMemory(addr, &v, sizeof(v));
+            std::ostringstream oss; oss << "[PAUSE] WriteGamespeed legacy bc+0x1400 at 0x" << std::hex << addr
+                << ": " << std::dec << (int)v << (ok ? " (OK)" : " (FAIL)");
+            LogOut(oss.str(), true);
+            return ok;
+        }
+        addr = s_gamespeedAddr.load();
+        bool ok = addr ? SafeWriteMemory(addr, &v, sizeof(v)) : false;
+        std::ostringstream oss; oss << "[PAUSE] WriteGamespeed slot-addr 0x" << std::hex << addr
+            << ": " << std::dec << (int)v << (ok ? " (OK)" : " (FAIL)");
         LogOut(oss.str(), true);
         return ok;
     }
@@ -414,7 +490,13 @@ namespace {
 }
 
 namespace PauseIntegration {
-    void EnsurePracticePointerCapture() { EnsurePracticePtrHookInstalled(); EnsureBattleContextHook(); }
+    void EnsurePracticePointerCapture() {
+        EnsurePracticePtrHookInstalled();
+        // Prefer direct mode-array resolution for battleContext (Revival-compatible). Fallback to render hook.
+        if (!RefreshBattleContextFromGameModeArray()) {
+            EnsureBattleContextHook();
+        }
+    }
     void* GetPracticeControllerPtr() { return s_practicePtr.load(); }
 
     bool IsPracticePaused() { bool p=false; if (ReadPracticePauseFlag(p)) return p; return false; }
@@ -424,6 +506,10 @@ namespace PauseIntegration {
     // No periodic maintenance required for official path; fallback paths are one-shot.
     void MaintainFreezeWhileMenuVisible() {
         if (!s_menuVisible.load()) return;
+        // Keep vanilla engine pause asserted if we set it
+        if (s_weVanillaEnginePause.load()) {
+            bool paused=false; if (ReadEnginePauseFlag(paused) && !paused) { WriteEnginePauseFlag(true); }
+        }
         if (s_weFrozeGamespeed.load()) {
             uint8_t cur=3; if (ReadGamespeed(cur) && cur!=0) WriteGamespeed(0);
         }
@@ -448,6 +534,7 @@ namespace PauseIntegration {
             s_weForcedFlagPause.store(false);
             s_weAppliedPatchFreeze.store(false);
             s_weFrozeGamespeed.store(false);
+            s_weVanillaEnginePause.store(false);
 
             if (revivalLoaded && inPractice && s_practicePtr.load()) {
                 bool alreadyPaused=false; ReadPracticePauseFlag(alreadyPaused);
@@ -468,6 +555,23 @@ namespace PauseIntegration {
                     return; // respect external pause
                 }
             }
+            // Vanilla path: if EfzRevival is NOT loaded, mirror Revival by freezing gamespeed (bc+0x1400=0)
+            if (!revivalLoaded) {
+                // Try to resolve battleContext via mode array like Revival
+                if (!RefreshBattleContextFromGameModeArray()) {
+                    EnsureBattleContextHook();
+                }
+                uint8_t cur=3;
+                if (ReadGamespeed(cur)) {
+                    if (cur != 0 && WriteGamespeed(0)) {
+                        s_prevGamespeed.store(cur);
+                        s_weFrozeGamespeed.store(true);
+                        LogOut("[PAUSE][VANILLA] Gamespeed frozen via battleContext+0x1400", true);
+                        return; // done
+                    }
+                }
+            }
+
             // Fallback 1: apply patch freeze unconditionally if EfzRevival is present, and set practice pause flag if pointer is known
             bool appliedAny=false;
             if (revivalLoaded) {
@@ -508,6 +612,11 @@ namespace PauseIntegration {
             if (s_weFrozeGamespeed.load()) {
                 uint8_t cur=0; if (ReadGamespeed(cur) && cur==0) WriteGamespeed(s_prevGamespeed.load());
                 s_weFrozeGamespeed.store(false);
+            }
+            if (s_weVanillaEnginePause.load()) {
+                bool paused=false; if (ReadEnginePauseFlag(paused) && paused) WriteEnginePauseFlag(false);
+                s_weVanillaEnginePause.store(false);
+                LogOut("[PAUSE][VANILLA] Engine pause cleared on menu close", true);
             }
         }
     }
