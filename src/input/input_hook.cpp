@@ -52,6 +52,15 @@ typedef int(__thiscall* tPollPlayerInputState)(int inputManagerPtr, unsigned int
 static tPollPlayerInputState oPollPlayerInputState = nullptr;
 static const uintptr_t POLL_INPUT_STATE_FUNC_OFFSET = 0x0CD00;
 
+// Vanilla-only input routing swap flag
+static std::atomic<bool> g_swapVanillaRouting{false};
+static inline bool RevivalLoaded() { return GetModuleHandleA("EfzRevival.dll") != nullptr; }
+void SetVanillaSwapInputRouting(bool enable) {
+    g_swapVanillaRouting.store(enable, std::memory_order_relaxed);
+    std::ostringstream oss; oss << "[INPUT_HOOK] Vanilla routing swap " << (enable?"ENABLED":"DISABLED");
+    LogOut(oss.str(), true);
+}
+
 // Our poll hook. Use __fastcall to match __thiscall trampoline signature.
 static int __fastcall HookedPollPlayerInputState(int inputManagerPtr, int /*edx*/, unsigned int playerIndex)
 {
@@ -61,6 +70,11 @@ static int __fastcall HookedPollPlayerInputState(int inputManagerPtr, int /*edx*
         if (g_pollOverrideActive[idx].load(std::memory_order_relaxed)) {
             return static_cast<int>(g_pollOverrideMask[idx].load(std::memory_order_relaxed));
         }
+    }
+    // Vanilla-only: swap control routing by flipping the polled index
+    if (!RevivalLoaded() && g_swapVanillaRouting.load(std::memory_order_relaxed)) {
+        unsigned int swapped = (playerIndex == 0) ? 1u : (playerIndex == 1 ? 0u : playerIndex);
+        return oPollPlayerInputState ? oPollPlayerInputState(inputManagerPtr, swapped) : 0;
     }
     return oPollPlayerInputState ? oPollPlayerInputState(inputManagerPtr, playerIndex) : 0;
 }
