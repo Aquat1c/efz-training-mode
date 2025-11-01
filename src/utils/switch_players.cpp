@@ -7,6 +7,7 @@
 #include "../include/game/efzrevival_addrs.h"
 #include "../include/input/input_motion.h" // SetAIControlFlag
 #include "../include/input/input_hook.h" // SetVanillaSwapInputRouting
+#include "../include/input/input_core.h" // cleanup helpers
 #include "../include/utils/utilities.h" // GetEFZBase
 #include "../include/utils/network.h" // GetEfzRevivalVersion
 #include "../include/utils/debug_log.h"
@@ -611,6 +612,12 @@ namespace SwitchPlayers {
             << " gameState=0x" << std::hex << gameStatePtr;
         LogOut(oss.str(), true);
 
+        // Arm late neutralization on the side becoming AI to prevent residual motions
+        int aiPlayer = (desiredLocal == 1) ? 1 : 2; // if P2 local -> P1 AI, else P2 AI
+    // Immediately neutralize the motion token for the side becoming AI to kill any in-flight motions
+    (void)NeutralizeMotionToken(aiPlayer);
+        InputHook_ArmTokenNeutralize(aiPlayer, /*alsoDoFullCleanup=*/true);
+
         return okA && ok1 && ok2;
     }
     static bool ApplySet(uint8_t* practice, int desiredLocal) {
@@ -773,6 +780,13 @@ namespace SwitchPlayers {
                     LogOut("[SWITCH][H/I] Control roles: P1=Human, P2=AI", true);
                 }
 
+                // Arm late neutralization for the side becoming AI
+                {
+                    int aiPlayer = (desiredLocal == 1) ? 1 : 2;
+                    (void)NeutralizeMotionToken(aiPlayer);
+                    InputHook_ArmTokenNeutralize(aiPlayer, /*alsoDoFullCleanup=*/true);
+                }
+
                 DebugLog::Write("[SWITCH][H/I] Single-swap path finished; returning");
                 DebugLog::Write("========================================");
                 return true;
@@ -837,6 +851,13 @@ namespace SwitchPlayers {
         // so that the rebind logic observes the correct target (fixes third-press misassignment).
     // 1.02e only; H/I returned earlier.
     PostSwitchRefresh(practice);
+
+        // Arm late neutralization for the side becoming AI on E-version as well
+        {
+            int aiPlayer = (desiredLocal == 1) ? 1 : 2;
+            (void)NeutralizeMotionToken(aiPlayer);
+            InputHook_ArmTokenNeutralize(aiPlayer, /*alsoDoFullCleanup=*/true);
+        }
 
         // Diagnostics: verify final values
         int checkLocal = -1, checkRemote = -1;

@@ -758,6 +758,8 @@ void Tick() {
                 g_forceBypass[2].store(false);
                 g_injectImmediateOnly[2].store(false);
                 if (s_macroBannerId != -1) { DirectDrawHook::RemovePermanentMessage(s_macroBannerId); s_macroBannerId = -1; }
+                // Neutralize motion token before giving control back to AI to prevent stray motions
+                (void)NeutralizeMotionToken(2);
                 if (g_p2ControlOverridden) RestoreP2ControlState();
                 int slotIdx = ClampSlot(s_curSlot.load()) - 1;
                 LogOut(std::string("[MACRO][PLAY] finish-guard exit ") + (activated?"on-activation":"on-timeout") +
@@ -823,6 +825,11 @@ void Tick() {
             g_manualInputOverride[2].store(false);
             g_forceBypass[2].store(false);
             g_injectImmediateOnly[2].store(false);
+            // If we had taken control, neutralize and restore to AI
+            if (g_p2ControlOverridden) {
+                (void)NeutralizeMotionToken(2);
+                RestoreP2ControlState();
+            }
             DirectDrawHook::AddMessage("Macro: Replay empty", "MACRO", RGB(255,120,120), 1000, 0, 120);
             return;
         }

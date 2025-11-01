@@ -81,3 +81,15 @@ uint16_t GetPlayerMoveID(int playerNum);
 // Clear engine command flags (command buffer and dash command) for a player.
 // This helps prevent the engine from initiating a move after our macro/queue finishes.
 bool ClearPlayerCommandFlags(int playerNum);
+
+// Neutralize the player's current motion token to stop in-flight recognizers
+// from triggering after a control toggle or macro completion.
+bool NeutralizeMotionToken(int playerNum);
+
+// Perform a full cleanup suitable after toggling human/AI control:
+// - Neutralize motion token
+// - Clear command/dash latch bytes and dash timer
+// - Clear circular input buffer and reset head
+// - Clear immediate input registers (neutral)
+// Returns true if all best-effort writes succeeded.
+bool FullCleanupAfterToggle(int playerNum);

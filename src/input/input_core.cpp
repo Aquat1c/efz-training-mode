@@ -264,3 +264,42 @@ bool ClearPlayerCommandFlags(int playerNum) {
     LogOut(std::string("[INPUT] Cleared command/dash flags for P") + std::to_string(playerNum), true);
     return ok1 && ok2;
 }
+
+// Write 99 to the motion token slot to neutralize any in-flight recognizer state
+bool NeutralizeMotionToken(int playerNum) {
+    uintptr_t playerPtr = GetPlayerPointer(playerNum);
+    if (!playerPtr) return false;
+    // Write one byte 0x63 (hex) which equals decimal 99
+    uint8_t token = 0x63;
+    bool ok = SafeWriteMemory(playerPtr + MOTION_TOKEN_OFFSET, &token, sizeof(uint8_t));
+    if (detailedLogging.load()) {
+        LogOut(std::string("[INPUT] Neutralized motion token for P") + std::to_string(playerNum) +
+               std::string(" -> 0x63"), true);
+    }
+    return ok;
+}
+
+// Perform a thorough cleanup after toggling control or finishing macro playback
+bool FullCleanupAfterToggle(int playerNum) {
+    uintptr_t playerPtr = GetPlayerPointer(playerNum);
+    if (!playerPtr) return false;
+    bool okAll = true;
+
+    // 1) Neutralize motion token
+    okAll = NeutralizeMotionToken(playerNum) && okAll;
+
+    // 2) Clear command/latch bytes and dash timer
+    uint8_t zero = 0;
+    okAll = SafeWriteMemory(playerPtr + INPUT_LATCH1_OFFSET, &zero, sizeof(uint8_t)) && okAll;
+    okAll = SafeWriteMemory(playerPtr + INPUT_LATCH2_OFFSET, &zero, sizeof(uint8_t)) && okAll;
+    okAll = SafeWriteMemory(playerPtr + DASH_TIMER_OFFSET, &zero, sizeof(uint8_t)) && okAll;
+
+    // 3) Clear circular buffer and reset head
+    okAll = ClearPlayerInputBuffer(playerNum, /*resetIndex=*/true) && okAll;
+
+    // 4) Clear immediate registers to neutral
+    okAll = WritePlayerInputImmediate(playerNum, GAME_INPUT_NEUTRAL) && okAll;
+
+    LogOut(std::string("[INPUT] Full cleanup after toggle for P") + std::to_string(playerNum), true);
+    return okAll;
+}
