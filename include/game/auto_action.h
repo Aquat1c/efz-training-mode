@@ -59,7 +59,6 @@ extern std::atomic<int>  autoActionPlayer;
 
 // ADD these externs for control-restore globals defined in auto_action.cpp
 extern std::atomic<bool>  g_pendingControlRestore;
-extern std::atomic<int>   g_controlRestoreTimeout;
 extern std::atomic<short> g_lastP2MoveID;
 
 // Control restore / cleanup helpers
