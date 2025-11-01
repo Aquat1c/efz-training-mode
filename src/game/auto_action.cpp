@@ -2494,12 +2494,31 @@ void ProcessAutoControlRestore() {
             return;
         }
 
+        // Fallback: if we still have a pending restore and human override, and the buffer-freeze is no longer
+        // active for P2 (owner released), perform an immediate restore. This covers cases where the active-frame
+        // early-restore window was missed while the freeze thread was still pushing frames, and avoids waiting
+        // for moveID to return to 0 (which we no longer use as a restore signal).
+        bool freezeActiveForP2 = (g_bufferFreezingActive.load() && g_activeFreezePlayer.load() == 2);
+        if (g_pendingControlRestore.load() && g_p2ControlOverridden && !freezeActiveForP2 && !dashQueueActiveNow) {
+            LogOut("[AUTO-ACTION] Fallback restore: freeze ended, pending restore active", true);
+            RestoreP2ControlState();
+            g_restoreGraceCounter = RESTORE_GRACE_PERIOD; // 0, kept for symmetry/logging
+            g_crgFastRestore.store(false);
+            g_lastP2MoveID.store(-1);
+            g_pendingControlRestore.store(false);
+            sawNonZeroMoveID = false;
+            p2TriggerCooldown = 0; p2TriggerActive = false;
+            s_prevMoveID2 = moveID2;
+            return;
+        }
+
         // Generic restore: require pending flag + valid context to avoid repeated restores when already clean.
         restorePendingNow = g_pendingControlRestore.load();
         haveTrackableMove = (g_lastP2MoveID.load() != -1);
     static int s_lastGenericRestoreFrame = -1; // dedupe generic restore per frame
     bool allowAnyRestore = (g_p2ControlOverridden || (g_bufferFreezingActive.load() && g_activeFreezePlayer.load() == 2));
-    bool baseRestoreCond = moveChanged &&
+    // Never use generic restore when the move returns to 0; we restore earlier on active frames or via dash/CRG paths.
+    bool baseRestoreCond = moveChanged && (moveID2 != 0) &&
                 !dashFollowPending &&
                 !queuedDashNoStart &&
                 !g_recentDashQueued.load() &&
