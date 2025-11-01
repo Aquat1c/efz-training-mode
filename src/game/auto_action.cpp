@@ -1984,6 +1984,9 @@ void RestoreP2ControlState() {
     p2TriggerCooldown = TRIGGER_COOLDOWN_FRAMES;
         LogOut("[AUTO-ACTION] Enforcing extended trigger cooldown after control restore", true);
         
+        // Always neutralize the motion token when returning control to AI to kill any latent motion parsing
+        (void)NeutralizeMotionToken(2);
+
         uintptr_t base = GetEFZBase();
         if (!base) {
             LogOut("[AUTO-ACTION] Failed to get EFZ base for control restore, marking as restored anyway", true);
@@ -2071,6 +2074,9 @@ static void RestoreP2ControlFlagOnly() {
     uintptr_t base = GetEFZBase();
     if (!base) return;
     
+    // Even for flag-only restores, neutralize motion token so AI won't pick up a half-parsed motion
+    (void)NeutralizeMotionToken(2);
+
     // CRITICAL: Get game state pointer to restore CPU control flag
     uintptr_t gameStatePtr = 0;
     if (!SafeReadMemory(base + EFZ_BASE_OFFSET_GAME_STATE, &gameStatePtr, sizeof(uintptr_t)) || !gameStatePtr) {

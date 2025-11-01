@@ -450,6 +450,11 @@
 #define P1_INPUT_BUFFER_INDEX_OFFSET 0x260 // Offset to current buffer index
 #define P1_INPUT_BUFFER_SIZE 180          // Size of the circular buffer
 
+// Motion token offset (immediately follows the 2-byte buffer head at 0x260)
+// Writing 99 here neutralizes any in-flight motion command recognition to prevent
+// unintended transitions after control handoffs or macro playback.
+#define MOTION_TOKEN_OFFSET 0x262
+
 // Add these input offset constants after the existing offset definitions
 
 // Raw input offsets from player base (from Cheat Engine findings)
@@ -467,6 +472,12 @@
 // prevents residual moveID transitions after external input injection completes.
 #define COMMAND_BUFFER_OFFSET   0x1A8  // Byte flag used by command recognizers
 #define DASH_COMMAND_OFFSET     0x1A9  // Byte flag for dash recognition/state
+
+// Aliases for clarity in cleanup code
+#define INPUT_LATCH1_OFFSET     COMMAND_BUFFER_OFFSET
+#define INPUT_LATCH2_OFFSET     DASH_COMMAND_OFFSET
+// Dash timer byte that counts dash frames; clear during full cleanup
+#define DASH_TIMER_OFFSET       0x1AA
 
 // Block helper aliases (same raw slots as inputs)
 #define BLOCK_DIRECTION_OFFSET  HORIZONTAL_INPUT_OFFSET // signed: -1 (left) / +1 (right) / 0 neutral
