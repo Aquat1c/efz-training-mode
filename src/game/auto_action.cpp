@@ -2251,7 +2251,7 @@ void ProcessAutoControlRestore() {
             g_dashDeferred.pendingSel.store(0);
             g_dashDeferred.dashStartLatched.store(-1);
         }
-        int fdfSel = forwardDashFollowup.load();
+    int fdfSel = forwardDashFollowup.load();
         // CRITICAL FIX: Don't restore immediately when dash starts (163/165).
         // Wait until we've LEFT the dash state entirely, regardless of what state we transition to:
         // - Natural completion: 163 → 0/1/2 (idle/walk)
@@ -2266,24 +2266,30 @@ void ProcessAutoControlRestore() {
     bool stillDashing = (moveID2 == FORWARD_DASH_START_ID || moveID2 == BACKWARD_DASH_START_ID ||
                          moveID2 == FORWARD_DASH_RECOVERY_ID || moveID2 == BACKWARD_DASH_RECOVERY_ID ||
                          (isKaori && moveID2 == KAORI_FORWARD_DASH_START_ID));
-        bool leftDashState = wasDashing && !stillDashing;
+        // Track dash start observation per attempt to avoid stale prev-move causing false "left dash" restores
+        static bool s_dashStartSeenThisAttempt = false;
+        // If a new dash attempt was just queued (tracked below), we'll reset this flag
+        if (dashStartJustEntered) {
+            s_dashStartSeenThisAttempt = true;
+        }
+        bool leftDashState = s_dashStartSeenThisAttempt && wasDashing && !stillDashing;
         
         bool doDashRestore = false;
         
         // PRIORITY 1: If we left the dash state entirely (163/165 → anything else), restore immediately.
         // This handles all transitions: natural completion, dash normals, cancels, interrupts, etc.
-        if (leftDashState) {
+        if (leftDashState && !waitingDashStart) {
             LogOut("[AUTO-ACTION][DASH] Restore: left dash state (163/165/250 → " + std::to_string(moveID2) + ")", true);
             doDashRestore = true;
         }
         // PRIORITY 2: Legacy paths for edge cases
-        else if (dashNormalStarted && wasDashing) {
+        else if (dashNormalStarted && wasDashing && s_dashStartSeenThisAttempt) {
             LogOut("[AUTO-ACTION][DASH] Restore: dash normal detected (moveID=" + std::to_string(moveID2) + ")", true);
             doDashRestore = true;
-        } else if (dashCancelled && wasDashing) {
+        } else if (dashCancelled && wasDashing && s_dashStartSeenThisAttempt) {
             LogOut("[AUTO-ACTION][DASH] Restore: dash cancelled by state (moveID=" + std::to_string(moveID2) + ")", true);
             doDashRestore = true;
-        } else if (moveID2 == FORWARD_DASH_RECOVERY_SENTINEL_ID) {
+        } else if (moveID2 == FORWARD_DASH_RECOVERY_SENTINEL_ID && s_dashStartSeenThisAttempt) {
             LogOut("[AUTO-ACTION][DASH] Restore: sentinel recovery ID detected (178)", true);
             doDashRestore = true;
         }
@@ -2318,6 +2324,7 @@ void ProcessAutoControlRestore() {
             // New dash attempt detected -> reset observation flag
             sawNonZeroMoveID = false;
             s_lastDashQueueFrame = dashQueueFrame;
+            s_dashStartSeenThisAttempt = false;
             if (detailedLogging.load()) {
                 LogOut("[AUTO-ACTION][DASH] New dash attempt detected; resetting sawNonZeroMoveID", true);
             }
