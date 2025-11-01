@@ -180,9 +180,8 @@ static void LogCharacterSelectDiagnostics() {
     }
 
     // Our override/patch states
-    os << "[CS][DIAG] overrides: p2Overridden=" << (g_p2ControlOverridden?"1":"0")
-       << "  pendingRestore=" << (g_pendingControlRestore.load()?"1":"0")
-       << "  restoreTimeout=" << g_controlRestoreTimeout.load();
+     os << "[CS][DIAG] overrides: p2Overridden=" << (g_p2ControlOverridden?"1":"0")
+         << "  pendingRestore=" << (g_pendingControlRestore.load()?"1":"0");
     LogOut(os.str(), true); os.str(""); os.clear();
 
     os << "[CS][DIAG] bufferFreezeActive=" << (g_bufferFreezingActive.load()?"1":"0")
@@ -275,7 +274,6 @@ static void ResetControlOnCharacterSelect() {
         RestoreP2ControlState();
     }
     g_pendingControlRestore.store(false);
-    g_controlRestoreTimeout.store(0);
 
     // Clear poll override/injection flags for both players
     for (int i = 1; i <= 2; ++i) {

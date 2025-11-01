@@ -227,9 +227,7 @@ static void ProcessDeferredDashFollowups(short curP1, short prevP1, short curP2,
 
 // Add at the top with other global variables (around line 40)
 std::atomic<bool> g_pendingControlRestore(false);
-std::atomic<int> g_controlRestoreTimeout(0);
 std::atomic<short> g_lastP2MoveID(-1);
-const int CONTROL_RESTORE_TIMEOUT = 180; // 180 internal frames = 1 second
 // Counter-RG fast restore: when active, restore AI control as soon as the special actually starts
 std::atomic<bool> g_crgFastRestore(false);
 // Forward dash tracking to prevent premature restore before MoveID 163 appears
@@ -1187,7 +1185,6 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
                         // longer timeout for FM sequences
                         g_lastP2MoveID.store(moveID2);
                         g_pendingControlRestore.store(true);
-                        g_controlRestoreTimeout.store(240);
                     } else {
                         // Allow buffer writes
                         g_injectImmediateOnly[2].store(false);
@@ -1195,7 +1192,6 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
                         s_p2RGPrearmIsSpecial = true;
                         g_lastP2MoveID.store(moveID2);
                         g_pendingControlRestore.store(true);
-                        g_controlRestoreTimeout.store(180);
                     }
                 }
                 if (preOk) {
@@ -1272,7 +1268,6 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
                             // Track restore similarly to specials
                             g_lastP2MoveID.store(moveID2);
                             g_pendingControlRestore.store(true);
-                            g_controlRestoreTimeout.store(240);
                             LogOut("[AUTO-ACTION][FM] P2 wake FM buffered early (delay=0)", true);
                         }
                     } else if (motionType >= MOTION_236A) {
@@ -1282,7 +1277,6 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
                             s_p2WakePrearmIsSpecial = true;
                             g_lastP2MoveID.store(moveID2);
                             g_pendingControlRestore.store(true);
-                            g_controlRestoreTimeout.store(180);
                             LogOut("[AUTO-ACTION] P2 wake special buffered early (delay=0)", true);
                         }
                     }
@@ -1348,7 +1342,6 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
                             // Ensure pending restore tracking is active for specials queued this way,
                             // so cleanup logic doesn't immediately revert control.
                             g_pendingControlRestore.store(true);
-                            g_controlRestoreTimeout.store(180);
                             { std::stringstream bm; bm << std::hex << buttonMask; LogOut(std::string("[AUTO-ACTION] P2 wake special frame1 buffer applied (index frozen) btnMask=0x") + bm.str(), true); }
                         }
                     }
@@ -1645,7 +1638,6 @@ void ApplyAutoAction(int playerNum, uintptr_t moveIDAddr, short currentMoveID, s
                     // Mirror special-move restore flow so AI control is returned after FM executes
                     g_lastP2MoveID.store(currentMoveID); // starting move id baseline
                     g_pendingControlRestore.store(true);
-                    g_controlRestoreTimeout.store(240); // a little longer for FM sequences
                     LogOut("[AUTO-ACTION][FM] Scheduled P2 control restore (timeout=240)", true);
                 } else {
                     p1TriggerActive = false; p1TriggerCooldown = 0; 
@@ -1808,8 +1800,6 @@ void ApplyAutoAction(int playerNum, uintptr_t moveIDAddr, short currentMoveID, s
             // Always arm restore monitor for P2 so control returns after dash (or dash+follow-up)
             if (playerNum == 2 && !g_pendingControlRestore.load()) {
                 g_lastP2MoveID.store(-1);
-                // If follow-up configured, give slightly longer window for dash-normal injection
-                g_controlRestoreTimeout.store(fdf > 0 ? 120 : 90);
                 g_pendingControlRestore.store(true);
                 LogOut(std::string("[AUTO-ACTION][DASH] Armed control restore monitor (") + (fdf>0?"follow-up":"no follow-up") + ")", true);
             }
@@ -1825,8 +1815,6 @@ void ApplyAutoAction(int playerNum, uintptr_t moveIDAddr, short currentMoveID, s
             }
             if (playerNum == 2 && !g_pendingControlRestore.load()) {
                 g_lastP2MoveID.store(-1);
-                // Slightly longer if a follow-up is configured
-                g_controlRestoreTimeout.store(fdf > 0 ? 120 : 90);
                 g_pendingControlRestore.store(true);
                 LogOut(std::string("[AUTO-ACTION][DASH] Armed control restore monitor (backdash ") + (fdf>0?"+ follow-up)":"no follow-up)"), true);
             }
@@ -1890,7 +1878,6 @@ void ApplyAutoAction(int playerNum, uintptr_t moveIDAddr, short currentMoveID, s
             LogOut("[AUTO-ACTION] Tracking P2 special for restore", true);
             g_lastP2MoveID.store(currentMoveID);
             g_pendingControlRestore.store(true);
-            g_controlRestoreTimeout.store(180);
         }
     } else {
         LogOut("[AUTO-ACTION] Failed to apply move " + GetMotionTypeName(motionType), true);
@@ -2323,25 +2310,23 @@ void ProcessAutoControlRestore() {
                 LogOut("[AUTO-ACTION][DASH] New dash attempt detected; resetting sawNonZeroMoveID", true);
             }
         }
-        int timeoutSnapshot = g_controlRestoreTimeout.load();
+        // No timeout-based fallback: rely on dash age and state only
     if (g_recentDashQueued.load() && moveID2 == 0 && !sawNonZeroMoveID) {
             int age = frameCounter.load() - g_recentDashQueuedFrame.load();
             extern int p2CurrentMotionType; extern bool p2QueueActive; extern int p2QueueIndex; extern int p2FrameCounter; extern std::vector<InputFrame> p2InputQueue;
             int qSize = (int)p2InputQueue.size();
             if ((age % 4) == 0) {
-                LogOut(std::string("[AUTO-ACTION][DASH][TRACE] waiting age=") + std::to_string(age) +
-                       " queueActive=" + (p2QueueActive?"1":"0") +
-                       " qIdx=" + std::to_string(p2QueueIndex) + "/" + std::to_string(qSize) +
-                       " frameInStep=" + std::to_string(p2FrameCounter) +
-                       " motionType=" + std::to_string(p2CurrentMotionType) +
-                       " timeout=" + std::to_string(timeoutSnapshot), true);
+          LogOut(std::string("[AUTO-ACTION][DASH][TRACE] waiting age=") + std::to_string(age) +
+              " queueActive=" + (p2QueueActive?"1":"0") +
+              " qIdx=" + std::to_string(p2QueueIndex) + "/" + std::to_string(qSize) +
+              " frameInStep=" + std::to_string(p2FrameCounter) +
+              " motionType=" + std::to_string(p2CurrentMotionType), true);
                 if (p2QueueActive && p2QueueIndex < qSize) {
                     uint8_t mask = p2InputQueue[p2QueueIndex].inputMask;
                     LogOut(std::string("[AUTO-ACTION][DASH][TRACE] current mask=") + std::to_string((int)mask), true);
                 }
             }
             if (age < 120) {
-                if (timeoutSnapshot < 90) { g_controlRestoreTimeout.store(90); }
                 s_prevMoveID2 = moveID2; return; // hold restore
             } else if (age == 120) {
                 // Requeue the same dash type that was attempted (forward or back)
@@ -2350,7 +2335,6 @@ void ProcessAutoControlRestore() {
                 LogOut(std::string("[AUTO-ACTION][DASH] Requeue ") + (wasBack?"backdash":"forward dash") + " after 120f no-start", true);
                 QueueMotionInput(2, wasBack ? MOTION_BACK_DASH : MOTION_FORWARD_DASH, 0);
                 g_recentDashQueuedFrame.store(frameCounter.load());
-                if (timeoutSnapshot < 120) g_controlRestoreTimeout.store(120);
                 s_prevMoveID2 = moveID2; return;
             } else if (age < 160) {
                 s_prevMoveID2 = moveID2; return; // continue holding
@@ -2361,45 +2345,7 @@ void ProcessAutoControlRestore() {
         }
         // (Reverted timing expansion) Do not add extra pre-start requeue/abandon paths here.
 
-    int timeout = g_controlRestoreTimeout.load();
-        if (timeout > 0) {
-            // Only decrement while positive to avoid unbounded negative underflow
-            int prev = g_controlRestoreTimeout.fetch_sub(1);
-            timeout = prev; // value before decrement for logging consistency
-        } else {
-            // Clamp once (idempotent) and keep it at 0
-            if (timeout < 0) {
-                g_controlRestoreTimeout.store(0);
-                static bool s_loggedUnderflow = false;
-                if (!s_loggedUnderflow) {
-                    LogOut("[AUTO-ACTION][WARN] Control restore timeout underflow detected; clamping to 0", true);
-                    s_loggedUnderflow = true;
-                }
-            }
-            timeout = 0;
-        }
-        // Throttled monitoring logging:
-        //  - While timeout > 0: roughly once per second (192 frames)
-        //  - After timeout reaches 0: once every 960 frames (~5s) to prevent log spam
-        if (detailedLogging.load()) {
-            static int s_lastZeroTimeoutLogFrame = -1000000;
-            int fcNow = frameCounter.load();
-            bool doLog = false;
-            if (timeout > 0) {
-                if ((timeout % 192) == 0) doLog = true; // snapshot at countdown intervals
-            } else { // timeout == 0
-                if (fcNow - s_lastZeroTimeoutLogFrame >= 960) { // ~5 seconds at 192fps
-                    doLog = true;
-                    s_lastZeroTimeoutLogFrame = fcNow;
-                }
-            }
-            if (doLog) {
-                LogOut("[AUTO-ACTION] Monitoring move execution: MoveID=" +
-                       std::to_string(moveID2) + ", LastMoveID=" +
-                       std::to_string(g_lastP2MoveID.load()) +
-                       ", Timeout=" + std::to_string(timeout), true);
-            }
-        }
+        // Removed timeout countdown and related logging; rely on move/state transitions only
 
         if (moveID2 > 0) {
             sawNonZeroMoveID = true;
@@ -2463,7 +2409,7 @@ void ProcessAutoControlRestore() {
             LogOut("[AUTO-ACTION][DASH] Suppressing generic restore (pending follow-up active)", detailedLogging.load());
         }
         bool moveChanged = moveChangedCandidate && !suppressGenericRestore;
-    bool timeoutExpired = (timeout == 0);
+    // No timeout path; only state-change driven restores
         
         // If pending restore flag is set but we are no longer actually overriding control (and not in grace),
         // clear it defensively to avoid indefinite sampling spam.
@@ -2502,11 +2448,32 @@ void ProcessAutoControlRestore() {
             }
         }
 
-        // Generic restore: require pending flag + valid context to avoid repeated restores when already clean.
+        // Early restore: as soon as an attack starts (first frame moveID enters attack range), restore immediately.
+        // This applies to specials, supers, and normals and removes the need to monitor until completion.
         bool restorePendingNow = g_pendingControlRestore.load();
         bool haveTrackableMove = (g_lastP2MoveID.load() != -1);
+        bool attackStartedNow = (moveID2 >= 200) && (s_prevMoveID2 != moveID2) && !moveIsDash;
+        if (restorePendingNow && attackStartedNow && (g_p2ControlOverridden || haveTrackableMove) && !dashFollowPending && !queuedDashNoStart && !g_recentDashQueued.load() && !dashQueueActiveNow) {
+            LogOut("[AUTO-ACTION] Early restore on attack start (first frame) moveID=" + std::to_string(moveID2), true);
+            RestoreP2ControlState();
+            g_restoreGraceCounter = RESTORE_GRACE_PERIOD;
+            g_crgFastRestore.store(false);
+            g_lastP2MoveID.store(-1);
+            sawNonZeroMoveID = false;
+            s_prevMoveID2 = moveID2;
+            // If override is gone, pending restore is no longer needed beyond grace
+            if (!g_p2ControlOverridden) {
+                g_pendingControlRestore.store(false);
+            }
+            p2TriggerCooldown = 0; p2TriggerActive = false;
+            return;
+        }
+
+        // Generic restore: require pending flag + valid context to avoid repeated restores when already clean.
+        restorePendingNow = g_pendingControlRestore.load();
+        haveTrackableMove = (g_lastP2MoveID.load() != -1);
     static int s_lastGenericRestoreFrame = -1; // dedupe generic restore per frame
-    bool baseRestoreCond = (moveChanged || timeoutExpired) &&
+    bool baseRestoreCond = moveChanged &&
                 !dashFollowPending &&
                 !queuedDashNoStart &&
                 !g_recentDashQueued.load() &&
@@ -2517,9 +2484,7 @@ void ProcessAutoControlRestore() {
 
         if (shouldGenericRestore) {
             LogOut("[AUTO-ACTION] Auto-restoring P2 control state after move execution", detailedLogging.load());
-            LogOut("[AUTO-ACTION] Reason: " +
-                   std::string(moveChanged ? "Move completed" : "Timeout expired") +
-                   ", MoveID: " + std::to_string(moveID2), detailedLogging.load());
+         LogOut("[AUTO-ACTION] Reason: Move completed, MoveID: " + std::to_string(moveID2), detailedLogging.load());
 
             RestoreP2ControlState();
             // CRITICAL: Don't clear g_pendingControlRestore immediately. Start grace period counter.
@@ -2543,7 +2508,7 @@ void ProcessAutoControlRestore() {
             p2TriggerActive = false;
             LogOut("[AUTO-ACTION] Cleared P2 trigger cooldown after restore", detailedLogging.load());
         } else {
-            if ((moveChanged || timeoutExpired) && restorePendingNow && !shouldGenericRestore && detailedLogging.load()) {
+            if (moveChanged && restorePendingNow && !shouldGenericRestore && detailedLogging.load()) {
                 LogOut(std::string("[AUTO-ACTION][TRACE] Suppressed generic restore: pending=") + (restorePendingNow?"1":"0") +
                        " override=" + (g_p2ControlOverridden?"1":"0") +
                        " lastMoveValid=" + (haveTrackableMove?"1":"0") +
@@ -2673,7 +2638,6 @@ void ClearAllAutoActionTriggers() {
         RestoreP2ControlState();
     }
     g_pendingControlRestore.store(false);
-    g_controlRestoreTimeout.store(0);
     g_lastP2MoveID.store(-1);
     g_crgFastRestore.store(false);
 
