@@ -60,7 +60,7 @@ static int p1TriggerCooldown = 0;
 static int p2TriggerCooldown = 0;
 // Further reduce cooldown to re-arm triggers faster (was 6)
 static constexpr int TRIGGER_COOLDOWN_FRAMES = 6; // modest base cooldown; simplified logic allows reliable expiry
-static constexpr int RESTORE_GRACE_PERIOD = 12; // frames to wait before clearing g_pendingControlRestore to prevent immediate re-trigger
+static constexpr int RESTORE_GRACE_PERIOD = 0; // grace disabled: neutralization now prevents immediate re-trigger
 static int g_restoreGraceCounter = 0; // counts down from RESTORE_GRACE_PERIOD after control restore
 bool g_p2ControlOverridden = false;
 uint32_t g_originalP2ControlFlag = 1; // Default to AI control
@@ -2141,6 +2141,18 @@ void ProcessAutoControlRestore() {
     }
     
     if (g_pendingControlRestore.load()) {
+        // If there's no active override and no active buffer-freeze for P2,
+        // treat this as a stale pending state and clear it without restoring.
+        // This prevents redundant restores that would re-neutralize inputs
+        // when AI control is already in effect.
+        if (!g_p2ControlOverridden && !(g_bufferFreezingActive.load() && g_activeFreezePlayer.load() == 2)) {
+            if (detailedLogging.load()) {
+                LogOut("[AUTO-ACTION] Clearing stale g_pendingControlRestore (no override/buffer-freeze)", true);
+            }
+            g_pendingControlRestore.store(false);
+            return;
+        }
+
         // Cache address and throttle to every other frame to reduce CPU
         static uintptr_t moveIDAddr2 = 0; // our player (P2)
         static uintptr_t moveIDAddr1 = 0; // opponent (P1)
@@ -2286,9 +2298,9 @@ void ProcessAutoControlRestore() {
                 // Clear any leftover dash queued flag so we don't immediately re-arm
                 g_recentDashQueued.store(false);
             }
-            // CRITICAL: Don't clear g_pendingControlRestore immediately. Start grace period counter
-            // to prevent triggers from firing again during hitstun recovery.
+            // Grace period disabled; clear pending immediately after restore.
             g_restoreGraceCounter = RESTORE_GRACE_PERIOD;
+            g_pendingControlRestore.store(false);
             g_crgFastRestore.store(false);
             g_lastP2MoveID.store(-1);
             s_prevMoveID2 = moveID2; // update before return
@@ -2367,8 +2379,9 @@ void ProcessAutoControlRestore() {
                 if (!isRGPrearmedSpecial) {
                     LogOut("[AUTO-ACTION][CRG] Early restore: opponent entered attack frames", true);
                     RestoreP2ControlFlagOnly();
-                    // CRITICAL: Don't clear immediately, start grace period
+                    // Grace period disabled; clear pending immediately.
                     g_restoreGraceCounter = RESTORE_GRACE_PERIOD;
+                    g_pendingControlRestore.store(false);
                     g_crgFastRestore.store(false);
                     g_lastP2MoveID.store(-1);
                     sawNonZeroMoveID = false;
@@ -2383,8 +2396,9 @@ void ProcessAutoControlRestore() {
             if (moveStarted) {
                 LogOut("[AUTO-ACTION][CRG] Early restore: special started after RG", true);
                 RestoreP2ControlState();
-                // CRITICAL: Don't clear immediately, start grace period
+                // Grace period disabled; clear pending immediately.
                 g_restoreGraceCounter = RESTORE_GRACE_PERIOD;
+                g_pendingControlRestore.store(false);
                 g_crgFastRestore.store(false);
                 g_lastP2MoveID.store(-1);
                 sawNonZeroMoveID = false;
@@ -2448,23 +2462,34 @@ void ProcessAutoControlRestore() {
             }
         }
 
-        // Early restore: as soon as an attack starts (first frame moveID enters attack range), restore immediately.
-        // This applies to specials, supers, and normals and removes the need to monitor until completion.
+        // Early restore: as soon as the move actually starts (first non-zero, non-RG, non-dash state), restore immediately.
+        // This covers specials/supers even if their first startup IDs are outside the >=200 attack range.
         bool restorePendingNow = g_pendingControlRestore.load();
+        // Only allow early restore when we actually overrode control or P2 is in an active freeze.
+        bool allowEarlyRestore = (g_p2ControlOverridden || (g_bufferFreezingActive.load() && g_activeFreezePlayer.load() == 2));
+        // keep trackable move only for diagnostics; don't use it to authorize restore
         bool haveTrackableMove = (g_lastP2MoveID.load() != -1);
-        bool attackStartedNow = (moveID2 >= 200) && (s_prevMoveID2 != moveID2) && !moveIsDash;
-        if (restorePendingNow && attackStartedNow && (g_p2ControlOverridden || haveTrackableMove) && !dashFollowPending && !queuedDashNoStart && !g_recentDashQueued.load() && !dashQueueActiveNow) {
-            LogOut("[AUTO-ACTION] Early restore on attack start (first frame) moveID=" + std::to_string(moveID2), true);
+        bool nonRGState = (moveID2 != RG_STAND_ID && moveID2 != RG_CROUCH_ID && moveID2 != RG_AIR_ID);
+        // Early-restore only when the move becomes ACTIVE:
+        // - Specials: first active frame assumed at moveID >= 250
+        // - Supers:   first active frame assumed at moveID >= 300
+        // Dashes are handled elsewhere (dash start IDs), so keep excluding dash here.
+        bool specialActiveNow = (moveID2 >= 250 && moveID2 < 300);
+        bool superActiveNow   = (moveID2 >= 300);
+        bool activeNow = (specialActiveNow || superActiveNow) && nonRGState && !moveIsDash;
+        bool stateEnteredNow = (s_prevMoveID2 != moveID2);
+        // Tighten gating: require actual override or active freeze to avoid spurious restores
+        if (restorePendingNow && allowEarlyRestore && stateEnteredNow && activeNow &&
+            !dashFollowPending && !queuedDashNoStart && !g_recentDashQueued.load() && !dashQueueActiveNow) {
+            LogOut("[AUTO-ACTION] Early restore on active frame (special>=250|super>=300) moveID=" + std::to_string(moveID2), true);
             RestoreP2ControlState();
             g_restoreGraceCounter = RESTORE_GRACE_PERIOD;
             g_crgFastRestore.store(false);
             g_lastP2MoveID.store(-1);
             sawNonZeroMoveID = false;
             s_prevMoveID2 = moveID2;
-            // If override is gone, pending restore is no longer needed beyond grace
-            if (!g_p2ControlOverridden) {
-                g_pendingControlRestore.store(false);
-            }
+            // Grace disabled; pending restore no longer needed.
+            g_pendingControlRestore.store(false);
             p2TriggerCooldown = 0; p2TriggerActive = false;
             return;
         }
@@ -2473,13 +2498,14 @@ void ProcessAutoControlRestore() {
         restorePendingNow = g_pendingControlRestore.load();
         haveTrackableMove = (g_lastP2MoveID.load() != -1);
     static int s_lastGenericRestoreFrame = -1; // dedupe generic restore per frame
+    bool allowAnyRestore = (g_p2ControlOverridden || (g_bufferFreezingActive.load() && g_activeFreezePlayer.load() == 2));
     bool baseRestoreCond = moveChanged &&
                 !dashFollowPending &&
                 !queuedDashNoStart &&
                 !g_recentDashQueued.load() &&
                 !dashQueueActiveNow &&
                 restorePendingNow &&
-                (g_p2ControlOverridden || haveTrackableMove);
+                allowAnyRestore;
     bool shouldGenericRestore = baseRestoreCond && (frameCounter.load() != s_lastGenericRestoreFrame);
 
         if (shouldGenericRestore) {
@@ -2487,19 +2513,13 @@ void ProcessAutoControlRestore() {
          LogOut("[AUTO-ACTION] Reason: Move completed, MoveID: " + std::to_string(moveID2), detailedLogging.load());
 
             RestoreP2ControlState();
-            // CRITICAL: Don't clear g_pendingControlRestore immediately. Start grace period counter.
+            // Grace disabled; clear pending immediately.
             g_restoreGraceCounter = RESTORE_GRACE_PERIOD;
+            g_pendingControlRestore.store(false);
             g_crgFastRestore.store(false);
             g_lastP2MoveID.store(-1);
             sawNonZeroMoveID = false;
             s_lastGenericRestoreFrame = frameCounter.load();
-
-            // If we are no longer overriding control after restore, there's nothing left to monitor except grace.
-            // Convert pending restore into grace-only sentinel by clearing pending early; grace counter
-            // already blocks triggers until it reaches 0.
-            if (!g_p2ControlOverridden) {
-                g_pendingControlRestore.store(false);
-            }
 
             // If we just restored after a dash and a forward dash follow-up is still pending,
             // keep a minimal cooldown (1 *internal* frame => ~instant visually) so we do not
