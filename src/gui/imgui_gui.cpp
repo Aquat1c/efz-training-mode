@@ -295,6 +295,16 @@ namespace ImGuiGui {
             ImGuiTabItemFlags _setVals = (rq == 1) ? ImGuiTabItemFlags_SetSelected : 0;
             if (ImGui::BeginTabItem("Values", nullptr, _setVals)) {
                 guiState.mainMenuSubTab = 1;
+                // Read engine regen params for debug/gating using stateful inference to avoid false F4
+                uint16_t engineParamA=0, engineParamB=0; EngineRegenMode regenMode = EngineRegenMode::Unknown;
+                bool gotParams = GetEngineRegenStatus(regenMode, engineParamA, engineParamB);
+                // Lock entire Values when engine F5 cycle OR F4 fine-tune is active
+                bool engineLocksValues = (regenMode == EngineRegenMode::F5_FullOrPreset) || (regenMode == EngineRegenMode::F4_FineTuneActive);
+                // Continuous Recovery global lock: if either player has any active CR target (hp/meter/rf)
+                bool crAny = (guiState.localData.p1ContinuousRecoveryEnabled && (guiState.localData.p1RecoveryHpMode>0 || guiState.localData.p1RecoveryMeterMode>0 || guiState.localData.p1RecoveryRfMode>0)) ||
+                              (guiState.localData.p2ContinuousRecoveryEnabled && (guiState.localData.p2RecoveryHpMode>0 || guiState.localData.p2RecoveryMeterMode>0 || guiState.localData.p2RecoveryRfMode>0));
+                bool globalValuesLocked = engineLocksValues || crAny;
+                if (globalValuesLocked) ImGui::BeginDisabled();
                 if (ImGui::BeginTable("values_table", 3, ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_SizingStretchProp)) {
                     // Compute a compact label column width based on the longest label text
                     const char* labelTexts[] = { "HP", "Meter", "RF", "Freeze RF", "RF color", "X", "Y" };
@@ -393,22 +403,57 @@ namespace ImGuiGui {
                         SetRFFreezeColorDesired(2, s_uiFreezeP2, s_uiFreezeP2ColorBlue);
                     }
 
-                    // RF color (formerly IC Color)
+                    // RF color selection (radio buttons choose desired color; applied on Apply)
                     ImGui::TableNextRow();
                     ImGui::TableNextColumn(); ImGui::TextUnformatted("RF color");
+                    // Determine if either side's color is currently managed by Freeze/CR
+                    auto crColorManagedRow = [&](int player)->bool {
+                        if (player == 1) {
+                            if (!guiState.localData.p1ContinuousRecoveryEnabled) return false;
+                            if (guiState.localData.p1RecoveryRfMode == 3 || guiState.localData.p1RecoveryRfMode == 4) return true; // Red presets force Red
+                            if (guiState.localData.p1RecoveryRfMode == 5 && guiState.localData.p1RecoveryRfForceBlueIC) return true; // Custom+BIC forces Blue
+                            return false;
+                        } else {
+                            if (!guiState.localData.p2ContinuousRecoveryEnabled) return false;
+                            if (guiState.localData.p2RecoveryRfMode == 3 || guiState.localData.p2RecoveryRfMode == 4) return true;
+                            if (guiState.localData.p2RecoveryRfMode == 5 && guiState.localData.p2RecoveryRfForceBlueIC) return true;
+                            return false;
+                        }
+                    };
+                    bool p1ManagedColor = IsRFFreezeColorManaging(1) || crColorManagedRow(1);
+                    bool p2ManagedColor = IsRFFreezeColorManaging(2) || crColorManagedRow(2);
+
                     ImGui::TableNextColumn();
                     {
-                        if (ImGui::Button("Red##p1RF")) { guiState.localData.p1BlueIC = false; }
+                        if (p1ManagedColor) ImGui::BeginDisabled();
+                        bool p1Blue = guiState.localData.p1BlueIC;
+                        if (ImGui::RadioButton("Red##p1RF", !p1Blue)) { guiState.localData.p1BlueIC = false; p1Blue = false; }
                         ImGui::SameLine();
-                        if (ImGui::Button("Blue##p1RF")) { guiState.localData.p1BlueIC = true; }
-                        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Swap P1 RF gauge color. Applied on 'Apply'.");
+                        if (ImGui::RadioButton("Blue##p1RF", p1Blue)) { guiState.localData.p1BlueIC = true; p1Blue = true; }
+                        if (p1ManagedColor) {
+                            ImGui::EndDisabled();
+                            ImGui::SameLine();
+                            ImGui::TextDisabled("(managed)");
+                            if (ImGui::IsItemHovered()) ImGui::SetTooltip("P1 color is currently managed by RF Freeze or Continuous Recovery.");
+                        } else {
+                            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Select P1 RF gauge color. Takes effect on Apply. Not a continuous lock.");
+                        }
                     }
                     ImGui::TableNextColumn();
                     {
-                        if (ImGui::Button("Red##p2RF")) { guiState.localData.p2BlueIC = false; }
+                        if (p2ManagedColor) ImGui::BeginDisabled();
+                        bool p2Blue = guiState.localData.p2BlueIC;
+                        if (ImGui::RadioButton("Red##p2RF", !p2Blue)) { guiState.localData.p2BlueIC = false; p2Blue = false; }
                         ImGui::SameLine();
-                        if (ImGui::Button("Blue##p2RF")) { guiState.localData.p2BlueIC = true; }
-                        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Swap P2 RF gauge color. Applied on 'Apply'.");
+                        if (ImGui::RadioButton("Blue##p2RF", p2Blue)) { guiState.localData.p2BlueIC = true; p2Blue = true; }
+                        if (p2ManagedColor) {
+                            ImGui::EndDisabled();
+                            ImGui::SameLine();
+                            ImGui::TextDisabled("(managed)");
+                            if (ImGui::IsItemHovered()) ImGui::SetTooltip("P2 color is currently managed by RF Freeze or Continuous Recovery.");
+                        } else {
+                            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Select P2 RF gauge color. Takes effect on Apply. Not a continuous lock.");
+                        }
                     }
 
                     // X position
@@ -424,6 +469,13 @@ namespace ImGuiGui {
                     ImGui::TableNextColumn(); { float v = (float)guiState.localData.y2; if (ImGui::InputFloat("##y_p2", &v, 1.0f, 10.0f, "%.2f")) guiState.localData.y2 = v; }
 
                     ImGui::EndTable();
+                }
+                if (globalValuesLocked) ImGui::EndDisabled();
+                // Short guidance message when engine regen is active
+                if (regenMode == EngineRegenMode::F4_FineTuneActive) {
+                    ImGui::TextWrapped("Currently, the game has RF Recovery enabled (F4). To edit values here, set Automatic Recovery (F5) to Disabled in-game.");
+                } else if (regenMode == EngineRegenMode::F5_FullOrPreset) {
+                    ImGui::TextWrapped("Currently, the game has Automatic regeneration enabled (F5). To edit values here, set Automatic Recovery (F5) to Disabled in-game.");
                 }
                 ImGui::Dummy(ImVec2(1, 4));
                 ImGui::EndTabItem();
@@ -2691,6 +2743,57 @@ namespace ImGuiGui {
     
     // Add this new function to the ImGuiGui namespace:
     void RenderDebugInputTab() {
+        // Engine regen/CR status moved here from Values tab
+        ImGui::SeparatorText("Engine Regen / Continuous Recovery Status");
+        uint16_t engineParamA = 0, engineParamB = 0; EngineRegenMode regenMode = EngineRegenMode::Unknown;
+        bool gotParams = GetEngineRegenStatus(regenMode, engineParamA, engineParamB);
+        static bool s_doDeepScanDbg = false;
+        ImGui::Checkbox("Deep Scan Params##dbgdeep_global", &s_doDeepScanDbg);
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("Brute-force scan window to locate Param A/B if offsets drift. F4 requires +5 cadence.");
+        }
+        uint32_t scanAOff=0, scanBOff=0; uint16_t scanAVal=0, scanBVal=0; bool scanOk=false;
+        if (s_doDeepScanDbg) {
+            uintptr_t base = GetEFZBase(); uintptr_t p1Base=0; if (base) SafeReadMemory(base + EFZ_BASE_OFFSET_P1, &p1Base, sizeof(p1Base));
+            if (p1Base) scanOk = DebugScanRegenParamWindow(p1Base, scanAOff, scanAVal, scanBOff, scanBVal);
+        }
+        if (gotParams) {
+            const char* modeLabel = (regenMode==EngineRegenMode::F4_FineTuneActive?"F4 Fine-Tune" : (regenMode==EngineRegenMode::F5_FullOrPreset?"F5 Cycle" : (regenMode==EngineRegenMode::Normal?"Normal":"Unknown")));
+            ImGui::Text("Param A: %u  Param B: %u  Mode: %s", (unsigned)engineParamA, (unsigned)engineParamB, modeLabel);
+            float derivedRF=0.0f; bool derivedBlue=false;
+            if (DeriveRfFromParamA(engineParamA, derivedRF, derivedBlue)) {
+                ImGui::SameLine();
+                ImGui::TextDisabled("[Derived RF: %.1f, %s]", derivedRF, derivedBlue?"Blue":"Red");
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Mapping: 0..999=Red, 1000=Blue full, 1001..2000 => Blue with RF=(2000-A)");
+            }
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Heuristic: F5 when A==1000/2000 or B==3332; F4 fine-tune when B==9999 and A stepping.");
+        } else {
+            ImGui::Text("Param A/B unavailable (not in match or read failed).");
+        }
+        if (s_doDeepScanDbg) {
+            if (scanOk) {
+                ImGui::TextDisabled("Scan Offsets: A@0x%X=%u B@0x%X=%u", scanAOff, (unsigned)scanAVal, scanBOff, (unsigned)scanBVal);
+                if (scanAOff != PLAYER_PARAM_A_COPY_OFFSET || scanBOff != PLAYER_PARAM_B_COPY_OFFSET) {
+                    ImGui::TextColored(ImVec4(1,0.3f,0.3f,1), "Mismatch: defined offsets 0x%X/0x%X differ from scan 0x%X/0x%X", PLAYER_PARAM_A_COPY_OFFSET, PLAYER_PARAM_B_COPY_OFFSET, scanAOff, scanBOff);
+                }
+            } else {
+                ImGui::TextColored(ImVec4(0.9f,0.6f,0.2f,1), "Scan found no candidates in window.");
+            }
+        }
+        // Summarize lock state similar to Values tab
+        bool engineLocksValues = (regenMode == EngineRegenMode::F5_FullOrPreset);
+        bool crAny = (guiState.localData.p1ContinuousRecoveryEnabled && (guiState.localData.p1RecoveryHpMode>0 || guiState.localData.p1RecoveryMeterMode>0 || guiState.localData.p1RecoveryRfMode>0)) ||
+                      (guiState.localData.p2ContinuousRecoveryEnabled && (guiState.localData.p2RecoveryHpMode>0 || guiState.localData.p2RecoveryMeterMode>0 || guiState.localData.p2RecoveryRfMode>0));
+        if (engineLocksValues) {
+            ImGui::TextColored(ImVec4(1,0.6f,0.2f,1), "Engine-managed regeneration active; manual value edits disabled.");
+        }
+        if (crAny) {
+            ImGui::TextColored(ImVec4(0.8f,0.4f,1,1), "Continuous Recovery active; manual value edits disabled to avoid conflict.");
+        }
+        if (!engineLocksValues && !crAny) {
+            ImGui::TextDisabled("Manual edits enabled (no engine regen or CR overrides detected).");
+        }
+        ImGui::Separator();
         // Practice Switch Players control
         if (GetCurrentGameMode() == GameMode::Practice) {
             ImGui::SeparatorText("Switch Players (Practice)");
@@ -2921,7 +3024,35 @@ namespace ImGuiGui {
         static bool lastVisible = false;
         bool currentVisible = ImGuiImpl::IsVisible();
         if (currentVisible && !lastVisible) {
+            // Refresh once on menu open
             RefreshLocalData();
+
+            // On menu open, update IC color ONCE if not managed by RF Freeze color lock or Continuous Recovery
+            // This ensures the game color matches the last applied Values tab selection without continuous locking.
+            auto crColorManaged = [&](int player)->bool {
+                if (player == 1) {
+                    if (!displayData.p1ContinuousRecoveryEnabled) return false;
+                    if (displayData.p1RecoveryRfMode == 3 || displayData.p1RecoveryRfMode == 4) return true; // Red presets force Red later
+                    if (displayData.p1RecoveryRfMode == 5 && displayData.p1RecoveryRfForceBlueIC) return true; // Custom+BIC forces Blue
+                    return false;
+                } else {
+                    if (!displayData.p2ContinuousRecoveryEnabled) return false;
+                    if (displayData.p2RecoveryRfMode == 3 || displayData.p2RecoveryRfMode == 4) return true;
+                    if (displayData.p2RecoveryRfMode == 5 && displayData.p2RecoveryRfForceBlueIC) return true;
+                    return false;
+                }
+            };
+            bool p1Managed = IsRFFreezeColorManaging(1) || crColorManaged(1);
+            bool p2Managed = IsRFFreezeColorManaging(2) || crColorManaged(2);
+            if (!p1Managed || !p2Managed) {
+                if (!p1Managed && !p2Managed) {
+                    SetICColorDirect(displayData.p1BlueIC, displayData.p2BlueIC);
+                } else if (!p1Managed) {
+                    SetICColorPlayer(1, displayData.p1BlueIC);
+                } else if (!p2Managed) {
+                    SetICColorPlayer(2, displayData.p2BlueIC);
+                }
+            }
         }
         lastVisible = currentVisible;
 
@@ -3405,8 +3536,32 @@ namespace ImGuiGui {
                    ", P1 Blue IC: " + std::to_string(displayData.p1BlueIC) + 
                    ", P2 Blue IC: " + std::to_string(displayData.p2BlueIC), true);
             
-            // Apply IC color settings directly
-            SetICColorDirect(displayData.p1BlueIC, displayData.p2BlueIC);
+            // Apply IC color settings ONCE per Apply if not managed by RF Freeze color lock or Continuous Recovery color logic.
+            auto crColorManaged = [&](int player)->bool {
+                if (player == 1) {
+                    if (!displayData.p1ContinuousRecoveryEnabled) return false;
+                    if (displayData.p1RecoveryRfMode == 3 || displayData.p1RecoveryRfMode == 4) return true; // Red presets force Red later
+                    if (displayData.p1RecoveryRfMode == 5 && displayData.p1RecoveryRfForceBlueIC) return true; // Custom+BIC forces Blue
+                    return false;
+                } else {
+                    if (!displayData.p2ContinuousRecoveryEnabled) return false;
+                    if (displayData.p2RecoveryRfMode == 3 || displayData.p2RecoveryRfMode == 4) return true;
+                    if (displayData.p2RecoveryRfMode == 5 && displayData.p2RecoveryRfForceBlueIC) return true;
+                    return false;
+                }
+            };
+            bool p1Managed = IsRFFreezeColorManaging(1) || crColorManaged(1);
+            bool p2Managed = IsRFFreezeColorManaging(2) || crColorManaged(2);
+            if (!p1Managed || !p2Managed) {
+                // Only write what is not managed to avoid fighting per-frame logic.
+                if (!p1Managed && !p2Managed) {
+                    SetICColorDirect(displayData.p1BlueIC, displayData.p2BlueIC);
+                } else if (!p1Managed) {
+                    SetICColorPlayer(1, displayData.p1BlueIC);
+                } else if (!p2Managed) {
+                    SetICColorPlayer(2, displayData.p2BlueIC);
+                }
+            }
             
             // Apply the settings to the game
             uintptr_t base = GetEFZBase();
@@ -3421,6 +3576,7 @@ namespace ImGuiGui {
                     short mv = 0; if (auto mvAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P2, MOVE_ID_OFFSET)) SafeReadMemory(mvAddr, &mv, sizeof(short));
                     if (!IsActionable(mv)) deferred = true;
                 }
+                // Apply settings normally; UI-level disabling prevents conflicting writes when engine/CR manage values
                 ApplySettings(&displayData);
                 // Run one enforcement tick immediately so infinite toggles take effect without waiting for the next cadence
                 CharacterSettings::TickCharacterEnforcements(base, displayData);

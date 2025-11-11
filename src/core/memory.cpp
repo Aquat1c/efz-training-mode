@@ -245,6 +245,156 @@ bool SetRFValuesDirect(double p1RF, double p2RF) {
     return success;
 }
 
+// Read per-player copies of engine regen params (Param A/B). We read from P1 base only since
+// both players are kept in sync by the engine handler; fallback tries P2 if P1 fails.
+bool ReadEngineRegenParams(uint16_t& outParamA, uint16_t& outParamB) {
+    outParamA = 0; outParamB = 0;
+    uintptr_t base = GetEFZBase(); if (!base) return false;
+    uintptr_t p1PtrAddr = base + EFZ_BASE_OFFSET_P1;
+    uintptr_t p2PtrAddr = base + EFZ_BASE_OFFSET_P2;
+    uintptr_t p1Base = 0, p2Base = 0;
+    if (!SafeReadMemory(p1PtrAddr, &p1Base, sizeof(p1Base)) || !p1Base) {
+        SafeReadMemory(p2PtrAddr, &p2Base, sizeof(p2Base));
+    }
+    uintptr_t useBase = p1Base ? p1Base : p2Base;
+    if (!useBase) return false;
+    uint16_t a=0,b=0;
+    if (!SafeReadMemory(useBase + PLAYER_PARAM_A_COPY_OFFSET, &a, sizeof(a))) return false;
+    if (!SafeReadMemory(useBase + PLAYER_PARAM_B_COPY_OFFSET, &b, sizeof(b))) return false;
+    outParamA = a; outParamB = b; return true;
+}
+
+EngineRegenMode InferEngineRegenMode(uint16_t paramA, uint16_t paramB) {
+    // F5 cycle sets A to 1000 or 2000 AND (at some point) B to 3332; it leaves B=3332 afterwards.
+    bool f5Pattern = (paramA == 1000 || paramA == 2000 || paramB == 3332);
+    // F4 fine-tune forces B=9999 while A steps 0..2000 by +5; A will often be multiples of 5.
+    bool fineTunePattern = (paramB == 9999 && (paramA % 5 == 0) && paramA != 1000 && paramA != 2000);
+    if (fineTunePattern) return EngineRegenMode::F4_FineTuneActive;
+    if (f5Pattern) return EngineRegenMode::F5_FullOrPreset;
+    return EngineRegenMode::Normal;
+}
+
+bool IsEngineRegenLikelyActive() {
+    uint16_t a=0,b=0; if (!ReadEngineRegenParams(a,b)) return false;
+    EngineRegenMode m = InferEngineRegenMode(a,b);
+    return m == EngineRegenMode::F4_FineTuneActive || m == EngineRegenMode::F5_FullOrPreset;
+}
+
+// Stateful inference to avoid false positives:
+// - Treat F5 as active when A==1000/2000 or B==3332; start a cooldown (s_f4Cooldown) suppressing F4 detection for N frames
+// - Treat F4 only when B==9999 AND A is stepping by +5 with wrap for several consecutive frames (s_stepRun>=3)
+// - Do NOT treat static B==9999 as F4 (HP max is common)
+static uint16_t s_prevA = 0;
+static uint16_t s_prevB = 0;
+static int s_stepRun = 0;
+static int s_f4Cooldown = 0;
+static bool s_prevValid = false;
+
+bool GetEngineRegenStatus(EngineRegenMode& outMode, uint16_t& outParamA, uint16_t& outParamB) {
+    outMode = EngineRegenMode::Unknown; outParamA = outParamB = 0;
+    uint16_t a=0,b=0; if (!ReadEngineRegenParams(a,b)) return false;
+    outParamA = a; outParamB = b;
+
+    // F5 check first
+    bool f5 = (a == 1000 || a == 2000 || b == 3332);
+    if (f5) {
+        outMode = EngineRegenMode::F5_FullOrPreset;
+        s_f4Cooldown = 30; // ~0.5s at 60fps; tune if needed
+        // reset F4 cadence tracker when F5 toggles
+        s_stepRun = 0; s_prevValid = true; s_prevA = a; s_prevB = b; return true;
+    }
+
+    // Cooldown suppresses F4 after F5 activity
+    if (s_f4Cooldown > 0) {
+        s_f4Cooldown--; outMode = EngineRegenMode::Normal; s_prevValid = true; s_prevA = a; s_prevB = b; return true;
+    }
+
+    // F4 cadence: B==9999 AND A stepping forward in multiples of 5 (account for sampling gaps and wrap 2000->0)
+    if (b == 9999 && s_prevValid) {
+        int delta = (int)a - (int)s_prevA;
+        bool forwardMulti5 = (delta > 0 && (delta % 5) == 0);
+        bool wrappedForward = (s_prevA > a) && (((2000 - s_prevA) + a) % 5 == 0);
+        if (forwardMulti5 || wrappedForward || (s_prevA == 2000 && a == 0)) {
+            if (s_stepRun < 10) s_stepRun++;
+        } else if (a != s_prevA) {
+            // Different but not consistent with +5 cadence: reset
+            s_stepRun = 0;
+        }
+    } else {
+        s_stepRun = 0;
+    }
+
+    if (b == 9999 && s_stepRun >= 1) {
+        outMode = EngineRegenMode::F4_FineTuneActive;
+    } else {
+        outMode = EngineRegenMode::Normal;
+    }
+
+    s_prevValid = true; s_prevA = a; s_prevB = b; return true;
+}
+
+// Derive RF gauge value and IC color from Param A mapping described by user:
+// Param A 0..999.99  -> red gauge, RF = A (clamped 0..1000)
+// Param A == 1000    -> blue gauge full (RF = 1000)
+// Param A 1001..2000 -> blue gauge with RF = 2000 - A (so A=1980 -> RF=20)
+// Returns true if mapping applied; outputs rfValue (float) and isBlueIC.
+bool DeriveRfFromParamA(uint16_t paramA, float& rfValue, bool& isBlueIC) {
+    // Accept 16-bit integer paramA; fractional .99 context ignored (engine stores word).
+    if (paramA <= 1000) {
+        if (paramA < 1000) {
+            isBlueIC = false; rfValue = (float)paramA; return true;
+        } else { // exactly 1000
+            isBlueIC = true; rfValue = 1000.0f; return true;
+        }
+    }
+    if (paramA <= 2000) {
+        isBlueIC = true; rfValue = (float)(2000 - paramA); if (rfValue < 0.0f) rfValue = 0.0f; return true;
+    }
+    // Outside expected range; treat as unknown
+    isBlueIC = false; rfValue = 0.0f; return false;
+}
+
+// Brute-force scan a small window around the expected offsets to find a plausible Param A/B pair.
+// This helps when observed values appear incorrect (e.g., 0xFFFF / static) to confirm actual locations.
+// Strategy:
+//   Scan words in [0x30C0 .. 0x3120]; look for patterns:
+//     - B candidates: 9999 (F4), 3332 (F5 cycle) -> preceding 2 bytes likely A.
+//     - A candidates: 1000 or 2000 with following 2 bytes in {3332, 9999, <=2100 stepping}.
+// Returns first strong candidate; offsets are relative to playerBase.
+bool DebugScanRegenParamWindow(uintptr_t playerBase, uint32_t& outAOffset, uint16_t& outAVal, uint32_t& outBOffset, uint16_t& outBVal) {
+    outAOffset = outBOffset = 0; outAVal = outBVal = 0;
+    if (!playerBase) return false;
+    const uint32_t START = 0x30C0; const uint32_t END = 0x3120; // conservative window
+    uint16_t prevVal = 0;
+    for (uint32_t off = START; off <= END; off += 2) {
+        uint16_t val = 0; SafeReadMemory(playerBase + off, &val, sizeof(val));
+        // B candidate first (strong identifiers)
+        if (val == 9999 || val == 3332) {
+            // Read preceding word as A
+            if (off >= 2) {
+                uint16_t aVal = 0; SafeReadMemory(playerBase + off - 2, &aVal, sizeof(aVal));
+                if ((aVal <= 2100) || aVal == 1000 || aVal == 2000) {
+                    outAOffset = off - 2; outAVal = aVal; outBOffset = off; outBVal = val; return true;
+                }
+            }
+        }
+        // A candidate pattern
+        if (val == 1000 || val == 2000) {
+            uint16_t bVal = 0; SafeReadMemory(playerBase + off + 2, &bVal, sizeof(bVal));
+            if (bVal == 3332 || bVal == 9999 || bVal <= 2100) {
+                outAOffset = off; outAVal = val; outBOffset = off + 2; outBVal = bVal; return true;
+            }
+        }
+        // F4 stepping heuristic: multiples of 5 rising towards 2000 while neighbor is 9999
+        if ((val % 5) == 0 && val <= 2000) {
+            uint16_t bVal = 0; SafeReadMemory(playerBase + off + 2, &bVal, sizeof(bVal));
+            if (bVal == 9999) { outAOffset = off; outAVal = val; outBOffset = off + 2; outBVal = bVal; return true; }
+        }
+        prevVal = val;
+    }
+    return false;
+}
+
 // Set IC Color values directly (similar to SetRFValuesDirect)
 bool SetICColorDirect(bool p1BlueIC, bool p2BlueIC) {
     uintptr_t base = GetEFZBase();
@@ -747,4 +897,14 @@ void SetRFFreezeColorDesired(int player, bool enabled, bool blueIC) {
         rfFreezeColorP2Enabled = enabled;
         rfFreezeColorP2Blue = blueIC;
     }
+}
+
+// Query whether RF freeze is actively managing IC color for a player
+bool IsRFFreezeColorManaging(int player) {
+    if (player == 1) {
+        return rfFreezeP1Active.load() && rfFreezeColorP1Enabled;
+    } else if (player == 2) {
+        return rfFreezeP2Active.load() && rfFreezeColorP2Enabled;
+    }
+    return false;
 }

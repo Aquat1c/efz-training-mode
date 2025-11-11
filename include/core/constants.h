@@ -36,6 +36,33 @@
 // IC (Instant Charge) color offset - 0=red IC, 1=blue IC
 #define IC_COLOR_OFFSET 0x120  // IC color offset from player base
 
+// -------------------------------------------------------------
+// Engine regeneration / recovery param copies (from decompile)
+// In the hotkey handler (F4/F5 logic) the battleContext fields
+// at offsets 1396/1398 (words) are copied into each player struct
+// at decimal offsets 12524 / 12526. (12524 = 0x30EC, 12526 = 0x30EE)
+// We only have direct access to the player bases, so we expose the
+// copy offsets here for read-only debug and gating heuristics.
+//  Param A (player + 0x30EC): cycles 1000 <-> 2000 via F5 or fine-tuned
+//                             0..2000 stepping +5 while F4 held.
+//  Param B (player + 0x30EE): becomes 3332 under one branch of F5 cycle,
+//                             forced to 9999 while F4 fine-tune active.
+// Heuristics used by UI:
+//   - Fine-tune active (F4 held)  : Param B == 9999 AND Param A not in {1000,2000}
+//   - Cycle / preset (F5 engaged) : Param A == 1000 or 2000 OR Param B == 3332
+//   - Normal                      : otherwise.
+// NOTE: These are observational; if future reverse engineering
+// refines semantics, update the detection in imgui_gui.cpp.
+// Decompile labels these as PLAYER_PARAM_A=12524 and PLAYER_PARAM_B=12526 (decimal)
+// 12524 dec = 0x30EC, 12526 dec = 0x30EE
+#define PLAYER_PARAM_A_COPY_OFFSET 0x30EC
+#define PLAYER_PARAM_B_COPY_OFFSET 0x30EE
+
+// System flags used by hotkey gating (from decompile)
+// sys + 4944 / 4948 were referenced as gate conditions blocking F4 fine-tune.
+#define SYS_FLAG_4944 4944
+#define SYS_FLAG_4948 4948
+
 // Character name offset
 #define CHARACTER_NAME_OFFSET 0x94  // Character name offset from player base
 
