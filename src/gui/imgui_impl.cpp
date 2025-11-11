@@ -1,5 +1,3 @@
-#include "../include/utils/utilities.h"
-
 #include "../include/gui/imgui_impl.h"
 #include "../include/utils/xinput_shim.h"
 #include "../include/core/logger.h"
@@ -15,6 +13,8 @@ namespace PracticeOverlayGate { void SetMenuVisible(bool); }
 #include "../include/utils/config.h"
 // Math helpers
 #include <cmath>
+// Hotkey cooldown
+#include "../include/input/input_handler.h"
 
 // XInput linked dynamically via XInputShim for Wine compatibility
 
@@ -740,6 +740,9 @@ namespace ImGuiImpl {
             // BUGFIX: Reset the global menuOpen flag when ImGui is closed
             // Use global namespace resolution operator (::) to access the global variable
             ::menuOpen.store(false);
+            
+            // Start hotkey cooldown to prevent accidental activation
+            StartHotkeyCooldown();
         }
 
         // Practice Pause integration: mirror EfzRevival pause when menu visible
