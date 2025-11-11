@@ -50,6 +50,9 @@ bool ReadKeyMappingsFromIni();
 bool ReadDirectInputKeyboardState(BYTE* keyboardState);
 void ShowEditDataDialog(HWND hParent); // Forward declaration for GUI function
 
+// Hotkey cooldown management (called when menu closes)
+void StartHotkeyCooldown();
+
 // Add these forward declarations at the top of the file (after existing includes)
 int MapEFZKeyToVK(unsigned short efzKey);
 extern std::atomic<int> frameCount;

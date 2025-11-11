@@ -48,6 +48,33 @@ LPDIRECTINPUTDEVICE8 g_pKeyboard = nullptr;
 bool g_directInputReadOnly = true;  // Default to read-only mode
 bool g_directInputAvailable = false;
 
+// Hotkey cooldown after menu closes
+static std::atomic<bool> g_hotkeyCooldownActive{false};
+static std::chrono::steady_clock::time_point g_menuClosedTime{};
+static constexpr double HOTKEY_COOLDOWN_SECONDS = 0.5;
+
+static bool IsHotkeyCooldownActive() {
+    if (!g_hotkeyCooldownActive.load(std::memory_order_relaxed)) {
+        return false;
+    }
+    auto now = std::chrono::steady_clock::now();
+    auto elapsed = std::chrono::duration<double>(now - g_menuClosedTime).count();
+    bool inCooldown = elapsed < HOTKEY_COOLDOWN_SECONDS;
+    
+    if (!inCooldown && g_hotkeyCooldownActive.load(std::memory_order_relaxed)) {
+        g_hotkeyCooldownActive.store(false, std::memory_order_relaxed);
+        LogOut("[INPUT] Hotkey cooldown expired", true);
+    }
+    
+    return inCooldown;
+}
+
+void StartHotkeyCooldown() {
+    g_menuClosedTime = std::chrono::steady_clock::now();
+    g_hotkeyCooldownActive.store(true, std::memory_order_relaxed);
+    LogOut("[INPUT] Menu closed - starting 0.5s hotkey cooldown", true);
+}
+
 int g_gamepadCount = 0;
 GamepadDevice g_gamepads[MAX_CONTROLLERS];
 extern void ResetFrameCounter();
@@ -337,6 +364,12 @@ void MonitorKeys() {
                 // Read config each frame so UI changes apply immediately
                 const auto &cgp = cfg; // alias
 
+                // Skip all hotkey processing if we're in cooldown period after menu close
+                if (IsHotkeyCooldownActive()) {
+                    prev = cur;
+                    return false;
+                }
+
                 bool handled = false;
                 // Process in priority order (single action per press)
                 // Unified menu toggle: gpToggleMenuButton now acts as open/close (ImGui preferred path)
@@ -458,6 +491,10 @@ void MonitorKeys() {
 
             // 3) Remaining keyboard-only actions
             if (!keyHandled) {
+                // Skip all hotkey processing if we're in cooldown period after menu close
+                if (IsHotkeyCooldownActive()) {
+                    // Do nothing - let cooldown expire
+                } else {
                 // New: configurable Swap Positions bindings (single key or chord)
                 {
                     const bool swapEnabled = cfg.swapCustomEnabled;
@@ -652,6 +689,7 @@ void MonitorKeys() {
                 }
                 keyHandled = true;
             }
+            } // End of cooldown check else block
             }
             // Developer motion-debug hotkeys removed
 
