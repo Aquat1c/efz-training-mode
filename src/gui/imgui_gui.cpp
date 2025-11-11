@@ -289,7 +289,7 @@ namespace ImGuiGui {
                 uint16_t engineParamA=0, engineParamB=0; EngineRegenMode regenMode = EngineRegenMode::Unknown;
                 bool gotParams = GetEngineRegenStatus(regenMode, engineParamA, engineParamB);
                 // Automatic Recovery control (top of section)
-                ImGui::SeparatorText("Automatic Recovery");
+                ImGui::SeparatorText("Automatic Recovery (F5)");
                 int curAutoIdx = 0; // Disabled
                 if (gotParams && regenMode == EngineRegenMode::F5_FullOrPreset) {
                     curAutoIdx = (engineParamB == 3332) ? 2 : 1; // 1=Full values (A==1000/2000), 2=FM values (B==3332)
