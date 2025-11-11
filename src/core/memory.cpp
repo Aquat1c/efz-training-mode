@@ -264,6 +264,66 @@ bool ReadEngineRegenParams(uint16_t& outParamA, uint16_t& outParamB) {
     outParamA = a; outParamB = b; return true;
 }
 
+// Write per-player copies of engine regen params (Param A/B) to both players.
+// Returns true if at least one player's params were written.
+bool WriteEngineRegenParams(uint16_t paramA, uint16_t paramB) {
+    uintptr_t base = GetEFZBase(); if (!base) return false;
+    uintptr_t p1PtrAddr = base + EFZ_BASE_OFFSET_P1;
+    uintptr_t p2PtrAddr = base + EFZ_BASE_OFFSET_P2;
+    uintptr_t p1Base = 0, p2Base = 0; bool any = false;
+    SafeReadMemory(p1PtrAddr, &p1Base, sizeof(p1Base));
+    SafeReadMemory(p2PtrAddr, &p2Base, sizeof(p2Base));
+    if (p1Base) {
+        any |= SafeWriteMemory(p1Base + PLAYER_PARAM_A_COPY_OFFSET, &paramA, sizeof(paramA));
+        any |= SafeWriteMemory(p1Base + PLAYER_PARAM_B_COPY_OFFSET, &paramB, sizeof(paramB));
+    }
+    if (p2Base) {
+        any |= SafeWriteMemory(p2Base + PLAYER_PARAM_A_COPY_OFFSET, &paramA, sizeof(paramA));
+        any |= SafeWriteMemory(p2Base + PLAYER_PARAM_B_COPY_OFFSET, &paramB, sizeof(paramB));
+    }
+    if (any) {
+        LogOut("[ENGINE][Regen] Wrote Param A/B: A=" + std::to_string((unsigned)paramA) + ", B=" + std::to_string((unsigned)paramB), detailedLogging.load());
+    }
+    return any;
+}
+
+// Force F5 preset: A=1000 or 2000, B=3332. Returns true if writes succeed.
+bool ForceEngineF5Preset(uint16_t presetA) {
+    if (presetA != 1000 && presetA != 2000) presetA = 1000;
+    uint16_t b = 3332;
+    bool ok = WriteEngineRegenParams(presetA, b);
+    // Kick our detection cooldown implicitly next frame; GetEngineRegenStatus will see A/B and mark F5
+    return ok;
+}
+
+// Force F5 "Full values": set HP to 9999 on both players and set params to a coherent F5-looking state.
+// We set A=1000 (so F5 is detected) and B=9999 (observed after A==2000 branch in engine); cadence is absent so not treated as F4.
+bool ForceEngineF5Full() {
+    uintptr_t base = GetEFZBase(); if (!base) return false;
+    uintptr_t p1Base = 0, p2Base = 0; bool any=false;
+    SafeReadMemory(base + EFZ_BASE_OFFSET_P1, &p1Base, sizeof(p1Base));
+    SafeReadMemory(base + EFZ_BASE_OFFSET_P2, &p2Base, sizeof(p2Base));
+    unsigned short hpFull = 9999;
+    if (p1Base) { any |= SafeWriteMemory(p1Base + HP_OFFSET, &hpFull, sizeof(hpFull)); }
+    if (p2Base) { any |= SafeWriteMemory(p2Base + HP_OFFSET, &hpFull, sizeof(hpFull)); }
+    // Mark params so our UI detects F5 and shows full state
+    WriteEngineRegenParams(1000, 9999);
+    LogOut("[ENGINE][Regen] Forced F5 Full: HP=9999, Params A=1000 B=9999", detailedLogging.load());
+    return any;
+}
+
+// Force F4 value: clamp to [0..2000], round to nearest multiple of 5, set B=9999.
+// Single write should produce a +5 cadence delta on next poll relative to previous A, engaging F4 heuristic.
+bool ForceEngineF4Value(uint16_t targetA) {
+    if (targetA > 2000) targetA = 2000;
+    // round to nearest multiple of 5 for authenticity
+    targetA = (uint16_t)((targetA + 2) / 5 * 5);
+    if (targetA > 2000) targetA = 2000;
+    uint16_t b = 9999;
+    bool ok = WriteEngineRegenParams(targetA, b);
+    return ok;
+}
+
 EngineRegenMode InferEngineRegenMode(uint16_t paramA, uint16_t paramB) {
     // F5 cycle sets A to 1000 or 2000 AND (at some point) B to 3332; it leaves B=3332 afterwards.
     bool f5Pattern = (paramA == 1000 || paramA == 2000 || paramB == 3332);

@@ -57,6 +57,8 @@ extern void SpamAttackButton(uintptr_t playerBase, uint8_t button, int frames, c
 namespace ImGuiGui {
     // Define static variable at namespace level
     static bool s_randomInputActive = false;
+    // Track current RF Recovery (F4) UI selection across frames for Apply gating (0=Disabled,1=Full,2=Custom)
+    static int g_f4UiMode = 0;
 
     // Action type mapping (same as in gui_auto_action.cpp)
     static const int ComboIndexToActionType[] = {
@@ -158,7 +160,7 @@ namespace ImGuiGui {
                     ImGui::SetNextItemWidth(200);
                     // Unlabeled combo; keep ID stable with a hidden label
                     if (ImGui::Combo("##RandomBlockMode", &abMode, abNames, 4)) { SetDummyAutoBlockMode(abMode); }
-                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("How the dummy blocks: Off / Block All / Block Only First Hit / Start Blocking After First Hit.\nRandom Block flips a coin each frame during the mode's ON window; OFF toggles are deferred while guarding.");
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("How the dummy blocks: Off / Block All / Block Only First Hit / Start Blocking After First Hit.\nRandom Block flips a coin each frame when it's turned ON.");
                     // After the combo: Random Block and Adaptive Stance checkboxes
                     bool randomBlock = RandomBlock::IsEnabled();
                     if (ImGui::Checkbox("Random Block", &randomBlock)) {
@@ -173,11 +175,11 @@ namespace ImGuiGui {
                             DirectDrawHook::AddMessage(std::string("Random Block: ") + (randomBlock ? "ON" : "OFF"), "RANDOM_BLOCK", RGB(220,200,255), 1500, 12, 108);
                         }
                     }
-                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Each frame flips a coin; 50% chance to set autoblock ON during the mode's ON window. OFF defers while guarding.");
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Each frame flips a coin; 50% chance to set autoblock ON during the mode's ON window.");
                     ImGui::SameLine();
                     bool adaptive = GetAdaptiveStanceEnabled();
                     if (ImGui::Checkbox("Adaptive stance", &adaptive)) { SetAdaptiveStanceEnabled(adaptive); }
-                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Auto pick high vs air attacks, low vs grounded attacks.");
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Auto pick high vs air attacks, low vs grounded attacks AND overheads.");
                 } else {
                     ImGui::BeginDisabled(); int dummyAB = 0; ImGui::Combo("##RandomBlockMode", &dummyAB, abNames, 4); if (ImGui::IsItemHovered()) ImGui::SetTooltip("How the dummy blocks: Off / Block All / Block Only First Hit / Start Blocking After First Hit.\nRandom Block flips a coin each frame during the mode's ON window; OFF toggles are deferred while guarding."); ImGui::EndDisabled();
                 }
@@ -195,7 +197,7 @@ namespace ImGuiGui {
                         DirectDrawHook::AddMessage(std::string("Always RG: ") + (alwaysRG ? "ON" : "OFF"), "ALWAYS_RG", RGB(200,220,255), 1500, 12, 72);
                     }
                 }
-                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Keeps the 10f Recoil Guard window always armed so the dummy will RG if possible.");
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("The dummy will RG if possible.");
 
                 ImGui::SameLine();
                 if (ImGui::Checkbox("Random RG", &randomRG)) {
@@ -208,7 +210,7 @@ namespace ImGuiGui {
                         DirectDrawHook::AddMessage(std::string("Random RG: ") + (randomRG ? "ON" : "OFF"), "RANDOM_RG", RGB(200,255,200), 1500, 12, 90);
                     }
                 }
-                if (ImGui::IsItemHovered()) ImGui::SetTooltip("EfzRevival parity: each frame flips a coin; 50% chance to arm RG window.");
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Flip a coint each time the dummy tries to block; 50% chance to RG the move.");
 
                 ImGui::SameLine();
                 bool crg = g_counterRGEnabled.load();
@@ -274,20 +276,6 @@ namespace ImGuiGui {
                     }
                 }
 
-                // When checking Frame Advantage via frame stepping in Practice, show step count here (no HUD spam)
-                if (GetCurrentGameMode() == GameMode::Practice) {
-                    FrameStepDebugInfo fs = GetFrameStepDebugInfo();
-                    if (fs.active && fs.steps >= 0) {
-                        ImGui::Separator();
-                        ImGui::TextDisabled("Frame Advantage check (paused):");
-                        ImGui::SameLine();
-                        ImGui::Text("Step advances: %d", fs.steps);
-                        if (ImGui::IsItemHovered()) {
-                            ImGui::SetTooltip("Counts frame-step presses since the FA timing window started.\nOnly updates while paused and FA timing is waiting.");
-                        }
-                    }
-                }
-
                 ImGui::EndTabItem();
             }
 
@@ -295,15 +283,112 @@ namespace ImGuiGui {
             ImGuiTabItemFlags _setVals = (rq == 1) ? ImGuiTabItemFlags_SetSelected : 0;
             if (ImGui::BeginTabItem("Values", nullptr, _setVals)) {
                 guiState.mainMenuSubTab = 1;
+                // Detect opening of the Values tab to resync dropdown defaults once
+                bool valuesJustOpened = ImGui::IsItemActivated();
                 // Read engine regen params for debug/gating using stateful inference to avoid false F4
                 uint16_t engineParamA=0, engineParamB=0; EngineRegenMode regenMode = EngineRegenMode::Unknown;
                 bool gotParams = GetEngineRegenStatus(regenMode, engineParamA, engineParamB);
-                // Lock entire Values when engine F5 cycle OR F4 fine-tune is active
+                // Automatic Recovery control (top of section)
+                ImGui::SeparatorText("Automatic Recovery");
+                int curAutoIdx = 0; // Disabled
+                if (gotParams && regenMode == EngineRegenMode::F5_FullOrPreset) {
+                    curAutoIdx = (engineParamB == 3332) ? 2 : 1; // 1=Full values (A==1000/2000), 2=FM values (B==3332)
+                }
+                int autoIdx = curAutoIdx;
+                const char* autoItems[] = { "Disabled", "Full values", "FM values (3332)" };
+                ImGui::SetNextItemWidth(260);
+                if (ImGui::Combo("##AutoRecoveryMode", &autoIdx, autoItems, IM_ARRAYSIZE(autoItems))) {
+                    // Apply immediately on change
+                    if (autoIdx == 0) {
+                        WriteEngineRegenParams(0, 0);
+                    } else if (autoIdx == 1) {
+                        // Full values: set HP to 9999 for both players and mark params coherently
+                        ForceEngineF5Full();
+                    } else if (autoIdx == 2) {
+                        // FM values: use explicit B=3332 path
+                        WriteEngineRegenParams(1000, 3332);
+                    }
+                }
+                ImGui::SameLine();
+                ImGui::TextDisabled("(applies immediately)");
+                // RF Recovery (F4) control (above manual values)
+                ImGui::Separator();
+                ImGui::SeparatorText("RF Recovery (F4)");
+                int curF4Idx = 0; // Disabled
+                if (gotParams && engineParamB == 9999) {
+                    curF4Idx = (engineParamA == 1000) ? 1 : 2; // 1=Full (Blue 1000), 2=Custom
+                }
+                static int s_f4ModeIdx = 0; // Disabled, Full, Custom
+                if (valuesJustOpened) { s_f4ModeIdx = curF4Idx; }
+                const char* f4Items[] = { "Disabled", "Full (Blue 1000)", "Custom" };
+                ImGui::SetNextItemWidth(260);
+                bool f5Active = (regenMode == EngineRegenMode::F5_FullOrPreset);
+                if (f5Active) ImGui::BeginDisabled();
+                int prevF4Idx = s_f4ModeIdx;
+                ImGui::Combo("##F4Mode", &s_f4ModeIdx, f4Items, IM_ARRAYSIZE(f4Items));
+                g_f4UiMode = s_f4ModeIdx; // persist selection for Apply gating
+                // Apply immediately on mode change
+                if (s_f4ModeIdx != prevF4Idx) {
+                    if (s_f4ModeIdx == 0) {
+                        // Clear B to disable recovery; zero A for clarity
+                        WriteEngineRegenParams(0, 0);
+                    } else if (s_f4ModeIdx == 1) {
+                        // Full RF on Blue gauge
+                        WriteEngineRegenParams(1000, 9999);
+                    }
+                }
+                if (s_f4ModeIdx == 2) {
+                    // Custom: choose Red/Blue and RF amount 0..1000, map to Param A, and set B=9999. Apply on any change.
+                    static bool s_f4Blue = false; // default Red
+                    static int s_f4RfAmount = 100; // 0..1000
+                    bool writeNow = false;
+                    ImGui::TextUnformatted("Color:"); ImGui::SameLine();
+                    bool wasBlue = s_f4Blue;
+                    if (ImGui::RadioButton("Red##F4", !s_f4Blue)) { s_f4Blue = false; }
+                    ImGui::SameLine(); if (ImGui::RadioButton("Blue##F4", s_f4Blue)) { s_f4Blue = true; }
+                    if (s_f4Blue != wasBlue) writeNow = true;
+                    ImGui::SetNextItemWidth(200);
+                    int rfPrev = s_f4RfAmount;
+                    if (ImGui::InputInt("RF amount (0..1000)", &s_f4RfAmount)) {
+                        if (s_f4RfAmount < 0) s_f4RfAmount = 0; else if (s_f4RfAmount > 1000) s_f4RfAmount = 1000;
+                        if (s_f4RfAmount != rfPrev) writeNow = true;
+                    }
+                    if (prevF4Idx != 2) writeNow = true;
+                    if (writeNow) {
+                        int rf = s_f4RfAmount;
+                        uint16_t a = 0;
+                        if (!s_f4Blue) {
+                            // Red: A = RF (0..999)
+                            if (rf > 999) rf = 999;
+                            a = (uint16_t)rf;
+                        } else {
+                            // Blue: A = (rf==1000 ? 1000 : 2000 - rf)
+                            a = (rf >= 1000) ? 1000 : (uint16_t)(2000 - rf);
+                        }
+                        WriteEngineRegenParams(a, 9999);
+                    }
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Type a value or use arrows to set RF recovery amount (0-999 for Red, 1000 - Blue \n If <1000 and Blue is selected - will make the gauge blue with the said values).");
+                }
+                if (f5Active) {
+                    ImGui::EndDisabled();
+                    ImGui::SameLine();
+                    ImGui::TextDisabled("(disabled: Automatic Recovery enabled)");
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Disable Automatic Recovery to adjust RF Recovery (F4).");
+                }
+                
+                // Track if F4 is actively controlling values (anything except Disabled)
+                bool f4Active = (s_f4ModeIdx != 0);
+                ImGui::SameLine();
+                ImGui::TextDisabled("(also maxes out HP and Meter)");
+                // Lock entire Values when engine F5 cycle OR F4 fine-tune is active, or when user selected F4 mode != Disabled
                 bool engineLocksValues = (regenMode == EngineRegenMode::F5_FullOrPreset) || (regenMode == EngineRegenMode::F4_FineTuneActive);
                 // Continuous Recovery global lock: if either player has any active CR target (hp/meter/rf)
                 bool crAny = (guiState.localData.p1ContinuousRecoveryEnabled && (guiState.localData.p1RecoveryHpMode>0 || guiState.localData.p1RecoveryMeterMode>0 || guiState.localData.p1RecoveryRfMode>0)) ||
                               (guiState.localData.p2ContinuousRecoveryEnabled && (guiState.localData.p2RecoveryHpMode>0 || guiState.localData.p2RecoveryMeterMode>0 || guiState.localData.p2RecoveryRfMode>0));
-                bool globalValuesLocked = engineLocksValues || crAny;
+                bool globalValuesLocked = engineLocksValues || crAny || f4Active;
+                // Distinct section for manual values below F4/F5
+                ImGui::Separator();
+                ImGui::SeparatorText("Manual Values");
                 if (globalValuesLocked) ImGui::BeginDisabled();
                 if (ImGui::BeginTable("values_table", 3, ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_SizingStretchProp)) {
                     // Compute a compact label column width based on the longest label text
@@ -1099,7 +1184,7 @@ namespace ImGuiGui {
                 bool empty = MacroController::IsSlotEmpty(MacroController::GetCurrentSlot());
                 ImGui::Text("Slot Empty: %s", empty ? "Yes" : "No");
                 // Debug stats for validation
-                {
+                /*{
                     auto stats = MacroController::GetSlotStats(MacroController::GetCurrentSlot());
                     ImGui::SeparatorText("Slot Stats");
                     ImGui::BulletText("Spans: %d", stats.spanCount);
@@ -1108,7 +1193,7 @@ namespace ImGuiGui {
                     ImGui::BulletText("Buf Idx Start: %u", (unsigned)stats.bufStartIdx);
                     ImGui::BulletText("Buf Idx End: %u", (unsigned)stats.bufEndIdx);
                     ImGui::BulletText("Has Data: %s", stats.hasData ? "Yes" : "No");
-                }
+                }*/
                 if (ImGui::Button("Toggle Record")) { MacroController::ToggleRecord(); }
                 ImGui::SameLine();
                 if (ImGui::Button("Play")) { MacroController::Play(); }
@@ -1532,8 +1617,8 @@ namespace ImGuiGui {
             case CHAR_ID_MISAKI:   return "Misaki_Kawana";
             case CHAR_ID_MISHIO:   return "Mishio_Amano";
             case CHAR_ID_MISUZU:   return "Misuzu_Kamio";
-            case CHAR_ID_MIZUKA:   return "Mizuka_Nagamori";   // Mizuka
-            case CHAR_ID_NAGAMORI: return "Mizuka_Nagamori";   // Nagamori maps to same page
+            case CHAR_ID_MIZUKA:   return "UNKNOWN";   // UNKNOWN(Boss)
+            case CHAR_ID_NAGAMORI: return "Mizuka_Nagamori";   // 
             case CHAR_ID_NANASE:   return "Rumi_Nanase";       // Rumi
             case CHAR_ID_SAYURI:   return "Sayuri_Kurata";
             case CHAR_ID_SHIORI:   return "Shiori_Misaka";

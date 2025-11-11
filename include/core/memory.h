@@ -49,6 +49,15 @@ bool DebugScanRegenParamWindow(uintptr_t playerBase, uint32_t& outAOffset, uint1
 // Derive RF and gauge color from Param A (engine regen parameter)
 bool DeriveRfFromParamA(uint16_t paramA, float& rfValue, bool& isBlueIC);
 
+// Write engine regen params (per-player copies). Returns true on success.
+bool WriteEngineRegenParams(uint16_t paramA, uint16_t paramB);
+// Force F5 Automatic Regeneration preset (A=1000 or 2000, B=3332)
+bool ForceEngineF5Preset(uint16_t presetA);
+// Force F5 "Full values" effect: set HP to 9999 for both players and mark params coherently
+bool ForceEngineF5Full();
+// Force F4 RF Recovery value (A in 0..2000 step 5 recommended, B=9999)
+bool ForceEngineF4Value(uint16_t targetA);
+
 // Add these for position save/load
 void SavePlayerPositions(uintptr_t base);
 void LoadPlayerPositions(uintptr_t base);
