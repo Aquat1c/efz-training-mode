@@ -1,5 +1,6 @@
 #pragma once
 #include <windows.h>
+#include <cstdint>
 
 // Function to read player inputs
 uint8_t GetPlayerInputs(int playerNum);
@@ -19,6 +20,34 @@ bool PatchMemory(uintptr_t address, const char* bytes, size_t length);
 bool NopMemory(uintptr_t address, size_t length);
 bool SetRFValuesDirect(double p1RF, double p2RF);
 bool SetICColorDirect(bool p1BlueIC, bool p2BlueIC);
+// Query if RF freeze is currently enforcing IC color for a player (returns true if freeze active AND color lock enabled)
+bool IsRFFreezeColorManaging(int player);
+
+// Engine regen (F4/F5) parameter accessors and inference
+enum class EngineRegenMode {
+	Unknown = 0,
+	Normal,
+	F5_FullOrPreset,   // Any F5-driven preset/cycle observed (A==1000/2000 or B==3332)
+	F4_FineTuneActive  // Heuristic: B==9999 and A stepping not at defaults
+};
+
+// Read per-player copies of engine params (copied from battleContext each tick)
+// Returns true if both reads succeeded; values are 16-bit words.
+bool ReadEngineRegenParams(uint16_t& outParamA, uint16_t& outParamB);
+
+// Infer current engine-managed regen mode from param A/B
+EngineRegenMode InferEngineRegenMode(uint16_t paramA, uint16_t paramB);
+
+// Convenience: true when engine regen likely to override manual HP/Meter/RF writes
+bool IsEngineRegenLikelyActive();
+// Stateful inference with history and cooldown to avoid false F4 after F5 cycles
+// Returns true if params were read; fills outMode and the latest A/B.
+bool GetEngineRegenStatus(EngineRegenMode& outMode, uint16_t& outParamA, uint16_t& outParamB);
+// Debug deep scan: attempt to locate Param A/B dynamically within a window if offsets drift.
+// Returns true if a plausible pair is found; outputs offsets & values.
+bool DebugScanRegenParamWindow(uintptr_t playerBase, uint32_t& outAOffset, uint16_t& outAVal, uint32_t& outBOffset, uint16_t& outBVal);
+// Derive RF and gauge color from Param A (engine regen parameter)
+bool DeriveRfFromParamA(uint16_t paramA, float& rfValue, bool& isBlueIC);
 
 // Add these for position save/load
 void SavePlayerPositions(uintptr_t base);
