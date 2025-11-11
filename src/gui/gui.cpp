@@ -182,16 +182,24 @@ void ApplySettings(DisplayData* data) {
         // Update the client memory
         uintptr_t base = GetEFZBase();
         if (base) {
-            // Update everything EXCEPT RF values
-            UpdatePlayerValuesExceptRF(base, EFZ_BASE_OFFSET_P1, EFZ_BASE_OFFSET_P2);
+            // Re-check engine regen status: when F4 recovery is active, skip manual value pushes
+            uint16_t pA=0, pB=0; EngineRegenMode regenMode = EngineRegenMode::Unknown;
+            bool got = GetEngineRegenStatus(regenMode, pA, pB);
+            bool f4ActiveNow = got && (pB == 9999);
+            if (!f4ActiveNow) {
+                // Update everything EXCEPT RF values
+                UpdatePlayerValuesExceptRF(base, EFZ_BASE_OFFSET_P1, EFZ_BASE_OFFSET_P2);
+            }
             
             // Add this line to apply character-specific values
             CharacterSettings::ApplyCharacterValues(base, *data);
             
-            // Handle RF values separately using the robust method
-            if (!SetRFValuesDirect(data->rf1, data->rf2)) {
-                LogOut("[GUI] Failed to set RF values directly, starting freeze thread", true);
-                StartRFFreeze(data->rf1, data->rf2);
+            // Handle RF values separately using the robust method, but not while F4 recovery is active
+            if (!f4ActiveNow) {
+                if (!SetRFValuesDirect(data->rf1, data->rf2)) {
+                    LogOut("[GUI] Failed to set RF values directly, starting freeze thread", true);
+                    StartRFFreeze(data->rf1, data->rf2);
+                }
             }
         }
 
