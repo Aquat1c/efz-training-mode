@@ -109,11 +109,21 @@ static const uintptr_t POLL_INPUT_STATE_FUNC_OFFSET = 0x0CD00;
 
 // Vanilla-only input routing swap flag
 static std::atomic<bool> g_swapVanillaRouting{false};
+static std::atomic<bool> g_loggedRoutingStateOnce{false};
 static inline bool RevivalLoaded() { return GetModuleHandleA("EfzRevival.dll") != nullptr; }
 void SetVanillaSwapInputRouting(bool enable) {
-    g_swapVanillaRouting.store(enable, std::memory_order_relaxed);
-    std::ostringstream oss; oss << "[INPUT_HOOK] Vanilla routing swap " << (enable?"ENABLED":"DISABLED");
-    LogOut(oss.str(), true);
+    bool prev = g_swapVanillaRouting.load(std::memory_order_relaxed);
+    if (prev != enable) {
+        g_swapVanillaRouting.store(enable, std::memory_order_relaxed);
+        std::ostringstream oss; oss << "[INPUT_HOOK] Vanilla routing swap " << (enable?"ENABLED":"DISABLED");
+        LogOut(oss.str(), true);
+    } else {
+        // If the state hasn't changed, log this condition at most once globally
+        if (!g_loggedRoutingStateOnce.exchange(true, std::memory_order_relaxed)) {
+            std::ostringstream oss; oss << "[INPUT_HOOK] Vanilla routing swap " << (enable?"ENABLED":"DISABLED");
+            LogOut(oss.str(), true);
+        }
+    }
 }
 
 // Our poll hook. Use __fastcall to match __thiscall trampoline signature.

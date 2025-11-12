@@ -9,6 +9,7 @@
 
 #include "../include/core/constants.h"
 #include "../include/utils/utilities.h"
+#include "../include/utils/network.h"
 
 #include "../include/game/practice_patch.h"
 #include "../include/gui/overlay.h"
@@ -25,7 +26,8 @@
 #include "../include/game/frame_analysis.h"
 
 // Define constants for offsets
-const uintptr_t P2_CPU_FLAG_OFFSET = 4931;
+// P2 is always on the RIGHT side spatially
+const uintptr_t P2_CPU_FLAG_OFFSET = 4932; // RIGHT side shutter (P2's spatial position)
 const uintptr_t PRACTICE_BLOCK_MODE_OFFSET = 4934;   // 0..2
 const uintptr_t PRACTICE_AUTO_BLOCK_OFFSET = 4936;   // dword, 0/1
 
@@ -528,6 +530,10 @@ bool DisablePlayer2InPracticeMode() {
 
 // Ensure P1 is player-controlled and P2 is AI-controlled at match start
 void EnsureDefaultControlFlagsOnMatchStart() {
+    // Only modify control flags in offline Practice mode
+    if (GetCurrentGameMode() != GameMode::Practice) return;
+    if (DetectOnlineMatch()) return;
+    
     uintptr_t efzBase = GetEFZBase();
     if (!efzBase) {
         LogOut("[PRACTICE_PATCH] EnsureDefaultControlFlagsOnMatchStart: EFZ base missing", true);
@@ -609,6 +615,7 @@ bool GetPracticeAutoBlockEnabled(bool &enabledOut) {
 
 bool SetPracticeAutoBlockEnabled(bool enabled, const char* reason) {
     if (GetCurrentGameMode() != GameMode::Practice) return false;
+    if (DetectOnlineMatch()) return false;
     uintptr_t gs = 0; if (!GetGameStatePtr(gs)) return false;
     uint32_t val = enabled ? 1u : 0u;
     // Read current to avoid redundant writes/logs
@@ -641,6 +648,7 @@ bool GetPracticeBlockMode(int &modeOut) {
 
 bool SetPracticeBlockMode(int mode) {
     if (GetCurrentGameMode() != GameMode::Practice) return false;
+    if (DetectOnlineMatch()) return false;
     if (mode < 0) mode = 0; if (mode > 2) mode = 2;
     uintptr_t gs = 0; if (!GetGameStatePtr(gs)) return false;
     // Avoid redundant writes
@@ -989,7 +997,10 @@ static inline bool DidP2JustBlockThisFrame(short prevMoveId, short currMoveId) {
 
 // Core per-frame monitor; call from frame monitor after move IDs are read
 void MonitorDummyAutoBlock(short p1MoveID, short p2MoveID, short prevP1MoveID, short prevP2MoveID) {
+    // Only operate in offline Practice mode
     if (GetCurrentGameMode() != GameMode::Practice) return;
+    if (DetectOnlineMatch()) return;
+    
     // Clear override when we return to Character Select (follow game's flag until user changes)
     static GamePhase s_lastPhase = GamePhase::Unknown;
     GamePhase phaseNow = GetCurrentGamePhase();

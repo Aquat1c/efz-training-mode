@@ -12,6 +12,7 @@
 #include "../include/utils/network.h" // GetEfzRevivalVersion
 #include "../include/utils/debug_log.h"
 #include <windows.h>
+#include <atomic>
 #include <sstream>
 #include <iomanip>
 
@@ -19,6 +20,24 @@ namespace {
     // Simple presence check for EfzRevival
     static inline bool IsRevivalLoaded() {
         return GetModuleHandleA("EfzRevival.dll") != nullptr;
+    }
+    // Track whether sides were swapped during the current match
+    static std::atomic<bool> s_sidesAreSwapped{false};
+    
+    // Character Select–scoped log suppression for missing Practice controller during menu resets
+    static std::atomic<bool> s_csActive{false};
+    static std::atomic<bool> s_loggedNoPracticeThisCS{false};
+    // Global once-only logging guard for missing Practice controller during menu mapping reset
+    static std::atomic<bool> s_loggedNoPracticeEver{false};
+    static inline void UpdateCsCycleState() {
+        const bool cs = IsInCharacterSelectScreen();
+        if (cs) {
+            if (!s_csActive.exchange(true, std::memory_order_relaxed)) {
+                s_loggedNoPracticeThisCS.store(false, std::memory_order_relaxed);
+            }
+        } else {
+            s_csActive.store(false, std::memory_order_relaxed);
+        }
     }
     // Dump a region of memory as hex for detailed analysis
     static void DumpMemoryRegion(const char* label, uintptr_t address, size_t size) {
@@ -216,6 +235,10 @@ namespace {
     // Resolve Practice pointer directly from EfzRevival's game-mode array as a fallback
     // when hooks haven't captured ECX yet. Index 3 corresponds to Practice.
     static uint8_t* ResolvePracticePtrFallback() {
+        // Gate scanning strictly: Practice mode only, offline only, and never during Character Select
+        if (IsInCharacterSelectScreen()) return nullptr;
+        if (GetCurrentGameMode() != GameMode::Practice) return nullptr;
+        if (DetectOnlineMatch() || isOnlineMatch.load(std::memory_order_relaxed)) return nullptr;
         HMODULE h = GetModuleHandleA("EfzRevival.dll");
         if (!h) return nullptr;
         uintptr_t base = reinterpret_cast<uintptr_t>(h);
@@ -414,7 +437,7 @@ namespace {
     // We don't call into that function directly; instead emulate minimum safe state:
     // In practice, flipping LOCAL/REMOTE and swapping the two side buffer pointers suffices for input routing.
     // If further fixes are needed, we can introduce a lightweight refresh by touching the shared input vector.
-    void PostSwitchRefresh(uint8_t* practice) {
+    void PostSwitchRefresh(uint8_t* practice, int explicitLocal = -1) {
         DebugLog::Write("--- POST SWITCH REFRESH BEGIN ---");
         
         // Attempt to use the official helpers first (works across e/h/i):
@@ -425,10 +448,15 @@ namespace {
                 DebugLog::Write("PostSwitchRefresh: practice is NULL");
                 break;
             }
-            // Resolve local side
+            // Resolve local side (use explicit if provided, otherwise read from memory)
             int local = -1;
-            (void)SafeReadMemory((uintptr_t)practice + PRACTICE_OFF_LOCAL_SIDE_IDX, &local, sizeof(local));
-            DebugLog::LogRead("PostSwitchRefresh: local side", (uintptr_t)practice + PRACTICE_OFF_LOCAL_SIDE_IDX, local);
+            if (explicitLocal >= 0 && explicitLocal <= 1) {
+                local = explicitLocal;
+                DebugLog::Write("PostSwitchRefresh: using explicit local=" + std::to_string(local));
+            } else {
+                (void)SafeReadMemory((uintptr_t)practice + PRACTICE_OFF_LOCAL_SIDE_IDX, &local, sizeof(local));
+                DebugLog::LogRead("PostSwitchRefresh: local side", (uintptr_t)practice + PRACTICE_OFF_LOCAL_SIDE_IDX, local);
+            }
             if (local != 0 && local != 1) {
                 DebugLog::Write("PostSwitchRefresh: invalid local side value");
                 break;
@@ -467,7 +495,11 @@ namespace {
         // Fallback: legacy emulation used previously (swap buffers, touch shared vector) if official path isn't available
         // Mirror init: sub_1006D640((char **)(this + 8 * (*[this+0x680] + 104)))
         int local = 0;
-    if (!SafeReadMemory((uintptr_t)practice + EFZ_Practice_LocalSideOffset(), &local, sizeof(local))) return;
+        if (explicitLocal >= 0 && explicitLocal <= 1) {
+            local = explicitLocal;
+        } else if (!SafeReadMemory((uintptr_t)practice + EFZ_Practice_LocalSideOffset(), &local, sizeof(local))) {
+            return;
+        }
         uintptr_t efzrevBase = (uintptr_t)GetModuleHandleA("EfzRevival.dll");
         if (!efzrevBase) return;
         EfzRevivalVersion ver = GetEfzRevivalVersion();
@@ -943,7 +975,12 @@ namespace SwitchPlayers {
             uintptr_t gs = 0; if (!SafeReadMemory(efzBase + EFZ_BASE_OFFSET_GAME_STATE, &gs, sizeof(gs)) || !gs) return false;
             uint8_t curActive = 0; SafeReadMemory(gs + GAMESTATE_OFF_ACTIVE_PLAYER, &curActive, sizeof(curActive));
             int desired = (curActive == 0) ? 1 : 0;
-            return ApplyEngineOnlySet(desired);
+            bool success = ApplyEngineOnlySet(desired);
+            if (success) {
+                s_sidesAreSwapped.store(true, std::memory_order_relaxed);
+                LogOut("[SWITCH] Toggle succeeded - sides now swapped (flag set)", true);
+            }
+            return success;
         }
         PauseIntegration::EnsurePracticePointerCapture();
         void* p = PauseIntegration::GetPracticeControllerPtr();
@@ -958,7 +995,12 @@ namespace SwitchPlayers {
                 if (!SafeReadMemory(efzBase + EFZ_BASE_OFFSET_GAME_STATE, &gs, sizeof(gs)) || !gs) return false;
                 uint8_t curActive=0; SafeReadMemory(gs + GAMESTATE_OFF_ACTIVE_PLAYER, &curActive, sizeof(curActive));
                 int desired = (curActive == 0) ? 1 : 0;
-                return ApplyEngineOnlySet(desired);
+                bool success = ApplyEngineOnlySet(desired);
+                if (success) {
+                    s_sidesAreSwapped.store(true, std::memory_order_relaxed);
+                    LogOut("[SWITCH] Toggle succeeded (fallback) - sides now swapped (flag set)", true);
+                }
+                return success;
             }
             LogOut("[SWITCH] Practice pointer resolved via fallback (GameModePtrArray)", true);
             p = fb;
@@ -966,7 +1008,12 @@ namespace SwitchPlayers {
         uint8_t* practice = reinterpret_cast<uint8_t*>(p);
     int curLocal = 0; if (!SafeReadMemory((uintptr_t)practice + EFZ_Practice_LocalSideOffset(), &curLocal, sizeof(curLocal))) return false;
         int desired = (curLocal == 0) ? 1 : 0;
-        return ApplySet(practice, desired);
+        bool success = ApplySet(practice, desired);
+        if (success) {
+            s_sidesAreSwapped.store(true, std::memory_order_relaxed);
+            LogOut("[SWITCH] Toggle succeeded - sides now swapped (flag set)", true);
+        }
+        return success;
     }
 
     bool SetLocalSide(int sideIdx) {
@@ -994,6 +1041,11 @@ namespace SwitchPlayers {
     }
 
     bool ResetControlMappingForMenusToP1() {
+        // Only operate in Practice mode
+        if (GetCurrentGameMode() != GameMode::Practice) return false;
+        
+        // Prevent repeated logs per Character Select instance
+        UpdateCsCycleState();
         // Vanilla: ensure routing swap is disabled
         SetVanillaSwapInputRouting(false);
 
@@ -1011,21 +1063,101 @@ namespace SwitchPlayers {
             practice = ResolvePracticePtrFallback();
         }
         if (!practice) {
-            LogOut("[SWITCH][MENU] Practice controller not available; only vanilla routing reset applied", true);
+            // Log only once per CS instance
+            bool firstThisCS = !s_loggedNoPracticeThisCS.exchange(true, std::memory_order_relaxed);
+            if (firstThisCS) {
+                if (!s_loggedNoPracticeEver.exchange(true, std::memory_order_relaxed)) {
+                    LogOut("[SWITCH][MENU] Practice controller not available; only vanilla routing reset applied", true);
+                }
+            }
             return false;
         }
 
-        // Write local/remote indices directly (avoid touching engine CPU flags)
-        int local = 0, remote = 1;
-        (void)SafeWriteMemory((uintptr_t)practice + EFZ_Practice_LocalSideOffset(), &local, sizeof(local));
-        (void)SafeWriteMemory((uintptr_t)practice + EFZ_Practice_RemoteSideOffset(), &remote, sizeof(remote));
-        // Align GUI_POS: 1 when P1 local
-        uint8_t guiPos = 1u; (void)SafeWriteMemory((uintptr_t)practice + PRACTICE_OFF_GUI_POS, &guiPos, sizeof(guiPos));
+        // Check if already at default state (local=0, remote=1, GUI_POS=1)
+        int currentLocal = -1, currentRemote = -1;
+        uint8_t currentGuiPos = 0xFF;
+        SafeReadMemory((uintptr_t)practice + EFZ_Practice_LocalSideOffset(), &currentLocal, sizeof(currentLocal));
+        SafeReadMemory((uintptr_t)practice + EFZ_Practice_RemoteSideOffset(), &currentRemote, sizeof(currentRemote));
+        SafeReadMemory((uintptr_t)practice + PRACTICE_OFF_GUI_POS, &currentGuiPos, sizeof(currentGuiPos));
+        
+        bool practiceStateIsDefault = (currentLocal == 0 && currentRemote == 1 && currentGuiPos == 1);
+        
+        // Also check engine CPU flags to see if they match the default Practice mapping
+        bool engineFlagsNeedReset = false;
+        uintptr_t efzBase = GetEFZBase();
+        if (efzBase) {
+            uintptr_t gameStatePtr = 0;
+            if (SafeReadMemory(efzBase + EFZ_BASE_OFFSET_GAME_STATE, &gameStatePtr, sizeof(gameStatePtr)) && gameStatePtr) {
+                uint8_t p1Cpu = 0xFF, p2Cpu = 0xFF;
+                SafeReadMemory(gameStatePtr + GAMESTATE_OFF_P1_CPU_FLAG, &p1Cpu, sizeof(p1Cpu));
+                SafeReadMemory(gameStatePtr + GAMESTATE_OFF_P2_CPU_FLAG, &p2Cpu, sizeof(p2Cpu));
+                // Default Practice mapping: P1 human (0), P2 CPU (1)
+                engineFlagsNeedReset = (p1Cpu != 0 || p2Cpu != 1);
+            }
+        }
+        
+        // Check if sides were actually swapped during match using tracking flag
+        bool sidesWereSwapped = s_sidesAreSwapped.load(std::memory_order_relaxed);
+        
+        if (practiceStateIsDefault && !engineFlagsNeedReset && !sidesWereSwapped) {
+            // Already at default and no swap occurred; no need to refresh
+            // Clear flag just in case (shouldn't be set, but defensive programming)
+            s_sidesAreSwapped.store(false, std::memory_order_relaxed);
+            static std::atomic<bool> s_loggedAlreadyDefault{false};
+            if (!s_loggedAlreadyDefault.exchange(true, std::memory_order_relaxed)) {
+                LogOut("[SWITCH][MENU] Already at default P1 local mapping; skipping refresh", true);
+            }
+            return true;
+        }
 
-        // Refresh mapping to ensure the input pair aligns with new local side
-        PostSwitchRefresh(practice);
+        // If sides were swapped during match, need full PostSwitchRefresh to restore input routing
+        if (sidesWereSwapped) {
+            // Sides were swapped during match - need full PostSwitchRefresh to restore
+            LogOut("[SWITCH][MENU] Sides were swapped during match; performing full reset via PostSwitchRefresh", true);
+            
+            // Write local/remote indices first
+            int local = 0, remote = 1;
+            (void)SafeWriteMemory((uintptr_t)practice + EFZ_Practice_LocalSideOffset(), &local, sizeof(local));
+            (void)SafeWriteMemory((uintptr_t)practice + EFZ_Practice_RemoteSideOffset(), &remote, sizeof(remote));
+            uint8_t guiPos = 1u; 
+            (void)SafeWriteMemory((uintptr_t)practice + PRACTICE_OFF_GUI_POS, &guiPos, sizeof(guiPos));
+            
+            // Call PostSwitchRefresh to physically restore input routing
+            PostSwitchRefresh(practice, /*explicitLocal=*/0);
+            
+            // Also restore engine CPU flags to default Practice state (P1=human, P2=CPU)
+            if (efzBase) {
+                uintptr_t gameStatePtr = 0;
+                if (SafeReadMemory(efzBase + EFZ_BASE_OFFSET_GAME_STATE, &gameStatePtr, sizeof(gameStatePtr)) && gameStatePtr) {
+                    uint8_t p1Human = 0, p2Cpu = 1;
+                    SafeWriteMemory(gameStatePtr + GAMESTATE_OFF_P1_CPU_FLAG, &p1Human, sizeof(p1Human));
+                    SafeWriteMemory(gameStatePtr + GAMESTATE_OFF_P2_CPU_FLAG, &p2Cpu, sizeof(p2Cpu));
+                    LogOut("[SWITCH][MENU] Restored CPU flags after swap: P1=0(human), P2=1(CPU)", true);
+                }
+            }
+            
+            // Clear the swap flag since we've restored default state
+            s_sidesAreSwapped.store(false, std::memory_order_relaxed);
+            
+            LogOut("[SWITCH][MENU] Reset mapping for menus: local=P1, remote=P2, GUI_POS=1 (with input swap, flag cleared)", true);
+            return true;
+        }
 
-        LogOut("[SWITCH][MENU] Reset mapping for menus: local=P1, remote=P2, GUI_POS=1", true);
+        // Practice state is default but engine flags need fixing - just write the flags
+        if (engineFlagsNeedReset && efzBase) {
+            uintptr_t gameStatePtr = 0;
+            if (SafeReadMemory(efzBase + EFZ_BASE_OFFSET_GAME_STATE, &gameStatePtr, sizeof(gameStatePtr)) && gameStatePtr) {
+                uint8_t p1Human = 0, p2Cpu = 1;
+                SafeWriteMemory(gameStatePtr + GAMESTATE_OFF_P1_CPU_FLAG, &p1Human, sizeof(p1Human));
+                SafeWriteMemory(gameStatePtr + GAMESTATE_OFF_P2_CPU_FLAG, &p2Cpu, sizeof(p2Cpu));
+                LogOut("[SWITCH][MENU] Fixed engine CPU flags without input swap", true);
+            }
+        }
+
         return true;
+    }
+
+    void ClearSwapFlag() {
+        s_sidesAreSwapped.store(false, std::memory_order_relaxed);
     }
 }

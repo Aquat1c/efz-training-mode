@@ -11,4 +11,6 @@ namespace SwitchPlayers {
     // - For vanilla: disable swapped routing (P1 controls -> P1)
     // Does NOT touch engine CPU flags (+4931/+4932) or active player (+4930)
     bool ResetControlMappingForMenusToP1();
+    // Clear the swap tracking flag (called at match start and CS entry)
+    void ClearSwapFlag();
 }

@@ -32,6 +32,13 @@ namespace {
     std::atomic<bool> s_menuVisible{false};
     std::atomic<void*> s_practicePtr{nullptr};
     std::atomic<bool> s_practiceHooksInstalled{false};
+    // Global once-only guard for verbose candidate validation log
+    std::atomic<bool> s_loggedValidateOnce{false};
+    // Character Select scoped suppression for noisy scan failures
+    std::atomic<bool> s_csActive{false};
+    std::atomic<bool> s_scanSuppressedThisCS{false};
+    // Global once-only logging guard for heuristic scan failure
+    std::atomic<bool> s_loggedScanFailOnce{false};
 
     // Official pause ownership: did WE invoke the real toggle (sub_10075720) when opening the menu?
     std::atomic<bool> s_weUsedOfficialToggle{false};
@@ -57,12 +64,15 @@ namespace {
         if (!cand) return false;
         EfzRevivalVersion ver = GetEfzRevivalVersion();
         {
-            std::ostringstream oss; oss << "[PAUSE] Validate candidate=0x" << std::hex << cand
-                << " ver=" << (EfzRevivalVersionName(ver) ? EfzRevivalVersionName(ver) : "?")
-                << " localOff=0x" << PRACTICE_OFF_LOCAL_SIDE_IDX
-                << " remoteOff=0x" << PRACTICE_OFF_REMOTE_SIDE_IDX
-                << " pauseOff=0x" << EFZ_Practice_PauseFlagOffset();
-            LogOut(oss.str(), detailedLogging.load());
+            // Print this verbose diagnostic only once globally to avoid spam
+            if (!s_loggedValidateOnce.exchange(true, std::memory_order_relaxed)) {
+                std::ostringstream oss; oss << "[PAUSE] Validate candidate=0x" << std::hex << cand
+                    << " ver=" << (EfzRevivalVersionName(ver) ? EfzRevivalVersionName(ver) : "?")
+                    << " localOff=0x" << PRACTICE_OFF_LOCAL_SIDE_IDX
+                    << " remoteOff=0x" << PRACTICE_OFF_REMOTE_SIDE_IDX
+                    << " pauseOff=0x" << EFZ_Practice_PauseFlagOffset();
+                LogOut(oss.str(), detailedLogging.load());
+            }
         }
         int local = -1;
         uint8_t pauseFlag = 0xFF;
@@ -118,13 +128,28 @@ namespace {
 
     // Heuristic scan: iterate a small range of mode slots to find a struct that looks like Practice by invariants.
     bool TryResolvePracticePtrByScan(void*& outPtr) {
+        // Gate scanning strictly: Practice mode only, offline only, and never during Character Select
+        if (IsInCharacterSelectScreen()) {
+            return false;
+        }
+        GameMode mode = GetCurrentGameMode();
+        if (mode != GameMode::Practice) {
+            return false;
+        }
+        if (DetectOnlineMatch() || isOnlineMatch.load(std::memory_order_relaxed)) {
+            return false;
+        }
+        // If we've already failed once during the current Character Select, skip further scans/logs
+        if (IsInCharacterSelectScreen() && s_scanSuppressedThisCS.load(std::memory_order_relaxed)) {
+            return false;
+        }
         HMODULE hRev = GetModuleHandleA("EfzRevival.dll");
         if (!hRev) return false;
         auto base = reinterpret_cast<uintptr_t>(hRev);
-        uintptr_t gm = EFZ_RVA_GameModePtrArray();
-        if (!gm) return false;
+        uintptr_t gmArrayRva = EFZ_RVA_GameModePtrArray();
+        if (!gmArrayRva) return false;
         for (int idx = 0; idx < 16; ++idx) {
-            uintptr_t slotAddr = base + gm + 4 * idx;
+            uintptr_t slotAddr = base + gmArrayRva + 4 * idx;
             uintptr_t cand = 0;
             if (!SafeReadMemory(slotAddr, &cand, sizeof(cand)) || !cand) continue;
             if (ValidatePracticeCandidate(cand)) {
@@ -134,7 +159,13 @@ namespace {
                 return true;
             }
         }
-        LogOut("[PAUSE] Heuristic scan failed to resolve Practice controller", detailedLogging.load());
+        // Log failure only once per Character Select instance, and only once globally overall
+        bool firstThisCS = !s_scanSuppressedThisCS.exchange(true, std::memory_order_relaxed);
+        if (firstThisCS) {
+            if (!s_loggedScanFailOnce.exchange(true, std::memory_order_relaxed)) {
+                LogOut("[PAUSE] Heuristic scan failed to resolve Practice controller", detailedLogging.load());
+            }
+        }
         return false;
     }
 
@@ -216,16 +247,38 @@ namespace {
         return oTogglePause ? oTogglePause(thisPtr) : 0;
     }
 
+    static inline void UpdateCsCycleState() {
+        const bool cs = IsInCharacterSelectScreen();
+        if (cs) {
+            // New CS entry: reset suppression so we try once per CS
+            if (!s_csActive.exchange(true, std::memory_order_relaxed)) {
+                s_scanSuppressedThisCS.store(false, std::memory_order_relaxed);
+            }
+        } else {
+            // Leaving CS
+            s_csActive.store(false, std::memory_order_relaxed);
+        }
+    }
+
     void EnsurePracticePtrHookInstalled() {
+        // Gate to Practice mode only (offline is checked in scanning functions)
+        GameMode mode = GetCurrentGameMode();
+        if (mode != GameMode::Practice) return;
+        
+        // Maintain CS cycle bookkeeping to bound scan/log spam to once per CS
+        UpdateCsCycleState();
         // Attempt direct resolution first (fast path, no hooks needed once valid)
         if (!s_practicePtr.load()) {
             void* resolved = nullptr;
             if (TryResolvePracticePtrFromModeArray(resolved)) {
                 s_practicePtr.store(resolved, std::memory_order_relaxed);
                 LogOut("[PAUSE] Practice ptr resolved via mode array", true);
+                // Once resolved, clear any prior CS suppression
+                s_scanSuppressedThisCS.store(false, std::memory_order_relaxed);
             } else if (TryResolvePracticePtrByScan(resolved)) {
                 s_practicePtr.store(resolved, std::memory_order_relaxed);
                 LogOut("[PAUSE] Practice ptr resolved via heuristic scan", true);
+                s_scanSuppressedThisCS.store(false, std::memory_order_relaxed);
             }
         }
         if (s_practiceHooksInstalled.load()) return;
