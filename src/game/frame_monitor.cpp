@@ -110,6 +110,13 @@ static bool s_csDidPersistentTriggerClear = false; // auto-action triggers clear
 static bool s_pendingPostCsCpuApply = false; // deferred CPU apply needed upon CS exit
 static bool s_csDidPreUnswitch = false;      // menu mapping reset executed once per CS entry
 
+// Global once-only guards for noisy CS alignment-related logs
+static std::atomic<bool> s_logOnce_CsSnapSkip{false};
+static std::atomic<bool> s_logOnce_CsRestoreAlign{false};
+static std::atomic<bool> s_logOnce_CsRestoreBaselineMatch{false};
+static std::atomic<bool> s_logOnce_CsSnapFallback{false};
+static std::atomic<bool> s_logOnce_CsApplyPost{false};
+
 // Global (extern defined elsewhere) suppression flag for auto-action clear logging; declare if missing
 extern std::atomic<bool> g_suppressAutoActionClearLogging;
 
@@ -821,6 +828,8 @@ void FrameDataMonitor() {
                     EnsureDefaultControlFlagsOnMatchStart();
                     // Reset Dummy Auto-Block per-round state machine
                     ResetDummyAutoBlockState();
+                    // Clear swap tracking flag at match start (new round = fresh state)
+                    SwitchPlayers::ClearSwapFlag();
                 }
             }
 
@@ -829,7 +838,12 @@ void FrameDataMonitor() {
 #if ENABLE_CS_DEBUG_LOGS
                 LogCharacterSelectDiagnostics();
 #endif
-                ResetControlOnCharacterSelect();
+                // Only perform CS control resets in Practice mode
+                if (GetCurrentGameMode() == GameMode::Practice) {
+                    // DON'T clear swap flag here - ResetControlMappingForMenusToP1 needs it to know if restoration is needed
+                    // Flag will be cleared AFTER restoration happens (inside ResetControlMappingForMenusToP1)
+                    ResetControlOnCharacterSelect();
+                }
                 // Reset live logger state on entry so first sample prints (only used when debug logs enabled)
                 s_csLastActive = 0xFF; s_csLastP2Cpu = 0xFF; s_csLastP1Cpu = 0xFF;
                 s_csLastP1Ai = 0xFFFFFFFFu; s_csLastP2Ai = 0xFFFFFFFFu; s_csLogDecim = 0;
@@ -850,16 +864,22 @@ void FrameDataMonitor() {
             CharacterSelectLiveLoggerTick();
             CharacterSelectInputEdgeLoggerTick();
 #endif
-            s_characterSelectPhaseFrames++;
-            if (s_characterSelectPhaseFrames == 1 && (detailedLogging.load() || !g_reducedLogging.load())) {
-                LogOut("[FRAME MONITOR] Detected CharacterSelect phase - starting debounce window", true);
-                s_csDidPreUnswitch = false; // reset guard each CS entry
-            }
-            // After short debounce, ensure menu mapping is reset so P1 controls P1 on CS
-            if (!s_csDidPreUnswitch && s_characterSelectPhaseFrames >= 30) {
-                if (SwitchPlayers::ResetControlMappingForMenusToP1()) {
-                    s_csDidPreUnswitch = true;
-                    if (detailedLogging.load()) LogOut("[CS][PRE][UNSWITCH] Menu mapping reset to P1 local", true);
+            const bool inPractice = (GetCurrentGameMode() == GameMode::Practice);
+            if (!inPractice) {
+                // Outside Practice mode: do not touch or log Character Select behavior
+                s_characterSelectPhaseFrames = 0;
+            } else {
+                s_characterSelectPhaseFrames++;
+                if (s_characterSelectPhaseFrames == 1 && (detailedLogging.load() || !g_reducedLogging.load())) {
+                    LogOut("[FRAME MONITOR] Detected CharacterSelect phase - starting debounce window", true);
+                    s_csDidPreUnswitch = false; // reset guard each CS entry
+                }
+                // After short debounce, ensure menu mapping is reset so P1 controls P1 on CS (Practice only)
+                if (!s_csDidPreUnswitch && s_characterSelectPhaseFrames >= 30) {
+                    if (SwitchPlayers::ResetControlMappingForMenusToP1()) {
+                        s_csDidPreUnswitch = true;
+                        if (detailedLogging.load()) LogOut("[CS][PRE][UNSWITCH] Menu mapping reset to P1 local", true);
+                    }
                 }
             }
             // Snapshot/restore: after a short debounce, capture CS baseline ONCE (first stable CS in session) and restore every CS entry.
@@ -899,10 +919,12 @@ void FrameDataMonitor() {
                     } else if (!s_csBaseline.valid && flagsAreSane && guiConsistent && !defaultPracticeMap) {
                         // We saw a sane but swapped/non-default mapping during first stable CS; log and defer capture.
                         if (detailedLogging.load()) {
-                            std::ostringstream os; os << "[CS][SNAP][SKIP] Sane but non-default mapping observed (active=" << (int)active
-                                                      << " P1CPU=" << (int)p1cpu << " P2CPU=" << (int)p2cpu
-                                                      << ") - deferring baseline capture until default (P1 human/P2 CPU) appears.";
-                            LogOut(os.str(), true);
+                            if (!s_logOnce_CsSnapSkip.exchange(true, std::memory_order_relaxed)) {
+                                std::ostringstream os; os << "[CS][SNAP][SKIP] Sane but non-default mapping observed (active=" << (int)active
+                                                          << " P1CPU=" << (int)p1cpu << " P2CPU=" << (int)p2cpu
+                                                          << ") - deferring baseline capture until default (P1 human/P2 CPU) appears.";
+                                LogOut(os.str(), true);
+                            }
                         }
                     }
                     // Apply baseline (if valid) to prevent swapped or duplicated controls on CS.
@@ -928,17 +950,21 @@ void FrameDataMonitor() {
                                 s_pendingPostCsCpuApply = true;
                             }
                             if (detailedLogging.load()) {
-                                std::ostringstream os; os << "[CS][RESTORE] Aligned GUI to engine-active; deferred CPU: engineActive=" << (int)active
-                                                          << " P1CPU->" << (int)wantP1 << " P2CPU->" << (int)wantP2
-                                                          << " okA=" << (okA?"1":"0")
-                                                          << " okGUI=" << (okGui?"1":"0")
-                                                          << " [CS][DEFER_CPU]";
-                                LogOut(os.str(), true);
+                                if (!s_logOnce_CsRestoreAlign.exchange(true, std::memory_order_relaxed)) {
+                                    std::ostringstream os; os << "[CS][RESTORE] Aligned GUI to engine-active; deferred CPU: engineActive=" << (int)active
+                                                              << " P1CPU->" << (int)wantP1 << " P2CPU->" << (int)wantP2
+                                                              << " okA=" << (okA?"1":"0")
+                                                              << " okGUI=" << (okGui?"1":"0")
+                                                              << " [CS][DEFER_CPU]";
+                                    LogOut(os.str(), true);
+                                }
                             }
                         } else if (!s_csDidSnapshotApply && detailedLogging.load()) {
-                            // Log a one-time notice that baseline is already in effect
-                            std::ostringstream os; os << "[CS][RESTORE] Baseline already matches; no enforcement needed";
-                            LogOut(os.str(), true);
+                            // Log a one-time notice per application lifetime that baseline is already in effect
+                            if (!s_logOnce_CsRestoreBaselineMatch.exchange(true, std::memory_order_relaxed)) {
+                                std::ostringstream os; os << "[CS][RESTORE] Baseline already matches; no enforcement needed";
+                                LogOut(os.str(), true);
+                            }
                         }
                         // Mark that we have applied/verified once this CS entry
                         s_csDidSnapshotApply = true;
@@ -952,14 +978,16 @@ void FrameDataMonitor() {
                         s_csBaseline.p1Cpu = 0u;
                         s_csBaseline.p2Cpu = 1u;
                         if (detailedLogging.load()) {
-                            std::ostringstream os; os << "[CS][SNAP][FALLBACK] Synthesized baseline after timeout: active=" << (int)synthActive
-                                                      << " P1CPU=0 P2CPU=1";
-                            LogOut(os.str(), true);
+                            if (!s_logOnce_CsSnapFallback.exchange(true, std::memory_order_relaxed)) {
+                                std::ostringstream os; os << "[CS][SNAP][FALLBACK] Synthesized baseline after timeout: active=" << (int)synthActive
+                                                          << " P1CPU=0 P2CPU=1";
+                                LogOut(os.str(), true);
+                            }
                         }
                     }
                 }
             }
-            if (s_characterSelectPhaseFrames >= 120) {
+            if (s_characterSelectPhaseFrames >= 120 && GetCurrentGameMode() == GameMode::Practice) {
                 bool charsInit = AreCharactersInitialized();
                 if (!charsInit && !s_csDidPersistentTriggerClear) {
                     if (!g_reducedLogging.load() || detailedLogging.load()) {
@@ -981,7 +1009,7 @@ void FrameDataMonitor() {
         } else if (s_characterSelectPhaseFrames > 0) {
             // Leaving Character Select: apply any deferred CPU flag baseline once
             s_characterSelectPhaseFrames = 0;
-            if (s_pendingPostCsCpuApply && s_csBaseline.valid) {
+            if (GetCurrentGameMode() == GameMode::Practice && s_pendingPostCsCpuApply && s_csBaseline.valid) {
                 uintptr_t gs = 0; uintptr_t base = GetEFZBase();
                 if (base && SafeReadMemory(base + EFZ_BASE_OFFSET_GAME_STATE, &gs, sizeof(gs)) && gs) {
                     uint8_t wantP1 = s_csBaseline.p1Cpu;
@@ -989,11 +1017,13 @@ void FrameDataMonitor() {
                     bool ok1 = SafeWriteMemory(gs + GAMESTATE_OFF_P1_CPU_FLAG, &wantP1, sizeof(wantP1));
                     bool ok2 = SafeWriteMemory(gs + GAMESTATE_OFF_P2_CPU_FLAG, &wantP2, sizeof(wantP2));
                     if (detailedLogging.load()) {
-                        std::ostringstream os; os << "[CS][APPLY_POST] Applied deferred CPU flags: P1CPU=" << (int)wantP1
-                                                  << " P2CPU=" << (int)wantP2
-                                                  << " ok1=" << (ok1?"1":"0")
-                                                  << " ok2=" << (ok2?"1":"0");
-                        LogOut(os.str(), true);
+                        if (!s_logOnce_CsApplyPost.exchange(true, std::memory_order_relaxed)) {
+                            std::ostringstream os; os << "[CS][APPLY_POST] Applied deferred CPU flags: P1CPU=" << (int)wantP1
+                                                      << " P2CPU=" << (int)wantP2
+                                                      << " ok1=" << (ok1?"1":"0")
+                                                      << " ok2=" << (ok2?"1":"0");
+                            LogOut(os.str(), true);
+                        }
                     }
                 }
                 s_pendingPostCsCpuApply = false;

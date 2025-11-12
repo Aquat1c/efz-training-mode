@@ -16,6 +16,7 @@
 #include "../include/game/auto_action.h"
 #include "../include/game/frame_monitor.h"
 #include "../include/input/input_freeze.h"
+#include "../include/game/practice_offsets.h" // For GAMESTATE_OFF_P1_CPU_FLAG, GAMESTATE_OFF_P2_CPU_FLAG
 #include <sstream>
 #include <iomanip>
 #include <iostream>  // Add this include for std::cout and std::cerr
@@ -372,6 +373,21 @@ void DisableFeatures() {
         return;
     
     LogOut("[SYSTEM] Game left valid mode. Disabling patches and overlays.", true);
+    
+    // CRITICAL: Restore normal control flags when leaving Practice mode
+    // to prevent control swap issues in other modes
+    uintptr_t efzBase = GetEFZBase();
+    if (efzBase) {
+        uintptr_t gameStatePtr = 0;
+        if (SafeReadMemory(efzBase + EFZ_BASE_OFFSET_GAME_STATE, &gameStatePtr, sizeof(uintptr_t)) && gameStatePtr) {
+            // Reset both sides to human (0 = human, 1 = CPU)
+            uint8_t p1Human = 0, p2Human = 0;
+            SafeWriteMemory(gameStatePtr + GAMESTATE_OFF_P1_CPU_FLAG, &p1Human, sizeof(uint8_t));
+            SafeWriteMemory(gameStatePtr + GAMESTATE_OFF_P2_CPU_FLAG, &p2Human, sizeof(uint8_t));
+            LogOut("[SYSTEM] Restored P1/P2 CPU flags to human (0) when disabling features", true);
+        }
+    }
+    
     // Stop immediate input writer
     ImmediateInput::Stop();
 

@@ -1,6 +1,7 @@
 #include "../include/game/auto_action.h"
 #include "../include/core/constants.h"
 #include "../include/utils/utilities.h"
+#include "../include/utils/network.h"
 #include "../include/game/game_state.h"
 #include "../include/core/memory.h"
 #include "../include/core/logger.h"
@@ -759,6 +760,10 @@ void ProcessTriggerCooldowns() {
 
 // Core implementation that uses caller-provided move IDs for better cache locality
 static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveID1, short prevMoveID2) {
+    // Only operate in offline Practice mode
+    if (GetCurrentGameMode() != GameMode::Practice) return;
+    if (DetectOnlineMatch()) return;
+    
     if (!autoActionEnabled.load()) {
         return;
     }
@@ -2004,7 +2009,7 @@ void RestoreP2ControlState() {
         
         // CRITICAL: Restore CPU control flag at game state level FIRST
         // This is what actually determines if the character is under player or AI control
-        const uintptr_t P2_CPU_FLAG_OFFSET = 4931;
+        const uintptr_t P2_CPU_FLAG_OFFSET = 4932; // RIGHT shutter/side
         uint8_t cpuControlled = 1; // 1 = CPU/AI controlled
         if (SafeWriteMemory(gameStatePtr + P2_CPU_FLAG_OFFSET, &cpuControlled, sizeof(uint8_t))) {
             LogOut("[AUTO-ACTION] Restored P2 CPU control flag to 1 (AI controlled)", true);
@@ -2080,7 +2085,7 @@ static void RestoreP2ControlFlagOnly() {
     
     // CRITICAL: Restore CPU control flag at game state level FIRST
     // This is what actually determines if the character is under player or AI control
-    const uintptr_t P2_CPU_FLAG_OFFSET = 4931;
+    const uintptr_t P2_CPU_FLAG_OFFSET = 4932; // RIGHT shutter/side
     uint8_t cpuControlled = 1; // 1 = CPU/AI controlled
     if (SafeWriteMemory(gameStatePtr + P2_CPU_FLAG_OFFSET, &cpuControlled, sizeof(uint8_t))) {
         LogOut("[AUTO-ACTION] RestoreP2ControlFlagOnly: Restored P2 CPU control flag to 1 (AI controlled)", true);

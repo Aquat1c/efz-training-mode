@@ -2,6 +2,8 @@
 #include "../include/game/auto_action.h"
 #include "../include/core/constants.h"
 #include "../include/utils/utilities.h"
+#include "../include/utils/network.h"
+#include "../include/game/game_state.h"
 
 #include "../include/core/memory.h"
 #include "../include/core/logger.h"
@@ -147,6 +149,10 @@ bool IsAutoActionActiveForPlayer(int playerNum) {
 }
 
 void MonitorAutoJump() {
+    // Only operate in offline Practice mode
+    if (GetCurrentGameMode() != GameMode::Practice) return;
+    if (DetectOnlineMatch()) return;
+    
     using clock = std::chrono::steady_clock;
     // We now hold the UP input continuously while enabled; timers retained for compatibility but not required
     static clock::time_point holdUntil[3] = { clock::time_point(), clock::time_point(), clock::time_point() };

@@ -185,9 +185,15 @@
 #endif
 
 // Per-side CPU flags (1 = CPU, 0 = Human)
-#ifndef GAMESTATE_OFF_P2_CPU_FLAG
-#define GAMESTATE_OFF_P2_CPU_FLAG       4931 // byte: P2 CPU/Human
+// NOTE: These are SPATIAL (left/right), not player numbers!
+// P1 is always on LEFT, P2 is always on RIGHT
+#ifndef GAMESTATE_OFF_LEFT_SIDE_CPU_FLAG
+#define GAMESTATE_OFF_LEFT_SIDE_CPU_FLAG  4931 // byte: LEFT side CPU/Human (P1's position)
 #endif
-#ifndef GAMESTATE_OFF_P1_CPU_FLAG
-#define GAMESTATE_OFF_P1_CPU_FLAG       4932 // byte: P1 CPU/Human
+#ifndef GAMESTATE_OFF_RIGHT_SIDE_CPU_FLAG  
+#define GAMESTATE_OFF_RIGHT_SIDE_CPU_FLAG 4932 // byte: RIGHT side CPU/Human (P2's position)
 #endif
+
+// Legacy aliases for compatibility
+#define GAMESTATE_OFF_P1_CPU_FLAG GAMESTATE_OFF_LEFT_SIDE_CPU_FLAG   // P1 = left side
+#define GAMESTATE_OFF_P2_CPU_FLAG GAMESTATE_OFF_RIGHT_SIDE_CPU_FLAG  // P2 = right side

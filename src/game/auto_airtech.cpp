@@ -1,6 +1,8 @@
 #include "../include/game/auto_airtech.h"
 #include "../include/core/constants.h"
 #include "../include/utils/utilities.h"
+#include "../include/utils/network.h"
+#include "../include/game/game_state.h"
 
 #include "../include/core/memory.h"
 #include "../include/core/logger.h"
@@ -90,6 +92,10 @@ bool IsAirtechAnimation(short moveID) {
 }
 
 void MonitorAutoAirtech(short moveID1, short moveID2) {
+    // Only operate in offline Practice mode
+    if (GetCurrentGameMode() != GameMode::Practice) return;
+    if (DetectOnlineMatch()) return;
+    
     static bool prevEnabled = false;
     static int prevDirection = -1;
     static int prevDelay = -1;
