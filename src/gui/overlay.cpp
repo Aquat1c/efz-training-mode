@@ -21,6 +21,7 @@
 #include "../3rdparty/minhook/include/MinHook.h"
 // ADD these includes for the new rendering loop
 #include "../include/gui/imgui_impl.h"
+#include "../include/utils/config.h"
 #include <Xinput.h>
 // XInput loaded dynamically via XInputShim
 #include "../include/utils/xinput_shim.h"
@@ -130,6 +131,42 @@ HRESULT WINAPI DirectDrawHook::HookedFlip(IDirectDrawSurface7* This, IDirectDraw
 
 // --- REVISED AND CORRECTED D3D9 EndScene Hook ---
 HRESULT WINAPI HookedEndScene(LPDIRECT3DDEVICE9 pDevice) {
+    // Refresh XInput snapshot once per frame at the start of EndScene; other systems read cached state
+    XInputShim::RefreshSnapshotOncePerFrame();
+    // Minimal per-frame timing (RAII) to detect stalls without per-frame logs
+    struct EndSceneFrameTimer {
+        std::chrono::steady_clock::time_point t0;
+        EndSceneFrameTimer() : t0(std::chrono::steady_clock::now()) {}
+        ~EndSceneFrameTimer() {
+            using namespace std::chrono;
+            static uint64_t frames = 0;
+            static double   sumMs = 0.0;
+            static double   maxMs = 0.0;
+            static uint32_t gt33 = 0, gt100 = 0, gt250 = 0, gt500 = 0;
+            static steady_clock::time_point lastReport{};
+            auto t1 = steady_clock::now();
+            double ms = duration<double, std::milli>(t1 - t0).count();
+            frames++; sumMs += ms; if (ms > maxMs) maxMs = ms;
+            if (ms > 33.0)  gt33++;
+            if (ms > 100.0) gt100++;
+            if (ms > 250.0) gt250++;
+            if (ms > 500.0) gt500++;
+            if (lastReport.time_since_epoch().count() == 0) lastReport = t1;
+            if (t1 - lastReport >= std::chrono::seconds(5)) {
+                // Only report if diagnostics are enabled in config
+                if (Config::GetSettings().enableFpsDiagnostics) {
+                    double avgMs = (frames > 0) ? (sumMs / (double)frames) : 0.0;
+                    double fps = (avgMs > 0.0) ? (1000.0 / avgMs) : 0.0;
+                    char buf[256];
+                    _snprintf_s(buf, sizeof(buf), _TRUNCATE,
+                        "[FPS] 5s window: frames=%llu ~fps=%.1f avg=%.2fms max=%.1fms >33ms=%u >100ms=%u >250ms=%u >500ms=%u",
+                        (unsigned long long)frames, fps, avgMs, maxMs, gt33, gt100, gt250, gt500);
+                    LogOut(buf, true);
+                }
+                frames = 0; sumMs = 0.0; maxMs = 0.0; gt33 = gt100 = gt250 = gt500 = 0; lastReport = t1;
+            }
+        }
+    } _frameTimerScope;
     // Mark that EndScene was observed at least once
     if (!g_EndSceneObserved.load()) g_EndSceneObserved.store(true);
     if (!pDevice) {
@@ -659,7 +696,7 @@ void DirectDrawHook::RenderD3D9Overlays(LPDIRECT3DDEVICE9 pDevice) {
             // Poll gamepad
             bool padActive = false;
             XINPUT_STATE state{};
-            if (XInputShim::GetState(0, &state) == ERROR_SUCCESS) {
+            if (const XINPUT_STATE* s = XInputShim::GetCachedState(0)) { state = *s; {
                 auto applyDeadzone = [](SHORT v, SHORT dz) -> float {
                     int iv = (int)v;
                     if (iv > dz) iv -= dz; else if (iv < -dz) iv += dz; else iv = 0;
@@ -701,7 +738,7 @@ void DirectDrawHook::RenderD3D9Overlays(LPDIRECT3DDEVICE9 pDevice) {
                     padPos.x += nx * baseSpeed * dt;
                     padPos.y += -ny * baseSpeed * dt;
                 }
-            }
+            }}
 
             // Physical mouse movement detection (ignore backend remap deltas):
             // We only activate from real OS cursor movement (>=2px in client space).

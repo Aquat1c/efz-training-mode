@@ -13,6 +13,8 @@ namespace PracticeOverlayGate { void SetMenuVisible(bool); }
 #include "../include/utils/config.h"
 // Math helpers
 #include <cmath>
+// Throttle timers
+#include <chrono>
 // Hotkey cooldown
 #include "../include/input/input_handler.h"
 
@@ -189,11 +191,13 @@ static void UpdateVirtualCursor(ImGuiIO& io) {
         s_lastMiddleDown = middleDown;
     }
 
-    // Poll all controllers and aggregate for ImGui nav; keep selected/last-active for virtual cursor
+    // Ensure XInput snapshot is fresh for this frame
+    XInputShim::RefreshSnapshotOncePerFrame();
+    // Poll from cached snapshot to avoid redundant syscalls
     auto pollController = [](int index, XINPUT_STATE& out) -> bool {
-        ZeroMemory(&out, sizeof(out));
-    DWORD r = XInputShim::GetState(index, &out);
-        return (r == ERROR_SUCCESS);
+        const XINPUT_STATE* s = XInputShim::GetCachedState(index);
+        if (!s) { ZeroMemory(&out, sizeof(out)); return false; }
+        out = *s; return true;
     };
 
     static int s_lastActivePad = 0; // remember last pad that produced any input
@@ -210,7 +214,7 @@ static void UpdateVirtualCursor(ImGuiIO& io) {
     // Update last active pad based on any activity this frame when using All mode
     const int cfgIndex = cfg.controllerIndex;
     if (cfgIndex < 0 || cfgIndex > 3) {
-        const int dzL = XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE;
+    const int dzL = XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE;
         for (int i = 0; i < 4; ++i) if (connected[i]) {
             const auto& gp = states[i].Gamepad;
             bool anyBtn = gp.wButtons != 0;
@@ -511,46 +515,44 @@ namespace ImGuiImpl {
         return 1.0f;
     }
 
-    // Rebuild font atlas for crisp text at a given UI scale. Safe to call multiple times.
+    // Rebuild font atlas for crisp text at a given UI scale. Throttled to avoid per-frame rebuilds.
     static void UpdateFontAtlasForScale(float uiScale)
     {
         if (!ImGui::GetCurrentContext()) return;
         ImGuiIO& io = ImGui::GetIO();
 
-        // Check desired font mode from config
+        // Throttle: only allow rebuild at most every 1000ms even if tiny scale oscillations occur.
+        static auto s_lastAttempt = std::chrono::steady_clock::time_point{};
+        auto now = std::chrono::steady_clock::now();
+        bool timeOk = (s_lastAttempt.time_since_epoch().count() == 0) || (now - s_lastAttempt >= std::chrono::milliseconds(1000));
+
         const int fontMode = Config::GetSettings().uiFontMode; // 0=Default, 1=Segoe UI
-
-        // Get DPI scale factor
         float dpiScale = GetDpiScale();
-
-        // Clamp and round to nearest hundredth to avoid thrashing on tiny changes
-        float s = uiScale * dpiScale; // Combine UI scale with DPI scale
+        float s = uiScale * dpiScale; // Combine UI + DPI
         if (s < 0.70f) s = 0.70f; else if (s > 2.50f) s = 2.50f;
-        float sRounded = floorf(s * 100.0f + 0.5f) / 100.0f;
+        float sRounded = floorf(s * 100.0f + 0.5f) / 100.0f; // nearest hundredth
+
         const bool scaleChanged = !(fabsf(sRounded - g_lastFontScaleApplied) < 0.01f);
         const bool fontChanged  = (fontMode != g_lastFontModeApplied);
-        if (!scaleChanged && !fontChanged) return;
+        if (!scaleChanged && !fontChanged) return; // nothing meaningful changed
+        if (!timeOk && scaleChanged && !fontChanged) return; // oscillating minor scale; wait
 
-    // Rebuild fonts at scaled pixel size for sharp rendering
-    // Start from ImGui's default base of ~13 px
-    const float basePx = 13.0f;
-    const float targetPx = roundf(basePx * sRounded);
+        s_lastAttempt = now;
 
-        // Invalidate DX9 objects before changing fonts
+        const float basePx = 13.0f;
+        const float targetPx = roundf(basePx * sRounded);
+
         ImGui_ImplDX9_InvalidateDeviceObjects();
-
         io.Fonts->Clear();
-        // Keep atlas flags consistent for DX9
-    io.Fonts->Flags |= ImFontAtlasFlags_NoPowerOfTwoHeight;
-    io.Fonts->TexGlyphPadding = 1;
+        io.Fonts->Flags |= ImFontAtlasFlags_NoPowerOfTwoHeight;
+        io.Fonts->TexGlyphPadding = 1;
 
-    ImFontConfig cfg;
-        cfg.OversampleH = 3; // Higher oversampling for smoother edges at high DPI
+        ImFontConfig cfg;
+        cfg.OversampleH = 3;
         cfg.OversampleV = 3;
-        cfg.PixelSnapH = false; // Allow subpixel positioning for smoother text
-        cfg.SizePixels = targetPx; // set explicit pixel size for crisp text
+        cfg.PixelSnapH = false;
+        cfg.SizePixels = targetPx;
 
-        // Choose font per config: 0=ImGui default, 1=Segoe UI (if available)
         ImFont* defaultFont = nullptr;
         if (fontMode == 1) {
             const char* segoePath = "C:\\Windows\\Fonts\\segoeui.ttf";
@@ -560,22 +562,19 @@ namespace ImGuiImpl {
             }
         }
         if (!defaultFont) {
-            // Default path: ImGui built-in font
             defaultFont = io.Fonts->AddFontDefault(&cfg);
         }
-    io.FontDefault = defaultFont;
+        io.FontDefault = defaultFont;
 
-        // Recreate device objects with the new atlas
         if (!ImGui_ImplDX9_CreateDeviceObjects()) {
-            // If recreation fails, keep previous state and avoid updating the applied marker
             LogOut("[IMGUI] Warning: Failed to recreate DX9 device objects after font rebuild.", true);
             return;
         }
 
-    g_lastFontScaleApplied = sRounded;
-    g_lastFontModeApplied  = fontMode;
-    LogOut((std::string("[IMGUI] Rebuilt font atlas: scale=") + std::to_string(sRounded) +
-        ", px=" + std::to_string((int)targetPx) + ", font=" + (fontMode==0?"Default":"Segoe UI")).c_str(), true);
+        g_lastFontScaleApplied = sRounded;
+        g_lastFontModeApplied  = fontMode;
+        LogOut((std::string("[IMGUI] Rebuilt font atlas: scale=") + std::to_string(sRounded) +
+            ", px=" + std::to_string((int)targetPx) + ", font=" + (fontMode==0?"Default":"Segoe UI")).c_str(), true);
     }
     bool Initialize(IDirect3DDevice9* device) {
         if (g_imguiInitialized)
@@ -704,9 +703,9 @@ namespace ImGuiImpl {
             // Log nav flags on open
             if (ImGui::GetCurrentContext()) {
                 ImGuiIO& io = ImGui::GetIO();
-                // Also take an immediate XInput snapshot
-                unsigned mask = 0; XINPUT_STATE s; ZeroMemory(&s, sizeof(s));
-                for (int i = 0; i < 4; ++i) { if (XInputShim::GetState(i, &s) == ERROR_SUCCESS) mask |= (1u << i); }
+                // Use cached XInput snapshot
+                XInputShim::RefreshSnapshotOncePerFrame();
+                unsigned mask = XInputShim::GetConnectedMaskCached();
                 char buf[256];
                 // Force-enable nav flags on open for reliability
                 io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
@@ -873,8 +872,7 @@ namespace ImGuiImpl {
                 UpdateVirtualCursor(io);
             }
             ImGui::NewFrame();
-            // Post-NewFrame diagnostics: verify ImGui processed our gamepad events (throttled)
-            PostNewFrameDiagnostics();
+            // (PostNewFrameDiagnostics removed to reduce per-frame overhead)
             // Skip rendering if minimized to avoid style asserts (DisplaySize == 0)
             ImGuiIO& io = ImGui::GetIO();
             if (io.DisplaySize.x <= 0.0f || io.DisplaySize.y <= 0.0f) {
