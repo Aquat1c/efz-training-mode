@@ -935,14 +935,45 @@ void UpdateRFFreezeTick() {
         double t2 = rfFreezeValueP2.load();
         bool canP1 = rfFreezeP1Active.load() && (!neutralOnly || isAllowedNeutral(m1));
         bool canP2 = rfFreezeP2Active.load() && (!neutralOnly || isAllowedNeutral(m2));
-        if (canP1 && p1RFAddr && VirtualProtect(p1RFAddr, sizeof(double), PAGE_EXECUTE_READWRITE, &old1)) { *p1RFAddr = t1; VirtualProtect(p1RFAddr, sizeof(double), old1, &old1); }
-        if (canP2 && p2RFAddr && VirtualProtect(p2RFAddr, sizeof(double), PAGE_EXECUTE_READWRITE, &old2)) { *p2RFAddr = t2; VirtualProtect(p2RFAddr, sizeof(double), old2, &old2); }
+        // Only write when value differs to avoid unnecessary page protection flips
+        if (canP1 && p1RFAddr) {
+            double cur1 = *p1RFAddr;
+            if (cur1 != t1) {
+                if (VirtualProtect(p1RFAddr, sizeof(double), PAGE_EXECUTE_READWRITE, &old1)) {
+                    *p1RFAddr = t1;
+                    VirtualProtect(p1RFAddr, sizeof(double), old1, &old1);
+                }
+            }
+        }
+        if (canP2 && p2RFAddr) {
+            double cur2 = *p2RFAddr;
+            if (cur2 != t2) {
+                if (VirtualProtect(p2RFAddr, sizeof(double), PAGE_EXECUTE_READWRITE, &old2)) {
+                    *p2RFAddr = t2;
+                    VirtualProtect(p2RFAddr, sizeof(double), old2, &old2);
+                }
+            }
+        }
         // Optional: enforce IC color while RF is frozen (per-player)
+        static bool s_lastP1Color = false;
+        static bool s_lastP1ColorEnabled = false;
+        static bool s_lastP2Color = false;
+        static bool s_lastP2ColorEnabled = false;
         if (rfFreezeP1Active.load() && rfFreezeColorP1Enabled) {
-            SetICColorPlayer(1, rfFreezeColorP1Blue);
+            if (!s_lastP1ColorEnabled || s_lastP1Color != rfFreezeColorP1Blue) {
+                SetICColorPlayer(1, rfFreezeColorP1Blue);
+                s_lastP1ColorEnabled = true; s_lastP1Color = rfFreezeColorP1Blue;
+            }
+        } else {
+            s_lastP1ColorEnabled = false; // allow re-apply next time it enables
         }
         if (rfFreezeP2Active.load() && rfFreezeColorP2Enabled) {
-            SetICColorPlayer(2, rfFreezeColorP2Blue);
+            if (!s_lastP2ColorEnabled || s_lastP2Color != rfFreezeColorP2Blue) {
+                SetICColorPlayer(2, rfFreezeColorP2Blue);
+                s_lastP2ColorEnabled = true; s_lastP2Color = rfFreezeColorP2Blue;
+            }
+        } else {
+            s_lastP2ColorEnabled = false;
         }
     } __except(EXCEPTION_EXECUTE_HANDLER) {
         // Ignore access faults; tick is best-effort
