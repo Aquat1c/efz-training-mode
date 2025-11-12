@@ -1234,53 +1234,5 @@ void DetectKeyBindingsWithDI() {
     prevInputs = currentInputs;
 }
 
-void GlobalF1MonitorThread() {
-    int sleepMs = 16;
-    int idleLoops = 0;
-    while (globalF1ThreadRunning.load()) {
-        // Park in online mode and reduce work when window inactive
-    if (g_onlineModeActive.load()) { keyMonitorRunning.store(false); break; }
-        if (!g_efzWindowActive.load()) {
-            // Back off heavily when game window not focused
-            Sleep(96);
-            continue;
-        }
-        if (IsKeyPressed(VK_F1, false)) {
-            LogOut("BGM Mute button called (global F1 thread)", true);
-            SetBGMSuppressed(!IsBGMSuppressed());
-            DirectDrawHook::AddMessage(
-                IsBGMSuppressed() ? "BGM: OFF" : "BGM: ON",
-                "SYSTEM",
-                IsBGMSuppressed() ? RGB(255,100,100) : RGB(100,255,100),
-                1500, 0, 100
-            );
-            uintptr_t efzBase = GetEFZBase();
-            uintptr_t gameStatePtr = 0;
-            if (SafeReadMemory(efzBase + EFZ_BASE_OFFSET_GAME_STATE, &gameStatePtr, sizeof(uintptr_t)) && gameStatePtr) {
-                if (IsBGMSuppressed()) {
-                    StopBGM(gameStatePtr);
-                } else {
-                    int currentSlot = GetBGMSlot(gameStatePtr);
-                    if (currentSlot != 150 && currentSlot != 0) {
-                        PlayBGM(gameStatePtr, static_cast<unsigned short>(currentSlot));
-                        SetBGMVolumeViaGame(gameStatePtr, 0);
-                    } else if (GetLastBgmTrack() != 150 && GetLastBgmTrack() != 0) {
-                        PlayBGM(gameStatePtr, GetLastBgmTrack());
-                        SetBGMVolumeViaGame(gameStatePtr, 0);
-                    }
-                }
-            } else {
-                LogOut("[BGM] No valid game state pointer for BGM action, will apply on next valid mode.", true);
-            }
-            Sleep(100); // Debounce
-            while (IsKeyPressed(VK_F1, true)) Sleep(10);
-            sleepMs = 16; idleLoops = 0;
-        }
-        // Adaptive backoff if idle
-        if (++idleLoops > 20) sleepMs = 24;  // ~41 Hz
-    if (idleLoops > 60) sleepMs = 32;    // ~31 Hz
-    if (idleLoops > 120) sleepMs = 48;   // ~21 Hz
-        Sleep(sleepMs);
-    }
-}
+// GlobalF1MonitorThread removed (legacy BGM toggle on F1). BGM control now only via ImGui.
 

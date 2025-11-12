@@ -364,13 +364,7 @@ void EnableFeatures() {
     }
     
     // --- BGM suppression integration ---
-    uintptr_t efzBase = GetEFZBase();
-    uintptr_t gameStatePtr = 0;
-    if (SafeReadMemory(efzBase + EFZ_BASE_OFFSET_GAME_STATE, &gameStatePtr, sizeof(uintptr_t)) && gameStatePtr) {
-        if (IsBGMSuppressed()) {
-            StopBGM(gameStatePtr);
-        }
-    }
+    // BGM suppression flag removed; legacy one-shot enforcement discarded.
 }
 
 void DisableFeatures() {
