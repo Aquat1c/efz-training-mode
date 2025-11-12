@@ -35,6 +35,8 @@ static ImVec2 g_overlayCenter = ImVec2(0.0f, 0.0f);
 static bool g_requestOverlayFocus = false;
 static bool g_lastLeftDown = false;
 static bool g_lastRightDown = false;
+// Flag to request virtual cursor activation state reset on next update (e.g. menu just opened in fullscreen)
+static bool g_resetVirtualCursorOnOpen = false;
 
 // Track applied font scale to rebuild atlas only when needed
 static float g_lastFontScaleApplied = 0.0f; // 0 = uninitialized
@@ -69,9 +71,37 @@ static void UpdateVirtualCursor(ImGuiIO& io) {
     const auto& cfg = Config::GetSettings();
     HWND hwnd = FindEFZWindow();
     bool fullscreen = hwnd && IsFullscreen(hwnd);
-    const bool allowCursor = cfg.enableVirtualCursor && g_imguiVisible && hwnd && (fullscreen || cfg.virtualCursorAllowWindowed);
+    
+    // Track physical mouse movement to enable cursor only when mouse is actually used
+    static ImVec2 s_lastMousePos = ImVec2(-1.0f, -1.0f);
+    static bool s_mouseHasMoved = false;
+    
+    // Check for real mouse movement (only in fullscreen)
+    if (fullscreen && hwnd) {
+        POINT pt;
+        if (GetCursorPos(&pt) && ScreenToClient(hwnd, &pt)) {
+            ImVec2 currentPos((float)pt.x, (float)pt.y);
+            if (s_lastMousePos.x >= 0.0f && s_lastMousePos.y >= 0.0f) {
+                float dx = currentPos.x - s_lastMousePos.x;
+                float dy = currentPos.y - s_lastMousePos.y;
+                float distSq = dx * dx + dy * dy;
+                if (distSq > 4.0f) { // 2px threshold
+                    s_mouseHasMoved = true;
+                }
+            }
+            s_lastMousePos = currentPos;
+        }
+    }
+    
+    // Only allow virtual cursor in fullscreen when mouse has actually moved
+    const bool allowCursor = cfg.enableVirtualCursor && g_imguiVisible && hwnd && fullscreen && s_mouseHasMoved;
     bool wasActive = g_useVirtualCursor;
     g_useVirtualCursor = allowCursor;
+    
+    // Reset mouse moved flag when menu closes
+    if (!g_imguiVisible) {
+        s_mouseHasMoved = false;
+    }
 
     // Track focus transitions to allow recenter on refocus
     static bool s_lastWindowFocused = false;
@@ -304,22 +334,11 @@ static void UpdateVirtualCursor(ImGuiIO& io) {
         io.AddKeyAnalogEvent(ImGuiKey_GamepadR2,          false, 0.f);
     }
 
-    // Keyboard fallback: mirror aggregated nav into arrow/enter/escape keys
-    // This helps when ImGui ignores gamepad events due to backend quirks.
-    {
-        const float navThr = ClampF(Config::GetSettings().guiNavAnalogThreshold, 0.05f, 0.95f);
-        bool navLeft  = kDpadL || (aLLeft  > navThr);
-        bool navRight = kDpadR || (aLRight > navThr);
-        bool navUp    = kDpadU || (aLUp    > navThr);
-        bool navDown  = kDpadD || (aLDown  > navThr);
-        io.AddKeyEvent(ImGuiKey_LeftArrow,  navLeft);
-        io.AddKeyEvent(ImGuiKey_RightArrow, navRight);
-        io.AddKeyEvent(ImGuiKey_UpArrow,    navUp);
-        io.AddKeyEvent(ImGuiKey_DownArrow,  navDown);
-        // Accept/Back
-        io.AddKeyEvent(ImGuiKey_Enter,  kFaceDown);
-        io.AddKeyEvent(ImGuiKey_Escape, kFaceRight || kBack);
-    }
+    // Keyboard fallback (TEMP DISABLED for arrow keys due to assertions):
+    // We only mirror Accept/Cancel to Enter/Escape. Real arrow key input will come from Win32 backend.
+    // If needed later, re-enable arrow mapping after root cause is identified.
+    io.AddKeyEvent(ImGuiKey_Enter,  kFaceDown);
+    io.AddKeyEvent(ImGuiKey_Escape, kFaceRight || kBack);
 
     // (burst debug logging removed)
 
@@ -375,63 +394,24 @@ static void UpdateVirtualCursor(ImGuiIO& io) {
             s_lastSubNext = nowSubNext;
         }
 
-        // Analog stick movement for virtual cursor only from selected pad
-        auto applyDeadzone = [](SHORT v, SHORT dz) -> float {
-            int iv = (int)v;
-            if (iv > dz) iv -= dz; else if (iv < -dz) iv += dz; else iv = 0;
-            float n = (float)iv / (32767.0f - dz);
-            if (n > 1.f) n = 1.f; if (n < -1.f) n = -1.f;
-            return n;
-        };
-
-    float nx = applyDeadzone(selGp.sThumbLX, XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE);
-    float ny = applyDeadzone(selGp.sThumbLY, XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE);
-
-        // Apply acceleration/response curve (exponent >1 softens near center for precision)
-        if (cfg.virtualCursorAccelPower != 1.0f) {
-            auto curve = [&](float v) {
-                float sign = (v >= 0.f) ? 1.f : -1.f;
-                float mag = fabsf(v);
-                mag = powf(mag, cfg.virtualCursorAccelPower);
-                return sign * mag;
-            };
-            nx = curve(nx);
-            ny = curve(ny);
-        }
-
-        // DPAD provides discrete nudge
-        float dpadX = 0.f, dpadY = 0.f;
-        if (selGp.wButtons & XINPUT_GAMEPAD_DPAD_RIGHT) dpadX += 1.f;
-        if (selGp.wButtons & XINPUT_GAMEPAD_DPAD_LEFT)  dpadX -= 1.f;
-        if (selGp.wButtons & XINPUT_GAMEPAD_DPAD_UP)    dpadY -= 1.f;
-        if (selGp.wButtons & XINPUT_GAMEPAD_DPAD_DOWN)  dpadY += 1.f;
+        // Virtual cursor is now mouse-only - gamepad controls are disabled
+        // Analog stick and dpad input still used for ImGui navigation, but not for cursor movement
 
         float dt = io.DeltaTime > 0.f ? io.DeltaTime : (1.f/60.f);
-        const bool fast = (selGp.wButtons & XINPUT_GAMEPAD_LEFT_SHOULDER) != 0;
-        float baseSpeed = fast ? cfg.virtualCursorFastSpeed : cfg.virtualCursorBaseSpeed;  // pixels per second
-        float dpadSpeed = cfg.virtualCursorDpadSpeed;
-        if (baseSpeed < 50.f) baseSpeed = 50.f; if (baseSpeed > 8000.f) baseSpeed = 8000.f;
-        if (dpadSpeed < 10.f) dpadSpeed = 10.f; if (dpadSpeed > 4000.f) dpadSpeed = 4000.f;
 
-        if (g_useVirtualCursor) {
-            g_virtualCursorPos.x += (nx * baseSpeed + dpadX * dpadSpeed) * dt;
-            g_virtualCursorPos.y += (-ny * baseSpeed + dpadY * dpadSpeed) * dt; // note: Y is inverted
-
-            // Clamp within client region size
-            g_virtualCursorPos.x = ClampF(g_virtualCursorPos.x, 0.0f, clientW - 1.0f);
-            g_virtualCursorPos.y = ClampF(g_virtualCursorPos.y, 0.0f, clientH - 1.0f);
-
-            // Buttons -> mouse clicks from selected pad
-            bool leftDown = (selGp.wButtons & XINPUT_GAMEPAD_A) != 0;
-            bool rightDown = (selGp.wButtons & XINPUT_GAMEPAD_B) != 0;
-            io.AddMouseButtonEvent(0, leftDown);
-            io.AddMouseButtonEvent(1, rightDown);
-            g_lastLeftDown = leftDown;
-            g_lastRightDown = rightDown;
-        }
+        // No gamepad cursor movement - virtual cursor only responds to physical mouse
+        // The cursor position is updated from OS mouse movement when enabled
 
         // Right-stick -> mouse wheel (scroll) for GUI navigation
         if (Config::GetSettings().guiScrollRightStickEnable) {
+            auto applyDeadzone = [](SHORT v, SHORT dz) -> float {
+                int iv = (int)v;
+                if (iv > dz) iv -= dz; else if (iv < -dz) iv += dz; else iv = 0;
+                float n = (float)iv / (32767.0f - dz);
+                if (n > 1.f) n = 1.f; if (n < -1.f) n = -1.f;
+                return n;
+            };
+            
             float rx = applyDeadzone(selGp.sThumbRX, XINPUT_GAMEPAD_RIGHT_THUMB_DEADZONE);
             float ry = applyDeadzone(selGp.sThumbRY, XINPUT_GAMEPAD_RIGHT_THUMB_DEADZONE);
             // Small deadzone to avoid noise
@@ -453,6 +433,19 @@ static void UpdateVirtualCursor(ImGuiIO& io) {
     }
 
     // (per-second pads mask diagnostics removed)
+
+    // Update virtual cursor position from OS mouse when enabled
+    if (g_useVirtualCursor && hwnd) {
+        POINT pt;
+        if (GetCursorPos(&pt) && ScreenToClient(hwnd, &pt)) {
+            g_virtualCursorPos.x = (float)pt.x;
+            g_virtualCursorPos.y = (float)pt.y;
+            
+            // Clamp within client region size
+            g_virtualCursorPos.x = ClampF(g_virtualCursorPos.x, 0.0f, clientW - 1.0f);
+            g_virtualCursorPos.y = ClampF(g_virtualCursorPos.y, 0.0f, clientH - 1.0f);
+        }
+    }
 
     // Draw ImGui software cursor only when enabled
     if (g_useVirtualCursor) {
@@ -706,6 +699,8 @@ namespace ImGuiImpl {
         
         if (g_imguiVisible) {
             LogOut("[IMGUI] ImGui interface opened - will render continuously until closed", true);
+            // Ensure virtual cursor (dot) starts hidden until fresh physical mouse movement while menu is open
+            g_resetVirtualCursorOnOpen = true;
             // Log nav flags on open
             if (ImGui::GetCurrentContext()) {
                 ImGuiIO& io = ImGui::GetIO();
