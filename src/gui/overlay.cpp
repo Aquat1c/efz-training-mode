@@ -640,6 +640,22 @@ void DirectDrawHook::RenderD3D9Overlays(LPDIRECT3DDEVICE9 pDevice) {
                 padPos = ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f);
             }
 
+            // Dot visibility policy:
+            //  - Only show after we've moved the physical mouse OR the analog stick (not the dpad).
+            //  - If the controller reports dpad and analog simultaneously (mixbox-style), suppress the dot briefly so only nav cursor moves.
+            static bool  s_dotActivated   = false;  // latched after qualifying movement
+            static float s_dotSuppressSec = 0.0f;   // suppression cooldown while mixed input is detected
+            static bool  s_prevMenuVis    = false;  // detect menu open edge to reset state
+            // Declare physical mouse tracker near top so we can reset on menu open edge
+            static ImVec2 s_lastPhysMouse(-1.f,-1.f);
+            if (ImGuiImpl::IsVisible() && !s_prevMenuVis) {
+                s_dotActivated = false;
+                s_dotSuppressSec = 0.0f;
+                // Reset physical mouse tracker so prior movement doesn't immediately activate the dot
+                s_lastPhysMouse = ImVec2(-1.f, -1.f);
+            }
+            s_prevMenuVis = ImGuiImpl::IsVisible();
+
             // Poll gamepad
             bool padActive = false;
             XINPUT_STATE state{};
@@ -660,23 +676,52 @@ void DirectDrawHook::RenderD3D9Overlays(LPDIRECT3DDEVICE9 pDevice) {
                 if (state.Gamepad.wButtons & XINPUT_GAMEPAD_DPAD_DOWN)  dpadY += 1.f;
 
                 const float dt = io.DeltaTime > 0.f ? io.DeltaTime : (1.f/60.f);
-                const bool fast = (state.Gamepad.wButtons & XINPUT_GAMEPAD_LEFT_SHOULDER) != 0;
+                const bool fast      = (state.Gamepad.wButtons & XINPUT_GAMEPAD_LEFT_SHOULDER) != 0;
                 const float baseSpeed = fast ? 1800.f : 900.f;
-                const float dpadSpeed = 700.f;
 
-                if (fabsf(nx) > 0.02f || fabsf(ny) > 0.02f || dpadX != 0.f || dpadY != 0.f ||
-                    (state.Gamepad.wButtons & (XINPUT_GAMEPAD_A | XINPUT_GAMEPAD_B | XINPUT_GAMEPAD_X | XINPUT_GAMEPAD_Y))) {
-                    padActive = true;
+                // Determine input sources
+                const bool analogMoved = (fabsf(nx) > 0.02f || fabsf(ny) > 0.02f);
+                const bool dpadMoved   = (dpadX != 0.f || dpadY != 0.f);
+
+                // Mixed input => suppress dot briefly so only navigational cursor responds
+                if (analogMoved && dpadMoved) {
+                    s_dotSuppressSec = 0.25f; // ~250 ms
                 }
-                if (padActive) {
-                    padPos.x += (nx * baseSpeed + dpadX * dpadSpeed) * dt;
-                    padPos.y += (-ny * baseSpeed + dpadY * dpadSpeed) * dt;
+
+                // Decrement suppression timer
+                if (s_dotSuppressSec > 0.f) {
+                    s_dotSuppressSec -= dt;
+                    if (s_dotSuppressSec < 0.f) s_dotSuppressSec = 0.f;
+                }
+
+                // Activate dot only on pure analog movement (no dpad)
+                if (analogMoved && !dpadMoved) {
+                    s_dotActivated = true;
+                    padActive = true;
+                    padPos.x += nx * baseSpeed * dt;
+                    padPos.y += -ny * baseSpeed * dt;
                 }
             }
 
-            // Prefer real mouse position if it moved this frame; otherwise fall back to pad
-            const bool mouseMoved = (fabsf(io.MouseDelta.x) + fabsf(io.MouseDelta.y)) > 0.0001f;
-            ImVec2 dot = mouseMoved ? io.MousePos : (padActive ? padPos : io.MousePos);
+            // Physical mouse movement detection (ignore backend remap deltas):
+            // We only activate from real OS cursor movement (>=2px in client space).
+            bool physicalMouseMoved = false;
+            HWND hwnd = FindEFZWindow();
+            if (hwnd) {
+                POINT pt; if (GetCursorPos(&pt) && ScreenToClient(hwnd,&pt)) {
+                    ImVec2 cur((float)pt.x,(float)pt.y);
+                    if (s_lastPhysMouse.x >= 0.f) {
+                        float dx = cur.x - s_lastPhysMouse.x;
+                        float dy = cur.y - s_lastPhysMouse.y;
+                        if ((dx*dx + dy*dy) > 4.f) physicalMouseMoved = true; // >2px
+                    }
+                    s_lastPhysMouse = cur;
+                }
+            }
+            if (physicalMouseMoved) {
+                s_dotActivated = true; // real mouse movement only
+            }
+            ImVec2 dot = physicalMouseMoved ? io.MousePos : (padActive ? padPos : io.MousePos);
 
             // Clamp to ImGui display size (we render on 640x480 RT only)
             float maxX = io.DisplaySize.x - 1.0f;
@@ -685,14 +730,16 @@ void DirectDrawHook::RenderD3D9Overlays(LPDIRECT3DDEVICE9 pDevice) {
             dot.x = (dot.x < 0.0f ? 0.0f : (dot.x > maxX ? maxX : dot.x));
             dot.y = (dot.y < 0.0f ? 0.0f : (dot.y > maxY ? maxY : dot.y));
 
-            // Draw dot (white filled with dark outline) on the foreground list (above all windows)
-            auto cursorList = ImGui::GetForegroundDrawList();
-            if (!cursorList) cursorList = bgList;
-            const float r = 4.5f;
-            cursorList->PushClipRectFullScreen();
-            cursorList->AddCircleFilled(dot, r, IM_COL32(255, 255, 255, 230), 20);
-            cursorList->AddCircle(dot, r + 1.2f, IM_COL32(0, 0, 0, 200), 24, 2.0f);
-            cursorList->PopClipRect();
+            // Draw dot only when activated (from physical mouse or pure analog) and not suppressed
+            if (s_dotActivated && s_dotSuppressSec <= 0.f) {
+                auto cursorList = ImGui::GetForegroundDrawList();
+                if (!cursorList) cursorList = bgList;
+                const float r = 4.5f;
+                cursorList->PushClipRectFullScreen();
+                cursorList->AddCircleFilled(dot, r, IM_COL32(255, 255, 255, 230), 20);
+                cursorList->AddCircle(dot, r + 1.2f, IM_COL32(0, 0, 0, 200), 24, 2.0f);
+                cursorList->PopClipRect();
+            }
         }
     }
 }
