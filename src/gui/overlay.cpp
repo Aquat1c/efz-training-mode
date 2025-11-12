@@ -50,6 +50,14 @@ int g_TriggerAfterAirtechId = -1;
 int g_TriggerOnRGId = -1;
 // Debug borders toggle default off
 std::atomic<bool> g_ShowOverlayDebugBorders{false};
+
+// Track RT size changes globally (shared across all EndScene calls)
+namespace {
+    std::mutex g_rtSizeMutex;
+    UINT g_prevRtW = 0;
+    UINT g_prevRtH = 0;
+    std::atomic<bool> g_rtSizeLogged{false};  // Use atomic for thread-safe first-log detection
+}
 std::atomic<bool> g_ShowRGDebugToasts{false};
 
 // --- Define static members of DirectDrawHook ---
@@ -211,19 +219,8 @@ HRESULT WINAPI HookedEndScene(LPDIRECT3DDEVICE9 pDevice) {
     // Post-NewFrame snapshot for diagnostics (throttled)
     ImGuiImpl::PostNewFrameDiagnostics();
 
-    // PreNewFrameInputs already set DisplaySize to 640x480; only log occasionally
+    // PreNewFrameInputs already set DisplaySize to 640x480
     ImGuiIO& io = ImGui::GetIO();
-    {
-        // Optional diagnostic to confirm sizes occasionally
-        static int s_logCounter = 0;
-        if ((++s_logCounter % 240) == 0) {
-            char buf[160];
-            _snprintf_s(buf, sizeof(buf), _TRUNCATE,
-                "[OVERLAY][D3D9] RT size=%ux%u ImGui.DisplaySize=%dx%d",
-                640, 480, (int)io.DisplaySize.x, (int)io.DisplaySize.y);
-            LogOut(buf, detailedLogging.load());
-        }
-    }
 
     // If the game window is minimized, skip rendering to avoid ImGui asserting on zero-size display
     if (io.DisplaySize.x <= 0.0f || io.DisplaySize.y <= 0.0f) {
@@ -525,15 +522,33 @@ void DirectDrawHook::RenderD3D9Overlays(LPDIRECT3DDEVICE9 pDevice) {
         ox = ((float)rtW - gw) * 0.5f;
         oy = ((float)rtH - gh) * 0.5f;
     }
-    // If ImGui menu is visible, skip heavy debug borders to reduce draw load
-    if (g_ShowOverlayDebugBorders.load() && !menuVisibleNow && rtW > 0 && rtH > 0) {
-        static UINT prevW = 0, prevH = 0;
-        if (rtW != prevW || rtH != prevH) {
-            prevW = rtW; prevH = rtH;
+    
+    // Track render target size changes and log when it changes (mutex-protected to prevent duplicate logs)
+    {
+        std::lock_guard<std::mutex> lock(g_rtSizeMutex);
+        
+        // Use atomic exchange to ensure only ONE thread logs initially
+        bool expected = false;
+        if (g_rtSizeLogged.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
+            // We won the race - this is the ONLY initial log
+            g_prevRtW = rtW;
+            g_prevRtH = rtH;
             ImVec2 ds = ImGui::GetIO().DisplaySize;
             LogOut("[OVERLAY][D3D9] RT size=" + std::to_string(rtW) + "x" + std::to_string(rtH) +
-                   " ImGui.DisplaySize=" + std::to_string((int)ds.x) + "x" + std::to_string((int)ds.y), detailedLogging.load());
+                   " ImGui.DisplaySize=" + std::to_string((int)ds.x) + "x" + std::to_string((int)ds.y), true);
+        } else if (rtW != g_prevRtW || rtH != g_prevRtH) {
+            // Already logged before AND size changed - log the change
+            g_prevRtW = rtW;
+            g_prevRtH = rtH;
+            ImVec2 ds = ImGui::GetIO().DisplaySize;
+            LogOut("[OVERLAY][D3D9] RT size CHANGED: " + std::to_string(rtW) + "x" + std::to_string(rtH) +
+                   " ImGui.DisplaySize=" + std::to_string((int)ds.x) + "x" + std::to_string((int)ds.y), true);
         }
+        // If exchange failed and size unchanged - do nothing
+    }
+    
+    // If ImGui menu is visible, skip heavy debug borders to reduce draw load
+    if (g_ShowOverlayDebugBorders.load() && !menuVisibleNow && rtW > 0 && rtH > 0) {
         // Full render-target border (red)
         bgList->AddRect(ImVec2(1.5f, 1.5f), ImVec2((float)rtW - 1.5f, (float)rtH - 1.5f), IM_COL32(255, 0, 0, 200), 0.0f, 0, 3.0f);
         // Label
