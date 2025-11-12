@@ -61,68 +61,67 @@ void LogOut(const std::string& msg, bool consoleOutput) {
     
     // Only output to console if requested
     if (consoleOutput) {
+        // Quick pre-filter (no lock or timestamp) to drop verbose categories when detailedLogging is off
+        std::string currentCategory = "OTHER";
+        {
+            size_t startBracket = msg.find('[');
+            size_t endBracket = msg.find(']', startBracket);
+            if (startBracket != std::string::npos && endBracket != std::string::npos) {
+                currentCategory = msg.substr(startBracket + 1, endBracket - startBracket - 1);
+            }
+        }
+        bool isDetailedDebugMsg =
+            currentCategory == "WINDOW" ||
+            currentCategory == "OVERLAY" ||
+            currentCategory == "IMGUI" ||
+            currentCategory == "IMGUI_MONITOR" ||
+            currentCategory == "CONFIG" ||
+            currentCategory == "KEYBINDS";
+        if (isDetailedDebugMsg && !detailedLogging.load()) {
+            return;
+        }
+
         std::lock_guard<std::mutex> lock(g_logMutex);
-        // Build a timestamp prefix without brackets (so category [..] remains the first bracketed token)
-        auto now = std::chrono::system_clock::now();
-        auto timeT = std::chrono::system_clock::to_time_t(now);
-        tm timeInfo{};
-        localtime_s(&timeInfo, &timeT);
-        auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()) % 1000;
-        char ts[32];
-        std::strftime(ts, sizeof(ts), "%H:%M:%S", &timeInfo);
-        std::ostringstream tsoss; tsoss << ts << "." << std::setw(3) << std::setfill('0') << ms.count() << " ";
-        std::string prefix = tsoss.str();
-        std::string formatted = msg.empty() ? std::string() : (prefix + msg);
+
+        auto buildPrefix = []() -> std::string {
+            auto now = std::chrono::system_clock::now();
+            auto timeT = std::chrono::system_clock::to_time_t(now);
+            tm timeInfo{};
+            localtime_s(&timeInfo, &timeT);
+            auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()) % 1000;
+            char ts[32];
+            std::strftime(ts, sizeof(ts), "%H:%M:%S", &timeInfo);
+            std::ostringstream tsoss; tsoss << ts << "." << std::setw(3) << std::setfill('0') << ms.count() << " ";
+            return tsoss.str();
+        };
 
         // Buffer until console window exists (store formatted with timestamp)
         if (!g_consoleReady.load() || GetConsoleWindow() == nullptr) {
+            std::string formatted = msg.empty() ? std::string() : (buildPrefix() + msg);
             g_pendingConsoleLogs.emplace_back(formatted);
             return;
         }
-        
+
         // Skip spacing logic for empty lines - this fixes most spacing issues
         if (msg.empty()) {
             std::cout << std::endl;
             return;
         }
-        
-    // Track message categories for proper spacing
+
+        // Track message categories for proper spacing
         static std::string lastCategory = "";
         static bool wasEmptyLine = false;
-        std::string currentCategory = "OTHER"; // Default
-        
-        // Extract the message category from inside first []
-        size_t startBracket = msg.find('[');
-        size_t endBracket = msg.find(']', startBracket);
-        
-        if (startBracket != std::string::npos && endBracket != std::string::npos) {
-            currentCategory = msg.substr(startBracket + 1, endBracket - startBracket - 1);
-        }
-        
-        // Skip certain debug messages unless detailed debug is enabled
-        bool isDetailedDebugMsg = 
-            currentCategory == "WINDOW" || 
-            currentCategory == "OVERLAY" || 
-            currentCategory == "IMGUI" || 
-            currentCategory == "IMGUI_MONITOR" ||
-            currentCategory == "CONFIG" ||
-            currentCategory == "KEYBINDS";
-            
-        // Don't show detailed debug messages unless enabled
-        if (isDetailedDebugMsg && !detailedLogging.load()) {
-            return;
-        }
-        
+
         // Don't add extra spacing if the last line was empty or this is a help message
-        bool isHelpMessage = (msg.find("Key") != std::string::npos && msg.find(":") != std::string::npos) || 
-                            msg.find("NOTE:") != std::string::npos ||
-                            msg.find("---") != std::string::npos;
-        
+        bool isHelpMessage = (msg.find("Key") != std::string::npos && msg.find(":") != std::string::npos) ||
+                             msg.find("NOTE:") != std::string::npos ||
+                             msg.find("---") != std::string::npos;
+
         // Add spacing based on category change, but not for help messages
         if (!wasEmptyLine && !isHelpMessage && !lastCategory.empty() && currentCategory != lastCategory) {
             std::cout << std::endl;
         }
-        
+
         // Reduced logging duplicate suppression & lightweight category throttling
         if (g_reducedLogging.load()) {
             // Maintain a tiny ring of last few messages to collapse duplicates within a window
@@ -150,10 +149,11 @@ void LogOut(const std::string& msg, bool consoleOutput) {
             static auto lastFlush = nowSteady;
             if (nowSteady - lastFlush >= std::chrono::seconds(1)) {
                 for (auto &e : recent) {
+                    std::string p = buildPrefix();
                     if (e.count > 1) {
-                        std::cout << prefix << e.text << " (x" << e.count << ")" << std::endl;
+                        std::cout << p << e.text << " (x" << e.count << ")" << std::endl;
                     } else if (e.count == 1) {
-                        std::cout << prefix << e.text << std::endl;
+                        std::cout << p << e.text << std::endl;
                     }
                 }
                 recent.clear();
@@ -165,12 +165,11 @@ void LogOut(const std::string& msg, bool consoleOutput) {
         }
 
         // Output the message immediately (non-reduced or first occurrence)
-        if (msg.empty()) {
-            std::cout << std::endl;
-        } else {
+        {
+            std::string formatted = buildPrefix() + msg;
             std::cout << formatted << std::endl;
         }
-        
+
         // Update tracking variables
         wasEmptyLine = msg.empty();
         if (!msg.empty() && !isHelpMessage) {

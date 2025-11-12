@@ -286,7 +286,12 @@ void MonitorKeys() {
             bool keyHandled = false;
 
             // Helpers
-            auto pollPad = [](int idx, XINPUT_STATE& out) { ZeroMemory(&out, sizeof(out)); return XInputShim::GetState(idx, &out) == ERROR_SUCCESS; };
+            // Cached polling (snapshot already refreshed earlier in frame by overlay EndScene; fallback refresh here if not yet)
+            auto pollPad = [](int idx, XINPUT_STATE& out) {
+                const XINPUT_STATE* s = XInputShim::GetCachedState(idx);
+                if (!s) { ZeroMemory(&out, sizeof(out)); return false; }
+                out = *s; return true;
+            };
             auto processActionsForPad = [&](int padIndex, const XINPUT_STATE& cur, XINPUT_STATE& prev) -> bool {
                 // Helper: edge detect (just-pressed) for standard buttons & pseudo trigger bits
                 constexpr int LT_MASK = 0x10000; // pseudo masks defined in config parser
@@ -454,12 +459,9 @@ void MonitorKeys() {
                 DWORD now = GetTickCount();
                 if ((now - lastConnScanTick) < 1000) return; // 1s cadence
                 lastConnScanTick = now;
-                unsigned mask = 0;
-                for (int i = 0; i < 4; ++i) {
-                    XINPUT_STATE tmp{};
-                    if (XInputShim::GetState(i, &tmp) == ERROR_SUCCESS) mask |= (1u << i);
-                }
-                connectedMask = mask;
+                // Use cached snapshot mask (refresh if stale)
+                XInputShim::RefreshSnapshotOncePerFrame();
+                connectedMask = XInputShim::GetConnectedMaskCached();
             };
             refreshConnectionsIfNeeded();
             int cfgIdx = cfg.controllerIndex;
@@ -474,10 +476,9 @@ void MonitorKeys() {
                 // All controllers: process in index order but handle at most one action per frame
                 unsigned mask = connectedMask;
                 if (mask == 0) {
-                    // Fallback: if no cached connections, do a light probe this frame
-                    for (int i = 0; i < 4; ++i) {
-                        XINPUT_STATE tmp{}; if (XInputShim::GetState(i, &tmp) == ERROR_SUCCESS) { mask |= (1u << i); }
-                    }
+                    // Refresh snapshot and reuse mask; avoids per-pad probing
+                    XInputShim::RefreshSnapshotOncePerFrame();
+                    mask = XInputShim::GetConnectedMaskCached();
                     connectedMask = mask;
                 }
                 for (int i = 0; i < 4 && !keyHandled; ++i) {
