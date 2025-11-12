@@ -103,7 +103,7 @@
 #define GROUNDTECH_PRE 97
 #define GROUNDTECH_RECOVERY 96  // Add this new constant for the recovery state
 
-// Jump Move IDs - add these after the Tech Move IDs section
+// Jump Move IDs
 #define STRAIGHT_JUMP_ID 4
 #define FORWARD_JUMP_ID 5
 #define BACKWARD_JUMP_ID 6
@@ -368,8 +368,6 @@
 #define IDC_TRIGGER_AFTER_HITSTUN_MACRO    5032
 #define IDC_TRIGGER_AFTER_AIRTECH_MACRO    5033
 #define IDC_TRIGGER_ON_RG_MACRO            5034
-
-// After your existing character constants, add:
 
 // Character IDs - corrected to match internal game IDs
 #define CHAR_ID_AKANE     0

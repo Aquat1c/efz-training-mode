@@ -1617,7 +1617,7 @@ namespace ImGuiGui {
             case CHAR_ID_MISAKI:   return "Misaki_Kawana";
             case CHAR_ID_MISHIO:   return "Mishio_Amano";
             case CHAR_ID_MISUZU:   return "Misuzu_Kamio";
-            case CHAR_ID_MIZUKA:   return "UNKNOWN";   // UNKNOWN(Boss)
+            case CHAR_ID_MIZUKA:   return "Mizuka_Nagamori";   // UNKNOWN(Boss)
             case CHAR_ID_NAGAMORI: return "Mizuka_Nagamori";   // 
             case CHAR_ID_NANASE:   return "Rumi_Nanase";       // Rumi
             case CHAR_ID_SAYURI:   return "Sayuri_Kurata";
