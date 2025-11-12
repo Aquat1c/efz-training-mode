@@ -255,7 +255,8 @@ void UpdateConsoleTitle() {
                 // Minimal fallback: refresh addresses occasionally and read values (including names)
                 static uintptr_t cachedAddresses[12] = {0};
                 static int titleCacheCounter = 0;
-                if (titleCacheCounter++ >= 20) {
+                // Refresh cached addresses less frequently to reduce pointer resolution overhead
+                if (titleCacheCounter++ >= 60) {
                     titleCacheCounter = 0;
                     cachedAddresses[0] = ResolvePointer(base, EFZ_BASE_OFFSET_P1, HP_OFFSET);
                     cachedAddresses[1] = ResolvePointer(base, EFZ_BASE_OFFSET_P1, METER_OFFSET);

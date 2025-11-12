@@ -16,6 +16,7 @@
 #include <sstream>
 #include <iomanip>
 #include <algorithm>
+#include <cstdint>
 
 // Define the buffer constants here
 // IMPORTANT: The actual input buffer is 180 bytes long. Using 0x180 (384)
@@ -96,16 +97,31 @@ void FreezeBufferValuesThread(int playerNum) {
         }
         
         // Write buffer values very frequently (every iteration)
-        for (uint16_t j = 0; j < g_frozenBufferLength; j++) {
-            uint16_t idx = (g_frozenBufferStartIndex + j) % INPUT_BUFFER_SIZE;
-            SafeWriteMemory(playerPtr + INPUT_BUFFER_OFFSET + idx, 
-                          &g_frozenBufferValues[j], sizeof(uint8_t));
+        // Optimize: two contiguous writes instead of per-byte writes across ring
+        if (g_frozenBufferLength > 0) {
+            uint16_t start = g_frozenBufferStartIndex;
+            uint16_t len1 = (uint16_t)std::min<uint16_t>(g_frozenBufferLength, INPUT_BUFFER_SIZE - start);
+            uint16_t len2 = g_frozenBufferLength - len1;
+            // First contiguous segment
+            if (len1 > 0) {
+                SafeWriteMemory(playerPtr + INPUT_BUFFER_OFFSET + start,
+                                g_frozenBufferValues.data(), len1 * sizeof(uint8_t));
+            }
+            // Wrapped segment at buffer start
+            if (len2 > 0) {
+                SafeWriteMemory(playerPtr + INPUT_BUFFER_OFFSET,
+                                g_frozenBufferValues.data() + len1, len2 * sizeof(uint8_t));
+            }
         }
         
         // Ensure index stays frozen
         if (g_indexFreezingActive) {
-            SafeWriteMemory(playerPtr + INPUT_BUFFER_INDEX_OFFSET, 
-                          &g_frozenIndexValue, sizeof(uint16_t));
+            // Avoid redundant writes if index is already at desired value
+            uint16_t curIdx = 0xFFFF;
+            if (!SafeReadMemory(playerPtr + INPUT_BUFFER_INDEX_OFFSET, &curIdx, sizeof(uint16_t)) || curIdx != g_frozenIndexValue) {
+                SafeWriteMemory(playerPtr + INPUT_BUFFER_INDEX_OFFSET,
+                                &g_frozenIndexValue, sizeof(uint16_t));
+            }
         }
         
         // Check for move ID changes
@@ -142,17 +158,28 @@ void FreezeBufferValuesThread(int playerNum) {
         
         // Rewrite buffer values every 3rd frame
         if (freezeCount % 3 == 0) {
-            for (uint16_t i = 0; i < g_frozenBufferLength; i++) {
-                uint16_t idx = (g_frozenBufferStartIndex + i) % INPUT_BUFFER_SIZE;
-                SafeWriteMemory(currentPlayerPtr + INPUT_BUFFER_OFFSET + idx, 
-                               &g_frozenBufferValues[i], sizeof(uint8_t));
+            if (g_frozenBufferLength > 0) {
+                uint16_t start = g_frozenBufferStartIndex;
+                uint16_t len1 = (uint16_t)std::min<uint16_t>(g_frozenBufferLength, INPUT_BUFFER_SIZE - start);
+                uint16_t len2 = g_frozenBufferLength - len1;
+                if (len1 > 0) {
+                    SafeWriteMemory(currentPlayerPtr + INPUT_BUFFER_OFFSET + start,
+                                    g_frozenBufferValues.data(), len1 * sizeof(uint8_t));
+                }
+                if (len2 > 0) {
+                    SafeWriteMemory(currentPlayerPtr + INPUT_BUFFER_OFFSET,
+                                    g_frozenBufferValues.data() + len1, len2 * sizeof(uint8_t));
+                }
             }
         }
         
         // Always keep index frozen
         if (g_indexFreezingActive) {
-            SafeWriteMemory(currentPlayerPtr + INPUT_BUFFER_INDEX_OFFSET, 
-                          &g_frozenIndexValue, sizeof(uint16_t));
+            uint16_t curIdx = 0xFFFF;
+            if (!SafeReadMemory(currentPlayerPtr + INPUT_BUFFER_INDEX_OFFSET, &curIdx, sizeof(uint16_t)) || curIdx != g_frozenIndexValue) {
+                SafeWriteMemory(currentPlayerPtr + INPUT_BUFFER_INDEX_OFFSET,
+                                &g_frozenIndexValue, sizeof(uint16_t));
+            }
         }
         
         // Check for move ID changes
@@ -189,10 +216,19 @@ void FreezeBufferValuesThread(int playerNum) {
         uintptr_t playerPtr = GetPlayerPointer(playerNum);
         if (playerPtr) {
             // Overwrite pattern region with neutral to avoid ghost follow‑ups
-            uint8_t zero = 0x00;
-            for (uint16_t i = 0; i < g_frozenBufferLength; ++i) {
-                uint16_t idx = (g_frozenBufferStartIndex + i) % INPUT_BUFFER_SIZE;
-                SafeWriteMemory(playerPtr + INPUT_BUFFER_OFFSET + idx, &zero, sizeof(uint8_t));
+            if (g_frozenBufferLength > 0) {
+                uint16_t start = g_frozenBufferStartIndex;
+                uint16_t len1 = (uint16_t)std::min<uint16_t>(g_frozenBufferLength, INPUT_BUFFER_SIZE - start);
+                uint16_t len2 = g_frozenBufferLength - len1;
+                // Prepare temporary zero buffers (stack-allocated, small)
+                std::vector<uint8_t> zeros1(len1, 0x00);
+                std::vector<uint8_t> zeros2(len2, 0x00);
+                if (len1 > 0) {
+                    SafeWriteMemory(playerPtr + INPUT_BUFFER_OFFSET + start, zeros1.data(), len1 * sizeof(uint8_t));
+                }
+                if (len2 > 0) {
+                    SafeWriteMemory(playerPtr + INPUT_BUFFER_OFFSET, zeros2.data(), len2 * sizeof(uint8_t));
+                }
             }
             // Push a few neutral frames at index tail
             uint16_t curIdx = 0;

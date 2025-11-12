@@ -992,4 +992,40 @@ namespace SwitchPlayers {
         }
         return ApplySet(reinterpret_cast<uint8_t*>(p), sideIdx);
     }
+
+    bool ResetControlMappingForMenusToP1() {
+        // Vanilla: ensure routing swap is disabled
+        SetVanillaSwapInputRouting(false);
+
+        // If EfzRevival is not loaded, nothing else to do for menus; return success
+        HMODULE h = GetModuleHandleA("EfzRevival.dll");
+        if (!h) {
+            LogOut("[SWITCH][MENU] Vanilla routing reset for menus (P1 controls -> P1)", true);
+            return true;
+        }
+
+        // With Revival: set Practice local=0 (P1), remote=1, align GUI_POS, and refresh mapping block.
+        PauseIntegration::EnsurePracticePointerCapture();
+        uint8_t* practice = reinterpret_cast<uint8_t*>(PauseIntegration::GetPracticeControllerPtr());
+        if (!practice) {
+            practice = ResolvePracticePtrFallback();
+        }
+        if (!practice) {
+            LogOut("[SWITCH][MENU] Practice controller not available; only vanilla routing reset applied", true);
+            return false;
+        }
+
+        // Write local/remote indices directly (avoid touching engine CPU flags)
+        int local = 0, remote = 1;
+        (void)SafeWriteMemory((uintptr_t)practice + EFZ_Practice_LocalSideOffset(), &local, sizeof(local));
+        (void)SafeWriteMemory((uintptr_t)practice + EFZ_Practice_RemoteSideOffset(), &remote, sizeof(remote));
+        // Align GUI_POS: 1 when P1 local
+        uint8_t guiPos = 1u; (void)SafeWriteMemory((uintptr_t)practice + PRACTICE_OFF_GUI_POS, &guiPos, sizeof(guiPos));
+
+        // Refresh mapping to ensure the input pair aligns with new local side
+        PostSwitchRefresh(practice);
+
+        LogOut("[SWITCH][MENU] Reset mapping for menus: local=P1, remote=P2, GUI_POS=1", true);
+        return true;
+    }
 }

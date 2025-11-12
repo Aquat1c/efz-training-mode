@@ -48,7 +48,7 @@ static void Worker() {
                 // If we just wrote a non-zero last time, keep holding
                 // On transition or periodic re-press, create an edge by forcing a neutral first
                 if (last != 0 && last == curDesired) {
-                    // keep holding
+                    // keep holding (reassert to ensure game sees it)
                     WritePlayerInputImmediate(p, curDesired);
                 } else {
                     // ensure a neutral edge when transitioning to a new non-zero
@@ -77,7 +77,7 @@ static void Worker() {
             }
 
             if (curDesired != 0) {
-                // Maintain hold; if last was different, insert edge
+                // Maintain hold; ensure the mask is reasserted periodically since the game may clear per frame
                 if (last != 0 && last != curDesired) {
                     WritePlayerInputImmediate(p, 0);
                 }
