@@ -3,6 +3,8 @@
 #include <string>
 #include <atomic>
 
+//#define ENABLE_FRAME_ADV_DEBUG
+
 // Structure to track frame advantage state with subframe precision
 struct FrameAdvantageState {
     // Blockstun/Hitstun tracking
@@ -68,6 +70,7 @@ FrameAdvantageState GetFrameAdvantageState();
 
 // Helper functions with subframe precision
 int GetCurrentInternalFrame();
+int GetDisplayDurationInternalFrames();  // Get configured display duration in internal frames
 double GetCurrentVisualFrame();      // Returns frame with .33/.66 subframes
 std::string FormatFrameAdvantage(int advantageInternal);  // Changed parameter from double to int
 bool IsAttackMove(short moveID);

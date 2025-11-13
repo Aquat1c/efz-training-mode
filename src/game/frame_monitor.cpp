@@ -1459,9 +1459,10 @@ void FrameDataMonitor() {
                     COLORREF rightColor = (fa2Int >= 0) ? RGB(0, 255, 0) : RGB(255, 0, 0);
                     // Clear any previous regular FA display window to ensure RG takes precedence
                     frameAdvState.displayUntilInternalFrame = -1;
-                    // Suppress regular FA overlay updates briefly (e.g., for ~1s)
-                    int nowInt = frameCounter.load();
-                    g_SkipRegularFAOverlayUntilFrame.store(nowInt + 192);
+                    // Suppress regular FA overlay updates for the same duration as display
+                    // Use pause-aware frame counter to match timer check in MonitorFrameAdvantage
+                    int nowInt = GetCurrentInternalFrame();
+                    g_SkipRegularFAOverlayUntilFrame.store(nowInt + GetDisplayDurationInternalFrames());
                     // Render as two messages placed side-by-side. Keep baseline Y and compute X for right.
                     // We’ll approximate widths by measuring when menu is hidden; otherwise keep coarse spacing.
                     const int baseX = 305;
@@ -1481,6 +1482,12 @@ void FrameDataMonitor() {
                         } else {
                             g_FrameAdvantage2Id = DirectDrawHook::AddPermanentMessage(rightText, rightColor, rightX, baseY);
                         }
+                        // Set display timer for RG messages (configurable via .ini, default 8 seconds)
+                        frameAdvState.displayUntilInternalFrame = nowInt + GetDisplayDurationInternalFrames();
+                        #if defined(ENABLE_FRAME_ADV_DEBUG)
+                        LogOut("[RG_DEBUG] Set RG timer: nowInt=" + std::to_string(nowInt) + 
+                               " expiry=" + std::to_string(frameAdvState.displayUntilInternalFrame), true);
+                        #endif
                     } else {
                         // If hidden, ensure any existing FA messages are cleared
                         if (g_FrameAdvantageId != -1) { DirectDrawHook::RemovePermanentMessage(g_FrameAdvantageId); g_FrameAdvantageId = -1; }
@@ -1488,7 +1495,13 @@ void FrameDataMonitor() {
                     }
 
                     // After FA2 is known, we can stop tracking this RG instance
+                    // But don't clear the display messages immediately - let them show for the full duration
+                    // Set a timer so regular FA can take over after the suppression window expires
                     rg.active = false;
+                    // The messages will be cleared naturally when:
+                    // 1. g_SkipRegularFAOverlayUntilFrame expires and regular FA takes over
+                    // 2. User toggles the overlay off
+                    // 3. A new RG occurs
                 }
             };
 
@@ -1689,10 +1702,9 @@ void FrameDataMonitor() {
             bool moveIDsChanged = (moveID1 != prevMoveID1) || (moveID2 != prevMoveID2);
             bool criticalFeaturesActive = autoJumpEnabled.load() || autoActionEnabled.load() || autoAirtechEnabled.load();
 
-            // ALWAYS process frame advantage for precise timing
-            if (moveIDsChanged) {
-                MonitorFrameAdvantage(moveID1, moveID2, prevMoveID1, prevMoveID2);
-            }
+            // ALWAYS process frame advantage for precise timing and display management
+            // Must run every frame to handle display timers and neutral detection
+            MonitorFrameAdvantage(moveID1, moveID2, prevMoveID1, prevMoveID2);
             
             // Run dummy auto-block stance early for minimal latency (uses current move IDs)
             MonitorDummyAutoBlock(moveID1, moveID2, prevMoveID1, prevMoveID2);

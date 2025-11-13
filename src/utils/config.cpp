@@ -241,6 +241,11 @@ namespace Config {
             file << "; Maintain RF freeze only when neutral (allowed MoveIDs) (1=yes, 0=no)\n";
             file << "freezeRFOnlyWhenNeutral = 1\n\n";
 
+            // Frame Advantage display duration
+            file << "; Frame Advantage display duration (seconds)\n";
+            file << "; How long to show frame advantage and gap messages on screen\n";
+            file << "frameAdvantageDisplayDuration = 1.9\n\n";
+
             // Practice options
             file << "; Practice: Dummy Auto-Block neutral timeout (ms) for First Hit/After First Hit modes.\n";
             file << "; When waiting to re-arm/disable, require this many milliseconds of continuous neutral before toggling.\n";
@@ -496,6 +501,20 @@ namespace Config {
             // RF freeze behavior (defaults: enabled and neutral-only)
             settings.freezeRFAfterContRec = GetValueBool("General", "freezeRFAfterContRec", true);
             settings.freezeRFOnlyWhenNeutral = GetValueBool("General", "freezeRFOnlyWhenNeutral", true);
+            // Frame Advantage display duration (default: 8.0 seconds)
+            {
+                auto sectionIt = iniData.find("general");
+                float duration = 8.0f;
+                if (sectionIt != iniData.end()) {
+                    auto keyIt = sectionIt->second.find("frameadvantagedisplayduration");
+                    if (keyIt != sectionIt->second.end()) {
+                        try { duration = std::stof(keyIt->second); } catch (...) { duration = 8.0f; }
+                    }
+                }
+                if (duration < 0.5f) duration = 0.5f;
+                if (duration > 30.0f) duration = 30.0f;
+                settings.frameAdvantageDisplayDuration = duration;
+            }
             // Practice: neutral timeout for dummy auto-block modes (ms)
             settings.autoBlockNeutralTimeoutMs = GetValueInt("General", "autoBlockNeutralTimeoutMs", 10000);
             
@@ -635,6 +654,9 @@ namespace Config {
             file << "; RF freeze behavior (after Continuous Recovery)\n";
             file << "freezeRFAfterContRec = " << (settings.freezeRFAfterContRec?"1":"0") << "\n";
             file << "freezeRFOnlyWhenNeutral = " << (settings.freezeRFOnlyWhenNeutral?"1":"0") << "\n\n";
+            // Frame Advantage display duration
+            file << "; Frame Advantage display duration (seconds)\n";
+            file << "frameAdvantageDisplayDuration = " << settings.frameAdvantageDisplayDuration << "\n\n";
             // Practice options
             file << "; Practice: Dummy Auto-Block neutral timeout (ms) for First Hit/After First Hit modes.\n";
             file << "autoBlockNeutralTimeoutMs = " << settings.autoBlockNeutralTimeoutMs << "\n\n";
@@ -753,6 +775,7 @@ namespace Config {
             if (k == "controllerindex") { try { settings.controllerIndex = std::stoi(value); } catch(...) { settings.controllerIndex = -1; } if (settings.controllerIndex < -1 || settings.controllerIndex > 3) settings.controllerIndex = -1; }
             if (k == "freezerfaftercontrec") settings.freezeRFAfterContRec = (value == "1");
             if (k == "freezerfonlywhenneutral") settings.freezeRFOnlyWhenNeutral = (value == "1");
+            if (k == "frameadvantagedisplayduration") { try { settings.frameAdvantageDisplayDuration = std::stof(value); } catch(...){} }
             if (k == "autoblockneutraltimeoutms") { try { settings.autoBlockNeutralTimeoutMs = std::stoi(value); } catch(...) { settings.autoBlockNeutralTimeoutMs = 10000; } }
         }
         else if (sec == "hotkeys") {
