@@ -22,8 +22,11 @@ FrameAdvantageState frameAdvState = {
     -1, -1,                        // p1DefenderFreeInternalFrame, p2DefenderFreeInternalFrame
     0.0, 0.0,                      // p1FrameAdvantage, p2FrameAdvantage
     false, false,                  // p1AdvantageCalculated, p2AdvantageCalculated
+    0, 0,                          // p1GapFrames, p2GapFrames
+    false, false,                  // p1GapCalculated, p2GapCalculated
     0, 0,                          // p1InitialBlockstunMoveID, p2InitialBlockstunMoveID
-    -1                             // displayUntilInternalFrame
+    -1,                            // displayUntilInternalFrame
+    -1                             // gapDisplayUntilInternalFrame
 };
 
 // Suppress regular FA overlay updates until this internal frame (0 = off)
@@ -54,9 +57,14 @@ void ResetFrameAdvantageState() {
     frameAdvState.p2FrameAdvantage = 0.0;
     frameAdvState.p1AdvantageCalculated = false;
     frameAdvState.p2AdvantageCalculated = false;
+    frameAdvState.p1GapFrames = 0;
+    frameAdvState.p2GapFrames = 0;
+    frameAdvState.p1GapCalculated = false;
+    frameAdvState.p2GapCalculated = false;
     frameAdvState.p1InitialBlockstunMoveID = 0;
     frameAdvState.p2InitialBlockstunMoveID = 0;
     frameAdvState.displayUntilInternalFrame = -1;
+    frameAdvState.gapDisplayUntilInternalFrame = -1;
     
     if (detailedLogging.load()) {
     #if defined(ENABLE_FRAME_ADV_DEBUG)
@@ -72,6 +80,10 @@ void ResetFrameAdvantageState() {
     if (g_FrameAdvantage2Id != -1) {
         DirectDrawHook::RemovePermanentMessage(g_FrameAdvantage2Id);
         g_FrameAdvantage2Id = -1;
+    }
+    if (g_FrameGapId != -1) {
+        DirectDrawHook::RemovePermanentMessage(g_FrameGapId);
+        g_FrameGapId = -1;
     }
 }
 
@@ -236,6 +248,15 @@ void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, shor
         frameAdvState.displayUntilInternalFrame = -1;
     }
     
+    // Check if the gap display timer has expired
+    if (frameAdvState.gapDisplayUntilInternalFrame != -1 && currentInternalFrame >= frameAdvState.gapDisplayUntilInternalFrame) {
+        if (g_FrameGapId != -1) {
+            DirectDrawHook::RemovePermanentMessage(g_FrameGapId);
+            g_FrameGapId = -1;
+        }
+        frameAdvState.gapDisplayUntilInternalFrame = -1;
+    }
+    
     // Update player states for proper tracking
     bool p1Actionable = IsActionable(moveID1);
     bool p2Actionable = IsActionable(moveID2);
@@ -319,51 +340,33 @@ void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, shor
         ((p2_entering_blockstun || p2_entering_hitstun || p2_entering_thrown || (p2_entering_nonactionable && p1_recent_attack_window))
          || (p1_attack_edge && !IsActionable(moveID2)))
         && p1_hit_connect_cooldown == 0) {
-        // Check for gap between moves in a string
+        
+        // Calculate gap if there was a previous defender free frame (string of attacks)
         if (p2_last_defender_free_frame != -1) {
             int gapFramesRaw = currentInternalFrame - p2_last_defender_free_frame;
             int gapFrames = gapFramesRaw - p2_freeze_accum_since_free;
             if (gapFrames < 0) gapFrames = 0;
             
-            // Only consider gaps that are reasonably small
+            // Store gap in state for later display (when we have complete data)
+            // Only store reasonable gaps (not massive timeouts)
             if (gapFrames > 0 && gapFrames <= 60) {
-                // Format gap WITHOUT a plus sign
-                int visualGapFrames = gapFrames / 3;
-                int subframes = gapFrames % 3;
-                
-                std::string gapText = "Gap: " + std::to_string(visualGapFrames);
-                
-                // Add subframe precision if needed
-                if (subframes == 1) {
-                    gapText += ".33";
-                } else if (subframes == 2) {
-                    gapText += ".66";
-                }
-                
-                // Respect the same visibility gate as the Frame Advantage overlay
-                if (g_showFrameAdvantageOverlay.load()) {
-                    if (g_FrameAdvantageId != -1) {
-                        DirectDrawHook::UpdatePermanentMessage(g_FrameAdvantageId, gapText, RGB(255, 255, 0));
-                    } else {
-                        g_FrameAdvantageId = DirectDrawHook::AddPermanentMessage(gapText, RGB(255, 255, 0), 305, 430);
-                    }
-                } else {
-                    // If hidden, ensure any existing message is cleared immediately
-                    if (g_FrameAdvantageId != -1) {
-                        DirectDrawHook::RemovePermanentMessage(g_FrameAdvantageId);
-                        g_FrameAdvantageId = -1;
-                    }
-                }
-                
-                // Display for ~1/3 second (60 internal frames)
-                frameAdvState.displayUntilInternalFrame = currentInternalFrame + 60;
+                frameAdvState.p1GapFrames = gapFrames;
+                frameAdvState.p1GapCalculated = true;
                 
                 if (detailedLogging.load()) {
-                    LogOut(std::string("[FRAME_ADV] Gap detected: ") + gapText +
+                    LogOut(std::string("[FRAME_ADV] Gap stored: ") + std::to_string(gapFrames / 3) +
                            " (raw=" + std::to_string(gapFramesRaw) +
                            ", freeze-removed=" + std::to_string(p2_freeze_accum_since_free) + ")", true);
                 }
+            } else {
+                // Gap too large or zero - clear any previous gap
+                frameAdvState.p1GapFrames = 0;
+                frameAdvState.p1GapCalculated = false;
             }
+        } else {
+            // No previous defender free = not a string, first hit
+            frameAdvState.p1GapFrames = 0;
+            frameAdvState.p1GapCalculated = false;
         }
         
         // CRUCIAL CHANGE: Don't reset the entire state for strings of attacks
@@ -439,51 +442,33 @@ void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, shor
         ((p1_entering_blockstun || p1_entering_hitstun || p1_entering_thrown || (p1_entering_nonactionable && p2_recent_attack_window))
          || (p2_attack_edge && !IsActionable(moveID1)))
         && p2_hit_connect_cooldown == 0) {
-        // Check for gap between moves in a string
+        
+        // Calculate gap if there was a previous defender free frame (string of attacks)
         if (p1_last_defender_free_frame != -1) {
             int gapFramesRaw = currentInternalFrame - p1_last_defender_free_frame;
             int gapFrames = gapFramesRaw - p1_freeze_accum_since_free;
             if (gapFrames < 0) gapFrames = 0;
             
-            // Only consider gaps that are reasonably small
+            // Store gap in state for later display (when we have complete data)
+            // Only store reasonable gaps (not massive timeouts)
             if (gapFrames > 0 && gapFrames <= 60) {
-                // Format gap WITHOUT a plus sign
-                int visualGapFrames = gapFrames / 3;
-                int subframes = gapFrames % 3;
-                
-                std::string gapText = "Gap: " + std::to_string(visualGapFrames);
-                
-                // Add subframe precision if needed
-                if (subframes == 1) {
-                    gapText += ".33";
-                } else if (subframes == 2) {
-                    gapText += ".66";
-                }
-                
-                // Respect the same visibility gate as the Frame Advantage overlay
-                if (g_showFrameAdvantageOverlay.load()) {
-                    if (g_FrameAdvantageId != -1) {
-                        DirectDrawHook::UpdatePermanentMessage(g_FrameAdvantageId, gapText, RGB(255, 255, 0));
-                    } else {
-                        g_FrameAdvantageId = DirectDrawHook::AddPermanentMessage(gapText, RGB(255, 255, 0), 305, 430);
-                    }
-                } else {
-                    // If hidden, ensure any existing message is cleared immediately
-                    if (g_FrameAdvantageId != -1) {
-                        DirectDrawHook::RemovePermanentMessage(g_FrameAdvantageId);
-                        g_FrameAdvantageId = -1;
-                    }
-                }
-                
-                // Display for ~1/3 second (60 internal frames)
-                frameAdvState.displayUntilInternalFrame = currentInternalFrame + 60;
+                frameAdvState.p2GapFrames = gapFrames;
+                frameAdvState.p2GapCalculated = true;
                 
                 if (detailedLogging.load()) {
-                    LogOut(std::string("[FRAME_ADV] Gap detected: ") + gapText +
+                    LogOut(std::string("[FRAME_ADV] Gap stored: ") + std::to_string(gapFrames / 3) +
                            " (raw=" + std::to_string(gapFramesRaw) +
                            ", freeze-removed=" + std::to_string(p1_freeze_accum_since_free) + ")", true);
                 }
+            } else {
+                // Gap too large or zero - clear any previous gap
+                frameAdvState.p2GapFrames = 0;
+                frameAdvState.p2GapCalculated = false;
             }
+        } else {
+            // No previous defender free = not a string, first hit
+            frameAdvState.p2GapFrames = 0;
+            frameAdvState.p2GapCalculated = false;
         }
         
         // CRUCIAL CHANGE: Don't reset the entire state for strings of attacks
@@ -653,6 +638,39 @@ void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, shor
                 DirectDrawHook::RemovePermanentMessage(g_FrameAdvantage2Id);
                 g_FrameAdvantage2Id = -1;
             }
+            
+            // Display gap if calculated (string of attacks)
+            if (frameAdvState.p1GapCalculated && frameAdvState.p1GapFrames > 0) {
+                int visualGapFrames = frameAdvState.p1GapFrames / 3;
+                int subframes = frameAdvState.p1GapFrames % 3;
+                
+                std::string gapText = "Gap: " + std::to_string(visualGapFrames);
+                if (subframes == 1) {
+                    gapText += ".33";
+                } else if (subframes == 2) {
+                    gapText += ".66";
+                }
+                
+                if (g_FrameGapId != -1) {
+                    DirectDrawHook::UpdatePermanentMessage(g_FrameGapId, gapText, RGB(255, 255, 0));
+                } else {
+                    // Position gap above frame advantage (Y=410 instead of 430)
+                    g_FrameGapId = DirectDrawHook::AddPermanentMessage(gapText, RGB(255, 255, 0), 305, 410);
+                }
+                // Display gap for same duration as frame advantage
+                frameAdvState.gapDisplayUntilInternalFrame = currentInternalFrame + 192;
+                
+                if (detailedLogging.load()) {
+                    LogOut("[FRAME_ADV] Gap displayed: " + gapText, true);
+                }
+            } else {
+                // No gap to display, clear any existing gap message
+                if (g_FrameGapId != -1) {
+                    DirectDrawHook::RemovePermanentMessage(g_FrameGapId);
+                    g_FrameGapId = -1;
+                }
+            }
+            
             // Set display duration (show for approximately 1 second)
             frameAdvState.displayUntilInternalFrame = currentInternalFrame + 192;
         }
@@ -694,6 +712,39 @@ void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, shor
                 DirectDrawHook::RemovePermanentMessage(g_FrameAdvantage2Id);
                 g_FrameAdvantage2Id = -1;
             }
+            
+            // Display gap if calculated (string of attacks)
+            if (frameAdvState.p2GapCalculated && frameAdvState.p2GapFrames > 0) {
+                int visualGapFrames = frameAdvState.p2GapFrames / 3;
+                int subframes = frameAdvState.p2GapFrames % 3;
+                
+                std::string gapText = "Gap: " + std::to_string(visualGapFrames);
+                if (subframes == 1) {
+                    gapText += ".33";
+                } else if (subframes == 2) {
+                    gapText += ".66";
+                }
+                
+                if (g_FrameGapId != -1) {
+                    DirectDrawHook::UpdatePermanentMessage(g_FrameGapId, gapText, RGB(255, 255, 0));
+                } else {
+                    // Position gap above frame advantage (Y=410 instead of 430)
+                    g_FrameGapId = DirectDrawHook::AddPermanentMessage(gapText, RGB(255, 255, 0), 305, 410);
+                }
+                // Display gap for same duration as frame advantage
+                frameAdvState.gapDisplayUntilInternalFrame = currentInternalFrame + 192;
+                
+                if (detailedLogging.load()) {
+                    LogOut("[FRAME_ADV] Gap displayed: " + gapText, true);
+                }
+            } else {
+                // No gap to display, clear any existing gap message
+                if (g_FrameGapId != -1) {
+                    DirectDrawHook::RemovePermanentMessage(g_FrameGapId);
+                    g_FrameGapId = -1;
+                }
+            }
+            
             // Set display duration (show for approximately 1 second)
             frameAdvState.displayUntilInternalFrame = currentInternalFrame + 192;
         }

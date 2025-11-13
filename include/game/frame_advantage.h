@@ -39,12 +39,20 @@ struct FrameAdvantageState {
     bool p1AdvantageCalculated;
     bool p2AdvantageCalculated;
     
+    // Gap tracking (frames between consecutive hits in a string)
+    int p1GapFrames;                    // Gap before P1's current attack
+    int p2GapFrames;                    // Gap before P2's current attack
+    bool p1GapCalculated;
+    bool p2GapCalculated;
+    
     // Initial moveIDs for analysis
     short p1InitialBlockstunMoveID;
     short p2InitialBlockstunMoveID;
 
     // Timer to control how long the advantage is displayed
     int displayUntilInternalFrame;
+    // Separate timer for gap display
+    int gapDisplayUntilInternalFrame;
 };
 
 // Global frame advantage state
