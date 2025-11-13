@@ -86,6 +86,9 @@ namespace Config {
         bool freezeRFAfterContRec;       // Start RF freeze after Continuous Recovery enforcement
         bool freezeRFOnlyWhenNeutral;    // Maintain RF freeze only while in neutral states
 
+        // Frame Advantage display duration (in seconds)
+        float frameAdvantageDisplayDuration; // How long to show FA/RG messages (default: 8.0)
+
         // Practice: Dummy Auto-Block behavior
         // Continuous neutral timeout used by event-driven modes (ms). Defaults to 10000 (10s).
         int autoBlockNeutralTimeoutMs;
