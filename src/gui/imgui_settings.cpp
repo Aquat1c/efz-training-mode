@@ -9,6 +9,7 @@
 #include "../include/core/logger.h"
 #include "../include/utils/switch_players.h"
 #include "../include/game/game_state.h"
+#include "../include/utils/debug_log.h"
 #include <windows.h>
 #include <Xinput.h>
 #include "../include/utils/xinput_shim.h"
@@ -26,6 +27,10 @@ namespace ImGuiSettings {
             if (std::string(key) == "DetailedLogging") {
                 detailedLogging.store(value);
                 LogOut(std::string("[CONFIG/UI] detailedLogging set to ") + (value ? "true" : "false"), false);
+            }
+            else if (std::string(key) == "enableDebugFileLog") {
+                DebugLog::g_EnableDebugLog = value;
+                LogOut(std::string("[CONFIG/UI] enableDebugFileLog set to ") + (value ? "true" : "false"), false);
             }
         }
     }
@@ -128,6 +133,7 @@ namespace ImGuiSettings {
         // Local copies for UI mutation
         bool useImGui = cfg.useImGui;
         bool logVerbose = cfg.detailedLogging;
+        bool debugFileLog = cfg.enableDebugFileLog;
         bool fpsDiag = cfg.enableFpsDiagnostics;
         bool restrictPractice = cfg.restrictToPracticeMode;
         bool enableConsole = cfg.enableConsole;
@@ -136,12 +142,11 @@ namespace ImGuiSettings {
 
     if (ImGui::BeginTabBar("##SettingsTabs")) {
             if (ImGui::BeginTabItem("General")) {
+                ImGui::SeparatorText("User Interface");
+                
                 CheckboxApply("Use ImGui UI (else legacy dialog)", useImGui, "General", "UseImGui");
                 ImGui::SameLine();
                 ImGui::TextDisabled("(applies on next menu open)");
-
-                CheckboxApply("Detailed logging", logVerbose, "General", "DetailedLogging");
-                CheckboxApply("Enable FPS/timing diagnostics", fpsDiag, "General", "enableFpsDiagnostics");
 
                 ImGui::Text("UI Scale:");
                 ImGui::SameLine();
@@ -167,7 +172,56 @@ namespace ImGuiSettings {
                 ImGui::SameLine();
                 ImGui::TextDisabled("(applies immediately)");
 
+                ImGui::Spacing();
+                ImGui::Separator();
+                ImGui::SeparatorText("Display Settings");
+
+                float faDuration = cfg.frameAdvantageDisplayDuration;
+                ImGui::Text("FA Display Duration:");
+                ImGui::SameLine();
+                ImGui::SetNextItemWidth(200);
+                if (ImGui::SliderFloat("##FADuration", &faDuration, 0.5f, 30.0f, "%.1f sec")) {
+                    Config::SetSetting("General", "frameAdvantageDisplayDuration", std::to_string(faDuration));
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Reset##FADuration")) {
+                    faDuration = 1.9f;
+                    Config::SetSetting("General", "frameAdvantageDisplayDuration", "1.9");
+                }
+                if (ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip("How long frame advantage and gap messages stay visible (default: 1.9 seconds)");
+                }
+
+                ImGui::Spacing();
+                ImGui::Separator();
+                ImGui::SeparatorText("Practice Options");
+
                 CheckboxApply("Restrict features to Practice Mode", restrictPractice, "General", "restrictToPracticeMode");
+
+                int abTimeoutMs = cfg.autoBlockNeutralTimeoutMs;
+                int abTimeoutSec = (abTimeoutMs + 500) / 1000; // round to nearest second for UI
+                ImGui::Text("Auto-Block neutral timeout:");
+                ImGui::SameLine();
+                ImGui::SetNextItemWidth(200);
+                if (ImGui::SliderInt("##ABTimeout", &abTimeoutSec, 0, 60, "%d sec")) {
+                    if (abTimeoutSec < 0) abTimeoutSec = 0; 
+                    if (abTimeoutSec > 600) abTimeoutSec = 600; // hard cap
+                    int ms = abTimeoutSec * 1000;
+                    Config::SetSetting("General", "autoBlockNeutralTimeoutMs", std::to_string(ms));
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Reset##ABTimeout")) {
+                    Config::SetSetting("General", "autoBlockNeutralTimeoutMs", "10000");
+                }
+                if (ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip("When using First Hit/After First Hit modes, require this much continuous neutral before re-arming/disabling. 0 = toggle on the first neutral frame.");
+                }
+
+                ImGui::Spacing();
+                ImGui::Separator();
+                ImGui::SeparatorText("Advanced");
+
+                CheckboxApply("Detailed logging", logVerbose, "General", "DetailedLogging");
 
                 if (ImGui::Checkbox("Show debug console (restart not required)", &enableConsole)) {
                     Config::SetSetting("General", "enableConsole", enableConsole ? "1" : "0");
@@ -177,26 +231,6 @@ namespace ImGuiSettings {
                         FlushPendingConsoleLogs();
                     } else {
                         SetConsoleVisibility(false);
-                    }
-                }
-
-                ImGui::Separator();
-                ImGui::SeparatorText("Practice Options");
-                {
-                    int abTimeoutMs = cfg.autoBlockNeutralTimeoutMs;
-                    int abTimeoutSec = (abTimeoutMs + 500) / 1000; // round to nearest second for UI
-                    ImGui::SetNextItemWidth(200);
-                    if (ImGui::SliderInt("Auto-Block neutral timeout (s)", &abTimeoutSec, 0, 60, "%d")) {
-                        if (abTimeoutSec < 0) abTimeoutSec = 0; if (abTimeoutSec > 600) abTimeoutSec = 600; // hard cap
-                        int ms = abTimeoutSec * 1000;
-                        Config::SetSetting("General", "autoBlockNeutralTimeoutMs", std::to_string(ms));
-                    }
-                    if (ImGui::IsItemHovered()) {
-                        ImGui::SetTooltip("When using First Hit/After First Hit modes, require this much continuous neutral before re-arming/disabling. 0 = toggle on the first neutral frame.");
-                    }
-                    ImGui::SameLine();
-                    if (ImGui::SmallButton("Reset##abTimeout")) {
-                        Config::SetSetting("General", "autoBlockNeutralTimeoutMs", "10000");
                     }
                 }
 
@@ -359,6 +393,14 @@ namespace ImGuiSettings {
 
             // New: Debug sub-tab (moved from main tabs)
             if (ImGui::BeginTabItem("Debug")) {
+                ImGui::SeparatorText("Debug Settings");
+                CheckboxApply("Debug file log (efz_training_debug.log)", debugFileLog, "General", "enableDebugFileLog");
+                CheckboxApply("Enable FPS/timing diagnostics", fpsDiag, "General", "enableFpsDiagnostics");
+                
+                ImGui::Spacing();
+                ImGui::Separator();
+                ImGui::Spacing();
+                
                 ImGuiGui::RenderDebugInputTab();
                 ImGui::EndTabItem();
             }
