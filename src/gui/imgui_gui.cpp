@@ -683,13 +683,6 @@ namespace ImGuiGui {
                 }
                 if (ImGui::IsItemHovered()) ImGui::SetTooltip("Toggles the numeric frame advantage readout (including RG FA1/FA2).");
 
-                // Frame Advantage display duration slider
-                float faDuration = Config::GetSettings().frameAdvantageDisplayDuration;
-                if (ImGui::SliderFloat("FA Display Duration (seconds)", &faDuration, 0.5f, 30.0f, "%.1f")) {
-                    Config::SetSetting("General", "frameAdvantageDisplayDuration", std::to_string(faDuration));
-                }
-                if (ImGui::IsItemHovered()) ImGui::SetTooltip("How long frame advantage and gap messages stay visible (default: 8.0 seconds).");
-
                 ImGui::EndTabItem();
             }
 
