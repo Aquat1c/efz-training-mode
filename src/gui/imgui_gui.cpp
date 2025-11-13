@@ -1629,7 +1629,7 @@ namespace ImGuiGui {
         }
     }
 
-    // Help Tab implementation (refactored into sub-tabs)
+    // Help Tab implementation (redesigned for conciseness and better categorization)
     void RenderHelpTab() {
         // Wrap help content in a scrollable child so keyboard/controller nav can scroll it
         ImGuiWindowFlags helpFlags = ImGuiWindowFlags_NoSavedSettings;
@@ -1645,230 +1645,140 @@ namespace ImGuiGui {
             }
             // Small hint so users know how to scroll without a mouse
             ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 1.0f, 0.8f, 0.85f));
-            ImGui::TextDisabled("Hint: Use Up/Down/PageUp/PageDown or D-Pad to scroll this Help.");
+            ImGui::TextDisabled("Tip: Use Up/Down/PageUp/PageDown or D-Pad to scroll");
             ImGui::PopStyleColor();
-            // Short intro
-            ImGui::TextWrapped("This Help covers the overlay features, hotkeys, and training tools. While the menu is open, practice hotkeys are gated and the game auto-pauses; it resumes on close.");
-            ImGui::Dummy(ImVec2(1, 4));
 
             if (ImGui::BeginTabBar("##HelpTabs", ImGuiTabBarFlags_None)) {
                 int rq3 = guiState.requestedHelpSubTab; guiState.requestedHelpSubTab = -1;
-                // Overview
-               /* if (ImGui::BeginTabItem("Overview")) {
-                    ImGui::SeparatorText("Quick start");
-                    ImGui::TextWrapped("Open the overlay, set options, then press Apply at the bottom. The game auto-pauses while the menu is open and resumes on close.");
-                    BulletTextWrapped("Toggle Overlay: %s (Controller: %s)", GetKeyName(cfg.toggleImGuiKey).c_str(), Config::GetGamepadButtonName(cfg.gpToggleMenuButton).c_str());
-                    BulletTextWrapped("Load Position: %s (Controller: %s)", GetKeyName(cfg.teleportKey).c_str(), Config::GetGamepadButtonName(cfg.gpTeleportButton).c_str());
-                    BulletTextWrapped("Save Position: %s (Controller: %s)", GetKeyName(cfg.recordKey).c_str(), Config::GetGamepadButtonName(cfg.gpSavePositionButton).c_str());
-                    BulletTextWrapped("Toggle Stats Display: %s", GetKeyName(cfg.toggleTitleKey).c_str());
 
-                    ImGui::Separator();
-                    ImGui::SeparatorText("Config & notes");
-                    BulletTextWrapped("Config file path: %s", Config::GetConfigFilePath().c_str());
-                    BulletTextWrapped("Menu behavior: training hotkeys are gated while the menu is open; game unpauses on close.");
-                    BulletTextWrapped("Overlays: trigger/status overlays update automatically; they reset when leaving Practice or on reinit.");
-                    BulletTextWrapped("Network: this tool targets offline training. Online/netplay behavior should not be affected in any way.");
-
-                    // GIF moved to About tab
-                    ImGui::EndTabItem();
-                }*/
-
-                // Basics
+                // Tab 1: Getting Started (consolidated Controls + Tools)
                 ImGuiTabItemFlags _setHelp0 = (rq3 == 0) ? ImGuiTabItemFlags_SetSelected : 0;
-                if (ImGui::BeginTabItem("Controls and Basics", nullptr, _setHelp0)) {
+                if (ImGui::BeginTabItem("Getting Started", nullptr, _setHelp0)) {
                     guiState.helpSubTab = 0;
-                    ImGui::SeparatorText("Basic controls");
-                    ImGui::TextWrapped("Open the overlay, set options, then press Apply at the bottom. The game auto-pauses while the menu is open and resumes on close.");
-                    BulletTextWrapped("Toggle Overlay: %s (Controller: %s)", GetKeyName(cfg.toggleImGuiKey).c_str(), Config::GetGamepadButtonName(cfg.gpToggleMenuButton).c_str());
-                    BulletTextWrapped("Load Position: %s (Controller: %s)", GetKeyName(cfg.teleportKey).c_str(), Config::GetGamepadButtonName(cfg.gpTeleportButton).c_str());
-                    BulletTextWrapped("Save Position: %s (Controller: %s)", GetKeyName(cfg.recordKey).c_str(), Config::GetGamepadButtonName(cfg.gpSavePositionButton).c_str());
-                    BulletTextWrapped("Toggle Stats Display: %s", GetKeyName(cfg.toggleTitleKey).c_str());
-                    ImGui::SeparatorText("Position tools (hold Load)");
-                    ImGui::TextDisabled("Hold the Load key: Keyboard=%s, Controller=%s", GetKeyName(cfg.teleportKey).c_str(), Config::GetGamepadButtonName(cfg.gpTeleportButton).c_str());
-                    BulletTextWrapped("Center Both: Load + Down (Controller: D-Pad Down + Load)");
-                    BulletTextWrapped("Left Corner: Load + Left (Controller: D-Pad Left + Load)");
-                    BulletTextWrapped("Right Corner: Load + Right (Controller: D-Pad Right + Load)");
-                    BulletTextWrapped("Round Start: Load + Down + A (Controller: hold D-Pad Down + A, then press Load)");
-                    BulletTextWrapped("Swap Positions: Load + D (Controller: %s)", Config::GetGamepadButtonName(cfg.gpSwapPositionsButton).c_str());
+                    ImGui::SeparatorText("Essential Controls");
+                    BulletTextWrapped("Toggle Menu: %s / Controller: %s", GetKeyName(cfg.toggleImGuiKey).c_str(), Config::GetGamepadButtonName(cfg.gpToggleMenuButton).c_str());
+                    BulletTextWrapped("Load Position: %s / Controller: %s", GetKeyName(cfg.teleportKey).c_str(), Config::GetGamepadButtonName(cfg.gpTeleportButton).c_str());
+                    BulletTextWrapped("Save Position: %s / Controller: %s", GetKeyName(cfg.recordKey).c_str(), Config::GetGamepadButtonName(cfg.gpSavePositionButton).c_str());
+                    BulletTextWrapped("Toggle Stats: %s", GetKeyName(cfg.toggleTitleKey).c_str());
+                    BulletTextWrapped("Switch Players: %s / Controller: %s", GetKeyName(cfg.switchPlayersKey).c_str(), Config::GetGamepadButtonName(cfg.gpSwitchPlayersButton).c_str());
 
                     ImGui::Separator();
-                    ImGui::SeparatorText("Practice basics");
-                    BulletTextWrapped("Switch Players: %s (Controller: %s, Practice only)", GetKeyName(cfg.switchPlayersKey).c_str(), Config::GetGamepadButtonName(cfg.gpSwitchPlayersButton).c_str());
-                    BulletTextWrapped("P2 Control: lets you play P2. While ON, the game's F6 (stance) and F7 (auto-block) keys won't work.");
-                    BulletTextWrapped("Dummy Auto-Block: Off / Block All / Only First Hit / Start After First Hit.");
-                    BulletTextWrapped("Adaptive stance: auto-picks high vs air, low vs grounded. Disables manual stance while ON. Should also properly handle grounded overheads.");
+                    ImGui::SeparatorText("Position Shortcuts");
+                    ImGui::TextDisabled("Hold Load key, then:");
+                    BulletTextWrapped("Left/Right: move to corner  •  Down: center  •  Down+A: round start  •  D: swap sides");
 
                     ImGui::Separator();
-                    ImGui::TextDisabled("Overlay & UI");
-                    BulletTextWrapped("UI Scale and Font are configurable (General section in config). If text feels too small/large, adjust uiScale or uiFont.");
-                    BulletTextWrapped("Navigation: mouse, keyboard arrows, or controller D-Pad. Expand/Collapse sections with Enter/Space or A button.");
-                    BulletTextWrapped("Footer hotkeys: Apply=%s, Refresh=%s, Exit=%s (customizable in [Hotkeys]).",
+                    ImGui::SeparatorText("Training Options");
+                    BulletTextWrapped("Always RG: makes dummy RG instead of blocking (enable block first)");
+                    BulletTextWrapped("Counter RG: dummy RGs back when possible");
+                    BulletTextWrapped("Auto-Airtech: automatic air recovery with delay/direction options");
+                    BulletTextWrapped("Auto-Jump: auto jump neutral/forward/backward when able");
+                    BulletTextWrapped("Continuous Recovery: auto-restore HP/Meter/RF on neutral (per-player in Options)");
+                    BulletTextWrapped("Dummy Block: Off / All / First Hit / After First Hit");
+                    BulletTextWrapped("Adaptive Stance: auto high vs air, low vs ground (disables manual stance)");
+
+                    ImGui::Separator();
+                    ImGui::TextDisabled("UI Navigation");
+                    ImGui::TextWrapped("Mouse, arrow keys, or D-Pad. Menu auto-pauses game and resumes on close. Footer: Apply=%s, Refresh=%s, Exit=%s",
                         GetKeyName(cfg.uiAcceptKey).c_str(), GetKeyName(cfg.uiRefreshKey).c_str(), GetKeyName(cfg.uiExitKey).c_str());
-                    BulletTextWrapped("Virtual Cursor (optional): When the game is in fullscreen you still can use the mouse whenever the menu is open. Sometimes it might get stuck after alt-tabbing or if you use multiple monitors. Quickly dragging the mouse should free it. If not, toggle the menu off/on with hotkeys.");
                     ImGui::EndTabItem();
                 }
 
-                // Tools - Training
+                // Tab 2: Advanced Features (consolidated Auto Actions + Macros)
                 ImGuiTabItemFlags _setHelp1 = (rq3 == 1) ? ImGuiTabItemFlags_SetSelected : 0;
-                if (ImGui::BeginTabItem("Tools", nullptr, _setHelp1)) {
+                if (ImGui::BeginTabItem("Advanced Features", nullptr, _setHelp1)) {
                     guiState.helpSubTab = 1;
-                    ImGui::SeparatorText("Options");
-                    BulletTextWrapped("Always Recoil Guard: makes the dummy RG instead of blocking. Blocking should be enabled beforehand.");
-                    BulletTextWrapped("Counter RG: tries to RG back after getting RG'd where the game allows it. Default: OFF. Turning this ON without Always RG will make opponent counter RG.");
-                    BulletTextWrapped("Auto-Airtech: auto air-recover Forward/Backward; 'Delay' adds frames before the tech.");
-                    BulletTextWrapped("Auto-Jump: make selected side(s) jump Neutral/Forward/Backward when able.");
-                    BulletTextWrapped("Final Memory (Global): 'Allow at any HP' lets FM be used regardless of life.");
+                    ImGui::SeparatorText("Auto Actions");
+                    ImGui::TextWrapped("Trigger actions on events: Wakeup, After Block, After Hitstun, After Airtech, or Recoil");
+                    BulletTextWrapped("Target: P1, P2, or Both");
+                    BulletTextWrapped("Action: normals, specials/supers, dash/backdash, jump, block, or macros");
+                    BulletTextWrapped("Delay/Strength: frame delay and A/B/C button strength");
+                    BulletTextWrapped("Triggers gate per-attempt to avoid spam");
 
                     ImGui::Separator();
-                    ImGui::SeparatorText("Continuous Recovery (per-player)");
-                    ImGui::TextWrapped("Restores HP/Meter/RF when a side returns to neutral. Configure P1/P2 in Options -> Continuous Recovery.");
-                    BulletTextWrapped("HP/Meter: Off, presets, or Custom.");
-                    BulletTextWrapped("RF: presets or Custom. BIC (force Blue IC) is only under RF -> Custom; Red presets flip IC back to Red.");
-                    BulletTextWrapped("RF Freeze (optional): if enabled in config, freezes the value of RF gauge. The freeze starts only when Recovery sets RF and stops when Recovery for RF is turned off.");
-                    BulletTextWrapped("Defaults: Recovery is OFF per-player. Maintenance runs in matches; can be neutral-only (config).");
-                    BulletTextWrapped("Tip: EFZ's F4/F5 Recovery can interfere. If things look wrong, press F4/F5 to cycle back to Normal.");
+                    ImGui::SeparatorText("Macros");
+                    ImGui::TextWrapped("Record and replay inputs with engine-accurate timing (64 Hz)");
+                    BulletTextWrapped("Slots: %s cycles slots", GetKeyName(cfg.macroSlotKey).c_str());
+                    BulletTextWrapped("Record: %s (arm → start → stop)", GetKeyName(cfg.macroRecordKey).c_str());
+                    BulletTextWrapped("Play: %s (drives P2, directions auto-flip)", GetKeyName(cfg.macroPlayKey).c_str());
+                    BulletTextWrapped("Text format: numpad notation (5A, 236C, etc.). Use 'xN' to repeat");
+                    ImGui::TextDisabled("Example: EFZMACRO 1 5A 5x3 5B 5x3 236C");
+                    BulletTextWrapped("Advanced: '{k: ...}' groups for precise buffer timing (optional for simple macros)");
+                    BulletTextWrapped("Integration: choose 'Macro' in Auto Action and select slot");
                     ImGui::EndTabItem();
                 }
-                                ImGuiTabItemFlags _setHelp2 = (rq3 == 2) ? ImGuiTabItemFlags_SetSelected : 0;
-                                if (ImGui::BeginTabItem("Characters", nullptr, _setHelp2)) {
-                                    guiState.helpSubTab = 2;
-                  ImGui::SeparatorText("Character-specific settings");
-                    ImGui::TextWrapped("These settings appear only whenever the proper characters are selected. You can find the characters and the available settings for the below:");
-                    BulletTextWrapped("Ikumi: Infinite Blood / Genocide timer tweaks (Practice only).");
-                    BulletTextWrapped("Misuzu: Feathers, Poison timer/level with optional freeze.");
-                    BulletTextWrapped("Mishio: Element (None/Fire/Lightning/Awakened) and Awakened timer controls, Infinite Awakening and element toggles.");
-                    BulletTextWrapped("Akiko: Bullet cycle lock, Clean Hit helper, Timeslow trigger.");
-                    BulletTextWrapped("Mai: Ghost/Charge/Awakening timers, 'No CD', Ghost position override.");
-                    BulletTextWrapped("Kano: Magic meter controls with optional value lock.");
-                    BulletTextWrapped("Nayuki (Awake): Snowbunnies timer with infinite toggle.");
-                    BulletTextWrapped("Nayuki (Asleep): Jam count.");
-                    BulletTextWrapped("Mio: Stance (Short/Long) with lock.");
-                    BulletTextWrapped("Doppel: Golden Doppel toggle.");
-                    BulletTextWrapped("Nanase (Rumi): Shinai/Barehanded, Infinite Shinai, Final Memory (Kimchi) timer controls.");
-                    BulletTextWrapped("Minagi: Always readied Michiru toggle and Michiru position override.");
-                                    ImGui::EndTabItem();
-                                }
-                // Tools - Automation
+
+                // Tab 3: Character Features
+                ImGuiTabItemFlags _setHelp2 = (rq3 == 2) ? ImGuiTabItemFlags_SetSelected : 0;
+                if (ImGui::BeginTabItem("Character Features", nullptr, _setHelp2)) {
+                    guiState.helpSubTab = 2;
+                    ImGui::SeparatorText("Character-Specific Settings");
+                    ImGui::TextWrapped("Settings appear when relevant characters are selected:");
+                    ImGui::Spacing();
+                    BulletTextWrapped("Ikumi: Infinite Blood, Genocide timer");
+                    BulletTextWrapped("Misuzu: Feathers, Poison timer/level/freeze");
+                    BulletTextWrapped("Mishio: Element selection, Awakened timer, infinite toggles");
+                    BulletTextWrapped("Akiko: Bullet cycle lock, Clean Hit helper, Timeslow");
+                    BulletTextWrapped("Mai: Ghost/Charge/Awakening timers, No CD, position override");
+                    BulletTextWrapped("Kano: Magic meter controls with lock");
+                    BulletTextWrapped("Nayuki (Awake): Snowbunnies timer, infinite toggle");
+                    BulletTextWrapped("Nayuki (Asleep): Jam count");
+                    BulletTextWrapped("Mio: Stance (Short/Long) with lock");
+                    BulletTextWrapped("Doppel: Golden Doppel toggle");
+                    BulletTextWrapped("Nanase (Rumi): Shinai/Barehanded, Infinite Shinai, Kimchi timer");
+                    BulletTextWrapped("Minagi: Michiru ready toggle, position override");
+                    ImGui::EndTabItem();
+                }
+
+                // Tab 4: About & Resources (combined)
                 ImGuiTabItemFlags _setHelp3 = (rq3 == 3) ? ImGuiTabItemFlags_SetSelected : 0;
-                if (ImGui::BeginTabItem("Auto Actions & Macros", nullptr, _setHelp3)) {
+                if (ImGui::BeginTabItem("About & Resources", nullptr, _setHelp3)) {
                     guiState.helpSubTab = 3;
-                    ImGui::SeparatorText("Auto Action");
-                    ImGui::TextWrapped("Creates a simple trigger to events like Wakeup, After Block, After Hitstun, After Airtech, or Recoil.");
-                    BulletTextWrapped("Target: choose P1, P2, or Both.");
-                    BulletTextWrapped("Action: pick a normal, specials/supers, macros and others(dash/backdash/jump/block.). Dash can have an optional follow-up normal.");
-                    BulletTextWrapped("Delay/Strength: delay in frames; strength maps to A/B/C keys.");
-                    BulletTextWrapped("Macro: choose 'Macro' as the action and select a Slot to play your recording.");
-                    BulletTextWrapped("Gating: triggers have per-attempt gating to avoid spam; clear triggers to reset.");
-
-                    ImGui::Separator();
-                    ImGui::SeparatorText("Macros - quick how-to");
-                    BulletTextWrapped("Slots: cycle with %s.", GetKeyName(cfg.macroSlotKey).c_str());
-                    BulletTextWrapped("Record: press %s to arm, press again to start, press again to stop.", GetKeyName(cfg.macroRecordKey).c_str());
-                    BulletTextWrapped("Play: press %s to play current slot (drives P2).", GetKeyName(cfg.macroPlayKey).c_str());
-                    BulletTextWrapped("Facing-aware: directions flip automatically based on P2 facing.");
-                    BulletTextWrapped("Frame-step aware: you can use Revival's default keys for framestepping (by defaults it's SPACE and P keys for the pause and frame advance respectively).");
-                    BulletTextWrapped("Empty slots: playing an empty slot does nothing.");
-
-                    ImGui::Separator();
-                    ImGui::SeparatorText("Macro notation (text)");
-                    ImGui::TextWrapped("Macros can be written and edited as plain text. The recommended format starts with a header and then a sequence of tick tokens:");
-                    ImGui::Indent();
-                    BulletTextWrapped("Header: 'EFZMACRO 1' (version 1). The header is optional when importing, but added on save.");
-                    BulletTextWrapped("Tick token: a numpad direction (1..9 or 5 for neutral) optionally followed by buttons A/B/C/D. Examples: 5A, 2, 6B, 236C -> '2 3 6C'. Case-insensitive; 'N' is an alias for neutral.");
-                    BulletTextWrapped("Repeat: append 'xN' to repeat a token pack N times. Spaces are allowed: '5Ax50', '5A x50', or '5A {1: 5A} x50'. The repeat applies to the whole pack (base plus optional group).");
-                    BulletTextWrapped("Per-tick buffer group (optional): '{k: v1 v2 ... vK}' attaches to the preceding tick token and describes the K raw input-buffer writes the engine made during that 1/64s tick (k=K). Values inside are tokens (like 6, 5B) or hex bytes (0x??) when needed.");
-                    BulletTextWrapped("Default when group omitted: '{1: <tickMask>}' is assumed, i.e., one buffer write equal to that tick's mask.");
-                    BulletTextWrapped("Whitespace: flexible. You can put spaces between the base token and '{...}'. On apply, text is normalized to a canonical form.");
-                    BulletTextWrapped("Facing rule: always write as if P1 is facing right (6=forward, 4=back). Playback flips 4/6 automatically for the current P2 facing.");
-                    ImGui::Unindent();
-
-                    ImGui::Dummy(ImVec2(1, 2));
-                    ImGui::TextDisabled("Example (header + simple chain + 623B with groups):");
-                    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.8f, 0.95f, 1.0f, 1.0f));
-                    ImGui::TextWrapped("EFZMACRO 1 5A 5x3 5B 5x3 5C 6 {3: 6 6 6} 2 {3: 2 2 2} 3 {3: 3 3 3} 5B {3: 5B 5 5}");
-                    ImGui::PopStyleColor();
-                    ImGui::Indent();
-                    BulletTextWrapped("5A 5x3 5B 5x3 5C: press 5A, wait ~3 ticks, then 5B, wait ~3, then 5C. The 'x3' repeats full neutral ticks after each attack.");
-                    BulletTextWrapped("6 {3: 6 6 6}: a tick whose engine history wrote three entries, all '6' (forward). We record and reproduce those writes precisely.");
-                    BulletTextWrapped("2 {3: 2 2 2} -> 3 {3: 3 3 3}: continue the dragon-motion with three writes per tick.");
-                    BulletTextWrapped("5B {3: 5B 5 5}: the attack tick had three writes: first '5B' (neutral+B) then two neutrals. This is exactly how the engine history looked when recording.");
-                    ImGui::Unindent();
-
-                    ImGui::Dummy(ImVec2(1, 2));
-                    ImGui::TextDisabled("Tips");
-                    ImGui::Indent();
-                    BulletTextWrapped("You usually don't need groups for simple macros; '2 3 6C' works. Groups let you match engine write cadence for strict timing.");
-                    BulletTextWrapped("If you paste text from outside, use Apply to Slot to validate and normalize. Parser accepts 'xN' with or without a space and braces with spaces.");
-                    BulletTextWrapped("Remember: write directions for P1-facing; replay flips automatically for P2-facing.");
-                    ImGui::Unindent();
-                    ImGui::EndTabItem();
-                }
-
-                // Resources
-                ImGuiTabItemFlags _setHelp4 = (rq3 == 4) ? ImGuiTabItemFlags_SetSelected : 0;
-                if (ImGui::BeginTabItem("Resources", nullptr, _setHelp4)) {
-                    guiState.helpSubTab = 4;
-                    ImGui::SeparatorText("Game Resources");
-                    BulletTextWrapped("Open helpful external resources in your browser:");
-                    ImGui::Indent();
-                    Link("Eternal Fighter Zero Wiki", "https://wiki.gbl.gg/w/Eternal_Fighter_Zero");
-                    Link("Training Mode (EFZ)", "https://wiki.gbl.gg/w/Eternal_Fighter_Zero/Training_Mode");
-                    Link("EFZ Global Discord", "https://discord.gg/aUgqXAt");
-                    ImGui::Unindent();
-
-                    // Character-specific wiki pages
-                    int p1Id = guiState.localData.p1CharID;
-                    int p2Id = guiState.localData.p2CharID;
-                    std::string p1Name = CharacterSettings::GetCharacterName(p1Id);
-                    std::string p2Name = CharacterSettings::GetCharacterName(p2Id);
-                    const char* p1Path = GetCharacterWikiPathByID(p1Id);
-                    if (p1Path) {
-                        std::string url = std::string("https://wiki.gbl.gg/w/Eternal_Fighter_Zero/") + p1Path;
-                        ImGui::Separator();
-                        ImGui::TextWrapped("P1: %s", p1Name.c_str());
-                        Link("Open character wiki (P1)", url.c_str());
-                    }
-                    const char* p2Path = GetCharacterWikiPathByID(p2Id);
-                    if (p2Path) {
-                        std::string url = std::string("https://wiki.gbl.gg/w/Eternal_Fighter_Zero/") + p2Path;
-                        if (!p1Path) ImGui::Separator();
-                        ImGui::TextWrapped("P2: %s", p2Name.c_str());
-                        Link("Open character wiki (P2)", url.c_str());
-                    }
-                    ImGui::EndTabItem();
-                }
-
-                // About (moved to end)
-                ImGuiTabItemFlags _setHelp5 = (rq3 == 5) ? ImGuiTabItemFlags_SetSelected : 0;
-                if (ImGui::BeginTabItem("About", nullptr, _setHelp5)) {
-                    guiState.helpSubTab = 5;
                     ImGui::SeparatorText("EFZ Training Mode");
-                    ImGui::TextWrapped("Version: %s", EFZ_TRAINING_MODE_VERSION);
-                    ImGui::TextWrapped("Build: %s %s", EFZ_TRAINING_MODE_BUILD_DATE, EFZ_TRAINING_MODE_BUILD_TIME);
-                    // Show detected EfzRevival version and support status (stub)
+                    ImGui::TextWrapped("Version: %s  •  Build: %s %s", EFZ_TRAINING_MODE_VERSION, EFZ_TRAINING_MODE_BUILD_DATE, EFZ_TRAINING_MODE_BUILD_TIME);
                     {
                         EfzRevivalVersion rv = GetEfzRevivalVersion();
                         const char* rvName = EfzRevivalVersionName(rv);
                         bool supported = IsEfzRevivalVersionSupported(rv);
-                        ImGui::Dummy(ImVec2(1, 4));
-                        ImGui::SeparatorText("Game/Revival Version");
-                        ImGui::Text("Detected: %s", rvName);
-                        if (!supported) {
-                            ImGui::SameLine();
-                            ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.2f, 1.0f), "(unsupported)");
-                            ImGui::TextDisabled("Some features are gated. Online detection and certain offsets may be unavailable.");
+                        ImGui::TextWrapped("Detected: %s", rvName);
+                        ImGui::SameLine();
+                        if (supported) {
+                            ImGui::TextColored(ImVec4(0.5f, 1.0f, 0.5f, 1.0f), "(supported)");
                         } else {
-                            ImGui::SameLine();
-                            ImGui::TextDisabled("(supported)");
+                            ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.2f, 1.0f), "(unsupported - limited features)");
                         }
-                        ImGui::Dummy(ImVec2(1, 4));
-                        ImGui::SeparatorText("Compatibility");
-                        ImGui::TextWrapped("Supported EfzRevival builds: Vanilla EFZ (no Revival), EfzRevival 1.02e, 1.02h, 1.02i.");
                     }
-                    ImGui::Dummy(ImVec2(1, 4));
-                    ImGui::SeparatorText("Overview");
-                    ImGui::TextWrapped("A comprehensive training mode enhancement tool for Eternal Fighter Zero. It provides frame data analysis, RG timing, robust auto-actions, and a modern in-game ImGui overlay with live configuration.");
-                    ImGui::Dummy(ImVec2(1, 4));
+                    ImGui::Spacing();
+                    ImGui::TextWrapped("A comprehensive training mode tool for Eternal Fighter Zero with frame data, RG timing, auto-actions, and live configuration.");
+
+                    ImGui::Separator();
+                    ImGui::SeparatorText("External Resources");
+                    Link("EFZ Wiki", "https://wiki.gbl.gg/w/Eternal_Fighter_Zero");
+                    Link("Training Mode Guide", "https://wiki.gbl.gg/w/Eternal_Fighter_Zero/Training_Mode");
+                    Link("EFZ Global Discord", "https://discord.gg/aUgqXAt");
+                    Link("GitHub Repository", "https://github.com/Aquat1c/efz-training-mode");
+
+                    // Character-specific wiki pages
+                    int p1Id = guiState.localData.p1CharID;
+                    int p2Id = guiState.localData.p2CharID;
+                    const char* p1Path = GetCharacterWikiPathByID(p1Id);
+                    const char* p2Path = GetCharacterWikiPathByID(p2Id);
+                    if (p1Path || p2Path) {
+                        ImGui::Separator();
+                        ImGui::TextDisabled("Character Wikis:");
+                        if (p1Path) {
+                            std::string p1Name = CharacterSettings::GetCharacterName(p1Id);
+                            std::string url = std::string("https://wiki.gbl.gg/w/Eternal_Fighter_Zero/") + p1Path;
+                            Link(("P1: " + p1Name).c_str(), url.c_str());
+                        }
+                        if (p2Path) {
+                            std::string p2Name = CharacterSettings::GetCharacterName(p2Id);
+                            std::string url = std::string("https://wiki.gbl.gg/w/Eternal_Fighter_Zero/") + p2Path;
+                            Link(("P2: " + p2Name).c_str(), url.c_str());
+                        }
+                    }
+
+                    ImGui::Dummy(ImVec2(1, 6));
                     ImGui::SeparatorText("Obligatory Michiru");
                     unsigned gw = 0, gh = 0;
                     if (IDirect3DTexture9* tex = GifPlayer::GetTexture(gw, gh)) {
@@ -1876,14 +1786,11 @@ namespace ImGuiGui {
                         float w = (float)gw, h = (float)gh;
                         if (w > maxW) { float s = maxW / w; w *= s; h *= s; }
                         if (h > maxH) { float s = maxH / h; w *= s; h *= s; }
-                        ImGui::Dummy(ImVec2(1, 6));
+                        ImGui::Dummy(ImVec2(1, 4));
                         ImGui::Image((ImTextureID)tex, ImVec2(w, h));
                     } else {
-                        ImGui::TextDisabled("(GIF not loaded yet)");
+                        ImGui::TextDisabled("(GIF loading...)");
                     }
-                    ImGui::Dummy(ImVec2(1, 6));
-                    ImGui::SeparatorText("Links");
-                    Link("GitHub repository", "https://github.com/Aquat1c/efz-training-mode");
                     ImGui::EndTabItem();
                 }
 
@@ -3842,9 +3749,9 @@ namespace ImGuiGui {
                 guiState.autoActionSubTab = idx;
                 guiState.requestedAutoActionSubTab = idx;
             } else if (guiState.currentTab == 4) {
-                // Help: 6 sub-tabs
+                // Help: 4 sub-tabs
                 int idx = guiState.helpSubTab;
-                int count = 6;
+                int count = 4;
                 idx = (idx + dir) % count; if (idx < 0) idx += count;
                 guiState.helpSubTab = idx;
                 guiState.requestedHelpSubTab = idx;

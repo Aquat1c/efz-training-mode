@@ -25,7 +25,7 @@ namespace ImGuiGui {
         // One-shot programmatic selection requests for sub-tabs
         int requestedMainMenuSubTab;   // -1 or 0..2
         int requestedAutoActionSubTab; // -1 or 0..1
-        int requestedHelpSubTab;       // -1 or 0..5
+        int requestedHelpSubTab;       // -1 or 0..3
         DisplayData localData;
     };
     
