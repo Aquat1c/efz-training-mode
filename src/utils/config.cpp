@@ -501,6 +501,13 @@ namespace Config {
             // RF freeze behavior (defaults: enabled and neutral-only)
             settings.freezeRFAfterContRec = GetValueBool("General", "freezeRFAfterContRec", true);
             settings.freezeRFOnlyWhenNeutral = GetValueBool("General", "freezeRFOnlyWhenNeutral", true);
+            // Continuous Recovery gating and delay
+            settings.crRequireBothNeutral = GetValueBool("General", "crRequireBothNeutral", true);
+            settings.crBothNeutralDelayMs = GetValueInt("General", "crBothNeutralDelayMs", 500);
+            if (settings.crBothNeutralDelayMs < 0) settings.crBothNeutralDelayMs = 0;
+            if (settings.crBothNeutralDelayMs > 5000) settings.crBothNeutralDelayMs = 5000;
+            // Auto-fix HP anomalies
+            settings.autoFixHPOnNeutral = GetValueBool("General", "autoFixHPOnNeutral", false);
             // Frame Advantage display duration (default: 8.0 seconds)
             {
                 auto sectionIt = iniData.find("general");
@@ -654,6 +661,14 @@ namespace Config {
             file << "; RF freeze behavior (after Continuous Recovery)\n";
             file << "freezeRFAfterContRec = " << (settings.freezeRFAfterContRec?"1":"0") << "\n";
             file << "freezeRFOnlyWhenNeutral = " << (settings.freezeRFOnlyWhenNeutral?"1":"0") << "\n\n";
+            // Continuous Recovery gating and delay
+            file << "; Continuous Recovery gating\n";
+            file << "crRequireBothNeutral = " << (settings.crRequireBothNeutral?"1":"0") << "\n";
+            file << "; Delay after both players are neutral before applying CR (ms)\n";
+            file << "crBothNeutralDelayMs = " << settings.crBothNeutralDelayMs << "\n\n";
+            // Auto-fix HP anomalies
+            file << "; Auto-fix HP: when neutral and HP<=0, set to 9999 (1=yes,0=no)\n";
+            file << "autoFixHPOnNeutral = " << (settings.autoFixHPOnNeutral?"1":"0") << "\n\n";
             // Frame Advantage display duration
             file << "; Frame Advantage display duration (seconds)\n";
             file << "frameAdvantageDisplayDuration = " << settings.frameAdvantageDisplayDuration << "\n\n";
@@ -775,6 +790,9 @@ namespace Config {
             if (k == "controllerindex") { try { settings.controllerIndex = std::stoi(value); } catch(...) { settings.controllerIndex = -1; } if (settings.controllerIndex < -1 || settings.controllerIndex > 3) settings.controllerIndex = -1; }
             if (k == "freezerfaftercontrec") settings.freezeRFAfterContRec = (value == "1");
             if (k == "freezerfonlywhenneutral") settings.freezeRFOnlyWhenNeutral = (value == "1");
+            if (k == "crrequirebothneutral") settings.crRequireBothNeutral = (value == "1");
+            if (k == "crbothneutraldelayms") { try { settings.crBothNeutralDelayMs = std::stoi(value); } catch(...){} if (settings.crBothNeutralDelayMs < 0) settings.crBothNeutralDelayMs = 0; }
+            if (k == "autofixhponneutral") settings.autoFixHPOnNeutral = (value == "1");
             if (k == "frameadvantagedisplayduration") { try { settings.frameAdvantageDisplayDuration = std::stof(value); } catch(...){} }
             if (k == "autoblockneutraltimeoutms") { try { settings.autoBlockNeutralTimeoutMs = std::stoi(value); } catch(...) { settings.autoBlockNeutralTimeoutMs = 10000; } }
         }

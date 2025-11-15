@@ -224,19 +224,8 @@ void MonitorKeys() {
         LogOut("[KEYBINDS] Toggle ImGui key: " + GetKeyName(cfg0.toggleImGuiKey), true);
     }
 
-    // Ensure we honor EFZ keyconfig for A/B/C/D by loading key.ini once up front.
-    // If it fails (no file or unreadable), we'll retry periodically while idle.
-    static bool s_iniTriedOnce = false;
-    static DWORD s_nextIniRetryTick = 0; // GetTickCount scheduling
-    if (!s_iniTriedOnce) {
-        if (ReadKeyMappingsFromIni()) {
-            LogOut("[KEYBINDS] Loaded EFZ key bindings from key.ini (D swap will use configured key)", true);
-        } else {
-            LogOut("[KEYBINDS] key.ini not found or unreadable; will fall back to defaults and retry later", true);
-            s_nextIniRetryTick = GetTickCount() + 5000; // retry in ~5s
-        }
-        s_iniTriedOnce = true;
-    }
+    // Defer key.ini reads to retries only (avoid duplicate reads during startup)
+    static DWORD s_nextIniRetryTick = GetTickCount() + 60000; // park retries for a minute by default
 
     // Constants for teleport positions
     const double centerX = 320.0;
@@ -261,6 +250,8 @@ void MonitorKeys() {
         if (!detectedBindings.attacksDetected || detectedBindings.dButton == 0) {
             if (ReadKeyMappingsFromIni()) {
                 LogOut("[KEYBINDS] Loaded EFZ key bindings from key.ini on retry", true);
+                // On success, park retries for a minute instead of re-reading immediately
+                s_nextIniRetryTick = GetTickCount() + 60000;
             } else {
                 // Backoff retries to avoid spam
                 s_nextIniRetryTick = GetTickCount() + 10000; // retry in ~10s
@@ -768,26 +759,20 @@ void MonitorKeys() {
 
 // Add this function to restart key monitoring
 void RestartKeyMonitoring() {
-    LogOut("[KEYBINDS] Restarting key monitoring system", true);
-    
     std::lock_guard<std::mutex> guard(keyMonitorMutex);
-    // If already running, signal existing thread to exit
     if (keyMonitorRunning.load()) {
-        keyMonitorRunning.store(false);
-        // Give it time to exit cleanly
-        Sleep(100);
+        LogOut("[KEYBINDS] Key monitoring already running", detailedLogging.load());
+        return;
     }
-    
+
     // Reset state
     p1Jumping = false;
     p2Jumping = false;
-    // Reset any other state variables...
-    
-    // Start new monitoring thread
+
+    // Start monitoring thread once
     keyMonitorRunning.store(true);
     std::thread(MonitorKeys).detach();
-    
-    LogOut("[KEYBINDS] Key monitoring system restarted", true);
+    LogOut("[KEYBINDS] Key monitoring thread started", true);
 }
 
 void DebugInputs() {
@@ -824,7 +809,8 @@ std::atomic<int> startFrameCount(0);
 
 // Complete the ReadKeyMappingsFromIni function
 bool ReadKeyMappingsFromIni() {
-    HANDLE configFile = CreateFileA("key.ini", GENERIC_READ, 0, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    // Allow shared reads so we don't fight the game holding the file open
+    HANDLE configFile = CreateFileA("key.ini", GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
     if (configFile == INVALID_HANDLE_VALUE) {
         LogOut("[INPUT] Failed to open key.ini - using default key bindings", true);
         return false;
@@ -861,8 +847,9 @@ bool ReadKeyMappingsFromIni() {
         const char* name;
         int* bindingPtr;
     } keyMaps[] = {
-        { 0, "Down", &detectedBindings.upKey },
-        { 2, "Up", &detectedBindings.downKey },
+        // Correct mapping: Down -> downKey, Up -> upKey
+        { 0, "Down", &detectedBindings.downKey },
+        { 2, "Up", &detectedBindings.upKey },
         { 4, "Left", &detectedBindings.leftKey },
         { 6, "Right", &detectedBindings.rightKey },
         { 8, "A (Light)", &detectedBindings.aButton },
@@ -871,7 +858,8 @@ bool ReadKeyMappingsFromIni() {
         { 14, "D (Special)", &detectedBindings.dButton },
     };
 
-    LogOut("[INPUT] Reading key bindings from key.ini", true);
+    // Only emit this noisy read when detailed logging is enabled
+    LogOut("[INPUT] Reading key bindings from key.ini", detailedLogging.load());
     for (int i = 0; i < 8; i++) {
         unsigned char byte1 = p1Data[keyMaps[i].offset];
         unsigned char byte2 = p1Data[keyMaps[i].offset + 1];
@@ -886,8 +874,9 @@ bool ReadKeyMappingsFromIni() {
         int vkKey = MapEFZKeyToVK(keyValue);
         *keyMaps[i].bindingPtr = vkKey;
 
-        LogOut("[INPUT] P1 " + std::string(keyMaps[i].name) + " = " +
-               GetKeyName(vkKey) + " (raw value: " + std::to_string(keyValue) + ")", true);
+         // Per-key line can be extremely chatty; gate behind detailedLogging
+         LogOut("[INPUT] P1 " + std::string(keyMaps[i].name) + " = " +
+             GetKeyName(vkKey) + " (raw value: " + std::to_string(keyValue) + ")", detailedLogging.load());
     }
 
     // Set flags to indicate we've detected the bindings

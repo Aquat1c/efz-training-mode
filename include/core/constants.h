@@ -27,6 +27,7 @@
 #define XPOS_OFFSET 0x20
 #define YPOS_OFFSET 0x28
 #define HP_OFFSET 0x108
+#define HP_BAR_OFFSET 0x10C
 #define METER_OFFSET 0x148
 #define MOVE_ID_OFFSET 0x8
 #define RF_OFFSET 0x118

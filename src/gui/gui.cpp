@@ -58,7 +58,7 @@ void OpenMenu() {
             uintptr_t xAddr1 = ResolvePointer(base, EFZ_BASE_OFFSET_P1, XPOS_OFFSET);
             uintptr_t yAddr1 = ResolvePointer(base, EFZ_BASE_OFFSET_P1, YPOS_OFFSET);
             
-            if (hpAddr1) memcpy(&displayData.hp1, (void*)hpAddr1, sizeof(WORD));
+            if (hpAddr1) memcpy(&displayData.hp1, (void*)hpAddr1, sizeof(int));
             if (meterAddr1) memcpy(&displayData.meter1, (void*)meterAddr1, sizeof(WORD));
             if (rfAddr1) memcpy(&displayData.rf1, (void*)rfAddr1, sizeof(double));
             if (xAddr1) memcpy(&displayData.x1, (void*)xAddr1, sizeof(double));
@@ -70,7 +70,7 @@ void OpenMenu() {
             uintptr_t xAddr2 = ResolvePointer(base, EFZ_BASE_OFFSET_P2, XPOS_OFFSET);
             uintptr_t yAddr2 = ResolvePointer(base, EFZ_BASE_OFFSET_P2, YPOS_OFFSET);
             
-            if (hpAddr2) memcpy(&displayData.hp2, (void*)hpAddr2, sizeof(WORD));
+            if (hpAddr2) memcpy(&displayData.hp2, (void*)hpAddr2, sizeof(int));
             if (meterAddr2) memcpy(&displayData.meter2, (void*)meterAddr2, sizeof(WORD));
             if (rfAddr2) memcpy(&displayData.rf2, (void*)rfAddr2, sizeof(double));
             if (xAddr2) memcpy(&displayData.x2, (void*)xAddr2, sizeof(double));

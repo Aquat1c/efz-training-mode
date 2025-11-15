@@ -802,6 +802,8 @@ void FrameDataMonitor() {
             if (lastPhase == GamePhase::Match && currentPhase != GamePhase::Match) {
                 // Force stop everything
                 StopBufferFreezing();
+                // Stop any RF freeze maintenance started by CR
+                StopRFFreeze();
                 ResetActionFlags();
 
                 // Clear all auto-action states
@@ -1735,11 +1737,14 @@ void FrameDataMonitor() {
                 ClearDelayStatesIfNonActionable();     
             }
 
-            // Continuous Recovery: restore values on return to neutral/crouch/jump/landing (per-player)
+            // Continuous Recovery: restore values based on neutral gating and optional both-neutral delay
             {
                 // Track RF freezes we started due to Continuous Recovery (per-side)
                 static bool s_crRFFreezeP1 = false;
                 static bool s_crRFFreezeP2 = false;
+                // Both-neutral timing gate
+                static bool s_prevBothNeutral = false;
+                static unsigned long long s_bothNeutralStartMs = 0ULL;
                 auto isAllowedNeutral = [](short m){
                     // Allowed MoveIDs: 0,1,2,3,4,7,8,9,13
                     return (m == 0 || m == 1 || m == 2 || m == 3 || m == 4 || m == 7 || m == 8 || m == 9 || m == 13);
@@ -1789,83 +1794,208 @@ void FrameDataMonitor() {
                     }
                     return t;
                 };
-                auto applyForPlayer = [&](int p){
-                    bool enabled = (p==1)? g_contRecEnabledP1.load() : g_contRecEnabledP2.load();
-                    if (!enabled) return;
-                    short prevM = (p==1? prevMoveID1 : prevMoveID2);
-                    short curM  = (p==1? moveID1     : moveID2);
-                    if (!transitionedToAllowed(prevM, curM)) return;
-                    uintptr_t baseNow = GetEFZBase(); if (!baseNow) return;
-                    uintptr_t pBase=0; SafeReadMemory(baseNow + (p==1?EFZ_BASE_OFFSET_P1:EFZ_BASE_OFFSET_P2), &pBase, sizeof(pBase)); if (!pBase) return;
-                    auto tg = resolveTargets(p==1);
-                    bool wrote = false;
-                    if (tg.hpOn) {
-                        uintptr_t hpA = pBase + HP_OFFSET;
-                        int curFull=0; SafeReadMemory(hpA, &curFull, sizeof(curFull));
-                        WORD cur = (WORD)(curFull & 0xFFFF);
-                        WORD tgt = (WORD)CLAMP(tg.hp, 0, MAX_HP);
-                        if (cur != tgt) { SafeWriteMemory(hpA, &tgt, sizeof(tgt)); wrote = true; }
-                    }
-                    if (tg.meterOn) {
-                        uintptr_t mA = pBase + METER_OFFSET;
-                        int curFull=0; SafeReadMemory(mA, &curFull, sizeof(curFull));
-                        WORD cur = (WORD)(curFull & 0xFFFF);
-                        WORD tgt = (WORD)CLAMP(tg.meter, 0, MAX_METER);
-                        if (cur != tgt) { SafeWriteMemory(mA, &tgt, sizeof(tgt)); wrote = true; }
-                    }
-                    if (tg.rfOn) {
-                        // Use robust setter for both players to avoid desync; read other side first
-                        double p1rf=0.0, p2rf=0.0; uintptr_t p1B=0, p2B=0;
-                        SafeReadMemory(baseNow + EFZ_BASE_OFFSET_P1, &p1B, sizeof(p1B));
-                        SafeReadMemory(baseNow + EFZ_BASE_OFFSET_P2, &p2B, sizeof(p2B));
-                        if (p1B) SafeReadMemory(p1B + RF_OFFSET, &p1rf, sizeof(p1rf));
-                        if (p2B) SafeReadMemory(p2B + RF_OFFSET, &p2rf, sizeof(p2rf));
-                        if (p==1) p1rf = tg.rf; else p2rf = tg.rf;
-                        (void)SetRFValuesDirect(p1rf, p2rf); // best-effort write; freeze handles persistence
-                        if (Config::GetSettings().freezeRFAfterContRec) {
-                            StartRFFreezeOne(p, tg.rf);
-                            if (p==1) s_crRFFreezeP1 = true; else s_crRFFreezeP2 = true;
-                        }
-                    }
-                    if (tg.bic) {
-                        // Set IC color to blue for restored side only; preserve the other side
-                        uintptr_t p1B=0, p2B=0; int ic1=1, ic2=1;
-                        SafeReadMemory(baseNow + EFZ_BASE_OFFSET_P1, &p1B, sizeof(p1B));
-                        SafeReadMemory(baseNow + EFZ_BASE_OFFSET_P2, &p2B, sizeof(p2B));
-                        if (p1B) SafeReadMemory(p1B + IC_COLOR_OFFSET, &ic1, sizeof(ic1));
-                        if (p2B) SafeReadMemory(p2B + IC_COLOR_OFFSET, &ic2, sizeof(ic2));
-                        bool p1Blue = (p==1)? true : (ic1 != 0);
-                        bool p2Blue = (p==2)? true : (ic2 != 0);
-                        SetICColorDirect(p1Blue, p2Blue);
-                    } else if (tg.wantRedIC) {
-                        // Red RF preset chosen: ensure this side is not Blue IC (flip to Red if needed)
-                        uintptr_t p1B=0, p2B=0; int ic1=0, ic2=0;
-                        SafeReadMemory(baseNow + EFZ_BASE_OFFSET_P1, &p1B, sizeof(p1B));
-                        SafeReadMemory(baseNow + EFZ_BASE_OFFSET_P2, &p2B, sizeof(p2B));
-                        if (p1B) SafeReadMemory(p1B + IC_COLOR_OFFSET, &ic1, sizeof(ic1));
-                        if (p2B) SafeReadMemory(p2B + IC_COLOR_OFFSET, &ic2, sizeof(ic2));
-                        bool p1Blue = (ic1 != 0);
-                        bool p2Blue = (ic2 != 0);
-                        if ((p==1 && p1Blue) || (p==2 && p2Blue)) {
-                            // Force this side to Red (false), keep the other side as-is
-                            bool newP1Blue = (p==1) ? false : p1Blue;
-                            bool newP2Blue = (p==2) ? false : p2Blue;
-                            SetICColorDirect(newP1Blue, newP2Blue);
-                        }
-                    }
-                    if (wrote) {
-                        // Optional: log in detailed mode
-                        LogOut(std::string("[FM][ContRec] Restored values for P") + (p==1?"1":"2"), detailedLogging.load());
-                    }
-                };
+                
                 if (moveIDsChanged) {
-                    applyForPlayer(1);
-                    applyForPlayer(2);
+                    // Engine regen gating: if engine-managed regen (F4/F5) is active, do not perform CR writes
+                    uint16_t engineParamA=0, engineParamB=0; EngineRegenMode regenMode = EngineRegenMode::Unknown;
+                    bool gotParams = GetEngineRegenStatus(regenMode, engineParamA, engineParamB);
+                    bool engineRegenActive = gotParams && (regenMode == EngineRegenMode::F5_FullOrPreset || regenMode == EngineRegenMode::F4_FineTuneActive);
+
+                    // Compute neutral states
+                    bool p1NeutralNow = isAllowedNeutral(moveID1);
+                    bool p2NeutralNow = isAllowedNeutral(moveID2);
+
+                    // Optional both-neutral + delay gating
+                    const Config::Settings& cfg = Config::GetSettings();
+                    bool requireBoth = cfg.crRequireBothNeutral;
+                    int delayMs = (cfg.crBothNeutralDelayMs < 0 ? 0 : cfg.crBothNeutralDelayMs);
+                    bool bothNeutral = p1NeutralNow && p2NeutralNow;
+                    unsigned long long nowMs = GetTickCount64();
+                    if (requireBoth) {
+                        if (bothNeutral) {
+                            if (!s_prevBothNeutral) {
+                                s_bothNeutralStartMs = nowMs;
+                            }
+                        } else {
+                            s_bothNeutralStartMs = 0ULL;
+                        }
+                        s_prevBothNeutral = bothNeutral;
+                    } else {
+                        // When not requiring both, reset tracker to avoid stale timestamps
+                        s_prevBothNeutral = false; s_bothNeutralStartMs = 0ULL;
+                    }
+
+                    // Define applier with captured gating context
+                    auto applyForPlayerIfEligible = [&](int p){
+                        bool enabled = (p==1)? g_contRecEnabledP1.load() : g_contRecEnabledP2.load();
+                        if (!enabled) return;
+                        uintptr_t baseNow = GetEFZBase(); if (!baseNow) return;
+                        uintptr_t pBase=0; SafeReadMemory(baseNow + (p==1?EFZ_BASE_OFFSET_P1:EFZ_BASE_OFFSET_P2), &pBase, sizeof(pBase)); if (!pBase) return;
+                        auto tg = resolveTargets(p==1);
+                        bool wroteHpOrMeter = false;
+                        bool appliedRf = false;
+                        if (tg.hpOn) {
+                            uintptr_t hpA = pBase + HP_OFFSET;
+                            int cur=0; SafeReadMemory(hpA, &cur, sizeof(cur));
+                            int tgt = CLAMP(tg.hp, 0, MAX_HP);
+                            if (cur != tgt) {
+                                SafeWriteMemory(pBase + HP_OFFSET, &tgt, sizeof(tgt));
+                                SafeWriteMemory(pBase + HP_BAR_OFFSET, &tgt, sizeof(tgt));
+                                wroteHpOrMeter = true;
+                            }
+                        }
+                        if (tg.meterOn) {
+                            uintptr_t mA = pBase + METER_OFFSET;
+                            int curFull=0; SafeReadMemory(mA, &curFull, sizeof(curFull));
+                            WORD cur = (WORD)(curFull & 0xFFFF);
+                            WORD tgt = (WORD)CLAMP(tg.meter, 0, MAX_METER);
+                            if (cur != tgt) { SafeWriteMemory(mA, &tgt, sizeof(tgt)); wroteHpOrMeter = true; }
+                        }
+                        if (tg.rfOn) {
+                            // Use robust setter for both players to avoid desync; read other side first
+                            double p1rf=0.0, p2rf=0.0; uintptr_t p1B=0, p2B=0;
+                            SafeReadMemory(baseNow + EFZ_BASE_OFFSET_P1, &p1B, sizeof(p1B));
+                            SafeReadMemory(baseNow + EFZ_BASE_OFFSET_P2, &p2B, sizeof(p2B));
+                            if (p1B) SafeReadMemory(p1B + RF_OFFSET, &p1rf, sizeof(p1rf));
+                            if (p2B) SafeReadMemory(p2B + RF_OFFSET, &p2rf, sizeof(p2rf));
+                            if (p==1) p1rf = tg.rf; else p2rf = tg.rf;
+                            (void)SetRFValuesDirect(p1rf, p2rf); // best-effort write; freeze handles persistence
+                            appliedRf = true;
+                            if (Config::GetSettings().freezeRFAfterContRec) {
+                                StartRFFreezeOneFromCR(p, tg.rf);
+                                if (p==1) s_crRFFreezeP1 = true; else s_crRFFreezeP2 = true;
+                            }
+                        }
+                        if (tg.bic) {
+                            // Set IC color to blue for restored side only; preserve the other side
+                            uintptr_t p1B=0, p2B=0; int ic1=1, ic2=1;
+                            SafeReadMemory(baseNow + EFZ_BASE_OFFSET_P1, &p1B, sizeof(p1B));
+                            SafeReadMemory(baseNow + EFZ_BASE_OFFSET_P2, &p2B, sizeof(p2B));
+                            if (p1B) SafeReadMemory(p1B + IC_COLOR_OFFSET, &ic1, sizeof(ic1));
+                            if (p2B) SafeReadMemory(p2B + IC_COLOR_OFFSET, &ic2, sizeof(ic2));
+                            bool p1Blue = (p==1)? true : (ic1 != 0);
+                            bool p2Blue = (p==2)? true : (ic2 != 0);
+                            SetICColorDirect(p1Blue, p2Blue);
+                        } else if (tg.wantRedIC) {
+                            // Red RF preset chosen: ensure this side is not Blue IC (flip to Red if needed)
+                            uintptr_t p1B=0, p2B=0; int ic1=0, ic2=0;
+                            SafeReadMemory(baseNow + EFZ_BASE_OFFSET_P1, &p1B, sizeof(p1B));
+                            SafeReadMemory(baseNow + EFZ_BASE_OFFSET_P2, &p2B, sizeof(p2B));
+                            if (p1B) SafeReadMemory(p1B + IC_COLOR_OFFSET, &ic1, sizeof(ic1));
+                            if (p2B) SafeReadMemory(p2B + IC_COLOR_OFFSET, &ic2, sizeof(ic2));
+                            bool p1Blue = (ic1 != 0);
+                            bool p2Blue = (ic2 != 0);
+                            if ((p==1 && p1Blue) || (p==2 && p2Blue)) {
+                                // Force this side to Red (false), keep the other side as-is
+                                bool newP1Blue = (p==1) ? false : p1Blue;
+                                bool newP2Blue = (p==2) ? false : p2Blue;
+                                SetICColorDirect(newP1Blue, newP2Blue);
+                            }
+                        }
+                        // Log recovery reason and state snapshot
+                        {
+                            // Build a concise reason based on gating config captured from outer scope
+                            std::string reason;
+                            if (requireBoth) {
+                                unsigned long long elapsed = (s_bothNeutralStartMs == 0ULL) ? 0ULL : (nowMs - s_bothNeutralStartMs);
+                                reason = std::string("both-neutral ") + (bothNeutral?"true":"false") + ", delay=" + std::to_string(delayMs) + "ms, elapsed=" + std::to_string((unsigned long long)elapsed) + "ms";
+                            } else {
+                                int prevM = (p==1? prevMoveID1 : prevMoveID2);
+                                int curM  = (p==1? moveID1 : moveID2);
+                                reason = std::string("transition ") + std::to_string(prevM) + "->" + std::to_string(curM);
+                            }
+                            // Targets summary (+ move IDs to debug misclassification)
+                            const char* hpOnStr = tg.hpOn ? "on" : "off";
+                            char hpVal[24] = {0};
+                            if (tg.hpOn) { snprintf(hpVal, sizeof(hpVal), "=%d", CLAMP(tg.hp, 0, MAX_HP)); }
+                            const char* meterOnStr = tg.meterOn ? "on" : "off";
+                            char meterVal[24] = {0};
+                            if (tg.meterOn) { snprintf(meterVal, sizeof(meterVal), "=%d", CLAMP(tg.meter, 0, MAX_METER)); }
+                            const char* rfOnStr = tg.rfOn ? "on" : "off";
+                            double rfVal = tg.rfOn ? tg.rf : 0.0;
+                            const char* bicStr = tg.bic ? "true" : "false";
+                            const char* redIcStr = tg.wantRedIC ? "true" : "false";
+                            char buf[256];
+                            snprintf(buf, sizeof(buf), "[FM][ContRec] P%d recovered; reason=%s; p1Neutral=%s p2Neutral=%s engineRegen=%s moves{p1:%d p2:%d} targets{hp:%s%s meter:%s%s rf:%s%.1f BIC:%s RedIC:%s}",
+                                     (p==1?1:2),
+                                     reason.c_str(),
+                                     (p1NeutralNow?"true":"false"), (p2NeutralNow?"true":"false"),
+                                     (engineRegenActive?"true":"false"),
+                                     (int)moveID1, (int)moveID2,
+                                     hpOnStr, hpVal,
+                                     meterOnStr, meterVal,
+                                     rfOnStr, rfVal,
+                                     bicStr, redIcStr);
+                            #if defined(ENABLE_FRAME_ADV_DEBUG)
+                            LogOut(buf, true);
+                            #endif
+                            #if defined(ENABLE_FRAME_ADV_DEBUG)
+                            if (detailedLogging.load()) {
+                                // Secondary detail: wrote flags
+                                char buf2[192];
+                                snprintf(buf2, sizeof(buf2), "[FM][ContRec] P%d wroteHpOrMeter=%s appliedRF=%s freezeRF=%s",
+                                         (p==1?1:2), wroteHpOrMeter?"true":"false", appliedRf?"true":"false",
+                                         ((p==1? s_crRFFreezeP1 : s_crRFFreezeP2)?"true":"false"));
+                                LogOut(buf2, true);
+                            }
+                            #endif
+                        }
+                    };
+
+                    // Determine per-player eligibility
+                    bool p1Eligible = false, p2Eligible = false;
+                    if (!engineRegenActive) {
+                        if (requireBoth) {
+                            // Both must be neutral for at least delayMs
+                            if (bothNeutral) {
+                                unsigned long long start = s_bothNeutralStartMs;
+                                if (start != 0ULL && (nowMs - start) >= (unsigned long long)delayMs) {
+                                    p1Eligible = g_contRecEnabledP1.load();
+                                    p2Eligible = g_contRecEnabledP2.load();
+                                }
+                            }
+                        } else {
+                            // Legacy behavior: on transition to allowed neutral per-side
+                            if (transitionedToAllowed(prevMoveID1, moveID1)) p1Eligible = g_contRecEnabledP1.load();
+                            if (transitionedToAllowed(prevMoveID2, moveID2)) p2Eligible = g_contRecEnabledP2.load();
+                        }
+                    }
+
+                    #if defined(ENABLE_FRAME_ADV_DEBUG)
+                    if (engineRegenActive) {
+                        // Helpful note when engine regen blocks CR on a transition or both-neutral window
+                        if ((requireBoth && bothNeutral) || (!requireBoth && (transitionedToAllowed(prevMoveID1, moveID1) || transitionedToAllowed(prevMoveID2, moveID2)))) {
+                            LogOut("[FM][ContRec] Skipped due to engine regen active (F4/F5)", true);
+                        }
+                    }
+                    #endif
+
+                    if (p1Eligible) applyForPlayerIfEligible(1);
+                    if (p2Eligible) applyForPlayerIfEligible(2);
+
                     // Stop per-side RF freeze only if we started it via Continuous Recovery and it's no longer active
                     bool p1RFActive = g_contRecEnabledP1.load() && (g_contRecRfModeP1.load() > 0);
                     bool p2RFActive = g_contRecEnabledP2.load() && (g_contRecRfModeP2.load() > 0);
                     if (s_crRFFreezeP1 && !p1RFActive) { StopRFFreezePlayer(1); s_crRFFreezeP1 = false; }
                     if (s_crRFFreezeP2 && !p2RFActive) { StopRFFreezePlayer(2); s_crRFFreezeP2 = false; }
+                }
+
+                // Auto-fix HP anomalies in neutral: if enabled, and a side is neutral with HP<=0, set to 9999.
+                if (Config::GetSettings().autoFixHPOnNeutral) {
+                    uintptr_t baseNow = s_ptrCache.base;
+                    uintptr_t p1B=0, p2B=0;
+                    if (baseNow) {
+                        SafeReadMemory(baseNow + EFZ_BASE_OFFSET_P1, &p1B, sizeof(p1B));
+                        SafeReadMemory(baseNow + EFZ_BASE_OFFSET_P2, &p2B, sizeof(p2B));
+                    }
+                    if (p1B && isAllowedNeutral(moveID1)) {
+                        int hp = 1; SafeReadMemory(p1B + HP_OFFSET, &hp, sizeof(hp));
+                        if (hp <= 0) { int full = MAX_HP; SafeWriteMemory(p1B + HP_OFFSET, &full, sizeof(full)); SafeWriteMemory(p1B + HP_BAR_OFFSET, &full, sizeof(full)); }
+                    }
+                    if (p2B && isAllowedNeutral(moveID2)) {
+                        int hp = 1; SafeReadMemory(p2B + HP_OFFSET, &hp, sizeof(hp));
+                        if (hp <= 0) { int full = MAX_HP; SafeWriteMemory(p2B + HP_OFFSET, &full, sizeof(full)); SafeWriteMemory(p2B + HP_BAR_OFFSET, &full, sizeof(full)); }
+                    }
                 }
             }
             
