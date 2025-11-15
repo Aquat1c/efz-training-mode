@@ -2,6 +2,7 @@
 #include "../include/input/input_core.h"
 #include "../include/core/memory.h"
 #include "../include/core/logger.h"
+#include "../include/utils/utilities.h"
 #include "../include/core/constants.h"
 #include "../include/game/auto_action_helpers.h"
 #include "../include/input/motion_constants.h"  // Add this include
@@ -140,7 +141,9 @@ void ProcessInputQueues() {
                     p1QueueIndex = 0;
                     LogOut("[INPUT_QUEUE] P1 queue completed", true);
                     // Dump buffer state after queue completes to debug dash issues
-                    DumpInputBuffer(1, "AFTER_QUEUE_COMPLETE");
+                    if (detailedLogging.load()) {
+                        DumpInputBuffer(1, "AFTER_QUEUE_COMPLETE");
+                    }
                 }
             }
         } else {
@@ -161,7 +164,9 @@ void ProcessInputQueues() {
                     p2QueueIndex = 0;
                     LogOut("[INPUT_QUEUE] P2 queue completed", true);
                     // Dump buffer state after queue completes to debug dash issues
-                    DumpInputBuffer(2, "AFTER_QUEUE_COMPLETE");
+                    if (detailedLogging.load()) {
+                        DumpInputBuffer(2, "AFTER_QUEUE_COMPLETE");
+                    }
                 }
             }
         } else {
@@ -426,7 +431,9 @@ bool QueueMotionInput(int playerNum, int motionType, int buttonMask) {
                 return false;
             }
         }
-        DumpInputBuffer(playerNum, "AFTER_DIRECT_DASH_WRITE");
+        if (detailedLogging.load()) {
+            DumpInputBuffer(playerNum, "AFTER_DIRECT_DASH_WRITE");
+        }
     }
     
     // Activate the queue for this player

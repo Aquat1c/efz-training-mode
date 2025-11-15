@@ -864,3 +864,15 @@ bool IsFrameAdvantageActive() {
 FrameAdvantageState GetFrameAdvantageState() {
     return frameAdvState;
 }
+
+// Returns true if any FA-related timers/overlays require ticking even without moveID changes
+bool FrameAdvantageTimersActive() {
+    // If a wall-clock display timer is active, we need to tick
+    if (g_displayUntilTimeMs != 0) return true;
+    // If the gap overlay timer is active, we need to tick
+    if (frameAdvState.gapDisplayUntilInternalFrame != -1) return true;
+    // If RG suppressed the regular FA overlay until a future frame, and overlay is enabled, tick
+    int cur = GetCurrentInternalFrame();
+    if (g_showFrameAdvantageOverlay.load() && cur < g_SkipRegularFAOverlayUntilFrame.load()) return true;
+    return false;
+}
