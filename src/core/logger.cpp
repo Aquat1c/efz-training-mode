@@ -76,7 +76,22 @@ void LogOut(const std::string& msg, bool consoleOutput) {
             currentCategory == "IMGUI" ||
             currentCategory == "IMGUI_MONITOR" ||
             currentCategory == "CONFIG" ||
-            currentCategory == "KEYBINDS";
+            currentCategory == "KEYBINDS" ||
+            // High-frequency categories gated unless detailedLogging is on
+            currentCategory == "INPUT_BUFFER" ||
+            currentCategory == "BUFFER_FREEZE" ||
+            currentCategory == "BUFFER_DEBUG" ||
+            currentCategory == "BUFFER_COMBO" ||
+            currentCategory == "BUFFER_DUMP" ||
+            currentCategory == "AUTO-ACTION" ||
+            currentCategory == "TRIGGER_DIAG" ||
+            currentCategory == "DELAY" ||
+            currentCategory == "COOLDOWN" ||
+            currentCategory == "DASH" ||
+            currentCategory == "DASH_DEBUG" ||
+            currentCategory == "AUTO_GUARD" ||
+            currentCategory == "CRG" ||
+            currentCategory == "RG";
         if (isDetailedDebugMsg && !detailedLogging.load()) {
             return;
         }

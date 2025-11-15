@@ -75,3 +75,5 @@ double GetCurrentVisualFrame();      // Returns frame with .33/.66 subframes
 std::string FormatFrameAdvantage(int advantageInternal);  // Changed parameter from double to int
 bool IsAttackMove(short moveID);
 bool IsRecoveryFromAttack(short currentMoveID, short prevMoveID);
+// Lightweight query for frame monitor to decide if FA needs ticking even without moveID changes
+bool FrameAdvantageTimersActive();

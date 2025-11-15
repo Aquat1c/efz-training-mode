@@ -1704,11 +1704,16 @@ void FrameDataMonitor() {
             bool moveIDsChanged = (moveID1 != prevMoveID1) || (moveID2 != prevMoveID2);
             bool criticalFeaturesActive = autoJumpEnabled.load() || autoActionEnabled.load() || autoAirtechEnabled.load();
 
-            // ALWAYS process frame advantage for precise timing and display management
-            // Must run every frame to handle display timers and neutral detection
-            MonitorFrameAdvantage(moveID1, moveID2, prevMoveID1, prevMoveID2);
+            // Process frame advantage only when move IDs change or timers/overlays require ticking
+            {
+                bool faNeedsTick = FrameAdvantageTimersActive();
+                if (moveIDsChanged || faNeedsTick) {
+                    MonitorFrameAdvantage(moveID1, moveID2, prevMoveID1, prevMoveID2);
+                }
+            }
             
             // Run dummy auto-block stance early for minimal latency (uses current move IDs)
+            // Keep running each frame to honor neutral timeouts precisely
             MonitorDummyAutoBlock(moveID1, moveID2, prevMoveID1, prevMoveID2);
 
             // Practice-only: Defense helpers

@@ -164,24 +164,32 @@ static void ProcessDeferredDashFollowups(short curP1, short prevP1, short curP2,
     // Debug: Log MoveID transitions while waiting for dash
     static short lastLoggedP1 = -999;
     static short lastLoggedP2 = -999;
-    if (targetP == 1 && curr != lastLoggedP1) {
+        if (targetP == 1 && curr != lastLoggedP1) {
         bool targIsKaori = (g_cachedP1CharID == CHAR_ID_KAORI);
         int waitId = back ? BACKWARD_DASH_START_ID : (targIsKaori ? KAORI_FORWARD_DASH_START_ID : FORWARD_DASH_START_ID);
-        LogOut("[DASH_DEBUG] P1 MoveID: " + std::to_string(prev) + " -> " + std::to_string(curr) + 
-               std::string(" (waiting for ") + std::to_string(waitId) + ")", true);
+            if (detailedLogging.load()) {
+                LogOut("[DASH_DEBUG] P1 MoveID: " + std::to_string(prev) + " -> " + std::to_string(curr) + 
+                       std::string(" (waiting for ") + std::to_string(waitId) + ")", true);
+            }
         lastLoggedP1 = curr;
-        if ((back && curr == BACKWARD_DASH_START_ID) || (!back && (curr == FORWARD_DASH_START_ID || (targIsKaori && curr == KAORI_FORWARD_DASH_START_ID)))) {
-            DumpInputBuffer(1, "DASH_START_DETECTED");
+            if ((back && curr == BACKWARD_DASH_START_ID) || (!back && (curr == FORWARD_DASH_START_ID || (targIsKaori && curr == KAORI_FORWARD_DASH_START_ID)))) {
+                if (detailedLogging.load()) {
+                    DumpInputBuffer(1, "DASH_START_DETECTED");
+                }
         }
     }
-    if (targetP == 2 && curr != lastLoggedP2) {
+        if (targetP == 2 && curr != lastLoggedP2) {
         bool targIsKaori = (g_cachedP2CharID == CHAR_ID_KAORI);
         int waitId = back ? BACKWARD_DASH_START_ID : (targIsKaori ? KAORI_FORWARD_DASH_START_ID : FORWARD_DASH_START_ID);
-        LogOut("[DASH_DEBUG] P2 MoveID: " + std::to_string(prev) + " -> " + std::to_string(curr) + 
-               std::string(" (waiting for ") + std::to_string(waitId) + ")", true);
+            if (detailedLogging.load()) {
+                LogOut("[DASH_DEBUG] P2 MoveID: " + std::to_string(prev) + " -> " + std::to_string(curr) + 
+                       std::string(" (waiting for ") + std::to_string(waitId) + ")", true);
+            }
         lastLoggedP2 = curr;
-        if ((back && curr == BACKWARD_DASH_START_ID) || (!back && (curr == FORWARD_DASH_START_ID || (targIsKaori && curr == KAORI_FORWARD_DASH_START_ID)))) {
-            DumpInputBuffer(2, "DASH_START_DETECTED");
+            if ((back && curr == BACKWARD_DASH_START_ID) || (!back && (curr == FORWARD_DASH_START_ID || (targIsKaori && curr == KAORI_FORWARD_DASH_START_ID)))) {
+                if (detailedLogging.load()) {
+                    DumpInputBuffer(2, "DASH_START_DETECTED");
+                }
         }
     }
     
@@ -770,6 +778,15 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
     
     // Fast-path out when there's definitively no work to do this frame
     if (!AutoActionWorkPending()) {
+        return;
+    }
+    // Quiescent fast-path: if nothing is pending and both move IDs are unchanged, skip all work
+    // This keeps idle CPU low when triggers are enabled but no transitions occur.
+    if (!p1DelayState.isDelaying && !p2DelayState.isDelaying &&
+        !g_pendingControlRestore.load() && g_dashDeferred.pendingSel.load() == 0 &&
+        !s_p1WakePrearmed && !s_p2WakePrearmed && !s_p1RGPrearmed && !s_p2RGPrearmed &&
+        p1TriggerCooldown <= 0 && p2TriggerCooldown <= 0 &&
+        moveID1 == prevMoveID1 && moveID2 == prevMoveID2) {
         return;
     }
     ProcessTriggerCooldowns();
@@ -2339,15 +2356,21 @@ void ProcessAutoControlRestore() {
             int age = frameCounter.load() - g_recentDashQueuedFrame.load();
             extern int p2CurrentMotionType; extern bool p2QueueActive; extern int p2QueueIndex; extern int p2FrameCounter; extern std::vector<InputFrame> p2InputQueue;
             int qSize = (int)p2InputQueue.size();
-            if ((age % 4) == 0) {
-          LogOut(std::string("[AUTO-ACTION][DASH][TRACE] waiting age=") + std::to_string(age) +
-              " queueActive=" + (p2QueueActive?"1":"0") +
-              " qIdx=" + std::to_string(p2QueueIndex) + "/" + std::to_string(qSize) +
-              " frameInStep=" + std::to_string(p2FrameCounter) +
-              " motionType=" + std::to_string(p2CurrentMotionType), true);
-                if (p2QueueActive && p2QueueIndex < qSize) {
-                    uint8_t mask = p2InputQueue[p2QueueIndex].inputMask;
-                    LogOut(std::string("[AUTO-ACTION][DASH][TRACE] current mask=") + std::to_string((int)mask), true);
+            // Throttle noisy trace logs behind detailedLogging to reduce idle overhead
+            if (detailedLogging.load()) {
+                static int s_nextDashTraceLogFrame = 0; // ~8 logs/sec at 192Hz
+                int nowF = frameCounter.load();
+                if (nowF >= s_nextDashTraceLogFrame) {
+                    s_nextDashTraceLogFrame = nowF + 24; // 24 internal frames ~125ms
+                    LogOut(std::string("[AUTO-ACTION][DASH][TRACE] waiting age=") + std::to_string(age) +
+                           " queueActive=" + (p2QueueActive?"1":"0") +
+                           " qIdx=" + std::to_string(p2QueueIndex) + "/" + std::to_string(qSize) +
+                           " frameInStep=" + std::to_string(p2FrameCounter) +
+                           " motionType=" + std::to_string(p2CurrentMotionType), true);
+                    if (p2QueueActive && p2QueueIndex < qSize) {
+                        uint8_t mask = p2InputQueue[p2QueueIndex].inputMask;
+                        LogOut(std::string("[AUTO-ACTION][DASH][TRACE] current mask=") + std::to_string((int)mask), true);
+                    }
                 }
             }
             if (age < 120) {

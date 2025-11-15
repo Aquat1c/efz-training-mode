@@ -114,9 +114,11 @@ bool WritePlayerInputToBuffer(int playerNum, uint8_t inputMask) {
     if (!SafeWriteMemory(playerPtr + INPUT_BUFFER_OFFSET + bufferIndex, &inputMask, sizeof(uint8_t)))
         return false;
     
-    // Debug logging for dash investigation
-    LogOut("[BUFFER_WRITE] P" + std::to_string(playerNum) + " wrote " + DecodeInputMask(inputMask) + 
-           " at index " + std::to_string(currentIndex) + " -> " + std::to_string(currentIndex + 1), true);
+    // Debug logging for dash investigation (gate under detailedLogging)
+    if (detailedLogging.load()) {
+        LogOut("[BUFFER_WRITE] P" + std::to_string(playerNum) + " wrote " + DecodeInputMask(inputMask) + 
+               " at index " + std::to_string(currentIndex) + " -> " + std::to_string(currentIndex + 1), true);
+    }
     
     // Increment buffer index
     currentIndex = (currentIndex + 1) % INPUT_BUFFER_SIZE;
@@ -149,8 +151,10 @@ bool ResetPlayerInputBufferIndex(int playerNum) {
     uintptr_t playerPtr = GetPlayerPointer(playerNum);
     if (!playerPtr) return false;
     
-    // Dump buffer state before reset
-    DumpInputBuffer(playerNum, "BEFORE_INDEX_RESET");
+    // Dump buffer state before reset (debug only)
+    if (detailedLogging.load()) {
+        DumpInputBuffer(playerNum, "BEFORE_INDEX_RESET");
+    }
     
     uint16_t zero = 0;
     if (!SafeWriteMemory(playerPtr + INPUT_BUFFER_INDEX_OFFSET, &zero, sizeof(uint16_t))) {
@@ -159,8 +163,10 @@ bool ResetPlayerInputBufferIndex(int playerNum) {
     }
     LogOut("[INPUT] Reset buffer index to 0 for P" + std::to_string(playerNum), true);
     
-    // Dump after reset
-    DumpInputBuffer(playerNum, "AFTER_INDEX_RESET");
+    // Dump after reset (debug only)
+    if (detailedLogging.load()) {
+        DumpInputBuffer(playerNum, "AFTER_INDEX_RESET");
+    }
     
     return true;
 }
@@ -235,15 +241,13 @@ bool ClearPlayerInputBuffer(int playerNum, bool resetIndex) {
     if (!playerPtr) return false;
     
     // Dump before clearing for debugging
-    DumpInputBuffer(playerNum, "BEFORE_CLEAR");
-    
-    uint8_t neutral = 0x00;
-    bool ok = true;
-    for (uint16_t i = 0; i < INPUT_BUFFER_SIZE; ++i) {
-        if (!SafeWriteMemory(playerPtr + INPUT_BUFFER_OFFSET + i, &neutral, sizeof(uint8_t))) {
-            ok = false; // continue attempting writes
-        }
+    if (detailedLogging.load()) {
+        DumpInputBuffer(playerNum, "BEFORE_CLEAR");
     }
+    
+    // Bulk clear the entire circular buffer region in one write
+    std::vector<uint8_t> zeros(INPUT_BUFFER_SIZE, 0x00);
+    bool ok = SafeWriteMemory(playerPtr + INPUT_BUFFER_OFFSET, zeros.data(), INPUT_BUFFER_SIZE);
     if (resetIndex) {
         uint16_t zero = 0;
         if (!SafeWriteMemory(playerPtr + INPUT_BUFFER_INDEX_OFFSET, &zero, sizeof(uint16_t))) {

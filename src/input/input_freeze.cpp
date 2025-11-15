@@ -20,7 +20,9 @@ bool FreezePerfectDragonPunch(int playerNum) {
     // Stop any existing freeze thread
     StopBufferFreezing();
     
-    LogOut("[BUFFER_FREEZE] Starting Dragon Punch buffer freeze for P" + std::to_string(playerNum), true);
+    if (detailedLogging.load()) {
+        LogOut("[BUFFER_FREEZE] Starting Dragon Punch buffer freeze for P" + std::to_string(playerNum), true);
+    }
     
     // Use the exact values from your successful DP execution
     std::vector<uint8_t> dpMotion = {
@@ -31,17 +33,19 @@ bool FreezePerfectDragonPunch(int playerNum) {
     };
     
     // Detailed logging of input sequence
-    std::stringstream ss;
-    ss << "[BUFFER_FREEZE] DP motion buffer values: ";
-    for (size_t i = 0; i < dpMotion.size(); i++) {
-        if (dpMotion[i] != 0) {
-            ss << std::hex << std::setw(2) << std::setfill('0') 
-               << static_cast<int>(dpMotion[i]) << "(" << DecodeInputMask(dpMotion[i]) << ") ";
-        } else if (i > 0 && dpMotion[i-1] != 0) {
-            ss << "00 ";  // Only show zeros that follow non-zero values
+    if (detailedLogging.load()) {
+        std::stringstream ss;
+        ss << "[BUFFER_FREEZE] DP motion buffer values: ";
+        for (size_t i = 0; i < dpMotion.size(); i++) {
+            if (dpMotion[i] != 0) {
+                ss << std::hex << std::setw(2) << std::setfill('0') 
+                   << static_cast<int>(dpMotion[i]) << "(" << DecodeInputMask(dpMotion[i]) << ") ";
+            } else if (i > 0 && dpMotion[i-1] != 0) {
+                ss << "00 ";  // Only show zeros that follow non-zero values
+            }
         }
+        LogOut(ss.str(), true);
     }
-    LogOut(ss.str(), true);
     
     // Setup the frozen buffer values
     g_frozenBufferValues = dpMotion;
@@ -57,8 +61,10 @@ bool FreezePerfectDragonPunch(int playerNum) {
     g_bufferFreezeThread = std::thread(FreezeBufferValuesThread, playerNum);
     g_bufferFreezeThread.detach();  // Detach to prevent termination
     
-    LogOut("[BUFFER_FREEZE] Perfect Dragon Punch motion freezing activated at index " + 
-           std::to_string(g_frozenIndexValue), true);
+    if (detailedLogging.load()) {
+        LogOut("[BUFFER_FREEZE] Perfect Dragon Punch motion freezing activated at index " + 
+               std::to_string(g_frozenIndexValue), true);
+    }
     return true;
 }
 
@@ -67,7 +73,9 @@ bool FreezePerfectDragonPunchEnhanced(int playerNum) {
     // Stop any existing freeze thread
     StopBufferFreezing();
     
-    LogOut("[BUFFER_DEBUG] Starting enhanced DP buffer freeze for P" + std::to_string(playerNum), true);
+    if (detailedLogging.load()) {
+        LogOut("[BUFFER_DEBUG] Starting enhanced DP buffer freeze for P" + std::to_string(playerNum), true);
+    }
     
     // Get player pointer
     uintptr_t playerPtr = GetPlayerPointer(playerNum);
@@ -84,7 +92,9 @@ bool FreezePerfectDragonPunchEnhanced(int playerNum) {
     }
     
     // First dump the current buffer contents for diagnostic purposes
-    DumpInputBuffer(playerNum);
+    if (detailedLogging.load()) {
+        DumpInputBuffer(playerNum);
+    }
     
     // Use the exact DP motion sequence from the console dump
     std::vector<uint8_t> dpMotion = {
@@ -104,29 +114,35 @@ bool FreezePerfectDragonPunchEnhanced(int playerNum) {
     g_frozenIndexValue = (g_frozenBufferStartIndex + 20) % INPUT_BUFFER_SIZE;
     g_indexFreezingActive = true;
     
-    LogOut("[BUFFER_DEBUG] Current buffer index: " + std::to_string(currentIndex), true);
-    LogOut("[BUFFER_DEBUG] Setting buffer start at: " + std::to_string(g_frozenBufferStartIndex), true);
-    LogOut("[BUFFER_DEBUG] Setting frozen index to: " + std::to_string(g_frozenIndexValue), true);
+    if (detailedLogging.load()) {
+        LogOut("[BUFFER_DEBUG] Current buffer index: " + std::to_string(currentIndex), true);
+        LogOut("[BUFFER_DEBUG] Setting buffer start at: " + std::to_string(g_frozenBufferStartIndex), true);
+        LogOut("[BUFFER_DEBUG] Setting frozen index to: " + std::to_string(g_frozenIndexValue), true);
+    }
     
     // Detailed logging of input sequence
-    std::stringstream ss;
-    ss << "[BUFFER_DEBUG] DP motion sequence: ";
-    for (size_t i = 0; i < dpMotion.size(); i++) {
-        ss << std::hex << std::setw(2) << std::setfill('0') 
-           << static_cast<int>(dpMotion[i]) << "(" << DecodeInputMask(dpMotion[i]) << ") ";
+    if (detailedLogging.load()) {
+        std::stringstream ss;
+        ss << "[BUFFER_DEBUG] DP motion sequence: ";
+        for (size_t i = 0; i < dpMotion.size(); i++) {
+            ss << std::hex << std::setw(2) << std::setfill('0') 
+               << static_cast<int>(dpMotion[i]) << "(" << DecodeInputMask(dpMotion[i]) << ") ";
+        }
+        LogOut(ss.str(), true);
     }
-    LogOut(ss.str(), true);
     
     // Start freezing thread
     g_bufferFreezingActive = true;
     g_bufferFreezeThread = std::thread([playerNum]() {
-    LogOut("[BUFFER_DEBUG] Enhanced freeze thread starting", true);
+    if (detailedLogging.load()) { LogOut("[BUFFER_DEBUG] Enhanced freeze thread starting", true); }
         FreezeBufferValuesThread(playerNum);
     });
     g_bufferFreezeThread.detach();  // Detach to prevent termination
     
-    LogOut("[BUFFER_DEBUG] Enhanced DP buffer freeze activated for P" + 
-           std::to_string(playerNum), true);
+    if (detailedLogging.load()) {
+        LogOut("[BUFFER_DEBUG] Enhanced DP buffer freeze activated for P" + 
+               std::to_string(playerNum), true);
+    }
     return true;
 }
 
@@ -134,7 +150,9 @@ bool ComboFreezeDP(int playerNum) {
     // Stop any existing freeze thread
     StopBufferFreezing();
     
-    LogOut("[BUFFER_COMBO] Starting CheatEngine-style DP freeze for P" + std::to_string(playerNum), true);
+    if (detailedLogging.load()) {
+        LogOut("[BUFFER_COMBO] Starting CheatEngine-style DP freeze for P" + std::to_string(playerNum), true);
+    }
     
     uintptr_t playerPtr = GetPlayerPointer(playerNum);
     if (!playerPtr) {
@@ -145,7 +163,9 @@ bool ComboFreezeDP(int playerNum) {
     // Read initial buffer state
     uint16_t currentIndex = 0;
     SafeReadMemory(playerPtr + INPUT_BUFFER_INDEX_OFFSET, &currentIndex, sizeof(uint16_t));
-    LogOut("[BUFFER_COMBO] Initial buffer index: " + std::to_string(currentIndex), true);
+    if (detailedLogging.load()) {
+        LogOut("[BUFFER_COMBO] Initial buffer index: " + std::to_string(currentIndex), true);
+    }
     
     // This is the exact CheatEngine pattern that works
     std::vector<uint8_t> dpMotion = {
@@ -167,7 +187,7 @@ bool ComboFreezeDP(int playerNum) {
     
     // Start buffer freeze thread
     g_bufferFreezeThread = std::thread([playerNum, dpMotion]() {
-        LogOut("[BUFFER_COMBO] Starting DP pattern buffer freeze thread", true);
+        if (detailedLogging.load()) { LogOut("[BUFFER_COMBO] Starting DP pattern buffer freeze thread", true); }
         uintptr_t playerPtr = GetPlayerPointer(playerNum);
         if (!playerPtr) return;
 
@@ -199,7 +219,9 @@ bool ComboFreezeDP(int playerNum) {
                 SafeReadMemory(moveIDAddr, &moveID, sizeof(short));
                 if (moveID != lastMoveID && moveID != 0) {
                     if (now - lastLogMs >= 250ULL) { // throttle
-                        LogOut("[BUFFER_COMBO] MoveID: " + std::to_string(lastMoveID) + " -> " + std::to_string(moveID), true);
+                        if (detailedLogging.load()) {
+                            LogOut("[BUFFER_COMBO] MoveID: " + std::to_string(lastMoveID) + " -> " + std::to_string(moveID), true);
+                        }
                         lastLogMs = now;
                     }
                     lastMoveID = moveID;
@@ -232,7 +254,7 @@ bool ComboFreezeDP(int playerNum) {
 
             // Sparse status log
             if ((currentIndex != lastIndex) && (now - lastLogMs >= 250ULL)) {
-                LogOut("[BUFFER_COMBO] Maintaining at index " + std::to_string(currentIndex), true);
+                if (detailedLogging.load()) { LogOut("[BUFFER_COMBO] Maintaining at index " + std::to_string(currentIndex), true); }
                 lastIndex = currentIndex;
                 lastLogMs = now;
             }
@@ -244,7 +266,7 @@ bool ComboFreezeDP(int playerNum) {
     });
     g_bufferFreezeThread.detach();
     
-    LogOut("[BUFFER_COMBO] DP buffer pattern freeze activated", true);
+    if (detailedLogging.load()) { LogOut("[BUFFER_COMBO] DP buffer pattern freeze activated", true); }
     return true;
 }
 
@@ -261,8 +283,10 @@ bool FreezeBufferForMotion(int playerNum, int motionType, int buttonMask, int op
     
     // Log basic information
     bool facingRight = GetPlayerFacingDirection(playerNum);
-    LogOut("[BUFFER_FREEZE] Starting buffer freeze for motion " + GetMotionTypeName(motionType) + " (P" + std::to_string(playerNum) + ")", true);
-    LogOut("[BUFFER_FREEZE] Begin session (" + GetMotionTypeName(motionType) + ") P" + std::to_string(playerNum), true);
+    if (detailedLogging.load()) {
+        LogOut("[BUFFER_FREEZE] Starting buffer freeze for motion " + GetMotionTypeName(motionType) + " (P" + std::to_string(playerNum) + ")", true);
+        LogOut("[BUFFER_FREEZE] Begin session (" + GetMotionTypeName(motionType) + ") P" + std::to_string(playerNum), true);
+    }
     
     // Define directions based on facing
     uint8_t fwd = facingRight ? GAME_INPUT_RIGHT : GAME_INPUT_LEFT;
@@ -272,7 +296,9 @@ bool FreezeBufferForMotion(int playerNum, int motionType, int buttonMask, int op
     uint8_t downBack = down | back;
     
     std::string motionLabel = GetMotionTypeName(motionType);
-    LogOut("[BUFFER_FREEZE] Player " + std::to_string(playerNum) + " facing " + (facingRight ? "right" : "left"), true);
+    if (detailedLogging.load()) {
+        LogOut("[BUFFER_FREEZE] Player " + std::to_string(playerNum) + " facing " + (facingRight ? "right" : "left"), true);
+    }
     
     // Initialize pattern with carefully optimized sequence
     std::vector<uint8_t> pattern;
@@ -480,12 +506,14 @@ bool FreezeBufferForMotion(int playerNum, int motionType, int buttonMask, int op
     }
     
     // Log the pattern values with direction names for debugging
-    std::stringstream ss;
-    ss << "[BUFFER_FREEZE] Pattern values for " << motionLabel << ": ";
-    for (size_t i = 0; i < pattern.size(); i++) {
-        ss << DecodeInputMask(pattern[i]) << " ";
+    if (detailedLogging.load()) {
+        std::stringstream ss;
+        ss << "[BUFFER_FREEZE] Pattern values for " << motionLabel << ": ";
+        for (size_t i = 0; i < pattern.size(); i++) {
+            ss << DecodeInputMask(pattern[i]) << " ";
+        }
+        LogOut(ss.str(), true);
     }
-    LogOut(ss.str(), true);
     
     // OPTIMIZATION: Always place pattern at the beginning of the buffer (index 0)
     const uint16_t startIndex = 0;
@@ -493,17 +521,13 @@ bool FreezeBufferForMotion(int playerNum, int motionType, int buttonMask, int op
     // First clear the entire buffer section we'll use plus a few extra bytes for safety
     const int clearPadding = 4;
     const uint16_t clearLength = static_cast<uint16_t>(pattern.size() + clearPadding);
-    
-    for (uint16_t i = 0; i < clearLength; i++) {
-        uint16_t idx = (startIndex + i) % INPUT_BUFFER_SIZE;
-        uint8_t zero = 0;
-        SafeWriteMemory(playerPtr + INPUT_BUFFER_OFFSET + idx, &zero, sizeof(uint8_t));
+    if (clearLength > 0) {
+        std::vector<uint8_t> zeros(clearLength, 0x00);
+        SafeWriteMemory(playerPtr + INPUT_BUFFER_OFFSET + startIndex, zeros.data(), clearLength);
     }
-    
-    // Now write our pattern at the start of the buffer
-    for (size_t i = 0; i < pattern.size(); i++) {
-        uint16_t idx = (startIndex + i) % INPUT_BUFFER_SIZE;
-        SafeWriteMemory(playerPtr + INPUT_BUFFER_OFFSET + idx, &pattern[i], sizeof(uint8_t));
+    // Now write our pattern at the start of the buffer (bulk write)
+    if (!pattern.empty()) {
+        SafeWriteMemory(playerPtr + INPUT_BUFFER_OFFSET + startIndex, pattern.data(), static_cast<uint32_t>(pattern.size()));
     }
     
     // Set up globals for the freeze thread
@@ -520,8 +544,10 @@ bool FreezeBufferForMotion(int playerNum, int motionType, int buttonMask, int op
     g_bufferFreezeThread = std::thread(FreezeBufferValuesThread, playerNum);
     g_bufferFreezeThread.detach();
     
-    LogOut("[BUFFER_FREEZE] Buffer freeze for " + motionLabel + " activated at index " + 
-           std::to_string(g_frozenIndexValue), true);
+    if (detailedLogging.load()) {
+        LogOut("[BUFFER_FREEZE] Buffer freeze for " + motionLabel + " activated at index " + 
+               std::to_string(g_frozenIndexValue), true);
+    }
     return true;
 }
 
@@ -539,10 +565,9 @@ namespace {
 void ClearPlayerInputBuffer(int playerNum) {
     uintptr_t playerPtr = GetPlayerPointer(playerNum);
     if (!playerPtr) return;
-    uint8_t zero = 0x00;
-    for (uint16_t i = 0; i < INPUT_BUFFER_SIZE; ++i) {
-        SafeWriteMemory(playerPtr + INPUT_BUFFER_OFFSET + i, &zero, sizeof(uint8_t));
-    }
+    // Bulk clear the entire buffer region in one write
+    std::vector<uint8_t> zeros(INPUT_BUFFER_SIZE, 0x00);
+    SafeWriteMemory(playerPtr + INPUT_BUFFER_OFFSET, zeros.data(), INPUT_BUFFER_SIZE);
     uint16_t idxZero = 0;
     SafeWriteMemory(playerPtr + INPUT_BUFFER_INDEX_OFFSET, &idxZero, sizeof(uint16_t));
     LogOut(std::string("[BUFFER_FREEZE] Cleared full buffer & index for P") + std::to_string(playerNum), true);
@@ -648,15 +673,15 @@ bool FreezeBufferWithPattern(int playerNum, const std::vector<uint8_t>& patternI
     std::vector<uint8_t> pattern = patternIn;
     if (pattern.size() > 120) pattern.resize(120); // safety cap
 
-    // Clear target region first (pattern + small padding)
+    // Clear target region first (pattern + small padding) and write in bulk
     const uint16_t startIndex = 0;
     const uint16_t clearLength = static_cast<uint16_t>(pattern.size() + 4);
-    for (uint16_t i = 0; i < clearLength; ++i) {
-        uint8_t z = 0; SafeWriteMemory(playerPtr + INPUT_BUFFER_OFFSET + ((startIndex + i) % INPUT_BUFFER_SIZE), &z, 1);
+    if (clearLength > 0) {
+        std::vector<uint8_t> zeros(clearLength, 0x00);
+        SafeWriteMemory(playerPtr + INPUT_BUFFER_OFFSET + startIndex, zeros.data(), clearLength);
     }
-    // Write pattern
-    for (size_t i = 0; i < pattern.size(); ++i) {
-        SafeWriteMemory(playerPtr + INPUT_BUFFER_OFFSET + ((startIndex + i) % INPUT_BUFFER_SIZE), &pattern[i], 1);
+    if (!pattern.empty()) {
+        SafeWriteMemory(playerPtr + INPUT_BUFFER_OFFSET + startIndex, pattern.data(), static_cast<uint32_t>(pattern.size()));
     }
     g_frozenBufferValues = pattern;
     g_frozenBufferStartIndex = startIndex;
@@ -685,11 +710,12 @@ bool FreezeBufferWithPattern(int playerNum, const std::vector<uint8_t>& patternI
     if (extraNeutralFrames > 30) extraNeutralFrames = 30;
     const uint16_t startIndex = 0;
     const uint16_t clearLength = static_cast<uint16_t>(pattern.size() + extraNeutralFrames + 4);
-    for (uint16_t i = 0; i < clearLength; ++i) {
-        uint8_t z = 0; SafeWriteMemory(playerPtr + INPUT_BUFFER_OFFSET + ((startIndex + i) % INPUT_BUFFER_SIZE), &z, 1);
+    if (clearLength > 0) {
+        std::vector<uint8_t> zeros(clearLength, 0x00);
+        SafeWriteMemory(playerPtr + INPUT_BUFFER_OFFSET + startIndex, zeros.data(), clearLength);
     }
-    for (size_t i = 0; i < pattern.size(); ++i) {
-        SafeWriteMemory(playerPtr + INPUT_BUFFER_OFFSET + ((startIndex + i) % INPUT_BUFFER_SIZE), &pattern[i], 1);
+    if (!pattern.empty()) {
+        SafeWriteMemory(playerPtr + INPUT_BUFFER_OFFSET + startIndex, pattern.data(), static_cast<uint32_t>(pattern.size()));
     }
     g_frozenBufferValues = pattern; // store only real pattern (neutrals virtual)
     g_frozenBufferStartIndex = startIndex;

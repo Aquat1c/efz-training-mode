@@ -37,10 +37,12 @@ std::atomic<int> g_activeFreezePlayer{0};
 
 // Define buffer functions
 void FreezeBufferValuesThread(int playerNum) {
-    LogOut("[INPUT_BUFFER] Starting buffer freeze thread for P" + std::to_string(playerNum) +
-           " startIdx=" + std::to_string(g_frozenBufferStartIndex) +
-           " len=" + std::to_string(g_frozenBufferLength) +
-           " idxLock=" + (g_indexFreezingActive.load()?std::to_string(g_frozenIndexValue):std::string("off")), true);
+    if (detailedLogging.load()) {
+        LogOut("[INPUT_BUFFER] Starting buffer freeze thread for P" + std::to_string(playerNum) +
+               " startIdx=" + std::to_string(g_frozenBufferStartIndex) +
+               " len=" + std::to_string(g_frozenBufferLength) +
+               " idxLock=" + (g_indexFreezingActive.load()?std::to_string(g_frozenIndexValue):std::string("off")), true);
+    }
     g_activeFreezePlayer.store(playerNum);
     
     uintptr_t initialPlayerPtr = GetPlayerPointer(playerNum);
@@ -58,11 +60,13 @@ void FreezeBufferValuesThread(int playerNum) {
             uintptr_t bufStart = testPlayer + INPUT_BUFFER_OFFSET;
             uintptr_t bufEnd   = bufStart + INPUT_BUFFER_SIZE - 1;
             uintptr_t idxAddr  = testPlayer + INPUT_BUFFER_INDEX_OFFSET;
-            std::stringstream ss;
-            ss << "[INPUT_BUFFER] Layout: start=0x" << std::hex << bufStart
-               << " end=0x" << bufEnd << " index=0x" << idxAddr
-               << std::dec;
-            LogOut(ss.str(), true);
+            if (detailedLogging.load()) {
+                std::stringstream ss;
+                ss << "[INPUT_BUFFER] Layout: start=0x" << std::hex << bufStart
+                   << " end=0x" << bufEnd << " index=0x" << idxAddr
+                   << std::dec;
+                LogOut(ss.str(), true);
+            }
             if (bufEnd >= idxAddr && idxAddr >= bufStart) {
                 LogOut("[INPUT_BUFFER][WARN] Buffer region overlaps index! Adjust sizes/offsets.", true);
             }
@@ -128,8 +132,10 @@ void FreezeBufferValuesThread(int playerNum) {
         short currentMoveID = 0;
         if (SafeReadMemory(moveIDAddr, &currentMoveID, sizeof(short))) {
             if (currentMoveID != lastMoveID) {
-                LogOut("[BUFFER_FREEZE] MoveID changed: " + std::to_string(lastMoveID) + 
-                      " → " + std::to_string(currentMoveID), true);
+                if (detailedLogging.load()) {
+                    LogOut("[BUFFER_FREEZE] MoveID changed: " + std::to_string(lastMoveID) + 
+                          " → " + std::to_string(currentMoveID), true);
+                }
                 lastMoveID = currentMoveID;
                 moveIDChanged = true;
             }
@@ -186,8 +192,10 @@ void FreezeBufferValuesThread(int playerNum) {
         short currentMoveID = 0;
         if (SafeReadMemory(moveIDAddr, &currentMoveID, sizeof(short))) {
             if (currentMoveID != lastMoveID) {
-                LogOut("[BUFFER_FREEZE] MoveID changed: " + std::to_string(lastMoveID) + 
-                      " → " + std::to_string(currentMoveID), true);
+                if (detailedLogging.load()) {
+                    LogOut("[BUFFER_FREEZE] MoveID changed: " + std::to_string(lastMoveID) + 
+                          " → " + std::to_string(currentMoveID), true);
+                }
                 lastMoveID = currentMoveID;
                 moveIDChanged = true;
             }
@@ -196,8 +204,10 @@ void FreezeBufferValuesThread(int playerNum) {
             if (currentMoveID != 0 && moveIDChanged) {
                 consecutiveMoveTicks++;
                 if (consecutiveMoveTicks >= 3) {
-                    LogOut("[BUFFER_FREEZE] Motion recognized! Move ID: " + 
-                          std::to_string(currentMoveID), true);
+                    if (detailedLogging.load()) {
+                        LogOut("[BUFFER_FREEZE] Motion recognized! Move ID: " + 
+                              std::to_string(currentMoveID), true);
+                    }
                     break; // Exit early on successful execution
                 }
             } else {
@@ -211,7 +221,9 @@ void FreezeBufferValuesThread(int playerNum) {
     }
     
     // Cleanup phase - DO NOT forcibly wipe entire buffer here; just neutralize trailing inputs
-    LogOut("[BUFFER_FREEZE] Buffer freeze thread ended (counter=" + std::to_string(freezeCount) + ")", true);
+    if (detailedLogging.load()) {
+        LogOut("[BUFFER_FREEZE] Buffer freeze thread ended (counter=" + std::to_string(freezeCount) + ")", true);
+    }
     if (g_frozenBufferLength > 0) {
         uintptr_t playerPtr = GetPlayerPointer(playerNum);
         if (playerPtr) {
@@ -245,7 +257,9 @@ void FreezeBufferValuesThread(int playerNum) {
     g_indexFreezingActive = false;
     g_activeFreezePlayer.store(0);
     
-    LogOut("[BUFFER_FREEZE] End session P" + std::to_string(playerNum) + " (thread ended)", true);
+    if (detailedLogging.load()) {
+        LogOut("[BUFFER_FREEZE] End session P" + std::to_string(playerNum) + " (thread ended)", true);
+    }
 }
 
 // Capture current buffer section and begin freezing it
@@ -291,13 +305,15 @@ bool CaptureAndFreezeBuffer(int playerNum, uint16_t startIndex, uint16_t length)
     }
     
     // Output the captured values
-    std::stringstream ss;
-    ss << "[INPUT_BUFFER] Captured values: ";
-    for (size_t i = 0; i < static_cast<size_t>(length); i++) {
-        ss << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(g_frozenBufferValues[i]);
-        if (i + 1 < static_cast<size_t>(length)) ss << " ";
+    if (detailedLogging.load()) {
+        std::stringstream ss;
+        ss << "[INPUT_BUFFER] Captured values: ";
+        for (size_t i = 0; i < static_cast<size_t>(length); i++) {
+            ss << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(g_frozenBufferValues[i]);
+            if (i + 1 < static_cast<size_t>(length)) ss << " ";
+        }
+        LogOut(ss.str(), true);
     }
-    LogOut(ss.str(), true);
     
     // Start freezing
     g_bufferFreezingActive = true;
