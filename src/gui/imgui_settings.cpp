@@ -219,6 +219,39 @@ namespace ImGuiSettings {
 
                 ImGui::Spacing();
                 ImGui::Separator();
+                ImGui::SeparatorText("Recovery & Health");
+
+                // Continuous Recovery gating settings (moved from Keyboard Hotkeys)
+                bool crBoth = cfg.crRequireBothNeutral;
+                if (ImGui::Checkbox("CR: require both players neutral", &crBoth)) {
+                    Config::SetSetting("General", "crRequireBothNeutral", crBoth ? "1" : "0");
+                }
+                int crDelay = cfg.crBothNeutralDelayMs;
+                ImGui::SetNextItemWidth(180);
+                if (ImGui::InputInt("CR: neutral delay (ms)", &crDelay)) {
+                    if (crDelay < 0) crDelay = 0; if (crDelay > 5000) crDelay = 5000;
+                    Config::SetSetting("General", "crBothNeutralDelayMs", std::to_string(crDelay));
+                }
+
+                // Auto-fix HP anomalies
+                bool autoFixHp = cfg.autoFixHPOnNeutral;
+                if (ImGui::Checkbox("Auto-fix HP<=0 in neutral (set to 9999)", &autoFixHp)) {
+                    Config::SetSetting("General", "autoFixHPOnNeutral", autoFixHp ? "1" : "0");
+                }
+
+                // RF Freeze behavior
+                ImGui::Dummy(ImVec2(1,2));
+                bool freezeAfterCR = cfg.freezeRFAfterContRec;
+                if (ImGui::Checkbox("Freeze RF after Continuous Recovery", &freezeAfterCR)) {
+                    Config::SetSetting("General", "freezeRFAfterContRec", freezeAfterCR ? "1" : "0");
+                }
+                bool freezeOnlyNeutral = cfg.freezeRFOnlyWhenNeutral;
+                if (ImGui::Checkbox("Freeze RF only when neutral", &freezeOnlyNeutral)) {
+                    Config::SetSetting("General", "freezeRFOnlyWhenNeutral", freezeOnlyNeutral ? "1" : "0");
+                }
+
+                ImGui::Spacing();
+                ImGui::Separator();
                 ImGui::SeparatorText("Advanced");
 
                 CheckboxApply("Detailed logging", logVerbose, "General", "DetailedLogging");
@@ -232,6 +265,13 @@ namespace ImGuiSettings {
                     } else {
                         SetConsoleVisibility(false);
                     }
+                }
+
+                ImGui::Spacing();
+                ImGui::Separator();
+                if (ImGui::Button("Save to disk")) {
+                    Config::SaveSettings();
+                    LogOut("[CONFIG/UI] Settings saved to ini", false);
                 }
 
                 ImGui::EndTabItem();

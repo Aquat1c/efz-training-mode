@@ -83,6 +83,21 @@ bool SetICColorPlayer(int player, bool blueIC);
 // enabled=false disables color enforcement for that player. If enabled=true, blueIC selects Red(false)/Blue(true)
 void SetRFFreezeColorDesired(int player, bool enabled, bool blueIC);
 
+// RF Freeze provenance and status helpers
+enum class RFFreezeOrigin {
+	None = 0,
+	ManualUI = 1,
+	ContinuousRecovery = 2,
+	Other = 3
+};
+// Start RF freeze for one player with origin attribution
+void StartRFFreezeOneFromUI(int player, double value);
+void StartRFFreezeOneFromCR(int player, double value);
+// Query RF freeze status for a player
+bool GetRFFreezeStatus(int player, bool& isActive, double& value, bool& colorManaged, bool& colorBlue);
+// Query RF freeze origin for a player
+RFFreezeOrigin GetRFFreezeOrigin(int player);
+
 // Input bitmask constants
 #define INPUT_UP     0x01
 #define INPUT_DOWN   0x02

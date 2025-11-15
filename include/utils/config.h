@@ -86,6 +86,13 @@ namespace Config {
         bool freezeRFAfterContRec;       // Start RF freeze after Continuous Recovery enforcement
         bool freezeRFOnlyWhenNeutral;    // Maintain RF freeze only while in neutral states
 
+        // Continuous Recovery gating
+        bool crRequireBothNeutral;       // Require BOTH players to be neutral before CR applies
+        int  crBothNeutralDelayMs;       // Delay after both-neutral detected before applying CR
+
+        // Auto-fix HP anomalies
+        bool autoFixHPOnNeutral;         // If neutral and HP<=0, set HP to 9999 automatically
+
         // Frame Advantage display duration (in seconds)
         float frameAdvantageDisplayDuration; // How long to show FA/RG messages (default: 8.0)
 

@@ -278,13 +278,13 @@ void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, shor
     }
     
     // Check if the display timer has expired (using wall-clock time)
-    if (g_displayUntilTimeMs != 0 && currentTimeMs >= g_displayUntilTimeMs) {
+            if (g_displayUntilTimeMs != 0 && currentTimeMs >= g_displayUntilTimeMs) {
         #if defined(ENABLE_FRAME_ADV_DEBUG)
-        LogOut("[FRAME_ADV_DEBUG] Timer expired: current=" + std::to_string(currentTimeMs) + 
-               " expiry=" + std::to_string(g_displayUntilTimeMs), true);
+             LogOut("[FRAME_ADV_DEBUG] Timer expired: current=" + std::to_string(currentTimeMs) + 
+                 " expiry=" + std::to_string(g_displayUntilTimeMs), true);
+             LogOut("[FA_TIMER] Message cleared - current=" + std::to_string(currentTimeMs) + 
+                 " expiry=" + std::to_string(g_displayUntilTimeMs), true);
         #endif
-        LogOut("[FA_TIMER] Message cleared - current=" + std::to_string(currentTimeMs) + 
-               " expiry=" + std::to_string(g_displayUntilTimeMs), true);
         // Clear both FA messages (handles both regular FA and RG FA1/FA2 displays)
         if (g_FrameAdvantageId != -1) {
             DirectDrawHook::RemovePermanentMessage(g_FrameAdvantageId);
@@ -325,7 +325,7 @@ void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, shor
                " p1NewAction=" + std::to_string(p1NewAction) + 
                " p2NewAction=" + std::to_string(p2NewAction) +
                " p1Move=" + std::to_string(moveID1) +
-               " p2Move=" + std::to_string(moveID2), true);
+               " p2Move=" + std::to_string(moveID2), detailedLogging.load());
         #endif
         // Clear FA display (both regular and RG messages) when new action starts
         if (g_FrameAdvantageId != -1) {
@@ -741,9 +741,11 @@ void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, shor
             
             // Set display duration using wall-clock time (real seconds, not frames)
             g_displayUntilTimeMs = currentTimeMs + GetDisplayDurationMs();
-            LogOut("[FA_TIMER] P1 FA timer set - current=" + std::to_string(currentTimeMs) + 
-                   " duration=" + std::to_string(GetDisplayDurationMs()) + "ms" +
-                   " expiry=" + std::to_string(g_displayUntilTimeMs), true);
+                     #if defined(ENABLE_FRAME_ADV_DEBUG)
+                     LogOut("[FA_TIMER] P1 FA timer set - current=" + std::to_string(currentTimeMs) + 
+                         " duration=" + std::to_string(GetDisplayDurationMs()) + "ms" +
+                         " expiry=" + std::to_string(g_displayUntilTimeMs), true);
+                     #endif
         }
         
         LogOut("[FRAME_ADV] P1->P2 Frame Advantage: " + frameAdvText, true);
@@ -799,9 +801,11 @@ void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, shor
             
             // Set display duration using wall-clock time (real seconds, not frames)
             g_displayUntilTimeMs = currentTimeMs + GetDisplayDurationMs();
-            LogOut("[FA_TIMER] P2 FA timer set - current=" + std::to_string(currentTimeMs) + 
-                   " duration=" + std::to_string(GetDisplayDurationMs()) + "ms" +
-                   " expiry=" + std::to_string(g_displayUntilTimeMs), true);
+                     #if defined(ENABLE_FRAME_ADV_DEBUG)
+                     LogOut("[FA_TIMER] P2 FA timer set - current=" + std::to_string(currentTimeMs) + 
+                         " duration=" + std::to_string(GetDisplayDurationMs()) + "ms" +
+                         " expiry=" + std::to_string(g_displayUntilTimeMs), true);
+                     #endif
         }
         
         LogOut("[FRAME_ADV] P2->P1 Frame Advantage: " + frameAdvText, true);

@@ -303,9 +303,15 @@ bool ForceEngineF5Full() {
     uintptr_t p1Base = 0, p2Base = 0; bool any=false;
     SafeReadMemory(base + EFZ_BASE_OFFSET_P1, &p1Base, sizeof(p1Base));
     SafeReadMemory(base + EFZ_BASE_OFFSET_P2, &p2Base, sizeof(p2Base));
-    unsigned short hpFull = 9999;
-    if (p1Base) { any |= SafeWriteMemory(p1Base + HP_OFFSET, &hpFull, sizeof(hpFull)); }
-    if (p2Base) { any |= SafeWriteMemory(p2Base + HP_OFFSET, &hpFull, sizeof(hpFull)); }
+    int hpFull = 9999;
+    if (p1Base) {
+        any |= SafeWriteMemory(p1Base + HP_OFFSET, &hpFull, sizeof(hpFull));
+        any |= SafeWriteMemory(p1Base + HP_BAR_OFFSET, &hpFull, sizeof(hpFull));
+    }
+    if (p2Base) {
+        any |= SafeWriteMemory(p2Base + HP_OFFSET, &hpFull, sizeof(hpFull));
+        any |= SafeWriteMemory(p2Base + HP_BAR_OFFSET, &hpFull, sizeof(hpFull));
+    }
     // Mark params so our UI detects F5 and shows full state
     WriteEngineRegenParams(1000, 9999);
     LogOut("[ENGINE][Regen] Forced F5 Full: HP=9999, Params A=1000 B=9999", detailedLogging.load());
@@ -575,7 +581,11 @@ void UpdatePlayerValues(uintptr_t base, uintptr_t baseOffsetP1, uintptr_t baseOf
     uintptr_t xAddr2 = ResolvePointer(base, baseOffsetP2, XPOS_OFFSET);
     uintptr_t yAddr2 = ResolvePointer(base, baseOffsetP2, YPOS_OFFSET);
 
-    if (hpAddr1) WriteGameMemory(hpAddr1, &displayData.hp1, sizeof(WORD));
+    if (hpAddr1) {
+        WriteGameMemory(hpAddr1, &displayData.hp1, sizeof(int));
+        uintptr_t hpBar1 = ResolvePointer(base, baseOffsetP1, HP_BAR_OFFSET);
+        if (hpBar1) WriteGameMemory(hpBar1, &displayData.hp1, sizeof(int));
+    }
     if (meterAddr1) WriteGameMemory(meterAddr1, &displayData.meter1, sizeof(WORD));
     
     // CRITICAL FIX: Write RF as float (4 bytes), not double (8 bytes)
@@ -587,7 +597,11 @@ void UpdatePlayerValues(uintptr_t base, uintptr_t baseOffsetP1, uintptr_t baseOf
     if (xAddr1) WriteGameMemory(xAddr1, &displayData.x1, sizeof(double));
     if (yAddr1) WriteGameMemory(yAddr1, &displayData.y1, sizeof(double));
 
-    if (hpAddr2) WriteGameMemory(hpAddr2, &displayData.hp2, sizeof(WORD));
+    if (hpAddr2) {
+        WriteGameMemory(hpAddr2, &displayData.hp2, sizeof(int));
+        uintptr_t hpBar2 = ResolvePointer(base, baseOffsetP2, HP_BAR_OFFSET);
+        if (hpBar2) WriteGameMemory(hpBar2, &displayData.hp2, sizeof(int));
+    }
     if (meterAddr2) WriteGameMemory(meterAddr2, &displayData.meter2, sizeof(WORD));
     
     // CRITICAL FIX: Write RF as float (4 bytes), not double (8 bytes)
@@ -720,12 +734,20 @@ void UpdatePlayerValuesExceptRF(uintptr_t base, uintptr_t baseOffsetP1, uintptr_
     uintptr_t xAddr2 = ResolvePointer(base, baseOffsetP2, XPOS_OFFSET);
     uintptr_t yAddr2 = ResolvePointer(base, baseOffsetP2, YPOS_OFFSET);
 
-    if (hpAddr1) WriteGameMemory(hpAddr1, &displayData.hp1, sizeof(WORD));
+    if (hpAddr1) {
+        WriteGameMemory(hpAddr1, &displayData.hp1, sizeof(int));
+        uintptr_t hpBar1 = ResolvePointer(base, baseOffsetP1, HP_BAR_OFFSET);
+        if (hpBar1) WriteGameMemory(hpBar1, &displayData.hp1, sizeof(int));
+    }
     if (meterAddr1) WriteGameMemory(meterAddr1, &displayData.meter1, sizeof(WORD));
     if (xAddr1) WriteGameMemory(xAddr1, &displayData.x1, sizeof(double));
     if (yAddr1) WriteGameMemory(yAddr1, &displayData.y1, sizeof(double));
 
-    if (hpAddr2) WriteGameMemory(hpAddr2, &displayData.hp2, sizeof(WORD));
+    if (hpAddr2) {
+        WriteGameMemory(hpAddr2, &displayData.hp2, sizeof(int));
+        uintptr_t hpBar2 = ResolvePointer(base, baseOffsetP2, HP_BAR_OFFSET);
+        if (hpBar2) WriteGameMemory(hpBar2, &displayData.hp2, sizeof(int));
+    }
     if (meterAddr2) WriteGameMemory(meterAddr2, &displayData.meter2, sizeof(WORD));
     if (xAddr2) WriteGameMemory(xAddr2, &displayData.x2, sizeof(double));
     if (yAddr2) WriteGameMemory(yAddr2, &displayData.y2, sizeof(double));
@@ -737,6 +759,9 @@ std::atomic<bool> rfFreezeP1Active(false);
 std::atomic<bool> rfFreezeP2Active(false);
 std::atomic<double> rfFreezeValueP1(0.0);
 std::atomic<double> rfFreezeValueP2(0.0);
+// Track provenance of RF freeze per-player
+static std::atomic<int> rfFreezeOriginP1{ (int)RFFreezeOrigin::None };
+static std::atomic<int> rfFreezeOriginP2{ (int)RFFreezeOrigin::None };
 std::thread rfFreezeThread;
 bool rfThreadRunning = false;
 // Desired RF-freeze IC color lock settings (optional)
@@ -855,9 +880,16 @@ void StartRFFreeze(double p1Value, double p2Value) {
 // Start freezing for one player only
 void StartRFFreezeOne(int player, double value) {
     if (player == 1) {
+        // Deduplicate: if already active with same value, do nothing
+        if (rfFreezeP1Active.load() && rfFreezeValueP1.load() == value) {
+            return;
+        }
         rfFreezeValueP1.store(value);
         rfFreezeP1Active.store(true);
     } else if (player == 2) {
+        if (rfFreezeP2Active.load() && rfFreezeValueP2.load() == value) {
+            return;
+        }
         rfFreezeValueP2.store(value);
         rfFreezeP2Active.store(true);
     } else {
@@ -880,8 +912,11 @@ void StopRFFreeze() {
 void StopRFFreezePlayer(int player) {
     if (player == 1) {
         rfFreezeP1Active.store(false);
+        // Clear origin when side becomes inactive
+        rfFreezeOriginP1.store((int)RFFreezeOrigin::None);
     } else if (player == 2) {
         rfFreezeP2Active.store(false);
+        rfFreezeOriginP2.store((int)RFFreezeOrigin::None);
     } else {
         return;
     }
@@ -919,65 +954,162 @@ void UpdateRFFreezeTick() {
     if (!p1Base || !p2Base) return;
     double* p1RFAddr = (double*)(p1Base + RF_OFFSET);
     double* p2RFAddr = (double*)(p2Base + RF_OFFSET);
-    // Optional neutral-only gating
-    bool neutralOnly = Config::GetSettings().freezeRFOnlyWhenNeutral;
+    // Optional neutral-only gating (own neutral) and optional both-neutral coupling to CR setting
+    auto cfg = Config::GetSettings();
+    bool neutralOnly = cfg.freezeRFOnlyWhenNeutral;
+    bool requireBothNeutral = cfg.crRequireBothNeutral; // when enabled, require BOTH sides neutral for RF freeze writes
+    int bothNeutralDelayMs = (cfg.crBothNeutralDelayMs < 0 ? 0 : cfg.crBothNeutralDelayMs);
     auto isAllowedNeutral = [](short m){ return (m==0 || m==1 || m==2 || m==3 || m==4 || m==7 || m==8 || m==9 || m==13); };
     short m1=0, m2=0;
-    if (neutralOnly) {
+    // Always read move IDs so we can log why freeze applies or skips
+    {
         short t1=0, t2=0;
         SafeReadMemory(p1Base + MOVE_ID_OFFSET, &t1, sizeof(t1));
         SafeReadMemory(p2Base + MOVE_ID_OFFSET, &t2, sizeof(t2));
         m1 = t1; m2 = t2;
     }
-    __try {
-        DWORD old1=0, old2=0;
-        double t1 = rfFreezeValueP1.load();
-        double t2 = rfFreezeValueP2.load();
-        bool canP1 = rfFreezeP1Active.load() && (!neutralOnly || isAllowedNeutral(m1));
-        bool canP2 = rfFreezeP2Active.load() && (!neutralOnly || isAllowedNeutral(m2));
-        // Only write when value differs to avoid unnecessary page protection flips
-        if (canP1 && p1RFAddr) {
-            double cur1 = *p1RFAddr;
-            if (cur1 != t1) {
-                if (VirtualProtect(p1RFAddr, sizeof(double), PAGE_EXECUTE_READWRITE, &old1)) {
-                    *p1RFAddr = t1;
-                    VirtualProtect(p1RFAddr, sizeof(double), old1, &old1);
-                }
-            }
-        }
-        if (canP2 && p2RFAddr) {
-            double cur2 = *p2RFAddr;
-            if (cur2 != t2) {
-                if (VirtualProtect(p2RFAddr, sizeof(double), PAGE_EXECUTE_READWRITE, &old2)) {
-                    *p2RFAddr = t2;
-                    VirtualProtect(p2RFAddr, sizeof(double), old2, &old2);
-                }
-            }
-        }
-        // Optional: enforce IC color while RF is frozen (per-player)
-        static bool s_lastP1Color = false;
-        static bool s_lastP1ColorEnabled = false;
-        static bool s_lastP2Color = false;
-        static bool s_lastP2ColorEnabled = false;
-        if (rfFreezeP1Active.load() && rfFreezeColorP1Enabled) {
-            if (!s_lastP1ColorEnabled || s_lastP1Color != rfFreezeColorP1Blue) {
-                SetICColorPlayer(1, rfFreezeColorP1Blue);
-                s_lastP1ColorEnabled = true; s_lastP1Color = rfFreezeColorP1Blue;
+    // Track outcomes for logging outside SEH block
+    bool didWriteP1 = false, didWriteP2 = false;
+    double prevP1 = 0.0, newP1 = 0.0, prevP2 = 0.0, newP2 = 0.0;
+    bool p1SkipNonNeutral = false, p2SkipNonNeutral = false;
+
+    // Use SafeRead/Write to avoid SEH requirements
+    double t1 = rfFreezeValueP1.load();
+    double t2 = rfFreezeValueP2.load();
+    bool p1Active = rfFreezeP1Active.load();
+    bool p2Active = rfFreezeP2Active.load();
+    bool p1Allowed = isAllowedNeutral(m1);
+    bool p2Allowed = isAllowedNeutral(m2);
+    bool bothAllowed = p1Allowed && p2Allowed;
+    // Track both-neutral stability for delay (local to RF freeze)
+    static bool s_prevBothNeutralRF = false;
+    static unsigned long long s_bothNeutralStartRFMs = 0ULL;
+    unsigned long long nowMs = (unsigned long long)std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+    if (neutralOnly && requireBothNeutral) {
+        if (bothAllowed) {
+            if (!s_prevBothNeutralRF) {
+                s_bothNeutralStartRFMs = nowMs;
             }
         } else {
-            s_lastP1ColorEnabled = false; // allow re-apply next time it enables
+            s_bothNeutralStartRFMs = 0ULL;
         }
-        if (rfFreezeP2Active.load() && rfFreezeColorP2Enabled) {
-            if (!s_lastP2ColorEnabled || s_lastP2Color != rfFreezeColorP2Blue) {
-                SetICColorPlayer(2, rfFreezeColorP2Blue);
-                s_lastP2ColorEnabled = true; s_lastP2Color = rfFreezeColorP2Blue;
-            }
-        } else {
-            s_lastP2ColorEnabled = false;
-        }
-    } __except(EXCEPTION_EXECUTE_HANDLER) {
-        // Ignore access faults; tick is best-effort
+        s_prevBothNeutralRF = bothAllowed;
+    } else {
+        s_prevBothNeutralRF = false;
+        s_bothNeutralStartRFMs = 0ULL;
     }
+    unsigned long long bothElapsedMs = (s_bothNeutralStartRFMs == 0ULL) ? 0ULL : (nowMs - s_bothNeutralStartRFMs);
+    bool bothAllowedWithDelay = bothAllowed && (!neutralOnly || !requireBothNeutral || (bothElapsedMs >= (unsigned long long)bothNeutralDelayMs));
+    // If neutralOnly is enabled and CR requires both-neutral, then RF freeze honors both sides neutrality AND delay.
+    // Otherwise, it honors only the target side's neutrality.
+    bool canP1 = p1Active && (!neutralOnly || (requireBothNeutral ? bothAllowedWithDelay : p1Allowed));
+    bool canP2 = p2Active && (!neutralOnly || (requireBothNeutral ? bothAllowedWithDelay : p2Allowed));
+    // Only write when value differs
+    if (canP1 && p1RFAddr) {
+        double cur1 = 0.0;
+        if (SafeReadMemory((uintptr_t)p1RFAddr, &cur1, sizeof(cur1)) && cur1 != t1) {
+            if (SafeWriteMemory((uintptr_t)p1RFAddr, &t1, sizeof(t1))) {
+                didWriteP1 = true; prevP1 = cur1; newP1 = t1;
+            }
+        }
+    }
+    if (canP2 && p2RFAddr) {
+        double cur2 = 0.0;
+        if (SafeReadMemory((uintptr_t)p2RFAddr, &cur2, sizeof(cur2)) && cur2 != t2) {
+            if (SafeWriteMemory((uintptr_t)p2RFAddr, &t2, sizeof(t2))) {
+                didWriteP2 = true; prevP2 = cur2; newP2 = t2;
+            }
+        }
+    }
+    bool p1SkipDelay = false, p2SkipDelay = false;
+    if (p1Active && !canP1 && neutralOnly) {
+        if (requireBothNeutral && bothAllowed && (bothElapsedMs < (unsigned long long)bothNeutralDelayMs)) {
+            p1SkipDelay = true;
+        } else {
+            p1SkipNonNeutral = true;
+        }
+    }
+    if (p2Active && !canP2 && neutralOnly) {
+        if (requireBothNeutral && bothAllowed && (bothElapsedMs < (unsigned long long)bothNeutralDelayMs)) {
+            p2SkipDelay = true;
+        } else {
+            p2SkipNonNeutral = true;
+        }
+    }
+    // Optional: enforce IC color while RF is frozen (per-player)
+    static bool s_lastP1Color = false;
+    static bool s_lastP1ColorEnabled = false;
+    static bool s_lastP2Color = false;
+    static bool s_lastP2ColorEnabled = false;
+    if (rfFreezeP1Active.load() && rfFreezeColorP1Enabled) {
+        if (!s_lastP1ColorEnabled || s_lastP1Color != rfFreezeColorP1Blue) {
+            SetICColorPlayer(1, rfFreezeColorP1Blue);
+            s_lastP1ColorEnabled = true; s_lastP1Color = rfFreezeColorP1Blue;
+        }
+    } else {
+        s_lastP1ColorEnabled = false; // allow re-apply next time it enables
+    }
+    if (rfFreezeP2Active.load() && rfFreezeColorP2Enabled) {
+        if (!s_lastP2ColorEnabled || s_lastP2Color != rfFreezeColorP2Blue) {
+            SetICColorPlayer(2, rfFreezeColorP2Blue);
+            s_lastP2ColorEnabled = true; s_lastP2Color = rfFreezeColorP2Blue;
+        }
+    } else {
+        s_lastP2ColorEnabled = false;
+    }
+
+    // Log outside SEH for safety
+    #if defined(ENABLE_FRAME_ADV_DEBUG)
+    if (true) {
+        if (didWriteP1) {
+            char buf[256];
+            snprintf(buf, sizeof(buf), "[RF][Freeze] P1 write %.1f->%.1f moveID=%d allowedNeutral=%s neutralOnly=%s bothNeutralGate=%s delayMs=%d elapsedMs=%llu oppMoveID=%d oppAllowed=%s",
+                     prevP1, newP1, (int)m1, (isAllowedNeutral(m1)?"true":"false"), (neutralOnly?"true":"false"),
+                     (requireBothNeutral?"true":"false"), bothNeutralDelayMs, (unsigned long long)bothElapsedMs, (int)m2, (isAllowedNeutral(m2)?"true":"false"));
+            LogOut(buf, true);
+        }
+        if (didWriteP2) {
+            char buf[256];
+            snprintf(buf, sizeof(buf), "[RF][Freeze] P2 write %.1f->%.1f moveID=%d allowedNeutral=%s neutralOnly=%s bothNeutralGate=%s delayMs=%d elapsedMs=%llu oppMoveID=%d oppAllowed=%s",
+                     prevP2, newP2, (int)m2, (isAllowedNeutral(m2)?"true":"false"), (neutralOnly?"true":"false"),
+                     (requireBothNeutral?"true":"false"), bothNeutralDelayMs, (unsigned long long)bothElapsedMs, (int)m1, (isAllowedNeutral(m1)?"true":"false"));
+            LogOut(buf, true);
+        }
+        if (p1SkipNonNeutral) {
+            char buf[192];
+            if (requireBothNeutral) {
+                snprintf(buf, sizeof(buf), "[RF][Freeze] P1 skip: both-not-neutral selfMove=%d selfAllowed=%s oppMove=%d oppAllowed=%s",
+                        (int)m1, (isAllowedNeutral(m1)?"true":"false"), (int)m2, (isAllowedNeutral(m2)?"true":"false"));
+            } else {
+                snprintf(buf, sizeof(buf), "[RF][Freeze] P1 skip non-neutral moveID=%d allowedNeutral=%s", (int)m1, (isAllowedNeutral(m1)?"true":"false"));
+            }
+            LogOut(buf, true);
+        }
+        if (p1SkipDelay) {
+            char buf[192];
+            snprintf(buf, sizeof(buf), "[RF][Freeze] P1 skip: both-neutral delay not met elapsed=%llums required=%dms selfMove=%d oppMove=%d",
+                    (unsigned long long)bothElapsedMs, bothNeutralDelayMs, (int)m1, (int)m2);
+            LogOut(buf, true);
+        }
+        if (p2SkipNonNeutral) {
+            char buf[192];
+            if (requireBothNeutral) {
+                snprintf(buf, sizeof(buf), "[RF][Freeze] P2 skip: both-not-neutral selfMove=%d selfAllowed=%s oppMove=%d oppAllowed=%s",
+                        (int)m2, (isAllowedNeutral(m2)?"true":"false"), (int)m1, (isAllowedNeutral(m1)?"true":"false"));
+            } else {
+                snprintf(buf, sizeof(buf), "[RF][Freeze] P2 skip non-neutral moveID=%d allowedNeutral=%s", (int)m2, (isAllowedNeutral(m2)?"true":"false"));
+            }
+            LogOut(buf, true);
+        }
+        if (p2SkipDelay) {
+            char buf[192];
+            snprintf(buf, sizeof(buf), "[RF][Freeze] P2 skip: both-neutral delay not met elapsed=%llums required=%dms selfMove=%d oppMove=%d",
+                    (unsigned long long)bothElapsedMs, bothNeutralDelayMs, (int)m2, (int)m1);
+            LogOut(buf, true);
+        }
+    }
+    #endif
 }
 
 void SetRFFreezeColorDesired(int player, bool enabled, bool blueIC) {
@@ -998,4 +1130,41 @@ bool IsRFFreezeColorManaging(int player) {
         return rfFreezeP2Active.load() && rfFreezeColorP2Enabled;
     }
     return false;
+}
+
+// --- RF Freeze provenance/status implementation ---
+
+void StartRFFreezeOneFromUI(int player, double value) {
+    StartRFFreezeOne(player, value);
+    if (player == 1) rfFreezeOriginP1.store((int)RFFreezeOrigin::ManualUI);
+    else if (player == 2) rfFreezeOriginP2.store((int)RFFreezeOrigin::ManualUI);
+}
+
+void StartRFFreezeOneFromCR(int player, double value) {
+    StartRFFreezeOne(player, value);
+    if (player == 1) rfFreezeOriginP1.store((int)RFFreezeOrigin::ContinuousRecovery);
+    else if (player == 2) rfFreezeOriginP2.store((int)RFFreezeOrigin::ContinuousRecovery);
+}
+
+bool GetRFFreezeStatus(int player, bool& isActive, double& value, bool& colorManaged, bool& colorBlue) {
+    if (player == 1) {
+        isActive = rfFreezeP1Active.load();
+        value = rfFreezeValueP1.load();
+        colorManaged = (isActive && rfFreezeColorP1Enabled);
+        colorBlue = rfFreezeColorP1Blue;
+        return true;
+    } else if (player == 2) {
+        isActive = rfFreezeP2Active.load();
+        value = rfFreezeValueP2.load();
+        colorManaged = (isActive && rfFreezeColorP2Enabled);
+        colorBlue = rfFreezeColorP2Blue;
+        return true;
+    }
+    return false;
+}
+
+RFFreezeOrigin GetRFFreezeOrigin(int player) {
+    if (player == 1) return (RFFreezeOrigin)rfFreezeOriginP1.load();
+    if (player == 2) return (RFFreezeOrigin)rfFreezeOriginP2.load();
+    return RFFreezeOrigin::None;
 }

@@ -319,7 +319,8 @@ namespace ImGuiGui {
                     curF4Idx = (engineParamA == 1000) ? 1 : 2; // 1=Full (Blue 1000), 2=Custom
                 }
                 static int s_f4ModeIdx = 0; // Disabled, Full, Custom
-                if (valuesJustOpened) { s_f4ModeIdx = curF4Idx; }
+                // Always reflect actual engine state to keep combobox in sync
+                s_f4ModeIdx = curF4Idx;
                 const char* f4Items[] = { "Disabled", "Full (Blue 1000)", "Custom" };
                 ImGui::SetNextItemWidth(260);
                 bool f5Active = (regenMode == EngineRegenMode::F5_FullOrPreset);
@@ -464,7 +465,7 @@ namespace ImGuiGui {
                         static bool s_uiFreezeP1 = false; static bool s_uiFreezeP1ColorBlue = true;
                         bool fr1 = s_uiFreezeP1; if (ImGui::Checkbox("Freeze##rf_p1", &fr1)) {
                             s_uiFreezeP1 = fr1;
-                            if (fr1) { StartRFFreezeOne(1, guiState.localData.rf1); }
+                            if (fr1) { StartRFFreezeOneFromUI(1, guiState.localData.rf1); }
                             else { StopRFFreezePlayer(1); }
                         }
                         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Continuously holds RF at the current value.");
@@ -478,7 +479,7 @@ namespace ImGuiGui {
                         static bool s_uiFreezeP2 = false; static bool s_uiFreezeP2ColorBlue = true;
                         bool fr2 = s_uiFreezeP2; if (ImGui::Checkbox("Freeze##rf_p2", &fr2)) {
                             s_uiFreezeP2 = fr2;
-                            if (fr2) { StartRFFreezeOne(2, guiState.localData.rf2); }
+                            if (fr2) { StartRFFreezeOneFromUI(2, guiState.localData.rf2); }
                             else { StopRFFreezePlayer(2); }
                         }
                         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Continuously holds RF at the current value.");
@@ -587,6 +588,10 @@ namespace ImGuiGui {
                     bool en = isP1 ? guiState.localData.p1ContinuousRecoveryEnabled : guiState.localData.p2ContinuousRecoveryEnabled;
                     if (ImGui::Checkbox(isP1?"Enable (P1)##contrecp1":"Enable (P2)##contrecp2", &en)) {
                         if (isP1) guiState.localData.p1ContinuousRecoveryEnabled = en; else guiState.localData.p2ContinuousRecoveryEnabled = en;
+                        // When enabling CR, disable engine-managed recovery (F4/F5) to avoid conflicts
+                        if (en) {
+                            WriteEngineRegenParams(0, 0);
+                        }
                     }
                     // HP presets
                     ImGui::TextUnformatted("HP:"); ImGui::SameLine();
@@ -3086,6 +3091,26 @@ namespace ImGuiGui {
             }
         }
 
+        // RF Freeze Status & Controls
+        ImGui::Separator();
+        ImGui::SeparatorText("RF Freeze Status");
+        auto renderFreezeRow = [&](int player){
+            bool active=false, colorManaged=false, colorBlue=false; double value=0.0;
+            if (!GetRFFreezeStatus(player, active, value, colorManaged, colorBlue)) return;
+            const char* side = (player==1? "P1" : "P2");
+            ImGui::Text("%s: %s", side, active?"Active":"Inactive");
+            if (active) {
+                ImGui::SameLine(); ImGui::TextDisabled("RF=%.1f", (float)value);
+                ImGui::SameLine(); ImGui::TextDisabled("ColorLock=%s%s", colorManaged?"On":"Off", (colorManaged? (colorBlue?"(Blue)":"(Red)") : ""));
+                RFFreezeOrigin origin = GetRFFreezeOrigin(player);
+                const char* olabel = (origin==RFFreezeOrigin::ManualUI?"Manual UI":(origin==RFFreezeOrigin::ContinuousRecovery?"Continuous Recovery":(origin==RFFreezeOrigin::Other?"Other":"Unknown")));
+                ImGui::SameLine(); ImGui::TextDisabled("Source=%s", olabel);
+                ImGui::SameLine(); if (ImGui::SmallButton(player==1?"Cancel##rf_cancel_p1":"Cancel##rf_cancel_p2")) { StopRFFreezePlayer(player); }
+            }
+        };
+        renderFreezeRow(1);
+        renderFreezeRow(2);
+
         // Minagi debug controls: conversion toggle shown only when Minagi is present
         /*if (guiState.localData.p1CharID == CHAR_ID_MINAGI || guiState.localData.p2CharID == CHAR_ID_MINAGI) {
             ImGui::SeparatorText("Minagi Control");
@@ -3764,8 +3789,9 @@ namespace ImGuiGui {
                     bool wrote = false;
                     uintptr_t pB = (p==1)? p1B : p2B;
                     if (tg.hpOn) {
-                        WORD tgt = (WORD)CLAMP(tg.hp, 0, MAX_HP);
+                        int tgt = CLAMP(tg.hp, 0, MAX_HP);
                         SafeWriteMemory(pB + HP_OFFSET, &tgt, sizeof(tgt));
+                        SafeWriteMemory(pB + HP_BAR_OFFSET, &tgt, sizeof(tgt));
                         wrote = true;
                     }
                     if (tg.meterOn) {
@@ -3780,7 +3806,7 @@ namespace ImGuiGui {
                         if (p==1) p1rf = tg.rf; else p2rf = tg.rf;
                         (void)SetRFValuesDirect(p1rf, p2rf);
                         if (Config::GetSettings().freezeRFAfterContRec) {
-                            StartRFFreezeOne(p, tg.rf);
+                            StartRFFreezeOneFromCR(p, tg.rf);
                         }
                         // BIC (Blue IC) only under Custom RF
                         if (tg.bic) {
