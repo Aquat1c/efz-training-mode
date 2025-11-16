@@ -77,3 +77,6 @@ bool IsAttackMove(short moveID);
 bool IsRecoveryFromAttack(short currentMoveID, short prevMoveID);
 // Lightweight query for frame monitor to decide if FA needs ticking even without moveID changes
 bool FrameAdvantageTimersActive();
+// Overload using unified per-frame sample (thin wrapper initially)
+struct PerFrameSample; // forward decl
+void MonitorFrameAdvantage(const PerFrameSample& sample);

@@ -11,6 +11,7 @@
 #include "../include/core/logger.h"
 #include "../include/gui/overlay.h"
 #include "../include/game/game_state.h"
+#include "../include/game/per_frame_sample.h" // unified sampling context
 #include "../include/input/input_buffer.h"
 #include "../include/utils/config.h"
 #include "../include/input/input_motion.h"
@@ -116,6 +117,9 @@ static std::atomic<bool> s_logOnce_CsRestoreAlign{false};
 static std::atomic<bool> s_logOnce_CsRestoreBaselineMatch{false};
 static std::atomic<bool> s_logOnce_CsSnapFallback{false};
 static std::atomic<bool> s_logOnce_CsApplyPost{false};
+
+// Published unified per-frame sample (updated once per 192Hz loop iteration)
+PerFrameSample g_lastSample{};
 
 // Global (extern defined elsewhere) suppression flag for auto-action clear logging; declare if missing
 extern std::atomic<bool> g_suppressAutoActionClearLogging;
@@ -1291,6 +1295,33 @@ void FrameDataMonitor() {
                 cachedMoveIDAddr2 = ResolvePointer(base, EFZ_BASE_OFFSET_P2, MOVE_ID_OFFSET);
             }
 
+            // Populate unified per-frame sample (read-only use for now)
+            // Neutral whitelist duplicated previously across Continuous Recovery & DummyAutoBlock.
+            auto isNeutralMoveId = [](short m) {
+                return (m == 0 || m == 1 || m == 2 || m == 3 || m == 4 ||
+                        m == 7 || m == 8 || m == 9 || m == 13);
+            };
+            g_lastSample.frame = (uint32_t)frameCounter.load();
+            g_lastSample.tickMs = GetTickCount64();
+            g_lastSample.phase = currentPhase;
+            g_lastSample.mode = GetCurrentGameMode();
+            g_lastSample.charsInitialized = isInitialized;
+            g_lastSample.moveID1 = moveID1;
+            g_lastSample.moveID2 = moveID2;
+            g_lastSample.prevMoveID1 = prevMoveID1;
+            g_lastSample.prevMoveID2 = prevMoveID2;
+            g_lastSample.actionable1 = IsActionable(moveID1);
+            g_lastSample.actionable2 = IsActionable(moveID2);
+            g_lastSample.neutral1 = isNeutralMoveId(moveID1);
+            g_lastSample.neutral2 = isNeutralMoveId(moveID2);
+            g_lastSample.basePtr = base;
+            g_lastSample.gameStatePtr = s_ptrCache.gs;
+            g_lastSample.p1Ptr = s_ptrCache.p1;
+            g_lastSample.p2Ptr = s_ptrCache.p2;
+            g_lastSample.online = g_onlineModeActive.load();
+            // Expose function symbol (lambda can't have external linkage) via inline in anonymous namespace
+            // We'll define GetCurrentPerFrameSample after the loop.
+
             // --- Recoil Guard (RG) analysis: detect edges and compute freeze/advantage ---
             struct RGAnalysis {
                 bool active = false;   // any RG event currently being tracked for this defender
@@ -1367,11 +1398,13 @@ void FrameDataMonitor() {
                 }
             };
 
+            // RG analysis now uses unified per-frame sample (reduces repeated IsActionable calls)
+            const PerFrameSample &rgSample = g_lastSample;
             auto closeCRGIfOver = [&](RGAnalysis &rg) {
                 if (!rg.active || !rg.cRGOpen) return;
                 // Determine current attacker move/actionable state
-                short atkMoveNow = (rg.attacker == 1) ? moveID1 : moveID2;
-                bool atkActionable = IsActionable(atkMoveNow);
+                short atkMoveNow = (rg.attacker == 1) ? rgSample.moveID1 : rgSample.moveID2;
+                bool atkActionable = (rg.attacker == 1) ? rgSample.actionable1 : rgSample.actionable2;
                 // Close when attacker becomes actionable or cancels out of their move
                 if (atkActionable || atkMoveNow != rg.attackerMoveAtEvent) {
                     rg.cRGOpen = false;
@@ -1389,8 +1422,9 @@ void FrameDataMonitor() {
 
                 // Track attacker actionable timestamp
                 if (rg.atkActionableAt < 0) {
-                    short atkMoveNow = (rg.attacker == 1) ? moveID1 : moveID2;
-                    if (IsActionable(atkMoveNow)) {
+                    short atkMoveNow = (rg.attacker == 1) ? rgSample.moveID1 : rgSample.moveID2;
+                    bool atkActionable = (rg.attacker == 1) ? rgSample.actionable1 : rgSample.actionable2;
+                    if (atkActionable) {
                         rg.atkActionableAt = frameCounter.load();
                         // Debug signal for verification
                         {
@@ -1405,8 +1439,9 @@ void FrameDataMonitor() {
                 }
                 // Track defender actionable timestamp
                 if (rg.defActionableAt < 0) {
-                    short defMoveNow = (rg.defender == 1) ? moveID1 : moveID2;
-                    if (IsActionable(defMoveNow)) {
+                    short defMoveNow = (rg.defender == 1) ? rgSample.moveID1 : rgSample.moveID2;
+                    bool defActionable = (rg.defender == 1) ? rgSample.actionable1 : rgSample.actionable2;
+                    if (defActionable) {
                         rg.defActionableAt = frameCounter.load();
                         // Debug signal for verification
                         {
@@ -1708,13 +1743,13 @@ void FrameDataMonitor() {
             {
                 bool faNeedsTick = FrameAdvantageTimersActive();
                 if (moveIDsChanged || faNeedsTick) {
-                    MonitorFrameAdvantage(moveID1, moveID2, prevMoveID1, prevMoveID2);
+                    // Use context overload (currently thin wrapper) to begin migration
+                    MonitorFrameAdvantage(GetCurrentPerFrameSample());
                 }
             }
             
-            // Run dummy auto-block stance early for minimal latency (uses current move IDs)
-            // Keep running each frame to honor neutral timeouts precisely
-            MonitorDummyAutoBlock(moveID1, moveID2, prevMoveID1, prevMoveID2);
+            // Run dummy auto-block using unified sample (still every frame for precision)
+            MonitorDummyAutoBlock(GetCurrentPerFrameSample());
 
             // Practice-only: Defense helpers
             // Always RG takes effect when enabled; Random RG mimics Revival's per-frame coin flip.
@@ -1742,7 +1777,7 @@ void FrameDataMonitor() {
                 ClearDelayStatesIfNonActionable();     
             }
 
-            // Continuous Recovery: restore values based on neutral gating and optional both-neutral delay
+            // Continuous Recovery: restore values based on unified sample neutral flags + optional both-neutral delay
             {
                 // Track RF freezes we started due to Continuous Recovery (per-side)
                 static bool s_crRFFreezeP1 = false;
@@ -1750,15 +1785,8 @@ void FrameDataMonitor() {
                 // Both-neutral timing gate
                 static bool s_prevBothNeutral = false;
                 static unsigned long long s_bothNeutralStartMs = 0ULL;
-                auto isAllowedNeutral = [](short m){
-                    // Allowed MoveIDs: 0,1,2,3,4,7,8,9,13
-                    return (m == 0 || m == 1 || m == 2 || m == 3 || m == 4 || m == 7 || m == 8 || m == 9 || m == 13);
-                };
-                auto transitionedToAllowed = [&](short prevM, short curM){
-                    // Only when previously not actionable and now in allowed neutral set
-                    bool wasBad = !IsActionable(prevM);
-                    return wasBad && isAllowedNeutral(curM);
-                };
+                // Use unified sample values (populated earlier this frame)
+                const PerFrameSample &sample = g_lastSample; // local alias
                 auto resolveTargets = [](bool isP1) {
                     struct T { int hp; int meter; double rf; bool bic; bool hpOn; bool meterOn; bool rfOn; bool wantRedIC; } t; t={0,0,0.0,false,false,false,false,false};
                     // HP
@@ -1806,9 +1834,9 @@ void FrameDataMonitor() {
                     bool gotParams = GetEngineRegenStatus(regenMode, engineParamA, engineParamB);
                     bool engineRegenActive = gotParams && (regenMode == EngineRegenMode::F5_FullOrPreset || regenMode == EngineRegenMode::F4_FineTuneActive);
 
-                    // Compute neutral states
-                    bool p1NeutralNow = isAllowedNeutral(moveID1);
-                    bool p2NeutralNow = isAllowedNeutral(moveID2);
+                    // Neutral states from sample (already whitelisted)
+                    bool p1NeutralNow = sample.neutral1;
+                    bool p2NeutralNow = sample.neutral2;
 
                     // Optional both-neutral + delay gating
                     const Config::Settings& cfg = Config::GetSettings();
@@ -1949,6 +1977,9 @@ void FrameDataMonitor() {
 
                     // Determine per-player eligibility
                     bool p1Eligible = false, p2Eligible = false;
+                    // Transition detection (legacy behavior path): previously not actionable -> now neutral
+                    bool transitionedToNeutralP1 = (!IsActionable(prevMoveID1)) && sample.neutral1;
+                    bool transitionedToNeutralP2 = (!IsActionable(prevMoveID2)) && sample.neutral2;
                     if (!engineRegenActive) {
                         if (requireBoth) {
                             // Both must be neutral for at least delayMs
@@ -1960,16 +1991,16 @@ void FrameDataMonitor() {
                                 }
                             }
                         } else {
-                            // Legacy behavior: on transition to allowed neutral per-side
-                            if (transitionedToAllowed(prevMoveID1, moveID1)) p1Eligible = g_contRecEnabledP1.load();
-                            if (transitionedToAllowed(prevMoveID2, moveID2)) p2Eligible = g_contRecEnabledP2.load();
+                            // Legacy behavior: on transition to allowed neutral per-side (now via sample flags)
+                            if (transitionedToNeutralP1) p1Eligible = g_contRecEnabledP1.load();
+                            if (transitionedToNeutralP2) p2Eligible = g_contRecEnabledP2.load();
                         }
                     }
 
                     #if defined(ENABLE_FRAME_ADV_DEBUG)
                     if (engineRegenActive) {
                         // Helpful note when engine regen blocks CR on a transition or both-neutral window
-                        if ((requireBoth && bothNeutral) || (!requireBoth && (transitionedToAllowed(prevMoveID1, moveID1) || transitionedToAllowed(prevMoveID2, moveID2)))) {
+                        if ((requireBoth && bothNeutral) || (!requireBoth && (transitionedToNeutralP1 || transitionedToNeutralP2))) {
                             LogOut("[FM][ContRec] Skipped due to engine regen active (F4/F5)", true);
                         }
                     }
@@ -1993,11 +2024,11 @@ void FrameDataMonitor() {
                         SafeReadMemory(baseNow + EFZ_BASE_OFFSET_P1, &p1B, sizeof(p1B));
                         SafeReadMemory(baseNow + EFZ_BASE_OFFSET_P2, &p2B, sizeof(p2B));
                     }
-                    if (p1B && isAllowedNeutral(moveID1)) {
+                    if (p1B && sample.neutral1) {
                         int hp = 1; SafeReadMemory(p1B + HP_OFFSET, &hp, sizeof(hp));
                         if (hp <= 0) { int full = MAX_HP; SafeWriteMemory(p1B + HP_OFFSET, &full, sizeof(full)); SafeWriteMemory(p1B + HP_BAR_OFFSET, &full, sizeof(full)); }
                     }
-                    if (p2B && isAllowedNeutral(moveID2)) {
+                    if (p2B && sample.neutral2) {
                         int hp = 1; SafeReadMemory(p2B + HP_OFFSET, &hp, sizeof(hp));
                         if (hp <= 0) { int full = MAX_HP; SafeWriteMemory(p2B + HP_OFFSET, &full, sizeof(full)); SafeWriteMemory(p2B + HP_BAR_OFFSET, &full, sizeof(full)); }
                     }
@@ -2053,7 +2084,8 @@ void FrameDataMonitor() {
                 snap.p2Move = moveID2;
                 snap.prevP1Move = prevMoveID1;
                 snap.prevP2Move = prevMoveID2;
-                snap.p2BlockEdge = (IsBlockstun(prevMoveID2) && !IsBlockstun(moveID2) && IsActionable(moveID2));
+                // Use cached actionable from unified sample for current moveID2
+                snap.p2BlockEdge = (IsBlockstun(prevMoveID2) && !IsBlockstun(moveID2) && g_lastSample.actionable2);
                 snap.p2HitstunEdge = (!IsHitstun(prevMoveID2) && IsHitstun(moveID2));
                 snap.p1X = p1X; snap.p2X = p2X;
                 snap.p1Y = p1Y; snap.p2Y = p2Y;
@@ -2283,6 +2315,14 @@ FRAME_MONITOR_FRAME_END:
     if (highResActive) {
         timeEndPeriod(1);
     }
+}
+
+// Accessor returns last published per-frame sample
+const PerFrameSample& GetCurrentPerFrameSample() {
+    // Before first frame monitor tick, return zero-initialized sample
+    static PerFrameSample initial{};
+    if (frameCounter.load() == 0) return initial;
+    return g_lastSample;
 }
 
 void ReinitializeOverlays() {
@@ -2564,6 +2604,23 @@ void UpdateStatsDisplay() {
 
     int p1Hp = 0, p2Hp = 0, p1Meter = 0, p2Meter = 0; double p1Rf = 0.0, p2Rf = 0.0;
     double p1X = 0.0, p1Y = 0.0, p2X = 0.0, p2Y = 0.0; short p1MoveId = 0, p2MoveId = 0;
+
+    // Throttle heavy stats formatting & reads when overlay active.
+    // We still maintain position cache every frame (using snapshot if present) for other systems.
+    static int s_lastStatsUpdateFrame = -9999;
+    static std::string s_lastP1Values, s_lastP2Values, s_lastPositions, s_lastMoveIds;
+
+    bool wantStatsUpdate = true; // default when overlay off or we have no snapshot fallback
+    if (statsOn) {
+        int fNow = frameCounter.load();
+        // Update at most every 4 internal frames (192Hz -> 48Hz) unless snapshot missing
+        if (fNow - s_lastStatsUpdateFrame < 4 && haveSnap) {
+            // Early position cache update from snapshot then skip expensive formatting
+            UpdatePositionCache(snap.p1X, snap.p1Y, snap.p2X, snap.p2Y);
+            return; // skip rest until next throttle boundary
+        }
+        s_lastStatsUpdateFrame = fNow;
+    }
 
     if (haveSnap) {
         p1Hp = snap.p1Hp; p2Hp = snap.p2Hp;

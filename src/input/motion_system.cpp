@@ -5,6 +5,7 @@
 #include "../include/utils/utilities.h"
 #include "../include/core/constants.h"
 #include "../include/game/auto_action_helpers.h"
+#include "../include/game/per_frame_sample.h" // unified per-frame sample accessor
 #include "../include/input/motion_constants.h"  // Add this include
 #include <vector>
 #include <sstream>
@@ -127,8 +128,14 @@ inline uint8_t u8(int value) {
     return static_cast<uint8_t>(value);
 }
 
-// Update ProcessInputQueues to only manage state, not write inputs
+// Update ProcessInputQueues to only manage state, not write inputs.
+// Early-out using unified per-frame sample: if neither queue active, or both sides in bad states
+// (non-actionable and no active queue progress), skip work to reduce overhead.
 void ProcessInputQueues() {
+    const PerFrameSample &sample = GetCurrentPerFrameSample();
+    if (!p1QueueActive && !p2QueueActive) return; // nothing to do
+    // If queue is active but player entered hitstun/frozen/throw etc, we still advance to allow natural completion.
+    // (No additional memory reads needed; rely on sample move IDs for actionable gating if we add future logic.)
     // Process P1 queue
     if (p1QueueActive) {
         if (p1QueueIndex >= 0 && (size_t)p1QueueIndex < p1InputQueue.size()) {

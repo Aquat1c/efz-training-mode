@@ -7,6 +7,7 @@
 #include "../include/core/logger.h"
 #include "../include/game/frame_analysis.h"
 #include "../include/game/frame_monitor.h"
+#include "../include/game/per_frame_sample.h"
 #include "../include/gui/overlay.h"
 #include "../include/utils/pause_integration.h"
 
@@ -307,8 +308,10 @@ void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, shor
     }
     
     // Update player states for proper tracking
-    bool p1Actionable = IsActionable(moveID1);
-    bool p2Actionable = IsActionable(moveID2);
+    // Use unified sample actionable flags for current moves (prev states still use direct checks)
+    const PerFrameSample &faSample = GetCurrentPerFrameSample();
+    bool p1Actionable = faSample.actionable1;
+    bool p2Actionable = faSample.actionable2;
     
     // Clear FA display immediately if either player starts a new attack or dash
     // This provides more responsive clearing than waiting for neutral timeout
@@ -344,8 +347,8 @@ void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, shor
     // (The configurable 8-second timer controls when messages disappear)
     
     // Detect when defender becomes actionable again (robust vs knockdown/tech/wakeup) for gap detection
-    bool p1_becomes_actionable = !IsActionable(prevMoveID1) && IsActionable(moveID1);
-    bool p2_becomes_actionable = !IsActionable(prevMoveID2) && IsActionable(moveID2);
+    bool p1_becomes_actionable = !IsActionable(prevMoveID1) && faSample.actionable1;
+    bool p2_becomes_actionable = !IsActionable(prevMoveID2) && faSample.actionable2;
 
     if (p1_becomes_actionable) {
         p1_last_defender_free_frame = currentInternalFrame;
@@ -395,7 +398,7 @@ void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, shor
     bool p2_entering_hitstun = IsHitstun(moveID2) && !IsHitstun(prevMoveID2);
     bool p2_entering_thrown   = IsThrown(moveID2)    && !IsThrown(prevMoveID2);
     // Fallback: treat transition from actionable->non-actionable as a connect if it occurs shortly after an attack edge
-    bool p2_entering_nonactionable = IsActionable(prevMoveID2) && !IsActionable(moveID2);
+    bool p2_entering_nonactionable = IsActionable(prevMoveID2) && !faSample.actionable2;
     bool p1_recent_attack_window = (p1_last_attack_edge_frame >= 0) && (currentInternalFrame - p1_last_attack_edge_frame <= 60);
     
     // Suppress false "connect" detection caused by IC/BIC/FIC superflash or global freeze frames
@@ -405,7 +408,7 @@ void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, shor
 
     if (!superflashActive &&
         ((p2_entering_blockstun || p2_entering_hitstun || p2_entering_thrown || (p2_entering_nonactionable && p1_recent_attack_window))
-         || (p1_attack_edge && !IsActionable(moveID2)))
+         || (p1_attack_edge && !faSample.actionable2))
         && p1_hit_connect_cooldown == 0) {
         
         // Calculate gap if there was a previous defender free frame (string of attacks)
@@ -511,13 +514,13 @@ void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, shor
     bool p1_entering_blockstun = IsBlockstunState(moveID1) && !IsBlockstunState(prevMoveID1);
     bool p1_entering_hitstun = IsHitstun(moveID1) && !IsHitstun(prevMoveID1);
     bool p1_entering_thrown   = IsThrown(moveID1)    && !IsThrown(prevMoveID1);
-    bool p1_entering_nonactionable = IsActionable(prevMoveID1) && !IsActionable(moveID1);
+    bool p1_entering_nonactionable = IsActionable(prevMoveID1) && !faSample.actionable1;
     bool p2_recent_attack_window = (p2_last_attack_edge_frame >= 0) && (currentInternalFrame - p2_last_attack_edge_frame <= 60);
     
     // Mirror connect suppression for P2
     if (!superflashActive &&
         ((p1_entering_blockstun || p1_entering_hitstun || p1_entering_thrown || (p1_entering_nonactionable && p2_recent_attack_window))
-         || (p2_attack_edge && !IsActionable(moveID1)))
+         || (p2_attack_edge && !faSample.actionable1))
         && p2_hit_connect_cooldown == 0) {
         
         // Calculate gap if there was a previous defender free frame (string of attacks)
@@ -620,7 +623,7 @@ void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, shor
     
     // STEP 3: Detect when attacker exits recovery
     if (frameAdvState.p1Attacking && frameAdvState.p1ActionableInternalFrame == -1) {
-        bool attackerRecoveryEdge = (!IsActionable(prevMoveID1) && IsActionable(moveID1));
+        bool attackerRecoveryEdge = (!IsActionable(prevMoveID1) && faSample.actionable1);
         if (attackerRecoveryEdge) {
             frameAdvState.p1ActionableInternalFrame = currentInternalFrame;
          #if defined(ENABLE_FRAME_ADV_DEBUG)
@@ -631,7 +634,7 @@ void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, shor
     }
     
     if (frameAdvState.p2Attacking && frameAdvState.p2ActionableInternalFrame == -1) {
-        bool attackerRecoveryEdge = (!IsActionable(prevMoveID2) && IsActionable(moveID2));
+        bool attackerRecoveryEdge = (!IsActionable(prevMoveID2) && faSample.actionable2);
         if (attackerRecoveryEdge) {
             frameAdvState.p2ActionableInternalFrame = currentInternalFrame;
          #if defined(ENABLE_FRAME_ADV_DEBUG)
@@ -643,7 +646,7 @@ void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, shor
     
     // STEP 4: Detect when defender becomes actionable (covers knockdowns, ground/air tech, wakeup)
     if (frameAdvState.p2Defending && frameAdvState.p2DefenderFreeInternalFrame == -1) {
-        bool defenderFreeEdge = (!IsActionable(prevMoveID2) && IsActionable(moveID2));
+        bool defenderFreeEdge = (!IsActionable(prevMoveID2) && faSample.actionable2);
         if (defenderFreeEdge) {
             frameAdvState.p2DefenderFreeInternalFrame = currentInternalFrame;
             #if defined(ENABLE_FRAME_ADV_DEBUG)
@@ -654,7 +657,7 @@ void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, shor
     }
 
     if (frameAdvState.p1Defending && frameAdvState.p1DefenderFreeInternalFrame == -1) {
-        bool defenderFreeEdge = (!IsActionable(prevMoveID1) && IsActionable(moveID1));
+        bool defenderFreeEdge = (!IsActionable(prevMoveID1) && faSample.actionable1);
         if (defenderFreeEdge) {
             frameAdvState.p1DefenderFreeInternalFrame = currentInternalFrame;
             #if defined(ENABLE_FRAME_ADV_DEBUG)
@@ -673,7 +676,7 @@ void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, shor
     if (frameAdvState.p1Attacking && frameAdvState.p1ActionableInternalFrame != -1 && frameAdvState.p2DefenderFreeInternalFrame == -1) {
         // Defender remained actionable (never lost actionability) implies whiff sequence;
         // If we detect attacker actionable and defender already actionable, synthesize immediate zero or negative adv.
-        if (IsActionable(moveID2)) {
+        if (faSample.actionable2) {
             // defender was never locked: treat advantage as (defender frame - attacker recovery frame)
             frameAdvState.p2DefenderFreeInternalFrame = frameAdvState.p1ActionableInternalFrame; // same frame
             #if defined(ENABLE_FRAME_ADV_DEBUG)
@@ -683,7 +686,7 @@ void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, shor
         }
     }
     if (frameAdvState.p2Attacking && frameAdvState.p2ActionableInternalFrame != -1 && frameAdvState.p1DefenderFreeInternalFrame == -1) {
-        if (IsActionable(moveID1)) {
+        if (faSample.actionable1) {
             frameAdvState.p1DefenderFreeInternalFrame = frameAdvState.p2ActionableInternalFrame;
             #if defined(ENABLE_FRAME_ADV_DEBUG)
             LogOut("[FRAME_ADV_DEBUG] Synthetic defender free (P1) at frame " + std::to_string(frameAdvState.p1DefenderFreeInternalFrame) +
@@ -875,4 +878,9 @@ bool FrameAdvantageTimersActive() {
     int cur = GetCurrentInternalFrame();
     if (g_showFrameAdvantageOverlay.load() && cur < g_SkipRegularFAOverlayUntilFrame.load()) return true;
     return false;
+}
+
+// Context overload (initial implementation delegates to existing signature)
+void MonitorFrameAdvantage(const PerFrameSample& sample) {
+    MonitorFrameAdvantage(sample.moveID1, sample.moveID2, sample.prevMoveID1, sample.prevMoveID2);
 }

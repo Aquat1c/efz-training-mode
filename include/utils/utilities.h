@@ -44,6 +44,17 @@ extern std::atomic<int> triggerOnRGDelay;
 
 // Function declarations
 uintptr_t GetEFZBase();
+// Invalidate cached EFZ base address (use if module could reload)
+void InvalidateEFZBaseCache();
+
+// Cached game state pointer (stable after initial allocation)
+uintptr_t GetGameStatePtr();
+void InvalidateGameStatePtrCache();
+
+// Cached player base pointers (reinitialized on each character load).
+// Returns 0 if characters not initialized or screen not in battle.
+uintptr_t GetPlayerBase(int playerIndex); // playerIndex: 1 or 2
+void InvalidatePlayerBaseCache();
 bool IsActionable(short moveID);
 // Wakeup-specific actionable check: treat CROUCH_TO_STAND_ID (7) as non-actionable for wake triggers
 // to ensure execution occurs on the true neutral frame (e.g., 96 -> 7 -> 0 sequences).
