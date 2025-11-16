@@ -51,11 +51,9 @@ bool EnablePlayer2InPracticeMode() {
     LogOut("[PRACTICE_PATCH] EFZ base address: 0x" + std::to_string(efzBase), true);
 
     // Game state pointer
-    uintptr_t gameStatePtr = 0;
-    
-    // Get the game state pointer using our existing offset
-    if (!SafeReadMemory(efzBase + EFZ_BASE_OFFSET_GAME_STATE, &gameStatePtr, sizeof(uintptr_t))) {
-        LogOut("[PRACTICE_PATCH] Failed to read game state pointer", true);
+    uintptr_t gameStatePtr = GetGameStatePtr();
+    if (!gameStatePtr) {
+        LogOut("[PRACTICE_PATCH] Failed to resolve game state pointer", true);
         return false;
     }
     LogOut("[PRACTICE_PATCH] Game state pointer: 0x" + std::to_string(gameStatePtr), true);
@@ -91,8 +89,8 @@ bool EnablePlayer2InPracticeMode() {
 
     // Additionally, we need to find and patch the AI flags for the actual Player 2 character
     // This is set in character initialization based on the above flag
-    uintptr_t p2CharPtr = 0;
-    if (!SafeReadMemory(efzBase + EFZ_BASE_OFFSET_P2, &p2CharPtr, sizeof(uintptr_t))) {
+    uintptr_t p2CharPtr = GetPlayerBase(2);
+    if (!p2CharPtr) {
         LogOut("[PRACTICE_PATCH] Failed to read Player 2 character pointer", true);
         return false;
     }
@@ -195,14 +193,8 @@ bool EnablePlayer2InPracticeMode() {
 void ScanForPotentialAIFlags() {
     LogOut("[PRACTICE_PATCH] Scanning for potential AI control flags...", true);
     
-    uintptr_t efzBase = GetEFZBase();
-    if (!efzBase) {
-        LogOut("[PRACTICE_PATCH] Failed to get EFZ base address", true);
-        return;
-    }
-    
-    uintptr_t p2CharPtr = 0;
-    if (!SafeReadMemory(efzBase + EFZ_BASE_OFFSET_P2, &p2CharPtr, sizeof(uintptr_t)) || !p2CharPtr) {
+    uintptr_t p2CharPtr = GetPlayerBase(2);
+    if (!p2CharPtr) {
         LogOut("[PRACTICE_PATCH] Failed to read Player 2 character pointer", true);
         return;
     }
@@ -276,12 +268,10 @@ void MonitorAndPatchPracticeMode() {
         
     if (currentMode == GameMode::Practice) {
             // Check current P2 CPU flag and AI flag before patching
-            uintptr_t efzBase = GetEFZBase();
-            uintptr_t gameStatePtr = 0;
+            uintptr_t gameStatePtr = GetGameStatePtr();
             uint8_t p2CpuFlag = 1; // Default to CPU controlled
 
-            if (efzBase && 
-                SafeReadMemory(efzBase + EFZ_BASE_OFFSET_GAME_STATE, &gameStatePtr, sizeof(uintptr_t)) &&
+            if (gameStatePtr &&
                 SafeReadMemory(gameStatePtr + P2_CPU_FLAG_OFFSET, &p2CpuFlag, sizeof(uint8_t))) {
                 
                 bool p2CpuControlled = (p2CpuFlag != 0);
@@ -296,12 +286,11 @@ void MonitorAndPatchPracticeMode() {
                 
                 // Keep P2 character AI flag aligned with the game state's CPU flag (when not temporarily overridden).
                 // If CPU flag says human (0), ensure AI flag = 0. If CPU flag says CPU (1), ensure AI flag = 1.
-                uintptr_t p2CharPtr = 0;
+                uintptr_t p2CharPtr = GetPlayerBase(2);
                 uint32_t p2AIFlag = 1; // Default to AI controlled
-                bool p2CharacterInitialized = false;
+                bool p2CharacterInitialized = (p2CharPtr != 0);
 
-                if (SafeReadMemory(efzBase + EFZ_BASE_OFFSET_P2, &p2CharPtr, sizeof(uintptr_t)) && p2CharPtr) {
-                    p2CharacterInitialized = true;
+                if (p2CharacterInitialized) {
                     SafeReadMemory(p2CharPtr + AI_CONTROL_FLAG_OFFSET, &p2AIFlag, sizeof(uint32_t));
 
                     bool p2AIControlled = (p2AIFlag != 0);
@@ -387,9 +376,9 @@ void DumpPracticeModeState() {
     LogOut("[PRACTICE_PATCH] EFZ base address: " + FormatHexAddress(efzBase), true);
     
     // Get the game state pointer
-    uintptr_t gameStatePtr = 0;
-    if (!SafeReadMemory(efzBase + EFZ_BASE_OFFSET_GAME_STATE, &gameStatePtr, sizeof(uintptr_t))) {
-        LogOut("[PRACTICE_PATCH] Cannot dump state: Failed to read game state pointer", true);
+    uintptr_t gameStatePtr = GetGameStatePtr();
+    if (!gameStatePtr) {
+        LogOut("[PRACTICE_PATCH] Cannot dump state: Failed to resolve game state pointer", true);
         return;
     }
     
@@ -413,21 +402,19 @@ void DumpPracticeModeState() {
     }
     
     // Read P2 character pointer and AI flag
-    uintptr_t p2CharPtr = 0;
-    if (SafeReadMemory(efzBase + EFZ_BASE_OFFSET_P2, &p2CharPtr, sizeof(uintptr_t))) {
+    uintptr_t p2CharPtr = GetPlayerBase(2);
+    if (p2CharPtr) {
         LogOut("[PRACTICE_PATCH] P2 character pointer: " + FormatHexAddress(p2CharPtr), true);
         
-        if (p2CharPtr) {
-            uint32_t aiFlag = 0;
-            if (SafeReadMemory(p2CharPtr + AI_CONTROL_FLAG_OFFSET, &aiFlag, sizeof(uint32_t))) {
-                LogOut("[PRACTICE_PATCH] P2 AI control flag: " + std::to_string(aiFlag) + 
-                        " (" + (aiFlag ? "AI controlled" : "Player controlled") + ")", true);
-            } else {
-                LogOut("[PRACTICE_PATCH] Failed to read P2 AI control flag", true);
-            }
+        uint32_t aiFlag = 0;
+        if (SafeReadMemory(p2CharPtr + AI_CONTROL_FLAG_OFFSET, &aiFlag, sizeof(uint32_t))) {
+            LogOut("[PRACTICE_PATCH] P2 AI control flag: " + std::to_string(aiFlag) + 
+                    " (" + (aiFlag ? "AI controlled" : "Player controlled") + ")", true);
+        } else {
+            LogOut("[PRACTICE_PATCH] Failed to read P2 AI control flag", true);
         }
     } else {
-        LogOut("[PRACTICE_PATCH] Failed to read P2 character pointer", true);
+        LogOut("[PRACTICE_PATCH] Failed to read Player 2 character pointer", true);
     }
     
     LogOut("[PRACTICE_PATCH] --------- End of Debug Dump ---------", true);
@@ -440,9 +427,6 @@ uint8_t lastP2Input = 0;
 
 // Enhanced function to log player inputs with filtering for non-neutral inputs
 void LogPlayerInputsInPracticeMode() {
-    uintptr_t base = GetEFZBase();
-    if (!base) return;
-    
     // Get the current inputs for both players
     uint8_t p1Input = GetPlayerInputs(1);
     uint8_t p2Input = GetPlayerInputs(2);
@@ -488,15 +472,9 @@ std::string GetDirectionName(uint8_t inputBits) {
 bool DisablePlayer2InPracticeMode() {
     LogOut("[PRACTICE_PATCH] Attempting to disable Player 2 controls in Practice mode...", true);
 
-    uintptr_t efzBase = GetEFZBase();
-    if (!efzBase) {
-        LogOut("[PRACTICE_PATCH] Failed to get EFZ base address", true);
-        return false;
-    }
-
-    uintptr_t gameStatePtr = 0;
-    if (!SafeReadMemory(efzBase + EFZ_BASE_OFFSET_GAME_STATE, &gameStatePtr, sizeof(uintptr_t))) {
-        LogOut("[PRACTICE_PATCH] Failed to read game state pointer", true);
+    uintptr_t gameStatePtr = GetGameStatePtr();
+    if (!gameStatePtr) {
+        LogOut("[PRACTICE_PATCH] Failed to resolve game state pointer", true);
         return false;
     }
 
@@ -509,11 +487,7 @@ bool DisablePlayer2InPracticeMode() {
     LogOut("[PRACTICE_PATCH] Restored P2 CPU control flag to 1 (CPU controlled)", true);
 
     // Restore the AI control flag for P2's character
-    uintptr_t p2CharPtr = 0;
-    if (!SafeReadMemory(efzBase + EFZ_BASE_OFFSET_P2, &p2CharPtr, sizeof(uintptr_t))) {
-        LogOut("[PRACTICE_PATCH] Failed to read Player 2 character pointer", true);
-        return false;
-    }
+    uintptr_t p2CharPtr = GetPlayerBase(2);
     if (p2CharPtr) {
         uint32_t aiControlFlag = 1; // 1 = AI controlled
         if (!SafeWriteMemory(p2CharPtr + AI_CONTROL_FLAG_OFFSET, &aiControlFlag, sizeof(uint32_t))) {
@@ -523,6 +497,7 @@ bool DisablePlayer2InPracticeMode() {
         LogOut("[PRACTICE_PATCH] Restored P2 AI control flag to 1 (AI controlled)", true);
     } else {
         LogOut("[PRACTICE_PATCH] Player 2 character not initialized yet, skipping AI flag restore", true);
+        return false;
     }
 
     DumpPracticeModeState();
@@ -535,15 +510,8 @@ void EnsureDefaultControlFlagsOnMatchStart() {
     if (GetCurrentGameMode() != GameMode::Practice) return;
     if (DetectOnlineMatch()) return;
     
-    uintptr_t efzBase = GetEFZBase();
-    if (!efzBase) {
-        LogOut("[PRACTICE_PATCH] EnsureDefaultControlFlagsOnMatchStart: EFZ base missing", true);
-        return;
-    }
-
-    // 1) Set P2 to CPU at game state level
-    uintptr_t gameStatePtr = 0;
-    if (SafeReadMemory(efzBase + EFZ_BASE_OFFSET_GAME_STATE, &gameStatePtr, sizeof(uintptr_t)) && gameStatePtr) {
+    uintptr_t gameStatePtr = GetGameStatePtr();
+    if (gameStatePtr) {
         uint8_t p2Cpu = 1; // 1 = CPU, 0 = human
         if (SafeWriteMemory(gameStatePtr + P2_CPU_FLAG_OFFSET, &p2Cpu, sizeof(uint8_t))) {
             LogOut("[PRACTICE_PATCH] MatchStart: P2 CPU flag set to 1 (CPU)", true);
@@ -555,9 +523,8 @@ void EnsureDefaultControlFlagsOnMatchStart() {
     }
 
     // 2) Adjust per-character AI flags (affects in-match control)
-    uintptr_t p1CharPtr = 0, p2CharPtr = 0;
-    SafeReadMemory(efzBase + EFZ_BASE_OFFSET_P1, &p1CharPtr, sizeof(uintptr_t));
-    SafeReadMemory(efzBase + EFZ_BASE_OFFSET_P2, &p2CharPtr, sizeof(uintptr_t));
+    uintptr_t p1CharPtr = GetPlayerBase(1);
+    uintptr_t p2CharPtr = GetPlayerBase(2);
 
     if (p1CharPtr) {
         uint32_t p1Ai = 0; // 0 = player-controlled
@@ -599,16 +566,10 @@ void EnsureDefaultControlFlagsOnMatchStart() {
 
 // --- Practice dummy F6/F7 equivalents ---
 
-static bool GetGameStatePtr(uintptr_t &gameStateOut) {
-    uintptr_t base = GetEFZBase();
-    if (!base) return false;
-    return SafeReadMemory(base + EFZ_BASE_OFFSET_GAME_STATE, &gameStateOut, sizeof(uintptr_t)) && gameStateOut != 0;
-}
-
 bool GetPracticeAutoBlockEnabled(bool &enabledOut) {
     enabledOut = false;
     if (GetCurrentGameMode() != GameMode::Practice) return false;
-    uintptr_t gs = 0; if (!GetGameStatePtr(gs)) return false;
+    uintptr_t gs = GetGameStatePtr(); if (!gs) return false;
     uint32_t val = 0; if (!SafeReadMemory(gs + PRACTICE_AUTO_BLOCK_OFFSET, &val, sizeof(val))) return false;
     enabledOut = (val != 0);
     return true;
@@ -617,7 +578,7 @@ bool GetPracticeAutoBlockEnabled(bool &enabledOut) {
 bool SetPracticeAutoBlockEnabled(bool enabled, const char* reason) {
     if (GetCurrentGameMode() != GameMode::Practice) return false;
     if (DetectOnlineMatch()) return false;
-    uintptr_t gs = 0; if (!GetGameStatePtr(gs)) return false;
+    uintptr_t gs = GetGameStatePtr(); if (!gs) return false;
     uint32_t val = enabled ? 1u : 0u;
     // Read current to avoid redundant writes/logs
     uint32_t cur = 0;
@@ -641,7 +602,7 @@ bool SetPracticeAutoBlockEnabled(bool enabled, const char* reason) {
 bool GetPracticeBlockMode(int &modeOut) {
     modeOut = 0;
     if (GetCurrentGameMode() != GameMode::Practice) return false;
-    uintptr_t gs = 0; if (!GetGameStatePtr(gs)) return false;
+    uintptr_t gs = GetGameStatePtr(); if (!gs) return false;
     uint8_t v = 0; if (!SafeReadMemory(gs + PRACTICE_BLOCK_MODE_OFFSET, &v, sizeof(v))) return false;
     modeOut = (int)v; if (modeOut < 0 || modeOut > 2) modeOut = 0;
     return true;
@@ -651,7 +612,7 @@ bool SetPracticeBlockMode(int mode) {
     if (GetCurrentGameMode() != GameMode::Practice) return false;
     if (DetectOnlineMatch()) return false;
     if (mode < 0) mode = 0; if (mode > 2) mode = 2;
-    uintptr_t gs = 0; if (!GetGameStatePtr(gs)) return false;
+    uintptr_t gs = GetGameStatePtr(); if (!gs) return false;
     // Avoid redundant writes
     uint8_t current = 0; SafeReadMemory(gs + PRACTICE_BLOCK_MODE_OFFSET, &current, sizeof(current));
     uint8_t v = (uint8_t)mode;
@@ -720,10 +681,10 @@ static bool SampleAttackerFrameFlags(int attacker /*1=P1, 2=P2*/, int &level, bo
     static uint16_t  s_lastState[3]      = {0xFFFF, 0xFFFF, 0xFFFF};
     static uintptr_t s_lastFramesPtr[3]  = {0, 0, 0};
 
-    uintptr_t base = GetEFZBase(); if (!base) return false;
-    uintptr_t pBase = 0; if (attacker == 1) { SafeReadMemory(base + EFZ_BASE_OFFSET_P1, &pBase, sizeof(pBase)); }
-                           else if (attacker == 2) { SafeReadMemory(base + EFZ_BASE_OFFSET_P2, &pBase, sizeof(pBase)); }
-                           else { return false; }
+    uintptr_t pBase = 0;
+    if (attacker == 1 || attacker == 2) {
+        pBase = GetPlayerBase(attacker);
+    }
     if (!pBase) return false;
     // Resolve anim frames table and frame block with caching
     uint16_t state = 0, frame = 0; uintptr_t animTab = 0, framesPtr = 0, frameBlock = 0;
@@ -867,7 +828,7 @@ int GetDummyAutoBlockMode() { return g_dummyAutoBlockMode.load(); }
 
 bool SyncAutoBlockModeFromGameFlag(bool clearOverride) {
     if (GetCurrentGameMode() != GameMode::Practice) return false;
-    uintptr_t gs = 0; if (!GetGameStatePtr(gs)) return false;
+    uintptr_t gs = GetGameStatePtr(); if (!gs) return false;
     uint32_t f = 0; if (!SafeReadMemory(gs + PRACTICE_AUTO_BLOCK_OFFSET, &f, sizeof(f))) return false;
     // Update our mode to mirror the flag (None/All only), without engaging override
     SetDummyAutoBlockModeFromSync((f != 0) ? DAB_All : DAB_None);
@@ -906,8 +867,7 @@ void SetExternalAutoBlockController(bool enabled) {
 
 // Helper: read stance/direction fields for P2, and Y positions for attacker(P1)
 static bool ReadP2BlockFields(uint8_t &dirOut, uint8_t &stanceOut) {
-    uintptr_t base = GetEFZBase(); if (!base) return false;
-    uintptr_t p2 = 0; if (!SafeReadMemory(base + EFZ_BASE_OFFSET_P2, &p2, sizeof(p2)) || !p2) return false;
+    uintptr_t p2 = GetPlayerBase(2); if (!p2) return false;
     uint8_t dir=0, stance=0;
     SafeReadMemory(p2 + 392, &dir, sizeof(dir));
     SafeReadMemory(p2 + 393, &stance, sizeof(stance));
@@ -916,8 +876,7 @@ static bool ReadP2BlockFields(uint8_t &dirOut, uint8_t &stanceOut) {
 }
 
 static bool WriteP2BlockStance(uint8_t stance) {
-    uintptr_t base = GetEFZBase(); if (!base) return false;
-    uintptr_t p2 = 0; if (!SafeReadMemory(base + EFZ_BASE_OFFSET_P2, &p2, sizeof(p2)) || !p2) return false;
+    uintptr_t p2 = GetPlayerBase(2); if (!p2) return false;
     return SafeWriteMemory(p2 + 393, &stance, sizeof(stance));
 }
 
@@ -926,8 +885,7 @@ static bool WriteP2BlockStance(uint8_t stance) {
 // Assist guard by holding BACK (and optionally DOWN) relative to P2 facing
 // guardLevel: 0=None, 1=High, 2=Low, 3=Any
 static void AssistP2DirectionForStance(uint8_t desiredStance, bool wantGuard, int guardLevel) {
-    uintptr_t base = GetEFZBase(); if (!base) return;
-    uintptr_t p2 = 0; if (!SafeReadMemory(base + EFZ_BASE_OFFSET_P2, &p2, sizeof(p2)) || !p2) return;
+    uintptr_t p2 = GetPlayerBase(2); if (!p2) return;
     uint8_t dir = 0; SafeReadMemory(p2 + 392, &dir, sizeof(dir));
     // Stance vertical assist
     if (desiredStance == 1) {
@@ -1017,7 +975,7 @@ void MonitorDummyAutoBlock(short p1MoveID, short p2MoveID, short prevP1MoveID, s
         if (phaseNow == GamePhase::CharacterSelect) {
             g_abOverrideActive.store(false);
             // Sync displayed mode to current game flag
-            uintptr_t gs = 0; if (GetGameStatePtr(gs)) {
+            uintptr_t gs = GetGameStatePtr(); if (gs) {
                 uint32_t f=0; if (SafeReadMemory(gs + PRACTICE_AUTO_BLOCK_OFFSET, &f, sizeof(f))) {
                     SetDummyAutoBlockModeFromSync((f!=0) ? DAB_All : DAB_None);
                 }
@@ -1233,8 +1191,8 @@ void MonitorDummyAutoBlock(short p1MoveID, short p2MoveID, short prevP1MoveID, s
     static unsigned long long s_lastAbFlagCheckMs = 0;
     unsigned long long nowMs = GetTickCount64();
     if (nowMs - s_lastAbFlagCheckMs >= 1000ULL) {
-        uintptr_t gsWatch = 0;
-        if (GetGameStatePtr(gsWatch)) {
+        uintptr_t gsWatch = GetGameStatePtr();
+        if (gsWatch) {
             uint32_t flagVal = 0;
             if (SafeReadMemory(gsWatch + PRACTICE_AUTO_BLOCK_OFFSET, &flagVal, sizeof(flagVal))) {
                 int curFlag = (flagVal != 0) ? 1 : 0;
@@ -1276,14 +1234,18 @@ void MonitorDummyAutoBlock(short p1MoveID, short p2MoveID, short prevP1MoveID, s
     // Apply adaptive stance only when autoblock is ON, with throttling and dedupe
     // Determine whether autoblock is currently active for adaptive stance gate
     bool gameFlagOn = false; {
-        uintptr_t gs=0; if (GetGameStatePtr(gs)) { uint32_t f=0; SafeReadMemory(gs + PRACTICE_AUTO_BLOCK_OFFSET, &f, sizeof(f)); gameFlagOn = (f!=0); }
+        uintptr_t gs = GetGameStatePtr();
+        if (gs) {
+            uint32_t f=0; SafeReadMemory(gs + PRACTICE_AUTO_BLOCK_OFFSET, &f, sizeof(f));
+            gameFlagOn = (f!=0);
+        }
     }
     bool activeAb = overrideEffective ? abOn : gameFlagOn;
     static bool s_prevActiveAb = false;
     if (g_adaptiveStance.load() && activeAb) {
         // Gate adaptive stance on P2 actually being AI controlled. If we've forced P2 to human (0) for auto-actions,
         // we should skip adaptive stance adjustments to avoid log spam and unintended stance overwrites.
-        uintptr_t baseAI = 0; SafeReadMemory(GetEFZBase() + EFZ_BASE_OFFSET_P2, &baseAI, sizeof(baseAI));
+        uintptr_t baseAI = GetPlayerBase(2);
         if (!baseAI) return; // can't evaluate
         uint32_t aiFlag = 1; SafeReadMemory(baseAI + AI_CONTROL_FLAG_OFFSET, &aiFlag, sizeof(aiFlag));
         if (aiFlag == 0) {
@@ -1324,7 +1286,7 @@ void MonitorDummyAutoBlock(short p1MoveID, short p2MoveID, short prevP1MoveID, s
 
             uint8_t desiredStance = attackerAir ? 0 : 1; // 0=stand,1=crouch
             if (!attackerAir && s_p1CharID >= 0) {
-                uintptr_t p1Base = 0; SafeReadMemory(GetEFZBase() + EFZ_BASE_OFFSET_P1, &p1Base, sizeof(p1Base));
+                uintptr_t p1Base = GetPlayerBase(1);
                 if (GuardOverrides::IsGroundedOverhead(s_p1CharID, static_cast<int>(st), p1Base)) {
                     desiredStance = 0;
                 }
@@ -1335,9 +1297,10 @@ void MonitorDummyAutoBlock(short p1MoveID, short p2MoveID, short prevP1MoveID, s
             if (ReadP2BlockFields(curDir, curStance)) {
                 if (curStance != desiredStance) {
                     // Preserve P2 guard context (blockstun + blocking MoveID) so stance/mode tweaks don't cut guard
-                    uintptr_t base = GetEFZBase(); uintptr_t p2=0; short prevBlk=0; short prevMove=0;
+                    uintptr_t p2 = GetPlayerBase(2);
+                    short prevBlk=0; short prevMove=0;
                     bool prevWasBlocking=false;
-                    if (base && SafeReadMemory(base + EFZ_BASE_OFFSET_P2, &p2, sizeof(p2)) && p2) {
+                    if (p2) {
                         SafeReadMemory(p2 + BLOCKSTUN_OFFSET, &prevBlk, sizeof(prevBlk));
                         SafeReadMemory(p2 + MOVE_ID_OFFSET, &prevMove, sizeof(prevMove));
                         prevWasBlocking = IsP2BlockingOrBlockstun(prevMove);
@@ -1372,8 +1335,9 @@ void MonitorDummyAutoBlock(short p1MoveID, short p2MoveID, short prevP1MoveID, s
                 }
             } else {
                 // Best-effort preservation when fields can't be read
-                uintptr_t base = GetEFZBase(); uintptr_t p2=0; short prevBlk=0; short prevMove=0; bool prevWasBlocking=false;
-                if (base && SafeReadMemory(base + EFZ_BASE_OFFSET_P2, &p2, sizeof(p2)) && p2) {
+                uintptr_t p2 = GetPlayerBase(2);
+                short prevBlk=0; short prevMove=0; bool prevWasBlocking=false;
+                if (p2) {
                     SafeReadMemory(p2 + BLOCKSTUN_OFFSET, &prevBlk, sizeof(prevBlk));
                     SafeReadMemory(p2 + MOVE_ID_OFFSET, &prevMove, sizeof(prevMove));
                     prevWasBlocking = IsP2BlockingOrBlockstun(prevMove);
