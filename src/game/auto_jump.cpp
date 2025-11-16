@@ -4,6 +4,7 @@
 #include "../include/utils/utilities.h"
 #include "../include/utils/network.h"
 #include "../include/game/game_state.h"
+#include "../include/game/validation_metrics.h" // validation metrics instrumentation
 
 #include "../include/core/memory.h"
 #include "../include/core/logger.h"
@@ -182,7 +183,7 @@ void MonitorAutoJump() {
     auto releaseIfOurJump = [](int p) {
         uint8_t mask = ImmediateInput::GetCurrentDesired(p);
         bool looksLikeJump = (mask & MOTION_INPUT_UP) && ((mask & MOTION_INPUT_BUTTON) == 0);
-        if (looksLikeJump) {
+        if (looksLikeJump) { 
             ImmediateInput::Clear(p);
         }
     };
@@ -220,6 +221,7 @@ void MonitorAutoJump() {
             // Edge-based auto-jump: neutral on landing, then UP on next tick
             bool grounded = isGrounded(1);
             bool landing = grounded && !s_wasGrounded[1];
+            if (landing && ValidationMetricsEnabled()) { GetValidationMetrics().p1LandingEdges++; }
             s_wasGrounded[1] = grounded;
             bool fwdRight = ForwardIsRightForPlayer(1);
             uint8_t wantMask = MOTION_INPUT_UP | (
@@ -232,6 +234,7 @@ void MonitorAutoJump() {
             if (landing) {
                 // Force a brief neutral to create a clean edge
                 s_forceNeutralFrames[1] = 1;
+                if (ValidationMetricsEnabled()) { GetValidationMetrics().p1ForcedNeutralFrames++; }
             }
 
             if (s_forceNeutralFrames[1] > 0) {
@@ -256,6 +259,7 @@ void MonitorAutoJump() {
         } else {
             bool grounded = isGrounded(2);
             bool landing = grounded && !s_wasGrounded[2];
+            if (landing && ValidationMetricsEnabled()) { GetValidationMetrics().p2LandingEdges++; }
             s_wasGrounded[2] = grounded;
             bool fwdRight = ForwardIsRightForPlayer(2);
             uint8_t wantMask = MOTION_INPUT_UP | (
@@ -267,6 +271,7 @@ void MonitorAutoJump() {
 
             if (landing) {
                 s_forceNeutralFrames[2] = 1;
+                if (ValidationMetricsEnabled()) { GetValidationMetrics().p2ForcedNeutralFrames++; }
             }
 
             if (s_forceNeutralFrames[2] > 0) {

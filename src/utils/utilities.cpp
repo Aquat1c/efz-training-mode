@@ -808,10 +808,84 @@ std::string FormatPosition(double x, double y) {
     return ss.str();
 }
 
+// Cached EFZ base module handle to avoid repeated GetModuleHandleA calls.
+namespace { std::atomic<uintptr_t> g_cachedEfzBase{0}; }
+
 uintptr_t GetEFZBase() {
-    std::locale::global(std::locale("C")); 
-    // This ensures consistent decimal point format
-    return (uintptr_t)GetModuleHandleA(NULL);
+    uintptr_t val = g_cachedEfzBase.load(std::memory_order_acquire);
+    if (val) return val;
+    HMODULE h = GetModuleHandleA(NULL); // NULL = current process module
+    if (!h) return 0;
+    val = reinterpret_cast<uintptr_t>(h);
+    g_cachedEfzBase.store(val, std::memory_order_release);
+    return val;
+}
+
+void InvalidateEFZBaseCache() { g_cachedEfzBase.store(0, std::memory_order_release); }
+
+// -----------------------------------------------------------------------------
+// Game state pointer caching
+// The game state object (at EFZ_BASE_OFFSET_GAME_STATE) is allocated once at
+// startup (initializeGameSystem). Its pointer remains stable; internal fields
+// are reset between matches. Safe to cache for lifetime of process unless we
+// explicitly disable features / enter online mode.
+namespace { std::atomic<uintptr_t> g_cachedGameState{0}; }
+
+uintptr_t GetGameStatePtr() {
+    uintptr_t gs = g_cachedGameState.load(std::memory_order_acquire);
+    if (gs) return gs;
+    uintptr_t base = GetEFZBase(); if (!base) return 0;
+    uintptr_t tmp = 0; if (!SafeReadMemory(base + EFZ_BASE_OFFSET_GAME_STATE, &tmp, sizeof(tmp))) return 0;
+    if (tmp) g_cachedGameState.store(tmp, std::memory_order_release);
+    return tmp;
+}
+
+void InvalidateGameStatePtrCache() { g_cachedGameState.store(0, std::memory_order_release); }
+
+// -----------------------------------------------------------------------------
+// Player base pointer caching
+// Player pointers (EFZ_BASE_OFFSET_P1/P2) are set to 0 at startup and populated
+// during character load sequences. They are reused for each match but may be
+// re-assigned when returning to character select and starting a new battle.
+// Strategy:
+//  - Cache after first successful read when AreCharactersInitialized()==true
+//  - Invalidate when AreCharactersInitialized()==false OR screen state != Battle (3)
+//  - Provide explicit invalidation for feature disable / online entry.
+namespace { std::atomic<uintptr_t> g_cachedPlayerBase[3] = {0,0,0}; }
+
+static bool ShouldInvalidatePlayerCache() {
+    // When characters not initialized, cached bases invalid.
+    if (!AreCharactersInitialized()) return true;
+    // Screen state check: only trust during battle (3) and possibly win (5) for post-match reads.
+    uint8_t screenState = 0; uintptr_t base = GetEFZBase();
+    if (base) SafeReadMemory(base + EFZ_BASE_OFFSET_SCREEN_STATE, &screenState, sizeof(screenState));
+    if (screenState != 3 && screenState != 5) return true; // battle or win screen retain
+    return false;
+}
+
+uintptr_t GetPlayerBase(int playerIndex) {
+    if (playerIndex != 1 && playerIndex != 2) return 0;
+    if (ShouldInvalidatePlayerCache()) {
+        g_cachedPlayerBase[1].store(0, std::memory_order_release);
+        g_cachedPlayerBase[2].store(0, std::memory_order_release);
+        return 0;
+    }
+    uintptr_t cached = g_cachedPlayerBase[playerIndex].load(std::memory_order_acquire);
+    if (cached) return cached;
+    uintptr_t base = GetEFZBase(); if (!base) return 0;
+    uintptr_t ptr = 0; uintptr_t off = (playerIndex==1)?EFZ_BASE_OFFSET_P1:EFZ_BASE_OFFSET_P2;
+    if (!SafeReadMemory(base + off, &ptr, sizeof(ptr))) return 0;
+    // Basic sanity: require non-null and readable HP field before caching.
+    if (ptr) {
+        int hpDummy=0; if (!SafeReadMemory(ptr + HP_OFFSET, &hpDummy, sizeof(hpDummy))) return 0;
+        g_cachedPlayerBase[playerIndex].store(ptr, std::memory_order_release);
+    }
+    return ptr;
+}
+
+void InvalidatePlayerBaseCache() {
+    g_cachedPlayerBase[1].store(0, std::memory_order_release);
+    g_cachedPlayerBase[2].store(0, std::memory_order_release);
 }
 
 // Add these helper functions to better detect state changes

@@ -12,6 +12,7 @@
 #include "../include/utils/network.h"
 
 #include "../include/game/practice_patch.h"
+#include "../include/game/per_frame_sample.h"
 #include "../include/gui/overlay.h"
 #include "../include/input/input_core.h"  // Include this to get AI_CONTROL_FLAG_OFFSET
 #include "../include/input/input_motion.h" // for direction/stance constants
@@ -726,7 +727,15 @@ static bool SampleAttackerFrameFlags(int attacker /*1=P1, 2=P2*/, int &level, bo
     if (!pBase) return false;
     // Resolve anim frames table and frame block with caching
     uint16_t state = 0, frame = 0; uintptr_t animTab = 0, framesPtr = 0, frameBlock = 0;
-    if (!SafeReadMemory(pBase + MOVE_ID_OFFSET, &state, sizeof(state))) return false;
+    // Prefer unified per-frame sample for current moveID/state when attacker is player 1 or 2
+    const PerFrameSample &sample = GetCurrentPerFrameSample();
+    if (attacker == 1) {
+        state = static_cast<uint16_t>(sample.moveID1);
+    } else if (attacker == 2) {
+        state = static_cast<uint16_t>(sample.moveID2);
+    } else {
+        if (!SafeReadMemory(pBase + MOVE_ID_OFFSET, &state, sizeof(state))) return false;
+    }
     if (!SafeReadMemory(pBase + CURRENT_FRAME_INDEX_OFFSET, &frame, sizeof(frame))) return false;
     if (!SafeReadMemory(pBase + ANIM_TABLE_OFFSET, &animTab, sizeof(animTab))) return false;
     if (!animTab) return false;
@@ -1167,7 +1176,9 @@ void MonitorDummyAutoBlock(short p1MoveID, short p2MoveID, short prevP1MoveID, s
             }
         }
         const bool inGuardNow = IsP2BlockingOrBlockstun(p2MoveID) || (p2Blockstun > 0);
-        const bool actionableNow = IsActionable(p2MoveID);
+        // Use unified sample actionable flag for current P2 move when available
+        const PerFrameSample &dabSample = GetCurrentPerFrameSample();
+        const bool actionableNow = (dabSample.moveID2 == p2MoveID ? dabSample.actionable2 : IsActionable(p2MoveID));
         const bool leftGuardNow = (IsP2BlockingOrBlockstun(prevP2MoveID) && !IsP2BlockingOrBlockstun(p2MoveID));
 
         // If we want to turn OFF while guarding, defer until safe
@@ -1386,4 +1397,9 @@ void MonitorDummyAutoBlock(short p1MoveID, short p2MoveID, short prevP1MoveID, s
             g_adaptiveForceTick.store(false);
         }
     }
+}
+
+// Overload using unified per-frame sample (delegates; preserves existing timing/ordering)
+void MonitorDummyAutoBlock(const PerFrameSample& sample) {
+    MonitorDummyAutoBlock(sample.moveID1, sample.moveID2, sample.prevMoveID1, sample.prevMoveID2);
 }

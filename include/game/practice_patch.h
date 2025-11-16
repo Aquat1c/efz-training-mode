@@ -60,6 +60,9 @@ int  GetDummyAutoBlockMode();
 void ResetDummyAutoBlockState();
 // Called every frame (Match only) with current and previous move IDs
 void MonitorDummyAutoBlock(short p1MoveID, short p2MoveID, short prevP1MoveID, short prevP2MoveID);
+// Context overload (PerFrameSample) used after unified sampling introduced
+struct PerFrameSample; // fwd decl
+void MonitorDummyAutoBlock(const PerFrameSample& sample);
 
 // New: Adaptive stance can be used with any mode
 void SetAdaptiveStanceEnabled(bool enabled);

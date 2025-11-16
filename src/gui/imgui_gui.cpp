@@ -10,6 +10,7 @@
 #include "../include/gui/overlay.h"
 #include "../include/game/character_settings.h"
 #include "../include/game/frame_monitor.h"
+#include "../include/game/per_frame_sample.h" // Unified per-frame sample (fix build: undefined PerFrameSample)
 #include "../include/input/input_motion.h"
 #include "../include/input/input_motion.h"
 #include "../include/utils/bgm_control.h"
@@ -3345,39 +3346,36 @@ namespace ImGuiGui {
             return;
         }
 
-        // P1
-        SafeReadMemory(ResolvePointer(base, EFZ_BASE_OFFSET_P1, HP_OFFSET), &guiState.localData.hp1, sizeof(int));
-        {
-            // Meter is a 2-byte field
-            unsigned short m1 = 0;
-            SafeReadMemory(ResolvePointer(base, EFZ_BASE_OFFSET_P1, METER_OFFSET), &m1, sizeof(m1));
-            guiState.localData.meter1 = (int)m1;
+        // Resolve player base pointers once; avoid multiple ResolvePointer() calls per field.
+        uintptr_t p1Base = 0, p2Base = 0;
+        SafeReadMemory(base + EFZ_BASE_OFFSET_P1, &p1Base, sizeof(p1Base));
+        SafeReadMemory(base + EFZ_BASE_OFFSET_P2, &p2Base, sizeof(p2Base));
+        if (!p1Base || !p2Base) {
+            LogOut("[IMGUI] RefreshLocalData: Player base ptr(s) unavailable", true);
+            return;
         }
-        SafeReadMemory(ResolvePointer(base, EFZ_BASE_OFFSET_P1, RF_OFFSET), &guiState.localData.rf1, sizeof(double));
-        SafeReadMemory(ResolvePointer(base, EFZ_BASE_OFFSET_P1, XPOS_OFFSET), &guiState.localData.x1, sizeof(double));
-        SafeReadMemory(ResolvePointer(base, EFZ_BASE_OFFSET_P1, YPOS_OFFSET), &guiState.localData.y1, sizeof(double));
-        
-        // Read character name and ensure null-termination
-        memset(guiState.localData.p1CharName, 0, sizeof(guiState.localData.p1CharName));
-        SafeReadMemory(ResolvePointer(base, EFZ_BASE_OFFSET_P1, CHARACTER_NAME_OFFSET), 
-                   guiState.localData.p1CharName, sizeof(guiState.localData.p1CharName) - 1);
-        
-        // P2
-        SafeReadMemory(ResolvePointer(base, EFZ_BASE_OFFSET_P2, HP_OFFSET), &guiState.localData.hp2, sizeof(int));
+
+        // P1 reads (single pass)
         {
-            // Meter is a 2-byte field
-            unsigned short m2 = 0;
-            SafeReadMemory(ResolvePointer(base, EFZ_BASE_OFFSET_P2, METER_OFFSET), &m2, sizeof(m2));
-            guiState.localData.meter2 = (int)m2;
+            SafeReadMemory(p1Base + HP_OFFSET, &guiState.localData.hp1, sizeof(int));
+            unsigned short m1 = 0; SafeReadMemory(p1Base + METER_OFFSET, &m1, sizeof(m1)); guiState.localData.meter1 = (int)m1;
+            SafeReadMemory(p1Base + RF_OFFSET, &guiState.localData.rf1, sizeof(double));
+            SafeReadMemory(p1Base + XPOS_OFFSET, &guiState.localData.x1, sizeof(double));
+            SafeReadMemory(p1Base + YPOS_OFFSET, &guiState.localData.y1, sizeof(double));
+            memset(guiState.localData.p1CharName, 0, sizeof(guiState.localData.p1CharName));
+            SafeReadMemory(p1Base + CHARACTER_NAME_OFFSET, guiState.localData.p1CharName, sizeof(guiState.localData.p1CharName) - 1);
         }
-        SafeReadMemory(ResolvePointer(base, EFZ_BASE_OFFSET_P2, RF_OFFSET), &guiState.localData.rf2, sizeof(double));
-        SafeReadMemory(ResolvePointer(base, EFZ_BASE_OFFSET_P2, XPOS_OFFSET), &guiState.localData.x2, sizeof(double));
-        SafeReadMemory(ResolvePointer(base, EFZ_BASE_OFFSET_P2, YPOS_OFFSET), &guiState.localData.y2, sizeof(double));
-        
-        // Read character name and ensure null-termination
-        memset(guiState.localData.p2CharName, 0, sizeof(guiState.localData.p2CharName));
-        SafeReadMemory(ResolvePointer(base, EFZ_BASE_OFFSET_P2, CHARACTER_NAME_OFFSET), 
-                   guiState.localData.p2CharName, sizeof(guiState.localData.p2CharName) - 1);
+
+        // P2 reads (single pass)
+        {
+            SafeReadMemory(p2Base + HP_OFFSET, &guiState.localData.hp2, sizeof(int));
+            unsigned short m2 = 0; SafeReadMemory(p2Base + METER_OFFSET, &m2, sizeof(m2)); guiState.localData.meter2 = (int)m2;
+            SafeReadMemory(p2Base + RF_OFFSET, &guiState.localData.rf2, sizeof(double));
+            SafeReadMemory(p2Base + XPOS_OFFSET, &guiState.localData.x2, sizeof(double));
+            SafeReadMemory(p2Base + YPOS_OFFSET, &guiState.localData.y2, sizeof(double));
+            memset(guiState.localData.p2CharName, 0, sizeof(guiState.localData.p2CharName));
+            SafeReadMemory(p2Base + CHARACTER_NAME_OFFSET, guiState.localData.p2CharName, sizeof(guiState.localData.p2CharName) - 1);
+        }
 
           // Log the character names we're reading
           LogOut("[IMGUI] Read character names: P1=" + std::string(guiState.localData.p1CharName) + 
@@ -3701,12 +3699,15 @@ namespace ImGuiGui {
                 // Defer Rumi mode apply if not actionable to avoid unsafe engine calls
                 bool deferred = false;
                 if (displayData.p1CharID == CHAR_ID_NANASE) {
-                    short mv = 0; if (auto mvAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P1, MOVE_ID_OFFSET)) SafeReadMemory(mvAddr, &mv, sizeof(short));
-                    if (!IsActionable(mv)) deferred = true;
+                    // Use unified sample for current P1 move when available
+                    const PerFrameSample &uiSample = GetCurrentPerFrameSample();
+                    short mv = uiSample.moveID1;
+                    if (!uiSample.actionable1) deferred = true;
                 }
                 if (displayData.p2CharID == CHAR_ID_NANASE) {
-                    short mv = 0; if (auto mvAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P2, MOVE_ID_OFFSET)) SafeReadMemory(mvAddr, &mv, sizeof(short));
-                    if (!IsActionable(mv)) deferred = true;
+                    const PerFrameSample &uiSample2 = GetCurrentPerFrameSample();
+                    short mv = uiSample2.moveID2;
+                    if (!uiSample2.actionable2) deferred = true;
                 }
                 // Apply settings normally; UI-level disabling prevents conflicting writes when engine/CR manage values
                 ApplySettings(&displayData);

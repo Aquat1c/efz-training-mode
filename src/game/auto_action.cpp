@@ -18,6 +18,9 @@
 #include "../include/game/macro_controller.h" // Integrate macros with triggers
 #include "../include/game/character_settings.h" // For authoritative character ID mapping
 #include "../include/game/frame_analysis.h" // For IsThrown/IsHitstun/IsLaunched helpers
+#include "../include/game/per_frame_sample.h" // Unified per-frame sample accessor
+#include "../include/game/validation_metrics.h" // Validation metrics instrumentation
+#include "../include/game/validation_metrics.h" // Validation metrics instrumentation
 
 // Safety forward declarations (in case of include-order differences in some build phases)
 bool IsThrown(short moveID);
@@ -472,30 +475,19 @@ void ProcessTriggerDelays() {
         
     if (p1DelayState.delayFramesRemaining <= 0) {
             LogOut("[AUTO-ACTION] P1 delay expired, applying action", true);
-            
-            // Get moveIDAddr just to pass to ApplyAutoAction - it won't be used to write to anymore
-            uintptr_t moveIDAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P1, MOVE_ID_OFFSET);
-            short currentMoveID = 0;
-            
-            if (moveIDAddr) {
-                SafeReadMemory(moveIDAddr, &currentMoveID, sizeof(short)); // Read just for logging
-                
-                // Apply action via input system
-                ApplyAutoAction(1, moveIDAddr, 0, 0); // moveID parameters are ignored now
-                
-                LogOut("[AUTO-ACTION] P1 action applied via input system", true);
-                
-                p1DelayState.isDelaying = false;
-                p1DelayState.triggerType = TRIGGER_NONE;
-                p1DelayState.pendingMoveID = 0;
-                p1DelayState.chosenAction = -1;
-                p1DelayState.chosenStrength = -1;
-                p1DelayState.chosenMacroSlot = 0;
-                p1DelayState.chosenCustomId = -1;
-            } else {
-                LogOut("[AUTO-ACTION] Failed to apply P1 action - invalid moveID address", true);
-                p1DelayState.isDelaying = false;
-            }
+            // Use unified per-frame sample; avoid redundant MOVE_ID resolution
+            const PerFrameSample &sample = GetCurrentPerFrameSample();
+            short currentMoveID = sample.moveID1;
+            ApplyAutoAction(1, 0, currentMoveID, sample.prevMoveID1); // address ignored
+            LogOut("[AUTO-ACTION] P1 action applied via input system", true);
+            if (ValidationMetricsEnabled()) { GetValidationMetrics().p1ActionsApplied++; }
+            p1DelayState.isDelaying = false;
+            p1DelayState.triggerType = TRIGGER_NONE;
+            p1DelayState.pendingMoveID = 0;
+            p1DelayState.chosenAction = -1;
+            p1DelayState.chosenStrength = -1;
+            p1DelayState.chosenMacroSlot = 0;
+            p1DelayState.chosenCustomId = -1;
         }
     }
     
@@ -540,42 +532,30 @@ void ProcessTriggerDelays() {
                         p2DelayState.chosenStrength = -1;
                         p2DelayState.chosenMacroSlot = 0;
                         p2DelayState.chosenCustomId = -1;
+                        if (ValidationMetricsEnabled()) { GetValidationMetrics().p2ActionsApplied++; }
                         return;
                     }
                 }
             }
 
-            // Fallback: apply the configured single action via input system
-            uintptr_t moveIDAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P2, MOVE_ID_OFFSET);
-            short currentMoveID = 0;
-
-            if (moveIDAddr) {
-                SafeReadMemory(moveIDAddr, &currentMoveID, sizeof(short));
-
-                // Apply action via input system
-                // If macro is currently playing, do not inject conflicting actions for P2.
-                if (MacroController::GetState() != MacroController::State::Replaying) {
-                    ApplyAutoAction(2, moveIDAddr, 0, 0);
-                } else {
-                    LogOut("[AUTO-ACTION][MACRO] P2 macro active; skipping ApplyAutoAction", detailedLogging.load());
-                }
-
-                LogOut("[AUTO-ACTION] P2 action applied via input system", true);
-
-                p2DelayState.isDelaying = false;
-                p2DelayState.triggerType = TRIGGER_NONE;
-                p2DelayState.pendingMoveID = 0;
-                p2ActionApplied = true;
-                // Do NOT restore P2 control immediately here; specials/supers use
-                // buffer freezing and set g_pendingControlRestore to return control
-                // after execution or timeout. Immediate restore would cancel the buffer.
-                if (detailedLogging.load()) {
-                    LogOut(std::string("[AUTO-ACTION] P2 delayed action applied; pendingRestore=") +
-                           (g_pendingControlRestore.load()?"true":"false"), true);
-                }
+            // Fallback: apply the configured single action via input system using unified sample
+            const PerFrameSample &sample2 = GetCurrentPerFrameSample();
+            short currentMoveID = sample2.moveID2;
+            if (MacroController::GetState() != MacroController::State::Replaying) {
+                ApplyAutoAction(2, 0, currentMoveID, sample2.prevMoveID2);
             } else {
-                LogOut("[AUTO-ACTION] Failed to apply P2 action - invalid moveID address", true);
-                p2DelayState.isDelaying = false;
+                LogOut("[AUTO-ACTION][MACRO] P2 macro active; skipping ApplyAutoAction", detailedLogging.load());
+                if (ValidationMetricsEnabled()) { GetValidationMetrics().p2SuppressedByMacro++; }
+            }
+            LogOut("[AUTO-ACTION] P2 action applied via input system", true);
+            if (ValidationMetricsEnabled() && MacroController::GetState() != MacroController::State::Replaying) { GetValidationMetrics().p2ActionsApplied++; }
+            p2DelayState.isDelaying = false;
+            p2DelayState.triggerType = TRIGGER_NONE;
+            p2DelayState.pendingMoveID = 0;
+            p2ActionApplied = true;
+            if (detailedLogging.load()) {
+                LogOut(std::string("[AUTO-ACTION] P2 delayed action applied; pendingRestore=") +
+                       (g_pendingControlRestore.load()?"true":"false"), true);
             }
         }
     }
@@ -610,6 +590,10 @@ void StartTriggerDelay(int playerNum, int triggerType, short moveID, int delayFr
            ", p2TrigActive=" + std::to_string(p2TriggerActive) +
            ", p1Cooldown=" + std::to_string(p1TriggerCooldown) +
            ", p2Cooldown=" + std::to_string(p2TriggerCooldown), detailedLogging.load());
+    if (ValidationMetricsEnabled()) {
+        ValidationMetrics &vm = GetValidationMetrics();
+        if (playerNum == 1) vm.p1TriggerStarts++; else if (playerNum == 2) vm.p2TriggerStarts++;
+    }
     // NOTE: We no longer unconditionally override P2 control here. Override is now done
     // just-in-time only for specials/supers inside ApplyAutoAction (and wake pre-arm
     // when freezing a special). Normals/jumps/dashes use immediate inputs and do not
@@ -1452,80 +1436,50 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
     }
 }
 
-// Back-compat wrapper: fetch move IDs once here (with basic caching) and forward to core
+// Back-compat wrapper now using unified per-frame sample to avoid extra memory reads
 void MonitorAutoActions() {
     static short s_prevMoveID1 = 0, s_prevMoveID2 = 0;
-    // Fast-path: if nothing could possibly generate work (feature disabled, no triggers, no delays,
-    // cooldowns, wake prearms, or pending control restores) skip all memory reads & processing.
     if (!AutoActionWorkPending()) {
         if (detailedLogging.load()) {
             static int s_lastIdleLogFrame = 0;
             int nowF = frameCounter.load();
-            // Roughly every 30 real seconds at 192fps (192 * 30 = 5760)
-            if (nowF - s_lastIdleLogFrame >= 5760) {
+            if (nowF - s_lastIdleLogFrame >= 5760) { // ~30s at 192Hz
                 LogOut("[AUTO-ACTION] Idle (disabled/no triggers) - skipping per-frame processing", true);
                 s_lastIdleLogFrame = nowF;
             }
         }
         return;
     }
-    uintptr_t base = GetEFZBase();
-    if (!base) return;
-    static uintptr_t addr1 = 0, addr2 = 0; static int cacheCtr = 0;
-    if (cacheCtr++ >= 192 || !addr1 || !addr2) {
-        addr1 = ResolvePointer(base, EFZ_BASE_OFFSET_P1, MOVE_ID_OFFSET);
-        addr2 = ResolvePointer(base, EFZ_BASE_OFFSET_P2, MOVE_ID_OFFSET);
-        cacheCtr = 0;
-    }
-    short m1 = 0, m2 = 0;
-    if (addr1) SafeReadMemory(addr1, &m1, sizeof(short));
-    if (addr2) SafeReadMemory(addr2, &m2, sizeof(short));
+    const PerFrameSample &sample = GetCurrentPerFrameSample();
+    short m1 = sample.moveID1;
+    short m2 = sample.moveID2;
     MonitorAutoActionsImpl(m1, m2, s_prevMoveID1, s_prevMoveID2);
     s_prevMoveID1 = m1; s_prevMoveID2 = m2;
 }
 
 void MonitorAutoActions(short moveID1, short moveID2, short prevMoveID1, short prevMoveID2) {
-    MonitorAutoActionsImpl(moveID1, moveID2, prevMoveID1, prevMoveID2);
+    const PerFrameSample &sample = GetCurrentPerFrameSample();
+    short m1  = (sample.moveID1     == moveID1     ? sample.moveID1     : moveID1);
+    short m2  = (sample.moveID2     == moveID2     ? sample.moveID2     : moveID2);
+    short pm1 = (sample.prevMoveID1 == prevMoveID1 ? sample.prevMoveID1 : prevMoveID1);
+    short pm2 = (sample.prevMoveID2 == prevMoveID2 ? sample.prevMoveID2 : prevMoveID2);
+    MonitorAutoActionsImpl(m1, m2, pm1, pm2);
 }
 
 void ResetActionFlags() {
     p1ActionApplied = false;
     p2ActionApplied = false;
-
-    // If we're resetting action flags, also restore P2 control if needed
     RestoreP2ControlState();
     LogOut("[AUTO-ACTION] ResetActionFlags invoked (control restored if overridden)", true);
 }
 
 void ClearDelayStatesIfNonActionable() {
-    // Only run this if there are actually delays active
-    if (!p1DelayState.isDelaying && !p2DelayState.isDelaying) {
-        return;
-    }
-    
-    uintptr_t base = GetEFZBase();
-    if (!base) return;
-    
-    // Use cached addresses
-    static uintptr_t cachedMoveIDAddr1 = 0;
-    static uintptr_t cachedMoveIDAddr2 = 0;
-    static int cacheRefreshCounter = 0;
-    
-    if (cacheRefreshCounter++ >= 64) {
-        cachedMoveIDAddr1 = ResolvePointer(base, EFZ_BASE_OFFSET_P1, MOVE_ID_OFFSET);
-        cachedMoveIDAddr2 = ResolvePointer(base, EFZ_BASE_OFFSET_P2, MOVE_ID_OFFSET);
-        cacheRefreshCounter = 0;
-    }
-    
-    short moveID1 = 0, moveID2 = 0;
-    if (cachedMoveIDAddr1) SafeReadMemory(cachedMoveIDAddr1, &moveID1, sizeof(short));
-    if (cachedMoveIDAddr2) SafeReadMemory(cachedMoveIDAddr2, &moveID2, sizeof(short));
-    
-    // CRITICAL FIX: Don't clear delays if the player is in the middle of executing the action we just applied
-    // Only clear if they're in clearly bad states (hitstun, blockstun, etc.)
+    if (!p1DelayState.isDelaying && !p2DelayState.isDelaying) return;
+    const PerFrameSample &sample = GetCurrentPerFrameSample();
+    short moveID1 = sample.moveID1;
+    short moveID2 = sample.moveID2;
     bool p1InBadState = IsBlockstun(moveID1) || IsHitstun(moveID1) || IsFrozen(moveID1) || IsThrown(moveID1) || IsLaunched(moveID1) || IsAirtech(moveID1) || IsGroundtech(moveID1);
     bool p2InBadState = IsBlockstun(moveID2) || IsHitstun(moveID2) || IsFrozen(moveID2) || IsThrown(moveID2) || IsLaunched(moveID2) || IsAirtech(moveID2) || IsGroundtech(moveID2);
-    
     if (p1DelayState.isDelaying && p1InBadState) {
         p1DelayState.isDelaying = false;
         p1DelayState.triggerType = TRIGGER_NONE;
@@ -1536,7 +1490,6 @@ void ClearDelayStatesIfNonActionable() {
         p1DelayState.chosenCustomId = -1;
         LogOut("[AUTO-ACTION] Cleared P1 delay - in bad state (moveID " + std::to_string(moveID1) + ")", true);
     }
-    
     if (p2DelayState.isDelaying && p2InBadState) {
         p2DelayState.isDelaying = false;
         p2DelayState.triggerType = TRIGGER_NONE;
@@ -1546,7 +1499,6 @@ void ClearDelayStatesIfNonActionable() {
         p2DelayState.chosenMacroSlot = 0;
         p2DelayState.chosenCustomId = -1;
         LogOut("[AUTO-ACTION] Cleared P2 delay - in bad state (moveID " + std::to_string(moveID2) + ")", true);
-        // Also clear trigger cooldown so next opportunity can re-arm promptly
         p2TriggerActive = false;
         p2TriggerCooldown = 0;
     }
@@ -2175,9 +2127,7 @@ void ProcessAutoControlRestore() {
             return;
         }
 
-        // Cache address and throttle to every other frame to reduce CPU
-        static uintptr_t moveIDAddr2 = 0; // our player (P2)
-        static uintptr_t moveIDAddr1 = 0; // opponent (P1)
+        // Use unified per-frame sample instead of raw address caching for MOVE_ID
         static int s_throttle = 0;
         static short s_prevMoveID2 = 0; // track previous for dash entry detection
         // NOTE: We originally throttled sampling to 96Hz (every other frame) when not in fast-restore mode
@@ -2189,17 +2139,9 @@ void ProcessAutoControlRestore() {
 
         uintptr_t base = GetEFZBase();
         if (!base) return;
-        if (!moveIDAddr2) moveIDAddr2 = ResolvePointer(base, EFZ_BASE_OFFSET_P2, MOVE_ID_OFFSET);
-        if (!moveIDAddr1) moveIDAddr1 = ResolvePointer(base, EFZ_BASE_OFFSET_P1, MOVE_ID_OFFSET);
-
-        short moveID2 = 0;
-        short oppMoveID = 0;
-        if (moveIDAddr2) {
-            SafeReadMemory(moveIDAddr2, &moveID2, sizeof(short));
-        }
-        if (moveIDAddr1) {
-            SafeReadMemory(moveIDAddr1, &oppMoveID, sizeof(short));
-        }
+        const PerFrameSample &dashSample = GetCurrentPerFrameSample();
+        short moveID2 = dashSample.moveID2;
+        short oppMoveID = dashSample.moveID1;
 
         // Ensure cached character IDs (once per MATCH phase) BEFORE deciding on throttle
         EnsureCachedCharacterIDs(base);
@@ -2217,6 +2159,7 @@ void ProcessAutoControlRestore() {
                     LogOut("[AUTO-ACTION][DASH][KAORI] Full-rate sampling active (disabling throttle to catch ID 250)", true);
                 }
             }
+            if (ValidationMetricsEnabled() && g_recentDashQueued.load()) { GetValidationMetrics().dashQueued++; }
         }
 
         // DASH RESTORE RULES:
@@ -2227,6 +2170,7 @@ void ProcessAutoControlRestore() {
     // isKaori already computed above
     bool dashStartNow = (moveID2 == FORWARD_DASH_START_ID || moveID2 == BACKWARD_DASH_START_ID || (isKaori && moveID2 == KAORI_FORWARD_DASH_START_ID));
     bool dashStartJustEntered = dashStartNow && (s_prevMoveID2 != moveID2);
+    if (ValidationMetricsEnabled() && dashStartJustEntered) { GetValidationMetrics().dashStartDetected++; }
     // Treat Kaori's forward dash start (250) as a dash state, NOT a normal. Only consider a "dash normal" when the new move
     // ID is a normal/special (>=200) AND it is not part of any dash start/recovery sequence.
     bool dashNormalStarted = (moveID2 >= 200);
@@ -2248,6 +2192,7 @@ void ProcessAutoControlRestore() {
         // when we are put into blockstun/hitstun/airtech or other non-dash states by the opponent.
         if (g_recentDashQueued.load() && !dashStartNow && dashCancelled) {
             LogOut("[AUTO-ACTION][DASH] Pre-start interrupted (hit/block/airtech) — cancelling dash and restoring control", true);
+            if (ValidationMetricsEnabled()) { GetValidationMetrics().dashPreStartInterrupts++; }
             // Cancel any pending follow-up as it will never fire now
             if (g_dashDeferred.pendingSel.load() > 0) {
                 g_dashDeferred.pendingSel.store(0);
@@ -2255,6 +2200,7 @@ void ProcessAutoControlRestore() {
             }
             g_recentDashQueued.store(false);
             RestoreP2ControlState();
+            if (ValidationMetricsEnabled()) { GetValidationMetrics().dashRestoreEvents++; }
             // Allow immediate re-arming on the next actionable window (second hit scenario):
             // clear trigger active/cooldown so After Block/Hitstun can fire even if the gap is small (3-4F).
             p2TriggerActive = false;
@@ -2270,6 +2216,7 @@ void ProcessAutoControlRestore() {
         // If we had only scheduled a follow-up but no longer waiting a queued dash, clear follow-up quietly.
         if (g_dashDeferred.pendingSel.load() > 0 && dashCancelled && !g_recentDashQueued.load()) {
             LogOut("[AUTO-ACTION][DASH] Dash follow-up cancelled by interrupt before dash started", true);
+            if (ValidationMetricsEnabled()) { GetValidationMetrics().dashFollowupCancelled++; }
             g_dashDeferred.pendingSel.store(0);
             g_dashDeferred.dashStartLatched.store(-1);
         }
