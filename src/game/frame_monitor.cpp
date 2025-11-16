@@ -156,15 +156,29 @@ namespace {
     static PointerCache s_ptrCache{};
     static std::atomic<uint32_t> s_ptrGen{0};
 
+    static uintptr_t ResolvePlayerBaseBestEffort(int playerIndex, uintptr_t baseHint = 0) {
+        uintptr_t ptr = GetPlayerBase(playerIndex);
+        if (ptr) return ptr;
+        uintptr_t base = baseHint ? baseHint : GetEFZBase();
+        if (!base) return 0;
+        uintptr_t addr = 0;
+        uintptr_t offset = (playerIndex == 1) ? EFZ_BASE_OFFSET_P1 : EFZ_BASE_OFFSET_P2;
+        SafeReadMemory(base + offset, &addr, sizeof(addr));
+        return addr;
+    }
+
+    static uintptr_t ResolvePlayerFieldBestEffort(int playerIndex, uintptr_t fieldOffset, uintptr_t baseHint = 0) {
+        uintptr_t ptr = (playerIndex == 1) ? s_ptrCache.p1 : s_ptrCache.p2;
+        if (!ptr) ptr = ResolvePlayerBaseBestEffort(playerIndex, baseHint);
+        return ptr ? ptr + fieldOffset : 0;
+    }
+
     inline void RefreshPointerCache() {
         // Read all primary pointers once; best-effort only
         s_ptrCache.base = GetEFZBase();
-        s_ptrCache.gs = 0; s_ptrCache.p1 = 0; s_ptrCache.p2 = 0;
-        if (s_ptrCache.base) {
-            SafeReadMemory(s_ptrCache.base + EFZ_BASE_OFFSET_GAME_STATE, &s_ptrCache.gs, sizeof(s_ptrCache.gs));
-            SafeReadMemory(s_ptrCache.base + EFZ_BASE_OFFSET_P1, &s_ptrCache.p1, sizeof(s_ptrCache.p1));
-            SafeReadMemory(s_ptrCache.base + EFZ_BASE_OFFSET_P2, &s_ptrCache.p2, sizeof(s_ptrCache.p2));
-        }
+        s_ptrCache.gs = GetGameStatePtr();
+        s_ptrCache.p1 = ResolvePlayerBaseBestEffort(1, s_ptrCache.base);
+        s_ptrCache.p2 = ResolvePlayerBaseBestEffort(2, s_ptrCache.base);
         s_ptrCache.gen = s_ptrGen.fetch_add(1, std::memory_order_relaxed) + 1;
     }
 }
@@ -204,7 +218,8 @@ static void LogCharacterSelectDiagnostics() {
     }
 
     // Player base pointers and AI flags (if available)
-    uintptr_t p1=0, p2=0; SafeReadMemory(base + EFZ_BASE_OFFSET_P1, &p1, sizeof(p1)); SafeReadMemory(base + EFZ_BASE_OFFSET_P2, &p2, sizeof(p2));
+    uintptr_t p1 = ResolvePlayerBaseBestEffort(1, base);
+    uintptr_t p2 = ResolvePlayerBaseBestEffort(2, base);
     os << "[CS][DIAG] P1=" << FM_Hex(p1) << "  P2=" << FM_Hex(p2);
     LogOut(os.str(), true); os.str(""); os.clear();
     if (p1) {
@@ -414,8 +429,7 @@ bool ShouldFeaturesBeActive() {
 
     bool isMatchRunning = false;
     if (base) {
-        uintptr_t p1StructAddr = 0;
-        SafeReadMemory(base + EFZ_BASE_OFFSET_P1, &p1StructAddr, sizeof(uintptr_t));
+        uintptr_t p1StructAddr = ResolvePlayerBaseBestEffort(1, base);
         isMatchRunning = (p1StructAddr != 0);
     }
 
@@ -1599,7 +1613,7 @@ void FrameDataMonitor() {
             updateRGFA(s_rgP2);
 
             // Counter RG assist maintenance: arm P2 RG while the P1 RG window is open
-            if (s_crgAssistActive) {
+                if (s_crgAssistActive) {
                 bool windowOpen = (s_rgP1.active && s_rgP1.cRGOpen);
                 bool p2RgEdge = (IsRecoilGuard(moveID2) && !IsRecoilGuard(prevMoveID2));
                 bool stopAssist = !windowOpen || p2RgEdge || (GetCurrentGamePhase() != GamePhase::Match) || (GetCurrentGameMode() != GameMode::Practice);
@@ -1615,9 +1629,8 @@ void FrameDataMonitor() {
                     }
                 } else {
                     // Arm RG for P2 by writing 0x3C to [P2 + 334]
-                    uintptr_t baseNow = GetEFZBase();
-                    uintptr_t p2Ptr = 0;
-                    if (baseNow && SafeReadMemory(baseNow + EFZ_BASE_OFFSET_P2, &p2Ptr, sizeof(p2Ptr)) && p2Ptr) {
+                    uintptr_t p2Ptr = ResolvePlayerBaseBestEffort(2);
+                    if (p2Ptr) {
                         uint8_t arm = 0x3C;
                         SafeWriteMemory(p2Ptr + 334, &arm, sizeof(arm));
                     }
@@ -1634,9 +1647,8 @@ void FrameDataMonitor() {
             // Only sample when at least one player is in an attack/state >= 200
             bool shouldSample = p1Trig || p2Trig;
                     if (shouldSample) {
-                        uintptr_t p1PtrDbg = 0, p2PtrDbg = 0;
-                        SafeReadMemory(base + EFZ_BASE_OFFSET_P1, &p1PtrDbg, sizeof(p1PtrDbg));
-                        SafeReadMemory(base + EFZ_BASE_OFFSET_P2, &p2PtrDbg, sizeof(p2PtrDbg));
+                        uintptr_t p1PtrDbg = ResolvePlayerBaseBestEffort(1, base);
+                        uintptr_t p2PtrDbg = ResolvePlayerBaseBestEffort(2, base);
                         // Determine attacker for this log line
                         int atkId = p1Trig ? 1 : (p2Trig ? 2 : ((moveID1 >= 200) ? 1 : ((moveID2 >= 200) ? 2 : 0)));
                         bool atkHasReq = false;
@@ -1862,8 +1874,14 @@ void FrameDataMonitor() {
                     auto applyForPlayerIfEligible = [&](int p){
                         bool enabled = (p==1)? g_contRecEnabledP1.load() : g_contRecEnabledP2.load();
                         if (!enabled) return;
-                        uintptr_t baseNow = GetEFZBase(); if (!baseNow) return;
-                        uintptr_t pBase=0; SafeReadMemory(baseNow + (p==1?EFZ_BASE_OFFSET_P1:EFZ_BASE_OFFSET_P2), &pBase, sizeof(pBase)); if (!pBase) return;
+                        uintptr_t baseNow = s_ptrCache.base ? s_ptrCache.base : GetEFZBase();
+                        if (!baseNow) return;
+                        uintptr_t pBase = ResolvePlayerBaseBestEffort(p, baseNow);
+                        if (!pBase) return;
+                        auto getPlayerBase = [&](int idx) -> uintptr_t {
+                            if (idx == p) return pBase;
+                            return ResolvePlayerBaseBestEffort(idx, baseNow);
+                        };
                         auto tg = resolveTargets(p==1);
                         bool wroteHpOrMeter = false;
                         bool appliedRf = false;
@@ -1886,9 +1904,9 @@ void FrameDataMonitor() {
                         }
                         if (tg.rfOn) {
                             // Use robust setter for both players to avoid desync; read other side first
-                            double p1rf=0.0, p2rf=0.0; uintptr_t p1B=0, p2B=0;
-                            SafeReadMemory(baseNow + EFZ_BASE_OFFSET_P1, &p1B, sizeof(p1B));
-                            SafeReadMemory(baseNow + EFZ_BASE_OFFSET_P2, &p2B, sizeof(p2B));
+                            double p1rf=0.0, p2rf=0.0;
+                            uintptr_t p1B = getPlayerBase(1);
+                            uintptr_t p2B = getPlayerBase(2);
                             if (p1B) SafeReadMemory(p1B + RF_OFFSET, &p1rf, sizeof(p1rf));
                             if (p2B) SafeReadMemory(p2B + RF_OFFSET, &p2rf, sizeof(p2rf));
                             if (p==1) p1rf = tg.rf; else p2rf = tg.rf;
@@ -1901,9 +1919,9 @@ void FrameDataMonitor() {
                         }
                         if (tg.bic) {
                             // Set IC color to blue for restored side only; preserve the other side
-                            uintptr_t p1B=0, p2B=0; int ic1=1, ic2=1;
-                            SafeReadMemory(baseNow + EFZ_BASE_OFFSET_P1, &p1B, sizeof(p1B));
-                            SafeReadMemory(baseNow + EFZ_BASE_OFFSET_P2, &p2B, sizeof(p2B));
+                            uintptr_t p1B = getPlayerBase(1);
+                            uintptr_t p2B = getPlayerBase(2);
+                            int ic1=1, ic2=1;
                             if (p1B) SafeReadMemory(p1B + IC_COLOR_OFFSET, &ic1, sizeof(ic1));
                             if (p2B) SafeReadMemory(p2B + IC_COLOR_OFFSET, &ic2, sizeof(ic2));
                             bool p1Blue = (p==1)? true : (ic1 != 0);
@@ -1911,9 +1929,9 @@ void FrameDataMonitor() {
                             SetICColorDirect(p1Blue, p2Blue);
                         } else if (tg.wantRedIC) {
                             // Red RF preset chosen: ensure this side is not Blue IC (flip to Red if needed)
-                            uintptr_t p1B=0, p2B=0; int ic1=0, ic2=0;
-                            SafeReadMemory(baseNow + EFZ_BASE_OFFSET_P1, &p1B, sizeof(p1B));
-                            SafeReadMemory(baseNow + EFZ_BASE_OFFSET_P2, &p2B, sizeof(p2B));
+                            uintptr_t p1B = getPlayerBase(1);
+                            uintptr_t p2B = getPlayerBase(2);
+                            int ic1=0, ic2=0;
                             if (p1B) SafeReadMemory(p1B + IC_COLOR_OFFSET, &ic1, sizeof(ic1));
                             if (p2B) SafeReadMemory(p2B + IC_COLOR_OFFSET, &ic2, sizeof(ic2));
                             bool p1Blue = (ic1 != 0);
@@ -2019,11 +2037,8 @@ void FrameDataMonitor() {
                 // Auto-fix HP anomalies in neutral: if enabled, and a side is neutral with HP<=0, set to 9999.
                 if (Config::GetSettings().autoFixHPOnNeutral) {
                     uintptr_t baseNow = s_ptrCache.base;
-                    uintptr_t p1B=0, p2B=0;
-                    if (baseNow) {
-                        SafeReadMemory(baseNow + EFZ_BASE_OFFSET_P1, &p1B, sizeof(p1B));
-                        SafeReadMemory(baseNow + EFZ_BASE_OFFSET_P2, &p2B, sizeof(p2B));
-                    }
+                    uintptr_t p1B = ResolvePlayerBaseBestEffort(1, baseNow);
+                    uintptr_t p2B = ResolvePlayerBaseBestEffort(2, baseNow);
                     if (p1B && sample.neutral1) {
                         int hp = 1; SafeReadMemory(p1B + HP_OFFSET, &hp, sizeof(hp));
                         if (hp <= 0) { int full = MAX_HP; SafeWriteMemory(p1B + HP_OFFSET, &full, sizeof(full)); SafeWriteMemory(p1B + HP_BAR_OFFSET, &full, sizeof(full)); }
@@ -2054,18 +2069,18 @@ void FrameDataMonitor() {
                 if (++s_cacheCounter >= 192 || !s_p1YAddr || !s_p2YAddr || !s_p1XAddr || !s_p2XAddr ||
                     !s_p1HpAddr || !s_p2HpAddr || !s_p1MeterAddr || !s_p2MeterAddr || !s_p1RfAddr || !s_p2RfAddr ||
                     !s_p1CharNameAddr || !s_p2CharNameAddr) {
-                    s_p1YAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P1, YPOS_OFFSET);
-                    s_p2YAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P2, YPOS_OFFSET);
-                    s_p1XAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P1, XPOS_OFFSET);
-                    s_p2XAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P2, XPOS_OFFSET);
-                    s_p1HpAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P1, HP_OFFSET);
-                    s_p2HpAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P2, HP_OFFSET);
-                    s_p1MeterAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P1, METER_OFFSET);
-                    s_p2MeterAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P2, METER_OFFSET);
-                    s_p1RfAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P1, RF_OFFSET);
-                    s_p2RfAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P2, RF_OFFSET);
-                    s_p1CharNameAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P1, CHARACTER_NAME_OFFSET);
-                    s_p2CharNameAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P2, CHARACTER_NAME_OFFSET);
+                    s_p1YAddr = ResolvePlayerFieldBestEffort(1, YPOS_OFFSET, base);
+                    s_p2YAddr = ResolvePlayerFieldBestEffort(2, YPOS_OFFSET, base);
+                    s_p1XAddr = ResolvePlayerFieldBestEffort(1, XPOS_OFFSET, base);
+                    s_p2XAddr = ResolvePlayerFieldBestEffort(2, XPOS_OFFSET, base);
+                    s_p1HpAddr = ResolvePlayerFieldBestEffort(1, HP_OFFSET, base);
+                    s_p2HpAddr = ResolvePlayerFieldBestEffort(2, HP_OFFSET, base);
+                    s_p1MeterAddr = ResolvePlayerFieldBestEffort(1, METER_OFFSET, base);
+                    s_p2MeterAddr = ResolvePlayerFieldBestEffort(2, METER_OFFSET, base);
+                    s_p1RfAddr = ResolvePlayerFieldBestEffort(1, RF_OFFSET, base);
+                    s_p2RfAddr = ResolvePlayerFieldBestEffort(2, RF_OFFSET, base);
+                    s_p1CharNameAddr = ResolvePlayerFieldBestEffort(1, CHARACTER_NAME_OFFSET, base);
+                    s_p2CharNameAddr = ResolvePlayerFieldBestEffort(2, CHARACTER_NAME_OFFSET, base);
                     s_cacheCounter = 0;
                 }
 
@@ -2636,18 +2651,18 @@ void UpdateStatsDisplay() {
         static uintptr_t p1MoveIdAddr = 0, p2MoveIdAddr = 0;
         static int cacheCounter = 0;
         if (cacheCounter++ >= 60 || !p1HpAddr) {
-            p1HpAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P1, HP_OFFSET);
-            p1MeterAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P1, METER_OFFSET);
-            p1RfAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P1, RF_OFFSET);
-            p1XAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P1, XPOS_OFFSET);
-            p1YAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P1, YPOS_OFFSET);
-            p1MoveIdAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P1, MOVE_ID_OFFSET);
-            p2HpAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P2, HP_OFFSET);
-            p2MeterAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P2, METER_OFFSET);
-            p2RfAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P2, RF_OFFSET);
-            p2XAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P2, XPOS_OFFSET);
-            p2YAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P2, YPOS_OFFSET);
-            p2MoveIdAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P2, MOVE_ID_OFFSET);
+            p1HpAddr = ResolvePlayerFieldBestEffort(1, HP_OFFSET, base);
+            p1MeterAddr = ResolvePlayerFieldBestEffort(1, METER_OFFSET, base);
+            p1RfAddr = ResolvePlayerFieldBestEffort(1, RF_OFFSET, base);
+            p1XAddr = ResolvePlayerFieldBestEffort(1, XPOS_OFFSET, base);
+            p1YAddr = ResolvePlayerFieldBestEffort(1, YPOS_OFFSET, base);
+            p1MoveIdAddr = ResolvePlayerFieldBestEffort(1, MOVE_ID_OFFSET, base);
+            p2HpAddr = ResolvePlayerFieldBestEffort(2, HP_OFFSET, base);
+            p2MeterAddr = ResolvePlayerFieldBestEffort(2, METER_OFFSET, base);
+            p2RfAddr = ResolvePlayerFieldBestEffort(2, RF_OFFSET, base);
+            p2XAddr = ResolvePlayerFieldBestEffort(2, XPOS_OFFSET, base);
+            p2YAddr = ResolvePlayerFieldBestEffort(2, YPOS_OFFSET, base);
+            p2MoveIdAddr = ResolvePlayerFieldBestEffort(2, MOVE_ID_OFFSET, base);
             cacheCounter = 0;
         }
         if (p1HpAddr) SafeReadMemory(p1HpAddr, &p1Hp, sizeof(int));
@@ -2687,8 +2702,8 @@ void UpdateStatsDisplay() {
     if (statsOn) {
         // Sample P1's current frame flags to decode guard requirement
         if (base) {
-            uintptr_t p1BasePtr = 0;
-            if (SafeReadMemory(base + EFZ_BASE_OFFSET_P1, &p1BasePtr, sizeof(p1BasePtr)) && p1BasePtr) {
+            uintptr_t p1BasePtr = ResolvePlayerBaseBestEffort(1, base);
+            if (p1BasePtr) {
                 uint16_t st = 0, fr = 0; uintptr_t animTab = 0;
                 if (SafeReadMemory(p1BasePtr + MOVE_ID_OFFSET, &st, sizeof(st)) &&
                     SafeReadMemory(p1BasePtr + CURRENT_FRAME_INDEX_OFFSET, &fr, sizeof(fr)) &&
@@ -2742,8 +2757,10 @@ void UpdateStatsDisplay() {
 
         // New: Separate Blockstun and Untech counters (raw internal values)
         auto readStunCounters = [&]() {
-            uintptr_t baseNow = GetEFZBase(); if (!baseNow) return std::tuple<int,int,int,int>(-1,-1,-1,-1);
-            uintptr_t p1=0,p2=0; SafeReadMemory(baseNow + EFZ_BASE_OFFSET_P1, &p1, sizeof(p1)); SafeReadMemory(baseNow + EFZ_BASE_OFFSET_P2, &p2, sizeof(p2));
+            uintptr_t baseNow = s_ptrCache.base ? s_ptrCache.base : GetEFZBase();
+            if (!baseNow) return std::tuple<int,int,int,int>(-1,-1,-1,-1);
+            uintptr_t p1 = ResolvePlayerBaseBestEffort(1, baseNow);
+            uintptr_t p2 = ResolvePlayerBaseBestEffort(2, baseNow);
             short p1Blk=0, p2Blk=0, p1Hit=0, p2Hit=0;
             if (p1) { SafeReadMemory(p1 + BLOCKSTUN_OFFSET, &p1Blk, sizeof(p1Blk)); SafeReadMemory(p1 + UNTECH_OFFSET, &p1Hit, sizeof(p1Hit)); }
             if (p2) { SafeReadMemory(p2 + BLOCKSTUN_OFFSET, &p2Blk, sizeof(p2Blk)); SafeReadMemory(p2 + UNTECH_OFFSET, &p2Hit, sizeof(p2Hit)); }
@@ -2765,13 +2782,11 @@ void UpdateStatsDisplay() {
         // Remove after confirming correct address in live testing.
         {
             uintptr_t baseNow = GetEFZBase();
-            uintptr_t p1=0,p2=0; short p1Cand=0, p2Cand=0;
-            if (baseNow) {
-                SafeReadMemory(baseNow + EFZ_BASE_OFFSET_P1, &p1, sizeof(p1));
-                SafeReadMemory(baseNow + EFZ_BASE_OFFSET_P2, &p2, sizeof(p2));
-                if (p1) { SafeReadMemory(p1 + BLOCKSTUN_OFFSET + 2, &p1Cand, sizeof(p1Cand)); }
-                if (p2) { SafeReadMemory(p2 + BLOCKSTUN_OFFSET + 2, &p2Cand, sizeof(p2Cand)); }
-            }
+            uintptr_t p1=ResolvePlayerBaseBestEffort(1, baseNow);
+            uintptr_t p2=ResolvePlayerBaseBestEffort(2, baseNow);
+            short p1Cand=0, p2Cand=0;
+            if (p1) { SafeReadMemory(p1 + BLOCKSTUN_OFFSET + 2, &p1Cand, sizeof(p1Cand)); }
+            if (p2) { SafeReadMemory(p2 + BLOCKSTUN_OFFSET + 2, &p2Cand, sizeof(p2Cand)); }
             std::stringstream diag;
             diag << "Blk?(+0x14C): P1 " << (int)(p1Cand < 0 ? 0 : p1Cand) << "  P2 " << (int)(p2Cand < 0 ? 0 : p2Cand);
             upsert(g_statsAIFlagsId, diag.str()); // reuse AI flags line position temporarily below character lines
@@ -2999,11 +3014,8 @@ void UpdateStatsDisplay() {
                     }
                 }
             };
-            uintptr_t p1Base = 0, p2Base = 0;
-            if (base) {
-                SafeReadMemory(base + EFZ_BASE_OFFSET_P1, &p1Base, sizeof(p1Base));
-                SafeReadMemory(base + EFZ_BASE_OFFSET_P2, &p2Base, sizeof(p2Base));
-            }
+            uintptr_t p1Base = ResolvePlayerBaseBestEffort(1, base);
+            uintptr_t p2Base = ResolvePlayerBaseBestEffort(2, base);
             if (displayData.p1CharID == CHAR_ID_MINAGI) {
                 scanPuppet(1, p1Base, displayData.p1MinagiPuppetX, displayData.p1MinagiPuppetY, displayData.p1MichiruCurrentId, displayData.p1MichiruLastX, displayData.p1MichiruLastY);
             } else { displayData.p1MichiruCurrentId = -1; }
@@ -3047,13 +3059,13 @@ void UpdateStatsDisplay() {
             GamePhase phase = GetCurrentGamePhase();
             if (phase == GamePhase::Match) {
                 uintptr_t p1BasePtr = 0, p2BasePtr = 0; uint32_t p1AI=0, p2AI=0; bool haveP1=false, haveP2=false;
-                if (base) {
-                    if (SafeReadMemory(base + EFZ_BASE_OFFSET_P1, &p1BasePtr, sizeof(p1BasePtr)) && p1BasePtr) {
-                        haveP1 = SafeReadMemory(p1BasePtr + AI_CONTROL_FLAG_OFFSET, &p1AI, sizeof(p1AI));
-                    }
-                    if (SafeReadMemory(base + EFZ_BASE_OFFSET_P2, &p2BasePtr, sizeof(p2BasePtr)) && p2BasePtr) {
-                        haveP2 = SafeReadMemory(p2BasePtr + AI_CONTROL_FLAG_OFFSET, &p2AI, sizeof(p2AI));
-                    }
+                p1BasePtr = ResolvePlayerBaseBestEffort(1, base);
+                p2BasePtr = ResolvePlayerBaseBestEffort(2, base);
+                if (p1BasePtr) {
+                    haveP1 = SafeReadMemory(p1BasePtr + AI_CONTROL_FLAG_OFFSET, &p1AI, sizeof(p1AI));
+                }
+                if (p2BasePtr) {
+                    haveP2 = SafeReadMemory(p2BasePtr + AI_CONTROL_FLAG_OFFSET, &p2AI, sizeof(p2AI));
                 }
                 std::stringstream aiLine;
                 aiLine << "AI: P1=" << (haveP1 ? (p1AI?"1":"0") : "-") << " P2=" << (haveP2 ? (p2AI?"1":"0") : "-");

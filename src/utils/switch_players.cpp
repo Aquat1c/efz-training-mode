@@ -234,9 +234,9 @@ namespace {
     }
     // Resolve Practice pointer directly from EfzRevival's game-mode array as a fallback
     // when hooks haven't captured ECX yet. Index 3 corresponds to Practice.
-    static uint8_t* ResolvePracticePtrFallback() {
+    static uint8_t* ResolvePracticePtrFallback(bool allowCharacterSelect = false) {
         // Gate scanning strictly: Practice mode only, offline only, and never during Character Select
-        if (IsInCharacterSelectScreen()) return nullptr;
+        if (!allowCharacterSelect && IsInCharacterSelectScreen()) return nullptr;
         if (GetCurrentGameMode() != GameMode::Practice) return nullptr;
         if (DetectOnlineMatch() || isOnlineMatch.load(std::memory_order_relaxed)) return nullptr;
         HMODULE h = GetModuleHandleA("EfzRevival.dll");
@@ -1060,7 +1060,7 @@ namespace SwitchPlayers {
         PauseIntegration::EnsurePracticePointerCapture();
         uint8_t* practice = reinterpret_cast<uint8_t*>(PauseIntegration::GetPracticeControllerPtr());
         if (!practice) {
-            practice = ResolvePracticePtrFallback();
+            practice = ResolvePracticePtrFallback(true); // Allow CS scans so menu reset never stalls on missing pointer
         }
         if (!practice) {
             // Log only once per CS instance

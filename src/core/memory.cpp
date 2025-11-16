@@ -54,19 +54,33 @@ bool SafeReadMemory(uintptr_t address, void* buffer, size_t size) {
 }
 
 uintptr_t ResolvePointer(uintptr_t base, uintptr_t baseOffset, uintptr_t offset) {
+    // First, prefer cached player bases when targeting EFZ player offsets. This avoids
+    // repeated SafeReadMemory calls during gameplay-critical loops.
+    if (baseOffset == EFZ_BASE_OFFSET_P1 || baseOffset == EFZ_BASE_OFFSET_P2) {
+        const int playerIndex = (baseOffset == EFZ_BASE_OFFSET_P1) ? 1 : 2;
+        uintptr_t playerBase = GetPlayerBase(playerIndex);
+        if (playerBase) {
+            uintptr_t finalAddr = playerBase + offset;
+            if (finalAddr >= 0x1000 && finalAddr <= 0xFFFFFFFF) {
+                return finalAddr;
+            }
+        }
+        // Fall through to legacy resolution if cache miss so existing behavior stays intact.
+    }
+
     if (base == 0) return 0;
-    
+
     uintptr_t ptrAddr = base + baseOffset;
     if (ptrAddr < 0x1000 || ptrAddr > 0xFFFFFFFF) return 0;
-    
+
     uintptr_t ptrValue = 0;
     if (!SafeReadMemory(ptrAddr, &ptrValue, sizeof(uintptr_t))) return 0;
-    
+
     if (ptrValue == 0 || ptrValue > 0xFFFFFFFF) return 0;
-    
+
     uintptr_t finalAddr = ptrValue + offset;
     if (finalAddr < 0x1000 || finalAddr > 0xFFFFFFFF) return 0;
-    
+
     return finalAddr;
 }
 
