@@ -1052,8 +1052,27 @@ namespace SwitchPlayers {
         // If EfzRevival is not loaded, nothing else to do for menus; return success
         HMODULE h = GetModuleHandleA("EfzRevival.dll");
         if (!h) {
-            LogOut("[SWITCH][MENU] Vanilla routing reset for menus (P1 controls -> P1)", true);
-            return true;
+            bool wroteFlags = false;
+            uintptr_t efzBase = GetEFZBase();
+            if (efzBase) {
+                uintptr_t gameStatePtr = 0;
+                if (SafeReadMemory(efzBase + EFZ_BASE_OFFSET_GAME_STATE, &gameStatePtr, sizeof(gameStatePtr)) && gameStatePtr) {
+                    uint8_t activePlayer = 0u; // Character Select should default to P1
+                    uint8_t p1Human = 0u;
+                    uint8_t p2Cpu   = 1u;
+                    bool okActive = SafeWriteMemory(gameStatePtr + GAMESTATE_OFF_ACTIVE_PLAYER, &activePlayer, sizeof(activePlayer));
+                    bool okP1     = SafeWriteMemory(gameStatePtr + GAMESTATE_OFF_P1_CPU_FLAG, &p1Human, sizeof(p1Human));
+                    bool okP2     = SafeWriteMemory(gameStatePtr + GAMESTATE_OFF_P2_CPU_FLAG, &p2Cpu, sizeof(p2Cpu));
+                    wroteFlags = okActive && okP1 && okP2;
+                    if (wroteFlags) {
+                        LogOut("[SWITCH][MENU] Vanilla routing reset + CPU flags restored (P1 human/P2 CPU)", true);
+                    } else {
+                        LogOut("[SWITCH][MENU][WARN] Vanilla CPU flag restore failed", true);
+                    }
+                }
+            }
+            s_sidesAreSwapped.store(false, std::memory_order_relaxed);
+            return wroteFlags;
         }
 
         // With Revival: set Practice local=0 (P1), remote=1, align GUI_POS, and refresh mapping block.
