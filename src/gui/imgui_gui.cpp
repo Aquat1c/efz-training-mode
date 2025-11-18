@@ -17,6 +17,7 @@
 #include "../include/input/input_debug.h"
 #include <algorithm> // Add this for std::max
 #include <vector>
+#include <string>
 // Removed <xinput.h> include: this translation unit no longer uses direct XInput
 // symbols (controller footer mappings were stripped). Keeping the include caused
 // stale compile diagnostics referencing XINPUT_* despite the code being removed.
@@ -60,6 +61,8 @@ namespace ImGuiGui {
     static bool s_randomInputActive = false;
     // Track current RF Recovery (F4) UI selection across frames for Apply gating (0=Disabled,1=Full,2=Custom)
     static int g_f4UiMode = 0;
+    static bool s_f4Blue = false;
+    static int s_f4RfAmount = 100;
 
     // Action type mapping (same as in gui_auto_action.cpp)
     static const int ComboIndexToActionType[] = {
@@ -316,12 +319,31 @@ namespace ImGuiGui {
                 ImGui::Separator();
                 ImGui::SeparatorText("RF Recovery (F4)");
                 int curF4Idx = 0; // Disabled
+                bool derivedRfValid = false;
+                float derivedRf = 0.0f;
+                bool derivedBlue = false;
                 if (gotParams && engineParamB == 9999) {
-                    curF4Idx = (engineParamA == 1000) ? 1 : 2; // 1=Full (Blue 1000), 2=Custom
+                    if (engineParamA == 0) {
+                        curF4Idx = 0;
+                    } else if (engineParamA == 1000) {
+                        curF4Idx = 1; // Full Blue
+                    } else {
+                        curF4Idx = 2; // Custom tuning
+                        if (DeriveRfFromParamA(engineParamA, derivedRf, derivedBlue)) {
+                            derivedRfValid = true;
+                        }
+                    }
                 }
                 static int s_f4ModeIdx = 0; // Disabled, Full, Custom
                 // Always reflect actual engine state to keep combobox in sync
                 s_f4ModeIdx = curF4Idx;
+                if (curF4Idx == 2 && derivedRfValid) {
+                    s_f4Blue = derivedBlue;
+                    int roundedRf = (int)(derivedRf + 0.5f);
+                    if (roundedRf < 0) roundedRf = 0;
+                    if (roundedRf > (int)MAX_RF) roundedRf = (int)MAX_RF;
+                    s_f4RfAmount = roundedRf;
+                }
                 const char* f4Items[] = { "Disabled", "Full (Blue 1000)", "Custom" };
                 ImGui::SetNextItemWidth(260);
                 bool f5Active = (regenMode == EngineRegenMode::F5_FullOrPreset);
@@ -341,8 +363,6 @@ namespace ImGuiGui {
                 }
                 if (s_f4ModeIdx == 2) {
                     // Custom: choose Red/Blue and RF amount 0..1000, map to Param A, and set B=9999. Apply on any change.
-                    static bool s_f4Blue = false; // default Red
-                    static int s_f4RfAmount = 100; // 0..1000
                     bool writeNow = false;
                     ImGui::TextUnformatted("Color:"); ImGui::SameLine();
                     bool wasBlue = s_f4Blue;
@@ -415,6 +435,46 @@ namespace ImGuiGui {
                     ImGui::TableNextColumn(); ImGui::TextUnformatted("");
                     headerCell((guiState.localData.p1CharName[0] ? guiState.localData.p1CharName : "Unknown"), ImVec4(0.5f, 0.8f, 1.0f, 1.0f));
                     headerCell((guiState.localData.p2CharName[0] ? guiState.localData.p2CharName : "Unknown"), ImVec4(1.0f, 0.5f, 0.5f, 1.0f));
+
+                    struct ManualPreset {
+                        const char* label;
+                        int hp;
+                        int meter;
+                        float rf;
+                    };
+                    static const ManualPreset kManualPresets[] = {
+                        { "Default", 9999, 0, 0.0f },
+                        { "Max", 9999, MAX_METER, MAX_RF },
+                        { "FM", 3333, MAX_METER, MAX_RF }
+                    };
+                    auto applyPreset = [&](int player, const ManualPreset& preset) {
+                        if (player == 1) {
+                            guiState.localData.hp1 = CLAMP(preset.hp, 0, MAX_HP);
+                            guiState.localData.meter1 = CLAMP(preset.meter, 0, MAX_METER);
+                            guiState.localData.rf1 = CLAMP(preset.rf, 0.0f, MAX_RF);
+                        } else {
+                            guiState.localData.hp2 = CLAMP(preset.hp, 0, MAX_HP);
+                            guiState.localData.meter2 = CLAMP(preset.meter, 0, MAX_METER);
+                            guiState.localData.rf2 = CLAMP(preset.rf, 0.0f, MAX_RF);
+                        }
+                    };
+                    auto renderPresetButtons = [&](int player) {
+                        bool first = true;
+                        for (const auto& preset : kManualPresets) {
+                            if (!first) ImGui::SameLine();
+                            first = false;
+                            std::string btnLabel = std::string(preset.label) + (player == 1 ? "##preset_p1_" : "##preset_p2_") + preset.label;
+                            if (ImGui::SmallButton(btnLabel.c_str())) {
+                                applyPreset(player, preset);
+                            }
+                        }
+                    };
+
+                    // Preset buttons row
+                    ImGui::TableNextRow();
+                    ImGui::TableNextColumn(); ImGui::TextUnformatted("Presets");
+                    ImGui::TableNextColumn(); renderPresetButtons(1);
+                    ImGui::TableNextColumn(); renderPresetButtons(2);
 
                     // HP
                     ImGui::TableNextRow();

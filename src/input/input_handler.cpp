@@ -272,8 +272,32 @@ void MonitorKeys() {
     int toggleImGuiKey = (cfg.toggleImGuiKey > 0) ? cfg.toggleImGuiKey : VK_F12;
     XINPUT_STATE currentPad{}; // kept for clarity; not used for idle scan
 
-        // --- All other hotkeys: only when overlays/features are active ---
-    if (g_efzWindowActive.load() && !g_guiActive.load()) {
+    bool windowActive = g_efzWindowActive.load();
+    bool guiActive = g_guiActive.load();
+
+    if (windowActive && guiActive) {
+        // Flush queued menu toggle presses so they don't reopen immediately after exit
+        IsKeyPressed(configMenuKey, false);
+        IsKeyPressed(toggleImGuiKey, false);
+
+        XInputShim::RefreshSnapshotOncePerFrame();
+        connectedMask = XInputShim::GetConnectedMaskCached();
+        for (int i = 0; i < 4; ++i) {
+            if (((connectedMask >> i) & 1u) == 0) {
+                continue;
+            }
+            const XINPUT_STATE* cached = XInputShim::GetCachedState(i);
+            if (cached) {
+                prevPads[i] = *cached;
+            }
+        }
+
+        Sleep(64);
+        continue;
+    }
+
+    // --- All other hotkeys: only when overlays/features are active ---
+    if (windowActive && !guiActive) {
             bool keyHandled = false;
 
             // Helpers
@@ -377,7 +401,11 @@ void MonitorKeys() {
                     }
                     handled = true;
                 } else if (!handled && gpWentDown(cgp.gpToggleImGuiButton)) {
-                    ImGuiImpl::ToggleVisibility();
+                    if (!ImGuiImpl::IsVisible()) {
+                        OpenMenu();
+                    } else {
+                        ImGuiImpl::ToggleVisibility();
+                    }
                     handled = true;
                 } else if (!handled && gpWentDown(cgp.gpTeleportButton)) {
                     teleportOrLoad();
@@ -440,7 +468,11 @@ void MonitorKeys() {
                 continue;
             }
             if (IsKeyPressed(toggleImGuiKey, false)) {
-                ImGuiImpl::ToggleVisibility();
+                if (!ImGuiImpl::IsVisible()) {
+                    OpenMenu();
+                } else {
+                    ImGuiImpl::ToggleVisibility();
+                }
                 Sleep(150); // debounce
                 continue;
             }
