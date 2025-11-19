@@ -117,6 +117,7 @@ static std::atomic<bool> s_logOnce_CsRestoreAlign{false};
 static std::atomic<bool> s_logOnce_CsRestoreBaselineMatch{false};
 static std::atomic<bool> s_logOnce_CsSnapFallback{false};
 static std::atomic<bool> s_logOnce_CsApplyPost{false};
+static std::atomic<bool> s_practiceHintShown{false}; // prevents repeated Practice overlay hints per session
 
 // Published unified per-frame sample (updated once per 192Hz loop iteration)
 PerFrameSample g_lastSample{};
@@ -138,6 +139,44 @@ static std::string FM_Hex(uintptr_t v) {
     std::ostringstream oss;
     oss << "0x" << std::hex << std::uppercase << v;
     return oss.str();
+}
+
+static void MaybeShowPracticeOverlayHintOnce() {
+    if (s_practiceHintShown.load(std::memory_order_relaxed)) return;
+    if (!g_featuresEnabled.load()) return;
+    if (!DirectDrawHook::isHooked) return;
+
+    const auto& cfg = Config::GetSettings();
+    if (!cfg.showPracticeEntryHint) return;
+
+    bool expected = false;
+    if (!s_practiceHintShown.compare_exchange_strong(expected, true)) {
+        return;
+    }
+
+    auto pickKeyName = [](int keyCode) -> std::string {
+        if (keyCode <= 0) return std::string();
+        return Config::GetKeyName(keyCode);
+    };
+    std::string keyboardKey = pickKeyName(cfg.configMenuKey);
+    if (keyboardKey.empty()) {
+        keyboardKey = pickKeyName(cfg.toggleImGuiKey);
+    }
+    if (keyboardKey.empty()) {
+        keyboardKey = "3"; // fallback to legacy default
+    }
+
+    std::ostringstream msg;
+    msg << "Training menu: press " << keyboardKey;
+    if (cfg.gpToggleMenuButton >= 0) {
+        std::string padName = Config::GetGamepadButtonName(cfg.gpToggleMenuButton);
+        if (!padName.empty() && padName != "-1") {
+            msg << " (controller: " << padName << ")";
+        }
+    }
+    msg << " to open.";
+
+    DirectDrawHook::AddMessage(msg.str(), "PRACTICE_HINT", RGB(180, 235, 255), 4200, 0, 100);
 }
 
 // Framestep debug state (visible via ImGui only)
@@ -850,6 +889,7 @@ void FrameDataMonitor() {
                     ResetDummyAutoBlockState();
                     // Clear swap tracking flag at match start (new round = fresh state)
                     SwitchPlayers::ClearSwapFlag();
+                    MaybeShowPracticeOverlayHintOnce();
                 }
             }
 
