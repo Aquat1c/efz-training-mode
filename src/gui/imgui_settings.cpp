@@ -136,6 +136,7 @@ namespace ImGuiSettings {
         bool debugFileLog = cfg.enableDebugFileLog;
         bool fpsDiag = cfg.enableFpsDiagnostics;
         bool restrictPractice = cfg.restrictToPracticeMode;
+        bool showPracticeHint = cfg.showPracticeEntryHint;
         bool enableConsole = cfg.enableConsole;
         float uiScale = cfg.uiScale;
         int uiFontMode = cfg.uiFontMode; // 0=Default, 1=Segoe UI
@@ -197,6 +198,11 @@ namespace ImGuiSettings {
                 ImGui::SeparatorText("Practice Options");
 
                 CheckboxApply("Restrict features to Practice Mode", restrictPractice, "General", "restrictToPracticeMode");
+                if (ImGui::Checkbox("Show Practice overlay hint once per session", &showPracticeHint)) {
+                    Config::SetSetting("General", "showPracticeEntryHint", showPracticeHint ? "1" : "0");
+                }
+                ImGui::SameLine();
+                ImGui::TextDisabled("Appears when the first Practice match starts");
 
                 int abTimeoutMs = cfg.autoBlockNeutralTimeoutMs;
                 int abTimeoutSec = (abTimeoutMs + 500) / 1000; // round to nearest second for UI

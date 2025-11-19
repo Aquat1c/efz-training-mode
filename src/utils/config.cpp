@@ -215,6 +215,9 @@ namespace Config {
             file << "; Log active player / CPU flags during Character Select (1 = yes, 0 = no)\n";
             file << "enableCharacterSelectLogger = 1\n\n";
 
+            file << "; Show a one-time Practice hint about opening the overlay (1 = yes, 0 = no)\n";
+            file << "showPracticeEntryHint = 1\n\n";
+
             file << "; UI scale for ImGui window (0.80 - 1.20 recommended)\n";
             file << "uiScale = 0.90\n\n";
             file << "; UI font: 0 = ImGui default font, 1 = Segoe UI (Windows)\n";
@@ -397,6 +400,7 @@ namespace Config {
             settings.enableFpsDiagnostics = GetValueBool("General", "enableFpsDiagnostics", false);
             // Default ON so older configs without this key enable it automatically
             settings.enableCharacterSelectLogger = GetValueBool("General", "enableCharacterSelectLogger", true);
+            settings.showPracticeEntryHint = GetValueBool("General", "showPracticeEntryHint", true);
             {
                 // Clamp scale to a sensible range
                 int raw = 0; // we parse as int/float via string later; reuse GetValueInt if needed
@@ -644,6 +648,8 @@ namespace Config {
             file << "enableFpsDiagnostics = " << (settings.enableFpsDiagnostics ? "1" : "0") << "\n\n";
             file << "; Log active player / CPU flags during Character Select (1 = yes, 0 = no)\n";
             file << "enableCharacterSelectLogger = " << (settings.enableCharacterSelectLogger ? "1" : "0") << "\n\n";
+            file << "; Show a one-time Practice hint about opening the overlay (1 = yes, 0 = no)\n";
+            file << "showPracticeEntryHint = " << (settings.showPracticeEntryHint ? "1" : "0") << "\n\n";
             file << "; UI scale for ImGui window (0.80 - 1.20 recommended)\n";
             file << "uiScale = " << settings.uiScale << "\n\n";
             file << "; UI font: 0 = ImGui default font, 1 = Segoe UI (Windows)\n";
@@ -769,6 +775,7 @@ namespace Config {
             if (k == "enabledebugfilelog") settings.enableDebugFileLog = (value == "1");
             if (k == "enableconsole") settings.enableConsole = (value == "1");
             if (k == "restricttopracticemode") settings.restrictToPracticeMode = (value == "1");
+            if (k == "showpracticeentryhint") settings.showPracticeEntryHint = (value == "1");
             if (k == "uiscale") {
                 try { settings.uiScale = std::stof(value); } catch (...) {}
             }
