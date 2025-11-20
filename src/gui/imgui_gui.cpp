@@ -57,12 +57,47 @@ extern void SpamAttackButton(uintptr_t playerBase, uint8_t button, int frames, c
 #define BUTTON_D    GAME_INPUT_D
 
 namespace ImGuiGui {
+    constexpr float kGameClientWidth = 640.0f;
+    constexpr float kGameClientHeight = 480.0f;
+
     // Define static variable at namespace level
     static bool s_randomInputActive = false;
     // Track current RF Recovery (F4) UI selection across frames for Apply gating (0=Disabled,1=Full,2=Custom)
     static int g_f4UiMode = 0;
     static bool s_f4Blue = false;
     static int s_f4RfAmount = 100;
+
+    static void ClampMainWindowToClientBounds() {
+        ImGuiViewport* viewport = ImGui::GetMainViewport();
+        if (!viewport) return;
+
+        ImVec2 pos = ImGui::GetWindowPos();
+        ImVec2 size = ImGui::GetWindowSize();
+
+        float minX = viewport->Pos.x;
+        float minY = viewport->Pos.y;
+        auto minf = [](float a, float b) { return (a < b) ? a : b; };
+        float boundsWidth = minf(kGameClientWidth, viewport->Size.x);
+        float boundsHeight = minf(kGameClientHeight, viewport->Size.y);
+
+        float maxX = minX + boundsWidth - size.x;
+        float maxY = minY + boundsHeight - size.y;
+        if (maxX < minX) maxX = minX;
+        if (maxY < minY) maxY = minY;
+
+        auto clamp = [](float value, float minV, float maxV) {
+            if (value < minV) return minV;
+            if (value > maxV) return maxV;
+            return value;
+        };
+
+        float clampedX = clamp(pos.x, minX, maxX);
+        float clampedY = clamp(pos.y, minY, maxY);
+        if (clampedX != pos.x || clampedY != pos.y) {
+            ImGui::SetWindowPos(ImVec2(clampedX, clampedY), ImGuiCond_Always);
+            ImGui::ResetMouseDragDelta(ImGuiMouseButton_Left);
+        }
+    }
 
     // Action type mapping (same as in gui_auto_action.cpp)
     static const int ComboIndexToActionType[] = {
@@ -3263,6 +3298,7 @@ namespace ImGuiGui {
     if (ImGui::Begin("EFZ Training Mode", nullptr, winFlags)) {
             // Text already crisp-scaled via font atlas; keep per-window font scale at 1.0
             ImGui::SetWindowFontScale(1.0f);
+            ClampMainWindowToClientBounds();
 
         // Provide current overlay center for virtual cursor recenters (middle click / L3)
         ImVec2 wpos = ImGui::GetWindowPos();

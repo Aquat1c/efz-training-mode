@@ -897,7 +897,9 @@ bool IsActionable(short moveID) {
                     moveID == CROUCH_ID ||
                     moveID == CROUCH_TO_STAND_ID ||
                     // Treat landing variants as actionable immediately
-                    moveID == LANDING_ID || moveID == LANDING_1_ID || moveID == LANDING_2_ID || moveID == LANDING_3_ID);
+                    moveID == LANDING_ID || moveID == LANDING_1_ID || moveID == LANDING_2_ID || moveID == LANDING_3_ID ||
+                    // MoveID 51 exception - appears after groundtech recovery instead of 0
+                    moveID == 51);
 
     if (neutral) return true;
 

@@ -12,7 +12,7 @@
 #include "../include/game/frame_monitor.h" // Add this include for shared constants
 // These functions are implemented in input_buffer.cpp
 extern void FreezeBufferValuesThread(int playerNum);
-extern bool CaptureAndFreezeBuffer(int playerNum, uint16_t startIndex, uint16_t length);
+extern bool CaptureAndFreezeBuffer(int playerNum, uint16_t startIndex, uint16_t length, int motionType, int buttonMask);
 extern bool FreezeBufferIndex(int playerNum, uint16_t indexValue);
 extern void StopBufferFreezing(void);
 // Helper to freeze the perfect Dragon Punch motion
@@ -283,9 +283,14 @@ bool FreezeBufferForMotion(int playerNum, int motionType, int buttonMask, int op
     
     // Log basic information
     bool facingRight = GetPlayerFacingDirection(playerNum);
+    std::string motionLabel = GetMotionTypeName(motionType);
     if (detailedLogging.load()) {
-        LogOut("[BUFFER_FREEZE] Starting buffer freeze for motion " + GetMotionTypeName(motionType) + " (P" + std::to_string(playerNum) + ")", true);
-        LogOut("[BUFFER_FREEZE] Begin session (" + GetMotionTypeName(motionType) + ") P" + std::to_string(playerNum), true);
+        std::stringstream ss;
+        ss << "[BUFFER_FREEZE] Starting buffer freeze for motion " << motionLabel 
+           << " (P" << playerNum << ") facing=" << (facingRight ? "right" : "left")
+           << " btnMask=0x" << std::hex << buttonMask << std::dec;
+        LogOut(ss.str(), true);
+        LogOut("[BUFFER_FREEZE] Begin session (" + motionLabel + ") P" + std::to_string(playerNum), true);
     }
     
     // Define directions based on facing
@@ -295,10 +300,7 @@ bool FreezeBufferForMotion(int playerNum, int motionType, int buttonMask, int op
     uint8_t downFwd = down | fwd;
     uint8_t downBack = down | back;
     
-    std::string motionLabel = GetMotionTypeName(motionType);
-    if (detailedLogging.load()) {
-        LogOut("[BUFFER_FREEZE] Player " + std::to_string(playerNum) + " facing " + (facingRight ? "right" : "left"), true);
-    }
+    // No longer need separate facing log since it's in the main log above
     
     // Initialize pattern with carefully optimized sequence
     std::vector<uint8_t> pattern;
@@ -534,6 +536,14 @@ bool FreezeBufferForMotion(int playerNum, int motionType, int buttonMask, int op
     g_frozenBufferValues = pattern;
     g_frozenBufferStartIndex = startIndex;
     g_frozenBufferLength = static_cast<uint16_t>(pattern.size());
+    
+    // Store motion info for dynamic pattern regeneration on facing changes
+    extern int g_frozenMotionType;
+    extern int g_frozenButtonMask;
+    extern bool g_lastKnownFacing;
+    g_frozenMotionType = motionType;
+    g_frozenButtonMask = buttonMask;
+    g_lastKnownFacing = facingRight;
     
     // Set index to point at the end of our pattern minus 1 (to ensure button press is read)
     g_frozenIndexValue = (startIndex + g_frozenBufferLength - 1) % INPUT_BUFFER_SIZE;

@@ -28,6 +28,7 @@ const uintptr_t INPUT_BUFFER_INDEX_OFFSET = 0x260;  // Current buffer index offs
 // Define the freeze buffer variables here
 std::atomic<bool> g_bufferFreezingActive(false);
 std::atomic<bool> g_indexFreezingActive(false);
+std::atomic<bool> g_freezeThreadInitialized(false);  // Thread startup confirmation
 std::thread g_bufferFreezeThread;
 std::vector<uint8_t> g_frozenBufferValues;
 uint16_t g_frozenBufferStartIndex = 0;
@@ -35,13 +36,253 @@ uint16_t g_frozenBufferLength = 0;
 uint16_t g_frozenIndexValue = 0;
 std::atomic<int> g_activeFreezePlayer{0};
 
+// Store motion info for dynamic pattern regeneration on facing changes
+int g_frozenMotionType = -1;
+int g_frozenButtonMask = 0;
+bool g_lastKnownFacing = false;
+
+// Helper function to regenerate motion pattern with new facing direction
+static bool RegeneratePatternForFacing(int playerNum, int motionType, int buttonMask, bool facingRight) {
+    // Define directions based on facing
+    uint8_t fwd = facingRight ? GAME_INPUT_RIGHT : GAME_INPUT_LEFT;
+    uint8_t back = facingRight ? GAME_INPUT_LEFT : GAME_INPUT_RIGHT;
+    uint8_t down = GAME_INPUT_DOWN;
+    uint8_t downFwd = down | fwd;
+    uint8_t downBack = down | back;
+    
+    std::vector<uint8_t> pattern;
+    
+    // Generate pattern based on motion type (matching FreezeBufferForMotion logic)
+    switch (motionType) {
+        case MOTION_623A: case MOTION_623B: case MOTION_623C: {
+            // Dragon Punch (623): Forward, Down, Down-Forward + Button
+            pattern = {
+                0x00, 0x00,
+                fwd, fwd, fwd,
+                down, down,
+                downFwd, downFwd,
+                (uint8_t)(downFwd | buttonMask),
+                (uint8_t)(downFwd | buttonMask),
+            };
+            break;
+        }
+        case MOTION_214A: case MOTION_214B: case MOTION_214C: {
+            // QCB: Down, Down-Back, Back + Button
+            pattern = {
+                0x00, 0x00,
+                down, down, down,
+                downBack, downBack,
+                back, back,
+                (uint8_t)(back | buttonMask),
+                (uint8_t)(back | buttonMask),
+            };
+            break;
+        }
+        case MOTION_236A: case MOTION_236B: case MOTION_236C: {
+            // QCF: Down, Down-Forward, Forward + Button
+            pattern = {
+                0x00, 0x00,
+                down, down, down,
+                downFwd, downFwd,
+                fwd, fwd,
+                (uint8_t)(fwd | buttonMask),
+                (uint8_t)(fwd | buttonMask),
+            };
+            break;
+        }
+        case MOTION_421A: case MOTION_421B: case MOTION_421C: {
+            // 421: Back, Down, Down-Back + Button
+            pattern = {
+                0x00, 0x00,
+                back, back,
+                down, down,
+                downBack, downBack,
+                (uint8_t)(downBack | buttonMask),
+                (uint8_t)(downBack | buttonMask),
+            };
+            break;
+        }
+        case MOTION_41236A: case MOTION_41236B: case MOTION_41236C: {
+            // HCF: Back, Down-Back, Down, Down-Forward, Forward + Button
+            pattern = {
+                0x00, 0x00,
+                back, back,
+                downBack, downBack,
+                down, down,
+                downFwd, downFwd,
+                fwd,
+                (uint8_t)(fwd | buttonMask),
+                (uint8_t)(fwd | buttonMask),
+            };
+            break;
+        }
+        case MOTION_214214A: case MOTION_214214B: case MOTION_214214C: {
+            // Double QCB: (Down, Down-Back, Back)x2 + Button
+            pattern = {
+                0x00, 0x00,
+                down, down, down,
+                downBack, downBack,
+                back, back,
+                down, down, down,
+                downBack, downBack,
+                back, back,
+                (uint8_t)(back | buttonMask),
+                (uint8_t)(back | buttonMask),
+            };
+            break;
+        }
+        case MOTION_236236A: case MOTION_236236B: case MOTION_236236C: {
+            // Double QCF: (Down, Down-Forward, Forward)x2 + Button
+            pattern = {
+                0x00, 0x00,
+                down, down, down,
+                downFwd, downFwd,
+                fwd, fwd,
+                down, down, down,
+                downFwd, downFwd,
+                fwd, fwd,
+                (uint8_t)(fwd | buttonMask),
+                (uint8_t)(fwd | buttonMask),
+            };
+            break;
+        }
+        case MOTION_641236A: case MOTION_641236B: case MOTION_641236C: {
+            // 641236: Forward, Back, Down-Back, Down, Down-Forward, Forward + Button
+            pattern = {
+                0x00, 0x00,
+                fwd, fwd,
+                back, back,
+                downBack, downBack,
+                down, down,
+                downFwd, downFwd,
+                fwd,
+                (uint8_t)(fwd | buttonMask),
+                (uint8_t)(fwd | buttonMask),
+            };
+            break;
+        }
+        case MOTION_412A: case MOTION_412B: case MOTION_412C: {
+            // 412: Back, Down-Back, Down + Button
+            pattern = {
+                0x00, 0x00,
+                back, back,
+                downBack, downBack,
+                down,
+                (uint8_t)(down | buttonMask),
+                (uint8_t)(down | buttonMask),
+            };
+            break;
+        }
+        case MOTION_22A: case MOTION_22B: case MOTION_22C: {
+            // 22: Down, (small neutral), Down + Button
+            pattern = {
+                0x00, 0x00,
+                down, down,
+                0x00, 0x00,
+                down,
+                (uint8_t)(down | buttonMask),
+                (uint8_t)(down | buttonMask),
+            };
+            break;
+        }
+        case MOTION_214236A: case MOTION_214236B: case MOTION_214236C: {
+            // 214236: Down, Down-Back, Back, Down, Down-Forward, Forward + Button
+            pattern = {
+                0x00, 0x00,
+                down, down,
+                downBack, downBack,
+                back, back,
+                down, down,
+                downFwd, downFwd,
+                fwd,
+                (uint8_t)(fwd | buttonMask),
+                (uint8_t)(fwd | buttonMask),
+            };
+            break;
+        }
+        case MOTION_463214A: case MOTION_463214B: case MOTION_463214C: {
+            // 463214: Back, Forward, Down-Forward, Down, Down-Back, Back + Button
+            pattern = {
+                0x00, 0x00,
+                back, back,
+                fwd, fwd,
+                downFwd, downFwd,
+                down, down,
+                downBack, downBack,
+                back,
+                (uint8_t)(back | buttonMask),
+                (uint8_t)(back | buttonMask),
+            };
+            break;
+        }
+        case MOTION_4123641236A: case MOTION_4123641236B: case MOTION_4123641236C: {
+            // 41236 41236: (Back, Down-Back, Down, Down-Forward, Forward)x2 + Button
+            pattern = {
+                0x00, 0x00,
+                back, back, downBack, downBack, down, down, downFwd, downFwd, fwd, fwd,
+                back, back, downBack, downBack, down, down, downFwd, downFwd, fwd,
+                (uint8_t)(fwd | buttonMask),
+                (uint8_t)(fwd | buttonMask),
+            };
+            break;
+        }
+        case MOTION_6321463214A: case MOTION_6321463214B: case MOTION_6321463214C: {
+            // 6321463214: (Forward, Down-Forward, Down, Down-Back, Back)x2 + Button
+            pattern = {
+                0x00, 0x00,
+                fwd, fwd,
+                downFwd, downFwd,
+                down, down,
+                downBack, downBack,
+                back, back,
+                fwd, fwd,
+                downFwd, downFwd,
+                down, down,
+                downBack, downBack,
+                back,
+                (uint8_t)(back | buttonMask),
+                (uint8_t)(back | buttonMask),
+            };
+            break;
+        }
+        default:
+            LogOut("[BUFFER_FREEZE][CROSSUP] Cannot regenerate pattern for motion type " + std::to_string(motionType), true);
+            return false;
+    }
+    
+    if (pattern.empty()) {
+        return false;
+    }
+    
+    // Update frozen buffer values
+    g_frozenBufferValues = pattern;
+    g_frozenBufferLength = static_cast<uint16_t>(pattern.size());
+    
+    // Write the new pattern to the buffer immediately
+    uintptr_t playerPtr = GetPlayerPointer(playerNum);
+    if (playerPtr) {
+        SafeWriteMemory(playerPtr + INPUT_BUFFER_OFFSET + g_frozenBufferStartIndex, 
+                       pattern.data(), static_cast<uint32_t>(pattern.size()));
+        if (detailedLogging.load()) {
+            LogOut("[BUFFER_FREEZE][CROSSUP] Pattern regenerated for new facing direction", true);
+        }
+        return true;
+    }
+    return false;
+}
+
 // Define buffer functions
 void FreezeBufferValuesThread(int playerNum) {
     if (detailedLogging.load()) {
-        LogOut("[INPUT_BUFFER] Starting buffer freeze thread for P" + std::to_string(playerNum) +
-               " startIdx=" + std::to_string(g_frozenBufferStartIndex) +
-               " len=" + std::to_string(g_frozenBufferLength) +
-               " idxLock=" + (g_indexFreezingActive.load()?std::to_string(g_frozenIndexValue):std::string("off")), true);
+        std::stringstream ss;
+        ss << "[INPUT_BUFFER] Starting buffer freeze thread for P" << playerNum
+           << " startIdx=" << g_frozenBufferStartIndex
+           << " len=" << g_frozenBufferLength
+           << " idxLock=" << (g_indexFreezingActive.load() ? std::to_string(g_frozenIndexValue) : std::string("off"))
+           << " motionType=" << g_frozenMotionType
+           << " btnMask=0x" << std::hex << g_frozenButtonMask << std::dec
+           << " facing=" << (g_lastKnownFacing ? "right" : "left");
+        LogOut(ss.str(), true);
     }
     g_activeFreezePlayer.store(playerNum);
     
@@ -80,13 +321,22 @@ void FreezeBufferValuesThread(int playerNum) {
         (playerNum == 1) ? EFZ_BASE_OFFSET_P1 : EFZ_BASE_OFFSET_P2, 
         MOVE_ID_OFFSET);
     
+    // Also monitor motion token to detect successful motion queuing
+    uintptr_t motionTokenAddr = initialPlayerPtr + MOTION_TOKEN_OFFSET;
+    
     short lastMoveID = -1;
+    uint8_t lastMotionToken = 0;
     bool moveIDChanged = false;
+    bool motionTokenChanged = false;
     int consecutiveMoveTicks = 0;
     const int freezeLimit = 300; // Hard limit on freeze frames
     
-    // Get initial move ID for comparison
+    // Get initial move ID and motion token for comparison
     SafeReadMemory(moveIDAddr, &lastMoveID, sizeof(short));
+    SafeReadMemory(motionTokenAddr, &lastMotionToken, sizeof(uint8_t));
+    
+    // Signal that thread has fully initialized
+    g_freezeThreadInitialized.store(true);
     
     // AGGRESSIVE PHASE: Write very frequently at the start
     const int aggressivePhaseFrames = 15;
@@ -98,6 +348,21 @@ void FreezeBufferValuesThread(int playerNum) {
             LogOut("[INPUT_BUFFER] Player pointer changed during aggressive phase, aborting", true);
             g_bufferFreezingActive = false;
             break;
+        }
+        
+        // Check for facing direction changes (cross-up detection)
+        if (g_frozenMotionType >= 0) {
+            bool currentFacing = GetPlayerFacingDirection(playerNum);
+            if (currentFacing != g_lastKnownFacing) {
+                if (detailedLogging.load()) {
+                    LogOut("[BUFFER_FREEZE][CROSSUP] Facing direction changed: " +
+                          std::string(g_lastKnownFacing ? "right" : "left") + " → " +
+                          std::string(currentFacing ? "right" : "left") + " during freeze!", true);
+                }
+                g_lastKnownFacing = currentFacing;
+                // Regenerate pattern with new facing direction
+                RegeneratePatternForFacing(playerNum, g_frozenMotionType, g_frozenButtonMask, currentFacing);
+            }
         }
         
         // Write buffer values very frequently (every iteration)
@@ -141,6 +406,24 @@ void FreezeBufferValuesThread(int playerNum) {
             }
         }
         
+        // Check for motion token changes (indicates motion was queued)
+        uint8_t currentMotionToken = 0;
+        if (SafeReadMemory(motionTokenAddr, &currentMotionToken, sizeof(uint8_t))) {
+            if (currentMotionToken != lastMotionToken && currentMotionToken != 0 && currentMotionToken != 0x63) {
+                if (detailedLogging.load()) {
+                    std::stringstream ss;
+                    ss << "[BUFFER_FREEZE] Motion token changed: 0x" 
+                       << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(lastMotionToken)
+                       << " → 0x" << std::setw(2) << std::setfill('0') << static_cast<int>(currentMotionToken)
+                       << " (motion queued, waiting for execution)";
+                    LogOut(ss.str(), true);
+                }
+                motionTokenChanged = true;
+                // Don't break yet - wait for moveID to change confirming execution
+            }
+            lastMotionToken = currentMotionToken;
+        }
+        
         // Very short sleep for aggressive phase
         std::this_thread::sleep_for(std::chrono::milliseconds(2));
     }
@@ -160,6 +443,21 @@ void FreezeBufferValuesThread(int playerNum) {
         if (!currentPlayerPtr || currentPlayerPtr != initialPlayerPtr) {
             LogOut("[INPUT_BUFFER] Player pointer changed, stopping buffer freeze", true);
             break;
+        }
+        
+        // Check for facing direction changes (cross-up detection)
+        if (g_frozenMotionType >= 0 && freezeCount % 3 == 0) {
+            bool currentFacing = GetPlayerFacingDirection(playerNum);
+            if (currentFacing != g_lastKnownFacing) {
+                if (detailedLogging.load()) {
+                    LogOut("[BUFFER_FREEZE][CROSSUP] Facing direction changed: " +
+                          std::string(g_lastKnownFacing ? "right" : "left") + " → " +
+                          std::string(currentFacing ? "right" : "left") + " during freeze!", true);
+                }
+                g_lastKnownFacing = currentFacing;
+                // Regenerate pattern with new facing direction
+                RegeneratePatternForFacing(playerNum, g_frozenMotionType, g_frozenButtonMask, currentFacing);
+            }
         }
         
         // Rewrite buffer values every 3rd frame
@@ -215,6 +513,24 @@ void FreezeBufferValuesThread(int playerNum) {
             }
         }
         
+        // Check for motion token changes (indicates motion was queued)
+        uint8_t currentMotionToken = 0;
+        if (SafeReadMemory(motionTokenAddr, &currentMotionToken, sizeof(uint8_t))) {
+            if (currentMotionToken != lastMotionToken && currentMotionToken != 0 && currentMotionToken != 0x63) {
+                if (detailedLogging.load()) {
+                    std::stringstream ss;
+                    ss << "[BUFFER_FREEZE] Motion token changed: 0x" 
+                       << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(lastMotionToken)
+                       << " → 0x" << std::setw(2) << std::setfill('0') << static_cast<int>(currentMotionToken)
+                       << " (motion queued, waiting for execution)";
+                    LogOut(ss.str(), true);
+                }
+                motionTokenChanged = true;
+                // Don't break yet - wait for moveID to change confirming execution
+            }
+            lastMotionToken = currentMotionToken;
+        }
+        
         freezeCount++;
         // Standard sleep time
         std::this_thread::sleep_for(std::chrono::milliseconds(4));
@@ -224,6 +540,10 @@ void FreezeBufferValuesThread(int playerNum) {
     if (detailedLogging.load()) {
         LogOut("[BUFFER_FREEZE] Buffer freeze thread ended (counter=" + std::to_string(freezeCount) + ")", true);
     }
+    
+    // Reset initialization flag so next freeze will wait for thread startup
+    g_freezeThreadInitialized.store(false);
+    
     if (g_frozenBufferLength > 0) {
         uintptr_t playerPtr = GetPlayerPointer(playerNum);
         if (playerPtr) {
@@ -263,9 +583,14 @@ void FreezeBufferValuesThread(int playerNum) {
 }
 
 // Capture current buffer section and begin freezing it
-bool CaptureAndFreezeBuffer(int playerNum, uint16_t startIndex, uint16_t length) {
+bool CaptureAndFreezeBuffer(int playerNum, uint16_t startIndex, uint16_t length, int motionType, int buttonMask) {
     // Stop any existing freeze thread
     StopBufferFreezing();
+    
+    // Store motion info for potential pattern regeneration
+    g_frozenMotionType = motionType;
+    g_frozenButtonMask = buttonMask;
+    g_lastKnownFacing = GetPlayerFacingDirection(playerNum);
     
     uintptr_t playerPtr = GetPlayerPointer(playerNum);
     if (!playerPtr) {
@@ -316,10 +641,35 @@ bool CaptureAndFreezeBuffer(int playerNum, uint16_t startIndex, uint16_t length)
     }
     
     // Start freezing
+    g_freezeThreadInitialized.store(false);  // Reset before creating thread
     g_bufferFreezingActive = true;
     g_activeFreezePlayer.store(playerNum);
     g_bufferFreezeThread = std::thread(FreezeBufferValuesThread, playerNum);
     g_bufferFreezeThread.detach();  // Detach to prevent termination
+    
+    // CRITICAL: Wait for thread to fully initialize before returning.
+    // This prevents race condition where auto_action's ProcessAutoControlRestore
+    // checks g_bufferFreezingActive before the thread has even started its loop.
+    // Max wait 10ms (should take <1ms normally).
+    auto startWait = std::chrono::steady_clock::now();
+    int waitIterations = 0;
+    while (!g_freezeThreadInitialized.load()) {
+        auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - startWait).count();
+        if (elapsed > 10) {
+            LogOut("[INPUT_BUFFER][WARN] Thread startup timeout after " + std::to_string(elapsed) + 
+                  "ms (waited " + std::to_string(waitIterations) + " iterations), active=" + 
+                  std::to_string(g_bufferFreezingActive.load()), true);
+            break;
+        }
+        waitIterations++;
+        std::this_thread::sleep_for(std::chrono::microseconds(100));
+    }
+    
+    if (detailedLogging.load() && waitIterations > 0) {
+        LogOut("[INPUT_BUFFER] Thread initialization confirmed after " + std::to_string(waitIterations) + 
+              " wait iterations", true);
+    }
     
     LogOut("[INPUT_BUFFER] Buffer freezing activated for P" + std::to_string(playerNum) + 
            " starting at index " + std::to_string(startIndex) +
