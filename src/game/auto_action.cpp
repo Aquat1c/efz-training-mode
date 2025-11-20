@@ -30,6 +30,7 @@ static inline bool PickRandomRow(int triggerType, TriggerOption &out);
 #include <cmath>
 #include <algorithm>
 #include <vector>
+#include <sstream>
 // Define the motion input constants if they're not already defined
 #ifndef MOTION_INPUT_UP
 #define MOTION_INPUT_UP INPUT_UP
@@ -45,6 +46,52 @@ static inline bool PickRandomRow(int triggerType, TriggerOption &out);
 
 // Forward declaration for function used within this file
 void ApplyAutoAction(int playerNum, uintptr_t moveIDAddr, short currentMoveID, short prevMoveID);
+static int ResolveButtonMaskForAction(int actionType, int triggerType);
+static bool ExecuteWakeSpecialNow(int playerNum, int actionType, short currentMoveID);
+
+// Wakeup timing table: rising frames (visual @ 64Hz) for each character
+// Multiply by 3 to get logical frames (192Hz ticks)
+struct WakeupTiming {
+    int charID;
+    int risingFramesVisual;  // Visual frames at 64Hz
+};
+
+static const WakeupTiming s_wakeupTimings[] = {
+    { CHAR_ID_NAGAMORI,  13 }, 
+    { CHAR_ID_MAKOTO,    16 },
+    { CHAR_ID_MINAGI,    16 },
+    { CHAR_ID_EXNANASE,  16 }, 
+    { CHAR_ID_NANASE,    16 }, 
+    { CHAR_ID_AKANE,     17 },
+    { CHAR_ID_NAYUKI,    17 }, 
+    { CHAR_ID_MISUZU,    19 },
+    { CHAR_ID_MIZUKAB,   19 },
+    { CHAR_ID_IKUMI,     20 },
+    { CHAR_ID_KAORI,     20 },
+    { CHAR_ID_SAYURI,    20 },
+    { CHAR_ID_SHIORI,    20 },
+    { CHAR_ID_AYU,       21 },
+    { CHAR_ID_MISAKI,    21 },
+    { CHAR_ID_MISHIO,    21 },
+    { CHAR_ID_MAI,       23 },  
+    { CHAR_ID_AKIKO,     26 },
+    { CHAR_ID_MIO,       26 },  
+    { CHAR_ID_NAYUKIB,   27 },  
+    { CHAR_ID_KANO,      29 },
+    { CHAR_ID_KANNA,     31 },
+    { CHAR_ID_MAYU,      39 }, 
+};
+
+// Get rising frame count for character (returns logical ticks at 192Hz)
+static int GetWakeupRisingTicks(int charID) {
+    for (const auto& timing : s_wakeupTimings) {
+        if (timing.charID == charID) {
+            return timing.risingFramesVisual * 3;  // Convert visual frames to ticks
+        }
+    }
+    // Default fallback: assume mid-range wakeup (20 visual frames × 3 = 60 ticks)
+    return 60;
+}
 
 // Initialize delay states
 TriggerDelayState p1DelayState = {false, 0, TRIGGER_NONE, 0, -1, -1, 0, -1};
@@ -55,6 +102,118 @@ bool p2ActionApplied = false;
 // Definitions for trigger tracking globals
 std::atomic<int> g_lastActiveTriggerType(TRIGGER_NONE);
 std::atomic<int> g_lastActiveTriggerFrame(0);
+
+struct AutoActionLogScope {
+    AutoActionLogScope(const char* phaseLabel, int playerNum, int triggerType)
+        : player(playerNum), trigger(triggerType), phase(phaseLabel ? phaseLabel : "AutoAction") {
+        LogOut("=================", true);
+        LogOut("[AUTO-ACTION] " + phase + " begin (player=" + std::to_string(player) +
+               ", trigger=" + std::to_string(trigger) + ")", true);
+    }
+    ~AutoActionLogScope() {
+        LogOut("[AUTO-ACTION] " + phase + " end (player=" + std::to_string(player) +
+               ", trigger=" + std::to_string(trigger) + ")", true);
+        LogOut("=================", true);
+    }
+    int player;
+    int trigger;
+    std::string phase;
+};
+
+struct TriggerFlowTracker {
+    bool active = false;
+    int player = 0;
+    int startFrame = 0;
+    short startMoveID = -1;
+    short lastMoveID = -1;
+    std::string reason;
+};
+
+static TriggerFlowTracker g_flowTrackers[3];
+
+static inline TriggerFlowTracker& GetFlowTracker(int playerNum) {
+    return g_flowTrackers[(playerNum == 2) ? 2 : 1];
+}
+
+static const char* TriggerTypeLabel(int triggerType) {
+    switch (triggerType) {
+        case TRIGGER_AFTER_BLOCK: return "AfterBlock";
+        case TRIGGER_ON_WAKEUP: return "OnWakeup";
+        case TRIGGER_AFTER_HITSTUN: return "AfterHitstun";
+        case TRIGGER_AFTER_AIRTECH: return "AfterAirtech";
+        case TRIGGER_ON_RG: return "OnRG";
+        default: return "Unknown";
+    }
+}
+
+static void BeginFlowSequence(int playerNum, const char* reason, short prevMoveID, short currMoveID) {
+    TriggerFlowTracker& tracker = GetFlowTracker(playerNum);
+    if (tracker.active) return;
+    tracker.active = true;
+    tracker.player = playerNum;
+    tracker.startFrame = frameCounter.load();
+    tracker.startMoveID = currMoveID;
+    tracker.lastMoveID = currMoveID;
+    tracker.reason = reason ? reason : "Unknown";
+    LogOut("=================", true);
+    LogOut("[AUTO-ACTION][FLOW] P" + std::to_string(playerNum) + " sequence begin: reason=" + tracker.reason +
+           " prev=" + std::to_string(prevMoveID) + " curr=" + std::to_string(currMoveID) +
+           " frame=" + std::to_string(tracker.startFrame), true);
+}
+
+static void LogFlowSequenceEvent(int playerNum, const std::string& label, short prevMoveID, short currMoveID) {
+    TriggerFlowTracker& tracker = GetFlowTracker(playerNum);
+    if (!tracker.active) return;
+    tracker.lastMoveID = currMoveID;
+    LogOut("[AUTO-ACTION][FLOW] P" + std::to_string(playerNum) + " " + label +
+           " prev=" + std::to_string(prevMoveID) + " curr=" + std::to_string(currMoveID) +
+           " frame=" + std::to_string(frameCounter.load()), true);
+}
+
+static void EndFlowSequence(int playerNum, const char* reason, short currMoveID) {
+    TriggerFlowTracker& tracker = GetFlowTracker(playerNum);
+    if (!tracker.active) return;
+    int duration = frameCounter.load() - tracker.startFrame;
+    std::string endReason = reason ? reason : "Unknown";
+    LogOut("[AUTO-ACTION][FLOW] P" + std::to_string(playerNum) + " sequence end: reason=" + endReason +
+           " duration=" + std::to_string(duration) + "F lastMove=" + std::to_string(currMoveID), true);
+    LogOut("=================", true);
+    tracker.active = false;
+    tracker.reason.clear();
+    tracker.startFrame = 0;
+    tracker.startMoveID = -1;
+    tracker.lastMoveID = -1;
+}
+
+static void MaybeBeginFlowSequence(int playerNum, short prevMoveID, short currMoveID) {
+    TriggerFlowTracker& tracker = GetFlowTracker(playerNum);
+    if (tracker.active) return;
+    bool enterGround = !IsGroundtech(prevMoveID) && IsGroundtech(currMoveID);
+    bool enterLaunch = !IsLaunched(prevMoveID) && IsLaunched(currMoveID);
+    bool enterAirtech = !IsAirtech(prevMoveID) && IsAirtech(currMoveID);
+    const char* reason = nullptr;
+    if (enterGround) reason = "EnteredGroundtech";
+    else if (enterLaunch) reason = "Launched";
+    else if (enterAirtech) reason = "Airtech";
+    if (reason) {
+        BeginFlowSequence(playerNum, reason, prevMoveID, currMoveID);
+    }
+}
+
+static void MaybeAutoCloseFlowSequence(int playerNum, short prevMoveID, short currMoveID, bool wakePrearmed, bool restorePending) {
+    TriggerFlowTracker& tracker = GetFlowTracker(playerNum);
+    if (!tracker.active) return;
+    bool stillInRecovery = IsGroundtech(currMoveID) || IsAirtech(currMoveID) || IsLaunched(currMoveID);
+    if (!stillInRecovery && !restorePending && !wakePrearmed) {
+        EndFlowSequence(playerNum, "SequenceAutoClosed", currMoveID);
+    } else if (tracker.lastMoveID != currMoveID) {
+        tracker.lastMoveID = currMoveID;
+        if (detailedLogging.load()) {
+            LogOut("[AUTO-ACTION][FLOW] P" + std::to_string(playerNum) + " move transition inside sequence prev=" +
+                   std::to_string(prevMoveID) + " curr=" + std::to_string(currMoveID), true);
+        }
+    }
+}
 
 static bool p1TriggerActive = false;
 static bool p2TriggerActive = false;
@@ -245,6 +404,8 @@ std::atomic<bool> g_crgFastRestore(false);
 // Forward dash tracking to prevent premature restore before MoveID 163 appears
 static std::atomic<bool> g_recentDashQueued(false);
 static std::atomic<int> g_recentDashQueuedFrame(0);
+// Grace period: prevent fallback restore from triggering immediately after freeze starts
+static std::atomic<DWORD> g_pendingRestoreTimestamp(0);
 
 // Pre-arm flags for On Wakeup: buffer inputs during GROUNDTECH_RECOVERY to fire on wake
 static bool s_p1WakePrearmed = false; // wake pre-arm without early triggerActive
@@ -256,6 +417,14 @@ static int  s_p1WakePrearmActionType = -1;
 static int  s_p2WakePrearmActionType = -1;
 static bool s_p1WakePrearmIsSpecial = false; // specials rely on buffer freeze; normals/dashes injected later
 static bool s_p2WakePrearmIsSpecial = false;
+static bool s_p1WakeActionableWarning = false;
+static bool s_p2WakeActionableWarning = false;
+// Wake special early buffer: count logical frames (192Hz) in moveID 96
+// Buffer on last rising frame before actionable (character-specific timing)
+static int s_p1WakeMoveID96FrameCount = 0;
+static int s_p2WakeMoveID96FrameCount = 0;
+static bool s_p1WakeBufferFrozen = false;
+static bool s_p2WakeBufferFrozen = false;
 
 // Lightweight stun/wakeup timing trackers for diagnostics
 struct StunTimers {
@@ -581,6 +750,9 @@ void StartTriggerDelay(int playerNum, int triggerType, short moveID, int delayFr
     g_lastActiveTriggerType.store(triggerType);
     g_lastActiveTriggerFrame.store(frameCounter.load());
 
+    AutoActionLogScope triggerScope("StartTriggerDelay", playerNum, triggerType);
+    (void)triggerScope;
+
     LogOut("[AUTO-ACTION] StartTriggerDelay called: Player=" + std::to_string(playerNum) + 
            ", triggerType=" + std::to_string(triggerType) + 
            ", delay=" + std::to_string(delayFrames) +
@@ -776,6 +948,9 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
     ProcessTriggerCooldowns();
     // (Deferred dash follow-ups handled after we have moveID context below)
 
+    MaybeBeginFlowSequence(1, prevMoveID1, moveID1);
+    MaybeBeginFlowSequence(2, prevMoveID2, moveID2);
+
     // Update timing trackers once per tick for both players
     UpdateStunTimersForPlayer(s_p1Timers, prevMoveID1, moveID1);
     UpdateStunTimersForPlayer(s_p2Timers, prevMoveID2, moveID2);
@@ -951,96 +1126,90 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
         p1_after_hitstun_done: ;
         }
         
-        // On Wakeup pre-arm: if user delay == 0 and action is a special/FM, buffer during 96 so it executes at wake
+        // On Wakeup pre-arm: record metadata when delay == 0 and action is a special/FM.
     if (triggerOnWakeupEnabled.load() && !s_p1WakePrearmed) {
             if (moveID1 == GROUNDTECH_RECOVERY) {
                 if (triggerRandomizeEnabled.load()) { if ((rand() & 1) == 0) { if (detailedLogging.load() && canLogTrigDiag()) LogOut("[AUTO-ACTION] P1 Wake prearm skipped by random gate", true); goto p1_wake_prearm_done; } }
                 int actionType = triggerOnWakeupAction.load();
                 int motionType = ConvertTriggerActionToMotion(actionType, TRIGGER_ON_WAKEUP);
-                // Determine button mask (A/B/C) for specials
-                int buttonMask = 0;
-                if ((actionType >= ACTION_5A && actionType <= ACTION_2C) || (actionType >= ACTION_6A && actionType <= ACTION_4C)) {
-                    int button = (actionType - ACTION_5A) % 3;  // 0=A, 1=B, 2=C
-                    buttonMask = (1 << (4 + button));
-                } else if (actionType >= ACTION_JA && actionType <= ACTION_JC) {
-                    int button = (actionType - ACTION_JA) % 3;
-                    buttonMask = (1 << (4 + button));
-                } else if (actionType >= ACTION_QCF && actionType <= ACTION_6321463214) {
-                    int strength = GetSpecialMoveStrength(actionType, TRIGGER_ON_WAKEUP);
-                    buttonMask = (1 << (4 + strength));
-                }
-                // Only pre-buffer when delay==0 AND action is a special/Final Memory
                 int userDelayF = triggerOnWakeupDelay.load();
-                bool prearmed = false;
-                if (userDelayF == 0) {
-                    if (actionType == ACTION_FINAL_MEMORY) {
-                        int charId = displayData.p1CharID;
-                        bool fmOk = ExecuteFinalMemory(1, charId);
-                        if (fmOk) {
-                            prearmed = true;
-                            s_p1WakePrearmIsSpecial = true;
-                            LogOut("[AUTO-ACTION][FM] P1 wake FM buffered early (delay=0)", true);
-                        }
-                    } else if (motionType >= MOTION_236A) {
-                        prearmed = FreezeBufferForMotion(1, motionType, buttonMask);
-                        if (prearmed) {
-                            s_p1WakePrearmIsSpecial = true;
-                            LogOut("[AUTO-ACTION] P1 wake special buffered early (delay=0)", true);
-                        }
-                    }
-                }
-                if (prearmed) {
+                bool isSpecial = (actionType == ACTION_FINAL_MEMORY) || (motionType >= MOTION_236A);
+                if (userDelayF == 0 && isSpecial) {
                     s_p1WakePrearmed = true;
-                    s_p1WakePrearmExpiry = frameCounter.load() + 120;
+                    s_p1WakePrearmIsSpecial = true;
                     s_p1WakePrearmActionType = actionType;
-                    LogOut("[AUTO-ACTION] P1 wake prearm stored: action=" + std::to_string(actionType) +
-                           " motion=" + std::to_string(motionType) +
-                           " special=" + std::to_string(s_p1WakePrearmIsSpecial) +
-                           " currMoveID=" + std::to_string(moveID1) +
-                           " frame=" + std::to_string(frameCounter.load()), true);
+                    s_p1WakePrearmExpiry = frameCounter.load() + 120;
+                    LogOut("[AUTO-ACTION] P1 wake special metadata stored (deferred buffer)", true);
+                    LogFlowSequenceEvent(1, "wake metadata stored action=" + std::to_string(actionType), prevMoveID1, moveID1);
                 } else if (detailedLogging.load()) {
-                    LogOut("[AUTO-ACTION] P1 wake pre-arm skipped (delay!=0 or non-special)", true);
+                    LogOut("[AUTO-ACTION] P1 wake pre-arm skipped (delay>0 or non-special)", true);
                 }
             p1_wake_prearm_done: ;
             }
         }
 
         // On Wakeup trigger (fallback if not pre-armed or for normals/jumps)
-        if (!shouldTrigger && triggerOnWakeupEnabled.load()) {
-            if (s_p1WakePrearmed && IsGroundtech(prevMoveID1) && IsActionable(moveID1)) {
-                LogOut("[AUTO-ACTION] P1 wake exec: action=" + std::to_string(s_p1WakePrearmActionType) +
-                       " special=" + std::to_string(s_p1WakePrearmIsSpecial) +
-                       " prevMoveID=" + std::to_string(prevMoveID1) +
-                       " currMoveID=" + std::to_string(moveID1) +
-                       " frame=" + std::to_string(frameCounter.load()), true);
-                g_lastActiveTriggerType.store(TRIGGER_ON_WAKEUP);
-                g_lastActiveTriggerFrame.store(frameCounter.load());
-                // If it was NOT an early-buffered special, inject now (special already handled by freeze thread)
-                if (!s_p1WakePrearmIsSpecial && s_p1WakePrearmActionType >= 0) {
+        if (s_p1WakePrearmed) {
+            // Count logical frames (192Hz) in moveID 96, buffer on last rising frame
+            if (moveID1 == GROUNDTECH_RECOVERY) {
+                s_p1WakeMoveID96FrameCount++;
+                // Get character-specific rising frame count
+                int charID = displayData.p1CharID;
+                int risingTicks = GetWakeupRisingTicks(charID);
+                int bufferFrame = risingTicks - 1;  // Buffer on last frame before actionable
+                // Allow 3-frame window for safety (buffer-3 to buffer)
+                if (s_p1WakePrearmIsSpecial && !s_p1WakeBufferFrozen && 
+                    s_p1WakeMoveID96FrameCount >= (bufferFrame - 2) && s_p1WakeMoveID96FrameCount <= bufferFrame) {
                     int at = s_p1WakePrearmActionType;
-                    if (at == ACTION_FINAL_MEMORY) {
-                        int charId = displayData.p1CharID;
-                        bool ok = ExecuteFinalMemory(1, charId);
-                        LogOut(std::string("[AUTO-ACTION][FM] P1 wake frame1 FM inject ") + (ok?"ok":"fail"), true);
-                        // Clear trigger immediately regardless outcome
+                    bool p1Facing = GetPlayerFacingDirection(1);
+                    bool ok = ExecuteWakeSpecialNow(1, at, moveID1);
+                    LogOut("[AUTO-ACTION] P1 wake special early buffer (frame " + std::to_string(s_p1WakeMoveID96FrameCount) + "/" + std::to_string(risingTicks) + ", charID=" + std::to_string(charID) + ", facing=" + (p1Facing?"right":"left") + ") " + std::string(ok?"ok":"fail"), true);
+                    LogFlowSequenceEvent(1, "wake early buffer f" + std::to_string(s_p1WakeMoveID96FrameCount) + " action=" + std::to_string(at), prevMoveID1, moveID1);
+                    s_p1WakeBufferFrozen = ok;
+                }
+            }
+            bool actionableButLostGround = !IsGroundtech(prevMoveID1) && IsActionable(moveID1) && !IsGroundtech(moveID1);
+            if (actionableButLostGround && !s_p1WakeActionableWarning) {
+                LogOut("[AUTO-ACTION][FLOW] P1 wake actionable while prev state not groundtech (prev=" + std::to_string(prevMoveID1) +
+                       ", curr=" + std::to_string(moveID1) + ")", true);
+                LogFlowSequenceEvent(1, "wake actionable lost-ground", prevMoveID1, moveID1);
+                s_p1WakeActionableWarning = true;
+            } else if (!actionableButLostGround) {
+                s_p1WakeActionableWarning = false;
+            }
+        } else {
+            s_p1WakeActionableWarning = false;
+        }
+
+        if (!shouldTrigger && triggerOnWakeupEnabled.load()) {
+            // If special was already frozen during moveID 96, just clear state on actionable
+            if (s_p1WakePrearmed && s_p1WakeBufferFrozen && IsGroundtech(prevMoveID1) && IsActionable(moveID1)) {
+                LogFlowSequenceEvent(1, "wake exec (buffered early)", prevMoveID1, moveID1);
+                p1TriggerActive = false;
+                p1TriggerCooldown = 0;
+                s_p1WakePrearmed = false;
+                s_p1WakePrearmIsSpecial = false;
+                s_p1WakePrearmActionType = -1;
+                s_p1WakeMoveID96FrameCount = 0;
+                s_p1WakeBufferFrozen = false;
+            } else if (s_p1WakePrearmed && !s_p1WakeBufferFrozen && IsGroundtech(prevMoveID1) && IsActionable(moveID1)) {
+            } else if (s_p1WakePrearmed && !s_p1WakeBufferFrozen && IsGroundtech(prevMoveID1) && IsActionable(moveID1)) {
+                AutoActionLogScope wakeScope("WakeImmediateExec", 1, TRIGGER_ON_WAKEUP);
+                LogOut("[AUTO-ACTION] P1 wake exec (fallback): action=" + std::to_string(s_p1WakePrearmActionType) +
+                       " special=" + std::to_string(s_p1WakePrearmIsSpecial) +
+                       " frame=" + std::to_string(frameCounter.load()), true);
+                    LogFlowSequenceEvent(1, "wake exec attempt action=" + std::to_string(s_p1WakePrearmActionType), prevMoveID1, moveID1);
+                    g_lastActiveTriggerType.store(TRIGGER_ON_WAKEUP);
+                    g_lastActiveTriggerFrame.store(frameCounter.load());
+                    if (s_p1WakePrearmActionType >= 0) {
+                    int at = s_p1WakePrearmActionType;
+                    if (s_p1WakePrearmIsSpecial) {
+                        bool ok = ExecuteWakeSpecialNow(1, at, moveID1);
+                        LogOut(std::string("[AUTO-ACTION] P1 wake special deferred inject ") + (ok?"ok":"fail"), true);
                         p1TriggerActive = false; p1TriggerCooldown = 0;
-                        s_p1WakePrearmed = false; s_p1WakePrearmActionType = -1;
                     } else {
                         int motionType = ConvertTriggerActionToMotion(at, TRIGGER_ON_WAKEUP);
-                        int buttonMask = 0;
-                        if ((at >= ACTION_5A && at <= ACTION_2C) || (at >= ACTION_6A && at <= ACTION_4C)) {
-                            int button;
-                            if (at >= ACTION_5A && at <= ACTION_2C) {
-                                button = (at - ACTION_5A) % 3;
-                            } else {
-                                int offset = at - ACTION_6A;
-                                button = offset % 3;
-                            }
-                            buttonMask = (1 << (4 + button));
-                        } else if (at >= ACTION_JA && at <= ACTION_JC) {
-                            int button = (at - ACTION_JA) % 3;
-                            buttonMask = (1 << (4 + button));
-                        }
+                        int buttonMask = ResolveButtonMaskForAction(at, TRIGGER_ON_WAKEUP);
                         if (at == ACTION_BACKDASH || at == ACTION_FORWARD_DASH) {
                             QueueMotionInput(1, motionType, 0);
                         } else if ((motionType >= MOTION_5A && motionType <= MOTION_5C) || (motionType >= MOTION_6A && motionType <= MOTION_4C)) {
@@ -1058,7 +1227,10 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
                     }
                 }
                 s_p1WakePrearmed = false;
+                s_p1WakePrearmIsSpecial = false;
                 s_p1WakePrearmActionType = -1;
+                s_p1WakeMoveID96FrameCount = 0;
+                s_p1WakeBufferFrozen = false;
             }
             if (!s_p1WakePrearmed && IsGroundtech(prevMoveID1) && IsActionable(moveID1)) {
                 if (triggerRandomizeEnabled.load()) { if ((rand() & 1) == 0) { if (detailedLogging.load() && canLogTrigDiag()) LogOut("[AUTO-ACTION] P1 On Wakeup skipped by random gate", true); goto p1_wakeup_done; } }
@@ -1081,6 +1253,8 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
         
         // Apply the trigger if any condition was met
         if (shouldTrigger) {
+            LogFlowSequenceEvent(1, std::string("trigger=") + TriggerTypeLabel(triggerType) + " delay=" + std::to_string(delay), prevMoveID1, moveID1);
+            AutoActionLogScope seqScope("TriggerSequence", 1, triggerType);
             StartTriggerDelay(1, triggerType, actionMoveID, delay);
         }
     }
@@ -1191,6 +1365,7 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
                         // longer timeout for FM sequences
                         g_lastP2MoveID.store(moveID2);
                         g_pendingControlRestore.store(true);
+                        g_pendingRestoreTimestamp.store(GetTickCount());
                     } else {
                         // Allow buffer writes
                         g_injectImmediateOnly[2].store(false);
@@ -1198,6 +1373,7 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
                         s_p2RGPrearmIsSpecial = true;
                         g_lastP2MoveID.store(moveID2);
                         g_pendingControlRestore.store(true);
+                        g_pendingRestoreTimestamp.store(GetTickCount());
                     }
                 }
                 if (preOk) {
@@ -1243,95 +1419,90 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
         p2_after_hitstun_done: ;
         }
         
-        // On Wakeup pre-arm for P2: if delay==0 and action is special/FM, buffer during 96
+        // On Wakeup pre-arm for P2: record metadata when delay==0 and action is special/FM
     if (triggerOnWakeupEnabled.load() && !s_p2WakePrearmed) {
             if (moveID2 == GROUNDTECH_RECOVERY) {
                 if (triggerRandomizeEnabled.load()) { if ((rand() & 1) == 0) { if (detailedLogging.load() && canLogTrigDiag()) LogOut("[AUTO-ACTION] P2 Wake prearm skipped by random gate", true); goto p2_wake_prearm_done; } }
                 int actionType = triggerOnWakeupAction.load();
                 int motionType = ConvertTriggerActionToMotion(actionType, TRIGGER_ON_WAKEUP);
-                int buttonMask = 0;
-                if (actionType >= ACTION_5A && actionType <= ACTION_2C) {
-                    int button = (actionType - ACTION_5A) % 3;  // 0=A, 1=B, 2=C
-                    buttonMask = (1 << (4 + button));
-                } else if (actionType >= ACTION_JA && actionType <= ACTION_JC) {
-                    int button = (actionType - ACTION_JA) % 3;
-                    buttonMask = (1 << (4 + button));
-                } else if (actionType >= ACTION_QCF && actionType <= ACTION_6321463214) {
-                    int strength = GetSpecialMoveStrength(actionType, TRIGGER_ON_WAKEUP);
-                    buttonMask = (1 << (4 + strength));
-                }
-                // Only pre-buffer when delay==0 AND action is a special/Final Memory
                 int userDelayF = triggerOnWakeupDelay.load();
-                bool prearmed = false;
-                if (userDelayF == 0) {
-                    if (actionType == ACTION_FINAL_MEMORY) {
-                        int charId = displayData.p2CharID;
-                        bool fmOk = ExecuteFinalMemory(2, charId);
-                        if (fmOk) {
-                            prearmed = true;
-                            s_p2WakePrearmIsSpecial = true;
-                            EnableP2ControlForAutoAction();
-                            // Track restore similarly to specials
-                            g_lastP2MoveID.store(moveID2);
-                            g_pendingControlRestore.store(true);
-                            LogOut("[AUTO-ACTION][FM] P2 wake FM buffered early (delay=0)", true);
-                        }
-                    } else if (motionType >= MOTION_236A) {
-                        EnableP2ControlForAutoAction();
-                        prearmed = FreezeBufferForMotion(2, motionType, buttonMask);
-                        if (prearmed) {
-                            s_p2WakePrearmIsSpecial = true;
-                            g_lastP2MoveID.store(moveID2);
-                            g_pendingControlRestore.store(true);
-                            LogOut("[AUTO-ACTION] P2 wake special buffered early (delay=0)", true);
-                        }
-                    }
-                }
-                if (prearmed) {
+                bool isSpecial = (actionType == ACTION_FINAL_MEMORY) || (motionType >= MOTION_236A);
+                if (userDelayF == 0 && isSpecial) {
                     s_p2WakePrearmed = true;
-                    s_p2WakePrearmExpiry = frameCounter.load() + 120;
+                    s_p2WakePrearmIsSpecial = true;
                     s_p2WakePrearmActionType = actionType;
-                    LogOut("[AUTO-ACTION] P2 wake prearm stored: action=" + std::to_string(actionType) +
-                           " motion=" + std::to_string(motionType) +
-                           " special=" + std::to_string(s_p2WakePrearmIsSpecial) +
-                           " currMoveID=" + std::to_string(moveID2) +
-                           " frame=" + std::to_string(frameCounter.load()), true);
+                    s_p2WakePrearmExpiry = frameCounter.load() + 120;
+                    LogOut("[AUTO-ACTION] P2 wake special metadata stored (deferred buffer)", true);
+                    LogFlowSequenceEvent(2, "wake metadata stored action=" + std::to_string(actionType), prevMoveID2, moveID2);
                 } else if (detailedLogging.load()) {
-                    LogOut("[AUTO-ACTION] P2 wake pre-arm skipped (delay!=0 or non-special)", true);
+                    LogOut("[AUTO-ACTION] P2 wake pre-arm skipped (delay>0 or non-special)", true);
                 }
             p2_wake_prearm_done: ;
             }
         }
 
         // On Wakeup trigger (fallback when not pre-armed)
-        if (!shouldTrigger && triggerOnWakeupEnabled.load()) {
-            if (s_p2WakePrearmed && IsGroundtech(prevMoveID2) && IsActionable(moveID2)) {
-                LogOut("[AUTO-ACTION] P2 wake exec: action=" + std::to_string(s_p2WakePrearmActionType) +
-                       " special=" + std::to_string(s_p2WakePrearmIsSpecial) +
-                       " prevMoveID=" + std::to_string(prevMoveID2) +
-                       " currMoveID=" + std::to_string(moveID2) +
-                       " frame=" + std::to_string(frameCounter.load()), true);
-                g_lastActiveTriggerType.store(TRIGGER_ON_WAKEUP);
-                g_lastActiveTriggerFrame.store(frameCounter.load());
-                if (!s_p2WakePrearmIsSpecial && s_p2WakePrearmActionType >= 0) {
+        if (s_p2WakePrearmed) {
+            // Count logical frames (192Hz) in moveID 96, buffer on last rising frame
+            if (moveID2 == GROUNDTECH_RECOVERY) {
+                s_p2WakeMoveID96FrameCount++;
+                // Get character-specific rising frame count
+                int charID = displayData.p2CharID;
+                int risingTicks = GetWakeupRisingTicks(charID);
+                int bufferFrame = risingTicks - 1;  // Buffer on last frame before actionable
+                // Allow 3-frame window for safety (buffer-3 to buffer)
+                if (s_p2WakePrearmIsSpecial && !s_p2WakeBufferFrozen && 
+                    s_p2WakeMoveID96FrameCount >= (bufferFrame - 2) && s_p2WakeMoveID96FrameCount <= bufferFrame) {
                     int at = s_p2WakePrearmActionType;
-                    if (at == ACTION_FINAL_MEMORY) {
-                        int charId = displayData.p2CharID;
-                        EnableP2ControlForAutoAction();
-                        bool ok = ExecuteFinalMemory(2, charId);
-                        LogOut(std::string("[AUTO-ACTION][FM] P2 wake frame1 FM inject ") + (ok?"ok":"fail"), true);
+                    bool p2Facing = GetPlayerFacingDirection(2);
+                    bool ok = ExecuteWakeSpecialNow(2, at, moveID2);
+                    LogOut("[AUTO-ACTION] P2 wake special early buffer (frame " + std::to_string(s_p2WakeMoveID96FrameCount) + "/" + std::to_string(risingTicks) + ", charID=" + std::to_string(charID) + ", facing=" + (p2Facing?"right":"left") + ") " + std::string(ok?"ok":"fail"), true);
+                    LogFlowSequenceEvent(2, "wake early buffer f" + std::to_string(s_p2WakeMoveID96FrameCount) + " action=" + std::to_string(at), prevMoveID2, moveID2);
+                    s_p2WakeBufferFrozen = ok;
+                }
+            }
+            bool actionableButLostGround = !IsGroundtech(prevMoveID2) && IsActionable(moveID2) && !IsGroundtech(moveID2);
+            if (actionableButLostGround && !s_p2WakeActionableWarning) {
+                LogOut("[AUTO-ACTION][FLOW] P2 wake actionable while prev state not groundtech (prev=" + std::to_string(prevMoveID2) +
+                       ", curr=" + std::to_string(moveID2) + ")", true);
+                LogFlowSequenceEvent(2, "wake actionable lost-ground", prevMoveID2, moveID2);
+                s_p2WakeActionableWarning = true;
+            } else if (!actionableButLostGround) {
+                s_p2WakeActionableWarning = false;
+            }
+        } else {
+            s_p2WakeActionableWarning = false;
+        }
+
+        if (!shouldTrigger && triggerOnWakeupEnabled.load()) {
+            // If special was already frozen during moveID 96, just clear state on actionable
+            if (s_p2WakePrearmed && s_p2WakeBufferFrozen && IsGroundtech(prevMoveID2) && IsActionable(moveID2)) {
+                LogFlowSequenceEvent(2, "wake exec (buffered early)", prevMoveID2, moveID2);
+                p2TriggerActive = false;
+                p2TriggerCooldown = 0;
+                s_p2WakePrearmed = false;
+                s_p2WakePrearmIsSpecial = false;
+                s_p2WakePrearmActionType = -1;
+                s_p2WakeMoveID96FrameCount = 0;
+                s_p2WakeBufferFrozen = false;
+            } else if (s_p2WakePrearmed && !s_p2WakeBufferFrozen && IsGroundtech(prevMoveID2) && IsActionable(moveID2)) {
+            } else if (s_p2WakePrearmed && !s_p2WakeBufferFrozen && IsGroundtech(prevMoveID2) && IsActionable(moveID2)) {
+                AutoActionLogScope wakeScope("WakeImmediateExec", 2, TRIGGER_ON_WAKEUP);
+                LogOut("[AUTO-ACTION] P2 wake exec (fallback): action=" + std::to_string(s_p2WakePrearmActionType) +
+                       " special=" + std::to_string(s_p2WakePrearmIsSpecial) +
+                       " frame=" + std::to_string(frameCounter.load()), true);
+                    LogFlowSequenceEvent(2, "wake exec attempt action=" + std::to_string(s_p2WakePrearmActionType), prevMoveID2, moveID2);
+                    g_lastActiveTriggerType.store(TRIGGER_ON_WAKEUP);
+                    g_lastActiveTriggerFrame.store(frameCounter.load());
+                    if (s_p2WakePrearmActionType >= 0) {
+                    int at = s_p2WakePrearmActionType;
+                    if (s_p2WakePrearmIsSpecial) {
+                        bool ok = ExecuteWakeSpecialNow(2, at, moveID2);
+                        LogOut(std::string("[AUTO-ACTION] P2 wake special deferred inject ") + (ok?"ok":"fail"), true);
                         p2TriggerActive = false; p2TriggerCooldown = 0;
-                        s_p2WakePrearmed = false; s_p2WakePrearmActionType = -1;
                     } else {
                         int motionType = ConvertTriggerActionToMotion(at, TRIGGER_ON_WAKEUP);
-                        int buttonMask = 0;
-                        if ((at >= ACTION_5A && at <= ACTION_2C) || (at >= ACTION_6A && at <= ACTION_4C)) {
-                            int button = (at >= ACTION_5A && at <= ACTION_2C) ? ((at - ACTION_5A) % 3) : ((at - ACTION_6A) % 3);
-                            buttonMask = (1 << (4 + button));
-                        } else if (at >= ACTION_JA && at <= ACTION_JC) {
-                            int button = (at - ACTION_JA) % 3;
-                            buttonMask = (1 << (4 + button));
-                        }
+                        int buttonMask = ResolveButtonMaskForAction(at, TRIGGER_ON_WAKEUP);
                         if (at == ACTION_BACKDASH || at == ACTION_FORWARD_DASH) {
                             QueueMotionInput(2, motionType, 0);
                         } else if ((motionType >= MOTION_5A && motionType <= MOTION_5C) || (motionType >= MOTION_6A && motionType <= MOTION_4C)) {
@@ -1345,15 +1516,17 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
                             }
                             EnableP2ControlForAutoAction();
                             FreezeBufferForMotion(2, motionType, buttonMask);
-                            // Ensure pending restore tracking is active for specials queued this way,
-                            // so cleanup logic doesn't immediately revert control.
                             g_pendingControlRestore.store(true);
+                            g_pendingRestoreTimestamp.store(GetTickCount());
                             { std::stringstream bm; bm << std::hex << buttonMask; LogOut(std::string("[AUTO-ACTION] P2 wake special frame1 buffer applied (index frozen) btnMask=0x") + bm.str(), true); }
                         }
                     }
                 }
                 s_p2WakePrearmed = false;
+                s_p2WakePrearmIsSpecial = false;
                 s_p2WakePrearmActionType = -1;
+                s_p2WakeMoveID96FrameCount = 0;
+                s_p2WakeBufferFrozen = false;
             } else if (!s_p2WakePrearmed && IsGroundtech(prevMoveID2) && IsActionable(moveID2)) {
                 if (triggerRandomizeEnabled.load()) { if ((rand() & 1) == 0) { if (detailedLogging.load() && canLogTrigDiag()) LogOut("[AUTO-ACTION] P2 On Wakeup skipped by random gate", true); goto p2_wakeup_done; } }
                 shouldTrigger = true;
@@ -1374,6 +1547,8 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
         }
         
         if (shouldTrigger) {
+            LogFlowSequenceEvent(2, std::string("trigger=") + TriggerTypeLabel(triggerType) + " delay=" + std::to_string(delay), prevMoveID2, moveID2);
+            AutoActionLogScope seqScope("TriggerSequence", 2, triggerType);
             StartTriggerDelay(2, triggerType, actionMoveID, delay);
         } else {
             // Don't spam repetitive diagnostics; throttling handled above
@@ -1415,15 +1590,34 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
     // Now that all moveID-based transitions processed, handle any deferred dash follow-ups
     ProcessDeferredDashFollowups(moveID1, prevMoveID1, moveID2, prevMoveID2);
 
+    MaybeAutoCloseFlowSequence(1, prevMoveID1, moveID1, s_p1WakePrearmed, false);
+    MaybeAutoCloseFlowSequence(2, prevMoveID2, moveID2, s_p2WakePrearmed, g_pendingControlRestore.load());
+
     // Clear pre-arm flags when window passes to avoid sticking
     int now = frameCounter.load();
     if (s_p1WakePrearmed && now > s_p1WakePrearmExpiry) {
-        LogOut("[AUTO-ACTION] P1 wake pre-arm expired (no execution)", detailedLogging.load());
+        int delta = now - s_p1WakePrearmExpiry;
+        LogOut("[AUTO-ACTION] P1 wake pre-arm expired (no execution, delta=" + std::to_string(delta) +
+               ", currMove=" + std::to_string(moveID1) + ")", true);
+        LogFlowSequenceEvent(1, "wake pre-arm expired", prevMoveID1, moveID1);
+        EndFlowSequence(1, "WakePrearmExpired", moveID1);
         s_p1WakePrearmed = false;
+        s_p1WakePrearmIsSpecial = false;
+        s_p1WakePrearmActionType = -1;
+        s_p1WakeMoveID96FrameCount = 0;
+        s_p1WakeBufferFrozen = false;
     }
     if (s_p2WakePrearmed && now > s_p2WakePrearmExpiry) {
-        LogOut("[AUTO-ACTION] P2 wake pre-arm expired (no execution)", detailedLogging.load());
+        int delta = now - s_p2WakePrearmExpiry;
+        LogOut("[AUTO-ACTION] P2 wake pre-arm expired (no execution, delta=" + std::to_string(delta) +
+               ", currMove=" + std::to_string(moveID2) + ")", true);
+        LogFlowSequenceEvent(2, "wake pre-arm expired", prevMoveID2, moveID2);
+        EndFlowSequence(2, "WakePrearmExpired", moveID2);
         s_p2WakePrearmed = false;
+        s_p2WakePrearmIsSpecial = false;
+        s_p2WakePrearmActionType = -1;
+        s_p2WakeMoveID96FrameCount = 0;
+        s_p2WakeBufferFrozen = false;
     }
     // Clear RG pre-arm flags if window passed without execution
     if (s_p1RGPrearmed && now > s_p1RGPrearmExpiry) {
@@ -1558,6 +1752,9 @@ void ApplyAutoAction(int playerNum, uintptr_t moveIDAddr, short currentMoveID, s
     // Get the trigger type from the player's delay state
     int triggerType = (playerNum == 1) ? p1DelayState.triggerType : p2DelayState.triggerType;
 
+    AutoActionLogScope applyScope("ApplyAutoAction", playerNum, triggerType);
+    (void)applyScope;
+
     // Get the appropriate action for this trigger
     int actionType = 0;
     // Prefer row-based chosen action if one was set at arming time
@@ -1612,6 +1809,7 @@ void ApplyAutoAction(int playerNum, uintptr_t moveIDAddr, short currentMoveID, s
                     // Mirror special-move restore flow so AI control is returned after FM executes
                     g_lastP2MoveID.store(currentMoveID); // starting move id baseline
                     g_pendingControlRestore.store(true);
+                    g_pendingRestoreTimestamp.store(GetTickCount());
                     LogOut("[AUTO-ACTION][FM] Scheduled P2 control restore (timeout=240)", true);
                 } else {
                     p1TriggerActive = false; p1TriggerCooldown = 0; 
@@ -1775,6 +1973,7 @@ void ApplyAutoAction(int playerNum, uintptr_t moveIDAddr, short currentMoveID, s
             if (playerNum == 2 && !g_pendingControlRestore.load()) {
                 g_lastP2MoveID.store(-1);
                 g_pendingControlRestore.store(true);
+                g_pendingRestoreTimestamp.store(GetTickCount());
                 LogOut(std::string("[AUTO-ACTION][DASH] Armed control restore monitor (") + (fdf>0?"follow-up":"no follow-up") + ")", true);
             }
         } else if (success && actionType == ACTION_BACKDASH) {
@@ -1790,6 +1989,7 @@ void ApplyAutoAction(int playerNum, uintptr_t moveIDAddr, short currentMoveID, s
             if (playerNum == 2 && !g_pendingControlRestore.load()) {
                 g_lastP2MoveID.store(-1);
                 g_pendingControlRestore.store(true);
+                g_pendingRestoreTimestamp.store(GetTickCount());
                 LogOut(std::string("[AUTO-ACTION][DASH] Armed control restore monitor (backdash ") + (fdf>0?"+ follow-up)":"no follow-up)"), true);
             }
         }
@@ -1852,6 +2052,7 @@ void ApplyAutoAction(int playerNum, uintptr_t moveIDAddr, short currentMoveID, s
             LogOut("[AUTO-ACTION] Tracking P2 special for restore", true);
             g_lastP2MoveID.store(currentMoveID);
             g_pendingControlRestore.store(true);
+            g_pendingRestoreTimestamp.store(GetTickCount());
         }
     } else {
         LogOut("[AUTO-ACTION] Failed to apply move " + GetMotionTypeName(motionType), true);
@@ -1937,6 +2138,8 @@ void EnableP2ControlForAutoAction() {
 // ==================================================================================
 void RestoreP2ControlState() {
     if (g_p2ControlOverridden) {
+        const PerFrameSample &restoreSample = GetCurrentPerFrameSample();
+        short restoreMoveID2 = restoreSample.moveID2;
         // Make sure to stop any buffer freezing when restoring control
         StopBufferFreezing();
         
@@ -1975,6 +2178,7 @@ void RestoreP2ControlState() {
         ClearPlayerInputBuffer(2);
         WritePlayerInputImmediate(2, 0x00);
         LogOut("[AUTO-ACTION] Cleared buffer and immediate registers before AI restore", true);
+        LogFlowSequenceEvent(2, "control restore buffer cleared", restoreMoveID2, restoreMoveID2);
         
         // CRITICAL: Restore CPU control flag at game state level FIRST
         // This is what actually determines if the character is under player or AI control
@@ -2000,6 +2204,7 @@ void RestoreP2ControlState() {
         } else {
             LogOut("[AUTO-ACTION] Failed to write P2 control state for restore", true);
         }
+        EndFlowSequence(2, "ControlRestored", restoreMoveID2);
         
         // Reset flag regardless of write success to avoid getting stuck
         g_p2ControlOverridden = false;
@@ -2032,6 +2237,8 @@ void RestoreP2ControlState() {
 // ==================================================================================
 static void RestoreP2ControlFlagOnly() {
     if (!g_p2ControlOverridden) return;
+    const PerFrameSample &restoreSample = GetCurrentPerFrameSample();
+    short restoreMoveID2 = restoreSample.moveID2;
     uintptr_t base = GetEFZBase();
     if (!base) return;
     
@@ -2071,6 +2278,7 @@ static void RestoreP2ControlFlagOnly() {
                                 << std::dec << " before=" << before << " write=" << g_originalP2ControlFlag
                                 << " after=" << after << " okWrite=" << (okWrite?"1":"0");
     LogOut(oss.str(), true);
+    EndFlowSequence(2, "ControlFlagOnly", restoreMoveID2);
     
     // NOTE: We deliberately DO NOT clear the input buffer here because Counter RG needs the
     // pre-armed special motion to remain in the buffer so it can execute after RG completes.
@@ -2472,6 +2680,7 @@ void ProcessAutoControlRestore() {
             s_prevMoveID2 = moveID2;
             // Grace disabled; pending restore no longer needed.
             g_pendingControlRestore.store(false);
+            g_pendingRestoreTimestamp.store(0);
             p2TriggerCooldown = 0; p2TriggerActive = false;
             return;
         }
@@ -2480,14 +2689,20 @@ void ProcessAutoControlRestore() {
         // active for P2 (owner released), perform an immediate restore. This covers cases where the active-frame
         // early-restore window was missed while the freeze thread was still pushing frames, and avoids waiting
         // for moveID to return to 0 (which we no longer use as a restore signal).
+        // Grace period: Don't trigger fallback restore within 20ms of setting g_pendingControlRestore to allow
+        // buffer freeze thread time to initialize and execute the motion.
         bool freezeActiveForP2 = (g_bufferFreezingActive.load() && g_activeFreezePlayer.load() == 2);
-        if (g_pendingControlRestore.load() && g_p2ControlOverridden && !freezeActiveForP2 && !dashQueueActiveNow) {
+        DWORD restoreTimestamp = g_pendingRestoreTimestamp.load();
+        DWORD currentTime = GetTickCount();
+        bool gracePeriodElapsed = (restoreTimestamp == 0) || ((currentTime - restoreTimestamp) >= 20);
+        if (g_pendingControlRestore.load() && g_p2ControlOverridden && !freezeActiveForP2 && !dashQueueActiveNow && gracePeriodElapsed) {
             LogOut("[AUTO-ACTION] Fallback restore: freeze ended, pending restore active", true);
             RestoreP2ControlState();
             g_restoreGraceCounter = RESTORE_GRACE_PERIOD; // 0, kept for symmetry/logging
             g_crgFastRestore.store(false);
             g_lastP2MoveID.store(-1);
             g_pendingControlRestore.store(false);
+            g_pendingRestoreTimestamp.store(0);
             sawNonZeroMoveID = false;
             p2TriggerCooldown = 0; p2TriggerActive = false;
             s_prevMoveID2 = moveID2;
@@ -2517,6 +2732,7 @@ void ProcessAutoControlRestore() {
             // Grace disabled; clear pending immediately.
             g_restoreGraceCounter = RESTORE_GRACE_PERIOD;
             g_pendingControlRestore.store(false);
+            g_pendingRestoreTimestamp.store(0);
             g_crgFastRestore.store(false);
             g_lastP2MoveID.store(-1);
             sawNonZeroMoveID = false;
@@ -2659,6 +2875,7 @@ void ClearAllAutoActionTriggers() {
         RestoreP2ControlState();
     }
     g_pendingControlRestore.store(false);
+    g_pendingRestoreTimestamp.store(0);
     g_lastP2MoveID.store(-1);
     g_crgFastRestore.store(false);
 
@@ -2749,4 +2966,78 @@ static inline bool PickRandomRow(int triggerType, TriggerOption &out) {
     int pick = (seed < 0 ? -seed : seed) % n;
     out = cands[pick];
     return true;
+}
+
+static int ResolveButtonMaskForAction(int actionType, int triggerType) {
+    int buttonMask = 0;
+    if ((actionType >= ACTION_5A && actionType <= ACTION_2C) ||
+        (actionType >= ACTION_6A && actionType <= ACTION_4C)) {
+        int button = 0;
+        if (actionType >= ACTION_5A && actionType <= ACTION_2C) {
+            button = (actionType - ACTION_5A) % 3;
+        } else {
+            int offset = actionType - ACTION_6A;
+            button = offset % 3;
+        }
+        buttonMask = (1 << (4 + button));
+    } else if (actionType >= ACTION_JA && actionType <= ACTION_JC) {
+        int button = (actionType - ACTION_JA) % 3;
+        buttonMask = (1 << (4 + button));
+    } else if (actionType >= ACTION_QCF && actionType <= ACTION_6321463214) {
+        int strength = GetSpecialMoveStrength(actionType, triggerType);
+        buttonMask = (1 << (4 + strength));
+    }
+    return buttonMask;
+}
+
+static bool ExecuteWakeSpecialNow(int playerNum, int actionType, short currentMoveID) {
+    if (actionType == ACTION_FINAL_MEMORY) {
+        int charId = (playerNum == 1) ? displayData.p1CharID : displayData.p2CharID;
+        if (charId < 0) {
+            LogOut("[AUTO-ACTION][FM] Wake special aborted: unknown character", true);
+            return false;
+        }
+        if (playerNum == 2) {
+            EnableP2ControlForAutoAction();
+        }
+        bool ok = ExecuteFinalMemory(playerNum, charId);
+        if (ok && playerNum == 2) {
+            g_lastP2MoveID.store(currentMoveID);
+            g_pendingControlRestore.store(true);
+            g_pendingRestoreTimestamp.store(GetTickCount());
+        }
+        return ok;
+    }
+
+    int motionType = ConvertTriggerActionToMotion(actionType, TRIGGER_ON_WAKEUP);
+    if (motionType < MOTION_236A) {
+        LogOut("[AUTO-ACTION] Wake special requested for non-special action", true);
+        return false;
+    }
+
+    int buttonMask = ResolveButtonMaskForAction(actionType, TRIGGER_ON_WAKEUP);
+    if (buttonMask == 0) {
+        buttonMask = GAME_INPUT_A;
+    }
+
+    if (playerNum == 2) {
+        EnableP2ControlForAutoAction();
+    }
+    g_injectImmediateOnly[playerNum].store(false);
+    bool facing = GetPlayerFacingDirection(playerNum);
+    std::stringstream btnFmt;
+    btnFmt << std::hex << buttonMask;
+    LogOut("[AUTO-ACTION] Wake special freeze request p" + std::to_string(playerNum) +
+           " motion=" + std::to_string(motionType) + " btnMask=0x" + btnFmt.str() +
+           " currMove=" + std::to_string(currentMoveID) + " facing=" + (facing?"right":"left"), true);
+    bool ok = FreezeBufferForMotion(playerNum, motionType, buttonMask);
+    if (ok && playerNum == 2) {
+        g_lastP2MoveID.store(currentMoveID);
+        g_pendingControlRestore.store(true);
+        g_pendingRestoreTimestamp.store(GetTickCount());
+    }
+    if (!ok) {
+        LogOut("[AUTO-ACTION] Wake special freeze failed for player " + std::to_string(playerNum), true);
+    }
+    return ok;
 }
