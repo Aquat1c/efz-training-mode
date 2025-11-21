@@ -35,13 +35,14 @@ A comprehensive training mode enhancement tool for Eternal Fighter Zero. It prov
 
 ## Online Play Support
 
-The training mode now features automatic network detection:
+The training mode features automatic network detection with improved compatibility:
 
 - When a connection to another player is detected, the tool will:
   - Temporarily hide the console window (after a short countdown)
   - Disable training-mode hotkeys
   - Prevent injected inputs that could cause desyncs
 - When the online match ends, the console/hotkeys restore automatically
+- **New**: Uses signature scanning to detect netplay even on unknown/unsupported EfzRevival versions, providing better compatibility across different builds
 
 ## Controls (default hotkeys)
 
@@ -157,7 +158,7 @@ Supported EFZ builds:
 - Eternal Fighter Zero -Revival- 1.02h!!!
 - Eternal Fighter Zero -Revival- 1.02i!!!
 
-If you run a different EfzRevival build, the mod will load but some features may be disabled for safety.
+**New**: The mod now includes a signature scanner that can detect netplay matches even for unknown/unsupported EfzRevival versions. This provides better compatibility and automatic netplay detection across different builds. If you run a different EfzRevival build, the mod will attempt to discover the necessary addresses dynamically, though some advanced features may still be limited for safety.
 
 ## Contributing
 Contributions are welcome! Major areas that need improvement:
