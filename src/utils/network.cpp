@@ -9,6 +9,7 @@
 #include "../include/core/logger.h"
 #include "../include/utils/utilities.h"
 #include "../include/core/memory.h"
+#include "../include/game/efzrevival_scanner.h"
 // For global shutdown flag
 #include "../include/core/globals.h"
 extern std::atomic<bool> g_isShuttingDown;
@@ -105,12 +106,42 @@ OnlineState ReadEfzRevivalOnlineState() {
     };
 
     EfzRevivalVersion vv = GetEfzRevivalVersion();
-    if (vv == EfzRevivalVersion::Unknown || vv == EfzRevivalVersion::Vanilla || vv == EfzRevivalVersion::Other)
-        return OnlineState::Unknown;
-
+    
     HMODULE hEfzRev = GetModuleHandleA("EfzRevival.dll");
     if (!hEfzRev) return OnlineState::Unknown;
     uintptr_t base = reinterpret_cast<uintptr_t>(hEfzRev);
+    
+    // For Vanilla (no EfzRevival.dll integration) or Unknown, attempt scanner fallback
+    if (vv == EfzRevivalVersion::Unknown || vv == EfzRevivalVersion::Vanilla || vv == EfzRevivalVersion::Other) {
+        // Try to use signature scanner to find online status for unsupported versions
+        if (EfzSigScanner::EnsureScanned()) {
+            const auto& scanResults = EfzSigScanner::Get();
+            if (scanResults.onlineStatusRva) {
+                int raw = 0;
+                if (SafeReadMemory(base + scanResults.onlineStatusRva, &raw, sizeof(raw))) {
+                    OnlineState st = mapState(raw);
+                    if (st != OnlineState::Unknown) {
+                        // Log success for debugging unsupported versions
+                        static std::atomic<bool> s_loggedOnce{false};
+                        if (!s_loggedOnce.exchange(true)) {
+                            char msg[200];
+                            _snprintf_s(msg, sizeof(msg), _TRUNCATE,
+                                "[NETWORK] Using scanner fallback for version '%s': onlineStatusRva=0x%08lX state=%s",
+                                EfzRevivalVersionName(vv), (unsigned long)scanResults.onlineStatusRva, OnlineStateName(st));
+                            LogOut(msg, true);
+                        }
+                        return st;
+                    }
+                    // Try masked reads
+                    st = mapState(raw & 0xFF);
+                    if (st != OnlineState::Unknown) return st;
+                    st = mapState(raw & 0x03);
+                    if (st != OnlineState::Unknown) return st;
+                }
+            }
+        }
+        return OnlineState::Unknown;
+    }
 
     // Pointer-based path first (more stable across sub-versions)
     {
