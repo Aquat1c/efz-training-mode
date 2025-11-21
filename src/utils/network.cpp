@@ -111,8 +111,9 @@ OnlineState ReadEfzRevivalOnlineState() {
     if (!hEfzRev) return OnlineState::Unknown;
     uintptr_t base = reinterpret_cast<uintptr_t>(hEfzRev);
     
-    // For Vanilla (no EfzRevival.dll integration) or Unknown, attempt scanner fallback
-    if (vv == EfzRevivalVersion::Unknown || vv == EfzRevivalVersion::Vanilla || vv == EfzRevivalVersion::Other) {
+    // For Unknown/Other or Vanilla-with-EfzRevival-dll (custom builds), attempt scanner fallback
+    if (vv == EfzRevivalVersion::Unknown || vv == EfzRevivalVersion::Other || 
+        (vv == EfzRevivalVersion::Vanilla && hEfzRev)) {
         // Try to use signature scanner to find online status for unsupported versions
         if (EfzSigScanner::EnsureScanned()) {
             const auto& scanResults = EfzSigScanner::Get();
