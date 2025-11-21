@@ -977,8 +977,9 @@ namespace SwitchPlayers {
             int desired = (curActive == 0) ? 1 : 0;
             bool success = ApplyEngineOnlySet(desired);
             if (success) {
-                s_sidesAreSwapped.store(true, std::memory_order_relaxed);
-                LogOut("[SWITCH] Toggle succeeded - sides now swapped (flag set)", true);
+                // Set flag true if swapping TO P2 (desired=1), false if returning TO P1 (desired=0)
+                s_sidesAreSwapped.store(desired == 1, std::memory_order_relaxed);
+                LogOut(desired == 1 ? "[SWITCH] Toggle succeeded - sides now swapped (flag set)" : "[SWITCH] Toggle succeeded - returned to default (flag cleared)", true);
             }
             return success;
         }
@@ -997,8 +998,9 @@ namespace SwitchPlayers {
                 int desired = (curActive == 0) ? 1 : 0;
                 bool success = ApplyEngineOnlySet(desired);
                 if (success) {
-                    s_sidesAreSwapped.store(true, std::memory_order_relaxed);
-                    LogOut("[SWITCH] Toggle succeeded (fallback) - sides now swapped (flag set)", true);
+                    // Set flag true if swapping TO P2 (desired=1), false if returning TO P1 (desired=0)
+                    s_sidesAreSwapped.store(desired == 1, std::memory_order_relaxed);
+                    LogOut(desired == 1 ? "[SWITCH] Toggle succeeded (fallback) - sides now swapped (flag set)" : "[SWITCH] Toggle succeeded (fallback) - returned to default (flag cleared)", true);
                 }
                 return success;
             }
@@ -1010,8 +1012,9 @@ namespace SwitchPlayers {
         int desired = (curLocal == 0) ? 1 : 0;
         bool success = ApplySet(practice, desired);
         if (success) {
-            s_sidesAreSwapped.store(true, std::memory_order_relaxed);
-            LogOut("[SWITCH] Toggle succeeded - sides now swapped (flag set)", true);
+            // Set flag true if swapping TO P2 (desired=1), false if returning TO P1 (desired=0)
+            s_sidesAreSwapped.store(desired == 1, std::memory_order_relaxed);
+            LogOut(desired == 1 ? "[SWITCH] Toggle succeeded - sides now swapped (flag set)" : "[SWITCH] Toggle succeeded - returned to default (flag cleared)", true);
         }
         return success;
     }
