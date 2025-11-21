@@ -679,7 +679,9 @@ void UpdateTriggerOverlay() {
             if (msgId == -1) {
                 msgId = DirectDrawHook::AddPermanentMessage(text, color, triggerX, yPos);
             } else {
-                DirectDrawHook::UpdatePermanentMessage(msgId, text, color);
+                // Remove and re-add to update position (Y changes when other triggers are enabled/disabled)
+                DirectDrawHook::RemovePermanentMessage(msgId);
+                msgId = DirectDrawHook::AddPermanentMessage(text, color, triggerX, yPos);
             }
             yPos += yIncrement;
         } else {

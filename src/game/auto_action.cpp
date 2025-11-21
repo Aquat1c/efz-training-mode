@@ -48,6 +48,13 @@ static inline bool PickRandomRow(int triggerType, TriggerOption &out);
 void ApplyAutoAction(int playerNum, uintptr_t moveIDAddr, short currentMoveID, short prevMoveID);
 static int ResolveButtonMaskForAction(int actionType, int triggerType);
 static bool ExecuteWakeSpecialNow(int playerNum, int actionType, short currentMoveID);
+static bool SupportsImmediateWakeHold(int actionType);
+static bool BuildImmediateWakeHoldMask(int playerNum, int actionType, uint8_t &outMask);
+static bool IssueWakeImmediateHold(int playerNum, int actionType);
+
+// Wake jump tracking for debugging
+static int s_p1WakeJumpTrackFrame = -1;
+static int s_p2WakeJumpTrackFrame = -1;
 
 // Wakeup timing table: rising frames (visual @ 64Hz) for each character
 // Multiply by 3 to get logical frames (192Hz ticks)
@@ -425,6 +432,10 @@ static int s_p1WakeMoveID96FrameCount = 0;
 static int s_p2WakeMoveID96FrameCount = 0;
 static bool s_p1WakeBufferFrozen = false;
 static bool s_p2WakeBufferFrozen = false;
+static bool s_p1WakeHoldPrimed = false;
+static bool s_p2WakeHoldPrimed = false;
+static bool s_p1WakeHoldIssued = false;
+static bool s_p2WakeHoldIssued = false;
 
 // Lightweight stun/wakeup timing trackers for diagnostics
 struct StunTimers {
@@ -463,6 +474,36 @@ void AutoActionsTick_Inline(short moveID1, short moveID2) {
     // Static prevs to compute edges without extra memory traffic
     static short prevMoveID1 = -1;
     static short prevMoveID2 = -1;
+    
+    // Check if jump state reached after wake hold
+    if (s_p1WakeJumpTrackFrame >= 0) {
+        int elapsed = frameCounter.load() - s_p1WakeJumpTrackFrame;
+        if (elapsed <= 10) {  // Track for 10 frames
+            if (moveID1 == 4 || moveID1 == 5 || moveID1 == 6) {
+                LogOut("[AUTO-ACTION] P1 wake jump SUCCESS! moveID=" + std::to_string(moveID1) + 
+                       " elapsed=" + std::to_string(elapsed) + "F", true);
+                s_p1WakeJumpTrackFrame = -1;
+            }
+        } else {
+            LogOut("[AUTO-ACTION] P1 wake jump FAILED - no jump state reached within 10F (moveID=" + 
+                   std::to_string(moveID1) + ")", true);
+            s_p1WakeJumpTrackFrame = -1;
+        }
+    }
+    if (s_p2WakeJumpTrackFrame >= 0) {
+        int elapsed = frameCounter.load() - s_p2WakeJumpTrackFrame;
+        if (elapsed <= 10) {  // Track for 10 frames
+            if (moveID2 == 4 || moveID2 == 5 || moveID2 == 6) {
+                LogOut("[AUTO-ACTION] P2 wake jump SUCCESS! moveID=" + std::to_string(moveID2) + 
+                       " elapsed=" + std::to_string(elapsed) + "F", true);
+                s_p2WakeJumpTrackFrame = -1;
+            }
+        } else {
+            LogOut("[AUTO-ACTION] P2 wake jump FAILED - no jump state reached within 10F (moveID=" + 
+                   std::to_string(moveID2) + ")", true);
+            s_p2WakeJumpTrackFrame = -1;
+        }
+    }
 
     // Process any armed delays first, then evaluate triggers against current moves
     ProcessTriggerDelays();
@@ -1134,21 +1175,28 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
                 int motionType = ConvertTriggerActionToMotion(actionType, TRIGGER_ON_WAKEUP);
                 int userDelayF = triggerOnWakeupDelay.load();
                 bool isSpecial = (actionType == ACTION_FINAL_MEMORY) || (motionType >= MOTION_236A);
-                if (userDelayF == 0 && isSpecial) {
+                bool holdEligible = (userDelayF == 0) && !isSpecial && SupportsImmediateWakeHold(actionType);
+                if (userDelayF == 0 && (isSpecial || holdEligible)) {
                     s_p1WakePrearmed = true;
-                    s_p1WakePrearmIsSpecial = true;
+                    s_p1WakePrearmIsSpecial = isSpecial;
                     s_p1WakePrearmActionType = actionType;
                     s_p1WakePrearmExpiry = frameCounter.load() + 120;
-                    LogOut("[AUTO-ACTION] P1 wake special metadata stored (deferred buffer)", true);
+                    s_p1WakeMoveID96FrameCount = 0;
+                    s_p1WakeBufferFrozen = false;
+                    s_p1WakeHoldPrimed = holdEligible;
+                    s_p1WakeHoldIssued = false;
+                    const char* tag = isSpecial ? "special" : "hold";
+                    LogOut(std::string("[AUTO-ACTION] P1 wake ") + tag + " metadata stored", true);
                     LogFlowSequenceEvent(1, "wake metadata stored action=" + std::to_string(actionType), prevMoveID1, moveID1);
                 } else if (detailedLogging.load()) {
-                    LogOut("[AUTO-ACTION] P1 wake pre-arm skipped (delay>0 or non-special)", true);
+                    LogOut("[AUTO-ACTION] P1 wake pre-arm skipped (delay>0 or unsupported action)", true);
                 }
             p1_wake_prearm_done: ;
             }
         }
 
         // On Wakeup trigger (fallback if not pre-armed or for normals/jumps)
+        bool p1BecameActionableFromGroundtech = IsGroundtech(prevMoveID1) && IsActionable(moveID1);
         if (s_p1WakePrearmed) {
             // Count logical frames (192Hz) in moveID 96, buffer on last rising frame
             if (moveID1 == GROUNDTECH_RECOVERY) {
@@ -1168,6 +1216,15 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
                     s_p1WakeBufferFrozen = ok;
                 }
             }
+            // Check for 96→0 transition (must be outside the moveID==96 block!)
+            if (!s_p1WakePrearmIsSpecial && s_p1WakeHoldPrimed && !s_p1WakeHoldIssued) {
+                const bool leavingGroundtechThisFrame = (prevMoveID1 == GROUNDTECH_RECOVERY) && (moveID1 != GROUNDTECH_RECOVERY);
+                if (leavingGroundtechThisFrame) {
+                    if (IssueWakeImmediateHold(1, s_p1WakePrearmActionType)) {
+                        s_p1WakeHoldIssued = true;
+                    }
+                }
+            }
             bool actionableButLostGround = !IsGroundtech(prevMoveID1) && IsActionable(moveID1) && !IsGroundtech(moveID1);
             if (actionableButLostGround && !s_p1WakeActionableWarning) {
                 LogOut("[AUTO-ACTION][FLOW] P1 wake actionable while prev state not groundtech (prev=" + std::to_string(prevMoveID1) +
@@ -1183,7 +1240,7 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
 
         if (!shouldTrigger && triggerOnWakeupEnabled.load()) {
             // If special was already frozen during moveID 96, just clear state on actionable
-            if (s_p1WakePrearmed && s_p1WakeBufferFrozen && IsGroundtech(prevMoveID1) && IsActionable(moveID1)) {
+            if (s_p1WakePrearmed && s_p1WakeBufferFrozen && p1BecameActionableFromGroundtech) {
                 LogFlowSequenceEvent(1, "wake exec (buffered early)", prevMoveID1, moveID1);
                 p1TriggerActive = false;
                 p1TriggerCooldown = 0;
@@ -1192,8 +1249,18 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
                 s_p1WakePrearmActionType = -1;
                 s_p1WakeMoveID96FrameCount = 0;
                 s_p1WakeBufferFrozen = false;
-            } else if (s_p1WakePrearmed && !s_p1WakeBufferFrozen && IsGroundtech(prevMoveID1) && IsActionable(moveID1)) {
-            } else if (s_p1WakePrearmed && !s_p1WakeBufferFrozen && IsGroundtech(prevMoveID1) && IsActionable(moveID1)) {
+                s_p1WakeHoldPrimed = false;
+                s_p1WakeHoldIssued = false;
+            } else if (s_p1WakePrearmed && !s_p1WakePrearmIsSpecial && s_p1WakeHoldIssued && p1BecameActionableFromGroundtech) {
+                LogOut("[AUTO-ACTION] P1 wake hold exec (inputs maintained through wake)", true);
+                LogFlowSequenceEvent(1, "wake hold exec", prevMoveID1, moveID1);
+                s_p1WakePrearmed = false;
+                s_p1WakePrearmActionType = -1;
+                s_p1WakeMoveID96FrameCount = 0;
+                s_p1WakeBufferFrozen = false;
+                s_p1WakeHoldPrimed = false;
+                s_p1WakeHoldIssued = false;
+            } else if (s_p1WakePrearmed && !s_p1WakeBufferFrozen && p1BecameActionableFromGroundtech) {
                 AutoActionLogScope wakeScope("WakeImmediateExec", 1, TRIGGER_ON_WAKEUP);
                 LogOut("[AUTO-ACTION] P1 wake exec (fallback): action=" + std::to_string(s_p1WakePrearmActionType) +
                        " special=" + std::to_string(s_p1WakePrearmIsSpecial) +
@@ -1231,6 +1298,8 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
                 s_p1WakePrearmActionType = -1;
                 s_p1WakeMoveID96FrameCount = 0;
                 s_p1WakeBufferFrozen = false;
+                s_p1WakeHoldPrimed = false;
+                s_p1WakeHoldIssued = false;
             }
             if (!s_p1WakePrearmed && IsGroundtech(prevMoveID1) && IsActionable(moveID1)) {
                 if (triggerRandomizeEnabled.load()) { if ((rand() & 1) == 0) { if (detailedLogging.load() && canLogTrigDiag()) LogOut("[AUTO-ACTION] P1 On Wakeup skipped by random gate", true); goto p1_wakeup_done; } }
@@ -1427,21 +1496,28 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
                 int motionType = ConvertTriggerActionToMotion(actionType, TRIGGER_ON_WAKEUP);
                 int userDelayF = triggerOnWakeupDelay.load();
                 bool isSpecial = (actionType == ACTION_FINAL_MEMORY) || (motionType >= MOTION_236A);
-                if (userDelayF == 0 && isSpecial) {
+                bool holdEligible = (userDelayF == 0) && !isSpecial && SupportsImmediateWakeHold(actionType);
+                if (userDelayF == 0 && (isSpecial || holdEligible)) {
                     s_p2WakePrearmed = true;
-                    s_p2WakePrearmIsSpecial = true;
+                    s_p2WakePrearmIsSpecial = isSpecial;
                     s_p2WakePrearmActionType = actionType;
                     s_p2WakePrearmExpiry = frameCounter.load() + 120;
-                    LogOut("[AUTO-ACTION] P2 wake special metadata stored (deferred buffer)", true);
+                    s_p2WakeMoveID96FrameCount = 0;
+                    s_p2WakeBufferFrozen = false;
+                    s_p2WakeHoldPrimed = holdEligible;
+                    s_p2WakeHoldIssued = false;
+                    const char* tag = isSpecial ? "special" : "hold";
+                    LogOut(std::string("[AUTO-ACTION] P2 wake ") + tag + " metadata stored", true);
                     LogFlowSequenceEvent(2, "wake metadata stored action=" + std::to_string(actionType), prevMoveID2, moveID2);
                 } else if (detailedLogging.load()) {
-                    LogOut("[AUTO-ACTION] P2 wake pre-arm skipped (delay>0 or non-special)", true);
+                    LogOut("[AUTO-ACTION] P2 wake pre-arm skipped (delay>0 or unsupported action)", true);
                 }
             p2_wake_prearm_done: ;
             }
         }
 
         // On Wakeup trigger (fallback when not pre-armed)
+        bool p2BecameActionableFromGroundtech = IsGroundtech(prevMoveID2) && IsActionable(moveID2);
         if (s_p2WakePrearmed) {
             // Count logical frames (192Hz) in moveID 96, buffer on last rising frame
             if (moveID2 == GROUNDTECH_RECOVERY) {
@@ -1461,6 +1537,15 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
                     s_p2WakeBufferFrozen = ok;
                 }
             }
+            // Check for 96→0 transition (must be outside the moveID==96 block!)
+            if (!s_p2WakePrearmIsSpecial && s_p2WakeHoldPrimed && !s_p2WakeHoldIssued) {
+                const bool leavingGroundtechThisFrame = (prevMoveID2 == GROUNDTECH_RECOVERY) && (moveID2 != GROUNDTECH_RECOVERY);
+                if (leavingGroundtechThisFrame) {
+                    if (IssueWakeImmediateHold(2, s_p2WakePrearmActionType)) {
+                        s_p2WakeHoldIssued = true;
+                    }
+                }
+            }
             bool actionableButLostGround = !IsGroundtech(prevMoveID2) && IsActionable(moveID2) && !IsGroundtech(moveID2);
             if (actionableButLostGround && !s_p2WakeActionableWarning) {
                 LogOut("[AUTO-ACTION][FLOW] P2 wake actionable while prev state not groundtech (prev=" + std::to_string(prevMoveID2) +
@@ -1476,7 +1561,7 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
 
         if (!shouldTrigger && triggerOnWakeupEnabled.load()) {
             // If special was already frozen during moveID 96, just clear state on actionable
-            if (s_p2WakePrearmed && s_p2WakeBufferFrozen && IsGroundtech(prevMoveID2) && IsActionable(moveID2)) {
+            if (s_p2WakePrearmed && s_p2WakeBufferFrozen && p2BecameActionableFromGroundtech) {
                 LogFlowSequenceEvent(2, "wake exec (buffered early)", prevMoveID2, moveID2);
                 p2TriggerActive = false;
                 p2TriggerCooldown = 0;
@@ -1485,8 +1570,22 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
                 s_p2WakePrearmActionType = -1;
                 s_p2WakeMoveID96FrameCount = 0;
                 s_p2WakeBufferFrozen = false;
-            } else if (s_p2WakePrearmed && !s_p2WakeBufferFrozen && IsGroundtech(prevMoveID2) && IsActionable(moveID2)) {
-            } else if (s_p2WakePrearmed && !s_p2WakeBufferFrozen && IsGroundtech(prevMoveID2) && IsActionable(moveID2)) {
+                s_p2WakeHoldPrimed = false;
+                s_p2WakeHoldIssued = false;
+            } else if (s_p2WakePrearmed && !s_p2WakePrearmIsSpecial && s_p2WakeHoldIssued && p2BecameActionableFromGroundtech) {
+                LogOut("[AUTO-ACTION] P2 wake hold exec (inputs maintained through wake)", true);
+                LogFlowSequenceEvent(2, "wake hold exec", prevMoveID2, moveID2);
+                
+                // Enable jump tracking
+                s_p2WakeJumpTrackFrame = frameCounter.load();
+                
+                s_p2WakePrearmed = false;
+                s_p2WakePrearmActionType = -1;
+                s_p2WakeMoveID96FrameCount = 0;
+                s_p2WakeBufferFrozen = false;
+                s_p2WakeHoldPrimed = false;
+                s_p2WakeHoldIssued = false;
+            } else if (s_p2WakePrearmed && !s_p2WakeBufferFrozen && p2BecameActionableFromGroundtech) {
                 AutoActionLogScope wakeScope("WakeImmediateExec", 2, TRIGGER_ON_WAKEUP);
                 LogOut("[AUTO-ACTION] P2 wake exec (fallback): action=" + std::to_string(s_p2WakePrearmActionType) +
                        " special=" + std::to_string(s_p2WakePrearmIsSpecial) +
@@ -1527,6 +1626,8 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
                 s_p2WakePrearmActionType = -1;
                 s_p2WakeMoveID96FrameCount = 0;
                 s_p2WakeBufferFrozen = false;
+                s_p2WakeHoldPrimed = false;
+                s_p2WakeHoldIssued = false;
             } else if (!s_p2WakePrearmed && IsGroundtech(prevMoveID2) && IsActionable(moveID2)) {
                 if (triggerRandomizeEnabled.load()) { if ((rand() & 1) == 0) { if (detailedLogging.load() && canLogTrigDiag()) LogOut("[AUTO-ACTION] P2 On Wakeup skipped by random gate", true); goto p2_wakeup_done; } }
                 shouldTrigger = true;
@@ -1606,6 +1707,8 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
         s_p1WakePrearmActionType = -1;
         s_p1WakeMoveID96FrameCount = 0;
         s_p1WakeBufferFrozen = false;
+        s_p1WakeHoldPrimed = false;
+        s_p1WakeHoldIssued = false;
     }
     if (s_p2WakePrearmed && now > s_p2WakePrearmExpiry) {
         int delta = now - s_p2WakePrearmExpiry;
@@ -1618,6 +1721,8 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
         s_p2WakePrearmActionType = -1;
         s_p2WakeMoveID96FrameCount = 0;
         s_p2WakeBufferFrozen = false;
+        s_p2WakeHoldPrimed = false;
+        s_p2WakeHoldIssued = false;
     }
     // Clear RG pre-arm flags if window passed without execution
     if (s_p1RGPrearmed && now > s_p1RGPrearmExpiry) {
@@ -2965,6 +3070,100 @@ static inline bool PickRandomRow(int triggerType, TriggerOption &out) {
     int seed = frameCounter.load() + triggerType * 13;
     int pick = (seed < 0 ? -seed : seed) % n;
     out = cands[pick];
+    return true;
+}
+
+static bool SupportsImmediateWakeHold(int actionType) {
+    if (actionType == ACTION_FINAL_MEMORY) return false;
+    if (actionType == ACTION_FORWARD_DASH || actionType == ACTION_BACKDASH || actionType == ACTION_BACK_DASH) {
+        return false;
+    }
+    if (actionType == ACTION_JUMP) return true;
+    int motionType = ConvertTriggerActionToMotion(actionType, TRIGGER_ON_WAKEUP);
+    if (motionType >= MOTION_236A) return false;
+    if ((motionType >= MOTION_5A && motionType <= MOTION_5C) ||
+        (motionType >= MOTION_2A && motionType <= MOTION_2C) ||
+        (motionType >= MOTION_JA && motionType <= MOTION_JC) ||
+        (motionType >= MOTION_6A && motionType <= MOTION_4C)) {
+        return true;
+    }
+    if (actionType == ACTION_BLOCK) return true;
+    return false;
+}
+
+static bool BuildImmediateWakeHoldMask(int playerNum, int actionType, uint8_t &outMask) {
+    const bool facingRight = GetPlayerFacingDirection(playerNum);
+    const uint8_t forwardDir = facingRight ? GAME_INPUT_RIGHT : GAME_INPUT_LEFT;
+    const uint8_t backDir    = facingRight ? GAME_INPUT_LEFT  : GAME_INPUT_RIGHT;
+    int motionType = ConvertTriggerActionToMotion(actionType, TRIGGER_ON_WAKEUP);
+    int buttonMask = ResolveButtonMaskForAction(actionType, TRIGGER_ON_WAKEUP);
+    if (buttonMask == 0) {
+        buttonMask = GAME_INPUT_A;
+    }
+
+    if (actionType == ACTION_JUMP) {
+        int dir = triggerOnWakeupStrength.load();
+        dir = CLAMP(dir, 0, 2);
+        uint8_t mask = GAME_INPUT_UP;
+        if (dir == 1) {
+            mask |= forwardDir;
+        } else if (dir == 2) {
+            mask |= backDir;
+        }
+        outMask = mask;
+        return true;
+    }
+
+    if (actionType == ACTION_BLOCK) {
+        outMask = backDir;
+        return true;
+    }
+
+    if (motionType >= MOTION_5A && motionType <= MOTION_5C) {
+        outMask = static_cast<uint8_t>(buttonMask);
+        return true;
+    }
+    if (motionType >= MOTION_2A && motionType <= MOTION_2C) {
+        outMask = static_cast<uint8_t>(GAME_INPUT_DOWN | buttonMask);
+        return true;
+    }
+    if (motionType >= MOTION_JA && motionType <= MOTION_JC) {
+        outMask = static_cast<uint8_t>(buttonMask);
+        return true;
+    }
+    if (motionType >= MOTION_6A && motionType <= MOTION_6C) {
+        outMask = static_cast<uint8_t>(forwardDir | buttonMask);
+        return true;
+    }
+    if (motionType >= MOTION_4A && motionType <= MOTION_4C) {
+        outMask = static_cast<uint8_t>(backDir | buttonMask);
+        return true;
+    }
+
+    return false;
+}
+
+static bool IssueWakeImmediateHold(int playerNum, int actionType) {
+    uint8_t mask = 0;
+    if (!BuildImmediateWakeHoldMask(playerNum, actionType, mask)) {
+        LogOut("[AUTO-ACTION] Wake immediate hold skipped (no mask) action=" + std::to_string(actionType), detailedLogging.load());
+        return false;
+    }
+    constexpr int kWakeHoldTicks = 3; // 3 visual frames covers last rising + 2 neutral frames
+    
+    // Log current moveID before scheduling
+    uint16_t currentMoveID = 0;
+    uintptr_t playerPtr = GetPlayerPointer(playerNum);
+    if (playerPtr) {
+        SafeReadMemory(playerPtr + MOVE_ID_OFFSET, &currentMoveID, sizeof(uint16_t));
+    }
+    
+    ImmediateInput::PressFor(playerNum, mask, kWakeHoldTicks);
+    LogOut("[AUTO-ACTION] Wake immediate hold issued (p" + std::to_string(playerNum) +
+           ", action=" + std::to_string(actionType) +
+           ", mask=" + std::to_string(mask) +
+           ", ticks=" + std::to_string(kWakeHoldTicks) +
+           ", moveID=" + std::to_string(currentMoveID) + ")", detailedLogging.load());
     return true;
 }
 
