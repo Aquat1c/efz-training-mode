@@ -621,11 +621,15 @@ namespace PauseIntegration {
                 }
                 uint8_t cur=3;
                 if (ReadGamespeed(cur)) {
-                    if (cur != 0 && WriteGamespeed(0)) {
+                    // Only freeze if gamespeed is at default value (3) to avoid overwriting user-set or already-frozen values
+                    if (cur == 3 && WriteGamespeed(0)) {
                         s_prevGamespeed.store(cur);
                         s_weFrozeGamespeed.store(true);
                         LogOut("[PAUSE][VANILLA] Gamespeed frozen via battleContext+0x1400", true);
                         return; // done
+                    } else if (cur != 3 && cur != 0) {
+                        LogOut("[PAUSE][VANILLA] Gamespeed already modified (not default), skipping freeze", true);
+                        return; // don't touch non-default gamespeed
                     }
                 }
             }
