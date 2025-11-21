@@ -1,6 +1,7 @@
 #define WIN32_LEAN_AND_MEAN
 #include <fstream>
 #include <iomanip>
+#include <sstream>
 #include <chrono>
 #include <windows.h>
 #include <thread>
@@ -122,6 +123,9 @@ OnlineState ReadEfzRevivalOnlineState() {
         uintptr_t ctxPtrAddr = base + 0x26A4; // module global: pointer to net/rollback context
         if (SafeReadMemory(ctxPtrAddr, &ctx, sizeof(ctx)) && ctx) {
             // Expanded candidate list to cover more potential layouts
+            // 0x370: 1.02e/h base offset
+            // 0x37C: 1.02i base offset  
+            // 0x378, 0x374, 0x380, 0x36C: nearby offsets for potential struct variations
             const size_t candidates[] = { 0x370, 0x37C, 0x378, 0x374, 0x380, 0x36C };
             for (size_t i = 0; i < sizeof(candidates) / sizeof(candidates[0]); ++i) {
                 int raw = 0; 
@@ -149,7 +153,10 @@ OnlineState ReadEfzRevivalOnlineState() {
                     if (st != OnlineState::Unknown) {
                         static bool logged = false;
                         if (!logged) {
-                            LogOut("[NETPLAY] Using signature-scanned online status RVA for unsupported version", true);
+                            std::ostringstream oss;
+                            oss << "[NETPLAY] Using signature-scanned online status RVA=0x" 
+                                << std::hex << scanRva << " for unsupported version";
+                            LogOut(oss.str(), true);
                             logged = true;
                         }
                         return st;
