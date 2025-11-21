@@ -17,9 +17,9 @@
 #include <iomanip>
 
 namespace {
-    // Simple presence check for EfzRevival
+    // Check if EfzRevival is loaded. For unsupported versions, treat as vanilla.
     static inline bool IsRevivalLoaded() {
-        return GetModuleHandleA("EfzRevival.dll") != nullptr;
+        return GetModuleHandleA("EfzRevival.dll") != nullptr && IsEfzRevivalVersionSupported();
     }
     // Track whether sides were swapped during the current match
     static std::atomic<bool> s_sidesAreSwapped{false};
@@ -1049,9 +1049,8 @@ namespace SwitchPlayers {
         // Vanilla: ensure routing swap is disabled
         SetVanillaSwapInputRouting(false);
 
-        // If EfzRevival is not loaded, nothing else to do for menus; return success
-        HMODULE h = GetModuleHandleA("EfzRevival.dll");
-        if (!h) {
+        // If EfzRevival is not loaded OR unsupported version, use vanilla logic
+        if (!IsRevivalLoaded()) {
             bool wroteFlags = false;
             uintptr_t efzBase = GetEFZBase();
             if (efzBase) {

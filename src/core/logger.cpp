@@ -2,6 +2,7 @@
 #include <iomanip>
 #include <chrono>
 #include "../include/core/logger.h"
+#include "../include/core/version.h"
 #include "../include/utils/utilities.h"
 
 #include "../include/core/memory.h"
@@ -200,7 +201,10 @@ void InitializeLogging() {
     });
     titleThread.detach();  // Let it run independently
 
-    LogOut("EFZ DLL started", true);
+    LogOut("==============================================", true);
+    LogOut(std::string("  EFZ Training Mode v") + EFZ_TRAINING_MODE_VERSION, true);
+    LogOut(std::string("  Build: ") + EFZ_TRAINING_MODE_BUILD_DATE + " " + EFZ_TRAINING_MODE_BUILD_TIME, true);
+    LogOut("==============================================", true);
     // Developer motion-debug hotkey banner removed
 }
 
