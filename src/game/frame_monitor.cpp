@@ -603,10 +603,13 @@ void UpdateTriggerOverlay() {
                     case ACTION_4123641236: return std::string("4123641236") + letter(str);
                     case ACTION_6321463214: return std::string("6321463214") + letter(str);
                     case ACTION_JUMP: {
-                        // strength: 0=neutral(8), 1=forward(9), 2=back(7)
+                        // strength: 0=neutral jump, 1=forward jump, 2=backward jump
                         int s = (str < 0 ? 0 : (str > 2 ? 2 : str));
-                        const char* dir = (s==0?"8":(s==1?"9":"7"));
-                        return std::string("j-") + dir;
+                        switch (s) {
+                            case 1: return "Forward Jump";
+                            case 2: return "Backward Jump";
+                            default: return "Jump";
+                        }
                     }
                     case ACTION_BACKDASH: return "44";
                     case ACTION_FORWARD_DASH: return "66";
