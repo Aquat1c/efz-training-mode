@@ -1981,7 +1981,7 @@ namespace ImGuiGui {
                         if (!supported) {
                             ImGui::SameLine();
                             ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.2f, 1.0f), "(unsupported)");
-                            ImGui::TextDisabled("Some features are gated. Online detection and certain functionality might be unavailable.");
+                            ImGui::TextDisabled("Some features are gated. Online detection uses signature scanning fallback.");
                         } else {
                             ImGui::SameLine();
                             ImGui::TextDisabled("(supported)");
