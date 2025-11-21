@@ -181,6 +181,10 @@ void MonitorAutoJump() {
     };
 
     auto releaseIfOurJump = [](int p) {
+        // Don't interfere with timed presses (e.g., wake-up jumps)
+        int remainingTicks = ImmediateInput::GetRemainingTicks(p);
+        if (remainingTicks > 0) return;
+        
         uint8_t mask = ImmediateInput::GetCurrentDesired(p);
         bool looksLikeJump = (mask & MOTION_INPUT_UP) && ((mask & MOTION_INPUT_BUTTON) == 0);
         if (looksLikeJump) { 
