@@ -1910,7 +1910,7 @@ namespace ImGuiGui {
                             ImGui::TextWrapped("Some features auto-disable others to avoid clashes:");
                             ImGui::Indent();
                             BulletTextWrapped("Random Block, Random RG, and Always RG are mutually exclusive. Enabling one may turn the others off.");
-                            BulletTextWrapped("Counter RG won’t work if Always RG is on.");
+                            BulletTextWrapped("Counter RG won't work if Always RG is on.");
                             BulletTextWrapped("While the menu is open, practice hotkeys are gated and the game auto-pauses. Mod also has a half-second cooldown after closing the menu before practice hotkeys work again.");
                             ImGui::Unindent();
                             ImGui::EndTabItem();
@@ -1918,10 +1918,23 @@ namespace ImGuiGui {
 
                         // Troubleshooting
                         if (ImGui::BeginTabItem("Troubleshooting")) {
+                            ImGui::SeparatorText("General Issues");
                             BulletTextWrapped("If values look wrong in matches, press F4/F5 to return to Normal mode.");
                             BulletTextWrapped("Continuous Recovery can be set to affect only neutral via settings.");
                             BulletTextWrapped("Use %s to open this Help quickly.", GetKeyName(cfg.helpKey).c_str());
                             BulletTextWrapped("If something looks broken - try going to the main menu and then back to the Practice mode.");
+                            
+                            ImGui::Dummy(ImVec2(1, 8));
+                            ImGui::SeparatorText("Unsupported EfzRevival Versions");
+                            ImGui::TextWrapped("If you're using an unsupported EfzRevival version (check the About tab to see if your version is supported), you may experience the following:");
+                            ImGui::Dummy(ImVec2(1, 4));
+                            BulletTextWrapped("It is recommended to avoid using unsupported versions in netplay. Offline practice mode should work, but if you encounter issues, try launching the game directly from the efz.exe instead.");
+                            ImGui::Dummy(ImVec2(1, 4));
+                            ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.2f, 1.0f), "Known Issue:");
+                            ImGui::Indent();
+                            BulletTextWrapped("Pressing EfzRevival hotkeys while this menu is open may trigger game functions. The Space key is particularly problematic - it can cause visual glitches that persist until you properly pause and unpause the game using that hotkey again. Try to avoid using Space in menus.");
+                            ImGui::Unindent();
+                            
                             ImGui::EndTabItem();
                         }
                         ImGui::EndTabBar();
