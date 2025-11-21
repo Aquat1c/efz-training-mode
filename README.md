@@ -157,7 +157,11 @@ Supported EFZ builds:
 - Eternal Fighter Zero -Revival- 1.02h!!!
 - Eternal Fighter Zero -Revival- 1.02i!!!
 
-If you run a different EfzRevival build, the mod will load but some features may be disabled for safety.
+**Unsupported Revival versions**: If you run a different EfzRevival build, the mod will attempt to use signature scanning to dynamically discover required addresses. This provides best-effort support for:
+- Netplay detection (to auto-disable features during online matches)
+- Basic training mode functionality
+
+Some advanced features may be disabled for safety on unsupported versions.
 
 ## Contributing
 Contributions are welcome! Major areas that need improvement:

@@ -9,6 +9,7 @@
 #include "../include/core/logger.h"
 #include "../include/utils/utilities.h"
 #include "../include/core/memory.h"
+#include "../include/game/efzrevival_scanner.h"
 // For global shutdown flag
 #include "../include/core/globals.h"
 extern std::atomic<bool> g_isShuttingDown;
@@ -93,6 +94,7 @@ bool IsEfzRevivalVersionSupported(EfzRevivalVersion v /*=detected*/) {
 //   state  = *(int*)(ctxPtr + 0x370)   // 1.02e/1.02h
 //   state  = *(int*)(ctxPtr + 0x37C)   // 1.02i
 // Fallback path: legacy fixed RVAs (module-relative) returning a 32-bit int.
+// Signature scanner fallback: for unsupported versions, attempt to use scanner-discovered RVAs.
 OnlineState ReadEfzRevivalOnlineState() {
     auto mapState = [](int v) -> OnlineState {
         switch (v) {
@@ -105,7 +107,8 @@ OnlineState ReadEfzRevivalOnlineState() {
     };
 
     EfzRevivalVersion vv = GetEfzRevivalVersion();
-    if (vv == EfzRevivalVersion::Unknown || vv == EfzRevivalVersion::Vanilla || vv == EfzRevivalVersion::Other)
+    // For Vanilla and completely unknown versions, bail early
+    if (vv == EfzRevivalVersion::Unknown || vv == EfzRevivalVersion::Vanilla)
         return OnlineState::Unknown;
 
     HMODULE hEfzRev = GetModuleHandleA("EfzRevival.dll");
@@ -113,12 +116,14 @@ OnlineState ReadEfzRevivalOnlineState() {
     uintptr_t base = reinterpret_cast<uintptr_t>(hEfzRev);
 
     // Pointer-based path first (more stable across sub-versions)
+    // This works for known and potentially for unknown Revival versions too
     {
         uintptr_t ctx = 0; 
         uintptr_t ctxPtrAddr = base + 0x26A4; // module global: pointer to net/rollback context
         if (SafeReadMemory(ctxPtrAddr, &ctx, sizeof(ctx)) && ctx) {
-            const size_t candidates[2] = { 0x370, 0x37C }; // e/h then i; probe both to be safe
-            for (size_t i = 0; i < 2; ++i) {
+            // Expanded candidate list to cover more potential layouts
+            const size_t candidates[] = { 0x370, 0x37C, 0x378, 0x374, 0x380, 0x36C };
+            for (size_t i = 0; i < sizeof(candidates) / sizeof(candidates[0]); ++i) {
                 int raw = 0; 
                 if (!SafeReadMemory(ctx + candidates[i], &raw, sizeof(raw))) continue;
                 // Primary attempt: exact enum 0..3
@@ -133,7 +138,34 @@ OnlineState ReadEfzRevivalOnlineState() {
         }
     }
 
-    // Legacy fixed-RVA ints (keep as fallback)
+    // For unsupported versions (Other), try signature scanner before giving up
+    if (vv == EfzRevivalVersion::Other) {
+        if (EfzSigScanner::EnsureScanned()) {
+            uintptr_t scanRva = EfzSigScanner::Get().onlineStatusRva;
+            if (scanRva) {
+                int raw = 0;
+                if (SafeReadMemory(base + scanRva, &raw, sizeof(raw))) {
+                    OnlineState st = mapState(raw);
+                    if (st != OnlineState::Unknown) {
+                        static bool logged = false;
+                        if (!logged) {
+                            LogOut("[NETPLAY] Using signature-scanned online status RVA for unsupported version", true);
+                            logged = true;
+                        }
+                        return st;
+                    }
+                    st = mapState(raw & 0xFF);
+                    if (st != OnlineState::Unknown) return st;
+                    st = mapState(raw & 0x03);
+                    if (st != OnlineState::Unknown) return st;
+                }
+            }
+        }
+        // If scanner didn't find it, return Unknown for Other versions
+        return OnlineState::Unknown;
+    }
+
+    // Legacy fixed-RVA ints (for known versions only)
     uintptr_t rva = 0;
     switch (vv) {
         case EfzRevivalVersion::Revival102e: rva = 0x00A05D0; break;
