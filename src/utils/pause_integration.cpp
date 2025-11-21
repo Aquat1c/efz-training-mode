@@ -56,7 +56,8 @@ namespace {
     std::atomic<bool> s_weVanillaEnginePause{false};
     
     bool IsEfzRevivalLoaded() {
-        return GetModuleHandleA("EfzRevival.dll") != nullptr;
+        // For unsupported versions, treat as vanilla (return false)
+        return GetModuleHandleA("EfzRevival.dll") != nullptr && IsEfzRevivalVersionSupported();
     }
 
     // Validate a candidate Practice controller pointer by checking key invariants
@@ -264,6 +265,9 @@ namespace {
         // Gate to Practice mode only (offline is checked in scanning functions)
         GameMode mode = GetCurrentGameMode();
         if (mode != GameMode::Practice) return;
+        
+        // Don't install hooks for unsupported Revival versions
+        if (!IsEfzRevivalLoaded()) return;
         
         // Maintain CS cycle bookkeeping to bound scan/log spam to once per CS
         UpdateCsCycleState();
@@ -576,7 +580,8 @@ namespace PauseIntegration {
         EnsurePracticePtrHookInstalled();
         GameMode mode = GetCurrentGameMode();
         const bool inPractice = (mode == GameMode::Practice);
-        const bool revivalLoaded = (GetModuleHandleA("EfzRevival.dll") != nullptr);
+        // For unsupported Revival versions, treat as vanilla
+        const bool revivalLoaded = (GetModuleHandleA("EfzRevival.dll") != nullptr) && IsEfzRevivalVersionSupported();
         std::ostringstream log; log << "[PAUSE] Menu=" << (visible?"open":"close") << " practice=" << (inPractice?1:0)
             << " prx=0x" << std::hex << (uintptr_t)s_practicePtr.load();
         LogOut(log.str(), true);

@@ -2,6 +2,7 @@
 #include "../../include/game/efzrevival_addrs.h" // future: version-aware toggles
 #include "../../include/core/logger.h"
 #include "../../include/game/practice_hotkey_gate.h" // for menu visibility notification if needed
+#include "../../include/utils/network.h" // IsEfzRevivalVersionSupported
 #include "../../3rdparty/minhook/include/MinHook.h"
 #include <windows.h>
 #include <atomic>
@@ -35,6 +36,13 @@ namespace {
         if (g_overlayHooksInstalled.load()) return;
         HMODULE hRev = GetModuleHandleA("EfzRevival.dll");
         if (!hRev) return;
+        
+        // Only install hooks for supported Revival versions - unsupported versions have wrong RVAs
+        if (!IsEfzRevivalVersionSupported()) {
+            LogOut("[HOTKEY] Overlay hooks skipped for unsupported Revival version", true);
+            return;
+        }
+        
         int installed = 0;
         if (MakeHook(reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(hRev)+EFZREV_RVA_TOGGLE_HURTBOXES), &HookedToggleHurt, &oToggleHurt)) { ++installed; }
         if (MakeHook(reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(hRev)+EFZREV_RVA_TOGGLE_HITBOXES), &HookedToggleHit, &oToggleHit)) { ++installed; }

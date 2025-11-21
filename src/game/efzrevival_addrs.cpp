@@ -180,6 +180,7 @@ uintptr_t EFZ_RVA_MapReset() {
     if (IsE()) r = 0x006D640;  // sub_1006D640
     else if (IsI()) r = 0x006E190;  // 1.02i: sub_1006E190 (corrected)
     else if (IsH()) r = 0x006DEC0;  // 1.02h: sub_1006DEC0 (corrected)
+    // For unsupported versions: return 0 (vanilla behavior - no player switching)
     LogAddrOnce("MapReset", r);
     return r;
 }
@@ -189,6 +190,7 @@ uintptr_t EFZ_RVA_CleanupPair() {
     if (IsE()) r = 0x006CAD0;  // 1.02e: EFZ_Obj_SubStruct448_CleanupPair
     else if (IsI()) r = 0x006D5F0;  // 1.02i: sub_1006D5F0 (corrected)
     else if (IsH()) r = 0x006D320;  // 1.02h: sub_1006D320 (corrected)
+    // For unsupported versions: return 0 (vanilla behavior - no player switching)
     LogAddrOnce("CleanupPair", r);
     return r;
 }
@@ -245,7 +247,8 @@ uintptr_t EFZ_RVA_PracticeDispatcher() {
     // e: 0x00759F0, h: 0x0076490, i: 0x0076A30
     if (IsE()) r = 0x00759F0;
     else if (IsI()) r = 0x0076A30;
-    else /* h */ r = 0x0076490;
+    else if (IsH()) r = 0x0076490;
+    // For unsupported versions: return 0 (don't guess addresses)
     LogAddrOnce("PracticeDispatcher", r);
     return r;
 }

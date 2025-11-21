@@ -9,6 +9,7 @@
 #include "../include/core/logger.h"
 #include "../include/utils/utilities.h"
 #include "../include/core/memory.h"
+#include "../include/game/game_state.h"
 // For global shutdown flag
 #include "../include/core/globals.h"
 extern std::atomic<bool> g_isShuttingDown;
@@ -167,7 +168,85 @@ const char* OnlineStateName(OnlineState st) {
 
 // Check if the process has any network connections - improved for local network detection
 bool DetectOnlineMatch() {
-    // Only use EfzRevival.dll flag for detection (no TCP/UDP fallback)
+    EfzRevivalVersion v = GetEfzRevivalVersion();
+    
+    // For unsupported/unknown versions: try multiple known RVAs
+    // The state variable address drifts between versions, so probe all candidates
+    if (v == EfzRevivalVersion::Other || v == EfzRevivalVersion::Unknown) {
+        HMODULE hEfzRev = GetModuleHandleA("EfzRevival.dll");
+        if (!hEfzRev) {
+            // EfzRevival.dll not loaded yet - definitely not online
+            return false;
+        }
+        
+        uintptr_t base = reinterpret_cast<uintptr_t>(hEfzRev);
+        // Known RVAs from supported versions (most recent first)
+        const uintptr_t candidateRVAs[] = {
+            0xA15FC,  // 1.02i
+            0xA05F0,  // 1.02h
+            0xA05D0   // 1.02e
+        };
+        
+        bool foundValidState = false;
+        for (uintptr_t rva : candidateRVAs) {
+            int state = -1;
+            if (SafeReadMemory(base + rva, &state, sizeof(state))) {
+                char debugBuf[128];
+                snprintf(debugBuf, sizeof(debugBuf), "[NETWORK_DBG] RVA 0x%X read value: %d (0x%08X)", (unsigned int)rva, state, (unsigned int)state);
+                LogOut(debugBuf);
+                
+                // Valid state values: 0=Netplay, 1=Spectating, 2=Offline, 3=Tournament
+                // Check if we got a valid state value
+                if (state >= 0 && state <= 3) {
+                    foundValidState = true;
+                    
+                    // IMPORTANT: During early startup, reading 0 might just be uninitialized memory
+                    // To avoid false positives, we need additional validation
+                    // Check if this looks like a real initialized state by verifying surrounding memory
+                    // isn't all zeros (which would indicate uninitialized .data section)
+                    if (state == 0 || state == 1 || state == 3) {
+                        // Reading what looks like an "online" state - verify it's real
+                        // Read a few bytes before and after to see if memory looks initialized
+                        int verify1 = 0, verify2 = 0;
+                        bool mem1 = SafeReadMemory(base + rva - 4, &verify1, sizeof(verify1));
+                        bool mem2 = SafeReadMemory(base + rva + 4, &verify2, sizeof(verify2));
+                        
+                        // If we can't read surrounding memory, or it's all zeros, this is likely
+                        // uninitialized memory during early startup - assume offline
+                        if (!mem1 || !mem2 || (verify1 == 0 && verify2 == 0 && state == 0)) {
+                            char buf[256];
+                            snprintf(buf, sizeof(buf), "[NETWORK_DBG] State %d at RVA 0x%X looks uninitialized (surrounding: 0x%08X, 0x%08X) - ignoring",
+                                state, (unsigned int)rva, (unsigned int)verify1, (unsigned int)verify2);
+                            LogOut(buf);
+                            continue; // Try next RVA
+                        }
+                    }
+                    
+                    // Found valid state; 2 = Offline/Practice, others = online
+                    if (state != 2) {
+                        char buf[128];
+                        snprintf(buf, sizeof(buf), "[NETWORK] Unsupported version online state detected at RVA 0x%X: %d", (unsigned int)rva, state);
+                        LogOut(buf);
+                        return true;
+                    }
+                    // State is 2 (Offline), found the correct address
+                    char buf[128];
+                    snprintf(buf, sizeof(buf), "[NETWORK] Offline state confirmed at RVA 0x%X: %d", (unsigned int)rva, state);
+                    LogOut(buf);
+                    return false;
+                }
+            }
+        }
+        
+        // If we read valid-looking states but they're all invalid, or all reads failed,
+        // conservatively assume offline to avoid blocking features during startup
+        if (!foundValidState) {
+            LogOut("[NETWORK_DBG] No valid state found at any known RVA - assuming offline (likely early startup)");
+        }
+        return false;
+    }
+    
+    // For supported versions: use EfzRevival.dll flag for detection (no TCP/UDP fallback)
     OnlineState st = ReadEfzRevivalOnlineState();
     if (st != OnlineState::Unknown) {
         // Treat Tournament as online-safe (disable features) conservatively

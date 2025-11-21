@@ -4,6 +4,7 @@
 #include "../include/core/logger.h"
 #include "../include/core/constants.h"
 #include "../include/utils/utilities.h"
+#include "../include/utils/network.h" // IsEfzRevivalVersionSupported
 
 #include "../include/input/input_core.h"
 
@@ -110,7 +111,10 @@ static const uintptr_t POLL_INPUT_STATE_FUNC_OFFSET = 0x0CD00;
 // Vanilla-only input routing swap flag
 static std::atomic<bool> g_swapVanillaRouting{false};
 static std::atomic<bool> g_loggedRoutingStateOnce{false};
-static inline bool RevivalLoaded() { return GetModuleHandleA("EfzRevival.dll") != nullptr; }
+// Check if Revival is loaded AND supported (not just present)
+static inline bool RevivalLoaded() { 
+    return GetModuleHandleA("EfzRevival.dll") != nullptr && IsEfzRevivalVersionSupported(); 
+}
 void SetVanillaSwapInputRouting(bool enable) {
     bool prev = g_swapVanillaRouting.load(std::memory_order_relaxed);
     if (prev != enable) {
