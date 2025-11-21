@@ -122,7 +122,7 @@ OnlineState ReadEfzRevivalOnlineState() {
                 if (SafeReadMemory(base + scanResults.onlineStatusRva, &raw, sizeof(raw))) {
                     OnlineState st = mapState(raw);
                     if (st != OnlineState::Unknown) {
-                        // Log success for debugging unsupported versions
+                        // Log success for debugging unsupported versions (once per session)
                         static std::atomic<bool> s_loggedOnce{false};
                         if (!s_loggedOnce.exchange(true)) {
                             char msg[200];
