@@ -3,6 +3,8 @@
 #include <iomanip>
 #include <chrono>
 #include <windows.h>
+#include <winsock2.h>
+#include <iphlpapi.h>
 #include <thread>
 #include <vector>
 #include "../include/utils/network.h"
@@ -10,9 +12,13 @@
 #include "../include/utils/utilities.h"
 #include "../include/core/memory.h"
 #include "../include/game/game_state.h"
+#include "../include/game/practice_patch.h" // For FormatHexAddress
 // For global shutdown flag
 #include "../include/core/globals.h"
 extern std::atomic<bool> g_isShuttingDown;
+
+#pragma comment(lib, "ws2_32.lib")
+#pragma comment(lib, "iphlpapi.lib")
 
 
 
@@ -91,6 +97,42 @@ bool IsEfzRevivalVersionSupported(EfzRevivalVersion v /*=detected*/) {
     }
 }
 
+// Helper: Check if the process has ANY active UDP connections
+// This is more reliable than checking specific ports since port numbers can vary
+// Returns true if any UDP socket is found for this process, false otherwise.
+static bool ProcessHasActiveUdpConnection() {
+    // Get the process ID of the current process
+    DWORD currentPid = GetCurrentProcessId();
+    
+    // Get the UDP table
+    ULONG tableSize = 0;
+    DWORD result = GetExtendedUdpTable(nullptr, &tableSize, FALSE, AF_INET, UDP_TABLE_OWNER_PID, 0);
+    if (result != ERROR_INSUFFICIENT_BUFFER) {
+        return false;
+    }
+    
+    std::vector<BYTE> buffer(tableSize);
+    PMIB_UDPTABLE_OWNER_PID pUdpTable = reinterpret_cast<PMIB_UDPTABLE_OWNER_PID>(buffer.data());
+    
+    result = GetExtendedUdpTable(pUdpTable, &tableSize, FALSE, AF_INET, UDP_TABLE_OWNER_PID, 0);
+    if (result != NO_ERROR) {
+        return false;
+    }
+    
+    // Check if ANY UDP socket belongs to this process
+    // EfzRevival uses UDP for netplay, so any active UDP socket indicates online play
+    for (DWORD i = 0; i < pUdpTable->dwNumEntries; i++) {
+        const MIB_UDPROW_OWNER_PID& row = pUdpTable->table[i];
+        
+        if (row.dwOwningPid == currentPid) {
+            // Found at least one UDP socket for this process
+            return true;
+        }
+    }
+    
+    return false;
+}
+
 // Try to read the ONLINE state exposed by EfzRevival.dll.
 // Preferred path (CE-confirmed):
 //   ctxPtr = *(void**)(EfzRevival.dll + 0x26A4)
@@ -98,6 +140,9 @@ bool IsEfzRevivalVersionSupported(EfzRevivalVersion v /*=detected*/) {
 //   state  = *(int*)(ctxPtr + 0x37C)   // 1.02i
 // Fallback path: legacy fixed RVAs (module-relative) returning a 32-bit int.
 OnlineState ReadEfzRevivalOnlineState() {
+    static std::atomic<bool> s_loggedOnce{false};
+    bool shouldLog = !s_loggedOnce.exchange(true, std::memory_order_relaxed);
+    
     auto mapState = [](int v) -> OnlineState {
         switch (v) {
             case 0: return OnlineState::Netplay;
@@ -120,19 +165,57 @@ OnlineState ReadEfzRevivalOnlineState() {
     {
         uintptr_t ctx = 0; 
         uintptr_t ctxPtrAddr = base + 0x26A4; // module global: pointer to net/rollback context
+        if (shouldLog) {
+            LogOut("[ONLINE_STATE] Checking pointer-based path at EfzRevival.dll+0x26A4 (VA=0x" + 
+                   FormatHexAddress(ctxPtrAddr) + ")", true);
+        }
         if (SafeReadMemory(ctxPtrAddr, &ctx, sizeof(ctx)) && ctx) {
-            const size_t candidates[2] = { 0x370, 0x37C }; // e/h then i; probe both to be safe
-            for (size_t i = 0; i < 2; ++i) {
-                int raw = 0; 
-                if (!SafeReadMemory(ctx + candidates[i], &raw, sizeof(raw))) continue;
+            if (shouldLog) {
+                LogOut("[ONLINE_STATE] Context pointer read: 0x" + FormatHexAddress(ctx), true);
+            }
+            
+            // Use version-specific offset: 0x370 for e/h, 0x37C for i
+            size_t offset = (vv == EfzRevivalVersion::Revival102i) ? 0x37C : 0x370;
+            int raw = 0; 
+            uintptr_t checkAddr = ctx + offset;
+            
+            if (SafeReadMemory(checkAddr, &raw, sizeof(raw))) {
+                if (shouldLog) {
+                    LogOut("[ONLINE_STATE] Read from ctx+0x" + FormatHexAddress(offset) + 
+                           " (VA=0x" + FormatHexAddress(checkAddr) + "): value=" + std::to_string(raw) + 
+                           " (0x" + FormatHexAddress(raw) + ")", true);
+                }
                 // Primary attempt: exact enum 0..3
                 OnlineState st = mapState(raw);
-                if (st != OnlineState::Unknown) return st;
+                if (st != OnlineState::Unknown) {
+                    if (shouldLog) {
+                        LogOut("[ONLINE_STATE] Pointer-based path returned: " + std::string(OnlineStateName(st)), true);
+                    }
+                    return st;
+                }
                 // Secondary attempt: some builds store in a byte or low bits
                 st = mapState(raw & 0xFF);
-                if (st != OnlineState::Unknown) return st;
+                if (st != OnlineState::Unknown) {
+                    if (shouldLog) {
+                        LogOut("[ONLINE_STATE] Pointer-based path (low byte) returned: " + std::string(OnlineStateName(st)), true);
+                    }
+                    return st;
+                }
                 st = mapState(raw & 0x03);
-                if (st != OnlineState::Unknown) return st;
+                if (st != OnlineState::Unknown) {
+                    if (shouldLog) {
+                        LogOut("[ONLINE_STATE] Pointer-based path (low 2 bits) returned: " + std::string(OnlineStateName(st)), true);
+                    }
+                    return st;
+                }
+            } else {
+                if (shouldLog) {
+                    LogOut("[ONLINE_STATE] Failed to read from ctx+0x" + FormatHexAddress(offset), true);
+                }
+            }
+        } else {
+            if (shouldLog) {
+                LogOut("[ONLINE_STATE] Pointer-based path failed: could not read ctx or ctx is NULL", true);
             }
         }
     }
@@ -143,20 +226,82 @@ OnlineState ReadEfzRevivalOnlineState() {
         case EfzRevivalVersion::Revival102e: rva = 0x00A05D0; break;
         case EfzRevivalVersion::Revival102g: rva = 0x00A05D0; break; // 1.02g uses same as 1.02e
         case EfzRevivalVersion::Revival102h: rva = 0x00A05F0; break;
-        case EfzRevivalVersion::Revival102i: rva = 0x00A15FC; break;
+        case EfzRevivalVersion::Revival102i: rva = 0x00A15FC; break; // CE-confirmed: online state
         default: return OnlineState::Unknown;
+    }
+    if (shouldLog) {
+        LogOut("[ONLINE_STATE] Checking legacy RVA path: EfzRevival.dll+0x" + FormatHexAddress(rva) + 
+               " (VA=0x" + FormatHexAddress(base + rva) + ")", true);
     }
     int raw = 0; 
     if (!SafeReadMemory(base + rva, &raw, sizeof(raw))) {
+        if (shouldLog) {
+            LogOut("[ONLINE_STATE] Failed to read from legacy RVA", true);
+        }
         return OnlineState::Unknown;
     }
+    if (shouldLog) {
+        LogOut("[ONLINE_STATE] Legacy RVA read value: " + std::to_string(raw) + " (0x" + FormatHexAddress(raw) + ")", true);
+    }
     OnlineState st = mapState(raw);
-    if (st != OnlineState::Unknown) return st;
+    if (st != OnlineState::Unknown) {
+        if (shouldLog) {
+            LogOut("[ONLINE_STATE] Legacy RVA returned: " + std::string(OnlineStateName(st)), true);
+        }
+        return st;
+    }
     st = mapState(raw & 0xFF);
-    if (st != OnlineState::Unknown) return st;
+    if (st != OnlineState::Unknown) {
+        if (shouldLog) {
+            LogOut("[ONLINE_STATE] Legacy RVA (low byte) returned: " + std::string(OnlineStateName(st)), true);
+        }
+        return st;
+    }
     st = mapState(raw & 0x03);
-    if (st != OnlineState::Unknown) return st;
-    return OnlineState::Unknown;
+    if (st != OnlineState::Unknown) {
+        if (shouldLog) {
+            LogOut("[ONLINE_STATE] Legacy RVA returned: " + std::string(OnlineStateName(st)), true);
+        }
+        return st;
+    }
+    
+    // Secondary attempt with low byte/bits masking (for some builds)
+    st = mapState(raw & 0xFF);
+    if (st != OnlineState::Unknown) {
+        if (shouldLog) {
+            LogOut("[ONLINE_STATE] Legacy RVA (low byte) returned: " + std::string(OnlineStateName(st)), true);
+        }
+        return st;
+    }
+    st = mapState(raw & 0x03);
+    if (st != OnlineState::Unknown) {
+        if (shouldLog) {
+            LogOut("[ONLINE_STATE] Legacy RVA (low 2 bits) returned: " + std::string(OnlineStateName(st)), true);
+        }
+        return st;
+    }
+    
+    // Tertiary fallback: Check for active UDP connection in the process
+    // This is more reliable than memory scanning and works for unsupported versions
+    // Connection check comes BEFORE low-bit probing because it's more reliable
+    if (shouldLog) {
+        LogOut("[ONLINE_STATE] Confirmed address methods failed. Checking for active UDP connection...", true);
+    }
+    
+    bool hasConnection = ProcessHasActiveUdpConnection();
+    if (shouldLog) {
+        LogOut("[ONLINE_STATE] Process UDP connection check: " + std::string(hasConnection ? "ACTIVE (Netplay)" : "NONE (Offline)"), true);
+    }
+    
+    if (hasConnection) {
+        return OnlineState::Netplay;
+    }
+    
+    // If no connection found, assume Offline rather than Unknown
+    if (shouldLog) {
+        LogOut("[ONLINE_STATE] No connection found, returning Offline", true);
+    }
+    return OnlineState::Offline;
 }
 
 // Helper: human-readable name for OnlineState
@@ -186,7 +331,7 @@ bool DetectOnlineMatch() {
         uintptr_t base = reinterpret_cast<uintptr_t>(hEfzRev);
         // Known RVAs from supported versions (most recent first)
         const uintptr_t candidateRVAs[] = {
-            0xA15FC,  // 1.02i
+            0xA15FC,  // 1.02i (CE-confirmed)
             0xA05F0,  // 1.02h
             0xA05D0   // 1.02e
         };
