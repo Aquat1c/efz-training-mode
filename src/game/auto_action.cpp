@@ -630,6 +630,8 @@ short GetActionMoveID(int actionType, int triggerType, int playerNum) {
                 return BASE_ATTACK_JB;  // Air B
             case ACTION_JC:
                 return BASE_ATTACK_JC;  // Air C
+            case ACTION_JD:
+                return BASE_ATTACK_JD;  // Air D
             default:
                 // If in air and trying to do a ground move, use a safe fallback
                 return STRAIGHT_JUMP_ID;
@@ -637,7 +639,7 @@ short GetActionMoveID(int actionType, int triggerType, int playerNum) {
     }
     else { // Character is on the ground
         // Air move attempted on ground - check if it's a jump-related action
-        if (actionType == ACTION_JA || actionType == ACTION_JB || actionType == ACTION_JC) {
+        if (actionType == ACTION_JA || actionType == ACTION_JB || actionType == ACTION_JC || actionType == ACTION_JD) {
             LogOut("[AUTO-ACTION] Cannot perform air move on ground, using JUMP instead", true);
             return STRAIGHT_JUMP_ID; // If air move selected on ground, do a jump instead
         }
@@ -650,12 +652,16 @@ short GetActionMoveID(int actionType, int triggerType, int playerNum) {
                 return BASE_ATTACK_5B;  // 201
             case ACTION_5C:
                 return BASE_ATTACK_5C;  // 203
+            case ACTION_5D:
+                return BASE_ATTACK_5D;  // D button standing
             case ACTION_2A:
                 return BASE_ATTACK_2A;  // 204
             case ACTION_2B:
                 return BASE_ATTACK_2B;  // 205
             case ACTION_2C:
                 return BASE_ATTACK_2C;  // 206
+            case ACTION_2D:
+                return BASE_ATTACK_2D;  // D button crouching
             case ACTION_JUMP:
                 return STRAIGHT_JUMP_ID; // 4
             case ACTION_BACKDASH:
@@ -1279,7 +1285,7 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
                         int buttonMask = ResolveButtonMaskForAction(at, TRIGGER_ON_WAKEUP);
                         if (at == ACTION_BACKDASH || at == ACTION_FORWARD_DASH) {
                             QueueMotionInput(1, motionType, 0);
-                        } else if ((motionType >= MOTION_5A && motionType <= MOTION_5C) || (motionType >= MOTION_6A && motionType <= MOTION_4C)) {
+                        } else if ((motionType >= MOTION_5A && motionType <= MOTION_5D) || (motionType >= MOTION_6A && motionType <= MOTION_4D)) {
                             ImmediateInput::PressFor(1, buttonMask, 2);
                         } else if (motionType >= MOTION_2A && motionType <= MOTION_2C) {
                             ImmediateInput::PressFor(1, GAME_INPUT_DOWN | buttonMask, 2);
@@ -1604,7 +1610,7 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
                         int buttonMask = ResolveButtonMaskForAction(at, TRIGGER_ON_WAKEUP);
                         if (at == ACTION_BACKDASH || at == ACTION_FORWARD_DASH) {
                             QueueMotionInput(2, motionType, 0);
-                        } else if ((motionType >= MOTION_5A && motionType <= MOTION_5C) || (motionType >= MOTION_6A && motionType <= MOTION_4C)) {
+                        } else if ((motionType >= MOTION_5A && motionType <= MOTION_5D) || (motionType >= MOTION_6A && motionType <= MOTION_4D)) {
                             ImmediateInput::PressFor(2, buttonMask, 2);
                         } else if (motionType >= MOTION_2A && motionType <= MOTION_2C) {
                             ImmediateInput::PressFor(2, GAME_INPUT_DOWN | buttonMask, 2);
@@ -1807,18 +1813,18 @@ void ClearDelayStatesIfNonActionable() {
 void ApplyAutoAction(int playerNum, uintptr_t moveIDAddr, short currentMoveID, short prevMoveID) {
     // Helper: map UI motion index to action type (uses per-trigger strength for normals)
     auto MapMotionIndexToActionType = [&](int idx, int triggerType)->int {
-        int strength = GetSpecialMoveStrength(ACTION_5A, triggerType); // 0=A,1=B,2=C
+        int strength = GetSpecialMoveStrength(ACTION_5A, triggerType); // 0=A,1=B,2=C,3=D
         switch (idx) {
-            case 0: return (strength==0?ACTION_5A:(strength==1?ACTION_5B:ACTION_5C));
-            case 1: return (strength==0?ACTION_2A:(strength==1?ACTION_2B:ACTION_2C));
-            case 2: return (strength==0?ACTION_JA:(strength==1?ACTION_JB:ACTION_JC));
+            case 0: return (strength==0?ACTION_5A:(strength==1?ACTION_5B:(strength==2?ACTION_5C:ACTION_5D)));
+            case 1: return (strength==0?ACTION_2A:(strength==1?ACTION_2B:(strength==2?ACTION_2C:ACTION_2D)));
+            case 2: return (strength==0?ACTION_JA:(strength==1?ACTION_JB:(strength==2?ACTION_JC:ACTION_JD)));
             case 3: return ACTION_QCF; case 4: return ACTION_DP; case 5: return ACTION_QCB; case 6: return ACTION_421;
             case 7: return ACTION_SUPER1; case 8: return ACTION_SUPER2; case 9: return ACTION_236236; case 10: return ACTION_214214;
             case 11: return ACTION_641236; case 12: return ACTION_463214; case 13: return ACTION_412; case 14: return ACTION_22;
             case 15: return ACTION_4123641236; case 16: return ACTION_6321463214; case 17: return ACTION_JUMP; case 18: return ACTION_BACKDASH;
             case 19: return ACTION_FORWARD_DASH; case 20: return ACTION_BLOCK; case 21: return ACTION_FINAL_MEMORY;
-            case 22: return (strength==0?ACTION_6A:(strength==1?ACTION_6B:ACTION_6C));
-            case 23: return (strength==0?ACTION_4A:(strength==1?ACTION_4B:ACTION_4C));
+            case 22: return (strength==0?ACTION_6A:(strength==1?ACTION_6B:(strength==2?ACTION_6C:ACTION_6D)));
+            case 23: return (strength==0?ACTION_4A:(strength==1?ACTION_4B:(strength==2?ACTION_4C:ACTION_4D)));
             default: return ACTION_5A;
         }
     };
@@ -1946,41 +1952,66 @@ void ApplyAutoAction(int playerNum, uintptr_t moveIDAddr, short currentMoveID, s
     }
 
     // Determine strength BEFORE converting to motion; strength drives motionType selection
-    int resolvedStrength = (dstate.chosenStrength >= 0) ? dstate.chosenStrength : GetSpecialMoveStrength(actionType, triggerType); // 0=A 1=B 2=C
+    int resolvedStrength = (dstate.chosenStrength >= 0) ? dstate.chosenStrength : GetSpecialMoveStrength(actionType, triggerType); // 0=A 1=B 2=C 3=D
     // Convert action to motion type and determine button mask
     int motionType = ConvertTriggerActionToMotion(actionType, triggerType);
     int buttonMask = 0;
     
     // Determine button mask based on action type
-    if (actionType >= ACTION_5A && actionType <= ACTION_2C) {
-        // Neutral and crouching normals (5A/B/C,2A/B/C)
-        int button = (actionType - ACTION_5A) % 3;  // 0=A, 1=B, 2=C
-        buttonMask = (1 << (4 + button));  // A=16, B=32, C=64
-    } else if (actionType >= ACTION_JA && actionType <= ACTION_JC) {
-        // Jump attacks
-        int button = (actionType - ACTION_JA) % 3;  // 0=A, 1=B, 2=C
-        buttonMask = (1 << (4 + button));  // A=16, B=32, C=64
-    } else if (actionType >= ACTION_6A && actionType <= ACTION_4C) {
-        // Directional forward/back normals (6A/B/C, 4A/B/C)
-        int button = (actionType - ACTION_6A) % 3; // groups of 3
-        buttonMask = (1 << (4 + button));
-    } else if (actionType >= ACTION_QCF) {
-        // Strength-based actions only (exclude jump/dash/block/custom)
-        switch (actionType) {
-            case ACTION_QCF:
-            case ACTION_DP:
-            case ACTION_QCB:
-            case ACTION_421:
-            case ACTION_SUPER1:
-            case ACTION_SUPER2:
-            case ACTION_236236:
-            case ACTION_214214:
-            case ACTION_641236: {
-                int strength = GetSpecialMoveStrength(actionType, triggerType); // 0=A 1=B 2=C
-                buttonMask = (1 << (4 + strength));
-                break; }
-            default: break;
+    // Use explicit switch to avoid overlapping ID ranges
+    switch (actionType) {
+        // Neutral normals
+        case ACTION_5A: buttonMask = GAME_INPUT_A; break;
+        case ACTION_5B: buttonMask = GAME_INPUT_B; break;
+        case ACTION_5C: buttonMask = GAME_INPUT_C; break;
+        case ACTION_5D: buttonMask = GAME_INPUT_D; break;
+        
+        // Crouch normals
+        case ACTION_2A: buttonMask = GAME_INPUT_A; break;
+        case ACTION_2B: buttonMask = GAME_INPUT_B; break;
+        case ACTION_2C: buttonMask = GAME_INPUT_C; break;
+        case ACTION_2D: buttonMask = GAME_INPUT_D; break;
+        
+        // Jump normals
+        case ACTION_JA: buttonMask = GAME_INPUT_A; break;
+        case ACTION_JB: buttonMask = GAME_INPUT_B; break;
+        case ACTION_JC: buttonMask = GAME_INPUT_C; break;
+        case ACTION_JD: buttonMask = GAME_INPUT_D; break;
+        
+        // Forward normals
+        case ACTION_6A: buttonMask = GAME_INPUT_A; break;
+        case ACTION_6B: buttonMask = GAME_INPUT_B; break;
+        case ACTION_6C: buttonMask = GAME_INPUT_C; break;
+        case ACTION_6D: buttonMask = GAME_INPUT_D; break;
+        
+        // Back normals
+        case ACTION_4A: buttonMask = GAME_INPUT_A; break;
+        case ACTION_4B: buttonMask = GAME_INPUT_B; break;
+        case ACTION_4C: buttonMask = GAME_INPUT_C; break;
+        case ACTION_4D: buttonMask = GAME_INPUT_D; break;
+        
+        // Special moves - use strength from config
+        case ACTION_QCF:
+        case ACTION_DP:
+        case ACTION_QCB:
+        case ACTION_421:
+        case ACTION_SUPER1:
+        case ACTION_SUPER2:
+        case ACTION_236236:
+        case ACTION_214214:
+        case ACTION_641236:
+        case ACTION_463214:
+        case ACTION_412:
+        case ACTION_22:
+        case ACTION_4123641236:
+        case ACTION_6321463214: {
+            int strength = GetSpecialMoveStrength(actionType, triggerType); // 0=A 1=B 2=C 3=D
+            buttonMask = (1 << (4 + strength));  // A=16, B=32, C=64, D=128
+            break;
         }
+        
+        default:
+            break;
     }
 
     LogOut("[AUTO-ACTION] Converting action=" + std::to_string(actionType) +
@@ -1996,11 +2027,11 @@ void ApplyAutoAction(int playerNum, uintptr_t moveIDAddr, short currentMoveID, s
     }
     else {
         LogOut("[AUTO-ACTION] Final buttonMask=" + std::to_string(buttonMask) +
-               " (A=16,B=32,C=64)", true);
+               " (A=16,B=32,C=64,D=128)", true);
     }
     
     bool success = false;
-    bool isRegularMove = (motionType >= MOTION_5A && motionType <= MOTION_JC) || (motionType >= MOTION_6A && motionType <= MOTION_4C);
+    bool isRegularMove = (motionType >= MOTION_5A && motionType <= MOTION_JD) || (motionType >= MOTION_6A && motionType <= MOTION_4D);
     bool isSpecialMove = (motionType >= MOTION_236A);
     // Exclude dashes from being treated as specials for restore/control tracking
     if (actionType == ACTION_FORWARD_DASH || actionType == ACTION_BACKDASH || actionType == ACTION_BACK_DASH) {
@@ -2111,16 +2142,16 @@ void ApplyAutoAction(int playerNum, uintptr_t moveIDAddr, short currentMoveID, s
         uint8_t forwardDir = facingRight ? GAME_INPUT_RIGHT : GAME_INPUT_LEFT;
         uint8_t backDir    = facingRight ? GAME_INPUT_LEFT  : GAME_INPUT_RIGHT;
 
-        if (motionType >= MOTION_5A && motionType <= MOTION_5C) {
-            inputMask = buttonMask; // Neutral ground normals
-        } else if (motionType >= MOTION_2A && motionType <= MOTION_2C) {
-            inputMask = GAME_INPUT_DOWN | buttonMask; // Crouching normals
-        } else if (motionType >= MOTION_JA && motionType <= MOTION_JC) {
-            inputMask = buttonMask; // Air normals (jump direction handled separately at jump time)
-        } else if (motionType >= MOTION_6A && motionType <= MOTION_6C) {
-            inputMask = forwardDir | buttonMask; // Forward direction + button
-        } else if (motionType >= MOTION_4A && motionType <= MOTION_4C) {
-            inputMask = backDir | buttonMask; // Back direction + button
+        if (motionType >= MOTION_5A && motionType <= MOTION_5D) {
+            inputMask = buttonMask; // Neutral ground normals (A/B/C/D)
+        } else if (motionType >= MOTION_2A && motionType <= MOTION_2D) {
+            inputMask = GAME_INPUT_DOWN | buttonMask; // Crouching normals (2A/B/C/D)
+        } else if (motionType >= MOTION_JA && motionType <= MOTION_JD) {
+            inputMask = buttonMask; // Air normals (JA/B/C/D - jump direction handled separately at jump time)
+        } else if (motionType >= MOTION_6A && motionType <= MOTION_6D) {
+            inputMask = forwardDir | buttonMask; // Forward direction + button (6A/B/C/D)
+        } else if (motionType >= MOTION_4A && motionType <= MOTION_4D) {
+            inputMask = backDir | buttonMask; // Back direction + button (4A/B/C/D)
         }
 
     // Use immediate writer for the button (A/B/C) and optionally direction DOWN for 2A/2B/2C.
@@ -3081,10 +3112,10 @@ static bool SupportsImmediateWakeHold(int actionType) {
     if (actionType == ACTION_JUMP) return true;
     int motionType = ConvertTriggerActionToMotion(actionType, TRIGGER_ON_WAKEUP);
     if (motionType >= MOTION_236A) return false;
-    if ((motionType >= MOTION_5A && motionType <= MOTION_5C) ||
-        (motionType >= MOTION_2A && motionType <= MOTION_2C) ||
-        (motionType >= MOTION_JA && motionType <= MOTION_JC) ||
-        (motionType >= MOTION_6A && motionType <= MOTION_4C)) {
+    if ((motionType >= MOTION_5A && motionType <= MOTION_5D) ||
+        (motionType >= MOTION_2A && motionType <= MOTION_2D) ||
+        (motionType >= MOTION_JA && motionType <= MOTION_JD) ||
+        (motionType >= MOTION_6A && motionType <= MOTION_4D)) {
         return true;
     }
     if (actionType == ACTION_BLOCK) return true;
@@ -3119,23 +3150,23 @@ static bool BuildImmediateWakeHoldMask(int playerNum, int actionType, uint8_t &o
         return true;
     }
 
-    if (motionType >= MOTION_5A && motionType <= MOTION_5C) {
+    if (motionType >= MOTION_5A && motionType <= MOTION_5D) {
         outMask = static_cast<uint8_t>(buttonMask);
         return true;
     }
-    if (motionType >= MOTION_2A && motionType <= MOTION_2C) {
+    if (motionType >= MOTION_2A && motionType <= MOTION_2D) {
         outMask = static_cast<uint8_t>(GAME_INPUT_DOWN | buttonMask);
         return true;
     }
-    if (motionType >= MOTION_JA && motionType <= MOTION_JC) {
+    if (motionType >= MOTION_JA && motionType <= MOTION_JD) {
         outMask = static_cast<uint8_t>(buttonMask);
         return true;
     }
-    if (motionType >= MOTION_6A && motionType <= MOTION_6C) {
+    if (motionType >= MOTION_6A && motionType <= MOTION_6D) {
         outMask = static_cast<uint8_t>(forwardDir | buttonMask);
         return true;
     }
-    if (motionType >= MOTION_4A && motionType <= MOTION_4C) {
+    if (motionType >= MOTION_4A && motionType <= MOTION_4D) {
         outMask = static_cast<uint8_t>(backDir | buttonMask);
         return true;
     }
@@ -3169,18 +3200,18 @@ static bool IssueWakeImmediateHold(int playerNum, int actionType) {
 
 static int ResolveButtonMaskForAction(int actionType, int triggerType) {
     int buttonMask = 0;
-    if ((actionType >= ACTION_5A && actionType <= ACTION_2C) ||
-        (actionType >= ACTION_6A && actionType <= ACTION_4C)) {
+    if ((actionType >= ACTION_5A && actionType <= ACTION_2D) ||
+        (actionType >= ACTION_6A && actionType <= ACTION_4D)) {
         int button = 0;
-        if (actionType >= ACTION_5A && actionType <= ACTION_2C) {
-            button = (actionType - ACTION_5A) % 3;
+        if (actionType >= ACTION_5A && actionType <= ACTION_2D) {
+            button = (actionType - ACTION_5A) % 4;  // Changed from % 3 to % 4 to handle A/B/C/D
         } else {
             int offset = actionType - ACTION_6A;
-            button = offset % 3;
+            button = offset % 4;  // Changed from % 3 to % 4 to handle A/B/C/D
         }
         buttonMask = (1 << (4 + button));
-    } else if (actionType >= ACTION_JA && actionType <= ACTION_JC) {
-        int button = (actionType - ACTION_JA) % 3;
+    } else if (actionType >= ACTION_JA && actionType <= ACTION_JD) {
+        int button = (actionType - ACTION_JA) % 4;  // Changed from % 3 to % 4 to handle A/B/C/D
         buttonMask = (1 << (4 + button));
     } else if (actionType >= ACTION_QCF && actionType <= ACTION_6321463214) {
         int strength = GetSpecialMoveStrength(actionType, triggerType);

@@ -273,6 +273,12 @@
 #define BASE_ATTACK_JA        207   // Jumping A
 #define BASE_ATTACK_JB        208   // Jumping B  
 #define BASE_ATTACK_JC        209   // Jumping C
+
+// D button (Special button) attack Move IDs
+#define BASE_ATTACK_5D        210   // Standing D
+#define BASE_ATTACK_2D        211   // Crouching D
+#define BASE_ATTACK_JD        212   // Jumping D
+
 #define BASE_AIRTHROW         241   // Air throw
 
 // Auto-action trigger points
@@ -321,6 +327,12 @@
 #define ACTION_4A             31
 #define ACTION_4B             32
 #define ACTION_4C             33
+// D button normals (notated as S for Special button)
+#define ACTION_5D             34
+#define ACTION_2D             35
+#define ACTION_JD             36
+#define ACTION_6D             37
+#define ACTION_4D             38
 
 // Default delay for triggers
 #define DEFAULT_TRIGGER_DELAY 0  // Default delay for all triggers

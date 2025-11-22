@@ -306,7 +306,7 @@ bool FreezeBufferForMotion(int playerNum, int motionType, int buttonMask, int op
     std::vector<uint8_t> pattern;
     
     switch (motionType) {
-        case MOTION_623A: case MOTION_623B: case MOTION_623C: {
+        case MOTION_623A: case MOTION_623B: case MOTION_623C: case MOTION_623D: {
             // Dragon Punch (623): Forward, Down, Down-Forward + Button
             pattern = {
                 0x00, 0x00,                             // Neutral padding (2)
@@ -319,7 +319,7 @@ bool FreezeBufferForMotion(int playerNum, int motionType, int buttonMask, int op
             break;
         }
         
-        case MOTION_214A: case MOTION_214B: case MOTION_214C: {
+        case MOTION_214A: case MOTION_214B: case MOTION_214C: case MOTION_214D: {
             // QCB: Down, Down-Back, Back + Button
             pattern = {
                 0x00, 0x00,                             // Neutral padding (2)
@@ -332,7 +332,7 @@ bool FreezeBufferForMotion(int playerNum, int motionType, int buttonMask, int op
             break;
         }
         
-        case MOTION_236A: case MOTION_236B: case MOTION_236C: {
+        case MOTION_236A: case MOTION_236B: case MOTION_236C: case MOTION_236D: {
             // QCF: Down, Down-Forward, Forward + Button
             pattern = {
                 0x00, 0x00,                             // Neutral padding (2)
@@ -344,7 +344,7 @@ bool FreezeBufferForMotion(int playerNum, int motionType, int buttonMask, int op
             };
             break;
         }
-        case MOTION_421A: case MOTION_421B: case MOTION_421C: {
+        case MOTION_421A: case MOTION_421B: case MOTION_421C: case MOTION_421D: {
             pattern = {
                 0x00, 0x00,                             // Neutral padding (2)
                 back, back,                             // Back (2)
@@ -355,7 +355,7 @@ bool FreezeBufferForMotion(int playerNum, int motionType, int buttonMask, int op
             };
             break;
         }
-        case MOTION_41236A: case MOTION_41236B: case MOTION_41236C: {
+        case MOTION_41236A: case MOTION_41236B: case MOTION_41236C: case MOTION_41236D: {
             // HCF: Back, Down-Back, Down, Down-Forward, Forward + Button
             pattern = {
                 0x00, 0x00,                             // Neutral padding (2)
@@ -369,7 +369,7 @@ bool FreezeBufferForMotion(int playerNum, int motionType, int buttonMask, int op
             };
             break;
         }
-        case MOTION_214214A: case MOTION_214214B: case MOTION_214214C: {
+        case MOTION_214214A: case MOTION_214214B: case MOTION_214214C: case MOTION_214214D: {
             // Double QCB: (Down, Down-Back, Back)x2 + Button
             pattern = {
                 0x00, 0x00,                             // Neutral padding (2)
@@ -384,7 +384,7 @@ bool FreezeBufferForMotion(int playerNum, int motionType, int buttonMask, int op
             };
             break;
         }
-        case MOTION_236236A: case MOTION_236236B: case MOTION_236236C: {
+        case MOTION_236236A: case MOTION_236236B: case MOTION_236236C: case MOTION_236236D: {
             // Double QCF: (Down, Down-Forward, Forward)x2 + Button
             pattern = {
                 0x00, 0x00,                             // Neutral padding (2)
@@ -399,7 +399,7 @@ bool FreezeBufferForMotion(int playerNum, int motionType, int buttonMask, int op
             };
             break;
         }
-        case MOTION_641236A: case MOTION_641236B: case MOTION_641236C: {
+        case MOTION_641236A: case MOTION_641236B: case MOTION_641236C: case MOTION_641236D: {
             pattern = {
                 0x00, 0x00,                             // Neutral padding (2)
                 fwd, fwd,                               // Forward (2)
@@ -413,7 +413,7 @@ bool FreezeBufferForMotion(int playerNum, int motionType, int buttonMask, int op
             };
             break;
         }
-        case MOTION_412A: case MOTION_412B: case MOTION_412C: {
+        case MOTION_412A: case MOTION_412B: case MOTION_412C: case MOTION_412D: {
             // 412: Back, Down-Back, Down + Button
             pattern = {
                 0x00, 0x00,
@@ -425,7 +425,7 @@ bool FreezeBufferForMotion(int playerNum, int motionType, int buttonMask, int op
             };
             break;
         }
-        case MOTION_22A: case MOTION_22B: case MOTION_22C: {
+        case MOTION_22A: case MOTION_22B: case MOTION_22C: case MOTION_22D: {
             // 22: Down, (small neutral), Down + Button
             pattern = {
                 0x00, 0x00,
@@ -437,7 +437,7 @@ bool FreezeBufferForMotion(int playerNum, int motionType, int buttonMask, int op
             };
             break;
         }
-        case MOTION_214236A: case MOTION_214236B: case MOTION_214236C: {
+        case MOTION_214236A: case MOTION_214236B: case MOTION_214236C: case MOTION_214236D: {
             // 214236: Down, Down-Back, Back, Down, Down-Forward, Forward + Button
             pattern = {
                 0x00, 0x00,
@@ -452,7 +452,7 @@ bool FreezeBufferForMotion(int playerNum, int motionType, int buttonMask, int op
             };
             break;
         }
-        case MOTION_463214A: case MOTION_463214B: case MOTION_463214C: {
+        case MOTION_463214A: case MOTION_463214B: case MOTION_463214C: case MOTION_463214D: {
             // 463214: Left, Right, Down-Right, Down, Down-Left, Left + Button
             // Using back=fwd swap logic later for facing; here we build canonical facing-right pattern
             pattern = {
@@ -468,7 +468,7 @@ bool FreezeBufferForMotion(int playerNum, int motionType, int buttonMask, int op
             };
             break;
         }
-        case MOTION_4123641236A: case MOTION_4123641236B: case MOTION_4123641236C: {
+        case MOTION_4123641236A: case MOTION_4123641236B: case MOTION_4123641236C: case MOTION_4123641236D: {
             // 41236 41236: Back, Down-Back, Down, Down-Forward, Forward x2 + Button only at final Forward
             pattern = {
                 0x00, 0x00,
@@ -479,7 +479,7 @@ bool FreezeBufferForMotion(int playerNum, int motionType, int buttonMask, int op
             };
             break;
         }
-        case MOTION_6321463214A: case MOTION_6321463214B: case MOTION_6321463214C: {
+        case MOTION_6321463214A: case MOTION_6321463214B: case MOTION_6321463214C: case MOTION_6321463214D: {
             // 6321463214: Fwd, Down-Fwd, Down, Down-Back, Back, Fwd, Down-Fwd, Down, Down-Back, Back + Button (represented with diagonals)
             // Using canonical facing-right mapping of digits; adapt using fwd/back variables.
             // Sequence digits: 6,3,2,1,4,6,3,2,1,4 + Button

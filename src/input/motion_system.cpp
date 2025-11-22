@@ -51,6 +51,14 @@ uint8_t DetermineButtonFromMotionType(int motionType) {
         case MOTION_412C: case MOTION_22C: case MOTION_214236C:
         case MOTION_463214C: case MOTION_4123641236C: case MOTION_6321463214C:
             return GAME_INPUT_C;
+    
+    case MOTION_5D: case MOTION_2D: case MOTION_JD: case MOTION_6D: case MOTION_4D:
+        case MOTION_236D: case MOTION_623D: case MOTION_214D:
+        case MOTION_421D: case MOTION_41236D:
+    case MOTION_236236D: case MOTION_214214D: case MOTION_641236D:
+        case MOTION_412D: case MOTION_22D: case MOTION_214236D:
+        case MOTION_463214D: case MOTION_4123641236D: case MOTION_6321463214D:
+            return GAME_INPUT_D;
             
         default:
             return GAME_INPUT_A;  // Default to A button
@@ -73,50 +81,69 @@ std::string GetMotionTypeName(int motionType) {
     case MOTION_4A: return "4A";
     case MOTION_4B: return "4B";
     case MOTION_4C: return "4C";
+    case MOTION_5D: return "5S";
+    case MOTION_2D: return "2S";
+    case MOTION_JD: return "j.S";
+    case MOTION_6D: return "6S";
+    case MOTION_4D: return "4S";
         case MOTION_JB: return "j.B";
         case MOTION_JC: return "j.C";
         case MOTION_236A: return "236A";
         case MOTION_236B: return "236B";
         case MOTION_236C: return "236C";
+        case MOTION_236D: return "236S";
         case MOTION_623A: return "623A";
         case MOTION_623B: return "623B";
         case MOTION_623C: return "623C";
+        case MOTION_623D: return "623S";
         case MOTION_214A: return "214A";
         case MOTION_214B: return "214B";
         case MOTION_214C: return "214C";
+        case MOTION_214D: return "214S";
         case MOTION_421A: return "421A";
         case MOTION_421B: return "421B";
         case MOTION_421C: return "421C";
+        case MOTION_421D: return "421S";
         case MOTION_41236A: return "41236A";
         case MOTION_41236B: return "41236B";
         case MOTION_41236C: return "41236C";
+        case MOTION_41236D: return "41236S";
         case MOTION_236236A: return "236236A";
         case MOTION_236236B: return "236236B";
         case MOTION_236236C: return "236236C";
+        case MOTION_236236D: return "236236S";
         case MOTION_214214A: return "214214A";
         case MOTION_214214B: return "214214B";
         case MOTION_214214C: return "214214C";
+        case MOTION_214214D: return "214214S";
         case MOTION_641236A: return "641236A";
         case MOTION_641236B: return "641236B";
         case MOTION_641236C: return "641236C";
+        case MOTION_641236D: return "641236S";
         case MOTION_412A: return "412A";
         case MOTION_412B: return "412B";
         case MOTION_412C: return "412C";
+        case MOTION_412D: return "412S";
         case MOTION_22A: return "22A";
         case MOTION_22B: return "22B";
         case MOTION_22C: return "22C";
+        case MOTION_22D: return "22S";
         case MOTION_214236A: return "214236A";
         case MOTION_214236B: return "214236B";
         case MOTION_214236C: return "214236C";
+        case MOTION_214236D: return "214236S";
         case MOTION_463214A: return "463214A";
         case MOTION_463214B: return "463214B";
         case MOTION_463214C: return "463214C";
+        case MOTION_463214D: return "463214S";
         case MOTION_4123641236A: return "4123641236A";
         case MOTION_4123641236B: return "4123641236B";
         case MOTION_4123641236C: return "4123641236C";
+        case MOTION_4123641236D: return "4123641236S";
     case MOTION_6321463214A: return "6321463214A";
     case MOTION_6321463214B: return "6321463214B";
     case MOTION_6321463214C: return "6321463214C";
+    case MOTION_6321463214D: return "6321463214S";
     case MOTION_FORWARD_DASH: return "Forward Dash";
     case MOTION_BACK_DASH: return "Back Dash";
         default: return "Unknown";

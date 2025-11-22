@@ -963,22 +963,22 @@ namespace ImGuiGui {
         const float _labelMacro = ImGui::CalcTextSize("Macro").x;
         const float _baseline = (std::max)(_labelFinalMemory, _labelMacro);
         const float actionComboWidth = _baseline + _style.FramePadding.x * 2.0f + ImGui::GetFrameHeight();
-        // Shared A/B/C choice for normals/specials strength
-        const char* buttonItems[] = { "A", "B", "C" };
+        // Shared A/B/C/D (notated as S for Special button) choice for normals/specials strength
+        const char* buttonItems[] = { "A", "B", "C", "S" };
 
         // Mapping helpers between UI motion indices and internal ACTION_* enums
         auto GetPostureIndexForAction = [](int action)->int {
             switch (action) {
-                case ACTION_5A: case ACTION_5B: case ACTION_5C: return 0; // Standing
-                case ACTION_2A: case ACTION_2B: case ACTION_2C: return 1; // Crouching
-                case ACTION_JA: case ACTION_JB: case ACTION_JC: return 2; // Jumping
+                case ACTION_5A: case ACTION_5B: case ACTION_5C: case ACTION_5D: return 0; // Standing
+                case ACTION_2A: case ACTION_2B: case ACTION_2C: case ACTION_2D: return 1; // Crouching
+                case ACTION_JA: case ACTION_JB: case ACTION_JC: case ACTION_JD: return 2; // Jumping
                 default: return -1;
             }
         };
         auto IsNormalAttackAction = [&](int action)->bool {
             return GetPostureIndexForAction(action) >= 0
-                || action == ACTION_6A || action == ACTION_6B || action == ACTION_6C
-                || action == ACTION_4A || action == ACTION_4B || action == ACTION_4C;
+                || action == ACTION_6A || action == ACTION_6B || action == ACTION_6C || action == ACTION_6D
+                || action == ACTION_4A || action == ACTION_4B || action == ACTION_4C || action == ACTION_4D;
         };
         auto IsSpecialMoveAction = [](int action)->bool {
             switch (action) {
@@ -991,11 +991,11 @@ namespace ImGuiGui {
             }
         };
         auto MapPostureAndButtonToAction = [](int postureIdx, int buttonIdx)->int {
-            buttonIdx = (buttonIdx < 0 ? 0 : (buttonIdx > 2 ? 2 : buttonIdx));
+            buttonIdx = (buttonIdx < 0 ? 0 : (buttonIdx > 3 ? 3 : buttonIdx));
             switch (postureIdx) {
-                case 0: return buttonIdx==0?ACTION_5A:(buttonIdx==1?ACTION_5B:ACTION_5C);
-                case 1: return buttonIdx==0?ACTION_2A:(buttonIdx==1?ACTION_2B:ACTION_2C);
-                case 2: return buttonIdx==0?ACTION_JA:(buttonIdx==1?ACTION_JB:ACTION_JC);
+                case 0: return buttonIdx==0?ACTION_5A:(buttonIdx==1?ACTION_5B:(buttonIdx==2?ACTION_5C:ACTION_5D));
+                case 1: return buttonIdx==0?ACTION_2A:(buttonIdx==1?ACTION_2B:(buttonIdx==2?ACTION_2C:ACTION_2D));
+                case 2: return buttonIdx==0?ACTION_JA:(buttonIdx==1?ACTION_JB:(buttonIdx==2?ACTION_JC:ACTION_JD));
                 default: return ACTION_5A;
             }
         };
@@ -1012,12 +1012,12 @@ namespace ImGuiGui {
         auto GetMotionIndexForAction = [&](int action)->int {
             switch (action) {
                 // Group normals
-                case ACTION_5A: case ACTION_5B: case ACTION_5C: return 0;
-                case ACTION_2A: case ACTION_2B: case ACTION_2C: return 1;
-                case ACTION_JA: case ACTION_JB: case ACTION_JC: return 2;
+                case ACTION_5A: case ACTION_5B: case ACTION_5C: case ACTION_5D: return 0;
+                case ACTION_2A: case ACTION_2B: case ACTION_2C: case ACTION_2D: return 1;
+                case ACTION_JA: case ACTION_JB: case ACTION_JC: case ACTION_JD: return 2;
                 // Forward/Back normals as separate groups (refined by Option)
-                case ACTION_6A: case ACTION_6B: case ACTION_6C: return 22;
-                case ACTION_4A: case ACTION_4B: case ACTION_4C: return 23;
+                case ACTION_6A: case ACTION_6B: case ACTION_6C: case ACTION_6D: return 22;
+                case ACTION_4A: case ACTION_4B: case ACTION_4C: case ACTION_4D: return 23;
                 // Specials/Supers/Others
                 case ACTION_QCF: return 3; case ACTION_DP: return 4; case ACTION_QCB: return 5; case ACTION_421: return 6; case ACTION_SUPER1: return 7;
                 case ACTION_SUPER2: return 8; case ACTION_236236: return 9; case ACTION_214214: return 10; case ACTION_641236: return 11; case ACTION_463214: return 12;
@@ -1146,19 +1146,19 @@ namespace ImGuiGui {
                     if (ImGui::Combo("##FDFollow", &fdf, fdItems, IM_ARRAYSIZE(fdItems))) { if (fdf < 0) fdf = 0; if (fdf > 6) fdf = 6; forwardDashFollowup.store(fdf); }
                     ImGui::SameLine(); bool dashMode = forwardDashFollowupDashMode.load(); if (ImGui::Checkbox("DashAtk", &dashMode)) { forwardDashFollowupDashMode.store(dashMode); }
                 } else if (postureIdx >= 0) {
-                    switch (*triggers[i].action) { case ACTION_5A: case ACTION_2A: case ACTION_JA: buttonIdx = 0; break; case ACTION_5B: case ACTION_2B: case ACTION_JB: buttonIdx = 1; break; case ACTION_5C: case ACTION_2C: case ACTION_JC: buttonIdx = 2; break; default: buttonIdx = 0; break; }
+                    switch (*triggers[i].action) { case ACTION_5A: case ACTION_2A: case ACTION_JA: buttonIdx = 0; break; case ACTION_5B: case ACTION_2B: case ACTION_JB: buttonIdx = 1; break; case ACTION_5C: case ACTION_2C: case ACTION_JC: buttonIdx = 2; break; case ACTION_5D: case ACTION_2D: case ACTION_JD: buttonIdx = 3; break; default: buttonIdx = 0; break; }
                     if (ImGui::Combo("##Btn", &buttonIdx, buttonItems, IM_ARRAYSIZE(buttonItems))) { *triggers[i].action = MapPostureAndButtonToAction(postureIdx, buttonIdx); }
                 } else if (IsSpecialMoveAction(*triggers[i].action)) {
-                    buttonIdx = *triggers[i].strength; if (ImGui::Combo("##Str", &buttonIdx, buttonItems, IM_ARRAYSIZE(buttonItems))) { *triggers[i].strength = (buttonIdx > 2) ? 2 : buttonIdx; }
+                    buttonIdx = *triggers[i].strength; if (ImGui::Combo("##Str", &buttonIdx, buttonItems, IM_ARRAYSIZE(buttonItems))) { *triggers[i].strength = (buttonIdx > 3) ? 3 : buttonIdx; }
                 } else if (GetMotionIndexForAction(*triggers[i].action) == 22 || GetMotionIndexForAction(*triggers[i].action) == 23) {
                     int groupIndex = GetMotionIndexForAction(*triggers[i].action);
-                    switch (*triggers[i].action) { case ACTION_6A: case ACTION_4A: buttonIdx = 0; break; case ACTION_6B: case ACTION_4B: buttonIdx = 1; break; case ACTION_6C: case ACTION_4C: buttonIdx = 2; break; default: buttonIdx = 0; break; }
-                    if (ImGui::Combo("##FwdBackBtn", &buttonIdx, buttonItems, 3)) {
-                        if (groupIndex == 22) { *triggers[i].action = (buttonIdx==0)?ACTION_6A:(buttonIdx==1)?ACTION_6B:ACTION_6C; }
-                        else { *triggers[i].action = (buttonIdx==0)?ACTION_4A:(buttonIdx==1)?ACTION_4B:ACTION_4C; }
+                    switch (*triggers[i].action) { case ACTION_6A: case ACTION_4A: buttonIdx = 0; break; case ACTION_6B: case ACTION_4B: buttonIdx = 1; break; case ACTION_6C: case ACTION_4C: buttonIdx = 2; break; case ACTION_6D: case ACTION_4D: buttonIdx = 3; break; default: buttonIdx = 0; break; }
+                    if (ImGui::Combo("##FwdBackBtn", &buttonIdx, buttonItems, IM_ARRAYSIZE(buttonItems))) {
+                        if (groupIndex == 22) { *triggers[i].action = (buttonIdx==0)?ACTION_6A:(buttonIdx==1)?ACTION_6B:(buttonIdx==2)?ACTION_6C:ACTION_6D; }
+                        else { *triggers[i].action = (buttonIdx==0)?ACTION_4A:(buttonIdx==1)?ACTION_4B:(buttonIdx==2)?ACTION_4C:ACTION_4D; }
                     }
                 } else {
-                    buttonIdx = *triggers[i].strength; if (*triggers[i].action != ACTION_BLOCK) { if (ImGui::Combo("##OtherBtn", &buttonIdx, buttonItems, IM_ARRAYSIZE(buttonItems))) { *triggers[i].strength = (buttonIdx > 2) ? 2 : buttonIdx; } }
+                    buttonIdx = *triggers[i].strength; if (*triggers[i].action != ACTION_BLOCK) { if (ImGui::Combo("##OtherBtn", &buttonIdx, buttonItems, IM_ARRAYSIZE(buttonItems))) { *triggers[i].strength = (buttonIdx > 3) ? 3 : buttonIdx; } }
                 }
 
                 // Column: Delay
@@ -1257,20 +1257,20 @@ namespace ImGuiGui {
                         if (ImGui::Combo("##rowJump", &dir, dirItems, IM_ARRAYSIZE(dirItems))) { opts[r].strength = (dir<0?0:(dir>2?2:dir)); }
                     } else if (IsNormalAttackAction(opts[r].action)) {
                         int postIdx = GetPostureIndexForAction(opts[r].action);
-                        int b = 0; switch (opts[r].action) { case ACTION_5A: case ACTION_2A: case ACTION_JA: case ACTION_6A: case ACTION_4A: b=0; break; case ACTION_5B: case ACTION_2B: case ACTION_JB: case ACTION_6B: case ACTION_4B: b=1; break; default: b=2; break; }
+                        int b = 0; switch (opts[r].action) { case ACTION_5A: case ACTION_2A: case ACTION_JA: case ACTION_6A: case ACTION_4A: b=0; break; case ACTION_5B: case ACTION_2B: case ACTION_JB: case ACTION_6B: case ACTION_4B: b=1; break; case ACTION_5C: case ACTION_2C: case ACTION_JC: case ACTION_6C: case ACTION_4C: b=2; break; case ACTION_5D: case ACTION_2D: case ACTION_JD: case ACTION_6D: case ACTION_4D: b=3; break; default: b=0; break; }
                         if (ImGui::Combo("##rowBtn", &b, buttonItems, IM_ARRAYSIZE(buttonItems))) {
-                            if (postIdx == 0) opts[r].action = (b==0?ACTION_5A:(b==1?ACTION_5B:ACTION_5C));
-                            else if (postIdx == 1) opts[r].action = (b==0?ACTION_2A:(b==1?ACTION_2B:ACTION_2C));
-                            else if (postIdx == 2) opts[r].action = (b==0?ACTION_JA:(b==1?ACTION_JB:ACTION_JC));
+                            if (postIdx == 0) opts[r].action = (b==0?ACTION_5A:(b==1?ACTION_5B:(b==2?ACTION_5C:ACTION_5D)));
+                            else if (postIdx == 1) opts[r].action = (b==0?ACTION_2A:(b==1?ACTION_2B:(b==2?ACTION_2C:ACTION_2D)));
+                            else if (postIdx == 2) opts[r].action = (b==0?ACTION_JA:(b==1?ACTION_JB:(b==2?ACTION_JC:ACTION_JD)));
                             else {
                                 int groupIndex = GetMotionIndexForAction(opts[r].action);
-                                if (groupIndex == 22) opts[r].action = (b==0?ACTION_6A:(b==1?ACTION_6B:ACTION_6C));
-                                else if (groupIndex == 23) opts[r].action = (b==0?ACTION_4A:(b==1?ACTION_4B:ACTION_4C));
+                                if (groupIndex == 22) opts[r].action = (b==0?ACTION_6A:(b==1?ACTION_6B:(b==2?ACTION_6C:ACTION_6D)));
+                                else if (groupIndex == 23) opts[r].action = (b==0?ACTION_4A:(b==1?ACTION_4B:(b==2?ACTION_4C:ACTION_4D)));
                             }
                             opts[r].strength = b;
                         }
                     } else if (IsSpecialMoveAction(opts[r].action)) {
-                        int b = opts[r].strength; if (ImGui::Combo("##rowStr", &b, buttonItems, IM_ARRAYSIZE(buttonItems))) { opts[r].strength = (b>2)?2:b; }
+                        int b = opts[r].strength; if (ImGui::Combo("##rowStr", &b, buttonItems, IM_ARRAYSIZE(buttonItems))) { opts[r].strength = (b>3)?3:b; }
                     } else { ImGui::TextDisabled("(none)"); }
 
                     // Delay column

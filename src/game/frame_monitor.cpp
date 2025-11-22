@@ -545,6 +545,11 @@ void UpdateTriggerOverlay() {
             case ACTION_4A: return "4A";
             case ACTION_4B: return "4B";
             case ACTION_4C: return "4C";
+            case ACTION_5D: return "5S";
+            case ACTION_2D: return "2S";
+            case ACTION_JD: return "j.S";
+            case ACTION_6D: return "6S";
+            case ACTION_4D: return "4S";
             case ACTION_QCF: return "236" + strengthLetter; // QCF + strength
             case ACTION_DP: return "623" + strengthLetter;  // DP + strength
             case ACTION_QCB: return "214" + strengthLetter; // QCB + strength
@@ -582,13 +587,13 @@ void UpdateTriggerOverlay() {
                 if (macro > 0) {
                     return std::string("Macro ") + std::to_string(macro);
                 }
-                auto letter = [&](int s)->char { return (s<=0)?'a':(s==1?'b':'c'); };
+                auto letter = [&](int s)->char { return (s<=0)?'A':(s==1?'B':(s==2?'C':'S')); };
                 switch (act) {
-                    case ACTION_5A: return "5a"; case ACTION_5B: return "5b"; case ACTION_5C: return "5c";
-                    case ACTION_2A: return "2a"; case ACTION_2B: return "2b"; case ACTION_2C: return "2c";
-                    case ACTION_JA: return "ja"; case ACTION_JB: return "jb"; case ACTION_JC: return "jc";
-                    case ACTION_6A: return "6a"; case ACTION_6B: return "6b"; case ACTION_6C: return "6c";
-                    case ACTION_4A: return "4a"; case ACTION_4B: return "4b"; case ACTION_4C: return "4c";
+                    case ACTION_5A: return "5A"; case ACTION_5B: return "5B"; case ACTION_5C: return "5C"; case ACTION_5D: return "5S";
+                    case ACTION_2A: return "2A"; case ACTION_2B: return "2B"; case ACTION_2C: return "2C"; case ACTION_2D: return "2S";
+                    case ACTION_JA: return "jA"; case ACTION_JB: return "jB"; case ACTION_JC: return "jC"; case ACTION_JD: return "jS";
+                    case ACTION_6A: return "6A"; case ACTION_6B: return "6B"; case ACTION_6C: return "6C"; case ACTION_6D: return "6S";
+                    case ACTION_4A: return "4A"; case ACTION_4B: return "4B"; case ACTION_4C: return "4C"; case ACTION_4D: return "4S";
                     case ACTION_QCF: return std::string("236") + letter(str);
                     case ACTION_DP:  return std::string("623") + letter(str);
                     case ACTION_QCB: return std::string("214") + letter(str);
