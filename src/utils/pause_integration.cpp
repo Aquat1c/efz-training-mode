@@ -613,7 +613,10 @@ namespace {
     return reinterpret_cast<tOfficialToggle>(EFZ_RVA_TO_VA(hRev, rva));
     }
     bool InvokeOfficialToggle() {
-        void* p = s_practicePtr.load(); if (!p) return false; auto fn = GetOfficialToggleFn(); if (!fn) return false;
+        void* p = s_practicePtr.load(); if (!p) return false;
+        
+        // Now that we have RVAs for 1.02g, use the standard function call path
+        auto fn = GetOfficialToggleFn(); if (!fn) return false;
         // Temporarily bypass suppression so HookedTogglePause calls through
         s_internalPauseBypass.store(true, std::memory_order_relaxed);
         bool ok = false;

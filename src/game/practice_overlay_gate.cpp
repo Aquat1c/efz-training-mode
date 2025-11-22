@@ -28,25 +28,46 @@ namespace {
     static ToggleFn oToggleHit  = nullptr;
     static ToggleFn oToggleDisp = nullptr; // We intentionally do NOT hook pause here; pause gating handled in pause_integration.
 
-    void __fastcall HookedToggleHurt(void* self, void*) { if (MenuVisible()) return; if (oToggleHurt) oToggleHurt(self); }
-    void __fastcall HookedToggleHit (void* self, void*) { if (MenuVisible()) return; if (oToggleHit)  oToggleHit(self); }
-    void __fastcall HookedToggleDisp(void* self, void*) { if (MenuVisible()) return; if (oToggleDisp) oToggleDisp(self); }
+    void __stdcall HookedToggleHurt(void* self) { if (MenuVisible()) return; if (oToggleHurt) oToggleHurt(self); }
+    void __stdcall HookedToggleHit (void* self) { if (MenuVisible()) return; if (oToggleHit)  oToggleHit(self); }
+    void __stdcall HookedToggleDisp(void* self) { if (MenuVisible()) return; if (oToggleDisp) oToggleDisp(self); }
 
     void InstallOverlayHooksInternal() {
         if (g_overlayHooksInstalled.load()) return;
         HMODULE hRev = GetModuleHandleA("EfzRevival.dll");
         if (!hRev) return;
         
+        // Log version detection for debugging
+        EfzRevivalVersion ver = GetEfzRevivalVersion();
+        bool supported = IsEfzRevivalVersionSupported();
+        char buf[256];
+        snprintf(buf, sizeof(buf), "[HOTKEY] Overlay gate: version=%s supported=%d", 
+                 EfzRevivalVersionName(ver), supported);
+        LogOut(buf, true);
+        
         // Only install hooks for supported Revival versions - unsupported versions have wrong RVAs
-        if (!IsEfzRevivalVersionSupported()) {
+        if (!supported) {
             LogOut("[HOTKEY] Overlay hooks skipped for unsupported Revival version", true);
             return;
         }
         
+        // Get version-aware RVAs
+        uintptr_t hurtRva = EFZ_RVA_ToggleHurtboxDisplay();
+        uintptr_t hitRva = EFZ_RVA_ToggleHitboxDisplay();
+        uintptr_t dispRva = EFZ_RVA_ToggleFrameDisplay();
+        
+        // Check if any RVAs are missing (0 means not found for this version)
+        if (!hurtRva || !hitRva || !dispRva) {
+            snprintf(buf, sizeof(buf), "[HOTKEY] Overlay hooks skipped (missing RVAs: hurt=%#x hit=%#x disp=%#x)", 
+                     hurtRva, hitRva, dispRva);
+            LogOut(buf, true);
+            return;
+        }
+        
         int installed = 0;
-        if (MakeHook(reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(hRev)+EFZREV_RVA_TOGGLE_HURTBOXES), &HookedToggleHurt, &oToggleHurt)) { ++installed; }
-        if (MakeHook(reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(hRev)+EFZREV_RVA_TOGGLE_HITBOXES), &HookedToggleHit, &oToggleHit)) { ++installed; }
-        if (MakeHook(reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(hRev)+EFZREV_RVA_TOGGLE_DISPLAY), &HookedToggleDisp, &oToggleDisp)) { ++installed; }
+        if (MakeHook(reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(hRev)+hurtRva), &HookedToggleHurt, &oToggleHurt)) { ++installed; }
+        if (MakeHook(reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(hRev)+hitRva), &HookedToggleHit, &oToggleHit)) { ++installed; }
+        if (MakeHook(reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(hRev)+dispRva), &HookedToggleDisp, &oToggleDisp)) { ++installed; }
         // Pause toggle NOT hooked here; suppression handled via pause_integration's hook with internal bypass.
         if (installed) {
             g_overlayHooksInstalled.store(true);

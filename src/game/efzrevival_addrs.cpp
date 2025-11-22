@@ -7,7 +7,8 @@
 #include <windows.h>
 
 static inline bool IsE() {
-    return GetEfzRevivalVersion() == EfzRevivalVersion::Revival102e;
+    EfzRevivalVersion v = GetEfzRevivalVersion();
+    return v == EfzRevivalVersion::Revival102e || v == EfzRevivalVersion::Revival102g;
 }
 static inline bool IsH() {
     EfzRevivalVersion v = GetEfzRevivalVersion();
@@ -32,7 +33,10 @@ static void LogAddrOnce(const char* label, uintptr_t rva) {
     if (s_once.exchange(true)) return;
     std::ostringstream oss;
     const char* verName = "other";
-    if (IsE()) verName = "1.02e"; else if (IsH()) {
+    if (IsE()) {
+        EfzRevivalVersion vdet = GetEfzRevivalVersion();
+        verName = (vdet == EfzRevivalVersion::Revival102g) ? "1.02g" : "1.02e";
+    } else if (IsH()) {
         EfzRevivalVersion vdet = GetEfzRevivalVersion();
         verName = (vdet == EfzRevivalVersion::Revival102i) ? "1.02i" : "1.02h";
     }
@@ -117,7 +121,9 @@ uintptr_t EFZ_RVA_PatchCtx() {
 
 uintptr_t EFZ_RVA_TogglePause() {
     uintptr_t r = 0;
-    if (IsE()) r = 0x0075720;  // sub_10075720
+    EfzRevivalVersion v = GetEfzRevivalVersion();
+    if (v == EfzRevivalVersion::Revival102e) r = 0x0075720;  // 1.02e: sub_10075720
+    else if (v == EfzRevivalVersion::Revival102g) r = 0x00759C0;  // 1.02g: sub_100759C0
     else if (IsI()) r = 0x0076710;  // 1.02i: sub_10076710
     else if (IsH()) r = 0x0076170;  // 1.02h: sub_10076170
         if (r == 0 || ForceScan()) {
@@ -177,9 +183,11 @@ uintptr_t EFZ_RVA_RefreshMappingBlock_PracToCtx() {
 
 uintptr_t EFZ_RVA_MapReset() {
     uintptr_t r = 0;
-    if (IsE()) r = 0x006D640;  // sub_1006D640
-    else if (IsI()) r = 0x006E190;  // 1.02i: sub_1006E190 (corrected)
-    else if (IsH()) r = 0x006DEC0;  // 1.02h: sub_1006DEC0 (corrected)
+    EfzRevivalVersion v = GetEfzRevivalVersion();
+    if (v == EfzRevivalVersion::Revival102e) r = 0x006D640;  // sub_1006D640
+    else if (v == EfzRevivalVersion::Revival102g) r = 0x006D850;  // sub_1006D850
+    else if (v == EfzRevivalVersion::Revival102i) r = 0x006E190;  // sub_1006E190
+    else if (v == EfzRevivalVersion::Revival102h) r = 0x006DEC0;  // sub_1006DEC0
     // For unsupported versions: return 0 (vanilla behavior - no player switching)
     LogAddrOnce("MapReset", r);
     return r;
@@ -187,9 +195,11 @@ uintptr_t EFZ_RVA_MapReset() {
 
 uintptr_t EFZ_RVA_CleanupPair() {
     uintptr_t r = 0;
-    if (IsE()) r = 0x006CAD0;  // 1.02e: EFZ_Obj_SubStruct448_CleanupPair
-    else if (IsI()) r = 0x006D5F0;  // 1.02i: sub_1006D5F0 (corrected)
-    else if (IsH()) r = 0x006D320;  // 1.02h: sub_1006D320 (corrected)
+    EfzRevivalVersion v = GetEfzRevivalVersion();
+    if (v == EfzRevivalVersion::Revival102e) r = 0x006CAD0;  // sub_1006CAD0
+    else if (v == EfzRevivalVersion::Revival102g) r = 0x006CCE0;  // sub_1006CCE0
+    else if (v == EfzRevivalVersion::Revival102i) r = 0x006D5F0;  // sub_1006D5F0
+    else if (v == EfzRevivalVersion::Revival102h) r = 0x006D320;  // sub_1006D320
     // For unsupported versions: return 0 (vanilla behavior - no player switching)
     LogAddrOnce("CleanupPair", r);
     return r;
@@ -222,10 +232,11 @@ uintptr_t EFZ_RVA_GameModePtrArray() {
 uintptr_t EFZ_RVA_PracticeControllerPtr() {
     // CheatEngine pointer scans found static pointers to Practice controller base:
     // 1.02e: EfzRevival.dll+0xA02CC
+    // 1.02g: EfzRevival.dll+0xA02CC (same as 1.02e)
     // 1.02h: EfzRevival.dll+0xA02EC
     // 1.02i: EfzRevival.dll+0xA15F8
     // These point directly to the Practice struct (not mode array which returns character structs)
-    if (IsE()) return 0xA02CC;
+    if (IsE()) return 0xA02CC; // Covers both 1.02e and 1.02g
     if (IsH()) {
         EfzRevivalVersion v = GetEfzRevivalVersion();
         if (v == EfzRevivalVersion::Revival102h) return 0xA02EC;
@@ -244,8 +255,10 @@ uintptr_t EFZ_RVA_PracticeControllerPtr() {
 uintptr_t EFZ_RVA_PracticeDispatcher() {
     uintptr_t r = 0;
     // Practice hotkey dispatcher RVAs per version
-    // e: 0x00759F0, h: 0x0076490, i: 0x0076A30
-    if (IsE()) r = 0x00759F0;
+    // e: 0x00773A0, g: 0x0075CC0, h: 0x0076490, i: 0x0076A30
+    EfzRevivalVersion v = GetEfzRevivalVersion();
+    if (v == EfzRevivalVersion::Revival102e) r = 0x00773A0;  // 1.02e: sub_100773A0
+    else if (v == EfzRevivalVersion::Revival102g) r = 0x0075CC0;  // 1.02g: sub_10075CC0
     else if (IsI()) r = 0x0076A30;
     else if (IsH()) r = 0x0076490;
     // For unsupported versions: return 0 (don't guess addresses)
@@ -296,4 +309,35 @@ int EFZ_Practice_MapResetIndexBias() {
     // Map array index base used at init when calling MapReset
     // 1.02i uses (local + 105); e/h use (local + 104)
     return IsI() ? 105 : 104;
+}
+
+// Overlay toggle functions - simple bool toggles for display flags
+uintptr_t EFZ_RVA_ToggleHurtboxDisplay() {
+    uintptr_t r = 0;
+    EfzRevivalVersion v = GetEfzRevivalVersion();
+    if (v == EfzRevivalVersion::Revival102e) r = 0x0075140;  // sub_10075140 - toggles this[183]
+    else if (v == EfzRevivalVersion::Revival102g) r = 0x00753E0;  // sub_100753E0 - toggles this[183]
+    // TODO: Add h/i versions if needed
+    LogAddrOnce("ToggleHurtboxDisplay", r);
+    return r;
+}
+
+uintptr_t EFZ_RVA_ToggleHitboxDisplay() {
+    uintptr_t r = 0;
+    EfzRevivalVersion v = GetEfzRevivalVersion();
+    if (v == EfzRevivalVersion::Revival102e) r = 0x0075160;  // sub_10075160 - toggles this[182]
+    else if (v == EfzRevivalVersion::Revival102g) r = 0x0075400;  // sub_10075400 - toggles this[182]
+    // TODO: Add h/i versions if needed
+    LogAddrOnce("ToggleHitboxDisplay", r);
+    return r;
+}
+
+uintptr_t EFZ_RVA_ToggleFrameDisplay() {
+    uintptr_t r = 0;
+    EfzRevivalVersion v = GetEfzRevivalVersion();
+    if (v == EfzRevivalVersion::Revival102e) r = 0x00756E0;  // sub_100756E0 - toggles this[181]
+    else if (v == EfzRevivalVersion::Revival102g) r = 0x0075980;  // sub_10075980 - toggles this[181]
+    // TODO: Add h/i versions if needed
+    LogAddrOnce("ToggleFrameDisplay", r);
+    return r;
 }

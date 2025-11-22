@@ -44,5 +44,10 @@ uintptr_t EFZ_Practice_SharedInputVectorOffset(); // 0x1240 (stable)
 // 1.02e/h use (local + 104), 1.02i uses (local + 105)
 int EFZ_Practice_MapResetIndexBias();
 
+// Overlay toggle functions - simple bool toggles for display flags
+uintptr_t EFZ_RVA_ToggleHurtboxDisplay();
+uintptr_t EFZ_RVA_ToggleHitboxDisplay();
+uintptr_t EFZ_RVA_ToggleFrameDisplay();
+
 // Debug/testing: log scanner vs version constants and optionally force scanner usage via env (EFZ_SCAN_FORCE=1)
 void EFZ_Debug_LogScannerComparison();
