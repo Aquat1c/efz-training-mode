@@ -16,6 +16,7 @@
 #include <atomic>
 #include "../include/gui/imgui_impl.h"
 #include <chrono>
+#include <sstream>
 
 namespace CharacterSettings {
     // Track if character patches are currently applied
@@ -584,27 +585,6 @@ namespace CharacterSettings {
             }
         }
         
-        // Apply Blue IC/Red IC toggle for both players
-        if (data.p1BlueIC || data.p2BlueIC) {
-            if (data.p1BlueIC) {
-                uintptr_t icAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P1, IC_COLOR_OFFSET);
-                if (icAddr) {
-                    int icValue = 1; // 1 = Blue IC
-                    SafeWriteMemory(icAddr, &icValue, sizeof(int));
-                    LogOut("[IC] Applied P1 Blue IC", detailedLogging.load());
-                }
-            }
-            
-            if (data.p2BlueIC) {
-                uintptr_t icAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P2, IC_COLOR_OFFSET);
-                if (icAddr) {
-                    int icValue = 1; // 1 = Blue IC
-                    SafeWriteMemory(icAddr, &icValue, sizeof(int));
-                    LogOut("[IC] Applied P2 Blue IC", detailedLogging.load());
-                }
-            }
-        }
-
         // Rumi – Prefer the game's own toggle routine for safe mode swaps (with safe fallback)
         auto ApplyRumiMode = [&](int playerIndex, bool barehanded) {
             if (!AreCharactersInitialized()) return;
@@ -1000,13 +980,6 @@ namespace CharacterSettings {
             const int target = MISUZU_POISON_TIMER_MAX;
             if (cur != target) { SafeWriteMemory(tAddr,&target,sizeof(int)); }
         }; enforceMisuzuPoison(1); enforceMisuzuPoison(2);
-
-        // IC color override (Blue IC = 1)
-        auto enforceIC = [&](int pi){
-            bool wantBlue = (pi==1)?localData.p1BlueIC:localData.p2BlueIC; if (!wantBlue) return;
-            const int off = (pi==1)?EFZ_BASE_OFFSET_P1:EFZ_BASE_OFFSET_P2;
-            if (auto addr = ResolvePointer(base, off, IC_COLOR_OFFSET)) { int cur=0; SafeReadMemory(addr,&cur,sizeof(int)); if (cur != 1) { int v=1; SafeWriteMemory(addr,&v,sizeof(int)); didWriteThisTick = true; } }
-        }; enforceIC(1); enforceIC(2);
 
         // Rumi Infinite Shinai (keep gate=0 and restore Shinai mode when safe)
         static int p1RestoreDelay = 0, p2RestoreDelay = 0;

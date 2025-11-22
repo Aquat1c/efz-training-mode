@@ -10,6 +10,8 @@
 #include "../include/utils/switch_players.h"
 #include "../include/game/game_state.h"
 #include "../include/utils/debug_log.h"
+#include "../include/input/framestep.h"
+#include "../include/utils/network.h"
 #include <windows.h>
 #include <Xinput.h>
 #include "../include/utils/xinput_shim.h"

@@ -512,12 +512,17 @@ bool SetICColorDirect(bool p1BlueIC, bool p2BlueIC) {
     // Convert bool to int (0=red IC, 1=blue IC)
     int p1ICValue = p1BlueIC ? 1 : 0;
     int p2ICValue = p2BlueIC ? 1 : 0;
-    
+
+    // LOG: Track IC color writes for debugging
+    std::ostringstream logMsg;
+    logMsg << "[IC][WRITE] SetICColorDirect called: P1=" << (p1BlueIC ? "Blue" : "Red")
+           << " P2=" << (p2BlueIC ? "Blue" : "Red")
+           << " (values: P1=" << p1ICValue << ", P2=" << p2ICValue << ")";
+    LogOut(logMsg.str(), true);
+
     // Write values with memory protection handling
     DWORD oldProtect1, oldProtect2;
-    bool success = true;
-    
-    // P1 IC color write
+    bool success = true;    // P1 IC color write
     if (VirtualProtect(p1ICAddr, sizeof(int), PAGE_EXECUTE_READWRITE, &oldProtect1)) {
         *p1ICAddr = p1ICValue;
         VirtualProtect(p1ICAddr, sizeof(int), oldProtect1, &oldProtect1);
@@ -570,6 +575,15 @@ bool SetICColorPlayer(int player, bool blueIC) {
 
     bool p1Blue = (p1IC != 0);
     bool p2Blue = (p2IC != 0);
+    
+    // LOG: Track which player's IC is being changed
+    std::ostringstream logMsg;
+    logMsg << "[IC][WRITE] SetICColorPlayer called: Player=" << player
+           << " NewColor=" << (blueIC ? "Blue" : "Red")
+           << " CurrentState(P1=" << (p1Blue ? "Blue" : "Red")
+           << ", P2=" << (p2Blue ? "Blue" : "Red") << ")";
+    LogOut(logMsg.str(), true);
+    
     if (player == 1) {
         p1Blue = blueIC;
     } else if (player == 2) {
@@ -1058,6 +1072,11 @@ void UpdateRFFreezeTick() {
     static bool s_lastP2ColorEnabled = false;
     if (rfFreezeP1Active.load() && rfFreezeColorP1Enabled) {
         if (!s_lastP1ColorEnabled || s_lastP1Color != rfFreezeColorP1Blue) {
+            std::ostringstream logMsg;
+            logMsg << "[IC][RF_FREEZE] P1 IC color enforced by RF freeze: "
+                   << (rfFreezeColorP1Blue ? "Blue" : "Red")
+                   << " (was " << (s_lastP1ColorEnabled ? (s_lastP1Color ? "Blue" : "Red") : "unmanaged") << ")";
+            LogOut(logMsg.str(), true);
             SetICColorPlayer(1, rfFreezeColorP1Blue);
             s_lastP1ColorEnabled = true; s_lastP1Color = rfFreezeColorP1Blue;
         }
@@ -1066,6 +1085,11 @@ void UpdateRFFreezeTick() {
     }
     if (rfFreezeP2Active.load() && rfFreezeColorP2Enabled) {
         if (!s_lastP2ColorEnabled || s_lastP2Color != rfFreezeColorP2Blue) {
+            std::ostringstream logMsg;
+            logMsg << "[IC][RF_FREEZE] P2 IC color enforced by RF freeze: "
+                   << (rfFreezeColorP2Blue ? "Blue" : "Red")
+                   << " (was " << (s_lastP2ColorEnabled ? (s_lastP2Color ? "Blue" : "Red") : "unmanaged") << ")";
+            LogOut(logMsg.str(), true);
             SetICColorPlayer(2, rfFreezeColorP2Blue);
             s_lastP2ColorEnabled = true; s_lastP2Color = rfFreezeColorP2Blue;
         }

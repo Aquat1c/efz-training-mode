@@ -54,6 +54,8 @@ namespace {
     std::atomic<uintptr_t> s_gamespeedAddr{0};
     // Vanilla EFZ pause ownership (engine pause via battleContext+0x1416)
     std::atomic<bool> s_weVanillaEnginePause{false};
+    // Visual effect patches ownership (for vanilla/unsupported versions)
+    std::atomic<bool> s_weAppliedVisualPatches{false};
     
     bool IsEfzRevivalLoaded() {
         // For unsupported versions, treat as vanilla (return false)
@@ -528,6 +530,82 @@ namespace {
         auto fn = GetPatchToggleFn(); if (!fn) return false;
         return SehCall_PatchToggleThis(ctx, fn, (char)enableParam);
     }
+
+    // Apply visual effect freeze patches (NOPs out animation/effect update CALLs in efz.exe)
+    // This mirrors Revival's sub_1006B2A0 behavior for unsupported versions
+    bool ApplyVisualEffectPatches(bool freeze) {
+        HMODULE hEfz = GetModuleHandleA("efz.exe");
+        if (!hEfz) return false;
+        uintptr_t base = reinterpret_cast<uintptr_t>(hEfz);
+        
+        // Patch addresses from Revival sub_1006B2A0 (these are RVAs from efz.exe base 0x400000)
+        // When freezing, write NOPs; when unfreezing, restore original bytes
+        struct PatchEntry {
+            uintptr_t rva;
+            SIZE_T size;
+            BYTE nops[5];
+            BYTE original[5];
+        };
+        
+        static PatchEntry patches[] = {
+            {0x36425F, 5, {0x90,0x90,0x90,0x90,0x90}, {}}, // Character rendering update
+            {0x35E183, 3, {0x90,0x90,0x90}, {}},             // Animation frame update
+            {0x35DFB5, 3, {0x90,0x90,0x90}, {}},             // Effect processing
+            {0x35DFD0, 3, {0x90,0x90,0x90}, {}},             // Effect processing
+            {0x35E055, 3, {0x90,0x90,0x90}, {}},             // Animation update
+            {0x35E0DA, 3, {0x90,0x90,0x90}, {}},             // Animation update
+            {0x36420A, 5, {0x90,0x90,0x90,0x90,0x90}, {}},   // Rendering update
+            {0x364AEB, 3, {0x90,0x90,0x90}, {}},             // Effect update
+            {0x365E59, 5, {0x90,0x90,0x90,0x90,0x90}, {}},   // Animation update
+            {0x365E7A, 5, {0x90,0x90,0x90,0x90,0x90}, {}}    // Animation update
+        };
+        
+        static bool originalsSaved = false;
+        
+        // On first freeze, save original bytes
+        if (freeze && !originalsSaved) {
+            for (auto& patch : patches) {
+                uintptr_t addr = base + patch.rva;
+                if (!SafeReadMemory(addr, patch.original, patch.size)) {
+                    LogOut("[PAUSE][VANILLA] Failed to read original bytes for visual effect patch", true);
+                    return false;
+                }
+            }
+            originalsSaved = true;
+        }
+        
+        // Apply or restore patches
+        int successCount = 0;
+        for (auto& patch : patches) {
+            uintptr_t addr = base + patch.rva;
+            const BYTE* data = freeze ? patch.nops : patch.original;
+            
+            DWORD oldProtect;
+            if (!VirtualProtect((void*)addr, patch.size, PAGE_EXECUTE_READWRITE, &oldProtect)) {
+                continue;
+            }
+            
+            memcpy((void*)addr, data, patch.size);
+            FlushInstructionCache(GetCurrentProcess(), (void*)addr, patch.size);
+            
+            DWORD dummy;
+            VirtualProtect((void*)addr, patch.size, oldProtect, &dummy);
+            
+            successCount++;
+        }
+        
+        if (successCount == _countof(patches)) {
+            LogOut(freeze ? "[PAUSE][VANILLA] Visual effect patches applied (10 CALLs NOPed)" 
+                          : "[PAUSE][VANILLA] Visual effect patches restored", true);
+            return true;
+        } else {
+            std::ostringstream oss;
+            oss << "[PAUSE][VANILLA] Partial visual effect patch: " << successCount << "/" << _countof(patches);
+            LogOut(oss.str(), true);
+            return false;
+        }
+    }
+
     tOfficialToggle GetOfficialToggleFn() {
         HMODULE hRev = GetModuleHandleA("EfzRevival.dll"); if (!hRev) return nullptr;
     uintptr_t rva = EFZ_RVA_TogglePause();
@@ -560,16 +638,35 @@ namespace PauseIntegration {
     bool __cdecl IsGameSpeedFrozen() { uint8_t v=3; if (ReadGamespeed(v)) return v==0; return false; }
     bool IsPausedOrFrozen() { return IsPracticePaused() || IsGameSpeedFrozen(); }
 
-    // No periodic maintenance required for official path; fallback paths are one-shot.
+    // Persistent pause enforcement: keep game frozen regardless of external unpause attempts
+    // ONLY for unsupported Revival versions - vanilla and supported versions handle pause correctly
     void MaintainFreezeWhileMenuVisible() {
         if (!s_menuVisible.load()) return;
-        // Keep vanilla engine pause asserted if we set it
+        
+        // Check if we're dealing with an unsupported Revival version
+        HMODULE hRev = GetModuleHandleA("EfzRevival.dll");
+        const bool unsupportedRevival = (hRev != nullptr) && !IsEfzRevivalVersionSupported();
+        
+        // Only enforce persistent pause for unsupported Revival versions
+        if (unsupportedRevival) {
+            // Always enforce gamespeed freeze while menu is visible
+            uint8_t cur=3;
+            if (ReadGamespeed(cur) && cur!=0) {
+                WriteGamespeed(0);
+            }
+            
+            // Always re-apply visual effect patches if we own them
+            if (s_weAppliedVisualPatches.load()) {
+                ApplyVisualEffectPatches(true);
+            }
+        }
+        
+        // Keep vanilla engine pause asserted if we set it (vanilla only)
         if (s_weVanillaEnginePause.load()) {
             bool paused=false; if (ReadEnginePauseFlag(paused) && !paused) { WriteEnginePauseFlag(true); }
         }
-        if (s_weFrozeGamespeed.load()) {
-            uint8_t cur=3; if (ReadGamespeed(cur) && cur!=0) WriteGamespeed(0);
-        }
+        
+        // Keep practice pause flag set if we own it (fallback paths)
         if (s_weForcedFlagPause.load()) {
             bool p=false; if (ReadPracticePauseFlag(p) && !p) WritePracticePauseFlag(true);
         }
@@ -613,24 +710,44 @@ namespace PauseIntegration {
                     return; // respect external pause
                 }
             }
-            // Vanilla path: if EfzRevival is NOT loaded, mirror Revival by freezing gamespeed (bc+0x1400=0)
+            // Vanilla path: if EfzRevival is NOT loaded, mirror Revival by freezing gamespeed AND visual effects
+            // Revival's pause (sub_1006B2A0) does TWO things:
+            //   1. Sets battleContext+0x1400 (gamespeed) to 0
+            //   2. NOPs out 10 CALL instructions to animation/effect update functions in efz.exe
+            // For unsupported Revival versions, we replicate BOTH to fully freeze gameplay and visuals.
             if (!revivalLoaded) {
                 // Try to resolve battleContext via mode array like Revival
                 if (!RefreshBattleContextFromGameModeArray()) {
                     EnsureBattleContextHook();
                 }
+                
+                bool appliedAny = false;
+                
+                // Step 1: Freeze gamespeed
                 uint8_t cur=3;
                 if (ReadGamespeed(cur)) {
                     // Only freeze if gamespeed is at default value (3) to avoid overwriting user-set or already-frozen values
                     if (cur == 3 && WriteGamespeed(0)) {
                         s_prevGamespeed.store(cur);
                         s_weFrozeGamespeed.store(true);
-                        LogOut("[PAUSE][VANILLA] Gamespeed frozen via battleContext+0x1400", true);
-                        return; // done
+                        appliedAny = true;
                     } else if (cur != 3 && cur != 0) {
                         LogOut("[PAUSE][VANILLA] Gamespeed already modified (not default), skipping freeze", true);
                         return; // don't touch non-default gamespeed
                     }
+                }
+                
+                // Step 2: Apply visual effect patches (NOP out animation/effect CALLs)
+                if (ApplyVisualEffectPatches(true)) {
+                    s_weAppliedVisualPatches.store(true);
+                    appliedAny = true;
+                }
+                
+                if (appliedAny) {
+                    LogOut("[PAUSE][VANILLA] Full pause applied: gamespeed frozen + visual effects frozen", true);
+                    return;
+                } else {
+                    LogOut("[PAUSE][VANILLA] Failed to apply full pause", true);
                 }
             }
 
@@ -674,6 +791,10 @@ namespace PauseIntegration {
             if (s_weFrozeGamespeed.load()) {
                 uint8_t cur=0; if (ReadGamespeed(cur) && cur==0) WriteGamespeed(s_prevGamespeed.load());
                 s_weFrozeGamespeed.store(false);
+            }
+            if (s_weAppliedVisualPatches.load()) {
+                ApplyVisualEffectPatches(false); // Restore original bytes
+                s_weAppliedVisualPatches.store(false);
             }
             if (s_weVanillaEnginePause.load()) {
                 bool paused=false; if (ReadEnginePauseFlag(paused) && paused) WriteEnginePauseFlag(false);

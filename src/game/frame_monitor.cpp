@@ -18,6 +18,7 @@
 #include "../include/utils/network.h"
 #include "../include/utils/pause_integration.h" // PauseIntegration::EnsurePracticePointerCapture/GetPracticeControllerPtr
 #include "../include/utils/switch_players.h"    // SwitchPlayers::ResetControlMappingForMenusToP1
+#include "../include/input/framestep.h"          // Framestep system for vanilla EFZ
 #define DISABLE_ATTACK_READER 1
 #include "../include/game/attack_reader.h"
 #include "../include/game/practice_patch.h"
@@ -784,6 +785,11 @@ void FrameDataMonitor() {
     RefreshPointerCache();
     // Check current game phase (single authoritative call per loop)
     GamePhase currentPhase = GetCurrentGamePhase();
+    
+    // Update framestep system (vanilla only, input monitoring and frame advance)
+    Framestep::Update();
+    // Update framestep overlay status
+    Framestep::UpdateOverlayStatus();
 
     // Lightweight, integrated online detection (replaces separate network thread)
     {
@@ -1971,6 +1977,13 @@ void FrameDataMonitor() {
                             if (p2B) SafeReadMemory(p2B + IC_COLOR_OFFSET, &ic2, sizeof(ic2));
                             bool p1Blue = (p==1)? true : (ic1 != 0);
                             bool p2Blue = (p==2)? true : (ic2 != 0);
+                            
+                            std::ostringstream logMsg;
+                            logMsg << "[IC][CONT_REC] P" << p << " BIC flag active: setting P" << p << " to Blue, preserving other (P1=" 
+                                   << (p1Blue ? "Blue" : "Red") << ", P2=" << (p2Blue ? "Blue" : "Red") 
+                                   << ") RFMode=" << (p==1 ? g_contRecRfModeP1.load() : g_contRecRfModeP2.load());
+                            LogOut(logMsg.str(), true);
+                            
                             SetICColorDirect(p1Blue, p2Blue);
                         } else if (tg.wantRedIC) {
                             // Red RF preset chosen: ensure this side is not Blue IC (flip to Red if needed)
@@ -1985,6 +1998,14 @@ void FrameDataMonitor() {
                                 // Force this side to Red (false), keep the other side as-is
                                 bool newP1Blue = (p==1) ? false : p1Blue;
                                 bool newP2Blue = (p==2) ? false : p2Blue;
+                                
+                                std::ostringstream logMsg;
+                                logMsg << "[IC][CONT_REC] P" << p << " Red RF preset: forcing P" << p << " to Red (was " 
+                                       << (p==1 ? (p1Blue?"Blue":"Red") : (p2Blue?"Blue":"Red")) << "), preserving other (P1=" 
+                                       << (newP1Blue ? "Blue" : "Red") << ", P2=" << (newP2Blue ? "Blue" : "Red") 
+                                       << ") RFMode=" << (p==1 ? g_contRecRfModeP1.load() : g_contRecRfModeP2.load());
+                                LogOut(logMsg.str(), true);
+                                
                                 SetICColorDirect(newP1Blue, newP2Blue);
                             }
                         }
