@@ -516,8 +516,11 @@ void MonitorKeys() {
 
             // 3) Remaining keyboard-only actions
             if (!keyHandled) {
-                // Skip all hotkey processing if we're in cooldown period after menu close
-                if (IsHotkeyCooldownActive()) {
+                // Skip all hotkeys on character select screen (including menu toggles)
+                if (IsInCharacterSelectScreen()) {
+                    // All hotkeys disabled on character select
+                } else if (IsHotkeyCooldownActive()) {
+                    // Skip all hotkey processing if we're in cooldown period after menu close
                     // Do nothing - let cooldown expire
                 } else {
                 // New: configurable Swap Positions bindings (single key or chord)
@@ -687,13 +690,6 @@ void MonitorKeys() {
             } else if (IsKeyPressed(cfg.helpKey, false)) {
                 ShowHotkeyInfo();
                 keyHandled = true;
-            } else if (IsKeyPressed(VK_F8, false)) {
-                std::string status = "OFF";
-                if (autoAirtechEnabled) {
-                    status = autoAirtechDirection == 0 ? "FORWARD" : "BACKWARD";
-                }
-                DirectDrawHook::AddMessage(("Auto-Airtech: " + status).c_str(), "SYSTEM", RGB(255, 165, 0), 1500, 0, 100);
-                keyHandled = true;
             } else if (IsKeyPressed(VK_F9, false)) {
                 autoJumpEnabled = !autoJumpEnabled;
                 DirectDrawHook::AddMessage(autoJumpEnabled ? "Auto-Jump: ON" : "Auto-Jump: OFF", "SYSTEM", RGB(255, 165, 0), 1500, 0, 100);
@@ -726,7 +722,7 @@ void MonitorKeys() {
                 }
                 keyHandled = true;
             }
-            } // End of cooldown check else block
+            } // End of character select check / cooldown check else block
             }
             // Developer motion-debug hotkeys removed
 
@@ -735,7 +731,7 @@ void MonitorKeys() {
                 Sleep(100);
           while (IsKeyPressed(teleportKey, true) || IsKeyPressed(recordKey, true) ||
               IsKeyPressed(toggleTitleKey, true) || IsKeyPressed(resetFrameCounterKey, true) ||
-              IsKeyPressed(helpKey, true) || IsKeyPressed(VK_F7, true) || IsKeyPressed(VK_F8, true) || IsKeyPressed(VK_F9, true) ||
+              IsKeyPressed(helpKey, true) || IsKeyPressed(VK_F7, true) || IsKeyPressed(VK_F9, true) ||
               IsKeyPressed(cfg.switchPlayersKey > 0 ? cfg.switchPlayersKey : 'L', true) ||
               IsKeyPressed(cfg.macroRecordKey > 0 ? cfg.macroRecordKey : 'I', true) ||
               IsKeyPressed(cfg.macroPlayKey > 0 ? cfg.macroPlayKey : 'O', true)) {
@@ -754,7 +750,6 @@ void MonitorKeys() {
                     ((GetAsyncKeyState(helpKey) & 0x8000) != 0) ||
                     ((GetAsyncKeyState(toggleImGuiKey) & 0x8000) != 0) ||
                     ((GetAsyncKeyState(VK_F7) & 0x8000) != 0) ||
-                    ((GetAsyncKeyState(VK_F8) & 0x8000) != 0) ||
                     ((GetAsyncKeyState(VK_F9) & 0x8000) != 0) ||
                     ((GetAsyncKeyState(cfg.switchPlayersKey > 0 ? cfg.switchPlayersKey : 'L') & 0x8000) != 0) ||
                     ((GetAsyncKeyState(cfg.macroRecordKey > 0 ? cfg.macroRecordKey : 'I') & 0x8000) != 0) ||

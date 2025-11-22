@@ -1148,36 +1148,60 @@ namespace SwitchPlayers {
             return true;
         }
 
-        // If sides were swapped during match, need full PostSwitchRefresh to restore input routing
+        // If sides were swapped during match, restore to default WITHOUT calling refresh functions
+        // (RefreshMappingBlock is for mid-match sync, not menu state restoration)
         if (sidesWereSwapped) {
-            // Sides were swapped during match - need full PostSwitchRefresh to restore
-            LogOut("[SWITCH][MENU] Sides were swapped during match; performing full reset via PostSwitchRefresh", true);
+            LogOut("[SWITCH][MENU] Sides were swapped during match; restoring default Practice state", true);
             
-            // Write local/remote indices first
+            // Write Practice structure back to default values
             int local = 0, remote = 1;
-            (void)SafeWriteMemory((uintptr_t)practice + EFZ_Practice_LocalSideOffset(), &local, sizeof(local));
-            (void)SafeWriteMemory((uintptr_t)practice + EFZ_Practice_RemoteSideOffset(), &remote, sizeof(remote));
+            bool okLocal = SafeWriteMemory((uintptr_t)practice + EFZ_Practice_LocalSideOffset(), &local, sizeof(local));
+            bool okRemote = SafeWriteMemory((uintptr_t)practice + EFZ_Practice_RemoteSideOffset(), &remote, sizeof(remote));
             uint8_t guiPos = 1u; 
-            (void)SafeWriteMemory((uintptr_t)practice + PRACTICE_OFF_GUI_POS, &guiPos, sizeof(guiPos));
+            bool okGui = SafeWriteMemory((uintptr_t)practice + PRACTICE_OFF_GUI_POS, &guiPos, sizeof(guiPos));
             
-            // Call PostSwitchRefresh to physically restore input routing
-            PostSwitchRefresh(practice, /*explicitLocal=*/0);
+            if (detailedLogging.load()) {
+                std::ostringstream oss;
+                oss << "[SWITCH][MENU] Wrote Practice fields: local=" << local << " remote=" << remote 
+                    << " GUI=" << (int)guiPos << " (ok=" << okLocal << "/" << okRemote << "/" << okGui << ")";
+                LogOut(oss.str(), true);
+            }
             
-            // Also restore engine CPU flags to default Practice state (P1=human, P2=CPU)
+            // Disable vanilla routing swap (return to normal P1=P1 controls, P2=P2 controls)
+            SetVanillaSwapInputRouting(false);
+            LogOut("[SWITCH][MENU] Disabled vanilla routing swap", true);
+            
+            // Restore engine CPU flags to default Practice state (P1=human, P2=CPU)
+            // Also restore active player to P1
             if (efzBase) {
                 uintptr_t gameStatePtr = 0;
                 if (SafeReadMemory(efzBase + EFZ_BASE_OFFSET_GAME_STATE, &gameStatePtr, sizeof(gameStatePtr)) && gameStatePtr) {
+                    uint8_t activePlayer = 0u;  // P1 is active
                     uint8_t p1Human = 0, p2Cpu = 1;
-                    SafeWriteMemory(gameStatePtr + GAMESTATE_OFF_P1_CPU_FLAG, &p1Human, sizeof(p1Human));
-                    SafeWriteMemory(gameStatePtr + GAMESTATE_OFF_P2_CPU_FLAG, &p2Cpu, sizeof(p2Cpu));
-                    LogOut("[SWITCH][MENU] Restored CPU flags after swap: P1=0(human), P2=1(CPU)", true);
+                    bool okActive = SafeWriteMemory(gameStatePtr + GAMESTATE_OFF_ACTIVE_PLAYER, &activePlayer, sizeof(activePlayer));
+                    bool okP1 = SafeWriteMemory(gameStatePtr + GAMESTATE_OFF_P1_CPU_FLAG, &p1Human, sizeof(p1Human));
+                    bool okP2 = SafeWriteMemory(gameStatePtr + GAMESTATE_OFF_P2_CPU_FLAG, &p2Cpu, sizeof(p2Cpu));
+                    
+                    if (detailedLogging.load()) {
+                        std::ostringstream oss;
+                        oss << "[SWITCH][MENU] Restored engine flags: active=" << (int)activePlayer 
+                            << " P1CPU=" << (int)p1Human << " P2CPU=" << (int)p2Cpu 
+                            << " (ok=" << okActive << "/" << okP1 << "/" << okP2 << ")";
+                        LogOut(oss.str(), true);
+                    } else {
+                        LogOut("[SWITCH][MENU] Restored CPU flags: active=0(P1), P1=0(human), P2=1(CPU)", true);
+                    }
                 }
             }
+            
+            // Restore AI control flags to default
+            SetAIControlFlag(1, /*human=*/true);  // P1 Human
+            SetAIControlFlag(2, /*human=*/false); // P2 AI
             
             // Clear the swap flag since we've restored default state
             s_sidesAreSwapped.store(false, std::memory_order_relaxed);
             
-            LogOut("[SWITCH][MENU] Reset mapping for menus: local=P1, remote=P2, GUI_POS=1 (with input swap, flag cleared)", true);
+            LogOut("[SWITCH][MENU] Reset complete: local=P1, remote=P2, vanilla routing disabled, flag cleared", true);
             return true;
         }
 
