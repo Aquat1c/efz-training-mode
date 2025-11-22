@@ -29,6 +29,7 @@
 #include "../include/utils/switch_players.h"
 #include "../include/game/macro_controller.h"
 #include "../include/game/frame_monitor.h" // AreCharactersInitialized, GamePhase
+#include "../include/input/framestep.h"
 #include <Xinput.h>
 
 // XInput DLL is loaded dynamically via XInputShim
@@ -671,6 +672,18 @@ void MonitorKeys() {
             } else if (IsKeyPressed(cfg.resetFrameCounterKey, false)) {
                 ResetFrameCounter();
                 keyHandled = true;
+            } else if (IsKeyPressed(VK_SPACE, false)) {
+                // Framestep: Toggle pause (vanilla EFZ only)
+                if (Framestep::IsEnabled()) {
+                    Framestep::TogglePause();
+                    keyHandled = true;
+                }
+            } else if (IsKeyPressed('P', false)) {
+                // Framestep: Step forward one frame (vanilla EFZ only)
+                if (Framestep::IsEnabled() && Framestep::IsPaused()) {
+                    Framestep::RequestFrameStep();
+                    keyHandled = true;
+                }
             } else if (IsKeyPressed(cfg.helpKey, false)) {
                 ShowHotkeyInfo();
                 keyHandled = true;

@@ -48,6 +48,7 @@ int g_TriggerOnWakeupId = -1;
 int g_TriggerAfterHitstunId = -1;
 int g_TriggerAfterAirtechId = -1;
 int g_TriggerOnRGId = -1;
+int g_FramestepStatusId = -1;
 // Debug borders toggle default off
 std::atomic<bool> g_ShowOverlayDebugBorders{false};
 
@@ -361,7 +362,7 @@ void DirectDrawHook::RenderText(HDC hdc, const std::string& text, int x, int y, 
     const int MAX_TEXT_WIDTH = screenWidth - x - 20;
     
     // Check if this is a trigger overlay by position (right-aligned text)
-    bool isTriggerOverlay = (x >= 510 && y >= 140 && y <= 200);
+    bool isTriggerOverlay = (x >= 510 && y >= 100 && y <= 200);
     
     // For trigger overlay, adjust X position instead of truncating
     int adjustedX = x;
@@ -436,7 +437,7 @@ void DirectDrawHook::RenderSimpleText(IDirectDrawSurface7* surface, const std::s
         const int MAX_TEXT_WIDTH = screenWidth - x - 20;
         
         // Check if this is a trigger overlay by position (right-aligned text)
-        bool isTriggerOverlay = (x >= 510 && y >= 140 && y <= 200);
+        bool isTriggerOverlay = (x >= 510 && y >= 100 && y <= 200);
         
         // For trigger overlay, adjust X position instead of truncating
         int adjustedX = x;
@@ -595,7 +596,7 @@ void DirectDrawHook::RenderD3D9Overlays(LPDIRECT3DDEVICE9 pDevice) {
     // Helper lambda to render a message with a background
     auto renderMessage = [&](const OverlayMessage& msg) {
         // Check if this is a trigger overlay by position
-        bool isTriggerOverlay = (msg.xPos >= 510 && msg.yPos >= 140 && msg.yPos <= 200);
+        bool isTriggerOverlay = (msg.xPos >= 510 && msg.yPos >= 100 && msg.yPos <= 200);
         
     // Map starting position from 640x480 virtual space to inner game area within current RT
     ImVec2 textPos(ox + msg.xPos * scale, oy + msg.yPos * scale);

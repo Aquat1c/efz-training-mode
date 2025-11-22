@@ -31,6 +31,7 @@
 #include "../include/utils/debug_log.h"
 #include "../include/game/efzrevival_addrs.h"
 #include "../include/game/efzrevival_scanner.h"
+#include "../include/input/framestep.h"
 // forward declaration for overlay gate
 namespace PracticeOverlayGate { void EnsureInstalled(); void SetMenuVisible(bool); }
 #pragma comment(lib, "winmm.lib")
@@ -125,6 +126,9 @@ void DelayedInitialization(HMODULE hModule) {
             return; // Early exit if MinHook fails
         }
         LogOut("[SYSTEM] MinHook initialized successfully.", true);
+        
+        // Initialize framestep system (vanilla only)
+        Framestep::Initialize();
 
         // Attempt to install Practice hotkey gate (will succeed only after EfzRevival.dll present)
         try {

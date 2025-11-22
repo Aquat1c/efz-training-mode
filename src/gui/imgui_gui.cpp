@@ -46,6 +46,7 @@ extern void SpamAttackButton(uintptr_t playerBase, uint8_t button, int frames, c
 #include "../include/game/practice_offsets.h"
 #include "../include/core/version.h"
 #include "../include/utils/network.h"
+#include "../include/input/framestep.h"
 
 // Add these constants at the top of the file after includes
 // These are from input_motion.cpp but we need them here
@@ -783,6 +784,31 @@ namespace ImGuiGui {
                     }
                 }
                 if (ImGui::IsItemHovered()) ImGui::SetTooltip("Toggles the numeric frame advantage readout (including RG FA1/FA2).");
+
+                // Framestep mode (Vanilla EFZ only)
+                if (GetEfzRevivalVersion() == EfzRevivalVersion::Vanilla) {
+                    ImGui::Spacing();
+                    ImGui::SeparatorText("Framestep (Vanilla EFZ)");
+                    ImGui::Text("Step Mode:");
+                    ImGui::SameLine();
+                    ImGui::SetNextItemWidth(200);
+                    const char* stepModeItems[] = { "Full Frames", "Subframes" };
+                    int currentMode = (Framestep::GetStepMode() == Framestep::StepMode::FullFrame) ? 0 : 1;
+                    if (ImGui::Combo("##FramestepMode", &currentMode, stepModeItems, IM_ARRAYSIZE(stepModeItems))) {
+                        Framestep::SetStepMode(currentMode == 0 ? Framestep::StepMode::FullFrame : Framestep::StepMode::Subframe);
+                    }
+                    if (ImGui::IsItemHovered()) {
+                        ImGui::BeginTooltip();
+                        ImGui::PushTextWrapPos(ImGui::GetFontSize() * 35.0f);
+                        ImGui::TextUnformatted("Full Frames: Each step advances 3 subframes (64fps visual frame).");
+                        ImGui::TextUnformatted("Subframes: Each step advances 1 logical frame (192fps). Shows fractional visual frames.");
+                        //ImGui::TextUnformatted("\nNote: Input buffer updates at 64fps (every 3 subframes), so buffer index advances every 3rd step in Subframe mode.");
+                        ImGui::TextUnformatted("\nHotkeys: Space = Pause/Resume, P = Step Forward");
+                        ImGui::TextUnformatted("Only works in Practice mode (or any mode if 'Restrict to Practice' is off).");
+                        ImGui::PopTextWrapPos();
+                        ImGui::EndTooltip();
+                    }
+                }
 
                 ImGui::EndTabItem();
             }
@@ -1930,9 +1956,9 @@ namespace ImGuiGui {
                             ImGui::Dummy(ImVec2(1, 4));
                             BulletTextWrapped("It is recommended to avoid using unsupported versions in netplay. Offline practice mode should work, but if you encounter issues, try launching the game directly from the efz.exe instead.");
                             ImGui::Dummy(ImVec2(1, 4));
-                            ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.2f, 1.0f), "Known Issue:");
+                            ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.2f, 1.0f), "Note:");
                             ImGui::Indent();
-                            BulletTextWrapped("Pressing EfzRevival hotkeys while this menu is open may trigger game functions. The Space key is particularly problematic - it can cause visual glitches that persist until you properly pause and unpause the game using that hotkey again. Try to avoid using Space in menus.");
+                            BulletTextWrapped("EfzRevival hotkeys may still be recognized while this menu is open, but the game will remain paused.");
                             ImGui::Unindent();
                             
                             ImGui::EndTabItem();
@@ -2339,7 +2365,7 @@ namespace ImGuiGui {
             bool noCD1 = guiState.localData.p1MaiNoChargeCD;
             if (ImGui::Checkbox("No CD (fast charge)##P1MaiNoCD", &noCD1)) guiState.localData.p1MaiNoChargeCD = noCD1;
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("Effective only while Charging (status 3): forces charge timer to 1 each tick.");
-            ImGui::TextDisabled("(Mai: status @0x3144, multi-timer @0x3148 - meaning depends on status)");
+            //ImGui::TextDisabled("(Mai: status @0x3144, multi-timer @0x3148 - meaning depends on status)");
             // Ghost coordinate edit controls
             double setGX = guiState.localData.p1MaiGhostSetX;
             double setGY = guiState.localData.p1MaiGhostSetY;
@@ -2435,10 +2461,10 @@ namespace ImGuiGui {
         // P1 Doppel (ExNanase) Settings
         else if (p1CharID == CHAR_ID_EXNANASE) {
             bool enlightened = guiState.localData.p1DoppelEnlightened;
-            if (ImGui::Checkbox("Enlightened (Final Memory)##p1Doppel", &enlightened)) {
+            if (ImGui::Checkbox("Enlightened (Gold Doppel)##p1Doppel", &enlightened)) {
                 guiState.localData.p1DoppelEnlightened = enlightened;
             }
-            ImGui::TextDisabled("(sets the FM-ready flag for testing)");
+            //ImGui::TextDisabled("(sets the FM-ready flag for testing)");
         }
     // P1 Nanase (Rumi) Settings
     else if (p1CharID == CHAR_ID_NANASE) {
@@ -2497,7 +2523,7 @@ namespace ImGuiGui {
             if (ImGui::Checkbox("Always readied##p1Minagi", &readied1)) {
                 guiState.localData.p1MinagiAlwaysReadied = readied1;
             }
-            ImGui::TextDisabled("(Sets Michiru to ID 401 when idle/unreadied; Practice only)");
+            ImGui::TextDisabled("(Sets Michiru to Readied stance when idle/unreadied; Practice only)");
             // Michiru position override controls
             double setMX = guiState.localData.p1MinagiPuppetSetX;
             double setMY = guiState.localData.p1MinagiPuppetSetY;
@@ -2649,7 +2675,7 @@ namespace ImGuiGui {
                 // No cap: write raw value as requested
                 guiState.localData.p2MisuzuPoisonLevel = p2PoisonLvl;
             }
-            ImGui::TextDisabled("(Misuzu: feathers @+0x3148, poison timer @+0x345C, level @+0x3460)");
+            //ImGui::TextDisabled("(Misuzu: feathers @+0x3148, poison timer @+0x345C, level @+0x3460)");
         }
     // P2 Mishio Settings
         else if (p2CharID == CHAR_ID_MISHIO) {
