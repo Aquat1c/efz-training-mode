@@ -440,6 +440,17 @@ namespace {
     void PostSwitchRefresh(uint8_t* practice, int explicitLocal = -1) {
         DebugLog::Write("--- POST SWITCH REFRESH BEGIN ---");
         
+        EfzRevivalVersion ver = GetEfzRevivalVersion();
+        
+        // For 1.02g: Skip function calls, use fallback direct memory path
+        // (structure identical to 1.02e but function RVAs unknown)
+        if (ver == EfzRevivalVersion::Revival102g) {
+            LogOut("[SWITCH] PostSwitchRefresh using direct memory path for 1.02g", true);
+            DebugLog::Write("Using direct memory path for 1.02g (skip function calls)");
+            // Jump directly to fallback which uses direct memory manipulation
+            goto use_fallback_path;
+        }
+        
         // Attempt to use the official helpers first (works across e/h/i):
         // sub_1006D640 (e), sub_1006DEC0 (h), sub_1006E190 (i)
         // and call CleanupPair when local == 1 (P2) to mirror init path.
@@ -492,6 +503,7 @@ namespace {
             return;
         } while (false);
 
+        use_fallback_path:  // Label for 1.02g to jump here
         // Fallback: legacy emulation used previously (swap buffers, touch shared vector) if official path isn't available
         // Mirror init: sub_1006D640((char **)(this + 8 * (*[this+0x680] + 104)))
         int local = 0;
@@ -502,9 +514,9 @@ namespace {
         }
         uintptr_t efzrevBase = (uintptr_t)GetModuleHandleA("EfzRevival.dll");
         if (!efzrevBase) return;
-        EfzRevivalVersion ver = GetEfzRevivalVersion();
-        bool isE = (ver == EfzRevivalVersion::Revival102e);
-        uintptr_t mapRva = isE ? EFZ_RVA_MapReset() : 0; // MapReset is e-only safe; skip on h/i
+        // ver already declared at top of function
+        bool isE = (ver == EfzRevivalVersion::Revival102e || ver == EfzRevivalVersion::Revival102g);
+        uintptr_t mapRva = isE ? 0 : 0; // Skip MapReset function call for e/g (use direct buffer swap); skip on h/i too
         {
             std::ostringstream oss; oss << "[SWITCH] PostSwitchRefresh local=" << local
                 << " base=0x" << std::hex << efzrevBase
@@ -750,7 +762,7 @@ namespace SwitchPlayers {
                 // Mirror init by updating INIT_SOURCE too (so next reinit stays consistent)
                 LogRW<int>("practice.initSource[+0x944]", (uintptr_t)practice + PRACTICE_OFF_INIT_SOURCE_SIDE, desiredLocal);
             } else {
-                // H/I-version: Make the other side local and swap mapping once, matching engine init semantics.
+                // G/H/I-version: Make the other side local and swap mapping once, matching engine init semantics.
                 // Steps:
                 // 1) Update Practice local/remote to desired/newRemote
                 // 2) Clear the engine switch flag (+36) to prevent a second swap in the tail
@@ -764,23 +776,28 @@ namespace SwitchPlayers {
                 // First commit new local/remote indices to reflect the chosen local side
                 uintptr_t offLocal  = (uintptr_t)practice + EFZ_Practice_LocalSideOffset();
                 uintptr_t offRemote = (uintptr_t)practice + EFZ_Practice_RemoteSideOffset();
-                LogRW<int>("practice.localSide[h/i]", offLocal, desiredLocal);
-                LogRW<int>("practice.remoteSide[h/i]", offRemote, newRemote);
+                
+                std::ostringstream ossVer;
+                ossVer << "[SWITCH][G/H/I-" << (ver == EfzRevivalVersion::Revival102g ? "g" : ver == EfzRevivalVersion::Revival102h ? "h" : "i") << "] localSide=" << desiredLocal << ", remoteSide=" << newRemote;
+                LogOut(ossVer.str(), true);
+                
+                LogRW<int>("practice.localSide[g/h/i]", offLocal, desiredLocal);
+                LogRW<int>("practice.remoteSide[g/h/i]", offRemote, newRemote);
 
                 // Then perform a single swap via CleanupPair on patch ctx so the new local gets the previous local's controls
                 HMODULE hMod = GetModuleHandleA("EfzRevival.dll");
                 uintptr_t ctxRva = EFZ_RVA_PatchCtx();
-                uintptr_t cleanRva = EFZ_RVA_CleanupPair(); // sub_1006D320(h) / sub_1006D5F0(i)
+                uintptr_t cleanRva = EFZ_RVA_CleanupPair(); // sub_1006CCE0(g) / sub_1006D320(h) / sub_1006D5F0(i)
                 if (hMod && ctxRva && cleanRva) {
                     auto fnCleanup = reinterpret_cast<int(__thiscall*)(void*)>(reinterpret_cast<uintptr_t>(hMod) + cleanRva);
                     void* patchCtx = reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(hMod) + ctxRva);
                     int rc = 0;
                     bool ok = SehSafe_CleanupPair(fnCleanup, patchCtx, &rc);
-                    std::ostringstream oss; oss << "[SWITCH][H/I] CleanupPair(ctx) -> "
+                    std::ostringstream oss; oss << "[SWITCH][G/H/I] CleanupPair(ctx) -> "
                         << (ok?"rc=":"EXC rc=") << rc << " ctx=0x" << std::hex << (uintptr_t)patchCtx;
                     LogOut(oss.str(), true);
                 } else {
-                    LogOut("[SWITCH][H/I] CleanupPair or ctx not available; skipped", true);
+                    LogOut("[SWITCH][G/H/I] CleanupPair or ctx not available; skipped", true);
                 }
 
                 // Update engine-facing flags and GUI to reflect the new local side
@@ -797,7 +814,7 @@ namespace SwitchPlayers {
                         uint8_t guiPos = (desiredLocal == 0) ? 1u : 0u; // 1 when P1 local, 0 when P2 local
                         LogRW<uint8_t>("practice.GUI_POS[+0x24]", (uintptr_t)practice + PRACTICE_OFF_GUI_POS, guiPos);
                     } else {
-                        LogOut("[SWITCH][H/I] Game state pointer not available; engine flags not updated", true);
+                        LogOut("[SWITCH][G/H/I] Game state pointer not available; engine flags not updated", true);
                     }
                 }
 
@@ -805,11 +822,11 @@ namespace SwitchPlayers {
                 if (desiredLocal == 1) {
                     SetAIControlFlag(1, /*human=*/false); // P1 AI
                     SetAIControlFlag(2, /*human=*/true);  // P2 Human
-                    LogOut("[SWITCH][H/I] Control roles: P1=AI, P2=Human", true);
+                    LogOut("[SWITCH][G/H/I] Control roles: P1=AI, P2=Human", true);
                 } else {
                     SetAIControlFlag(1, /*human=*/true);  // P1 Human
                     SetAIControlFlag(2, /*human=*/false); // P2 AI
-                    LogOut("[SWITCH][H/I] Control roles: P1=Human, P2=AI", true);
+                    LogOut("[SWITCH][G/H/I] Control roles: P1=Human, P2=AI", true);
                 }
 
                 // Arm late neutralization for the side becoming AI
@@ -819,7 +836,7 @@ namespace SwitchPlayers {
                     InputHook_ArmTokenNeutralize(aiPlayer, /*alsoDoFullCleanup=*/true);
                 }
 
-                DebugLog::Write("[SWITCH][H/I] Single-swap path finished; returning");
+                DebugLog::Write("[SWITCH][G/H/I] Single-swap path finished; returning");
                 DebugLog::Write("========================================");
                 return true;
             }

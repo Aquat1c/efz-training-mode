@@ -40,7 +40,7 @@ EfzRevivalVersion GetEfzRevivalVersion() {
     // Parse the current EFZ window title
     std::string t = GetEFZWindowTitleA();
     if (t.empty()) {
-        s_cachedRevivalVer.store((int)EfzRevivalVersion::Unknown, std::memory_order_release);
+        // Don't cache Unknown - window title might not be available yet during early init
         return EfzRevivalVersion::Unknown;
     }
     // Normalize case for robust matching
@@ -51,6 +51,7 @@ EfzRevivalVersion GetEfzRevivalVersion() {
     if (lower.find("-revival-") != std::string::npos) {
         // Has Revival marker; check for known tags
         if (lower.find("1.02e") != std::string::npos) v = EfzRevivalVersion::Revival102e;
+        else if (lower.find("1.02g") != std::string::npos) v = EfzRevivalVersion::Revival102g;
         else if (lower.find("1.02h") != std::string::npos) v = EfzRevivalVersion::Revival102h;
         else if (lower.find("1.02i") != std::string::npos) v = EfzRevivalVersion::Revival102i;
         else v = EfzRevivalVersion::Other;
@@ -67,6 +68,7 @@ const char* EfzRevivalVersionName(EfzRevivalVersion v) {
         case EfzRevivalVersion::Unknown: return "Unknown";
         case EfzRevivalVersion::Vanilla: return "Vanilla";
         case EfzRevivalVersion::Revival102e: return "Revival 1.02e";
+        case EfzRevivalVersion::Revival102g: return "Revival 1.02g";
         case EfzRevivalVersion::Revival102h: return "Revival 1.02h";
         case EfzRevivalVersion::Revival102i: return "Revival 1.02i";
         case EfzRevivalVersion::Other: return "Revival (Other)";
@@ -76,10 +78,11 @@ const char* EfzRevivalVersionName(EfzRevivalVersion v) {
 
 bool IsEfzRevivalVersionSupported(EfzRevivalVersion v /*=detected*/) {
     EfzRevivalVersion vv = (v == (EfzRevivalVersion)0) ? GetEfzRevivalVersion() : v;
-    // Supported builds: Vanilla EFZ and EfzRevival 1.02e, 1.02h, 1.02i
+    // Supported builds: Vanilla EFZ and EfzRevival 1.02e, 1.02g, 1.02h, 1.02i
     switch (vv) {
         case EfzRevivalVersion::Vanilla:
         case EfzRevivalVersion::Revival102e:
+        case EfzRevivalVersion::Revival102g:
         case EfzRevivalVersion::Revival102h:
         case EfzRevivalVersion::Revival102i:
             return true;
@@ -138,6 +141,7 @@ OnlineState ReadEfzRevivalOnlineState() {
     uintptr_t rva = 0;
     switch (vv) {
         case EfzRevivalVersion::Revival102e: rva = 0x00A05D0; break;
+        case EfzRevivalVersion::Revival102g: rva = 0x00A05D0; break; // 1.02g uses same as 1.02e
         case EfzRevivalVersion::Revival102h: rva = 0x00A05F0; break;
         case EfzRevivalVersion::Revival102i: rva = 0x00A15FC; break;
         default: return OnlineState::Unknown;

@@ -4,6 +4,7 @@
 #include "../include/core/logger.h"
 #include "../include/core/version.h"
 #include "../include/utils/utilities.h"
+#include "../include/utils/network.h" // For EfzRevival version detection
 
 #include "../include/core/memory.h"
 #include "../include/core/constants.h"
@@ -205,6 +206,14 @@ void InitializeLogging() {
     LogOut(std::string("  EFZ Training Mode v") + EFZ_TRAINING_MODE_VERSION, true);
     LogOut(std::string("  Build: ") + EFZ_TRAINING_MODE_BUILD_DATE + " " + EFZ_TRAINING_MODE_BUILD_TIME, true);
     LogOut("==============================================", true);
+    
+    // Log detected EfzRevival version early
+    EfzRevivalVersion detectedVer = GetEfzRevivalVersion();
+    std::string verMsg = "[VERSION] Detected: ";
+    verMsg += EfzRevivalVersionName(detectedVer);
+    verMsg += IsEfzRevivalVersionSupported(detectedVer) ? " (supported)" : " (UNSUPPORTED)";
+    LogOut(verMsg, true);
+    
     // Developer motion-debug hotkey banner removed
 }
 
