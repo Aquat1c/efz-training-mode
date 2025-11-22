@@ -75,8 +75,8 @@ const char* EfzRevivalVersionName(EfzRevivalVersion v) {
         case EfzRevivalVersion::Vanilla: return "Vanilla";
         case EfzRevivalVersion::Revival102e: return "Revival 1.02e";
         case EfzRevivalVersion::Revival102g: return "Revival 1.02g";
-        case EfzRevivalVersion::Revival102h: return "Revival 1.02h";
-        case EfzRevivalVersion::Revival102i: return "Revival 1.02i";
+        case EfzRevivalVersion::Revival102h: return "Revival 1.02h!!!";
+        case EfzRevivalVersion::Revival102i: return "Revival 1.02i!!!";
         case EfzRevivalVersion::Other: return "Revival (Other)";
         default: return "(invalid)";
     }
@@ -84,7 +84,7 @@ const char* EfzRevivalVersionName(EfzRevivalVersion v) {
 
 bool IsEfzRevivalVersionSupported(EfzRevivalVersion v /*=detected*/) {
     EfzRevivalVersion vv = (v == (EfzRevivalVersion)0) ? GetEfzRevivalVersion() : v;
-    // Supported builds: Vanilla EFZ and EfzRevival 1.02e, 1.02g, 1.02h, 1.02i
+    // Supported builds: Vanilla EFZ and EfzRevival 1.02e, 1.02g, 1.02h!!!, 1.02i!!!
     switch (vv) {
         case EfzRevivalVersion::Vanilla:
         case EfzRevivalVersion::Revival102e:
