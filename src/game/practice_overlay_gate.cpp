@@ -45,6 +45,10 @@ namespace {
                  EfzRevivalVersionName(ver), supported);
         LogOut(buf, true);
         
+        // DISABLED: Hitbox/hurtbox/frame display hooks cause crashes on all Revival versions
+        LogOut("[HOTKEY] Overlay hooks disabled (hitbox/hurtbox/frame display hooks cause crashes)", true);
+        return;
+        
         // Only install hooks for supported Revival versions - unsupported versions have wrong RVAs
         if (!supported) {
             LogOut("[HOTKEY] Overlay hooks skipped for unsupported Revival version", true);
