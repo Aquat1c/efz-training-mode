@@ -729,9 +729,9 @@ namespace SwitchPlayers {
 
         // VERSION SPECIFIC BEHAVIOR - CRITICAL DIFFERENCE:
         //
-        // E-version: Manual live swap by writing buffer pointers
-        //   - Writes buffer pointers at +0x338/+0x33C to game exe addresses
-        //   - Immediately swaps input routing without reinitialization
+        // E-version: Manual live swap while keeping Practice-local buffer layout
+        //   - Writes side buffer pointers at +0x338/+0x33C to the LOCAL/REMOTE bases
+        //   - Uses CleanupPair + RefreshMappingBlock to reseat routing safely
         //
         // H/I-version: Official switch mechanism using flag at +36
         //   - Setting *(Practice+36)=1 triggers full reinitialization on next tick
@@ -742,23 +742,17 @@ namespace SwitchPlayers {
             EfzRevivalVersion ver = GetEfzRevivalVersion();
             
             if (ver == EfzRevivalVersion::Revival102e) {
-                // E-version: Manual buffer pointer swap
-                uintptr_t efzBase = GetEFZBase();
-                uintptr_t bufP1 = efzBase + 0x390104;  // P1 buffer in game exe
-                uintptr_t bufP2 = efzBase + 0x390108;  // P2 buffer in game exe
-                
-                std::ostringstream ossBuffers;
-                ossBuffers << "[SWITCH] Game executable buffers - P1: 0x" << std::hex << std::uppercase << bufP1
-                           << " | P2: 0x" << bufP2 << " (efz.exe base: 0x" << efzBase << ")";
-                LogOut(ossBuffers.str(), true);
-                DebugLog::Write(ossBuffers.str());
-                
-                uintptr_t primary = (desiredLocal == 0) ? bufP1 : bufP2;
-                uintptr_t secondary = (desiredLocal == 0) ? bufP2 : bufP1;
-                
+                // E-version: keep Practice-local buffer ownership and mirror init layout.
+                // Wire side buffer pointers based on desiredLocal using local/remote bases.
+                uintptr_t baseLocal  = (uintptr_t)practice + PRACTICE_OFF_BUF_LOCAL_BASE;
+                uintptr_t baseRemote = (uintptr_t)practice + PRACTICE_OFF_BUF_REMOTE_BASE;
+
+                uintptr_t primary   = (desiredLocal == 0) ? baseLocal  : baseRemote;
+                uintptr_t secondary = (desiredLocal == 0) ? baseRemote : baseLocal;
+
                 LogRWPtr("practice.sideBuf.primary[+0x338]", (uintptr_t)practice + PRACTICE_OFF_SIDE_BUF_PRIMARY, primary);
                 LogRWPtr("practice.sideBuf.secondary[+0x33C]", (uintptr_t)practice + PRACTICE_OFF_SIDE_BUF_SECONDARY, secondary);
-                
+
                 // Mirror init by updating INIT_SOURCE too (so next reinit stays consistent)
                 LogRW<int>("practice.initSource[+0x944]", (uintptr_t)practice + PRACTICE_OFF_INIT_SOURCE_SIDE, desiredLocal);
             } else {
@@ -1148,8 +1142,6 @@ namespace SwitchPlayers {
             return true;
         }
 
-        // If sides were swapped during match, restore to default WITHOUT calling refresh functions
-        // (RefreshMappingBlock is for mid-match sync, not menu state restoration)
         if (sidesWereSwapped) {
             LogOut("[SWITCH][MENU] Sides were swapped during match; restoring default Practice state", true);
             
@@ -1197,6 +1189,12 @@ namespace SwitchPlayers {
             // Restore AI control flags to default
             SetAIControlFlag(1, /*human=*/true);  // P1 Human
             SetAIControlFlag(2, /*human=*/false); // P2 AI
+
+            // For 1.02e, also perform a lightweight mapping refresh so that
+            // buffer routing fully realigns with the restored local side.
+            if (GetEfzRevivalVersion() == EfzRevivalVersion::Revival102e) {
+                PostSwitchRefresh(practice, /*explicitLocal=*/0);
+            }
             
             // Clear the swap flag since we've restored default state
             s_sidesAreSwapped.store(false, std::memory_order_relaxed);
