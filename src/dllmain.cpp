@@ -30,7 +30,6 @@
 #include "../include/game/practice_offsets.h"
 #include "../include/utils/debug_log.h"
 #include "../include/game/efzrevival_addrs.h"
-#include "../include/game/efzrevival_scanner.h"
 #include "../include/input/framestep.h"
 // forward declaration for overlay gate
 namespace PracticeOverlayGate { void EnsureInstalled(); void SetMenuVisible(bool); }
@@ -92,18 +91,6 @@ void DelayedInitialization(HMODULE hModule) {
             SetConsoleReady(false);
         }
 
-        // Attempt to scan EfzRevival signatures before any online detection, so we don't prematurely shutdown
-        try {
-            // Best-effort small wait for EfzRevival.dll to appear (up to ~500ms)
-            for (int i = 0; i < 50; ++i) {
-                if (EfzSigScanner::IsEfzRevivalLoaded()) break;
-                Sleep(10);
-            }
-            EfzSigScanner::EnsureScanned();
-        } catch (...) {
-            // ignore
-        }
-
         // Early gate: if online at startup, do NOT initialize hooks/threads/overlays
         // Leave the console (per settings) and exit initialization immediately.
         bool onlineAtStart = false;
@@ -132,8 +119,6 @@ void DelayedInitialization(HMODULE hModule) {
 
         // Attempt to install Practice hotkey gate (will succeed only after EfzRevival.dll present)
         try {
-            // Trigger a scan early and dump comparison for testing on known versions
-            EFZ_Debug_LogScannerComparison();
             if (PracticeHotkeyGate::Install()) {
                 LogOut("[HOTKEY] Practice hotkey gate active (menu suppression)", true);
             } else {
