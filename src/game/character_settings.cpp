@@ -1140,11 +1140,30 @@ namespace CharacterSettings {
             tickAw(1); tickAw(2);
         }
 
-        // Misuzu feather freeze
+        // Misuzu feather freeze / auto-refill on super usage
         if (localData.infiniteFeatherMode) {
             auto keepFeathers = [&](int pi){
                 if ((pi==1 && localData.p1CharID != CHAR_ID_MISUZU) || (pi==2 && localData.p2CharID != CHAR_ID_MISUZU)) return;
                 const int off = (pi==1)?EFZ_BASE_OFFSET_P1:EFZ_BASE_OFFSET_P2;
+
+                // Detect supers that consume a feather and replenish by +1 (up to max)
+                short mv = 0;
+                if (auto mvAddr = ResolvePointer(base, off, MOVE_ID_OFFSET)) {
+                    SafeReadMemory(mvAddr, &mv, sizeof(short));
+                    if (mv == 313 || mv == 314 || mv == 315) {
+                        if (auto addr = ResolvePointer(base, off, MISUZU_FEATHER_OFFSET)) {
+                            int cur = 0; SafeReadMemory(addr, &cur, sizeof(int));
+                            int next = cur + 1;
+                            if (next > MISUZU_FEATHER_MAX) next = MISUZU_FEATHER_MAX;
+                            if (next != cur) {
+                                SafeWriteMemory(addr, &next, sizeof(int));
+                                didWriteThisTick = true;
+                            }
+                        }
+                    }
+                }
+
+                // Classic infinite-feather behaviour: prevent feathers from decreasing
                 if (auto addr = ResolvePointer(base, off, MISUZU_FEATHER_OFFSET)) {
                     int cur=0; SafeReadMemory(addr,&cur,sizeof(int));
                     int &last = (pi==1)?p1LastFeatherCount:p2LastFeatherCount;
