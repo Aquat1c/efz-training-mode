@@ -896,6 +896,8 @@ bool IsActionable(short moveID) {
                     moveID == WALK_BACK_ID || 
                     moveID == CROUCH_ID ||
                     moveID == CROUCH_TO_STAND_ID ||
+                    // Airborne falling is considered actionable (air actions possible)
+                    moveID == FALLING_ID ||
                     // Treat landing variants as actionable immediately
                     moveID == LANDING_ID || moveID == LANDING_1_ID || moveID == LANDING_2_ID || moveID == LANDING_3_ID);
 

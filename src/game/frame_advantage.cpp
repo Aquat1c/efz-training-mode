@@ -136,6 +136,63 @@ void ClearFrameAdvantageDisplay() {
     }
 }
 
+// Cancel any in-progress or queued frame advantage calculation.
+// This is used for artificial state changes (e.g., teleport/reset) where
+// continuing the current exchange would produce meaningless results.
+void CancelFrameAdvantageCalculation() {
+    // Clear any on-screen messages and timers
+    ClearFrameAdvantageDisplay();
+
+    // Reset core attacking/defending and timing state
+    frameAdvState.p1Attacking = false;
+    frameAdvState.p2Attacking = false;
+    frameAdvState.p1Defending = false;
+    frameAdvState.p2Defending = false;
+    frameAdvState.p1ActionableInternalFrame = -1;
+    frameAdvState.p2ActionableInternalFrame = -1;
+    frameAdvState.p1DefenderFreeInternalFrame = -1;
+    frameAdvState.p2DefenderFreeInternalFrame = -1;
+    frameAdvState.p1AdvantageCalculated = false;
+    frameAdvState.p2AdvantageCalculated = false;
+    frameAdvState.p1FrameAdvantage = 0.0;
+    frameAdvState.p2FrameAdvantage = 0.0;
+
+    // Also reset gap-related tracking by reinitializing the static locals
+    // via a small lambda that returns references to them.
+    auto resetLocals = []() {
+        // These mirror the static locals declared at the top of MonitorFrameAdvantage.
+        static int &p1_last_defender_free_frame = *([](){ static int v = -1; return &v; })();
+        static int &p2_last_defender_free_frame = *([](){ static int v = -1; return &v; })();
+        static int &p1_freeze_accum_since_free = *([](){ static int v = 0; return &v; })();
+        static int &p2_freeze_accum_since_free = *([](){ static int v = 0; return &v; })();
+        static int &p1_freeze_after_atk_actionable = *([](){ static int v = 0; return &v; })();
+        static int &p2_freeze_after_atk_actionable = *([](){ static int v = 0; return &v; })();
+        static int &p1_hit_connect_cooldown = *([](){ static int v = 0; return &v; })();
+        static int &p2_hit_connect_cooldown = *([](){ static int v = 0; return &v; })();
+        static int &p1_last_attack_edge_frame = *([](){ static int v = -1; return &v; })();
+        static int &p2_last_attack_edge_frame = *([](){ static int v = -1; return &v; })();
+
+        p1_last_defender_free_frame = -1;
+        p2_last_defender_free_frame = -1;
+        p1_freeze_accum_since_free = 0;
+        p2_freeze_accum_since_free = 0;
+        p1_freeze_after_atk_actionable = 0;
+        p2_freeze_after_atk_actionable = 0;
+        p1_hit_connect_cooldown = 0;
+        p2_hit_connect_cooldown = 0;
+        p1_last_attack_edge_frame = -1;
+        p2_last_attack_edge_frame = -1;
+    };
+
+    resetLocals();
+
+#if defined(ENABLE_FRAME_ADV_DEBUG)
+    if (detailedLogging.load()) {
+        LogOut("[FRAME_ADV_DEBUG] Cancelled current frame advantage calculation due to external reset/teleport", false);
+    }
+#endif
+}
+
 int GetCurrentInternalFrame() {
     // Pause-aware internal frame counter for FA timings:
     // - When not paused (or not in Practice), mirror the global frameCounter.
@@ -280,18 +337,26 @@ void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, shor
     if (p1_attack_edge) p1_last_attack_edge_frame = currentInternalFrame;
     if (p2_attack_edge) p2_last_attack_edge_frame = currentInternalFrame;
     
-    // Log the current state for debugging
-    static int debugCounter = 0;
-    if (detailedLogging.load() && ++debugCounter % 60 == 0) {
+    // Log moveID changes for debugging (only when they actually change).
+    static short lastLoggedMoveID1 = -1;
+    static short lastLoggedMoveID2 = -1;
+    if (detailedLogging.load() && (moveID1 != lastLoggedMoveID1 || moveID2 != lastLoggedMoveID2)) {
      #if defined(ENABLE_FRAME_ADV_DEBUG)
-     LogOut("[FRAME_ADV_DEBUG] State: p1Block=" + std::to_string(frameAdvState.p1InBlockstun) + 
-               " p2Block=" + std::to_string(frameAdvState.p2InBlockstun) + 
-               " p1Def=" + std::to_string(frameAdvState.p1Defending) + 
-               " p2Def=" + std::to_string(frameAdvState.p2Defending) + 
-               " p1Atk=" + std::to_string(frameAdvState.p1Attacking) + 
-         " p2Atk=" + std::to_string(frameAdvState.p2Attacking), 
-         false);
+        LogOut("[FRAME_ADV_DEBUG] MoveChange: frame=" + std::to_string(currentInternalFrame) +
+               " p1Prev=" + std::to_string(prevMoveID1) +
+               " p1Curr=" + std::to_string(moveID1) +
+               " p2Prev=" + std::to_string(prevMoveID2) +
+               " p2Curr=" + std::to_string(moveID2) +
+               " p1Block=" + std::to_string(frameAdvState.p1InBlockstun) +
+               " p2Block=" + std::to_string(frameAdvState.p2InBlockstun) +
+               " p1Def=" + std::to_string(frameAdvState.p1Defending) +
+               " p2Def=" + std::to_string(frameAdvState.p2Defending) +
+               " p1Atk=" + std::to_string(frameAdvState.p1Attacking) +
+               " p2Atk=" + std::to_string(frameAdvState.p2Attacking),
+               false);
      #endif
+        lastLoggedMoveID1 = moveID1;
+        lastLoggedMoveID2 = moveID2;
     }
 
     // Force-enable detailed FA logging when overlay is shown to aid diagnosis (can be relaxed later)

@@ -410,9 +410,9 @@ void MonitorKeys() {
                     }
                     handled = true;
                 } else if (!handled && gpWentDown(cgp.gpTeleportButton)) {
-                    // Teleporting should also clear any active frame advantage display,
-                    // since positions/states are being reset artificially.
-                    ClearFrameAdvantageDisplay();
+                    // Teleporting should also cancel any in-progress frame advantage
+                    // calculation, since positions/states are being reset artificially.
+                    CancelFrameAdvantageCalculation();
                     teleportOrLoad();
                     handled = true;
                 } else if (!handled && gpWentDown(cgp.gpSavePositionButton)) {
