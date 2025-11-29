@@ -19,6 +19,8 @@
 #include <sstream>
 
 namespace CharacterSettings {
+    // Forward declaration for GUI visibility flag (defined in ImGui layer)
+    extern std::atomic<bool> g_guiVisible;
     // Track if character patches are currently applied
     static bool ikumiBloodPatchApplied = false;
     // Throttle/decimate Ikumi read logs: log on change or heartbeat only
@@ -57,6 +59,118 @@ namespace CharacterSettings {
     static int  s_p1AkikoFrozenCycle = 0;
     static int  s_p2AkikoFrozenCycle = 0;
     
+    // Cached per-player character-specific pointers to reduce ResolvePointer calls
+    struct PlayerCharPointers {
+        uintptr_t base = 0;
+        int       charId = -1;
+        // Ikumi
+        uintptr_t ikumiBlood = 0;
+        uintptr_t ikumiGenocide = 0;
+        // Mishio
+        uintptr_t mishioElement = 0;
+        uintptr_t mishioAwakenedTimer = 0;
+        // Misuzu
+        uintptr_t misuzuFeather = 0;
+        uintptr_t misuzuPoisonTimer = 0;
+        uintptr_t misuzuPoisonLevel = 0;
+        // Doppel / Rumi
+        uintptr_t doppelEnlightened = 0;
+        uintptr_t rumiModeByte = 0;
+        uintptr_t rumiWeaponGate = 0;
+        uintptr_t rumiKimchiFlag = 0;
+        uintptr_t rumiKimchiTimer = 0;
+        // Akiko
+        uintptr_t akikoBulletCycle = 0;
+        uintptr_t akikoTimeslowTrigger = 0;
+        uintptr_t akikoDigitFirst = 0;
+        uintptr_t akikoDigitSecond = 0;
+        uintptr_t akikoDigitThird = 0;
+        // Mio
+        uintptr_t mioStance = 0;
+        // Kano
+        uintptr_t kanoMagic = 0;
+        // Neyuki / NayukiB
+        uintptr_t neyukiJamCount = 0;
+        uintptr_t nayukiSnowbunnyTimer = 0;
+        // Mai
+        uintptr_t maiStatus = 0;
+        uintptr_t maiMultiTimer = 0;
+        uintptr_t maiSummonFlashFlag = 0;
+        // Minagi puppet / Mai ghost share base pointer only (computed via base+off)
+    };
+
+    static PlayerCharPointers s_pointersP1;
+    static PlayerCharPointers s_pointersP2;
+
+    static void RefreshCharacterPointers(uintptr_t base, int playerIndex, int charId) {
+        PlayerCharPointers &p = (playerIndex == 1) ? s_pointersP1 : s_pointersP2;
+        const int off = (playerIndex == 1) ? EFZ_BASE_OFFSET_P1 : EFZ_BASE_OFFSET_P2;
+        p.base = base + off;
+        p.charId = charId;
+
+        // Clear all first
+        p.ikumiBlood = p.ikumiGenocide = 0;
+        p.mishioElement = p.mishioAwakenedTimer = 0;
+        p.misuzuFeather = p.misuzuPoisonTimer = p.misuzuPoisonLevel = 0;
+        p.doppelEnlightened = 0;
+        p.rumiModeByte = p.rumiWeaponGate = 0;
+        p.rumiKimchiFlag = p.rumiKimchiTimer = 0;
+        p.akikoBulletCycle = p.akikoTimeslowTrigger = 0;
+        p.akikoDigitFirst = p.akikoDigitSecond = p.akikoDigitThird = 0;
+        p.mioStance = 0;
+        p.kanoMagic = 0;
+        p.neyukiJamCount = 0;
+        p.nayukiSnowbunnyTimer = 0;
+        p.maiStatus = p.maiMultiTimer = p.maiSummonFlashFlag = 0;
+
+        if (charId == CHAR_ID_IKUMI) {
+            p.ikumiBlood    = ResolvePointer(base, off, IKUMI_BLOOD_OFFSET);
+            p.ikumiGenocide = ResolvePointer(base, off, IKUMI_GENOCIDE_OFFSET);
+        }
+        if (charId == CHAR_ID_MISHIO) {
+            p.mishioElement       = ResolvePointer(base, off, MISHIO_ELEMENT_OFFSET);
+            p.mishioAwakenedTimer = ResolvePointer(base, off, MISHIO_AWAKENED_TIMER_OFFSET);
+        }
+        if (charId == CHAR_ID_MISUZU) {
+            p.misuzuFeather     = ResolvePointer(base, off, MISUZU_FEATHER_OFFSET);
+            p.misuzuPoisonTimer = ResolvePointer(base, off, MISUZU_POISON_TIMER_OFFSET);
+            p.misuzuPoisonLevel = ResolvePointer(base, off, MISUZU_POISON_LEVEL_OFFSET);
+        }
+        if (charId == CHAR_ID_EXNANASE) {
+            p.doppelEnlightened = ResolvePointer(base, off, DOPPEL_ENLIGHTENED_OFFSET);
+        }
+        if (charId == CHAR_ID_NANASE) {
+            p.rumiModeByte    = ResolvePointer(base, off, RUMI_MODE_BYTE_OFFSET);
+            p.rumiWeaponGate  = ResolvePointer(base, off, RUMI_WEAPON_GATE_OFFSET);
+            p.rumiKimchiFlag  = ResolvePointer(base, off, RUMI_KIMCHI_ACTIVE_OFFSET);
+            p.rumiKimchiTimer = ResolvePointer(base, off, RUMI_KIMCHI_TIMER_OFFSET);
+        }
+        if (charId == CHAR_ID_AKIKO) {
+            p.akikoBulletCycle    = ResolvePointer(base, off, AKIKO_BULLET_CYCLE_OFFSET);
+            p.akikoTimeslowTrigger= ResolvePointer(base, off, AKIKO_TIMESLOW_TRIGGER_OFFSET);
+            p.akikoDigitFirst     = ResolvePointer(base, off, AKIKO_TIMESLOW_FIRST_OFFSET);
+            p.akikoDigitSecond    = ResolvePointer(base, off, AKIKO_TIMESLOW_SECOND_OFFSET);
+            p.akikoDigitThird     = ResolvePointer(base, off, AKIKO_TIMESLOW_THIRD_OFFSET);
+        }
+        if (charId == CHAR_ID_MIO) {
+            p.mioStance = ResolvePointer(base, off, MIO_STANCE_OFFSET);
+        }
+        if (charId == CHAR_ID_KANO) {
+            p.kanoMagic = ResolvePointer(base, off, KANO_MAGIC_OFFSET);
+        }
+        if (charId == CHAR_ID_NAYUKI) {
+            p.neyukiJamCount = ResolvePointer(base, off, NEYUKI_JAM_COUNT_OFFSET);
+        }
+        if (charId == CHAR_ID_NAYUKIB) {
+            p.nayukiSnowbunnyTimer = ResolvePointer(base, off, NAYUKIB_SNOWBUNNY_TIMER_OFFSET);
+        }
+        if (charId == CHAR_ID_MAI) {
+            p.maiStatus         = ResolvePointer(base, off, MAI_STATUS_OFFSET);
+            p.maiMultiTimer     = ResolvePointer(base, off, MAI_MULTI_TIMER_OFFSET);
+            p.maiSummonFlashFlag= ResolvePointer(base, off, MAI_SUMMON_FLASH_FLAG_OFFSET);
+        }
+    }
+
     // Updated character name mapping with correct display names
     static const std::unordered_map<std::string, int> characterNameMap = {
         {"akane", CHAR_ID_AKANE},
@@ -141,6 +255,8 @@ namespace CharacterSettings {
     }
     
     void UpdateCharacterIDs(DisplayData& data) {
+        int oldP1 = data.p1CharID;
+        int oldP2 = data.p2CharID;
         data.p1CharID = GetCharacterID(data.p1CharName);
         data.p2CharID = GetCharacterID(data.p2CharName);
         
@@ -148,14 +264,64 @@ namespace CharacterSettings {
                " (ID: " + std::to_string(data.p1CharID) + "), P2: " + 
                std::string(data.p2CharName) + " (ID: " + std::to_string(data.p2CharID) + ")",
                detailedLogging.load());
+
+        // Refresh cached pointers when IDs change; base will be patched on first Read/Apply call
+        if (oldP1 != data.p1CharID || oldP2 != data.p2CharID) {
+            uintptr_t base = GetEFZBase();
+            if (base) {
+                RefreshCharacterPointers(base, 1, data.p1CharID);
+                RefreshCharacterPointers(base, 2, data.p2CharID);
+            }
+        }
     }
     
+    // Helper to check if any background infinite/lock options are active
+    static bool AnyInfiniteOrLockEnabled(const DisplayData& d) {
+        return d.infiniteBloodMode ||
+               d.infiniteMishioElement || d.infiniteMishioAwakened ||
+               d.infiniteFeatherMode ||
+               d.p1MisuzuInfinitePoison || d.p2MisuzuInfinitePoison ||
+               d.p1RumiInfiniteShinai || d.p2RumiInfiniteShinai ||
+               d.p1RumiInfiniteKimchi || d.p2RumiInfiniteKimchi ||
+               d.p1AkikoInfiniteTimeslow || d.p2AkikoInfiniteTimeslow ||
+               d.p1AkikoFreezeCycle || d.p2AkikoFreezeCycle ||
+               d.p1MioLockStance || d.p2MioLockStance ||
+               d.p1KanoLockMagic || d.p2KanoLockMagic ||
+               d.p1NayukiInfiniteSnow || d.p2NayukiInfiniteSnow ||
+               d.p1MaiInfiniteGhost || d.p2MaiInfiniteGhost ||
+               d.p1MaiInfiniteCharge || d.p2MaiInfiniteCharge ||
+               d.p1MaiInfiniteAwakening || d.p2MaiInfiniteAwakening ||
+               d.p1MaiNoChargeCD || d.p2MaiNoChargeCD ||
+               d.p1MinagiAlwaysReadied || d.p2MinagiAlwaysReadied ||
+               d.minagiConvertNewProjectiles;
+    }
+
     void ReadCharacterValues(uintptr_t base, DisplayData& data) {
+        // Ensure pointer caches have correct base for this session
+        if (base) {
+            if (s_pointersP1.base == 0 || s_pointersP1.base != base + EFZ_BASE_OFFSET_P1)
+                RefreshCharacterPointers(base, 1, data.p1CharID);
+            if (s_pointersP2.base == 0 || s_pointersP2.base != base + EFZ_BASE_OFFSET_P2)
+                RefreshCharacterPointers(base, 2, data.p2CharID);
+        }
+
+        // If GUI is hidden and no infinite/lock option needs these values, we can skip reads entirely.
+        static int s_charReadCounter = 0;
+        if (!g_guiVisible.load()) {
+            if (!AnyInfiniteOrLockEnabled(data)) {
+                return;
+            }
+            // Throttle purely background reads when only infinites are active
+            constexpr int CHAR_READ_PERIOD = 4; // every 4 frames when GUI closed
+            if ((++s_charReadCounter % CHAR_READ_PERIOD) != 0) {
+                return;
+            }
+        }
         // Read Ikumi's values if either player is using her
         if (data.p1CharID == CHAR_ID_IKUMI) {
             uintptr_t levelAddr   = ResolvePointer(base, EFZ_BASE_OFFSET_P1, IKUMI_LEVEL_GAUGE_OFFSET);
-            uintptr_t bloodAddr   = ResolvePointer(base, EFZ_BASE_OFFSET_P1, IKUMI_BLOOD_OFFSET);
-            uintptr_t genocideAddr= ResolvePointer(base, EFZ_BASE_OFFSET_P1, IKUMI_GENOCIDE_OFFSET);
+            uintptr_t bloodAddr   = s_pointersP1.ikumiBlood;
+            uintptr_t genocideAddr= s_pointersP1.ikumiGenocide;
 
             if (levelAddr)   { SafeReadMemory(levelAddr,   &data.p1IkumiLevelGauge, sizeof(int)); data.p1IkumiLevelGauge = CLAMP(data.p1IkumiLevelGauge, 0, 99); }
             if (bloodAddr)   SafeReadMemory(bloodAddr,   &data.p1IkumiBlood, sizeof(int));
@@ -176,8 +342,8 @@ namespace CharacterSettings {
         
         if (data.p2CharID == CHAR_ID_IKUMI) {
             uintptr_t levelAddr   = ResolvePointer(base, EFZ_BASE_OFFSET_P2, IKUMI_LEVEL_GAUGE_OFFSET);
-            uintptr_t bloodAddr   = ResolvePointer(base, EFZ_BASE_OFFSET_P2, IKUMI_BLOOD_OFFSET);
-            uintptr_t genocideAddr= ResolvePointer(base, EFZ_BASE_OFFSET_P2, IKUMI_GENOCIDE_OFFSET);
+            uintptr_t bloodAddr   = s_pointersP2.ikumiBlood;
+            uintptr_t genocideAddr= s_pointersP2.ikumiGenocide;
 
             if (levelAddr)   { SafeReadMemory(levelAddr,   &data.p2IkumiLevelGauge, sizeof(int)); data.p2IkumiLevelGauge = CLAMP(data.p2IkumiLevelGauge, 0, 99); }
             if (bloodAddr)   SafeReadMemory(bloodAddr,   &data.p2IkumiBlood, sizeof(int));
@@ -198,8 +364,8 @@ namespace CharacterSettings {
 
         // Read Neyuki (Sleepy Nayuki) jam count (0..9)
         auto ReadNeyuki = [&](int playerIndex){
-            const int off = (playerIndex==1)?EFZ_BASE_OFFSET_P1:EFZ_BASE_OFFSET_P2;
-            uintptr_t jamAddr = ResolvePointer(base, off, NEYUKI_JAM_COUNT_OFFSET);
+            PlayerCharPointers &p = (playerIndex==1)?s_pointersP1:s_pointersP2;
+            uintptr_t jamAddr = p.neyukiJamCount;
             if (!jamAddr) return;
             int jam = 0; SafeReadMemory(jamAddr, &jam, sizeof(int));
             if (jam < 0) jam = 0; else if (jam > NEYUKI_JAM_COUNT_MAX) jam = NEYUKI_JAM_COUNT_MAX;
@@ -211,16 +377,16 @@ namespace CharacterSettings {
         
         // Read Mishio's values if either player is using her
         if (data.p1CharID == CHAR_ID_MISHIO) {
-            uintptr_t elemAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P1, MISHIO_ELEMENT_OFFSET);
-            uintptr_t awAddr   = ResolvePointer(base, EFZ_BASE_OFFSET_P1, MISHIO_AWAKENED_TIMER_OFFSET);
+            uintptr_t elemAddr = s_pointersP1.mishioElement;
+            uintptr_t awAddr   = s_pointersP1.mishioAwakenedTimer;
             if (elemAddr) SafeReadMemory(elemAddr, &data.p1MishioElement, sizeof(int));
             if (awAddr)   SafeReadMemory(awAddr,   &data.p1MishioAwakenedTimer, sizeof(int));
             LogOut("[CHAR] Read P1 Mishio values: Element=" + std::to_string(data.p1MishioElement) +
                    ", AwTimer=" + std::to_string(data.p1MishioAwakenedTimer), detailedLogging.load());
         }
         if (data.p2CharID == CHAR_ID_MISHIO) {
-            uintptr_t elemAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P2, MISHIO_ELEMENT_OFFSET);
-            uintptr_t awAddr   = ResolvePointer(base, EFZ_BASE_OFFSET_P2, MISHIO_AWAKENED_TIMER_OFFSET);
+            uintptr_t elemAddr = s_pointersP2.mishioElement;
+            uintptr_t awAddr   = s_pointersP2.mishioAwakenedTimer;
             if (elemAddr) SafeReadMemory(elemAddr, &data.p2MishioElement, sizeof(int));
             if (awAddr)   SafeReadMemory(awAddr,   &data.p2MishioAwakenedTimer, sizeof(int));
             LogOut("[CHAR] Read P2 Mishio values: Element=" + std::to_string(data.p2MishioElement) +
@@ -229,9 +395,9 @@ namespace CharacterSettings {
 
         // Read Misuzu's values if either player is using her
         if (data.p1CharID == CHAR_ID_MISUZU) {
-            uintptr_t featherAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P1, MISUZU_FEATHER_OFFSET);
-         uintptr_t poisonTimerAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P1, MISUZU_POISON_TIMER_OFFSET);
-         uintptr_t poisonLevelAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P1, MISUZU_POISON_LEVEL_OFFSET);
+                uintptr_t featherAddr = s_pointersP1.misuzuFeather;
+            uintptr_t poisonTimerAddr = s_pointersP1.misuzuPoisonTimer;
+            uintptr_t poisonLevelAddr = s_pointersP1.misuzuPoisonLevel;
             
             if (featherAddr) SafeReadMemory(featherAddr, &data.p1MisuzuFeathers, sizeof(int));
          if (poisonTimerAddr) { SafeReadMemory(poisonTimerAddr, &data.p1MisuzuPoisonTimer, sizeof(int)); data.p1MisuzuPoisonTimer = CLAMP(data.p1MisuzuPoisonTimer, 0, MISUZU_POISON_TIMER_MAX); }
@@ -244,9 +410,9 @@ namespace CharacterSettings {
         }
         
         if (data.p2CharID == CHAR_ID_MISUZU) {
-            uintptr_t featherAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P2, MISUZU_FEATHER_OFFSET);
-         uintptr_t poisonTimerAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P2, MISUZU_POISON_TIMER_OFFSET);
-         uintptr_t poisonLevelAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P2, MISUZU_POISON_LEVEL_OFFSET);
+                uintptr_t featherAddr = s_pointersP2.misuzuFeather;
+            uintptr_t poisonTimerAddr = s_pointersP2.misuzuPoisonTimer;
+            uintptr_t poisonLevelAddr = s_pointersP2.misuzuPoisonLevel;
             
             if (featherAddr) SafeReadMemory(featherAddr, &data.p2MisuzuFeathers, sizeof(int));
          if (poisonTimerAddr) { SafeReadMemory(poisonTimerAddr, &data.p2MisuzuPoisonTimer, sizeof(int)); data.p2MisuzuPoisonTimer = CLAMP(data.p2MisuzuPoisonTimer, 0, MISUZU_POISON_TIMER_MAX); }
@@ -260,13 +426,13 @@ namespace CharacterSettings {
 
         // Doppel Nanase (ExNanase) - read Enlightened flag (0/1)
         if (data.p1CharID == CHAR_ID_EXNANASE) {
-            uintptr_t flagAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P1, DOPPEL_ENLIGHTENED_OFFSET);
+            uintptr_t flagAddr = s_pointersP1.doppelEnlightened;
             int tmp = 0; if (flagAddr) SafeReadMemory(flagAddr, &tmp, sizeof(int));
             data.p1DoppelEnlightened = (tmp != 0);
             LogOut("[CHAR] Read P1 Doppel Enlightened=" + std::to_string(data.p1DoppelEnlightened), detailedLogging.load());
         }
         if (data.p2CharID == CHAR_ID_EXNANASE) {
-            uintptr_t flagAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P2, DOPPEL_ENLIGHTENED_OFFSET);
+            uintptr_t flagAddr = s_pointersP2.doppelEnlightened;
             int tmp = 0; if (flagAddr) SafeReadMemory(flagAddr, &tmp, sizeof(int));
             data.p2DoppelEnlightened = (tmp != 0);
             LogOut("[CHAR] Read P2 Doppel Enlightened=" + std::to_string(data.p2DoppelEnlightened), detailedLogging.load());
@@ -274,11 +440,11 @@ namespace CharacterSettings {
 
         // Nanase (Rumi) – Safe read of mode/gate only (no pointer derefs to anim/move tables)
         auto ReadRumiState = [&](int playerIndex) {
-            const int baseOffset = (playerIndex == 1) ? EFZ_BASE_OFFSET_P1 : EFZ_BASE_OFFSET_P2;
-            uintptr_t modeAddr = ResolvePointer(base, baseOffset, RUMI_MODE_BYTE_OFFSET);
-            uintptr_t gateAddr = ResolvePointer(base, baseOffset, RUMI_WEAPON_GATE_OFFSET);
-            uintptr_t kimchiFlagAddr = ResolvePointer(base, baseOffset, RUMI_KIMCHI_ACTIVE_OFFSET);
-            uintptr_t kimchiTimerAddr = ResolvePointer(base, baseOffset, RUMI_KIMCHI_TIMER_OFFSET);
+            PlayerCharPointers &p = (playerIndex==1)?s_pointersP1:s_pointersP2;
+            uintptr_t modeAddr = p.rumiModeByte;
+            uintptr_t gateAddr = p.rumiWeaponGate;
+            uintptr_t kimchiFlagAddr = p.rumiKimchiFlag;
+            uintptr_t kimchiTimerAddr = p.rumiKimchiTimer;
             uint8_t mode = 0, gate = 0;
             if (modeAddr) SafeReadMemory(modeAddr, &mode, sizeof(uint8_t));
             if (gateAddr) SafeReadMemory(gateAddr, &gate, sizeof(uint8_t));
@@ -329,9 +495,9 @@ namespace CharacterSettings {
         bool p1JustSwitchedToAkiko = (data.p1CharID == CHAR_ID_AKIKO && s_prevCharIDP1 != CHAR_ID_AKIKO);
         bool p2JustSwitchedToAkiko = (data.p2CharID == CHAR_ID_AKIKO && s_prevCharIDP2 != CHAR_ID_AKIKO);
         auto ReadAkiko = [&](int playerIndex){
-            const int off = (playerIndex==1)?EFZ_BASE_OFFSET_P1:EFZ_BASE_OFFSET_P2;
-            uintptr_t bulletAddr = ResolvePointer(base, off, AKIKO_BULLET_CYCLE_OFFSET);
-            uintptr_t timeAddr   = ResolvePointer(base, off, AKIKO_TIMESLOW_TRIGGER_OFFSET);
+            PlayerCharPointers &p = (playerIndex==1)?s_pointersP1:s_pointersP2;
+            uintptr_t bulletAddr = p.akikoBulletCycle;
+            uintptr_t timeAddr   = p.akikoTimeslowTrigger;
             int bullet=0, t=0; if (bulletAddr) SafeReadMemory(bulletAddr,&bullet,sizeof(int)); if (timeAddr) SafeReadMemory(timeAddr,&t,sizeof(int));
             // Clamp bullet cycle to valid range [0..2]; timeslow is [0..3] (0=Inactive,1=A,2=B,3=C)
             bullet = CLAMP(bullet, 0, 2);
@@ -370,9 +536,9 @@ namespace CharacterSettings {
 
         // Mio stance (simple byte/int at shared offset 0x3150; 0=Short,1=Long)
         auto ReadMio = [&](int playerIndex){
-            const int off = (playerIndex==1)?EFZ_BASE_OFFSET_P1:EFZ_BASE_OFFSET_P2;
+            PlayerCharPointers &p = (playerIndex==1)?s_pointersP1:s_pointersP2;
             if ((playerIndex==1 && data.p1CharID!=CHAR_ID_MIO) || (playerIndex==2 && data.p2CharID!=CHAR_ID_MIO)) return;
-            uintptr_t stanceAddr = ResolvePointer(base, off, MIO_STANCE_OFFSET);
+            uintptr_t stanceAddr = p.mioStance;
             if (!stanceAddr) return;
             int stance=0; SafeReadMemory(stanceAddr,&stance,sizeof(int)); stance = (stance==MIO_STANCE_LONG)?MIO_STANCE_LONG:MIO_STANCE_SHORT;
             if (playerIndex==1) data.p1MioStance = stance; else data.p2MioStance = stance;
@@ -381,9 +547,9 @@ namespace CharacterSettings {
 
         // Kano magic meter (0..10000) at same 0x3150 slot
         auto ReadKano = [&](int playerIndex){
-            const int off = (playerIndex==1)?EFZ_BASE_OFFSET_P1:EFZ_BASE_OFFSET_P2;
+            PlayerCharPointers &p = (playerIndex==1)?s_pointersP1:s_pointersP2;
             if ((playerIndex==1 && data.p1CharID!=CHAR_ID_KANO) || (playerIndex==2 && data.p2CharID!=CHAR_ID_KANO)) return;
-            uintptr_t magicAddr = ResolvePointer(base, off, KANO_MAGIC_OFFSET);
+            uintptr_t magicAddr = p.kanoMagic;
             if (!magicAddr) return;
             int val=0; SafeReadMemory(magicAddr,&val,sizeof(int));
             val = CLAMP(val, 0, KANO_MAGIC_MAX);
@@ -394,8 +560,8 @@ namespace CharacterSettings {
         // Nayuki (Awake) – Snowbunnies timer at shared 0x3150 (0..3000)
         auto ReadNayukiB = [&](int playerIndex){
             if ((playerIndex==1 && data.p1CharID!=CHAR_ID_NAYUKIB) || (playerIndex==2 && data.p2CharID!=CHAR_ID_NAYUKIB)) return;
-            const int off = (playerIndex==1)?EFZ_BASE_OFFSET_P1:EFZ_BASE_OFFSET_P2;
-            uintptr_t snowAddr = ResolvePointer(base, off, NAYUKIB_SNOWBUNNY_TIMER_OFFSET);
+            PlayerCharPointers &p = (playerIndex==1)?s_pointersP1:s_pointersP2;
+            uintptr_t snowAddr = p.nayukiSnowbunnyTimer;
             if (!snowAddr) return;
             int v=0; SafeReadMemory(snowAddr,&v,sizeof(int)); v = CLAMP(v,0,NAYUKIB_SNOWBUNNY_MAX);
             if (playerIndex==1) data.p1NayukiSnowbunnies = v; else data.p2NayukiSnowbunnies = v;
@@ -403,6 +569,7 @@ namespace CharacterSettings {
             // Read snowbunny active flags array (8 snowbunnies, each flag is 4 bytes at +0x3154 + 4*i)
             int activeFlags[8] = {0};
             std::string flagsStr = "";
+            const int off = (playerIndex==1)?EFZ_BASE_OFFSET_P1:EFZ_BASE_OFFSET_P2;
             for (int i = 0; i < 8; i++) {
                 uintptr_t flagAddr = ResolvePointer(base, off, NAYUKIB_SNOWBUNNY_ACTIVE_FLAGS_BASE + (4 * i));
                 if (flagAddr) {
@@ -464,10 +631,22 @@ namespace CharacterSettings {
     }
     
     void ApplyCharacterValues(uintptr_t base, const DisplayData& data) {
+        // Ensure pointer caches have correct base for this session
+        if (base) {
+            if (s_pointersP1.base == 0 || s_pointersP1.base != base + EFZ_BASE_OFFSET_P1)
+                RefreshCharacterPointers(base, 1, data.p1CharID);
+            if (s_pointersP2.base == 0 || s_pointersP2.base != base + EFZ_BASE_OFFSET_P2)
+                RefreshCharacterPointers(base, 2, data.p2CharID);
+        }
+
+        // If GUI is hidden and no infinite/lock is enabled, Apply is effectively a no-op.
+        if (!g_guiVisible.load() && !AnyInfiniteOrLockEnabled(data)) {
+            return;
+        }
         // Apply Ikumi's values (P1)
         if (data.p1CharID == CHAR_ID_IKUMI) {
-            uintptr_t bloodAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P1, IKUMI_BLOOD_OFFSET);
-            uintptr_t genocideAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P1, IKUMI_GENOCIDE_OFFSET);
+            uintptr_t bloodAddr = s_pointersP1.ikumiBlood;
+            uintptr_t genocideAddr = s_pointersP1.ikumiGenocide;
             int bloodValue = std::max<int>(0, std::min<int>(IKUMI_BLOOD_MAX, data.p1IkumiBlood));
             int genocideValue = data.infiniteBloodMode ? IKUMI_GENOCIDE_MAX
                                                        : std::max<int>(0, std::min<int>(IKUMI_GENOCIDE_MAX, data.p1IkumiGenocide));
@@ -481,8 +660,8 @@ namespace CharacterSettings {
         
         // Apply Mishio's values (P1 element and awakened timer)
         if (data.p1CharID == CHAR_ID_MISHIO) {
-            uintptr_t elemAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P1, MISHIO_ELEMENT_OFFSET);
-            uintptr_t awAddr   = ResolvePointer(base, EFZ_BASE_OFFSET_P1, MISHIO_AWAKENED_TIMER_OFFSET);
+            uintptr_t elemAddr = s_pointersP1.mishioElement;
+            uintptr_t awAddr   = s_pointersP1.mishioAwakenedTimer;
             if (elemAddr) {
                 int elem = CLAMP(data.p1MishioElement, MISHIO_ELEM_NONE, MISHIO_ELEM_AWAKENED);
                 SafeWriteMemory(elemAddr, &elem, sizeof(int));
@@ -497,8 +676,8 @@ namespace CharacterSettings {
                    ", AwTimer=" + std::to_string(data.p1MishioAwakenedTimer), detailedLogging.load());
         }
         if (data.p2CharID == CHAR_ID_MISHIO) {
-            uintptr_t elemAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P2, MISHIO_ELEMENT_OFFSET);
-            uintptr_t awAddr   = ResolvePointer(base, EFZ_BASE_OFFSET_P2, MISHIO_AWAKENED_TIMER_OFFSET);
+            uintptr_t elemAddr = s_pointersP2.mishioElement;
+            uintptr_t awAddr   = s_pointersP2.mishioAwakenedTimer;
             if (elemAddr) {
                 int elem = CLAMP(data.p2MishioElement, MISHIO_ELEM_NONE, MISHIO_ELEM_AWAKENED);
                 SafeWriteMemory(elemAddr, &elem, sizeof(int));
@@ -515,8 +694,8 @@ namespace CharacterSettings {
 
         // Fix for lines 158-159
         if (data.p2CharID == CHAR_ID_IKUMI) {
-            uintptr_t bloodAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P2, IKUMI_BLOOD_OFFSET);
-            uintptr_t genocideAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P2, IKUMI_GENOCIDE_OFFSET);
+            uintptr_t bloodAddr = s_pointersP2.ikumiBlood;
+            uintptr_t genocideAddr = s_pointersP2.ikumiGenocide;
             
             // Fix: Add explicit template parameters to std::max and std::min
             int bloodValue = std::max<int>(0, std::min<int>(IKUMI_BLOOD_MAX, data.p2IkumiBlood));
@@ -534,9 +713,9 @@ namespace CharacterSettings {
         
      // Apply Misuzu's values if either player is using her
           if (data.p1CharID == CHAR_ID_MISUZU) {
-            uintptr_t featherAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P1, MISUZU_FEATHER_OFFSET);
-         uintptr_t poisonTimerAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P1, MISUZU_POISON_TIMER_OFFSET);
-         uintptr_t poisonLevelAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P1, MISUZU_POISON_LEVEL_OFFSET);
+                uintptr_t featherAddr = s_pointersP1.misuzuFeather;
+            uintptr_t poisonTimerAddr = s_pointersP1.misuzuPoisonTimer;
+            uintptr_t poisonLevelAddr = s_pointersP1.misuzuPoisonLevel;
             
             int featherValue = std::max<int>(0, std::min<int>(MISUZU_FEATHER_MAX, data.p1MisuzuFeathers));
             
@@ -551,9 +730,9 @@ namespace CharacterSettings {
         }
         
           if (data.p2CharID == CHAR_ID_MISUZU) {
-            uintptr_t featherAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P2, MISUZU_FEATHER_OFFSET);
-         uintptr_t poisonTimerAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P2, MISUZU_POISON_TIMER_OFFSET);
-         uintptr_t poisonLevelAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P2, MISUZU_POISON_LEVEL_OFFSET);
+                uintptr_t featherAddr = s_pointersP2.misuzuFeather;
+            uintptr_t poisonTimerAddr = s_pointersP2.misuzuPoisonTimer;
+            uintptr_t poisonLevelAddr = s_pointersP2.misuzuPoisonLevel;
             
             int featherValue = std::max<int>(0, std::min<int>(MISUZU_FEATHER_MAX, data.p2MisuzuFeathers));
             
@@ -569,7 +748,7 @@ namespace CharacterSettings {
 
         // Doppel Enlightened: simple checkbox -> set flag 1 when checked, 0 when unchecked
         if (data.p1CharID == CHAR_ID_EXNANASE) {
-            uintptr_t flagAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P1, DOPPEL_ENLIGHTENED_OFFSET);
+            uintptr_t flagAddr = s_pointersP1.doppelEnlightened;
             if (flagAddr) {
                 int v = data.p1DoppelEnlightened ? 1 : 0;
                 SafeWriteMemory(flagAddr, &v, sizeof(int));
@@ -577,7 +756,7 @@ namespace CharacterSettings {
             }
         }
         if (data.p2CharID == CHAR_ID_EXNANASE) {
-            uintptr_t flagAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P2, DOPPEL_ENLIGHTENED_OFFSET);
+            uintptr_t flagAddr = s_pointersP2.doppelEnlightened;
             if (flagAddr) {
                 int v = data.p2DoppelEnlightened ? 1 : 0;
                 SafeWriteMemory(flagAddr, &v, sizeof(int));
@@ -598,8 +777,9 @@ namespace CharacterSettings {
                 return;
             }
 
-            uintptr_t modeByteAddr  = ResolvePointer(base, baseOffset, RUMI_MODE_BYTE_OFFSET);
-            uintptr_t gateAddr      = ResolvePointer(base, baseOffset, RUMI_WEAPON_GATE_OFFSET);
+            PlayerCharPointers &pc = (playerIndex==1)?s_pointersP1:s_pointersP2;
+            uintptr_t modeByteAddr  = pc.rumiModeByte;
+            uintptr_t gateAddr      = pc.rumiWeaponGate;
             if (!modeByteAddr || !gateAddr) return;
 
             uint8_t curMode = 0, curGate = 0;
@@ -670,7 +850,7 @@ namespace CharacterSettings {
             const bool wantBarehand = data.p1RumiInfiniteShinai ? false : data.p1RumiBarehanded;
             ApplyRumiMode(1, wantBarehand);
             // Apply Kimchi activation/timer if fields are present
-            if (uintptr_t flag = ResolvePointer(base, EFZ_BASE_OFFSET_P1, RUMI_KIMCHI_ACTIVE_OFFSET)) {
+            if (uintptr_t flag = s_pointersP1.rumiKimchiFlag) {
                 int newV = data.p1RumiKimchiActive ? 1 : 0;
                 int curV = 0; SafeReadMemory(flag, &curV, sizeof(int));
                 if (curV != newV) { SafeWriteMemory(flag, &newV, sizeof(int)); }
@@ -682,14 +862,14 @@ namespace CharacterSettings {
                     }
                 }
             }
-            if (uintptr_t tim = ResolvePointer(base, EFZ_BASE_OFFSET_P1, RUMI_KIMCHI_TIMER_OFFSET)) {
+            if (uintptr_t tim = s_pointersP1.rumiKimchiTimer) {
                 int t = data.p1RumiKimchiTimer; if (t < 0) t = 0; if (t > RUMI_KIMCHI_TARGET) t = RUMI_KIMCHI_TARGET; SafeWriteMemory(tim, &t, sizeof(int));
             }
         }
         if (data.p2CharID == CHAR_ID_NANASE) {
             const bool wantBarehand = data.p2RumiInfiniteShinai ? false : data.p2RumiBarehanded;
             ApplyRumiMode(2, wantBarehand);
-            if (uintptr_t flag = ResolvePointer(base, EFZ_BASE_OFFSET_P2, RUMI_KIMCHI_ACTIVE_OFFSET)) {
+            if (uintptr_t flag = s_pointersP2.rumiKimchiFlag) {
                 int newV = data.p2RumiKimchiActive ? 1 : 0;
                 int curV = 0; SafeReadMemory(flag, &curV, sizeof(int));
                 if (curV != newV) { SafeWriteMemory(flag, &newV, sizeof(int)); }
@@ -700,7 +880,7 @@ namespace CharacterSettings {
                     }
                 }
             }
-            if (uintptr_t tim = ResolvePointer(base, EFZ_BASE_OFFSET_P2, RUMI_KIMCHI_TIMER_OFFSET)) {
+            if (uintptr_t tim = s_pointersP2.rumiKimchiTimer) {
                 int t = data.p2RumiKimchiTimer; if (t < 0) t = 0; if (t > RUMI_KIMCHI_TARGET) t = RUMI_KIMCHI_TARGET; SafeWriteMemory(tim, &t, sizeof(int));
             }
         }
@@ -710,8 +890,8 @@ namespace CharacterSettings {
         // Apply Akiko values directly when set in DisplayData
         auto ApplyAkiko = [&](int pi){
             if ((pi==1 && data.p1CharID != CHAR_ID_AKIKO) || (pi==2 && data.p2CharID != CHAR_ID_AKIKO)) return;
-            const int off = (pi==1)?EFZ_BASE_OFFSET_P1:EFZ_BASE_OFFSET_P2;
-            uintptr_t bulletAddr = ResolvePointer(base, off, AKIKO_BULLET_CYCLE_OFFSET);
+            PlayerCharPointers &p = (pi==1)?s_pointersP1:s_pointersP2;
+            uintptr_t bulletAddr = p.akikoBulletCycle;
             int bullet = (pi==1)?data.p1AkikoBulletCycle:data.p2AkikoBulletCycle;
             int t      = (pi==1)?data.p1AkikoTimeslowTrigger:data.p2AkikoTimeslowTrigger;
             bullet = CLAMP(bullet, 0, 2);
@@ -724,8 +904,8 @@ namespace CharacterSettings {
         // Apply Neyuki jam count if present
         auto ApplyNeyuki = [&](int pi){
             if ((pi==1 && data.p1CharID != CHAR_ID_NAYUKI) || (pi==2 && data.p2CharID != CHAR_ID_NAYUKI)) return;
-            const int off = (pi==1)?EFZ_BASE_OFFSET_P1:EFZ_BASE_OFFSET_P2;
-            if (uintptr_t jamAddr = ResolvePointer(base, off, NEYUKI_JAM_COUNT_OFFSET)) {
+            PlayerCharPointers &p = (pi==1)?s_pointersP1:s_pointersP2;
+            if (uintptr_t jamAddr = p.neyukiJamCount) {
                 int jam = (pi==1)? data.p1NeyukiJamCount : data.p2NeyukiJamCount;
                 if (jam < 0) jam = 0; else if (jam > NEYUKI_JAM_COUNT_MAX) jam = NEYUKI_JAM_COUNT_MAX;
                 SafeWriteMemory(jamAddr, &jam, sizeof(int));
@@ -736,8 +916,8 @@ namespace CharacterSettings {
         // Mio stance application (only write when user changed value; locking handled in TickCharacterEnforcements)
         auto ApplyMio = [&](int pi){
             if ((pi==1 && data.p1CharID != CHAR_ID_MIO) || (pi==2 && data.p2CharID != CHAR_ID_MIO)) return;
-            const int off = (pi==1)?EFZ_BASE_OFFSET_P1:EFZ_BASE_OFFSET_P2;
-            if (uintptr_t stanceAddr = ResolvePointer(base, off, MIO_STANCE_OFFSET)) {
+            PlayerCharPointers &p = (pi==1)?s_pointersP1:s_pointersP2;
+            if (uintptr_t stanceAddr = p.mioStance) {
                 int desired = (pi==1)?data.p1MioStance:data.p2MioStance;
                 desired = (desired==MIO_STANCE_LONG)?MIO_STANCE_LONG:MIO_STANCE_SHORT;
                 int cur=0; SafeReadMemory(stanceAddr,&cur,sizeof(int));
@@ -751,8 +931,8 @@ namespace CharacterSettings {
         // Kano magic meter (respect user value; locking handled per-tick)
         auto ApplyKano = [&](int pi){
             if ((pi==1 && data.p1CharID != CHAR_ID_KANO) || (pi==2 && data.p2CharID != CHAR_ID_KANO)) return;
-            const int off = (pi==1)?EFZ_BASE_OFFSET_P1:EFZ_BASE_OFFSET_P2;
-            if (uintptr_t magicAddr = ResolvePointer(base, off, KANO_MAGIC_OFFSET)) {
+            PlayerCharPointers &p = (pi==1)?s_pointersP1:s_pointersP2;
+            if (uintptr_t magicAddr = p.kanoMagic) {
                 int desired = (pi==1)?data.p1KanoMagic:data.p2KanoMagic;
                 desired = CLAMP(desired,0,KANO_MAGIC_MAX);
                 int cur=0; SafeReadMemory(magicAddr,&cur,sizeof(int));
@@ -766,8 +946,8 @@ namespace CharacterSettings {
         // Nayuki (Awake) – apply snowbunnies timer
         auto ApplyNayukiB = [&](int pi){
             if ((pi==1 && data.p1CharID != CHAR_ID_NAYUKIB) || (pi==2 && data.p2CharID != CHAR_ID_NAYUKIB)) return;
-            const int off = (pi==1)?EFZ_BASE_OFFSET_P1:EFZ_BASE_OFFSET_P2;
-            if (auto addr = ResolvePointer(base, off, NAYUKIB_SNOWBUNNY_TIMER_OFFSET)) {
+            PlayerCharPointers &p = (pi==1)?s_pointersP1:s_pointersP2;
+            if (auto addr = p.nayukiSnowbunnyTimer) {
                 int desired = (pi==1)?data.p1NayukiSnowbunnies:data.p2NayukiSnowbunnies;
                 // If Infinite is enabled, force to 3000 immediately here as well
                 bool wantInf = (pi==1)?data.p1NayukiInfiniteSnow:data.p2NayukiInfiniteSnow;
@@ -784,6 +964,7 @@ namespace CharacterSettings {
         auto ApplyMai = [&](int pi){
             if ((pi==1 && data.p1CharID!=CHAR_ID_MAI) || (pi==2 && data.p2CharID!=CHAR_ID_MAI)) return;
             const int off = (pi==1)?EFZ_BASE_OFFSET_P1:EFZ_BASE_OFFSET_P2;
+            PlayerCharPointers &pc = (pi==1)?s_pointersP1:s_pointersP2;
             int status = (pi==1)?data.p1MaiStatus:data.p2MaiStatus;
             status = CLAMP(status,0,4);
             bool forceSummon = (pi==1)?data.p1MaiForceSummon:data.p2MaiForceSummon;
@@ -798,14 +979,14 @@ namespace CharacterSettings {
 
             // Read live status/timer for decision logic
             int liveStatus = 0; int liveTimer = 0;
-            if (auto sAddrLive = ResolvePointer(base, off, MAI_STATUS_OFFSET)) { uint8_t ls=0; SafeReadMemory(sAddrLive,&ls,sizeof(uint8_t)); liveStatus = ls; }
-            if (auto tAddrLive = ResolvePointer(base, off, MAI_MULTI_TIMER_OFFSET)) { SafeReadMemory(tAddrLive,&liveTimer,sizeof(int)); }
+            if (auto sAddrLive = pc.maiStatus) { uint8_t ls=0; SafeReadMemory(sAddrLive,&ls,sizeof(uint8_t)); liveStatus = ls; }
+            if (auto tAddrLive = pc.maiMultiTimer) { SafeReadMemory(tAddrLive,&liveTimer,sizeof(int)); }
 
             // Handle Force Despawn: convert to unsummon path (simulate timer out)
             if (forceDespawn) {
                 // Only if currently active (1) or awakening (4); otherwise just clear request
                 if (liveStatus == 1 || liveStatus == 4) {
-                    if (auto tAddr = ResolvePointer(base, off, MAI_MULTI_TIMER_OFFSET)) {
+                    if (auto tAddr = pc.maiMultiTimer) {
                         int zero = 0; SafeWriteMemory(tAddr,&zero,sizeof(int));
                     }
                     // Let natural state machine shift to unsummon (will set status=2)
@@ -830,7 +1011,7 @@ namespace CharacterSettings {
                         unsigned short z=0; SafeWriteMemory(subFrameAddr,&z,sizeof(unsigned short));
                     }
                     // Seed flash flag (duplicate write harmless; engine sets it first tick).
-                    if (auto flashAddr = ResolvePointer(base, off, MAI_SUMMON_FLASH_FLAG_OFFSET)) { int one=1; SafeWriteMemory(flashAddr,&one,sizeof(int)); }
+                    if (auto flashAddr = pc.maiSummonFlashFlag) { int one=1; SafeWriteMemory(flashAddr,&one,sizeof(int)); }
                     // Cache desired timer target for later infinite enforcement once status becomes 1.
                     int desired = (pi==1)?data.p1MaiGhostTime:data.p2MaiGhostTime; desired = CLAMP(desired,1,MAI_GHOST_TIME_MAX);
                     if (infGhost && desired < MAI_GHOST_TIME_MAX) desired = MAI_GHOST_TIME_MAX;
@@ -856,11 +1037,11 @@ namespace CharacterSettings {
                     desiredTimer = 0;
                 }
             }
-            if (auto sAddr = ResolvePointer(base, off, MAI_STATUS_OFFSET)) {
+            if (auto sAddr = pc.maiStatus) {
                 uint8_t cur=0; SafeReadMemory(sAddr,&cur,sizeof(uint8_t)); uint8_t st = (uint8_t)status; if (cur!=st) SafeWriteMemory(sAddr,&st,sizeof(uint8_t));
             }
             if (desiredTimer != -1) {
-                if (auto tAddr = ResolvePointer(base, off, MAI_MULTI_TIMER_OFFSET)) {
+                if (auto tAddr = pc.maiMultiTimer) {
                     int cur=0; SafeReadMemory(tAddr,&cur,sizeof(int)); if (cur!=desiredTimer) SafeWriteMemory(tAddr,&desiredTimer,sizeof(int));
                 }
             }
@@ -902,6 +1083,11 @@ namespace CharacterSettings {
         if (!g_featuresEnabled.load()) return;
         if (g_onlineModeActive.load()) return; // never enforcements online
         if (GetCurrentGameMode() != GameMode::Practice) return;
+
+        // If GUI is hidden and no infinite/lock is enabled, skip all enforcement work.
+        if (!g_guiVisible.load() && !AnyInfiniteOrLockEnabled(localData)) {
+            return;
+        }
 
         bool didWriteThisTick = false;
 
