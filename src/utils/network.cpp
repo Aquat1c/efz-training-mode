@@ -399,7 +399,12 @@ bool DetectOnlineMatch() {
     OnlineState st = ReadEfzRevivalOnlineState();
     if (st != OnlineState::Unknown) {
         // Treat Tournament as online-safe (disable features) conservatively
-        return (st == OnlineState::Netplay || st == OnlineState::Spectating || st == OnlineState::Tournament);
+        bool isOnline = (st == OnlineState::Netplay || st == OnlineState::Spectating || st == OnlineState::Tournament);
+        if (isOnline) {
+            // Ensure global online state is latched so all subsystems early-out
+            EnterOnlineMode();
+        }
+        return isOnline;
     }
     return false;
 }
