@@ -2,6 +2,7 @@
 #include <iomanip>
 #include <chrono>
 #include "../include/input/input_handler.h"
+#include "../include/game/frame_advantage.h"
 #include "../include/utils/utilities.h"
 
 #include "../include/gui/gui.h"
@@ -409,6 +410,9 @@ void MonitorKeys() {
                     }
                     handled = true;
                 } else if (!handled && gpWentDown(cgp.gpTeleportButton)) {
+                    // Teleporting should also clear any active frame advantage display,
+                    // since positions/states are being reset artificially.
+                    ClearFrameAdvantageDisplay();
                     teleportOrLoad();
                     handled = true;
                 } else if (!handled && gpWentDown(cgp.gpSavePositionButton)) {

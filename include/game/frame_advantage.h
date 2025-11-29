@@ -64,6 +64,8 @@ extern std::atomic<int> g_SkipRegularFAOverlayUntilFrame;
 
 // Function declarations
 void ResetFrameAdvantageState();
+// Clear only the on-screen frame advantage message/overlay
+void ClearFrameAdvantageDisplay();
 void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, short prevMoveID2);
 bool IsFrameAdvantageActive();
 FrameAdvantageState GetFrameAdvantageState();

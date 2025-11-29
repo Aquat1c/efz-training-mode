@@ -115,6 +115,27 @@ void ResetFrameAdvantageState() {
     }
 }
 
+// Helper to clear any active frame advantage overlay/message without
+// touching the underlying tracking state. Useful for actions like teleport.
+void ClearFrameAdvantageDisplay() {
+    g_displayUntilTimeMs = 0;
+    frameAdvState.displayUntilInternalFrame = -1;
+    frameAdvState.gapDisplayUntilInternalFrame = -1;
+
+    if (g_FrameAdvantageId != -1) {
+        DirectDrawHook::RemovePermanentMessage(g_FrameAdvantageId);
+        g_FrameAdvantageId = -1;
+    }
+    if (g_FrameAdvantage2Id != -1) {
+        DirectDrawHook::RemovePermanentMessage(g_FrameAdvantage2Id);
+        g_FrameAdvantage2Id = -1;
+    }
+    if (g_FrameGapId != -1) {
+        DirectDrawHook::RemovePermanentMessage(g_FrameGapId);
+        g_FrameGapId = -1;
+    }
+}
+
 int GetCurrentInternalFrame() {
     // Pause-aware internal frame counter for FA timings:
     // - When not paused (or not in Practice), mirror the global frameCounter.
@@ -628,7 +649,11 @@ void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, shor
             frameAdvState.p1ActionableInternalFrame = currentInternalFrame;
          #if defined(ENABLE_FRAME_ADV_DEBUG)
          LogOut("[FRAME_ADV_DEBUG] P1 attacker recovery ended at frame " + 
-             std::to_string(currentInternalFrame), detailedLogging.load());
+             std::to_string(currentInternalFrame) +
+             " (prevMoveID=" + std::to_string(prevMoveID1) +
+             ", currMoveID=" + std::to_string(moveID1) +
+             ", actionable1=" + std::to_string(faSample.actionable1) + ")",
+             detailedLogging.load());
          #endif
         }
     }
@@ -639,7 +664,11 @@ void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, shor
             frameAdvState.p2ActionableInternalFrame = currentInternalFrame;
          #if defined(ENABLE_FRAME_ADV_DEBUG)
          LogOut("[FRAME_ADV_DEBUG] P2 attacker recovery ended at frame " + 
-             std::to_string(currentInternalFrame), detailedLogging.load());
+             std::to_string(currentInternalFrame) +
+             " (prevMoveID=" + std::to_string(prevMoveID2) +
+             ", currMoveID=" + std::to_string(moveID2) +
+             ", actionable2=" + std::to_string(faSample.actionable2) + ")",
+             detailedLogging.load());
          #endif
         }
     }
@@ -657,7 +686,13 @@ void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, shor
             frameAdvState.p2DefenderFreeInternalFrame = currentInternalFrame;
             #if defined(ENABLE_FRAME_ADV_DEBUG)
             LogOut("[FRAME_ADV_DEBUG] P2 defender actionable at frame " + 
-                std::to_string(currentInternalFrame), detailedLogging.load());
+                std::to_string(currentInternalFrame) +
+                " (prevMoveID=" + std::to_string(prevMoveID2) +
+                ", currMoveID=" + std::to_string(moveID2) +
+                ", actionable2=" + std::to_string(faSample.actionable2) +
+                ", isLanding=" + std::to_string(isLanding) +
+                ", shouldExcludeLanding=" + std::to_string(shouldExcludeLanding) + ")",
+                detailedLogging.load());
             #endif
         }
     }
@@ -674,7 +709,13 @@ void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, shor
             frameAdvState.p1DefenderFreeInternalFrame = currentInternalFrame;
             #if defined(ENABLE_FRAME_ADV_DEBUG)
             LogOut("[FRAME_ADV_DEBUG] P1 defender actionable at frame " + 
-                std::to_string(currentInternalFrame), detailedLogging.load());
+                std::to_string(currentInternalFrame) +
+                " (prevMoveID=" + std::to_string(prevMoveID1) +
+                ", currMoveID=" + std::to_string(moveID1) +
+                ", actionable1=" + std::to_string(faSample.actionable1) +
+                ", isLanding=" + std::to_string(isLanding) +
+                ", shouldExcludeLanding=" + std::to_string(shouldExcludeLanding) + ")",
+                detailedLogging.load());
             #endif
         }
     }
