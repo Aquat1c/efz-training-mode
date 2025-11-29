@@ -32,6 +32,7 @@
 #define MOVE_ID_OFFSET 0x8
 #define RF_OFFSET 0x118
 #define GAME_MODE_OFFSET 0x1364 // CORRECTED: The offset is hexadecimal, not decimal.
+#define XVEL_OFFSET 0x30  // X velocity offset from player base
 #define YVEL_OFFSET 0x38  // Y velocity offset from player base
 
 // IC (Instant Charge) color offset - 0=red IC, 1=blue IC

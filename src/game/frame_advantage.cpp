@@ -646,7 +646,13 @@ void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, shor
     
     // STEP 4: Detect when defender becomes actionable (covers knockdowns, ground/air tech, wakeup)
     if (frameAdvState.p2Defending && frameAdvState.p2DefenderFreeInternalFrame == -1) {
-        bool defenderFreeEdge = (!IsActionable(prevMoveID2) && faSample.actionable2);
+        // Check if current state is landing
+        bool isLanding = (moveID2 == LANDING_ID || moveID2 == LANDING_1_ID || 
+                          moveID2 == LANDING_2_ID || moveID2 == LANDING_3_ID);
+        // Only exclude landing if they were defending (hit/blocking)
+        bool shouldExcludeLanding = isLanding && frameAdvState.p2Defending;
+        
+        bool defenderFreeEdge = (!IsActionable(prevMoveID2) && faSample.actionable2 && !shouldExcludeLanding);
         if (defenderFreeEdge) {
             frameAdvState.p2DefenderFreeInternalFrame = currentInternalFrame;
             #if defined(ENABLE_FRAME_ADV_DEBUG)
@@ -657,7 +663,13 @@ void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, shor
     }
 
     if (frameAdvState.p1Defending && frameAdvState.p1DefenderFreeInternalFrame == -1) {
-        bool defenderFreeEdge = (!IsActionable(prevMoveID1) && faSample.actionable1);
+        // Check if current state is landing
+        bool isLanding = (moveID1 == LANDING_ID || moveID1 == LANDING_1_ID || 
+                          moveID1 == LANDING_2_ID || moveID1 == LANDING_3_ID);
+        // Only exclude landing if they were defending (hit/blocking)
+        bool shouldExcludeLanding = isLanding && frameAdvState.p1Defending;
+        
+        bool defenderFreeEdge = (!IsActionable(prevMoveID1) && faSample.actionable1 && !shouldExcludeLanding);
         if (defenderFreeEdge) {
             frameAdvState.p1DefenderFreeInternalFrame = currentInternalFrame;
             #if defined(ENABLE_FRAME_ADV_DEBUG)

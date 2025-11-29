@@ -154,6 +154,27 @@ void SetPlayerPosition(uintptr_t base, uintptr_t playerOffset, double x, double 
         return;
     }
     
+    // Read current Y position to determine if transitioning from air to ground
+    double currentY = 0.0;
+    SafeReadMemory(yAddr, &currentY, sizeof(double));
+    bool wasInAir = (currentY > 0.5);
+    bool willBeGrounded = (y <= 0.5);
+    
+    // Read current move ID to check if character is performing an attack
+    short currentMoveID = 0;
+    if (moveIDAddr) {
+        SafeReadMemory(moveIDAddr, &currentMoveID, sizeof(short));
+    }
+    bool isPerformingMove = (currentMoveID >= 200);
+    
+    // Reset animation frame counters for BOTH players to prevent stuck cloud state
+    // This is critical - if one player has cloud, both frame counters can get stuck
+    uintptr_t p1FrameAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P1, CURRENT_FRAME_INDEX_OFFSET);
+    uintptr_t p2FrameAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P2, CURRENT_FRAME_INDEX_OFFSET);
+    short zeroFrame = 0;
+    if (p1FrameAddr) SafeWriteMemory(p1FrameAddr, &zeroFrame, sizeof(short));
+    if (p2FrameAddr) SafeWriteMemory(p2FrameAddr, &zeroFrame, sizeof(short));
+    
     // Set X coordinate
     if (!SafeWriteMemory(xAddr, &x, sizeof(double))) {
         LogOut("[MEMORY] Failed to write X position", true);
@@ -164,6 +185,13 @@ void SetPlayerPosition(uintptr_t base, uintptr_t playerOffset, double x, double 
         LogOut("[MEMORY] Failed to write Y position", true);
     }
     
+    // Reset X velocity to zero to prevent unintended movement
+    uintptr_t xVelAddr = ResolvePointer(base, playerOffset, XVEL_OFFSET);
+    if (xVelAddr) {
+        double zeroVel = 0.0;
+        SafeWriteMemory(xVelAddr, &zeroVel, sizeof(double));
+    }
+    
     // Reset Y velocity to zero to prevent unintended movement
     uintptr_t yVelAddr = ResolvePointer(base, playerOffset, YVEL_OFFSET);
     if (yVelAddr) {
@@ -171,16 +199,34 @@ void SetPlayerPosition(uintptr_t base, uintptr_t playerOffset, double x, double 
         SafeWriteMemory(yVelAddr, &zeroVel, sizeof(double));
     }
     
+    // Reset animation frame counter to prevent stuck animations
+    uintptr_t frameCounterAddr = ResolvePointer(base, playerOffset, CURRENT_FRAME_INDEX_OFFSET);
+    if (frameCounterAddr) {
+        short zeroFrame = 0;
+        SafeWriteMemory(frameCounterAddr, &zeroFrame, sizeof(short));
+    }
+    
     // If requested, update moveID to reset the character state
     if (updateMoveID && moveIDAddr) {
-        short idleID = IDLE_MOVE_ID;
-        if (!SafeWriteMemory(moveIDAddr, &idleID, sizeof(short))) {
-            LogOut("[MEMORY] Failed to reset moveID", true);
+        short newMoveID;
+        
+        if (!willBeGrounded) {
+            // Teleporting to air position - set to falling state
+            newMoveID = FALLING_ID;
+        } else {
+            // Teleporting to ground - reset to idle
+            // The X and Y velocity resets above should prevent cloud issues
+            newMoveID = IDLE_MOVE_ID;
+        }
+        
+        if (!SafeWriteMemory(moveIDAddr, &newMoveID, sizeof(short))) {
+            LogOut("[MEMORY] Failed to set move ID", true);
         }
     }
     
     LogOut("[MEMORY] Set position - X: " + std::to_string(x) + ", Y: " + std::to_string(y), detailedLogging.load());
 }
+
 
 // Direct RF value setter that matches Cheat Engine's approach
 bool SetRFValuesDirect(double p1RF, double p2RF) {
