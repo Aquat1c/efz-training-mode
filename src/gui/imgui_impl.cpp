@@ -27,6 +27,9 @@ extern std::atomic<bool> g_isShuttingDown;
 static bool g_imguiInitialized = false;
 // Made non-static to satisfy legacy external references during LTCG; accessor functions should be preferred.
 bool g_imguiVisible = false;
+namespace CharacterSettings {
+    std::atomic<bool> g_guiVisible{false};
+}
 static IDirect3DDevice9* g_d3dDevice = nullptr;
 static WNDPROC g_originalWndProc = nullptr;
 
@@ -695,6 +698,7 @@ namespace ImGuiImpl {
     
     void ToggleVisibility() {
         g_imguiVisible = !g_imguiVisible;
+        CharacterSettings::g_guiVisible.store(g_imguiVisible, std::memory_order_relaxed);
         
         if (g_imguiVisible) {
             LogOut("[IMGUI] ImGui interface opened - will render continuously until closed", true);
@@ -743,6 +747,7 @@ namespace ImGuiImpl {
     PauseIntegration::OnMenuVisibilityChanged(g_imguiVisible);
     PracticeHotkeyGate::NotifyMenuVisibility(g_imguiVisible);
     PracticeOverlayGate::SetMenuVisible(g_imguiVisible);
+    CharacterSettings::g_guiVisible.store(g_imguiVisible, std::memory_order_relaxed);
         
         // Ensure the visibility state persists by setting it in a global
         static bool stateLogged = false;

@@ -11,7 +11,8 @@ short initialBlockstunMoveID = -1;
 bool IsHitstun(short moveID) {
     return (moveID >= STAND_HITSTUN_START && moveID <= STAND_HITSTUN_END) || 
            (moveID >= CROUCH_HITSTUN_START && moveID <= CROUCH_HITSTUN_END) ||
-           moveID == SWEEP_HITSTUN;
+           moveID == SWEEP_HITSTUN ||
+           moveID == 69; // Ikumi 623 hit state
 }
 
 bool IsLaunched(short moveID) {
