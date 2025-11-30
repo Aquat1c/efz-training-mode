@@ -167,8 +167,9 @@ uintptr_t EFZ_RVA_PracticeDispatcher() {
     // Practice hotkey dispatcher RVAs per version
     // e: 0x00773A0, g: 0x0075CC0, h: 0x0076490, i: 0x0076A30
     EfzRevivalVersion v = GetEfzRevivalVersion();
-    if (v == EfzRevivalVersion::Revival102e) r = 0x00773A0;  // 1.02e: sub_100773A0
-    else if (v == EfzRevivalVersion::Revival102g) r = 0x0075CC0;  // 1.02g: sub_10075CC0
+    // CRITICAL: Disable dispatcher on 1.02e/1.02g entirely to avoid Replay-mode crashes.
+    if (v == EfzRevivalVersion::Revival102e) r = 0;  // disabled for 1.02e
+    else if (v == EfzRevivalVersion::Revival102g) r = 0;  // disabled for 1.02g
     else if (IsI()) r = 0x0076A30;
     else if (IsH()) r = 0x0076490;
     // For unsupported versions: return 0 (don't guess addresses)
