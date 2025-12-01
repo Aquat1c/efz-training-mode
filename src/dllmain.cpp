@@ -102,6 +102,15 @@ void DelayedInitialization(HMODULE hModule) {
         if (onlineAtStart) {
             LogOut("[SYSTEM] Online mode detected at startup; skipping hooks, threads, and overlays.", true);
             LogOut("[SYSTEM] Console state left as configured; no initialization will proceed while online.", true);
+            // Surface the reason for online detection to aid diagnostics
+            try {
+                std::string reason = GetLastOnlineDetectionReason();
+                if (!reason.empty()) {
+                    LogOut("[SYSTEM] Online detection reason: " + reason, true);
+                }
+            } catch (...) {
+                // best-effort; ignore
+            }
             inStartupPhase = false;
             return; // do not install hooks or start background workers
         }

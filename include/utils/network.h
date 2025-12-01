@@ -9,6 +9,7 @@ extern std::atomic<bool> isOnlineMatch;
 enum class EfzRevivalVersion : int {
 	Unknown = 0,
 	Vanilla,     // No "-Revival-" marker or no version tag
+	Revival102f, // Eternal Fighter Zero -Revival- 1.02f (new; stubbed RVAs)
 	Revival102e, // Eternal Fighter Zero -Revival- 1.02e
 	Revival102g, // Eternal Fighter Zero -Revival- 1.02g (same RVAs as 1.02e)
 	Revival102h, // Eternal Fighter Zero -Revival- 1.02h!!! (supported; shares RVAs/semantics with 1.02i where noted)
@@ -40,3 +41,6 @@ bool IsEfzRevivalVersionSupported(EfzRevivalVersion v = (EfzRevivalVersion)0 /*u
 OnlineState ReadEfzRevivalOnlineState();
 // Helper: get human-readable name for OnlineState
 const char* OnlineStateName(OnlineState st);
+
+// Reason for last online detection (best-effort; for diagnostics/logging)
+std::string GetLastOnlineDetectionReason();

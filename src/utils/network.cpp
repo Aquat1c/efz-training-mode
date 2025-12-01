@@ -7,6 +7,7 @@
 #include <iphlpapi.h>
 #include <thread>
 #include <vector>
+#include <mutex>
 #include "../include/utils/network.h"
 #include "../include/core/logger.h"
 #include "../include/utils/utilities.h"
@@ -26,6 +27,14 @@ std::atomic<bool> isOnlineMatch(false);
 
 // Cache for detected EfzRevival version
 static std::atomic<int> s_cachedRevivalVer{0}; // 0 = Unknown (EfzRevivalVersion::Unknown)
+
+// Best-effort: store reason for last online detection
+static std::mutex s_reasonMutex;
+static std::string s_lastOnlineReason; // accessed under s_reasonMutex
+static void SetOnlineReason(const std::string& r) {
+    std::lock_guard<std::mutex> lock(s_reasonMutex);
+    s_lastOnlineReason = r;
+}
 
 // Helper: narrow/wide title fetcher (best-effort)
 static std::string GetEFZWindowTitleA() {
@@ -56,7 +65,8 @@ EfzRevivalVersion GetEfzRevivalVersion() {
     EfzRevivalVersion v = EfzRevivalVersion::Vanilla;
     if (lower.find("-revival-") != std::string::npos) {
         // Has Revival marker; check for known tags
-        if (lower.find("1.02e") != std::string::npos) v = EfzRevivalVersion::Revival102e;
+        if (lower.find("1.02f") != std::string::npos) v = EfzRevivalVersion::Revival102f;
+        else if (lower.find("1.02e") != std::string::npos) v = EfzRevivalVersion::Revival102e;
         else if (lower.find("1.02g") != std::string::npos) v = EfzRevivalVersion::Revival102g;
         else if (lower.find("1.02h") != std::string::npos) v = EfzRevivalVersion::Revival102h;
         else if (lower.find("1.02i") != std::string::npos) v = EfzRevivalVersion::Revival102i;
@@ -73,6 +83,7 @@ const char* EfzRevivalVersionName(EfzRevivalVersion v) {
     switch (v) {
         case EfzRevivalVersion::Unknown: return "Unknown";
         case EfzRevivalVersion::Vanilla: return "Vanilla";
+        case EfzRevivalVersion::Revival102f: return "Revival 1.02f";
         case EfzRevivalVersion::Revival102e: return "Revival 1.02e";
         case EfzRevivalVersion::Revival102g: return "Revival 1.02g";
         case EfzRevivalVersion::Revival102h: return "Revival 1.02h!!!";
@@ -85,8 +96,10 @@ const char* EfzRevivalVersionName(EfzRevivalVersion v) {
 bool IsEfzRevivalVersionSupported(EfzRevivalVersion v /*=detected*/) {
     EfzRevivalVersion vv = (v == (EfzRevivalVersion)0) ? GetEfzRevivalVersion() : v;
     // Supported builds: Vanilla EFZ and EfzRevival 1.02e, 1.02g, 1.02h!!!, 1.02i!!!
+    // 1.02f is newly detected but treated as unsupported until RVAs are provided.
     switch (vv) {
         case EfzRevivalVersion::Vanilla:
+        case EfzRevivalVersion::Revival102f:
         case EfzRevivalVersion::Revival102e:
         case EfzRevivalVersion::Revival102g:
         case EfzRevivalVersion::Revival102h:
@@ -191,6 +204,9 @@ OnlineState ReadEfzRevivalOnlineState() {
                     if (shouldLog) {
                         LogOut("[ONLINE_STATE] Pointer-based path returned: " + std::string(OnlineStateName(st)), true);
                     }
+                    // Record reason for diagnostics
+                    SetOnlineReason(std::string("Pointer-based ctx+0x") + FormatHexAddress(offset) +
+                                    " => " + OnlineStateName(st));
                     return st;
                 }
                 // Secondary attempt: some builds store in a byte or low bits
@@ -199,6 +215,8 @@ OnlineState ReadEfzRevivalOnlineState() {
                     if (shouldLog) {
                         LogOut("[ONLINE_STATE] Pointer-based path (low byte) returned: " + std::string(OnlineStateName(st)), true);
                     }
+                    SetOnlineReason(std::string("Pointer-based ctx+0x") + FormatHexAddress(offset) +
+                                    " (low byte) => " + OnlineStateName(st));
                     return st;
                 }
                 st = mapState(raw & 0x03);
@@ -206,6 +224,8 @@ OnlineState ReadEfzRevivalOnlineState() {
                     if (shouldLog) {
                         LogOut("[ONLINE_STATE] Pointer-based path (low 2 bits) returned: " + std::string(OnlineStateName(st)), true);
                     }
+                    SetOnlineReason(std::string("Pointer-based ctx+0x") + FormatHexAddress(offset) +
+                                    " (low 2 bits) => " + OnlineStateName(st));
                     return st;
                 }
             } else {
@@ -223,6 +243,7 @@ OnlineState ReadEfzRevivalOnlineState() {
     // Legacy fixed-RVA ints (keep as fallback)
     uintptr_t rva = 0;
     switch (vv) {
+        case EfzRevivalVersion::Revival102f: rva = 0x00A05D0; break; // per user report
         case EfzRevivalVersion::Revival102e: rva = 0x00A05D0; break;
         case EfzRevivalVersion::Revival102g: rva = 0x00A05D0; break; // 1.02g uses same as 1.02e
         case EfzRevivalVersion::Revival102h: rva = 0x00A05F0; break;
@@ -248,6 +269,8 @@ OnlineState ReadEfzRevivalOnlineState() {
         if (shouldLog) {
             LogOut("[ONLINE_STATE] Legacy RVA returned: " + std::string(OnlineStateName(st)), true);
         }
+        SetOnlineReason(std::string("Legacy RVA 0x") + FormatHexAddress(rva) +
+                        " => " + OnlineStateName(st));
         return st;
     }
     st = mapState(raw & 0xFF);
@@ -255,6 +278,8 @@ OnlineState ReadEfzRevivalOnlineState() {
         if (shouldLog) {
             LogOut("[ONLINE_STATE] Legacy RVA (low byte) returned: " + std::string(OnlineStateName(st)), true);
         }
+        SetOnlineReason(std::string("Legacy RVA 0x") + FormatHexAddress(rva) +
+                        " (low byte) => " + OnlineStateName(st));
         return st;
     }
     st = mapState(raw & 0x03);
@@ -262,6 +287,8 @@ OnlineState ReadEfzRevivalOnlineState() {
         if (shouldLog) {
             LogOut("[ONLINE_STATE] Legacy RVA returned: " + std::string(OnlineStateName(st)), true);
         }
+        SetOnlineReason(std::string("Legacy RVA 0x") + FormatHexAddress(rva) +
+                        " (low 2 bits) => " + OnlineStateName(st));
         return st;
     }
     
@@ -294,6 +321,7 @@ OnlineState ReadEfzRevivalOnlineState() {
     }
     
     if (hasConnection) {
+        SetOnlineReason("Active UDP socket(s) detected => Netplay");
         return OnlineState::Netplay;
     }
     
@@ -376,6 +404,10 @@ bool DetectOnlineMatch() {
                         char buf[128];
                         snprintf(buf, sizeof(buf), "[NETWORK] Unsupported version online state detected at RVA 0x%X: %d", (unsigned int)rva, state);
                         LogOut(buf);
+                        // Record reason for diagnostics
+                        SetOnlineReason(std::string("Unsupported Revival state RVA 0x") + FormatHexAddress(rva) +
+                                        ": value=" + std::to_string(state) +
+                                        " => " + OnlineStateName((state==0)?OnlineState::Netplay:(state==1?OnlineState::Spectating:OnlineState::Tournament)));
                         return true;
                     }
                     // State is 2 (Offline), found the correct address
@@ -407,6 +439,10 @@ bool DetectOnlineMatch() {
         return isOnline;
     }
     return false;
+}
+std::string GetLastOnlineDetectionReason() {
+    std::lock_guard<std::mutex> lock(s_reasonMutex);
+    return s_lastOnlineReason;
 }
 
 // Standalone MonitorOnlineStatus thread removed; online detection integrated into FrameDataMonitor
