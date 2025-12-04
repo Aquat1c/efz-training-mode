@@ -679,13 +679,13 @@ void MonitorKeys() {
             } else if (IsKeyPressed(cfg.resetFrameCounterKey, false)) {
                 ResetFrameCounter();
                 keyHandled = true;
-            } else if (IsKeyPressed(VK_SPACE, false)) {
+            } else if (IsKeyPressed(cfg.framestepPauseKey > 0 ? cfg.framestepPauseKey : VK_SPACE, false)) {
                 // Framestep: Toggle pause (vanilla EFZ only)
                 if (Framestep::IsEnabled()) {
                     Framestep::TogglePause();
                     keyHandled = true;
                 }
-            } else if (IsKeyPressed('P', false)) {
+            } else if (IsKeyPressed(cfg.framestepStepKey > 0 ? cfg.framestepStepKey : 'P', false)) {
                 // Framestep: Step forward one frame (vanilla EFZ only)
                 if (Framestep::IsEnabled() && Framestep::IsPaused()) {
                     Framestep::RequestFrameStep();
@@ -738,7 +738,9 @@ void MonitorKeys() {
               IsKeyPressed(helpKey, true) || IsKeyPressed(VK_F7, true) || IsKeyPressed(VK_F9, true) ||
               IsKeyPressed(cfg.switchPlayersKey > 0 ? cfg.switchPlayersKey : 'L', true) ||
               IsKeyPressed(cfg.macroRecordKey > 0 ? cfg.macroRecordKey : 'I', true) ||
-              IsKeyPressed(cfg.macroPlayKey > 0 ? cfg.macroPlayKey : 'O', true)) {
+              IsKeyPressed(cfg.macroPlayKey > 0 ? cfg.macroPlayKey : 'O', true) ||
+              IsKeyPressed(cfg.framestepPauseKey > 0 ? cfg.framestepPauseKey : VK_SPACE, true) ||
+              IsKeyPressed(cfg.framestepStepKey > 0 ? cfg.framestepStepKey : 'P', true)) {
                     Sleep(10);
                 }
                 // Reset polling interval after handling input
@@ -758,6 +760,8 @@ void MonitorKeys() {
                     ((GetAsyncKeyState(cfg.switchPlayersKey > 0 ? cfg.switchPlayersKey : 'L') & 0x8000) != 0) ||
                     ((GetAsyncKeyState(cfg.macroRecordKey > 0 ? cfg.macroRecordKey : 'I') & 0x8000) != 0) ||
                     ((GetAsyncKeyState(cfg.macroPlayKey > 0 ? cfg.macroPlayKey : 'O') & 0x8000) != 0) ||
+                    ((GetAsyncKeyState(cfg.framestepPauseKey > 0 ? cfg.framestepPauseKey : VK_SPACE) & 0x8000) != 0) ||
+                    ((GetAsyncKeyState(cfg.framestepStepKey > 0 ? cfg.framestepStepKey : 'P') & 0x8000) != 0) ||
                     ((GetAsyncKeyState(cfg.macroSlotKey > 0 ? cfg.macroSlotKey : 'K') & 0x8000) != 0);
                 auto anyControllerActive = [&]() -> bool {
                     unsigned mask = connectedMask;
