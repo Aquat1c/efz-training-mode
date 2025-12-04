@@ -303,6 +303,24 @@ namespace ImGuiSettings {
                 InputKeyHex("Toggle ImGui Overlay", toggleImGui, "ToggleImGuiKey");
 
                 ImGui::Separator();
+                ImGui::SeparatorText("Practice / Macros");
+                int switchPlayers = cfg.switchPlayersKey;
+                int macroRecord = cfg.macroRecordKey;
+                int macroPlay   = cfg.macroPlayKey;
+                int macroSlot   = cfg.macroSlotKey;
+                InputKeyHex("Switch Players (Practice)", switchPlayers, "SwitchPlayersKey");
+                InputKeyHex("Macro: Record", macroRecord, "MacroRecordKey");
+                InputKeyHex("Macro: Play", macroPlay, "MacroPlayKey");
+                InputKeyHex("Macro: Next Slot", macroSlot, "MacroSlotKey");
+
+                ImGui::Separator();
+                ImGui::SeparatorText("Framestep (vanilla EFZ only)");
+                int fsPause = cfg.framestepPauseKey;
+                int fsStep  = cfg.framestepStepKey;
+                InputKeyHex("Framestep: Toggle Pause", fsPause, "FramestepPauseKey");
+                InputKeyHex("Framestep: Step Frame", fsStep, "FramestepStepKey");
+
+                ImGui::Separator();
                 ImGui::SeparatorText("Swap Positions");
                 bool swapEnabled = cfg.swapCustomEnabled;
                 if (ImGui::Checkbox("Enable custom swap key", &swapEnabled)) {

@@ -316,6 +316,13 @@ namespace Config {
             file << "UIRefreshKey=0x52       # 'R' (Refresh)\n";
             file << "UIExitKey=0x51          # 'Q' (Exit)\n";
 
+            // Framestep hotkeys (vanilla EFZ only)
+            file << "\n; Framestep (vanilla EFZ only)\n";
+            file << "; Pause toggle\n";
+            file << "FramestepPauseKey=0x20  # Default: Space\n";
+            file << "; Step forward one frame (when paused)\n";
+            file << "FramestepStepKey=0x50   # Default: 'P'\n";
+
             // Swap Positions custom binding
             file << "\n; Swap Positions custom binding\n";
             file << "; Enable a dedicated key for swapping positions (1=yes,0=no)\n";
@@ -545,6 +552,9 @@ namespace Config {
             settings.uiAcceptKey      = GetValueInt("Hotkeys", "UIAcceptKey",     0x45); // 'E'
             settings.uiRefreshKey     = GetValueInt("Hotkeys", "UIRefreshKey",    0x52); // 'R'
             settings.uiExitKey        = GetValueInt("Hotkeys", "UIExitKey",       0x51); // 'Q'
+            // Framestep keys (vanilla EFZ only)
+            settings.framestepPauseKey = GetValueInt("Hotkeys", "FramestepPauseKey", 0x20); // VK_SPACE
+            settings.framestepStepKey  = GetValueInt("Hotkeys", "FramestepStepKey",  0x50); // 'P'
             // Swap custom binding
             settings.swapCustomEnabled = GetValueBool("Hotkeys", "SwapCustomEnabled", false);
             settings.swapCustomKey     = GetValueInt("Hotkeys", "SwapCustomKey", -1);
@@ -591,6 +601,8 @@ namespace Config {
             LogOut("[CONFIG] UIAcceptKey: " + std::to_string(settings.uiAcceptKey) + " (" + GetKeyName(settings.uiAcceptKey) + ")", true);
             LogOut("[CONFIG] UIRefreshKey: " + std::to_string(settings.uiRefreshKey) + " (" + GetKeyName(settings.uiRefreshKey) + ")", true);
             LogOut("[CONFIG] UIExitKey: " + std::to_string(settings.uiExitKey) + " (" + GetKeyName(settings.uiExitKey) + ")", true);
+            LogOut("[CONFIG] FramestepPauseKey: " + std::to_string(settings.framestepPauseKey) + " (" + GetKeyName(settings.framestepPauseKey) + ")", true);
+            LogOut("[CONFIG] FramestepStepKey: " + std::to_string(settings.framestepStepKey) + " (" + GetKeyName(settings.framestepStepKey) + ")", true);
             LogOut("[CONFIG] SwapCustomEnabled: " + std::to_string(settings.swapCustomEnabled), true);
             LogOut("[CONFIG] SwapCustomKey: " + GetKeyName(settings.swapCustomKey), true);
             LogOut("[CONFIG] gpTeleportButton: " + GetGamepadButtonName(settings.gpTeleportButton), true);
@@ -717,6 +729,8 @@ namespace Config {
             file << "UIAcceptKey=" << toHexString(settings.uiAcceptKey) << "\n";
             file << "UIRefreshKey=" << toHexString(settings.uiRefreshKey) << "\n";
             file << "UIExitKey=" << toHexString(settings.uiExitKey) << "\n";
+            file << "FramestepPauseKey=" << toHexString(settings.framestepPauseKey) << "\n";
+            file << "FramestepStepKey=" << toHexString(settings.framestepStepKey) << "\n";
 
             // Swap custom binding
             file << "\n; Swap Positions custom binding\n";
@@ -819,6 +833,8 @@ namespace Config {
             if (k == "uiacceptkey") settings.uiAcceptKey = intValue;
             if (k == "uirefreshkey") settings.uiRefreshKey = intValue;
             if (k == "uiexitkey") settings.uiExitKey = intValue;
+            if (k == "framesteppausekey") settings.framestepPauseKey = intValue;
+            if (k == "framestepstepkey") settings.framestepStepKey = intValue;
             if (k == "swapcustomenabled") settings.swapCustomEnabled = (value == "1" || value == "true");
             if (k == "swapcustomkey") settings.swapCustomKey = intValue;
             // Gamepad button updates (these accept names or hex values)

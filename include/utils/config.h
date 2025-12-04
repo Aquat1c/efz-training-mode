@@ -55,6 +55,10 @@ namespace Config {
         int macroPlayKey;       // Default: 'O'
         int macroSlotKey;       // NEW: Cycle macro slot (Default: 'K')
 
+        // Framestep hotkeys (configurable; vanilla EFZ only)
+        int framestepPauseKey;  // Default: VK_SPACE
+        int framestepStepKey;   // Default: 'P'
+
         // ImGui footer action hotkeys (keyboard access without cursor)
         int uiAcceptKey;        // Apply changes
         int uiRefreshKey;       // Refresh values
