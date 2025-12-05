@@ -37,6 +37,7 @@ void Tick();
 void ToggleRecord();   // Idle -> PreRecord -> Recording -> Idle(stop)
 void Play();           // Start replay current slot if present
 void Stop();           // Force stop (record/replay), restore state
+void UnswapThenStop(); // Restore default mapping (unswap+CPU) first, then stop
 
 // Slot helpers
 int  GetCurrentSlot();           // 1-based slot index

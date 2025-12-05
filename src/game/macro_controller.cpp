@@ -968,7 +968,9 @@ void ToggleRecord() {
             if (readOk) {
                 s_prevLocalSide.store(curLocal);
                 if (curLocal != 1) {
-                    SwitchPlayers::SetLocalSide(1); // make P2 local for easier recording
+                    // make P2 local for easier recording and mark swapped
+                    SwitchPlayers::SetLocalSide(1);
+                    SwitchPlayers::MarkSwapped();
                 }
             } else {
                 // Vanilla fallback: if we can't read the practice controller local side,
@@ -976,6 +978,7 @@ void ToggleRecord() {
                 // This path does not touch Revival-specific state and uses our unified
                 // side-switcher which already guards Revival vs vanilla under the hood.
                 SwitchPlayers::SetLocalSide(1);
+                SwitchPlayers::MarkSwapped();
             }
             EnableP2ControlForAutoAction(); // ensure P2 is human-controlled
         }
@@ -1047,7 +1050,8 @@ void Play() {
     }
     // If we're in PreRecord, treat Play as a cancel of PreRecord
     if (s_state.load() == State::PreRecord) {
-        Stop();
+        // Ensure we unswap first, then stop
+        UnswapThenStop();
         DirectDrawHook::AddMessage("Macro: PreRecord canceled", "MACRO", RGB(255, 200, 120), 900, 0, 120);
         return;
     }
@@ -1135,8 +1139,21 @@ void Stop() {
     int prev = s_prevLocalSide.load();
     if (prev == 0 || prev == 1) {
         SwitchPlayers::SetLocalSide(prev);
+        // Clear any swap tracking flag maintained by switch_players
+        SwitchPlayers::ClearSwapFlag();
         s_prevLocalSide.store(-1);
     }
+}
+
+// When exiting during PreRecord/Recording or on menu entry,
+// restore default Practice mapping (unswap + CPU flags) first, then stop.
+void UnswapThenStop() {
+    // Prefer explicit unswap/reset in Practice mode so CS/menus are consistent
+    if (GetCurrentGameMode() == GameMode::Practice) {
+        SwitchPlayers::ResetControlMappingForMenusToP1();
+    }
+    // Then perform the standard macro stop/cleanup
+    Stop();
 }
 
 int GetCurrentSlot() { return s_curSlot.load(); }
