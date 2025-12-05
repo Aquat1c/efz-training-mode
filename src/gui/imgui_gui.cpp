@@ -348,13 +348,63 @@ namespace ImGuiGui {
                 if (ImGui::Combo("##AutoRecoveryMode", &autoIdx, autoItems, IM_ARRAYSIZE(autoItems))) {
                     // Apply immediately on change
                     if (autoIdx == 0) {
+                        // Disabled
                         WriteEngineRegenParams(0, 0);
                     } else if (autoIdx == 1) {
-                        // Full values: set HP to 9999 for both players and mark params coherently
+                        // Full values
                         ForceEngineF5Full();
                     } else if (autoIdx == 2) {
-                        // FM values: use explicit B=3332 path
+                        // FM values
                         WriteEngineRegenParams(1000, 3332);
+                    }
+
+                    // Additionally, set HP/Meter/RF in display and memory for both players
+                    // Per request: ONLY when switching FROM Full/FM TO Disabled, snap values to 9999/0/0.0
+                    if (autoIdx != curAutoIdx && autoIdx == 0 && (curAutoIdx == 1 || curAutoIdx == 2)) {
+                        uintptr_t base = GetEFZBase();
+                        if (base) {
+                            // Targets when disabling Automatic Recovery
+                            int hpTarget = MAX_HP; // 9999
+                            int hpTargetP2 = MAX_HP; // 9999
+                            WORD meterTarget = 0; // always 0 for both Full/FM per request
+                            double rfTarget = 0.0; // always 0.0 for both Full/FM per request
+
+                            // Update displayData (used by Apply flow)
+                            displayData.hp1 = hpTarget;
+                            displayData.hp2 = hpTargetP2;
+                            displayData.meter1 = meterTarget;
+                            displayData.meter2 = meterTarget;
+                            displayData.rf1 = rfTarget;
+                            displayData.rf2 = rfTarget;
+
+                            // Update ImGui-local mirrors so the Values tab reflects the snap immediately
+                            guiState.localData.hp1 = hpTarget;
+                            guiState.localData.hp2 = hpTargetP2;
+                            guiState.localData.meter1 = meterTarget;
+                            guiState.localData.meter2 = meterTarget;
+                            guiState.localData.rf1 = rfTarget;
+                            guiState.localData.rf2 = rfTarget;
+                            // RF color should be Red when Disabled per request
+                            guiState.localData.p1BlueIC = false;
+                            guiState.localData.p2BlueIC = false;
+
+                            // Write to memory immediately
+                            uintptr_t p1B=0, p2B=0; SafeReadMemory(base + EFZ_BASE_OFFSET_P1, &p1B, sizeof(p1B)); SafeReadMemory(base + EFZ_BASE_OFFSET_P2, &p2B, sizeof(p2B));
+                            if (p1B && p2B) {
+                                // HP
+                                SafeWriteMemory(p1B + HP_OFFSET, &hpTarget, sizeof(hpTarget));
+                                SafeWriteMemory(p1B + HP_BAR_OFFSET, &hpTarget, sizeof(hpTarget));
+                                SafeWriteMemory(p2B + HP_OFFSET, &hpTargetP2, sizeof(hpTargetP2));
+                                SafeWriteMemory(p2B + HP_BAR_OFFSET, &hpTargetP2, sizeof(hpTargetP2));
+                                // Meter
+                                SafeWriteMemory(p1B + METER_OFFSET, &meterTarget, sizeof(meterTarget));
+                                SafeWriteMemory(p2B + METER_OFFSET, &meterTarget, sizeof(meterTarget));
+                                // RF and IC color (force Red)
+                                (void)SetRFValuesDirect(rfTarget, rfTarget);
+                                SetICColorDirect(false, false);
+                                LogOut("[IMGUI][F5] Disabled from " + std::to_string(curAutoIdx) + ": Applied targets HP=9999, Meter=0, RF=0.0 and IC=Red for both players", detailedLogging.load());
+                            }
+                        }
                     }
                 }
                 ImGui::SameLine();
