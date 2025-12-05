@@ -1045,8 +1045,17 @@ void Play() {
         DirectDrawHook::AddMessage("Macro controls available only during Match", "MACRO", RGB(255, 180, 120), 900, 0, 120);
         return;
     }
-    // If currently recording, finish first
-    if (s_state.load() == State::Recording) FinishRecording();
+    // If we're in PreRecord, treat Play as a cancel of PreRecord
+    if (s_state.load() == State::PreRecord) {
+        Stop();
+        DirectDrawHook::AddMessage("Macro: PreRecord canceled", "MACRO", RGB(255, 200, 120), 900, 0, 120);
+        return;
+    }
+    // If currently recording, disallow play
+    if (s_state.load() == State::Recording) {
+        DirectDrawHook::AddMessage("Macro: Cannot play while recording", "MACRO", RGB(255, 180, 120), 900, 0, 120);
+        return;
+    }
     // Prepare playback
     int slotIdx = ClampSlot(s_curSlot.load()) - 1;
     if ((!s_slots[slotIdx].hasData || s_slots[slotIdx].spans.empty()) && s_slots[slotIdx].macroStream.empty()) {
