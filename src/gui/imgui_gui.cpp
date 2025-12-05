@@ -647,6 +647,8 @@ namespace ImGuiGui {
                         }
                     }
 
+                    // Temporarily unlock X/Y even when values are globally locked by F4/F5/CR
+                    if (globalValuesLocked) ImGui::EndDisabled();
                     // X position
                     ImGui::TableNextRow();
                     ImGui::TableNextColumn(); ImGui::TextUnformatted("X");
@@ -658,6 +660,7 @@ namespace ImGuiGui {
                     ImGui::TableNextColumn(); ImGui::TextUnformatted("Y");
                     ImGui::TableNextColumn(); { float v = (float)guiState.localData.y1; if (ImGui::InputFloat("##y_p1", &v, 1.0f, 10.0f, "%.2f")) guiState.localData.y1 = v; }
                     ImGui::TableNextColumn(); { float v = (float)guiState.localData.y2; if (ImGui::InputFloat("##y_p2", &v, 1.0f, 10.0f, "%.2f")) guiState.localData.y2 = v; }
+                    if (globalValuesLocked) ImGui::BeginDisabled();
 
                     ImGui::EndTable();
                 }
@@ -3857,8 +3860,30 @@ namespace ImGuiGui {
                     short mv = uiSample2.moveID2;
                     if (!uiSample2.actionable2) deferred = true;
                 }
-                // Apply settings normally; UI-level disabling prevents conflicting writes when engine/CR manage values
-                ApplySettings(&displayData);
+                // Determine if engine F4/F5 or Continuous Recovery is managing values
+                uint16_t engA = 0, engB = 0; EngineRegenMode regenMode = EngineRegenMode::Unknown;
+                bool gotParams = GetEngineRegenStatus(regenMode, engA, engB);
+                bool engineLocksValues = gotParams && (regenMode == EngineRegenMode::F4_FineTuneActive || regenMode == EngineRegenMode::F5_FullOrPreset);
+                bool crAny = (displayData.p1ContinuousRecoveryEnabled && (displayData.p1RecoveryHpMode>0 || displayData.p1RecoveryMeterMode>0 || displayData.p1RecoveryRfMode>0)) ||
+                             (displayData.p2ContinuousRecoveryEnabled && (displayData.p2RecoveryHpMode>0 || displayData.p2RecoveryMeterMode>0 || displayData.p2RecoveryRfMode>0));
+
+                bool onlyApplyXY = engineLocksValues || crAny;
+
+                if (!onlyApplyXY) {
+                    // Normal path: apply all values (HP/Meter/X/Y/RF) via legacy ApplySettings
+                    ApplySettings(&displayData);
+                } else {
+                    // Regen/CR active: only apply X/Y, and only if Values tab is active in ImGui
+                    if (guiState.mainMenuSubTab == 1) {
+                        // Apply positions directly; skip HP/Meter/RF to avoid fighting engine/CR
+                        SetPlayerPosition(base, EFZ_BASE_OFFSET_P1, (double)displayData.x1, (double)displayData.y1);
+                        SetPlayerPosition(base, EFZ_BASE_OFFSET_P2, (double)displayData.x2, (double)displayData.y2);
+                        LogOut("[IMGUI] Engine/CR active — applied X/Y only (Values tab)", detailedLogging.load());
+                    } else {
+                        LogOut("[IMGUI] Engine/CR active — skipped HP/Meter/RF and X/Y (Values tab not active)", detailedLogging.load());
+                    }
+                }
+
                 // Run one enforcement tick immediately so infinite toggles take effect without waiting for the next cadence
                 CharacterSettings::TickCharacterEnforcements(base, displayData);
                 if (deferred) {

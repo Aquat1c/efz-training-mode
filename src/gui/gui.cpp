@@ -189,6 +189,10 @@ void ApplySettings(DisplayData* data) {
             if (!f4ActiveNow) {
                 // Update everything EXCEPT RF values
                 UpdatePlayerValuesExceptRF(base, EFZ_BASE_OFFSET_P1, EFZ_BASE_OFFSET_P2);
+            } else {
+                // F4 RF Recovery active: still apply X/Y positions, skip HP/Meter to avoid fighting engine
+                SetPlayerPosition(base, EFZ_BASE_OFFSET_P1, (double)displayData.x1, (double)displayData.y1);
+                SetPlayerPosition(base, EFZ_BASE_OFFSET_P2, (double)displayData.x2, (double)displayData.y2);
             }
             
             // Add this line to apply character-specific values
