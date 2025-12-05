@@ -422,15 +422,22 @@ void MonitorKeys() {
                     swapPositions();
                     handled = true;
                 } else if (!handled && gpWentDown(cgp.gpSwitchPlayersButton)) {
-                    if (GetCurrentGameMode() == GameMode::Practice) {
-                        bool ok = SwitchPlayers::ToggleLocalSide();
-                        if (ok) {
-                            DirectDrawHook::AddMessage("Switch Players: toggled", "SYSTEM", RGB(100,255,100), 1200, 0, 100);
-                        } else {
-                            DirectDrawHook::AddMessage("Switch Players: failed", "SYSTEM", RGB(255,100,100), 1200, 0, 100);
+                    // Guard: disable switch-players while macro prerecord/recording is active
+                    auto st = MacroController::GetState();
+                    if (st == MacroController::State::PreRecord || st == MacroController::State::Recording) {
+                        DirectDrawHook::AddMessage("Switch Players disabled during Macro PreRecord/Recording", "SYSTEM", RGB(255,200,120), 1200, 0, 100);
+                        handled = true;
+                    } else {
+                        if (GetCurrentGameMode() == GameMode::Practice) {
+                            bool ok = SwitchPlayers::ToggleLocalSide();
+                            if (ok) {
+                                DirectDrawHook::AddMessage("Switch Players: toggled", "SYSTEM", RGB(100,255,100), 1200, 0, 100);
+                            } else {
+                                DirectDrawHook::AddMessage("Switch Players: failed", "SYSTEM", RGB(255,100,100), 1200, 0, 100);
+                            }
                         }
+                        handled = true;
                     }
-                    handled = true;
                 } else if (!handled && gpWentDown(cgp.gpMacroRecordButton)) {
                     if (GetCurrentGamePhase() == GamePhase::Match && AreCharactersInitialized()) {
                         MacroController::ToggleRecord();
@@ -568,7 +575,11 @@ void MonitorKeys() {
                 }
                 if (IsKeyPressed(cfg.switchPlayersKey > 0 ? cfg.switchPlayersKey : 'L', false)) {
                 // Debug hotkey: Toggle local/remote players in Practice
-                if (GetCurrentGameMode() == GameMode::Practice && !g_guiActive.load()) {
+                auto st = MacroController::GetState();
+                if (st == MacroController::State::PreRecord || st == MacroController::State::Recording) {
+                    DirectDrawHook::AddMessage("Switch Players disabled during Macro PreRecord/Recording", "SYSTEM", RGB(255,200,120), 1200, 0, 100);
+                    keyHandled = true;
+                } else if (GetCurrentGameMode() == GameMode::Practice && !g_guiActive.load()) {
                     bool ok = SwitchPlayers::ToggleLocalSide();
                     if (ok) {
                         DirectDrawHook::AddMessage("Switch Players: toggled", "SYSTEM", RGB(100,255,100), 1200, 0, 100);
