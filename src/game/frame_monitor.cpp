@@ -920,6 +920,9 @@ void FrameDataMonitor() {
                     // DON'T clear swap flag here - ResetControlMappingForMenusToP1 needs it to know if restoration is needed
                     // Flag will be cleared AFTER restoration happens (inside ResetControlMappingForMenusToP1)
                     ResetControlOnCharacterSelect();
+                    // If P2 controls were enabled before CS, disable them and clear the UI flag
+                    (void)DisablePlayer2InPracticeMode();
+                    displayData.p2ControlEnabled = false;
                     // Ensure any ongoing macro state is stopped when entering Character Select,
                     // but restore menu mapping first to avoid lingering swapped controls.
                     MacroController::UnswapThenStop();

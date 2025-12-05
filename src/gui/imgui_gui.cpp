@@ -39,6 +39,7 @@ extern void SpamAttackButton(uintptr_t playerBase, uint8_t button, int frames, c
 #include "../include/game/random_rg.h"
 // Random Block control
 #include "../include/game/random_block.h"
+#include "../include/game/auto_action.h" // g_p2ControlOverridden
 // Switch players
 #include "../include/utils/switch_players.h"
 #include "../include/game/macro_controller.h"
@@ -183,11 +184,18 @@ namespace ImGuiGui {
             if (ImGui::BeginTabItem("Opponent", nullptr, _setOpp)) {
                 guiState.mainMenuSubTab = 0;
                 // Control (requires Apply)
-                ImGui::Checkbox("Enable P2 Control (Practice Only)", &guiState.localData.p2ControlEnabled);
+                // When auto-actions temporarily override P2 control, disable this checkbox to avoid conflicts.
+                if (g_p2ControlOverridden) {
+                    ImGui::BeginDisabled(true);
+                    ImGui::Checkbox("Enable P2 Control (Practice Only)", &guiState.localData.p2ControlEnabled);
+                    ImGui::EndDisabled();
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Disabled: P2 control is temporarily overridden by Auto Actions.");
+                } else {
+                    ImGui::Checkbox("Enable P2 Control (Practice Only)", &guiState.localData.p2ControlEnabled);
+                }
                 if (ImGui::IsItemHovered()) ImGui::SetTooltip("Let you play P2 in Practice.\nClick Apply to enable/disable.");
                 // Inform about default training hotkeys behavior while P2 control is enabled
                 if (guiState.localData.p2ControlEnabled) {
-                    ImGui::SameLine();
                     ImGui::TextDisabled("F6/F7 training keys won't work while this is ON");
                     if (ImGui::IsItemHovered()) ImGui::SetTooltip("While P2 Control is enabled, the game's F6 (stance) and F7 (auto-block) keys are ignored.");
                 }
