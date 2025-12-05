@@ -2167,7 +2167,7 @@ namespace ImGuiGui {
                 guiState.localData.infiniteMishioElement || guiState.localData.infiniteMishioAwakened ||
                 guiState.localData.p1RumiInfiniteShinai || guiState.localData.p2RumiInfiniteShinai ||
                 guiState.localData.p1RumiInfiniteKimchi || guiState.localData.p2RumiInfiniteKimchi) {
-                ImGui::TextColored(ImVec4(0.6f, 0.8f, 1.0f, 1.0f), "Enforcement: inline (~16 Hz)");
+                ImGui::TextColored(ImVec4(0.6f, 0.8f, 1.0f, 1.0f), "Infinite mode is active.");
             }
             
             ImGui::Separator();
@@ -2859,7 +2859,7 @@ namespace ImGuiGui {
             if (ImGui::Checkbox("Lock stance##p2Mio", &lock2)) {
                 guiState.localData.p2MioLockStance = lock2;
             }
-            ImGui::TextDisabled("(Mio: stance byte at +0x3150, 0=Short,1=Long)");
+            //ImGui::TextDisabled("(Mio: stance byte at +0x3150, 0=Short,1=Long)");
     }
 
         // P2 Neyuki (Sleepy Nayuki) Settings
@@ -2998,7 +2998,7 @@ namespace ImGuiGui {
         ImGui::Separator();
         ImGui::TextWrapped(
             "Character-specific settings allow you to modify special parameters unique to each character.\n"
-            "Supported: Ikumi (Blood/Genocide), Misuzu (Feathers), Mishio (Element/Awakened), Rumi (Stance, Kimchi), Akiko (Bullet/Time-Slow), Neyuki (Jam 0-9), Kano (Magic), Mio (Stance), Doppel (Enlightened), Mai (Ghost/Awakening), Minagi (Michiru debug + Always readied)");
+            "Supported: Ikumi (Blood/Genocide), Misuzu (Feathers), Mishio (Element/Awakened), Rumi (Stance, Kimchi), Akiko (Bullet/Time-Slow), Neyuki (Jam 0-9), Kano (Magic), Mio (Stance), Doppel (Enlightened(Gold)), Mai (Ghost/Awakening), Minagi (Michiru position control + Always readied)");
     }
     
     // Add this new function to the ImGuiGui namespace:
