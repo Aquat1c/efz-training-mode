@@ -133,11 +133,11 @@ namespace ImGuiSettings {
         const Config::Settings& cfg = Config::GetSettings();
 
         // Local copies for UI mutation
-        bool useImGui = cfg.useImGui;
+        
         bool logVerbose = cfg.detailedLogging;
         bool debugFileLog = cfg.enableDebugFileLog;
         bool fpsDiag = cfg.enableFpsDiagnostics;
-        bool restrictPractice = cfg.restrictToPracticeMode;
+        
         bool showPracticeHint = cfg.showPracticeEntryHint;
         bool enableConsole = cfg.enableConsole;
         float uiScale = cfg.uiScale;
@@ -147,9 +147,7 @@ namespace ImGuiSettings {
             if (ImGui::BeginTabItem("General")) {
                 ImGui::SeparatorText("User Interface");
                 
-                CheckboxApply("Use ImGui UI (else legacy dialog)", useImGui, "General", "UseImGui");
-                ImGui::SameLine();
-                ImGui::TextDisabled("(applies on next menu open)");
+                
 
                 ImGui::Text("UI Scale:");
                 ImGui::SameLine();
@@ -199,11 +197,10 @@ namespace ImGuiSettings {
                 ImGui::Separator();
                 ImGui::SeparatorText("Practice Options");
 
-                CheckboxApply("Restrict features to Practice Mode", restrictPractice, "General", "restrictToPracticeMode");
+                
                 if (ImGui::Checkbox("Show Practice overlay hint once per session", &showPracticeHint)) {
                     Config::SetSetting("General", "showPracticeEntryHint", showPracticeHint ? "1" : "0");
                 }
-                ImGui::SameLine();
                 ImGui::TextDisabled("Appears when the first Practice match starts");
 
                 int abTimeoutMs = cfg.autoBlockNeutralTimeoutMs;

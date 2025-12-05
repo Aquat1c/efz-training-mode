@@ -31,7 +31,7 @@ namespace {
     struct RLESpan { Mask mask; Mask buf; int ticks; int8_t facing; };
     struct Slot {
         std::vector<RLESpan> spans; // RLE of immediate+buf at 64 Hz
-        // EfzRevival-style macro buffer: one byte per 64 Hz logic frame
+        // one byte per 64 Hz logic frame
         // This is the authoritative stream used for playback (StepReplay: Read→inject immediate-only)
         std::vector<uint8_t> macroStream;
         std::vector<uint8_t> bufStream; // full circular buffer stream captured during recording
@@ -815,7 +815,7 @@ void Tick() {
         // Pause while buffer-freeze is active for P2 to avoid fighting the engine
         if (g_bufferFreezingActive.load() && (g_activeFreezePlayer.load() == 2 || g_activeFreezePlayer.load() == 0)) return;
         int slotIdx = ClampSlot(s_curSlot.load()) - 1;
-        // Prefer stream playback if present (EfzRevival-style). Fallback to spans if no stream captured.
+        // Prefer stream playback if present. Fallback to spans if no stream captured.
         bool useStream = !s_slots[slotIdx].macroStream.empty();
         if (!s_slots[slotIdx].hasData || (s_slots[slotIdx].spans.empty() && !useStream)) {
             // Nothing to play
