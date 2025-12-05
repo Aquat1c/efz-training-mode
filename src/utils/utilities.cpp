@@ -1175,7 +1175,8 @@ void ShowHotkeyInfo() {
         if (!ImGuiImpl::IsVisible()) {
             ImGuiImpl::ToggleVisibility();
         }
-        ImGuiGui::guiState.requestedTab = 2; // Request the Help tab
+        // Use logical index 4 for Help; map to actual via helper
+        ImGuiGui::RequestTopTabAbsolute(4);
         LogOut("[GUI] Opening ImGui to Help tab", true);
     } else {
         // Fallback for legacy dialog

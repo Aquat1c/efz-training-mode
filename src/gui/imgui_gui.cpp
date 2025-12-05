@@ -227,7 +227,7 @@ namespace ImGuiGui {
                     ImGui::SameLine();
                     bool adaptive = GetAdaptiveStanceEnabled();
                     if (ImGui::Checkbox("Adaptive stance", &adaptive)) { SetAdaptiveStanceEnabled(adaptive); }
-                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Auto pick high vs air attacks, low vs grounded attacks AND overheads.");
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Auto pick high vs overhead/air attacks, low vs grounded attacks.");
                 } else {
                     ImGui::BeginDisabled(); int dummyAB = 0; ImGui::Combo("##RandomBlockMode", &dummyAB, abNames, 4); if (ImGui::IsItemHovered()) ImGui::SetTooltip("How the dummy blocks: Off / Block All / Block Only First Hit / Start Blocking After First Hit.\nRandom Block flips a coin each frame during the mode's ON window; OFF toggles are deferred while guarding."); ImGui::EndDisabled();
                 }
@@ -258,7 +258,7 @@ namespace ImGuiGui {
                         DirectDrawHook::AddMessage(std::string("Random RG: ") + (randomRG ? "ON" : "OFF"), "RANDOM_RG", RGB(200,255,200), 1500, 12, 90);
                     }
                 }
-                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Flip a coint each time the dummy tries to block; 50% chance to RG the move.");
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Flip a coin each time the dummy tries to block; 50% chance to RG the move.");
 
                 ImGui::SameLine();
                 bool crg = g_counterRGEnabled.load();
@@ -1901,7 +1901,7 @@ namespace ImGuiGui {
                             BulletTextWrapped("Random RG: flips a coin to attempt RG.");
                             BulletTextWrapped("Counter RG: tries to RG back after you RG.");
                             ImGui::SeparatorText("Notes");
-                            BulletTextWrapped("Some of these modes can’t run together. Turning one on can turn others off automatically.");
+                            BulletTextWrapped("Some of these modes can't run together. Turning one on can turn others off automatically.");
                             ImGui::EndTabItem();
                         }
 
@@ -1914,20 +1914,26 @@ namespace ImGuiGui {
                             ImGui::SeparatorText("Frame Advantage & Gaps");
                             ImGui::TextWrapped("The overlay shows Frame Advantage after an exchange and Gaps during strings:");
                             ImGui::Indent();
-                            BulletTextWrapped("Frame Advantage: appears after both sides recover; stays for about %.1fs (set in Settings → General).", Config::GetSettings().frameAdvantageDisplayDuration);
-                            BulletTextWrapped("Gaps: briefly flash during strings when there’s a hole.");
+                            BulletTextWrapped("Frame Advantage: appears after both sides recover; stays for about %.1fs (set in Settings -> General).", Config::GetSettings().frameAdvantageDisplayDuration);
+                            BulletTextWrapped("Gaps: briefly flash during strings when there's a hole.");
                             BulletTextWrapped("During Recoil Guard, FA1/FA2 labels show advantage for each part.");
                             ImGui::Unindent();
                             ImGui::EndTabItem();
                         }
-                        // Continuous Recovery
+                        // Recovery (Consolidated: per-player + Automatic Recovery info)
                         if (ImGui::BeginTabItem("Continuous Recovery")) {
-                            ImGui::TextWrapped("Restores HP/Meter/RF when a side returns to neutral. Configure P1/P2 in Options -> Continuous Recovery. \n Disabled by default if F4/F5 recoveries are used already.");
+                            ImGui::SeparatorText("ContinuousRecovery (Per-Player)");
+                            ImGui::TextWrapped("Restores HP/Meter/RF when a side returns to neutral. Configure per-side under Main -> Options -> Continuous Recovery. Disabled automatically when engine-managed recovery is active (F4/F5).\n");
                             BulletTextWrapped("HP/Meter: Off, presets, or Custom.");
-                            BulletTextWrapped("RF: presets or Custom. BIC is under RF->Custom; Red presets flip IC back to Red.");
+                            BulletTextWrapped("RF: presets or Custom. BIC (Blue IC) is under RF->Custom. Red presets flip IC back to Red.");
                             BulletTextWrapped("RF Freeze (optional): if enabled in config, freezes RF after Recovery sets it until you turn Recovery (RF) off.");
-                            BulletTextWrapped("Defaults: Recovery is OFF per-player. Enforced even in matches; can be neutral-only via config.");
-                            BulletTextWrapped("Tip: EFZ's F4/F5 can interfere. If values look wrong, press F4/F5 to return to Normal.");
+                            BulletTextWrapped("Defaults: Recovery is OFF per-player. Enforcement runs in matches; can be limited to neutral-only via config.");
+                            ImGui::Dummy(ImVec2(1, 6));
+                            ImGui::SeparatorText("Automatic Recovery (F5)");
+                            ImGui::TextWrapped("Game-driven recovery modes toggled from Main -> Values: \n- Disabled: no automatic regeneration. \n- Full values: engine maintains full HP/meter and manages RF gauge. \n- FM values (3332): engine maintains FM HP and manages RF gauge.");
+                            BulletTextWrapped("Switching Automatic Recovery from Full/FM to Disabled in the GUI specifically sets both players to HP=9999, Meter=0, RF=0.0 and sets IC color to Red.");
+                            BulletTextWrapped("While F5 or F4 is active, manual value edits are gated. X/Y positions can still be applied from the Values tab.");
+                            BulletTextWrapped("Tip: If numbers look off, press F4/F5 to return to Normal mode, then re-Apply.");
                             ImGui::EndTabItem();
                         }
                         // Character Settings
@@ -1949,11 +1955,11 @@ namespace ImGuiGui {
                         }
                         // Auto Actions
                         if (ImGui::BeginTabItem("Auto Actions")) {
-                            ImGui::TextWrapped("Auto Action triggers an action on Wakeup, After Block/Hitstun/Airtech, or Recoil.");
-                            BulletTextWrapped("Target: choose P1, P2, or Both.");
+                            ImGui::TextWrapped("Auto Action triggers an action on Wakeup, After Block/Hitstun/Airtech, or Recoil Guard.");
+                            BulletTextWrapped("You can choose P1/P2 or Both. P2 is Set by default.");
                             BulletTextWrapped("Action: normals, specials/supers, macros, and other (dash/backdash/jump/block). Dash can chain a follow-up normal.");
-                            BulletTextWrapped("Delay/Strength: frames to wait; strength maps to A/B/C.");
-                            BulletTextWrapped("Macro: pick 'Macro' then select a Slot to playback.");
+                            BulletTextWrapped("Delay/Strength: frames to wait; strength maps to A/B/C/D buttons.");
+                            BulletTextWrapped("Macro: You can pick 'Macro' as an option for a trigger then select a Slot for a playback.");
                             BulletTextWrapped("Gating: per-attempt gating avoids spam; clear triggers to reset.");
                             ImGui::EndTabItem();
                         }
@@ -2024,7 +2030,7 @@ namespace ImGuiGui {
                             ImGui::Dummy(ImVec2(1, 4));
                             ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.2f, 1.0f), "Note:");
                             ImGui::Indent();
-                            BulletTextWrapped("EfzRevival hotkeys may still be recognized while this menu is open, but the game will remain paused.");
+                            BulletTextWrapped("If the EfzRevival version isn't supported then hotkeys may still be recognized while this menu is open, but the game will remain paused.");
                             ImGui::Unindent();
                             
                             ImGui::EndTabItem();
@@ -2370,7 +2376,7 @@ namespace ImGuiGui {
                 guiState.localData.p1AkikoBulletCycle = bc1;
             }
             if (ImGui::IsItemHovered()) {
-                ImGui::SetTooltip("Sequence advances on use. Value is shared across A and B: A then B yields Egg→Radish for 0, etc.");
+                ImGui::SetTooltip("Sequence advances on use. Value is shared across A and B: A then B yields Egg->Radish for 0, etc.");
             }
             bool freeze1 = guiState.localData.p1AkikoFreezeCycle;
             if (ImGui::Checkbox("Freeze bullet cycle##p1Akiko", &freeze1)) {
@@ -2782,7 +2788,7 @@ namespace ImGuiGui {
                 guiState.localData.p2AkikoBulletCycle = bc2;
             }
             if (ImGui::IsItemHovered()) {
-                ImGui::SetTooltip("Sequence advances on use. Value is shared across A and B: A then B yields Egg→Radish for 0, etc.");
+                ImGui::SetTooltip("Sequence advances on use. Value is shared across A and B: A then B yields Egg->Radish for 0, etc.");
             }
             bool freeze2 = guiState.localData.p2AkikoFreezeCycle;
             if (ImGui::Checkbox("Freeze bullet cycle##p2Akiko", &freeze2)) {
