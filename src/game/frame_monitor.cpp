@@ -1,4 +1,5 @@
 #include "../include/game/frame_monitor.h"
+#include "../include/game/macro_controller.h"
 #include "../include/game/auto_airtech.h"
 #include "../include/game/auto_jump.h"
 #include "../include/game/auto_action.h" // ensure ClearAllAutoActionTriggers declaration
@@ -919,6 +920,11 @@ void FrameDataMonitor() {
                     // DON'T clear swap flag here - ResetControlMappingForMenusToP1 needs it to know if restoration is needed
                     // Flag will be cleared AFTER restoration happens (inside ResetControlMappingForMenusToP1)
                     ResetControlOnCharacterSelect();
+                    // Ensure any ongoing macro state is stopped when entering Character Select,
+                    // but restore menu mapping first to avoid lingering swapped controls.
+                    MacroController::UnswapThenStop();
+                    // Diagnostic: note macro stop on CS entry
+                    LogOut("[CS][MACRO] Stopped macros on Character Select entry", true);
                 }
                 // Reset live logger state on entry so first sample prints (only used when debug logs enabled)
                 s_csLastActive = 0xFF; s_csLastP2Cpu = 0xFF; s_csLastP1Cpu = 0xFF;

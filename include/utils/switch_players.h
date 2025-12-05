@@ -13,4 +13,6 @@ namespace SwitchPlayers {
     bool ResetControlMappingForMenusToP1();
     // Clear the swap tracking flag (called at match start and CS entry)
     void ClearSwapFlag();
+    // Mark that sides were swapped during match (used by callers that perform manual SetLocalSide).
+    void MarkSwapped();
 }

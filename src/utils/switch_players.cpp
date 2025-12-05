@@ -1220,4 +1220,8 @@ namespace SwitchPlayers {
     void ClearSwapFlag() {
         s_sidesAreSwapped.store(false, std::memory_order_relaxed);
     }
+
+    void MarkSwapped() {
+        s_sidesAreSwapped.store(true, std::memory_order_relaxed);
+    }
 }
