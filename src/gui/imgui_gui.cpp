@@ -1900,7 +1900,12 @@ namespace ImGuiGui {
                         if (ImGui::BeginTabItem("Macros")) {
                             ImGui::SeparatorText("Quick How-to");
                             BulletTextWrapped("Slots: cycle with %s.", GetKeyName(cfg.macroSlotKey).c_str());
-                            BulletTextWrapped("Record: %s to enter the Pre-recording phase(you can control P2 with P1 controls and P1 becomes a practice dummy); press again to start; again to stop.", GetKeyName(cfg.macroRecordKey).c_str());
+                            BulletTextWrapped("Record: %s to enter the Pre-recording phase(you can control P2 with P1 controls and P1 becomes a practice dummy); press again to start; again to save the recording.", GetKeyName(cfg.macroRecordKey).c_str());
+                            ImGui::TextWrapped(
+                                "Tip: You can exit the Pre-recording phase with Play (Keyboard: %s, Controller: %s). Pressing Play during Recording does nothing.",
+                                GetKeyName(cfg.macroPlayKey).c_str(),
+                                Config::GetGamepadButtonName(cfg.gpMacroPlayButton).c_str()
+                            );
                             BulletTextWrapped("Play: %s plays current slot.", GetKeyName(cfg.macroPlayKey).c_str());
                             BulletTextWrapped("Facing-aware: directions flip for P2 automatically.");
                             BulletTextWrapped("Frame-step aware: use Revival's pause/frame-advance if needed.");
