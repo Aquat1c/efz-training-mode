@@ -180,7 +180,7 @@ namespace Config {
         }
     }
     
-    // Add this helper function to get the current working directory
+    // Helper function to get the current working directory
     std::string GetCurrentWorkingDirectory() {
         char currentDir[MAX_PATH];
         if (GetCurrentDirectoryA(MAX_PATH, currentDir)) {

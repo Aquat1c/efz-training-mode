@@ -760,7 +760,6 @@ void LoadPlayerPositions(uintptr_t base) {
     }
 }
 
-// Add this function implementation at the end of the file
 uint8_t GetPlayerInputs(int playerNum) {
     uintptr_t base = GetEFZBase();
     if (!base) return 0;
@@ -795,7 +794,6 @@ bool GetPlayerFacingDirection(int playerNum) {
     return facingValue == 1;
 }
 
-// Add this function that updates all values except RF
 void UpdatePlayerValuesExceptRF(uintptr_t base, uintptr_t baseOffsetP1, uintptr_t baseOffsetP2) {
     // Write values from displayData to game memory
     uintptr_t hpAddr1 = ResolvePointer(base, baseOffsetP1, HP_OFFSET);

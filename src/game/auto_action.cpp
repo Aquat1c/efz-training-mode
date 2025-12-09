@@ -2423,7 +2423,6 @@ static void RestoreP2ControlFlagOnly() {
     g_p2ControlOverridden = false;
 }
 
-// Add this function to auto_action.h
 void ProcessAutoControlRestore() {
     if (!IsMatchPhase()) {
         // Likely transitioning to character select / menu; invalidate caches

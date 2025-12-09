@@ -15,7 +15,7 @@
 #include "../include/input/input_motion.h"
 #include "../include/utils/bgm_control.h"
 #include "../include/input/input_debug.h"
-#include <algorithm> // Add this for std::max
+#include <algorithm> 
 #include <vector>
 #include <string>
 // Removed <xinput.h> include: this translation unit no longer uses direct XInput
@@ -3056,7 +3056,6 @@ namespace ImGuiGui {
             "Supported: Ikumi (Blood/Genocide), Misuzu (Feathers), Mishio (Element/Awakened), Rumi (Stance, Kimchi), Akiko (Bullet/Time-Slow), Neyuki (Jam 0-9), Kano (Magic), Mio (Stance), Doppel (Enlightened(Gold)), Mai (Ghost/Awakening), Minagi (Michiru position control + Always readied)");
     }
     
-    // Add this new function to the ImGuiGui namespace:
     void RenderDebugInputTab() {
         // (Engine Regen / Continuous Recovery UI removed from Debug menu)
         ImGui::Separator();
@@ -3811,7 +3810,6 @@ namespace ImGuiGui {
                 DisablePlayer2InPracticeMode();
             }
             
-            // Add this to log character settings being applied
             LogOut("[IMGUI_GUI] Applying character settings - Blood Mode: " + 
                    std::to_string(displayData.infiniteBloodMode) + 
                    ", Feather Mode: " + std::to_string(displayData.infiniteFeatherMode) +
