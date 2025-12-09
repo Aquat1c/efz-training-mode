@@ -101,7 +101,7 @@ public:
     // Make this function public so it can be called from the global EndScene hook
     static void RenderD3D9Overlays(LPDIRECT3DDEVICE9 pDevice);
 
-    // Add this method - it's missing but called in dllmain.cpp
+
     static void Shutdown();
 
     // Set up window procedure hooks for ImGui input handling

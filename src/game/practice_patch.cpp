@@ -420,7 +420,6 @@ void DumpPracticeModeState() {
     LogOut("[PRACTICE_PATCH] --------- End of Debug Dump ---------", true);
 }
 
-// Add this variable near the top of the file with other globals
 std::atomic<bool> g_monitorInputs(true);
 uint8_t lastP1Input = 0;
 uint8_t lastP2Input = 0;

@@ -102,7 +102,7 @@
 #define GROUNDTECH_END 99
 // Some engine logic references state 97 as a pre-tech/startup marker; include as alias for safety
 #define GROUNDTECH_PRE 97
-#define GROUNDTECH_RECOVERY 96  // Add this new constant for the recovery state
+#define GROUNDTECH_RECOVERY 96 
 
 // Jump Move IDs
 #define STRAIGHT_JUMP_ID 4

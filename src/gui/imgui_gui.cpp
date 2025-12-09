@@ -15,7 +15,7 @@
 #include "../include/input/input_motion.h"
 #include "../include/utils/bgm_control.h"
 #include "../include/input/input_debug.h"
-#include <algorithm> // Add this for std::max
+#include <algorithm> 
 #include <vector>
 #include <string>
 // Removed <xinput.h> include: this translation unit no longer uses direct XInput
@@ -223,7 +223,7 @@ namespace ImGuiGui {
                             DirectDrawHook::AddMessage(std::string("Random Block: ") + (randomBlock ? "ON" : "OFF"), "RANDOM_BLOCK", RGB(220,200,255), 1500, 12, 108);
                         }
                     }
-                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Each frame flips a coin; 50% chance to set autoblock ON during the mode's ON window.");
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Each frame flips a coin; fifty percent chance chance to set autoblock ON during the mode's ON window.");
                     ImGui::SameLine();
                     bool adaptive = GetAdaptiveStanceEnabled();
                     if (ImGui::Checkbox("Adaptive stance", &adaptive)) { SetAdaptiveStanceEnabled(adaptive); }
@@ -258,7 +258,7 @@ namespace ImGuiGui {
                         DirectDrawHook::AddMessage(std::string("Random RG: ") + (randomRG ? "ON" : "OFF"), "RANDOM_RG", RGB(200,255,200), 1500, 12, 90);
                     }
                 }
-                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Flip a coin each time the dummy tries to block; 50% chance to RG the move.");
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Flip a coin each time the dummy tries to block; fifty percent chance chance to RG the move.");
 
                 ImGui::SameLine();
                 bool crg = g_counterRGEnabled.load();
@@ -914,7 +914,7 @@ namespace ImGuiGui {
                     if (ImGui::Checkbox("Randomize chance to fire the trigger", &randTrig)) {
                         guiState.localData.randomizeTriggers = randTrig;
                     }
-                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("When ON, each trigger attempt has a 50% chance to be skipped.");
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("When ON, each trigger attempt has a fifty percent chance chance to be skipped.");
                 }
 
                 // Player target selector
@@ -3056,58 +3056,8 @@ namespace ImGuiGui {
             "Supported: Ikumi (Blood/Genocide), Misuzu (Feathers), Mishio (Element/Awakened), Rumi (Stance, Kimchi), Akiko (Bullet/Time-Slow), Neyuki (Jam 0-9), Kano (Magic), Mio (Stance), Doppel (Enlightened(Gold)), Mai (Ghost/Awakening), Minagi (Michiru position control + Always readied)");
     }
     
-    // Add this new function to the ImGuiGui namespace:
     void RenderDebugInputTab() {
-        // Engine regen/CR status moved here from Values tab
-        ImGui::SeparatorText("Engine Regen / Continuous Recovery Status");
-        uint16_t engineParamA = 0, engineParamB = 0; EngineRegenMode regenMode = EngineRegenMode::Unknown;
-        bool gotParams = GetEngineRegenStatus(regenMode, engineParamA, engineParamB);
-        static bool s_doDeepScanDbg = false;
-        ImGui::Checkbox("Deep Scan Params##dbgdeep_global", &s_doDeepScanDbg);
-        if (ImGui::IsItemHovered()) {
-            ImGui::SetTooltip("Brute-force scan window to locate Param A/B if offsets drift. F4 requires +5 cadence.");
-        }
-        uint32_t scanAOff=0, scanBOff=0; uint16_t scanAVal=0, scanBVal=0; bool scanOk=false;
-        if (s_doDeepScanDbg) {
-            uintptr_t base = GetEFZBase(); uintptr_t p1Base=0; if (base) SafeReadMemory(base + EFZ_BASE_OFFSET_P1, &p1Base, sizeof(p1Base));
-            if (p1Base) scanOk = DebugScanRegenParamWindow(p1Base, scanAOff, scanAVal, scanBOff, scanBVal);
-        }
-        if (gotParams) {
-            const char* modeLabel = (regenMode==EngineRegenMode::F4_FineTuneActive?"F4 Fine-Tune" : (regenMode==EngineRegenMode::F5_FullOrPreset?"F5 Cycle" : (regenMode==EngineRegenMode::Normal?"Normal":"Unknown")));
-            ImGui::Text("Param A: %u  Param B: %u  Mode: %s", (unsigned)engineParamA, (unsigned)engineParamB, modeLabel);
-            float derivedRF=0.0f; bool derivedBlue=false;
-            if (DeriveRfFromParamA(engineParamA, derivedRF, derivedBlue)) {
-                ImGui::SameLine();
-                ImGui::TextDisabled("[Derived RF: %.1f, %s]", derivedRF, derivedBlue?"Blue":"Red");
-                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Mapping: 0..999=Red, 1000=Blue full, 1001..2000 => Blue with RF=(2000-A)");
-            }
-            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Heuristic: F5 when A==1000/2000 or B==3332; F4 fine-tune when B==9999 and A stepping.");
-        } else {
-            ImGui::Text("Param A/B unavailable (not in match or read failed).");
-        }
-        if (s_doDeepScanDbg) {
-            if (scanOk) {
-                ImGui::TextDisabled("Scan Offsets: A@0x%X=%u B@0x%X=%u", scanAOff, (unsigned)scanAVal, scanBOff, (unsigned)scanBVal);
-                if (scanAOff != PLAYER_PARAM_A_COPY_OFFSET || scanBOff != PLAYER_PARAM_B_COPY_OFFSET) {
-                    ImGui::TextColored(ImVec4(1,0.3f,0.3f,1), "Mismatch: defined offsets 0x%X/0x%X differ from scan 0x%X/0x%X", PLAYER_PARAM_A_COPY_OFFSET, PLAYER_PARAM_B_COPY_OFFSET, scanAOff, scanBOff);
-                }
-            } else {
-                ImGui::TextColored(ImVec4(0.9f,0.6f,0.2f,1), "Scan found no candidates in window.");
-            }
-        }
-        // Summarize lock state similar to Values tab
-        bool engineLocksValues = (regenMode == EngineRegenMode::F5_FullOrPreset);
-        bool crAny = (guiState.localData.p1ContinuousRecoveryEnabled && (guiState.localData.p1RecoveryHpMode>0 || guiState.localData.p1RecoveryMeterMode>0 || guiState.localData.p1RecoveryRfMode>0)) ||
-                      (guiState.localData.p2ContinuousRecoveryEnabled && (guiState.localData.p2RecoveryHpMode>0 || guiState.localData.p2RecoveryMeterMode>0 || guiState.localData.p2RecoveryRfMode>0));
-        if (engineLocksValues) {
-            ImGui::TextColored(ImVec4(1,0.6f,0.2f,1), "Engine-managed regeneration active; manual value edits disabled.");
-        }
-        if (crAny) {
-            ImGui::TextColored(ImVec4(0.8f,0.4f,1,1), "Continuous Recovery active; manual value edits disabled to avoid conflict.");
-        }
-        if (!engineLocksValues && !crAny) {
-            ImGui::TextDisabled("Manual edits enabled (no engine regen or CR overrides detected).");
-        }
+        // (Engine Regen / Continuous Recovery UI removed from Debug menu)
         ImGui::Separator();
         // Practice Switch Players control
         if (GetCurrentGameMode() == GameMode::Practice) {
@@ -3860,7 +3810,6 @@ namespace ImGuiGui {
                 DisablePlayer2InPracticeMode();
             }
             
-            // Add this to log character settings being applied
             LogOut("[IMGUI_GUI] Applying character settings - Blood Mode: " + 
                    std::to_string(displayData.infiniteBloodMode) + 
                    ", Feather Mode: " + std::to_string(displayData.infiniteFeatherMode) +

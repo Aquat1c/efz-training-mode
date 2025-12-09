@@ -8,7 +8,7 @@
 extern std::mutex g_logMutex;
 extern std::ofstream g_log;
 extern std::atomic<bool> detailedTitleMode;
-extern std::atomic<bool> detailedDebugOutput; // Add this line
+extern std::atomic<bool> detailedDebugOutput;
 // Global reduced logging toggle (suppresses repetitive/duplicate spam while keeping critical events)
 extern std::atomic<bool> g_reducedLogging;
 

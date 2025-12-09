@@ -18,9 +18,9 @@
 #include <dinput.h>
 #include <sstream>
 #include <string>
-#include <commctrl.h>  for Common Controls
+#include <commctrl.h>
 #include "../include/gui/imgui_impl.h"
-#include "../include/gui/overlay.h"   for DirectDrawHook class
+#include "../include/gui/overlay.h"
 #include "../include/utils/config.h"
 #include "../include/input/input_motion.h" // For QueueMotionInput
 #include "../include/utils/bgm_control.h"
@@ -40,7 +40,7 @@
 
 #pragma comment(lib, "dinput8.lib")
 #pragma comment(lib, "dxguid.lib")
-#pragma comment(lib, "comctl32.lib") // Add this comment directive for Common Controls
+#pragma comment(lib, "comctl32.lib")
 
 // Global DirectInput objects
 LPDIRECTINPUT8 g_pDI = nullptr;
@@ -178,7 +178,7 @@ bool IsDIKeyPressed(BYTE* keyboardState, DWORD dikCode) {
     return (keyboardState[dikCode] & 0x80) != 0;
 }
 
-// Add this helper function at the top to handle keyboard input more reliably
+// Helper function at the top to handle keyboard input more reliably
 bool IsKeyPressed(int vKey, bool checkState) {
     SHORT keyState;
     // Set C locale once to avoid repeated global locale churn
@@ -816,7 +816,7 @@ void MonitorKeys() {
     LogOut("[KEYBINDS] Key monitoring thread exiting", true);
 }
 
-// Add this function to restart key monitoring
+// Helper function at the top to handle keyboard input more reliably
 void RestartKeyMonitoring() {
     std::lock_guard<std::mutex> guard(keyMonitorMutex);
     if (keyMonitorRunning.load()) {

@@ -1,7 +1,7 @@
 #pragma once
 #include <windows.h>
 #include <atomic>
-#include <string>  // Add this for std::string
+#include <string>  
 #include "../include/core/constants.h"
 
 // Delay tracking structure
@@ -37,7 +37,7 @@ void MonitorAutoActions(short moveID1, short moveID2, short prevMoveID1, short p
 void ResetActionFlags();
 void ClearDelayStatesIfNonActionable();
 
-// Add this function declaration for the special move logic
+// Function declaration for the special move logic
 void ApplyAutoAction(int playerNum, uintptr_t moveIDAddr, short currentMoveID, short prevMoveID);
 
 // Helper functions for motion selection
