@@ -62,7 +62,7 @@ This project is a DLL mod that loads via EFZ Mod Manager. It adds a configurable
 
 - **Character-Specific Settings:**
   - Toggle or adjust unique character parameters directly from the overlay
-  - Examples: Ikumi (Blood/Genocide), Misuzu (Feathers), Mishio (Element/Awakened), Rumi (Stance/Kimchi), Akiko (Bullet/Time-Slow), Neyuki (Jam 0–9), Kano (Magic), Mio (Stance), Doppel (Enlightened/Gold), Mai (Ghost/Awakening), Minagi (Michiru position + Always readied)
+  - Examples: Ikumi (Blood/Genocide), Misuzu (Feathers), Mishio (Element/Awakened), Rumi (Stance/Kimchi), Akiko (Current Bullet Cycle/Time-Slow), Neyuki (Jam 0–9), Kano (Magic), Mio (Stance), Doppel (Gold Doppel), Mai (Ghost/Awakening), Minagi (Michiru position + Always readied)
 
 - **Random Defense Tools:**
   - Random Block and Random RG for realistic defensive variance
