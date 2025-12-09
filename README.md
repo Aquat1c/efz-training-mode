@@ -170,18 +170,8 @@ External libraries:
 
 ---
 
-**Contributing**
-- Contributions are welcome! Areas of interest include:
-  - More precise RG/frame calculations
-  - Improved defender state detection
-  - Additional training quality-of-life features
-
-Please open issues/PRs with clear descriptions and steps to reproduce where relevant.
-
----
-
 **Special Thanks**
-- fishshapedfish — early tables and references used to bootstrap character state work
+- fishshapedfish — early tables and references as well as consultations.
 - Ev.Geniy, yagelbagel, Micro and others — testing and feedback
 
 ---
