@@ -6,7 +6,7 @@
 #include "../include/core/logger.h"
 #include "../include/utils/config.h"
 #include "../include/gui/imgui_impl.h"  
-#include "../include/game/character_settings.h"  for ImGui dialog
+#include "../include/game/character_settings.h" 
 #include <windows.h>
 #include <string>
 #include <thread>

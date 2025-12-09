@@ -8,8 +8,8 @@
 #include "../include/utils/utilities.h"
 #include "../include/game/game_state.h"
 #include "../include/input/motion_system.h"
-#include "../include/input/input_motion.h"   for motion functions
-#include "../include/game/frame_monitor.h"  for shared constants
+#include "../include/input/input_motion.h" 
+#include "../include/game/frame_monitor.h"
 // These functions are implemented in input_buffer.cpp
 extern void FreezeBufferValuesThread(int playerNum);
 extern bool CaptureAndFreezeBuffer(int playerNum, uint16_t startIndex, uint16_t length, int motionType, int buttonMask);
