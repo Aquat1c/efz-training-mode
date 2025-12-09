@@ -3,6 +3,8 @@
 #include <string>
 #include <atomic>
 
+//#define ENABLE_FRAME_ADV_DEBUG
+
 // Structure to track frame advantage state with subframe precision
 struct FrameAdvantageState {
     // Blockstun/Hitstun tracking
@@ -39,12 +41,20 @@ struct FrameAdvantageState {
     bool p1AdvantageCalculated;
     bool p2AdvantageCalculated;
     
+    // Gap tracking (frames between consecutive hits in a string)
+    int p1GapFrames;                    // Gap before P1's current attack
+    int p2GapFrames;                    // Gap before P2's current attack
+    bool p1GapCalculated;
+    bool p2GapCalculated;
+    
     // Initial moveIDs for analysis
     short p1InitialBlockstunMoveID;
     short p2InitialBlockstunMoveID;
 
     // Timer to control how long the advantage is displayed
     int displayUntilInternalFrame;
+    // Separate timer for gap display
+    int gapDisplayUntilInternalFrame;
 };
 
 // Global frame advantage state
@@ -54,13 +64,23 @@ extern std::atomic<int> g_SkipRegularFAOverlayUntilFrame;
 
 // Function declarations
 void ResetFrameAdvantageState();
+// Clear only the on-screen frame advantage message/overlay
+void ClearFrameAdvantageDisplay();
+// Cancel any in-progress frame advantage exchange (used for teleport/reset)
+void CancelFrameAdvantageCalculation();
 void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, short prevMoveID2);
 bool IsFrameAdvantageActive();
 FrameAdvantageState GetFrameAdvantageState();
 
 // Helper functions with subframe precision
 int GetCurrentInternalFrame();
+int GetDisplayDurationInternalFrames();  // Get configured display duration in internal frames
 double GetCurrentVisualFrame();      // Returns frame with .33/.66 subframes
 std::string FormatFrameAdvantage(int advantageInternal);  // Changed parameter from double to int
 bool IsAttackMove(short moveID);
 bool IsRecoveryFromAttack(short currentMoveID, short prevMoveID);
+// Lightweight query for frame monitor to decide if FA needs ticking even without moveID changes
+bool FrameAdvantageTimersActive();
+// Overload using unified per-frame sample (thin wrapper initially)
+struct PerFrameSample; // forward decl
+void MonitorFrameAdvantage(const PerFrameSample& sample);

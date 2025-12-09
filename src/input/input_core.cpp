@@ -114,9 +114,11 @@ bool WritePlayerInputToBuffer(int playerNum, uint8_t inputMask) {
     if (!SafeWriteMemory(playerPtr + INPUT_BUFFER_OFFSET + bufferIndex, &inputMask, sizeof(uint8_t)))
         return false;
     
-    // Debug logging for dash investigation
-    LogOut("[BUFFER_WRITE] P" + std::to_string(playerNum) + " wrote " + DecodeInputMask(inputMask) + 
-           " at index " + std::to_string(currentIndex) + " -> " + std::to_string(currentIndex + 1), true);
+    // Debug logging for dash investigation (gate under detailedLogging)
+    if (detailedLogging.load()) {
+        LogOut("[BUFFER_WRITE] P" + std::to_string(playerNum) + " wrote " + DecodeInputMask(inputMask) + 
+               " at index " + std::to_string(currentIndex) + " -> " + std::to_string(currentIndex + 1), true);
+    }
     
     // Increment buffer index
     currentIndex = (currentIndex + 1) % INPUT_BUFFER_SIZE;
@@ -149,8 +151,10 @@ bool ResetPlayerInputBufferIndex(int playerNum) {
     uintptr_t playerPtr = GetPlayerPointer(playerNum);
     if (!playerPtr) return false;
     
-    // Dump buffer state before reset
-    DumpInputBuffer(playerNum, "BEFORE_INDEX_RESET");
+    // Dump buffer state before reset (debug only)
+    if (detailedLogging.load()) {
+        DumpInputBuffer(playerNum, "BEFORE_INDEX_RESET");
+    }
     
     uint16_t zero = 0;
     if (!SafeWriteMemory(playerPtr + INPUT_BUFFER_INDEX_OFFSET, &zero, sizeof(uint16_t))) {
@@ -159,19 +163,26 @@ bool ResetPlayerInputBufferIndex(int playerNum) {
     }
     LogOut("[INPUT] Reset buffer index to 0 for P" + std::to_string(playerNum), true);
     
-    // Dump after reset
-    DumpInputBuffer(playerNum, "AFTER_INDEX_RESET");
+    // Dump after reset (debug only)
+    if (detailedLogging.load()) {
+        DumpInputBuffer(playerNum, "AFTER_INDEX_RESET");
+    }
     
     return true;
 }
 
-// Read MoveID (offset 610 = 0x262)
+// Read MoveID using authoritative offset (MOVE_ID_OFFSET)
 uint16_t GetPlayerMoveID(int playerNum) {
     uintptr_t playerPtr = GetPlayerPointer(playerNum);
-    if (!playerPtr) return 99; // Default "no move" value
-    
-    uint16_t moveID = 99;
-    SafeReadMemory(playerPtr + 610, &moveID, sizeof(uint16_t));
+    if (!playerPtr) {
+        LogOut("[BUFFER_DUMP] GetPlayerMoveID: null playerPtr for P" + std::to_string(playerNum), true);
+        return 0; // safest fallback: idle
+    }
+    uint16_t moveID = 0;
+    if (!SafeReadMemory(playerPtr + MOVE_ID_OFFSET, &moveID, sizeof(uint16_t))) {
+        LogOut("[BUFFER_DUMP] GetPlayerMoveID: failed to read MoveID for P" + std::to_string(playerNum), true);
+        return 0;
+    }
     return moveID;
 }
 
@@ -190,16 +201,13 @@ void DumpInputBuffer(int playerNum, const std::string& context) {
     // Read MoveID
     uint16_t moveID = GetPlayerMoveID(playerNum);
     
-    // Read current move animation ID (offset 8 = 0x08)
-    uint16_t currentMove = 0;
-    SafeReadMemory(playerPtr + 8, &currentMove, sizeof(uint16_t));
+    // MoveID is authoritative; drop the duplicate/ambiguous CurrentAnim read
     
     // Read last 15 positions (game checks last 5 for dash, but we want more context)
     std::stringstream ss;
     ss << "[BUFFER_DUMP][" << context << "] P" << playerNum 
        << " Index=" << bufferIndex 
-       << " MoveID=" << moveID
-       << " CurrentAnim=" << currentMove
+    << " MoveID=" << moveID
        << " Last15=[";
     
     int startPos = (bufferIndex >= 15) ? (bufferIndex - 15) : 0;
@@ -233,15 +241,13 @@ bool ClearPlayerInputBuffer(int playerNum, bool resetIndex) {
     if (!playerPtr) return false;
     
     // Dump before clearing for debugging
-    DumpInputBuffer(playerNum, "BEFORE_CLEAR");
-    
-    uint8_t neutral = 0x00;
-    bool ok = true;
-    for (uint16_t i = 0; i < INPUT_BUFFER_SIZE; ++i) {
-        if (!SafeWriteMemory(playerPtr + INPUT_BUFFER_OFFSET + i, &neutral, sizeof(uint8_t))) {
-            ok = false; // continue attempting writes
-        }
+    if (detailedLogging.load()) {
+        DumpInputBuffer(playerNum, "BEFORE_CLEAR");
     }
+    
+    // Bulk clear the entire circular buffer region in one write
+    std::vector<uint8_t> zeros(INPUT_BUFFER_SIZE, 0x00);
+    bool ok = SafeWriteMemory(playerPtr + INPUT_BUFFER_OFFSET, zeros.data(), INPUT_BUFFER_SIZE);
     if (resetIndex) {
         uint16_t zero = 0;
         if (!SafeWriteMemory(playerPtr + INPUT_BUFFER_INDEX_OFFSET, &zero, sizeof(uint16_t))) {
@@ -250,4 +256,54 @@ bool ClearPlayerInputBuffer(int playerNum, bool resetIndex) {
     }
     LogOut(std::string("[INPUT] Cleared input buffer for P") + std::to_string(playerNum) + (resetIndex?" (index reset)":""), true);
     return ok;
+}
+
+// Clear engine command flags (command buffer and dash command) to avoid post-macro transitions
+bool ClearPlayerCommandFlags(int playerNum) {
+    uintptr_t playerPtr = GetPlayerPointer(playerNum);
+    if (!playerPtr) return false;
+    uint8_t zero = 0;
+    bool ok1 = SafeWriteMemory(playerPtr + COMMAND_BUFFER_OFFSET, &zero, sizeof(uint8_t));
+    bool ok2 = SafeWriteMemory(playerPtr + DASH_COMMAND_OFFSET, &zero, sizeof(uint8_t));
+    LogOut(std::string("[INPUT] Cleared command/dash flags for P") + std::to_string(playerNum), true);
+    return ok1 && ok2;
+}
+
+// Write 99 to the motion token slot to neutralize any in-flight recognizer state
+bool NeutralizeMotionToken(int playerNum) {
+    uintptr_t playerPtr = GetPlayerPointer(playerNum);
+    if (!playerPtr) return false;
+    // Write one byte 0x63 (hex) which equals decimal 99
+    uint8_t token = 0x63;
+    bool ok = SafeWriteMemory(playerPtr + MOTION_TOKEN_OFFSET, &token, sizeof(uint8_t));
+    if (detailedLogging.load()) {
+        LogOut(std::string("[INPUT] Neutralized motion token for P") + std::to_string(playerNum) +
+               std::string(" -> 0x63"), true);
+    }
+    return ok;
+}
+
+// Perform a thorough cleanup after toggling control or finishing macro playback
+bool FullCleanupAfterToggle(int playerNum) {
+    uintptr_t playerPtr = GetPlayerPointer(playerNum);
+    if (!playerPtr) return false;
+    bool okAll = true;
+
+    // 1) Neutralize motion token
+    okAll = NeutralizeMotionToken(playerNum) && okAll;
+
+    // 2) Clear command/latch bytes and dash timer
+    uint8_t zero = 0;
+    okAll = SafeWriteMemory(playerPtr + INPUT_LATCH1_OFFSET, &zero, sizeof(uint8_t)) && okAll;
+    okAll = SafeWriteMemory(playerPtr + INPUT_LATCH2_OFFSET, &zero, sizeof(uint8_t)) && okAll;
+    okAll = SafeWriteMemory(playerPtr + DASH_TIMER_OFFSET, &zero, sizeof(uint8_t)) && okAll;
+
+    // 3) Clear circular buffer and reset head
+    okAll = ClearPlayerInputBuffer(playerNum, /*resetIndex=*/true) && okAll;
+
+    // 4) Clear immediate registers to neutral
+    okAll = WritePlayerInputImmediate(playerNum, GAME_INPUT_NEUTRAL) && okAll;
+
+    LogOut(std::string("[INPUT] Full cleanup after toggle for P") + std::to_string(playerNum), true);
+    return okAll;
 }

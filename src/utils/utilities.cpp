@@ -16,9 +16,10 @@
 #include "../include/game/auto_action.h"
 #include "../include/game/frame_monitor.h"
 #include "../include/input/input_freeze.h"
+#include "../include/game/practice_offsets.h" // For GAMESTATE_OFF_P1_CPU_FLAG, GAMESTATE_OFF_P2_CPU_FLAG
 #include <sstream>
 #include <iomanip>
-#include <iostream>  // Add this include for std::cout and std::cerr
+#include <iostream>   for std::cout and std::cerr
 #include <algorithm>  // For std::transform
 #include <cwctype>    // For wide character functions
 #include <locale>     // For std::locale
@@ -295,6 +296,31 @@ void ResetDisplayDataToDefaults() {
     displayData.p1MichiruSubframe = -1;
     displayData.p2MichiruFrame = -1;
     displayData.p2MichiruSubframe = -1;
+    // Multi-action pools (defaults: disabled, empty masks)
+    displayData.afterBlockActionPoolMask   = 0;
+    displayData.onWakeupActionPoolMask     = 0;
+    displayData.afterHitstunActionPoolMask = 0;
+    displayData.afterAirtechActionPoolMask = 0;
+    displayData.onRGActionPoolMask         = 0;
+    displayData.afterBlockUseActionPool    = false;
+    displayData.onWakeupUseActionPool      = false;
+    displayData.afterHitstunUseActionPool  = false;
+    displayData.afterAirtechUseActionPool  = false;
+    displayData.onRGUseActionPool          = false;
+
+    // Per-trigger option rows (randomized selection)
+    displayData.afterBlockOptionCount = 0;
+    displayData.onWakeupOptionCount = 0;
+    displayData.afterHitstunOptionCount = 0;
+    displayData.afterAirtechOptionCount = 0;
+    displayData.onRGOptionCount = 0;
+    for (int i = 0; i < MAX_TRIGGER_OPTIONS; ++i) {
+        displayData.afterBlockOptions[i]   = { false, ACTION_5A, 0, 0, (int)BASE_ATTACK_5A, 0 };
+        displayData.onWakeupOptions[i]     = { false, ACTION_5A, 0, 0, (int)BASE_ATTACK_5A, 0 };
+        displayData.afterHitstunOptions[i] = { false, ACTION_5A, 0, 0, (int)BASE_ATTACK_5A, 0 };
+        displayData.afterAirtechOptions[i] = { false, ACTION_JA, 0, 0, (int)BASE_ATTACK_JA, 0 };
+        displayData.onRGOptions[i]         = { false, ACTION_5A, 0, 0, (int)BASE_ATTACK_5A, 0 };
+    }
     
     LogOut("[SYSTEM] DisplayData reset to defaults", true);
 }
@@ -339,13 +365,7 @@ void EnableFeatures() {
     }
     
     // --- BGM suppression integration ---
-    uintptr_t efzBase = GetEFZBase();
-    uintptr_t gameStatePtr = 0;
-    if (SafeReadMemory(efzBase + EFZ_BASE_OFFSET_GAME_STATE, &gameStatePtr, sizeof(uintptr_t)) && gameStatePtr) {
-        if (IsBGMSuppressed()) {
-            StopBGM(gameStatePtr);
-        }
-    }
+    // BGM suppression flag removed; legacy one-shot enforcement discarded.
 }
 
 void DisableFeatures() {
@@ -353,6 +373,21 @@ void DisableFeatures() {
         return;
     
     LogOut("[SYSTEM] Game left valid mode. Disabling patches and overlays.", true);
+    
+    // CRITICAL: Restore normal control flags when leaving Practice mode
+    // to prevent control swap issues in other modes
+    uintptr_t efzBase = GetEFZBase();
+    if (efzBase) {
+        uintptr_t gameStatePtr = 0;
+        if (SafeReadMemory(efzBase + EFZ_BASE_OFFSET_GAME_STATE, &gameStatePtr, sizeof(uintptr_t)) && gameStatePtr) {
+            // Reset both sides to human (0 = human, 1 = CPU)
+            uint8_t p1Human = 0, p2Human = 0;
+            SafeWriteMemory(gameStatePtr + GAMESTATE_OFF_P1_CPU_FLAG, &p1Human, sizeof(uint8_t));
+            SafeWriteMemory(gameStatePtr + GAMESTATE_OFF_P2_CPU_FLAG, &p2Human, sizeof(uint8_t));
+            LogOut("[SYSTEM] Restored P1/P2 CPU flags to human (0) when disabling features", true);
+        }
+    }
+    
     // Stop immediate input writer
     ImmediateInput::Stop();
 
@@ -387,6 +422,8 @@ void DisableFeatures() {
     g_statsMoveIdId = -1;
     g_statsCleanHitId = -1;
     g_statsAIFlagsId = -1;
+    g_statsBlockstunId = -1;
+    g_statsUntechId = -1;
 
     // Also reset trigger/status overlay IDs so they get recreated on next update
     g_TriggerAfterBlockId = -1;
@@ -406,8 +443,8 @@ void DisableFeatures() {
     // Reset all core logic states
     ResetFrameAdvantageState();
     ResetActionFlags();
-    p1DelayState = {false, 0, TRIGGER_NONE, 0};
-    p2DelayState = {false, 0, TRIGGER_NONE, 0};
+    p1DelayState = {false, 0, TRIGGER_NONE, 0, -1, -1, 0, -1};
+    p2DelayState = {false, 0, TRIGGER_NONE, 0, -1, -1, 0, -1};
 
     g_featuresEnabled.store(false);
     
@@ -655,6 +692,8 @@ int g_statsIkumiId = -1;
 int g_statsMaiId = -1;
 int g_statsMinagiId = -1;
 int g_statsAIFlagsId = -1; // new: AI control flags line in stats overlay
+int g_statsBlockstunId = -1; // new: Blockstun counters line
+int g_statsUntechId = -1;    // new: Hitstun/Untech counters line
 
 // Auto-action settings - replace single trigger with individual triggers
 std::atomic<bool> autoActionEnabled(false);
@@ -668,6 +707,8 @@ std::atomic<bool> triggerOnWakeupEnabled(false);
 std::atomic<bool> triggerAfterHitstunEnabled(false);
 std::atomic<bool> triggerAfterAirtechEnabled(false);
 std::atomic<bool> triggerOnRGEnabled(false);
+// Global trigger randomization toggle (default OFF)
+std::atomic<bool> triggerRandomizeEnabled(false);
 
 // Delay settings (in visual frames)
 std::atomic<int> triggerAfterBlockDelay(DEFAULT_TRIGGER_DELAY);
@@ -688,6 +729,30 @@ std::atomic<int> triggerOnWakeupAction(ACTION_5A);
 std::atomic<int> triggerAfterHitstunAction(ACTION_5A);
 std::atomic<int> triggerAfterAirtechAction(ACTION_5A);
 std::atomic<int> triggerOnRGAction(ACTION_5A);
+
+// Multi-action pools per trigger (disabled by default)
+std::atomic<uint32_t> triggerAfterBlockActionPoolMask{0};
+std::atomic<uint32_t> triggerOnWakeupActionPoolMask{0};
+std::atomic<uint32_t> triggerAfterHitstunActionPoolMask{0};
+std::atomic<uint32_t> triggerAfterAirtechActionPoolMask{0};
+std::atomic<uint32_t> triggerOnRGActionPoolMask{0};
+std::atomic<bool>     triggerAfterBlockUsePool{false};
+std::atomic<bool>     triggerOnWakeupUsePool{false};
+std::atomic<bool>     triggerAfterHitstunUsePool{false};
+std::atomic<bool>     triggerAfterAirtechUsePool{false};
+std::atomic<bool>     triggerOnRGUsePool{false};
+
+// Runtime per-trigger option rows (populated on Apply)
+int           g_afterBlockOptionCount = 0;
+TriggerOption g_afterBlockOptions[MAX_TRIGGER_OPTIONS] = {};
+int           g_onWakeupOptionCount = 0;
+TriggerOption g_onWakeupOptions[MAX_TRIGGER_OPTIONS] = {};
+int           g_afterHitstunOptionCount = 0;
+TriggerOption g_afterHitstunOptions[MAX_TRIGGER_OPTIONS] = {};
+int           g_afterAirtechOptionCount = 0;
+TriggerOption g_afterAirtechOptions[MAX_TRIGGER_OPTIONS] = {};
+int           g_onRGOptionCount = 0;
+TriggerOption g_onRGOptions[MAX_TRIGGER_OPTIONS] = {};
 
 // Forward dash follow-up selection (0=None, 1=5A,2=5B,3=5C,4=2A,5=2B,6=2C)
 std::atomic<int> forwardDashFollowup(0);
@@ -721,8 +786,8 @@ std::atomic<bool> g_wakeBufferingEnabled{false};
 // Global toggle: enable/disable Counter RG early-restore behavior (default OFF)
 std::atomic<bool> g_counterRGEnabled{false};
 
-// UI: gate for the regular Frame Advantage overlay (default OFF)
-std::atomic<bool> g_showFrameAdvantageOverlay{false};
+// UI: gate for the regular Frame Advantage overlay (default ON)
+std::atomic<bool> g_showFrameAdvantageOverlay{true};
 
 // Deep frame advantage instrumentation toggle
 std::atomic<bool> g_deepFrameAdvDebug{false};
@@ -743,10 +808,84 @@ std::string FormatPosition(double x, double y) {
     return ss.str();
 }
 
+// Cached EFZ base module handle to avoid repeated GetModuleHandleA calls.
+namespace { std::atomic<uintptr_t> g_cachedEfzBase{0}; }
+
 uintptr_t GetEFZBase() {
-    std::locale::global(std::locale("C")); 
-    // This ensures consistent decimal point format
-    return (uintptr_t)GetModuleHandleA(NULL);
+    uintptr_t val = g_cachedEfzBase.load(std::memory_order_acquire);
+    if (val) return val;
+    HMODULE h = GetModuleHandleA(NULL); // NULL = current process module
+    if (!h) return 0;
+    val = reinterpret_cast<uintptr_t>(h);
+    g_cachedEfzBase.store(val, std::memory_order_release);
+    return val;
+}
+
+void InvalidateEFZBaseCache() { g_cachedEfzBase.store(0, std::memory_order_release); }
+
+// -----------------------------------------------------------------------------
+// Game state pointer caching
+// The game state object (at EFZ_BASE_OFFSET_GAME_STATE) is allocated once at
+// startup (initializeGameSystem). Its pointer remains stable; internal fields
+// are reset between matches. Safe to cache for lifetime of process unless we
+// explicitly disable features / enter online mode.
+namespace { std::atomic<uintptr_t> g_cachedGameState{0}; }
+
+uintptr_t GetGameStatePtr() {
+    uintptr_t gs = g_cachedGameState.load(std::memory_order_acquire);
+    if (gs) return gs;
+    uintptr_t base = GetEFZBase(); if (!base) return 0;
+    uintptr_t tmp = 0; if (!SafeReadMemory(base + EFZ_BASE_OFFSET_GAME_STATE, &tmp, sizeof(tmp))) return 0;
+    if (tmp) g_cachedGameState.store(tmp, std::memory_order_release);
+    return tmp;
+}
+
+void InvalidateGameStatePtrCache() { g_cachedGameState.store(0, std::memory_order_release); }
+
+// -----------------------------------------------------------------------------
+// Player base pointer caching
+// Player pointers (EFZ_BASE_OFFSET_P1/P2) are set to 0 at startup and populated
+// during character load sequences. They are reused for each match but may be
+// re-assigned when returning to character select and starting a new battle.
+// Strategy:
+//  - Cache after first successful read when AreCharactersInitialized()==true
+//  - Invalidate when AreCharactersInitialized()==false OR screen state != Battle (3)
+//  - Provide explicit invalidation for feature disable / online entry.
+namespace { std::atomic<uintptr_t> g_cachedPlayerBase[3] = {0,0,0}; }
+
+static bool ShouldInvalidatePlayerCache() {
+    // When characters not initialized, cached bases invalid.
+    if (!AreCharactersInitialized()) return true;
+    // Screen state check: only trust during battle (3) and possibly win (5) for post-match reads.
+    uint8_t screenState = 0; uintptr_t base = GetEFZBase();
+    if (base) SafeReadMemory(base + EFZ_BASE_OFFSET_SCREEN_STATE, &screenState, sizeof(screenState));
+    if (screenState != 3 && screenState != 5) return true; // battle or win screen retain
+    return false;
+}
+
+uintptr_t GetPlayerBase(int playerIndex) {
+    if (playerIndex != 1 && playerIndex != 2) return 0;
+    if (ShouldInvalidatePlayerCache()) {
+        g_cachedPlayerBase[1].store(0, std::memory_order_release);
+        g_cachedPlayerBase[2].store(0, std::memory_order_release);
+        return 0;
+    }
+    uintptr_t cached = g_cachedPlayerBase[playerIndex].load(std::memory_order_acquire);
+    if (cached) return cached;
+    uintptr_t base = GetEFZBase(); if (!base) return 0;
+    uintptr_t ptr = 0; uintptr_t off = (playerIndex==1)?EFZ_BASE_OFFSET_P1:EFZ_BASE_OFFSET_P2;
+    if (!SafeReadMemory(base + off, &ptr, sizeof(ptr))) return 0;
+    // Basic sanity: require non-null and readable HP field before caching.
+    if (ptr) {
+        int hpDummy=0; if (!SafeReadMemory(ptr + HP_OFFSET, &hpDummy, sizeof(hpDummy))) return 0;
+        g_cachedPlayerBase[playerIndex].store(ptr, std::memory_order_release);
+    }
+    return ptr;
+}
+
+void InvalidatePlayerBaseCache() {
+    g_cachedPlayerBase[1].store(0, std::memory_order_release);
+    g_cachedPlayerBase[2].store(0, std::memory_order_release);
 }
 
 // Add these helper functions to better detect state changes
@@ -757,18 +896,30 @@ bool IsActionable(short moveID) {
                     moveID == WALK_BACK_ID || 
                     moveID == CROUCH_ID ||
                     moveID == CROUCH_TO_STAND_ID ||
-                    moveID == LANDING_ID);
+                    // Airborne falling is considered actionable (air actions possible)
+                    moveID == FALLING_ID ||
+                    // Treat landing variants as actionable immediately
+                    moveID == LANDING_ID || moveID == LANDING_1_ID || moveID == LANDING_2_ID || moveID == LANDING_3_ID);
 
     if (neutral) return true;
+
+    // Explicit inactionable groups from engine
+    bool isDash = (moveID == FORWARD_DASH_START_ID || moveID == FORWARD_DASH_RECOVERY_ID ||
+                   moveID == BACKWARD_DASH_START_ID || moveID == BACKWARD_DASH_RECOVERY_ID ||
+                   moveID == FORWARD_DASH_RECOVERY_SENTINEL_ID);
+    bool isGroundTechSeq = (moveID == GROUNDTECH_RECOVERY || moveID == GROUNDTECH_PRE || moveID == GROUNDTECH_START || moveID == GROUNDTECH_END);
+    bool isSuperflash = (moveID == GROUND_IC_ID || moveID == AIR_IC_ID);
 
     bool prohibited = (IsAttackMove(moveID) || 
                        IsBlockstunState(moveID) || 
                        IsHitstun(moveID) || 
                        IsLaunched(moveID) ||
+                       IsThrown(moveID) ||
                        IsAirtech(moveID) || 
                        IsGroundtech(moveID) ||
                        IsFrozen(moveID) ||
                        IsRecoilGuard(moveID) ||
+                       isDash || isGroundTechSeq || isSuperflash ||
                        moveID == STAND_GUARD_ID || 
                        moveID == CROUCH_GUARD_ID || 
                        moveID == AIR_GUARD_ID);
@@ -784,6 +935,9 @@ bool IsActionable(short moveID) {
     }
     return result;
 }
+
+// Note: Wakeup triggers use IsActionable directly; CROUCH_TO_STAND_ID (7) is considered
+// actionable so wake actions can fire ASAP when state 96 ends.
 
 bool IsBlockstun(short moveID) {
     std::locale::global(std::locale("C")); 
@@ -1021,7 +1175,8 @@ void ShowHotkeyInfo() {
         if (!ImGuiImpl::IsVisible()) {
             ImGuiImpl::ToggleVisibility();
         }
-        ImGuiGui::guiState.requestedTab = 2; // Request the Help tab
+        // Use logical index 4 for Help; map to actual via helper
+        ImGuiGui::RequestTopTabAbsolute(4);
         LogOut("[GUI] Opening ImGui to Help tab", true);
     } else {
         // Fallback for legacy dialog

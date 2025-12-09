@@ -10,6 +10,11 @@ struct TriggerDelayState {
     int delayFramesRemaining;
     int triggerType;
     short pendingMoveID;
+    // Chosen per-execution overrides (used when a per-trigger option row was selected)
+    int  chosenAction;     // ACTION_* or -1 if not set
+    int  chosenStrength;   // 0..2 or -1 if not set
+    int  chosenMacroSlot;  // 0=None or slot index
+    int  chosenCustomId;   // optional, default -1
 };
 
 // Global variables
@@ -54,9 +59,18 @@ extern std::atomic<int>  autoActionPlayer;
 
 // ADD these externs for control-restore globals defined in auto_action.cpp
 extern std::atomic<bool>  g_pendingControlRestore;
-extern std::atomic<int>   g_controlRestoreTimeout;
 extern std::atomic<short> g_lastP2MoveID;
 
 // Control restore / cleanup helpers
 void ProcessAutoControlRestore();
 void ClearAllAutoActionTriggers();
+
+// Tick-integrated execution
+// When enabled, auto-actions are evaluated once per internal engine tick from the input hook
+// (right before the engine consumes inputs for that tick). The frame monitor will skip
+// running its copy to avoid double-processing.
+extern std::atomic<bool> g_tickIntegratedAutoActions;
+
+// Lightweight tick entry called from the input hook (once per sub-tick, before P1 processing).
+// It executes only the auto-action path using provided move IDs to avoid extra memory reads.
+void AutoActionsTick_Inline(short moveID1, short moveID2);

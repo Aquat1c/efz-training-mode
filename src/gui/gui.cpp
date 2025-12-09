@@ -5,8 +5,8 @@
 
 #include "../include/core/logger.h"
 #include "../include/utils/config.h"
-#include "../include/gui/imgui_impl.h"  // Add this include
-#include "../include/game/character_settings.h" // Add this include for ImGui dialog
+#include "../include/gui/imgui_impl.h"  
+#include "../include/game/character_settings.h"  for ImGui dialog
 #include <windows.h>
 #include <string>
 #include <thread>
@@ -58,7 +58,7 @@ void OpenMenu() {
             uintptr_t xAddr1 = ResolvePointer(base, EFZ_BASE_OFFSET_P1, XPOS_OFFSET);
             uintptr_t yAddr1 = ResolvePointer(base, EFZ_BASE_OFFSET_P1, YPOS_OFFSET);
             
-            if (hpAddr1) memcpy(&displayData.hp1, (void*)hpAddr1, sizeof(WORD));
+            if (hpAddr1) memcpy(&displayData.hp1, (void*)hpAddr1, sizeof(int));
             if (meterAddr1) memcpy(&displayData.meter1, (void*)meterAddr1, sizeof(WORD));
             if (rfAddr1) memcpy(&displayData.rf1, (void*)rfAddr1, sizeof(double));
             if (xAddr1) memcpy(&displayData.x1, (void*)xAddr1, sizeof(double));
@@ -70,7 +70,7 @@ void OpenMenu() {
             uintptr_t xAddr2 = ResolvePointer(base, EFZ_BASE_OFFSET_P2, XPOS_OFFSET);
             uintptr_t yAddr2 = ResolvePointer(base, EFZ_BASE_OFFSET_P2, YPOS_OFFSET);
             
-            if (hpAddr2) memcpy(&displayData.hp2, (void*)hpAddr2, sizeof(WORD));
+            if (hpAddr2) memcpy(&displayData.hp2, (void*)hpAddr2, sizeof(int));
             if (meterAddr2) memcpy(&displayData.meter2, (void*)meterAddr2, sizeof(WORD));
             if (rfAddr2) memcpy(&displayData.rf2, (void*)rfAddr2, sizeof(double));
             if (xAddr2) memcpy(&displayData.x2, (void*)xAddr2, sizeof(double));
@@ -182,16 +182,28 @@ void ApplySettings(DisplayData* data) {
         // Update the client memory
         uintptr_t base = GetEFZBase();
         if (base) {
-            // Update everything EXCEPT RF values
-            UpdatePlayerValuesExceptRF(base, EFZ_BASE_OFFSET_P1, EFZ_BASE_OFFSET_P2);
+            // Re-check engine regen status: when F4 recovery is active, skip manual value pushes
+            uint16_t pA=0, pB=0; EngineRegenMode regenMode = EngineRegenMode::Unknown;
+            bool got = GetEngineRegenStatus(regenMode, pA, pB);
+            bool f4ActiveNow = got && (pB == 9999);
+            if (!f4ActiveNow) {
+                // Update everything EXCEPT RF values
+                UpdatePlayerValuesExceptRF(base, EFZ_BASE_OFFSET_P1, EFZ_BASE_OFFSET_P2);
+            } else {
+                // F4 RF Recovery active: still apply X/Y positions, skip HP/Meter to avoid fighting engine
+                SetPlayerPosition(base, EFZ_BASE_OFFSET_P1, (double)displayData.x1, (double)displayData.y1);
+                SetPlayerPosition(base, EFZ_BASE_OFFSET_P2, (double)displayData.x2, (double)displayData.y2);
+            }
             
             // Add this line to apply character-specific values
             CharacterSettings::ApplyCharacterValues(base, *data);
             
-            // Handle RF values separately using the robust method
-            if (!SetRFValuesDirect(data->rf1, data->rf2)) {
-                LogOut("[GUI] Failed to set RF values directly, starting freeze thread", true);
-                StartRFFreeze(data->rf1, data->rf2);
+            // Handle RF values separately using the robust method, but not while F4 recovery is active
+            if (!f4ActiveNow) {
+                if (!SetRFValuesDirect(data->rf1, data->rf2)) {
+                    LogOut("[GUI] Failed to set RF values directly, starting freeze thread", true);
+                    StartRFFreeze(data->rf1, data->rf2);
+                }
             }
         }
 

@@ -1,6 +1,5 @@
-#include "../include/utils/utilities.h"
-
 #include "../include/gui/imgui_impl.h"
+#include "../include/utils/xinput_shim.h"
 #include "../include/core/logger.h"
 #include "../include/gui/imgui_gui.h"
 #include "../include/game/practice_hotkey_gate.h"
@@ -14,8 +13,12 @@ namespace PracticeOverlayGate { void SetMenuVisible(bool); }
 #include "../include/utils/config.h"
 // Math helpers
 #include <cmath>
+// Throttle timers
+#include <chrono>
+// Hotkey cooldown
+#include "../include/input/input_handler.h"
 
-#pragma comment(lib, "xinput9_1_0.lib")
+// XInput linked dynamically via XInputShim for Wine compatibility
 
 // Global reference to shutdown flag - MOVED OUTSIDE namespace
 extern std::atomic<bool> g_isShuttingDown;
@@ -24,6 +27,9 @@ extern std::atomic<bool> g_isShuttingDown;
 static bool g_imguiInitialized = false;
 // Made non-static to satisfy legacy external references during LTCG; accessor functions should be preferred.
 bool g_imguiVisible = false;
+namespace CharacterSettings {
+    std::atomic<bool> g_guiVisible{false};
+}
 static IDirect3DDevice9* g_d3dDevice = nullptr;
 static WNDPROC g_originalWndProc = nullptr;
 
@@ -34,6 +40,8 @@ static ImVec2 g_overlayCenter = ImVec2(0.0f, 0.0f);
 static bool g_requestOverlayFocus = false;
 static bool g_lastLeftDown = false;
 static bool g_lastRightDown = false;
+// Flag to request virtual cursor activation state reset on next update (e.g. menu just opened in fullscreen)
+static bool g_resetVirtualCursorOnOpen = false;
 
 // Track applied font scale to rebuild atlas only when needed
 static float g_lastFontScaleApplied = 0.0f; // 0 = uninitialized
@@ -68,9 +76,37 @@ static void UpdateVirtualCursor(ImGuiIO& io) {
     const auto& cfg = Config::GetSettings();
     HWND hwnd = FindEFZWindow();
     bool fullscreen = hwnd && IsFullscreen(hwnd);
-    const bool allowCursor = cfg.enableVirtualCursor && g_imguiVisible && hwnd && (fullscreen || cfg.virtualCursorAllowWindowed);
+    
+    // Track physical mouse movement to enable cursor only when mouse is actually used
+    static ImVec2 s_lastMousePos = ImVec2(-1.0f, -1.0f);
+    static bool s_mouseHasMoved = false;
+    
+    // Check for real mouse movement (only in fullscreen)
+    if (fullscreen && hwnd) {
+        POINT pt;
+        if (GetCursorPos(&pt) && ScreenToClient(hwnd, &pt)) {
+            ImVec2 currentPos((float)pt.x, (float)pt.y);
+            if (s_lastMousePos.x >= 0.0f && s_lastMousePos.y >= 0.0f) {
+                float dx = currentPos.x - s_lastMousePos.x;
+                float dy = currentPos.y - s_lastMousePos.y;
+                float distSq = dx * dx + dy * dy;
+                if (distSq > 4.0f) { // 2px threshold
+                    s_mouseHasMoved = true;
+                }
+            }
+            s_lastMousePos = currentPos;
+        }
+    }
+    
+    // Only allow virtual cursor in fullscreen when mouse has actually moved
+    const bool allowCursor = cfg.enableVirtualCursor && g_imguiVisible && hwnd && fullscreen && s_mouseHasMoved;
     bool wasActive = g_useVirtualCursor;
     g_useVirtualCursor = allowCursor;
+    
+    // Reset mouse moved flag when menu closes
+    if (!g_imguiVisible) {
+        s_mouseHasMoved = false;
+    }
 
     // Track focus transitions to allow recenter on refocus
     static bool s_lastWindowFocused = false;
@@ -158,11 +194,13 @@ static void UpdateVirtualCursor(ImGuiIO& io) {
         s_lastMiddleDown = middleDown;
     }
 
-    // Poll all controllers and aggregate for ImGui nav; keep selected/last-active for virtual cursor
+    // Ensure XInput snapshot is fresh for this frame
+    XInputShim::RefreshSnapshotOncePerFrame();
+    // Poll from cached snapshot to avoid redundant syscalls
     auto pollController = [](int index, XINPUT_STATE& out) -> bool {
-        ZeroMemory(&out, sizeof(out));
-        DWORD r = XInputGetState(index, &out);
-        return (r == ERROR_SUCCESS);
+        const XINPUT_STATE* s = XInputShim::GetCachedState(index);
+        if (!s) { ZeroMemory(&out, sizeof(out)); return false; }
+        out = *s; return true;
     };
 
     static int s_lastActivePad = 0; // remember last pad that produced any input
@@ -179,7 +217,7 @@ static void UpdateVirtualCursor(ImGuiIO& io) {
     // Update last active pad based on any activity this frame when using All mode
     const int cfgIndex = cfg.controllerIndex;
     if (cfgIndex < 0 || cfgIndex > 3) {
-        const int dzL = XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE;
+    const int dzL = XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE;
         for (int i = 0; i < 4; ++i) if (connected[i]) {
             const auto& gp = states[i].Gamepad;
             bool anyBtn = gp.wButtons != 0;
@@ -303,21 +341,11 @@ static void UpdateVirtualCursor(ImGuiIO& io) {
         io.AddKeyAnalogEvent(ImGuiKey_GamepadR2,          false, 0.f);
     }
 
-    // Keyboard fallback: mirror aggregated nav into arrow/enter/escape keys
-    // This helps when ImGui ignores gamepad events due to backend quirks.
-    {
-        bool navLeft  = kDpadL || (aLLeft  > 0.45f);
-        bool navRight = kDpadR || (aLRight > 0.45f);
-        bool navUp    = kDpadU || (aLUp    > 0.45f);
-        bool navDown  = kDpadD || (aLDown  > 0.45f);
-        io.AddKeyEvent(ImGuiKey_LeftArrow,  navLeft);
-        io.AddKeyEvent(ImGuiKey_RightArrow, navRight);
-        io.AddKeyEvent(ImGuiKey_UpArrow,    navUp);
-        io.AddKeyEvent(ImGuiKey_DownArrow,  navDown);
-        // Accept/Back
-        io.AddKeyEvent(ImGuiKey_Enter,  kFaceDown);
-        io.AddKeyEvent(ImGuiKey_Escape, kFaceRight || kBack);
-    }
+    // Keyboard fallback (TEMP DISABLED for arrow keys due to assertions):
+    // We only mirror Accept/Cancel to Enter/Escape. Real arrow key input will come from Win32 backend.
+    // If needed later, re-enable arrow mapping after root cause is identified.
+    io.AddKeyEvent(ImGuiKey_Enter,  kFaceDown);
+    io.AddKeyEvent(ImGuiKey_Escape, kFaceRight || kBack);
 
     // (burst debug logging removed)
 
@@ -330,7 +358,7 @@ static void UpdateVirtualCursor(ImGuiIO& io) {
     }
 
     if (selPad >= 0 && selPad <= 3 && connected[selPad]) {
-        const auto& selGp = states[selPad].Gamepad;
+    const auto& selGp = states[selPad].Gamepad;
         bool lThumbDown = (selGp.wButtons & XINPUT_GAMEPAD_LEFT_THUMB) != 0;
         bool lThumbPressed = lThumbDown && !s_lastLThumbDown && focusedNow && g_imguiVisible;
         if (lThumbPressed) {
@@ -343,59 +371,68 @@ static void UpdateVirtualCursor(ImGuiIO& io) {
         }
         s_lastLThumbDown = lThumbDown;
 
-        // Analog stick movement for virtual cursor only from selected pad
-        auto applyDeadzone = [](SHORT v, SHORT dz) -> float {
-            int iv = (int)v;
-            if (iv > dz) iv -= dz; else if (iv < -dz) iv += dz; else iv = 0;
-            float n = (float)iv / (32767.0f - dz);
-            if (n > 1.f) n = 1.f; if (n < -1.f) n = -1.f;
-            return n;
-        };
-
-        float nx = applyDeadzone(selGp.sThumbLX, XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE);
-        float ny = applyDeadzone(selGp.sThumbLY, XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE);
-
-        // Apply acceleration/response curve (exponent >1 softens near center for precision)
-        if (cfg.virtualCursorAccelPower != 1.0f) {
-            auto curve = [&](float v) {
-                float sign = (v >= 0.f) ? 1.f : -1.f;
-                float mag = fabsf(v);
-                mag = powf(mag, cfg.virtualCursorAccelPower);
-                return sign * mag;
+        // UI tab/sub-tab controller bindings (edge-detected)
+        {
+            const auto& cfg2 = Config::GetSettings();
+            auto isBindingDown = [&](int mask)->bool {
+                if (mask < 0) return false;
+                if (mask == 0x10000) return selGp.bLeftTrigger > 30;  // LT threshold
+                if (mask == 0x20000) return selGp.bRightTrigger > 30; // RT threshold
+                return (selGp.wButtons & (WORD)mask) != 0;
             };
-            nx = curve(nx);
-            ny = curve(ny);
+            static bool s_lastTopPrev=false, s_lastTopNext=false, s_lastSubPrev=false, s_lastSubNext=false;
+            bool nowTopPrev = isBindingDown(cfg2.gpUiTopTabPrev);
+            bool nowTopNext = isBindingDown(cfg2.gpUiTopTabNext);
+            bool nowSubPrev = isBindingDown(cfg2.gpUiSubTabPrev);
+            bool nowSubNext = isBindingDown(cfg2.gpUiSubTabNext);
+            bool pressTopPrev = nowTopPrev && !s_lastTopPrev;
+            bool pressTopNext = nowTopNext && !s_lastTopNext;
+            bool pressSubPrev = nowSubPrev && !s_lastSubPrev;
+            bool pressSubNext = nowSubNext && !s_lastSubNext;
+            if (g_imguiVisible) {
+                if (pressTopPrev) ImGuiGui::RequestTopTabCycle(-1);
+                if (pressTopNext) ImGuiGui::RequestTopTabCycle(+1);
+                if (pressSubPrev) ImGuiGui::RequestActiveSubTabCycle(-1);
+                if (pressSubNext) ImGuiGui::RequestActiveSubTabCycle(+1);
+            }
+            s_lastTopPrev = nowTopPrev;
+            s_lastTopNext = nowTopNext;
+            s_lastSubPrev = nowSubPrev;
+            s_lastSubNext = nowSubNext;
         }
 
-        // DPAD provides discrete nudge
-        float dpadX = 0.f, dpadY = 0.f;
-        if (selGp.wButtons & XINPUT_GAMEPAD_DPAD_RIGHT) dpadX += 1.f;
-        if (selGp.wButtons & XINPUT_GAMEPAD_DPAD_LEFT)  dpadX -= 1.f;
-        if (selGp.wButtons & XINPUT_GAMEPAD_DPAD_UP)    dpadY -= 1.f;
-        if (selGp.wButtons & XINPUT_GAMEPAD_DPAD_DOWN)  dpadY += 1.f;
+        // Virtual cursor is now mouse-only - gamepad controls are disabled
+        // Analog stick and dpad input still used for ImGui navigation, but not for cursor movement
 
         float dt = io.DeltaTime > 0.f ? io.DeltaTime : (1.f/60.f);
-        const bool fast = (selGp.wButtons & XINPUT_GAMEPAD_LEFT_SHOULDER) != 0;
-        float baseSpeed = fast ? cfg.virtualCursorFastSpeed : cfg.virtualCursorBaseSpeed;  // pixels per second
-        float dpadSpeed = cfg.virtualCursorDpadSpeed;
-        if (baseSpeed < 50.f) baseSpeed = 50.f; if (baseSpeed > 8000.f) baseSpeed = 8000.f;
-        if (dpadSpeed < 10.f) dpadSpeed = 10.f; if (dpadSpeed > 4000.f) dpadSpeed = 4000.f;
 
-        if (g_useVirtualCursor) {
-            g_virtualCursorPos.x += (nx * baseSpeed + dpadX * dpadSpeed) * dt;
-            g_virtualCursorPos.y += (-ny * baseSpeed + dpadY * dpadSpeed) * dt; // note: Y is inverted
+        // No gamepad cursor movement - virtual cursor only responds to physical mouse
+        // The cursor position is updated from OS mouse movement when enabled
 
-            // Clamp within client region size
-            g_virtualCursorPos.x = ClampF(g_virtualCursorPos.x, 0.0f, clientW - 1.0f);
-            g_virtualCursorPos.y = ClampF(g_virtualCursorPos.y, 0.0f, clientH - 1.0f);
-
-            // Buttons -> mouse clicks from selected pad
-            bool leftDown = (selGp.wButtons & XINPUT_GAMEPAD_A) != 0;
-            bool rightDown = (selGp.wButtons & XINPUT_GAMEPAD_B) != 0;
-            io.AddMouseButtonEvent(0, leftDown);
-            io.AddMouseButtonEvent(1, rightDown);
-            g_lastLeftDown = leftDown;
-            g_lastRightDown = rightDown;
+        // Right-stick -> mouse wheel (scroll) for GUI navigation
+        if (Config::GetSettings().guiScrollRightStickEnable) {
+            auto applyDeadzone = [](SHORT v, SHORT dz) -> float {
+                int iv = (int)v;
+                if (iv > dz) iv -= dz; else if (iv < -dz) iv += dz; else iv = 0;
+                float n = (float)iv / (32767.0f - dz);
+                if (n > 1.f) n = 1.f; if (n < -1.f) n = -1.f;
+                return n;
+            };
+            
+            float rx = applyDeadzone(selGp.sThumbRX, XINPUT_GAMEPAD_RIGHT_THUMB_DEADZONE);
+            float ry = applyDeadzone(selGp.sThumbRY, XINPUT_GAMEPAD_RIGHT_THUMB_DEADZONE);
+            // Small deadzone to avoid noise
+            const float dz = 0.15f;
+            if (fabsf(rx) < dz) rx = 0.0f;
+            if (fabsf(ry) < dz) ry = 0.0f;
+            if (rx != 0.0f || ry != 0.0f) {
+                float scale = Config::GetSettings().guiScrollRightStickScale;
+                // Negative ry scrolls down (ImGui expects positive up), invert to match UI expectations
+                float wheelX = rx * scale * dt;      // horizontal wheel
+                float wheelY = -ry * scale * dt;     // vertical wheel
+                // Use event API to report wheel motion (both axes)
+                io.AddMouseWheelEvent(wheelX, wheelY);
+            }
         }
     } else {
         // release L3 edge tracker if nothing connected
@@ -403,6 +440,19 @@ static void UpdateVirtualCursor(ImGuiIO& io) {
     }
 
     // (per-second pads mask diagnostics removed)
+
+    // Update virtual cursor position from OS mouse when enabled
+    if (g_useVirtualCursor && hwnd) {
+        POINT pt;
+        if (GetCursorPos(&pt) && ScreenToClient(hwnd, &pt)) {
+            g_virtualCursorPos.x = (float)pt.x;
+            g_virtualCursorPos.y = (float)pt.y;
+            
+            // Clamp within client region size
+            g_virtualCursorPos.x = ClampF(g_virtualCursorPos.x, 0.0f, clientW - 1.0f);
+            g_virtualCursorPos.y = ClampF(g_virtualCursorPos.y, 0.0f, clientH - 1.0f);
+        }
+    }
 
     // Draw ImGui software cursor only when enabled
     if (g_useVirtualCursor) {
@@ -468,46 +518,44 @@ namespace ImGuiImpl {
         return 1.0f;
     }
 
-    // Rebuild font atlas for crisp text at a given UI scale. Safe to call multiple times.
+    // Rebuild font atlas for crisp text at a given UI scale. Throttled to avoid per-frame rebuilds.
     static void UpdateFontAtlasForScale(float uiScale)
     {
         if (!ImGui::GetCurrentContext()) return;
         ImGuiIO& io = ImGui::GetIO();
 
-        // Check desired font mode from config
+        // Throttle: only allow rebuild at most every 1000ms even if tiny scale oscillations occur.
+        static auto s_lastAttempt = std::chrono::steady_clock::time_point{};
+        auto now = std::chrono::steady_clock::now();
+        bool timeOk = (s_lastAttempt.time_since_epoch().count() == 0) || (now - s_lastAttempt >= std::chrono::milliseconds(1000));
+
         const int fontMode = Config::GetSettings().uiFontMode; // 0=Default, 1=Segoe UI
-
-        // Get DPI scale factor
         float dpiScale = GetDpiScale();
-
-        // Clamp and round to nearest hundredth to avoid thrashing on tiny changes
-        float s = uiScale * dpiScale; // Combine UI scale with DPI scale
+        float s = uiScale * dpiScale; // Combine UI + DPI
         if (s < 0.70f) s = 0.70f; else if (s > 2.50f) s = 2.50f;
-        float sRounded = floorf(s * 100.0f + 0.5f) / 100.0f;
+        float sRounded = floorf(s * 100.0f + 0.5f) / 100.0f; // nearest hundredth
+
         const bool scaleChanged = !(fabsf(sRounded - g_lastFontScaleApplied) < 0.01f);
         const bool fontChanged  = (fontMode != g_lastFontModeApplied);
-        if (!scaleChanged && !fontChanged) return;
+        if (!scaleChanged && !fontChanged) return; // nothing meaningful changed
+        if (!timeOk && scaleChanged && !fontChanged) return; // oscillating minor scale; wait
 
-    // Rebuild fonts at scaled pixel size for sharp rendering
-    // Start from ImGui's default base of ~13 px
-    const float basePx = 13.0f;
-    const float targetPx = roundf(basePx * sRounded);
+        s_lastAttempt = now;
 
-        // Invalidate DX9 objects before changing fonts
+        const float basePx = 13.0f;
+        const float targetPx = roundf(basePx * sRounded);
+
         ImGui_ImplDX9_InvalidateDeviceObjects();
-
         io.Fonts->Clear();
-        // Keep atlas flags consistent for DX9
-    io.Fonts->Flags |= ImFontAtlasFlags_NoPowerOfTwoHeight;
-    io.Fonts->TexGlyphPadding = 1;
+        io.Fonts->Flags |= ImFontAtlasFlags_NoPowerOfTwoHeight;
+        io.Fonts->TexGlyphPadding = 1;
 
-    ImFontConfig cfg;
-        cfg.OversampleH = 3; // Higher oversampling for smoother edges at high DPI
+        ImFontConfig cfg;
+        cfg.OversampleH = 3;
         cfg.OversampleV = 3;
-        cfg.PixelSnapH = false; // Allow subpixel positioning for smoother text
-        cfg.SizePixels = targetPx; // set explicit pixel size for crisp text
+        cfg.PixelSnapH = false;
+        cfg.SizePixels = targetPx;
 
-        // Choose font per config: 0=ImGui default, 1=Segoe UI (if available)
         ImFont* defaultFont = nullptr;
         if (fontMode == 1) {
             const char* segoePath = "C:\\Windows\\Fonts\\segoeui.ttf";
@@ -517,22 +565,19 @@ namespace ImGuiImpl {
             }
         }
         if (!defaultFont) {
-            // Default path: ImGui built-in font
             defaultFont = io.Fonts->AddFontDefault(&cfg);
         }
-    io.FontDefault = defaultFont;
+        io.FontDefault = defaultFont;
 
-        // Recreate device objects with the new atlas
         if (!ImGui_ImplDX9_CreateDeviceObjects()) {
-            // If recreation fails, keep previous state and avoid updating the applied marker
             LogOut("[IMGUI] Warning: Failed to recreate DX9 device objects after font rebuild.", true);
             return;
         }
 
-    g_lastFontScaleApplied = sRounded;
-    g_lastFontModeApplied  = fontMode;
-    LogOut((std::string("[IMGUI] Rebuilt font atlas: scale=") + std::to_string(sRounded) +
-        ", px=" + std::to_string((int)targetPx) + ", font=" + (fontMode==0?"Default":"Segoe UI")).c_str(), true);
+        g_lastFontScaleApplied = sRounded;
+        g_lastFontModeApplied  = fontMode;
+        LogOut((std::string("[IMGUI] Rebuilt font atlas: scale=") + std::to_string(sRounded) +
+            ", px=" + std::to_string((int)targetPx) + ", font=" + (fontMode==0?"Default":"Segoe UI")).c_str(), true);
     }
     bool Initialize(IDirect3DDevice9* device) {
         if (g_imguiInitialized)
@@ -558,6 +603,13 @@ namespace ImGuiImpl {
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
     // Re-enable gamepad navigation for ImGui
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
+
+    // Apply configurable nav repeat timings
+    {
+        const auto& cfg = Config::GetSettings();
+        io.KeyRepeatDelay = ClampF(cfg.guiNavRepeatDelay, 0.05f, 1.0f);
+        io.KeyRepeatRate  = ClampF(cfg.guiNavRepeatRate,  0.01f, 0.50f);
+    }
 
     // Make font atlas slightly cheaper to render (DX9)
     io.Fonts->Flags |= ImFontAtlasFlags_NoPowerOfTwoHeight; // avoid unnecessary atlas stretch
@@ -646,15 +698,18 @@ namespace ImGuiImpl {
     
     void ToggleVisibility() {
         g_imguiVisible = !g_imguiVisible;
+        CharacterSettings::g_guiVisible.store(g_imguiVisible, std::memory_order_relaxed);
         
         if (g_imguiVisible) {
             LogOut("[IMGUI] ImGui interface opened - will render continuously until closed", true);
+            // Ensure virtual cursor (dot) starts hidden until fresh physical mouse movement while menu is open
+            g_resetVirtualCursorOnOpen = true;
             // Log nav flags on open
             if (ImGui::GetCurrentContext()) {
                 ImGuiIO& io = ImGui::GetIO();
-                // Also take an immediate XInput snapshot
-                unsigned mask = 0; XINPUT_STATE s; ZeroMemory(&s, sizeof(s));
-                for (int i = 0; i < 4; ++i) { if (XInputGetState(i, &s) == ERROR_SUCCESS) mask |= (1u << i); }
+                // Use cached XInput snapshot
+                XInputShim::RefreshSnapshotOncePerFrame();
+                unsigned mask = XInputShim::GetConnectedMaskCached();
                 char buf[256];
                 // Force-enable nav flags on open for reliability
                 io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
@@ -683,12 +738,16 @@ namespace ImGuiImpl {
             // BUGFIX: Reset the global menuOpen flag when ImGui is closed
             // Use global namespace resolution operator (::) to access the global variable
             ::menuOpen.store(false);
+            
+            // Start hotkey cooldown to prevent accidental activation
+            StartHotkeyCooldown();
         }
 
         // Practice Pause integration: mirror EfzRevival pause when menu visible
     PauseIntegration::OnMenuVisibilityChanged(g_imguiVisible);
     PracticeHotkeyGate::NotifyMenuVisibility(g_imguiVisible);
     PracticeOverlayGate::SetMenuVisible(g_imguiVisible);
+    CharacterSettings::g_guiVisible.store(g_imguiVisible, std::memory_order_relaxed);
         
         // Ensure the visibility state persists by setting it in a global
         static bool stateLogged = false;
@@ -721,7 +780,74 @@ namespace ImGuiImpl {
     void PreNewFrameInputs() {
         if (!g_imguiInitialized || g_isShuttingDown.load()) return;
         if (!ImGui::GetCurrentContext()) return;
-        // Defer virtual cursor and input aggregation to RenderFrame after backend NewFrame
+
+        // Align ImGui IO to the game's fixed 640x480 render target and remap mouse to RT space
+        // This fixes mouse misalignment when the window client area is larger than 640x480.
+        ImGuiIO& io = ImGui::GetIO();
+
+        // Base game backbuffer size
+        const float baseW = 640.0f;
+        const float baseH = 480.0f;
+
+        // Always force ImGui to render against the backbuffer size (not the window size)
+        io.DisplaySize = ImVec2(baseW, baseH);
+        io.DisplayFramebufferScale = ImVec2(1.0f, 1.0f);
+
+        // Remap OS mouse to backbuffer coordinates (letterbox/pillarbox aware, DPI-robust)
+        HWND hwnd = FindEFZWindow();
+        if (hwnd) {
+            RECT rcClient{};
+            if (GetClientRect(hwnd, &rcClient)) {
+                // Convert client rect to screen space to obtain physical pixel size under DPI scaling
+                POINT tl{rcClient.left, rcClient.top};
+                POINT br{rcClient.right, rcClient.bottom};
+                ClientToScreen(hwnd, &tl);
+                ClientToScreen(hwnd, &br);
+                const float cw_px = float(br.x - tl.x);
+                const float ch_px = float(br.y - tl.y);
+                if (cw_px > 0.0f && ch_px > 0.0f) {
+                    // Compute scaling from 640x480 to current client; allow anisotropic fill if aspect deviates
+                    const float sx = cw_px / baseW;
+                    const float sy = ch_px / baseH;
+                    const float aspectClient = cw_px / ch_px;
+                    const float aspectBase = baseW / baseH; // 4:3
+                    const float aspectDelta = fabsf(aspectClient - aspectBase) / aspectBase;
+                    const bool useUniformLetterbox = (aspectDelta < 0.02f); // within ~2% of 4:3 -> assume letterbox/pillarbox
+                    const float scale = (sx < sy) ? sx : sy;
+                    const float gw = baseW * scale;
+                    const float gh = baseH * scale;
+                    const float ox = (cw_px - gw) * 0.5f;
+                    const float oy = (ch_px - gh) * 0.5f;
+
+                    // Current cursor in screen space (physical pixels)
+                    POINT pt{};
+                    if (GetCursorPos(&pt)) {
+                        // Convert to client-relative physical pixels
+                        const float cx = float(pt.x - tl.x);
+                        const float cy = float(pt.y - tl.y);
+                        float mx, my;
+                        if (useUniformLetterbox) {
+                            // Uniform scale with centered inner 4:3 region
+                            mx = (cx - ox) / (scale > 0.0f ? scale : 1.0f);
+                            my = (cy - oy) / (scale > 0.0f ? scale : 1.0f);
+                        } else {
+                            // Content is stretched to fill client non-uniformly (windowed mode). Map axis independently.
+                            mx = cx / (sx > 0.0f ? sx : 1.0f);
+                            my = cy / (sy > 0.0f ? sy : 1.0f);
+                        }
+                        // Clamp to RT bounds
+                        if (mx < 0.0f) mx = 0.0f; else if (mx > baseW - 1.0f) mx = baseW - 1.0f;
+                        if (my < 0.0f) my = 0.0f; else if (my > baseH - 1.0f) my = baseH - 1.0f;
+
+                        // Feed corrected mouse position to ImGui (after backend NewFrame)
+                        io.AddMousePosEvent(mx, my);
+                    }
+                }
+            }
+        }
+
+        // Note: Virtual cursor/gamepad aggregation happens later in UpdateVirtualCursor during
+        // the alternate RenderFrame path, and for the EndScene path we only need OS mouse remap here.
     }
 
     // (PostNewFrameDiagnostics removed)
@@ -745,11 +871,13 @@ namespace ImGuiImpl {
             // override OS mouse position provided by the backend, then before ImGui::NewFrame
             {
                 ImGuiIO& io = ImGui::GetIO();
+                // Keep nav repeat settings in sync with config per-frame
+                io.KeyRepeatDelay = ClampF(Config::GetSettings().guiNavRepeatDelay, 0.05f, 1.0f);
+                io.KeyRepeatRate  = ClampF(Config::GetSettings().guiNavRepeatRate,  0.01f, 0.50f);
                 UpdateVirtualCursor(io);
             }
             ImGui::NewFrame();
-            // Post-NewFrame diagnostics: verify ImGui processed our gamepad events (throttled)
-            PostNewFrameDiagnostics();
+            // (PostNewFrameDiagnostics removed to reduce per-frame overhead)
             // Skip rendering if minimized to avoid style asserts (DisplaySize == 0)
             ImGuiIO& io = ImGui::GetIO();
             if (io.DisplaySize.x <= 0.0f || io.DisplaySize.y <= 0.0f) {

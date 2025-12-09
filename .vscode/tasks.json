@@ -943,6 +943,746 @@
 			],
 			"isBackground": false,
 			"group": "build"
+		},
+		{
+			"label": "build-dll",
+			"type": "shell",
+			"command": "pwsh",
+			"args": [
+				"-ExecutionPolicy",
+				"Bypass",
+				"-File",
+				"c:\\Users\\Aquatic\\source\\repos\\efz_training\\efz-training-mode\\.vscode\\build-script.ps1"
+			],
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "build-dll",
+			"type": "shell",
+			"command": "pwsh",
+			"args": [
+				"-ExecutionPolicy",
+				"Bypass",
+				"-File",
+				"c:\\Users\\Aquatic\\source\\repos\\efz_training\\efz-training-mode\\.vscode\\build-script.ps1"
+			],
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "build-dll",
+			"type": "shell",
+			"command": "pwsh",
+			"args": [
+				"-ExecutionPolicy",
+				"Bypass",
+				"-File",
+				"${workspaceFolder}\\.vscode\\build-script.ps1"
+			],
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "build-dll",
+			"type": "shell",
+			"command": "pwsh",
+			"args": [
+				"-ExecutionPolicy",
+				"Bypass",
+				"-File",
+				"${workspaceFolder}\\.vscode\\build-script.ps1"
+			],
+			"group": "build"
+		},
+		{
+			"label": "build-dll",
+			"type": "shell",
+			"command": "pwsh",
+			"args": [
+				"-ExecutionPolicy",
+				"Bypass",
+				"-File",
+				"${workspaceFolder}\\.vscode\\build-script.ps1"
+			],
+			"group": "build"
+		},
+		{
+			"label": "build-dll",
+			"type": "shell",
+			"command": "pwsh",
+			"args": [
+				"-ExecutionPolicy",
+				"Bypass",
+				"-File",
+				"C:\\Users\\Aquatic\\source\\repos\\efz_training\\efz-training-mode\\.vscode\\build-script.ps1"
+			],
+			"isBackground": false,
+			"problemMatcher": [
+				"$msCompile"
+			],
+			"group": "build"
+		},
+		{
+			"label": "build-dll",
+			"type": "shell",
+			"command": "pwsh",
+			"args": [
+				"-ExecutionPolicy",
+				"Bypass",
+				"-File",
+				"c:\\Users\\Aquatic\\source\\repos\\efz_training\\efz-training-mode\\.vscode\\build-script.ps1"
+			],
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "build-dll",
+			"type": "shell",
+			"command": "pwsh",
+			"args": [
+				"-ExecutionPolicy",
+				"Bypass",
+				"-File",
+				"c:\\Users\\Aquatic\\source\\repos\\efz_training\\efz-training-mode\\.vscode\\build-script.ps1"
+			],
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "build-dll",
+			"type": "shell",
+			"command": "pwsh",
+			"args": [
+				"-ExecutionPolicy",
+				"Bypass",
+				"-File",
+				"c:\\Users\\Aquatic\\source\\repos\\efz_training\\efz-training-mode\\.vscode\\build-script.ps1"
+			],
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "build-dll",
+			"type": "shell",
+			"command": "pwsh",
+			"args": [
+				"-ExecutionPolicy",
+				"Bypass",
+				"-File",
+				"c:\\Users\\Aquatic\\source\\repos\\efz_training\\efz-training-mode\\.vscode\\build-script.ps1"
+			],
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "build-dll",
+			"type": "shell",
+			"command": "pwsh",
+			"args": [
+				"-ExecutionPolicy",
+				"Bypass",
+				"-File",
+				"c:\\Users\\Aquatic\\source\\repos\\efz_training\\efz-training-mode\\.vscode\\build-script.ps1"
+			],
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "build-dll",
+			"type": "shell",
+			"command": "pwsh",
+			"args": [
+				"-ExecutionPolicy",
+				"Bypass",
+				"-File",
+				"c:\\Users\\Aquatic\\source\\repos\\efz_training\\efz-training-mode\\.vscode\\build-script.ps1"
+			],
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "build-dll",
+			"type": "shell",
+			"command": "pwsh",
+			"args": [
+				"-ExecutionPolicy",
+				"Bypass",
+				"-File",
+				"c:\\Users\\Aquatic\\source\\repos\\efz_training\\efz-training-mode\\.vscode\\build-script.ps1"
+			],
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "build-dll",
+			"type": "shell",
+			"command": "pwsh",
+			"args": [
+				"-ExecutionPolicy",
+				"Bypass",
+				"-File",
+				"c:\\Users\\Aquatic\\source\\repos\\efz_training\\efz-training-mode\\.vscode\\build-script.ps1"
+			],
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "build-dll",
+			"type": "shell",
+			"command": "pwsh",
+			"args": [
+				"-ExecutionPolicy",
+				"Bypass",
+				"-File",
+				"c:\\Users\\Aquatic\\source\\repos\\efz_training\\efz-training-mode\\.vscode\\build-script.ps1"
+			],
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "build-dll",
+			"type": "shell",
+			"command": "pwsh",
+			"args": [
+				"-ExecutionPolicy",
+				"Bypass",
+				"-File",
+				"c:\\Users\\Aquatic\\source\\repos\\efz_training\\efz-training-mode\\.vscode\\build-script.ps1"
+			],
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "build-dll",
+			"type": "shell",
+			"command": "pwsh",
+			"args": [
+				"-ExecutionPolicy",
+				"Bypass",
+				"-File",
+				"${workspaceFolder}\\.vscode\\build-script.ps1"
+			],
+			"isBackground": false,
+			"problemMatcher": [
+				"$msCompile"
+			],
+			"group": "build"
+		},
+		{
+			"label": "build-dll",
+			"type": "shell",
+			"command": "pwsh",
+			"args": [
+				"-ExecutionPolicy",
+				"Bypass",
+				"-File",
+				"${workspaceFolder}\\.vscode\\build-script.ps1"
+			],
+			"isBackground": false,
+			"problemMatcher": [
+				"$msCompile"
+			],
+			"group": "build"
+		},
+		{
+			"label": "build-dll",
+			"type": "shell",
+			"command": "pwsh",
+			"args": [
+				"-ExecutionPolicy",
+				"Bypass",
+				"-File",
+				"${workspaceFolder}\\.vscode\\build-script.ps1"
+			],
+			"isBackground": false,
+			"problemMatcher": [
+				"$msCompile"
+			],
+			"group": "build"
+		},
+		{
+			"label": "build-dll",
+			"type": "shell",
+			"command": "pwsh",
+			"args": [
+				"-ExecutionPolicy",
+				"Bypass",
+				"-File",
+				"c:\\Users\\Aquatic\\source\\repos\\efz_training\\efz-training-mode\\.vscode\\build-script.ps1"
+			],
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "build-dll",
+			"type": "shell",
+			"command": "pwsh",
+			"args": [
+				"-ExecutionPolicy",
+				"Bypass",
+				"-File",
+				"${workspaceFolder}\\.vscode\\build-script.ps1"
+			],
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "build-dll",
+			"type": "shell",
+			"command": "pwsh",
+			"args": [
+				"-ExecutionPolicy",
+				"Bypass",
+				"-File",
+				"${workspaceFolder}\\.vscode\\build-script.ps1"
+			],
+			"isBackground": false,
+			"problemMatcher": [
+				"$msCompile"
+			],
+			"group": "build"
+		},
+		{
+			"label": "build-dll",
+			"type": "shell",
+			"command": "pwsh",
+			"args": [
+				"-ExecutionPolicy",
+				"Bypass",
+				"-File",
+				"${workspaceFolder}\\.vscode\\build-script.ps1"
+			],
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "build-dll",
+			"type": "shell",
+			"command": "pwsh",
+			"args": [
+				"-ExecutionPolicy",
+				"Bypass",
+				"-File",
+				"${workspaceFolder}\\.vscode\\build-script.ps1"
+			],
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "build-dll",
+			"type": "shell",
+			"command": "pwsh",
+			"args": [
+				"-ExecutionPolicy",
+				"Bypass",
+				"-File",
+				"${workspaceFolder}\\.vscode\\build-script.ps1"
+			],
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "build-dll",
+			"type": "shell",
+			"command": "pwsh",
+			"args": [
+				"-ExecutionPolicy",
+				"Bypass",
+				"-File",
+				"c:\\Users\\Aquatic\\source\\repos\\efz_training\\efz-training-mode\\.vscode\\build-script.ps1"
+			],
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "build-dll",
+			"type": "shell",
+			"command": "pwsh",
+			"args": [
+				"-ExecutionPolicy",
+				"Bypass",
+				"-File",
+				"c:\\Users\\Aquatic\\source\\repos\\efz_training\\efz-training-mode\\.vscode\\build-script.ps1"
+			],
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "build-dll",
+			"type": "shell",
+			"command": "pwsh",
+			"args": [
+				"-ExecutionPolicy",
+				"Bypass",
+				"-File",
+				"c:\\Users\\Aquatic\\source\\repos\\efz_training\\efz-training-mode\\.vscode\\build-script.ps1"
+			],
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "build-dll",
+			"type": "shell",
+			"command": "pwsh",
+			"args": [
+				"-ExecutionPolicy",
+				"Bypass",
+				"-File",
+				"${workspaceFolder}\\.vscode\\build-script.ps1"
+			],
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "build-dll",
+			"type": "shell",
+			"command": "pwsh",
+			"args": [
+				"-ExecutionPolicy",
+				"Bypass",
+				"-File",
+				"${workspaceFolder}\\.vscode\\build-script.ps1"
+			],
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "build-dll",
+			"type": "shell",
+			"command": "pwsh",
+			"args": [
+				"-ExecutionPolicy",
+				"Bypass",
+				"-File",
+				"${workspaceFolder}\\.vscode\\build-script.ps1"
+			],
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "build-dll",
+			"type": "shell",
+			"command": "pwsh",
+			"args": [
+				"-ExecutionPolicy",
+				"Bypass",
+				"-File",
+				"${workspaceFolder}\\.vscode\\build-script.ps1"
+			],
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "build-dll",
+			"type": "shell",
+			"command": "pwsh",
+			"args": [
+				"-ExecutionPolicy",
+				"Bypass",
+				"-File",
+				"${workspaceFolder}\\.vscode\\build-script.ps1"
+			],
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "build-dll",
+			"type": "shell",
+			"command": "pwsh",
+			"args": [
+				"-ExecutionPolicy",
+				"Bypass",
+				"-File",
+				"${workspaceFolder}\\.vscode\\build-script.ps1"
+			],
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "build-dll",
+			"type": "shell",
+			"command": "pwsh",
+			"args": [
+				"-ExecutionPolicy",
+				"Bypass",
+				"-File",
+				"${workspaceFolder}\\.vscode\\build-script.ps1"
+			],
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "build-dll",
+			"type": "shell",
+			"command": "pwsh",
+			"args": [
+				"-ExecutionPolicy",
+				"Bypass",
+				"-File",
+				"${workspaceFolder}\\.vscode\\build-script.ps1"
+			],
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "build-dll",
+			"type": "shell",
+			"command": "pwsh",
+			"args": [
+				"-ExecutionPolicy",
+				"Bypass",
+				"-File",
+				"c:\\Users\\Aquatic\\source\\repos\\efz_training\\efz-training-mode\\.vscode\\build-script.ps1"
+			],
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "build-dll",
+			"type": "shell",
+			"command": "pwsh",
+			"args": [
+				"-ExecutionPolicy",
+				"Bypass",
+				"-File",
+				"c:\\Users\\Aquatic\\source\\repos\\efz_training\\efz-training-mode\\.vscode\\build-script.ps1"
+			],
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "build-dll",
+			"type": "shell",
+			"command": "pwsh",
+			"args": [
+				"-ExecutionPolicy",
+				"Bypass",
+				"-File",
+				"c:\\Users\\Aquatic\\source\\repos\\efz_training\\efz-training-mode\\.vscode\\build-script.ps1"
+			],
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "build-dll",
+			"type": "shell",
+			"command": "pwsh",
+			"args": [
+				"-ExecutionPolicy",
+				"Bypass",
+				"-File",
+				"c:\\Users\\Aquatic\\source\\repos\\efz_training\\efz-training-mode\\.vscode\\build-script.ps1"
+			],
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "build-dll",
+			"type": "shell",
+			"command": "pwsh",
+			"args": [
+				"-ExecutionPolicy",
+				"Bypass",
+				"-File",
+				"c:\\Users\\Aquatic\\source\\repos\\efz_training\\efz-training-mode\\.vscode\\build-script.ps1"
+			],
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "build-dll",
+			"type": "shell",
+			"command": "pwsh",
+			"args": [
+				"-ExecutionPolicy",
+				"Bypass",
+				"-File",
+				"c:\\Users\\Aquatic\\source\\repos\\efz_training\\efz-training-mode\\.vscode\\build-script.ps1"
+			],
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "build-dll",
+			"type": "shell",
+			"command": "pwsh",
+			"args": [
+				"-ExecutionPolicy",
+				"Bypass",
+				"-File",
+				"c:\\Users\\Aquatic\\source\\repos\\efz_training\\efz-training-mode\\.vscode\\build-script.ps1"
+			],
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "build-dll",
+			"type": "shell",
+			"command": "pwsh",
+			"args": [
+				"-ExecutionPolicy",
+				"Bypass",
+				"-File",
+				"c:\\Users\\Aquatic\\source\\repos\\efz_training\\efz-training-mode\\.vscode\\build-script.ps1"
+			],
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "build-dll",
+			"type": "shell",
+			"command": "pwsh",
+			"args": [
+				"-ExecutionPolicy",
+				"Bypass",
+				"-File",
+				"c:\\Users\\Aquatic\\source\\repos\\efz_training\\efz-training-mode\\.vscode\\build-script.ps1"
+			],
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "build-dll",
+			"type": "shell",
+			"command": "pwsh",
+			"args": [
+				"-ExecutionPolicy",
+				"Bypass",
+				"-File",
+				"${workspaceFolder}\\.vscode\\build-script.ps1"
+			],
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "build-dll",
+			"type": "shell",
+			"command": "pwsh",
+			"args": [
+				"-ExecutionPolicy",
+				"Bypass",
+				"-File",
+				"${workspaceFolder}\\.vscode\\build-script.ps1"
+			],
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "build-dll",
+			"type": "shell",
+			"command": "pwsh",
+			"args": [
+				"-ExecutionPolicy",
+				"Bypass",
+				"-File",
+				"${workspaceFolder}\\.vscode\\build-script.ps1"
+			],
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "build-dll",
+			"type": "shell",
+			"command": "pwsh",
+			"args": [
+				"-ExecutionPolicy",
+				"Bypass",
+				"-File",
+				"${workspaceFolder}\\.vscode\\build-script.ps1"
+			],
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "build-dll",
+			"type": "shell",
+			"command": "pwsh",
+			"args": [
+				"-ExecutionPolicy",
+				"Bypass",
+				"-File",
+				"${workspaceFolder}\\.vscode\\build-script.ps1"
+			],
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "build-dll",
+			"type": "shell",
+			"command": "pwsh",
+			"args": [
+				"-ExecutionPolicy",
+				"Bypass",
+				"-File",
+				"${workspaceFolder}\\.vscode\\build-script.ps1"
+			],
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "build-dll",
+			"type": "shell",
+			"command": "pwsh",
+			"args": [
+				"-ExecutionPolicy",
+				"Bypass",
+				"-File",
+				"${workspaceFolder}\\.vscode\\build-script.ps1"
+			],
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "build-dll",
+			"type": "shell",
+			"command": "pwsh",
+			"args": [
+				"-ExecutionPolicy",
+				"Bypass",
+				"-File",
+				"${workspaceFolder}\\.vscode\\build-script.ps1"
+			],
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "build-dll",
+			"type": "shell",
+			"command": "pwsh",
+			"args": [
+				"-ExecutionPolicy",
+				"Bypass",
+				"-File",
+				"${workspaceFolder}\\.vscode\\build-script.ps1"
+			],
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "build-dll",
+			"type": "shell",
+			"command": "pwsh",
+			"args": [
+				"-ExecutionPolicy",
+				"Bypass",
+				"-File",
+				"${workspaceFolder}\\.vscode\\build-script.ps1"
+			],
+			"group": "build"
+		},
+		{
+			"label": "build-dll",
+			"type": "shell",
+			"command": "pwsh",
+			"args": [
+				"-ExecutionPolicy",
+				"Bypass",
+				"-File",
+				"${workspaceFolder}\\.vscode\\build-script.ps1"
+			],
+			"isBackground": false,
+			"group": "build"
 		}
 	]
 }

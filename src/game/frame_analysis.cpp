@@ -11,7 +11,8 @@ short initialBlockstunMoveID = -1;
 bool IsHitstun(short moveID) {
     return (moveID >= STAND_HITSTUN_START && moveID <= STAND_HITSTUN_END) || 
            (moveID >= CROUCH_HITSTUN_START && moveID <= CROUCH_HITSTUN_END) ||
-           moveID == SWEEP_HITSTUN;
+           moveID == SWEEP_HITSTUN ||
+           moveID == 69; // Ikumi 623 hit state
 }
 
 bool IsLaunched(short moveID) {
@@ -23,9 +24,10 @@ bool IsAirtech(short moveID) {
 }
 
 bool IsGroundtech(short moveID) {
-    return moveID == GROUNDTECH_START || 
+    return moveID == GROUNDTECH_PRE ||
+           moveID == GROUNDTECH_START ||
            moveID == GROUNDTECH_END || 
-           moveID == 96; // Recovery state
+           moveID == GROUNDTECH_RECOVERY; // Recovery state
 }
 
 bool IsFrozen(short moveID) {
@@ -35,6 +37,17 @@ bool IsFrozen(short moveID) {
 bool IsSpecialStun(short moveID) {
     return moveID == FIRE_STATE || moveID == ELECTRIC_STATE || 
            (moveID >= FROZEN_STATE_START && moveID <= FROZEN_STATE_END);
+}
+
+bool IsThrown(short moveID) {
+    // Many characters place defenders into a temporary "thrown" sequence before transitioning to
+    // hit/launch states. Known windows include 100..110 (common) and 121..122 (Akiko continuation).
+    if (moveID >= THROWN_STATE_START && moveID <= THROWN_STATE_END) return true;
+    if (moveID >= THROWN2_STATE_START && moveID <= THROWN2_STATE_END) return true;
+    if (moveID >= THROWN3_STATE_START && moveID <= THROWN3_STATE_END) return true;
+    if (moveID >= THROWN4_STATE_START && moveID <= THROWN4_STATE_END) return true;
+    if (moveID >= THROWN5_STATE_START && moveID <= THROWN5_STATE_END) return true;
+    return false;
 }
 
 bool IsBlockstunState(short moveID) {
@@ -117,4 +130,14 @@ short GetUntechValue(uintptr_t base, int player) {
     }
     
     return untechValue;
+}
+
+short GetBlockstunValue(uintptr_t base, int player) {
+    short v = 0;
+    uintptr_t baseOffset = (player == 1) ? EFZ_BASE_OFFSET_P1 : EFZ_BASE_OFFSET_P2;
+    uintptr_t addr = ResolvePointer(base, baseOffset, BLOCKSTUN_OFFSET);
+    if (addr) {
+        SafeReadMemory(addr, &v, sizeof(v));
+    }
+    return v;
 }

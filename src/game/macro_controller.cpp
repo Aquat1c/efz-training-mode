@@ -19,6 +19,8 @@
 #include <atomic>
 #include <sstream>
 #include <iomanip>
+#include <cctype>
+#include <algorithm>
 
 // Forward decls in case headers aren't visible due to include order in some TU configs
 extern uintptr_t GetEFZBase();
@@ -29,7 +31,7 @@ namespace {
     struct RLESpan { Mask mask; Mask buf; int ticks; int8_t facing; };
     struct Slot {
         std::vector<RLESpan> spans; // RLE of immediate+buf at 64 Hz
-        // EfzRevival-style macro buffer: one byte per 64 Hz logic frame
+        // one byte per 64 Hz logic frame
         // This is the authoritative stream used for playback (StepReplay: Read→inject immediate-only)
         std::vector<uint8_t> macroStream;
         std::vector<uint8_t> bufStream; // full circular buffer stream captured during recording
@@ -86,6 +88,17 @@ namespace {
     std::vector<uint8_t> s_tickBufQueue;
     size_t s_tickBufHead = 0;
     uint16_t s_writesLeftThisTick = 0; // how many buffer writes remain to issue in the current 64 Hz tick
+    // When finishing playback, we optionally inject one neutral frame (poll override = 0)
+    // to guarantee the engine writes a neutral value into the input history immediately.
+    bool s_finishing = false;
+    int  s_finishNeutralFrames = 0; // number of neutral frames to inject for a full clear tick (3 subframes)
+    bool s_finishPendingClearTick = false; // wait until next tick boundary (s_frameDiv==0) to start neutral clear tick
+    // After the neutral clear tick, hold a short guard window to wait for the engine
+    // to commit a detected command into a MoveID (special/super/dash) before we
+    // restore control. This mitigates repeats caused by restoring too early.
+    bool s_finishGuardActive = false;
+    int  s_finishGuardFramesLeft = 0;  // internal frames (192 Hz)
+    uint16_t s_finishGuardStartMoveId = 0;
     // Baseline immediate mask for the current 64 Hz tick
     uint8_t s_baselineMask = 0;
 
@@ -134,6 +147,85 @@ namespace {
         std::ostringstream oss;
         oss << std::hex << std::uppercase << std::setfill('0') << std::setw(width) << value;
         return oss.str();
+    }
+
+    // Helper: classify activation-worthy MoveIDs to gate control restore
+    static bool IsActivationMove(uint16_t mv) {
+        // Supers (>=300), specials (>=250), dash starts (explicit), Kaori dash special-case
+        if (mv >= 300) return true;           // supers
+        if (mv >= 250) return true;           // specials and Kaori forward dash start (250)
+        if (mv == FORWARD_DASH_START_ID) return true;   // 163
+        if (mv == BACKWARD_DASH_START_ID) return true;  // 165
+        return false;
+    }
+
+    // Direction mask <-> numpad helpers
+    static char DirMaskToNumpad(uint8_t m) {
+        bool u = (m & GAME_INPUT_UP) != 0;
+        bool d = (m & GAME_INPUT_DOWN) != 0;
+        bool l = (m & GAME_INPUT_LEFT) != 0;
+        bool r = (m & GAME_INPUT_RIGHT) != 0;
+        // Resolve invalid combos by neutral (5)
+        if ((u && d) || (l && r)) return '5';
+        if (u && r) return '9';
+        if (u && l) return '7';
+        if (d && r) return '3';
+        if (d && l) return '1';
+        if (u) return '8';
+        if (d) return '2';
+        if (r) return '6';
+        if (l) return '4';
+        return '5';
+    }
+
+    static uint8_t NumpadCharToDirMask(char c) {
+        switch (c) {
+            case '1': return (GAME_INPUT_DOWN | GAME_INPUT_LEFT);
+            case '2': return (GAME_INPUT_DOWN);
+            case '3': return (GAME_INPUT_DOWN | GAME_INPUT_RIGHT);
+            case '4': return (GAME_INPUT_LEFT);
+            case '5': return 0;
+            case '6': return (GAME_INPUT_RIGHT);
+            case '7': return (GAME_INPUT_UP | GAME_INPUT_LEFT);
+            case '8': return (GAME_INPUT_UP);
+            case '9': return (GAME_INPUT_UP | GAME_INPUT_RIGHT);
+            case 'N': return 0; // alias
+            default:  return 0xFF; // invalid sentinel
+        }
+    }
+
+    static std::string MaskToToken(uint8_t m) {
+        uint8_t dir = m & (GAME_INPUT_UP | GAME_INPUT_DOWN | GAME_INPUT_LEFT | GAME_INPUT_RIGHT);
+        std::string t;
+        t.push_back(DirMaskToNumpad(dir));
+        // Append buttons in A..D order
+        if (m & GAME_INPUT_A) t.push_back('A');
+        if (m & GAME_INPUT_B) t.push_back('B');
+        if (m & GAME_INPUT_C) t.push_back('C');
+        if (m & GAME_INPUT_D) t.push_back('D');
+        return t;
+    }
+
+    static bool TryTokenToMask(const std::string& tok, uint8_t& outMask) {
+        if (tok.empty()) return false;
+        // Accept 'N' or 'n' as neutral
+        if (tok.size() == 1 && (tok[0] == 'N' || tok[0] == 'n')) { outMask = 0; return true; }
+        char d = tok[0];
+        if (d >= 'a' && d <= 'z') d = (char)std::toupper((unsigned char)d);
+        uint8_t dir = NumpadCharToDirMask(d);
+        if (dir == 0xFF) return false;
+        uint8_t btn = 0;
+        for (size_t i = 1; i < tok.size(); ++i) {
+            char c = tok[i];
+            if (c >= 'a' && c <= 'z') c = (char)std::toupper((unsigned char)c);
+            if (c == 'A') btn |= GAME_INPUT_A;
+            else if (c == 'B') btn |= GAME_INPUT_B;
+            else if (c == 'C') btn |= GAME_INPUT_C;
+            else if (c == 'D') btn |= GAME_INPUT_D;
+            else return false; // unexpected char
+        }
+        outMask = (dir | btn);
+        return true;
     }
 
     static std::string MaskToButtons(Mask m) {
@@ -314,6 +406,8 @@ namespace {
         s_streamFacingPerTick.clear();
         s_bufWriteQueue.clear(); s_bufQueueHead = 0; s_baselineMask = 0;
         s_tickBufQueue.clear(); s_tickBufHead = 0; s_writesLeftThisTick = 0;
+        s_finishing = false; s_finishNeutralFrames = 0; s_finishPendingClearTick = false;
+        s_finishGuardActive = false; s_finishGuardFramesLeft = 0; s_finishGuardStartMoveId = 0;
         ImmediateInput::Clear(2);
         // Default hook behavior
         g_forceBypass[1].store(false);
@@ -646,20 +740,96 @@ void Tick() {
             s_recLastMask = mask; s_recLastBuf = mask; s_recLastFacing = facing; s_recSpanTicks = 1; s_recLastReason = reasonCode;
         }
     } else if (st == State::Replaying) {
+        // Finish guard: after neutral clear tick, hold neutral until moveID activation or timeout
+        if (s_finishGuardActive) {
+            // Keep neutral override while guarding
+            g_pollOverrideMask[2].store(0, std::memory_order_relaxed);
+            g_pollOverrideActive[2].store(true, std::memory_order_relaxed);
+            // Probe current MoveID
+            uint16_t mv = GetPlayerMoveID(2);
+            bool activated = IsActivationMove(mv);
+            if (activated || s_finishGuardFramesLeft <= 0) {
+                // Finalize: restore control and cleanup
+                s_finishGuardActive = false;
+                s_state.store(State::Idle);
+                ImmediateInput::Clear(2);
+                (void)ClearPlayerCommandFlags(2);
+                g_pollOverrideActive[2].store(false, std::memory_order_relaxed);
+                g_forceBypass[2].store(false);
+                g_injectImmediateOnly[2].store(false);
+                if (s_macroBannerId != -1) { DirectDrawHook::RemovePermanentMessage(s_macroBannerId); s_macroBannerId = -1; }
+                // Neutralize motion token before giving control back to AI to prevent stray motions
+                (void)NeutralizeMotionToken(2);
+                if (g_p2ControlOverridden) RestoreP2ControlState();
+                int slotIdx = ClampSlot(s_curSlot.load()) - 1;
+                LogOut(std::string("[MACRO][PLAY] finish-guard exit ") + (activated?"on-activation":"on-timeout") +
+                       " slot=" + std::to_string(s_curSlot.load()) +
+                       " lastMoveID=" + std::to_string((int)mv) +
+                       " streamBytes=" + std::to_string((int)s_slots[slotIdx].macroStream.size()) +
+                       " bufWrites=" + std::to_string((int)s_slots[slotIdx].bufStream.size()), true);
+                DirectDrawHook::AddMessage("Macro: Replay finished", "MACRO", RGB(180,255,180), 1200, 0, 120);
+                return;
+            }
+            // Count down guard frames
+            if (s_finishGuardFramesLeft > 0) s_finishGuardFramesLeft--;
+            return;
+        }
+        // If we are in or pending the finishing phase, handle the neutral clear tick.
+        if (s_finishPendingClearTick && s_frameDiv == 0) {
+            // Start a full neutral clear tick at the next 64 Hz boundary (3 subframes)
+            s_finishPendingClearTick = false;
+            s_finishing = true;
+            s_finishNeutralFrames = 3; // full tick at 192 Hz pacing
+            // Clear any residual queues/baseline
+            s_tickBufQueue.clear();
+            s_tickBufHead = 0;
+            s_writesLeftThisTick = 0;
+            s_baselineMask = 0;
+        }
+        // While waiting for the next boundary, maintain neutral override to avoid tail holds
+        if (s_finishPendingClearTick && s_frameDiv != 0) {
+            g_pollOverrideMask[2].store(0, std::memory_order_relaxed);
+            g_pollOverrideActive[2].store(true, std::memory_order_relaxed);
+            return;
+        }
+        if (s_finishing) {
+            // Drive a neutral poll override for the duration of the clear tick
+            g_pollOverrideMask[2].store(0, std::memory_order_relaxed);
+            g_pollOverrideActive[2].store(true, std::memory_order_relaxed);
+            if (s_finishNeutralFrames > 0) {
+                s_finishNeutralFrames--;
+                return; // keep neutral for remaining subframes
+            }
+            // After the neutral clear tick, enter a short guard window waiting for MoveID activation
+            s_finishing = false;
+            s_finishGuardActive = true;
+            // Default guard window: 6 internal frames (~2 visual frames)
+            s_finishGuardFramesLeft = 6;
+            s_finishGuardStartMoveId = GetPlayerMoveID(2);
+            // Keep neutral override active during guard and clear command flags once
+            (void)ClearPlayerCommandFlags(2);
+            return;
+        }
         // Replay runs every internal frame to better match engine read cadence
         if (ReadGamespeedFrozen()) return; // pause-safe
         // Pause while buffer-freeze is active for P2 to avoid fighting the engine
         if (g_bufferFreezingActive.load() && (g_activeFreezePlayer.load() == 2 || g_activeFreezePlayer.load() == 0)) return;
         int slotIdx = ClampSlot(s_curSlot.load()) - 1;
-        // Prefer stream playback if present (EfzRevival-style). Fallback to spans if no stream captured.
+        // Prefer stream playback if present. Fallback to spans if no stream captured.
         bool useStream = !s_slots[slotIdx].macroStream.empty();
         if (!s_slots[slotIdx].hasData || (s_slots[slotIdx].spans.empty() && !useStream)) {
             // Nothing to play
             s_state.store(State::Idle);
             ImmediateInput::Clear(2);
+            (void)ClearPlayerCommandFlags(2);
             g_manualInputOverride[2].store(false);
             g_forceBypass[2].store(false);
             g_injectImmediateOnly[2].store(false);
+            // If we had taken control, neutralize and restore to AI
+            if (g_p2ControlOverridden) {
+                (void)NeutralizeMotionToken(2);
+                RestoreP2ControlState();
+            }
             DirectDrawHook::AddMessage("Macro: Replay empty", "MACRO", RGB(255,120,120), 1000, 0, 120);
             return;
         }
@@ -668,12 +838,13 @@ void Tick() {
             if (s_frameDiv == 0) {
                 if (s_playStreamIndex < s_slots[slotIdx].macroStream.size()) {
                     uint8_t mask = s_slots[slotIdx].macroStream[s_playStreamIndex];
-                    if (!s_streamFacingPerTick.empty() && s_playStreamIndex < s_streamFacingPerTick.size()) {
-                        int8_t recFacing = s_streamFacingPerTick[s_playStreamIndex];
-                        int curFacing = ReadFacingSign(2);
-                        if (recFacing != 0 && curFacing != 0 && recFacing != curFacing) {
-                            mask = FlipMaskHoriz(mask);
-                        }
+                    // Facing-aware: if recorded facing is unknown (0), assume P1-facing (+1)
+                    int8_t recFacing = 0;
+                    if (!s_streamFacingPerTick.empty() && s_playStreamIndex < s_streamFacingPerTick.size()) recFacing = s_streamFacingPerTick[s_playStreamIndex];
+                    if (recFacing == 0) recFacing = +1;
+                    int curFacing = ReadFacingSign(2);
+                    if (curFacing != 0 && recFacing != curFacing) {
+                        mask = FlipMaskHoriz(mask);
                     }
                     s_baselineMask = mask;
                     // Prepare per-tick queue of recorded raw buffer bytes
@@ -685,12 +856,12 @@ void Tick() {
                         s_writesLeftThisTick = writesThisTick;
                         for (uint16_t i = 0; i < writesThisTick && s_playBufStreamIndex < s_slots[slotIdx].bufStream.size(); ++i) {
                             uint8_t raw = s_slots[slotIdx].bufStream[s_playBufStreamIndex++];
-                            if (!s_streamFacingPerTick.empty() && s_playStreamIndex < s_streamFacingPerTick.size()) {
-                                int8_t recFacing = s_streamFacingPerTick[s_playStreamIndex];
-                                int curFacing = ReadFacingSign(2);
-                                if (recFacing != 0 && curFacing != 0 && recFacing != curFacing) {
-                                    raw = FlipMaskHoriz(raw);
-                                }
+                            int8_t recFacingRaw = 0;
+                            if (!s_streamFacingPerTick.empty() && s_playStreamIndex < s_streamFacingPerTick.size()) recFacingRaw = s_streamFacingPerTick[s_playStreamIndex];
+                            if (recFacingRaw == 0) recFacingRaw = +1;
+                            int curFacingRaw = ReadFacingSign(2);
+                            if (curFacingRaw != 0 && recFacingRaw != curFacingRaw) {
+                                raw = FlipMaskHoriz(raw);
                             }
                             s_tickBufQueue.push_back(raw);
                         }
@@ -729,39 +900,24 @@ void Tick() {
             g_injectImmediateOnly[2].store(false);
             // End condition: after last tick and queue drained
             if (s_playStreamIndex >= s_slots[slotIdx].macroStream.size() && s_tickBufHead >= s_tickBufQueue.size() && s_writesLeftThisTick == 0) {
-                s_state.store(State::Idle);
-          ImmediateInput::Clear(2);
-          g_pollOverrideActive[2].store(false, std::memory_order_relaxed);
-          g_forceBypass[2].store(false);
-          g_injectImmediateOnly[2].store(false);
-                if (s_macroBannerId != -1) { DirectDrawHook::RemovePermanentMessage(s_macroBannerId); s_macroBannerId = -1; }
-                if (g_p2ControlOverridden) RestoreP2ControlState();
-                LogOut("[MACRO][PLAY] finished slot=" + std::to_string(s_curSlot.load()) +
-                       " streamBytes=" + std::to_string((int)s_slots[slotIdx].macroStream.size()) +
-                       " bufWrites=" + std::to_string((int)s_slots[slotIdx].bufStream.size()), true);
-                DirectDrawHook::AddMessage("Macro: Replay finished", "MACRO", RGB(180,255,180), 1200, 0, 120);
+                // Defer to the next tick boundary, then inject a full neutral clear tick.
+                // IMPORTANT: Neutralize immediately so we don't keep holding the last mask for leftover subframes.
+                s_finishPendingClearTick = true;
+                s_baselineMask = 0;
+                g_pollOverrideMask[2].store(0, std::memory_order_relaxed);
+                g_pollOverrideActive[2].store(true, std::memory_order_relaxed);
+                // Early clear of command flags as we enter finish sequence
+                (void)ClearPlayerCommandFlags(2);
                 return;
             }
         } else {
             // Fallback to existing RLE span playback (legacy path)
             if (s_frameDiv == 0 && s_playSpanRemaining <= 0) {
                 if (s_playIndex >= s_slots[slotIdx].spans.size()) {
-                    // End
-                    s_state.store(State::Idle);
-                    ImmediateInput::Clear(2);
-                    g_manualInputOverride[2].store(false);
-                    g_forceBypass[2].store(false);
-                    g_injectImmediateOnly[2].store(false);
-                    // Remove banner on finish
-                    if (s_macroBannerId != -1) { DirectDrawHook::RemovePermanentMessage(s_macroBannerId); s_macroBannerId = -1; }
-                    // Restore P2 control if we overrode it for playback
-                    if (g_p2ControlOverridden) RestoreP2ControlState();
-                    // Summary
-                    int totalTicks = 0; for (auto &sp : s_slots[slotIdx].spans) totalTicks += sp.ticks;
-                    LogOut("[MACRO][PLAY] finished slot=" + std::to_string(s_curSlot.load()) +
-                           " spans=" + std::to_string((int)s_slots[slotIdx].spans.size()) +
-                           " ticks=" + std::to_string(totalTicks), true);
-                    DirectDrawHook::AddMessage("Macro: Replay finished", "MACRO", RGB(180,255,180), 1200, 0, 120);
+                    // End via spans: defer to next tick boundary then perform full neutral clear tick
+                    s_finishPendingClearTick = true;
+                    // Early clear of command flags as we enter finish sequence (spans path)
+                    (void)ClearPlayerCommandFlags(2);
                     return;
                 }
                 const RLESpan &sp = s_slots[slotIdx].spans[s_playIndex++];
@@ -769,7 +925,8 @@ void Tick() {
                 // Determine current facing and flip if needed
                 int curFacing = ReadFacingSign(2);
                 uint8_t maskToApply = sp.mask;
-                if (sp.facing != 0 && curFacing != 0 && sp.facing != curFacing) {
+                int recFacing = (sp.facing == 0) ? +1 : sp.facing;
+                if (curFacing != 0 && recFacing != curFacing) {
                     maskToApply = FlipMaskHoriz(maskToApply);
                 }
                 // For RLE fallback, also use poll override so engine cadence is preserved
@@ -807,11 +964,21 @@ void ToggleRecord() {
             PauseIntegration::EnsurePracticePointerCapture();
             void* p = PauseIntegration::GetPracticeControllerPtr();
             int curLocal = 0;
-            if (p && SafeReadMemory((uintptr_t)p + PRACTICE_OFF_LOCAL_SIDE_IDX, &curLocal, sizeof(curLocal))) {
+            bool readOk = (p && SafeReadMemory((uintptr_t)p + PRACTICE_OFF_LOCAL_SIDE_IDX, &curLocal, sizeof(curLocal)));
+            if (readOk) {
                 s_prevLocalSide.store(curLocal);
                 if (curLocal != 1) {
-                    SwitchPlayers::SetLocalSide(1); // make P2 local for easier recording
+                    // make P2 local for easier recording and mark swapped
+                    SwitchPlayers::SetLocalSide(1);
+                    SwitchPlayers::MarkSwapped();
                 }
+            } else {
+                // Vanilla fallback: if we can't read the practice controller local side,
+                // still force P2 local so the user controls P2 during macro recording.
+                // This path does not touch Revival-specific state and uses our unified
+                // side-switcher which already guards Revival vs vanilla under the hood.
+                SwitchPlayers::SetLocalSide(1);
+                SwitchPlayers::MarkSwapped();
             }
             EnableP2ControlForAutoAction(); // ensure P2 is human-controlled
         }
@@ -881,8 +1048,18 @@ void Play() {
         DirectDrawHook::AddMessage("Macro controls available only during Match", "MACRO", RGB(255, 180, 120), 900, 0, 120);
         return;
     }
-    // If currently recording, finish first
-    if (s_state.load() == State::Recording) FinishRecording();
+    // If we're in PreRecord, treat Play as a cancel of PreRecord
+    if (s_state.load() == State::PreRecord) {
+        // Ensure we unswap first, then stop
+        UnswapThenStop();
+        DirectDrawHook::AddMessage("Macro: PreRecord canceled", "MACRO", RGB(255, 200, 120), 900, 0, 120);
+        return;
+    }
+    // If currently recording, disallow play
+    if (s_state.load() == State::Recording) {
+        DirectDrawHook::AddMessage("Macro: Cannot play while recording", "MACRO", RGB(255, 180, 120), 900, 0, 120);
+        return;
+    }
     // Prepare playback
     int slotIdx = ClampSlot(s_curSlot.load()) - 1;
     if ((!s_slots[slotIdx].hasData || s_slots[slotIdx].spans.empty()) && s_slots[slotIdx].macroStream.empty()) {
@@ -954,20 +1131,41 @@ void Stop() {
     g_forceBypass[2].store(false);
     g_pollOverrideActive[2].store(false);
     g_pollOverrideMask[2].store(0);
+    // Ensure engine command flags are cleared on manual stop
+    (void)ClearPlayerCommandFlags(2);
     // Remove banner and restore side
     if (s_macroBannerId != -1) { DirectDrawHook::RemovePermanentMessage(s_macroBannerId); s_macroBannerId = -1; }
     if (g_p2ControlOverridden) RestoreP2ControlState();
     int prev = s_prevLocalSide.load();
     if (prev == 0 || prev == 1) {
         SwitchPlayers::SetLocalSide(prev);
+        // Clear any swap tracking flag maintained by switch_players
+        SwitchPlayers::ClearSwapFlag();
         s_prevLocalSide.store(-1);
     }
+}
+
+// When exiting during PreRecord/Recording or on menu entry,
+// restore default Practice mapping (unswap + CPU flags) first, then stop.
+void UnswapThenStop() {
+    // Prefer explicit unswap/reset in Practice mode so CS/menus are consistent
+    if (GetCurrentGameMode() == GameMode::Practice) {
+        SwitchPlayers::ResetControlMappingForMenusToP1();
+    }
+    // Then perform the standard macro stop/cleanup
+    Stop();
 }
 
 int GetCurrentSlot() { return s_curSlot.load(); }
 void SetCurrentSlot(int slot) { s_curSlot.store(ClampSlot(slot)); }
 int GetSlotCount() { return kMaxSlots; }
-bool IsSlotEmpty(int slot) { slot = ClampSlot(slot) - 1; return !s_slots[slot].hasData || s_slots[slot].spans.empty(); }
+bool IsSlotEmpty(int slot) {
+    slot = ClampSlot(slot) - 1;
+    const Slot& s = s_slots[slot];
+    // Consider either spans or stream as data; require hasData true
+    bool hasAny = (!s.spans.empty() || !s.macroStream.empty());
+    return !(s.hasData && hasAny);
+}
 MacroController::State GetState() { return s_state.load(); }
 
 std::string GetStatusLine() {
@@ -988,7 +1186,7 @@ SlotStats GetSlotStats(int slot) {
     stats.bufIndexTicks = static_cast<int>(s.bufIndexPerTick.size());
     stats.bufStartIdx = s.bufStartIdx;
     stats.bufEndIdx = s.bufEndIdx;
-    stats.hasData = s.hasData && !s.spans.empty();
+    stats.hasData = s.hasData && (!s.spans.empty() || !s.macroStream.empty());
     return stats;
 }
 
@@ -1001,6 +1199,334 @@ void PrevSlot() {
     if (GetCurrentGamePhase() != GamePhase::Match || !AreCharactersInitialized()) return;
     int cur = s_curSlot.load();
     cur--; if (cur < 1) cur = kMaxSlots; s_curSlot.store(cur);
+}
+
+} // namespace MacroController
+
+// ---- Serialization / Deserialization implementation ----
+namespace MacroController {
+
+std::string SerializeSlot(int slot, bool includeBuffers) {
+    slot = ClampSlot(slot);
+    const Slot& s = s_slots[slot - 1];
+    // Build per-tick macro masks
+    std::vector<uint8_t> ticks;
+    std::vector<int8_t> faces; // recorded facing per tick (-1 left, +1 right, 0 unknown)
+    if (!s.macroStream.empty()) {
+        ticks = s.macroStream; // copy
+        // Try to derive per-tick facing from spans if available
+        if (!s.spans.empty()) {
+            faces.reserve(ticks.size());
+            for (const auto& sp : s.spans) {
+                for (int t = 0; t < sp.ticks && faces.size() < ticks.size(); ++t) faces.push_back(sp.facing);
+                if (faces.size() >= ticks.size()) break;
+            }
+            while (faces.size() < ticks.size()) faces.push_back(0);
+        } else {
+            faces.assign(ticks.size(), 0);
+        }
+    } else {
+        // Expand spans
+        for (const auto& sp : s.spans) {
+            for (int t = 0; t < sp.ticks; ++t) {
+                ticks.push_back(sp.mask);
+                faces.push_back(sp.facing);
+            }
+        }
+        if (faces.size() < ticks.size()) faces.resize(ticks.size(), 0);
+    }
+    std::ostringstream out;
+    out << "EFZMACRO 1";
+    if (ticks.empty()) return out.str();
+
+    // Prepare per-tick buffer slices if requested
+    size_t bufPos = 0;
+    auto buildBufToken = [&](size_t tickIndex) {
+        std::ostringstream bt;
+        uint16_t k = 0;
+        if (tickIndex < s.bufCountsPerTick.size()) k = s.bufCountsPerTick[tickIndex];
+        bt << "{" << k << ":";
+        if (k > 0) bt << ' ';
+        for (uint16_t i = 0; i < k && bufPos < s.bufStream.size(); ++i) {
+            uint8_t v = s.bufStream[bufPos++];
+            // Normalize buffer value to P1-facing if we know recorded facing for this tick
+            int8_t f = (tickIndex < faces.size()) ? faces[tickIndex] : 0;
+            if (f == -1) v = FlipMaskHoriz(v);
+            // Prefer token form when it matches our mapping; fallback to hex otherwise
+            std::string valTok = MaskToToken(v);
+            // No way to disambiguate invalid combos, but MaskToToken always yields something;
+            // Emit hex when v has impossible combinations (both U&D or L&R)
+            bool u = (v & GAME_INPUT_UP) != 0, d = (v & GAME_INPUT_DOWN) != 0, l = (v & GAME_INPUT_LEFT) != 0, r = (v & GAME_INPUT_RIGHT) != 0;
+            if ((u && d) || (l && r)) {
+                bt << "0x" << ToHexString((int)v, 2);
+            } else {
+                bt << valTok;
+            }
+            if (i + 1 < k) bt << ' ';
+        }
+        bt << "}";
+        return bt.str();
+    };
+
+    // Build tokens with optional RLE compression
+    std::vector<std::string> perTick;
+    perTick.reserve(ticks.size());
+    for (size_t i = 0; i < ticks.size(); ++i) {
+        uint8_t m = ticks[i];
+        // Normalize to P1-facing in text: if recorded facing was left, flip 4/6 (and diagonals)
+        int8_t f = (i < faces.size()) ? faces[i] : 0;
+        if (f == -1) m = FlipMaskHoriz(m);
+        std::string tok = MaskToToken(m);
+        if (includeBuffers) {
+            tok += ' ';
+            tok += buildBufToken(i);
+        }
+        perTick.push_back(std::move(tok));
+    }
+    // RLE compress only identical full tokens
+    std::ostringstream seq;
+    seq << ' ';
+    size_t i = 0;
+    while (i < perTick.size()) {
+        size_t j = i + 1;
+        while (j < perTick.size() && perTick[j] == perTick[i]) ++j;
+        size_t run = j - i;
+        seq << perTick[i];
+        if (run > 1) seq << 'x' << run;
+        if (j < perTick.size()) seq << ' ';
+        i = j;
+    }
+    out << seq.str();
+    return out.str();
+}
+
+static void ClearSlotForImport(Slot& s) {
+    s.spans.clear();
+    s.macroStream.clear();
+    s.bufStream.clear();
+    s.bufCountsPerTick.clear();
+    s.bufIndexPerTick.clear();
+    s.tickReason.clear();
+    s.immPerTick.clear();
+    s.bufLatestPerTick.clear();
+    s.fullBufferSnapshots.clear();
+    s.bufStartIdx = 0;
+    s.bufEndIdx = 0;
+    s.hasData = false;
+}
+
+static void BuildSpansFromStream(Slot& s) {
+    s.spans.clear();
+    if (s.macroStream.empty()) return;
+    uint8_t last = s.macroStream[0];
+    int count = 1;
+    for (size_t i = 1; i < s.macroStream.size(); ++i) {
+        if (s.macroStream[i] == last) {
+            ++count;
+        } else {
+            s.spans.push_back({ last, last, count, 0 });
+            last = s.macroStream[i];
+            count = 1;
+        }
+    }
+    s.spans.push_back({ last, last, count, 0 });
+}
+
+bool DeserializeSlot(int slot, const std::string& text, std::string& errorOut) {
+    errorOut.clear();
+    slot = ClampSlot(slot);
+    Slot& dst = s_slots[slot - 1];
+
+    // Tokenize with brace-aware scanning
+    std::vector<std::string> tokens;
+    tokens.reserve(256);
+    size_t n = text.size();
+    size_t p = 0;
+    auto skipSpace = [&](size_t& i){ while (i < n && std::isspace((unsigned char)text[i])) ++i; };
+    skipSpace(p);
+    // Optional header "EFZMACRO 1"
+    if (p < n) {
+        size_t hdrEnd = p;
+        // Read first two non-space tokens to check header
+        std::string t1, t2;
+        while (hdrEnd < n && !std::isspace((unsigned char)text[hdrEnd])) ++hdrEnd;
+        t1 = text.substr(p, hdrEnd - p);
+        p = hdrEnd; skipSpace(p);
+        hdrEnd = p; while (hdrEnd < n && !std::isspace((unsigned char)text[hdrEnd])) ++hdrEnd;
+        t2 = text.substr(p, hdrEnd - p);
+        if (!t1.empty() && !t2.empty() && (_stricmp(t1.c_str(), "EFZMACRO") == 0)) {
+            // Verify version
+            if (t2 != "1") { errorOut = "Unsupported macro version: " + t2; return false; }
+            p = hdrEnd; // move beyond version
+        } else {
+            // No header; reset to start to parse normally
+            p = 0;
+        }
+    }
+    skipSpace(p);
+    while (p < n) {
+        if (std::isspace((unsigned char)text[p])) { ++p; continue; }
+        size_t start = p;
+        if (text[p] == '{') {
+            // Should not start with group; groups attach to preceding tick token
+            errorOut = "Unexpected '{' without preceding tick token";
+            return false;
+        }
+        // Read until whitespace OR brace start (we'll include following group as part of this token pack)
+        while (p < n && !std::isspace((unsigned char)text[p])) {
+            if (text[p] == '{') break;
+            ++p;
+        }
+        size_t baseEnd = p;
+        // Allow optional whitespace between base token and its attached brace group
+        // Example: "5 {3: ...}" should be treated as a single pack just like "5{3: ...}"
+        if (p < n && std::isspace((unsigned char)text[p])) {
+            size_t q = p;
+            // Peek past spaces to see if a brace group follows
+            while (q < n && std::isspace((unsigned char)text[q])) ++q;
+            if (q < n && text[q] == '{') {
+                p = q; // Attach the upcoming brace group to this pack
+            }
+        }
+        // Capture any attached brace group including spaces inside until matching '}'
+        int brace = 0;
+        if (p < n && text[p] == '{') {
+            brace = 1; ++p;
+            while (p < n && brace > 0) {
+                if (text[p] == '{') ++brace;
+                else if (text[p] == '}') --brace;
+                ++p;
+            }
+            if (brace != 0) { errorOut = "Unterminated buffer group"; return false; }
+        }
+        // Attach an immediate or space-separated repeat suffix xN/XN to this pack
+        // Example forms to accept: "5C}x12", "5C} x12", and even "5C x12" (no group)
+        if (p < n) {
+            size_t qx = p;
+            // Skip any spaces between token and suffix
+            while (qx < n && std::isspace((unsigned char)text[qx])) ++qx;
+            if (qx < n && (text[qx] == 'x' || text[qx] == 'X')) {
+                size_t r = qx + 1;
+                size_t rStart = r;
+                while (r < n && std::isdigit((unsigned char)text[r])) ++r;
+                if (r > rStart) {
+                    p = r; // consume suffix into this token pack
+                }
+            }
+        }
+        size_t end = p;
+        tokens.push_back(text.substr(start, end - start));
+        skipSpace(p);
+    }
+
+    if (tokens.empty()) {
+        // Allow clearing slot
+        ClearSlotForImport(dst);
+        return true;
+    }
+
+    // Parse sequence
+    std::vector<uint8_t> macro;
+    std::vector<uint16_t> counts;
+    std::vector<uint8_t> buf;
+
+    auto parseUInt = [](const std::string& s, size_t i, uint32_t& out)->size_t{
+        out = 0; size_t start = i; while (i < s.size() && std::isdigit((unsigned char)s[i])) { out = out*10 + (s[i]-'0'); ++i; }
+        return (i > start) ? i : start;
+    };
+
+    for (size_t iTok = 0; iTok < tokens.size(); ++iTok) {
+        const std::string& packFull = tokens[iTok];
+        // Handle trailing repeat suffix xN or XN at end of pack (applies to both base-only and base+group forms)
+        uint32_t repeat = 1;
+        std::string pack = packFull;
+        if (!pack.empty()) {
+            size_t end = pack.size();
+            size_t j = end;
+            // Move j back over trailing digits
+            while (j > 0 && std::isdigit((unsigned char)pack[j - 1])) --j;
+            if (j > 0 && j < end && (pack[j - 1] == 'x' || pack[j - 1] == 'X')) {
+                // Parse repeat
+                uint32_t val = 0; size_t k = j; k = parseUInt(pack, k, val);
+                if (k == j || val == 0) { errorOut = "Invalid repeat suffix in '" + pack + "'"; return false; }
+                repeat = val;
+                // Remove the suffix from the working pack
+                pack = pack.substr(0, j - 1);
+                // Trim trailing spaces
+                while (!pack.empty() && std::isspace((unsigned char)pack.back())) pack.pop_back();
+            }
+        }
+        // Split into base and optional group on the adjusted pack (without trailing xN)
+        size_t bracePos = pack.find('{');
+        std::string base = (bracePos == std::string::npos) ? pack : pack.substr(0, bracePos);
+        std::string group = (bracePos == std::string::npos) ? std::string() : pack.substr(bracePos);
+        // Trim trailing spaces from base
+        while (!base.empty() && std::isspace((unsigned char)base.back())) base.pop_back();
+        std::string baseTok = base;
+    // Parse base token mask
+        uint8_t baseMask = 0;
+        if (!TryTokenToMask(baseTok, baseMask)) { errorOut = "Bad tick token: '" + baseTok + "'"; return false; }
+
+        // Optional group parsing {k: v1 v2 ...}
+        std::vector<uint8_t> thisTickBuf;
+        uint16_t thisTickK = 0;
+        if (!group.empty()) {
+            // Strip braces
+            if (group.front() != '{') { errorOut = "Malformed buffer group in '" + packFull + "'"; return false; }
+            if (group.back() != '}') { errorOut = "Malformed buffer group in '" + packFull + "'"; return false; }
+            std::string inner = group.substr(1, group.size()-2);
+            // Parse k:
+            size_t q = 0; while (q < inner.size() && std::isspace((unsigned char)inner[q])) ++q;
+            uint32_t kVal = 0; size_t q2 = parseUInt(inner, q, kVal);
+            if (q2 == q) { errorOut = "Buffer group missing count in '" + pack + "'"; return false; }
+            while (q2 < inner.size() && std::isspace((unsigned char)inner[q2])) ++q2;
+            if (q2 >= inner.size() || inner[q2] != ':') { errorOut = "Buffer group missing ':' in '" + pack + "'"; return false; }
+            q = q2 + 1;
+            // Parse values
+            while (q < inner.size()) {
+                while (q < inner.size() && std::isspace((unsigned char)inner[q])) ++q;
+                if (q >= inner.size()) break;
+                // Read next token until space
+                size_t start = q; while (q < inner.size() && !std::isspace((unsigned char)inner[q])) ++q;
+                std::string vtok = inner.substr(start, q - start);
+                if (vtok.empty()) break;
+                uint8_t vmask = 0;
+                if (vtok.size() >= 3 && (vtok[0] == '0') && (vtok[1] == 'x' || vtok[1] == 'X')) {
+                    // Hex
+                    uint32_t vv = 0;
+                    std::stringstream ss; ss << std::hex << vtok; ss >> vv;
+                    vmask = (uint8_t)(vv & 0xFF);
+                } else {
+                    if (!TryTokenToMask(vtok, vmask)) { errorOut = "Bad buffer value token: '" + vtok + "'"; return false; }
+                }
+                thisTickBuf.push_back(vmask);
+            }
+            thisTickK = (uint16_t)kVal;
+            if (thisTickK != thisTickBuf.size()) {
+                errorOut = "Buffer group count mismatch (k!=values) in '" + pack + "'";
+                return false;
+            }
+        } else {
+            // Default: one write equal to tick mask
+            thisTickK = 1; thisTickBuf.push_back(baseMask);
+        }
+
+        // Emit repeat
+        for (uint32_t r = 0; r < repeat; ++r) {
+            macro.push_back(baseMask);
+            counts.push_back(thisTickK);
+            buf.insert(buf.end(), thisTickBuf.begin(), thisTickBuf.end());
+        }
+    }
+
+    // Commit to slot
+    ClearSlotForImport(dst);
+    dst.macroStream = std::move(macro);
+    dst.bufCountsPerTick = std::move(counts);
+    dst.bufStream = std::move(buf);
+    dst.hasData = !dst.macroStream.empty();
+    BuildSpansFromStream(dst);
+    return true;
 }
 
 } // namespace MacroController

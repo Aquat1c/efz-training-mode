@@ -2,6 +2,7 @@
 #include <iomanip>
 #include <chrono>
 #include "../include/input/input_handler.h"
+#include "../include/game/frame_advantage.h"
 #include "../include/utils/utilities.h"
 
 #include "../include/gui/gui.h"
@@ -17,9 +18,9 @@
 #include <dinput.h>
 #include <sstream>
 #include <string>
-#include <commctrl.h> // Add this include for Common Controls
+#include <commctrl.h>  for Common Controls
 #include "../include/gui/imgui_impl.h"
-#include "../include/gui/overlay.h"  // Add this include for DirectDrawHook class
+#include "../include/gui/overlay.h"   for DirectDrawHook class
 #include "../include/utils/config.h"
 #include "../include/input/input_motion.h" // For QueueMotionInput
 #include "../include/utils/bgm_control.h"
@@ -29,9 +30,11 @@
 #include "../include/utils/switch_players.h"
 #include "../include/game/macro_controller.h"
 #include "../include/game/frame_monitor.h" // AreCharactersInitialized, GamePhase
+#include "../include/input/framestep.h"
 #include <Xinput.h>
 
-#pragma comment(lib, "xinput9_1_0.lib")
+// XInput DLL is loaded dynamically via XInputShim
+#include "../include/utils/xinput_shim.h"
 
 // Removed VK_NUMPAD_* dev hotkey defines (no longer used)
 
@@ -46,6 +49,33 @@ LPDIRECTINPUTDEVICE8 g_pKeyboard = nullptr;
 // Add these global variables
 bool g_directInputReadOnly = true;  // Default to read-only mode
 bool g_directInputAvailable = false;
+
+// Hotkey cooldown after menu closes
+static std::atomic<bool> g_hotkeyCooldownActive{false};
+static std::chrono::steady_clock::time_point g_menuClosedTime{};
+static constexpr double HOTKEY_COOLDOWN_SECONDS = 0.5;
+
+static bool IsHotkeyCooldownActive() {
+    if (!g_hotkeyCooldownActive.load(std::memory_order_relaxed)) {
+        return false;
+    }
+    auto now = std::chrono::steady_clock::now();
+    auto elapsed = std::chrono::duration<double>(now - g_menuClosedTime).count();
+    bool inCooldown = elapsed < HOTKEY_COOLDOWN_SECONDS;
+    
+    if (!inCooldown && g_hotkeyCooldownActive.load(std::memory_order_relaxed)) {
+        g_hotkeyCooldownActive.store(false, std::memory_order_relaxed);
+        LogOut("[INPUT] Hotkey cooldown expired", true);
+    }
+    
+    return inCooldown;
+}
+
+void StartHotkeyCooldown() {
+    g_menuClosedTime = std::chrono::steady_clock::now();
+    g_hotkeyCooldownActive.store(true, std::memory_order_relaxed);
+    LogOut("[INPUT] Menu closed - starting 0.5s hotkey cooldown", true);
+}
 
 int g_gamepadCount = 0;
 GamepadDevice g_gamepads[MAX_CONTROLLERS];
@@ -179,6 +209,7 @@ bool IsKeyPressed(int vKey, bool checkState) {
 // Add a flag to track if the monitor thread is running
 // Start disabled; ManageKeyMonitoring will spawn the thread when appropriate.
 std::atomic<bool> keyMonitorRunning(false);
+std::mutex keyMonitorMutex;
 
 void MonitorKeys() {
     // Mark as running in case the thread was spawned externally
@@ -194,6 +225,9 @@ void MonitorKeys() {
         LogOut("[KEYBINDS] Config Menu key: " + GetKeyName(cfg0.configMenuKey), true);
         LogOut("[KEYBINDS] Toggle ImGui key: " + GetKeyName(cfg0.toggleImGuiKey), true);
     }
+
+    // Defer key.ini reads to retries only (avoid duplicate reads during startup)
+    static DWORD s_nextIniRetryTick = GetTickCount() + 60000; // park retries for a minute by default
 
     // Constants for teleport positions
     const double centerX = 320.0;
@@ -212,6 +246,23 @@ void MonitorKeys() {
     while (keyMonitorRunning.load()) {
     // Update window active state at the beginning of each loop
         UpdateWindowActiveState();
+
+    // Opportunistically retry loading key.ini if we don't have attacks detected or D is unset
+    if (GetTickCount() >= s_nextIniRetryTick) {
+        if (!detectedBindings.attacksDetected || detectedBindings.dButton == 0) {
+            if (ReadKeyMappingsFromIni()) {
+                LogOut("[KEYBINDS] Loaded EFZ key bindings from key.ini on retry", true);
+                // On success, park retries for a minute instead of re-reading immediately
+                s_nextIniRetryTick = GetTickCount() + 60000;
+            } else {
+                // Backoff retries to avoid spam
+                s_nextIniRetryTick = GetTickCount() + 10000; // retry in ~10s
+            }
+        } else {
+            // We already have a valid mapping; no need to keep retrying
+            s_nextIniRetryTick = GetTickCount() + 60000; // park for a minute
+        }
+    }
     // Re-read hotkeys every frame so config UI changes apply instantly
     const Config::Settings& cfg = Config::GetSettings();
     int teleportKey = (cfg.teleportKey > 0) ? cfg.teleportKey : '1';
@@ -223,12 +274,41 @@ void MonitorKeys() {
     int toggleImGuiKey = (cfg.toggleImGuiKey > 0) ? cfg.toggleImGuiKey : VK_F12;
     XINPUT_STATE currentPad{}; // kept for clarity; not used for idle scan
 
-        // --- All other hotkeys: only when overlays/features are active ---
-    if (g_efzWindowActive.load() && !g_guiActive.load()) {
+    bool windowActive = g_efzWindowActive.load();
+    bool guiActive = g_guiActive.load();
+
+    if (windowActive && guiActive) {
+        // Flush queued menu toggle presses so they don't reopen immediately after exit
+        IsKeyPressed(configMenuKey, false);
+        IsKeyPressed(toggleImGuiKey, false);
+
+        XInputShim::RefreshSnapshotOncePerFrame();
+        connectedMask = XInputShim::GetConnectedMaskCached();
+        for (int i = 0; i < 4; ++i) {
+            if (((connectedMask >> i) & 1u) == 0) {
+                continue;
+            }
+            const XINPUT_STATE* cached = XInputShim::GetCachedState(i);
+            if (cached) {
+                prevPads[i] = *cached;
+            }
+        }
+
+        Sleep(64);
+        continue;
+    }
+
+    // --- All other hotkeys: only when overlays/features are active ---
+    if (windowActive && !guiActive) {
             bool keyHandled = false;
 
             // Helpers
-            auto pollPad = [](int idx, XINPUT_STATE& out) { ZeroMemory(&out, sizeof(out)); return XInputGetState(idx, &out) == ERROR_SUCCESS; };
+            // Cached polling (snapshot already refreshed earlier in frame by overlay EndScene; fallback refresh here if not yet)
+            auto pollPad = [](int idx, XINPUT_STATE& out) {
+                const XINPUT_STATE* s = XInputShim::GetCachedState(idx);
+                if (!s) { ZeroMemory(&out, sizeof(out)); return false; }
+                out = *s; return true;
+            };
             auto processActionsForPad = [&](int padIndex, const XINPUT_STATE& cur, XINPUT_STATE& prev) -> bool {
                 // Helper: edge detect (just-pressed) for standard buttons & pseudo trigger bits
                 constexpr int LT_MASK = 0x10000; // pseudo masks defined in config parser
@@ -306,6 +386,12 @@ void MonitorKeys() {
                 // Read config each frame so UI changes apply immediately
                 const auto &cgp = cfg; // alias
 
+                // Skip all hotkey processing if we're in cooldown period after menu close
+                if (IsHotkeyCooldownActive()) {
+                    prev = cur;
+                    return false;
+                }
+
                 bool handled = false;
                 // Process in priority order (single action per press)
                 // Unified menu toggle: gpToggleMenuButton now acts as open/close (ImGui preferred path)
@@ -317,9 +403,16 @@ void MonitorKeys() {
                     }
                     handled = true;
                 } else if (!handled && gpWentDown(cgp.gpToggleImGuiButton)) {
-                    ImGuiImpl::ToggleVisibility();
+                    if (!ImGuiImpl::IsVisible()) {
+                        OpenMenu();
+                    } else {
+                        ImGuiImpl::ToggleVisibility();
+                    }
                     handled = true;
                 } else if (!handled && gpWentDown(cgp.gpTeleportButton)) {
+                    // Teleporting should also cancel any in-progress frame advantage
+                    // calculation, since positions/states are being reset artificially.
+                    CancelFrameAdvantageCalculation();
                     teleportOrLoad();
                     handled = true;
                 } else if (!handled && gpWentDown(cgp.gpSavePositionButton)) {
@@ -329,15 +422,22 @@ void MonitorKeys() {
                     swapPositions();
                     handled = true;
                 } else if (!handled && gpWentDown(cgp.gpSwitchPlayersButton)) {
-                    if (GetCurrentGameMode() == GameMode::Practice) {
-                        bool ok = SwitchPlayers::ToggleLocalSide();
-                        if (ok) {
-                            DirectDrawHook::AddMessage("Switch Players: toggled", "SYSTEM", RGB(100,255,100), 1200, 0, 100);
-                        } else {
-                            DirectDrawHook::AddMessage("Switch Players: failed", "SYSTEM", RGB(255,100,100), 1200, 0, 100);
+                    // Guard: disable switch-players while macro prerecord/recording is active
+                    auto st = MacroController::GetState();
+                    if (st == MacroController::State::PreRecord || st == MacroController::State::Recording) {
+                        DirectDrawHook::AddMessage("Switch Players disabled during Macro PreRecord/Recording", "SYSTEM", RGB(255,200,120), 1200, 0, 100);
+                        handled = true;
+                    } else {
+                        if (GetCurrentGameMode() == GameMode::Practice) {
+                            bool ok = SwitchPlayers::ToggleLocalSide();
+                            if (ok) {
+                                DirectDrawHook::AddMessage("Switch Players: toggled", "SYSTEM", RGB(100,255,100), 1200, 0, 100);
+                            } else {
+                                DirectDrawHook::AddMessage("Switch Players: failed", "SYSTEM", RGB(255,100,100), 1200, 0, 100);
+                            }
                         }
+                        handled = true;
                     }
-                    handled = true;
                 } else if (!handled && gpWentDown(cgp.gpMacroRecordButton)) {
                     if (GetCurrentGamePhase() == GamePhase::Match && AreCharactersInitialized()) {
                         MacroController::ToggleRecord();
@@ -380,7 +480,11 @@ void MonitorKeys() {
                 continue;
             }
             if (IsKeyPressed(toggleImGuiKey, false)) {
-                ImGuiImpl::ToggleVisibility();
+                if (!ImGuiImpl::IsVisible()) {
+                    OpenMenu();
+                } else {
+                    ImGuiImpl::ToggleVisibility();
+                }
                 Sleep(150); // debounce
                 continue;
             }
@@ -390,12 +494,9 @@ void MonitorKeys() {
                 DWORD now = GetTickCount();
                 if ((now - lastConnScanTick) < 1000) return; // 1s cadence
                 lastConnScanTick = now;
-                unsigned mask = 0;
-                for (int i = 0; i < 4; ++i) {
-                    XINPUT_STATE tmp{};
-                    if (XInputGetState(i, &tmp) == ERROR_SUCCESS) mask |= (1u << i);
-                }
-                connectedMask = mask;
+                // Use cached snapshot mask (refresh if stale)
+                XInputShim::RefreshSnapshotOncePerFrame();
+                connectedMask = XInputShim::GetConnectedMaskCached();
             };
             refreshConnectionsIfNeeded();
             int cfgIdx = cfg.controllerIndex;
@@ -410,10 +511,9 @@ void MonitorKeys() {
                 // All controllers: process in index order but handle at most one action per frame
                 unsigned mask = connectedMask;
                 if (mask == 0) {
-                    // Fallback: if no cached connections, do a light probe this frame
-                    for (int i = 0; i < 4; ++i) {
-                        XINPUT_STATE tmp{}; if (XInputGetState(i, &tmp) == ERROR_SUCCESS) { mask |= (1u << i); }
-                    }
+                    // Refresh snapshot and reuse mask; avoids per-pad probing
+                    XInputShim::RefreshSnapshotOncePerFrame();
+                    mask = XInputShim::GetConnectedMaskCached();
                     connectedMask = mask;
                 }
                 for (int i = 0; i < 4 && !keyHandled; ++i) {
@@ -427,9 +527,59 @@ void MonitorKeys() {
 
             // 3) Remaining keyboard-only actions
             if (!keyHandled) {
+                // Skip all hotkeys on character select screen (including menu toggles)
+                if (IsInCharacterSelectScreen()) {
+                    // All hotkeys disabled on character select
+                } else if (IsHotkeyCooldownActive()) {
+                    // Skip all hotkey processing if we're in cooldown period after menu close
+                    // Do nothing - let cooldown expire
+                } else {
+                // New: configurable Swap Positions bindings (single key or chord)
+                {
+                    const bool swapEnabled = cfg.swapCustomEnabled;
+                    const int swapKey = cfg.swapCustomKey;
+                    bool didSwap = false;
+                    auto doSwap = [&]() {
+                        uintptr_t base = GetEFZBase();
+                        if (!base) return;
+                        double x1=0,y1=0,x2=0,y2=0;
+                        uintptr_t xAddr1 = ResolvePointer(base, EFZ_BASE_OFFSET_P1, XPOS_OFFSET);
+                        uintptr_t yAddr1 = ResolvePointer(base, EFZ_BASE_OFFSET_P1, YPOS_OFFSET);
+                        uintptr_t xAddr2 = ResolvePointer(base, EFZ_BASE_OFFSET_P2, XPOS_OFFSET);
+                        uintptr_t yAddr2 = ResolvePointer(base, EFZ_BASE_OFFSET_P2, YPOS_OFFSET);
+                        if (xAddr1 && yAddr1 && xAddr2 && yAddr2) {
+                            SafeReadMemory(xAddr1, &x1, sizeof(double));
+                            SafeReadMemory(yAddr1, &y1, sizeof(double));
+                            SafeReadMemory(xAddr2, &x2, sizeof(double));
+                            SafeReadMemory(yAddr2, &y2, sizeof(double));
+                            SetPlayerPosition(base, EFZ_BASE_OFFSET_P1, x2, y2);
+                            SetPlayerPosition(base, EFZ_BASE_OFFSET_P2, x1, y1);
+                            DirectDrawHook::AddMessage("Positions Swapped", "SYSTEM", RGB(100, 255, 100), 1500, 0, 100);
+                        } else {
+                            DirectDrawHook::AddMessage("Swap Failed: Can't read positions", "SYSTEM", RGB(255,100,100), 1500, 0, 100);
+                        }
+                    };
+                    // Dedicated custom key when enabled
+                    if (swapEnabled && swapKey > 0 && IsKeyPressed(swapKey, false)) {
+                        if (GetCurrentGameMode() == GameMode::Practice) {
+                            doSwap(); didSwap = true; keyHandled = true;
+                        } else {
+                            DirectDrawHook::AddMessage("Swap available only in Practice", "SYSTEM", RGB(255,180,120), 1200, 0, 110);
+                            didSwap = true; keyHandled = true;
+                        }
+                    }
+                    if (didSwap) {
+                        // Basic debounce: wait a short time and until keys released
+                        Sleep(80);
+                    }
+                }
                 if (IsKeyPressed(cfg.switchPlayersKey > 0 ? cfg.switchPlayersKey : 'L', false)) {
                 // Debug hotkey: Toggle local/remote players in Practice
-                if (GetCurrentGameMode() == GameMode::Practice && !g_guiActive.load()) {
+                auto st = MacroController::GetState();
+                if (st == MacroController::State::PreRecord || st == MacroController::State::Recording) {
+                    DirectDrawHook::AddMessage("Switch Players disabled during Macro PreRecord/Recording", "SYSTEM", RGB(255,200,120), 1200, 0, 100);
+                    keyHandled = true;
+                } else if (GetCurrentGameMode() == GameMode::Practice && !g_guiActive.load()) {
                     bool ok = SwitchPlayers::ToggleLocalSide();
                     if (ok) {
                         DirectDrawHook::AddMessage("Switch Players: toggled", "SYSTEM", RGB(100,255,100), 1200, 0, 100);
@@ -480,7 +630,7 @@ void MonitorKeys() {
                     keyHandled = true;
                 }
                 // Swap player positions
-                else if (IsKeyPressed(detectedBindings.dButton, true)) {
+                else if (IsKeyPressed(detectedBindings.dButton != 0 ? detectedBindings.dButton : 'D', true)) {
                     uintptr_t base = GetEFZBase();
                     if (base) {
                         double tempX1 = 0.0, tempY1 = 0.0;
@@ -503,7 +653,7 @@ void MonitorKeys() {
                             SetPlayerPosition(base, EFZ_BASE_OFFSET_P2, tempX1, tempY1);
                             DirectDrawHook::AddMessage("Positions Swapped", "SYSTEM", RGB(100, 255, 100), 1500, 0, 100);
                         } else {
-                            DirectDrawHook::AddMessage("Swap Failed: Can't read positions", "SYSTEM", RGB(255, 100, 100), 1500, 0, 100);
+                            DirectDrawHook::AddMessage("Swap Failed: Can't read positions", "SYSTEM", RGB(255,100,100), 1500, 0, 100);
                         }
                     }
                     keyHandled = true;
@@ -540,26 +690,20 @@ void MonitorKeys() {
             } else if (IsKeyPressed(cfg.resetFrameCounterKey, false)) {
                 ResetFrameCounter();
                 keyHandled = true;
+            } else if (IsKeyPressed(cfg.framestepPauseKey > 0 ? cfg.framestepPauseKey : VK_SPACE, false)) {
+                // Framestep: Toggle pause (vanilla EFZ only)
+                if (Framestep::IsEnabled()) {
+                    Framestep::TogglePause();
+                    keyHandled = true;
+                }
+            } else if (IsKeyPressed(cfg.framestepStepKey > 0 ? cfg.framestepStepKey : 'P', false)) {
+                // Framestep: Step forward one frame (vanilla EFZ only)
+                if (Framestep::IsEnabled() && Framestep::IsPaused()) {
+                    Framestep::RequestFrameStep();
+                    keyHandled = true;
+                }
             } else if (IsKeyPressed(cfg.helpKey, false)) {
                 ShowHotkeyInfo();
-                keyHandled = true;
-            } else if (IsKeyPressed(VK_F7, false)) {
-                // Mirror in-game F7: toggle dummy autoblock mode between None and All
-                if (GetCurrentGameMode() == GameMode::Practice) {
-                    int mode = GetDummyAutoBlockMode();
-                    if (mode == DAB_All) {
-                        SetDummyAutoBlockMode(DAB_None);
-                    } else {
-                        SetDummyAutoBlockMode(DAB_All);
-                    }
-                }
-                keyHandled = true;
-            } else if (IsKeyPressed(VK_F8, false)) {
-                std::string status = "OFF";
-                if (autoAirtechEnabled) {
-                    status = autoAirtechDirection == 0 ? "FORWARD" : "BACKWARD";
-                }
-                DirectDrawHook::AddMessage(("Auto-Airtech: " + status).c_str(), "SYSTEM", RGB(255, 165, 0), 1500, 0, 100);
                 keyHandled = true;
             } else if (IsKeyPressed(VK_F9, false)) {
                 autoJumpEnabled = !autoJumpEnabled;
@@ -593,6 +737,7 @@ void MonitorKeys() {
                 }
                 keyHandled = true;
             }
+            } // End of character select check / cooldown check else block
             }
             // Developer motion-debug hotkeys removed
 
@@ -601,10 +746,12 @@ void MonitorKeys() {
                 Sleep(100);
           while (IsKeyPressed(teleportKey, true) || IsKeyPressed(recordKey, true) ||
               IsKeyPressed(toggleTitleKey, true) || IsKeyPressed(resetFrameCounterKey, true) ||
-              IsKeyPressed(helpKey, true) || IsKeyPressed(VK_F7, true) || IsKeyPressed(VK_F8, true) || IsKeyPressed(VK_F9, true) ||
+              IsKeyPressed(helpKey, true) || IsKeyPressed(VK_F7, true) || IsKeyPressed(VK_F9, true) ||
               IsKeyPressed(cfg.switchPlayersKey > 0 ? cfg.switchPlayersKey : 'L', true) ||
               IsKeyPressed(cfg.macroRecordKey > 0 ? cfg.macroRecordKey : 'I', true) ||
-              IsKeyPressed(cfg.macroPlayKey > 0 ? cfg.macroPlayKey : 'O', true)) {
+              IsKeyPressed(cfg.macroPlayKey > 0 ? cfg.macroPlayKey : 'O', true) ||
+              IsKeyPressed(cfg.framestepPauseKey > 0 ? cfg.framestepPauseKey : VK_SPACE, true) ||
+              IsKeyPressed(cfg.framestepStepKey > 0 ? cfg.framestepStepKey : 'P', true)) {
                     Sleep(10);
                 }
                 // Reset polling interval after handling input
@@ -620,11 +767,12 @@ void MonitorKeys() {
                     ((GetAsyncKeyState(helpKey) & 0x8000) != 0) ||
                     ((GetAsyncKeyState(toggleImGuiKey) & 0x8000) != 0) ||
                     ((GetAsyncKeyState(VK_F7) & 0x8000) != 0) ||
-                    ((GetAsyncKeyState(VK_F8) & 0x8000) != 0) ||
                     ((GetAsyncKeyState(VK_F9) & 0x8000) != 0) ||
                     ((GetAsyncKeyState(cfg.switchPlayersKey > 0 ? cfg.switchPlayersKey : 'L') & 0x8000) != 0) ||
                     ((GetAsyncKeyState(cfg.macroRecordKey > 0 ? cfg.macroRecordKey : 'I') & 0x8000) != 0) ||
                     ((GetAsyncKeyState(cfg.macroPlayKey > 0 ? cfg.macroPlayKey : 'O') & 0x8000) != 0) ||
+                    ((GetAsyncKeyState(cfg.framestepPauseKey > 0 ? cfg.framestepPauseKey : VK_SPACE) & 0x8000) != 0) ||
+                    ((GetAsyncKeyState(cfg.framestepStepKey > 0 ? cfg.framestepStepKey : 'P') & 0x8000) != 0) ||
                     ((GetAsyncKeyState(cfg.macroSlotKey > 0 ? cfg.macroSlotKey : 'K') & 0x8000) != 0);
                 auto anyControllerActive = [&]() -> bool {
                     unsigned mask = connectedMask;
@@ -632,7 +780,7 @@ void MonitorKeys() {
                     for (int i = 0; i < 4; ++i) {
                         if (((mask >> i) & 1u) == 0) continue;
                         XINPUT_STATE cur{};
-                        if (XInputGetState(i, &cur) != ERROR_SUCCESS) continue;
+                        if (XInputShim::GetState(i, &cur) != ERROR_SUCCESS) continue;
                         if (cur.dwPacketNumber != prevPads[i].dwPacketNumber) return true;
                         if (cur.Gamepad.wButtons != 0) return true;
                         if (cur.Gamepad.bLeftTrigger || cur.Gamepad.bRightTrigger) return true;
@@ -670,25 +818,20 @@ void MonitorKeys() {
 
 // Add this function to restart key monitoring
 void RestartKeyMonitoring() {
-    LogOut("[KEYBINDS] Restarting key monitoring system", true);
-    
-    // If already running, signal existing thread to exit
+    std::lock_guard<std::mutex> guard(keyMonitorMutex);
     if (keyMonitorRunning.load()) {
-        keyMonitorRunning.store(false);
-        // Give it time to exit cleanly
-        Sleep(100);
+        LogOut("[KEYBINDS] Key monitoring already running", detailedLogging.load());
+        return;
     }
-    
+
     // Reset state
     p1Jumping = false;
     p2Jumping = false;
-    // Reset any other state variables...
-    
-    // Start new monitoring thread
+
+    // Start monitoring thread once
     keyMonitorRunning.store(true);
     std::thread(MonitorKeys).detach();
-    
-    LogOut("[KEYBINDS] Key monitoring system restarted", true);
+    LogOut("[KEYBINDS] Key monitoring thread started", true);
 }
 
 void DebugInputs() {
@@ -725,7 +868,8 @@ std::atomic<int> startFrameCount(0);
 
 // Complete the ReadKeyMappingsFromIni function
 bool ReadKeyMappingsFromIni() {
-    HANDLE configFile = CreateFileA("key.ini", GENERIC_READ, 0, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    // Allow shared reads so we don't fight the game holding the file open
+    HANDLE configFile = CreateFileA("key.ini", GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
     if (configFile == INVALID_HANDLE_VALUE) {
         LogOut("[INPUT] Failed to open key.ini - using default key bindings", true);
         return false;
@@ -762,8 +906,9 @@ bool ReadKeyMappingsFromIni() {
         const char* name;
         int* bindingPtr;
     } keyMaps[] = {
-        { 0, "Down", &detectedBindings.upKey },
-        { 2, "Up", &detectedBindings.downKey },
+        // Correct mapping: Down -> downKey, Up -> upKey
+        { 0, "Down", &detectedBindings.downKey },
+        { 2, "Up", &detectedBindings.upKey },
         { 4, "Left", &detectedBindings.leftKey },
         { 6, "Right", &detectedBindings.rightKey },
         { 8, "A (Light)", &detectedBindings.aButton },
@@ -772,7 +917,8 @@ bool ReadKeyMappingsFromIni() {
         { 14, "D (Special)", &detectedBindings.dButton },
     };
 
-    LogOut("[INPUT] Reading key bindings from key.ini", true);
+    // Only emit this noisy read when detailed logging is enabled
+    LogOut("[INPUT] Reading key bindings from key.ini", detailedLogging.load());
     for (int i = 0; i < 8; i++) {
         unsigned char byte1 = p1Data[keyMaps[i].offset];
         unsigned char byte2 = p1Data[keyMaps[i].offset + 1];
@@ -787,8 +933,9 @@ bool ReadKeyMappingsFromIni() {
         int vkKey = MapEFZKeyToVK(keyValue);
         *keyMaps[i].bindingPtr = vkKey;
 
-        LogOut("[INPUT] P1 " + std::string(keyMaps[i].name) + " = " +
-               GetKeyName(vkKey) + " (raw value: " + std::to_string(keyValue) + ")", true);
+         // Per-key line can be extremely chatty; gate behind detailedLogging
+         LogOut("[INPUT] P1 " + std::string(keyMaps[i].name) + " = " +
+             GetKeyName(vkKey) + " (raw value: " + std::to_string(keyValue) + ")", detailedLogging.load());
     }
 
     // Set flags to indicate we've detected the bindings
@@ -823,31 +970,21 @@ bool ReadDirectInputKeyboardState(BYTE* keyboardState) {
 
 // Implementation of MapEFZKeyToVK
 int MapEFZKeyToVK(unsigned short efzKey) {
+    // Handle a few known extended EFZ encodings that aren't plain DIK codes
     switch (efzKey) {
-        case 0xCB: return VK_LEFT;
-        case 0xCD: return VK_RIGHT;
-        case 0xC8: return VK_UP;
-        case 0xD0: return VK_DOWN;
-        case 0x2C: return 'Z';
-        case 0x2D: return 'X';
-        case 0x2E: return 'C';
-        case 0x2F: return 'V';
-        case 0x1E: return 'A';
-        case 0x1F: return 'S';
-        case 0x20: return 'D';
-        case 0x21: return 'F';
-        case 0x39: return VK_SPACE;
-        case 0x1C: return VK_RETURN;
-        
-        // Handle specific joystick buttons based on config_EN.exe
-        case 0x13:  return VK_LEFT;     // Joystick Left
-        case 0x114: return VK_RIGHT;    // Joystick Right
-        case 0x111: return VK_UP;       // Joystick Up
-        case 0x112: return VK_DOWN;     // Joystick Down
-        
-        default:
-            return 0;
+        case 0x114: return VK_RIGHT; // Joystick Right (extended)
+        case 0x111: return VK_UP;    // Joystick Up
+        case 0x112: return VK_DOWN;  // Joystick Down
+        case 0x113: return VK_LEFT;  // Joystick Left
     }
+
+    // Prefer centralized DI scancode -> VK mapping from di_keycodes
+    int vk = MapDIKToVK(static_cast<int>(efzKey));
+    if (vk != 0) return vk;
+
+    // Fallback to Windows API conversion if not covered
+    UINT apiVk = MapVirtualKey(efzKey, MAPVK_VSC_TO_VK);
+    return apiVk ? static_cast<int>(apiVk) : 0;
 }
 
 
@@ -904,18 +1041,7 @@ bool UpdateGamepadState(int gamepadIndex) {
     return true;
 }
 
-// Add this implementation:
-std::string GetDIKeyName(int dikCode) {
-    // Look up the key in our mappings array
-    for (const auto& mapping : KeyMappings) {
-        if (mapping.dikCode == dikCode) {
-            return mapping.keyName;
-        }
-    }
-    
-    // If not found, return a generic name
-    return "Key(" + std::to_string(dikCode) + ")";
-}
+// GetDIKeyName is now implemented centrally in di_keycodes.cpp
 
 void DetectKeyBindingsWithDI() {
     static BYTE prevKeyboardState[256] = {0};
@@ -1156,53 +1282,5 @@ void DetectKeyBindingsWithDI() {
     prevInputs = currentInputs;
 }
 
-void GlobalF1MonitorThread() {
-    int sleepMs = 16;
-    int idleLoops = 0;
-    while (globalF1ThreadRunning.load()) {
-        // Park in online mode and reduce work when window inactive
-    if (g_onlineModeActive.load()) { keyMonitorRunning.store(false); break; }
-        if (!g_efzWindowActive.load()) {
-            // Back off heavily when game window not focused
-            Sleep(96);
-            continue;
-        }
-        if (IsKeyPressed(VK_F1, false)) {
-            LogOut("BGM Mute button called (global F1 thread)", true);
-            SetBGMSuppressed(!IsBGMSuppressed());
-            DirectDrawHook::AddMessage(
-                IsBGMSuppressed() ? "BGM: OFF" : "BGM: ON",
-                "SYSTEM",
-                IsBGMSuppressed() ? RGB(255,100,100) : RGB(100,255,100),
-                1500, 0, 100
-            );
-            uintptr_t efzBase = GetEFZBase();
-            uintptr_t gameStatePtr = 0;
-            if (SafeReadMemory(efzBase + EFZ_BASE_OFFSET_GAME_STATE, &gameStatePtr, sizeof(uintptr_t)) && gameStatePtr) {
-                if (IsBGMSuppressed()) {
-                    StopBGM(gameStatePtr);
-                } else {
-                    int currentSlot = GetBGMSlot(gameStatePtr);
-                    if (currentSlot != 150 && currentSlot != 0) {
-                        PlayBGM(gameStatePtr, static_cast<unsigned short>(currentSlot));
-                        SetBGMVolumeViaGame(gameStatePtr, 0);
-                    } else if (GetLastBgmTrack() != 150 && GetLastBgmTrack() != 0) {
-                        PlayBGM(gameStatePtr, GetLastBgmTrack());
-                        SetBGMVolumeViaGame(gameStatePtr, 0);
-                    }
-                }
-            } else {
-                LogOut("[BGM] No valid game state pointer for BGM action, will apply on next valid mode.", true);
-            }
-            Sleep(100); // Debounce
-            while (IsKeyPressed(VK_F1, true)) Sleep(10);
-            sleepMs = 16; idleLoops = 0;
-        }
-        // Adaptive backoff if idle
-        if (++idleLoops > 20) sleepMs = 24;  // ~41 Hz
-    if (idleLoops > 60) sleepMs = 32;    // ~31 Hz
-    if (idleLoops > 120) sleepMs = 48;   // ~21 Hz
-        Sleep(sleepMs);
-    }
-}
+// GlobalF1MonitorThread removed (legacy BGM toggle on F1). BGM control now only via ImGui.
 

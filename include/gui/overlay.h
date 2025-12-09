@@ -128,6 +128,7 @@ extern int g_TriggerOnWakeupId;
 extern int g_TriggerAfterHitstunId;
 extern int g_TriggerAfterAirtechId;
 extern int g_TriggerOnRGId;
+extern int g_FramestepStatusId;
 
 // Debug overlay borders toggle (controlled from ImGui)
 extern std::atomic<bool> g_ShowOverlayDebugBorders;

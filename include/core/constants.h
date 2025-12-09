@@ -21,20 +21,48 @@
 #define EFZ_BASE_OFFSET_P1 0x390104
 #define EFZ_BASE_OFFSET_P2 0x390108
 #define EFZ_BASE_OFFSET_GAME_STATE 0x39010C // NEW: For game state
-// Screen/state byte (observed via Cheat Engine):
+// Screen/state byte:
 // 0=Title, 1=Character Select, 2=Loading, 3=In-game, 5=Win screen, 6=Settings, 8=Replay select
 #define EFZ_BASE_OFFSET_SCREEN_STATE 0x390148
 #define XPOS_OFFSET 0x20
 #define YPOS_OFFSET 0x28
 #define HP_OFFSET 0x108
+#define HP_BAR_OFFSET 0x10C
 #define METER_OFFSET 0x148
 #define MOVE_ID_OFFSET 0x8
 #define RF_OFFSET 0x118
 #define GAME_MODE_OFFSET 0x1364 // CORRECTED: The offset is hexadecimal, not decimal.
+#define XVEL_OFFSET 0x30  // X velocity offset from player base
 #define YVEL_OFFSET 0x38  // Y velocity offset from player base
 
 // IC (Instant Charge) color offset - 0=red IC, 1=blue IC
 #define IC_COLOR_OFFSET 0x120  // IC color offset from player base
+
+// -------------------------------------------------------------
+// Engine regeneration / recovery param copies 
+// In the hotkey handler (F4/F5 logic) the battleContext fields
+// at offsets 1396/1398 (words) are copied into each player struct
+// at decimal offsets 12524 / 12526. (12524 = 0x30EC, 12526 = 0x30EE)
+// We only have direct access to the player bases, so we expose the
+// copy offsets here for read-only debug and gating heuristics.
+//  Param A (player + 0x30EC): cycles 1000 <-> 2000 via F5 or fine-tuned
+//                             0..2000 stepping +5 while F4 held.
+//  Param B (player + 0x30EE): becomes 3332 under one branch of F5 cycle,
+//                             forced to 9999 while F4 fine-tune active.
+// Heuristics used by UI:
+//   - Fine-tune active (F4 held)  : Param B == 9999 AND Param A not in {1000,2000}
+//   - Cycle / preset (F5 engaged) : Param A == 1000 or 2000 OR Param B == 3332
+//   - Normal                      : otherwise.
+// refines semantics, update the detection in imgui_gui.cpp.
+// PLAYER_PARAM_A=12524 and PLAYER_PARAM_B=12526 (decimal)
+// 12524 dec = 0x30EC, 12526 dec = 0x30EE
+#define PLAYER_PARAM_A_COPY_OFFSET 0x30EC
+#define PLAYER_PARAM_B_COPY_OFFSET 0x30EE
+
+// System flags used by hotkey gating 
+// sys + 4944 / 4948 were referenced as gate conditions blocking F4 fine-tune.
+#define SYS_FLAG_4944 4944
+#define SYS_FLAG_4948 4948
 
 // Character name offset
 #define CHARACTER_NAME_OFFSET 0x94  // Character name offset from player base
@@ -72,13 +100,19 @@
 #define BACKWARD_AIRTECH 158
 #define GROUNDTECH_START 98
 #define GROUNDTECH_END 99
+// Some engine logic references state 97 as a pre-tech/startup marker; include as alias for safety
+#define GROUNDTECH_PRE 97
 #define GROUNDTECH_RECOVERY 96  // Add this new constant for the recovery state
 
-// Jump Move IDs - add these after the Tech Move IDs section
+// Jump Move IDs
 #define STRAIGHT_JUMP_ID 4
 #define FORWARD_JUMP_ID 5
 #define BACKWARD_JUMP_ID 6
 #define FALLING_ID 9
+// Multiple landing variants 10/11/12 are used; keep 13 as legacy/alt
+#define LANDING_1_ID 10
+#define LANDING_2_ID 11
+#define LANDING_3_ID 12
 #define LANDING_ID 13 
 
 // Special Stun States
@@ -86,6 +120,28 @@
 #define ELECTRIC_STATE 82
 #define FROZEN_STATE_START 83
 #define FROZEN_STATE_END 86
+
+// Thrown states (defender pre-hit/airborne during throw). Ranges can vary slightly by character.
+// Observed examples:
+//  - Ayu:   110 -> 100 -> 59 (launch)
+//  - Akiko: 110 -> 121 -> 122 -> 59 (launch) -> knockdown
+//  - Mai:   108 -> 103 -> 117 -> knockdown (117 is a continuation outside 100..110)
+//  - Rumi:  107 -> 101 -> 118 -> 105 -> knockdown (118 continuation outside 100..110)
+//  - Unknown: (throw start) 59 -> 113 -> 64 -> 70 (wallbounce) -> knockdown (113 continuation outside 100..110)
+// We cover a conservative primary window 100..110 and include known outliers 121..122 and 117, 118, 113.
+#define THROWN_STATE_START 100
+#define THROWN_STATE_END   110
+#define THROWN2_STATE_START 121
+#define THROWN2_STATE_END   122
+// Single-ID continuation observed for Mai
+#define THROWN3_STATE_START 117
+#define THROWN3_STATE_END   117
+// Single-ID continuation observed for Rumi
+#define THROWN4_STATE_START 118
+#define THROWN4_STATE_END   118
+// Single-ID continuation observed for UNKNOWN and Mizuka
+#define THROWN5_STATE_START 113
+#define THROWN5_STATE_END   113
 
 // Game frame rate settings
 #define EFZ_VISUAL_FPS 64.0
@@ -116,6 +172,10 @@
 // Untech memory offset
 #define UNTECH_OFFSET 0x124
 
+// Blockstun/guard freeze counter (short)
+// As per CE entry: [efz.exe + EFZ_BASE_OFFSET_P1/P2] + 0x14A
+#define BLOCKSTUN_OFFSET 0x14A
+
 // Tech recovery frames
 #define AIRTECH_VULNERABLE_FRAMES 16
 #define RUMI_AIRTECH_DOUBLEJUMP_LOCKOUT 31
@@ -123,7 +183,7 @@
 // Helper macros
 #define CLAMP(val, min, max) ((val)<(min)?(min):((val)>(max)?(max):(val)))
 
-// Auto-Airtech patch addresses and original bytes
+// Auto-Airtech patch configuration
 #define AIRTECH_ENABLE_ADDR 0xF4FF
 #define AIRTECH_ENABLE_BYTES "\x74\x71"
 #define AIRTECH_FORWARD_ADDR 0xF514
@@ -213,6 +273,12 @@
 #define BASE_ATTACK_JA        207   // Jumping A
 #define BASE_ATTACK_JB        208   // Jumping B  
 #define BASE_ATTACK_JC        209   // Jumping C
+
+// D button (Special button) attack Move IDs
+#define BASE_ATTACK_5D        210   // Standing D
+#define BASE_ATTACK_2D        211   // Crouching D
+#define BASE_ATTACK_JD        212   // Jumping D
+
 #define BASE_AIRTHROW         241   // Air throw
 
 // Auto-action trigger points
@@ -261,6 +327,12 @@
 #define ACTION_4A             31
 #define ACTION_4B             32
 #define ACTION_4C             33
+// D button normals (notated as S for Special button)
+#define ACTION_5D             34
+#define ACTION_2D             35
+#define ACTION_JD             36
+#define ACTION_6D             37
+#define ACTION_4D             38
 
 // Default delay for triggers
 #define DEFAULT_TRIGGER_DELAY 0  // Default delay for all triggers
@@ -310,8 +382,6 @@
 #define IDC_TRIGGER_AFTER_AIRTECH_MACRO    5033
 #define IDC_TRIGGER_ON_RG_MACRO            5034
 
-// After your existing character constants, add:
-
 // Character IDs - corrected to match internal game IDs
 #define CHAR_ID_AKANE     0
 #define CHAR_ID_AKIKO     1
@@ -329,8 +399,8 @@
 #define CHAR_ID_NAGAMORI  13
 #define CHAR_ID_NANASE    14  // Actually Rumi in files
 #define CHAR_ID_EXNANASE  15  // Actually Doppel in files
-#define CHAR_ID_NAYUKI    16  // Actually NayukiB (Neyuki) in files
-#define CHAR_ID_NAYUKIB   17  // Actually Nayuki in files
+#define CHAR_ID_NAYUKI    16  // Actually Nayuki (Neyuki) in files
+#define CHAR_ID_NAYUKIB   17  // Actually NayukiB in files
 #define CHAR_ID_SHIORI    18
 #define CHAR_ID_AYU       19
 #define CHAR_ID_MAI       20
@@ -348,7 +418,7 @@
 #define IKUMI_BLOOD_MAX      8       // Blood ranges from 0-8
 #define IKUMI_GENOCIDE_MAX   1260    // Depletes by 3 every frames
 
-// Patch addresses for infinite blood mode
+// Patch configuration for infinite blood mode
 #define IKUMI_GENOCIDE_TIMER_ADDR 0x2A718    // Address to patch genocide timer decrement
 #define IKUMI_GENOCIDE_TIMER_ORIGINAL "\x89\x86\x50\x31\x00\x00"  // Original bytes
 #define IKUMI_GENOCIDE_TIMER_PATCH "\x90\x90\x90\x90\x90\x90"     // NOP sequence
@@ -361,7 +431,7 @@
 #define MISUZU_POISON_TIMER_MAX    3000
 
 // Mishio (Element system)
-// Offsets relative to player base (from reverse-engineering/CE)
+// Offsets relative to player base
 #define MISHIO_ELEMENT_OFFSET            0x3158  // 0=None, 1=Fire, 2=Lightning, 3=Awakened
 #define MISHIO_ELEMENT_COOLDOWN_OFFSET   0x315C  // Decrements while element active
 #define MISHIO_ELEMENT_CLOCK_OFFSET      0x3160  // Internal clock used for effects
@@ -377,12 +447,11 @@
 #define MISHIO_AWAKENED_TARGET 4500
 
 // Doppel Nanase (ExNanase) - Enlightened Final Memory flag
-// From decomp: *(DWORD*)(playerBase + 13396) toggles 0/1 when Enlightened is active
+// *(DWORD*)(playerBase + 13396) toggles 0/1 when Enlightened is active
 #define DOPPEL_ENLIGHTENED_OFFSET 0x3454
 
 // Nanase (Rumi) weapon/barehand mode swap
-// RVA of the engine's native toggleCharacterMode routine
-// Decomp VA: 0x0048E140; Module base: 0x00400000; RVA = 0x0008E140
+// Native toggleCharacterMode routine
 #define TOGGLE_CHARACTER_MODE_RVA 0x0008E140
 // Gate flag that enables barehand specials (1=barehand, 0=shinai)
 #define RUMI_WEAPON_GATE_OFFSET   0x344C
@@ -398,13 +467,13 @@
 #define RUMI_ACTIVE_ANIM_PTR_DST  0x0010
 #define RUMI_ACTIVE_MOVE_PTR_DST  0x0164
 
-// Nanase (Rumi) super that forcibly drops Shinai (moveIDs from reverse-engineering)
+// Nanase (Rumi) super that forcibly drops Shinai
 #define RUMI_SUPER_TOSS_A 308
 #define RUMI_SUPER_TOSS_B 309
 #define RUMI_SUPER_TOSS_C 310
 
 // Nanase (Rumi) – Final Memory ("Kimchi") state
-// From decomp: *(DWORD*)(playerBase + 0x3148) toggles 0/1 around special state cases
+// *(DWORD*)(playerBase + 0x3148) toggles 0/1 around special state cases
 // The timer at +0x314C feeds the special gauge rendering
 #define RUMI_KIMCHI_TIMER_OFFSET  0x3148  // timer value used by render gauge
 #define RUMI_KIMCHI_ACTIVE_OFFSET 0x314C  // 0=inactive, 1=active
@@ -418,9 +487,14 @@
 #define P1_INPUT_BUFFER_INDEX_OFFSET 0x260 // Offset to current buffer index
 #define P1_INPUT_BUFFER_SIZE 180          // Size of the circular buffer
 
+// Motion token offset (immediately follows the 2-byte buffer head at 0x260)
+// Writing 99 here neutralizes any in-flight motion command recognition to prevent
+// unintended transitions after control handoffs or macro playback.
+#define MOTION_TOKEN_OFFSET 0x262
+
 // Add these input offset constants after the existing offset definitions
 
-// Raw input offsets from player base (from Cheat Engine findings)
+// Raw input offsets from player base
 #define HORIZONTAL_INPUT_OFFSET 0x188  // Left = 255, Right = 1, Neutral = 0
 #define VERTICAL_INPUT_OFFSET   0x189  // Up = 255, Down = 1, Neutral = 0
 // Immediate button registers are contiguous bytes after vertical input
@@ -428,6 +502,19 @@
 #define BUTTON_B_OFFSET         0x18B
 #define BUTTON_C_OFFSET         0x18C
 #define BUTTON_D_OFFSET         0x18D
+
+// Engine command flags
+// These bytes sit just before the circular input buffer region and are toggled by
+// the engine when a motion/command or dash pattern is recognized. Clearing them
+// prevents residual moveID transitions after external input injection completes.
+#define COMMAND_BUFFER_OFFSET   0x1A8  // Byte flag used by command recognizers
+#define DASH_COMMAND_OFFSET     0x1A9  // Byte flag for dash recognition/state
+
+// Aliases for clarity in cleanup code
+#define INPUT_LATCH1_OFFSET     COMMAND_BUFFER_OFFSET
+#define INPUT_LATCH2_OFFSET     DASH_COMMAND_OFFSET
+// Dash timer byte that counts dash frames; clear during full cleanup
+#define DASH_TIMER_OFFSET       0x1AA
 
 // Block helper aliases (same raw slots as inputs)
 #define BLOCK_DIRECTION_OFFSET  HORIZONTAL_INPUT_OFFSET // signed: -1 (left) / +1 (right) / 0 neutral
@@ -460,7 +547,7 @@
 #define AKIKO_TIMESLOW_A                 1
 #define AKIKO_TIMESLOW_B                 2
 #define AKIKO_TIMESLOW_C                 3
-#define AKIKO_TIMESLOW_INFINITE          4
+#define AKIKO_TIMESLOW_INFINITE          4 //unused in the mod since it breaks next timeslow activation
 
 // Akiko time-slow on-screen counter digits (observed as XYZ). When set to 000, time-slow persists.
 // These are 4-byte integers at the following offsets relative to the player base:
@@ -494,12 +581,12 @@
 #define AKIKO_MOVE_623_LAST_C            254
 
 // Neyuki (Sleepy Nayuki Minase) – Jam count
-// From CE/decomp: integer at +0x3148 on the player struct (same slot other chars repurpose)
+// integer at +0x3148 on the player struct (same slot other chars repurpose)
 #define NEYUKI_JAM_COUNT_OFFSET          0x3148
 #define NEYUKI_JAM_COUNT_MAX             9
 
 // Mai (Kawasumi) – Mini-Mai system (single multi-purpose timer + status byte)
-// Findings (Cheat Engine + decomp correlation):
+// Findings:
 //   +0x3144 : status byte
 //              0 = inactive
 //              1 = Mini-Mai active (summoned)
@@ -521,20 +608,20 @@
 #define MAI_GHOST_TIME_MAX               10000
 #define MAI_GHOST_CHARGE_MAX             1200
 #define MAI_AWAKENING_MAX                10000
-// Additional Mai internal helper flags (observed in decomp region 0x191 state machine):
+// Additional Mai internal helper flags (observed in 0x191 state machine):
 //  +0x314C : transient int used when entering charge (we saw 12620 cleared) – treat as CHARGE_HELPER
 //  +0x3150 : one-shot summon flash flag (12624) reused by multiple characters; when set to 1 before
 //            first tick of active (0x191) causes an effect spawn then auto-clears. We expose for
 //            Force Summon to mimic natural spawn visuals without needing deep engine calls.
 #define MAI_CHARGE_HELPER_OFFSET         0x314C
 #define MAI_SUMMON_FLASH_FLAG_OFFSET     0x3150
-// Native summon script moveID (case 0x104 in decomp) – use to trigger authentic spawn sequence
+// Native summon script moveID (case 0x104) – use to trigger authentic spawn sequence
 #define MAI_SUMMON_MOVE_ID                0x0104  // 260 decimal
 // Internal per-state counters (observed at +0x0A / +0x0C) used by engine switch logic
 #define STATE_FRAME_INDEX_OFFSET          0x0A    // already synonymous with CURRENT_FRAME_INDEX_OFFSET
 #define STATE_SUBFRAME_COUNTER_OFFSET     0x0C
 
-// Mini-Mai (ghost) runtime slot array (reverse-engineered from decomp case 0x191 region):
+// Mini-Mai (ghost) runtime slot array:
 // Player struct contains an array of small slot structs starting at +0x04D0 (1232) with stride 152 (0x98).
 // For Mai, one of these slots (ID == 401) represents the active Mini-Mai entity. Fields (relative to slot start):
 //   +0x00 : uint16 id (401 = Mini-Mai, other values reused by engine scripts)
@@ -553,8 +640,8 @@
 #define MAI_GHOST_SLOT_Y_OFFSET           0x20
 #define MAI_GHOST_SLOT_MAX_SCAN           12       // Safety cap (engine likely uses fewer)
 
-// Minagi (Tono Minagi) – Puppet (Michiru) entity uses the same slot array layout as Mini-Mai
-// Entity ID for Michiru puppet observed via CE/decomp: 400
+// Minagi (Tohno Minagi) – (Michiru) entity uses the same slot array layout as Mini-Mai
+// Entity ID for Michiru observed: 400
 // Reuse the same slot base/stride/offsets; only the ID differs
 #define MINAGI_PUPPET_ENTITY_ID           400
 #define MINAGI_PUPPET_SLOTS_BASE          MAI_GHOST_SLOTS_BASE
