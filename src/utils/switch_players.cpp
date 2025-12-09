@@ -196,7 +196,7 @@ namespace {
             << "\n    sharedVec[0]=0x" << slot0 << " [1]=0x" << slot1;
         LogOut(oss.str(), true);
 
-        // Also log key EfzRevival call addresses for this session
+        // Log key call info for this session
         HMODULE h = GetModuleHandleA("EfzRevival.dll"); uintptr_t base = (uintptr_t)h;
         uintptr_t rvaTog = EFZ_RVA_PatchToggler();
         uintptr_t rvaCtx = EFZ_RVA_PatchCtx();
@@ -443,7 +443,7 @@ namespace {
         EfzRevivalVersion ver = GetEfzRevivalVersion();
         
         // For 1.02g: Skip function calls, use fallback direct memory path
-        // (structure identical to 1.02e but function RVAs unknown)
+        // (structure identical to 1.02e)
         if (ver == EfzRevivalVersion::Revival102g) {
             LogOut("[SWITCH] PostSwitchRefresh using direct memory path for 1.02g", true);
             DebugLog::Write("Using direct memory path for 1.02g (skip function calls)");
@@ -476,7 +476,7 @@ namespace {
             // Compute per-side map pointer: (char**)(this + 8 * (local + 104))
             char** mapPtr = reinterpret_cast<char**>((uintptr_t)practice + (8 * (local + 104)));
 
-            // Resolve MapReset RVA and call if available
+            // Resolve MapReset function and call if available
             uintptr_t rvaMapReset = EFZ_RVA_MapReset();
             HMODULE hMod = GetModuleHandleA("EfzRevival.dll");
             if (!hMod || !rvaMapReset) break;
@@ -681,7 +681,7 @@ namespace SwitchPlayers {
                   << " | Desired local: " << std::dec << desiredLocal;
         DebugLog::Write(ossHeader.str());
         
-        // Log EfzRevival.dll base for reference
+        // Log module base for reference
         HMODULE hEfz = GetModuleHandleA("EfzRevival.dll");
         if (hEfz) {
             std::ostringstream ossEfz;
@@ -736,7 +736,7 @@ namespace SwitchPlayers {
         // H/I-version: Official switch mechanism using flag at +36
         //   - Setting *(Practice+36)=1 triggers full reinitialization on next tick
         //   - Engine handles ALL state updates (buffers, pointers, etc.)
-        //   - From decompilation (h): if (*(_DWORD *)(this + 36) == 1) { sub_1006D320(...); *(_DWORD *)(this + 36) = 0; }
+        //   - Behavior observed in version h: if (*(_DWORD *)(this + 36) == 1) { sub_1006D320(...); *(_DWORD *)(this + 36) = 0; }
         //
         {
             EfzRevivalVersion ver = GetEfzRevivalVersion();

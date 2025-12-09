@@ -5,8 +5,8 @@
 
 #include "../include/core/logger.h"
 #include "../include/utils/config.h"
-#include "../include/gui/imgui_impl.h"  // Add this include
-#include "../include/game/character_settings.h" // Add this include for ImGui dialog
+#include "../include/gui/imgui_impl.h"  
+#include "../include/game/character_settings.h"  for ImGui dialog
 #include <windows.h>
 #include <string>
 #include <thread>

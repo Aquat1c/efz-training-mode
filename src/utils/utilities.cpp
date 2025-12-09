@@ -19,7 +19,7 @@
 #include "../include/game/practice_offsets.h" // For GAMESTATE_OFF_P1_CPU_FLAG, GAMESTATE_OFF_P2_CPU_FLAG
 #include <sstream>
 #include <iomanip>
-#include <iostream>  // Add this include for std::cout and std::cerr
+#include <iostream>   for std::cout and std::cerr
 #include <algorithm>  // For std::transform
 #include <cwctype>    // For wide character functions
 #include <locale>     // For std::locale

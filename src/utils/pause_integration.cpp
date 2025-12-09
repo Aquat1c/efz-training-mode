@@ -50,7 +50,7 @@ namespace {
     std::atomic<void*> s_battleContext{nullptr};
     std::atomic<bool> s_weFrozeGamespeed{false};
     std::atomic<uint8_t> s_prevGamespeed{3};
-    // Direct gamespeed byte address resolved from efz.exe GameMode array (CE-confirmed)
+    // Direct gamespeed byte address resolved from game mode array
     std::atomic<uintptr_t> s_gamespeedAddr{0};
     // Vanilla EFZ pause ownership (engine pause via battleContext+0x1416)
     std::atomic<bool> s_weVanillaEnginePause{false};
@@ -365,7 +365,7 @@ namespace {
     // to avoid fragile render hooks in vanilla.
     static bool RefreshBattleContextFromGameModeArray() {
         uintptr_t efzBase = GetEFZBase(); if (!efzBase) return false;
-        constexpr uintptr_t RVA_GameModeArray = 0x00790110; // efz.exe absolute RVA
+        constexpr uintptr_t RVA_GameModeArray = 0x00790110; // game mode array base offset
         void* bc = nullptr;
         uintptr_t slot3 = efzBase + RVA_GameModeArray + 4 * 3; // index 3 = battle context
         if (!SafeReadMemory(slot3, &bc, sizeof(bc)) || !bc) return false;
@@ -373,15 +373,11 @@ namespace {
         return true;
     }
 
-    // Resolve the gamespeed byte address from efz.exe GameMode array.
-    // Cheat table pointers confirm three equivalent paths ending at the same address:
-    //   *(efz+0x390114) + 0x0F20 -> byte
-    //   *(efz+0x390118) + 0x09B8 -> byte
-    //   *(efz+0x39011C) + 0x0578 -> byte (slot 3 = battle)
+    // Resolve the gamespeed byte address from the game mode array.
     static bool ResolveGamespeedAddr() {
         if (s_gamespeedAddr.load()) return true;
         uintptr_t efzBase = GetEFZBase(); if (!efzBase) return false;
-        constexpr uintptr_t RVA_GameModeArray = 0x00390110; // same as 0x00790110 RVA; we add base
+        constexpr uintptr_t RVA_GameModeArray = 0x00390110; // game mode array base offset
         struct Path { int idx; uintptr_t off; } paths[] = {
             { 1, 0x0F20 },
             { 2, 0x09B8 },
@@ -457,7 +453,7 @@ namespace {
         return ok;
     }
 
-    // Read/write game speed via CE-confirmed slot address (preferred), fallback to legacy bc+0x1400 if unresolved
+    // Read/write game speed via resolved slot address (preferred), fallback to legacy bc+0x1400 if unresolved
     bool ReadGamespeed(uint8_t &out) {
         // Try direct resolved address first
         uintptr_t addr = s_gamespeedAddr.load();
@@ -538,8 +534,7 @@ namespace {
         if (!hEfz) return false;
         uintptr_t base = reinterpret_cast<uintptr_t>(hEfz);
         
-        // Patch addresses from Revival sub_1006B2A0 (these are RVAs from efz.exe base 0x400000)
-        // When freezing, write NOPs; when unfreezing, restore original bytes
+        // Visual effect patching handled by writing NOPs when freezing and restoring when unfreezing
         struct PatchEntry {
             uintptr_t rva;
             SIZE_T size;
@@ -615,7 +610,7 @@ namespace {
     bool InvokeOfficialToggle() {
         void* p = s_practicePtr.load(); if (!p) return false;
         
-        // Now that we have RVAs for 1.02g, use the standard function call path
+        // Use the standard function call path
         auto fn = GetOfficialToggleFn(); if (!fn) return false;
         // Temporarily bypass suppression so HookedTogglePause calls through
         s_internalPauseBypass.store(true, std::memory_order_relaxed);

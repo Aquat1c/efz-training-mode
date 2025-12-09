@@ -19,12 +19,12 @@
 #include "../include/utils/config.h"
 #include "../include/game/practice_patch.h"
 #include "../include/game/final_memory_patch.h"
-#include "../include/game/auto_action.h"  // ADD THIS INCLUDE
-#include "../include/input/input_hook.h" // Add this include
-#include "../3rdparty/minhook/include/MinHook.h" // Add this include
+#include "../include/game/auto_action.h"  
+#include "../include/input/input_hook.h" 
+#include "../3rdparty/minhook/include/MinHook.h" 
 #include "../include/utils/bgm_control.h"
 #include "../include/game/game_state.h"
-#include "../include/core/globals.h"  // Add this include
+#include "../include/core/globals.h"  
 #include "../include/game/collision_hook.h"
 #include "../include/game/practice_hotkey_gate.h"
 #include "../include/game/practice_offsets.h"
@@ -42,7 +42,6 @@ void UpdateConsoleTitle();
 void WriteStartupLog(const std::string& message);
 extern std::atomic<bool> inStartupPhase;
 
-// Add this declaration before it's used
 void InitializeConfig();
 
 // Define the global flags (remove 'static' if present)

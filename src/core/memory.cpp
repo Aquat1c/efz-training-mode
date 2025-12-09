@@ -228,12 +228,12 @@ void SetPlayerPosition(uintptr_t base, uintptr_t playerOffset, double x, double 
 }
 
 
-// Direct RF value setter that matches Cheat Engine's approach
+// Direct RF value setter (pointer-based)
 bool SetRFValuesDirect(double p1RF, double p2RF) {
     uintptr_t base = GetEFZBase();
     if (!base) return false;
     
-    // Use direct pointer access exactly as Cheat Engine does
+    // Use direct pointer access
     uintptr_t* p1Ptr = (uintptr_t*)(base + EFZ_BASE_OFFSET_P1);
     uintptr_t* p2Ptr = (uintptr_t*)(base + EFZ_BASE_OFFSET_P2);
     
@@ -526,7 +526,7 @@ bool SetICColorDirect(bool p1BlueIC, bool p2BlueIC) {
     uintptr_t base = GetEFZBase();
     if (!base) return false;
     
-    // Use direct pointer access exactly as Cheat Engine does
+    // Use direct pointer access
     uintptr_t* p1Ptr = (uintptr_t*)(base + EFZ_BASE_OFFSET_P1);
     uintptr_t* p2Ptr = (uintptr_t*)(base + EFZ_BASE_OFFSET_P2);
     
@@ -859,7 +859,7 @@ void RFFreezeThreadFunc() {
         if (rfFreezing.load()) {
             uintptr_t base = GetEFZBase();
             if (base) {
-                // Use direct pointer access exactly as Cheat Engine does
+                // Use direct pointer access
                 uintptr_t* p1Ptr = (uintptr_t*)(base + EFZ_BASE_OFFSET_P1);
                 uintptr_t* p2Ptr = (uintptr_t*)(base + EFZ_BASE_OFFSET_P2);
                 

@@ -146,12 +146,12 @@ static bool ProcessHasActiveUdpConnection() {
     return false;
 }
 
-// Try to read the ONLINE state exposed by EfzRevival.dll.
-// Preferred path (CE-confirmed):
-//   ctxPtr = *(void**)(EfzRevival.dll + 0x26A4)
+// Try to read the ONLINE state.
+// Preferred path:
+
 //   state  = *(int*)(ctxPtr + 0x370)   // 1.02e/1.02h
 //   state  = *(int*)(ctxPtr + 0x37C)   // 1.02i
-// Fallback path: legacy fixed RVAs (module-relative) returning a 32-bit int.
+
 OnlineState ReadEfzRevivalOnlineState() {
     static std::atomic<bool> s_loggedOnce{false};
     bool shouldLog = !s_loggedOnce.exchange(true, std::memory_order_relaxed);
@@ -240,14 +240,14 @@ OnlineState ReadEfzRevivalOnlineState() {
         }
     }
 
-    // Legacy fixed-RVA ints (keep as fallback)
+
     uintptr_t rva = 0;
     switch (vv) {
         case EfzRevivalVersion::Revival102f: rva = 0x00A05D0; break; // per user report
         case EfzRevivalVersion::Revival102e: rva = 0x00A05D0; break;
         case EfzRevivalVersion::Revival102g: rva = 0x00A05D0; break; // 1.02g uses same as 1.02e
         case EfzRevivalVersion::Revival102h: rva = 0x00A05F0; break;
-        case EfzRevivalVersion::Revival102i: rva = 0x00A15FC; break; // CE-confirmed: online state
+        case EfzRevivalVersion::Revival102i: rva = 0x00A15FC; break;
         default: return OnlineState::Unknown;
     }
     if (shouldLog) {
@@ -347,7 +347,7 @@ const char* OnlineStateName(OnlineState st) {
 bool DetectOnlineMatch() {
     EfzRevivalVersion v = GetEfzRevivalVersion();
     
-    // For unsupported/unknown versions: try multiple known RVAs
+
     // The state variable address drifts between versions, so probe all candidates
     if (v == EfzRevivalVersion::Other || v == EfzRevivalVersion::Unknown) {
         HMODULE hEfzRev = GetModuleHandleA("EfzRevival.dll");
@@ -357,7 +357,7 @@ bool DetectOnlineMatch() {
         }
         
         uintptr_t base = reinterpret_cast<uintptr_t>(hEfzRev);
-        // Known RVAs from supported versions (most recent first)
+
         const uintptr_t candidateRVAs[] = {
             0xA15FC,  // 1.02i (CE-confirmed)
             0xA05F0,  // 1.02h
