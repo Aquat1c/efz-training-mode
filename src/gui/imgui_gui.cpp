@@ -2354,7 +2354,6 @@ namespace ImGuiGui {
             }
             if (!p1Awakened) {
                 ImGui::EndDisabled();
-                ImGui::SameLine();
                 ImGui::TextDisabled("(set Element to Awakened to edit)");
             }
         }
@@ -2766,7 +2765,6 @@ namespace ImGuiGui {
             }
             if (!p2Awakened) {
                 ImGui::EndDisabled();
-                ImGui::SameLine();
                 ImGui::TextDisabled("(set Element to Awakened to edit)");
             }
     }
@@ -3307,9 +3305,19 @@ namespace ImGuiGui {
 
         // Refresh data once when UI becomes visible; avoid continuous auto-refresh to reduce work
         static bool lastVisible = false;
+        static bool lastCharsInitialized = false;
         bool currentVisible = ImGuiImpl::IsVisible();
+        bool charsInitializedNow = AreCharactersInitialized();
         if (currentVisible && !lastVisible) {
-            // Refresh once on menu open
+            // Refresh once on menu open (parses character names/IDs
+            // and reads character-specific values via
+            // CharacterSettings::ReadCharacterValues).
+            RefreshLocalData();
+        } else if (currentVisible && charsInitializedNow && !lastCharsInitialized) {
+            // Menu is already open, but characters just became
+            // available (e.g. re-entered Practice from character
+            // select). Re-run the ImGui-side parsing so the
+            // Character tab uses up-to-date IDs/values.
             RefreshLocalData();
 
             // On menu open, update IC color ONCE if not managed by RF Freeze color lock or Continuous Recovery
@@ -3340,6 +3348,7 @@ namespace ImGuiGui {
             }
         }
         lastVisible = currentVisible;
+        lastCharsInitialized = charsInitializedNow;
 
     // Set window position and size
         // Use Appearing so the menu always resets to a visible spot when reopened (prevents off-screen in fullscreen)
@@ -3694,8 +3703,11 @@ namespace ImGuiGui {
     // Update ApplyImGuiSettings to include character-specific data
     void ApplyImGuiSettings() {
         if (g_featuresEnabled.load()) {
-            LogOut("[IMGUI_GUI] Applying settings from ImGui interface", true);
-            
+            bool charsInit = AreCharactersInitialized();
+            LogOut("[IMGUI_GUI] Applying settings from ImGui interface (charsInit=" + std::string(charsInit ? "Y" : "N") +
+                   ", P1CharID=" + std::to_string(guiState.localData.p1CharID) +
+                   ", P2CharID=" + std::to_string(guiState.localData.p2CharID) + ")", true);
+
             DisplayData updatedData = guiState.localData;
             // Normalize Rumi intent: Infinite Shinai overrides to Shinai mode
             if (updatedData.p1RumiInfiniteShinai) updatedData.p1RumiBarehanded = false;
@@ -3861,29 +3873,10 @@ namespace ImGuiGui {
                     short mv = uiSample2.moveID2;
                     if (!uiSample2.actionable2) deferred = true;
                 }
-                // Determine if engine F4/F5 or Continuous Recovery is managing values
-                uint16_t engA = 0, engB = 0; EngineRegenMode regenMode = EngineRegenMode::Unknown;
-                bool gotParams = GetEngineRegenStatus(regenMode, engA, engB);
-                bool engineLocksValues = gotParams && (regenMode == EngineRegenMode::F4_FineTuneActive || regenMode == EngineRegenMode::F5_FullOrPreset);
-                bool crAny = (displayData.p1ContinuousRecoveryEnabled && (displayData.p1RecoveryHpMode>0 || displayData.p1RecoveryMeterMode>0 || displayData.p1RecoveryRfMode>0)) ||
-                             (displayData.p2ContinuousRecoveryEnabled && (displayData.p2RecoveryHpMode>0 || displayData.p2RecoveryMeterMode>0 || displayData.p2RecoveryRfMode>0));
-
-                bool onlyApplyXY = engineLocksValues || crAny;
-
-                if (!onlyApplyXY) {
-                    // Normal path: apply all values (HP/Meter/X/Y/RF) via legacy ApplySettings
-                    ApplySettings(&displayData);
-                } else {
-                    // Regen/CR active: only apply X/Y, and only if Values tab is active in ImGui
-                    if (guiState.mainMenuSubTab == 1) {
-                        // Apply positions directly; skip HP/Meter/RF to avoid fighting engine/CR
-                        SetPlayerPosition(base, EFZ_BASE_OFFSET_P1, (double)displayData.x1, (double)displayData.y1);
-                        SetPlayerPosition(base, EFZ_BASE_OFFSET_P2, (double)displayData.x2, (double)displayData.y2);
-                        LogOut("[IMGUI] Engine/CR active — applied X/Y only (Values tab)", detailedLogging.load());
-                    } else {
-                        LogOut("[IMGUI] Engine/CR active — skipped HP/Meter/RF and X/Y (Values tab not active)", detailedLogging.load());
-                    }
-                }
+                // Apply all values (HP/Meter/X/Y/RF and character-specific) via legacy ApplySettings.
+                // Engine F4 recovery safety is handled inside ApplySettings itself, to mirror non-ImGui behaviour.
+                LogOut("[IMGUI_GUI] Calling ApplySettings from ImGui (base!=0)", true);
+                ApplySettings(&displayData);
 
                 // Run one enforcement tick immediately so infinite toggles take effect without waiting for the next cadence
                 CharacterSettings::TickCharacterEnforcements(base, displayData);
@@ -4011,6 +4004,8 @@ namespace ImGuiGui {
                 // Apply one-shot enforcement now (only for sides with CR enabled)
                 enforceForPlayer(1);
                 enforceForPlayer(2);
+            } else {
+                LogOut("[IMGUI_GUI] ApplyImGuiSettings: base=0; skipping ApplySettings/TickCharacterEnforcements", true);
             }
         }
     }

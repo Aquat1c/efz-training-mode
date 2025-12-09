@@ -25,4 +25,10 @@ namespace CharacterSettings {
     // Inline per-tick enforcement of character-specific features (no threads)
     // Call this periodically (e.g., ~16 Hz) from the main monitor thread.
     void TickCharacterEnforcements(uintptr_t base, const DisplayData& data);
+
+    // Clear all cached per-character pointers so they will be
+    // recomputed on the next Read/Apply call. Intended to be
+    // called when (re)entering a valid game mode (e.g. after
+    // returning from character select) to avoid stale addresses.
+    void InvalidateAllCharacterPointerCaches();
 }

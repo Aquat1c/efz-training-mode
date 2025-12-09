@@ -1309,6 +1309,16 @@ void FrameDataMonitor() {
               " frame=" + std::to_string(currentFrame), detailedLogging.load());
                 fm_lastCharsInit = isInitialized;
 
+                // Manage character-specific pointer cache lifecycle around init transitions.
+                // When characters deinitialize (e.g., returning to Character Select), immediately
+                // invalidate all character pointer caches and the player base cache. On the next
+                // Read/Apply call in CharacterSettings, caches will be lazily refreshed using the
+                // current base and character IDs.
+                if (wasInitialized && !isInitialized) {
+                    CharacterSettings::InvalidateAllCharacterPointerCaches();
+                    InvalidatePlayerBaseCache();
+                }
+
                 // If we were waiting for init in a valid mode, reinitialize overlays now
                 if (!wasInitialized && isInitialized && s_pendingOverlayReinit && isValidGameMode && g_featuresEnabled.load()) {
                     LogOut("[FRAME MONITOR] Characters initialized in valid mode; reinitializing overlays now", true);
@@ -2198,6 +2208,10 @@ void FrameDataMonitor() {
                     pid2 = CharacterSettings::GetCharacterID(std::string(name2));
                 }
                 snap.p1CharId = pid1; snap.p2CharId = pid2;
+
+                // Character-specific pointer caches are lazily refreshed inside
+                // CharacterSettings::ReadCharacterValues/ApplyCharacterValues after
+                // we invalidate them on deinitialization; no explicit refresh here.
 
                 // One-shot Akiko Clean Hit helper (frame-monitor based): trigger on HP drop of defender
                 if (currentPhase == GamePhase::Match && DirectDrawHook::isHooked) {
