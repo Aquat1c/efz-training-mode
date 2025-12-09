@@ -164,10 +164,8 @@ External libraries:
 
 **Compatibility**
 - The mod fully tested on:
-  - Vanilla EFZ (no Revival)
-  - Eternal Fighter Zero -Revival- 1.02e
-  - Eternal Fighter Zero -Revival- 1.02h
-  - Eternal Fighter Zero -Revival- 1.02i
+  - Vanilla EFZ (no Revival, launched via efz.exe)
+  - Eternal Fighter Zero -Revival- 1.02e/1.02g/1.02f/1.02h!!!/1.02i!!!
 - On other versions, the mod should work fine as well but some features might not work properly.
 
 ---
