@@ -5,7 +5,7 @@
 #include "../include/core/memory.h"
 #include "../include/input/input_handler.h"
 #include "../include/core/di_keycodes.h"
-#include "../include/game/frame_analysis.h"    // ADD THIS - for IsBlockstunState
+#include "../include/game/frame_analysis.h"   
 #include "../include/game/frame_advantage.h"
 #include "../include/utils/config.h"
 #include "../include/gui/imgui_impl.h"
@@ -16,13 +16,13 @@
 #include "../include/game/auto_action.h"
 #include "../include/game/frame_monitor.h"
 #include "../include/input/input_freeze.h"
-#include "../include/game/practice_offsets.h" // For GAMESTATE_OFF_P1_CPU_FLAG, GAMESTATE_OFF_P2_CPU_FLAG
+#include "../include/game/practice_offsets.h"
 #include <sstream>
 #include <iomanip>
-#include <iostream>   for std::cout and std::cerr
-#include <algorithm>  // For std::transform
-#include <cwctype>    // For wide character functions
-#include <locale>     // For std::locale
+#include <iostream>
+#include <algorithm> 
+#include <cwctype>    
+#include <locale>     
 #include <fstream>
 #include <iomanip>
 #include <chrono>
@@ -30,9 +30,9 @@
 #include <limits>
 #include "../include/game/character_settings.h"
 #include "../include/game/game_state.h"
-#include "../include/input/input_hook.h"          // For RemoveInputHook
-#include "../include/game/collision_hook.h"       // For RemoveCollisionHook
-#include "../3rdparty/minhook/include/MinHook.h"  // For MH_DisableHook(MH_ALL_HOOKS)
+#include "../include/input/input_hook.h"         
+#include "../include/game/collision_hook.h"       
+#include "../3rdparty/minhook/include/MinHook.h" 
 #include "../include/input/immediate_input.h"
 
 #include "../include/utils/bgm_control.h"
@@ -1243,7 +1243,6 @@ bool IsDashState(short moveID) {
 }
 
 
-// Add this function after the IsEFZWindowActive() function
 HWND FindEFZWindow() {
     // Cache & throttle enumeration: only re-enumerate every 120 internal frames or if handle invalid
     static HWND cached = NULL;

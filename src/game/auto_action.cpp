@@ -10,7 +10,7 @@
 #include "../include/game/auto_action_helpers.h"
 #include "../include/input/motion_constants.h"  
 #include "../include/input/input_motion.h"      
-#include "../include/input/input_freeze.h"      near the top with the other includes
+#include "../include/input/input_freeze.h"
 #include "../include/input/input_buffer.h"     // For g_activeFreezePlayer owner check
 #include "../include/game/attack_reader.h"
 #include "../include/input/immediate_input.h"
@@ -2423,7 +2423,6 @@ static void RestoreP2ControlFlagOnly() {
     g_p2ControlOverridden = false;
 }
 
-// Add this function to auto_action.h
 void ProcessAutoControlRestore() {
     if (!IsMatchPhase()) {
         // Likely transitioning to character select / menu; invalidate caches

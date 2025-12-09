@@ -60,7 +60,6 @@ static bool TryFindNestedAttackPtr(uintptr_t frameData, int& outOffset, uintptr_
     return false;
 }
 
-// Add this function to log detailed attack data
 void AttackReader::LogMoveData(int playerNum, short moveID) {
     if (moveID <= 0) {
         return; // Not an attack move

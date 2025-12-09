@@ -89,7 +89,7 @@ void WriteStartupLog(const std::string& message); // Logs messages during the st
 std::string GetKeyName(int virtualKey);
 void DetectKeyBindings();
 bool IsDashState(short moveID); // New: Check if in dash state
-bool CanAirtech(short moveID); // Add this missing declaration
+bool CanAirtech(short moveID); 
 
 // NEW: Add feature management functions
 extern std::atomic<bool> g_featuresEnabled;
@@ -152,7 +152,7 @@ struct DisplayData {
     // Misuzu
     int p1MisuzuFeathers;
     int p2MisuzuFeathers;
-    bool infiniteFeatherMode; // Add this missing field
+    bool infiniteFeatherMode;
     // Misuzu poison
     int  p1MisuzuPoisonTimer; // 0..3000
     int  p2MisuzuPoisonTimer; // 0..3000
@@ -501,7 +501,6 @@ extern std::atomic<bool> g_manualInputOverride[3]; // Index 0 unused, 1 for P1, 
 extern std::atomic<uint8_t> g_manualInputMask[3];
 extern std::atomic<bool> g_manualJumpHold[3]; // NEW: For continuous jump on hold
 
-// Add this function declaration
 void UpdateWindowActiveState();
 
 // Add these after the other global state variables

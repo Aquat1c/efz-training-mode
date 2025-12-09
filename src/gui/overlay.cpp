@@ -3,7 +3,7 @@
 #include <chrono>
 #include <vector>
 #include <thread>
-#include <atomic> // Add this for std::atomic
+#include <atomic>
 #include "../include/gui/overlay.h"
 #include "../include/core/logger.h"
 #include "../include/utils/utilities.h"

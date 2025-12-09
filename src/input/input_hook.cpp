@@ -28,7 +28,7 @@ static std::string FormatHexByte(uint8_t value) {
     oss << std::uppercase << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(value);
     return oss.str();
 }
-// Add this static variable to track the previous frame's button mask for edge detection.
+// Static variable to track the previous frame's button mask for edge detection.
 static uint8_t g_lastInjectedMask[3] = {0, 0, 0}; // Index 0 unused, 1 for P1, 2 for P2
 // Track whether we were bypassing original (buffered injection) last frame per player.
 static bool g_wasBypassBuffered[3] = { false, false, false };
