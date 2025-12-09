@@ -32,14 +32,14 @@ This project is a DLL mod that loads via EFZ Mod Manager. It adds a configurable
 
 **Features**
 
-- **Frame Analysis:** Frame advantage on block/hit; RG analysis including Stand/Crouch/Air windows, immediate attack window after RG freeze, and advantage if RG stun isn’t canceled; gap timing and move ID tracking; visual frame counter.
-
 - **Auto-Actions:** Configurable triggers and actions that fire at precise training moments:
   - Triggers: After Block, After Hitstun, On Wakeup, After Airtech
   - Actions: Macro slot playback, auto-jump, buffered dashes, button/direction inputs
   - Designed for stability in practice mode and disabled automatically during online play
 
 - **Auto-Airtech:** Automatic air recovery with direction (Forward/Neutral/Back) and optional delay; tuned for actionable states around FALLING.
+
+- **Frame Analysis:** Shows frame advantage on block, hit, and RG, plus the gap between blocked hits.
 
 - **Jumps and Dashes:**
   - Jumps use immediate input injection (direction respects facing)
