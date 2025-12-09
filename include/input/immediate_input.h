@@ -26,5 +26,6 @@ void Clear(int playerNum);
 
 // For diagnostics
 uint8_t GetCurrentDesired(int playerNum);
+int GetRemainingTicks(int playerNum);
 
 } // namespace ImmediateInput

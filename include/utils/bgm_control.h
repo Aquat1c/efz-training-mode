@@ -27,14 +27,14 @@ int GetBGMVolume(uintptr_t gameStatePtr);
 // Log current BGM state (slot, volume, etc)
 void LogBGMState(uintptr_t gameStatePtr);
 
-bool ToggleBGM(uintptr_t gameSystemPtr);
-void SetBGMSuppressed(bool suppress);
-bool IsBGMSuppressed();
+// Legacy suppression/toggle interfaces removed; stubs exist only in implementation for ABI.
+void SetBGMSuppressed(bool suppress); // no-op
+bool IsBGMSuppressed();               // always false
 bool InstallBGMHook(uintptr_t efzBase);
 
 // Get/set last BGM track for toggling/resume
 unsigned short GetLastBgmTrack();
 void SetLastBgmTrack(unsigned short track);
 bool SetBGMVolumeViaGame(uintptr_t gameSystemPtr, int volumeLevel);
-void StartBGMSuppressionPoller();
-void StopBGMSuppressionPoller();
+void StartBGMSuppressionPoller(); // no-op
+void StopBGMSuppressionPoller();  // no-op

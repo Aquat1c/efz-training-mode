@@ -37,6 +37,7 @@ void Tick();
 void ToggleRecord();   // Idle -> PreRecord -> Recording -> Idle(stop)
 void Play();           // Start replay current slot if present
 void Stop();           // Force stop (record/replay), restore state
+void UnswapThenStop(); // Restore default mapping (unswap+CPU) first, then stop
 
 // Slot helpers
 int  GetCurrentSlot();           // 1-based slot index
@@ -53,5 +54,19 @@ std::string GetStatusLine();
 
 // Debug helpers
 SlotStats GetSlotStats(int slot);
+
+// Text serialization for macros (human-editable)
+// Format header: "EFZMACRO 1" then a space-separated sequence of tokens.
+// Token syntax (per 64 Hz tick):
+//   - Direction+buttons, e.g., 5, 6A, 2AB, N, 4C (digit is numpad: 2=D, 4=L, 5=N, 6=R, 8=U, diagonals 1/3/7/9)
+//   - Optional repeat suffix: xN (e.g., 5Ax50)
+//   - Optional buffer group: {k: v1 v2 ...} where k is number of raw buffer writes this tick and v* are either
+//     direction+buttons tokens or hex bytes (0xNN). If omitted, playback defaults to one write equal to the tick mask.
+// IncludeBuffers controls whether Serialize emits explicit buffer groups (recommended when preserving recorder fidelity).
+std::string SerializeSlot(int slot, bool includeBuffers);
+
+// Parse a serialized macro and replace the given slot. On success returns true and clears errorOut.
+// On failure returns false and puts a message into errorOut; slot contents are left unchanged.
+bool DeserializeSlot(int slot, const std::string& text, std::string& errorOut);
 
 } // namespace MacroController

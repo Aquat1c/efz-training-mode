@@ -4,11 +4,15 @@
 #include "../include/core/logger.h"
 #include "../include/core/constants.h"
 #include "../include/utils/utilities.h"
+#include "../include/utils/network.h" // IsEfzRevivalVersionSupported
+
+#include "../include/input/input_core.h"
 
 #include "../3rdparty/minhook/include/MinHook.h"
 #include "../include/game/practice_patch.h"
 #include "../include/input/input_buffer.h" // for g_bufferFreezingActive
 #include "../include/input/immediate_input.h"
+#include "../include/game/auto_action.h"
 #include "../include/input/injection_control.h"
 #include <windows.h>
 #include <vector>
@@ -36,6 +40,59 @@ std::atomic<bool> g_forceBypass[3] = { false, false, false };
 std::atomic<bool> g_pollOverrideActive[3] = { false, false, false };
 std::atomic<uint8_t> g_pollOverrideMask[3] = { 0, 0, 0 };
 
+// Arming state for motion-token neutralization and optional staged cleanup
+static std::atomic<bool> s_armedNeutralize[3] = { false, false, false };
+static std::atomic<bool> s_doFullCleanup[3] = { false, false, false };
+static std::atomic<uint16_t> s_lastHead[3] = { 0xFFFF, 0xFFFF, 0xFFFF };
+static std::atomic<int> s_headStable[3] = { 0, 0, 0 };
+
+void InputHook_ArmTokenNeutralize(int playerNum, bool alsoDoFullCleanup) {
+    if (playerNum != 1 && playerNum != 2) return;
+    s_armedNeutralize[playerNum].store(true, std::memory_order_relaxed);
+    s_doFullCleanup[playerNum].store(alsoDoFullCleanup, std::memory_order_relaxed);
+    s_lastHead[playerNum].store(0xFFFF, std::memory_order_relaxed);
+    s_headStable[playerNum].store(0, std::memory_order_relaxed);
+    if (detailedLogging.load()) {
+        LogOut(std::string("[INPUT_HOOK] Armed token neutralize for P") + std::to_string(playerNum) +
+               (alsoDoFullCleanup?" + full cleanup":""), true);
+    }
+}
+
+// Helper invoked at the end of processing to perform late neutralization/cleanup
+static void MaybePerformTailCleanup(int playerNum) {
+    if (playerNum != 1 && playerNum != 2) return;
+    // Skip during buffer-freeze for this player (let freeze system manage state)
+    if (g_bufferFreezingActive.load()) {
+        int owner = g_activeFreezePlayer.load();
+        if (owner == playerNum || owner == 0) return;
+    }
+    // One-shot token neutralization
+    if (s_armedNeutralize[playerNum].load(std::memory_order_relaxed)) {
+        (void)NeutralizeMotionToken(playerNum);
+        s_armedNeutralize[playerNum].store(false, std::memory_order_relaxed);
+    }
+    // Staged cleanup once buffer head is stable for >=2 frames
+    if (s_doFullCleanup[playerNum].load(std::memory_order_relaxed)) {
+        uintptr_t pPtr = GetPlayerPointer(playerNum);
+        if (!pPtr) return;
+        uint16_t head = 0;
+        if (!SafeReadMemory(pPtr + INPUT_BUFFER_INDEX_OFFSET, &head, sizeof(head))) return;
+        uint16_t last = s_lastHead[playerNum].load(std::memory_order_relaxed);
+        if (last == 0xFFFF || head != last) {
+            s_lastHead[playerNum].store(head, std::memory_order_relaxed);
+            s_headStable[playerNum].store(0, std::memory_order_relaxed);
+            return;
+        }
+        int stable = s_headStable[playerNum].fetch_add(1, std::memory_order_relaxed) + 1;
+        if (stable >= 2) {
+            (void)FullCleanupAfterToggle(playerNum);
+            s_doFullCleanup[playerNum].store(false, std::memory_order_relaxed);
+            s_lastHead[playerNum].store(0xFFFF, std::memory_order_relaxed);
+            s_headStable[playerNum].store(0, std::memory_order_relaxed);
+        }
+    }
+}
+
 // Function pointer for the original game function we are hooking.
 typedef int(__thiscall* tProcessCharacterInput)(int characterPtr);
 tProcessCharacterInput oProcessCharacterInput = nullptr;
@@ -51,6 +108,28 @@ typedef int(__thiscall* tPollPlayerInputState)(int inputManagerPtr, unsigned int
 static tPollPlayerInputState oPollPlayerInputState = nullptr;
 static const uintptr_t POLL_INPUT_STATE_FUNC_OFFSET = 0x0CD00;
 
+// Vanilla-only input routing swap flag
+static std::atomic<bool> g_swapVanillaRouting{false};
+static std::atomic<bool> g_loggedRoutingStateOnce{false};
+// Check if Revival is loaded AND supported (not just present)
+static inline bool RevivalLoaded() { 
+    return GetModuleHandleA("EfzRevival.dll") != nullptr && IsEfzRevivalVersionSupported(); 
+}
+void SetVanillaSwapInputRouting(bool enable) {
+    bool prev = g_swapVanillaRouting.load(std::memory_order_relaxed);
+    if (prev != enable) {
+        g_swapVanillaRouting.store(enable, std::memory_order_relaxed);
+        std::ostringstream oss; oss << "[INPUT_HOOK] Vanilla routing swap " << (enable?"ENABLED":"DISABLED");
+        LogOut(oss.str(), true);
+    } else {
+        // If the state hasn't changed, log this condition at most once globally
+        if (!g_loggedRoutingStateOnce.exchange(true, std::memory_order_relaxed)) {
+            std::ostringstream oss; oss << "[INPUT_HOOK] Vanilla routing swap " << (enable?"ENABLED":"DISABLED");
+            LogOut(oss.str(), true);
+        }
+    }
+}
+
 // Our poll hook. Use __fastcall to match __thiscall trampoline signature.
 static int __fastcall HookedPollPlayerInputState(int inputManagerPtr, int /*edx*/, unsigned int playerIndex)
 {
@@ -60,6 +139,11 @@ static int __fastcall HookedPollPlayerInputState(int inputManagerPtr, int /*edx*
         if (g_pollOverrideActive[idx].load(std::memory_order_relaxed)) {
             return static_cast<int>(g_pollOverrideMask[idx].load(std::memory_order_relaxed));
         }
+    }
+    // Vanilla-only: swap control routing by flipping the polled index
+    if (!RevivalLoaded() && g_swapVanillaRouting.load(std::memory_order_relaxed)) {
+        unsigned int swapped = (playerIndex == 0) ? 1u : (playerIndex == 1 ? 0u : playerIndex);
+        return oPollPlayerInputState ? oPollPlayerInputState(inputManagerPtr, swapped) : 0;
     }
     return oPollPlayerInputState ? oPollPlayerInputState(inputManagerPtr, playerIndex) : 0;
 }
@@ -84,6 +168,20 @@ int __fastcall HookedProcessCharacterInput(int characterPtr, int edx) {
         return oProcessCharacterInput(characterPtr);
     }
 
+    // Tick-integrated auto-actions: run once per internal sub-tick before P1 processing
+    if (g_tickIntegratedAutoActions.load() && playerNum == 1) {
+        short move1 = 0, move2 = 0;
+        // Read move IDs directly from character structs (word at +MOVE_ID_OFFSET)
+        (void)SafeReadMemory((uintptr_t)characterPtr + MOVE_ID_OFFSET, &move1, sizeof(move1));
+        uintptr_t otherPtr = (characterPtr == (int)p1Ptr) ? p2Ptr : p1Ptr;
+        if (otherPtr) {
+            (void)SafeReadMemory(otherPtr + MOVE_ID_OFFSET, &move2, sizeof(move2));
+        } else {
+            move2 = -1;
+        }
+        AutoActionsTick_Inline(move1, move2);
+    }
+
     // Do not inject while a buffer-freeze is active for THIS player; let the game's
     // original logic read the frozen buffer/index without interference.
     if (g_bufferFreezingActive.load()) {
@@ -102,6 +200,7 @@ int __fastcall HookedProcessCharacterInput(int characterPtr, int edx) {
                 }
             }
             g_lastInjectedMask[playerNum] = 0;
+            // Intentionally skip tail cleanup during freeze
             return oProcessCharacterInput(characterPtr);
         }
     }
@@ -159,6 +258,7 @@ int __fastcall HookedProcessCharacterInput(int characterPtr, int edx) {
             
             g_lastInjectedMask[playerNum] = currentMask;
             g_wasBypassBuffered[playerNum] = true;
+            MaybePerformTailCleanup(playerNum);
             return 0;
         } else {
             // For immediate-only, write before AND after calling the game's processor.
@@ -169,6 +269,7 @@ int __fastcall HookedProcessCharacterInput(int characterPtr, int edx) {
             WritePlayerInputImmediate(playerNum, currentMask);
             g_lastInjectedMask[playerNum] = currentMask;
             g_wasBypassBuffered[playerNum] = false;
+            MaybePerformTailCleanup(playerNum);
             return ret;
         }
     } 
@@ -190,6 +291,7 @@ int __fastcall HookedProcessCharacterInput(int characterPtr, int edx) {
             s_lastDesired[playerNum] = desired;
             g_lastInjectedMask[playerNum] = desired;
             g_wasBypassBuffered[playerNum] = false;
+            MaybePerformTailCleanup(playerNum);
             return ret;
         }
     }
@@ -211,7 +313,11 @@ int __fastcall HookedProcessCharacterInput(int characterPtr, int edx) {
         // Reset the last injected mask for this player to ensure a clean state on the next injection.
         g_lastInjectedMask[playerNum] = 0;
     }
-    return oProcessCharacterInput(characterPtr);
+    {
+        int ret = oProcessCharacterInput(characterPtr);
+        MaybePerformTailCleanup(playerNum);
+        return ret;
+    }
 }
 
 void InstallInputHook() {

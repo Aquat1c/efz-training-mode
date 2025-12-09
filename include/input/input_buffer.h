@@ -24,6 +24,6 @@ extern std::atomic<int> g_activeFreezePlayer;
 // Buffer freezing functions
 //bool FreezeBufferForMotion(int playerNum, int motionType, int buttonMask, int optimalIndex);
 void FreezeBufferValuesThread(int playerNum);
-bool CaptureAndFreezeBuffer(int playerNum, uint16_t startIndex, uint16_t length);
+bool CaptureAndFreezeBuffer(int playerNum, uint16_t startIndex, uint16_t length, int motionType = -1, int buttonMask = 0);
 bool FreezeBufferIndex(int playerNum, uint16_t indexValue);
 void StopBufferFreezing();

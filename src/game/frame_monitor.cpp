@@ -1,4 +1,5 @@
 #include "../include/game/frame_monitor.h"
+#include "../include/game/macro_controller.h"
 #include "../include/game/auto_airtech.h"
 #include "../include/game/auto_jump.h"
 #include "../include/game/auto_action.h" // ensure ClearAllAutoActionTriggers declaration
@@ -11,17 +12,22 @@
 #include "../include/core/logger.h"
 #include "../include/gui/overlay.h"
 #include "../include/game/game_state.h"
+#include "../include/game/per_frame_sample.h" // unified sampling context
 #include "../include/input/input_buffer.h"
 #include "../include/utils/config.h"
 #include "../include/input/input_motion.h"
 #include "../include/utils/network.h"
 #include "../include/utils/pause_integration.h" // PauseIntegration::EnsurePracticePointerCapture/GetPracticeControllerPtr
+#include "../include/utils/switch_players.h"    // SwitchPlayers::ResetControlMappingForMenusToP1
+#include "../include/input/framestep.h"          // Framestep system for vanilla EFZ
 #define DISABLE_ATTACK_READER 1
 #include "../include/game/attack_reader.h"
 #include "../include/game/practice_patch.h"
 #include "../include/game/character_settings.h"
 #include "../include/game/macro_controller.h"
 #include "../include/game/always_rg.h"
+#include "../include/game/random_rg.h"
+#include "../include/game/random_block.h"
 #include "../include/game/practice_offsets.h"   // GAMESTATE_OFF_* and practice controller offsets
 #include "../include/input/injection_control.h"  // g_forceBypass/g_injectImmediateOnly/g_pollOverride*
 #include "../include/input/input_core.h"         // AI_CONTROL_FLAG_OFFSET
@@ -72,9 +78,51 @@ static int s_csLogDecim = 0; // throttle
 static bool s_csBtnInit = false;
 static uint8_t s_csPrevBtns[4] = {0,0,0,0}; // A,B,C,D for active player last sample
 // Character Select CPU-flag guard (fixes post-Practice return when both flags become 1)
-static bool s_csDidCpuGuard = false;
-// One-shot persistent trigger clear guard per Character Select entry
-static bool s_csDidPersistentTriggerClear = false;
+// Snapshot/restore state for Character Select control flags (Practice mode)
+struct CSCtrlSnapshot {
+    bool     valid{false};
+    uint8_t  active{0xFF};   // GAMESTATE_OFF_ACTIVE_PLAYER (0=P1,1=P2)
+    uint8_t  p1Cpu{0xFF};    // GAMESTATE_OFF_P1_CPU_FLAG (1=CPU,0=Human)
+    uint8_t  p2Cpu{0xFF};    // GAMESTATE_OFF_P2_CPU_FLAG (1=CPU,0=Human)
+};
+static CSCtrlSnapshot s_csBaseline{};      // captured on first stable CS in Practice
+// ---------------- Character Select Handling Strategy ----------------
+// We previously attempted to enforce baseline CPU flags and active player DURING the Character Select (CS) phase.
+// That caused a regression: both controllers were required to "join" before the engine would proceed, because we
+// were overwriting the engine's dynamic writes to +4930 (active player) and CPU flags (+4931 / +4932) mid-CS.
+//
+// Engine behavior
+//   * During CS the engine itself toggles +4930 as users navigate sides.
+//   * CPU flags (+4931 P2, +4932 P1) remain authoritative for human/CPU designation but should not be forced
+//     while the CS menu logic is actively evaluating inputs.
+//
+// Fix approach (two parts):
+//   1. DEFER CPU flag enforcement until AFTER leaving CS. We snapshot our desired baseline beforehand; during CS
+//      we never write +4931/+4932. When CS ends, we apply baseline exactly once and log [CS][APPLY_POST].
+//   2. DO NOT force active player (+4930) during CS; instead, we only align the overlay GUI position (GUI_POS) to
+//      the engine's current active. This prevents fighting the engine's selection logic while still keeping the GUI
+//      visually consistent.
+//   3. RESTORE menu mapping to default P1-local if the user performed a side swap in-match. After a short debounce
+//      (>=30 CS frames) call SwitchPlayers::ResetControlMappingForMenusToP1(). This affects practice local/remote
+//      indices and GUI_POS ONLY (plus disables vanilla routing swap) and intentionally avoids touching CPU flags
+//      or active player memory. Log tag: [CS][PRE][UNSWITCH].
+//
+// Guard variables below govern one-shot actions per CS entry:
+static bool s_csDidSnapshotApply = false;   // baseline snapshot applied once per CS entry
+static bool s_csDidPersistentTriggerClear = false; // auto-action triggers cleared once per CS entry
+static bool s_pendingPostCsCpuApply = false; // deferred CPU apply needed upon CS exit
+static bool s_csDidPreUnswitch = false;      // menu mapping reset executed once per CS entry
+
+// Global once-only guards for noisy CS alignment-related logs
+static std::atomic<bool> s_logOnce_CsSnapSkip{false};
+static std::atomic<bool> s_logOnce_CsRestoreAlign{false};
+static std::atomic<bool> s_logOnce_CsRestoreBaselineMatch{false};
+static std::atomic<bool> s_logOnce_CsSnapFallback{false};
+static std::atomic<bool> s_logOnce_CsApplyPost{false};
+static std::atomic<bool> s_practiceHintShown{false}; // prevents repeated Practice overlay hints per session
+
+// Published unified per-frame sample (updated once per 192Hz loop iteration)
+PerFrameSample g_lastSample{};
 
 // Global (extern defined elsewhere) suppression flag for auto-action clear logging; declare if missing
 extern std::atomic<bool> g_suppressAutoActionClearLogging;
@@ -93,6 +141,94 @@ static std::string FM_Hex(uintptr_t v) {
     std::ostringstream oss;
     oss << "0x" << std::hex << std::uppercase << v;
     return oss.str();
+}
+
+static void MaybeShowPracticeOverlayHintOnce() {
+    if (s_practiceHintShown.load(std::memory_order_relaxed)) return;
+    if (!g_featuresEnabled.load()) return;
+    if (!DirectDrawHook::isHooked) return;
+
+    const auto& cfg = Config::GetSettings();
+    if (!cfg.showPracticeEntryHint) return;
+
+    bool expected = false;
+    if (!s_practiceHintShown.compare_exchange_strong(expected, true)) {
+        return;
+    }
+
+    auto pickKeyName = [](int keyCode) -> std::string {
+        if (keyCode <= 0) return std::string();
+        return Config::GetKeyName(keyCode);
+    };
+    std::string keyboardKey = pickKeyName(cfg.configMenuKey);
+    if (keyboardKey.empty()) {
+        keyboardKey = pickKeyName(cfg.toggleImGuiKey);
+    }
+    if (keyboardKey.empty()) {
+        keyboardKey = "3"; // fallback to legacy default
+    }
+
+    std::ostringstream msg;
+    msg << "Training menu: press " << keyboardKey;
+    if (cfg.gpToggleMenuButton >= 0) {
+        std::string padName = Config::GetGamepadButtonName(cfg.gpToggleMenuButton);
+        if (!padName.empty() && padName != "-1") {
+            msg << " (controller: " << padName << ")";
+        }
+    }
+    msg << " to open.";
+
+    DirectDrawHook::AddMessage(msg.str(), "PRACTICE_HINT", RGB(180, 235, 255), 4200, 0, 100);
+}
+
+// Framestep debug state (visible via ImGui only)
+static std::atomic<int> g_fsdbgSteps{-1};
+static std::atomic<bool> g_fsdbgActive{false};
+
+// Lightweight per-iteration pointer cache to reduce repeated SafeReadMemory calls
+namespace {
+    struct PointerCache {
+        uintptr_t base{0};
+        uintptr_t gs{0};
+        uintptr_t p1{0};
+        uintptr_t p2{0};
+        uint32_t  gen{0}; // increments once per FrameDataMonitor loop
+    };
+    static PointerCache s_ptrCache{};
+    static std::atomic<uint32_t> s_ptrGen{0};
+
+    static uintptr_t ResolvePlayerBaseBestEffort(int playerIndex, uintptr_t baseHint = 0) {
+        uintptr_t ptr = GetPlayerBase(playerIndex);
+        if (ptr) return ptr;
+        uintptr_t base = baseHint ? baseHint : GetEFZBase();
+        if (!base) return 0;
+        uintptr_t addr = 0;
+        uintptr_t offset = (playerIndex == 1) ? EFZ_BASE_OFFSET_P1 : EFZ_BASE_OFFSET_P2;
+        SafeReadMemory(base + offset, &addr, sizeof(addr));
+        return addr;
+    }
+
+    static uintptr_t ResolvePlayerFieldBestEffort(int playerIndex, uintptr_t fieldOffset, uintptr_t baseHint = 0) {
+        uintptr_t ptr = (playerIndex == 1) ? s_ptrCache.p1 : s_ptrCache.p2;
+        if (!ptr) ptr = ResolvePlayerBaseBestEffort(playerIndex, baseHint);
+        return ptr ? ptr + fieldOffset : 0;
+    }
+
+    inline void RefreshPointerCache() {
+        // Read all primary pointers once; best-effort only
+        s_ptrCache.base = GetEFZBase();
+        s_ptrCache.gs = GetGameStatePtr();
+        s_ptrCache.p1 = ResolvePlayerBaseBestEffort(1, s_ptrCache.base);
+        s_ptrCache.p2 = ResolvePlayerBaseBestEffort(2, s_ptrCache.base);
+        s_ptrCache.gen = s_ptrGen.fetch_add(1, std::memory_order_relaxed) + 1;
+    }
+}
+
+FrameStepDebugInfo GetFrameStepDebugInfo() {
+    FrameStepDebugInfo info{};
+    info.active = g_fsdbgActive.load(std::memory_order_relaxed);
+    info.steps = g_fsdbgSteps.load(std::memory_order_relaxed);
+    return info;
 }
 
 // --- Character Select diagnostics & reset helpers ---
@@ -123,7 +259,8 @@ static void LogCharacterSelectDiagnostics() {
     }
 
     // Player base pointers and AI flags (if available)
-    uintptr_t p1=0, p2=0; SafeReadMemory(base + EFZ_BASE_OFFSET_P1, &p1, sizeof(p1)); SafeReadMemory(base + EFZ_BASE_OFFSET_P2, &p2, sizeof(p2));
+    uintptr_t p1 = ResolvePlayerBaseBestEffort(1, base);
+    uintptr_t p2 = ResolvePlayerBaseBestEffort(2, base);
     os << "[CS][DIAG] P1=" << FM_Hex(p1) << "  P2=" << FM_Hex(p2);
     LogOut(os.str(), true); os.str(""); os.clear();
     if (p1) {
@@ -159,9 +296,8 @@ static void LogCharacterSelectDiagnostics() {
     }
 
     // Our override/patch states
-    os << "[CS][DIAG] overrides: p2Overridden=" << (g_p2ControlOverridden?"1":"0")
-       << "  pendingRestore=" << (g_pendingControlRestore.load()?"1":"0")
-       << "  restoreTimeout=" << g_controlRestoreTimeout.load();
+     os << "[CS][DIAG] overrides: p2Overridden=" << (g_p2ControlOverridden?"1":"0")
+         << "  pendingRestore=" << (g_pendingControlRestore.load()?"1":"0");
     LogOut(os.str(), true); os.str(""); os.clear();
 
     os << "[CS][DIAG] bufferFreezeActive=" << (g_bufferFreezingActive.load()?"1":"0")
@@ -181,13 +317,13 @@ static void CharacterSelectLiveLoggerTick() {
     if (!Config::GetSettings().enableCharacterSelectLogger) return;
     // Throttle to ~10 Hz to keep logs readable
     if ((++s_csLogDecim % 19) != 0) return; // 192/19 ~= 10 Hz
-    uintptr_t base = GetEFZBase(); if (!base) return;
-    uintptr_t gs = 0; if (!SafeReadMemory(base + EFZ_BASE_OFFSET_GAME_STATE, &gs, sizeof(gs)) || !gs) return;
+    uintptr_t base = s_ptrCache.base; if (!base) return;
+    uintptr_t gs = s_ptrCache.gs; if (!gs) return;
     uint8_t active=0xFF, p2cpu=0xFF, p1cpu=0xFF;
     SafeReadMemory(gs + GAMESTATE_OFF_ACTIVE_PLAYER, &active, sizeof(active));
     SafeReadMemory(gs + GAMESTATE_OFF_P2_CPU_FLAG, &p2cpu, sizeof(p2cpu));
     SafeReadMemory(gs + GAMESTATE_OFF_P1_CPU_FLAG, &p1cpu, sizeof(p1cpu));
-    uintptr_t p1=0, p2=0; SafeReadMemory(base + EFZ_BASE_OFFSET_P1, &p1, sizeof(p1)); SafeReadMemory(base + EFZ_BASE_OFFSET_P2, &p2, sizeof(p2));
+    uintptr_t p1 = s_ptrCache.p1, p2 = s_ptrCache.p2;
     uint32_t a1=0xFFFFFFFFu, a2=0xFFFFFFFFu;
     if (p1) SafeReadMemory(p1 + AI_CONTROL_FLAG_OFFSET, &a1, sizeof(a1));
     if (p2) SafeReadMemory(p2 + AI_CONTROL_FLAG_OFFSET, &a2, sizeof(a2));
@@ -207,12 +343,12 @@ static void CharacterSelectLiveLoggerTick() {
 // Log down-edges for A/B/C/D buttons for the active player on Character Select
 static void CharacterSelectInputEdgeLoggerTick() {
     if (!Config::GetSettings().enableCharacterSelectLogger) return;
-    uintptr_t base = GetEFZBase(); if (!base) return;
+    uintptr_t base = s_ptrCache.base; if (!base) return;
     // Determine active player and resolve struct
-    uintptr_t gs = 0; if (!SafeReadMemory(base + EFZ_BASE_OFFSET_GAME_STATE, &gs, sizeof(gs)) || !gs) return;
+    uintptr_t gs = s_ptrCache.gs; if (!gs) return;
     uint8_t active = 0; SafeReadMemory(gs + GAMESTATE_OFF_ACTIVE_PLAYER, &active, sizeof(active));
-    uintptr_t pStructPtrAddr = (active == 0) ? (base + EFZ_BASE_OFFSET_P1) : (base + EFZ_BASE_OFFSET_P2);
-    uintptr_t pStruct = 0; if (!SafeReadMemory(pStructPtrAddr, &pStruct, sizeof(pStruct)) || !pStruct) return;
+    uintptr_t pStruct = (active == 0) ? s_ptrCache.p1 : s_ptrCache.p2;
+    if (!pStruct) return;
     // Sample immediate input registers
     uint8_t a=0,b=0,c=0,d=0;
     SafeReadMemory(pStruct + INPUT_BUTTON_A_OFFSET, &a, sizeof(a));
@@ -254,7 +390,6 @@ static void ResetControlOnCharacterSelect() {
         RestoreP2ControlState();
     }
     g_pendingControlRestore.store(false);
-    g_controlRestoreTimeout.store(0);
 
     // Clear poll override/injection flags for both players
     for (int i = 1; i <= 2; ++i) {
@@ -264,22 +399,15 @@ static void ResetControlOnCharacterSelect() {
         g_injectImmediateOnly[i].store(false);
         g_manualInputOverride[i].store(false);
     }
-    // At Character Select, ensure sane defaults without interfering with join/pick:
-    //  - Force active focus to P1
-    //  - Do NOT mutate CPU flags here (we observed that doing so can disable Cancel/picking)
+    // At Character Select: diagnostics only; do NOT mutate game/practice control state here.
     uintptr_t base = GetEFZBase();
     uintptr_t gs = 0;
     if (base && SafeReadMemory(base + EFZ_BASE_OFFSET_GAME_STATE, &gs, sizeof(gs)) && gs) {
-        uint8_t activeBefore = 0xFF, activeAfter = 0xFF;
-        SafeReadMemory(gs + GAMESTATE_OFF_ACTIVE_PLAYER, &activeBefore, sizeof(activeBefore));
-        if (activeBefore != 0u) {
-            uint8_t zero = 0u;
-            bool ok = SafeWriteMemory(gs + GAMESTATE_OFF_ACTIVE_PLAYER, &zero, sizeof(zero));
-            SafeReadMemory(gs + GAMESTATE_OFF_ACTIVE_PLAYER, &activeAfter, sizeof(activeAfter));
-            std::ostringstream os; os << "[CS][RESET] +4930(active): " << (int)activeBefore << "->" << (int)activeAfter << (ok?"":" (fail)");
+        uint8_t activeNow = 0xFF;
+        SafeReadMemory(gs + GAMESTATE_OFF_ACTIVE_PLAYER, &activeNow, sizeof(activeNow));
+        if (detailedLogging.load()) {
+            std::ostringstream os; os << "[CS][RESET][DIAG] +4930(active)=" << (int)activeNow;
             LogOut(os.str(), true);
-        } else if (detailedLogging.load()) {
-            LogOut("[CS][RESET] +4930(active): already 0 (P1)", true);
         }
         // Diagnostic only: if both CPU flags match (both 0 or both 1), note it for later analysis.
         // We intentionally avoid writing here due to side-effects on Cancel/join behavior.
@@ -342,8 +470,7 @@ bool ShouldFeaturesBeActive() {
 
     bool isMatchRunning = false;
     if (base) {
-        uintptr_t p1StructAddr = 0;
-        SafeReadMemory(base + EFZ_BASE_OFFSET_P1, &p1StructAddr, sizeof(uintptr_t));
+        uintptr_t p1StructAddr = ResolvePlayerBaseBestEffort(1, base);
         isMatchRunning = (p1StructAddr != 0);
     }
 
@@ -419,6 +546,11 @@ void UpdateTriggerOverlay() {
             case ACTION_4A: return "4A";
             case ACTION_4B: return "4B";
             case ACTION_4C: return "4C";
+            case ACTION_5D: return "5S";
+            case ACTION_2D: return "2S";
+            case ACTION_JD: return "j.S";
+            case ACTION_6D: return "6S";
+            case ACTION_4D: return "4S";
             case ACTION_QCF: return "236" + strengthLetter; // QCF + strength
             case ACTION_DP: return "623" + strengthLetter;  // DP + strength
             case ACTION_QCB: return "214" + strengthLetter; // QCB + strength
@@ -451,7 +583,50 @@ void UpdateTriggerOverlay() {
     auto update_line = [&](int& msgId, bool isEnabled, const std::string& label, int action, 
                           int customId, int delay, int strength, int triggerType) {
         if (isEnabled) {
-            // If a macro slot is set for this trigger, display it as Macro S# instead of a default move name
+            // Helper: build a compact token for a single TriggerOption
+            auto tokenFor = [&](int act, int str, int macro) -> std::string {
+                if (macro > 0) {
+                    return std::string("Macro ") + std::to_string(macro);
+                }
+                auto letter = [&](int s)->char { return (s<=0)?'A':(s==1?'B':(s==2?'C':'S')); };
+                switch (act) {
+                    case ACTION_5A: return "5A"; case ACTION_5B: return "5B"; case ACTION_5C: return "5C"; case ACTION_5D: return "5S";
+                    case ACTION_2A: return "2A"; case ACTION_2B: return "2B"; case ACTION_2C: return "2C"; case ACTION_2D: return "2S";
+                    case ACTION_JA: return "jA"; case ACTION_JB: return "jB"; case ACTION_JC: return "jC"; case ACTION_JD: return "jS";
+                    case ACTION_6A: return "6A"; case ACTION_6B: return "6B"; case ACTION_6C: return "6C"; case ACTION_6D: return "6S";
+                    case ACTION_4A: return "4A"; case ACTION_4B: return "4B"; case ACTION_4C: return "4C"; case ACTION_4D: return "4S";
+                    case ACTION_QCF: return std::string("236") + letter(str);
+                    case ACTION_DP:  return std::string("623") + letter(str);
+                    case ACTION_QCB: return std::string("214") + letter(str);
+                    case ACTION_421: return std::string("421") + letter(str);
+                    case ACTION_SUPER1: return std::string("41236") + letter(str);
+                    case ACTION_SUPER2: return std::string("214236") + letter(str);
+                    case ACTION_236236: return std::string("236236") + letter(str);
+                    case ACTION_214214: return std::string("214214") + letter(str);
+                    case ACTION_641236: return std::string("641236") + letter(str);
+                    case ACTION_463214: return std::string("463214") + letter(str);
+                    case ACTION_412: return std::string("412") + letter(str);
+                    case ACTION_22:  return std::string("22") + letter(str);
+                    case ACTION_4123641236: return std::string("4123641236") + letter(str);
+                    case ACTION_6321463214: return std::string("6321463214") + letter(str);
+                    case ACTION_JUMP: {
+                        // strength: 0=neutral jump, 1=forward jump, 2=backward jump
+                        int s = (str < 0 ? 0 : (str > 2 ? 2 : str));
+                        switch (s) {
+                            case 1: return "Forward Jump";
+                            case 2: return "Backward Jump";
+                            default: return "Jump";
+                        }
+                    }
+                    case ACTION_BACKDASH: return "44";
+                    case ACTION_FORWARD_DASH: return "66";
+                    case ACTION_BLOCK: return "[4]";
+                    case ACTION_FINAL_MEMORY: return "fm";
+                    default: return "?";
+                }
+            };
+
+            // Determine macro slot for main row display and build slash-separated summary including main row
             int macroSlot = 0;
             switch (triggerType) {
                 case TRIGGER_AFTER_BLOCK: macroSlot = triggerAfterBlockMacroSlot.load(); break;
@@ -461,11 +636,37 @@ void UpdateTriggerOverlay() {
                 case TRIGGER_ON_RG: macroSlot = triggerOnRGMacroSlot.load(); break;
                 default: break;
             }
-            std::string actionName = (macroSlot > 0) ? (std::string("Macro Slot #") + std::to_string(macroSlot))
-                                                     : getActionName(action, customId, strength);
-            std::string text = label + actionName;
-            if (delay > 0) {
-                text += " +" + std::to_string(delay);
+
+            std::string combined;
+            const TriggerOption* opts = nullptr; int optCount = 0;
+            switch (triggerType) {
+                case TRIGGER_AFTER_BLOCK: opts = g_afterBlockOptions; optCount = g_afterBlockOptionCount; break;
+                case TRIGGER_ON_WAKEUP: opts = g_onWakeupOptions; optCount = g_onWakeupOptionCount; break;
+                case TRIGGER_AFTER_HITSTUN: opts = g_afterHitstunOptions; optCount = g_afterHitstunOptionCount; break;
+                case TRIGGER_AFTER_AIRTECH: opts = g_afterAirtechOptions; optCount = g_afterAirtechOptionCount; break;
+                case TRIGGER_ON_RG: opts = g_onRGOptions; optCount = g_onRGOptionCount; break;
+                default: break;
+            }
+            // Always start with the main trigger row token
+            combined = tokenFor(action, strength, macroSlot);
+            // Then append any enabled sub-rows in order
+            if (opts && optCount > 0) {
+                for (int i = 0; i < optCount; ++i) {
+                    if (!opts[i].enabled) continue;
+                    combined += "/";
+                    combined += tokenFor(opts[i].action, opts[i].strength, opts[i].macroSlot);
+                }
+            }
+
+            // If no row summary was produced, use legacy single-action display (with optional macro and delay)
+            std::string text;
+            if (!combined.empty()) {
+                text = label + combined;
+            } else {
+                std::string actionName = (macroSlot > 0) ? (std::string("Macro Slot #") + std::to_string(macroSlot))
+                                                         : getActionName(action, customId, strength);
+                text = label + actionName;
+                if (delay > 0) { text += " +" + std::to_string(delay); }
             }
 
             bool isActive = false;
@@ -485,7 +686,9 @@ void UpdateTriggerOverlay() {
             if (msgId == -1) {
                 msgId = DirectDrawHook::AddPermanentMessage(text, color, triggerX, yPos);
             } else {
-                DirectDrawHook::UpdatePermanentMessage(msgId, text, color);
+                // Remove and re-add to update position (Y changes when other triggers are enabled/disabled)
+                DirectDrawHook::RemovePermanentMessage(msgId);
+                msgId = DirectDrawHook::AddPermanentMessage(text, color, triggerX, yPos);
             }
             yPos += yIncrement;
         } else {
@@ -574,8 +777,8 @@ void FrameDataMonitor() {
         if (g_onlineModeActive.load()) {
             StopBufferFreezing();
             ResetActionFlags();
-            p1DelayState = {false, 0, TRIGGER_NONE, 0};
-            p2DelayState = {false, 0, TRIGGER_NONE, 0};
+            p1DelayState = {false, 0, TRIGGER_NONE, 0, -1, -1, 0, -1};
+            p2DelayState = {false, 0, TRIGGER_NONE, 0, -1, -1, 0, -1};
             break; // exit thread to allow safe self-unload
         }
         auto frameStart = clock::now();
@@ -584,8 +787,15 @@ void FrameDataMonitor() {
             expectedNext = frameStart + targetFrameTime;
         }
         
+    // Refresh core pointer cache once per loop iteration
+    RefreshPointerCache();
     // Check current game phase (single authoritative call per loop)
     GamePhase currentPhase = GetCurrentGamePhase();
+    
+    // Update framestep system (vanilla only, input monitoring and frame advance)
+    Framestep::Update();
+    // Update framestep overlay status
+    Framestep::UpdateOverlayStatus();
 
     // Lightweight, integrated online detection (replaces separate network thread)
     {
@@ -666,11 +876,13 @@ void FrameDataMonitor() {
             if (lastPhase == GamePhase::Match && currentPhase != GamePhase::Match) {
                 // Force stop everything
                 StopBufferFreezing();
+                // Stop any RF freeze maintenance started by CR
+                StopRFFreeze();
                 ResetActionFlags();
 
                 // Clear all auto-action states
-                p1DelayState = {false, 0, TRIGGER_NONE, 0};
-                p2DelayState = {false, 0, TRIGGER_NONE, 0};
+                p1DelayState = {false, 0, TRIGGER_NONE, 0, -1, -1, 0, -1};
+                p2DelayState = {false, 0, TRIGGER_NONE, 0, -1, -1, 0, -1};
                 p1ActionApplied = false;
                 p2ActionApplied = false;
 
@@ -692,6 +904,9 @@ void FrameDataMonitor() {
                     EnsureDefaultControlFlagsOnMatchStart();
                     // Reset Dummy Auto-Block per-round state machine
                     ResetDummyAutoBlockState();
+                    // Clear swap tracking flag at match start (new round = fresh state)
+                    SwitchPlayers::ClearSwapFlag();
+                    MaybeShowPracticeOverlayHintOnce();
                 }
             }
 
@@ -700,14 +915,27 @@ void FrameDataMonitor() {
 #if ENABLE_CS_DEBUG_LOGS
                 LogCharacterSelectDiagnostics();
 #endif
-                ResetControlOnCharacterSelect();
+                // Only perform CS control resets in Practice mode
+                if (GetCurrentGameMode() == GameMode::Practice) {
+                    // DON'T clear swap flag here - ResetControlMappingForMenusToP1 needs it to know if restoration is needed
+                    // Flag will be cleared AFTER restoration happens (inside ResetControlMappingForMenusToP1)
+                    ResetControlOnCharacterSelect();
+                    // If P2 controls were enabled before CS, disable them and clear the UI flag
+                    (void)DisablePlayer2InPracticeMode();
+                    displayData.p2ControlEnabled = false;
+                    // Ensure any ongoing macro state is stopped when entering Character Select,
+                    // but restore menu mapping first to avoid lingering swapped controls.
+                    MacroController::UnswapThenStop();
+                    // Diagnostic: note macro stop on CS entry
+                    LogOut("[CS][MACRO] Stopped macros on Character Select entry", true);
+                }
                 // Reset live logger state on entry so first sample prints (only used when debug logs enabled)
                 s_csLastActive = 0xFF; s_csLastP2Cpu = 0xFF; s_csLastP1Cpu = 0xFF;
                 s_csLastP1Ai = 0xFFFFFFFFu; s_csLastP2Ai = 0xFFFFFFFFu; s_csLogDecim = 0;
                 // Reset input-edge logger state
                 s_csBtnInit = false; for (int i=0;i<4;++i) s_csPrevBtns[i] = 0;
-                // Reset CPU-flag guard
-                s_csDidCpuGuard = false;
+                // Reset per-entry snapshot apply guard
+                s_csDidSnapshotApply = false;
                 // NEW: mark that we have not yet performed our one-shot persistent trigger clear this CS entry
                 s_csDidPersistentTriggerClear = false;
             }
@@ -721,33 +949,130 @@ void FrameDataMonitor() {
             CharacterSelectLiveLoggerTick();
             CharacterSelectInputEdgeLoggerTick();
 #endif
-            s_characterSelectPhaseFrames++;
-            if (s_characterSelectPhaseFrames == 1 && (detailedLogging.load() || !g_reducedLogging.load())) {
-                LogOut("[FRAME MONITOR] Detected CharacterSelect phase - starting debounce window", true);
-            }
-            // Guard: after a short debounce, if we're in Practice and both CPU flags are 1 (broken state),
-            // set to the known-good pattern observed on first CS: P2CPU=0, P1CPU=1. Do this once per CS entry.
-            if (!s_csDidCpuGuard && s_characterSelectPhaseFrames >= 30 && GetCurrentGameMode() == GameMode::Practice) {
-                uintptr_t base = GetEFZBase(); uintptr_t gs = 0;
-                if (base && SafeReadMemory(base + EFZ_BASE_OFFSET_GAME_STATE, &gs, sizeof(gs)) && gs) {
-                    uint8_t p1cpu=0xFF, p2cpu=0xFF;
-                    SafeReadMemory(gs + GAMESTATE_OFF_P1_CPU_FLAG, &p1cpu, sizeof(p1cpu));
-                    SafeReadMemory(gs + GAMESTATE_OFF_P2_CPU_FLAG, &p2cpu, sizeof(p2cpu));
-                    if (p1cpu == 1u && p2cpu == 1u) {
-                        uint8_t newP2 = 0u; // make P2 human/selectable
-                        uint8_t newP1 = 1u; // keep P1 as in working first-CS pattern
-                        bool ok1 = SafeWriteMemory(gs + GAMESTATE_OFF_P2_CPU_FLAG, &newP2, sizeof(newP2));
-                        bool ok2 = SafeWriteMemory(gs + GAMESTATE_OFF_P1_CPU_FLAG, &newP1, sizeof(newP1));
-                        uint8_t p1aft=0xFF, p2aft=0xFF; SafeReadMemory(gs + GAMESTATE_OFF_P1_CPU_FLAG, &p1aft, sizeof(p1aft));
-                        SafeReadMemory(gs + GAMESTATE_OFF_P2_CPU_FLAG, &p2aft, sizeof(p2aft));
-                        std::ostringstream os; os << "[CS][GUARD] CPU flags 1/1 -> set P2CPU 1->" << (int)p2aft
-                                                  << ", P1CPU 1->" << (int)p1aft << (ok1 && ok2 ? "" : " (partial)");
-                        LogOut(os.str(), true);
-                        s_csDidCpuGuard = true;
+            const bool inPractice = (GetCurrentGameMode() == GameMode::Practice);
+            if (!inPractice) {
+                // Outside Practice mode: do not touch or log Character Select behavior
+                s_characterSelectPhaseFrames = 0;
+            } else {
+                s_characterSelectPhaseFrames++;
+                if (s_characterSelectPhaseFrames == 1 && (detailedLogging.load() || !g_reducedLogging.load())) {
+                    LogOut("[FRAME MONITOR] Detected CharacterSelect phase - starting debounce window", true);
+                    s_csDidPreUnswitch = false; // reset guard each CS entry
+                }
+                // After short debounce, ensure menu mapping is reset so P1 controls P1 on CS (Practice only)
+                if (!s_csDidPreUnswitch && s_characterSelectPhaseFrames >= 30) {
+                    if (SwitchPlayers::ResetControlMappingForMenusToP1()) {
+                        s_csDidPreUnswitch = true;
+                        if (detailedLogging.load()) LogOut("[CS][PRE][UNSWITCH] Menu mapping reset to P1 local", true);
                     }
                 }
             }
-            if (s_characterSelectPhaseFrames >= 120) {
+            // Snapshot/restore: after a short debounce, capture CS baseline ONCE (first stable CS in session) and restore every CS entry.
+            // Rationale: We do NOT want in-match swaps to redefine the CS baseline. CS should always return to the original mapping.
+            if (s_characterSelectPhaseFrames >= 30 && GetCurrentGameMode() == GameMode::Practice) {
+                uintptr_t base = GetEFZBase(); uintptr_t gs = 0;
+                if (base && SafeReadMemory(base + EFZ_BASE_OFFSET_GAME_STATE, &gs, sizeof(gs)) && gs) {
+                    uint8_t active=0xFF, p1cpu=0xFF, p2cpu=0xFF;
+                    SafeReadMemory(gs + GAMESTATE_OFF_ACTIVE_PLAYER, &active, sizeof(active));
+                    SafeReadMemory(gs + GAMESTATE_OFF_P1_CPU_FLAG, &p1cpu, sizeof(p1cpu));
+                    SafeReadMemory(gs + GAMESTATE_OFF_P2_CPU_FLAG, &p2cpu, sizeof(p2cpu));
+                    bool flagsAreSane = (p1cpu != p2cpu) && (active == 0u || active == 1u);
+                    // Cross-check with Practice controller GUI_POS; note: GUI_POS 1 = P1, 0 = P2, while active 0 = P1, 1 = P2.
+                    // So consistency means: (active == 0 && guiPos == 1) OR (active == 1 && guiPos == 0).
+                    bool guiConsistent = true; // default to true if we cannot read it
+                    uint8_t guiPos = 0xFF;
+                    PauseIntegration::EnsurePracticePointerCapture();
+                    if (void* prac = PauseIntegration::GetPracticeControllerPtr()) {
+                        SafeReadMemory((uintptr_t)prac + PRACTICE_OFF_GUI_POS, &guiPos, sizeof(guiPos));
+                        if (guiPos == 0u || guiPos == 1u) {
+                            guiConsistent = ((active == 0u && guiPos == 1u) || (active == 1u && guiPos == 0u));
+                        }
+                    }
+                    // Additional gate: only capture baseline when we observe the expected default Practice mapping (P1 human, P2 CPU)
+                    bool defaultPracticeMap = (p1cpu == 0u && p2cpu == 1u);
+                    if (!s_csBaseline.valid && flagsAreSane && guiConsistent && defaultPracticeMap) {
+                        // Capture only once per session; later CS entries will restore to this snapshot
+                        s_csBaseline.valid = true;
+                        s_csBaseline.active = active;
+                        s_csBaseline.p1Cpu = p1cpu;
+                        s_csBaseline.p2Cpu = p2cpu;
+                        if (detailedLogging.load()) {
+                            std::ostringstream os; os << "[CS][SNAP] Captured baseline: active=" << (int)active
+                                                      << " P1CPU=" << (int)p1cpu << " P2CPU=" << (int)p2cpu;
+                            LogOut(os.str(), true);
+                        }
+                    } else if (!s_csBaseline.valid && flagsAreSane && guiConsistent && !defaultPracticeMap) {
+                        // We saw a sane but swapped/non-default mapping during first stable CS; log and defer capture.
+                        if (detailedLogging.load()) {
+                            if (!s_logOnce_CsSnapSkip.exchange(true, std::memory_order_relaxed)) {
+                                std::ostringstream os; os << "[CS][SNAP][SKIP] Sane but non-default mapping observed (active=" << (int)active
+                                                          << " P1CPU=" << (int)p1cpu << " P2CPU=" << (int)p2cpu
+                                                          << ") - deferring baseline capture until default (P1 human/P2 CPU) appears.";
+                                LogOut(os.str(), true);
+                            }
+                        }
+                    }
+                    // Apply baseline (if valid) to prevent swapped or duplicated controls on CS.
+                    if (s_csBaseline.valid) {
+                        if (active != s_csBaseline.active || p1cpu != s_csBaseline.p1Cpu || p2cpu != s_csBaseline.p2Cpu) {
+                            uint8_t wantActive = s_csBaseline.active;
+                            uint8_t wantP1 = s_csBaseline.p1Cpu;
+                            uint8_t wantP2 = s_csBaseline.p2Cpu;
+                            // During CS: do not force engine's active owner; only align GUI_POS.
+                            bool okA = true; // we are not writing active here intentionally
+                            // If Practice controller exists and GUI_POS disagrees with desired active, align it
+                            bool okGui = true;
+                            if (void* prac = PauseIntegration::GetPracticeControllerPtr()) {
+                                uint8_t curGui = 0xFF;
+                                SafeReadMemory((uintptr_t)prac + PRACTICE_OFF_GUI_POS, &curGui, sizeof(curGui));
+                                // Align GUI to the engine-reported active player (not baseline) to keep UI consistent
+                                if ((curGui == 0u || curGui == 1u) && curGui != active) {
+                                    uint8_t newGui = active; okGui = SafeWriteMemory((uintptr_t)prac + PRACTICE_OFF_GUI_POS, &newGui, sizeof(newGui));
+                                }
+                            }
+                            // Mark for post-CS CPU flag application if needed
+                            if (p1cpu != wantP1 || p2cpu != wantP2) {
+                                s_pendingPostCsCpuApply = true;
+                            }
+                            if (detailedLogging.load()) {
+                                if (!s_logOnce_CsRestoreAlign.exchange(true, std::memory_order_relaxed)) {
+                                    std::ostringstream os; os << "[CS][RESTORE] Aligned GUI to engine-active; deferred CPU: engineActive=" << (int)active
+                                                              << " P1CPU->" << (int)wantP1 << " P2CPU->" << (int)wantP2
+                                                              << " okA=" << (okA?"1":"0")
+                                                              << " okGUI=" << (okGui?"1":"0")
+                                                              << " [CS][DEFER_CPU]";
+                                    LogOut(os.str(), true);
+                                }
+                            }
+                        } else if (!s_csDidSnapshotApply && detailedLogging.load()) {
+                            // Log a one-time notice per application lifetime that baseline is already in effect
+                            if (!s_logOnce_CsRestoreBaselineMatch.exchange(true, std::memory_order_relaxed)) {
+                                std::ostringstream os; os << "[CS][RESTORE] Baseline already matches; no enforcement needed";
+                                LogOut(os.str(), true);
+                            }
+                        }
+                        // Mark that we have applied/verified once this CS entry
+                        s_csDidSnapshotApply = true;
+                    } else if (!s_csBaseline.valid && s_characterSelectPhaseFrames == 120) {
+                        // Fallback: after extended debounce (120 frames) baseline still not captured; synthesize default mapping.
+                        // Use GUI_POS (if available) to infer active. GUI_POS 1=P1 -> active=0; GUI_POS 0=P2 -> active=1. Default CPU flags: P1 human (0), P2 CPU (1).
+                        uint8_t synthActive = 0u; // default assume P1
+                        if (guiPos == 0u) synthActive = 1u; // if GUI_POS shows P2 side
+                        s_csBaseline.valid = true;
+                        s_csBaseline.active = synthActive;
+                        s_csBaseline.p1Cpu = 0u;
+                        s_csBaseline.p2Cpu = 1u;
+                        if (detailedLogging.load()) {
+                            if (!s_logOnce_CsSnapFallback.exchange(true, std::memory_order_relaxed)) {
+                                std::ostringstream os; os << "[CS][SNAP][FALLBACK] Synthesized baseline after timeout: active=" << (int)synthActive
+                                                          << " P1CPU=0 P2CPU=1";
+                                LogOut(os.str(), true);
+                            }
+                        }
+                    }
+                }
+            }
+            if (s_characterSelectPhaseFrames >= 120 && GetCurrentGameMode() == GameMode::Practice) {
                 bool charsInit = AreCharactersInitialized();
                 if (!charsInit && !s_csDidPersistentTriggerClear) {
                     if (!g_reducedLogging.load() || detailedLogging.load()) {
@@ -767,7 +1092,27 @@ void FrameDataMonitor() {
                 }
             }
         } else if (s_characterSelectPhaseFrames > 0) {
+            // Leaving Character Select: apply any deferred CPU flag baseline once
             s_characterSelectPhaseFrames = 0;
+            if (GetCurrentGameMode() == GameMode::Practice && s_pendingPostCsCpuApply && s_csBaseline.valid) {
+                uintptr_t gs = 0; uintptr_t base = GetEFZBase();
+                if (base && SafeReadMemory(base + EFZ_BASE_OFFSET_GAME_STATE, &gs, sizeof(gs)) && gs) {
+                    uint8_t wantP1 = s_csBaseline.p1Cpu;
+                    uint8_t wantP2 = s_csBaseline.p2Cpu;
+                    bool ok1 = SafeWriteMemory(gs + GAMESTATE_OFF_P1_CPU_FLAG, &wantP1, sizeof(wantP1));
+                    bool ok2 = SafeWriteMemory(gs + GAMESTATE_OFF_P2_CPU_FLAG, &wantP2, sizeof(wantP2));
+                    if (detailedLogging.load()) {
+                        if (!s_logOnce_CsApplyPost.exchange(true, std::memory_order_relaxed)) {
+                            std::ostringstream os; os << "[CS][APPLY_POST] Applied deferred CPU flags: P1CPU=" << (int)wantP1
+                                                      << " P2CPU=" << (int)wantP2
+                                                      << " ok1=" << (ok1?"1":"0")
+                                                      << " ok2=" << (ok2?"1":"0");
+                            LogOut(os.str(), true);
+                        }
+                    }
+                }
+                s_pendingPostCsCpuApply = false;
+            }
         }
         
     // SINGLE authoritative frame increment
@@ -799,6 +1144,86 @@ void FrameDataMonitor() {
         bool isInitialized = AreCharactersInitialized();
         GameMode currentMode = GetCurrentGameMode();
         bool isValidGameMode = !Config::GetSettings().restrictToPracticeMode || (currentMode == GameMode::Practice);
+
+        // Lightweight global Practice framestep tracker (no on-screen overlay)
+        // - Tracks step count only while FA timing is actively waiting during pause in Practice.
+        // - Exposes state via GetFrameStepDebugInfo() for ImGui to render in the debug menu.
+        {
+            static bool s_prevPaused = false;
+            static bool s_haveLast = false;
+            static uint32_t s_lastStep = 0;
+            static int s_stepsSincePause = 0;
+            static bool s_prevFAInProgress = false; // FA waiting window last frame
+
+            const bool inPractice = (currentMode == GameMode::Practice);
+            bool paused = PauseIntegration::IsPracticePaused();
+
+            // Reset counters across mode changes away from Practice
+            if (!inPractice) {
+                s_prevPaused = false; s_haveLast = false; s_stepsSincePause = 0; s_prevFAInProgress = false;
+            } else {
+                if (paused) {
+                    // Determine whether FA tracking is actively waiting for timings
+                    bool faInProgress = false;
+                    {
+                        FrameAdvantageState fas = GetFrameAdvantageState();
+                        bool faActive = fas.p1Attacking || fas.p2Attacking || fas.p1Defending || fas.p2Defending;
+                        bool waitingAtk = (fas.p1Attacking && fas.p1ActionableInternalFrame == -1) ||
+                                          (fas.p2Attacking && fas.p2ActionableInternalFrame == -1);
+                        bool waitingDef = (fas.p1Defending && fas.p1DefenderFreeInternalFrame == -1) ||
+                                          (fas.p2Defending && fas.p2DefenderFreeInternalFrame == -1);
+                        faInProgress = faActive && (waitingAtk || waitingDef);
+                    }
+
+                    if (!s_prevPaused) {
+                        s_haveLast = false; // seed will be re-captured on first FA step read
+                    }
+
+                    // On FA start (rising edge), reset the step counter and seed last counter
+                    if (faInProgress && !s_prevFAInProgress) {
+                        s_stepsSincePause = 0;
+                        s_haveLast = false;
+                    }
+
+                    uint32_t cur = 0;
+                    if (faInProgress) {
+                        if (PauseIntegration::ReadStepCounter(cur)) {
+                            if (!s_haveLast) {
+                                s_lastStep = cur; s_haveLast = true;
+                            } else if (cur != s_lastStep) {
+                                uint32_t delta = cur - s_lastStep;
+                                if (delta > 1000u) delta = 1u; // sanity clamp
+                                s_stepsSincePause += (int)delta;
+                                s_lastStep = cur;
+                            }
+                        }
+                    } else {
+                        // FA not in progress while paused: drop seed; next FA will reseed
+                        s_haveLast = false;
+                    }
+                } else {
+                    // Not paused: reset per-session trackers
+                    s_haveLast = false;
+                    s_stepsSincePause = 0;
+                }
+                s_prevPaused = paused;
+                // Track FA in-progress state for edge detection
+                {
+                    FrameAdvantageState fas = GetFrameAdvantageState();
+                    bool faActive = fas.p1Attacking || fas.p2Attacking || fas.p1Defending || fas.p2Defending;
+                    bool waitingAtk = (fas.p1Attacking && fas.p1ActionableInternalFrame == -1) ||
+                                      (fas.p2Attacking && fas.p2ActionableInternalFrame == -1);
+                    bool waitingDef = (fas.p1Defending && fas.p1DefenderFreeInternalFrame == -1) ||
+                                      (fas.p2Defending && fas.p2DefenderFreeInternalFrame == -1);
+                    s_prevFAInProgress = faActive && (waitingAtk || waitingDef);
+                }
+            }
+
+            // Publish debug snapshot for ImGui (global atomics)
+            bool faActiveNow = s_prevFAInProgress && inPractice && paused;
+            g_fsdbgActive.store(faActiveNow, std::memory_order_relaxed);
+            g_fsdbgSteps.store(faActiveNow ? s_stepsSincePause : -1, std::memory_order_relaxed);
+        }
 
         // Track game mode transitions
         if (g_featuresEnabled.load() && currentMode != s_previousGameMode) {
@@ -861,15 +1286,13 @@ void FrameDataMonitor() {
             if ((trigDecim++ % 16) == 0) {
                 UpdateTriggerOverlay();
             }
-            uintptr_t base = GetEFZBase();
+                        uintptr_t base = s_ptrCache.base;
             if (!base) {
                 goto FRAME_MONITOR_FRAME_END;
             }
 
             // Pointer change logging
-            uintptr_t p1Ptr = 0, p2Ptr = 0;
-            SafeReadMemory(base + EFZ_BASE_OFFSET_P1, &p1Ptr, sizeof(p1Ptr));
-            SafeReadMemory(base + EFZ_BASE_OFFSET_P2, &p2Ptr, sizeof(p2Ptr));
+                        uintptr_t p1Ptr = s_ptrCache.p1, p2Ptr = s_ptrCache.p2;
             if ((p1Ptr != fm_lastP1Ptr || p2Ptr != fm_lastP2Ptr) && (p1Ptr || p2Ptr)) {
           LogOut("[FRAME_MONITOR][PTR] P1 " + FM_Hex(p1Ptr) + " (was " + FM_Hex(fm_lastP1Ptr) + ")  P2 " +
               FM_Hex(p2Ptr) + " (was " + FM_Hex(fm_lastP2Ptr) + ")", detailedLogging.load());
@@ -951,6 +1374,33 @@ void FrameDataMonitor() {
                 cachedMoveIDAddr2 = ResolvePointer(base, EFZ_BASE_OFFSET_P2, MOVE_ID_OFFSET);
             }
 
+            // Populate unified per-frame sample (read-only use for now)
+            // Neutral whitelist duplicated previously across Continuous Recovery & DummyAutoBlock.
+            auto isNeutralMoveId = [](short m) {
+                return (m == 0 || m == 1 || m == 2 || m == 3 || m == 4 ||
+                        m == 7 || m == 8 || m == 9 || m == 13);
+            };
+            g_lastSample.frame = (uint32_t)frameCounter.load();
+            g_lastSample.tickMs = GetTickCount64();
+            g_lastSample.phase = currentPhase;
+            g_lastSample.mode = GetCurrentGameMode();
+            g_lastSample.charsInitialized = isInitialized;
+            g_lastSample.moveID1 = moveID1;
+            g_lastSample.moveID2 = moveID2;
+            g_lastSample.prevMoveID1 = prevMoveID1;
+            g_lastSample.prevMoveID2 = prevMoveID2;
+            g_lastSample.actionable1 = IsActionable(moveID1);
+            g_lastSample.actionable2 = IsActionable(moveID2);
+            g_lastSample.neutral1 = isNeutralMoveId(moveID1);
+            g_lastSample.neutral2 = isNeutralMoveId(moveID2);
+            g_lastSample.basePtr = base;
+            g_lastSample.gameStatePtr = s_ptrCache.gs;
+            g_lastSample.p1Ptr = s_ptrCache.p1;
+            g_lastSample.p2Ptr = s_ptrCache.p2;
+            g_lastSample.online = g_onlineModeActive.load();
+            // Expose function symbol (lambda can't have external linkage) via inline in anonymous namespace
+            // We'll define GetCurrentPerFrameSample after the loop.
+
             // --- Recoil Guard (RG) analysis: detect edges and compute freeze/advantage ---
             struct RGAnalysis {
                 bool active = false;   // any RG event currently being tracked for this defender
@@ -1027,11 +1477,13 @@ void FrameDataMonitor() {
                 }
             };
 
+            // RG analysis now uses unified per-frame sample (reduces repeated IsActionable calls)
+            const PerFrameSample &rgSample = g_lastSample;
             auto closeCRGIfOver = [&](RGAnalysis &rg) {
                 if (!rg.active || !rg.cRGOpen) return;
                 // Determine current attacker move/actionable state
-                short atkMoveNow = (rg.attacker == 1) ? moveID1 : moveID2;
-                bool atkActionable = IsActionable(atkMoveNow);
+                short atkMoveNow = (rg.attacker == 1) ? rgSample.moveID1 : rgSample.moveID2;
+                bool atkActionable = (rg.attacker == 1) ? rgSample.actionable1 : rgSample.actionable2;
                 // Close when attacker becomes actionable or cancels out of their move
                 if (atkActionable || atkMoveNow != rg.attackerMoveAtEvent) {
                     rg.cRGOpen = false;
@@ -1049,8 +1501,9 @@ void FrameDataMonitor() {
 
                 // Track attacker actionable timestamp
                 if (rg.atkActionableAt < 0) {
-                    short atkMoveNow = (rg.attacker == 1) ? moveID1 : moveID2;
-                    if (IsActionable(atkMoveNow)) {
+                    short atkMoveNow = (rg.attacker == 1) ? rgSample.moveID1 : rgSample.moveID2;
+                    bool atkActionable = (rg.attacker == 1) ? rgSample.actionable1 : rgSample.actionable2;
+                    if (atkActionable) {
                         rg.atkActionableAt = frameCounter.load();
                         // Debug signal for verification
                         {
@@ -1065,8 +1518,9 @@ void FrameDataMonitor() {
                 }
                 // Track defender actionable timestamp
                 if (rg.defActionableAt < 0) {
-                    short defMoveNow = (rg.defender == 1) ? moveID1 : moveID2;
-                    if (IsActionable(defMoveNow)) {
+                    short defMoveNow = (rg.defender == 1) ? rgSample.moveID1 : rgSample.moveID2;
+                    bool defActionable = (rg.defender == 1) ? rgSample.actionable1 : rgSample.actionable2;
+                    if (defActionable) {
                         rg.defActionableAt = frameCounter.load();
                         // Debug signal for verification
                         {
@@ -1121,9 +1575,10 @@ void FrameDataMonitor() {
                     COLORREF rightColor = (fa2Int >= 0) ? RGB(0, 255, 0) : RGB(255, 0, 0);
                     // Clear any previous regular FA display window to ensure RG takes precedence
                     frameAdvState.displayUntilInternalFrame = -1;
-                    // Suppress regular FA overlay updates briefly (e.g., for ~1s)
-                    int nowInt = frameCounter.load();
-                    g_SkipRegularFAOverlayUntilFrame.store(nowInt + 192);
+                    // Suppress regular FA overlay updates for the same duration as display
+                    // Use pause-aware frame counter to match timer check in MonitorFrameAdvantage
+                    int nowInt = GetCurrentInternalFrame();
+                    g_SkipRegularFAOverlayUntilFrame.store(nowInt + GetDisplayDurationInternalFrames());
                     // Render as two messages placed side-by-side. Keep baseline Y and compute X for right.
                     // We’ll approximate widths by measuring when menu is hidden; otherwise keep coarse spacing.
                     const int baseX = 305;
@@ -1143,6 +1598,12 @@ void FrameDataMonitor() {
                         } else {
                             g_FrameAdvantage2Id = DirectDrawHook::AddPermanentMessage(rightText, rightColor, rightX, baseY);
                         }
+                        // Set display timer for RG messages (configurable via .ini, default 8 seconds)
+                        frameAdvState.displayUntilInternalFrame = nowInt + GetDisplayDurationInternalFrames();
+                        #if defined(ENABLE_FRAME_ADV_DEBUG)
+                        LogOut("[RG_DEBUG] Set RG timer: nowInt=" + std::to_string(nowInt) + 
+                               " expiry=" + std::to_string(frameAdvState.displayUntilInternalFrame), true);
+                        #endif
                     } else {
                         // If hidden, ensure any existing FA messages are cleared
                         if (g_FrameAdvantageId != -1) { DirectDrawHook::RemovePermanentMessage(g_FrameAdvantageId); g_FrameAdvantageId = -1; }
@@ -1150,7 +1611,13 @@ void FrameDataMonitor() {
                     }
 
                     // After FA2 is known, we can stop tracking this RG instance
+                    // But don't clear the display messages immediately - let them show for the full duration
+                    // Set a timer so regular FA can take over after the suppression window expires
                     rg.active = false;
+                    // The messages will be cleared naturally when:
+                    // 1. g_SkipRegularFAOverlayUntilFrame expires and regular FA takes over
+                    // 2. User toggles the overlay off
+                    // 3. A new RG occurs
                 }
             };
 
@@ -1211,7 +1678,7 @@ void FrameDataMonitor() {
             updateRGFA(s_rgP2);
 
             // Counter RG assist maintenance: arm P2 RG while the P1 RG window is open
-            if (s_crgAssistActive) {
+                if (s_crgAssistActive) {
                 bool windowOpen = (s_rgP1.active && s_rgP1.cRGOpen);
                 bool p2RgEdge = (IsRecoilGuard(moveID2) && !IsRecoilGuard(prevMoveID2));
                 bool stopAssist = !windowOpen || p2RgEdge || (GetCurrentGamePhase() != GamePhase::Match) || (GetCurrentGameMode() != GameMode::Practice);
@@ -1227,9 +1694,8 @@ void FrameDataMonitor() {
                     }
                 } else {
                     // Arm RG for P2 by writing 0x3C to [P2 + 334]
-                    uintptr_t baseNow = GetEFZBase();
-                    uintptr_t p2Ptr = 0;
-                    if (baseNow && SafeReadMemory(baseNow + EFZ_BASE_OFFSET_P2, &p2Ptr, sizeof(p2Ptr)) && p2Ptr) {
+                    uintptr_t p2Ptr = ResolvePlayerBaseBestEffort(2);
+                    if (p2Ptr) {
                         uint8_t arm = 0x3C;
                         SafeWriteMemory(p2Ptr + 334, &arm, sizeof(arm));
                     }
@@ -1246,9 +1712,8 @@ void FrameDataMonitor() {
             // Only sample when at least one player is in an attack/state >= 200
             bool shouldSample = p1Trig || p2Trig;
                     if (shouldSample) {
-                        uintptr_t p1PtrDbg = 0, p2PtrDbg = 0;
-                        SafeReadMemory(base + EFZ_BASE_OFFSET_P1, &p1PtrDbg, sizeof(p1PtrDbg));
-                        SafeReadMemory(base + EFZ_BASE_OFFSET_P2, &p2PtrDbg, sizeof(p2PtrDbg));
+                        uintptr_t p1PtrDbg = ResolvePlayerBaseBestEffort(1, base);
+                        uintptr_t p2PtrDbg = ResolvePlayerBaseBestEffort(2, base);
                         // Determine attacker for this log line
                         int atkId = p1Trig ? 1 : (p2Trig ? 2 : ((moveID1 >= 200) ? 1 : ((moveID2 >= 200) ? 2 : 0)));
                         bool atkHasReq = false;
@@ -1351,22 +1816,34 @@ void FrameDataMonitor() {
             bool moveIDsChanged = (moveID1 != prevMoveID1) || (moveID2 != prevMoveID2);
             bool criticalFeaturesActive = autoJumpEnabled.load() || autoActionEnabled.load() || autoAirtechEnabled.load();
 
-            // ALWAYS process frame advantage for precise timing
-            if (moveIDsChanged) {
-                MonitorFrameAdvantage(moveID1, moveID2, prevMoveID1, prevMoveID2);
+            // Process frame advantage only when move IDs change or timers/overlays require ticking
+            {
+                bool faNeedsTick = FrameAdvantageTimersActive();
+                if (moveIDsChanged || faNeedsTick) {
+                    // Use context overload (currently thin wrapper) to begin migration
+                    MonitorFrameAdvantage(GetCurrentPerFrameSample());
+                }
             }
             
-            // Run dummy auto-block stance early for minimal latency (uses current move IDs)
-            MonitorDummyAutoBlock(moveID1, moveID2, prevMoveID1, prevMoveID2);
+            // Run dummy auto-block using unified sample (still every frame for precision)
+            MonitorDummyAutoBlock(GetCurrentPerFrameSample());
 
-            // Practice-only: arm Recoil Guard for the dummy when enabled
+            // Practice-only: Defense helpers
+            // Always RG takes effect when enabled; Random RG mimics Revival's per-frame coin flip.
             AlwaysRG::Tick(moveID1, moveID2);
+            RandomRG::Tick(moveID1, moveID2);
+            // Random Block: per-frame coin flip for the autoblock flag with safe OFF deferral
+            RandomBlock::Tick(moveID1, moveID2);
 
             if (moveIDsChanged || criticalFeaturesActive) {
                 // STEP 1: Process auto-actions FIRST (highest priority)
-                ProcessTriggerDelays();      // Handle pending delays
-                // Pass cached move IDs to avoid extra reads and enable lighter math inside
-                MonitorAutoActions(moveID1, moveID2, prevMoveID1, prevMoveID2);
+                // When tick-integrated mode is active, auto-actions are driven directly from the
+                // engine's per-tick input hook; skip here to avoid double-processing.
+                if (!g_tickIntegratedAutoActions.load()) {
+                    ProcessTriggerDelays();      // Handle pending delays
+                    // Pass cached move IDs to avoid extra reads and enable lighter math inside
+                    MonitorAutoActions(moveID1, moveID2, prevMoveID1, prevMoveID2);
+                }
                 
                 // STEP 2: Auto-jump
                 // Always call to allow internal cleanup when toggled off; function self-checks enable state
@@ -1377,20 +1854,16 @@ void FrameDataMonitor() {
                 ClearDelayStatesIfNonActionable();     
             }
 
-            // Continuous Recovery: restore values on return to neutral/crouch/jump/landing (per-player)
+            // Continuous Recovery: restore values based on unified sample neutral flags + optional both-neutral delay
             {
                 // Track RF freezes we started due to Continuous Recovery (per-side)
                 static bool s_crRFFreezeP1 = false;
                 static bool s_crRFFreezeP2 = false;
-                auto isAllowedNeutral = [](short m){
-                    // Allowed MoveIDs: 0,1,2,3,4,7,8,9,13
-                    return (m == 0 || m == 1 || m == 2 || m == 3 || m == 4 || m == 7 || m == 8 || m == 9 || m == 13);
-                };
-                auto transitionedToAllowed = [&](short prevM, short curM){
-                    // Only when previously not actionable and now in allowed neutral set
-                    bool wasBad = !IsActionable(prevM);
-                    return wasBad && isAllowedNeutral(curM);
-                };
+                // Both-neutral timing gate
+                static bool s_prevBothNeutral = false;
+                static unsigned long long s_bothNeutralStartMs = 0ULL;
+                // Use unified sample values (populated earlier this frame)
+                const PerFrameSample &sample = g_lastSample; // local alias
                 auto resolveTargets = [](bool isP1) {
                     struct T { int hp; int meter; double rf; bool bic; bool hpOn; bool meterOn; bool rfOn; bool wantRedIC; } t; t={0,0,0.0,false,false,false,false,false};
                     // HP
@@ -1431,83 +1904,229 @@ void FrameDataMonitor() {
                     }
                     return t;
                 };
-                auto applyForPlayer = [&](int p){
-                    bool enabled = (p==1)? g_contRecEnabledP1.load() : g_contRecEnabledP2.load();
-                    if (!enabled) return;
-                    short prevM = (p==1? prevMoveID1 : prevMoveID2);
-                    short curM  = (p==1? moveID1     : moveID2);
-                    if (!transitionedToAllowed(prevM, curM)) return;
-                    uintptr_t baseNow = GetEFZBase(); if (!baseNow) return;
-                    uintptr_t pBase=0; SafeReadMemory(baseNow + (p==1?EFZ_BASE_OFFSET_P1:EFZ_BASE_OFFSET_P2), &pBase, sizeof(pBase)); if (!pBase) return;
-                    auto tg = resolveTargets(p==1);
-                    bool wrote = false;
-                    if (tg.hpOn) {
-                        uintptr_t hpA = pBase + HP_OFFSET;
-                        int curFull=0; SafeReadMemory(hpA, &curFull, sizeof(curFull));
-                        WORD cur = (WORD)(curFull & 0xFFFF);
-                        WORD tgt = (WORD)CLAMP(tg.hp, 0, MAX_HP);
-                        if (cur != tgt) { SafeWriteMemory(hpA, &tgt, sizeof(tgt)); wrote = true; }
-                    }
-                    if (tg.meterOn) {
-                        uintptr_t mA = pBase + METER_OFFSET;
-                        int curFull=0; SafeReadMemory(mA, &curFull, sizeof(curFull));
-                        WORD cur = (WORD)(curFull & 0xFFFF);
-                        WORD tgt = (WORD)CLAMP(tg.meter, 0, MAX_METER);
-                        if (cur != tgt) { SafeWriteMemory(mA, &tgt, sizeof(tgt)); wrote = true; }
-                    }
-                    if (tg.rfOn) {
-                        // Use robust setter for both players to avoid desync; read other side first
-                        double p1rf=0.0, p2rf=0.0; uintptr_t p1B=0, p2B=0;
-                        SafeReadMemory(baseNow + EFZ_BASE_OFFSET_P1, &p1B, sizeof(p1B));
-                        SafeReadMemory(baseNow + EFZ_BASE_OFFSET_P2, &p2B, sizeof(p2B));
-                        if (p1B) SafeReadMemory(p1B + RF_OFFSET, &p1rf, sizeof(p1rf));
-                        if (p2B) SafeReadMemory(p2B + RF_OFFSET, &p2rf, sizeof(p2rf));
-                        if (p==1) p1rf = tg.rf; else p2rf = tg.rf;
-                        (void)SetRFValuesDirect(p1rf, p2rf); // best-effort write; freeze handles persistence
-                        if (Config::GetSettings().freezeRFAfterContRec) {
-                            StartRFFreezeOne(p, tg.rf);
-                            if (p==1) s_crRFFreezeP1 = true; else s_crRFFreezeP2 = true;
-                        }
-                    }
-                    if (tg.bic) {
-                        // Set IC color to blue for restored side only; preserve the other side
-                        uintptr_t p1B=0, p2B=0; int ic1=1, ic2=1;
-                        SafeReadMemory(baseNow + EFZ_BASE_OFFSET_P1, &p1B, sizeof(p1B));
-                        SafeReadMemory(baseNow + EFZ_BASE_OFFSET_P2, &p2B, sizeof(p2B));
-                        if (p1B) SafeReadMemory(p1B + IC_COLOR_OFFSET, &ic1, sizeof(ic1));
-                        if (p2B) SafeReadMemory(p2B + IC_COLOR_OFFSET, &ic2, sizeof(ic2));
-                        bool p1Blue = (p==1)? true : (ic1 != 0);
-                        bool p2Blue = (p==2)? true : (ic2 != 0);
-                        SetICColorDirect(p1Blue, p2Blue);
-                    } else if (tg.wantRedIC) {
-                        // Red RF preset chosen: ensure this side is not Blue IC (flip to Red if needed)
-                        uintptr_t p1B=0, p2B=0; int ic1=0, ic2=0;
-                        SafeReadMemory(baseNow + EFZ_BASE_OFFSET_P1, &p1B, sizeof(p1B));
-                        SafeReadMemory(baseNow + EFZ_BASE_OFFSET_P2, &p2B, sizeof(p2B));
-                        if (p1B) SafeReadMemory(p1B + IC_COLOR_OFFSET, &ic1, sizeof(ic1));
-                        if (p2B) SafeReadMemory(p2B + IC_COLOR_OFFSET, &ic2, sizeof(ic2));
-                        bool p1Blue = (ic1 != 0);
-                        bool p2Blue = (ic2 != 0);
-                        if ((p==1 && p1Blue) || (p==2 && p2Blue)) {
-                            // Force this side to Red (false), keep the other side as-is
-                            bool newP1Blue = (p==1) ? false : p1Blue;
-                            bool newP2Blue = (p==2) ? false : p2Blue;
-                            SetICColorDirect(newP1Blue, newP2Blue);
-                        }
-                    }
-                    if (wrote) {
-                        // Optional: log in detailed mode
-                        LogOut(std::string("[FM][ContRec] Restored values for P") + (p==1?"1":"2"), detailedLogging.load());
-                    }
-                };
+                
                 if (moveIDsChanged) {
-                    applyForPlayer(1);
-                    applyForPlayer(2);
+                    // Engine regen gating: if engine-managed regen (F4/F5) is active, do not perform CR writes
+                    uint16_t engineParamA=0, engineParamB=0; EngineRegenMode regenMode = EngineRegenMode::Unknown;
+                    bool gotParams = GetEngineRegenStatus(regenMode, engineParamA, engineParamB);
+                    bool engineRegenActive = gotParams && (regenMode == EngineRegenMode::F5_FullOrPreset || regenMode == EngineRegenMode::F4_FineTuneActive);
+
+                    // Neutral states from sample (already whitelisted)
+                    bool p1NeutralNow = sample.neutral1;
+                    bool p2NeutralNow = sample.neutral2;
+
+                    // Optional both-neutral + delay gating
+                    const Config::Settings& cfg = Config::GetSettings();
+                    bool requireBoth = cfg.crRequireBothNeutral;
+                    int delayMs = (cfg.crBothNeutralDelayMs < 0 ? 0 : cfg.crBothNeutralDelayMs);
+                    bool bothNeutral = p1NeutralNow && p2NeutralNow;
+                    unsigned long long nowMs = GetTickCount64();
+                    if (requireBoth) {
+                        if (bothNeutral) {
+                            if (!s_prevBothNeutral) {
+                                s_bothNeutralStartMs = nowMs;
+                            }
+                        } else {
+                            s_bothNeutralStartMs = 0ULL;
+                        }
+                        s_prevBothNeutral = bothNeutral;
+                    } else {
+                        // When not requiring both, reset tracker to avoid stale timestamps
+                        s_prevBothNeutral = false; s_bothNeutralStartMs = 0ULL;
+                    }
+
+                    // Define applier with captured gating context
+                    auto applyForPlayerIfEligible = [&](int p){
+                        bool enabled = (p==1)? g_contRecEnabledP1.load() : g_contRecEnabledP2.load();
+                        if (!enabled) return;
+                        uintptr_t baseNow = s_ptrCache.base ? s_ptrCache.base : GetEFZBase();
+                        if (!baseNow) return;
+                        uintptr_t pBase = ResolvePlayerBaseBestEffort(p, baseNow);
+                        if (!pBase) return;
+                        auto getPlayerBase = [&](int idx) -> uintptr_t {
+                            if (idx == p) return pBase;
+                            return ResolvePlayerBaseBestEffort(idx, baseNow);
+                        };
+                        auto tg = resolveTargets(p==1);
+                        bool wroteHpOrMeter = false;
+                        bool appliedRf = false;
+                        if (tg.hpOn) {
+                            uintptr_t hpA = pBase + HP_OFFSET;
+                            int cur=0; SafeReadMemory(hpA, &cur, sizeof(cur));
+                            int tgt = CLAMP(tg.hp, 0, MAX_HP);
+                            if (cur != tgt) {
+                                SafeWriteMemory(pBase + HP_OFFSET, &tgt, sizeof(tgt));
+                                SafeWriteMemory(pBase + HP_BAR_OFFSET, &tgt, sizeof(tgt));
+                                wroteHpOrMeter = true;
+                            }
+                        }
+                        if (tg.meterOn) {
+                            uintptr_t mA = pBase + METER_OFFSET;
+                            int curFull=0; SafeReadMemory(mA, &curFull, sizeof(curFull));
+                            WORD cur = (WORD)(curFull & 0xFFFF);
+                            WORD tgt = (WORD)CLAMP(tg.meter, 0, MAX_METER);
+                            if (cur != tgt) { SafeWriteMemory(mA, &tgt, sizeof(tgt)); wroteHpOrMeter = true; }
+                        }
+                        if (tg.rfOn) {
+                            // Use robust setter for both players to avoid desync; read other side first
+                            double p1rf=0.0, p2rf=0.0;
+                            uintptr_t p1B = getPlayerBase(1);
+                            uintptr_t p2B = getPlayerBase(2);
+                            if (p1B) SafeReadMemory(p1B + RF_OFFSET, &p1rf, sizeof(p1rf));
+                            if (p2B) SafeReadMemory(p2B + RF_OFFSET, &p2rf, sizeof(p2rf));
+                            if (p==1) p1rf = tg.rf; else p2rf = tg.rf;
+                            (void)SetRFValuesDirect(p1rf, p2rf); // best-effort write; freeze handles persistence
+                            appliedRf = true;
+                            if (Config::GetSettings().freezeRFAfterContRec) {
+                                StartRFFreezeOneFromCR(p, tg.rf);
+                                if (p==1) s_crRFFreezeP1 = true; else s_crRFFreezeP2 = true;
+                            }
+                        }
+                        if (tg.bic) {
+                            // Set IC color to blue for restored side only; preserve the other side
+                            uintptr_t p1B = getPlayerBase(1);
+                            uintptr_t p2B = getPlayerBase(2);
+                            int ic1=1, ic2=1;
+                            if (p1B) SafeReadMemory(p1B + IC_COLOR_OFFSET, &ic1, sizeof(ic1));
+                            if (p2B) SafeReadMemory(p2B + IC_COLOR_OFFSET, &ic2, sizeof(ic2));
+                            bool p1Blue = (p==1)? true : (ic1 != 0);
+                            bool p2Blue = (p==2)? true : (ic2 != 0);
+                            
+                            std::ostringstream logMsg;
+                            logMsg << "[IC][CONT_REC] P" << p << " BIC flag active: setting P" << p << " to Blue, preserving other (P1=" 
+                                   << (p1Blue ? "Blue" : "Red") << ", P2=" << (p2Blue ? "Blue" : "Red") 
+                                   << ") RFMode=" << (p==1 ? g_contRecRfModeP1.load() : g_contRecRfModeP2.load());
+                            LogOut(logMsg.str(), true);
+                            
+                            SetICColorDirect(p1Blue, p2Blue);
+                        } else if (tg.wantRedIC) {
+                            // Red RF preset chosen: ensure this side is not Blue IC (flip to Red if needed)
+                            uintptr_t p1B = getPlayerBase(1);
+                            uintptr_t p2B = getPlayerBase(2);
+                            int ic1=0, ic2=0;
+                            if (p1B) SafeReadMemory(p1B + IC_COLOR_OFFSET, &ic1, sizeof(ic1));
+                            if (p2B) SafeReadMemory(p2B + IC_COLOR_OFFSET, &ic2, sizeof(ic2));
+                            bool p1Blue = (ic1 != 0);
+                            bool p2Blue = (ic2 != 0);
+                            if ((p==1 && p1Blue) || (p==2 && p2Blue)) {
+                                // Force this side to Red (false), keep the other side as-is
+                                bool newP1Blue = (p==1) ? false : p1Blue;
+                                bool newP2Blue = (p==2) ? false : p2Blue;
+                                
+                                std::ostringstream logMsg;
+                                logMsg << "[IC][CONT_REC] P" << p << " Red RF preset: forcing P" << p << " to Red (was " 
+                                       << (p==1 ? (p1Blue?"Blue":"Red") : (p2Blue?"Blue":"Red")) << "), preserving other (P1=" 
+                                       << (newP1Blue ? "Blue" : "Red") << ", P2=" << (newP2Blue ? "Blue" : "Red") 
+                                       << ") RFMode=" << (p==1 ? g_contRecRfModeP1.load() : g_contRecRfModeP2.load());
+                                LogOut(logMsg.str(), true);
+                                
+                                SetICColorDirect(newP1Blue, newP2Blue);
+                            }
+                        }
+                        // Log recovery reason and state snapshot
+                        {
+                            // Build a concise reason based on gating config captured from outer scope
+                            std::string reason;
+                            if (requireBoth) {
+                                unsigned long long elapsed = (s_bothNeutralStartMs == 0ULL) ? 0ULL : (nowMs - s_bothNeutralStartMs);
+                                reason = std::string("both-neutral ") + (bothNeutral?"true":"false") + ", delay=" + std::to_string(delayMs) + "ms, elapsed=" + std::to_string((unsigned long long)elapsed) + "ms";
+                            } else {
+                                int prevM = (p==1? prevMoveID1 : prevMoveID2);
+                                int curM  = (p==1? moveID1 : moveID2);
+                                reason = std::string("transition ") + std::to_string(prevM) + "->" + std::to_string(curM);
+                            }
+                            // Targets summary (+ move IDs to debug misclassification)
+                            const char* hpOnStr = tg.hpOn ? "on" : "off";
+                            char hpVal[24] = {0};
+                            if (tg.hpOn) { snprintf(hpVal, sizeof(hpVal), "=%d", CLAMP(tg.hp, 0, MAX_HP)); }
+                            const char* meterOnStr = tg.meterOn ? "on" : "off";
+                            char meterVal[24] = {0};
+                            if (tg.meterOn) { snprintf(meterVal, sizeof(meterVal), "=%d", CLAMP(tg.meter, 0, MAX_METER)); }
+                            const char* rfOnStr = tg.rfOn ? "on" : "off";
+                            double rfVal = tg.rfOn ? tg.rf : 0.0;
+                            const char* bicStr = tg.bic ? "true" : "false";
+                            const char* redIcStr = tg.wantRedIC ? "true" : "false";
+                            char buf[256];
+                            snprintf(buf, sizeof(buf), "[FM][ContRec] P%d recovered; reason=%s; p1Neutral=%s p2Neutral=%s engineRegen=%s moves{p1:%d p2:%d} targets{hp:%s%s meter:%s%s rf:%s%.1f BIC:%s RedIC:%s}",
+                                     (p==1?1:2),
+                                     reason.c_str(),
+                                     (p1NeutralNow?"true":"false"), (p2NeutralNow?"true":"false"),
+                                     (engineRegenActive?"true":"false"),
+                                     (int)moveID1, (int)moveID2,
+                                     hpOnStr, hpVal,
+                                     meterOnStr, meterVal,
+                                     rfOnStr, rfVal,
+                                     bicStr, redIcStr);
+                            #if defined(ENABLE_FRAME_ADV_DEBUG)
+                            LogOut(buf, true);
+                            #endif
+                            #if defined(ENABLE_FRAME_ADV_DEBUG)
+                            if (detailedLogging.load()) {
+                                // Secondary detail: wrote flags
+                                char buf2[192];
+                                snprintf(buf2, sizeof(buf2), "[FM][ContRec] P%d wroteHpOrMeter=%s appliedRF=%s freezeRF=%s",
+                                         (p==1?1:2), wroteHpOrMeter?"true":"false", appliedRf?"true":"false",
+                                         ((p==1? s_crRFFreezeP1 : s_crRFFreezeP2)?"true":"false"));
+                                LogOut(buf2, true);
+                            }
+                            #endif
+                        }
+                    };
+
+                    // Determine per-player eligibility
+                    bool p1Eligible = false, p2Eligible = false;
+                    // Transition detection (legacy behavior path): previously not actionable -> now neutral
+                    bool transitionedToNeutralP1 = (!IsActionable(prevMoveID1)) && sample.neutral1;
+                    bool transitionedToNeutralP2 = (!IsActionable(prevMoveID2)) && sample.neutral2;
+                    if (!engineRegenActive) {
+                        if (requireBoth) {
+                            // Both must be neutral for at least delayMs
+                            if (bothNeutral) {
+                                unsigned long long start = s_bothNeutralStartMs;
+                                if (start != 0ULL && (nowMs - start) >= (unsigned long long)delayMs) {
+                                    p1Eligible = g_contRecEnabledP1.load();
+                                    p2Eligible = g_contRecEnabledP2.load();
+                                }
+                            }
+                        } else {
+                            // Legacy behavior: on transition to allowed neutral per-side (now via sample flags)
+                            if (transitionedToNeutralP1) p1Eligible = g_contRecEnabledP1.load();
+                            if (transitionedToNeutralP2) p2Eligible = g_contRecEnabledP2.load();
+                        }
+                    }
+
+                    #if defined(ENABLE_FRAME_ADV_DEBUG)
+                    if (engineRegenActive) {
+                        // Helpful note when engine regen blocks CR on a transition or both-neutral window
+                        if ((requireBoth && bothNeutral) || (!requireBoth && (transitionedToNeutralP1 || transitionedToNeutralP2))) {
+                            LogOut("[FM][ContRec] Skipped due to engine regen active (F4/F5)", true);
+                        }
+                    }
+                    #endif
+
+                    if (p1Eligible) applyForPlayerIfEligible(1);
+                    if (p2Eligible) applyForPlayerIfEligible(2);
+
                     // Stop per-side RF freeze only if we started it via Continuous Recovery and it's no longer active
                     bool p1RFActive = g_contRecEnabledP1.load() && (g_contRecRfModeP1.load() > 0);
                     bool p2RFActive = g_contRecEnabledP2.load() && (g_contRecRfModeP2.load() > 0);
                     if (s_crRFFreezeP1 && !p1RFActive) { StopRFFreezePlayer(1); s_crRFFreezeP1 = false; }
                     if (s_crRFFreezeP2 && !p2RFActive) { StopRFFreezePlayer(2); s_crRFFreezeP2 = false; }
+                }
+
+                // Auto-fix HP anomalies in neutral: if enabled, and a side is neutral with HP<=0, set to 9999.
+                if (Config::GetSettings().autoFixHPOnNeutral) {
+                    uintptr_t baseNow = s_ptrCache.base;
+                    uintptr_t p1B = ResolvePlayerBaseBestEffort(1, baseNow);
+                    uintptr_t p2B = ResolvePlayerBaseBestEffort(2, baseNow);
+                    if (p1B && sample.neutral1) {
+                        int hp = 1; SafeReadMemory(p1B + HP_OFFSET, &hp, sizeof(hp));
+                        if (hp <= 0) { int full = MAX_HP; SafeWriteMemory(p1B + HP_OFFSET, &full, sizeof(full)); SafeWriteMemory(p1B + HP_BAR_OFFSET, &full, sizeof(full)); }
+                    }
+                    if (p2B && sample.neutral2) {
+                        int hp = 1; SafeReadMemory(p2B + HP_OFFSET, &hp, sizeof(hp));
+                        if (hp <= 0) { int full = MAX_HP; SafeWriteMemory(p2B + HP_OFFSET, &full, sizeof(full)); SafeWriteMemory(p2B + HP_BAR_OFFSET, &full, sizeof(full)); }
+                    }
                 }
             }
             
@@ -1530,18 +2149,18 @@ void FrameDataMonitor() {
                 if (++s_cacheCounter >= 192 || !s_p1YAddr || !s_p2YAddr || !s_p1XAddr || !s_p2XAddr ||
                     !s_p1HpAddr || !s_p2HpAddr || !s_p1MeterAddr || !s_p2MeterAddr || !s_p1RfAddr || !s_p2RfAddr ||
                     !s_p1CharNameAddr || !s_p2CharNameAddr) {
-                    s_p1YAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P1, YPOS_OFFSET);
-                    s_p2YAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P2, YPOS_OFFSET);
-                    s_p1XAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P1, XPOS_OFFSET);
-                    s_p2XAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P2, XPOS_OFFSET);
-                    s_p1HpAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P1, HP_OFFSET);
-                    s_p2HpAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P2, HP_OFFSET);
-                    s_p1MeterAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P1, METER_OFFSET);
-                    s_p2MeterAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P2, METER_OFFSET);
-                    s_p1RfAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P1, RF_OFFSET);
-                    s_p2RfAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P2, RF_OFFSET);
-                    s_p1CharNameAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P1, CHARACTER_NAME_OFFSET);
-                    s_p2CharNameAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P2, CHARACTER_NAME_OFFSET);
+                    s_p1YAddr = ResolvePlayerFieldBestEffort(1, YPOS_OFFSET, base);
+                    s_p2YAddr = ResolvePlayerFieldBestEffort(2, YPOS_OFFSET, base);
+                    s_p1XAddr = ResolvePlayerFieldBestEffort(1, XPOS_OFFSET, base);
+                    s_p2XAddr = ResolvePlayerFieldBestEffort(2, XPOS_OFFSET, base);
+                    s_p1HpAddr = ResolvePlayerFieldBestEffort(1, HP_OFFSET, base);
+                    s_p2HpAddr = ResolvePlayerFieldBestEffort(2, HP_OFFSET, base);
+                    s_p1MeterAddr = ResolvePlayerFieldBestEffort(1, METER_OFFSET, base);
+                    s_p2MeterAddr = ResolvePlayerFieldBestEffort(2, METER_OFFSET, base);
+                    s_p1RfAddr = ResolvePlayerFieldBestEffort(1, RF_OFFSET, base);
+                    s_p2RfAddr = ResolvePlayerFieldBestEffort(2, RF_OFFSET, base);
+                    s_p1CharNameAddr = ResolvePlayerFieldBestEffort(1, CHARACTER_NAME_OFFSET, base);
+                    s_p2CharNameAddr = ResolvePlayerFieldBestEffort(2, CHARACTER_NAME_OFFSET, base);
                     s_cacheCounter = 0;
                 }
 
@@ -1549,7 +2168,7 @@ void FrameDataMonitor() {
                 double p1Y=0.0, p2Y=0.0; if (s_p1YAddr) SafeReadMemory(s_p1YAddr, &p1Y, sizeof(p1Y)); if (s_p2YAddr) SafeReadMemory(s_p2YAddr, &p2Y, sizeof(p2Y));
                 double p1X=0.0, p2X=0.0; if (s_p1XAddr) SafeReadMemory(s_p1XAddr, &p1X, sizeof(p1X)); if (s_p2XAddr) SafeReadMemory(s_p2XAddr, &p2X, sizeof(p2X));
                 int p1Hp=0, p2Hp=0; if (s_p1HpAddr) SafeReadMemory(s_p1HpAddr, &p1Hp, sizeof(p1Hp)); if (s_p2HpAddr) SafeReadMemory(s_p2HpAddr, &p2Hp, sizeof(p2Hp));
-                int p1Meter=0, p2Meter=0; if (s_p1MeterAddr) SafeReadMemory(s_p1MeterAddr, &p1Meter, sizeof(p1Meter)); if (s_p2MeterAddr) SafeReadMemory(s_p2MeterAddr, &p2Meter, sizeof(p2Meter));
+                int p1Meter=0, p2Meter=0; if (s_p1MeterAddr) { unsigned short w=0; SafeReadMemory(s_p1MeterAddr, &w, sizeof(w)); p1Meter=(int)w; } if (s_p2MeterAddr) { unsigned short w=0; SafeReadMemory(s_p2MeterAddr, &w, sizeof(w)); p2Meter=(int)w; }
                 double p1Rf=0.0, p2Rf=0.0; if (s_p1RfAddr) SafeReadMemory(s_p1RfAddr, &p1Rf, sizeof(p1Rf)); if (s_p2RfAddr) SafeReadMemory(s_p2RfAddr, &p2Rf, sizeof(p2Rf));
 
                 FrameSnapshot snap{};
@@ -1560,7 +2179,8 @@ void FrameDataMonitor() {
                 snap.p2Move = moveID2;
                 snap.prevP1Move = prevMoveID1;
                 snap.prevP2Move = prevMoveID2;
-                snap.p2BlockEdge = (IsBlockstun(prevMoveID2) && !IsBlockstun(moveID2) && IsActionable(moveID2));
+                // Use cached actionable from unified sample for current moveID2
+                snap.p2BlockEdge = (IsBlockstun(prevMoveID2) && !IsBlockstun(moveID2) && g_lastSample.actionable2);
                 snap.p2HitstunEdge = (!IsHitstun(prevMoveID2) && IsHitstun(moveID2));
                 snap.p1X = p1X; snap.p2X = p2X;
                 snap.p1Y = p1Y; snap.p2Y = p2Y;
@@ -1792,6 +2412,14 @@ FRAME_MONITOR_FRAME_END:
     }
 }
 
+// Accessor returns last published per-frame sample
+const PerFrameSample& GetCurrentPerFrameSample() {
+    // Before first frame monitor tick, return zero-initialized sample
+    static PerFrameSample initial{};
+    if (frameCounter.load() == 0) return initial;
+    return g_lastSample;
+}
+
 void ReinitializeOverlays() {
     // Clear existing trigger messages
     if (g_TriggerAfterBlockId != -1) {
@@ -1847,6 +2475,8 @@ void ReinitializeOverlays() {
             DirectDrawHook::RemovePermanentMessage(g_statsP2ValuesId);
             DirectDrawHook::RemovePermanentMessage(g_statsPositionId);
             DirectDrawHook::RemovePermanentMessage(g_statsMoveIdId);
+            if (g_statsBlockstunId != -1) { DirectDrawHook::RemovePermanentMessage(g_statsBlockstunId); g_statsBlockstunId = -1; }
+            if (g_statsUntechId != -1) { DirectDrawHook::RemovePermanentMessage(g_statsUntechId); g_statsUntechId = -1; }
             if (g_statsNayukiId != -1) { DirectDrawHook::RemovePermanentMessage(g_statsNayukiId); g_statsNayukiId = -1; }
             if (g_statsMisuzuId != -1) { DirectDrawHook::RemovePermanentMessage(g_statsMisuzuId); g_statsMisuzuId = -1; }
             if (g_statsMishioId != -1) { DirectDrawHook::RemovePermanentMessage(g_statsMishioId); g_statsMishioId = -1; }
@@ -1858,6 +2488,8 @@ void ReinitializeOverlays() {
             g_statsP2ValuesId = -1;
             g_statsPositionId = -1;
             g_statsMoveIdId = -1;
+            if (g_statsBlockstunId != -1) { DirectDrawHook::RemovePermanentMessage(g_statsBlockstunId); g_statsBlockstunId = -1; }
+            if (g_statsUntechId != -1) { DirectDrawHook::RemovePermanentMessage(g_statsUntechId); g_statsUntechId = -1; }
         }
     }
     
@@ -1908,6 +2540,8 @@ void UpdateStatsDisplay() {
             g_statsP2ValuesId = -1;
             g_statsPositionId = -1;
             g_statsMoveIdId = -1;
+            if (g_statsBlockstunId != -1) { DirectDrawHook::RemovePermanentMessage(g_statsBlockstunId); g_statsBlockstunId = -1; }
+            if (g_statsUntechId != -1) { DirectDrawHook::RemovePermanentMessage(g_statsUntechId); g_statsUntechId = -1; }
         }
         if (g_statsCleanHitId != -1) {
             DirectDrawHook::RemovePermanentMessage(g_statsCleanHitId);
@@ -1945,6 +2579,8 @@ void UpdateStatsDisplay() {
             DirectDrawHook::RemovePermanentMessage(g_statsAIFlagsId);
             g_statsAIFlagsId = -1;
         }
+        if (g_statsBlockstunId != -1) { DirectDrawHook::RemovePermanentMessage(g_statsBlockstunId); g_statsBlockstunId = -1; }
+        if (g_statsUntechId != -1) { DirectDrawHook::RemovePermanentMessage(g_statsUntechId); g_statsUntechId = -1; }
         return;
     }
 
@@ -1961,6 +2597,8 @@ void UpdateStatsDisplay() {
             g_statsP2ValuesId = -1;
             g_statsPositionId = -1;
             g_statsMoveIdId = -1;
+            if (g_statsBlockstunId != -1) { DirectDrawHook::RemovePermanentMessage(g_statsBlockstunId); g_statsBlockstunId = -1; }
+            if (g_statsUntechId != -1) { DirectDrawHook::RemovePermanentMessage(g_statsUntechId); g_statsUntechId = -1; }
         }
         // Also clear any character-specific stat lines (Nayuki/Misuzu)
         if (g_statsNayukiId != -1) {
@@ -1995,6 +2633,8 @@ void UpdateStatsDisplay() {
             DirectDrawHook::RemovePermanentMessage(g_statsAIFlagsId);
             g_statsAIFlagsId = -1;
         }
+        if (g_statsBlockstunId != -1) { DirectDrawHook::RemovePermanentMessage(g_statsBlockstunId); g_statsBlockstunId = -1; }
+        if (g_statsUntechId != -1) { DirectDrawHook::RemovePermanentMessage(g_statsUntechId); g_statsUntechId = -1; }
     }
 
     // Check for valid game state - return early if not in a valid state
@@ -2046,6 +2686,8 @@ void UpdateStatsDisplay() {
             DirectDrawHook::RemovePermanentMessage(g_statsAIFlagsId);
             g_statsAIFlagsId = -1;
         }
+        if (g_statsBlockstunId != -1) { DirectDrawHook::RemovePermanentMessage(g_statsBlockstunId); g_statsBlockstunId = -1; }
+        if (g_statsUntechId != -1) { DirectDrawHook::RemovePermanentMessage(g_statsUntechId); g_statsUntechId = -1; }
         return;
     }
 
@@ -2057,6 +2699,23 @@ void UpdateStatsDisplay() {
 
     int p1Hp = 0, p2Hp = 0, p1Meter = 0, p2Meter = 0; double p1Rf = 0.0, p2Rf = 0.0;
     double p1X = 0.0, p1Y = 0.0, p2X = 0.0, p2Y = 0.0; short p1MoveId = 0, p2MoveId = 0;
+
+    // Throttle heavy stats formatting & reads when overlay active.
+    // We still maintain position cache every frame (using snapshot if present) for other systems.
+    static int s_lastStatsUpdateFrame = -9999;
+    static std::string s_lastP1Values, s_lastP2Values, s_lastPositions, s_lastMoveIds;
+
+    bool wantStatsUpdate = true; // default when overlay off or we have no snapshot fallback
+    if (statsOn) {
+        int fNow = frameCounter.load();
+        // Update at most every 4 internal frames (192Hz -> 48Hz) unless snapshot missing
+        if (fNow - s_lastStatsUpdateFrame < 4 && haveSnap) {
+            // Early position cache update from snapshot then skip expensive formatting
+            UpdatePositionCache(snap.p1X, snap.p1Y, snap.p2X, snap.p2Y);
+            return; // skip rest until next throttle boundary
+        }
+        s_lastStatsUpdateFrame = fNow;
+    }
 
     if (haveSnap) {
         p1Hp = snap.p1Hp; p2Hp = snap.p2Hp;
@@ -2072,25 +2731,25 @@ void UpdateStatsDisplay() {
         static uintptr_t p1MoveIdAddr = 0, p2MoveIdAddr = 0;
         static int cacheCounter = 0;
         if (cacheCounter++ >= 60 || !p1HpAddr) {
-            p1HpAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P1, HP_OFFSET);
-            p1MeterAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P1, METER_OFFSET);
-            p1RfAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P1, RF_OFFSET);
-            p1XAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P1, XPOS_OFFSET);
-            p1YAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P1, YPOS_OFFSET);
-            p1MoveIdAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P1, MOVE_ID_OFFSET);
-            p2HpAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P2, HP_OFFSET);
-            p2MeterAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P2, METER_OFFSET);
-            p2RfAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P2, RF_OFFSET);
-            p2XAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P2, XPOS_OFFSET);
-            p2YAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P2, YPOS_OFFSET);
-            p2MoveIdAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P2, MOVE_ID_OFFSET);
+            p1HpAddr = ResolvePlayerFieldBestEffort(1, HP_OFFSET, base);
+            p1MeterAddr = ResolvePlayerFieldBestEffort(1, METER_OFFSET, base);
+            p1RfAddr = ResolvePlayerFieldBestEffort(1, RF_OFFSET, base);
+            p1XAddr = ResolvePlayerFieldBestEffort(1, XPOS_OFFSET, base);
+            p1YAddr = ResolvePlayerFieldBestEffort(1, YPOS_OFFSET, base);
+            p1MoveIdAddr = ResolvePlayerFieldBestEffort(1, MOVE_ID_OFFSET, base);
+            p2HpAddr = ResolvePlayerFieldBestEffort(2, HP_OFFSET, base);
+            p2MeterAddr = ResolvePlayerFieldBestEffort(2, METER_OFFSET, base);
+            p2RfAddr = ResolvePlayerFieldBestEffort(2, RF_OFFSET, base);
+            p2XAddr = ResolvePlayerFieldBestEffort(2, XPOS_OFFSET, base);
+            p2YAddr = ResolvePlayerFieldBestEffort(2, YPOS_OFFSET, base);
+            p2MoveIdAddr = ResolvePlayerFieldBestEffort(2, MOVE_ID_OFFSET, base);
             cacheCounter = 0;
         }
         if (p1HpAddr) SafeReadMemory(p1HpAddr, &p1Hp, sizeof(int));
-        if (p1MeterAddr) SafeReadMemory(p1MeterAddr, &p1Meter, sizeof(int));
+    if (p1MeterAddr) { unsigned short w=0; SafeReadMemory(p1MeterAddr, &w, sizeof(w)); p1Meter=(int)w; }
         if (p1RfAddr) SafeReadMemory(p1RfAddr, &p1Rf, sizeof(double));
         if (p2HpAddr) SafeReadMemory(p2HpAddr, &p2Hp, sizeof(int));
-        if (p2MeterAddr) SafeReadMemory(p2MeterAddr, &p2Meter, sizeof(int));
+    if (p2MeterAddr) { unsigned short w=0; SafeReadMemory(p2MeterAddr, &w, sizeof(w)); p2Meter=(int)w; }
         if (p2RfAddr) SafeReadMemory(p2RfAddr, &p2Rf, sizeof(double));
         if (p1XAddr) SafeReadMemory(p1XAddr, &p1X, sizeof(double));
         if (p1YAddr) SafeReadMemory(p1YAddr, &p1Y, sizeof(double));
@@ -2123,8 +2782,8 @@ void UpdateStatsDisplay() {
     if (statsOn) {
         // Sample P1's current frame flags to decode guard requirement
         if (base) {
-            uintptr_t p1BasePtr = 0;
-            if (SafeReadMemory(base + EFZ_BASE_OFFSET_P1, &p1BasePtr, sizeof(p1BasePtr)) && p1BasePtr) {
+            uintptr_t p1BasePtr = ResolvePlayerBaseBestEffort(1, base);
+            if (p1BasePtr) {
                 uint16_t st = 0, fr = 0; uintptr_t animTab = 0;
                 if (SafeReadMemory(p1BasePtr + MOVE_ID_OFFSET, &st, sizeof(st)) &&
                     SafeReadMemory(p1BasePtr + CURRENT_FRAME_INDEX_OFFSET, &fr, sizeof(fr)) &&
@@ -2150,6 +2809,8 @@ void UpdateStatsDisplay() {
                 }
             }
         }
+        if (g_statsBlockstunId != -1) { DirectDrawHook::RemovePermanentMessage(g_statsBlockstunId); g_statsBlockstunId = -1; }
+        if (g_statsUntechId != -1) { DirectDrawHook::RemovePermanentMessage(g_statsUntechId); g_statsUntechId = -1; }
     }
     moveIds << "MoveID:  P1: " << p1MoveId;
     if (!p1ReqStr.empty()) moveIds << " [" << p1ReqStr << "]";
@@ -2173,6 +2834,43 @@ void UpdateStatsDisplay() {
         upsert(g_statsP1ValuesId, p1Values.str());
         upsert(g_statsP2ValuesId, p2Values.str());
         upsert(g_statsPositionId, positions.str());
+
+        // New: Separate Blockstun and Untech counters (raw internal values)
+        auto readStunCounters = [&]() {
+            uintptr_t baseNow = s_ptrCache.base ? s_ptrCache.base : GetEFZBase();
+            if (!baseNow) return std::tuple<int,int,int,int>(-1,-1,-1,-1);
+            uintptr_t p1 = ResolvePlayerBaseBestEffort(1, baseNow);
+            uintptr_t p2 = ResolvePlayerBaseBestEffort(2, baseNow);
+            short p1Blk=0, p2Blk=0, p1Hit=0, p2Hit=0;
+            if (p1) { SafeReadMemory(p1 + BLOCKSTUN_OFFSET, &p1Blk, sizeof(p1Blk)); SafeReadMemory(p1 + UNTECH_OFFSET, &p1Hit, sizeof(p1Hit)); }
+            if (p2) { SafeReadMemory(p2 + BLOCKSTUN_OFFSET, &p2Blk, sizeof(p2Blk)); SafeReadMemory(p2 + UNTECH_OFFSET, &p2Hit, sizeof(p2Hit)); }
+            // Return raw counters as integers; clamp negatives to zero for display neatness
+            auto clamp0 = [](int v){ return v < 0 ? 0 : v; };
+            return std::tuple<int,int,int,int>(clamp0((int)p1Blk), clamp0((int)p1Hit), clamp0((int)p2Blk), clamp0((int)p2Hit));
+        };
+        {
+            int p1BlkLF=0, p1HitLF=0, p2BlkLF=0, p2HitLF=0;
+            std::tie(p1BlkLF, p1HitLF, p2BlkLF, p2HitLF) = readStunCounters();
+            std::stringstream blkLine, hitLine;
+            blkLine << "Blockstun:  P1 " << p1BlkLF << "  P2 " << p2BlkLF;
+            hitLine << "Untech:    P1 " << p1HitLF << "  P2 " << p2HitLF;
+            upsert(g_statsBlockstunId, blkLine.str());
+            upsert(g_statsUntechId, hitLine.str());
+        }
+
+        // TEMP diagnostic: probe adjacent offset (+0x14C) to validate blockstun pointer choice.
+        // Remove after confirming correct address in live testing.
+        {
+            uintptr_t baseNow = GetEFZBase();
+            uintptr_t p1=ResolvePlayerBaseBestEffort(1, baseNow);
+            uintptr_t p2=ResolvePlayerBaseBestEffort(2, baseNow);
+            short p1Cand=0, p2Cand=0;
+            if (p1) { SafeReadMemory(p1 + BLOCKSTUN_OFFSET + 2, &p1Cand, sizeof(p1Cand)); }
+            if (p2) { SafeReadMemory(p2 + BLOCKSTUN_OFFSET + 2, &p2Cand, sizeof(p2Cand)); }
+            std::stringstream diag;
+            diag << "Blk?(+0x14C): P1 " << (int)(p1Cand < 0 ? 0 : p1Cand) << "  P2 " << (int)(p2Cand < 0 ? 0 : p2Cand);
+            upsert(g_statsAIFlagsId, diag.str()); // reuse AI flags line position temporarily below character lines
+        }
 
         // Character-specific: Nayuki (Awake) snowbunnies timer line
         // Show when either side is Nayuki(Awake); include Infinite indicator per side
@@ -2396,11 +3094,8 @@ void UpdateStatsDisplay() {
                     }
                 }
             };
-            uintptr_t p1Base = 0, p2Base = 0;
-            if (base) {
-                SafeReadMemory(base + EFZ_BASE_OFFSET_P1, &p1Base, sizeof(p1Base));
-                SafeReadMemory(base + EFZ_BASE_OFFSET_P2, &p2Base, sizeof(p2Base));
-            }
+            uintptr_t p1Base = ResolvePlayerBaseBestEffort(1, base);
+            uintptr_t p2Base = ResolvePlayerBaseBestEffort(2, base);
             if (displayData.p1CharID == CHAR_ID_MINAGI) {
                 scanPuppet(1, p1Base, displayData.p1MinagiPuppetX, displayData.p1MinagiPuppetY, displayData.p1MichiruCurrentId, displayData.p1MichiruLastX, displayData.p1MichiruLastY);
             } else { displayData.p1MichiruCurrentId = -1; }
@@ -2444,13 +3139,13 @@ void UpdateStatsDisplay() {
             GamePhase phase = GetCurrentGamePhase();
             if (phase == GamePhase::Match) {
                 uintptr_t p1BasePtr = 0, p2BasePtr = 0; uint32_t p1AI=0, p2AI=0; bool haveP1=false, haveP2=false;
-                if (base) {
-                    if (SafeReadMemory(base + EFZ_BASE_OFFSET_P1, &p1BasePtr, sizeof(p1BasePtr)) && p1BasePtr) {
-                        haveP1 = SafeReadMemory(p1BasePtr + AI_CONTROL_FLAG_OFFSET, &p1AI, sizeof(p1AI));
-                    }
-                    if (SafeReadMemory(base + EFZ_BASE_OFFSET_P2, &p2BasePtr, sizeof(p2BasePtr)) && p2BasePtr) {
-                        haveP2 = SafeReadMemory(p2BasePtr + AI_CONTROL_FLAG_OFFSET, &p2AI, sizeof(p2AI));
-                    }
+                p1BasePtr = ResolvePlayerBaseBestEffort(1, base);
+                p2BasePtr = ResolvePlayerBaseBestEffort(2, base);
+                if (p1BasePtr) {
+                    haveP1 = SafeReadMemory(p1BasePtr + AI_CONTROL_FLAG_OFFSET, &p1AI, sizeof(p1AI));
+                }
+                if (p2BasePtr) {
+                    haveP2 = SafeReadMemory(p2BasePtr + AI_CONTROL_FLAG_OFFSET, &p2AI, sizeof(p2AI));
                 }
                 std::stringstream aiLine;
                 aiLine << "AI: P1=" << (haveP1 ? (p1AI?"1":"0") : "-") << " P2=" << (haveP2 ? (p2AI?"1":"0") : "-");
@@ -2461,7 +3156,9 @@ void UpdateStatsDisplay() {
                 if (g_statsAIFlagsId != -1) { DirectDrawHook::RemovePermanentMessage(g_statsAIFlagsId); g_statsAIFlagsId = -1; }
             }
         }
-        else if (g_statsAIFlagsId != -1) { DirectDrawHook::RemovePermanentMessage(g_statsAIFlagsId); g_statsAIFlagsId = -1; }
+    else if (g_statsAIFlagsId != -1) { DirectDrawHook::RemovePermanentMessage(g_statsAIFlagsId); g_statsAIFlagsId = -1; }
+    if (!statsOn && g_statsBlockstunId != -1) { DirectDrawHook::RemovePermanentMessage(g_statsBlockstunId); g_statsBlockstunId = -1; }
+    if (!statsOn && g_statsUntechId != -1) { DirectDrawHook::RemovePermanentMessage(g_statsUntechId); g_statsUntechId = -1; }
     }
 
     if (statsOn) {

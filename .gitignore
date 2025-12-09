@@ -9,7 +9,7 @@ x64/
 Win32/
 bin/
 obj/
-
+.history/
 # CMake files
 CMakeFiles/
 CMakeCache.txt

@@ -9,9 +9,13 @@
 #include "../include/core/logger.h"
 #include "../include/utils/switch_players.h"
 #include "../include/game/game_state.h"
+#include "../include/utils/debug_log.h"
+#include "../include/input/framestep.h"
+#include "../include/utils/network.h"
 #include <windows.h>
 #include <Xinput.h>
-#pragma comment(lib, "xinput9_1_0.lib")
+#include "../include/utils/xinput_shim.h"
+// XInput is loaded dynamically via XInputShim
 
 namespace ImGuiSettings {
     // Pseudo-bits for triggers when mapping to a button mask
@@ -25,6 +29,10 @@ namespace ImGuiSettings {
             if (std::string(key) == "DetailedLogging") {
                 detailedLogging.store(value);
                 LogOut(std::string("[CONFIG/UI] detailedLogging set to ") + (value ? "true" : "false"), false);
+            }
+            else if (std::string(key) == "enableDebugFileLog") {
+                DebugLog::g_EnableDebugLog = value;
+                LogOut(std::string("[CONFIG/UI] enableDebugFileLog set to ") + (value ? "true" : "false"), false);
             }
         }
     }
@@ -77,7 +85,7 @@ namespace ImGuiSettings {
         uint32_t connected = 0;
         for (int i = 0; i < 4; ++i) {
             XINPUT_STATE st{};
-            if (XInputGetState(i, &st) == ERROR_SUCCESS) {
+            if (XInputShim::GetState(i, &st) == ERROR_SUCCESS) {
                 connected |= (1u << i);
                 agg |= st.Gamepad.wButtons;
                 if (st.Gamepad.bLeftTrigger > GP_TRIGGER_THRESH) agg |= GP_LT_BIT;
@@ -125,22 +133,21 @@ namespace ImGuiSettings {
         const Config::Settings& cfg = Config::GetSettings();
 
         // Local copies for UI mutation
-        bool useImGui = cfg.useImGui;
+        
         bool logVerbose = cfg.detailedLogging;
+        bool debugFileLog = cfg.enableDebugFileLog;
         bool fpsDiag = cfg.enableFpsDiagnostics;
-        bool restrictPractice = cfg.restrictToPracticeMode;
+        
+        bool showPracticeHint = cfg.showPracticeEntryHint;
         bool enableConsole = cfg.enableConsole;
         float uiScale = cfg.uiScale;
         int uiFontMode = cfg.uiFontMode; // 0=Default, 1=Segoe UI
 
     if (ImGui::BeginTabBar("##SettingsTabs")) {
             if (ImGui::BeginTabItem("General")) {
-                CheckboxApply("Use ImGui UI (else legacy dialog)", useImGui, "General", "UseImGui");
-                ImGui::SameLine();
-                ImGui::TextDisabled("(applies on next menu open)");
-
-                CheckboxApply("Detailed logging", logVerbose, "General", "DetailedLogging");
-                CheckboxApply("Enable FPS/timing diagnostics", fpsDiag, "General", "enableFpsDiagnostics");
+                ImGui::SeparatorText("User Interface");
+                
+                
 
                 ImGui::Text("UI Scale:");
                 ImGui::SameLine();
@@ -166,7 +173,93 @@ namespace ImGuiSettings {
                 ImGui::SameLine();
                 ImGui::TextDisabled("(applies immediately)");
 
-                CheckboxApply("Restrict features to Practice Mode", restrictPractice, "General", "restrictToPracticeMode");
+                ImGui::Spacing();
+                ImGui::Separator();
+                ImGui::SeparatorText("Display Settings");
+
+                float faDuration = cfg.frameAdvantageDisplayDuration;
+                ImGui::Text("FA Display Duration:");
+                ImGui::SameLine();
+                ImGui::SetNextItemWidth(200);
+                if (ImGui::SliderFloat("##FADuration", &faDuration, 0.5f, 30.0f, "%.1f sec")) {
+                    Config::SetSetting("General", "frameAdvantageDisplayDuration", std::to_string(faDuration));
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Reset##FADuration")) {
+                    faDuration = 1.9f;
+                    Config::SetSetting("General", "frameAdvantageDisplayDuration", "1.9");
+                }
+                if (ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip("How long frame advantage and gap messages stay visible (default: 1.9 seconds)");
+                }
+
+                ImGui::Spacing();
+                ImGui::Separator();
+                ImGui::SeparatorText("Practice Options");
+
+                
+                if (ImGui::Checkbox("Show Practice overlay hint once per session", &showPracticeHint)) {
+                    Config::SetSetting("General", "showPracticeEntryHint", showPracticeHint ? "1" : "0");
+                }
+                ImGui::TextDisabled("Appears when the first Practice match starts");
+
+                int abTimeoutMs = cfg.autoBlockNeutralTimeoutMs;
+                int abTimeoutSec = (abTimeoutMs + 500) / 1000; // round to nearest second for UI
+                ImGui::Text("Auto-Block neutral timeout:");
+                ImGui::SameLine();
+                ImGui::SetNextItemWidth(200);
+                if (ImGui::SliderInt("##ABTimeout", &abTimeoutSec, 0, 60, "%d sec")) {
+                    if (abTimeoutSec < 0) abTimeoutSec = 0; 
+                    if (abTimeoutSec > 600) abTimeoutSec = 600; // hard cap
+                    int ms = abTimeoutSec * 1000;
+                    Config::SetSetting("General", "autoBlockNeutralTimeoutMs", std::to_string(ms));
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Reset##ABTimeout")) {
+                    Config::SetSetting("General", "autoBlockNeutralTimeoutMs", "10000");
+                }
+                if (ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip("When using First Hit/After First Hit modes, require this much continuous neutral before re-arming/disabling. 0 = toggle on the first neutral frame.");
+                }
+
+                ImGui::Spacing();
+                ImGui::Separator();
+                ImGui::SeparatorText("Recovery & Health");
+
+                // Continuous Recovery gating settings (moved from Keyboard Hotkeys)
+                bool crBoth = cfg.crRequireBothNeutral;
+                if (ImGui::Checkbox("CR: require both players neutral", &crBoth)) {
+                    Config::SetSetting("General", "crRequireBothNeutral", crBoth ? "1" : "0");
+                }
+                int crDelay = cfg.crBothNeutralDelayMs;
+                ImGui::SetNextItemWidth(180);
+                if (ImGui::InputInt("CR: neutral delay (ms)", &crDelay)) {
+                    if (crDelay < 0) crDelay = 0; if (crDelay > 5000) crDelay = 5000;
+                    Config::SetSetting("General", "crBothNeutralDelayMs", std::to_string(crDelay));
+                }
+
+                // Auto-fix HP anomalies
+                bool autoFixHp = cfg.autoFixHPOnNeutral;
+                if (ImGui::Checkbox("Auto-fix HP<=0 in neutral (set to 9999)", &autoFixHp)) {
+                    Config::SetSetting("General", "autoFixHPOnNeutral", autoFixHp ? "1" : "0");
+                }
+
+                // RF Freeze behavior
+                ImGui::Dummy(ImVec2(1,2));
+                bool freezeAfterCR = cfg.freezeRFAfterContRec;
+                if (ImGui::Checkbox("Freeze RF after Continuous Recovery", &freezeAfterCR)) {
+                    Config::SetSetting("General", "freezeRFAfterContRec", freezeAfterCR ? "1" : "0");
+                }
+                bool freezeOnlyNeutral = cfg.freezeRFOnlyWhenNeutral;
+                if (ImGui::Checkbox("Freeze RF only when neutral", &freezeOnlyNeutral)) {
+                    Config::SetSetting("General", "freezeRFOnlyWhenNeutral", freezeOnlyNeutral ? "1" : "0");
+                }
+
+                ImGui::Spacing();
+                ImGui::Separator();
+                ImGui::SeparatorText("Advanced");
+
+                CheckboxApply("Detailed logging", logVerbose, "General", "DetailedLogging");
 
                 if (ImGui::Checkbox("Show debug console (restart not required)", &enableConsole)) {
                     Config::SetSetting("General", "enableConsole", enableConsole ? "1" : "0");
@@ -177,6 +270,13 @@ namespace ImGuiSettings {
                     } else {
                         SetConsoleVisibility(false);
                     }
+                }
+
+                ImGui::Spacing();
+                ImGui::Separator();
+                if (ImGui::Button("Save to disk")) {
+                    Config::SaveSettings();
+                    LogOut("[CONFIG/UI] Settings saved to ini", false);
                 }
 
                 ImGui::EndTabItem();
@@ -198,6 +298,35 @@ namespace ImGuiSettings {
                 InputKeyHex("Reset Frame Counter", resetFrame, "ResetFrameCounterKey");
                 InputKeyHex("Help", help, "HelpKey");
                 InputKeyHex("Toggle ImGui Overlay", toggleImGui, "ToggleImGuiKey");
+
+                ImGui::Separator();
+                ImGui::SeparatorText("Practice / Macros");
+                int switchPlayers = cfg.switchPlayersKey;
+                int macroRecord = cfg.macroRecordKey;
+                int macroPlay   = cfg.macroPlayKey;
+                int macroSlot   = cfg.macroSlotKey;
+                InputKeyHex("Switch Players (Practice)", switchPlayers, "SwitchPlayersKey");
+                InputKeyHex("Macro: Record", macroRecord, "MacroRecordKey");
+                InputKeyHex("Macro: Play", macroPlay, "MacroPlayKey");
+                InputKeyHex("Macro: Next Slot", macroSlot, "MacroSlotKey");
+
+                ImGui::Separator();
+                if (GetEfzRevivalVersion() == EfzRevivalVersion::Vanilla) {
+                    ImGui::SeparatorText("Framestep (vanilla EFZ only)");
+                    int fsPause = cfg.framestepPauseKey;
+                    int fsStep  = cfg.framestepStepKey;
+                    InputKeyHex("Framestep: Toggle Pause", fsPause, "FramestepPauseKey");
+                    InputKeyHex("Framestep: Step Frame", fsStep, "FramestepStepKey");
+                }
+
+                ImGui::Separator();
+                ImGui::SeparatorText("Swap Positions");
+                bool swapEnabled = cfg.swapCustomEnabled;
+                if (ImGui::Checkbox("Enable custom swap key", &swapEnabled)) {
+                    Config::SetSetting("Hotkeys", "SwapCustomEnabled", swapEnabled ? "1" : "0");
+                }
+                int swapKey = cfg.swapCustomKey;
+                InputKeyHex("Custom swap key", swapKey, "SwapCustomKey");
 
                 ImGui::Separator();
                 if (ImGui::Button("Save to disk")) {
@@ -329,6 +458,14 @@ namespace ImGuiSettings {
 
             // New: Debug sub-tab (moved from main tabs)
             if (ImGui::BeginTabItem("Debug")) {
+                ImGui::SeparatorText("Debug Settings");
+                CheckboxApply("Debug file log (efz_training_debug.log)", debugFileLog, "General", "enableDebugFileLog");
+                CheckboxApply("Enable FPS/timing diagnostics", fpsDiag, "General", "enableFpsDiagnostics");
+                
+                ImGui::Spacing();
+                ImGui::Separator();
+                ImGui::Spacing();
+                
                 ImGuiGui::RenderDebugInputTab();
                 ImGui::EndTabItem();
             }

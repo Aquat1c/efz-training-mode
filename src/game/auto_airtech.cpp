@@ -1,10 +1,13 @@
 #include "../include/game/auto_airtech.h"
 #include "../include/core/constants.h"
 #include "../include/utils/utilities.h"
+#include "../include/utils/network.h"
+#include "../include/game/game_state.h"
 
 #include "../include/core/memory.h"
 #include "../include/core/logger.h"
 #include "../include/input/input_core.h" // for WritePlayerInputImmediate and GAME_INPUT_*
+#include "../include/game/validation_metrics.h" // validation metrics instrumentation
 #include <thread>
 #include <atomic>
 #include <chrono>
@@ -90,6 +93,10 @@ bool IsAirtechAnimation(short moveID) {
 }
 
 void MonitorAutoAirtech(short moveID1, short moveID2) {
+    // Only operate in offline Practice mode
+    if (GetCurrentGameMode() != GameMode::Practice) return;
+    if (DetectOnlineMatch()) return;
+    
     static bool prevEnabled = false;
     static int prevDirection = -1;
     static int prevDelay = -1;
@@ -151,6 +158,7 @@ void MonitorAutoAirtech(short moveID1, short moveID2) {
     // Detect transitions into airtech animation
     if (p1CurrentlyAirteching && !p1IsAirteching) {
         LogOut("[AUTO-AIRTECH] P1 entered airtech animation", detailedLogging.load());
+        if (ValidationMetricsEnabled()) { GetValidationMetrics().p1AirtechSuccess++; }
     if (patchesApplied) RemoveAirtechPatches();
     p1DelayCounter = 0;
     p1InjectRemaining = 0;
@@ -160,6 +168,7 @@ void MonitorAutoAirtech(short moveID1, short moveID2) {
     
     if (p2CurrentlyAirteching && !p2IsAirteching) {
         LogOut("[AUTO-AIRTECH] P2 entered airtech animation", detailedLogging.load());
+        if (ValidationMetricsEnabled()) { GetValidationMetrics().p2AirtechSuccess++; }
     if (patchesApplied) RemoveAirtechPatches();
     p2DelayCounter = 0;
     p2InjectRemaining = 0;
@@ -179,6 +188,10 @@ void MonitorAutoAirtech(short moveID1, short moveID2) {
     // Compute airtechable using helpers (untech + moveID classification)
     bool p1AbleNow = IsPlayerAirtechable(moveID1, 1);
     bool p2AbleNow = IsPlayerAirtechable(moveID2, 2);
+    if (ValidationMetricsEnabled()) {
+        if (p1AbleNow && !p1WasAirtechable) GetValidationMetrics().p1AirtechableEdges++;
+        if (p2AbleNow && !p2WasAirtechable) GetValidationMetrics().p2AirtechableEdges++;
+    }
     g_airtechP1Active.store(p1ActiveNow);
     g_airtechP2Active.store(p2ActiveNow);
     g_airtechP1Airtechable.store(p1AbleNow);

@@ -15,8 +15,7 @@
 #include "../include/core/constants.h"
 #include "../include/gui/overlay.h"
 
-// EFZ address of handlePlayerToPlayerCollision relative to module base (from decomp notes)
-// Absolute: 0x00767F60, module base is 0x00400000, so relative offset is 0x00367F60
+// Offset of handlePlayerToPlayerCollision relative to module base
 static constexpr uintptr_t HANDLE_P2P_COLLISION_OFFSET = 0x367F60;
 
 // Original function pointer typedef and storage

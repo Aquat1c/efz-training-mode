@@ -8,12 +8,23 @@ namespace Config {
         // General settings
         bool useImGui;
         bool detailedLogging;
+        bool enableDebugFileLog;   // NEW: Enable writing efz_training_debug.log (file debug logging)
         bool restrictToPracticeMode; // NEW: Restrict to practice mode
     bool enableConsole;          // NEW: Show/Hide console window
     bool enableFpsDiagnostics;   // NEW: Enable FPS/timing diagnostics output
     bool enableCharacterSelectLogger; // NEW: Toggle per-frame Character Select flag logger
+    bool showPracticeEntryHint;   // NEW: Show practice overlay hint once per session
     float uiScale;               // NEW: UI scale for ImGui window (e.g., 0.80..1.20)
     int uiFontMode;              // NEW: UI font selection (0=ImGui default, 1=Segoe UI)
+
+    // ImGui navigation tuning
+    float guiNavAnalogThreshold; // Analog threshold (0..1) to treat stick as a digital dpad for fallback nav
+    float guiNavRepeatDelay;     // Seconds before key repeat starts for nav
+    float guiNavRepeatRate;      // Seconds between repeats once repeating
+
+    // ImGui scrolling via right stick
+    bool  guiScrollRightStickEnable; // Enable right-stick to mouse-wheel mapping in GUI
+    float guiScrollRightStickScale;  // Notches per second at full tilt (vertical & horizontal)
 
     // Virtual cursor (software cursor driven by gamepad) settings
     bool enableVirtualCursor;          // Master enable/disable
@@ -44,10 +55,17 @@ namespace Config {
         int macroPlayKey;       // Default: 'O'
         int macroSlotKey;       // NEW: Cycle macro slot (Default: 'K')
 
+        // Framestep hotkeys (configurable; vanilla EFZ only)
+        int framestepPauseKey;  // Default: VK_SPACE
+        int framestepStepKey;   // Default: 'P'
+
         // ImGui footer action hotkeys (keyboard access without cursor)
         int uiAcceptKey;        // Apply changes
         int uiRefreshKey;       // Refresh values
         int uiExitKey;          // Close menu
+    // Swap Positions custom binding (simple)
+    bool swapCustomEnabled;     // Enable dedicated swap key
+    int  swapCustomKey;         // VK for dedicated swap key
 
         // Gamepad binding settings (XInput button bitmasks; -1 = disabled)
         int gpTeleportButton;       // Default: XINPUT_GAMEPAD_BACK
@@ -61,9 +79,31 @@ namespace Config {
         int gpToggleMenuButton;     // Default: XINPUT_GAMEPAD_START
         int gpToggleImGuiButton;    // Default: -1 (disabled)
 
+    // UI navigation/controller bindings (rebindable)
+    // Top-level tabs cycle (logical order: Main, Auto Action, Settings, Character, Help)
+    int gpUiTopTabPrev;         // Default: LB
+    int gpUiTopTabNext;         // Default: RB
+    // Active sub-tab cycle within current tab (e.g., Help pages, Main Menu sub-tabs)
+    int gpUiSubTabPrev;         // Default: LT
+    int gpUiSubTabNext;         // Default: RT
+
         // RF freeze behavior
         bool freezeRFAfterContRec;       // Start RF freeze after Continuous Recovery enforcement
         bool freezeRFOnlyWhenNeutral;    // Maintain RF freeze only while in neutral states
+
+        // Continuous Recovery gating
+        bool crRequireBothNeutral;       // Require BOTH players to be neutral before CR applies
+        int  crBothNeutralDelayMs;       // Delay after both-neutral detected before applying CR
+
+        // Auto-fix HP anomalies
+        bool autoFixHPOnNeutral;         // If neutral and HP<=0, set HP to 9999 automatically
+
+        // Frame Advantage display duration (in seconds)
+        float frameAdvantageDisplayDuration; // How long to show FA/RG messages (default: 8.0)
+
+        // Practice: Dummy Auto-Block behavior
+        // Continuous neutral timeout used by event-driven modes (ms). Defaults to 10000 (10s).
+        int autoBlockNeutralTimeoutMs;
     };
     
     // Initialize configuration system

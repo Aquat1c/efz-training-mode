@@ -38,7 +38,7 @@ inline uint8_t u8(int value) {
 
 // Core buffer freezing functions
 void FreezeBufferValuesThread(int playerNum);
-bool CaptureAndFreezeBuffer(int playerNum, uint16_t startIndex, uint16_t length);
+//bool CaptureAndFreezeBuffer(int playerNum, uint16_t startIndex, uint16_t length); // Moved to input_buffer.h
 bool FreezeBufferIndex(int playerNum, uint16_t indexValue);
 void StopBufferFreezing();
 

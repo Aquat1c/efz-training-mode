@@ -2,7 +2,9 @@
 #include <iomanip>
 #include <chrono>
 #include "../include/core/logger.h"
+#include "../include/core/version.h"
 #include "../include/utils/utilities.h"
+#include "../include/utils/network.h" // For EfzRevival version detection
 
 #include "../include/core/memory.h"
 #include "../include/core/constants.h"
@@ -17,11 +19,12 @@
 #include "../include/game/game_state.h"
 // For global shutdown flag
 #include "../include/core/globals.h"
- // Add this include
+ 
 #include "../include/input/input_motion.h"
 // Snapshot access for light reads
 #include "../include/game/frame_monitor.h"
 #include "../include/game/character_settings.h"
+#include "../include/utils/debug_log.h"
 
 std::mutex g_logMutex;
 std::atomic<bool> detailedTitleMode(false);
@@ -49,70 +52,93 @@ void LogOut(const std::string& msg, bool consoleOutput) {
     if (g_onlineModeActive.load() || g_isShuttingDown.load()) {
         return;
     }
+    
+    // Always write to debug log if it's a switch-related message
+    if (msg.find("[SWITCH]") != std::string::npos || 
+        msg.find("[FREEZE]") != std::string::npos ||
+        msg.find("[AI]") != std::string::npos ||
+        msg.find("[ENGINE]") != std::string::npos) {
+        DebugLog::Write(msg);
+    }
+    
     // Only output to console if requested
     if (consoleOutput) {
+        // Quick pre-filter (no lock or timestamp) to drop verbose categories when detailedLogging is off
+        std::string currentCategory = "OTHER";
+        {
+            size_t startBracket = msg.find('[');
+            size_t endBracket = msg.find(']', startBracket);
+            if (startBracket != std::string::npos && endBracket != std::string::npos) {
+                currentCategory = msg.substr(startBracket + 1, endBracket - startBracket - 1);
+            }
+        }
+        bool isDetailedDebugMsg =
+            currentCategory == "WINDOW" ||
+            currentCategory == "OVERLAY" ||
+            currentCategory == "IMGUI" ||
+            currentCategory == "IMGUI_MONITOR" ||
+            currentCategory == "CONFIG" ||
+            currentCategory == "KEYBINDS" ||
+            // High-frequency categories gated unless detailedLogging is on
+            currentCategory == "INPUT_BUFFER" ||
+            currentCategory == "BUFFER_FREEZE" ||
+            currentCategory == "BUFFER_DEBUG" ||
+            currentCategory == "BUFFER_COMBO" ||
+            currentCategory == "BUFFER_DUMP" ||
+            currentCategory == "AUTO-ACTION" ||
+            currentCategory == "TRIGGER_DIAG" ||
+            currentCategory == "DELAY" ||
+            currentCategory == "COOLDOWN" ||
+            currentCategory == "DASH" ||
+            currentCategory == "DASH_DEBUG" ||
+            currentCategory == "AUTO_GUARD" ||
+            currentCategory == "CRG" ||
+            currentCategory == "RG";
+        if (isDetailedDebugMsg && !detailedLogging.load()) {
+            return;
+        }
+
         std::lock_guard<std::mutex> lock(g_logMutex);
-        // Build a timestamp prefix without brackets (so category [..] remains the first bracketed token)
-        auto now = std::chrono::system_clock::now();
-        auto timeT = std::chrono::system_clock::to_time_t(now);
-        tm timeInfo{};
-        localtime_s(&timeInfo, &timeT);
-        auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()) % 1000;
-        char ts[32];
-        std::strftime(ts, sizeof(ts), "%H:%M:%S", &timeInfo);
-        std::ostringstream tsoss; tsoss << ts << "." << std::setw(3) << std::setfill('0') << ms.count() << " ";
-        std::string prefix = tsoss.str();
-        std::string formatted = msg.empty() ? std::string() : (prefix + msg);
+
+        auto buildPrefix = []() -> std::string {
+            auto now = std::chrono::system_clock::now();
+            auto timeT = std::chrono::system_clock::to_time_t(now);
+            tm timeInfo{};
+            localtime_s(&timeInfo, &timeT);
+            auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()) % 1000;
+            char ts[32];
+            std::strftime(ts, sizeof(ts), "%H:%M:%S", &timeInfo);
+            std::ostringstream tsoss; tsoss << ts << "." << std::setw(3) << std::setfill('0') << ms.count() << " ";
+            return tsoss.str();
+        };
 
         // Buffer until console window exists (store formatted with timestamp)
         if (!g_consoleReady.load() || GetConsoleWindow() == nullptr) {
+            std::string formatted = msg.empty() ? std::string() : (buildPrefix() + msg);
             g_pendingConsoleLogs.emplace_back(formatted);
             return;
         }
-        
+
         // Skip spacing logic for empty lines - this fixes most spacing issues
         if (msg.empty()) {
             std::cout << std::endl;
             return;
         }
-        
-    // Track message categories for proper spacing
+
+        // Track message categories for proper spacing
         static std::string lastCategory = "";
         static bool wasEmptyLine = false;
-        std::string currentCategory = "OTHER"; // Default
-        
-        // Extract the message category from inside first []
-        size_t startBracket = msg.find('[');
-        size_t endBracket = msg.find(']', startBracket);
-        
-        if (startBracket != std::string::npos && endBracket != std::string::npos) {
-            currentCategory = msg.substr(startBracket + 1, endBracket - startBracket - 1);
-        }
-        
-        // Skip certain debug messages unless detailed debug is enabled
-        bool isDetailedDebugMsg = 
-            currentCategory == "WINDOW" || 
-            currentCategory == "OVERLAY" || 
-            currentCategory == "IMGUI" || 
-            currentCategory == "IMGUI_MONITOR" ||
-            currentCategory == "CONFIG" ||
-            currentCategory == "KEYBINDS";
-            
-        // Don't show detailed debug messages unless enabled
-        if (isDetailedDebugMsg && !detailedLogging.load()) {
-            return;
-        }
-        
+
         // Don't add extra spacing if the last line was empty or this is a help message
-        bool isHelpMessage = (msg.find("Key") != std::string::npos && msg.find(":") != std::string::npos) || 
-                            msg.find("NOTE:") != std::string::npos ||
-                            msg.find("---") != std::string::npos;
-        
+        bool isHelpMessage = (msg.find("Key") != std::string::npos && msg.find(":") != std::string::npos) ||
+                             msg.find("NOTE:") != std::string::npos ||
+                             msg.find("---") != std::string::npos;
+
         // Add spacing based on category change, but not for help messages
         if (!wasEmptyLine && !isHelpMessage && !lastCategory.empty() && currentCategory != lastCategory) {
             std::cout << std::endl;
         }
-        
+
         // Reduced logging duplicate suppression & lightweight category throttling
         if (g_reducedLogging.load()) {
             // Maintain a tiny ring of last few messages to collapse duplicates within a window
@@ -140,10 +166,11 @@ void LogOut(const std::string& msg, bool consoleOutput) {
             static auto lastFlush = nowSteady;
             if (nowSteady - lastFlush >= std::chrono::seconds(1)) {
                 for (auto &e : recent) {
+                    std::string p = buildPrefix();
                     if (e.count > 1) {
-                        std::cout << prefix << e.text << " (x" << e.count << ")" << std::endl;
+                        std::cout << p << e.text << " (x" << e.count << ")" << std::endl;
                     } else if (e.count == 1) {
-                        std::cout << prefix << e.text << std::endl;
+                        std::cout << p << e.text << std::endl;
                     }
                 }
                 recent.clear();
@@ -155,12 +182,11 @@ void LogOut(const std::string& msg, bool consoleOutput) {
         }
 
         // Output the message immediately (non-reduced or first occurrence)
-        if (msg.empty()) {
-            std::cout << std::endl;
-        } else {
+        {
+            std::string formatted = buildPrefix() + msg;
             std::cout << formatted << std::endl;
         }
-        
+
         // Update tracking variables
         wasEmptyLine = msg.empty();
         if (!msg.empty() && !isHelpMessage) {
@@ -176,7 +202,18 @@ void InitializeLogging() {
     });
     titleThread.detach();  // Let it run independently
 
-    LogOut("EFZ DLL started", true);
+    LogOut("==============================================", true);
+    LogOut(std::string("  EFZ Training Mode v") + EFZ_TRAINING_MODE_VERSION, true);
+    LogOut(std::string("  Build: ") + EFZ_TRAINING_MODE_BUILD_DATE + " " + EFZ_TRAINING_MODE_BUILD_TIME, true);
+    LogOut("==============================================", true);
+    
+    // Log detected EfzRevival version early
+    EfzRevivalVersion detectedVer = GetEfzRevivalVersion();
+    std::string verMsg = "[VERSION] Detected: ";
+    verMsg += EfzRevivalVersionName(detectedVer);
+    verMsg += IsEfzRevivalVersionSupported(detectedVer) ? " (supported)" : " (UNSUPPORTED)";
+    LogOut(verMsg, true);
+    
     // Developer motion-debug hotkey banner removed
 }
 
@@ -246,7 +283,8 @@ void UpdateConsoleTitle() {
                 // Minimal fallback: refresh addresses occasionally and read values (including names)
                 static uintptr_t cachedAddresses[12] = {0};
                 static int titleCacheCounter = 0;
-                if (titleCacheCounter++ >= 20) {
+                // Refresh cached addresses less frequently to reduce pointer resolution overhead
+                if (titleCacheCounter++ >= 60) {
                     titleCacheCounter = 0;
                     cachedAddresses[0] = ResolvePointer(base, EFZ_BASE_OFFSET_P1, HP_OFFSET);
                     cachedAddresses[1] = ResolvePointer(base, EFZ_BASE_OFFSET_P1, METER_OFFSET);
@@ -262,13 +300,13 @@ void UpdateConsoleTitle() {
                     cachedAddresses[11] = ResolvePointer(base, EFZ_BASE_OFFSET_P2, CHARACTER_NAME_OFFSET);
                 }
                 if (cachedAddresses[0]) SafeReadMemory(cachedAddresses[0], &displayData.hp1, sizeof(int));
-                if (cachedAddresses[1]) SafeReadMemory(cachedAddresses[1], &displayData.meter1, sizeof(int));
+                if (cachedAddresses[1]) { unsigned short w=0; SafeReadMemory(cachedAddresses[1], &w, sizeof(w)); displayData.meter1 = (int)w; }
                 if (cachedAddresses[2]) SafeReadMemory(cachedAddresses[2], &displayData.rf1, sizeof(double));
                 if (cachedAddresses[3]) SafeReadMemory(cachedAddresses[3], &displayData.x1, sizeof(double));
                 if (cachedAddresses[4]) SafeReadMemory(cachedAddresses[4], &displayData.y1, sizeof(double));
                 if (cachedAddresses[5]) SafeReadMemory(cachedAddresses[5], &displayData.p1CharName, sizeof(displayData.p1CharName) - 1);
                 if (cachedAddresses[6]) SafeReadMemory(cachedAddresses[6], &displayData.hp2, sizeof(int));
-                if (cachedAddresses[7]) SafeReadMemory(cachedAddresses[7], &displayData.meter2, sizeof(int));
+                if (cachedAddresses[7]) { unsigned short w=0; SafeReadMemory(cachedAddresses[7], &w, sizeof(w)); displayData.meter2 = (int)w; }
                 if (cachedAddresses[8]) SafeReadMemory(cachedAddresses[8], &displayData.rf2, sizeof(double));
                 if (cachedAddresses[9]) SafeReadMemory(cachedAddresses[9], &displayData.x2, sizeof(double));
                 if (cachedAddresses[10]) SafeReadMemory(cachedAddresses[10], &displayData.y2, sizeof(double));

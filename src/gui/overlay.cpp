@@ -21,8 +21,10 @@
 #include "../3rdparty/minhook/include/MinHook.h"
 // ADD these includes for the new rendering loop
 #include "../include/gui/imgui_impl.h"
+#include "../include/utils/config.h"
 #include <Xinput.h>
-#pragma comment(lib, "xinput9_1_0.lib")
+// XInput loaded dynamically via XInputShim
+#include "../include/utils/xinput_shim.h"
 #include <cmath>
 #include "../../include/gui/gif_player.h"
 
@@ -46,8 +48,17 @@ int g_TriggerOnWakeupId = -1;
 int g_TriggerAfterHitstunId = -1;
 int g_TriggerAfterAirtechId = -1;
 int g_TriggerOnRGId = -1;
+int g_FramestepStatusId = -1;
 // Debug borders toggle default off
 std::atomic<bool> g_ShowOverlayDebugBorders{false};
+
+// Track RT size changes globally (shared across all EndScene calls)
+namespace {
+    std::mutex g_rtSizeMutex;
+    UINT g_prevRtW = 0;
+    UINT g_prevRtH = 0;
+    std::atomic<bool> g_rtSizeLogged{false};  // Use atomic for thread-safe first-log detection
+}
 std::atomic<bool> g_ShowRGDebugToasts{false};
 
 // --- Define static members of DirectDrawHook ---
@@ -96,6 +107,8 @@ static float GetDpiScale() {
 typedef HRESULT(WINAPI* EndScene_t)(LPDIRECT3DDEVICE9);
 static EndScene_t oEndScene = nullptr;
 static void* g_EndSceneTarget = nullptr; // store target vtable entry for cleanup
+// Track if our EndScene hook has ever been called (for diagnostics)
+static std::atomic<bool> g_EndSceneObserved{ false };
 // --- End D3D9 Globals ---
 
 // --- FIX: Add missing implementations for obsolete DirectDraw hooks ---
@@ -127,6 +140,44 @@ HRESULT WINAPI DirectDrawHook::HookedFlip(IDirectDrawSurface7* This, IDirectDraw
 
 // --- REVISED AND CORRECTED D3D9 EndScene Hook ---
 HRESULT WINAPI HookedEndScene(LPDIRECT3DDEVICE9 pDevice) {
+    // Refresh XInput snapshot once per frame at the start of EndScene; other systems read cached state
+    XInputShim::RefreshSnapshotOncePerFrame();
+    // Minimal per-frame timing (RAII) to detect stalls without per-frame logs
+    struct EndSceneFrameTimer {
+        std::chrono::steady_clock::time_point t0;
+        EndSceneFrameTimer() : t0(std::chrono::steady_clock::now()) {}
+        ~EndSceneFrameTimer() {
+            using namespace std::chrono;
+            static uint64_t frames = 0;
+            static double   sumMs = 0.0;
+            static double   maxMs = 0.0;
+            static uint32_t gt33 = 0, gt100 = 0, gt250 = 0, gt500 = 0;
+            static steady_clock::time_point lastReport{};
+            auto t1 = steady_clock::now();
+            double ms = duration<double, std::milli>(t1 - t0).count();
+            frames++; sumMs += ms; if (ms > maxMs) maxMs = ms;
+            if (ms > 33.0)  gt33++;
+            if (ms > 100.0) gt100++;
+            if (ms > 250.0) gt250++;
+            if (ms > 500.0) gt500++;
+            if (lastReport.time_since_epoch().count() == 0) lastReport = t1;
+            if (t1 - lastReport >= std::chrono::seconds(5)) {
+                // Only report if diagnostics are enabled in config
+                if (Config::GetSettings().enableFpsDiagnostics) {
+                    double avgMs = (frames > 0) ? (sumMs / (double)frames) : 0.0;
+                    double fps = (avgMs > 0.0) ? (1000.0 / avgMs) : 0.0;
+                    char buf[256];
+                    _snprintf_s(buf, sizeof(buf), _TRUNCATE,
+                        "[FPS] 5s window: frames=%llu ~fps=%.1f avg=%.2fms max=%.1fms >33ms=%u >100ms=%u >250ms=%u >500ms=%u",
+                        (unsigned long long)frames, fps, avgMs, maxMs, gt33, gt100, gt250, gt500);
+                    LogOut(buf, true);
+                }
+                frames = 0; sumMs = 0.0; maxMs = 0.0; gt33 = gt100 = gt250 = gt500 = 0; lastReport = t1;
+            }
+        }
+    } _frameTimerScope;
+    // Mark that EndScene was observed at least once
+    if (!g_EndSceneObserved.load()) g_EndSceneObserved.store(true);
     if (!pDevice) {
         return oEndScene(pDevice);
     }
@@ -169,8 +220,10 @@ HRESULT WINAPI HookedEndScene(LPDIRECT3DDEVICE9 pDevice) {
     // Post-NewFrame snapshot for diagnostics (throttled)
     ImGuiImpl::PostNewFrameDiagnostics();
 
-    // If the game window is minimized, skip rendering to avoid ImGui asserting on zero-size display
+    // PreNewFrameInputs already set DisplaySize to 640x480
     ImGuiIO& io = ImGui::GetIO();
+
+    // If the game window is minimized, skip rendering to avoid ImGui asserting on zero-size display
     if (io.DisplaySize.x <= 0.0f || io.DisplaySize.y <= 0.0f) {
         ImGui::EndFrame();
         return oEndScene(pDevice);
@@ -309,7 +362,7 @@ void DirectDrawHook::RenderText(HDC hdc, const std::string& text, int x, int y, 
     const int MAX_TEXT_WIDTH = screenWidth - x - 20;
     
     // Check if this is a trigger overlay by position (right-aligned text)
-    bool isTriggerOverlay = (x >= 510 && y >= 140 && y <= 200);
+    bool isTriggerOverlay = (x >= 510 && y >= 100 && y <= 200);
     
     // For trigger overlay, adjust X position instead of truncating
     int adjustedX = x;
@@ -384,7 +437,7 @@ void DirectDrawHook::RenderSimpleText(IDirectDrawSurface7* surface, const std::s
         const int MAX_TEXT_WIDTH = screenWidth - x - 20;
         
         // Check if this is a trigger overlay by position (right-aligned text)
-        bool isTriggerOverlay = (x >= 510 && y >= 140 && y <= 200);
+        bool isTriggerOverlay = (x >= 510 && y >= 100 && y <= 200);
         
         // For trigger overlay, adjust X position instead of truncating
         int adjustedX = x;
@@ -470,15 +523,33 @@ void DirectDrawHook::RenderD3D9Overlays(LPDIRECT3DDEVICE9 pDevice) {
         ox = ((float)rtW - gw) * 0.5f;
         oy = ((float)rtH - gh) * 0.5f;
     }
-    // If ImGui menu is visible, skip heavy debug borders to reduce draw load
-    if (g_ShowOverlayDebugBorders.load() && !menuVisibleNow && rtW > 0 && rtH > 0) {
-        static UINT prevW = 0, prevH = 0;
-        if (rtW != prevW || rtH != prevH) {
-            prevW = rtW; prevH = rtH;
+    
+    // Track render target size changes and log when it changes (mutex-protected to prevent duplicate logs)
+    {
+        std::lock_guard<std::mutex> lock(g_rtSizeMutex);
+        
+        // Use atomic exchange to ensure only ONE thread logs initially
+        bool expected = false;
+        if (g_rtSizeLogged.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
+            // We won the race - this is the ONLY initial log
+            g_prevRtW = rtW;
+            g_prevRtH = rtH;
             ImVec2 ds = ImGui::GetIO().DisplaySize;
             LogOut("[OVERLAY][D3D9] RT size=" + std::to_string(rtW) + "x" + std::to_string(rtH) +
                    " ImGui.DisplaySize=" + std::to_string((int)ds.x) + "x" + std::to_string((int)ds.y), true);
+        } else if (rtW != g_prevRtW || rtH != g_prevRtH) {
+            // Already logged before AND size changed - log the change
+            g_prevRtW = rtW;
+            g_prevRtH = rtH;
+            ImVec2 ds = ImGui::GetIO().DisplaySize;
+            LogOut("[OVERLAY][D3D9] RT size CHANGED: " + std::to_string(rtW) + "x" + std::to_string(rtH) +
+                   " ImGui.DisplaySize=" + std::to_string((int)ds.x) + "x" + std::to_string((int)ds.y), true);
         }
+        // If exchange failed and size unchanged - do nothing
+    }
+    
+    // If ImGui menu is visible, skip heavy debug borders to reduce draw load
+    if (g_ShowOverlayDebugBorders.load() && !menuVisibleNow && rtW > 0 && rtH > 0) {
         // Full render-target border (red)
         bgList->AddRect(ImVec2(1.5f, 1.5f), ImVec2((float)rtW - 1.5f, (float)rtH - 1.5f), IM_COL32(255, 0, 0, 200), 0.0f, 0, 3.0f);
         // Label
@@ -525,7 +596,7 @@ void DirectDrawHook::RenderD3D9Overlays(LPDIRECT3DDEVICE9 pDevice) {
     // Helper lambda to render a message with a background
     auto renderMessage = [&](const OverlayMessage& msg) {
         // Check if this is a trigger overlay by position
-        bool isTriggerOverlay = (msg.xPos >= 510 && msg.yPos >= 140 && msg.yPos <= 200);
+        bool isTriggerOverlay = (msg.xPos >= 510 && msg.yPos >= 100 && msg.yPos <= 200);
         
     // Map starting position from 640x480 virtual space to inner game area within current RT
     ImVec2 textPos(ox + msg.xPos * scale, oy + msg.yPos * scale);
@@ -622,10 +693,26 @@ void DirectDrawHook::RenderD3D9Overlays(LPDIRECT3DDEVICE9 pDevice) {
                 padPos = ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f);
             }
 
+            // Dot visibility policy:
+            //  - Only show after we've moved the physical mouse OR the analog stick (not the dpad).
+            //  - If the controller reports dpad and analog simultaneously (mixbox-style), suppress the dot briefly so only nav cursor moves.
+            static bool  s_dotActivated   = false;  // latched after qualifying movement
+            static float s_dotSuppressSec = 0.0f;   // suppression cooldown while mixed input is detected
+            static bool  s_prevMenuVis    = false;  // detect menu open edge to reset state
+            // Declare physical mouse tracker near top so we can reset on menu open edge
+            static ImVec2 s_lastPhysMouse(-1.f,-1.f);
+            if (ImGuiImpl::IsVisible() && !s_prevMenuVis) {
+                s_dotActivated = false;
+                s_dotSuppressSec = 0.0f;
+                // Reset physical mouse tracker so prior movement doesn't immediately activate the dot
+                s_lastPhysMouse = ImVec2(-1.f, -1.f);
+            }
+            s_prevMenuVis = ImGuiImpl::IsVisible();
+
             // Poll gamepad
             bool padActive = false;
             XINPUT_STATE state{};
-            if (XInputGetState(0, &state) == ERROR_SUCCESS) {
+            if (const XINPUT_STATE* s = XInputShim::GetCachedState(0)) { state = *s; {
                 auto applyDeadzone = [](SHORT v, SHORT dz) -> float {
                     int iv = (int)v;
                     if (iv > dz) iv -= dz; else if (iv < -dz) iv += dz; else iv = 0;
@@ -642,23 +729,52 @@ void DirectDrawHook::RenderD3D9Overlays(LPDIRECT3DDEVICE9 pDevice) {
                 if (state.Gamepad.wButtons & XINPUT_GAMEPAD_DPAD_DOWN)  dpadY += 1.f;
 
                 const float dt = io.DeltaTime > 0.f ? io.DeltaTime : (1.f/60.f);
-                const bool fast = (state.Gamepad.wButtons & XINPUT_GAMEPAD_LEFT_SHOULDER) != 0;
+                const bool fast      = (state.Gamepad.wButtons & XINPUT_GAMEPAD_LEFT_SHOULDER) != 0;
                 const float baseSpeed = fast ? 1800.f : 900.f;
-                const float dpadSpeed = 700.f;
 
-                if (fabsf(nx) > 0.02f || fabsf(ny) > 0.02f || dpadX != 0.f || dpadY != 0.f ||
-                    (state.Gamepad.wButtons & (XINPUT_GAMEPAD_A | XINPUT_GAMEPAD_B | XINPUT_GAMEPAD_X | XINPUT_GAMEPAD_Y))) {
-                    padActive = true;
+                // Determine input sources
+                const bool analogMoved = (fabsf(nx) > 0.02f || fabsf(ny) > 0.02f);
+                const bool dpadMoved   = (dpadX != 0.f || dpadY != 0.f);
+
+                // Mixed input => suppress dot briefly so only navigational cursor responds
+                if (analogMoved && dpadMoved) {
+                    s_dotSuppressSec = 0.25f; // ~250 ms
                 }
-                if (padActive) {
-                    padPos.x += (nx * baseSpeed + dpadX * dpadSpeed) * dt;
-                    padPos.y += (-ny * baseSpeed + dpadY * dpadSpeed) * dt;
+
+                // Decrement suppression timer
+                if (s_dotSuppressSec > 0.f) {
+                    s_dotSuppressSec -= dt;
+                    if (s_dotSuppressSec < 0.f) s_dotSuppressSec = 0.f;
+                }
+
+                // Activate dot only on pure analog movement (no dpad)
+                if (analogMoved && !dpadMoved) {
+                    s_dotActivated = true;
+                    padActive = true;
+                    padPos.x += nx * baseSpeed * dt;
+                    padPos.y += -ny * baseSpeed * dt;
+                }
+            }}
+
+            // Physical mouse movement detection (ignore backend remap deltas):
+            // We only activate from real OS cursor movement (>=2px in client space).
+            bool physicalMouseMoved = false;
+            HWND hwnd = FindEFZWindow();
+            if (hwnd) {
+                POINT pt; if (GetCursorPos(&pt) && ScreenToClient(hwnd,&pt)) {
+                    ImVec2 cur((float)pt.x,(float)pt.y);
+                    if (s_lastPhysMouse.x >= 0.f) {
+                        float dx = cur.x - s_lastPhysMouse.x;
+                        float dy = cur.y - s_lastPhysMouse.y;
+                        if ((dx*dx + dy*dy) > 4.f) physicalMouseMoved = true; // >2px
+                    }
+                    s_lastPhysMouse = cur;
                 }
             }
-
-            // Prefer real mouse position if it moved this frame; otherwise fall back to pad
-            const bool mouseMoved = (fabsf(io.MouseDelta.x) + fabsf(io.MouseDelta.y)) > 0.0001f;
-            ImVec2 dot = mouseMoved ? io.MousePos : (padActive ? padPos : io.MousePos);
+            if (physicalMouseMoved) {
+                s_dotActivated = true; // real mouse movement only
+            }
+            ImVec2 dot = physicalMouseMoved ? io.MousePos : (padActive ? padPos : io.MousePos);
 
             // Clamp to ImGui display size (we render on 640x480 RT only)
             float maxX = io.DisplaySize.x - 1.0f;
@@ -667,14 +783,16 @@ void DirectDrawHook::RenderD3D9Overlays(LPDIRECT3DDEVICE9 pDevice) {
             dot.x = (dot.x < 0.0f ? 0.0f : (dot.x > maxX ? maxX : dot.x));
             dot.y = (dot.y < 0.0f ? 0.0f : (dot.y > maxY ? maxY : dot.y));
 
-            // Draw dot (white filled with dark outline) on the foreground list (above all windows)
-            auto cursorList = ImGui::GetForegroundDrawList();
-            if (!cursorList) cursorList = bgList;
-            const float r = 4.5f;
-            cursorList->PushClipRectFullScreen();
-            cursorList->AddCircleFilled(dot, r, IM_COL32(255, 255, 255, 230), 20);
-            cursorList->AddCircle(dot, r + 1.2f, IM_COL32(0, 0, 0, 200), 24, 2.0f);
-            cursorList->PopClipRect();
+            // Draw dot only when activated (from physical mouse or pure analog) and not suppressed
+            if (s_dotActivated && s_dotSuppressSec <= 0.f) {
+                auto cursorList = ImGui::GetForegroundDrawList();
+                if (!cursorList) cursorList = bgList;
+                const float r = 4.5f;
+                cursorList->PushClipRectFullScreen();
+                cursorList->AddCircleFilled(dot, r, IM_COL32(255, 255, 255, 230), 20);
+                cursorList->AddCircle(dot, r + 1.2f, IM_COL32(0, 0, 0, 200), 24, 2.0f);
+                cursorList->PopClipRect();
+            }
         }
     }
 }
@@ -1010,12 +1128,27 @@ bool DirectDrawHook::InitializeD3D9() {
             return false;
         }
     }
+    // Log the module path for d3d9.dll
+    {
+        char pathBuf[MAX_PATH] = {0};
+        DWORD n = GetModuleFileNameA(d3d9Module, pathBuf, MAX_PATH);
+        if (n > 0) {
+            LogOut(std::string("[OVERLAY][D3D9] Using d3d9 module: ") + pathBuf, true);
+        } else {
+            LogOut("[OVERLAY][D3D9] GetModuleFileNameA(d3d9.dll) failed", detailedLogging.load());
+        }
+    }
     
     // Get the address of Direct3DCreate9
     auto Direct3DCreate9_fn = (LPDIRECT3D9(WINAPI*)(UINT))(GetProcAddress(d3d9Module, "Direct3DCreate9"));
     if (!Direct3DCreate9_fn) {
         LogOut("[OVERLAY] Failed to get Direct3DCreate9 address", true);
         return false;
+    }
+    else {
+        char ptrbuf[32] = {};
+        _snprintf_s(ptrbuf, sizeof(ptrbuf), _TRUNCATE, "%p", (void*)Direct3DCreate9_fn);
+        LogOut(std::string("[OVERLAY][D3D9] Direct3DCreate9 at ") + ptrbuf, detailedLogging.load());
     }
     
     // Create a D3D9 object
@@ -1024,15 +1157,36 @@ bool DirectDrawHook::InitializeD3D9() {
         LogOut("[OVERLAY] Failed to create D3D9 object", true);
         return false;
     }
+
+    // Log adapter information for diagnostics
+    UINT adapterCount = d3d9->GetAdapterCount();
+    LogOut("[OVERLAY][D3D9] Adapter count: " + std::to_string((unsigned)adapterCount), detailedLogging.load());
+    D3DADAPTER_IDENTIFIER9 ident{};
+    if (SUCCEEDED(d3d9->GetAdapterIdentifier(D3DADAPTER_DEFAULT, 0, &ident))) {
+        LogOut(std::string("[OVERLAY][D3D9] Default adapter: ") + ident.Description, detailedLogging.load());
+        char idbuf[128] = {};
+        _snprintf_s(idbuf, sizeof(idbuf), _TRUNCATE, "VendorID=0x%04X DeviceID=0x%04X SubSysID=0x%08X Revision=%u",
+            ident.VendorId, ident.DeviceId, ident.SubSysId, ident.Revision);
+        LogOut(std::string("[OVERLAY][D3D9] ") + idbuf, detailedLogging.load());
+    } else {
+        LogOut("[OVERLAY][D3D9] GetAdapterIdentifier failed", detailedLogging.load());
+    }
     
     // Create a hidden dummy window to safely create a temporary device
     WNDCLASSA wc = {};
     wc.lpfnWndProc = DefWindowProcA;
     wc.hInstance = GetModuleHandleA(nullptr);
     wc.lpszClassName = "EFZ_TM_D3D9_DUMMY";
-    RegisterClassA(&wc);
+    if (!RegisterClassA(&wc)) {
+        DWORD le = GetLastError();
+        LogOut("[OVERLAY][D3D9] RegisterClassA failed: " + std::to_string((unsigned)le), detailedLogging.load());
+    }
     HWND dummyWnd = CreateWindowExA(0, wc.lpszClassName, "efz_tm_dummy", WS_OVERLAPPEDWINDOW,
                                     CW_USEDEFAULT, CW_USEDEFAULT, 100, 100, nullptr, nullptr, wc.hInstance, nullptr);
+    if (!dummyWnd) {
+        DWORD le = GetLastError();
+        LogOut("[OVERLAY][D3D9] CreateWindowExA(dummy) failed: " + std::to_string((unsigned)le), true);
+    }
 
     // Set up present parameters
     D3DPRESENT_PARAMETERS d3dpp = {};
@@ -1051,7 +1205,10 @@ bool DirectDrawHook::InitializeD3D9() {
         D3DCREATE_SOFTWARE_VERTEXPROCESSING, &d3dpp, &tempDevice);
         
     if (FAILED(hr)) {
-        LogOut("[OVERLAY] Failed to create temp D3D9 device: " + std::to_string(hr), true);
+        // Log HRESULT in hex and decimal for easier lookup
+        char hrbuf[64] = {};
+        _snprintf_s(hrbuf, sizeof(hrbuf), _TRUNCATE, "0x%08lX (%ld)", (unsigned long)hr, (long)hr);
+        LogOut(std::string("[OVERLAY] Failed to create temp D3D9 device: ") + hrbuf, true);
         d3d9->Release();
         return false;
     }
@@ -1059,20 +1216,30 @@ bool DirectDrawHook::InitializeD3D9() {
     // Get the function pointer for EndScene
     void** vTable = *reinterpret_cast<void***>(tempDevice);
     void* endSceneAddr = vTable[42]; // EndScene is at index 42
+    {
+        char ptrbuf1[32] = {}, ptrbuf2[32] = {};
+        _snprintf_s(ptrbuf1, sizeof(ptrbuf1), _TRUNCATE, "%p", (void*)vTable);
+        _snprintf_s(ptrbuf2, sizeof(ptrbuf2), _TRUNCATE, "%p", endSceneAddr);
+        LogOut(std::string("[OVERLAY][D3D9] Device VTable=") + ptrbuf1 + " EndScene@42=" + ptrbuf2, true);
+    }
     g_EndSceneTarget = endSceneAddr;
     
     // Create the hook using MinHook
     LogOut("[OVERLAY] Hooking EndScene", detailedLogging.load());
-    if (MH_CreateHook(endSceneAddr, HookedEndScene, reinterpret_cast<void**>(&oEndScene)) != MH_OK) {
-        LogOut("[OVERLAY] Failed to create hook for EndScene", true);
+    MH_STATUS cr = MH_CreateHook(endSceneAddr, HookedEndScene, reinterpret_cast<void**>(&oEndScene));
+    if (cr != MH_OK) {
+        const char* es = MH_StatusToString(cr);
+        LogOut(std::string("[OVERLAY] Failed to create hook for EndScene: ") + (es ? es : "<unknown>"), true);
         tempDevice->Release();
         d3d9->Release();
         return false;
     }
     
     // Enable the hook
-    if (MH_EnableHook(endSceneAddr) != MH_OK) {
-        LogOut("[OVERLAY] Failed to enable EndScene hook", true);
+    MH_STATUS er = MH_EnableHook(endSceneAddr);
+    if (er != MH_OK) {
+        const char* es = MH_StatusToString(er);
+        LogOut(std::string("[OVERLAY] Failed to enable EndScene hook: ") + (es ? es : "<unknown>"), true);
         tempDevice->Release();
         d3d9->Release();
         return false;
@@ -1093,6 +1260,15 @@ bool DirectDrawHook::InitializeD3D9() {
     LogOut("[IMGUI] ImGui initialization succeeded", detailedLogging.load());
     LogOut("[IMGUI_GUI] GUI state initialized", detailedLogging.load());
     LogOut("[OVERLAY] D3D9 EndScene hook installed successfully.", true);
+
+    // Diagnostic: Verify EndScene is observed soon; otherwise log hints why overlay might appear missing
+    std::thread([]{
+        Sleep(6000);
+        if (!g_EndSceneObserved.load()) {
+            LogOut("[OVERLAY][D3D9] EndScene not observed within 6s after hook enable.", true);
+            LogOut("[OVERLAY][D3D9] Possible causes: EFZ is not rendering via D3D9 yet (no wrapper), game not yet in a render loop, or another overlay modified the vtable.", true);
+        }
+    }).detach();
     return true;
 }
 

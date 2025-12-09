@@ -204,6 +204,8 @@ namespace Config {
             file << "useImGui = 1\n";
             file << "; Enable detailed debug messages in the console (1 = yes, 0 = no)\n";
             file << "detailedLogging = 0\n";
+            file << "; Enable writing efz_training_debug.log (1 = yes, 0 = no)\n";
+            file << "enableDebugFileLog = 0\n";
             file << "; Show the debug console window (1 = yes, 0 = no)\n";
             file << "enableConsole = 0\n";
             file << "; Restrict functionality to Practice Mode only (1 = yes, 0 = no)\n";
@@ -213,10 +215,27 @@ namespace Config {
             file << "; Log active player / CPU flags during Character Select (1 = yes, 0 = no)\n";
             file << "enableCharacterSelectLogger = 1\n\n";
 
+            file << "; Show a one-time Practice hint about opening the overlay (1 = yes, 0 = no)\n";
+            file << "showPracticeEntryHint = 1\n\n";
+
             file << "; UI scale for ImGui window (0.80 - 1.20 recommended)\n";
             file << "uiScale = 0.90\n\n";
             file << "; UI font: 0 = ImGui default font, 1 = Segoe UI (Windows)\n";
             file << "uiFont = 0\n\n";
+
+            // ImGui navigation tuning
+            file << "; ImGui navigation tuning\n";
+            file << "; Analog threshold for keyboard-fallback nav (0..1). Default 0.45\n";
+            file << "guiNavAnalogThreshold = 0.45\n";
+            file << "; Key repeat timings (seconds). Defaults 0.30 delay, 0.06 rate\n";
+            file << "guiNavRepeatDelay = 0.30\n";
+            file << "guiNavRepeatRate = 0.06\n\n";
+
+            // Right-stick scrolling
+            file << "; Right-stick to mouse wheel (GUI)\n";
+            file << "guiScrollRightStickEnable = 1\n";
+            file << "; Notches per second at full tilt (both axes). Default 10.0\n";
+            file << "guiScrollRightStickScale = 10.0\n\n";
 
             // RF freeze behavior
             file << "; RF freeze behavior (after Continuous Recovery)\n";
@@ -224,6 +243,17 @@ namespace Config {
             file << "freezeRFAfterContRec = 1\n";
             file << "; Maintain RF freeze only when neutral (allowed MoveIDs) (1=yes, 0=no)\n";
             file << "freezeRFOnlyWhenNeutral = 1\n\n";
+
+            // Frame Advantage display duration
+            file << "; Frame Advantage display duration (seconds)\n";
+            file << "; How long to show frame advantage and gap messages on screen\n";
+            file << "frameAdvantageDisplayDuration = 1.9\n\n";
+
+            // Practice options
+            file << "; Practice: Dummy Auto-Block neutral timeout (ms) for First Hit/After First Hit modes.\n";
+            file << "; When waiting to re-arm/disable, require this many milliseconds of continuous neutral before toggling.\n";
+            file << "; Default: 10000 (10 seconds). Set 0 to toggle immediately on any neutral edge.\n";
+            file << "autoBlockNeutralTimeoutMs = 10000\n\n";
 
             file << "; Virtual Cursor (software controller-driven cursor) settings\n";
             file << "; Master enable (1=on,0=off)\n";
@@ -286,6 +316,20 @@ namespace Config {
             file << "UIRefreshKey=0x52       # 'R' (Refresh)\n";
             file << "UIExitKey=0x51          # 'Q' (Exit)\n";
 
+            // Framestep hotkeys (vanilla EFZ only)
+            file << "\n; Framestep (vanilla EFZ only)\n";
+            file << "; Pause toggle\n";
+            file << "FramestepPauseKey=0x20  # Default: Space\n";
+            file << "; Step forward one frame (when paused)\n";
+            file << "FramestepStepKey=0x50   # Default: 'P'\n";
+
+            // Swap Positions custom binding
+            file << "\n; Swap Positions custom binding\n";
+            file << "; Enable a dedicated key for swapping positions (1=yes,0=no)\n";
+            file << "SwapCustomEnabled=0\n";
+            file << "; Dedicated key (hex VK) for swapping positions when enabled (-1 disables)\n";
+            file << "SwapCustomKey=-1\n";
+
             // --- Gamepad binding defaults ---
             file << "\n; Controller bindings (XInput) \n";
             file << "; Use symbolic names (e.g. A, B, X, Y, LB, RB, BACK, START, L3, R3, DPAD_UP, DPAD_DOWN, DPAD_LEFT, DPAD_RIGHT) or hex mask (e.g. 0x2000). -1 disables.\n";
@@ -300,6 +344,14 @@ namespace Config {
             file << "gpMacroSlotButton=LT\n";        // Cycle macro slot (was B)
             file << "gpToggleMenuButton=START\n";    // Open training menu
             file << "gpToggleImGuiButton=-1\n";      // Toggle overlay (disabled by default)
+
+            // UI navigation bindings (controller)
+            file << "; UI navigation: cycle tabs/sub-tabs (rebindable)\n";
+            file << "; Defaults: LB/RB = previous/next top-level tab; LT/RT = previous/next active sub-tab\n";
+            file << "gpUiTopTabPrev=LB\n";
+            file << "gpUiTopTabNext=RB\n";
+            file << "gpUiSubTabPrev=LT\n";
+            file << "gpUiSubTabNext=RT\n";
             
             file.close();
             
@@ -349,11 +401,13 @@ namespace Config {
         try {
             settings.useImGui = GetValueBool("General", "useImGui", true);
             settings.detailedLogging = GetValueBool("General", "detailedLogging", false);
+            settings.enableDebugFileLog = GetValueBool("General", "enableDebugFileLog", false);
             settings.enableConsole = GetValueBool("General", "enableConsole", false);
             settings.restrictToPracticeMode = GetValueBool("General", "restrictToPracticeMode", true);
             settings.enableFpsDiagnostics = GetValueBool("General", "enableFpsDiagnostics", false);
             // Default ON so older configs without this key enable it automatically
             settings.enableCharacterSelectLogger = GetValueBool("General", "enableCharacterSelectLogger", true);
+            settings.showPracticeEntryHint = GetValueBool("General", "showPracticeEntryHint", true);
             {
                 // Clamp scale to a sensible range
                 int raw = 0; // we parse as int/float via string later; reuse GetValueInt if needed
@@ -405,6 +459,43 @@ namespace Config {
                 settings.virtualCursorAccelPower = p;
             }
 
+            // ImGui navigation tuning
+            {
+                auto sectionIt = iniData.find("general");
+                float thr = 0.45f;
+                float repDelay = 0.30f;
+                float repRate = 0.06f;
+                bool scrollEnable = true;
+                float scrollScale = 10.0f;
+                if (sectionIt != iniData.end()) {
+                    auto getf = [&](const char* k, float defv){
+                        auto it = sectionIt->second.find(k);
+                        if (it != sectionIt->second.end()) { try { return std::stof(it->second); } catch (...) {} }
+                        return defv;
+                    };
+                    auto geti = [&](const char* k, bool defv){
+                        auto it = sectionIt->second.find(k);
+                        if (it != sectionIt->second.end()) { return it->second == "1" || it->second == "true"; }
+                        return defv;
+                    };
+                    thr = getf("guinavanalogthreshold", 0.45f);
+                    repDelay = getf("guinavrepeatdelay", 0.30f);
+                    repRate = getf("guinavrepeatrate", 0.06f);
+                    scrollEnable = geti("guiscrollrightstickenable", true);
+                    scrollScale = getf("guiscrollrightstickscale", 10.0f);
+                }
+                // Clamp sensible ranges
+                if (thr < 0.05f) thr = 0.05f; if (thr > 0.95f) thr = 0.95f;
+                if (repDelay < 0.05f) repDelay = 0.05f; if (repDelay > 1.00f) repDelay = 1.00f;
+                if (repRate < 0.01f) repRate = 0.01f; if (repRate > 0.50f) repRate = 0.50f;
+                if (scrollScale < 1.0f) scrollScale = 1.0f; if (scrollScale > 50.0f) scrollScale = 50.0f;
+                settings.guiNavAnalogThreshold = thr;
+                settings.guiNavRepeatDelay = repDelay;
+                settings.guiNavRepeatRate = repRate;
+                settings.guiScrollRightStickEnable = scrollEnable;
+                settings.guiScrollRightStickScale = scrollScale;
+            }
+
             // Controller index (which XInput device controls the mod / virtual cursor)
             settings.controllerIndex = -1; // default: all
             {
@@ -421,6 +512,29 @@ namespace Config {
             // RF freeze behavior (defaults: enabled and neutral-only)
             settings.freezeRFAfterContRec = GetValueBool("General", "freezeRFAfterContRec", true);
             settings.freezeRFOnlyWhenNeutral = GetValueBool("General", "freezeRFOnlyWhenNeutral", true);
+            // Continuous Recovery gating and delay
+            settings.crRequireBothNeutral = GetValueBool("General", "crRequireBothNeutral", true);
+            settings.crBothNeutralDelayMs = GetValueInt("General", "crBothNeutralDelayMs", 500);
+            if (settings.crBothNeutralDelayMs < 0) settings.crBothNeutralDelayMs = 0;
+            if (settings.crBothNeutralDelayMs > 5000) settings.crBothNeutralDelayMs = 5000;
+            // Auto-fix HP anomalies
+            settings.autoFixHPOnNeutral = GetValueBool("General", "autoFixHPOnNeutral", false);
+            // Frame Advantage display duration (default: 8.0 seconds)
+            {
+                auto sectionIt = iniData.find("general");
+                float duration = 8.0f;
+                if (sectionIt != iniData.end()) {
+                    auto keyIt = sectionIt->second.find("frameadvantagedisplayduration");
+                    if (keyIt != sectionIt->second.end()) {
+                        try { duration = std::stof(keyIt->second); } catch (...) { duration = 8.0f; }
+                    }
+                }
+                if (duration < 0.5f) duration = 0.5f;
+                if (duration > 30.0f) duration = 30.0f;
+                settings.frameAdvantageDisplayDuration = duration;
+            }
+            // Practice: neutral timeout for dummy auto-block modes (ms)
+            settings.autoBlockNeutralTimeoutMs = GetValueInt("General", "autoBlockNeutralTimeoutMs", 10000);
             
             // Hotkey settings - REVERTED to number key defaults
             settings.teleportKey = GetValueInt("Hotkeys", "TeleportKey", 0x31);          // Default: '1'
@@ -438,6 +552,12 @@ namespace Config {
             settings.uiAcceptKey      = GetValueInt("Hotkeys", "UIAcceptKey",     0x45); // 'E'
             settings.uiRefreshKey     = GetValueInt("Hotkeys", "UIRefreshKey",    0x52); // 'R'
             settings.uiExitKey        = GetValueInt("Hotkeys", "UIExitKey",       0x51); // 'Q'
+            // Framestep keys (vanilla EFZ only)
+            settings.framestepPauseKey = GetValueInt("Hotkeys", "FramestepPauseKey", 0x20); // VK_SPACE
+            settings.framestepStepKey  = GetValueInt("Hotkeys", "FramestepStepKey",  0x50); // 'P'
+            // Swap custom binding
+            settings.swapCustomEnabled = GetValueBool("Hotkeys", "SwapCustomEnabled", false);
+            settings.swapCustomKey     = GetValueInt("Hotkeys", "SwapCustomKey", -1);
             // Gamepad bindings (defaults mirror CreateDefaultConfig)
             auto getPad = [&](const char* name, const char* defStr){
                 auto sectionIt = iniData.find("hotkeys");
@@ -457,9 +577,15 @@ namespace Config {
             settings.gpMacroSlotButton      = getPad("gpmacroslotbutton", "LT");
             settings.gpToggleMenuButton     = getPad("gptogglemenubutton", "START");
             settings.gpToggleImGuiButton    = getPad("gptoggleimguibutton", "-1");
+            // UI navigation bindings (controller)
+            settings.gpUiTopTabPrev         = getPad("gpuitoptabprev", "LB");
+            settings.gpUiTopTabNext         = getPad("gpuitoptabnext", "RB");
+            settings.gpUiSubTabPrev         = getPad("gpuisubtabprev", "LT");
+            settings.gpUiSubTabNext         = getPad("gpuisubtabnext", "RT");
             LogOut("[CONFIG] Settings loaded successfully", true);
             LogOut("[CONFIG] UseImGui: " + std::to_string(settings.useImGui), true);
             LogOut("[CONFIG] DetailedLogging: " + std::to_string(settings.detailedLogging), true);
+            LogOut("[CONFIG] EnableDebugFileLog: " + std::to_string(settings.enableDebugFileLog), true);
             LogOut("[CONFIG] EnableConsole: " + std::to_string(settings.enableConsole), true);
             LogOut("[CONFIG] TeleportKey: " + std::to_string(settings.teleportKey) + " (" + GetKeyName(settings.teleportKey) + ")", true);
             LogOut("[CONFIG] RecordKey: " + std::to_string(settings.recordKey) + " (" + GetKeyName(settings.recordKey) + ")", true);
@@ -475,6 +601,10 @@ namespace Config {
             LogOut("[CONFIG] UIAcceptKey: " + std::to_string(settings.uiAcceptKey) + " (" + GetKeyName(settings.uiAcceptKey) + ")", true);
             LogOut("[CONFIG] UIRefreshKey: " + std::to_string(settings.uiRefreshKey) + " (" + GetKeyName(settings.uiRefreshKey) + ")", true);
             LogOut("[CONFIG] UIExitKey: " + std::to_string(settings.uiExitKey) + " (" + GetKeyName(settings.uiExitKey) + ")", true);
+            LogOut("[CONFIG] FramestepPauseKey: " + std::to_string(settings.framestepPauseKey) + " (" + GetKeyName(settings.framestepPauseKey) + ")", true);
+            LogOut("[CONFIG] FramestepStepKey: " + std::to_string(settings.framestepStepKey) + " (" + GetKeyName(settings.framestepStepKey) + ")", true);
+            LogOut("[CONFIG] SwapCustomEnabled: " + std::to_string(settings.swapCustomEnabled), true);
+            LogOut("[CONFIG] SwapCustomKey: " + GetKeyName(settings.swapCustomKey), true);
             LogOut("[CONFIG] gpTeleportButton: " + GetGamepadButtonName(settings.gpTeleportButton), true);
             LogOut("[CONFIG] gpSavePositionButton: " + GetGamepadButtonName(settings.gpSavePositionButton), true);
             LogOut("[CONFIG] gpSwitchPlayersButton: " + GetGamepadButtonName(settings.gpSwitchPlayersButton), true);
@@ -484,6 +614,10 @@ namespace Config {
             LogOut("[CONFIG] gpMacroSlotButton: " + GetGamepadButtonName(settings.gpMacroSlotButton), true);
             LogOut("[CONFIG] gpToggleMenuButton: " + GetGamepadButtonName(settings.gpToggleMenuButton), true);
             LogOut("[CONFIG] gpToggleImGuiButton: " + GetGamepadButtonName(settings.gpToggleImGuiButton), true);
+            LogOut("[CONFIG] gpUiTopTabPrev: " + GetGamepadButtonName(settings.gpUiTopTabPrev), true);
+            LogOut("[CONFIG] gpUiTopTabNext: " + GetGamepadButtonName(settings.gpUiTopTabNext), true);
+            LogOut("[CONFIG] gpUiSubTabPrev: " + GetGamepadButtonName(settings.gpUiSubTabPrev), true);
+            LogOut("[CONFIG] gpUiSubTabNext: " + GetGamepadButtonName(settings.gpUiSubTabNext), true);
             LogOut("[CONFIG] enableFpsDiagnostics: " + std::to_string(settings.enableFpsDiagnostics), true);
             LogOut("[CONFIG] uiScale: " + std::to_string(settings.uiScale), true);
             LogOut("[CONFIG] uiFontMode: " + std::to_string(settings.uiFontMode), true);
@@ -516,6 +650,8 @@ namespace Config {
             file << "useImGui = " << (settings.useImGui ? "1" : "0") << "\n";
             file << "; Enable detailed debug messages in the console (1 = yes, 0 = no)\n";
             file << "detailedLogging = " << (settings.detailedLogging ? "1" : "0") << "\n";
+            file << "; Enable writing efz_training_debug.log (1 = yes, 0 = no)\n";
+            file << "enableDebugFileLog = " << (settings.enableDebugFileLog ? "1" : "0") << "\n";
             file << "; Show the debug console window (1 = yes, 0 = no)\n";
             file << "enableConsole = " << (settings.enableConsole ? "1" : "0") << "\n";
             file << "; Restrict functionality to Practice Mode only (1 = yes, 0 = no)\n";
@@ -524,14 +660,39 @@ namespace Config {
             file << "enableFpsDiagnostics = " << (settings.enableFpsDiagnostics ? "1" : "0") << "\n\n";
             file << "; Log active player / CPU flags during Character Select (1 = yes, 0 = no)\n";
             file << "enableCharacterSelectLogger = " << (settings.enableCharacterSelectLogger ? "1" : "0") << "\n\n";
+            file << "; Show a one-time Practice hint about opening the overlay (1 = yes, 0 = no)\n";
+            file << "showPracticeEntryHint = " << (settings.showPracticeEntryHint ? "1" : "0") << "\n\n";
             file << "; UI scale for ImGui window (0.80 - 1.20 recommended)\n";
             file << "uiScale = " << settings.uiScale << "\n\n";
             file << "; UI font: 0 = ImGui default font, 1 = Segoe UI (Windows)\n";
             file << "uiFont = " << settings.uiFontMode << "\n\n";
+            // ImGui navigation tuning
+            file << "; ImGui navigation tuning\n";
+            file << "guiNavAnalogThreshold = " << settings.guiNavAnalogThreshold << "\n";
+            file << "guiNavRepeatDelay = " << settings.guiNavRepeatDelay << "\n";
+            file << "guiNavRepeatRate = " << settings.guiNavRepeatRate << "\n\n";
+            // Right-stick scrolling
+            file << "; Right-stick to mouse wheel (GUI)\n";
+            file << "guiScrollRightStickEnable = " << (settings.guiScrollRightStickEnable?"1":"0") << "\n";
+            file << "guiScrollRightStickScale = " << settings.guiScrollRightStickScale << "\n\n";
             // RF freeze behavior
             file << "; RF freeze behavior (after Continuous Recovery)\n";
             file << "freezeRFAfterContRec = " << (settings.freezeRFAfterContRec?"1":"0") << "\n";
             file << "freezeRFOnlyWhenNeutral = " << (settings.freezeRFOnlyWhenNeutral?"1":"0") << "\n\n";
+            // Continuous Recovery gating and delay
+            file << "; Continuous Recovery gating\n";
+            file << "crRequireBothNeutral = " << (settings.crRequireBothNeutral?"1":"0") << "\n";
+            file << "; Delay after both players are neutral before applying CR (ms)\n";
+            file << "crBothNeutralDelayMs = " << settings.crBothNeutralDelayMs << "\n\n";
+            // Auto-fix HP anomalies
+            file << "; Auto-fix HP: when neutral and HP<=0, set to 9999 (1=yes,0=no)\n";
+            file << "autoFixHPOnNeutral = " << (settings.autoFixHPOnNeutral?"1":"0") << "\n\n";
+            // Frame Advantage display duration
+            file << "; Frame Advantage display duration (seconds)\n";
+            file << "frameAdvantageDisplayDuration = " << settings.frameAdvantageDisplayDuration << "\n\n";
+            // Practice options
+            file << "; Practice: Dummy Auto-Block neutral timeout (ms) for First Hit/After First Hit modes.\n";
+            file << "autoBlockNeutralTimeoutMs = " << settings.autoBlockNeutralTimeoutMs << "\n\n";
             file << "; Virtual Cursor settings\n";
             file << "enableVirtualCursor = " << (settings.enableVirtualCursor?"1":"0") << "\n";
             file << "virtualCursorAllowWindowed = " << (settings.virtualCursorAllowWindowed?"1":"0") << "\n";
@@ -568,6 +729,13 @@ namespace Config {
             file << "UIAcceptKey=" << toHexString(settings.uiAcceptKey) << "\n";
             file << "UIRefreshKey=" << toHexString(settings.uiRefreshKey) << "\n";
             file << "UIExitKey=" << toHexString(settings.uiExitKey) << "\n";
+            file << "FramestepPauseKey=" << toHexString(settings.framestepPauseKey) << "\n";
+            file << "FramestepStepKey=" << toHexString(settings.framestepStepKey) << "\n";
+
+            // Swap custom binding
+            file << "\n; Swap Positions custom binding\n";
+            file << "SwapCustomEnabled=" << (settings.swapCustomEnabled ? "1" : "0") << "\n";
+            file << "SwapCustomKey=" << toHexString(settings.swapCustomKey) << "\n";
 
             file << "\n; Controller bindings (symbolic names or hex). -1 disables.\n";
             file << "; NOTE: ABXY reserved: A=UI confirm, B=UI back. Defaults map actions to shoulders/triggers/sticks.\n";
@@ -583,6 +751,10 @@ namespace Config {
             writePad("gpMacroSlotButton", settings.gpMacroSlotButton);
             writePad("gpToggleMenuButton", settings.gpToggleMenuButton);
             writePad("gpToggleImGuiButton", settings.gpToggleImGuiButton);
+            writePad("gpUiTopTabPrev", settings.gpUiTopTabPrev);
+            writePad("gpUiTopTabNext", settings.gpUiTopTabNext);
+            writePad("gpUiSubTabPrev", settings.gpUiSubTabPrev);
+            writePad("gpUiSubTabNext", settings.gpUiSubTabNext);
 
             file.close();
             if (file.fail()) {
@@ -614,8 +786,10 @@ namespace Config {
         if (sec == "general") {
             if (k == "useimgui" || k == "useimgui ") settings.useImGui = (value == "1");
             if (k == "detailedlogging") settings.detailedLogging = (value == "1");
+            if (k == "enabledebugfilelog") settings.enableDebugFileLog = (value == "1");
             if (k == "enableconsole") settings.enableConsole = (value == "1");
             if (k == "restricttopracticemode") settings.restrictToPracticeMode = (value == "1");
+            if (k == "showpracticeentryhint") settings.showPracticeEntryHint = (value == "1");
             if (k == "uiscale") {
                 try { settings.uiScale = std::stof(value); } catch (...) {}
             }
@@ -623,6 +797,11 @@ namespace Config {
                 try { settings.uiFontMode = std::stoi(value); } catch (...) {}
                 if (settings.uiFontMode < 0 || settings.uiFontMode > 1) settings.uiFontMode = 0;
             }
+            if (k == "guinavanalogthreshold") { try { settings.guiNavAnalogThreshold = std::stof(value); } catch(...){} }
+            if (k == "guinavrepeatdelay") { try { settings.guiNavRepeatDelay = std::stof(value); } catch(...){} }
+            if (k == "guinavrepeatrate") { try { settings.guiNavRepeatRate = std::stof(value); } catch(...){} }
+            if (k == "guiscrollrightstickenable") settings.guiScrollRightStickEnable = (value == "1");
+            if (k == "guiscrollrightstickscale") { try { settings.guiScrollRightStickScale = std::stof(value); } catch(...){} }
             if (k == "enablevirtualcursor") settings.enableVirtualCursor = (value == "1");
             if (k == "virtualcursorallowwindowed") settings.virtualCursorAllowWindowed = (value == "1");
             if (k == "virtualcursorbasespeed") { try { settings.virtualCursorBaseSpeed = std::stof(value); } catch(...){} }
@@ -632,6 +811,11 @@ namespace Config {
             if (k == "controllerindex") { try { settings.controllerIndex = std::stoi(value); } catch(...) { settings.controllerIndex = -1; } if (settings.controllerIndex < -1 || settings.controllerIndex > 3) settings.controllerIndex = -1; }
             if (k == "freezerfaftercontrec") settings.freezeRFAfterContRec = (value == "1");
             if (k == "freezerfonlywhenneutral") settings.freezeRFOnlyWhenNeutral = (value == "1");
+            if (k == "crrequirebothneutral") settings.crRequireBothNeutral = (value == "1");
+            if (k == "crbothneutraldelayms") { try { settings.crBothNeutralDelayMs = std::stoi(value); } catch(...){} if (settings.crBothNeutralDelayMs < 0) settings.crBothNeutralDelayMs = 0; }
+            if (k == "autofixhponneutral") settings.autoFixHPOnNeutral = (value == "1");
+            if (k == "frameadvantagedisplayduration") { try { settings.frameAdvantageDisplayDuration = std::stof(value); } catch(...){} }
+            if (k == "autoblockneutraltimeoutms") { try { settings.autoBlockNeutralTimeoutMs = std::stoi(value); } catch(...) { settings.autoBlockNeutralTimeoutMs = 10000; } }
         }
         else if (sec == "hotkeys") {
             int intValue = ParseKeyValue(value);
@@ -649,6 +833,10 @@ namespace Config {
             if (k == "uiacceptkey") settings.uiAcceptKey = intValue;
             if (k == "uirefreshkey") settings.uiRefreshKey = intValue;
             if (k == "uiexitkey") settings.uiExitKey = intValue;
+            if (k == "framesteppausekey") settings.framestepPauseKey = intValue;
+            if (k == "framestepstepkey") settings.framestepStepKey = intValue;
+            if (k == "swapcustomenabled") settings.swapCustomEnabled = (value == "1" || value == "true");
+            if (k == "swapcustomkey") settings.swapCustomKey = intValue;
             // Gamepad button updates (these accept names or hex values)
             if (k == "gpteleportbutton") settings.gpTeleportButton = ParseGamepadButton(value);
             if (k == "gpsavepositionbutton") settings.gpSavePositionButton = ParseGamepadButton(value);
@@ -659,6 +847,10 @@ namespace Config {
             if (k == "gpmacroslotbutton") settings.gpMacroSlotButton = ParseGamepadButton(value);
             if (k == "gptogglemenubutton") settings.gpToggleMenuButton = ParseGamepadButton(value);
             if (k == "gptoggleimguibutton") settings.gpToggleImGuiButton = ParseGamepadButton(value);
+            if (k == "gpuitoptabprev") settings.gpUiTopTabPrev = ParseGamepadButton(value);
+            if (k == "gpuitoptabnext") settings.gpUiTopTabNext = ParseGamepadButton(value);
+            if (k == "gpuisubtabprev") settings.gpUiSubTabPrev = ParseGamepadButton(value);
+            if (k == "gpuisubtabnext") settings.gpUiSubTabNext = ParseGamepadButton(value);
         }
     // Practice: no mutable settings currently
     }

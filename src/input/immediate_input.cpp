@@ -1,6 +1,7 @@
 #include "../include/input/immediate_input.h"
 #include "../include/input/input_core.h"
 #include "../include/core/logger.h"
+#include "../include/core/memory.h"
 #include <thread>
 #include <chrono>
 
@@ -32,7 +33,8 @@ static void Worker() {
         next += frameDur;
 
         for (int p = 1; p <= 2; ++p) {
-            uint8_t curDesired = s_slot[p].desired.load(std::memory_order_relaxed);
+            // Use acquire to ensure we see desired before checking ticks
+            uint8_t curDesired = s_slot[p].desired.load(std::memory_order_acquire);
             int t = s_slot[p].ticks.load(std::memory_order_relaxed);
             uint8_t last = s_slot[p].lastWritten.load(std::memory_order_relaxed);
             bool needNeutral = s_slot[p].needNeutralEdge.exchange(false);
@@ -48,14 +50,40 @@ static void Worker() {
                 // If we just wrote a non-zero last time, keep holding
                 // On transition or periodic re-press, create an edge by forcing a neutral first
                 if (last != 0 && last == curDesired) {
-                    // keep holding
+                    // keep holding (reassert to ensure game sees it)
                     WritePlayerInputImmediate(p, curDesired);
+                    
+                    // Debug: Log wake jump writes
+                    if ((curDesired & GAME_INPUT_UP) != 0) {
+                        uint16_t moveID = 0;
+                        uintptr_t playerPtr = GetPlayerPointer(p);
+                        if (playerPtr) {
+                            SafeReadMemory(playerPtr + MOVE_ID_OFFSET, &moveID, sizeof(uint16_t));
+                        }
+                        LogOut("[IMMEDIATE_INPUT] Holding UP for P" + std::to_string(p) + 
+                               " mask=" + std::to_string(curDesired) + 
+                               " ticksLeft=" + std::to_string(t-1) +
+                               " moveID=" + std::to_string(moveID), true);
+                    }
                 } else {
                     // ensure a neutral edge when transitioning to a new non-zero
                     if (last != 0) {
                         WritePlayerInputImmediate(p, 0);
                     }
                     WritePlayerInputImmediate(p, curDesired);
+                    
+                    // Debug: Log initial wake jump write
+                    if ((curDesired & GAME_INPUT_UP) != 0) {
+                        uint16_t moveID = 0;
+                        uintptr_t playerPtr = GetPlayerPointer(p);
+                        if (playerPtr) {
+                            SafeReadMemory(playerPtr + MOVE_ID_OFFSET, &moveID, sizeof(uint16_t));
+                        }
+                        LogOut("[IMMEDIATE_INPUT] Initial UP write for P" + std::to_string(p) + 
+                               " mask=" + std::to_string(curDesired) + 
+                               " ticksLeft=" + std::to_string(t-1) +
+                               " moveID=" + std::to_string(moveID), true);
+                    }
                 }
                 s_slot[p].lastWritten.store(curDesired, std::memory_order_relaxed);
                 s_slot[p].ticks.store(t - 1, std::memory_order_relaxed);
@@ -77,7 +105,7 @@ static void Worker() {
             }
 
             if (curDesired != 0) {
-                // Maintain hold; if last was different, insert edge
+                // Maintain hold; ensure the mask is reasserted periodically since the game may clear per frame
                 if (last != 0 && last != curDesired) {
                     WritePlayerInputImmediate(p, 0);
                 }
@@ -136,7 +164,9 @@ void Set(int playerNum, uint8_t mask) {
 
 void PressFor(int playerNum, uint8_t mask, int ticks) {
     if (playerNum < 1 || playerNum > 2 || ticks <= 0) return;
-    s_slot[playerNum].desired.store(mask, std::memory_order_relaxed);
+    // CRITICAL: Set desired first with release semantics, then ticks with relaxed.
+    // This ensures the worker thread never sees ticks>0 with desired==0.
+    s_slot[playerNum].desired.store(mask, std::memory_order_release);
     s_slot[playerNum].ticks.store(ticks, std::memory_order_relaxed);
 }
 
@@ -152,6 +182,11 @@ void Clear(int playerNum) {
 uint8_t GetCurrentDesired(int playerNum) {
     if (playerNum < 1 || playerNum > 2) return 0;
     return s_slot[playerNum].desired.load(std::memory_order_relaxed);
+}
+
+int GetRemainingTicks(int playerNum) {
+    if (playerNum < 1 || playerNum > 2) return 0;
+    return s_slot[playerNum].ticks.load(std::memory_order_relaxed);
 }
 
 } // namespace ImmediateInput
