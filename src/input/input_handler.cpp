@@ -18,9 +18,9 @@
 #include <dinput.h>
 #include <sstream>
 #include <string>
-#include <commctrl.h>  for Common Controls
+#include <commctrl.h>
 #include "../include/gui/imgui_impl.h"
-#include "../include/gui/overlay.h"   for DirectDrawHook class
+#include "../include/gui/overlay.h"
 #include "../include/utils/config.h"
 #include "../include/input/input_motion.h" // For QueueMotionInput
 #include "../include/utils/bgm_control.h"

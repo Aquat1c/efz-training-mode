@@ -6,8 +6,8 @@
 #include "../include/utils/utilities.h"
 #include "../include/input/motion_constants.h"
 #include "../include/core/globals.h"
-#include "../include/input/shared_constants.h"  for shared constants
-#include "../include/input/input_debug.h" for debug functions
+#include "../include/input/shared_constants.h"
+#include "../include/input/input_debug.h"
 #include "../include/input/motion_system.h"
 #include "../include/input/input_motion.h"  
 #include "../include/game/game_state.h"  
