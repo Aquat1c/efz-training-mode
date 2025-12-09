@@ -26,7 +26,7 @@ extern std::atomic<bool> keyMonitorRunning;
 // Flag to track if DirectInput is available
 extern bool g_directInputAvailable;
 
-// Add this flag to control DirectInput behavior
+// Flag to control DirectInput behavior
 extern bool g_directInputReadOnly;
 static std::atomic<bool> globalF1ThreadRunning{true};
 

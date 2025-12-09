@@ -11,5 +11,5 @@ extern bool p2ActionApplied;
 // Function declarations
 void ApplyJump(uintptr_t moveIDAddr, int playerNum, int jumpType);
 void MonitorAutoJump();
-bool IsAutoActionActiveForPlayer(int playerNum);  // Add this declaration
+bool IsAutoActionActiveForPlayer(int playerNum); 
 void AutoJumpReleaseForPlayer(int playerNum);     // Release any auto-jump-held input for a player

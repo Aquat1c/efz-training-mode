@@ -62,6 +62,7 @@ This project is a DLL mod that loads via EFZ Mod Manager. It adds a configurable
 
 - **Random Defense Tools:**
   - Random Block and Random RG for realistic defensive variance
+  - Adaptive Guard: automatically chooses Stand/Crouch/Air guard based on incoming attack properties and state. Doesn't walk backwards on high-block.
   - Guard overrides (force stand/crouch/air where applicable)
 
 - **Overlay Controls:**

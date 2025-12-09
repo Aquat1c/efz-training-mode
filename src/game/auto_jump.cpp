@@ -116,7 +116,6 @@ void ApplyJump(uintptr_t moveIDAddr, int playerNum, int jumpType) {
     }
 }
 
-// Add this function to check if auto-action is active
 bool IsAutoActionActiveForPlayer(int playerNum) {
     if (!autoActionEnabled.load()) {
         return false;

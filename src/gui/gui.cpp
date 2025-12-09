@@ -12,7 +12,6 @@
 #include <thread>
 #include <commctrl.h>
 
-// Add this link to the Common Controls library
 #pragma comment(lib, "comctl32.lib")
 
 void OpenMenu() {
@@ -195,7 +194,6 @@ void ApplySettings(DisplayData* data) {
                 SetPlayerPosition(base, EFZ_BASE_OFFSET_P2, (double)displayData.x2, (double)displayData.y2);
             }
             
-            // Add this line to apply character-specific values
             CharacterSettings::ApplyCharacterValues(base, *data);
             
             // Handle RF values separately using the robust method, but not while F4 recovery is active
