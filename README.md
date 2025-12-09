@@ -171,8 +171,8 @@ External libraries:
 ---
 
 **Special Thanks**
-- fishshapedfish — early tables and references as well as consultations.
-- Ev.Geniy, yagelbagel, Micro and others — testing and feedback
+- fishshapedfish - early tables and references as well as consultations.
+- Ev.Geniy, yagelbagel, Micro and others - testing and feedback
 
 ---
 
