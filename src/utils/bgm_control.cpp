@@ -3,7 +3,7 @@
 #include "../include/core/memory.h"
 #include "../include/core/constants.h"
 #include "../include/gui/overlay.h"
-#include "../include/core/globals.h"  // Add this include
+#include "../include/core/globals.h"  
 #include "../3rdparty/minhook/include/MinHook.h"
 #include <thread>
 #include <chrono>

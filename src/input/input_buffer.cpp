@@ -6,11 +6,11 @@
 #include "../include/utils/utilities.h"
 #include "../include/input/motion_constants.h"
 #include "../include/core/globals.h"
-#include "../include/input/shared_constants.h" // Add this include for shared constants
-#include "../include/input/input_debug.h"// Add this include for debug functions
+#include "../include/input/shared_constants.h"  for shared constants
+#include "../include/input/input_debug.h" for debug functions
 #include "../include/input/motion_system.h"
-#include "../include/input/input_motion.h"  // Add this include
-#include "../include/game/game_state.h"  // Add this include
+#include "../include/input/input_motion.h"  
+#include "../include/game/game_state.h"  
 #include "../include/input/input_freeze.h"
 #include <vector>
 #include <sstream>
