@@ -102,6 +102,17 @@ namespace CharacterSettings {
     static PlayerCharPointers s_pointersP1;
     static PlayerCharPointers s_pointersP2;
 
+    void InvalidateAllCharacterPointerCaches() {
+        // Zero out all cached addresses so they get refreshed
+        // on the next Read/Apply call. This is important when
+        // re-entering Practice after character select, since
+        // the underlying player objects are reallocated and
+        // previously-resolved pointers can become stale.
+        s_pointersP1 = PlayerCharPointers{};
+        s_pointersP2 = PlayerCharPointers{};
+        LogOut("[CHAR] Invalidating all character pointer caches", detailedLogging.load());
+    }
+
     static void RefreshCharacterPointers(uintptr_t base, int playerIndex, int charId) {
         PlayerCharPointers &p = (playerIndex == 1) ? s_pointersP1 : s_pointersP2;
         const int off = (playerIndex == 1) ? EFZ_BASE_OFFSET_P1 : EFZ_BASE_OFFSET_P2;
@@ -296,32 +307,53 @@ namespace CharacterSettings {
                d.minagiConvertNewProjectiles;
     }
 
+    static std::string PtrHex(uintptr_t v) {
+        char buf[32];
+        _snprintf_s(buf, sizeof(buf), _TRUNCATE, "0x%p", (void*)v);
+        return std::string(buf);
+    }
+
     void ReadCharacterValues(uintptr_t base, DisplayData& data) {
         // Ensure pointer caches have correct base for this session
         if (base) {
-            if (s_pointersP1.base == 0 || s_pointersP1.base != base + EFZ_BASE_OFFSET_P1)
+            if (s_pointersP1.base == 0 || s_pointersP1.base != base + EFZ_BASE_OFFSET_P1) {
+                  LogOut("[CHAR][READ] P1 pointer cache invalid or base changed (old=" +
+                      PtrHex(s_pointersP1.base) + ", new=" + PtrHex(base + EFZ_BASE_OFFSET_P1) + ")",
+                       detailedLogging.load());
                 RefreshCharacterPointers(base, 1, data.p1CharID);
-            if (s_pointersP2.base == 0 || s_pointersP2.base != base + EFZ_BASE_OFFSET_P2)
+            }
+            if (s_pointersP2.base == 0 || s_pointersP2.base != base + EFZ_BASE_OFFSET_P2) {
+                  LogOut("[CHAR][READ] P2 pointer cache invalid or base changed (old=" +
+                      PtrHex(s_pointersP2.base) + ", new=" + PtrHex(base + EFZ_BASE_OFFSET_P2) + ")",
+                       detailedLogging.load());
                 RefreshCharacterPointers(base, 2, data.p2CharID);
+            }
+        } else {
+            LogOut("[CHAR][READ] ReadCharacterValues called with base=0; skipping character reads", detailedLogging.load());
         }
 
         // If GUI is hidden and no infinite/lock option needs these values, we can skip reads entirely.
-        static int s_charReadCounter = 0;
+        // Log this skip only once per "GUI-hidden" period to avoid spamming.
+        static bool s_loggedSkipOnce = false;
         if (!g_guiVisible.load()) {
             if (!AnyInfiniteOrLockEnabled(data)) {
+                if (!s_loggedSkipOnce) {
+                    LogOut("[CHAR][READ] Skipping character reads (GUI hidden, no infinites/locks)", detailedLogging.load());
+                    s_loggedSkipOnce = true;
+                }
                 return;
             }
-            // Throttle purely background reads when only infinites are active
-            constexpr int CHAR_READ_PERIOD = 4; // every 4 frames when GUI closed
-            if ((++s_charReadCounter % CHAR_READ_PERIOD) != 0) {
-                return;
-            }
+        } else {
+            // Reset one-shot skip log when GUI becomes visible again
+            s_loggedSkipOnce = false;
         }
         // Read Ikumi's values if either player is using her
         if (data.p1CharID == CHAR_ID_IKUMI) {
-            uintptr_t levelAddr   = ResolvePointer(base, EFZ_BASE_OFFSET_P1, IKUMI_LEVEL_GAUGE_OFFSET);
-            uintptr_t bloodAddr   = s_pointersP1.ikumiBlood;
-            uintptr_t genocideAddr= s_pointersP1.ikumiGenocide;
+            uintptr_t levelAddr    = ResolvePointer(base, EFZ_BASE_OFFSET_P1, IKUMI_LEVEL_GAUGE_OFFSET);
+            // NOTE: Resolve blood/genocide dynamically each read to avoid stale cached
+            // addresses across character-select / re-entry transitions.
+            uintptr_t bloodAddr    = ResolvePointer(base, EFZ_BASE_OFFSET_P1, IKUMI_BLOOD_OFFSET);
+            uintptr_t genocideAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P1, IKUMI_GENOCIDE_OFFSET);
 
             if (levelAddr)   { SafeReadMemory(levelAddr,   &data.p1IkumiLevelGauge, sizeof(int)); data.p1IkumiLevelGauge = CLAMP(data.p1IkumiLevelGauge, 0, 99); }
             if (bloodAddr)   SafeReadMemory(bloodAddr,   &data.p1IkumiBlood, sizeof(int));
@@ -331,9 +363,14 @@ namespace CharacterSettings {
             auto now = std::chrono::steady_clock::now();
             bool heartbeat = (s_lastIkumiLogP1.time_since_epoch().count() == 0) || ((now - s_lastIkumiLogP1) >= IKUMI_LOG_HEARTBEAT);
             if (detailedLogging.load() && (changed || heartbeat)) {
-                LogOut("[CHAR] Read P1 Ikumi values: Lvl=" + std::to_string(data.p1IkumiLevelGauge) +
-                       ", Blood=" + std::to_string(data.p1IkumiBlood) +
-                       ", Genocide=" + std::to_string(data.p1IkumiGenocide), true);
+                LogOut(std::string("[CHAR][READ][IKUMI] P1 ") +
+                       "LvlAddr=" + PtrHex(levelAddr) +
+                       " BloodAddr=" + PtrHex(bloodAddr) +
+                       " GenocideAddr=" + PtrHex(genocideAddr) +
+                       " Lvl=" + std::to_string(data.p1IkumiLevelGauge) +
+                       " Blood=" + std::to_string(data.p1IkumiBlood) +
+                       " Genocide=" + std::to_string(data.p1IkumiGenocide),
+                       true);
                 s_lastIkumiLogP1 = now;
             }
             s_lastP1IkumiBlood = data.p1IkumiBlood;
@@ -341,9 +378,9 @@ namespace CharacterSettings {
         }
         
         if (data.p2CharID == CHAR_ID_IKUMI) {
-            uintptr_t levelAddr   = ResolvePointer(base, EFZ_BASE_OFFSET_P2, IKUMI_LEVEL_GAUGE_OFFSET);
-            uintptr_t bloodAddr   = s_pointersP2.ikumiBlood;
-            uintptr_t genocideAddr= s_pointersP2.ikumiGenocide;
+            uintptr_t levelAddr    = ResolvePointer(base, EFZ_BASE_OFFSET_P2, IKUMI_LEVEL_GAUGE_OFFSET);
+            uintptr_t bloodAddr    = ResolvePointer(base, EFZ_BASE_OFFSET_P2, IKUMI_BLOOD_OFFSET);
+            uintptr_t genocideAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P2, IKUMI_GENOCIDE_OFFSET);
 
             if (levelAddr)   { SafeReadMemory(levelAddr,   &data.p2IkumiLevelGauge, sizeof(int)); data.p2IkumiLevelGauge = CLAMP(data.p2IkumiLevelGauge, 0, 99); }
             if (bloodAddr)   SafeReadMemory(bloodAddr,   &data.p2IkumiBlood, sizeof(int));
@@ -353,9 +390,14 @@ namespace CharacterSettings {
             auto now = std::chrono::steady_clock::now();
             bool heartbeat = (s_lastIkumiLogP2.time_since_epoch().count() == 0) || ((now - s_lastIkumiLogP2) >= IKUMI_LOG_HEARTBEAT);
             if (detailedLogging.load() && (changed || heartbeat)) {
-                LogOut("[CHAR] Read P2 Ikumi values: Lvl=" + std::to_string(data.p2IkumiLevelGauge) +
-                       ", Blood=" + std::to_string(data.p2IkumiBlood) +
-                       ", Genocide=" + std::to_string(data.p2IkumiGenocide), true);
+                LogOut(std::string("[CHAR][READ][IKUMI] P2 ") +
+                       "LvlAddr=" + PtrHex(levelAddr) +
+                       " BloodAddr=" + PtrHex(bloodAddr) +
+                       " GenocideAddr=" + PtrHex(genocideAddr) +
+                       " Lvl=" + std::to_string(data.p2IkumiLevelGauge) +
+                       " Blood=" + std::to_string(data.p2IkumiBlood) +
+                       " Genocide=" + std::to_string(data.p2IkumiGenocide),
+                       true);
                 s_lastIkumiLogP2 = now;
             }
             s_lastP2IkumiBlood = data.p2IkumiBlood;
@@ -367,30 +409,39 @@ namespace CharacterSettings {
             PlayerCharPointers &p = (playerIndex==1)?s_pointersP1:s_pointersP2;
             uintptr_t jamAddr = p.neyukiJamCount;
             if (!jamAddr) return;
-            int jam = 0; SafeReadMemory(jamAddr, &jam, sizeof(int));
+                 int jam = 0; SafeReadMemory(jamAddr, &jam, sizeof(int));
             if (jam < 0) jam = 0; else if (jam > NEYUKI_JAM_COUNT_MAX) jam = NEYUKI_JAM_COUNT_MAX;
             if (playerIndex==1) data.p1NeyukiJamCount = jam; else data.p2NeyukiJamCount = jam;
-            LogOut(std::string("[CHAR] Read ") + (playerIndex==1?"P1":"P2") + " Neyuki: JamCount=" + std::to_string(jam), detailedLogging.load());
+                 LogOut(std::string("[CHAR][READ][NEYUKI] ") + (playerIndex==1?"P1":"P2") +
+                     " addr=" + PtrHex(jamAddr) +
+                     " JamCount=" + std::to_string(jam),
+                     detailedLogging.load());
         };
         if (data.p1CharID == CHAR_ID_NAYUKI) ReadNeyuki(1);
         if (data.p2CharID == CHAR_ID_NAYUKI) ReadNeyuki(2);
         
         // Read Mishio's values if either player is using her
         if (data.p1CharID == CHAR_ID_MISHIO) {
-            uintptr_t elemAddr = s_pointersP1.mishioElement;
-            uintptr_t awAddr   = s_pointersP1.mishioAwakenedTimer;
+                 uintptr_t elemAddr = s_pointersP1.mishioElement;
+                 uintptr_t awAddr   = s_pointersP1.mishioAwakenedTimer;
             if (elemAddr) SafeReadMemory(elemAddr, &data.p1MishioElement, sizeof(int));
             if (awAddr)   SafeReadMemory(awAddr,   &data.p1MishioAwakenedTimer, sizeof(int));
-            LogOut("[CHAR] Read P1 Mishio values: Element=" + std::to_string(data.p1MishioElement) +
-                   ", AwTimer=" + std::to_string(data.p1MishioAwakenedTimer), detailedLogging.load());
+                 LogOut(std::string("[CHAR][READ][MISHIO] P1 elemAddr=") + PtrHex(elemAddr) +
+                     " awAddr=" + PtrHex(awAddr) +
+                     " Element=" + std::to_string(data.p1MishioElement) +
+                     " AwTimer=" + std::to_string(data.p1MishioAwakenedTimer),
+                     detailedLogging.load());
         }
         if (data.p2CharID == CHAR_ID_MISHIO) {
             uintptr_t elemAddr = s_pointersP2.mishioElement;
             uintptr_t awAddr   = s_pointersP2.mishioAwakenedTimer;
             if (elemAddr) SafeReadMemory(elemAddr, &data.p2MishioElement, sizeof(int));
             if (awAddr)   SafeReadMemory(awAddr,   &data.p2MishioAwakenedTimer, sizeof(int));
-            LogOut("[CHAR] Read P2 Mishio values: Element=" + std::to_string(data.p2MishioElement) +
-                   ", AwTimer=" + std::to_string(data.p2MishioAwakenedTimer), detailedLogging.load());
+                 LogOut(std::string("[CHAR][READ][MISHIO] P2 elemAddr=") + PtrHex(elemAddr) +
+                     " awAddr=" + PtrHex(awAddr) +
+                     " Element=" + std::to_string(data.p2MishioElement) +
+                     " AwTimer=" + std::to_string(data.p2MishioAwakenedTimer),
+                     detailedLogging.load());
         }
 
         // Read Misuzu's values if either player is using her
@@ -403,9 +454,12 @@ namespace CharacterSettings {
          if (poisonTimerAddr) { SafeReadMemory(poisonTimerAddr, &data.p1MisuzuPoisonTimer, sizeof(int)); data.p1MisuzuPoisonTimer = CLAMP(data.p1MisuzuPoisonTimer, 0, MISUZU_POISON_TIMER_MAX); }
          if (poisonLevelAddr)  SafeReadMemory(poisonLevelAddr, &data.p1MisuzuPoisonLevel, sizeof(int));
             
-         LogOut("[CHAR] Read P1 Misuzu values: Feathers=" + std::to_string(data.p1MisuzuFeathers) +
-             ", PoisonTimer=" + std::to_string(data.p1MisuzuPoisonTimer) +
-             ", PoisonLvl=" + std::to_string(data.p1MisuzuPoisonLevel), 
+         LogOut(std::string("[CHAR][READ][MISUZU] P1 featherAddr=") + PtrHex(featherAddr) +
+             " poisonTimerAddr=" + PtrHex(poisonTimerAddr) +
+             " poisonLevelAddr=" + PtrHex(poisonLevelAddr) +
+             " Feathers=" + std::to_string(data.p1MisuzuFeathers) +
+             " PoisonTimer=" + std::to_string(data.p1MisuzuPoisonTimer) +
+             " PoisonLvl=" + std::to_string(data.p1MisuzuPoisonLevel), 
                    detailedLogging.load());
         }
         
@@ -418,24 +472,31 @@ namespace CharacterSettings {
          if (poisonTimerAddr) { SafeReadMemory(poisonTimerAddr, &data.p2MisuzuPoisonTimer, sizeof(int)); data.p2MisuzuPoisonTimer = CLAMP(data.p2MisuzuPoisonTimer, 0, MISUZU_POISON_TIMER_MAX); }
          if (poisonLevelAddr)  SafeReadMemory(poisonLevelAddr, &data.p2MisuzuPoisonLevel, sizeof(int));
             
-         LogOut("[CHAR] Read P2 Misuzu values: Feathers=" + std::to_string(data.p2MisuzuFeathers) +
-             ", PoisonTimer=" + std::to_string(data.p2MisuzuPoisonTimer) +
-             ", PoisonLvl=" + std::to_string(data.p2MisuzuPoisonLevel), 
+         LogOut(std::string("[CHAR][READ][MISUZU] P2 featherAddr=") + PtrHex(featherAddr) +
+             " poisonTimerAddr=" + PtrHex(poisonTimerAddr) +
+             " poisonLevelAddr=" + PtrHex(poisonLevelAddr) +
+             " Feathers=" + std::to_string(data.p2MisuzuFeathers) +
+             " PoisonTimer=" + std::to_string(data.p2MisuzuPoisonTimer) +
+             " PoisonLvl=" + std::to_string(data.p2MisuzuPoisonLevel), 
                    detailedLogging.load());
         }
 
         // Doppel Nanase (ExNanase) - read Enlightened flag (0/1)
         if (data.p1CharID == CHAR_ID_EXNANASE) {
-            uintptr_t flagAddr = s_pointersP1.doppelEnlightened;
-            int tmp = 0; if (flagAddr) SafeReadMemory(flagAddr, &tmp, sizeof(int));
-            data.p1DoppelEnlightened = (tmp != 0);
-            LogOut("[CHAR] Read P1 Doppel Enlightened=" + std::to_string(data.p1DoppelEnlightened), detailedLogging.load());
+                 uintptr_t flagAddr = s_pointersP1.doppelEnlightened;
+                 int tmp = 0; if (flagAddr) SafeReadMemory(flagAddr, &tmp, sizeof(int));
+                 data.p1DoppelEnlightened = (tmp != 0);
+                 LogOut(std::string("[CHAR][READ][DOPPEL] P1 addr=") + PtrHex(flagAddr) +
+                     " Enlightened=" + std::to_string(data.p1DoppelEnlightened),
+                     detailedLogging.load());
         }
         if (data.p2CharID == CHAR_ID_EXNANASE) {
-            uintptr_t flagAddr = s_pointersP2.doppelEnlightened;
-            int tmp = 0; if (flagAddr) SafeReadMemory(flagAddr, &tmp, sizeof(int));
-            data.p2DoppelEnlightened = (tmp != 0);
-            LogOut("[CHAR] Read P2 Doppel Enlightened=" + std::to_string(data.p2DoppelEnlightened), detailedLogging.load());
+                 uintptr_t flagAddr = s_pointersP2.doppelEnlightened;
+                 int tmp = 0; if (flagAddr) SafeReadMemory(flagAddr, &tmp, sizeof(int));
+                 data.p2DoppelEnlightened = (tmp != 0);
+                 LogOut(std::string("[CHAR][READ][DOPPEL] P2 addr=") + PtrHex(flagAddr) +
+                     " Enlightened=" + std::to_string(data.p2DoppelEnlightened),
+                     detailedLogging.load());
         }
 
         // Nanase (Rumi) – Safe read of mode/gate only (no pointer derefs to anim/move tables)
@@ -466,8 +527,13 @@ namespace CharacterSettings {
                 changed = (s_lastRumiModeP1 != (int)mode) || (s_lastRumiGateP1 != (int)gate);
                 heartbeat = (s_lastRumiLogP1.time_since_epoch().count() == 0) || ((now - s_lastRumiLogP1) >= RUMI_LOG_HEARTBEAT);
                 if (detailedLogging.load() && (changed || heartbeat)) {
-                    LogOut(std::string("[CHAR] Read Rumi state P1: mode=") + std::to_string((int)mode) + ", gate=" + std::to_string((int)gate) +
-                           ", KimchiActive=" + std::to_string((int)data.p1RumiKimchiActive) + ", KimchiTimer=" + std::to_string((int)data.p1RumiKimchiTimer), true);
+                          LogOut(std::string("[CHAR][READ][RUMI] P1 modeAddr=") + PtrHex(modeAddr) +
+                              " gateAddr=" + PtrHex(gateAddr) +
+                              " kimchiFlagAddr=" + PtrHex(kimchiFlagAddr) +
+                              " kimchiTimerAddr=" + PtrHex(kimchiTimerAddr) +
+                              " mode=" + std::to_string((int)mode) + ", gate=" + std::to_string((int)gate) +
+                              ", KimchiActive=" + std::to_string((int)data.p1RumiKimchiActive) + ", KimchiTimer=" + std::to_string((int)data.p1RumiKimchiTimer),
+                              true);
                     s_lastRumiLogP1 = now;
                 }
                 s_lastRumiModeP1 = (int)mode; s_lastRumiGateP1 = (int)gate;
@@ -475,8 +541,13 @@ namespace CharacterSettings {
                 changed = (s_lastRumiModeP2 != (int)mode) || (s_lastRumiGateP2 != (int)gate);
                 heartbeat = (s_lastRumiLogP2.time_since_epoch().count() == 0) || ((now - s_lastRumiLogP2) >= RUMI_LOG_HEARTBEAT);
                 if (detailedLogging.load() && (changed || heartbeat)) {
-                    LogOut(std::string("[CHAR] Read Rumi state P2: mode=") + std::to_string((int)mode) + ", gate=" + std::to_string((int)gate) +
-                           ", KimchiActive=" + std::to_string((int)data.p2RumiKimchiActive) + ", KimchiTimer=" + std::to_string((int)data.p2RumiKimchiTimer), true);
+                          LogOut(std::string("[CHAR][READ][RUMI] P2 modeAddr=") + PtrHex(modeAddr) +
+                              " gateAddr=" + PtrHex(gateAddr) +
+                              " kimchiFlagAddr=" + PtrHex(kimchiFlagAddr) +
+                              " kimchiTimerAddr=" + PtrHex(kimchiTimerAddr) +
+                              " mode=" + std::to_string((int)mode) + ", gate=" + std::to_string((int)gate) +
+                              ", KimchiActive=" + std::to_string((int)data.p2RumiKimchiActive) + ", KimchiTimer=" + std::to_string((int)data.p2RumiKimchiTimer),
+                              true);
                     s_lastRumiLogP2 = now;
                 }
                 s_lastRumiModeP2 = (int)mode; s_lastRumiGateP2 = (int)gate;
@@ -512,7 +583,10 @@ namespace CharacterSettings {
                 bool changed = (s_lastAkikoBulletP1!=bullet)||(s_lastAkikoTimeP1!=t);
                 bool heartbeat = (s_lastAkikoLogP1.time_since_epoch().count()==0)||((now - s_lastAkikoLogP1) >= AKIKO_LOG_HEARTBEAT);
                 if (detailedLogging.load() && (changed || heartbeat)) {
-                    LogOut("[CHAR] Read P1 Akiko: BulletCycle=" + std::to_string(bullet) + ", TimeSlow=" + std::to_string(t), true);
+                          LogOut(std::string("[CHAR][READ][AKIKO] P1 bulletAddr=") + PtrHex(bulletAddr) +
+                              " timeAddr=" + PtrHex(timeAddr) +
+                              " BulletCycle=" + std::to_string(bullet) + ", TimeSlow=" + std::to_string(t),
+                              true);
                     s_lastAkikoLogP1 = now;
                 }
                 s_lastAkikoBulletP1=bullet; s_lastAkikoTimeP1=t;
@@ -521,7 +595,10 @@ namespace CharacterSettings {
                 bool changed = (s_lastAkikoBulletP2!=bullet)||(s_lastAkikoTimeP2!=t);
                 bool heartbeat = (s_lastAkikoLogP2.time_since_epoch().count()==0)||((now - s_lastAkikoLogP2) >= AKIKO_LOG_HEARTBEAT);
                 if (detailedLogging.load() && (changed || heartbeat)) {
-                    LogOut("[CHAR] Read P2 Akiko: BulletCycle=" + std::to_string(bullet) + ", TimeSlow=" + std::to_string(t), true);
+                          LogOut(std::string("[CHAR][READ][AKIKO] P2 bulletAddr=") + PtrHex(bulletAddr) +
+                              " timeAddr=" + PtrHex(timeAddr) +
+                              " BulletCycle=" + std::to_string(bullet) + ", TimeSlow=" + std::to_string(t),
+                              true);
                     s_lastAkikoLogP2 = now;
                 }
                 s_lastAkikoBulletP2=bullet; s_lastAkikoTimeP2=t;
@@ -538,23 +615,29 @@ namespace CharacterSettings {
         auto ReadMio = [&](int playerIndex){
             PlayerCharPointers &p = (playerIndex==1)?s_pointersP1:s_pointersP2;
             if ((playerIndex==1 && data.p1CharID!=CHAR_ID_MIO) || (playerIndex==2 && data.p2CharID!=CHAR_ID_MIO)) return;
-            uintptr_t stanceAddr = p.mioStance;
+                 uintptr_t stanceAddr = p.mioStance;
             if (!stanceAddr) return;
             int stance=0; SafeReadMemory(stanceAddr,&stance,sizeof(int)); stance = (stance==MIO_STANCE_LONG)?MIO_STANCE_LONG:MIO_STANCE_SHORT;
             if (playerIndex==1) data.p1MioStance = stance; else data.p2MioStance = stance;
-            LogOut(std::string("[CHAR] Read ") + (playerIndex==1?"P1":"P2") + " Mio stance=" + (stance==MIO_STANCE_LONG?"Long":"Short"), detailedLogging.load());
+                 LogOut(std::string("[CHAR][READ][MIO] ") + (playerIndex==1?"P1":"P2") +
+                     " addr=" + PtrHex(stanceAddr) +
+                     " stance=" + (stance==MIO_STANCE_LONG?"Long":"Short"),
+                     detailedLogging.load());
         }; ReadMio(1); ReadMio(2);
 
         // Kano magic meter (0..10000) at same 0x3150 slot
         auto ReadKano = [&](int playerIndex){
             PlayerCharPointers &p = (playerIndex==1)?s_pointersP1:s_pointersP2;
             if ((playerIndex==1 && data.p1CharID!=CHAR_ID_KANO) || (playerIndex==2 && data.p2CharID!=CHAR_ID_KANO)) return;
-            uintptr_t magicAddr = p.kanoMagic;
+                 uintptr_t magicAddr = p.kanoMagic;
             if (!magicAddr) return;
             int val=0; SafeReadMemory(magicAddr,&val,sizeof(int));
             val = CLAMP(val, 0, KANO_MAGIC_MAX);
             if (playerIndex==1) data.p1KanoMagic = val; else data.p2KanoMagic = val;
-            LogOut(std::string("[CHAR] Read ") + (playerIndex==1?"P1":"P2") + " Kano magic=" + std::to_string(val), detailedLogging.load());
+                 LogOut(std::string("[CHAR][READ][KANO] ") + (playerIndex==1?"P1":"P2") +
+                     " addr=" + PtrHex(magicAddr) +
+                     " magic=" + std::to_string(val),
+                     detailedLogging.load());
         }; ReadKano(1); ReadKano(2);
 
         // Nayuki (Awake) – Snowbunnies timer at shared 0x3150 (0..3000)
@@ -579,8 +662,10 @@ namespace CharacterSettings {
                 }
             }
             
-            LogOut(std::string("[CHAR] ") + (playerIndex==1?"P1":"P2") + " Nayuki(Awake) timer=" + std::to_string(v) + 
-                   " active=[" + flagsStr + "]", detailedLogging.load());
+                 LogOut(std::string("[CHAR][READ][NAYUKIB] ") + (playerIndex==1?"P1":"P2") +
+                     " timerAddr=" + PtrHex(snowAddr) +
+                     " timer=" + std::to_string(v) +
+                     " active=[" + flagsStr + "]", detailedLogging.load());
         }; ReadNayukiB(1); ReadNayukiB(2);
 
         // Mai (Kawasumi) – Unified status + single multi-purpose timer model
@@ -633,28 +718,44 @@ namespace CharacterSettings {
     void ApplyCharacterValues(uintptr_t base, const DisplayData& data) {
         // Ensure pointer caches have correct base for this session
         if (base) {
-            if (s_pointersP1.base == 0 || s_pointersP1.base != base + EFZ_BASE_OFFSET_P1)
+            if (s_pointersP1.base == 0 || s_pointersP1.base != base + EFZ_BASE_OFFSET_P1) {
+                  LogOut("[CHAR][APPLY] P1 pointer cache invalid or base changed (old=" +
+                      PtrHex(s_pointersP1.base) + ", new=" + PtrHex(base + EFZ_BASE_OFFSET_P1) + ")",
+                       detailedLogging.load());
                 RefreshCharacterPointers(base, 1, data.p1CharID);
-            if (s_pointersP2.base == 0 || s_pointersP2.base != base + EFZ_BASE_OFFSET_P2)
+            }
+            if (s_pointersP2.base == 0 || s_pointersP2.base != base + EFZ_BASE_OFFSET_P2) {
+                  LogOut("[CHAR][APPLY] P2 pointer cache invalid or base changed (old=" +
+                      PtrHex(s_pointersP2.base) + ", new=" + PtrHex(base + EFZ_BASE_OFFSET_P2) + ")",
+                       detailedLogging.load());
                 RefreshCharacterPointers(base, 2, data.p2CharID);
+            }
+        } else {
+            LogOut("[CHAR][APPLY] ApplyCharacterValues called with base=0; skipping character writes", detailedLogging.load());
+            return;
         }
 
         // If GUI is hidden and no infinite/lock is enabled, Apply is effectively a no-op.
         if (!g_guiVisible.load() && !AnyInfiniteOrLockEnabled(data)) {
+            LogOut("[CHAR][APPLY] Skipping ApplyCharacterValues (GUI hidden, no infinites/locks)", detailedLogging.load());
             return;
         }
         // Apply Ikumi's values (P1)
         if (data.p1CharID == CHAR_ID_IKUMI) {
-            uintptr_t bloodAddr = s_pointersP1.ikumiBlood;
-            uintptr_t genocideAddr = s_pointersP1.ikumiGenocide;
+            // Resolve dynamically each Apply to avoid stale cached addresses across
+            // character select / re-entry.
+            uintptr_t bloodAddr    = ResolvePointer(base, EFZ_BASE_OFFSET_P1, IKUMI_BLOOD_OFFSET);
+            uintptr_t genocideAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P1, IKUMI_GENOCIDE_OFFSET);
             int bloodValue = std::max<int>(0, std::min<int>(IKUMI_BLOOD_MAX, data.p1IkumiBlood));
             int genocideValue = data.infiniteBloodMode ? IKUMI_GENOCIDE_MAX
                                                        : std::max<int>(0, std::min<int>(IKUMI_GENOCIDE_MAX, data.p1IkumiGenocide));
             if (bloodAddr) SafeWriteMemory(bloodAddr, &bloodValue, sizeof(int));
             if (genocideAddr) SafeWriteMemory(genocideAddr, &genocideValue, sizeof(int));
-            LogOut("[CHAR] Applied P1 Ikumi values: Blood=" + std::to_string(bloodValue) +
-                   ", Genocide=" + std::to_string(genocideValue) + " (infinite: " +
-                   (data.infiniteBloodMode ? "ON" : "OFF") + ")",
+            LogOut(std::string("[CHAR][APPLY][IKUMI] P1 bloodAddr=") + PtrHex(bloodAddr) +
+                   " genocideAddr=" + PtrHex(genocideAddr) +
+                   " Blood=" + std::to_string(bloodValue) +
+                   " Genocide=" + std::to_string(genocideValue) +
+                   " (infinite=" + (data.infiniteBloodMode ? "ON" : "OFF") + ")",
                    detailedLogging.load());
         }
         
@@ -672,8 +773,11 @@ namespace CharacterSettings {
                 if (aw > MISHIO_AWAKENED_TARGET) aw = MISHIO_AWAKENED_TARGET;
                 SafeWriteMemory(awAddr, &aw, sizeof(int));
             }
-            LogOut("[CHAR] Applied P1 Mishio values: Elem=" + std::to_string(data.p1MishioElement) +
-                   ", AwTimer=" + std::to_string(data.p1MishioAwakenedTimer), detailedLogging.load());
+            LogOut(std::string("[CHAR][APPLY][MISHIO] P1 elemAddr=") + PtrHex(elemAddr) +
+                   " awAddr=" + PtrHex(awAddr) +
+                   " Elem=" + std::to_string(data.p1MishioElement) +
+                   " AwTimer=" + std::to_string(data.p1MishioAwakenedTimer),
+                   detailedLogging.load());
         }
         if (data.p2CharID == CHAR_ID_MISHIO) {
             uintptr_t elemAddr = s_pointersP2.mishioElement;
@@ -688,16 +792,20 @@ namespace CharacterSettings {
                 if (aw > MISHIO_AWAKENED_TARGET) aw = MISHIO_AWAKENED_TARGET;
                 SafeWriteMemory(awAddr, &aw, sizeof(int));
             }
-            LogOut("[CHAR] Applied P2 Mishio values: Elem=" + std::to_string(data.p2MishioElement) +
-                   ", AwTimer=" + std::to_string(data.p2MishioAwakenedTimer), detailedLogging.load());
+            LogOut(std::string("[CHAR][APPLY][MISHIO] P2 elemAddr=") + PtrHex(elemAddr) +
+                   " awAddr=" + PtrHex(awAddr) +
+                   " Elem=" + std::to_string(data.p2MishioElement) +
+                   " AwTimer=" + std::to_string(data.p2MishioAwakenedTimer),
+                   detailedLogging.load());
         }
 
-        // Fix for lines 158-159
+        // Ikumi values (P2)
         if (data.p2CharID == CHAR_ID_IKUMI) {
-            uintptr_t bloodAddr = s_pointersP2.ikumiBlood;
-            uintptr_t genocideAddr = s_pointersP2.ikumiGenocide;
-            
-            // Fix: Add explicit template parameters to std::max and std::min
+            // Resolve dynamically each Apply to avoid stale cached addresses across
+            // character select / re-entry.
+            uintptr_t bloodAddr    = ResolvePointer(base, EFZ_BASE_OFFSET_P2, IKUMI_BLOOD_OFFSET);
+            uintptr_t genocideAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P2, IKUMI_GENOCIDE_OFFSET);
+
             int bloodValue = std::max<int>(0, std::min<int>(IKUMI_BLOOD_MAX, data.p2IkumiBlood));
             // For infinite mode, set genocide timer to max, otherwise use the provided value
             int genocideValue = data.infiniteBloodMode ? IKUMI_GENOCIDE_MAX : 
@@ -706,16 +814,18 @@ namespace CharacterSettings {
             if (bloodAddr) SafeWriteMemory(bloodAddr, &bloodValue, sizeof(int));
             if (genocideAddr) SafeWriteMemory(genocideAddr, &genocideValue, sizeof(int));
             
-            LogOut("[CHAR] Applied P2 Ikumi values: Blood=" + std::to_string(bloodValue) + 
-                   ", Genocide=" + std::to_string(genocideValue), 
-                   detailedLogging.load());
+                 LogOut(std::string("[CHAR][APPLY][IKUMI] P2 bloodAddr=") + PtrHex(bloodAddr) +
+                     " genocideAddr=" + PtrHex(genocideAddr) +
+                     " Blood=" + std::to_string(bloodValue) +
+                     " Genocide=" + std::to_string(genocideValue),
+                     detailedLogging.load());
         }
         
-     // Apply Misuzu's values if either player is using her
-          if (data.p1CharID == CHAR_ID_MISUZU) {
-                uintptr_t featherAddr = s_pointersP1.misuzuFeather;
-            uintptr_t poisonTimerAddr = s_pointersP1.misuzuPoisonTimer;
-            uintptr_t poisonLevelAddr = s_pointersP1.misuzuPoisonLevel;
+    // Apply Misuzu's values if either player is using her
+        if (data.p1CharID == CHAR_ID_MISUZU) {
+             uintptr_t featherAddr = s_pointersP1.misuzuFeather;
+          uintptr_t poisonTimerAddr = s_pointersP1.misuzuPoisonTimer;
+          uintptr_t poisonLevelAddr = s_pointersP1.misuzuPoisonLevel;
             
             int featherValue = std::max<int>(0, std::min<int>(MISUZU_FEATHER_MAX, data.p1MisuzuFeathers));
             
@@ -723,9 +833,12 @@ namespace CharacterSettings {
             if (poisonTimerAddr) { int t = CLAMP(data.p1MisuzuPoisonTimer, 0, MISUZU_POISON_TIMER_MAX); if (data.p1MisuzuInfinitePoison) t = MISUZU_POISON_TIMER_MAX; SafeWriteMemory(poisonTimerAddr, &t, sizeof(int)); }
          if (poisonLevelAddr)  { int l = data.p1MisuzuPoisonLevel; SafeWriteMemory(poisonLevelAddr, &l, sizeof(int)); }
             
-         LogOut("[CHAR] Applied P1 Misuzu values: Feathers=" + std::to_string(featherValue) +
-             ", PoisonTimer=" + std::to_string(data.p1MisuzuPoisonTimer) +
-             ", PoisonLvl=" + std::to_string(data.p1MisuzuPoisonLevel), 
+         LogOut(std::string("[CHAR][APPLY][MISUZU] P1 featherAddr=") + PtrHex(featherAddr) +
+             " poisonTimerAddr=" + PtrHex(poisonTimerAddr) +
+             " poisonLevelAddr=" + PtrHex(poisonLevelAddr) +
+             " Feathers=" + std::to_string(featherValue) +
+             " PoisonTimer=" + std::to_string(data.p1MisuzuPoisonTimer) +
+             " PoisonLvl=" + std::to_string(data.p1MisuzuPoisonLevel), 
                    detailedLogging.load());
         }
         
@@ -740,9 +853,12 @@ namespace CharacterSettings {
             if (poisonTimerAddr) { int t = CLAMP(data.p2MisuzuPoisonTimer, 0, MISUZU_POISON_TIMER_MAX); if (data.p2MisuzuInfinitePoison) t = MISUZU_POISON_TIMER_MAX; SafeWriteMemory(poisonTimerAddr, &t, sizeof(int)); }
          if (poisonLevelAddr)  { int l = data.p2MisuzuPoisonLevel; SafeWriteMemory(poisonLevelAddr, &l, sizeof(int)); }
 
-         LogOut("[CHAR] Applied P2 Misuzu values: Feathers=" + std::to_string(featherValue) +
-             ", PoisonTimer=" + std::to_string(data.p2MisuzuPoisonTimer) +
-             ", PoisonLvl=" + std::to_string(data.p2MisuzuPoisonLevel), 
+         LogOut(std::string("[CHAR][APPLY][MISUZU] P2 featherAddr=") + PtrHex(featherAddr) +
+             " poisonTimerAddr=" + PtrHex(poisonTimerAddr) +
+             " poisonLevelAddr=" + PtrHex(poisonLevelAddr) +
+             " Feathers=" + std::to_string(featherValue) +
+             " PoisonTimer=" + std::to_string(data.p2MisuzuPoisonTimer) +
+             " PoisonLvl=" + std::to_string(data.p2MisuzuPoisonLevel), 
                    detailedLogging.load());
         }
 
@@ -752,7 +868,9 @@ namespace CharacterSettings {
             if (flagAddr) {
                 int v = data.p1DoppelEnlightened ? 1 : 0;
                 SafeWriteMemory(flagAddr, &v, sizeof(int));
-                LogOut("[CHAR] Applied P1 Doppel Enlightened=" + std::to_string(v), detailedLogging.load());
+                LogOut(std::string("[CHAR][APPLY][DOPPEL] P1 addr=") + PtrHex(flagAddr) +
+                       " value=" + std::to_string(v),
+                       detailedLogging.load());
             }
         }
         if (data.p2CharID == CHAR_ID_EXNANASE) {
@@ -760,7 +878,9 @@ namespace CharacterSettings {
             if (flagAddr) {
                 int v = data.p2DoppelEnlightened ? 1 : 0;
                 SafeWriteMemory(flagAddr, &v, sizeof(int));
-                LogOut("[CHAR] Applied P2 Doppel Enlightened=" + std::to_string(v), detailedLogging.load());
+                LogOut(std::string("[CHAR][APPLY][DOPPEL] P2 addr=") + PtrHex(flagAddr) +
+                       " value=" + std::to_string(v),
+                       detailedLogging.load());
             }
         }
         
@@ -896,9 +1016,13 @@ namespace CharacterSettings {
             int t      = (pi==1)?data.p1AkikoTimeslowTrigger:data.p2AkikoTimeslowTrigger;
             bullet = CLAMP(bullet, 0, 2);
             // Timeslow trigger respects only 0..3 now; any other value becomes Inactive
-            if (t < AKIKO_TIMESLOW_INACTIVE || t > AKIKO_TIMESLOW_C) t = AKIKO_TIMESLOW_INACTIVE;
-            if (bulletAddr) SafeWriteMemory(bulletAddr,&bullet,sizeof(int));
-            LogOut(std::string("[CHAR] Applied ") + (pi==1?"P1":"P2") + " Akiko: BulletCycle=" + std::to_string(bullet) + ", TimeSlow=" + std::to_string(t), detailedLogging.load());
+                 if (t < AKIKO_TIMESLOW_INACTIVE || t > AKIKO_TIMESLOW_C) t = AKIKO_TIMESLOW_INACTIVE;
+                 if (bulletAddr) SafeWriteMemory(bulletAddr,&bullet,sizeof(int));
+                 LogOut(std::string("[CHAR][APPLY][AKIKO] ") + (pi==1?"P1":"P2") +
+                     " bulletAddr=" + PtrHex(bulletAddr) +
+                     " BulletCycle=" + std::to_string(bullet) +
+                     " TimeSlow=" + std::to_string(t),
+                     detailedLogging.load());
         }; ApplyAkiko(1); ApplyAkiko(2);
 
         // Apply Neyuki jam count if present
@@ -909,7 +1033,10 @@ namespace CharacterSettings {
                 int jam = (pi==1)? data.p1NeyukiJamCount : data.p2NeyukiJamCount;
                 if (jam < 0) jam = 0; else if (jam > NEYUKI_JAM_COUNT_MAX) jam = NEYUKI_JAM_COUNT_MAX;
                 SafeWriteMemory(jamAddr, &jam, sizeof(int));
-                LogOut(std::string("[CHAR] Applied ") + (pi==1?"P1":"P2") + " Neyuki: JamCount=" + std::to_string(jam), detailedLogging.load());
+                LogOut(std::string("[CHAR][APPLY][NEYUKI] ") + (pi==1?"P1":"P2") +
+                       " addr=" + PtrHex(jamAddr) +
+                       " JamCount=" + std::to_string(jam),
+                       detailedLogging.load());
             }
         }; ApplyNeyuki(1); ApplyNeyuki(2);
 
@@ -923,7 +1050,10 @@ namespace CharacterSettings {
                 int cur=0; SafeReadMemory(stanceAddr,&cur,sizeof(int));
                 if (cur != desired) {
                     SafeWriteMemory(stanceAddr,&desired,sizeof(int));
-                    LogOut(std::string("[CHAR] Applied ") + (pi==1?"P1":"P2") + " Mio stance=" + (desired==MIO_STANCE_LONG?"Long":"Short"), detailedLogging.load());
+                    LogOut(std::string("[CHAR][APPLY][MIO] ") + (pi==1?"P1":"P2") +
+                           " addr=" + PtrHex(stanceAddr) +
+                           " stance=" + (desired==MIO_STANCE_LONG?"Long":"Short"),
+                           detailedLogging.load());
                 }
             }
         }; ApplyMio(1); ApplyMio(2);
@@ -938,7 +1068,10 @@ namespace CharacterSettings {
                 int cur=0; SafeReadMemory(magicAddr,&cur,sizeof(int));
                 if (cur != desired) {
                     SafeWriteMemory(magicAddr,&desired,sizeof(int));
-                    LogOut(std::string("[CHAR] Applied ") + (pi==1?"P1":"P2") + " Kano magic=" + std::to_string(desired), detailedLogging.load());
+                    LogOut(std::string("[CHAR][APPLY][KANO] ") + (pi==1?"P1":"P2") +
+                           " addr=" + PtrHex(magicAddr) +
+                           " magic=" + std::to_string(desired),
+                           detailedLogging.load());
                 }
             }
         }; ApplyKano(1); ApplyKano(2);
@@ -955,7 +1088,10 @@ namespace CharacterSettings {
                 desired = CLAMP(desired,0,NAYUKIB_SNOWBUNNY_MAX);
                 int cur=0; SafeReadMemory(addr,&cur,sizeof(int));
                 if (cur != desired) { SafeWriteMemory(addr,&desired,sizeof(int));
-                    LogOut(std::string("[CHAR] Applied ") + (pi==1?"P1":"P2") + " Nayuki(Awake) snowbunnies=" + std::to_string(desired), detailedLogging.load());
+                    LogOut(std::string("[CHAR][APPLY][NAYUKIB] ") + (pi==1?"P1":"P2") +
+                           " addr=" + PtrHex(addr) +
+                           " snowbunnies=" + std::to_string(desired),
+                           detailedLogging.load());
                 }
             }
         }; ApplyNayukiB(1); ApplyNayukiB(2);
@@ -1066,7 +1202,11 @@ namespace CharacterSettings {
                 }
             }
             if (detailedLogging.load()) {
-                LogOut(std::string("[CHAR] Applied ") + (pi==1?"P1":"P2") + " Mai: Status=" + std::to_string(status) + ", Timer=" + std::to_string(desiredTimer) + (noCD?" (NoCD armed)":""), true);
+                LogOut(std::string("[CHAR][APPLY][MAI] ") + (pi==1?"P1":"P2") +
+                       " status=" + std::to_string(status) +
+                       " desiredTimer=" + std::to_string(desiredTimer) +
+                       (noCD?" (NoCD armed)":""),
+                       true);
             }
         }; ApplyMai(1); ApplyMai(2);
     }
