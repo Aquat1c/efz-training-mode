@@ -101,6 +101,9 @@ namespace {
     uint16_t s_finishGuardStartMoveId = 0;
     // Baseline immediate mask for the current 64 Hz tick
     uint8_t s_baselineMask = 0;
+    // Playback synchronization: track last seen buffer index to detect when engine advances
+    uint16_t s_lastSeenBufIdx = 0xFFFF;  // Last buffer index we observed
+    bool s_playbackBufIdxSyncInitialized = false;
 
     // Progress pacing: we step at the 64 Hz ImmediateInput cadence by counting internal frames (192 Hz)
     int s_frameDiv = 0; // 0..2 cycles; advance when hits 0
@@ -408,6 +411,8 @@ namespace {
         s_tickBufQueue.clear(); s_tickBufHead = 0; s_writesLeftThisTick = 0;
         s_finishing = false; s_finishNeutralFrames = 0; s_finishPendingClearTick = false;
         s_finishGuardActive = false; s_finishGuardFramesLeft = 0; s_finishGuardStartMoveId = 0;
+        // Reset playback buffer index synchronization
+        s_lastSeenBufIdx = 0xFFFF; s_playbackBufIdxSyncInitialized = false;
         ImmediateInput::Clear(2);
         // Default hook behavior
         g_forceBypass[1].store(false);
@@ -834,40 +839,102 @@ void Tick() {
             return;
         }
         if (useStream) {
-            // On 64 Hz tick boundary: update baseline mask and enqueue this tick's buffer bytes
-            if (s_frameDiv == 0) {
-                if (s_playStreamIndex < s_slots[slotIdx].macroStream.size()) {
-                    uint8_t mask = s_slots[slotIdx].macroStream[s_playStreamIndex];
-                    // Facing-aware: if recorded facing is unknown (0), assume P1-facing (+1)
-                    int8_t recFacing = 0;
-                    if (!s_streamFacingPerTick.empty() && s_playStreamIndex < s_streamFacingPerTick.size()) recFacing = s_streamFacingPerTick[s_playStreamIndex];
-                    if (recFacing == 0) recFacing = +1;
-                    int curFacing = ReadFacingSign(2);
-                    if (curFacing != 0 && recFacing != curFacing) {
-                        mask = FlipMaskHoriz(mask);
-                    }
-                    s_baselineMask = mask;
-                    // Prepare per-tick queue of recorded raw buffer bytes
-                    s_tickBufQueue.clear();
-                    s_tickBufHead = 0;
-                    s_writesLeftThisTick = 0;
-                    if (s_playStreamIndex < s_slots[slotIdx].bufCountsPerTick.size()) {
-                        uint16_t writesThisTick = s_slots[slotIdx].bufCountsPerTick[s_playStreamIndex];
-                        s_writesLeftThisTick = writesThisTick;
-                        for (uint16_t i = 0; i < writesThisTick && s_playBufStreamIndex < s_slots[slotIdx].bufStream.size(); ++i) {
-                            uint8_t raw = s_slots[slotIdx].bufStream[s_playBufStreamIndex++];
-                            int8_t recFacingRaw = 0;
-                            if (!s_streamFacingPerTick.empty() && s_playStreamIndex < s_streamFacingPerTick.size()) recFacingRaw = s_streamFacingPerTick[s_playStreamIndex];
-                            if (recFacingRaw == 0) recFacingRaw = +1;
-                            int curFacingRaw = ReadFacingSign(2);
-                            if (curFacingRaw != 0 && recFacingRaw != curFacingRaw) {
-                                raw = FlipMaskHoriz(raw);
-                            }
-                            s_tickBufQueue.push_back(raw);
-                        }
-                    }
-                    ++s_playStreamIndex;
+            // Playback synchronization: advance stream once per engine frame (when buffer index changes)
+            // This is simpler and more robust than trying to match recorded indices with offsets
+            
+            // Read current P2 buffer index
+            uintptr_t p2Ptr = GetPlayerPointer(2);
+            uint16_t curBufIdx = 0;
+            bool haveIdx = p2Ptr && SafeReadMemory(p2Ptr + INPUT_BUFFER_INDEX_OFFSET, &curBufIdx, sizeof(curBufIdx));
+            
+            // Initialize on first call
+            if (haveIdx && !s_playbackBufIdxSyncInitialized) {
+                s_lastSeenBufIdx = curBufIdx;
+                s_playbackBufIdxSyncInitialized = true;
+                LogOut("[MACRO][SYNC] Initialized: curBufIdx=" + std::to_string(curBufIdx), true);
+            }
+            
+            // Check if buffer index has changed since last check (indicates real engine frame advance)
+            bool shouldAdvanceStream = false;
+            if (haveIdx && s_playbackBufIdxSyncInitialized && 
+                s_playStreamIndex < s_slots[slotIdx].macroStream.size()) {
+                
+                // Only advance if buffer index is different from last seen
+                // This naturally handles double-Tick since buffer only changes once per real engine frame
+                if (curBufIdx != s_lastSeenBufIdx) {
+                    shouldAdvanceStream = true;
+                    s_lastSeenBufIdx = curBufIdx;
                 }
+            }
+            
+            if (shouldAdvanceStream && s_playStreamIndex < s_slots[slotIdx].macroStream.size()) {
+                uint8_t mask = s_slots[slotIdx].macroStream[s_playStreamIndex];
+                // Facing-aware: if recorded facing is unknown (0), assume P1-facing (+1)
+                int8_t recFacing = 0;
+                if (!s_streamFacingPerTick.empty() && s_playStreamIndex < s_streamFacingPerTick.size()) recFacing = s_streamFacingPerTick[s_playStreamIndex];
+                if (recFacing == 0) recFacing = +1;
+                int curFacing = ReadFacingSign(2);
+                if (curFacing != 0 && recFacing != curFacing) {
+                    mask = FlipMaskHoriz(mask);
+                }
+                s_baselineMask = mask;
+                
+                // CRITICAL: Restore the FULL BUFFER SNAPSHOT from recording
+                // This ensures motion recognition works because the D,D,C pattern appears
+                // in the exact same buffer positions relative to the index as during recording.
+                if (kEnableFullBufferSnapshots && 
+                    s_playStreamIndex < s_slots[slotIdx].fullBufferSnapshots.size() &&
+                    !s_slots[slotIdx].fullBufferSnapshots[s_playStreamIndex].empty()) {
+                    
+                    const auto& snapshot = s_slots[slotIdx].fullBufferSnapshots[s_playStreamIndex];
+                    // Get the recorded buffer index for this tick
+                    uint16_t recBufIdx = 0;
+                    if (s_playStreamIndex < s_slots[slotIdx].bufIndexPerTick.size()) {
+                        recBufIdx = s_slots[slotIdx].bufIndexPerTick[s_playStreamIndex];
+                    }
+                    
+                    // Write the full buffer snapshot to P2's input buffer
+                    if (p2Ptr && snapshot.size() == INPUT_BUFFER_SIZE) {
+                        // Apply facing flip if needed
+                        std::vector<uint8_t> adjustedSnapshot = snapshot;
+                        if (curFacing != 0 && recFacing != curFacing) {
+                            for (size_t i = 0; i < adjustedSnapshot.size(); ++i) {
+                                adjustedSnapshot[i] = FlipMaskHoriz(adjustedSnapshot[i]);
+                            }
+                        }
+                        // Write full buffer
+                        SafeWriteMemory(p2Ptr + INPUT_BUFFER_OFFSET, adjustedSnapshot.data(), INPUT_BUFFER_SIZE);
+                        // Also set the buffer index to match the recorded index
+                        SafeWriteMemory(p2Ptr + INPUT_BUFFER_INDEX_OFFSET, &recBufIdx, sizeof(recBufIdx));
+                        // Update our tracking to the recorded index so we detect when engine advances from there
+                        s_lastSeenBufIdx = recBufIdx;
+                    }
+                }
+                
+                // Prepare per-tick queue of recorded raw buffer bytes (for poll override backup)
+                s_tickBufQueue.clear();
+                s_tickBufHead = 0;
+                s_writesLeftThisTick = 0;
+                if (s_playStreamIndex < s_slots[slotIdx].bufCountsPerTick.size()) {
+                    uint16_t writesThisTick = s_slots[slotIdx].bufCountsPerTick[s_playStreamIndex];
+                    s_writesLeftThisTick = writesThisTick;
+                    for (uint16_t i = 0; i < writesThisTick && s_playBufStreamIndex < s_slots[slotIdx].bufStream.size(); ++i) {
+                        uint8_t raw = s_slots[slotIdx].bufStream[s_playBufStreamIndex++];
+                        int8_t recFacingRaw = 0;
+                        if (!s_streamFacingPerTick.empty() && s_playStreamIndex < s_streamFacingPerTick.size()) recFacingRaw = s_streamFacingPerTick[s_playStreamIndex];
+                        if (recFacingRaw == 0) recFacingRaw = +1;
+                        int curFacingRaw = ReadFacingSign(2);
+                        if (curFacingRaw != 0 && recFacingRaw != curFacingRaw) {
+                            raw = FlipMaskHoriz(raw);
+                        }
+                        s_tickBufQueue.push_back(raw);
+                    }
+                }
+                // Log stream advancement
+                LogOut("[MACRO][ADVANCE] t=" + std::to_string(s_playStreamIndex) + 
+                       " bufIdx=" + std::to_string(curBufIdx) + 
+                       " mask=0x" + [mask]{ char b[8]; snprintf(b,8,"%02X",mask); return std::string(b); }(), true);
+                ++s_playStreamIndex;
             }
             // Every frame: write some of this tick's buffer bytes via engine by overriding the poll,
             // and set per-frame poll override to the intended immediate mask for exact engine cadence.
