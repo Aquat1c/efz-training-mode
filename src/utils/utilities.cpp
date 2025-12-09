@@ -335,6 +335,10 @@ void EnableFeatures() {
     
     // Reset display data to defaults when entering valid mode
     ResetDisplayDataToDefaults();
+    // Invalidate cached character-specific pointers so they get
+    // refreshed for the new session (prevents stale addresses
+    // when re-entering Practice from character select).
+    CharacterSettings::InvalidateAllCharacterPointerCaches();
     // Start centralized immediate input writer (64fps)
     ImmediateInput::Start();
 

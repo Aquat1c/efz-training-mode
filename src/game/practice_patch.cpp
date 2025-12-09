@@ -471,6 +471,25 @@ std::string GetDirectionName(uint8_t inputBits) {
 bool DisablePlayer2InPracticeMode() {
     LogOut("[PRACTICE_PATCH] Attempting to disable Player 2 controls in Practice mode...", true);
 
+    // When using EfzRevival side-switching during an active Practice match, P2 can
+    // be the *local* human side. In that case, we must NOT blindly force P2 back
+    // to AI when the user hits Apply in the ImGui menu, or their controlled side
+    // will suddenly become CPU.
+    if (GetCurrentGameMode() == GameMode::Practice && GetCurrentGamePhase() == GamePhase::Match) {
+        PauseIntegration::EnsurePracticePointerCapture();
+        void* practice = PauseIntegration::GetPracticeControllerPtr();
+        if (practice) {
+            int8_t localSide = 0;
+            if (SafeReadMemory((uintptr_t)practice + PRACTICE_OFF_LOCAL_SIDE_IDX, &localSide, sizeof(localSide))) {
+                // localSide: 0 = P1 is local, 1 = P2 is local
+                if (localSide == 1) {
+                    LogOut("[PRACTICE_PATCH] DisableP2Control: Skipping CPU/AI reset because P2 is the current local side", true);
+                    return true; // Leave control mapping as-is when P2 is the human side
+                }
+            }
+        }
+    }
+
     uintptr_t gameStatePtr = GetGameStatePtr();
     if (!gameStatePtr) {
         LogOut("[PRACTICE_PATCH] Failed to resolve game state pointer", true);
