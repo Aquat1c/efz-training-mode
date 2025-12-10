@@ -514,14 +514,17 @@ namespace {
                 if (s_slots[slotIdx].fullBufferSnapshots.size() > 1) dumpSnap(s_slots[slotIdx].fullBufferSnapshots.size()-1, "last");
             }
         }
-      }
-        s_state.store(MacroController::State::Idle);
-    // Restore P2 control if we overrode it during pre-record
-    if (g_p2ControlOverridden) RestoreP2ControlState();
-    // Swap back to P1 local side after recording for convenience
-    SwitchPlayers::SetLocalSide(0);
-    s_prevLocalSide.store(-1);
-    LogOut("[MACRO][REC] post-finish: local side set to P1", true);
+            }
+                s_state.store(MacroController::State::Idle);
+        // Restore P2 control if we overrode it during pre-record
+        if (g_p2ControlOverridden) RestoreP2ControlState();
+        // Swap back to P1 local side after recording for convenience
+        SwitchPlayers::SetLocalSide(0);
+        // Recording forcibly restores default mapping; clear swap tracking flag
+        // so Character Select/menu reset logic doesn't think sides are still swapped.
+        SwitchPlayers::ClearSwapFlag();
+        s_prevLocalSide.store(-1);
+        LogOut("[MACRO][REC] post-finish: local side set to P1", true);
         // Remove persistent banner
         if (s_macroBannerId != -1) { DirectDrawHook::RemovePermanentMessage(s_macroBannerId); s_macroBannerId = -1; }
         DirectDrawHook::AddMessage("Macro: Recording stopped", "MACRO", RGB(255,220,120), 1200, 0, 120);

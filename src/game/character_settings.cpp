@@ -407,7 +407,12 @@ namespace CharacterSettings {
         // Read Neyuki (Sleepy Nayuki) jam count (0..9)
         auto ReadNeyuki = [&](int playerIndex){
             PlayerCharPointers &p = (playerIndex==1)?s_pointersP1:s_pointersP2;
+            const int off = (playerIndex==1)?EFZ_BASE_OFFSET_P1:EFZ_BASE_OFFSET_P2;
             uintptr_t jamAddr = p.neyukiJamCount;
+            // Lazily resolve Neyuki jam pointer if cache was cleared or unresolved.
+            if (base && !jamAddr) {
+                jamAddr = p.neyukiJamCount = ResolvePointer(base, off, NEYUKI_JAM_COUNT_OFFSET);
+            }
             if (!jamAddr) return;
                  int jam = 0; SafeReadMemory(jamAddr, &jam, sizeof(int));
             if (jam < 0) jam = 0; else if (jam > NEYUKI_JAM_COUNT_MAX) jam = NEYUKI_JAM_COUNT_MAX;
@@ -424,6 +429,11 @@ namespace CharacterSettings {
         if (data.p1CharID == CHAR_ID_MISHIO) {
                  uintptr_t elemAddr = s_pointersP1.mishioElement;
                  uintptr_t awAddr   = s_pointersP1.mishioAwakenedTimer;
+            // Lazily resolve Mishio pointers if cache was cleared or unresolved.
+            if (base) {
+                if (!elemAddr) elemAddr = s_pointersP1.mishioElement       = ResolvePointer(base, EFZ_BASE_OFFSET_P1, MISHIO_ELEMENT_OFFSET);
+                if (!awAddr)   awAddr   = s_pointersP1.mishioAwakenedTimer = ResolvePointer(base, EFZ_BASE_OFFSET_P1, MISHIO_AWAKENED_TIMER_OFFSET);
+            }
             if (elemAddr) SafeReadMemory(elemAddr, &data.p1MishioElement, sizeof(int));
             if (awAddr)   SafeReadMemory(awAddr,   &data.p1MishioAwakenedTimer, sizeof(int));
                  LogOut(std::string("[CHAR][READ][MISHIO] P1 elemAddr=") + PtrHex(elemAddr) +
@@ -435,6 +445,10 @@ namespace CharacterSettings {
         if (data.p2CharID == CHAR_ID_MISHIO) {
             uintptr_t elemAddr = s_pointersP2.mishioElement;
             uintptr_t awAddr   = s_pointersP2.mishioAwakenedTimer;
+            if (base) {
+                if (!elemAddr) elemAddr = s_pointersP2.mishioElement       = ResolvePointer(base, EFZ_BASE_OFFSET_P2, MISHIO_ELEMENT_OFFSET);
+                if (!awAddr)   awAddr   = s_pointersP2.mishioAwakenedTimer = ResolvePointer(base, EFZ_BASE_OFFSET_P2, MISHIO_AWAKENED_TIMER_OFFSET);
+            }
             if (elemAddr) SafeReadMemory(elemAddr, &data.p2MishioElement, sizeof(int));
             if (awAddr)   SafeReadMemory(awAddr,   &data.p2MishioAwakenedTimer, sizeof(int));
                  LogOut(std::string("[CHAR][READ][MISHIO] P2 elemAddr=") + PtrHex(elemAddr) +
@@ -449,6 +463,13 @@ namespace CharacterSettings {
                 uintptr_t featherAddr = s_pointersP1.misuzuFeather;
             uintptr_t poisonTimerAddr = s_pointersP1.misuzuPoisonTimer;
             uintptr_t poisonLevelAddr = s_pointersP1.misuzuPoisonLevel;
+            // Lazily resolve Misuzu pointers if cache was cleared or unresolved.
+            if (base) {
+                const int off = EFZ_BASE_OFFSET_P1;
+                if (!featherAddr)      featherAddr      = s_pointersP1.misuzuFeather     = ResolvePointer(base, off, MISUZU_FEATHER_OFFSET);
+                if (!poisonTimerAddr)  poisonTimerAddr  = s_pointersP1.misuzuPoisonTimer = ResolvePointer(base, off, MISUZU_POISON_TIMER_OFFSET);
+                if (!poisonLevelAddr)  poisonLevelAddr  = s_pointersP1.misuzuPoisonLevel = ResolvePointer(base, off, MISUZU_POISON_LEVEL_OFFSET);
+            }
             
             if (featherAddr) SafeReadMemory(featherAddr, &data.p1MisuzuFeathers, sizeof(int));
          if (poisonTimerAddr) { SafeReadMemory(poisonTimerAddr, &data.p1MisuzuPoisonTimer, sizeof(int)); data.p1MisuzuPoisonTimer = CLAMP(data.p1MisuzuPoisonTimer, 0, MISUZU_POISON_TIMER_MAX); }
@@ -467,6 +488,12 @@ namespace CharacterSettings {
                 uintptr_t featherAddr = s_pointersP2.misuzuFeather;
             uintptr_t poisonTimerAddr = s_pointersP2.misuzuPoisonTimer;
             uintptr_t poisonLevelAddr = s_pointersP2.misuzuPoisonLevel;
+            if (base) {
+                const int off = EFZ_BASE_OFFSET_P2;
+                if (!featherAddr)      featherAddr      = s_pointersP2.misuzuFeather     = ResolvePointer(base, off, MISUZU_FEATHER_OFFSET);
+                if (!poisonTimerAddr)  poisonTimerAddr  = s_pointersP2.misuzuPoisonTimer = ResolvePointer(base, off, MISUZU_POISON_TIMER_OFFSET);
+                if (!poisonLevelAddr)  poisonLevelAddr  = s_pointersP2.misuzuPoisonLevel = ResolvePointer(base, off, MISUZU_POISON_LEVEL_OFFSET);
+            }
             
             if (featherAddr) SafeReadMemory(featherAddr, &data.p2MisuzuFeathers, sizeof(int));
          if (poisonTimerAddr) { SafeReadMemory(poisonTimerAddr, &data.p2MisuzuPoisonTimer, sizeof(int)); data.p2MisuzuPoisonTimer = CLAMP(data.p2MisuzuPoisonTimer, 0, MISUZU_POISON_TIMER_MAX); }
@@ -484,6 +511,9 @@ namespace CharacterSettings {
         // Doppel Nanase (ExNanase) - read Enlightened flag (0/1)
         if (data.p1CharID == CHAR_ID_EXNANASE) {
                  uintptr_t flagAddr = s_pointersP1.doppelEnlightened;
+                 if (base && !flagAddr) {
+                     flagAddr = s_pointersP1.doppelEnlightened = ResolvePointer(base, EFZ_BASE_OFFSET_P1, DOPPEL_ENLIGHTENED_OFFSET);
+                 }
                  int tmp = 0; if (flagAddr) SafeReadMemory(flagAddr, &tmp, sizeof(int));
                  data.p1DoppelEnlightened = (tmp != 0);
                  LogOut(std::string("[CHAR][READ][DOPPEL] P1 addr=") + PtrHex(flagAddr) +
@@ -492,6 +522,9 @@ namespace CharacterSettings {
         }
         if (data.p2CharID == CHAR_ID_EXNANASE) {
                  uintptr_t flagAddr = s_pointersP2.doppelEnlightened;
+                 if (base && !flagAddr) {
+                     flagAddr = s_pointersP2.doppelEnlightened = ResolvePointer(base, EFZ_BASE_OFFSET_P2, DOPPEL_ENLIGHTENED_OFFSET);
+                 }
                  int tmp = 0; if (flagAddr) SafeReadMemory(flagAddr, &tmp, sizeof(int));
                  data.p2DoppelEnlightened = (tmp != 0);
                  LogOut(std::string("[CHAR][READ][DOPPEL] P2 addr=") + PtrHex(flagAddr) +
@@ -502,10 +535,21 @@ namespace CharacterSettings {
         // Nanase (Rumi) – Safe read of mode/gate only (no pointer derefs to anim/move tables)
         auto ReadRumiState = [&](int playerIndex) {
             PlayerCharPointers &p = (playerIndex==1)?s_pointersP1:s_pointersP2;
+            const int off = (playerIndex==1)?EFZ_BASE_OFFSET_P1:EFZ_BASE_OFFSET_P2;
             uintptr_t modeAddr = p.rumiModeByte;
             uintptr_t gateAddr = p.rumiWeaponGate;
             uintptr_t kimchiFlagAddr = p.rumiKimchiFlag;
             uintptr_t kimchiTimerAddr = p.rumiKimchiTimer;
+
+            // If any Rumi pointers are missing (e.g. after character re-select),
+            // lazily resolve them using the current EFZ base and cache for future calls.
+            if (base) {
+                if (!modeAddr)        { modeAddr        = p.rumiModeByte    = ResolvePointer(base, off, RUMI_MODE_BYTE_OFFSET); }
+                if (!gateAddr)        { gateAddr        = p.rumiWeaponGate  = ResolvePointer(base, off, RUMI_WEAPON_GATE_OFFSET); }
+                if (!kimchiFlagAddr)  { kimchiFlagAddr  = p.rumiKimchiFlag  = ResolvePointer(base, off, RUMI_KIMCHI_ACTIVE_OFFSET); }
+                if (!kimchiTimerAddr) { kimchiTimerAddr = p.rumiKimchiTimer = ResolvePointer(base, off, RUMI_KIMCHI_TIMER_OFFSET); }
+            }
+
             uint8_t mode = 0, gate = 0;
             if (modeAddr) SafeReadMemory(modeAddr, &mode, sizeof(uint8_t));
             if (gateAddr) SafeReadMemory(gateAddr, &gate, sizeof(uint8_t));
@@ -569,6 +613,12 @@ namespace CharacterSettings {
             PlayerCharPointers &p = (playerIndex==1)?s_pointersP1:s_pointersP2;
             uintptr_t bulletAddr = p.akikoBulletCycle;
             uintptr_t timeAddr   = p.akikoTimeslowTrigger;
+            // Lazily resolve Akiko pointers if cache was cleared or unresolved.
+            if (base) {
+                const int off = (playerIndex==1)?EFZ_BASE_OFFSET_P1:EFZ_BASE_OFFSET_P2;
+                if (!bulletAddr) bulletAddr = p.akikoBulletCycle    = ResolvePointer(base, off, AKIKO_BULLET_CYCLE_OFFSET);
+                if (!timeAddr)   timeAddr   = p.akikoTimeslowTrigger= ResolvePointer(base, off, AKIKO_TIMESLOW_TRIGGER_OFFSET);
+            }
             int bullet=0, t=0; if (bulletAddr) SafeReadMemory(bulletAddr,&bullet,sizeof(int)); if (timeAddr) SafeReadMemory(timeAddr,&t,sizeof(int));
             // Clamp bullet cycle to valid range [0..2]; timeslow is [0..3] (0=Inactive,1=A,2=B,3=C)
             bullet = CLAMP(bullet, 0, 2);
@@ -615,7 +665,12 @@ namespace CharacterSettings {
         auto ReadMio = [&](int playerIndex){
             PlayerCharPointers &p = (playerIndex==1)?s_pointersP1:s_pointersP2;
             if ((playerIndex==1 && data.p1CharID!=CHAR_ID_MIO) || (playerIndex==2 && data.p2CharID!=CHAR_ID_MIO)) return;
-                 uintptr_t stanceAddr = p.mioStance;
+            const int off = (playerIndex==1)?EFZ_BASE_OFFSET_P1:EFZ_BASE_OFFSET_P2;
+            uintptr_t stanceAddr = p.mioStance;
+            // Lazily resolve Mio stance pointer if cache was cleared between matches.
+            if (base && !stanceAddr) {
+                stanceAddr = p.mioStance = ResolvePointer(base, off, MIO_STANCE_OFFSET);
+            }
             if (!stanceAddr) return;
             int stance=0; SafeReadMemory(stanceAddr,&stance,sizeof(int)); stance = (stance==MIO_STANCE_LONG)?MIO_STANCE_LONG:MIO_STANCE_SHORT;
             if (playerIndex==1) data.p1MioStance = stance; else data.p2MioStance = stance;
@@ -629,7 +684,12 @@ namespace CharacterSettings {
         auto ReadKano = [&](int playerIndex){
             PlayerCharPointers &p = (playerIndex==1)?s_pointersP1:s_pointersP2;
             if ((playerIndex==1 && data.p1CharID!=CHAR_ID_KANO) || (playerIndex==2 && data.p2CharID!=CHAR_ID_KANO)) return;
-                 uintptr_t magicAddr = p.kanoMagic;
+            const int off = (playerIndex==1)?EFZ_BASE_OFFSET_P1:EFZ_BASE_OFFSET_P2;
+            uintptr_t magicAddr = p.kanoMagic;
+            // Lazily resolve Kano magic pointer if cache was cleared between matches.
+            if (base && !magicAddr) {
+                magicAddr = p.kanoMagic = ResolvePointer(base, off, KANO_MAGIC_OFFSET);
+            }
             if (!magicAddr) return;
             int val=0; SafeReadMemory(magicAddr,&val,sizeof(int));
             val = CLAMP(val, 0, KANO_MAGIC_MAX);
@@ -645,6 +705,10 @@ namespace CharacterSettings {
             if ((playerIndex==1 && data.p1CharID!=CHAR_ID_NAYUKIB) || (playerIndex==2 && data.p2CharID!=CHAR_ID_NAYUKIB)) return;
             PlayerCharPointers &p = (playerIndex==1)?s_pointersP1:s_pointersP2;
             uintptr_t snowAddr = p.nayukiSnowbunnyTimer;
+            if (base && !snowAddr) {
+                const int offBase = (playerIndex==1)?EFZ_BASE_OFFSET_P1:EFZ_BASE_OFFSET_P2;
+                snowAddr = p.nayukiSnowbunnyTimer = ResolvePointer(base, offBase, NAYUKIB_SNOWBUNNY_TIMER_OFFSET);
+            }
             if (!snowAddr) return;
             int v=0; SafeReadMemory(snowAddr,&v,sizeof(int)); v = CLAMP(v,0,NAYUKIB_SNOWBUNNY_MAX);
             if (playerIndex==1) data.p1NayukiSnowbunnies = v; else data.p2NayukiSnowbunnies = v;
@@ -763,6 +827,10 @@ namespace CharacterSettings {
         if (data.p1CharID == CHAR_ID_MISHIO) {
             uintptr_t elemAddr = s_pointersP1.mishioElement;
             uintptr_t awAddr   = s_pointersP1.mishioAwakenedTimer;
+            if (base) {
+                if (!elemAddr) elemAddr = s_pointersP1.mishioElement       = ResolvePointer(base, EFZ_BASE_OFFSET_P1, MISHIO_ELEMENT_OFFSET);
+                if (!awAddr)   awAddr   = s_pointersP1.mishioAwakenedTimer = ResolvePointer(base, EFZ_BASE_OFFSET_P1, MISHIO_AWAKENED_TIMER_OFFSET);
+            }
             if (elemAddr) {
                 int elem = CLAMP(data.p1MishioElement, MISHIO_ELEM_NONE, MISHIO_ELEM_AWAKENED);
                 SafeWriteMemory(elemAddr, &elem, sizeof(int));
@@ -782,6 +850,10 @@ namespace CharacterSettings {
         if (data.p2CharID == CHAR_ID_MISHIO) {
             uintptr_t elemAddr = s_pointersP2.mishioElement;
             uintptr_t awAddr   = s_pointersP2.mishioAwakenedTimer;
+            if (base) {
+                if (!elemAddr) elemAddr = s_pointersP2.mishioElement       = ResolvePointer(base, EFZ_BASE_OFFSET_P2, MISHIO_ELEMENT_OFFSET);
+                if (!awAddr)   awAddr   = s_pointersP2.mishioAwakenedTimer = ResolvePointer(base, EFZ_BASE_OFFSET_P2, MISHIO_AWAKENED_TIMER_OFFSET);
+            }
             if (elemAddr) {
                 int elem = CLAMP(data.p2MishioElement, MISHIO_ELEM_NONE, MISHIO_ELEM_AWAKENED);
                 SafeWriteMemory(elemAddr, &elem, sizeof(int));
@@ -826,6 +898,12 @@ namespace CharacterSettings {
              uintptr_t featherAddr = s_pointersP1.misuzuFeather;
           uintptr_t poisonTimerAddr = s_pointersP1.misuzuPoisonTimer;
           uintptr_t poisonLevelAddr = s_pointersP1.misuzuPoisonLevel;
+            if (base) {
+                const int off = EFZ_BASE_OFFSET_P1;
+                if (!featherAddr)      featherAddr      = s_pointersP1.misuzuFeather     = ResolvePointer(base, off, MISUZU_FEATHER_OFFSET);
+                if (!poisonTimerAddr)  poisonTimerAddr  = s_pointersP1.misuzuPoisonTimer = ResolvePointer(base, off, MISUZU_POISON_TIMER_OFFSET);
+                if (!poisonLevelAddr)  poisonLevelAddr  = s_pointersP1.misuzuPoisonLevel = ResolvePointer(base, off, MISUZU_POISON_LEVEL_OFFSET);
+            }
             
             int featherValue = std::max<int>(0, std::min<int>(MISUZU_FEATHER_MAX, data.p1MisuzuFeathers));
             
@@ -846,6 +924,12 @@ namespace CharacterSettings {
                 uintptr_t featherAddr = s_pointersP2.misuzuFeather;
             uintptr_t poisonTimerAddr = s_pointersP2.misuzuPoisonTimer;
             uintptr_t poisonLevelAddr = s_pointersP2.misuzuPoisonLevel;
+            if (base) {
+                const int off = EFZ_BASE_OFFSET_P2;
+                if (!featherAddr)      featherAddr      = s_pointersP2.misuzuFeather     = ResolvePointer(base, off, MISUZU_FEATHER_OFFSET);
+                if (!poisonTimerAddr)  poisonTimerAddr  = s_pointersP2.misuzuPoisonTimer = ResolvePointer(base, off, MISUZU_POISON_TIMER_OFFSET);
+                if (!poisonLevelAddr)  poisonLevelAddr  = s_pointersP2.misuzuPoisonLevel = ResolvePointer(base, off, MISUZU_POISON_LEVEL_OFFSET);
+            }
             
             int featherValue = std::max<int>(0, std::min<int>(MISUZU_FEATHER_MAX, data.p2MisuzuFeathers));
             
@@ -865,6 +949,9 @@ namespace CharacterSettings {
         // Doppel Enlightened: simple checkbox -> set flag 1 when checked, 0 when unchecked
         if (data.p1CharID == CHAR_ID_EXNANASE) {
             uintptr_t flagAddr = s_pointersP1.doppelEnlightened;
+            if (base && !flagAddr) {
+                flagAddr = s_pointersP1.doppelEnlightened = ResolvePointer(base, EFZ_BASE_OFFSET_P1, DOPPEL_ENLIGHTENED_OFFSET);
+            }
             if (flagAddr) {
                 int v = data.p1DoppelEnlightened ? 1 : 0;
                 SafeWriteMemory(flagAddr, &v, sizeof(int));
@@ -875,6 +962,9 @@ namespace CharacterSettings {
         }
         if (data.p2CharID == CHAR_ID_EXNANASE) {
             uintptr_t flagAddr = s_pointersP2.doppelEnlightened;
+            if (base && !flagAddr) {
+                flagAddr = s_pointersP2.doppelEnlightened = ResolvePointer(base, EFZ_BASE_OFFSET_P2, DOPPEL_ENLIGHTENED_OFFSET);
+            }
             if (flagAddr) {
                 int v = data.p2DoppelEnlightened ? 1 : 0;
                 SafeWriteMemory(flagAddr, &v, sizeof(int));
@@ -900,6 +990,13 @@ namespace CharacterSettings {
             PlayerCharPointers &pc = (playerIndex==1)?s_pointersP1:s_pointersP2;
             uintptr_t modeByteAddr  = pc.rumiModeByte;
             uintptr_t gateAddr      = pc.rumiWeaponGate;
+
+            // If caches are empty (e.g. after returning from Character Select),
+            // refresh Rumi mode/gate pointers using the current base.
+            if (base) {
+                if (!modeByteAddr) modeByteAddr = pc.rumiModeByte = ResolvePointer(base, baseOffset, RUMI_MODE_BYTE_OFFSET);
+                if (!gateAddr)     gateAddr     = pc.rumiWeaponGate = ResolvePointer(base, baseOffset, RUMI_WEAPON_GATE_OFFSET);
+            }
             if (!modeByteAddr || !gateAddr) return;
 
             uint8_t curMode = 0, curGate = 0;
@@ -969,8 +1066,17 @@ namespace CharacterSettings {
             // Infinite Shinai overrides UI selection; force Shinai when enabled
             const bool wantBarehand = data.p1RumiInfiniteShinai ? false : data.p1RumiBarehanded;
             ApplyRumiMode(1, wantBarehand);
+
+            // Lazily resolve Kimchi pointers if caches are empty (e.g. after re-selecting Rumi).
+            PlayerCharPointers &p1 = s_pointersP1;
+            if (base) {
+                const int off1 = EFZ_BASE_OFFSET_P1;
+                if (!p1.rumiKimchiFlag)  p1.rumiKimchiFlag  = ResolvePointer(base, off1, RUMI_KIMCHI_ACTIVE_OFFSET);
+                if (!p1.rumiKimchiTimer) p1.rumiKimchiTimer = ResolvePointer(base, off1, RUMI_KIMCHI_TIMER_OFFSET);
+            }
+
             // Apply Kimchi activation/timer if fields are present
-            if (uintptr_t flag = s_pointersP1.rumiKimchiFlag) {
+            if (uintptr_t flag = p1.rumiKimchiFlag) {
                 int newV = data.p1RumiKimchiActive ? 1 : 0;
                 int curV = 0; SafeReadMemory(flag, &curV, sizeof(int));
                 if (curV != newV) { SafeWriteMemory(flag, &newV, sizeof(int)); }
@@ -982,14 +1088,22 @@ namespace CharacterSettings {
                     }
                 }
             }
-            if (uintptr_t tim = s_pointersP1.rumiKimchiTimer) {
+            if (uintptr_t tim = p1.rumiKimchiTimer) {
                 int t = data.p1RumiKimchiTimer; if (t < 0) t = 0; if (t > RUMI_KIMCHI_TARGET) t = RUMI_KIMCHI_TARGET; SafeWriteMemory(tim, &t, sizeof(int));
             }
         }
         if (data.p2CharID == CHAR_ID_NANASE) {
             const bool wantBarehand = data.p2RumiInfiniteShinai ? false : data.p2RumiBarehanded;
             ApplyRumiMode(2, wantBarehand);
-            if (uintptr_t flag = s_pointersP2.rumiKimchiFlag) {
+
+            PlayerCharPointers &p2 = s_pointersP2;
+            if (base) {
+                const int off2 = EFZ_BASE_OFFSET_P2;
+                if (!p2.rumiKimchiFlag)  p2.rumiKimchiFlag  = ResolvePointer(base, off2, RUMI_KIMCHI_ACTIVE_OFFSET);
+                if (!p2.rumiKimchiTimer) p2.rumiKimchiTimer = ResolvePointer(base, off2, RUMI_KIMCHI_TIMER_OFFSET);
+            }
+
+            if (uintptr_t flag = p2.rumiKimchiFlag) {
                 int newV = data.p2RumiKimchiActive ? 1 : 0;
                 int curV = 0; SafeReadMemory(flag, &curV, sizeof(int));
                 if (curV != newV) { SafeWriteMemory(flag, &newV, sizeof(int)); }
@@ -1000,7 +1114,7 @@ namespace CharacterSettings {
                     }
                 }
             }
-            if (uintptr_t tim = s_pointersP2.rumiKimchiTimer) {
+            if (uintptr_t tim = p2.rumiKimchiTimer) {
                 int t = data.p2RumiKimchiTimer; if (t < 0) t = 0; if (t > RUMI_KIMCHI_TARGET) t = RUMI_KIMCHI_TARGET; SafeWriteMemory(tim, &t, sizeof(int));
             }
         }
@@ -1012,6 +1126,10 @@ namespace CharacterSettings {
             if ((pi==1 && data.p1CharID != CHAR_ID_AKIKO) || (pi==2 && data.p2CharID != CHAR_ID_AKIKO)) return;
             PlayerCharPointers &p = (pi==1)?s_pointersP1:s_pointersP2;
             uintptr_t bulletAddr = p.akikoBulletCycle;
+            if (base && !bulletAddr) {
+                const int off = (pi==1)?EFZ_BASE_OFFSET_P1:EFZ_BASE_OFFSET_P2;
+                bulletAddr = p.akikoBulletCycle = ResolvePointer(base, off, AKIKO_BULLET_CYCLE_OFFSET);
+            }
             int bullet = (pi==1)?data.p1AkikoBulletCycle:data.p2AkikoBulletCycle;
             int t      = (pi==1)?data.p1AkikoTimeslowTrigger:data.p2AkikoTimeslowTrigger;
             bullet = CLAMP(bullet, 0, 2);
@@ -1044,17 +1162,22 @@ namespace CharacterSettings {
         auto ApplyMio = [&](int pi){
             if ((pi==1 && data.p1CharID != CHAR_ID_MIO) || (pi==2 && data.p2CharID != CHAR_ID_MIO)) return;
             PlayerCharPointers &p = (pi==1)?s_pointersP1:s_pointersP2;
-            if (uintptr_t stanceAddr = p.mioStance) {
-                int desired = (pi==1)?data.p1MioStance:data.p2MioStance;
-                desired = (desired==MIO_STANCE_LONG)?MIO_STANCE_LONG:MIO_STANCE_SHORT;
-                int cur=0; SafeReadMemory(stanceAddr,&cur,sizeof(int));
-                if (cur != desired) {
-                    SafeWriteMemory(stanceAddr,&desired,sizeof(int));
-                    LogOut(std::string("[CHAR][APPLY][MIO] ") + (pi==1?"P1":"P2") +
-                           " addr=" + PtrHex(stanceAddr) +
-                           " stance=" + (desired==MIO_STANCE_LONG?"Long":"Short"),
-                           detailedLogging.load());
-                }
+            const int off = (pi==1)?EFZ_BASE_OFFSET_P1:EFZ_BASE_OFFSET_P2;
+            uintptr_t stanceAddr = p.mioStance;
+            // Lazily resolve Mio stance pointer if cache was cleared between matches.
+            if (base && !stanceAddr) {
+                stanceAddr = p.mioStance = ResolvePointer(base, off, MIO_STANCE_OFFSET);
+            }
+            if (!stanceAddr) return;
+            int desired = (pi==1)?data.p1MioStance:data.p2MioStance;
+            desired = (desired==MIO_STANCE_LONG)?MIO_STANCE_LONG:MIO_STANCE_SHORT;
+            int cur=0; SafeReadMemory(stanceAddr,&cur,sizeof(int));
+            if (cur != desired) {
+                SafeWriteMemory(stanceAddr,&desired,sizeof(int));
+                LogOut(std::string("[CHAR][APPLY][MIO] ") + (pi==1?"P1":"P2") +
+                       " addr=" + PtrHex(stanceAddr) +
+                       " stance=" + (desired==MIO_STANCE_LONG?"Long":"Short"),
+                       detailedLogging.load());
             }
         }; ApplyMio(1); ApplyMio(2);
 
@@ -1062,17 +1185,22 @@ namespace CharacterSettings {
         auto ApplyKano = [&](int pi){
             if ((pi==1 && data.p1CharID != CHAR_ID_KANO) || (pi==2 && data.p2CharID != CHAR_ID_KANO)) return;
             PlayerCharPointers &p = (pi==1)?s_pointersP1:s_pointersP2;
-            if (uintptr_t magicAddr = p.kanoMagic) {
-                int desired = (pi==1)?data.p1KanoMagic:data.p2KanoMagic;
-                desired = CLAMP(desired,0,KANO_MAGIC_MAX);
-                int cur=0; SafeReadMemory(magicAddr,&cur,sizeof(int));
-                if (cur != desired) {
-                    SafeWriteMemory(magicAddr,&desired,sizeof(int));
-                    LogOut(std::string("[CHAR][APPLY][KANO] ") + (pi==1?"P1":"P2") +
-                           " addr=" + PtrHex(magicAddr) +
-                           " magic=" + std::to_string(desired),
-                           detailedLogging.load());
-                }
+            const int off = (pi==1)?EFZ_BASE_OFFSET_P1:EFZ_BASE_OFFSET_P2;
+            uintptr_t magicAddr = p.kanoMagic;
+            // Lazily resolve Kano magic pointer if cache was cleared between matches.
+            if (base && !magicAddr) {
+                magicAddr = p.kanoMagic = ResolvePointer(base, off, KANO_MAGIC_OFFSET);
+            }
+            if (!magicAddr) return;
+            int desired = (pi==1)?data.p1KanoMagic:data.p2KanoMagic;
+            desired = CLAMP(desired,0,KANO_MAGIC_MAX);
+            int cur=0; SafeReadMemory(magicAddr,&cur,sizeof(int));
+            if (cur != desired) {
+                SafeWriteMemory(magicAddr,&desired,sizeof(int));
+                LogOut(std::string("[CHAR][APPLY][KANO] ") + (pi==1?"P1":"P2") +
+                       " addr=" + PtrHex(magicAddr) +
+                       " magic=" + std::to_string(desired),
+                       detailedLogging.load());
             }
         }; ApplyKano(1); ApplyKano(2);
 
@@ -1081,6 +1209,11 @@ namespace CharacterSettings {
             if ((pi==1 && data.p1CharID != CHAR_ID_NAYUKIB) || (pi==2 && data.p2CharID != CHAR_ID_NAYUKIB)) return;
             PlayerCharPointers &p = (pi==1)?s_pointersP1:s_pointersP2;
             if (auto addr = p.nayukiSnowbunnyTimer) {
+                if (base && !addr) {
+                    const int off = (pi==1)?EFZ_BASE_OFFSET_P1:EFZ_BASE_OFFSET_P2;
+                    addr = p.nayukiSnowbunnyTimer = ResolvePointer(base, off, NAYUKIB_SNOWBUNNY_TIMER_OFFSET);
+                }
+                if (!addr) return;
                 int desired = (pi==1)?data.p1NayukiSnowbunnies:data.p2NayukiSnowbunnies;
                 // If Infinite is enabled, force to 3000 immediately here as well
                 bool wantInf = (pi==1)?data.p1NayukiInfiniteSnow:data.p2NayukiInfiniteSnow;
@@ -1101,6 +1234,12 @@ namespace CharacterSettings {
             if ((pi==1 && data.p1CharID!=CHAR_ID_MAI) || (pi==2 && data.p2CharID!=CHAR_ID_MAI)) return;
             const int off = (pi==1)?EFZ_BASE_OFFSET_P1:EFZ_BASE_OFFSET_P2;
             PlayerCharPointers &pc = (pi==1)?s_pointersP1:s_pointersP2;
+            // Lazily resolve Mai core pointers if cache was cleared or unresolved.
+            if (base) {
+                if (!pc.maiStatus)         pc.maiStatus         = ResolvePointer(base, off, MAI_STATUS_OFFSET);
+                if (!pc.maiMultiTimer)     pc.maiMultiTimer     = ResolvePointer(base, off, MAI_MULTI_TIMER_OFFSET);
+                if (!pc.maiSummonFlashFlag)pc.maiSummonFlashFlag= ResolvePointer(base, off, MAI_SUMMON_FLASH_FLAG_OFFSET);
+            }
             int status = (pi==1)?data.p1MaiStatus:data.p2MaiStatus;
             status = CLAMP(status,0,4);
             bool forceSummon = (pi==1)?data.p1MaiForceSummon:data.p2MaiForceSummon;
