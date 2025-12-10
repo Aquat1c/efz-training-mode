@@ -436,6 +436,9 @@ static bool s_p1WakeHoldPrimed = false;
 static bool s_p2WakeHoldPrimed = false;
 static bool s_p1WakeHoldIssued = false;
 static bool s_p2WakeHoldIssued = false;
+// Macro-specific wake tracking: late pre-buffer window for wakeup macros
+static int  s_p2WakeMacro96FrameCount = 0;
+static bool s_p2WakeMacroQueued       = false;
 
 // Lightweight stun/wakeup timing trackers for diagnostics
 struct StunTimers {
@@ -1174,15 +1177,23 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
         }
         
         // On Wakeup pre-arm: record metadata when delay == 0 and action is a special/FM.
+        // IMPORTANT: If a macro slot is configured for On Wakeup, prefer the generic
+        // trigger->delay->macro path even at 0F so macros can be used for 0F wakeup
+        // reversals. In that case we skip pre-arm entirely and let StartTriggerDelay
+        // handle immediate macro playback on the first actionable wake frame.
     if (triggerOnWakeupEnabled.load() && !s_p1WakePrearmed) {
             if (moveID1 == GROUNDTECH_RECOVERY) {
                 if (triggerRandomizeEnabled.load()) { if ((rand() & 1) == 0) { if (detailedLogging.load() && canLogTrigDiag()) LogOut("[AUTO-ACTION] P1 Wake prearm skipped by random gate", true); goto p1_wake_prearm_done; } }
                 int actionType = triggerOnWakeupAction.load();
                 int motionType = ConvertTriggerActionToMotion(actionType, TRIGGER_ON_WAKEUP);
                 int userDelayF = triggerOnWakeupDelay.load();
+                // If a macro slot is selected for On Wakeup, avoid pre-arm so that
+                // StartTriggerDelay can fire a macro (including 0F) instead.
+                int macroSlot = triggerOnWakeupMacroSlot.load();
                 bool isSpecial = (actionType == ACTION_FINAL_MEMORY) || (motionType >= MOTION_236A);
                 bool holdEligible = (userDelayF == 0) && !isSpecial && SupportsImmediateWakeHold(actionType);
-                if (userDelayF == 0 && (isSpecial || holdEligible)) {
+                bool allowPrearm = (macroSlot <= 0); // macros take priority over pre-arm at 0F
+                if (allowPrearm && userDelayF == 0 && (isSpecial || holdEligible)) {
                     s_p1WakePrearmed = true;
                     s_p1WakePrearmIsSpecial = isSpecial;
                     s_p1WakePrearmActionType = actionType;
@@ -1495,15 +1506,55 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
         }
         
         // On Wakeup pre-arm for P2: record metadata when delay==0 and action is special/FM
+        // Same macro preference as P1: if a macro slot is configured for On Wakeup,
+        // skip pre-arm so the generic trigger path can run a macro on the first
+        // actionable wake frame (0F reversal testing, etc.). Additionally, when the
+        // global wake-buffering toggle is enabled, we use the same late pre-buffer
+        // window (based on character-specific wake timings) to pre-buffer wake macros
+        // by starting the macro slightly before the first actionable frame.
     if (triggerOnWakeupEnabled.load() && !s_p2WakePrearmed) {
             if (moveID2 == GROUNDTECH_RECOVERY) {
                 if (triggerRandomizeEnabled.load()) { if ((rand() & 1) == 0) { if (detailedLogging.load() && canLogTrigDiag()) LogOut("[AUTO-ACTION] P2 Wake prearm skipped by random gate", true); goto p2_wake_prearm_done; } }
+                // Track 96-frame window for potential macro pre-buffering
+                if (prevMoveID2 != GROUNDTECH_RECOVERY) {
+                    s_p2WakeMacro96FrameCount = 0;
+                    s_p2WakeMacroQueued = false;
+                } else {
+                    ++s_p2WakeMacro96FrameCount;
+                }
                 int actionType = triggerOnWakeupAction.load();
                 int motionType = ConvertTriggerActionToMotion(actionType, TRIGGER_ON_WAKEUP);
                 int userDelayF = triggerOnWakeupDelay.load();
+                // If a macro slot is selected for On Wakeup, avoid pre-arm so that
+                // StartTriggerDelay can fire a macro (including 0F) instead.
+                int macroSlot = triggerOnWakeupMacroSlot.load();
                 bool isSpecial = (actionType == ACTION_FINAL_MEMORY) || (motionType >= MOTION_236A);
                 bool holdEligible = (userDelayF == 0) && !isSpecial && SupportsImmediateWakeHold(actionType);
-                if (userDelayF == 0 && (isSpecial || holdEligible)) {
+                bool allowPrearm = (macroSlot <= 0); // macros take priority over pre-arm at 0F
+                // When wake buffering is enabled and a macro slot is configured with 0F
+                // delay, pre-buffer the macro late in moveID 96 using per-character
+                // wake timings so its buffered inputs exist on the first actionable frame.
+                if (macroSlot > 0 && userDelayF == 0 && g_wakeBufferingEnabled.load() && !s_p2WakeMacroQueued) {
+                    int charID = displayData.p2CharID;
+                    int risingTicks = GetWakeupRisingTicks(charID);
+                    int bufferFrame = risingTicks - 1; // buffer on last frame before actionable
+                    if (s_p2WakeMacro96FrameCount >= (bufferFrame - 2) && s_p2WakeMacro96FrameCount <= bufferFrame) {
+                        // Validate macro slot before arming immediate StartTriggerDelay
+                        int sel = macroSlot;
+                        if (MacroController::GetState() != MacroController::State::Recording) {
+                            sel = CLAMP(sel, 1, MacroController::GetSlotCount());
+                            if (!MacroController::IsSlotEmpty(sel)) {
+                                // Hint the chosen macro slot so StartTriggerDelay prefers it
+                                p2DelayState.chosenMacroSlot = sel;
+                                LogOut("[AUTO-ACTION][MACRO] Pre-buffering wake macro (slot=" + std::to_string(sel) +
+                                       ") at frame " + std::to_string(s_p2WakeMacro96FrameCount) + "/" + std::to_string(risingTicks), detailedLogging.load());
+                                StartTriggerDelay(2, TRIGGER_ON_WAKEUP, 0, 0);
+                                s_p2WakeMacroQueued = true;
+                            }
+                        }
+                    }
+                }
+                if (allowPrearm && userDelayF == 0 && (isSpecial || holdEligible)) {
                     s_p2WakePrearmed = true;
                     s_p2WakePrearmIsSpecial = isSpecial;
                     s_p2WakePrearmActionType = actionType;
@@ -1953,8 +2004,9 @@ void ApplyAutoAction(int playerNum, uintptr_t moveIDAddr, short currentMoveID, s
 
     // Determine strength BEFORE converting to motion; strength drives motionType selection
     int resolvedStrength = (dstate.chosenStrength >= 0) ? dstate.chosenStrength : GetSpecialMoveStrength(actionType, triggerType); // 0=A 1=B 2=C 3=D
-    // Convert action to motion type and determine button mask
-    int motionType = ConvertTriggerActionToMotion(actionType, triggerType);
+    // Convert action to motion type and determine button mask. Use resolvedStrength so row-specific
+    // strength overrides (per-option rows) correctly influence which super variant is chosen.
+    int motionType = ConvertTriggerActionToMotion(actionType, triggerType, resolvedStrength);
     int buttonMask = 0;
     
     // Determine button mask based on action type
@@ -1990,7 +2042,7 @@ void ApplyAutoAction(int playerNum, uintptr_t moveIDAddr, short currentMoveID, s
         case ACTION_4C: buttonMask = GAME_INPUT_C; break;
         case ACTION_4D: buttonMask = GAME_INPUT_D; break;
         
-        // Special moves - use strength from config
+        // Special moves - use strength from config / row override
         case ACTION_QCF:
         case ACTION_DP:
         case ACTION_QCB:
@@ -2005,7 +2057,9 @@ void ApplyAutoAction(int playerNum, uintptr_t moveIDAddr, short currentMoveID, s
         case ACTION_22:
         case ACTION_4123641236:
         case ACTION_6321463214: {
-            int strength = GetSpecialMoveStrength(actionType, triggerType); // 0=A 1=B 2=C 3=D
+            int strength = resolvedStrength; // 0=A 1=B 2=C 3=D
+            if (strength < 0) strength = 0;
+            if (strength > 3) strength = 3;
             buttonMask = (1 << (4 + strength));  // A=16, B=32, C=64, D=128
             break;
         }
