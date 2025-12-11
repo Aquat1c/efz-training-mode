@@ -53,9 +53,10 @@ std::string GetTriggerName(int triggerType) {
     }
 }
 
-int ConvertTriggerActionToMotion(int actionType, int triggerType) {
-    // Get the strength for this trigger (0=A, 1=B, 2=C, 3=D)
-    int strength = GetSpecialMoveStrength(actionType, triggerType);
+int ConvertTriggerActionToMotion(int actionType, int triggerType, int strengthOverride) {
+    // Get the strength for this trigger (0=A, 1=B, 2=C, 3=D).
+    // If an explicit override is provided (e.g., from a selected row), prefer it.
+    int strength = (strengthOverride >= 0) ? strengthOverride : GetSpecialMoveStrength(actionType, triggerType);
 
     switch (actionType) {
         // Normal attacks (unchanged)

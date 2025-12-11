@@ -55,6 +55,15 @@ std::string GetStatusLine();
 // Debug helpers
 SlotStats GetSlotStats(int slot);
 
+// Returns the effective tick count (last non-neutral tick + 1) for timing calculations.
+// This excludes trailing neutral inputs from the total.
+int GetEffectiveTicks(int slot);
+
+// Returns the tick index (0-based) of the first attack button press (A/B/C/D).
+// For wake timing, this is what needs to land during the buffer window.
+// Returns -1 if no button found.
+int GetFirstButtonTick(int slot);
+
 // Text serialization for macros (human-editable)
 // Format header: "EFZMACRO 1" then a space-separated sequence of tokens.
 // Token syntax (per 64 Hz tick):
