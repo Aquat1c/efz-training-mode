@@ -567,7 +567,18 @@ void UpdateTriggerOverlay() {
             case ACTION_6321463214: return "6321463214" + strengthLetter;
             case ACTION_JUMP: return "Jump";
             case ACTION_BACKDASH: return "Backdash";
-            case ACTION_FORWARD_DASH: return "Forward Dash";
+            case ACTION_FORWARD_DASH: {
+                int fdf = forwardDashFollowup.load();
+                switch (fdf) {
+                    case 1: return "66A";
+                    case 2: return "66B";
+                    case 3: return "66C";
+                    case 4: return "662A";
+                    case 5: return "662B";
+                    case 6: return "662C";
+                    default: return "66";
+                }
+            }
             case ACTION_BLOCK: return "Block";
             case ACTION_FINAL_MEMORY: return "Final Memory";
             default: return "Unknown (" + std::to_string(actionType) + ")";
@@ -619,7 +630,18 @@ void UpdateTriggerOverlay() {
                         }
                     }
                     case ACTION_BACKDASH: return "44";
-                    case ACTION_FORWARD_DASH: return "66";
+                    case ACTION_FORWARD_DASH: {
+                        int fdf = forwardDashFollowup.load();
+                        switch (fdf) {
+                            case 1: return "66A";
+                            case 2: return "66B";
+                            case 3: return "66C";
+                            case 4: return "662A";
+                            case 5: return "662B";
+                            case 6: return "662C";
+                            default: return "66";
+                        }
+                    }
                     case ACTION_BLOCK: return "[4]";
                     case ACTION_FINAL_MEMORY: return "fm";
                     default: return "?";

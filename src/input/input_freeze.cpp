@@ -501,6 +501,28 @@ bool FreezeBufferForMotion(int playerNum, int motionType, int buttonMask, int op
             };
             break;
         }
+
+        case MOTION_FORWARD_DASH: {
+            // Forward Dash: Forward, Neutral, Forward
+            // Optimized for 0F reversal: F (2), N (1), F (2)
+            pattern = {
+                0x00, 0x00,                             // Neutral padding (2)
+                fwd, fwd,                               // Forward (2)
+                0x00,                                   // Neutral (1)
+                fwd, fwd,                               // Forward (2)
+            };
+            break;
+        }
+        case MOTION_BACK_DASH: {
+            // Back Dash: Back, Neutral, Back
+            pattern = {
+                0x00, 0x00,                             // Neutral padding (2)
+                back, back,                             // Back (2)
+                0x00,                                   // Neutral (1)
+                back, back,                             // Back (2)
+            };
+            break;
+        }
         
         default:
             LogOut("[BUFFER_FREEZE] Unsupported motion type: " + std::to_string(motionType), true);

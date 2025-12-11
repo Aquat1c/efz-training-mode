@@ -1013,10 +1013,10 @@ void ProcessTriggerCooldowns() {
         static int s_nextCooldownDiagFrame = 0; // 5s throttle at 192 fps => 960 frames
         int now = frameCounter.load();
         if (now >= s_nextCooldownDiagFrame) {
-            LogOut("[COOLDOWN] p1Active=" + std::to_string(p1TriggerActive) +
-                   " p1CD=" + std::to_string(p1TriggerCooldown) +
-                   " | p2Active=" + std::to_string(p2TriggerActive) +
-                   " p2CD=" + std::to_string(p2TriggerCooldown), true);
+            // LogOut("[COOLDOWN] p1Active=" + std::to_string(p1TriggerActive) +
+            //        " p1CD=" + std::to_string(p1TriggerCooldown) +
+            //        " | p2Active=" + std::to_string(p2TriggerActive) +
+            //        " p2CD=" + std::to_string(p2TriggerCooldown), true);
             s_nextCooldownDiagFrame = now + 960;
         }
     }
@@ -1093,11 +1093,11 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
         short actionMoveID = 0;        
         // Extra diagnostics for P1 trigger evaluation
     if (detailedLogging.load() && canLogTrigDiag()) {
-            LogOut("[TRIGGER_DIAG] P1 eval: prev=" + std::to_string(prevMoveID1) + 
-                       ", curr=" + std::to_string(moveID1) +
-                       ", trigActive=" + std::to_string(p1TriggerActive) +
-                       ", cooldown=" + std::to_string(p1TriggerCooldown) +
-                   ", actionable(prev/curr)=" + std::to_string(IsActionable(prevMoveID1)) + "/" + std::to_string(IsActionable(moveID1)), true);
+            // LogOut("[TRIGGER_DIAG] P1 eval: prev=" + std::to_string(prevMoveID1) + 
+            //            ", curr=" + std::to_string(moveID1) +
+            //            ", trigActive=" + std::to_string(p1TriggerActive) +
+            //            ", cooldown=" + std::to_string(p1TriggerCooldown) +
+            //        ", actionable(prev/curr)=" + std::to_string(IsActionable(prevMoveID1)) + "/" + std::to_string(IsActionable(moveID1)), true);
         }
         
     if (!shouldTrigger && triggerAfterAirtechEnabled.load()) {
@@ -1106,9 +1106,9 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
             // Post-airtech actionable: allow either general actionable states or explicit FALLING
             bool postAirtechNow = (!IsAirtech(moveID1)) && (IsActionable(moveID1) || moveID1 == FALLING_ID);
             if (detailedLogging.load() && canLogTrigDiag()) {
-                LogOut("[TRIGGER_DIAG] P1 AfterAirtech check: wasAirtech=" + std::to_string(wasInAirtech) +
-                       ", postAirtechNow=" + std::to_string(postAirtechNow) +
-                       ", targetPlayer=" + std::to_string(targetPlayer), true);
+                // LogOut("[TRIGGER_DIAG] P1 AfterAirtech check: wasAirtech=" + std::to_string(wasInAirtech) +
+                //        ", postAirtechNow=" + std::to_string(postAirtechNow) +
+                //        ", targetPlayer=" + std::to_string(targetPlayer), true);
             }
 
             // P1 After-Airtech trigger condition
@@ -1260,6 +1260,7 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
                 int macroSlot = triggerOnWakeupMacroSlot.load();
                 int macroSel = CLAMP(macroSlot, 1, MacroController::GetSlotCount());
                 bool macroHasData = (macroSlot > 0) && MacroController::GetState() != MacroController::State::Recording && !MacroController::IsSlotEmpty(macroSel);
+                bool isDash = (motionType == MOTION_FORWARD_DASH || motionType == MOTION_BACK_DASH);
                 bool isSpecial = (actionType == ACTION_FINAL_MEMORY) || (motionType >= MOTION_236A);
                 bool holdEligible = (userDelayF == 0) && !isSpecial && SupportsImmediateWakeHold(actionType);
                 // Macros are now a supported pre-arm type (treated like specials for timing)
@@ -1431,6 +1432,7 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
                         int motionType = ConvertTriggerActionToMotion(at, TRIGGER_ON_WAKEUP);
                         int buttonMask = ResolveButtonMaskForAction(at, TRIGGER_ON_WAKEUP, s_p1WakePrearmStrength);
                         if (at == ACTION_BACKDASH || at == ACTION_FORWARD_DASH) {
+                            ResetPlayerInputBufferIndex(1);
                             QueueMotionInput(1, motionType, 0);
                         } else if ((motionType >= MOTION_5A && motionType <= MOTION_5D) || (motionType >= MOTION_6A && motionType <= MOTION_4D)) {
                             ImmediateInput::PressFor(1, buttonMask, 2);
@@ -1649,10 +1651,10 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
         // On Wakeup handling for P2.
         // DEBUG: Always log wake block entry check
     if (detailedLogging.load()) {
-        LogOut("[AUTO-ACTION][WAKE-ENTRY-CHECK] wakeEnabled=" + std::to_string(triggerOnWakeupEnabled.load()) +
-               " preArmed=" + std::to_string(s_p2WakePrearmed) +
-               " move2=" + std::to_string(moveID2) +
-               " prev2=" + std::to_string(prevMoveID2), true);
+        // LogOut("[AUTO-ACTION][WAKE-ENTRY-CHECK] wakeEnabled=" + std::to_string(triggerOnWakeupEnabled.load()) +
+        //        " preArmed=" + std::to_string(s_p2WakePrearmed) +
+        //        " move2=" + std::to_string(moveID2) +
+        //        " prev2=" + std::to_string(prevMoveID2), true);
     }
 
     // Dedicated path for pre-armed wake macros (uses wake-buffering timing only).
@@ -1807,7 +1809,8 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
                 bool macroHasData = macroSlotSelected &&
                                     MacroController::GetState() != MacroController::State::Recording &&
                                     !MacroController::IsSlotEmpty(macroSel);
-                bool isSpecial = (actionType == ACTION_FINAL_MEMORY) || (motionType >= MOTION_236A);
+                bool isDash = (motionType == MOTION_FORWARD_DASH || motionType == MOTION_BACK_DASH);
+                bool isSpecial = (actionType == ACTION_FINAL_MEMORY) || (motionType >= MOTION_236A && !isDash);
 
                 // If a macro slot is selected for On Wakeup we do NOT want to
                 // treat this as a hold/special pre-arm. That case is handled
@@ -1990,7 +1993,12 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
                         int motionType = ConvertTriggerActionToMotion(at, TRIGGER_ON_WAKEUP);
                         int buttonMask = ResolveButtonMaskForAction(at, TRIGGER_ON_WAKEUP, s_p2WakePrearmStrength);
                         if (at == ACTION_BACKDASH || at == ACTION_FORWARD_DASH) {
+                            g_injectImmediateOnly[2].store(false);
+                            EnableP2ControlForAutoAction();
+                            ResetPlayerInputBufferIndex(2);
                             QueueMotionInput(2, motionType, 0);
+                            g_pendingControlRestore.store(true);
+                            g_pendingRestoreTimestamp.store(GetTickCount());
                         } else if ((motionType >= MOTION_5A && motionType <= MOTION_5D) || (motionType >= MOTION_6A && motionType <= MOTION_4D)) {
                             ImmediateInput::PressFor(2, buttonMask, 2);
                         } else if (motionType >= MOTION_2A && motionType <= MOTION_2C) {
@@ -3812,7 +3820,7 @@ static bool ExecuteWakeSpecialNow(int playerNum, int actionType, short currentMo
     }
 
     int buttonMask = ResolveButtonMaskForAction(actionType, TRIGGER_ON_WAKEUP, strengthOverride);
-    if (buttonMask == 0) {
+    if (buttonMask == 0 && motionType != MOTION_FORWARD_DASH && motionType != MOTION_BACK_DASH) {
         int fallbackStrength = (strengthOverride >= 0) ? strengthOverride : 0;
         buttonMask = (1 << (4 + CLAMP(fallbackStrength, 0, 3)));
     }
