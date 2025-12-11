@@ -26,6 +26,13 @@
 extern uintptr_t GetEFZBase();
 bool AreCharactersInitialized();
 
+// From auto_action.cpp: specialized restore for wake macros and flags
+// indicating that the next macro-driven restore should preserve buffer
+// and that wake macro playback has fully completed.
+extern void RestoreP2ControlFlagsPreserveBufferAndTokenForMacro();
+extern std::atomic<bool> g_macroWakePreserveBuffer;
+extern std::atomic<bool> g_wakeMacroPlaybackCompleted;
+
 namespace {
     using Mask = uint8_t;
     struct RLESpan { Mask mask; Mask buf; int ticks; int8_t facing; };
@@ -766,9 +773,25 @@ void Tick() {
                 g_forceBypass[2].store(false);
                 g_injectImmediateOnly[2].store(false);
                 if (s_macroBannerId != -1) { DirectDrawHook::RemovePermanentMessage(s_macroBannerId); s_macroBannerId = -1; }
-                // Neutralize motion token before giving control back to AI to prevent stray motions
-                (void)NeutralizeMotionToken(2);
-                if (g_p2ControlOverridden) RestoreP2ControlState();
+                // For wake-prebuffered macros, we want to preserve the entire
+                // input buffer and motion token so the motion can still be
+                // recognized on wake. In that case, only restore control
+                // flags. For all other macros, perform the standard full
+                // restore which clears buffer and neutralizes the token.
+                if (g_macroWakePreserveBuffer.load()) {
+                    g_macroWakePreserveBuffer.store(false);
+                    // Signal auto-action that a wake-prebuffered macro has
+                    // fully finished so it can schedule a delayed
+                    // neutralization of the motion token after wake.
+                    g_wakeMacroPlaybackCompleted.store(true);
+                    if (g_p2ControlOverridden) {
+                        RestoreP2ControlFlagsPreserveBufferAndTokenForMacro();
+                    }
+                } else {
+                    // Neutralize motion token before giving control back to AI to prevent stray motions
+                    (void)NeutralizeMotionToken(2);
+                    if (g_p2ControlOverridden) RestoreP2ControlState();
+                }
                 int slotIdx = ClampSlot(s_curSlot.load()) - 1;
                 LogOut(std::string("[MACRO][PLAY] finish-guard exit ") + (activated?"on-activation":"on-timeout") +
                        " slot=" + std::to_string(s_curSlot.load()) +
@@ -933,10 +956,20 @@ void Tick() {
                         s_tickBufQueue.push_back(raw);
                     }
                 }
-                // Log stream advancement
-                LogOut("[MACRO][ADVANCE] t=" + std::to_string(s_playStreamIndex) + 
-                       " bufIdx=" + std::to_string(curBufIdx) + 
-                       " mask=0x" + [mask]{ char b[8]; snprintf(b,8,"%02X",mask); return std::string(b); }(), true);
+                  // Log stream advancement with moveID context to aid wake/macro debugging
+                  {
+                      static bool s_prevMoveIdInit = false;
+                      static uint16_t s_prevMoveId = 0;
+                      uint16_t currMoveId = GetPlayerMoveID(2);
+                      uint16_t prevMoveId = s_prevMoveIdInit ? s_prevMoveId : currMoveId;
+                      s_prevMoveId = currMoveId;
+                      s_prevMoveIdInit = true;
+                      LogOut("[MACRO][ADVANCE] t=" + std::to_string(s_playStreamIndex) +
+                          " bufIdx=" + std::to_string(curBufIdx) +
+                          " mask=0x" + [mask]{ char b[8]; snprintf(b,8,"%02X",mask); return std::string(b); }() +
+                          " prevMoveID=" + std::to_string(prevMoveId) +
+                          " currMoveID=" + std::to_string(currMoveId), true);
+                  }
                 ++s_playStreamIndex;
             }
             // Every frame: write some of this tick's buffer bytes via engine by overriding the poll,
@@ -1260,6 +1293,39 @@ SlotStats GetSlotStats(int slot) {
     return stats;
 }
 
+int GetEffectiveTicks(int slot) {
+    slot = ClampSlot(slot) - 1;
+    if (slot < 0) slot = 0; if (slot >= kMaxSlots) slot = kMaxSlots - 1;
+    const Slot& s = s_slots[slot];
+    if (s.macroStream.empty()) return 0;
+    // Scan backwards from end to find last non-neutral tick
+    int lastAction = 0;
+    for (int i = static_cast<int>(s.macroStream.size()) - 1; i >= 0; --i) {
+        if (s.macroStream[i] != 0x00) {
+            lastAction = i + 1; // tick count = last index + 1
+            break;
+        }
+    }
+    return lastAction;
+}
+
+int GetFirstButtonTick(int slot) {
+    // Returns the tick index (0-based) of the FIRST attack button press (A/B/C/D).
+    // For wake timing, this is what needs to land during the buffer window.
+    // Returns -1 if no button found.
+    constexpr uint8_t BUTTON_MASK = 0xF0; // A(0x10) | B(0x20) | C(0x40) | D(0x80)
+    slot = ClampSlot(slot) - 1;
+    if (slot < 0) slot = 0; if (slot >= kMaxSlots) slot = kMaxSlots - 1;
+    const Slot& s = s_slots[slot];
+    if (s.macroStream.empty()) return -1;
+    for (int i = 0; i < static_cast<int>(s.macroStream.size()); ++i) {
+        if (s.macroStream[i] & BUTTON_MASK) {
+            return i;
+        }
+    }
+    return -1;
+}
+
 void NextSlot() {
     if (GetCurrentGamePhase() != GamePhase::Match || !AreCharactersInitialized()) return;
     int cur = s_curSlot.load();
@@ -1400,6 +1466,41 @@ static void BuildSpansFromStream(Slot& s) {
         }
     }
     s.spans.push_back({ last, last, count, 0 });
+}
+
+// For imported macros (text → slot), reconstruct minimal synthetic
+// buffer snapshots and per-tick buffer indices so that stream
+// playback can use the same full-snapshot restoration path that
+// recorded macros use. We don't know the original engine indices,
+// so we simulate a clean history ring starting from index 0 and
+// applying each tick's bufStream writes in order.
+static void BuildSyntheticSnapshotsFromBuf(Slot& s) {
+    s.fullBufferSnapshots.clear();
+    s.bufIndexPerTick.clear();
+
+    if (s.macroStream.empty()) return;
+
+    // Ensure we have per-tick counts matching the macro stream.
+    // If not, bail out and let playback fall back to stream-only.
+    if (s.bufCountsPerTick.size() != s.macroStream.size()) return;
+
+    const size_t kBufSize = INPUT_BUFFER_SIZE;
+    std::vector<uint8_t> cur(kBufSize, 0);
+    uint16_t idx = 0; // synthetic tail index
+    size_t bufPos = 0;
+
+    s.fullBufferSnapshots.reserve(s.macroStream.size());
+    s.bufIndexPerTick.reserve(s.macroStream.size());
+
+    for (size_t t = 0; t < s.macroStream.size(); ++t) {
+        const uint16_t k = s.bufCountsPerTick[t];
+        for (uint16_t i = 0; i < k && bufPos < s.bufStream.size(); ++i) {
+            cur[idx] = s.bufStream[bufPos++];
+            idx = static_cast<uint16_t>((idx + 1) % kBufSize);
+        }
+        s.fullBufferSnapshots.push_back(cur);
+        s.bufIndexPerTick.push_back(idx);
+    }
 }
 
 bool DeserializeSlot(int slot, const std::string& text, std::string& errorOut) {
@@ -1596,6 +1697,11 @@ bool DeserializeSlot(int slot, const std::string& text, std::string& errorOut) {
     dst.bufStream = std::move(buf);
     dst.hasData = !dst.macroStream.empty();
     BuildSpansFromStream(dst);
+    // For imported macros, synthesize buffer snapshots/indices so
+    // playback can restore a consistent history window.
+    if (kEnableFullBufferSnapshots) {
+        BuildSyntheticSnapshotsFromBuf(dst);
+    }
     return true;
 }
 
