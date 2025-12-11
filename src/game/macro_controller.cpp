@@ -1435,6 +1435,41 @@ static void BuildSpansFromStream(Slot& s) {
     s.spans.push_back({ last, last, count, 0 });
 }
 
+// For imported macros (text → slot), reconstruct minimal synthetic
+// buffer snapshots and per-tick buffer indices so that stream
+// playback can use the same full-snapshot restoration path that
+// recorded macros use. We don't know the original engine indices,
+// so we simulate a clean history ring starting from index 0 and
+// applying each tick's bufStream writes in order.
+static void BuildSyntheticSnapshotsFromBuf(Slot& s) {
+    s.fullBufferSnapshots.clear();
+    s.bufIndexPerTick.clear();
+
+    if (s.macroStream.empty()) return;
+
+    // Ensure we have per-tick counts matching the macro stream.
+    // If not, bail out and let playback fall back to stream-only.
+    if (s.bufCountsPerTick.size() != s.macroStream.size()) return;
+
+    const size_t kBufSize = INPUT_BUFFER_SIZE;
+    std::vector<uint8_t> cur(kBufSize, 0);
+    uint16_t idx = 0; // synthetic tail index
+    size_t bufPos = 0;
+
+    s.fullBufferSnapshots.reserve(s.macroStream.size());
+    s.bufIndexPerTick.reserve(s.macroStream.size());
+
+    for (size_t t = 0; t < s.macroStream.size(); ++t) {
+        const uint16_t k = s.bufCountsPerTick[t];
+        for (uint16_t i = 0; i < k && bufPos < s.bufStream.size(); ++i) {
+            cur[idx] = s.bufStream[bufPos++];
+            idx = static_cast<uint16_t>((idx + 1) % kBufSize);
+        }
+        s.fullBufferSnapshots.push_back(cur);
+        s.bufIndexPerTick.push_back(idx);
+    }
+}
+
 bool DeserializeSlot(int slot, const std::string& text, std::string& errorOut) {
     errorOut.clear();
     slot = ClampSlot(slot);
@@ -1629,6 +1664,11 @@ bool DeserializeSlot(int slot, const std::string& text, std::string& errorOut) {
     dst.bufStream = std::move(buf);
     dst.hasData = !dst.macroStream.empty();
     BuildSpansFromStream(dst);
+    // For imported macros, synthesize buffer snapshots/indices so
+    // playback can restore a consistent history window.
+    if (kEnableFullBufferSnapshots) {
+        BuildSyntheticSnapshotsFromBuf(dst);
+    }
     return true;
 }
 
