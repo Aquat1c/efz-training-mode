@@ -101,42 +101,48 @@ namespace ImGuiGui {
         }
     }
 
-    // Action type mapping (same as in gui_auto_action.cpp)
+    // Action type mapping - GUI combo index to internal action type
+    // The combo index is what appears in the dropdown, action type is the internal value
     static const int ComboIndexToActionType[] = {
         ACTION_5A,          // 0 = 5A
         ACTION_5B,          // 1 = 5B
         ACTION_5C,          // 2 = 5C
-        ACTION_2A,          // 3 = 2A
-        ACTION_2B,          // 4 = 2B
-        ACTION_2C,          // 5 = 2C
-        ACTION_JA,          // 6 = j.A 
-        ACTION_JB,          // 7 = j.B
-        ACTION_JC,          // 8 = j.C
-        ACTION_QCF,         // 9 = 236 (QCF)
-        ACTION_DP,          // 10 = 623 (DP)
-        ACTION_QCB,         // 11 = 214 (QCB)
-        ACTION_421,         // 12 = 421 (Half-circle Down)
-        ACTION_SUPER1,      // 13 = 41236 (HCF)
-    ACTION_SUPER2,      // 14 = 214236 Hybrid (replaces removed 63214)
-    ACTION_236236,      // 15 = 236236 (Double QCF)
-    ACTION_214214,      // 16 = 214214 (Double QCB)
-    ACTION_JUMP,        // 17 = Jump
-    ACTION_BACKDASH,    // 18 = Backdash
-    ACTION_FORWARD_DASH,// 19 = Forward Dash
-    ACTION_BLOCK,       // 20 = Block
-    ACTION_FINAL_MEMORY,// 21 = Final Memory (per-character)
-    ACTION_641236,      // 22 = 641236 Super
-    ACTION_463214,      // 23 = 463214 Reverse Roll
-    ACTION_412,         // 24 = 412 Partial Roll
-    ACTION_22,          // 25 = 22 Down-Down
-    ACTION_4123641236,  // 26 = 4123641236 Double Roll
-    ACTION_6321463214   // 27 = 6321463214 Extended Pretzel
-    ,ACTION_6A          // 28 = 6A (Forward A)
-    ,ACTION_6B          // 29 = 6B
-    ,ACTION_6C          // 30 = 6C
-    ,ACTION_4A          // 31 = 4A (Back A)
-    ,ACTION_4B          // 32 = 4B
-    ,ACTION_4C          // 33 = 4C
+        ACTION_5D,          // 3 = 5D
+        ACTION_2A,          // 4 = 2A
+        ACTION_2B,          // 5 = 2B
+        ACTION_2C,          // 6 = 2C
+        ACTION_2D,          // 7 = 2D
+        ACTION_JA,          // 8 = j.A 
+        ACTION_JB,          // 9 = j.B
+        ACTION_JC,          // 10 = j.C
+        ACTION_JD,          // 11 = j.D
+        ACTION_6A,          // 12 = 6A (Forward A)
+        ACTION_6B,          // 13 = 6B
+        ACTION_6C,          // 14 = 6C
+        ACTION_6D,          // 15 = 6D
+        ACTION_4A,          // 16 = 4A (Back A)
+        ACTION_4B,          // 17 = 4B
+        ACTION_4C,          // 18 = 4C
+        ACTION_4D,          // 19 = 4D
+        ACTION_QCF,         // 20 = 236 (QCF)
+        ACTION_DP,          // 21 = 623 (DP)
+        ACTION_QCB,         // 22 = 214 (QCB)
+        ACTION_421,         // 23 = 421 (Half-circle Down)
+        ACTION_SUPER1,      // 24 = 41236 (HCF)
+        ACTION_SUPER2,      // 25 = 214236 Hybrid
+        ACTION_236236,      // 26 = 236236 (Double QCF)
+        ACTION_214214,      // 27 = 214214 (Double QCB)
+        ACTION_641236,      // 28 = 641236 Super
+        ACTION_463214,      // 29 = 463214 Reverse Roll
+        ACTION_412,         // 30 = 412 Partial Roll
+        ACTION_22,          // 31 = 22 Down-Down
+        ACTION_4123641236,  // 32 = 4123641236 Double Roll
+        ACTION_6321463214,  // 33 = 6321463214 Extended Pretzel
+        ACTION_JUMP,        // 34 = Jump
+        ACTION_BACKDASH,    // 35 = Backdash
+        ACTION_FORWARD_DASH,// 36 = Forward Dash
+        ACTION_BLOCK,       // 37 = Block
+        ACTION_FINAL_MEMORY // 38 = Final Memory (per-character)
     };
 
     // Helper function to convert action type to combo index

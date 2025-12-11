@@ -770,7 +770,7 @@ std::atomic<int> triggerAfterHitstunCustomID{ (int)BASE_ATTACK_5A };
 std::atomic<int> triggerAfterAirtechCustomID{ (int)BASE_ATTACK_JA };  // Default to jumping A for airtech
 std::atomic<int> triggerOnRGCustomID{ (int)BASE_ATTACK_5A };
 
-// Individual strength settings (0=A, 1=B, 2=C)
+// Individual strength settings (0=A, 1=B, 2=C, 3=D)
 std::atomic<int> triggerAfterBlockStrength(0);
 std::atomic<int> triggerOnWakeupStrength(0);
 std::atomic<int> triggerAfterHitstunStrength(0);

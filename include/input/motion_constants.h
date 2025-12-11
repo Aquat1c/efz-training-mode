@@ -1,29 +1,30 @@
 #pragma once
 
-// Basic attack motion constants
+// Basic attack motion constants - grouped by posture with 4 buttons each (A/B/C/D)
+// Standing normals (5X) - 100-103
 #define MOTION_5A        100
 #define MOTION_5B        101
 #define MOTION_5C        102
-#define MOTION_2A        103
-#define MOTION_2B        104
-#define MOTION_2C        105
-#define MOTION_JA        106
-#define MOTION_JB        107
-#define MOTION_JC        108
-
-// Directional normal motion constants (forward/back normals)
-#define MOTION_6A        109
-#define MOTION_6B        110
-#define MOTION_6C        111
-#define MOTION_4A        112
-#define MOTION_4B        113
-#define MOTION_4C        114
-
-// D button (Special button) motion constants
-#define MOTION_5D        115
-#define MOTION_2D        116
-#define MOTION_JD        117
-#define MOTION_6D        118
+#define MOTION_5D        103
+// Crouching normals (2X) - 104-107
+#define MOTION_2A        104
+#define MOTION_2B        105
+#define MOTION_2C        106
+#define MOTION_2D        107
+// Jumping normals (jX) - 108-111
+#define MOTION_JA        108
+#define MOTION_JB        109
+#define MOTION_JC        110
+#define MOTION_JD        111
+// Forward normals (6X) - 112-115
+#define MOTION_6A        112
+#define MOTION_6B        113
+#define MOTION_6C        114
+#define MOTION_6D        115
+// Back normals (4X) - 116-119
+#define MOTION_4A        116
+#define MOTION_4B        117
+#define MOTION_4C        118
 #define MOTION_4D        119
 
 // Special move motion constants

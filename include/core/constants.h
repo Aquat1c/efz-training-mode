@@ -290,49 +290,54 @@
 #define TRIGGER_ON_RG         5  // New: On Recoil Guard actionable
 
 // Auto-action types
-// IMPORTANT: These numeric IDs are persisted (GUI combo indices map to them). Maintain order.
+// Normals are grouped by posture with 4 buttons each (A/B/C/D) for easy modulo-4 button extraction.
+// Specials and other actions follow after the normals.
 #define ACTION_NONE           0
+// Standing normals (5X) - indices 0-3
 #define ACTION_5A             0
 #define ACTION_5B             1
 #define ACTION_5C             2
-#define ACTION_2A             3
-#define ACTION_2B             4
-#define ACTION_2C             5
-#define ACTION_JA             6
-#define ACTION_JB             7
-#define ACTION_JC             8
-#define ACTION_QCF            9
-#define ACTION_DP            10
-#define ACTION_QCB           11
-#define ACTION_421           12  // Half-circle down (421)
-#define ACTION_SUPER1        13  // 41236 (HCF)
-#define ACTION_SUPER2        14  // 214236 hybrid (replaces removed 63214)
-#define ACTION_236236        15  // Double QCF
-#define ACTION_214214        16  // Double QCB
-#define ACTION_JUMP          17
-#define ACTION_BACKDASH      18
-#define ACTION_FORWARD_DASH  19
-#define ACTION_BLOCK         20
-#define ACTION_FINAL_MEMORY  21  // Virtual action to request per-character Final Memory
-#define ACTION_641236        22  // 641236 Super
-#define ACTION_463214        23
-#define ACTION_412           24
-#define ACTION_22            25
-#define ACTION_4123641236    26
-#define ACTION_6321463214    27
-// Directional normals (forward/back) appended to preserve existing ordering
-#define ACTION_6A             28
-#define ACTION_6B             29
-#define ACTION_6C             30
-#define ACTION_4A             31
-#define ACTION_4B             32
-#define ACTION_4C             33
-// D button normals (notated as S for Special button)
-#define ACTION_5D             34
-#define ACTION_2D             35
-#define ACTION_JD             36
-#define ACTION_6D             37
-#define ACTION_4D             38
+#define ACTION_5D             3
+// Crouching normals (2X) - indices 4-7
+#define ACTION_2A             4
+#define ACTION_2B             5
+#define ACTION_2C             6
+#define ACTION_2D             7
+// Jumping normals (jX) - indices 8-11
+#define ACTION_JA             8
+#define ACTION_JB             9
+#define ACTION_JC            10
+#define ACTION_JD            11
+// Forward normals (6X) - indices 12-15
+#define ACTION_6A            12
+#define ACTION_6B            13
+#define ACTION_6C            14
+#define ACTION_6D            15
+// Back normals (4X) - indices 16-19
+#define ACTION_4A            16
+#define ACTION_4B            17
+#define ACTION_4C            18
+#define ACTION_4D            19
+// Special moves and commands - indices 20+
+#define ACTION_QCF           20
+#define ACTION_DP            21
+#define ACTION_QCB           22
+#define ACTION_421           23  // Half-circle down (421)
+#define ACTION_SUPER1        24  // 41236 (HCF)
+#define ACTION_SUPER2        25  // 214236 hybrid (replaces removed 63214)
+#define ACTION_236236        26  // Double QCF
+#define ACTION_214214        27  // Double QCB
+#define ACTION_JUMP          28
+#define ACTION_BACKDASH      29
+#define ACTION_FORWARD_DASH  30
+#define ACTION_BLOCK         31
+#define ACTION_FINAL_MEMORY  32  // Virtual action to request per-character Final Memory
+#define ACTION_641236        33  // 641236 Super
+#define ACTION_463214        34
+#define ACTION_412           35
+#define ACTION_22            36
+#define ACTION_4123641236    37
+#define ACTION_6321463214    38
 
 // Default delay for triggers
 #define DEFAULT_TRIGGER_DELAY 0  // Default delay for all triggers
