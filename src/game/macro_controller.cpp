@@ -1260,6 +1260,39 @@ SlotStats GetSlotStats(int slot) {
     return stats;
 }
 
+int GetEffectiveTicks(int slot) {
+    slot = ClampSlot(slot) - 1;
+    if (slot < 0) slot = 0; if (slot >= kMaxSlots) slot = kMaxSlots - 1;
+    const Slot& s = s_slots[slot];
+    if (s.macroStream.empty()) return 0;
+    // Scan backwards from end to find last non-neutral tick
+    int lastAction = 0;
+    for (int i = static_cast<int>(s.macroStream.size()) - 1; i >= 0; --i) {
+        if (s.macroStream[i] != 0x00) {
+            lastAction = i + 1; // tick count = last index + 1
+            break;
+        }
+    }
+    return lastAction;
+}
+
+int GetFirstButtonTick(int slot) {
+    // Returns the tick index (0-based) of the FIRST attack button press (A/B/C/D).
+    // For wake timing, this is what needs to land during the buffer window.
+    // Returns -1 if no button found.
+    constexpr uint8_t BUTTON_MASK = 0xF0; // A(0x10) | B(0x20) | C(0x40) | D(0x80)
+    slot = ClampSlot(slot) - 1;
+    if (slot < 0) slot = 0; if (slot >= kMaxSlots) slot = kMaxSlots - 1;
+    const Slot& s = s_slots[slot];
+    if (s.macroStream.empty()) return -1;
+    for (int i = 0; i < static_cast<int>(s.macroStream.size()); ++i) {
+        if (s.macroStream[i] & BUTTON_MASK) {
+            return i;
+        }
+    }
+    return -1;
+}
+
 void NextSlot() {
     if (GetCurrentGamePhase() != GamePhase::Match || !AreCharactersInitialized()) return;
     int cur = s_curSlot.load();
