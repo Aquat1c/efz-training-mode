@@ -906,12 +906,12 @@ namespace ImGuiGui {
 
                 // Wake buffering toggle (debug): pre-buffer wake specials/dashes vs frame1 inject
                 bool wakeBuf = g_wakeBufferingEnabled.load();
-                if (ImGui::Checkbox("Pre-buffer wake specials/dashes", &wakeBuf)) {
+                if (ImGui::Checkbox("Pre-buffer wake specials/dashes/macroses", &wakeBuf)) {
                     g_wakeBufferingEnabled.store(wakeBuf);
                     LogOut(std::string("[IMGUI] Wake buffering mode: ") + (wakeBuf ? "BUFFERED (early freeze)" : "FRAME1 (no early freeze)"), true);
                 }
                 if (ImGui::IsItemHovered()) {
-                    ImGui::SetTooltip("On: buffer wake moves slightly early. Off: do them on the first actionable frame.\nUseful for testing tight wakeup timing.");
+                    ImGui::SetTooltip("On: buffer wake moves slightly early. Off: do them on the first actionable frame.\nUseful for testing tight wakeup timing and wake-up buffering.");
                 }
 
                 // Global: Randomize all triggers toggle (placed with master/wake settings)

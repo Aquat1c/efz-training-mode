@@ -26,6 +26,13 @@
 extern uintptr_t GetEFZBase();
 bool AreCharactersInitialized();
 
+// From auto_action.cpp: specialized restore for wake macros and flags
+// indicating that the next macro-driven restore should preserve buffer
+// and that wake macro playback has fully completed.
+extern void RestoreP2ControlFlagsPreserveBufferAndTokenForMacro();
+extern std::atomic<bool> g_macroWakePreserveBuffer;
+extern std::atomic<bool> g_wakeMacroPlaybackCompleted;
+
 namespace {
     using Mask = uint8_t;
     struct RLESpan { Mask mask; Mask buf; int ticks; int8_t facing; };
@@ -766,9 +773,25 @@ void Tick() {
                 g_forceBypass[2].store(false);
                 g_injectImmediateOnly[2].store(false);
                 if (s_macroBannerId != -1) { DirectDrawHook::RemovePermanentMessage(s_macroBannerId); s_macroBannerId = -1; }
-                // Neutralize motion token before giving control back to AI to prevent stray motions
-                (void)NeutralizeMotionToken(2);
-                if (g_p2ControlOverridden) RestoreP2ControlState();
+                // For wake-prebuffered macros, we want to preserve the entire
+                // input buffer and motion token so the motion can still be
+                // recognized on wake. In that case, only restore control
+                // flags. For all other macros, perform the standard full
+                // restore which clears buffer and neutralizes the token.
+                if (g_macroWakePreserveBuffer.load()) {
+                    g_macroWakePreserveBuffer.store(false);
+                    // Signal auto-action that a wake-prebuffered macro has
+                    // fully finished so it can schedule a delayed
+                    // neutralization of the motion token after wake.
+                    g_wakeMacroPlaybackCompleted.store(true);
+                    if (g_p2ControlOverridden) {
+                        RestoreP2ControlFlagsPreserveBufferAndTokenForMacro();
+                    }
+                } else {
+                    // Neutralize motion token before giving control back to AI to prevent stray motions
+                    (void)NeutralizeMotionToken(2);
+                    if (g_p2ControlOverridden) RestoreP2ControlState();
+                }
                 int slotIdx = ClampSlot(s_curSlot.load()) - 1;
                 LogOut(std::string("[MACRO][PLAY] finish-guard exit ") + (activated?"on-activation":"on-timeout") +
                        " slot=" + std::to_string(s_curSlot.load()) +
@@ -933,10 +956,20 @@ void Tick() {
                         s_tickBufQueue.push_back(raw);
                     }
                 }
-                // Log stream advancement
-                LogOut("[MACRO][ADVANCE] t=" + std::to_string(s_playStreamIndex) + 
-                       " bufIdx=" + std::to_string(curBufIdx) + 
-                       " mask=0x" + [mask]{ char b[8]; snprintf(b,8,"%02X",mask); return std::string(b); }(), true);
+                  // Log stream advancement with moveID context to aid wake/macro debugging
+                  {
+                      static bool s_prevMoveIdInit = false;
+                      static uint16_t s_prevMoveId = 0;
+                      uint16_t currMoveId = GetPlayerMoveID(2);
+                      uint16_t prevMoveId = s_prevMoveIdInit ? s_prevMoveId : currMoveId;
+                      s_prevMoveId = currMoveId;
+                      s_prevMoveIdInit = true;
+                      LogOut("[MACRO][ADVANCE] t=" + std::to_string(s_playStreamIndex) +
+                          " bufIdx=" + std::to_string(curBufIdx) +
+                          " mask=0x" + [mask]{ char b[8]; snprintf(b,8,"%02X",mask); return std::string(b); }() +
+                          " prevMoveID=" + std::to_string(prevMoveId) +
+                          " currMoveID=" + std::to_string(currMoveId), true);
+                  }
                 ++s_playStreamIndex;
             }
             // Every frame: write some of this tick's buffer bytes via engine by overriding the poll,
