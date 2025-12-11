@@ -1209,7 +1209,7 @@ namespace ImGuiGui {
                 } else if (*triggers[i].action == ACTION_BACKDASH) {
                     ImGui::TextDisabled("(none)");
                 } else if (*triggers[i].action == ACTION_FORWARD_DASH) {
-                    int fdf = forwardDashFollowup.load(); const char* fdItems[] = { "No Follow-up", "5A", "5B", "5C", "2A", "2B", "2C" };
+                    int fdf = forwardDashFollowup.load(); const char* fdItems[] = { "No Follow-up", "A", "B", "C", "2A", "2B", "2C" };
                     if (ImGui::Combo("##FDFollow", &fdf, fdItems, IM_ARRAYSIZE(fdItems))) { if (fdf < 0) fdf = 0; if (fdf > 6) fdf = 6; forwardDashFollowup.store(fdf); }
                     ImGui::SameLine(); bool dashMode = forwardDashFollowupDashMode.load(); if (ImGui::Checkbox("DashAtk", &dashMode)) { forwardDashFollowupDashMode.store(dashMode); }
                 } else if (postureIdx >= 0) {
