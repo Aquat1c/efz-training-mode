@@ -1,7 +1,7 @@
 #pragma once
 
 // EFZ Training Mode version information
-#define EFZ_TRAINING_MODE_VERSION "1.0.4"
+#define EFZ_TRAINING_MODE_VERSION "1.0.5"
 
 // Build timestamp (from compiler)
 #define EFZ_TRAINING_MODE_BUILD_DATE __DATE__
