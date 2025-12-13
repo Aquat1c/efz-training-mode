@@ -112,6 +112,13 @@ namespace {
     uint16_t s_lastSeenBufIdx = 0xFFFF;  // Last buffer index we observed
     bool s_playbackBufIdxSyncInitialized = false;
 
+    // Logging state for move ID tracking
+    bool s_logPrevMoveIdInit = false;
+    uint16_t s_logPrevMoveId = 0;
+
+    // Track if we've seen the first attack button in the current playback
+    bool s_firstAttackSeen = false;
+
     // Progress pacing: we step at the 64 Hz ImmediateInput cadence by counting internal frames (192 Hz)
     int s_frameDiv = 0; // 0..2 cycles; advance when hits 0
     // Diagnostics: detect abnormal cycle lengths (should always be 3 calls between div0 events if Tick called once per internal frame)
@@ -119,7 +126,7 @@ namespace {
     static bool s_firstDiv0Seen = false;
 
     // Gating constants for heavy diagnostics
-    constexpr bool kEnableFullBufferSnapshots = true; // set false if memory/log size becomes an issue
+    constexpr bool kEnableFullBufferSnapshots = false; // set false if memory/log size becomes an issue
 
     // Unified freeze detector for macro timing.
     // Treat as frozen when:
@@ -413,6 +420,7 @@ namespace {
 
     void ResetPlayback() {
         s_playIndex = 0; s_playSpanRemaining = 0; s_playStreamIndex = 0; s_playBufStreamIndex = 0; s_frameDiv = 0;
+        s_callsSinceDiv0 = 0; s_firstDiv0Seen = false;
         s_streamFacingPerTick.clear();
         s_bufWriteQueue.clear(); s_bufQueueHead = 0; s_baselineMask = 0;
         s_tickBufQueue.clear(); s_tickBufHead = 0; s_writesLeftThisTick = 0;
@@ -420,6 +428,8 @@ namespace {
         s_finishGuardActive = false; s_finishGuardFramesLeft = 0; s_finishGuardStartMoveId = 0;
         // Reset playback buffer index synchronization
         s_lastSeenBufIdx = 0xFFFF; s_playbackBufIdxSyncInitialized = false;
+        s_logPrevMoveIdInit = false; s_logPrevMoveId = 0;
+        s_firstAttackSeen = false;
         ImmediateInput::Clear(2);
         // Default hook behavior
         g_forceBypass[1].store(false);
@@ -589,6 +599,7 @@ void Tick() {
     if (GetCurrentGamePhase() != GamePhase::Match || !AreCharactersInitialized()) return;
 
     // Pace counter for 64 Hz logical ticks using 192 Hz internal frames
+    ++s_callsSinceDiv0;
     if (++s_frameDiv >= 3) {
         s_frameDiv = 0;
         if (s_firstDiv0Seen) {
@@ -600,7 +611,6 @@ void Tick() {
         }
         s_callsSinceDiv0 = 0;
     }
-    ++s_callsSinceDiv0;
 
     State st = s_state.load();
     if (st == State::Recording) {
@@ -625,7 +635,13 @@ void Tick() {
         }
         bool shouldAdvance = false;
         if (!frozen) {
-            shouldAdvance = (s_frameDiv == 0);
+            // Sync recording to buffer updates to prevent drift if hook rate varies (e.g. double-tick)
+            // Fallback to s_frameDiv if buffer index reading failed (s_recPrevBufIdx < 0)
+            if (s_recPrevBufIdx >= 0) {
+                shouldAdvance = bufAdvanced;
+            } else {
+                shouldAdvance = (s_frameDiv == 0);
+            }
         } else {
             // When frozen (paused), advance if either the buffer index moved OR a step counter increment occurred.
             // This preserves neutral delay frames during frame stepping that previously were dropped when the
@@ -956,20 +972,18 @@ void Tick() {
                         s_tickBufQueue.push_back(raw);
                     }
                 }
-                  // Log stream advancement with moveID context to aid wake/macro debugging
-                  {
-                      static bool s_prevMoveIdInit = false;
-                      static uint16_t s_prevMoveId = 0;
-                      uint16_t currMoveId = GetPlayerMoveID(2);
-                      uint16_t prevMoveId = s_prevMoveIdInit ? s_prevMoveId : currMoveId;
-                      s_prevMoveId = currMoveId;
-                      s_prevMoveIdInit = true;
-                      LogOut("[MACRO][ADVANCE] t=" + std::to_string(s_playStreamIndex) +
-                          " bufIdx=" + std::to_string(curBufIdx) +
-                          " mask=0x" + [mask]{ char b[8]; snprintf(b,8,"%02X",mask); return std::string(b); }() +
-                          " prevMoveID=" + std::to_string(prevMoveId) +
-                          " currMoveID=" + std::to_string(currMoveId), true);
-                  }
+                  // Macro advance logging disabled (uncomment for debugging)
+                  // {
+                  //     uint16_t currMoveId = GetPlayerMoveID(2);
+                  //     uint16_t prevMoveId = s_logPrevMoveIdInit ? s_logPrevMoveId : currMoveId;
+                  //     s_logPrevMoveId = currMoveId;
+                  //     s_logPrevMoveIdInit = true;
+                  //     LogOut("[MACRO][ADVANCE] t=" + std::to_string(s_playStreamIndex) +
+                  //         " bufIdx=" + std::to_string(curBufIdx) +
+                  //         " mask=0x" + [mask]{ char b[8]; snprintf(b,8,"%02X",mask); return std::string(b); }() +
+                  //         " prevMoveID=" + std::to_string(prevMoveId) +
+                  //         " currMoveID=" + std::to_string(currMoveId), true);
+                  // }
                 ++s_playStreamIndex;
             }
             // Every frame: write some of this tick's buffer bytes via engine by overriding the poll,
@@ -994,12 +1008,40 @@ void Tick() {
                 uint8_t btnBits = (raw & BTN_MASK);
                 if (btnBits) frameMask = (uint8_t)((frameMask & DIR_MASK) | btnBits);
             }
-            // Drive the engine's poll directly this frame (P2 = index 2). This ensures
-            // poll → immediate registers → history ring all reflect our desired state.
+
+            // Logic to disable immediate input write for pre-buffer macro playback until the first attack button
+            // "Disable immediate inputs(button registers) and only write to the buffer"
+            // Implementation: Use Poll Override to write to buffer, but use Manual Override (Immediate Only) to force neutral immediate state.
+            bool suppressImmediate = false;
+            if (g_macroWakePreserveBuffer.load()) {
+                bool hasButtons = (frameMask & BTN_MASK) != 0;
+                if (!s_firstAttackSeen) {
+                    if (hasButtons) {
+                        s_firstAttackSeen = true;
+                    } else {
+                        suppressImmediate = true;
+                    }
+                }
+            }
+
+            // Drive the engine's poll directly this frame (P2 = index 2).
+            // This ensures the buffer history ring receives the correct macro inputs.
             g_pollOverrideMask[2].store(frameMask, std::memory_order_relaxed);
             g_pollOverrideActive[2].store(true, std::memory_order_relaxed);
-            // Ensure we are not bypassing processCharacterInput; let the engine handle writes.
             g_forceBypass[2].store(false);
+
+            if (suppressImmediate) {
+                // Force immediate state to Neutral (0) while preserving buffer write above.
+                // This prevents the character from reacting to the buffered directions/inputs until the trigger.
+                g_manualInputMask[2].store(0, std::memory_order_relaxed);
+                g_manualInputOverride[2].store(true, std::memory_order_relaxed);
+                // Use BUFFERED path (bypass original) so we can control both immediate (0) and buffer (via poll override)
+                g_injectImmediateOnly[2].store(false, std::memory_order_relaxed);
+            } else {
+                // Normal playback: Immediate state matches Poll state (engine handles it)
+                g_manualInputOverride[2].store(false, std::memory_order_relaxed);
+                g_injectImmediateOnly[2].store(false, std::memory_order_relaxed);
+            }
             g_injectImmediateOnly[2].store(false);
             // End condition: after last tick and queue drained
             if (s_playStreamIndex >= s_slots[slotIdx].macroStream.size() && s_tickBufHead >= s_tickBufQueue.size() && s_writesLeftThisTick == 0) {
@@ -1224,6 +1266,62 @@ void Play() {
     }
 }
 
+void PlayFromTick(int startTick) {
+    // Start playback from a specific tick offset.
+    // Used for wakeup macros to skip ahead and ensure the first attack button
+    // lands during the buffer window.
+    if (GetCurrentGamePhase() != GamePhase::Match || !AreCharactersInitialized()) return;
+    if (s_state.load() == State::Recording) return;
+    
+    int slotIdx = ClampSlot(s_curSlot.load()) - 1;
+    if (s_slots[slotIdx].macroStream.empty()) return;
+    
+    // Clamp startTick to valid range
+    if (startTick < 0) startTick = 0;
+    if (startTick >= static_cast<int>(s_slots[slotIdx].macroStream.size())) {
+        // Nothing to play
+        return;
+    }
+    
+    ResetPlayback();
+    s_playStreamIndex = static_cast<size_t>(startTick);
+    
+    // Ensure player control: we control P1 locally while P2 is macro-driven.
+    if (GetCurrentGameMode() == GameMode::Practice) {
+        SwitchPlayers::SetLocalSide(0); // P1 is local side
+    }
+    
+    // Precompute per-tick recorded facing for stream playback from RLE spans
+    if (!s_slots[slotIdx].spans.empty()) {
+        size_t total = s_slots[slotIdx].macroStream.size();
+        s_streamFacingPerTick.clear();
+        s_streamFacingPerTick.reserve(total);
+        for (const auto &sp : s_slots[slotIdx].spans) {
+            for (int t = 0; t < sp.ticks && s_streamFacingPerTick.size() < total; ++t) {
+                s_streamFacingPerTick.push_back(sp.facing);
+            }
+            if (s_streamFacingPerTick.size() >= total) break;
+        }
+        while (s_streamFacingPerTick.size() < total) s_streamFacingPerTick.push_back(0);
+    }
+    
+    EnableP2ControlForAutoAction();
+    g_pollOverrideActive[2].store(true, std::memory_order_relaxed);
+    g_forceBypass[2].store(false);
+    g_injectImmediateOnly[2].store(false);
+    s_state.store(State::Replaying);
+    
+    if (s_macroBannerId == -1) {
+        s_macroBannerId = DirectDrawHook::AddPermanentMessage("Macro: Replaying", RGB(120,255,120), kBannerX, kBannerY);
+    } else {
+        DirectDrawHook::UpdatePermanentMessage(s_macroBannerId, "Macro: Replaying", RGB(120,255,120));
+    }
+    
+    LogOut("[MACRO][PLAY-FROM] started slot=" + std::to_string(s_curSlot.load()) +
+           " startTick=" + std::to_string(startTick) +
+           " totalTicks=" + std::to_string((int)s_slots[slotIdx].macroStream.size()), true);
+}
+
 void Stop() {
     // Stop can be called anytime; no gating so it can clean up if needed
     State st = s_state.load();
@@ -1324,6 +1422,23 @@ int GetFirstButtonTick(int slot) {
         }
     }
     return -1;
+}
+
+uint8_t GetFirstAttackInput(int slot) {
+    // Returns the full input mask (direction + buttons) at the first attack button tick.
+    // This is what should be injected during wakeup buffer window.
+    // Returns 0 if no button found.
+    constexpr uint8_t BUTTON_MASK = 0xF0; // A(0x10) | B(0x20) | C(0x40) | D(0x80)
+    slot = ClampSlot(slot) - 1;
+    if (slot < 0) slot = 0; if (slot >= kMaxSlots) slot = kMaxSlots - 1;
+    const Slot& s = s_slots[slot];
+    if (s.macroStream.empty()) return 0;
+    for (size_t i = 0; i < s.macroStream.size(); ++i) {
+        if (s.macroStream[i] & BUTTON_MASK) {
+            return s.macroStream[i];
+        }
+    }
+    return 0;
 }
 
 void NextSlot() {
