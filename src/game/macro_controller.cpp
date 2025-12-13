@@ -972,18 +972,18 @@ void Tick() {
                         s_tickBufQueue.push_back(raw);
                     }
                 }
-                  // Log stream advancement with moveID context to aid wake/macro debugging
-                  {
-                      uint16_t currMoveId = GetPlayerMoveID(2);
-                      uint16_t prevMoveId = s_logPrevMoveIdInit ? s_logPrevMoveId : currMoveId;
-                      s_logPrevMoveId = currMoveId;
-                      s_logPrevMoveIdInit = true;
-                      LogOut("[MACRO][ADVANCE] t=" + std::to_string(s_playStreamIndex) +
-                          " bufIdx=" + std::to_string(curBufIdx) +
-                          " mask=0x" + [mask]{ char b[8]; snprintf(b,8,"%02X",mask); return std::string(b); }() +
-                          " prevMoveID=" + std::to_string(prevMoveId) +
-                          " currMoveID=" + std::to_string(currMoveId), true);
-                  }
+                  // Macro advance logging disabled (uncomment for debugging)
+                  // {
+                  //     uint16_t currMoveId = GetPlayerMoveID(2);
+                  //     uint16_t prevMoveId = s_logPrevMoveIdInit ? s_logPrevMoveId : currMoveId;
+                  //     s_logPrevMoveId = currMoveId;
+                  //     s_logPrevMoveIdInit = true;
+                  //     LogOut("[MACRO][ADVANCE] t=" + std::to_string(s_playStreamIndex) +
+                  //         " bufIdx=" + std::to_string(curBufIdx) +
+                  //         " mask=0x" + [mask]{ char b[8]; snprintf(b,8,"%02X",mask); return std::string(b); }() +
+                  //         " prevMoveID=" + std::to_string(prevMoveId) +
+                  //         " currMoveID=" + std::to_string(currMoveId), true);
+                  // }
                 ++s_playStreamIndex;
             }
             // Every frame: write some of this tick's buffer bytes via engine by overriding the poll,
