@@ -36,6 +36,7 @@ void Tick();
 // Hotkeys
 void ToggleRecord();   // Idle -> PreRecord -> Recording -> Idle(stop)
 void Play();           // Start replay current slot if present
+void PlayFromTick(int startTick); // Start replay from a specific tick offset
 void Stop();           // Force stop (record/replay), restore state
 void UnswapThenStop(); // Restore default mapping (unswap+CPU) first, then stop
 
@@ -63,6 +64,11 @@ int GetEffectiveTicks(int slot);
 // For wake timing, this is what needs to land during the buffer window.
 // Returns -1 if no button found.
 int GetFirstButtonTick(int slot);
+
+// Returns the full input mask (direction + buttons) at the first attack button tick.
+// This is what should be injected during wakeup buffer window.
+// Returns 0 if no button found.
+uint8_t GetFirstAttackInput(int slot);
 
 // Text serialization for macros (human-editable)
 // Format header: "EFZMACRO 1" then a space-separated sequence of tokens.

@@ -84,8 +84,9 @@ static inline bool IsBufferableAction(short moveID) {
     return false;
 }
 
-// Wakeup timing table: rising frames (visual @ 64Hz) for each character
+// Wakeup timing table: rising frames(moveid 96) (visual @ 64Hz) for each character
 // Multiply by 3 to get logical frames (192Hz ticks)
+//Taken out straight from https://mizuumi.wiki/w/Eternal_Fighter_Zero/Advanced_Mechanics#Wakeup_Time
 struct WakeupTiming {
     int charID;
     int risingFramesVisual;  // Visual frames at 64Hz
@@ -497,12 +498,15 @@ static int  s_p1WakeMacro96FrameCount = 0;
 static bool s_p1WakeMacroQueued       = false;
 static int  s_p1WakeMacroTargetFrame  = -1;
 static int  s_p1WakeMacroSlot         = -1;
+static int  s_p1WakeMacroStartTick    = 0;   // Tick offset to skip to for wake macros
 static int  s_p2WakeMacro96FrameCount = 0;
 static bool s_p2WakeMacroQueued       = false;
 // Pre-picked option for this wake sequence (row selection done early in moveID 96)
 static TriggerOption s_p2WakePrePickedOption = {};
 static int  s_p2WakeMacroTargetFrame  = -1;
 static int  s_p2WakeMacroSlot         = -1;
+static int  s_p2WakeMacroStartFrame   = -1;
+static int  s_p2WakeMacroStartTick    = 0;   // Tick offset to skip to for wake macros
 static bool s_p2WakeOptionPicked = false;
 
 // Lightweight stun/wakeup timing trackers for diagnostics
@@ -579,6 +583,11 @@ void AutoActionsTick_Inline(short moveID1, short moveID2) {
     ClearDelayStatesIfNonActionable();
 
     // Update prevs for next tick
+    // if (detailedLogging.load() && (IsGroundtech(prevMoveID2) || IsGroundtech(moveID2))) {
+    //     LogOut("[AUTO-ACTION][PREV-UPDATE] P2 prev " + std::to_string(prevMoveID2) + "->" + std::to_string(moveID2) +
+    //            " (wasGroundtech=" + std::to_string(IsGroundtech(prevMoveID2)) + 
+    //            " isGroundtech=" + std::to_string(IsGroundtech(moveID2)) + ")", true);
+    // }
     prevMoveID1 = moveID1;
     prevMoveID2 = moveID2;
 }
@@ -1039,6 +1048,7 @@ void ProcessTriggerCooldowns() {
 
 // Core implementation that uses caller-provided move IDs for better cache locality
 static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveID1, short prevMoveID2) {
+    static bool s_p2ForcedNeutral = false;
     // Only operate in offline Practice mode
     if (GetCurrentGameMode() != GameMode::Practice) return;
     if (DetectOnlineMatch()) return;
@@ -1053,11 +1063,14 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
     }
     // Quiescent fast-path: if nothing is pending and both move IDs are unchanged, skip all work
     // This keeps idle CPU low when triggers are enabled but no transitions occur.
+    // EXCEPTION: Never skip while P2 is in groundtech - we need to count ticks for wake macro timing!
+    bool p2InGroundtech = IsGroundtech(moveID2);
     if (!p1DelayState.isDelaying && !p2DelayState.isDelaying &&
         !g_pendingControlRestore.load() && g_dashDeferred.pendingSel.load() == 0 &&
         !s_p1WakePrearmed && !s_p2WakePrearmed && !s_p1RGPrearmed && !s_p2RGPrearmed &&
         p1TriggerCooldown <= 0 && p2TriggerCooldown <= 0 &&
         s_p2WakeMacroTokenNeutralizeCountdown <= 0 &&
+        !p2InGroundtech && // Don't skip during groundtech - need to count wake timing ticks
         moveID1 == prevMoveID1 && moveID2 == prevMoveID2) {
         return;
     }
@@ -1282,6 +1295,7 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
                     s_p1WakeMacroQueued = false;
                     s_p1WakeMacroTargetFrame = -1;
                     s_p1WakeMacroSlot = -1;
+                    s_p1WakeMacroStartTick = 0;
                     const char* tag = isSpecial ? "special" : (isMacro ? "macro" : "hold");
                     LogOut(std::string("[AUTO-ACTION] P1 wake ") + tag + " metadata stored", true);
                     LogFlowSequenceEvent(1, "wake metadata stored action=" + std::to_string(actionType), prevMoveID1, moveID1);
@@ -1318,43 +1332,57 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
                 int macroSlot = triggerOnWakeupMacroSlot.load();
                 int userDelayF = triggerOnWakeupDelay.load();
                 if (macroSlot > 0 && userDelayF == 0 && !s_p1WakeMacroQueued) {
-                    int risingFrames = GetWakeupRisingFrames(charID); // Visual frames at 64Hz
+                    int risingFrames = GetWakeupRisingFrames(charID); // Visual frames at 64Hz (13-39)
                     
                     // Find the FIRST attack button in the macro
                     int sel = CLAMP(macroSlot, 1, MacroController::GetSlotCount());
                     int firstButtonTick = MacroController::GetFirstButtonTick(sel);
-                    int totalTicks = MacroController::GetSlotStats(sel).totalTicks;
                     
-                    int ticksToButton = (firstButtonTick >= 0) ? (firstButtonTick + 1) : MacroController::GetEffectiveTicks(sel);
-                    
-                    int playStartFrame = risingFrames - ticksToButton - 1;
-                    if (playStartFrame < 1) playStartFrame = 1;
-                    s_p1WakeMacroTargetFrame = playStartFrame;
-                    s_p1WakeMacroSlot = macroSlot;
-                    
-                    if (detailedLogging.load() && s_p1WakeMacro96FrameCount == 1) {
-                        LogOut("[AUTO-ACTION][MACRO-TIMING-INIT] P1 charID=" + std::to_string(charID) +
-                               " risingFrames64=" + std::to_string(risingFrames) +
-                               " firstBtnTick=" + std::to_string(firstButtonTick) +
-                               " ticksToBtn=" + std::to_string(ticksToButton) +
-                               " playStartFrame=" + std::to_string(playStartFrame), true);
-                    }
-                    
-                    // Start macro playback at calculated frame
-                    if (s_p1WakeMacro96FrameCount >= playStartFrame) {
-                        if (MacroController::GetState() != MacroController::State::Recording) {
-                            if (!MacroController::IsSlotEmpty(sel)) {
-                                MacroController::SetCurrentSlot(sel);
-                                LogOut("[AUTO-ACTION][MACRO] P1 Pre-buffering wake macro (slot=" + std::to_string(sel) +
-                                       ") at frame " + std::to_string(s_p1WakeMacro96FrameCount) + 
-                                       "/" + std::to_string(risingFrames) +
-                                       " (firstBtnTick=" + std::to_string(firstButtonTick) + 
-                                       ", ticksToBtn=" + std::to_string(ticksToButton) + ")", true);
-                                MacroController::Play();
-                                s_p1WakeMacroQueued = true;
-                                s_p1WakeMacroTargetFrame = -1;
-                                s_p1WakeMacroSlot = -1;
-                                s_p1WakeBufferFrozen = true; // Mark as buffered to skip fallback path
+                    if (firstButtonTick < 0) {
+                        // No attack button in macro, nothing to buffer
+                        s_p1WakeMacroTargetFrame = -1;
+                        s_p1WakeMacroSlot = -1;
+                        s_p1WakeMacroStartTick = 0;
+                    } else {
+                        // Convert ticks to frames (ceil division to be safe)
+                        int framesToButton = (firstButtonTick + 2) / 3;
+                        
+                    // We want the attack button pressed before actionable (inside buffer window)
+                    // playStartFrame = when to start the macro during state 96
+                    // kBufferMargin accounts for the buffer window + timing margin
+                    // Tested with regular Mizuka and Kano as well as Mayu- this value seems to be fumbleproof so macros won't fail buffering
+                    // For Mizuka, 623c(3 hits) 22c was used as a test, for Kano - 214236c 22c, for Mayu - 623c delay 22c -  all of these seems to be properly buffering on wakeup and having f1 invlunerability
+                        constexpr int kBufferMargin = 12;
+                        int playStartFrame = risingFrames - framesToButton - kBufferMargin;
+                        if (playStartFrame < 1) playStartFrame = 1;
+                        
+                        // NOTE: Counter increments at 192Hz (ticks), so convert target to ticks
+                        s_p1WakeMacroStartTick = 0; // Play from beginning
+                        s_p1WakeMacroTargetFrame = playStartFrame * 3; // Convert visual frames to ticks
+                        s_p1WakeMacroSlot = macroSlot;
+                        
+                        if (detailedLogging.load() && s_p1WakeMacro96FrameCount == 1) {
+                            LogOut("[AUTO-ACTION][MACRO-TIMING-INIT] P1 charID=" + std::to_string(charID) +
+                                   " risingFrames=" + std::to_string(risingFrames) +
+                                   " firstBtnTick=" + std::to_string(firstButtonTick) +
+                                   " framesToBtn=" + std::to_string(framesToButton) +
+                                   " playStartFrame=" + std::to_string(playStartFrame), true);
+                        }
+                        
+                        // Start macro playback at calculated frame
+                        if (s_p1WakeMacro96FrameCount >= s_p1WakeMacroTargetFrame) {
+                            if (MacroController::GetState() != MacroController::State::Recording) {
+                                if (!MacroController::IsSlotEmpty(sel)) {
+                                    MacroController::SetCurrentSlot(sel);
+                                    LogOut("[AUTO-ACTION][MACRO] P1 Pre-buffering wake macro (slot=" + std::to_string(sel) +
+                                           ") at frame " + std::to_string(s_p1WakeMacro96FrameCount) +
+                                           " (target=" + std::to_string(playStartFrame) + ")", true);
+                                    MacroController::Play();
+                                    s_p1WakeMacroQueued = true;
+                                    s_p1WakeMacroTargetFrame = -1;
+                                    s_p1WakeMacroSlot = -1;
+                                    s_p1WakeBufferFrozen = true; // Mark as buffered to skip fallback path
+                                }
                             }
                         }
                     }
@@ -1664,7 +1692,21 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
     // not just the final GROUNDTECH_RECOVERY state, so that longer macros
     // have enough time to be pre-buffered before the character becomes
     // actionable.
-    if (triggerOnWakeupEnabled.load() && g_wakeBufferingEnabled.load() && IsGroundtech(moveID2)) {
+    bool isInGroundtech = IsGroundtech(moveID2);
+    bool wakeBlockEnabled = triggerOnWakeupEnabled.load() && g_wakeBufferingEnabled.load();
+    
+    // Wake state logging (disabled - uncomment for debugging)
+    // if (detailedLogging.load()) {
+    //     LogOut("[AUTO-ACTION][WAKE-STATE] moveID2=" + std::to_string(moveID2) +
+    //            " prevMoveID2=" + std::to_string(prevMoveID2) +
+    //            " isGroundtech=" + std::to_string(isInGroundtech) +
+    //            " counter=" + std::to_string(s_p2WakeMacro96FrameCount) +
+    //            " target=" + std::to_string(s_p2WakeMacroTargetFrame) +
+    //            " queued=" + std::to_string(s_p2WakeMacroQueued) +
+    //            " slot=" + std::to_string(s_p2WakeMacroSlot), true);
+    // }
+    
+    if (wakeBlockEnabled && isInGroundtech) {
         // Track frames during any groundtech state for potential macro pre-buffering.
         // On first frame entering groundtech, pre-pick the option row to get macro slot early.
         bool enteringGroundtechThisFrame = !IsGroundtech(prevMoveID2) && IsGroundtech(moveID2);
@@ -1673,10 +1715,12 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
             s_p2WakeMacroQueued = false;
             s_p2WakeMacroTargetFrame = -1;
             s_p2WakeMacroSlot = -1;
+            s_p2WakeMacroStartFrame = -1;
+            s_p2WakeMacroStartTick = 0;
             s_p2WakeOptionPicked = false;
-            if (detailedLogging.load()) {
-                LogOut("[AUTO-ACTION][MACRO-COUNTER] FIRST FRAME in groundtech, prev=" + std::to_string(prevMoveID2) + " counter=0", true);
-            }
+            // if (detailedLogging.load()) {
+            //     LogOut("[AUTO-ACTION][MACRO-COUNTER] FIRST FRAME in groundtech, prev=" + std::to_string(prevMoveID2) + " counter=0", true);
+            // }
             // Pre-pick a row now so we know macro slot for pre-buffering timing
             if (HasEnabledRows(TRIGGER_ON_WAKEUP)) {
                 if (PickRandomRow(TRIGGER_ON_WAKEUP, s_p2WakePrePickedOption)) {
@@ -1689,11 +1733,21 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
                 }
             }
         } else {
-            ++s_p2WakeMacro96FrameCount;
-            if (detailedLogging.load()) {
-                LogOut("[AUTO-ACTION][MACRO-COUNTER] tick=" + std::to_string(s_p2WakeMacro96FrameCount) +
-                       " prev=" + std::to_string(prevMoveID2) + " curr=" + std::to_string(moveID2), true);
+            // Only count ticks when in GROUNDTECH_RECOVERY (state 96), not the
+            // earlier groundtech states (97=PRE, 98=START, 99=END). The wakeup
+            // timing calculation uses the state 96 duration specifically.
+            if (moveID2 == GROUNDTECH_RECOVERY) {
+                ++s_p2WakeMacro96FrameCount;
+                // if (detailedLogging.load()) {
+                //     LogOut("[AUTO-ACTION][MACRO-COUNTER] tick=" + std::to_string(s_p2WakeMacro96FrameCount) +
+                //            " prev=" + std::to_string(prevMoveID2) + " curr=" + std::to_string(moveID2), true);
+                // }
             }
+            // Logging for pre-recovery states disabled
+            // else if (detailedLogging.load()) {
+            //     LogOut("[AUTO-ACTION][MACRO-COUNTER] pre-recovery state prev=" + std::to_string(prevMoveID2) + 
+            //            " curr=" + std::to_string(moveID2) + " (not counting)", true);
+            // }
         }
 
         // Determine macro slot and delay: prefer pre-picked option, fallback to global.
@@ -1715,65 +1769,94 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
         // When wake buffering is enabled and a macro slot is configured with 0F delay,
         // compute a target frame during GROUNDTECH_RECOVERY so that the first attack
         // button lands in the wake buffer window.
+        //
+        // State 96 (GROUNDTECH_RECOVERY) lasts the full wakeup duration (13-39 visual frames
+        // depending on character, as defined in s_wakeupTimings).
+        //
+        // Strategy: We want the first attack button to be pressed ~3 frames BEFORE actionable
+        // so it lands inside the ~10 frame buffer window and executes immediately on wakeup.
+        //
+        // Formula: playStartFrame = risingFrames - framesToButton - bufferMargin
+        // where framesToButton = ceil(firstButtonTick / 3) = how many frames until button in macro
+        //       bufferMargin = 3 frames (ensures button lands inside buffer window)
         if (macroHasData && userDelayF == 0) {
             int charID = displayData.p2CharID;
-            int risingFrames = GetWakeupRisingFrames(charID); // visual frames @64Hz
+            int risingFrames = GetWakeupRisingFrames(charID); // Visual frames at 64Hz (13-39)
             int firstButtonTick = MacroController::GetFirstButtonTick(macroSel);
-            int totalTicks = MacroController::GetSlotStats(macroSel).totalTicks;
-            (void)totalTicks; // silence unused warning in non-strict builds
-            int ticksToButton = (firstButtonTick >= 0)
-                ? (firstButtonTick + 1)
-                : MacroController::GetEffectiveTicks(macroSel);
-
-            // Original intent: start the macro so that the first attack button
-            // lands inside the wake buffer window by offsetting from the
-            // character's rising frames. However, risingFrames includes
-            // pre-groundtech states that we do not count in
-            // s_p2WakeMacro96FrameCount, which can push the computed
-            // playStartFrame past the actual number of groundtech frames and
-            // force us into the fallback path (starting the macro after 96).
-            //
-            // To guarantee that we actually pre-buffer *during* groundtech,
-            // cap the start frame to a small window near the end of the
-            // groundtech sequence. This is conservative but ensures that the
-            // macro will always start before wake instead of "late" on frame 1.
-            int playStartFrame = risingFrames - ticksToButton - 1;
-            if (playStartFrame < 1) playStartFrame = 1;
-            // Safety cap: we only ever see a handful of IsGroundtech frames
-            // (98/99/96), so don't let the target drift beyond that window.
-            const int kMaxGroundtechWindow = 4;
-            if (playStartFrame > kMaxGroundtechWindow) playStartFrame = kMaxGroundtechWindow;
-
-            s_p2WakeMacroTargetFrame = playStartFrame;
-            if (detailedLogging.load() && s_p2WakeMacro96FrameCount == 0) {
-                LogOut("[AUTO-ACTION][MACRO-TIMING-INIT] P2 charID=" + std::to_string(charID) +
-                       " risingFrames64=" + std::to_string(risingFrames) +
-                       " firstBtnTick=" + std::to_string(firstButtonTick) +
-                       " ticksToBtn=" + std::to_string(ticksToButton) +
-                       " playStartFrame=" + std::to_string(playStartFrame), true);
+            
+            if (firstButtonTick < 0) {
+                // No attack button in macro, nothing to buffer
+                s_p2WakeMacroTargetFrame = -1;
+                s_p2WakeMacroStartTick = 0;
+            } else {
+                // Convert ticks to frames (ceil division to be safe)
+                int framesToButton = (firstButtonTick + 2) / 3;
+                
+                // We want the attack button pressed before actionable (inside buffer window)
+                // playStartFrame = when to start the macro during state 96
+                // kBufferMargin accounts for the buffer window + timing margin
+                // Tested with regular Mizuka and Kano as well as Mayu- this value seems to be fumbleproof so macros won't fail buffering
+                 // For Mizuka, 623c(3 hits) 22c was used as a test, for Kano - 214236c 22c, for Mayu - 623c delay 22c -  all of these seems to be properly buffering on wakeup and having f1 invlunerability
+                constexpr int kBufferMargin = 12;
+                int playStartFrame = risingFrames - framesToButton - kBufferMargin;
+                if (playStartFrame < 1) playStartFrame = 1;
+                
+                // For this approach, we play from tick 0 (full macro) at the calculated frame
+                // NOTE: Counter increments at 192Hz (ticks), so convert target to ticks
+                s_p2WakeMacroStartTick = 0;
+                s_p2WakeMacroTargetFrame = playStartFrame * 3; // Convert visual frames to ticks
+                
+                if (detailedLogging.load() && s_p2WakeMacro96FrameCount == 0) {
+                    LogOut("[AUTO-ACTION][MACRO-TIMING-INIT] P2 charID=" + std::to_string(charID) +
+                           " risingFrames=" + std::to_string(risingFrames) +
+                           " firstBtnTick=" + std::to_string(firstButtonTick) +
+                           " framesToBtn=" + std::to_string(framesToButton) +
+                           " playStartFrame=" + std::to_string(playStartFrame), true);
+                }
             }
         } else if (s_p2WakeMacro96FrameCount == 0) {
             // No valid wake pre-buffer for this 96 cycle
             s_p2WakeMacroTargetFrame = -1;
+            s_p2WakeMacroStartTick = 0;
+        }
+
+        // Force Neutral while waiting for macro to prevent AI inputs (e.g. holding Down)
+        // from causing accidental transitions (e.g. Crouch) before the macro starts.
+        if (!s_p2WakeMacroQueued && s_p2WakeMacroSlot > 0) {
+             bool macroPlaying = (MacroController::GetState() == MacroController::State::Replaying);
+             if (!macroPlaying) {
+                 g_manualInputMask[2].store(0, std::memory_order_relaxed);
+                 g_manualInputOverride[2].store(true, std::memory_order_relaxed);
+                 g_injectImmediateOnly[2].store(true, std::memory_order_relaxed);
+                 s_p2ForcedNeutral = true;
+             }
         }
 
         // Macro pre-buffering for P2: if we have a computed target frame,
-        // start playback once the per-96 counter reaches that frame.
+        // start playback once the counter reaches that frame.
         if (!s_p2WakeMacroQueued && s_p2WakeMacroSlot > 0 && s_p2WakeMacroTargetFrame >= 0) {
+            // if (detailedLogging.load()) {
+            //     LogOut("[AUTO-ACTION][MACRO-CHECK] counter=" + std::to_string(s_p2WakeMacro96FrameCount) +
+            //            " target=" + std::to_string(s_p2WakeMacroTargetFrame) +
+            //            " reached=" + std::to_string(s_p2WakeMacro96FrameCount >= s_p2WakeMacroTargetFrame), true);
+            // }
             if (s_p2WakeMacro96FrameCount >= s_p2WakeMacroTargetFrame) {
                 int sel = CLAMP(s_p2WakeMacroSlot, 1, MacroController::GetSlotCount());
                 if (MacroController::GetState() != MacroController::State::Recording &&
                     !MacroController::IsSlotEmpty(sel)) {
-                    int charID = displayData.p2CharID;
-                    int risingFrames = GetWakeupRisingFrames(charID);
                     MacroController::SetCurrentSlot(sel);
                     LogOut("[AUTO-ACTION][MACRO] P2 Pre-buffering wake macro (slot=" + std::to_string(sel) +
                            ") at frame " + std::to_string(s_p2WakeMacro96FrameCount) +
-                           "/" + std::to_string(risingFrames), true);
-                          // Mark this macro as a wake pre-buffer so that when playback
-                          // completes, the restore path preserves the buffered motion.
-                          g_macroWakePreserveBuffer.store(true);
-                    MacroController::Play();
+                           " (target=" + std::to_string(s_p2WakeMacroTargetFrame) + ")", true);
+                    // Mark this macro as a wake pre-buffer so that when playback
+                    // completes, the restore path preserves the buffered motion.
+                    g_macroWakePreserveBuffer.store(true);
+                    // Start playback (from tick 0 or calculated offset)
+                    if (s_p2WakeMacroStartTick > 0) {
+                        MacroController::PlayFromTick(s_p2WakeMacroStartTick);
+                    } else {
+                        MacroController::Play();
+                    }
                     s_p2WakeMacroQueued = true;
                     s_p2WakeMacroTargetFrame = -1;
                     // Treat as buffered to skip generic wake fallback.
@@ -1782,6 +1865,14 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
             }
         }
     }
+    // Wake outside groundtech logging disabled
+    // else if (wakeBlockEnabled && detailedLogging.load()) {
+    //     LogOut("[AUTO-ACTION][WAKE-OUTSIDE] Not in groundtech: moveID2=" + std::to_string(moveID2) +
+    //            " prevMoveID2=" + std::to_string(prevMoveID2) +
+    //            " IsGroundtech(prev)=" + std::to_string(IsGroundtech(prevMoveID2)) +
+    //            " counter=" + std::to_string(s_p2WakeMacro96FrameCount) +
+    //            " queued=" + std::to_string(s_p2WakeMacroQueued), true);
+    // }
 
     // Standard wake pre-arm path for specials/holds (non-macro).
     if (triggerOnWakeupEnabled.load() && !s_p2WakePrearmed) {
@@ -1862,6 +1953,16 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
         // On Wakeup trigger (fallback when not pre-armed)
         bool p2BecameActionableFromGroundtech = IsGroundtech(prevMoveID2) && IsActionable(moveID2);
         const bool p2LeavingGroundtechThisFrame = IsGroundtech(prevMoveID2) && !IsGroundtech(moveID2);
+        
+        // if (detailedLogging.load()) {
+        //     LogOut("[AUTO-ACTION][FALLBACK-CHECK] prevMove=" + std::to_string(prevMoveID2) +
+        //            " currMove=" + std::to_string(moveID2) +
+        //            " IsGroundtech(prev)=" + std::to_string(IsGroundtech(prevMoveID2)) +
+        //            " IsGroundtech(curr)=" + std::to_string(IsGroundtech(moveID2)) +
+        //            " leaving=" + std::to_string(p2LeavingGroundtechThisFrame) +
+        //            " queued=" + std::to_string(s_p2WakeMacroQueued) +
+        //            " slot=" + std::to_string(s_p2WakeMacroSlot), true);
+        // }
 
         // If groundtech recovery ended and we never started the macro in-state,
         // queue it on exit so the wake buffer still fires as early as possible.
@@ -1872,7 +1973,9 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
                 MacroController::SetCurrentSlot(sel);
                 LogOut("[AUTO-ACTION][MACRO] Fallback wake macro queue on 96 exit (slot=" + std::to_string(sel) +
                        ", count=" + std::to_string(s_p2WakeMacro96FrameCount) +
-                       ", target=" + std::to_string(s_p2WakeMacroTargetFrame) + ")", true);
+                       ", target=" + std::to_string(s_p2WakeMacroTargetFrame) +
+                       ", prevMove=" + std::to_string(prevMoveID2) +
+                       ", currMove=" + std::to_string(moveID2) + ")", true);
                 // Fallback wake macro should also preserve the buffered motion.
                 g_macroWakePreserveBuffer.store(true);
                 MacroController::Play();
@@ -1880,6 +1983,16 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
             }
             s_p2WakeMacroTargetFrame = -1;
             s_p2WakeMacroSlot = -1;
+        }
+
+        // Cleanup Forced Neutral if we exited 96
+        if (s_p2ForcedNeutral && moveID2 != GROUNDTECH_RECOVERY) {
+             bool macroPlaying = (MacroController::GetState() == MacroController::State::Replaying);
+             if (!macroPlaying) {
+                 g_manualInputOverride[2].store(false, std::memory_order_relaxed);
+                 g_injectImmediateOnly[2].store(false, std::memory_order_relaxed);
+             }
+             s_p2ForcedNeutral = false;
         }
 
         if (s_p2WakePrearmed) {
