@@ -19,7 +19,7 @@ bool IsGroundedOverhead(int charId, int moveId, uintptr_t attackerBase) {
             if (moveId == 232) return true;
             break;
         case CHAR_ID_KAORI:
-            // Kaori: 623A/B/C
+            // Kaori: 214A/B/C
             if (InRange(moveId, 253, 256)) return true;
             break;
         case CHAR_ID_MISHIO:
@@ -51,9 +51,13 @@ bool IsGroundedOverhead(int charId, int moveId, uintptr_t attackerBase) {
             // Misuzu: 6C (moveId 211), failsafe since the move can hit if she's on the ground already.
             if (moveId == 211) return true;
             break;
+        case CHAR_ID_AKIKO:
+            // This clueless Akikomain just learned that their 236236a-236236c is an overhead!
+            if (InRange(moveId, 300, 302)) return true;
+            break;
         case CHAR_ID_NAYUKIB:
-            // Nayuki (awake): 662C (moveId 235)
-            if (moveId == 235) return true;
+            // Nayuki (awake): 662C (moveId 235)/236c(moveid 255)
+            if ((moveId == 235) || (moveId == 255)) return true;
             break;
         default:
             break;

@@ -197,6 +197,8 @@ void ResetDisplayDataToDefaults() {
     // Neyuki
     displayData.p1NeyukiJamCount = 0;
     displayData.p2NeyukiJamCount = 0;
+    displayData.p1NeyukiLockJam = false;
+    displayData.p2NeyukiLockJam = false;
     // Mio
     displayData.p1MioStance = 0;
     displayData.p2MioStance = 0;
