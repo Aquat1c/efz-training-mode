@@ -253,7 +253,15 @@ int __fastcall HookedProcessCharacterInput(int characterPtr, int edx) {
             int currentMotion = (playerNum == 1) ? p1CurrentMotionType : p2CurrentMotionType;
             bool isDashMotion = (currentMotion == MOTION_FORWARD_DASH || currentMotion == MOTION_BACK_DASH);
             if (!isDashMotion) {
-                WritePlayerInputToBuffer(playerNum, currentMask);
+                // Special handling for split injection (Immediate=0, Buffer=Macro):
+                // If a poll override is active, prefer it for the buffer write.
+                // This allows macro playback to suppress immediate inputs (via currentMask=0)
+                // while still populating the buffer history (via pollOverride=Macro).
+                uint8_t bufferMask = currentMask;
+                if (g_pollOverrideActive[playerNum].load(std::memory_order_relaxed)) {
+                    bufferMask = g_pollOverrideMask[playerNum].load(std::memory_order_relaxed);
+                }
+                WritePlayerInputToBuffer(playerNum, bufferMask);
             }
             
             g_lastInjectedMask[playerNum] = currentMask;
