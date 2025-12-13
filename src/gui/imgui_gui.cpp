@@ -2528,7 +2528,11 @@ namespace ImGuiGui {
             if (ImGui::SliderInt("##P1NeyukiJam", &jam, 0, NEYUKI_JAM_COUNT_MAX)) {
                 guiState.localData.p1NeyukiJamCount = jam;
             }
-            ImGui::TextDisabled("(Neyuki only)");
+            bool lockJam = guiState.localData.p1NeyukiLockJam;
+            if (ImGui::Checkbox("Lock Jam (restore on wakeup)##p1Neyuki", &lockJam)) {
+                guiState.localData.p1NeyukiLockJam = lockJam;
+            }
+            //ImGui::TextDisabled("(Neyuki only)");
     }
 
         // P1 Doppel (ExNanase) Settings
@@ -2929,7 +2933,11 @@ namespace ImGuiGui {
             if (ImGui::SliderInt("##P2NeyukiJam", &jam2, 0, NEYUKI_JAM_COUNT_MAX)) {
                 guiState.localData.p2NeyukiJamCount = jam2;
             }
-            ImGui::TextDisabled("(Neyuki only)");
+            bool lockJam2 = guiState.localData.p2NeyukiLockJam;
+            if (ImGui::Checkbox("Lock Jam (restore on wakeup)##p2Neyuki", &lockJam2)) {
+                guiState.localData.p2NeyukiLockJam = lockJam2;
+            }
+            //ImGui::TextDisabled("(Neyuki only)");
     }
 
         // P2 Doppel (ExNanase) Settings

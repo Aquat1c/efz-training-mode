@@ -262,6 +262,8 @@ struct DisplayData {
     // Neyuki (Sleepy Nayuki) – Jam count (0..9)
     int  p1NeyukiJamCount;
     int  p2NeyukiJamCount;
+    bool p1NeyukiLockJam;  // when true, restore jam count on wakeup (moveID 96)
+    bool p2NeyukiLockJam;
 
     // Mio – stance control (0=Short,1=Long) and optional lock
     int  p1MioStance;      // cached current stance

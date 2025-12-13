@@ -298,6 +298,7 @@ namespace CharacterSettings {
                d.p1AkikoFreezeCycle || d.p2AkikoFreezeCycle ||
                d.p1MioLockStance || d.p2MioLockStance ||
                d.p1KanoLockMagic || d.p2KanoLockMagic ||
+               d.p1NeyukiLockJam || d.p2NeyukiLockJam ||
                d.p1NayukiInfiniteSnow || d.p2NayukiInfiniteSnow ||
                d.p1MaiInfiniteGhost || d.p2MaiInfiniteGhost ||
                d.p1MaiInfiniteCharge || d.p2MaiInfiniteCharge ||
@@ -1571,6 +1572,25 @@ namespace CharacterSettings {
             int want = (pi==1)?localData.p1KanoMagic:localData.p2KanoMagic; want = CLAMP(want,0,KANO_MAGIC_MAX);
             int cur=0; SafeReadMemory(addr,&cur,sizeof(int)); if (cur != want) { SafeWriteMemory(addr,&want,sizeof(int)); }
         }; enforceKano(1); enforceKano(2);
+
+        // Neyuki (Sleepy Nayuki) – jam lock: restore jam count when in wakeup state (moveID 96)
+        auto enforceNeyukiJam = [&](int pi){
+            bool lock = (pi==1)?localData.p1NeyukiLockJam:localData.p2NeyukiLockJam;
+            if (!lock) return;
+            if ((pi==1 && localData.p1CharID != CHAR_ID_NAYUKI) || (pi==2 && localData.p2CharID != CHAR_ID_NAYUKI)) return;
+            const int off = (pi==1)?EFZ_BASE_OFFSET_P1:EFZ_BASE_OFFSET_P2;
+            // Check if player is in groundtech recovery state (moveID 96)
+            auto mvAddr = ResolvePointer(base, off, MOVE_ID_OFFSET);
+            if (!mvAddr) return;
+            short moveId = 0; SafeReadMemory(mvAddr, &moveId, sizeof(moveId));
+            if (moveId != GROUNDTECH_RECOVERY) return;
+            // Restore jam count to locked value
+            auto addr = ResolvePointer(base, off, NEYUKI_JAM_COUNT_OFFSET); if (!addr) return;
+            int want = (pi==1)?localData.p1NeyukiJamCount:localData.p2NeyukiJamCount;
+            want = CLAMP(want, 0, NEYUKI_JAM_COUNT_MAX);
+            int cur=0; SafeReadMemory(addr,&cur,sizeof(int));
+            if (cur != want) { SafeWriteMemory(addr,&want,sizeof(int)); }
+        }; enforceNeyukiJam(1); enforceNeyukiJam(2);
 
         // Nayuki (Awake) – infinite snowbunnies: hard-set to max (3000) every tick to prevent any decay
         auto enforceNayukiB = [&](int pi){
