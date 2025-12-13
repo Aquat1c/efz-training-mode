@@ -582,12 +582,12 @@ void AutoActionsTick_Inline(short moveID1, short moveID2) {
     MonitorAutoActions(moveID1, moveID2, prevMoveID1, prevMoveID2);
     ClearDelayStatesIfNonActionable();
 
-    // Update prevs for next tick - log this transition for debugging
-    if (detailedLogging.load() && (IsGroundtech(prevMoveID2) || IsGroundtech(moveID2))) {
-        LogOut("[AUTO-ACTION][PREV-UPDATE] P2 prev " + std::to_string(prevMoveID2) + "->" + std::to_string(moveID2) +
-               " (wasGroundtech=" + std::to_string(IsGroundtech(prevMoveID2)) + 
-               " isGroundtech=" + std::to_string(IsGroundtech(moveID2)) + ")", true);
-    }
+    // Update prevs for next tick
+    // if (detailedLogging.load() && (IsGroundtech(prevMoveID2) || IsGroundtech(moveID2))) {
+    //     LogOut("[AUTO-ACTION][PREV-UPDATE] P2 prev " + std::to_string(prevMoveID2) + "->" + std::to_string(moveID2) +
+    //            " (wasGroundtech=" + std::to_string(IsGroundtech(prevMoveID2)) + 
+    //            " isGroundtech=" + std::to_string(IsGroundtech(moveID2)) + ")", true);
+    // }
     prevMoveID1 = moveID1;
     prevMoveID2 = moveID2;
 }
@@ -1695,16 +1695,16 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
     bool isInGroundtech = IsGroundtech(moveID2);
     bool wakeBlockEnabled = triggerOnWakeupEnabled.load() && g_wakeBufferingEnabled.load();
     
-    // Always log state for debugging
-    if (detailedLogging.load()) {
-        LogOut("[AUTO-ACTION][WAKE-STATE] moveID2=" + std::to_string(moveID2) +
-               " prevMoveID2=" + std::to_string(prevMoveID2) +
-               " isGroundtech=" + std::to_string(isInGroundtech) +
-               " counter=" + std::to_string(s_p2WakeMacro96FrameCount) +
-               " target=" + std::to_string(s_p2WakeMacroTargetFrame) +
-               " queued=" + std::to_string(s_p2WakeMacroQueued) +
-               " slot=" + std::to_string(s_p2WakeMacroSlot), true);
-    }
+    // Wake state logging (disabled - uncomment for debugging)
+    // if (detailedLogging.load()) {
+    //     LogOut("[AUTO-ACTION][WAKE-STATE] moveID2=" + std::to_string(moveID2) +
+    //            " prevMoveID2=" + std::to_string(prevMoveID2) +
+    //            " isGroundtech=" + std::to_string(isInGroundtech) +
+    //            " counter=" + std::to_string(s_p2WakeMacro96FrameCount) +
+    //            " target=" + std::to_string(s_p2WakeMacroTargetFrame) +
+    //            " queued=" + std::to_string(s_p2WakeMacroQueued) +
+    //            " slot=" + std::to_string(s_p2WakeMacroSlot), true);
+    // }
     
     if (wakeBlockEnabled && isInGroundtech) {
         // Track frames during any groundtech state for potential macro pre-buffering.
@@ -1718,9 +1718,9 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
             s_p2WakeMacroStartFrame = -1;
             s_p2WakeMacroStartTick = 0;
             s_p2WakeOptionPicked = false;
-            if (detailedLogging.load()) {
-                LogOut("[AUTO-ACTION][MACRO-COUNTER] FIRST FRAME in groundtech, prev=" + std::to_string(prevMoveID2) + " counter=0", true);
-            }
+            // if (detailedLogging.load()) {
+            //     LogOut("[AUTO-ACTION][MACRO-COUNTER] FIRST FRAME in groundtech, prev=" + std::to_string(prevMoveID2) + " counter=0", true);
+            // }
             // Pre-pick a row now so we know macro slot for pre-buffering timing
             if (HasEnabledRows(TRIGGER_ON_WAKEUP)) {
                 if (PickRandomRow(TRIGGER_ON_WAKEUP, s_p2WakePrePickedOption)) {
@@ -1738,15 +1738,16 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
             // timing calculation uses the state 96 duration specifically.
             if (moveID2 == GROUNDTECH_RECOVERY) {
                 ++s_p2WakeMacro96FrameCount;
-                if (detailedLogging.load()) {
-                    LogOut("[AUTO-ACTION][MACRO-COUNTER] tick=" + std::to_string(s_p2WakeMacro96FrameCount) +
-                           " prev=" + std::to_string(prevMoveID2) + " curr=" + std::to_string(moveID2), true);
-                }
-            } else if (detailedLogging.load()) {
-                // Log early groundtech states without incrementing counter
-                LogOut("[AUTO-ACTION][MACRO-COUNTER] pre-recovery state prev=" + std::to_string(prevMoveID2) + 
-                       " curr=" + std::to_string(moveID2) + " (not counting)", true);
+                // if (detailedLogging.load()) {
+                //     LogOut("[AUTO-ACTION][MACRO-COUNTER] tick=" + std::to_string(s_p2WakeMacro96FrameCount) +
+                //            " prev=" + std::to_string(prevMoveID2) + " curr=" + std::to_string(moveID2), true);
+                // }
             }
+            // Logging for pre-recovery states disabled
+            // else if (detailedLogging.load()) {
+            //     LogOut("[AUTO-ACTION][MACRO-COUNTER] pre-recovery state prev=" + std::to_string(prevMoveID2) + 
+            //            " curr=" + std::to_string(moveID2) + " (not counting)", true);
+            // }
         }
 
         // Determine macro slot and delay: prefer pre-picked option, fallback to global.
@@ -1834,11 +1835,11 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
         // Macro pre-buffering for P2: if we have a computed target frame,
         // start playback once the counter reaches that frame.
         if (!s_p2WakeMacroQueued && s_p2WakeMacroSlot > 0 && s_p2WakeMacroTargetFrame >= 0) {
-            if (detailedLogging.load()) {
-                LogOut("[AUTO-ACTION][MACRO-CHECK] counter=" + std::to_string(s_p2WakeMacro96FrameCount) +
-                       " target=" + std::to_string(s_p2WakeMacroTargetFrame) +
-                       " reached=" + std::to_string(s_p2WakeMacro96FrameCount >= s_p2WakeMacroTargetFrame), true);
-            }
+            // if (detailedLogging.load()) {
+            //     LogOut("[AUTO-ACTION][MACRO-CHECK] counter=" + std::to_string(s_p2WakeMacro96FrameCount) +
+            //            " target=" + std::to_string(s_p2WakeMacroTargetFrame) +
+            //            " reached=" + std::to_string(s_p2WakeMacro96FrameCount >= s_p2WakeMacroTargetFrame), true);
+            // }
             if (s_p2WakeMacro96FrameCount >= s_p2WakeMacroTargetFrame) {
                 int sel = CLAMP(s_p2WakeMacroSlot, 1, MacroController::GetSlotCount());
                 if (MacroController::GetState() != MacroController::State::Recording &&
@@ -1863,14 +1864,15 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
                 }
             }
         }
-    } else if (wakeBlockEnabled && detailedLogging.load()) {
-        // Log when we're NOT in groundtech but wake block is enabled
-        LogOut("[AUTO-ACTION][WAKE-OUTSIDE] Not in groundtech: moveID2=" + std::to_string(moveID2) +
-               " prevMoveID2=" + std::to_string(prevMoveID2) +
-               " IsGroundtech(prev)=" + std::to_string(IsGroundtech(prevMoveID2)) +
-               " counter=" + std::to_string(s_p2WakeMacro96FrameCount) +
-               " queued=" + std::to_string(s_p2WakeMacroQueued), true);
     }
+    // Wake outside groundtech logging disabled
+    // else if (wakeBlockEnabled && detailedLogging.load()) {
+    //     LogOut("[AUTO-ACTION][WAKE-OUTSIDE] Not in groundtech: moveID2=" + std::to_string(moveID2) +
+    //            " prevMoveID2=" + std::to_string(prevMoveID2) +
+    //            " IsGroundtech(prev)=" + std::to_string(IsGroundtech(prevMoveID2)) +
+    //            " counter=" + std::to_string(s_p2WakeMacro96FrameCount) +
+    //            " queued=" + std::to_string(s_p2WakeMacroQueued), true);
+    // }
 
     // Standard wake pre-arm path for specials/holds (non-macro).
     if (triggerOnWakeupEnabled.load() && !s_p2WakePrearmed) {
@@ -1952,15 +1954,15 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
         bool p2BecameActionableFromGroundtech = IsGroundtech(prevMoveID2) && IsActionable(moveID2);
         const bool p2LeavingGroundtechThisFrame = IsGroundtech(prevMoveID2) && !IsGroundtech(moveID2);
         
-        if (detailedLogging.load()) {
-            LogOut("[AUTO-ACTION][FALLBACK-CHECK] prevMove=" + std::to_string(prevMoveID2) +
-                   " currMove=" + std::to_string(moveID2) +
-                   " IsGroundtech(prev)=" + std::to_string(IsGroundtech(prevMoveID2)) +
-                   " IsGroundtech(curr)=" + std::to_string(IsGroundtech(moveID2)) +
-                   " leaving=" + std::to_string(p2LeavingGroundtechThisFrame) +
-                   " queued=" + std::to_string(s_p2WakeMacroQueued) +
-                   " slot=" + std::to_string(s_p2WakeMacroSlot), true);
-        }
+        // if (detailedLogging.load()) {
+        //     LogOut("[AUTO-ACTION][FALLBACK-CHECK] prevMove=" + std::to_string(prevMoveID2) +
+        //            " currMove=" + std::to_string(moveID2) +
+        //            " IsGroundtech(prev)=" + std::to_string(IsGroundtech(prevMoveID2)) +
+        //            " IsGroundtech(curr)=" + std::to_string(IsGroundtech(moveID2)) +
+        //            " leaving=" + std::to_string(p2LeavingGroundtechThisFrame) +
+        //            " queued=" + std::to_string(s_p2WakeMacroQueued) +
+        //            " slot=" + std::to_string(s_p2WakeMacroSlot), true);
+        // }
 
         // If groundtech recovery ended and we never started the macro in-state,
         // queue it on exit so the wake buffer still fires as early as possible.
