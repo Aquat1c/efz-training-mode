@@ -1454,7 +1454,7 @@ namespace CharacterSettings {
             }; keepFeathers(1); keepFeathers(2);
         } else { p1LastFeatherCount = 0; p2LastFeatherCount = 0; }
 
-        // Misuzu: Infinite Poison timer — hard-set to max every tick for selected side(s)
+        // Misuzu: Infinite Poison timer - hard-set to max every tick for selected side(s)
         auto enforceMisuzuPoison = [&](int pi){
             bool isMisuzu = (pi==1)?(localData.p1CharID==CHAR_ID_MISUZU):(localData.p2CharID==CHAR_ID_MISUZU);
             bool wantInf = (pi==1)?localData.p1MisuzuInfinitePoison:localData.p2MisuzuInfinitePoison;

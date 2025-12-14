@@ -69,7 +69,7 @@
 #define MOTION_412C      305
 #define MOTION_412D      322  // 412 + D
 
-// 22 (down, neutral, down) alias pattern (spec given as 22 or 5252) — treat as 2, (optional neutral), 2
+// 22 (down, neutral, down) alias pattern (spec given as 22 or 5252) - treat as 2, (optional neutral), 2
 #define MOTION_22A       306
 #define MOTION_22B       307
 #define MOTION_22C       308
