@@ -493,7 +493,6 @@ namespace ImGuiGui {
                 }
                 if (f5Active) {
                     ImGui::EndDisabled();
-                    ImGui::SameLine();
                     ImGui::TextDisabled("(disabled: Automatic Recovery enabled)");
                     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Disable Automatic Recovery to adjust RF Recovery (F4).");
                 }
@@ -1839,10 +1838,10 @@ namespace ImGuiGui {
             }
             // Small hint so users know how to scroll without a mouse
             ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 1.0f, 0.8f, 0.85f));
-            ImGui::TextDisabled("Hint: Use Up/Down/PageUp/PageDown or D-Pad to scroll this Help.");
+            ImGui::TextDisabled("Hint: Use Up/Down/Mousewheel or D-Pad to scroll this Help section.");
             ImGui::PopStyleColor();
             // Short intro
-            ImGui::TextWrapped("This Help covers the overlay features, hotkeys, and training tools. While the menu is open, practice hotkeys are gated and the game auto-pauses; it resumes on close.");
+            ImGui::TextWrapped("This Help covers the overlay features, hotkeys, and training tools. While the menu is open, practice hotkeys are disabled and the game auto-pauses; it resumes on close.");
             ImGui::Dummy(ImVec2(1, 4));
 
             if (ImGui::BeginTabBar("##HelpTabs", ImGuiTabBarFlags_None)) {
@@ -1854,7 +1853,7 @@ namespace ImGuiGui {
                     if (ImGui::BeginTabBar("##HelpGettingStartedTabs", ImGuiTabBarFlags_None)) {
                         // Quick Start
                         if (ImGui::BeginTabItem("Quick Start")) {
-                            ImGui::TextWrapped("Open the overlay, adjust options, then press Apply at the bottom. While the menu is open, practice hotkeys are gated and the game auto-pauses; it resumes on close.");
+                            ImGui::TextWrapped("Open the overlay, adjust options, then press Apply at the bottom. While the menu is open, practice hotkeys are disabled and the game auto-pauses; it resumes on close.");
                             BulletTextWrapped("Open Help: %s", GetKeyName(cfg.helpKey).c_str());
                             BulletTextWrapped("Toggle Overlay: %s (Controller: %s)", GetKeyName(cfg.toggleImGuiKey).c_str(), Config::GetGamepadButtonName(cfg.gpToggleMenuButton).c_str());
                             BulletTextWrapped("Save Position: %s (Controller: %s)", GetKeyName(cfg.recordKey).c_str(), Config::GetGamepadButtonName(cfg.gpSavePositionButton).c_str());
@@ -1948,19 +1947,44 @@ namespace ImGuiGui {
                         }
                         // Character Settings
                         if (ImGui::BeginTabItem("Character Settings")) {
-                            ImGui::TextWrapped("Options appear only when that character is present. Examples:");
-                            BulletTextWrapped("Ikumi: Infinite Blood / Genocide timer tweaks (Practice only).");
-                            BulletTextWrapped("Misuzu: Feathers, Poison timer/level with optional freeze.");
-                            BulletTextWrapped("Mishio: Element (None/Fire/Lightning/Awakened) and Awakened timer controls; Infinite toggles.");
-                            BulletTextWrapped("Akiko: Bullet cycle lock, Clean Hit helper, Timeslow trigger.");
-                            BulletTextWrapped("Mai: Ghost/Charge/Awakening timers, 'No CD', Ghost position override.");
-                            BulletTextWrapped("Kano: Magic meter controls with optional value lock.");
-                            BulletTextWrapped("Nayuki (Awake): Snowbunnies timer with infinite toggle.");
-                            BulletTextWrapped("Nayuki (Asleep): Jam count.");
-                            BulletTextWrapped("Mio: Stance (Short/Long) with lock.");
-                            BulletTextWrapped("Doppel: Golden Doppel toggle.");
-                            BulletTextWrapped("Nanase (Rumi): Shinai/Barehanded, Infinite Shinai, FM (Kimchi) timer controls.");
-                            BulletTextWrapped("Minagi: Always-readied Michiru toggle and Michiru position override.");
+                            ImGui::TextWrapped("Character-specific options appear only when that character is present in the match.");
+                            ImGui::Dummy(ImVec2(1, 6));
+                            ImGui::TextColored(ImVec4(0.7f, 0.9f, 1.0f, 1.0f), "Ikumi");
+                            ImGui::TextWrapped("Toggle Infinite Blood to stay in blood mode permanently. Genocide timer shows the remaining duration and can be adjusted.");
+                            ImGui::Dummy(ImVec2(1, 4));
+                            ImGui::TextColored(ImVec4(0.7f, 0.9f, 1.0f, 1.0f), "Misuzu");
+                            ImGui::TextWrapped("Adjust feather count (0-5). Poison timer and level can be set manually; enable Freeze Poison to prevent the timer from ticking down.");
+                            ImGui::Dummy(ImVec2(1, 4));
+                            ImGui::TextColored(ImVec4(0.7f, 0.9f, 1.0f, 1.0f), "Mishio");
+                            ImGui::TextWrapped("Select element (None/Fire/Lightning/Awakened). Awakened timer can be adjusted; Infinite Element and Infinite Awakened prevent decay.");
+                            ImGui::Dummy(ImVec2(1, 4));
+                            ImGui::TextColored(ImVec4(0.7f, 0.9f, 1.0f, 1.0f), "Mai");
+                            ImGui::TextWrapped("Control Mini-Mai, Charge, and Awakening timers separately. 'No Charge Cooldown' removes the delay between charge uses. Mini-Mai X/Y position can be overridden for testing setups.");
+                            ImGui::Dummy(ImVec2(1, 4));
+                            ImGui::TextColored(ImVec4(0.7f, 0.9f, 1.0f, 1.0f), "Kano");
+                            ImGui::TextWrapped("Set magic meter value (0-3). Enable Lock Magic to keep the meter at your chosen value even when spent.");
+                            ImGui::Dummy(ImVec2(1, 4));
+                            ImGui::TextColored(ImVec4(0.7f, 0.9f, 1.0f, 1.0f), "Nayuki (Awake)");
+                            ImGui::TextWrapped("Snow bunnies timer controls how long bunnies stay active. Infinite Snow bunnies keeps them at maximum duration.");
+                            ImGui::Dummy(ImVec2(1, 4));
+                            ImGui::TextColored(ImVec4(0.7f, 0.9f, 1.0f, 1.0f), "Nayuki (Asleep)");
+                            ImGui::TextWrapped("Jam count (0-9) controls stored jams. Lock Jam restores the count to your set value whenever the character wakes up from knockdown.");
+                            ImGui::Dummy(ImVec2(1, 4));
+                            ImGui::TextColored(ImVec4(0.7f, 0.9f, 1.0f, 1.0f), "Mio");
+                            ImGui::TextWrapped("Switch between Short and Long stance. Lock Stance prevents the game from automatically changing it during certain moves.");
+                            ImGui::Dummy(ImVec2(1, 4));
+                            ImGui::TextColored(ImVec4(0.7f, 0.9f, 1.0f, 1.0f), "Doppel");
+                            ImGui::TextWrapped("Golden Doppel (Enlightened) toggle makes Doppel enter the FM state. Uncheck to disable");
+                            ImGui::Dummy(ImVec2(1, 4));
+                            ImGui::TextColored(ImVec4(0.7f, 0.9f, 1.0f, 1.0f), "Nanase (Rumi)");
+                            ImGui::TextWrapped("Toggle between Shinai and Barehanded mode. Infinite Shinai prevents it from breaking. You can also adjust Kimchi timer as well as make it stop decaying.");
+                            ImGui::Dummy(ImVec2(1, 4));
+                            ImGui::TextColored(ImVec4(0.7f, 0.9f, 1.0f, 1.0f), "Minagi");
+                            ImGui::TextWrapped("Always-readied Michiru always keeps Michiru in readied state. Michiru X/Y position lets you place her anywhere for setup testing.");
+                            ImGui::Dummy(ImVec2(1, 4));
+                            ImGui::TextColored(ImVec4(0.7f, 0.9f, 1.0f, 1.0f), "Akiko");
+                            ImGui::TextWrapped("Lock Bullet Cycle to keep a specific bullet pattern. Timeslow trigger controls the slowdown effect.");
+                            ImGui::TextWrapped("Clean Hit helper shows timing feedback for 623 inputs - if it says 'Too Low', delay your 623; if 'Too High', press faster.");
                             ImGui::EndTabItem();
                         }
                         // Auto Actions
@@ -1983,6 +2007,9 @@ namespace ImGuiGui {
                             BulletTextWrapped("It should also properly handle crossups as well.");
                             ImGui::TextWrapped("Actions are rate-limited to avoid spam; toggling the trigger clears it.");
                             ImGui::TextWrapped("'After Airtech' here is separate from Auto-Airtech; you need to enable auto-airtech for After Airtech trigger to work.");
+                            ImGui::Dummy(ImVec2(1, 4));
+                            ImGui::TextDisabled("Tip: Testing Wakeup Timing");
+                            ImGui::TextWrapped("You can enable 'Pre-buffer wake specials/dashes/macroses' to test wakeup macroses - it'll try to buffer the macro during the rising frames of wakeup.");
                             ImGui::EndTabItem();
                         }
                         // Macros
@@ -2018,7 +2045,7 @@ namespace ImGuiGui {
                             ImGui::Indent();
                             BulletTextWrapped("Random Block, Random RG, and Always RG are mutually exclusive; turning one on can turn others off.");
                             BulletTextWrapped("Counter RG won't work if Always RG is on.");
-                            BulletTextWrapped("While the menu is open, practice hotkeys are gated and the game auto-pauses; there's a brief cooldown after closing.");
+                            BulletTextWrapped("While the menu is open, practice hotkeys are disabled and the game auto-pauses; there's a brief cooldown after closing.");
                             ImGui::Unindent();
 
                             ImGui::Dummy(ImVec2(1, 6));
@@ -2083,6 +2110,8 @@ namespace ImGuiGui {
                     ImGui::SeparatorText("EFZ Training Mode");
                     ImGui::TextWrapped("Version: %s", EFZ_TRAINING_MODE_VERSION);
                     ImGui::TextWrapped("Build: %s %s", EFZ_TRAINING_MODE_BUILD_DATE, EFZ_TRAINING_MODE_BUILD_TIME);
+                    ImGui::TextWrapped("Find the newest version here:");
+                    ImGui::TextLinkOpenURL("https://github.com/Aquat1c/efz-training-mode/releases");
                     // Show detected EfzRevival version and support status (stub)
                     {
                         EfzRevivalVersion rv = GetEfzRevivalVersion();
@@ -2094,14 +2123,14 @@ namespace ImGuiGui {
                         if (!supported) {
                             ImGui::SameLine();
                             ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.2f, 1.0f), "(unsupported)");
-                            ImGui::TextDisabled("Some features are gated. Online detection and certain functionality might be unavailable.");
+                            ImGui::TextDisabled("Some features are disabled. Online detection and certain functionality might be unavailable.");
                         } else {
                             ImGui::SameLine();
                             ImGui::TextDisabled("(supported)");
                         }
                         ImGui::Dummy(ImVec2(1, 4));
                         ImGui::SeparatorText("Compatibility");
-                        ImGui::TextWrapped("Supported EfzRevival builds: Vanilla EFZ (no Revival), EfzRevival 1.02e, 1.02g, 1.02h!!!, 1.02i!!!.");
+                        ImGui::TextWrapped("Supported EfzRevival builds: Vanilla EFZ (no Revival), EfzRevival 1.02e, 1.02f, 1.02g, 1.02h!!!, 1.02i!!!.");
                     }
                     ImGui::Dummy(ImVec2(1, 4));
                     ImGui::SeparatorText("Overview");
@@ -2397,7 +2426,7 @@ namespace ImGuiGui {
             if (ImGui::Checkbox("Infinite timeslow (freeze 000)##p1Akiko", &inf1)) {
                 guiState.localData.p1AkikoInfiniteTimeslow = inf1;
             }
-            ImGui::TextDisabled("(Akiko: bullet routes and clock-slow; 'Infinite' now freezes the XYZ digits to 000)");
+            // ImGui::TextDisabled("(Akiko: bullet routes and clock-slow; 'Infinite' now freezes the XYZ digits to 000)");
     }
         // P1 Mai (Kawasumi) Settings
         else if (p1CharID == CHAR_ID_MAI) {
@@ -2488,7 +2517,7 @@ namespace ImGuiGui {
             if (ImGui::Button("Zero##P1KanoMagic")) { guiState.localData.p1KanoMagic = 0; }
             bool lock = guiState.localData.p1KanoLockMagic;
             if (ImGui::Checkbox("Lock magic##p1Kano", &lock)) { guiState.localData.p1KanoLockMagic = lock; }
-            ImGui::TextDisabled("(Kano: magic meter at +0x3150)");
+            //ImGui::TextDisabled("(Kano: magic meter at +0x3150)");
     }
         // P1 Nayuki (Awake) Settings
         else if (p1CharID == CHAR_ID_NAYUKIB) {
@@ -2502,7 +2531,7 @@ namespace ImGuiGui {
             }
             bool inf = guiState.localData.p1NayukiInfiniteSnow;
             if (ImGui::Checkbox("Infinite timer##p1Nayuki", &inf)) guiState.localData.p1NayukiInfiniteSnow = inf;
-            ImGui::TextDisabled("(Nayuki: snowbunnies timer at +0x3150)");
+            //ImGui::TextDisabled("(Nayuki: snowbunnies timer at +0x3150)");
     }
         // P1 Mio Settings
         else if (p1CharID == CHAR_ID_MIO) {
@@ -2517,7 +2546,7 @@ namespace ImGuiGui {
             if (ImGui::Checkbox("Lock stance##p1Mio", &lock)) {
                 guiState.localData.p1MioLockStance = lock;
             }
-            ImGui::TextDisabled("(Mio training helpers)");
+            //ImGui::TextDisabled("(Mio training helpers)");
     }
 
         // P1 Neyuki (Sleepy Nayuki) Settings
@@ -2571,7 +2600,7 @@ namespace ImGuiGui {
             if (ImGui::IsItemHovered()) {
                 ImGui::SetTooltip("When enabled, keeps Shinai equipped by forcing mode back to Shinai after specials/supers that drop it. Only applies when mode is Shinai.");
             }
-            ImGui::TextDisabled("(Switch carefully during idle)");
+            //ImGui::TextDisabled("(Switch carefully during idle)");
 
             ImGui::Separator();
             ImGui::Text("Final Memory (Kimchi):");
@@ -2816,7 +2845,7 @@ namespace ImGuiGui {
             if (ImGui::Checkbox("Infinite timeslow (freeze 000)##p2Akiko", &inf2)) {
                 guiState.localData.p2AkikoInfiniteTimeslow = inf2;
             }
-            ImGui::TextDisabled("(Akiko: bullet routes and clock-slow; 'Infinite' now freezes the XYZ digits to 000)");
+            // ImGui::TextDisabled("(Akiko: bullet routes and clock-slow; 'Infinite' now freezes the XYZ digits to 000)");
     }
         // P2 Mai (Kawasumi) Settings
         else if (p2CharID == CHAR_ID_MAI) {
@@ -3004,7 +3033,7 @@ namespace ImGuiGui {
             if (ImGui::Checkbox("Always readied##p2Minagi", &readied2)) {
                 guiState.localData.p2MinagiAlwaysReadied = readied2;
             }
-            ImGui::TextDisabled("(Sets Michiru to ID 401 when idle/unreadied; Practice only)");
+            // ImGui::TextDisabled("(Sets Michiru to ID 401 when idle/unreadied; Practice only)");
             // Michiru position override controls (P2)
             double setMX2 = guiState.localData.p2MinagiPuppetSetX;
             double setMY2 = guiState.localData.p2MinagiPuppetSetY;
