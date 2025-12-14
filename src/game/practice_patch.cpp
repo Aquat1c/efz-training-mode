@@ -1309,6 +1309,12 @@ void MonitorDummyAutoBlock(short p1MoveID, short p2MoveID, short prevP1MoveID, s
                     desiredStance = 0;
                 }
             }
+            // Check for airborne lows (moves that hit low even when attacker is in the air)
+            if (attackerAir && s_p1CharID >= 0) {
+                if (GuardOverrides::IsAirborneLow(s_p1CharID, static_cast<int>(st))) {
+                    desiredStance = 1; // crouch to block low
+                }
+            }
 
             // Write if changed
             uint8_t curDir=0, curStance=0;
