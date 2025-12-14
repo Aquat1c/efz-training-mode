@@ -65,4 +65,16 @@ bool IsGroundedOverhead(int charId, int moveId, uintptr_t attackerBase) {
     return false;
 }
 
+bool IsAirborneLow(int charId, int moveId) {
+    switch (charId) {
+        case CHAR_ID_MAKOTO:
+            // Makoto: 236236A/B/C (moveIds 303-305) - hits low even from air
+            if (InRange(moveId, 303, 305)) return true;
+            break;
+        default:
+            break;
+    }
+    return false;
+}
+
 } // namespace GuardOverrides
