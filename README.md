@@ -183,8 +183,8 @@ Please open issues/PRs with clear descriptions and steps to reproduce where rele
 ---
 
 **Special Thanks**
-- fishshapedfish — early tables and references used to bootstrap character state work
-- Ev.Geniy, yagelbagel, Micro and others — testing and feedback
+- fishshapedfish - early tables and references used to bootstrap character state work
+- Ev.Geniy, yagelbagel, Micro and others - testing and feedback
 
 ---
 

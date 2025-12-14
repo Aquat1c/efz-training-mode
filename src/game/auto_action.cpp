@@ -3197,7 +3197,7 @@ void ProcessAutoControlRestore() {
         // immediately restore control and clear the queued-dash guard. This avoids an infinite pre-start hold
         // when we are put into blockstun/hitstun/airtech or other non-dash states by the opponent.
         if (g_recentDashQueued.load() && !dashStartNow && dashCancelled) {
-            LogOut("[AUTO-ACTION][DASH] Pre-start interrupted (hit/block/airtech) — cancelling dash and restoring control", true);
+            LogOut("[AUTO-ACTION][DASH] Pre-start interrupted (hit/block/airtech) - cancelling dash and restoring control", true);
             if (ValidationMetricsEnabled()) { GetValidationMetrics().dashPreStartInterrupts++; }
             // Cancel any pending follow-up as it will never fire now
             if (g_dashDeferred.pendingSel.load() > 0) {
@@ -3429,7 +3429,7 @@ void ProcessAutoControlRestore() {
         if (waitingDashStart && !dashQueueActiveNow && moveID2 != 0 && !moveIsDash) {
             int ageSinceQueue = frameCounter.load() - g_recentDashQueuedFrame.load();
             if (ageSinceQueue >= 12) { // ~1/6 sec at 192 Hz; enough to rule out 1F start IDs
-                LogOut("[AUTO-ACTION][DASH] Pre-start cancelled (no start observed, non-dash state persisted) — restoring", true);
+                LogOut("[AUTO-ACTION][DASH] Pre-start cancelled (no start observed, non-dash state persisted) - restoring", true);
                 // Cancel any pending follow-up as it will never fire now
                 if (g_dashDeferred.pendingSel.load() > 0) {
                     g_dashDeferred.pendingSel.store(0);
