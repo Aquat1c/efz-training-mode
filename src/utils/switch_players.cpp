@@ -1060,6 +1060,38 @@ namespace SwitchPlayers {
         return ApplySet(reinterpret_cast<uint8_t*>(p), sideIdx);
     }
 
+    int GetLocalSide() {
+        // Returns 0 (P1 local), 1 (P2 local), or -1 if unable to read
+        if (GetCurrentGameMode() != GameMode::Practice) return -1;
+        
+        if (!IsRevivalLoaded()) {
+            // Vanilla path: check active player flag from game state
+            uintptr_t efzBase = GetEFZBase();
+            if (!efzBase) return -1;
+            uintptr_t gameStatePtr = 0;
+            if (!SafeReadMemory(efzBase + EFZ_BASE_OFFSET_GAME_STATE, &gameStatePtr, sizeof(gameStatePtr)) || !gameStatePtr)
+                return -1;
+            uint8_t activePlayer = 0;
+            if (!SafeReadMemory(gameStatePtr + GAMESTATE_OFF_ACTIVE_PLAYER, &activePlayer, sizeof(activePlayer)))
+                return -1;
+            return (int)activePlayer;
+        }
+        
+        // Revival path: read from Practice controller
+        PauseIntegration::EnsurePracticePointerCapture();
+        void* p = PauseIntegration::GetPracticeControllerPtr();
+        if (!p) {
+            uint8_t* fb = ResolvePracticePtrFallback();
+            if (!fb) return -1;
+            p = fb;
+        }
+        
+        int curLocal = 0;
+        if (!SafeReadMemory((uintptr_t)p + EFZ_Practice_LocalSideOffset(), &curLocal, sizeof(curLocal)))
+            return -1;
+        return curLocal;
+    }
+
     bool ResetControlMappingForMenusToP1() {
         // CRITICAL: Never modify game state during online mode
         if (g_onlineModeActive.load()) return false;

@@ -21,6 +21,7 @@
 #include "../include/game/per_frame_sample.h" // Unified per-frame sample accessor
 #include "../include/game/validation_metrics.h" // Validation metrics instrumentation
 #include "../include/game/validation_metrics.h" // Validation metrics instrumentation
+#include "../include/gui/overlay.h" // For DirectDrawHook::AddMessage
 
 // Safety forward declarations (in case of include-order differences in some build phases)
 bool IsThrown(short moveID);
@@ -149,6 +150,10 @@ bool p2ActionApplied = false;
 // Definitions for trigger tracking globals
 std::atomic<int> g_lastActiveTriggerType(TRIGGER_NONE);
 std::atomic<int> g_lastActiveTriggerFrame(0);
+
+// Globals to track trigger cancelled state (flashes red on cancel)
+std::atomic<bool> g_triggersCancelledActive(false);
+std::atomic<int> g_triggersCancelledFrame(0);
 
 struct AutoActionLogScope {
     AutoActionLogScope(const char* phaseLabel, int playerNum, int triggerType)
@@ -3666,6 +3671,261 @@ bool AutoGuard(int playerNum, int opponentPtr) {
     
     // Apply block input
     return WritePlayerInput(playerPtr, blockInput);
+}
+
+// Cancel active auto-actions and macros without disabling trigger settings.
+// Resets execution state so triggers can fire again cleanly after state/position changes.
+void CancelAutoActionsAndMacros() {
+    std::ostringstream logStream;
+    logStream << "[CANCEL] === BEGIN CancelAutoActionsAndMacros ===";
+    LogOut(logStream.str(), true);
+
+    // =========================================================================
+    // 1. MACRO STATE CAPTURE AND CANCEL
+    // =========================================================================
+    MacroController::State macroSt = MacroController::GetState();
+    int macroSlot = MacroController::GetCurrentSlot();
+    
+    logStream.str(""); logStream.clear();
+    logStream << "[CANCEL][MACRO] Current state: "
+              << (macroSt == MacroController::State::Idle ? "Idle" :
+                  macroSt == MacroController::State::PreRecord ? "PreRecord" :
+                  macroSt == MacroController::State::Recording ? "Recording" : "Replaying")
+              << " slot=" << macroSlot;
+    LogOut(logStream.str(), true);
+    
+    if (macroSt != MacroController::State::Idle) {
+        // Use UnswapThenStop for PreRecord/Recording to properly restore default mapping
+        // (same pattern as backing to Character Select) 
+        if (macroSt == MacroController::State::PreRecord || macroSt == MacroController::State::Recording) {
+            MacroController::UnswapThenStop();
+            logStream.str(""); logStream.clear();
+            logStream << "[CANCEL][MACRO] Stopped PreRecord/Recording with UnswapThenStop";
+            LogOut(logStream.str(), true);
+            // Show "Macro: Cancelled" with darker red than Recording color (255,80,80)
+            DirectDrawHook::AddMessage("Macro: Cancelled", "MACRO", RGB(180, 40, 40), 1200, 0, 120);
+        } else {
+            MacroController::Stop();
+            logStream.str(""); logStream.clear();
+            logStream << "[CANCEL][MACRO] Stopped active macro playback";
+            LogOut(logStream.str(), true);
+            // Show cancellation message for replay as well
+            DirectDrawHook::AddMessage("Macro: Cancelled", "MACRO", RGB(180, 40, 40), 1200, 0, 120);
+        }
+    }
+
+    // =========================================================================
+    // 2. DELAY STATE CAPTURE AND RESET
+    // =========================================================================
+    logStream.str(""); logStream.clear();
+    logStream << "[CANCEL][DELAY] P1: isDelaying=" << (p1DelayState.isDelaying ? "true" : "false")
+              << " framesRemaining=" << p1DelayState.delayFramesRemaining
+              << " triggerType=" << p1DelayState.triggerType;
+    LogOut(logStream.str(), true);
+    
+    logStream.str(""); logStream.clear();
+    logStream << "[CANCEL][DELAY] P2: isDelaying=" << (p2DelayState.isDelaying ? "true" : "false")
+              << " framesRemaining=" << p2DelayState.delayFramesRemaining
+              << " triggerType=" << p2DelayState.triggerType;
+    LogOut(logStream.str(), true);
+    
+    p1DelayState = {false, 0, TRIGGER_NONE, 0, -1, -1, 0, -1};
+    p2DelayState = {false, 0, TRIGGER_NONE, 0, -1, -1, 0, -1};
+    LogOut("[CANCEL][DELAY] Reset both delay states", true);
+
+    // =========================================================================
+    // 3. ACTION APPLIED FLAGS RESET
+    // =========================================================================
+    logStream.str(""); logStream.clear();
+    logStream << "[CANCEL][FLAGS] p1ActionApplied=" << (p1ActionApplied ? "true" : "false")
+              << " p2ActionApplied=" << (p2ActionApplied ? "true" : "false");
+    LogOut(logStream.str(), true);
+    
+    p1ActionApplied = false;
+    p2ActionApplied = false;
+
+    // =========================================================================
+    // 4. TRIGGER FEEDBACK RESET + SET CANCELLED FLAG
+    // =========================================================================
+    int lastTrigger = g_lastActiveTriggerType.load();
+    int lastFrame = g_lastActiveTriggerFrame.load();
+    logStream.str(""); logStream.clear();
+    logStream << "[CANCEL][TRIGGER] lastActiveTriggerType=" << lastTrigger
+              << " lastActiveTriggerFrame=" << lastFrame;
+    LogOut(logStream.str(), true);
+    
+    g_lastActiveTriggerType.store(TRIGGER_NONE);
+    g_lastActiveTriggerFrame.store(0);
+    
+    // Set the cancelled flag to trigger red flash on triggers for ~0.5 seconds
+    g_triggersCancelledActive.store(true);
+    g_triggersCancelledFrame.store(frameCounter.load());
+    LogOut("[CANCEL][TRIGGER] Set triggers cancelled flag for red flash feedback", true);
+
+    // =========================================================================
+    // 5. COOLDOWNS RESET
+    // =========================================================================
+    logStream.str(""); logStream.clear();
+    logStream << "[CANCEL][COOLDOWN] p1TriggerActive=" << (p1TriggerActive ? "true" : "false")
+              << " p1Cooldown=" << p1TriggerCooldown
+              << " p2TriggerActive=" << (p2TriggerActive ? "true" : "false")
+              << " p2Cooldown=" << p2TriggerCooldown;
+    LogOut(logStream.str(), true);
+    
+    p1TriggerActive = false; p1TriggerCooldown = 0;
+    p2TriggerActive = false; p2TriggerCooldown = 0;
+
+    // =========================================================================
+    // 6. P2 CONTROL STATE RESTORE
+    // =========================================================================
+    bool wasOverridden = g_p2ControlOverridden;
+    uint32_t origFlag = g_originalP2ControlFlag;
+    bool pendingRestore = g_pendingControlRestore.load();
+    
+    logStream.str(""); logStream.clear();
+    logStream << "[CANCEL][CONTROL] g_p2ControlOverridden=" << (wasOverridden ? "true" : "false")
+              << " g_originalP2ControlFlag=" << origFlag
+              << " g_pendingControlRestore=" << (pendingRestore ? "true" : "false");
+    LogOut(logStream.str(), true);
+    
+    if (g_p2ControlOverridden) {
+        RestoreP2ControlState();
+        LogOut("[CANCEL][CONTROL] Restored P2 control state", true);
+    }
+    g_pendingControlRestore.store(false);
+    g_pendingRestoreTimestamp.store(0);
+    g_lastP2MoveID.store(-1);
+    g_crgFastRestore.store(false);
+
+    // =========================================================================
+    // 7. INPUT BUFFER FREEZE STOP
+    // =========================================================================
+    extern std::atomic<bool> g_bufferFreezingActive;
+    extern std::atomic<int> g_activeFreezePlayer;
+    bool freezeActive = g_bufferFreezingActive.load();
+    int freezePlayer = g_activeFreezePlayer.load();
+    
+    logStream.str(""); logStream.clear();
+    logStream << "[CANCEL][FREEZE] g_bufferFreezingActive=" << (freezeActive ? "true" : "false")
+              << " g_activeFreezePlayer=" << freezePlayer;
+    LogOut(logStream.str(), true);
+    
+    StopBufferFreezing();
+
+    // =========================================================================
+    // 8. RG PENDING/PRE-ARM STATE RESET
+    // =========================================================================
+    logStream.str(""); logStream.clear();
+    logStream << "[CANCEL][RG] P1: pending=" << (s_p1RGPending ? "true" : "false")
+              << " prearm=" << (s_p1RGPrearmed ? "true" : "false")
+              << " P2: pending=" << (s_p2RGPending ? "true" : "false")
+              << " prearm=" << (s_p2RGPrearmed ? "true" : "false");
+    LogOut(logStream.str(), true);
+    
+    s_p1RGPending = false; s_p1RGExpiry = 0;
+    s_p2RGPending = false; s_p2RGExpiry = 0;
+    s_p1RGPrearmed = false; s_p1RGPrearmIsSpecial = false; s_p1RGPrearmActionType = -1; s_p1RGPrearmExpiry = 0;
+    s_p2RGPrearmed = false; s_p2RGPrearmIsSpecial = false; s_p2RGPrearmActionType = -1; s_p2RGPrearmExpiry = 0;
+
+    // =========================================================================
+    // 9. WAKE PRE-ARM STATE RESET
+    // =========================================================================
+    logStream.str(""); logStream.clear();
+    logStream << "[CANCEL][WAKE] P1: prearm=" << (s_p1WakePrearmed ? "true" : "false")
+              << " isMacro=" << (s_p1WakePrearmIsMacro ? "true" : "false")
+              << " 96count=" << s_p1WakeMoveID96FrameCount
+              << " frozen=" << (s_p1WakeBufferFrozen ? "true" : "false");
+    LogOut(logStream.str(), true);
+    
+    logStream.str(""); logStream.clear();
+    logStream << "[CANCEL][WAKE] P2: prearm=" << (s_p2WakePrearmed ? "true" : "false")
+              << " isMacro=" << (s_p2WakePrearmIsMacro ? "true" : "false")
+              << " 96count=" << s_p2WakeMoveID96FrameCount
+              << " frozen=" << (s_p2WakeBufferFrozen ? "true" : "false");
+    LogOut(logStream.str(), true);
+    
+    s_p1WakePrearmed = false; s_p1WakePrearmExpiry = 0; s_p1WakePrearmActionType = -1;
+    s_p1WakePrearmStrength = -1; s_p1WakePrearmIsSpecial = false; s_p1WakePrearmIsMacro = false;
+    s_p1WakeActionableWarning = false; s_p1WakeMoveID96FrameCount = 0;
+    s_p1WakeBufferFrozen = false; s_p1WakeHoldPrimed = false; s_p1WakeHoldIssued = false;
+    
+    s_p2WakePrearmed = false; s_p2WakePrearmExpiry = 0; s_p2WakePrearmActionType = -1;
+    s_p2WakePrearmStrength = -1; s_p2WakePrearmIsSpecial = false; s_p2WakePrearmIsMacro = false;
+    s_p2WakeActionableWarning = false; s_p2WakeMoveID96FrameCount = 0;
+    s_p2WakeBufferFrozen = false; s_p2WakeHoldPrimed = false; s_p2WakeHoldIssued = false;
+
+    // =========================================================================
+    // 10. WAKE MACRO STATE RESET
+    // =========================================================================
+    logStream.str(""); logStream.clear();
+    logStream << "[CANCEL][WAKE_MACRO] P1: queued=" << (s_p1WakeMacroQueued ? "true" : "false")
+              << " slot=" << s_p1WakeMacroSlot
+              << " P2: queued=" << (s_p2WakeMacroQueued ? "true" : "false")
+              << " slot=" << s_p2WakeMacroSlot;
+    LogOut(logStream.str(), true);
+    
+    s_p1WakeMacro96FrameCount = 0; s_p1WakeMacroQueued = false;
+    s_p1WakeMacroTargetFrame = -1; s_p1WakeMacroSlot = -1; s_p1WakeMacroStartTick = 0;
+    s_p2WakeMacro96FrameCount = 0; s_p2WakeMacroQueued = false;
+    s_p2WakeMacroTargetFrame = -1; s_p2WakeMacroSlot = -1; s_p2WakeMacroStartFrame = -1; s_p2WakeMacroStartTick = 0;
+    s_p2WakeOptionPicked = false;
+    s_p2WakePrePickedOption = {};
+
+    // =========================================================================
+    // 11. WAKE MACRO COMPLETION TRACKING RESET
+    // =========================================================================
+    bool wakePreserve = g_macroWakePreserveBuffer.load();
+    bool wakeCompleted = g_wakeMacroPlaybackCompleted.load();
+    
+    logStream.str(""); logStream.clear();
+    logStream << "[CANCEL][WAKE_COMPLETE] preserveBuffer=" << (wakePreserve ? "true" : "false")
+              << " playbackCompleted=" << (wakeCompleted ? "true" : "false")
+              << " tokenCountdown=" << s_p2WakeMacroTokenNeutralizeCountdown;
+    LogOut(logStream.str(), true);
+    
+    g_macroWakePreserveBuffer.store(false);
+    g_wakeMacroPlaybackCompleted.store(false);
+    s_p2WakeMacroTokenNeutralizeCountdown = 0;
+
+    // =========================================================================
+    // 12. INPUT INJECTION STATE RESET (POLL OVERRIDE, FORCE BYPASS, MANUAL OVERRIDE)
+    // =========================================================================
+    extern std::atomic<bool> g_forceBypass[3];
+    extern std::atomic<bool> g_pollOverrideActive[3];
+    extern std::atomic<uint8_t> g_pollOverrideMask[3];
+    extern std::atomic<uint8_t> g_manualInputMask[3];
+    extern std::atomic<bool> g_injectImmediateOnly[3];
+    
+    logStream.str(""); logStream.clear();
+    logStream << "[CANCEL][INJECT] P1: pollOverride=" << (g_pollOverrideActive[1].load() ? "true" : "false")
+              << " mask=0x" << std::hex << (int)g_pollOverrideMask[1].load() << std::dec
+              << " manualOverride=" << (g_manualInputOverride[1].load() ? "true" : "false")
+              << " forceBypass=" << (g_forceBypass[1].load() ? "true" : "false");
+    LogOut(logStream.str(), true);
+    
+    logStream.str(""); logStream.clear();
+    logStream << "[CANCEL][INJECT] P2: pollOverride=" << (g_pollOverrideActive[2].load() ? "true" : "false")
+              << " mask=0x" << std::hex << (int)g_pollOverrideMask[2].load() << std::dec
+              << " manualOverride=" << (g_manualInputOverride[2].load() ? "true" : "false")
+              << " forceBypass=" << (g_forceBypass[2].load() ? "true" : "false");
+    LogOut(logStream.str(), true);
+    
+    // Clear all input injection state for both players
+    for (int p = 1; p <= 2; ++p) {
+        g_forceBypass[p].store(false);
+        g_pollOverrideActive[p].store(false);
+        g_pollOverrideMask[p].store(0);
+        g_manualInputOverride[p].store(false);
+        g_manualInputMask[p].store(0);
+        g_injectImmediateOnly[p].store(false);
+    }
+    
+    // Clear immediate input registers
+    ImmediateInput::Clear(1);
+    ImmediateInput::Clear(2);
+    LogOut("[CANCEL][INJECT] Cleared all input injection state and immediate registers", true);
+
+    LogOut("[CANCEL] === END CancelAutoActionsAndMacros - Triggers remain enabled ===", true);
 }
 
 // Hard reset of all auto-action trigger related runtime state
