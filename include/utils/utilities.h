@@ -498,6 +498,13 @@ extern std::atomic<bool> g_onlineModeActive;
 // Enter online-safe mode: cooperatively stop mod threads, disable hooks/features
 void EnterOnlineMode();
 
+// Start a background watchdog thread that continuously monitors for online mode.
+// If online mode is detected at any point (e.g., after initial startup), it will
+// trigger EnterOnlineMode() to fully shut down the mod.
+void StartOnlineWatchdog();
+// Stop the online watchdog thread (called during shutdown)
+void StopOnlineWatchdog();
+
 // NEW: Add these for the debug tab's manual input override feature
 extern std::atomic<bool> g_manualInputOverride[3]; // Index 0 unused, 1 for P1, 2 for P2
 extern std::atomic<uint8_t> g_manualInputMask[3];
