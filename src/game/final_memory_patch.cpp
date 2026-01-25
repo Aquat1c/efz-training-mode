@@ -6,6 +6,7 @@
 #include "../../include/core/logger.h"
 #include "../../include/core/memory.h"
 #include "../../include/game/final_memory_patch.h"
+#include "../../include/utils/utilities.h" // for g_onlineModeActive
 
 // Helper: get module .text section bounds
 static bool GetTextSection(uint8_t** start, size_t* size) {
@@ -116,6 +117,9 @@ static int PatchToOriginalFromBypass() {
 }
 
 int ApplyFinalMemoryHPBypass() {
+    // CRITICAL: Never modify game code during online mode
+    if (g_onlineModeActive.load()) return 0;
+
     std::lock_guard<std::mutex> _lk(g_fmMutex);
     if (!g_fmBypassSites.empty()) {
         // Already applied in this session
@@ -132,6 +136,9 @@ int ApplyFinalMemoryHPBypass() {
 }
 
 int RevertFinalMemoryHPBypass() {
+    // CRITICAL: Never modify game code during online mode
+    if (g_onlineModeActive.load()) return 0;
+
     std::lock_guard<std::mutex> _lk(g_fmMutex);
     int reverted = 0;
     const uint32_t FM_THRESH = 0x00000D05;
@@ -157,6 +164,9 @@ int RevertFinalMemoryHPBypass() {
 }
 
 int SetFinalMemoryBypass(bool enabled) {
+    // CRITICAL: Never modify game code during online mode
+    if (g_onlineModeActive.load()) return 0;
+
     if (enabled) return ApplyFinalMemoryHPBypass();
     return RevertFinalMemoryHPBypass();
 }

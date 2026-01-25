@@ -273,6 +273,12 @@ static bool RegeneratePatternForFacing(int playerNum, int motionType, int button
 
 // Define buffer functions
 void FreezeBufferValuesThread(int playerNum) {
+    // CRITICAL: Never run during online mode
+    if (g_onlineModeActive.load()) {
+        g_bufferFreezingActive = false;
+        return;
+    }
+
     if (detailedLogging.load()) {
         std::stringstream ss;
         ss << "[INPUT_BUFFER] Starting buffer freeze thread for P" << playerNum
@@ -584,6 +590,9 @@ void FreezeBufferValuesThread(int playerNum) {
 
 // Capture current buffer section and begin freezing it
 bool CaptureAndFreezeBuffer(int playerNum, uint16_t startIndex, uint16_t length, int motionType, int buttonMask) {
+    // CRITICAL: Never run during online mode
+    if (g_onlineModeActive.load()) return false;
+
     // Stop any existing freeze thread
     StopBufferFreezing();
     

@@ -212,6 +212,11 @@ std::atomic<bool> keyMonitorRunning(false);
 std::mutex keyMonitorMutex;
 
 void MonitorKeys() {
+    // CRITICAL: Never run during online mode
+    if (g_onlineModeActive.load()) {
+        keyMonitorRunning.store(false);
+        return;
+    }
     // Mark as running in case the thread was spawned externally
     keyMonitorRunning.store(true);
     LogOut("[KEYBINDS] Key monitoring thread started", true);
@@ -244,6 +249,11 @@ void MonitorKeys() {
     int idleLoops = 0;       // counts consecutive idle loops
     const int idleThreshold = 10; // after ~10 loops idle (~160ms), back off
     while (keyMonitorRunning.load()) {
+        // Exit immediately if online mode is entered
+        if (g_onlineModeActive.load()) {
+            keyMonitorRunning.store(false);
+            break;
+        }
     // Update window active state at the beginning of each loop
         UpdateWindowActiveState();
 
@@ -818,6 +828,9 @@ void MonitorKeys() {
 
 // Helper function at the top to handle keyboard input more reliably
 void RestartKeyMonitoring() {
+    // CRITICAL: Never start key monitoring during online mode
+    if (g_onlineModeActive.load()) return;
+
     std::lock_guard<std::mutex> guard(keyMonitorMutex);
     if (keyMonitorRunning.load()) {
         LogOut("[KEYBINDS] Key monitoring already running", detailedLogging.load());

@@ -1,4 +1,5 @@
 #include "utils/debug_log.h"
+#include "utils/utilities.h" // for g_onlineModeActive
 #include <windows.h>
 #include <chrono>
 #include <ctime>
@@ -28,7 +29,9 @@ namespace DebugLog {
     
     void Initialize() {
         if (g_Initialized) return;
-        
+        // Never initialize during online mode
+        if (g_onlineModeActive.load()) return;
+
         if (!g_EnableDebugLog) {
             g_Initialized = true;
             return;
@@ -61,6 +64,7 @@ namespace DebugLog {
     
     void Write(const std::string& message) {
         if (!g_EnableDebugLog || !g_Initialized) return;
+        if (g_onlineModeActive.load()) return; // Never log during online mode
         
         std::lock_guard<std::mutex> lock(g_LogMutex);
         

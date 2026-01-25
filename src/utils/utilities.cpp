@@ -614,6 +614,7 @@ std::string startupLogPath;
 // Create a function that writes to a log file without requiring the console
 void WriteStartupLog(const std::string& message) {
     if (!inStartupPhase) return; // Skip if we're past startup
+    if (g_onlineModeActive.load()) return; // Skip entirely during online mode
     
     try {
         // Open log file in append mode

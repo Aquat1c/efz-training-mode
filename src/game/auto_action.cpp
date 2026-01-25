@@ -2815,6 +2815,9 @@ void ApplyAutoAction(int playerNum, uintptr_t moveIDAddr, short currentMoveID, s
 
 // Enable P2 human control for auto-action and save original state
 void EnableP2ControlForAutoAction() {
+    // CRITICAL: Never modify game state during online mode
+    if (g_onlineModeActive.load()) return;
+
     uintptr_t base = GetEFZBase();
     if (!base) {
         LogOut("[AUTO-ACTION] Failed to get EFZ base address", true);
@@ -2886,6 +2889,12 @@ void EnableP2ControlForAutoAction() {
 //      (use RestoreP2ControlFlagOnly instead)
 // ==================================================================================
 void RestoreP2ControlState() {
+    // CRITICAL: Never modify game state during online mode
+    if (g_onlineModeActive.load()) {
+        g_p2ControlOverridden = false;
+        return;
+    }
+
     if (g_p2ControlOverridden) {
         const PerFrameSample &restoreSample = GetCurrentPerFrameSample();
         short restoreMoveID2 = restoreSample.moveID2;
@@ -2985,6 +2994,12 @@ void RestoreP2ControlState() {
 // The only difference from RestoreP2ControlState is that it preserves the input buffer.
 // ==================================================================================
 static void RestoreP2ControlFlagOnly() {
+    // CRITICAL: Never modify game state during online mode
+    if (g_onlineModeActive.load()) {
+        g_p2ControlOverridden = false;
+        return;
+    }
+
     if (!g_p2ControlOverridden) return;
     const PerFrameSample &restoreSample = GetCurrentPerFrameSample();
     short restoreMoveID2 = restoreSample.moveID2;
@@ -3040,6 +3055,12 @@ static void RestoreP2ControlFlagOnly() {
 // explicitly preserve both the input buffer and motion token so
 // pre-buffered motions (e.g. DP) can still be recognized on wake.
 void RestoreP2ControlFlagsPreserveBufferAndTokenForMacro() {
+    // CRITICAL: Never modify game state during online mode
+    if (g_onlineModeActive.load()) {
+        g_p2ControlOverridden = false;
+        return;
+    }
+
     if (!g_p2ControlOverridden) return;
     const PerFrameSample &restoreSample = GetCurrentPerFrameSample();
     short restoreMoveID2 = restoreSample.moveID2;
@@ -3087,6 +3108,13 @@ void RestoreP2ControlFlagsPreserveBufferAndTokenForMacro() {
 }
 
 void ProcessAutoControlRestore() {
+    // CRITICAL: Never process control restoration during online mode
+    if (g_onlineModeActive.load()) {
+        g_p2ControlOverridden = false;
+        g_pendingControlRestore.store(false);
+        return;
+    }
+
     if (!IsMatchPhase()) {
         // Likely transitioning to character select / menu; invalidate caches
         InvalidateCachedCharacterIDs("phase change");
