@@ -31,6 +31,7 @@
 #include "../include/utils/debug_log.h"
 #include "../include/game/efzrevival_addrs.h"
 #include "../include/input/framestep.h"
+#include "../include/game/savestate_hook.h"
 // forward declaration for overlay gate
 namespace PracticeOverlayGate { void EnsureInstalled(); void SetMenuVisible(bool); }
 #pragma comment(lib, "winmm.lib")
@@ -134,6 +135,17 @@ void DelayedInitialization(HMODULE hModule) {
             PracticeOverlayGate::EnsureInstalled();
         } catch (...) {
             LogOut("[HOTKEY] Exception while installing practice hotkey gate", true);
+        }
+
+        // Attempt to install savestate hooks (for tracking save/load state in Practice mode)
+        try {
+            if (SavestateHook::Install()) {
+                LogOut("[SAVESTATE] Savestate hooks installed successfully", true);
+            } else {
+                LogOut("[SAVESTATE] Savestate hooks not installed (unsupported version or EfzRevival not loaded)", true);
+            }
+        } catch (...) {
+            LogOut("[SAVESTATE] Exception while installing savestate hooks", true);
         }
 
         // Install hooks (with guards)
@@ -283,6 +295,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
             RemoveInputHook();
             RemoveCollisionHook();
             StopBGMSuppressionPoller();
+            SavestateHook::Uninstall();
             // Stop any active overlay rendering
             if (g_guiActive.load()) {
                 g_guiActive = false;
