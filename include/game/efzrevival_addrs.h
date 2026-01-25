@@ -51,3 +51,18 @@ uintptr_t EFZ_RVA_ToggleFrameDisplay();
 
 // Debug/testing: log scanner vs version constants and optionally force scanner usage via env (EFZ_SCAN_FORCE=1)
 void EFZ_Debug_LogScannerComparison();
+
+// VS/Practice Mode Savestate functions (non-recording)
+// These are the actual functions called when user presses save/load keys in normal Practice mode.
+// Returns RVA for the load state function: sub_10075910 (1.02e)
+uintptr_t EFZ_RVA_LoadState();
+// Returns RVA for the save state function: sub_10075980 (1.02e)
+uintptr_t EFZ_RVA_SaveState();
+// Practice hotkey handler that routes key presses to Save/Load based on configured keybinds.
+// sub_100759F0 (1.02e) - checks this+476 for save key, this+480 for load key
+uintptr_t EFZ_RVA_PracticeHotkeyHandler();
+
+// Replay/Recording Mode Savestate functions (different code path)
+// These are only used when recording is active - NOT in normal Practice mode!
+uintptr_t EFZ_RVA_ReplayLoadState();
+uintptr_t EFZ_RVA_ReplaySaveState();

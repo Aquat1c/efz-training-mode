@@ -252,3 +252,73 @@ uintptr_t EFZ_RVA_ToggleFrameDisplay() {
     LogAddrOnce("ToggleFrameDisplay", r);
     return r;
 }
+
+// Savestate functions - VS/Practice Mode (non-recording)
+// These are the actual functions called when user presses save/load keys in Practice mode.
+// Routed via PracticeHotkeyHandler: this+476=Save, this+480=Load (except 1.02i: this+480=Save, this+484=Load)
+uintptr_t EFZ_RVA_LoadState() {
+    uintptr_t r = 0;
+    EfzRevivalVersion v = GetEfzRevivalVersion();
+    // VS/Practice mode load - restores snapshot
+    if (v == EfzRevivalVersion::Revival102e) r = 0x0075910;  // sub_10075910
+    else if (v == EfzRevivalVersion::Revival102f) r = 0x0075940;  // sub_10075940
+    else if (v == EfzRevivalVersion::Revival102g) r = 0x0075BE0;  // sub_10075BE0
+    else if (v == EfzRevivalVersion::Revival102h) r = 0x00763B0;  // sub_100763B0
+    else if (v == EfzRevivalVersion::Revival102i) r = 0x0076950;  // sub_10076950
+    LogAddrOnce("LoadState", r);
+    return r;
+}
+
+uintptr_t EFZ_RVA_SaveState() {
+    uintptr_t r = 0;
+    EfzRevivalVersion v = GetEfzRevivalVersion();
+    // VS/Practice mode save - builds snapshot
+    if (v == EfzRevivalVersion::Revival102e) r = 0x0075980;  // sub_10075980
+    else if (v == EfzRevivalVersion::Revival102f) r = 0x00759B0;  // sub_100759B0
+    else if (v == EfzRevivalVersion::Revival102g) r = 0x0075C50;  // sub_10075C50
+    else if (v == EfzRevivalVersion::Revival102h) r = 0x0076420;  // sub_10076420
+    else if (v == EfzRevivalVersion::Revival102i) r = 0x00769C0;  // sub_100769C0
+    LogAddrOnce("SaveState", r);
+    return r;
+}
+
+uintptr_t EFZ_RVA_PracticeHotkeyHandler() {
+    uintptr_t r = 0;
+    EfzRevivalVersion v = GetEfzRevivalVersion();
+    // VS/Practice mode hotkey handler - routes key presses to save/load
+    // e/f/g/h: this+476=Save, this+480=Load
+    // i: this+480=Save, this+484=Load (offsets shifted by 4)
+    if (v == EfzRevivalVersion::Revival102e) r = 0x00759F0;  // sub_100759F0
+    else if (v == EfzRevivalVersion::Revival102f) r = 0x0075A20;  // sub_10075A20
+    else if (v == EfzRevivalVersion::Revival102g) r = 0x0075CC0;  // sub_10075CC0
+    else if (v == EfzRevivalVersion::Revival102h) r = 0x0076490;  // sub_10076490
+    else if (v == EfzRevivalVersion::Revival102i) r = 0x0076A30;  // sub_10076A30
+    LogAddrOnce("PracticeHotkeyHandler", r);
+    return r;
+}
+
+// Replay/Recording mode savestate functions (different code path, kept for reference)
+// These are only used when recording is active - NOT in normal Practice mode!
+uintptr_t EFZ_RVA_ReplayLoadState() {
+    uintptr_t r = 0;
+    EfzRevivalVersion v = GetEfzRevivalVersion();
+    if (v == EfzRevivalVersion::Revival102e) r = 0x0077060;
+    else if (v == EfzRevivalVersion::Revival102f) r = 0x0077090;
+    else if (v == EfzRevivalVersion::Revival102g) r = 0x0077330;
+    else if (v == EfzRevivalVersion::Revival102h) r = 0x0077B00;
+    else if (v == EfzRevivalVersion::Revival102i) r = 0x00780E0;
+    LogAddrOnce("ReplayLoadState", r);
+    return r;
+}
+
+uintptr_t EFZ_RVA_ReplaySaveState() {
+    uintptr_t r = 0;
+    EfzRevivalVersion v = GetEfzRevivalVersion();
+    if (v == EfzRevivalVersion::Revival102e) r = 0x00770C0;
+    else if (v == EfzRevivalVersion::Revival102f) r = 0x00770F0;
+    else if (v == EfzRevivalVersion::Revival102g) r = 0x0077390;
+    else if (v == EfzRevivalVersion::Revival102h) r = 0x0077B60;
+    else if (v == EfzRevivalVersion::Revival102i) r = 0x0078140;
+    LogAddrOnce("ReplaySaveState", r);
+    return r;
+}
