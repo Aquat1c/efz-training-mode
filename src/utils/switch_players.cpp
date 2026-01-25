@@ -973,6 +973,9 @@ namespace SwitchPlayers {
     }
 
     bool ToggleLocalSide() {
+        // CRITICAL: Never modify game state during online mode
+        if (g_onlineModeActive.load()) return false;
+
         if (GetCurrentGameMode() != GameMode::Practice) return false;
         // Only switch during active match to avoid confusing selection/menus
         if (!IsMatchPhase()) {
@@ -1031,6 +1034,9 @@ namespace SwitchPlayers {
     }
 
     bool SetLocalSide(int sideIdx) {
+        // CRITICAL: Never modify game state during online mode
+        if (g_onlineModeActive.load()) return false;
+
         if (GetCurrentGameMode() != GameMode::Practice) return false;
         if (!IsMatchPhase()) {
             LogOut("[SWITCH] Ignored set outside of match phase", true);
@@ -1055,6 +1061,9 @@ namespace SwitchPlayers {
     }
 
     bool ResetControlMappingForMenusToP1() {
+        // CRITICAL: Never modify game state during online mode
+        if (g_onlineModeActive.load()) return false;
+
         // Only operate in Practice mode
         if (GetCurrentGameMode() != GameMode::Practice) return false;
         

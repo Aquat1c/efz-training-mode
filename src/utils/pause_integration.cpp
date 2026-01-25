@@ -264,6 +264,9 @@ namespace {
     }
 
     void EnsurePracticePtrHookInstalled() {
+        // CRITICAL: Never install hooks during online mode
+        if (g_onlineModeActive.load()) return;
+
         // Gate to Practice mode only (offline is checked in scanning functions)
         GameMode mode = GetCurrentGameMode();
         if (mode != GameMode::Practice) return;

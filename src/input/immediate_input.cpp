@@ -2,6 +2,7 @@
 #include "../include/input/input_core.h"
 #include "../include/core/logger.h"
 #include "../include/core/memory.h"
+#include "../include/utils/utilities.h" // for g_onlineModeActive
 #include <thread>
 #include <chrono>
 
@@ -21,11 +22,23 @@ struct Slot {
 static Slot s_slot[3]; // 1=P1, 2=P2
 
 static void Worker() {
+    // CRITICAL: Never run during online mode
+    if (g_onlineModeActive.load()) {
+        s_running.store(false);
+        return;
+    }
+
     using clock = std::chrono::steady_clock;
     const auto frameDur = std::chrono::milliseconds(1000 / 64); // ~15.625ms
     auto next = clock::now();
 
     while (!s_stop.load(std::memory_order_relaxed)) {
+        // Exit if online mode is detected
+        if (g_onlineModeActive.load()) {
+            s_running.store(false);
+            break;
+        }
+
         auto now = clock::now();
         if (now < next) {
             std::this_thread::sleep_for(next - now);
@@ -131,6 +144,9 @@ static void Worker() {
 }
 
 void Start() {
+    // CRITICAL: Never start during online mode
+    if (g_onlineModeActive.load()) return;
+
     bool expected = false;
     if (!s_running.compare_exchange_strong(expected, true)) return;
     s_stop.store(false);

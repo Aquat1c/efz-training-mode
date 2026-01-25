@@ -196,8 +196,13 @@ void LogOut(const std::string& msg, bool consoleOutput) {
 }
 
 void InitializeLogging() {
+    // CRITICAL: Never initialize during online mode
+    if (g_onlineModeActive.load()) return;
+
     // Create a thread to continuously update the console title
     std::thread titleThread([]() {
+        // Double-check online mode before starting any work
+        if (g_onlineModeActive.load()) return;
         UpdateConsoleTitle();
     });
     titleThread.detach();  // Let it run independently
@@ -230,6 +235,9 @@ short GetCurrentMoveID(int player) {
 }
 
 void UpdateConsoleTitle() {
+    // CRITICAL: Never run during online mode
+    if (g_onlineModeActive.load()) return;
+
     // Keep this thread at normal priority since you want it to keep up with the game
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_NORMAL);
     std::string lastTitle;

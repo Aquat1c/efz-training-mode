@@ -55,7 +55,29 @@ void DelayedInitialization(HMODULE hModule) {
         // Short delay to ensure the game has started properly
         Sleep(1500);
 
-        WriteStartupLog("Starting delayed initialization");
+        // ============================================================
+        // CRITICAL: Online detection MUST happen FIRST, before ANY
+        // initialization (no logging, no config, no console, no threads).
+        // If online is detected, we exit immediately and do NOTHING.
+        // ============================================================
+        bool onlineAtStart = false;
+        try {
+            onlineAtStart = DetectOnlineMatch();
+        } catch (...) {
+            onlineAtStart = false; // be conservative; if unknown, continue
+        }
+        if (onlineAtStart) {
+            // Set the global flag so any other code paths also bail out
+            g_onlineModeActive.store(true);
+            isOnlineMatch.store(true);
+            // Do NOT initialize anything - no logging, no console, no threads, no hooks
+            // Just silently exit. The mod will be completely dormant during netplay.
+            inStartupPhase = false;
+            return;
+        }
+
+        // Safe to proceed with initialization - not in online mode
+        WriteStartupLog("Starting delayed initialization (offline mode confirmed)");
 
         // Initialize logging system (starts title updater thread)
         WriteStartupLog("Initializing logging system...");
@@ -88,30 +110,6 @@ void DelayedInitialization(HMODULE hModule) {
                 ShowWindow(consoleWnd, SW_HIDE);
             }
             SetConsoleReady(false);
-        }
-
-        // Early gate: if online at startup, do NOT initialize hooks/threads/overlays
-        // Leave the console (per settings) and exit initialization immediately.
-        bool onlineAtStart = false;
-        try {
-            onlineAtStart = DetectOnlineMatch();
-        } catch (...) {
-            onlineAtStart = false; // be conservative; if unknown, continue
-        }
-        if (onlineAtStart) {
-            LogOut("[SYSTEM] Online mode detected at startup; skipping hooks, threads, and overlays.", true);
-            LogOut("[SYSTEM] Console state left as configured; no initialization will proceed while online.", true);
-            // Surface the reason for online detection to aid diagnostics
-            try {
-                std::string reason = GetLastOnlineDetectionReason();
-                if (!reason.empty()) {
-                    LogOut("[SYSTEM] Online detection reason: " + reason, true);
-                }
-            } catch (...) {
-                // best-effort; ignore
-            }
-            inStartupPhase = false;
-            return; // do not install hooks or start background workers
         }
 
         // Initialize MinHook once for the entire application.
@@ -187,6 +185,8 @@ void DelayedInitialization(HMODULE hModule) {
                     LogOut("[SYSTEM] D3D9 Overlay system initialized.", true);
                 } else {
                     LogOut("[SYSTEM] Failed to initialize D3D9 Overlay system.", true);
+                    // Don't show MessageBox during online mode - stay silent
+                    if (g_onlineModeActive.load()) return;
                     static bool s_warnedNoD3D9 = false;
                     if (!s_warnedNoD3D9) {
                         s_warnedNoD3D9 = true;
@@ -251,18 +251,23 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
         // Signal shutdown to all threads
         g_isShuttingDown = true;
         g_featuresEnabled = false;
-        
+
+        // If we were in online mode at startup, nothing was initialized - skip cleanup entirely
+        if (g_onlineModeActive.load() && !g_initialized.load()) {
+            break;
+        }
+
         // Shutdown debug log
         DebugLog::Shutdown();
-        
+
         // CRITICAL: Stop buffer freezing FIRST
         StopBufferFreezing();
-        
+
         // Then restore P2 control
         if (g_p2ControlOverridden) {
             RestoreP2ControlState();
         }
-        
+
         // Clean up hooks safely
         try {
             RemoveInputHook();
@@ -275,10 +280,10 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
         } catch (...) {
             // Suppress exceptions during shutdown
         }
-        
+
         // Give threads a moment to clean up
         Sleep(100);
-        
+
         // Uninitialize MinHook
         MH_Uninitialize();
         break;

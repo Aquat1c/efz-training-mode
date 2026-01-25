@@ -746,8 +746,13 @@ void UpdateTriggerOverlay() {
 }
 
 void FrameDataMonitor() {
+    // CRITICAL: Never run during online mode - exit immediately without doing anything
+    if (g_onlineModeActive.load()) {
+        return;
+    }
+
     using clock = std::chrono::high_resolution_clock;
-    
+
     if (Config::GetSettings().enableFpsDiagnostics || detailedLogging.load()) {
         LogOut("[FRAME MONITOR] Starting frame monitoring at 192fps for maximum precision", true);
     }
