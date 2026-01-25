@@ -77,7 +77,7 @@ bool DirectDrawHook::isHooked = false;
 
 // --- DPI Awareness Helper ---
 static float GetDpiScale() {
-    HWND hwnd = FindWindow(NULL, "Eternal Fighter Zero");
+    HWND hwnd = FindEFZWindow();  // Use safe multi-instance window finder
     if (!hwnd) return 1.0f;
     
     // Try Windows 10+ API first
@@ -109,6 +109,8 @@ static EndScene_t oEndScene = nullptr;
 static void* g_EndSceneTarget = nullptr; // store target vtable entry for cleanup
 // Track if our EndScene hook has ever been called (for diagnostics)
 static std::atomic<bool> g_EndSceneObserved{ false };
+// Track ImGui init state within EndScene with atomic for thread safety
+static std::atomic<bool> g_endSceneImguiInit{ false };
 // --- End D3D9 Globals ---
 
 // --- FIX: Add missing implementations for obsolete DirectDraw hooks ---
@@ -200,14 +202,22 @@ HRESULT WINAPI HookedEndScene(LPDIRECT3DDEVICE9 pDevice) {
         return oEndScene(pDevice);
     }
 
-    static bool imguiInit = false;
-    if (!imguiInit) {
-        if (ImGuiImpl::Initialize(pDevice)) {
-            imguiInit = true;
-            LogOut("[OVERLAY] ImGui initialized from EndScene hook.", true);
-        } else {
-            LogOut("[OVERLAY] ImGui failed to initialize from EndScene hook.", true);
-            return oEndScene(pDevice); // Don't proceed if init fails
+    // Thread-safe ImGui initialization (only once)
+    if (!g_endSceneImguiInit.load(std::memory_order_acquire)) {
+        // Try to claim the init slot
+        bool expected = false;
+        if (g_endSceneImguiInit.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
+            // We won - initialize ImGui
+            if (ImGuiImpl::Initialize(pDevice)) {
+                LogOut("[OVERLAY] ImGui initialized from EndScene hook.", true);
+            } else {
+                LogOut("[OVERLAY] ImGui failed to initialize from EndScene hook.", true);
+                // Keep g_endSceneImguiInit true to prevent retry spam
+            }
+        }
+        // If we lost the race or init failed, just continue to render pass
+        if (!ImGuiImpl::IsInitialized()) {
+            return oEndScene(pDevice);
         }
     }
 
@@ -956,18 +966,29 @@ bool DirectDrawHook::Initialize() {
     
     LogOut("[OVERLAY] Initializing DirectDraw hook", true);
     
-    // Use the robust FindEFZWindow function instead of FindWindowA
+    // Use the robust FindEFZWindow function (validates PID for multi-instance safety)
     gameWindow = FindEFZWindow();
     if (!gameWindow) {
         LogOut("[OVERLAY] Could not find EFZ window using FindEFZWindow()", true);
         
-        // Try alternative window finding methods
-        gameWindow = FindWindowA(NULL, "Eternal Fighter Zero");
+        // Fallback: try FindWindowA but validate PID
+        DWORD ourPid = GetCurrentProcessId();
+        auto tryWindow = [ourPid](const char* title) -> HWND {
+            HWND hwnd = FindWindowA(NULL, title);
+            if (hwnd) {
+                DWORD windowPid = 0;
+                GetWindowThreadProcessId(hwnd, &windowPid);
+                if (windowPid == ourPid) return hwnd;
+            }
+            return NULL;
+        };
+        
+        gameWindow = tryWindow("Eternal Fighter Zero");
         if (!gameWindow) {
-            gameWindow = FindWindowA(NULL, "Eternal Fighter Zero -Revival-");
+            gameWindow = tryWindow("Eternal Fighter Zero -Revival-");
         }
         if (!gameWindow) {
-            gameWindow = FindWindowA(NULL, "Eternal Fighter Zero -Revival- 1.02e");
+            gameWindow = tryWindow("Eternal Fighter Zero -Revival- 1.02e");
         }
         
         if (!gameWindow) {
@@ -1101,13 +1122,23 @@ void DirectDrawHook::ClearAllMessages() {
     permanentMessages.clear();
 }
 
+// Thread-safe D3D9 init guard
+static std::atomic<bool> s_d3d9InitInProgress{false};
+
 // --- NEW: D3D9 Hook Initialization and Shutdown ---
 bool DirectDrawHook::InitializeD3D9() {
-    LogOut("[OVERLAY] Attempting to initialize D3D9 hook", detailedLogging.load());
-    
-    if (isHooked) { // FIX: Use the class's static member variable
-        LogOut("[OVERLAY] D3D9 already hooked", true);
+    // Fast path: already hooked
+    if (isHooked) {
         return true;
+    }
+
+    // Prevent concurrent initialization attempts
+    bool expected = false;
+    if (!s_d3d9InitInProgress.compare_exchange_strong(expected, true)) {
+        // Another thread is initializing - wait and check result
+        LogOut("[OVERLAY] D3D9 init already in progress, waiting...", true);
+        Sleep(100);
+        return isHooked;
     }
     
     // Find the game window (best-effort; not strictly required for dummy device)
@@ -1125,6 +1156,7 @@ bool DirectDrawHook::InitializeD3D9() {
         d3d9Module = LoadLibraryA("d3d9.dll");
         if (!d3d9Module) {
             LogOut("[OVERLAY] Failed to get d3d9.dll module", true);
+            s_d3d9InitInProgress.store(false);
             return false;
         }
     }
@@ -1143,6 +1175,7 @@ bool DirectDrawHook::InitializeD3D9() {
     auto Direct3DCreate9_fn = (LPDIRECT3D9(WINAPI*)(UINT))(GetProcAddress(d3d9Module, "Direct3DCreate9"));
     if (!Direct3DCreate9_fn) {
         LogOut("[OVERLAY] Failed to get Direct3DCreate9 address", true);
+        s_d3d9InitInProgress.store(false);
         return false;
     }
     else {
@@ -1155,6 +1188,7 @@ bool DirectDrawHook::InitializeD3D9() {
     LPDIRECT3D9 d3d9 = Direct3DCreate9_fn(D3D_SDK_VERSION);
     if (!d3d9) {
         LogOut("[OVERLAY] Failed to create D3D9 object", true);
+        s_d3d9InitInProgress.store(false);
         return false;
     }
 
@@ -1210,6 +1244,7 @@ bool DirectDrawHook::InitializeD3D9() {
         _snprintf_s(hrbuf, sizeof(hrbuf), _TRUNCATE, "0x%08lX (%ld)", (unsigned long)hr, (long)hr);
         LogOut(std::string("[OVERLAY] Failed to create temp D3D9 device: ") + hrbuf, true);
         d3d9->Release();
+        s_d3d9InitInProgress.store(false);
         return false;
     }
     
@@ -1232,6 +1267,7 @@ bool DirectDrawHook::InitializeD3D9() {
         LogOut(std::string("[OVERLAY] Failed to create hook for EndScene: ") + (es ? es : "<unknown>"), true);
         tempDevice->Release();
         d3d9->Release();
+        s_d3d9InitInProgress.store(false);
         return false;
     }
     
@@ -1242,6 +1278,7 @@ bool DirectDrawHook::InitializeD3D9() {
         LogOut(std::string("[OVERLAY] Failed to enable EndScene hook: ") + (es ? es : "<unknown>"), true);
         tempDevice->Release();
         d3d9->Release();
+        s_d3d9InitInProgress.store(false);
         return false;
     }
     
@@ -1254,11 +1291,7 @@ bool DirectDrawHook::InitializeD3D9() {
     }
     
     isHooked = true;
-    LogOut("[OVERLAY] D3D9 hook initialized successfully", detailedLogging.load());
-    LogOut("[SYSTEM] ImGui D3D9 hook initialized successfully.", detailedLogging.load());  // Keep this one visible
-    LogOut("[IMGUI] ImGui initialized successfully", detailedLogging.load());
-    LogOut("[IMGUI] ImGui initialization succeeded", detailedLogging.load());
-    LogOut("[IMGUI_GUI] GUI state initialized", detailedLogging.load());
+    s_d3d9InitInProgress.store(false);  // Release init lock
     LogOut("[OVERLAY] D3D9 EndScene hook installed successfully.", true);
 
     // Diagnostic: Verify EndScene is observed soon; otherwise log hints why overlay might appear missing

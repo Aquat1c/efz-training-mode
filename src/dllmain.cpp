@@ -88,6 +88,12 @@ void DelayedInitialization(HMODULE hModule) {
         // Initialize configuration system first so we can gate file logging
         InitializeConfig();
 
+        // Gate startup log file behind detailedLogging flag
+        // (messages before this point are still logged, but after config loads we respect the setting)
+        if (!Config::GetSettings().detailedLogging) {
+            SetStartupLogEnabled(false);
+        }
+
     // Gate file debug logging behind dedicated config flag (separate from console verbosity)
     DebugLog::g_EnableDebugLog = Config::GetSettings().enableDebugFileLog;
         if (DebugLog::g_EnableDebugLog) {
