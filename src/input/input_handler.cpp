@@ -30,6 +30,7 @@
 #include "../include/utils/switch_players.h"
 #include "../include/game/macro_controller.h"
 #include "../include/game/frame_monitor.h" // AreCharactersInitialized, GamePhase
+#include "../include/game/auto_action.h" // CancelAutoActionsAndMacros
 #include "../include/input/framestep.h"
 #include <Xinput.h>
 
@@ -351,6 +352,10 @@ void MonitorKeys() {
                 auto teleportOrLoad = [&]() {
                     uintptr_t base = GetEFZBase();
                     if (!base) return;
+                    
+                    // Cancel auto-actions and macros before any position change
+                    CancelAutoActionsAndMacros();
+                    
                     if ((cur.Gamepad.wButtons & XINPUT_GAMEPAD_DPAD_DOWN) && (cur.Gamepad.wButtons & XINPUT_GAMEPAD_A)) {
                         SetPlayerPosition(base, EFZ_BASE_OFFSET_P1, p1StartX, startY);
                         SetPlayerPosition(base, EFZ_BASE_OFFSET_P2, p2StartX, startY);
@@ -599,6 +604,9 @@ void MonitorKeys() {
                     keyHandled = true;
                 }
             } else if (IsKeyPressed(teleportKey, true)) {
+                // Cancel auto-actions and macros before any position change
+                CancelAutoActionsAndMacros();
+                
                 // Round start positions
                 if (IsKeyPressed(VK_DOWN, true) && IsKeyPressed('A', true)) {
                     uintptr_t base = GetEFZBase();
