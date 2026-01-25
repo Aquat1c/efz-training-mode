@@ -36,6 +36,7 @@
 #include "../include/input/immediate_input.h"
 
 #include "../include/utils/bgm_control.h"
+#include "../include/utils/network.h"  // for DetectOnlineMatch in watchdog
 #include "../include/core/globals.h"
 
 std::atomic<bool> g_efzWindowActive(false);
@@ -572,6 +573,78 @@ void EnterOnlineMode() {
             LogOut("[ONLINE] Self-unload spawn failed; remaining parked", true);
         }
     }
+}
+
+// ============================================================================
+// Online Mode Watchdog Thread
+// Monitors for online mode for a limited time after startup and triggers
+// full shutdown if detected. Runs for 10 seconds max with infrequent checks
+// to avoid any performance impact.
+// ============================================================================
+static std::atomic<bool> g_watchdogRunning{false};
+static std::thread g_watchdogThread;
+
+static void OnlineWatchdogLoop() {
+    LogOut("[WATCHDOG] Online mode watchdog started (10 second window)", true);
+
+    constexpr DWORD CHECK_INTERVAL_MS = 2000;  // Check every 2 seconds
+    constexpr DWORD MAX_RUNTIME_MS = 10000;    // Run for 10 seconds max
+    constexpr int MAX_CHECKS = MAX_RUNTIME_MS / CHECK_INTERVAL_MS;  // 5 checks
+
+    for (int checkCount = 0; checkCount < MAX_CHECKS && g_watchdogRunning.load(); ++checkCount) {
+        // If we've already detected online mode, stop watching
+        if (g_onlineModeActive.load()) {
+            LogOut("[WATCHDOG] Online mode flag already set, watchdog exiting", true);
+            return;
+        }
+
+        // Check for online mode using all detection methods
+        bool isOnline = false;
+        try {
+            isOnline = DetectOnlineMatch();
+        } catch (...) {
+            // On error, assume offline to avoid false positives
+            isOnline = false;
+        }
+
+        if (isOnline) {
+            LogOut("[WATCHDOG] ONLINE MODE DETECTED! Triggering full shutdown...", true);
+            EnterOnlineMode();
+            return;
+        }
+
+        // Wait before next check
+        Sleep(CHECK_INTERVAL_MS);
+    }
+
+    LogOut("[WATCHDOG] Online mode watchdog completed (no online detected)", true);
+    g_watchdogRunning.store(false);
+}
+
+void StartOnlineWatchdog() {
+    // Don't start if already in online mode (detected at startup)
+    if (g_onlineModeActive.load()) {
+        LogOut("[WATCHDOG] Skipping watchdog - online mode already detected", true);
+        return;
+    }
+
+    // Don't start if already running
+    if (g_watchdogRunning.load()) {
+        return;
+    }
+
+    g_watchdogRunning.store(true);
+    g_watchdogThread = std::thread(OnlineWatchdogLoop);
+    g_watchdogThread.detach();
+    LogOut("[WATCHDOG] Online watchdog thread launched", true);
+}
+
+void StopOnlineWatchdog() {
+    if (g_watchdogRunning.load()) {
+        g_watchdogRunning.store(false);
+        LogOut("[WATCHDOG] Online watchdog thread stopped", true);
+    }
+    // Thread is detached, so no need to join
 }
 
 // Public helper: permanently clear all triggers so they stay disabled until user re-enables

@@ -205,6 +205,13 @@ void DelayedInitialization(HMODULE hModule) {
             }
         }).detach();
 
+        // Start the online watchdog thread to continuously monitor for online mode.
+        // This provides defense-in-depth: if online mode is entered after initial
+        // detection (e.g., after 5-6 matches), the watchdog will catch it and
+        // trigger a full shutdown to prevent any potential crashes or interference.
+        StartOnlineWatchdog();
+        LogOut("[SYSTEM] Online watchdog thread started for continuous monitoring", true);
+
         // Set initialization flag and stop startup logging
         g_initialized = true;
         inStartupPhase = false;
@@ -251,6 +258,9 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
         // Signal shutdown to all threads
         g_isShuttingDown = true;
         g_featuresEnabled = false;
+
+        // Stop the online watchdog thread
+        StopOnlineWatchdog();
 
         // If we were in online mode at startup, nothing was initialized - skip cleanup entirely
         if (g_onlineModeActive.load() && !g_initialized.load()) {
