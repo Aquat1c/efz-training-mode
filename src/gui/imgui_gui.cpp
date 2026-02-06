@@ -366,7 +366,8 @@ namespace ImGuiGui {
 
                     // Additionally, set HP/Meter/RF in display and memory for both players
                     // Per request: ONLY when switching FROM Full/FM TO Disabled, snap values to 9999/0/0.0
-                    if (autoIdx != curAutoIdx && autoIdx == 0 && (curAutoIdx == 1 || curAutoIdx == 2)) {
+                    // CRITICAL: Never modify game memory during online mode
+                    if (autoIdx != curAutoIdx && autoIdx == 0 && (curAutoIdx == 1 || curAutoIdx == 2) && !g_onlineModeActive.load()) {
                         uintptr_t base = GetEFZBase();
                         if (base) {
                             // Targets when disabling Automatic Recovery
@@ -3991,6 +3992,8 @@ namespace ImGuiGui {
                 };
 
                 auto enforceForPlayer = [&](int p){
+                    // CRITICAL: Never modify game memory during online mode
+                    if (g_onlineModeActive.load()) return;
                     bool enabled = (p==1) ? displayData.p1ContinuousRecoveryEnabled : displayData.p2ContinuousRecoveryEnabled;
                     if (!enabled) return;
                     // Resolve player bases once

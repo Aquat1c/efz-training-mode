@@ -40,6 +40,9 @@ static bool WriteP2BlockStance(uint8_t stance);
 
 // Patch to enable Player 2 controls in Practice mode
 bool EnablePlayer2InPracticeMode() {
+    // CRITICAL: Never modify game state during online mode
+    if (g_onlineModeActive.load()) return false;
+
     LogOut("[PRACTICE_PATCH] Attempting to enable Player 2 controls in Practice mode...", true);
 
     // Get base address of the game
@@ -191,6 +194,9 @@ bool EnablePlayer2InPracticeMode() {
 
 // Function to scan for potential AI control flags in P2's character structure
 void ScanForPotentialAIFlags() {
+    // CRITICAL: Never scan/write game memory during online mode
+    if (g_onlineModeActive.load()) return;
+
     LogOut("[PRACTICE_PATCH] Scanning for potential AI control flags...", true);
     
     uintptr_t p2CharPtr = GetPlayerBase(2);
@@ -236,6 +242,9 @@ void ScanForPotentialAIFlags() {
 // Function that continuously monitors and applies the patch
 // This needs to be called from a background thread
 void MonitorAndPatchPracticeMode() {
+    // CRITICAL: Never run during online mode
+    if (g_onlineModeActive.load()) return;
+
     LogOut("[PRACTICE_PATCH] Starting practice mode monitor thread", true);
     
     // Keep track of consecutive failures for error reporting
@@ -249,6 +258,12 @@ void MonitorAndPatchPracticeMode() {
     
     // Add input monitoring to the main loop
     while (true) {
+        // Exit if online mode is detected
+        if (g_onlineModeActive.load()) {
+            LogOut("[PRACTICE_PATCH] Online mode detected, stopping practice monitor thread", true);
+            return;
+        }
+
         GameMode currentMode = GetCurrentGameMode();
         cycleCount++;
         
@@ -469,6 +484,9 @@ std::string GetDirectionName(uint8_t inputBits) {
 
 // Function to disable Player 2 controls in Practice mode
 bool DisablePlayer2InPracticeMode() {
+    // CRITICAL: Never modify game state during online mode
+    if (g_onlineModeActive.load()) return false;
+
     LogOut("[PRACTICE_PATCH] Attempting to disable Player 2 controls in Practice mode...", true);
 
     // When using EfzRevival side-switching during an active Practice match, P2 can

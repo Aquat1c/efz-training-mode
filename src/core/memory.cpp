@@ -230,6 +230,9 @@ void SetPlayerPosition(uintptr_t base, uintptr_t playerOffset, double x, double 
 
 // Direct RF value setter (pointer-based)
 bool SetRFValuesDirect(double p1RF, double p2RF) {
+    // CRITICAL: Never modify game state during online mode
+    if (g_onlineModeActive.load()) return false;
+
     uintptr_t base = GetEFZBase();
     if (!base) return false;
     
@@ -523,6 +526,9 @@ bool DebugScanRegenParamWindow(uintptr_t playerBase, uint32_t& outAOffset, uint1
 
 // Set IC Color values directly (similar to SetRFValuesDirect)
 bool SetICColorDirect(bool p1BlueIC, bool p2BlueIC) {
+    // CRITICAL: Never modify game state during online mode
+    if (g_onlineModeActive.load()) return false;
+
     uintptr_t base = GetEFZBase();
     if (!base) return false;
     
@@ -844,6 +850,12 @@ static bool rfFreezeColorP2Blue = false;
 
 // Improved RF freeze thread function with better error handling
 void RFFreezeThreadFunc() {
+    // CRITICAL: Never run during online mode
+    if (g_onlineModeActive.load()) {
+        rfThreadRunning = false;
+        return;
+    }
+
     rfThreadRunning = true;
     int sleepMs = 10;                // default ~100 Hz when active
     const int minSleepMs = 5;        // lower bound when values are drifting
@@ -852,8 +864,13 @@ void RFFreezeThreadFunc() {
     auto nearlyEqual = [](double a, double b) {
         return fabs(a - b) < 1e-6;   // tiny tolerance for float write verification
     };
-    
+
     while (rfThreadRunning && !g_isShuttingDown.load()) {
+        // Exit if online mode is detected
+        if (g_onlineModeActive.load()) {
+            rfThreadRunning = false;
+            break;
+        }
         if (rfFreezing.load()) {
             uintptr_t base = GetEFZBase();
             if (base) {
@@ -924,12 +941,14 @@ void RFFreezeThreadFunc() {
 
 // Initialize the RF freeze thread
 void InitRFFreezeThread() {
+    // CRITICAL: Never initialize during online mode
+    if (g_onlineModeActive.load()) return;
     if (rfThreadRunning) return;
-    
+
     rfThreadRunning = true;
     rfFreezeThread = std::thread(RFFreezeThreadFunc);
     rfFreezeThread.detach();
-    
+
     // Only show in detailed mode
     LogOut("[RF] RF freeze thread initialized", detailedLogging.load());
 }

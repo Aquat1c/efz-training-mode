@@ -692,14 +692,27 @@ void UpdateTriggerOverlay() {
             }
 
             bool isActive = false;
-            if (g_lastActiveTriggerType.load() == triggerType) {
+            bool isCancelled = false;
+            
+            // Check if triggers were cancelled (red flash for ~0.5 seconds)
+            if (g_triggersCancelledActive.load()) {
+                if (frameCounter.load() - g_triggersCancelledFrame.load() < 96) {
+                    isCancelled = true;
+                } else {
+                    g_triggersCancelledActive.store(false);
+                }
+            }
+            
+            // Check if this trigger was just activated (green flash)
+            if (!isCancelled && g_lastActiveTriggerType.load() == triggerType) {
                 // Highlight for 96 internal frames (~0.5 seconds) after activation
                 if (frameCounter.load() - g_lastActiveTriggerFrame.load() < 96) {
                     isActive = true;
                 }
             }
 
-            COLORREF color = isActive ? RGB(50, 255, 50) : RGB(255, 215, 0);
+            // Color priority: cancelled (red) > active (green) > default (gold)
+            COLORREF color = isCancelled ? RGB(200, 50, 50) : (isActive ? RGB(50, 255, 50) : RGB(255, 215, 0));
 
             // Position to the right side with proper margins
             // 640 is standard game width, leave 10px margin
@@ -746,8 +759,13 @@ void UpdateTriggerOverlay() {
 }
 
 void FrameDataMonitor() {
+    // CRITICAL: Never run during online mode - exit immediately without doing anything
+    if (g_onlineModeActive.load()) {
+        return;
+    }
+
     using clock = std::chrono::high_resolution_clock;
-    
+
     if (Config::GetSettings().enableFpsDiagnostics || detailedLogging.load()) {
         LogOut("[FRAME MONITOR] Starting frame monitoring at 192fps for maximum precision", true);
     }
