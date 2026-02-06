@@ -27,6 +27,10 @@ extern bool p2ActionApplied;
 extern std::atomic<int> g_lastActiveTriggerType;
 extern std::atomic<int> g_lastActiveTriggerFrame;
 
+// Globals to track trigger cancelled state (flashes red on cancel)
+extern std::atomic<bool> g_triggersCancelledActive;
+extern std::atomic<int> g_triggersCancelledFrame;
+
 // Function declarations
 short GetActionMoveID(int actionType, int triggerType = TRIGGER_NONE, int playerNum = 2);
 void ProcessTriggerDelays();
@@ -64,6 +68,11 @@ extern std::atomic<short> g_lastP2MoveID;
 // Control restore / cleanup helpers
 void ProcessAutoControlRestore();
 void ClearAllAutoActionTriggers();
+
+// Cancel active auto-actions and macros without disabling trigger settings.
+// Use this when loading savestates or resetting positions to abort in-progress
+// executions while preserving user-configured triggers for future activations.
+void CancelAutoActionsAndMacros();
 
 // Tick-integrated execution
 // When enabled, auto-actions are evaluated once per internal engine tick from the input hook

@@ -36,6 +36,7 @@
 #include "../include/input/immediate_input.h"
 
 #include "../include/utils/bgm_control.h"
+#include "../include/utils/network.h"  // for DetectOnlineMatch in watchdog
 #include "../include/core/globals.h"
 
 std::atomic<bool> g_efzWindowActive(false);
@@ -574,6 +575,78 @@ void EnterOnlineMode() {
     }
 }
 
+// ============================================================================
+// Online Mode Watchdog Thread
+// Monitors for online mode for a limited time after startup and triggers
+// full shutdown if detected. Runs for 10 seconds max with infrequent checks
+// to avoid any performance impact.
+// ============================================================================
+static std::atomic<bool> g_watchdogRunning{false};
+static std::thread g_watchdogThread;
+
+static void OnlineWatchdogLoop() {
+    LogOut("[WATCHDOG] Online mode watchdog started (10 second window)", true);
+
+    constexpr DWORD CHECK_INTERVAL_MS = 2000;  // Check every 2 seconds
+    constexpr DWORD MAX_RUNTIME_MS = 10000;    // Run for 10 seconds max
+    constexpr int MAX_CHECKS = MAX_RUNTIME_MS / CHECK_INTERVAL_MS;  // 5 checks
+
+    for (int checkCount = 0; checkCount < MAX_CHECKS && g_watchdogRunning.load(); ++checkCount) {
+        // If we've already detected online mode, stop watching
+        if (g_onlineModeActive.load()) {
+            LogOut("[WATCHDOG] Online mode flag already set, watchdog exiting", true);
+            return;
+        }
+
+        // Check for online mode using all detection methods
+        bool isOnline = false;
+        try {
+            isOnline = DetectOnlineMatch();
+        } catch (...) {
+            // On error, assume offline to avoid false positives
+            isOnline = false;
+        }
+
+        if (isOnline) {
+            LogOut("[WATCHDOG] ONLINE MODE DETECTED! Triggering full shutdown...", true);
+            EnterOnlineMode();
+            return;
+        }
+
+        // Wait before next check
+        Sleep(CHECK_INTERVAL_MS);
+    }
+
+    LogOut("[WATCHDOG] Online mode watchdog completed (no online detected)", true);
+    g_watchdogRunning.store(false);
+}
+
+void StartOnlineWatchdog() {
+    // Don't start if already in online mode (detected at startup)
+    if (g_onlineModeActive.load()) {
+        LogOut("[WATCHDOG] Skipping watchdog - online mode already detected", true);
+        return;
+    }
+
+    // Don't start if already running
+    if (g_watchdogRunning.load()) {
+        return;
+    }
+
+    g_watchdogRunning.store(true);
+    g_watchdogThread = std::thread(OnlineWatchdogLoop);
+    g_watchdogThread.detach();
+    LogOut("[WATCHDOG] Online watchdog thread launched", true);
+}
+
+void StopOnlineWatchdog() {
+    if (g_watchdogRunning.load()) {
+        g_watchdogRunning.store(false);
+        LogOut("[WATCHDOG] Online watchdog thread stopped", true);
+    }
+    // Thread is detached, so no need to join
+}
+
 // Public helper: permanently clear all triggers so they stay disabled until user re-enables
 void ClearAllTriggersPersistently() {
     static uint64_t s_lastClearTick = 0; // throttle identical spam bursts
@@ -610,13 +683,24 @@ void ClearAllTriggersPersistently() {
 // Global flag to track if we're still in startup mode
 std::atomic<bool> inStartupPhase(true);
 std::string startupLogPath;
+// Flag to enable/disable startup log file (checked after config loads)
+static std::atomic<bool> s_startupLogEnabled{true};  // Default true until config says otherwise
+// Track if we've written the first message this session (to truncate on first write)
+static std::atomic<bool> s_startupLogFirstWrite{true};
+
+// Called after config loads to disable startup log if detailedLogging is off
+void SetStartupLogEnabled(bool enabled) {
+    s_startupLogEnabled.store(enabled);
+}
 
 // Create a function that writes to a log file without requiring the console
 void WriteStartupLog(const std::string& message) {
     if (!inStartupPhase) return; // Skip if we're past startup
+    if (g_onlineModeActive.load()) return; // Skip entirely during online mode
+    if (!s_startupLogEnabled.load()) return; // Skip if disabled by config
     
     try {
-        // Open log file in append mode
+        // Determine log file path once
         if (startupLogPath.empty()) {
             char path[MAX_PATH] = {0};
             GetModuleFileNameA(NULL, path, MAX_PATH);
@@ -624,8 +708,12 @@ void WriteStartupLog(const std::string& message) {
             startupLogPath = exePath.substr(0, exePath.find_last_of("\\/")) + "\\efz_startup.log";
         }
         
-        // Open file and append message with timestamp
-        std::ofstream logFile(startupLogPath, std::ios::app);
+        // First write this session: truncate (refresh) the file
+        // Subsequent writes: append
+        bool isFirstWrite = s_startupLogFirstWrite.exchange(false);
+        std::ios_base::openmode mode = isFirstWrite ? std::ios::trunc : std::ios::app;
+        
+        std::ofstream logFile(startupLogPath, mode);
         if (logFile.is_open()) {
             // Get current time
             auto now = std::chrono::system_clock::now();
@@ -1253,19 +1341,39 @@ HWND FindEFZWindow() {
     // Cache & throttle enumeration: only re-enumerate every 120 internal frames or if handle invalid
     static HWND cached = NULL;
     static int lastRefreshFrame = -99999;
+    static DWORD ourPid = GetCurrentProcessId();  // Our process ID (constant per instance)
+    
     int currentInternal = frameCounter.load();
     if (cached && IsWindow(cached)) {
-        // Fast path use cached
-        return cached;
+        // Validate cached window still belongs to our process
+        DWORD cachedPid = 0;
+        GetWindowThreadProcessId(cached, &cachedPid);
+        if (cachedPid == ourPid) {
+            return cached;  // Fast path: cached handle is valid and belongs to us
+        }
+        // Wrong process - invalidate cache
+        cached = NULL;
     }
-    if (currentInternal - lastRefreshFrame < 120) {
+    if (currentInternal - lastRefreshFrame < 120 && cached) {
         return cached; // avoid hammering EnumWindows()
     }
     lastRefreshFrame = currentInternal;
 
-    HWND foundWindow = NULL;
+    // Search context: our PID and result pointer
+    struct EnumContext {
+        DWORD targetPid;
+        HWND foundWindow;
+    } ctx = { ourPid, NULL };
+
     EnumWindows([](HWND hwnd, LPARAM lParam) -> BOOL {
+        EnumContext* pCtx = reinterpret_cast<EnumContext*>(lParam);
         if (!IsWindowVisible(hwnd)) return TRUE;
+        
+        // CRITICAL: Only consider windows belonging to OUR process
+        DWORD windowPid = 0;
+        GetWindowThreadProcessId(hwnd, &windowPid);
+        if (windowPid != pCtx->targetPid) return TRUE;  // Not our window, skip
+        
         WCHAR wideTitle[256] = {0};
         GetWindowTextW(hwnd, wideTitle, 255);
         if (wcslen(wideTitle) == 0) return TRUE;
@@ -1273,13 +1381,14 @@ HWND FindEFZWindow() {
         wcscpy_s(lower, wideTitle);
         _wcslwr_s(lower);
         if (wcsstr(lower, L"eternal fighter zero") || wcsstr(lower, L"efz.exe") || wcsstr(lower, L"revival")) {
-            *reinterpret_cast<HWND*>(lParam) = hwnd;
-            return FALSE;
+            pCtx->foundWindow = hwnd;
+            return FALSE;  // Found it, stop enumeration
         }
         return TRUE;
-    }, reinterpret_cast<LPARAM>(&foundWindow));
-    if (foundWindow) {
-        cached = foundWindow;
+    }, reinterpret_cast<LPARAM>(&ctx));
+    
+    if (ctx.foundWindow) {
+        cached = ctx.foundWindow;
     }
     return cached;
 }

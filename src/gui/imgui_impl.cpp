@@ -23,6 +23,9 @@ namespace PracticeOverlayGate { void SetMenuVisible(bool); }
 // Global reference to shutdown flag - MOVED OUTSIDE namespace
 extern std::atomic<bool> g_isShuttingDown;
 
+// Thread-safe initialization guard
+static std::atomic<bool> s_imguiInitInProgress{false};
+
 // Global state
 static bool g_imguiInitialized = false;
 // Made non-static to satisfy legacy external references during LTCG; accessor functions should be preferred.
@@ -580,13 +583,29 @@ namespace ImGuiImpl {
             ", px=" + std::to_string((int)targetPx) + ", font=" + (fontMode==0?"Default":"Segoe UI")).c_str(), true);
     }
     bool Initialize(IDirect3DDevice9* device) {
+        // Fast path: already initialized
         if (g_imguiInitialized)
             return true;
+
+        // Prevent concurrent initialization attempts (race between EndScene calls)
+        bool expected = false;
+        if (!s_imguiInitInProgress.compare_exchange_strong(expected, true)) {
+            // Another thread is already initializing - wait briefly and check result
+            Sleep(50);
+            return g_imguiInitialized;
+        }
+
+        // Double-check after acquiring the lock
+        if (g_imguiInitialized) {
+            s_imguiInitInProgress.store(false);
+            return true;
+        }
 
         LogOut("[IMGUI] Initializing ImGui", true);
         
         if (!device) {
             LogOut("[IMGUI] Error: No valid D3D device provided", true);
+            s_imguiInitInProgress.store(false);
             return false;
         }
         
@@ -648,13 +667,19 @@ namespace ImGuiImpl {
             UpdateFontAtlasForScale(initScale);
         }
         
+    // Clear last error before SetWindowLongPtr to get accurate error info
+    SetLastError(0);
     g_originalWndProc = (WNDPROC)SetWindowLongPtr(gameWindow, GWLP_WNDPROC, (LONG_PTR)ImGuiWndProc);
-        if (!g_originalWndProc) {
-            LogOut("[IMGUI] Error: Failed to hook window procedure", true);
+    DWORD wndProcErr = GetLastError();
+    if (!g_originalWndProc && wndProcErr != 0) {
+            // Genuine failure - SetWindowLongPtr returned NULL with an error
+            LogOut("[IMGUI] Error: Failed to hook window procedure (err=" + std::to_string(wndProcErr) + ")", true);
             ImGui_ImplDX9_Shutdown();
             ImGui_ImplWin32_Shutdown();
+            s_imguiInitInProgress.store(false);
             return false;
         }
+    // Note: NULL return with no error means previous WndProc was NULL (rare but valid)
         
     // Let ImGui know we can provide inputs. Disable HasSetMousePos so ImGui doesn't warp OS cursor,
     // we manage OS cursor explicitly (e.g., on middle-click).
@@ -665,6 +690,7 @@ namespace ImGuiImpl {
     ImGuiGui::Initialize();
         
         g_imguiInitialized = true;
+        s_imguiInitInProgress.store(false);  // Release init lock
         LogOut("[IMGUI] ImGui initialized successfully", true);
         
         return true;
