@@ -133,6 +133,10 @@ void SetVanillaSwapInputRouting(bool enable) {
 // Our poll hook. Use __fastcall to match __thiscall trampoline signature.
 static int __fastcall HookedPollPlayerInputState(int inputManagerPtr, int /*edx*/, unsigned int playerIndex)
 {
+    if (g_onlineModeActive.load(std::memory_order_relaxed)) {
+        return oPollPlayerInputState ? oPollPlayerInputState(inputManagerPtr, playerIndex) : 0;
+    }
+
     // Engine uses 0 for P1 and 1 for P2; our globals use 1=P1, 2=P2.
     unsigned int idx = (playerIndex <= 1) ? (playerIndex + 1) : 0;
     if (idx <= 2) {
@@ -151,6 +155,10 @@ static int __fastcall HookedPollPlayerInputState(int inputManagerPtr, int /*edx*
 // Our custom function that will be called instead of the original.
 // We use __fastcall for __thiscall hooks from MinHook.
 int __fastcall HookedProcessCharacterInput(int characterPtr, int edx) {
+    if (g_onlineModeActive.load(std::memory_order_relaxed)) {
+        return oProcessCharacterInput(characterPtr);
+    }
+
     // Determine if this is P1 or P2 by comparing the character object pointer.
     
     // --- CORRECTED POINTER LOGIC ---

@@ -82,6 +82,7 @@ add_library(efz_training_mode SHARED ${SOURCES})
 
 # Update include directories to include subdirectories
 target_include_directories(efz_training_mode PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${CMAKE_CURRENT_SOURCE_DIR}/include/core
     ${CMAKE_CURRENT_SOURCE_DIR}/include/game

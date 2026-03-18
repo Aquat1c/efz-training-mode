@@ -55,30 +55,7 @@ void DelayedInitialization(HMODULE hModule) {
     try {
         // Short delay to ensure the game has started properly
         Sleep(1500);
-
-        // ============================================================
-        // CRITICAL: Online detection MUST happen FIRST, before ANY
-        // initialization (no logging, no config, no console, no threads).
-        // If online is detected, we exit immediately and do NOTHING.
-        // ============================================================
-        bool onlineAtStart = false;
-        try {
-            onlineAtStart = DetectOnlineMatch();
-        } catch (...) {
-            onlineAtStart = false; // be conservative; if unknown, continue
-        }
-        if (onlineAtStart) {
-            // Set the global flag so any other code paths also bail out
-            g_onlineModeActive.store(true);
-            isOnlineMatch.store(true);
-            // Do NOT initialize anything - no logging, no console, no threads, no hooks
-            // Just silently exit. The mod will be completely dormant during netplay.
-            inStartupPhase = false;
-            return;
-        }
-
-        // Safe to proceed with initialization - not in online mode
-        WriteStartupLog("Starting delayed initialization (offline mode confirmed)");
+        WriteStartupLog("Starting delayed initialization");
 
         // Initialize logging system (starts title updater thread)
         WriteStartupLog("Initializing logging system...");
@@ -171,6 +148,38 @@ void DelayedInitialization(HMODULE hModule) {
             LogOut("[SYSTEM] Exception while starting BGM suppression poller.", true);
         }
 
+        // Safety baseline: if a previous injected session left FM bypass patched,
+        // restore the original HP checks before this runtime decides whether to
+        // reapply it for local practice.
+        ForceRestoreFinalMemoryHPBypass("startup baseline");
+
+        RefreshNetplayRuntimeState();
+        {
+            NetplayRuntimeState state = GetNetplayRuntimeState();
+            std::ostringstream oss;
+            oss << "[NETPLAY] Startup snapshot"
+                << " source=" << NetplayStateSourceName(state.source)
+                << " suspend=" << (state.suspendTraining ? "1" : "0")
+                << " session=" << (state.sessionActive ? "1" : "0")
+                << " menu=" << (state.inNetplayMenu ? "1" : "0")
+                << " flow=" << (state.inNetplayFlow ? "1" : "0");
+            if (state.exportAvailable) {
+                oss << " mode=" << state.exportState.sessionMode
+                    << " phase=" << state.exportState.sessionPhase
+                    << " activity=" << static_cast<int>(state.exportState.activityPhase);
+            } else {
+                oss << " legacy=" << OnlineStateName(state.legacyOnlineState);
+            }
+            oss << " reason=" << GetLastOnlineDetectionReason();
+            LogOut(oss.str(), true);
+        }
+        if (IsNetplaySuspendActive()) {
+            LogOut("[NETPLAY] Startup entering suspended mode", true);
+            EnterNetplaySuspend();
+        } else {
+            LogOut("[NETPLAY] Startup entering active local mode", true);
+        }
+
     // Final Memory HP bypass is now manual via Debug tab to avoid unintended changes.
 
         LogOut("[SYSTEM] EFZ Training Mode - Delayed initialization starting", true);
@@ -181,6 +190,7 @@ void DelayedInitialization(HMODULE hModule) {
     LogOut("[SYSTEM] Starting background threads...", true);
     // Note: UpdateConsoleTitle thread is already started by InitializeLogging(); don't start a duplicate here.
     std::thread(FrameDataMonitor).detach();
+    std::thread(LifecycleWatcherThread).detach();
         LogOut("[SYSTEM] Essential background threads started.", true);
 
         // Use standard Windows input APIs instead of DirectInput
@@ -198,13 +208,10 @@ void DelayedInitialization(HMODULE hModule) {
     std::thread([]{
             Sleep(2000); // Give the game a moment to be fully ready
             try {
-        if (g_onlineModeActive.load()) return; // don't init if online already
                 if (DirectDrawHook::InitializeD3D9()) {
                     LogOut("[SYSTEM] D3D9 Overlay system initialized.", true);
                 } else {
                     LogOut("[SYSTEM] Failed to initialize D3D9 Overlay system.", true);
-                    // Don't show MessageBox during online mode - stay silent
-                    if (g_onlineModeActive.load()) return;
                     static bool s_warnedNoD3D9 = false;
                     if (!s_warnedNoD3D9) {
                         s_warnedNoD3D9 = true;
@@ -222,13 +229,6 @@ void DelayedInitialization(HMODULE hModule) {
                 LogOut("[SYSTEM] Exception during D3D9 overlay initialization.", true);
             }
         }).detach();
-
-        // Start the online watchdog thread to continuously monitor for online mode.
-        // This provides defense-in-depth: if online mode is entered after initial
-        // detection (e.g., after 5-6 matches), the watchdog will catch it and
-        // trigger a full shutdown to prevent any potential crashes or interference.
-        StartOnlineWatchdog();
-        LogOut("[SYSTEM] Online watchdog thread started for continuous monitoring", true);
 
         // Set initialization flag and stop startup logging
         g_initialized = true;
@@ -267,7 +267,7 @@ void InitializeConfig() {
 BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserved) {
     switch (ul_reason_for_call) {
     case DLL_PROCESS_ATTACH:
-    // Remember our own module for safe self-unload later
+    // Keep our module handle available for any future runtime services that need it.
     g_hSelfModule = hModule;
         DisableThreadLibraryCalls(hModule);
         std::thread(DelayedInitialization, hModule).detach();
@@ -277,19 +277,12 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
         g_isShuttingDown = true;
         g_featuresEnabled = false;
 
-        // Stop the online watchdog thread
-        StopOnlineWatchdog();
-
-        // If we were in online mode at startup, nothing was initialized - skip cleanup entirely
-        if (g_onlineModeActive.load() && !g_initialized.load()) {
-            break;
-        }
-
         // Shutdown debug log
         DebugLog::Shutdown();
 
         // CRITICAL: Stop buffer freezing FIRST
         StopBufferFreezing();
+        ForceRestoreFinalMemoryHPBypass("DLL_PROCESS_DETACH");
 
         // Then restore P2 control
         if (g_p2ControlOverridden) {

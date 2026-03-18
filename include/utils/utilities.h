@@ -3,6 +3,7 @@
 #include <string>
 #include <atomic>
 #include <chrono>
+#include <cstdint>
 
 // Global state variables
 extern std::atomic<bool> menuOpen;
@@ -50,6 +51,10 @@ void InvalidateEFZBaseCache();
 // Cached game state pointer (stable after initial allocation)
 uintptr_t GetGameStatePtr();
 void InvalidateGameStatePtrCache();
+uint32_t GetRuntimeLifecycleGeneration();
+void RequestRuntimeLifecycleResync(const std::string& reason);
+void ConsumeRuntimeLifecycleResyncRequests();
+void LifecycleWatcherThread();
 
 // Cached player base pointers (reinitialized on each character load).
 // Returns 0 if characters not initialized or screen not in battle.
@@ -97,6 +102,7 @@ extern std::atomic<bool> g_featuresEnabled;
 void EnableFeatures();
 void DisableFeatures();
 void ResetDisplayDataToDefaults();
+void ResetPracticeMatchSessionState(const char* reason);
 
 // Add delay support for auto-airtech
 extern std::atomic<int> autoAirtechDelay; // 0=instant, 1+=frames to wait
@@ -493,18 +499,13 @@ extern std::atomic<int> triggerOnRGCustomID;
 // Add these after the other global state variables
 extern std::atomic<bool> g_efzWindowActive;
 extern std::atomic<bool> g_guiActive;
-// Set when an online match is detected; used to terminate/pause mod threads
+// Reversible runtime suspend flag used to keep training systems passive during netplay.
 extern std::atomic<bool> g_onlineModeActive;
 
-// Enter online-safe mode: cooperatively stop mod threads, disable hooks/features
-void EnterOnlineMode();
-
-// Start a background watchdog thread that continuously monitors for online mode.
-// If online mode is detected at any point (e.g., after initial startup), it will
-// trigger EnterOnlineMode() to fully shut down the mod.
-void StartOnlineWatchdog();
-// Stop the online watchdog thread (called during shutdown)
-void StopOnlineWatchdog();
+// Enter/exit reversible netplay suspension.
+void EnterNetplaySuspend();
+void ExitNetplaySuspend();
+void AuditNetplayMenuEntryState();
 
 // NEW: Add these for the debug tab's manual input override feature
 extern std::atomic<bool> g_manualInputOverride[3]; // Index 0 unused, 1 for P1, 2 for P2

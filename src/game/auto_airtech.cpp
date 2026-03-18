@@ -95,7 +95,7 @@ bool IsAirtechAnimation(short moveID) {
 void MonitorAutoAirtech(short moveID1, short moveID2) {
     // Only operate in offline Practice mode
     if (GetCurrentGameMode() != GameMode::Practice) return;
-    if (DetectOnlineMatch()) return;
+    if (IsNetplaySuspendActive()) return;
     
     static bool prevEnabled = false;
     static int prevDirection = -1;

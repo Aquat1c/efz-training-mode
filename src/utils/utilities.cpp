@@ -17,6 +17,10 @@
 #include "../include/game/frame_monitor.h"
 #include "../include/input/input_freeze.h"
 #include "../include/game/practice_offsets.h"
+#include "../include/game/practice_patch.h"
+#include "../include/game/always_rg.h"
+#include "../include/game/random_rg.h"
+#include "../include/game/random_block.h"
 #include <sstream>
 #include <iomanip>
 #include <iostream>
@@ -30,13 +34,19 @@
 #include <limits>
 #include "../include/game/character_settings.h"
 #include "../include/game/game_state.h"
+#include "../include/game/macro_controller.h"
+#include "../include/game/collision_hook.h"
+#include "../include/game/final_memory_patch.h"
 #include "../include/input/input_hook.h"         
-#include "../include/game/collision_hook.h"       
 #include "../3rdparty/minhook/include/MinHook.h" 
 #include "../include/input/immediate_input.h"
+#include "../include/input/injection_control.h"
+#include "../include/input/input_buffer.h"
+#include "../include/input/input_core.h"
 
 #include "../include/utils/bgm_control.h"
-#include "../include/utils/network.h"  // for DetectOnlineMatch in watchdog
+#include "../include/utils/network.h"
+#include "../include/utils/pause_integration.h"
 #include "../include/core/globals.h"
 
 std::atomic<bool> g_efzWindowActive(false);
@@ -44,8 +54,13 @@ std::atomic<bool> g_guiActive(false);
 std::atomic<bool> g_onlineModeActive(false);
 // Suppress auto-action clear logging (used for one-shot CS persistent clear)
 std::atomic<bool> g_suppressAutoActionClearLogging(false);
-// Sticky, one-way hard stop once online is confirmed
-static std::atomic<bool> g_hardStoppedOnce{false};
+
+namespace {
+std::atomic<uint32_t> g_runtimeLifecycleGeneration{1};
+std::atomic<bool> g_runtimeLifecycleResyncPending{false};
+std::mutex g_runtimeLifecycleReasonMutex;
+std::string g_runtimeLifecycleReason;
+}
 
 // NEW: Define the manual input override atomics
 std::atomic<bool> g_manualInputOverride[3] = {false, false, false};
@@ -139,7 +154,7 @@ void ResetDisplayDataToDefaults() {
     displayData.autoAction = false;
     displayData.autoActionType = ACTION_5A;
     displayData.autoActionCustomID = 200;
-    displayData.autoActionPlayer = 0;
+    displayData.autoActionPlayer = 2;
     displayData.triggerAfterBlock = false;
     displayData.triggerOnWakeup = false;
     displayData.triggerAfterHitstun = false;
@@ -328,6 +343,173 @@ void ResetDisplayDataToDefaults() {
     LogOut("[SYSTEM] DisplayData reset to defaults", true);
 }
 
+namespace {
+void ResetRuntimeSettingsToDisplayDefaults() {
+    autoAirtechEnabled.store(displayData.autoAirtech);
+    autoAirtechDirection.store(displayData.airtechDirection);
+    autoAirtechDelay.store(displayData.airtechDelay);
+    autoJumpEnabled.store(displayData.autoJump);
+    jumpDirection.store(displayData.jumpDirection);
+    jumpTarget.store(displayData.jumpTarget);
+    p1Jumping.store(false);
+    p2Jumping.store(false);
+
+    autoActionEnabled.store(displayData.autoAction);
+    autoActionType.store(displayData.autoActionType);
+    autoActionCustomID.store(displayData.autoActionCustomID);
+    autoActionPlayer.store(displayData.autoActionPlayer);
+
+    triggerAfterBlockEnabled.store(displayData.triggerAfterBlock);
+    triggerOnWakeupEnabled.store(displayData.triggerOnWakeup);
+    triggerAfterHitstunEnabled.store(displayData.triggerAfterHitstun);
+    triggerAfterAirtechEnabled.store(displayData.triggerAfterAirtech);
+    triggerOnRGEnabled.store(displayData.triggerOnRG);
+    triggerRandomizeEnabled.store(displayData.randomizeTriggers);
+
+    triggerAfterBlockDelay.store(displayData.delayAfterBlock);
+    triggerOnWakeupDelay.store(displayData.delayOnWakeup);
+    triggerAfterHitstunDelay.store(displayData.delayAfterHitstun);
+    triggerAfterAirtechDelay.store(displayData.delayAfterAirtech);
+    triggerOnRGDelay.store(displayData.delayOnRG);
+
+    triggerAfterBlockAction.store(displayData.actionAfterBlock);
+    triggerOnWakeupAction.store(displayData.actionOnWakeup);
+    triggerAfterHitstunAction.store(displayData.actionAfterHitstun);
+    triggerAfterAirtechAction.store(displayData.actionAfterAirtech);
+    triggerOnRGAction.store(displayData.actionOnRG);
+
+    triggerAfterBlockActionPoolMask.store(displayData.afterBlockActionPoolMask);
+    triggerOnWakeupActionPoolMask.store(displayData.onWakeupActionPoolMask);
+    triggerAfterHitstunActionPoolMask.store(displayData.afterHitstunActionPoolMask);
+    triggerAfterAirtechActionPoolMask.store(displayData.afterAirtechActionPoolMask);
+    triggerOnRGActionPoolMask.store(displayData.onRGActionPoolMask);
+    triggerAfterBlockUsePool.store(displayData.afterBlockUseActionPool);
+    triggerOnWakeupUsePool.store(displayData.onWakeupUseActionPool);
+    triggerAfterHitstunUsePool.store(displayData.afterHitstunUseActionPool);
+    triggerAfterAirtechUsePool.store(displayData.afterAirtechUseActionPool);
+    triggerOnRGUsePool.store(displayData.onRGUseActionPool);
+
+    triggerAfterBlockCustomID.store(displayData.customAfterBlock);
+    triggerOnWakeupCustomID.store(displayData.customOnWakeup);
+    triggerAfterHitstunCustomID.store(displayData.customAfterHitstun);
+    triggerAfterAirtechCustomID.store(displayData.customAfterAirtech);
+    triggerOnRGCustomID.store(displayData.customOnRG);
+
+    triggerAfterBlockStrength.store(displayData.strengthAfterBlock);
+    triggerOnWakeupStrength.store(displayData.strengthOnWakeup);
+    triggerAfterHitstunStrength.store(displayData.strengthAfterHitstun);
+    triggerAfterAirtechStrength.store(displayData.strengthAfterAirtech);
+    triggerOnRGStrength.store(displayData.strengthOnRG);
+
+    triggerAfterBlockMacroSlot.store(displayData.macroSlotAfterBlock);
+    triggerOnWakeupMacroSlot.store(displayData.macroSlotOnWakeup);
+    triggerAfterHitstunMacroSlot.store(displayData.macroSlotAfterHitstun);
+    triggerAfterAirtechMacroSlot.store(displayData.macroSlotAfterAirtech);
+    triggerOnRGMacroSlot.store(displayData.macroSlotOnRG);
+
+    auto clampCopy = [](int srcCount, const TriggerOption* srcArr, int& dstCount, TriggerOption* dstArr) {
+        int count = srcCount;
+        if (count < 0) count = 0;
+        if (count > MAX_TRIGGER_OPTIONS) count = MAX_TRIGGER_OPTIONS;
+        dstCount = count;
+        for (int i = 0; i < count; ++i) {
+            dstArr[i] = srcArr[i];
+        }
+        for (int i = count; i < MAX_TRIGGER_OPTIONS; ++i) {
+            dstArr[i] = TriggerOption{false, ACTION_5A, 0, 0, (int)BASE_ATTACK_5A, 0};
+        }
+    };
+    clampCopy(displayData.afterBlockOptionCount, displayData.afterBlockOptions, g_afterBlockOptionCount, g_afterBlockOptions);
+    clampCopy(displayData.onWakeupOptionCount, displayData.onWakeupOptions, g_onWakeupOptionCount, g_onWakeupOptions);
+    clampCopy(displayData.afterHitstunOptionCount, displayData.afterHitstunOptions, g_afterHitstunOptionCount, g_afterHitstunOptions);
+    clampCopy(displayData.afterAirtechOptionCount, displayData.afterAirtechOptions, g_afterAirtechOptionCount, g_afterAirtechOptions);
+    clampCopy(displayData.onRGOptionCount, displayData.onRGOptions, g_onRGOptionCount, g_onRGOptions);
+
+    g_contRecoveryEnabled.store(displayData.continuousRecoveryEnabled);
+    g_contRecoveryApplyTo.store(displayData.continuousRecoveryApplyTo);
+    g_contRecHpMode.store(displayData.recoveryHpMode);
+    g_contRecHpCustom.store(displayData.recoveryHpCustom);
+    g_contRecMeterMode.store(displayData.recoveryMeterMode);
+    g_contRecMeterCustom.store(displayData.recoveryMeterCustom);
+    g_contRecRfMode.store(displayData.recoveryRfMode);
+    g_contRecRfCustom.store(displayData.recoveryRfCustom);
+    g_contRecRfForceBlueIC.store(displayData.recoveryRfForceBlueIC);
+
+    g_contRecEnabledP1.store(displayData.p1ContinuousRecoveryEnabled);
+    g_contRecHpModeP1.store(displayData.p1RecoveryHpMode);
+    g_contRecHpCustomP1.store(displayData.p1RecoveryHpCustom);
+    g_contRecMeterModeP1.store(displayData.p1RecoveryMeterMode);
+    g_contRecMeterCustomP1.store(displayData.p1RecoveryMeterCustom);
+    g_contRecRfModeP1.store(displayData.p1RecoveryRfMode);
+    g_contRecRfCustomP1.store(displayData.p1RecoveryRfCustom);
+    g_contRecRfForceBlueICP1.store(displayData.p1RecoveryRfForceBlueIC);
+
+    g_contRecEnabledP2.store(displayData.p2ContinuousRecoveryEnabled);
+    g_contRecHpModeP2.store(displayData.p2RecoveryHpMode);
+    g_contRecHpCustomP2.store(displayData.p2RecoveryHpCustom);
+    g_contRecMeterModeP2.store(displayData.p2RecoveryMeterMode);
+    g_contRecMeterCustomP2.store(displayData.p2RecoveryMeterCustom);
+    g_contRecRfModeP2.store(displayData.p2RecoveryRfMode);
+    g_contRecRfCustomP2.store(displayData.p2RecoveryRfCustom);
+    g_contRecRfForceBlueICP2.store(displayData.p2RecoveryRfForceBlueIC);
+}
+}
+
+void ResetPracticeMatchSessionState(const char* reason) {
+    ResetDisplayDataToDefaults();
+    ResetRuntimeSettingsToDisplayDefaults();
+    ClearAllAutoActionTriggers();
+    ResetActionFlags();
+    MacroController::UnswapThenStop();
+
+    forwardDashFollowup.store(0);
+    forwardDashFollowupDashMode.store(false);
+    g_wakeBufferingEnabled.store(false);
+    g_counterRGEnabled.store(false);
+
+    AlwaysRG::SetEnabled(false);
+    RandomRG::SetEnabled(false);
+    RandomBlock::SetEnabled(false);
+
+    SetDummyAutoBlockMode(DAB_None);
+    SetAdaptiveStanceEnabled(false);
+    if (GetCurrentGameMode() == GameMode::Practice && !IsNetplaySuspendActive()) {
+        SetPracticeBlockMode(0);
+        DisablePlayer2InPracticeMode();
+    }
+
+    WriteEngineRegenParams(0, 0);
+    StopRFFreeze();
+    StopRFFreezePlayer(1);
+    StopRFFreezePlayer(2);
+    SetRFFreezeColorDesired(1, false, false);
+    SetRFFreezeColorDesired(2, false, false);
+
+    SetFinalMemoryBypass(false);
+    CharacterSettings::InvalidateAllCharacterPointerCaches();
+    InvalidateAutoActionCharacterCaches(reason ? reason : "practice match reset");
+    PauseIntegration::ResetCachedPointers(reason ? reason : "practice match reset");
+    ResetCollisionHookSessionCaches(reason ? reason : "practice match reset");
+    ImGuiGui::ResetForPracticeSession(reason ? reason : "practice match reset");
+
+    std::string lifecycleReason = "practice match session reset";
+    if (reason && *reason) {
+        lifecycleReason += ": ";
+        lifecycleReason += reason;
+    }
+    RequestRuntimeLifecycleResync(lifecycleReason);
+
+    std::ostringstream oss;
+    oss << "[SESSION] Practice match state reset"
+        << " reason=" << (reason && *reason ? reason : "unspecified")
+        << " fmRequested=" << (IsFinalMemoryBypassEnabled() ? "1" : "0")
+        << " fmInstalled=" << (IsFinalMemoryBypassInstalled() ? "1" : "0")
+        << " wakeBuf=" << (g_wakeBufferingEnabled.load() ? "1" : "0")
+        << " counterRG=" << (g_counterRGEnabled.load() ? "1" : "0")
+        << " autoActionPlayer=" << autoActionPlayer.load();
+    LogOut(oss.str(), true);
+}
+
 // NEW: Add feature management functions
 void EnableFeatures() {
     if (g_onlineModeActive.load()) return;
@@ -338,6 +520,7 @@ void EnableFeatures() {
     
     // Reset display data to defaults when entering valid mode
     ResetDisplayDataToDefaults();
+    ImGuiGui::ResetForPracticeSession("EnableFeatures", false);
     // Invalidate cached character-specific pointers so they get
     // refreshed for the new session (prevents stale addresses
     // when re-entering Practice from character select).
@@ -351,6 +534,15 @@ void EnableFeatures() {
     }
 
     g_featuresEnabled.store(true);
+    const int fmApplied = SyncFinalMemoryBypassForCurrentMode("EnableFeatures");
+    if (fmApplied > 0 || detailedLogging.load()) {
+        LogOut(
+            std::string("[FM_PATCH] EnableFeatures sync")
+            + " requested=" + (IsFinalMemoryBypassEnabled() ? "1" : "0")
+            + " installed=" + (IsFinalMemoryBypassInstalled() ? "1" : "0")
+            + " changes=" + std::to_string(fmApplied),
+            true);
+    }
 
     // No automatic restoration of triggers; user must re-enable manually
     LogOut("[SYSTEM] Triggers remain disabled until manually re-enabled", true);
@@ -380,6 +572,15 @@ void DisableFeatures() {
         return;
     
     LogOut("[SYSTEM] Game left valid mode. Disabling patches and overlays.", true);
+    const int fmRestored = ForceRestoreFinalMemoryHPBypass("DisableFeatures");
+    if (fmRestored > 0 || detailedLogging.load()) {
+        LogOut(
+            std::string("[FM_PATCH] DisableFeatures restore")
+            + " requested=" + (IsFinalMemoryBypassEnabled() ? "1" : "0")
+            + " installed=" + (IsFinalMemoryBypassInstalled() ? "1" : "0")
+            + " changes=" + std::to_string(fmRestored),
+            true);
+    }
     
     // CRITICAL: Restore normal control flags when leaving Practice mode
     // to prevent control swap issues in other modes
@@ -409,6 +610,7 @@ void DisableFeatures() {
     // Character-specific enforcement is inline; nothing to stop explicitly here
 
     // Do NOT save states; we want a hard reset every time
+    ResetPracticeMatchSessionState("DisableFeatures");
 
     autoActionEnabled.store(false);
     triggerAfterBlockEnabled.store(false);
@@ -479,172 +681,527 @@ bool TryGetCachedYPositions(double &p1Y, double &p2Y, unsigned int maxAgeMs) {
     return true;
 }
 
-// Cooperatively stop mod activity when entering online play, then hard-stop all hooks/threads.
-void EnterOnlineMode() {
-    // Ensure we only run once
-    bool wasOnline = g_onlineModeActive.exchange(true);
-    if (g_hardStoppedOnce.load()) return;
+namespace {
 
-    LogOut("[ONLINE] Entering online mode: disabling mod features, unhooking, and stopping threads", true);
-    // Stop immediate input writer
-    ImmediateInput::Stop();
+struct NetplayMenuPlayerReadback {
+    bool pointerAvailable = false;
+    bool readbackValid = false;
+    uint8_t horizontal = 0;
+    uint8_t vertical = 0;
+    uint8_t buttonA = 0;
+    uint8_t buttonB = 0;
+    uint8_t buttonC = 0;
+    uint8_t buttonD = 0;
+    uint8_t command = 0;
+    uint8_t dashCommand = 0;
+    uint8_t latch1 = 0;
+    uint8_t latch2 = 0;
+    uint8_t dashTimer = 0;
+    uint8_t motionToken = 0;
+    uint16_t bufferIndex = 0;
+    size_t nonZeroBufferBytes = 0;
+};
 
-    // Stop any active buffer/index freezing immediately
-    StopBufferFreezing();
-    // Stop RF freezing loop from acting
-    StopRFFreeze();
+void ResetOverlayTrackingIds() {
+    g_statsP1ValuesId = -1;
+    g_statsP2ValuesId = -1;
+    g_statsPositionId = -1;
+    g_statsMoveIdId = -1;
+    g_statsCleanHitId = -1;
+    g_statsNayukiId = -1;
+    g_statsMisuzuId = -1;
+    g_statsMishioId = -1;
+    g_statsRumiId = -1;
+    g_statsIkumiId = -1;
+    g_statsMaiId = -1;
+    g_statsMinagiId = -1;
+    g_statsAIFlagsId = -1;
+    g_statsBlockstunId = -1;
+    g_statsUntechId = -1;
 
-    // Disable auto features and clear triggers/state
-    autoActionEnabled.store(false);
-    triggerAfterBlockEnabled.store(false);
-    triggerOnWakeupEnabled.store(false);
-    triggerAfterHitstunEnabled.store(false);
-    triggerAfterAirtechEnabled.store(false);
-    ClearAllAutoActionTriggers();
+    g_TriggerAfterBlockId = -1;
+    g_TriggerOnWakeupId = -1;
+    g_TriggerAfterHitstunId = -1;
+    g_TriggerAfterAirtechId = -1;
+    g_TriggerOnRGId = -1;
+    g_AirtechStatusId = -1;
+    g_JumpStatusId = -1;
+    g_FrameAdvantageId = -1;
+}
 
-    // Disable features globally (turns off overlays, patches, etc.)
-    if (g_featuresEnabled.load()) {
-        DisableFeatures();
+void ClearTransientInputOverrides() {
+    for (int i = 1; i <= 2; ++i) {
+        g_manualInputOverride[i].store(false);
+        g_manualInputMask[i].store(0);
+        g_manualJumpHold[i].store(false);
+        g_forceBypass[i].store(false);
+        g_pollOverrideActive[i].store(false);
+        g_pollOverrideMask[i].store(0);
+        g_injectImmediateOnly[i].store(false);
+    }
+}
+
+void ResetDelayStatesForSuspend() {
+    p1DelayState = {false, 0, TRIGGER_NONE, 0, -1, -1, 0, -1};
+    p2DelayState = {false, 0, TRIGGER_NONE, 0, -1, -1, 0, -1};
+}
+
+bool OverlayTrackingIdsAreClear() {
+    return g_statsP1ValuesId == -1
+        && g_statsP2ValuesId == -1
+        && g_statsPositionId == -1
+        && g_statsMoveIdId == -1
+        && g_statsCleanHitId == -1
+        && g_statsNayukiId == -1
+        && g_statsMisuzuId == -1
+        && g_statsMishioId == -1
+        && g_statsRumiId == -1
+        && g_statsIkumiId == -1
+        && g_statsMaiId == -1
+        && g_statsMinagiId == -1
+        && g_statsAIFlagsId == -1
+        && g_statsBlockstunId == -1
+        && g_statsUntechId == -1
+        && g_TriggerAfterBlockId == -1
+        && g_TriggerOnWakeupId == -1
+        && g_TriggerAfterHitstunId == -1
+        && g_TriggerAfterAirtechId == -1
+        && g_TriggerOnRGId == -1
+        && g_AirtechStatusId == -1
+        && g_JumpStatusId == -1
+        && g_FrameAdvantageId == -1;
+}
+
+NetplayMenuPlayerReadback CaptureNetplayMenuPlayerReadback(int playerNum) {
+    NetplayMenuPlayerReadback readback;
+    const uintptr_t playerPtr = GetPlayerPointer(playerNum);
+    if (!playerPtr) {
+        return readback;
     }
 
-    // Stop key monitoring
+    readback.pointerAvailable = true;
+    bool ok = true;
+    ok = SafeReadMemory(playerPtr + INPUT_HORIZONTAL_OFFSET, &readback.horizontal, sizeof(readback.horizontal)) && ok;
+    ok = SafeReadMemory(playerPtr + INPUT_VERTICAL_OFFSET, &readback.vertical, sizeof(readback.vertical)) && ok;
+    ok = SafeReadMemory(playerPtr + INPUT_BUTTON_A_OFFSET, &readback.buttonA, sizeof(readback.buttonA)) && ok;
+    ok = SafeReadMemory(playerPtr + INPUT_BUTTON_B_OFFSET, &readback.buttonB, sizeof(readback.buttonB)) && ok;
+    ok = SafeReadMemory(playerPtr + INPUT_BUTTON_C_OFFSET, &readback.buttonC, sizeof(readback.buttonC)) && ok;
+    ok = SafeReadMemory(playerPtr + INPUT_BUTTON_D_OFFSET, &readback.buttonD, sizeof(readback.buttonD)) && ok;
+    ok = SafeReadMemory(playerPtr + COMMAND_BUFFER_OFFSET, &readback.command, sizeof(readback.command)) && ok;
+    ok = SafeReadMemory(playerPtr + DASH_COMMAND_OFFSET, &readback.dashCommand, sizeof(readback.dashCommand)) && ok;
+    ok = SafeReadMemory(playerPtr + INPUT_LATCH1_OFFSET, &readback.latch1, sizeof(readback.latch1)) && ok;
+    ok = SafeReadMemory(playerPtr + INPUT_LATCH2_OFFSET, &readback.latch2, sizeof(readback.latch2)) && ok;
+    ok = SafeReadMemory(playerPtr + DASH_TIMER_OFFSET, &readback.dashTimer, sizeof(readback.dashTimer)) && ok;
+    ok = SafeReadMemory(playerPtr + MOTION_TOKEN_OFFSET, &readback.motionToken, sizeof(readback.motionToken)) && ok;
+    ok = SafeReadMemory(playerPtr + INPUT_BUFFER_INDEX_OFFSET, &readback.bufferIndex, sizeof(readback.bufferIndex)) && ok;
+
+    std::vector<uint8_t> buffer(INPUT_BUFFER_SIZE, 0);
+    if (!SafeReadMemory(playerPtr + INPUT_BUFFER_OFFSET, buffer.data(), INPUT_BUFFER_SIZE)) {
+        ok = false;
+    } else {
+        readback.nonZeroBufferBytes =
+            static_cast<size_t>(std::count_if(buffer.begin(), buffer.end(), [](uint8_t value) {
+                return value != 0;
+            }));
+    }
+
+    readback.readbackValid = ok;
+    return readback;
+}
+
+void AppendPlayerReadbackResiduals(
+    int playerNum,
+    const NetplayMenuPlayerReadback& readback,
+    std::vector<std::string>& residuals) {
+    const std::string prefix = "P" + std::to_string(playerNum);
+    if (!readback.pointerAvailable) {
+        return;
+    }
+    if (!readback.readbackValid) {
+        residuals.push_back(prefix + "Readback=fail");
+        return;
+    }
+    if (readback.horizontal != 0 || readback.vertical != 0
+        || readback.buttonA != 0 || readback.buttonB != 0
+        || readback.buttonC != 0 || readback.buttonD != 0) {
+        std::ostringstream oss;
+        oss << prefix << "Immediate=("
+            << static_cast<int>(readback.horizontal) << ","
+            << static_cast<int>(readback.vertical) << ","
+            << static_cast<int>(readback.buttonA) << ","
+            << static_cast<int>(readback.buttonB) << ","
+            << static_cast<int>(readback.buttonC) << ","
+            << static_cast<int>(readback.buttonD) << ")";
+        residuals.push_back(oss.str());
+    }
+    if (readback.command != 0) {
+        residuals.push_back(prefix + "Command=" + std::to_string(readback.command));
+    }
+    if (readback.dashCommand != 0) {
+        residuals.push_back(prefix + "DashCommand=" + std::to_string(readback.dashCommand));
+    }
+    if (readback.latch1 != 0 || readback.latch2 != 0) {
+        std::ostringstream oss;
+        oss << prefix << "Latch=("
+            << static_cast<int>(readback.latch1) << ","
+            << static_cast<int>(readback.latch2) << ")";
+        residuals.push_back(oss.str());
+    }
+    if (readback.dashTimer != 0) {
+        residuals.push_back(prefix + "DashTimer=" + std::to_string(readback.dashTimer));
+    }
+    if (readback.motionToken != 0x63) {
+        std::ostringstream oss;
+        oss << prefix << "MotionToken=0x"
+            << std::hex << std::uppercase << std::setw(2) << std::setfill('0')
+            << static_cast<int>(readback.motionToken);
+        residuals.push_back(oss.str());
+    }
+    if (readback.bufferIndex != 0) {
+        residuals.push_back(prefix + "BufferIndex=" + std::to_string(readback.bufferIndex));
+    }
+    if (readback.nonZeroBufferBytes != 0) {
+        residuals.push_back(prefix + "BufferNonZero=" + std::to_string(readback.nonZeroBufferBytes));
+    }
+}
+
+void AppendPlayerReadbackSummary(
+    int playerNum,
+    bool cleanupAttempted,
+    bool cleanupSucceeded,
+    const NetplayMenuPlayerReadback& readback,
+    std::ostringstream& summary) {
+    summary << " P" << playerNum << "[";
+    if (!cleanupAttempted) {
+        summary << "cleanup=na";
+    } else {
+        summary << "cleanup=" << (cleanupSucceeded ? "ok" : "partial");
+    }
+
+    if (!readback.pointerAvailable) {
+        summary << " mem=na]";
+        return;
+    }
+    if (!readback.readbackValid) {
+        summary << " mem=readback-fail]";
+        return;
+    }
+
+    summary << " imm="
+            << static_cast<int>(readback.horizontal) << "/"
+            << static_cast<int>(readback.vertical) << "/"
+            << static_cast<int>(readback.buttonA) << "/"
+            << static_cast<int>(readback.buttonB) << "/"
+            << static_cast<int>(readback.buttonC) << "/"
+            << static_cast<int>(readback.buttonD)
+            << " cmd=" << static_cast<int>(readback.command)
+            << " dash=" << static_cast<int>(readback.dashCommand)
+            << " latch=" << static_cast<int>(readback.latch1) << "/" << static_cast<int>(readback.latch2)
+            << " dt=" << static_cast<int>(readback.dashTimer)
+            << " token=0x" << std::hex << std::uppercase << std::setw(2) << std::setfill('0')
+            << static_cast<int>(readback.motionToken)
+            << std::dec << std::nouppercase << std::setfill(' ')
+            << " idx=" << readback.bufferIndex
+            << " nz=" << readback.nonZeroBufferBytes
+            << "]";
+}
+
+} // namespace
+
+void EnterNetplaySuspend() {
+    const bool wasSuspended = g_onlineModeActive.exchange(true);
+    isOnlineMatch.store(true, std::memory_order_release);
+    if (wasSuspended) {
+        return;
+    }
+
+    NetplayRuntimeState state = GetNetplayRuntimeState();
+    std::ostringstream oss;
+    oss << "[NETPLAY] Entering training suspend"
+        << " source=" << NetplayStateSourceName(state.source);
+    if (state.exportAvailable) {
+        oss << " mode=" << state.exportState.sessionMode
+            << " phase=" << state.exportState.sessionPhase
+            << " activity=" << static_cast<int>(state.exportState.activityPhase);
+    } else {
+        oss << " legacy=" << OnlineStateName(state.legacyOnlineState);
+    }
+    oss << " reason=" << GetLastOnlineDetectionReason();
+    LogOut(oss.str(), true);
+    RequestRuntimeLifecycleResync("entered netplay suspend");
+    const int fmRestored = ForceRestoreFinalMemoryHPBypass("EnterNetplaySuspend");
+
+    ImmediateInput::Stop();
+    StopBufferFreezing();
+    StopRFFreeze();
+
+    if (g_featuresEnabled.load()) {
+        DisableFeatures();
+    } else {
+        ClearAllAutoActionTriggers();
+        ResetActionFlags();
+        ResetDelayStatesForSuspend();
+        DirectDrawHook::ClearAllMessages();
+        ResetOverlayTrackingIds();
+    }
+
+    if (g_p2ControlOverridden) {
+        RestoreP2ControlState();
+    }
+    g_pendingControlRestore.store(false);
+    ClearTransientInputOverrides();
+
     if (keyMonitorRunning.load()) {
         keyMonitorRunning.store(false);
     }
-    // Stop RF freeze worker thread entirely
-    StopRFFreezeThread();
 
-    // Stop BGM suppression poller
     StopBGMSuppressionPoller();
     SetBGMSuppressed(false);
 
-    // Hide overlays/GUI
     if (ImGuiImpl::IsVisible()) {
         ImGuiImpl::ToggleVisibility();
     }
+
     DirectDrawHook::ClearAllMessages();
+    ResetOverlayTrackingIds();
 
-    // Proactively destroy the debug console so nothing further prints and stop buffering
-    DestroyDebugConsole();
-    SetConsoleReady(false);
+    LogOut(
+        std::string("[NETPLAY] Suspend cleanup complete")
+        + " features=" + (g_featuresEnabled.load() ? "1" : "0")
+        + " keyMonitor=" + (keyMonitorRunning.load() ? "1" : "0")
+        + " imguiVisible=" + (ImGuiImpl::IsVisible() ? "1" : "0")
+        + " fmRequested=" + (IsFinalMemoryBypassEnabled() ? "1" : "0")
+        + " fmInstalled=" + (IsFinalMemoryBypassInstalled() ? "1" : "0")
+        + " fmRestored=" + std::to_string(fmRestored),
+        true);
 
-    // --- HARD STOP: Remove hooks and stop rendering ---
-    // 1) Unhook EndScene and any D3D9 overlay work
-    try {
-        DirectDrawHook::ShutdownD3D9();
-    } catch (...) { /* swallow */ }
-
-    // 2) Remove input and collision hooks
-    try {
-        RemoveInputHook();
-    } catch (...) { /* swallow */ }
-    try {
-        RemoveCollisionHook();
-    } catch (...) { /* swallow */ }
-
-    // 3) Disable any remaining MinHook hooks (belt-and-suspenders)
-    // Avoid Uninitialize at runtime; just disable all hooks safely.
-    MH_DisableHook(MH_ALL_HOOKS);
-
-    // 4) Ensure any UI/overlay state is fully cleared
-    try {
-        DirectDrawHook::Shutdown(); // clears message queues as well
-    } catch (...) { /* swallow */ }
-
-    // 5) Prevent any re-initialization attempts for the rest of the process lifetime
-    g_hardStoppedOnce.store(true);
-
-    LogOut("[ONLINE] Hard stop complete: hooks removed, threads parked, overlays cleared", true);
-
-    // Optional: Self-unload the DLL to fully detach from the process once we're safely quiesced
-    // Guard: only if we have a module handle available
-    if (g_hSelfModule) {
-        try {
-            std::thread([]{
-                // Small grace delay to ensure any tail work finishes
-                Sleep(250);
-                HMODULE h = g_hSelfModule;
-                // Use FreeLibraryAndExitThread to safely unload this module from a non-DllMain context
-                FreeLibraryAndExitThread(h, 0);
-            }).detach();
-            LogOut("[ONLINE] Self-unload initiated", true);
-        } catch (...) {
-            // If spawning fails, we simply remain loaded but inert
-            LogOut("[ONLINE] Self-unload spawn failed; remaining parked", true);
-        }
+    if (state.inNetplayMenu || state.exportState.activityPhase == EFZ_ACTIVITY_MENU) {
+        AuditNetplayMenuEntryState();
     }
 }
 
-// ============================================================================
-// Online Mode Watchdog Thread
-// Monitors for online mode for a limited time after startup and triggers
-// full shutdown if detected. Runs for 10 seconds max with infrequent checks
-// to avoid any performance impact.
-// ============================================================================
-static std::atomic<bool> g_watchdogRunning{false};
-static std::thread g_watchdogThread;
-
-static void OnlineWatchdogLoop() {
-    LogOut("[WATCHDOG] Online mode watchdog started (10 second window)", true);
-
-    constexpr DWORD CHECK_INTERVAL_MS = 2000;  // Check every 2 seconds
-    constexpr DWORD MAX_RUNTIME_MS = 10000;    // Run for 10 seconds max
-    constexpr int MAX_CHECKS = MAX_RUNTIME_MS / CHECK_INTERVAL_MS;  // 5 checks
-
-    for (int checkCount = 0; checkCount < MAX_CHECKS && g_watchdogRunning.load(); ++checkCount) {
-        // If we've already detected online mode, stop watching
-        if (g_onlineModeActive.load()) {
-            LogOut("[WATCHDOG] Online mode flag already set, watchdog exiting", true);
-            return;
-        }
-
-        // Check for online mode using all detection methods
-        bool isOnline = false;
-        try {
-            isOnline = DetectOnlineMatch();
-        } catch (...) {
-            // On error, assume offline to avoid false positives
-            isOnline = false;
-        }
-
-        if (isOnline) {
-            LogOut("[WATCHDOG] ONLINE MODE DETECTED! Triggering full shutdown...", true);
-            EnterOnlineMode();
-            return;
-        }
-
-        // Wait before next check
-        Sleep(CHECK_INTERVAL_MS);
-    }
-
-    LogOut("[WATCHDOG] Online mode watchdog completed (no online detected)", true);
-    g_watchdogRunning.store(false);
-}
-
-void StartOnlineWatchdog() {
-    // Don't start if already in online mode (detected at startup)
-    if (g_onlineModeActive.load()) {
-        LogOut("[WATCHDOG] Skipping watchdog - online mode already detected", true);
+void ExitNetplaySuspend() {
+    const bool wasSuspended = g_onlineModeActive.exchange(false);
+    isOnlineMatch.store(false, std::memory_order_release);
+    if (!wasSuspended) {
         return;
     }
 
-    // Don't start if already running
-    if (g_watchdogRunning.load()) {
+    NetplayRuntimeState state = GetNetplayRuntimeState();
+    std::ostringstream oss;
+    oss << "[NETPLAY] Leaving training suspend"
+        << " source=" << NetplayStateSourceName(state.source)
+        << " reason=" << GetLastOnlineDetectionReason();
+    LogOut(oss.str(), true);
+    RequestRuntimeLifecycleResync("left netplay suspend");
+
+    ImmediateInput::Stop();
+    StopBufferFreezing();
+    StopRFFreeze();
+    ClearAllAutoActionTriggers();
+    ResetActionFlags();
+    ResetDelayStatesForSuspend();
+
+    if (g_p2ControlOverridden) {
+        RestoreP2ControlState();
+    }
+    g_pendingControlRestore.store(false);
+    ClearTransientInputOverrides();
+
+    InvalidateGameStatePtrCache();
+    InvalidatePlayerBaseCache();
+    CharacterSettings::InvalidateAllCharacterPointerCaches();
+    ResetPracticeMatchSessionState("ExitNetplaySuspend");
+
+    DirectDrawHook::ClearAllMessages();
+    ResetOverlayTrackingIds();
+
+    LogOut(
+        std::string("[NETPLAY] Resume cleanup complete: transient overrides cleared, caches invalidated")
+        + " fmRequested=" + (IsFinalMemoryBypassEnabled() ? "1" : "0")
+        + " fmInstalled=" + (IsFinalMemoryBypassInstalled() ? "1" : "0"),
+        true);
+}
+
+void AuditNetplayMenuEntryState() {
+    const NetplayRuntimeState state = GetNetplayRuntimeState();
+
+    std::ostringstream start;
+    start << "[NETPLAY][VERIFY] Menu entry audit start"
+          << " source=" << NetplayStateSourceName(state.source);
+    if (state.exportAvailable) {
+        start << " mode=" << state.exportState.sessionMode
+              << " phase=" << state.exportState.sessionPhase
+              << " activity=" << static_cast<int>(state.exportState.activityPhase)
+              << " screen=" << static_cast<int>(state.exportState.netplayMenuScreen)
+              << " detail=" << static_cast<int>(state.exportState.netplayMenuDetail);
+    } else {
+        start << " legacy=" << OnlineStateName(state.legacyOnlineState);
+    }
+    start << " reason=" << GetLastOnlineDetectionReason();
+    LogOut(start.str(), true);
+
+    MacroController::Stop();
+    ImmediateInput::Stop();
+    ImmediateInput::Clear(1);
+    ImmediateInput::Clear(2);
+    StopBufferFreezing();
+    StopRFFreeze();
+    ClearAllAutoActionTriggers();
+    ResetActionFlags();
+    ResetDelayStatesForSuspend();
+
+    if (g_p2ControlOverridden) {
+        RestoreP2ControlState();
+    }
+    g_pendingControlRestore.store(false);
+    ClearTransientInputOverrides();
+
+    if (keyMonitorRunning.load()) {
+        keyMonitorRunning.store(false);
+    }
+
+    if (ImGuiImpl::IsVisible()) {
+        ImGuiImpl::ToggleVisibility();
+    }
+    menuOpen.store(false);
+    g_guiActive.store(false);
+    PauseIntegration::OnMenuVisibilityChanged(false);
+
+    DirectDrawHook::ClearAllMessages();
+    ResetOverlayTrackingIds();
+
+    bool cleanupAttempted[3] = {false, false, false};
+    bool cleanupSucceeded[3] = {false, false, false};
+    NetplayMenuPlayerReadback readback[3];
+    for (int player = 1; player <= 2; ++player) {
+        if (GetPlayerPointer(player) != 0) {
+            cleanupAttempted[player] = true;
+            cleanupSucceeded[player] = FullCleanupAfterToggle(player);
+        }
+        readback[player] = CaptureNetplayMenuPlayerReadback(player);
+    }
+
+    std::vector<std::string> residuals;
+    if (g_featuresEnabled.load()) {
+        residuals.push_back("features=1");
+    }
+    if (MacroController::GetState() != MacroController::State::Idle) {
+        residuals.push_back("macroState=" + std::to_string(static_cast<int>(MacroController::GetState())));
+    }
+    if (ImmediateInput::IsRunning()) {
+        residuals.push_back("immediateThread=1");
+    }
+    for (int player = 1; player <= 2; ++player) {
+        if (ImmediateInput::GetCurrentDesired(player) != 0) {
+            residuals.push_back("P" + std::to_string(player) + "ImmediateDesired="
+                + std::to_string(ImmediateInput::GetCurrentDesired(player)));
+        }
+        if (ImmediateInput::GetRemainingTicks(player) != 0) {
+            residuals.push_back("P" + std::to_string(player) + "ImmediateTicks="
+                + std::to_string(ImmediateInput::GetRemainingTicks(player)));
+        }
+        if (g_manualInputOverride[player].load()) {
+            residuals.push_back("P" + std::to_string(player) + "ManualOverride=1");
+        }
+        if (g_manualInputMask[player].load() != 0) {
+            residuals.push_back("P" + std::to_string(player) + "ManualMask="
+                + std::to_string(g_manualInputMask[player].load()));
+        }
+        if (g_manualJumpHold[player].load()) {
+            residuals.push_back("P" + std::to_string(player) + "ManualJumpHold=1");
+        }
+        if (g_forceBypass[player].load()) {
+            residuals.push_back("P" + std::to_string(player) + "ForceBypass=1");
+        }
+        if (g_pollOverrideActive[player].load()) {
+            residuals.push_back("P" + std::to_string(player) + "PollOverride=1");
+        }
+        if (g_pollOverrideMask[player].load() != 0) {
+            residuals.push_back("P" + std::to_string(player) + "PollMask="
+                + std::to_string(g_pollOverrideMask[player].load()));
+        }
+        if (g_injectImmediateOnly[player].load()) {
+            residuals.push_back("P" + std::to_string(player) + "ImmediateOnly=1");
+        }
+    }
+    if (g_bufferFreezingActive.load()) {
+        residuals.push_back("bufferFreeze=1");
+    }
+    if (g_indexFreezingActive.load()) {
+        residuals.push_back("indexFreeze=1");
+    }
+    if (g_activeFreezePlayer.load() != 0) {
+        residuals.push_back("freezeOwner=P" + std::to_string(g_activeFreezePlayer.load()));
+    }
+    bool rfActive = false;
+    for (int player = 1; player <= 2; ++player) {
+        bool active = false;
+        double value = 0.0;
+        bool colorManaged = false;
+        bool colorBlue = false;
+        if (GetRFFreezeStatus(player, active, value, colorManaged, colorBlue) && active) {
+            rfActive = true;
+            std::ostringstream oss;
+            oss << "P" << player << "RFFreeze=" << value;
+            residuals.push_back(oss.str());
+        }
+    }
+    if (rfActive) {
+        residuals.push_back("rfFreeze=1");
+    }
+    if (g_p2ControlOverridden) {
+        residuals.push_back("p2ControlOverride=1");
+    }
+    if (g_pendingControlRestore.load()) {
+        residuals.push_back("pendingControlRestore=1");
+    }
+    if (ImGuiImpl::IsVisible()) {
+        residuals.push_back("imguiVisible=1");
+    }
+    if (menuOpen.load()) {
+        residuals.push_back("menuOpen=1");
+    }
+    if (g_guiActive.load()) {
+        residuals.push_back("guiActive=1");
+    }
+    if (!OverlayTrackingIdsAreClear()) {
+        residuals.push_back("overlayIds=stale");
+    }
+    if (PauseIntegration::IsPausedOrFrozen()) {
+        residuals.push_back("pauseFrozen=1");
+    }
+    if (IsFinalMemoryBypassInstalled()) {
+        residuals.push_back("fmBypassInstalled=1");
+    }
+    if (IsFinalMemoryBypassEnabled()) {
+        residuals.push_back("fmBypassRequested=1");
+    }
+
+    AppendPlayerReadbackResiduals(1, readback[1], residuals);
+    AppendPlayerReadbackResiduals(2, readback[2], residuals);
+
+    std::ostringstream summary;
+    summary << "[NETPLAY][VERIFY] Menu entry state";
+    AppendPlayerReadbackSummary(1, cleanupAttempted[1], cleanupSucceeded[1], readback[1], summary);
+    AppendPlayerReadbackSummary(2, cleanupAttempted[2], cleanupSucceeded[2], readback[2], summary);
+    summary << " overlays=" << (OverlayTrackingIdsAreClear() ? "clear" : "stale")
+            << " pause=" << (PauseIntegration::IsPausedOrFrozen() ? "1" : "0")
+            << " macro=" << static_cast<int>(MacroController::GetState())
+            << " features=" << (g_featuresEnabled.load() ? "1" : "0");
+    LogOut(summary.str(), true);
+
+    if (residuals.empty()) {
+        LogOut("[NETPLAY][VERIFY] Menu entry clean: no active training overrides or injected state remain", true);
         return;
     }
 
-    g_watchdogRunning.store(true);
-    g_watchdogThread = std::thread(OnlineWatchdogLoop);
-    g_watchdogThread.detach();
-    LogOut("[WATCHDOG] Online watchdog thread launched", true);
-}
-
-void StopOnlineWatchdog() {
-    if (g_watchdogRunning.load()) {
-        g_watchdogRunning.store(false);
-        LogOut("[WATCHDOG] Online watchdog thread stopped", true);
+    std::ostringstream warn;
+    warn << "[NETPLAY][VERIFY][WARN] Menu entry residual state:";
+    for (const std::string& residual : residuals) {
+        warn << " " << residual;
     }
-    // Thread is detached, so no need to join
+    LogOut(warn.str(), true);
 }
 
 // Public helper: permanently clear all triggers so they stay disabled until user re-enables
@@ -935,6 +1492,61 @@ uintptr_t GetGameStatePtr() {
 }
 
 void InvalidateGameStatePtrCache() { g_cachedGameState.store(0, std::memory_order_release); }
+
+uint32_t GetRuntimeLifecycleGeneration() {
+    return g_runtimeLifecycleGeneration.load(std::memory_order_acquire);
+}
+
+void RequestRuntimeLifecycleResync(const std::string& reason) {
+    std::string aggregateReason;
+    {
+        std::lock_guard<std::mutex> lock(g_runtimeLifecycleReasonMutex);
+        if (g_runtimeLifecycleReason.empty()) {
+            g_runtimeLifecycleReason = reason;
+        } else if (g_runtimeLifecycleReason.find(reason) == std::string::npos) {
+            g_runtimeLifecycleReason += "; " + reason;
+        }
+        aggregateReason = g_runtimeLifecycleReason;
+    }
+
+    const uint32_t generation = g_runtimeLifecycleGeneration.fetch_add(1, std::memory_order_acq_rel) + 1;
+    const bool wasPending = g_runtimeLifecycleResyncPending.exchange(true, std::memory_order_acq_rel);
+    if (!wasPending || detailedLogging.load()) {
+        std::ostringstream oss;
+        oss << "[LIFECYCLE] Queued runtime resync"
+            << " gen=" << generation
+            << " pending=" << (wasPending ? "1" : "0")
+            << " reason=" << aggregateReason;
+        LogOut(oss.str(), true);
+    }
+}
+
+void ConsumeRuntimeLifecycleResyncRequests() {
+    if (!g_runtimeLifecycleResyncPending.exchange(false, std::memory_order_acq_rel)) {
+        return;
+    }
+
+    std::string reason;
+    {
+        std::lock_guard<std::mutex> lock(g_runtimeLifecycleReasonMutex);
+        reason = g_runtimeLifecycleReason;
+        g_runtimeLifecycleReason.clear();
+    }
+
+    InvalidateGameStatePtrCache();
+    InvalidatePlayerBaseCache();
+    CharacterSettings::InvalidateAllCharacterPointerCaches();
+    InvalidateAutoActionCharacterCaches("lifecycle resync");
+    PauseIntegration::ResetCachedPointers("lifecycle resync");
+    ResetCollisionHookSessionCaches("lifecycle resync");
+
+    std::ostringstream oss;
+    oss << "[LIFECYCLE] Runtime resync applied"
+        << " gen=" << GetRuntimeLifecycleGeneration()
+        << " reason=" << reason
+        << " caches=gameState,playerBase,charSettings,autoActionCharIds,pauseIntegration,collisionHook";
+    LogOut(oss.str(), true);
+}
 
 // -----------------------------------------------------------------------------
 // Player base pointer caching
@@ -1440,5 +2052,111 @@ void ManageKeyMonitoring() {
         std::string reason = !currentFeaturesEnabled ? "features disabled" : "window inactive";
         LogOut("[SYSTEM] Stopping key monitoring - " + reason, true);
         keyMonitorRunning.store(false);
+    }
+}
+
+void LifecycleWatcherThread() {
+    struct Snapshot {
+        bool suspended = false;
+        bool exportAvailable = false;
+        bool sessionActive = false;
+        uint32_t sessionId = 0;
+        int source = 0;
+        GameMode mode = GameMode::Unknown;
+        bool validMode = false;
+        bool charactersInitialized = false;
+    };
+
+    auto isValidMode = [](GameMode mode) -> bool {
+        const Config::Settings& cfg = Config::GetSettings();
+        return !cfg.restrictToPracticeMode || (mode == GameMode::Practice);
+    };
+
+    Snapshot previous = {};
+    bool havePrevious = false;
+
+    while (!g_isShuttingDown.load(std::memory_order_acquire)) {
+        Snapshot current = {};
+        const NetplayRuntimeState netplayState = GetNetplayRuntimeState();
+        current.suspended = g_onlineModeActive.load(std::memory_order_acquire);
+        current.exportAvailable = netplayState.exportAvailable;
+        current.sessionActive = netplayState.sessionActive;
+        current.sessionId = netplayState.exportAvailable ? netplayState.exportState.sessionId : 0;
+        current.source = static_cast<int>(netplayState.source);
+        current.mode = GetCurrentGameMode();
+        current.validMode = isValidMode(current.mode);
+        current.charactersInitialized = AreCharactersInitialized();
+
+        if (havePrevious) {
+            std::ostringstream reason;
+            bool needsResync = false;
+
+            if (current.suspended != previous.suspended) {
+                reason << (needsResync ? "; " : "")
+                       << "suspend " << (previous.suspended ? "1" : "0")
+                       << "->" << (current.suspended ? "1" : "0");
+                needsResync = true;
+            }
+            if (current.source != previous.source) {
+                reason << (needsResync ? "; " : "")
+                       << "source " << NetplayStateSourceName(static_cast<NetplayStateSource>(previous.source))
+                       << "->" << NetplayStateSourceName(static_cast<NetplayStateSource>(current.source));
+                needsResync = true;
+            }
+            if (current.exportAvailable != previous.exportAvailable) {
+                reason << (needsResync ? "; " : "")
+                       << "export " << (previous.exportAvailable ? "1" : "0")
+                       << "->" << (current.exportAvailable ? "1" : "0");
+                needsResync = true;
+            }
+            if (current.sessionActive != previous.sessionActive) {
+                reason << (needsResync ? "; " : "")
+                       << "sessionActive " << (previous.sessionActive ? "1" : "0")
+                       << "->" << (current.sessionActive ? "1" : "0");
+                needsResync = true;
+            }
+            if (current.exportAvailable && previous.exportAvailable && current.sessionId != previous.sessionId) {
+                reason << (needsResync ? "; " : "")
+                       << "sessionId " << previous.sessionId << "->" << current.sessionId;
+                needsResync = true;
+            }
+            if (current.mode != previous.mode) {
+                reason << (needsResync ? "; " : "")
+                       << "mode " << GetGameModeName(previous.mode)
+                       << "->" << GetGameModeName(current.mode);
+                needsResync = true;
+            }
+            if (current.validMode != previous.validMode) {
+                reason << (needsResync ? "; " : "")
+                       << "validMode " << (previous.validMode ? "1" : "0")
+                       << "->" << (current.validMode ? "1" : "0");
+                needsResync = true;
+            }
+            if (current.charactersInitialized != previous.charactersInitialized) {
+                reason << (needsResync ? "; " : "")
+                       << "charsInit " << (previous.charactersInitialized ? "1" : "0")
+                       << "->" << (current.charactersInitialized ? "1" : "0");
+                needsResync = true;
+            }
+
+            if (needsResync) {
+                std::ostringstream watcherLog;
+                watcherLog << "[LIFECYCLE] Watcher observed transition: " << reason.str()
+                           << " suspended=" << (current.suspended ? "1" : "0")
+                           << " source=" << NetplayStateSourceName(static_cast<NetplayStateSource>(current.source))
+                           << " export=" << (current.exportAvailable ? "1" : "0")
+                           << " session=" << (current.sessionActive ? "1" : "0")
+                           << " sessionId=" << current.sessionId
+                           << " mode=" << GetGameModeName(current.mode)
+                           << " validMode=" << (current.validMode ? "1" : "0")
+                           << " charsInit=" << (current.charactersInitialized ? "1" : "0");
+                LogOut(watcherLog.str(), true);
+                RequestRuntimeLifecycleResync(reason.str());
+            }
+        }
+
+        previous = current;
+        havePrevious = true;
+        Sleep(current.suspended ? 200 : 150);
     }
 }

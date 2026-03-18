@@ -38,6 +38,7 @@ namespace ImGuiGui {
     // Apply settings from ImGui interface to game
     void ApplyImGuiSettings();
     void RefreshLocalData();
+    void ResetForPracticeSession(const char* reason, bool resetTabs = true);
     
     // Helper function to check if character settings should be shown
     bool ShouldShowCharacterSettings();

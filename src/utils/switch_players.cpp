@@ -238,7 +238,7 @@ namespace {
         // Gate scanning strictly: Practice mode only, offline only, and never during Character Select
         if (!allowCharacterSelect && IsInCharacterSelectScreen()) return nullptr;
         if (GetCurrentGameMode() != GameMode::Practice) return nullptr;
-        if (DetectOnlineMatch() || isOnlineMatch.load(std::memory_order_relaxed)) return nullptr;
+        if (IsNetplaySuspendActive()) return nullptr;
         HMODULE h = GetModuleHandleA("EfzRevival.dll");
         if (!h) return nullptr;
         uintptr_t base = reinterpret_cast<uintptr_t>(h);
