@@ -12,9 +12,23 @@ int ApplyFinalMemoryHPBypass();
 int RevertFinalMemoryHPBypass();
 
 // Convenience: enable/disable the FM bypass in one call. Returns number of
-// changes performed (patched or reverted). If the requested state is already
-// active, returns 0.
+// changes performed (patched or reverted). This updates the requested local
+// training preference and then synchronizes the live patch state if the
+// current mode allows it.
 int SetFinalMemoryBypass(bool enabled);
 
-// Returns whether the FM bypass is currently enabled (based on tracked state).
+// Returns whether the FM bypass is requested by the local training UI/runtime.
 bool IsFinalMemoryBypassEnabled();
+
+// Returns whether the FM bypass code patch is currently installed in efz.exe.
+bool IsFinalMemoryBypassInstalled();
+
+// Reconcile the live code patch with the current requested state and runtime
+// safety gates (local practice active, not netplay suspended). Returns the
+// number of sites changed.
+int SyncFinalMemoryBypassForCurrentMode(const char* reason = nullptr);
+
+// Always restore the original FM HP checks, even during suspend/shutdown.
+// The requested local preference is preserved so the patch can be reapplied
+// later when local training becomes active again.
+int ForceRestoreFinalMemoryHPBypass(const char* reason = nullptr);

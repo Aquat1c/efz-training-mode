@@ -5,6 +5,7 @@
 #include "../include/game/practice_hotkey_gate.h"
 namespace PracticeOverlayGate { void SetMenuVisible(bool); }
 #include "../include/gui/overlay.h" 
+#include "../include/utils/utilities.h"
 #include <stdexcept>
 #include <Xinput.h>
 #include <algorithm>
@@ -469,6 +470,10 @@ static void UpdateVirtualCursor(ImGuiIO& io) {
 
 // Custom WndProc to handle ImGui input
 LRESULT CALLBACK ImGuiWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    if (g_onlineModeActive.load(std::memory_order_relaxed)) {
+        return CallWindowProc(g_originalWndProc, hWnd, msg, wParam, lParam);
+    }
+
     // Always feed events to ImGui so backend state stays coherent even when UI is hidden
     ImGui_ImplWin32_WndProcHandler(hWnd, msg, wParam, lParam);
 
@@ -723,6 +728,11 @@ namespace ImGuiImpl {
     }
     
     void ToggleVisibility() {
+        if (g_onlineModeActive.load(std::memory_order_relaxed)) {
+            LogOut("[IMGUI] Ignoring visibility toggle while netplay suspend is active", true);
+            return;
+        }
+
         g_imguiVisible = !g_imguiVisible;
         CharacterSettings::g_guiVisible.store(g_imguiVisible, std::memory_order_relaxed);
         

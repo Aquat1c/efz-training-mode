@@ -18,6 +18,7 @@
 #include <algorithm> 
 #include <vector>
 #include <string>
+#include <sstream>
 // Removed <xinput.h> include: this translation unit no longer uses direct XInput
 // symbols (controller footer mappings were stripped). Keeping the include caused
 // stale compile diagnostics referencing XINPUT_* despite the code being removed.
@@ -68,6 +69,11 @@ namespace ImGuiGui {
     static int g_f4UiMode = 0;
     static bool s_f4Blue = false;
     static int s_f4RfAmount = 100;
+    static int s_f4ModeIdx = 0;
+    static bool s_uiFreezeP1 = false;
+    static bool s_uiFreezeP1ColorBlue = true;
+    static bool s_uiFreezeP2 = false;
+    static bool s_uiFreezeP2ColorBlue = true;
 
     static void ClampMainWindowToClientBounds() {
         ImGuiViewport* viewport = ImGui::GetMainViewport();
@@ -171,11 +177,40 @@ namespace ImGuiGui {
 
     // Initialize the GUI
     void Initialize() {
-        // Copy current display data into our local copy
-        guiState.localData = displayData;
-        
-        // Only show in detailed mode
+        ResetForPracticeSession("Initialize");
         LogOut("[IMGUI_GUI] GUI state initialized", detailedLogging.load());
+    }
+
+    void ResetForPracticeSession(const char* reason, bool resetTabs) {
+        guiState.localData = displayData;
+        if (resetTabs) {
+            guiState.currentTab = 0;
+            guiState.requestedTab = -1;
+            guiState.mainMenuSubTab = 0;
+            guiState.autoActionSubTab = 0;
+            guiState.helpSubTab = 0;
+            guiState.requestedMainMenuSubTab = -1;
+            guiState.requestedAutoActionSubTab = -1;
+            guiState.requestedHelpSubTab = -1;
+        }
+
+        s_randomInputActive = false;
+        g_f4UiMode = 0;
+        s_f4Blue = false;
+        s_f4RfAmount = 100;
+        s_f4ModeIdx = 0;
+        s_uiFreezeP1 = false;
+        s_uiFreezeP1ColorBlue = true;
+        s_uiFreezeP2 = false;
+        s_uiFreezeP2ColorBlue = true;
+
+        std::ostringstream oss;
+        oss << "[IMGUI][SESSION] Reset local state";
+        if (reason && *reason) {
+            oss << " reason=" << reason;
+        }
+        oss << " tabs=" << (resetTabs ? "1" : "0");
+        LogOut(oss.str(), true);
     }
 
     // Game Values Tab (reworked layout)
@@ -435,7 +470,6 @@ namespace ImGuiGui {
                         }
                     }
                 }
-                static int s_f4ModeIdx = 0; // Disabled, Full, Custom
                 // Always reflect actual engine state to keep combobox in sync
                 s_f4ModeIdx = curF4Idx;
                 if (curF4Idx == 2 && derivedRfValid) {
@@ -623,7 +657,6 @@ namespace ImGuiGui {
                     ImGui::TableNextColumn(); ImGui::TextUnformatted("Freeze RF");
                     ImGui::TableNextColumn();
                     {
-                        static bool s_uiFreezeP1 = false; static bool s_uiFreezeP1ColorBlue = true;
                         bool fr1 = s_uiFreezeP1; if (ImGui::Checkbox("Freeze##rf_p1", &fr1)) {
                             s_uiFreezeP1 = fr1;
                             if (fr1) { StartRFFreezeOneFromUI(1, guiState.localData.rf1); }
@@ -637,7 +670,6 @@ namespace ImGuiGui {
                     }
                     ImGui::TableNextColumn();
                     {
-                        static bool s_uiFreezeP2 = false; static bool s_uiFreezeP2ColorBlue = true;
                         bool fr2 = s_uiFreezeP2; if (ImGui::Checkbox("Freeze##rf_p2", &fr2)) {
                             s_uiFreezeP2 = fr2;
                             if (fr2) { StartRFFreezeOneFromUI(2, guiState.localData.rf2); }
@@ -835,8 +867,15 @@ namespace ImGuiGui {
 
                 bool fmBypass = IsFinalMemoryBypassEnabled();
                 if (ImGui::Checkbox("Final Memory: Allow at any HP", &fmBypass)) {
-                    (void)SetFinalMemoryBypass(fmBypass);
-                    LogOut(std::string("[IMGUI][FM] ") + (fmBypass ? "Enabled" : "Disabled") + " FM HP bypass.", true);
+                    const int changes = SetFinalMemoryBypass(fmBypass);
+                    LogOut(
+                        std::string("[IMGUI][FM] ")
+                        + (fmBypass ? "Enabled" : "Disabled")
+                        + " FM HP bypass request. changes="
+                        + std::to_string(changes)
+                        + " installed="
+                        + (IsFinalMemoryBypassInstalled() ? "1" : "0"),
+                        true);
                 }
                 if (ImGui::IsItemHovered()) ImGui::SetTooltip("Let any character use FM regardless of HP.");
 
@@ -3194,17 +3233,21 @@ namespace ImGuiGui {
         // Final Memory (FM) tools
         ImGui::Text("Final Memory Tools:");
         if (ImGui::Button("Apply FM HP bypass (allow FM at any HP)")) {
-            // Call runtime patcher once; log summary only
+            // Mark the local preference enabled and sync immediately if the current mode is safe.
             static uint64_t s_lastPatchLogTick = 0;
             int sites = 0;
             try {
-                sites = ::ApplyFinalMemoryHPBypass();
+                sites = ::SetFinalMemoryBypass(true);
             } catch (...) {
-                LogOut("[IMGUI][FM] Exception while applying FM bypass.", true);
+                LogOut("[IMGUI][FM] Exception while enabling FM bypass.", true);
             }
             uint64_t now = GetTickCount64();
             if (now - s_lastPatchLogTick > 2000) { // throttle to 2s
-                LogOut(std::string("[IMGUI][FM] FM HP bypass applied. Sites patched: ") + std::to_string(sites), true);
+                LogOut(
+                    std::string("[IMGUI][FM] FM HP bypass requested. Runtime changes: ")
+                    + std::to_string(sites)
+                    + " installed=" + (IsFinalMemoryBypassInstalled() ? "1" : "0"),
+                    true);
                 s_lastPatchLogTick = now;
             }
         }
@@ -3540,15 +3583,17 @@ namespace ImGuiGui {
 
     // Update RefreshLocalData to include character-specific data
     void RefreshLocalData() {
+        guiState.localData = displayData;
+
         uintptr_t base = GetEFZBase();
         if (!base) {
-            LogOut("[IMGUI] RefreshLocalData: Couldn't get base address", true);
+            LogOut("[IMGUI] RefreshLocalData: Couldn't get base address; using display defaults", true);
             return;
         }
 
         // Hard gate: don't dereference player pointers until characters are initialized
         if (!AreCharactersInitialized()) {
-            LogOut("[IMGUI] RefreshLocalData: Characters not initialized; skipping memory reads", true);
+            LogOut("[IMGUI] RefreshLocalData: Characters not initialized; using display defaults", true);
             return;
         }
 
@@ -3557,7 +3602,7 @@ namespace ImGuiGui {
         SafeReadMemory(base + EFZ_BASE_OFFSET_P1, &p1Base, sizeof(p1Base));
         SafeReadMemory(base + EFZ_BASE_OFFSET_P2, &p2Base, sizeof(p2Base));
         if (!p1Base || !p2Base) {
-            LogOut("[IMGUI] RefreshLocalData: Player base ptr(s) unavailable", true);
+            LogOut("[IMGUI] RefreshLocalData: Player base ptr(s) unavailable; using display defaults", true);
             return;
         }
 
@@ -3709,39 +3754,6 @@ namespace ImGuiGui {
     guiState.localData.macroSlotAfterAirtech = triggerAfterAirtechMacroSlot.load();
     guiState.localData.macroSlotOnRG         = triggerOnRGMacroSlot.load();
 
-    // Copy character-specific settings from displayData (which may have been reset)
-    // This ensures GUI checkboxes reflect the current state after ResetDisplayDataToDefaults()
-    guiState.localData.p1NayukiSnowbunnies = displayData.p1NayukiSnowbunnies;
-    guiState.localData.p2NayukiSnowbunnies = displayData.p2NayukiSnowbunnies;
-    guiState.localData.p1NayukiInfiniteSnow = displayData.p1NayukiInfiniteSnow;
-    guiState.localData.p2NayukiInfiniteSnow = displayData.p2NayukiInfiniteSnow;
-    guiState.localData.infiniteBloodMode = displayData.infiniteBloodMode;
-    guiState.localData.p1MaiInfiniteGhost = displayData.p1MaiInfiniteGhost;
-    guiState.localData.p1MaiInfiniteCharge = displayData.p1MaiInfiniteCharge;
-    guiState.localData.p1MaiInfiniteAwakening = displayData.p1MaiInfiniteAwakening;
-    guiState.localData.p2MaiInfiniteCharge = displayData.p2MaiInfiniteCharge;
-    guiState.localData.p2MaiInfiniteAwakening = displayData.p2MaiInfiniteAwakening;
-    guiState.localData.p1MisuzuInfinitePoison = displayData.p1MisuzuInfinitePoison;
-    guiState.localData.p2MisuzuInfinitePoison = displayData.p2MisuzuInfinitePoison;
-    guiState.localData.infiniteMishioElement = displayData.infiniteMishioElement;
-    guiState.localData.infiniteMishioAwakened = displayData.infiniteMishioAwakened;
-    guiState.localData.p1RumiInfiniteShinai = displayData.p1RumiInfiniteShinai;
-    guiState.localData.p2RumiInfiniteShinai = displayData.p2RumiInfiniteShinai;
-    guiState.localData.p1RumiInfiniteKimchi = displayData.p1RumiInfiniteKimchi;
-    guiState.localData.p2RumiInfiniteKimchi = displayData.p2RumiInfiniteKimchi;
-    guiState.localData.p1AkikoInfiniteTimeslow = displayData.p1AkikoInfiniteTimeslow;
-    guiState.localData.p2AkikoInfiniteTimeslow = displayData.p2AkikoInfiniteTimeslow;
-    // Minagi (puppet settings and flags)
-    guiState.localData.p1MinagiAlwaysReadied = displayData.p1MinagiAlwaysReadied;
-    guiState.localData.p2MinagiAlwaysReadied = displayData.p2MinagiAlwaysReadied;
-    guiState.localData.minagiConvertNewProjectiles = displayData.minagiConvertNewProjectiles;
-    guiState.localData.p1MinagiApplyPos = displayData.p1MinagiApplyPos;
-    guiState.localData.p2MinagiApplyPos = displayData.p2MinagiApplyPos;
-    guiState.localData.p1MinagiPuppetSetX = displayData.p1MinagiPuppetSetX;
-    guiState.localData.p1MinagiPuppetSetY = displayData.p1MinagiPuppetSetY;
-    guiState.localData.p2MinagiPuppetSetX = displayData.p2MinagiPuppetSetX;
-    guiState.localData.p2MinagiPuppetSetY = displayData.p2MinagiPuppetSetY;
-    // Note: p1MinagiPuppetX/Y and p2MinagiPuppetX/Y are read from memory by ScanMichiru above
     }
 
     // Update ApplyImGuiSettings to include character-specific data
@@ -3851,9 +3863,8 @@ namespace ImGuiGui {
             clampCopy(displayData.afterAirtechOptionCount,  displayData.afterAirtechOptions,  g_afterAirtechOptionCount,  g_afterAirtechOptions);
             clampCopy(displayData.onRGOptionCount,          displayData.onRGOptions,          g_onRGOptionCount,          g_onRGOptions);
             
-            // Enforce FM bypass state to match UI selection (idempotent)
-            // We read current enabled state from the runtime and reapply to ensure consistency
-            SetFinalMemoryBypass(IsFinalMemoryBypassEnabled());
+            // Reconcile FM bypass runtime patch with the stored local request.
+            SyncFinalMemoryBypassForCurrentMode("ImGui Apply");
 
             // Persist wake buffering toggle (already live-updated, but ensure consistency on Apply)
             // No additional action needed; atomic already updated through checkbox interaction.

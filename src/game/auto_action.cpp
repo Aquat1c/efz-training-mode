@@ -305,24 +305,45 @@ static DashFollowDeferred g_dashDeferred; // single slot (only one forward dash 
 static int g_cachedP1CharID = -999;
 static int g_cachedP2CharID = -999;
 static bool g_loggedCharInvalidation = false;
+static uint32_t g_characterCacheGeneration = 0;
 
 static void InvalidateCachedCharacterIDs(const char* reason) {
+    const uint32_t generation = GetRuntimeLifecycleGeneration();
     if ((g_cachedP1CharID != -999 || g_cachedP2CharID != -999) && !g_loggedCharInvalidation) {
-        LogOut(std::string("[AUTO-ACTION][CHAR] Invalidating cached character IDs (") + reason + ")", detailedLogging.load());
+        LogOut(std::string("[AUTO-ACTION][CHAR] Invalidating cached character IDs gen=")
+            + std::to_string(generation) + " (" + reason + ")", detailedLogging.load());
         g_loggedCharInvalidation = true;
     }
     g_cachedP1CharID = -999;
     g_cachedP2CharID = -999;
+    g_characterCacheGeneration = generation;
+}
+
+void InvalidateAutoActionCharacterCaches(const char* reason) {
+    InvalidateCachedCharacterIDs(reason);
 }
 
 static void EnsureCachedCharacterIDs(uintptr_t base) {
+    const uint32_t lifecycleGeneration = GetRuntimeLifecycleGeneration();
+    if (g_characterCacheGeneration != lifecycleGeneration) {
+        const bool hadCachedValues = (g_cachedP1CharID != -999 || g_cachedP2CharID != -999);
+        if (hadCachedValues || detailedLogging.load()) {
+            LogOut(std::string("[AUTO-ACTION][CHAR] Lifecycle generation changed ")
+                + std::to_string(g_characterCacheGeneration) + "->" + std::to_string(lifecycleGeneration),
+                true);
+        }
+        InvalidateCachedCharacterIDs("lifecycle generation change");
+    }
+
     if (g_cachedP1CharID == -999) {
         char nameBuf1[16] = {0};
         uintptr_t nameAddr1 = ResolvePointer(base, EFZ_BASE_OFFSET_P1, CHARACTER_NAME_OFFSET);
         if (nameAddr1) SafeReadMemory(nameAddr1, &nameBuf1, sizeof(nameBuf1)-1);
         g_cachedP1CharID = CharacterSettings::GetCharacterID(std::string(nameBuf1));
         if (g_cachedP1CharID < 0) g_cachedP1CharID = -1;
-        LogOut(std::string("[AUTO-ACTION][CHAR] Cached P1 char name='") + nameBuf1 + "' id=" + std::to_string(g_cachedP1CharID), detailedLogging.load());
+        g_characterCacheGeneration = lifecycleGeneration;
+        LogOut(std::string("[AUTO-ACTION][CHAR] Cached P1 gen=") + std::to_string(g_characterCacheGeneration)
+            + " char name='" + nameBuf1 + "' id=" + std::to_string(g_cachedP1CharID), detailedLogging.load());
         g_loggedCharInvalidation = false;
     }
     if (g_cachedP2CharID == -999) {
@@ -331,7 +352,9 @@ static void EnsureCachedCharacterIDs(uintptr_t base) {
         if (nameAddr2) SafeReadMemory(nameAddr2, &nameBuf2, sizeof(nameBuf2)-1);
         g_cachedP2CharID = CharacterSettings::GetCharacterID(std::string(nameBuf2));
         if (g_cachedP2CharID < 0) g_cachedP2CharID = -1;
-        LogOut(std::string("[AUTO-ACTION][CHAR] Cached P2 char name='") + nameBuf2 + "' id=" + std::to_string(g_cachedP2CharID), detailedLogging.load());
+        g_characterCacheGeneration = lifecycleGeneration;
+        LogOut(std::string("[AUTO-ACTION][CHAR] Cached P2 gen=") + std::to_string(g_characterCacheGeneration)
+            + " char name='" + nameBuf2 + "' id=" + std::to_string(g_cachedP2CharID), detailedLogging.load());
         g_loggedCharInvalidation = false;
     }
 }
@@ -1056,7 +1079,7 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
     static bool s_p2ForcedNeutral = false;
     // Only operate in offline Practice mode
     if (GetCurrentGameMode() != GameMode::Practice) return;
-    if (DetectOnlineMatch()) return;
+    if (IsNetplaySuspendActive()) return;
     
     if (!autoActionEnabled.load()) {
         return;

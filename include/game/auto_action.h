@@ -68,6 +68,7 @@ extern std::atomic<short> g_lastP2MoveID;
 // Control restore / cleanup helpers
 void ProcessAutoControlRestore();
 void ClearAllAutoActionTriggers();
+void InvalidateAutoActionCharacterCaches(const char* reason);
 
 // Cancel active auto-actions and macros without disabling trigger settings.
 // Use this when loading savestates or resetting positions to abort in-progress

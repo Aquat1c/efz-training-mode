@@ -24,6 +24,7 @@
 #include "../include/game/attack_reader.h"
 #include "../include/game/practice_patch.h"
 #include "../include/game/character_settings.h"
+#include "../include/game/final_memory_patch.h"
 #include "../include/game/macro_controller.h"
 #include "../include/game/always_rg.h"
 #include "../include/game/random_rg.h"
@@ -64,6 +65,7 @@ MonitorState state = Idle;
 static GameMode s_previousGameMode = GameMode::Unknown;
 static bool s_wasActive = false;
 static GamePhase s_lastPhase = GamePhase::Unknown;  // NEW phase tracker
+static GameMode s_lastPhaseMode = GameMode::Unknown;
 static bool s_pendingOverlayReinit = false; // Set when we return to a valid mode but chars aren't initialized yet
 // NEW: Debounce for CharacterSelect trigger clearing to avoid false positives mid-match
 static int s_characterSelectPhaseFrames = 0; // counts consecutive frames seen as CharacterSelect
@@ -463,6 +465,10 @@ bool IsValidGameMode(GameMode mode) {
 }
 
 bool ShouldFeaturesBeActive() {
+    if (IsNetplaySuspendActive()) {
+        return false;
+    }
+
     // Check if we have a valid game state
     uintptr_t base = GetEFZBase();
     const Config::Settings& cfg = Config::GetSettings();
@@ -759,11 +765,6 @@ void UpdateTriggerOverlay() {
 }
 
 void FrameDataMonitor() {
-    // CRITICAL: Never run during online mode - exit immediately without doing anything
-    if (g_onlineModeActive.load()) {
-        return;
-    }
-
     using clock = std::chrono::high_resolution_clock;
 
     if (Config::GetSettings().enableFpsDiagnostics || detailedLogging.load()) {
@@ -811,67 +812,101 @@ void FrameDataMonitor() {
     // Improved scheduling target time (accumulative to avoid drift)
     auto startTime = clock::now();
     auto expectedNext = startTime + targetFrameTime; // next frame boundary
+    int netplayRefreshCounter = 15;
+    bool lastNetplayMenuActive = GetNetplayRuntimeState().inNetplayMenu;
+    uint32_t lastLifecycleGeneration = GetRuntimeLifecycleGeneration();
+    GameMode lastFmSyncMode = GameMode::Unknown;
+    GamePhase lastFmSyncPhase = GamePhase::Unknown;
+    bool lastFmSyncFeatures = g_featuresEnabled.load(std::memory_order_relaxed);
+    bool lastFmSyncNetplay = g_onlineModeActive.load(std::memory_order_relaxed);
 
     while (!g_isShuttingDown) {
-        // If online mode is active, perform one-time cleanup then exit the thread
-        if (g_onlineModeActive.load()) {
-            StopBufferFreezing();
-            ResetActionFlags();
-            p1DelayState = {false, 0, TRIGGER_NONE, 0, -1, -1, 0, -1};
-            p2DelayState = {false, 0, TRIGGER_NONE, 0, -1, -1, 0, -1};
-            break; // exit thread to allow safe self-unload
-        }
         auto frameStart = clock::now();
         // Catch-up logic: if we are *very* late (> 10 frames), jump ahead to avoid cascading backlog
         if (frameStart - expectedNext > targetFrameTime * 10) {
             expectedNext = frameStart + targetFrameTime;
         }
-        
+
+        if (++netplayRefreshCounter >= 16) {
+            netplayRefreshCounter = 0;
+            RefreshNetplayRuntimeState();
+            const NetplayRuntimeState netplayState = GetNetplayRuntimeState();
+            const bool shouldSuspend = netplayState.suspendTraining;
+            const bool isSuspended = g_onlineModeActive.load();
+            if (shouldSuspend && !isSuspended) {
+                LogOut("[NETPLAY] Frame monitor requested suspend: " + GetLastOnlineDetectionReason(), true);
+                EnterNetplaySuspend();
+            } else if (!shouldSuspend && isSuspended) {
+                LogOut("[NETPLAY] Frame monitor requested resume: " + GetLastOnlineDetectionReason(), true);
+                ExitNetplaySuspend();
+            }
+
+            if (netplayState.inNetplayMenu && !lastNetplayMenuActive) {
+                LogOut("[NETPLAY] Frame monitor detected netplay menu entry; auditing residual training state", true);
+                AuditNetplayMenuEntryState();
+            }
+            lastNetplayMenuActive = netplayState.inNetplayMenu;
+        }
+
+        ConsumeRuntimeLifecycleResyncRequests();
+        const uint32_t lifecycleGeneration = GetRuntimeLifecycleGeneration();
+        if (lifecycleGeneration != lastLifecycleGeneration) {
+            cachedMoveIDAddr1 = 0;
+            cachedMoveIDAddr2 = 0;
+            addressCacheCounter = 0;
+            fm_lastP1Ptr = 0;
+            fm_lastP2Ptr = 0;
+            fm_lastMoveAddr1 = 0;
+            fm_lastMoveAddr2 = 0;
+            lastLifecycleGeneration = lifecycleGeneration;
+            LogOut("[LIFECYCLE] Frame monitor cleared session-scoped caches for generation "
+                + std::to_string(lifecycleGeneration), detailedLogging.load());
+        }
+
+    if (g_onlineModeActive.load()) {
+        g_lastSample.online = true;
+        goto FRAME_MONITOR_FRAME_END;
+    }
+
     // Refresh core pointer cache once per loop iteration
     RefreshPointerCache();
     // Check current game phase (single authoritative call per loop)
     GamePhase currentPhase = GetCurrentGamePhase();
+    GameMode currentMode = GetCurrentGameMode();
+
+    {
+        const bool featuresEnabledNow = g_featuresEnabled.load(std::memory_order_relaxed);
+        const bool netplayNow = g_onlineModeActive.load(std::memory_order_relaxed);
+        const bool fmSyncNeeded =
+            currentMode != lastFmSyncMode
+            || currentPhase != lastFmSyncPhase
+            || featuresEnabledNow != lastFmSyncFeatures
+            || netplayNow != lastFmSyncNetplay;
+        if (fmSyncNeeded) {
+            const int fmChanges = SyncFinalMemoryBypassForCurrentMode("FrameDataMonitor transition");
+            if (fmChanges > 0 || detailedLogging.load()) {
+                std::ostringstream oss;
+                oss << "[FM_PATCH] Frame monitor sync"
+                    << " mode=" << GetGameModeName(currentMode)
+                    << " phase=" << static_cast<int>(currentPhase)
+                    << " features=" << (featuresEnabledNow ? "1" : "0")
+                    << " online=" << (netplayNow ? "1" : "0")
+                    << " requested=" << (IsFinalMemoryBypassEnabled() ? "1" : "0")
+                    << " installed=" << (IsFinalMemoryBypassInstalled() ? "1" : "0")
+                    << " changes=" << fmChanges;
+                LogOut(oss.str(), true);
+            }
+            lastFmSyncMode = currentMode;
+            lastFmSyncPhase = currentPhase;
+            lastFmSyncFeatures = featuresEnabledNow;
+            lastFmSyncNetplay = netplayNow;
+        }
+    }
     
     // Update framestep system (vanilla only, input monitoring and frame advance)
     Framestep::Update();
     // Update framestep overlay status
     Framestep::UpdateOverlayStatus();
-
-    // Lightweight, integrated online detection (replaces separate network thread)
-    {
-        static int netCheckCounter = 0;              // frames since last check
-        static int consecutiveOnline = 0;            // consecutive positive detections
-        static bool stopNetChecks = false;           // stop after timeout / confirmation
-        static auto gameStartTime = std::chrono::steady_clock::now();
-        if (!stopNetChecks) {
-            // 2.5s cadence at 192 Hz ~ 480 frames
-            if (++netCheckCounter >= 480) {
-                netCheckCounter = 0;
-                OnlineState st = ReadEfzRevivalOnlineState();
-                if (st != OnlineState::Unknown) {
-                    if (st == OnlineState::Netplay || st == OnlineState::Spectating || st == OnlineState::Tournament) {
-                        ++consecutiveOnline;
-                        if (consecutiveOnline >= 2) {
-                            // Immediately enter online mode; do not alter console visibility here
-                            isOnlineMatch = true;
-                            EnterOnlineMode();
-                            // After EnterOnlineMode, loop will hit g_onlineModeActive guard and break
-                            stopNetChecks = true;
-                        }
-                    } else {
-                        consecutiveOnline = 0;
-                    }
-                }
-
-                // Stop checking after 10s if nothing detected
-                auto elapsedSecs = std::chrono::duration_cast<std::chrono::seconds>(
-                    std::chrono::steady_clock::now() - gameStartTime).count();
-                if (elapsedSecs > 10 && !isOnlineMatch.load()) {
-                    stopNetChecks = true;
-                }
-            }
-        }
-    }
         
     // CRITICAL FIX: Stop buffer freezing IMMEDIATELY if not in match
         if (currentPhase != GamePhase::Match) {
@@ -914,6 +949,9 @@ void FrameDataMonitor() {
 
             // On ANY phase change away from Match, ensure cleanup
             if (lastPhase == GamePhase::Match && currentPhase != GamePhase::Match) {
+                const bool leavingPracticeMatch =
+                    (s_lastPhaseMode == GameMode::Practice) || (currentMode == GameMode::Practice);
+
                 // Force stop everything
                 StopBufferFreezing();
                 // Stop any RF freeze maintenance started by CR
@@ -930,6 +968,17 @@ void FrameDataMonitor() {
                 if (g_p2ControlOverridden) {
                     RestoreP2ControlState();
                     g_p2ControlOverridden = false;
+                }
+
+                if (leavingPracticeMatch && g_featuresEnabled.load()) {
+                    std::ostringstream oss;
+                    oss << "[SESSION] Practice match exit detected"
+                        << " phase=" << static_cast<int>(lastPhase)
+                        << "->" << static_cast<int>(currentPhase)
+                        << " modeBefore=" << GetGameModeName(s_lastPhaseMode)
+                        << " modeNow=" << GetGameModeName(currentMode);
+                    LogOut(oss.str(), true);
+                    ResetPracticeMatchSessionState("PracticeMatchExit");
                 }
             }
 
@@ -981,6 +1030,7 @@ void FrameDataMonitor() {
             }
 
             lastPhase = currentPhase;
+            s_lastPhaseMode = currentMode;
         }
 
         // Character Select handling: run per-frame, not only on phase-change edge
@@ -1182,7 +1232,6 @@ void FrameDataMonitor() {
 
         // Track initialization & mode
         bool isInitialized = AreCharactersInitialized();
-        GameMode currentMode = GetCurrentGameMode();
         bool isValidGameMode = !Config::GetSettings().restrictToPracticeMode || (currentMode == GameMode::Practice);
 
         // Lightweight global Practice framestep tracker (no on-screen overlay)
@@ -2193,9 +2242,24 @@ void FrameDataMonitor() {
                 static uintptr_t s_p1CharNameAddr = 0, s_p2CharNameAddr = 0; // used to derive IDs if needed
                 static uintptr_t s_p1CharIdAddr = 0, s_p2CharIdAddr = 0; // if ID offset exists in struct (fallback to name->id map)
                 static int s_cacheCounter = 0;
+                static uint32_t s_cacheGeneration = 0;
                 // Clean Hit helper state (HP-based, one-shot)
                 static int s_prevHpP1 = -1, s_prevHpP2 = -1;
                 static int s_cleanHitSuppress = 0; // small cooldown in frames to avoid dupes
+                if (s_cacheGeneration != lifecycleGeneration) {
+                    s_p1YAddr = s_p2YAddr = 0;
+                    s_p1XAddr = s_p2XAddr = 0;
+                    s_p1HpAddr = s_p2HpAddr = 0;
+                    s_p1MeterAddr = s_p2MeterAddr = 0;
+                    s_p1RfAddr = s_p2RfAddr = 0;
+                    s_p1CharNameAddr = s_p2CharNameAddr = 0;
+                    s_p1CharIdAddr = s_p2CharIdAddr = 0;
+                    s_cacheCounter = 0;
+                    s_prevHpP1 = -1;
+                    s_prevHpP2 = -1;
+                    s_cleanHitSuppress = 0;
+                    s_cacheGeneration = lifecycleGeneration;
+                }
                 if (++s_cacheCounter >= 192 || !s_p1YAddr || !s_p2YAddr || !s_p1XAddr || !s_p2XAddr ||
                     !s_p1HpAddr || !s_p2HpAddr || !s_p1MeterAddr || !s_p2MeterAddr || !s_p1RfAddr || !s_p2RfAddr ||
                     !s_p1CharNameAddr || !s_p2CharNameAddr) {
@@ -2407,7 +2471,7 @@ FRAME_MONITOR_FRAME_END:
         }
 
         // Maintain RF freeze inline only during Match. Outside Match, avoid repeated stop spam.
-        if (currentPhase == GamePhase::Match) {
+        if (!g_onlineModeActive.load() && currentPhase == GamePhase::Match) {
             // ~32 Hz maintenance
             static int rfDecim = 0; if ((rfDecim++ % 6) == 0) { UpdateRFFreezeTick(); }
         } else {
@@ -2784,6 +2848,15 @@ void UpdateStatsDisplay() {
         static uintptr_t p1XAddr = 0, p1YAddr = 0, p2XAddr = 0, p2YAddr = 0;
         static uintptr_t p1MoveIdAddr = 0, p2MoveIdAddr = 0;
         static int cacheCounter = 0;
+        static uint32_t cacheGeneration = 0;
+        if (cacheGeneration != GetRuntimeLifecycleGeneration()) {
+            p1HpAddr = p1MeterAddr = p1RfAddr = 0;
+            p2HpAddr = p2MeterAddr = p2RfAddr = 0;
+            p1XAddr = p1YAddr = p2XAddr = p2YAddr = 0;
+            p1MoveIdAddr = p2MoveIdAddr = 0;
+            cacheCounter = 0;
+            cacheGeneration = GetRuntimeLifecycleGeneration();
+        }
         if (cacheCounter++ >= 60 || !p1HpAddr) {
             p1HpAddr = ResolvePlayerFieldBestEffort(1, HP_OFFSET, base);
             p1MeterAddr = ResolvePlayerFieldBestEffort(1, METER_OFFSET, base);

@@ -142,6 +142,10 @@ HRESULT WINAPI DirectDrawHook::HookedFlip(IDirectDrawSurface7* This, IDirectDraw
 
 // --- REVISED AND CORRECTED D3D9 EndScene Hook ---
 HRESULT WINAPI HookedEndScene(LPDIRECT3DDEVICE9 pDevice) {
+    if (g_onlineModeActive.load(std::memory_order_relaxed)) {
+        return oEndScene(pDevice);
+    }
+
     // Refresh XInput snapshot once per frame at the start of EndScene; other systems read cached state
     XInputShim::RefreshSnapshotOncePerFrame();
     // Minimal per-frame timing (RAII) to detect stalls without per-frame logs
@@ -194,11 +198,6 @@ HRESULT WINAPI HookedEndScene(LPDIRECT3DDEVICE9 pDevice) {
     }
     // Only render on the actual 640x480 game surface
     if (!(rtW == 640 && rtH == 480)) {
-        return oEndScene(pDevice);
-    }
-
-    // Hard gate: do not render any UI/overlays during online play
-    if (g_onlineModeActive.load()) {
         return oEndScene(pDevice);
     }
 

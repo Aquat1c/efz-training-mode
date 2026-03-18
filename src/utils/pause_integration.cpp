@@ -52,6 +52,7 @@ namespace {
     std::atomic<uint8_t> s_prevGamespeed{3};
     // Direct gamespeed byte address resolved from game mode array
     std::atomic<uintptr_t> s_gamespeedAddr{0};
+    std::atomic<uint32_t> s_lastStepCounter{0};
     // Vanilla EFZ pause ownership (engine pause via battleContext+0x1416)
     std::atomic<bool> s_weVanillaEnginePause{false};
     // Visual effect patches ownership (for vanilla/unsupported versions)
@@ -139,7 +140,7 @@ namespace {
         if (mode != GameMode::Practice) {
             return false;
         }
-        if (DetectOnlineMatch() || isOnlineMatch.load(std::memory_order_relaxed)) {
+        if (IsNetplaySuspendActive()) {
             return false;
         }
         // If we've already failed once during the current Character Select, skip further scans/logs
@@ -177,6 +178,9 @@ namespace {
     typedef int (__thiscall *tPracticeTickE)(void* thisPtr);
     static tPracticeTickE oPracticeTickE = nullptr;
     static int __fastcall HookedPracticeTickE(void* thisPtr, void* /*edx*/) {
+        if (g_onlineModeActive.load(std::memory_order_relaxed)) {
+            return oPracticeTickE ? oPracticeTickE(thisPtr) : 0;
+        }
         s_practicePtr.store(thisPtr, std::memory_order_relaxed);
         {
             std::ostringstream oss; oss << "[PAUSE] HookedPracticeTickE ECX=0x" << std::hex << (uintptr_t)thisPtr;
@@ -206,6 +210,9 @@ namespace {
     typedef char (__thiscall *tPracticeTickH)(void* thisPtr, int a2);
     static tPracticeTickH oPracticeTickH = nullptr;
     static char __fastcall HookedPracticeTickH(void* thisPtr, void* /*edx*/, int a2) {
+        if (g_onlineModeActive.load(std::memory_order_relaxed)) {
+            return oPracticeTickH ? oPracticeTickH(thisPtr, a2) : 0;
+        }
         s_practicePtr.store(thisPtr, std::memory_order_relaxed);
         {
             std::ostringstream oss; oss << "[PAUSE] HookedPracticeTickH ECX=0x" << std::hex << (uintptr_t)thisPtr << " a2=" << std::dec << a2;
@@ -236,6 +243,9 @@ namespace {
     // Internal bypass lets us invoke the official toggle even while menu visible
     static std::atomic<bool> s_internalPauseBypass{false};
     static int __fastcall HookedTogglePause(void* thisPtr, void* /*edx*/) {
+        if (g_onlineModeActive.load(std::memory_order_relaxed)) {
+            return oTogglePause ? oTogglePause(thisPtr) : 0;
+        }
         if (thisPtr) s_practicePtr.store(thisPtr, std::memory_order_relaxed);
         {
             std::ostringstream oss; oss << "[PAUSE] HookedTogglePause ECX=0x" << std::hex << (uintptr_t)thisPtr
@@ -356,6 +366,9 @@ namespace {
     typedef BOOL (__thiscall *tRenderBattleScreen)(void* battleContext);
     static tRenderBattleScreen oRenderBattleScreen = nullptr;
     static BOOL __fastcall HookedRenderBattleScreen(void* battleContext, void* /*edx*/) {
+        if (g_onlineModeActive.load(std::memory_order_relaxed)) {
+            return oRenderBattleScreen ? oRenderBattleScreen(battleContext) : FALSE;
+        }
         if (battleContext) s_battleContext.store(battleContext, std::memory_order_relaxed);
         {
             std::ostringstream oss; oss << "[PAUSE] RenderBattleScreen bc=0x" << std::hex << (uintptr_t)battleContext;
@@ -812,14 +825,31 @@ namespace PauseIntegration {
     }
 
     bool ConsumeStepAdvance() {
-        static uint32_t s_lastStep = 0;
         uint32_t cur = 0;
         if (!IsPracticePaused()) return false;
         if (!ReadStepCounter(cur)) return false;
-        if (cur != s_lastStep) {
-            s_lastStep = cur;
+        const uint32_t last = s_lastStepCounter.load(std::memory_order_relaxed);
+        if (cur != last) {
+            s_lastStepCounter.store(cur, std::memory_order_relaxed);
             return true;
         }
         return false;
+    }
+
+    void ResetCachedPointers(const char* reason) {
+        void* practice = s_practicePtr.exchange(nullptr, std::memory_order_relaxed);
+        void* battle = s_battleContext.exchange(nullptr, std::memory_order_relaxed);
+        uintptr_t gamespeed = s_gamespeedAddr.exchange(0, std::memory_order_relaxed);
+        s_lastStepCounter.store(0, std::memory_order_relaxed);
+
+        if (practice || battle || gamespeed || detailedLogging.load()) {
+            std::ostringstream oss;
+            oss << "[PAUSE] Reset cached pointers"
+                << " reason=" << (reason ? reason : "unspecified")
+                << " practice=0x" << std::hex << reinterpret_cast<uintptr_t>(practice)
+                << " battle=0x" << reinterpret_cast<uintptr_t>(battle)
+                << " gamespeed=0x" << gamespeed;
+            LogOut(oss.str(), true);
+        }
     }
 }

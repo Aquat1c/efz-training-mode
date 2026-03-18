@@ -48,8 +48,7 @@ namespace Logger {
 }
 
 void LogOut(const std::string& msg, bool consoleOutput) {
-    // After online hard-stop or during shutdown, suppress all logging entirely
-    if (g_onlineModeActive.load() || g_isShuttingDown.load()) {
+    if (g_isShuttingDown.load()) {
         return;
     }
     
@@ -196,13 +195,8 @@ void LogOut(const std::string& msg, bool consoleOutput) {
 }
 
 void InitializeLogging() {
-    // CRITICAL: Never initialize during online mode
-    if (g_onlineModeActive.load()) return;
-
     // Create a thread to continuously update the console title
     std::thread titleThread([]() {
-        // Double-check online mode before starting any work
-        if (g_onlineModeActive.load()) return;
         UpdateConsoleTitle();
     });
     titleThread.detach();  // Let it run independently
@@ -235,9 +229,6 @@ short GetCurrentMoveID(int player) {
 }
 
 void UpdateConsoleTitle() {
-    // CRITICAL: Never run during online mode
-    if (g_onlineModeActive.load()) return;
-
     // Keep this thread at normal priority since you want it to keep up with the game
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_NORMAL);
     std::string lastTitle;
@@ -249,12 +240,6 @@ void UpdateConsoleTitle() {
     while (true) {
         // Exit if shutting down
         if (g_isShuttingDown.load()) break;
-        // Exit immediately when entering online/hard-stopped mode to silence all activity
-        if (g_onlineModeActive.load()) {
-            // Proactively destroy console so no further output appears
-            DestroyDebugConsole();
-            break;
-        }
 
         // If the console window isn't present or visible, back off and try later
         HWND hWnd = GetConsoleWindow();
@@ -264,6 +249,22 @@ void UpdateConsoleTitle() {
         }
 
         char title[512];
+        if (g_onlineModeActive.load()) {
+            NetplayRuntimeState netplayState = GetNetplayRuntimeState();
+            sprintf_s(title, sizeof(title),
+                "EFZ Training Mode - Suspended for Netplay | Source: %s | Mode: %d | Phase: %d | Activity: %d",
+                NetplayStateSourceName(netplayState.source),
+                netplayState.exportAvailable ? netplayState.exportState.sessionMode : static_cast<int>(netplayState.legacyOnlineState),
+                netplayState.exportAvailable ? netplayState.exportState.sessionPhase : -1,
+                netplayState.exportAvailable ? static_cast<int>(netplayState.exportState.activityPhase) : -1);
+            if (lastTitle != title) {
+                SetConsoleTitleA(title);
+                lastTitle = title;
+            }
+            Sleep(250);
+            continue;
+        }
+
         uintptr_t base = GetEFZBase();
         
         // Keep the fast update rate as requested - every 250ms
@@ -291,6 +292,17 @@ void UpdateConsoleTitle() {
                 // Minimal fallback: refresh addresses occasionally and read values (including names)
                 static uintptr_t cachedAddresses[12] = {0};
                 static int titleCacheCounter = 0;
+                static uint32_t titleCacheGeneration = 0;
+                const uint32_t lifecycleGeneration = GetRuntimeLifecycleGeneration();
+                if (titleCacheGeneration != lifecycleGeneration) {
+                    for (uintptr_t& addr : cachedAddresses) {
+                        addr = 0;
+                    }
+                    titleCacheCounter = 60;
+                    titleCacheGeneration = lifecycleGeneration;
+                    LogOut("[LIFECYCLE] Reset title fallback address cache for generation "
+                        + std::to_string(lifecycleGeneration), detailedLogging.load());
+                }
                 // Refresh cached addresses less frequently to reduce pointer resolution overhead
                 if (titleCacheCounter++ >= 60) {
                     titleCacheCounter = 0;

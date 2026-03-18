@@ -3,10 +3,17 @@
 #include <cstdint>
 #include <string>
 #include <mutex>
+#include <sstream>
 #include "../../include/core/logger.h"
 #include "../../include/core/memory.h"
 #include "../../include/game/final_memory_patch.h"
+#include "../../include/game/game_state.h"
 #include "../../include/utils/utilities.h" // for g_onlineModeActive
+
+namespace {
+constexpr uint32_t kFinalMemoryThreshold = 0x00000D05; // 3333
+constexpr uint32_t kFinalMemoryBypass    = 0x00002710; // 10000
+}
 
 // Helper: get module .text section bounds
 static bool GetTextSection(uint8_t** start, size_t* size) {
@@ -34,21 +41,20 @@ extern std::atomic<bool> detailedLogging;
 // Track patched immediate addresses so we can revert precisely
 static std::vector<uint8_t*> g_fmBypassSites;
 static std::mutex g_fmMutex;
+static std::atomic<bool> g_fmBypassRequested{false};
 
-static bool ScanAndPatch(uint32_t fromImm, uint32_t toImm, std::vector<uint8_t*>* outSites) {
+static int FindMatchingHpCompareSites(uint32_t immValue, std::vector<uint8_t*>* outSites) {
     uint8_t* text = nullptr; size_t textSize = 0;
     if (!GetTextSection(&text, &textSize)) {
         LogOut("[FM_PATCH] Failed to locate .text section", true);
-        return false;
+        return 0;
     }
 
     // Robust scan: look for 81 /7 (CMP r/m32, imm32) with operand [reg + disp32] where disp32 == 0x108 (HP), imm32 == 0x0D05 (3333)
     // Then rewrite imm32 to the requested value so the test behaves accordingly.
     const uint32_t HP_OFFSET_DISP = 0x00000108;
-    const uint32_t FROM = fromImm;
-    const uint32_t TO   = toImm;
 
-    int rewrites = 0;
+    int matches = 0;
 
     for (size_t i = 0; i + 10 < textSize; ++i) {
         const uint8_t* p = text + i;
@@ -69,51 +75,67 @@ static bool ScanAndPatch(uint32_t fromImm, uint32_t toImm, std::vector<uint8_t*>
             uint32_t disp = *reinterpret_cast<const uint32_t*>(p + dispOff);
             if (disp != HP_OFFSET_DISP) continue;
             uint32_t imm = *reinterpret_cast<const uint32_t*>(p + dispOff + 4);
-            if (imm != FROM) continue;
-            // Patch immediate
+            if (imm != immValue) continue;
             uint8_t* immPtr = const_cast<uint8_t*>(p + dispOff + 4);
-            DWORD oldProt;
-            if (VirtualProtect(immPtr, 4, PAGE_EXECUTE_READWRITE, &oldProt)) {
-                memcpy(immPtr, &TO, sizeof(TO));
-                DWORD _tmp; VirtualProtect(immPtr, 4, oldProt, &_tmp);
-                ++rewrites;
-                if (rewrites <= 4 || detailedLogging.load()) {
-                    char buf[160];
-                    sprintf_s(buf, "[FM_PATCH] Patched HP compare imm at %p: %u -> %u (cmp [*+0x108], imm32)", immPtr, FROM, TO);
-                    LogOut(buf, true);
-                }
-                if (outSites) outSites->push_back(immPtr);
-            }
+            if (outSites) outSites->push_back(immPtr);
+            ++matches;
         }
     }
 
-    LogOut(std::string("[FM_PATCH] HP compare immediates updated: ") + std::to_string(rewrites), true);
-    return rewrites > 0;
+    return matches;
 }
 
-static int PatchToBypass(std::vector<uint8_t*>* outSites) {
-    const uint32_t FM_THRESH = 0x00000D05;     // 3333
-    const uint32_t BYPASS    = 0x00002710;     // 10000
-    int count = 0;
-    if (ScanAndPatch(FM_THRESH, BYPASS, outSites)) {
-        // count equals outSites size delta; but ScanAndPatch already logged
-        count = (int)(outSites ? outSites->size() : 0);
+static int RewriteImmediateSites(
+    const std::vector<uint8_t*>& sites,
+    uint32_t fromImm,
+    uint32_t toImm,
+    const char* phaseTag) {
+    int rewrites = 0;
+    for (uint8_t* immPtr : sites) {
+        if (!immPtr) continue;
+        DWORD oldProt = 0;
+        if (!VirtualProtect(immPtr, sizeof(uint32_t), PAGE_EXECUTE_READWRITE, &oldProt)) {
+            continue;
+        }
+        memcpy(immPtr, &toImm, sizeof(toImm));
+        DWORD dummy = 0;
+        VirtualProtect(immPtr, sizeof(uint32_t), oldProt, &dummy);
+        ++rewrites;
+        if (rewrites <= 4 || detailedLogging.load()) {
+            char buf[192];
+            sprintf_s(
+                buf,
+                "[FM_PATCH] %s HP compare imm at %p: %u -> %u (cmp [*+0x108], imm32)",
+                phaseTag ? phaseTag : "Rewrote",
+                immPtr,
+                fromImm,
+                toImm);
+            LogOut(buf, true);
+        }
     }
-    return count;
+    LogOut(
+        std::string("[FM_PATCH] HP compare immediates updated: ")
+        + std::to_string(rewrites),
+        true);
+    return rewrites;
 }
 
-static int PatchToOriginalFromBypass() {
-    // Re-scan for sites that currently have imm=10000 and restore to 3333
-    const uint32_t FM_THRESH = 0x00000D05;     // 3333
-    const uint32_t BYPASS    = 0x00002710;     // 10000
-    // We don't collect sites when reverting via scan
-    std::vector<uint8_t*> dummy;
-    int count = 0;
-    if (ScanAndPatch(BYPASS, FM_THRESH, nullptr)) {
-        // Unknown exact count; we will log via ScanAndPatch. Return 1+ to indicate work done.
-        count = 1;
+static int RecoverTrackedBypassSitesLocked(const char* reason) {
+    if (!g_fmBypassSites.empty()) {
+        return static_cast<int>(g_fmBypassSites.size());
     }
-    return count;
+    std::vector<uint8_t*> recovered;
+    const int found = FindMatchingHpCompareSites(kFinalMemoryBypass, &recovered);
+    if (found > 0) {
+        g_fmBypassSites = recovered;
+        std::ostringstream oss;
+        oss << "[FM_PATCH] Recovered " << found << " active bypass site(s)";
+        if (reason && *reason) {
+            oss << " reason=" << reason;
+        }
+        LogOut(oss.str(), true);
+    }
+    return found;
 }
 
 int ApplyFinalMemoryHPBypass() {
@@ -125,53 +147,145 @@ int ApplyFinalMemoryHPBypass() {
         // Already applied in this session
         return 0;
     }
+
     std::vector<uint8_t*> sites;
-    int before = (int)sites.size();
-    PatchToBypass(&sites);
-    int added = (int)sites.size() - before;
-    if (added > 0) {
-        g_fmBypassSites.insert(g_fmBypassSites.end(), sites.begin(), sites.end());
+    const int foundOriginal = FindMatchingHpCompareSites(kFinalMemoryThreshold, &sites);
+    if (foundOriginal > 0) {
+        const int rewritten = RewriteImmediateSites(
+            sites,
+            kFinalMemoryThreshold,
+            kFinalMemoryBypass,
+            "Patched");
+        if (rewritten > 0) {
+            g_fmBypassSites = sites;
+            LogOut(
+                std::string("[FM_PATCH] Applied FM HP bypass at tracked sites: ")
+                + std::to_string(rewritten),
+                true);
+        }
+        return rewritten;
     }
-    return added;
+
+    if (RecoverTrackedBypassSitesLocked("apply requested") > 0) {
+        LogOut("[FM_PATCH] FM HP bypass was already active; recovered tracked state", true);
+    } else if (detailedLogging.load()) {
+        LogOut("[FM_PATCH] No original FM HP compare sites found to patch", true);
+    }
+    return 0;
 }
 
 int RevertFinalMemoryHPBypass() {
-    // CRITICAL: Never modify game code during online mode
-    if (g_onlineModeActive.load()) return 0;
-
     std::lock_guard<std::mutex> _lk(g_fmMutex);
-    int reverted = 0;
-    const uint32_t FM_THRESH = 0x00000D05;
-    const uint32_t BYPASS    = 0x00002710;
-    if (!g_fmBypassSites.empty()) {
-        for (auto* immPtr : g_fmBypassSites) {
-            if (!immPtr) continue;
-            DWORD oldProt;
-            if (VirtualProtect(immPtr, 4, PAGE_EXECUTE_READWRITE, &oldProt)) {
-                memcpy(immPtr, &FM_THRESH, sizeof(FM_THRESH));
-                DWORD _tmp; VirtualProtect(immPtr, 4, oldProt, &_tmp);
-                ++reverted;
-            }
-        }
-        g_fmBypassSites.clear();
-        LogOut(std::string("[FM_PATCH] Reverted FM HP bypass at tracked sites: ") + std::to_string(reverted), true);
-        return reverted;
+    std::vector<uint8_t*> sites = g_fmBypassSites;
+    if (sites.empty()) {
+        RecoverTrackedBypassSitesLocked("restore requested");
+        sites = g_fmBypassSites;
     }
-    // Fallback: conservative scan and restore compares currently set to BYPASS value
-    int rescanned = PatchToOriginalFromBypass();
-    LogOut("[FM_PATCH] Reverted FM HP bypass via rescan.", true);
-    return rescanned;
+    if (sites.empty()) {
+        if (detailedLogging.load()) {
+            LogOut("[FM_PATCH] Revert requested but no active FM HP bypass sites were found", true);
+        }
+        return 0;
+    }
+
+    const int reverted = RewriteImmediateSites(
+        sites,
+        kFinalMemoryBypass,
+        kFinalMemoryThreshold,
+        "Restored");
+    g_fmBypassSites.clear();
+    LogOut(
+        std::string("[FM_PATCH] Reverted FM HP bypass at tracked sites: ")
+        + std::to_string(reverted),
+        true);
+    return reverted;
 }
 
 int SetFinalMemoryBypass(bool enabled) {
-    // CRITICAL: Never modify game code during online mode
-    if (g_onlineModeActive.load()) return 0;
-
-    if (enabled) return ApplyFinalMemoryHPBypass();
-    return RevertFinalMemoryHPBypass();
+    const bool previous = g_fmBypassRequested.exchange(enabled, std::memory_order_release);
+    if (previous != enabled) {
+        LogOut(
+            std::string("[FM_PATCH] Request ")
+            + (enabled ? "enabled" : "disabled")
+            + " by local training runtime",
+            true);
+    }
+    return SyncFinalMemoryBypassForCurrentMode("SetFinalMemoryBypass");
 }
 
 bool IsFinalMemoryBypassEnabled() {
+    return g_fmBypassRequested.load(std::memory_order_acquire);
+}
+
+bool IsFinalMemoryBypassInstalled() {
     std::lock_guard<std::mutex> _lk(g_fmMutex);
-    return !g_fmBypassSites.empty();
+    if (!g_fmBypassSites.empty()) {
+        return true;
+    }
+    return FindMatchingHpCompareSites(kFinalMemoryBypass, nullptr) > 0;
+}
+
+int SyncFinalMemoryBypassForCurrentMode(const char* reason) {
+    const bool requested = g_fmBypassRequested.load(std::memory_order_acquire);
+    const bool featuresActive = g_featuresEnabled.load(std::memory_order_acquire);
+    const bool onlineSuspended = g_onlineModeActive.load(std::memory_order_acquire);
+    const GameMode currentMode = GetCurrentGameMode();
+    const GamePhase currentPhase = GetCurrentGamePhase();
+    const bool inPracticeMatch = (currentMode == GameMode::Practice) && (currentPhase == GamePhase::Match);
+    const bool shouldInstall = requested && featuresActive && !onlineSuspended && inPracticeMatch;
+
+    if (shouldInstall) {
+        const int applied = ApplyFinalMemoryHPBypass();
+        if (applied > 0) {
+            std::ostringstream oss;
+            oss << "[FM_PATCH] Sync applied"
+                << " requested=1 features=" << (featuresActive ? "1" : "0")
+                << " online=" << (onlineSuspended ? "1" : "0")
+                << " mode=" << GetGameModeName(currentMode)
+                << " phase=" << static_cast<int>(currentPhase);
+            if (reason && *reason) {
+                oss << " reason=" << reason;
+            }
+            LogOut(oss.str(), true);
+        }
+        return applied;
+    }
+
+    const int reverted = RevertFinalMemoryHPBypass();
+    if (requested && reverted == 0 && detailedLogging.load()) {
+        std::ostringstream oss;
+        oss << "[FM_PATCH] Request held but patch not installed"
+            << " requested=1 features=" << (featuresActive ? "1" : "0")
+            << " online=" << (onlineSuspended ? "1" : "0")
+            << " mode=" << GetGameModeName(currentMode)
+            << " phase=" << static_cast<int>(currentPhase);
+        if (reason && *reason) {
+            oss << " reason=" << reason;
+        }
+        LogOut(oss.str(), true);
+    }
+    if (!requested && reverted > 0) {
+        std::ostringstream oss;
+        oss << "[FM_PATCH] Sync restored original FM checks";
+        if (reason && *reason) {
+            oss << " reason=" << reason;
+        }
+        LogOut(oss.str(), true);
+    }
+    return reverted;
+}
+
+int ForceRestoreFinalMemoryHPBypass(const char* reason) {
+    const int reverted = RevertFinalMemoryHPBypass();
+    if (reverted > 0 || detailedLogging.load()) {
+        std::ostringstream oss;
+        oss << "[FM_PATCH] Forced restore"
+            << " requested=" << (IsFinalMemoryBypassEnabled() ? "1" : "0")
+            << " reverted=" << reverted;
+        if (reason && *reason) {
+            oss << " reason=" << reason;
+        }
+        LogOut(oss.str(), true);
+    }
+    return reverted;
 }

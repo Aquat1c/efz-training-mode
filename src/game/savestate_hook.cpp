@@ -141,6 +141,10 @@ namespace {
 
     // Hooked Load State function (VS/Practice mode)
     bool __fastcall HookedLoadState(void* self, void* /*edx*/) {
+        if (g_onlineModeActive.load(std::memory_order_relaxed)) {
+            return oLoadState ? oLoadState(self) : false;
+        }
+
         LogOut("[SAVESTATE] === LOAD STATE BEGIN ===", true);
         
         // Cancel any active auto-actions/macros BEFORE loading state
@@ -163,6 +167,11 @@ namespace {
 
     // Hooked Save State function (VS/Practice mode)
     void __fastcall HookedSaveState(void* self, void* /*edx*/) {
+        if (g_onlineModeActive.load(std::memory_order_relaxed)) {
+            if (oSaveState) oSaveState(self);
+            return;
+        }
+
         LogOut("[SAVESTATE] === SAVE STATE BEGIN ===", true);
         
         // Capture our mod state before the game saves its state

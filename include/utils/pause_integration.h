@@ -30,4 +30,8 @@ namespace PauseIntegration {
     // Returns true if (a) paused and (b) the internal step counter advanced since last call to this function.
     // Safe to call every tick; internally debounces using a static snapshot.
     bool ConsumeStepAdvance();
+
+    // Clears cached Practice/battle/gamespeed pointers that are only valid for the
+    // current gameplay session. Hooks remain installed.
+    void ResetCachedPointers(const char* reason);
 }
