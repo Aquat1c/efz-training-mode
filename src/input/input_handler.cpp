@@ -32,6 +32,7 @@
 #include "../include/game/frame_monitor.h" // AreCharactersInitialized, GamePhase
 #include "../include/game/auto_action.h" // CancelAutoActionsAndMacros
 #include "../include/input/framestep.h"
+#include "../include/utils/xp_compat.h"
 #include <Xinput.h>
 
 // XInput DLL is loaded dynamically via XInputShim
@@ -249,14 +250,20 @@ void MonitorKeys() {
     int sleepMs = 16;        // adaptive polling interval
     int idleLoops = 0;       // counts consecutive idle loops
     const int idleThreshold = 10; // after ~10 loops idle (~160ms), back off
+    unsigned long long nextWindowStateRefreshTick = 0;
     while (keyMonitorRunning.load()) {
         // Exit immediately if online mode is entered
         if (g_onlineModeActive.load()) {
             keyMonitorRunning.store(false);
             break;
         }
-    // Update window active state at the beginning of each loop
-        UpdateWindowActiveState();
+        // Frame monitor already refreshes window/gui state aggressively. Keep this thread's
+        // copy in sync at a lower cadence to avoid redundant user32 work.
+        const unsigned long long nowTick = XPCompat::GetTickCount64Compat();
+        if (nowTick >= nextWindowStateRefreshTick) {
+            UpdateWindowActiveState();
+            nextWindowStateRefreshTick = nowTick + 100;
+        }
 
     // Opportunistically retry loading key.ini if we don't have attacks detected or D is unset
     if (GetTickCount() >= s_nextIniRetryTick) {
@@ -795,10 +802,12 @@ void MonitorKeys() {
                 auto anyControllerActive = [&]() -> bool {
                     unsigned mask = connectedMask;
                     if (mask == 0) return false; // nobody connected; don’t poll
+                    XInputShim::RefreshSnapshotOncePerFrame();
                     for (int i = 0; i < 4; ++i) {
                         if (((mask >> i) & 1u) == 0) continue;
-                        XINPUT_STATE cur{};
-                        if (XInputShim::GetState(i, &cur) != ERROR_SUCCESS) continue;
+                        const XINPUT_STATE* cached = XInputShim::GetCachedState(i);
+                        if (!cached) continue;
+                        const XINPUT_STATE& cur = *cached;
                         if (cur.dwPacketNumber != prevPads[i].dwPacketNumber) return true;
                         if (cur.Gamepad.wButtons != 0) return true;
                         if (cur.Gamepad.bLeftTrigger || cur.Gamepad.bRightTrigger) return true;

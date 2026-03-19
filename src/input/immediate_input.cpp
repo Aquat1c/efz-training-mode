@@ -11,6 +11,7 @@ namespace ImmediateInput {
 static std::thread s_thread;
 static std::atomic<bool> s_running{false};
 static std::atomic<bool> s_stop{false};
+static constexpr auto kVisualFrameDuration = std::chrono::nanoseconds(15625000); // exact 1/64 s
 
 struct Slot {
     std::atomic<uint8_t> desired{0};
@@ -29,8 +30,11 @@ static void Worker() {
     }
 
     using clock = std::chrono::steady_clock;
-    const auto frameDur = std::chrono::milliseconds(1000 / 64); // ~15.625ms
     auto next = clock::now();
+    if (detailedLogging.load()) {
+        LogOut("[IMMEDIATE_INPUT] Worker started with exact 64 Hz cadence (" +
+               std::to_string(kVisualFrameDuration.count()) + " ns per visual frame)", true);
+    }
 
     while (!s_stop.load(std::memory_order_relaxed)) {
         // Exit if online mode is detected
@@ -43,7 +47,7 @@ static void Worker() {
         if (now < next) {
             std::this_thread::sleep_for(next - now);
         }
-        next += frameDur;
+        next += kVisualFrameDuration;
 
         for (int p = 1; p <= 2; ++p) {
             // Use acquire to ensure we see desired before checking ticks
@@ -180,10 +184,23 @@ void Set(int playerNum, uint8_t mask) {
 
 void PressFor(int playerNum, uint8_t mask, int ticks) {
     if (playerNum < 1 || playerNum > 2 || ticks <= 0) return;
-    // CRITICAL: Set desired first with release semantics, then ticks with relaxed.
-    // This ensures the worker thread never sees ticks>0 with desired==0.
+    const uint8_t last = s_slot[playerNum].lastWritten.load(std::memory_order_relaxed);
+    if (mask != 0) {
+        // Prime the immediate register now so delayed actions do not wait for the next 64 Hz worker tick.
+        if (last != 0) {
+            WritePlayerInputImmediate(playerNum, 0);
+        }
+        WritePlayerInputImmediate(playerNum, mask);
+        s_slot[playerNum].lastWritten.store(mask, std::memory_order_relaxed);
+        if (detailedLogging.load()) {
+            LogOut("[IMMEDIATE_INPUT] Primed timed press for P" + std::to_string(playerNum) +
+                   " mask=" + std::to_string(mask) +
+                   " ticks=" + std::to_string(ticks), true);
+        }
+    }
+    // Set desired first with release semantics, then arm the remaining worker ticks.
     s_slot[playerNum].desired.store(mask, std::memory_order_release);
-    s_slot[playerNum].ticks.store(ticks, std::memory_order_relaxed);
+    s_slot[playerNum].ticks.store((ticks > 1) ? (ticks - 1) : 1, std::memory_order_relaxed);
 }
 
 void Clear(int playerNum) {

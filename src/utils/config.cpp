@@ -249,6 +249,18 @@ namespace Config {
             file << "; How long to show frame advantage and gap messages on screen\n";
             file << "frameAdvantageDisplayDuration = 1.9\n\n";
 
+            file << "; Combo statistics overlay\n";
+            file << "showComboStatisticsOverlay = 1\n";
+            file << "comboOverlayCompactMode = 1\n";
+            file << "comboOverlayShowDetailRow = 0\n";
+            file << "comboOverlayDetailRowSource = 0\n";
+            file << "comboOverlayShowFinalSummary = 1\n";
+            file << "comboOverlayDisplayDuration = 1.9\n";
+            file << "comboOverlayHideWhenImGuiVisible = 1\n";
+            file << "comboOverlayResumeAfterImGui = 1\n";
+            file << "comboOverlayShowRfMultiplier = 0\n";
+            file << "comboOverlayShowRawScale = 0\n\n";
+
             // Practice options
             file << "; Practice: Dummy Auto-Block neutral timeout (ms) for First Hit/After First Hit modes.\n";
             file << "; When waiting to re-arm/disable, require this many milliseconds of continuous neutral before toggling.\n";
@@ -535,6 +547,31 @@ namespace Config {
             }
             // Practice: neutral timeout for dummy auto-block modes (ms)
             settings.autoBlockNeutralTimeoutMs = GetValueInt("General", "autoBlockNeutralTimeoutMs", 10000);
+            settings.showComboStatisticsOverlay = GetValueBool("General", "showComboStatisticsOverlay", true);
+            settings.comboOverlayCompactMode = GetValueBool("General", "comboOverlayCompactMode", true);
+            settings.comboOverlayShowDetailRow = GetValueBool("General", "comboOverlayShowDetailRow", false);
+            settings.comboOverlayDetailRowSource = GetValueInt("General", "comboOverlayDetailRowSource", 0);
+            if (settings.comboOverlayDetailRowSource < 0 || settings.comboOverlayDetailRowSource > 1) {
+                settings.comboOverlayDetailRowSource = 0;
+            }
+            settings.comboOverlayShowFinalSummary = GetValueBool("General", "comboOverlayShowFinalSummary", true);
+            {
+                auto sectionIt = iniData.find("general");
+                float duration = 1.9f;
+                if (sectionIt != iniData.end()) {
+                    auto keyIt = sectionIt->second.find("combooverlaydisplayduration");
+                    if (keyIt != sectionIt->second.end()) {
+                        try { duration = std::stof(keyIt->second); } catch (...) { duration = 1.9f; }
+                    }
+                }
+                if (duration < 0.5f) duration = 0.5f;
+                if (duration > 30.0f) duration = 30.0f;
+                settings.comboOverlayDisplayDuration = duration;
+            }
+            settings.comboOverlayHideWhenImGuiVisible = GetValueBool("General", "comboOverlayHideWhenImGuiVisible", true);
+            settings.comboOverlayResumeAfterImGui = GetValueBool("General", "comboOverlayResumeAfterImGui", true);
+            settings.comboOverlayShowRfMultiplier = GetValueBool("General", "comboOverlayShowRfMultiplier", false);
+            settings.comboOverlayShowRawScale = GetValueBool("General", "comboOverlayShowRawScale", false);
             
             // Hotkey settings - REVERTED to number key defaults
             settings.teleportKey = GetValueInt("Hotkeys", "TeleportKey", 0x31);          // Default: '1'
@@ -690,6 +727,18 @@ namespace Config {
             // Frame Advantage display duration
             file << "; Frame Advantage display duration (seconds)\n";
             file << "frameAdvantageDisplayDuration = " << settings.frameAdvantageDisplayDuration << "\n\n";
+            // Combo statistics overlay
+            file << "; Combo statistics overlay\n";
+            file << "showComboStatisticsOverlay = " << (settings.showComboStatisticsOverlay ? "1" : "0") << "\n";
+            file << "comboOverlayCompactMode = " << (settings.comboOverlayCompactMode ? "1" : "0") << "\n";
+            file << "comboOverlayShowDetailRow = " << (settings.comboOverlayShowDetailRow ? "1" : "0") << "\n";
+            file << "comboOverlayDetailRowSource = " << settings.comboOverlayDetailRowSource << "\n";
+            file << "comboOverlayShowFinalSummary = " << (settings.comboOverlayShowFinalSummary ? "1" : "0") << "\n";
+            file << "comboOverlayDisplayDuration = " << settings.comboOverlayDisplayDuration << "\n";
+            file << "comboOverlayHideWhenImGuiVisible = " << (settings.comboOverlayHideWhenImGuiVisible ? "1" : "0") << "\n";
+            file << "comboOverlayResumeAfterImGui = " << (settings.comboOverlayResumeAfterImGui ? "1" : "0") << "\n";
+            file << "comboOverlayShowRfMultiplier = " << (settings.comboOverlayShowRfMultiplier ? "1" : "0") << "\n";
+            file << "comboOverlayShowRawScale = " << (settings.comboOverlayShowRawScale ? "1" : "0") << "\n\n";
             // Practice options
             file << "; Practice: Dummy Auto-Block neutral timeout (ms) for First Hit/After First Hit modes.\n";
             file << "autoBlockNeutralTimeoutMs = " << settings.autoBlockNeutralTimeoutMs << "\n\n";
@@ -815,6 +864,23 @@ namespace Config {
             if (k == "crbothneutraldelayms") { try { settings.crBothNeutralDelayMs = std::stoi(value); } catch(...){} if (settings.crBothNeutralDelayMs < 0) settings.crBothNeutralDelayMs = 0; }
             if (k == "autofixhponneutral") settings.autoFixHPOnNeutral = (value == "1");
             if (k == "frameadvantagedisplayduration") { try { settings.frameAdvantageDisplayDuration = std::stof(value); } catch(...){} }
+            if (k == "showcombostatisticsoverlay") settings.showComboStatisticsOverlay = (value == "1");
+            if (k == "combooverlaycompactmode") settings.comboOverlayCompactMode = (value == "1");
+            if (k == "combooverlayshowdetailrow") settings.comboOverlayShowDetailRow = (value == "1");
+            if (k == "combooverlaydetailrowsource") {
+                try { settings.comboOverlayDetailRowSource = std::stoi(value); } catch(...) { settings.comboOverlayDetailRowSource = 0; }
+                if (settings.comboOverlayDetailRowSource < 0 || settings.comboOverlayDetailRowSource > 1) settings.comboOverlayDetailRowSource = 0;
+            }
+            if (k == "combooverlayshowfinalsummary") settings.comboOverlayShowFinalSummary = (value == "1");
+            if (k == "combooverlaydisplayduration") {
+                try { settings.comboOverlayDisplayDuration = std::stof(value); } catch(...) { settings.comboOverlayDisplayDuration = 1.9f; }
+                if (settings.comboOverlayDisplayDuration < 0.5f) settings.comboOverlayDisplayDuration = 0.5f;
+                if (settings.comboOverlayDisplayDuration > 30.0f) settings.comboOverlayDisplayDuration = 30.0f;
+            }
+            if (k == "combooverlayhidewhenimguivisible") settings.comboOverlayHideWhenImGuiVisible = (value == "1");
+            if (k == "combooverlayresumeafterimgui") settings.comboOverlayResumeAfterImGui = (value == "1");
+            if (k == "combooverlayshowrfmultiplier") settings.comboOverlayShowRfMultiplier = (value == "1");
+            if (k == "combooverlayshowrawscale") settings.comboOverlayShowRawScale = (value == "1");
             if (k == "autoblockneutraltimeoutms") { try { settings.autoBlockNeutralTimeoutMs = std::stoi(value); } catch(...) { settings.autoBlockNeutralTimeoutMs = 10000; } }
         }
         else if (sec == "hotkeys") {

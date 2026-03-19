@@ -58,6 +58,66 @@ namespace {
     UINT g_prevRtW = 0;
     UINT g_prevRtH = 0;
     std::atomic<bool> g_rtSizeLogged{false};  // Use atomic for thread-safe first-log detection
+
+    bool QueryRenderTargetSize(LPDIRECT3DDEVICE9 pDevice, UINT& outWidth, UINT& outHeight) {
+        outWidth = 0;
+        outHeight = 0;
+        if (!pDevice) {
+            return false;
+        }
+
+        IDirect3DSurface9* rt = nullptr;
+        if (FAILED(pDevice->GetRenderTarget(0, &rt)) || !rt) {
+            return false;
+        }
+
+        D3DSURFACE_DESC desc{};
+        const bool ok = SUCCEEDED(rt->GetDesc(&desc));
+        rt->Release();
+        if (!ok) {
+            return false;
+        }
+
+        outWidth = desc.Width;
+        outHeight = desc.Height;
+        return true;
+    }
+
+    bool IsEfzFullscreenCached() {
+        static HWND s_cachedHwnd = nullptr;
+        static DWORD s_lastRefreshTick = 0;
+        static bool s_cachedFullscreen = false;
+
+        HWND hwnd = FindEFZWindow();
+        if (!hwnd) {
+            s_cachedHwnd = nullptr;
+            s_cachedFullscreen = false;
+            s_lastRefreshTick = 0;
+            return false;
+        }
+
+        const DWORD now = GetTickCount();
+        if (hwnd == s_cachedHwnd && s_lastRefreshTick != 0 && (now - s_lastRefreshTick) < 125) {
+            return s_cachedFullscreen;
+        }
+
+        WINDOWPLACEMENT wp{ sizeof(WINDOWPLACEMENT) };
+        RECT wndRect{};
+        HMONITOR mon = nullptr;
+        MONITORINFO mi{ sizeof(MONITORINFO) };
+        bool fullscreen = false;
+        if (GetWindowPlacement(hwnd, &wp)
+            && GetWindowRect(hwnd, &wndRect)
+            && (mon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTOPRIMARY)) != nullptr
+            && GetMonitorInfo(mon, &mi)) {
+            fullscreen = EqualRect(&wndRect, &mi.rcMonitor) || EqualRect(&wndRect, &mi.rcWork);
+        }
+
+        s_cachedHwnd = hwnd;
+        s_cachedFullscreen = fullscreen;
+        s_lastRefreshTick = now;
+        return fullscreen;
+    }
 }
 std::atomic<bool> g_ShowRGDebugToasts{false};
 
@@ -142,6 +202,10 @@ HRESULT WINAPI DirectDrawHook::HookedFlip(IDirectDrawSurface7* This, IDirectDraw
 
 // --- REVISED AND CORRECTED D3D9 EndScene Hook ---
 HRESULT WINAPI HookedEndScene(LPDIRECT3DDEVICE9 pDevice) {
+    if (g_onlineModeActive.load(std::memory_order_relaxed)) {
+        return oEndScene(pDevice);
+    }
+
     // Refresh XInput snapshot once per frame at the start of EndScene; other systems read cached state
     XInputShim::RefreshSnapshotOncePerFrame();
     // Minimal per-frame timing (RAII) to detect stalls without per-frame logs
@@ -186,19 +250,9 @@ HRESULT WINAPI HookedEndScene(LPDIRECT3DDEVICE9 pDevice) {
 
     // Determine current render target size
     UINT rtW = 0, rtH = 0;
-    // Always query the device for RT size; do NOT touch ImGui IO before init
-    if (IDirect3DSurface9* rt = nullptr; SUCCEEDED(pDevice->GetRenderTarget(0, &rt)) && rt) {
-        D3DSURFACE_DESC d{};
-        if (SUCCEEDED(rt->GetDesc(&d))) { rtW = d.Width; rtH = d.Height; }
-        rt->Release();
-    }
+    QueryRenderTargetSize(pDevice, rtW, rtH);
     // Only render on the actual 640x480 game surface
     if (!(rtW == 640 && rtH == 480)) {
-        return oEndScene(pDevice);
-    }
-
-    // Hard gate: do not render any UI/overlays during online play
-    if (g_onlineModeActive.load()) {
         return oEndScene(pDevice);
     }
 
@@ -240,19 +294,7 @@ HRESULT WINAPI HookedEndScene(LPDIRECT3DDEVICE9 pDevice) {
     }
 
     // Helper: fullscreen check
-    auto isFullscreen = []() -> bool {
-        HWND hwnd = FindEFZWindow();
-        if (!hwnd) return false;
-        WINDOWPLACEMENT wp{ sizeof(WINDOWPLACEMENT) };
-        if (!GetWindowPlacement(hwnd, &wp)) return false;
-        RECT wndRect{};
-        if (!GetWindowRect(hwnd, &wndRect)) return false;
-        HMONITOR mon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTOPRIMARY);
-        MONITORINFO mi{ sizeof(MONITORINFO) };
-        if (!GetMonitorInfo(mon, &mi)) return false;
-        return EqualRect(&wndRect, &mi.rcMonitor) || EqualRect(&wndRect, &mi.rcWork);
-    };
-    const bool fullscreenNow = isFullscreen();
+    const bool fullscreenNow = IsEfzFullscreenCached();
 
     // Ensure OS cursor is hidden only when the menu is visible and fullscreen; otherwise show OS cursor
     if (ImGuiImpl::IsVisible() && fullscreenNow) {
@@ -268,7 +310,7 @@ HRESULT WINAPI HookedEndScene(LPDIRECT3DDEVICE9 pDevice) {
     if (!gifInit && ImGuiImpl::IsVisible()) { gifInit = GifPlayer::Initialize(pDevice); }
 
     // Render our custom text overlays using the background draw list
-    DirectDrawHook::RenderD3D9Overlays(pDevice);
+    DirectDrawHook::RenderD3D9Overlays(pDevice, rtW, rtH);
 
     // Render the main ImGui configuration window if it's visible
     if (ImGuiImpl::IsVisible()) {
@@ -489,35 +531,38 @@ void DirectDrawHook::RenderSimpleText(IDirectDrawSurface7* surface, const std::s
 }
 
 // NEW: Implement the D3D9 overlay renderer
-void DirectDrawHook::RenderD3D9Overlays(LPDIRECT3DDEVICE9 pDevice) {
+void DirectDrawHook::RenderD3D9Overlays(LPDIRECT3DDEVICE9 pDevice, UINT rtW, UINT rtH) {
     // Use background list for borders/messages and foreground for the cursor so it draws above windows
     auto bgList = ImGui::GetBackgroundDrawList();
     if (!bgList)
         return;
 
-    std::lock_guard<std::mutex> lock(messagesMutex);
+    std::vector<OverlayMessage> permanentSnapshot;
+    std::vector<OverlayMessage> temporarySnapshot;
+    {
+        std::lock_guard<std::mutex> lock(messagesMutex);
+        const auto now = std::chrono::steady_clock::now();
+        messages.erase(std::remove_if(messages.begin(), messages.end(),
+            [&](const OverlayMessage& msg) {
+                return !msg.isPermanent && msg.expireTime <= now;
+            }), messages.end());
+        permanentSnapshot.assign(permanentMessages.begin(), permanentMessages.end());
+        temporarySnapshot.assign(messages.begin(), messages.end());
+    }
 
     // If the ImGui menu is visible and there are no messages, skip message rendering only
     // (but still allow the cursor to render on top of the UI)
     const bool menuVisibleNow = ImGuiImpl::IsVisible();
-    bool skipMessageRendering = false;
-    if (menuVisibleNow && !g_ShowOverlayDebugBorders.load()) {
-        bool haveActiveTemp = false;
-        auto nowChk = std::chrono::steady_clock::now();
-        for (const auto& m : messages) { if (m.expireTime > nowChk) { haveActiveTemp = true; break; } }
-        if (!haveActiveTemp && permanentMessages.empty()) {
-            skipMessageRendering = true; // do not return; we still want to draw the cursor
-        }
+    const bool haveMessages = !permanentSnapshot.empty() || !temporarySnapshot.empty();
+    if (!menuVisibleNow && !g_ShowOverlayDebugBorders.load() && !haveMessages) {
+        return;
     }
 
+    bool skipMessageRendering = menuVisibleNow && !g_ShowOverlayDebugBorders.load() && !haveMessages;
+
     // --- Identify current D3D9 render target (needed for mapping to inner 4:3 area) ---
-    UINT rtW = 0, rtH = 0;
-    if (IDirect3DSurface9* rt = nullptr; SUCCEEDED(pDevice->GetRenderTarget(0, &rt)) && rt) {
-        D3DSURFACE_DESC d{};
-        if (SUCCEEDED(rt->GetDesc(&d))) {
-            rtW = d.Width; rtH = d.Height;
-        }
-        rt->Release();
+    if ((rtW == 0 || rtH == 0) && !QueryRenderTargetSize(pDevice, rtW, rtH)) {
+        return;
     }
 
     // Compute inner 4:3 game area within current RT (letterbox/pillarbox safe)
@@ -577,7 +622,7 @@ void DirectDrawHook::RenderD3D9Overlays(LPDIRECT3DDEVICE9 pDevice) {
         if (g_FrameAdvantageId != -1 && g_FrameAdvantage2Id != -1) {
             const OverlayMessage* faLeft = nullptr;
             const OverlayMessage* faRight = nullptr;
-            for (const auto& pm : permanentMessages) {
+            for (const auto& pm : permanentSnapshot) {
                 if (pm.id == g_FrameAdvantageId) faLeft = &pm;
                 else if (pm.id == g_FrameAdvantage2Id) faRight = &pm;
             }
@@ -632,11 +677,11 @@ void DirectDrawHook::RenderD3D9Overlays(LPDIRECT3DDEVICE9 pDevice) {
                 }
             }
             // Draw background behind text only when menu is hidden
-            if (textSize.x > 0.f && textSize.y > 0.f) {
+            if (textSize.x > 0.f && textSize.y > 0.f && msg.backgroundAlpha > 0) {
                 bgList->AddRectFilled(
                     ImVec2(textPos.x - 4, textPos.y - 2),
                     ImVec2(textPos.x + textSize.x + 4, textPos.y + textSize.y + 2),
-                    IM_COL32(0, 0, 0, 180)
+                    IM_COL32(0, 0, 0, msg.backgroundAlpha)
                 );
             }
             }
@@ -657,40 +702,24 @@ void DirectDrawHook::RenderD3D9Overlays(LPDIRECT3DDEVICE9 pDevice) {
         const int cap = limitMessages ? 24 : INT_MAX;
         int drawn = 0;
         // Permanent first
-        for (const auto& msg : permanentMessages) {
+        for (const auto& msg : permanentSnapshot) {
             renderMessage(msg);
             if (++drawn >= cap) break;
         }
         // Then temporary until cap
         if (drawn < cap) {
-            const auto now = std::chrono::steady_clock::now();
-            for (const auto& msg : messages) {
-                if (msg.expireTime > now) {
-                    renderMessage(msg);
-                    if (++drawn >= cap) break;
-                }
+            for (const auto& msg : temporarySnapshot) {
+                renderMessage(msg);
+                if (++drawn >= cap) break;
             }
         }
     }
 
     // --- Fullscreen cursor dot (mouse + gamepad) ---
     // Helper: fullscreen check
-    auto isFullscreen = []() -> bool {
-        HWND hwnd = FindEFZWindow();
-        if (!hwnd) return false;
-        WINDOWPLACEMENT wp{ sizeof(WINDOWPLACEMENT) };
-        if (!GetWindowPlacement(hwnd, &wp)) return false;
-        RECT wndRect{};
-        if (!GetWindowRect(hwnd, &wndRect)) return false;
-        HMONITOR mon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTOPRIMARY);
-        MONITORINFO mi{ sizeof(MONITORINFO) };
-        if (!GetMonitorInfo(mon, &mi)) return false;
-        return EqualRect(&wndRect, &mi.rcMonitor) || EqualRect(&wndRect, &mi.rcWork);
-    };
-
     // Draw the overlay cursor only when the ImGui menu is visible and fullscreen
     if (ImGuiImpl::IsVisible()) {
-        const bool fullscreenNow_local = isFullscreen();
+        const bool fullscreenNow_local = IsEfzFullscreenCached();
         if (!fullscreenNow_local) {
             // Do not draw dot in windowed mode
             // (menu still works; OS cursor is visible in windowed)
@@ -1066,11 +1095,11 @@ void DirectDrawHook::AddMessage(const std::string& text, const std::string& cate
     }
 
     auto expireTime = std::chrono::steady_clock::now() + std::chrono::milliseconds(durationMs);
-    messages.push_back({text, color, expireTime, x, y, false, -1, category});
+    messages.push_back({text, color, expireTime, x, y, false, -1, category, 180});
 }
 
 // Add a permanent message
-int DirectDrawHook::AddPermanentMessage(const std::string& text, COLORREF color, int x, int y) {
+int DirectDrawHook::AddPermanentMessage(const std::string& text, COLORREF color, int x, int y, unsigned char backgroundAlpha) {
     std::lock_guard<std::mutex> lock(messagesMutex);
     
     // FIX: Declare newId and increment the static counter
@@ -1078,7 +1107,7 @@ int DirectDrawHook::AddPermanentMessage(const std::string& text, COLORREF color,
     
     // FIX: Add the missing 'category' member to the initializer list.
     // Permanent messages don't need a category, so we use an empty string.
-    permanentMessages.push_back({text, color, {}, x, y, true, newId, ""});
+    permanentMessages.push_back({text, color, {}, x, y, true, newId, "", backgroundAlpha});
     
     return newId;
 }
@@ -1089,6 +1118,9 @@ void DirectDrawHook::UpdatePermanentMessage(int id, const std::string& newText, 
     
     for (auto& msg : permanentMessages) {
         if (msg.id == id) {
+            if (msg.text == newText && msg.color == newColor) {
+                break;
+            }
             msg.text = newText;
             msg.color = newColor;
             break;

@@ -1,6 +1,7 @@
 #pragma once
 #include <windows.h>
 #include <Xinput.h>
+#include <string>
 
 namespace XInputShim {
     // Initialize by loading an available XInput DLL (tries 1_4, 9_1_0, 1_3)
@@ -19,5 +20,9 @@ namespace XInputShim {
     void RefreshSnapshotOncePerFrame();
     bool IsPadConnectedCached(int index); // fast check using cached mask
     unsigned GetConnectedMaskCached();    // bit i set if pad i connected in last refresh
+    unsigned GetNativeConnectedMaskCached();   // physical XInput slots
+    unsigned GetGenericConnectedMaskCached();  // DirectInput fallback slots
     const XINPUT_STATE* GetCachedState(int index); // returns pointer or nullptr if disconnected
+    bool IsGenericFallbackSlot(int index);
+    std::string GetSlotDisplayName(int index);
 }

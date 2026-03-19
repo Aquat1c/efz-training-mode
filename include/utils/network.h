@@ -2,8 +2,16 @@
 #include <windows.h>
 #include <string>
 #include <atomic>
+#include "efz_netplay_state.h"
 
 extern std::atomic<bool> isOnlineMatch;
+
+enum class NetplayStateSource : int {
+	None = 0,
+	ExportSharedMemory,
+	ExportDll,
+	LegacyRevival
+};
 
 // Minimal EfzRevival version enum detected from the game's window title
 enum class EfzRevivalVersion : int {
@@ -26,13 +34,28 @@ enum class OnlineState : int {
 	Unknown = -1
 };
 
-// Function to check if EFZ is in an online match
+struct NetplayRuntimeState {
+	DWORD refreshTick;
+	bool exportAvailable;
+	bool sessionActive;
+	bool suspendTraining;
+	bool inNetplayMenu;
+	bool inNetplayFlow;
+	bool inNetplayCharacterSelect;
+	bool inNetplayMatch;
+	NetplayStateSource source;
+	OnlineState legacyOnlineState;
+	EFZNetplayState exportState;
+};
+
+// Compatibility wrapper: pure query only, no side effects.
 bool DetectOnlineMatch();
 
 // Detect EfzRevival version by parsing the EFZ window title. Cached after first call.
 EfzRevivalVersion GetEfzRevivalVersion();
 // Human-readable name for EfzRevivalVersion
 const char* EfzRevivalVersionName(EfzRevivalVersion v);
+const char* NetplayStateSourceName(NetplayStateSource source);
 // Whether this build of the training mode supports the detected Revival version
 bool IsEfzRevivalVersionSupported(EfzRevivalVersion v = (EfzRevivalVersion)0 /*use detected*/);
 
@@ -41,6 +64,14 @@ bool IsEfzRevivalVersionSupported(EfzRevivalVersion v = (EfzRevivalVersion)0 /*u
 OnlineState ReadEfzRevivalOnlineState();
 // Helper: get human-readable name for OnlineState
 const char* OnlineStateName(OnlineState st);
+
+void RefreshNetplayRuntimeState();
+NetplayRuntimeState GetNetplayRuntimeState();
+bool IsNetplaySuspendActive();
+bool IsNetplaySessionActive();
+bool IsNetplayMenuActive();
+bool IsNetplayFlowActive();
+bool IsNetplayExportAvailable();
 
 // Reason for last online detection (best-effort; for diagnostics/logging)
 std::string GetLastOnlineDetectionReason();

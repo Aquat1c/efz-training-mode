@@ -58,6 +58,16 @@ namespace CharacterSettings {
     static bool s_prevP2AkikoFreeze = false;
     static int  s_p1AkikoFrozenCycle = 0;
     static int  s_p2AkikoFrozenCycle = 0;
+    static int p1LastFeatherCount = 0;
+    static int p2LastFeatherCount = 0;
+    static int p1LastMishioElem = -1;
+    static int p2LastMishioElem = -1;
+    static int p1RestoreDelay = 0;
+    static int p2RestoreDelay = 0;
+    static int s_p1MaiFrozenTimer = -1;
+    static int s_p2MaiFrozenTimer = -1;
+    static int s_p1MaiFrozenStatus = -1;
+    static int s_p2MaiFrozenStatus = -1;
     
     // Cached per-player character-specific pointers to reduce ResolvePointer calls
     struct PlayerCharPointers {
@@ -103,6 +113,39 @@ namespace CharacterSettings {
     static PlayerCharPointers s_pointersP2;
 
     void InvalidateAllCharacterPointerCaches() {
+        const uint32_t generation = GetRuntimeLifecycleGeneration();
+        const bool hadPointerCache = (s_pointersP1.base != 0 || s_pointersP2.base != 0);
+        const bool hadRuntimeState =
+            (s_prevCharIDP1 != -2 || s_prevCharIDP2 != -2 ||
+             s_prevP1AkikoFreeze || s_prevP2AkikoFreeze ||
+             s_p1AkikoFrozenCycle != 0 || s_p2AkikoFrozenCycle != 0 ||
+             p1LastFeatherCount != 0 || p2LastFeatherCount != 0 ||
+             p1LastMishioElem != -1 || p2LastMishioElem != -1 ||
+             p1RestoreDelay != 0 || p2RestoreDelay != 0 ||
+             s_p1MaiFrozenTimer != -1 || s_p2MaiFrozenTimer != -1 ||
+             s_p1MaiFrozenStatus != -1 || s_p2MaiFrozenStatus != -1);
+
+        if (hadPointerCache || hadRuntimeState || detailedLogging.load()) {
+            auto fmtPtr = [](uintptr_t value) {
+                std::ostringstream oss;
+                oss << "0x" << std::hex << std::uppercase << value;
+                return oss.str();
+            };
+
+            std::ostringstream oss;
+            oss << "[CHAR][CACHE] Invalidating character runtime caches"
+                << " gen=" << generation
+                << " P1[base=" << fmtPtr(s_pointersP1.base) << " char=" << s_pointersP1.charId << "]"
+                << " P2[base=" << fmtPtr(s_pointersP2.base) << " char=" << s_pointersP2.charId << "]"
+                << " prevChar=" << s_prevCharIDP1 << "/" << s_prevCharIDP2
+                << " feathers=" << p1LastFeatherCount << "/" << p2LastFeatherCount
+                << " mishio=" << p1LastMishioElem << "/" << p2LastMishioElem
+                << " rumiDelay=" << p1RestoreDelay << "/" << p2RestoreDelay
+                << " maiFrozen=" << s_p1MaiFrozenTimer << ":" << s_p1MaiFrozenStatus
+                << "/" << s_p2MaiFrozenTimer << ":" << s_p2MaiFrozenStatus;
+            LogOut(oss.str(), true);
+        }
+
         // Zero out all cached addresses so they get refreshed
         // on the next Read/Apply call. This is important when
         // re-entering Practice after character select, since
@@ -110,7 +153,40 @@ namespace CharacterSettings {
         // previously-resolved pointers can become stale.
         s_pointersP1 = PlayerCharPointers{};
         s_pointersP2 = PlayerCharPointers{};
-        LogOut("[CHAR] Invalidating all character pointer caches", detailedLogging.load());
+        s_lastP1IkumiBlood = -1;
+        s_lastP1IkumiGenocide = -1;
+        s_lastP2IkumiBlood = -1;
+        s_lastP2IkumiGenocide = -1;
+        s_lastIkumiLogP1 = {};
+        s_lastIkumiLogP2 = {};
+        s_lastRumiModeP1 = -1;
+        s_lastRumiGateP1 = -1;
+        s_lastRumiModeP2 = -1;
+        s_lastRumiGateP2 = -1;
+        s_lastRumiLogP1 = {};
+        s_lastRumiLogP2 = {};
+        s_lastAkikoBulletP1 = -1;
+        s_lastAkikoBulletP2 = -1;
+        s_lastAkikoTimeP1 = -1;
+        s_lastAkikoTimeP2 = -1;
+        s_lastAkikoLogP1 = {};
+        s_lastAkikoLogP2 = {};
+        s_prevCharIDP1 = -2;
+        s_prevCharIDP2 = -2;
+        s_prevP1AkikoFreeze = false;
+        s_prevP2AkikoFreeze = false;
+        s_p1AkikoFrozenCycle = 0;
+        s_p2AkikoFrozenCycle = 0;
+        p1LastFeatherCount = 0;
+        p2LastFeatherCount = 0;
+        p1LastMishioElem = -1;
+        p2LastMishioElem = -1;
+        p1RestoreDelay = 0;
+        p2RestoreDelay = 0;
+        s_p1MaiFrozenTimer = -1;
+        s_p2MaiFrozenTimer = -1;
+        s_p1MaiFrozenStatus = -1;
+        s_p2MaiFrozenStatus = -1;
     }
 
     static void RefreshCharacterPointers(uintptr_t base, int playerIndex, int charId) {
@@ -1352,11 +1428,6 @@ namespace CharacterSettings {
     }
     
     // Track previous values (used by inline enforcement)
-    static int p1LastFeatherCount = 0;
-    static int p2LastFeatherCount = 0;
-    static int p1LastMishioElem = -1;
-    static int p2LastMishioElem = -1;
-
     // Inline per-tick enforcement (call at low cadence from FrameDataMonitor)
     void TickCharacterEnforcements(uintptr_t base, const DisplayData& localData) {
         if (!base) return;
@@ -1467,7 +1538,6 @@ namespace CharacterSettings {
         }; enforceMisuzuPoison(1); enforceMisuzuPoison(2);
 
         // Rumi Infinite Shinai (keep gate=0 and restore Shinai mode when safe)
-        static int p1RestoreDelay = 0, p2RestoreDelay = 0;
         auto enforceRumi = [&](int pi){
             bool wantInf = (pi==1)?(localData.p1RumiInfiniteShinai && localData.p1CharID==CHAR_ID_NANASE)
                                   :(localData.p2RumiInfiniteShinai && localData.p2CharID==CHAR_ID_NANASE);
@@ -1606,8 +1676,6 @@ namespace CharacterSettings {
         }; enforceNayukiB(1); enforceNayukiB(2);
 
         // Mai – per-tick enforcement for infinite modes (status-aware)
-        static int s_p1MaiFrozenTimer = -1, s_p2MaiFrozenTimer = -1;
-        static int s_p1MaiFrozenStatus = -1, s_p2MaiFrozenStatus = -1;
         auto enforceMai = [&](int pi){
             if ((pi==1 && localData.p1CharID!=CHAR_ID_MAI) || (pi==2 && localData.p2CharID!=CHAR_ID_MAI)) return;
             const int off = (pi==1)?EFZ_BASE_OFFSET_P1:EFZ_BASE_OFFSET_P2;

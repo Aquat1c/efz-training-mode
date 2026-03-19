@@ -21,7 +21,15 @@ static bool ForwardIsRightForPlayer(int p) {
     // Cache X position addresses to avoid repeated ResolvePointer calls
     static uintptr_t cachedBase = 0;
     static uintptr_t xAddr[3] = { 0, 0, 0 }; // [1]=P1, [2]=P2
+    static uint32_t cachedGeneration = 0;
     uintptr_t baseNow = GetEFZBase();
+    const uint32_t generationNow = GetRuntimeLifecycleGeneration();
+    if (generationNow != cachedGeneration) {
+        cachedBase = 0;
+        xAddr[1] = 0;
+        xAddr[2] = 0;
+        cachedGeneration = generationNow;
+    }
     if (baseNow != 0 && baseNow != cachedBase) {
         cachedBase = baseNow;
         xAddr[1] = ResolvePointer(baseNow, EFZ_BASE_OFFSET_P1, XPOS_OFFSET);
@@ -151,7 +159,7 @@ bool IsAutoActionActiveForPlayer(int playerNum) {
 void MonitorAutoJump() {
     // Only operate in offline Practice mode
     if (GetCurrentGameMode() != GameMode::Practice) return;
-    if (DetectOnlineMatch()) return;
+    if (IsNetplaySuspendActive()) return;
     
     using clock = std::chrono::steady_clock;
     // We now hold the UP input continuously while enabled; timers retained for compatibility but not required
@@ -166,7 +174,15 @@ void MonitorAutoJump() {
     auto isGrounded = [](int p) -> bool {
         static uintptr_t s_cachedBase = 0;
         static uintptr_t s_yAddr[3] = { 0, 0, 0 };
+        static uint32_t s_cachedGeneration = 0;
         uintptr_t baseNow = GetEFZBase();
+        const uint32_t generationNow = GetRuntimeLifecycleGeneration();
+        if (generationNow != s_cachedGeneration) {
+            s_cachedBase = 0;
+            s_yAddr[1] = 0;
+            s_yAddr[2] = 0;
+            s_cachedGeneration = generationNow;
+        }
         if (baseNow != 0 && baseNow != s_cachedBase) {
             s_cachedBase = baseNow;
             s_yAddr[1] = ResolvePointer(baseNow, EFZ_BASE_OFFSET_P1, YPOS_OFFSET);

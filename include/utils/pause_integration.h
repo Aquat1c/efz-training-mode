@@ -12,6 +12,15 @@ namespace PauseIntegration {
     void EnsurePracticePointerCapture();
     // Returns the current Practice controller pointer (or nullptr if not yet captured)
     void* GetPracticeControllerPtr();
+    // Record a Practice controller pointer observed by a trusted Revival hook.
+    void NotePracticeControllerCandidate(void* practicePtr, const char* source);
+    // Force an immediate Practice controller resolution attempt.
+    // `allowCharacterSelect` is only for menu/reset paths that legitimately run in CS.
+    // `allowLooseValidation` allows a match-only fallback that accepts a live Practice object
+    // even if the stricter pause/menu invariants are not initialized yet.
+    void* ResolvePracticeControllerPtrNow(bool allowCharacterSelect = false,
+                                          bool allowLooseValidation = false,
+                                          const char* reason = nullptr);
     // While the menu is visible, keep the freeze enforced in gameplay (guards against external unfreeze)
     void MaintainFreezeWhileMenuVisible();
 
@@ -30,4 +39,8 @@ namespace PauseIntegration {
     // Returns true if (a) paused and (b) the internal step counter advanced since last call to this function.
     // Safe to call every tick; internally debounces using a static snapshot.
     bool ConsumeStepAdvance();
+
+    // Clears cached Practice/battle/gamespeed pointers that are only valid for the
+    // current gameplay session. Hooks remain installed.
+    void ResetCachedPointers(const char* reason);
 }

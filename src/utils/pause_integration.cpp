@@ -16,10 +16,6 @@
 #include <sstream>
 
 namespace {
-    // Helper to check for 1.02h specifically (only h uses the two-arg PracticeTick signature)
-    static inline bool IsHOnly() {
-        return GetEfzRevivalVersion() == EfzRevivalVersion::Revival102h;
-    }
     // SEH-safe wrapper for calling EfzRevival's GetModeStruct in 1.02i
     typedef void* (__stdcall *tGetModeStruct)(int idx);
     static void* Seh_GetModeStruct(tGetModeStruct fn, int idx) {
@@ -52,6 +48,7 @@ namespace {
     std::atomic<uint8_t> s_prevGamespeed{3};
     // Direct gamespeed byte address resolved from game mode array
     std::atomic<uintptr_t> s_gamespeedAddr{0};
+    std::atomic<uint32_t> s_lastStepCounter{0};
     // Vanilla EFZ pause ownership (engine pause via battleContext+0x1416)
     std::atomic<bool> s_weVanillaEnginePause{false};
     // Visual effect patches ownership (for vanilla/unsupported versions)
@@ -60,6 +57,31 @@ namespace {
     bool IsEfzRevivalLoaded() {
         // For unsupported versions, treat as vanilla (return false)
         return GetModuleHandleA("EfzRevival.dll") != nullptr && IsEfzRevivalVersionSupported();
+    }
+
+    static bool ReadPracticeCandidateCore(uintptr_t cand,
+                                          int& outLocal,
+                                          int& outRemote,
+                                          uint8_t& outGuiPos,
+                                          uint8_t& outPauseFlag,
+                                          uintptr_t& outPrimary,
+                                          uintptr_t& outSecondary) {
+        outLocal = -1;
+        outRemote = -1;
+        outGuiPos = 0xFF;
+        outPauseFlag = 0xFF;
+        outPrimary = 0;
+        outSecondary = 0;
+        if (!cand) return false;
+
+        const uintptr_t pauseOff = EFZ_Practice_PauseFlagOffset();
+        const bool okLocal = SafeReadMemory(cand + PRACTICE_OFF_LOCAL_SIDE_IDX, &outLocal, sizeof(outLocal));
+        const bool okRemote = SafeReadMemory(cand + PRACTICE_OFF_REMOTE_SIDE_IDX, &outRemote, sizeof(outRemote));
+        const bool okGui = SafeReadMemory(cand + PRACTICE_OFF_GUI_POS, &outGuiPos, sizeof(outGuiPos));
+        const bool okPause = (pauseOff == 0) || SafeReadMemory(cand + pauseOff, &outPauseFlag, sizeof(outPauseFlag));
+        const bool okPrimary = SafeReadMemory(cand + PRACTICE_OFF_SIDE_BUF_PRIMARY, &outPrimary, sizeof(outPrimary));
+        const bool okSecondary = SafeReadMemory(cand + PRACTICE_OFF_SIDE_BUF_SECONDARY, &outSecondary, sizeof(outSecondary));
+        return okLocal && okRemote && okGui && okPause && okPrimary && okSecondary;
     }
 
     // Validate a candidate Practice controller pointer by checking key invariants
@@ -77,73 +99,66 @@ namespace {
                 LogOut(oss.str(), detailedLogging.load());
             }
         }
-        int local = -1;
-        uint8_t pauseFlag = 0xFF;
-        (void)SafeReadMemory(cand + PRACTICE_OFF_LOCAL_SIDE_IDX, &local, sizeof(local));
+        int local = -1, remote = -1;
+        uint8_t guiPos = 0xFF, pauseFlag = 0xFF;
+        uintptr_t primary = 0, secondary = 0;
+        (void)ReadPracticeCandidateCore(cand, local, remote, guiPos, pauseFlag, primary, secondary);
         // Use version-aware offset for pause flag
         uintptr_t pauseOff = EFZ_Practice_PauseFlagOffset();
-        if (pauseOff) (void)SafeReadMemory(cand + pauseOff, &pauseFlag, sizeof(pauseFlag));
         bool sideOk = (local == 0 || local == 1);
+        bool remoteOk = (remote == 0 || remote == 1) && (remote != local);
         bool pauseOk = (pauseOff == 0 || pauseFlag == 0 || pauseFlag == 1);
 
         // On 1.02e we additionally validate that the primary side buffer points to one of the known
         // base blocks embedded in the Practice struct. These offsets do not hold across h/i, so skip there.
         if (ver == EfzRevivalVersion::Revival102e) {
-            uintptr_t primary = 0;
-            (void)SafeReadMemory(cand + PRACTICE_OFF_SIDE_BUF_PRIMARY, &primary, sizeof(primary));
             bool bufOk = (primary == (cand + PRACTICE_OFF_BUF_LOCAL_BASE)) || (primary == (cand + PRACTICE_OFF_BUF_REMOTE_BASE));
-            return sideOk && pauseOk && bufOk;
+            return sideOk && remoteOk && pauseOk && bufOk;
         } else {
             // For 1.02h/1.02i, rely on the basic invariants and optionally cross-check GUI_POS when present (0 or 1)
-            uint8_t guiPos = 0xFF;
-            (void)SafeReadMemory(cand + PRACTICE_OFF_GUI_POS, &guiPos, sizeof(guiPos));
             bool guiOk = (guiPos == 0 || guiPos == 1);
-            return sideOk && (pauseOk || guiOk);
+            return sideOk && remoteOk && (pauseOk || guiOk);
         }
     }
 
-    bool TryResolvePracticePtrFromModeArray(void*& outPtr) {
-        // Note: EfzRevival's EFZ_GameMode_GetStructByIndex returns engine mode objects
-        // (e.g., battle context at idx=3), not the Practice controller. We therefore
-        // do NOT use the game mode array to find Practice. Keep only the direct static
-        // pointer fast-path; otherwise rely on lightweight hooks to capture ECX.
-        HMODULE hRev = GetModuleHandleA("EfzRevival.dll");
-        if (!hRev) return false;
-        auto base = reinterpret_cast<uintptr_t>(hRev);
+    static bool ValidatePracticeCandidateLoose(uintptr_t cand) {
+        if (!cand) return false;
+        if (GetCurrentGameMode() != GameMode::Practice || !IsMatchPhase()) return false;
+        if (IsNetplaySuspendActive()) return false;
 
-        // For all versions (e/h/i), prefer the direct static pointer (CheatEngine found all three)
-        EfzRevivalVersion ver = GetEfzRevivalVersion();
-        uintptr_t ptrRva = EFZ_RVA_PracticeControllerPtr();
-        if (ptrRva) {
-            uintptr_t ptrAddr = base + ptrRva;
-            uintptr_t cand = 0;
-            if (SafeReadMemory(ptrAddr, &cand, sizeof(cand)) && cand) {
-                if (ValidatePracticeCandidate(cand)) {
-                    outPtr = reinterpret_cast<void*>(cand);
-                    std::ostringstream oss; oss << "[PAUSE] Direct ptr @+0x" << std::hex << ptrRva << " resolved practice=0x" << cand;
-                    LogOut(oss.str(), detailedLogging.load());
-                    return true;
-                }
-            }
+        int local = -1, remote = -1;
+        uint8_t guiPos = 0xFF, pauseFlag = 0xFF;
+        uintptr_t primary = 0, secondary = 0;
+        if (!ReadPracticeCandidateCore(cand, local, remote, guiPos, pauseFlag, primary, secondary)) {
+            return false;
         }
-        return false;
+
+        const bool sideOk = (local == 0 || local == 1) && (remote == 0 || remote == 1) && (local != remote);
+        const bool guiOk = (guiPos == 0 || guiPos == 1);
+        const bool pauseOk = (pauseFlag == 0 || pauseFlag == 1);
+        const bool primaryOk = (primary > 0x10000);
+        const bool secondaryOk = (secondary > 0x10000);
+        return sideOk && (guiOk || pauseOk || (primaryOk && secondaryOk && primary != secondary));
     }
 
     // Heuristic scan: iterate a small range of mode slots to find a struct that looks like Practice by invariants.
-    bool TryResolvePracticePtrByScan(void*& outPtr) {
+    bool TryResolvePracticePtrByScan(void*& outPtr,
+                                     bool allowCharacterSelect = false,
+                                     bool allowLooseValidation = false,
+                                     const char* reason = nullptr) {
         // Gate scanning strictly: Practice mode only, offline only, and never during Character Select
-        if (IsInCharacterSelectScreen()) {
+        if (!allowCharacterSelect && IsInCharacterSelectScreen()) {
             return false;
         }
         GameMode mode = GetCurrentGameMode();
         if (mode != GameMode::Practice) {
             return false;
         }
-        if (DetectOnlineMatch() || isOnlineMatch.load(std::memory_order_relaxed)) {
+        if (IsNetplaySuspendActive()) {
             return false;
         }
         // If we've already failed once during the current Character Select, skip further scans/logs
-        if (IsInCharacterSelectScreen() && s_scanSuppressedThisCS.load(std::memory_order_relaxed)) {
+        if (!allowCharacterSelect && IsInCharacterSelectScreen() && s_scanSuppressedThisCS.load(std::memory_order_relaxed)) {
             return false;
         }
         HMODULE hRev = GetModuleHandleA("EfzRevival.dll");
@@ -155,33 +170,63 @@ namespace {
             uintptr_t slotAddr = base + gmArrayRva + 4 * idx;
             uintptr_t cand = 0;
             if (!SafeReadMemory(slotAddr, &cand, sizeof(cand)) || !cand) continue;
-            if (ValidatePracticeCandidate(cand)) {
+            if (ValidatePracticeCandidate(cand) || (allowLooseValidation && ValidatePracticeCandidateLoose(cand))) {
                 outPtr = reinterpret_cast<void*>(cand);
-                std::ostringstream oss; oss << "[PAUSE] Heuristic scan resolved practice=0x" << std::hex << cand << " (slot=" << std::dec << idx << ")";
+                std::ostringstream oss;
+                oss << "[PAUSE] Heuristic scan resolved practice=0x" << std::hex << cand
+                    << " (slot=" << std::dec << idx << ")"
+                    << " mode=" << (allowLooseValidation ? "loose" : "strict")
+                    << " reason=" << (reason ? reason : "unspecified");
                 LogOut(oss.str(), detailedLogging.load());
                 return true;
             }
         }
         // Log failure only once per Character Select instance, and only once globally overall
-        bool firstThisCS = !s_scanSuppressedThisCS.exchange(true, std::memory_order_relaxed);
-        if (firstThisCS) {
+        bool firstThisCS = allowCharacterSelect ? false : !s_scanSuppressedThisCS.exchange(true, std::memory_order_relaxed);
+        if (allowCharacterSelect || firstThisCS) {
             if (!s_loggedScanFailOnce.exchange(true, std::memory_order_relaxed)) {
-                LogOut("[PAUSE] Heuristic scan failed to resolve Practice controller", detailedLogging.load());
+                std::ostringstream oss;
+                oss << "[PAUSE] Heuristic scan failed to resolve Practice controller"
+                    << " mode=" << (allowLooseValidation ? "loose" : "strict")
+                    << " reason=" << (reason ? reason : "unspecified");
+                LogOut(oss.str(), detailedLogging.load());
             }
         }
         return false;
     }
 
-    // Lightweight hooks to capture Practice controller pointer (ECX of Practice tick)
-    // 1.02e: sub_10074F70(int this) -> we use (void*) and no extra arg
-    typedef int (__thiscall *tPracticeTickE)(void* thisPtr);
-    static tPracticeTickE oPracticeTickE = nullptr;
-    static int __fastcall HookedPracticeTickE(void* thisPtr, void* /*edx*/) {
-        s_practicePtr.store(thisPtr, std::memory_order_relaxed);
-        {
-            std::ostringstream oss; oss << "[PAUSE] HookedPracticeTickE ECX=0x" << std::hex << (uintptr_t)thisPtr;
-            LogOut(oss.str(), false);
+    void* ResolvePracticeControllerPtrInternal(bool allowCharacterSelect,
+                                               bool allowLooseValidation,
+                                               const char* reason) {
+        if (void* cached = s_practicePtr.load(std::memory_order_relaxed)) {
+            return cached;
         }
+
+        if (allowCharacterSelect) {
+            return nullptr;
+        }
+
+        if (!IsMatchPhase()) {
+            return nullptr;
+        }
+
+        void* resolved = nullptr;
+        if (TryResolvePracticePtrByScan(resolved, allowCharacterSelect, allowLooseValidation, reason)) {
+            s_practicePtr.store(resolved, std::memory_order_relaxed);
+            return resolved;
+        }
+        return nullptr;
+    }
+
+    // Lightweight hook to capture the Practice controller pointer from the
+    // version-correct per-frame Practice update (ECX = Practice "this").
+    typedef int (__thiscall *tPracticeTick)(void* thisPtr);
+    static tPracticeTick oPracticeTick = nullptr;
+    static int __fastcall HookedPracticeTick(void* thisPtr, void* /*edx*/) {
+        if (g_onlineModeActive.load(std::memory_order_relaxed)) {
+            return oPracticeTick ? oPracticeTick(thisPtr) : 0;
+        }
+        PauseIntegration::NotePracticeControllerCandidate(thisPtr, "PracticeTick");
         // Capture pre-step counter if menu visible (so we can neutralize any increment)
         uint32_t before = 0; bool wantNeutralize = false;
         if (s_menuVisible.load(std::memory_order_relaxed)) {
@@ -189,35 +234,7 @@ namespace {
             SafeReadMemory(reinterpret_cast<uintptr_t>(thisPtr)+stepCounterOff, &before, sizeof(before));
             wantNeutralize = true;
         }
-        int ret = oPracticeTickE ? oPracticeTickE(thisPtr) : 0;
-        if (wantNeutralize) {
-            uint32_t after = before;
-            uintptr_t stepCounterOff = EFZ_Practice_StepCounterOffset();
-            if (SafeReadMemory(reinterpret_cast<uintptr_t>(thisPtr)+stepCounterOff, &after, sizeof(after))) {
-                if (after == before + 1) {
-                    SafeWriteMemory(reinterpret_cast<uintptr_t>(thisPtr)+stepCounterOff, &before, sizeof(before));
-                }
-            }
-        }
-        return ret;
-    }
-
-    // 1.02h: sub_10074F40(int this, int a2) -> we must accept the extra int argument
-    typedef char (__thiscall *tPracticeTickH)(void* thisPtr, int a2);
-    static tPracticeTickH oPracticeTickH = nullptr;
-    static char __fastcall HookedPracticeTickH(void* thisPtr, void* /*edx*/, int a2) {
-        s_practicePtr.store(thisPtr, std::memory_order_relaxed);
-        {
-            std::ostringstream oss; oss << "[PAUSE] HookedPracticeTickH ECX=0x" << std::hex << (uintptr_t)thisPtr << " a2=" << std::dec << a2;
-            LogOut(oss.str(), false);
-        }
-        uint32_t before = 0; bool wantNeutralize = false;
-        if (s_menuVisible.load(std::memory_order_relaxed)) {
-            uintptr_t stepCounterOff = EFZ_Practice_StepCounterOffset();
-            SafeReadMemory(reinterpret_cast<uintptr_t>(thisPtr)+stepCounterOff, &before, sizeof(before));
-            wantNeutralize = true;
-        }
-        char ret = oPracticeTickH ? oPracticeTickH(thisPtr, a2) : 0;
+        int ret = oPracticeTick ? oPracticeTick(thisPtr) : 0;
         if (wantNeutralize) {
             uint32_t after = before;
             uintptr_t stepCounterOff = EFZ_Practice_StepCounterOffset();
@@ -236,13 +253,10 @@ namespace {
     // Internal bypass lets us invoke the official toggle even while menu visible
     static std::atomic<bool> s_internalPauseBypass{false};
     static int __fastcall HookedTogglePause(void* thisPtr, void* /*edx*/) {
-        if (thisPtr) s_practicePtr.store(thisPtr, std::memory_order_relaxed);
-        {
-            std::ostringstream oss; oss << "[PAUSE] HookedTogglePause ECX=0x" << std::hex << (uintptr_t)thisPtr
-                << " menuVisible=" << (s_menuVisible.load()?1:0)
-                << " bypass=" << (s_internalPauseBypass.load()?1:0);
-            LogOut(oss.str(), detailedLogging.load());
+        if (g_onlineModeActive.load(std::memory_order_relaxed)) {
+            return oTogglePause ? oTogglePause(thisPtr) : 0;
         }
+        PauseIntegration::NotePracticeControllerCandidate(thisPtr, "TogglePause");
         if (s_menuVisible.load(std::memory_order_relaxed) && !s_internalPauseBypass.load(std::memory_order_relaxed)) {
             // Suppress user-initiated pause/unpause while menu open
             return 0;
@@ -276,20 +290,6 @@ namespace {
         
         // Maintain CS cycle bookkeeping to bound scan/log spam to once per CS
         UpdateCsCycleState();
-        // Attempt direct resolution first (fast path, no hooks needed once valid)
-        if (!s_practicePtr.load()) {
-            void* resolved = nullptr;
-            if (TryResolvePracticePtrFromModeArray(resolved)) {
-                s_practicePtr.store(resolved, std::memory_order_relaxed);
-                LogOut("[PAUSE] Practice ptr resolved via mode array", true);
-                // Once resolved, clear any prior CS suppression
-                s_scanSuppressedThisCS.store(false, std::memory_order_relaxed);
-            } else if (TryResolvePracticePtrByScan(resolved)) {
-                s_practicePtr.store(resolved, std::memory_order_relaxed);
-                LogOut("[PAUSE] Practice ptr resolved via heuristic scan", true);
-                s_scanSuppressedThisCS.store(false, std::memory_order_relaxed);
-            }
-        }
         if (s_practiceHooksInstalled.load()) return;
         HMODULE hRev = GetModuleHandleA("EfzRevival.dll");
         if (!hRev) return; // wait for injection
@@ -303,17 +303,11 @@ namespace {
             LogOut(oss.str(), detailedLogging.load());
         }
         bool anyHook = false;
-        // Select the correct PracticeTick hook based on version/signature
         if (tickTarget) {
-            EfzRevivalVersion ver = GetEfzRevivalVersion();
-            if (IsEfzRevivalLoaded() && ver == EfzRevivalVersion::Revival102h) {
-                if (MH_CreateHook(tickTarget, &HookedPracticeTickH, reinterpret_cast<void**>(&oPracticeTickH)) == MH_OK && MH_EnableHook(tickTarget) == MH_OK) {
-                    anyHook = true; LogOut("[PAUSE] PracticeTick hook active (1.02h)", detailedLogging.load());
-                }
-            } else {
-                if (MH_CreateHook(tickTarget, &HookedPracticeTickE, reinterpret_cast<void**>(&oPracticeTickE)) == MH_OK && MH_EnableHook(tickTarget) == MH_OK) {
-                    anyHook = true; LogOut("[PAUSE] PracticeTick hook active (1.02e/1.02i)", detailedLogging.load());
-                }
+            if (MH_CreateHook(tickTarget, &HookedPracticeTick, reinterpret_cast<void**>(&oPracticeTick)) == MH_OK
+                && MH_EnableHook(tickTarget) == MH_OK) {
+                anyHook = true;
+                LogOut("[PAUSE] PracticeTick hook active", detailedLogging.load());
             }
         }
         if (pauseTarget && MH_CreateHook(pauseTarget, &HookedTogglePause, reinterpret_cast<void**>(&oTogglePause)) == MH_OK && MH_EnableHook(pauseTarget) == MH_OK) {
@@ -335,8 +329,7 @@ namespace {
         uint8_t v = paused ? 1u : 0u; return SafeWriteMemory(reinterpret_cast<uintptr_t>(p) + pauseOff, &v, sizeof(v));
     }
 
-    // Reset the Practice step counter to 0, mirroring the official toggle behavior
-    // 1.02e: +0xB0, 1.02h/i: +0x176
+    // Reset the Practice step counter to 0, mirroring the official toggle behavior.
     bool ResetPracticeStepCounterToZero() {
         void* p = s_practicePtr.load(); if (!p) return false;
         uint32_t zero = 0;
@@ -356,6 +349,9 @@ namespace {
     typedef BOOL (__thiscall *tRenderBattleScreen)(void* battleContext);
     static tRenderBattleScreen oRenderBattleScreen = nullptr;
     static BOOL __fastcall HookedRenderBattleScreen(void* battleContext, void* /*edx*/) {
+        if (g_onlineModeActive.load(std::memory_order_relaxed)) {
+            return oRenderBattleScreen ? oRenderBattleScreen(battleContext) : FALSE;
+        }
         if (battleContext) s_battleContext.store(battleContext, std::memory_order_relaxed);
         {
             std::ostringstream oss; oss << "[PAUSE] RenderBattleScreen bc=0x" << std::hex << (uintptr_t)battleContext;
@@ -634,6 +630,41 @@ namespace PauseIntegration {
         }
     }
     void* GetPracticeControllerPtr() { return s_practicePtr.load(); }
+    void NotePracticeControllerCandidate(void* practicePtr, const char* source) {
+        if (!practicePtr) return;
+        if (GetCurrentGameMode() != GameMode::Practice) return;
+        void* previous = s_practicePtr.exchange(practicePtr, std::memory_order_relaxed);
+        if (previous != practicePtr) {
+            std::ostringstream oss;
+            oss << "[PAUSE] Captured Practice controller via "
+                << (source ? source : "unknown")
+                << " practice=0x" << std::hex << reinterpret_cast<uintptr_t>(practicePtr);
+            LogOut(oss.str(), true);
+        }
+    }
+    void* ResolvePracticeControllerPtrNow(bool allowCharacterSelect,
+                                          bool allowLooseValidation,
+                                          const char* reason) {
+        EnsurePracticePtrHookInstalled();
+        void* resolved = ResolvePracticeControllerPtrInternal(allowCharacterSelect, allowLooseValidation, reason);
+        if (resolved) {
+            std::ostringstream oss;
+            oss << "[PAUSE] ResolvePracticeControllerPtrNow"
+                << " reason=" << (reason ? reason : "unspecified")
+                << " allowCS=" << (allowCharacterSelect ? 1 : 0)
+                << " allowLoose=" << (allowLooseValidation ? 1 : 0)
+                << " practice=0x" << std::hex << reinterpret_cast<uintptr_t>(resolved);
+            LogOut(oss.str(), true);
+        } else if (!allowCharacterSelect && IsMatchPhase() && (allowLooseValidation || detailedLogging.load())) {
+            std::ostringstream oss;
+            oss << "[PAUSE] ResolvePracticeControllerPtrNow failed"
+                << " reason=" << (reason ? reason : "unspecified")
+                << " allowCS=" << (allowCharacterSelect ? 1 : 0)
+                << " allowLoose=" << (allowLooseValidation ? 1 : 0);
+            LogOut(oss.str(), true);
+        }
+        return resolved;
+    }
 
     bool IsPracticePaused() { bool p=false; if (ReadPracticePauseFlag(p)) return p; return false; }
     bool __cdecl IsGameSpeedFrozen() { uint8_t v=3; if (ReadGamespeed(v)) return v==0; return false; }
@@ -812,14 +843,37 @@ namespace PauseIntegration {
     }
 
     bool ConsumeStepAdvance() {
-        static uint32_t s_lastStep = 0;
         uint32_t cur = 0;
         if (!IsPracticePaused()) return false;
         if (!ReadStepCounter(cur)) return false;
-        if (cur != s_lastStep) {
-            s_lastStep = cur;
+        const uint32_t last = s_lastStepCounter.load(std::memory_order_relaxed);
+        if (cur != last) {
+            s_lastStepCounter.store(cur, std::memory_order_relaxed);
             return true;
         }
         return false;
+    }
+
+    void ResetCachedPointers(const char* reason) {
+        const bool keepPractice =
+            (GetCurrentGameMode() == GameMode::Practice) &&
+            !IsNetplaySuspendActive();
+        void* practice = keepPractice
+            ? s_practicePtr.load(std::memory_order_relaxed)
+            : s_practicePtr.exchange(nullptr, std::memory_order_relaxed);
+        void* battle = s_battleContext.exchange(nullptr, std::memory_order_relaxed);
+        uintptr_t gamespeed = s_gamespeedAddr.exchange(0, std::memory_order_relaxed);
+        s_lastStepCounter.store(0, std::memory_order_relaxed);
+
+        if (practice || battle || gamespeed || detailedLogging.load()) {
+            std::ostringstream oss;
+            oss << "[PAUSE] Reset cached pointers"
+                << " reason=" << (reason ? reason : "unspecified")
+                << " keepPractice=" << (keepPractice ? "1" : "0")
+                << " practice=0x" << std::hex << reinterpret_cast<uintptr_t>(practice)
+                << " battle=0x" << reinterpret_cast<uintptr_t>(battle)
+                << " gamespeed=0x" << gamespeed;
+            LogOut(oss.str(), true);
+        }
     }
 }

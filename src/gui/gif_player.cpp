@@ -1,16 +1,19 @@
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
+#include <algorithm>
+#if defined(EFZ_XP_COMPAT)
+using std::max;
+using std::min;
+#endif
 #include <windows.h>
 #include <gdiplus.h>
 #pragma comment(lib, "gdiplus.lib")
 #include <d3d9.h>
 #include <vector>
 #include <memory>
-#include <algorithm>
 #include <shlwapi.h>
 #pragma comment(lib, "shlwapi.lib")
-#include <atlbase.h>
 
 #include "../../include/gui/embedded_gif.h"
 #include "../../include/core/logger.h"
@@ -18,9 +21,42 @@
 namespace GifPlayer {
 
 struct Frame {
-    CComPtr<IDirect3DTexture9> tex;
+    IDirect3DTexture9* tex = nullptr;
     UINT w = 0, h = 0;
     UINT delayMs = 100;
+
+    Frame() = default;
+    ~Frame() {
+        if (tex) {
+            tex->Release();
+            tex = nullptr;
+        }
+    }
+    Frame(const Frame&) = delete;
+    Frame& operator=(const Frame&) = delete;
+    Frame(Frame&& other) noexcept
+        : tex(other.tex), w(other.w), h(other.h), delayMs(other.delayMs) {
+        other.tex = nullptr;
+        other.w = 0;
+        other.h = 0;
+        other.delayMs = 100;
+    }
+    Frame& operator=(Frame&& other) noexcept {
+        if (this != &other) {
+            if (tex) {
+                tex->Release();
+            }
+            tex = other.tex;
+            w = other.w;
+            h = other.h;
+            delayMs = other.delayMs;
+            other.tex = nullptr;
+            other.w = 0;
+            other.h = 0;
+            other.delayMs = 100;
+        }
+        return *this;
+    }
 };
 
 static ULONG_PTR s_gdiplusToken = 0;
@@ -41,12 +77,15 @@ static bool BitmapFrameToTexture(LPDIRECT3DDEVICE9 dev, Gdiplus::Bitmap* bmp, Fr
     const UINT h = bmp->GetHeight();
     if (w == 0 || h == 0) return false;
 
-    CComPtr<IDirect3DTexture9> tex;
+    IDirect3DTexture9* tex = nullptr;
     if (FAILED(dev->CreateTexture(w, h, 1, 0, D3DFMT_A8R8G8B8, D3DPOOL_MANAGED, &tex, nullptr)))
         return false;
 
     D3DLOCKED_RECT lr{};
-    if (FAILED(tex->LockRect(0, &lr, nullptr, 0))) return false;
+    if (FAILED(tex->LockRect(0, &lr, nullptr, 0))) {
+        tex->Release();
+        return false;
+    }
 
     for (UINT y = 0; y < h; ++y) {
         DWORD* dst = reinterpret_cast<DWORD*>(reinterpret_cast<BYTE*>(lr.pBits) + y * lr.Pitch);

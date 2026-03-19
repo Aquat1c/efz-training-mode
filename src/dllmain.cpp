@@ -4,7 +4,7 @@
 #include <vector>
 #include <windows.h>
 #include <thread>
-#include <timeapi.h>
+#include "../include/utils/xp_compat.h"
 #include "../include/core/memory.h"
 #include "../include/utils/utilities.h"
 #include "../include/input/input_buffer.h"
@@ -44,46 +44,74 @@ void WriteStartupLog(const std::string& message);
 extern std::atomic<bool> inStartupPhase;
 
 void InitializeConfig();
+void DelayedInitialization(HMODULE hModule);
 
 // Define the global flags (remove 'static' if present)
 extern std::atomic<bool> g_isShuttingDown;  // Reference the one defined in globals.cpp
 std::atomic<bool> g_initialized(false);
 std::atomic<bool> g_featuresEnabled(false);  // If this exists elsewhere, move it here
 
+static void WriteEarlyLoaderTrace(const char* message) {
+#if defined(EFZ_XP_COMPAT)
+    char path[MAX_PATH] = {0};
+    DWORD len = GetModuleFileNameA(NULL, path, MAX_PATH);
+    if (len == 0 || len >= MAX_PATH) {
+        return;
+    }
+
+    char* slash = path + len;
+    while (slash > path && *slash != '\\' && *slash != '/') {
+        --slash;
+    }
+    if (*slash == '\\' || *slash == '/') {
+        *(slash + 1) = '\0';
+    }
+
+    const char* traceName = "efz_loader_trace.log";
+    char fullPath[MAX_PATH] = {0};
+    lstrcpynA(fullPath, path, MAX_PATH);
+    lstrcpynA(fullPath + lstrlenA(fullPath), traceName, MAX_PATH - lstrlenA(fullPath));
+
+    HANDLE hFile = CreateFileA(fullPath, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE,
+        nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (hFile == INVALID_HANDLE_VALUE) {
+        return;
+    }
+
+    SYSTEMTIME st{};
+    GetLocalTime(&st);
+    char line[512] = {0};
+    wsprintfA(line, "[%02u:%02u:%02u.%03u] %s\r\n",
+        st.wHour, st.wMinute, st.wSecond, st.wMilliseconds, message);
+    DWORD bytesWritten = 0;
+    WriteFile(hFile, line, static_cast<DWORD>(lstrlenA(line)), &bytesWritten, nullptr);
+    CloseHandle(hFile);
+#else
+    (void)message;
+#endif
+}
+
+static DWORD WINAPI DelayedInitializationThreadProc(LPVOID param) {
+    WriteEarlyLoaderTrace("DelayedInitializationThreadProc entered");
+    DelayedInitialization(static_cast<HMODULE>(param));
+    return 0;
+}
+
 // Delayed initialization function
 void DelayedInitialization(HMODULE hModule) {
     try {
+        WriteStartupLog("Delayed initialization thread entered");
+
         // Short delay to ensure the game has started properly
         Sleep(1500);
-
-        // ============================================================
-        // CRITICAL: Online detection MUST happen FIRST, before ANY
-        // initialization (no logging, no config, no console, no threads).
-        // If online is detected, we exit immediately and do NOTHING.
-        // ============================================================
-        bool onlineAtStart = false;
-        try {
-            onlineAtStart = DetectOnlineMatch();
-        } catch (...) {
-            onlineAtStart = false; // be conservative; if unknown, continue
-        }
-        if (onlineAtStart) {
-            // Set the global flag so any other code paths also bail out
-            g_onlineModeActive.store(true);
-            isOnlineMatch.store(true);
-            // Do NOT initialize anything - no logging, no console, no threads, no hooks
-            // Just silently exit. The mod will be completely dormant during netplay.
-            inStartupPhase = false;
-            return;
-        }
-
-        // Safe to proceed with initialization - not in online mode
-        WriteStartupLog("Starting delayed initialization (offline mode confirmed)");
+        WriteStartupLog("Starting delayed initialization");
 
         // Initialize logging system (starts title updater thread)
         WriteStartupLog("Initializing logging system...");
         InitializeLogging();
         WriteStartupLog("Logging system initialized");
+        WriteStartupLog(XPCompat::GetRuntimeSummary());
+        LogOut(XPCompat::GetRuntimeSummary(), true);
 
         // Initialize configuration system first so we can gate file logging
         InitializeConfig();
@@ -171,6 +199,38 @@ void DelayedInitialization(HMODULE hModule) {
             LogOut("[SYSTEM] Exception while starting BGM suppression poller.", true);
         }
 
+        // Safety baseline: if a previous injected session left FM bypass patched,
+        // restore the original HP checks before this runtime decides whether to
+        // reapply it for local practice.
+        ForceRestoreFinalMemoryHPBypass("startup baseline");
+
+        RefreshNetplayRuntimeState();
+        {
+            NetplayRuntimeState state = GetNetplayRuntimeState();
+            std::ostringstream oss;
+            oss << "[NETPLAY] Startup snapshot"
+                << " source=" << NetplayStateSourceName(state.source)
+                << " suspend=" << (state.suspendTraining ? "1" : "0")
+                << " session=" << (state.sessionActive ? "1" : "0")
+                << " menu=" << (state.inNetplayMenu ? "1" : "0")
+                << " flow=" << (state.inNetplayFlow ? "1" : "0");
+            if (state.exportAvailable) {
+                oss << " mode=" << state.exportState.sessionMode
+                    << " phase=" << state.exportState.sessionPhase
+                    << " activity=" << static_cast<int>(state.exportState.activityPhase);
+            } else {
+                oss << " legacy=" << OnlineStateName(state.legacyOnlineState);
+            }
+            oss << " reason=" << GetLastOnlineDetectionReason();
+            LogOut(oss.str(), true);
+        }
+        if (IsNetplaySuspendActive()) {
+            LogOut("[NETPLAY] Startup entering suspended mode", true);
+            EnterNetplaySuspend();
+        } else {
+            LogOut("[NETPLAY] Startup entering active local mode", true);
+        }
+
     // Final Memory HP bypass is now manual via Debug tab to avoid unintended changes.
 
         LogOut("[SYSTEM] EFZ Training Mode - Delayed initialization starting", true);
@@ -181,11 +241,13 @@ void DelayedInitialization(HMODULE hModule) {
     LogOut("[SYSTEM] Starting background threads...", true);
     // Note: UpdateConsoleTitle thread is already started by InitializeLogging(); don't start a duplicate here.
     std::thread(FrameDataMonitor).detach();
+    std::thread(LifecycleWatcherThread).detach();
         LogOut("[SYSTEM] Essential background threads started.", true);
 
-        // Use standard Windows input APIs instead of DirectInput
-        WriteStartupLog("Using standard Windows input APIs instead of DirectInput");
-        g_directInputAvailable = false;  // Ensure DirectInput is marked as unavailable
+        // Keyboard hotkeys stay on WinAPI; controller input now prefers XInput with
+        // a DirectInput fallback handled inside XInputShim.
+        WriteStartupLog("Using WinAPI keyboard input path; controller input prefers XInput with DirectInput fallback");
+        g_directInputAvailable = false;
 
         WriteStartupLog("Reading key.ini file...");
         ReadKeyMappingsFromIni();
@@ -198,13 +260,10 @@ void DelayedInitialization(HMODULE hModule) {
     std::thread([]{
             Sleep(2000); // Give the game a moment to be fully ready
             try {
-        if (g_onlineModeActive.load()) return; // don't init if online already
                 if (DirectDrawHook::InitializeD3D9()) {
                     LogOut("[SYSTEM] D3D9 Overlay system initialized.", true);
                 } else {
                     LogOut("[SYSTEM] Failed to initialize D3D9 Overlay system.", true);
-                    // Don't show MessageBox during online mode - stay silent
-                    if (g_onlineModeActive.load()) return;
                     static bool s_warnedNoD3D9 = false;
                     if (!s_warnedNoD3D9) {
                         s_warnedNoD3D9 = true;
@@ -222,13 +281,6 @@ void DelayedInitialization(HMODULE hModule) {
                 LogOut("[SYSTEM] Exception during D3D9 overlay initialization.", true);
             }
         }).detach();
-
-        // Start the online watchdog thread to continuously monitor for online mode.
-        // This provides defense-in-depth: if online mode is entered after initial
-        // detection (e.g., after 5-6 matches), the watchdog will catch it and
-        // trigger a full shutdown to prevent any potential crashes or interference.
-        StartOnlineWatchdog();
-        LogOut("[SYSTEM] Online watchdog thread started for continuous monitoring", true);
 
         // Set initialization flag and stop startup logging
         g_initialized = true;
@@ -267,29 +319,29 @@ void InitializeConfig() {
 BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserved) {
     switch (ul_reason_for_call) {
     case DLL_PROCESS_ATTACH:
-    // Remember our own module for safe self-unload later
+    // Keep our module handle available for any future runtime services that need it.
     g_hSelfModule = hModule;
+        WriteEarlyLoaderTrace("DLL_PROCESS_ATTACH reached");
         DisableThreadLibraryCalls(hModule);
-        std::thread(DelayedInitialization, hModule).detach();
+        if (HANDLE initThread = CreateThread(nullptr, 0, DelayedInitializationThreadProc, hModule, 0, nullptr)) {
+            WriteEarlyLoaderTrace("Delayed initialization thread created");
+            CloseHandle(initThread);
+        } else {
+            WriteEarlyLoaderTrace("Failed to create delayed initialization thread");
+            OutputDebugStringA("[EFZ_TM][XP] Failed to create delayed initialization thread.\n");
+        }
         break;
     case DLL_PROCESS_DETACH:
         // Signal shutdown to all threads
         g_isShuttingDown = true;
         g_featuresEnabled = false;
 
-        // Stop the online watchdog thread
-        StopOnlineWatchdog();
-
-        // If we were in online mode at startup, nothing was initialized - skip cleanup entirely
-        if (g_onlineModeActive.load() && !g_initialized.load()) {
-            break;
-        }
-
         // Shutdown debug log
         DebugLog::Shutdown();
 
         // CRITICAL: Stop buffer freezing FIRST
         StopBufferFreezing();
+        ForceRestoreFinalMemoryHPBypass("DLL_PROCESS_DETACH");
 
         // Then restore P2 control
         if (g_p2ControlOverridden) {

@@ -52,6 +52,10 @@ static void IdentifyPlayerByFrameData(uintptr_t frameDataPtr, int& outPlayerNum,
 
 // We use __fastcall wrapper to intercept __thiscall
 static int __fastcall HookedHandleP2PCollision(void* gameSystem, void* /*edx*/, int attackerPtr, int defenderPtr, int attackerFrameData, const void* defenderFrameData) {
+    if (g_onlineModeActive.load(std::memory_order_relaxed)) {
+        return oHandleP2PCollision(gameSystem, attackerPtr, defenderPtr, attackerFrameData, defenderFrameData);
+    }
+
     // Cache last seen frame-data pointer unconditionally; AttackReader will resolve nested attack-data.
     if (attackerPtr && attackerFrameData) {
         uintptr_t frameData = (uintptr_t)attackerFrameData;
@@ -134,4 +138,19 @@ uintptr_t GetCachedAttackDataForPlayer(int playerNum) {
 
 int GetAttackDataOffsetForPlayer(int playerNum) {
     return (playerNum == 1) ? g_attackDataOffsetP1.load() : g_attackDataOffsetP2.load();
+}
+
+void ResetCollisionHookSessionCaches(const char* reason) {
+    const uintptr_t lastP1 = g_lastAttackDataP1.exchange(0);
+    const uintptr_t lastP2 = g_lastAttackDataP2.exchange(0);
+
+    if (lastP1 || lastP2 || detailedLogging.load()) {
+        std::ostringstream oss;
+        oss << "[COLLISION_HOOK] Reset session caches"
+            << " reason=" << (reason ? reason : "unspecified")
+            << " P1=" << FormatHexAddress(lastP1)
+            << " P2=" << FormatHexAddress(lastP2)
+            << " offsets=" << g_attackDataOffsetP1.load() << "/" << g_attackDataOffsetP2.load();
+        LogOut(oss.str(), true);
+    }
 }

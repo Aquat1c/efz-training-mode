@@ -83,10 +83,14 @@ uintptr_t EFZ_RVA_TogglePause() {
 uintptr_t EFZ_RVA_PracticeTick() {
     uintptr_t r = 0;
         EfzRevivalVersion v = GetEfzRevivalVersion();
-        if (v == EfzRevivalVersion::Revival102f) r = 0x00757A0;  // 1.02f
-        else if (IsE()) r = 0x0074F70;  // e/g
-        else if (IsI()) r = 0x0074FF0;  // 1.02i
-        else if (IsH()) r = 0x0074F40;  // 1.02h
+        if (v == EfzRevivalVersion::Revival102e) r = 0x0074F70;  // 1.02e
+        else if (v == EfzRevivalVersion::Revival102f) r = 0x0074FA0;  // 1.02f
+        else if (v == EfzRevivalVersion::Revival102g) r = 0x0075210;  // 1.02g
+        // For 1.02h/i, prefer the real per-frame Practice update loop because it
+        // runs every visual frame with ECX = Practice controller. The older
+        // 0x74F40/0x74FF0 helper path is not reliable for match-entry capture.
+        else if (IsI()) r = 0x0075F60;  // 1.02i
+        else if (IsH()) r = 0x00759C0;  // 1.02h
     LogAddrOnce("PracticeTick", r);
     return r;
 }
@@ -156,14 +160,10 @@ uintptr_t EFZ_RVA_GameModePtrArray() {
 }
 
 uintptr_t EFZ_RVA_PracticeControllerPtr() {
-    if (IsE()) return 0xA02CC; // Covers both 1.02e and 1.02g
-    if (IsH()) {
-        EfzRevivalVersion v = GetEfzRevivalVersion();
-        if (v == EfzRevivalVersion::Revival102h) return 0xA02EC;
-        if (v == EfzRevivalVersion::Revival102i) return 0xA15F8;
-    }
-    if (IsI()) return 0xA15F8;
-    // Unsupported versions: return 0 (no scanning fallback).
+    // Disabled intentionally.
+    // These RVAs were previously assumed to reference the Practice controller, but
+    // they match Revival session-pointer globals used by InGameNetplay and are not
+    // safe to treat as Practice objects.
     return 0;
 }
 

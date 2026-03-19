@@ -23,6 +23,7 @@
 #include "../include/game/practice_offsets.h"
 #include "../include/utils/pause_integration.h"
 #include "../include/utils/config.h"
+#include "../include/utils/xp_compat.h"
 // For blockstun counter accessor used to gate autoblock disable
 #include "../include/game/frame_analysis.h"
 
@@ -544,7 +545,7 @@ bool DisablePlayer2InPracticeMode() {
 void EnsureDefaultControlFlagsOnMatchStart() {
     // Only modify control flags in offline Practice mode
     if (GetCurrentGameMode() != GameMode::Practice) return;
-    if (DetectOnlineMatch()) return;
+    if (IsNetplaySuspendActive()) return;
     
     uintptr_t gameStatePtr = GetGameStatePtr();
     if (gameStatePtr) {
@@ -596,7 +597,7 @@ void EnsureDefaultControlFlagsOnMatchStart() {
         std::ostringstream oss; oss << "[PRACTICE_PATCH] MatchStart: GUI_POS(+0x24) set to " << (int)verify << (okWrite?"":" (fail)");
         LogOut(oss.str(), true);
     } else {
-        LogOut("[PRACTICE_PATCH] MatchStart: Practice controller unavailable, GUI_POS not updated", true);
+        LogOut("[PRACTICE_PATCH] MatchStart: Practice controller not yet confirmed, GUI_POS not updated", true);
     }
 }
 
@@ -613,7 +614,7 @@ bool GetPracticeAutoBlockEnabled(bool &enabledOut) {
 
 bool SetPracticeAutoBlockEnabled(bool enabled, const char* reason) {
     if (GetCurrentGameMode() != GameMode::Practice) return false;
-    if (DetectOnlineMatch()) return false;
+    if (IsNetplaySuspendActive()) return false;
     uintptr_t gs = GetGameStatePtr(); if (!gs) return false;
     uint32_t val = enabled ? 1u : 0u;
     // Read current to avoid redundant writes/logs
@@ -646,7 +647,7 @@ bool GetPracticeBlockMode(int &modeOut) {
 
 bool SetPracticeBlockMode(int mode) {
     if (GetCurrentGameMode() != GameMode::Practice) return false;
-    if (DetectOnlineMatch()) return false;
+    if (IsNetplaySuspendActive()) return false;
     if (mode < 0) mode = 0; if (mode > 2) mode = 2;
     uintptr_t gs = GetGameStatePtr(); if (!gs) return false;
     // Avoid redundant writes
@@ -716,6 +717,22 @@ static bool SampleAttackerFrameFlags(int attacker /*1=P1, 2=P2*/, int &level, bo
     static uintptr_t s_lastAnimTab[3]    = {0, 0, 0};
     static uint16_t  s_lastState[3]      = {0xFFFF, 0xFFFF, 0xFFFF};
     static uintptr_t s_lastFramesPtr[3]  = {0, 0, 0};
+    static uint32_t  s_cacheGeneration   = 0;
+
+    const uint32_t generationNow = GetRuntimeLifecycleGeneration();
+    if (s_cacheGeneration != generationNow) {
+        for (int i = 0; i < 3; ++i) {
+            s_lastPBase[i] = 0;
+            s_lastAnimTab[i] = 0;
+            s_lastState[i] = 0xFFFF;
+            s_lastFramesPtr[i] = 0;
+        }
+        if (detailedLogging.load()) {
+            LogOut("[PRACTICE_PATCH] Reset attacker frame sampler caches for lifecycle generation "
+                + std::to_string(generationNow), true);
+        }
+        s_cacheGeneration = generationNow;
+    }
 
     uintptr_t pBase = 0;
     if (attacker == 1 || attacker == 2) {
@@ -954,9 +971,18 @@ static bool ReadPositions(double &p1Y, double &p2Y) {
     static uintptr_t s_p1YAddr = 0;
     static uintptr_t s_p2YAddr = 0;
     static int s_cacheCounter = 0;
+    static uint32_t s_cacheGeneration = 0;
 
     uintptr_t base = GetEFZBase();
     if (!base) { s_p1YAddr = s_p2YAddr = 0; return false; }
+
+    const uint32_t generationNow = GetRuntimeLifecycleGeneration();
+    if (generationNow != s_cacheGeneration) {
+        s_p1YAddr = 0;
+        s_p2YAddr = 0;
+        s_cacheCounter = 0;
+        s_cacheGeneration = generationNow;
+    }
 
     // Refresh cached addresses occasionally or if missing
     if (!s_p1YAddr || !s_p2YAddr || (++s_cacheCounter >= 192)) {
@@ -1002,7 +1028,7 @@ static inline bool DidP2JustBlockThisFrame(short prevMoveId, short currMoveId) {
 void MonitorDummyAutoBlock(short p1MoveID, short p2MoveID, short prevP1MoveID, short prevP2MoveID) {
     // Only operate in offline Practice mode
     if (GetCurrentGameMode() != GameMode::Practice) return;
-    if (DetectOnlineMatch()) return;
+    if (IsNetplaySuspendActive()) return;
     
     // Clear override when we return to Character Select (follow game's flag until user changes)
     static GamePhase s_lastPhase = GamePhase::Unknown;
@@ -1023,7 +1049,7 @@ void MonitorDummyAutoBlock(short p1MoveID, short p2MoveID, short prevP1MoveID, s
     // Transition log throttle (5s)
     static unsigned long long s_lastAbLog = 0;
     auto log_ab = [&](const std::string& msg){
-        unsigned long long now = GetTickCount64();
+        unsigned long long now = XPCompat::GetTickCount64Compat();
         if (now - s_lastAbLog >= 5000ULL) {
             LogOut("[DUMMY_AB] " + msg, true);
             s_lastAbLog = now;
@@ -1045,7 +1071,7 @@ void MonitorDummyAutoBlock(short p1MoveID, short p2MoveID, short prevP1MoveID, s
     const bool transitionedToNeutral = (!isAllowedNeutral(prevP2MoveID) && neutralNow);
     int neutralTimeoutMs = Config::GetSettings().autoBlockNeutralTimeoutMs;
     if (neutralTimeoutMs < 0) neutralTimeoutMs = 0; // clamp
-    const unsigned long long curMs = GetTickCount64();
+    const unsigned long long curMs = XPCompat::GetTickCount64Compat();
 
     // Reset per-mode state when mode changes
     static int s_lastMode = -999;
@@ -1225,7 +1251,7 @@ void MonitorDummyAutoBlock(short p1MoveID, short p2MoveID, short prevP1MoveID, s
     // Watch the actual autoblock flag (+4936) at low frequency (1 Hz) and display overlay on any change
     static int s_lastAbFlag = -1; // -1 = unknown, otherwise 0/1
     static unsigned long long s_lastAbFlagCheckMs = 0;
-    unsigned long long nowMs = GetTickCount64();
+    unsigned long long nowMs = XPCompat::GetTickCount64Compat();
     if (nowMs - s_lastAbFlagCheckMs >= 1000ULL) {
         uintptr_t gsWatch = GetGameStatePtr();
         if (gsWatch) {
@@ -1292,7 +1318,7 @@ void MonitorDummyAutoBlock(short p1MoveID, short p2MoveID, short prevP1MoveID, s
             return;
         }
         static unsigned long long s_lastAdaptiveMs = 0;
-        unsigned long long now = GetTickCount64();
+        unsigned long long now = XPCompat::GetTickCount64Compat();
         const unsigned long long ADAPTIVE_INTERVAL_MS = 0ULL; // every frame
         bool due = (now - s_lastAdaptiveMs >= ADAPTIVE_INTERVAL_MS) || g_adaptiveForceTick.load();
         if (due) {
@@ -1371,7 +1397,7 @@ void MonitorDummyAutoBlock(short p1MoveID, short p2MoveID, short prevP1MoveID, s
                            << " hit=0x" << hitFlags
                            << " grd=0x" << grdFlags
                            << std::dec
-                           << " t=" << GetTickCount64();
+                           << " t=" << XPCompat::GetTickCount64Compat();
                         LogOut(os.str(), true);
                     }
                 }

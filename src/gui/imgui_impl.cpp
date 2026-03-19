@@ -5,6 +5,8 @@
 #include "../include/game/practice_hotkey_gate.h"
 namespace PracticeOverlayGate { void SetMenuVisible(bool); }
 #include "../include/gui/overlay.h" 
+#include "../include/utils/utilities.h"
+#include "../include/utils/xp_compat.h"
 #include <stdexcept>
 #include <Xinput.h>
 #include <algorithm>
@@ -56,29 +58,81 @@ static inline float ClampF(float v, float lo, float hi) {
     return v;
 }
 
-// Helper: check if window is in fullscreen (covering its monitor)
-static bool IsFullscreen(HWND hwnd) {
-    if (!hwnd) return false;
-    WINDOWPLACEMENT wp{ sizeof(WINDOWPLACEMENT) };
-    if (!GetWindowPlacement(hwnd, &wp)) return false;
-    if (wp.showCmd != SW_SHOWMAXIMIZED && wp.showCmd != SW_SHOWNORMAL && wp.showCmd != SW_SHOW) {
-        // Still allow borderless popup fullscreen
+struct CachedWindowMetrics {
+    HWND hwnd = nullptr;
+    DWORD tick = 0;
+    bool fullscreen = false;
+    float clientW = 0.0f;
+    float clientH = 0.0f;
+};
+
+static void GetCachedWindowMetrics(HWND hwnd, bool& fullscreen, float& clientW, float& clientH) {
+    static CachedWindowMetrics s_cache{};
+    if (!hwnd) {
+        fullscreen = false;
+        clientW = 0.0f;
+        clientH = 0.0f;
+        s_cache = {};
+        return;
     }
 
+    const DWORD now = GetTickCount();
+    if (hwnd == s_cache.hwnd && s_cache.tick != 0 && (now - s_cache.tick) < 125) {
+        fullscreen = s_cache.fullscreen;
+        clientW = s_cache.clientW;
+        clientH = s_cache.clientH;
+        return;
+    }
+
+    RECT clientRect{};
+    float cachedClientW = 0.0f;
+    float cachedClientH = 0.0f;
+    if (GetClientRect(hwnd, &clientRect)) {
+        cachedClientW = static_cast<float>(clientRect.right - clientRect.left);
+        cachedClientH = static_cast<float>(clientRect.bottom - clientRect.top);
+    }
+
+    WINDOWPLACEMENT wp{ sizeof(WINDOWPLACEMENT) };
     RECT wndRect{};
-    if (!GetWindowRect(hwnd, &wndRect)) return false;
-    HMONITOR mon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTOPRIMARY);
+    HMONITOR mon = nullptr;
     MONITORINFO mi{ sizeof(MONITORINFO) };
-    if (!GetMonitorInfo(mon, &mi)) return false;
-    // Consider fullscreen if window rect matches monitor work area or monitor area
-    return EqualRect(&wndRect, &mi.rcMonitor) || EqualRect(&wndRect, &mi.rcWork);
+    bool cachedFullscreen = false;
+    if (GetWindowPlacement(hwnd, &wp)
+        && GetWindowRect(hwnd, &wndRect)
+        && (mon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTOPRIMARY)) != nullptr
+        && GetMonitorInfo(mon, &mi)) {
+        cachedFullscreen = EqualRect(&wndRect, &mi.rcMonitor) || EqualRect(&wndRect, &mi.rcWork);
+    }
+
+    s_cache.hwnd = hwnd;
+    s_cache.tick = now;
+    s_cache.fullscreen = cachedFullscreen;
+    s_cache.clientW = cachedClientW;
+    s_cache.clientH = cachedClientH;
+
+    fullscreen = cachedFullscreen;
+    clientW = cachedClientW;
+    clientH = cachedClientH;
+}
+
+static bool IsFullscreen(HWND hwnd) {
+    bool fullscreen = false;
+    float clientW = 0.0f;
+    float clientH = 0.0f;
+    GetCachedWindowMetrics(hwnd, fullscreen, clientW, clientH);
+    return fullscreen;
 }
 
 // Poll XInput and update a software mouse cursor
 static void UpdateVirtualCursor(ImGuiIO& io) {
     const auto& cfg = Config::GetSettings();
     HWND hwnd = FindEFZWindow();
-    bool fullscreen = hwnd && IsFullscreen(hwnd);
+    float clientW = io.DisplaySize.x;
+    float clientH = io.DisplaySize.y;
+    bool fullscreen = false;
+    if (hwnd) {
+        GetCachedWindowMetrics(hwnd, fullscreen, clientW, clientH);
+    }
     
     // Track physical mouse movement to enable cursor only when mouse is actually used
     static ImVec2 s_lastMousePos = ImVec2(-1.0f, -1.0f);
@@ -126,12 +180,6 @@ static void UpdateVirtualCursor(ImGuiIO& io) {
     // regardless of whether the virtual cursor feature is enabled.
 
     // Determine current client rect for clamping and centering
-    float clientW = io.DisplaySize.x;
-    float clientH = io.DisplaySize.y;
-    if (hwnd) {
-        RECT rc{}; if (GetClientRect(hwnd, &rc)) { clientW = (float)(rc.right - rc.left); clientH = (float)(rc.bottom - rc.top); }
-    }
-
     if (g_useVirtualCursor && (!wasActive || regainedFocus)) {
         // Center cursor on first activation OR when window regains focus
         ImVec2 target = (g_overlayCenter.x > 0.f && g_overlayCenter.y > 0.f)
@@ -469,6 +517,10 @@ static void UpdateVirtualCursor(ImGuiIO& io) {
 
 // Custom WndProc to handle ImGui input
 LRESULT CALLBACK ImGuiWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    if (g_onlineModeActive.load(std::memory_order_relaxed)) {
+        return CallWindowProc(g_originalWndProc, hWnd, msg, wParam, lParam);
+    }
+
     // Always feed events to ImGui so backend state stays coherent even when UI is hidden
     ImGui_ImplWin32_WndProcHandler(hWnd, msg, wParam, lParam);
 
@@ -723,6 +775,11 @@ namespace ImGuiImpl {
     }
     
     void ToggleVisibility() {
+        if (g_onlineModeActive.load(std::memory_order_relaxed)) {
+            LogOut("[IMGUI] Ignoring visibility toggle while netplay suspend is active", true);
+            return;
+        }
+
         g_imguiVisible = !g_imguiVisible;
         CharacterSettings::g_guiVisible.store(g_imguiVisible, std::memory_order_relaxed);
         
@@ -736,14 +793,16 @@ namespace ImGuiImpl {
                 // Use cached XInput snapshot
                 XInputShim::RefreshSnapshotOncePerFrame();
                 unsigned mask = XInputShim::GetConnectedMaskCached();
+                unsigned nativeMask = XInputShim::GetNativeConnectedMaskCached();
+                unsigned genericMask = XInputShim::GetGenericConnectedMaskCached();
                 char buf[256];
                 // Force-enable nav flags on open for reliability
                 io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
                 io.BackendFlags |= ImGuiBackendFlags_HasGamepad;
-                _snprintf_s(buf, sizeof(buf), _TRUNCATE, "[IMGUI] Open: NavEnableGamepad=%d BackendHasGamepad=%d XInputMask=0x%X (forced)",
+                _snprintf_s(buf, sizeof(buf), _TRUNCATE, "[IMGUI] Open: NavEnableGamepad=%d BackendHasGamepad=%d GamepadMask=0x%X (xinput=0x%X generic=0x%X, forced)",
                     (io.ConfigFlags & ImGuiConfigFlags_NavEnableGamepad) ? 1 : 0,
                     (io.BackendFlags & ImGuiBackendFlags_HasGamepad) ? 1 : 0,
-                    mask);
+                    mask, nativeMask, genericMask);
                 LogOut(buf, true);
                 LogOut("[IMGUI] Keyboard fallback for nav is active (Arrow/Enter/Escape)", true);
                 // (burst debug window removed)

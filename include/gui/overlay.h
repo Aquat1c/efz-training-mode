@@ -30,6 +30,7 @@ struct OverlayMessage {
     bool isPermanent;  // If true, stays until explicitly removed
     int id;            // Unique ID for permanent messages
     std::string category; // NEW: Category for grouping messages
+    unsigned char backgroundAlpha; // Per-message background opacity
 };
 
 class DirectDrawHook {
@@ -84,7 +85,7 @@ public:
     
     // Add or update a permanent message
     static int AddPermanentMessage(const std::string& text, COLORREF color = RGB(255, 255, 0), 
-                                 int x = 10, int y = 10);
+                                 int x = 10, int y = 10, unsigned char backgroundAlpha = 180);
     
     // Update an existing permanent message
     static void UpdatePermanentMessage(int id, const std::string& newText, COLORREF newColor = RGB(255, 255, 0));
@@ -99,7 +100,7 @@ public:
     static void ClearAllMessages();
 
     // Make this function public so it can be called from the global EndScene hook
-    static void RenderD3D9Overlays(LPDIRECT3DDEVICE9 pDevice);
+    static void RenderD3D9Overlays(LPDIRECT3DDEVICE9 pDevice, UINT rtWidth = 0, UINT rtHeight = 0);
 
 
     static void Shutdown();

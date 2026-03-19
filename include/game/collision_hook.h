@@ -13,3 +13,7 @@ uintptr_t GetCachedAttackDataForPlayer(int playerNum);
 // Returns the discovered offset (in bytes) from the player base pointer to the
 // field that holds the current attack data pointer, or -1 if not yet found.
 int GetAttackDataOffsetForPlayer(int playerNum);
+
+// Clears session-scoped cached frame-data pointers captured by the collision hook.
+// Discovered structural offsets are intentionally preserved.
+void ResetCollisionHookSessionCaches(const char* reason);
