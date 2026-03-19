@@ -6,6 +6,7 @@
 namespace PracticeOverlayGate { void SetMenuVisible(bool); }
 #include "../include/gui/overlay.h" 
 #include "../include/utils/utilities.h"
+#include "../include/utils/xp_compat.h"
 #include <stdexcept>
 #include <Xinput.h>
 #include <algorithm>
@@ -746,14 +747,16 @@ namespace ImGuiImpl {
                 // Use cached XInput snapshot
                 XInputShim::RefreshSnapshotOncePerFrame();
                 unsigned mask = XInputShim::GetConnectedMaskCached();
+                unsigned nativeMask = XInputShim::GetNativeConnectedMaskCached();
+                unsigned genericMask = XInputShim::GetGenericConnectedMaskCached();
                 char buf[256];
                 // Force-enable nav flags on open for reliability
                 io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
                 io.BackendFlags |= ImGuiBackendFlags_HasGamepad;
-                _snprintf_s(buf, sizeof(buf), _TRUNCATE, "[IMGUI] Open: NavEnableGamepad=%d BackendHasGamepad=%d XInputMask=0x%X (forced)",
+                _snprintf_s(buf, sizeof(buf), _TRUNCATE, "[IMGUI] Open: NavEnableGamepad=%d BackendHasGamepad=%d GamepadMask=0x%X (xinput=0x%X generic=0x%X, forced)",
                     (io.ConfigFlags & ImGuiConfigFlags_NavEnableGamepad) ? 1 : 0,
                     (io.BackendFlags & ImGuiBackendFlags_HasGamepad) ? 1 : 0,
-                    mask);
+                    mask, nativeMask, genericMask);
                 LogOut(buf, true);
                 LogOut("[IMGUI] Keyboard fallback for nav is active (Arrow/Enter/Escape)", true);
                 // (burst debug window removed)

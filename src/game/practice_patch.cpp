@@ -23,6 +23,7 @@
 #include "../include/game/practice_offsets.h"
 #include "../include/utils/pause_integration.h"
 #include "../include/utils/config.h"
+#include "../include/utils/xp_compat.h"
 // For blockstun counter accessor used to gate autoblock disable
 #include "../include/game/frame_analysis.h"
 
@@ -596,7 +597,7 @@ void EnsureDefaultControlFlagsOnMatchStart() {
         std::ostringstream oss; oss << "[PRACTICE_PATCH] MatchStart: GUI_POS(+0x24) set to " << (int)verify << (okWrite?"":" (fail)");
         LogOut(oss.str(), true);
     } else {
-        LogOut("[PRACTICE_PATCH] MatchStart: Practice controller unavailable, GUI_POS not updated", true);
+        LogOut("[PRACTICE_PATCH] MatchStart: Practice controller not yet confirmed, GUI_POS not updated", true);
     }
 }
 
@@ -1048,7 +1049,7 @@ void MonitorDummyAutoBlock(short p1MoveID, short p2MoveID, short prevP1MoveID, s
     // Transition log throttle (5s)
     static unsigned long long s_lastAbLog = 0;
     auto log_ab = [&](const std::string& msg){
-        unsigned long long now = GetTickCount64();
+        unsigned long long now = XPCompat::GetTickCount64Compat();
         if (now - s_lastAbLog >= 5000ULL) {
             LogOut("[DUMMY_AB] " + msg, true);
             s_lastAbLog = now;
@@ -1070,7 +1071,7 @@ void MonitorDummyAutoBlock(short p1MoveID, short p2MoveID, short prevP1MoveID, s
     const bool transitionedToNeutral = (!isAllowedNeutral(prevP2MoveID) && neutralNow);
     int neutralTimeoutMs = Config::GetSettings().autoBlockNeutralTimeoutMs;
     if (neutralTimeoutMs < 0) neutralTimeoutMs = 0; // clamp
-    const unsigned long long curMs = GetTickCount64();
+    const unsigned long long curMs = XPCompat::GetTickCount64Compat();
 
     // Reset per-mode state when mode changes
     static int s_lastMode = -999;
@@ -1250,7 +1251,7 @@ void MonitorDummyAutoBlock(short p1MoveID, short p2MoveID, short prevP1MoveID, s
     // Watch the actual autoblock flag (+4936) at low frequency (1 Hz) and display overlay on any change
     static int s_lastAbFlag = -1; // -1 = unknown, otherwise 0/1
     static unsigned long long s_lastAbFlagCheckMs = 0;
-    unsigned long long nowMs = GetTickCount64();
+    unsigned long long nowMs = XPCompat::GetTickCount64Compat();
     if (nowMs - s_lastAbFlagCheckMs >= 1000ULL) {
         uintptr_t gsWatch = GetGameStatePtr();
         if (gsWatch) {
@@ -1317,7 +1318,7 @@ void MonitorDummyAutoBlock(short p1MoveID, short p2MoveID, short prevP1MoveID, s
             return;
         }
         static unsigned long long s_lastAdaptiveMs = 0;
-        unsigned long long now = GetTickCount64();
+        unsigned long long now = XPCompat::GetTickCount64Compat();
         const unsigned long long ADAPTIVE_INTERVAL_MS = 0ULL; // every frame
         bool due = (now - s_lastAdaptiveMs >= ADAPTIVE_INTERVAL_MS) || g_adaptiveForceTick.load();
         if (due) {
@@ -1396,7 +1397,7 @@ void MonitorDummyAutoBlock(short p1MoveID, short p2MoveID, short prevP1MoveID, s
                            << " hit=0x" << hitFlags
                            << " grd=0x" << grdFlags
                            << std::dec
-                           << " t=" << GetTickCount64();
+                           << " t=" << XPCompat::GetTickCount64Compat();
                         LogOut(os.str(), true);
                     }
                 }

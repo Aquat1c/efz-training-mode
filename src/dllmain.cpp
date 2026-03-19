@@ -4,7 +4,7 @@
 #include <vector>
 #include <windows.h>
 #include <thread>
-#include <timeapi.h>
+#include "../include/utils/xp_compat.h"
 #include "../include/core/memory.h"
 #include "../include/utils/utilities.h"
 #include "../include/input/input_buffer.h"
@@ -44,15 +44,64 @@ void WriteStartupLog(const std::string& message);
 extern std::atomic<bool> inStartupPhase;
 
 void InitializeConfig();
+void DelayedInitialization(HMODULE hModule);
 
 // Define the global flags (remove 'static' if present)
 extern std::atomic<bool> g_isShuttingDown;  // Reference the one defined in globals.cpp
 std::atomic<bool> g_initialized(false);
 std::atomic<bool> g_featuresEnabled(false);  // If this exists elsewhere, move it here
 
+static void WriteEarlyLoaderTrace(const char* message) {
+#if defined(EFZ_XP_COMPAT)
+    char path[MAX_PATH] = {0};
+    DWORD len = GetModuleFileNameA(NULL, path, MAX_PATH);
+    if (len == 0 || len >= MAX_PATH) {
+        return;
+    }
+
+    char* slash = path + len;
+    while (slash > path && *slash != '\\' && *slash != '/') {
+        --slash;
+    }
+    if (*slash == '\\' || *slash == '/') {
+        *(slash + 1) = '\0';
+    }
+
+    const char* traceName = "efz_loader_trace.log";
+    char fullPath[MAX_PATH] = {0};
+    lstrcpynA(fullPath, path, MAX_PATH);
+    lstrcpynA(fullPath + lstrlenA(fullPath), traceName, MAX_PATH - lstrlenA(fullPath));
+
+    HANDLE hFile = CreateFileA(fullPath, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE,
+        nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (hFile == INVALID_HANDLE_VALUE) {
+        return;
+    }
+
+    SYSTEMTIME st{};
+    GetLocalTime(&st);
+    char line[512] = {0};
+    wsprintfA(line, "[%02u:%02u:%02u.%03u] %s\r\n",
+        st.wHour, st.wMinute, st.wSecond, st.wMilliseconds, message);
+    DWORD bytesWritten = 0;
+    WriteFile(hFile, line, static_cast<DWORD>(lstrlenA(line)), &bytesWritten, nullptr);
+    CloseHandle(hFile);
+#else
+    (void)message;
+#endif
+}
+
+static DWORD WINAPI DelayedInitializationThreadProc(LPVOID param) {
+    WriteEarlyLoaderTrace("DelayedInitializationThreadProc entered");
+    DelayedInitialization(static_cast<HMODULE>(param));
+    return 0;
+}
+
 // Delayed initialization function
 void DelayedInitialization(HMODULE hModule) {
     try {
+        WriteStartupLog("Delayed initialization thread entered");
+
         // Short delay to ensure the game has started properly
         Sleep(1500);
         WriteStartupLog("Starting delayed initialization");
@@ -61,6 +110,8 @@ void DelayedInitialization(HMODULE hModule) {
         WriteStartupLog("Initializing logging system...");
         InitializeLogging();
         WriteStartupLog("Logging system initialized");
+        WriteStartupLog(XPCompat::GetRuntimeSummary());
+        LogOut(XPCompat::GetRuntimeSummary(), true);
 
         // Initialize configuration system first so we can gate file logging
         InitializeConfig();
@@ -193,9 +244,10 @@ void DelayedInitialization(HMODULE hModule) {
     std::thread(LifecycleWatcherThread).detach();
         LogOut("[SYSTEM] Essential background threads started.", true);
 
-        // Use standard Windows input APIs instead of DirectInput
-        WriteStartupLog("Using standard Windows input APIs instead of DirectInput");
-        g_directInputAvailable = false;  // Ensure DirectInput is marked as unavailable
+        // Keyboard hotkeys stay on WinAPI; controller input now prefers XInput with
+        // a DirectInput fallback handled inside XInputShim.
+        WriteStartupLog("Using WinAPI keyboard input path; controller input prefers XInput with DirectInput fallback");
+        g_directInputAvailable = false;
 
         WriteStartupLog("Reading key.ini file...");
         ReadKeyMappingsFromIni();
@@ -269,8 +321,15 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
     case DLL_PROCESS_ATTACH:
     // Keep our module handle available for any future runtime services that need it.
     g_hSelfModule = hModule;
+        WriteEarlyLoaderTrace("DLL_PROCESS_ATTACH reached");
         DisableThreadLibraryCalls(hModule);
-        std::thread(DelayedInitialization, hModule).detach();
+        if (HANDLE initThread = CreateThread(nullptr, 0, DelayedInitializationThreadProc, hModule, 0, nullptr)) {
+            WriteEarlyLoaderTrace("Delayed initialization thread created");
+            CloseHandle(initThread);
+        } else {
+            WriteEarlyLoaderTrace("Failed to create delayed initialization thread");
+            OutputDebugStringA("[EFZ_TM][XP] Failed to create delayed initialization thread.\n");
+        }
         break;
     case DLL_PROCESS_DETACH:
         // Signal shutdown to all threads

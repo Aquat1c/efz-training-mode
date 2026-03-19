@@ -47,6 +47,7 @@
 #include "../include/utils/bgm_control.h"
 #include "../include/utils/network.h"
 #include "../include/utils/pause_integration.h"
+#include "../include/utils/xp_compat.h"
 #include "../include/core/globals.h"
 
 std::atomic<bool> g_efzWindowActive(false);
@@ -668,13 +669,13 @@ static std::atomic<unsigned long long> s_posCacheTickMs{0};
 void UpdatePositionCache(double /*p1X*/, double p1Y, double /*p2X*/, double p2Y) {
     s_cachedP1Y.store(p1Y, std::memory_order_relaxed);
     s_cachedP2Y.store(p2Y, std::memory_order_relaxed);
-    s_posCacheTickMs.store(GetTickCount64(), std::memory_order_relaxed);
+    s_posCacheTickMs.store(XPCompat::GetTickCount64Compat(), std::memory_order_relaxed);
 }
 
 bool TryGetCachedYPositions(double &p1Y, double &p2Y, unsigned int maxAgeMs) {
     unsigned long long t = s_posCacheTickMs.load(std::memory_order_relaxed);
     if (t == 0) return false;
-    unsigned long long now = GetTickCount64();
+    unsigned long long now = XPCompat::GetTickCount64Compat();
     if (now - t > static_cast<unsigned long long>(maxAgeMs)) return false;
     p1Y = s_cachedP1Y.load(std::memory_order_relaxed);
     p2Y = s_cachedP2Y.load(std::memory_order_relaxed);
@@ -1207,7 +1208,7 @@ void AuditNetplayMenuEntryState() {
 // Public helper: permanently clear all triggers so they stay disabled until user re-enables
 void ClearAllTriggersPersistently() {
     static uint64_t s_lastClearTick = 0; // throttle identical spam bursts
-    uint64_t nowTick = GetTickCount64();
+    uint64_t nowTick = XPCompat::GetTickCount64Compat();
     bool willLogPrimary = (nowTick - s_lastClearTick > 750); // at most ~1 log per 750ms
     if (willLogPrimary) {
         LogOut("[SYSTEM] Clearing all triggers persistently (Character Select / forced)", true);
@@ -1795,12 +1796,17 @@ void CreateDebugConsole() {
             WriteStartupLog("GetConsoleMode failed with error: " + std::to_string(lastError));
         } else {
             WriteStartupLog("Current console mode: " + std::to_string(dwMode));
-            if (!SetConsoleMode(hOut, dwMode | ENABLE_VIRTUAL_TERMINAL_PROCESSING | ENABLE_PROCESSED_OUTPUT)) {
-                DWORD lastError = GetLastError();
-                WriteStartupLog("SetConsoleMode failed with error: " + std::to_string(lastError));
-            } else {
-                WriteStartupLog("SetConsoleMode succeeded");
-            }
+#if defined(EFZ_XP_COMPAT)
+                WriteStartupLog("SetConsoleMode skipped: XP compatibility mode disables VT console");
+                LogOut("[XP] Console VT mode disabled for XP compatibility build", true);
+#else
+                if (!SetConsoleMode(hOut, dwMode | ENABLE_VIRTUAL_TERMINAL_PROCESSING | ENABLE_PROCESSED_OUTPUT)) {
+                    DWORD lastError = GetLastError();
+                    WriteStartupLog("SetConsoleMode failed with error: " + std::to_string(lastError));
+                } else {
+                    WriteStartupLog("SetConsoleMode succeeded");
+                }
+#endif
         }
         
         // Set console buffer size for more history

@@ -10,6 +10,7 @@
 #include "../include/game/per_frame_sample.h"
 #include "../include/gui/overlay.h"
 #include "../include/utils/pause_integration.h"
+#include "../include/utils/xp_compat.h"
 
 // Global state for frame advantage tracking
 FrameAdvantageState frameAdvState = {
@@ -297,7 +298,7 @@ bool IsAttackMove(short moveID) {
 
 void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, short prevMoveID2) {
     int currentInternalFrame = GetCurrentInternalFrame();
-    ULONGLONG currentTimeMs = GetTickCount64();
+    ULONGLONG currentTimeMs = XPCompat::GetTickCount64Compat();
     
     // Debug logging to track timer state
     static int debugLogCounter = 0;

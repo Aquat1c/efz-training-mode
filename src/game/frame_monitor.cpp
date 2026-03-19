@@ -32,6 +32,7 @@
 #include "../include/game/practice_offsets.h"   // GAMESTATE_OFF_* and practice controller offsets
 #include "../include/input/injection_control.h"  // g_forceBypass/g_injectImmediateOnly/g_pollOverride*
 #include "../include/input/input_core.h"         // AI_CONTROL_FLAG_OFFSET
+#include "../include/utils/xp_compat.h"
 #ifndef CLEAR_ALL_AUTO_ACTION_TRIGGERS_FWD
 #define CLEAR_ALL_AUTO_ACTION_TRIGGERS_FWD
 void ClearAllAutoActionTriggers();
@@ -453,7 +454,7 @@ bool TryGetLatestSnapshot(FrameSnapshot &out, unsigned int maxAgeMs) {
     FrameSnapshot tmp = rb->snap; // copy
     uint32_t s2 = rb->seq.load(std::memory_order_acquire);
     if (s1 != s2 || (s2 & 1u)) return false; // changed mid-read
-    unsigned long long now = GetTickCount64();
+    unsigned long long now = XPCompat::GetTickCount64Compat();
     if (tmp.tickMs == 0 || now - tmp.tickMs > maxAgeMs) return false;
     out = tmp;
     return true;
@@ -1017,6 +1018,15 @@ void FrameDataMonitor() {
                 // Ensure default control flags (P1=Player, P2=AI) at match start in Practice mode
                 GameMode modeAtMatch = GetCurrentGameMode();
                 if (modeAtMatch == GameMode::Practice) {
+                    PauseIntegration::EnsurePracticePointerCapture();
+                    if (void* practice = PauseIntegration::GetPracticeControllerPtr()) {
+                        std::ostringstream oss;
+                        oss << "[PAUSE] Match-entry confirmed Practice controller=0x"
+                            << std::hex << reinterpret_cast<uintptr_t>(practice);
+                        LogOut(oss.str(), true);
+                    } else if (GetModuleHandleA("EfzRevival.dll") != nullptr && IsEfzRevivalVersionSupported()) {
+                        LogOut("[PAUSE] Match-entry Practice controller not yet confirmed; Revival swap stays blocked until capture", true);
+                    }
                     EnsureDefaultControlFlagsOnMatchStart();
                     // Reset Dummy Auto-Block per-round state machine
                     ResetDummyAutoBlockState();
@@ -1521,7 +1531,7 @@ void FrameDataMonitor() {
                         m == 7 || m == 8 || m == 9 || m == 13);
             };
             g_lastSample.frame = (uint32_t)frameCounter.load();
-            g_lastSample.tickMs = GetTickCount64();
+            g_lastSample.tickMs = XPCompat::GetTickCount64Compat();
             g_lastSample.phase = currentPhase;
             g_lastSample.mode = GetCurrentGameMode();
             g_lastSample.charsInitialized = isInitialized;
@@ -2060,7 +2070,7 @@ void FrameDataMonitor() {
                     bool requireBoth = cfg.crRequireBothNeutral;
                     int delayMs = (cfg.crBothNeutralDelayMs < 0 ? 0 : cfg.crBothNeutralDelayMs);
                     bool bothNeutral = p1NeutralNow && p2NeutralNow;
-                    unsigned long long nowMs = GetTickCount64();
+                    unsigned long long nowMs = XPCompat::GetTickCount64Compat();
                     if (requireBoth) {
                         if (bothNeutral) {
                             if (!s_prevBothNeutral) {
@@ -2327,7 +2337,7 @@ void FrameDataMonitor() {
                 double p1Rf=0.0, p2Rf=0.0; if (s_p1RfAddr) SafeReadMemory(s_p1RfAddr, &p1Rf, sizeof(p1Rf)); if (s_p2RfAddr) SafeReadMemory(s_p2RfAddr, &p2Rf, sizeof(p2Rf));
 
                 FrameSnapshot snap{};
-                snap.tickMs = GetTickCount64();
+                snap.tickMs = XPCompat::GetTickCount64Compat();
                 snap.phase = currentPhase;
                 snap.mode = currentMode;
                 snap.p1Move = moveID1;

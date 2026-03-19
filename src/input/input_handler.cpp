@@ -32,6 +32,7 @@
 #include "../include/game/frame_monitor.h" // AreCharactersInitialized, GamePhase
 #include "../include/game/auto_action.h" // CancelAutoActionsAndMacros
 #include "../include/input/framestep.h"
+#include "../include/utils/xp_compat.h"
 #include <Xinput.h>
 
 // XInput DLL is loaded dynamically via XInputShim
@@ -795,10 +796,12 @@ void MonitorKeys() {
                 auto anyControllerActive = [&]() -> bool {
                     unsigned mask = connectedMask;
                     if (mask == 0) return false; // nobody connected; don’t poll
+                    XInputShim::RefreshSnapshotOncePerFrame();
                     for (int i = 0; i < 4; ++i) {
                         if (((mask >> i) & 1u) == 0) continue;
-                        XINPUT_STATE cur{};
-                        if (XInputShim::GetState(i, &cur) != ERROR_SUCCESS) continue;
+                        const XINPUT_STATE* cached = XInputShim::GetCachedState(i);
+                        if (!cached) continue;
+                        const XINPUT_STATE& cur = *cached;
                         if (cur.dwPacketNumber != prevPads[i].dwPacketNumber) return true;
                         if (cur.Gamepad.wButtons != 0) return true;
                         if (cur.Gamepad.bLeftTrigger || cur.Gamepad.bRightTrigger) return true;

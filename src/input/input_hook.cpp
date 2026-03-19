@@ -144,8 +144,9 @@ static int __fastcall HookedPollPlayerInputState(int inputManagerPtr, int /*edx*
             return static_cast<int>(g_pollOverrideMask[idx].load(std::memory_order_relaxed));
         }
     }
-    // Vanilla-only: swap control routing by flipping the polled index
-    if (!RevivalLoaded() && g_swapVanillaRouting.load(std::memory_order_relaxed)) {
+    // Engine-routing fallback: when armed, flip the polled index regardless of whether
+    // Revival is loaded. This flag is only enabled by the engine-only side-switch path.
+    if (g_swapVanillaRouting.load(std::memory_order_relaxed)) {
         unsigned int swapped = (playerIndex == 0) ? 1u : (playerIndex == 1 ? 0u : playerIndex);
         return oPollPlayerInputState ? oPollPlayerInputState(inputManagerPtr, swapped) : 0;
     }
