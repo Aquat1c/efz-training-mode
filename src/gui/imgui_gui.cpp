@@ -9,6 +9,7 @@
 #include "../include/utils/config.h"
 #include "../include/gui/overlay.h"
 #include "../include/game/character_settings.h"
+#include "../include/game/combo_overlay.h"
 #include "../include/game/frame_monitor.h"
 #include "../include/game/per_frame_sample.h" // Unified per-frame sample (fix build: undefined PerFrameSample)
 #include "../include/input/input_motion.h"
@@ -891,6 +892,51 @@ namespace ImGuiGui {
                     }
                 }
                 if (ImGui::IsItemHovered()) ImGui::SetTooltip("Toggles the numeric frame advantage readout (including RG FA1/FA2).");
+
+                ImGui::Spacing();
+                ImGui::SeparatorText("Combo Statistics");
+                ImGui::TextWrapped("Shows a compact combo summary during Practice. The final combo state stays on-screen until the match ends.");
+
+                bool showComboOverlay = Config::GetSettings().showComboStatisticsOverlay;
+                if (ImGui::Checkbox("Enable Combo Statistics Overlay", &showComboOverlay)) {
+                    Config::SetSetting("General", "showComboStatisticsOverlay", showComboOverlay ? "1" : "0");
+                    ComboOverlay::ClearDisplay();
+                }
+                if (ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip("Turns the in-match combo statistics card on or off.");
+                }
+
+                if (showComboOverlay) {
+                    ImGui::Indent();
+
+                    bool showDetailRow = Config::GetSettings().comboOverlayShowDetailRow;
+                    if (ImGui::Checkbox("Show Detail Row", &showDetailRow)) {
+                        Config::SetSetting("General", "comboOverlayShowDetailRow", showDetailRow ? "1" : "0");
+                        ComboOverlay::ClearDisplay();
+                    }
+
+                    if (showDetailRow) {
+                        int detailSource = Config::GetSettings().comboOverlayDetailRowSource;
+                        const char* detailItems[] = { "Combo State", "Last Hit" };
+                        ImGui::SetNextItemWidth(180);
+                        if (ImGui::Combo("Detail Row Source", &detailSource, detailItems, IM_ARRAYSIZE(detailItems))) {
+                            Config::SetSetting("General", "comboOverlayDetailRowSource", std::to_string(detailSource));
+                            ComboOverlay::ClearDisplay();
+                        }
+                    }
+
+                    bool showFinalSummary = Config::GetSettings().comboOverlayShowFinalSummary;
+                    if (ImGui::Checkbox("Keep Final Summary", &showFinalSummary)) {
+                        Config::SetSetting("General", "comboOverlayShowFinalSummary", showFinalSummary ? "1" : "0");
+                        ComboOverlay::ClearDisplay();
+                    }
+                    if (ImGui::IsItemHovered()) {
+                        ImGui::SetTooltip("Keeps the last combo visible until the match ends instead of hiding it when the combo drops.");
+                    }
+
+                    ImGui::TextDisabled("Advanced appearance options are under Settings > General > Combo Statistics.");
+                    ImGui::Unindent();
+                }
 
                 // Framestep mode (Vanilla EFZ only)
                 if (GetEfzRevivalVersion() == EfzRevivalVersion::Vanilla) {

@@ -7,6 +7,7 @@
 #include "../include/core/di_keycodes.h"
 #include "../include/game/frame_analysis.h"   
 #include "../include/game/frame_advantage.h"
+#include "../include/game/combo_overlay.h"
 #include "../include/utils/config.h"
 #include "../include/gui/imgui_impl.h"
 #include "../include/gui/imgui_gui.h"
@@ -491,6 +492,7 @@ void ResetPracticeMatchSessionState(const char* reason) {
     InvalidateAutoActionCharacterCaches(reason ? reason : "practice match reset");
     PauseIntegration::ResetCachedPointers(reason ? reason : "practice match reset");
     ResetCollisionHookSessionCaches(reason ? reason : "practice match reset");
+    ComboOverlay::ResetState(reason ? reason : "practice match reset");
     ImGuiGui::ResetForPracticeSession(reason ? reason : "practice match reset");
 
     std::string lifecycleReason = "practice match session reset";
@@ -623,6 +625,7 @@ void DisableFeatures() {
     ClearAllAutoActionTriggers();
 
     // Clear ALL visual overlays
+    ComboOverlay::ResetState("DisableFeatures");
     DirectDrawHook::ClearAllMessages();
     
     // Reset stats display IDs since they've been cleared
@@ -1540,6 +1543,7 @@ void ConsumeRuntimeLifecycleResyncRequests() {
     InvalidateAutoActionCharacterCaches("lifecycle resync");
     PauseIntegration::ResetCachedPointers("lifecycle resync");
     ResetCollisionHookSessionCaches("lifecycle resync");
+    ComboOverlay::ResetState("lifecycle resync");
 
     std::ostringstream oss;
     oss << "[LIFECYCLE] Runtime resync applied"

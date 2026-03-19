@@ -8,6 +8,7 @@
 #include "../include/utils/config.h"
 #include "../include/core/logger.h"
 #include "../include/utils/switch_players.h"
+#include "../include/game/combo_overlay.h"
 #include "../include/game/game_state.h"
 #include "../include/utils/debug_log.h"
 #include "../include/input/framestep.h"
@@ -192,6 +193,36 @@ namespace ImGuiSettings {
                 }
                 if (ImGui::IsItemHovered()) {
                     ImGui::SetTooltip("How long frame advantage and gap messages stay visible (default: 1.9 seconds)");
+                }
+
+                ImGui::Spacing();
+                ImGui::Separator();
+                ImGui::SeparatorText("Combo Statistics");
+
+                ImGui::TextWrapped("Combo summary persists until you leave the match. Enable or disable the overlay from Main -> Options.");
+
+                bool hideComboWhenImGuiVisible = cfg.comboOverlayHideWhenImGuiVisible;
+                if (ImGui::Checkbox("Hide Overlay While ImGui Is Open", &hideComboWhenImGuiVisible)) {
+                    Config::SetSetting("General", "comboOverlayHideWhenImGuiVisible", hideComboWhenImGuiVisible ? "1" : "0");
+                    ComboOverlay::ClearDisplay();
+                }
+
+                bool resumeComboAfterImGui = cfg.comboOverlayResumeAfterImGui;
+                if (ImGui::Checkbox("Resume Summary After Closing ImGui", &resumeComboAfterImGui)) {
+                    Config::SetSetting("General", "comboOverlayResumeAfterImGui", resumeComboAfterImGui ? "1" : "0");
+                    ComboOverlay::ClearDisplay();
+                }
+
+                bool showRfMultiplier = cfg.comboOverlayShowRfMultiplier;
+                if (ImGui::Checkbox("Show RF Multiplier", &showRfMultiplier)) {
+                    Config::SetSetting("General", "comboOverlayShowRfMultiplier", showRfMultiplier ? "1" : "0");
+                    ComboOverlay::ClearDisplay();
+                }
+
+                bool showRawScale = cfg.comboOverlayShowRawScale;
+                if (ImGui::Checkbox("Show Raw Scale Value", &showRawScale)) {
+                    Config::SetSetting("General", "comboOverlayShowRawScale", showRawScale ? "1" : "0");
+                    ComboOverlay::ClearDisplay();
                 }
 
                 ImGui::Spacing();
