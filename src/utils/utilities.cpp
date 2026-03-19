@@ -1832,20 +1832,10 @@ void CreateDebugConsole() {
         WriteStartupLog("ShowWindow called");
     }
     
-    // Test that console is working by writing directly to it
-    WriteStartupLog("Testing console output...");
-    try {
-        std::cout << "Console initialization complete!" << std::endl;
-        WriteStartupLog("Console test output successful");
-    } catch (const std::exception& e) {
-        WriteStartupLog("Console test output failed: " + std::string(e.what()));
-    } catch (...) {
-        WriteStartupLog("Console test output failed with unknown exception");
-    }
-    
     WriteStartupLog("CreateDebugConsole() completed");
     // Mark console ready for logging and flush pending logs
     SetConsoleReady(true);
+    LogOut("[SYSTEM] Console initialization complete", true);
 }
 
 void DestroyDebugConsole() {

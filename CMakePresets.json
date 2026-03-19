@@ -1,0 +1,38 @@
+{
+    "version": 5,
+    "cmakeMinimumRequired": {
+        "major": 3,
+        "minor": 23,
+        "patch": 0
+    },
+    "configurePresets": [
+        {
+            "name": "vs-base-win32",
+            "hidden": true,
+            "binaryDir": "${sourceDir}/build",
+            "architecture": "Win32"
+        },
+        {
+            "name": "vs18-win32",
+            "inherits": "vs-base-win32",
+            "generator": "Visual Studio 18 2026"
+        },
+        {
+            "name": "vs17-win32",
+            "inherits": "vs-base-win32",
+            "generator": "Visual Studio 17 2022"
+        }
+    ],
+    "buildPresets": [
+        {
+            "name": "vs18-release",
+            "configurePreset": "vs18-win32",
+            "configuration": "Release"
+        },
+        {
+            "name": "vs17-release",
+            "configurePreset": "vs17-win32",
+            "configuration": "Release"
+        }
+    ]
+}

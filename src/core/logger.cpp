@@ -34,6 +34,7 @@ std::atomic<bool> g_reducedLogging(true);
 // Buffer logs until console is ready so enabling console later shows early logs
 static std::vector<std::string> g_pendingConsoleLogs;
 std::atomic<bool> g_consoleReady{false};
+static std::atomic<int> g_logMatchInternalFrame{-1};
 
 // NEW: Definition for Logger::hwndToString
 namespace Logger {
@@ -45,6 +46,14 @@ namespace Logger {
         oss << hwnd;
         return oss.str();
     }
+}
+
+void SetCurrentLogMatchInternalFrame(int internalFrame) {
+    g_logMatchInternalFrame.store(internalFrame, std::memory_order_relaxed);
+}
+
+int GetCurrentLogMatchInternalFrame() {
+    return g_logMatchInternalFrame.load(std::memory_order_relaxed);
 }
 
 void LogOut(const std::string& msg, bool consoleOutput) {
@@ -107,7 +116,17 @@ void LogOut(const std::string& msg, bool consoleOutput) {
             auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()) % 1000;
             char ts[32];
             std::strftime(ts, sizeof(ts), "%H:%M:%S", &timeInfo);
-            std::ostringstream tsoss; tsoss << ts << "." << std::setw(3) << std::setfill('0') << ms.count() << " ";
+            const int matchInternalFrame = GetCurrentLogMatchInternalFrame();
+            std::ostringstream tsoss;
+            tsoss << ts << "." << std::setw(3) << std::setfill('0') << ms.count() << " ";
+            if (matchInternalFrame >= 0) {
+                static const char* kFrameSuffix[3] = { "00", "33", "66" };
+                const int visualFrame = matchInternalFrame / 3;
+                const int subframe = matchInternalFrame % 3;
+                tsoss << "MF" << visualFrame << "." << kFrameSuffix[subframe] << " ";
+            } else {
+                tsoss << "MF----.-- ";
+            }
             return tsoss.str();
         };
 
@@ -138,46 +157,18 @@ void LogOut(const std::string& msg, bool consoleOutput) {
             std::cout << std::endl;
         }
 
-        // Reduced logging duplicate suppression & lightweight category throttling
-        if (g_reducedLogging.load()) {
-            // Maintain a tiny ring of last few messages to collapse duplicates within a window
-            struct DupEntry { std::string text; int count; std::chrono::steady_clock::time_point first; };
-            static std::vector<DupEntry> recent; // intentionally small
-            static const size_t kMaxDupEntries = 16;
-            static const auto kWindow = std::chrono::seconds(3); // collapse duplicates over 3s
+        // Reduced logging: suppress only rapid exact duplicates, and never in detailed mode.
+        if (g_reducedLogging.load() && !detailedLogging.load()) {
+            static std::string s_lastMsg;
+            static auto s_lastMsgAt = std::chrono::steady_clock::time_point{};
             auto nowSteady = std::chrono::steady_clock::now();
-            // Expire old entries
-            recent.erase(std::remove_if(recent.begin(), recent.end(), [&](const DupEntry &e){return (nowSteady - e.first) > kWindow;}), recent.end());
-            // Key off raw msg (without timestamp)
-            bool suppressed = false;
-            for (auto &e : recent) {
-                if (e.text == msg) {
-                    e.count++;
-                    suppressed = true;
-                    break;
-                }
+            if (msg == s_lastMsg &&
+                s_lastMsgAt.time_since_epoch().count() != 0 &&
+                (nowSteady - s_lastMsgAt) < std::chrono::milliseconds(250)) {
+                return;
             }
-            if (!suppressed) {
-                if (recent.size() >= kMaxDupEntries) recent.erase(recent.begin());
-                recent.push_back({msg,1,nowSteady});
-            }
-            // Periodically flush accumulated counts (once per second)
-            static auto lastFlush = nowSteady;
-            if (nowSteady - lastFlush >= std::chrono::seconds(1)) {
-                for (auto &e : recent) {
-                    std::string p = buildPrefix();
-                    if (e.count > 1) {
-                        std::cout << p << e.text << " (x" << e.count << ")" << std::endl;
-                    } else if (e.count == 1) {
-                        std::cout << p << e.text << std::endl;
-                    }
-                }
-                recent.clear();
-                lastFlush = nowSteady;
-            }
-            if (suppressed) {
-                return; // defer actual printing to periodic flush
-            }
+            s_lastMsg = msg;
+            s_lastMsgAt = nowSteady;
         }
 
         // Output the message immediately (non-reduced or first occurrence)
