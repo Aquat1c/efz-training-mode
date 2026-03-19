@@ -1266,7 +1266,16 @@ void FrameDataMonitor() {
         // Process any active input queues
         ProcessInputQueues();
 
-        UpdateWindowActiveState();
+        {
+            // Window-focus and key-monitor state do not need subframe cadence.
+            // Throttle them to reduce repeated user32 polling from the 192 Hz loop.
+            static int windowStateDecim = -1;
+            if (windowStateDecim < 0) windowStateDecim = 7;
+            if ((windowStateDecim++ % 8) == 0) {
+                UpdateWindowActiveState();
+                ManageKeyMonitoring();
+            }
+        }
         // Throttle stats overlay further to ~15-16 Hz to reduce churn and CPU
         {
             static int statsDecim = -1; // prime to fire quickly after enable
@@ -1282,8 +1291,6 @@ void FrameDataMonitor() {
         } else if (!shouldBeActive && g_featuresEnabled.load()) {
             DisableFeatures();
         }
-
-        ManageKeyMonitoring();
 
         // Track initialization & mode
         bool isInitialized = AreCharactersInitialized();

@@ -100,7 +100,7 @@ public:
     static void ClearAllMessages();
 
     // Make this function public so it can be called from the global EndScene hook
-    static void RenderD3D9Overlays(LPDIRECT3DDEVICE9 pDevice);
+    static void RenderD3D9Overlays(LPDIRECT3DDEVICE9 pDevice, UINT rtWidth = 0, UINT rtHeight = 0);
 
 
     static void Shutdown();

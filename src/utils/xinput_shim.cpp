@@ -406,11 +406,16 @@ namespace {
                 UpdateSnapshotLocked();
                 if (g_cachedMask == 0 && g_genericPads.empty()) {
                     sleepMs = 250;
-                } else if (g_cachedGenericMask != 0) {
+                } else {
+                    // 60 Hz snapshot refresh is enough for menu navigation and hotkeys.
+                    // The previous 8 ms native polling bought little responsiveness but
+                    // increased wakeups on the background thread.
                     sleepMs = 16;
-                } else if (g_cachedNativeMask != 0) {
-                    sleepMs = 8;
                 }
+            }
+            if (!g_efzWindowActive.load(std::memory_order_relaxed)
+                && !g_guiActive.load(std::memory_order_relaxed)) {
+                sleepMs = (std::max)(sleepMs, static_cast<DWORD>(48));
             }
             Sleep(sleepMs);
         }
