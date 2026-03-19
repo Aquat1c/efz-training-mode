@@ -89,11 +89,13 @@ extern bool p2ActionApplied;
 
 // Update function declarations
 void ProcessTriggerDelays();
+void ProcessTriggerDelays(short moveID1, short moveID2, short prevMoveID1, short prevMoveID2);
 
 // Add these function declarations:
 void MonitorAutoActions();
 void ResetActionFlags();
 void ClearDelayStatesIfNonActionable();
+void ClearDelayStatesIfNonActionable(short moveID1, short moveID2, short prevMoveID1, short prevMoveID2, const char* source);
 void UpdateTriggerOverlay();
 bool CheckAndHandleInvalidGameState(GameMode currentMode); // Changed signature
 void ReinitializeOverlays();

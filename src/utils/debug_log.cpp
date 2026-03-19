@@ -29,8 +29,6 @@ namespace DebugLog {
     
     void Initialize() {
         if (g_Initialized) return;
-        // Never initialize during online mode
-        if (g_onlineModeActive.load()) return;
 
         if (!g_EnableDebugLog) {
             g_Initialized = true;
@@ -64,7 +62,6 @@ namespace DebugLog {
     
     void Write(const std::string& message) {
         if (!g_EnableDebugLog || !g_Initialized) return;
-        if (g_onlineModeActive.load()) return; // Never log during online mode
         
         std::lock_guard<std::mutex> lock(g_LogMutex);
         

@@ -180,9 +180,6 @@ namespace {
 
 namespace Framestep {
     void Initialize() {
-        // CRITICAL: Never initialize during online mode
-        if (g_onlineModeActive.load()) return;
-
         // Only enable for vanilla EFZ (no Revival)
         HMODULE hRev = GetModuleHandleA("EfzRevival.dll");
         s_enabled.store(hRev == nullptr);
@@ -226,7 +223,7 @@ namespace Framestep {
         }
 
         // Don't interfere with online matches
-        if (DetectOnlineMatch() || isOnlineMatch.load()) {
+        if (IsNetplaySuspendActive()) {
             return;
         }
 

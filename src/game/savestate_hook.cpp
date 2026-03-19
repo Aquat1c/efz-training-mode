@@ -1,6 +1,7 @@
 #include "../../include/game/savestate_hook.h"
 #include "../../include/game/efzrevival_addrs.h"
 #include "../../include/game/auto_action.h"
+#include "../../include/game/combo_overlay.h"
 #include "../../include/game/macro_controller.h"
 #include "../../include/game/practice_offsets.h"
 #include "../../include/utils/switch_players.h"
@@ -141,6 +142,10 @@ namespace {
 
     // Hooked Load State function (VS/Practice mode)
     bool __fastcall HookedLoadState(void* self, void* /*edx*/) {
+        if (g_onlineModeActive.load(std::memory_order_relaxed)) {
+            return oLoadState ? oLoadState(self) : false;
+        }
+
         LogOut("[SAVESTATE] === LOAD STATE BEGIN ===", true);
         
         // Cancel any active auto-actions/macros BEFORE loading state
@@ -152,6 +157,7 @@ namespace {
         
         // Restore our captured mod state after the game state is loaded
         RestoreModState();
+        ComboOverlay::ResetState("savestate load");
         
         LogOut("[SAVESTATE] === LOAD STATE END (result=" + std::string(result ? "true" : "false") + ") ===", true);
         
@@ -163,6 +169,11 @@ namespace {
 
     // Hooked Save State function (VS/Practice mode)
     void __fastcall HookedSaveState(void* self, void* /*edx*/) {
+        if (g_onlineModeActive.load(std::memory_order_relaxed)) {
+            if (oSaveState) oSaveState(self);
+            return;
+        }
+
         LogOut("[SAVESTATE] === SAVE STATE BEGIN ===", true);
         
         // Capture our mod state before the game saves its state

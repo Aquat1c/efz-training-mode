@@ -128,6 +128,9 @@ All hotkeys are configurable in Settings → Hotkeys or in `efz_training_config.
   - Rebind hotkeys in Settings → Hotkeys and try again
 - Overlay not visible
   - Press the Toggle Overlay hotkey (default `7`) or ensure ImGui UI is enabled in Settings → General
+- Revival side switch does nothing
+  - Side switching in Revival is now intentionally blocked until the mod has confirmed the live Practice controller pointer during an active Practice match
+  - If it stays blocked, check the startup/match logs for `[PAUSE] Match-entry confirmed Practice controller=0x...` or `[SWITCH] Revival swap blocked: Practice controller not yet confirmed`
 - Performance issues on lower-end systems
   - Disabling the EfzRevival GUI (default key Enter) can improve FPS if for some reason there're issues with it.
 

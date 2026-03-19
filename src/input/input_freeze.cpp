@@ -10,6 +10,7 @@
 #include "../include/input/motion_system.h"
 #include "../include/input/input_motion.h" 
 #include "../include/game/frame_monitor.h"
+#include "../include/utils/xp_compat.h"
 // These functions are implemented in input_buffer.cpp
 extern void FreezeBufferValuesThread(int playerNum);
 extern bool CaptureAndFreezeBuffer(int playerNum, uint16_t startIndex, uint16_t length, int motionType, int buttonMask);
@@ -191,7 +192,7 @@ bool ComboFreezeDP(int playerNum) {
         uintptr_t playerPtr = GetPlayerPointer(playerNum);
         if (!playerPtr) return;
 
-        const unsigned long long startMs = GetTickCount64();
+        const unsigned long long startMs = XPCompat::GetTickCount64Compat();
         unsigned long long lastLogMs = startMs;
         int counter = 0;
         uint16_t lastIndex = 0;
@@ -203,7 +204,7 @@ bool ComboFreezeDP(int playerNum) {
         while (g_bufferFreezingActive) {
             if (g_onlineModeActive.load()) break;                   // never operate online
             if (GetCurrentGamePhase() != GamePhase::Match) break;   // only in match
-            unsigned long long now = GetTickCount64();
+            unsigned long long now = XPCompat::GetTickCount64Compat();
             if (now - startMs > 4000ULL) break;                     // safety timeout ~4s
 
             // Read current index and moveID for monitoring

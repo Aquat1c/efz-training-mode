@@ -34,12 +34,14 @@ extern std::atomic<int> g_triggersCancelledFrame;
 // Function declarations
 short GetActionMoveID(int actionType, int triggerType = TRIGGER_NONE, int playerNum = 2);
 void ProcessTriggerDelays();
+void ProcessTriggerDelays(short moveID1, short moveID2, short prevMoveID1, short prevMoveID2);
 void StartTriggerDelay(int playerNum, int triggerType, short moveID, int delayFrames);
 void MonitorAutoActions();
 // Optimized overload: avoid per-frame memory reads by passing current/prev move IDs
 void MonitorAutoActions(short moveID1, short moveID2, short prevMoveID1, short prevMoveID2);
 void ResetActionFlags();
 void ClearDelayStatesIfNonActionable();
+void ClearDelayStatesIfNonActionable(short moveID1, short moveID2, short prevMoveID1, short prevMoveID2, const char* source);
 
 // Function declaration for the special move logic
 void ApplyAutoAction(int playerNum, uintptr_t moveIDAddr, short currentMoveID, short prevMoveID);
@@ -68,6 +70,7 @@ extern std::atomic<short> g_lastP2MoveID;
 // Control restore / cleanup helpers
 void ProcessAutoControlRestore();
 void ClearAllAutoActionTriggers();
+void InvalidateAutoActionCharacterCaches(const char* reason);
 
 // Cancel active auto-actions and macros without disabling trigger settings.
 // Use this when loading savestates or resetting positions to abort in-progress

@@ -52,6 +52,15 @@ static bool ExecuteWakeSpecialNow(int playerNum, int actionType, short currentMo
 static bool SupportsImmediateWakeHold(int actionType);
 static bool BuildImmediateWakeHoldMask(int playerNum, int actionType, uint8_t &outMask);
 static bool IssueWakeImmediateHold(int playerNum, int actionType);
+static constexpr int kInternalTicksPerVisualFrame = 3;
+
+static inline int VisualFramesToInternalTicks(int visualFrames) {
+    return (visualFrames <= 0) ? 0 : (visualFrames * kInternalTicksPerVisualFrame);
+}
+
+static inline int InternalTicksToVisualFramesCeil(int internalTicks) {
+    return (internalTicks <= 0) ? 0 : ((internalTicks + kInternalTicksPerVisualFrame - 1) / kInternalTicksPerVisualFrame);
+}
 
 // Wake jump tracking for debugging
 static int s_p1WakeJumpTrackFrame = -1;
@@ -134,11 +143,11 @@ static int GetWakeupRisingFrames(int charID) {
 static int GetWakeupRisingTicks(int charID) {
     for (const auto& timing : s_wakeupTimings) {
         if (timing.charID == charID) {
-            return timing.risingFramesVisual * 3;  // Convert visual frames to ticks
+            return VisualFramesToInternalTicks(timing.risingFramesVisual);
         }
     }
     // Default fallback: assume mid-range wakeup (20 visual frames × 3 = 60 ticks)
-    return 60;
+    return VisualFramesToInternalTicks(20);
 }
 
 // Initialize delay states
@@ -305,24 +314,45 @@ static DashFollowDeferred g_dashDeferred; // single slot (only one forward dash 
 static int g_cachedP1CharID = -999;
 static int g_cachedP2CharID = -999;
 static bool g_loggedCharInvalidation = false;
+static uint32_t g_characterCacheGeneration = 0;
 
 static void InvalidateCachedCharacterIDs(const char* reason) {
+    const uint32_t generation = GetRuntimeLifecycleGeneration();
     if ((g_cachedP1CharID != -999 || g_cachedP2CharID != -999) && !g_loggedCharInvalidation) {
-        LogOut(std::string("[AUTO-ACTION][CHAR] Invalidating cached character IDs (") + reason + ")", detailedLogging.load());
+        LogOut(std::string("[AUTO-ACTION][CHAR] Invalidating cached character IDs gen=")
+            + std::to_string(generation) + " (" + reason + ")", detailedLogging.load());
         g_loggedCharInvalidation = true;
     }
     g_cachedP1CharID = -999;
     g_cachedP2CharID = -999;
+    g_characterCacheGeneration = generation;
+}
+
+void InvalidateAutoActionCharacterCaches(const char* reason) {
+    InvalidateCachedCharacterIDs(reason);
 }
 
 static void EnsureCachedCharacterIDs(uintptr_t base) {
+    const uint32_t lifecycleGeneration = GetRuntimeLifecycleGeneration();
+    if (g_characterCacheGeneration != lifecycleGeneration) {
+        const bool hadCachedValues = (g_cachedP1CharID != -999 || g_cachedP2CharID != -999);
+        if (hadCachedValues || detailedLogging.load()) {
+            LogOut(std::string("[AUTO-ACTION][CHAR] Lifecycle generation changed ")
+                + std::to_string(g_characterCacheGeneration) + "->" + std::to_string(lifecycleGeneration),
+                true);
+        }
+        InvalidateCachedCharacterIDs("lifecycle generation change");
+    }
+
     if (g_cachedP1CharID == -999) {
         char nameBuf1[16] = {0};
         uintptr_t nameAddr1 = ResolvePointer(base, EFZ_BASE_OFFSET_P1, CHARACTER_NAME_OFFSET);
         if (nameAddr1) SafeReadMemory(nameAddr1, &nameBuf1, sizeof(nameBuf1)-1);
         g_cachedP1CharID = CharacterSettings::GetCharacterID(std::string(nameBuf1));
         if (g_cachedP1CharID < 0) g_cachedP1CharID = -1;
-        LogOut(std::string("[AUTO-ACTION][CHAR] Cached P1 char name='") + nameBuf1 + "' id=" + std::to_string(g_cachedP1CharID), detailedLogging.load());
+        g_characterCacheGeneration = lifecycleGeneration;
+        LogOut(std::string("[AUTO-ACTION][CHAR] Cached P1 gen=") + std::to_string(g_characterCacheGeneration)
+            + " char name='" + nameBuf1 + "' id=" + std::to_string(g_cachedP1CharID), detailedLogging.load());
         g_loggedCharInvalidation = false;
     }
     if (g_cachedP2CharID == -999) {
@@ -331,7 +361,9 @@ static void EnsureCachedCharacterIDs(uintptr_t base) {
         if (nameAddr2) SafeReadMemory(nameAddr2, &nameBuf2, sizeof(nameBuf2)-1);
         g_cachedP2CharID = CharacterSettings::GetCharacterID(std::string(nameBuf2));
         if (g_cachedP2CharID < 0) g_cachedP2CharID = -1;
-        LogOut(std::string("[AUTO-ACTION][CHAR] Cached P2 char name='") + nameBuf2 + "' id=" + std::to_string(g_cachedP2CharID), detailedLogging.load());
+        g_characterCacheGeneration = lifecycleGeneration;
+        LogOut(std::string("[AUTO-ACTION][CHAR] Cached P2 gen=") + std::to_string(g_characterCacheGeneration)
+            + " char name='" + nameBuf2 + "' id=" + std::to_string(g_cachedP2CharID), detailedLogging.load());
         g_loggedCharInvalidation = false;
     }
 }
@@ -583,9 +615,9 @@ void AutoActionsTick_Inline(short moveID1, short moveID2) {
     }
 
     // Process any armed delays first, then evaluate triggers against current moves
-    ProcessTriggerDelays();
+    ProcessTriggerDelays(moveID1, moveID2, prevMoveID1, prevMoveID2);
     MonitorAutoActions(moveID1, moveID2, prevMoveID1, prevMoveID2);
-    ClearDelayStatesIfNonActionable();
+    ClearDelayStatesIfNonActionable(moveID1, moveID2, prevMoveID1, prevMoveID2, "tick");
 
     // Update prevs for next tick
     // if (detailedLogging.load() && (IsGroundtech(prevMoveID2) || IsGroundtech(moveID2))) {
@@ -756,51 +788,167 @@ short GetActionMoveID(int actionType, int triggerType, int playerNum) {
     }
 }
 
-void ProcessTriggerDelays() {
+static void ResetDelayState(TriggerDelayState& state) {
+    state.isDelaying = false;
+    state.delayFramesRemaining = 0;
+    state.triggerType = TRIGGER_NONE;
+    state.pendingMoveID = 0;
+    state.chosenAction = -1;
+    state.chosenStrength = -1;
+    state.chosenMacroSlot = 0;
+    state.chosenCustomId = -1;
+}
+
+static bool IsDashLikeState(short moveID) {
+    return moveID == FORWARD_DASH_START_ID ||
+           moveID == FORWARD_DASH_RECOVERY_ID ||
+           moveID == FORWARD_DASH_RECOVERY_SENTINEL_ID ||
+           moveID == BACKWARD_DASH_START_ID ||
+           moveID == BACKWARD_DASH_RECOVERY_ID ||
+           moveID == KAORI_FORWARD_DASH_START_ID;
+}
+
+static bool IsJumpLikeState(short moveID) {
+    return moveID == STRAIGHT_JUMP_ID ||
+           moveID == FORWARD_JUMP_ID ||
+           moveID == BACKWARD_JUMP_ID ||
+           moveID == FALLING_ID;
+}
+
+static bool ShouldCancelDelayForState(const TriggerDelayState& state, short prevMoveID, short moveID, std::string& reason) {
+    if (!state.isDelaying) {
+        return false;
+    }
+
+    if (state.triggerType == TRIGGER_AFTER_BLOCK) {
+        if (!IsBlockstun(prevMoveID) && IsBlockstun(moveID)) {
+            reason = "new_blockstun";
+            return true;
+        }
+        if (IsHitstun(moveID)) {
+            reason = "hitstun";
+            return true;
+        }
+        if (IsThrown(moveID)) {
+            reason = "thrown";
+            return true;
+        }
+        if (IsLaunched(moveID)) {
+            reason = "launched";
+            return true;
+        }
+        if (IsAirtech(moveID)) {
+            reason = "airtech";
+            return true;
+        }
+        if (IsGroundtech(moveID)) {
+            reason = "groundtech";
+            return true;
+        }
+        if (IsFrozen(moveID)) {
+            reason = "frozen";
+            return true;
+        }
+        if (IsJumpLikeState(moveID)) {
+            reason = "jump";
+            return true;
+        }
+        if (IsDashLikeState(moveID)) {
+            reason = "dash";
+            return true;
+        }
+        if (IsAttackMove(moveID)) {
+            reason = "attack";
+            return true;
+        }
+        if (IsRecoilGuard(moveID)) {
+            reason = "recoil_guard";
+            return true;
+        }
+        return false;
+    }
+
+    if (IsBlockstun(moveID)) {
+        reason = "blockstun";
+        return true;
+    }
+    if (IsHitstun(moveID)) {
+        reason = "hitstun";
+        return true;
+    }
+    if (IsFrozen(moveID)) {
+        reason = "frozen";
+        return true;
+    }
+    if (IsThrown(moveID)) {
+        reason = "thrown";
+        return true;
+    }
+    if (IsLaunched(moveID)) {
+        reason = "launched";
+        return true;
+    }
+    if (IsAirtech(moveID)) {
+        reason = "airtech";
+        return true;
+    }
+    if (IsGroundtech(moveID)) {
+        reason = "groundtech";
+        return true;
+    }
+
+    return false;
+}
+
+void ProcessTriggerDelays(short moveID1, short moveID2, short prevMoveID1, short prevMoveID2) {
     uintptr_t base = GetEFZBase();
     if (!base) return;
 
     // P1 delay processing
     if (p1DelayState.isDelaying) {
-     LogOut("[DELAY] P1 delaying: framesRemaining=" + std::to_string(p1DelayState.delayFramesRemaining) +
-         ", triggerType=" + std::to_string(p1DelayState.triggerType), detailedLogging.load());
-     p1DelayState.delayFramesRemaining--;
-        
-        if (p1DelayState.delayFramesRemaining % 64 == 0 && p1DelayState.delayFramesRemaining > 0) {
-            LogOut("[AUTO-ACTION] P1 delay countdown: " + std::to_string(p1DelayState.delayFramesRemaining/3) + 
-                   " visual frames remaining", detailedLogging.load());
+        const int remainingBefore = p1DelayState.delayFramesRemaining;
+        const int visualBefore = InternalTicksToVisualFramesCeil(remainingBefore);
+        LogOut("[DELAY] P1 delaying: internalRemaining=" + std::to_string(remainingBefore) +
+               ", visualRemaining=" + std::to_string(visualBefore) +
+               ", triggerType=" + std::to_string(p1DelayState.triggerType), detailedLogging.load());
+        p1DelayState.delayFramesRemaining--;
+        const int remainingAfter = p1DelayState.delayFramesRemaining;
+        const int visualAfter = InternalTicksToVisualFramesCeil(remainingAfter);
+
+        if (remainingAfter > 0 && visualAfter != visualBefore && detailedLogging.load()) {
+            LogOut("[AUTO-ACTION] P1 delay countdown: visualRemaining=" + std::to_string(visualAfter) +
+                   " internalRemaining=" + std::to_string(remainingAfter),
+                   true);
         }
         
-    if (p1DelayState.delayFramesRemaining <= 0) {
+    if (remainingAfter <= 0) {
             LogOut("[AUTO-ACTION] P1 delay expired, applying action", true);
             // Use unified per-frame sample; avoid redundant MOVE_ID resolution
-            const PerFrameSample &sample = GetCurrentPerFrameSample();
-            short currentMoveID = sample.moveID1;
-            ApplyAutoAction(1, 0, currentMoveID, sample.prevMoveID1); // address ignored
+            ApplyAutoAction(1, 0, moveID1, prevMoveID1); // address ignored
             LogOut("[AUTO-ACTION] P1 action applied via input system", true);
             if (ValidationMetricsEnabled()) { GetValidationMetrics().p1ActionsApplied++; }
-            p1DelayState.isDelaying = false;
-            p1DelayState.triggerType = TRIGGER_NONE;
-            p1DelayState.pendingMoveID = 0;
-            p1DelayState.chosenAction = -1;
-            p1DelayState.chosenStrength = -1;
-            p1DelayState.chosenMacroSlot = 0;
-            p1DelayState.chosenCustomId = -1;
+            ResetDelayState(p1DelayState);
         }
     }
     
     // P2 delay processing
     if (p2DelayState.isDelaying) {
-     LogOut("[DELAY] P2 delaying: framesRemaining=" + std::to_string(p2DelayState.delayFramesRemaining) +
-         ", triggerType=" + std::to_string(p2DelayState.triggerType), detailedLogging.load());
-     p2DelayState.delayFramesRemaining--;
-        
-        if (p2DelayState.delayFramesRemaining % 64 == 0 && p2DelayState.delayFramesRemaining > 0) {
-            LogOut("[AUTO-ACTION] P2 delay countdown: " + std::to_string(p2DelayState.delayFramesRemaining/3) + 
-                   " visual frames remaining", detailedLogging.load());
+        const int remainingBefore = p2DelayState.delayFramesRemaining;
+        const int visualBefore = InternalTicksToVisualFramesCeil(remainingBefore);
+        LogOut("[DELAY] P2 delaying: internalRemaining=" + std::to_string(remainingBefore) +
+               ", visualRemaining=" + std::to_string(visualBefore) +
+               ", triggerType=" + std::to_string(p2DelayState.triggerType), detailedLogging.load());
+        p2DelayState.delayFramesRemaining--;
+        const int remainingAfter = p2DelayState.delayFramesRemaining;
+        const int visualAfter = InternalTicksToVisualFramesCeil(remainingAfter);
+
+        if (remainingAfter > 0 && visualAfter != visualBefore && detailedLogging.load()) {
+            LogOut("[AUTO-ACTION] P2 delay countdown: visualRemaining=" + std::to_string(visualAfter) +
+                   " internalRemaining=" + std::to_string(remainingAfter),
+                   true);
         }
         
-    if (p2DelayState.delayFramesRemaining <= 0) {
+    if (remainingAfter <= 0) {
             LogOut("[AUTO-ACTION] P2 delay expired, applying action", true);
 
             // If a macro is selected for this trigger and has data, prefer playing it
@@ -823,13 +971,9 @@ void ProcessTriggerDelays() {
                         LogOut("[AUTO-ACTION][MACRO] Starting macro playback (slot=" + std::to_string(sel) + ") for P2 on trigger expiry", true);
                         MacroController::Play();
                         // Clear the delay state and exit
-                        p2DelayState.isDelaying = false;
-                        p2DelayState.triggerType = TRIGGER_NONE;
-                        p2DelayState.pendingMoveID = 0;
-                        p2DelayState.chosenAction = -1;
-                        p2DelayState.chosenStrength = -1;
-                        p2DelayState.chosenMacroSlot = 0;
-                        p2DelayState.chosenCustomId = -1;
+                        ResetDelayState(p2DelayState);
+                        p2TriggerActive = false;
+                        p2TriggerCooldown = 0;
                         if (ValidationMetricsEnabled()) { GetValidationMetrics().p2ActionsApplied++; }
                         return;
                     }
@@ -837,19 +981,15 @@ void ProcessTriggerDelays() {
             }
 
             // Fallback: apply the configured single action via input system using unified sample
-            const PerFrameSample &sample2 = GetCurrentPerFrameSample();
-            short currentMoveID = sample2.moveID2;
             if (MacroController::GetState() != MacroController::State::Replaying) {
-                ApplyAutoAction(2, 0, currentMoveID, sample2.prevMoveID2);
+                ApplyAutoAction(2, 0, moveID2, prevMoveID2);
             } else {
                 LogOut("[AUTO-ACTION][MACRO] P2 macro active; skipping ApplyAutoAction", detailedLogging.load());
                 if (ValidationMetricsEnabled()) { GetValidationMetrics().p2SuppressedByMacro++; }
             }
             LogOut("[AUTO-ACTION] P2 action applied via input system", true);
             if (ValidationMetricsEnabled() && MacroController::GetState() != MacroController::State::Replaying) { GetValidationMetrics().p2ActionsApplied++; }
-            p2DelayState.isDelaying = false;
-            p2DelayState.triggerType = TRIGGER_NONE;
-            p2DelayState.pendingMoveID = 0;
+            ResetDelayState(p2DelayState);
             p2ActionApplied = true;
             if (detailedLogging.load()) {
                 LogOut(std::string("[AUTO-ACTION] P2 delayed action applied; pendingRestore=") +
@@ -1002,23 +1142,35 @@ void StartTriggerDelay(int playerNum, int triggerType, short moveID, int delayFr
     }
     // For delayed actions, use the existing delay system
     else {
-        int internalFrames = delayFrames * 3;
+        int internalFrames = VisualFramesToInternalTicks(delayFrames);
         
         if (playerNum == 1) {
             p1DelayState.isDelaying = true;
             p1DelayState.delayFramesRemaining = internalFrames;
             // triggerType already set above
             p1DelayState.pendingMoveID = 0;
-         LogOut("[DELAY] Armed P1 delay: internalFrames=" + std::to_string(internalFrames) +
-             ", triggerType=" + std::to_string(triggerType), detailedLogging.load());
+            LogOut("[DELAY] Armed P1 delay: visualFrames=" + std::to_string(delayFrames) +
+                   ", internalFrames=" + std::to_string(internalFrames) +
+                   ", triggerType=" + std::to_string(triggerType) +
+                   ", expiresAtInternal=" + std::to_string(frameCounter.load() + internalFrames),
+                   true);
         } else {
             p2DelayState.isDelaying = true;
             p2DelayState.delayFramesRemaining = internalFrames;
             // triggerType already set above
             p2DelayState.pendingMoveID = 0;
-            LogOut("[AUTO-ACTION] P2 delay armed: internalFrames=" + std::to_string(internalFrames), detailedLogging.load());
+            LogOut("[DELAY] Armed P2 delay: visualFrames=" + std::to_string(delayFrames) +
+                   ", internalFrames=" + std::to_string(internalFrames) +
+                   ", triggerType=" + std::to_string(triggerType) +
+                   ", expiresAtInternal=" + std::to_string(frameCounter.load() + internalFrames),
+                   true);
         }
     }
+}
+
+void ProcessTriggerDelays() {
+    const PerFrameSample &sample = GetCurrentPerFrameSample();
+    ProcessTriggerDelays(sample.moveID1, sample.moveID2, sample.prevMoveID1, sample.prevMoveID2);
 }
 
 void ProcessTriggerCooldowns() {
@@ -1036,17 +1188,21 @@ void ProcessTriggerCooldowns() {
     }
     // Simplified cooldown progression (no pinning) to avoid deadlocks
     if (p1TriggerActive && p1TriggerCooldown > 0) {
-        p1TriggerCooldown--;
-        if (p1TriggerCooldown <= 0) {
-            p1TriggerActive = false;
-            LogOut("[AUTO-ACTION] P1 trigger cooldown expired, new triggers allowed", detailedLogging.load());
+        if (!p1DelayState.isDelaying) {
+            p1TriggerCooldown--;
+            if (p1TriggerCooldown <= 0) {
+                p1TriggerActive = false;
+                LogOut("[AUTO-ACTION] P1 trigger cooldown expired, new triggers allowed", detailedLogging.load());
+            }
         }
     }
     if (p2TriggerActive && p2TriggerCooldown > 0) {
-        p2TriggerCooldown--;
-        if (p2TriggerCooldown <= 0) {
-            p2TriggerActive = false;
-            LogOut("[AUTO-ACTION] P2 trigger cooldown expired, new triggers allowed", detailedLogging.load());
+        if (!p2DelayState.isDelaying) {
+            p2TriggerCooldown--;
+            if (p2TriggerCooldown <= 0) {
+                p2TriggerActive = false;
+                LogOut("[AUTO-ACTION] P2 trigger cooldown expired, new triggers allowed", detailedLogging.load());
+            }
         }
     }
 }
@@ -1056,7 +1212,7 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
     static bool s_p2ForcedNeutral = false;
     // Only operate in offline Practice mode
     if (GetCurrentGameMode() != GameMode::Practice) return;
-    if (DetectOnlineMatch()) return;
+    if (IsNetplaySuspendActive()) return;
     
     if (!autoActionEnabled.load()) {
         return;
@@ -2393,35 +2549,50 @@ void ResetActionFlags() {
     LogOut("[AUTO-ACTION] ResetActionFlags invoked (control restored if overridden)", true);
 }
 
-void ClearDelayStatesIfNonActionable() {
+void ClearDelayStatesIfNonActionable(short moveID1, short moveID2, short prevMoveID1, short prevMoveID2, const char* source) {
     if (!p1DelayState.isDelaying && !p2DelayState.isDelaying) return;
-    const PerFrameSample &sample = GetCurrentPerFrameSample();
-    short moveID1 = sample.moveID1;
-    short moveID2 = sample.moveID2;
-    bool p1InBadState = IsBlockstun(moveID1) || IsHitstun(moveID1) || IsFrozen(moveID1) || IsThrown(moveID1) || IsLaunched(moveID1) || IsAirtech(moveID1) || IsGroundtech(moveID1);
-    bool p2InBadState = IsBlockstun(moveID2) || IsHitstun(moveID2) || IsFrozen(moveID2) || IsThrown(moveID2) || IsLaunched(moveID2) || IsAirtech(moveID2) || IsGroundtech(moveID2);
-    if (p1DelayState.isDelaying && p1InBadState) {
-        p1DelayState.isDelaying = false;
-        p1DelayState.triggerType = TRIGGER_NONE;
-        p1DelayState.pendingMoveID = 0;
-        p1DelayState.chosenAction = -1;
-        p1DelayState.chosenStrength = -1;
-        p1DelayState.chosenMacroSlot = 0;
-        p1DelayState.chosenCustomId = -1;
-        LogOut("[AUTO-ACTION] Cleared P1 delay - in bad state (moveID " + std::to_string(moveID1) + ")", true);
+    const std::string clearSource = source ? source : "unknown";
+    std::string p1Reason;
+    std::string p2Reason;
+    const bool p1ShouldCancel = ShouldCancelDelayForState(p1DelayState, prevMoveID1, moveID1, p1Reason);
+    const bool p2ShouldCancel = ShouldCancelDelayForState(p2DelayState, prevMoveID2, moveID2, p2Reason);
+    if (p1DelayState.isDelaying && p1ShouldCancel) {
+        const int clearedTriggerType = p1DelayState.triggerType;
+        const int remainingInternal = p1DelayState.delayFramesRemaining;
+        const int remainingVisual = InternalTicksToVisualFramesCeil(remainingInternal);
+        ResetDelayState(p1DelayState);
+        LogOut("[AUTO-ACTION][DELAY] Cleared P1 delay source=" + clearSource +
+               " trigger=" + TriggerTypeLabel(clearedTriggerType) +
+               " reason=" + p1Reason +
+               " prevMoveID=" + std::to_string(prevMoveID1) +
+               " moveID=" + std::to_string(moveID1) +
+               " visualRemaining=" + std::to_string(remainingVisual) +
+               " internalRemaining=" + std::to_string(remainingInternal),
+               true);
+        p1TriggerActive = false;
+        p1TriggerCooldown = 0;
     }
-    if (p2DelayState.isDelaying && p2InBadState) {
-        p2DelayState.isDelaying = false;
-        p2DelayState.triggerType = TRIGGER_NONE;
-        p2DelayState.pendingMoveID = 0;
-        p2DelayState.chosenAction = -1;
-        p2DelayState.chosenStrength = -1;
-        p2DelayState.chosenMacroSlot = 0;
-        p2DelayState.chosenCustomId = -1;
-        LogOut("[AUTO-ACTION] Cleared P2 delay - in bad state (moveID " + std::to_string(moveID2) + ")", true);
+    if (p2DelayState.isDelaying && p2ShouldCancel) {
+        const int clearedTriggerType = p2DelayState.triggerType;
+        const int remainingInternal = p2DelayState.delayFramesRemaining;
+        const int remainingVisual = InternalTicksToVisualFramesCeil(remainingInternal);
+        ResetDelayState(p2DelayState);
+        LogOut("[AUTO-ACTION][DELAY] Cleared P2 delay source=" + clearSource +
+               " trigger=" + TriggerTypeLabel(clearedTriggerType) +
+               " reason=" + p2Reason +
+               " prevMoveID=" + std::to_string(prevMoveID2) +
+               " moveID=" + std::to_string(moveID2) +
+               " visualRemaining=" + std::to_string(remainingVisual) +
+               " internalRemaining=" + std::to_string(remainingInternal),
+               true);
         p2TriggerActive = false;
         p2TriggerCooldown = 0;
     }
+}
+
+void ClearDelayStatesIfNonActionable() {
+    const PerFrameSample &sample = GetCurrentPerFrameSample();
+    ClearDelayStatesIfNonActionable(sample.moveID1, sample.moveID2, sample.prevMoveID1, sample.prevMoveID2, "sample");
 }
 
 // Replace the ApplyAutoAction function with this implementation:

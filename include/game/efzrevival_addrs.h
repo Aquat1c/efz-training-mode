@@ -19,18 +19,18 @@ uintptr_t EFZ_RVA_MapReset();
 uintptr_t EFZ_RVA_CleanupPair();
 uintptr_t EFZ_RVA_RenderBattleScreen();
 uintptr_t EFZ_RVA_GameModePtrArray();
-// Direct static pointer to Practice controller (CheatEngine found all versions)
-// e: EfzRevival.dll+0xA02CC, h: EfzRevival.dll+0xA02EC, i: EfzRevival.dll+0xA15F8
+// Deprecated: this accessor intentionally returns 0.
+// The previously used RVAs overlap Revival session-pointer globals and are not
+// valid Practice-controller pointers.
 uintptr_t EFZ_RVA_PracticeControllerPtr();
 // Practice hotkey dispatcher (evaluates Pause/Step/Record/etc.)
 uintptr_t EFZ_RVA_PracticeDispatcher();
 
-// Version-aware Practice controller offsets
-// These return the correct offset based on detected EfzRevival version
-// 1.02e uses different offsets than 1.02h/i for pause/step fields
-uintptr_t EFZ_Practice_PauseFlagOffset();    // 0xB4 for 1.02e, 0x180 for 1.02h/i
-uintptr_t EFZ_Practice_StepFlagOffset();     // 0xAC for 1.02e, 0x172 for 1.02h/i
-uintptr_t EFZ_Practice_StepCounterOffset();  // 0xB0 for 1.02e, 0x176 for 1.02h/i
+// Version-aware Practice controller offsets.
+// Pause/step fields are stable across the supported Revival versions.
+uintptr_t EFZ_Practice_PauseFlagOffset();    // 0xB4
+uintptr_t EFZ_Practice_StepFlagOffset();     // 0xAC
+uintptr_t EFZ_Practice_StepCounterOffset();  // 0xB0
 
 // Side selection and related Practice controller fields
 uintptr_t EFZ_Practice_LocalSideOffset();    // 0x680 for 1.02e/h, 0x688 for 1.02i
