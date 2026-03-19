@@ -319,8 +319,15 @@ namespace {
     void UpdateSnapshotLocked() {
         DWORD now = GetTickCount();
 
-        if ((g_lastGenericEnumTick == 0) || (now - g_lastGenericEnumTick >= 5000)) {
-            EnumerateGenericPadsLocked(g_lastGenericEnumTick == 0);
+        // Avoid re-enumerating DirectInput devices on a fixed 5s cadence while a stable pad
+        // is already connected. Device enumeration is comparatively heavy and can cause the
+        // exact kind of rare hitch the user is seeing. We only enumerate:
+        //  - on startup
+        //  - periodically when no generic pads are currently known
+        const bool firstGenericEnum = (g_lastGenericEnumTick == 0);
+        const bool noKnownGenericPads = g_genericPads.empty();
+        if (firstGenericEnum || (noKnownGenericPads && (now - g_lastGenericEnumTick >= 5000))) {
+            EnumerateGenericPadsLocked(firstGenericEnum);
         }
 
         std::array<XINPUT_STATE, 4> nativeStates{};
@@ -333,13 +340,26 @@ namespace {
             }
         }
 
-        std::vector<std::pair<XINPUT_STATE, std::string>> genericStates;
-        genericStates.reserve(g_genericPads.size());
-        for (GenericPad& pad : g_genericPads) {
-            if (!PollGenericPadLocked(pad)) {
-                continue;
+        auto collectGenericStates = [&]() {
+            std::vector<std::pair<XINPUT_STATE, std::string>> out;
+            out.reserve(g_genericPads.size());
+            for (GenericPad& pad : g_genericPads) {
+                if (!PollGenericPadLocked(pad)) {
+                    continue;
+                }
+                out.emplace_back(BuildSyntheticState(pad), pad.name);
             }
-            genericStates.emplace_back(BuildSyntheticState(pad), pad.name);
+            return out;
+        };
+
+        std::vector<std::pair<XINPUT_STATE, std::string>> genericStates = collectGenericStates();
+
+        // Recovery path: if we used to know about generic pads but none of them are pollable now,
+        // perform a one-shot re-enumeration after a short cooldown. This preserves hot-plug
+        // recovery without paying the cost continuously during stable play.
+        if (!g_genericPads.empty() && genericStates.empty() && (now - g_lastGenericEnumTick >= 1000)) {
+            EnumerateGenericPadsLocked(false);
+            genericStates = collectGenericStates();
         }
 
         g_cachedMask = 0;

@@ -5,6 +5,7 @@
 #include "../include/game/auto_action.h" // ensure ClearAllAutoActionTriggers declaration
 #include "../include/game/frame_analysis.h"
 #include "../include/game/frame_advantage.h"
+#include "../include/game/combo_overlay.h"
 #include "../include/core/constants.h"
 #include "../include/utils/utilities.h"
 #include "../include/utils/bgm_control.h"
@@ -974,6 +975,8 @@ void FrameDataMonitor() {
                 const bool leavingPracticeMatch =
                     (s_lastPhaseMode == GameMode::Practice) || (currentMode == GameMode::Practice);
 
+                ComboOverlay::ResetState("phase left match");
+
                 // Force stop everything
                 StopBufferFreezing();
                 // Stop any RF freeze maintenance started by CR
@@ -1008,6 +1011,7 @@ void FrameDataMonitor() {
             if (currentPhase == GamePhase::Match && lastPhase != GamePhase::Match) {
                 matchLogAnchorInternal = frameBeforeIncrement + 1;
                 SetCurrentLogMatchInternalFrame(0);
+                ComboOverlay::ResetState("match entry");
                 if (detailedLogging.load()) {
                     LogOut("[LOGGER] Match-frame anchor reset for new match at internal=" +
                            std::to_string(matchLogAnchorInternal), true);
@@ -1550,6 +1554,8 @@ void FrameDataMonitor() {
             g_lastSample.online = g_onlineModeActive.load();
             // Expose function symbol (lambda can't have external linkage) via inline in anonymous namespace
             // We'll define GetCurrentPerFrameSample after the loop.
+
+            ComboOverlay::Tick(g_lastSample);
 
             // --- Recoil Guard (RG) analysis: detect edges and compute freeze/advantage ---
             struct RGAnalysis {

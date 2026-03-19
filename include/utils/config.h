@@ -101,6 +101,18 @@ namespace Config {
         // Frame Advantage display duration (in seconds)
         float frameAdvantageDisplayDuration; // How long to show FA/RG messages (default: 8.0)
 
+        // Combo statistics overlay
+        bool showComboStatisticsOverlay;
+        bool comboOverlayCompactMode;
+        bool comboOverlayShowDetailRow;
+        int  comboOverlayDetailRowSource;   // 0=Combo State, 1=Last Hit
+        bool comboOverlayShowFinalSummary;
+        float comboOverlayDisplayDuration;
+        bool comboOverlayHideWhenImGuiVisible;
+        bool comboOverlayResumeAfterImGui;
+        bool comboOverlayShowRfMultiplier;
+        bool comboOverlayShowRawScale;
+
         // Practice: Dummy Auto-Block behavior
         // Continuous neutral timeout used by event-driven modes (ms). Defaults to 10000 (10s).
         int autoBlockNeutralTimeoutMs;

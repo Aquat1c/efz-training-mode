@@ -494,17 +494,25 @@ void DirectDrawHook::RenderD3D9Overlays(LPDIRECT3DDEVICE9 pDevice) {
     if (!bgList)
         return;
 
-    std::lock_guard<std::mutex> lock(messagesMutex);
+    std::vector<OverlayMessage> permanentSnapshot;
+    std::vector<OverlayMessage> temporarySnapshot;
+    {
+        std::lock_guard<std::mutex> lock(messagesMutex);
+        const auto now = std::chrono::steady_clock::now();
+        messages.erase(std::remove_if(messages.begin(), messages.end(),
+            [&](const OverlayMessage& msg) {
+                return !msg.isPermanent && msg.expireTime <= now;
+            }), messages.end());
+        permanentSnapshot.assign(permanentMessages.begin(), permanentMessages.end());
+        temporarySnapshot.assign(messages.begin(), messages.end());
+    }
 
     // If the ImGui menu is visible and there are no messages, skip message rendering only
     // (but still allow the cursor to render on top of the UI)
     const bool menuVisibleNow = ImGuiImpl::IsVisible();
     bool skipMessageRendering = false;
     if (menuVisibleNow && !g_ShowOverlayDebugBorders.load()) {
-        bool haveActiveTemp = false;
-        auto nowChk = std::chrono::steady_clock::now();
-        for (const auto& m : messages) { if (m.expireTime > nowChk) { haveActiveTemp = true; break; } }
-        if (!haveActiveTemp && permanentMessages.empty()) {
+        if (temporarySnapshot.empty() && permanentSnapshot.empty()) {
             skipMessageRendering = true; // do not return; we still want to draw the cursor
         }
     }
@@ -576,7 +584,7 @@ void DirectDrawHook::RenderD3D9Overlays(LPDIRECT3DDEVICE9 pDevice) {
         if (g_FrameAdvantageId != -1 && g_FrameAdvantage2Id != -1) {
             const OverlayMessage* faLeft = nullptr;
             const OverlayMessage* faRight = nullptr;
-            for (const auto& pm : permanentMessages) {
+            for (const auto& pm : permanentSnapshot) {
                 if (pm.id == g_FrameAdvantageId) faLeft = &pm;
                 else if (pm.id == g_FrameAdvantage2Id) faRight = &pm;
             }
@@ -631,11 +639,11 @@ void DirectDrawHook::RenderD3D9Overlays(LPDIRECT3DDEVICE9 pDevice) {
                 }
             }
             // Draw background behind text only when menu is hidden
-            if (textSize.x > 0.f && textSize.y > 0.f) {
+            if (textSize.x > 0.f && textSize.y > 0.f && msg.backgroundAlpha > 0) {
                 bgList->AddRectFilled(
                     ImVec2(textPos.x - 4, textPos.y - 2),
                     ImVec2(textPos.x + textSize.x + 4, textPos.y + textSize.y + 2),
-                    IM_COL32(0, 0, 0, 180)
+                    IM_COL32(0, 0, 0, msg.backgroundAlpha)
                 );
             }
             }
@@ -656,18 +664,15 @@ void DirectDrawHook::RenderD3D9Overlays(LPDIRECT3DDEVICE9 pDevice) {
         const int cap = limitMessages ? 24 : INT_MAX;
         int drawn = 0;
         // Permanent first
-        for (const auto& msg : permanentMessages) {
+        for (const auto& msg : permanentSnapshot) {
             renderMessage(msg);
             if (++drawn >= cap) break;
         }
         // Then temporary until cap
         if (drawn < cap) {
-            const auto now = std::chrono::steady_clock::now();
-            for (const auto& msg : messages) {
-                if (msg.expireTime > now) {
-                    renderMessage(msg);
-                    if (++drawn >= cap) break;
-                }
+            for (const auto& msg : temporarySnapshot) {
+                renderMessage(msg);
+                if (++drawn >= cap) break;
             }
         }
     }
@@ -1065,11 +1070,11 @@ void DirectDrawHook::AddMessage(const std::string& text, const std::string& cate
     }
 
     auto expireTime = std::chrono::steady_clock::now() + std::chrono::milliseconds(durationMs);
-    messages.push_back({text, color, expireTime, x, y, false, -1, category});
+    messages.push_back({text, color, expireTime, x, y, false, -1, category, 180});
 }
 
 // Add a permanent message
-int DirectDrawHook::AddPermanentMessage(const std::string& text, COLORREF color, int x, int y) {
+int DirectDrawHook::AddPermanentMessage(const std::string& text, COLORREF color, int x, int y, unsigned char backgroundAlpha) {
     std::lock_guard<std::mutex> lock(messagesMutex);
     
     // FIX: Declare newId and increment the static counter
@@ -1077,7 +1082,7 @@ int DirectDrawHook::AddPermanentMessage(const std::string& text, COLORREF color,
     
     // FIX: Add the missing 'category' member to the initializer list.
     // Permanent messages don't need a category, so we use an empty string.
-    permanentMessages.push_back({text, color, {}, x, y, true, newId, ""});
+    permanentMessages.push_back({text, color, {}, x, y, true, newId, "", backgroundAlpha});
     
     return newId;
 }
@@ -1088,6 +1093,9 @@ void DirectDrawHook::UpdatePermanentMessage(int id, const std::string& newText, 
     
     for (auto& msg : permanentMessages) {
         if (msg.id == id) {
+            if (msg.text == newText && msg.color == newColor) {
+                break;
+            }
             msg.text = newText;
             msg.color = newColor;
             break;
