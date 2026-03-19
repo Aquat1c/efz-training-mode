@@ -250,14 +250,20 @@ void MonitorKeys() {
     int sleepMs = 16;        // adaptive polling interval
     int idleLoops = 0;       // counts consecutive idle loops
     const int idleThreshold = 10; // after ~10 loops idle (~160ms), back off
+    unsigned long long nextWindowStateRefreshTick = 0;
     while (keyMonitorRunning.load()) {
         // Exit immediately if online mode is entered
         if (g_onlineModeActive.load()) {
             keyMonitorRunning.store(false);
             break;
         }
-    // Update window active state at the beginning of each loop
-        UpdateWindowActiveState();
+        // Frame monitor already refreshes window/gui state aggressively. Keep this thread's
+        // copy in sync at a lower cadence to avoid redundant user32 work.
+        const unsigned long long nowTick = XPCompat::GetTickCount64Compat();
+        if (nowTick >= nextWindowStateRefreshTick) {
+            UpdateWindowActiveState();
+            nextWindowStateRefreshTick = nowTick + 100;
+        }
 
     // Opportunistically retry loading key.ini if we don't have attacks detected or D is unset
     if (GetTickCount() >= s_nextIniRetryTick) {
