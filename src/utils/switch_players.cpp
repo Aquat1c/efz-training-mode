@@ -21,6 +21,42 @@ namespace {
     static inline bool IsRevivalLoaded() {
         return GetModuleHandleA("EfzRevival.dll") != nullptr && IsEfzRevivalVersionSupported();
     }
+    static inline bool UseRevivalLiveSideField(EfzRevivalVersion ver) {
+        return ver == EfzRevivalVersion::Revival102h || ver == EfzRevivalVersion::Revival102i;
+    }
+    static int ReadEngineActivePlayer() {
+        uintptr_t efzBase = GetEFZBase();
+        if (!efzBase) return -1;
+        uintptr_t gameStatePtr = 0;
+        if (!SafeReadMemory(efzBase + EFZ_BASE_OFFSET_GAME_STATE, &gameStatePtr, sizeof(gameStatePtr)) || !gameStatePtr)
+            return -1;
+        uint8_t activePlayer = 0xFF;
+        if (!SafeReadMemory(gameStatePtr + GAMESTATE_OFF_ACTIVE_PLAYER, &activePlayer, sizeof(activePlayer)))
+            return -1;
+        return (activePlayer == 0u || activePlayer == 1u) ? static_cast<int>(activePlayer) : -1;
+    }
+    static int ReadEffectivePracticeLocalSide(uint8_t* practice) {
+        if (!practice) return -1;
+
+        const EfzRevivalVersion ver = GetEfzRevivalVersion();
+        if (UseRevivalLiveSideField(ver)) {
+            // On 1.02h/i, the live SwitchPlayers hotkey toggles the dword at +0x24.
+            // 1 means P1 is local, 0 means P2 is local.
+            int liveSideField = -1;
+            if (SafeReadMemory((uintptr_t)practice + PRACTICE_OFF_GUI_POS, &liveSideField, sizeof(liveSideField))) {
+                if (liveSideField == 1) return 0;
+                if (liveSideField == 0) return 1;
+            }
+        }
+
+        int local = -1;
+        if (SafeReadMemory((uintptr_t)practice + EFZ_Practice_LocalSideOffset(), &local, sizeof(local))
+            && (local == 0 || local == 1)) {
+            return local;
+        }
+
+        return ReadEngineActivePlayer();
+    }
     // Track whether sides were swapped during the current match
     static std::atomic<bool> s_sidesAreSwapped{false};
     
@@ -231,52 +267,6 @@ namespace {
             ret = nullptr;
         }
         return ret;
-    }
-    // Resolve Practice pointer directly from EfzRevival's game-mode array as a fallback
-    // when hooks haven't captured ECX yet. Index 3 corresponds to Practice.
-    static uint8_t* ResolvePracticePtrFallback(bool allowCharacterSelect = false) {
-        // Gate scanning strictly: Practice mode only, offline only, and never during Character Select
-        if (!allowCharacterSelect && IsInCharacterSelectScreen()) return nullptr;
-        if (GetCurrentGameMode() != GameMode::Practice) return nullptr;
-        if (IsNetplaySuspendActive()) return nullptr;
-        HMODULE h = GetModuleHandleA("EfzRevival.dll");
-        if (!h) return nullptr;
-        uintptr_t base = reinterpret_cast<uintptr_t>(h);
-        // Prefer 1.02i helper if available: sub_1006C040(idx)
-        if (GetEfzRevivalVersion() == EfzRevivalVersion::Revival102i) {
-            void* getModeRaw = reinterpret_cast<void*>(base + 0x006C040);
-            // Try current mode then common candidates
-            uint8_t rawMode = 255; GetCurrentGameMode(&rawMode);
-            int tryIdx[3] = { (int)rawMode, 1, 3 };
-            for (int t=0;t<3;++t) {
-                int idx = tryIdx[t]; if (idx < 0 || idx > 15) continue;
-                bool okCall = false;
-                void* cand = SehSafe_GetMode(getModeRaw, idx, &okCall);
-                if (!okCall || !cand) continue;
-                uintptr_t p = reinterpret_cast<uintptr_t>(cand);
-                int local=-1, remote=-1;
-                if (!SafeReadMemory(p + PRACTICE_OFF_LOCAL_SIDE_IDX, &local, sizeof(local))) continue;
-                if (!SafeReadMemory(p + PRACTICE_OFF_REMOTE_SIDE_IDX, &remote, sizeof(remote))) continue;
-                if (!((local==0||local==1) && (remote==0||remote==1))) continue;
-                return reinterpret_cast<uint8_t*>(p);
-            }
-            LogOut("[SWITCH] GetModeStruct calls failed; falling back to array scan", true);
-        }
-        // Fallback: mode array scan (0..15)
-        uintptr_t arrRva = EFZ_RVA_GameModePtrArray();
-        if (!arrRva) return nullptr;
-        for (int idx=0; idx<16; ++idx) {
-            uintptr_t slotAddr = base + arrRva + 4*idx;
-            uintptr_t p = 0; if (!SafeReadMemory(slotAddr, &p, sizeof(p)) || !p) continue;
-            int local=-1, remote=-1;
-            if (!SafeReadMemory(p + PRACTICE_OFF_LOCAL_SIDE_IDX, &local, sizeof(local))) continue;
-            if (!SafeReadMemory(p + PRACTICE_OFF_REMOTE_SIDE_IDX, &remote, sizeof(remote))) continue;
-            if (!((local==0||local==1) && (remote==0||remote==1))) continue;
-            std::ostringstream oss; oss << "[SWITCH] Fallback resolved practice slot=" << idx << " VA=0x" << std::hex << p;
-            LogOut(oss.str(), true);
-            return reinterpret_cast<uint8_t*>(p);
-        }
-        return nullptr;
     }
     // SEH-safe wrappers (no C++ objects in scope) to call into EfzRevival without crashing the game
     static bool SehSafe_MapReset(bool(__thiscall* fn)(char**), char** mapPtr, bool* outOk) {
@@ -690,7 +680,7 @@ namespace SwitchPlayers {
         }
         
         // Read current
-    int curLocal = 0; SafeReadMemory((uintptr_t)practice + EFZ_Practice_LocalSideOffset(), &curLocal, sizeof(curLocal));
+        int curLocal = ReadEffectivePracticeLocalSide(practice);
         DebugLog::LogRead("practice.localSide[INITIAL]", (uintptr_t)practice + EFZ_Practice_LocalSideOffset(), curLocal);
         
         // Dump DETAILED state before any changes
@@ -756,20 +746,20 @@ namespace SwitchPlayers {
                 // Mirror init by updating INIT_SOURCE too (so next reinit stays consistent)
                 LogRW<int>("practice.initSource[+0x944]", (uintptr_t)practice + PRACTICE_OFF_INIT_SOURCE_SIDE, desiredLocal);
             } else {
-                // G/H/I-version: Make the other side local and swap mapping once, matching engine init semantics.
+                // G/H/I-version: 1.02h/i use the live side field at +0x24 for runtime SwitchPlayers.
+                // Keep the stored local/remote/init fields aligned for future reinit, but derive and write
+                // the live side via +0x24 so repeated toggles can return to P1 correctly.
                 // Steps:
-                // 1) Update Practice local/remote to desired/newRemote
-                // 2) Clear the engine switch flag (+36) to prevent a second swap in the tail
+                // 1) Update Practice local/remote/initSource metadata to the desired side
+                // 2) Write the runtime live-side field (+0x24) to 1 for P1-local / 0 for P2-local
                 // 3) Call CleanupPair(ctx) exactly once (engine swap helper)
                 // 4) Update engine-facing flags (active player, CPU) and GUI pos so UI/control roles match
                 // 5) Return (no further map reset/refresh here)
 
-                // Clear switch-needed flag to prevent tail double-swap; we'll perform a single immediate swap here.
-                LogRW<int>("practice.switchFlag[+36]", (uintptr_t)practice + 36, 0);
-
                 // First commit new local/remote indices to reflect the chosen local side
                 uintptr_t offLocal  = (uintptr_t)practice + EFZ_Practice_LocalSideOffset();
                 uintptr_t offRemote = (uintptr_t)practice + EFZ_Practice_RemoteSideOffset();
+                uintptr_t offInit   = (uintptr_t)practice + PRACTICE_OFF_INIT_SOURCE_SIDE;
                 
                 std::ostringstream ossVer;
                 ossVer << "[SWITCH][G/H/I-" << (ver == EfzRevivalVersion::Revival102g ? "g" : ver == EfzRevivalVersion::Revival102h ? "h" : "i") << "] localSide=" << desiredLocal << ", remoteSide=" << newRemote;
@@ -777,6 +767,10 @@ namespace SwitchPlayers {
                 
                 LogRW<int>("practice.localSide[g/h/i]", offLocal, desiredLocal);
                 LogRW<int>("practice.remoteSide[g/h/i]", offRemote, newRemote);
+                LogRW<int>("practice.initSource[g/h/i]", offInit, desiredLocal);
+
+                const int liveSideField = (desiredLocal == 0) ? 1 : 0;
+                LogRW<int>("practice.liveSide[+0x24]", (uintptr_t)practice + PRACTICE_OFF_GUI_POS, liveSideField);
 
                 // Then perform a single swap via CleanupPair on patch ctx so the new local gets the previous local's controls
                 HMODULE hMod = GetModuleHandleA("EfzRevival.dll");
@@ -805,8 +799,6 @@ namespace SwitchPlayers {
                         LogRW<uint8_t>("engine.activePlayer[+4930]", gameStatePtr + GAMESTATE_OFF_ACTIVE_PLAYER, activePlayer);
                         LogRW<uint8_t>("engine.P2_CPU_FLAG[+4931]", gameStatePtr + GAMESTATE_OFF_P2_CPU_FLAG, p2CpuFlag);
                         LogRW<uint8_t>("engine.P1_CPU_FLAG[+4932]", gameStatePtr + GAMESTATE_OFF_P1_CPU_FLAG, p1CpuFlag);
-                        uint8_t guiPos = (desiredLocal == 0) ? 1u : 0u; // 1 when P1 local, 0 when P2 local
-                        LogRW<uint8_t>("practice.GUI_POS[+0x24]", (uintptr_t)practice + PRACTICE_OFF_GUI_POS, guiPos);
                     } else {
                         LogOut("[SWITCH][G/H/I] Game state pointer not available; engine flags not updated", true);
                     }
@@ -1000,29 +992,12 @@ namespace SwitchPlayers {
         PauseIntegration::EnsurePracticePointerCapture();
         void* p = PauseIntegration::GetPracticeControllerPtr();
         if (!p) {
-            // Fallback: try direct resolution from game-mode array
-            uint8_t* fb = ResolvePracticePtrFallback();
-            if (!fb) {
-                LogOut("[SWITCH] Practice controller not available", true);
-                // As a last resort, perform an engine-only swap even though Revival is present but practice is missing
-                uintptr_t efzBase = GetEFZBase();
-                if (!efzBase) return false; uintptr_t gs=0; 
-                if (!SafeReadMemory(efzBase + EFZ_BASE_OFFSET_GAME_STATE, &gs, sizeof(gs)) || !gs) return false;
-                uint8_t curActive=0; SafeReadMemory(gs + GAMESTATE_OFF_ACTIVE_PLAYER, &curActive, sizeof(curActive));
-                int desired = (curActive == 0) ? 1 : 0;
-                bool success = ApplyEngineOnlySet(desired);
-                if (success) {
-                    // Set flag true if swapping TO P2 (desired=1), false if returning TO P1 (desired=0)
-                    s_sidesAreSwapped.store(desired == 1, std::memory_order_relaxed);
-                    LogOut(desired == 1 ? "[SWITCH] Toggle succeeded (fallback) - sides now swapped (flag set)" : "[SWITCH] Toggle succeeded (fallback) - returned to default (flag cleared)", true);
-                }
-                return success;
-            }
-            LogOut("[SWITCH] Practice pointer resolved via fallback (GameModePtrArray)", true);
-            p = fb;
+            LogOut("[SWITCH] Revival swap blocked: Practice controller not yet confirmed", true);
+            return false;
         }
         uint8_t* practice = reinterpret_cast<uint8_t*>(p);
-    int curLocal = 0; if (!SafeReadMemory((uintptr_t)practice + EFZ_Practice_LocalSideOffset(), &curLocal, sizeof(curLocal))) return false;
+        int curLocal = ReadEffectivePracticeLocalSide(practice);
+        if (curLocal != 0 && curLocal != 1) return false;
         int desired = (curLocal == 0) ? 1 : 0;
         bool success = ApplySet(practice, desired);
         if (success) {
@@ -1048,14 +1023,8 @@ namespace SwitchPlayers {
         PauseIntegration::EnsurePracticePointerCapture();
         void* p = PauseIntegration::GetPracticeControllerPtr();
         if (!p) {
-            uint8_t* fb = ResolvePracticePtrFallback();
-            if (!fb) {
-                LogOut("[SWITCH] Practice controller not available", true);
-                // Fallback to engine-only path
-                return ApplyEngineOnlySet(sideIdx);
-            }
-            LogOut("[SWITCH] Practice pointer resolved via fallback (GameModePtrArray)", true);
-            p = fb;
+            LogOut("[SWITCH] Revival SetLocalSide blocked: Practice controller not yet confirmed", true);
+            return false;
         }
         return ApplySet(reinterpret_cast<uint8_t*>(p), sideIdx);
     }
@@ -1081,15 +1050,10 @@ namespace SwitchPlayers {
         PauseIntegration::EnsurePracticePointerCapture();
         void* p = PauseIntegration::GetPracticeControllerPtr();
         if (!p) {
-            uint8_t* fb = ResolvePracticePtrFallback();
-            if (!fb) return -1;
-            p = fb;
+            return -1;
         }
         
-        int curLocal = 0;
-        if (!SafeReadMemory((uintptr_t)p + EFZ_Practice_LocalSideOffset(), &curLocal, sizeof(curLocal)))
-            return -1;
-        return curLocal;
+        return ReadEffectivePracticeLocalSide(reinterpret_cast<uint8_t*>(p));
     }
 
     bool ResetControlMappingForMenusToP1() {
@@ -1133,9 +1097,6 @@ namespace SwitchPlayers {
         PauseIntegration::EnsurePracticePointerCapture();
         uint8_t* practice = reinterpret_cast<uint8_t*>(PauseIntegration::GetPracticeControllerPtr());
         if (!practice) {
-            practice = ResolvePracticePtrFallback(true); // Allow CS scans so menu reset never stalls on missing pointer
-        }
-        if (!practice) {
             // Log only once per CS instance
             bool firstThisCS = !s_loggedNoPracticeThisCS.exchange(true, std::memory_order_relaxed);
             if (firstThisCS) {
@@ -1148,12 +1109,18 @@ namespace SwitchPlayers {
 
         // Check if already at default state (local=0, remote=1, GUI_POS=1)
         int currentLocal = -1, currentRemote = -1;
-        uint8_t currentGuiPos = 0xFF;
+        int currentLiveSide = ReadEffectivePracticeLocalSide(practice);
+        int currentGuiPos = -1;
         SafeReadMemory((uintptr_t)practice + EFZ_Practice_LocalSideOffset(), &currentLocal, sizeof(currentLocal));
         SafeReadMemory((uintptr_t)practice + EFZ_Practice_RemoteSideOffset(), &currentRemote, sizeof(currentRemote));
         SafeReadMemory((uintptr_t)practice + PRACTICE_OFF_GUI_POS, &currentGuiPos, sizeof(currentGuiPos));
-        
-        bool practiceStateIsDefault = (currentLocal == 0 && currentRemote == 1 && currentGuiPos == 1);
+
+        bool practiceStateIsDefault = false;
+        if (UseRevivalLiveSideField(GetEfzRevivalVersion())) {
+            practiceStateIsDefault = (currentLiveSide == 0 && currentGuiPos == 1);
+        } else {
+            practiceStateIsDefault = (currentLocal == 0 && currentRemote == 1 && currentGuiPos == 1);
+        }
         
         // Also check engine CPU flags to see if they match the default Practice mapping
         bool engineFlagsNeedReset = false;
@@ -1190,7 +1157,7 @@ namespace SwitchPlayers {
             int local = 0, remote = 1;
             bool okLocal = SafeWriteMemory((uintptr_t)practice + EFZ_Practice_LocalSideOffset(), &local, sizeof(local));
             bool okRemote = SafeWriteMemory((uintptr_t)practice + EFZ_Practice_RemoteSideOffset(), &remote, sizeof(remote));
-            uint8_t guiPos = 1u; 
+            int guiPos = 1;
             bool okGui = SafeWriteMemory((uintptr_t)practice + PRACTICE_OFF_GUI_POS, &guiPos, sizeof(guiPos));
             
             if (detailedLogging.load()) {

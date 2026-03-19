@@ -1107,7 +1107,10 @@ void ToggleRecord() {
         // Enter PreRecord: swap controls to make P2 local and remember current side
         if (GetCurrentGameMode() == GameMode::Practice) {
             PauseIntegration::EnsurePracticePointerCapture();
-            void* p = PauseIntegration::GetPracticeControllerPtr();
+            void* p = PauseIntegration::ResolvePracticeControllerPtrNow(
+                false,
+                true,
+                "MacroController::ToggleRecord");
             int curLocal = 0;
             bool readOk = (p && SafeReadMemory((uintptr_t)p + PRACTICE_OFF_LOCAL_SIDE_IDX, &curLocal, sizeof(curLocal)));
             if (readOk) {

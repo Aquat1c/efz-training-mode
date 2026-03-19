@@ -14,6 +14,7 @@
 #include "../include/input/input_motion.h"
 #include "../include/input/input_motion.h"
 #include "../include/utils/bgm_control.h"
+#include "../include/utils/xp_compat.h"
 #include "../include/input/input_debug.h"
 #include <algorithm> 
 #include <vector>
@@ -3145,7 +3146,10 @@ namespace ImGuiGui {
             ImGui::SeparatorText("Switch Players (Practice)");
             int curLocal = -1;
             PauseIntegration::EnsurePracticePointerCapture();
-            if (void* p = PauseIntegration::GetPracticeControllerPtr()) {
+            if (void* p = PauseIntegration::ResolvePracticeControllerPtrNow(
+                    false,
+                    GetCurrentGamePhase() == GamePhase::Match,
+                    "ImGuiGui::RenderDebugInputTab")) {
                 SafeReadMemory((uintptr_t)p + PRACTICE_OFF_LOCAL_SIDE_IDX, &curLocal, sizeof(curLocal));
             }
             if (ImGui::Button("Toggle Switch Players")) {
@@ -3156,7 +3160,10 @@ namespace ImGuiGui {
                 } else {
                     // Re-read after toggle for display
                     curLocal = -1;
-                    if (void* p2 = PauseIntegration::GetPracticeControllerPtr()) {
+                    if (void* p2 = PauseIntegration::ResolvePracticeControllerPtrNow(
+                            false,
+                            GetCurrentGamePhase() == GamePhase::Match,
+                            "ImGuiGui::RenderDebugInputTabAfterToggle")) {
                         SafeReadMemory((uintptr_t)p2 + PRACTICE_OFF_LOCAL_SIDE_IDX, &curLocal, sizeof(curLocal));
                     }
                     DirectDrawHook::AddMessage(curLocal == 0 ? "Local: P1" : (curLocal == 1 ? "Local: P2" : "Local: ?"),
@@ -3241,7 +3248,7 @@ namespace ImGuiGui {
             } catch (...) {
                 LogOut("[IMGUI][FM] Exception while enabling FM bypass.", true);
             }
-            uint64_t now = GetTickCount64();
+            uint64_t now = XPCompat::GetTickCount64Compat();
             if (now - s_lastPatchLogTick > 2000) { // throttle to 2s
                 LogOut(
                     std::string("[IMGUI][FM] FM HP bypass requested. Runtime changes: ")

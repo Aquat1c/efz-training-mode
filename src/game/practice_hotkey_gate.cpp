@@ -4,6 +4,7 @@
 #include "../../include/core/logger.h"
 #include "../../include/core/constants.h"
 #include "../../include/core/memory.h"
+#include "../../include/utils/pause_integration.h"
 #include "../../3rdparty/minhook/include/MinHook.h"
 #include <windows.h>
 #include <atomic>
@@ -28,6 +29,7 @@ namespace {
     uintptr_t ScanForHotkeyEvaluator();
 
     char __fastcall HookedHotkeyEval(void* self, void* /*edx*/, int a2) {
+        PauseIntegration::NotePracticeControllerCandidate(self, "PracticeDispatcher");
         if (Gate_IsMenuVisible()) {
             // Suppress all practice hotkey side-effects this frame
             s_suppressedFrames.fetch_add(1, std::memory_order_relaxed);
