@@ -26,3 +26,5 @@ void FlushPendingConsoleLogs();
 void SetConsoleReady(bool ready);
 // Enable/disable reduced logging mode at runtime
 void SetReducedLogging(bool reduced);
+void SetCurrentLogMatchInternalFrame(int internalFrame);
+int GetCurrentLogMatchInternalFrame();

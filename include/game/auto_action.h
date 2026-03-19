@@ -34,12 +34,14 @@ extern std::atomic<int> g_triggersCancelledFrame;
 // Function declarations
 short GetActionMoveID(int actionType, int triggerType = TRIGGER_NONE, int playerNum = 2);
 void ProcessTriggerDelays();
+void ProcessTriggerDelays(short moveID1, short moveID2, short prevMoveID1, short prevMoveID2);
 void StartTriggerDelay(int playerNum, int triggerType, short moveID, int delayFrames);
 void MonitorAutoActions();
 // Optimized overload: avoid per-frame memory reads by passing current/prev move IDs
 void MonitorAutoActions(short moveID1, short moveID2, short prevMoveID1, short prevMoveID2);
 void ResetActionFlags();
 void ClearDelayStatesIfNonActionable();
+void ClearDelayStatesIfNonActionable(short moveID1, short moveID2, short prevMoveID1, short prevMoveID2, const char* source);
 
 // Function declaration for the special move logic
 void ApplyAutoAction(int playerNum, uintptr_t moveIDAddr, short currentMoveID, short prevMoveID);

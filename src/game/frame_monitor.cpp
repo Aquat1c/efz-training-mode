@@ -819,9 +819,17 @@ void FrameDataMonitor() {
     GamePhase lastFmSyncPhase = GamePhase::Unknown;
     bool lastFmSyncFeatures = g_featuresEnabled.load(std::memory_order_relaxed);
     bool lastFmSyncNetplay = g_onlineModeActive.load(std::memory_order_relaxed);
+    int matchLogAnchorInternal = -1;
 
     while (!g_isShuttingDown) {
         auto frameStart = clock::now();
+        const int frameBeforeIncrement = frameCounter.load();
+        if (matchLogAnchorInternal >= 0) {
+            const int relativeFrame = frameBeforeIncrement - matchLogAnchorInternal;
+            SetCurrentLogMatchInternalFrame((relativeFrame >= 0) ? relativeFrame : 0);
+        } else {
+            SetCurrentLogMatchInternalFrame(-1);
+        }
         // Catch-up logic: if we are *very* late (> 10 frames), jump ahead to avoid cascading backlog
         if (frameStart - expectedNext > targetFrameTime * 10) {
             expectedNext = frameStart + targetFrameTime;
@@ -865,6 +873,8 @@ void FrameDataMonitor() {
 
     if (g_onlineModeActive.load()) {
         g_lastSample.online = true;
+        matchLogAnchorInternal = -1;
+        SetCurrentLogMatchInternalFrame(-1);
         goto FRAME_MONITOR_FRAME_END;
     }
 
@@ -873,6 +883,17 @@ void FrameDataMonitor() {
     // Check current game phase (single authoritative call per loop)
     GamePhase currentPhase = GetCurrentGamePhase();
     GameMode currentMode = GetCurrentGameMode();
+    if (currentPhase == GamePhase::Match) {
+        if (matchLogAnchorInternal < 0) {
+            matchLogAnchorInternal = frameBeforeIncrement + 1;
+            SetCurrentLogMatchInternalFrame(0);
+        } else {
+            const int relativeFrame = frameBeforeIncrement - matchLogAnchorInternal;
+            SetCurrentLogMatchInternalFrame((relativeFrame >= 0) ? relativeFrame : 0);
+        }
+    } else if (matchLogAnchorInternal < 0) {
+        SetCurrentLogMatchInternalFrame(-1);
+    }
 
     {
         const bool featuresEnabledNow = g_featuresEnabled.load(std::memory_order_relaxed);
@@ -984,6 +1005,12 @@ void FrameDataMonitor() {
 
             // Entering MATCH phase -> reinit transient state
             if (currentPhase == GamePhase::Match && lastPhase != GamePhase::Match) {
+                matchLogAnchorInternal = frameBeforeIncrement + 1;
+                SetCurrentLogMatchInternalFrame(0);
+                if (detailedLogging.load()) {
+                    LogOut("[LOGGER] Match-frame anchor reset for new match at internal=" +
+                           std::to_string(matchLogAnchorInternal), true);
+                }
                 prevMoveID1 = -1;
                 prevMoveID2 = -1;
 
@@ -1027,6 +1054,16 @@ void FrameDataMonitor() {
                 s_csDidSnapshotApply = false;
                 // NEW: mark that we have not yet performed our one-shot persistent trigger clear this CS entry
                 s_csDidPersistentTriggerClear = false;
+            }
+
+            if (lastPhase == GamePhase::Match && currentPhase != GamePhase::Match) {
+                if (detailedLogging.load()) {
+                    const int finalMatchFrame = frameBeforeIncrement - matchLogAnchorInternal;
+                    LogOut("[LOGGER] Match-frame anchor cleared at internal=" + std::to_string(frameBeforeIncrement) +
+                           " finalMatchInternal=" + std::to_string((finalMatchFrame >= 0) ? finalMatchFrame : 0), true);
+                }
+                matchLogAnchorInternal = -1;
+                SetCurrentLogMatchInternalFrame(-1);
             }
 
             lastPhase = currentPhase;
@@ -1207,6 +1244,10 @@ void FrameDataMonitor() {
         
     // SINGLE authoritative frame increment
     int currentFrame = frameCounter.fetch_add(1) + 1;
+        if (currentPhase == GamePhase::Match && matchLogAnchorInternal >= 0) {
+            const int relativeFrame = currentFrame - matchLogAnchorInternal;
+            SetCurrentLogMatchInternalFrame((relativeFrame >= 0) ? relativeFrame : 0);
+        }
 
         // Process any active input queues
         ProcessInputQueues();
@@ -1939,9 +1980,10 @@ void FrameDataMonitor() {
                 // When tick-integrated mode is active, auto-actions are driven directly from the
                 // engine's per-tick input hook; skip here to avoid double-processing.
                 if (!g_tickIntegratedAutoActions.load()) {
-                    ProcessTriggerDelays();      // Handle pending delays
+                    ProcessTriggerDelays(moveID1, moveID2, prevMoveID1, prevMoveID2);      // Handle pending delays
                     // Pass cached move IDs to avoid extra reads and enable lighter math inside
                     MonitorAutoActions(moveID1, moveID2, prevMoveID1, prevMoveID2);
+                    ClearDelayStatesIfNonActionable(moveID1, moveID2, prevMoveID1, prevMoveID2, "frame_monitor");
                 }
                 
                 // STEP 2: Auto-jump
@@ -1950,7 +1992,6 @@ void FrameDataMonitor() {
                 
                 // STEP 3: Auto-airtech (every frame for precision, no throttling)
                 MonitorAutoAirtech(moveID1, moveID2);  
-                ClearDelayStatesIfNonActionable();     
             }
 
             // Continuous Recovery: restore values based on unified sample neutral flags + optional both-neutral delay
