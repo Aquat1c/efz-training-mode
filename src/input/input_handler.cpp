@@ -31,6 +31,7 @@
 #include "../include/game/macro_controller.h"
 #include "../include/game/frame_monitor.h" // AreCharactersInitialized, GamePhase
 #include "../include/game/auto_action.h" // CancelAutoActionsAndMacros
+#include "../include/game/character_settings.h"
 #include "../include/input/framestep.h"
 #include "../include/utils/xp_compat.h"
 #include <Xinput.h>
@@ -356,6 +357,9 @@ void MonitorKeys() {
                         DirectDrawHook::AddMessage("Position Saved", "SYSTEM", RGB(255, 255, 100), 1500, 0, 100);
                     }
                 };
+                auto reapplyCharacterLocks = [&](uintptr_t base) {
+                    CharacterSettings::TickCharacterEnforcements(base, displayData);
+                };
                 auto teleportOrLoad = [&]() {
                     uintptr_t base = GetEFZBase();
                     if (!base) return;
@@ -383,6 +387,7 @@ void MonitorKeys() {
                         LoadPlayerPositions(base);
                         DirectDrawHook::AddMessage("Position Loaded", "SYSTEM", RGB(100, 255, 100), 1500, 0, 100);
                     }
+                    reapplyCharacterLocks(base);
                 };
                 auto swapPositions = [&]() {
                     uintptr_t base = GetEFZBase();
@@ -399,6 +404,7 @@ void MonitorKeys() {
                         SafeReadMemory(yAddr2, &y2, sizeof(double));
                         SetPlayerPosition(base, EFZ_BASE_OFFSET_P1, x2, y2);
                         SetPlayerPosition(base, EFZ_BASE_OFFSET_P2, x1, y1);
+                        reapplyCharacterLocks(base);
                         DirectDrawHook::AddMessage("Positions Swapped", "SYSTEM", RGB(100, 255, 100), 1500, 0, 100);
                     } else {
                         DirectDrawHook::AddMessage("Swap Failed: Can't read positions", "SYSTEM", RGB(255,100,100), 1500, 0, 100);
@@ -620,6 +626,7 @@ void MonitorKeys() {
                     if (base) {
                         SetPlayerPosition(base, EFZ_BASE_OFFSET_P1, p1StartX, startY);
                         SetPlayerPosition(base, EFZ_BASE_OFFSET_P2, p2StartX, startY);
+                        CharacterSettings::TickCharacterEnforcements(base, displayData);
                         DirectDrawHook::AddMessage("Round Start Position", "SYSTEM", RGB(100, 255, 100), 1500, 0, 100);
                     }
                     keyHandled = true;
@@ -630,6 +637,7 @@ void MonitorKeys() {
                     if (base) {
                         SetPlayerPosition(base, EFZ_BASE_OFFSET_P1, centerX, teleportY);
                         SetPlayerPosition(base, EFZ_BASE_OFFSET_P2, centerX, teleportY);
+                        CharacterSettings::TickCharacterEnforcements(base, displayData);
                         DirectDrawHook::AddMessage("Players Centered", "SYSTEM", RGB(100, 255, 100), 1500, 0, 100);
                     }
                     keyHandled = true;
@@ -640,6 +648,7 @@ void MonitorKeys() {
                     if (base) {
                         SetPlayerPosition(base, EFZ_BASE_OFFSET_P1, leftX, teleportY);
                         SetPlayerPosition(base, EFZ_BASE_OFFSET_P2, leftX, teleportY);
+                        CharacterSettings::TickCharacterEnforcements(base, displayData);
                         DirectDrawHook::AddMessage("Left Corner", "SYSTEM", RGB(100, 255, 100), 1500, 0, 100);
                     }
                     keyHandled = true;
@@ -650,6 +659,7 @@ void MonitorKeys() {
                     if (base) {
                         SetPlayerPosition(base, EFZ_BASE_OFFSET_P1, rightX, teleportY);
                         SetPlayerPosition(base, EFZ_BASE_OFFSET_P2, rightX, teleportY);
+                        CharacterSettings::TickCharacterEnforcements(base, displayData);
                         DirectDrawHook::AddMessage("Right Corner", "SYSTEM", RGB(100, 255, 100), 1500, 0, 100);
                     }
                     keyHandled = true;
@@ -676,6 +686,7 @@ void MonitorKeys() {
                             // Swap positions
                             SetPlayerPosition(base, EFZ_BASE_OFFSET_P1, tempX2, tempY2);
                             SetPlayerPosition(base, EFZ_BASE_OFFSET_P2, tempX1, tempY1);
+                            CharacterSettings::TickCharacterEnforcements(base, displayData);
                             DirectDrawHook::AddMessage("Positions Swapped", "SYSTEM", RGB(100, 255, 100), 1500, 0, 100);
                         } else {
                             DirectDrawHook::AddMessage("Swap Failed: Can't read positions", "SYSTEM", RGB(255,100,100), 1500, 0, 100);
@@ -688,6 +699,7 @@ void MonitorKeys() {
                     uintptr_t base = GetEFZBase();
                     if (base) {
                         LoadPlayerPositions(base);
+                        CharacterSettings::TickCharacterEnforcements(base, displayData);
                         DirectDrawHook::AddMessage("Position Loaded", "SYSTEM", RGB(100, 255, 100), 1500, 0, 100);
                     }
                     keyHandled = true;

@@ -131,6 +131,7 @@ namespace {
         int resources = -1;
         int detail = -1;
         int status = -1;
+        int extras = -1;
     };
 
     std::mutex g_comboOverlayMutex;
@@ -355,6 +356,7 @@ namespace {
         RemoveMessage(g_displayIds.resources);
         RemoveMessage(g_displayIds.detail);
         RemoveMessage(g_displayIds.status);
+        RemoveMessage(g_displayIds.extras);
     }
 
     void ResetPrevSamplesUnlocked() {
@@ -374,7 +376,8 @@ namespace {
     void ResetStateUnlocked(const char* reason, bool resetSessionStats) {
         const bool hadState = g_state.live || g_state.finalized || g_displayIds.header != -1
             || g_displayIds.totals != -1 || g_displayIds.resources != -1
-            || g_displayIds.detail != -1 || g_displayIds.status != -1;
+            || g_displayIds.detail != -1 || g_displayIds.status != -1
+            || g_displayIds.extras != -1;
 
         ClearDisplayUnlocked();
         g_state = ComboState{};
@@ -598,11 +601,13 @@ namespace {
         std::ostringstream line3;
         std::ostringstream line4;
         std::ostringstream line5;
+        std::ostringstream line6;
 
         const bool compact = true;
         const bool showDetail = cfg.comboOverlayShowDetailRow;
         const bool showRfMultiplier = cfg.comboOverlayShowRfMultiplier;
         const bool showRawScale = cfg.comboOverlayShowRawScale;
+        bool hasLine6 = false;
         const int p1MeterDelta = (g_state.attackerSide == 1) ? g_state.attackerMeterDelta : g_state.defenderMeterDelta;
         const double p1RfDelta = (g_state.attackerSide == 1) ? g_state.attackerRfDelta : g_state.defenderRfDelta;
         const int p2MeterDelta = (g_state.attackerSide == 2) ? g_state.attackerMeterDelta : g_state.defenderMeterDelta;
@@ -634,26 +639,24 @@ namespace {
             line5 << "PRORATION " << FormatScalePercent(g_state.scalePercent);
             if (cfg.comboOverlayDetailRowSource == 1 && g_state.attackDetail.valid) {
                 line5 << "   Move " << g_state.attackerMoveId
-                      << "   Hitstun " << g_state.defenderHitstun
                       << "   Untech " << g_state.defenderUntech;
             } else {
-                line5 << "   Hitstun " << g_state.defenderHitstun
-                      << "   Untech " << g_state.defenderUntech;
-            }
-            if (showRfMultiplier) {
-                line5 << "   RFx " << std::fixed << std::setprecision(3) << g_state.rfMultiplier;
-            }
-            if (showRawScale) {
-                line5 << "   Raw " << static_cast<int>(std::lround(g_state.scaleRaw));
+                line5 << "   Untech " << g_state.defenderUntech;
             }
         } else {
             line5 << "PRORATION " << FormatScalePercent(g_state.scalePercent);
-            if (showRfMultiplier) {
-                line5 << "   RFx " << std::fixed << std::setprecision(3) << g_state.rfMultiplier;
+        }
+
+        if (showRfMultiplier) {
+            line6 << "RFx " << std::fixed << std::setprecision(3) << g_state.rfMultiplier;
+            hasLine6 = true;
+        }
+        if (showRawScale) {
+            if (hasLine6) {
+                line6 << "   ";
             }
-            if (showRawScale) {
-                line5 << "   Raw " << static_cast<int>(std::lround(g_state.scaleRaw));
-            }
+            line6 << "Raw " << static_cast<int>(std::lround(g_state.scaleRaw));
+            hasLine6 = true;
         }
 
         int y = OVERLAY_Y;
@@ -666,6 +669,8 @@ namespace {
         UpsertMessage(g_displayIds.detail, line4.str(), RGB(255, 170, 170), OVERLAY_X, y, OVERLAY_BG_ALPHA);
         y += LINE_HEIGHT;
         UpsertMessage(g_displayIds.status, line5.str(), RGB(220, 220, 220), OVERLAY_X, y, OVERLAY_BG_ALPHA);
+        y += LINE_HEIGHT;
+        UpsertMessage(g_displayIds.extras, hasLine6 ? line6.str() : std::string(), RGB(220, 220, 220), OVERLAY_X, y, OVERLAY_BG_ALPHA);
     }
 }
 

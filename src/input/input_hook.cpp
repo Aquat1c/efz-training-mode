@@ -108,6 +108,49 @@ typedef int(__thiscall* tPollPlayerInputState)(int inputManagerPtr, unsigned int
 static tPollPlayerInputState oPollPlayerInputState = nullptr;
 static const uintptr_t POLL_INPUT_STATE_FUNC_OFFSET = 0x0CD00;
 
+namespace {
+std::atomic<bool> s_inputHooksCreated{false};
+std::atomic<bool> s_inputHooksEnabled{false};
+uintptr_t s_processTargetAddr = 0;
+uintptr_t s_pollTargetAddr = 0;
+
+bool ResolveInputHookTargets(uintptr_t& targetAddr, uintptr_t& pollAddr) {
+    uintptr_t base = GetEFZBase();
+    if (!base) {
+        LogOut("[INPUT_HOOK] Failed to get game base address. Hook not installed.", true);
+        return false;
+    }
+
+    targetAddr = base + PROCESS_INPUTS_FUNC_OFFSET;
+    pollAddr = base + POLL_INPUT_STATE_FUNC_OFFSET;
+    return true;
+}
+
+bool SetInputHookTargetEnabled(uintptr_t targetAddr, bool active, const char* label) {
+    if (!targetAddr) {
+        return false;
+    }
+
+    const MH_STATUS rc = active
+        ? MH_EnableHook(reinterpret_cast<LPVOID>(targetAddr))
+        : MH_DisableHook(reinterpret_cast<LPVOID>(targetAddr));
+    if (rc == MH_OK
+        || (active && rc == MH_ERROR_ENABLED)
+        || (!active && rc == MH_ERROR_DISABLED)) {
+        return true;
+    }
+
+    LogOut(
+        std::string("[INPUT_HOOK] Failed to ")
+        + (active ? "enable " : "disable ")
+        + label
+        + " hook at "
+        + FormatHexAddress(targetAddr),
+        true);
+    return false;
+}
+} // namespace
+
 // Vanilla-only input routing swap flag
 static std::atomic<bool> g_swapVanillaRouting{false};
 static std::atomic<bool> g_loggedRoutingStateOnce{false};
@@ -338,61 +381,74 @@ int __fastcall HookedProcessCharacterInput(int characterPtr, int edx) {
 }
 
 void InstallInputHook() {
-    uintptr_t base = GetEFZBase();
-    if (!base) {
-        LogOut("[INPUT_HOOK] Failed to get game base address. Hook not installed.", true);
+    uintptr_t targetAddr = 0;
+    uintptr_t pollAddr = 0;
+    if (!ResolveInputHookTargets(targetAddr, pollAddr)) {
+        return;
+    }
+    s_processTargetAddr = targetAddr;
+    s_pollTargetAddr = pollAddr;
+
+    if (!s_inputHooksCreated.load(std::memory_order_acquire)) {
+        if (MH_CreateHook((LPVOID)targetAddr, &HookedProcessCharacterInput, (LPVOID*)&oProcessCharacterInput) != MH_OK) {
+            LogOut("[INPUT_HOOK] Failed to create hook at address " + FormatHexAddress(targetAddr), true);
+            return;
+        }
+
+        if (MH_CreateHook((LPVOID)pollAddr, &HookedPollPlayerInputState, (LPVOID*)&oPollPlayerInputState) != MH_OK) {
+            LogOut("[INPUT_HOOK] Failed to create poll hook at address " + FormatHexAddress(pollAddr), true);
+            MH_RemoveHook((LPVOID)targetAddr);
+            return;
+        }
+
+        s_inputHooksCreated.store(true, std::memory_order_release);
+        LogOut("[INPUT_HOOK] Hooked processCharacterInput at " + FormatHexAddress(targetAddr), true);
+        LogOut("[INPUT_HOOK] Hooked pollPlayerInputState at " + FormatHexAddress(pollAddr), true);
+    }
+
+    if (g_onlineModeActive.load(std::memory_order_relaxed)) {
+        SetInputHookActive(false);
         return;
     }
 
-    // The actual address in memory is the game's base + the relative offset.
-    uintptr_t targetAddr = base + PROCESS_INPUTS_FUNC_OFFSET;
-    uintptr_t pollAddr   = base + POLL_INPUT_STATE_FUNC_OFFSET;
+    SetInputHookActive(true);
+}
 
-    // REMOVED: MH_Initialize() is now called globally in dllmain.cpp
-
-    // Create the hooks.
-    if (MH_CreateHook((LPVOID)targetAddr, &HookedProcessCharacterInput, (LPVOID*)&oProcessCharacterInput) != MH_OK) {
-        LogOut("[INPUT_HOOK] Failed to create hook at address " + FormatHexAddress(targetAddr), true);
+void SetInputHookActive(bool active) {
+    if (!s_inputHooksCreated.load(std::memory_order_acquire)) {
+        if (active) {
+            InstallInputHook();
+        }
         return;
     }
 
-    if (MH_CreateHook((LPVOID)pollAddr, &HookedPollPlayerInputState, (LPVOID*)&oPollPlayerInputState) != MH_OK) {
-        LogOut("[INPUT_HOOK] Failed to create poll hook at address " + FormatHexAddress(pollAddr), true);
-        // Clean up previously created hook to avoid partial state
-        MH_RemoveHook((LPVOID)targetAddr);
+    const bool currentlyEnabled = s_inputHooksEnabled.load(std::memory_order_acquire);
+    if (currentlyEnabled == active) {
         return;
     }
 
-    // Enable the hooks.
-    if (MH_EnableHook((LPVOID)targetAddr) != MH_OK) {
-        LogOut("[INPUT_HOOK] Failed to enable hook.", true);
-        MH_RemoveHook((LPVOID)targetAddr);
-        MH_RemoveHook((LPVOID)pollAddr);
+    const bool processOk = SetInputHookTargetEnabled(s_processTargetAddr, active, "processCharacterInput");
+    const bool pollOk = SetInputHookTargetEnabled(s_pollTargetAddr, active, "pollPlayerInputState");
+    if (!processOk || !pollOk) {
         return;
     }
 
-    if (MH_EnableHook((LPVOID)pollAddr) != MH_OK) {
-        LogOut("[INPUT_HOOK] Failed to enable poll hook.", true);
-        MH_DisableHook((LPVOID)targetAddr);
-        MH_RemoveHook((LPVOID)targetAddr);
-        MH_RemoveHook((LPVOID)pollAddr);
-        return;
-    }
-
-    LogOut("[INPUT_HOOK] Hooked processCharacterInput at " + FormatHexAddress(targetAddr), true);
-    LogOut("[INPUT_HOOK] Hooked pollPlayerInputState at " + FormatHexAddress(pollAddr), true);
+    s_inputHooksEnabled.store(active, std::memory_order_release);
+    LogOut(std::string("[INPUT_HOOK] Input hooks ") + (active ? "enabled" : "disabled"), true);
 }
 
 void RemoveInputHook() {
-    uintptr_t base = GetEFZBase();
-    if (base) {
-        uintptr_t targetAddr = base + PROCESS_INPUTS_FUNC_OFFSET;
-        uintptr_t pollAddr   = base + POLL_INPUT_STATE_FUNC_OFFSET;
-        MH_DisableHook((LPVOID)targetAddr);
-        MH_RemoveHook((LPVOID)targetAddr); // Also explicitly remove the hook
-        MH_DisableHook((LPVOID)pollAddr);
-        MH_RemoveHook((LPVOID)pollAddr);
+    if (s_processTargetAddr) {
+        MH_DisableHook((LPVOID)s_processTargetAddr);
+        MH_RemoveHook((LPVOID)s_processTargetAddr);
     }
-    // REMOVED: MH_Uninitialize() is now called globally in dllmain.cpp
+    if (s_pollTargetAddr) {
+        MH_DisableHook((LPVOID)s_pollTargetAddr);
+        MH_RemoveHook((LPVOID)s_pollTargetAddr);
+    }
+    s_inputHooksEnabled.store(false, std::memory_order_release);
+    s_inputHooksCreated.store(false, std::memory_order_release);
+    s_processTargetAddr = 0;
+    s_pollTargetAddr = 0;
     LogOut("[INPUT_HOOK] Input hook removed.", true);
 }

@@ -50,4 +50,6 @@ namespace ImGuiGui {
     void RequestActiveSubTabCycle(int direction);
     // Request an absolute top-level tab by logical index in the above order
     void RequestTopTabAbsolute(int logicalIndex);
+    // Ask the next visible frame to focus the window and seed keyboard/gamepad navigation.
+    void RequestInitialNavFocus();
 }

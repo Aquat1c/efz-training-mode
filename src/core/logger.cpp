@@ -252,7 +252,7 @@ void UpdateConsoleTitle() {
                 SetConsoleTitleA(title);
                 lastTitle = title;
             }
-            Sleep(250);
+            Sleep(1000);
             continue;
         }
 

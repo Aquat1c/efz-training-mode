@@ -1,9 +1,13 @@
 #pragma once
 #include <windows.h>
 #include <Xinput.h>
+#include <atomic>
 #include <string>
 
 namespace XInputShim {
+    // Runtime-only debug toggle for verbose generic-controller input translation logs.
+    extern std::atomic<bool> g_LogGenericPadInputDebug;
+
     // Initialize by loading an available XInput DLL (tries 1_4, 9_1_0, 1_3)
     bool Init();
     bool IsLoaded();

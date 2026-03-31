@@ -43,4 +43,7 @@ namespace PauseIntegration {
     // Clears cached Practice/battle/gamespeed pointers that are only valid for the
     // current gameplay session. Hooks remain installed.
     void ResetCachedPointers(const char* reason);
+
+    // Suspend or resume the lightweight pause/battle-context capture hooks used by the mod.
+    void SetRuntimeHooksActive(bool active);
 }

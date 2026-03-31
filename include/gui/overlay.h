@@ -110,6 +110,7 @@ public:
     
     // --- D3D9 Hooking for ImGui ---
     static bool InitializeD3D9();
+    static bool SetD3D9Active(bool active);
     static void ShutdownD3D9();
     // OBSOLETE: These functions are part of the old rendering model and should be removed.
     // static void RenderImGui();

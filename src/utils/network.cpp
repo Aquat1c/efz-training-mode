@@ -553,18 +553,35 @@ void RefreshNetplayRuntimeState() {
         nextState.exportAvailable = true;
         nextState.source = exportSource;
         nextState.exportState = exportState;
+        const uint32_t caps = exportState.capabilityFlags;
+        const bool hasSession = (caps & EFZ_CAP_SESSION) != 0;
+        const bool hasMenu = (caps & EFZ_CAP_MENU) != 0;
+        const bool hasGameFlow = (caps & EFZ_CAP_GAME_FLOW) != 0;
+        const bool hasActivity = (caps & EFZ_CAP_ACTIVITY) != 0;
+        const bool hasRelevantCaps = hasSession || hasMenu || hasGameFlow || hasActivity;
 
-        const bool inMenu = exportState.inNetplayMenu != 0;
-        const bool inCharSelect = exportState.inNetplayCharacterSelect != 0;
-        const bool inMatch = exportState.inNetplayMatch != 0;
+        const bool inMenu = hasMenu && exportState.inNetplayMenu != 0;
+        const bool inCharSelect = hasGameFlow && exportState.inNetplayCharacterSelect != 0;
+        const bool inMatch = hasGameFlow && exportState.inNetplayMatch != 0;
         const bool inFlow = inCharSelect || inMatch;
-        const bool activityActive = exportState.activityPhase != EFZ_ACTIVITY_IDLE;
+        const bool activityActive = hasActivity && exportState.activityPhase != EFZ_ACTIVITY_IDLE;
         const bool phaseTerminal =
-            exportState.sessionPhase == EFZ_PHASE_FAILED
-            || exportState.sessionPhase == EFZ_PHASE_SESSION_ENDED;
+            hasSession
+            && (exportState.sessionPhase == EFZ_PHASE_FAILED
+            || exportState.sessionPhase == EFZ_PHASE_SESSION_ENDED);
         const bool phaseActive =
-            exportState.sessionPhase != EFZ_PHASE_IDLE && !phaseTerminal;
-        const bool exportOwnsRuntime = inMenu || inFlow || activityActive || phaseActive;
+            hasSession
+            && exportState.sessionPhase != EFZ_PHASE_IDLE
+            && !phaseTerminal;
+        bool legacyOnline = false;
+        OnlineState legacyState = OnlineState::Offline;
+        std::string legacyReason;
+        if (!hasRelevantCaps) {
+            legacyOnline = DetectLegacyOnlineState(legacyState, legacyReason);
+            nextState.legacyOnlineState = legacyState;
+        }
+        const bool exportOwnsRuntime =
+            inMenu || inFlow || activityActive || phaseActive || legacyOnline;
 
         nextState.inNetplayMenu = inMenu;
         nextState.inNetplayCharacterSelect = inCharSelect;
@@ -573,12 +590,19 @@ void RefreshNetplayRuntimeState() {
         nextState.sessionActive = exportOwnsRuntime;
         nextState.suspendTraining = exportOwnsRuntime;
 
-        std::string reason = std::string("Export ")
-            + NetplayStateSourceName(exportSource)
-            + " mode=" + std::to_string(exportState.sessionMode)
-            + " phase=" + std::to_string(exportState.sessionPhase)
-            + " activity=" + std::to_string(exportState.activityPhase);
-        SetOnlineReason(reason);
+        std::ostringstream reason;
+        reason << "Export " << NetplayStateSourceName(exportSource)
+               << " caps=0x" << std::hex << std::uppercase << caps << std::dec
+               << " mode=" << exportState.sessionMode
+               << " phase=" << (hasSession ? std::to_string(exportState.sessionPhase) : std::string("n/a"))
+               << " activity=" << (hasActivity ? std::to_string(exportState.activityPhase) : std::string("n/a"))
+               << " menu=" << (inMenu ? "1" : "0")
+               << " flow=" << (inFlow ? "1" : "0");
+        if (!hasRelevantCaps) {
+            reason << " legacyFallback=" << OnlineStateName(legacyState)
+                   << " legacyReason=" << legacyReason;
+        }
+        SetOnlineReason(reason.str());
     } else {
         OnlineState legacyState = OnlineState::Offline;
         std::string reason;

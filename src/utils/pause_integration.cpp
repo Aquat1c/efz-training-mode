@@ -28,6 +28,9 @@ namespace {
     std::atomic<bool> s_menuVisible{false};
     std::atomic<void*> s_practicePtr{nullptr};
     std::atomic<bool> s_practiceHooksInstalled{false};
+    std::atomic<bool> s_practiceHooksEnabled{false};
+    std::atomic<bool> s_practiceTickHookCreated{false};
+    std::atomic<bool> s_togglePauseHookCreated{false};
     // Global once-only guard for verbose candidate validation log
     std::atomic<bool> s_loggedValidateOnce{false};
     // Character Select scoped suppression for noisy scan failures
@@ -53,6 +56,33 @@ namespace {
     std::atomic<bool> s_weVanillaEnginePause{false};
     // Visual effect patches ownership (for vanilla/unsupported versions)
     std::atomic<bool> s_weAppliedVisualPatches{false};
+    uintptr_t s_practiceTickTarget = 0;
+    uintptr_t s_togglePauseTarget = 0;
+    std::atomic<bool> s_battleContextHookInstalled{false};
+    std::atomic<bool> s_battleContextHookEnabled{false};
+    std::atomic<bool> s_battleContextHookLoggedFail{false};
+    uintptr_t s_battleContextHookTarget = 0;
+
+    bool SetCapturedHookEnabled(uintptr_t target, bool active, const char* label) {
+        if (!target) {
+            return false;
+        }
+
+        const MH_STATUS rc = active
+            ? MH_EnableHook(reinterpret_cast<void*>(target))
+            : MH_DisableHook(reinterpret_cast<void*>(target));
+        if (rc == MH_OK
+            || (active && rc == MH_ERROR_ENABLED)
+            || (!active && rc == MH_ERROR_DISABLED)) {
+            return true;
+        }
+
+        std::ostringstream oss;
+        oss << "[PAUSE] Failed to " << (active ? "enable " : "disable ")
+            << label << " hook at 0x" << std::hex << target;
+        LogOut(oss.str(), true);
+        return false;
+    }
     
     bool IsEfzRevivalLoaded() {
         // For unsupported versions, treat as vanilla (return false)
@@ -290,13 +320,30 @@ namespace {
         
         // Maintain CS cycle bookkeeping to bound scan/log spam to once per CS
         UpdateCsCycleState();
-        if (s_practiceHooksInstalled.load()) return;
         HMODULE hRev = GetModuleHandleA("EfzRevival.dll");
         if (!hRev) return; // wait for injection
         uintptr_t rvaTick = EFZ_RVA_PracticeTick();
         uintptr_t rvaPause = EFZ_RVA_TogglePause();
         void* tickTarget  = rvaTick ? EFZ_RVA_TO_VA(hRev, rvaTick) : nullptr;
         void* pauseTarget = rvaPause ? EFZ_RVA_TO_VA(hRev, rvaPause) : nullptr;
+        s_practiceTickTarget = reinterpret_cast<uintptr_t>(tickTarget);
+        s_togglePauseTarget = reinterpret_cast<uintptr_t>(pauseTarget);
+        if (s_practiceHooksInstalled.load()) {
+            if (!s_practiceHooksEnabled.load(std::memory_order_relaxed)) {
+                bool anyEnabled = false;
+                if (s_practiceTickHookCreated.load(std::memory_order_relaxed) && s_practiceTickTarget) {
+                    anyEnabled |= SetCapturedHookEnabled(s_practiceTickTarget, true, "PracticeTick");
+                }
+                if (s_togglePauseHookCreated.load(std::memory_order_relaxed) && s_togglePauseTarget) {
+                    anyEnabled |= SetCapturedHookEnabled(s_togglePauseTarget, true, "TogglePause");
+                }
+                if (anyEnabled) {
+                    s_practiceHooksEnabled.store(true, std::memory_order_relaxed);
+                    LogOut("[PAUSE] Practice capture hooks re-enabled", detailedLogging.load());
+                }
+            }
+            return;
+        }
         {
             std::ostringstream oss; oss << "[PAUSE] Installing hooks: PracticeTick=0x" << std::hex << (uintptr_t)tickTarget
                 << " TogglePause=0x" << (uintptr_t)pauseTarget;
@@ -306,14 +353,19 @@ namespace {
         if (tickTarget) {
             if (MH_CreateHook(tickTarget, &HookedPracticeTick, reinterpret_cast<void**>(&oPracticeTick)) == MH_OK
                 && MH_EnableHook(tickTarget) == MH_OK) {
+                s_practiceTickHookCreated.store(true, std::memory_order_relaxed);
                 anyHook = true;
                 LogOut("[PAUSE] PracticeTick hook active", detailedLogging.load());
             }
         }
         if (pauseTarget && MH_CreateHook(pauseTarget, &HookedTogglePause, reinterpret_cast<void**>(&oTogglePause)) == MH_OK && MH_EnableHook(pauseTarget) == MH_OK) {
+            s_togglePauseHookCreated.store(true, std::memory_order_relaxed);
             anyHook = true; LogOut("[PAUSE] TogglePause hook active", detailedLogging.load());
         }
-        if (anyHook) s_practiceHooksInstalled.store(true);
+        if (anyHook) {
+            s_practiceHooksInstalled.store(true);
+            s_practiceHooksEnabled.store(true);
+        }
     }
 
     // Practice pause flag helpers (flag semantics: 1 = paused, 0 = running)
@@ -405,18 +457,25 @@ namespace {
     }
 
     void EnsureBattleContextHook() {
-        static std::atomic<bool> installed{false};
-        static std::atomic<bool> loggedFail{false};
-        if (installed.load()) return;
+        if (s_battleContextHookInstalled.load()) {
+            if (!s_battleContextHookEnabled.load(std::memory_order_relaxed) && s_battleContextHookTarget) {
+                if (SetCapturedHookEnabled(s_battleContextHookTarget, true, "RenderBattleScreen")) {
+                    s_battleContextHookEnabled.store(true, std::memory_order_relaxed);
+                    LogOut("[PAUSE] RenderBattleScreen hook re-enabled", detailedLogging.load());
+                }
+            }
+            return;
+        }
         // RenderBattleScreen lives in efz.exe, not EfzRevival.dll
         uintptr_t efzBase = GetEFZBase();
         if (!efzBase) return;
         uintptr_t rva = EFZ_RVA_RenderBattleScreen();
         void* target = rva ? reinterpret_cast<void*>(efzBase + rva) : nullptr;
         if (!target) return;
+        s_battleContextHookTarget = reinterpret_cast<uintptr_t>(target);
         auto rcCreate = MH_CreateHook(target, &HookedRenderBattleScreen, reinterpret_cast<void**>(&oRenderBattleScreen));
         if (rcCreate != MH_OK && rcCreate != MH_ERROR_ALREADY_CREATED) {
-            if (!loggedFail.exchange(true)) {
+            if (!s_battleContextHookLoggedFail.exchange(true)) {
                 std::ostringstream oss; oss << "[PAUSE] Failed to create RenderBattleScreen hook at VA=0x" << std::hex << (uintptr_t)target;
                 LogOut(oss.str(), true);
             }
@@ -424,15 +483,16 @@ namespace {
         }
         auto rcEnable = MH_EnableHook(target);
         if (rcEnable != MH_OK && rcEnable != MH_ERROR_ENABLED) {
-            if (!loggedFail.exchange(true)) {
+            if (!s_battleContextHookLoggedFail.exchange(true)) {
                 std::ostringstream oss; oss << "[PAUSE] Failed to enable RenderBattleScreen hook at VA=0x" << std::hex << (uintptr_t)target;
                 LogOut(oss.str(), true);
             }
             // Don't remove the hook if it was already created; just bail
             return;
         }
-    installed.store(true);
-    LogOut("[PAUSE] RenderBattleScreen hook installed (capturing battleContext)", detailedLogging.load());
+        s_battleContextHookInstalled.store(true);
+        s_battleContextHookEnabled.store(true);
+        LogOut("[PAUSE] RenderBattleScreen hook installed (capturing battleContext)", detailedLogging.load());
     }
 
     // Read/write engine pause flag from battleContext + 0x1416 (int, toggled by in-engine input)
@@ -874,6 +934,41 @@ namespace PauseIntegration {
                 << " battle=0x" << reinterpret_cast<uintptr_t>(battle)
                 << " gamespeed=0x" << gamespeed;
             LogOut(oss.str(), true);
+        }
+    }
+
+    void SetRuntimeHooksActive(bool active) {
+        if (!active) {
+            bool changed = false;
+            if (s_practiceHooksInstalled.load(std::memory_order_relaxed)) {
+                if (s_practiceTickHookCreated.load(std::memory_order_relaxed) && s_practiceTickTarget) {
+                    changed |= SetCapturedHookEnabled(s_practiceTickTarget, false, "PracticeTick");
+                }
+                if (s_togglePauseHookCreated.load(std::memory_order_relaxed) && s_togglePauseTarget) {
+                    changed |= SetCapturedHookEnabled(s_togglePauseTarget, false, "TogglePause");
+                }
+                s_practiceHooksEnabled.store(false, std::memory_order_relaxed);
+            }
+            if (s_battleContextHookInstalled.load(std::memory_order_relaxed) && s_battleContextHookTarget) {
+                changed |= SetCapturedHookEnabled(s_battleContextHookTarget, false, "RenderBattleScreen");
+                s_battleContextHookEnabled.store(false, std::memory_order_relaxed);
+            }
+            if (changed || detailedLogging.load()) {
+                LogOut("[PAUSE] Runtime capture hooks suspended", true);
+            }
+            return;
+        }
+
+        if (g_onlineModeActive.load(std::memory_order_relaxed)) {
+            return;
+        }
+        if (GetCurrentGameMode() != GameMode::Practice) {
+            return;
+        }
+
+        EnsurePracticePtrHookInstalled();
+        if (!RefreshBattleContextFromGameModeArray()) {
+            EnsureBattleContextHook();
         }
     }
 }

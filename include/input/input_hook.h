@@ -3,6 +3,9 @@
 // Installs the hook on the game's input processing function.
 void InstallInputHook();
 
+// Enables or disables the live input detours without destroying their MinHook state.
+void SetInputHookActive(bool active);
+
 // Removes the hook.
 void RemoveInputHook();
 
