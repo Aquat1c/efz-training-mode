@@ -9,6 +9,7 @@
 extern std::atomic<bool> menuOpen;
 extern std::atomic<int> frameCounter;
 extern std::atomic<bool> detailedLogging;
+extern std::atomic<bool> g_deepFrameAdvDebug;
 extern std::atomic<bool> autoAirtechEnabled;  // New: Controls auto-airtech feature
 extern std::atomic<int> autoAirtechDirection; // New: 0=forward, 1=backward
 extern std::atomic<bool> autoJumpEnabled;     // Controls auto-jump feature
@@ -269,7 +270,7 @@ struct DisplayData {
     // Neyuki (Sleepy Nayuki) – Jam count (0..9)
     int  p1NeyukiJamCount;
     int  p2NeyukiJamCount;
-    bool p1NeyukiLockJam;  // when true, restore jam count on wakeup (moveID 96)
+    bool p1NeyukiLockJam;  // when true, restore jam count on wakeup/neutral recovery
     bool p2NeyukiLockJam;
 
     // Mio – stance control (0=Short,1=Long) and optional lock

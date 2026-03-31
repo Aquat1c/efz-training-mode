@@ -14,6 +14,10 @@
 #include <thread>
 #include <vector>
 
+namespace XInputShim {
+    std::atomic<bool> g_LogGenericPadInputDebug{false};
+}
+
 namespace {
     HMODULE g_xinput = nullptr;
     const char* g_name = nullptr;
@@ -28,9 +32,12 @@ namespace {
         LPDIRECTINPUTDEVICE8 device = nullptr;
         std::string name;
         DIJOYSTATE2 rawState{};
+        DIJOYSTATE2 neutralState{};
         XINPUT_STATE syntheticState{};
         DWORD packetCounter = 0;
         bool connected = false;
+        bool neutralStateValid = false;
+        std::string lastInputDebugSummary;
     };
 
     LPDIRECTINPUT8 g_directInput = nullptr;
@@ -139,6 +146,8 @@ namespace {
         ConfigureAxisRange(device, DIJOFS_RX);
         ConfigureAxisRange(device, DIJOFS_RY);
         ConfigureAxisRange(device, DIJOFS_RZ);
+        ConfigureAxisRange(device, DIJOFS_SLIDER(0));
+        ConfigureAxisRange(device, DIJOFS_SLIDER(1));
 
         device->Acquire();
 
@@ -233,6 +242,52 @@ namespace {
 
         pad.rawState = state;
         pad.connected = true;
+
+        const bool hasButtons = [&]() {
+            for (int i = 0; i < 128; ++i) {
+                if (state.rgbButtons[i] & 0x80) return true;
+            }
+            return false;
+        }();
+        bool hasPov = false;
+        for (int i = 0; i < 4; ++i) {
+            if (state.rgdwPOV[i] != 0xFFFFFFFF) {
+                hasPov = true;
+                break;
+            }
+        }
+        if (!hasButtons && !hasPov) {
+            if (!pad.neutralStateValid) {
+                pad.neutralState = state;
+                pad.neutralStateValid = true;
+            } else {
+                auto relaxAxisTowardSample = [](LONG& neutral, LONG sample) {
+                    const LONG delta = sample - neutral;
+                    if (delta > 1024 || delta < -1024) return;
+                    neutral += delta / 8;
+                };
+                relaxAxisTowardSample(pad.neutralState.lX, state.lX);
+                relaxAxisTowardSample(pad.neutralState.lY, state.lY);
+                relaxAxisTowardSample(pad.neutralState.lZ, state.lZ);
+                relaxAxisTowardSample(pad.neutralState.lRx, state.lRx);
+                relaxAxisTowardSample(pad.neutralState.lRy, state.lRy);
+                relaxAxisTowardSample(pad.neutralState.lRz, state.lRz);
+                relaxAxisTowardSample(pad.neutralState.lVX, state.lVX);
+                relaxAxisTowardSample(pad.neutralState.lVY, state.lVY);
+                relaxAxisTowardSample(pad.neutralState.lVZ, state.lVZ);
+                relaxAxisTowardSample(pad.neutralState.lVRx, state.lVRx);
+                relaxAxisTowardSample(pad.neutralState.lVRy, state.lVRy);
+                relaxAxisTowardSample(pad.neutralState.lVRz, state.lVRz);
+                relaxAxisTowardSample(pad.neutralState.lAX, state.lAX);
+                relaxAxisTowardSample(pad.neutralState.lAY, state.lAY);
+                relaxAxisTowardSample(pad.neutralState.lAZ, state.lAZ);
+                relaxAxisTowardSample(pad.neutralState.lARx, state.lARx);
+                relaxAxisTowardSample(pad.neutralState.lARy, state.lARy);
+                relaxAxisTowardSample(pad.neutralState.lARz, state.lARz);
+                relaxAxisTowardSample(pad.neutralState.rglSlider[0], state.rglSlider[0]);
+                relaxAxisTowardSample(pad.neutralState.rglSlider[1], state.rglSlider[1]);
+            }
+        }
         return true;
     }
 
@@ -241,12 +296,99 @@ namespace {
     }
 
     static void MapPovToDpad(const DIJOYSTATE2& state, WORD& buttons) {
-        DWORD pov = state.rgdwPOV[0];
-        if (pov == 0xFFFFFFFF) return;
-        if (pov >= 31500 || pov <= 4500) buttons |= XINPUT_GAMEPAD_DPAD_UP;
-        if (pov >= 4500 && pov <= 13500) buttons |= XINPUT_GAMEPAD_DPAD_RIGHT;
-        if (pov >= 13500 && pov <= 22500) buttons |= XINPUT_GAMEPAD_DPAD_DOWN;
-        if (pov >= 22500 && pov <= 31500) buttons |= XINPUT_GAMEPAD_DPAD_LEFT;
+        for (int i = 0; i < 4; ++i) {
+            DWORD pov = state.rgdwPOV[i];
+            if (pov == 0xFFFFFFFF) continue;
+            if (pov >= 31500 || pov <= 4500) buttons |= XINPUT_GAMEPAD_DPAD_UP;
+            if (pov >= 4500 && pov <= 13500) buttons |= XINPUT_GAMEPAD_DPAD_RIGHT;
+            if (pov >= 13500 && pov <= 22500) buttons |= XINPUT_GAMEPAD_DPAD_DOWN;
+            if (pov >= 22500 && pov <= 31500) buttons |= XINPUT_GAMEPAD_DPAD_LEFT;
+        }
+    }
+
+    static void MapButtonDpadFallback(const DIJOYSTATE2& state, WORD& buttons) {
+        // A number of DirectInput-only fight sticks / leverless controllers expose directions
+        // as digital buttons instead of POV. The common layout is buttons 12..15.
+        if (ButtonDown(state, 12)) buttons |= XINPUT_GAMEPAD_DPAD_UP;
+        if (ButtonDown(state, 13)) buttons |= XINPUT_GAMEPAD_DPAD_DOWN;
+        if (ButtonDown(state, 14)) buttons |= XINPUT_GAMEPAD_DPAD_LEFT;
+        if (ButtonDown(state, 15)) buttons |= XINPUT_GAMEPAD_DPAD_RIGHT;
+    }
+
+    static bool AxisPairActive(LONG x, LONG y, LONG threshold = 6000) {
+        return x >= threshold || x <= -threshold || y >= threshold || y <= -threshold;
+    }
+
+    static LONG AxisDelta(LONG value, LONG neutral) {
+        return value - neutral;
+    }
+
+    struct AxisPairCandidate {
+        LONG x;
+        LONG y;
+    };
+
+    static LONG AxisAbs(LONG value) {
+        return (value < 0) ? -value : value;
+    }
+
+    static LONG AxisPairStrength(const AxisPairCandidate& pair) {
+        const LONG absX = AxisAbs(pair.x);
+        const LONG absY = AxisAbs(pair.y);
+        return (absX > absY) ? absX : absY;
+    }
+
+    static AxisPairCandidate ResolveStrongestNavAxisPair(const GenericPad& pad) {
+        const DIJOYSTATE2& state = pad.rawState;
+        const DIJOYSTATE2& neutral = pad.neutralStateValid ? pad.neutralState : DIJOYSTATE2{};
+        const AxisPairCandidate candidates[] = {
+            { AxisDelta(state.lX, neutral.lX), -AxisDelta(state.lY, neutral.lY) },
+            { AxisDelta(state.lRx, neutral.lRx), -AxisDelta(state.lRy, neutral.lRy) },
+            { AxisDelta(state.lVX, neutral.lVX), -AxisDelta(state.lVY, neutral.lVY) },
+            { AxisDelta(state.lVRx, neutral.lVRx), -AxisDelta(state.lVRy, neutral.lVRy) },
+            { AxisDelta(state.lAX, neutral.lAX), -AxisDelta(state.lAY, neutral.lAY) },
+            { AxisDelta(state.lARx, neutral.lARx), -AxisDelta(state.lARy, neutral.lARy) },
+            { AxisDelta(state.rglSlider[0], neutral.rglSlider[0]), -AxisDelta(state.rglSlider[1], neutral.rglSlider[1]) }
+        };
+
+        AxisPairCandidate best = candidates[0];
+        LONG bestStrength = AxisPairStrength(best);
+        for (size_t i = 1; i < sizeof(candidates) / sizeof(candidates[0]); ++i) {
+            const LONG strength = AxisPairStrength(candidates[i]);
+            if (strength > bestStrength) {
+                best = candidates[i];
+                bestStrength = strength;
+            }
+        }
+        return best;
+    }
+
+    static void MapAxisPairToDpad(LONG x, LONG y, WORD& buttons, LONG threshold = 6000) {
+        if (x <= -threshold) buttons |= XINPUT_GAMEPAD_DPAD_LEFT;
+        if (x >= threshold) buttons |= XINPUT_GAMEPAD_DPAD_RIGHT;
+        if (y >= threshold) buttons |= XINPUT_GAMEPAD_DPAD_UP;
+        if (y <= -threshold) buttons |= XINPUT_GAMEPAD_DPAD_DOWN;
+    }
+
+    static void ResolvePreferredLeftStickAxes(const GenericPad& pad, LONG& outX, LONG& outY) {
+        const AxisPairCandidate best = ResolveStrongestNavAxisPair(pad);
+        outX = best.x;
+        outY = best.y;
+        if (AxisPairActive(outX, outY)) {
+            return;
+        }
+        if (pad.neutralStateValid) {
+            outX = AxisDelta(pad.rawState.lX, pad.neutralState.lX);
+            outY = -AxisDelta(pad.rawState.lY, pad.neutralState.lY);
+        } else {
+            outX = pad.rawState.lX;
+            outY = -pad.rawState.lY;
+        }
+    }
+
+    static void MapAxisDpadFallback(const GenericPad& pad, WORD& buttons) {
+        const AxisPairCandidate best = ResolveStrongestNavAxisPair(pad);
+        MapAxisPairToDpad(best.x, best.y, buttons);
     }
 
     static SHORT ClampAxisToShort(LONG value) {
@@ -261,6 +403,88 @@ namespace {
         return static_cast<BYTE>((value * 255) / 32767);
     }
 
+    static bool RawStateHasInterestingInput(const GenericPad& pad) {
+        const DIJOYSTATE2& state = pad.rawState;
+        for (int i = 0; i < 128; ++i) {
+            if (ButtonDown(state, i)) return true;
+        }
+        for (int i = 0; i < 4; ++i) {
+            if (state.rgdwPOV[i] != 0xFFFFFFFF) return true;
+        }
+        const LONG kAxisNoise = 6000;
+        if (pad.neutralStateValid) {
+            return AxisPairActive(AxisDelta(state.lX, pad.neutralState.lX), AxisDelta(state.lY, pad.neutralState.lY), kAxisNoise)
+                || AxisPairActive(AxisDelta(state.lRx, pad.neutralState.lRx), AxisDelta(state.lRy, pad.neutralState.lRy), kAxisNoise)
+                || AxisAbs(AxisDelta(state.lZ, pad.neutralState.lZ)) >= kAxisNoise
+                || AxisAbs(AxisDelta(state.lRz, pad.neutralState.lRz)) >= kAxisNoise
+                || AxisAbs(AxisDelta(state.rglSlider[0], pad.neutralState.rglSlider[0])) >= kAxisNoise
+                || AxisAbs(AxisDelta(state.rglSlider[1], pad.neutralState.rglSlider[1])) >= kAxisNoise;
+        }
+        return AxisPairActive(state.lX, state.lY, kAxisNoise)
+            || AxisPairActive(state.lRx, state.lRy, kAxisNoise)
+            || AxisAbs(state.lZ) >= kAxisNoise
+            || AxisAbs(state.lRz) >= kAxisNoise
+            || AxisAbs(state.rglSlider[0]) >= kAxisNoise
+            || AxisAbs(state.rglSlider[1]) >= kAxisNoise;
+    }
+
+    static void MaybeLogGenericPadInput(GenericPad& pad, const XINPUT_STATE& state) {
+        if (!XInputShim::g_LogGenericPadInputDebug.load()) return;
+        if (!RawStateHasInterestingInput(pad) && state.Gamepad.wButtons == 0
+            && state.Gamepad.bLeftTrigger == 0 && state.Gamepad.bRightTrigger == 0) {
+            return;
+        }
+
+        std::ostringstream rawBtns;
+        bool first = true;
+        for (int i = 0; i < 128; ++i) {
+            if (!ButtonDown(pad.rawState, i)) continue;
+            if (!first) rawBtns << ",";
+            rawBtns << i;
+            first = false;
+        }
+        if (first) rawBtns << "-";
+
+        std::ostringstream povs;
+        for (int i = 0; i < 4; ++i) {
+            if (i != 0) povs << ",";
+            if (pad.rawState.rgdwPOV[i] == 0xFFFFFFFF) povs << "-";
+            else povs << pad.rawState.rgdwPOV[i];
+        }
+
+        std::ostringstream oss;
+        oss << "[GAMEPAD][GENERIC] " << pad.name
+            << " rawButtons=[" << rawBtns.str() << "]"
+            << " pov=[" << povs.str() << "]"
+            << " axes=("
+            << pad.rawState.lX << "," << pad.rawState.lY << "," << pad.rawState.lZ << ","
+            << pad.rawState.lRx << "," << pad.rawState.lRy << "," << pad.rawState.lRz << ";"
+            << pad.rawState.rglSlider[0] << "," << pad.rawState.rglSlider[1] << ")"
+            << " deltaAxes=("
+            << (pad.neutralStateValid ? AxisDelta(pad.rawState.lX, pad.neutralState.lX) : pad.rawState.lX) << ","
+            << (pad.neutralStateValid ? AxisDelta(pad.rawState.lY, pad.neutralState.lY) : pad.rawState.lY) << ","
+            << (pad.neutralStateValid ? AxisDelta(pad.rawState.lZ, pad.neutralState.lZ) : pad.rawState.lZ) << ","
+            << (pad.neutralStateValid ? AxisDelta(pad.rawState.lRx, pad.neutralState.lRx) : pad.rawState.lRx) << ","
+            << (pad.neutralStateValid ? AxisDelta(pad.rawState.lRy, pad.neutralState.lRy) : pad.rawState.lRy) << ","
+            << (pad.neutralStateValid ? AxisDelta(pad.rawState.lRz, pad.neutralState.lRz) : pad.rawState.lRz) << ";"
+            << (pad.neutralStateValid ? AxisDelta(pad.rawState.rglSlider[0], pad.neutralState.rglSlider[0]) : pad.rawState.rglSlider[0]) << ","
+            << (pad.neutralStateValid ? AxisDelta(pad.rawState.rglSlider[1], pad.neutralState.rglSlider[1]) : pad.rawState.rglSlider[1]) << ")"
+            << " synthetic{buttons=0x" << std::hex << std::uppercase << state.Gamepad.wButtons
+            << std::dec
+            << " LT=" << static_cast<int>(state.Gamepad.bLeftTrigger)
+            << " RT=" << static_cast<int>(state.Gamepad.bRightTrigger)
+            << " LX=" << state.Gamepad.sThumbLX
+            << " LY=" << state.Gamepad.sThumbLY
+            << " RX=" << state.Gamepad.sThumbRX
+            << " RY=" << state.Gamepad.sThumbRY
+            << "}";
+        const std::string summary = oss.str();
+        if (summary != pad.lastInputDebugSummary) {
+            pad.lastInputDebugSummary = summary;
+            LogOut(summary, true);
+        }
+    }
+
     XINPUT_STATE BuildSyntheticState(GenericPad& pad) {
         XINPUT_STATE state{};
         WORD buttons = 0;
@@ -272,11 +496,35 @@ namespace {
         if (ButtonDown(pad.rawState, 3)) buttons |= XINPUT_GAMEPAD_Y; // Triangle
         if (ButtonDown(pad.rawState, 4)) buttons |= XINPUT_GAMEPAD_LEFT_SHOULDER;
         if (ButtonDown(pad.rawState, 5)) buttons |= XINPUT_GAMEPAD_RIGHT_SHOULDER;
-        if (ButtonDown(pad.rawState, 8)) buttons |= XINPUT_GAMEPAD_BACK;
-        if (ButtonDown(pad.rawState, 9)) buttons |= XINPUT_GAMEPAD_START;
-        if (ButtonDown(pad.rawState, 10)) buttons |= XINPUT_GAMEPAD_LEFT_THUMB;
-        if (ButtonDown(pad.rawState, 11)) buttons |= XINPUT_GAMEPAD_RIGHT_THUMB;
+        const auto anyButtonIn = [&](const int* indices, size_t count) {
+            for (size_t i = 0; i < count; ++i) {
+                if (ButtonDown(pad.rawState, indices[i])) return true;
+            }
+            return false;
+        };
+        static const int kBackCandidates[] = { 8, 16, 24, 32, 40, 48, 56 };
+        static const int kStartCandidates[] = { 9, 17, 25, 33, 41, 49, 57 };
+        static const int kLeftThumbCandidates[] = { 10, 18, 26, 34, 42, 50, 58 };
+        static const int kRightThumbCandidates[] = { 11, 19, 27, 35, 43, 51, 59 };
+        if (anyButtonIn(kBackCandidates, sizeof(kBackCandidates) / sizeof(kBackCandidates[0]))) {
+            buttons |= XINPUT_GAMEPAD_BACK;
+        }
+        if (anyButtonIn(kStartCandidates, sizeof(kStartCandidates) / sizeof(kStartCandidates[0]))) {
+            buttons |= XINPUT_GAMEPAD_START;
+        }
+        if (anyButtonIn(kLeftThumbCandidates, sizeof(kLeftThumbCandidates) / sizeof(kLeftThumbCandidates[0]))) {
+            buttons |= XINPUT_GAMEPAD_LEFT_THUMB;
+        }
+        if (anyButtonIn(kRightThumbCandidates, sizeof(kRightThumbCandidates) / sizeof(kRightThumbCandidates[0]))) {
+            buttons |= XINPUT_GAMEPAD_RIGHT_THUMB;
+        }
         MapPovToDpad(pad.rawState, buttons);
+        if ((buttons & (XINPUT_GAMEPAD_DPAD_UP | XINPUT_GAMEPAD_DPAD_DOWN | XINPUT_GAMEPAD_DPAD_LEFT | XINPUT_GAMEPAD_DPAD_RIGHT)) == 0) {
+            MapButtonDpadFallback(pad.rawState, buttons);
+        }
+        if ((buttons & (XINPUT_GAMEPAD_DPAD_UP | XINPUT_GAMEPAD_DPAD_DOWN | XINPUT_GAMEPAD_DPAD_LEFT | XINPUT_GAMEPAD_DPAD_RIGHT)) == 0) {
+            MapAxisDpadFallback(pad, buttons);
+        }
 
         state.Gamepad.wButtons = buttons;
         state.Gamepad.bLeftTrigger = ButtonDown(pad.rawState, 6) ? 255 : 0;
@@ -289,15 +537,24 @@ namespace {
                 state.Gamepad.bRightTrigger = TriggerFromAxisPositive(pad.rawState.lRz);
             }
         }
-        state.Gamepad.sThumbLX = ClampAxisToShort(pad.rawState.lX);
-        state.Gamepad.sThumbLY = ClampAxisToShort(-pad.rawState.lY);
-        state.Gamepad.sThumbRX = ClampAxisToShort(pad.rawState.lRx);
-        state.Gamepad.sThumbRY = ClampAxisToShort(-pad.rawState.lRy);
+        LONG leftStickX = 0;
+        LONG leftStickY = 0;
+        ResolvePreferredLeftStickAxes(pad, leftStickX, leftStickY);
+        state.Gamepad.sThumbLX = ClampAxisToShort(leftStickX);
+        state.Gamepad.sThumbLY = ClampAxisToShort(leftStickY);
+        if (pad.neutralStateValid) {
+            state.Gamepad.sThumbRX = ClampAxisToShort(AxisDelta(pad.rawState.lRx, pad.neutralState.lRx));
+            state.Gamepad.sThumbRY = ClampAxisToShort(-AxisDelta(pad.rawState.lRy, pad.neutralState.lRy));
+        } else {
+            state.Gamepad.sThumbRX = ClampAxisToShort(pad.rawState.lRx);
+            state.Gamepad.sThumbRY = ClampAxisToShort(-pad.rawState.lRy);
+        }
 
         if (memcmp(&state.Gamepad, &pad.syntheticState.Gamepad, sizeof(XINPUT_GAMEPAD)) != 0) {
             ++pad.packetCounter;
         }
         state.dwPacketNumber = pad.packetCounter;
+        MaybeLogGenericPadInput(pad, state);
         pad.syntheticState = state;
         return state;
     }
@@ -400,6 +657,13 @@ namespace {
     void ControllerWatcherThread() {
         LogOut("[GAMEPAD] Background controller watcher started", true);
         while (!g_isShuttingDown.load(std::memory_order_acquire)) {
+            if (g_onlineModeActive.load(std::memory_order_relaxed)) {
+                // Training features and ImGui navigation are suspended online, so park the
+                // controller watcher instead of continuously polling hardware in the background.
+                Sleep(250);
+                continue;
+            }
+
             DWORD sleepMs = 16;
             {
                 std::lock_guard<std::mutex> lock(g_snapshotMutex);

@@ -167,6 +167,7 @@ static float GetDpiScale() {
 typedef HRESULT(WINAPI* EndScene_t)(LPDIRECT3DDEVICE9);
 static EndScene_t oEndScene = nullptr;
 static void* g_EndSceneTarget = nullptr; // store target vtable entry for cleanup
+static std::atomic<bool> g_EndSceneHookEnabled{ false };
 // Track if our EndScene hook has ever been called (for diagnostics)
 static std::atomic<bool> g_EndSceneObserved{ false };
 // Track ImGui init state within EndScene with atomic for thread safety
@@ -1159,9 +1160,14 @@ static std::atomic<bool> s_d3d9InitInProgress{false};
 
 // --- NEW: D3D9 Hook Initialization and Shutdown ---
 bool DirectDrawHook::InitializeD3D9() {
+    if (g_onlineModeActive.load(std::memory_order_relaxed)) {
+        LogOut("[OVERLAY] Skipping D3D9 initialization while netplay suspend is active.", detailedLogging.load());
+        return false;
+    }
+
     // Fast path: already hooked
     if (isHooked) {
-        return true;
+        return SetD3D9Active(true);
     }
 
     // Prevent concurrent initialization attempts
@@ -1302,6 +1308,20 @@ bool DirectDrawHook::InitializeD3D9() {
         s_d3d9InitInProgress.store(false);
         return false;
     }
+
+    if (g_onlineModeActive.load(std::memory_order_relaxed)) {
+        LogOut("[OVERLAY] Aborting EndScene enable because netplay suspend became active during initialization.", true);
+        MH_RemoveHook(endSceneAddr);
+        tempDevice->Release();
+        d3d9->Release();
+        if (dummyWnd) {
+            DestroyWindow(dummyWnd);
+            UnregisterClassA("EFZ_TM_D3D9_DUMMY", GetModuleHandleA(nullptr));
+        }
+        g_EndSceneTarget = nullptr;
+        s_d3d9InitInProgress.store(false);
+        return false;
+    }
     
     // Enable the hook
     MH_STATUS er = MH_EnableHook(endSceneAddr);
@@ -1323,6 +1343,7 @@ bool DirectDrawHook::InitializeD3D9() {
     }
     
     isHooked = true;
+    g_EndSceneHookEnabled.store(true, std::memory_order_release);
     s_d3d9InitInProgress.store(false);  // Release init lock
     LogOut("[OVERLAY] D3D9 EndScene hook installed successfully.", true);
 
@@ -1337,6 +1358,44 @@ bool DirectDrawHook::InitializeD3D9() {
     return true;
 }
 
+bool DirectDrawHook::SetD3D9Active(bool active) {
+    if (active && g_onlineModeActive.load(std::memory_order_relaxed)) {
+        return false;
+    }
+
+    if (!g_EndSceneTarget) {
+        if (active && !isHooked) {
+            return InitializeD3D9();
+        }
+        return !active;
+    }
+
+    const bool currentlyEnabled = g_EndSceneHookEnabled.load(std::memory_order_acquire);
+    if (currentlyEnabled == active) {
+        return true;
+    }
+
+    const MH_STATUS rc = active
+        ? MH_EnableHook(g_EndSceneTarget)
+        : MH_DisableHook(g_EndSceneTarget);
+    if (rc != MH_OK
+        && !(active && rc == MH_ERROR_ENABLED)
+        && !(!active && rc == MH_ERROR_DISABLED)) {
+        const char* es = MH_StatusToString(rc);
+        LogOut(
+            std::string("[OVERLAY] Failed to ")
+            + (active ? "enable" : "disable")
+            + " EndScene hook: "
+            + (es ? es : "<unknown>"),
+            true);
+        return false;
+    }
+
+    g_EndSceneHookEnabled.store(active, std::memory_order_release);
+    LogOut(std::string("[OVERLAY] D3D9 EndScene hook ") + (active ? "enabled" : "disabled"), true);
+    return true;
+}
+
 void DirectDrawHook::ShutdownD3D9() {
     LogOut("[OVERLAY] Shutting down D3D9 hooks.", true);
     GifPlayer::Shutdown();
@@ -1345,6 +1404,8 @@ void DirectDrawHook::ShutdownD3D9() {
         MH_RemoveHook(g_EndSceneTarget);
         g_EndSceneTarget = nullptr;
     }
+    g_EndSceneHookEnabled.store(false, std::memory_order_release);
+    isHooked = false;
     
     // REMOVED: MH_Uninitialize() is now called globally in dllmain.cpp
 }

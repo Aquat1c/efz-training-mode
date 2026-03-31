@@ -71,6 +71,7 @@ void CancelFrameAdvantageCalculation();
 void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, short prevMoveID2);
 bool IsFrameAdvantageActive();
 FrameAdvantageState GetFrameAdvantageState();
+void ArmFrameAdvantageDisplayTimer();
 
 // Helper functions with subframe precision
 int GetCurrentInternalFrame();

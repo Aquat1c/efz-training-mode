@@ -27,6 +27,45 @@ static std::atomic<uintptr_t> g_lastAttackDataP1{0};
 static std::atomic<uintptr_t> g_lastAttackDataP2{0};
 static std::atomic<int> g_attackDataOffsetP1{-1};
 static std::atomic<int> g_attackDataOffsetP2{-1};
+static std::atomic<bool> s_collisionHookCreated{false};
+static std::atomic<bool> s_collisionHookEnabled{false};
+static uintptr_t s_collisionHookTargetAddr = 0;
+
+namespace {
+bool ResolveCollisionHookTarget(uintptr_t& targetAddr) {
+    uintptr_t base = GetEFZBase();
+    if (!base) {
+        LogOut("[COLLISION_HOOK] Failed to get game base address.", true);
+        return false;
+    }
+
+    targetAddr = base + HANDLE_P2P_COLLISION_OFFSET;
+    return true;
+}
+
+bool SetCollisionHookEnabledInternal(bool active) {
+    if (!s_collisionHookTargetAddr) {
+        return false;
+    }
+
+    const MH_STATUS rc = active
+        ? MH_EnableHook(reinterpret_cast<LPVOID>(s_collisionHookTargetAddr))
+        : MH_DisableHook(reinterpret_cast<LPVOID>(s_collisionHookTargetAddr));
+    if (rc == MH_OK
+        || (active && rc == MH_ERROR_ENABLED)
+        || (!active && rc == MH_ERROR_DISABLED)) {
+        return true;
+    }
+
+    LogOut(
+        std::string("[COLLISION_HOOK] Failed to ")
+        + (active ? "enable" : "disable")
+        + " collision hook at "
+        + FormatHexAddress(s_collisionHookTargetAddr),
+        true);
+    return false;
+}
+} // namespace
 
 // Identify which player owns this frame-data by scanning both player bases for a matching field.
 static void IdentifyPlayerByFrameData(uintptr_t frameDataPtr, int& outPlayerNum, int& outOffset) {
@@ -106,30 +145,57 @@ static int __fastcall HookedHandleP2PCollision(void* gameSystem, void* /*edx*/, 
 }
 
 void InstallCollisionHook() {
-    uintptr_t base = GetEFZBase();
-    if (!base) {
-        LogOut("[COLLISION_HOOK] Failed to get game base address.", true);
+    uintptr_t targetAddr = 0;
+    if (!ResolveCollisionHookTarget(targetAddr)) {
         return;
     }
-    uintptr_t targetAddr = base + HANDLE_P2P_COLLISION_OFFSET;
+    s_collisionHookTargetAddr = targetAddr;
 
-    if (MH_CreateHook((LPVOID)targetAddr, &HookedHandleP2PCollision, (LPVOID*)&oHandleP2PCollision) != MH_OK) {
-        LogOut("[COLLISION_HOOK] Failed to create hook at address " + FormatHexAddress(targetAddr), true);
+    if (!s_collisionHookCreated.load(std::memory_order_acquire)) {
+        if (MH_CreateHook((LPVOID)targetAddr, &HookedHandleP2PCollision, (LPVOID*)&oHandleP2PCollision) != MH_OK) {
+            LogOut("[COLLISION_HOOK] Failed to create hook at address " + FormatHexAddress(targetAddr), true);
+            return;
+        }
+        s_collisionHookCreated.store(true, std::memory_order_release);
+        LogOut("[COLLISION_HOOK] Installed at " + FormatHexAddress(targetAddr), true);
+    }
+
+    if (g_onlineModeActive.load(std::memory_order_relaxed)) {
+        SetCollisionHookActive(false);
         return;
     }
-    if (MH_EnableHook((LPVOID)targetAddr) != MH_OK) {
-        LogOut("[COLLISION_HOOK] Failed to enable collision hook.", true);
+
+    SetCollisionHookActive(true);
+}
+
+void SetCollisionHookActive(bool active) {
+    if (!s_collisionHookCreated.load(std::memory_order_acquire)) {
+        if (active) {
+            InstallCollisionHook();
+        }
         return;
     }
-    LogOut("[COLLISION_HOOK] Installed at " + FormatHexAddress(targetAddr), true);
+
+    const bool currentlyEnabled = s_collisionHookEnabled.load(std::memory_order_acquire);
+    if (currentlyEnabled == active) {
+        return;
+    }
+
+    if (!SetCollisionHookEnabledInternal(active)) {
+        return;
+    }
+
+    s_collisionHookEnabled.store(active, std::memory_order_release);
+    LogOut(std::string("[COLLISION_HOOK] Collision hook ") + (active ? "enabled" : "disabled"), true);
 }
 
 void RemoveCollisionHook() {
-    uintptr_t base = GetEFZBase();
-    if (!base) return;
-    uintptr_t targetAddr = base + HANDLE_P2P_COLLISION_OFFSET;
-    MH_DisableHook((LPVOID)targetAddr);
-    MH_RemoveHook((LPVOID)targetAddr);
+    if (!s_collisionHookTargetAddr) return;
+    MH_DisableHook((LPVOID)s_collisionHookTargetAddr);
+    MH_RemoveHook((LPVOID)s_collisionHookTargetAddr);
+    s_collisionHookEnabled.store(false, std::memory_order_release);
+    s_collisionHookCreated.store(false, std::memory_order_release);
+    s_collisionHookTargetAddr = 0;
 }
 
 uintptr_t GetCachedAttackDataForPlayer(int playerNum) {

@@ -1643,18 +1643,19 @@ namespace CharacterSettings {
             int cur=0; SafeReadMemory(addr,&cur,sizeof(int)); if (cur != want) { SafeWriteMemory(addr,&want,sizeof(int)); }
         }; enforceKano(1); enforceKano(2);
 
-        // Neyuki (Sleepy Nayuki) – jam lock: restore jam count when in wakeup state (moveID 96)
+        // Neyuki (Sleepy Nayuki) – jam lock: restore jam count when she reaches
+        // wakeup or a neutral/actionable state. This keeps manual reset/load flows
+        // in sync without forcing writes during active move sequences.
         auto enforceNeyukiJam = [&](int pi){
             bool lock = (pi==1)?localData.p1NeyukiLockJam:localData.p2NeyukiLockJam;
             if (!lock) return;
             if ((pi==1 && localData.p1CharID != CHAR_ID_NAYUKI) || (pi==2 && localData.p2CharID != CHAR_ID_NAYUKI)) return;
             const int off = (pi==1)?EFZ_BASE_OFFSET_P1:EFZ_BASE_OFFSET_P2;
-            // Check if player is in groundtech recovery state (moveID 96)
             auto mvAddr = ResolvePointer(base, off, MOVE_ID_OFFSET);
             if (!mvAddr) return;
             short moveId = 0; SafeReadMemory(mvAddr, &moveId, sizeof(moveId));
-            if (moveId != GROUNDTECH_RECOVERY) return;
-            // Restore jam count to locked value
+            const bool safeRestoreWindow = (moveId == GROUNDTECH_RECOVERY) || IsActionable(moveId);
+            if (!safeRestoreWindow) return;
             auto addr = ResolvePointer(base, off, NEYUKI_JAM_COUNT_OFFSET); if (!addr) return;
             int want = (pi==1)?localData.p1NeyukiJamCount:localData.p2NeyukiJamCount;
             want = CLAMP(want, 0, NEYUKI_JAM_COUNT_MAX);

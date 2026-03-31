@@ -182,28 +182,6 @@ void DelayedInitialization(HMODULE hModule) {
             LogOut("[SAVESTATE] Exception while installing savestate hooks", true);
         }
 
-        // Install hooks (with guards)
-        try {
-            InstallInputHook();
-        } catch (...) {
-            LogOut("[SYSTEM] Exception while installing input hook.", true);
-        }
-        try {
-            InstallCollisionHook();
-        } catch (...) {
-            LogOut("[SYSTEM] Exception while installing collision hook.", true);
-        }
-        try {
-            StartBGMSuppressionPoller();
-        } catch (...) {
-            LogOut("[SYSTEM] Exception while starting BGM suppression poller.", true);
-        }
-
-        // Safety baseline: if a previous injected session left FM bypass patched,
-        // restore the original HP checks before this runtime decides whether to
-        // reapply it for local practice.
-        ForceRestoreFinalMemoryHPBypass("startup baseline");
-
         RefreshNetplayRuntimeState();
         {
             NetplayRuntimeState state = GetNetplayRuntimeState();
@@ -230,6 +208,28 @@ void DelayedInitialization(HMODULE hModule) {
         } else {
             LogOut("[NETPLAY] Startup entering active local mode", true);
         }
+
+        // Install hooks (with guards)
+        try {
+            InstallInputHook();
+        } catch (...) {
+            LogOut("[SYSTEM] Exception while installing input hook.", true);
+        }
+        try {
+            InstallCollisionHook();
+        } catch (...) {
+            LogOut("[SYSTEM] Exception while installing collision hook.", true);
+        }
+        try {
+            StartBGMSuppressionPoller();
+        } catch (...) {
+            LogOut("[SYSTEM] Exception while starting BGM suppression poller.", true);
+        }
+
+        // Safety baseline: if a previous injected session left FM bypass patched,
+        // restore the original HP checks before this runtime decides whether to
+        // reapply it for local practice.
+        ForceRestoreFinalMemoryHPBypass("startup baseline");
 
     // Final Memory HP bypass is now manual via Debug tab to avoid unintended changes.
 

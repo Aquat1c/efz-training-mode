@@ -38,6 +38,7 @@
 #include "../include/game/macro_controller.h"
 #include "../include/game/collision_hook.h"
 #include "../include/game/final_memory_patch.h"
+#include "../include/game/savestate_hook.h"
 #include "../include/input/input_hook.h"         
 #include "../3rdparty/minhook/include/MinHook.h" 
 #include "../include/input/immediate_input.h"
@@ -647,6 +648,8 @@ void DisableFeatures() {
     g_AirtechStatusId = -1;
     g_JumpStatusId = -1;
     g_FrameAdvantageId = -1;
+    g_FrameAdvantage2Id = -1;
+    g_FrameGapId = -1;
     
     // Close the menu if it's open
     if (ImGuiImpl::IsVisible()) {
@@ -731,6 +734,8 @@ void ResetOverlayTrackingIds() {
     g_AirtechStatusId = -1;
     g_JumpStatusId = -1;
     g_FrameAdvantageId = -1;
+    g_FrameAdvantage2Id = -1;
+    g_FrameGapId = -1;
 }
 
 void ClearTransientInputOverrides() {
@@ -773,7 +778,9 @@ bool OverlayTrackingIdsAreClear() {
         && g_TriggerOnRGId == -1
         && g_AirtechStatusId == -1
         && g_JumpStatusId == -1
-        && g_FrameAdvantageId == -1;
+        && g_FrameAdvantageId == -1
+        && g_FrameAdvantage2Id == -1
+        && g_FrameGapId == -1;
 }
 
 NetplayMenuPlayerReadback CaptureNetplayMenuPlayerReadback(int playerNum) {
@@ -938,6 +945,11 @@ void EnterNetplaySuspend() {
     ImmediateInput::Stop();
     StopBufferFreezing();
     StopRFFreeze();
+    SetInputHookActive(false);
+    SetCollisionHookActive(false);
+    PauseIntegration::SetRuntimeHooksActive(false);
+    DirectDrawHook::SetD3D9Active(false);
+    SavestateHook::Uninstall();
 
     if (g_featuresEnabled.load()) {
         DisableFeatures();
@@ -1019,6 +1031,11 @@ void ExitNetplaySuspend() {
 
     DirectDrawHook::ClearAllMessages();
     ResetOverlayTrackingIds();
+    InstallInputHook();
+    InstallCollisionHook();
+    PauseIntegration::SetRuntimeHooksActive(true);
+    DirectDrawHook::SetD3D9Active(true);
+    SavestateHook::Install();
 
     LogOut(
         std::string("[NETPLAY] Resume cleanup complete: transient overrides cleared, caches invalidated")
@@ -2060,6 +2077,7 @@ void LifecycleWatcherThread() {
         bool suspended = false;
         bool exportAvailable = false;
         bool sessionActive = false;
+        bool inNetplayMenu = false;
         uint32_t sessionId = 0;
         int source = 0;
         GameMode mode = GameMode::Unknown;
@@ -2076,16 +2094,31 @@ void LifecycleWatcherThread() {
     bool havePrevious = false;
 
     while (!g_isShuttingDown.load(std::memory_order_acquire)) {
-        Snapshot current = {};
+        RefreshNetplayRuntimeState();
+
         const NetplayRuntimeState netplayState = GetNetplayRuntimeState();
+        const bool shouldSuspend = netplayState.suspendTraining;
+        const bool suspendedNow = g_onlineModeActive.load(std::memory_order_acquire);
+        if (shouldSuspend && !suspendedNow) {
+            LogOut("[NETPLAY] Lifecycle watcher requested suspend: " + GetLastOnlineDetectionReason(), true);
+            EnterNetplaySuspend();
+        } else if (!shouldSuspend && suspendedNow) {
+            LogOut("[NETPLAY] Lifecycle watcher requested resume: " + GetLastOnlineDetectionReason(), true);
+            ExitNetplaySuspend();
+        }
+
+        Snapshot current = {};
         current.suspended = g_onlineModeActive.load(std::memory_order_acquire);
         current.exportAvailable = netplayState.exportAvailable;
         current.sessionActive = netplayState.sessionActive;
+        current.inNetplayMenu = netplayState.inNetplayMenu;
         current.sessionId = netplayState.exportAvailable ? netplayState.exportState.sessionId : 0;
         current.source = static_cast<int>(netplayState.source);
-        current.mode = GetCurrentGameMode();
-        current.validMode = isValidMode(current.mode);
-        current.charactersInitialized = AreCharactersInitialized();
+        if (!current.suspended) {
+            current.mode = GetCurrentGameMode();
+            current.validMode = isValidMode(current.mode);
+            current.charactersInitialized = AreCharactersInitialized();
+        }
 
         if (havePrevious) {
             std::ostringstream reason;
@@ -2113,6 +2146,12 @@ void LifecycleWatcherThread() {
                 reason << (needsResync ? "; " : "")
                        << "sessionActive " << (previous.sessionActive ? "1" : "0")
                        << "->" << (current.sessionActive ? "1" : "0");
+                needsResync = true;
+            }
+            if (current.inNetplayMenu != previous.inNetplayMenu) {
+                reason << (needsResync ? "; " : "")
+                       << "menu " << (previous.inNetplayMenu ? "1" : "0")
+                       << "->" << (current.inNetplayMenu ? "1" : "0");
                 needsResync = true;
             }
             if (current.exportAvailable && previous.exportAvailable && current.sessionId != previous.sessionId) {
@@ -2146,6 +2185,7 @@ void LifecycleWatcherThread() {
                            << " source=" << NetplayStateSourceName(static_cast<NetplayStateSource>(current.source))
                            << " export=" << (current.exportAvailable ? "1" : "0")
                            << " session=" << (current.sessionActive ? "1" : "0")
+                           << " menu=" << (current.inNetplayMenu ? "1" : "0")
                            << " sessionId=" << current.sessionId
                            << " mode=" << GetGameModeName(current.mode)
                            << " validMode=" << (current.validMode ? "1" : "0")
@@ -2153,10 +2193,15 @@ void LifecycleWatcherThread() {
                 LogOut(watcherLog.str(), true);
                 RequestRuntimeLifecycleResync(reason.str());
             }
+
+            if (current.inNetplayMenu && !previous.inNetplayMenu) {
+                LogOut("[NETPLAY] Lifecycle watcher detected netplay menu entry; auditing residual training state", true);
+                AuditNetplayMenuEntryState();
+            }
         }
 
         previous = current;
         havePrevious = true;
-        Sleep(current.suspended ? 200 : 150);
+        Sleep(current.suspended ? 250 : 150);
     }
 }

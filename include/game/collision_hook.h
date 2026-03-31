@@ -4,6 +4,7 @@
 // Installs a hook on the game's handlePlayerToPlayerCollision function to capture
 // the live attackerFrameData pointer each time collisions are processed.
 void InstallCollisionHook();
+void SetCollisionHookActive(bool active);
 void RemoveCollisionHook();
 
 // Returns the last seen attackerFrameData pointer for the given player (1 or 2).

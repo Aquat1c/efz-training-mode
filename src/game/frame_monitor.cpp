@@ -814,8 +814,6 @@ void FrameDataMonitor() {
     // Improved scheduling target time (accumulative to avoid drift)
     auto startTime = clock::now();
     auto expectedNext = startTime + targetFrameTime; // next frame boundary
-    int netplayRefreshCounter = 15;
-    bool lastNetplayMenuActive = GetNetplayRuntimeState().inNetplayMenu;
     uint32_t lastLifecycleGeneration = GetRuntimeLifecycleGeneration();
     GameMode lastFmSyncMode = GameMode::Unknown;
     GamePhase lastFmSyncPhase = GamePhase::Unknown;
@@ -837,27 +835,6 @@ void FrameDataMonitor() {
             expectedNext = frameStart + targetFrameTime;
         }
 
-        if (++netplayRefreshCounter >= 16) {
-            netplayRefreshCounter = 0;
-            RefreshNetplayRuntimeState();
-            const NetplayRuntimeState netplayState = GetNetplayRuntimeState();
-            const bool shouldSuspend = netplayState.suspendTraining;
-            const bool isSuspended = g_onlineModeActive.load();
-            if (shouldSuspend && !isSuspended) {
-                LogOut("[NETPLAY] Frame monitor requested suspend: " + GetLastOnlineDetectionReason(), true);
-                EnterNetplaySuspend();
-            } else if (!shouldSuspend && isSuspended) {
-                LogOut("[NETPLAY] Frame monitor requested resume: " + GetLastOnlineDetectionReason(), true);
-                ExitNetplaySuspend();
-            }
-
-            if (netplayState.inNetplayMenu && !lastNetplayMenuActive) {
-                LogOut("[NETPLAY] Frame monitor detected netplay menu entry; auditing residual training state", true);
-                AuditNetplayMenuEntryState();
-            }
-            lastNetplayMenuActive = netplayState.inNetplayMenu;
-        }
-
         ConsumeRuntimeLifecycleResyncRequests();
         const uint32_t lifecycleGeneration = GetRuntimeLifecycleGeneration();
         if (lifecycleGeneration != lastLifecycleGeneration) {
@@ -873,12 +850,18 @@ void FrameDataMonitor() {
                 + std::to_string(lifecycleGeneration), detailedLogging.load());
         }
 
-    if (g_onlineModeActive.load()) {
-        g_lastSample.online = true;
-        matchLogAnchorInternal = -1;
-        SetCurrentLogMatchInternalFrame(-1);
-        goto FRAME_MONITOR_FRAME_END;
-    }
+        if (g_onlineModeActive.load(std::memory_order_acquire)) {
+            if (highResActive) {
+                timeEndPeriod(1);
+                highResActive = false;
+            }
+            g_lastSample.online = true;
+            matchLogAnchorInternal = -1;
+            SetCurrentLogMatchInternalFrame(-1);
+            std::this_thread::sleep_for(std::chrono::milliseconds(250));
+            expectedNext = clock::now() + targetFrameTime;
+            continue;
+        }
 
     // Refresh core pointer cache once per loop iteration
     RefreshPointerCache();
@@ -1633,7 +1616,9 @@ void FrameDataMonitor() {
          << "  FA1(endFreeze)=" << rg.fa1F << "F"
          << "  FA2(th)=" << rg.fa2ThF << "F"
              << "  cRG window: until attacker recovers/cancels";
-                LogOut(std::string("[RG][FM] ") + os.str(), true);
+                if (g_deepFrameAdvDebug.load()) {
+                    LogOut(std::string("[RG][FM] ") + os.str(), true);
+                }
                 // One-shot overlay toast (gated by debug flag)
                 if (g_ShowRGDebugToasts.load()) {
                     DirectDrawHook::AddMessage(os.str(), "RG", RGB(120, 200, 255), 1500, 0, 140);
@@ -1652,7 +1637,9 @@ void FrameDataMonitor() {
                     rg.cRGOpen = false;
                     std::ostringstream os; os.setf(std::ios::fixed); os << std::setprecision(2);
                     os << "RG: cRG window closed for P" << rg.defender << " (attacker now actionable/cancelled)";
-                    LogOut(std::string("[RG][FM] ") + os.str(), detailedLogging.load());
+                    if (g_deepFrameAdvDebug.load()) {
+                        LogOut(std::string("[RG][FM] ") + os.str(), true);
+                    }
                     // No overlay toast on close to reduce noise
                 }
             };
@@ -1661,6 +1648,26 @@ void FrameDataMonitor() {
             auto updateRGFA = [&](RGAnalysis &rg) {
                 if (!rg.active) return;
                 const double kIntToVis = 60.0 / 192.0; // convert internal 192 Hz frames to visual frames
+
+                // If the defender gets clipped into a fresh non-RG lockout before ever becoming free,
+                // the original RG exchange has been superseded by a new regular hit/block sequence.
+                // Let the normal FA tracker own that later contact instead of measuring through it as RG FA.
+                if (rg.defActionableAt < 0) {
+                    short defMoveNow = (rg.defender == 1) ? rgSample.moveID1 : rgSample.moveID2;
+                    bool defenderEnteredFreshLockout =
+                        !IsRecoilGuard(defMoveNow) &&
+                        (IsBlockstunState(defMoveNow) || IsHitstun(defMoveNow) || IsThrown(defMoveNow));
+                    if (defenderEnteredFreshLockout) {
+                        std::ostringstream os;
+                        os << "RG: cancelled for P" << rg.defender
+                           << " because a fresh non-RG contact started before defender recovery";
+                        if (g_deepFrameAdvDebug.load()) {
+                            LogOut(std::string("[RG][FM] ") + os.str(), true);
+                        }
+                        rg = RGAnalysis{};
+                        return;
+                    }
+                }
 
                 // Track attacker actionable timestamp
                 if (rg.atkActionableAt < 0) {
@@ -1672,7 +1679,9 @@ void FrameDataMonitor() {
                         {
                             std::ostringstream os; os.setf(std::ios::fixed); os << std::setprecision(2);
                             os << "RG: Attacker actionable (P" << rg.attacker << ")";
-                            LogOut(std::string("[RG][FM] ") + os.str(), true);
+                            if (g_deepFrameAdvDebug.load()) {
+                                LogOut(std::string("[RG][FM] ") + os.str(), true);
+                            }
                             if (g_ShowRGDebugToasts.load()) {
                                 DirectDrawHook::AddMessage(os.str(), "RG", RGB(160, 255, 160), 1200, 0, 156);
                             }
@@ -1689,7 +1698,9 @@ void FrameDataMonitor() {
                         {
                             std::ostringstream os; os.setf(std::ios::fixed); os << std::setprecision(2);
                             os << "RG: Defender actionable (P" << rg.defender << ")";
-                            LogOut(std::string("[RG][FM] ") + os.str(), true);
+                            if (g_deepFrameAdvDebug.load()) {
+                                LogOut(std::string("[RG][FM] ") + os.str(), true);
+                            }
                             if (g_ShowRGDebugToasts.load()) {
                                 DirectDrawHook::AddMessage(os.str(), "RG", RGB(255, 240, 160), 1200, 0, 156);
                             }
@@ -1708,7 +1719,9 @@ void FrameDataMonitor() {
                           os << "RG: P" << rg.defender
                               << "  FA1(endFreeze)=" << rg.fa1F << "F"
                               << "  FA2(meas)=" << rg.fa2F << "F";
-                    LogOut(std::string("[RG][FM] ") + os.str(), true);
+                    if (g_deepFrameAdvDebug.load()) {
+                        LogOut(std::string("[RG][FM] ") + os.str(), true);
+                    }
                     if (g_ShowRGDebugToasts.load()) {
                         DirectDrawHook::AddMessage(os.str(), "RG", RGB(120, 200, 255), 1500, 0, 156);
                     }
@@ -1761,11 +1774,11 @@ void FrameDataMonitor() {
                         } else {
                             g_FrameAdvantage2Id = DirectDrawHook::AddPermanentMessage(rightText, rightColor, rightX, baseY);
                         }
-                        // Set display timer for RG messages (configurable via .ini, default 8 seconds)
-                        frameAdvState.displayUntilInternalFrame = nowInt + GetDisplayDurationInternalFrames();
+                        // RG FA shares the same wall-clock lifetime as regular FA.
+                        ArmFrameAdvantageDisplayTimer();
                         #if defined(ENABLE_FRAME_ADV_DEBUG)
                         LogOut("[RG_DEBUG] Set RG timer: nowInt=" + std::to_string(nowInt) + 
-                               " expiry=" + std::to_string(frameAdvState.displayUntilInternalFrame), true);
+                               " suppressUntil=" + std::to_string(g_SkipRegularFAOverlayUntilFrame.load()), true);
                         #endif
                     } else {
                         // If hidden, ensure any existing FA messages are cleared

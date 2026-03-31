@@ -1,6 +1,7 @@
 #include "../../include/game/savestate_hook.h"
 #include "../../include/game/efzrevival_addrs.h"
 #include "../../include/game/auto_action.h"
+#include "../../include/game/character_settings.h"
 #include "../../include/game/combo_overlay.h"
 #include "../../include/game/macro_controller.h"
 #include "../../include/game/practice_offsets.h"
@@ -158,6 +159,9 @@ namespace {
         // Restore our captured mod state after the game state is loaded
         RestoreModState();
         ComboOverlay::ResetState("savestate load");
+        if (uintptr_t base = GetEFZBase()) {
+            CharacterSettings::TickCharacterEnforcements(base, displayData);
+        }
         
         LogOut("[SAVESTATE] === LOAD STATE END (result=" + std::string(result ? "true" : "false") + ") ===", true);
         

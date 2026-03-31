@@ -6,6 +6,8 @@
 namespace PracticeOverlayGate { void SetMenuVisible(bool); }
 #include "../include/gui/overlay.h" 
 #include "../include/utils/utilities.h"
+#include "../include/core/memory.h"
+#include "../include/utils/switch_players.h"
 #include "../include/utils/xp_compat.h"
 #include <stdexcept>
 #include <Xinput.h>
@@ -56,6 +58,25 @@ static inline float ClampF(float v, float lo, float hi) {
     if (v < lo) return lo;
     if (v > hi) return hi;
     return v;
+}
+
+static bool IsVkDownForImGuiNav(int vk) {
+    return vk > 0 && (GetAsyncKeyState(vk) & 0x8000) != 0;
+}
+
+static uint8_t ReadMenuGameplayInputs() {
+    int localSide = SwitchPlayers::GetLocalSide();
+    int localPlayer = 1;
+    if (localSide == 1) {
+        localPlayer = 2;
+    }
+
+    uint8_t inputs = GetPlayerInputs(localPlayer);
+    if (inputs == 0 && localPlayer != 1) {
+        // Menu routing is frequently reset to P1-local; fall back there if the local-side read is empty.
+        inputs = GetPlayerInputs(1);
+    }
+    return inputs;
 }
 
 struct CachedWindowMetrics {
@@ -296,6 +317,7 @@ static void UpdateVirtualCursor(ImGuiIO& io) {
         if (n > 1.f) n = 1.f; if (n < -1.f) n = -1.f;
         return n;
     };
+    const float navAnalogThreshold = ClampF(cfg.guiNavAnalogThreshold, 0.05f, 0.95f);
 
     // Aggregate ImGui navigation input from ALL connected controllers
     bool kFaceDown=false, kFaceRight=false, kFaceLeft=false, kFaceUp=false;
@@ -325,6 +347,18 @@ static void UpdateVirtualCursor(ImGuiIO& io) {
             // Left stick per-direction max (avoid std::max due to Windows min/max macros)
             float lxNorm = axisToAnalog(gp.sThumbLX, XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE);
             float lyNorm = axisToAnalog(gp.sThumbLY, XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE);
+            if (XInputShim::IsGenericFallbackSlot(i)) {
+                // Generic DirectInput pads sometimes surface their only usable navigation axes
+                // on what looks like the right stick after translation. Prefer the stronger pair.
+                float rxNorm = axisToAnalog(gp.sThumbRX, XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE);
+                float ryNorm = axisToAnalog(gp.sThumbRY, XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE);
+                const float leftStrength = (std::max)(std::fabs(lxNorm), std::fabs(lyNorm));
+                const float rightStrength = (std::max)(std::fabs(rxNorm), std::fabs(ryNorm));
+                if (rightStrength > leftStrength) {
+                    lxNorm = rxNorm;
+                    lyNorm = ryNorm;
+                }
+            }
             {
                 float cLeft  = (lxNorm < 0.f) ? -lxNorm : 0.f;
                 float cRight = (lxNorm > 0.f) ?  lxNorm : 0.f;
@@ -345,6 +379,42 @@ static void UpdateVirtualCursor(ImGuiIO& io) {
             }
         }
     }
+
+    // Also mirror the same gameplay-facing inputs the match already recognizes.
+    // This keeps ImGui navigation compatible with non-XInput devices that still work in-game.
+    {
+        const uint8_t menuInputs = ReadMenuGameplayInputs();
+        kDpadL |= (menuInputs & INPUT_LEFT)  != 0;
+        kDpadR |= (menuInputs & INPUT_RIGHT) != 0;
+        kDpadU |= (menuInputs & INPUT_UP)    != 0;
+        kDpadD |= (menuInputs & INPUT_DOWN)  != 0;
+        kFaceDown  |= (menuInputs & INPUT_A) != 0;
+        kFaceRight |= (menuInputs & INPUT_B) != 0;
+        kFaceLeft  |= (menuInputs & INPUT_C) != 0;
+        kFaceUp    |= (menuInputs & INPUT_D) != 0;
+    }
+
+    // Supplement the gameplay bitmask with any discovered keyboard bindings so paused-menu
+    // navigation still works even if the game-side input byte stalls for a frame.
+    if (detectedBindings.directionsDetected) {
+        kDpadL |= IsVkDownForImGuiNav(detectedBindings.leftKey);
+        kDpadR |= IsVkDownForImGuiNav(detectedBindings.rightKey);
+        kDpadU |= IsVkDownForImGuiNav(detectedBindings.upKey);
+        kDpadD |= IsVkDownForImGuiNav(detectedBindings.downKey);
+    }
+    if (detectedBindings.attacksDetected) {
+        kFaceDown  |= IsVkDownForImGuiNav(detectedBindings.aButton);
+        kFaceRight |= IsVkDownForImGuiNav(detectedBindings.bButton);
+        kFaceLeft  |= IsVkDownForImGuiNav(detectedBindings.cButton);
+        kFaceUp    |= IsVkDownForImGuiNav(detectedBindings.dButton);
+    }
+
+    // Mirror sufficiently strong analog navigation into digital dpad events.
+    // This helps DirectInput fallback pads whose best nav source is an axis pair rather than a real POV hat.
+    kDpadL = kDpadL || (aLLeft  >= navAnalogThreshold);
+    kDpadR = kDpadR || (aLRight >= navAnalogThreshold);
+    kDpadU = kDpadU || (aLUp    >= navAnalogThreshold);
+    kDpadD = kDpadD || (aLDown  >= navAnalogThreshold);
 
     // Feed ImGui only once with aggregated values (pre-NewFrame)
     if (anyConnected) {
@@ -470,8 +540,19 @@ static void UpdateVirtualCursor(ImGuiIO& io) {
                 return n;
             };
             
-            float rx = applyDeadzone(selGp.sThumbRX, XINPUT_GAMEPAD_RIGHT_THUMB_DEADZONE);
-            float ry = applyDeadzone(selGp.sThumbRY, XINPUT_GAMEPAD_RIGHT_THUMB_DEADZONE);
+            bool genericNavBorrowedRightStick = false;
+            if (XInputShim::IsGenericFallbackSlot(selPad)) {
+                float lxNorm = applyDeadzone(selGp.sThumbLX, XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE);
+                float lyNorm = applyDeadzone(selGp.sThumbLY, XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE);
+                float rxNorm = applyDeadzone(selGp.sThumbRX, XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE);
+                float ryNorm = applyDeadzone(selGp.sThumbRY, XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE);
+                const float leftStrength = (std::max)(std::fabs(lxNorm), std::fabs(lyNorm));
+                const float rightStrength = (std::max)(std::fabs(rxNorm), std::fabs(ryNorm));
+                genericNavBorrowedRightStick = rightStrength > leftStrength;
+            }
+
+            float rx = genericNavBorrowedRightStick ? 0.0f : applyDeadzone(selGp.sThumbRX, XINPUT_GAMEPAD_RIGHT_THUMB_DEADZONE);
+            float ry = genericNavBorrowedRightStick ? 0.0f : applyDeadzone(selGp.sThumbRY, XINPUT_GAMEPAD_RIGHT_THUMB_DEADZONE);
             // Small deadzone to avoid noise
             const float dz = 0.15f;
             if (fabsf(rx) < dz) rx = 0.0f;
@@ -787,6 +868,7 @@ namespace ImGuiImpl {
             LogOut("[IMGUI] ImGui interface opened - will render continuously until closed", true);
             // Ensure virtual cursor (dot) starts hidden until fresh physical mouse movement while menu is open
             g_resetVirtualCursorOnOpen = true;
+            ImGuiGui::RequestInitialNavFocus();
             // Log nav flags on open
             if (ImGui::GetCurrentContext()) {
                 ImGuiIO& io = ImGui::GetIO();
@@ -874,6 +956,10 @@ namespace ImGuiImpl {
         const float baseW = 640.0f;
         const float baseH = 480.0f;
 
+        // Keep navigation repeat timing synchronized regardless of which render path is active.
+        io.KeyRepeatDelay = ClampF(Config::GetSettings().guiNavRepeatDelay, 0.05f, 1.0f);
+        io.KeyRepeatRate  = ClampF(Config::GetSettings().guiNavRepeatRate,  0.01f, 0.50f);
+
         // Always force ImGui to render against the backbuffer size (not the window size)
         io.DisplaySize = ImVec2(baseW, baseH);
         io.DisplayFramebufferScale = ImVec2(1.0f, 1.0f);
@@ -931,8 +1017,9 @@ namespace ImGuiImpl {
             }
         }
 
-        // Note: Virtual cursor/gamepad aggregation happens later in UpdateVirtualCursor during
-        // the alternate RenderFrame path, and for the EndScene path we only need OS mouse remap here.
+        // Feed controller navigation and optional virtual-cursor input for the active frame.
+        // The EndScene overlay path relies on this helper, so gamepad events must be queued here.
+        UpdateVirtualCursor(io);
     }
 
     // (PostNewFrameDiagnostics removed)
@@ -952,15 +1039,8 @@ namespace ImGuiImpl {
             // Prepare backend new-frame data first
             ImGui_ImplDX9_NewFrame();
             ImGui_ImplWin32_NewFrame();
-            // Feed our gamepad/virtual cursor inputs AFTER backend NewFrame so our events
-            // override OS mouse position provided by the backend, then before ImGui::NewFrame
-            {
-                ImGuiIO& io = ImGui::GetIO();
-                // Keep nav repeat settings in sync with config per-frame
-                io.KeyRepeatDelay = ClampF(Config::GetSettings().guiNavRepeatDelay, 0.05f, 1.0f);
-                io.KeyRepeatRate  = ClampF(Config::GetSettings().guiNavRepeatRate,  0.01f, 0.50f);
-                UpdateVirtualCursor(io);
-            }
+            // Feed our corrected mouse/gamepad inputs after backend NewFrame, before ImGui::NewFrame.
+            PreNewFrameInputs();
             ImGui::NewFrame();
             // (PostNewFrameDiagnostics removed to reduce per-frame overhead)
             // Skip rendering if minimized to avoid style asserts (DisplaySize == 0)

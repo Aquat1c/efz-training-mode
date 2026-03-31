@@ -17,6 +17,7 @@
 #include "../include/utils/bgm_control.h"
 #include "../include/utils/xp_compat.h"
 #include "../include/input/input_debug.h"
+#include "../include/utils/xinput_shim.h"
 #include <algorithm> 
 #include <vector>
 #include <string>
@@ -76,6 +77,7 @@ namespace ImGuiGui {
     static bool s_uiFreezeP1ColorBlue = true;
     static bool s_uiFreezeP2 = false;
     static bool s_uiFreezeP2ColorBlue = true;
+    static bool s_requestInitialNavFocus = false;
 
     static void ClampMainWindowToClientBounds() {
         ImGuiViewport* viewport = ImGui::GetMainViewport();
@@ -181,6 +183,10 @@ namespace ImGuiGui {
     void Initialize() {
         ResetForPracticeSession("Initialize");
         LogOut("[IMGUI_GUI] GUI state initialized", detailedLogging.load());
+    }
+
+    void RequestInitialNavFocus() {
+        s_requestInitialNavFocus = true;
     }
 
     void ResetForPracticeSession(const char* reason, bool resetTabs) {
@@ -896,15 +902,21 @@ namespace ImGuiGui {
                 ImGui::Spacing();
                 ImGui::SeparatorText("Combo Statistics");
                 ImGui::TextWrapped("Shows a compact combo summary during Practice. The final combo state stays on-screen until the match ends.");
+                auto showWrappedTooltip = [](const char* text) {
+                    if (!ImGui::IsItemHovered()) return;
+                    ImGui::BeginTooltip();
+                    ImGui::PushTextWrapPos(ImGui::GetFontSize() * 35.0f);
+                    ImGui::TextUnformatted(text);
+                    ImGui::PopTextWrapPos();
+                    ImGui::EndTooltip();
+                };
 
                 bool showComboOverlay = Config::GetSettings().showComboStatisticsOverlay;
                 if (ImGui::Checkbox("Enable Combo Statistics Overlay", &showComboOverlay)) {
                     Config::SetSetting("General", "showComboStatisticsOverlay", showComboOverlay ? "1" : "0");
                     ComboOverlay::ClearDisplay();
                 }
-                if (ImGui::IsItemHovered()) {
-                    ImGui::SetTooltip("Turns the in-match combo statistics card on or off.");
-                }
+                showWrappedTooltip("Turns the in-match combo statistics card on or off.");
 
                 if (showComboOverlay) {
                     ImGui::Indent();
@@ -930,11 +942,11 @@ namespace ImGuiGui {
                         Config::SetSetting("General", "comboOverlayShowFinalSummary", showFinalSummary ? "1" : "0");
                         ComboOverlay::ClearDisplay();
                     }
-                    if (ImGui::IsItemHovered()) {
-                        ImGui::SetTooltip("Keeps the last combo visible until the match ends instead of hiding it when the combo drops.");
-                    }
+                    showWrappedTooltip("Keeps the last combo visible until the match ends instead of hiding it when the combo drops.");
 
-                    ImGui::TextDisabled("Advanced appearance options are under Settings > General > Combo Statistics.");
+                    ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+                    ImGui::TextWrapped("Advanced appearance options are under Settings > General > Combo Statistics.");
+                    ImGui::PopStyleColor();
                     ImGui::Unindent();
                 }
 
@@ -2055,7 +2067,7 @@ namespace ImGuiGui {
                             ImGui::TextWrapped("Snow bunnies timer controls how long bunnies stay active. Infinite Snow bunnies keeps them at maximum duration.");
                             ImGui::Dummy(ImVec2(1, 4));
                             ImGui::TextColored(ImVec4(0.7f, 0.9f, 1.0f, 1.0f), "Nayuki (Asleep)");
-                            ImGui::TextWrapped("Jam count (0-9) controls stored jams. Lock Jam restores the count to your set value whenever the character wakes up from knockdown.");
+                            ImGui::TextWrapped("Jam count (0-9) controls stored jams. Lock Jam restores the count to your set value on wakeup and after neutral-style resets or loads.");
                             ImGui::Dummy(ImVec2(1, 4));
                             ImGui::TextColored(ImVec4(0.7f, 0.9f, 1.0f, 1.0f), "Mio");
                             ImGui::TextWrapped("Switch between Short and Long stance. Lock Stance prevents the game from automatically changing it during certain moves.");
@@ -2645,7 +2657,7 @@ namespace ImGuiGui {
                 guiState.localData.p1NeyukiJamCount = jam;
             }
             bool lockJam = guiState.localData.p1NeyukiLockJam;
-            if (ImGui::Checkbox("Lock Jam (restore on wakeup)##p1Neyuki", &lockJam)) {
+            if (ImGui::Checkbox("Lock Jam (restore on wakeup/neutral)##p1Neyuki", &lockJam)) {
                 guiState.localData.p1NeyukiLockJam = lockJam;
             }
             //ImGui::TextDisabled("(Neyuki only)");
@@ -3050,7 +3062,7 @@ namespace ImGuiGui {
                 guiState.localData.p2NeyukiJamCount = jam2;
             }
             bool lockJam2 = guiState.localData.p2NeyukiLockJam;
-            if (ImGui::Checkbox("Lock Jam (restore on wakeup)##p2Neyuki", &lockJam2)) {
+            if (ImGui::Checkbox("Lock Jam (restore on wakeup/neutral)##p2Neyuki", &lockJam2)) {
                 guiState.localData.p2NeyukiLockJam = lockJam2;
             }
             //ImGui::TextDisabled("(Neyuki only)");
@@ -3309,6 +3321,15 @@ namespace ImGuiGui {
         if (ImGui::Checkbox("Show RG debug toasts", &showRGToasts)) {
             g_ShowRGDebugToasts.store(showRGToasts);
         }
+        bool logGenericPadInput = XInputShim::g_LogGenericPadInputDebug.load();
+        if (ImGui::Checkbox("Log generic controller input", &logGenericPadInput)) {
+            XInputShim::g_LogGenericPadInputDebug.store(logGenericPadInput);
+        }
+        bool logDetailedFrameAdv = g_deepFrameAdvDebug.load();
+        if (ImGui::Checkbox("Log detailed frame advantage", &logDetailedFrameAdv)) {
+            g_deepFrameAdvDebug.store(logDetailedFrameAdv);
+        }
+        ImGui::TextDisabled("These logging toggles are runtime-only and reset on restart.");
 
         // Always RG toggle moved to Game Settings
 
@@ -3500,6 +3521,9 @@ namespace ImGuiGui {
 
         // Main window
         // Allow navigation (keyboard/gamepad), disable collapse and saved settings to avoid off-screen positions
+        if (s_requestInitialNavFocus) {
+            ImGui::SetNextWindowFocus();
+        }
         ImGuiWindowFlags winFlags = ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings;
     if (ImGui::Begin("EFZ Training Mode", nullptr, winFlags)) {
             // Text already crisp-scaled via font atlas; keep per-window font scale at 1.0
@@ -3514,8 +3538,7 @@ namespace ImGuiGui {
             // If input layer requested overlay focus (e.g., middle-click/L3 recenter), honor it here
             if (ImGuiImpl::ConsumeOverlayFocusRequest()) {
                 ImGui::SetWindowFocus();
-                // Place keyboard/gamepad nav at center-most item by setting default focus to the window
-                ImGui::SetItemDefaultFocus();
+                s_requestInitialNavFocus = true;
             }
 
             // Capture any requested top-level tab selection; we'll apply it via SetSelected flags below
@@ -3543,6 +3566,10 @@ namespace ImGuiGui {
                     // Main Menu tab
                     if (ImGui::BeginTabItem("Main Menu", nullptr, __mainFlags)) {
                         guiState.currentTab = 0;
+                        if (s_requestInitialNavFocus) {
+                            ImGui::SetKeyboardFocusHere();
+                            s_requestInitialNavFocus = false;
+                        }
                         RenderGameValuesTab();
                         ImGui::EndTabItem();
                     }
@@ -3550,6 +3577,10 @@ namespace ImGuiGui {
                     // Auto Actions tab
                     if (ImGui::BeginTabItem("Auto Actions", nullptr, __autoFlags)) {
                         guiState.currentTab = 1;
+                        if (s_requestInitialNavFocus) {
+                            ImGui::SetKeyboardFocusHere();
+                            s_requestInitialNavFocus = false;
+                        }
                         RenderAutoActionTab();
                         ImGui::EndTabItem();
                     }
@@ -3557,6 +3588,10 @@ namespace ImGuiGui {
                     // Characters tab; refresh character IDs once on open to avoid per-frame work
                     if (ImGui::BeginTabItem("Characters", nullptr, __charFlags)) {
                         guiState.currentTab = 2;
+                        if (s_requestInitialNavFocus) {
+                            ImGui::SetKeyboardFocusHere();
+                            s_requestInitialNavFocus = false;
+                        }
                         static bool s_charTabJustOpened = false;
                         if (ImGui::IsItemActivated()) { s_charTabJustOpened = true; }
                         if (s_charTabJustOpened) {
@@ -3571,6 +3606,10 @@ namespace ImGuiGui {
                     // Settings tab (moved after Characters)
                     if (ImGui::BeginTabItem("Settings", nullptr, __settingsFlags)) {
                         guiState.currentTab = 5;
+                        if (s_requestInitialNavFocus) {
+                            ImGui::SetKeyboardFocusHere();
+                            s_requestInitialNavFocus = false;
+                        }
                         ImGuiSettings::RenderSettingsTab();
                         ImGui::EndTabItem();
                     }
@@ -3580,6 +3619,10 @@ namespace ImGuiGui {
                     // Help tab(s)
                     if (ImGui::BeginTabItem("Help", nullptr, __helpFlags)) {
                         guiState.currentTab = 4;
+                        if (s_requestInitialNavFocus) {
+                            ImGui::SetKeyboardFocusHere();
+                            s_requestInitialNavFocus = false;
+                        }
                         RenderHelpTab();
                         ImGui::EndTabItem();
                     }
