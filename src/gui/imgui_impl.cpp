@@ -409,12 +409,69 @@ static void UpdateVirtualCursor(ImGuiIO& io) {
         kFaceUp    |= IsVkDownForImGuiNav(detectedBindings.dButton);
     }
 
-    // Mirror sufficiently strong analog navigation into digital dpad events.
-    // This helps DirectInput fallback pads whose best nav source is an axis pair rather than a real POV hat.
-    kDpadL = kDpadL || (aLLeft  >= navAnalogThreshold);
-    kDpadR = kDpadR || (aLRight >= navAnalogThreshold);
-    kDpadU = kDpadU || (aLUp    >= navAnalogThreshold);
-    kDpadD = kDpadD || (aLDown  >= navAnalogThreshold);
+    // Merge all directional sources into a single raw signal per direction,
+    // then gate it through a "just-pressed → hold → repeat-with-acceleration"
+    // state machine.  This prevents double-taps from multiple input sources
+    // (XInput dpad, analog stick, gameplay byte, keyboard) all independently
+    // triggering ImGui navigation, and gives a human-friendly feel:
+    //   • tap  → exactly one nav step
+    //   • hold < 1 s  → still just one step
+    //   • hold ≥ 1 s  → start repeating, accelerating over time
+    {
+        // Combine every source into one bool per direction (dpad + stick + gameplay + keyboard)
+        bool rawDir[4] = {
+            kDpadL || (aLLeft  >= navAnalogThreshold),
+            kDpadR || (aLRight >= navAnalogThreshold),
+            kDpadU || (aLUp    >= navAnalogThreshold),
+            kDpadD || (aLDown  >= navAnalogThreshold),
+        };
+
+        // Per-direction state persisted across frames
+        static bool  s_prevRaw[4]        = {false, false, false, false};
+        static float s_holdTime[4]       = {0, 0, 0, 0};
+        static float s_nextRepeatAt[4]   = {0, 0, 0, 0};
+
+        const float holdThreshold = 1.0f; // seconds before repeat kicks in
+
+        bool gated[4];
+        for (int i = 0; i < 4; i++) {
+            if (rawDir[i]) {
+                if (!s_prevRaw[i]) {
+                    // Rising edge – emit one nav step ("just pressed")
+                    gated[i] = true;
+                    s_holdTime[i] = 0.f;
+                    s_nextRepeatAt[i] = holdThreshold;
+                } else {
+                    s_holdTime[i] += io.DeltaTime;
+                    if (s_holdTime[i] >= s_nextRepeatAt[i]) {
+                        // Emit a repeat pulse
+                        gated[i] = true;
+                        // Acceleration: rate increases with hold duration
+                        float elapsed = s_holdTime[i] - holdThreshold;
+                        float interval;
+                        if (elapsed < 0.5f)       interval = 0.18f;  // ~6/s
+                        else if (elapsed < 1.5f)   interval = 0.09f;  // ~11/s
+                        else                        interval = 0.045f; // ~22/s
+                        s_nextRepeatAt[i] = s_holdTime[i] + interval;
+                    } else {
+                        gated[i] = false; // suppress during dead zone
+                    }
+                }
+            } else {
+                gated[i] = false;
+                s_holdTime[i] = 0.f;
+                s_nextRepeatAt[i] = 0.f;
+            }
+            s_prevRaw[i] = rawDir[i];
+        }
+
+        // Write gated values back; ALL directional nav is driven solely
+        // through these gated dpad bools.  LStick analog is zeroed to prevent
+        // ImGui's NavUpdate from reading AnalogValue and double-triggering nav.
+        kDpadL = gated[0]; kDpadR = gated[1];
+        kDpadU = gated[2]; kDpadD = gated[3];
+        aLLeft = 0.f; aLRight = 0.f; aLUp = 0.f; aLDown = 0.f;
+    }
 
     // Feed ImGui only once with aggregated values (pre-NewFrame)
     if (anyConnected) {
@@ -432,10 +489,13 @@ static void UpdateVirtualCursor(ImGuiIO& io) {
         io.AddKeyEvent(ImGuiKey_GamepadDpadRight, kDpadR);
         io.AddKeyEvent(ImGuiKey_GamepadDpadUp,    kDpadU);
         io.AddKeyEvent(ImGuiKey_GamepadDpadDown,  kDpadD);
-        io.AddKeyAnalogEvent(ImGuiKey_GamepadLStickLeft,  aLLeft  > 0.f, aLLeft);
-        io.AddKeyAnalogEvent(ImGuiKey_GamepadLStickRight, aLRight > 0.f, aLRight);
-        io.AddKeyAnalogEvent(ImGuiKey_GamepadLStickUp,    aLUp    > 0.f, aLUp);
-        io.AddKeyAnalogEvent(ImGuiKey_GamepadLStickDown,  aLDown  > 0.f, aLDown);
+        // LStick: fully zeroed — nav is handled exclusively by gated dpad above.
+        // ImGui reads AnalogValue directly in NavUpdate regardless of the bool,
+        // so passing non-zero analog would double-trigger every nav step.
+        io.AddKeyAnalogEvent(ImGuiKey_GamepadLStickLeft,  false, 0.f);
+        io.AddKeyAnalogEvent(ImGuiKey_GamepadLStickRight, false, 0.f);
+        io.AddKeyAnalogEvent(ImGuiKey_GamepadLStickUp,    false, 0.f);
+        io.AddKeyAnalogEvent(ImGuiKey_GamepadLStickDown,  false, 0.f);
         io.AddKeyAnalogEvent(ImGuiKey_GamepadL2,          aL2 > 0.05f, aL2);
         io.AddKeyAnalogEvent(ImGuiKey_GamepadR2,          aR2 > 0.05f, aR2);
     } else {
@@ -600,6 +660,20 @@ static void UpdateVirtualCursor(ImGuiIO& io) {
 LRESULT CALLBACK ImGuiWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     if (g_onlineModeActive.load(std::memory_order_relaxed)) {
         return CallWindowProc(g_originalWndProc, hWnd, msg, wParam, lParam);
+    }
+
+    // When our UI is visible, block directional keyboard events from reaching
+    // ImGui's Win32 backend.  Arrow keys (and their game-bound equivalents)
+    // generate WM_KEYDOWN messages that ImGui_ImplWin32_WndProcHandler converts
+    // into ImGuiKey_UpArrow / DownArrow / LeftArrow / RightArrow nav triggers,
+    // which fire independently of our gated gamepad dpad — causing double-navigation.
+    // We handle ALL directional nav ourselves in PreNewFrameInputs, so suppress
+    // these here to prevent a second input path.
+    if (g_imguiVisible && (msg == WM_KEYDOWN || msg == WM_KEYUP)) {
+        if (wParam == VK_UP || wParam == VK_DOWN || wParam == VK_LEFT || wParam == VK_RIGHT) {
+            // Still pass to game so non-ImGui systems aren't starved
+            return CallWindowProc(g_originalWndProc, hWnd, msg, wParam, lParam);
+        }
     }
 
     // Always feed events to ImGui so backend state stays coherent even when UI is hidden
@@ -956,9 +1030,12 @@ namespace ImGuiImpl {
         const float baseW = 640.0f;
         const float baseH = 480.0f;
 
-        // Keep navigation repeat timing synchronized regardless of which render path is active.
-        io.KeyRepeatDelay = ClampF(Config::GetSettings().guiNavRepeatDelay, 0.05f, 1.0f);
-        io.KeyRepeatRate  = ClampF(Config::GetSettings().guiNavRepeatRate,  0.01f, 0.50f);
+        // Nav repeat is fully owned by our per-direction gate (pulse emitter).
+        // Set ImGui's built-in repeat to effectively-never so it doesn't fire
+        // on top of our gated pulses.  Non-nav keys (e.g. text input) still
+        // get a sane rate.
+        io.KeyRepeatDelay = 9999.f;
+        io.KeyRepeatRate  = 9999.f;
 
         // Always force ImGui to render against the backbuffer size (not the window size)
         io.DisplaySize = ImVec2(baseW, baseH);

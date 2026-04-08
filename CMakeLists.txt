@@ -39,6 +39,16 @@ if(MSVC)
     
     # Disable annoying secure CRT warnings
     add_definitions(-D_CRT_SECURE_NO_WARNINGS)
+    
+    # Disable ImGui's built-in XInput gamepad polling in the Win32 backend.
+    # We handle ALL gamepad input ourselves via PreNewFrameInputs() with a
+    # per-direction gate.  Without this, ImGui_ImplWin32_UpdateGamepads()
+    # calls XInputGetState() every frame and feeds raw ungated dpad/stick
+    # events, causing double-navigation.
+    add_definitions(-DIMGUI_IMPL_WIN32_DISABLE_GAMEPAD)
+    
+    # Uncomment to enable verbose frame advantage debug logging:
+    # add_definitions(-DENABLE_FRAME_ADV_DEBUG)
 
     if(EFZ_XP_COMPAT)
         add_definitions(-DWINVER=0x0501 -D_WIN32_WINNT=0x0501 -DEFZ_XP_COMPAT=1)
