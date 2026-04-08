@@ -99,6 +99,7 @@ enum EFZNetplayActivityPhase
     EFZ_ACTIVITY_LOADING        = 5,  // Post-charselect loading screen
     EFZ_ACTIVITY_MATCH          = 6,  // Active online match / round
     EFZ_ACTIVITY_RESULTS        = 7,  // Post-match results screen (reserved)
+    EFZ_ACTIVITY_HOST_IDLE      = 8,  // Host returned to local gameplay while still listening
 };
 
 // ---------------------------------------------------------------------------

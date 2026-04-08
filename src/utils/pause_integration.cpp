@@ -708,13 +708,15 @@ namespace PauseIntegration {
         EnsurePracticePtrHookInstalled();
         void* resolved = ResolvePracticeControllerPtrInternal(allowCharacterSelect, allowLooseValidation, reason);
         if (resolved) {
-            std::ostringstream oss;
-            oss << "[PAUSE] ResolvePracticeControllerPtrNow"
-                << " reason=" << (reason ? reason : "unspecified")
-                << " allowCS=" << (allowCharacterSelect ? 1 : 0)
-                << " allowLoose=" << (allowLooseValidation ? 1 : 0)
-                << " practice=0x" << std::hex << reinterpret_cast<uintptr_t>(resolved);
-            LogOut(oss.str(), true);
+            if (detailedLogging.load()) {
+                std::ostringstream oss;
+                oss << "[PAUSE] ResolvePracticeControllerPtrNow"
+                    << " reason=" << (reason ? reason : "unspecified")
+                    << " allowCS=" << (allowCharacterSelect ? 1 : 0)
+                    << " allowLoose=" << (allowLooseValidation ? 1 : 0)
+                    << " practice=0x" << std::hex << reinterpret_cast<uintptr_t>(resolved);
+                LogOut(oss.str(), true);
+            }
         } else if (!allowCharacterSelect && IsMatchPhase() && (allowLooseValidation || detailedLogging.load())) {
             std::ostringstream oss;
             oss << "[PAUSE] ResolvePracticeControllerPtrNow failed"

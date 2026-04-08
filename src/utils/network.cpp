@@ -179,7 +179,34 @@ bool CopyStableExportSnapshot(const EFZNetplayState* raw, EFZNetplayState& outSt
     return false;
 }
 
+bool IsNetplayModInProcess() {
+    return GetModuleHandleA("efz_netplay_mod.dll") != nullptr
+        || GetModuleHandleA("efz_netplay_mod") != nullptr;
+}
+
+void ReleaseSharedMemoryView() {
+    if (s_sharedStateView != nullptr) {
+        UnmapViewOfFile(s_sharedStateView);
+        s_sharedStateView = nullptr;
+    }
+    if (s_sharedStateHandle != nullptr) {
+        CloseHandle(s_sharedStateHandle);
+        s_sharedStateHandle = nullptr;
+    }
+}
+
 bool EnsureSharedMemoryView() {
+    // Only use shared memory if efz_netplay_mod is loaded in THIS process.
+    // The shared memory name is global; without this guard, a second EFZ
+    // instance running netplay would cause our practice copy to read the
+    // other process's state and incorrectly suspend.
+    if (!IsNetplayModInProcess()) {
+        if (s_sharedStateView != nullptr) {
+            ReleaseSharedMemoryView();
+        }
+        return false;
+    }
+
     if (s_sharedStateView != nullptr) {
         return true;
     }
@@ -224,15 +251,30 @@ NetplayGetStateFn ResolveExportFunction() {
 }
 
 bool TryReadExportSnapshot(EFZNetplayState& outState, NetplayStateSource& outSource) {
-    if (EnsureSharedMemoryView() && CopyStableExportSnapshot(s_sharedStateView, outState)) {
-        outSource = NetplayStateSource::ExportSharedMemory;
-        return true;
-    }
-
+    // Always prefer the DLL export: it calls into OUR process's copy of
+    // efz_netplay_mod and returns a pointer to its in-process state.
+    // Shared memory is a global named object and is unsafe when multiple
+    // EFZ instances run on the same machine (both write to it, causing
+    // the practice copy to read the hosting copy's "netplay active" state).
     if (auto fn = ResolveExportFunction()) {
         const EFZNetplayState* raw = fn();
         if (CopyStableExportSnapshot(raw, outState)) {
             outSource = NetplayStateSource::ExportDll;
+            // Release any stale shared memory view since we don't need it
+            if (s_sharedStateView != nullptr) {
+                ReleaseSharedMemoryView();
+            }
+            return true;
+        }
+    }
+
+    // Shared memory fallback: only safe when the netplay mod is NOT loaded
+    // in our process (external monitoring scenario). If it IS loaded but
+    // the export failed above, the shared memory could contain state from
+    // another EFZ instance, so skip it.
+    if (!IsNetplayModInProcess()) {
+        if (EnsureSharedMemoryView() && CopyStableExportSnapshot(s_sharedStateView, outState)) {
+            outSource = NetplayStateSource::ExportSharedMemory;
             return true;
         }
     }
@@ -564,7 +606,9 @@ void RefreshNetplayRuntimeState() {
         const bool inCharSelect = hasGameFlow && exportState.inNetplayCharacterSelect != 0;
         const bool inMatch = hasGameFlow && exportState.inNetplayMatch != 0;
         const bool inFlow = inCharSelect || inMatch;
-        const bool activityActive = hasActivity && exportState.activityPhase != EFZ_ACTIVITY_IDLE;
+        const bool activityActive = hasActivity
+            && exportState.activityPhase != EFZ_ACTIVITY_IDLE
+            && exportState.activityPhase != EFZ_ACTIVITY_HOST_IDLE;
         const bool phaseTerminal =
             hasSession
             && (exportState.sessionPhase == EFZ_PHASE_FAILED

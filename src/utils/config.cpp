@@ -227,9 +227,9 @@ namespace Config {
             file << "; ImGui navigation tuning\n";
             file << "; Analog threshold for keyboard-fallback nav (0..1). Default 0.45\n";
             file << "guiNavAnalogThreshold = 0.45\n";
-            file << "; Key repeat timings (seconds). Defaults 0.30 delay, 0.06 rate\n";
-            file << "guiNavRepeatDelay = 0.30\n";
-            file << "guiNavRepeatRate = 0.06\n\n";
+            file << "; Key repeat timings (seconds). Defaults 0.50 delay, 0.15 rate\n";
+            file << "guiNavRepeatDelay = 0.50\n";
+            file << "guiNavRepeatRate = 0.15\n\n";
 
             // Right-stick scrolling
             file << "; Right-stick to mouse wheel (GUI)\n";
@@ -475,8 +475,8 @@ namespace Config {
             {
                 auto sectionIt = iniData.find("general");
                 float thr = 0.45f;
-                float repDelay = 0.30f;
-                float repRate = 0.06f;
+                float repDelay = 0.50f;
+                float repRate = 0.15f;
                 bool scrollEnable = true;
                 float scrollScale = 10.0f;
                 if (sectionIt != iniData.end()) {
@@ -491,8 +491,8 @@ namespace Config {
                         return defv;
                     };
                     thr = getf("guinavanalogthreshold", 0.45f);
-                    repDelay = getf("guinavrepeatdelay", 0.30f);
-                    repRate = getf("guinavrepeatrate", 0.06f);
+                    repDelay = getf("guinavrepeatdelay", 0.50f);
+                    repRate = getf("guinavrepeatrate", 0.15f);
                     scrollEnable = geti("guiscrollrightstickenable", true);
                     scrollScale = getf("guiscrollrightstickscale", 10.0f);
                 }

@@ -714,12 +714,22 @@ void MonitorKeys() {
             } else if (IsKeyPressed(toggleTitleKey, true)) {
                 // Toggle stats display instead of detailed title mode
                 bool currentState = g_statsDisplayEnabled.load();
-                g_statsDisplayEnabled.store(!currentState);
-                
-                if (g_statsDisplayEnabled.load()) {
+                bool nextState = !currentState;
+                g_statsDisplayEnabled.store(nextState);
+
+                // Disable combo overlay while stats display is active, restore when off
+                static bool s_comboOverlayWasEnabled = false;
+                if (nextState) {
+                    s_comboOverlayWasEnabled = cfg.showComboStatisticsOverlay;
+                    if (s_comboOverlayWasEnabled) {
+                        Config::SetSetting("General", "showComboStatisticsOverlay", "0");
+                    }
                     LogOut("[STATS] Stats display enabled", true);
                     DirectDrawHook::AddMessage("Stats Display Enabled", "SYSTEM", RGB(255, 255, 0), 1500, 20, 100);
                 } else {
+                    if (s_comboOverlayWasEnabled) {
+                        Config::SetSetting("General", "showComboStatisticsOverlay", "1");
+                    }
                     LogOut("[STATS] Stats display disabled", true);
                     DirectDrawHook::AddMessage("Stats Display Disabled", "SYSTEM", RGB(255, 255, 0), 1500, 20, 100);
                 }
