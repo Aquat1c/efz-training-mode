@@ -202,6 +202,8 @@ namespace Config {
             file << "[General]\n";
             file << "; Use the modern ImGui interface (1) or the legacy Win32 dialog (0)\n";
             file << "useImGui = 1\n";
+            file << "; Preview: render the new EFZ-native overlay instead of ImGui (1 = yes, 0 = no)\n";
+            file << "useCustomMenu = 0\n";
             file << "; Enable detailed debug messages in the console (1 = yes, 0 = no)\n";
             file << "detailedLogging = 0\n";
             file << "; Enable writing efz_training_debug.log (1 = yes, 0 = no)\n";
@@ -412,6 +414,7 @@ namespace Config {
         
         try {
             settings.useImGui = GetValueBool("General", "useImGui", true);
+            settings.useCustomMenu = GetValueBool("General", "useCustomMenu", false);
             settings.detailedLogging = GetValueBool("General", "detailedLogging", false);
             settings.enableDebugFileLog = GetValueBool("General", "enableDebugFileLog", false);
             settings.enableConsole = GetValueBool("General", "enableConsole", false);
@@ -685,6 +688,8 @@ namespace Config {
             file << "[General]\n";
             file << "; Use the modern ImGui interface (1) or the legacy Win32 dialog (0)\n";
             file << "useImGui = " << (settings.useImGui ? "1" : "0") << "\n";
+            file << "; Preview: render the new EFZ-native overlay instead of ImGui (1 = yes, 0 = no)\n";
+            file << "useCustomMenu = " << (settings.useCustomMenu ? "1" : "0") << "\n";
             file << "; Enable detailed debug messages in the console (1 = yes, 0 = no)\n";
             file << "detailedLogging = " << (settings.detailedLogging ? "1" : "0") << "\n";
             file << "; Enable writing efz_training_debug.log (1 = yes, 0 = no)\n";
@@ -834,6 +839,7 @@ namespace Config {
         // Update the appropriate setting (case-insensitive keys)
         if (sec == "general") {
             if (k == "useimgui" || k == "useimgui ") settings.useImGui = (value == "1");
+            if (k == "usecustommenu") settings.useCustomMenu = (value == "1");
             if (k == "detailedlogging") settings.detailedLogging = (value == "1");
             if (k == "enabledebugfilelog") settings.enableDebugFileLog = (value == "1");
             if (k == "enableconsole") settings.enableConsole = (value == "1");

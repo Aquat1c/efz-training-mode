@@ -948,8 +948,8 @@ bool ReadKeyMappingsFromIni() {
         return false;
     }
 
-    // Focus on Player 1's mappings (first 16 bytes)
-    // In key.ini, the mapping order is: ↓↑←→ABCD
+    // Focus on Player 1's mappings (first 16 bytes).
+    // EFZ stores directions in key.ini as Up, Down, Left, Right, not Down, Up.
     unsigned char* p1Data = (unsigned char*)fileBuffer;
 
     // Read P1's direction keys (the first 4 button pairs)
@@ -958,9 +958,8 @@ bool ReadKeyMappingsFromIni() {
         const char* name;
         int* bindingPtr;
     } keyMaps[] = {
-        // Correct mapping: Down -> downKey, Up -> upKey
-        { 0, "Down", &detectedBindings.downKey },
-        { 2, "Up", &detectedBindings.upKey },
+        { 0, "Up", &detectedBindings.upKey },
+        { 2, "Down", &detectedBindings.downKey },
         { 4, "Left", &detectedBindings.leftKey },
         { 6, "Right", &detectedBindings.rightKey },
         { 8, "A (Light)", &detectedBindings.aButton },
