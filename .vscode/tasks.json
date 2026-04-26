@@ -1,47 +1,51 @@
 {
-    "version": "2.0.0",
-    "tasks": [
-        {
-            "label": "build-dll",
-            "type": "process",
-            "command": "powershell.exe",
-            "options": {
-                "cwd": "${workspaceFolder}"
-            },
-            "args": [
-                "-NoProfile",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-Command",
-                "& { $ErrorActionPreference = 'Stop'; $projectRoot = (Get-Location).Path; $buildDir = Join-Path $projectRoot 'build'; $help = (& cmake --help | Out-String); if ($help -match 'Visual Studio 18 2026') { $configurePreset = 'vs18-win32'; $buildPreset = 'vs18-release'; $expectedGenerator = 'Visual Studio 18 2026'; } elseif ($help -match 'Visual Studio 17 2022') { $configurePreset = 'vs17-win32'; $buildPreset = 'vs17-release'; $expectedGenerator = 'Visual Studio 17 2022'; } else { throw 'No supported Visual Studio CMake generator found (expected VS18/VS17).' }; if (-not (Test-Path $buildDir)) { New-Item -ItemType Directory -Path $buildDir | Out-Null; } $cachePath = Join-Path $buildDir 'CMakeCache.txt'; if (Test-Path $cachePath) { $cachedSource = (Select-String -Path $cachePath -Pattern '^CMAKE_HOME_DIRECTORY:INTERNAL=(.+)$' | Select-Object -First 1).Matches.Groups[1].Value; $cachedGenerator = (Select-String -Path $cachePath -Pattern '^CMAKE_GENERATOR:INTERNAL=(.+)$' | Select-Object -First 1).Matches.Groups[1].Value; $projectRootNorm = [System.IO.Path]::GetFullPath($projectRoot).TrimEnd('\\').ToLowerInvariant(); $cachedSourceNorm = ''; if ($cachedSource) { $cachedSourceNorm = [System.IO.Path]::GetFullPath($cachedSource).TrimEnd('\\').ToLowerInvariant(); } if (($cachedSourceNorm -and $cachedSourceNorm -ne $projectRootNorm) -or ($cachedGenerator -and $cachedGenerator -ne $expectedGenerator)) { Write-Host 'Resetting stale CMake cache for current workspace/generator...' -ForegroundColor Cyan; Remove-Item $cachePath -Force -ErrorAction SilentlyContinue; Remove-Item (Join-Path $buildDir 'CMakeFiles') -Recurse -Force -ErrorAction SilentlyContinue; } }; Write-Host ('Using CMake presets: ' + $configurePreset + ' / ' + $buildPreset) -ForegroundColor Cyan; cmake --preset $configurePreset; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; cmake --build --preset $buildPreset; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; $dllOutputPath = Join-Path $projectRoot 'build\\bin\\Release\\efz_training_mode.dll'; if (Test-Path $dllOutputPath) { Write-Host ('Build completed successfully: ' + $dllOutputPath) -ForegroundColor Cyan; } else { Write-Host ('Build completed but DLL not found at expected location: ' + $dllOutputPath) -ForegroundColor Yellow; } }"
-            ],
-            "group": {
-                "kind": "build",
-                "isDefault": true
-            },
-            "presentation": {
-                "reveal": "always"
-            },
-            "problemMatcher": "$msCompile"
-        },
-        {
-            "label": "build-dll-xp",
-            "type": "process",
-            "command": "powershell.exe",
-            "options": {
-                "cwd": "${workspaceFolder}"
-            },
-            "args": [
-                "-NoProfile",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-Command",
-                "& { $ErrorActionPreference = 'Stop'; $projectRoot = (Get-Location).Path; $buildDir = Join-Path $projectRoot 'build_xp_win32'; $help = (& cmake --help | Out-String); if ($help -match 'Visual Studio 18 2026') { $configurePreset = 'vs18-xp-win32'; $buildPreset = 'vs18-xp-release'; $expectedGenerator = 'Visual Studio 18 2026'; } elseif ($help -match 'Visual Studio 17 2022') { $configurePreset = 'vs17-xp-win32'; $buildPreset = 'vs17-xp-release'; $expectedGenerator = 'Visual Studio 17 2022'; } else { throw 'No supported Visual Studio CMake generator found (expected VS18/VS17).' }; if (-not (Test-Path $buildDir)) { New-Item -ItemType Directory -Path $buildDir | Out-Null; } $cachePath = Join-Path $buildDir 'CMakeCache.txt'; if (Test-Path $cachePath) { $cachedSource = (Select-String -Path $cachePath -Pattern '^CMAKE_HOME_DIRECTORY:INTERNAL=(.+)$' | Select-Object -First 1).Matches.Groups[1].Value; $cachedGenerator = (Select-String -Path $cachePath -Pattern '^CMAKE_GENERATOR:INTERNAL=(.+)$' | Select-Object -First 1).Matches.Groups[1].Value; $projectRootNorm = [System.IO.Path]::GetFullPath($projectRoot).TrimEnd('\\').ToLowerInvariant(); $cachedSourceNorm = ''; if ($cachedSource) { $cachedSourceNorm = [System.IO.Path]::GetFullPath($cachedSource).TrimEnd('\\').ToLowerInvariant(); } if (($cachedSourceNorm -and $cachedSourceNorm -ne $projectRootNorm) -or ($cachedGenerator -and $cachedGenerator -ne $expectedGenerator)) { Write-Host 'Resetting stale XP CMake cache for current workspace/generator...' -ForegroundColor Cyan; Remove-Item $cachePath -Force -ErrorAction SilentlyContinue; Remove-Item (Join-Path $buildDir 'CMakeFiles') -Recurse -Force -ErrorAction SilentlyContinue; } }; Write-Host ('Using XP CMake presets: ' + $configurePreset + ' / ' + $buildPreset) -ForegroundColor Cyan; cmake --preset $configurePreset; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; cmake --build --preset $buildPreset; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; $dllOutputPath = Join-Path $projectRoot 'build_xp_win32\\bin\\Release\\efz_training_mode.dll'; if (Test-Path $dllOutputPath) { Write-Host ('XP build completed successfully: ' + $dllOutputPath) -ForegroundColor Cyan; } else { Write-Host ('XP build completed but DLL not found at expected location: ' + $dllOutputPath) -ForegroundColor Yellow; } }"
-            ],
-            "presentation": {
-                "reveal": "always"
-            },
-            "problemMatcher": "$msCompile"
-        }
-    ]
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "build-dll",
+      "type": "process",
+      "command": "powershell.exe",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "args": [
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        "${workspaceFolder}\\tools\\build-task.ps1",
+        "-Target",
+        "default"
+      ],
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      },
+      "presentation": {
+        "reveal": "always"
+      },
+      "problemMatcher": "$msCompile"
+    },
+    {
+      "label": "build-dll-xp",
+      "type": "process",
+      "command": "powershell.exe",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "args": [
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        "${workspaceFolder}\\tools\\build-task.ps1",
+        "-Target",
+        "xp"
+      ],
+      "presentation": {
+        "reveal": "always"
+      },
+      "problemMatcher": "$msCompile"
+    }
+  ]
 }

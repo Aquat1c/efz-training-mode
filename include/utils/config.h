@@ -7,6 +7,7 @@ namespace Config {
     struct Settings {
         // General settings
         bool useImGui;
+        bool useCustomMenu;          // Preview: render the new EFZ-native overlay (default false)
         bool detailedLogging;
         bool enableDebugFileLog;   // NEW: Enable writing efz_training_debug.log (file debug logging)
         bool restrictToPracticeMode; // NEW: Restrict to practice mode

@@ -18,6 +18,7 @@
 #include <deque>
 #include <unordered_set>
 #include "../include/gui/imgui_gui.h"
+#include "../include/gui/custom_menu/renderer.h"
 #include "../3rdparty/minhook/include/MinHook.h"
 // ADD these includes for the new rendering loop
 #include "../include/gui/imgui_impl.h"
@@ -339,7 +340,11 @@ HRESULT WINAPI HookedEndScene(LPDIRECT3DDEVICE9 pDevice) {
         style.WindowBorderSize = 0.0f;
         style.FrameBorderSize = 0.0f;
 
-        ImGuiGui::RenderGui();
+        if (Config::GetSettings().useCustomMenu) {
+            CustomMenu::Render();
+        } else {
+            ImGuiGui::RenderGui();
+        }
 
         // Restore style
         style.AntiAliasedFill = oldAAFill;

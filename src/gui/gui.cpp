@@ -38,9 +38,12 @@ void OpenMenu() {
     LogOut("[GUI] Opening config menu", detailedLogging.load()); // Use detailed logging
 
     // Check which UI system to use
-    if (Config::GetSettings().useImGui) {
-        // Use ImGui interface
-        LogOut("[GUI] Using ImGui interface as per config", detailedLogging.load()); // Use detailed logging
+    // Custom menu overrides useImGui because it draws via the same D3D9/ImGui
+    // frame and uses ImGuiImpl::IsVisible() as its visibility source of truth.
+    if (Config::GetSettings().useCustomMenu || Config::GetSettings().useImGui) {
+        // Use ImGui visibility toggle (drives either the custom renderer or the
+        // legacy ImGui renderer, decided per-frame inside HookedEndScene)
+        LogOut("[GUI] Using ImGui visibility toggle (custom menu or ImGui)", detailedLogging.load());
         ImGuiImpl::ToggleVisibility();
     } else {
         // Use legacy Win32 dialog
@@ -184,7 +187,20 @@ void ApplySettings(DisplayData* data) {
             // Re-check engine regen status: when F4 recovery is active, skip manual value pushes
             uint16_t pA=0, pB=0; EngineRegenMode regenMode = EngineRegenMode::Unknown;
             bool got = GetEngineRegenStatus(regenMode, pA, pB);
-            bool f4ActiveNow = got && (pB == 9999);
+            const bool f4ActiveNow = got && (regenMode == EngineRegenMode::F4_FineTuneActive);
+            if (detailedLogging.load()) {
+                const char* modeName = "Unknown";
+                switch (regenMode) {
+                    case EngineRegenMode::Unknown: modeName = "Unknown"; break;
+                    case EngineRegenMode::Normal: modeName = "Normal"; break;
+                    case EngineRegenMode::F5_FullOrPreset: modeName = "F5_FullOrPreset"; break;
+                    case EngineRegenMode::F4_FineTuneActive: modeName = "F4_FineTuneActive"; break;
+                }
+                LogOut("[GUI] ApplySettings regenMode=" + std::string(modeName) +
+                       " A=" + std::to_string((unsigned)pA) +
+                       " B=" + std::to_string((unsigned)pB) +
+                       " skipManualValues=" + std::to_string((int)f4ActiveNow), true);
+            }
             if (!f4ActiveNow) {
                 // Update everything EXCEPT RF values
                 UpdatePlayerValuesExceptRF(base, EFZ_BASE_OFFSET_P1, EFZ_BASE_OFFSET_P2);
