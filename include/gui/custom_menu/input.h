@@ -2,6 +2,10 @@
 
 namespace CustomMenu::Input {
 
+// True only while EFZ is the foreground window. Direct key polling is gated by
+// this so the custom menu cannot consume keys typed into another app.
+bool IsGameWindowActive();
+
 // Call once when the menu becomes visible. Snapshots the current physical
 // state of all tracked keys/buttons so any already-held inputs (e.g. the
 // menu-open key, or a gamepad button from gameplay) do NOT register as a
@@ -9,20 +13,11 @@ namespace CustomMenu::Input {
 void ResetEdges();
 
 // Edge-detected navigation queries. Each returns true exactly once per "press"
-// — where "press" is whatever the gated input machine in imgui_impl.cpp
-// produces (keyboard arrow tap, dpad tap, analog stick tap, plus the
-// accelerating-repeat pulses after 1s hold).
+// — where "press" is the foreground-window-gated physical state sampled in
+// input.cpp.
 //
-// Input sources unified into each query:
-//   - ImGui's GamepadDpad keys (fed by PreNewFrameInputs aggregation of
-//     all XInput pads, analog sticks, game-bound direction keys)
-//   - ImGui's Enter / Escape keys (fed from gated face A/B buttons)
-//   - Direct WinAPI GetAsyncKeyState for arrow/Enter/Escape as a keyboard-
-//     native fallback (catches users whose arrow keys are NOT routed through
-//     imgui_impl's gate).
-//
-// Safe to query multiple times within the same frame — internally backed by
-// ImGui::IsKeyPressed which is frame-coherent.
+// Safe to query multiple times within the same frame — internally cached so
+// every query sees the same physical snapshot.
 
 bool NavUp();
 bool NavDown();

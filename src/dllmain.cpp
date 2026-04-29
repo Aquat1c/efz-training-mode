@@ -7,6 +7,7 @@
 #include "../include/utils/xp_compat.h"
 #include "../include/core/memory.h"
 #include "../include/utils/utilities.h"
+#include "../include/gui/framebar.h"
 #include "../include/input/input_buffer.h"
 #include "../include/core/logger.h"
 #include "../include/game/frame_monitor.h"
@@ -155,8 +156,12 @@ void DelayedInitialization(HMODULE hModule) {
         }
         LogOut("[SYSTEM] MinHook initialized successfully.", true);
         
-        // Initialize framestep system (vanilla only)
+        // Initialize framestep system (vanilla / supported Revival)
         Framestep::Initialize();
+
+        // Suppress EFZ DirectInput battle hotkeys while our menu is open and
+        // support menu-driven front-end exits.
+        EnsureFrontendControlHooksInstalled();
 
         // Attempt to install Practice hotkey gate (will succeed only after EfzRevival.dll present)
         try {
@@ -308,6 +313,8 @@ void InitializeConfig() {
         detailedLogging = Config::GetSettings().detailedLogging;
     // Keep file debug logging in sync with config flag
     DebugLog::g_EnableDebugLog = Config::GetSettings().enableDebugFileLog;
+    // FrameBar overlay enable mirror
+    FrameBar::g_enabled.store(Config::GetSettings().showFrameBar);
     // Console visibility will be handled post-init in DelayedInitialization
     }
     else {

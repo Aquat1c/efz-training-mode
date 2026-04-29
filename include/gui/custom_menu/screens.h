@@ -195,6 +195,7 @@ void RefreshSecondaryScreenMirrors();
 // MAIN top-tab sub-panes:
 void TickOpponent(ImDrawList* dl, const ScreenLayout& layout, int& focus, ScrollState& scroll, bool& backEdge);
 void TickOptions (ImDrawList* dl, const ScreenLayout& layout, int& focus, ScrollState& scroll, bool& backEdge);
+void TickMenu    (ImDrawList* dl, const ScreenLayout& layout, int& focus, ScrollState& scroll, bool& backEdge);
 // (VALUES sub-pane is rendered specially by the 2-column renderer; not a list screen.)
 
 // AUTO top-tab sub-panes:

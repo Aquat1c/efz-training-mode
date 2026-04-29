@@ -61,6 +61,7 @@ enum Pane {
     PANE_VALUES = 0,            // MAIN / VALUES  (2-column P1 | P2 editor)
     PANE_OPPONENT,              // MAIN / OPPONENT
     PANE_OPTIONS,               // MAIN / OPTIONS
+    PANE_MENU,                  // MAIN / MENU
     PANE_TRIGGERS,              // AUTO / TRIGGERS
     PANE_MACROS,                // AUTO / MACROS
     PANE_CHARS,                 // CHARS
@@ -95,7 +96,8 @@ struct TopTabInfo {
 
 static const SubTab kSubs_Main[]     = { {"VALUES",   PANE_VALUES},
                                          {"OPPONENT", PANE_OPPONENT},
-                                         {"OPTIONS",  PANE_OPTIONS} };
+                                         {"OPTIONS",  PANE_OPTIONS},
+                                         {"MENU",     PANE_MENU} };
 static const SubTab kSubs_Auto[]     = { {"TRIGGERS", PANE_TRIGGERS},
                                          {"MACROS",   PANE_MACROS} };
 static const SubTab kSubs_Chars[]    = { {"CHARS",    PANE_CHARS} };
@@ -107,7 +109,7 @@ static const SubTab kSubs_Help[]     = { {"ABOUT",    PANE_HELP_ABOUT},
                                          {"CONTROLS", PANE_HELP_CONTROLS} };
 
 static const TopTabInfo kTopTabs[TT_COUNT] = {
-    {"MAIN",     kSubs_Main,     3},
+    {"MAIN",     kSubs_Main,     4},
     {"AUTO",     kSubs_Auto,     2},
     {"CHARS",    kSubs_Chars,    1},
     {"SETTINGS", kSubs_Settings, 3},
@@ -229,6 +231,7 @@ void UpdateMouseState() {
 }
 
 bool ShiftHeld() {
+    if (!Input::IsGameWindowActive()) return false;
     return (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
 }
 
@@ -607,6 +610,13 @@ void ProcessEditTextInput() {
 
 // ===== Menu hotkey =====
 bool MenuKeyEdge() {
+    if (!Input::IsGameWindowActive()) {
+        // Mask the first foreground frame in case the user re-focuses EFZ
+        // while the menu hotkey is still physically held.
+        g_shell.prevMenuKeyDown = true;
+        return false;
+    }
+
     const auto& cfg = Config::GetSettings();
     const int menuKey = (cfg.configMenuKey > 0) ? cfg.configMenuKey : '3';
     const bool now = (GetAsyncKeyState(menuKey) & 0x8000) != 0;
@@ -1105,15 +1115,22 @@ void MaybeRefreshOnOpen() {
 
 } // namespace
 
+void PrepareFrame() {
+    if (!ImGui::GetCurrentContext()) return;
+    if (!ImGuiImpl::IsVisible()) return;
+
+    // This can invalidate/recreate the shared DX9 font texture. Keep it out
+    // of Render(), because Render() runs after ImGui::NewFrame() and after
+    // overlay text may already have queued draw commands using the old atlas.
+    (void)Fonts::Rebuild(Config::GetSettings().uiScale, GetDpiScaleQuick());
+}
+
 void Render() {
     if (!ImGui::GetCurrentContext()) return;
 
     MaybeRefreshOnOpen();
 
     if (!ImGuiImpl::IsVisible()) return;
-
-    // Keep font atlas up-to-date with current scale (throttled internally).
-    (void)Fonts::Rebuild(Config::GetSettings().uiScale, GetDpiScaleQuick());
 
     UpdateMouseState();
 
@@ -1192,6 +1209,7 @@ void Render() {
             switch (activePane) {
                 case PANE_OPPONENT:           Screens::TickOpponent       (dl, sl, focus, scroll, backEdge); break;
                 case PANE_OPTIONS:            Screens::TickOptions        (dl, sl, focus, scroll, backEdge); break;
+                case PANE_MENU:               Screens::TickMenu           (dl, sl, focus, scroll, backEdge); break;
                 case PANE_TRIGGERS:           Screens::TickTriggers       (dl, sl, focus, scroll, backEdge); break;
                 case PANE_MACROS:             Screens::TickMacros         (dl, sl, focus, scroll, backEdge); break;
                 case PANE_CHARS:              Screens::TickChars          (dl, sl, focus, scroll, backEdge); break;

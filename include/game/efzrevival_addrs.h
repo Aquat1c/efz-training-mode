@@ -5,7 +5,8 @@
 // for functions/globals we call or hook, switching based on the detected EfzRevival version.
 // For unknown/unsupported versions, these return 0 so callers can skip the operation safely.
 
-// Returns the correct unfreeze parameter for the patch toggler: 1 for 1.02e, 3 for 1.02h/i.
+// Returns the correct normal-speed parameter for the patch toggler.
+// 1.02f/h/i use 3 for normal speed; older e/g keep the legacy parameter.
 int EFZ_PatchToggleUnfreezeParam();
 
 uintptr_t EFZ_RVA_PatchToggler();
@@ -31,6 +32,8 @@ uintptr_t EFZ_RVA_PracticeDispatcher();
 uintptr_t EFZ_Practice_PauseFlagOffset();    // 0xB4
 uintptr_t EFZ_Practice_StepFlagOffset();     // 0xAC
 uintptr_t EFZ_Practice_StepCounterOffset();  // 0xB0
+uintptr_t EFZ_Practice_PauseHotkeyOffset();  // 0x1D4 for 1.02f
+uintptr_t EFZ_Practice_StepHotkeyOffset();   // 0x1D8 for 1.02f
 
 // Side selection and related Practice controller fields
 uintptr_t EFZ_Practice_LocalSideOffset();    // 0x680 for 1.02e/h, 0x688 for 1.02i

@@ -52,6 +52,7 @@ namespace {
     // Direct gamespeed byte address resolved from game mode array
     std::atomic<uintptr_t> s_gamespeedAddr{0};
     std::atomic<uint32_t> s_lastStepCounter{0};
+    std::atomic<PauseIntegration::StepAdvanceCallback> s_stepAdvanceCallback{nullptr};
     // Vanilla EFZ pause ownership (engine pause via battleContext+0x1416)
     std::atomic<bool> s_weVanillaEnginePause{false};
     // Visual effect patches ownership (for vanilla/unsupported versions)
@@ -257,20 +258,24 @@ namespace {
             return oPracticeTick ? oPracticeTick(thisPtr) : 0;
         }
         PauseIntegration::NotePracticeControllerCandidate(thisPtr, "PracticeTick");
-        // Capture pre-step counter if menu visible (so we can neutralize any increment)
-        uint32_t before = 0; bool wantNeutralize = false;
-        if (s_menuVisible.load(std::memory_order_relaxed)) {
-            uintptr_t stepCounterOff = EFZ_Practice_StepCounterOffset();
-            SafeReadMemory(reinterpret_cast<uintptr_t>(thisPtr)+stepCounterOff, &before, sizeof(before));
-            wantNeutralize = true;
+        const auto stepCallback = s_stepAdvanceCallback.load(std::memory_order_relaxed);
+        const bool wantNeutralize = s_menuVisible.load(std::memory_order_relaxed);
+        const uintptr_t stepCounterOff = EFZ_Practice_StepCounterOffset();
+        uint32_t before = 0;
+        bool haveBefore = false;
+        if (stepCallback || wantNeutralize) {
+            haveBefore = SafeReadMemory(reinterpret_cast<uintptr_t>(thisPtr) + stepCounterOff, &before, sizeof(before));
         }
         int ret = oPracticeTick ? oPracticeTick(thisPtr) : 0;
-        if (wantNeutralize) {
+        if (haveBefore) {
             uint32_t after = before;
-            uintptr_t stepCounterOff = EFZ_Practice_StepCounterOffset();
-            if (SafeReadMemory(reinterpret_cast<uintptr_t>(thisPtr)+stepCounterOff, &after, sizeof(after))) {
-                if (after == before + 1) {
-                    SafeWriteMemory(reinterpret_cast<uintptr_t>(thisPtr)+stepCounterOff, &before, sizeof(before));
+            if (SafeReadMemory(reinterpret_cast<uintptr_t>(thisPtr) + stepCounterOff, &after, sizeof(after))) {
+                if (wantNeutralize && after == before + 1) {
+                    SafeWriteMemory(reinterpret_cast<uintptr_t>(thisPtr) + stepCounterOff, &before, sizeof(before));
+                    after = before;
+                }
+                if (stepCallback && after != before) {
+                    stepCallback(before, after);
                 }
             }
         }
@@ -380,6 +385,12 @@ namespace {
         uintptr_t pauseOff = EFZ_Practice_PauseFlagOffset();
         uint8_t v = paused ? 1u : 0u; return SafeWriteMemory(reinterpret_cast<uintptr_t>(p) + pauseOff, &v, sizeof(v));
     }
+    bool WritePracticeStepFlag(bool stepRequested) {
+        void* p = s_practicePtr.load(); if (!p) return false;
+        uintptr_t stepOff = EFZ_Practice_StepFlagOffset();
+        uint8_t v = stepRequested ? 1u : 0u;
+        return SafeWriteMemory(reinterpret_cast<uintptr_t>(p) + stepOff, &v, sizeof(v));
+    }
 
     // Reset the Practice step counter to 0, mirroring the official toggle behavior.
     bool ResetPracticeStepCounterToZero() {
@@ -395,6 +406,19 @@ namespace {
             LogOut("[PAUSE] Failed to reset step counter (Practice ptr missing or write failed)", true);
         }
         return ok;
+    }
+
+    bool ResolvePracticeForFramestep(const char* reason) {
+        EnsurePracticePtrHookInstalled();
+        if (s_practicePtr.load(std::memory_order_relaxed)) {
+            return true;
+        }
+        void* resolved = ResolvePracticeControllerPtrInternal(false, true, reason);
+        if (resolved) {
+            s_practicePtr.store(resolved, std::memory_order_relaxed);
+            return true;
+        }
+        return false;
     }
 
     // Hook battle screen render to capture battleContext pointer (legacy path).
@@ -546,8 +570,8 @@ namespace {
     }
 
     // === Patch toggler wrapper ===
-    // All supported versions (1.02e/h/i) use __thiscall: int func(void* this, char enable)
-    // Unfreeze parameter varies by version (1 for 1.02e, 3 for 1.02h/i). See EFZ_PatchToggleUnfreezeParam().
+    // Supported Revival patch togglers use __thiscall: int func(void* this, char enable).
+    // The normal-speed parameter varies by version; see EFZ_PatchToggleUnfreezeParam().
     typedef int (__thiscall *tPatchToggle)(void* patchCtx, char enable);
     // Official pause toggle (sub_10075720)
     typedef int (__thiscall *tOfficialToggle)(void* thisPtr);
@@ -732,6 +756,45 @@ namespace PauseIntegration {
     bool __cdecl IsGameSpeedFrozen() { uint8_t v=3; if (ReadGamespeed(v)) return v==0; return false; }
     bool IsPausedOrFrozen() { return IsPracticePaused() || IsGameSpeedFrozen(); }
 
+    bool SetPracticePausedForFramestep(bool paused) {
+        if (!ResolvePracticeForFramestep(paused ? "framestep pause" : "framestep unpause")) {
+            LogOut("[PAUSE][FRAMESTEP] Practice pointer unavailable", true);
+            return false;
+        }
+
+        bool ok = true;
+        ok = WritePracticeStepFlag(false) && ok;
+        ok = WritePracticePauseFlag(paused) && ok;
+        ok = ResetPracticeStepCounterToZero() && ok;
+        ok = ApplyPatchFreeze(paused) && ok;
+
+        std::ostringstream oss;
+        oss << "[PAUSE][FRAMESTEP] SetPracticePausedForFramestep(" << (paused ? 1 : 0)
+            << ") -> " << (ok ? "OK" : "FAIL");
+        LogOut(oss.str(), true);
+        return ok;
+    }
+
+    bool RequestPracticeSubframeStep() {
+        if (!ResolvePracticeForFramestep("framestep step")) {
+            LogOut("[PAUSE][FRAMESTEP] Cannot request subframe step: Practice pointer unavailable", true);
+            return false;
+        }
+
+        bool paused = false;
+        if (!ReadPracticePauseFlag(paused) || !paused) {
+            if (!SetPracticePausedForFramestep(true)) {
+                return false;
+            }
+        }
+
+        bool ok = true;
+        ok = WritePracticePauseFlag(true) && ok;
+        ok = WritePracticeStepFlag(true) && ok;
+        LogOut(std::string("[PAUSE][FRAMESTEP] RequestPracticeSubframeStep -> ") + (ok ? "OK" : "FAIL"), true);
+        return ok;
+    }
+
     // Persistent pause enforcement: keep game frozen regardless of external unpause attempts
     // ONLY for unsupported Revival versions - vanilla and supported versions handle pause correctly
     void MaintainFreezeWhileMenuVisible() {
@@ -914,6 +977,10 @@ namespace PauseIntegration {
             return true;
         }
         return false;
+    }
+
+    void SetPracticeStepAdvanceCallback(StepAdvanceCallback callback) {
+        s_stepAdvanceCallback.store(callback, std::memory_order_relaxed);
     }
 
     void ResetCachedPointers(const char* reason) {

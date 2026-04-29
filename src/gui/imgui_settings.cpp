@@ -343,13 +343,19 @@ namespace ImGuiSettings {
                 InputKeyHex("Macro: Next Slot", macroSlot, "MacroSlotKey");
 
                 ImGui::Separator();
-                if (GetEfzRevivalVersion() == EfzRevivalVersion::Vanilla) {
-                    ImGui::SeparatorText("Framestep (vanilla EFZ only)");
-                    int fsPause = cfg.framestepPauseKey;
-                    int fsStep  = cfg.framestepStepKey;
-                    InputKeyHex("Framestep: Toggle Pause", fsPause, "FramestepPauseKey");
-                    InputKeyHex("Framestep: Step Frame", fsStep, "FramestepStepKey");
+                ImGui::SeparatorText("Framestep");
+                bool fsEnabled = cfg.framestepEnabled;
+                if (ImGui::Checkbox("Enable Framestep", &fsEnabled)) {
+                    Config::SetSetting("General", "framestepEnabled", fsEnabled ? "1" : "0");
                 }
+                bool suppressRevival = cfg.suppressRevivalFramestep;
+                if (ImGui::Checkbox("Suppress Revival Framestep", &suppressRevival)) {
+                    Config::SetSetting("General", "suppressRevivalFramestep", suppressRevival ? "1" : "0");
+                }
+                int fsPause = cfg.framestepPauseKey;
+                int fsStep  = cfg.framestepStepKey;
+                InputKeyHex("Framestep: Toggle Pause", fsPause, "FramestepPauseKey");
+                InputKeyHex("Framestep: Step Frame", fsStep, "FramestepStepKey");
 
                 ImGui::Separator();
                 ImGui::SeparatorText("Swap Positions");

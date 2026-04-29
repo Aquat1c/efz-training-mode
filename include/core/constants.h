@@ -76,6 +76,7 @@
 #define WALK_BACK_ID 2
 #define CROUCH_ID 3
 #define CROUCH_TO_STAND_ID 7
+#define PREJUMP_ID 8
 #define LANDING_ID 13
 #define STAND_GUARD_ID 151
 #define CROUCH_GUARD_ID 153
@@ -109,11 +110,14 @@
 #define FORWARD_JUMP_ID 5
 #define BACKWARD_JUMP_ID 6
 #define FALLING_ID 9
+#define DOUBLE_JUMP_NEUTRAL_ID 14
+#define DOUBLE_JUMP_FWD_ID 15
+#define DOUBLE_JUMP_BACK_ID 16
 // Multiple landing variants 10/11/12 are used; keep 13 as legacy/alt
 #define LANDING_1_ID 10
 #define LANDING_2_ID 11
 #define LANDING_3_ID 12
-#define LANDING_ID 13 
+#define LANDING_ID 13
 
 // Special Stun States
 #define FIRE_STATE 81
@@ -169,12 +173,163 @@
 #define IC_FLASH_DURATION 89        // 29.66 visual frames * 3
 #define SUPERFLASH_BLACK_BG_OFFSET 1  // First subframe of black bg isn't part of freeze
 
-// Untech memory offset
+// Untech memory offset (also: "recovery cooldown" in canPerformAirRecovery —
+// gates when the defender can air-tech).
 #define UNTECH_OFFSET 0x124
 
-// Blockstun/guard freeze counter (short)
-// As per CE entry: [efz.exe + EFZ_BASE_OFFSET_P1/P2] + 0x14A
+// Multi-purpose state-timer (short, +0x14A/330). On the *defender* this is the
+// remaining blockstun/hitstun freeze; on the *attacker* it's the hit-hitstop
+// frames remaining (set from attack_data +194 / +196 the moment the attack
+// resolves — see processProjectileCollision in efz.c). Decremented every
+// non-frozen frame for whichever player it belongs to. Despite the historical
+// "blockstun" name, this is the field that drives **shared hit-hitstop**:
+// when both players have +0x14A > 0 the engine doesn't advance gameplay timers
+// (mirrors MBAACC's `nSharedHitstop` heuristic).
 #define BLOCKSTUN_OFFSET 0x14A
+#define HITSTOP_FREEZE_OFFSET BLOCKSTUN_OFFSET   // alias for attacker-side reads
+
+// "I am causing the screen to freeze" counter (short, +0x14C/332).
+// Set by character scripts that enter Initial Charge / Super flash to fixed
+// durations (60/90/120 internal frames). While > 0 on either player the
+// engine pauses the flash visual counter (+0x30C4) and the screen is frozen
+// because of that player's super.
+// Decompilation: efz.c:14432, 14538, 14577 (case 0xAB = AIR_IC_ID), 16422 etc.
+//                set via `*(_WORD*)(this+332) = 60/90/120`.
+//                Read at efz.c:195038 to gate flash counter ticks.
+// NOT to be confused with hit-hitstop, which lives in BLOCKSTUN_OFFSET +0x14A.
+#define SUPERFLASH_FREEZE_OFFSET 0x14C
+// Backwards-compat alias retained while we migrate consumers.
+#define HITSTOP_OFFSET SUPERFLASH_FREEZE_OFFSET
+
+// Air time counter (short). Frames since the character last touched the ground.
+// canPerformRecoilGuard uses `>= 30` as a threshold for "in air too long".
+#define AIRTIME_OFFSET 0x14E
+
+// Combo timer (short). Counts down from 180 frames after each hit; when it
+// reaches 0 the combo counter resets. (decompilation: applyAttackDamage)
+#define PLAYER_COMBO_TIMER_OFFSET 0x104
+
+// Total combo damage so far (DWORD).
+#define PLAYER_COMBO_DAMAGE_OFFSET 0x100
+
+// Combo length the *attacker* has on the opponent (short).
+#define PLAYER_COMBO_COUNTER_OFFSET 0x174
+
+// Combo damage scaling multiplier (double, displayed as N/100).
+#define PLAYER_COMBO_DAMAGE_SCALING_OFFSET 0x178
+
+// Superflash / IC freeze counter (DWORD). Counts down once per non-frozen frame.
+#define PLAYER_SUPERFLASH_COUNTER_OFFSET 0x30C4
+
+// ===== Hit-resolution / RG state (decompiled from sub_767F60) =====
+//
+// updateCharacterTimers (efz.c:9925) and the post-hit handler at
+// processProjectileCollision/handlePlayerToPlayerCollision expose several
+// short-counter fields that decrement per non-frozen visual frame. Names are
+// based on observed semantics, not the decompilation comments (which are
+// AI-generated and unreliable).
+
+// "Cooldown" / lockout counter family (each decrements while opponent's
+// hitstop is 0). Their write sites confirm specific semantics:
+//   +0x138 (312)  guard-cancel / "no-RG" lockout — gates RG eligibility
+//                 (wiki: 10F cooldown after a missed RG attempt)
+//   +0x130 (304)  byte-sized frame lockout refreshed by frame hit flags and
+//                 checked by collision code for some airborne interactions
+//   +0x13A (314)  generic state lockout — set to 1/2 by character scripts
+//   +0x13C (316)  "in special state" — checked by hit handler to forbid RG
+//   +0x13E (318)  per-state cooldown
+//   +0x140 (320)  per-state cooldown
+#define PLAYER_FRAME_LOCKOUT_OFFSET    0x130
+#define PLAYER_RG_COOLDOWN_OFFSET     0x138
+#define PLAYER_STATE_LOCKOUT_OFFSET   0x13A
+#define PLAYER_SPECIAL_STATE_OFFSET   0x13C
+#define PLAYER_STATE_COOLDOWN3_OFFSET 0x13E
+#define PLAYER_STATE_COOLDOWN4_OFFSET 0x140
+
+// Hit-state machine flag (DWORD).
+//   0 = neutral / nothing
+//   2 = block or RG just landed
+//   3 = hit just landed
+//   6 = throw connected
+//   7 = special-attack connected (e.g. airthrow chain)
+// Set on the *attacker* by the hit handler the frame the attack resolves.
+#define PLAYER_HIT_STATE_OFFSET   0x168
+
+// Attacker move countdown — decremented by 1 every time an attack resolves
+// (RG / block / hit / throw). Used by the engine to time "attack ended" state.
+#define PLAYER_ATTACK_TIMER_OFFSET 0x16C
+
+// Guard / countered flag (DWORD).
+//   0 = not in a guard state
+//   1 = in block/guard state OR (on the *attacker*) "marked as countered" by RG
+#define PLAYER_GUARD_FLAG_OFFSET   0x170
+
+// Guard Gauge (float, max 360). Depletes per subframe at:
+//   neutral             0.075
+//   grounded hitstun    0.2
+//   air hitstun         1.0
+// Refilled by chip damage (BlockedMoveBaseDamage / 30) per blocked move.
+#define PLAYER_GUARD_GAUGE_OFFSET  0x134
+
+// Counter-hit flag (DWORD) on the *attacker*. Set when their attack landed on
+// a defender flagged as counter-hit eligible (defender frame_data+176 bit
+// 0x2000). Cleared at the start of every collision pass.
+#define PLAYER_COUNTER_HIT_FLAG_OFFSET 0x144
+
+// Knockback velocities applied by the most recent hit (set on the defender).
+#define PLAYER_HIT_XVEL_OFFSET 0xC0   // double
+#define PLAYER_HIT_YVEL_OFFSET 0xC8   // double
+#define PLAYER_PHYSICS_FLAG_OFFSET 0xD0  // DWORD set to 1 after a hit lands
+
+// Per-hit knockdown flags written by the hit handler.
+#define PLAYER_WALLBOUNCE_FLAG_OFFSET 0x128 // DWORD (attack flag bit 0x400)
+#define PLAYER_GROUND_BOUNCE_FLAG_OFFSET 0x12C // DWORD (attack flag bit 0x800)
+
+// Pre-hit HP snapshot — combo display reads this minus current HP for damage.
+// Already exists as HP_BAR_OFFSET (0x10C); see existing constant above.
+
+// ===== Attack-data fields (within frame_data 200-byte block) =====
+// Verified from `applyAttackDamage` and the hit handler. All offsets here are
+// relative to the start of the same 200-byte frame_data block whose first 80
+// bytes hold the 5 hurtboxes and the next 64 bytes hold the 4 attack boxes.
+#define ATTACK_DATA_BASE_DAMAGE_OFFSET    0xA0  // short
+#define ATTACK_DATA_CHIP_DAMAGE_OFFSET    0xA8  // short
+#define ATTACK_DATA_FLAGS_OFFSET          0xAA  // word (already FRAME_ATTACK_PROPS_OFFSET)
+#define ATTACK_DATA_AIR_HIT_OVERRIDE      0xAC  // short — defender moveID for air-hit reaction
+#define ATTACK_DATA_GROUND_HIT_OVERRIDE   0xAE  // short
+#define ATTACK_DATA_HIT_FLAGS_OFFSET      0xB0  // word (already FRAME_HIT_PROPS_OFFSET)
+#define ATTACK_DATA_GUARD_FLAGS_OFFSET    0xB2  // word — stun duration scalar
+#define ATTACK_DATA_METER_GAIN_BLOCK      0xB6  // short
+#define ATTACK_DATA_KNOCKBACK_X           0xB8  // float
+#define ATTACK_DATA_KNOCKBACK_Y           0xBC  // float
+#define ATTACK_DATA_ATTACKER_HITSTOP      0xC2  // short
+#define ATTACK_DATA_DEFENDER_HITSTOP      0xC4  // short
+
+// Newly-mapped attack flag bits (frame_data + 0xAA, set on attacker frame):
+#define FRAME_ATTACK_FLAG_THROW_ATTACK    0x0100  // throw vs strike
+#define FRAME_ATTACK_FLAG_WALLBOUNCE      0x0400
+#define FRAME_ATTACK_FLAG_GROUND_BOUNCE   0x0800
+#define FRAME_ATTACK_FLAG_COUNTER_MOVE    0x2000  // CH-causing move
+
+// Newly-mapped hit-property flag bits (frame_data + 0xB0):
+#define FRAME_HIT_FLAG_COUNTER_SETUP      0x0200  // counter-eligible state
+#define FRAME_HIT_FLAG_AIRTHROW_VULN      0x0800
+#define FRAME_HIT_FLAG_GROUND_THROW_VULN  0x1000
+#define FRAME_HIT_FLAG_COUNTER_VULN       0x2000  // defender in CH-vulnerable state
+
+// Frame-data block flags (within the 200-byte frame_data block at +80 attack-boxes).
+//   ATTACK_PROPS_OFFSET (170/0xAA) low byte:
+//     0x01 = stand-blockable, 0x02 = crouch-blockable, 0x04 = "special anim",
+//     0x40 = airborne-attack flag, 0x80 = block-disable
+//   HIT_PROPS_OFFSET (176/0xB0):
+//     0x10 = blockable hit, 0x20 = defender immune
+#define FRAME_ATTACK_FLAG_STAND_BLOCKABLE   0x0001
+#define FRAME_ATTACK_FLAG_CROUCH_BLOCKABLE  0x0002
+#define FRAME_ATTACK_FLAG_SPECIAL_ANIM      0x0004
+#define FRAME_ATTACK_FLAG_AIRBORNE          0x0040
+#define FRAME_ATTACK_FLAG_BLOCK_DISABLE     0x0080
+#define FRAME_HIT_FLAG_BLOCKABLE            0x0010
+#define FRAME_HIT_FLAG_DEFENDER_IMMUNE      0x0020
 
 // Tech recovery frames
 #define AIRTECH_VULNERABLE_FRAMES 16
@@ -496,6 +651,14 @@
 // Writing 99 here neutralizes any in-flight motion command recognition to prevent
 // unintended transitions after control handoffs or macro playback.
 #define MOTION_TOKEN_OFFSET 0x262
+
+// Air-mobility runtime counters. Decompilation shows both bytes reset on
+// landing (updateCharacterMovementState), and character scripts increment them
+// when air dashes / double jumps are consumed. Semantics vary slightly by
+// character, so display them as raw engine counters rather than treating them
+// as universal limits.
+#define AIR_MOBILITY_COUNTER1_OFFSET 0x159
+#define AIR_MOBILITY_COUNTER2_OFFSET 0x15A
 
 // Add these input offset constants after the existing offset definitions
 

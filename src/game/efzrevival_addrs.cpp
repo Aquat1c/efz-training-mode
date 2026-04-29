@@ -7,7 +7,16 @@
 
 static inline bool IsE() {
     EfzRevivalVersion v = GetEfzRevivalVersion();
-    return v == EfzRevivalVersion::Revival102e || v == EfzRevivalVersion::Revival102f || v == EfzRevivalVersion::Revival102g;
+    return v == EfzRevivalVersion::Revival102e || v == EfzRevivalVersion::Revival102g;
+}
+static inline bool IsFClassic() {
+    return GetEfzRevivalVersion() == EfzRevivalVersion::Revival102f && IsEfzRevival102fClassicBuild();
+}
+static inline bool IsFSubframe() {
+    return GetEfzRevivalVersion() == EfzRevivalVersion::Revival102f && IsEfzRevival102fSubframeBuild();
+}
+static inline bool IsLegacyEFamily() {
+    return IsE() || IsFClassic();
 }
 static inline bool IsH() {
     EfzRevivalVersion v = GetEfzRevivalVersion();
@@ -22,10 +31,10 @@ static void LogAddrOnce(const char* label, uintptr_t rva) {
     if (s_once.exchange(true)) return;
     std::ostringstream oss;
     const char* verName = "other";
-    if (IsE()) {
+    if (IsE() || GetEfzRevivalVersion() == EfzRevivalVersion::Revival102f) {
         EfzRevivalVersion vdet = GetEfzRevivalVersion();
         verName = (vdet == EfzRevivalVersion::Revival102g) ? "1.02g" :
-                  (vdet == EfzRevivalVersion::Revival102f) ? "1.02f" : "1.02e";
+                  (vdet == EfzRevivalVersion::Revival102f) ? EfzRevivalDllFlavorName(GetEfzRevivalDllFlavor()) : "1.02e";
     } else if (IsH()) {
         EfzRevivalVersion vdet = GetEfzRevivalVersion();
         verName = (vdet == EfzRevivalVersion::Revival102i) ? "1.02i" : "1.02h";
@@ -42,15 +51,15 @@ static void LogAddrOnce(const char* label, uintptr_t rva) {
 // Legacy SigDebug/EFZ_Debug_LogScannerComparison removed along with scanner support.
 
 int EFZ_PatchToggleUnfreezeParam() {
-    if (IsH()) return 3; // 1.02h/1.02i use 0=freeze, 3=unfreeze
-    return 1;            // 1.02e uses 0=freeze, 1=unfreeze
+    if (IsFSubframe() || IsH()) return 3; // 0=freeze, 3=normal speed
+    return 1; // legacy e/g behavior
 }
 
 uintptr_t EFZ_RVA_PatchToggler() {
     uintptr_t r = 0;
     EfzRevivalVersion v = GetEfzRevivalVersion();
-    if (v == EfzRevivalVersion::Revival102f) r = 0x006B2A0; // 1.02f
-    else if (IsE()) r = 0x006B2A0;
+    if (IsFSubframe()) r = 0x006B4C0; // 1.02f sub_1006B4C0
+    else if (IsLegacyEFamily()) r = 0x006B2A0;
     else if (IsI()) r = 0x006BD50; // 1.02i (different from 1.02h)
         else if (IsH()) r = 0x006BB00; // 1.02h
     LogAddrOnce("PatchToggler", r);
@@ -71,7 +80,8 @@ uintptr_t EFZ_RVA_PatchCtx() {
 uintptr_t EFZ_RVA_TogglePause() {
     uintptr_t r = 0;
     EfzRevivalVersion v = GetEfzRevivalVersion();
-    if (v == EfzRevivalVersion::Revival102f) r = 0x0075750;  // 1.02f
+    if (IsFSubframe()) r = 0x0075990;  // 1.02f sub_10075990
+    else if (IsFClassic()) r = 0x0075750;  // 1.02f classic
         else if (v == EfzRevivalVersion::Revival102e) r = 0x0075720;  // 1.02e
         else if (v == EfzRevivalVersion::Revival102g) r = 0x00759C0;  // 1.02g
         else if (IsI()) r = 0x0076710;  // 1.02i
@@ -84,7 +94,8 @@ uintptr_t EFZ_RVA_PracticeTick() {
     uintptr_t r = 0;
         EfzRevivalVersion v = GetEfzRevivalVersion();
         if (v == EfzRevivalVersion::Revival102e) r = 0x0074F70;  // 1.02e
-        else if (v == EfzRevivalVersion::Revival102f) r = 0x0074FA0;  // 1.02f
+        else if (IsFSubframe()) r = 0x00759E0;  // 1.02f subframe per-frame Practice tick
+        else if (IsFClassic()) r = 0x0074FA0;  // 1.02f classic active Practice tick
         else if (v == EfzRevivalVersion::Revival102g) r = 0x0075210;  // 1.02g
         // For 1.02h/i, prefer the real per-frame Practice update loop because it
         // runs every visual frame with ECX = Practice controller. The older
@@ -98,7 +109,8 @@ uintptr_t EFZ_RVA_PracticeTick() {
 uintptr_t EFZ_RVA_RefreshMappingBlock() {
     uintptr_t r = 0;
         EfzRevivalVersion v = GetEfzRevivalVersion();
-        if (v == EfzRevivalVersion::Revival102f) r = 0x0075130; // 1.02f (ctx -> Practice)
+        if (IsFSubframe()) r = 0x0075370; // 1.02f subframe (ctx -> Practice)
+        else if (IsFClassic()) r = 0x0075130; // 1.02f classic (ctx -> Practice)
         else if (IsE()) r = 0x0075100;  // e/g
         else if (IsI()) r = 0x00760F0;  // 1.02i (ctx -> Practice)
         else if (IsH()) r = 0x0075B50;  // 1.02h (ctx -> Practice)
@@ -152,7 +164,8 @@ uintptr_t EFZ_RVA_RenderBattleScreen() {
 
 uintptr_t EFZ_RVA_GameModePtrArray() {
     uintptr_t r = 0;
-        if (IsE()) r = 0x790110;
+        EfzRevivalVersion v = GetEfzRevivalVersion();
+        if (v == EfzRevivalVersion::Revival102f || IsE()) r = 0x790110;
         else if (IsH()) r = 0x790110; // likely unchanged for 1.02h
         else if (IsI()) r = 0x790110; // likely unchanged for 1.02i; fast-path only
     LogAddrOnce("GameModePtrArray", r);
@@ -170,9 +183,11 @@ uintptr_t EFZ_RVA_PracticeControllerPtr() {
 uintptr_t EFZ_RVA_PracticeDispatcher() {
     uintptr_t r = 0;
     EfzRevivalVersion v = GetEfzRevivalVersion();
-    // CRITICAL: Disable dispatcher on 1.02e/1.02f/1.02g entirely to avoid Replay-mode crashes.
+    // Only hook the 1.02f subframe build here; older e/g/classic-f stay disabled
+    // to avoid replay-mode crashes from the legacy fast path.
     if (v == EfzRevivalVersion::Revival102e) r = 0;  // disabled for 1.02e
-    else if (v == EfzRevivalVersion::Revival102f) r = 0;  // disabled for 1.02f
+    else if (IsFSubframe()) r = 0x0075C90;  // 1.02f subframe sub_10075C90
+    else if (IsFClassic()) r = 0;
     else if (v == EfzRevivalVersion::Revival102g) r = 0;  // disabled for 1.02g
     else if (IsI()) r = 0x0076A30;
     else if (IsH()) r = 0x0076490;
@@ -192,6 +207,14 @@ uintptr_t EFZ_Practice_StepFlagOffset() {
 
 uintptr_t EFZ_Practice_StepCounterOffset() {
     return 0xB0;  // All versions
+}
+
+uintptr_t EFZ_Practice_PauseHotkeyOffset() {
+    return GetEfzRevivalVersion() == EfzRevivalVersion::Revival102f ? 0x1D4 : 0;
+}
+
+uintptr_t EFZ_Practice_StepHotkeyOffset() {
+    return GetEfzRevivalVersion() == EfzRevivalVersion::Revival102f ? 0x1D8 : 0;
 }
 
 uintptr_t EFZ_Practice_LocalSideOffset() {
@@ -223,7 +246,8 @@ int EFZ_Practice_MapResetIndexBias() {
 uintptr_t EFZ_RVA_ToggleHurtboxDisplay() {
     uintptr_t r = 0;
     EfzRevivalVersion v = GetEfzRevivalVersion();
-    if (v == EfzRevivalVersion::Revival102f) r = 0x0075170;  // 1.02f - toggles this[183]
+    if (IsFSubframe()) r = 0x00753B0;  // 1.02f subframe - toggles this[183]
+    else if (IsFClassic()) r = 0x0075170;  // 1.02f classic - toggles this[183]
     else if (v == EfzRevivalVersion::Revival102e) r = 0x0075140;  // 1.02e - toggles this[183]
     else if (v == EfzRevivalVersion::Revival102g) r = 0x00753E0;  // 1.02g - toggles this[183]
     // TODO: Add h/i versions if needed
@@ -234,7 +258,8 @@ uintptr_t EFZ_RVA_ToggleHurtboxDisplay() {
 uintptr_t EFZ_RVA_ToggleHitboxDisplay() {
     uintptr_t r = 0;
     EfzRevivalVersion v = GetEfzRevivalVersion();
-    if (v == EfzRevivalVersion::Revival102f) r = 0x0075190;  // 1.02f - toggles this[182]
+    if (IsFSubframe()) r = 0x00753D0;  // 1.02f subframe - toggles this[182]
+    else if (IsFClassic()) r = 0x0075190;  // 1.02f classic - toggles this[182]
     else if (v == EfzRevivalVersion::Revival102e) r = 0x0075160;  // 1.02e - toggles this[182]
     else if (v == EfzRevivalVersion::Revival102g) r = 0x0075400;  // 1.02g - toggles this[182]
     // TODO: Add h/i versions if needed
@@ -245,7 +270,8 @@ uintptr_t EFZ_RVA_ToggleHitboxDisplay() {
 uintptr_t EFZ_RVA_ToggleFrameDisplay() {
     uintptr_t r = 0;
     EfzRevivalVersion v = GetEfzRevivalVersion();
-    if (v == EfzRevivalVersion::Revival102f) r = 0x0075710;  // 1.02f - toggles this[181]
+    if (IsFSubframe()) r = 0x0075950;  // 1.02f subframe - toggles this[181]
+    else if (IsFClassic()) r = 0x0075710;  // 1.02f classic - toggles this[181]
     else if (v == EfzRevivalVersion::Revival102e) r = 0x00756E0;  // 1.02e - toggles this[181]
     else if (v == EfzRevivalVersion::Revival102g) r = 0x0075980;  // 1.02g - toggles this[181]
     // TODO: Add h/i versions if needed
@@ -261,7 +287,8 @@ uintptr_t EFZ_RVA_LoadState() {
     EfzRevivalVersion v = GetEfzRevivalVersion();
     // VS/Practice mode load - restores snapshot
     if (v == EfzRevivalVersion::Revival102e) r = 0x0075910;  // sub_10075910
-    else if (v == EfzRevivalVersion::Revival102f) r = 0x0075940;  // sub_10075940
+    else if (IsFSubframe()) r = 0x0075BB0;  // sub_10075BB0
+    else if (IsFClassic()) r = 0x0075940;  // sub_10075940
     else if (v == EfzRevivalVersion::Revival102g) r = 0x0075BE0;  // sub_10075BE0
     else if (v == EfzRevivalVersion::Revival102h) r = 0x00763B0;  // sub_100763B0
     else if (v == EfzRevivalVersion::Revival102i) r = 0x0076950;  // sub_10076950
@@ -274,7 +301,8 @@ uintptr_t EFZ_RVA_SaveState() {
     EfzRevivalVersion v = GetEfzRevivalVersion();
     // VS/Practice mode save - builds snapshot
     if (v == EfzRevivalVersion::Revival102e) r = 0x0075980;  // sub_10075980
-    else if (v == EfzRevivalVersion::Revival102f) r = 0x00759B0;  // sub_100759B0
+    else if (IsFSubframe()) r = 0x0075C20;  // sub_10075C20
+    else if (IsFClassic()) r = 0x00759B0;  // sub_100759B0
     else if (v == EfzRevivalVersion::Revival102g) r = 0x0075C50;  // sub_10075C50
     else if (v == EfzRevivalVersion::Revival102h) r = 0x0076420;  // sub_10076420
     else if (v == EfzRevivalVersion::Revival102i) r = 0x00769C0;  // sub_100769C0
@@ -289,7 +317,8 @@ uintptr_t EFZ_RVA_PracticeHotkeyHandler() {
     // e/f/g/h: this+476=Save, this+480=Load
     // i: this+480=Save, this+484=Load (offsets shifted by 4)
     if (v == EfzRevivalVersion::Revival102e) r = 0x00759F0;  // sub_100759F0
-    else if (v == EfzRevivalVersion::Revival102f) r = 0x0075A20;  // sub_10075A20
+    else if (IsFSubframe()) r = 0x0075C90;  // sub_10075C90
+    else if (IsFClassic()) r = 0x0075A20;  // sub_10075A20
     else if (v == EfzRevivalVersion::Revival102g) r = 0x0075CC0;  // sub_10075CC0
     else if (v == EfzRevivalVersion::Revival102h) r = 0x0076490;  // sub_10076490
     else if (v == EfzRevivalVersion::Revival102i) r = 0x0076A30;  // sub_10076A30

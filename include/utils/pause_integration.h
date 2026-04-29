@@ -6,6 +6,8 @@
 // When the menu closes, we unfreeze only if we were the ones who froze it (don’t fight user pause).
 
 namespace PauseIntegration {
+    using StepAdvanceCallback = void (*)(uint32_t beforeCounter, uint32_t afterCounter);
+
     // Notify of menu visibility change; applies/removes pause accordingly (Practice mode only)
     void OnMenuVisibilityChanged(bool visible);
     // Ensure the Practice pointer capture hook is installed (no-op if already)
@@ -33,12 +35,22 @@ namespace PauseIntegration {
     bool IsPausedOrFrozen();
 
     // Frame-step support:
-    // Exposes the Practice step counter (+0xB0) which increments each single-frame advance while paused.
+    // Exposes the Practice step counter (+0xB0) which increments each subframe advance while paused.
     // Returns true if we could read the counter; outCounter unchanged on failure.
     bool ReadStepCounter(uint32_t &outCounter);
+    // Mirrors EfzRevival's official pause toggle state without calling the hotkey path.
+    // Resets the Practice step counter like the official toggle.
+    bool SetPracticePausedForFramestep(bool paused);
+    // Queues one EfzRevival subframe step by setting Practice pause (+0xB4)
+    // and step-request (+0xAC) flags. The Practice tick consumes this.
+    bool RequestPracticeSubframeStep();
     // Returns true if (a) paused and (b) the internal step counter advanced since last call to this function.
     // Safe to call every tick; internally debounces using a static snapshot.
     bool ConsumeStepAdvance();
+
+    // Called from the hooked Revival Practice tick after it consumes a
+    // step-request flag and increments the Practice step counter.
+    void SetPracticeStepAdvanceCallback(StepAdvanceCallback callback);
 
     // Clears cached Practice/battle/gamespeed pointers that are only valid for the
     // current gameplay session. Hooks remain installed.
