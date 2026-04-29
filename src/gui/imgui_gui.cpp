@@ -950,10 +950,18 @@ namespace ImGuiGui {
                     ImGui::Unindent();
                 }
 
-                // Framestep mode (Vanilla EFZ only)
-                if (GetEfzRevivalVersion() == EfzRevivalVersion::Vanilla) {
-                    ImGui::Spacing();
-                    ImGui::SeparatorText("Framestep (Vanilla EFZ)");
+                // Framestep mode
+                ImGui::Spacing();
+                ImGui::SeparatorText("Framestep");
+                bool framestepEnabled = Config::GetSettings().framestepEnabled;
+                if (ImGui::Checkbox("Enable Framestep", &framestepEnabled)) {
+                    Config::SetSetting("General", "framestepEnabled", framestepEnabled ? "1" : "0");
+                }
+                bool suppressRevivalFramestep = Config::GetSettings().suppressRevivalFramestep;
+                if (ImGui::Checkbox("Suppress Revival Framestep", &suppressRevivalFramestep)) {
+                    Config::SetSetting("General", "suppressRevivalFramestep", suppressRevivalFramestep ? "1" : "0");
+                }
+                if (Framestep::IsEnabled()) {
                     ImGui::Text("Step Mode:");
                     ImGui::SameLine();
                     ImGui::SetNextItemWidth(200);

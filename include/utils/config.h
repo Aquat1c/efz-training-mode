@@ -11,8 +11,11 @@ namespace Config {
         bool detailedLogging;
         bool enableDebugFileLog;   // NEW: Enable writing efz_training_debug.log (file debug logging)
         bool restrictToPracticeMode; // NEW: Restrict to practice mode
+    bool framestepEnabled;      // Enable our framestep hotkeys/runtime
+    bool suppressRevivalFramestep; // Suppress Revival's native pause/step hotkeys while our framestep is active
     bool enableConsole;          // NEW: Show/Hide console window
     bool enableFpsDiagnostics;   // NEW: Enable FPS/timing diagnostics output
+    bool showFrameBar;           // NEW: Per-player frame-state strip (color-coded)
     bool enableCharacterSelectLogger; // NEW: Toggle per-frame Character Select flag logger
     bool showPracticeEntryHint;   // NEW: Show practice overlay hint once per session
     float uiScale;               // NEW: UI scale for ImGui window (e.g., 0.80..1.20)
@@ -56,7 +59,7 @@ namespace Config {
         int macroPlayKey;       // Default: 'O'
         int macroSlotKey;       // NEW: Cycle macro slot (Default: 'K')
 
-        // Framestep hotkeys (configurable; vanilla EFZ only)
+        // Framestep hotkeys (configurable; vanilla EFZ / supported Revival)
         int framestepPauseKey;  // Default: VK_SPACE
         int framestepStepKey;   // Default: 'P'
 

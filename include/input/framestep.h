@@ -13,7 +13,7 @@ namespace Framestep {
     // Update framestep state (call every frame)
     void Update();
 
-    // Check if we're currently paused via framestep
+    // Check if Practice is currently paused via framestep/Revival
     bool IsPaused();
 
     // Get the current step counter value
@@ -28,8 +28,12 @@ namespace Framestep {
     // Handle frame step request (P key)
     void RequestFrameStep();
 
-    // Check if framestep is enabled (vanilla EFZ only)
+    // Check if framestep is enabled for the active backend
     bool IsEnabled();
+
+    // Used by the EfzRevival Practice hotkey hook to keep native pause/step
+    // from racing our own framestep implementation in Practice mode.
+    bool ShouldSuppressRevivalHotkey(void* practiceController, int key);
 
     // Update overlay display status
     void UpdateOverlayStatus();

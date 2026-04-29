@@ -2,13 +2,18 @@
 
 namespace CustomMenu {
 
+// Called before ImGui::NewFrame() when the custom menu may render. This is
+// where shared ImGui device objects/font atlas may be rebuilt; doing it before
+// any draw-list commands are queued keeps font texture IDs stable for the
+// entire frame.
+void PrepareFrame();
+
 // Called once per EndScene frame from HookedEndScene (gated by
 // Config::useCustomMenu). Queries ImGuiImpl::IsVisible() internally — only
 // draws when the menu is open.
 //
-// Uses ImGui::GetBackgroundDrawList() on the 640x480 render target; does not
-// call ImGui::Begin/End. Fonts are loaded/rebuilt on demand; safe to call
-// every frame.
+// Uses ImGui::GetBackgroundDrawList() on the 640x480 render target and does
+// not call ImGui::Begin/End.
 void Render();
 
 } // namespace CustomMenu

@@ -5,6 +5,7 @@
 #include <thread>
 #include <atomic>
 #include "../include/gui/overlay.h"
+#include "../include/gui/framebar.h"
 #include "../include/core/logger.h"
 #include "../include/utils/utilities.h"
 
@@ -275,6 +276,10 @@ HRESULT WINAPI HookedEndScene(LPDIRECT3DDEVICE9 pDevice) {
         if (!ImGuiImpl::IsInitialized()) {
             return oEndScene(pDevice);
         }
+    }
+
+    if (ImGuiImpl::IsVisible() && Config::GetSettings().useCustomMenu) {
+        CustomMenu::PrepareFrame();
     }
 
     // Start a new ImGui frame and feed inputs before NewFrame
@@ -620,6 +625,16 @@ void DirectDrawHook::RenderD3D9Overlays(LPDIRECT3DDEVICE9 pDevice, UINT rtW, UIN
 
         // Inner game-area border assuming 640x480 letterbox (green)
         bgList->AddRect(ImVec2(ox + 1.0f, oy + 1.0f), ImVec2(ox + gw - 1.0f, oy + gh - 1.0f), IM_COL32(0, 255, 0, 200), 0.0f, 0, 2.0f);
+    }
+
+    // FrameBar overlay (toggle-gated). Drawn before other messages so message
+    // text floats on top of the bar if they happen to overlap.
+    if (FrameBar::g_enabled.load() && !menuVisibleNow) {
+        FrameBar::DrawCtx fbCtx;
+        fbCtx.ox = ox;
+        fbCtx.oy = oy;
+        fbCtx.scale = scale;
+        FrameBar::Render(fbCtx);
     }
 
     // Optional: draw a single combined background for split frame-advantage messages
@@ -1544,4 +1559,3 @@ std::string DirectDrawHook::FitTextToWidthFromLeft(const std::string& text, int 
     
     return result;
 }
-

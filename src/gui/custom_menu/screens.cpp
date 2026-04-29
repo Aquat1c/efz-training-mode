@@ -33,6 +33,7 @@ bool RowDisabled(const Row& r) {
 }
 
 bool ShiftHeld() {
+    if (!Input::IsGameWindowActive()) return false;
     return (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
 }
 
@@ -939,6 +940,8 @@ bool IsKeybindActive() { return g_keybind.active; }
 void OpenKeybind(const char* title, int* field,
                  const char* section, const char* key) {
     if (!field || !title || !section || !key) return;
+    if (!Input::IsGameWindowActive()) return;
+
     g_keybind.active = true;
     strncpy_s(g_keybind.title, sizeof(g_keybind.title), title, _TRUNCATE);
     g_keybind.settingsField = field;
@@ -974,6 +977,11 @@ bool VkIsBindable(int vk) {
 namespace KeybindAPI {
     void TickInput() {
         if (!g_keybind.active) return;
+        if (!Input::IsGameWindowActive()) {
+            memset(g_keybind.prevPressed, 0, sizeof(g_keybind.prevPressed));
+            g_keybind.primed = false;
+            return;
+        }
 
         // Cancel
         const bool escNow = (GetAsyncKeyState(VK_ESCAPE) & 0x8000) != 0;

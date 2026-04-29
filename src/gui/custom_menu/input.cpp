@@ -6,10 +6,15 @@
 
 #include <windows.h>
 #include <Xinput.h>
+#include <atomic>
 #include <cstdarg>
 #include <string>
 
 namespace CustomMenu::Input {
+
+bool IsGameWindowActive() {
+    return g_efzWindowActive.load(std::memory_order_relaxed);
+}
 
 namespace {
 
@@ -70,8 +75,13 @@ bool VkDown(int vk) {
     return (GetAsyncKeyState(vk) & 0x8000) != 0;
 }
 
+bool InputAllowed() {
+    return IsGameWindowActive();
+}
+
 CurState SampleCurrent() {
     CurState cur;
+    if (!InputAllowed()) return cur;
 
     // Keyboard — fixed VKs
     if (VkDown(VK_UP))     cur.up       = true;
@@ -199,6 +209,7 @@ bool Back()     { return SampleEdges().back;  }
 bool SwitchPlayer() { return SampleEdges().switchPlayer; }
 
 bool TopTabPrev() {
+    if (!InputAllowed()) return false;
     if (ImGui::IsKeyPressed(ImGuiKey_GamepadL1, false)) {
         LogInputDetail("TopTabPrev via GamepadL1");
         return true;
@@ -211,6 +222,7 @@ bool TopTabPrev() {
 }
 
 bool TopTabNext() {
+    if (!InputAllowed()) return false;
     if (ImGui::IsKeyPressed(ImGuiKey_GamepadR1, false)) {
         LogInputDetail("TopTabNext via GamepadR1");
         return true;
@@ -230,6 +242,11 @@ bool SubTabNext() { return SampleEdges().subTabNext; }
 // should only query this when no numeric-edit is active.
 int TopTabNumberEdge() {
     static bool s_prev[9] = {false,false,false,false,false,false,false,false,false};
+    if (!InputAllowed()) {
+        for (int i = 0; i < 9; ++i) s_prev[i] = false;
+        return 0;
+    }
+
     int hitIdx = 0;
     for (int i = 0; i < 9; ++i) {
         const int vk = '1' + i;

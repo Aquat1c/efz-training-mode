@@ -83,7 +83,7 @@ set(IMGUI_SOURCES
 file(GLOB ROOT_SOURCES "src/*.cpp")
 file(GLOB CORE_SOURCES "src/core/*.cpp")
 file(GLOB GAME_SOURCES "src/game/*.cpp")
-file(GLOB GUI_SOURCES "src/gui/*.cpp")
+file(GLOB GUI_SOURCES CONFIGURE_DEPENDS "src/gui/*.cpp")
 file(GLOB GUI_CUSTOM_MENU_SOURCES CONFIGURE_DEPENDS "src/gui/custom_menu/*.cpp")
 file(GLOB INPUT_SOURCES "src/input/*.cpp")
 file(GLOB UTILS_SOURCES "src/utils/*.cpp")

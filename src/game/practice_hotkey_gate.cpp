@@ -4,6 +4,7 @@
 #include "../../include/core/logger.h"
 #include "../../include/core/constants.h"
 #include "../../include/core/memory.h"
+#include "../../include/input/framestep.h"
 #include "../../include/utils/pause_integration.h"
 #include "../../3rdparty/minhook/include/MinHook.h"
 #include <windows.h>
@@ -35,6 +36,10 @@ namespace {
             s_suppressedFrames.fetch_add(1, std::memory_order_relaxed);
             return 0; // early exit, indicate not handled
         }
+        if (Framestep::ShouldSuppressRevivalHotkey(self, a2)) {
+            s_suppressedFrames.fetch_add(1, std::memory_order_relaxed);
+            return 0;
+        }
         return oHotkeyEval ? oHotkeyEval(self, a2) : 0;
     }
 
@@ -51,18 +56,8 @@ namespace {
                 return candidate;
             }
         }
-        // Fallback: try legacy constant fast-path (previously stable across builds used by this project)
-        {
-            uintptr_t candidate = reinterpret_cast<uintptr_t>(mod) + static_cast<uintptr_t>(EFZREV_RVA_PRACTICE_HOTKEY_EVAL);
-            uint8_t firstBytes[5] = {0};
-            if (SafeReadMemory(candidate, firstBytes, sizeof(firstBytes))) {
-                // Heuristic: typical function prologue or push/mov pattern
-                if (firstBytes[0] == 0x55 || firstBytes[0] == 0x8B || firstBytes[0] == 0x53) {
-                    return candidate;
-                }
-            }
-        }
-        // Fallback: pattern scan (not fully implemented; stub for future upgrade)
+        // If version-aware lookup declines, do not guess a legacy RVA. The old
+        // fast path can overlap unrelated code in split 1.02f builds.
         return ScanForHotkeyEvaluator();
     }
 

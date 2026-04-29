@@ -12,6 +12,7 @@
 #include "../include/core/memory.h"
 #include "../include/core/logger.h"
 #include "../include/gui/overlay.h"
+#include "../include/gui/framebar.h"
 #include "../include/game/game_state.h"
 #include "../include/game/per_frame_sample.h" // unified sampling context
 #include "../include/input/input_buffer.h"
@@ -20,7 +21,7 @@
 #include "../include/utils/network.h"
 #include "../include/utils/pause_integration.h" // PauseIntegration::EnsurePracticePointerCapture/GetPracticeControllerPtr
 #include "../include/utils/switch_players.h"    // SwitchPlayers::ResetControlMappingForMenusToP1
-#include "../include/input/framestep.h"          // Framestep system for vanilla EFZ
+#include "../include/input/framestep.h"          // Framestep system
 #define DISABLE_ATTACK_READER 1
 #include "../include/game/attack_reader.h"
 #include "../include/game/practice_patch.h"
@@ -909,7 +910,7 @@ void FrameDataMonitor() {
         }
     }
     
-    // Update framestep system (vanilla only, input monitoring and frame advance)
+    // Update framestep system (vanilla / supported Revival)
     Framestep::Update();
     // Update framestep overlay status
     Framestep::UpdateOverlayStatus();
@@ -2003,6 +2004,9 @@ void FrameDataMonitor() {
             
             // Run dummy auto-block using unified sample (still every frame for precision)
             MonitorDummyAutoBlock(GetCurrentPerFrameSample());
+
+            // FrameBar: per-visual-frame sampler (cheap when toggle is off).
+            FrameBar::TickSample();
 
             // Practice-only: Defense helpers
             // Always RG takes effect when enabled; Random RG mimics Revival's per-frame coin flip.

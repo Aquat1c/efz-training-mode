@@ -23,6 +23,22 @@ void DebugDumpScreenState();
 bool IsInGameplayState();
 bool IsInCharacterSelectScreen();
 
+enum class FrontendExitTarget : uint8_t {
+    CharacterSelect = 1,
+    Title = 0,
+};
+
+// Installs lightweight front-end safety hooks:
+// - suppresses EFZ's DirectInput ESC/F-key battle hotkeys while our menu is open
+// - lets requested battle cleanup return to Title instead of Character Select
+bool EnsureFrontendControlHooksInstalled();
+
+using BattleUpdateCallback = void (*)(void* battleContext);
+void SetBattleUpdateCallbacks(BattleUpdateCallback beforeUpdate, BattleUpdateCallback afterUpdate);
+
+bool CanRequestFrontendExit(FrontendExitTarget target);
+bool RequestFrontendExit(FrontendExitTarget target);
+
 // Enum to represent the different game phases
 enum class GamePhase : uint8_t {
     Unknown = 0,

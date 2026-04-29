@@ -14,23 +14,28 @@
 #include "../include/core/constants.h"
 #include "../include/core/version.h"
 #include "../include/game/practice_patch.h"
+#include "../include/game/game_state.h"
 #include "../include/game/always_rg.h"
 #include "../include/game/random_rg.h"
 #include "../include/game/random_block.h"
 #include "../include/game/final_memory_patch.h"
 #include "../include/game/macro_controller.h"
 #include "../include/game/fm_commands.h"
+#include "../include/game/character_settings.h"
 #include "../include/gui/overlay.h"
+#include "../include/gui/framebar.h"
 #include "../include/utils/xinput_shim.h"
 #include "../include/utils/network.h"
 #include "../include/utils/bgm_control.h"
 #include "../include/input/framestep.h"
 #include "../include/core/memory.h"
+#include "../include/core/logger.h"
 #include "../3rdparty/imgui/imgui.h"
 
 #include <windows.h>
 #include <cstdio>
 #include <cstring>
+#include <string>
 
 namespace CustomMenu::Screens {
 
@@ -620,6 +625,9 @@ Row* BuildSettingsDebugRows(int& count) {
     s_rows[n++] = Toggle ("LOG DETAILED FA",      &g_mirrorDeepFA,         OnDeepFA);
 
     s_rows[n++] = Header("OVERLAYS");
+    s_rows[n++] = Toggle ("FRAME BAR",                 &s.showFrameBar,
+        [](){ PersistBool("General", "showFrameBar", MutableSettings().showFrameBar);
+              FrameBar::g_enabled.store(MutableSettings().showFrameBar); });
     s_rows[n++] = Toggle ("OVERLAY DEBUG BORDERS",     &g_mirrorOverlayBorders,       OnOverlayBorders);
     s_rows[n++] = Toggle ("RG DEBUG TOASTS",           &g_mirrorRGToasts,             OnRGToasts);
     s_rows[n++] = Toggle ("COMBO STATS OVERLAY",       &s.showComboStatisticsOverlay, OnShowCombo);
@@ -835,6 +843,14 @@ void RefreshCharacterDataAction() {
     ImGuiGui::RefreshLocalData();
 }
 
+std::string CharacterDisplayName(int charId, const char* rawName) {
+    std::string name = CharacterSettings::GetCharacterName(charId);
+    if (name.empty() || name == "Undefined") {
+        name = (rawName && rawName[0]) ? rawName : "(NONE)";
+    }
+    return name;
+}
+
 void ForceP1MaiSummon()   { ImGuiGui::guiState.localData.p1MaiForceSummon = true; OnAutoApply(); }
 void ForceP2MaiSummon()   { ImGuiGui::guiState.localData.p2MaiForceSummon = true; OnAutoApply(); }
 void ForceP1MaiDespawn()  { ImGuiGui::guiState.localData.p1MaiForceDespawn = true; OnAutoApply(); }
@@ -1036,11 +1052,13 @@ void AddMinagiRows(Row* rows, int& n, DisplayData& d, int player) {
     }
 }
 
-void AddPlayerCharacterRows(Row* rows, int& n, DisplayData& d, int player, int charId, const char* rawName) {
-    static char s_headers[2][48];
+bool AddPlayerCharacterRows(Row* rows, int& n, DisplayData& d, int player, int charId, const char* rawName) {
+    if (!CharHasCustomRows(charId)) return false;
+
+    static char s_headers[2][64];
     char* header = s_headers[(player == 2) ? 1 : 0];
-    const char* name = (rawName && rawName[0]) ? rawName : "(NONE)";
-    _snprintf_s(header, sizeof(s_headers[0]), _TRUNCATE, "P%d  %s", player, name);
+    const std::string name = CharacterDisplayName(charId, rawName);
+    _snprintf_s(header, sizeof(s_headers[0]), _TRUNCATE, "P%d  %s", player, name.c_str());
     rows[n++] = Header(header);
 
     switch (charId) {
@@ -1056,10 +1074,9 @@ void AddPlayerCharacterRows(Row* rows, int& n, DisplayData& d, int player, int c
         case CHAR_ID_MIO:      AddMioRows(rows, n, d, player); break;
         case CHAR_ID_MAI:      AddMaiRows(rows, n, d, player); break;
         case CHAR_ID_MINAGI:   AddMinagiRows(rows, n, d, player); break;
-        default:
-            rows[n++] = Info("NO CHARACTER-SPECIFIC CONTROLS");
-            break;
+        default: break;
     }
+    return true;
 }
 
 Row* BuildCharsRows(int& count) {
@@ -1067,28 +1084,19 @@ Row* BuildCharsRows(int& count) {
     int n = 0;
     auto& d = ImGuiGui::guiState.localData;
 
-    s_rows[n++] = Header("CURRENT MATCHUP");
-
-    static char s_p1Label[32];
-    static char s_p2Label[32];
-    _snprintf_s(s_p1Label, sizeof(s_p1Label), _TRUNCATE,
-                "P1  %-12s ID %d", d.p1CharName[0] ? d.p1CharName : "(none)", d.p1CharID);
-    _snprintf_s(s_p2Label, sizeof(s_p2Label), _TRUNCATE,
-                "P2  %-12s ID %d", d.p2CharName[0] ? d.p2CharName : "(none)", d.p2CharID);
-    s_rows[n++] = Info(s_p1Label);
-    s_rows[n++] = Info(s_p2Label);
+    s_rows[n++] = Header("CHARACTER CONTROLS");
     s_rows[n++] = Action("REFRESH CHARACTER DATA", RefreshCharacterDataAction);
-    s_rows[n++] = Action("RUN P1 FINAL MEMORY", RunP1FinalMemory);
-    s_rows[n++] = Action("RUN P2 FINAL MEMORY", RunP2FinalMemory);
 
     s_rows[n++] = Spacer();
     AddCharacterLockRows(s_rows, n);
-    AddPlayerCharacterRows(s_rows, n, d, 1, d.p1CharID, d.p1CharName);
-    s_rows[n++] = Spacer();
-    AddPlayerCharacterRows(s_rows, n, d, 2, d.p2CharID, d.p2CharName);
 
-    if (!CharHasCustomRows(d.p1CharID) && !CharHasCustomRows(d.p2CharID)) {
+    const bool p1Added = AddPlayerCharacterRows(s_rows, n, d, 1, d.p1CharID, d.p1CharName);
+    if (p1Added && CharHasCustomRows(d.p2CharID)) {
         s_rows[n++] = Spacer();
+    }
+    const bool p2Added = AddPlayerCharacterRows(s_rows, n, d, 2, d.p2CharID, d.p2CharName);
+
+    if (!p1Added && !p2Added) {
         s_rows[n++] = Header("STATUS");
         s_rows[n++] = Info("NO SUPPORTED CHARACTER CONTROLS IN THIS MATCHUP");
     }
@@ -1135,6 +1143,61 @@ Row* BuildOpponentRows(int& count) {
     s_rows[n++] = Toggle   ("AUTO-JUMP",               &d.autoJump,        OnAutoApply);
     s_rows[n++] = ChoicesRow("  JUMP DIRECTION",       &d.jumpDirection,   kJumpDirChoices, 3, OnAutoApply);
     s_rows[n++] = ChoicesRow("  JUMP TARGET",          &d.jumpTarget,      kJumpTargetChoices, 3, OnAutoApply);
+
+    count = n;
+    return s_rows;
+}
+
+// ===== MENU screen =====
+void RunExitToCharacterSelect() {
+    RequestFrontendExit(FrontendExitTarget::CharacterSelect);
+}
+
+void RunExitToTitle() {
+    RequestFrontendExit(FrontendExitTarget::Title);
+}
+
+void StubHotswapSelection() {
+    LogOut("[CUSTOM_MENU] Hotswap selection stub activated", true);
+}
+
+bool ExitToCharacterSelectDisabled() {
+    return !CanRequestFrontendExit(FrontendExitTarget::CharacterSelect);
+}
+
+bool ExitToTitleDisabled() {
+    return !CanRequestFrontendExit(FrontendExitTarget::Title);
+}
+
+bool HotswapSelectionDisabled() {
+    return true;
+}
+
+const char* ValExitToCharacterSelect() {
+    return CanRequestFrontendExit(FrontendExitTarget::CharacterSelect) ? "READY" : "MATCH ONLY";
+}
+
+const char* ValExitToTitle() {
+    return CanRequestFrontendExit(FrontendExitTarget::Title) ? "READY" : "UNAVAILABLE";
+}
+
+const char* ValTodo() {
+    return "TODO";
+}
+
+Row* BuildMenuRows(int& count) {
+    static Row s_rows[16];
+    int n = 0;
+
+    s_rows[n++] = Header("MENU");
+    s_rows[n++] = Action("EXIT TO CHARACTER SELECT", RunExitToCharacterSelect, ValExitToCharacterSelect, ExitToCharacterSelectDisabled);
+    s_rows[n++] = Action("EXIT TO TITLE SCREEN",     RunExitToTitle,           ValExitToTitle,           ExitToTitleDisabled);
+
+    s_rows[n++] = Spacer();
+    s_rows[n++] = Header("HOTSWAP");
+    s_rows[n++] = Action("CHARACTER 1 SELECTION", StubHotswapSelection, ValTodo, HotswapSelectionDisabled);
+    s_rows[n++] = Action("CHARACTER 2 SELECTION", StubHotswapSelection, ValTodo, HotswapSelectionDisabled);
+    s_rows[n++] = Action("STAGE SELECTION",       StubHotswapSelection, ValTodo, HotswapSelectionDisabled);
 
     count = n;
     return s_rows;
@@ -1252,7 +1315,13 @@ bool F4CustomHidden() { return g_f4Mode != 2; }
 
 // Framestep
 int  g_framestepMode = 0;     // 0=FullFrame, 1=Subframe
-bool VanillaHidden() { return GetEfzRevivalVersion() != EfzRevivalVersion::Vanilla; }
+void OnFramestepEnabled() {
+    PersistBool("General", "framestepEnabled", MutableSettings().framestepEnabled);
+}
+void OnSuppressRevivalFramestep() {
+    PersistBool("General", "suppressRevivalFramestep", MutableSettings().suppressRevivalFramestep);
+}
+bool FramestepModeHidden() { return !Framestep::IsEnabled(); }
 void RefreshFramestepMirror() {
     g_framestepMode = (Framestep::GetStepMode() == Framestep::StepMode::Subframe) ? 1 : 0;
 }
@@ -1313,8 +1382,10 @@ Row* BuildOptionsRows(int& count) {
     s_rows[n++] = Header("TIMING");
     s_rows[n++] = FloatNum("FA DURATION (SEC)",      &s.frameAdvantageDisplayDuration, 0.5f, 30.0f, 0.1f, 1.0f, "%.1f", OnFADuration);
 
-    s_rows[n++] = Header("FRAMESTEP (VANILLA EFZ)");
-    s_rows[n++] = ChoicesRow("STEP MODE",            &g_framestepMode, kFramestepChoices, 2, OnFramestepMode, nullptr, VanillaHidden);
+    s_rows[n++] = Header("FRAMESTEP");
+    s_rows[n++] = Toggle    ("ENABLE FRAMESTEP",     &s.framestepEnabled, OnFramestepEnabled);
+    s_rows[n++] = Toggle    ("SUPPRESS REVIVAL STEP", &s.suppressRevivalFramestep, OnSuppressRevivalFramestep);
+    s_rows[n++] = ChoicesRow("STEP MODE",            &g_framestepMode, kFramestepChoices, 2, OnFramestepMode, nullptr, FramestepModeHidden);
 
     count = n;
     return s_rows;
@@ -1380,6 +1451,10 @@ void TickOpponent(ImDrawList* dl, const ScreenLayout& layout, int& focus, Scroll
 void TickOptions(ImDrawList* dl, const ScreenLayout& layout, int& focus, ScrollState& scroll, bool& backEdge) {
     int n = 0; Row* rows = BuildOptionsRows(n);
     TickListScreen(dl, layout, "OPTIONS", rows, n, focus, scroll, backEdge);
+}
+void TickMenu(ImDrawList* dl, const ScreenLayout& layout, int& focus, ScrollState& scroll, bool& backEdge) {
+    int n = 0; Row* rows = BuildMenuRows(n);
+    TickListScreen(dl, layout, "MENU", rows, n, focus, scroll, backEdge);
 }
 
 // ===== AUTO sub-panes =====

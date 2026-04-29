@@ -212,8 +212,14 @@ namespace Config {
             file << "enableConsole = 0\n";
             file << "; Restrict functionality to Practice Mode only (1 = yes, 0 = no)\n";
             file << "restrictToPracticeMode = 1\n\n";
+            file << "; Enable this mod's framestep hotkeys/runtime (1 = yes, 0 = no)\n";
+            file << "framestepEnabled = 1\n";
+            file << "; Suppress Revival's native pause/step hotkeys while this mod owns framestep (1 = yes, 0 = no)\n";
+            file << "suppressRevivalFramestep = 1\n\n";
             file << "; Enable FPS/timing diagnostics in logs (1 = yes, 0 = no)\n";
             file << "enableFpsDiagnostics = 0\n\n";
+            file << "; Show per-player FrameBar overlay (1 = yes, 0 = no)\n";
+            file << "showFrameBar = 0\n\n";
             file << "; Log active player / CPU flags during Character Select (1 = yes, 0 = no)\n";
             file << "enableCharacterSelectLogger = 1\n\n";
 
@@ -330,8 +336,8 @@ namespace Config {
             file << "UIRefreshKey=0x52       # 'R' (Refresh)\n";
             file << "UIExitKey=0x51          # 'Q' (Exit)\n";
 
-            // Framestep hotkeys (vanilla EFZ only)
-            file << "\n; Framestep (vanilla EFZ only)\n";
+            // Framestep hotkeys (vanilla EFZ / supported Revival)
+            file << "\n; Framestep (vanilla EFZ / supported Revival)\n";
             file << "; Pause toggle\n";
             file << "FramestepPauseKey=0x20  # Default: Space\n";
             file << "; Step forward one frame (when paused)\n";
@@ -419,7 +425,10 @@ namespace Config {
             settings.enableDebugFileLog = GetValueBool("General", "enableDebugFileLog", false);
             settings.enableConsole = GetValueBool("General", "enableConsole", false);
             settings.restrictToPracticeMode = GetValueBool("General", "restrictToPracticeMode", true);
+            settings.framestepEnabled = GetValueBool("General", "framestepEnabled", true);
+            settings.suppressRevivalFramestep = GetValueBool("General", "suppressRevivalFramestep", true);
             settings.enableFpsDiagnostics = GetValueBool("General", "enableFpsDiagnostics", false);
+            settings.showFrameBar = GetValueBool("General", "showFrameBar", false);
             // Default ON so older configs without this key enable it automatically
             settings.enableCharacterSelectLogger = GetValueBool("General", "enableCharacterSelectLogger", true);
             settings.showPracticeEntryHint = GetValueBool("General", "showPracticeEntryHint", true);
@@ -592,7 +601,7 @@ namespace Config {
             settings.uiAcceptKey      = GetValueInt("Hotkeys", "UIAcceptKey",     0x45); // 'E'
             settings.uiRefreshKey     = GetValueInt("Hotkeys", "UIRefreshKey",    0x52); // 'R'
             settings.uiExitKey        = GetValueInt("Hotkeys", "UIExitKey",       0x51); // 'Q'
-            // Framestep keys (vanilla EFZ only)
+            // Framestep keys (vanilla EFZ / supported Revival)
             settings.framestepPauseKey = GetValueInt("Hotkeys", "FramestepPauseKey", 0x20); // VK_SPACE
             settings.framestepStepKey  = GetValueInt("Hotkeys", "FramestepStepKey",  0x50); // 'P'
             // Swap custom binding
@@ -627,6 +636,8 @@ namespace Config {
             LogOut("[CONFIG] DetailedLogging: " + std::to_string(settings.detailedLogging), true);
             LogOut("[CONFIG] EnableDebugFileLog: " + std::to_string(settings.enableDebugFileLog), true);
             LogOut("[CONFIG] EnableConsole: " + std::to_string(settings.enableConsole), true);
+            LogOut("[CONFIG] FramestepEnabled: " + std::to_string(settings.framestepEnabled), true);
+            LogOut("[CONFIG] SuppressRevivalFramestep: " + std::to_string(settings.suppressRevivalFramestep), true);
             LogOut("[CONFIG] TeleportKey: " + std::to_string(settings.teleportKey) + " (" + GetKeyName(settings.teleportKey) + ")", true);
             LogOut("[CONFIG] RecordKey: " + std::to_string(settings.recordKey) + " (" + GetKeyName(settings.recordKey) + ")", true);
             LogOut("[CONFIG] ConfigMenuKey: " + std::to_string(settings.configMenuKey) + " (" + GetKeyName(settings.configMenuKey) + ")", true);
@@ -698,8 +709,14 @@ namespace Config {
             file << "enableConsole = " << (settings.enableConsole ? "1" : "0") << "\n";
             file << "; Restrict functionality to Practice Mode only (1 = yes, 0 = no)\n";
             file << "restrictToPracticeMode = " << (settings.restrictToPracticeMode ? "1" : "0") << "\n\n";
+            file << "; Enable this mod's framestep hotkeys/runtime (1 = yes, 0 = no)\n";
+            file << "framestepEnabled = " << (settings.framestepEnabled ? "1" : "0") << "\n";
+            file << "; Suppress Revival's native pause/step hotkeys while this mod owns framestep (1 = yes, 0 = no)\n";
+            file << "suppressRevivalFramestep = " << (settings.suppressRevivalFramestep ? "1" : "0") << "\n\n";
             file << "; Enable FPS/timing diagnostics in logs (1 = yes, 0 = no)\n";
             file << "enableFpsDiagnostics = " << (settings.enableFpsDiagnostics ? "1" : "0") << "\n\n";
+            file << "; Show per-player FrameBar overlay (1 = yes, 0 = no)\n";
+            file << "showFrameBar = " << (settings.showFrameBar ? "1" : "0") << "\n\n";
             file << "; Log active player / CPU flags during Character Select (1 = yes, 0 = no)\n";
             file << "enableCharacterSelectLogger = " << (settings.enableCharacterSelectLogger ? "1" : "0") << "\n\n";
             file << "; Show a one-time Practice hint about opening the overlay (1 = yes, 0 = no)\n";
@@ -843,7 +860,10 @@ namespace Config {
             if (k == "detailedlogging") settings.detailedLogging = (value == "1");
             if (k == "enabledebugfilelog") settings.enableDebugFileLog = (value == "1");
             if (k == "enableconsole") settings.enableConsole = (value == "1");
+            if (k == "showframebar") settings.showFrameBar = (value == "1");
             if (k == "restricttopracticemode") settings.restrictToPracticeMode = (value == "1");
+            if (k == "framestepenabled") settings.framestepEnabled = (value == "1" || value == "true");
+            if (k == "suppressrevivalframestep") settings.suppressRevivalFramestep = (value == "1" || value == "true");
             if (k == "showpracticeentryhint") settings.showPracticeEntryHint = (value == "1");
             if (k == "uiscale") {
                 try { settings.uiScale = std::stof(value); } catch (...) {}

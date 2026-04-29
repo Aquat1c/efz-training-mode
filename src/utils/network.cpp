@@ -31,6 +31,7 @@ constexpr size_t kRequiredExportSize =
     offsetof(EFZNetplayState, stateSeq) + sizeof(uint32_t);
 
 std::atomic<int> s_cachedRevivalVer{0};
+std::atomic<int> s_cachedRevivalFlavor{0};
 
 std::mutex s_reasonMutex;
 std::string s_lastOnlineReason;
@@ -118,6 +119,50 @@ std::string GetEFZWindowTitleA() {
         return std::string(titleA);
     }
     return std::string();
+}
+
+bool RegionContainsU32(uintptr_t start, size_t size, uint32_t value) {
+    if (!start || size < sizeof(value)) return false;
+
+    BYTE bytes[0x220] = {};
+    if (size > sizeof(bytes)) {
+        size = sizeof(bytes);
+    }
+    if (!SafeReadMemory(start, bytes, size)) {
+        return false;
+    }
+
+    for (size_t i = 0; i + sizeof(value) <= size; ++i) {
+        uint32_t found = 0;
+        std::memcpy(&found, bytes + i, sizeof(found));
+        if (found == value) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool LooksLikeRevivalPatchToggler(HMODULE module, uintptr_t rva) {
+    if (!module || !rva) return false;
+    const uintptr_t start = reinterpret_cast<uintptr_t>(module) + rva;
+
+    uint8_t first = 0;
+    if (!SafeReadMemory(start, &first, sizeof(first)) || first != 0x55) {
+        return false;
+    }
+
+    static const uint32_t kPatchedCalls[] = {
+        0x0076425F, 0x0075E183, 0x0075DFB5, 0x0075DFD0, 0x0075E055,
+        0x0075E0DA, 0x0076420A, 0x00764AEB, 0x00765E59, 0x00765E7A
+    };
+
+    int hits = 0;
+    for (uint32_t addr : kPatchedCalls) {
+        if (RegionContainsU32(start, 0x220, addr)) {
+            ++hits;
+        }
+    }
+    return hits >= 8;
 }
 
 bool ProcessHasActiveUdpConnection() {
@@ -437,16 +482,84 @@ EfzRevivalVersion GetEfzRevivalVersion() {
     return version;
 }
 
+EfzRevivalDllFlavor GetEfzRevivalDllFlavor() {
+    int cached = s_cachedRevivalFlavor.load(std::memory_order_acquire);
+    if (cached != 0) {
+        return static_cast<EfzRevivalDllFlavor>(cached);
+    }
+
+    EfzRevivalVersion version = GetEfzRevivalVersion();
+    if (version == EfzRevivalVersion::Vanilla) {
+        s_cachedRevivalFlavor.store(static_cast<int>(EfzRevivalDllFlavor::Standard), std::memory_order_release);
+        return EfzRevivalDllFlavor::Standard;
+    }
+    if (version != EfzRevivalVersion::Revival102f) {
+        EfzRevivalDllFlavor flavor = (version == EfzRevivalVersion::Unknown || version == EfzRevivalVersion::Other)
+            ? EfzRevivalDllFlavor::Unknown
+            : EfzRevivalDllFlavor::Standard;
+        if (flavor != EfzRevivalDllFlavor::Unknown) {
+            s_cachedRevivalFlavor.store(static_cast<int>(flavor), std::memory_order_release);
+        }
+        return flavor;
+    }
+
+    HMODULE module = GetModuleHandleA("EfzRevival.dll");
+    if (!module) {
+        return EfzRevivalDllFlavor::Unknown;
+    }
+
+    const bool classic = LooksLikeRevivalPatchToggler(module, 0x006B2A0);
+    const bool subframe = LooksLikeRevivalPatchToggler(module, 0x006B4C0);
+
+    EfzRevivalDllFlavor flavor = EfzRevivalDllFlavor::Unknown;
+    if (subframe && !classic) {
+        flavor = EfzRevivalDllFlavor::Revival102fSubframe;
+    } else if (classic) {
+        flavor = EfzRevivalDllFlavor::Revival102fClassic;
+    }
+
+    if (flavor != EfzRevivalDllFlavor::Unknown) {
+        s_cachedRevivalFlavor.store(static_cast<int>(flavor), std::memory_order_release);
+        std::ostringstream oss;
+        oss << "[REVIVAL] Detected DLL flavor: " << EfzRevivalDllFlavorName(flavor);
+        LogOut(oss.str(), true);
+    }
+    return flavor;
+}
+
+bool IsEfzRevival102fSubframeBuild() {
+    return GetEfzRevivalDllFlavor() == EfzRevivalDllFlavor::Revival102fSubframe;
+}
+
+bool IsEfzRevival102fClassicBuild() {
+    return GetEfzRevivalDllFlavor() == EfzRevivalDllFlavor::Revival102fClassic;
+}
+
 const char* EfzRevivalVersionName(EfzRevivalVersion v) {
     switch (v) {
     case EfzRevivalVersion::Unknown: return "Unknown";
     case EfzRevivalVersion::Vanilla: return "Vanilla";
-    case EfzRevivalVersion::Revival102f: return "Revival 1.02f";
+    case EfzRevivalVersion::Revival102f:
+        switch (GetEfzRevivalDllFlavor()) {
+        case EfzRevivalDllFlavor::Revival102fClassic: return "Revival 1.02f (classic)";
+        case EfzRevivalDllFlavor::Revival102fSubframe: return "Revival 1.02f (subframe)";
+        default: return "Revival 1.02f";
+        }
     case EfzRevivalVersion::Revival102e: return "Revival 1.02e";
     case EfzRevivalVersion::Revival102g: return "Revival 1.02g";
     case EfzRevivalVersion::Revival102h: return "Revival 1.02h";
     case EfzRevivalVersion::Revival102i: return "Revival 1.02i";
     case EfzRevivalVersion::Other: return "Revival (Other)";
+    default: return "(invalid)";
+    }
+}
+
+const char* EfzRevivalDllFlavorName(EfzRevivalDllFlavor flavor) {
+    switch (flavor) {
+    case EfzRevivalDllFlavor::Unknown: return "Unknown";
+    case EfzRevivalDllFlavor::Standard: return "Standard";
+    case EfzRevivalDllFlavor::Revival102fClassic: return "Revival 1.02f classic";
+    case EfzRevivalDllFlavor::Revival102fSubframe: return "Revival 1.02f subframe";
     default: return "(invalid)";
     }
 }
@@ -465,12 +578,16 @@ bool IsEfzRevivalVersionSupported(EfzRevivalVersion v) {
     EfzRevivalVersion version = (v == static_cast<EfzRevivalVersion>(0)) ? GetEfzRevivalVersion() : v;
     switch (version) {
     case EfzRevivalVersion::Vanilla:
-    case EfzRevivalVersion::Revival102f:
     case EfzRevivalVersion::Revival102e:
     case EfzRevivalVersion::Revival102g:
     case EfzRevivalVersion::Revival102h:
     case EfzRevivalVersion::Revival102i:
         return true;
+    case EfzRevivalVersion::Revival102f: {
+        EfzRevivalDllFlavor flavor = GetEfzRevivalDllFlavor();
+        return flavor == EfzRevivalDllFlavor::Revival102fClassic
+            || flavor == EfzRevivalDllFlavor::Revival102fSubframe;
+    }
     default:
         return false;
     }

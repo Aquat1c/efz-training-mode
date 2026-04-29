@@ -3,14 +3,140 @@
 #include "../include/core/memory.h"
 #include "../include/core/constants.h"
 #include "../include/utils/utilities.h"
+#include "../include/utils/network.h"
+#include "../include/utils/pause_integration.h"
+#include "../include/utils/switch_players.h"
+#include "../include/gui/imgui_impl.h"
 #include "frame_monitor.h"
 #include "../include/core/logger.h"
+#include "../3rdparty/minhook/include/MinHook.h"
+#include <windows.h>
+#include <atomic>
 #include <sstream>
 #include <iomanip>
 
 static std::atomic<GamePhase> g_phaseCache{ GamePhase::Unknown };
 static std::atomic<int> g_phaseStableFrames{0};
 static std::atomic<uint8_t> g_lastRawScreenState{ 255 };
+
+namespace {
+    constexpr uintptr_t RVA_GAME_MODE_ARRAY = 0x00390110;
+    constexpr uintptr_t RVA_BATTLE_UPDATE = 0x00363C20;      // efz.exe 0x00763C20
+    constexpr uintptr_t RVA_BATTLE_HOTKEYS = 0x00365660;     // efz.exe 0x00765660
+    constexpr uint8_t SCREEN_TITLE = 0;
+    constexpr uint8_t SCREEN_CHARACTER_SELECT = 1;
+    constexpr uint8_t SCREEN_BATTLE = 3;
+    constexpr uintptr_t SCREEN_EXIT_FLAG_OFFSET = 45;
+    constexpr uintptr_t BATTLE_ENGINE_PAUSE_OFFSET = 1416;
+
+    enum class PendingExitOverride : int {
+        None = 0,
+        Title = 1,
+    };
+
+    using BattleUpdateFn = char (__thiscall *)(void* battleContext);
+    using BattleHotkeysFn = int (__thiscall *)(void* battleContext);
+
+    BattleUpdateFn oBattleUpdate = nullptr;
+    BattleHotkeysFn oBattleHotkeys = nullptr;
+    std::atomic<bool> s_frontendHooksInstalled{false};
+    std::atomic<bool> s_frontendHooksAttempted{false};
+    std::atomic<BattleUpdateCallback> s_beforeBattleUpdate{nullptr};
+    std::atomic<BattleUpdateCallback> s_afterBattleUpdate{nullptr};
+    std::atomic<int> s_pendingExitOverride{static_cast<int>(PendingExitOverride::None)};
+    std::atomic<int> s_pendingExitOverrideFrames{0};
+
+    uint8_t ReadRawScreenStateNoDebounce() {
+        uintptr_t base = GetEFZBase();
+        uint8_t v = 255;
+        if (base) {
+            SafeReadMemory(base + EFZ_BASE_OFFSET_SCREEN_STATE, &v, sizeof(v));
+        }
+        return v;
+    }
+
+    bool ResolveScreenContext(uint8_t screenIndex, uintptr_t& outContext) {
+        outContext = 0;
+        uintptr_t base = GetEFZBase();
+        if (!base) return false;
+
+        uintptr_t slot = base + RVA_GAME_MODE_ARRAY + 4u * static_cast<uintptr_t>(screenIndex);
+        return SafeReadMemory(slot, &outContext, sizeof(outContext)) && outContext != 0;
+    }
+
+    bool RequestScreenExitFlag(uint8_t screenIndex) {
+        uintptr_t context = 0;
+        if (!ResolveScreenContext(screenIndex, context)) {
+            return false;
+        }
+
+        uint8_t exitRequested = 1;
+        bool ok = SafeWriteMemory(context + SCREEN_EXIT_FLAG_OFFSET, &exitRequested, sizeof(exitRequested));
+
+        if (ok && screenIndex == SCREEN_BATTLE) {
+            uint32_t unpaused = 0;
+            SafeWriteMemory(context + BATTLE_ENGINE_PAUSE_OFFSET, &unpaused, sizeof(unpaused));
+        }
+
+        return ok;
+    }
+
+    void CloseTrainingMenuForFrontendExit() {
+        if (ImGuiImpl::IsVisible()) {
+            ImGuiImpl::ToggleVisibility();
+        }
+        menuOpen.store(false);
+    }
+
+    void ResetModSessionForFrontendExit(const char* reason) {
+        SwitchPlayers::ResetControlMappingForMenusToP1();
+        PauseIntegration::SetPracticePausedForFramestep(false);
+        ResetPracticeMatchSessionState(reason);
+    }
+
+    char __fastcall HookedBattleUpdate(void* battleContext, void* /*edx*/) {
+        if (auto callback = s_beforeBattleUpdate.load(std::memory_order_relaxed)) {
+            callback(battleContext);
+        }
+
+        const char result = oBattleUpdate ? oBattleUpdate(battleContext) : SCREEN_BATTLE;
+
+        if (auto callback = s_afterBattleUpdate.load(std::memory_order_relaxed)) {
+            callback(battleContext);
+        }
+
+        if (s_pendingExitOverride.load(std::memory_order_acquire) != static_cast<int>(PendingExitOverride::Title)) {
+            return result;
+        }
+
+        if (result == SCREEN_BATTLE) {
+            int framesLeft = s_pendingExitOverrideFrames.load(std::memory_order_relaxed);
+            if (framesLeft > 0) {
+                s_pendingExitOverrideFrames.store(framesLeft - 1, std::memory_order_relaxed);
+            } else {
+                s_pendingExitOverride.store(static_cast<int>(PendingExitOverride::None), std::memory_order_release);
+            }
+            return result;
+        }
+
+        s_pendingExitOverride.store(static_cast<int>(PendingExitOverride::None), std::memory_order_release);
+        s_pendingExitOverrideFrames.store(0, std::memory_order_relaxed);
+
+        if (result == SCREEN_CHARACTER_SELECT) {
+            LogOut("[FRONTEND] Battle cleanup completed; overriding next screen to Title", true);
+            return SCREEN_TITLE;
+        }
+
+        return result;
+    }
+
+    int __fastcall HookedBattleHotkeys(void* battleContext, void* /*edx*/) {
+        if (ImGuiImpl::IsVisible()) {
+            return 0;
+        }
+        return oBattleHotkeys ? oBattleHotkeys(battleContext) : 0;
+    }
+}
 
 // REVISED: Now takes an optional out parameter.
 GameMode GetCurrentGameMode(uint8_t* rawValueOut) {
@@ -126,6 +252,143 @@ bool IsInCharacterSelectScreen() {
 bool IsInGameplayState() {
     uint8_t st = ReadRawScreenState();
     return st == 3; // 3 = In-game
+}
+
+bool EnsureFrontendControlHooksInstalled() {
+    if (s_frontendHooksInstalled.load(std::memory_order_acquire)) {
+        return true;
+    }
+
+    uintptr_t base = GetEFZBase();
+    if (!base) {
+        return false;
+    }
+
+    bool anyFailed = false;
+
+    LPVOID battleUpdateTarget = reinterpret_cast<LPVOID>(base + RVA_BATTLE_UPDATE);
+    MH_STATUS updateStatus = MH_CreateHook(
+        battleUpdateTarget,
+        reinterpret_cast<LPVOID>(&HookedBattleUpdate),
+        reinterpret_cast<void**>(&oBattleUpdate));
+    if (updateStatus == MH_OK || updateStatus == MH_ERROR_ALREADY_CREATED) {
+        MH_STATUS enableStatus = MH_EnableHook(battleUpdateTarget);
+        if (enableStatus != MH_OK && enableStatus != MH_ERROR_ENABLED) {
+            anyFailed = true;
+            LogOut("[FRONTEND] Failed to enable battle update hook", true);
+        }
+    } else {
+        anyFailed = true;
+        LogOut("[FRONTEND] Failed to create battle update hook", true);
+    }
+
+    LPVOID battleHotkeysTarget = reinterpret_cast<LPVOID>(base + RVA_BATTLE_HOTKEYS);
+    MH_STATUS hotkeyStatus = MH_CreateHook(
+        battleHotkeysTarget,
+        reinterpret_cast<LPVOID>(&HookedBattleHotkeys),
+        reinterpret_cast<void**>(&oBattleHotkeys));
+    if (hotkeyStatus == MH_OK || hotkeyStatus == MH_ERROR_ALREADY_CREATED) {
+        MH_STATUS enableStatus = MH_EnableHook(battleHotkeysTarget);
+        if (enableStatus != MH_OK && enableStatus != MH_ERROR_ENABLED) {
+            anyFailed = true;
+            LogOut("[FRONTEND] Failed to enable battle hotkey gate", true);
+        }
+    } else {
+        anyFailed = true;
+        LogOut("[FRONTEND] Failed to create battle hotkey gate", true);
+    }
+
+    if (!anyFailed) {
+        s_frontendHooksInstalled.store(true, std::memory_order_release);
+        LogOut("[FRONTEND] Control hooks installed", true);
+        return true;
+    }
+
+    const bool alreadyAttempted = s_frontendHooksAttempted.exchange(true);
+    if (!alreadyAttempted) {
+        LogOut("[FRONTEND] Control hooks unavailable; menu ESC suppression and title override disabled", true);
+    }
+    return false;
+}
+
+void SetBattleUpdateCallbacks(BattleUpdateCallback beforeUpdate, BattleUpdateCallback afterUpdate) {
+    s_beforeBattleUpdate.store(beforeUpdate, std::memory_order_relaxed);
+    s_afterBattleUpdate.store(afterUpdate, std::memory_order_relaxed);
+}
+
+bool CanRequestFrontendExit(FrontendExitTarget target) {
+    if (IsNetplaySuspendActive() || IsNetplaySessionActive()) {
+        return false;
+    }
+
+    const uint8_t screen = ReadRawScreenStateNoDebounce();
+    switch (target) {
+    case FrontendExitTarget::CharacterSelect:
+        return screen == SCREEN_BATTLE;
+    case FrontendExitTarget::Title:
+        return screen == SCREEN_BATTLE || screen == SCREEN_CHARACTER_SELECT || screen == SCREEN_TITLE;
+    default:
+        return false;
+    }
+}
+
+bool RequestFrontendExit(FrontendExitTarget target) {
+    if (!CanRequestFrontendExit(target)) {
+        LogOut("[FRONTEND] Exit request ignored in current screen/netplay state", true);
+        return false;
+    }
+
+    const bool hooksReady = EnsureFrontendControlHooksInstalled();
+
+    const uint8_t screen = ReadRawScreenStateNoDebounce();
+    if (target == FrontendExitTarget::Title && screen == SCREEN_TITLE) {
+        CloseTrainingMenuForFrontendExit();
+        return true;
+    }
+
+    if (screen == SCREEN_BATTLE) {
+        if (target == FrontendExitTarget::Title) {
+            if (!hooksReady) {
+                LogOut("[FRONTEND] Exit to Title unavailable because the battle update hook is inactive", true);
+                return false;
+            }
+            s_pendingExitOverride.store(static_cast<int>(PendingExitOverride::Title), std::memory_order_release);
+            s_pendingExitOverrideFrames.store(120, std::memory_order_relaxed);
+        } else {
+            s_pendingExitOverride.store(static_cast<int>(PendingExitOverride::None), std::memory_order_release);
+            s_pendingExitOverrideFrames.store(0, std::memory_order_relaxed);
+        }
+
+        if (!RequestScreenExitFlag(SCREEN_BATTLE)) {
+            s_pendingExitOverride.store(static_cast<int>(PendingExitOverride::None), std::memory_order_release);
+            s_pendingExitOverrideFrames.store(0, std::memory_order_relaxed);
+            LogOut("[FRONTEND] Failed to request battle cleanup", true);
+            return false;
+        }
+
+        ResetModSessionForFrontendExit(target == FrontendExitTarget::Title
+            ? "MenuExitToTitle"
+            : "MenuExitToCharacterSelect");
+        CloseTrainingMenuForFrontendExit();
+
+        LogOut(target == FrontendExitTarget::Title
+            ? "[FRONTEND] Requested exit to Title through battle cleanup"
+            : "[FRONTEND] Requested exit to Character Select through battle cleanup",
+            true);
+        return true;
+    }
+
+    if (screen == SCREEN_CHARACTER_SELECT && target == FrontendExitTarget::Title) {
+        if (!RequestScreenExitFlag(SCREEN_CHARACTER_SELECT)) {
+            LogOut("[FRONTEND] Failed to request Character Select exit", true);
+            return false;
+        }
+        CloseTrainingMenuForFrontendExit();
+        LogOut("[FRONTEND] Requested exit to Title through Character Select cleanup", true);
+        return true;
+    }
+
+    return false;
 }
 
 // Enhanced debug dump: log first 0x40 bytes (byte granularity)
