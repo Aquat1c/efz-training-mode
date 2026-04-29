@@ -6,7 +6,7 @@
 // For unknown/unsupported versions, these return 0 so callers can skip the operation safely.
 
 // Returns the correct normal-speed parameter for the patch toggler.
-// 1.02f/h/i use 3 for normal speed; older e/g keep the legacy parameter.
+// 1.02f subframe, 1.02g, and h/i use 3 for normal speed; 1.02e/classic-f use 1.
 int EFZ_PatchToggleUnfreezeParam();
 
 uintptr_t EFZ_RVA_PatchToggler();
@@ -32,8 +32,8 @@ uintptr_t EFZ_RVA_PracticeDispatcher();
 uintptr_t EFZ_Practice_PauseFlagOffset();    // 0xB4
 uintptr_t EFZ_Practice_StepFlagOffset();     // 0xAC
 uintptr_t EFZ_Practice_StepCounterOffset();  // 0xB0
-uintptr_t EFZ_Practice_PauseHotkeyOffset();  // 0x1D4 for 1.02f
-uintptr_t EFZ_Practice_StepHotkeyOffset();   // 0x1D8 for 1.02f
+uintptr_t EFZ_Practice_PauseHotkeyOffset();  // e/f/g/h: 0x1D4, i: 0x1D8
+uintptr_t EFZ_Practice_StepHotkeyOffset();   // e/f/g/h: 0x1D8, i: 0x1DC
 
 // Side selection and related Practice controller fields
 uintptr_t EFZ_Practice_LocalSideOffset();    // 0x680 for 1.02e/h, 0x688 for 1.02i

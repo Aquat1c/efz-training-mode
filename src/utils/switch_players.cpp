@@ -404,7 +404,7 @@ namespace {
         void unfreeze() {
             if (!ctx || !active) return;
             DebugLog::Write("--- UNFREEZE BEGIN ---");
-            int unfreezeParam = EFZ_PatchToggleUnfreezeParam(); // 1 for e, 3 for h/i
+            int unfreezeParam = EFZ_PatchToggleUnfreezeParam(); // version-specific normal-speed parameter
             std::ostringstream oss;
             oss << "Unfreezing game - ctx=0x" << std::hex << std::uppercase << (uintptr_t)ctx 
                 << " param=" << std::dec << unfreezeParam;
