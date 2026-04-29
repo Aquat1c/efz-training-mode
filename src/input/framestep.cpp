@@ -38,11 +38,12 @@ namespace {
     std::atomic<bool> s_vanillaHookStepActive{false};
     std::atomic<bool> s_vanillaStepInBattleUpdate{false};
     std::atomic<uint8_t> s_vanillaStepSpeed{0};
-    // Revival: substeps still to request after the currently armed step flag is consumed.
-    std::atomic<int> s_pendingRevivalSubsteps{0};
+    // Revival: native steps still to request after the currently armed step flag is consumed.
+    std::atomic<int> s_pendingRevivalNativeSteps{0};
     std::atomic<uint32_t> s_lastRevivalStepCounter{0};
     std::atomic<bool> s_haveRevivalStepCounter{false};
     std::atomic<bool> s_revivalHotkeyGateReady{false};
+    std::atomic<DWORD> s_revivalStepQueuedTick{0};
     std::atomic<DWORD> s_nextHotkeyGateAttemptTick{0};
     std::atomic<bool> s_loggedHotkeyGateUnavailable{false};
 
@@ -52,6 +53,7 @@ namespace {
     enum class Backend {
         Disabled,
         Vanilla,
+        RevivalNativeFrame,
         Revival102fSubframe
     };
 
@@ -61,9 +63,27 @@ namespace {
             return Backend::Vanilla;
         }
 
-        return IsEfzRevival102fSubframeBuild()
-            ? Backend::Revival102fSubframe
-            : Backend::Disabled;
+        if (IsEfzRevival102fSubframeBuild()) {
+            return Backend::Revival102fSubframe;
+        }
+        if (IsEfzRevivalVersionSupported()) {
+            return Backend::RevivalNativeFrame;
+        }
+        return Backend::Disabled;
+    }
+
+    bool IsRevivalBackend(Backend backend) {
+        return backend == Backend::RevivalNativeFrame
+            || backend == Backend::Revival102fSubframe;
+    }
+
+    bool UsesRevivalNativeStep(Backend backend) {
+        return backend == Backend::Revival102fSubframe;
+    }
+
+    bool UsesEngineStep(Backend backend) {
+        return backend == Backend::Vanilla
+            || backend == Backend::RevivalNativeFrame;
     }
 
     bool IsConfigEnabled() {
@@ -81,9 +101,18 @@ namespace {
     const char* BackendName(Backend backend) {
         switch (backend) {
         case Backend::Vanilla: return "vanilla";
+        case Backend::RevivalNativeFrame: return "Revival engine";
         case Backend::Revival102fSubframe: return "Revival 1.02f subframe";
         default: return "disabled";
         }
+    }
+
+    const char* DetectedRevivalName() {
+        EfzRevivalVersion version = GetEfzRevivalVersion();
+        if (version == EfzRevivalVersion::Revival102f) {
+            return EfzRevivalDllFlavorName(GetEfzRevivalDllFlavor());
+        }
+        return EfzRevivalVersionName(version);
     }
 
     bool IsValidFramestepMode() {
@@ -100,9 +129,10 @@ namespace {
     }
 
     void ResetRevivalStepTracking() {
-        s_pendingRevivalSubsteps.store(0);
+        s_pendingRevivalNativeSteps.store(0);
         s_inFrameStep.store(false);
         s_haveRevivalStepCounter.store(false);
+        s_revivalStepQueuedTick.store(0);
     }
 
     void ResetVanillaStepTracking() {
@@ -117,7 +147,7 @@ namespace {
         if (s_revivalHotkeyGateReady.load()) {
             return true;
         }
-        if (GetBackend() != Backend::Revival102fSubframe) {
+        if (!IsRevivalBackend(GetBackend())) {
             return false;
         }
 
@@ -236,17 +266,25 @@ namespace {
 
         constexpr uintptr_t RVA_GameModeArray = 0x00390110;
         
-        // Try slot 3 (battle context) + 0x0578
-        uintptr_t slot3 = efzBase + RVA_GameModeArray + 4 * 3;
-        uintptr_t basePtr = 0;
-        if (!SafeReadMemory(slot3, &basePtr, sizeof(basePtr)) || !basePtr) {
-            return 0;
-        }
+        struct Path { int slot; uintptr_t offset; };
+        const Path paths[] = {
+            { 3, 0x0578 },
+            { 1, 0x0F20 },
+            { 2, 0x09B8 },
+        };
 
-        uintptr_t addr = basePtr + 0x0578;
-        probe = 0xFF;
-        if (SafeReadMemory(addr, &probe, sizeof(probe)) && probe <= 3) {
-            return addr;
+        for (const auto& path : paths) {
+            uintptr_t slotAddr = efzBase + RVA_GameModeArray + 4u * static_cast<uintptr_t>(path.slot);
+            uintptr_t basePtr = 0;
+            if (!SafeReadMemory(slotAddr, &basePtr, sizeof(basePtr)) || !basePtr) {
+                continue;
+            }
+
+            uintptr_t addr = basePtr + path.offset;
+            probe = 0xFF;
+            if (SafeReadMemory(addr, &probe, sizeof(probe)) && probe <= 3) {
+                return addr;
+            }
         }
 
         return 0;
@@ -271,12 +309,12 @@ namespace {
             || s_inFrameStep.load()
             || s_visualPatchesApplied.load()
             || s_wePaused.load()
-            || s_pendingRevivalSubsteps.load() > 0
+            || s_pendingRevivalNativeSteps.load() > 0
             || g_FramestepStatusId != -1;
 
         s_stepRequested.store(false);
 
-        if (backend == Backend::Revival102fSubframe) {
+        if (UsesRevivalNativeStep(backend)) {
             if (s_wePaused.load() && PauseIntegration::IsPracticePaused()) {
                 PauseIntegration::SetPracticePausedForFramestep(false);
             }
@@ -352,7 +390,7 @@ namespace {
         return false;
     }
 
-    bool BeginVanillaHookStep() {
+    bool BeginEngineHookStep() {
         const int subframes = Framestep::GetSubframesPerStep();
         if (subframes <= 0) {
             return false;
@@ -370,7 +408,7 @@ namespace {
         s_vanillaStepSpeed.store(0);
 
         std::ostringstream oss;
-        oss << "[FRAMESTEP][VANILLA] Queued " << subframes
+        oss << "[FRAMESTEP][ENGINE] Queued " << subframes
             << " subframe(s) for next battle update";
         LogOut(oss.str(), true);
         return true;
@@ -383,7 +421,7 @@ namespace {
         if (!s_vanillaHookStepActive.load()
             || !s_inFrameStep.load()
             || !s_paused.load()
-            || GetBackend() != Backend::Vanilla
+            || !UsesEngineStep(GetBackend())
             || GetCurrentGameMode() != GameMode::Practice
             || IsNetplaySuspendActive()) {
             return;
@@ -435,7 +473,7 @@ namespace {
         s_stepCounter.fetch_add(1);
 
         std::ostringstream oss;
-        oss << "[FRAMESTEP][VANILLA] Battle update consumed "
+        oss << "[FRAMESTEP][ENGINE] Battle update consumed "
             << static_cast<int>(speed) << " subframe(s) (step "
             << s_stepCounter.load() << ")";
         LogOut(oss.str(), true);
@@ -443,7 +481,7 @@ namespace {
 
     bool ReadRevivalPracticeHotkey(uintptr_t offset, int& outKey) {
         outKey = 0;
-        if (!offset || GetBackend() != Backend::Revival102fSubframe) {
+        if (!offset || !IsRevivalBackend(GetBackend())) {
             return false;
         }
 
@@ -496,7 +534,7 @@ namespace {
         }
 
         if (s_inFrameStep.load()) {
-            int remaining = s_pendingRevivalSubsteps.load();
+            int remaining = s_pendingRevivalNativeSteps.load();
             if (observed > 1) {
                 remaining -= (observed - 1);
                 if (remaining < 0) {
@@ -505,14 +543,18 @@ namespace {
             }
 
             if (remaining > 0) {
-                s_pendingRevivalSubsteps.store(remaining - 1);
+                s_pendingRevivalNativeSteps.store(remaining - 1);
                 if (!PauseIntegration::RequestPracticeSubframeStep()) {
-                    s_pendingRevivalSubsteps.store(0);
+                    s_pendingRevivalNativeSteps.store(0);
                     s_inFrameStep.store(false);
+                    s_revivalStepQueuedTick.store(0);
+                } else {
+                    s_revivalStepQueuedTick.store(GetTickCount());
                 }
             } else {
-                s_pendingRevivalSubsteps.store(0);
+                s_pendingRevivalNativeSteps.store(0);
                 s_inFrameStep.store(false);
+                s_revivalStepQueuedTick.store(0);
             }
             return;
         }
@@ -522,7 +564,7 @@ namespace {
     }
 
     void OnPracticeStepAdvanced(uint32_t beforeCounter, uint32_t afterCounter) {
-        if (!IsRuntimeEnabled() || GetBackend() != Backend::Revival102fSubframe) {
+        if (!IsRuntimeEnabled() || !UsesRevivalNativeStep(GetBackend())) {
             return;
         }
 
@@ -539,13 +581,69 @@ namespace {
         HandleRevivalStepDelta(delta);
     }
 
-    bool QueueRevivalSubsteps(int subframes) {
-        if (subframes <= 0) {
+    bool RefreshRevivalStepCounterNow() {
+        uint32_t currentCounter = 0;
+        if (!PauseIntegration::ReadStepCounter(currentCounter)) {
+            return false;
+        }
+
+        if (!s_haveRevivalStepCounter.exchange(true)) {
+            s_lastRevivalStepCounter.store(currentCounter);
+            return false;
+        }
+
+        const uint32_t lastCounter = s_lastRevivalStepCounter.load();
+        if (currentCounter == lastCounter) {
+            return false;
+        }
+
+        s_lastRevivalStepCounter.store(currentCounter);
+        if (currentCounter < lastCounter) {
+            s_pendingRevivalNativeSteps.store(0);
+            s_inFrameStep.store(false);
+            s_revivalStepQueuedTick.store(0);
+            return true;
+        }
+
+        HandleRevivalStepDelta(currentCounter - lastCounter);
+        return true;
+    }
+
+    bool ClearStaleRevivalInFlightIfNeeded() {
+        RefreshRevivalStepCounterNow();
+        if (!s_inFrameStep.load()) {
+            return true;
+        }
+
+        const DWORD queuedTick = s_revivalStepQueuedTick.load();
+        const DWORD now = GetTickCount();
+        if (queuedTick == 0 || static_cast<LONG>(now - queuedTick) < 250) {
+            return false;
+        }
+
+        uint32_t currentCounter = 0;
+        if (PauseIntegration::ReadStepCounter(currentCounter)) {
+            s_haveRevivalStepCounter.store(true);
+            s_lastRevivalStepCounter.store(currentCounter);
+        }
+
+        s_pendingRevivalNativeSteps.store(0);
+        s_inFrameStep.store(false);
+        s_revivalStepQueuedTick.store(0);
+        LogOut("[FRAMESTEP][REVIVAL] Cleared stale pending native step", true);
+        return true;
+    }
+
+    bool QueueRevivalNativeSteps(int steps) {
+        if (steps <= 0) {
             return false;
         }
 
         // Native Revival has a single step-request bit. Matching that behavior
-        // avoids coalescing fast repeat presses into a later 3-subframe burst.
+        // avoids coalescing fast repeat presses into a later multi-step burst.
+        if (s_inFrameStep.load() && !ClearStaleRevivalInFlightIfNeeded()) {
+            return false;
+        }
         if (s_inFrameStep.exchange(true)) {
             return false;
         }
@@ -557,18 +655,31 @@ namespace {
         }
 
         s_stepCounter.fetch_add(1);
-        s_pendingRevivalSubsteps.store(subframes - 1);
+        s_pendingRevivalNativeSteps.store(steps - 1);
         if (PauseIntegration::RequestPracticeSubframeStep()) {
             s_inFrameStep.store(true);
+            s_revivalStepQueuedTick.store(GetTickCount());
             return true;
         }
 
-        s_pendingRevivalSubsteps.store(0);
+        s_pendingRevivalNativeSteps.store(0);
         if (s_stepCounter.load() > 0) {
             s_stepCounter.fetch_sub(1);
         }
         s_inFrameStep.store(false);
+        s_revivalStepQueuedTick.store(0);
         return false;
+    }
+
+    int GetRevivalNativeStepsPerRequest(Backend backend) {
+        if (backend == Backend::Revival102fSubframe) {
+            return Framestep::GetSubframesPerStep();
+        }
+        return 0;
+    }
+
+    const char* RevivalNativeStepUnit(Backend backend) {
+        return UsesRevivalNativeStep(backend) ? "subframe(s)" : "visual frame(s)";
     }
 
     void SyncRevivalFramestep() {
@@ -622,6 +733,9 @@ namespace Framestep {
         Backend backend = GetBackend();
         std::ostringstream oss;
         oss << "[FRAMESTEP] Initialized; backend=" << BackendName(backend);
+        if (IsRevivalBackend(backend)) {
+            oss << " version=" << DetectedRevivalName();
+        }
         if (backend == Backend::Disabled && GetModuleHandleA("EfzRevival.dll")) {
             oss << " (unsupported Revival framestep)";
         }
@@ -646,23 +760,14 @@ namespace Framestep {
             return;
         }
 
-        if (backend == Backend::Revival102fSubframe && ShouldSuppressNativeRevivalFramestep()) {
-            EnsureRevivalHotkeyGate();
-        }
-
         // Check if game window is active
         if (!g_efzWindowActive.load()) {
             return;
         }
 
-        // Check if ImGui menu is open (keys should be gated)
-        if (ImGuiImpl::IsVisible()) {
-            return;
-        }
-
         if (!IsValidFramestepMode()) {
             // Reset state if we leave valid mode
-            if (backend == Backend::Revival102fSubframe) {
+            if (UsesRevivalNativeStep(backend)) {
                 if (s_wePaused.load()) {
                     PauseIntegration::SetPracticePausedForFramestep(false);
                     s_wePaused.store(false);
@@ -685,7 +790,16 @@ namespace Framestep {
             return;
         }
 
-        if (backend == Backend::Revival102fSubframe) {
+        if (IsRevivalBackend(backend) && ShouldSuppressNativeRevivalFramestep()) {
+            EnsureRevivalHotkeyGate();
+        }
+
+        // Check if ImGui menu is open (keys should be gated)
+        if (ImGuiImpl::IsVisible()) {
+            return;
+        }
+
+        if (UsesRevivalNativeStep(backend)) {
             if (ShouldSuppressNativeRevivalFramestep()) {
                 EnsureRevivalHotkeyGate();
             }
@@ -703,7 +817,7 @@ namespace Framestep {
 
         // Process frame step if requested
         if (s_stepRequested.load() && s_paused.load()) {
-            if (EnsureFrontendControlHooksInstalled() && BeginVanillaHookStep()) {
+            if (EnsureFrontendControlHooksInstalled() && BeginEngineHookStep()) {
                 return;
             }
 
@@ -721,7 +835,7 @@ namespace Framestep {
 
     bool IsPaused() {
         if (!IsRuntimeEnabled()) return false;
-        if (GetBackend() == Backend::Revival102fSubframe) {
+        if (UsesRevivalNativeStep(GetBackend())) {
             if (ShouldSuppressNativeRevivalFramestep()) {
                 EnsureRevivalHotkeyGate();
             }
@@ -736,7 +850,7 @@ namespace Framestep {
 
     void ResetStepCounter() {
         s_stepCounter.store(0);
-        if (GetBackend() == Backend::Revival102fSubframe) {
+        if (UsesRevivalNativeStep(GetBackend())) {
             ResetRevivalStepTracking();
         } else {
             ResetVanillaStepTracking();
@@ -751,7 +865,7 @@ namespace Framestep {
         if (mode != GameMode::Practice) return;
 
         Backend backend = GetBackend();
-        if (backend == Backend::Revival102fSubframe) {
+        if (UsesRevivalNativeStep(backend)) {
             if (ShouldSuppressNativeRevivalFramestep()
                 && ConfiguredKeyMatchesRevivalNative(false)
                 && !EnsureRevivalHotkeyGate()) {
@@ -773,6 +887,13 @@ namespace Framestep {
             return;
         }
 
+        if (IsRevivalBackend(backend)
+            && ShouldSuppressNativeRevivalFramestep()
+            && ConfiguredKeyMatchesRevivalNative(false)
+            && !EnsureRevivalHotkeyGate()) {
+            LogHotkeyGateUnavailableOnce("pause");
+        }
+
         bool newState = !s_paused.load();
         s_paused.store(newState);
 
@@ -783,7 +904,7 @@ namespace Framestep {
                 s_visualPatchesApplied.store(true);
             }
             ResetStepCounter();
-            LogOut("[FRAMESTEP] Paused", true);
+            LogOut(backend == Backend::RevivalNativeFrame ? "[FRAMESTEP][REVIVAL] Engine-paused" : "[FRAMESTEP] Paused", true);
         } else {
             // Unpausing
             ResetVanillaStepTracking();
@@ -792,7 +913,7 @@ namespace Framestep {
                 s_visualPatchesApplied.store(false);
             }
             SetGamespeed(3);
-            LogOut("[FRAMESTEP] Unpaused", true);
+            LogOut(backend == Backend::RevivalNativeFrame ? "[FRAMESTEP][REVIVAL] Engine-unpaused" : "[FRAMESTEP] Unpaused", true);
         }
 
         // Clear any pending step request
@@ -806,7 +927,7 @@ namespace Framestep {
         if (mode != GameMode::Practice) return;
 
         Backend backend = GetBackend();
-        if (backend == Backend::Revival102fSubframe) {
+        if (UsesRevivalNativeStep(backend)) {
             if (ShouldSuppressNativeRevivalFramestep()
                 && ConfiguredKeyMatchesRevivalNative(true)
                 && !EnsureRevivalHotkeyGate()) {
@@ -821,13 +942,21 @@ namespace Framestep {
                 s_wePaused.store(true);
             }
 
-            const int subframes = GetSubframesPerStep();
-            if (QueueRevivalSubsteps(subframes)) {
+            const int nativeSteps = GetRevivalNativeStepsPerRequest(backend);
+            if (QueueRevivalNativeSteps(nativeSteps)) {
                 std::ostringstream oss;
-                oss << "[FRAMESTEP][REVIVAL] Queued " << subframes << " subframe(s)";
+                oss << "[FRAMESTEP][REVIVAL] Queued " << nativeSteps << " "
+                    << RevivalNativeStepUnit(backend);
                 LogOut(oss.str(), true);
             }
             return;
+        }
+
+        if (IsRevivalBackend(backend)
+            && ShouldSuppressNativeRevivalFramestep()
+            && ConfiguredKeyMatchesRevivalNative(true)
+            && !EnsureRevivalHotkeyGate()) {
+            LogHotkeyGateUnavailableOnce("step");
         }
 
         // Ensure we're paused
@@ -846,7 +975,7 @@ namespace Framestep {
 
     bool ShouldSuppressRevivalHotkey(void* practiceController, int key) {
         if (!practiceController || key == 0) return false;
-        if (!IsRuntimeEnabled() || GetBackend() != Backend::Revival102fSubframe) return false;
+        if (!IsRuntimeEnabled() || !IsRevivalBackend(GetBackend())) return false;
         if (!ShouldSuppressNativeRevivalFramestep()) return false;
         if (GetCurrentGameMode() != GameMode::Practice || IsNetplaySuspendActive()) return false;
 

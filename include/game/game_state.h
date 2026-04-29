@@ -30,6 +30,7 @@ enum class FrontendExitTarget : uint8_t {
 
 // Installs lightweight front-end safety hooks:
 // - suppresses EFZ's DirectInput ESC/F-key battle hotkeys while our menu is open
+// - redirects Practice ESC to the training menu instead of EFZ's character-select exit
 // - lets requested battle cleanup return to Title instead of Character Select
 bool EnsureFrontendControlHooksInstalled();
 

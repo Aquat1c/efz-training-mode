@@ -35,14 +35,15 @@ namespace PauseIntegration {
     bool IsPausedOrFrozen();
 
     // Frame-step support:
-    // Exposes the Practice step counter (+0xB0) which increments each subframe advance while paused.
+    // Exposes the Practice step counter (+0xB0) which increments each native Revival step while paused.
     // Returns true if we could read the counter; outCounter unchanged on failure.
     bool ReadStepCounter(uint32_t &outCounter);
     // Mirrors EfzRevival's official pause toggle state without calling the hotkey path.
     // Resets the Practice step counter like the official toggle.
     bool SetPracticePausedForFramestep(bool paused);
-    // Queues one EfzRevival subframe step by setting Practice pause (+0xB4)
-    // and step-request (+0xAC) flags. The Practice tick consumes this.
+    // Queues one EfzRevival native step by setting Practice pause (+0xB4)
+    // and step-request (+0xAC) flags. Current framestep code uses this only
+    // for the 1.02f subframe build; other Revival builds use engine stepping.
     bool RequestPracticeSubframeStep();
     // Returns true if (a) paused and (b) the internal step counter advanced since last call to this function.
     // Safe to call every tick; internally debounces using a static snapshot.

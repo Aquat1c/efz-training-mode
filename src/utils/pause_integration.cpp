@@ -777,7 +777,7 @@ namespace PauseIntegration {
 
     bool RequestPracticeSubframeStep() {
         if (!ResolvePracticeForFramestep("framestep step")) {
-            LogOut("[PAUSE][FRAMESTEP] Cannot request subframe step: Practice pointer unavailable", true);
+            LogOut("[PAUSE][FRAMESTEP] Cannot request native step: Practice pointer unavailable", true);
             return false;
         }
 
@@ -791,7 +791,7 @@ namespace PauseIntegration {
         bool ok = true;
         ok = WritePracticePauseFlag(true) && ok;
         ok = WritePracticeStepFlag(true) && ok;
-        LogOut(std::string("[PAUSE][FRAMESTEP] RequestPracticeSubframeStep -> ") + (ok ? "OK" : "FAIL"), true);
+        LogOut(std::string("[PAUSE][FRAMESTEP] RequestPracticeNativeStep -> ") + (ok ? "OK" : "FAIL"), true);
         return ok;
     }
 

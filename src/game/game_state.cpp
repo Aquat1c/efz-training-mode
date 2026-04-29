@@ -6,6 +6,7 @@
 #include "../include/utils/network.h"
 #include "../include/utils/pause_integration.h"
 #include "../include/utils/switch_players.h"
+#include "../include/gui/gui.h"
 #include "../include/gui/imgui_impl.h"
 #include "frame_monitor.h"
 #include "../include/core/logger.h"
@@ -45,6 +46,7 @@ namespace {
     std::atomic<BattleUpdateCallback> s_afterBattleUpdate{nullptr};
     std::atomic<int> s_pendingExitOverride{static_cast<int>(PendingExitOverride::None)};
     std::atomic<int> s_pendingExitOverrideFrames{0};
+    std::atomic<bool> s_practiceEscHeld{false};
 
     uint8_t ReadRawScreenStateNoDebounce() {
         uintptr_t base = GetEFZBase();
@@ -94,6 +96,29 @@ namespace {
         ResetPracticeMatchSessionState(reason);
     }
 
+    bool IsPracticeBattleHotkeyContext() {
+        if (ReadRawScreenStateNoDebounce() != SCREEN_BATTLE) {
+            return false;
+        }
+        if (GetCurrentGameMode() != GameMode::Practice) {
+            return false;
+        }
+        if (IsNetplaySuspendActive() || IsNetplaySessionActive()) {
+            return false;
+        }
+        return true;
+    }
+
+    bool PollEscapeIfGameActive(bool& outEscDown) {
+        outEscDown = false;
+        UpdateWindowActiveState();
+        if (!g_efzWindowActive.load(std::memory_order_relaxed)) {
+            return false;
+        }
+        outEscDown = (GetAsyncKeyState(VK_ESCAPE) & 0x8000) != 0;
+        return true;
+    }
+
     char __fastcall HookedBattleUpdate(void* battleContext, void* /*edx*/) {
         if (auto callback = s_beforeBattleUpdate.load(std::memory_order_relaxed)) {
             callback(battleContext);
@@ -131,9 +156,39 @@ namespace {
     }
 
     int __fastcall HookedBattleHotkeys(void* battleContext, void* /*edx*/) {
+        const bool practiceBattle = IsPracticeBattleHotkeyContext();
+        bool escDown = false;
+        const bool gameActive = practiceBattle && PollEscapeIfGameActive(escDown);
+
         if (ImGuiImpl::IsVisible()) {
+            if (practiceBattle) {
+                s_practiceEscHeld.store(gameActive && escDown, std::memory_order_relaxed);
+            } else {
+                s_practiceEscHeld.store(false, std::memory_order_relaxed);
+            }
             return 0;
         }
+
+        if (!practiceBattle) {
+            s_practiceEscHeld.store(false, std::memory_order_relaxed);
+            return oBattleHotkeys ? oBattleHotkeys(battleContext) : 0;
+        }
+
+        if (!gameActive) {
+            s_practiceEscHeld.store(false, std::memory_order_relaxed);
+            return 0;
+        }
+
+        if (escDown) {
+            const bool wasHeld = s_practiceEscHeld.exchange(true, std::memory_order_acq_rel);
+            if (!wasHeld) {
+                LogOut("[FRONTEND] Practice ESC intercepted; opening training menu", true);
+                OpenMenu();
+            }
+            return 0;
+        }
+
+        s_practiceEscHeld.store(false, std::memory_order_relaxed);
         return oBattleHotkeys ? oBattleHotkeys(battleContext) : 0;
     }
 }
