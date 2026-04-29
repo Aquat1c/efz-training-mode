@@ -131,6 +131,47 @@ CurState SampleCurrent() {
     return cur;
 }
 
+// Hold-repeat for vertical / horizontal nav. After an initial press fires
+// once, repeats every `kRepeatIntervalFrames` once `kRepeatDelayFrames` has
+// elapsed since the last press transition. Tuned around 64 visual frames per
+// second so 18 / 4 ≈ 280 ms initial delay then ~62 ms between repeats.
+constexpr unsigned int kRepeatDelayFrames    = 18;
+constexpr unsigned int kRepeatIntervalFrames = 4;
+
+struct HoldState {
+    unsigned int heldFrames = 0;
+    unsigned int framesSinceFire = 0;
+};
+HoldState g_holdUp;
+HoldState g_holdDown;
+HoldState g_holdLeft;
+HoldState g_holdRight;
+
+bool TickHoldRepeat(HoldState& s, bool nowPressed, bool risingEdge) {
+    if (!nowPressed) {
+        s.heldFrames = 0;
+        s.framesSinceFire = 0;
+        return false;
+    }
+    if (risingEdge) {
+        // Initial tap: fire immediately, restart timers.
+        s.heldFrames = 1;
+        s.framesSinceFire = 0;
+        return true;
+    }
+    s.heldFrames++;
+    if (s.heldFrames < kRepeatDelayFrames) {
+        s.framesSinceFire++;
+        return false;
+    }
+    s.framesSinceFire++;
+    if (s.framesSinceFire >= kRepeatIntervalFrames) {
+        s.framesSinceFire = 0;
+        return true;
+    }
+    return false;
+}
+
 const Edges& SampleEdges() {
     const unsigned int f = ImGui::GetFrameCount();
     if (f == g_cachedFrame) return g_cachedEdges;
@@ -138,10 +179,15 @@ const Edges& SampleEdges() {
 
     CurState cur = SampleCurrent();
 
-    g_cachedEdges.up       = cur.up       && !g_prev.up;
-    g_cachedEdges.down     = cur.down     && !g_prev.down;
-    g_cachedEdges.left     = cur.left     && !g_prev.left;
-    g_cachedEdges.right    = cur.right    && !g_prev.right;
+    const bool risingUp    = cur.up    && !g_prev.up;
+    const bool risingDown  = cur.down  && !g_prev.down;
+    const bool risingLeft  = cur.left  && !g_prev.left;
+    const bool risingRight = cur.right && !g_prev.right;
+
+    g_cachedEdges.up       = TickHoldRepeat(g_holdUp,    cur.up,    risingUp);
+    g_cachedEdges.down     = TickHoldRepeat(g_holdDown,  cur.down,  risingDown);
+    g_cachedEdges.left     = TickHoldRepeat(g_holdLeft,  cur.left,  risingLeft);
+    g_cachedEdges.right    = TickHoldRepeat(g_holdRight, cur.right, risingRight);
     g_cachedEdges.activate = cur.activate && !g_prev.activate;
     g_cachedEdges.back     = cur.back     && !g_prev.back;
     g_cachedEdges.switchPlayer = cur.switchPlayer && !g_prev.switchPlayer;
@@ -181,6 +227,12 @@ void ResetEdges() {
     g_prev = SampleCurrent();
     g_cachedEdges = Edges{};   // zero: no edges on the open-frame
     g_cachedFrame = ImGui::GetFrameCount();
+    // Wipe the hold-repeat windows so a key already held when the menu opens
+    // doesn't trigger continuous nav until it's released and re-pressed.
+    g_holdUp = HoldState{};
+    g_holdDown = HoldState{};
+    g_holdLeft = HoldState{};
+    g_holdRight = HoldState{};
 
     LogInputDetail(
         "ResetEdges held U=%d D=%d L=%d R=%d A=%d B=%d SW=%d | bindings Up=%s Down=%s Left=%s Right=%s A=%s B=%s D=%s",

@@ -18,15 +18,25 @@ namespace CustomMenu::Screens {
 
 namespace {
 
+// Info rows are focusable so keyboard nav can scroll through paragraph text
+// (Help pages especially). Activate is a no-op on Info (the switch in
+// HandleRowsInput falls through to `default: break;`). Headers and Spacers
+// remain non-focusable so the cursor doesn't park on a section divider.
 bool RowIsFocusable(const Row& r) {
     switch (r.kind) {
         case RowKind::Header:
-        case RowKind::Info:
         case RowKind::Spacer:
             return false;
         default:
             return true;
     }
+}
+
+// Whether a focused row should receive any cursor/highlight visual treatment
+// at all. Info rows are focusable for navigation but we keep their look
+// understated so the rest of the page doesn't look cluttered.
+bool RowDrawsFocusChrome(const Row& r) {
+    return r.kind != RowKind::Info;
 }
 
 bool RowHidden(const Row& r) {
@@ -906,13 +916,24 @@ void RenderList(ImDrawList* dl, const ScreenLayout& layout,
                     static_cast<float>((lines.size() > 0) ? lines.size() - 1 : 0) * kInfoLineGap;
                 const float py0 = y + (std::max)(0.0f, (rowH - textBlockH) * 0.5f);
 
+                // Subtle left-edge cursor when this Info is the focused row,
+                // so keyboard scrolling has a visible anchor without making
+                // body paragraphs noisy. Active text colour brightens too.
+                if (focused) {
+                    dl->AddRectFilled(
+                        ImVec2(x + 2.0f,            py0 - 1.0f),
+                        ImVec2(x + 4.0f,            py0 + textBlockH + 1.0f),
+                        kTextActive);
+                }
+                const ImU32 textColor = focused ? kTextActive : kTextInactive;
+
                 const float px = x + kInfoTextX;
                 for (size_t li = 0; li < lines.size(); ++li) {
                     const float py = py0 + static_cast<float>(li) * (bPx + kInfoLineGap);
                     Layout::DrawString(dl, bFont, bPx, px + 1.0f, py + 1.0f,
                                        IM_COL32(0, 0, 0, 190), lines[li].c_str());
                     Layout::DrawString(dl, bFont, bPx, px, py,
-                                       kTextInactive, lines[li].c_str());
+                                       textColor, lines[li].c_str());
                 }
                 break;
             }

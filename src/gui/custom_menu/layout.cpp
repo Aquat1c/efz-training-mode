@@ -213,10 +213,25 @@ void DrawHeader(ImDrawList* dl, float x, float y, float w, const char* text) {
     ImFont* bFont = BodyFont();
     const float bPx = PxFromFont(bFont);
 
+    // Strip background + rules (unchanged from before).
     DrawMenuStrip(dl, x, y, w, kRowHeight, true);
 
+    // Left-edge accent: a 3px bright vertical bar that anchors the header
+    // visually to the left edge of the panel. The strip already extends
+    // past `x` by kPanelPadX on both sides, so painting at `x - kPanelPadX`
+    // sits flush with the panel border.
+    const float stripLeft = x - kPanelPadX;
+    dl->AddRectFilled(
+        ImVec2(stripLeft,        y + 1.0f),
+        ImVec2(stripLeft + 3.0f, y + kRowHeight - 1.0f),
+        kTextActive);
+
+    // Text now starts just past the accent bar (a few extra pixels of
+    // breathing room) instead of the standard row indent. Headers visually
+    // hang off the left edge instead of floating in the middle.
+    const float headerTextX = stripLeft + 8.0f;
     const float textY = CenterTextY(y, kRowHeight, bPx);
-    DrawString(dl, bFont, bPx, x + kRowPadX, textY, kTextHeader, text);
+    DrawString(dl, bFont, bPx, headerTextX, textY, kTextHeader, text);
 }
 
 void DrawRowSelectedBg(ImDrawList* dl, float x, float y, float w, float h) {
