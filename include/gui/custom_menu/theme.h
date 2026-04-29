@@ -21,6 +21,8 @@ constexpr ImU32 kTextInactive    = IM_COL32(150, 150, 150, 235);
 constexpr ImU32 kTextHeader      = IM_COL32(235, 235, 235, 255);
 constexpr ImU32 kTextDisabled    = IM_COL32( 96,  96,  96, 255);
 constexpr ImU32 kTextStatus      = IM_COL32(170, 170, 170, 255);
+constexpr ImU32 kInfoFill        = IM_COL32(  4,  16,  18,  126);
+constexpr ImU32 kInfoAccent      = IM_COL32(105, 235, 235,  150);
 constexpr ImU32 kSelectedFill    = IM_COL32( 30, 155, 190,  105);
 constexpr ImU32 kSelectedLine    = IM_COL32(105, 235, 235,  190);
 constexpr ImU32 kDisabledFill    = IM_COL32(0,   0,   0,   120);
@@ -43,7 +45,7 @@ constexpr float kPanelPadY       = 6.0f;
 // ===== Row metrics =====
 // Row strips stretch the full panel width (minus panel padding).
 constexpr float kRowHeight       = 22.0f;
-constexpr float kRowPadX         = 7.0f;       // inner horizontal padding
+constexpr float kRowPadX         = 18.0f;      // inner horizontal padding
 constexpr float kSectionPadY     = 4.0f;       // extra gap above a section header
 constexpr float kRuleInsetX      = 0.0f;       // EFZ rows/separators span the full strip
 

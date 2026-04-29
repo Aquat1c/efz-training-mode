@@ -4,6 +4,7 @@
 #include "../include/gui/custom_menu/layout.h"
 #include "../include/gui/custom_menu/input.h"
 #include "../include/gui/custom_menu/screens.h"
+#include "../include/gui/custom_menu/sound.h"
 #include "../include/gui/value_lock_state.h"
 #include "../include/gui/imgui_impl.h"
 #include "../include/gui/imgui_gui.h"
@@ -20,6 +21,7 @@
 #include <cstdio>
 #include <cstring>
 #include <cstdlib>
+#include <cmath>
 #include <string>
 
 namespace CustomMenu {
@@ -68,9 +70,10 @@ enum Pane {
     PANE_SETTINGS_GENERAL,      // SETTINGS / GENERAL
     PANE_SETTINGS_HOTKEYS,      // SETTINGS / HOTKEYS
     PANE_SETTINGS_DEBUG,        // SETTINGS / DEBUG
+    PANE_HELP_START,            // HELP / START
+    PANE_HELP_GUIDE,            // HELP / GUIDE
+    PANE_HELP_RESOURCES,        // HELP / RESOURCES
     PANE_HELP_ABOUT,            // HELP / ABOUT
-    PANE_HELP_HOTKEYS,          // HELP / HOTKEYS
-    PANE_HELP_CONTROLS,         // HELP / CONTROLS
     PANE_COUNT
 };
 
@@ -94,26 +97,27 @@ struct TopTabInfo {
     int subCount;
 };
 
-static const SubTab kSubs_Main[]     = { {"VALUES",   PANE_VALUES},
+static const SubTab kSubs_Main[]     = { {"MENU",     PANE_MENU},
+                                         {"VALUES",   PANE_VALUES},
                                          {"OPPONENT", PANE_OPPONENT},
-                                         {"OPTIONS",  PANE_OPTIONS},
-                                         {"MENU",     PANE_MENU} };
+                                         {"OPTIONS",  PANE_OPTIONS} };
 static const SubTab kSubs_Auto[]     = { {"TRIGGERS", PANE_TRIGGERS},
                                          {"MACROS",   PANE_MACROS} };
 static const SubTab kSubs_Chars[]    = { {"CHARS",    PANE_CHARS} };
 static const SubTab kSubs_Settings[] = { {"GENERAL",  PANE_SETTINGS_GENERAL},
                                          {"HOTKEYS",  PANE_SETTINGS_HOTKEYS},
                                          {"DEBUG",    PANE_SETTINGS_DEBUG} };
-static const SubTab kSubs_Help[]     = { {"ABOUT",    PANE_HELP_ABOUT},
-                                         {"HOTKEYS",  PANE_HELP_HOTKEYS},
-                                         {"CONTROLS", PANE_HELP_CONTROLS} };
+static const SubTab kSubs_Help[]     = { {"START",     PANE_HELP_START},
+                                         {"GUIDE",     PANE_HELP_GUIDE},
+                                         {"RESOURCES", PANE_HELP_RESOURCES},
+                                         {"ABOUT",     PANE_HELP_ABOUT} };
 
 static const TopTabInfo kTopTabs[TT_COUNT] = {
     {"MAIN",     kSubs_Main,     4},
     {"AUTO",     kSubs_Auto,     2},
     {"CHARS",    kSubs_Chars,    1},
     {"SETTINGS", kSubs_Settings, 3},
-    {"HELP",     kSubs_Help,     3},
+    {"HELP",     kSubs_Help,     4},
 };
 
 inline int ClampTopTab(int t) {
@@ -152,11 +156,18 @@ void LogMenuDetail(const char* fmt, ...) {
 const char* ScreenName(int pane) { return PaneName(pane); }
 
 // ===== Shell / edit / focus state =====
+enum class FocusRegion {
+    Content = 0,
+    SubTabs,
+    TopTabs,
+};
+
 struct ShellState {
     int  activeTopTab = TT_MAIN;
     int  subIdxPerTop[TT_COUNT] = { 0, 0, 0, 0, 0 };
     int  focusPerPane[PANE_COUNT] = {};
     Screens::ScrollState scrollPerPane[PANE_COUNT];
+    FocusRegion focusRegion = FocusRegion::Content;
 
     bool menuWasVisible = false;
     bool lastWasCustom  = false;
@@ -173,6 +184,81 @@ inline int ActivePane() {
     const TopTabInfo& t = kTopTabs[ClampTopTab(g_shell.activeTopTab)];
     const int s = ClampSubTab(g_shell.activeTopTab, g_shell.subIdxPerTop[g_shell.activeTopTab]);
     return t.subs[s].pane;
+}
+
+bool ActiveTopHasSubTabs() {
+    return kTopTabs[ClampTopTab(g_shell.activeTopTab)].subCount > 1;
+}
+
+void SetFocusRegion(FocusRegion region, const char* reason) {
+    if (g_shell.focusRegion == region) return;
+    LogMenuDetail("FocusRegion %d -> %d (%s)",
+        static_cast<int>(g_shell.focusRegion),
+        static_cast<int>(region),
+        reason ? reason : "n/a");
+    g_shell.focusRegion = region;
+    if (!reason || !strstr(reason, "mouse")) {
+        Sound::PlayCursor();
+    }
+}
+
+void MoveFocusAboveContent(const char* reason) {
+    SetFocusRegion(ActiveTopHasSubTabs() ? FocusRegion::SubTabs : FocusRegion::TopTabs,
+                   reason ? reason : "content nav up");
+}
+
+// EFZ's replay menu animates submenu transitions by accumulating a
+// degree-like value from 0..180 and using cosine for the slide offset.
+// We mirror that curve here so panes ease in with the same snappy slowdown.
+struct AnimState {
+    DWORD openTick = 0;
+    DWORD paneTick = 0;
+    int   paneDir = 1;
+};
+AnimState g_anim;
+
+constexpr float kOpenAnimMs = 180.0f;
+constexpr float kPaneAnimMs = 170.0f;
+constexpr float kPaneSlidePx = 72.0f;
+constexpr float kOpenSlidePx = 18.0f;
+constexpr double kDegToRadDivisor = 57.29579143313326;
+
+float Clamp01(float v) {
+    if (v < 0.0f) return 0.0f;
+    if (v > 1.0f) return 1.0f;
+    return v;
+}
+
+float AnimT(DWORD startTick, float durationMs) {
+    if (startTick == 0 || durationMs <= 0.0f) return 1.0f;
+    const DWORD now = GetTickCount();
+    return Clamp01(static_cast<float>(now - startTick) / durationMs);
+}
+
+float EfzCosEase(float t01) {
+    const double degrees = 180.0 * Clamp01(t01);
+    return static_cast<float>((1.0 - std::cos(degrees / kDegToRadDivisor)) * 0.5);
+}
+
+void StartOpenAnimation() {
+    g_anim.openTick = GetTickCount();
+    g_anim.paneTick = g_anim.openTick;
+    g_anim.paneDir = 1;
+}
+
+void StartPaneAnimation(int dir) {
+    g_anim.paneTick = GetTickCount();
+    g_anim.paneDir = (dir < 0) ? -1 : 1;
+}
+
+float CurrentPaneOffsetX() {
+    const float ease = EfzCosEase(AnimT(g_anim.paneTick, kPaneAnimMs));
+    return (1.0f - ease) * kPaneSlidePx * static_cast<float>(g_anim.paneDir);
+}
+
+float CurrentOpenOffsetY() {
+    const float ease = EfzCosEase(AnimT(g_anim.openTick, kOpenAnimMs));
+    return (1.0f - ease) * -kOpenSlidePx;
 }
 
 enum class MainMode {
@@ -419,6 +505,7 @@ void ResetMainState(const char* reason) {
     g_main.row = 0;
     g_main.player = 0;
     g_main.mode = MainMode::Browse;
+    g_shell.focusRegion = FocusRegion::Content;
     LogMenuDetail("Main reset (%s) focus=%s mode=%s",
         reason ? reason : "n/a",
         DescribeFocus(PANE_VALUES, CurFocus()).c_str(),
@@ -429,18 +516,26 @@ void SetActiveTopTab(int newTop, const char* reason) {
     newTop = ClampTopTab(newTop);
     if (g_shell.activeTopTab == newTop) return;
 
+    const int oldTop = g_shell.activeTopTab;
     SetMainMode(MainMode::Browse, "top-tab change");
     LogMenuDetail("TopTab %s -> %s (%s)",
         kTopTabs[g_shell.activeTopTab].label,
         kTopTabs[newTop].label,
         reason ? reason : "n/a");
+    Screens::ResetSubmenus();
     g_shell.activeTopTab = newTop;
+    if (g_shell.focusRegion == FocusRegion::SubTabs && !ActiveTopHasSubTabs()) {
+        g_shell.focusRegion = FocusRegion::TopTabs;
+    }
+    Sound::PlayCursor();
+    StartPaneAnimation((newTop >= oldTop) ? 1 : -1);
 }
 
 void SetActiveSubTab(int top, int newSub, const char* reason) {
     top = ClampTopTab(top);
     newSub = ClampSubTab(top, newSub);
     if (g_shell.subIdxPerTop[top] == newSub) return;
+    const int oldSub = g_shell.subIdxPerTop[top];
     SetMainMode(MainMode::Browse, "sub-tab change");
     LogMenuDetail("SubTab %s/%s -> %s/%s (%s)",
         kTopTabs[top].label,
@@ -448,7 +543,10 @@ void SetActiveSubTab(int top, int newSub, const char* reason) {
         kTopTabs[top].label,
         kTopTabs[top].subs[newSub].label,
         reason ? reason : "n/a");
+    Screens::ResetSubmenus();
     g_shell.subIdxPerTop[top] = newSub;
+    Sound::PlayCursor();
+    StartPaneAnimation((newSub >= oldSub) ? 1 : -1);
 }
 
 void SetFocus(int newFocus, const char* reason) {
@@ -468,6 +566,9 @@ void SetFocus(int newFocus, const char* reason) {
     DecodeFocus(newFocus, row, player);
     g_main.row = row;
     g_main.player = player;
+    if (!reason || !strstr(reason, "mouse")) {
+        Sound::PlayCursor();
+    }
 }
 
 void FormatNumericRow(const ValueRow& r, char* buf, size_t bufSz) {
@@ -656,6 +757,17 @@ struct MainLayout {
     int    subRectCount;
 };
 
+void ApplyContentAnimation(MainLayout& L) {
+    const float x = CurrentPaneOffsetX();
+    const float y = CurrentOpenOffsetY();
+    L.colLeftX += x;
+    L.colRightX += x;
+    L.dataStartY += y;
+    for (float& rowY : L.rowY) {
+        rowY += y;
+    }
+}
+
 MainLayout ComputeMainLayout(float contentTopY) {
     using namespace Theme;
     MainLayout L{};
@@ -751,7 +863,7 @@ void SetActiveTopTab(int newTop, const char* reason);
 void SetActiveSubTab(int top, int newSub, const char* reason);
 
 bool HandleTabBarClick(const MainLayout& L) {
-    if (Screens::IsPopupActive() || Screens::IsKeybindActive()) return false;
+    if (Screens::IsPopupActive() || Screens::IsKeybindActive() || Screens::IsTextEditorActive()) return false;
     if (!Input::MouseLeftEdge()) return false;
 
     // Top tabs
@@ -779,6 +891,73 @@ bool HandleTabBarClick(const MainLayout& L) {
         if (g_shell.subIdxPerTop[top] != i) {
             CancelEditMode();
             SetActiveSubTab(top, i, "sub tab click");
+        }
+        return true;
+    }
+
+    return false;
+}
+
+void MaybeMouseReturnFocusToContent(const MainLayout& L, bool tabClickConsumed) {
+    if (g_shell.focusRegion == FocusRegion::Content) return;
+    if (tabClickConsumed) return;
+    if (!g_mouse.movedThisFrame && !Input::MouseLeftEdge()) return;
+
+    const auto m = Input::GetMouse();
+    if (!m.valid) return;
+    if (m.y >= L.dataStartY && m.y <= Theme::PanelBottomRight().y - 40.0f) {
+        SetFocusRegion(FocusRegion::Content, "mouse over content");
+    }
+}
+
+bool HandleFocusedTabInput() {
+    if (Screens::IsPopupActive() || Screens::IsKeybindActive() ||
+        Screens::IsSubmenuActive() || Screens::IsTextEditorActive()) {
+        return false;
+    }
+    if (g_shell.focusRegion == FocusRegion::Content) return false;
+
+    const bool navUp = Input::NavUp();
+    const bool navDown = Input::NavDown();
+    const bool navLeft = Input::NavLeft();
+    const bool navRight = Input::NavRight();
+    const bool activate = Input::Activate();
+    const bool back = Input::Back();
+    const bool any = navUp || navDown || navLeft || navRight || activate || back;
+    if (!any) return false;
+
+    if (back) {
+        LogMenuDetail("Back pressed -> close from tab focus");
+        ImGuiImpl::ToggleVisibility();
+        return true;
+    }
+
+    if (g_shell.focusRegion == FocusRegion::TopTabs) {
+        if (navLeft) {
+            SetActiveTopTab((g_shell.activeTopTab + TT_COUNT - 1) % TT_COUNT, "top tab focus left");
+        } else if (navRight) {
+            SetActiveTopTab((g_shell.activeTopTab + 1) % TT_COUNT, "top tab focus right");
+        } else if (navDown || activate) {
+            SetFocusRegion(ActiveTopHasSubTabs() ? FocusRegion::SubTabs : FocusRegion::Content,
+                           navDown ? "top tab focus down" : "top tab activate");
+        }
+        return true;
+    }
+
+    if (g_shell.focusRegion == FocusRegion::SubTabs) {
+        const int top = ClampTopTab(g_shell.activeTopTab);
+        const int subCount = kTopTabs[top].subCount;
+        if (navLeft && subCount > 1) {
+            SetActiveSubTab(top, (g_shell.subIdxPerTop[top] + subCount - 1) % subCount,
+                            "sub tab focus left");
+        } else if (navRight && subCount > 1) {
+            SetActiveSubTab(top, (g_shell.subIdxPerTop[top] + 1) % subCount,
+                            "sub tab focus right");
+        } else if (navUp) {
+            SetFocusRegion(FocusRegion::TopTabs, "sub tab focus up");
+        } else if (navDown || activate) {
+            SetFocusRegion(FocusRegion::Content,
+                           navDown ? "sub tab focus down" : "sub tab activate");
         }
         return true;
     }
@@ -872,7 +1051,7 @@ void RenderTabBar(const MainLayout& L) {
         dl, L.panelTL.x, L.tabBarY, Theme::kPanelW,
         labels, TT_COUNT,
         /*activeIdx=*/g_shell.activeTopTab,
-        /*focusedIdx=*/-1);
+        /*focusedIdx=*/g_shell.focusRegion == FocusRegion::TopTabs ? g_shell.activeTopTab : -1);
 
     // Sub-tab strip (only rendered when the current top tab has >1 sub).
     const int top = ClampTopTab(g_shell.activeTopTab);
@@ -885,7 +1064,7 @@ void RenderTabBar(const MainLayout& L) {
             dl, L.panelTL.x, L.subBarY, Theme::kPanelW,
             subLabels, n,
             /*activeIdx=*/g_shell.subIdxPerTop[top],
-            /*focusedIdx=*/-1);
+            /*focusedIdx=*/g_shell.focusRegion == FocusRegion::SubTabs ? g_shell.subIdxPerTop[top] : -1);
     }
 }
 
@@ -920,8 +1099,14 @@ void HandleMainScreenInput(const MainLayout& L, const GuiValueLocks::State& lock
         return;
     }
 
-    // Mouse hover → focus (if mouse moved this frame)
-    if (g_mouse.movedThisFrame) {
+    const bool keyboardOrPadEdge = Input::NavUp() || Input::NavDown() ||
+                                   Input::NavLeft() || Input::NavRight() ||
+                                   Input::Activate() || Input::Back() ||
+                                   Input::SwitchPlayer();
+
+    // Mouse hover -> focus (if mouse moved this frame). Keyboard/gamepad
+    // edges win for the frame, so a stationary cursor cannot steal focus.
+    if (!keyboardOrPadEdge && g_mouse.movedThisFrame) {
         for (int i = 0; i < kColRowCount; ++i) {
             if (Input::MouseHovering(L.colLeftX, L.rowY[i], L.colW, Theme::kRowHeight)) {
                 SetMainMode(MainMode::Browse, "mouse hover");
@@ -937,7 +1122,7 @@ void HandleMainScreenInput(const MainLayout& L, const GuiValueLocks::State& lock
     }
 
     // Mouse click — route per-rect
-    if (Input::MouseLeftEdge()) {
+    if (!keyboardOrPadEdge && Input::MouseLeftEdge()) {
         // Data rows in either column
         for (int i = 0; i < kColRowCount; ++i) {
             int hit = -1;
@@ -963,10 +1148,12 @@ void HandleMainScreenInput(const MainLayout& L, const GuiValueLocks::State& lock
                 if (hit == kICColorP1Idx) ImGuiGui::guiState.localData.p1BlueIC = !ImGuiGui::guiState.localData.p1BlueIC;
                 else                       ImGuiGui::guiState.localData.p2BlueIC = !ImGuiGui::guiState.localData.p2BlueIC;
                 SetMainMode(MainMode::Adjust, "mouse click toggle");
+                Sound::PlayCursor();
                 LogRowValueChange(hit, "Click toggle");
                 ImGuiGui::ApplyImGuiSettings();
             } else if (RowIsNumeric(hit)) {
                 SetMainMode(MainMode::Adjust, "mouse click edit");
+                Sound::PlayDecision();
                 EnterEditMode(hit);
             }
             return;
@@ -1019,10 +1206,12 @@ void HandleMainScreenInput(const MainLayout& L, const GuiValueLocks::State& lock
                 return;
             }
             SetMainMode(MainMode::Adjust, "browse activate");
+            Sound::PlayDecision();
             return;
         }
         if (back) {
             LogMenuDetail("Back pressed -> close from %s", ScreenName(ActivePane()));
+            Sound::PlayDecision();
             ImGuiImpl::ToggleVisibility();
             return;
         }
@@ -1039,6 +1228,7 @@ void HandleMainScreenInput(const MainLayout& L, const GuiValueLocks::State& lock
         if (activate)         { blue = !blue; changed = true; }
         if (changed) {
             LogRowValueChange(focus, "Adjust color");
+            Sound::PlayCursor();
             ImGuiGui::ApplyImGuiSettings();
         }
     } else if (RowIsNumeric(focus)) {
@@ -1053,9 +1243,11 @@ void HandleMainScreenInput(const MainLayout& L, const GuiValueLocks::State& lock
                 ? ((navLeft || navRight) ? "Adjust mixed" : "Adjust big")
                 : (ShiftHeld() ? "Adjust small (shift)" : "Adjust small");
             LogRowValueChange(focus, reason);
+            Sound::PlayCursor();
             ImGuiGui::ApplyImGuiSettings();
         }
         if (activate) {
+            Sound::PlayDecision();
             EnterEditMode(focus);
             return;
         }
@@ -1063,6 +1255,7 @@ void HandleMainScreenInput(const MainLayout& L, const GuiValueLocks::State& lock
 
     if (back) {
         SetMainMode(MainMode::Browse, "adjust back");
+        Sound::PlayDecision();
     }
 }
 
@@ -1082,6 +1275,8 @@ void MaybeRefreshOnOpen() {
         g_shell.keybindWasActive = false;
         g_mouse.lastX = g_mouse.lastY = -1.0f;
         g_mouse.movedThisFrame = false;
+        StartOpenAnimation();
+        Screens::ResetSubmenus();
         // Snap physical-input edge detector so currently-held keys (the
         // menu-open press, a gamepad button still down from gameplay) do
         // not register as a rising edge on the first input-handling pass.
@@ -1096,6 +1291,8 @@ void MaybeRefreshOnOpen() {
         ResetMainState("switch to custom");
         CancelEditMode();
         g_shell.keybindWasActive = false;
+        StartOpenAnimation();
+        Screens::ResetSubmenus();
         Input::ResetEdges();
         LogMenuDetail("Switched to custom menu while visible; pane=%s focus=%s mode=%s",
             ScreenName(ActivePane()),
@@ -1106,6 +1303,8 @@ void MaybeRefreshOnOpen() {
             LogMenuDetail("Closed custom menu");
         }
         CancelEditMode();
+        Screens::ResetSubmenus();
+        Screens::ResetTextEditor();
         g_shell.keybindWasActive = false;
     }
 
@@ -1135,16 +1334,18 @@ void Render() {
     UpdateMouseState();
 
     // Global menu-key close — same hotkey used to open.
-    if (!Screens::IsKeybindActive() && MenuKeyEdge()) {
+    if (!Screens::IsKeybindActive() && !Screens::IsTextEditorActive() && MenuKeyEdge()) {
         CancelEditMode();
         LogMenuDetail("Closing menu via menu hotkey from %s", ScreenName(ActivePane()));
+        Sound::PlayDecision();
         ImGuiImpl::ToggleVisibility();
         return;
     }
 
     // Global tab cycling (top + sub). Blocked while editing a numeric value
     // OR while a dropdown popup is open (popup eats input on its own).
-    if (!g_edit.active && !Screens::IsPopupActive() && !Screens::IsKeybindActive()) {
+    if (!g_edit.active && !Screens::IsPopupActive() && !Screens::IsKeybindActive() &&
+        !Screens::IsSubmenuActive() && !Screens::IsTextEditorActive()) {
         if (Input::TopTabPrev()) {
             CancelEditMode();
             SetActiveTopTab((g_shell.activeTopTab + TT_COUNT - 1) % TT_COUNT, "top-tab prev");
@@ -1182,22 +1383,40 @@ void Render() {
     MainLayout L = ComputeMainLayout(origin.y);
     ComputeTabRects(L);
     const bool tabClickConsumed = HandleTabBarClick(L);
+    MaybeMouseReturnFocusToContent(L, tabClickConsumed);
+    const bool tabFocusConsumed = HandleFocusedTabInput();
+    if (!ImGuiImpl::IsVisible()) return;
 
     RenderTabBar(L);
 
     const int activePane = ActivePane();
+    MainLayout contentL = L;
+    ApplyContentAnimation(contentL);
 
     if (activePane == PANE_VALUES) {
-        if (!tabClickConsumed) HandleMainScreenInput(L, valueLocks);
-        RenderMainScreen(L, valueLocks);
+        bool valuesInputEnabled = !tabClickConsumed &&
+                                  g_shell.focusRegion == FocusRegion::Content &&
+                                  !tabFocusConsumed;
+        if (valuesInputEnabled &&
+            g_main.mode == MainMode::Browse &&
+            g_main.row == 0 &&
+            Input::NavUp()) {
+            MoveFocusAboveContent("values top nav up");
+            valuesInputEnabled = false;
+        }
+        if (valuesInputEnabled) HandleMainScreenInput(contentL, valueLocks);
+        RenderMainScreen(contentL, valueLocks);
     } else {
         // Secondary list-based panes share the same render/input driver.
         Screens::ScreenLayout sl{};
         sl.panelX         = L.panelTL.x;
         sl.contentX       = L.panelTL.x + Theme::kPanelPadX;
         sl.contentW       = Theme::kPanelW - Theme::kPanelPadX * 2.0f;
-        sl.contentTopY    = L.dataStartY + Theme::kRowHeight + Theme::kSectionPadY;
+        sl.contentTopY    = L.dataStartY;
         sl.contentBottomY = Theme::PanelBottomRight().y - 40.0f;
+        sl.animOffsetX    = CurrentPaneOffsetX();
+        sl.animOffsetY    = CurrentOpenOffsetY();
+        sl.inputEnabled   = g_shell.focusRegion == FocusRegion::Content && !tabFocusConsumed;
 
         Screens::RefreshSecondaryScreenMirrors();
 
@@ -1216,14 +1435,18 @@ void Render() {
                 case PANE_SETTINGS_GENERAL:   Screens::TickSettingsGeneral(dl, sl, focus, scroll, backEdge); break;
                 case PANE_SETTINGS_HOTKEYS:   Screens::TickSettingsHotkeys(dl, sl, focus, scroll, backEdge); break;
                 case PANE_SETTINGS_DEBUG:     Screens::TickSettingsDebug  (dl, sl, focus, scroll, backEdge); break;
+                case PANE_HELP_START:         Screens::TickHelpStart      (dl, sl, focus, scroll, backEdge); break;
+                case PANE_HELP_GUIDE:         Screens::TickHelpGuide      (dl, sl, focus, scroll, backEdge); break;
+                case PANE_HELP_RESOURCES:     Screens::TickHelpResources  (dl, sl, focus, scroll, backEdge); break;
                 case PANE_HELP_ABOUT:         Screens::TickHelpAbout      (dl, sl, focus, scroll, backEdge); break;
-                case PANE_HELP_HOTKEYS:       Screens::TickHelpHotkeys    (dl, sl, focus, scroll, backEdge); break;
-                case PANE_HELP_CONTROLS:      Screens::TickHelpControls   (dl, sl, focus, scroll, backEdge); break;
                 default: break;
             }
         };
 
         dispatch();
+        if (g_shell.focusRegion == FocusRegion::Content && Screens::ConsumeFocusAboveRequest()) {
+            MoveFocusAboveContent("list top nav up");
+        }
 
         // Draw modal overlays last so they sit on top of rows.
         Screens::TickPopupIfOpen(dl, sl);
@@ -1233,7 +1456,7 @@ void Render() {
         }
         g_shell.keybindWasActive = Screens::IsKeybindActive();
 
-        if (!tabClickConsumed && backEdge) {
+        if (!tabClickConsumed && g_shell.focusRegion == FocusRegion::Content && backEdge) {
             LogMenuDetail("Back pressed -> close from %s", ScreenName(activePane));
             ImGuiImpl::ToggleVisibility();
             return;
@@ -1251,6 +1474,14 @@ void Render() {
         hint = "RELEASE KEYS THEN PRESS NEW HOTKEY   ESC CANCEL";
     } else if (Screens::IsPopupActive()) {
         hint = "UP/DOWN MOVE   ENTER SELECT   ESC CANCEL";
+    } else if (Screens::IsTextEditorActive()) {
+        hint = "EDIT MACRO TEXT   CTRL+V PASTE   APPLY/DONE BUTTONS   ESC CLOSE";
+    } else if (g_shell.focusRegion == FocusRegion::TopTabs) {
+        hint = "L/R CHANGE TAB   DOWN ENTER SUBTABS   ESC CLOSE";
+    } else if (g_shell.focusRegion == FocusRegion::SubTabs) {
+        hint = "L/R CHANGE SUBTAB   UP TABS   DOWN ENTER OPTIONS   ESC CLOSE";
+    } else if (Screens::IsSubmenuActive()) {
+        hint = "UP/DOWN MOVE   ENTER SELECT   ESC BACK";
     } else if (ActivePane() == PANE_VALUES) {
         const int focus = CurFocus();
         const bool focusLocked = RowIsLocked(valueLocks, focus);
