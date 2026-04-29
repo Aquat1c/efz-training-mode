@@ -29,12 +29,14 @@ enum class RowKind : uint8_t {
     ActionStrength, // paired choices; Activate opens primary picker, Shift+L/R adjusts secondary
     Dropdown,     // int index into choices[]; Activate opens modal popup
     MaskPicker,   // uint32 bitmask; Activate opens multi-select popup
+    Submenu,      // drill into another list page; Back returns to the parent
     Action,       // fire callback on Activate; optional right-side value
 };
 
 struct Row;
 using RowValueFormatter = const char* (*)(const Row& row);
 using PairedChoiceChange = void (*)(int* primary, int* secondary);
+using RowListBuilder = Row* (*)(int& count);
 
 struct Row {
     RowKind kind;
@@ -77,6 +79,10 @@ struct Row {
 
     // Optional right-side display string for Action rows (e.g. a current value).
     const char* (*actionValue)();
+
+    // Submenu rows open a nested list built every frame by submenuBuilder.
+    RowListBuilder submenuBuilder;
+    const char* submenuTitle;
 
     // Optional formatter/callbacks for paired-choice rows.
     RowValueFormatter valueFormatter;
@@ -142,6 +148,10 @@ Row MaskPickerRow(const char* label, unsigned int* mask,
                   void (*onChange)() = nullptr,
                   bool (*isDisabled)() = nullptr,
                   bool (*isHidden)() = nullptr);
+Row Submenu(const char* label, const char* title, RowListBuilder builder,
+            const char* (*valueFn)() = nullptr,
+            bool (*isDisabled)() = nullptr,
+            bool (*isHidden)() = nullptr);
 Row Action(const char* label, void (*fn)(),
            const char* (*valueFn)() = nullptr,
            bool (*isDisabled)() = nullptr,
@@ -155,6 +165,9 @@ struct ScreenLayout {
     float contentW;
     float contentTopY;    // Y below the tab bar where list content begins
     float contentBottomY; // Y above the hint line; limits visible rows
+    float animOffsetX;    // EFZ-style pane slide offset; input/render share it
+    float animOffsetY;
+    bool  inputEnabled;   // false when keyboard focus is on top/sub tabs
 };
 
 // Per-screen scrollable state. The renderer owns one of these per screen and
@@ -211,15 +224,21 @@ void TickSettingsHotkeys(ImDrawList* dl, const ScreenLayout& layout, int& focus,
 void TickSettingsDebug  (ImDrawList* dl, const ScreenLayout& layout, int& focus, ScrollState& scroll, bool& backEdge);
 
 // HELP top-tab sub-panes:
-void TickHelpAbout   (ImDrawList* dl, const ScreenLayout& layout, int& focus, ScrollState& scroll, bool& backEdge);
-void TickHelpHotkeys (ImDrawList* dl, const ScreenLayout& layout, int& focus, ScrollState& scroll, bool& backEdge);
-void TickHelpControls(ImDrawList* dl, const ScreenLayout& layout, int& focus, ScrollState& scroll, bool& backEdge);
+void TickHelpStart    (ImDrawList* dl, const ScreenLayout& layout, int& focus, ScrollState& scroll, bool& backEdge);
+void TickHelpGuide    (ImDrawList* dl, const ScreenLayout& layout, int& focus, ScrollState& scroll, bool& backEdge);
+void TickHelpResources(ImDrawList* dl, const ScreenLayout& layout, int& focus, ScrollState& scroll, bool& backEdge);
+void TickHelpAbout    (ImDrawList* dl, const ScreenLayout& layout, int& focus, ScrollState& scroll, bool& backEdge);
 
 // Popup (modal dropdown) state — exposed so the renderer can draw it last
 // (so it overlays the screen) and query whether it's currently consuming
 // input.
 bool IsPopupActive();
 bool TickPopupIfOpen(ImDrawList* dl, const ScreenLayout& layout);
+bool IsSubmenuActive();
+void ResetSubmenus();
+bool IsTextEditorActive();
+void ResetTextEditor();
+bool ConsumeFocusAboveRequest();
 
 // Hotkey-binding overlay. While active, every keypress is captured and
 // written into the active config setting. The renderer should call

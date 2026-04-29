@@ -33,9 +33,11 @@
 #include "../3rdparty/imgui/imgui.h"
 
 #include <windows.h>
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 #include <string>
+#include <vector>
 
 namespace CustomMenu::Screens {
 
@@ -119,6 +121,14 @@ void OnUseCustomMenu()   { PersistBool ("General", "useCustomMenu",          Mut
 void OnUiScale()         { PersistFloat("General", "uiScale",                MutableSettings().uiScale); }
 void OnFADuration()      { PersistFloat("General", "frameAdvantageDisplayDuration", MutableSettings().frameAdvantageDisplayDuration); }
 void OnShowCombo()       { PersistBool ("General", "showComboStatisticsOverlay",    MutableSettings().showComboStatisticsOverlay); }
+void OnComboDetailRow()  { PersistBool ("General", "comboOverlayShowDetailRow",     MutableSettings().comboOverlayShowDetailRow); }
+void OnComboDetailSrc()  { PersistInt  ("General", "comboOverlayDetailRowSource",   MutableSettings().comboOverlayDetailRowSource); }
+void OnComboFinal()      { PersistBool ("General", "comboOverlayShowFinalSummary",  MutableSettings().comboOverlayShowFinalSummary); }
+void OnComboDuration()   { PersistFloat("General", "comboOverlayDisplayDuration",   MutableSettings().comboOverlayDisplayDuration); }
+void OnComboHideMenu()   { PersistBool ("General", "comboOverlayHideWhenImGuiVisible", MutableSettings().comboOverlayHideWhenImGuiVisible); }
+void OnComboResume()     { PersistBool ("General", "comboOverlayResumeAfterImGui",  MutableSettings().comboOverlayResumeAfterImGui); }
+void OnComboRfMult()     { PersistBool ("General", "comboOverlayShowRfMultiplier",  MutableSettings().comboOverlayShowRfMultiplier); }
+void OnComboRawScale()   { PersistBool ("General", "comboOverlayShowRawScale",      MutableSettings().comboOverlayShowRawScale); }
 void OnCrRequire()       { PersistBool ("General", "crRequireBothNeutral",   MutableSettings().crRequireBothNeutral); }
 void OnCrDelay()         { PersistInt  ("General", "crBothNeutralDelayMs",   MutableSettings().crBothNeutralDelayMs); }
 void OnAutoFixHp()       { PersistBool ("General", "autoFixHPOnNeutral",     MutableSettings().autoFixHPOnNeutral); }
@@ -434,17 +444,28 @@ void OnRestrictPractice() {
     PersistBool("General", "restrictToPracticeMode", MutableSettings().restrictToPracticeMode);
 }
 
-Row* BuildSettingsGeneralRows(int& count) {
-    static Row s_rows[32];
+const char* ValInterfaceSettings() { return MutableSettings().useCustomMenu ? "CUSTOM" : "IMGUI"; }
+const char* ValRecoverySettings()  { return MutableSettings().crRequireBothNeutral ? "NEUTRAL" : "ANY"; }
+const char* ValPracticeSettings()  { return MutableSettings().restrictToPracticeMode ? "PRACTICE" : "ANY MODE"; }
+
+Row* BuildSettingsInterfaceRows(int& count) {
+    static Row s_rows[16];
     int n = 0;
     auto& s = MutableSettings();
 
     s_rows[n++] = Header("INTERFACE");
     s_rows[n++] = Toggle    ("USE CUSTOM MENU",        &s.useCustomMenu,       OnUseCustomMenu);
     s_rows[n++] = FloatNum  ("UI SCALE",               &s.uiScale,      0.70f, 1.50f, 0.05f, 0.10f, "%.2f", OnUiScale);
-    s_rows[n++] = ChoicesRow("UI FONT (IMGUI MENU)",   &s.uiFontMode,   kUiFontChoices, 2, OnUiFont);
+    s_rows[n++] = ChoicesRow("UI FONT (ADVANCED MENU)", &s.uiFontMode,   kUiFontChoices, 2, OnUiFont);
     s_rows[n++] = Toggle    ("PRACTICE OVERLAY HINT",  &s.showPracticeEntryHint, OnPracticeHint);
-    s_rows[n++] = Toggle    ("RESTRICT TO PRACTICE",   &s.restrictToPracticeMode, OnRestrictPractice);
+    count = n;
+    return s_rows;
+}
+
+Row* BuildSettingsRecoveryRows(int& count) {
+    static Row s_rows[16];
+    int n = 0;
+    auto& s = MutableSettings();
 
     s_rows[n++] = Header("RECOVERY");
     s_rows[n++] = Toggle ("CR: BOTH NEUTRAL REQD",     &s.crRequireBothNeutral, OnCrRequire);
@@ -452,10 +473,30 @@ Row* BuildSettingsGeneralRows(int& count) {
     s_rows[n++] = Toggle ("AUTO-FIX HP<=0",            &s.autoFixHPOnNeutral,   OnAutoFixHp);
     s_rows[n++] = Toggle ("FREEZE RF AFTER CR",        &s.freezeRFAfterContRec, OnFreezeRfAfterCr);
     s_rows[n++] = Toggle ("FREEZE RF ONLY NEUTRAL",    &s.freezeRFOnlyWhenNeutral, OnFreezeRfNeutral);
+    count = n;
+    return s_rows;
+}
+
+Row* BuildSettingsPracticeRows(int& count) {
+    static Row s_rows[8];
+    int n = 0;
+    auto& s = MutableSettings();
 
     s_rows[n++] = Header("PRACTICE");
     s_rows[n++] = IntNum ("AUTO-BLOCK TIMEOUT (MS)",   &s.autoBlockNeutralTimeoutMs, 0, 60000, 500, 5000, OnAutoBlockTimeout);
+    s_rows[n++] = Toggle ("RESTRICT TO PRACTICE",      &s.restrictToPracticeMode, OnRestrictPractice);
+    count = n;
+    return s_rows;
+}
 
+Row* BuildSettingsGeneralRows(int& count) {
+    static Row s_rows[16];
+    int n = 0;
+
+    s_rows[n++] = Header("GENERAL MENUS");
+    s_rows[n++] = Submenu("INTERFACE", "INTERFACE", BuildSettingsInterfaceRows, ValInterfaceSettings);
+    s_rows[n++] = Submenu("RECOVERY",  "RECOVERY",  BuildSettingsRecoveryRows,  ValRecoverySettings);
+    s_rows[n++] = Submenu("PRACTICE",  "PRACTICE",  BuildSettingsPracticeRows,  ValPracticeSettings);
     s_rows[n++] = Spacer();
     s_rows[n++] = Action ("SAVE ALL TO DISK",          SaveSettingsToDisk);
 
@@ -483,7 +524,7 @@ void BindSavePosition()   { auto& s = MutableSettings(); BindHotkey("SAVE POSITI
 void BindToggleStats()    { auto& s = MutableSettings(); BindHotkey("TOGGLE STATS",    &s.toggleTitleKey,        "ToggleTitleKey"); }
 void BindResetCounter()   { auto& s = MutableSettings(); BindHotkey("RESET COUNTER",   &s.resetFrameCounterKey,  "ResetFrameCounterKey"); }
 void BindHelp()           { auto& s = MutableSettings(); BindHotkey("HELP",            &s.helpKey,               "HelpKey"); }
-void BindToggleImGui()    { auto& s = MutableSettings(); BindHotkey("TOGGLE IMGUI",    &s.toggleImGuiKey,        "ToggleImGuiKey"); }
+void BindToggleImGui()    { auto& s = MutableSettings(); BindHotkey("TOGGLE OVERLAY",  &s.toggleImGuiKey,        "ToggleImGuiKey"); }
 void BindSwitchPlayers()  { auto& s = MutableSettings(); BindHotkey("SWITCH PLAYERS",  &s.switchPlayersKey,      "SwitchPlayersKey"); }
 void BindMacroRecord()    { auto& s = MutableSettings(); BindHotkey("MACRO RECORD",    &s.macroRecordKey,        "MacroRecordKey"); }
 void BindMacroPlay()      { auto& s = MutableSettings(); BindHotkey("MACRO PLAY",      &s.macroPlayKey,          "MacroPlayKey"); }
@@ -524,10 +565,13 @@ bool SwapCustomKeyDisabled() {
 
 void RefreshHotkeyStrings() {}
 
-Row* BuildSettingsHotkeysRows(int& count) {
-    static Row s_rows[40];
+const char* ValHotkeyGameplay() { return "8 KEYS"; }
+const char* ValHotkeyMacros()   { return "3 KEYS"; }
+const char* ValHotkeyMenu()     { return "5 KEYS"; }
+
+Row* BuildHotkeysGameplayRows(int& count) {
+    static Row s_rows[16];
     int n = 0;
-    auto& s = MutableSettings();
 
     s_rows[n++] = Header("GAMEPLAY HOTKEYS");
     s_rows[n++] = Action("OPEN MENU",       BindOpenMenu,       ValOpenMenu);
@@ -536,28 +580,59 @@ Row* BuildSettingsHotkeysRows(int& count) {
     s_rows[n++] = Action("TOGGLE STATS",    BindToggleStats,    ValToggleStats);
     s_rows[n++] = Action("RESET COUNTER",   BindResetCounter,   ValResetCounter);
     s_rows[n++] = Action("HELP",            BindHelp,           ValHelp);
-    s_rows[n++] = Action("TOGGLE IMGUI",    BindToggleImGui,    ValToggleImGui);
+    s_rows[n++] = Action("TOGGLE OVERLAY",  BindToggleImGui,    ValToggleImGui);
     s_rows[n++] = Action("SWITCH PLAYERS",  BindSwitchPlayers,  ValSwitchPlayers);
+    count = n;
+    return s_rows;
+}
 
-    s_rows[n++] = Spacer();
+Row* BuildHotkeysMacroRows(int& count) {
+    static Row s_rows[8];
+    int n = 0;
+
     s_rows[n++] = Header("MACROS");
     s_rows[n++] = Action("MACRO RECORD",    BindMacroRecord,    ValMacroRecord);
     s_rows[n++] = Action("MACRO PLAY",      BindMacroPlay,      ValMacroPlay);
     s_rows[n++] = Action("MACRO NEXT SLOT", BindMacroSlot,      ValMacroSlot);
+    count = n;
+    return s_rows;
+}
 
-    s_rows[n++] = Spacer();
+Row* BuildHotkeysMenuRows(int& count) {
+    static Row s_rows[10];
+    int n = 0;
+
     s_rows[n++] = Header("MENU CONTROL");
     s_rows[n++] = Action("UI ACCEPT",       BindUiAccept,       ValUiAccept);
     s_rows[n++] = Action("UI REFRESH",      BindUiRefresh,      ValUiRefresh);
     s_rows[n++] = Action("UI EXIT",         BindUiExit,         ValUiExit);
     s_rows[n++] = Action("FRAMESTEP PAUSE", BindFramestepPause, ValFramestepPause);
     s_rows[n++] = Action("FRAMESTEP STEP",  BindFramestepStep,  ValFramestepStep);
+    count = n;
+    return s_rows;
+}
 
-    s_rows[n++] = Spacer();
+Row* BuildHotkeysSwapRows(int& count) {
+    static Row s_rows[8];
+    int n = 0;
+    auto& s = MutableSettings();
+
     s_rows[n++] = Header("SWAP POSITIONS");
     s_rows[n++] = Toggle("CUSTOM SWAP KEY", &s.swapCustomEnabled, OnSwapCustomEnabled);
     s_rows[n++] = Action("SWAP CUSTOM KEY", BindSwapCustom, ValSwapCustom, SwapCustomKeyDisabled);
+    count = n;
+    return s_rows;
+}
 
+Row* BuildSettingsHotkeysRows(int& count) {
+    static Row s_rows[16];
+    int n = 0;
+
+    s_rows[n++] = Header("HOTKEY MENUS");
+    s_rows[n++] = Submenu("GAMEPLAY",      "GAMEPLAY HOTKEYS", BuildHotkeysGameplayRows, ValHotkeyGameplay);
+    s_rows[n++] = Submenu("MACROS",        "MACRO HOTKEYS",    BuildHotkeysMacroRows,    ValHotkeyMacros);
+    s_rows[n++] = Submenu("MENU CONTROL",  "MENU CONTROL",     BuildHotkeysMenuRows,     ValHotkeyMenu);
+    s_rows[n++] = Submenu("SWAP POSITIONS","SWAP POSITIONS",   BuildHotkeysSwapRows,     ValSwapEnabled);
     s_rows[n++] = Spacer();
     s_rows[n++] = Action("SAVE ALL TO DISK", SaveSettingsToDisk);
     count = n;
@@ -608,8 +683,19 @@ void RunP2FinalMemory() {
     ExecuteFinalMemory(2, d.p2CharID);
 }
 
-Row* BuildSettingsDebugRows(int& count) {
-    static Row s_rows[32];
+void OnFrameBarPersist();
+
+const char* ValDebugLogging() { return MutableSettings().detailedLogging ? "DETAILED" : "NORMAL"; }
+const char* ValDebugOverlays() { return MutableSettings().showFrameBar ? "FRAMEBAR" : "TOOLS"; }
+const char* ValDebugBgm() {
+    static char s_buf[24];
+    _snprintf_s(s_buf, sizeof(s_buf), _TRUNCATE, "SLOT %d", g_bgmSlot);
+    return s_buf;
+}
+const char* ValFinalMemoryTools() { return "RUN"; }
+
+Row* BuildDebugLoggingRows(int& count) {
+    static Row s_rows[16];
     int n = 0;
     auto& s = MutableSettings();
 
@@ -623,25 +709,57 @@ Row* BuildSettingsDebugRows(int& count) {
         [](){ PersistBool("General", "enableCharacterSelectLogger", MutableSettings().enableCharacterSelectLogger); });
     s_rows[n++] = Toggle ("LOG CONTROLLER INPUT", &g_mirrorPadInputLog,    OnPadInputLog);
     s_rows[n++] = Toggle ("LOG DETAILED FA",      &g_mirrorDeepFA,         OnDeepFA);
+    count = n;
+    return s_rows;
+}
+
+Row* BuildDebugOverlayRows(int& count) {
+    static Row s_rows[12];
+    int n = 0;
+    auto& s = MutableSettings();
 
     s_rows[n++] = Header("OVERLAYS");
-    s_rows[n++] = Toggle ("FRAME BAR",                 &s.showFrameBar,
-        [](){ PersistBool("General", "showFrameBar", MutableSettings().showFrameBar);
-              FrameBar::g_enabled.store(MutableSettings().showFrameBar); });
+    s_rows[n++] = Toggle ("FRAME BAR",                 &s.showFrameBar,            OnFrameBarPersist);
     s_rows[n++] = Toggle ("OVERLAY DEBUG BORDERS",     &g_mirrorOverlayBorders,       OnOverlayBorders);
     s_rows[n++] = Toggle ("RG DEBUG TOASTS",           &g_mirrorRGToasts,             OnRGToasts);
-    s_rows[n++] = Toggle ("COMBO STATS OVERLAY",       &s.showComboStatisticsOverlay, OnShowCombo);
+    s_rows[n++] = Toggle ("COMBO STATISTICS",          &s.showComboStatisticsOverlay, OnShowCombo);
     s_rows[n++] = FloatNum("FA DURATION (SEC)",        &s.frameAdvantageDisplayDuration, 0.5f, 30.0f, 0.1f, 1.0f, "%.1f", OnFADuration);
+    count = n;
+    return s_rows;
+}
+
+Row* BuildDebugBgmRows(int& count) {
+    static Row s_rows[8];
+    int n = 0;
 
     s_rows[n++] = Header("BGM");
     s_rows[n++] = IntNum ("BGM SLOT",                  &g_bgmSlot, 0, 999, 1, 10);
     s_rows[n++] = Action ("PLAY BGM",                  RunPlayBGM);
     s_rows[n++] = Action ("STOP BGM",                  RunStopBGM);
+    count = n;
+    return s_rows;
+}
+
+Row* BuildDebugFinalMemoryRows(int& count) {
+    static Row s_rows[8];
+    int n = 0;
 
     s_rows[n++] = Header("FINAL MEMORY");
     s_rows[n++] = Action ("RUN P1 FINAL MEMORY",       RunP1FinalMemory);
     s_rows[n++] = Action ("RUN P2 FINAL MEMORY",       RunP2FinalMemory);
+    count = n;
+    return s_rows;
+}
 
+Row* BuildSettingsDebugRows(int& count) {
+    static Row s_rows[16];
+    int n = 0;
+
+    s_rows[n++] = Header("DEBUG MENUS");
+    s_rows[n++] = Submenu("LOGGING",      "DEBUG LOGGING", BuildDebugLoggingRows,     ValDebugLogging);
+    s_rows[n++] = Submenu("OVERLAYS",     "DEBUG OVERLAYS", BuildDebugOverlayRows,     ValDebugOverlays);
+    s_rows[n++] = Submenu("BGM",          "BGM",            BuildDebugBgmRows,         ValDebugBgm);
+    s_rows[n++] = Submenu("FINAL MEMORY", "FINAL MEMORY",   BuildDebugFinalMemoryRows, ValFinalMemoryTools);
     s_rows[n++] = Spacer();
     s_rows[n++] = Action ("SAVE ALL TO DISK",          SaveSettingsToDisk);
     count = n;
@@ -651,91 +769,477 @@ Row* BuildSettingsDebugRows(int& count) {
 // ===== HELP screen =====
 char g_helpVersionStr[64];
 char g_helpBuildStr[64];
-char g_helpHotkeyOpenMenu[48];
-char g_helpHotkeyTeleport[48];
-char g_helpHotkeySavePos[48];
-char g_helpHotkeyMacroRec[48];
-char g_helpHotkeyMacroPlay[48];
-char g_helpHotkeySwitch[48];
+char g_helpOpenHelp[96];
+char g_helpToggleOverlay[128];
+char g_helpSavePos[128];
+char g_helpLoadPos[128];
+char g_helpSwapPos[128];
+char g_helpToggleStats[96];
+char g_helpSwitchPlayers[128];
+char g_helpUiFooter[128];
+char g_helpMacroRecord[128];
+char g_helpMacroPlay[128];
+char g_helpMacroSlot[96];
+char g_helpFaDuration[80];
+char g_helpDetectedVersion[96];
+char g_helpP1WikiLabel[96];
+char g_helpP2WikiLabel[96];
+char g_helpP1WikiUrl[192];
+char g_helpP2WikiUrl[192];
 
 void RefreshHelpStrings() {
     const auto& s = Config::GetSettings();
     _snprintf_s(g_helpVersionStr, sizeof(g_helpVersionStr), _TRUNCATE,
-                "EFZ TRAINING MODE v%s", EFZ_TRAINING_MODE_VERSION);
+                "EFZ Training Mode v%s", EFZ_TRAINING_MODE_VERSION);
     _snprintf_s(g_helpBuildStr, sizeof(g_helpBuildStr), _TRUNCATE,
-                "BUILT %s %s", __DATE__, __TIME__);
-    _snprintf_s(g_helpHotkeyOpenMenu, sizeof(g_helpHotkeyOpenMenu), _TRUNCATE,
-                "OPEN MENU    %s", Config::GetKeyName(s.configMenuKey).c_str());
-    _snprintf_s(g_helpHotkeyTeleport, sizeof(g_helpHotkeyTeleport), _TRUNCATE,
-                "TELEPORT     %s", Config::GetKeyName(s.teleportKey).c_str());
-    _snprintf_s(g_helpHotkeySavePos, sizeof(g_helpHotkeySavePos), _TRUNCATE,
-                "SAVE POS     %s", Config::GetKeyName(s.recordKey).c_str());
-    _snprintf_s(g_helpHotkeyMacroRec, sizeof(g_helpHotkeyMacroRec), _TRUNCATE,
-                "MACRO REC    %s", Config::GetKeyName(s.macroRecordKey).c_str());
-    _snprintf_s(g_helpHotkeyMacroPlay, sizeof(g_helpHotkeyMacroPlay), _TRUNCATE,
-                "MACRO PLAY   %s", Config::GetKeyName(s.macroPlayKey).c_str());
-    _snprintf_s(g_helpHotkeySwitch, sizeof(g_helpHotkeySwitch), _TRUNCATE,
-                "SWITCH PLAYERS %s", Config::GetKeyName(s.switchPlayersKey).c_str());
+                "Build %s %s", EFZ_TRAINING_MODE_BUILD_DATE, EFZ_TRAINING_MODE_BUILD_TIME);
+    _snprintf_s(g_helpOpenHelp, sizeof(g_helpOpenHelp), _TRUNCATE,
+                "Open this Help page: %s.", Config::GetKeyName(s.helpKey).c_str());
+    _snprintf_s(g_helpToggleOverlay, sizeof(g_helpToggleOverlay), _TRUNCATE,
+                "Toggle the overlay: %s (Controller: %s).",
+                Config::GetKeyName(s.toggleImGuiKey).c_str(),
+                Config::GetGamepadButtonName(s.gpToggleMenuButton).c_str());
+    _snprintf_s(g_helpSavePos, sizeof(g_helpSavePos), _TRUNCATE,
+                "Save the current position: %s (Controller: %s).",
+                Config::GetKeyName(s.recordKey).c_str(),
+                Config::GetGamepadButtonName(s.gpSavePositionButton).c_str());
+    _snprintf_s(g_helpLoadPos, sizeof(g_helpLoadPos), _TRUNCATE,
+                "Load a saved or directional position: %s (Controller: %s).",
+                Config::GetKeyName(s.teleportKey).c_str(),
+                Config::GetGamepadButtonName(s.gpTeleportButton).c_str());
+    _snprintf_s(g_helpSwapPos, sizeof(g_helpSwapPos), _TRUNCATE,
+                "Swap positions: hold Load + D, or press %s on controller.",
+                Config::GetGamepadButtonName(s.gpSwapPositionsButton).c_str());
+    _snprintf_s(g_helpToggleStats, sizeof(g_helpToggleStats), _TRUNCATE,
+                "Toggle the stats display: %s.", Config::GetKeyName(s.toggleTitleKey).c_str());
+    _snprintf_s(g_helpSwitchPlayers, sizeof(g_helpSwitchPlayers), _TRUNCATE,
+                "Switch player control: %s (Controller: %s).",
+                Config::GetKeyName(s.switchPlayersKey).c_str(),
+                Config::GetGamepadButtonName(s.gpSwitchPlayersButton).c_str());
+    _snprintf_s(g_helpUiFooter, sizeof(g_helpUiFooter), _TRUNCATE,
+                "Footer shortcuts: Apply=%s, Refresh=%s, Exit=%s.",
+                Config::GetKeyName(s.uiAcceptKey).c_str(),
+                Config::GetKeyName(s.uiRefreshKey).c_str(),
+                Config::GetKeyName(s.uiExitKey).c_str());
+    _snprintf_s(g_helpMacroRecord, sizeof(g_helpMacroRecord), _TRUNCATE,
+                "Record macro: %s (Controller: %s).",
+                Config::GetKeyName(s.macroRecordKey).c_str(),
+                Config::GetGamepadButtonName(s.gpMacroRecordButton).c_str());
+    _snprintf_s(g_helpMacroPlay, sizeof(g_helpMacroPlay), _TRUNCATE,
+                "Play macro: %s (Controller: %s).",
+                Config::GetKeyName(s.macroPlayKey).c_str(),
+                Config::GetGamepadButtonName(s.gpMacroPlayButton).c_str());
+    _snprintf_s(g_helpMacroSlot, sizeof(g_helpMacroSlot), _TRUNCATE,
+                "Cycle macro slots: %s.", Config::GetKeyName(s.macroSlotKey).c_str());
+    _snprintf_s(g_helpFaDuration, sizeof(g_helpFaDuration), _TRUNCATE,
+                "Frame advantage labels last about %.1f sec.", s.frameAdvantageDisplayDuration);
+
+    const EfzRevivalVersion rv = GetEfzRevivalVersion();
+    _snprintf_s(g_helpDetectedVersion, sizeof(g_helpDetectedVersion), _TRUNCATE,
+                "Detected: %s %s",
+                EfzRevivalVersionName(rv),
+                IsEfzRevivalVersionSupported(rv) ? "(supported)" : "(unsupported)");
+
+    g_helpP1WikiLabel[0] = '\0';
+    g_helpP2WikiLabel[0] = '\0';
+    g_helpP1WikiUrl[0] = '\0';
+    g_helpP2WikiUrl[0] = '\0';
+    const auto& d = ImGuiGui::guiState.localData;
+    auto fillWiki = [](int charId, const char* rawName, int player, char* label, size_t labelSz, char* url, size_t urlSz) {
+        const char* path = nullptr;
+        switch (charId) {
+            case CHAR_ID_AKANE:    path = "Akane_Satomura"; break;
+            case CHAR_ID_AKIKO:    path = "Akiko_Minase"; break;
+            case CHAR_ID_AYU:      path = "Ayu_Tsukimiya"; break;
+            case CHAR_ID_EXNANASE: path = "Doppel_Nanase"; break;
+            case CHAR_ID_IKUMI:    path = "Ikumi_Amasawa"; break;
+            case CHAR_ID_KANNA:    path = "Kanna"; break;
+            case CHAR_ID_KANO:     path = "Kano_Kirishima"; break;
+            case CHAR_ID_KAORI:    path = "Kaori_Misaka"; break;
+            case CHAR_ID_MAI:      path = "Mai_Kawasumi"; break;
+            case CHAR_ID_MAKOTO:   path = "Makoto_Sawatari"; break;
+            case CHAR_ID_MAYU:     path = "Mayu_Shiina"; break;
+            case CHAR_ID_MINAGI:   path = "Minagi_Tohno"; break;
+            case CHAR_ID_MIO:      path = "Mio_Kouzuki"; break;
+            case CHAR_ID_MISAKI:   path = "Misaki_Kawana"; break;
+            case CHAR_ID_MISHIO:   path = "Mishio_Amano"; break;
+            case CHAR_ID_MISUZU:   path = "Misuzu_Kamio"; break;
+            case CHAR_ID_MIZUKA:
+            case CHAR_ID_NAGAMORI: path = "Mizuka_Nagamori"; break;
+            case CHAR_ID_NANASE:   path = "Rumi_Nanase"; break;
+            case CHAR_ID_SAYURI:   path = "Sayuri_Kurata"; break;
+            case CHAR_ID_SHIORI:   path = "Shiori_Misaka"; break;
+            case CHAR_ID_NAYUKI:   path = "Nayuki_Minase_(asleep)"; break;
+            case CHAR_ID_NAYUKIB:  path = "Nayuki_Minase_(awake)"; break;
+            case CHAR_ID_MIZUKAB:  path = "UNKNOWN"; break;
+            default: break;
+        }
+        if (!path) return;
+        std::string name = CharacterSettings::GetCharacterName(charId);
+        if (name.empty() || name == "Undefined") {
+            name = (rawName && rawName[0]) ? rawName : "CHARACTER";
+        }
+        _snprintf_s(label, labelSz, _TRUNCATE, "OPEN P%d WIKI: %s", player, name.c_str());
+        _snprintf_s(url, urlSz, _TRUNCATE, "https://wiki.gbl.gg/w/Eternal_Fighter_Zero/%s", path);
+    };
+    fillWiki(d.p1CharID, d.p1CharName, 1, g_helpP1WikiLabel, sizeof(g_helpP1WikiLabel), g_helpP1WikiUrl, sizeof(g_helpP1WikiUrl));
+    fillWiki(d.p2CharID, d.p2CharName, 2, g_helpP2WikiLabel, sizeof(g_helpP2WikiLabel), g_helpP2WikiUrl, sizeof(g_helpP2WikiUrl));
 }
 
-void OpenGithubReleases() {
-    ShellExecuteA(nullptr, "open",
-                  "https://github.com/Aquat1c/EFZ-Training-Mode/releases",
-                  nullptr, nullptr, SW_SHOWNORMAL);
+void OpenUrl(const char* url) {
+    if (!url || !url[0]) return;
+    ShellExecuteA(nullptr, "open", url, nullptr, nullptr, SW_SHOWNORMAL);
+}
+
+void OpenGithubReleases() { OpenUrl("https://github.com/Aquat1c/efz-training-mode/releases"); }
+void OpenEternalFighterZeroWiki() { OpenUrl("https://wiki.gbl.gg/w/Eternal_Fighter_Zero"); }
+void OpenTrainingModeWiki() { OpenUrl("https://wiki.gbl.gg/w/Eternal_Fighter_Zero/Training_Mode"); }
+void OpenEfzDiscord() { OpenUrl("https://discord.gg/aUgqXAt"); }
+void OpenP1Wiki() { OpenUrl(g_helpP1WikiUrl); }
+void OpenP2Wiki() { OpenUrl(g_helpP2WikiUrl); }
+bool P1WikiDisabled() { return g_helpP1WikiUrl[0] == '\0'; }
+bool P2WikiDisabled() { return g_helpP2WikiUrl[0] == '\0'; }
+const char* ValWiki() { return "OPEN"; }
+
+Row* BuildHelpQuickStartRows(int& count) {
+    static Row s_rows[32];
+    int n = 0;
+    s_rows[n++] = Header("QUICK START");
+    s_rows[n++] = Info("Open the menu during Practice, set up the drill, then close it to keep playing. The game pauses while the menu is open.");
+    s_rows[n++] = Info("Use Main > Opponent for dummy behavior, Main > Options for recovery and overlays, Auto for triggers/macros, and Chars for matchup-specific tools.");
+    s_rows[n++] = Info("Use Main > Menu when you want to return to Character Select or the Title Screen.");
+    s_rows[n++] = Info("Most toggles apply as soon as you change them. HP, meter, RF, position, and some character values are applied when you adjust them or confirm an edit.");
+    s_rows[n++] = Info("Practice hotkeys are ignored while the menu is open, then briefly cooled down when it closes so one press does not leak into gameplay.");
+    s_rows[n++] = Spacer();
+    s_rows[n++] = Header("FAST SETUP");
+    s_rows[n++] = Info("1. Save a position once, then use Load Position to return to it after each attempt.");
+    s_rows[n++] = Info("2. Pick dummy defense, recovery, or movement in Main > Opponent.");
+    s_rows[n++] = Info("3. Turn on Frame Advantage, Combo Statistics, Frame Bar, or Framestep in Main > Options when you need extra feedback.");
+    s_rows[n++] = Info("4. Use Auto Actions or Macros for repeatable wakeup, block, hitstun, airtech, and RG tests.");
+    s_rows[n++] = Spacer();
+    s_rows[n++] = Header("COMMON HOTKEYS");
+    s_rows[n++] = Info(g_helpOpenHelp);
+    s_rows[n++] = Info(g_helpToggleOverlay);
+    s_rows[n++] = Info(g_helpSavePos);
+    s_rows[n++] = Info(g_helpLoadPos);
+    s_rows[n++] = Info(g_helpToggleStats);
+    count = n;
+    return s_rows;
+}
+
+Row* BuildHelpPositionRows(int& count) {
+    static Row s_rows[18];
+    int n = 0;
+    s_rows[n++] = Header("POSITION TOOLS");
+    s_rows[n++] = Info("Tap Load Position by itself to return to your saved spot.");
+    s_rows[n++] = Info("Hold Load Position with a direction to place both players without needing to save first.");
+    s_rows[n++] = Info("Load + Down centers both players. Load + Left or Right moves them to the nearest corner.");
+    s_rows[n++] = Info("Load + Down + A returns to round-start spacing. On controller, use D-Pad Down + A + Load.");
+    s_rows[n++] = Info(g_helpSwapPos);
+    s_rows[n++] = Spacer();
+    s_rows[n++] = Header("BINDINGS");
+    s_rows[n++] = Info(g_helpLoadPos);
+    s_rows[n++] = Info(g_helpSavePos);
+    count = n;
+    return s_rows;
+}
+
+Row* BuildHelpMenuTipsRows(int& count) {
+    static Row s_rows[32];
+    int n = 0;
+    s_rows[n++] = Header("NAVIGATION");
+    s_rows[n++] = Info  ("Use Up/Down or the D-Pad to move focus. Press Enter, Space, or the controller confirm button to pick the highlighted row.");
+    s_rows[n++] = Info  ("Left/Right adjusts the selected value. Hold Shift while pressing Left/Right to use the larger adjustment step.");
+    s_rows[n++] = Info  ("Esc or the controller back button returns from a submenu, closes a picker, or closes the menu.");
+    s_rows[n++] = Spacer();
+    s_rows[n++] = Header("TABS");
+    s_rows[n++] = Info  ("LB/RB or PgUp/PgDn switches top tabs. Number keys 1..5 jump directly to a top tab.");
+    s_rows[n++] = Info  ("LT/RT or [ / ] switches subtabs. From the first row in a list, press Up to move focus into subtab and tab selection.");
+    s_rows[n++] = Spacer();
+    s_rows[n++] = Header("MOUSE");
+    s_rows[n++] = Info  ("Mouse hover only takes focus after the pointer moves. Keyboard and gamepad edges take priority over a resting cursor.");
+    s_rows[n++] = Info  ("Click activates a row; the mouse wheel scrolls long lists.");
+    s_rows[n++] = Spacer();
+    s_rows[n++] = Header("TIPS");
+    s_rows[n++] = Info  (g_helpUiFooter);
+    s_rows[n++] = Info  ("If text feels too small or large, adjust UI Scale in Settings > General > Interface.");
+    s_rows[n++] = Info  (g_helpOpenHelp);
+    count = n;
+    return s_rows;
+}
+
+Row* BuildHelpStartRows(int& count) {
+    static Row s_rows[16];
+    int n = 0;
+    s_rows[n++] = Header("GETTING STARTED");
+    s_rows[n++] = Info("Use this page when you need a reminder without leaving Practice.");
+    s_rows[n++] = Info("Quick Start covers the normal training flow. Position Tools lists save/load shortcuts. Menu Tips covers navigation.");
+    s_rows[n++] = Info("Long pages scroll with Up/Down, D-Pad, mouse wheel, or the list controls shown in the footer.");
+    s_rows[n++] = Spacer();
+    s_rows[n++] = Header("START MENUS");
+    s_rows[n++] = Submenu("QUICK START",    "QUICK START",    BuildHelpQuickStartRows, nullptr);
+    s_rows[n++] = Submenu("POSITION TOOLS", "POSITION TOOLS", BuildHelpPositionRows,   nullptr);
+    s_rows[n++] = Submenu("MENU TIPS",      "MENU TIPS",      BuildHelpMenuTipsRows,   nullptr);
+    count = n;
+    return s_rows;
+}
+
+Row* BuildHelpBasicsRows(int& count) {
+    static Row s_rows[40];
+    int n = 0;
+    s_rows[n++] = Header("BASICS");
+    s_rows[n++] = Info("Core dummy behavior lives in Main > Opponent. These are the first options to check when building a drill.");
+    s_rows[n++] = Info(g_helpSwitchPlayers);
+    s_rows[n++] = Info("P2 Control lets you play from Player 2's side. Some side-switch training keys are disabled while it is on.");
+    s_rows[n++] = Info("Dummy Auto-Block supports Off, Block All, Only Block First Hit, and Block After First Hit.");
+    s_rows[n++] = Info("Adaptive Stance automatically picks high guard against air or overhead attacks and low guard against grounded attacks, so manual stance is hidden while it is on.");
+    s_rows[n++] = Spacer();
+    s_rows[n++] = Header("BLOCK AND RG");
+    s_rows[n++] = Info("Random Block flips a coin when the dummy is allowed to block; it is useful for hit-confirm practice.");
+    s_rows[n++] = Info("Always RG treats eligible blocks as Recoil Guard. Random RG flips a coin each time the dummy tries to block.");
+    s_rows[n++] = Info("Counter RG tries to RG back after you Recoil Guard, where the game allows it.");
+    s_rows[n++] = Info("Random Block, Random RG, and Always RG can conflict. Turning one on can turn others off automatically.");
+    s_rows[n++] = Spacer();
+    s_rows[n++] = Header("TRAINING TOOLS");
+    s_rows[n++] = Info("Auto-Airtech can recover neutral, forward, or backward. Delay adds frames before tech, which is useful for testing late airtech situations.");
+    s_rows[n++] = Info("Auto-Jump makes P1, P2, or both sides jump neutral, forward, or backward when able.");
+    s_rows[n++] = Info("Final Memory: Allow at any HP removes HP checks. Turn it off when you want normal game requirements.");
+    s_rows[n++] = Spacer();
+    s_rows[n++] = Header("FRAME ADVANTAGE");
+    s_rows[n++] = Info(g_helpFaDuration);
+    s_rows[n++] = Info("Frame Advantage appears after both sides recover. Gaps briefly flash during strings when there is a hole.");
+    s_rows[n++] = Info("During Recoil Guard, FA1 and FA2 labels show advantage for each part.");
+    count = n;
+    return s_rows;
+}
+
+Row* BuildHelpRecoveryRows(int& count) {
+    static Row s_rows[36];
+    int n = 0;
+    s_rows[n++] = Header("CONTINUOUS RECOVERY");
+    s_rows[n++] = Info("Continuous Recovery restores HP, meter, and RF when a side returns to neutral. Configure it per player under Main > Options > Recovery.");
+    s_rows[n++] = Info("It disables itself while the game's own HP, meter, or RF recovery is active through F4/F5, so both recovery systems do not fight each other.");
+    s_rows[n++] = Info("HP and meter can be Off, preset values, or Custom. RF can use presets or a custom amount; Blue IC is available under RF Custom.");
+    s_rows[n++] = Info("RF Freeze can hold RF after Recovery sets it until you turn Recovery (RF) off, so it will not increase by itself.");
+    s_rows[n++] = Spacer();
+    s_rows[n++] = Header("ENGINE RECOVERY");
+    s_rows[n++] = Info("Automatic Recovery (F5) is game-driven. Disabled means no automatic regeneration; Full Values sets HP and meter to max; FM Values sets HP to 3332 and meter to max.");
+    s_rows[n++] = Info("RF Recovery (F4) controls RF recovery. Disable Automatic Recovery before adjusting RF Recovery.");
+    s_rows[n++] = Info("While F5 or F4 is active, manual value edits are disallowed. X/Y positions can still be changed in the Values tab.");
+    s_rows[n++] = Info("Tip: if numbers look wrong, press F4/F5 until the game returns to Normal mode, then re-apply your training values.");
+    count = n;
+    return s_rows;
+}
+
+Row* BuildHelpCharacterRows(int& count) {
+    static Row s_rows[48];
+    int n = 0;
+    s_rows[n++] = Header("CHARACTER SETTINGS");
+    s_rows[n++] = Info("Chars only shows controls for characters currently in the match. Match-wide locks appear above the player menus when the matchup supports them.");
+    s_rows[n++] = Info("Match-wide locks: Infinite Ikumi Blood, Infinite Misuzu Feather, Lock Mishio Element, Infinite Mishio Awaken, and Minagi Projectiles -> Michiru.");
+    s_rows[n++] = Spacer();
+    s_rows[n++] = Header("CHARACTER ROWS");
+    s_rows[n++] = Info("Ikumi: set Blood Stock, Genocide Timer, and Level Gauge.");
+    s_rows[n++] = Info("Misuzu: set Feathers, Infinite Poison, Poison Timer, and Poison Level.");
+    s_rows[n++] = Info("Mishio: choose Element and set Awaken Timer; the match-wide locks keep element and awakened state from decaying.");
+    s_rows[n++] = Info("Akiko: set Bullet Cycle, Freeze Cycle, Show Clean Hit, Time-Slow Trigger, and Infinite Timeslow.");
+    s_rows[n++] = Info("Nayuki (Awake): Infinite Snow and Snowbunny Timer control bunny duration.");
+    s_rows[n++] = Info("Nayuki (Asleep): Jam Count and Lock Jam Count control stored jams.");
+    s_rows[n++] = Info("Kano: Magic sets the stored magic value, and Lock Magic keeps it from being spent.");
+    s_rows[n++] = Info("Nanase (Rumi): Infinite Shinai, Barehanded Mode, Kimchi Active, Infinite Kimchi, and Kimchi Timer control her weapon and Final Memory state.");
+    s_rows[n++] = Info("Doppel: Enlightened puts Doppel in the Final Memory state.");
+    s_rows[n++] = Info("Mio: Stance switches Short/Long stance, and Lock Stance prevents automatic stance changes.");
+    s_rows[n++] = Info("Mai: Status, Ghost Time, Charge Timer, Awaken Timer, Infinite Ghost/Charge/Awaken, No Charge Cooldown, and Aggressive Summon control Mini-Mai setups.");
+    s_rows[n++] = Info("Mai also has Force Summon, Force Despawn, and Ghost Target X/Y with Apply Ghost Position for exact setup placement.");
+    s_rows[n++] = Info("Minagi: Always Readied keeps Michiru ready, and Michiru Target X/Y with Apply Michiru Position places her for setup testing.");
+    count = n;
+    return s_rows;
+}
+
+Row* BuildHelpAutoActionRows(int& count) {
+    static Row s_rows[44];
+    int n = 0;
+    s_rows[n++] = Header("AUTO ACTIONS");
+    s_rows[n++] = Info("Auto Actions make the dummy act on key moments: On Wakeup, After Block, After Hitstun, After Airtech, or on Recoil Guard.");
+    s_rows[n++] = Info("Enable the Auto Action system first, then enable the triggers you want. Target defaults to Player 2, but you can apply it to P1 or both players.");
+    s_rows[n++] = Info("Randomize Triggers adds a coin-flip so a trigger can sometimes skip activation. Pre-buffer Wakeup performs wake specials, dashes, and macros slightly early.");
+    s_rows[n++] = Spacer();
+    s_rows[n++] = Header("PER TRIGGER");
+    s_rows[n++] = Info("Pick an action: normals, forward/back normals, specials, supers, jump, dash/backdash, block, Final Memory, or a macro slot.");
+    s_rows[n++] = Info("Set the button if the action needs one, add an optional delay, or turn on Random Pool to pick from several actions.");
+    s_rows[n++] = Spacer();
+    s_rows[n++] = Header("NOTES");
+    s_rows[n++] = Info("This feature briefly enables P2 controls for specials, supers, dashes, and other input-buffer actions. Regular attacks and jumps use direct writes and keep AI control.");
+    s_rows[n++] = Info("By default, wakeup actions try to use the move on the last wakeup frame, with character-specific wakeup handling and crossup support.");
+    s_rows[n++] = Info("Actions are rate-limited to avoid spam; toggling a trigger clears it. After Airtech is separate from Auto-Airtech, so Auto-Airtech must be enabled first.");
+    s_rows[n++] = Info("Tip: enable Pre-buffer Wakeup when testing wakeup macros or input crossups that need early buffering.");
+    count = n;
+    return s_rows;
+}
+
+Row* BuildHelpMacroRows(int& count) {
+    static Row s_rows[44];
+    int n = 0;
+    s_rows[n++] = Header("MACROS");
+    s_rows[n++] = Info("Macros record, play, and edit input sequences. Playback flips left/right automatically for Player 2.");
+    s_rows[n++] = Info(g_helpMacroRecord);
+    s_rows[n++] = Info(g_helpMacroPlay);
+    s_rows[n++] = Info(g_helpMacroSlot);
+    s_rows[n++] = Info("Record enters Pre-recording, where P1 controls drive P2. Press Record again to start recording, then press it a third time to save.");
+    s_rows[n++] = Info("Play runs the current slot and also exits Pre-recording. Empty slots do nothing, and framestep tools work during playback.");
+    s_rows[n++] = Spacer();
+    s_rows[n++] = Header("CUSTOM MENU TOOLS");
+    s_rows[n++] = Info("Serialized Macro opens the text editor, Apply To Slot, Reload From Slot, Clear Slot, clipboard actions, undo/redo, and sample insertion.");
+    s_rows[n++] = Info("Slot Stats shows slot state, total ticks, effective ticks, first button tick, and buffer capture details.");
+    s_rows[n++] = Info("The editor's Apply button saves the text into the current slot. Done closes the editor and keeps the draft text; Cancel reloads from the slot.");
+    s_rows[n++] = Spacer();
+    s_rows[n++] = Header("NOTATION");
+    s_rows[n++] = Info("Write macros as plain text: a header plus tick tokens. Use numpad directions 1..9, with 5 or N as neutral, and A/B/C/D for buttons.");
+    s_rows[n++] = Info("Examples include 5A, 6B, and 236C. Repeat packs like 5x3 insert neutral ticks, and per-tick buffers like {3: 6 6 6} write several inputs inside one tick.");
+    s_rows[n++] = Info("Whitespace is flexible; Apply To Slot normalizes the text after it parses successfully.");
+    s_rows[n++] = Info("Write notation as if Player 1 is facing right. Player 2 playback flips 4 and 6.");
+    s_rows[n++] = Info("Example: EFZMACRO 1 5A 5x3 5B 5x3 5C 6 {3: 6 6 6} 2 {3: 2 2 2} 3 {3: 3 3 3} 5B");
+    count = n;
+    return s_rows;
+}
+
+Row* BuildHelpComboStatisticsRows(int& count) {
+    static Row s_rows[40];
+    int n = 0;
+    s_rows[n++] = Header("COMBO STATISTICS");
+    s_rows[n++] = Info("Combo Statistics is the compact combo summary overlay drawn at 640x480 game coordinates x=244, y=92 during Practice.");
+    s_rows[n++] = Info("It appears only in supported local match states. It clears outside Practice, online sessions, character select, or when the overlay is disabled.");
+    s_rows[n++] = Info("The combo starts from the game's combo counter and damage values. If those are unavailable, the mod can fall back to HP loss while the defender is in hitstun or untech.");
+    s_rows[n++] = Spacer();
+    s_rows[n++] = Header("WHAT IT SHOWS");
+    s_rows[n++] = Info("Move is last hit damage. Combo is total combo damage. Max is the best combo damage seen this match session.");
+    s_rows[n++] = Info("HP shows defender HP at combo start, current HP, and total HP lost.");
+    s_rows[n++] = Info("P1 and P2 rows show meter and RF changes during the combo. Resource spends update immediately; passive gains are kept stable so the numbers stay useful.");
+    s_rows[n++] = Info("Proration shows the current damage scaling. Detail Row can add defender untech and, when using Last Hit details, the attacker's current move ID.");
+    s_rows[n++] = Info("Optional RFx and Raw fields show the RF multiplier and raw scale value for deeper combo testing.");
+    s_rows[n++] = Spacer();
+    s_rows[n++] = Header("OPTIONS");
+    s_rows[n++] = Info("Enable it from Main > Options > Overlays with Combo Statistics.");
+    s_rows[n++] = Info("Show Detail Row adds extra proration and untech information. Detail source chooses between current combo state and last-hit data.");
+    s_rows[n++] = Info("Keep Final Summary leaves the finished combo visible after the combo drops. Summary Time controls how long it lingers.");
+    s_rows[n++] = Info("Hide With Menu removes Combo Statistics while this menu is open. Resume Summary lets the final summary return when the menu closes.");
+    s_rows[n++] = Spacer();
+    s_rows[n++] = Header("NOTES");
+    s_rows[n++] = Info("Max resets when the match/session resets. Combo Statistics is for quick damage and resource checks; use Framebar when you need timing and state breakdowns.");
+    count = n;
+    return s_rows;
+}
+
+Row* BuildHelpFramebarRows(int& count) {
+    static Row s_rows[56];
+    int n = 0;
+    s_rows[n++] = Header("FRAMEBAR");
+    s_rows[n++] = Info("Framebar is a per-player timeline near the bottom-center of the screen. Each cell is one 64 FPS visual frame.");
+    s_rows[n++] = Info("The right edge is the current frame. Older frames are on the left, so scan left-to-right to follow the sequence into the present.");
+    s_rows[n++] = Info("It starts advancing when something important happens: attacks, stun, projectiles, lockout, Recoil Guard, or a block/RG check against the opponent's current attack.");
+    s_rows[n++] = Info("After roughly one second of calm, it freezes in place until the next action. This keeps the last useful sequence visible instead of scrolling through neutral forever.");
+    s_rows[n++] = Spacer();
+    s_rows[n++] = Header("COLORS");
+    s_rows[n++] = Info("Green means neutral movement, walking, crouching, landing, or falling.");
+    s_rows[n++] = Info("Yellow means prejump, jump, double jump, airtech, or ground tech.");
+    s_rows[n++] = Info("Blue and cyan mean dashes, air dashes, and Recoil Guard windows.");
+    s_rows[n++] = Info("Red means attack startup, active frames, or recovery. Grey means blockstun, hitstun, or launch.");
+    s_rows[n++] = Info("Purple and pink cover throws and superflash. Blue-grey marks shared hitstop or engine freeze.");
+    s_rows[n++] = Spacer();
+    s_rows[n++] = Header("MARKERS");
+    s_rows[n++] = Info("A white vertical line marks the first active frame detected in the current attack sequence.");
+    s_rows[n++] = Info("Orange top ticks mark active projectiles. Red lower strips mark attack data, visible attack boxes, or the engine's attack timer.");
+    s_rows[n++] = Info("Blue and cyan small strips mean that side can block or Recoil Guard the opponent's current attack.");
+    s_rows[n++] = Info("A dark blue band means hitstop or freeze. Yellow/magenta flashes call out untech, hit, block/RG, throw, and counter-hit moments.");
+    s_rows[n++] = Info("Purple middle marks track air-mobility counters, useful when checking double jumps and air dashes.");
+    s_rows[n++] = Spacer();
+    s_rows[n++] = Header("STATUS LINES");
+    s_rows[n++] = Info("ID/F is move ID and current animation frame. BX is active attack boxes. P is active projectiles.");
+    s_rows[n++] = Info("ST is the engine state timer. UT is untech or stun duration. SF is superflash freeze. AT is air-time. AM is air-mobility counters.");
+    s_rows[n++] = Info("FA is first active frame. ACT is active or projectile frames. TOT is total engine-busy frames.");
+    s_rows[n++] = Info("ATK is the attacker collision countdown. FL and CL are frame and collision lockouts. GG is guard gauge.");
+    s_rows[n++] = Info("B and RG tell whether the side can block or Recoil Guard the opponent's current attack. G is the current guard flag.");
+    s_rows[n++] = Info("HS is the hit-state flag. CH is counter-hit. FRZ means the engine is currently frozen by superflash or shared hitstop.");
+    s_rows[n++] = Spacer();
+    s_rows[n++] = Header("FRAMESTEP");
+    s_rows[n++] = Info("When the game is paused or framestepping, Framebar advances only when the game actually steps. That makes it useful for reviewing one frame at a time.");
+    s_rows[n++] = Info("Enable it from Main > Options > Overlays with Frame Bar.");
+    count = n;
+    return s_rows;
+}
+
+Row* BuildHelpIssuesRows(int& count) {
+    static Row s_rows[36];
+    int n = 0;
+    s_rows[n++] = Header("CONFLICTS");
+    s_rows[n++] = Info("Some features auto-disable others to avoid clashes. Random Block, Random RG, and Always RG are mutually exclusive, so turning one on can turn another off.");
+    s_rows[n++] = Info("Counter RG cannot work while Always RG is on.");
+    s_rows[n++] = Info("While the menu is open, practice hotkeys are disabled and the game auto-pauses. Closing the menu starts a brief hotkey cooldown.");
+    s_rows[n++] = Spacer();
+    s_rows[n++] = Header("TROUBLESHOOTING");
+    s_rows[n++] = Info("If values look wrong, press F4/F5 until the game returns to Normal mode, then re-apply your values.");
+    s_rows[n++] = Info("Continuous Recovery can be limited to neutral in Settings. If something seems off, go back to the main menu and return to Practice.");
+    s_rows[n++] = Info(g_helpOpenHelp);
+    s_rows[n++] = Spacer();
+    s_rows[n++] = Header("UNSUPPORTED REVIVAL");
+    s_rows[n++] = Info("If your EfzRevival build is not listed as supported, some tools may be disabled and newer builds can introduce unexpected issues.");
+    s_rows[n++] = Info("Avoid unsupported versions for netplay. If problems occur, launching the game directly through efz.exe can be a fallback.");
+    s_rows[n++] = Info("Hotkeys may still be recognized by unsupported builds while this menu is open, but the game should remain paused.");
+    count = n;
+    return s_rows;
+}
+
+Row* BuildHelpGuideRows(int& count) {
+    static Row s_rows[20];
+    int n = 0;
+    s_rows[n++] = Header("GUIDE MENUS");
+    s_rows[n++] = Info("Open these sections for feature behavior, caveats, setup notes, and troubleshooting.");
+    s_rows[n++] = Submenu("BASICS",             "BASICS",             BuildHelpBasicsRows,     nullptr);
+    s_rows[n++] = Submenu("COMBO STATISTICS",   "COMBO STATISTICS",   BuildHelpComboStatisticsRows, nullptr);
+    s_rows[n++] = Submenu("FRAMEBAR",           "FRAMEBAR",           BuildHelpFramebarRows,   nullptr);
+    s_rows[n++] = Submenu("RECOVERY",           "RECOVERY",           BuildHelpRecoveryRows,   nullptr);
+    s_rows[n++] = Submenu("CHARACTER SETTINGS", "CHARACTER SETTINGS", BuildHelpCharacterRows,  nullptr);
+    s_rows[n++] = Submenu("AUTO ACTIONS",       "AUTO ACTIONS",       BuildHelpAutoActionRows, nullptr);
+    s_rows[n++] = Submenu("MACROS",             "MACROS",             BuildHelpMacroRows,      nullptr);
+    s_rows[n++] = Submenu("ISSUES",             "ISSUES",             BuildHelpIssuesRows,     nullptr);
+    count = n;
+    return s_rows;
+}
+
+Row* BuildHelpResourcesRows(int& count) {
+    static Row s_rows[18];
+    int n = 0;
+    s_rows[n++] = Header("GAME RESOURCES");
+    s_rows[n++] = Info("Open helpful external resources in your browser.");
+    s_rows[n++] = Action("EFZ WIKI",           OpenEternalFighterZeroWiki, ValWiki);
+    s_rows[n++] = Action("TRAINING MODE WIKI", OpenTrainingModeWiki,       ValWiki);
+    s_rows[n++] = Action("EFZ GLOBAL DISCORD", OpenEfzDiscord,             ValWiki);
+    s_rows[n++] = Spacer();
+    s_rows[n++] = Header("CURRENT CHARACTERS");
+    s_rows[n++] = Info("Character wiki links appear when the current matchup can be identified.");
+    s_rows[n++] = Action(g_helpP1WikiLabel[0] ? g_helpP1WikiLabel : "OPEN P1 WIKI", OpenP1Wiki, ValWiki, P1WikiDisabled);
+    s_rows[n++] = Action(g_helpP2WikiLabel[0] ? g_helpP2WikiLabel : "OPEN P2 WIKI", OpenP2Wiki, ValWiki, P2WikiDisabled);
+    count = n;
+    return s_rows;
 }
 
 Row* BuildHelpAboutRows(int& count) {
-    static Row s_rows[12];
+    static Row s_rows[28];
     int n = 0;
-    s_rows[n++] = Header(g_helpVersionStr);
-    s_rows[n++] = Info  (g_helpBuildStr);
+    s_rows[n++] = Header("EFZ TRAINING MODE");
+    s_rows[n++] = Info(g_helpVersionStr);
+    s_rows[n++] = Info(g_helpBuildStr);
+    s_rows[n++] = Info("Find the newest version and release notes on GitHub.");
+    s_rows[n++] = Action("OPEN GITHUB RELEASES", OpenGithubReleases, ValWiki);
     s_rows[n++] = Spacer();
-    s_rows[n++] = Header("LINKS");
-    s_rows[n++] = Action("OPEN GITHUB RELEASES", OpenGithubReleases);
+    s_rows[n++] = Header("GAME / REVIVAL VERSION");
+    s_rows[n++] = Info(g_helpDetectedVersion);
+    s_rows[n++] = Header("COMPATIBILITY");
+    s_rows[n++] = Info("Supported EfzRevival builds: Vanilla EFZ (no Revival), EfzRevival 1.02e, 1.02f, 1.02g, 1.02h!!!, and 1.02i!!!.");
+    s_rows[n++] = Info("Unsupported builds disable some tools. Online detection and certain version-specific hooks may be unavailable.");
     s_rows[n++] = Spacer();
-    s_rows[n++] = Info("EFZ TRAINING MODE IS A 32-BIT DLL MOD");
-    s_rows[n++] = Info("FOR ETERNAL FIGHTER ZERO REVIVAL.");
-    count = n;
-    return s_rows;
-}
-
-Row* BuildHelpHotkeysRows(int& count) {
-    static Row s_rows[16];
-    int n = 0;
-    s_rows[n++] = Header("GAMEPLAY HOTKEYS");
-    s_rows[n++] = Info  (g_helpHotkeyOpenMenu);
-    s_rows[n++] = Info  (g_helpHotkeyTeleport);
-    s_rows[n++] = Info  (g_helpHotkeySavePos);
-    s_rows[n++] = Info  (g_helpHotkeySwitch);
-    s_rows[n++] = Spacer();
-    s_rows[n++] = Header("MACROS");
-    s_rows[n++] = Info  (g_helpHotkeyMacroRec);
-    s_rows[n++] = Info  (g_helpHotkeyMacroPlay);
-    count = n;
-    return s_rows;
-}
-
-Row* BuildHelpControlsRows(int& count) {
-    static Row s_rows[20];
-    int n = 0;
-    s_rows[n++] = Header("NAVIGATION");
-    s_rows[n++] = Info  ("UP/DOWN        MOVE FOCUS");
-    s_rows[n++] = Info  ("LEFT/RIGHT     ADJUST VALUE");
-    s_rows[n++] = Info  ("SHIFT+L/R      BIG STEP");
-    s_rows[n++] = Info  ("ENTER / A      ACTIVATE");
-    s_rows[n++] = Info  ("ESC / B        BACK / CLOSE");
-    s_rows[n++] = Spacer();
-    s_rows[n++] = Header("TABS");
-    s_rows[n++] = Info  ("LB/RB          TOP TAB PREV/NEXT");
-    s_rows[n++] = Info  ("PGUP/PGDN      TOP TAB PREV/NEXT");
-    s_rows[n++] = Info  ("1..5           JUMP TO TOP TAB");
-    s_rows[n++] = Info  ("LT/RT          SUB-TAB PREV/NEXT");
-    s_rows[n++] = Info  ("[ / ]          SUB-TAB PREV/NEXT");
-    s_rows[n++] = Spacer();
-    s_rows[n++] = Header("MOUSE");
-    s_rows[n++] = Info  ("HOVER          STEAL FOCUS");
-    s_rows[n++] = Info  ("CLICK          ACTIVATE ROW");
-    s_rows[n++] = Info  ("WHEEL          SCROLL LIST");
+    s_rows[n++] = Header("OVERVIEW");
+    s_rows[n++] = Info("A training mode enhancement tool for Eternal Fighter Zero. It adds frame advantage display, Combo Statistics, Framebar, macros, dummy triggers, character tools, and in-game configuration.");
     count = n;
     return s_rows;
 }
@@ -771,48 +1275,108 @@ void AddTriggerRows(Row* rows, int& n,
     rows[n++] = DropdownRow   ("  MACRO",       macroSlot, g_macroSlotChoiceArr, g_macroSlotChoiceCount, OnAutoApply);
 }
 
-Row* BuildTriggersRows(int& count) {
-    static Row s_rows[96];
+const char* FormatTriggerSummary(bool enabled, bool usePool, int delay) {
+    static char s_buf[5][32];
+    static int s_idx = 0;
+    char* buf = s_buf[s_idx++ % 5];
+    if (!enabled) {
+        _snprintf_s(buf, sizeof(s_buf[0]), _TRUNCATE, "OFF");
+    } else if (usePool) {
+        _snprintf_s(buf, sizeof(s_buf[0]), _TRUNCATE, "POOL / %dF", delay);
+    } else {
+        _snprintf_s(buf, sizeof(s_buf[0]), _TRUNCATE, "ON / %dF", delay);
+    }
+    return buf;
+}
+
+const char* ValTriggerAB() { const auto& d = ImGuiGui::guiState.localData; return FormatTriggerSummary(d.triggerAfterBlock,    g_useMaskAB, d.delayAfterBlock); }
+const char* ValTriggerWU() { const auto& d = ImGuiGui::guiState.localData; return FormatTriggerSummary(d.triggerOnWakeup,       g_useMaskWU, d.delayOnWakeup); }
+const char* ValTriggerAH() { const auto& d = ImGuiGui::guiState.localData; return FormatTriggerSummary(d.triggerAfterHitstun,   g_useMaskAH, d.delayAfterHitstun); }
+const char* ValTriggerAA() { const auto& d = ImGuiGui::guiState.localData; return FormatTriggerSummary(d.triggerAfterAirtech,   g_useMaskAA, d.delayAfterAirtech); }
+const char* ValTriggerRG() { const auto& d = ImGuiGui::guiState.localData; return FormatTriggerSummary(d.triggerOnRG,           g_useMaskRG, d.delayOnRG); }
+
+Row* BuildAfterBlockRows(int& count) {
+    static Row s_rows[16];
     int n = 0;
     auto& d = ImGuiGui::guiState.localData;
+    AddTriggerRows(s_rows, n, "AFTER BLOCK",
+                   &d.triggerAfterBlock, &d.actionAfterBlock, &d.strengthAfterBlock,
+                   &d.macroSlotAfterBlock, &d.delayAfterBlock,
+                   &g_useMaskAB, &g_poolMaskAB, OnUseMaskAB, OnPoolMaskAB,
+                   HideABSingleAction, HideABPool);
+    count = n;
+    return s_rows;
+}
+
+Row* BuildWakeupRows(int& count) {
+    static Row s_rows[16];
+    int n = 0;
+    auto& d = ImGuiGui::guiState.localData;
+    AddTriggerRows(s_rows, n, "ON WAKEUP",
+                   &d.triggerOnWakeup, &d.actionOnWakeup, &d.strengthOnWakeup,
+                   &d.macroSlotOnWakeup, &d.delayOnWakeup,
+                   &g_useMaskWU, &g_poolMaskWU, OnUseMaskWU, OnPoolMaskWU,
+                   HideWUSingleAction, HideWUPool);
+    count = n;
+    return s_rows;
+}
+
+Row* BuildHitstunRows(int& count) {
+    static Row s_rows[16];
+    int n = 0;
+    auto& d = ImGuiGui::guiState.localData;
+    AddTriggerRows(s_rows, n, "AFTER HITSTUN",
+                   &d.triggerAfterHitstun, &d.actionAfterHitstun, &d.strengthAfterHitstun,
+                   &d.macroSlotAfterHitstun, &d.delayAfterHitstun,
+                   &g_useMaskAH, &g_poolMaskAH, OnUseMaskAH, OnPoolMaskAH,
+                   HideAHSingleAction, HideAHPool);
+    count = n;
+    return s_rows;
+}
+
+Row* BuildAirtechRows(int& count) {
+    static Row s_rows[16];
+    int n = 0;
+    auto& d = ImGuiGui::guiState.localData;
+    AddTriggerRows(s_rows, n, "AFTER AIRTECH",
+                   &d.triggerAfterAirtech, &d.actionAfterAirtech, &d.strengthAfterAirtech,
+                   &d.macroSlotAfterAirtech, &d.delayAfterAirtech,
+                   &g_useMaskAA, &g_poolMaskAA, OnUseMaskAA, OnPoolMaskAA,
+                   HideAASingleAction, HideAAPool);
+    count = n;
+    return s_rows;
+}
+
+Row* BuildRecoilGuardRows(int& count) {
+    static Row s_rows[16];
+    int n = 0;
+    auto& d = ImGuiGui::guiState.localData;
+    AddTriggerRows(s_rows, n, "ON RECOIL GUARD",
+                   &d.triggerOnRG, &d.actionOnRG, &d.strengthOnRG,
+                   &d.macroSlotOnRG, &d.delayOnRG,
+                   &g_useMaskRG, &g_poolMaskRG, OnUseMaskRG, OnPoolMaskRG,
+                   HideRGSingleAction, HideRGPool);
+    count = n;
+    return s_rows;
+}
+
+Row* BuildTriggersRows(int& count) {
+    static Row s_rows[32];
+    int n = 0;
 
     s_rows[n++] = Header("GLOBAL");
     s_rows[n++] = Toggle    ("ENABLE AUTO ACTION",    &g_mirrorAutoAction, OnAutoActionToggle);
     s_rows[n++] = ChoicesRow("TARGET",                &g_mirrorAutoActionPlayerIdx, kTargetChoices, 3, OnAutoActionTarget);
     s_rows[n++] = Toggle    ("RANDOMIZE TRIGGERS",    &g_mirrorRandomize,  OnRandomizeToggle);
     s_rows[n++] = Toggle    ("PRE-BUFFER WAKEUP",     &g_mirrorWakeBuffer, OnWakeBufferToggle);
-    s_rows[n++] = Toggle    ("COUNTER RG",            &g_mirrorCounterRG,  OnCounterRGToggle);
-    s_rows[n++] = Toggle    ("FRAME ADV OVERLAY",     &g_mirrorFaOverlay,  OnFaOverlayToggle);
 
-    AddTriggerRows(s_rows, n, "AFTER BLOCK",
-                   &d.triggerAfterBlock, &d.actionAfterBlock, &d.strengthAfterBlock,
-                   &d.macroSlotAfterBlock, &d.delayAfterBlock,
-                   &g_useMaskAB, &g_poolMaskAB, OnUseMaskAB, OnPoolMaskAB,
-                   HideABSingleAction, HideABPool);
-
-    AddTriggerRows(s_rows, n, "ON WAKEUP",
-                   &d.triggerOnWakeup, &d.actionOnWakeup, &d.strengthOnWakeup,
-                   &d.macroSlotOnWakeup, &d.delayOnWakeup,
-                   &g_useMaskWU, &g_poolMaskWU, OnUseMaskWU, OnPoolMaskWU,
-                   HideWUSingleAction, HideWUPool);
-
-    AddTriggerRows(s_rows, n, "AFTER HITSTUN",
-                   &d.triggerAfterHitstun, &d.actionAfterHitstun, &d.strengthAfterHitstun,
-                   &d.macroSlotAfterHitstun, &d.delayAfterHitstun,
-                   &g_useMaskAH, &g_poolMaskAH, OnUseMaskAH, OnPoolMaskAH,
-                   HideAHSingleAction, HideAHPool);
-
-    AddTriggerRows(s_rows, n, "AFTER AIRTECH",
-                   &d.triggerAfterAirtech, &d.actionAfterAirtech, &d.strengthAfterAirtech,
-                   &d.macroSlotAfterAirtech, &d.delayAfterAirtech,
-                   &g_useMaskAA, &g_poolMaskAA, OnUseMaskAA, OnPoolMaskAA,
-                   HideAASingleAction, HideAAPool);
-
-    AddTriggerRows(s_rows, n, "ON RG",
-                   &d.triggerOnRG, &d.actionOnRG, &d.strengthOnRG,
-                   &d.macroSlotOnRG, &d.delayOnRG,
-                   &g_useMaskRG, &g_poolMaskRG, OnUseMaskRG, OnPoolMaskRG,
-                   HideRGSingleAction, HideRGPool);
+    s_rows[n++] = Spacer();
+    s_rows[n++] = Header("TRIGGER MENUS");
+    s_rows[n++] = Submenu("AFTER BLOCK",       "AFTER BLOCK",       BuildAfterBlockRows,  ValTriggerAB);
+    s_rows[n++] = Submenu("ON WAKEUP",         "ON WAKEUP",         BuildWakeupRows,      ValTriggerWU);
+    s_rows[n++] = Submenu("AFTER HITSTUN",     "AFTER HITSTUN",     BuildHitstunRows,     ValTriggerAH);
+    s_rows[n++] = Submenu("AFTER AIRTECH",     "AFTER AIRTECH",     BuildAirtechRows,     ValTriggerAA);
+    s_rows[n++] = Submenu("ON RECOIL GUARD",   "ON RECOIL GUARD",   BuildRecoilGuardRows, ValTriggerRG);
 
     count = n;
     return s_rows;
@@ -1079,8 +1643,48 @@ bool AddPlayerCharacterRows(Row* rows, int& n, DisplayData& d, int player, int c
     return true;
 }
 
+const char* ValP1Character() {
+    static char s_buf[64];
+    const auto& d = ImGuiGui::guiState.localData;
+    const std::string name = CharacterDisplayName(d.p1CharID, d.p1CharName);
+    _snprintf_s(s_buf, sizeof(s_buf), _TRUNCATE, "%s", name.c_str());
+    return s_buf;
+}
+
+const char* ValP2Character() {
+    static char s_buf[64];
+    const auto& d = ImGuiGui::guiState.localData;
+    const std::string name = CharacterDisplayName(d.p2CharID, d.p2CharName);
+    _snprintf_s(s_buf, sizeof(s_buf), _TRUNCATE, "%s", name.c_str());
+    return s_buf;
+}
+
+Row* BuildP1CharacterRows(int& count) {
+    static Row s_rows[64];
+    int n = 0;
+    auto& d = ImGuiGui::guiState.localData;
+    if (!AddPlayerCharacterRows(s_rows, n, d, 1, d.p1CharID, d.p1CharName)) {
+        s_rows[n++] = Header("STATUS");
+        s_rows[n++] = Info("No custom controls for Player 1.");
+    }
+    count = n;
+    return s_rows;
+}
+
+Row* BuildP2CharacterRows(int& count) {
+    static Row s_rows[64];
+    int n = 0;
+    auto& d = ImGuiGui::guiState.localData;
+    if (!AddPlayerCharacterRows(s_rows, n, d, 2, d.p2CharID, d.p2CharName)) {
+        s_rows[n++] = Header("STATUS");
+        s_rows[n++] = Info("No custom controls for Player 2.");
+    }
+    count = n;
+    return s_rows;
+}
+
 Row* BuildCharsRows(int& count) {
-    static Row s_rows[96];
+    static Row s_rows[32];
     int n = 0;
     auto& d = ImGuiGui::guiState.localData;
 
@@ -1090,15 +1694,21 @@ Row* BuildCharsRows(int& count) {
     s_rows[n++] = Spacer();
     AddCharacterLockRows(s_rows, n);
 
-    const bool p1Added = AddPlayerCharacterRows(s_rows, n, d, 1, d.p1CharID, d.p1CharName);
-    if (p1Added && CharHasCustomRows(d.p2CharID)) {
-        s_rows[n++] = Spacer();
+    const bool p1HasRows = CharHasCustomRows(d.p1CharID);
+    const bool p2HasRows = CharHasCustomRows(d.p2CharID);
+    if (p1HasRows || p2HasRows) {
+        s_rows[n++] = Header("PLAYER MENUS");
+        if (p1HasRows) {
+            s_rows[n++] = Submenu("PLAYER 1", "PLAYER 1 CHARACTER", BuildP1CharacterRows, ValP1Character);
+        }
+        if (p2HasRows) {
+            s_rows[n++] = Submenu("PLAYER 2", "PLAYER 2 CHARACTER", BuildP2CharacterRows, ValP2Character);
+        }
     }
-    const bool p2Added = AddPlayerCharacterRows(s_rows, n, d, 2, d.p2CharID, d.p2CharName);
 
-    if (!p1Added && !p2Added) {
+    if (!p1HasRows && !p2HasRows) {
         s_rows[n++] = Header("STATUS");
-        s_rows[n++] = Info("NO SUPPORTED CHARACTER CONTROLS IN THIS MATCHUP");
+        s_rows[n++] = Info("No supported character controls in this matchup.");
     }
 
     count = n;
@@ -1117,13 +1727,28 @@ bool AdaptiveHidesStance() { return g_mirrorAdaptiveStance; }
 // DisplayData::airtechDelay / jumpDirection etc. are plain ints; no indirection
 // mirror needed. Just bind rows to them directly and call OnAutoApply on change.
 
-Row* BuildOpponentRows(int& count) {
-    static Row s_rows[32];
-    int n = 0;
-    auto& d = ImGuiGui::guiState.localData;
+const char* ValDefenseSummary() {
+    if (g_mirrorRandomBlock) return "RANDOM BLOCK";
+    if (g_mirrorAlwaysRG) return "ALWAYS RG";
+    if (g_mirrorRandomRG) return "RANDOM RG";
+    if (g_mirrorDummyBlockMode != 0) return kDummyBlockChoices[g_mirrorDummyBlockMode];
+    return "OFF";
+}
 
-    s_rows[n++] = Header("OPPONENT");
-    s_rows[n++] = Toggle("ENABLE P2 CONTROL",   &d.p2ControlEnabled, OnAutoApply);
+const char* ValRecoverySummary() {
+    const auto& d = ImGuiGui::guiState.localData;
+    if (d.autoAirtech) return "AIRTECH";
+    return "OFF";
+}
+
+const char* ValMovementSummary() {
+    const auto& d = ImGuiGui::guiState.localData;
+    return d.autoJump ? "AUTO-JUMP" : "OFF";
+}
+
+Row* BuildOpponentDefenseRows(int& count) {
+    static Row s_rows[16];
+    int n = 0;
 
     s_rows[n++] = Header("DEFENSE");
     s_rows[n++] = ChoicesRow("DUMMY AUTO-BLOCK",       &g_mirrorDummyBlockMode,    kDummyBlockChoices, 4, OnDummyBlockMode);
@@ -1133,16 +1758,48 @@ Row* BuildOpponentRows(int& count) {
     s_rows[n++] = Toggle    ("ALWAYS RECOIL GUARD",    &g_mirrorAlwaysRG,          OnAlwaysRG);
     s_rows[n++] = Toggle    ("RANDOM RECOIL GUARD",    &g_mirrorRandomRG,          OnRandomRG);
     s_rows[n++] = Toggle    ("COUNTER RG",             &g_mirrorCounterRG,         OnCounterRGToggle);
+    count = n;
+    return s_rows;
+}
+
+Row* BuildOpponentRecoveryRows(int& count) {
+    static Row s_rows[8];
+    int n = 0;
+    auto& d = ImGuiGui::guiState.localData;
 
     s_rows[n++] = Header("RECOVERY");
     s_rows[n++] = Toggle   ("AUTO-AIRTECH",            &d.autoAirtech,      OnAutoApply);
     s_rows[n++] = ChoicesRow("  AIRTECH DIRECTION",    &d.airtechDirection, kAirtechDirChoices, 3, OnAutoApply);
     s_rows[n++] = IntNum   ("  AIRTECH DELAY",         &d.airtechDelay,     0, 60, 1, 5, OnAutoApply);
+    count = n;
+    return s_rows;
+}
+
+Row* BuildOpponentMovementRows(int& count) {
+    static Row s_rows[8];
+    int n = 0;
+    auto& d = ImGuiGui::guiState.localData;
 
     s_rows[n++] = Header("MOVEMENT");
     s_rows[n++] = Toggle   ("AUTO-JUMP",               &d.autoJump,        OnAutoApply);
     s_rows[n++] = ChoicesRow("  JUMP DIRECTION",       &d.jumpDirection,   kJumpDirChoices, 3, OnAutoApply);
     s_rows[n++] = ChoicesRow("  JUMP TARGET",          &d.jumpTarget,      kJumpTargetChoices, 3, OnAutoApply);
+    count = n;
+    return s_rows;
+}
+
+Row* BuildOpponentRows(int& count) {
+    static Row s_rows[16];
+    int n = 0;
+    auto& d = ImGuiGui::guiState.localData;
+
+    s_rows[n++] = Header("OPPONENT");
+    s_rows[n++] = Toggle("ENABLE P2 CONTROL", &d.p2ControlEnabled, OnAutoApply);
+    s_rows[n++] = Spacer();
+    s_rows[n++] = Header("OPPONENT MENUS");
+    s_rows[n++] = Submenu("DEFENSE",  "DEFENSE",  BuildOpponentDefenseRows,  ValDefenseSummary);
+    s_rows[n++] = Submenu("RECOVERY", "RECOVERY", BuildOpponentRecoveryRows, ValRecoverySummary);
+    s_rows[n++] = Submenu("MOVEMENT", "MOVEMENT", BuildOpponentMovementRows, ValMovementSummary);
 
     count = n;
     return s_rows;
@@ -1189,7 +1846,7 @@ Row* BuildMenuRows(int& count) {
     static Row s_rows[16];
     int n = 0;
 
-    s_rows[n++] = Header("MENU");
+    s_rows[n++] = Header("MAIN MENU");
     s_rows[n++] = Action("EXIT TO CHARACTER SELECT", RunExitToCharacterSelect, ValExitToCharacterSelect, ExitToCharacterSelectDisabled);
     s_rows[n++] = Action("EXIT TO TITLE SCREEN",     RunExitToTitle,           ValExitToTitle,           ExitToTitleDisabled);
 
@@ -1205,6 +1862,10 @@ Row* BuildMenuRows(int& count) {
 
 // ===== OPTIONS screen =====
 void OnFaOverlayPersist()  { g_showFrameAdvantageOverlay.store(g_mirrorFaOverlay); }
+void OnFrameBarPersist() {
+    PersistBool("General", "showFrameBar", MutableSettings().showFrameBar);
+    FrameBar::g_enabled.store(MutableSettings().showFrameBar);
+}
 
 // ===== Continuous Recovery mirrors =====
 const char* const kCrHpModeChoices[]    = { "OFF", "MAX", "FM (3332)", "CUSTOM" };
@@ -1278,18 +1939,29 @@ int  g_f4RfAmount = 1000;
 
 void RefreshEngineRegenMirrors() {
     uint16_t a = 0, b = 0;
-    if (!ReadEngineRegenParams(a, b)) return;
-    if (b == 3332) { g_f5Mode = 2; g_f4Mode = 0; }
-    else if ((a == 1000 || a == 2000) && b == 9999) { g_f4Mode = 1; g_f5Mode = 0; }
-    else if (b == 9999 && a > 0) {
+    EngineRegenMode regenMode = EngineRegenMode::Unknown;
+    if (!GetEngineRegenStatus(regenMode, a, b)) return;
+
+    if (regenMode == EngineRegenMode::F5_FullOrPreset) {
+        g_f5Mode = (b == 3332) ? 2 : 1;
+        g_f4Mode = 0;
+        return;
+    }
+
+    g_f5Mode = 0;
+    if (regenMode == EngineRegenMode::F4_FineTuneActive && b == 9999 && a > 0) {
         g_f4Mode = 2;
         float rf = 0.0f; bool blue = false;
         if (DeriveRfFromParamA(a, rf, blue)) {
             g_f4Color = blue ? 1 : 0;
             g_f4RfAmount = (int)rf;
         }
+        return;
     }
-    else if (a == 0 && b == 0) { g_f5Mode = 0; g_f4Mode = 0; }
+
+    if (a == 0 && b == 0) {
+        g_f4Mode = 0;
+    }
 }
 
 void ApplyF5() {
@@ -1311,7 +1983,8 @@ void OnF4Mode() {
     else ApplyF4Custom();
 }
 void OnF4Custom() { if (g_f4Mode == 2) ApplyF4Custom(); }
-bool F4CustomHidden() { return g_f4Mode != 2; }
+bool F4DisabledByF5() { return g_f5Mode != 0; }
+bool F4CustomHidden() { return g_f4Mode != 2 || F4DisabledByF5(); }
 
 // Framestep
 int  g_framestepMode = 0;     // 0=FullFrame, 1=Subframe
@@ -1330,22 +2003,43 @@ void OnFramestepMode() {
                                                 : Framestep::StepMode::FullFrame);
 }
 const char* const kFramestepChoices[2] = { "FULL FRAMES", "SUBFRAMES" };
+const char* const kComboDetailChoices[2] = { "COMBO STATE", "LAST HIT" };
 
-Row* BuildOptionsRows(int& count) {
-    static Row s_rows[80];
+const char* ValRecoveryOptions() {
+    const bool engine = (g_f5Mode != 0 || g_f4Mode != 0);
+    const bool continuous = (g_crEnabledP1 || g_crEnabledP2);
+    if (engine && continuous) return "ENGINE + CR";
+    if (engine) return "ENGINE";
+    if (continuous) return "CR";
+    return "OFF";
+}
+
+const char* ValOverlays() {
+    static char s_buf[24];
+    const auto& s = MutableSettings();
+    int enabled = 0;
+    if (s.showFrameBar) ++enabled;
+    if (s.showComboStatisticsOverlay) ++enabled;
+    if (s.framestepEnabled) ++enabled;
+    _snprintf_s(s_buf, sizeof(s_buf), _TRUNCATE, "%d ON", enabled);
+    return s_buf;
+}
+
+bool ComboStatsHidden() { return !MutableSettings().showComboStatisticsOverlay; }
+bool ComboDetailSourceHidden() { return ComboStatsHidden() || !MutableSettings().comboOverlayShowDetailRow; }
+bool ComboFinalDurationHidden() { return ComboStatsHidden() || !MutableSettings().comboOverlayShowFinalSummary; }
+
+Row* BuildRecoveryOptionsRows(int& count) {
+    static Row s_rows[40];
     int n = 0;
-    auto& s = MutableSettings();
-
-    s_rows[n++] = Header("GAMEPLAY");
-    s_rows[n++] = Toggle ("FINAL MEMORY AT ANY HP",   &g_mirrorFmBypass,         OnFmBypass);
 
     s_rows[n++] = Header("AUTO RECOVERY (F5)");
     s_rows[n++] = ChoicesRow("F5 MODE",               &g_f5Mode, kF5ModeChoices, 3, OnF5Mode);
 
     s_rows[n++] = Header("RF RECOVERY (F4)");
-    s_rows[n++] = ChoicesRow("F4 MODE",               &g_f4Mode, kF4ModeChoices, 3, OnF4Mode);
-    s_rows[n++] = ChoicesRow("  COLOR",               &g_f4Color, kF4ColorChoices, 2, OnF4Custom, nullptr, F4CustomHidden);
-    s_rows[n++] = IntNum    ("  RF AMOUNT",           &g_f4RfAmount, 0, 1000, 50, 100, OnF4Custom, nullptr, F4CustomHidden);
+    s_rows[n++] = ChoicesRow("F4 MODE",               &g_f4Mode, kF4ModeChoices, 3, OnF4Mode, F4DisabledByF5);
+    s_rows[n++] = ChoicesRow("  COLOR",               &g_f4Color, kF4ColorChoices, 2, OnF4Custom, F4DisabledByF5, F4CustomHidden);
+    s_rows[n++] = IntNum    ("  RF AMOUNT",           &g_f4RfAmount, 0, 1000, 50, 100, OnF4Custom, F4DisabledByF5, F4CustomHidden);
 
     s_rows[n++] = Header("CONTINUOUS RECOVERY P1");
     s_rows[n++] = Toggle    ("  ENABLE P1",           &g_crEnabledP1,     OnCrEnabledP1);
@@ -1367,20 +2061,26 @@ Row* BuildOptionsRows(int& count) {
     s_rows[n++] = FloatNum  ("  RF CUSTOM",           &g_crRfCustomP2,    0.0f, 1000.0f, 10.0f, 100.0f, "%.0f", OnCrRfCustomP2, nullptr, CrP2RfCustomHidden);
     s_rows[n++] = Toggle    ("  RF FORCE BLUE IC",    &g_crForceBlueICP2, OnCrForceBlueICP2, nullptr, CrP2RfBicHidden);
 
-    s_rows[n++] = Header("OVERLAYS");
-    s_rows[n++] = Toggle ("FRAME ADVANTAGE OVERLAY",  &g_mirrorFaOverlay,        OnFaOverlayPersist);
-    s_rows[n++] = Toggle ("COMBO STATS OVERLAY",      &s.showComboStatisticsOverlay, OnShowCombo);
-    s_rows[n++] = Toggle ("  SHOW DETAIL ROW",        &s.comboOverlayShowDetailRow,
-        [](){ PersistBool("General", "comboOverlayShowDetailRow", MutableSettings().comboOverlayShowDetailRow); });
-    s_rows[n++] = Toggle ("  KEEP FINAL SUMMARY",     &s.comboOverlayShowFinalSummary,
-        [](){ PersistBool("General", "comboOverlayShowFinalSummary", MutableSettings().comboOverlayShowFinalSummary); });
-    s_rows[n++] = Toggle ("  HIDE WITH MENU",         &s.comboOverlayHideWhenImGuiVisible,
-        [](){ PersistBool("General", "comboOverlayHideWhenImGuiVisible", MutableSettings().comboOverlayHideWhenImGuiVisible); });
-    s_rows[n++] = Toggle ("  SHOW RF MULTIPLIER",     &s.comboOverlayShowRfMultiplier,
-        [](){ PersistBool("General", "comboOverlayShowRfMultiplier", MutableSettings().comboOverlayShowRfMultiplier); });
+    count = n;
+    return s_rows;
+}
 
-    s_rows[n++] = Header("TIMING");
-    s_rows[n++] = FloatNum("FA DURATION (SEC)",      &s.frameAdvantageDisplayDuration, 0.5f, 30.0f, 0.1f, 1.0f, "%.1f", OnFADuration);
+Row* BuildOverlayOptionsRows(int& count) {
+    static Row s_rows[24];
+    int n = 0;
+    auto& s = MutableSettings();
+
+    s_rows[n++] = Header("OVERLAYS");
+    s_rows[n++] = Toggle    ("FRAME BAR",             &s.showFrameBar,           OnFrameBarPersist);
+    s_rows[n++] = Toggle    ("COMBO STATISTICS",      &s.showComboStatisticsOverlay, OnShowCombo);
+    s_rows[n++] = Toggle    ("  SHOW DETAIL ROW",     &s.comboOverlayShowDetailRow, OnComboDetailRow, nullptr, ComboStatsHidden);
+    s_rows[n++] = ChoicesRow("  DETAIL SOURCE",       &s.comboOverlayDetailRowSource, kComboDetailChoices, 2, OnComboDetailSrc, nullptr, ComboDetailSourceHidden);
+    s_rows[n++] = Toggle    ("  KEEP FINAL SUMMARY",  &s.comboOverlayShowFinalSummary, OnComboFinal, nullptr, ComboStatsHidden);
+    s_rows[n++] = FloatNum  ("  SUMMARY TIME",        &s.comboOverlayDisplayDuration, 0.5f, 30.0f, 0.1f, 1.0f, "%.1f", OnComboDuration, nullptr, ComboFinalDurationHidden);
+    s_rows[n++] = Toggle    ("  HIDE WITH MENU",      &s.comboOverlayHideWhenImGuiVisible, OnComboHideMenu, nullptr, ComboStatsHidden);
+    s_rows[n++] = Toggle    ("  RESUME AFTER MENU",   &s.comboOverlayResumeAfterImGui, OnComboResume, nullptr, ComboStatsHidden);
+    s_rows[n++] = Toggle    ("  SHOW RF MULTIPLIER",  &s.comboOverlayShowRfMultiplier, OnComboRfMult, nullptr, ComboStatsHidden);
+    s_rows[n++] = Toggle    ("  SHOW RAW SCALE",      &s.comboOverlayShowRawScale, OnComboRawScale, nullptr, ComboStatsHidden);
 
     s_rows[n++] = Header("FRAMESTEP");
     s_rows[n++] = Toggle    ("ENABLE FRAMESTEP",     &s.framestepEnabled, OnFramestepEnabled);
@@ -1391,34 +2091,557 @@ Row* BuildOptionsRows(int& count) {
     return s_rows;
 }
 
+Row* BuildOptionsRows(int& count) {
+    static Row s_rows[16];
+    int n = 0;
+    auto& s = MutableSettings();
+
+    s_rows[n++] = Header("GAMEPLAY");
+    s_rows[n++] = Toggle ("FINAL MEMORY AT ANY HP",  &g_mirrorFmBypass,  OnFmBypass);
+    s_rows[n++] = Toggle ("FRAME ADVANTAGE OVERLAY", &g_mirrorFaOverlay, OnFaOverlayPersist);
+    s_rows[n++] = FloatNum("FA DURATION (SEC)",      &s.frameAdvantageDisplayDuration, 0.5f, 30.0f, 0.1f, 1.0f, "%.1f", OnFADuration);
+
+    s_rows[n++] = Spacer();
+    s_rows[n++] = Header("OPTION MENUS");
+    s_rows[n++] = Submenu("RECOVERY", "RECOVERY", BuildRecoveryOptionsRows, ValRecoveryOptions);
+    s_rows[n++] = Submenu("OVERLAYS", "OVERLAYS", BuildOverlayOptionsRows,  ValOverlays);
+
+    count = n;
+    return s_rows;
+}
+
 } // namespace
 
 // ===== Public per-screen entry points =====
 
-// ===== Macros stub =====
-void MacroRecord()    { MacroController::ToggleRecord(); }
-void MacroPlay()      { MacroController::Play(); }
-void MacroStop()      { MacroController::Stop(); }
+// ===== Macros =====
+bool g_macroIncludeBuffers = true;
+int  g_macroSlotMirror = 1;
+int  g_macroLastSlot = -1;
+bool g_macroLastInclude = true;
+bool g_macroForceReload = true;
+std::string g_macroText;
+std::string g_macroApplyError;
+std::vector<std::string> g_macroUndoStack;
+std::vector<std::string> g_macroRedoStack;
+
+struct MacroTextEditorState {
+    bool active = false;
+    bool wantFocus = false;
+    std::vector<char> buffer;
+};
+MacroTextEditorState g_macroEditor;
+
+void MacroPushUndo(const std::string& previous) {
+    if (!g_macroUndoStack.empty() && g_macroUndoStack.back() == previous) return;
+    g_macroUndoStack.push_back(previous);
+    if (g_macroUndoStack.size() > 64) {
+        g_macroUndoStack.erase(g_macroUndoStack.begin());
+    }
+}
+
+void MacroEnsureEditorBuffer(const std::string& text) {
+    const size_t minCap = 8192;
+    const size_t cap = (std::max)(minCap, text.size() + 1024);
+    g_macroEditor.buffer.assign(cap, '\0');
+    if (!text.empty()) {
+        memcpy(g_macroEditor.buffer.data(), text.data(), (std::min)(text.size(), cap - 1));
+    }
+}
+
+std::string MacroCleanText(const std::string& text) {
+    std::string cleaned;
+    cleaned.reserve(text.size());
+    bool prevWasSpace = false;
+    for (char c : text) {
+        const bool isSpace = (c == ' ' || c == '\t' || c == '\n' || c == '\r');
+        if (isSpace) {
+            if (!prevWasSpace && !cleaned.empty()) {
+                cleaned.push_back(' ');
+                prevWasSpace = true;
+            }
+        } else {
+            cleaned.push_back(c);
+            prevWasSpace = false;
+        }
+    }
+    if (!cleaned.empty() && cleaned.back() == ' ') cleaned.pop_back();
+    return cleaned;
+}
+
+void MacroReloadFromSlot() {
+    const int slot = MacroController::GetCurrentSlot();
+    g_macroText = MacroController::SerializeSlot(slot, g_macroIncludeBuffers);
+    g_macroApplyError.clear();
+    g_macroUndoStack.clear();
+    g_macroRedoStack.clear();
+    g_macroLastSlot = slot;
+    g_macroLastInclude = g_macroIncludeBuffers;
+    g_macroForceReload = false;
+    if (g_macroEditor.active) MacroEnsureEditorBuffer(g_macroText);
+}
+
+void MacroMaybeReloadText() {
+    if (g_macroEditor.active && !g_macroForceReload) return;
+    const int slot = MacroController::GetCurrentSlot();
+    if (g_macroForceReload || g_macroLastSlot != slot || g_macroLastInclude != g_macroIncludeBuffers) {
+        MacroReloadFromSlot();
+    }
+}
+
+void MacroSetText(const std::string& text, bool pushUndo) {
+    if (pushUndo && text != g_macroText) {
+        MacroPushUndo(g_macroText);
+        g_macroRedoStack.clear();
+    }
+    g_macroText = text;
+    g_macroApplyError.clear();
+    if (g_macroEditor.active) MacroEnsureEditorBuffer(g_macroText);
+}
+
+void MacroApplyTextToSlot() {
+    const int slot = MacroController::GetCurrentSlot();
+    std::string err;
+    const std::string cleaned = MacroCleanText(g_macroText);
+    if (!MacroController::DeserializeSlot(slot, cleaned, err)) {
+        g_macroApplyError = err;
+        DirectDrawHook::AddMessage(g_macroApplyError.c_str(), "MACRO", RGB(255, 120, 120), 1400, 0, 120);
+        return;
+    }
+
+    g_macroApplyError.clear();
+    g_macroText = MacroController::SerializeSlot(slot, g_macroIncludeBuffers);
+    g_macroUndoStack.clear();
+    g_macroRedoStack.clear();
+    g_macroLastSlot = slot;
+    g_macroLastInclude = g_macroIncludeBuffers;
+    g_macroForceReload = false;
+    if (g_macroEditor.active) MacroEnsureEditorBuffer(g_macroText);
+    DirectDrawHook::AddMessage("Applied macro to slot", "MACRO", RGB(180, 255, 180), 1000, 0, 120);
+}
+
+void MacroRecord() {
+    MacroController::ToggleRecord();
+    DirectDrawHook::AddMessage(MacroController::GetStatusLine().c_str(), "MACRO", RGB(200, 220, 255), 900, 0, 120);
+}
+void MacroPlay() {
+    MacroController::Play();
+    DirectDrawHook::AddMessage(MacroController::GetStatusLine().c_str(), "MACRO", RGB(180, 255, 180), 900, 0, 120);
+}
+void MacroStop() {
+    MacroController::Stop();
+    DirectDrawHook::AddMessage(MacroController::GetStatusLine().c_str(), "MACRO", RGB(255, 220, 120), 900, 0, 120);
+}
+void MacroPrevSlot() {
+    MacroController::PrevSlot();
+    g_macroForceReload = true;
+}
+void MacroNextSlot() {
+    MacroController::NextSlot();
+    g_macroForceReload = true;
+}
+
+void OnMacroSlotChanged() {
+    MacroController::SetCurrentSlot(g_macroSlotMirror);
+    g_macroForceReload = true;
+}
+void OnMacroIncludeBuffers() {
+    g_macroForceReload = true;
+}
+
+void MacroOpenEditor() {
+    MacroMaybeReloadText();
+    MacroEnsureEditorBuffer(g_macroText);
+    g_macroEditor.active = true;
+    g_macroEditor.wantFocus = true;
+    Input::ResetEdges();
+}
+
+void MacroReloadAction() {
+    MacroReloadFromSlot();
+    DirectDrawHook::AddMessage("Reloaded macro text from slot", "MACRO", RGB(180, 255, 220), 700, 0, 120);
+}
+
+void MacroClearSlot() {
+    std::string err;
+    const int slot = MacroController::GetCurrentSlot();
+    if (MacroController::DeserializeSlot(slot, std::string(), err)) {
+        g_macroApplyError.clear();
+        g_macroForceReload = true;
+        MacroReloadFromSlot();
+        DirectDrawHook::AddMessage("Cleared macro slot", "MACRO", RGB(255, 220, 120), 900, 0, 120);
+    } else {
+        g_macroApplyError = err;
+    }
+}
+
+void MacroUndo() {
+    if (g_macroUndoStack.empty()) return;
+    g_macroRedoStack.push_back(g_macroText);
+    g_macroText = g_macroUndoStack.back();
+    g_macroUndoStack.pop_back();
+    g_macroApplyError.clear();
+    if (g_macroEditor.active) MacroEnsureEditorBuffer(g_macroText);
+}
+void MacroRedo() {
+    if (g_macroRedoStack.empty()) return;
+    g_macroUndoStack.push_back(g_macroText);
+    g_macroText = g_macroRedoStack.back();
+    g_macroRedoStack.pop_back();
+    g_macroApplyError.clear();
+    if (g_macroEditor.active) MacroEnsureEditorBuffer(g_macroText);
+}
+void MacroCopy() {
+    MacroMaybeReloadText();
+    ImGui::SetClipboardText(g_macroText.c_str());
+    DirectDrawHook::AddMessage("Copied macro text", "MACRO", RGB(180, 255, 220), 700, 0, 120);
+}
+void MacroPaste() {
+    const char* clip = ImGui::GetClipboardText();
+    if (!clip || !*clip) {
+        DirectDrawHook::AddMessage("Clipboard is empty", "MACRO", RGB(255, 220, 120), 700, 0, 120);
+        return;
+    }
+    MacroSetText(std::string(clip), true);
+    DirectDrawHook::AddMessage("Pasted macro text", "MACRO", RGB(180, 255, 220), 700, 0, 120);
+}
+void MacroInsertSample() {
+    const char* sample =
+        "EFZMACRO 1 "
+        "5A 5x3 5B 5x3 5C "
+        "6 {3: 6 6 6} 2 {3: 2 2 2} 3 {3: 3 3 3} 5B {3: 5B 5 5}";
+    MacroSetText(sample, true);
+}
+
+bool MacroUndoDisabled() { return g_macroUndoStack.empty(); }
+bool MacroRedoDisabled() { return g_macroRedoStack.empty(); }
 
 const char* MacroStateStr() {
     static char buf[64];
-    _snprintf_s(buf, sizeof(buf), _TRUNCATE, "SLOTS: %d",
-                MacroController::GetSlotCount());
+    _snprintf_s(buf, sizeof(buf), _TRUNCATE, "SLOT %d/%d",
+                MacroController::GetCurrentSlot(), MacroController::GetSlotCount());
     return buf;
 }
 
-Row* BuildMacrosRows(int& count) {
-    static Row s_rows[10];
+const char* MacroSlotEmptyStr() {
+    return MacroController::IsSlotEmpty(MacroController::GetCurrentSlot()) ? "EMPTY" : "HAS DATA";
+}
+
+const char* MacroSerializedStr() {
+    return g_macroIncludeBuffers ? "BUFFERS" : "NO BUFFERS";
+}
+
+const char* MacroStatsStr() {
+    static char buf[32];
+    const int slot = MacroController::GetCurrentSlot();
+    const auto stats = MacroController::GetSlotStats(slot);
+    if (!stats.hasData) return "EMPTY";
+    _snprintf_s(buf, sizeof(buf), _TRUNCATE, "%d TICKS", stats.totalTicks);
+    return buf;
+}
+
+int BuildTextPreviewRows(const std::string& text, char lines[][96], int maxLines) {
+    if (maxLines <= 0) return 0;
+    if (text.empty()) {
+        strncpy_s(lines[0], 96, "(EMPTY)", _TRUNCATE);
+        return 1;
+    }
+
+    const int maxChars = 84;
+    int line = 0;
+    int pos = 0;
+    lines[line][0] = '\0';
+
+    auto finishLine = [&]() {
+        if (line + 1 >= maxLines) return false;
+        ++line;
+        pos = 0;
+        lines[line][0] = '\0';
+        return true;
+    };
+
+    std::string token;
+    for (size_t i = 0; i <= text.size(); ++i) {
+        const char c = (i < text.size()) ? text[i] : ' ';
+        const bool split = (c == ' ' || c == '\t' || c == '\n' || c == '\r' || i == text.size());
+        if (!split) {
+            token.push_back(c);
+            continue;
+        }
+        if (token.empty()) continue;
+        const int tokenLen = (int)token.size();
+        if (pos > 0 && pos + 1 + tokenLen > maxChars) {
+            if (!finishLine()) break;
+        }
+        if (pos > 0 && pos + 1 < 95) {
+            strncat_s(lines[line], 96, " ", _TRUNCATE);
+            ++pos;
+        }
+        strncat_s(lines[line], 96, token.c_str(), _TRUNCATE);
+        pos += tokenLen;
+        token.clear();
+    }
+
+    if (line == maxLines - 1 && text.size() > 0) {
+        const size_t len = strlen(lines[line]);
+        if (len < 92) {
+            strncat_s(lines[line], 96, " ...", _TRUNCATE);
+        }
+    }
+    return line + 1;
+}
+
+Row* BuildMacroSerializedRows(int& count) {
+    static Row s_rows[48];
+    static char preview[12][96];
+    static char errorLine[128];
     int n = 0;
-    s_rows[n++] = Header("MACROS");
-    s_rows[n++] = Action("RECORD (TOGGLE)", MacroRecord, MacroStateStr);
-    s_rows[n++] = Action("PLAY",            MacroPlay);
-    s_rows[n++] = Action("STOP",            MacroStop);
+    MacroMaybeReloadText();
+
+    s_rows[n++] = Header("SERIALIZED MACRO");
+    s_rows[n++] = Toggle("INCLUDE BUFFERS", &g_macroIncludeBuffers, OnMacroIncludeBuffers);
+    s_rows[n++] = Action("EDIT TEXT",       MacroOpenEditor, MacroSerializedStr);
+    s_rows[n++] = Action("APPLY TO SLOT",   MacroApplyTextToSlot);
+    s_rows[n++] = Action("RELOAD FROM SLOT", MacroReloadAction);
+    s_rows[n++] = Action("CLEAR SLOT",      MacroClearSlot);
+
     s_rows[n++] = Spacer();
-    s_rows[n++] = Info("ADVANCED MACRO EDITOR LIVES IN");
-    s_rows[n++] = Info("THE IMGUI MENU FOR NOW.");
+    s_rows[n++] = Header("CLIPBOARD / HISTORY");
+    s_rows[n++] = Action("COPY",            MacroCopy);
+    s_rows[n++] = Action("PASTE",           MacroPaste);
+    s_rows[n++] = Action("UNDO",            MacroUndo, nullptr, MacroUndoDisabled);
+    s_rows[n++] = Action("REDO",            MacroRedo, nullptr, MacroRedoDisabled);
+    s_rows[n++] = Action("INSERT SAMPLE",   MacroInsertSample);
+
+    if (!g_macroApplyError.empty()) {
+        s_rows[n++] = Spacer();
+        s_rows[n++] = Header("ERROR");
+        _snprintf_s(errorLine, sizeof(errorLine), _TRUNCATE, "%s", g_macroApplyError.c_str());
+        s_rows[n++] = Info(errorLine);
+    }
+
+    s_rows[n++] = Spacer();
+    s_rows[n++] = Header("PREVIEW");
+    const int previewCount = BuildTextPreviewRows(g_macroText, preview, 12);
+    for (int i = 0; i < previewCount && n < 47; ++i) {
+        s_rows[n++] = Info(preview[i]);
+    }
+
     count = n;
     return s_rows;
+}
+
+Row* BuildMacroStatsRows(int& count) {
+    static Row s_rows[24];
+    static char status[128];
+    static char slot[64];
+    static char spans[64];
+    static char ticks[96];
+    static char effective[64];
+    static char firstButton[64];
+    static char buffers[96];
+    static char indexes[96];
+    int n = 0;
+    const int curSlot = MacroController::GetCurrentSlot();
+    const auto stats = MacroController::GetSlotStats(curSlot);
+    const int effectiveTicks = MacroController::GetEffectiveTicks(curSlot);
+    const int firstButtonTick = MacroController::GetFirstButtonTick(curSlot);
+
+    _snprintf_s(status, sizeof(status), _TRUNCATE, "State: %s", MacroController::GetStatusLine().c_str());
+    _snprintf_s(slot, sizeof(slot), _TRUNCATE, "Current slot: %d / %d (%s)",
+                curSlot, MacroController::GetSlotCount(), stats.hasData ? "has data" : "empty");
+    _snprintf_s(spans, sizeof(spans), _TRUNCATE, "Spans: %d", stats.spanCount);
+    _snprintf_s(ticks, sizeof(ticks), _TRUNCATE, "Total ticks: %d (~%.2f sec)",
+                stats.totalTicks, stats.totalTicks / 64.0f);
+    _snprintf_s(effective, sizeof(effective), _TRUNCATE, "Effective ticks: %d", effectiveTicks);
+    _snprintf_s(firstButton, sizeof(firstButton), _TRUNCATE,
+                firstButtonTick >= 0 ? "First button tick: %d" : "First button tick: none",
+                firstButtonTick);
+    _snprintf_s(buffers, sizeof(buffers), _TRUNCATE, "Buffer entries: %d  Buffer ticks: %d",
+                stats.bufEntries, stats.bufTicks);
+    _snprintf_s(indexes, sizeof(indexes), _TRUNCATE, "Buffer idx: %u -> %u  Samples: %d",
+                (unsigned)stats.bufStartIdx, (unsigned)stats.bufEndIdx, stats.bufIndexTicks);
+
+    s_rows[n++] = Header("SLOT STATUS");
+    s_rows[n++] = Info(status);
+    s_rows[n++] = Info(slot);
+    s_rows[n++] = Spacer();
+    s_rows[n++] = Header("TIMING");
+    s_rows[n++] = Info(spans);
+    s_rows[n++] = Info(ticks);
+    s_rows[n++] = Info(effective);
+    s_rows[n++] = Info(firstButton);
+    s_rows[n++] = Spacer();
+    s_rows[n++] = Header("BUFFER CAPTURE");
+    s_rows[n++] = Info(buffers);
+    s_rows[n++] = Info(indexes);
+    count = n;
+    return s_rows;
+}
+
+Row* BuildMacroGuideRows(int& count) {
+    static Row s_rows[28];
+    int n = 0;
+    const auto& cfg = Config::GetSettings();
+    static char rec[128], play[128], slot[128];
+    _snprintf_s(rec,  sizeof(rec),  _TRUNCATE,
+                "Record: %s enters Pre-recording. Press it again to start recording, then again to save.",
+                Config::GetKeyName(cfg.macroRecordKey).c_str());
+    _snprintf_s(play, sizeof(play), _TRUNCATE,
+                "Play: %s runs the current slot and also exits Pre-recording.",
+                Config::GetKeyName(cfg.macroPlayKey).c_str());
+    _snprintf_s(slot, sizeof(slot), _TRUNCATE,
+                "Slots cycle with %s. Empty slots do nothing.",
+                Config::GetKeyName(cfg.macroSlotKey).c_str());
+
+    s_rows[n++] = Header("QUICK SETUP");
+    s_rows[n++] = Info(rec);
+    s_rows[n++] = Info(play);
+    s_rows[n++] = Info(slot);
+    s_rows[n++] = Info("Playback flips directions for Player 2 automatically. Framestep tools work during playback.");
+    s_rows[n++] = Spacer();
+    s_rows[n++] = Header("TEXT NOTATION");
+    s_rows[n++] = Info("Write macros as plain text using numpad directions 1..9, with 5 or N as neutral, and A/B/C/D for buttons.");
+    s_rows[n++] = Info("Use tokens like 5A, 6B, and 236C. Repeats such as 5x3 insert neutral ticks between presses.");
+    s_rows[n++] = Info("Optional per-tick buffers like {3: 6 6 6} perform several writes inside one tick.");
+    s_rows[n++] = Info("Write notation as if Player 1 is facing right. Player 2 playback flips 4 and 6.");
+    s_rows[n++] = Spacer();
+    s_rows[n++] = Header("EXAMPLE");
+    s_rows[n++] = Info("Example: EFZMACRO 1 5A 5x3 5B 236C");
+    count = n;
+    return s_rows;
+}
+
+Row* BuildMacrosRows(int& count) {
+    static Row s_rows[24];
+    int n = 0;
+    MacroMaybeReloadText();
+    g_macroSlotMirror = MacroController::GetCurrentSlot();
+
+    static char status[128];
+    _snprintf_s(status, sizeof(status), _TRUNCATE, "State: %s", MacroController::GetStatusLine().c_str());
+
+    s_rows[n++] = Header("MACRO CONTROLLER");
+    s_rows[n++] = Info(status);
+    s_rows[n++] = IntNum("CURRENT SLOT", &g_macroSlotMirror, 1, MacroController::GetSlotCount(),
+                         1, 1, OnMacroSlotChanged);
+    s_rows[n++] = Action("RECORD (TOGGLE)", MacroRecord, MacroStateStr);
+    s_rows[n++] = Action("PLAY",            MacroPlay,   MacroSlotEmptyStr);
+    s_rows[n++] = Action("STOP",            MacroStop);
+    s_rows[n++] = Action("PREV SLOT",       MacroPrevSlot);
+    s_rows[n++] = Action("NEXT SLOT",       MacroNextSlot);
+
+    s_rows[n++] = Spacer();
+    s_rows[n++] = Header("MACRO TOOLS");
+    s_rows[n++] = Submenu("SERIALIZED MACRO", "SERIALIZED MACRO", BuildMacroSerializedRows, MacroSerializedStr);
+    s_rows[n++] = Submenu("SLOT STATS",       "SLOT STATS",       BuildMacroStatsRows,      MacroStatsStr);
+    s_rows[n++] = Submenu("GUIDE",            "MACRO GUIDE",      BuildMacroGuideRows,      nullptr);
+    count = n;
+    return s_rows;
+}
+
+bool IsTextEditorActive() {
+    return g_macroEditor.active;
+}
+
+void ResetTextEditor() {
+    g_macroEditor.active = false;
+    g_macroEditor.wantFocus = false;
+}
+
+bool TickMacroTextEditorIfActive(ImDrawList*, const ScreenLayout& layout) {
+    if (!g_macroEditor.active) return false;
+
+    const float x = layout.panelX + 38.0f;
+    const float y = layout.contentTopY + 8.0f;
+    const float w = Theme::kPanelW - 76.0f;
+    const float h = layout.contentBottomY - y - 8.0f;
+
+    ImGui::SetNextWindowPos(ImVec2(x, y), ImGuiCond_Always);
+    ImGui::SetNextWindowSize(ImVec2(w, h), ImGuiCond_Always);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.0f);
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.0f, 0.0f, 0.0f, 0.94f));
+    ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(1.0f, 1.0f, 1.0f, 0.86f));
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 1.0f, 1.0f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0.04f, 0.04f, 0.04f, 0.96f));
+    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.12f, 0.12f, 0.12f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.22f, 0.22f, 0.22f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.35f, 0.35f, 0.35f, 1.0f));
+
+    const ImGuiWindowFlags flags =
+        ImGuiWindowFlags_NoCollapse |
+        ImGuiWindowFlags_NoResize |
+        ImGuiWindowFlags_NoMove |
+        ImGuiWindowFlags_NoSavedSettings;
+    if (ImGui::Begin("MACRO TEXT EDITOR", nullptr, flags)) {
+        ImGui::Text("Slot %d / %d", MacroController::GetCurrentSlot(), MacroController::GetSlotCount());
+        ImGui::SameLine();
+        ImGui::TextDisabled(g_macroIncludeBuffers ? "with buffers" : "without buffers");
+        if (!g_macroApplyError.empty()) {
+            ImGui::TextColored(ImVec4(1.0f, 0.35f, 0.35f, 1.0f), "Error: %s", g_macroApplyError.c_str());
+        } else {
+            ImGui::TextDisabled("Use EFZMACRO text notation. Apply normalizes whitespace.");
+        }
+
+        const float buttonH = 28.0f;
+        const float editorH = (std::max)(100.0f, ImGui::GetContentRegionAvail().y - buttonH - 10.0f);
+        if (g_macroEditor.wantFocus) {
+            ImGui::SetKeyboardFocusHere();
+            g_macroEditor.wantFocus = false;
+        }
+        if (ImGui::InputTextMultiline("##macro_text_editor",
+                                      g_macroEditor.buffer.data(),
+                                      g_macroEditor.buffer.size(),
+                                      ImVec2(-1.0f, editorH),
+                                      ImGuiInputTextFlags_AllowTabInput)) {
+            const std::string newText = g_macroEditor.buffer.data();
+            if (newText != g_macroText) {
+                MacroPushUndo(g_macroText);
+                g_macroRedoStack.clear();
+                g_macroText = newText;
+                g_macroApplyError.clear();
+            }
+        }
+
+        if (ImGui::Button("Apply")) {
+            g_macroText = g_macroEditor.buffer.data();
+            MacroApplyTextToSlot();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Done")) {
+            g_macroText = g_macroEditor.buffer.data();
+            g_macroEditor.active = false;
+            Input::ResetEdges();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel")) {
+            MacroReloadFromSlot();
+            g_macroEditor.active = false;
+            Input::ResetEdges();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Reload")) {
+            MacroReloadFromSlot();
+            g_macroEditor.wantFocus = true;
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Sample")) {
+            MacroInsertSample();
+            g_macroEditor.wantFocus = true;
+        }
+
+        if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
+            g_macroText = g_macroEditor.buffer.data();
+            g_macroEditor.active = false;
+            Input::ResetEdges();
+        }
+    }
+    ImGui::End();
+
+    ImGui::PopStyleColor(7);
+    ImGui::PopStyleVar(2);
+    return true;
 }
 
 void RefreshSecondaryScreenMirrors() {
@@ -1464,6 +2687,13 @@ void TickTriggers(ImDrawList* dl, const ScreenLayout& layout, int& focus, Scroll
 }
 void TickMacros(ImDrawList* dl, const ScreenLayout& layout, int& focus, ScrollState& scroll, bool& backEdge) {
     int n = 0; Row* rows = BuildMacrosRows(n);
+    if (IsTextEditorActive()) {
+        ClampFocus(rows, n, focus);
+        backEdge = false;
+        RenderList(dl, layout, "MACROS", rows, n, focus, scroll);
+        TickMacroTextEditorIfActive(dl, layout);
+        return;
+    }
     TickListScreen(dl, layout, "MACROS", rows, n, focus, scroll, backEdge);
 }
 
@@ -1488,17 +2718,21 @@ void TickSettingsDebug(ImDrawList* dl, const ScreenLayout& layout, int& focus, S
 }
 
 // ===== HELP sub-panes =====
+void TickHelpStart(ImDrawList* dl, const ScreenLayout& layout, int& focus, ScrollState& scroll, bool& backEdge) {
+    int n = 0; Row* rows = BuildHelpStartRows(n);
+    TickListScreen(dl, layout, "START", rows, n, focus, scroll, backEdge);
+}
+void TickHelpGuide(ImDrawList* dl, const ScreenLayout& layout, int& focus, ScrollState& scroll, bool& backEdge) {
+    int n = 0; Row* rows = BuildHelpGuideRows(n);
+    TickListScreen(dl, layout, "GUIDE", rows, n, focus, scroll, backEdge);
+}
+void TickHelpResources(ImDrawList* dl, const ScreenLayout& layout, int& focus, ScrollState& scroll, bool& backEdge) {
+    int n = 0; Row* rows = BuildHelpResourcesRows(n);
+    TickListScreen(dl, layout, "RESOURCES", rows, n, focus, scroll, backEdge);
+}
 void TickHelpAbout(ImDrawList* dl, const ScreenLayout& layout, int& focus, ScrollState& scroll, bool& backEdge) {
     int n = 0; Row* rows = BuildHelpAboutRows(n);
     TickListScreen(dl, layout, "ABOUT", rows, n, focus, scroll, backEdge);
-}
-void TickHelpHotkeys(ImDrawList* dl, const ScreenLayout& layout, int& focus, ScrollState& scroll, bool& backEdge) {
-    int n = 0; Row* rows = BuildHelpHotkeysRows(n);
-    TickListScreen(dl, layout, "HOTKEYS", rows, n, focus, scroll, backEdge);
-}
-void TickHelpControls(ImDrawList* dl, const ScreenLayout& layout, int& focus, ScrollState& scroll, bool& backEdge) {
-    int n = 0; Row* rows = BuildHelpControlsRows(n);
-    TickListScreen(dl, layout, "CONTROLS", rows, n, focus, scroll, backEdge);
 }
 
 } // namespace CustomMenu::Screens

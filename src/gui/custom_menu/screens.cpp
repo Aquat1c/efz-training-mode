@@ -2,12 +2,17 @@
 #include "../include/gui/custom_menu/layout.h"
 #include "../include/gui/custom_menu/theme.h"
 #include "../include/gui/custom_menu/input.h"
+#include "../include/gui/custom_menu/sound.h"
 #include "../include/utils/config.h"
 #include "../3rdparty/imgui/imgui.h"
 
 #include <windows.h>
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
+#include <cmath>
+#include <string>
+#include <vector>
 
 namespace CustomMenu::Screens {
 
@@ -37,9 +42,92 @@ bool ShiftHeld() {
     return (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
 }
 
-float RowPixelHeight(const Row& r) {
+constexpr float kInfoPadX = 8.0f;
+constexpr float kInfoTextX = 18.0f;
+constexpr float kInfoPadY = 1.0f;
+constexpr float kInfoLineGap = 1.0f;
+
+void PushWrappedLine(std::vector<std::string>& out, const std::string& line) {
+    if (!line.empty()) {
+        out.push_back(line);
+    }
+}
+
+void WrapTextLine(ImFont* font, float px, const char* text, float maxW,
+                  std::vector<std::string>& out) {
+    if (!text || !*text) return;
+    if (maxW <= 12.0f) {
+        out.push_back(text);
+        return;
+    }
+
+    std::string current;
+    std::string word;
+
+    auto flushWord = [&]() {
+        if (word.empty()) return;
+        if (current.empty()) {
+            current = word;
+        } else {
+            std::string candidate = current;
+            candidate.push_back(' ');
+            candidate += word;
+            if (Layout::MeasureTextW(font, px, candidate.c_str()) <= maxW) {
+                current = candidate;
+            } else {
+                PushWrappedLine(out, current);
+                current = word;
+            }
+        }
+        word.clear();
+    };
+
+    for (const char* p = text; *p; ++p) {
+        const char c = *p;
+        if (c == '\r') continue;
+        if (c == '\n') {
+            flushWord();
+            PushWrappedLine(out, current);
+            current.clear();
+            continue;
+        }
+        if (c == ' ' || c == '\t') {
+            flushWord();
+            continue;
+        }
+        word.push_back(c);
+    }
+    flushWord();
+    PushWrappedLine(out, current);
+}
+
+void WrapInfoText(const Row& r, float contentW, std::vector<std::string>& out) {
+    out.clear();
+    const char* text = r.label ? r.label : "";
+    if (!*text) return;
+
+    ImFont* font = Layout::BodyFont();
+    const float px = font ? font->FontSize : 13.0f;
+    const float textW = (std::max)(32.0f, contentW - kInfoTextX - kInfoPadX);
+    WrapTextLine(font, px, text, textW, out);
+    if (out.empty()) out.push_back(text);
+}
+
+float InfoRowHeight(const Row& r, float contentW) {
+    std::vector<std::string> lines;
+    WrapInfoText(r, contentW, lines);
+    ImFont* font = Layout::BodyFont();
+    const float px = font ? font->FontSize : 13.0f;
+    const float textH = (static_cast<float>(lines.size()) * px) +
+                        (static_cast<float>((lines.size() > 0) ? lines.size() - 1 : 0) * kInfoLineGap);
+    const float desired = kInfoPadY * 2.0f + textH;
+    return desired;
+}
+
+float RowPixelHeight(const Row& r, float contentW) {
     if (r.kind == RowKind::Spacer) return Theme::kRowHeight * 0.5f;
     if (r.kind == RowKind::Header) return Theme::kRowHeight + Theme::kSectionPadY;
+    if (r.kind == RowKind::Info) return InfoRowHeight(r, contentW);
     return Theme::kRowHeight;
 }
 
@@ -69,18 +157,18 @@ struct RowRect {
 // [contentTopY, contentBottomY].
 float ComputeRects(const ScreenLayout& layout, const Row* rows, int rowCount,
                    float scrollPx, RowRect* out) {
-    float y = layout.contentTopY - scrollPx;
+    float y = layout.contentTopY + layout.animOffsetY - scrollPx;
     for (int i = 0; i < rowCount; ++i) {
         RowRect& r = out[i];
         r.y = y;
-        r.h = RowPixelHeight(rows[i]);
+        r.h = RowPixelHeight(rows[i], layout.contentW);
         const bool hidden = RowHidden(rows[i]);
         r.visible = !hidden &&
                     (r.y + r.h) > layout.contentTopY &&
                     r.y < layout.contentBottomY;
         if (!hidden) y += r.h;
     }
-    return y - (layout.contentTopY - scrollPx);
+    return y - (layout.contentTopY + layout.animOffsetY - scrollPx);
 }
 
 // Forward / backward scan to find next focusable (non-hidden, non-deco) row.
@@ -100,6 +188,143 @@ int FindFocusable(const Row* rows, int rowCount, int from, int dir) {
         if (RowIsFocusable(rows[i])) return i;
     }
     return -1;
+}
+
+constexpr int kMaxSubmenuDepth = 4;
+constexpr float kSubmenuAnimMs = 170.0f;
+constexpr float kSubmenuSlidePx = 78.0f;
+constexpr double kDegToRadDivisor = 57.29579143313326;
+
+struct SubmenuFrame {
+    const char* title = nullptr;
+    RowListBuilder builder = nullptr;
+    int focus = 0;
+    ScrollState scroll;
+};
+
+struct SubmenuState {
+    SubmenuFrame frames[kMaxSubmenuDepth];
+    int depth = 0;
+    DWORD animTick = 0;
+    int animDir = 1;
+};
+
+SubmenuState g_submenus;
+bool g_focusAboveRequested = false;
+
+float Clamp01(float v) {
+    if (v < 0.0f) return 0.0f;
+    if (v > 1.0f) return 1.0f;
+    return v;
+}
+
+float AnimT(DWORD startTick, float durationMs) {
+    if (startTick == 0 || durationMs <= 0.0f) return 1.0f;
+    return Clamp01(static_cast<float>(GetTickCount() - startTick) / durationMs);
+}
+
+float EfzCosEase(float t01) {
+    const double degrees = 180.0 * Clamp01(t01);
+    return static_cast<float>((1.0 - std::cos(degrees / kDegToRadDivisor)) * 0.5);
+}
+
+float CurrentSubmenuOffsetX() {
+    if (g_submenus.animTick == 0) return 0.0f;
+    const float ease = EfzCosEase(AnimT(g_submenus.animTick, kSubmenuAnimMs));
+    return (1.0f - ease) * kSubmenuSlidePx * static_cast<float>(g_submenus.animDir);
+}
+
+void StartSubmenuAnimation(int dir) {
+    g_submenus.animTick = GetTickCount();
+    g_submenus.animDir = (dir < 0) ? -1 : 1;
+}
+
+void OpenSubmenu(const Row& r) {
+    if (!r.submenuBuilder || g_submenus.depth >= kMaxSubmenuDepth) return;
+    SubmenuFrame& f = g_submenus.frames[g_submenus.depth++];
+    f.title = (r.submenuTitle && r.submenuTitle[0]) ? r.submenuTitle : r.label;
+    f.builder = r.submenuBuilder;
+    f.focus = 0;
+    f.scroll = ScrollState{};
+    StartSubmenuAnimation(+1);
+    Sound::PlayDecision();
+    Input::ResetEdges();
+}
+
+void CloseOneSubmenu() {
+    if (g_submenus.depth <= 0) return;
+    --g_submenus.depth;
+    StartSubmenuAnimation(-1);
+    Sound::PlayDecision();
+    Input::ResetEdges();
+}
+
+ScreenLayout ApplySubmenuAnimation(const ScreenLayout& layout) {
+    ScreenLayout out = layout;
+    out.animOffsetX += CurrentSubmenuOffsetX();
+    return out;
+}
+
+bool ActiveSubmenuRows(Row*& rows, int& rowCount, int*& focus, ScrollState*& scroll, const char*& title) {
+    if (g_submenus.depth <= 0) return false;
+    SubmenuFrame& f = g_submenus.frames[g_submenus.depth - 1];
+    if (!f.builder) return false;
+    rows = f.builder(rowCount);
+    focus = &f.focus;
+    scroll = &f.scroll;
+    title = f.title;
+    return true;
+}
+
+bool RowStartsInfoBlock(const Row* rows, int idx) {
+    if (!rows || idx < 0) return false;
+    if (RowHidden(rows[idx]) || rows[idx].kind != RowKind::Info) return false;
+    if (idx == 0) return true;
+    return RowHidden(rows[idx - 1]) || rows[idx - 1].kind != RowKind::Info;
+}
+
+void DrawInfoBlockBackgrounds(ImDrawList* dl, const ScreenLayout& layout,
+                              const Row* rows, int rowCount,
+                              const RowRect* rects) {
+    if (!dl || !rows || !rects) return;
+    using namespace Theme;
+    const float x = layout.contentX + layout.animOffsetX;
+    const float w = layout.contentW;
+
+    for (int i = 0; i < rowCount; ++i) {
+        if (!RowStartsInfoBlock(rows, i)) continue;
+
+        int end = i;
+        while (end + 1 < rowCount &&
+               !RowHidden(rows[end + 1]) &&
+               rows[end + 1].kind == RowKind::Info) {
+            ++end;
+        }
+
+        const float y1 = rects[i].y;
+        const float y2 = rects[end].y + rects[end].h;
+        if (y2 <= layout.contentTopY || y1 >= layout.contentBottomY) {
+            i = end;
+            continue;
+        }
+
+        const float top = y1 + 1.0f;
+        const float bot = y2 - 1.0f;
+        dl->AddRectFilled(ImVec2(x - 2.0f, top),
+                          ImVec2(x + w + 2.0f, bot),
+                          kInfoFill);
+        dl->AddRectFilled(ImVec2(x + 1.0f, top),
+                          ImVec2(x + 5.0f, bot),
+                          kInfoAccent);
+        dl->AddLine(ImVec2(x - 2.0f, top),
+                    ImVec2(x + w + 2.0f, top),
+                    IM_COL32(255, 255, 255, 55), 1.0f);
+        dl->AddLine(ImVec2(x - 2.0f, bot),
+                    ImVec2(x + w + 2.0f, bot),
+                    IM_COL32(255, 255, 255, 42), 1.0f);
+
+        i = end;
+    }
 }
 
 } // namespace
@@ -278,6 +503,21 @@ Row MaskPickerRow(const char* label, unsigned int* mask,
     return r;
 }
 
+Row Submenu(const char* label, const char* title, RowListBuilder builder,
+            const char* (*valueFn)(),
+            bool (*isDisabled)(),
+            bool (*isHidden)()) {
+    Row r{};
+    r.kind = RowKind::Submenu;
+    r.label = label;
+    r.submenuTitle = title;
+    r.submenuBuilder = builder;
+    r.actionValue = valueFn;
+    r.isDisabled = isDisabled;
+    r.isHidden = isHidden;
+    return r;
+}
+
 Row Action(const char* label, void (*fn)(),
            const char* (*valueFn)(),
            bool (*isDisabled)(),
@@ -322,6 +562,7 @@ void OpenDropdownPopup(const Row& r) {
     g_popup.scrollPx = 0.0f;
     g_popup.onChange = r.onChange;
     g_popup.onPrimaryChoiceChange = r.onPrimaryChoiceChange;
+    Sound::PlayDecision();
 }
 
 void OpenMaskPopup(const Row& r) {
@@ -336,6 +577,7 @@ void OpenMaskPopup(const Row& r) {
     g_popup.scrollPx = 0.0f;
     g_popup.onChange = r.onChange;
     g_popup.onPrimaryChoiceChange = nullptr;
+    Sound::PlayDecision();
 }
 
 void ClosePopup() {
@@ -412,15 +654,47 @@ void PopupTickInputOnly(const ScreenLayout& layout) {
 
     const bool navUp    = Input::NavUp();
     const bool navDown  = Input::NavDown();
+    const bool navLeft  = Input::NavLeft();
+    const bool navRight = Input::NavRight();
     const bool activate = Input::Activate();
     const bool back     = Input::Back();
-    if (navUp)   g_popup.focusIdx = (g_popup.focusIdx - 1 + g_popup.choiceCount) % g_popup.choiceCount;
-    if (navDown) g_popup.focusIdx = (g_popup.focusIdx + 1) % g_popup.choiceCount;
+    const bool keyboardOrPadEdge = navUp || navDown || navLeft || navRight ||
+                                   activate || back || Input::SwitchPlayer();
+
+    static unsigned int s_popupMouseFrame = ~0u;
+    static float s_popupLastMouseX = -1.0f;
+    static float s_popupLastMouseY = -1.0f;
+    static bool s_popupMouseMoved = false;
+    const unsigned int frame = ImGui::GetFrameCount();
+    if (frame != s_popupMouseFrame) {
+        s_popupMouseFrame = frame;
+        s_popupMouseMoved = false;
+        auto m = Input::GetMouse();
+        if (m.valid) {
+            if (s_popupLastMouseX < 0.0f && s_popupLastMouseY < 0.0f) {
+                s_popupLastMouseX = m.x;
+                s_popupLastMouseY = m.y;
+            } else {
+                const float dx = m.x - s_popupLastMouseX;
+                const float dy = m.y - s_popupLastMouseY;
+                if ((dx * dx + dy * dy) > 1.0f) {
+                    s_popupMouseMoved = true;
+                    s_popupLastMouseX = m.x;
+                    s_popupLastMouseY = m.y;
+                }
+            }
+        }
+    }
+
+    if (navUp)   { g_popup.focusIdx = (g_popup.focusIdx - 1 + g_popup.choiceCount) % g_popup.choiceCount; Sound::PlayCursor(); }
+    if (navDown) { g_popup.focusIdx = (g_popup.focusIdx + 1) % g_popup.choiceCount; Sound::PlayCursor(); }
     if (activate) {
         toggleAt(g_popup.focusIdx);
+        Sound::PlayDecision();
         if (!isMulti) { ClosePopup(); return; }
     }
     if (back) {
+        Sound::PlayDecision();
         ClosePopup();
         return;
     }
@@ -428,30 +702,35 @@ void PopupTickInputOnly(const ScreenLayout& layout) {
     const float wheel = ImGui::GetIO().MouseWheel;
     if (wheel != 0.0f) g_popup.scrollPx -= wheel * g.rowH * 3.0f;
 
-    if (Input::MouseLeftEdge()) {
+    const bool mouseLeftEdge = Input::MouseLeftEdge();
+    if (!keyboardOrPadEdge && mouseLeftEdge) {
         for (int i = 0; i < g_popup.choiceCount; ++i) {
             const float ry = g.listY + i * g.rowH - g_popup.scrollPx;
             if (ry < g.listY) continue;
             if (ry + g.rowH > g.listY + g.listH) break;
             if (Input::MouseHovering(g.listX, ry, g.listW, g.rowH)) {
                 toggleAt(i);
+                Sound::PlayDecision();
                 if (!isMulti) { ClosePopup(); return; }
                 break;
             }
         }
         // Click outside popup dismisses.
         if (!Input::MouseHovering(g.px, g.py, g.popupW, g.popupH)) {
+            Sound::PlayDecision();
             ClosePopup();
             return;
         }
     }
-    for (int i = 0; i < g_popup.choiceCount; ++i) {
-        const float ry = g.listY + i * g.rowH - g_popup.scrollPx;
-        if (ry < g.listY) continue;
-        if (ry + g.rowH > g.listY + g.listH) break;
-        if (Input::MouseHovering(g.listX, ry, g.listW, g.rowH)) {
-            g_popup.focusIdx = i;
-            break;
+    if (!keyboardOrPadEdge && s_popupMouseMoved) {
+        for (int i = 0; i < g_popup.choiceCount; ++i) {
+            const float ry = g.listY + i * g.rowH - g_popup.scrollPx;
+            if (ry < g.listY) continue;
+            if (ry + g.rowH > g.listY + g.listH) break;
+            if (Input::MouseHovering(g.listX, ry, g.listW, g.rowH)) {
+                g_popup.focusIdx = i;
+                break;
+            }
         }
     }
 
@@ -557,7 +836,7 @@ void EnsureFocusVisible(const ScreenLayout& layout,
     float totalH = 0.0f;
     for (int i = 0; i < rowCount; ++i) {
         if (RowHidden(rows[i])) continue;
-        totalH += RowPixelHeight(rows[i]);
+        totalH += RowPixelHeight(rows[i], layout.contentW);
     }
     const float viewH = viewBot - viewTop;
     scroll.maxScrollPx = (totalH > viewH) ? (totalH - viewH) : 0.0f;
@@ -572,56 +851,69 @@ void RenderList(ImDrawList* dl, const ScreenLayout& layout,
                 const ScrollState& scroll) {
     using namespace Theme;
 
+    ScreenLayout drawLayout = ApplySubmenuAnimation(layout);
+    const Row* drawRows = rows;
+    int drawCount = rowCount;
+    int drawFocus = focus;
+    const ScrollState* drawScroll = &scroll;
+    (void)title;
+
+    Row* submenuRows = nullptr;
+    int* submenuFocus = nullptr;
+    ScrollState* submenuScroll = nullptr;
+    const char* submenuTitle = nullptr;
+    if (ActiveSubmenuRows(submenuRows, drawCount, submenuFocus, submenuScroll, submenuTitle)) {
+        drawRows = submenuRows;
+        drawFocus = submenuFocus ? *submenuFocus : 0;
+        drawScroll = submenuScroll ? submenuScroll : &scroll;
+        (void)submenuTitle;
+    }
+
     RowRect rects[128];
-    if (rowCount > 128) rowCount = 128;
-    ComputeRects(layout, rows, rowCount, scroll.scrollPx, rects);
+    if (drawCount > 128) drawCount = 128;
+    ComputeRects(drawLayout, drawRows, drawCount, drawScroll->scrollPx, rects);
 
     ImFont* bFont = Layout::BodyFont();
     const float bPx = bFont ? bFont->FontSize : 13.0f;
 
-    // Screen title as a centered bright header over the content area.
-    if (title && title[0]) {
-        const float tw = Layout::MeasureTextW(bFont, bPx, title);
-        float tx = layout.panelX + (kPanelW - tw) * 0.5f;
-        if (tx < layout.contentX) tx = layout.contentX;
-        Layout::DrawString(dl, bFont, bPx, tx,
-                           layout.contentTopY - (kRowHeight + 2.0f),
-                           kTextActive, title);
-    }
-
     // Push a clip rect around the scrollable region so rows partially off the
     // top/bottom edge get correctly clipped instead of bleeding into header/hint.
-    dl->PushClipRect(ImVec2(layout.panelX, layout.contentTopY),
-                     ImVec2(layout.panelX + kPanelW, layout.contentBottomY),
+    dl->PushClipRect(ImVec2(drawLayout.panelX, drawLayout.contentTopY),
+                     ImVec2(drawLayout.panelX + kPanelW, drawLayout.contentBottomY),
                      true);
 
-    for (int i = 0; i < rowCount; ++i) {
+    DrawInfoBlockBackgrounds(dl, drawLayout, drawRows, drawCount, rects);
+
+    for (int i = 0; i < drawCount; ++i) {
         if (!rects[i].visible) continue;
-        const Row& r = rows[i];
-        const bool focused = (i == focus);
+        const Row& r = drawRows[i];
+        const bool focused = (i == drawFocus);
         const bool disabled = RowDisabled(r);
-        const float x = layout.contentX;
+        const float x = drawLayout.contentX + drawLayout.animOffsetX;
         const float y = rects[i].y;
-        const float w = layout.contentW;
+        const float w = drawLayout.contentW;
 
         switch (r.kind) {
             case RowKind::Header:
                 Layout::DrawHeader(dl, x, y, w, r.label);
                 break;
             case RowKind::Info: {
-                dl->AddRectFilled(ImVec2(layout.contentX - kPanelPadX, y),
-                                  ImVec2(layout.contentX + w + kPanelPadX, y + kRowHeight),
-                                  kStrip);
-                dl->AddLine(ImVec2(layout.contentX - kPanelPadX, y),
-                            ImVec2(layout.contentX + w + kPanelPadX, y),
-                            kRule, 1.0f);
-                dl->AddLine(ImVec2(layout.contentX - kPanelPadX, y + kRowHeight - 1.0f),
-                            ImVec2(layout.contentX + w + kPanelPadX, y + kRowHeight - 1.0f),
-                            kRule, 1.0f);
-                const float px = layout.contentX + kRuleInsetX;
-                Layout::DrawString(dl, bFont, bPx, px,
-                                   y + (kRowHeight - bPx) * 0.5f,
-                                   kTextInactive, r.label);
+                std::vector<std::string> lines;
+                WrapInfoText(r, w, lines);
+                const float rowH = rects[i].h;
+                const float textBlockH =
+                    static_cast<float>(lines.size()) * bPx +
+                    static_cast<float>((lines.size() > 0) ? lines.size() - 1 : 0) * kInfoLineGap;
+                const float py0 = y + (std::max)(0.0f, (rowH - textBlockH) * 0.5f);
+
+                const float px = x + kInfoTextX;
+                for (size_t li = 0; li < lines.size(); ++li) {
+                    const float py = py0 + static_cast<float>(li) * (bPx + kInfoLineGap);
+                    Layout::DrawString(dl, bFont, bPx, px + 1.0f, py + 1.0f,
+                                       IM_COL32(0, 0, 0, 190), lines[li].c_str());
+                    Layout::DrawString(dl, bFont, bPx, px, py,
+                                       kTextInactive, lines[li].c_str());
+                }
                 break;
             }
             case RowKind::Spacer:
@@ -690,6 +982,11 @@ void RenderList(ImDrawList* dl, const ScreenLayout& layout,
                 Layout::DrawRowDrill(dl, x, y, w, r.label, s_buf, focused, disabled);
                 break;
             }
+            case RowKind::Submenu: {
+                const char* val = r.actionValue ? r.actionValue() : nullptr;
+                Layout::DrawRowDrill(dl, x, y, w, r.label, val, focused, disabled);
+                break;
+            }
             case RowKind::Action: {
                 const char* val = r.actionValue ? r.actionValue() : nullptr;
                 Layout::DrawRowDrill(dl, x, y, w, r.label, val, focused, disabled);
@@ -701,24 +998,30 @@ void RenderList(ImDrawList* dl, const ScreenLayout& layout,
     dl->PopClipRect();
 
     // Scroll indicator (right edge, inside panel pad area).
-    if (scroll.maxScrollPx > 0.0f) {
-        const float viewH = layout.contentBottomY - layout.contentTopY;
-        const float totalH = viewH + scroll.maxScrollPx;
-        const float barX = layout.panelX + kPanelW - 4.0f;
-        const float frac = scroll.scrollPx / scroll.maxScrollPx;
+    if (drawScroll->maxScrollPx > 0.0f) {
+        const float viewH = drawLayout.contentBottomY - drawLayout.contentTopY;
+        const float totalH = viewH + drawScroll->maxScrollPx;
+        const float barX = drawLayout.panelX + kPanelW - 4.0f;
+        const float frac = drawScroll->scrollPx / drawScroll->maxScrollPx;
         const float barH = viewH * (viewH / totalH);
-        const float barY = layout.contentTopY + (viewH - barH) * frac;
+        const float barY = drawLayout.contentTopY + (viewH - barH) * frac;
         dl->AddRectFilled(ImVec2(barX, barY),
                           ImVec2(barX + 2.0f, barY + barH),
                           kRule);
     }
 }
 
-bool HandleListInput(const ScreenLayout& layout,
+bool HandleRowsInput(const ScreenLayout& layout,
                      const Row* rows, int rowCount,
                      int& focus,
-                     ScrollState& scroll) {
+                     ScrollState& scroll,
+                     bool submenuContext) {
     if (IsKeybindActive()) {
+        return false;
+    }
+
+    if (!layout.inputEnabled) {
+        EnsureFocusVisible(layout, rows, rowCount, focus, scroll);
         return false;
     }
 
@@ -746,40 +1049,70 @@ bool HandleListInput(const ScreenLayout& layout,
         if (scroll.scrollPx > scroll.maxScrollPx) scroll.scrollPx = scroll.maxScrollPx;
     }
 
-    // Mouse hover → focus (only consider visible, focusable rows)
-    for (int i = 0; i < rowCount; ++i) {
-        if (!rects[i].visible) continue;
-        if (!RowIsFocusable(rows[i])) continue;
-        if (Input::MouseHovering(layout.contentX, rects[i].y,
-                                 layout.contentW, rects[i].h)) {
-            focus = i;
-            break;
+    const bool navUp    = Input::NavUp();
+    const bool navDown  = Input::NavDown();
+    const bool navLeft  = Input::NavLeft();
+    const bool navRight = Input::NavRight();
+    const bool keyboardOrPadEdge = navUp || navDown || navLeft || navRight ||
+                                   Input::Activate() || Input::Back() ||
+                                   Input::SwitchPlayer();
+
+    // Mouse hover should not continuously steal focus from keyboard/gamepad
+    // navigation. Only let hover retarget focus when the cursor actually moved
+    // this frame, or when the user clicks a row.
+    static unsigned int s_mouseFrame = ~0u;
+    static float s_lastMouseX = -1.0f;
+    static float s_lastMouseY = -1.0f;
+    static bool s_mouseMoved = false;
+    const unsigned int frame = ImGui::GetFrameCount();
+    if (frame != s_mouseFrame) {
+        s_mouseFrame = frame;
+        s_mouseMoved = false;
+        auto m = Input::GetMouse();
+        if (m.valid) {
+            if (s_lastMouseX < 0.0f && s_lastMouseY < 0.0f) {
+                s_lastMouseX = m.x;
+                s_lastMouseY = m.y;
+            } else {
+                const float dx = m.x - s_lastMouseX;
+                const float dy = m.y - s_lastMouseY;
+                if ((dx * dx + dy * dy) > 1.0f) {
+                    s_mouseMoved = true;
+                    s_lastMouseX = m.x;
+                    s_lastMouseY = m.y;
+                }
+            }
         }
     }
 
-    // Mouse click on a row = Activate that row
+    const bool mouseLeftEdge = Input::MouseLeftEdge();
     bool clickActivated = false;
-    if (Input::MouseLeftEdge()) {
+    if (!keyboardOrPadEdge && (s_mouseMoved || mouseLeftEdge)) {
         for (int i = 0; i < rowCount; ++i) {
             if (!rects[i].visible) continue;
             if (!RowIsFocusable(rows[i])) continue;
-            if (Input::MouseHovering(layout.contentX, rects[i].y,
+            if (Input::MouseHovering(layout.contentX + layout.animOffsetX, rects[i].y,
                                      layout.contentW, rects[i].h)) {
                 focus = i;
-                clickActivated = true;
+                clickActivated = mouseLeftEdge;
                 break;
             }
         }
     }
 
-    const bool navUp    = Input::NavUp();
-    const bool navDown  = Input::NavDown();
-    const bool navLeft  = Input::NavLeft();
-    const bool navRight = Input::NavRight();
     const bool activate = Input::Activate() || clickActivated;
 
-    if (navUp)   focus = FindFocusable(rows, rowCount, focus - 1, -1);
+    const int firstFocusable = FindFocusable(rows, rowCount, 0, +1);
+    const int oldFocus = focus;
+    if (navUp && !submenuContext && focus == firstFocusable) {
+        g_focusAboveRequested = true;
+    } else if (navUp) {
+        focus = FindFocusable(rows, rowCount, focus - 1, -1);
+    }
     if (navDown) focus = FindFocusable(rows, rowCount, focus + 1, +1);
+    if (focus != oldFocus) {
+        Sound::PlayCursor();
+    }
 
     if (focus >= 0 && focus < rowCount) {
         Row& r = const_cast<Row&>(rows[focus]);
@@ -796,6 +1129,7 @@ bool HandleListInput(const ScreenLayout& layout,
                 if (activate)  { *r.boolPtr = !*r.boolPtr; changed = true; }
                 else if (navLeft && *r.boolPtr)  { *r.boolPtr = false; changed = true; }
                 else if (navRight && !*r.boolPtr){ *r.boolPtr = true;  changed = true; }
+                if (changed) Sound::PlayCursor();
                 fire(changed);
                 break;
             }
@@ -809,6 +1143,7 @@ bool HandleListInput(const ScreenLayout& layout,
                 if (activate) { *r.intPtr += (s > 0 ? s : 1); changed = true; }
                 if (*r.intPtr < r.intMin) *r.intPtr = r.intMin;
                 if (*r.intPtr > r.intMax) *r.intPtr = r.intMax;
+                if (changed) Sound::PlayCursor();
                 fire(changed);
                 break;
             }
@@ -822,6 +1157,7 @@ bool HandleListInput(const ScreenLayout& layout,
                 if (activate) { *r.floatPtr += s; changed = true; }
                 if (*r.floatPtr < r.floatMin) *r.floatPtr = r.floatMin;
                 if (*r.floatPtr > r.floatMax) *r.floatPtr = r.floatMax;
+                if (changed) Sound::PlayCursor();
                 fire(changed);
                 break;
             }
@@ -835,6 +1171,7 @@ bool HandleListInput(const ScreenLayout& layout,
                 if (activate) { *r.doublePtr += s; changed = true; }
                 if (*r.doublePtr < r.doubleMin) *r.doublePtr = r.doubleMin;
                 if (*r.doublePtr > r.doubleMax) *r.doublePtr = r.doubleMax;
+                if (changed) Sound::PlayCursor();
                 fire(changed);
                 break;
             }
@@ -844,6 +1181,7 @@ bool HandleListInput(const ScreenLayout& layout,
                 bool changed = false;
                 if (navLeft)              { idx = (idx - 1 + r.choiceCount) % r.choiceCount; changed = true; }
                 else if (navRight || activate) { idx = (idx + 1) % r.choiceCount; changed = true; }
+                if (changed) Sound::PlayCursor();
                 fire(changed);
                 break;
             }
@@ -873,6 +1211,7 @@ bool HandleListInput(const ScreenLayout& layout,
                     }
                     changed = true;
                 }
+                if (changed) Sound::PlayCursor();
                 fire(changed);
                 break;
             }
@@ -885,6 +1224,7 @@ bool HandleListInput(const ScreenLayout& layout,
                 bool changed = false;
                 if (navLeft)  { idx = (idx - 1 + r.choiceCount) % r.choiceCount; changed = true; }
                 if (navRight) { idx = (idx + 1) % r.choiceCount; changed = true; }
+                if (changed) Sound::PlayCursor();
                 fire(changed);
                 break;
             }
@@ -893,9 +1233,14 @@ bool HandleListInput(const ScreenLayout& layout,
                 if (activate) { OpenMaskPopup(r); }
                 break;
             }
+            case RowKind::Submenu: {
+                if (disabled) break;
+                if (activate) { OpenSubmenu(r); }
+                break;
+            }
             case RowKind::Action: {
                 if (disabled) break;
-                if (activate && r.action) r.action();
+                if (activate && r.action) { Sound::PlayDecision(); r.action(); }
                 break;
             }
             default:
@@ -906,10 +1251,43 @@ bool HandleListInput(const ScreenLayout& layout,
     // Keep the focused row visible after any nav/click.
     EnsureFocusVisible(layout, rows, rowCount, focus, scroll);
 
-    return Input::Back();
+    const bool back = Input::Back();
+    if (back && submenuContext) {
+        CloseOneSubmenu();
+        return false;
+    }
+    return back;
+}
+
+bool HandleListInput(const ScreenLayout& layout,
+                     const Row* rows, int rowCount,
+                     int& focus,
+                     ScrollState& scroll) {
+    g_focusAboveRequested = false;
+    ScreenLayout activeLayout = ApplySubmenuAnimation(layout);
+    Row* submenuRows = nullptr;
+    int submenuCount = 0;
+    int* submenuFocus = nullptr;
+    ScrollState* submenuScroll = nullptr;
+    const char* submenuTitle = nullptr;
+    if (ActiveSubmenuRows(submenuRows, submenuCount, submenuFocus, submenuScroll, submenuTitle)) {
+        if (!submenuFocus || !submenuScroll) return false;
+        return HandleRowsInput(activeLayout, submenuRows, submenuCount, *submenuFocus, *submenuScroll, true);
+    }
+    return HandleRowsInput(activeLayout, rows, rowCount, focus, scroll, false);
 }
 
 bool IsPopupActive() { return PopupActive(); }
+bool IsSubmenuActive() { return g_submenus.depth > 0; }
+bool ConsumeFocusAboveRequest() {
+    const bool requested = g_focusAboveRequested;
+    g_focusAboveRequested = false;
+    return requested;
+}
+
+void ResetSubmenus() {
+    g_submenus = SubmenuState{};
+}
 
 bool TickPopupIfOpen(ImDrawList* dl, const ScreenLayout& layout) {
     if (!g_popup.active) return false;

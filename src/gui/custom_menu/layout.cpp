@@ -33,6 +33,17 @@ void DrawMenuStrip(ImDrawList* dl, float x, float y, float w, float h, bool stro
     dl->AddLine(ImVec2(sx, y + h - 1.0f), ImVec2(sx + sw, y + h - 1.0f), kRule, 1.0f);
 }
 
+void DrawOutlinedString(ImDrawList* dl, ImFont* font, float px, float x, float y,
+                        ImU32 textCol, ImU32 outlineCol, const char* text) {
+    if (!dl || !text || !*text) return;
+    DrawString(dl, font, px, x - 1.0f, y,        outlineCol, text);
+    DrawString(dl, font, px, x + 1.0f, y,        outlineCol, text);
+    DrawString(dl, font, px, x,        y - 1.0f, outlineCol, text);
+    DrawString(dl, font, px, x,        y + 1.0f, outlineCol, text);
+    DrawString(dl, font, px, x + 1.0f, y + 1.0f, IM_COL32(0, 0, 0, 150), text);
+    DrawString(dl, font, px, x,        y,        textCol, text);
+}
+
 // Draw the focused-row background tint + left-side cursor glyph (">"). This
 // is the visual anchor that indicates which row is currently selected;
 // matches EFZ's native menu convention.
@@ -49,12 +60,11 @@ void DrawRowChromeFocused(ImDrawList* dl, float x, float y, float w, bool disabl
     ImFont* f  = Fonts::Body();
     const float px = PxFromFont(f);
     const float textY = CenterTextY(y, kRowHeight, px);
-    // Cursor sits inside kRowPadX (12px) so it doesn't collide with the label,
-    // which starts at x + kRowPadX.
+    // Cursor sits inside the row padding so it doesn't crowd the label.
     if (dl && f) {
-        dl->AddText(f, px, ImVec2(x + 3.0f, textY), cursorCol, ">");
+        dl->AddText(f, px, ImVec2(x + 5.0f, textY), cursorCol, ">");
     } else if (dl) {
-        dl->AddText(ImVec2(x + 3.0f, textY), cursorCol, ">");
+        dl->AddText(ImVec2(x + 5.0f, textY), cursorCol, ">");
     }
     if (disabled) {
         dl->AddRect(
@@ -139,8 +149,6 @@ void DrawTabBar(ImDrawList* dl, float x, float y, float w,
     ImFont* bFont = BodyFont();
     const float bPx = PxFromFont(bFont);
 
-    DrawMenuStrip(dl, x + kPanelPadX, y, w - kPanelPadX * 2.0f, kTabBarHeight, true);
-
     // Measure all widths
     float totalW = 0.0f;
     for (int i = 0; i < count; ++i) {
@@ -159,21 +167,38 @@ void DrawTabBar(ImDrawList* dl, float x, float y, float w,
         const bool isActive  = (i == activeIdx);
         const bool isFocused = (i == focusedIdx);
         const ImU32 col = isActive ? kTextActive : kTextInactive;
+        const float boxPadX = 7.0f;
+        const float boxTop = textY - 4.0f;
+        const float boxBottom = textY + bPx + 4.0f;
 
         if (isActive) {
-            dl->AddRectFilled(
-                ImVec2(cursorX - 5.0f, y + 3.0f),
-                ImVec2(cursorX + tw + 5.0f, y + kTabBarHeight - 4.0f),
-                kSelectedFill);
+            dl->AddRectFilled(ImVec2(cursorX - boxPadX, boxTop),
+                              ImVec2(cursorX + tw + boxPadX, boxBottom),
+                              IM_COL32(0, 0, 0, 118));
+            dl->AddRect(ImVec2(cursorX - boxPadX + 0.5f, boxTop + 0.5f),
+                        ImVec2(cursorX + tw + boxPadX - 0.5f, boxBottom - 0.5f),
+                        isFocused ? kTextActive : kRuleDim, 0.0f, 0, 1.0f);
+            const float underlineY = y + kTabBarHeight - 5.0f;
+            dl->AddLine(ImVec2(cursorX - 3.0f, underlineY),
+                        ImVec2(cursorX + tw + 3.0f, underlineY),
+                        kTextActive, 1.0f);
+            dl->AddLine(ImVec2(cursorX - 3.0f, underlineY + 2.0f),
+                        ImVec2(cursorX + tw + 3.0f, underlineY + 2.0f),
+                        kSelectedLine, 1.0f);
         } else if (isFocused) {
-            const float pad = 2.0f;
-            dl->AddRect(
-                ImVec2(cursorX - pad, textY - pad),
-                ImVec2(cursorX + tw + pad, textY + bPx + pad),
-                kRuleDim, 0.0f, 0, 1.0f);
+            dl->AddRectFilled(ImVec2(cursorX - boxPadX, boxTop),
+                              ImVec2(cursorX + tw + boxPadX, boxBottom),
+                              IM_COL32(0, 0, 0, 96));
+            dl->AddRect(ImVec2(cursorX - boxPadX + 0.5f, boxTop + 0.5f),
+                        ImVec2(cursorX + tw + boxPadX - 0.5f, boxBottom - 0.5f),
+                        kRuleDim, 0.0f, 0, 1.0f);
+            const float underlineY = y + kTabBarHeight - 6.0f;
+            dl->AddLine(ImVec2(cursorX - 2.0f, underlineY),
+                        ImVec2(cursorX + tw + 2.0f, underlineY),
+                        kRuleDim, 1.0f);
         }
 
-        DrawString(dl, bFont, bPx, cursorX, textY, col, labels[i]);
+        DrawOutlinedString(dl, bFont, bPx, cursorX, textY, col, IM_COL32(0, 0, 0, 230), labels[i]);
 
         cursorX += tw + kTabGapX;
     }
