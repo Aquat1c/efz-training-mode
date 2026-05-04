@@ -1021,7 +1021,10 @@ namespace Framestep {
         }
 
         // Build status message (only when paused)
-        std::string text = "Paused [Space=Resume P=Step]";
+        const Config::Settings cfg = Config::GetSettings();
+        const int pauseKey = (cfg.framestepPauseKey > 0) ? cfg.framestepPauseKey : VK_SPACE;
+        const int stepKey = (cfg.framestepStepKey > 0) ? cfg.framestepStepKey : 'P';
+        std::string text = "Paused [" + GetKeyName(pauseKey) + "=Resume " + GetKeyName(stepKey) + "=Step]";
         COLORREF color = RGB(255, 100, 100); // Red for paused
         
         // Add step counter and mode info if we've stepped
@@ -1038,9 +1041,9 @@ namespace Framestep {
             text += ")";
         }
 
-        // Position on right side, same Y as teleport messages (100)
+        // Position below Revival's built-in top-right practice text block.
         const int x = 540;
-        const int y = 100;
+        const int y = 145;
 
         if (g_FramestepStatusId == -1) {
             g_FramestepStatusId = DirectDrawHook::AddPermanentMessage(text, color, x, y);
@@ -1056,7 +1059,7 @@ namespace Framestep {
 
     void SetStepMode(StepMode mode) {
         s_stepMode.store(mode);
-        std::string modeStr = (mode == StepMode::Subframe) ? "Subframe (1 step = 192fps frame)" : "Full Frame (1 step = 64fps frame)";
+        std::string modeStr = (mode == StepMode::Subframe) ? "Subframe (1 step = 1 subframe)" : "Full Frame (1 step = 1 visual frame)";
         LogOut("[FRAMESTEP] Step mode changed to: " + modeStr, true);
     }
 

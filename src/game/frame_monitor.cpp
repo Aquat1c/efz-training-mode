@@ -26,6 +26,7 @@
 #include "../include/game/attack_reader.h"
 #include "../include/game/practice_patch.h"
 #include "../include/game/character_settings.h"
+#include "../include/game/character_hotswap.h"
 #include "../include/game/final_memory_patch.h"
 #include "../include/game/macro_controller.h"
 #include "../include/game/always_rg.h"
@@ -507,7 +508,9 @@ void UpdateTriggerOverlay() {
         return;
     }
 
-    int yPos = 140;
+    const int yPosDefault = 140;
+    const int yPosBelowFramestep = 160;
+    int yPos = Framestep::IsPaused() ? yPosBelowFramestep : yPosDefault;
     const int yIncrement = 15;
     int targetPlayer = autoActionPlayer.load();
 
@@ -1067,6 +1070,8 @@ void FrameDataMonitor() {
             lastPhase = currentPhase;
             s_lastPhaseMode = currentMode;
         }
+
+        CharacterHotswap::Tick(currentPhase, currentMode);
 
         // Character Select handling: run per-frame, not only on phase-change edge
         if (currentPhase == GamePhase::CharacterSelect) {
@@ -2005,7 +2010,7 @@ void FrameDataMonitor() {
             // Run dummy auto-block using unified sample (still every frame for precision)
             MonitorDummyAutoBlock(GetCurrentPerFrameSample());
 
-            // FrameBar: per-visual-frame sampler (cheap when toggle is off).
+            // FrameBar: per-subframe sampler (cheap when toggle is off).
             FrameBar::TickSample();
 
             // Practice-only: Defense helpers

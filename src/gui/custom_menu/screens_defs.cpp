@@ -22,6 +22,7 @@
 #include "../include/game/macro_controller.h"
 #include "../include/game/fm_commands.h"
 #include "../include/game/character_settings.h"
+#include "../include/game/character_hotswap.h"
 #include "../include/gui/overlay.h"
 #include "../include/gui/framebar.h"
 #include "../include/utils/xinput_shim.h"
@@ -659,20 +660,195 @@ void OnDeepFA()         { g_deepFrameAdvDebug.store(g_mirrorDeepFA); }
 
 int g_bgmSlot = 1;
 
+char g_hotswapOstTrack08Label[64] = "08 - Character Selection (BME)";
+
+const char* const kNamedStageChoices[] = {
+    "00 - Courtyard of the Full Moon",
+    "01 - Snowy Park (Night)",
+    "02 - Lunch Break Courtyard",
+    "03 - School Road Park (Day)",
+    "04 - School Road Park (Night)",
+    "05 - Sunset Rooftop",
+    "06 - Shopping Street",
+    "07 - Tree of Beginnings",
+    "08 - Minase House (Day)",
+    "09 - Gymnasium",
+    "10 - Rainy Field",
+    "11 - Behind the School",
+    "12 - World of Eternity",
+    "13 - Abandoned Station (Day)",
+    "14 - Shrine Near the Sky (Day)",
+    "15 - Kamio House",
+    "16 - The Infinite Sky",
+    "17 - Minase House (Night)",
+    "18 - Abandoned Station (Dusk)",
+    "19 - FARGO Research Facility",
+    "20 - Monomi Hill",
+    "21 - Shrine Near the Sky (Night)",
+    "22 - Snowy Park (Day)",
+};
+
+const unsigned short kNamedOstTracks[] = {
+    150,
+    0,
+    1,
+    5,
+    6,
+    7,
+    8,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    16,
+    17,
+    18,
+    19,
+    20,
+    21,
+    22,
+    23,
+    24,
+    25,
+    26,
+    27,
+    28,
+    29,
+    30,
+    31,
+    32,
+};
+
+const char* const kNamedOstChoices[] = {
+    "OFF (150)",
+    "00 - Character Selection",
+    "01 - Character Selection (Practice)",
+    "05 - Staff Roll",
+    "06 - Replay Menu OST",
+    "07 - Config Menu OST",
+    g_hotswapOstTrack08Label,
+    "10 - Courtyard of the Full Moon",
+    "11 - Snowy Park (Night)",
+    "12 - Lunch Break Courtyard",
+    "13 - School Road Park (Day)",
+    "14 - School Road Park (Night)",
+    "15 - Sunset Rooftop",
+    "16 - Shopping Street",
+    "17 - Tree of Beginnings",
+    "18 - Minase House (Day)",
+    "19 - Gymnasium",
+    "20 - Rainy Field",
+    "21 - Behind the School",
+    "22 - World of Eternity",
+    "23 - Abandoned Station (Day)",
+    "24 - Shrine Near the Sky (Day)",
+    "25 - Kamio House",
+    "26 - The Infinite Sky",
+    "27 - Minase House (Night)",
+    "28 - Abandoned Station (Dusk)",
+    "29 - FARGO Research Facility",
+    "30 - Monomi Hill",
+    "31 - Shrine Near the Sky (Night)",
+    "32 - Snowy Park (Day)",
+};
+
+constexpr int kNamedStageChoiceCount = static_cast<int>(sizeof(kNamedStageChoices) / sizeof(kNamedStageChoices[0]));
+constexpr int kNamedOstChoiceCount = static_cast<int>(sizeof(kNamedOstChoices) / sizeof(kNamedOstChoices[0]));
+
+bool NetplayModLoaded() {
+    return GetModuleHandleA("efz_netplay_mod.dll") != nullptr
+        || GetModuleHandleA("efz_netplay_mod") != nullptr;
+}
+
+void RefreshNamedOstChoices() {
+    _snprintf_s(g_hotswapOstTrack08Label,
+                sizeof(g_hotswapOstTrack08Label),
+                _TRUNCATE,
+                "%s",
+                NetplayModLoaded() ? "08 - Netplay Menu OST" : "08 - Character Selection (BME)");
+}
+
+int FindNamedOstChoiceIndexByTrack(int trackNumber) {
+    for (int i = 0; i < kNamedOstChoiceCount; ++i) {
+        if (static_cast<int>(kNamedOstTracks[i]) == trackNumber) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+unsigned short TrackForNamedOstChoice(int choiceIdx) {
+    if (choiceIdx < 0 || choiceIdx >= kNamedOstChoiceCount) {
+        return 150;
+    }
+    return kNamedOstTracks[choiceIdx];
+}
+
+int CharacterSelectIdFromInternalCharacterId(int internalCharId) {
+    switch (internalCharId) {
+        case CHAR_ID_AKANE:    return 4;
+        case CHAR_ID_AKIKO:    return 16;
+        case CHAR_ID_IKUMI:    return 14;
+        case CHAR_ID_MISAKI:   return 7;
+        case CHAR_ID_SAYURI:   return 9;
+        case CHAR_ID_KANNA:    return 19;
+        case CHAR_ID_KAORI:    return 13;
+        case CHAR_ID_MAKOTO:   return 3;
+        case CHAR_ID_MINAGI:   return 21;
+        case CHAR_ID_MIO:      return 11;
+        case CHAR_ID_MISHIO:   return 15;
+        case CHAR_ID_MISUZU:   return 23;
+        case CHAR_ID_MIZUKA:   return 6;
+        case CHAR_ID_NAGAMORI: return 6;
+        case CHAR_ID_NANASE:   return 0;
+        case CHAR_ID_EXNANASE: return 12;
+        case CHAR_ID_NAYUKI:   return 10;
+        case CHAR_ID_NAYUKIB:  return 17;
+        case CHAR_ID_SHIORI:   return 8;
+        case CHAR_ID_AYU:      return 1;
+        case CHAR_ID_MAI:      return 2;
+        case CHAR_ID_MAYU:     return 5;
+        case CHAR_ID_MIZUKAB:  return 18;
+        case CHAR_ID_KANO:     return 20;
+        default:               return 4;
+    }
+}
+
+bool g_bgmChoiceSeeded = false;
+
+void SeedDebugBgmChoiceIfNeeded() {
+    RefreshNamedOstChoices();
+    if (g_bgmChoiceSeeded) {
+        return;
+    }
+
+    uintptr_t gameStatePtr = GetGameStatePtr();
+    if (gameStatePtr) {
+        const int currentTrack = GetBGMSlot(gameStatePtr);
+        const int ostChoice = FindNamedOstChoiceIndexByTrack(currentTrack);
+        if (ostChoice >= 0) {
+            g_bgmSlot = ostChoice;
+        }
+    }
+
+    if (g_bgmSlot < 0 || g_bgmSlot >= kNamedOstChoiceCount) {
+        g_bgmSlot = 0;
+    }
+    g_bgmChoiceSeeded = true;
+}
+
 void RunStopBGM() {
-    uintptr_t base = GetEFZBase();
-    if (!base) return;
-    uintptr_t gameStatePtr = 0;
-    if (!SafeReadMemory(base + EFZ_BASE_OFFSET_GAME_STATE, &gameStatePtr, sizeof(gameStatePtr))) return;
+    uintptr_t gameStatePtr = GetGameStatePtr();
+    if (!gameStatePtr) return;
     StopBGM(gameStatePtr);
 }
 void RunPlayBGM() {
-    uintptr_t base = GetEFZBase();
-    if (!base) return;
-    uintptr_t gameStatePtr = 0;
-    if (!SafeReadMemory(base + EFZ_BASE_OFFSET_GAME_STATE, &gameStatePtr, sizeof(gameStatePtr))) return;
-    if (g_bgmSlot < 0) g_bgmSlot = 0;
-    PlayBGM(gameStatePtr, (unsigned short)g_bgmSlot);
+    SeedDebugBgmChoiceIfNeeded();
+    uintptr_t gameStatePtr = GetGameStatePtr();
+    if (!gameStatePtr) return;
+    PlayBGM(gameStatePtr, TrackForNamedOstChoice(g_bgmSlot));
 }
 void RunP1FinalMemory() {
     const auto& d = ImGuiGui::guiState.localData;
@@ -684,13 +860,20 @@ void RunP2FinalMemory() {
 }
 
 void OnFrameBarPersist();
+void OnFrameBarTiming();
+void OnFrameBarDetail();
+bool FrameBarOptionsHidden();
+const char* const kFrameBarTimingChoices[2] = { "SUBFRAMES", "VISUAL FRAMES" };
+const char* const kFrameBarDetailChoices[3] = { "FULL", "COMPACT", "BARS ONLY" };
 
 const char* ValDebugLogging() { return MutableSettings().detailedLogging ? "DETAILED" : "NORMAL"; }
 const char* ValDebugOverlays() { return MutableSettings().showFrameBar ? "FRAMEBAR" : "TOOLS"; }
 const char* ValDebugBgm() {
-    static char s_buf[24];
-    _snprintf_s(s_buf, sizeof(s_buf), _TRUNCATE, "SLOT %d", g_bgmSlot);
-    return s_buf;
+    SeedDebugBgmChoiceIfNeeded();
+    if (g_bgmSlot >= 0 && g_bgmSlot < kNamedOstChoiceCount) {
+        return kNamedOstChoices[g_bgmSlot];
+    }
+    return "OFF (150)";
 }
 const char* ValFinalMemoryTools() { return "RUN"; }
 
@@ -714,12 +897,14 @@ Row* BuildDebugLoggingRows(int& count) {
 }
 
 Row* BuildDebugOverlayRows(int& count) {
-    static Row s_rows[12];
+    static Row s_rows[16];
     int n = 0;
     auto& s = MutableSettings();
 
     s_rows[n++] = Header("OVERLAYS");
     s_rows[n++] = Toggle ("FRAME BAR",                 &s.showFrameBar,            OnFrameBarPersist);
+    s_rows[n++] = ChoicesRow("  FRAME BAR CELLS",      &s.frameBarTimingMode,      kFrameBarTimingChoices, 2, OnFrameBarTiming, nullptr, FrameBarOptionsHidden);
+    s_rows[n++] = ChoicesRow("  FRAME BAR DETAIL",     &s.frameBarDetailMode,      kFrameBarDetailChoices, 3, OnFrameBarDetail, nullptr, FrameBarOptionsHidden);
     s_rows[n++] = Toggle ("OVERLAY DEBUG BORDERS",     &g_mirrorOverlayBorders,       OnOverlayBorders);
     s_rows[n++] = Toggle ("RG DEBUG TOASTS",           &g_mirrorRGToasts,             OnRGToasts);
     s_rows[n++] = Toggle ("COMBO STATISTICS",          &s.showComboStatisticsOverlay, OnShowCombo);
@@ -732,8 +917,10 @@ Row* BuildDebugBgmRows(int& count) {
     static Row s_rows[8];
     int n = 0;
 
+    SeedDebugBgmChoiceIfNeeded();
+
     s_rows[n++] = Header("BGM");
-    s_rows[n++] = IntNum ("BGM SLOT",                  &g_bgmSlot, 0, 999, 1, 10);
+    s_rows[n++] = DropdownRow("BGM TRACK",            &g_bgmSlot, kNamedOstChoices, kNamedOstChoiceCount);
     s_rows[n++] = Action ("PLAY BGM",                  RunPlayBGM);
     s_rows[n++] = Action ("STOP BGM",                  RunStopBGM);
     count = n;
@@ -1134,9 +1321,10 @@ Row* BuildHelpFramebarRows(int& count) {
     static Row s_rows[56];
     int n = 0;
     s_rows[n++] = Header("FRAMEBAR");
-    s_rows[n++] = Info("Framebar is a per-player timeline near the bottom-center of the screen. Each cell is one 64 FPS visual frame.");
+    s_rows[n++] = Info("Framebar is a per-player timeline near the bottom-center of the screen. Each cell is one subframe by default.");
+    s_rows[n++] = Info("Set Cell Step to Visual Frames if you prefer one cell per displayed game frame instead of subframe detail.");
     s_rows[n++] = Info("The right edge is the current frame. Older frames are on the left, so scan left-to-right to follow the sequence into the present.");
-    s_rows[n++] = Info("It starts advancing when something important happens: attacks, stun, projectiles, lockout, Recoil Guard, or a block/RG check against the opponent's current attack.");
+    s_rows[n++] = Info("It starts advancing when something important happens: attacks, stun, projectiles, lockout, Recoil Guard, or an overlapping block/RG check.");
     s_rows[n++] = Info("After roughly one second of calm, it freezes in place until the next action. This keeps the last useful sequence visible instead of scrolling through neutral forever.");
     s_rows[n++] = Spacer();
     s_rows[n++] = Header("COLORS");
@@ -1144,22 +1332,25 @@ Row* BuildHelpFramebarRows(int& count) {
     s_rows[n++] = Info("Yellow means prejump, jump, double jump, airtech, or ground tech.");
     s_rows[n++] = Info("Blue and cyan mean dashes, air dashes, and Recoil Guard windows.");
     s_rows[n++] = Info("Red means attack startup, active frames, or recovery. Grey means blockstun, hitstun, or launch.");
-    s_rows[n++] = Info("Purple and pink cover throws and superflash. Blue-grey marks shared hitstop or engine freeze.");
+    s_rows[n++] = Info("Purple and pink cover throws and superflash. Blue-grey marks shared hitstop.");
     s_rows[n++] = Spacer();
     s_rows[n++] = Header("MARKERS");
     s_rows[n++] = Info("A white vertical line marks the first active frame detected in the current attack sequence.");
-    s_rows[n++] = Info("Orange top ticks mark active projectiles. Red lower strips mark attack data, visible attack boxes, or the engine's attack timer.");
-    s_rows[n++] = Info("Blue and cyan small strips mean that side can block or Recoil Guard the opponent's current attack.");
-    s_rows[n++] = Info("A dark blue band means hitstop or freeze. Yellow/magenta flashes call out untech, hit, block/RG, throw, and counter-hit moments.");
+    s_rows[n++] = Info("Orange top ticks mark live projectile slots. A second orange tick means the projectile's current frame has attack boxes.");
+    s_rows[n++] = Info("Bright red lower strips mean collision-active character boxes. Dark red means attack data without active collision yet.");
+    s_rows[n++] = Info("Muted brown strips mark the engine's post-hit attack timer; they are not active frames by themselves.");
+    s_rows[n++] = Info("Blue and cyan small strips mean that side can block or Recoil Guard the overlapping character or projectile attack.");
+    s_rows[n++] = Info("A dark blue band means shared hitstop. Yellow/magenta flashes call out untech, hit, block/RG, throw, and counter-hit moments.");
     s_rows[n++] = Info("Purple middle marks track air-mobility counters, useful when checking double jumps and air dashes.");
+    s_rows[n++] = Info("Detail controls how much of this appears: Full shows every marker and status line, Compact keeps the main timing data, and Bars Only hides text and extra marker strips.");
     s_rows[n++] = Spacer();
     s_rows[n++] = Header("STATUS LINES");
-    s_rows[n++] = Info("ID/F is move ID and current animation frame. BX is active attack boxes. P is active projectiles.");
-    s_rows[n++] = Info("ST is the engine state timer. UT is untech or stun duration. SF is superflash freeze. AT is air-time. AM is air-mobility counters.");
+    s_rows[n++] = Info("ID/F is move ID and current animation frame. BX is active/raw character boxes. PB is projectile attack boxes. P is live projectile slots.");
+    s_rows[n++] = Info("ST is the engine state timer. UT is untech or stun duration. SF is superflash freeze. AM is air-mobility counters.");
     s_rows[n++] = Info("FA is first active frame. ACT is active or projectile frames. TOT is total engine-busy frames.");
-    s_rows[n++] = Info("ATK is the attacker collision countdown. FL and CL are frame and collision lockouts. GG is guard gauge.");
-    s_rows[n++] = Info("B and RG tell whether the side can block or Recoil Guard the opponent's current attack. G is the current guard flag.");
-    s_rows[n++] = Info("HS is the hit-state flag. CH is counter-hit. FRZ means the engine is currently frozen by superflash or shared hitstop.");
+    s_rows[n++] = Info("ATK is the post-hit attacker countdown. FL and CL are frame and collision lockouts. GG is guard gauge.");
+    s_rows[n++] = Info("B and RG tell whether the side can block or Recoil Guard the opponent's overlapping attack. G is the current guard flag.");
+    s_rows[n++] = Info("HS is the hit-state flag. CH is counter-hit. HST means shared hitstop.");
     s_rows[n++] = Spacer();
     s_rows[n++] = Header("FRAMESTEP");
     s_rows[n++] = Info("When the game is paused or framestepping, Framebar advances only when the game actually steps. That makes it useful for reviewing one frame at a time.");
@@ -1814,8 +2005,261 @@ void RunExitToTitle() {
     RequestFrontendExit(FrontendExitTarget::Title);
 }
 
-void StubHotswapSelection() {
-    LogOut("[CUSTOM_MENU] Hotswap selection stub activated", true);
+const char* const kHotswapCharacterChoices[] = {
+    "Rumi", "Ayu", "Mai", "Makoto", "Akane", "Mayu",
+    "Mizuka", "Misaki", "Shiori", "Sayuri", "Neyuki", "Mio",
+    "Doppel", "Kaori", "Ikumi", "Mishio", "Akiko", "Nayuki",
+    "Unknown", "Kanna", "Kano", "Minagi", "Misuzu",
+};
+
+const int kHotswapCharacterSelectIds[] = {
+    0, 1, 2, 3, 4, 5,
+    6, 7, 8, 9, 10, 11,
+    12, 13, 14, 15, 16, 17,
+    18, 19, 20, 21, 23,
+};
+
+constexpr int kHotswapCharacterChoiceCount = static_cast<int>(sizeof(kHotswapCharacterChoices) / sizeof(kHotswapCharacterChoices[0]));
+
+constexpr uintptr_t kHotswapScreenTableRva = 0x00390110;
+constexpr uint8_t kHotswapCharacterSelectScreen = 1;
+constexpr uintptr_t kHotswapCsP1SelectionOffset = 1340;
+constexpr uintptr_t kHotswapCsP2SelectionOffset = 1341;
+
+int g_hotswapMenuP1Character = 4;
+int g_hotswapMenuP2Character = 16;
+int g_hotswapMenuStage = 0;
+int g_hotswapMenuOstChoice = 0;
+bool g_hotswapMenuSeeded = false;
+
+struct HotswapCurrentState {
+    bool charsValid = false;
+    int p1SelectId = 4;
+    int p2SelectId = 16;
+    bool stageValid = false;
+    int stageId = 0;
+    bool bgmValid = false;
+    int bgmTrack = 0;
+};
+
+int CharacterSelectIdForHotswapChoice(int choiceIdx) {
+    if (choiceIdx < 0 || choiceIdx >= kHotswapCharacterChoiceCount) {
+        return 4;
+    }
+    return kHotswapCharacterSelectIds[choiceIdx];
+}
+
+int HotswapChoiceIndexFromCharacterSelectId(int selectId) {
+    if (selectId == 22) {
+        selectId = 10;
+    }
+    for (int i = 0; i < kHotswapCharacterChoiceCount; ++i) {
+        if (kHotswapCharacterSelectIds[i] == selectId) {
+            return i;
+        }
+    }
+    return 4;
+}
+
+bool ReadCurrentCharacterSelectIds(HotswapCurrentState& state) {
+    const uintptr_t base = GetEFZBase();
+    if (!base) {
+        return false;
+    }
+
+    uintptr_t screenContext = 0;
+    const uintptr_t slot = base + kHotswapScreenTableRva + 4u * static_cast<uintptr_t>(kHotswapCharacterSelectScreen);
+    if (!SafeReadMemory(slot, &screenContext, sizeof(screenContext)) || !screenContext) {
+        return false;
+    }
+
+    uint8_t p1SelectId = 0;
+    uint8_t p2SelectId = 0;
+    if (!SafeReadMemory(screenContext + kHotswapCsP1SelectionOffset, &p1SelectId, sizeof(p1SelectId))) {
+        return false;
+    }
+    if (!SafeReadMemory(screenContext + kHotswapCsP2SelectionOffset, &p2SelectId, sizeof(p2SelectId))) {
+        return false;
+    }
+
+    state.p1SelectId = static_cast<int>(p1SelectId);
+    state.p2SelectId = static_cast<int>(p2SelectId);
+    state.charsValid = true;
+    return true;
+}
+
+bool ReadCurrentHotswapState(HotswapCurrentState& state) {
+    state = HotswapCurrentState{};
+
+    const GamePhase phase = GetCurrentGamePhase();
+    if (phase == GamePhase::Match) {
+        const auto& d = ImGuiGui::guiState.localData;
+        state.p1SelectId = HotswapChoiceIndexFromCharacterSelectId(CharacterSelectIdFromInternalCharacterId(d.p1CharID));
+        state.p2SelectId = HotswapChoiceIndexFromCharacterSelectId(CharacterSelectIdFromInternalCharacterId(d.p2CharID));
+        state.p1SelectId = CharacterSelectIdForHotswapChoice(state.p1SelectId);
+        state.p2SelectId = CharacterSelectIdForHotswapChoice(state.p2SelectId);
+        state.charsValid = true;
+    } else if (phase == GamePhase::CharacterSelect) {
+        ReadCurrentCharacterSelectIds(state);
+    }
+
+    const uintptr_t gameStatePtr = GetGameStatePtr();
+    if (gameStatePtr) {
+        uint8_t currentStage = 0;
+        if (SafeReadMemory(gameStatePtr + 3890, &currentStage, sizeof(currentStage))) {
+            state.stageId = static_cast<int>(currentStage);
+            state.stageValid = state.stageId >= 0 && state.stageId < kNamedStageChoiceCount;
+        }
+        state.bgmTrack = GetBGMSlot(gameStatePtr);
+        state.bgmValid = true;
+    }
+
+    return state.charsValid || state.stageValid || state.bgmValid;
+}
+
+bool RevivalBgmMuted() {
+    HMODULE revivalModule = GetModuleHandleA("EfzRevival.dll");
+    if (!revivalModule) {
+        return false;
+    }
+
+    char modulePath[MAX_PATH] = {0};
+    if (!GetModuleFileNameA(revivalModule, modulePath, MAX_PATH)) {
+        return false;
+    }
+
+    std::string iniPath(modulePath);
+    const size_t slash = iniPath.find_last_of("\\/");
+    if (slash == std::string::npos) {
+        return false;
+    }
+    iniPath.resize(slash + 1);
+    iniPath += "EfzRevival.ini";
+
+    return GetPrivateProfileIntA("Global Settings", "MuteBGM", 0, iniPath.c_str()) != 0;
+}
+
+bool HotswapOstValueDisabled() {
+    return CharacterHotswap::IsBusy() || RevivalBgmMuted();
+}
+
+bool HotswapHasReloadChanges(const HotswapCurrentState& current) {
+    if (!current.charsValid || !current.stageValid) {
+        return false;
+    }
+
+    return CharacterSelectIdForHotswapChoice(g_hotswapMenuP1Character) != current.p1SelectId
+        || CharacterSelectIdForHotswapChoice(g_hotswapMenuP2Character) != current.p2SelectId
+        || g_hotswapMenuStage != current.stageId;
+}
+
+bool HotswapHasOstChange(const HotswapCurrentState& current) {
+    if (!current.bgmValid || RevivalBgmMuted()) {
+        return false;
+    }
+    return static_cast<int>(TrackForNamedOstChoice(g_hotswapMenuOstChoice)) != current.bgmTrack;
+}
+
+const char* ValHotswapApply() {
+    if (CharacterHotswap::IsBusy()) {
+        return CharacterHotswap::GetActionValueText();
+    }
+
+    HotswapCurrentState current{};
+    ReadCurrentHotswapState(current);
+    const bool reloadChanged = HotswapHasReloadChanges(current);
+    const bool ostChanged = HotswapHasOstChange(current);
+
+    if (!reloadChanged && !ostChanged) {
+        return "NO CHANGES";
+    }
+    if (reloadChanged) {
+        return CharacterHotswap::CanQueueReload() ? "READY" : "MATCH/CS ONLY";
+    }
+    return current.bgmValid ? "OST ONLY" : "UNAVAILABLE";
+}
+
+void SeedHotswapMenuSelectionsIfNeeded() {
+    RefreshNamedOstChoices();
+    if (g_hotswapMenuSeeded) {
+        return;
+    }
+
+    HotswapCurrentState current{};
+    if (ReadCurrentHotswapState(current)) {
+        if (current.charsValid) {
+            g_hotswapMenuP1Character = HotswapChoiceIndexFromCharacterSelectId(current.p1SelectId);
+            g_hotswapMenuP2Character = HotswapChoiceIndexFromCharacterSelectId(current.p2SelectId);
+        }
+        if (current.stageValid) {
+            g_hotswapMenuStage = current.stageId;
+        }
+        if (current.bgmValid) {
+            const int ostChoice = FindNamedOstChoiceIndexByTrack(current.bgmTrack);
+            if (ostChoice >= 0) {
+                g_hotswapMenuOstChoice = ostChoice;
+            } else {
+                const int stageTrackChoice = FindNamedOstChoiceIndexByTrack(10 + g_hotswapMenuStage);
+                g_hotswapMenuOstChoice = (stageTrackChoice >= 0) ? stageTrackChoice : 0;
+            }
+        }
+    } else {
+        const auto& d = ImGuiGui::guiState.localData;
+        if (d.p1CharID >= CHAR_ID_AKANE && d.p1CharID <= CHAR_ID_KANO) {
+            g_hotswapMenuP1Character = HotswapChoiceIndexFromCharacterSelectId(CharacterSelectIdFromInternalCharacterId(d.p1CharID));
+        }
+        if (d.p2CharID >= CHAR_ID_AKANE && d.p2CharID <= CHAR_ID_KANO) {
+            g_hotswapMenuP2Character = HotswapChoiceIndexFromCharacterSelectId(CharacterSelectIdFromInternalCharacterId(d.p2CharID));
+        }
+    }
+
+    g_hotswapMenuSeeded = true;
+}
+
+void RunMenuHotswapApply() {
+    if (CharacterHotswap::IsBusy()) {
+        return;
+    }
+
+    HotswapCurrentState current{};
+    ReadCurrentHotswapState(current);
+
+    const int p1SelectId = CharacterSelectIdForHotswapChoice(g_hotswapMenuP1Character);
+    const int p2SelectId = CharacterSelectIdForHotswapChoice(g_hotswapMenuP2Character);
+    const bool reloadChanged = HotswapHasReloadChanges(current);
+    bool ostChanged = HotswapHasOstChange(current);
+    unsigned short targetTrack = TrackForNamedOstChoice(g_hotswapMenuOstChoice);
+
+    if (RevivalBgmMuted()) {
+        ostChanged = false;
+        if (current.bgmValid) {
+            targetTrack = static_cast<unsigned short>(current.bgmTrack);
+        }
+    }
+
+    if (!reloadChanged && !ostChanged) {
+        LogOut("[HOTSWAP] apply ignored because menu selections match current runtime state", true);
+        return;
+    }
+
+    if (!reloadChanged) {
+        const uintptr_t gameStatePtr = GetGameStatePtr();
+        if (!gameStatePtr) {
+            LogOut("[HOTSWAP] OST-only apply failed because game state pointer was unavailable", true);
+            return;
+        }
+        if (PlayBGM(gameStatePtr, targetTrack)) {
+            LogOut("[HOTSWAP] applied OST without reload track=" + std::to_string(targetTrack), true);
+        } else {
+            LogOut("[HOTSWAP] failed to apply OST without reload track=" + std::to_string(targetTrack), true);
+        }
+        return;
+    }
+
+    CharacterHotswap::QueueReload(p1SelectId,
+                                  p2SelectId,
+                                  g_hotswapMenuStage,
+                                  targetTrack);
 }
 
 bool ExitToCharacterSelectDisabled() {
@@ -1826,8 +2270,27 @@ bool ExitToTitleDisabled() {
     return !CanRequestFrontendExit(FrontendExitTarget::Title);
 }
 
-bool HotswapSelectionDisabled() {
-    return true;
+bool HotswapSelectionValueDisabled() {
+    return CharacterHotswap::IsBusy();
+}
+
+bool HotswapReloadDisabled() {
+    if (CharacterHotswap::IsBusy()) {
+        return false;
+    }
+
+    HotswapCurrentState current{};
+    ReadCurrentHotswapState(current);
+    const bool reloadChanged = HotswapHasReloadChanges(current);
+    const bool ostChanged = HotswapHasOstChange(current);
+
+    if (!reloadChanged && !ostChanged) {
+        return true;
+    }
+    if (reloadChanged) {
+        return !CharacterHotswap::CanQueueReload();
+    }
+    return !current.bgmValid;
 }
 
 const char* ValExitToCharacterSelect() {
@@ -1838,13 +2301,11 @@ const char* ValExitToTitle() {
     return CanRequestFrontendExit(FrontendExitTarget::Title) ? "READY" : "UNAVAILABLE";
 }
 
-const char* ValTodo() {
-    return "TODO";
-}
-
 Row* BuildMenuRows(int& count) {
     static Row s_rows[16];
     int n = 0;
+
+    SeedHotswapMenuSelectionsIfNeeded();
 
     s_rows[n++] = Header("MAIN MENU");
     s_rows[n++] = Action("EXIT TO CHARACTER SELECT", RunExitToCharacterSelect, ValExitToCharacterSelect, ExitToCharacterSelectDisabled);
@@ -1852,9 +2313,25 @@ Row* BuildMenuRows(int& count) {
 
     s_rows[n++] = Spacer();
     s_rows[n++] = Header("HOTSWAP");
-    s_rows[n++] = Action("CHARACTER 1 SELECTION", StubHotswapSelection, ValTodo, HotswapSelectionDisabled);
-    s_rows[n++] = Action("CHARACTER 2 SELECTION", StubHotswapSelection, ValTodo, HotswapSelectionDisabled);
-    s_rows[n++] = Action("STAGE SELECTION",       StubHotswapSelection, ValTodo, HotswapSelectionDisabled);
+    s_rows[n++] = DropdownRow("PLAYER 1 CHARACTER", &g_hotswapMenuP1Character,
+                              kHotswapCharacterChoices,
+                              kHotswapCharacterChoiceCount,
+                              nullptr, HotswapSelectionValueDisabled);
+    s_rows[n++] = DropdownRow("PLAYER 2 CHARACTER", &g_hotswapMenuP2Character,
+                              kHotswapCharacterChoices,
+                              kHotswapCharacterChoiceCount,
+                              nullptr, HotswapSelectionValueDisabled);
+    s_rows[n++] = DropdownRow("STAGE", &g_hotswapMenuStage,
+                              kNamedStageChoices,
+                              kNamedStageChoiceCount,
+                              nullptr, HotswapSelectionValueDisabled);
+    s_rows[n++] = DropdownRow("OST", &g_hotswapMenuOstChoice,
+                              kNamedOstChoices,
+                              kNamedOstChoiceCount,
+                              nullptr, HotswapOstValueDisabled);
+    s_rows[n++] = Action("APPLY MENU SELECTIONS", RunMenuHotswapApply,
+                         ValHotswapApply,
+                         HotswapReloadDisabled);
 
     count = n;
     return s_rows;
@@ -1865,7 +2342,16 @@ void OnFaOverlayPersist()  { g_showFrameAdvantageOverlay.store(g_mirrorFaOverlay
 void OnFrameBarPersist() {
     PersistBool("General", "showFrameBar", MutableSettings().showFrameBar);
     FrameBar::g_enabled.store(MutableSettings().showFrameBar);
+    FrameBar::Reset();
 }
+void OnFrameBarTiming() {
+    PersistInt("General", "frameBarTimingMode", MutableSettings().frameBarTimingMode);
+    FrameBar::Reset();
+}
+void OnFrameBarDetail() {
+    PersistInt("General", "frameBarDetailMode", MutableSettings().frameBarDetailMode);
+}
+bool FrameBarOptionsHidden() { return !MutableSettings().showFrameBar; }
 
 // ===== Continuous Recovery mirrors =====
 const char* const kCrHpModeChoices[]    = { "OFF", "MAX", "FM (3332)", "CUSTOM" };
@@ -2072,6 +2558,8 @@ Row* BuildOverlayOptionsRows(int& count) {
 
     s_rows[n++] = Header("OVERLAYS");
     s_rows[n++] = Toggle    ("FRAME BAR",             &s.showFrameBar,           OnFrameBarPersist);
+    s_rows[n++] = ChoicesRow("  CELL STEP",           &s.frameBarTimingMode,     kFrameBarTimingChoices, 2, OnFrameBarTiming, nullptr, FrameBarOptionsHidden);
+    s_rows[n++] = ChoicesRow("  DETAIL",              &s.frameBarDetailMode,     kFrameBarDetailChoices, 3, OnFrameBarDetail, nullptr, FrameBarOptionsHidden);
     s_rows[n++] = Toggle    ("COMBO STATISTICS",      &s.showComboStatisticsOverlay, OnShowCombo);
     s_rows[n++] = Toggle    ("  SHOW DETAIL ROW",     &s.comboOverlayShowDetailRow, OnComboDetailRow, nullptr, ComboStatsHidden);
     s_rows[n++] = ChoicesRow("  DETAIL SOURCE",       &s.comboOverlayDetailRowSource, kComboDetailChoices, 2, OnComboDetailSrc, nullptr, ComboDetailSourceHidden);

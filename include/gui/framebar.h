@@ -1,6 +1,6 @@
 #pragma once
 //
-// FrameBar — per-player visual frame strip showing each frame's state
+// FrameBar — per-player strip showing each sampled state
 // (idle/walk/jump/attack/blockstun/hitstun/etc.) color-coded.
 //
 // Concept ported from MBAACC Extended Training Mode by fangdreth (see
@@ -9,7 +9,7 @@
 // inactionable counters; EFZ exposes the equivalent pieces through frame data
 // blocks, collision/RG timers, and a few fallback move-ID classifiers.
 //
-// Sampling cadence: once per visual frame (64 FPS) from FrameDataMonitor.
+// Sampling cadence: subframes by default, optionally once per visual frame.
 // Render cadence: once per EndScene from DirectDrawHook::RenderD3D9Overlays
 // when toggled on (config flag), independent of menu visibility.
 
@@ -39,9 +39,9 @@ enum class Cat : uint8_t {
     AirDashNeutral,
     AirDashFwd,
     AirDashBack,
-    AttackStartup,  // attack move, before active hit/block detected
-    AttackActive,   // attack move where defender is in stun this frame (best-effort)
-    AttackRecovery, // attack move, after active resolved
+    AttackStartup,  // attack move, before collision-capable boxes are active
+    AttackActive,   // character attack frame with collision-capable boxes
+    AttackRecovery, // attack move, after active boxes ended
     Blockstun,
     Hitstun,
     Launched,
@@ -51,17 +51,17 @@ enum class Cat : uint8_t {
     SpecialStun,    // fire / electric / frozen
     Thrown,
     RG,             // recoil-guard windows
-    SuperFlash,     // IC/super freeze
-    HitstopShared,  // both players in hit-hitstop (engine-frozen)
+    SuperFlash,     // IC/super screen freeze
+    HitstopShared,  // both players in hit-hitstop
     COUNT_
 };
 
-constexpr int kBarMemory = 240;     // ring buffer length (~3.75s @64fps)
+constexpr int kBarMemory = 240;     // ring buffer length (subframe samples by default)
 
 // Master enable. Persisted via Config::SetSetting("General", "showFrameBar").
 extern std::atomic<bool> g_enabled;
 
-// Called once per visual frame from FrameDataMonitor. Reads move-IDs and
+// Called from FrameDataMonitor. Reads move-IDs and
 // edge-detects state to populate the next ring-buffer cell.
 void TickSample();
 

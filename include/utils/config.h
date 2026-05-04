@@ -16,6 +16,8 @@ namespace Config {
     bool enableConsole;          // NEW: Show/Hide console window
     bool enableFpsDiagnostics;   // NEW: Enable FPS/timing diagnostics output
     bool showFrameBar;           // NEW: Per-player frame-state strip (color-coded)
+    int  frameBarTimingMode;     // 0 = subframes, 1 = visual frames
+    int  frameBarDetailMode;     // 0 = full, 1 = compact, 2 = bars only
     bool enableCharacterSelectLogger; // NEW: Toggle per-frame Character Select flag logger
     bool showPracticeEntryHint;   // NEW: Show practice overlay hint once per session
     float uiScale;               // NEW: UI scale for ImGui window (e.g., 0.80..1.20)

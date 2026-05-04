@@ -1680,17 +1680,19 @@ bool IsBlockstun(short moveID) {
     }
     
     // Check the range that includes many standing blockstun states BUT explicitly
-    // exclude dash related IDs (forward/back dash start & recovery + sentinel) so the
-    // auto-action dash follow-up & restore logic does not treat active dashes as stun.
+    // exclude dash and airtech IDs so follow-up/restore logic does not treat
+    // movement/recovery states as stun.
     if (moveID == 150 || moveID == 152 || 
         (moveID >= 140 && moveID <= 149) ||
         (moveID >= 153 && moveID <= 165)) {
-        // Forward/back dash IDs must not be blockstun.
+        // Movement/recovery IDs inside this broad range must not be blockstun.
         if (moveID == FORWARD_DASH_START_ID ||
             moveID == FORWARD_DASH_RECOVERY_ID ||
             moveID == FORWARD_DASH_RECOVERY_SENTINEL_ID ||
             moveID == BACKWARD_DASH_START_ID ||
-            moveID == BACKWARD_DASH_RECOVERY_ID) {
+            moveID == BACKWARD_DASH_RECOVERY_ID ||
+            moveID == FORWARD_AIRTECH ||
+            moveID == BACKWARD_AIRTECH) {
             return false; // explicitly exclude
         }
         return true;

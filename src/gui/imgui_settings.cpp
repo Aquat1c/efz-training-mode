@@ -24,6 +24,94 @@ namespace ImGuiSettings {
     static constexpr uint32_t GP_RT_BIT = 0x20000; // Right Trigger
     static constexpr int GP_TRIGGER_THRESH = 30;
 
+    struct KeyboardCaptureState {
+        bool active = false;
+        bool armed = false;
+        std::string which;
+        bool prevPressed[256] = {};
+    };
+
+    static bool IsKeyboardBindableVk(int vk) {
+        if (vk <= 0) return false;
+        if (vk >= 0x01 && vk <= 0x06) return false;
+        if (vk == VK_SHIFT || vk == VK_LSHIFT || vk == VK_RSHIFT) return false;
+        if (vk == VK_CONTROL || vk == VK_LCONTROL || vk == VK_RCONTROL) return false;
+        if (vk == VK_MENU || vk == VK_LMENU || vk == VK_RMENU) return false;
+        if (vk == VK_LWIN || vk == VK_RWIN) return false;
+        if (vk == VK_CLEAR) return false;
+        if (vk == VK_ESCAPE) return false;
+        return true;
+    }
+
+    static void BeginKeyboardCapture(KeyboardCaptureState& state, const char* cfgKey) {
+        state.active = true;
+        state.armed = false;
+        state.which = cfgKey ? cfgKey : "";
+        for (int vk = 0; vk < 256; ++vk) {
+            state.prevPressed[vk] = (GetAsyncKeyState(vk) & 0x8000) != 0;
+        }
+    }
+
+    static void CancelKeyboardCapture(KeyboardCaptureState& state) {
+        state.active = false;
+        state.armed = false;
+        state.which.clear();
+    }
+
+    static bool PollKeyboardCapture(KeyboardCaptureState& state,
+                                    int& keyCode,
+                                    const char* cfgKey,
+                                    bool disallowFooterKeys = false) {
+        if (!state.active || state.which != (cfgKey ? cfgKey : "")) {
+            return false;
+        }
+
+        const bool escNow = (GetAsyncKeyState(VK_ESCAPE) & 0x8000) != 0;
+        const bool escWas = state.prevPressed[VK_ESCAPE];
+        state.prevPressed[VK_ESCAPE] = escNow;
+        if (escNow && !escWas) {
+            CancelKeyboardCapture(state);
+            return false;
+        }
+
+        bool anyHeld = false;
+        int captured = 0;
+        for (int vk = 0; vk < 256; ++vk) {
+            if (!IsKeyboardBindableVk(vk)) continue;
+
+            const bool now = (GetAsyncKeyState(vk) & 0x8000) != 0;
+            const bool was = state.prevPressed[vk];
+            state.prevPressed[vk] = now;
+
+            if (now) anyHeld = true;
+            if (state.armed && now && !was && captured == 0) {
+                captured = vk;
+            }
+        }
+
+        if (!state.armed) {
+            if (!anyHeld) state.armed = true;
+            return false;
+        }
+
+        if (captured == 0) {
+            return false;
+        }
+
+        if (disallowFooterKeys && (captured == VK_RETURN || captured == VK_SPACE)) {
+            LogOut("[CONFIG/UI] Disallowed footer key (Enter/Space) ignored", false);
+            CancelKeyboardCapture(state);
+            return false;
+        }
+
+        keyCode = captured;
+        char hexBuf[16];
+        snprintf(hexBuf, sizeof(hexBuf), "0x%X", keyCode);
+        Config::SetSetting("Hotkeys", cfgKey, hexBuf);
+        CancelKeyboardCapture(state);
+        return true;
+    }
+
     static void CheckboxApply(const char* label, bool& value, const char* section, const char* key) {
         if (ImGui::Checkbox(label, &value)) {
             Config::SetSetting(section, key, value ? "1" : "0");
@@ -52,29 +140,17 @@ namespace ImGuiSettings {
         ImGui::TextDisabled("(%s)", GetKeyName(keyCode).c_str());
         ImGui::SameLine();
         // Press-to-bind helper
-        static bool capturing = false;
-        static std::string capturingKey;
+        static KeyboardCaptureState captureState;
         std::string btnId = std::string("Bind##") + setKeyName;
-        if (!capturing) {
+        if (!captureState.active) {
             if (ImGui::Button(btnId.c_str())) {
-                capturing = true;
-                capturingKey = setKeyName;
+                BeginKeyboardCapture(captureState, setKeyName);
                 LogOut(std::string("[CONFIG/UI] Capturing key for ") + setKeyName + "... press any key", false);
             }
-        } else if (capturing && capturingKey == setKeyName) {
-            ImGui::TextColored(ImVec4(1,1,0,1), "Press any key...");
-            for (int vk = 0x01; vk <= 0xFE; ++vk) {
-                SHORT state = GetAsyncKeyState(vk);
-                if (state & 0x8000) {
-                    keyCode = vk;
-                    char hexBuf[16];
-                    snprintf(hexBuf, sizeof(hexBuf), "0x%X", keyCode);
-                    Config::SetSetting("Hotkeys", setKeyName, hexBuf);
-                    LogOut(std::string("[CONFIG/UI] ") + setKeyName + " bound to " + GetKeyName(keyCode) + " (" + hexBuf + ")", false);
-                    capturing = false;
-                    capturingKey.clear();
-                    break;
-                }
+        } else if (captureState.which == setKeyName) {
+            ImGui::TextColored(ImVec4(1,1,0,1), captureState.armed ? "Press any key..." : "Release all keys...");
+            if (PollKeyboardCapture(captureState, keyCode, setKeyName)) {
+                LogOut(std::string("[CONFIG/UI] ") + setKeyName + " bound to " + GetKeyName(keyCode), false);
             }
         }
         return false;
@@ -105,28 +181,14 @@ namespace ImGuiSettings {
         ImGui::TextDisabled("[%s]", GetKeyName(keyCode).c_str());
         ImGui::SameLine();
         std::string btnId = std::string("Rebind##") + cfgKey;
-        static bool capturing = false; // shared (only one at a time)
-        static std::string which;
-        if (!capturing) {
-            if (ImGui::Button(btnId.c_str())) { capturing = true; which = cfgKey; }
-        } else if (capturing && which == cfgKey) {
+        static KeyboardCaptureState captureState;
+        if (!captureState.active) {
+            if (ImGui::Button(btnId.c_str())) { BeginKeyboardCapture(captureState, cfgKey); }
+        } else if (captureState.which == cfgKey) {
             ImGui::SameLine();
-            ImGui::TextColored(ImVec4(1,1,0,1), "Press a key (no Enter/Escape/Space)...");
-            for (int vk = 0x01; vk <= 0xFE; ++vk) {
-                SHORT st = GetAsyncKeyState(vk);
-                if (st & 0x8000) {
-                    if (vk == VK_RETURN || vk == VK_ESCAPE || vk == VK_SPACE) {
-                        LogOut("[CONFIG/UI] Disallowed footer key (Enter/Escape/Space) ignored", false);
-                        capturing = false; which.clear();
-                        break;
-                    }
-                    keyCode = vk;
-                    char hexBuf[16]; snprintf(hexBuf, sizeof(hexBuf), "0x%X", keyCode);
-                    Config::SetSetting("Hotkeys", cfgKey, hexBuf);
-                    LogOut(std::string("[CONFIG/UI] ") + cfgKey + " footer key -> " + GetKeyName(keyCode), false);
-                    capturing = false; which.clear();
-                    break;
-                }
+            ImGui::TextColored(ImVec4(1,1,0,1), captureState.armed ? "Press a key (no Enter/Space)..." : "Release all keys...");
+            if (PollKeyboardCapture(captureState, keyCode, cfgKey, true)) {
+                LogOut(std::string("[CONFIG/UI] ") + cfgKey + " footer key -> " + GetKeyName(keyCode), false);
             }
         }
     }

@@ -629,7 +629,17 @@ PopupGeom ComputePopupGeom(const ScreenLayout& layout) {
     using namespace Theme;
     PopupGeom g{};
     g.rowH   = kRowHeight;
-    g.popupW = 320.0f;
+    ImFont* bFont = Layout::BodyFont();
+    const float bPx = bFont ? bFont->FontSize : 13.0f;
+    const float prefixW = Layout::MeasureTextW(bFont, bPx, PopupIsMulti() ? "> [X] " : "> ");
+    float widestChoiceW = 0.0f;
+    for (int i = 0; i < g_popup.choiceCount; ++i) {
+        const char* text = (g_popup.choices && g_popup.choices[i]) ? g_popup.choices[i] : "";
+        widestChoiceW = (std::max)(widestChoiceW, Layout::MeasureTextW(bFont, bPx, text));
+    }
+    g.popupW = (std::max)(320.0f, widestChoiceW + prefixW + 28.0f);
+    const float maxW = kPanelW - 16.0f;
+    if (g.popupW > maxW) g.popupW = maxW;
     const float maxH = (layout.contentBottomY - layout.contentTopY) - 20.0f;
     const float desiredH = g_popup.choiceCount * g.rowH + 16.0f;
     g.popupH = (desiredH < maxH) ? desiredH : maxH;
@@ -782,7 +792,7 @@ void PopupRender(ImDrawList* dl, const ScreenLayout& layout) {
                               ImVec2(g.listX + g.listW, ry + g.rowH),
                               kSelectedFill);
         }
-        char line[128];
+        char line[256];
         if (isMulti) {
             const bool checked = ((*g_popup.maskPtr) >> i) & 1u;
             const char* mark = focused ? ">" : " ";
@@ -1369,8 +1379,13 @@ bool VkIsBindable(int vk) {
     if (vk == VK_CONTROL || vk == VK_LCONTROL || vk == VK_RCONTROL) return false;
     if (vk == VK_MENU || vk == VK_LMENU || vk == VK_RMENU) return false;
     if (vk == VK_LWIN || vk == VK_RWIN) return false;
+    if (vk == VK_CLEAR) return false;               // often reports as phantom "Num 5"
     if (vk == VK_ESCAPE) return false;              // reserved for cancel
     return true;
+}
+
+bool VkCountsTowardsPriming(int vk) {
+    return VkIsBindable(vk);
 }
 
 namespace KeybindAPI {
@@ -1386,7 +1401,7 @@ namespace KeybindAPI {
         const bool escNow = (GetAsyncKeyState(VK_ESCAPE) & 0x8000) != 0;
         const bool escWas = g_keybind.prevPressed[VK_ESCAPE];
         g_keybind.prevPressed[VK_ESCAPE] = escNow;
-        if (g_keybind.primed && escNow && !escWas) {
+        if (escNow && !escWas) {
             CloseKeybind();
             Input::ResetEdges();
             return;
@@ -1397,6 +1412,7 @@ namespace KeybindAPI {
         int captured = 0;
         for (int vk = 0; vk < 256; ++vk) {
             if (vk == VK_ESCAPE) continue;
+            if (!VkCountsTowardsPriming(vk)) continue;
             const bool now = (GetAsyncKeyState(vk) & 0x8000) != 0;
             const bool was = g_keybind.prevPressed[vk];
             g_keybind.prevPressed[vk] = now;
