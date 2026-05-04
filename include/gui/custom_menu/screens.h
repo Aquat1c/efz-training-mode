@@ -23,6 +23,7 @@ enum class RowKind : uint8_t {
     // Focusable
     Toggle,       // bool value; Activate/L/R toggles
     IntNumber,    // int value;  L/R small step, U/D big step, Shift=big
+    IntSlider,    // int value rendered as a slider track
     FloatNumber,  // float value
     DoubleNumber, // double value
     Choices,      // int index into choices[]; L/R cycles inline
@@ -110,6 +111,11 @@ Row IntNum(const char* label, int* p, int mn, int mx,
            void (*onChange)() = nullptr,
            bool (*isDisabled)() = nullptr,
            bool (*isHidden)() = nullptr);
+Row IntSlider(const char* label, int* p, int mn, int mx,
+              int stepSmall = 1, int stepBig = 10,
+              void (*onChange)() = nullptr,
+              bool (*isDisabled)() = nullptr,
+              bool (*isHidden)() = nullptr);
 Row FloatNum(const char* label, float* p, float mn, float mx,
              float stepSmall, float stepBig,
              const char* fmt = "%.2f",

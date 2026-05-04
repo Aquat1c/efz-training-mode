@@ -12,6 +12,7 @@
 #include "../include/game/game_state.h"
 #include "../include/utils/debug_log.h"
 #include "../include/input/framestep.h"
+#include "../include/utils/audio_control.h"
 #include "../include/utils/network.h"
 #include <windows.h>
 #include <Xinput.h>
@@ -314,6 +315,38 @@ namespace ImGuiSettings {
                 }
                 if (ImGui::IsItemHovered()) {
                     ImGui::SetTooltip("When using First Hit/After First Hit modes, require this much continuous neutral before re-arming/disabling. 0 = toggle on the first neutral frame.");
+                }
+
+                ImGui::Spacing();
+                ImGui::Separator();
+                ImGui::SeparatorText("Audio");
+
+                int bgmVolumePercent = cfg.bgmVolumePercent;
+                ImGui::Text("BGM Volume:");
+                ImGui::SameLine();
+                ImGui::SetNextItemWidth(200);
+                if (ImGui::SliderInt("##BgmVolumePercent", &bgmVolumePercent, 0, 100, "%d%%")) {
+                    Config::SetSetting("General", "bgmVolumePercent", std::to_string(bgmVolumePercent));
+                    AudioControl::ApplyConfiguredVolumesNow();
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Reset##BgmVolumePercent")) {
+                    Config::SetSetting("General", "bgmVolumePercent", "100");
+                    AudioControl::ApplyConfiguredVolumesNow();
+                }
+
+                int seVolumePercent = cfg.seVolumePercent;
+                ImGui::Text("SE Volume:");
+                ImGui::SameLine();
+                ImGui::SetNextItemWidth(200);
+                if (ImGui::SliderInt("##SeVolumePercent", &seVolumePercent, 0, 100, "%d%%")) {
+                    Config::SetSetting("General", "seVolumePercent", std::to_string(seVolumePercent));
+                    AudioControl::ApplyConfiguredVolumesNow();
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Reset##SeVolumePercent")) {
+                    Config::SetSetting("General", "seVolumePercent", "100");
+                    AudioControl::ApplyConfiguredVolumesNow();
                 }
 
                 ImGui::Spacing();

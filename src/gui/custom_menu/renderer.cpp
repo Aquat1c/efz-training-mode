@@ -186,6 +186,13 @@ inline int ActivePane() {
     return t.subs[s].pane;
 }
 
+bool SettingsTabActive() {
+    return ClampTopTab(g_shell.activeTopTab) == TT_SETTINGS;
+}
+
+std::string g_transientStatusText;
+DWORD g_transientStatusTick = 0;
+
 bool ActiveTopHasSubTabs() {
     return kTopTabs[ClampTopTab(g_shell.activeTopTab)].subCount > 1;
 }
@@ -222,6 +229,46 @@ constexpr float kPaneAnimMs = 170.0f;
 constexpr float kPaneSlidePx = 72.0f;
 constexpr float kOpenSlidePx = 18.0f;
 constexpr double kDegToRadDivisor = 57.29579143313326;
+constexpr DWORD kTransientStatusMs = 1800;
+
+void SetTransientStatus(const char* text) {
+    g_transientStatusText = text ? text : "";
+    g_transientStatusTick = GetTickCount();
+}
+
+const char* CurrentTransientStatus() {
+    if (g_transientStatusText.empty()) {
+        return nullptr;
+    }
+    if ((GetTickCount() - g_transientStatusTick) > kTransientStatusMs) {
+        g_transientStatusText.clear();
+        return nullptr;
+    }
+    return g_transientStatusText.c_str();
+}
+
+bool SettingsQuickSaveAllowed() {
+    return SettingsTabActive()
+        && !Screens::IsPopupActive()
+        && !Screens::IsKeybindActive()
+        && !Screens::IsTextEditorActive();
+}
+
+void HandleSettingsQuickSave() {
+    if (!SettingsQuickSaveAllowed() || !Input::SwitchPlayer()) {
+        return;
+    }
+
+    const bool ok = Config::SaveSettings();
+    if (ok) {
+        Sound::PlayDecision();
+        SetTransientStatus("SETTINGS SAVED TO DISK");
+        LogOut(std::string("[CUSTOM_MENU] Settings saved to disk via D button from ") + ScreenName(ActivePane()), false);
+    } else {
+        SetTransientStatus("SAVE FAILED");
+        LogOut(std::string("[CUSTOM_MENU] Failed to save settings via D button from ") + ScreenName(ActivePane()), true);
+    }
+}
 
 float Clamp01(float v) {
     if (v < 0.0f) return 0.0f;
@@ -1390,6 +1437,7 @@ void Render() {
     RenderTabBar(L);
 
     const int activePane = ActivePane();
+    HandleSettingsQuickSave();
     MainLayout contentL = L;
     ApplyContentAnimation(contentL);
 
@@ -1468,6 +1516,9 @@ void Render() {
     const float bPx = bFont ? bFont->FontSize : 13.0f;
     const char* hint;
     std::string statusText;
+    if (const char* transientStatus = CurrentTransientStatus()) {
+        statusText = transientStatus;
+    }
     if (g_edit.active) {
         hint = "0-9 / . / BACKSPACE    ENTER COMMIT    ESC CANCEL";
     } else if (Screens::IsKeybindActive()) {
@@ -1477,11 +1528,17 @@ void Render() {
     } else if (Screens::IsTextEditorActive()) {
         hint = "EDIT MACRO TEXT   CTRL+V PASTE   APPLY/DONE BUTTONS   ESC CLOSE";
     } else if (g_shell.focusRegion == FocusRegion::TopTabs) {
-        hint = "L/R CHANGE TAB   DOWN ENTER SUBTABS   ESC CLOSE";
+        hint = SettingsTabActive()
+            ? "L/R CHANGE TAB   DOWN ENTER SUBTABS   D SAVE   ESC CLOSE"
+            : "L/R CHANGE TAB   DOWN ENTER SUBTABS   ESC CLOSE";
     } else if (g_shell.focusRegion == FocusRegion::SubTabs) {
-        hint = "L/R CHANGE SUBTAB   UP TABS   DOWN ENTER OPTIONS   ESC CLOSE";
+        hint = SettingsTabActive()
+            ? "L/R CHANGE SUBTAB   UP TABS   DOWN ENTER OPTIONS   D SAVE   ESC CLOSE"
+            : "L/R CHANGE SUBTAB   UP TABS   DOWN ENTER OPTIONS   ESC CLOSE";
     } else if (Screens::IsSubmenuActive()) {
-        hint = "UP/DOWN MOVE   ENTER SELECT   ESC BACK";
+        hint = SettingsTabActive()
+            ? "UP/DOWN MOVE   ENTER SELECT   D SAVE   ESC BACK"
+            : "UP/DOWN MOVE   ENTER SELECT   ESC BACK";
     } else if (ActivePane() == PANE_VALUES) {
         const int focus = CurFocus();
         const bool focusLocked = RowIsLocked(valueLocks, focus);
@@ -1499,6 +1556,8 @@ void Render() {
         } else {
             hint = "L/R SMALL   U/D BIG   D SWITCH PLAYER   ENTER TYPE   ESC BACK";
         }
+    } else if (SettingsTabActive()) {
+        hint = "U/D MOVE   L/R ADJUST   D SAVE   ENTER PICK   PGUP/PGDN TOP";
     } else {
         hint = "U/D MOVE   L/R ADJUST   SHIFT+L/R 2ND   ENTER PICK   PGUP/PGDN TOP";
     }

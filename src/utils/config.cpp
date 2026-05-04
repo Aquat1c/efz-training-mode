@@ -220,6 +220,9 @@ namespace Config {
             file << "enableFpsDiagnostics = 0\n\n";
             file << "; Show per-player FrameBar overlay (1 = yes, 0 = no)\n";
             file << "showFrameBar = 0\n\n";
+            file << "; Audio volume levels as percent of the current default mix (0-100)\n";
+            file << "bgmVolumePercent = 100\n";
+            file << "seVolumePercent = 100\n\n";
             file << "; FrameBar cell cadence: 0 = subframes, 1 = visual frames\n";
             file << "frameBarTimingMode = 0\n";
             file << "; FrameBar detail: 0 = full, 1 = compact, 2 = bars only\n";
@@ -433,6 +436,12 @@ namespace Config {
             settings.suppressRevivalFramestep = GetValueBool("General", "suppressRevivalFramestep", true);
             settings.enableFpsDiagnostics = GetValueBool("General", "enableFpsDiagnostics", false);
             settings.showFrameBar = GetValueBool("General", "showFrameBar", false);
+            settings.bgmVolumePercent = GetValueInt("General", "bgmVolumePercent", 100);
+            if (settings.bgmVolumePercent < 0) settings.bgmVolumePercent = 0;
+            if (settings.bgmVolumePercent > 100) settings.bgmVolumePercent = 100;
+            settings.seVolumePercent = GetValueInt("General", "seVolumePercent", 100);
+            if (settings.seVolumePercent < 0) settings.seVolumePercent = 0;
+            if (settings.seVolumePercent > 100) settings.seVolumePercent = 100;
             settings.frameBarTimingMode = GetValueInt("General", "frameBarTimingMode", 0);
             if (settings.frameBarTimingMode < 0 || settings.frameBarTimingMode > 1) {
                 settings.frameBarTimingMode = 0;
@@ -729,6 +738,9 @@ namespace Config {
             file << "enableFpsDiagnostics = " << (settings.enableFpsDiagnostics ? "1" : "0") << "\n\n";
             file << "; Show per-player FrameBar overlay (1 = yes, 0 = no)\n";
             file << "showFrameBar = " << (settings.showFrameBar ? "1" : "0") << "\n\n";
+            file << "; Audio volume levels as percent of the current default mix (0-100)\n";
+            file << "bgmVolumePercent = " << settings.bgmVolumePercent << "\n";
+            file << "seVolumePercent = " << settings.seVolumePercent << "\n\n";
             file << "; FrameBar cell cadence: 0 = subframes, 1 = visual frames\n";
             file << "frameBarTimingMode = " << settings.frameBarTimingMode << "\n";
             file << "; FrameBar detail: 0 = full, 1 = compact, 2 = bars only\n";
@@ -877,6 +889,16 @@ namespace Config {
             if (k == "enabledebugfilelog") settings.enableDebugFileLog = (value == "1");
             if (k == "enableconsole") settings.enableConsole = (value == "1");
             if (k == "showframebar") settings.showFrameBar = (value == "1");
+            if (k == "bgmvolumepercent") {
+                try { settings.bgmVolumePercent = std::stoi(value); } catch (...) { settings.bgmVolumePercent = 100; }
+                if (settings.bgmVolumePercent < 0) settings.bgmVolumePercent = 0;
+                if (settings.bgmVolumePercent > 100) settings.bgmVolumePercent = 100;
+            }
+            if (k == "sevolumepercent") {
+                try { settings.seVolumePercent = std::stoi(value); } catch (...) { settings.seVolumePercent = 100; }
+                if (settings.seVolumePercent < 0) settings.seVolumePercent = 0;
+                if (settings.seVolumePercent > 100) settings.seVolumePercent = 100;
+            }
             if (k == "framebartimingmode") {
                 try { settings.frameBarTimingMode = std::stoi(value); } catch (...) { settings.frameBarTimingMode = 0; }
                 if (settings.frameBarTimingMode < 0 || settings.frameBarTimingMode > 1) settings.frameBarTimingMode = 0;

@@ -145,6 +145,26 @@ void FormatIntValue(const Row& r, char* buf, size_t bufSz) {
     _snprintf_s(buf, bufSz, _TRUNCATE, "%d", r.intPtr ? *r.intPtr : 0);
 }
 
+const char* FormatIntDisplayValue(const Row& r, char* buf, size_t bufSz) {
+    if (r.valueFormatter) {
+        const char* formatted = r.valueFormatter(r);
+        if (formatted && *formatted) {
+            return formatted;
+        }
+    }
+    FormatIntValue(r, buf, bufSz);
+    return buf;
+}
+
+float GetIntSliderProgress01(const Row& r) {
+    if (!r.intPtr || r.intMax <= r.intMin) {
+        return 0.0f;
+    }
+    const int value = *r.intPtr;
+    const float denom = static_cast<float>(r.intMax - r.intMin);
+    return static_cast<float>(value - r.intMin) / denom;
+}
+
 void FormatFloatValue(const Row& r, char* buf, size_t bufSz) {
     const char* fmt = r.floatFmt ? r.floatFmt : "%.2f";
     _snprintf_s(buf, bufSz, _TRUNCATE, fmt, r.floatPtr ? *r.floatPtr : 0.0f);
@@ -383,6 +403,25 @@ Row IntNum(const char* label, int* p, int mn, int mx,
            bool (*isHidden)()) {
     Row r{};
     r.kind = RowKind::IntNumber;
+    r.label = label;
+    r.intPtr = p;
+    r.intMin = mn;
+    r.intMax = mx;
+    r.intStepSmall = stepSmall;
+    r.intStepBig = stepBig;
+    r.onChange = onChange;
+    r.isDisabled = isDisabled;
+    r.isHidden = isHidden;
+    return r;
+}
+
+Row IntSlider(const char* label, int* p, int mn, int mx,
+              int stepSmall, int stepBig,
+              void (*onChange)(),
+              bool (*isDisabled)(),
+              bool (*isHidden)()) {
+    Row r{};
+    r.kind = RowKind::IntSlider;
     r.label = label;
     r.intPtr = p;
     r.intMin = mn;
@@ -960,6 +999,20 @@ void RenderList(ImDrawList* dl, const ScreenLayout& layout,
                 Layout::DrawRowNumber(dl, x, y, w, r.label, buf, focused, disabled);
                 break;
             }
+            case RowKind::IntSlider: {
+                char buf[32];
+                const char* valueText = FormatIntDisplayValue(r, buf, sizeof(buf));
+                Layout::DrawRowSlider(dl,
+                                      x,
+                                      y,
+                                      w,
+                                      r.label,
+                                      valueText,
+                                      GetIntSliderProgress01(r),
+                                      focused,
+                                      disabled);
+                break;
+            }
             case RowKind::FloatNumber: {
                 char buf[32];
                 FormatFloatValue(r, buf, sizeof(buf));
@@ -1164,7 +1217,8 @@ bool HandleRowsInput(const ScreenLayout& layout,
                 fire(changed);
                 break;
             }
-            case RowKind::IntNumber: {
+            case RowKind::IntNumber:
+            case RowKind::IntSlider: {
                 if (disabled || !r.intPtr) break;
                 bool changed = false;
                 const int sBig = r.intStepBig > 0 ? r.intStepBig : r.intStepSmall;

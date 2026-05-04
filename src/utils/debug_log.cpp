@@ -76,6 +76,7 @@ namespace DebugLog {
             
             g_LogFile << "[" << timeStr << "." << std::setfill('0') << std::setw(3) 
                       << ms.count() << "] " << message << "\n";
+            g_LogFile.flush();
         }
     }
     

@@ -8,6 +8,7 @@
 #include "../../include/utils/network.h"
 #include "../../include/utils/utilities.h"
 #include "../../include/utils/config.h"
+#include "../../include/utils/debug_log.h"
 #include "../../include/gui/overlay.h"
 #include "../../include/gui/imgui_impl.h"
 #include <windows.h>
@@ -46,6 +47,13 @@ namespace {
     std::atomic<DWORD> s_revivalStepQueuedTick{0};
     std::atomic<DWORD> s_nextHotkeyGateAttemptTick{0};
     std::atomic<bool> s_loggedHotkeyGateUnavailable{false};
+    std::atomic<bool> s_menuWasVisible{false};
+    std::atomic<bool> s_restorePausedAfterMenu{false};
+    std::atomic<bool> s_restoreWePausedAfterMenu{false};
+
+    void TraceFramestep(const std::string& message) {
+        DebugLog::Write(message);
+    }
 
     constexpr uintptr_t kBattleGamespeedOffset = 1400;
     constexpr uintptr_t kBattleEnginePauseOffset = 1416;
@@ -56,6 +64,27 @@ namespace {
         RevivalNativeFrame,
         Revival102fSubframe
     };
+
+    void SnapshotPauseStateForMenu(Backend backend);
+    void RestorePauseStateAfterMenu(Backend backend);
+
+    bool SehSnapshotPauseStateForMenu(Backend backend) {
+        __try {
+            SnapshotPauseStateForMenu(backend);
+            return true;
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            return false;
+        }
+    }
+
+    bool SehRestorePauseStateAfterMenu(Backend backend) {
+        __try {
+            RestorePauseStateAfterMenu(backend);
+            return true;
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            return false;
+        }
+    }
 
     Backend GetBackend() {
         HMODULE hRev = GetModuleHandleA("EfzRevival.dll");
@@ -313,6 +342,9 @@ namespace {
             || g_FramestepStatusId != -1;
 
         s_stepRequested.store(false);
+        s_menuWasVisible.store(false);
+        s_restorePausedAfterMenu.store(false);
+        s_restoreWePausedAfterMenu.store(false);
 
         if (UsesRevivalNativeStep(backend)) {
             if (s_wePaused.load() && PauseIntegration::IsPracticePaused()) {
@@ -682,6 +714,70 @@ namespace {
         return UsesRevivalNativeStep(backend) ? "subframe(s)" : "visual frame(s)";
     }
 
+    void SnapshotPauseStateForMenu(Backend backend) {
+        const bool paused = UsesRevivalNativeStep(backend)
+            ? PauseIntegration::IsPracticePaused()
+            : s_paused.load();
+
+        s_restorePausedAfterMenu.store(paused);
+        s_restoreWePausedAfterMenu.store(UsesRevivalNativeStep(backend) && s_wePaused.load());
+        if (UsesRevivalNativeStep(backend)) {
+            s_paused.store(paused);
+        }
+
+        std::ostringstream oss;
+        oss << "[FRAMESTEP][TRACE] SnapshotPauseStateForMenu backend=" << BackendName(backend)
+            << " paused=" << (paused ? 1 : 0)
+            << " wePaused=" << (s_wePaused.load() ? 1 : 0);
+        TraceFramestep(oss.str());
+    }
+
+    void RestorePauseStateAfterMenu(Backend backend) {
+        const bool shouldRestore = s_restorePausedAfterMenu.exchange(false);
+        const bool restoreOwnedPause = s_restoreWePausedAfterMenu.exchange(false);
+        std::ostringstream begin;
+        begin << "[FRAMESTEP][TRACE] RestorePauseStateAfterMenu backend=" << BackendName(backend)
+              << " shouldRestore=" << (shouldRestore ? 1 : 0)
+              << " restoreOwnedPause=" << (restoreOwnedPause ? 1 : 0);
+        TraceFramestep(begin.str());
+        if (!shouldRestore) {
+            return;
+        }
+
+        if (UsesRevivalNativeStep(backend)) {
+            const bool pausedNow = PauseIntegration::IsPracticePaused();
+            std::ostringstream revival;
+            revival << "[FRAMESTEP][TRACE] RestorePauseStateAfterMenu revival pausedNow=" << (pausedNow ? 1 : 0);
+            TraceFramestep(revival.str());
+            if (!pausedNow) {
+                if (!PauseIntegration::SetPracticePausedForFramestep(true)) {
+                    TraceFramestep("[FRAMESTEP][TRACE] RestorePauseStateAfterMenu revival failed to reassert practice pause");
+                    return;
+                }
+            }
+
+            s_paused.store(true);
+            s_wePaused.store(restoreOwnedPause);
+            ResetRevivalStepTracking();
+            LogOut("[FRAMESTEP][REVIVAL] Restored paused state after menu close", true);
+            return;
+        }
+
+        s_paused.store(true);
+        const bool gamespeedOk = SetGamespeed(0);
+        bool visualOk = s_visualPatchesApplied.load();
+        if (!s_visualPatchesApplied.load() && ApplyVisualPatches(true)) {
+            s_visualPatchesApplied.store(true);
+            visualOk = true;
+        }
+        s_stepRequested.store(false);
+        std::ostringstream vanilla;
+        vanilla << "[FRAMESTEP][TRACE] RestorePauseStateAfterMenu vanilla gamespeedOk=" << (gamespeedOk ? 1 : 0)
+                << " visualOk=" << (visualOk ? 1 : 0);
+        TraceFramestep(vanilla.str());
+        LogOut("[FRAMESTEP] Restored paused state after menu close", true);
+    }
+
     void SyncRevivalFramestep() {
         PauseIntegration::EnsurePracticePointerCapture();
         const bool paused = PauseIntegration::IsPracticePaused();
@@ -795,8 +891,33 @@ namespace Framestep {
         }
 
         // Check if ImGui menu is open (keys should be gated)
-        if (ImGuiImpl::IsVisible()) {
+        const bool menuVisible = ImGuiImpl::IsVisible();
+        if (menuVisible) {
+            if (!s_menuWasVisible.exchange(true)) {
+                std::ostringstream oss;
+                oss << "[FRAMESTEP][TRACE] Menu became visible backend=" << BackendName(backend)
+                    << " paused=" << (s_paused.load() ? 1 : 0)
+                    << " wePaused=" << (s_wePaused.load() ? 1 : 0);
+                TraceFramestep(oss.str());
+                if (!SehSnapshotPauseStateForMenu(backend)) {
+                    LogOut("[FRAMESTEP][SEH] Exception while snapshotting pause state for menu", true);
+                    TraceFramestep("[FRAMESTEP][TRACE] Menu snapshot crashed under SEH");
+                }
+            }
             return;
+        }
+        if (s_menuWasVisible.exchange(false)) {
+            std::ostringstream oss;
+            oss << "[FRAMESTEP][TRACE] Menu became hidden backend=" << BackendName(backend)
+                << " restorePaused=" << (s_restorePausedAfterMenu.load() ? 1 : 0)
+                << " restoreWePaused=" << (s_restoreWePausedAfterMenu.load() ? 1 : 0);
+            TraceFramestep(oss.str());
+            if (!SehRestorePauseStateAfterMenu(backend)) {
+                LogOut("[FRAMESTEP][SEH] Exception while restoring pause state after menu close", true);
+                TraceFramestep("[FRAMESTEP][TRACE] Menu restore crashed under SEH");
+                s_restorePausedAfterMenu.store(false);
+                s_restoreWePausedAfterMenu.store(false);
+            }
         }
 
         if (UsesRevivalNativeStep(backend)) {
