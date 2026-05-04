@@ -279,6 +279,8 @@ void DelayedInitialization(HMODULE hModule) {
             try {
                 if (DirectDrawHook::InitializeD3D9()) {
                     LogOut("[SYSTEM] D3D9 Overlay system initialized.", true);
+                } else if (DirectDrawHook::WasLastD3D9InitDeferredForNetplay()) {
+                    LogOut("[SYSTEM] D3D9 overlay initialization deferred because netplay suspend is active; resume path will retry.", true);
                 } else {
                     LogOut("[SYSTEM] Failed to initialize D3D9 Overlay system.", true);
                     static bool s_warnedNoD3D9 = false;
