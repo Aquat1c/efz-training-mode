@@ -220,6 +220,10 @@ namespace Config {
             file << "enableFpsDiagnostics = 0\n\n";
             file << "; Show per-player FrameBar overlay (1 = yes, 0 = no)\n";
             file << "showFrameBar = 0\n\n";
+            file << "; FrameBar cell cadence: 0 = subframes, 1 = visual frames\n";
+            file << "frameBarTimingMode = 0\n";
+            file << "; FrameBar detail: 0 = full, 1 = compact, 2 = bars only\n";
+            file << "frameBarDetailMode = 0\n\n";
             file << "; Log active player / CPU flags during Character Select (1 = yes, 0 = no)\n";
             file << "enableCharacterSelectLogger = 1\n\n";
 
@@ -429,6 +433,14 @@ namespace Config {
             settings.suppressRevivalFramestep = GetValueBool("General", "suppressRevivalFramestep", true);
             settings.enableFpsDiagnostics = GetValueBool("General", "enableFpsDiagnostics", false);
             settings.showFrameBar = GetValueBool("General", "showFrameBar", false);
+            settings.frameBarTimingMode = GetValueInt("General", "frameBarTimingMode", 0);
+            if (settings.frameBarTimingMode < 0 || settings.frameBarTimingMode > 1) {
+                settings.frameBarTimingMode = 0;
+            }
+            settings.frameBarDetailMode = GetValueInt("General", "frameBarDetailMode", 0);
+            if (settings.frameBarDetailMode < 0 || settings.frameBarDetailMode > 2) {
+                settings.frameBarDetailMode = 0;
+            }
             // Default ON so older configs without this key enable it automatically
             settings.enableCharacterSelectLogger = GetValueBool("General", "enableCharacterSelectLogger", true);
             settings.showPracticeEntryHint = GetValueBool("General", "showPracticeEntryHint", true);
@@ -717,6 +729,10 @@ namespace Config {
             file << "enableFpsDiagnostics = " << (settings.enableFpsDiagnostics ? "1" : "0") << "\n\n";
             file << "; Show per-player FrameBar overlay (1 = yes, 0 = no)\n";
             file << "showFrameBar = " << (settings.showFrameBar ? "1" : "0") << "\n\n";
+            file << "; FrameBar cell cadence: 0 = subframes, 1 = visual frames\n";
+            file << "frameBarTimingMode = " << settings.frameBarTimingMode << "\n";
+            file << "; FrameBar detail: 0 = full, 1 = compact, 2 = bars only\n";
+            file << "frameBarDetailMode = " << settings.frameBarDetailMode << "\n\n";
             file << "; Log active player / CPU flags during Character Select (1 = yes, 0 = no)\n";
             file << "enableCharacterSelectLogger = " << (settings.enableCharacterSelectLogger ? "1" : "0") << "\n\n";
             file << "; Show a one-time Practice hint about opening the overlay (1 = yes, 0 = no)\n";
@@ -861,6 +877,14 @@ namespace Config {
             if (k == "enabledebugfilelog") settings.enableDebugFileLog = (value == "1");
             if (k == "enableconsole") settings.enableConsole = (value == "1");
             if (k == "showframebar") settings.showFrameBar = (value == "1");
+            if (k == "framebartimingmode") {
+                try { settings.frameBarTimingMode = std::stoi(value); } catch (...) { settings.frameBarTimingMode = 0; }
+                if (settings.frameBarTimingMode < 0 || settings.frameBarTimingMode > 1) settings.frameBarTimingMode = 0;
+            }
+            if (k == "framebardetailmode") {
+                try { settings.frameBarDetailMode = std::stoi(value); } catch (...) { settings.frameBarDetailMode = 0; }
+                if (settings.frameBarDetailMode < 0 || settings.frameBarDetailMode > 2) settings.frameBarDetailMode = 0;
+            }
             if (k == "restricttopracticemode") settings.restrictToPracticeMode = (value == "1");
             if (k == "framestepenabled") settings.framestepEnabled = (value == "1" || value == "true");
             if (k == "suppressrevivalframestep") settings.suppressRevivalFramestep = (value == "1" || value == "true");

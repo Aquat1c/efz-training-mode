@@ -8,6 +8,7 @@
 #include "../include/gui/gui.h"
 #include "../include/utils/config.h"
 #include "../include/gui/overlay.h"
+#include "../include/gui/framebar.h"
 #include "../include/game/character_settings.h"
 #include "../include/game/combo_overlay.h"
 #include "../include/game/frame_monitor.h"
@@ -899,9 +900,6 @@ namespace ImGuiGui {
                 }
                 if (ImGui::IsItemHovered()) ImGui::SetTooltip("Toggles the numeric frame advantage readout (including RG FA1/FA2).");
 
-                ImGui::Spacing();
-                ImGui::SeparatorText("Combo Statistics");
-                ImGui::TextWrapped("Shows a compact combo summary during Practice. The final combo state stays on-screen until the match ends.");
                 auto showWrappedTooltip = [](const char* text) {
                     if (!ImGui::IsItemHovered()) return;
                     ImGui::BeginTooltip();
@@ -910,6 +908,43 @@ namespace ImGuiGui {
                     ImGui::PopTextWrapPos();
                     ImGui::EndTooltip();
                 };
+
+                ImGui::Spacing();
+                ImGui::SeparatorText("Framebar");
+                bool showFrameBar = Config::GetSettings().showFrameBar;
+                if (ImGui::Checkbox("Enable Framebar", &showFrameBar)) {
+                    Config::SetSetting("General", "showFrameBar", showFrameBar ? "1" : "0");
+                    FrameBar::g_enabled.store(showFrameBar);
+                    FrameBar::Reset();
+                }
+                showWrappedTooltip("Shows a per-player timeline of movement, attacks, active boxes, hitstun, blockstun, Recoil Guard, projectiles, and freeze states.");
+
+                if (showFrameBar) {
+                    ImGui::Indent();
+
+                    int timingMode = Config::GetSettings().frameBarTimingMode;
+                    const char* timingItems[] = { "Subframes", "Visual Frames" };
+                    ImGui::SetNextItemWidth(180);
+                    if (ImGui::Combo("Cell Step", &timingMode, timingItems, IM_ARRAYSIZE(timingItems))) {
+                        Config::SetSetting("General", "frameBarTimingMode", std::to_string(timingMode));
+                        FrameBar::Reset();
+                    }
+                    showWrappedTooltip("Subframes shows every sampled game subframe. Visual Frames keeps one cell per displayed game frame.");
+
+                    int detailMode = Config::GetSettings().frameBarDetailMode;
+                    const char* detailItems[] = { "Full", "Compact", "Bars Only" };
+                    ImGui::SetNextItemWidth(180);
+                    if (ImGui::Combo("Detail", &detailMode, detailItems, IM_ARRAYSIZE(detailItems))) {
+                        Config::SetSetting("General", "frameBarDetailMode", std::to_string(detailMode));
+                    }
+                    showWrappedTooltip("Full shows every status line and marker. Compact keeps core timing. Bars Only hides text and detailed marker strips.");
+
+                    ImGui::Unindent();
+                }
+
+                ImGui::Spacing();
+                ImGui::SeparatorText("Combo Statistics");
+                ImGui::TextWrapped("Shows a compact combo summary during Practice. The final combo state stays on-screen until the match ends.");
 
                 bool showComboOverlay = Config::GetSettings().showComboStatisticsOverlay;
                 if (ImGui::Checkbox("Enable Combo Statistics Overlay", &showComboOverlay)) {
@@ -973,8 +1008,8 @@ namespace ImGuiGui {
                     if (ImGui::IsItemHovered()) {
                         ImGui::BeginTooltip();
                         ImGui::PushTextWrapPos(ImGui::GetFontSize() * 35.0f);
-                        ImGui::TextUnformatted("Full Frames: Each step advances 3 subframes (64fps visual frame).");
-                        ImGui::TextUnformatted("Subframes: Each step advances 1 logical frame (192fps). Shows fractional visual frames.");
+                        ImGui::TextUnformatted("Full Frames: Each step advances one visual frame.");
+                        ImGui::TextUnformatted("Subframes: Each step advances one subframe. Shows fractional visual frames.");
                         //ImGui::TextUnformatted("\nNote: Input buffer updates at 64fps (every 3 subframes), so buffer index advances every 3rd step in Subframe mode.");
                         ImGui::TextUnformatted("\nHotkeys: Space = Pause/Resume, P = Step Forward");
                         ImGui::TextUnformatted("Only works in Practice mode (or any mode if 'Restrict to Practice' is off).");

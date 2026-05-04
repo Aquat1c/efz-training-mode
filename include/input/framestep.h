@@ -3,7 +3,7 @@
 namespace Framestep {
     // Framestep mode: how many subframes to advance per step
     enum class StepMode {
-        Subframe = 1,      // Advance 1 subframe (192fps logical frame)
+        Subframe = 1,      // Advance 1 subframe
         FullFrame = 3      // Advance 3 subframes (64fps visual frame)
     };
 
