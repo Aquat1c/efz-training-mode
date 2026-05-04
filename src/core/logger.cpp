@@ -60,12 +60,11 @@ void LogOut(const std::string& msg, bool consoleOutput) {
     if (g_isShuttingDown.load()) {
         return;
     }
-    
-    // Always write to debug log if it's a switch-related message
-    if (msg.find("[SWITCH]") != std::string::npos || 
-        msg.find("[FREEZE]") != std::string::npos ||
-        msg.find("[AI]") != std::string::npos ||
-        msg.find("[ENGINE]") != std::string::npos) {
+
+    // The dedicated debug log is meant to capture the runtime trace even when
+    // the console is disabled or later crashes out. When enabled, forward all
+    // non-empty messages there instead of a tiny category whitelist.
+    if (DebugLog::g_EnableDebugLog && !msg.empty()) {
         DebugLog::Write(msg);
     }
     

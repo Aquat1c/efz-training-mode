@@ -28,6 +28,7 @@
 #include "../include/utils/xinput_shim.h"
 #include "../include/utils/network.h"
 #include "../include/utils/bgm_control.h"
+#include "../include/utils/audio_control.h"
 #include "../include/input/framestep.h"
 #include "../include/core/memory.h"
 #include "../include/core/logger.h"
@@ -444,8 +445,30 @@ void OnPracticeHint() {
 void OnRestrictPractice() {
     PersistBool("General", "restrictToPracticeMode", MutableSettings().restrictToPracticeMode);
 }
+void OnBgmVolume() {
+    PersistInt("General", "bgmVolumePercent", MutableSettings().bgmVolumePercent);
+    AudioControl::ApplyConfiguredVolumesNow();
+}
+void OnSeVolume() {
+    PersistInt("General", "seVolumePercent", MutableSettings().seVolumePercent);
+    AudioControl::ApplyConfiguredVolumesNow();
+}
+
+const char* FormatPercentRowValue(const Row& row) {
+    static char buf[32];
+    const int value = row.intPtr ? *row.intPtr : 0;
+    _snprintf_s(buf, sizeof(buf), _TRUNCATE, "%d%%", value);
+    return buf;
+}
 
 const char* ValInterfaceSettings() { return MutableSettings().useCustomMenu ? "CUSTOM" : "IMGUI"; }
+const char* ValAudioSettings() {
+    static char buf[32];
+    _snprintf_s(buf, sizeof(buf), _TRUNCATE, "BGM %d / SE %d",
+                MutableSettings().bgmVolumePercent,
+                MutableSettings().seVolumePercent);
+    return buf;
+}
 const char* ValRecoverySettings()  { return MutableSettings().crRequireBothNeutral ? "NEUTRAL" : "ANY"; }
 const char* ValPracticeSettings()  { return MutableSettings().restrictToPracticeMode ? "PRACTICE" : "ANY MODE"; }
 
@@ -478,6 +501,23 @@ Row* BuildSettingsRecoveryRows(int& count) {
     return s_rows;
 }
 
+Row* BuildSettingsAudioRows(int& count) {
+    static Row s_rows[8];
+    int n = 0;
+    auto& s = MutableSettings();
+
+    s_rows[n++] = Header("AUDIO");
+    Row bgmVolume = IntSlider("BGM VOLUME", &s.bgmVolumePercent, 0, 100, 1, 10, OnBgmVolume);
+    bgmVolume.valueFormatter = FormatPercentRowValue;
+    s_rows[n++] = bgmVolume;
+    Row seVolume = IntSlider("SE VOLUME", &s.seVolumePercent, 0, 100, 1, 10, OnSeVolume);
+    seVolume.valueFormatter = FormatPercentRowValue;
+    s_rows[n++] = seVolume;
+    s_rows[n++] = Info("100% preserves the current default mix.");
+    count = n;
+    return s_rows;
+}
+
 Row* BuildSettingsPracticeRows(int& count) {
     static Row s_rows[8];
     int n = 0;
@@ -496,6 +536,7 @@ Row* BuildSettingsGeneralRows(int& count) {
 
     s_rows[n++] = Header("GENERAL MENUS");
     s_rows[n++] = Submenu("INTERFACE", "INTERFACE", BuildSettingsInterfaceRows, ValInterfaceSettings);
+    s_rows[n++] = Submenu("AUDIO",     "AUDIO",     BuildSettingsAudioRows,     ValAudioSettings);
     s_rows[n++] = Submenu("RECOVERY",  "RECOVERY",  BuildSettingsRecoveryRows,  ValRecoverySettings);
     s_rows[n++] = Submenu("PRACTICE",  "PRACTICE",  BuildSettingsPracticeRows,  ValPracticeSettings);
     s_rows[n++] = Spacer();

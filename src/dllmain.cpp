@@ -24,11 +24,13 @@
 #include "../include/input/input_hook.h" 
 #include "../3rdparty/minhook/include/MinHook.h" 
 #include "../include/utils/bgm_control.h"
+#include "../include/utils/audio_control.h"
 #include "../include/game/game_state.h"
 #include "../include/core/globals.h"  
 #include "../include/game/collision_hook.h"
 #include "../include/game/practice_hotkey_gate.h"
 #include "../include/game/practice_offsets.h"
+#include "../include/utils/crash_handler.h"
 #include "../include/utils/debug_log.h"
 #include "../include/game/efzrevival_addrs.h"
 #include "../include/input/framestep.h"
@@ -226,6 +228,16 @@ void DelayedInitialization(HMODULE hModule) {
             LogOut("[SYSTEM] Exception while installing collision hook.", true);
         }
         try {
+            const uintptr_t efzBase = GetEFZBase();
+            if (AudioControl::InstallHooks(efzBase)) {
+                AudioControl::ApplyConfiguredVolumesNow();
+            } else {
+                LogOut("[AUDIO] Runtime audio hooks were not installed.", true);
+            }
+        } catch (...) {
+            LogOut("[AUDIO] Exception while installing runtime audio hooks.", true);
+        }
+        try {
             StartBGMSuppressionPoller();
         } catch (...) {
             LogOut("[SYSTEM] Exception while starting BGM suppression poller.", true);
@@ -328,6 +340,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
     case DLL_PROCESS_ATTACH:
     // Keep our module handle available for any future runtime services that need it.
     g_hSelfModule = hModule;
+        CrashHandler::Install(hModule);
         WriteEarlyLoaderTrace("DLL_PROCESS_ATTACH reached");
         DisableThreadLibraryCalls(hModule);
         if (HANDLE initThread = CreateThread(nullptr, 0, DelayedInitializationThreadProc, hModule, 0, nullptr)) {
