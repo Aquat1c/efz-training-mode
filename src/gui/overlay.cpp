@@ -1177,13 +1177,17 @@ void DirectDrawHook::ClearAllMessages() {
 
 // Thread-safe D3D9 init guard
 static std::atomic<bool> s_d3d9InitInProgress{false};
+static std::atomic<bool> s_lastD3D9InitDeferredForNetplay{false};
 
 // --- NEW: D3D9 Hook Initialization and Shutdown ---
 bool DirectDrawHook::InitializeD3D9() {
     if (g_onlineModeActive.load(std::memory_order_relaxed)) {
+        s_lastD3D9InitDeferredForNetplay.store(true, std::memory_order_release);
         LogOut("[OVERLAY] Skipping D3D9 initialization while netplay suspend is active.", detailedLogging.load());
         return false;
     }
+
+    s_lastD3D9InitDeferredForNetplay.store(false, std::memory_order_release);
 
     // Fast path: already hooked
     if (isHooked) {
@@ -1330,6 +1334,7 @@ bool DirectDrawHook::InitializeD3D9() {
     }
 
     if (g_onlineModeActive.load(std::memory_order_relaxed)) {
+        s_lastD3D9InitDeferredForNetplay.store(true, std::memory_order_release);
         LogOut("[OVERLAY] Aborting EndScene enable because netplay suspend became active during initialization.", true);
         MH_RemoveHook(endSceneAddr);
         tempDevice->Release();
@@ -1376,6 +1381,10 @@ bool DirectDrawHook::InitializeD3D9() {
         }
     }).detach();
     return true;
+}
+
+bool DirectDrawHook::WasLastD3D9InitDeferredForNetplay() {
+    return s_lastD3D9InitDeferredForNetplay.load(std::memory_order_acquire);
 }
 
 bool DirectDrawHook::SetD3D9Active(bool active) {
