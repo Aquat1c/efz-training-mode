@@ -98,6 +98,7 @@ constexpr uint32_t kDirectSoundStatusPlaying = 0x1;
 constexpr uint32_t kDirectSoundStatusBufferLost = 0x2;
 constexpr uint32_t kDirectSoundStatusLooping = 0x4;
 constexpr size_t kMaxSerializedSoundEntries = kSoundManagerBufferCount * 3;
+constexpr uint16_t kActiveRoundDurationValue = 300;
 constexpr int kInitialSnapshotSlot = 0;
 constexpr int kMaxDiskSlots = 8;
 constexpr int kPostRestoreStabilizationFrames = 6;
@@ -1491,6 +1492,46 @@ std::string DescribeGameStateKeyFields(const std::vector<uint8_t>& bytes) {
         << " replayActive=" << static_cast<unsigned int>(replayActive)
         << " replayHandle=" << Hex32(replayHandle);
     return oss.str();
+}
+
+bool NormalizeInitialSnapshotRoundStartState(Snapshot& snapshot, std::string& outDetail) {
+    uint8_t roundEvent = 0;
+    uint16_t roundDuration = 0;
+    uint32_t roundGate = 0;
+    uint16_t roundUiCounter = 0;
+    uint16_t roundUiCounter2 = 0;
+
+    if (!ReadStructValue(snapshot.gameState, kGameStateRoundEventOffset, roundEvent)
+        || !ReadStructValue(snapshot.gameState, kGameStateRoundDurationOffset, roundDuration)
+        || !ReadStructValue(snapshot.gameState, kGameStateRoundGateOffset, roundGate)
+        || !ReadStructValue(snapshot.gameState, kGameStateRoundUiCounterOffset, roundUiCounter)
+        || !ReadStructValue(snapshot.gameState, kGameStateRoundUiCounter2Offset, roundUiCounter2)) {
+        outDetail = "missing gameState round-start fields";
+        return false;
+    }
+
+    if (roundEvent == 0 && roundDuration != 0) {
+        return false;
+    }
+
+    const std::string before = DescribeGameStateKeyFields(snapshot.gameState);
+    const uint8_t activeRoundEvent = 0;
+    const uint32_t clearedRoundGate = 0;
+    const uint16_t clearedRoundUiCounter = 0;
+
+    const bool ok = WriteStructValue(snapshot.gameState, kGameStateRoundEventOffset, activeRoundEvent)
+        && WriteStructValue(snapshot.gameState, kGameStateRoundDurationOffset, kActiveRoundDurationValue)
+        && WriteStructValue(snapshot.gameState, kGameStateRoundGateOffset, clearedRoundGate)
+        && WriteStructValue(snapshot.gameState, kGameStateRoundUiCounterOffset, clearedRoundUiCounter)
+        && WriteStructValue(snapshot.gameState, kGameStateRoundUiCounter2Offset, clearedRoundUiCounter);
+
+    if (!ok) {
+        outDetail = "failed to rewrite gameState round-start fields";
+        return false;
+    }
+
+    outDetail = "before={" + before + "} after={" + DescribeGameStateKeyFields(snapshot.gameState) + "}";
+    return true;
 }
 
 std::string DescribePlayerStateKeyFields(const std::vector<uint8_t>& bytes) {
@@ -3165,6 +3206,11 @@ bool LoadSnapshotFromSlotIntoWorkingImpl(int slot, std::string& outReason, bool 
                 ShowSnapshotMessage("Initial Slot Empty", RGB(255, 180, 120));
             }
             return false;
+        }
+
+        std::string slot0NormalizeDetail;
+        if (NormalizeInitialSnapshotRoundStartState(snapshot, slot0NormalizeDetail)) {
+            LogSavestateTrace("disk load slot0 normalize", slot0NormalizeDetail);
         }
 
         LogSavestateTrace("disk load slot0", DescribeSnapshot(snapshot));
