@@ -28,7 +28,7 @@ namespace {
 //
 // Instead we poll the physical inputs every frame:
 //   - Arrow keys + Enter/Escape via GetAsyncKeyState
-//   - User's configured game direction + A/B/D keys (from detectedBindings)
+//   - User's configured game direction + A/B/C/D keys (from detectedBindings)
 //     via GetAsyncKeyState on the same VK they resolved to
 //   - XInput dpad + A/B/Y buttons across all connected pads, via XInputShim's
 //     cached state (already refreshed at the start of each EndScene by
@@ -102,9 +102,10 @@ CurState SampleCurrent() {
         if (VkDown(detectedBindings.leftKey))  cur.left  = true;
         if (VkDown(detectedBindings.rightKey)) cur.right = true;
     }
-    // User's configured attack keys: A = activate, B = back, D = switch player.
+    // User's configured attack keys: A/C = activate, B = back, D = switch player.
     if (detectedBindings.attacksDetected) {
         if (VkDown(detectedBindings.aButton)) cur.activate = true;
+        if (VkDown(detectedBindings.cButton)) cur.activate = true;
         if (VkDown(detectedBindings.bButton)) cur.back     = true;
         if (VkDown(detectedBindings.dButton)) cur.switchPlayer = true;
     }
@@ -235,7 +236,7 @@ void ResetEdges() {
     g_holdRight = HoldState{};
 
     LogInputDetail(
-        "ResetEdges held U=%d D=%d L=%d R=%d A=%d B=%d SW=%d | bindings Up=%s Down=%s Left=%s Right=%s A=%s B=%s D=%s",
+        "ResetEdges held U=%d D=%d L=%d R=%d A=%d B=%d SW=%d | bindings Up=%s Down=%s Left=%s Right=%s A=%s B=%s C=%s D=%s",
         g_prev.up ? 1 : 0,
         g_prev.down ? 1 : 0,
         g_prev.left ? 1 : 0,
@@ -249,6 +250,7 @@ void ResetEdges() {
         detectedBindings.directionsDetected ? GetKeyName(detectedBindings.rightKey).c_str() : "<none>",
         detectedBindings.attacksDetected ? GetKeyName(detectedBindings.aButton).c_str() : "<none>",
         detectedBindings.attacksDetected ? GetKeyName(detectedBindings.bButton).c_str() : "<none>",
+        detectedBindings.attacksDetected ? GetKeyName(detectedBindings.cButton).c_str() : "<none>",
         detectedBindings.attacksDetected ? GetKeyName(detectedBindings.dButton).c_str() : "<none>");
 }
 

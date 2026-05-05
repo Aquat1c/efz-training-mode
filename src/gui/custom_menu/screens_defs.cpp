@@ -38,6 +38,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -2067,21 +2068,279 @@ constexpr uint8_t kHotswapCharacterSelectScreen = 1;
 constexpr uintptr_t kHotswapCsP1SelectionOffset = 1340;
 constexpr uintptr_t kHotswapCsP2SelectionOffset = 1341;
 
+const char* const kHotswapPaletteChoices[] = {
+    "1", "2", "3", "4", "5", "6",
+};
+
+constexpr int kHotswapPaletteChoiceCount = static_cast<int>(sizeof(kHotswapPaletteChoices) / sizeof(kHotswapPaletteChoices[0]));
+
 int g_hotswapMenuP1Character = 4;
 int g_hotswapMenuP2Character = 16;
+int g_hotswapMenuP1Palette = 0;
+int g_hotswapMenuP2Palette = 0;
+int g_hotswapMenuP1PalettePrev = 0;
+int g_hotswapMenuP2PalettePrev = 0;
+bool g_hotswapMenuP1CustomPalette = false;
+bool g_hotswapMenuP2CustomPalette = false;
 int g_hotswapMenuStage = 0;
 int g_hotswapMenuOstChoice = 0;
 bool g_hotswapMenuSeeded = false;
+
+struct HotswapCustomAvailabilityLogState {
+    int selectId = -1;
+    int palette = -1;
+    int available = -1;
+    int disabled = -1;
+};
+
+HotswapCustomAvailabilityLogState g_hotswapP1CustomAvailabilityLog;
+HotswapCustomAvailabilityLogState g_hotswapP2CustomAvailabilityLog;
 
 struct HotswapCurrentState {
     bool charsValid = false;
     int p1SelectId = 4;
     int p2SelectId = 16;
+    bool paletteValid = false;
+    CharacterHotswap::PaletteSelection paletteSelection;
     bool stageValid = false;
     int stageId = 0;
     bool bgmValid = false;
     int bgmTrack = 0;
 };
+
+int CharacterSelectIdForHotswapChoice(int choiceIdx);
+
+bool HotswapCurrentStatesEqual(const HotswapCurrentState& lhs, const HotswapCurrentState& rhs) {
+    return lhs.charsValid == rhs.charsValid
+        && lhs.p1SelectId == rhs.p1SelectId
+        && lhs.p2SelectId == rhs.p2SelectId
+        && lhs.paletteValid == rhs.paletteValid
+        && lhs.paletteSelection.p1Color == rhs.paletteSelection.p1Color
+        && lhs.paletteSelection.p2Color == rhs.paletteSelection.p2Color
+        && lhs.paletteSelection.p1UseCustomPalette == rhs.paletteSelection.p1UseCustomPalette
+        && lhs.paletteSelection.p2UseCustomPalette == rhs.paletteSelection.p2UseCustomPalette
+        && lhs.stageValid == rhs.stageValid
+        && lhs.stageId == rhs.stageId
+        && lhs.bgmValid == rhs.bgmValid
+        && lhs.bgmTrack == rhs.bgmTrack;
+}
+
+void LogHotswapMenuSelection(const char* reason) {
+    std::ostringstream oss;
+    oss << "[HOTSWAP][MENU] " << (reason ? reason : "state")
+        << " p1Char=" << CharacterSelectIdForHotswapChoice(g_hotswapMenuP1Character)
+        << " p2Char=" << CharacterSelectIdForHotswapChoice(g_hotswapMenuP2Character)
+        << " palette=" << (g_hotswapMenuP1Palette + 1)
+        << "/" << (g_hotswapMenuP2Palette + 1)
+        << " custom=" << (g_hotswapMenuP1CustomPalette ? 1 : 0)
+        << "/" << (g_hotswapMenuP2CustomPalette ? 1 : 0)
+        << " stage=" << g_hotswapMenuStage
+        << " ostChoice=" << g_hotswapMenuOstChoice
+        << " seeded=" << (g_hotswapMenuSeeded ? 1 : 0);
+    LogOut(oss.str(), true);
+}
+
+void LogHotswapRuntimeStateIfChanged(const HotswapCurrentState& state) {
+    static bool s_hasLogged = false;
+    static HotswapCurrentState s_lastState{};
+    if (s_hasLogged && HotswapCurrentStatesEqual(state, s_lastState)) {
+        return;
+    }
+
+    std::ostringstream oss;
+    oss << "[HOTSWAP][MENU] runtime charsValid=" << (state.charsValid ? 1 : 0)
+        << " p1Char=" << state.p1SelectId
+        << " p2Char=" << state.p2SelectId
+        << " paletteValid=" << (state.paletteValid ? 1 : 0)
+        << " palette=" << (state.paletteSelection.p1Color + 1)
+        << "/" << (state.paletteSelection.p2Color + 1)
+        << " custom=" << (state.paletteSelection.p1UseCustomPalette ? 1 : 0)
+        << "/" << (state.paletteSelection.p2UseCustomPalette ? 1 : 0)
+        << " stageValid=" << (state.stageValid ? 1 : 0)
+        << " stage=" << state.stageId
+        << " bgmValid=" << (state.bgmValid ? 1 : 0)
+        << " bgm=" << state.bgmTrack;
+    LogOut(oss.str(), true);
+
+    s_lastState = state;
+    s_hasLogged = true;
+}
+
+void LogCustomPaletteAvailabilityIfChanged(const char* playerLabel,
+                                          HotswapCustomAvailabilityLogState& state,
+                                          int selectId,
+                                          int palette,
+                                          bool available,
+                                          bool disabled,
+                                          const char* reason) {
+    const int availableInt = available ? 1 : 0;
+    const int disabledInt = disabled ? 1 : 0;
+    if (state.selectId == selectId
+        && state.palette == palette
+        && state.available == availableInt
+        && state.disabled == disabledInt) {
+        return;
+    }
+
+    std::ostringstream oss;
+    oss << "[HOTSWAP][MENU] custom availability " << playerLabel
+        << " char=" << selectId
+        << " palette=" << (palette + 1)
+        << " available=" << availableInt
+        << " disabled=" << disabledInt;
+    if (reason && reason[0] != '\0') {
+        oss << " reason=" << reason;
+    }
+    LogOut(oss.str(), true);
+
+    state.selectId = selectId;
+    state.palette = palette;
+    state.available = availableInt;
+    state.disabled = disabledInt;
+}
+
+void ResetHotswapMenuSeedState() {
+    const bool wasSeeded = g_hotswapMenuSeeded;
+    g_hotswapMenuSeeded = false;
+    g_hotswapP1CustomAvailabilityLog = HotswapCustomAvailabilityLogState{};
+    g_hotswapP2CustomAvailabilityLog = HotswapCustomAvailabilityLogState{};
+    if (wasSeeded) {
+        LogOut("[HOTSWAP][MENU] reset seed for next open", true);
+    }
+}
+
+int NormalizePaletteChoiceIndex(int paletteIndex) {
+    if (paletteIndex < 0) {
+        paletteIndex %= kHotswapPaletteChoiceCount;
+        paletteIndex += kHotswapPaletteChoiceCount;
+    }
+    if (paletteIndex >= kHotswapPaletteChoiceCount) {
+        paletteIndex %= kHotswapPaletteChoiceCount;
+    }
+    return paletteIndex;
+}
+
+int InferPaletteCycleDirection(int previousPalette, int currentPalette) {
+    previousPalette = NormalizePaletteChoiceIndex(previousPalette);
+    currentPalette = NormalizePaletteChoiceIndex(currentPalette);
+    if (currentPalette == previousPalette) {
+        return 1;
+    }
+    if (currentPalette == (previousPalette + 1) % kHotswapPaletteChoiceCount) {
+        return 1;
+    }
+    if (currentPalette == (previousPalette + kHotswapPaletteChoiceCount - 1) % kHotswapPaletteChoiceCount) {
+        return -1;
+    }
+    return (currentPalette > previousPalette) ? 1 : -1;
+}
+
+bool FindCustomPaletteSlotForCharacter(int selectId, int startPalette, int direction, int& outPalette) {
+    if (direction < 0) {
+        direction = -1;
+    } else {
+        direction = 1;
+    }
+
+    int palette = NormalizePaletteChoiceIndex(startPalette);
+    for (int i = 0; i < kHotswapPaletteChoiceCount; ++i) {
+        if (CharacterHotswap::HasCustomPaletteFile(selectId, palette)) {
+            outPalette = palette;
+            return true;
+        }
+        palette = NormalizePaletteChoiceIndex(palette + direction);
+    }
+    return false;
+}
+
+bool CharacterHasAnyCustomPaletteSlot(int selectId) {
+    int palette = 0;
+    return FindCustomPaletteSlotForCharacter(selectId, 0, 1, palette);
+}
+
+void NormalizeMenuPaletteSelection(const char* playerLabel,
+                                   int selectId,
+                                   int& palette,
+                                   bool& useCustomPalette,
+                                   int& previousPalette) {
+    const int originalPalette = palette;
+    const bool originalUseCustomPalette = useCustomPalette;
+    const int originalPreviousPalette = previousPalette;
+    palette = NormalizePaletteChoiceIndex(palette);
+    previousPalette = NormalizePaletteChoiceIndex(previousPalette);
+
+    if (useCustomPalette && !CharacterHotswap::HasCustomPaletteFile(selectId, palette)) {
+        const int direction = InferPaletteCycleDirection(previousPalette, palette);
+        int resolvedPalette = palette;
+        if (!FindCustomPaletteSlotForCharacter(selectId, palette, direction, resolvedPalette)) {
+            useCustomPalette = false;
+        } else {
+            palette = resolvedPalette;
+        }
+    }
+
+    previousPalette = palette;
+
+    if (originalPalette != palette
+        || originalUseCustomPalette != useCustomPalette
+        || originalPreviousPalette != previousPalette) {
+        std::ostringstream oss;
+        oss << "[HOTSWAP][MENU] normalize " << playerLabel
+            << " char=" << selectId
+            << " beforePalette=" << (NormalizePaletteChoiceIndex(originalPalette) + 1)
+            << " beforeCustom=" << (originalUseCustomPalette ? 1 : 0)
+            << " afterPalette=" << (palette + 1)
+            << " afterCustom=" << (useCustomPalette ? 1 : 0)
+            << " prev=" << (NormalizePaletteChoiceIndex(originalPreviousPalette) + 1)
+            << " nextPrev=" << (previousPalette + 1);
+        LogOut(oss.str(), true);
+    }
+}
+
+void NormalizeHotswapMenuPaletteSelections() {
+    const int p1SelectId = CharacterSelectIdForHotswapChoice(g_hotswapMenuP1Character);
+    const int p2SelectId = CharacterSelectIdForHotswapChoice(g_hotswapMenuP2Character);
+    NormalizeMenuPaletteSelection("P1",
+                                  p1SelectId,
+                                  g_hotswapMenuP1Palette,
+                                  g_hotswapMenuP1CustomPalette,
+                                  g_hotswapMenuP1PalettePrev);
+    NormalizeMenuPaletteSelection("P2",
+                                  p2SelectId,
+                                  g_hotswapMenuP2Palette,
+                                  g_hotswapMenuP2CustomPalette,
+                                  g_hotswapMenuP2PalettePrev);
+}
+
+void OnHotswapP1CharacterChanged() {
+    NormalizeHotswapMenuPaletteSelections();
+    LogHotswapMenuSelection("P1 character changed");
+}
+
+void OnHotswapP2CharacterChanged() {
+    NormalizeHotswapMenuPaletteSelections();
+    LogHotswapMenuSelection("P2 character changed");
+}
+
+void OnHotswapP1PaletteChanged() {
+    NormalizeHotswapMenuPaletteSelections();
+    LogHotswapMenuSelection("P1 palette changed");
+}
+
+void OnHotswapP2PaletteChanged() {
+    NormalizeHotswapMenuPaletteSelections();
+    LogHotswapMenuSelection("P2 palette changed");
+}
+
+void OnHotswapP1CustomPaletteChanged() {
+    NormalizeHotswapMenuPaletteSelections();
+    LogHotswapMenuSelection("P1 custom toggled");
+}
+
+void OnHotswapP2CustomPaletteChanged() {
+    NormalizeHotswapMenuPaletteSelections();
+    LogHotswapMenuSelection("P2 custom toggled");
+}
 
 int CharacterSelectIdForHotswapChoice(int choiceIdx) {
     if (choiceIdx < 0 || choiceIdx >= kHotswapCharacterChoiceCount) {
@@ -2144,6 +2403,12 @@ bool ReadCurrentHotswapState(HotswapCurrentState& state) {
         ReadCurrentCharacterSelectIds(state);
     }
 
+    CharacterHotswap::PaletteSelection paletteSelection{};
+    if (CharacterHotswap::ReadCurrentPaletteSelection(paletteSelection)) {
+        state.paletteSelection = paletteSelection;
+        state.paletteValid = true;
+    }
+
     const uintptr_t gameStatePtr = GetGameStatePtr();
     if (gameStatePtr) {
         uint8_t currentStage = 0;
@@ -2154,6 +2419,8 @@ bool ReadCurrentHotswapState(HotswapCurrentState& state) {
         state.bgmTrack = GetBGMSlot(gameStatePtr);
         state.bgmValid = true;
     }
+
+    LogHotswapRuntimeStateIfChanged(state);
 
     return state.charsValid || state.stageValid || state.bgmValid;
 }
@@ -2191,6 +2458,10 @@ bool HotswapHasReloadChanges(const HotswapCurrentState& current) {
 
     return CharacterSelectIdForHotswapChoice(g_hotswapMenuP1Character) != current.p1SelectId
         || CharacterSelectIdForHotswapChoice(g_hotswapMenuP2Character) != current.p2SelectId
+        || (current.paletteValid && g_hotswapMenuP1Palette != current.paletteSelection.p1Color)
+        || (current.paletteValid && g_hotswapMenuP2Palette != current.paletteSelection.p2Color)
+        || (current.paletteValid && g_hotswapMenuP1CustomPalette != current.paletteSelection.p1UseCustomPalette)
+        || (current.paletteValid && g_hotswapMenuP2CustomPalette != current.paletteSelection.p2UseCustomPalette)
         || g_hotswapMenuStage != current.stageId;
 }
 
@@ -2232,6 +2503,12 @@ void SeedHotswapMenuSelectionsIfNeeded() {
             g_hotswapMenuP1Character = HotswapChoiceIndexFromCharacterSelectId(current.p1SelectId);
             g_hotswapMenuP2Character = HotswapChoiceIndexFromCharacterSelectId(current.p2SelectId);
         }
+        if (current.paletteValid) {
+            g_hotswapMenuP1Palette = NormalizePaletteChoiceIndex(current.paletteSelection.p1Color);
+            g_hotswapMenuP2Palette = NormalizePaletteChoiceIndex(current.paletteSelection.p2Color);
+            g_hotswapMenuP1CustomPalette = current.paletteSelection.p1UseCustomPalette;
+            g_hotswapMenuP2CustomPalette = current.paletteSelection.p2UseCustomPalette;
+        }
         if (current.stageValid) {
             g_hotswapMenuStage = current.stageId;
         }
@@ -2254,7 +2531,14 @@ void SeedHotswapMenuSelectionsIfNeeded() {
         }
     }
 
+    g_hotswapMenuP1PalettePrev = NormalizePaletteChoiceIndex(g_hotswapMenuP1Palette);
+    g_hotswapMenuP2PalettePrev = NormalizePaletteChoiceIndex(g_hotswapMenuP2Palette);
+    NormalizeHotswapMenuPaletteSelections();
+
     g_hotswapMenuSeeded = true;
+    LogHotswapMenuSelection(current.charsValid || current.paletteValid || current.stageValid || current.bgmValid
+        ? "seeded from runtime"
+        : "seeded from fallback local data");
 }
 
 void RunMenuHotswapApply() {
@@ -2297,9 +2581,40 @@ void RunMenuHotswapApply() {
         return;
     }
 
+    CharacterHotswap::PaletteSelection paletteSelection{};
+    paletteSelection.p1Color = g_hotswapMenuP1Palette;
+    paletteSelection.p2Color = g_hotswapMenuP2Palette;
+    paletteSelection.p1UseCustomPalette = g_hotswapMenuP1CustomPalette;
+    paletteSelection.p2UseCustomPalette = g_hotswapMenuP2CustomPalette;
+    {
+        std::ostringstream oss;
+        oss << "[HOTSWAP][MENU] apply request"
+            << " runtimePaletteValid=" << (current.paletteValid ? 1 : 0)
+            << " runtimePalette=" << (current.paletteSelection.p1Color + 1)
+            << "/" << (current.paletteSelection.p2Color + 1)
+            << " runtimeCustom=" << (current.paletteSelection.p1UseCustomPalette ? 1 : 0)
+            << "/" << (current.paletteSelection.p2UseCustomPalette ? 1 : 0)
+            << " requestedPalette=" << (paletteSelection.p1Color + 1)
+            << "/" << (paletteSelection.p2Color + 1)
+            << " requestedCustom=" << (paletteSelection.p1UseCustomPalette ? 1 : 0)
+            << "/" << (paletteSelection.p2UseCustomPalette ? 1 : 0);
+        LogOut(oss.str(), true);
+    }
+    CharacterHotswap::SanitizePaletteSelection(p1SelectId, p2SelectId, paletteSelection);
+    {
+        std::ostringstream oss;
+        oss << "[HOTSWAP][MENU] apply sanitized"
+            << " palette=" << (paletteSelection.p1Color + 1)
+            << "/" << (paletteSelection.p2Color + 1)
+            << " custom=" << (paletteSelection.p1UseCustomPalette ? 1 : 0)
+            << "/" << (paletteSelection.p2UseCustomPalette ? 1 : 0);
+        LogOut(oss.str(), true);
+    }
+
     CharacterHotswap::QueueReload(p1SelectId,
                                   p2SelectId,
                                   g_hotswapMenuStage,
+                                  paletteSelection,
                                   targetTrack);
 }
 
@@ -2313,6 +2628,54 @@ bool ExitToTitleDisabled() {
 
 bool HotswapSelectionValueDisabled() {
     return CharacterHotswap::IsBusy();
+}
+
+bool HotswapP1CustomPaletteDisabled() {
+    if (CharacterHotswap::IsBusy()) {
+        LogCustomPaletteAvailabilityIfChanged("P1",
+                                             g_hotswapP1CustomAvailabilityLog,
+                                             CharacterSelectIdForHotswapChoice(g_hotswapMenuP1Character),
+                                             g_hotswapMenuP1Palette,
+                                             false,
+                                             true,
+                                             "busy");
+        return true;
+    }
+    const int selectId = CharacterSelectIdForHotswapChoice(g_hotswapMenuP1Character);
+    const bool available = CharacterHotswap::HasCustomPaletteFile(selectId, g_hotswapMenuP1Palette);
+    const bool disabled = !available;
+    LogCustomPaletteAvailabilityIfChanged("P1",
+                                         g_hotswapP1CustomAvailabilityLog,
+                                         selectId,
+                                         g_hotswapMenuP1Palette,
+                                         available,
+                                         disabled,
+                                         disabled ? "missing custom .pal" : "available");
+    return disabled;
+}
+
+bool HotswapP2CustomPaletteDisabled() {
+    if (CharacterHotswap::IsBusy()) {
+        LogCustomPaletteAvailabilityIfChanged("P2",
+                                             g_hotswapP2CustomAvailabilityLog,
+                                             CharacterSelectIdForHotswapChoice(g_hotswapMenuP2Character),
+                                             g_hotswapMenuP2Palette,
+                                             false,
+                                             true,
+                                             "busy");
+        return true;
+    }
+    const int selectId = CharacterSelectIdForHotswapChoice(g_hotswapMenuP2Character);
+    const bool available = CharacterHotswap::HasCustomPaletteFile(selectId, g_hotswapMenuP2Palette);
+    const bool disabled = !available;
+    LogCustomPaletteAvailabilityIfChanged("P2",
+                                         g_hotswapP2CustomAvailabilityLog,
+                                         selectId,
+                                         g_hotswapMenuP2Palette,
+                                         available,
+                                         disabled,
+                                         disabled ? "missing custom .pal" : "available");
+    return disabled;
 }
 
 bool HotswapReloadDisabled() {
@@ -2343,7 +2706,7 @@ const char* ValExitToTitle() {
 }
 
 Row* BuildMenuRows(int& count) {
-    static Row s_rows[16];
+    static Row s_rows[20];
     int n = 0;
 
     SeedHotswapMenuSelectionsIfNeeded();
@@ -2357,11 +2720,31 @@ Row* BuildMenuRows(int& count) {
     s_rows[n++] = DropdownRow("PLAYER 1 CHARACTER", &g_hotswapMenuP1Character,
                               kHotswapCharacterChoices,
                               kHotswapCharacterChoiceCount,
-                              nullptr, HotswapSelectionValueDisabled);
+                              OnHotswapP1CharacterChanged, HotswapSelectionValueDisabled);
     s_rows[n++] = DropdownRow("PLAYER 2 CHARACTER", &g_hotswapMenuP2Character,
                               kHotswapCharacterChoices,
                               kHotswapCharacterChoiceCount,
-                              nullptr, HotswapSelectionValueDisabled);
+                              OnHotswapP2CharacterChanged, HotswapSelectionValueDisabled);
+    s_rows[n++] = ChoicesRow("PLAYER 1 PALETTE", &g_hotswapMenuP1Palette,
+                             kHotswapPaletteChoices,
+                             kHotswapPaletteChoiceCount,
+                             OnHotswapP1PaletteChanged,
+                             HotswapSelectionValueDisabled);
+    s_rows[n++] = Toggle("PLAYER 1 CUSTOM PALETTE", &g_hotswapMenuP1CustomPalette,
+                         OnHotswapP1CustomPaletteChanged,
+                         HotswapP1CustomPaletteDisabled,
+                         nullptr,
+                         true);
+    s_rows[n++] = ChoicesRow("PLAYER 2 PALETTE", &g_hotswapMenuP2Palette,
+                             kHotswapPaletteChoices,
+                             kHotswapPaletteChoiceCount,
+                             OnHotswapP2PaletteChanged,
+                             HotswapSelectionValueDisabled);
+    s_rows[n++] = Toggle("PLAYER 2 CUSTOM PALETTE", &g_hotswapMenuP2CustomPalette,
+                         OnHotswapP2CustomPaletteChanged,
+                         HotswapP2CustomPaletteDisabled,
+                         nullptr,
+                         true);
     s_rows[n++] = DropdownRow("STAGE", &g_hotswapMenuStage,
                               kNamedStageChoices,
                               kNamedStageChoiceCount,
@@ -2642,6 +3025,10 @@ Row* BuildOptionsRows(int& count) {
 } // namespace
 
 // ===== Public per-screen entry points =====
+
+void ResetHotswapMenuSeed() {
+    ResetHotswapMenuSeedState();
+}
 
 // ===== Macros =====
 bool g_macroIncludeBuffers = true;

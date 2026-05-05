@@ -1324,6 +1324,7 @@ void MaybeRefreshOnOpen() {
         g_mouse.movedThisFrame = false;
         StartOpenAnimation();
         Screens::ResetSubmenus();
+        Screens::ResetHotswapMenuSeed();
         // Snap physical-input edge detector so currently-held keys (the
         // menu-open press, a gamepad button still down from gameplay) do
         // not register as a rising edge on the first input-handling pass.
@@ -1340,6 +1341,7 @@ void MaybeRefreshOnOpen() {
         g_shell.keybindWasActive = false;
         StartOpenAnimation();
         Screens::ResetSubmenus();
+        Screens::ResetHotswapMenuSeed();
         Input::ResetEdges();
         LogMenuDetail("Switched to custom menu while visible; pane=%s focus=%s mode=%s",
             ScreenName(ActivePane()),
@@ -1351,6 +1353,7 @@ void MaybeRefreshOnOpen() {
         }
         CancelEditMode();
         Screens::ResetSubmenus();
+        Screens::ResetHotswapMenuSeed();
         Screens::ResetTextEditor();
         g_shell.keybindWasActive = false;
     }
