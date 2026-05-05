@@ -299,19 +299,49 @@ namespace CharacterSettings {
             case CHAR_ID_MIO:      return "Mio";
             case CHAR_ID_MISHIO:   return "Mishio";
             case CHAR_ID_MISUZU:   return "Misuzu";
-            case CHAR_ID_MIZUKA:   return "Mizuka";      // Nagamori in files
+            case CHAR_ID_MIZUKA:   return "Mizuka";
             case CHAR_ID_NAGAMORI: return "Nagamori";
-            case CHAR_ID_NANASE:   return "Rumi";        // Nanase in files
-            case CHAR_ID_EXNANASE: return "Doppel";      // ExNanase in files
-            case CHAR_ID_NAYUKI:   return "Neyuki";   // Sleepy Nayuki (nayuki in files)
-            case CHAR_ID_NAYUKIB:  return "Nayuki";   // Awake Nayuki (nayukib in files) 
+            case CHAR_ID_NANASE:   return "Rumi";
+            case CHAR_ID_EXNANASE: return "Doppel";
+            case CHAR_ID_NAYUKI:   return "Neyuki";
+            case CHAR_ID_NAYUKIB:  return "Nayuki";
             case CHAR_ID_SHIORI:   return "Shiori";
             case CHAR_ID_AYU:      return "Ayu";
             case CHAR_ID_MAI:      return "Mai";
             case CHAR_ID_MAYU:     return "Mayu";
-            case CHAR_ID_MIZUKAB:  return "Unknown";     // MizukaB in files
+            case CHAR_ID_MIZUKAB:  return "Unknown";
             case CHAR_ID_KANO:     return "Kano";
-            default:               return "Undefined";    // Changed from "Unknown"
+            default:               return "Undefined";
+        }
+    }
+
+    std::string GetCharacterInternalName(int charID) {
+        switch (charID) {
+            case CHAR_ID_AKANE:    return "akane";
+            case CHAR_ID_AKIKO:    return "akiko";
+            case CHAR_ID_IKUMI:    return "ikumi";
+            case CHAR_ID_MISAKI:   return "misaki";
+            case CHAR_ID_SAYURI:   return "sayuri";
+            case CHAR_ID_KANNA:    return "kanna";
+            case CHAR_ID_KAORI:    return "kaori";
+            case CHAR_ID_MAKOTO:   return "makoto";
+            case CHAR_ID_MINAGI:   return "minagi";
+            case CHAR_ID_MIO:      return "mio";
+            case CHAR_ID_MISHIO:   return "mishio";
+            case CHAR_ID_MISUZU:   return "misuzu";
+            case CHAR_ID_MIZUKA:   return "nagamori";
+            case CHAR_ID_NAGAMORI: return "nagamori";
+            case CHAR_ID_NANASE:   return "nanase";
+            case CHAR_ID_EXNANASE: return "exnanase";
+            case CHAR_ID_NAYUKI:   return "nayuki";
+            case CHAR_ID_NAYUKIB:  return "nayukib";
+            case CHAR_ID_SHIORI:   return "shiori";
+            case CHAR_ID_AYU:      return "ayu";
+            case CHAR_ID_MAI:      return "mai";
+            case CHAR_ID_MAYU:     return "mayu";
+            case CHAR_ID_MIZUKAB:  return "mizukab";
+            case CHAR_ID_KANO:     return "kano";
+            default:               return "unknown";
         }
     }
     

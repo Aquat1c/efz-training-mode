@@ -24,6 +24,7 @@ namespace Config {
     bool showPracticeEntryHint;   // NEW: Show practice overlay hint once per session
     float uiScale;               // NEW: UI scale for ImGui window (e.g., 0.80..1.20)
     int uiFontMode;              // NEW: UI font selection (0=ImGui default, 1=Segoe UI)
+    int savestateBackendMode;    // 0=Custom, 1=Revival, 2=Custom with Revival fallback
 
     // ImGui navigation tuning
     float guiNavAnalogThreshold; // Analog threshold (0..1) to treat stick as a digital dpad for fallback nav
@@ -56,6 +57,10 @@ namespace Config {
         int resetFrameCounterKey;
         int helpKey;
         int toggleImGuiKey;
+        int savestateSaveKey;
+        int savestateLoadKey;
+        int savestatePrevSlotKey;
+        int savestateNextSlotKey;
 
         // Practice/macro hotkeys (configurable)
         int switchPlayersKey;   // Default: 'L'

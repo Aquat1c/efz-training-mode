@@ -6,6 +6,9 @@
 namespace CharacterSettings {
     // Get character name from ID
     std::string GetCharacterName(int charID);
+
+    // Get the internal/resource character name used by auto-actions and game memory.
+    std::string GetCharacterInternalName(int charID);
     
     // Get character ID from name
     int GetCharacterID(const std::string& name);

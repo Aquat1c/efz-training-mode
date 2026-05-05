@@ -233,11 +233,7 @@ namespace {
             return cached;
         }
 
-        if (allowCharacterSelect) {
-            return nullptr;
-        }
-
-        if (!IsMatchPhase()) {
+        if (!allowCharacterSelect && !IsMatchPhase()) {
             return nullptr;
         }
 

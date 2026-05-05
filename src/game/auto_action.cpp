@@ -22,6 +22,7 @@
 #include "../include/game/validation_metrics.h" // Validation metrics instrumentation
 #include "../include/game/validation_metrics.h" // Validation metrics instrumentation
 #include "../include/gui/overlay.h" // For DirectDrawHook::AddMessage
+#include "../include/utils/switch_players.h"
 
 // Safety forward declarations (in case of include-order differences in some build phases)
 bool IsThrown(short moveID);
@@ -1248,6 +1249,9 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
     // Note: Do NOT restore on RG exit; we must keep buffer-freeze active until the special actually begins.
     
     int targetPlayer = autoActionPlayer.load();
+    if (targetPlayer != 3 && SwitchPlayers::GetLocalPlayerIndex() == 2) {
+        targetPlayer = (targetPlayer == 1) ? 2 : 1;
+    }
     // Throttle trigger diagnostics to ~5s intervals
     static int s_nextTrigDiagFrame = 0; // shared across P1/P2 logs
     auto canLogTrigDiag = [&]() -> bool {

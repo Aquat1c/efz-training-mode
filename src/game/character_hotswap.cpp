@@ -3,10 +3,15 @@
 #include "../include/core/constants.h"
 #include "../include/core/logger.h"
 #include "../include/core/memory.h"
+#include "../include/game/auto_action.h"
+#include "../include/game/collision_hook.h"
+#include "../include/game/combo_overlay.h"
+#include "../include/game/custom_savestate.h"
 #include "../include/game/character_settings.h"
 #include "../include/game/frame_monitor.h"
 #include "../include/game/game_state.h"
 #include "../include/utils/bgm_control.h"
+#include "../include/utils/pause_integration.h"
 #include "../include/utils/utilities.h"
 
 #include <windows.h>
@@ -206,6 +211,19 @@ const char* StatusText(UiStatus status) {
     }
 }
 
+const char* RequestStateName(RequestState state) {
+    switch (state) {
+        case RequestState::Idle:                    return "Idle";
+        case RequestState::PendingExitRequest:      return "PendingExitRequest";
+        case RequestState::AwaitingCharacterSelect: return "AwaitingCharacterSelect";
+        case RequestState::PendingApply:            return "PendingApply";
+        case RequestState::AwaitingLoading:         return "AwaitingLoading";
+        case RequestState::AwaitingMatch:           return "AwaitingMatch";
+        case RequestState::Failed:                  return "Failed";
+        default:                                    return "Unknown";
+    }
+}
+
 const char* PhaseName(GamePhase phase) {
     switch (phase) {
         case GamePhase::Menu:            return "Menu";
@@ -222,13 +240,30 @@ std::string Hex(uintptr_t value) {
     return oss.str();
 }
 
+void AppendRequestedReloadSummary(std::ostringstream& oss) {
+    const int p1CharId = s_requestedP1Char.load(std::memory_order_relaxed);
+    const int p2CharId = s_requestedP2Char.load(std::memory_order_relaxed);
+    const int p1Color = s_requestedP1Color.load(std::memory_order_relaxed);
+    const int p2Color = s_requestedP2Color.load(std::memory_order_relaxed);
+    const int p1Custom = s_requestedP1CustomPalette.load(std::memory_order_relaxed);
+    const int p2Custom = s_requestedP2CustomPalette.load(std::memory_order_relaxed);
+    const int stageId = s_requestedStage.load(std::memory_order_relaxed);
+    const int bgmTrack = s_requestedBgmTrack.load(std::memory_order_relaxed);
+    oss << " request="
+        << GetCharacterSelectName(p1CharId) << "(" << p1CharId << ")/"
+        << GetCharacterSelectName(p2CharId) << "(" << p2CharId << ")"
+        << " stage=" << stageId
+        << " bgm=" << bgmTrack
+        << " palette=" << (p1Color + 1) << "/" << (p2Color + 1)
+        << " custom=" << p1Custom << "/" << p2Custom;
+}
+
 std::string BuildGameRelativePath(const std::string& relativePath) {
     char exePath[MAX_PATH] = {0};
     const DWORD len = GetModuleFileNameA(nullptr, exePath, MAX_PATH);
     if (len == 0 || len >= MAX_PATH) {
         return relativePath;
     }
-
     std::string absolutePath(exePath, len);
     const size_t slash = absolutePath.find_last_of("\\/");
     if (slash == std::string::npos) {
@@ -393,12 +428,15 @@ void SetState(RequestState nextState, UiStatus nextStatus, const char* reason) {
     s_waitTicks.store(0, std::memory_order_relaxed);
 
     std::ostringstream oss;
-    oss << "[HOTSWAP] state " << static_cast<int>(prevState)
-        << " -> " << static_cast<int>(nextState)
+    oss << "[HOTSWAP] state " << RequestStateName(prevState)
+        << "(" << static_cast<int>(prevState) << ")"
+        << " -> " << RequestStateName(nextState)
+        << "(" << static_cast<int>(nextState) << ")"
         << " status=" << StatusText(nextStatus);
     if (reason && reason[0] != '\0') {
         oss << " reason=" << reason;
     }
+    AppendRequestedReloadSummary(oss);
     LogOut(oss.str(), true);
 }
 
@@ -406,6 +444,7 @@ void FailRequest(const char* reason, GamePhase currentPhase) {
     std::ostringstream oss;
     oss << "[HOTSWAP] failed in phase=" << PhaseName(currentPhase)
         << " reason=" << (reason ? reason : "unknown");
+    AppendRequestedReloadSummary(oss);
     LogOut(oss.str(), true);
     s_state.store(RequestState::Failed, std::memory_order_release);
     s_uiStatus.store(UiStatus::Failed, std::memory_order_release);
@@ -743,17 +782,45 @@ void LogQueuedRequest(GamePhase phase,
 void CompleteReload(GamePhase currentPhase) {
     const unsigned short bgmTrack = static_cast<unsigned short>(s_requestedBgmTrack.load(std::memory_order_relaxed));
     const uintptr_t gameStatePtr = GetGameStatePtr();
+    const bool restoredWorkingSnapshot = CustomSavestate::ConsumeHotswapRestoreApplied();
+    {
+        std::ostringstream oss;
+        oss << "[HOTSWAP] completing reload"
+            << " phase=" << PhaseName(currentPhase)
+            << " gameState=" << Hex(gameStatePtr)
+            << " p1BaseBeforeInvalidate=" << Hex(GetPlayerBase(1))
+            << " p2BaseBeforeInvalidate=" << Hex(GetPlayerBase(2));
+        AppendRequestedReloadSummary(oss);
+        LogOut(oss.str(), true);
+    }
     if (gameStatePtr) {
-        if (PlayBGM(gameStatePtr, bgmTrack)) {
+        const int liveBgmTrack = GetBGMSlot(gameStatePtr);
+        if (restoredWorkingSnapshot) {
+            std::ostringstream oss;
+            oss << "[HOTSWAP] skipped BGM override because deferred savestate restore already ran"
+                << " liveTrack=" << liveBgmTrack
+                << " requestedTrack=" << bgmTrack;
+            LogOut(oss.str(), true);
+        } else if (PlayBGM(gameStatePtr, bgmTrack)) {
             LogOut("[HOTSWAP] applied BGM override track=" + std::to_string(bgmTrack), true);
         } else {
-            LogOut("[HOTSWAP] failed to apply BGM override track=" + std::to_string(bgmTrack), true);
+            std::ostringstream oss;
+            oss << "[HOTSWAP] failed to apply BGM override track=" << bgmTrack
+                << " liveTrackBeforeCall=" << liveBgmTrack;
+            LogOut(oss.str(), true);
         }
     } else {
         LogOut("[HOTSWAP] skipped BGM override because game state pointer was unavailable", true);
     }
 
+    InvalidateGameStatePtrCache();
+    InvalidatePlayerBaseCache();
     CharacterSettings::InvalidateAllCharacterPointerCaches();
+    InvalidateAutoActionCharacterCaches("character hotswap reload immediate");
+    PauseIntegration::ResetCachedPointers("character hotswap reload immediate");
+    ResetCollisionHookSessionCaches("character hotswap reload immediate");
+    ComboOverlay::ResetState("character hotswap reload immediate");
+    LogOut("[HOTSWAP] applied immediate session reset before lifecycle resync", true);
     RequestRuntimeLifecycleResync("character hotswap reload complete");
     LogOut("[HOTSWAP] reload completed and lifecycle resync requested", true);
     s_state.store(RequestState::Idle, std::memory_order_release);
@@ -763,6 +830,15 @@ void CompleteReload(GamePhase currentPhase) {
 }
 
 } // namespace
+
+const char* GetDisplayNameForSelectId(int selectId) {
+    return GetCharacterSelectName(selectId);
+}
+
+const char* GetResourceNameForSelectId(int selectId) {
+    const char* resourceName = GetCharacterResourceName(selectId);
+    return resourceName ? resourceName : "unknown";
+}
 
 bool QueueReload(int p1CharId, int p2CharId, int stageId, unsigned short bgmTrack) {
     PaletteSelection paletteSelection{};

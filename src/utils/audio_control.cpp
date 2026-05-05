@@ -633,6 +633,39 @@ bool InstallHooks(uintptr_t efzBase) {
     return ok;
 }
 
+bool PlayBackgroundMusic(uintptr_t gameSystemPtr, unsigned short trackNumber) {
+    if (!gameSystemPtr) {
+        TraceAudio("[AUDIO][TRACE] PlayBackgroundMusic skipped because gameSystemPtr was null");
+        return false;
+    }
+
+    PlayBackgroundMusicFn playBackgroundMusic = g_originalPlayBackgroundMusic;
+    if (!playBackgroundMusic) {
+        const uintptr_t efzBase = GetEFZBase();
+        if (!efzBase) {
+            LogOut("[AUDIO] playBackgroundMusic unavailable because EFZ base was not resolved", true);
+            return false;
+        }
+        playBackgroundMusic = reinterpret_cast<PlayBackgroundMusicFn>(efzBase + kPlayBackgroundMusicRva);
+    }
+
+    {
+        std::ostringstream oss;
+        oss << "[AUDIO][TRACE] PlayBackgroundMusic request track=" << trackNumber
+            << " gameSystem=0x" << std::hex << gameSystemPtr;
+        TraceAudio(oss.str());
+    }
+
+    if (!SehCallPlayBackgroundMusic(playBackgroundMusic, gameSystemPtr, trackNumber)) {
+        LogOut("[AUDIO][SEH] Exception in requested playBackgroundMusic call", true);
+        return false;
+    }
+    if (!SehApplyBgmVolumeToGameSystem(gameSystemPtr)) {
+        LogOut("[AUDIO][SEH] Exception while applying BGM volume after requested playBackgroundMusic", true);
+    }
+    return true;
+}
+
 void ApplyConfiguredVolumesNow() {
     TraceAudio("[AUDIO][TRACE] ApplyConfiguredVolumesNow begin");
     const uintptr_t gameSystemPtr = GetGameStatePtr();

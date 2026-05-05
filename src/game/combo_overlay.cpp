@@ -7,6 +7,7 @@
 #include "../include/gui/imgui_impl.h"
 #include "../include/gui/overlay.h"
 #include "../include/utils/config.h"
+#include "../include/utils/switch_players.h"
 #include "../include/utils/utilities.h"
 #include "../include/utils/xp_compat.h"
 
@@ -140,6 +141,9 @@ namespace {
     PreviousPlayerFrame g_prevPlayers[3]{};
     int g_frameDataAttackOffsets[3] = {-1, -1, -1};
     int g_sessionMaxComboDamage = 0;
+    bool g_idleBaselineRequired = true;
+    bool g_idleBaselineWaitLogged = false;
+    uint32_t g_lastLifecycleGeneration = 0;
 
     bool ReadComboRuntime(uintptr_t playerPtr, ComboRuntime& out) {
         if (!playerPtr) {
@@ -299,6 +303,24 @@ namespace {
         return player.hitstun > 0 || player.untech > 0;
     }
 
+    bool IsRuntimeIdle(const ComboRuntime& runtime) {
+        return !runtime.valid || (runtime.hitCount <= 0 && runtime.totalDamage <= 0 && runtime.timer <= 0);
+    }
+
+    bool ShouldWaitForIdleBaseline(const ComboRuntime& combo1,
+                                   const ComboRuntime& combo2,
+                                   const PlayerMetrics& p1,
+                                   const PlayerMetrics& p2,
+                                   int damageToP1,
+                                   int damageToP2) {
+        return !IsRuntimeIdle(combo1)
+            || !IsRuntimeIdle(combo2)
+            || IsComboVictimState(p1)
+            || IsComboVictimState(p2)
+            || damageToP1 > 0
+            || damageToP2 > 0;
+    }
+
     ComboRuntime BuildSyntheticRuntime(const ComboRuntime& hint, int hitCount, int totalDamage) {
         ComboRuntime runtime = hint;
         runtime.valid = true;
@@ -373,7 +395,7 @@ namespace {
         g_sessionMaxComboDamage = 0;
     }
 
-    void ResetStateUnlocked(const char* reason, bool resetSessionStats) {
+    void ResetStateUnlocked(const char* reason, bool resetSessionStats, bool armIdleBaseline) {
         const bool hadState = g_state.live || g_state.finalized || g_displayIds.header != -1
             || g_displayIds.totals != -1 || g_displayIds.resources != -1
             || g_displayIds.detail != -1 || g_displayIds.status != -1
@@ -385,6 +407,10 @@ namespace {
         ResetAttackDetailCacheUnlocked();
         if (resetSessionStats) {
             ResetSessionStatsUnlocked();
+        }
+        if (armIdleBaseline) {
+            g_idleBaselineRequired = true;
+            g_idleBaselineWaitLogged = false;
         }
 
         if (hadState && (detailedLogging.load() || reason != nullptr)) {
@@ -551,7 +577,7 @@ namespace {
             return;
         }
         if (!cfg.comboOverlayShowFinalSummary) {
-            ResetStateUnlocked("combo ended without linger", false);
+            ResetStateUnlocked("combo ended without linger", false, false);
             return;
         }
 
@@ -590,7 +616,7 @@ namespace {
             ClearDisplayUnlocked();
             g_state.hiddenByPolicy = true;
             if (g_state.finalized && !cfg.comboOverlayResumeAfterImGui) {
-                ResetStateUnlocked("hidden by imgui without resume", false);
+                ResetStateUnlocked("hidden by imgui without resume", false, false);
             }
             return;
         }
@@ -612,6 +638,12 @@ namespace {
         const double p1RfDelta = (g_state.attackerSide == 1) ? g_state.attackerRfDelta : g_state.defenderRfDelta;
         const int p2MeterDelta = (g_state.attackerSide == 2) ? g_state.attackerMeterDelta : g_state.defenderMeterDelta;
         const double p2RfDelta = (g_state.attackerSide == 2) ? g_state.attackerRfDelta : g_state.defenderRfDelta;
+        const int localPlayer = SwitchPlayers::GetLocalPlayerIndex();
+        const int remotePlayer = SwitchPlayers::GetRemotePlayerIndex();
+        const int localMeterDelta = (localPlayer == 1) ? p1MeterDelta : p2MeterDelta;
+        const double localRfDelta = (localPlayer == 1) ? p1RfDelta : p2RfDelta;
+        const int remoteMeterDelta = (remotePlayer == 1) ? p1MeterDelta : p2MeterDelta;
+        const double remoteRfDelta = (remotePlayer == 1) ? p1RfDelta : p2RfDelta;
 
         if (compact) {
             line1 << "Move " << FormatOptionalDamage(g_state.lastHitDamage > 0, g_state.lastHitDamage)
@@ -619,20 +651,20 @@ namespace {
                   << "  Max " << g_sessionMaxComboDamage;
             line2 << "HP " << g_state.defenderHpStart << " > " << g_state.defenderHpCurrent
                   << " (-" << g_state.defenderHpDelta << ")";
-            line3 << "P1   M " << FormatMeterDelta(p1MeterDelta)
-                  << "   RF " << FormatRfDelta(p1RfDelta);
-            line4 << "P2   M " << FormatMeterDelta(p2MeterDelta)
-                  << "   RF " << FormatRfDelta(p2RfDelta);
+            line3 << "YOU  M " << FormatMeterDelta(localMeterDelta)
+                << "   RF " << FormatRfDelta(localRfDelta);
+            line4 << "OPP  M " << FormatMeterDelta(remoteMeterDelta)
+                << "   RF " << FormatRfDelta(remoteRfDelta);
         } else {
             line1 << "MOVE " << FormatOptionalDamage(g_state.lastHitDamage > 0, g_state.lastHitDamage)
                   << "  COMBO " << g_state.totalDamage
                   << "  MAX " << g_sessionMaxComboDamage;
             line2 << "HP " << g_state.defenderHpStart << " -> " << g_state.defenderHpCurrent
                   << " (-" << g_state.defenderHpDelta << ")";
-            line3 << "P1   M " << FormatMeterDelta(p1MeterDelta)
-                  << "   RF " << FormatRfDelta(p1RfDelta);
-            line4 << "P2   M " << FormatMeterDelta(p2MeterDelta)
-                  << "   RF " << FormatRfDelta(p2RfDelta);
+            line3 << "YOU  M " << FormatMeterDelta(localMeterDelta)
+                << "   RF " << FormatRfDelta(localRfDelta);
+            line4 << "OPP  M " << FormatMeterDelta(remoteMeterDelta)
+                << "   RF " << FormatRfDelta(remoteRfDelta);
         }
 
         if (showDetail) {
@@ -679,14 +711,25 @@ namespace ComboOverlay {
         std::lock_guard<std::mutex> lock(g_comboOverlayMutex);
 
         if (sample.phase != GamePhase::Match || sample.online || !sample.charsInitialized) {
-            ResetStateUnlocked("tick outside supported match state", true);
+            ResetStateUnlocked("tick outside supported match state", true, true);
             return;
+        }
+
+        const uint32_t lifecycleGeneration = GetRuntimeLifecycleGeneration();
+        if (g_lastLifecycleGeneration != lifecycleGeneration) {
+            if (g_lastLifecycleGeneration != 0) {
+                ResetStateUnlocked("runtime lifecycle generation changed", true, true);
+            } else {
+                g_idleBaselineRequired = true;
+                g_idleBaselineWaitLogged = false;
+            }
+            g_lastLifecycleGeneration = lifecycleGeneration;
         }
 
         PlayerMetrics p1{};
         PlayerMetrics p2{};
         if (!ReadPlayerMetrics(sample.p1Ptr, p1) || !ReadPlayerMetrics(sample.p2Ptr, p2)) {
-            ResetStateUnlocked("tick missing player metrics", false);
+            ResetStateUnlocked("tick missing player metrics", false, true);
             return;
         }
 
@@ -697,6 +740,37 @@ namespace ComboOverlay {
 
         const int damageToP1 = g_prevPlayers[1].valid ? (std::max)(0, g_prevPlayers[1].hp - p1.hp) : 0;
         const int damageToP2 = g_prevPlayers[2].valid ? (std::max)(0, g_prevPlayers[2].hp - p2.hp) : 0;
+        const unsigned long long nowMs = sample.tickMs ? sample.tickMs : XPCompat::GetTickCount64Compat();
+
+        if (g_idleBaselineRequired) {
+            if (ShouldWaitForIdleBaseline(combo1, combo2, p1, p2, damageToP1, damageToP2)) {
+                if (!g_idleBaselineWaitLogged && detailedLogging.load()) {
+                    std::ostringstream oss;
+                    oss << "[COMBO] Waiting for idle baseline"
+                        << " gen=" << lifecycleGeneration
+                        << " p1Hits=" << combo1.hitCount
+                        << " p2Hits=" << combo2.hitCount
+                        << " p1Dmg=" << combo1.totalDamage
+                        << " p2Dmg=" << combo2.totalDamage
+                        << " p1Victim=" << (IsComboVictimState(p1) ? 1 : 0)
+                        << " p2Victim=" << (IsComboVictimState(p2) ? 1 : 0)
+                        << " deltaP1=" << damageToP1
+                        << " deltaP2=" << damageToP2;
+                    LogOut(oss.str(), true);
+                }
+                g_idleBaselineWaitLogged = true;
+                RenderUnlocked(nowMs);
+                g_prevPlayers[1] = { true, p1.hp, p1.meter, p1.rf };
+                g_prevPlayers[2] = { true, p2.hp, p2.meter, p2.rf };
+                return;
+            }
+
+            if (g_idleBaselineWaitLogged && detailedLogging.load()) {
+                LogOut("[COMBO] Idle baseline reacquired", true);
+            }
+            g_idleBaselineRequired = false;
+            g_idleBaselineWaitLogged = false;
+        }
 
         int attackerSide = 0;
         ComboRuntime currentCombo{};
@@ -736,8 +810,6 @@ namespace ComboOverlay {
                 }
             }
         }
-
-        const unsigned long long nowMs = sample.tickMs ? sample.tickMs : XPCompat::GetTickCount64Compat();
         if (attackerSide != 0) {
             const PlayerMetrics& attacker = (attackerSide == 1) ? p1 : p2;
             const PlayerMetrics& defender = (attackerSide == 1) ? p2 : p1;
@@ -782,6 +854,6 @@ namespace ComboOverlay {
 
     void ResetState(const char* reason) {
         std::lock_guard<std::mutex> lock(g_comboOverlayMutex);
-        ResetStateUnlocked(reason, true);
+        ResetStateUnlocked(reason, true, true);
     }
 }

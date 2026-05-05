@@ -22,6 +22,8 @@ void Tick(GamePhase currentPhase, GameMode currentMode);
 bool IsBusy();
 bool CanQueueReload();
 const char* GetActionValueText();
+const char* GetDisplayNameForSelectId(int selectId);
+const char* GetResourceNameForSelectId(int selectId);
 bool ReadCurrentPaletteSelection(PaletteSelection& outSelection);
 bool HasCustomPaletteFile(int selectId, int paletteIndex);
 void SanitizePaletteSelection(int p1CharId, int p2CharId, PaletteSelection& selection);
