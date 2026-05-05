@@ -13,6 +13,7 @@
 #include "../include/utils/config.h"
 #include "../include/core/constants.h"
 #include "../include/core/version.h"
+#include "../include/game/character_hotswap.h"
 #include "../3rdparty/imgui/imgui.h"
 
 #include <windows.h>
@@ -151,6 +152,70 @@ void LogMenuDetail(const char* fmt, ...) {
     va_end(args);
 
     LogOut(std::string("[CUSTOM_MENU] ") + buf, true);
+}
+
+// Always-on trace logger used to localize crashes along the menu open/render
+// path. Every entry is prefixed [CUSTOM_MENU][TRACE]. Keep messages short.
+void LogMenuTrace(const char* fmt, ...) {
+    char buf[384];
+    va_list args;
+    va_start(args, fmt);
+    _vsnprintf_s(buf, sizeof(buf), _TRUNCATE, fmt, args);
+    va_end(args);
+    LogOut(std::string("[CUSTOM_MENU][TRACE] ") + buf, true);
+}
+
+void LogMenuTiming(const char* fmt, ...) {
+    char buf[384];
+    va_list args;
+    va_start(args, fmt);
+    _vsnprintf_s(buf, sizeof(buf), _TRUNCATE, fmt, args);
+    va_end(args);
+    LogOut(std::string("[CUSTOM_MENU][TIMING] ") + buf, true);
+}
+
+void LogMenuSehStep(unsigned code, const char* step) {
+    char buf[224];
+    _snprintf_s(buf, sizeof(buf), _TRUNCATE,
+        "[CUSTOM_MENU][TRACE] SEH 0x%08X during %s",
+        code, step ? step : "(unknown step)");
+    LogOut(buf, true);
+}
+
+void LogMenuSehPane(unsigned code, const char* paneName) {
+    char buf[192];
+    _snprintf_s(buf, sizeof(buf), _TRUNCATE,
+        "[CUSTOM_MENU][TRACE] SEH 0x%08X in Tick%s",
+        code, paneName ? paneName : "?");
+    LogOut(buf, true);
+}
+
+// Free-function SEH wrapper used to bracket each menu-open / per-frame step.
+// Helper functions are split out from the C++-using callers because mixing
+// __try with non-trivial unwindable locals is brittle under MSVC.
+typedef void (*MenuStepFn)();
+static bool SehInvokeStep(const char* step, MenuStepFn fn) {
+    __try {
+        fn();
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        LogMenuSehStep((unsigned)GetExceptionCode(), step);
+        return false;
+    }
+}
+
+typedef void (*TickPaneFn)(ImDrawList*, const Screens::ScreenLayout&,
+                           int&, Screens::ScrollState&, bool&);
+static bool SehTickPane(const char* paneName, TickPaneFn fn,
+                        ImDrawList* dl, const Screens::ScreenLayout& sl,
+                        int& focus, Screens::ScrollState& scroll, bool& backEdge) {
+    __try {
+        fn(dl, sl, focus, scroll, backEdge);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        LogMenuSehPane((unsigned)GetExceptionCode(), paneName);
+        return false;
+    }
 }
 
 const char* ScreenName(int pane) { return PaneName(pane); }
@@ -1312,7 +1377,12 @@ void MaybeRefreshOnOpen() {
     const bool customNow  = Config::GetSettings().useCustomMenu;
 
     if (visibleNow && !g_shell.menuWasVisible) {
-        ImGuiGui::RefreshLocalData();
+        LogMenuTrace("MaybeRefreshOnOpen: visibility 0->1 (custom=%d), beginning open sequence", customNow ? 1 : 0);
+        // Drop the on-disk .pal lookup cache so any palette files added since
+        // last menu open are re-discovered. Cheap (clears 24*6 entries).
+        CharacterHotswap::InvalidateCustomPaletteCache();
+        SehInvokeStep("open: ImGuiGui::RefreshLocalData", &ImGuiGui::RefreshLocalData);
+        LogMenuTrace("open: RefreshLocalData done");
         for (auto& f : g_shell.focusPerPane) f = 0;
         for (auto& s : g_shell.subIdxPerTop) s = 0;
         g_shell.activeTopTab = TT_MAIN;
@@ -1323,38 +1393,44 @@ void MaybeRefreshOnOpen() {
         g_mouse.lastX = g_mouse.lastY = -1.0f;
         g_mouse.movedThisFrame = false;
         StartOpenAnimation();
-        Screens::ResetSubmenus();
-        Screens::ResetHotswapMenuSeed();
+        LogMenuTrace("open: state reset done; calling Screens::ResetSubmenus");
+        SehInvokeStep("open: Screens::ResetSubmenus", &Screens::ResetSubmenus);
+        LogMenuTrace("open: calling Screens::ResetHotswapMenuSeed");
+        SehInvokeStep("open: Screens::ResetHotswapMenuSeed", &Screens::ResetHotswapMenuSeed);
         // Snap physical-input edge detector so currently-held keys (the
         // menu-open press, a gamepad button still down from gameplay) do
         // not register as a rising edge on the first input-handling pass.
-        Input::ResetEdges();
+        LogMenuTrace("open: calling Input::ResetEdges");
+        SehInvokeStep("open: Input::ResetEdges", &Input::ResetEdges);
+        LogMenuTrace("open: open sequence complete");
         LogMenuDetail("Opened pane=%s focus=%s mode=%s",
             ScreenName(ActivePane()),
             DescribeFocus(ActivePane(), CurFocus()).c_str(),
             MainModeName(g_main.mode));
     } else if (visibleNow && customNow && !g_shell.lastWasCustom) {
-        ImGuiGui::RefreshLocalData();
+        LogMenuTrace("MaybeRefreshOnOpen: switched to custom while visible");
+        SehInvokeStep("switch-to-custom: RefreshLocalData", &ImGuiGui::RefreshLocalData);
         for (auto& f : g_shell.focusPerPane) f = 0;
         ResetMainState("switch to custom");
         CancelEditMode();
         g_shell.keybindWasActive = false;
         StartOpenAnimation();
-        Screens::ResetSubmenus();
-        Screens::ResetHotswapMenuSeed();
-        Input::ResetEdges();
+        SehInvokeStep("switch-to-custom: ResetSubmenus", &Screens::ResetSubmenus);
+        SehInvokeStep("switch-to-custom: ResetHotswapMenuSeed", &Screens::ResetHotswapMenuSeed);
+        SehInvokeStep("switch-to-custom: Input::ResetEdges", &Input::ResetEdges);
         LogMenuDetail("Switched to custom menu while visible; pane=%s focus=%s mode=%s",
             ScreenName(ActivePane()),
             DescribeFocus(ActivePane(), CurFocus()).c_str(),
             MainModeName(g_main.mode));
     } else if (!visibleNow) {
         if (g_shell.menuWasVisible && g_shell.lastWasCustom) {
+            LogMenuTrace("MaybeRefreshOnOpen: visibility 1->0, tearing down");
             LogMenuDetail("Closed custom menu");
         }
         CancelEditMode();
-        Screens::ResetSubmenus();
-        Screens::ResetHotswapMenuSeed();
-        Screens::ResetTextEditor();
+        SehInvokeStep("close: ResetSubmenus", &Screens::ResetSubmenus);
+        SehInvokeStep("close: ResetHotswapMenuSeed", &Screens::ResetHotswapMenuSeed);
+        SehInvokeStep("close: ResetTextEditor", &Screens::ResetTextEditor);
         g_shell.keybindWasActive = false;
     }
 
@@ -1377,9 +1453,35 @@ void PrepareFrame() {
 void Render() {
     if (!ImGui::GetCurrentContext()) return;
 
+    // Track open-edge so we can budget how many post-open frames get traced.
+    static bool s_prevVisible = false;
+    static unsigned long s_renderFrame = 0;
+    static unsigned long s_framesSinceOpen = 0xFFFFFFFFul;
+    const bool visibleBeforeMaybe = ImGuiImpl::IsVisible();
+    if (visibleBeforeMaybe && !s_prevVisible) {
+        s_framesSinceOpen = 0;
+        LogMenuTrace("Render: visibility edge 0->1 detected at frame %lu", s_renderFrame + 1);
+    } else if (!visibleBeforeMaybe) {
+        s_framesSinceOpen = 0xFFFFFFFFul;
+    } else if (s_framesSinceOpen != 0xFFFFFFFFul && s_framesSinceOpen < 32) {
+        ++s_framesSinceOpen;
+    }
+    s_prevVisible = visibleBeforeMaybe;
+
     MaybeRefreshOnOpen();
 
     if (!ImGuiImpl::IsVisible()) return;
+
+    ++s_renderFrame;
+    const DWORD renderStartMs = GetTickCount();
+    const bool traceThisFrame = (s_framesSinceOpen < 8);
+    if (traceThisFrame) {
+        LogMenuTrace("Render frame=%lu postOpen=%lu pane=%s topTab=%d sub=%d focusReg=%d",
+            s_renderFrame, s_framesSinceOpen, ScreenName(ActivePane()),
+            g_shell.activeTopTab,
+            g_shell.subIdxPerTop[ClampTopTab(g_shell.activeTopTab)],
+            (int)g_shell.focusRegion);
+    }
 
     UpdateMouseState();
 
@@ -1469,32 +1571,62 @@ void Render() {
         sl.animOffsetY    = CurrentOpenOffsetY();
         sl.inputEnabled   = g_shell.focusRegion == FocusRegion::Content && !tabFocusConsumed;
 
+        const DWORD mirrorStart = GetTickCount();
+        if (traceThisFrame) {
+            LogMenuTrace("RefreshSecondaryScreenMirrors begin");
+        }
         Screens::RefreshSecondaryScreenMirrors();
+        const DWORD mirrorMs = GetTickCount() - mirrorStart;
+        if (traceThisFrame || mirrorMs >= 50) {
+            LogMenuTrace("RefreshSecondaryScreenMirrors end ms=%lu",
+                static_cast<unsigned long>(mirrorMs));
+        }
 
         int& focus = g_shell.focusPerPane[activePane];
         Screens::ScrollState& scroll = g_shell.scrollPerPane[activePane];
         bool backEdge = false;
 
-        auto dispatch = [&]() {
-            switch (activePane) {
-                case PANE_OPPONENT:           Screens::TickOpponent       (dl, sl, focus, scroll, backEdge); break;
-                case PANE_OPTIONS:            Screens::TickOptions        (dl, sl, focus, scroll, backEdge); break;
-                case PANE_MENU:               Screens::TickMenu           (dl, sl, focus, scroll, backEdge); break;
-                case PANE_TRIGGERS:           Screens::TickTriggers       (dl, sl, focus, scroll, backEdge); break;
-                case PANE_MACROS:             Screens::TickMacros         (dl, sl, focus, scroll, backEdge); break;
-                case PANE_CHARS:              Screens::TickChars          (dl, sl, focus, scroll, backEdge); break;
-                case PANE_SETTINGS_GENERAL:   Screens::TickSettingsGeneral(dl, sl, focus, scroll, backEdge); break;
-                case PANE_SETTINGS_HOTKEYS:   Screens::TickSettingsHotkeys(dl, sl, focus, scroll, backEdge); break;
-                case PANE_SETTINGS_DEBUG:     Screens::TickSettingsDebug  (dl, sl, focus, scroll, backEdge); break;
-                case PANE_HELP_START:         Screens::TickHelpStart      (dl, sl, focus, scroll, backEdge); break;
-                case PANE_HELP_GUIDE:         Screens::TickHelpGuide      (dl, sl, focus, scroll, backEdge); break;
-                case PANE_HELP_RESOURCES:     Screens::TickHelpResources  (dl, sl, focus, scroll, backEdge); break;
-                case PANE_HELP_ABOUT:         Screens::TickHelpAbout      (dl, sl, focus, scroll, backEdge); break;
-                default: break;
-            }
-        };
+        if (traceThisFrame) {
+            LogMenuTrace("Dispatch pane=%s (id=%d) focus=%d",
+                ScreenName(activePane), activePane, focus);
+        }
 
-        dispatch();
+        const DWORD paneStartMs = GetTickCount();
+        switch (activePane) {
+            case PANE_OPPONENT:           SehTickPane("Opponent",        &Screens::TickOpponent,        dl, sl, focus, scroll, backEdge); break;
+            case PANE_OPTIONS:            SehTickPane("Options",         &Screens::TickOptions,         dl, sl, focus, scroll, backEdge); break;
+            case PANE_MENU:               SehTickPane("Menu",            &Screens::TickMenu,            dl, sl, focus, scroll, backEdge); break;
+            case PANE_TRIGGERS:           SehTickPane("Triggers",        &Screens::TickTriggers,        dl, sl, focus, scroll, backEdge); break;
+            case PANE_MACROS:             SehTickPane("Macros",          &Screens::TickMacros,          dl, sl, focus, scroll, backEdge); break;
+            case PANE_CHARS:              SehTickPane("Chars",           &Screens::TickChars,           dl, sl, focus, scroll, backEdge); break;
+            case PANE_SETTINGS_GENERAL:   SehTickPane("SettingsGeneral", &Screens::TickSettingsGeneral, dl, sl, focus, scroll, backEdge); break;
+            case PANE_SETTINGS_HOTKEYS:   SehTickPane("SettingsHotkeys", &Screens::TickSettingsHotkeys, dl, sl, focus, scroll, backEdge); break;
+            case PANE_SETTINGS_DEBUG:     SehTickPane("SettingsDebug",   &Screens::TickSettingsDebug,   dl, sl, focus, scroll, backEdge); break;
+            case PANE_HELP_START:         SehTickPane("HelpStart",       &Screens::TickHelpStart,       dl, sl, focus, scroll, backEdge); break;
+            case PANE_HELP_GUIDE:         SehTickPane("HelpGuide",       &Screens::TickHelpGuide,       dl, sl, focus, scroll, backEdge); break;
+            case PANE_HELP_RESOURCES:     SehTickPane("HelpResources",   &Screens::TickHelpResources,   dl, sl, focus, scroll, backEdge); break;
+            case PANE_HELP_ABOUT:         SehTickPane("HelpAbout",       &Screens::TickHelpAbout,       dl, sl, focus, scroll, backEdge); break;
+            default:
+                LogMenuTrace("Dispatch: unknown pane %d", activePane);
+                break;
+        }
+        const DWORD paneMs = GetTickCount() - paneStartMs;
+        static DWORD s_lastSlowPaneLog = 0;
+        const DWORD paneLogNow = GetTickCount();
+        if (paneMs >= 50 && (s_lastSlowPaneLog == 0 || (paneLogNow - s_lastSlowPaneLog) >= 1000)) {
+            s_lastSlowPaneLog = paneLogNow;
+            LogMenuTiming("Pane %s tick/render took %lums focus=%d submenu=%d popup=%d keybind=%d textEditor=%d",
+                ScreenName(activePane),
+                static_cast<unsigned long>(paneMs),
+                focus,
+                Screens::IsSubmenuActive() ? 1 : 0,
+                Screens::IsPopupActive() ? 1 : 0,
+                Screens::IsKeybindActive() ? 1 : 0,
+                Screens::IsTextEditorActive() ? 1 : 0);
+        }
+        if (traceThisFrame) {
+            LogMenuTrace("Dispatch pane=%s done backEdge=%d", ScreenName(activePane), backEdge ? 1 : 0);
+        }
         if (g_shell.focusRegion == FocusRegion::Content && Screens::ConsumeFocusAboveRequest()) {
             MoveFocusAboveContent("list top nav up");
         }
@@ -1594,6 +1726,21 @@ void Render() {
     float hintX = L.panelTL.x + (Theme::kPanelW - hw) * 0.5f;
     if (hintX < L.panelTL.x + Theme::kPanelPadX) hintX = L.panelTL.x + Theme::kPanelPadX;
     Layout::DrawString(dl, bFont, bPx, hintX, hintY, Theme::kTextInactive, hint);
+
+    const DWORD renderMs = GetTickCount() - renderStartMs;
+    static DWORD s_lastSlowRenderLog = 0;
+    const DWORD renderLogNow = GetTickCount();
+    if (renderMs >= 75 && (s_lastSlowRenderLog == 0 || (renderLogNow - s_lastSlowRenderLog) >= 1000)) {
+        s_lastSlowRenderLog = renderLogNow;
+        LogMenuTiming("Render frame took %lums pane=%s topTab=%d sub=%d focusRegion=%d popup=%d submenu=%d",
+            static_cast<unsigned long>(renderMs),
+            ScreenName(ActivePane()),
+            g_shell.activeTopTab,
+            g_shell.subIdxPerTop[ClampTopTab(g_shell.activeTopTab)],
+            static_cast<int>(g_shell.focusRegion),
+            Screens::IsPopupActive() ? 1 : 0,
+            Screens::IsSubmenuActive() ? 1 : 0);
+    }
 }
 
 } // namespace CustomMenu

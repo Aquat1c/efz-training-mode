@@ -310,6 +310,85 @@ CustomPaletteLookupResult ProbeCharacterCustomPalette(int selectId, int paletteI
     return result;
 }
 
+// .pal files almost never move during a session. Cache probe results so the
+// menu and hotswap paths don't hit the file system on every refresh / button
+// press. The cache is process-lifetime by default but can be invalidated
+// explicitly (e.g. when the custom menu opens) via InvalidateCustomPaletteCache().
+struct PaletteProbeCacheEntry {
+    bool populated = false;
+    CustomPaletteLookupResult result;
+};
+
+constexpr int kPaletteProbeCacheChars = 24;
+PaletteProbeCacheEntry g_paletteProbeCache[kPaletteProbeCacheChars][PALETTE_SLOT_COUNT];
+CRITICAL_SECTION g_paletteProbeCacheCs;
+std::atomic<bool> g_paletteProbeCacheCsInit{false};
+std::atomic<unsigned long> g_paletteProbeCacheHits{0};
+std::atomic<unsigned long> g_paletteProbeCacheMisses{0};
+
+void EnsurePaletteProbeCacheCs() {
+    bool expected = false;
+    if (g_paletteProbeCacheCsInit.compare_exchange_strong(expected, true)) {
+        InitializeCriticalSection(&g_paletteProbeCacheCs);
+    }
+}
+
+bool TryGetCachedPaletteProbe(int selectId, int paletteIndex, CustomPaletteLookupResult& out) {
+    if (selectId < 0 || selectId >= kPaletteProbeCacheChars || !IsValidPaletteIndex(paletteIndex)) {
+        return false;
+    }
+    EnsurePaletteProbeCacheCs();
+    EnterCriticalSection(&g_paletteProbeCacheCs);
+    const bool hit = g_paletteProbeCache[selectId][paletteIndex].populated;
+    if (hit) {
+        out = g_paletteProbeCache[selectId][paletteIndex].result;
+    }
+    LeaveCriticalSection(&g_paletteProbeCacheCs);
+    return hit;
+}
+
+void StorePaletteProbeInCache(int selectId, int paletteIndex, const CustomPaletteLookupResult& result) {
+    if (selectId < 0 || selectId >= kPaletteProbeCacheChars || !IsValidPaletteIndex(paletteIndex)) {
+        return;
+    }
+    EnsurePaletteProbeCacheCs();
+    EnterCriticalSection(&g_paletteProbeCacheCs);
+    g_paletteProbeCache[selectId][paletteIndex].populated = true;
+    g_paletteProbeCache[selectId][paletteIndex].result = result;
+    LeaveCriticalSection(&g_paletteProbeCacheCs);
+}
+
+CustomPaletteLookupResult LookupCharacterCustomPalette(int selectId, int paletteIndex) {
+    CustomPaletteLookupResult cached{};
+    if (TryGetCachedPaletteProbe(selectId, paletteIndex, cached)) {
+        g_paletteProbeCacheHits.fetch_add(1, std::memory_order_relaxed);
+        return cached;
+    }
+    g_paletteProbeCacheMisses.fetch_add(1, std::memory_order_relaxed);
+    CustomPaletteLookupResult fresh = ProbeCharacterCustomPalette(selectId, paletteIndex);
+    StorePaletteProbeInCache(selectId, paletteIndex, fresh);
+    return fresh;
+}
+
+void InvalidatePaletteProbeCacheImpl() {
+    EnsurePaletteProbeCacheCs();
+    EnterCriticalSection(&g_paletteProbeCacheCs);
+    for (int charIdx = 0; charIdx < kPaletteProbeCacheChars; ++charIdx) {
+        for (int slotIdx = 0; slotIdx < PALETTE_SLOT_COUNT; ++slotIdx) {
+            g_paletteProbeCache[charIdx][slotIdx].populated = false;
+            g_paletteProbeCache[charIdx][slotIdx].result = CustomPaletteLookupResult{};
+        }
+    }
+    LeaveCriticalSection(&g_paletteProbeCacheCs);
+    const unsigned long hits = g_paletteProbeCacheHits.exchange(0, std::memory_order_relaxed);
+    const unsigned long misses = g_paletteProbeCacheMisses.exchange(0, std::memory_order_relaxed);
+    char buf[160] = {0};
+    _snprintf_s(buf, sizeof(buf), _TRUNCATE,
+                "[HOTSWAP][PAL][CACHE] invalidated (prior hits=%lu misses=%lu)",
+                hits, misses);
+    LogOut(buf, true);
+}
+
 void AppendCustomPaletteLookupDetails(std::ostringstream& oss, const CustomPaletteLookupResult& result) {
     oss << " resource=" << (result.resourceName.empty() ? "<invalid>" : result.resourceName)
         << " root=" << (result.rootPath.empty() ? "<none>" : result.rootPath)
@@ -385,7 +464,7 @@ void LogMatchPaletteReadinessIfChanged(bool charactersInitialized,
 }
 
 bool CharacterCustomPaletteExists(int selectId, int paletteIndex, std::string* outPath = nullptr) {
-    const CustomPaletteLookupResult lookup = ProbeCharacterCustomPalette(selectId, paletteIndex);
+    const CustomPaletteLookupResult lookup = LookupCharacterCustomPalette(selectId, paletteIndex);
     if (!lookup.valid) {
         if (outPath) {
             outPath->clear();
@@ -595,7 +674,7 @@ void ResolveRequestedCustomPalette(int selectId,
         return;
     }
 
-    const CustomPaletteLookupResult lookup = ProbeCharacterCustomPalette(selectId, static_cast<int>(colorIndex));
+    const CustomPaletteLookupResult lookup = LookupCharacterCustomPalette(selectId, static_cast<int>(colorIndex));
     LogCustomPaletteLookupIfChanged(playerLabel, selectId, static_cast<int>(colorIndex), lookup);
     if (lookup.exists) {
         std::ostringstream oss;
@@ -1041,13 +1120,17 @@ bool ReadCurrentPaletteSelection(PaletteSelection& outSelection) {
 }
 
 bool HasCustomPaletteFile(int selectId, int paletteIndex) {
-    const CustomPaletteLookupResult lookup = ProbeCharacterCustomPalette(selectId, paletteIndex);
+    const CustomPaletteLookupResult lookup = LookupCharacterCustomPalette(selectId, paletteIndex);
     LogCustomPaletteLookupIfChanged("HAS", selectId, paletteIndex, lookup);
     return lookup.exists;
 }
 
 void SanitizePaletteSelection(int p1CharId, int p2CharId, PaletteSelection& selection) {
     SanitizeRequestedPaletteSelection(p1CharId, p2CharId, selection);
+}
+
+void InvalidateCustomPaletteCache() {
+    InvalidatePaletteProbeCacheImpl();
 }
 
 bool IsBusy() {

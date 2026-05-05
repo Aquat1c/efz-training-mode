@@ -113,27 +113,104 @@ void WrapTextLine(ImFont* font, float px, const char* text, float maxW,
     PushWrappedLine(out, current);
 }
 
-void WrapInfoText(const Row& r, float contentW, std::vector<std::string>& out) {
-    out.clear();
-    const char* text = r.label ? r.label : "";
-    if (!*text) return;
+struct InfoWrapCacheEntry {
+    bool valid = false;
+    const char* labelPtr = nullptr;
+    int widthKey = 0;
+    ImFont* font = nullptr;
+    int fontPxKey = 0;
+    std::string text;
+    std::vector<std::string> lines;
+    float height = Theme::kRowHeight;
+};
 
+constexpr int kInfoWrapCacheSlots = 160;
+InfoWrapCacheEntry g_infoWrapCache[kInfoWrapCacheSlots];
+int g_infoWrapNextSlot = 0;
+
+int InfoWrapWidthKey(float contentW) {
+    return static_cast<int>(contentW * 4.0f + 0.5f);
+}
+
+int InfoWrapFontPxKey(float px) {
+    return static_cast<int>(px * 16.0f + 0.5f);
+}
+
+float InfoTextBlockHeight(size_t lineCount, float px) {
+    return static_cast<float>(lineCount) * px +
+           static_cast<float>((lineCount > 0) ? lineCount - 1 : 0) * kInfoLineGap;
+}
+
+void RebuildInfoWrapCacheEntry(InfoWrapCacheEntry& entry,
+                               const Row& r,
+                               float contentW,
+                               ImFont* font,
+                               float px,
+                               int widthKey,
+                               int fontPxKey) {
+    const char* text = r.label ? r.label : "";
+    entry.valid = true;
+    entry.labelPtr = text;
+    entry.widthKey = widthKey;
+    entry.font = font;
+    entry.fontPxKey = fontPxKey;
+    entry.text = text;
+    entry.lines.clear();
+    entry.lines.reserve(4);
+    if (!*text) {
+        entry.height = kInfoPadY * 2.0f;
+        return;
+    }
+
+    const float textW = (std::max)(32.0f, contentW - kInfoTextX - kInfoPadX);
+    WrapTextLine(font, px, entry.text.c_str(), textW, entry.lines);
+    if (entry.lines.empty()) entry.lines.push_back(entry.text);
+    entry.height = kInfoPadY * 2.0f + InfoTextBlockHeight(entry.lines.size(), px);
+}
+
+const InfoWrapCacheEntry& GetInfoWrapCacheEntry(const Row& r, float contentW) {
+    const char* text = r.label ? r.label : "";
     ImFont* font = Layout::BodyFont();
     const float px = font ? font->FontSize : 13.0f;
-    const float textW = (std::max)(32.0f, contentW - kInfoTextX - kInfoPadX);
-    WrapTextLine(font, px, text, textW, out);
-    if (out.empty()) out.push_back(text);
+    const int widthKey = InfoWrapWidthKey(contentW);
+    const int fontPxKey = InfoWrapFontPxKey(px);
+
+    int reusableSlot = -1;
+    for (int i = 0; i < kInfoWrapCacheSlots; ++i) {
+        InfoWrapCacheEntry& entry = g_infoWrapCache[i];
+        if (!entry.valid) {
+            reusableSlot = i;
+            break;
+        }
+        if (entry.labelPtr == text &&
+            entry.widthKey == widthKey &&
+            entry.font == font &&
+            entry.fontPxKey == fontPxKey) {
+            if (entry.text == text) {
+                return entry;
+            }
+            reusableSlot = i;
+            break;
+        }
+    }
+
+    if (reusableSlot < 0) {
+        reusableSlot = g_infoWrapNextSlot;
+        g_infoWrapNextSlot = (g_infoWrapNextSlot + 1) % kInfoWrapCacheSlots;
+    }
+
+    RebuildInfoWrapCacheEntry(g_infoWrapCache[reusableSlot],
+                              r,
+                              contentW,
+                              font,
+                              px,
+                              widthKey,
+                              fontPxKey);
+    return g_infoWrapCache[reusableSlot];
 }
 
 float InfoRowHeight(const Row& r, float contentW) {
-    std::vector<std::string> lines;
-    WrapInfoText(r, contentW, lines);
-    ImFont* font = Layout::BodyFont();
-    const float px = font ? font->FontSize : 13.0f;
-    const float textH = (static_cast<float>(lines.size()) * px) +
-                        (static_cast<float>((lines.size() > 0) ? lines.size() - 1 : 0) * kInfoLineGap);
-    const float desired = kInfoPadY * 2.0f + textH;
-    return desired;
+    return GetInfoWrapCacheEntry(r, contentW).height;
 }
 
 float RowPixelHeight(const Row& r, float contentW) {
@@ -974,12 +1051,10 @@ void RenderList(ImDrawList* dl, const ScreenLayout& layout,
                 Layout::DrawHeader(dl, x, y, w, r.label);
                 break;
             case RowKind::Info: {
-                std::vector<std::string> lines;
-                WrapInfoText(r, w, lines);
+                const InfoWrapCacheEntry& wrapped = GetInfoWrapCacheEntry(r, w);
+                const std::vector<std::string>& lines = wrapped.lines;
                 const float rowH = rects[i].h;
-                const float textBlockH =
-                    static_cast<float>(lines.size()) * bPx +
-                    static_cast<float>((lines.size() > 0) ? lines.size() - 1 : 0) * kInfoLineGap;
+                const float textBlockH = InfoTextBlockHeight(lines.size(), bPx);
                 const float py0 = y + (std::max)(0.0f, (rowH - textBlockH) * 0.5f);
 
                 // Subtle left-edge cursor when this Info is the focused row,

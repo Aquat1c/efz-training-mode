@@ -112,16 +112,6 @@ void ForEachRelevantPadState(const Fn& fn) {
     }
 }
 
-bool AnyRelevantPadBindingDown(int mask) {
-    bool down = false;
-    ForEachRelevantPadState([&](const XINPUT_STATE& state) {
-        if (!down && PadBindingDown(state, mask)) {
-            down = true;
-        }
-    });
-    return down;
-}
-
 CurState SampleCurrent() {
     CurState cur;
     if (!InputAllowed()) return cur;
@@ -167,12 +157,11 @@ CurState SampleCurrent() {
         if (b & XINPUT_GAMEPAD_A)          cur.activate = true;
         if (b & XINPUT_GAMEPAD_B)          cur.back     = true;
         if (b & XINPUT_GAMEPAD_Y)          cur.switchPlayer = true;
+        if (PadBindingDown(state, cfg.gpUiTopTabPrev)) cur.topTabPrev = true;
+        if (PadBindingDown(state, cfg.gpUiTopTabNext)) cur.topTabNext = true;
+        if (PadBindingDown(state, cfg.gpUiSubTabPrev)) cur.subTabPrev = true;
+        if (PadBindingDown(state, cfg.gpUiSubTabNext)) cur.subTabNext = true;
     });
-
-    cur.topTabPrev = cur.topTabPrev || AnyRelevantPadBindingDown(cfg.gpUiTopTabPrev);
-    cur.topTabNext = cur.topTabNext || AnyRelevantPadBindingDown(cfg.gpUiTopTabNext);
-    cur.subTabPrev = cur.subTabPrev || AnyRelevantPadBindingDown(cfg.gpUiSubTabPrev);
-    cur.subTabNext = cur.subTabNext || AnyRelevantPadBindingDown(cfg.gpUiSubTabNext);
 
     return cur;
 }
