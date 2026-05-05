@@ -385,7 +385,8 @@ Row Spacer() {
 Row Toggle(const char* label, bool* p,
            void (*onChange)(),
            bool (*isDisabled)(),
-           bool (*isHidden)()) {
+           bool (*isHidden)(),
+           bool useSwitchPlayerToggle) {
     Row r{};
     r.kind = RowKind::Toggle;
     r.label = label;
@@ -393,6 +394,7 @@ Row Toggle(const char* label, bool* p,
     r.onChange = onChange;
     r.isDisabled = isDisabled;
     r.isHidden = isHidden;
+    r.useSwitchPlayerToggle = useSwitchPlayerToggle;
     return r;
 }
 
@@ -1210,7 +1212,8 @@ bool HandleRowsInput(const ScreenLayout& layout,
             case RowKind::Toggle: {
                 if (disabled || !r.boolPtr) break;
                 bool changed = false;
-                if (activate)  { *r.boolPtr = !*r.boolPtr; changed = true; }
+                const bool switchToggle = r.useSwitchPlayerToggle && Input::SwitchPlayer();
+                if (activate || switchToggle)  { *r.boolPtr = !*r.boolPtr; changed = true; }
                 else if (navLeft && *r.boolPtr)  { *r.boolPtr = false; changed = true; }
                 else if (navRight && !*r.boolPtr){ *r.boolPtr = true;  changed = true; }
                 if (changed) Sound::PlayCursor();

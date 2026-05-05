@@ -24,7 +24,7 @@ bool NavDown();
 bool NavLeft();
 bool NavRight();
 
-// Activate / Accept: Enter, A (gamepad face-down), mouse left click on
+// Activate / Accept: Enter, A/C (gameplay buttons), mouse left click on
 // focused row (future). Returns edge.
 bool Activate();
 

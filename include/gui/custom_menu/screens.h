@@ -96,6 +96,9 @@ struct Row {
 
     // Fired after a value is mutated (via toggle / adjust / choice / edit).
     void (*onChange)();
+
+    // Optional D-button alias for checkbox-style rows.
+    bool useSwitchPlayerToggle;
 };
 
 // Row builders. Keep these short so screen definitions read like a small DSL.
@@ -105,7 +108,8 @@ Row Spacer();
 Row Toggle(const char* label, bool* p,
            void (*onChange)() = nullptr,
            bool (*isDisabled)() = nullptr,
-           bool (*isHidden)() = nullptr);
+           bool (*isHidden)() = nullptr,
+           bool useSwitchPlayerToggle = false);
 Row IntNum(const char* label, int* p, int mn, int mx,
            int stepSmall = 1, int stepBig = 10,
            void (*onChange)() = nullptr,
@@ -242,6 +246,7 @@ bool IsPopupActive();
 bool TickPopupIfOpen(ImDrawList* dl, const ScreenLayout& layout);
 bool IsSubmenuActive();
 void ResetSubmenus();
+void ResetHotswapMenuSeed();
 bool IsTextEditorActive();
 void ResetTextEditor();
 bool ConsumeFocusAboveRequest();
