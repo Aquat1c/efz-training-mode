@@ -120,6 +120,240 @@ namespace {
         s_lastRefreshTick = now;
         return fullscreen;
     }
+
+    std::atomic<bool> g_endSceneWatchdogStarted{false};
+    std::atomic<bool> g_endSceneInProgress{false};
+    std::atomic<DWORD> g_endSceneThreadId{0};
+    std::atomic<DWORD> g_endSceneStartTick{0};
+    std::atomic<unsigned long> g_endSceneSequence{0};
+    std::atomic<const char*> g_endScenePhase{"idle"};
+    std::atomic<bool> g_activeD3D9DeviceLogged{false};
+
+    bool TryReadPointer(uintptr_t address, uintptr_t* outValue) {
+        if (!address || !outValue) return false;
+        __try {
+            *outValue = *reinterpret_cast<const uintptr_t*>(address);
+            return true;
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            return false;
+        }
+    }
+
+    std::string DescribeAddress(uintptr_t address) {
+        char result[256] = {};
+        MEMORY_BASIC_INFORMATION mbi{};
+        if (address && VirtualQuery(reinterpret_cast<const void*>(address), &mbi, sizeof(mbi)) && mbi.AllocationBase) {
+            char modulePath[MAX_PATH] = {};
+            if (GetModuleFileNameA(static_cast<HMODULE>(mbi.AllocationBase), modulePath, MAX_PATH)) {
+                _snprintf_s(result, sizeof(result), _TRUNCATE,
+                            "%p %s+0x%lX",
+                            reinterpret_cast<void*>(address),
+                            modulePath,
+                            static_cast<unsigned long>(address - reinterpret_cast<uintptr_t>(mbi.AllocationBase)));
+                return result;
+            }
+            _snprintf_s(result, sizeof(result), _TRUNCATE,
+                        "%p allocationBase=%p",
+                        reinterpret_cast<void*>(address),
+                        mbi.AllocationBase);
+            return result;
+        }
+
+        _snprintf_s(result, sizeof(result), _TRUNCATE, "%p <unmapped>", reinterpret_cast<void*>(address));
+        return result;
+    }
+
+    void LogEndSceneHangSnapshot(DWORD tid, const char* phase, DWORD elapsedMs, unsigned long sequence) {
+        if (!tid || tid == GetCurrentThreadId()) {
+            return;
+        }
+
+        HANDLE thread = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_QUERY_INFORMATION,
+                                   FALSE,
+                                   tid);
+        if (!thread) {
+            LogOut("[OVERLAY][D3D9][HANG] Could not open render thread for snapshot; tid=" + std::to_string(tid), true);
+            return;
+        }
+
+        CONTEXT ctx{};
+        ctx.ContextFlags = CONTEXT_CONTROL;
+        uintptr_t ip = 0;
+        uintptr_t sp = 0;
+        uintptr_t bp = 0;
+        uintptr_t stack[6] = {};
+        bool stackOk[6] = {};
+
+        const DWORD suspendResult = SuspendThread(thread);
+        if (suspendResult == static_cast<DWORD>(-1)) {
+            CloseHandle(thread);
+            LogOut("[OVERLAY][D3D9][HANG] SuspendThread failed for render thread; tid=" + std::to_string(tid), true);
+            return;
+        }
+
+        const BOOL gotContext = GetThreadContext(thread, &ctx);
+#if defined(_M_IX86)
+        if (gotContext) {
+            ip = static_cast<uintptr_t>(ctx.Eip);
+            sp = static_cast<uintptr_t>(ctx.Esp);
+            bp = static_cast<uintptr_t>(ctx.Ebp);
+            for (int i = 0; i < 6; ++i) {
+                stackOk[i] = TryReadPointer(sp + static_cast<uintptr_t>(i) * sizeof(uintptr_t), &stack[i]);
+            }
+        }
+#endif
+        ResumeThread(thread);
+        CloseHandle(thread);
+
+        char header[320] = {};
+        _snprintf_s(header, sizeof(header), _TRUNCATE,
+                    "[OVERLAY][D3D9][HANG] EndScene active for %lums seq=%lu tid=%lu phase=%s ctx=%s ip=%s sp=%p bp=%p",
+                    static_cast<unsigned long>(elapsedMs),
+                    sequence,
+                    static_cast<unsigned long>(tid),
+                    phase ? phase : "unknown",
+                    gotContext ? "ok" : "failed",
+                    ip ? DescribeAddress(ip).c_str() : "<unavailable>",
+                    reinterpret_cast<void*>(sp),
+                    reinterpret_cast<void*>(bp));
+        LogOut(header, true);
+
+        if (gotContext && sp) {
+            for (int i = 0; i < 6; ++i) {
+                if (!stackOk[i]) continue;
+                char line[320] = {};
+                const std::string desc = DescribeAddress(stack[i]);
+                _snprintf_s(line, sizeof(line), _TRUNCATE,
+                            "[OVERLAY][D3D9][HANG] stack[%d]=%s",
+                            i,
+                            desc.c_str());
+                LogOut(line, true);
+            }
+        }
+    }
+
+    void StartEndSceneWatchdog() {
+        bool expected = false;
+        if (!g_endSceneWatchdogStarted.compare_exchange_strong(expected, true)) {
+            return;
+        }
+
+        std::thread([] {
+            unsigned long lastLoggedSequence = 0;
+            DWORD lastLogTick = 0;
+            for (;;) {
+                Sleep(250);
+                if (!g_endSceneInProgress.load(std::memory_order_acquire)) {
+                    continue;
+                }
+
+                const DWORD now = GetTickCount();
+                const DWORD start = g_endSceneStartTick.load(std::memory_order_acquire);
+                const DWORD elapsed = now - start;
+                if (elapsed < 2500) {
+                    continue;
+                }
+
+                const unsigned long sequence = g_endSceneSequence.load(std::memory_order_acquire);
+                if (sequence == lastLoggedSequence && (now - lastLogTick) < 5000) {
+                    continue;
+                }
+
+                lastLoggedSequence = sequence;
+                lastLogTick = now;
+                LogEndSceneHangSnapshot(g_endSceneThreadId.load(std::memory_order_acquire),
+                                         g_endScenePhase.load(std::memory_order_acquire),
+                                         elapsed,
+                                         sequence);
+            }
+        }).detach();
+    }
+
+    void SetEndScenePhase(const char* phase) {
+        g_endScenePhase.store(phase ? phase : "unknown", std::memory_order_release);
+    }
+
+    struct EndSceneHangScope {
+        EndSceneHangScope() {
+            StartEndSceneWatchdog();
+            g_endSceneThreadId.store(GetCurrentThreadId(), std::memory_order_release);
+            g_endSceneStartTick.store(GetTickCount(), std::memory_order_release);
+            g_endSceneSequence.fetch_add(1, std::memory_order_acq_rel);
+            SetEndScenePhase("enter");
+            g_endSceneInProgress.store(true, std::memory_order_release);
+        }
+
+        ~EndSceneHangScope() {
+            SetEndScenePhase("idle");
+            g_endSceneInProgress.store(false, std::memory_order_release);
+        }
+    };
+
+    void LogActiveD3D9DeviceOnce(LPDIRECT3DDEVICE9 pDevice) {
+        if (!pDevice) return;
+        bool expected = false;
+        if (!g_activeD3D9DeviceLogged.compare_exchange_strong(expected, true)) {
+            return;
+        }
+
+        D3DDEVICE_CREATION_PARAMETERS cp{};
+        const HRESULT cpHr = pDevice->GetCreationParameters(&cp);
+        IDirect3D9* d3d = nullptr;
+        const HRESULT d3dHr = pDevice->GetDirect3D(&d3d);
+        if (SUCCEEDED(cpHr) && SUCCEEDED(d3dHr) && d3d) {
+            D3DADAPTER_IDENTIFIER9 ident{};
+            if (SUCCEEDED(d3d->GetAdapterIdentifier(cp.AdapterOrdinal, 0, &ident))) {
+                char idbuf[256] = {};
+                _snprintf_s(idbuf, sizeof(idbuf), _TRUNCATE,
+                            "[OVERLAY][D3D9] Active device adapter=%u vendor=0x%04X device=0x%04X desc=%s",
+                            static_cast<unsigned>(cp.AdapterOrdinal),
+                            ident.VendorId,
+                            ident.DeviceId,
+                            ident.Description);
+                LogOut(idbuf, true);
+                if (ident.VendorId == 0x1002) {
+                    LogOut("[OVERLAY][D3D9] AMD adapter detected; EndScene watchdog and cooperative-level guards are active", true);
+                }
+            }
+        } else {
+            char buf[160] = {};
+            _snprintf_s(buf, sizeof(buf), _TRUNCATE,
+                        "[OVERLAY][D3D9] Active device adapter query failed cp=0x%08lX d3d=0x%08lX",
+                        static_cast<unsigned long>(cpHr),
+                        static_cast<unsigned long>(d3dHr));
+            LogOut(buf, true);
+        }
+
+        if (d3d) {
+            d3d->Release();
+        }
+    }
+
+    bool SkipOverlayForLostDevice(LPDIRECT3DDEVICE9 pDevice) {
+        if (!pDevice) return true;
+        const HRESULT hr = pDevice->TestCooperativeLevel();
+        if (hr == D3D_OK) {
+            return false;
+        }
+
+        static HRESULT s_lastLoggedHr = D3D_OK;
+        static DWORD s_lastLogTick = 0;
+        const DWORD now = GetTickCount();
+        if (hr != s_lastLoggedHr || (now - s_lastLogTick) >= 1000) {
+            s_lastLoggedHr = hr;
+            s_lastLogTick = now;
+            char buf[160] = {};
+            _snprintf_s(buf, sizeof(buf), _TRUNCATE,
+                        "[OVERLAY][D3D9] TestCooperativeLevel=0x%08lX; %s",
+                        static_cast<unsigned long>(hr),
+                        (hr == D3DERR_DEVICELOST || hr == D3DERR_DEVICENOTRESET)
+                            ? "skipping overlay render this frame"
+                            : "continuing overlay render");
+            LogOut(buf, true);
+        }
+
+        return hr == D3DERR_DEVICELOST || hr == D3DERR_DEVICENOTRESET;
+    }
 }
 std::atomic<bool> g_ShowRGDebugToasts{false};
 
@@ -209,6 +443,9 @@ HRESULT WINAPI HookedEndScene(LPDIRECT3DDEVICE9 pDevice) {
         return oEndScene(pDevice);
     }
 
+    EndSceneHangScope _hangScope;
+    SetEndScenePhase("XInput snapshot");
+
     // Refresh XInput snapshot once per frame at the start of EndScene; other systems read cached state
     XInputShim::RefreshSnapshotOncePerFrame();
     // Minimal per-frame timing (RAII) to detect stalls without per-frame logs
@@ -222,6 +459,7 @@ HRESULT WINAPI HookedEndScene(LPDIRECT3DDEVICE9 pDevice) {
             static double   maxMs = 0.0;
             static uint32_t gt33 = 0, gt100 = 0, gt250 = 0, gt500 = 0;
             static steady_clock::time_point lastReport{};
+            static steady_clock::time_point lastMenuSlowReport{};
             auto t1 = steady_clock::now();
             double ms = duration<double, std::milli>(t1 - t0).count();
             frames++; sumMs += ms; if (ms > maxMs) maxMs = ms;
@@ -229,6 +467,16 @@ HRESULT WINAPI HookedEndScene(LPDIRECT3DDEVICE9 pDevice) {
             if (ms > 100.0) gt100++;
             if (ms > 250.0) gt250++;
             if (ms > 500.0) gt500++;
+            if (ImGuiImpl::IsVisible() && ms >= 100.0
+                && (lastMenuSlowReport.time_since_epoch().count() == 0
+                    || t1 - lastMenuSlowReport >= std::chrono::seconds(1))) {
+                char slowBuf[192];
+                _snprintf_s(slowBuf, sizeof(slowBuf), _TRUNCATE,
+                    "[OVERLAY][D3D9][SLOW] Menu EndScene frame took %.1fms custom=%d",
+                    ms, Config::GetSettings().useCustomMenu ? 1 : 0);
+                LogOut(slowBuf, true);
+                lastMenuSlowReport = t1;
+            }
             if (lastReport.time_since_epoch().count() == 0) lastReport = t1;
             if (t1 - lastReport >= std::chrono::seconds(5)) {
                 // Only report if diagnostics are enabled in config
@@ -248,18 +496,30 @@ HRESULT WINAPI HookedEndScene(LPDIRECT3DDEVICE9 pDevice) {
     // Mark that EndScene was observed at least once
     if (!g_EndSceneObserved.load()) g_EndSceneObserved.store(true);
     if (!pDevice) {
+        SetEndScenePhase("original EndScene: null device");
         return oEndScene(pDevice);
     }
 
+    SetEndScenePhase("TestCooperativeLevel");
+    if (SkipOverlayForLostDevice(pDevice)) {
+        SetEndScenePhase("original EndScene: lost device");
+        return oEndScene(pDevice);
+    }
+
+    LogActiveD3D9DeviceOnce(pDevice);
+
     // Determine current render target size
+    SetEndScenePhase("QueryRenderTargetSize");
     UINT rtW = 0, rtH = 0;
     QueryRenderTargetSize(pDevice, rtW, rtH);
     // Only render on the actual 640x480 game surface
     if (!(rtW == 640 && rtH == 480)) {
+        SetEndScenePhase("original EndScene: non-640 render target");
         return oEndScene(pDevice);
     }
 
     // Thread-safe ImGui initialization (only once)
+    SetEndScenePhase("ImGui initialization");
     if (!g_endSceneImguiInit.load(std::memory_order_acquire)) {
         // Try to claim the init slot
         bool expected = false;
@@ -274,19 +534,24 @@ HRESULT WINAPI HookedEndScene(LPDIRECT3DDEVICE9 pDevice) {
         }
         // If we lost the race or init failed, just continue to render pass
         if (!ImGuiImpl::IsInitialized()) {
+            SetEndScenePhase("original EndScene: ImGui unavailable");
             return oEndScene(pDevice);
         }
     }
 
     if (ImGuiImpl::IsVisible() && Config::GetSettings().useCustomMenu) {
+        SetEndScenePhase("CustomMenu::PrepareFrame");
         CustomMenu::PrepareFrame();
     }
 
     // Start a new ImGui frame and feed inputs before NewFrame
+    SetEndScenePhase("ImGui DX9 NewFrame");
     ImGui_ImplDX9_NewFrame();
     ImGui_ImplWin32_NewFrame();
     // Feed controller/virtual-cursor inputs before NewFrame so they apply this frame
+    SetEndScenePhase("ImGui input feed");
     ImGuiImpl::PreNewFrameInputs();
+    SetEndScenePhase("ImGui::NewFrame");
     ImGui::NewFrame();
     // Post-NewFrame snapshot for diagnostics (throttled)
     ImGuiImpl::PostNewFrameDiagnostics();
@@ -297,6 +562,7 @@ HRESULT WINAPI HookedEndScene(LPDIRECT3DDEVICE9 pDevice) {
     // If the game window is minimized, skip rendering to avoid ImGui asserting on zero-size display
     if (io.DisplaySize.x <= 0.0f || io.DisplaySize.y <= 0.0f) {
         ImGui::EndFrame();
+        SetEndScenePhase("original EndScene: minimized");
         return oEndScene(pDevice);
     }
 
@@ -312,11 +578,15 @@ HRESULT WINAPI HookedEndScene(LPDIRECT3DDEVICE9 pDevice) {
         ImGui::SetMouseCursor(ImGuiMouseCursor_Arrow);
     }
 
-    // Initialize GIF player only when UI is visible (used on Help tab)
-    static bool gifInit = false;
-    if (!gifInit && ImGuiImpl::IsVisible()) { gifInit = GifPlayer::Initialize(pDevice); }
+    // Initialize the GIF only after a screen actually asks for it. Decoding and
+    // creating D3D textures here on first menu-open is a visible hitch on some drivers.
+    if (ImGuiImpl::IsVisible() && GifPlayer::ShouldAttemptLoad()) {
+        SetEndScenePhase("GifPlayer::Initialize");
+        GifPlayer::Initialize(pDevice);
+    }
 
     // Render our custom text overlays using the background draw list
+    SetEndScenePhase("RenderD3D9Overlays");
     DirectDrawHook::RenderD3D9Overlays(pDevice, rtW, rtH);
 
     // Render the main ImGui configuration window if it's visible
@@ -346,8 +616,10 @@ HRESULT WINAPI HookedEndScene(LPDIRECT3DDEVICE9 pDevice) {
         style.FrameBorderSize = 0.0f;
 
         if (Config::GetSettings().useCustomMenu) {
+            SetEndScenePhase("CustomMenu::Render");
             CustomMenu::Render();
         } else {
+            SetEndScenePhase("ImGuiGui::RenderGui");
             ImGuiGui::RenderGui();
         }
 
@@ -364,27 +636,32 @@ HRESULT WINAPI HookedEndScene(LPDIRECT3DDEVICE9 pDevice) {
         style.FrameBorderSize = oldFrameBorder;
     }
 
-    // Advance GIF animation timing at ~24 FPS only when UI is visible
-    if (gifInit && ImGuiImpl::IsVisible()) {
+    // Advance GIF animation timing at ~24 FPS only while a GIF row is visible.
+    if (ImGuiImpl::IsVisible() && GifPlayer::WasRequestedThisFrame()) {
         static double gifAccum = 0.0;
         ImGuiIO& io = ImGui::GetIO();
         double dt = io.DeltaTime > 0.f ? (double)io.DeltaTime : (1.0/60.0);
         gifAccum += dt;
         const double interval = 1.0 / 24.0;
         if (gifAccum >= interval) {
+            SetEndScenePhase("GifPlayer::Update");
             GifPlayer::Update(gifAccum);
             gifAccum = 0.0;
         }
     }
+    GifPlayer::EndFrame();
 
     // End the frame and render all accumulated draw data
+    SetEndScenePhase("ImGui::Render");
     ImGui::EndFrame();
     ImGui::Render();
     // Guard again in case size changed mid-frame
     if (io.DisplaySize.x > 0.0f && io.DisplaySize.y > 0.0f) {
+        SetEndScenePhase("ImGui_ImplDX9_RenderDrawData");
         ImGui_ImplDX9_RenderDrawData(ImGui::GetDrawData());
     }
 
+    SetEndScenePhase("original EndScene");
     return oEndScene(pDevice);
 }
 

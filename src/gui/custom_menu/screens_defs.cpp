@@ -973,10 +973,31 @@ bool SwapCustomKeyDisabled() {
 void RefreshHotkeyStrings() {
     const auto& s = Config::GetSettings();
 
-    _snprintf_s(g_controllerChoiceLabels[0], sizeof(g_controllerChoiceLabels[0]), _TRUNCATE, "All (Any)");
-    for (int i = 0; i < 4; ++i) {
-        _snprintf_s(g_controllerChoiceLabels[i + 1], sizeof(g_controllerChoiceLabels[i + 1]), _TRUNCATE,
-                    "%s", GetControllerNameForIndex(i).c_str());
+    static DWORD s_lastControllerLabelRefresh = 0;
+    static unsigned s_lastControllerMask = 0xFFFFFFFFu;
+    static unsigned s_lastNativeMask = 0xFFFFFFFFu;
+    static unsigned s_lastGenericMask = 0xFFFFFFFFu;
+
+    const DWORD now = GetTickCount();
+    const unsigned controllerMask = XInputShim::GetConnectedMaskCached();
+    const unsigned nativeMask = XInputShim::GetNativeConnectedMaskCached();
+    const unsigned genericMask = XInputShim::GetGenericConnectedMaskCached();
+    const bool labelsDue = s_lastControllerLabelRefresh == 0
+        || (now - s_lastControllerLabelRefresh) >= 2000
+        || controllerMask != s_lastControllerMask
+        || nativeMask != s_lastNativeMask
+        || genericMask != s_lastGenericMask;
+
+    if (labelsDue) {
+        _snprintf_s(g_controllerChoiceLabels[0], sizeof(g_controllerChoiceLabels[0]), _TRUNCATE, "All (Any)");
+        for (int i = 0; i < 4; ++i) {
+            _snprintf_s(g_controllerChoiceLabels[i + 1], sizeof(g_controllerChoiceLabels[i + 1]), _TRUNCATE,
+                        "%s", GetControllerNameForIndex(i).c_str());
+        }
+        s_lastControllerLabelRefresh = now;
+        s_lastControllerMask = controllerMask;
+        s_lastNativeMask = nativeMask;
+        s_lastGenericMask = genericMask;
     }
 
     g_controllerChoiceIndex = (s.controllerIndex >= 0 && s.controllerIndex <= 3)
@@ -1199,6 +1220,7 @@ char g_debugRfFreezeP2Info[160] = "P2 RF Freeze: inactive";
 struct HotswapCurrentState;
 int CharacterSelectIdFromInternalCharacterId(int internalCharId);
 bool ReadCurrentHotswapState(HotswapCurrentState& state);
+bool RevivalBgmMuted();
 const char* GetNamedStageLabel(int stageId);
 void UpdateCustomSavestateHotswapPromptFromWorking();
 
@@ -1207,6 +1229,103 @@ const char* const kSavestateBackendChoices[3] = {
     "REVIVAL",
     "CUSTOM+FALLBACK",
 };
+
+int SavedSavestateSelectId(uint8_t rawCharId) {
+    if (rawCharId == 0xFF) {
+        return -1;
+    }
+
+    const int internalCharId = static_cast<int>(rawCharId);
+    if (internalCharId < CHAR_ID_AKANE || internalCharId > CHAR_ID_KANO) {
+        return -1;
+    }
+
+    return CharacterSelectIdFromInternalCharacterId(internalCharId);
+}
+
+const char* SavedSavestateDisplayName(uint8_t rawCharId) {
+    const int selectId = SavedSavestateSelectId(rawCharId);
+    return selectId >= 0 ? CharacterHotswap::GetDisplayNameForSelectId(selectId) : "UNKNOWN";
+}
+
+void LogSavestateMirrorStateIfChanged(const char* source,
+                                      const CustomSavestate::Summary& summary,
+                                      CustomSavestate::BackendMode backendMode,
+                                      int activeDiskSlot,
+                                      bool fieldsOk) {
+    static std::string s_lastLogLine;
+
+    std::ostringstream oss;
+    oss << "[SAVESTATE][MENU][" << (source ? source : "MIRROR") << "]"
+        << " backend=" << CustomSavestate::BackendModeName(backendMode)
+        << " slot=" << activeDiskSlot
+        << " stamp=" << summary.workingSnapshotStamp
+        << " working=" << (summary.hasWorkingSnapshot ? 1 : 0)
+        << " dirty=" << (summary.workingSnapshotDirty ? 1 : 0)
+        << " rawChars=" << static_cast<unsigned int>(summary.savedP1CharId)
+        << "/" << static_cast<unsigned int>(summary.savedP2CharId)
+        << " selectChars=" << SavedSavestateSelectId(summary.savedP1CharId)
+        << "/" << SavedSavestateSelectId(summary.savedP2CharId)
+        << " stage=" << static_cast<unsigned int>(summary.savedStageId)
+        << " compat=" << (summary.currentPairCompatible ? 1 : 0)
+        << "/" << (summary.currentStageCompatible ? 1 : 0)
+        << "/" << (summary.currentVersionCompatible ? 1 : 0)
+        << " restoreAllowed=" << (summary.currentRestoreAllowed ? 1 : 0)
+        << " fieldsOk=" << (fieldsOk ? 1 : 0)
+        << " saveLoad=" << summary.saveCount << "/" << summary.loadCount
+        << " revival=" << summary.savedRevivalVersion;
+
+    const std::string line = oss.str();
+    if (line != s_lastLogLine) {
+        LogOut(line, true);
+        s_lastLogLine = line;
+    }
+}
+
+bool CustomSavestateDiskSlotExistsCached(int slot, DWORD maxAgeMs = 1000) {
+    struct CacheEntry {
+        bool valid = false;
+        int slot = -999;
+        bool exists = false;
+        DWORD tick = 0;
+    };
+
+    constexpr int kCacheSlots = 16;
+    static CacheEntry s_cache[kCacheSlots];
+    const int index = (slot >= 0 && slot < kCacheSlots) ? slot : (kCacheSlots - 1);
+    CacheEntry& entry = s_cache[index];
+
+    const DWORD now = GetTickCount();
+    if (maxAgeMs > 0 &&
+        entry.valid &&
+        entry.slot == slot &&
+        (now - entry.tick) < maxAgeMs) {
+        return entry.exists;
+    }
+
+    const DWORD start = now;
+    const bool exists = CustomSavestate::DoesDiskSlotExist(slot);
+    const DWORD elapsed = GetTickCount() - start;
+
+    entry.valid = true;
+    entry.slot = slot;
+    entry.exists = exists;
+    entry.tick = GetTickCount();
+
+    static DWORD s_lastSlowLog = 0;
+    if (elapsed >= 25 && (s_lastSlowLog == 0 || (now - s_lastSlowLog) >= 1000)) {
+        s_lastSlowLog = now;
+        char buf[192];
+        _snprintf_s(buf, sizeof(buf), _TRUNCATE,
+            "[CUSTOM_MENU][TIMING] Savestate slot existence probe took %lums slot=%d exists=%d",
+            static_cast<unsigned long>(elapsed),
+            slot,
+            exists ? 1 : 0);
+        LogOut(buf, true);
+    }
+
+    return exists;
+}
 
 void RefreshCustomSavestateMirrors() {
     CustomSavestate::Summary summary{};
@@ -1226,9 +1345,10 @@ void RefreshCustomSavestateMirrors() {
     }
     UpdateCustomSavestateHotswapPromptFromWorking();
 
-    if (summary.hasWorkingSnapshot && CustomSavestate::GetWorkingEditableFields(g_customSavestateFields)) {
-        const std::string p1Name = CharacterHotswap::GetDisplayNameForSelectId(summary.savedP1CharId);
-        const std::string p2Name = CharacterHotswap::GetDisplayNameForSelectId(summary.savedP2CharId);
+    const bool fieldsOk = summary.hasWorkingSnapshot && CustomSavestate::GetWorkingEditableFields(g_customSavestateFields);
+    if (fieldsOk) {
+        const std::string p1Name = SavedSavestateDisplayName(summary.savedP1CharId);
+        const std::string p2Name = SavedSavestateDisplayName(summary.savedP2CharId);
         const char* savedStageName = GetNamedStageLabel(summary.savedStageId);
         _snprintf_s(g_customSavestateWorkingInfo, sizeof(g_customSavestateWorkingInfo), _TRUNCATE,
                 "Current State: %s / %s | %s | stage %s | restore %s/%s/%s | save/load %u/%u | revival %u/%u",
@@ -1290,18 +1410,53 @@ void RefreshCustomSavestateMirrors() {
                 "Status: %s",
                 CustomSavestate::GetLastStatus().c_str());
 
-    if (g_customSavestateDiskSlot == 0) {
-        _snprintf_s(g_customSavestateDiskInfo, sizeof(g_customSavestateDiskInfo), _TRUNCATE,
-                    "Slot 0: %s | memory snapshot | next save uses slot 1",
-                    CustomSavestate::DoesDiskSlotExist(0) ? "READY" : "EMPTY");
-    } else {
-        const std::string slotPath = CustomSavestate::GetDiskSlotPath(g_customSavestateDiskSlot);
-        _snprintf_s(g_customSavestateDiskInfo, sizeof(g_customSavestateDiskInfo), _TRUNCATE,
-                    "Slot %d: %s | %s",
-                    g_customSavestateDiskSlot,
-                    CustomSavestate::DoesDiskSlotExist(g_customSavestateDiskSlot) ? "HAS FILE" : "EMPTY",
-                    slotPath.c_str());
+    constexpr DWORD kDiskInfoRefreshMs = 1000;
+    static int s_lastDiskInfoSlot = -999;
+    static unsigned int s_lastDiskInfoSaveCount = 0xFFFFFFFFu;
+    static unsigned int s_lastDiskInfoLoadCount = 0xFFFFFFFFu;
+    static DWORD s_lastDiskInfoRefresh = 0;
+
+    const DWORD diskNow = GetTickCount();
+    const bool diskInfoDue = s_lastDiskInfoRefresh == 0
+        || (diskNow - s_lastDiskInfoRefresh) >= kDiskInfoRefreshMs
+        || s_lastDiskInfoSlot != g_customSavestateDiskSlot
+        || s_lastDiskInfoSaveCount != summary.saveCount
+        || s_lastDiskInfoLoadCount != summary.loadCount;
+
+    if (diskInfoDue) {
+        const DWORD diskStart = diskNow;
+        if (g_customSavestateDiskSlot == 0) {
+            _snprintf_s(g_customSavestateDiskInfo, sizeof(g_customSavestateDiskInfo), _TRUNCATE,
+                        "Slot 0: %s | memory snapshot | next save uses slot 1",
+                        CustomSavestateDiskSlotExistsCached(0, 0) ? "READY" : "EMPTY");
+        } else {
+            const std::string slotPath = CustomSavestate::GetDiskSlotPath(g_customSavestateDiskSlot);
+            _snprintf_s(g_customSavestateDiskInfo, sizeof(g_customSavestateDiskInfo), _TRUNCATE,
+                        "Slot %d: %s | %s",
+                        g_customSavestateDiskSlot,
+                        CustomSavestateDiskSlotExistsCached(g_customSavestateDiskSlot, 0) ? "HAS FILE" : "EMPTY",
+                        slotPath.c_str());
+        }
+
+        s_lastDiskInfoSlot = g_customSavestateDiskSlot;
+        s_lastDiskInfoSaveCount = summary.saveCount;
+        s_lastDiskInfoLoadCount = summary.loadCount;
+        s_lastDiskInfoRefresh = GetTickCount();
+
+        const DWORD diskElapsed = s_lastDiskInfoRefresh - diskStart;
+        static DWORD s_lastSlowDiskLog = 0;
+        if (diskElapsed >= 25 && (s_lastSlowDiskLog == 0 || (diskNow - s_lastSlowDiskLog) >= 1000)) {
+            s_lastSlowDiskLog = diskNow;
+            char buf[192];
+            _snprintf_s(buf, sizeof(buf), _TRUNCATE,
+                "[CUSTOM_MENU][TIMING] Savestate disk mirror took %lums slot=%d",
+                static_cast<unsigned long>(diskElapsed),
+                g_customSavestateDiskSlot);
+            LogOut(buf, true);
+        }
     }
+
+    LogSavestateMirrorStateIfChanged("SUMMARY", summary, backendMode, g_customSavestateDiskSlot, fieldsOk);
 }
 
 void RefreshDebugRuntimeMirrors() {
@@ -1604,6 +1759,10 @@ void RunPlayBGM() {
     SeedDebugBgmChoiceIfNeeded();
     uintptr_t gameStatePtr = GetGameStatePtr();
     if (!gameStatePtr) return;
+    if (RevivalBgmMuted()) {
+        LogOut("[BGM] PLAY BGM ignored because Revival MuteBGM is enabled", true);
+        return;
+    }
     PlayBGM(gameStatePtr, TrackForNamedOstChoice(g_bgmSlot));
 }
 void RunP1FinalMemory() {
@@ -1757,7 +1916,7 @@ bool CustomSavestateWorkingMissing() {
 }
 
 bool CustomSavestateDiskSlotMissing() {
-    return !CustomSavestate::DoesDiskSlotExist(g_customSavestateDiskSlot);
+    return !CustomSavestateDiskSlotExistsCached(g_customSavestateDiskSlot);
 }
 
 bool CustomSavestateUsingRevivalBackend() {
@@ -3279,6 +3438,47 @@ bool HotswapCurrentStatesEqual(const HotswapCurrentState& lhs, const HotswapCurr
         && lhs.bgmTrack == rhs.bgmTrack;
 }
 
+void LogSavestateHotswapPromptStateIfChanged(const char* reason,
+                                             bool promptVisible,
+                                             const CustomSavestate::Summary* summary,
+                                             const HotswapCurrentState* current,
+                                             int savedP1SelectId,
+                                             int savedP2SelectId) {
+    static std::string s_lastLogLine;
+
+    std::ostringstream oss;
+    oss << "[SAVESTATE][MENU][HOTSWAP]"
+        << " reason=" << (reason ? reason : "unknown")
+        << " prompt=" << (promptVisible ? 1 : 0);
+
+    if (summary) {
+        oss << " rawChars=" << static_cast<unsigned int>(summary->savedP1CharId)
+            << "/" << static_cast<unsigned int>(summary->savedP2CharId)
+            << " selectChars=" << savedP1SelectId
+            << "/" << savedP2SelectId
+            << " savedStage=" << static_cast<unsigned int>(summary->savedStageId)
+            << " compat=" << (summary->currentPairCompatible ? 1 : 0)
+            << "/" << (summary->currentStageCompatible ? 1 : 0)
+            << "/" << (summary->currentVersionCompatible ? 1 : 0);
+    }
+
+    if (current) {
+        oss << " currentCharsValid=" << (current->charsValid ? 1 : 0)
+            << " currentChars=" << current->p1SelectId
+            << "/" << current->p2SelectId
+            << " currentStageValid=" << (current->stageValid ? 1 : 0)
+            << " currentStage=" << current->stageId
+            << " currentBgmValid=" << (current->bgmValid ? 1 : 0)
+            << " currentBgm=" << current->bgmTrack;
+    }
+
+    const std::string line = oss.str();
+    if (line != s_lastLogLine) {
+        LogOut(line, true);
+        s_lastLogLine = line;
+    }
+}
+
 void LogHotswapMenuSelection(const char* reason) {
     std::ostringstream oss;
     oss << "[HOTSWAP][MENU] " << (reason ? reason : "state")
@@ -3579,36 +3779,88 @@ bool ReadCurrentHotswapState(HotswapCurrentState& state) {
     return state.charsValid || state.stageValid || state.bgmValid;
 }
 
+bool ReadCurrentHotswapStateCached(HotswapCurrentState& state, DWORD maxAgeMs = 100) {
+    static bool s_haveCached = false;
+    static bool s_cachedOk = false;
+    static DWORD s_cachedTick = 0;
+    static HotswapCurrentState s_cachedState{};
+
+    const DWORD now = GetTickCount();
+    if (s_haveCached && (now - s_cachedTick) < maxAgeMs) {
+        state = s_cachedState;
+        return s_cachedOk;
+    }
+
+    const DWORD start = now;
+    HotswapCurrentState fresh{};
+    const bool ok = ReadCurrentHotswapState(fresh);
+    const DWORD elapsed = GetTickCount() - start;
+
+    s_cachedState = fresh;
+    s_cachedOk = ok;
+    s_cachedTick = GetTickCount();
+    s_haveCached = true;
+    state = fresh;
+
+    static DWORD s_lastSlowLog = 0;
+    if (elapsed >= 25 && (s_lastSlowLog == 0 || (now - s_lastSlowLog) >= 1000)) {
+        s_lastSlowLog = now;
+        char buf[192];
+        _snprintf_s(buf, sizeof(buf), _TRUNCATE,
+            "[CUSTOM_MENU][TIMING] ReadCurrentHotswapState took %lums ok=%d",
+            static_cast<unsigned long>(elapsed),
+            ok ? 1 : 0);
+        LogOut(buf, true);
+    }
+
+    return ok;
+}
+
 void UpdateCustomSavestateHotswapPromptFromWorking() {
     g_customSavestateHotswapPrompt = false;
 
     if (g_customSavestateHotswapDismissed) {
+        LogSavestateHotswapPromptStateIfChanged("dismissed", false, nullptr, nullptr, -1, -1);
         return;
     }
 
     CustomSavestate::Summary summary{};
-    if (!CustomSavestate::GetSummary(summary)
-        || !summary.hasWorkingSnapshot
-        || summary.savedStageId == 0xFF) {
+    if (!CustomSavestate::GetSummary(summary)) {
+        LogSavestateHotswapPromptStateIfChanged("summary-unavailable", false, nullptr, nullptr, -1, -1);
+        return;
+    }
+    if (!summary.hasWorkingSnapshot) {
+        LogSavestateHotswapPromptStateIfChanged("no-working-snapshot", false, &summary, nullptr, -1, -1);
+        return;
+    }
+    if (summary.savedStageId == 0xFF) {
+        LogSavestateHotswapPromptStateIfChanged("saved-stage-unset", false, &summary, nullptr, -1, -1);
+        return;
+    }
+
+    const int savedP1SelectId = SavedSavestateSelectId(summary.savedP1CharId);
+    const int savedP2SelectId = SavedSavestateSelectId(summary.savedP2CharId);
+    if (savedP1SelectId < 0 || savedP2SelectId < 0) {
+        LogSavestateHotswapPromptStateIfChanged("invalid-char-map", false, &summary, nullptr, savedP1SelectId, savedP2SelectId);
         return;
     }
 
     HotswapCurrentState current{};
-    if (!ReadCurrentHotswapState(current) || !current.charsValid || !current.stageValid) {
+    if (!ReadCurrentHotswapStateCached(current) || !current.charsValid || !current.stageValid) {
+        LogSavestateHotswapPromptStateIfChanged("current-unavailable", false, &summary, &current, savedP1SelectId, savedP2SelectId);
         return;
     }
 
-    const int savedP1SelectId = summary.savedP1CharId;
-    const int savedP2SelectId = summary.savedP2CharId;
     const bool mismatch = current.p1SelectId != savedP1SelectId
         || current.p2SelectId != savedP2SelectId
         || current.stageId != summary.savedStageId;
     if (!mismatch) {
+        LogSavestateHotswapPromptStateIfChanged("already-matching", false, &summary, &current, savedP1SelectId, savedP2SelectId);
         return;
     }
 
-    const std::string p1Name = CharacterHotswap::GetDisplayNameForSelectId(summary.savedP1CharId);
-    const std::string p2Name = CharacterHotswap::GetDisplayNameForSelectId(summary.savedP2CharId);
+    const std::string p1Name = SavedSavestateDisplayName(summary.savedP1CharId);
+    const std::string p2Name = SavedSavestateDisplayName(summary.savedP2CharId);
     const char* stageName = GetNamedStageLabel(summary.savedStageId);
     _snprintf_s(g_customSavestateHotswapInfo,
                 sizeof(g_customSavestateHotswapInfo),
@@ -3618,32 +3870,84 @@ void UpdateCustomSavestateHotswapPromptFromWorking() {
                 p2Name.c_str(),
                 stageName);
     g_customSavestateHotswapPrompt = true;
+    LogSavestateHotswapPromptStateIfChanged("prompt-visible", true, &summary, &current, savedP1SelectId, savedP2SelectId);
 }
 
 bool RevivalBgmMuted() {
+    constexpr DWORD kRefreshMs = 2000;
+    static bool s_haveCached = false;
+    static bool s_cachedMuted = false;
+    static bool s_cachedModulePresent = false;
+    static bool s_cachedPathOk = false;
+    static DWORD s_cachedTick = 0;
+
+    const DWORD now = GetTickCount();
+    if (s_haveCached && (now - s_cachedTick) < kRefreshMs) {
+        return s_cachedMuted;
+    }
+
+    const DWORD start = now;
+    bool modulePresent = false;
+    bool pathOk = false;
+    bool muted = false;
+
     HMODULE revivalModule = GetModuleHandleA("EfzRevival.dll");
     if (!revivalModule) {
-        return false;
+        modulePresent = false;
+    } else {
+        modulePresent = true;
+        char modulePath[MAX_PATH] = {0};
+        if (GetModuleFileNameA(revivalModule, modulePath, MAX_PATH)) {
+            std::string iniPath(modulePath);
+            const size_t slash = iniPath.find_last_of("\\/");
+            if (slash != std::string::npos) {
+                iniPath.resize(slash + 1);
+                iniPath += "EfzRevival.ini";
+                muted = GetPrivateProfileIntA("Global Settings", "MuteBGM", 0, iniPath.c_str()) != 0;
+                pathOk = true;
+            }
+        }
     }
 
-    char modulePath[MAX_PATH] = {0};
-    if (!GetModuleFileNameA(revivalModule, modulePath, MAX_PATH)) {
-        return false;
+    const DWORD elapsed = GetTickCount() - start;
+    const bool changed = !s_haveCached ||
+        s_cachedMuted != muted ||
+        s_cachedModulePresent != modulePresent ||
+        s_cachedPathOk != pathOk;
+
+    s_haveCached = true;
+    s_cachedMuted = muted;
+    s_cachedModulePresent = modulePresent;
+    s_cachedPathOk = pathOk;
+    s_cachedTick = GetTickCount();
+
+    if (changed) {
+        char buf[192];
+        _snprintf_s(buf, sizeof(buf), _TRUNCATE,
+            "[HOTSWAP][MENU] Revival BGM mute cache module=%d path=%d muted=%d",
+            modulePresent ? 1 : 0,
+            pathOk ? 1 : 0,
+            muted ? 1 : 0);
+        LogOut(buf, true);
     }
 
-    std::string iniPath(modulePath);
-    const size_t slash = iniPath.find_last_of("\\/");
-    if (slash == std::string::npos) {
-        return false;
+    static DWORD s_lastSlowLog = 0;
+    if (elapsed >= 25 && (s_lastSlowLog == 0 || (now - s_lastSlowLog) >= 1000)) {
+        s_lastSlowLog = now;
+        char buf[192];
+        _snprintf_s(buf, sizeof(buf), _TRUNCATE,
+            "[CUSTOM_MENU][TIMING] RevivalBgmMuted poll took %lums module=%d path=%d",
+            static_cast<unsigned long>(elapsed),
+            modulePresent ? 1 : 0,
+            pathOk ? 1 : 0);
+        LogOut(buf, true);
     }
-    iniPath.resize(slash + 1);
-    iniPath += "EfzRevival.ini";
 
-    return GetPrivateProfileIntA("Global Settings", "MuteBGM", 0, iniPath.c_str()) != 0;
+    return muted;
 }
 
 bool HotswapOstValueDisabled() {
-    return CharacterHotswap::IsBusy() || RevivalBgmMuted();
+    return CharacterHotswap::IsBusy();
 }
 
 bool HotswapHasReloadChanges(const HotswapCurrentState& current) {
@@ -3660,11 +3964,18 @@ bool HotswapHasReloadChanges(const HotswapCurrentState& current) {
         || g_hotswapMenuStage != current.stageId;
 }
 
-bool HotswapHasOstChange(const HotswapCurrentState& current) {
-    if (!current.bgmValid || RevivalBgmMuted()) {
+bool HotswapHasOstSelectionChange(const HotswapCurrentState& current) {
+    if (!current.bgmValid) {
         return false;
     }
     return static_cast<int>(TrackForNamedOstChoice(g_hotswapMenuOstChoice)) != current.bgmTrack;
+}
+
+bool HotswapHasOstChangeForAction(const HotswapCurrentState& current, bool revivalBgmMuted) {
+    if (revivalBgmMuted) {
+        return false;
+    }
+    return HotswapHasOstSelectionChange(current);
 }
 
 const char* ValHotswapApply() {
@@ -3673,9 +3984,9 @@ const char* ValHotswapApply() {
     }
 
     HotswapCurrentState current{};
-    ReadCurrentHotswapState(current);
+    ReadCurrentHotswapStateCached(current);
     const bool reloadChanged = HotswapHasReloadChanges(current);
-    const bool ostChanged = HotswapHasOstChange(current);
+    const bool ostChanged = HotswapHasOstSelectionChange(current);
 
     if (!reloadChanged && !ostChanged) {
         return "NO CHANGES";
@@ -3686,14 +3997,37 @@ const char* ValHotswapApply() {
     return current.bgmValid ? "OST ONLY" : "UNAVAILABLE";
 }
 
+void LogReadCurrentHotswapStateSeh(unsigned code) {
+    char buf[160];
+    _snprintf_s(buf, sizeof(buf), _TRUNCATE,
+        "[CUSTOM_MENU][TRACE] SEH 0x%08X in ReadCurrentHotswapState",
+        code);
+    LogOut(buf, true);
+}
+
+static bool SehReadCurrentHotswapState(HotswapCurrentState* outState) {
+    __try {
+        return ReadCurrentHotswapState(*outState);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        LogReadCurrentHotswapStateSeh((unsigned)GetExceptionCode());
+        if (outState) {
+            memset(outState, 0, sizeof(*outState));
+        }
+        return false;
+    }
+}
+
 void SeedHotswapMenuSelectionsIfNeeded() {
     RefreshNamedOstChoices();
     if (g_hotswapMenuSeeded) {
         return;
     }
 
+    LogOut("[CUSTOM_MENU][TRACE] SeedHotswapMenuSelectionsIfNeeded: begin", true);
     HotswapCurrentState current{};
-    if (ReadCurrentHotswapState(current)) {
+    const bool readOk = SehReadCurrentHotswapState(&current);
+
+    if (readOk) {
         if (current.charsValid) {
             g_hotswapMenuP1Character = HotswapChoiceIndexFromCharacterSelectId(current.p1SelectId);
             g_hotswapMenuP2Character = HotswapChoiceIndexFromCharacterSelectId(current.p2SelectId);
@@ -3747,13 +4081,16 @@ void RunMenuHotswapApply() {
     const int p1SelectId = CharacterSelectIdForHotswapChoice(g_hotswapMenuP1Character);
     const int p2SelectId = CharacterSelectIdForHotswapChoice(g_hotswapMenuP2Character);
     const bool reloadChanged = HotswapHasReloadChanges(current);
-    bool ostChanged = HotswapHasOstChange(current);
     unsigned short targetTrack = TrackForNamedOstChoice(g_hotswapMenuOstChoice);
+    const bool revivalBgmMuted = RevivalBgmMuted();
+    bool ostChanged = HotswapHasOstChangeForAction(current, revivalBgmMuted);
 
-    if (RevivalBgmMuted()) {
-        ostChanged = false;
+    if (revivalBgmMuted) {
         if (current.bgmValid) {
             targetTrack = static_cast<unsigned short>(current.bgmTrack);
+        }
+        if (HotswapHasOstSelectionChange(current)) {
+            LogOut("[HOTSWAP] OST request ignored because Revival MuteBGM is enabled", true);
         }
     }
 
@@ -3879,9 +4216,9 @@ bool HotswapReloadDisabled() {
     }
 
     HotswapCurrentState current{};
-    ReadCurrentHotswapState(current);
+    ReadCurrentHotswapStateCached(current);
     const bool reloadChanged = HotswapHasReloadChanges(current);
-    const bool ostChanged = HotswapHasOstChange(current);
+    const bool ostChanged = HotswapHasOstSelectionChange(current);
 
     if (!reloadChanged && !ostChanged) {
         return true;
@@ -4756,18 +5093,77 @@ bool TickMacroTextEditorIfActive(ImDrawList*, const ScreenLayout& layout) {
     return true;
 }
 
+void LogMirrorStepSeh(unsigned code, const char* name) {
+    char buf[160];
+    _snprintf_s(buf, sizeof(buf), _TRUNCATE,
+        "[CUSTOM_MENU][TRACE] SEH 0x%08X in %s",
+        code, name ? name : "(unknown mirror)");
+    LogOut(buf, true);
+}
+
+void LogSlowSecondaryMirrorRefresh(DWORD elapsed) {
+    char buf[160];
+    _snprintf_s(buf, sizeof(buf), _TRUNCATE,
+        "[CUSTOM_MENU][TIMING] Slow secondary mirror refresh: %lums",
+        static_cast<unsigned long>(elapsed));
+    LogOut(buf, true);
+}
+
+static bool SehRefreshMirrorStep(const char* name, void (*fn)()) {
+    __try {
+        fn();
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        LogMirrorStepSeh((unsigned)GetExceptionCode(), name);
+        return false;
+    }
+}
+
 void RefreshSecondaryScreenMirrors() {
-    RefreshAutoMirrors();
-    RefreshCharMirrors();
-    RefreshOpponentMirrors();
-    RefreshOptionsMirrors();
-    RefreshHelpStrings();
-    RefreshHotkeyStrings();
-    RefreshMacroSlotChoices();
-    RefreshDebugMirrors();
-    RefreshCrMirrors();
-    RefreshEngineRegenMirrors();
-    RefreshFramestepMirror();
+    // Wrap each step in SEH so a single bad refresher (e.g. one walking
+    // game memory while characters are mid-init) cannot kill the whole
+    // menu render path.
+    struct Step { const char* name; void (*fn)(); };
+    static const Step kFastSteps[] = {
+        { "RefreshAutoMirrors",        &RefreshAutoMirrors        },
+        { "RefreshCharMirrors",        &RefreshCharMirrors        },
+        { "RefreshOpponentMirrors",    &RefreshOpponentMirrors    },
+        { "RefreshOptionsMirrors",     &RefreshOptionsMirrors     },
+    };
+    static const Step kSlowSteps[] = {
+        { "RefreshHelpStrings",        &RefreshHelpStrings        },
+        { "RefreshHotkeyStrings",      &RefreshHotkeyStrings      },
+        { "RefreshMacroSlotChoices",   &RefreshMacroSlotChoices   },
+        { "RefreshDebugMirrors",       &RefreshDebugMirrors       },
+        { "RefreshCrMirrors",          &RefreshCrMirrors          },
+        { "RefreshEngineRegenMirrors", &RefreshEngineRegenMirrors },
+        { "RefreshFramestepMirror",    &RefreshFramestepMirror    },
+    };
+
+    for (const Step& s : kFastSteps) {
+        SehRefreshMirrorStep(s.name, s.fn);
+    }
+
+    constexpr DWORD kSlowMirrorRefreshMs = 250;
+    static DWORD s_lastSlowMirrorRefresh = 0;
+
+    const DWORD now = GetTickCount();
+    if (s_lastSlowMirrorRefresh != 0 && (now - s_lastSlowMirrorRefresh) < kSlowMirrorRefreshMs) {
+        return;
+    }
+    s_lastSlowMirrorRefresh = now;
+
+    const DWORD slowStart = GetTickCount();
+    for (const Step& s : kSlowSteps) {
+        SehRefreshMirrorStep(s.name, s.fn);
+    }
+
+    const DWORD elapsed = GetTickCount() - slowStart;
+    static DWORD s_lastSlowMirrorLog = 0;
+    if (elapsed >= 50 && (s_lastSlowMirrorLog == 0 || (now - s_lastSlowMirrorLog) >= 1000)) {
+        s_lastSlowMirrorLog = now;
+        LogSlowSecondaryMirrorRefresh(elapsed);
+    }
 }
 
 static void TickListScreen(ImDrawList* dl, const ScreenLayout& layout,
@@ -4832,7 +5228,17 @@ void TickSettingsHotkeys(ImDrawList* dl, const ScreenLayout& layout, int& focus,
     TickListScreen(dl, layout, "HOTKEYS", rows, n, focus, scroll, backEdge);
 }
 void TickSettingsDebug(ImDrawList* dl, const ScreenLayout& layout, int& focus, ScrollState& scroll, bool& backEdge) {
-    RefreshDebugRuntimeMirrors();
+    // Throttle the runtime poll: SafeReadMemory, GetModuleHandleA, RF freeze
+    // queries, and string formatting all happen on the render thread and only
+    // need to feel "live" — 100 ms is well below human perception while
+    // dramatically cheaper than per-frame.
+    constexpr DWORD kDebugRuntimeMirrorRefreshMs = 100;
+    static DWORD s_lastDebugRuntimeRefresh = 0;
+    const DWORD now = GetTickCount();
+    if (s_lastDebugRuntimeRefresh == 0 || (now - s_lastDebugRuntimeRefresh) >= kDebugRuntimeMirrorRefreshMs) {
+        s_lastDebugRuntimeRefresh = now;
+        RefreshDebugRuntimeMirrors();
+    }
     int n = 0; Row* rows = BuildSettingsDebugRows(n);
     TickListScreen(dl, layout, "DEBUG", rows, n, focus, scroll, backEdge);
 }

@@ -12,6 +12,7 @@ using std::min;
 #include <d3d9.h>
 #include <vector>
 #include <memory>
+#include <cstring>
 #include <shlwapi.h>
 #pragma comment(lib, "shlwapi.lib")
 
@@ -64,6 +65,9 @@ static std::vector<Frame> s_frames;
 static size_t s_index = 0;
 static double s_accum = 0.0;
 static bool s_inited = false;
+static bool s_loadRequested = false;
+static bool s_requestedThisFrame = false;
+static DWORD s_lastFailedLoadTick = 0;
 
 static bool EnsureGdiplus() {
     if (s_gdiplusToken) return true;
@@ -87,12 +91,27 @@ static bool BitmapFrameToTexture(LPDIRECT3DDEVICE9 dev, Gdiplus::Bitmap* bmp, Fr
         return false;
     }
 
-    for (UINT y = 0; y < h; ++y) {
-        DWORD* dst = reinterpret_cast<DWORD*>(reinterpret_cast<BYTE*>(lr.pBits) + y * lr.Pitch);
-        for (UINT x = 0; x < w; ++x) {
-            Gdiplus::Color c;
-            bmp->GetPixel(x, y, &c);
-            dst[x] = (c.GetA() << 24) | (c.GetR() << 16) | (c.GetG() << 8) | (c.GetB());
+    Gdiplus::Rect rect(0, 0, static_cast<INT>(w), static_cast<INT>(h));
+    Gdiplus::BitmapData data{};
+    if (bmp->LockBits(&rect, Gdiplus::ImageLockModeRead, PixelFormat32bppARGB, &data) == Gdiplus::Ok) {
+        const BYTE* scan0 = reinterpret_cast<const BYTE*>(data.Scan0);
+        const size_t rowBytes = static_cast<size_t>(w) * sizeof(DWORD);
+        for (UINT y = 0; y < h; ++y) {
+            const BYTE* src = data.Stride >= 0
+                ? scan0 + static_cast<size_t>(y) * static_cast<size_t>(data.Stride)
+                : scan0 + static_cast<size_t>(h - 1 - y) * static_cast<size_t>(-data.Stride);
+            BYTE* dst = reinterpret_cast<BYTE*>(lr.pBits) + static_cast<size_t>(y) * static_cast<size_t>(lr.Pitch);
+            memcpy(dst, src, rowBytes);
+        }
+        bmp->UnlockBits(&data);
+    } else {
+        for (UINT y = 0; y < h; ++y) {
+            DWORD* dst = reinterpret_cast<DWORD*>(reinterpret_cast<BYTE*>(lr.pBits) + y * lr.Pitch);
+            for (UINT x = 0; x < w; ++x) {
+                Gdiplus::Color c;
+                bmp->GetPixel(x, y, &c);
+                dst[x] = (c.GetA() << 24) | (c.GetR() << 16) | (c.GetG() << 8) | (c.GetB());
+            }
         }
     }
     tex->UnlockRect(0);
@@ -102,20 +121,34 @@ static bool BitmapFrameToTexture(LPDIRECT3DDEVICE9 dev, Gdiplus::Bitmap* bmp, Fr
     return true;
 }
 
+bool ShouldAttemptLoad() {
+    if (s_inited || !s_loadRequested) return false;
+    if (s_lastFailedLoadTick == 0) return true;
+    return (GetTickCount() - s_lastFailedLoadTick) >= 5000;
+}
+
 bool Initialize(LPDIRECT3DDEVICE9 dev) {
     if (s_inited) return true;
-    if (!EnsureGdiplus()) return false;
+    if (!dev || !ShouldAttemptLoad()) return false;
+
+    const DWORD start = GetTickCount();
+    auto fail = [&]() -> bool {
+        s_lastFailedLoadTick = GetTickCount();
+        return false;
+    };
+
+    if (!EnsureGdiplus()) return fail();
 
     IStream* stream = SHCreateMemStream(kEmbeddedGif, (UINT)kEmbeddedGifSize);
-    if (!stream) return false;
+    if (!stream) return fail();
     std::unique_ptr<Gdiplus::Bitmap> bmp(new Gdiplus::Bitmap(stream, FALSE));
     stream->Release();
-    if (!bmp || bmp->GetLastStatus() != Gdiplus::Ok) return false;
+    if (!bmp || bmp->GetLastStatus() != Gdiplus::Ok) return fail();
 
     // Get frame dimension
     GUID dim;
     UINT count = bmp->GetFrameDimensionsCount();
-    if (count == 0) return false;
+    if (count == 0) return fail();
     bmp->GetFrameDimensionsList(&dim, 1);
     UINT frames = bmp->GetFrameCount(&dim);
     if (frames == 0) frames = 1;
@@ -146,9 +179,12 @@ bool Initialize(LPDIRECT3DDEVICE9 dev) {
         if (!clone || clone->GetLastStatus() != Gdiplus::Ok) continue;
         if (BitmapFrameToTexture(dev, clone.get(), f)) s_frames.push_back(std::move(f));
     }
-    if (s_frames.empty()) return false;
+    if (s_frames.empty()) return fail();
     s_index = 0; s_accum = 0.0; s_inited = true;
-    LogOut("[GIF] Embedded GIF loaded: " + std::to_string(s_frames.size()) + " frames", true);
+    s_loadRequested = false;
+    s_lastFailedLoadTick = 0;
+    LogOut("[GIF] Embedded GIF loaded: " + std::to_string(s_frames.size()) +
+           " frames in " + std::to_string(GetTickCount() - start) + "ms", true);
     return true;
 }
 
@@ -159,6 +195,9 @@ void Shutdown() {
         s_gdiplusToken = 0;
     }
     s_inited = false;
+    s_loadRequested = false;
+    s_requestedThisFrame = false;
+    s_lastFailedLoadTick = 0;
 }
 
 void Update(double dtSeconds) {
@@ -173,9 +212,19 @@ void Update(double dtSeconds) {
 }
 
 IDirect3DTexture9* GetTexture(UINT& w, UINT& h) {
+    s_loadRequested = true;
+    s_requestedThisFrame = true;
     if (!s_inited || s_frames.empty()) return nullptr;
     w = s_frames[s_index].w; h = s_frames[s_index].h;
     return s_frames[s_index].tex;
+}
+
+bool WasRequestedThisFrame() {
+    return s_requestedThisFrame;
+}
+
+void EndFrame() {
+    s_requestedThisFrame = false;
 }
 
 } // namespace GifPlayer

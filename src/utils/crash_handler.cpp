@@ -56,6 +56,12 @@ constexpr DWORD kSyntheticInvalidParameterCode = 0xE0001001;
 constexpr DWORD kSyntheticPureCallCode = 0xE0001002;
 constexpr DWORD kSyntheticTerminateCode = 0xE0001003;
 constexpr DWORD kSyntheticSignalBaseCode = 0xE0001100;
+constexpr const char* kFirstChanceCrashCaptureEnv = "EFZ_TM_CRASH_FIRST_CHANCE";
+constexpr const char* kSymbolWarmupEnv = "EFZ_TM_CRASH_SYMBOL_WARMUP";
+constexpr const char* kDetailedDumpEnv = "EFZ_TM_CRASH_DETAILED_DUMP";
+constexpr const char* kKeepAliveOnCrashEnv = "EFZ_TM_CRASH_KEEP_ALIVE";
+constexpr DWORD kCrashWatchdogTimeoutMs = 15000;
+constexpr DWORD kSyntheticWatchdogCode = 0xE0001004;
 const unsigned char kEfzSymbolMapPathBytes[] = {
     0x3E, 0x60, 0x06, 0x3E, 0x3F, 0x2C, 0x06, 0x1F, 0x1C, 0x00, 0x05, 0x37,
     0x35, 0x3E, 0x3E, 0x33, 0x34, 0x3D, 0x06, 0x37, 0x35, 0x3E, 0x05, 0x2A,
@@ -81,6 +87,8 @@ bool LoadEfzSymbolMapBestEffort();
 bool LookupEfzFunction(uintptr_t address, char* output, size_t outputSize);
 bool TryLookupDebugSymbol(uintptr_t address, char* output, size_t outputSize);
 bool DecodeEfzSymbolMapPath(char* output, size_t outputSize);
+bool IsEnvironmentFlagEnabled(const char* name);
+void EnsureEfzSymbolMapReadyForCrash();
 void FormatAddress(char* output, size_t outputSize, uintptr_t address);
 void WriteCrashReport(EXCEPTION_POINTERS* exceptionPointers, const char* source, const char* detail);
 void ReportSyntheticCrash(const char* source, DWORD code, uintptr_t preferredIp, const char* detail);
@@ -93,6 +101,8 @@ void __cdecl PureCallCrashHandler();
 void __cdecl TerminateCrashHandler();
 void __cdecl SignalCrashHandler(int signalNumber);
 DWORD WINAPI SymbolWarmupThreadProc(LPVOID param);
+DWORD WINAPI CrashWatchdogThreadProc(LPVOID param);
+void ArmCrashWatchdog(DWORD timeoutMs, DWORD exitCode);
 
 bool IsCrashCandidateException(DWORD code) {
     switch (code) {
@@ -130,6 +140,23 @@ bool DirectoryExists(const char* path) {
 
     const DWORD attrs = GetFileAttributesA(path);
     return attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_DIRECTORY) != 0;
+}
+
+bool IsEnvironmentFlagEnabled(const char* name) {
+    if (!name || !*name) {
+        return false;
+    }
+
+    char value[32] = {0};
+    const DWORD length = GetEnvironmentVariableA(name, value, static_cast<DWORD>(sizeof(value)));
+    if (length == 0 || length >= sizeof(value)) {
+        return false;
+    }
+
+    return value[0] == '1'
+        || _stricmp(value, "true") == 0
+        || _stricmp(value, "yes") == 0
+        || _stricmp(value, "on") == 0;
 }
 
 const char* BaseName(const char* path) {
@@ -456,11 +483,15 @@ bool EnsureDbgHelpSymbolsReady() {
 
     SymSetOptions(SYMOPT_DEFERRED_LOADS | SYMOPT_LOAD_LINES | SYMOPT_UNDNAME | SYMOPT_FAIL_CRITICAL_ERRORS | SYMOPT_NO_PROMPTS);
     if (!SymInitialize(GetCurrentProcess(), searchPath[0] ? searchPath : nullptr, TRUE)) {
+        AppendFormat("[CRASH] dbghelp SymInitialize failed (error=%lu) -- using module+offset only",
+                     static_cast<unsigned long>(GetLastError()));
         InterlockedExchange(&g_dbgHelpSymbolState, kDbgHelpStateUnavailable);
         return false;
     }
 
     lstrcpynA(g_dbgHelpSearchPath, searchPath, static_cast<int>(sizeof(g_dbgHelpSearchPath)));
+    AppendFormat("[CRASH] dbghelp ready (searchPath=%s)",
+                 g_dbgHelpSearchPath[0] ? g_dbgHelpSearchPath : "<default>");
     InterlockedExchange(&g_dbgHelpSymbolState, kDbgHelpStateReady);
     return true;
 }
@@ -742,21 +773,38 @@ bool LoadEfzFunctionMapFromFile(const char* path) {
 bool LoadEfzSymbolMapBestEffort() {
     bool loaded = false;
     char resolvedPath[MAX_PATH] = {0};
-    if (DecodeEfzSymbolMapPath(resolvedPath, sizeof(resolvedPath)) && FileExists(resolvedPath)) {
+    const bool decoded = DecodeEfzSymbolMapPath(resolvedPath, sizeof(resolvedPath));
+    const bool present = decoded && FileExists(resolvedPath);
+    AppendFormat("[CRASH] Symbol map probe: path=%s present=%s",
+                 decoded ? resolvedPath : "<decode-failed>",
+                 present ? "yes" : "no");
+    if (present) {
         loaded = LoadEfzFunctionMapFromFile(resolvedPath);
     }
 
     if (loaded) {
-        if (InterlockedCompareExchange(&g_handlingCrash, 0, 0) != 0) {
-            AppendFormat("[CRASH] Loaded EFZ symbol map (%lu entries)",
-                         static_cast<unsigned long>(g_efzFunctionEntries.size()));
-        }
+        AppendFormat("[CRASH] Loaded EFZ symbol map (%lu entries)",
+                     static_cast<unsigned long>(g_efzFunctionEntries.size()));
     } else {
-        if (InterlockedCompareExchange(&g_handlingCrash, 0, 0) != 0) {
-            AppendLine("[CRASH] EFZ symbol map unavailable; crash logs will use module+offset only");
-        }
+        AppendLine("[CRASH] EFZ symbol map unavailable; crash logs will use module+offset only");
     }
     return loaded;
+}
+
+void EnsureEfzSymbolMapReadyForCrash() {
+    // Never perform the synchronous symbol-map parse while the process is mid-crash.
+    // The decompilation .c file is large and parsing it from inside the unhandled
+    // exception filter can stall the process for many seconds, which looks like a
+    // ghost process to the user. The warmup thread (gated by EFZ_TM_CRASH_SYMBOL_WARMUP)
+    // is responsible for loading it ahead of time. If it isn't ready, fall back to
+    // module+offset only.
+    const LONG state = InterlockedCompareExchange(&g_efzSymbolMapLoadState, 0, 0);
+    if (state == kEfzSymbolMapStateNotStarted || state == kEfzSymbolMapStateLoading) {
+        // Mark unavailable so subsequent lookups short-circuit instead of re-checking.
+        InterlockedCompareExchange(&g_efzSymbolMapLoadState,
+                                   kEfzSymbolMapStateUnavailable,
+                                   state);
+    }
 }
 
 bool LookupEfzFunction(uintptr_t address, char* output, size_t outputSize) {
@@ -806,6 +854,57 @@ DWORD WINAPI SymbolWarmupThreadProc(LPVOID param) {
     InterlockedExchange(&g_efzSymbolMapLoadState,
                         loaded ? kEfzSymbolMapStateReady : kEfzSymbolMapStateUnavailable);
     return 0;
+}
+
+struct CrashWatchdogParams {
+    DWORD timeoutMs;
+    DWORD exitCode;
+};
+
+DWORD WINAPI CrashWatchdogThreadProc(LPVOID param) {
+    // Last-resort safety net: if the crash reporter itself stalls (file I/O
+    // hang, dbghelp deadlock, hung previous filter, blocking WerFault), make
+    // absolutely sure the host process exits so it cannot linger as a ghost.
+    CrashWatchdogParams params = {kCrashWatchdogTimeoutMs, kSyntheticWatchdogCode};
+    if (param) {
+        params = *static_cast<CrashWatchdogParams*>(param);
+        HeapFree(GetProcessHeap(), 0, param);
+    }
+    if (params.timeoutMs == 0) {
+        params.timeoutMs = kCrashWatchdogTimeoutMs;
+    }
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
+    Sleep(params.timeoutMs);
+    AppendFormat("[CRASH] Watchdog timeout (%lums) elapsed; forcing TerminateProcess(0x%08lX)",
+                 static_cast<unsigned long>(params.timeoutMs),
+                 static_cast<unsigned long>(params.exitCode));
+    TerminateProcess(GetCurrentProcess(), params.exitCode);
+    return 0;
+}
+
+LONG g_watchdogArmed = 0;
+
+void ArmCrashWatchdog(DWORD timeoutMs, DWORD exitCode) {
+    if (InterlockedCompareExchange(&g_watchdogArmed, 1, 0) != 0) {
+        return;
+    }
+    auto* params = static_cast<CrashWatchdogParams*>(
+        HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(CrashWatchdogParams)));
+    if (params) {
+        params->timeoutMs = timeoutMs;
+        params->exitCode = exitCode;
+    }
+    HANDLE thread = CreateThread(nullptr, 0, &CrashWatchdogThreadProc, params, 0, nullptr);
+    if (!thread) {
+        if (params) {
+            HeapFree(GetProcessHeap(), 0, params);
+        }
+        // Could not arm watchdog -- terminate immediately rather than risk a ghost.
+        AppendLine("[CRASH] Failed to arm watchdog thread; terminating immediately");
+        TerminateProcess(GetCurrentProcess(), exitCode);
+        return;
+    }
+    CloseHandle(thread);
 }
 
 void LogAddressMemoryDetails(const char* label, uintptr_t address) {
@@ -1130,6 +1229,10 @@ void ReportSyntheticCrash(const char* source, DWORD code, uintptr_t preferredIp,
     if (InterlockedCompareExchange(&g_handlingCrash, 1, 0) != 0) {
         return;
     }
+
+    // Same protection as the unhandled filter: arm the watchdog so that any
+    // hang inside the report writer still results in process termination.
+    ArmCrashWatchdog(kCrashWatchdogTimeoutMs, code);
 
     EXCEPTION_RECORD record = {};
     CONTEXT context = {};
@@ -1470,15 +1573,27 @@ void TryWriteMiniDump(EXCEPTION_POINTERS* exceptionPointers) {
     exceptionInfo.ExceptionPointers = exceptionPointers;
     exceptionInfo.ClientPointers = FALSE;
 
-    const MINIDUMP_TYPE detailedType = static_cast<MINIDUMP_TYPE>(
+    // Default to a fast minidump that still yields a usable stack & module list.
+    // The previous default included MiniDumpWithIndirectlyReferencedMemory and
+    // MiniDumpScanMemory which produced very large dumps and could take many
+    // seconds to write -- the user perceives this as a frozen / ghost process.
+    // Set EFZ_TM_CRASH_DETAILED_DUMP=1 to opt back in to the heavy flags.
+    MINIDUMP_TYPE detailedType = static_cast<MINIDUMP_TYPE>(
         MiniDumpNormal |
-        MiniDumpWithDataSegs |
-        MiniDumpWithHandleData |
-        MiniDumpWithIndirectlyReferencedMemory |
-        MiniDumpScanMemory |
-        MiniDumpWithProcessThreadData |
         MiniDumpWithThreadInfo |
-        MiniDumpWithUnloadedModules);
+        MiniDumpWithUnloadedModules |
+        MiniDumpWithHandleData);
+    if (IsEnvironmentFlagEnabled(kDetailedDumpEnv)) {
+        detailedType = static_cast<MINIDUMP_TYPE>(
+            MiniDumpNormal |
+            MiniDumpWithDataSegs |
+            MiniDumpWithHandleData |
+            MiniDumpWithIndirectlyReferencedMemory |
+            MiniDumpScanMemory |
+            MiniDumpWithProcessThreadData |
+            MiniDumpWithThreadInfo |
+            MiniDumpWithUnloadedModules);
+    }
 
     BOOL ok = miniDumpWriteDump(GetCurrentProcess(),
                                 GetCurrentProcessId(),
@@ -1543,6 +1658,8 @@ void WriteCrashReport(EXCEPTION_POINTERS* exceptionPointers, const char* source,
         return;
     }
 
+    EnsureEfzSymbolMapReadyForCrash();
+
     LogCrashAnalysisSummary(exceptionPointers);
     LogExceptionRecord(exceptionPointers->ExceptionRecord);
     if (exceptionPointers->ExceptionRecord) {
@@ -1594,8 +1711,27 @@ LONG CallPreviousFilter(EXCEPTION_POINTERS* exceptionPointers) {
 
 LONG WINAPI UnhandledCrashFilter(EXCEPTION_POINTERS* exceptionPointers) {
     if (InterlockedCompareExchange(&g_handlingCrash, 1, 0) == 0) {
+        // Arm the watchdog before we do any heavy reporting work so that even if
+        // WriteCrashReport hangs, the process is still guaranteed to exit.
+        const DWORD exitCode = exceptionPointers && exceptionPointers->ExceptionRecord
+                                   ? exceptionPointers->ExceptionRecord->ExceptionCode
+                                   : kSyntheticWatchdogCode;
+        ArmCrashWatchdog(kCrashWatchdogTimeoutMs, exitCode);
         WriteCrashReport(exceptionPointers, "UnhandledExceptionFilter", nullptr);
+
+        // Optionally fall through to the previous filter chain (e.g., for nested
+        // hosts that want to capture their own dump). Default behaviour is to
+        // self-terminate to avoid ghost processes caused by hung WER / chained
+        // filters.
+        if (IsEnvironmentFlagEnabled(kKeepAliveOnCrashEnv)) {
+            return CallPreviousFilter(exceptionPointers);
+        }
+        AppendLine("[CRASH] Terminating process to prevent ghost / hung WER state");
+        TerminateProcess(GetCurrentProcess(), exitCode);
+        return EXCEPTION_EXECUTE_HANDLER;
     }
+    // Already handling a crash on another thread -- just continue search to let
+    // the OS / previous filter run; the watchdog will reap us if anything stalls.
     return CallPreviousFilter(exceptionPointers);
 }
 
@@ -1635,11 +1771,67 @@ void Install(HMODULE selfModule) {
     signal(SIGILL, &SignalCrashHandler);
     signal(SIGSEGV, &SignalCrashHandler);
     signal(SIGTERM, &SignalCrashHandler);
-    g_vectoredHandler = AddVectoredExceptionHandler(1, &VectoredCrashHandler);
+    if (IsEnvironmentFlagEnabled(kFirstChanceCrashCaptureEnv)) {
+        g_vectoredHandler = AddVectoredExceptionHandler(1, &VectoredCrashHandler);
+    }
     g_previousFilter = SetUnhandledExceptionFilter(&UnhandledCrashFilter);
+
+    // Visible install banner so it is obvious in logs that the crash handler is
+    // active and which optional features are gated by env flags.
+    AppendLine("[CRASH] CrashHandler::Install completed");
+    AppendFormat("[CRASH]   debugLog=%s", g_debugLogPath[0] ? g_debugLogPath : "<unavailable>");
+    AppendFormat("[CRASH]   crashLog=%s", g_crashLogPath[0] ? g_crashLogPath : "<unavailable>");
+    AppendFormat("[CRASH]   dumpDir=%s", g_dumpDirectory[0] ? g_dumpDirectory : "<unavailable>");
+    AppendFormat("[CRASH]   firstChanceVEH=%s symbolWarmup=%s detailedDump=%s keepAlive=%s",
+                 IsEnvironmentFlagEnabled(kFirstChanceCrashCaptureEnv) ? "on" : "off",
+                 IsEnvironmentFlagEnabled(kSymbolWarmupEnv) ? "on" : "off",
+                 IsEnvironmentFlagEnabled(kDetailedDumpEnv) ? "on" : "off",
+                 IsEnvironmentFlagEnabled(kKeepAliveOnCrashEnv) ? "on" : "off");
+
+    // Probe (but do not load) the optional EFZ decompilation symbol map so the
+    // log clearly shows whether function names will be available in dumps.
+    char efzMapProbe[MAX_PATH] = {0};
+    if (DecodeEfzSymbolMapPath(efzMapProbe, sizeof(efzMapProbe))) {
+        const bool present = FileExists(efzMapProbe);
+        AppendFormat("[CRASH]   efzSymbolMap=%s present=%s (parsing deferred to warmup thread)",
+                     efzMapProbe,
+                     present ? "yes" : "no");
+        if (!present) {
+            // Pre-mark unavailable so crash-time lookups short-circuit instantly.
+            InterlockedExchange(&g_efzSymbolMapLoadState, kEfzSymbolMapStateUnavailable);
+        }
+    } else {
+        AppendLine("[CRASH]   efzSymbolMap=<decode-failed>");
+        InterlockedExchange(&g_efzSymbolMapLoadState, kEfzSymbolMapStateUnavailable);
+    }
+
+    // Probe for our own DLL's .pdb so we know up-front whether dbghelp will be
+    // able to symbolize our addresses. Missing PDB is non-fatal; dbghelp will
+    // simply return module+offset.
+    char selfDllPath[MAX_PATH] = {0};
+    if (g_selfModule && GetModuleFileNameA(g_selfModule, selfDllPath, MAX_PATH)) {
+        char selfPdbPath[MAX_PATH] = {0};
+        lstrcpynA(selfPdbPath, selfDllPath, MAX_PATH);
+        const size_t len = static_cast<size_t>(lstrlenA(selfPdbPath));
+        if (len >= 4) {
+            // Replace .dll with .pdb (case-insensitive).
+            char* ext = selfPdbPath + len - 4;
+            if (_stricmp(ext, ".dll") == 0) {
+                lstrcpynA(ext, ".pdb", 5);
+            }
+        }
+        AppendFormat("[CRASH]   selfDll=%s pdb=%s present=%s",
+                     selfDllPath,
+                     selfPdbPath,
+                     FileExists(selfPdbPath) ? "yes" : "no");
+    }
 }
 
 void WarmupSymbolMaps() {
+    if (!IsEnvironmentFlagEnabled(kSymbolWarmupEnv)) {
+        return;
+    }
+
     if (InterlockedCompareExchange(&g_efzSymbolMapLoadState,
                                    kEfzSymbolMapStateLoading,
                                    kEfzSymbolMapStateNotStarted) != kEfzSymbolMapStateNotStarted) {

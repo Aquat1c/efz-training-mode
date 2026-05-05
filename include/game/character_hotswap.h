@@ -27,5 +27,9 @@ const char* GetResourceNameForSelectId(int selectId);
 bool ReadCurrentPaletteSelection(PaletteSelection& outSelection);
 bool HasCustomPaletteFile(int selectId, int paletteIndex);
 void SanitizePaletteSelection(int p1CharId, int p2CharId, PaletteSelection& selection);
+// Drops the cached results of probing on-disk custom .pal files. Probes are
+// cheap individually but add up over a session; the cache is process-lifetime
+// and only needs to be flushed when the user adds/removes palette files.
+void InvalidateCustomPaletteCache();
 
 } // namespace CharacterHotswap

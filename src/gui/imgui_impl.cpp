@@ -144,6 +144,31 @@ static bool IsFullscreen(HWND hwnd) {
     return fullscreen;
 }
 
+static void ReleaseGamepadNavInputs(ImGuiIO& io) {
+    io.AddKeyEvent(ImGuiKey_GamepadFaceDown,  false);
+    io.AddKeyEvent(ImGuiKey_GamepadFaceRight, false);
+    io.AddKeyEvent(ImGuiKey_GamepadFaceLeft,  false);
+    io.AddKeyEvent(ImGuiKey_GamepadFaceUp,    false);
+    io.AddKeyEvent(ImGuiKey_GamepadL1,        false);
+    io.AddKeyEvent(ImGuiKey_GamepadR1,        false);
+    io.AddKeyEvent(ImGuiKey_GamepadBack,      false);
+    io.AddKeyEvent(ImGuiKey_GamepadStart,     false);
+    io.AddKeyEvent(ImGuiKey_GamepadL3,        false);
+    io.AddKeyEvent(ImGuiKey_GamepadR3,        false);
+    io.AddKeyEvent(ImGuiKey_GamepadDpadLeft,  false);
+    io.AddKeyEvent(ImGuiKey_GamepadDpadRight, false);
+    io.AddKeyEvent(ImGuiKey_GamepadDpadUp,    false);
+    io.AddKeyEvent(ImGuiKey_GamepadDpadDown,  false);
+    io.AddKeyAnalogEvent(ImGuiKey_GamepadLStickLeft,  false, 0.f);
+    io.AddKeyAnalogEvent(ImGuiKey_GamepadLStickRight, false, 0.f);
+    io.AddKeyAnalogEvent(ImGuiKey_GamepadLStickUp,    false, 0.f);
+    io.AddKeyAnalogEvent(ImGuiKey_GamepadLStickDown,  false, 0.f);
+    io.AddKeyAnalogEvent(ImGuiKey_GamepadL2,          false, 0.f);
+    io.AddKeyAnalogEvent(ImGuiKey_GamepadR2,          false, 0.f);
+    io.AddKeyEvent(ImGuiKey_Enter, false);
+    io.AddKeyEvent(ImGuiKey_Escape, false);
+}
+
 // Poll XInput and update a software mouse cursor
 static void UpdateVirtualCursor(ImGuiIO& io) {
     const auto& cfg = Config::GetSettings();
@@ -199,6 +224,17 @@ static void UpdateVirtualCursor(ImGuiIO& io) {
 
     // We'll always attempt to provide ImGui gamepad nav inputs when the menu is visible,
     // regardless of whether the virtual cursor feature is enabled.
+    static bool s_releasedGamepadWhileHidden = false;
+    if (!g_imguiVisible) {
+        if (!s_releasedGamepadWhileHidden) {
+            ReleaseGamepadNavInputs(io);
+            s_releasedGamepadWhileHidden = true;
+        }
+        g_useVirtualCursor = false;
+        io.MouseDrawCursor = false;
+        return;
+    }
+    s_releasedGamepadWhileHidden = false;
 
     // Determine current client rect for clamping and centering
     if (g_useVirtualCursor && (!wasActive || regainedFocus)) {

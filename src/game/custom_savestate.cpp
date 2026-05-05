@@ -4317,6 +4317,27 @@ bool HasWorkingSnapshot() {
     return s_workingSnapshot.valid;
 }
 
+struct SummaryCompatibilityEvaluation {
+    bool pairCompatible = false;
+    bool stageCompatible = false;
+    bool versionCompatible = false;
+};
+
+bool SehEvaluateSummaryCompatibility(const Snapshot& snapshot,
+                                     SummaryCompatibilityEvaluation& outEvaluation,
+                                     SehFailure& outFailure) {
+    outEvaluation = SummaryCompatibilityEvaluation{};
+    outFailure = SehFailure{};
+    __try {
+        outEvaluation.pairCompatible = CurrentPairMatchesSnapshot(snapshot);
+        outEvaluation.stageCompatible = CurrentStageMatchesSnapshot(snapshot);
+        outEvaluation.versionCompatible = CurrentVersionMatchesSnapshot(snapshot);
+        return true;
+    } __except (CaptureSehFailure(&outFailure, GetExceptionInformation())) {
+        return false;
+    }
+}
+
 bool GetSummary(Summary& outSummary) {
     outSummary = Summary{};
     outSummary.installed = IsInstalled();
@@ -4340,9 +4361,33 @@ bool GetSummary(Summary& outSummary) {
     outSummary.savedBattleContextSize = static_cast<unsigned int>(s_workingSnapshot.battleContext.size());
     outSummary.savedGameStateSize = static_cast<unsigned int>(s_workingSnapshot.gameState.size());
     outSummary.savedRenderBitmapSize = static_cast<unsigned int>(s_workingSnapshot.renderBitmap.size());
-    outSummary.currentPairCompatible = CurrentPairMatchesSnapshot(s_workingSnapshot);
-    outSummary.currentStageCompatible = CurrentStageMatchesSnapshot(s_workingSnapshot);
-    outSummary.currentVersionCompatible = CurrentVersionMatchesSnapshot(s_workingSnapshot);
+
+    SummaryCompatibilityEvaluation compatibility{};
+    SehFailure compatibilityFailure{};
+    if (!SehEvaluateSummaryCompatibility(s_workingSnapshot, compatibility, compatibilityFailure)) {
+        std::ostringstream detail;
+        detail << "stamp=" << outSummary.workingSnapshotStamp
+               << " working=" << (outSummary.hasWorkingSnapshot ? 1 : 0)
+               << " dirty=" << (outSummary.workingSnapshotDirty ? 1 : 0)
+               << " rawChars=" << static_cast<unsigned int>(outSummary.savedP1CharId)
+               << "/" << static_cast<unsigned int>(outSummary.savedP2CharId)
+               << " stage=" << static_cast<unsigned int>(outSummary.savedStageId)
+               << " sizes=" << outSummary.savedP1StateSize
+               << "/" << outSummary.savedP2StateSize
+               << " bc=" << outSummary.savedBattleContextSize
+               << " gs=" << outSummary.savedGameStateSize
+               << " rb=" << outSummary.savedRenderBitmapSize;
+        LogSavestateSehFailure("summary compatibility", compatibilityFailure, detail.str());
+        outSummary.currentPairCompatible = false;
+        outSummary.currentStageCompatible = false;
+        outSummary.currentVersionCompatible = false;
+        outSummary.currentRestoreAllowed = false;
+        return true;
+    }
+
+    outSummary.currentPairCompatible = compatibility.pairCompatible;
+    outSummary.currentStageCompatible = compatibility.stageCompatible;
+    outSummary.currentVersionCompatible = compatibility.versionCompatible;
     outSummary.currentRestoreAllowed = outSummary.currentPairCompatible
         && outSummary.currentStageCompatible
         && outSummary.currentVersionCompatible;
