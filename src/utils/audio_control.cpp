@@ -22,6 +22,7 @@ namespace {
 constexpr uintptr_t kPlayBackgroundMusicRva = 0x68B0;
 // efz.c: playSoundBuffer is at 0x40DE80; 0x40DF50 is releaseSoundBufferAndMemory.
 constexpr uintptr_t kPlaySoundBufferRva = 0xDE80;
+constexpr uintptr_t kSetSoundVolumeRva = 0xE5D0;
 constexpr uintptr_t kFadeWithSoundAdjustmentRva = 0x359C90;
 constexpr uintptr_t kLoadSoundEffectsRva = 0x6780;
 constexpr uintptr_t kLoadCharacterSoundsRva = 0x11AE0;
@@ -55,6 +56,7 @@ using SetSoundVolumeFn = int(__thiscall*)(void* soundManagerPtr, unsigned short 
 
 PlayBackgroundMusicFn g_originalPlayBackgroundMusic = nullptr;
 PlaySoundBufferFn g_originalPlaySoundBuffer = nullptr;
+SetSoundVolumeFn g_originalSetSoundVolume = nullptr;
 FadeWithSoundAdjustmentFn g_originalFadeWithSoundAdjustment = nullptr;
 LoadSoundEffectsFn g_originalLoadSoundEffects = nullptr;
 LoadCharacterSoundsFn g_originalLoadCharacterSounds = nullptr;
@@ -256,11 +258,15 @@ int GetConfiguredBgmFadeBaseVolume(int baseDirectSoundVolume) {
 }
 
 SetSoundVolumeFn ResolveSetSoundVolume() {
+    if (g_originalSetSoundVolume) {
+        return g_originalSetSoundVolume;
+    }
+
     const uintptr_t efzBase = GetEFZBase();
     if (!efzBase) {
         return nullptr;
     }
-    return reinterpret_cast<SetSoundVolumeFn>(efzBase + 0xE5D0);
+    return reinterpret_cast<SetSoundVolumeFn>(efzBase + kSetSoundVolumeRva);
 }
 
 bool ReadPointer(uintptr_t address, void*& outPtr) {
@@ -503,19 +509,33 @@ int __fastcall HookedPlaySoundBuffer(void* soundManagerPtr, void*, unsigned shor
     return result;
 }
 
+int __fastcall HookedSetSoundVolume(void* soundManagerPtr, void*, unsigned short bufferIndex, int volumeLevel) {
+    int adjustedVolumeLevel = volumeLevel;
+    uintptr_t gameSystemPtr = 0;
+    if (IsCurrentBgmBuffer(soundManagerPtr, bufferIndex, gameSystemPtr)) {
+        adjustedVolumeLevel = PercentToDirectSoundVolume(GetConfiguredBgmVolumePercent(), volumeLevel);
+    }
+
+    SetSoundVolumeFn setSoundVolume = ResolveSetSoundVolume();
+    int result = -1;
+    if (!SehSetSoundVolume(setSoundVolume, soundManagerPtr, bufferIndex, adjustedVolumeLevel, &result)) {
+        LogOut("[AUDIO][SEH] Exception in original setSoundVolume call", true);
+        return -1;
+    }
+    return result;
+}
+
 int __fastcall HookedFadeWithSoundAdjustment(void* screenEffectPtr,
                                             void*,
                                             int paletteId,
                                             unsigned char fadeDirection,
                                             int baseVolume,
                                             int volumeAdjustment) {
-    const int adjustedBaseVolume = GetConfiguredBgmFadeBaseVolume(baseVolume);
     {
         std::ostringstream oss;
         oss << "[AUDIO][TRACE] HookedFadeWithSoundAdjustment dir=" << static_cast<int>(fadeDirection)
             << " palette=0x" << std::hex << paletteId
             << " baseVolume=" << std::dec << baseVolume
-            << " adjustedBaseVolume=" << adjustedBaseVolume
             << " volumeAdjustment=" << volumeAdjustment
             << " bgmPercent=" << GetConfiguredBgmVolumePercent()
             << " screenEffect=0x" << std::hex << reinterpret_cast<uintptr_t>(screenEffectPtr);
@@ -527,7 +547,7 @@ int __fastcall HookedFadeWithSoundAdjustment(void* screenEffectPtr,
                                                       screenEffectPtr,
                                                       paletteId,
                                                       fadeDirection,
-                                                      adjustedBaseVolume,
+                                                      baseVolume,
                                                       volumeAdjustment,
                                                       &originalOk);
     if (!originalOk) {
@@ -587,6 +607,10 @@ bool InstallHooks(uintptr_t efzBase) {
                      reinterpret_cast<void*>(efzBase + kPlaySoundBufferRva),
                      reinterpret_cast<void*>(&HookedPlaySoundBuffer),
                      &g_originalPlaySoundBuffer) && ok;
+    ok = InstallHook("setSoundVolume",
+                     reinterpret_cast<void*>(efzBase + kSetSoundVolumeRva),
+                     reinterpret_cast<void*>(&HookedSetSoundVolume),
+                     &g_originalSetSoundVolume) && ok;
     ok = InstallHook("fadeWithSoundAdjustment",
                      reinterpret_cast<void*>(efzBase + kFadeWithSoundAdjustmentRva),
                      reinterpret_cast<void*>(&HookedFadeWithSoundAdjustment),
