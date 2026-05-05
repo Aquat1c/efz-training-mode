@@ -578,8 +578,8 @@ void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, shor
     }
 
     if (!superflashActive &&
-        ((p2_entering_blockstun || p2_entering_hitstun || p2_entering_launch || p2_entering_thrown || (p2_entering_nonactionable && p1_recent_attack_window))
-         || (p1_attack_edge && !faSample.actionable2))
+        (p2_entering_blockstun || p2_entering_hitstun || p2_entering_launch || p2_entering_thrown ||
+         (p2_entering_nonactionable && p1_recent_attack_window))
         && p1_hit_connect_cooldown == 0) {
 
         if (g_deepFrameAdvDebug.load()) {
@@ -707,8 +707,8 @@ void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, shor
     
     // Mirror connect suppression for P2
     if (!superflashActive &&
-        ((p1_entering_blockstun || p1_entering_hitstun || p1_entering_launch || p1_entering_thrown || (p1_entering_nonactionable && p2_recent_attack_window))
-         || (p2_attack_edge && !faSample.actionable1))
+        (p1_entering_blockstun || p1_entering_hitstun || p1_entering_launch || p1_entering_thrown ||
+         (p1_entering_nonactionable && p2_recent_attack_window))
         && p2_hit_connect_cooldown == 0) {
 
         if (g_deepFrameAdvDebug.load()) {
@@ -864,6 +864,40 @@ void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, shor
              ", actionable2=" + std::to_string(faSample.actionable2) + ")",
              detailedLogging.load());
          #endif
+        }
+    }
+
+    // If the attacker was already actionable and spends that advantage on a new action
+    // before the defender becomes free, the next recovery should become the new FA anchor.
+    if (frameAdvState.p1Attacking &&
+        frameAdvState.p1ActionableInternalFrame != -1 &&
+        frameAdvState.p2DefenderFreeInternalFrame == -1) {
+        bool attackerRecommitted = IsActionable(prevMoveID1) && !faSample.actionable1;
+        if (attackerRecommitted) {
+            if (g_deepFrameAdvDebug.load()) {
+                LogOut("[FA_DIAG] STEP3_RESET P1 actionable anchor cleared by new action at frame=" +
+                       std::to_string(currentInternalFrame) +
+                       " prevM1=" + std::to_string(prevMoveID1) +
+                       " curM1=" + std::to_string(moveID1), true);
+            }
+            frameAdvState.p1ActionableInternalFrame = -1;
+            p1_freeze_after_atk_actionable = 0;
+        }
+    }
+
+    if (frameAdvState.p2Attacking &&
+        frameAdvState.p2ActionableInternalFrame != -1 &&
+        frameAdvState.p1DefenderFreeInternalFrame == -1) {
+        bool attackerRecommitted = IsActionable(prevMoveID2) && !faSample.actionable2;
+        if (attackerRecommitted) {
+            if (g_deepFrameAdvDebug.load()) {
+                LogOut("[FA_DIAG] STEP3_RESET P2 actionable anchor cleared by new action at frame=" +
+                       std::to_string(currentInternalFrame) +
+                       " prevM2=" + std::to_string(prevMoveID2) +
+                       " curM2=" + std::to_string(moveID2), true);
+            }
+            frameAdvState.p2ActionableInternalFrame = -1;
+            p2_freeze_after_atk_actionable = 0;
         }
     }
     
