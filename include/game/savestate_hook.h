@@ -1,9 +1,10 @@
 #pragma once
 
 // Savestate Hook
-// Hooks the EfzRevival Practice mode save/load state functions to track when
-// savestates are saved and loaded. Provides console logging and status messages.
-// Currently only supports EfzRevival 1.02e.
+// Hooks the EfzRevival Practice mode save/load state functions so the mod can
+// track Revival-owned savestate activity and restore mod-side state around it.
+// This remains available even when custom savestates are selected so Revival
+// loads/saves can still be observed and used as a fallback path.
 
 namespace SavestateHook {
     // Install the savestate hooks (save and load)

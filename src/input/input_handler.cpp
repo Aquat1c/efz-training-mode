@@ -32,6 +32,7 @@
 #include "../include/game/frame_monitor.h" // AreCharactersInitialized, GamePhase
 #include "../include/game/auto_action.h" // CancelAutoActionsAndMacros
 #include "../include/game/character_settings.h"
+#include "../include/game/custom_savestate.h"
 #include "../include/input/framestep.h"
 #include "../include/utils/xp_compat.h"
 #include <Xinput.h>
@@ -291,6 +292,10 @@ void MonitorKeys() {
     int resetFrameCounterKey = (cfg.resetFrameCounterKey > 0) ? cfg.resetFrameCounterKey : '5';
     int helpKey = (cfg.helpKey > 0) ? cfg.helpKey : '6';
     int toggleImGuiKey = (cfg.toggleImGuiKey > 0) ? cfg.toggleImGuiKey : VK_F12;
+    int savestateSaveKey = (cfg.savestateSaveKey > 0) ? cfg.savestateSaveKey : 'U';
+    int savestateLoadKey = (cfg.savestateLoadKey > 0) ? cfg.savestateLoadKey : 'J';
+    int savestatePrevSlotKey = (cfg.savestatePrevSlotKey > 0) ? cfg.savestatePrevSlotKey : VK_OEM_COMMA;
+    int savestateNextSlotKey = (cfg.savestateNextSlotKey > 0) ? cfg.savestateNextSlotKey : VK_OEM_PERIOD;
     XINPUT_STATE currentPad{}; // kept for clarity; not used for idle scan
 
     bool windowActive = g_efzWindowActive.load();
@@ -616,6 +621,54 @@ void MonitorKeys() {
                     }
                     keyHandled = true;
                 }
+            } else if (IsKeyPressed(savestatePrevSlotKey, false)) {
+                if (CustomSavestate::GetConfiguredBackendMode() == CustomSavestate::BackendMode::Revival) {
+                    DirectDrawHook::AddMessage("Custom savestate slot keys are disabled in Revival mode", "SAVESTATE", RGB(255, 180, 120), 1200, 0, 100);
+                } else if (GetCurrentGameMode() == GameMode::Practice && !g_guiActive.load()) {
+                    const int slot = CustomSavestate::CycleActiveDiskSlot(-1);
+                    std::string text = slot == 0
+                        ? "Savestate Slot 0 (Initial)"
+                        : std::string("Savestate Slot ") + std::to_string(slot);
+                    DirectDrawHook::AddMessage(text.c_str(), "SAVESTATE", RGB(180, 220, 255), 900, 0, 100);
+                } else {
+                    DirectDrawHook::AddMessage("Savestate slot keys are available only in Practice", "SAVESTATE", RGB(255, 180, 120), 1200, 0, 100);
+                }
+                keyHandled = true;
+            } else if (IsKeyPressed(savestateNextSlotKey, false)) {
+                if (CustomSavestate::GetConfiguredBackendMode() == CustomSavestate::BackendMode::Revival) {
+                    DirectDrawHook::AddMessage("Custom savestate slot keys are disabled in Revival mode", "SAVESTATE", RGB(255, 180, 120), 1200, 0, 100);
+                } else if (GetCurrentGameMode() == GameMode::Practice && !g_guiActive.load()) {
+                    const int slot = CustomSavestate::CycleActiveDiskSlot(1);
+                    std::string text = slot == 0
+                        ? "Savestate Slot 0 (Initial)"
+                        : std::string("Savestate Slot ") + std::to_string(slot);
+                    DirectDrawHook::AddMessage(text.c_str(), "SAVESTATE", RGB(180, 220, 255), 900, 0, 100);
+                } else {
+                    DirectDrawHook::AddMessage("Savestate slot keys are available only in Practice", "SAVESTATE", RGB(255, 180, 120), 1200, 0, 100);
+                }
+                keyHandled = true;
+            } else if (IsKeyPressed(savestateSaveKey, false)) {
+                if (CustomSavestate::GetConfiguredBackendMode() == CustomSavestate::BackendMode::Revival) {
+                    DirectDrawHook::AddMessage("Custom savestate save is disabled in Revival mode", "SAVESTATE", RGB(255, 180, 120), 1200, 0, 100);
+                } else if (GetCurrentGameMode() == GameMode::Practice
+                        && GetCurrentGamePhase() == GamePhase::Match
+                        && AreCharactersInitialized()) {
+                    CustomSavestate::SaveSelectedSlot();
+                } else {
+                    DirectDrawHook::AddMessage("Savestate save is available only during Practice Match", "SAVESTATE", RGB(255, 180, 120), 1200, 0, 100);
+                }
+                keyHandled = true;
+            } else if (IsKeyPressed(savestateLoadKey, false)) {
+                if (CustomSavestate::GetConfiguredBackendMode() == CustomSavestate::BackendMode::Revival) {
+                    DirectDrawHook::AddMessage("Custom savestate load is disabled in Revival mode", "SAVESTATE", RGB(255, 180, 120), 1200, 0, 100);
+                } else if (GetCurrentGameMode() == GameMode::Practice
+                        && GetCurrentGamePhase() == GamePhase::Match
+                        && AreCharactersInitialized()) {
+                    CustomSavestate::LoadSelectedSlot();
+                } else {
+                    DirectDrawHook::AddMessage("Savestate load is available only during Practice Match", "SAVESTATE", RGB(255, 180, 120), 1200, 0, 100);
+                }
+                keyHandled = true;
             } else if (IsKeyPressed(teleportKey, true)) {
                 // Cancel auto-actions and macros before any position change
                 CancelAutoActionsAndMacros();
@@ -794,6 +847,8 @@ void MonitorKeys() {
           while (IsKeyPressed(teleportKey, true) || IsKeyPressed(recordKey, true) ||
               IsKeyPressed(toggleTitleKey, true) || IsKeyPressed(resetFrameCounterKey, true) ||
               IsKeyPressed(helpKey, true) || IsKeyPressed(VK_F7, true) || IsKeyPressed(VK_F9, true) ||
+              IsKeyPressed(savestateSaveKey, true) || IsKeyPressed(savestateLoadKey, true) ||
+              IsKeyPressed(savestatePrevSlotKey, true) || IsKeyPressed(savestateNextSlotKey, true) ||
               IsKeyPressed(cfg.switchPlayersKey > 0 ? cfg.switchPlayersKey : 'L', true) ||
               IsKeyPressed(cfg.macroRecordKey > 0 ? cfg.macroRecordKey : 'I', true) ||
               IsKeyPressed(cfg.macroPlayKey > 0 ? cfg.macroPlayKey : 'O', true) ||
@@ -813,6 +868,10 @@ void MonitorKeys() {
                     ((GetAsyncKeyState(resetFrameCounterKey) & 0x8000) != 0) ||
                     ((GetAsyncKeyState(helpKey) & 0x8000) != 0) ||
                     ((GetAsyncKeyState(toggleImGuiKey) & 0x8000) != 0) ||
+                    ((GetAsyncKeyState(savestateSaveKey) & 0x8000) != 0) ||
+                    ((GetAsyncKeyState(savestateLoadKey) & 0x8000) != 0) ||
+                    ((GetAsyncKeyState(savestatePrevSlotKey) & 0x8000) != 0) ||
+                    ((GetAsyncKeyState(savestateNextSlotKey) & 0x8000) != 0) ||
                     ((GetAsyncKeyState(VK_F7) & 0x8000) != 0) ||
                     ((GetAsyncKeyState(VK_F9) & 0x8000) != 0) ||
                     ((GetAsyncKeyState(cfg.switchPlayersKey > 0 ? cfg.switchPlayersKey : 'L') & 0x8000) != 0) ||

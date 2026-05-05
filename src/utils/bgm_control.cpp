@@ -4,6 +4,7 @@
 #include "../include/core/constants.h"
 #include "../include/gui/overlay.h"
 #include "../include/core/globals.h"  
+#include "../include/utils/audio_control.h"
 #include "../3rdparty/minhook/include/MinHook.h"
 #include <thread>
 #include <chrono>
@@ -38,15 +39,12 @@ bool StopBGM(uintptr_t gameSystemPtr) {
 
 bool PlayBGM(uintptr_t gameSystemPtr, unsigned short trackNumber) {
     if (!gameSystemPtr) return false;
-    uintptr_t efzBase = GetEFZBase();
-    if (!efzBase) {
-        LogOut("[BGM] Could not get EFZ base address!", true);
+    LogOut("[BGM] Calling game's playBackgroundMusic with track " + std::to_string(trackNumber), true);
+    if (!AudioControl::PlayBackgroundMusic(gameSystemPtr, trackNumber)) {
+        LogOut("[BGM] playBackgroundMusic request failed for track " + std::to_string(trackNumber), true);
         return false;
     }
-    PlayBGMFunc playBGM = (PlayBGMFunc)(efzBase + 0x68B0); // 0x4068B0 RVA
-    LogOut("[BGM] Calling game's playBackgroundMusic with track " + std::to_string(trackNumber), true);
-    playBGM(gameSystemPtr, trackNumber);
-    LogOut("[BGM] Called playBackgroundMusic.", true);
+    LogOut("[BGM] playBackgroundMusic request succeeded.", true);
     return true;
 }
 

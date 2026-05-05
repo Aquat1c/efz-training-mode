@@ -298,6 +298,9 @@ namespace Config {
             file << "; Controller selection: -1 = All, 0..3 = XInput user index\n";
             file << "controllerIndex = -1\n\n";
 
+            file << "; Savestate backend: 0=Custom, 1=Revival, 2=Custom with Revival fallback\n";
+            file << "savestateBackendMode = 2\n\n";
+
             // (Practice-specific tuning is hardcoded now)
             
             file << "[Hotkeys]\n";
@@ -328,6 +331,11 @@ namespace Config {
             
             file << "; Toggle ImGui overlay\n";
             file << "ToggleImGuiKey=0x37 # Default: '7' key\n";
+            file << "\n; Custom savestate working snapshot hotkeys\n";
+            file << "SavestateSaveKey=0x55  # Default: 'U' key\n";
+            file << "SavestateLoadKey=0x4A  # Default: 'J' key\n";
+            file << "SavestatePrevSlotKey=0xBC  # Default: ',' key\n";
+            file << "SavestateNextSlotKey=0xBE  # Default: '.' key\n";
 
             file << "\n; Practice: Switch Players toggle (Practice only)\n";
             file << "SwitchPlayersKey=0x4C  # Default: 'L' key\n";
@@ -615,6 +623,10 @@ namespace Config {
             settings.resetFrameCounterKey = GetValueInt("Hotkeys", "ResetFrameCounterKey", 0x35); // Default: '5'
             settings.helpKey = GetValueInt("Hotkeys", "HelpKey", 0x36);                // Default: '6'
             settings.toggleImGuiKey = GetValueInt("Hotkeys", "ToggleImGuiKey", 0x37);      // Default: '7'            
+            settings.savestateSaveKey = GetValueInt("Hotkeys", "SavestateSaveKey", 0x55); // 'U'
+            settings.savestateLoadKey = GetValueInt("Hotkeys", "SavestateLoadKey", 0x4A); // 'J'
+            settings.savestatePrevSlotKey = GetValueInt("Hotkeys", "SavestatePrevSlotKey", 0xBC); // ','
+            settings.savestateNextSlotKey = GetValueInt("Hotkeys", "SavestateNextSlotKey", 0xBE); // '.'
             // Additional configurable hotkeys
             settings.switchPlayersKey = GetValueInt("Hotkeys", "SwitchPlayersKey", 0x4C); // 'L'
             settings.macroRecordKey   = GetValueInt("Hotkeys", "MacroRecordKey",   0x49); // 'I'
@@ -653,6 +665,8 @@ namespace Config {
             settings.gpUiTopTabNext         = getPad("gpuitoptabnext", "RB");
             settings.gpUiSubTabPrev         = getPad("gpuisubtabprev", "LT");
             settings.gpUiSubTabNext         = getPad("gpuisubtabnext", "RT");
+            settings.savestateBackendMode   = GetValueInt("General", "savestateBackendMode", 2);
+            if (settings.savestateBackendMode < 0 || settings.savestateBackendMode > 2) settings.savestateBackendMode = 2;
             LogOut("[CONFIG] Settings loaded successfully", true);
             LogOut("[CONFIG] UseImGui: " + std::to_string(settings.useImGui), true);
             LogOut("[CONFIG] DetailedLogging: " + std::to_string(settings.detailedLogging), true);
@@ -667,6 +681,10 @@ namespace Config {
             LogOut("[CONFIG] ResetFrameCounterKey: " + std::to_string(settings.resetFrameCounterKey) + " (" + GetKeyName(settings.resetFrameCounterKey) + ")", true);
             LogOut("[CONFIG] HelpKey: " + std::to_string(settings.helpKey) + " (" + GetKeyName(settings.helpKey) + ")", true);
             LogOut("[CONFIG] ToggleImGuiKey: " + std::to_string(settings.toggleImGuiKey) + " (" + GetKeyName(settings.toggleImGuiKey) + ")", true);
+            LogOut("[CONFIG] SavestateSaveKey: " + std::to_string(settings.savestateSaveKey) + " (" + GetKeyName(settings.savestateSaveKey) + ")", true);
+            LogOut("[CONFIG] SavestateLoadKey: " + std::to_string(settings.savestateLoadKey) + " (" + GetKeyName(settings.savestateLoadKey) + ")", true);
+            LogOut("[CONFIG] SavestatePrevSlotKey: " + std::to_string(settings.savestatePrevSlotKey) + " (" + GetKeyName(settings.savestatePrevSlotKey) + ")", true);
+            LogOut("[CONFIG] SavestateNextSlotKey: " + std::to_string(settings.savestateNextSlotKey) + " (" + GetKeyName(settings.savestateNextSlotKey) + ")", true);
             LogOut("[CONFIG] SwitchPlayersKey: " + std::to_string(settings.switchPlayersKey) + " (" + GetKeyName(settings.switchPlayersKey) + ")", true);
             LogOut("[CONFIG] MacroRecordKey: " + std::to_string(settings.macroRecordKey) + " (" + GetKeyName(settings.macroRecordKey) + ")", true);
             LogOut("[CONFIG] MacroPlayKey: " + std::to_string(settings.macroPlayKey) + " (" + GetKeyName(settings.macroPlayKey) + ")", true);
@@ -694,6 +712,7 @@ namespace Config {
             LogOut("[CONFIG] enableFpsDiagnostics: " + std::to_string(settings.enableFpsDiagnostics), true);
             LogOut("[CONFIG] uiScale: " + std::to_string(settings.uiScale), true);
             LogOut("[CONFIG] uiFontMode: " + std::to_string(settings.uiFontMode), true);
+            LogOut("[CONFIG] savestateBackendMode: " + std::to_string(settings.savestateBackendMode), true);
             
             return true;
         }
@@ -805,6 +824,9 @@ namespace Config {
             file << "; Controller selection: -1 = All, 0..3 = XInput user index\n";
             file << "controllerIndex = " << settings.controllerIndex << "\n\n";
 
+            file << "; Savestate backend: 0=Custom, 1=Revival, 2=Custom with Revival fallback\n";
+            file << "savestateBackendMode = " << settings.savestateBackendMode << "\n\n";
+
             // (Practice tuning omitted)
             file << "; Show the debug console window (1 = yes, 0 = no)\n";
             // Note: keep console toggle alongside General fields
@@ -822,6 +844,10 @@ namespace Config {
             file << "ResetFrameCounterKey=" << toHexString(settings.resetFrameCounterKey) << "\n";
             file << "HelpKey=" << toHexString(settings.helpKey) << "\n";
             file << "ToggleImGuiKey=" << toHexString(settings.toggleImGuiKey) << "\n";
+            file << "SavestateSaveKey=" << toHexString(settings.savestateSaveKey) << "\n";
+            file << "SavestateLoadKey=" << toHexString(settings.savestateLoadKey) << "\n";
+            file << "SavestatePrevSlotKey=" << toHexString(settings.savestatePrevSlotKey) << "\n";
+            file << "SavestateNextSlotKey=" << toHexString(settings.savestateNextSlotKey) << "\n";
             file << "SwitchPlayersKey=" << toHexString(settings.switchPlayersKey) << "\n";
             file << "MacroRecordKey=" << toHexString(settings.macroRecordKey) << "\n";
             file << "MacroPlayKey=" << toHexString(settings.macroPlayKey) << "\n";
@@ -912,6 +938,10 @@ namespace Config {
             if (k == "framestepenabled") settings.framestepEnabled = (value == "1" || value == "true");
             if (k == "suppressrevivalframestep") settings.suppressRevivalFramestep = (value == "1" || value == "true");
             if (k == "showpracticeentryhint") settings.showPracticeEntryHint = (value == "1");
+            if (k == "savestatebackendmode") {
+                try { settings.savestateBackendMode = std::stoi(value); } catch (...) { settings.savestateBackendMode = 2; }
+                if (settings.savestateBackendMode < 0 || settings.savestateBackendMode > 2) settings.savestateBackendMode = 2;
+            }
             if (k == "uiscale") {
                 try { settings.uiScale = std::stof(value); } catch (...) {}
             }
@@ -965,6 +995,10 @@ namespace Config {
             if (k == "resetframecounterkey") settings.resetFrameCounterKey = intValue;
             if (k == "helpkey") settings.helpKey = intValue;
             if (k == "toggleimguikey") settings.toggleImGuiKey = intValue;
+            if (k == "savestatesavekey") settings.savestateSaveKey = intValue;
+            if (k == "savestateloadkey") settings.savestateLoadKey = intValue;
+            if (k == "savestateprevslotkey") settings.savestatePrevSlotKey = intValue;
+            if (k == "savestatenextslotkey") settings.savestateNextSlotKey = intValue;
             if (k == "switchplayerskey") settings.switchPlayersKey = intValue;
             if (k == "macrorecordkey") settings.macroRecordKey = intValue;
             if (k == "macroplaykey") settings.macroPlayKey = intValue;

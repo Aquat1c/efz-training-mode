@@ -20,6 +20,8 @@
 #include "../include/game/random_block.h"
 #include "../include/game/final_memory_patch.h"
 #include "../include/game/macro_controller.h"
+#include "../include/game/custom_savestate.h"
+#include "../include/game/savestate_hook.h"
 #include "../include/game/fm_commands.h"
 #include "../include/game/character_settings.h"
 #include "../include/game/character_hotswap.h"
@@ -443,6 +445,9 @@ void OnUiFont() {
 void OnPracticeHint() {
     PersistBool("General", "showPracticeEntryHint", MutableSettings().showPracticeEntryHint);
 }
+void OnSavestateBackendMode() {
+    PersistInt("General", "savestateBackendMode", MutableSettings().savestateBackendMode);
+}
 void OnRestrictPractice() {
     PersistBool("General", "restrictToPracticeMode", MutableSettings().restrictToPracticeMode);
 }
@@ -568,6 +573,10 @@ void BindToggleStats()    { auto& s = MutableSettings(); BindHotkey("TOGGLE STAT
 void BindResetCounter()   { auto& s = MutableSettings(); BindHotkey("RESET COUNTER",   &s.resetFrameCounterKey,  "ResetFrameCounterKey"); }
 void BindHelp()           { auto& s = MutableSettings(); BindHotkey("HELP",            &s.helpKey,               "HelpKey"); }
 void BindToggleImGui()    { auto& s = MutableSettings(); BindHotkey("TOGGLE OVERLAY",  &s.toggleImGuiKey,        "ToggleImGuiKey"); }
+void BindSavestateSave()  { auto& s = MutableSettings(); BindHotkey("SAVESTATE SAVE",  &s.savestateSaveKey,      "SavestateSaveKey"); }
+void BindSavestateLoad()  { auto& s = MutableSettings(); BindHotkey("SAVESTATE LOAD",  &s.savestateLoadKey,      "SavestateLoadKey"); }
+void BindSavestatePrev()  { auto& s = MutableSettings(); BindHotkey("SLOT PREVIOUS",   &s.savestatePrevSlotKey,  "SavestatePrevSlotKey"); }
+void BindSavestateNext()  { auto& s = MutableSettings(); BindHotkey("SLOT NEXT",       &s.savestateNextSlotKey,  "SavestateNextSlotKey"); }
 void BindSwitchPlayers()  { auto& s = MutableSettings(); BindHotkey("SWITCH PLAYERS",  &s.switchPlayersKey,      "SwitchPlayersKey"); }
 void BindMacroRecord()    { auto& s = MutableSettings(); BindHotkey("MACRO RECORD",    &s.macroRecordKey,        "MacroRecordKey"); }
 void BindMacroPlay()      { auto& s = MutableSettings(); BindHotkey("MACRO PLAY",      &s.macroPlayKey,          "MacroPlayKey"); }
@@ -586,6 +595,10 @@ const char* ValToggleStats()    { return HotkeyNameValue(Config::GetSettings().t
 const char* ValResetCounter()   { return HotkeyNameValue(Config::GetSettings().resetFrameCounterKey); }
 const char* ValHelp()           { return HotkeyNameValue(Config::GetSettings().helpKey); }
 const char* ValToggleImGui()    { return HotkeyNameValue(Config::GetSettings().toggleImGuiKey); }
+const char* ValSavestateSave()  { return HotkeyNameValue(Config::GetSettings().savestateSaveKey); }
+const char* ValSavestateLoad()  { return HotkeyNameValue(Config::GetSettings().savestateLoadKey); }
+const char* ValSavestatePrev()  { return HotkeyNameValue(Config::GetSettings().savestatePrevSlotKey); }
+const char* ValSavestateNext()  { return HotkeyNameValue(Config::GetSettings().savestateNextSlotKey); }
 const char* ValSwitchPlayers()  { return HotkeyNameValue(Config::GetSettings().switchPlayersKey); }
 const char* ValMacroRecord()    { return HotkeyNameValue(Config::GetSettings().macroRecordKey); }
 const char* ValMacroPlay()      { return HotkeyNameValue(Config::GetSettings().macroPlayKey); }
@@ -609,6 +622,7 @@ bool SwapCustomKeyDisabled() {
 void RefreshHotkeyStrings() {}
 
 const char* ValHotkeyGameplay() { return "8 KEYS"; }
+const char* ValHotkeySavestate() { return "4 KEYS"; }
 const char* ValHotkeyMacros()   { return "3 KEYS"; }
 const char* ValHotkeyMenu()     { return "5 KEYS"; }
 
@@ -637,6 +651,20 @@ Row* BuildHotkeysMacroRows(int& count) {
     s_rows[n++] = Action("MACRO RECORD",    BindMacroRecord,    ValMacroRecord);
     s_rows[n++] = Action("MACRO PLAY",      BindMacroPlay,      ValMacroPlay);
     s_rows[n++] = Action("MACRO NEXT SLOT", BindMacroSlot,      ValMacroSlot);
+    count = n;
+    return s_rows;
+}
+
+Row* BuildHotkeysSavestateRows(int& count) {
+    static Row s_rows[10];
+    int n = 0;
+
+    s_rows[n++] = Header("SAVESTATE HOTKEYS");
+    s_rows[n++] = Action("SAVE WORKING",  BindSavestateSave, ValSavestateSave);
+    s_rows[n++] = Action("LOAD WORKING",  BindSavestateLoad, ValSavestateLoad);
+    s_rows[n++] = Action("SLOT PREVIOUS", BindSavestatePrev, ValSavestatePrev);
+    s_rows[n++] = Action("SLOT NEXT",     BindSavestateNext, ValSavestateNext);
+    s_rows[n++] = Info("Save/load hotkeys target the working custom snapshot. Slot hotkeys change the active custom disk slot.");
     count = n;
     return s_rows;
 }
@@ -673,6 +701,7 @@ Row* BuildSettingsHotkeysRows(int& count) {
 
     s_rows[n++] = Header("HOTKEY MENUS");
     s_rows[n++] = Submenu("GAMEPLAY",      "GAMEPLAY HOTKEYS", BuildHotkeysGameplayRows, ValHotkeyGameplay);
+    s_rows[n++] = Submenu("SAVESTATE",     "SAVESTATE HOTKEYS", BuildHotkeysSavestateRows, ValHotkeySavestate);
     s_rows[n++] = Submenu("MACROS",        "MACRO HOTKEYS",    BuildHotkeysMacroRows,    ValHotkeyMacros);
     s_rows[n++] = Submenu("MENU CONTROL",  "MENU CONTROL",     BuildHotkeysMenuRows,     ValHotkeyMenu);
     s_rows[n++] = Submenu("SWAP POSITIONS","SWAP POSITIONS",   BuildHotkeysSwapRows,     ValSwapEnabled);
@@ -687,12 +716,132 @@ bool g_mirrorOverlayBorders = false;
 bool g_mirrorRGToasts       = false;
 bool g_mirrorPadInputLog    = false;
 bool g_mirrorDeepFA         = false;
+int g_customSavestateDiskSlot = 0;
+CustomSavestate::EditableFields g_customSavestateFields;
+char g_customSavestateModeInfo[256] = "Mode: custom savestate tools active";
+char g_customSavestateWorkingInfo[256] = "Live: empty";
+char g_customSavestateMetaInfo[256] = "Meta: n/a";
+char g_customSavestateStatusInfo[256] = "Status: idle";
+char g_customSavestateDiskInfo[256] = "Slot 0: initial snapshot | memory only";
+bool g_customSavestateHotswapPrompt = false;
+bool g_customSavestateHotswapDismissed = false;
+unsigned int g_customSavestateHotswapWorkingStamp = 0;
+char g_customSavestateHotswapInfo[256] = "Loaded slot differs from the current match.";
+
+struct HotswapCurrentState;
+int CharacterSelectIdFromInternalCharacterId(int internalCharId);
+bool ReadCurrentHotswapState(HotswapCurrentState& state);
+const char* GetNamedStageLabel(int stageId);
+void UpdateCustomSavestateHotswapPromptFromWorking();
+
+const char* const kSavestateBackendChoices[3] = {
+    "CUSTOM",
+    "REVIVAL",
+    "CUSTOM+FALLBACK",
+};
+
+void RefreshCustomSavestateMirrors() {
+    CustomSavestate::Summary summary{};
+    CustomSavestate::GetSummary(summary);
+    const CustomSavestate::BackendMode backendMode = CustomSavestate::GetConfiguredBackendMode();
+    g_customSavestateDiskSlot = CustomSavestate::GetActiveDiskSlot();
+
+    const char* currentVersionName = EfzRevivalVersionName(GetEfzRevivalVersion());
+    const char* savedVersionName = summary.savedRevivalVersion != 0
+        ? EfzRevivalVersionName(static_cast<EfzRevivalVersion>(summary.savedRevivalVersion))
+        : "UNKNOWN/LEGACY";
+    const unsigned int revivalSaves = SavestateHook::GetSaveCount();
+    const unsigned int revivalLoads = SavestateHook::GetLoadCount();
+    if (summary.workingSnapshotStamp != g_customSavestateHotswapWorkingStamp) {
+        g_customSavestateHotswapWorkingStamp = summary.workingSnapshotStamp;
+        g_customSavestateHotswapDismissed = false;
+    }
+    UpdateCustomSavestateHotswapPromptFromWorking();
+
+    if (summary.hasWorkingSnapshot && CustomSavestate::GetWorkingEditableFields(g_customSavestateFields)) {
+        const std::string p1Name = CharacterHotswap::GetDisplayNameForSelectId(summary.savedP1CharId);
+        const std::string p2Name = CharacterHotswap::GetDisplayNameForSelectId(summary.savedP2CharId);
+        const char* savedStageName = GetNamedStageLabel(summary.savedStageId);
+        _snprintf_s(g_customSavestateWorkingInfo, sizeof(g_customSavestateWorkingInfo), _TRUNCATE,
+                    "Live: %s / %s | %s | stage %s | restore %s/%s/%s | custom %u/%u | revival %u/%u",
+                    p1Name.c_str(),
+                    p2Name.c_str(),
+                    summary.workingSnapshotDirty ? "DIRTY" : "READY",
+                    savedStageName,
+                    summary.currentPairCompatible ? "PAIR OK" : "PAIR BLOCK",
+                    summary.currentStageCompatible ? "STAGE OK" : "STAGE BLOCK",
+                    summary.currentVersionCompatible ? "VER OK" : "VER BLOCK",
+                    summary.saveCount,
+                    summary.loadCount,
+                    revivalSaves,
+                    revivalLoads);
+        _snprintf_s(g_customSavestateMetaInfo, sizeof(g_customSavestateMetaInfo), _TRUNCATE,
+                    "Meta: saved %s | current %s | BGM %u | P1 0x%X CPU %u | P2 0x%X CPU %u | side %d | BC 0x%X GS 0x%X RB 0x%X",
+                    savedVersionName,
+                    currentVersionName,
+                    summary.savedBgmTrack,
+                    summary.savedP1StateSize,
+                    summary.savedP1CpuFlag,
+                    summary.savedP2StateSize,
+                    summary.savedP2CpuFlag,
+                    summary.savedLocalSide,
+                    summary.savedBattleContextSize,
+                    summary.savedGameStateSize,
+                    summary.savedRenderBitmapSize);
+    } else {
+        g_customSavestateFields = CustomSavestate::EditableFields{};
+        _snprintf_s(g_customSavestateWorkingInfo, sizeof(g_customSavestateWorkingInfo), _TRUNCATE,
+                    "Live: empty | custom %u/%u | revival %u/%u",
+                    summary.saveCount,
+                    summary.loadCount,
+                    revivalSaves,
+                    revivalLoads);
+        _snprintf_s(g_customSavestateMetaInfo, sizeof(g_customSavestateMetaInfo), _TRUNCATE,
+                    "Meta: current %s | backend %s",
+                    currentVersionName,
+                    CustomSavestate::BackendModeName(backendMode));
+    }
+
+    switch (backendMode) {
+    case CustomSavestate::BackendMode::Revival:
+        _snprintf_s(g_customSavestateModeInfo, sizeof(g_customSavestateModeInfo), _TRUNCATE,
+                    "Mode: Revival owns live savestates; custom capture, restore, edit, and disk writes are locked.");
+        break;
+    case CustomSavestate::BackendMode::CustomWithRevivalFallback:
+        _snprintf_s(g_customSavestateModeInfo, sizeof(g_customSavestateModeInfo), _TRUNCATE,
+                    "Mode: Custom owns live savestates; Revival stays installed for tracking and allowed fallback cases.");
+        break;
+    case CustomSavestate::BackendMode::Custom:
+    default:
+        _snprintf_s(g_customSavestateModeInfo, sizeof(g_customSavestateModeInfo), _TRUNCATE,
+                    "Mode: Custom owns live savestates; working snapshot tools and disk files are active.");
+        break;
+    }
+
+    _snprintf_s(g_customSavestateStatusInfo, sizeof(g_customSavestateStatusInfo), _TRUNCATE,
+                "Status: %s",
+                CustomSavestate::GetLastStatus().c_str());
+
+    if (g_customSavestateDiskSlot == 0) {
+        _snprintf_s(g_customSavestateDiskInfo, sizeof(g_customSavestateDiskInfo), _TRUNCATE,
+                    "Slot 0: %s | memory snapshot | next save uses slot 1",
+                    CustomSavestate::DoesDiskSlotExist(0) ? "READY" : "EMPTY");
+    } else {
+        const std::string slotPath = CustomSavestate::GetDiskSlotPath(g_customSavestateDiskSlot);
+        _snprintf_s(g_customSavestateDiskInfo, sizeof(g_customSavestateDiskInfo), _TRUNCATE,
+                    "Slot %d: %s | %s",
+                    g_customSavestateDiskSlot,
+                    CustomSavestate::DoesDiskSlotExist(g_customSavestateDiskSlot) ? "HAS FILE" : "EMPTY",
+                    slotPath.c_str());
+    }
+}
 
 void RefreshDebugMirrors() {
     g_mirrorOverlayBorders = g_ShowOverlayDebugBorders.load();
     g_mirrorRGToasts       = g_ShowRGDebugToasts.load();
     g_mirrorPadInputLog    = XInputShim::g_LogGenericPadInputDebug.load();
     g_mirrorDeepFA         = g_deepFrameAdvDebug.load();
+    RefreshCustomSavestateMirrors();
 }
 
 void OnOverlayBorders() { g_ShowOverlayDebugBorders.store(g_mirrorOverlayBorders); }
@@ -798,6 +947,12 @@ const char* const kNamedOstChoices[] = {
 
 constexpr int kNamedStageChoiceCount = static_cast<int>(sizeof(kNamedStageChoices) / sizeof(kNamedStageChoices[0]));
 constexpr int kNamedOstChoiceCount = static_cast<int>(sizeof(kNamedOstChoices) / sizeof(kNamedOstChoices[0]));
+
+const char* GetNamedStageLabel(int stageId) {
+    return (stageId >= 0 && stageId < kNamedStageChoiceCount)
+        ? kNamedStageChoices[stageId]
+        : "UNKNOWN STAGE";
+}
 
 bool NetplayModLoaded() {
     return GetModuleHandleA("efz_netplay_mod.dll") != nullptr
@@ -910,6 +1065,9 @@ const char* const kFrameBarDetailChoices[3] = { "FULL", "COMPACT", "BARS ONLY" }
 
 const char* ValDebugLogging() { return MutableSettings().detailedLogging ? "DETAILED" : "NORMAL"; }
 const char* ValDebugOverlays() { return MutableSettings().showFrameBar ? "FRAMEBAR" : "TOOLS"; }
+const char* ValDebugSavestate() {
+    return CustomSavestate::BackendModeName(CustomSavestate::GetConfiguredBackendMode());
+}
 const char* ValDebugBgm() {
     SeedDebugBgmChoiceIfNeeded();
     if (g_bgmSlot >= 0 && g_bgmSlot < kNamedOstChoiceCount) {
@@ -965,6 +1123,251 @@ Row* BuildDebugBgmRows(int& count) {
     s_rows[n++] = DropdownRow("BGM TRACK",            &g_bgmSlot, kNamedOstChoices, kNamedOstChoiceCount);
     s_rows[n++] = Action ("PLAY BGM",                  RunPlayBGM);
     s_rows[n++] = Action ("STOP BGM",                  RunStopBGM);
+    count = n;
+    return s_rows;
+}
+
+bool CustomSavestateWorkingMissing() {
+    return !CustomSavestate::HasWorkingSnapshot();
+}
+
+bool CustomSavestateDiskSlotMissing() {
+    return !CustomSavestate::DoesDiskSlotExist(g_customSavestateDiskSlot);
+}
+
+bool CustomSavestateUsingRevivalBackend() {
+    return CustomSavestate::GetConfiguredBackendMode() == CustomSavestate::BackendMode::Revival;
+}
+
+bool CustomSavestateMutationLocked() {
+    return CustomSavestateUsingRevivalBackend();
+}
+
+bool CustomSavestateInitialSlotSelected() {
+    return g_customSavestateDiskSlot == 0;
+}
+
+bool CustomSavestateRestoreDisabled() {
+    return CustomSavestateMutationLocked() || CustomSavestateWorkingMissing();
+}
+
+bool CustomSavestateDiskSaveDisabled() {
+    return CustomSavestateMutationLocked() || CustomSavestateWorkingMissing();
+}
+
+bool CustomSavestateDiskLoadDisabled() {
+    return CustomSavestateMutationLocked() || CustomSavestateDiskSlotMissing();
+}
+
+bool CustomSavestateEditorDisabled() {
+    return CustomSavestateMutationLocked() || CustomSavestateWorkingMissing();
+}
+
+bool CustomSavestateHotswapDisabled() {
+    return !CharacterHotswap::CanQueueReload();
+}
+
+const char* ValSavestateLive() {
+    CustomSavestate::Summary summary{};
+    if (!CustomSavestate::GetSummary(summary) || !summary.hasWorkingSnapshot) {
+        return "EMPTY";
+    }
+    return summary.workingSnapshotDirty ? "DIRTY" : "READY";
+}
+
+const char* ValSavestateSlots() {
+    static char text[32] = {};
+    const int slot = CustomSavestate::GetActiveDiskSlot();
+    if (slot == 0) {
+        return "SLOT 0";
+    }
+    _snprintf_s(text, sizeof(text), _TRUNCATE, "SLOT %d", slot);
+    return text;
+}
+
+const char* ValSavestateEdit() {
+    if (CustomSavestateWorkingMissing()) {
+        return "EMPTY";
+    }
+    return CustomSavestateEditorDisabled() ? "LOCKED" : "READY";
+}
+
+void RunCustomSavestateCapture() {
+    CustomSavestate::CaptureWorkingSnapshot();
+    g_customSavestateHotswapDismissed = false;
+    g_customSavestateHotswapPrompt = false;
+}
+
+void RunCustomSavestateRestore() {
+    CustomSavestate::RestoreWorkingSnapshot();
+    g_customSavestateHotswapDismissed = false;
+    UpdateCustomSavestateHotswapPromptFromWorking();
+}
+
+void RunCustomSavestateSaveToDisk() {
+    CustomSavestate::SaveWorkingSnapshotToDisk(g_customSavestateDiskSlot);
+}
+
+void RunCustomSavestateLoadFromDisk() {
+    if (CustomSavestate::LoadWorkingSnapshotFromDisk(g_customSavestateDiskSlot)) {
+        g_customSavestateHotswapDismissed = false;
+        UpdateCustomSavestateHotswapPromptFromWorking();
+    } else {
+        g_customSavestateHotswapPrompt = false;
+    }
+}
+
+void OnCustomSavestateDiskSlotChanged() {
+    CustomSavestate::SetActiveDiskSlot(g_customSavestateDiskSlot);
+}
+
+void RunCustomSavestateClear() {
+    CustomSavestate::ClearWorkingSnapshot();
+    g_customSavestateHotswapDismissed = false;
+    g_customSavestateHotswapPrompt = false;
+}
+
+void RunCustomSavestateDismissHotswapPrompt() {
+    g_customSavestateHotswapDismissed = true;
+    g_customSavestateHotswapPrompt = false;
+}
+
+void RunCustomSavestateQueueWorkingHotswap() {
+    CustomSavestate::Summary summary{};
+    if (!CustomSavestate::GetSummary(summary)
+        || !summary.hasWorkingSnapshot
+        || summary.savedStageId == 0xFF) {
+        g_customSavestateHotswapPrompt = false;
+        return;
+    }
+
+    bool queued = false;
+    CharacterHotswap::PaletteSelection paletteSelection{};
+    if (CharacterHotswap::ReadCurrentPaletteSelection(paletteSelection)) {
+        CharacterHotswap::SanitizePaletteSelection(summary.savedP1CharId,
+                                                   summary.savedP2CharId,
+                                                   paletteSelection);
+        queued = CharacterHotswap::QueueReload(summary.savedP1CharId,
+                                               summary.savedP2CharId,
+                                               summary.savedStageId,
+                                               paletteSelection,
+                                               static_cast<unsigned short>(summary.savedBgmTrack));
+    } else {
+        queued = CharacterHotswap::QueueReload(summary.savedP1CharId,
+                                               summary.savedP2CharId,
+                                               summary.savedStageId,
+                                               static_cast<unsigned short>(summary.savedBgmTrack));
+    }
+
+    if (queued && CustomSavestate::QueueWorkingSnapshotRestoreAfterHotswap()) {
+        g_customSavestateHotswapDismissed = false;
+        g_customSavestateHotswapPrompt = false;
+    }
+}
+
+void OnCustomSavestateEditorChanged() {
+    CustomSavestate::SetWorkingEditableFields(g_customSavestateFields);
+}
+
+Row* BuildSavestateLiveRows(int& count) {
+    static Row s_rows[12];
+    int n = 0;
+
+    s_rows[n++] = Header("LIVE STATE");
+    s_rows[n++] = Info("These actions edit the live in-memory state directly. Save/load hotkeys now follow the active slot instead.");
+    s_rows[n++] = Info(g_customSavestateWorkingInfo);
+    s_rows[n++] = Info(g_customSavestateMetaInfo);
+    s_rows[n++] = Info(g_customSavestateStatusInfo);
+    s_rows[n++] = Action("SAVE TO LIVE STATE", RunCustomSavestateCapture, nullptr, CustomSavestateMutationLocked);
+    s_rows[n++] = Action("LOAD LIVE STATE", RunCustomSavestateRestore, nullptr, CustomSavestateRestoreDisabled);
+    s_rows[n++] = Action("CLEAR LIVE STATE", RunCustomSavestateClear, nullptr, CustomSavestateMutationLocked);
+    count = n;
+    return s_rows;
+}
+
+Row* BuildSavestateSlotRows(int& count) {
+    static Row s_rows[16];
+    int n = 0;
+
+    s_rows[n++] = Header("FILE SLOTS");
+    s_rows[n++] = Info("Save/load hotkeys follow the active slot. Slot 0 is the round-start memory slot; saves from it jump to slot 1.");
+    s_rows[n++] = IntNum("ACTIVE SLOT", &g_customSavestateDiskSlot, 0, 8, 1, 1, OnCustomSavestateDiskSlotChanged);
+    s_rows[n++] = Info(g_customSavestateDiskInfo);
+    s_rows[n++] = Action("LOAD SLOT TO LIVE STATE", RunCustomSavestateLoadFromDisk, nullptr, CustomSavestateDiskLoadDisabled);
+    s_rows[n++] = Action("SAVE LIVE STATE TO SLOT", RunCustomSavestateSaveToDisk, nullptr, CustomSavestateDiskSaveDisabled);
+    if (g_customSavestateHotswapPrompt) {
+        s_rows[n++] = Info(g_customSavestateHotswapInfo);
+        s_rows[n++] = Action("HOTSWAP TO LOADED MATCH", RunCustomSavestateQueueWorkingHotswap, CharacterHotswap::GetActionValueText, CustomSavestateHotswapDisabled);
+        s_rows[n++] = Action("KEEP CURRENT MATCH", RunCustomSavestateDismissHotswapPrompt);
+    }
+    count = n;
+    return s_rows;
+}
+
+Row* BuildSavestateP1EditorRows(int& count) {
+    static Row s_rows[12];
+    int n = 0;
+
+    s_rows[n++] = Header("P1 SNAPSHOT");
+    s_rows[n++] = IntNum("HP", &g_customSavestateFields.p1Hp, 0, 9999, 1, 100, OnCustomSavestateEditorChanged, CustomSavestateEditorDisabled);
+    s_rows[n++] = IntNum("METER", &g_customSavestateFields.p1Meter, 0, 1000, 1, 25, OnCustomSavestateEditorChanged, CustomSavestateEditorDisabled);
+    s_rows[n++] = DoubleNum("RF", &g_customSavestateFields.p1Rf, 0.0, 2000.0, 1.0, 25.0, "%.1f", OnCustomSavestateEditorChanged, CustomSavestateEditorDisabled);
+    s_rows[n++] = DoubleNum("X", &g_customSavestateFields.p1X, -5000.0, 5000.0, 1.0, 10.0, "%.1f", OnCustomSavestateEditorChanged, CustomSavestateEditorDisabled);
+    s_rows[n++] = DoubleNum("Y", &g_customSavestateFields.p1Y, -5000.0, 5000.0, 1.0, 10.0, "%.1f", OnCustomSavestateEditorChanged, CustomSavestateEditorDisabled);
+    s_rows[n++] = DoubleNum("X VEL", &g_customSavestateFields.p1XVel, -5000.0, 5000.0, 1.0, 10.0, "%.1f", OnCustomSavestateEditorChanged, CustomSavestateEditorDisabled);
+    s_rows[n++] = DoubleNum("Y VEL", &g_customSavestateFields.p1YVel, -5000.0, 5000.0, 1.0, 10.0, "%.1f", OnCustomSavestateEditorChanged, CustomSavestateEditorDisabled);
+    s_rows[n++] = IntNum("CPU", &g_customSavestateFields.p1CpuFlag, 0, 1, 1, 1, OnCustomSavestateEditorChanged, CustomSavestateEditorDisabled);
+    count = n;
+    return s_rows;
+}
+
+Row* BuildSavestateP2EditorRows(int& count) {
+    static Row s_rows[12];
+    int n = 0;
+
+    s_rows[n++] = Header("P2 SNAPSHOT");
+    s_rows[n++] = IntNum("HP", &g_customSavestateFields.p2Hp, 0, 9999, 1, 100, OnCustomSavestateEditorChanged, CustomSavestateEditorDisabled);
+    s_rows[n++] = IntNum("METER", &g_customSavestateFields.p2Meter, 0, 1000, 1, 25, OnCustomSavestateEditorChanged, CustomSavestateEditorDisabled);
+    s_rows[n++] = DoubleNum("RF", &g_customSavestateFields.p2Rf, 0.0, 2000.0, 1.0, 25.0, "%.1f", OnCustomSavestateEditorChanged, CustomSavestateEditorDisabled);
+    s_rows[n++] = DoubleNum("X", &g_customSavestateFields.p2X, -5000.0, 5000.0, 1.0, 10.0, "%.1f", OnCustomSavestateEditorChanged, CustomSavestateEditorDisabled);
+    s_rows[n++] = DoubleNum("Y", &g_customSavestateFields.p2Y, -5000.0, 5000.0, 1.0, 10.0, "%.1f", OnCustomSavestateEditorChanged, CustomSavestateEditorDisabled);
+    s_rows[n++] = DoubleNum("X VEL", &g_customSavestateFields.p2XVel, -5000.0, 5000.0, 1.0, 10.0, "%.1f", OnCustomSavestateEditorChanged, CustomSavestateEditorDisabled);
+    s_rows[n++] = DoubleNum("Y VEL", &g_customSavestateFields.p2YVel, -5000.0, 5000.0, 1.0, 10.0, "%.1f", OnCustomSavestateEditorChanged, CustomSavestateEditorDisabled);
+    s_rows[n++] = IntNum("CPU", &g_customSavestateFields.p2CpuFlag, 0, 1, 1, 1, OnCustomSavestateEditorChanged, CustomSavestateEditorDisabled);
+    count = n;
+    return s_rows;
+}
+
+Row* BuildSavestateMatchEditorRows(int& count) {
+    static Row s_rows[8];
+    int n = 0;
+
+    s_rows[n++] = Header("MATCH SNAPSHOT");
+    s_rows[n++] = Info(g_customSavestateMetaInfo);
+    s_rows[n++] = IntNum("LOCAL SIDE", &g_customSavestateFields.localSide, 0, 1, 1, 1, OnCustomSavestateEditorChanged, CustomSavestateEditorDisabled);
+    count = n;
+    return s_rows;
+}
+
+Row* BuildDebugSavestateRows(int& count) {
+    static Row s_rows[20];
+    int n = 0;
+    auto& s = MutableSettings();
+
+    s_rows[n++] = Header("SAVESTATE");
+    s_rows[n++] = Info("Hotkey save/load follows the active slot. Slot 0 is the round-start memory slot; saves from it jump to slot 1.");
+    s_rows[n++] = ChoicesRow("BACKEND", &s.savestateBackendMode, kSavestateBackendChoices, 3, OnSavestateBackendMode);
+    s_rows[n++] = Info(g_customSavestateModeInfo);
+    s_rows[n++] = Info(g_customSavestateWorkingInfo);
+    s_rows[n++] = Info(g_customSavestateDiskInfo);
+    s_rows[n++] = Action("SAVE TO FILE", RunCustomSavestateSaveToDisk, nullptr, CustomSavestateDiskSaveDisabled);
+    s_rows[n++] = Action("LOAD FROM FILE", RunCustomSavestateLoadFromDisk, nullptr, CustomSavestateDiskLoadDisabled);
+    s_rows[n++] = Info(g_customSavestateStatusInfo);
+    s_rows[n++] = Submenu("LIVE STATE", "LIVE STATE", BuildSavestateLiveRows, ValSavestateLive);
+    s_rows[n++] = Submenu("FILES",      "SAVESTATE FILES", BuildSavestateSlotRows, ValSavestateSlots);
+    s_rows[n++] = Submenu("P1 EDIT",    "P1 SNAPSHOT", BuildSavestateP1EditorRows, ValSavestateEdit);
+    s_rows[n++] = Submenu("P2 EDIT",    "P2 SNAPSHOT", BuildSavestateP2EditorRows, ValSavestateEdit);
+    s_rows[n++] = Submenu("MATCH",      "MATCH SNAPSHOT", BuildSavestateMatchEditorRows, ValSavestateEdit);
     count = n;
     return s_rows;
 }
@@ -2425,6 +2828,47 @@ bool ReadCurrentHotswapState(HotswapCurrentState& state) {
     return state.charsValid || state.stageValid || state.bgmValid;
 }
 
+void UpdateCustomSavestateHotswapPromptFromWorking() {
+    g_customSavestateHotswapPrompt = false;
+
+    if (g_customSavestateHotswapDismissed) {
+        return;
+    }
+
+    CustomSavestate::Summary summary{};
+    if (!CustomSavestate::GetSummary(summary)
+        || !summary.hasWorkingSnapshot
+        || summary.savedStageId == 0xFF) {
+        return;
+    }
+
+    HotswapCurrentState current{};
+    if (!ReadCurrentHotswapState(current) || !current.charsValid || !current.stageValid) {
+        return;
+    }
+
+    const int savedP1SelectId = summary.savedP1CharId;
+    const int savedP2SelectId = summary.savedP2CharId;
+    const bool mismatch = current.p1SelectId != savedP1SelectId
+        || current.p2SelectId != savedP2SelectId
+        || current.stageId != summary.savedStageId;
+    if (!mismatch) {
+        return;
+    }
+
+    const std::string p1Name = CharacterHotswap::GetDisplayNameForSelectId(summary.savedP1CharId);
+    const std::string p2Name = CharacterHotswap::GetDisplayNameForSelectId(summary.savedP2CharId);
+    const char* stageName = GetNamedStageLabel(summary.savedStageId);
+    _snprintf_s(g_customSavestateHotswapInfo,
+                sizeof(g_customSavestateHotswapInfo),
+                _TRUNCATE,
+                "Loaded slot differs from current match. Hotswap to %s / %s on %s?",
+                p1Name.c_str(),
+                p2Name.c_str(),
+                stageName);
+    g_customSavestateHotswapPrompt = true;
+}
+
 bool RevivalBgmMuted() {
     HMODULE revivalModule = GetModuleHandleA("EfzRevival.dll");
     if (!revivalModule) {
@@ -3015,6 +3459,7 @@ Row* BuildOptionsRows(int& count) {
 
     s_rows[n++] = Spacer();
     s_rows[n++] = Header("OPTION MENUS");
+    s_rows[n++] = Submenu("SAVESTATE", "SAVESTATE", BuildDebugSavestateRows, ValDebugSavestate);
     s_rows[n++] = Submenu("RECOVERY", "RECOVERY", BuildRecoveryOptionsRows, ValRecoveryOptions);
     s_rows[n++] = Submenu("OVERLAYS", "OVERLAYS", BuildOverlayOptionsRows,  ValOverlays);
 

@@ -23,6 +23,7 @@
 #include "../include/game/practice_offsets.h"
 #include "../include/utils/pause_integration.h"
 #include "../include/utils/config.h"
+#include "../include/utils/switch_players.h"
 #include "../include/utils/xp_compat.h"
 // For blockstun counter accessor used to gate autoblock disable
 #include "../include/game/frame_analysis.h"
@@ -920,7 +921,7 @@ void SetExternalAutoBlockController(bool enabled) {
 
 // Helper: read stance/direction fields for P2, and Y positions for attacker(P1)
 static bool ReadP2BlockFields(uint8_t &dirOut, uint8_t &stanceOut) {
-    uintptr_t p2 = GetPlayerBase(2); if (!p2) return false;
+    uintptr_t p2 = GetPlayerBase(SwitchPlayers::GetRemotePlayerIndex()); if (!p2) return false;
     uint8_t dir=0, stance=0;
     SafeReadMemory(p2 + 392, &dir, sizeof(dir));
     SafeReadMemory(p2 + 393, &stance, sizeof(stance));
@@ -929,7 +930,7 @@ static bool ReadP2BlockFields(uint8_t &dirOut, uint8_t &stanceOut) {
 }
 
 static bool WriteP2BlockStance(uint8_t stance) {
-    uintptr_t p2 = GetPlayerBase(2); if (!p2) return false;
+    uintptr_t p2 = GetPlayerBase(SwitchPlayers::GetRemotePlayerIndex()); if (!p2) return false;
     return SafeWriteMemory(p2 + 393, &stance, sizeof(stance));
 }
 
@@ -938,7 +939,8 @@ static bool WriteP2BlockStance(uint8_t stance) {
 // Assist guard by holding BACK (and optionally DOWN) relative to P2 facing
 // guardLevel: 0=None, 1=High, 2=Low, 3=Any
 static void AssistP2DirectionForStance(uint8_t desiredStance, bool wantGuard, int guardLevel) {
-    uintptr_t p2 = GetPlayerBase(2); if (!p2) return;
+    const int dummyPlayer = SwitchPlayers::GetRemotePlayerIndex();
+    uintptr_t p2 = GetPlayerBase(dummyPlayer); if (!p2) return;
     uint8_t dir = 0; SafeReadMemory(p2 + 392, &dir, sizeof(dir));
     // Stance vertical assist
     if (desiredStance == 1) {
@@ -952,7 +954,7 @@ static void AssistP2DirectionForStance(uint8_t desiredStance, bool wantGuard, in
 
     // Guard horizontal assist: press BACK relative to facing if a guard window is active/imminent
     if (wantGuard) {
-        bool facingRight = GetPlayerFacingDirection(2); // true = facing right
+        bool facingRight = GetPlayerFacingDirection(dummyPlayer); // true = facing right
         uint8_t backBit = facingRight ? INPUT_LEFT : INPUT_RIGHT;
         uint8_t fwdBit  = facingRight ? INPUT_RIGHT : INPUT_LEFT;
         // Clear forward, set back
@@ -1029,6 +1031,11 @@ void MonitorDummyAutoBlock(short p1MoveID, short p2MoveID, short prevP1MoveID, s
     // Only operate in offline Practice mode
     if (GetCurrentGameMode() != GameMode::Practice) return;
     if (IsNetplaySuspendActive()) return;
+
+    const int attackerPlayer = SwitchPlayers::GetLocalPlayerIndex();
+    const int dummyPlayer = SwitchPlayers::GetRemotePlayerIndex();
+    const short dummyMoveID = (dummyPlayer == 1) ? p1MoveID : p2MoveID;
+    const short prevDummyMoveID = (dummyPlayer == 1) ? prevP1MoveID : prevP2MoveID;
     
     // Clear override when we return to Character Select (follow game's flag until user changes)
     static GamePhase s_lastPhase = GamePhase::Unknown;
@@ -1061,14 +1068,14 @@ void MonitorDummyAutoBlock(short p1MoveID, short p2MoveID, short prevP1MoveID, s
     static bool s_pendingAbOff = false; // defer turning OFF until blockstun ends/actionable
 
     // Shared event detectors
-    const bool justBlocked = DidP2JustBlockThisFrame(prevP2MoveID, p2MoveID);
-    const bool hitNow = (!IsP2InHitstun(prevP2MoveID) && IsP2InHitstun(p2MoveID));
+    const bool justBlocked = DidP2JustBlockThisFrame(prevDummyMoveID, dummyMoveID);
+    const bool hitNow = (!IsP2InHitstun(prevDummyMoveID) && IsP2InHitstun(dummyMoveID));
     auto isAllowedNeutral = [](short m){
         // Allowed MoveIDs: 0,1,2,3,4,7,8,9,13 (same as Continuous Recovery)
         return (m == 0 || m == 1 || m == 2 || m == 3 || m == 4 || m == 7 || m == 8 || m == 9 || m == 13);
     };
-    const bool neutralNow = isAllowedNeutral(p2MoveID);
-    const bool transitionedToNeutral = (!isAllowedNeutral(prevP2MoveID) && neutralNow);
+    const bool neutralNow = isAllowedNeutral(dummyMoveID);
+    const bool transitionedToNeutral = (!isAllowedNeutral(prevDummyMoveID) && neutralNow);
     int neutralTimeoutMs = Config::GetSettings().autoBlockNeutralTimeoutMs;
     if (neutralTimeoutMs < 0) neutralTimeoutMs = 0; // clamp
     const unsigned long long curMs = XPCompat::GetTickCount64Compat();
@@ -1192,14 +1199,16 @@ void MonitorDummyAutoBlock(short p1MoveID, short p2MoveID, short prevP1MoveID, s
         {
             uintptr_t base = GetEFZBase();
             if (base) {
-                p2Blockstun = GetBlockstunValue(base, 2);
+                p2Blockstun = GetBlockstunValue(base, dummyPlayer);
             }
         }
-        const bool inGuardNow = IsP2BlockingOrBlockstun(p2MoveID) || (p2Blockstun > 0);
+        const bool inGuardNow = IsP2BlockingOrBlockstun(dummyMoveID) || (p2Blockstun > 0);
         // Use unified sample actionable flag for current P2 move when available
         const PerFrameSample &dabSample = GetCurrentPerFrameSample();
-        const bool actionableNow = (dabSample.moveID2 == p2MoveID ? dabSample.actionable2 : IsActionable(p2MoveID));
-        const bool leftGuardNow = (IsP2BlockingOrBlockstun(prevP2MoveID) && !IsP2BlockingOrBlockstun(p2MoveID));
+        const bool actionableNow = (dummyPlayer == 1)
+            ? (dabSample.moveID1 == dummyMoveID ? dabSample.actionable1 : IsActionable(dummyMoveID))
+            : (dabSample.moveID2 == dummyMoveID ? dabSample.actionable2 : IsActionable(dummyMoveID));
+        const bool leftGuardNow = (IsP2BlockingOrBlockstun(prevDummyMoveID) && !IsP2BlockingOrBlockstun(dummyMoveID));
 
         // If we want to turn OFF while guarding, defer until safe
         if (!abOn) {
@@ -1307,7 +1316,7 @@ void MonitorDummyAutoBlock(short p1MoveID, short p2MoveID, short prevP1MoveID, s
     if (g_adaptiveStance.load() && activeAb) {
         // Gate adaptive stance on P2 actually being AI controlled. If we've forced P2 to human (0) for auto-actions,
         // we should skip adaptive stance adjustments to avoid log spam and unintended stance overwrites.
-        uintptr_t baseAI = GetPlayerBase(2);
+        uintptr_t baseAI = GetPlayerBase(dummyPlayer);
         if (!baseAI) return; // can't evaluate
         uint32_t aiFlag = 1; SafeReadMemory(baseAI + AI_CONTROL_FLAG_OFFSET, &aiFlag, sizeof(aiFlag));
         if (aiFlag == 0) {
@@ -1325,7 +1334,7 @@ void MonitorDummyAutoBlock(short p1MoveID, short p2MoveID, short prevP1MoveID, s
             // Stats/diagnostics sampling (not used for stance): keep per-frame guard decoding for UI
             int dummyLevel=-1; bool dummyBlk=false; int dummyNL=-1; bool dummyNB=false; int dummyN2L=-1; bool dummyN2B=false;
             uint16_t atkFlags=0, hitFlags=0, grdFlags=0, st=0, fr=0;
-            SampleAttackerFrameFlags(1, dummyLevel, dummyBlk, &atkFlags, &hitFlags, &grdFlags, &st, &fr, &dummyNL, &dummyNB, &dummyN2L, &dummyN2B);
+            SampleAttackerFrameFlags(attackerPlayer, dummyLevel, dummyBlk, &atkFlags, &hitFlags, &grdFlags, &st, &fr, &dummyNL, &dummyNB, &dummyN2L, &dummyN2B);
 
             // Determine base stance: ground=crouch, air=stand
             double p1Y=0.0, p2Y=0.0; bool haveCached = TryGetCachedYPositions(p1Y, p2Y, 200);
@@ -1333,22 +1342,25 @@ void MonitorDummyAutoBlock(short p1MoveID, short p2MoveID, short prevP1MoveID, s
                 UpdatePositionCache(0.0, p1Y, 0.0, p2Y);
                 haveCached = true;
             }
-            bool attackerAir = haveCached ? (p1Y < 0.0) : false;
+            bool attackerAir = haveCached ? ((attackerPlayer == 1 ? p1Y : p2Y) < 0.0) : false;
 
             // Character-specific overrides: certain grounded moves are overheads => stand
             static int s_p1CharID = -1;
+            static int s_p1CharPlayer = 0;
             static unsigned long long s_lastCharRefresh = 0;
-            if (now - s_lastCharRefresh > 500ULL || s_p1CharID < 0) {
+            if (attackerPlayer != s_p1CharPlayer || now - s_lastCharRefresh > 500ULL || s_p1CharID < 0) {
                 uintptr_t base = GetEFZBase();
                 char nameBuf[32] = {0};
-                SafeReadMemory(ResolvePointer(base, EFZ_BASE_OFFSET_P1, CHARACTER_NAME_OFFSET), nameBuf, sizeof(nameBuf)-1);
+                const uintptr_t attackerOffset = (attackerPlayer == 1) ? EFZ_BASE_OFFSET_P1 : EFZ_BASE_OFFSET_P2;
+                SafeReadMemory(ResolvePointer(base, attackerOffset, CHARACTER_NAME_OFFSET), nameBuf, sizeof(nameBuf)-1);
                 s_p1CharID = CharacterSettings::GetCharacterID(std::string(nameBuf));
+                s_p1CharPlayer = attackerPlayer;
                 s_lastCharRefresh = now;
             }
 
             uint8_t desiredStance = attackerAir ? 0 : 1; // 0=stand,1=crouch
             if (!attackerAir && s_p1CharID >= 0) {
-                uintptr_t p1Base = GetPlayerBase(1);
+                uintptr_t p1Base = GetPlayerBase(attackerPlayer);
                 if (GuardOverrides::IsGroundedOverhead(s_p1CharID, static_cast<int>(st), p1Base)) {
                     desiredStance = 0;
                 }
@@ -1365,7 +1377,7 @@ void MonitorDummyAutoBlock(short p1MoveID, short p2MoveID, short prevP1MoveID, s
             if (ReadP2BlockFields(curDir, curStance)) {
                 if (curStance != desiredStance) {
                     // Preserve P2 guard context (blockstun + blocking MoveID) so stance/mode tweaks don't cut guard
-                    uintptr_t p2 = GetPlayerBase(2);
+                    uintptr_t p2 = GetPlayerBase(dummyPlayer);
                     short prevBlk=0; short prevMove=0;
                     bool prevWasBlocking=false;
                     if (p2) {
@@ -1403,7 +1415,7 @@ void MonitorDummyAutoBlock(short p1MoveID, short p2MoveID, short prevP1MoveID, s
                 }
             } else {
                 // Best-effort preservation when fields can't be read
-                uintptr_t p2 = GetPlayerBase(2);
+                uintptr_t p2 = GetPlayerBase(dummyPlayer);
                 short prevBlk=0; short prevMove=0; bool prevWasBlocking=false;
                 if (p2) {
                     SafeReadMemory(p2 + BLOCKSTUN_OFFSET, &prevBlk, sizeof(prevBlk));

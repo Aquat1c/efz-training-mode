@@ -654,7 +654,7 @@ namespace SwitchPlayers {
 
         return okA && ok1 && ok2;
     }
-    static bool ApplySet(uint8_t* practice, int desiredLocal) {
+    static bool ApplySet(uint8_t* practice, int desiredLocal, bool forceApply = false) {
         if (!practice) return false;
         if (desiredLocal != 0 && desiredLocal != 1) return false;
 
@@ -687,11 +687,15 @@ namespace SwitchPlayers {
         DumpPracticeStateDetailed(practice, "BEFORE SWITCH");
         DumpPracticeState(practice, "before");
         
-        if (curLocal == desiredLocal) {
+        if (curLocal == desiredLocal && !forceApply) {
             LogOut("[SWITCH] Local side already set; no changes", true);
             DebugLog::Write("No changes needed - already at desired local side");
             DebugLog::Write("========================================");
             return true;
+        }
+        if (curLocal == desiredLocal && forceApply) {
+            LogOut("[SWITCH] Force reapplying local side mapping despite matching live side", true);
+            DebugLog::Write("Force reapplying local side mapping despite matching live side");
         }
         // Only freeze around E-path edits; H/I path will emulate engine hotkey without extra bracketing.
         EFZFreezeGuard guard; // used for 1.02e only
@@ -983,6 +987,7 @@ namespace SwitchPlayers {
             int desired = (curActive == 0) ? 1 : 0;
             bool success = ApplyEngineOnlySet(desired);
             if (success) {
+                displayData.p2ControlEnabled = (desired == 1);
                 // Set flag true if swapping TO P2 (desired=1), false if returning TO P1 (desired=0)
                 s_sidesAreSwapped.store(desired == 1, std::memory_order_relaxed);
                 LogOut(desired == 1 ? "[SWITCH] Toggle succeeded - sides now swapped (flag set)" : "[SWITCH] Toggle succeeded - returned to default (flag cleared)", true);
@@ -1001,6 +1006,7 @@ namespace SwitchPlayers {
         int desired = (curLocal == 0) ? 1 : 0;
         bool success = ApplySet(practice, desired);
         if (success) {
+            displayData.p2ControlEnabled = (desired == 1);
             // Set flag true if swapping TO P2 (desired=1), false if returning TO P1 (desired=0)
             s_sidesAreSwapped.store(desired == 1, std::memory_order_relaxed);
             LogOut(desired == 1 ? "[SWITCH] Toggle succeeded - sides now swapped (flag set)" : "[SWITCH] Toggle succeeded - returned to default (flag cleared)", true);
@@ -1018,7 +1024,11 @@ namespace SwitchPlayers {
             return false;
         }
         if (!IsRevivalLoaded()) {
-            return ApplyEngineOnlySet(sideIdx);
+            const bool success = ApplyEngineOnlySet(sideIdx);
+            if (success) {
+                displayData.p2ControlEnabled = (sideIdx == 1);
+            }
+            return success;
         }
         PauseIntegration::EnsurePracticePointerCapture();
         void* p = PauseIntegration::GetPracticeControllerPtr();
@@ -1026,7 +1036,88 @@ namespace SwitchPlayers {
             LogOut("[SWITCH] Revival SetLocalSide blocked: Practice controller not yet confirmed", true);
             return false;
         }
-        return ApplySet(reinterpret_cast<uint8_t*>(p), sideIdx);
+        const bool success = ApplySet(reinterpret_cast<uint8_t*>(p), sideIdx);
+        if (success) {
+            displayData.p2ControlEnabled = (sideIdx == 1);
+        }
+        return success;
+    }
+
+    bool ReapplyLocalSide(int sideIdx) {
+        if (g_onlineModeActive.load()) return false;
+
+        if (GetCurrentGameMode() != GameMode::Practice) return false;
+        if (!IsMatchPhase()) {
+            LogOut("[SWITCH] Ignored reapply outside of match phase", true);
+            return false;
+        }
+
+        if (!IsRevivalLoaded()) {
+            const bool success = ApplyEngineOnlySet(sideIdx);
+            if (success) {
+                displayData.p2ControlEnabled = (sideIdx == 1);
+                s_sidesAreSwapped.store(sideIdx == 1, std::memory_order_relaxed);
+            }
+            return success;
+        }
+
+        PauseIntegration::EnsurePracticePointerCapture();
+        void* p = PauseIntegration::GetPracticeControllerPtr();
+        if (!p) {
+            return false;
+        }
+
+        // Hand routing back to Revival's real side mapping before rebuilding Practice state.
+        SetVanillaSwapInputRouting(false);
+
+        const bool success = ApplySet(reinterpret_cast<uint8_t*>(p), sideIdx, /*forceApply=*/true);
+        if (success) {
+            displayData.p2ControlEnabled = (sideIdx == 1);
+            s_sidesAreSwapped.store(sideIdx == 1, std::memory_order_relaxed);
+        }
+        return success;
+    }
+
+    bool RestoreEngineControlState(int sideIdx, uint8_t p1CpuFlag, uint8_t p2CpuFlag) {
+        if (g_onlineModeActive.load()) return false;
+        if (GetCurrentGameMode() != GameMode::Practice) return false;
+        if (sideIdx != 0 && sideIdx != 1) return false;
+
+        uintptr_t efzBase = GetEFZBase();
+        if (!efzBase) return false;
+
+        uintptr_t gameStatePtr = 0;
+        if (!SafeReadMemory(efzBase + EFZ_BASE_OFFSET_GAME_STATE, &gameStatePtr, sizeof(gameStatePtr)) || !gameStatePtr) {
+            return false;
+        }
+
+        const uint8_t activePlayer = static_cast<uint8_t>(sideIdx);
+        const bool okActive = SafeWriteMemory(gameStatePtr + GAMESTATE_OFF_ACTIVE_PLAYER, &activePlayer, sizeof(activePlayer));
+        const bool okP1 = SafeWriteMemory(gameStatePtr + GAMESTATE_OFF_P1_CPU_FLAG, &p1CpuFlag, sizeof(p1CpuFlag));
+        const bool okP2 = SafeWriteMemory(gameStatePtr + GAMESTATE_OFF_P2_CPU_FLAG, &p2CpuFlag, sizeof(p2CpuFlag));
+
+        SetAIControlFlag(1, p1CpuFlag == 0u);
+        SetAIControlFlag(2, p2CpuFlag == 0u);
+        SetVanillaSwapInputRouting(sideIdx == 1);
+        displayData.p2ControlEnabled = (sideIdx == 1);
+
+        const int aiPlayer = (p1CpuFlag != 0u && p2CpuFlag == 0u) ? 1
+                            : (p2CpuFlag != 0u && p1CpuFlag == 0u) ? 2
+                            : 0;
+        if (aiPlayer != 0) {
+            (void)NeutralizeMotionToken(aiPlayer);
+            InputHook_ArmTokenNeutralize(aiPlayer, /*alsoDoFullCleanup=*/true);
+        }
+
+        std::ostringstream oss;
+        oss << "[SWITCH][ENGINE_ONLY] Restored active=" << static_cast<int>(activePlayer)
+            << " P1CPU=" << static_cast<int>(p1CpuFlag)
+            << " P2CPU=" << static_cast<int>(p2CpuFlag)
+            << " routeSwap=" << (sideIdx == 1 ? 1 : 0)
+            << " gameState=0x" << std::hex << gameStatePtr;
+        LogOut(oss.str(), true);
+
+        return okActive && okP1 && okP2;
     }
 
     int GetLocalSide() {
@@ -1054,6 +1145,14 @@ namespace SwitchPlayers {
         }
         
         return ReadEffectivePracticeLocalSide(reinterpret_cast<uint8_t*>(p));
+    }
+
+    int GetLocalPlayerIndex() {
+        return GetLocalSide() == 1 ? 2 : 1;
+    }
+
+    int GetRemotePlayerIndex() {
+        return GetLocalPlayerIndex() == 1 ? 2 : 1;
     }
 
     bool ResetControlMappingForMenusToP1() {

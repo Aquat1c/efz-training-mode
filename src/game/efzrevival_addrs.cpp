@@ -233,6 +233,30 @@ uintptr_t EFZ_Practice_StepHotkeyOffset() {
     return 0;
 }
 
+uintptr_t EFZ_Practice_SaveHotkeyOffset() {
+    EfzRevivalVersion v = GetEfzRevivalVersion();
+    if (v == EfzRevivalVersion::Revival102i) return 0x1E0;
+    if (v == EfzRevivalVersion::Revival102e
+        || v == EfzRevivalVersion::Revival102f
+        || v == EfzRevivalVersion::Revival102g
+        || v == EfzRevivalVersion::Revival102h) {
+        return 0x1DC;
+    }
+    return 0;
+}
+
+uintptr_t EFZ_Practice_LoadHotkeyOffset() {
+    EfzRevivalVersion v = GetEfzRevivalVersion();
+    if (v == EfzRevivalVersion::Revival102i) return 0x1E4;
+    if (v == EfzRevivalVersion::Revival102e
+        || v == EfzRevivalVersion::Revival102f
+        || v == EfzRevivalVersion::Revival102g
+        || v == EfzRevivalVersion::Revival102h) {
+        return 0x1E0;
+    }
+    return 0;
+}
+
 uintptr_t EFZ_Practice_LocalSideOffset() {
     return IsI() ? 0x688 : 0x680;
 }

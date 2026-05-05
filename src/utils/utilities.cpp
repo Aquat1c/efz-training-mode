@@ -38,6 +38,7 @@
 #include "../include/game/macro_controller.h"
 #include "../include/game/collision_hook.h"
 #include "../include/game/final_memory_patch.h"
+#include "../include/game/custom_savestate.h"
 #include "../include/game/savestate_hook.h"
 #include "../include/input/input_hook.h"         
 #include "../3rdparty/minhook/include/MinHook.h" 
@@ -949,6 +950,7 @@ void EnterNetplaySuspend() {
     SetCollisionHookActive(false);
     PauseIntegration::SetRuntimeHooksActive(false);
     DirectDrawHook::SetD3D9Active(false);
+    CustomSavestate::Uninstall();
     SavestateHook::Uninstall();
 
     if (g_featuresEnabled.load()) {
@@ -1035,6 +1037,7 @@ void ExitNetplaySuspend() {
     InstallCollisionHook();
     PauseIntegration::SetRuntimeHooksActive(true);
     DirectDrawHook::SetD3D9Active(true);
+    CustomSavestate::Install();
     SavestateHook::Install();
 
     LogOut(
@@ -1560,13 +1563,23 @@ void ConsumeRuntimeLifecycleResyncRequests() {
     InvalidateAutoActionCharacterCaches("lifecycle resync");
     PauseIntegration::ResetCachedPointers("lifecycle resync");
     ResetCollisionHookSessionCaches("lifecycle resync");
-    ComboOverlay::ResetState("lifecycle resync");
+
+    const bool isPostRestoreResync =
+        reason.find("custom savestate restore complete") != std::string::npos
+        || reason.find("character hotswap reload complete") != std::string::npos;
 
     std::ostringstream oss;
     oss << "[LIFECYCLE] Runtime resync applied"
         << " gen=" << GetRuntimeLifecycleGeneration()
         << " reason=" << reason
         << " caches=gameState,playerBase,charSettings,autoActionCharIds,pauseIntegration,collisionHook";
+
+    if (isPostRestoreResync) {
+        LogOut(oss.str(), true);
+        return;
+    }
+
+    ComboOverlay::ResetState("lifecycle resync");
     LogOut(oss.str(), true);
 }
 

@@ -5,6 +5,7 @@
 namespace AudioControl {
 
 bool InstallHooks(uintptr_t efzBase);
+bool PlayBackgroundMusic(uintptr_t gameSystemPtr, unsigned short trackNumber);
 void ApplyConfiguredVolumesNow();
 
 int GetConfiguredBgmVolumePercent();

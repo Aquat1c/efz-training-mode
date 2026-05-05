@@ -27,6 +27,7 @@
 #include "../include/game/practice_patch.h"
 #include "../include/game/character_settings.h"
 #include "../include/game/character_hotswap.h"
+#include "../include/game/custom_savestate.h"
 #include "../include/game/final_memory_patch.h"
 #include "../include/game/macro_controller.h"
 #include "../include/game/always_rg.h"
@@ -1023,6 +1024,7 @@ void FrameDataMonitor() {
                     ResetDummyAutoBlockState();
                     // Clear swap tracking flag at match start (new round = fresh state)
                     SwitchPlayers::ClearSwapFlag();
+                    CustomSavestate::CapturePracticeEntrySnapshot();
                     MaybeShowPracticeOverlayHintOnce();
                 }
             }
@@ -1285,6 +1287,14 @@ void FrameDataMonitor() {
         bool isInitialized = AreCharactersInitialized();
         bool isValidGameMode = !Config::GetSettings().restrictToPracticeMode || (currentMode == GameMode::Practice);
 
+        if (CustomSavestate::ProcessQueuedRestoreAtFrameBoundary(currentMode == GameMode::Practice
+                                                                 && currentPhase == GamePhase::Match,
+                                                                 isInitialized)) {
+            goto FRAME_MONITOR_FRAME_END;
+        }
+
+        CustomSavestate::TickDeferredPracticeSideRestore(isInitialized);
+
         // Lightweight global Practice framestep tracker (no on-screen overlay)
         // - Tracks step count only while FA timing is actively waiting during pause in Practice.
         // - Exposes state via GetFrameStepDebugInfo() for ImGui to render in the debug menu.
@@ -1481,6 +1491,14 @@ void FrameDataMonitor() {
                 lightweightTick();
                 prevMoveID1 = 0;
                 prevMoveID2 = 0;
+                skipHeavy = true;
+            }
+            if (CustomSavestate::IsRestoreInProgress()) {
+                lightweightTick();
+                skipHeavy = true;
+            }
+            if (CustomSavestate::ConsumePostRestoreStabilizationFrame()) {
+                lightweightTick();
                 skipHeavy = true;
             }
             // =========================================================================

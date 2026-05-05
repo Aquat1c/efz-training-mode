@@ -1,4 +1,5 @@
 #include "../../include/game/practice_hotkey_gate.h"
+#include "../../include/game/custom_savestate.h"
 #include "../../include/game/practice_offsets.h"
 #include "../../include/game/efzrevival_addrs.h" // version-aware RVAs
 #include "../../include/core/logger.h"
@@ -35,6 +36,16 @@ namespace {
             // Suppress all practice hotkey side-effects this frame
             s_suppressedFrames.fetch_add(1, std::memory_order_relaxed);
             return 0; // early exit, indicate not handled
+        }
+        switch (CustomSavestate::HandlePracticeHotkey(self, a2)) {
+        case CustomSavestate::HotkeyHandleResult::Consumed:
+            s_suppressedFrames.fetch_add(1, std::memory_order_relaxed);
+            return 1;
+        case CustomSavestate::HotkeyHandleResult::UseRevivalFallback:
+            break;
+        case CustomSavestate::HotkeyHandleResult::NotHandled:
+        default:
+            break;
         }
         if (Framestep::ShouldSuppressRevivalHotkey(self, a2)) {
             s_suppressedFrames.fetch_add(1, std::memory_order_relaxed);

@@ -34,6 +34,8 @@ uintptr_t EFZ_Practice_StepFlagOffset();     // 0xAC
 uintptr_t EFZ_Practice_StepCounterOffset();  // 0xB0
 uintptr_t EFZ_Practice_PauseHotkeyOffset();  // e/f/g/h: 0x1D4, i: 0x1D8
 uintptr_t EFZ_Practice_StepHotkeyOffset();   // e/f/g/h: 0x1D8, i: 0x1DC
+uintptr_t EFZ_Practice_SaveHotkeyOffset();   // e/f/g/h: 0x1DC, i: 0x1E0
+uintptr_t EFZ_Practice_LoadHotkeyOffset();   // e/f/g/h: 0x1E0, i: 0x1E4
 
 // Side selection and related Practice controller fields
 uintptr_t EFZ_Practice_LocalSideOffset();    // 0x680 for 1.02e/h, 0x688 for 1.02i
