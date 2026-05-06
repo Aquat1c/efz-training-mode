@@ -2778,10 +2778,33 @@ bool RestoreSnapshot(const Snapshot& snapshot, std::string& outReason, bool engi
         LogSavestateTrace("restore write policy", mergeDetail);
     }
 
-    if (snapshot.fromDisk) {
-        LogSavestateTrace("restore palette policy",
-                          std::string("source=disk preserveSnapshot=1 | ")
-                              + DescribeSnapshotPaletteState(snapshot));
+    {
+        const bool loadCustomPalettes = Config::GetSettings().savestateLoadCustomPalettes;
+        const bool canClearCustomPaletteFlags =
+            gameStateBytes.size() >= (kGameStateP2CustomPaletteFlagOffset + sizeof(uint32_t));
+        bool clearedCustomPaletteFlags = false;
+        if (!loadCustomPalettes && canClearCustomPaletteFlags) {
+            const uint32_t zeroCustomPaletteFlag = 0;
+            std::memcpy(gameStateBytes.data() + kGameStateP1CustomPaletteFlagOffset,
+                        &zeroCustomPaletteFlag,
+                        sizeof(zeroCustomPaletteFlag));
+            std::memcpy(gameStateBytes.data() + kGameStateP2CustomPaletteFlagOffset,
+                        &zeroCustomPaletteFlag,
+                        sizeof(zeroCustomPaletteFlag));
+            clearedCustomPaletteFlags = true;
+        }
+
+        std::ostringstream oss;
+        oss << "source=" << (snapshot.fromDisk ? "disk" : "working")
+            << " loadCustomPalettes=" << (loadCustomPalettes ? 1 : 0)
+            << " applied=";
+        if (loadCustomPalettes) {
+            oss << "snapshot";
+        } else {
+            oss << (clearedCustomPaletteFlags ? "default" : "unchanged");
+        }
+        oss << " | " << DescribeSnapshotPaletteState(snapshot);
+        LogSavestateTrace("restore palette policy", oss.str());
     }
 
     SehFailure failure;
