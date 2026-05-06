@@ -19,6 +19,7 @@ enum class RowKind : uint8_t {
     Header = 0,  // section header (uppercase, dim)
     Info,        // plain text line (dim)
     Spacer,      // blank vertical gap
+    Custom,      // custom non-focusable render block
 
     // Focusable
     Toggle,       // bool value; Activate/L/R toggles
@@ -38,6 +39,7 @@ struct Row;
 using RowValueFormatter = const char* (*)(const Row& row);
 using PairedChoiceChange = void (*)(int* primary, int* secondary);
 using RowListBuilder = Row* (*)(int& count);
+using RowCustomRenderer = void (*)(ImDrawList* dl, float x, float y, float w, float h);
 
 struct Row {
     RowKind kind;
@@ -45,6 +47,9 @@ struct Row {
 
     // Data hooks — only the one relevant to `kind` is used.
     bool*  boolPtr;
+
+    RowCustomRenderer customDraw;
+    float customHeight;
 
     int*   intPtr;
     int    intMin;
@@ -105,6 +110,9 @@ struct Row {
 Row Header(const char* label);
 Row Info(const char* label);
 Row Spacer();
+Row Custom(float height,
+           RowCustomRenderer draw,
+           bool (*isHidden)() = nullptr);
 Row Toggle(const char* label, bool* p,
            void (*onChange)() = nullptr,
            bool (*isDisabled)() = nullptr,
@@ -258,7 +266,8 @@ bool ConsumeFocusAboveRequest();
 bool IsKeybindActive();
 bool IsGamepadKeybindActive();
 void OpenKeybind(const char* title, int* field,
-                 const char* section, const char* key);
+                 const char* section, const char* key,
+                 bool disallowMenuReserved = false);
 void OpenGamepadKeybind(const char* title, int* field,
                         const char* section, const char* key);
 bool TickKeybindIfActive(ImDrawList* dl, const ScreenLayout& layout);

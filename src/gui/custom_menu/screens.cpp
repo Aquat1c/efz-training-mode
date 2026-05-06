@@ -27,6 +27,7 @@ bool RowIsFocusable(const Row& r) {
     switch (r.kind) {
         case RowKind::Header:
         case RowKind::Spacer:
+        case RowKind::Custom:
             return false;
         default:
             return true;
@@ -139,6 +140,7 @@ float RowPixelHeight(const Row& r, float contentW) {
     if (r.kind == RowKind::Spacer) return Theme::kRowHeight * 0.5f;
     if (r.kind == RowKind::Header) return Theme::kRowHeight + Theme::kSectionPadY;
     if (r.kind == RowKind::Info) return InfoRowHeight(r, contentW);
+    if (r.kind == RowKind::Custom) return r.customHeight > 0.0f ? r.customHeight : Theme::kRowHeight;
     return Theme::kRowHeight;
 }
 
@@ -380,6 +382,18 @@ Row Spacer() {
     Row r{};
     r.kind = RowKind::Spacer;
     r.label = "";
+    return r;
+}
+
+Row Custom(float height,
+           RowCustomRenderer draw,
+           bool (*isHidden)()) {
+    Row r{};
+    r.kind = RowKind::Custom;
+    r.label = "";
+    r.customHeight = height;
+    r.customDraw = draw;
+    r.isHidden = isHidden;
     return r;
 }
 
@@ -991,6 +1005,11 @@ void RenderList(ImDrawList* dl, const ScreenLayout& layout,
             }
             case RowKind::Spacer:
                 break;
+            case RowKind::Custom:
+                if (r.customDraw) {
+                    r.customDraw(dl, x, y, w, rects[i].h);
+                }
+                break;
             case RowKind::Toggle: {
                 const bool v = r.boolPtr ? *r.boolPtr : false;
                 Layout::DrawRowToggle(dl, x, y, w, r.label, v, focused, disabled);
@@ -1469,6 +1488,7 @@ struct KeybindState {
     bool prevPressed[256] = {};
     uint32_t prevGamepadMask = 0;
     bool captureGamepad = false;
+    bool disallowMenuReserved = false;
     bool primed = false;              // false on the first frame so a held key
                                       // or button (the Activate that opened binding) is
                                       // treated as already-down
@@ -1479,7 +1499,8 @@ bool IsKeybindActive() { return g_keybind.active; }
 bool IsGamepadKeybindActive() { return g_keybind.active && g_keybind.captureGamepad; }
 
 void OpenKeybind(const char* title, int* field,
-                 const char* section, const char* key) {
+                 const char* section, const char* key,
+                 bool disallowMenuReserved) {
     if (!field || !title || !section || !key) return;
     if (!Input::IsGameWindowActive()) return;
 
@@ -1489,6 +1510,7 @@ void OpenKeybind(const char* title, int* field,
     strncpy_s(g_keybind.iniSection, sizeof(g_keybind.iniSection), section, _TRUNCATE);
     strncpy_s(g_keybind.iniKey, sizeof(g_keybind.iniKey), key, _TRUNCATE);
     g_keybind.captureGamepad = false;
+    g_keybind.disallowMenuReserved = disallowMenuReserved;
     g_keybind.prevGamepadMask = 0;
     // Snapshot all keys as currently-pressed so the Activate edge that opened
     // this binding doesn't immediately register as a capture.
@@ -1507,6 +1529,7 @@ void OpenGamepadKeybind(const char* title, int* field,
     strncpy_s(g_keybind.iniSection, sizeof(g_keybind.iniSection), section, _TRUNCATE);
     strncpy_s(g_keybind.iniKey, sizeof(g_keybind.iniKey), key, _TRUNCATE);
     g_keybind.captureGamepad = true;
+    g_keybind.disallowMenuReserved = false;
     SnapshotKeyboardState(g_keybind.prevPressed);
     g_keybind.prevGamepadMask = PollRelevantGamepadMask();
     g_keybind.primed = false;
@@ -1518,6 +1541,7 @@ void CloseKeybind() {
     g_keybind.iniSection[0] = '\0';
     g_keybind.iniKey[0] = '\0';
     g_keybind.captureGamepad = false;
+    g_keybind.disallowMenuReserved = false;
     g_keybind.prevGamepadMask = 0;
 }
 
@@ -1536,6 +1560,14 @@ bool VkIsBindable(int vk) {
 
 bool VkCountsTowardsPriming(int vk) {
     return VkIsBindable(vk);
+}
+
+bool VkAllowedForCurrentCapture(int vk) {
+    if (!VkIsBindable(vk)) return false;
+    if (g_keybind.disallowMenuReserved && (vk == VK_RETURN || vk == VK_SPACE)) {
+        return false;
+    }
+    return true;
 }
 
 namespace KeybindAPI {
@@ -1607,7 +1639,7 @@ namespace KeybindAPI {
             const bool was = g_keybind.prevPressed[vk];
             g_keybind.prevPressed[vk] = now;
             if (now) anyHeld = true;
-            if (g_keybind.primed && now && !was && captured == 0 && VkIsBindable(vk)) {
+            if (g_keybind.primed && now && !was && captured == 0 && VkAllowedForCurrentCapture(vk)) {
                 captured = vk;
             }
         }
@@ -1681,7 +1713,11 @@ bool TickKeybindIfActive(ImDrawList* dl, const ScreenLayout& layout) {
         if (!g_keybind.primed) {
             centerText(by + 50.0f, "RELEASE ALL KEYS...", kTextInactive);
         } else {
-            centerText(by + 50.0f, "PRESS A KEY", kTextActive);
+            centerText(by + 50.0f,
+                       g_keybind.disallowMenuReserved
+                           ? "PRESS A KEY (NO ENTER / SPACE)"
+                           : "PRESS A KEY",
+                       kTextActive);
         }
         centerText(by + 80.0f, "ESC TO CANCEL", kTextInactive);
     }
