@@ -979,6 +979,10 @@ namespace Framestep {
         LogOut("[FRAMESTEP] Step counter reset", true);
     }
 
+    void CancelActiveState(const char* reason) {
+        ClearActiveFramestepState(GetBackend(), reason ? reason : "external reset");
+    }
+
     void TogglePause() {
         if (!IsRuntimeEnabled()) return;
 
