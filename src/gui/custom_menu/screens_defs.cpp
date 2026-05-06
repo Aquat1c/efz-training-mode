@@ -27,6 +27,7 @@
 #include "../include/game/character_hotswap.h"
 #include "../include/gui/overlay.h"
 #include "../include/gui/framebar.h"
+#include "../include/utils/controller_names.h"
 #include "../include/utils/xinput_shim.h"
 #include "../include/utils/network.h"
 #include "../include/utils/bgm_control.h"
@@ -613,6 +614,65 @@ const char* ValFramestepPause() { return HotkeyNameValue(Config::GetSettings().f
 const char* ValFramestepStep()  { return HotkeyNameValue(Config::GetSettings().framestepStepKey); }
 const char* ValSwapCustom()     { return HotkeyNameValue(Config::GetSettings().swapCustomKey); }
 const char* ValSwapEnabled()    { return Config::GetSettings().swapCustomEnabled ? "ON" : "OFF"; }
+constexpr int kControllerChoiceCount = 5;
+
+char g_controllerChoiceLabels[kControllerChoiceCount][96] = {};
+const char* const g_controllerChoicePtrs[kControllerChoiceCount] = {
+    g_controllerChoiceLabels[0],
+    g_controllerChoiceLabels[1],
+    g_controllerChoiceLabels[2],
+    g_controllerChoiceLabels[3],
+    g_controllerChoiceLabels[4],
+};
+
+int g_controllerChoiceIndex = 0;
+int g_gpTeleportChoice = 0;
+
+void OnControllerIndexChoice() {
+    const int newValue = (g_controllerChoiceIndex <= 0) ? -1 : (g_controllerChoiceIndex - 1);
+    PersistInt("General", "controllerIndex", newValue);
+}
+
+void BindGamepadHotkey(const char* title, int* field, const char* key) {
+    OpenGamepadKeybind(title, field, "Hotkeys", key);
+}
+
+void BindGpTeleport()      { auto& s = MutableSettings(); BindGamepadHotkey("LOAD / TELEPORT",  &s.gpTeleportButton,      "gpTeleportButton"); }
+void BindGpSavePosition()  { auto& s = MutableSettings(); BindGamepadHotkey("SAVE POSITION",    &s.gpSavePositionButton,  "gpSavePositionButton"); }
+void BindGpSwitchPlayers() { auto& s = MutableSettings(); BindGamepadHotkey("SWITCH PLAYERS",   &s.gpSwitchPlayersButton, "gpSwitchPlayersButton"); }
+void BindGpSwapPositions() { auto& s = MutableSettings(); BindGamepadHotkey("SWAP POSITIONS",   &s.gpSwapPositionsButton, "gpSwapPositionsButton"); }
+void BindGpMacroRecord()   { auto& s = MutableSettings(); BindGamepadHotkey("MACRO RECORD",     &s.gpMacroRecordButton,   "gpMacroRecordButton"); }
+void BindGpMacroPlay()     { auto& s = MutableSettings(); BindGamepadHotkey("MACRO PLAY",       &s.gpMacroPlayButton,     "gpMacroPlayButton"); }
+void BindGpMacroSlot()     { auto& s = MutableSettings(); BindGamepadHotkey("MACRO NEXT SLOT",  &s.gpMacroSlotButton,     "gpMacroSlotButton"); }
+void BindGpToggleMenu()    { auto& s = MutableSettings(); BindGamepadHotkey("TOGGLE MENU",      &s.gpToggleMenuButton,    "gpToggleMenuButton"); }
+void BindGpToggleOverlay() { auto& s = MutableSettings(); BindGamepadHotkey("TOGGLE OVERLAY",   &s.gpToggleImGuiButton,   "gpToggleImGuiButton"); }
+void BindGpUiTopTabPrev()  { auto& s = MutableSettings(); BindGamepadHotkey("TOP TAB PREVIOUS", &s.gpUiTopTabPrev,        "gpUiTopTabPrev"); }
+void BindGpUiTopTabNext()  { auto& s = MutableSettings(); BindGamepadHotkey("TOP TAB NEXT",     &s.gpUiTopTabNext,        "gpUiTopTabNext"); }
+void BindGpUiSubTabPrev()  { auto& s = MutableSettings(); BindGamepadHotkey("SUBTAB PREVIOUS",  &s.gpUiSubTabPrev,        "gpUiSubTabPrev"); }
+void BindGpUiSubTabNext()  { auto& s = MutableSettings(); BindGamepadHotkey("SUBTAB NEXT",      &s.gpUiSubTabNext,        "gpUiSubTabNext"); }
+
+const char* GamepadBindNameValue(int mask) {
+    static char buffers[8][64];
+    static int next = 0;
+    char* buf = buffers[next++ & 7];
+    _snprintf_s(buf, sizeof(buffers[0]), _TRUNCATE, "%s",
+                Config::GetGamepadButtonName(mask).c_str());
+    return buf;
+}
+
+const char* ValGpTeleport()      { return GamepadBindNameValue(Config::GetSettings().gpTeleportButton); }
+const char* ValGpSavePosition()  { return GamepadBindNameValue(Config::GetSettings().gpSavePositionButton); }
+const char* ValGpSwitchPlayers() { return GamepadBindNameValue(Config::GetSettings().gpSwitchPlayersButton); }
+const char* ValGpSwapPositions() { return GamepadBindNameValue(Config::GetSettings().gpSwapPositionsButton); }
+const char* ValGpMacroRecord()   { return GamepadBindNameValue(Config::GetSettings().gpMacroRecordButton); }
+const char* ValGpMacroPlay()     { return GamepadBindNameValue(Config::GetSettings().gpMacroPlayButton); }
+const char* ValGpMacroSlot()     { return GamepadBindNameValue(Config::GetSettings().gpMacroSlotButton); }
+const char* ValGpToggleMenu()    { return GamepadBindNameValue(Config::GetSettings().gpToggleMenuButton); }
+const char* ValGpToggleOverlay() { return GamepadBindNameValue(Config::GetSettings().gpToggleImGuiButton); }
+const char* ValGpUiTopTabPrev()  { return GamepadBindNameValue(Config::GetSettings().gpUiTopTabPrev); }
+const char* ValGpUiTopTabNext()  { return GamepadBindNameValue(Config::GetSettings().gpUiTopTabNext); }
+const char* ValGpUiSubTabPrev()  { return GamepadBindNameValue(Config::GetSettings().gpUiSubTabPrev); }
+const char* ValGpUiSubTabNext()  { return GamepadBindNameValue(Config::GetSettings().gpUiSubTabNext); }
 
 void OnSwapCustomEnabled() {
     PersistBool("Hotkeys", "SwapCustomEnabled", MutableSettings().swapCustomEnabled);
@@ -622,12 +682,25 @@ bool SwapCustomKeyDisabled() {
     return !Config::GetSettings().swapCustomEnabled;
 }
 
-void RefreshHotkeyStrings() {}
+void RefreshHotkeyStrings() {
+    const auto& s = Config::GetSettings();
+
+    _snprintf_s(g_controllerChoiceLabels[0], sizeof(g_controllerChoiceLabels[0]), _TRUNCATE, "All (Any)");
+    for (int i = 0; i < 4; ++i) {
+        _snprintf_s(g_controllerChoiceLabels[i + 1], sizeof(g_controllerChoiceLabels[i + 1]), _TRUNCATE,
+                    "%s", GetControllerNameForIndex(i).c_str());
+    }
+
+    g_controllerChoiceIndex = (s.controllerIndex >= 0 && s.controllerIndex <= 3)
+        ? (s.controllerIndex + 1)
+        : 0;
+}
 
 const char* ValHotkeyGameplay() { return "8 KEYS"; }
 const char* ValHotkeySavestate() { return "4 KEYS"; }
 const char* ValHotkeyMacros()   { return "3 KEYS"; }
 const char* ValHotkeyMenu()     { return "5 KEYS"; }
+const char* ValHotkeyController() { return "13 BINDS"; }
 
 Row* BuildHotkeysGameplayRows(int& count) {
     static Row s_rows[16];
@@ -698,6 +771,49 @@ Row* BuildHotkeysSwapRows(int& count) {
     return s_rows;
 }
 
+Row* BuildHotkeysControllerRows(int& count) {
+    static Row s_rows[32];
+    int n = 0;
+
+    s_rows[n++] = Header("CONTROLLER BINDINGS");
+    s_rows[n++] = DropdownRow("CONTROLLER FOR MOD INPUTS", &g_controllerChoiceIndex,
+                              g_controllerChoicePtrs, kControllerChoiceCount,
+                              OnControllerIndexChoice);
+    s_rows[n++] = Info("All (Any) lets any connected controller open the menu and trigger mod actions.");
+    s_rows[n++] = Info("Press Enter or the confirm button (A / Cross) on any bind row, release your inputs, then press the new controller button.");
+    s_rows[n++] = Info("During controller capture, press your Toggle Menu button on pad to cancel. Delete or Backspace still disables the bind from keyboard.");
+    s_rows[n++] = Info("Button names are shown with Xbox labels. On many PlayStation-style pads, read A / B / X / Y as Cross / Circle / Square / Triangle.");
+    s_rows[n++] = Spacer();
+
+    s_rows[n++] = Header("GAMEPLAY");
+    s_rows[n++] = Action("LOAD / TELEPORT", BindGpTeleport, ValGpTeleport);
+    s_rows[n++] = Action("SAVE POSITION", BindGpSavePosition, ValGpSavePosition);
+    s_rows[n++] = Action("SWITCH PLAYERS", BindGpSwitchPlayers, ValGpSwitchPlayers);
+    s_rows[n++] = Action("SWAP POSITIONS", BindGpSwapPositions, ValGpSwapPositions);
+    s_rows[n++] = Spacer();
+
+    s_rows[n++] = Header("MACROS");
+    s_rows[n++] = Action("MACRO RECORD", BindGpMacroRecord, ValGpMacroRecord);
+    s_rows[n++] = Action("MACRO PLAY", BindGpMacroPlay, ValGpMacroPlay);
+    s_rows[n++] = Action("MACRO NEXT SLOT", BindGpMacroSlot, ValGpMacroSlot);
+    s_rows[n++] = Spacer();
+
+    s_rows[n++] = Header("MENU");
+    s_rows[n++] = Action("TOGGLE MENU", BindGpToggleMenu, ValGpToggleMenu);
+    s_rows[n++] = Action("TOGGLE OVERLAY", BindGpToggleOverlay, ValGpToggleOverlay);
+    s_rows[n++] = Info("Toggle Menu uses the selected controller for both opening and closing the custom menu.");
+    s_rows[n++] = Spacer();
+
+    s_rows[n++] = Header("NAVIGATION");
+    s_rows[n++] = Action("TOP TAB PREVIOUS", BindGpUiTopTabPrev, ValGpUiTopTabPrev);
+    s_rows[n++] = Action("TOP TAB NEXT", BindGpUiTopTabNext, ValGpUiTopTabNext);
+    s_rows[n++] = Action("SUBTAB PREVIOUS", BindGpUiSubTabPrev, ValGpUiSubTabPrev);
+    s_rows[n++] = Action("SUBTAB NEXT", BindGpUiSubTabNext, ValGpUiSubTabNext);
+    s_rows[n++] = Info("These tab and subtab binds also work while you are inside submenus.");
+    count = n;
+    return s_rows;
+}
+
 Row* BuildSettingsHotkeysRows(int& count) {
     static Row s_rows[16];
     int n = 0;
@@ -707,6 +823,7 @@ Row* BuildSettingsHotkeysRows(int& count) {
     s_rows[n++] = Submenu("SAVESTATE",     "SAVESTATE HOTKEYS", BuildHotkeysSavestateRows, ValHotkeySavestate);
     s_rows[n++] = Submenu("MACROS",        "MACRO HOTKEYS",    BuildHotkeysMacroRows,    ValHotkeyMacros);
     s_rows[n++] = Submenu("MENU CONTROL",  "MENU CONTROL",     BuildHotkeysMenuRows,     ValHotkeyMenu);
+    s_rows[n++] = Submenu("CONTROLLER",    "CONTROLLER BINDINGS", BuildHotkeysControllerRows, ValHotkeyController);
     s_rows[n++] = Submenu("SWAP POSITIONS","SWAP POSITIONS",   BuildHotkeysSwapRows,     ValSwapEnabled);
     s_rows[n++] = Spacer();
     s_rows[n++] = Action("SAVE ALL TO DISK", SaveSettingsToDisk);
@@ -1363,6 +1480,7 @@ Row* BuildDebugSavestateRows(int& count) {
     s_rows[n++] = ChoicesRow("BACKEND", &s.savestateBackendMode, kSavestateBackendChoices, 3, OnSavestateBackendMode);
     s_rows[n++] = Toggle("LOAD CUSTOM PALETTES", &s.savestateLoadCustomPalettes, OnSavestateLoadCustomPalettes);
     s_rows[n++] = Info("When off, savestate loads keep the saved palette number but force default palettes instead of custom .pal files.");
+    s_rows[n++] = Info("If a savestate load gives you broken colors or other graphical issues, turn Load Custom Palettes off and load again.");
     s_rows[n++] = Info(g_customSavestateModeInfo);
     s_rows[n++] = Info(g_customSavestateWorkingInfo);
     s_rows[n++] = Info(g_customSavestateDiskInfo);
@@ -1413,6 +1531,9 @@ char g_helpSwapPos[128];
 char g_helpToggleStats[96];
 char g_helpSwitchPlayers[128];
 char g_helpUiFooter[128];
+char g_helpTopTabs[160];
+char g_helpSubTabs[192];
+char g_helpControllerSupport[192];
 char g_helpMacroRecord[128];
 char g_helpMacroPlay[128];
 char g_helpMacroSlot[96];
@@ -1457,6 +1578,16 @@ void RefreshHelpStrings() {
                 Config::GetKeyName(s.uiAcceptKey).c_str(),
                 Config::GetKeyName(s.uiRefreshKey).c_str(),
                 Config::GetKeyName(s.uiExitKey).c_str());
+    _snprintf_s(g_helpTopTabs, sizeof(g_helpTopTabs), _TRUNCATE,
+                "Top tabs: %s / %s on controller, or PgUp / PgDn on keyboard.",
+                Config::GetGamepadButtonName(s.gpUiTopTabPrev).c_str(),
+                Config::GetGamepadButtonName(s.gpUiTopTabNext).c_str());
+    _snprintf_s(g_helpSubTabs, sizeof(g_helpSubTabs), _TRUNCATE,
+                "Subtabs: %s / %s on controller, or [ / ] on keyboard. These also work while you are inside submenus.",
+                Config::GetGamepadButtonName(s.gpUiSubTabPrev).c_str(),
+                Config::GetGamepadButtonName(s.gpUiSubTabNext).c_str());
+    _snprintf_s(g_helpControllerSupport, sizeof(g_helpControllerSupport), _TRUNCATE,
+                "Controller support: native XInput pads and DirectInput fallback pads use the same binds. Button names are shown with Xbox labels; on many PlayStation-style pads A/B/X/Y map to Cross/Circle/Square/Triangle.");
     _snprintf_s(g_helpMacroRecord, sizeof(g_helpMacroRecord), _TRUNCATE,
                 "Record macro: %s (Controller: %s).",
                 Config::GetKeyName(s.macroRecordKey).c_str(),
@@ -1584,13 +1715,14 @@ Row* BuildHelpMenuTipsRows(int& count) {
     static Row s_rows[32];
     int n = 0;
     s_rows[n++] = Header("NAVIGATION");
-    s_rows[n++] = Info  ("Use Up/Down or the D-Pad to move focus. Press Enter, Space, or the controller confirm button to pick the highlighted row.");
+    s_rows[n++] = Info  ("Use Up/Down or the D-Pad to move focus. Press Enter, Space, or the controller confirm button (A / Cross) to pick the highlighted row.");
     s_rows[n++] = Info  ("Left/Right adjusts the selected value. Hold Shift while pressing Left/Right to use the larger adjustment step.");
-    s_rows[n++] = Info  ("Esc or the controller back button returns from a submenu, closes a picker, or closes the menu.");
+    s_rows[n++] = Info  ("Esc or the controller back button (B / Circle) returns from a submenu, closes a picker, or closes the menu.");
     s_rows[n++] = Spacer();
     s_rows[n++] = Header("TABS");
-    s_rows[n++] = Info  ("LB/RB or PgUp/PgDn switches top tabs. Number keys 1..5 jump directly to a top tab.");
-    s_rows[n++] = Info  ("LT/RT or [ / ] switches subtabs. From the first row in a list, press Up to move focus into subtab and tab selection.");
+    s_rows[n++] = Info  (g_helpTopTabs);
+    s_rows[n++] = Info  (g_helpSubTabs);
+    s_rows[n++] = Info  ("Number keys 1..5 jump directly to a top tab. From the first row in a list, press Up to move focus into subtab and tab selection.");
     s_rows[n++] = Spacer();
     s_rows[n++] = Header("MOUSE");
     s_rows[n++] = Info  ("Mouse hover only takes focus after the pointer moves. Keyboard and gamepad edges take priority over a resting cursor.");
@@ -1598,6 +1730,8 @@ Row* BuildHelpMenuTipsRows(int& count) {
     s_rows[n++] = Spacer();
     s_rows[n++] = Header("TIPS");
     s_rows[n++] = Info  (g_helpUiFooter);
+    s_rows[n++] = Info  (g_helpControllerSupport);
+    s_rows[n++] = Info  ("Controller bindings can be changed in Settings > Hotkeys > Controller.");
     s_rows[n++] = Info  ("If text feels too small or large, adjust UI Scale in Settings > General > Interface.");
     s_rows[n++] = Info  (g_helpOpenHelp);
     count = n;
@@ -1809,30 +1943,65 @@ Row* BuildHelpFramebarRows(int& count) {
 }
 
 Row* BuildHelpSavestatesRows(int& count) {
-    static Row s_rows[40];
+    static Row s_rows[64];
     int n = 0;
     s_rows[n++] = Header("SAVESTATES");
     s_rows[n++] = Info("Open Main > Options > Savestates for snapshot capture, slot selection, palette behavior, and snapshot editing.");
-    s_rows[n++] = Info("There are two layers: Current State is the in-memory snapshot, while Slots are saved files and the target for savestate hotkeys.");
+    s_rows[n++] = Info("Use savestates for retry loops, setup lab work, matchup reloads, and preserving exact Practice situations.");
+    s_rows[n++] = Spacer();
+    s_rows[n++] = Header("TWO LAYERS");
+    s_rows[n++] = Info("Current State is the editable in-memory snapshot used by the manual restore and edit menus.");
+    s_rows[n++] = Info("Slots are the saved targets for savestate hotkeys. Slot actions in the menu let you inspect or edit a slot before restoring it.");
+    s_rows[n++] = Info("READY means the current snapshot matches the last capture or slot load. EDITED means you changed Current State after capture or load.");
     s_rows[n++] = Spacer();
     s_rows[n++] = Header("BASIC FLOW");
     s_rows[n++] = Info("Save Current Match copies the live Practice match into Current State.");
     s_rows[n++] = Info("Load Current State restores that in-memory snapshot back into the live match.");
     s_rows[n++] = Info("Save Current State To Slot writes the current state into the selected slot.");
     s_rows[n++] = Info("Load Slot To Current State reads a slot for review, edits, or hotswap without changing the live match yet.");
+    s_rows[n++] = Info("If the slot was saved on a different stage or matchup, load it into Current State first, then use Hotswap To Loaded Match.");
     s_rows[n++] = Spacer();
     s_rows[n++] = Header("HOTKEYS");
     s_rows[n++] = Info("Savestate Save captures the live match and writes it to the active slot immediately.");
-    s_rows[n++] = Info("Savestate Load restores the active slot immediately.");
+    s_rows[n++] = Info("Savestate Load reads the active slot and restores it immediately.");
     s_rows[n++] = Info("Slot Previous and Slot Next only change which slot the savestate hotkeys use.");
+    s_rows[n++] = Info("The menu path is slower on purpose: it lets you inspect, edit, or hotswap a slot before restoring it.");
+    s_rows[n++] = Spacer();
+    s_rows[n++] = Header("SLOT 0");
+    s_rows[n++] = Info("Slot 0 is the round-start memory snapshot captured from Practice entry.");
+    s_rows[n++] = Info("Saving while slot 0 is selected writes to slot 1 so the initial round-start snapshot stays intact.");
+    s_rows[n++] = Info("Use slot 0 when you want a reliable return point for a fresh Practice round.");
+    s_rows[n++] = Spacer();
+    s_rows[n++] = Header("BACKEND MODES");
+    s_rows[n++] = Info("Custom keeps Current State, slot files, edits, and hotswap features active.");
+    s_rows[n++] = Info("Revival hands save/load ownership back to EfzRevival, so custom capture, restore, edits, and slot writes are locked.");
+    s_rows[n++] = Info("Custom+Fallback keeps custom savestates active while leaving Revival available for supported fallback cases.");
     s_rows[n++] = Spacer();
     s_rows[n++] = Header("CUSTOM PALETTES");
     s_rows[n++] = Info("Load Custom Palettes controls whether savestate loads restore saved custom .pal usage.");
     s_rows[n++] = Info("When it is off, savestate loads keep the saved palette number but use the game's default palette instead of a custom palette.");
+    s_rows[n++] = Info("If a savestate load gives you broken colors, missing effects, or other graphical issues, turn Load Custom Palettes off and load again.");
+    s_rows[n++] = Info("The toggle changes load behavior only. The snapshot still keeps the saved palette data.");
     s_rows[n++] = Spacer();
-    s_rows[n++] = Header("SLOT 0 AND HOTSWAP");
-    s_rows[n++] = Info("Slot 0 is the round-start memory snapshot. Saving while slot 0 is selected writes to slot 1 so the initial slot stays intact.");
-    s_rows[n++] = Info("If a loaded slot was saved on a different matchup or stage, use Hotswap To Loaded Match after loading that slot into Current State.");
+    s_rows[n++] = Header("HOTSWAP AND MATCHUPS");
+    s_rows[n++] = Info("Manual restore only works when the live stage and character pair match the loaded Current State.");
+    s_rows[n++] = Info("If you intentionally loaded a different matchup or stage, use Hotswap To Loaded Match after loading that slot into Current State.");
+    s_rows[n++] = Info("After the reload finishes, the queued savestate restore applies to the new match automatically.");
+    s_rows[n++] = Spacer();
+    s_rows[n++] = Header("EDITING");
+    s_rows[n++] = Info("Edit P1, Edit P2, and Edit Match only change Current State. They never change the live match until you load that state.");
+    s_rows[n++] = Info("After editing, use Load Current State to test it immediately or Save Current State To Slot to keep it on disk.");
+    s_rows[n++] = Spacer();
+    s_rows[n++] = Header("RESTORE BLOCKERS");
+    s_rows[n++] = Info("A restore can block if you are not in a valid Practice match, the stage differs, or the character pair differs.");
+    s_rows[n++] = Info("Supported Revival 1.02x builds are treated as compatible, but unsupported builds can still fail or behave unexpectedly.");
+    s_rows[n++] = Info("The status line in the Savestates menu tells you whether the current pair, stage, and version are allowed for restore.");
+    s_rows[n++] = Spacer();
+    s_rows[n++] = Header("TROUBLESHOOTING");
+    s_rows[n++] = Info("If a load is blocked, verify that you are in Practice Match with the same stage and character pair, or hotswap first.");
+    s_rows[n++] = Info("If visuals look wrong after a load, disable Load Custom Palettes and try the load again.");
+    s_rows[n++] = Info("If you want the fastest loop, use the savestate hotkeys on the active slot instead of the menu path.");
+    s_rows[n++] = Info("If a slot looks empty or unexpected, check the active slot number and the disk-slot status line before saving over it.");
     count = n;
     return s_rows;
 }
@@ -1894,7 +2063,7 @@ Row* BuildHelpResourcesRows(int& count) {
 }
 
 Row* BuildHelpAboutRows(int& count) {
-    static Row s_rows[28];
+    static Row s_rows[40];
     int n = 0;
     s_rows[n++] = Header("EFZ TRAINING MODE");
     s_rows[n++] = Info(g_helpVersionStr);
@@ -1908,8 +2077,14 @@ Row* BuildHelpAboutRows(int& count) {
     s_rows[n++] = Info("Supported EfzRevival builds: Vanilla EFZ (no Revival), EfzRevival 1.02e, 1.02f, 1.02g, 1.02h!!!, and 1.02i!!!.");
     s_rows[n++] = Info("Unsupported builds disable some tools. Online detection and certain version-specific hooks may be unavailable.");
     s_rows[n++] = Spacer();
+    s_rows[n++] = Header("INPUT SUPPORT");
+    s_rows[n++] = Info(g_helpControllerSupport);
+    s_rows[n++] = Info("Menu open/close uses the configured Toggle Menu button. Menu back uses the controller back button, and top/subtab cycling uses the configured controller tab bindings.");
+    s_rows[n++] = Spacer();
     s_rows[n++] = Header("OVERVIEW");
-    s_rows[n++] = Info("A training mode enhancement tool for Eternal Fighter Zero. It adds frame advantage display, Combo Statistics, Framebar, macros, dummy triggers, character tools, and in-game configuration.");
+    s_rows[n++] = Info("A comprehensive training mode enhancement tool for Eternal Fighter Zero.");
+    s_rows[n++] = Info("It adds frame advantage display, Combo Statistics, Framebar, macros, dummy triggers, character tools, savestates, and in-game configuration.");
+    s_rows[n++] = Info("The custom menu and overlay are built to support keyboard, Xbox-style pads, and many PlayStation-style pads through the same controller input layer.");
     count = n;
     return s_rows;
 }

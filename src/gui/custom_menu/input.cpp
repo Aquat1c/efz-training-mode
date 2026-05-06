@@ -1,5 +1,6 @@
 #include "../include/gui/custom_menu/input.h"
 #include "../include/core/logger.h"
+#include "../include/utils/config.h"
 #include "../include/utils/utilities.h"     // detectedBindings
 #include "../include/utils/xinput_shim.h"   // XInputShim::GetCachedState
 #include "../3rdparty/imgui/imgui.h"
@@ -45,18 +46,25 @@ struct CurState {
     bool activate = false;   // any Enter / A source
     bool back     = false;   // any Esc / B source
     bool switchPlayer = false; // EFZ D / Y source
+    bool topTabPrev = false;
+    bool topTabNext = false;
     bool subTabPrev = false; // LT trigger / '['
     bool subTabNext = false; // RT trigger / ']'
 };
 
 struct Edges {
     bool up, down, left, right, activate, back, switchPlayer;
+    bool topTabPrev, topTabNext;
     bool subTabPrev, subTabNext;
 };
 
 CurState g_prev{};
 Edges    g_cachedEdges{};
 unsigned int g_cachedFrame = ~0u;
+
+constexpr int kPseudoLeftTriggerMask = 0x10000;
+constexpr int kPseudoRightTriggerMask = 0x20000;
+constexpr BYTE kTriggerThreshold = 30;
 
 void LogInputDetail(const char* fmt, ...) {
     if (!detailedLogging.load()) return;
@@ -79,9 +87,45 @@ bool InputAllowed() {
     return IsGameWindowActive();
 }
 
+bool PadBindingDown(const XINPUT_STATE& state, int mask) {
+    if (mask < 0) return false;
+    if (mask == kPseudoLeftTriggerMask) return state.Gamepad.bLeftTrigger > kTriggerThreshold;
+    if (mask == kPseudoRightTriggerMask) return state.Gamepad.bRightTrigger > kTriggerThreshold;
+    return (state.Gamepad.wButtons & static_cast<WORD>(mask & 0xFFFF)) != 0;
+}
+
+template <typename Fn>
+void ForEachRelevantPadState(const Fn& fn) {
+    const int controllerIndex = Config::GetSettings().controllerIndex;
+    if (controllerIndex >= 0 && controllerIndex <= 3) {
+        const XINPUT_STATE* state = XInputShim::GetCachedState(controllerIndex);
+        if (state) {
+            fn(*state);
+        }
+        return;
+    }
+
+    for (int i = 0; i < 4; ++i) {
+        const XINPUT_STATE* state = XInputShim::GetCachedState(i);
+        if (!state) continue;
+        fn(*state);
+    }
+}
+
+bool AnyRelevantPadBindingDown(int mask) {
+    bool down = false;
+    ForEachRelevantPadState([&](const XINPUT_STATE& state) {
+        if (!down && PadBindingDown(state, mask)) {
+            down = true;
+        }
+    });
+    return down;
+}
+
 CurState SampleCurrent() {
     CurState cur;
     if (!InputAllowed()) return cur;
+    const auto& cfg = Config::GetSettings();
 
     // Keyboard — fixed VKs
     if (VkDown(VK_UP))     cur.up       = true;
@@ -90,6 +134,8 @@ CurState SampleCurrent() {
     if (VkDown(VK_RIGHT))  cur.right    = true;
     if (VkDown(VK_RETURN) || VkDown(VK_SEPARATOR)) cur.activate = true;
     if (VkDown(VK_ESCAPE)) cur.back     = true;
+    if (VkDown(VK_PRIOR))  cur.topTabPrev = true;   // Page Up
+    if (VkDown(VK_NEXT))   cur.topTabNext = true;   // Page Down
     if (VkDown(VK_OEM_4))  cur.subTabPrev = true;   // '[' { bracket
     if (VkDown(VK_OEM_6))  cur.subTabNext = true;   // ']' } bracket
 
@@ -110,13 +156,10 @@ CurState SampleCurrent() {
         if (VkDown(detectedBindings.dButton)) cur.switchPlayer = true;
     }
 
-    // XInput across all connected pads. GetCachedState returns nullptr for
-    // disconnected slots — cached snapshot was already refreshed by the
-    // EndScene hook earlier this frame.
-    for (int i = 0; i < 4; ++i) {
-        const XINPUT_STATE* s = XInputShim::GetCachedState(i);
-        if (!s) continue;
-        const WORD b = s->Gamepad.wButtons;
+    // Controller nav uses the selected controller when configured, otherwise
+    // any cached XInput or DirectInput-synthetic pad may drive the menu.
+    ForEachRelevantPadState([&](const XINPUT_STATE& state) {
+        const WORD b = state.Gamepad.wButtons;
         if (b & XINPUT_GAMEPAD_DPAD_UP)    cur.up       = true;
         if (b & XINPUT_GAMEPAD_DPAD_DOWN)  cur.down     = true;
         if (b & XINPUT_GAMEPAD_DPAD_LEFT)  cur.left     = true;
@@ -124,10 +167,12 @@ CurState SampleCurrent() {
         if (b & XINPUT_GAMEPAD_A)          cur.activate = true;
         if (b & XINPUT_GAMEPAD_B)          cur.back     = true;
         if (b & XINPUT_GAMEPAD_Y)          cur.switchPlayer = true;
-        // Analog triggers as digital: cycle sub-tabs.
-        if (s->Gamepad.bLeftTrigger  > 30) cur.subTabPrev = true;
-        if (s->Gamepad.bRightTrigger > 30) cur.subTabNext = true;
-    }
+    });
+
+    cur.topTabPrev = cur.topTabPrev || AnyRelevantPadBindingDown(cfg.gpUiTopTabPrev);
+    cur.topTabNext = cur.topTabNext || AnyRelevantPadBindingDown(cfg.gpUiTopTabNext);
+    cur.subTabPrev = cur.subTabPrev || AnyRelevantPadBindingDown(cfg.gpUiSubTabPrev);
+    cur.subTabNext = cur.subTabNext || AnyRelevantPadBindingDown(cfg.gpUiSubTabNext);
 
     return cur;
 }
@@ -192,14 +237,18 @@ const Edges& SampleEdges() {
     g_cachedEdges.activate = cur.activate && !g_prev.activate;
     g_cachedEdges.back     = cur.back     && !g_prev.back;
     g_cachedEdges.switchPlayer = cur.switchPlayer && !g_prev.switchPlayer;
+    g_cachedEdges.topTabPrev = cur.topTabPrev && !g_prev.topTabPrev;
+    g_cachedEdges.topTabNext = cur.topTabNext && !g_prev.topTabNext;
     g_cachedEdges.subTabPrev = cur.subTabPrev && !g_prev.subTabPrev;
     g_cachedEdges.subTabNext = cur.subTabNext && !g_prev.subTabNext;
 
     if (g_cachedEdges.up || g_cachedEdges.down || g_cachedEdges.left ||
         g_cachedEdges.right || g_cachedEdges.activate || g_cachedEdges.back ||
-        g_cachedEdges.switchPlayer) {
+        g_cachedEdges.switchPlayer || g_cachedEdges.topTabPrev ||
+        g_cachedEdges.topTabNext || g_cachedEdges.subTabPrev ||
+        g_cachedEdges.subTabNext) {
         LogInputDetail(
-            "Edge U=%d D=%d L=%d R=%d A=%d B=%d SW=%d | held U=%d D=%d L=%d R=%d A=%d B=%d SW=%d",
+            "Edge U=%d D=%d L=%d R=%d A=%d B=%d SW=%d TP=%d TN=%d SP=%d SN=%d | held U=%d D=%d L=%d R=%d A=%d B=%d SW=%d TP=%d TN=%d SP=%d SN=%d",
             g_cachedEdges.up ? 1 : 0,
             g_cachedEdges.down ? 1 : 0,
             g_cachedEdges.left ? 1 : 0,
@@ -207,13 +256,21 @@ const Edges& SampleEdges() {
             g_cachedEdges.activate ? 1 : 0,
             g_cachedEdges.back ? 1 : 0,
             g_cachedEdges.switchPlayer ? 1 : 0,
+            g_cachedEdges.topTabPrev ? 1 : 0,
+            g_cachedEdges.topTabNext ? 1 : 0,
+            g_cachedEdges.subTabPrev ? 1 : 0,
+            g_cachedEdges.subTabNext ? 1 : 0,
             cur.up ? 1 : 0,
             cur.down ? 1 : 0,
             cur.left ? 1 : 0,
             cur.right ? 1 : 0,
             cur.activate ? 1 : 0,
             cur.back ? 1 : 0,
-            cur.switchPlayer ? 1 : 0);
+            cur.switchPlayer ? 1 : 0,
+            cur.topTabPrev ? 1 : 0,
+            cur.topTabNext ? 1 : 0,
+            cur.subTabPrev ? 1 : 0,
+            cur.subTabNext ? 1 : 0);
     }
 
     g_prev = cur;
@@ -263,29 +320,11 @@ bool Back()     { return SampleEdges().back;  }
 bool SwitchPlayer() { return SampleEdges().switchPlayer; }
 
 bool TopTabPrev() {
-    if (!InputAllowed()) return false;
-    if (ImGui::IsKeyPressed(ImGuiKey_GamepadL1, false)) {
-        LogInputDetail("TopTabPrev via GamepadL1");
-        return true;
-    }
-    if (ImGui::IsKeyPressed(ImGuiKey_PageUp, false)) {
-        LogInputDetail("TopTabPrev via PageUp");
-        return true;
-    }
-    return false;
+    return SampleEdges().topTabPrev;
 }
 
 bool TopTabNext() {
-    if (!InputAllowed()) return false;
-    if (ImGui::IsKeyPressed(ImGuiKey_GamepadR1, false)) {
-        LogInputDetail("TopTabNext via GamepadR1");
-        return true;
-    }
-    if (ImGui::IsKeyPressed(ImGuiKey_PageDown, false)) {
-        LogInputDetail("TopTabNext via PageDown");
-        return true;
-    }
-    return false;
+    return SampleEdges().topTabNext;
 }
 
 bool SubTabPrev() { return SampleEdges().subTabPrev; }

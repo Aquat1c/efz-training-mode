@@ -251,13 +251,16 @@ bool IsTextEditorActive();
 void ResetTextEditor();
 bool ConsumeFocusAboveRequest();
 
-// Hotkey-binding overlay. While active, every keypress is captured and
-// written into the active config setting. The renderer should call
+// Hotkey-binding overlay. While active, every captured key or controller
+// button is written into the active config setting. The renderer should call
 // TickKeybindIfActive() to render the overlay and process input. Returns
 // true if the overlay is consuming input.
 bool IsKeybindActive();
+bool IsGamepadKeybindActive();
 void OpenKeybind(const char* title, int* field,
                  const char* section, const char* key);
+void OpenGamepadKeybind(const char* title, int* field,
+                        const char* section, const char* key);
 bool TickKeybindIfActive(ImDrawList* dl, const ScreenLayout& layout);
 
 } // namespace CustomMenu::Screens

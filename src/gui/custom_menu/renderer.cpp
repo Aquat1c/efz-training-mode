@@ -959,7 +959,7 @@ void MaybeMouseReturnFocusToContent(const MainLayout& L, bool tabClickConsumed) 
 
 bool HandleFocusedTabInput() {
     if (Screens::IsPopupActive() || Screens::IsKeybindActive() ||
-        Screens::IsSubmenuActive() || Screens::IsTextEditorActive()) {
+        Screens::IsTextEditorActive()) {
         return false;
     }
     if (g_shell.focusRegion == FocusRegion::Content) return false;
@@ -1395,7 +1395,7 @@ void Render() {
     // Global tab cycling (top + sub). Blocked while editing a numeric value
     // OR while a dropdown popup is open (popup eats input on its own).
     if (!g_edit.active && !Screens::IsPopupActive() && !Screens::IsKeybindActive() &&
-        !Screens::IsSubmenuActive() && !Screens::IsTextEditorActive()) {
+        !Screens::IsTextEditorActive()) {
         if (Input::TopTabPrev()) {
             CancelEditMode();
             SetActiveTopTab((g_shell.activeTopTab + TT_COUNT - 1) % TT_COUNT, "top-tab prev");
@@ -1525,7 +1525,9 @@ void Render() {
     if (g_edit.active) {
         hint = "0-9 / . / BACKSPACE    ENTER COMMIT    ESC CANCEL";
     } else if (Screens::IsKeybindActive()) {
-        hint = "RELEASE KEYS THEN PRESS NEW HOTKEY   ESC CANCEL";
+        hint = Screens::IsGamepadKeybindActive()
+            ? "RELEASE INPUTS   PRESS BUTTON   MENU CANCEL   DEL DISABLE"
+            : "RELEASE KEYS THEN PRESS NEW HOTKEY   ESC CANCEL";
     } else if (Screens::IsPopupActive()) {
         hint = "UP/DOWN MOVE   ENTER SELECT   ESC CANCEL";
     } else if (Screens::IsTextEditorActive()) {
