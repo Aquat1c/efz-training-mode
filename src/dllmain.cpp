@@ -117,6 +117,8 @@ void DelayedInitialization(HMODULE hModule) {
         WriteStartupLog(XPCompat::GetRuntimeSummary());
         LogOut(XPCompat::GetRuntimeSummary(), true);
 
+        CrashHandler::WarmupSymbolMaps();
+
         // Initialize configuration system first so we can gate file logging
         InitializeConfig();
 

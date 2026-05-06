@@ -199,6 +199,7 @@ set(EFZ_THIRD_PARTY_LINKS
     gdiplus
     shlwapi
     d3d9
+    dbghelp
     legacy_stdio_definitions
 )
 
@@ -226,6 +227,16 @@ if(MSVC)
     set_target_properties(efz_training_mode PROPERTIES
         STATIC_LIBRARY_FLAGS "/LTCG")
 
+    target_compile_options(efz_training_mode PRIVATE
+        "$<$<CONFIG:Release>:/Zi>"
+    )
+
+    target_link_options(efz_training_mode PRIVATE
+        "$<$<CONFIG:Release>:/DEBUG:FULL>"
+        "$<$<CONFIG:Release>:/OPT:REF>"
+        "$<$<CONFIG:Release>:/OPT:ICF>"
+    )
+
     if(EFZ_XP_COMPAT)
         # dinput.h auto-links dxguid.lib, but the XP toolchain on this machine
         # does not ship it. We provide the needed DirectInput GUIDs in-tree.
@@ -242,6 +253,9 @@ set_target_properties(efz_training_mode PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
     LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib"
     ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib"
+    PDB_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
+    PDB_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}/bin/Release"
+    PDB_NAME "efz_training_mode"
 )
 
 # Set the runtime library to static
