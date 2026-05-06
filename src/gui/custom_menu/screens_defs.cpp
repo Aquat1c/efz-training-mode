@@ -14,6 +14,7 @@
 #include "../include/core/constants.h"
 #include "../include/core/version.h"
 #include "../include/game/practice_patch.h"
+#include "../include/game/practice_offsets.h"
 #include "../include/game/game_state.h"
 #include "../include/game/always_rg.h"
 #include "../include/game/random_rg.h"
@@ -30,11 +31,15 @@
 #include "../include/utils/controller_names.h"
 #include "../include/utils/xinput_shim.h"
 #include "../include/utils/network.h"
+#include "../include/utils/pause_integration.h"
+#include "../include/utils/switch_players.h"
 #include "../include/utils/bgm_control.h"
 #include "../include/utils/audio_control.h"
 #include "../include/input/framestep.h"
+#include "../include/input/input_motion.h"
 #include "../include/core/memory.h"
 #include "../include/core/logger.h"
+#include "../include/gui/gif_player.h"
 #include "../3rdparty/imgui/imgui.h"
 
 #include <windows.h>
@@ -147,6 +152,24 @@ void OnFpsDiag()         { PersistBool ("General", "enableFpsDiagnostics",   Mut
 void OnAutoBlockTimeout(){ PersistInt  ("General", "autoBlockNeutralTimeoutMs", MutableSettings().autoBlockNeutralTimeoutMs); }
 
 void SaveSettingsToDisk(){ Config::SaveSettings(); }
+
+void ReloadSettingsFromDisk() {
+    if (Config::LoadSettings()) {
+        detailedLogging.store(Config::GetSettings().detailedLogging);
+        AudioControl::ApplyConfiguredVolumesNow();
+        LogOut("[CONFIG/UI] Settings reloaded from ini", false);
+        DirectDrawHook::AddMessage("Settings reloaded from disk", "SYSTEM", RGB(180, 255, 220), 1200, 0, 120);
+    } else {
+        LogOut("[CONFIG/UI] Settings reload failed", true);
+        DirectDrawHook::AddMessage("Settings reload failed", "SYSTEM", RGB(255, 120, 120), 1400, 0, 120);
+    }
+}
+
+const char* CurrentConfigPathInfo() {
+    static char buf[320];
+    _snprintf_s(buf, sizeof(buf), _TRUNCATE, "Config file: %s", Config::GetConfigFilePath().c_str());
+    return buf;
+}
 
 // Atomic-backed bools exposed via a local static mirror.
 // The generic row system wants a bool*; we refresh from the atomic each frame
@@ -541,7 +564,7 @@ Row* BuildSettingsPracticeRows(int& count) {
 }
 
 Row* BuildSettingsGeneralRows(int& count) {
-    static Row s_rows[16];
+    static Row s_rows[20];
     int n = 0;
 
     s_rows[n++] = Header("GENERAL MENUS");
@@ -550,7 +573,9 @@ Row* BuildSettingsGeneralRows(int& count) {
     s_rows[n++] = Submenu("RECOVERY",  "RECOVERY",  BuildSettingsRecoveryRows,  ValRecoverySettings);
     s_rows[n++] = Submenu("PRACTICE",  "PRACTICE",  BuildSettingsPracticeRows,  ValPracticeSettings);
     s_rows[n++] = Spacer();
+    s_rows[n++] = Info(CurrentConfigPathInfo());
     s_rows[n++] = Action ("SAVE ALL TO DISK",          SaveSettingsToDisk);
+    s_rows[n++] = Action ("RELOAD FROM DISK",          ReloadSettingsFromDisk);
 
     count = n;
     return s_rows;
@@ -566,8 +591,24 @@ const char* HotkeyNameValue(int vk) {
     return buf;
 }
 
+const char* HotkeyCodeValue(int vk) {
+    static char buffers[8][96];
+    static int next = 0;
+    char* buf = buffers[next++ & 7];
+    if (vk < 0) {
+        _snprintf_s(buf, sizeof(buffers[0]), _TRUNCATE, "DISABLED");
+    } else {
+        _snprintf_s(buf, sizeof(buffers[0]), _TRUNCATE, "0x%X  %s", vk, Config::GetKeyName(vk).c_str());
+    }
+    return buf;
+}
+
 void BindHotkey(const char* title, int* field, const char* key) {
     OpenKeybind(title, field, "Hotkeys", key);
+}
+
+void BindFooterHotkey(const char* title, int* field, const char* key) {
+    OpenKeybind(title, field, "Hotkeys", key, true);
 }
 
 void BindOpenMenu()       { auto& s = MutableSettings(); BindHotkey("OPEN MENU",       &s.configMenuKey,          "ConfigMenuKey"); }
@@ -585,12 +626,238 @@ void BindSwitchPlayers()  { auto& s = MutableSettings(); BindHotkey("SWITCH PLAY
 void BindMacroRecord()    { auto& s = MutableSettings(); BindHotkey("MACRO RECORD",    &s.macroRecordKey,        "MacroRecordKey"); }
 void BindMacroPlay()      { auto& s = MutableSettings(); BindHotkey("MACRO PLAY",      &s.macroPlayKey,          "MacroPlayKey"); }
 void BindMacroSlot()      { auto& s = MutableSettings(); BindHotkey("MACRO NEXT SLOT", &s.macroSlotKey,          "MacroSlotKey"); }
-void BindUiAccept()       { auto& s = MutableSettings(); BindHotkey("UI ACCEPT",       &s.uiAcceptKey,           "UIAcceptKey"); }
-void BindUiRefresh()      { auto& s = MutableSettings(); BindHotkey("UI REFRESH",      &s.uiRefreshKey,          "UIRefreshKey"); }
-void BindUiExit()         { auto& s = MutableSettings(); BindHotkey("UI EXIT",         &s.uiExitKey,             "UIExitKey"); }
+void BindUiAccept()       { auto& s = MutableSettings(); BindFooterHotkey("UI ACCEPT",  &s.uiAcceptKey,          "UIAcceptKey"); }
+void BindUiRefresh()      { auto& s = MutableSettings(); BindFooterHotkey("UI REFRESH", &s.uiRefreshKey,         "UIRefreshKey"); }
+void BindUiExit()         { auto& s = MutableSettings(); BindFooterHotkey("UI EXIT",    &s.uiExitKey,            "UIExitKey"); }
 void BindFramestepPause() { auto& s = MutableSettings(); BindHotkey("FRAMESTEP PAUSE", &s.framestepPauseKey,     "FramestepPauseKey"); }
 void BindFramestepStep()  { auto& s = MutableSettings(); BindHotkey("FRAMESTEP STEP",  &s.framestepStepKey,      "FramestepStepKey"); }
 void BindSwapCustom()     { auto& s = MutableSettings(); BindHotkey("SWAP CUSTOM KEY", &s.swapCustomKey,         "SwapCustomKey"); }
+
+struct ManualKeybindEditorState {
+    bool active = false;
+    bool disallowMenuReserved = false;
+    int* settingsField = nullptr;
+    char title[48] = "";
+    char iniSection[16] = "";
+    char iniKey[32] = "";
+    char valueBuf[32] = "";
+    char errorBuf[128] = "";
+};
+ManualKeybindEditorState g_manualKeybindEditor;
+
+bool IsManualKeybindEditorActive() {
+    return g_manualKeybindEditor.active;
+}
+
+bool ManualKeybindAllowed(int vk, bool disallowMenuReserved) {
+    if (vk < 0) return true;
+    if (vk == 0) return false;
+    if (vk >= 0x01 && vk <= 0x06) return false;
+    if (vk == VK_SHIFT || vk == VK_LSHIFT || vk == VK_RSHIFT) return false;
+    if (vk == VK_CONTROL || vk == VK_LCONTROL || vk == VK_RCONTROL) return false;
+    if (vk == VK_MENU || vk == VK_LMENU || vk == VK_RMENU) return false;
+    if (vk == VK_LWIN || vk == VK_RWIN) return false;
+    if (vk == VK_CLEAR) return false;
+    if (vk == VK_ESCAPE) return false;
+    if (disallowMenuReserved && (vk == VK_RETURN || vk == VK_SPACE)) return false;
+    return true;
+}
+
+std::string TrimAscii(const char* text) {
+    if (!text) return std::string();
+    std::string value(text);
+    const auto isSpace = [](char c) {
+        return c == ' ' || c == '\t' || c == '\n' || c == '\r';
+    };
+    size_t start = 0;
+    while (start < value.size() && isSpace(value[start])) ++start;
+    size_t end = value.size();
+    while (end > start && isSpace(value[end - 1])) --end;
+    return value.substr(start, end - start);
+}
+
+void CloseManualKeybindEditor() {
+    g_manualKeybindEditor.active = false;
+    g_manualKeybindEditor.settingsField = nullptr;
+    g_manualKeybindEditor.title[0] = '\0';
+    g_manualKeybindEditor.iniSection[0] = '\0';
+    g_manualKeybindEditor.iniKey[0] = '\0';
+    g_manualKeybindEditor.valueBuf[0] = '\0';
+    g_manualKeybindEditor.errorBuf[0] = '\0';
+    g_manualKeybindEditor.disallowMenuReserved = false;
+}
+
+void OpenManualKeybindEditor(const char* title, int* field,
+                             const char* section, const char* key,
+                             bool disallowMenuReserved = false) {
+    if (!title || !field || !section || !key) return;
+    g_manualKeybindEditor.active = true;
+    g_manualKeybindEditor.settingsField = field;
+    g_manualKeybindEditor.disallowMenuReserved = disallowMenuReserved;
+    strncpy_s(g_manualKeybindEditor.title, sizeof(g_manualKeybindEditor.title), title, _TRUNCATE);
+    strncpy_s(g_manualKeybindEditor.iniSection, sizeof(g_manualKeybindEditor.iniSection), section, _TRUNCATE);
+    strncpy_s(g_manualKeybindEditor.iniKey, sizeof(g_manualKeybindEditor.iniKey), key, _TRUNCATE);
+    if (*field < 0) {
+        strncpy_s(g_manualKeybindEditor.valueBuf, sizeof(g_manualKeybindEditor.valueBuf), "-1", _TRUNCATE);
+    } else {
+        _snprintf_s(g_manualKeybindEditor.valueBuf, sizeof(g_manualKeybindEditor.valueBuf), _TRUNCATE, "0x%X", *field);
+    }
+    g_manualKeybindEditor.errorBuf[0] = '\0';
+    Input::ResetEdges();
+}
+
+bool ApplyManualKeybindEditor() {
+    if (!g_manualKeybindEditor.active || !g_manualKeybindEditor.settingsField) {
+        return false;
+    }
+
+    const std::string raw = TrimAscii(g_manualKeybindEditor.valueBuf);
+    int parsed = 0;
+    bool disable = false;
+    if (raw.empty()) {
+        strncpy_s(g_manualKeybindEditor.errorBuf, sizeof(g_manualKeybindEditor.errorBuf),
+                  "Enter a virtual-key code in hex (0x48) or decimal (72).", _TRUNCATE);
+        return false;
+    }
+    if (raw == "-1" || raw == "off" || raw == "OFF" || raw == "disabled" || raw == "DISABLED") {
+        disable = true;
+        parsed = -1;
+    } else {
+        parsed = Config::ParseKeyValue(raw);
+    }
+
+    if (!disable && !ManualKeybindAllowed(parsed, g_manualKeybindEditor.disallowMenuReserved)) {
+        strncpy_s(g_manualKeybindEditor.errorBuf, sizeof(g_manualKeybindEditor.errorBuf),
+                  g_manualKeybindEditor.disallowMenuReserved
+                      ? "That key is reserved here. Footer bindings disallow Enter, Escape, and Space."
+                      : "That key is not allowed for menu binding.",
+                  _TRUNCATE);
+        return false;
+    }
+
+    *g_manualKeybindEditor.settingsField = parsed;
+    if (disable) {
+        Config::SetSetting(g_manualKeybindEditor.iniSection, g_manualKeybindEditor.iniKey, "-1");
+    } else {
+        char buf[16];
+        _snprintf_s(buf, sizeof(buf), _TRUNCATE, "0x%X", parsed);
+        Config::SetSetting(g_manualKeybindEditor.iniSection, g_manualKeybindEditor.iniKey, buf);
+    }
+
+    DirectDrawHook::AddMessage(disable ? "Keybind disabled" : "Keybind updated", "HOTKEY", RGB(180, 255, 220), 900, 0, 120);
+    CloseManualKeybindEditor();
+    Input::ResetEdges();
+    return true;
+}
+
+std::string ManualKeybindPreviewText() {
+    const std::string raw = TrimAscii(g_manualKeybindEditor.valueBuf);
+    if (raw.empty()) return "Preview: enter a value";
+    if (raw == "-1" || raw == "off" || raw == "OFF" || raw == "disabled" || raw == "DISABLED") {
+        return "Preview: DISABLED";
+    }
+    const int parsed = Config::ParseKeyValue(raw);
+    if (!ManualKeybindAllowed(parsed, g_manualKeybindEditor.disallowMenuReserved)) {
+        return "Preview: blocked by key restrictions";
+    }
+    char buf[96];
+    _snprintf_s(buf, sizeof(buf), _TRUNCATE, "Preview: 0x%X  %s", parsed, Config::GetKeyName(parsed).c_str());
+    return std::string(buf);
+}
+
+bool TickManualKeybindEditorIfActive(ImDrawList*, const ScreenLayout& layout) {
+    if (!g_manualKeybindEditor.active) return false;
+
+    const float x = layout.panelX + 52.0f;
+    const float y = layout.contentTopY + 26.0f;
+    const float w = Theme::kPanelW - 104.0f;
+    const float h = 184.0f;
+
+    ImGui::SetNextWindowPos(ImVec2(x, y), ImGuiCond_Always);
+    ImGui::SetNextWindowSize(ImVec2(w, h), ImGuiCond_Always);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.0f);
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.0f, 0.0f, 0.0f, 0.94f));
+    ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(1.0f, 1.0f, 1.0f, 0.86f));
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 1.0f, 1.0f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0.04f, 0.04f, 0.04f, 0.96f));
+    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.12f, 0.12f, 0.12f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.22f, 0.22f, 0.22f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.35f, 0.35f, 0.35f, 1.0f));
+
+    const ImGuiWindowFlags flags =
+        ImGuiWindowFlags_NoCollapse |
+        ImGuiWindowFlags_NoResize |
+        ImGuiWindowFlags_NoMove |
+        ImGuiWindowFlags_NoSavedSettings;
+    if (ImGui::Begin("MANUAL KEYBIND EDITOR", nullptr, flags)) {
+        ImGui::TextUnformatted(g_manualKeybindEditor.title);
+        ImGui::TextDisabled("Enter a raw virtual-key code as hex or decimal. Example: 0x48 or 72.");
+        if (g_manualKeybindEditor.disallowMenuReserved) {
+            ImGui::TextDisabled("Footer bindings reserve Enter, Escape, and Space.");
+        }
+
+        if (g_manualKeybindEditor.errorBuf[0]) {
+            ImGui::TextColored(ImVec4(1.0f, 0.35f, 0.35f, 1.0f), "%s", g_manualKeybindEditor.errorBuf);
+        } else {
+            const std::string preview = ManualKeybindPreviewText();
+            ImGui::TextDisabled("%s", preview.c_str());
+        }
+
+        ImGui::SetNextItemWidth(-1.0f);
+        ImGui::InputText("##manual_vk_value", g_manualKeybindEditor.valueBuf, sizeof(g_manualKeybindEditor.valueBuf));
+
+        if (ImGui::Button("Apply")) {
+            ApplyManualKeybindEditor();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Disable")) {
+            strncpy_s(g_manualKeybindEditor.valueBuf, sizeof(g_manualKeybindEditor.valueBuf), "-1", _TRUNCATE);
+            ApplyManualKeybindEditor();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel")) {
+            CloseManualKeybindEditor();
+            Input::ResetEdges();
+        }
+
+        if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
+            CloseManualKeybindEditor();
+            Input::ResetEdges();
+        }
+    }
+    ImGui::End();
+
+    ImGui::PopStyleColor(7);
+    ImGui::PopStyleVar(2);
+    return true;
+}
+
+void EditKeyboardHotkey(const char* title, int* field, const char* key, bool disallowMenuReserved = false) {
+    OpenManualKeybindEditor(title, field, "Hotkeys", key, disallowMenuReserved);
+}
+
+void EditOpenMenuVk()       { auto& s = MutableSettings(); EditKeyboardHotkey("OPEN MENU",       &s.configMenuKey,         "ConfigMenuKey"); }
+void EditTeleportVk()       { auto& s = MutableSettings(); EditKeyboardHotkey("TELEPORT",        &s.teleportKey,          "TeleportKey"); }
+void EditSavePositionVk()   { auto& s = MutableSettings(); EditKeyboardHotkey("SAVE POSITION",   &s.recordKey,            "RecordKey"); }
+void EditToggleStatsVk()    { auto& s = MutableSettings(); EditKeyboardHotkey("TOGGLE STATS",    &s.toggleTitleKey,       "ToggleTitleKey"); }
+void EditResetCounterVk()   { auto& s = MutableSettings(); EditKeyboardHotkey("RESET COUNTER",   &s.resetFrameCounterKey, "ResetFrameCounterKey"); }
+void EditHelpVk()           { auto& s = MutableSettings(); EditKeyboardHotkey("HELP",            &s.helpKey,              "HelpKey"); }
+void EditToggleImGuiVk()    { auto& s = MutableSettings(); EditKeyboardHotkey("TOGGLE OVERLAY",  &s.toggleImGuiKey,       "ToggleImGuiKey"); }
+void EditSavestateSaveVk()  { auto& s = MutableSettings(); EditKeyboardHotkey("SAVESTATE SAVE",  &s.savestateSaveKey,     "SavestateSaveKey"); }
+void EditSavestateLoadVk()  { auto& s = MutableSettings(); EditKeyboardHotkey("SAVESTATE LOAD",  &s.savestateLoadKey,     "SavestateLoadKey"); }
+void EditSavestatePrevVk()  { auto& s = MutableSettings(); EditKeyboardHotkey("SLOT PREVIOUS",   &s.savestatePrevSlotKey, "SavestatePrevSlotKey"); }
+void EditSavestateNextVk()  { auto& s = MutableSettings(); EditKeyboardHotkey("SLOT NEXT",       &s.savestateNextSlotKey, "SavestateNextSlotKey"); }
+void EditSwitchPlayersVk()  { auto& s = MutableSettings(); EditKeyboardHotkey("SWITCH PLAYERS",  &s.switchPlayersKey,     "SwitchPlayersKey"); }
+void EditMacroRecordVk()    { auto& s = MutableSettings(); EditKeyboardHotkey("MACRO RECORD",    &s.macroRecordKey,       "MacroRecordKey"); }
+void EditMacroPlayVk()      { auto& s = MutableSettings(); EditKeyboardHotkey("MACRO PLAY",      &s.macroPlayKey,         "MacroPlayKey"); }
+void EditMacroSlotVk()      { auto& s = MutableSettings(); EditKeyboardHotkey("MACRO NEXT SLOT", &s.macroSlotKey,         "MacroSlotKey"); }
+void EditUiAcceptVk()       { auto& s = MutableSettings(); EditKeyboardHotkey("UI ACCEPT",       &s.uiAcceptKey,          "UIAcceptKey", true); }
+void EditUiRefreshVk()      { auto& s = MutableSettings(); EditKeyboardHotkey("UI REFRESH",      &s.uiRefreshKey,         "UIRefreshKey", true); }
+void EditUiExitVk()         { auto& s = MutableSettings(); EditKeyboardHotkey("UI EXIT",         &s.uiExitKey,            "UIExitKey", true); }
+void EditFramestepPauseVk() { auto& s = MutableSettings(); EditKeyboardHotkey("FRAMESTEP PAUSE", &s.framestepPauseKey,    "FramestepPauseKey"); }
+void EditFramestepStepVk()  { auto& s = MutableSettings(); EditKeyboardHotkey("FRAMESTEP STEP",  &s.framestepStepKey,     "FramestepStepKey"); }
+void EditSwapCustomVk()     { auto& s = MutableSettings(); EditKeyboardHotkey("SWAP CUSTOM KEY", &s.swapCustomKey,        "SwapCustomKey"); }
 
 const char* ValOpenMenu()       { return HotkeyNameValue(Config::GetSettings().configMenuKey); }
 const char* ValTeleport()       { return HotkeyNameValue(Config::GetSettings().teleportKey); }
@@ -613,6 +880,27 @@ const char* ValUiExit()         { return HotkeyNameValue(Config::GetSettings().u
 const char* ValFramestepPause() { return HotkeyNameValue(Config::GetSettings().framestepPauseKey); }
 const char* ValFramestepStep()  { return HotkeyNameValue(Config::GetSettings().framestepStepKey); }
 const char* ValSwapCustom()     { return HotkeyNameValue(Config::GetSettings().swapCustomKey); }
+const char* ValOpenMenuCode()       { return HotkeyCodeValue(Config::GetSettings().configMenuKey); }
+const char* ValTeleportCode()       { return HotkeyCodeValue(Config::GetSettings().teleportKey); }
+const char* ValSavePositionCode()   { return HotkeyCodeValue(Config::GetSettings().recordKey); }
+const char* ValToggleStatsCode()    { return HotkeyCodeValue(Config::GetSettings().toggleTitleKey); }
+const char* ValResetCounterCode()   { return HotkeyCodeValue(Config::GetSettings().resetFrameCounterKey); }
+const char* ValHelpCode()           { return HotkeyCodeValue(Config::GetSettings().helpKey); }
+const char* ValToggleImGuiCode()    { return HotkeyCodeValue(Config::GetSettings().toggleImGuiKey); }
+const char* ValSavestateSaveCode()  { return HotkeyCodeValue(Config::GetSettings().savestateSaveKey); }
+const char* ValSavestateLoadCode()  { return HotkeyCodeValue(Config::GetSettings().savestateLoadKey); }
+const char* ValSavestatePrevCode()  { return HotkeyCodeValue(Config::GetSettings().savestatePrevSlotKey); }
+const char* ValSavestateNextCode()  { return HotkeyCodeValue(Config::GetSettings().savestateNextSlotKey); }
+const char* ValSwitchPlayersCode()  { return HotkeyCodeValue(Config::GetSettings().switchPlayersKey); }
+const char* ValMacroRecordCode()    { return HotkeyCodeValue(Config::GetSettings().macroRecordKey); }
+const char* ValMacroPlayCode()      { return HotkeyCodeValue(Config::GetSettings().macroPlayKey); }
+const char* ValMacroSlotCode()      { return HotkeyCodeValue(Config::GetSettings().macroSlotKey); }
+const char* ValUiAcceptCode()       { return HotkeyCodeValue(Config::GetSettings().uiAcceptKey); }
+const char* ValUiRefreshCode()      { return HotkeyCodeValue(Config::GetSettings().uiRefreshKey); }
+const char* ValUiExitCode()         { return HotkeyCodeValue(Config::GetSettings().uiExitKey); }
+const char* ValFramestepPauseCode() { return HotkeyCodeValue(Config::GetSettings().framestepPauseKey); }
+const char* ValFramestepStepCode()  { return HotkeyCodeValue(Config::GetSettings().framestepStepKey); }
+const char* ValSwapCustomCode()     { return HotkeyCodeValue(Config::GetSettings().swapCustomKey); }
 const char* ValSwapEnabled()    { return Config::GetSettings().swapCustomEnabled ? "ON" : "OFF"; }
 constexpr int kControllerChoiceCount = 5;
 
@@ -701,6 +989,7 @@ const char* ValHotkeySavestate() { return "4 KEYS"; }
 const char* ValHotkeyMacros()   { return "3 KEYS"; }
 const char* ValHotkeyMenu()     { return "5 KEYS"; }
 const char* ValHotkeyController() { return "13 BINDS"; }
+const char* ValHotkeyManual()   { return "RAW VK"; }
 
 Row* BuildHotkeysGameplayRows(int& count) {
     static Row s_rows[16];
@@ -771,8 +1060,50 @@ Row* BuildHotkeysSwapRows(int& count) {
     return s_rows;
 }
 
+Row* BuildHotkeysManualRows(int& count) {
+    static Row s_rows[40];
+    int n = 0;
+
+    s_rows[n++] = Header("RAW VK CODES");
+    s_rows[n++] = Info("Use this page for direct virtual-key entry when press-to-bind is not enough.");
+    s_rows[n++] = Info("Examples: 0x48 or 72. Enter -1 in the editor to disable a binding.");
+    s_rows[n++] = Spacer();
+
+    s_rows[n++] = Header("GAMEPLAY");
+    s_rows[n++] = Action("OPEN MENU",       EditOpenMenuVk,      ValOpenMenuCode);
+    s_rows[n++] = Action("TELEPORT",        EditTeleportVk,      ValTeleportCode);
+    s_rows[n++] = Action("SAVE POSITION",   EditSavePositionVk,  ValSavePositionCode);
+    s_rows[n++] = Action("TOGGLE STATS",    EditToggleStatsVk,   ValToggleStatsCode);
+    s_rows[n++] = Action("RESET COUNTER",   EditResetCounterVk,  ValResetCounterCode);
+    s_rows[n++] = Action("HELP",            EditHelpVk,          ValHelpCode);
+    s_rows[n++] = Action("TOGGLE OVERLAY",  EditToggleImGuiVk,   ValToggleImGuiCode);
+    s_rows[n++] = Action("SWITCH PLAYERS",  EditSwitchPlayersVk, ValSwitchPlayersCode);
+    s_rows[n++] = Spacer();
+
+    s_rows[n++] = Header("SAVESTATES / MACROS");
+    s_rows[n++] = Action("SAVESTATE SAVE",  EditSavestateSaveVk, ValSavestateSaveCode);
+    s_rows[n++] = Action("SAVESTATE LOAD",  EditSavestateLoadVk, ValSavestateLoadCode);
+    s_rows[n++] = Action("SLOT PREVIOUS",   EditSavestatePrevVk, ValSavestatePrevCode);
+    s_rows[n++] = Action("SLOT NEXT",       EditSavestateNextVk, ValSavestateNextCode);
+    s_rows[n++] = Action("MACRO RECORD",    EditMacroRecordVk,   ValMacroRecordCode);
+    s_rows[n++] = Action("MACRO PLAY",      EditMacroPlayVk,     ValMacroPlayCode);
+    s_rows[n++] = Action("MACRO NEXT SLOT", EditMacroSlotVk,     ValMacroSlotCode);
+    s_rows[n++] = Spacer();
+
+    s_rows[n++] = Header("MENU / FRAMESTEP");
+    s_rows[n++] = Action("UI ACCEPT",       EditUiAcceptVk,       ValUiAcceptCode);
+    s_rows[n++] = Action("UI REFRESH",      EditUiRefreshVk,      ValUiRefreshCode);
+    s_rows[n++] = Action("UI EXIT",         EditUiExitVk,         ValUiExitCode);
+    s_rows[n++] = Info("Footer hotkeys disallow Enter, Escape, and Space so they do not fight menu controls.");
+    s_rows[n++] = Action("FRAMESTEP PAUSE", EditFramestepPauseVk, ValFramestepPauseCode);
+    s_rows[n++] = Action("FRAMESTEP STEP",  EditFramestepStepVk,  ValFramestepStepCode);
+    s_rows[n++] = Action("SWAP CUSTOM KEY", EditSwapCustomVk,     ValSwapCustomCode, SwapCustomKeyDisabled);
+    count = n;
+    return s_rows;
+}
+
 Row* BuildHotkeysControllerRows(int& count) {
-    static Row s_rows[32];
+    static Row s_rows[40];
     int n = 0;
 
     s_rows[n++] = Header("CONTROLLER BINDINGS");
@@ -810,12 +1141,16 @@ Row* BuildHotkeysControllerRows(int& count) {
     s_rows[n++] = Action("SUBTAB PREVIOUS", BindGpUiSubTabPrev, ValGpUiSubTabPrev);
     s_rows[n++] = Action("SUBTAB NEXT", BindGpUiSubTabNext, ValGpUiSubTabNext);
     s_rows[n++] = Info("These tab and subtab binds also work while you are inside submenus.");
+    s_rows[n++] = Spacer();
+    s_rows[n++] = Action("SAVE CONTROLLER BINDS", SaveSettingsToDisk);
+    s_rows[n++] = Action("RELOAD FROM DISK", ReloadSettingsFromDisk);
+    s_rows[n++] = Info(CurrentConfigPathInfo());
     count = n;
     return s_rows;
 }
 
 Row* BuildSettingsHotkeysRows(int& count) {
-    static Row s_rows[16];
+    static Row s_rows[20];
     int n = 0;
 
     s_rows[n++] = Header("HOTKEY MENUS");
@@ -823,10 +1158,13 @@ Row* BuildSettingsHotkeysRows(int& count) {
     s_rows[n++] = Submenu("SAVESTATE",     "SAVESTATE HOTKEYS", BuildHotkeysSavestateRows, ValHotkeySavestate);
     s_rows[n++] = Submenu("MACROS",        "MACRO HOTKEYS",    BuildHotkeysMacroRows,    ValHotkeyMacros);
     s_rows[n++] = Submenu("MENU CONTROL",  "MENU CONTROL",     BuildHotkeysMenuRows,     ValHotkeyMenu);
+    s_rows[n++] = Submenu("RAW VK CODES",  "RAW VK CODES",     BuildHotkeysManualRows,   ValHotkeyManual);
     s_rows[n++] = Submenu("CONTROLLER",    "CONTROLLER BINDINGS", BuildHotkeysControllerRows, ValHotkeyController);
     s_rows[n++] = Submenu("SWAP POSITIONS","SWAP POSITIONS",   BuildHotkeysSwapRows,     ValSwapEnabled);
     s_rows[n++] = Spacer();
+    s_rows[n++] = Info(CurrentConfigPathInfo());
     s_rows[n++] = Action("SAVE ALL TO DISK", SaveSettingsToDisk);
+    s_rows[n++] = Action("RELOAD FROM DISK", ReloadSettingsFromDisk);
     count = n;
     return s_rows;
 }
@@ -847,6 +1185,16 @@ bool g_customSavestateHotswapPrompt = false;
 bool g_customSavestateHotswapDismissed = false;
 unsigned int g_customSavestateHotswapWorkingStamp = 0;
 char g_customSavestateHotswapInfo[256] = "Loaded slot differs from the current match.";
+int g_debugPracticeLocalSide = -1;
+bool g_debugSwitchPlayersAvailable = false;
+bool g_debugRfFreezeP1Active = false;
+bool g_debugRfFreezeP2Active = false;
+char g_debugLocalSideInfo[96] = "Current Local: unknown";
+char g_debugAiControlInfo[96] = "AI Control Flags: unknown";
+char g_debugPracticeCpuInfo[96] = "Practice P2 CPU flag: unknown";
+char g_debugGamespeedInfo[96] = "Gamespeed: unknown";
+char g_debugRfFreezeP1Info[160] = "P1 RF Freeze: inactive";
+char g_debugRfFreezeP2Info[160] = "P2 RF Freeze: inactive";
 
 struct HotswapCurrentState;
 int CharacterSelectIdFromInternalCharacterId(int internalCharId);
@@ -956,11 +1304,102 @@ void RefreshCustomSavestateMirrors() {
     }
 }
 
+void RefreshDebugRuntimeMirrors() {
+    g_debugSwitchPlayersAvailable = GetCurrentGameMode() == GameMode::Practice;
+    g_debugPracticeLocalSide = -1;
+    if (g_debugSwitchPlayersAvailable) {
+        PauseIntegration::EnsurePracticePointerCapture();
+        if (void* practice = PauseIntegration::GetPracticeControllerPtr()) {
+            SafeReadMemory((uintptr_t)practice + PRACTICE_OFF_LOCAL_SIDE_IDX,
+                           &g_debugPracticeLocalSide,
+                           sizeof(g_debugPracticeLocalSide));
+        }
+    }
+
+    if (g_debugPracticeLocalSide == 0) {
+        strncpy_s(g_debugLocalSideInfo, sizeof(g_debugLocalSideInfo), "Current Local: P1", _TRUNCATE);
+    } else if (g_debugPracticeLocalSide == 1) {
+        strncpy_s(g_debugLocalSideInfo, sizeof(g_debugLocalSideInfo), "Current Local: P2", _TRUNCATE);
+    } else if (g_debugSwitchPlayersAvailable) {
+        strncpy_s(g_debugLocalSideInfo, sizeof(g_debugLocalSideInfo), "Current Local: (unknown)", _TRUNCATE);
+    } else {
+        strncpy_s(g_debugLocalSideInfo, sizeof(g_debugLocalSideInfo), "Current Local: Practice mode only", _TRUNCATE);
+    }
+
+    _snprintf_s(g_debugAiControlInfo, sizeof(g_debugAiControlInfo), _TRUNCATE,
+                "AI Control Flags: P1=%s  P2=%s",
+                IsAIControlFlagHuman(1) ? "Human" : "AI",
+                IsAIControlFlagHuman(2) ? "Human" : "AI");
+
+    uint8_t p2CpuFlag = 0xFF;
+    uintptr_t efzBase = GetEFZBase();
+    if (efzBase) {
+        uintptr_t gameStatePtr = 0;
+        if (SafeReadMemory(efzBase + EFZ_BASE_OFFSET_GAME_STATE, &gameStatePtr, sizeof(gameStatePtr)) && gameStatePtr) {
+            SafeReadMemory(gameStatePtr + 4931, &p2CpuFlag, sizeof(p2CpuFlag));
+        }
+    }
+    if (p2CpuFlag != 0xFF) {
+        _snprintf_s(g_debugPracticeCpuInfo, sizeof(g_debugPracticeCpuInfo), _TRUNCATE,
+                    "Practice P2 CPU flag: %s (byte=%u)", p2CpuFlag ? "CPU" : "Human", (unsigned)p2CpuFlag);
+    } else {
+        strncpy_s(g_debugPracticeCpuInfo, sizeof(g_debugPracticeCpuInfo), "Practice P2 CPU flag: unknown", _TRUNCATE);
+    }
+
+    uint8_t curSpeed = 0xFF;
+    if (HMODULE hEfz = GetModuleHandleA("efz.exe")) {
+        uint32_t rootPtr = 0;
+        if (SafeReadMemory(reinterpret_cast<uintptr_t>(hEfz) + 0x39010C, &rootPtr, sizeof(rootPtr)) && rootPtr) {
+            SafeReadMemory(static_cast<uintptr_t>(rootPtr) + 0xF7FF8, &curSpeed, sizeof(curSpeed));
+        }
+    }
+    if (curSpeed != 0xFF) {
+        _snprintf_s(g_debugGamespeedInfo, sizeof(g_debugGamespeedInfo), _TRUNCATE,
+                    "Gamespeed: %u (0=freeze, 3=normal)", (unsigned)curSpeed);
+    } else {
+        strncpy_s(g_debugGamespeedInfo, sizeof(g_debugGamespeedInfo), "Gamespeed: unknown", _TRUNCATE);
+    }
+
+    auto fillRfInfo = [](int player, char* buf, size_t bufSz, bool& activeOut) {
+        bool active = false;
+        bool colorManaged = false;
+        bool colorBlue = false;
+        double value = 0.0;
+        activeOut = false;
+        if (!GetRFFreezeStatus(player, active, value, colorManaged, colorBlue)) {
+            _snprintf_s(buf, bufSz, _TRUNCATE, "P%d RF Freeze: unknown", player);
+            return;
+        }
+        activeOut = active;
+        if (!active) {
+            _snprintf_s(buf, bufSz, _TRUNCATE, "P%d RF Freeze: inactive", player);
+            return;
+        }
+
+        const RFFreezeOrigin origin = GetRFFreezeOrigin(player);
+        const char* originLabel = "Unknown";
+        if (origin == RFFreezeOrigin::ManualUI) originLabel = "Manual UI";
+        else if (origin == RFFreezeOrigin::ContinuousRecovery) originLabel = "Continuous Recovery";
+        else if (origin == RFFreezeOrigin::Other) originLabel = "Other";
+
+        _snprintf_s(buf, bufSz, _TRUNCATE,
+                    "P%d RF Freeze: ACTIVE  RF=%.1f  Color=%s%s  Source=%s",
+                    player,
+                    value,
+                    colorManaged ? "Locked" : "Off",
+                    colorManaged ? (colorBlue ? " (Blue)" : " (Red)") : "",
+                    originLabel);
+    };
+    fillRfInfo(1, g_debugRfFreezeP1Info, sizeof(g_debugRfFreezeP1Info), g_debugRfFreezeP1Active);
+    fillRfInfo(2, g_debugRfFreezeP2Info, sizeof(g_debugRfFreezeP2Info), g_debugRfFreezeP2Active);
+}
+
 void RefreshDebugMirrors() {
     g_mirrorOverlayBorders = g_ShowOverlayDebugBorders.load();
     g_mirrorRGToasts       = g_ShowRGDebugToasts.load();
     g_mirrorPadInputLog    = XInputShim::g_LogGenericPadInputDebug.load();
     g_mirrorDeepFA         = g_deepFrameAdvDebug.load();
+
     RefreshCustomSavestateMirrors();
 }
 
@@ -1196,6 +1635,12 @@ const char* ValDebugBgm() {
     return "OFF (150)";
 }
 const char* ValFinalMemoryTools() { return "RUN"; }
+const char* ValDebugRuntime() {
+    if (g_debugPracticeLocalSide == 0) return "P1 LOCAL";
+    if (g_debugPracticeLocalSide == 1) return "P2 LOCAL";
+    if (g_debugRfFreezeP1Active || g_debugRfFreezeP2Active) return "RF ACTIVE";
+    return g_debugSwitchPlayersAvailable ? "LIVE" : "PRACTICE";
+}
 
 Row* BuildDebugLoggingRows(int& count) {
     static Row s_rows[16];
@@ -1243,6 +1688,66 @@ Row* BuildDebugBgmRows(int& count) {
     s_rows[n++] = DropdownRow("BGM TRACK",            &g_bgmSlot, kNamedOstChoices, kNamedOstChoiceCount);
     s_rows[n++] = Action ("PLAY BGM",                  RunPlayBGM);
     s_rows[n++] = Action ("STOP BGM",                  RunStopBGM);
+    count = n;
+    return s_rows;
+}
+
+bool DebugSwitchPlayersDisabled() {
+    return !g_debugSwitchPlayersAvailable;
+}
+
+bool DebugCancelRFP1Disabled() {
+    return !g_debugRfFreezeP1Active;
+}
+
+bool DebugCancelRFP2Disabled() {
+    return !g_debugRfFreezeP2Active;
+}
+
+void RunDebugToggleSwitchPlayers() {
+    const bool ok = SwitchPlayers::ToggleLocalSide();
+    if (!ok) {
+        LogOut("[DEBUG/UI] SwitchPlayers toggle failed (Practice controller not ready?)", true);
+        DirectDrawHook::AddMessage("Switch Players: FAILED", "SYSTEM", RGB(255, 100, 100), 1500, 0, 100);
+        return;
+    }
+    RefreshDebugMirrors();
+    if (g_debugPracticeLocalSide == 0) {
+        DirectDrawHook::AddMessage("Local: P1", "SYSTEM", RGB(100, 255, 100), 1500, 0, 100);
+    } else if (g_debugPracticeLocalSide == 1) {
+        DirectDrawHook::AddMessage("Local: P2", "SYSTEM", RGB(100, 255, 100), 1500, 0, 100);
+    } else {
+        DirectDrawHook::AddMessage("Local side changed", "SYSTEM", RGB(100, 255, 100), 1200, 0, 100);
+    }
+}
+
+void RunCancelRFP1() {
+    StopRFFreezePlayer(1);
+    RefreshDebugMirrors();
+}
+
+void RunCancelRFP2() {
+    StopRFFreezePlayer(2);
+    RefreshDebugMirrors();
+}
+
+Row* BuildDebugRuntimeRows(int& count) {
+    static Row s_rows[24];
+    int n = 0;
+
+    s_rows[n++] = Header("PRACTICE ROUTING");
+    s_rows[n++] = Info("This is the custom-menu port of the ImGui debug runtime readouts for switch-player and pause troubleshooting.");
+    s_rows[n++] = Action("TOGGLE SWITCH PLAYERS", RunDebugToggleSwitchPlayers, nullptr, DebugSwitchPlayersDisabled);
+    s_rows[n++] = Info(g_debugLocalSideInfo);
+    s_rows[n++] = Info(g_debugAiControlInfo);
+    s_rows[n++] = Info(g_debugPracticeCpuInfo);
+    s_rows[n++] = Info(g_debugGamespeedInfo);
+    s_rows[n++] = Spacer();
+    s_rows[n++] = Header("RF FREEZE STATUS");
+    s_rows[n++] = Info(g_debugRfFreezeP1Info);
+    s_rows[n++] = Action("CANCEL P1 RF FREEZE", RunCancelRFP1, nullptr, DebugCancelRFP1Disabled);
+    s_rows[n++] = Info(g_debugRfFreezeP2Info);
+    s_rows[n++] = Action("CANCEL P2 RF FREEZE", RunCancelRFP2, nullptr, DebugCancelRFP2Disabled);
     count = n;
     return s_rows;
 }
@@ -1506,16 +2011,19 @@ Row* BuildDebugFinalMemoryRows(int& count) {
 }
 
 Row* BuildSettingsDebugRows(int& count) {
-    static Row s_rows[16];
+    static Row s_rows[20];
     int n = 0;
 
     s_rows[n++] = Header("DEBUG MENUS");
     s_rows[n++] = Submenu("LOGGING",      "DEBUG LOGGING", BuildDebugLoggingRows,     ValDebugLogging);
     s_rows[n++] = Submenu("OVERLAYS",     "DEBUG OVERLAYS", BuildDebugOverlayRows,     ValDebugOverlays);
+    s_rows[n++] = Submenu("INPUT / RUNTIME", "INPUT / RUNTIME", BuildDebugRuntimeRows, ValDebugRuntime);
     s_rows[n++] = Submenu("BGM",          "BGM",            BuildDebugBgmRows,         ValDebugBgm);
     s_rows[n++] = Submenu("FINAL MEMORY", "FINAL MEMORY",   BuildDebugFinalMemoryRows, ValFinalMemoryTools);
     s_rows[n++] = Spacer();
+    s_rows[n++] = Info(CurrentConfigPathInfo());
     s_rows[n++] = Action ("SAVE ALL TO DISK",          SaveSettingsToDisk);
+    s_rows[n++] = Action ("RELOAD FROM DISK",          ReloadSettingsFromDisk);
     count = n;
     return s_rows;
 }
@@ -1667,6 +2175,37 @@ void OpenP2Wiki() { OpenUrl(g_helpP2WikiUrl); }
 bool P1WikiDisabled() { return g_helpP1WikiUrl[0] == '\0'; }
 bool P2WikiDisabled() { return g_helpP2WikiUrl[0] == '\0'; }
 const char* ValWiki() { return "OPEN"; }
+
+void DrawMichiruInline(ImDrawList* dl, float x, float y, float w, float h) {
+    if (!dl) return;
+
+    const float left = x;
+    const float top = y + 2.0f;
+    const float right = x + w;
+    const float bottom = y + h;
+
+    unsigned gw = 0, gh = 0;
+    if (IDirect3DTexture9* tex = GifPlayer::GetTexture(gw, gh)) {
+        float drawW = static_cast<float>(gw);
+        float drawH = static_cast<float>(gh);
+        const float maxW = (std::min)(right - left, 300.0f);
+        const float maxH = bottom - top;
+        if (drawW > maxW) {
+            const float scale = maxW / drawW;
+            drawW *= scale;
+            drawH *= scale;
+        }
+        if (drawH > maxH) {
+            const float scale = maxH / drawH;
+            drawW *= scale;
+            drawH *= scale;
+        }
+
+        const float imgX = left + (right - left - drawW) * 0.5f;
+        const float imgY = top;
+        dl->AddImage((ImTextureID)tex, ImVec2(imgX, imgY), ImVec2(imgX + drawW, imgY + drawH));
+    }
+}
 
 Row* BuildHelpQuickStartRows(int& count) {
     static Row s_rows[32];
@@ -2063,7 +2602,7 @@ Row* BuildHelpResourcesRows(int& count) {
 }
 
 Row* BuildHelpAboutRows(int& count) {
-    static Row s_rows[40];
+    static Row s_rows[48];
     int n = 0;
     s_rows[n++] = Header("EFZ TRAINING MODE");
     s_rows[n++] = Info(g_helpVersionStr);
@@ -2085,6 +2624,9 @@ Row* BuildHelpAboutRows(int& count) {
     s_rows[n++] = Info("A comprehensive training mode enhancement tool for Eternal Fighter Zero.");
     s_rows[n++] = Info("It adds frame advantage display, Combo Statistics, Framebar, macros, dummy triggers, character tools, savestates, and in-game configuration.");
     s_rows[n++] = Info("The custom menu and overlay are built to support keyboard, Xbox-style pads, and many PlayStation-style pads through the same controller input layer.");
+    s_rows[n++] = Spacer();
+    s_rows[n++] = Header("OBLIGATORY MICHIRU");
+    s_rows[n++] = Custom(216.0f, DrawMichiruInline);
     count = n;
     return s_rows;
 }
@@ -4280,9 +4822,17 @@ void TickSettingsGeneral(ImDrawList* dl, const ScreenLayout& layout, int& focus,
 }
 void TickSettingsHotkeys(ImDrawList* dl, const ScreenLayout& layout, int& focus, ScrollState& scroll, bool& backEdge) {
     int n = 0; Row* rows = BuildSettingsHotkeysRows(n);
+    if (IsManualKeybindEditorActive()) {
+        ClampFocus(rows, n, focus);
+        backEdge = false;
+        RenderList(dl, layout, "HOTKEYS", rows, n, focus, scroll);
+        TickManualKeybindEditorIfActive(dl, layout);
+        return;
+    }
     TickListScreen(dl, layout, "HOTKEYS", rows, n, focus, scroll, backEdge);
 }
 void TickSettingsDebug(ImDrawList* dl, const ScreenLayout& layout, int& focus, ScrollState& scroll, bool& backEdge) {
+    RefreshDebugRuntimeMirrors();
     int n = 0; Row* rows = BuildSettingsDebugRows(n);
     TickListScreen(dl, layout, "DEBUG", rows, n, focus, scroll, backEdge);
 }
