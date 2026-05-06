@@ -80,6 +80,8 @@ constexpr size_t kGameStateExternalSpeedTriggerOffset = 82556;
 constexpr size_t kGameStateExternalEventTriggerOffset = 82560;
 constexpr size_t kGameStateReplayIoOffset = 82563;
 constexpr size_t kGameStateReplayIoSize = 5;
+constexpr size_t kGameStateP1CustomPaletteFlagOffset = 4920;
+constexpr size_t kGameStateP2CustomPaletteFlagOffset = 4924;
 constexpr size_t kPlayerStateOpponentPtrOffset = sizeof(uint32_t) * 30;
 constexpr size_t kPlayerStateGameStatePtrOffset = sizeof(uint32_t) * 31;
 constexpr size_t kPlayerStateRenderPtrOffset = sizeof(uint32_t) * 32;
@@ -87,8 +89,12 @@ constexpr size_t kPlayerStateInputPtrOffset = sizeof(uint32_t) * 33;
 constexpr size_t kPlayerStateSoundPtrOffset = sizeof(uint32_t) * 34;
 constexpr size_t kPlayerStateRuntimePointerBlockOffset = kPlayerStateOpponentPtrOffset;
 constexpr size_t kPlayerStateRuntimePointerBlockSize = (kPlayerStateSoundPtrOffset + sizeof(uint32_t)) - kPlayerStateOpponentPtrOffset;
+constexpr size_t kPlayerStateAnimationDataTableOffset = 16;
+constexpr size_t kPlayerStateImageSurfaceArrayOffset = 20;
 constexpr size_t kPlayerStatePlayerIndexOffset = 140;
 constexpr size_t kPlayerStateIdentityByteOffset = 141;
+constexpr size_t kPlayerStatePaletteIndexOffset = 142;
+constexpr size_t kPlayerStateCollisionDataTableOffset = 356;
 constexpr uintptr_t kGameStateSoundManagerOffset = 8;
 constexpr uintptr_t kCharacterSoundManagerOffset = 136;
 constexpr uintptr_t kSoundManagerBufferTableOffset = 1216;
@@ -694,6 +700,51 @@ std::string DescribePersistedModState(const PersistedModState& state) {
     return oss.str();
 }
 
+bool ReadSnapshotPaletteState(const Snapshot& snapshot,
+                             uint8_t& outP1PaletteIndex,
+                             uint8_t& outP2PaletteIndex,
+                             uint32_t& outP1CustomFlag,
+                             uint32_t& outP2CustomFlag) {
+    if (snapshot.p1State.size() <= kPlayerStatePaletteIndexOffset
+        || snapshot.p2State.size() <= kPlayerStatePaletteIndexOffset
+        || snapshot.gameState.size() < (kGameStateP1CustomPaletteFlagOffset + sizeof(outP1CustomFlag))
+        || snapshot.gameState.size() < (kGameStateP2CustomPaletteFlagOffset + sizeof(outP2CustomFlag))) {
+        return false;
+    }
+
+    outP1PaletteIndex = snapshot.p1State[kPlayerStatePaletteIndexOffset];
+    outP2PaletteIndex = snapshot.p2State[kPlayerStatePaletteIndexOffset];
+    std::memcpy(&outP1CustomFlag,
+                snapshot.gameState.data() + kGameStateP1CustomPaletteFlagOffset,
+                sizeof(outP1CustomFlag));
+    std::memcpy(&outP2CustomFlag,
+                snapshot.gameState.data() + kGameStateP2CustomPaletteFlagOffset,
+                sizeof(outP2CustomFlag));
+
+    return true;
+}
+
+std::string DescribeSnapshotPaletteState(const Snapshot& snapshot) {
+    uint8_t p1PaletteIndex = 0;
+    uint8_t p2PaletteIndex = 0;
+    uint32_t p1CustomFlag = 0;
+    uint32_t p2CustomFlag = 0;
+    if (!ReadSnapshotPaletteState(snapshot,
+                                  p1PaletteIndex,
+                                  p2PaletteIndex,
+                                  p1CustomFlag,
+                                  p2CustomFlag)) {
+        return "unavailable";
+    }
+
+    std::ostringstream oss;
+    oss << "palette=" << (static_cast<unsigned int>(p1PaletteIndex) + 1)
+        << '/' << (static_cast<unsigned int>(p2PaletteIndex) + 1)
+        << " custom=" << (p1CustomFlag != 0 ? 1 : 0)
+        << '/' << (p2CustomFlag != 0 ? 1 : 0);
+    return oss.str();
+}
+
 std::string DescribeSnapshotPayload(const Snapshot& snapshot) {
     uint8_t savedGameSpeed = 0;
     const bool haveSavedGameSpeed = TryReadSavedGameSpeed(snapshot, savedGameSpeed);
@@ -713,6 +764,7 @@ std::string DescribeSnapshotPayload(const Snapshot& snapshot) {
     if (!snapshot.gameState.empty()) {
         oss << " gameKeys={" << DescribeGameStateKeyFields(snapshot.gameState) << '}';
     }
+    oss << " paletteKeys={" << DescribeSnapshotPaletteState(snapshot) << '}';
     if (snapshot.hasSoundState) {
         oss << " soundKeys={" << DescribeSoundState(snapshot.soundState) << '}';
     } else {
@@ -1270,6 +1322,32 @@ size_t RefreshRestoreTargetPlayerStatePointers(std::vector<uint8_t>& snapshotPla
                                                   sampleLog,
                                                   sampleCount,
                                                   maxSamples);
+    replaced += RefreshExplicitPointerFields(snapshotPlayerState,
+                                             livePlayerState,
+                                             kPlayerStateAnimationDataTableOffset,
+                                             sizeof(uint32_t),
+                                             label,
+                                             sampleLog,
+                                             sampleCount,
+                                             maxSamples);
+    replaced += RefreshExplicitPointerFields(snapshotPlayerState,
+                                             livePlayerState,
+                                             kPlayerStateImageSurfaceArrayOffset,
+                                             sizeof(uint32_t),
+                                             label,
+                                             sampleLog,
+                                             sampleCount,
+                                             maxSamples);
+    // efz.exe handlePlayerCollisions reads player+0x164 as the collision/frame-data table base.
+    // Preserve the live pointer explicitly so post-restore collision processing never reuses a stale table.
+    replaced += RefreshExplicitPointerFields(snapshotPlayerState,
+                                             livePlayerState,
+                                             kPlayerStateCollisionDataTableOffset,
+                                             sizeof(uint32_t),
+                                             label,
+                                             sampleLog,
+                                             sampleCount,
+                                             maxSamples);
     replaced += RehydrateCommittedPrivatePointers(snapshotPlayerState,
                                                   livePlayerState,
                                                   label,
@@ -1541,23 +1619,32 @@ std::string DescribePlayerStateKeyFields(const std::vector<uint8_t>& bytes) {
     uint32_t renderPtr = 0;
     uint32_t inputPtr = 0;
     uint32_t soundPtr = 0;
+    uint32_t animationDataPtr = 0;
+    uint32_t imageSurfacePtr = 0;
+    uint32_t collisionDataPtr = 0;
     uint8_t playerIndex = 0;
     uint8_t identityByte = 0;
 
+    ReadStructValue(bytes, kPlayerStateAnimationDataTableOffset, animationDataPtr);
+    ReadStructValue(bytes, kPlayerStateImageSurfaceArrayOffset, imageSurfacePtr);
     ReadStructValue(bytes, kPlayerStateOpponentPtrOffset, opponentPtr);
     ReadStructValue(bytes, kPlayerStateGameStatePtrOffset, gameStatePtr);
     ReadStructValue(bytes, kPlayerStateRenderPtrOffset, renderPtr);
     ReadStructValue(bytes, kPlayerStateInputPtrOffset, inputPtr);
     ReadStructValue(bytes, kPlayerStateSoundPtrOffset, soundPtr);
+    ReadStructValue(bytes, kPlayerStateCollisionDataTableOffset, collisionDataPtr);
     ReadStructValue(bytes, kPlayerStatePlayerIndexOffset, playerIndex);
     ReadStructValue(bytes, kPlayerStateIdentityByteOffset, identityByte);
 
     std::ostringstream oss;
-    oss << "opp=" << Hex32(opponentPtr)
+    oss << "anim=" << Hex32(animationDataPtr)
+        << " image=" << Hex32(imageSurfacePtr)
+        << " opp=" << Hex32(opponentPtr)
         << " gs=" << Hex32(gameStatePtr)
         << " gfx=" << Hex32(renderPtr)
         << " input=" << Hex32(inputPtr)
         << " sound=" << Hex32(soundPtr)
+        << " collision=" << Hex32(collisionDataPtr)
         << " idx=" << static_cast<unsigned int>(playerIndex)
         << " idByte=" << static_cast<unsigned int>(identityByte);
     return oss.str();
@@ -2088,17 +2175,60 @@ bool ReadSnapshotRuntimeMetadata(uintptr_t gameStatePtr,
                                  uint16_t& outBgmTrack,
                                  std::string& outReason);
 
+enum class SnapshotVersionFamily {
+    Unknown = 0,
+    Vanilla,
+    Revival102x,
+    Other,
+};
+
+SnapshotVersionFamily ClassifySnapshotVersionFamily(uint32_t versionValue) {
+    switch (static_cast<EfzRevivalVersion>(versionValue)) {
+    case EfzRevivalVersion::Unknown:
+        return SnapshotVersionFamily::Unknown;
+    case EfzRevivalVersion::Vanilla:
+        return SnapshotVersionFamily::Vanilla;
+    case EfzRevivalVersion::Revival102e:
+    case EfzRevivalVersion::Revival102f:
+    case EfzRevivalVersion::Revival102g:
+    case EfzRevivalVersion::Revival102h:
+    case EfzRevivalVersion::Revival102i:
+        return SnapshotVersionFamily::Revival102x;
+    default:
+        return SnapshotVersionFamily::Other;
+    }
+}
+
+bool SnapshotVersionsAreCompatible(uint32_t currentVersion, uint32_t savedVersion) {
+    if (currentVersion == 0 || savedVersion == 0) {
+        return true;
+    }
+
+    if (currentVersion == savedVersion) {
+        return true;
+    }
+
+    const SnapshotVersionFamily currentFamily = ClassifySnapshotVersionFamily(currentVersion);
+    const SnapshotVersionFamily savedFamily = ClassifySnapshotVersionFamily(savedVersion);
+    return currentFamily == SnapshotVersionFamily::Revival102x
+        && savedFamily == SnapshotVersionFamily::Revival102x;
+}
+
 bool CurrentVersionMatchesSnapshot(const Snapshot& snapshot, std::string* outReason = nullptr) {
     if (!snapshot.valid || snapshot.revivalVersion == 0) {
         return true;
     }
 
     const uint32_t currentVersion = CurrentRevivalVersionValue();
-    if (currentVersion != 0 && currentVersion != snapshot.revivalVersion) {
+    if (!SnapshotVersionsAreCompatible(currentVersion, snapshot.revivalVersion)) {
         if (outReason) {
             std::ostringstream oss;
+            const EfzRevivalVersion current = static_cast<EfzRevivalVersion>(currentVersion);
+            const EfzRevivalVersion saved = static_cast<EfzRevivalVersion>(snapshot.revivalVersion);
             oss << "current Revival version " << currentVersion
-                << " does not match saved snapshot version " << snapshot.revivalVersion;
+                << " (" << EfzRevivalVersionName(current) << ")"
+                << " is not compatible with saved snapshot version " << snapshot.revivalVersion
+                << " (" << EfzRevivalVersionName(saved) << ")";
             *outReason = oss.str();
         }
         return false;
@@ -2230,6 +2360,30 @@ void RestoreFpuState(const uint8_t* src) {
     }
 }
 
+void CanonicalizeControlState(PersistedModState& state) {
+    if (state.localSide != 0 && state.localSide != 1) {
+        state.localSide = 0;
+    }
+
+    state.p1CpuFlag = static_cast<uint8_t>((state.localSide == 1) ? 1u : 0u);
+    state.p2CpuFlag = static_cast<uint8_t>((state.localSide == 1) ? 0u : 1u);
+}
+
+void ForceSnapshotControlState(Snapshot& snapshot, int localSide) {
+    if (!snapshot.valid) {
+        return;
+    }
+
+    snapshot.modState.valid = 1;
+    snapshot.modState.localSide = (localSide == 1) ? 1 : 0;
+    CanonicalizeControlState(snapshot.modState);
+
+    const uint8_t activePlayer = static_cast<uint8_t>(snapshot.modState.localSide);
+    WriteStructValue(snapshot.gameState, GAMESTATE_OFF_ACTIVE_PLAYER, activePlayer);
+    WriteStructValue(snapshot.gameState, GAMESTATE_OFF_P1_CPU_FLAG, snapshot.modState.p1CpuFlag);
+    WriteStructValue(snapshot.gameState, GAMESTATE_OFF_P2_CPU_FLAG, snapshot.modState.p2CpuFlag);
+}
+
 void CaptureModState(PersistedModState& outState) {
     std::memset(&outState, 0, sizeof(outState));
     outState.valid = 1;
@@ -2246,31 +2400,7 @@ void CaptureModState(PersistedModState& outState) {
         SafeReadMemory(gameStatePtr + GAMESTATE_OFF_P1_CPU_FLAG, &outState.p1CpuFlag, sizeof(outState.p1CpuFlag));
         SafeReadMemory(gameStatePtr + GAMESTATE_OFF_P2_CPU_FLAG, &outState.p2CpuFlag, sizeof(outState.p2CpuFlag));
     }
-}
-
-int ReadEngineLocalSideForRestoreDecision() {
-    const uintptr_t gameStatePtr = GetGameStatePtr();
-    if (!gameStatePtr) {
-        return -1;
-    }
-
-    uint8_t activePlayer = 0xFF;
-    uint8_t p1CpuFlag = 0xFF;
-    uint8_t p2CpuFlag = 0xFF;
-    if (!SafeReadMemory(gameStatePtr + GAMESTATE_OFF_ACTIVE_PLAYER, &activePlayer, sizeof(activePlayer))
-        || !SafeReadMemory(gameStatePtr + GAMESTATE_OFF_P1_CPU_FLAG, &p1CpuFlag, sizeof(p1CpuFlag))
-        || !SafeReadMemory(gameStatePtr + GAMESTATE_OFF_P2_CPU_FLAG, &p2CpuFlag, sizeof(p2CpuFlag))) {
-        return -1;
-    }
-
-    if (activePlayer == 0u && p1CpuFlag == 0u && p2CpuFlag == 1u) {
-        return 0;
-    }
-    if (activePlayer == 1u && p1CpuFlag == 1u && p2CpuFlag == 0u) {
-        return 1;
-    }
-
-    return -1;
+    CanonicalizeControlState(outState);
 }
 
 void RestoreModState(const PersistedModState& state, bool engineOnlyLocalSideRestore) {
@@ -2279,37 +2409,49 @@ void RestoreModState(const PersistedModState& state, bool engineOnlyLocalSideRes
         return;
     }
 
-    g_p2ControlOverridden = state.p2ControlWasOverridden != 0;
-    g_originalP2ControlFlag = state.originalP2ControlFlag;
+    PersistedModState restoreState = state;
+    CanonicalizeControlState(restoreState);
+
+    g_p2ControlOverridden = restoreState.p2ControlWasOverridden != 0;
+    g_originalP2ControlFlag = restoreState.originalP2ControlFlag;
 
     bool restoredEngineControlState = false;
 
-    if (state.localSide >= 0) {
+    if (restoreState.localSide >= 0) {
         if (engineOnlyLocalSideRestore) {
-            const int liveLocalSideBeforeRestore = ReadEngineLocalSideForRestoreDecision();
-            restoredEngineControlState = SwitchPlayers::RestoreEngineControlState(state.localSide,
-                                                                                  state.p1CpuFlag,
-                                                                                  state.p2CpuFlag);
+            restoredEngineControlState = SwitchPlayers::RestoreEngineControlState(restoreState.localSide,
+                                                                                  restoreState.p1CpuFlag,
+                                                                                  restoreState.p2CpuFlag,
+                                                                                  /*armInputCleanup=*/false);
             if (restoredEngineControlState) {
-                // Only finish with the delayed full Practice remap when the restore is
-                // changing who was already locally controlled before the load.
-                if (liveLocalSideBeforeRestore == 0 || liveLocalSideBeforeRestore == 1) {
-                    if (liveLocalSideBeforeRestore != state.localSide) {
-                        ArmDeferredPracticeSideRestore(state.localSide);
-                    } else {
-                        ClearDeferredPracticeSideRestoreState();
-                    }
-                } else {
-                    ArmDeferredPracticeSideRestore(state.localSide);
-                }
+                ArmDeferredPracticeSideRestore(restoreState.localSide);
             } else {
                 ClearDeferredPracticeSideRestoreState();
             }
         } else {
             ClearDeferredPracticeSideRestoreState();
-            const int currentSide = SwitchPlayers::GetLocalSide();
-            if (currentSide != state.localSide) {
-                SwitchPlayers::SetLocalSide(state.localSide);
+            const int currentPracticeSide = SwitchPlayers::GetLocalSide();
+            const bool practiceSideAlreadyMatches = currentPracticeSide == restoreState.localSide;
+            if (practiceSideAlreadyMatches) {
+                std::ostringstream oss;
+                oss << "localSide=" << restoreState.localSide
+                    << " currentSide=" << currentPracticeSide
+                    << " skippedRemap=1";
+                LogSavestateTrace("restore control reconcile already satisfied", oss.str());
+            } else if (!SwitchPlayers::ReapplyLocalSide(restoreState.localSide)) {
+                restoredEngineControlState = SwitchPlayers::RestoreEngineControlState(restoreState.localSide,
+                                                                                      restoreState.p1CpuFlag,
+                                                                                      restoreState.p2CpuFlag);
+                if (restoredEngineControlState) {
+                    ArmDeferredPracticeSideRestore(restoreState.localSide);
+                }
+            }
+            if (!restoredEngineControlState && restoreState.localSide >= 0) {
+                if (restoreState.localSide == 1) {
+                    SwitchPlayers::MarkSwapped();
+                } else {
+                    SwitchPlayers::ClearSwapFlag();
+                }
             }
         }
     } else {
@@ -2318,8 +2460,10 @@ void RestoreModState(const PersistedModState& state, bool engineOnlyLocalSideRes
 
     if (!restoredEngineControlState) {
         if (uintptr_t gameStatePtr = GetGameStatePtr()) {
-            SafeWriteMemory(gameStatePtr + GAMESTATE_OFF_P1_CPU_FLAG, &state.p1CpuFlag, sizeof(state.p1CpuFlag));
-            SafeWriteMemory(gameStatePtr + GAMESTATE_OFF_P2_CPU_FLAG, &state.p2CpuFlag, sizeof(state.p2CpuFlag));
+            const uint8_t activePlayer = static_cast<uint8_t>(restoreState.localSide);
+            SafeWriteMemory(gameStatePtr + GAMESTATE_OFF_ACTIVE_PLAYER, &activePlayer, sizeof(activePlayer));
+            SafeWriteMemory(gameStatePtr + GAMESTATE_OFF_P1_CPU_FLAG, &restoreState.p1CpuFlag, sizeof(restoreState.p1CpuFlag));
+            SafeWriteMemory(gameStatePtr + GAMESTATE_OFF_P2_CPU_FLAG, &restoreState.p2CpuFlag, sizeof(restoreState.p2CpuFlag));
         }
     }
 }
@@ -2391,6 +2535,7 @@ bool ApplyEditableFields(Snapshot& snapshot, const CustomSavestate::EditableFiel
     snapshot.modState.p1CpuFlag = clampedP1Cpu;
     snapshot.modState.p2CpuFlag = clampedP2Cpu;
     snapshot.modState.localSide = clampedLocalSide;
+    ForceSnapshotControlState(snapshot, clampedLocalSide);
     if (ok) {
         snapshot.dirty = true;
     }
@@ -2483,6 +2628,7 @@ bool CaptureSnapshot(Snapshot& outSnapshot, std::string& outReason) {
 
     outSnapshot.valid = true;
     outSnapshot.dirty = false;
+    ForceSnapshotControlState(outSnapshot, outSnapshot.modState.localSide);
     LogSavestateTrace("capture payload", DescribeSnapshotPayload(outSnapshot));
     LogSnapshotStatus("capture", "working snapshot captured | " + DescribeSnapshot(outSnapshot));
     return true;
@@ -2632,6 +2778,12 @@ bool RestoreSnapshot(const Snapshot& snapshot, std::string& outReason, bool engi
         LogSavestateTrace("restore write policy", mergeDetail);
     }
 
+    if (snapshot.fromDisk) {
+        LogSavestateTrace("restore palette policy",
+                          std::string("source=disk preserveSnapshot=1 | ")
+                              + DescribeSnapshotPaletteState(snapshot));
+    }
+
     SehFailure failure;
     if (!SehCancelAutoActionsAndMacros(failure)) {
         outReason = "exception during auto action cancel";
@@ -2755,15 +2907,20 @@ bool RestoreSnapshot(const Snapshot& snapshot, std::string& outReason, bool engi
     } else {
         LogSavestateTrace("restore sound", "available=0 skipped=legacy snapshot without serialized sound state");
     }
-    if (!SehComboOverlayResetState("custom savestate load", failure)) {
-        outReason = "exception during combo overlay reset";
-        LogSavestateSehFailure("restore combo overlay reset", failure, restoreContext);
-        return false;
-    }
-    if (!SehTickCharacterEnforcements(base, failure)) {
-        outReason = "exception during character enforcement refresh";
-        LogSavestateSehFailure("restore character enforcements", failure, restoreContext);
-        return false;
+    if (engineOnlyLocalSideRestore) {
+        LogSavestateTrace("restore post-write refresh",
+                          "skipped during control reconcile; lifecycle reset will refresh session caches");
+    } else {
+        if (!SehComboOverlayResetState("custom savestate load", failure)) {
+            outReason = "exception during combo overlay reset";
+            LogSavestateSehFailure("restore combo overlay reset", failure, restoreContext);
+            return false;
+        }
+        if (!SehTickCharacterEnforcements(base, failure)) {
+            outReason = "exception during character enforcement refresh";
+            LogSavestateSehFailure("restore character enforcements", failure, restoreContext);
+            return false;
+        }
     }
     {
         uint8_t savedGameSpeed = 0;
@@ -3127,13 +3284,15 @@ SnapshotActionResult RestoreWorkingSnapshotInternalImpl(std::string& outReason,
     }
 
     Framestep::CancelActiveState(engineOnlyLocalSideRestore
-                                     ? "hotswap savestate restore"
+                                     ? "savestate restore control reconcile"
                                      : "savestate restore");
 
     const bool shouldRefreshSessionScratch = snapshot.fromDisk || engineOnlyLocalSideRestore;
     if (shouldRefreshSessionScratch) {
         std::string sessionScratchDetail;
-        const char* sessionScratchSource = snapshot.fromDisk ? "disk" : "hotswap";
+        const char* sessionScratchSource = snapshot.fromDisk
+            ? "disk"
+            : (engineOnlyLocalSideRestore ? "control-reconcile" : "memory");
         if (RefreshRestoreSessionScratch(snapshot, sessionScratchDetail)) {
             LogSavestateTrace("restore session scratch refresh",
                               std::string("source=") + sessionScratchSource + " | " + sessionScratchDetail);
@@ -3573,6 +3732,7 @@ bool CapturePracticeEntrySnapshot() {
     if (!CaptureSnapshot(snapshot, reason)) {
         return false;
     }
+    ForceSnapshotControlState(snapshot, 0);
 
     LogSavestateTrace("practice entry capture", DescribeSnapshot(snapshot));
 
@@ -3694,9 +3854,12 @@ bool ProcessQueuedRestoreAtFrameBoundaryImpl(bool inPracticeMatch, bool characte
         ? "custom savestate slot restore immediate"
         : "custom savestate restore immediate";
     const bool preserveCurrentLocalSide = false;
+    const bool restoreInitialSlotControlViaDeferredPracticeRemap =
+        kind == DeferredRestoreKind::SelectedSlot && slot == kInitialSnapshotSlot;
     const SnapshotActionResult result = RestoreWorkingSnapshotInternal(reason,
                                                                        resetReason,
-                                                                       preserveCurrentLocalSide);
+                                                                       preserveCurrentLocalSide,
+                                                                       restoreInitialSlotControlViaDeferredPracticeRemap);
     if (result != SnapshotActionResult::Success) {
         LogSnapshotFailure(kind == DeferredRestoreKind::SelectedSlot ? "slot restore" : "restore", reason);
         ShowSnapshotMessage(result == SnapshotActionResult::GuardBlocked ? "State Load Blocked" : "State Load Failed",
@@ -3804,12 +3967,30 @@ void TickDeferredPracticeSideRestore(bool charactersInitialized) {
     }
 
     PauseIntegration::EnsurePracticePointerCapture();
-    void* practice = PauseIntegration::GetPracticeControllerPtr();
-    if (!practice) {
-        practice = PauseIntegration::ResolvePracticeControllerPtrNow(false,
-                                                                     false,
-                                                                     "CustomSavestate::TickDeferredPracticeSideRestore");
+    void* cachedPractice = PauseIntegration::GetPracticeControllerPtr();
+    void* resolvedPractice = cachedPractice;
+    if (!cachedPractice) {
+        resolvedPractice = PauseIntegration::ResolvePracticeControllerPtrNow(false,
+                                                                             false,
+                                                                             "CustomSavestate::TickDeferredPracticeSideRestore");
+    } else {
+        resolvedPractice = PauseIntegration::ResolvePracticeControllerPtrNow(false,
+                                                                             false,
+                                                                             "CustomSavestate::TickDeferredPracticeSideRestore verify");
     }
+
+    if (resolvedPractice && resolvedPractice != cachedPractice) {
+        std::ostringstream oss;
+        oss << "localSide=" << localSide
+            << " cachedPractice=" << PointerHex(reinterpret_cast<uintptr_t>(cachedPractice))
+            << " resolvedPractice=" << PointerHex(reinterpret_cast<uintptr_t>(resolvedPractice))
+            << " action=refresh-cache";
+        LogSavestateTrace("restore practice reconcile pointer refresh", oss.str());
+        PauseIntegration::NotePracticeControllerCandidate(resolvedPractice,
+                                                          "CustomSavestate::TickDeferredPracticeSideRestore");
+    }
+
+    void* practice = resolvedPractice ? resolvedPractice : cachedPractice;
 
     if (!practice) {
         s_deferredPracticeSideRestoreRetries.store(retries - 1, std::memory_order_release);
@@ -3822,9 +4003,32 @@ void TickDeferredPracticeSideRestore(bool charactersInitialized) {
         return;
     }
 
+    const int currentPracticeSide = SwitchPlayers::GetLocalSide();
+    if (currentPracticeSide == localSide) {
+        std::ostringstream oss;
+        oss << "localSide=" << localSide
+            << " currentPracticeSide=" << currentPracticeSide
+            << " cachedPractice=" << PointerHex(reinterpret_cast<uintptr_t>(cachedPractice))
+            << " resolvedPractice=" << PointerHex(reinterpret_cast<uintptr_t>(resolvedPractice))
+            << " chosenPractice=" << PointerHex(reinterpret_cast<uintptr_t>(practice))
+            << " skippedRemap=1";
+        LogSavestateTrace("restore practice reconcile already satisfied", oss.str());
+        ClearDeferredPracticeSideRestoreState();
+        return;
+    }
+    {
+        std::ostringstream oss;
+        oss << "localSide=" << localSide
+            << " currentPracticeSide=" << currentPracticeSide
+            << " cachedPractice=" << PointerHex(reinterpret_cast<uintptr_t>(cachedPractice))
+            << " resolvedPractice=" << PointerHex(reinterpret_cast<uintptr_t>(resolvedPractice))
+            << " chosenPractice=" << PointerHex(reinterpret_cast<uintptr_t>(practice));
+        LogSavestateTrace("restore practice reconcile apply", oss.str());
+    }
     if (SwitchPlayers::ReapplyLocalSide(localSide)) {
         std::ostringstream oss;
         oss << "localSide=" << localSide
+            << " previousSide=" << currentPracticeSide
             << " practice=" << PointerHex(reinterpret_cast<uintptr_t>(practice));
         LogSavestateTrace("restore practice reconcile success", oss.str());
         ClearDeferredPracticeSideRestoreState();
@@ -3835,6 +4039,7 @@ void TickDeferredPracticeSideRestore(bool charactersInitialized) {
     if (retries == kDeferredPracticeSideRestoreRetryFrames || retries == 1 || (retries % 8) == 0) {
         std::ostringstream oss;
         oss << "localSide=" << localSide
+            << " previousSide=" << currentPracticeSide
             << " practice=" << PointerHex(reinterpret_cast<uintptr_t>(practice))
             << " retriesRemaining=" << (retries - 1);
         LogSavestateTrace("restore practice reconcile retry", oss.str());

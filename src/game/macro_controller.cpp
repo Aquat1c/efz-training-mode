@@ -1343,8 +1343,6 @@ void Stop() {
     int prev = s_prevLocalSide.load();
     if (prev == 0 || prev == 1) {
         SwitchPlayers::SetLocalSide(prev);
-        // Clear any swap tracking flag maintained by switch_players
-        SwitchPlayers::ClearSwapFlag();
         s_prevLocalSide.store(-1);
     }
 }
