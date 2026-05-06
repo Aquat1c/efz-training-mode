@@ -22,6 +22,9 @@ namespace Framestep {
     // Reset step counter to zero
     void ResetStepCounter();
 
+    // Clear any active pause/step state without toggling through the hotkeys.
+    void CancelActiveState(const char* reason = nullptr);
+
     // Handle pause toggle (Space key)
     void TogglePause();
 

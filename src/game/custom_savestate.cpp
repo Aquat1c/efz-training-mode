@@ -13,6 +13,7 @@
 #include "../../include/core/constants.h"
 #include "../../include/core/logger.h"
 #include "../../include/core/memory.h"
+#include "../../include/input/framestep.h"
 #include "../../include/gui/overlay.h"
 #include "../../include/utils/bgm_control.h"
 #include "../../include/utils/config.h"
@@ -822,7 +823,7 @@ size_t RefreshRestoreTargetGameStatePointers(std::vector<uint8_t>& snapshotGameS
                                             size_t& sampleCount,
                                             size_t maxSamples);
 
-bool RefreshDiskLoadedSessionScratch(Snapshot& snapshot, std::string& outDetail) {
+bool RefreshRestoreSessionScratch(Snapshot& snapshot, std::string& outDetail) {
     if (snapshot.renderBitmap.size() != kRenderBitmapSize) {
         outDetail = "render bitmap size mismatch";
         return false;
@@ -2247,6 +2248,31 @@ void CaptureModState(PersistedModState& outState) {
     }
 }
 
+int ReadEngineLocalSideForRestoreDecision() {
+    const uintptr_t gameStatePtr = GetGameStatePtr();
+    if (!gameStatePtr) {
+        return -1;
+    }
+
+    uint8_t activePlayer = 0xFF;
+    uint8_t p1CpuFlag = 0xFF;
+    uint8_t p2CpuFlag = 0xFF;
+    if (!SafeReadMemory(gameStatePtr + GAMESTATE_OFF_ACTIVE_PLAYER, &activePlayer, sizeof(activePlayer))
+        || !SafeReadMemory(gameStatePtr + GAMESTATE_OFF_P1_CPU_FLAG, &p1CpuFlag, sizeof(p1CpuFlag))
+        || !SafeReadMemory(gameStatePtr + GAMESTATE_OFF_P2_CPU_FLAG, &p2CpuFlag, sizeof(p2CpuFlag))) {
+        return -1;
+    }
+
+    if (activePlayer == 0u && p1CpuFlag == 0u && p2CpuFlag == 1u) {
+        return 0;
+    }
+    if (activePlayer == 1u && p1CpuFlag == 1u && p2CpuFlag == 0u) {
+        return 1;
+    }
+
+    return -1;
+}
+
 void RestoreModState(const PersistedModState& state, bool engineOnlyLocalSideRestore) {
     if (!state.valid) {
         ClearDeferredPracticeSideRestoreState();
@@ -2260,7 +2286,7 @@ void RestoreModState(const PersistedModState& state, bool engineOnlyLocalSideRes
 
     if (state.localSide >= 0) {
         if (engineOnlyLocalSideRestore) {
-            const int liveLocalSideBeforeRestore = SwitchPlayers::GetLocalSide();
+            const int liveLocalSideBeforeRestore = ReadEngineLocalSideForRestoreDecision();
             restoredEngineControlState = SwitchPlayers::RestoreEngineControlState(state.localSide,
                                                                                   state.p1CpuFlag,
                                                                                   state.p2CpuFlag);
@@ -3100,12 +3126,20 @@ SnapshotActionResult RestoreWorkingSnapshotInternalImpl(std::string& outReason,
         return SnapshotActionResult::GuardBlocked;
     }
 
-    if (snapshot.fromDisk) {
+    Framestep::CancelActiveState(engineOnlyLocalSideRestore
+                                     ? "hotswap savestate restore"
+                                     : "savestate restore");
+
+    const bool shouldRefreshSessionScratch = snapshot.fromDisk || engineOnlyLocalSideRestore;
+    if (shouldRefreshSessionScratch) {
         std::string sessionScratchDetail;
-        if (RefreshDiskLoadedSessionScratch(snapshot, sessionScratchDetail)) {
-            LogSavestateTrace("restore session scratch refresh", sessionScratchDetail);
+        const char* sessionScratchSource = snapshot.fromDisk ? "disk" : "hotswap";
+        if (RefreshRestoreSessionScratch(snapshot, sessionScratchDetail)) {
+            LogSavestateTrace("restore session scratch refresh",
+                              std::string("source=") + sessionScratchSource + " | " + sessionScratchDetail);
         } else {
-            LogSavestateTrace("restore session scratch refresh", "skipped | " + sessionScratchDetail);
+            LogSavestateTrace("restore session scratch refresh",
+                              std::string("source=") + sessionScratchSource + " | skipped | " + sessionScratchDetail);
         }
     }
 
@@ -3400,7 +3434,7 @@ bool LoadSnapshotFromSlotIntoWorkingImpl(int slot, std::string& outReason, bool 
     std::fclose(file);
 
     std::string sessionScratchDetail;
-    const bool refreshedSessionScratch = ok && RefreshDiskLoadedSessionScratch(snapshot, sessionScratchDetail);
+    const bool refreshedSessionScratch = ok && RefreshRestoreSessionScratch(snapshot, sessionScratchDetail);
     if (ok) {
         std::ostringstream oss;
         oss << "slot=" << slot

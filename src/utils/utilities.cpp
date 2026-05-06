@@ -5,6 +5,7 @@
 #include "../include/core/memory.h"
 #include "../include/input/input_handler.h"
 #include "../include/core/di_keycodes.h"
+#include "../include/input/framestep.h"
 #include "../include/game/frame_analysis.h"   
 #include "../include/game/frame_advantage.h"
 #include "../include/game/combo_overlay.h"
@@ -460,6 +461,7 @@ void ResetRuntimeSettingsToDisplayDefaults() {
 }
 
 void ResetPracticeMatchSessionState(const char* reason) {
+    Framestep::CancelActiveState(reason ? reason : "practice match reset");
     ResetDisplayDataToDefaults();
     ResetRuntimeSettingsToDisplayDefaults();
     ClearAllAutoActionTriggers();
