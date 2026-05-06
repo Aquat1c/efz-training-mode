@@ -982,8 +982,11 @@ void RefreshHotkeyStrings() {
     const unsigned controllerMask = XInputShim::GetConnectedMaskCached();
     const unsigned nativeMask = XInputShim::GetNativeConnectedMaskCached();
     const unsigned genericMask = XInputShim::GetGenericConnectedMaskCached();
+    // Bumped from 2s to 10s: building these labels can hit the XInput shim, which is
+    // cheap when slots are connected but historically expensive when slots are empty.
+    // Mask-change still forces an immediate rebuild, so hot-plug is unaffected.
     const bool labelsDue = s_lastControllerLabelRefresh == 0
-        || (now - s_lastControllerLabelRefresh) >= 2000
+        || (now - s_lastControllerLabelRefresh) >= 10000
         || controllerMask != s_lastControllerMask
         || nativeMask != s_lastNativeMask
         || genericMask != s_lastGenericMask;
@@ -991,8 +994,11 @@ void RefreshHotkeyStrings() {
     if (labelsDue) {
         _snprintf_s(g_controllerChoiceLabels[0], sizeof(g_controllerChoiceLabels[0]), _TRUNCATE, "All (Any)");
         for (int i = 0; i < 4; ++i) {
-            _snprintf_s(g_controllerChoiceLabels[i + 1], sizeof(g_controllerChoiceLabels[i + 1]), _TRUNCATE,
-                        "%s", GetControllerNameForIndex(i).c_str());
+            // Names are pre-computed by the background controller watcher thread; the
+            // read here is a brief try_lock copy and never invokes Windows enumeration
+            // APIs from the render thread.
+            (void)XInputShim::GetPublishedControllerName(
+                i, g_controllerChoiceLabels[i + 1], sizeof(g_controllerChoiceLabels[i + 1]));
         }
         s_lastControllerLabelRefresh = now;
         s_lastControllerMask = controllerMask;
@@ -1223,6 +1229,7 @@ bool ReadCurrentHotswapState(HotswapCurrentState& state);
 bool RevivalBgmMuted();
 const char* GetNamedStageLabel(int stageId);
 void UpdateCustomSavestateHotswapPromptFromWorking();
+void UpdateCustomSavestateHotswapPromptFromSummary(const CustomSavestate::Summary& summary);
 
 const char* const kSavestateBackendChoices[3] = {
     "CUSTOM",
@@ -1343,7 +1350,7 @@ void RefreshCustomSavestateMirrors() {
         g_customSavestateHotswapWorkingStamp = summary.workingSnapshotStamp;
         g_customSavestateHotswapDismissed = false;
     }
-    UpdateCustomSavestateHotswapPromptFromWorking();
+    UpdateCustomSavestateHotswapPromptFromSummary(summary);
 
     const bool fieldsOk = summary.hasWorkingSnapshot && CustomSavestate::GetWorkingEditableFields(g_customSavestateFields);
     if (fieldsOk) {
@@ -3816,17 +3823,11 @@ bool ReadCurrentHotswapStateCached(HotswapCurrentState& state, DWORD maxAgeMs = 
     return ok;
 }
 
-void UpdateCustomSavestateHotswapPromptFromWorking() {
+void UpdateCustomSavestateHotswapPromptFromSummary(const CustomSavestate::Summary& summary) {
     g_customSavestateHotswapPrompt = false;
 
     if (g_customSavestateHotswapDismissed) {
         LogSavestateHotswapPromptStateIfChanged("dismissed", false, nullptr, nullptr, -1, -1);
-        return;
-    }
-
-    CustomSavestate::Summary summary{};
-    if (!CustomSavestate::GetSummary(summary)) {
-        LogSavestateHotswapPromptStateIfChanged("summary-unavailable", false, nullptr, nullptr, -1, -1);
         return;
     }
     if (!summary.hasWorkingSnapshot) {
@@ -3871,6 +3872,22 @@ void UpdateCustomSavestateHotswapPromptFromWorking() {
                 stageName);
     g_customSavestateHotswapPrompt = true;
     LogSavestateHotswapPromptStateIfChanged("prompt-visible", true, &summary, &current, savedP1SelectId, savedP2SelectId);
+}
+
+void UpdateCustomSavestateHotswapPromptFromWorking() {
+    if (g_customSavestateHotswapDismissed) {
+        g_customSavestateHotswapPrompt = false;
+        LogSavestateHotswapPromptStateIfChanged("dismissed", false, nullptr, nullptr, -1, -1);
+        return;
+    }
+
+    CustomSavestate::Summary summary{};
+    if (!CustomSavestate::GetSummary(summary)) {
+        g_customSavestateHotswapPrompt = false;
+        LogSavestateHotswapPromptStateIfChanged("summary-unavailable", false, nullptr, nullptr, -1, -1);
+        return;
+    }
+    UpdateCustomSavestateHotswapPromptFromSummary(summary);
 }
 
 bool RevivalBgmMuted() {
@@ -5155,7 +5172,19 @@ void RefreshSecondaryScreenMirrors() {
 
     const DWORD slowStart = GetTickCount();
     for (const Step& s : kSlowSteps) {
+        const DWORD stepStart = GetTickCount();
         SehRefreshMirrorStep(s.name, s.fn);
+        const DWORD stepElapsed = GetTickCount() - stepStart;
+        // Log any slow individual step so we can pinpoint future hangs in one repro.
+        // Threshold deliberately low (>=20ms) since the whole loop runs throttled to 250ms.
+        if (stepElapsed >= 20) {
+            char stepBuf[160];
+            _snprintf_s(stepBuf, sizeof(stepBuf), _TRUNCATE,
+                "[CUSTOM_MENU][TIMING] step=%s took=%lums",
+                s.name ? s.name : "(unknown)",
+                static_cast<unsigned long>(stepElapsed));
+            LogOut(stepBuf, true);
+        }
     }
 
     const DWORD elapsed = GetTickCount() - slowStart;

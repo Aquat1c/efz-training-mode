@@ -565,11 +565,14 @@ namespace ImGuiSettings {
                     int idx = Config::GetSettings().controllerIndex;
                     int current = idx; // -1 = All
                     std::string labelAll = "All (Any)";
-                    std::string lbl0 = ::GetControllerNameForIndex(0);
-                    std::string lbl1 = ::GetControllerNameForIndex(1);
-                    std::string lbl2 = ::GetControllerNameForIndex(2);
-                    std::string lbl3 = ::GetControllerNameForIndex(3);
-                    const char* items[] = { labelAll.c_str(), lbl0.c_str(), lbl1.c_str(), lbl2.c_str(), lbl3.c_str() };
+                    // Use names pre-published by the background controller watcher so the
+                    // render thread never invokes XInput/RawInput enumeration directly.
+                    char nm0[96] = {}, nm1[96] = {}, nm2[96] = {}, nm3[96] = {};
+                    XInputShim::GetPublishedControllerName(0, nm0, sizeof(nm0));
+                    XInputShim::GetPublishedControllerName(1, nm1, sizeof(nm1));
+                    XInputShim::GetPublishedControllerName(2, nm2, sizeof(nm2));
+                    XInputShim::GetPublishedControllerName(3, nm3, sizeof(nm3));
+                    const char* items[] = { labelAll.c_str(), nm0, nm1, nm2, nm3 };
                     int comboIndex = (current < 0) ? 0 : (current + 1);
                     ImGui::TextUnformatted("Controller for mod inputs"); ImGui::SameLine();
                     if (ImGui::BeginCombo("##controllerIndex", items[comboIndex])) {
