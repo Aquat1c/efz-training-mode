@@ -300,6 +300,8 @@ namespace Config {
 
             file << "; Savestate backend: 0=Custom, 1=Revival, 2=Custom with Revival fallback\n";
             file << "savestateBackendMode = 2\n\n";
+            file << "; Restore saved custom .pal usage when loading savestates (1=yes, 0=use default palettes)\n";
+            file << "savestateLoadCustomPalettes = 1\n\n";
 
             // (Practice-specific tuning is hardcoded now)
             
@@ -667,6 +669,7 @@ namespace Config {
             settings.gpUiSubTabNext         = getPad("gpuisubtabnext", "RT");
             settings.savestateBackendMode   = GetValueInt("General", "savestateBackendMode", 2);
             if (settings.savestateBackendMode < 0 || settings.savestateBackendMode > 2) settings.savestateBackendMode = 2;
+            settings.savestateLoadCustomPalettes = GetValueBool("General", "savestateLoadCustomPalettes", true);
             LogOut("[CONFIG] Settings loaded successfully", true);
             LogOut("[CONFIG] UseImGui: " + std::to_string(settings.useImGui), true);
             LogOut("[CONFIG] DetailedLogging: " + std::to_string(settings.detailedLogging), true);
@@ -713,6 +716,7 @@ namespace Config {
             LogOut("[CONFIG] uiScale: " + std::to_string(settings.uiScale), true);
             LogOut("[CONFIG] uiFontMode: " + std::to_string(settings.uiFontMode), true);
             LogOut("[CONFIG] savestateBackendMode: " + std::to_string(settings.savestateBackendMode), true);
+            LogOut("[CONFIG] savestateLoadCustomPalettes: " + std::to_string(settings.savestateLoadCustomPalettes), true);
             
             return true;
         }
@@ -826,6 +830,8 @@ namespace Config {
 
             file << "; Savestate backend: 0=Custom, 1=Revival, 2=Custom with Revival fallback\n";
             file << "savestateBackendMode = " << settings.savestateBackendMode << "\n\n";
+            file << "; Restore saved custom .pal usage when loading savestates (1=yes, 0=use default palettes)\n";
+            file << "savestateLoadCustomPalettes = " << (settings.savestateLoadCustomPalettes ? "1" : "0") << "\n\n";
 
             // (Practice tuning omitted)
             file << "; Show the debug console window (1 = yes, 0 = no)\n";
@@ -942,6 +948,7 @@ namespace Config {
                 try { settings.savestateBackendMode = std::stoi(value); } catch (...) { settings.savestateBackendMode = 2; }
                 if (settings.savestateBackendMode < 0 || settings.savestateBackendMode > 2) settings.savestateBackendMode = 2;
             }
+            if (k == "savestateloadcustompalettes") settings.savestateLoadCustomPalettes = (value == "1" || value == "true");
             if (k == "uiscale") {
                 try { settings.uiScale = std::stof(value); } catch (...) {}
             }

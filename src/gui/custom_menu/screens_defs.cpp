@@ -448,6 +448,9 @@ void OnPracticeHint() {
 void OnSavestateBackendMode() {
     PersistInt("General", "savestateBackendMode", MutableSettings().savestateBackendMode);
 }
+void OnSavestateLoadCustomPalettes() {
+    PersistBool("General", "savestateLoadCustomPalettes", MutableSettings().savestateLoadCustomPalettes);
+}
 void OnRestrictPractice() {
     PersistBool("General", "restrictToPracticeMode", MutableSettings().restrictToPracticeMode);
 }
@@ -660,11 +663,11 @@ Row* BuildHotkeysSavestateRows(int& count) {
     int n = 0;
 
     s_rows[n++] = Header("SAVESTATE HOTKEYS");
-    s_rows[n++] = Action("SAVE WORKING",  BindSavestateSave, ValSavestateSave);
-    s_rows[n++] = Action("LOAD WORKING",  BindSavestateLoad, ValSavestateLoad);
+    s_rows[n++] = Action("SAVE ACTIVE SLOT", BindSavestateSave, ValSavestateSave);
+    s_rows[n++] = Action("LOAD ACTIVE SLOT", BindSavestateLoad, ValSavestateLoad);
     s_rows[n++] = Action("SLOT PREVIOUS", BindSavestatePrev, ValSavestatePrev);
     s_rows[n++] = Action("SLOT NEXT",     BindSavestateNext, ValSavestateNext);
-    s_rows[n++] = Info("Save/load hotkeys target the working custom snapshot. Slot hotkeys change the active custom disk slot.");
+    s_rows[n++] = Info("Save/load hotkeys capture or restore the active slot immediately. Slot Previous and Slot Next only change which slot those hotkeys use.");
     count = n;
     return s_rows;
 }
@@ -718,8 +721,8 @@ bool g_mirrorPadInputLog    = false;
 bool g_mirrorDeepFA         = false;
 int g_customSavestateDiskSlot = 0;
 CustomSavestate::EditableFields g_customSavestateFields;
-char g_customSavestateModeInfo[256] = "Mode: custom savestate tools active";
-char g_customSavestateWorkingInfo[256] = "Live: empty";
+char g_customSavestateModeInfo[256] = "Mode: custom savestates active";
+char g_customSavestateWorkingInfo[256] = "Current State: empty";
 char g_customSavestateMetaInfo[256] = "Meta: n/a";
 char g_customSavestateStatusInfo[256] = "Status: idle";
 char g_customSavestateDiskInfo[256] = "Slot 0: initial snapshot | memory only";
@@ -763,10 +766,10 @@ void RefreshCustomSavestateMirrors() {
         const std::string p2Name = CharacterHotswap::GetDisplayNameForSelectId(summary.savedP2CharId);
         const char* savedStageName = GetNamedStageLabel(summary.savedStageId);
         _snprintf_s(g_customSavestateWorkingInfo, sizeof(g_customSavestateWorkingInfo), _TRUNCATE,
-                    "Live: %s / %s | %s | stage %s | restore %s/%s/%s | custom %u/%u | revival %u/%u",
+                "Current State: %s / %s | %s | stage %s | restore %s/%s/%s | save/load %u/%u | revival %u/%u",
                     p1Name.c_str(),
                     p2Name.c_str(),
-                    summary.workingSnapshotDirty ? "DIRTY" : "READY",
+                summary.workingSnapshotDirty ? "EDITED" : "READY",
                     savedStageName,
                     summary.currentPairCompatible ? "PAIR OK" : "PAIR BLOCK",
                     summary.currentStageCompatible ? "STAGE OK" : "STAGE BLOCK",
@@ -791,7 +794,7 @@ void RefreshCustomSavestateMirrors() {
     } else {
         g_customSavestateFields = CustomSavestate::EditableFields{};
         _snprintf_s(g_customSavestateWorkingInfo, sizeof(g_customSavestateWorkingInfo), _TRUNCATE,
-                    "Live: empty | custom %u/%u | revival %u/%u",
+                    "Current State: empty | save/load %u/%u | revival %u/%u",
                     summary.saveCount,
                     summary.loadCount,
                     revivalSaves,
@@ -805,16 +808,16 @@ void RefreshCustomSavestateMirrors() {
     switch (backendMode) {
     case CustomSavestate::BackendMode::Revival:
         _snprintf_s(g_customSavestateModeInfo, sizeof(g_customSavestateModeInfo), _TRUNCATE,
-                    "Mode: Revival owns live savestates; custom capture, restore, edit, and disk writes are locked.");
+                    "Mode: Revival save/load is active. Custom current-state capture, restore, edits, and slot files are locked.");
         break;
     case CustomSavestate::BackendMode::CustomWithRevivalFallback:
         _snprintf_s(g_customSavestateModeInfo, sizeof(g_customSavestateModeInfo), _TRUNCATE,
-                    "Mode: Custom owns live savestates; Revival stays installed for tracking and allowed fallback cases.");
+                    "Mode: Custom savestates are active. Revival stays installed for tracking and supported fallback cases.");
         break;
     case CustomSavestate::BackendMode::Custom:
     default:
         _snprintf_s(g_customSavestateModeInfo, sizeof(g_customSavestateModeInfo), _TRUNCATE,
-                    "Mode: Custom owns live savestates; working snapshot tools and disk files are active.");
+                    "Mode: Custom savestates are active. Current State editing and slot files are available.");
         break;
     }
 
@@ -1172,7 +1175,7 @@ const char* ValSavestateLive() {
     if (!CustomSavestate::GetSummary(summary) || !summary.hasWorkingSnapshot) {
         return "EMPTY";
     }
-    return summary.workingSnapshotDirty ? "DIRTY" : "READY";
+    return summary.workingSnapshotDirty ? "EDITED" : "READY";
 }
 
 const char* ValSavestateSlots() {
@@ -1273,14 +1276,15 @@ Row* BuildSavestateLiveRows(int& count) {
     static Row s_rows[12];
     int n = 0;
 
-    s_rows[n++] = Header("LIVE STATE");
-    s_rows[n++] = Info("These actions edit the live in-memory state directly. Save/load hotkeys now follow the active slot instead.");
+    s_rows[n++] = Header("CURRENT STATE");
+    s_rows[n++] = Info("This is the in-memory savestate used for manual restore, editing, and slot saves.");
+    s_rows[n++] = Info("Save Current Match captures the live Practice match here. Load Current State applies it back to the match.");
     s_rows[n++] = Info(g_customSavestateWorkingInfo);
     s_rows[n++] = Info(g_customSavestateMetaInfo);
     s_rows[n++] = Info(g_customSavestateStatusInfo);
-    s_rows[n++] = Action("SAVE TO LIVE STATE", RunCustomSavestateCapture, nullptr, CustomSavestateMutationLocked);
-    s_rows[n++] = Action("LOAD LIVE STATE", RunCustomSavestateRestore, nullptr, CustomSavestateRestoreDisabled);
-    s_rows[n++] = Action("CLEAR LIVE STATE", RunCustomSavestateClear, nullptr, CustomSavestateMutationLocked);
+    s_rows[n++] = Action("SAVE CURRENT MATCH", RunCustomSavestateCapture, nullptr, CustomSavestateMutationLocked);
+    s_rows[n++] = Action("LOAD CURRENT STATE", RunCustomSavestateRestore, nullptr, CustomSavestateRestoreDisabled);
+    s_rows[n++] = Action("CLEAR CURRENT STATE", RunCustomSavestateClear, nullptr, CustomSavestateMutationLocked);
     count = n;
     return s_rows;
 }
@@ -1289,12 +1293,12 @@ Row* BuildSavestateSlotRows(int& count) {
     static Row s_rows[16];
     int n = 0;
 
-    s_rows[n++] = Header("FILE SLOTS");
-    s_rows[n++] = Info("Save/load hotkeys follow the active slot. Slot 0 is the round-start memory slot; saves from it jump to slot 1.");
+    s_rows[n++] = Header("SLOTS");
+    s_rows[n++] = Info("Savestate hotkeys use the active slot directly. Loading a slot here only updates Current State for review, edits, or hotswap.");
     s_rows[n++] = IntNum("ACTIVE SLOT", &g_customSavestateDiskSlot, 0, 8, 1, 1, OnCustomSavestateDiskSlotChanged);
     s_rows[n++] = Info(g_customSavestateDiskInfo);
-    s_rows[n++] = Action("LOAD SLOT TO LIVE STATE", RunCustomSavestateLoadFromDisk, nullptr, CustomSavestateDiskLoadDisabled);
-    s_rows[n++] = Action("SAVE LIVE STATE TO SLOT", RunCustomSavestateSaveToDisk, nullptr, CustomSavestateDiskSaveDisabled);
+    s_rows[n++] = Action("LOAD SLOT TO CURRENT STATE", RunCustomSavestateLoadFromDisk, nullptr, CustomSavestateDiskLoadDisabled);
+    s_rows[n++] = Action("SAVE CURRENT STATE TO SLOT", RunCustomSavestateSaveToDisk, nullptr, CustomSavestateDiskSaveDisabled);
     if (g_customSavestateHotswapPrompt) {
         s_rows[n++] = Info(g_customSavestateHotswapInfo);
         s_rows[n++] = Action("HOTSWAP TO LOADED MATCH", RunCustomSavestateQueueWorkingHotswap, CharacterHotswap::GetActionValueText, CustomSavestateHotswapDisabled);
@@ -1308,7 +1312,7 @@ Row* BuildSavestateP1EditorRows(int& count) {
     static Row s_rows[12];
     int n = 0;
 
-    s_rows[n++] = Header("P1 SNAPSHOT");
+    s_rows[n++] = Header("EDIT P1 STATE");
     s_rows[n++] = IntNum("HP", &g_customSavestateFields.p1Hp, 0, 9999, 1, 100, OnCustomSavestateEditorChanged, CustomSavestateEditorDisabled);
     s_rows[n++] = IntNum("METER", &g_customSavestateFields.p1Meter, 0, 1000, 1, 25, OnCustomSavestateEditorChanged, CustomSavestateEditorDisabled);
     s_rows[n++] = DoubleNum("RF", &g_customSavestateFields.p1Rf, 0.0, 2000.0, 1.0, 25.0, "%.1f", OnCustomSavestateEditorChanged, CustomSavestateEditorDisabled);
@@ -1325,7 +1329,7 @@ Row* BuildSavestateP2EditorRows(int& count) {
     static Row s_rows[12];
     int n = 0;
 
-    s_rows[n++] = Header("P2 SNAPSHOT");
+    s_rows[n++] = Header("EDIT P2 STATE");
     s_rows[n++] = IntNum("HP", &g_customSavestateFields.p2Hp, 0, 9999, 1, 100, OnCustomSavestateEditorChanged, CustomSavestateEditorDisabled);
     s_rows[n++] = IntNum("METER", &g_customSavestateFields.p2Meter, 0, 1000, 1, 25, OnCustomSavestateEditorChanged, CustomSavestateEditorDisabled);
     s_rows[n++] = DoubleNum("RF", &g_customSavestateFields.p2Rf, 0.0, 2000.0, 1.0, 25.0, "%.1f", OnCustomSavestateEditorChanged, CustomSavestateEditorDisabled);
@@ -1342,7 +1346,7 @@ Row* BuildSavestateMatchEditorRows(int& count) {
     static Row s_rows[8];
     int n = 0;
 
-    s_rows[n++] = Header("MATCH SNAPSHOT");
+    s_rows[n++] = Header("EDIT MATCH STATE");
     s_rows[n++] = Info(g_customSavestateMetaInfo);
     s_rows[n++] = IntNum("LOCAL SIDE", &g_customSavestateFields.localSide, 0, 1, 1, 1, OnCustomSavestateEditorChanged, CustomSavestateEditorDisabled);
     count = n;
@@ -1354,20 +1358,20 @@ Row* BuildDebugSavestateRows(int& count) {
     int n = 0;
     auto& s = MutableSettings();
 
-    s_rows[n++] = Header("SAVESTATE");
-    s_rows[n++] = Info("Hotkey save/load follows the active slot. Slot 0 is the round-start memory slot; saves from it jump to slot 1.");
+    s_rows[n++] = Header("SAVESTATES");
+    s_rows[n++] = Info("Hotkey save/load uses the active slot. Current State is the in-memory snapshot you can restore, edit, and write to a slot.");
     s_rows[n++] = ChoicesRow("BACKEND", &s.savestateBackendMode, kSavestateBackendChoices, 3, OnSavestateBackendMode);
+    s_rows[n++] = Toggle("LOAD CUSTOM PALETTES", &s.savestateLoadCustomPalettes, OnSavestateLoadCustomPalettes);
+    s_rows[n++] = Info("When off, savestate loads keep the saved palette number but force default palettes instead of custom .pal files.");
     s_rows[n++] = Info(g_customSavestateModeInfo);
     s_rows[n++] = Info(g_customSavestateWorkingInfo);
     s_rows[n++] = Info(g_customSavestateDiskInfo);
-    s_rows[n++] = Action("SAVE TO FILE", RunCustomSavestateSaveToDisk, nullptr, CustomSavestateDiskSaveDisabled);
-    s_rows[n++] = Action("LOAD FROM FILE", RunCustomSavestateLoadFromDisk, nullptr, CustomSavestateDiskLoadDisabled);
     s_rows[n++] = Info(g_customSavestateStatusInfo);
-    s_rows[n++] = Submenu("LIVE STATE", "LIVE STATE", BuildSavestateLiveRows, ValSavestateLive);
-    s_rows[n++] = Submenu("FILES",      "SAVESTATE FILES", BuildSavestateSlotRows, ValSavestateSlots);
-    s_rows[n++] = Submenu("P1 EDIT",    "P1 SNAPSHOT", BuildSavestateP1EditorRows, ValSavestateEdit);
-    s_rows[n++] = Submenu("P2 EDIT",    "P2 SNAPSHOT", BuildSavestateP2EditorRows, ValSavestateEdit);
-    s_rows[n++] = Submenu("MATCH",      "MATCH SNAPSHOT", BuildSavestateMatchEditorRows, ValSavestateEdit);
+    s_rows[n++] = Submenu("CURRENT STATE", "CURRENT STATE", BuildSavestateLiveRows, ValSavestateLive);
+    s_rows[n++] = Submenu("SLOTS",         "SAVESTATE SLOTS", BuildSavestateSlotRows, ValSavestateSlots);
+    s_rows[n++] = Submenu("EDIT P1",       "EDIT P1 STATE", BuildSavestateP1EditorRows, ValSavestateEdit);
+    s_rows[n++] = Submenu("EDIT P2",       "EDIT P2 STATE", BuildSavestateP2EditorRows, ValSavestateEdit);
+    s_rows[n++] = Submenu("EDIT MATCH",    "EDIT MATCH STATE", BuildSavestateMatchEditorRows, ValSavestateEdit);
     count = n;
     return s_rows;
 }
@@ -1804,6 +1808,35 @@ Row* BuildHelpFramebarRows(int& count) {
     return s_rows;
 }
 
+Row* BuildHelpSavestatesRows(int& count) {
+    static Row s_rows[40];
+    int n = 0;
+    s_rows[n++] = Header("SAVESTATES");
+    s_rows[n++] = Info("Open Main > Options > Savestates for snapshot capture, slot selection, palette behavior, and snapshot editing.");
+    s_rows[n++] = Info("There are two layers: Current State is the in-memory snapshot, while Slots are saved files and the target for savestate hotkeys.");
+    s_rows[n++] = Spacer();
+    s_rows[n++] = Header("BASIC FLOW");
+    s_rows[n++] = Info("Save Current Match copies the live Practice match into Current State.");
+    s_rows[n++] = Info("Load Current State restores that in-memory snapshot back into the live match.");
+    s_rows[n++] = Info("Save Current State To Slot writes the current state into the selected slot.");
+    s_rows[n++] = Info("Load Slot To Current State reads a slot for review, edits, or hotswap without changing the live match yet.");
+    s_rows[n++] = Spacer();
+    s_rows[n++] = Header("HOTKEYS");
+    s_rows[n++] = Info("Savestate Save captures the live match and writes it to the active slot immediately.");
+    s_rows[n++] = Info("Savestate Load restores the active slot immediately.");
+    s_rows[n++] = Info("Slot Previous and Slot Next only change which slot the savestate hotkeys use.");
+    s_rows[n++] = Spacer();
+    s_rows[n++] = Header("CUSTOM PALETTES");
+    s_rows[n++] = Info("Load Custom Palettes controls whether savestate loads restore saved custom .pal usage.");
+    s_rows[n++] = Info("When it is off, savestate loads keep the saved palette number but use the game's default palette instead of a custom palette.");
+    s_rows[n++] = Spacer();
+    s_rows[n++] = Header("SLOT 0 AND HOTSWAP");
+    s_rows[n++] = Info("Slot 0 is the round-start memory snapshot. Saving while slot 0 is selected writes to slot 1 so the initial slot stays intact.");
+    s_rows[n++] = Info("If a loaded slot was saved on a different matchup or stage, use Hotswap To Loaded Match after loading that slot into Current State.");
+    count = n;
+    return s_rows;
+}
+
 Row* BuildHelpIssuesRows(int& count) {
     static Row s_rows[36];
     int n = 0;
@@ -1831,6 +1864,7 @@ Row* BuildHelpGuideRows(int& count) {
     s_rows[n++] = Header("GUIDE MENUS");
     s_rows[n++] = Info("Open these sections for feature behavior, caveats, setup notes, and troubleshooting.");
     s_rows[n++] = Submenu("BASICS",             "BASICS",             BuildHelpBasicsRows,     nullptr);
+    s_rows[n++] = Submenu("SAVESTATES",         "SAVESTATES",         BuildHelpSavestatesRows, nullptr);
     s_rows[n++] = Submenu("COMBO STATISTICS",   "COMBO STATISTICS",   BuildHelpComboStatisticsRows, nullptr);
     s_rows[n++] = Submenu("FRAMEBAR",           "FRAMEBAR",           BuildHelpFramebarRows,   nullptr);
     s_rows[n++] = Submenu("RECOVERY",           "RECOVERY",           BuildHelpRecoveryRows,   nullptr);
@@ -3459,7 +3493,7 @@ Row* BuildOptionsRows(int& count) {
 
     s_rows[n++] = Spacer();
     s_rows[n++] = Header("OPTION MENUS");
-    s_rows[n++] = Submenu("SAVESTATE", "SAVESTATE", BuildDebugSavestateRows, ValDebugSavestate);
+    s_rows[n++] = Submenu("SAVESTATES", "SAVESTATES", BuildDebugSavestateRows, ValDebugSavestate);
     s_rows[n++] = Submenu("RECOVERY", "RECOVERY", BuildRecoveryOptionsRows, ValRecoveryOptions);
     s_rows[n++] = Submenu("OVERLAYS", "OVERLAYS", BuildOverlayOptionsRows,  ValOverlays);
 

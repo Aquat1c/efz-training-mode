@@ -25,6 +25,7 @@ namespace Config {
     float uiScale;               // NEW: UI scale for ImGui window (e.g., 0.80..1.20)
     int uiFontMode;              // NEW: UI font selection (0=ImGui default, 1=Segoe UI)
     int savestateBackendMode;    // 0=Custom, 1=Revival, 2=Custom with Revival fallback
+    bool savestateLoadCustomPalettes; // 1=restore saved custom palette usage, 0=force default palettes on load
 
     // ImGui navigation tuning
     float guiNavAnalogThreshold; // Analog threshold (0..1) to treat stick as a digital dpad for fallback nav
