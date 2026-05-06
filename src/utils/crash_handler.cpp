@@ -1789,19 +1789,20 @@ void Install(HMODULE selfModule) {
                  IsEnvironmentFlagEnabled(kKeepAliveOnCrashEnv) ? "on" : "off");
 
     // Probe (but do not load) the optional EFZ decompilation symbol map so the
-    // log clearly shows whether function names will be available in dumps.
+    // log clearly shows whether function names will be available in dumps. We do
+    // NOT include the absolute path because it can leak the original developer's
+    // workspace layout to end users; only the present/missing state matters here.
     char efzMapProbe[MAX_PATH] = {0};
     if (DecodeEfzSymbolMapPath(efzMapProbe, sizeof(efzMapProbe))) {
         const bool present = FileExists(efzMapProbe);
-        AppendFormat("[CRASH]   efzSymbolMap=%s present=%s (parsing deferred to warmup thread)",
-                     efzMapProbe,
-                     present ? "yes" : "no");
-        if (!present) {
+        if (present) {
+            AppendLine("[CRASH]   efzSymbolMap=available (parsing deferred to warmup thread)");
+        } else {
             // Pre-mark unavailable so crash-time lookups short-circuit instantly.
+            // Skip logging the path entirely when it isn't present.
             InterlockedExchange(&g_efzSymbolMapLoadState, kEfzSymbolMapStateUnavailable);
         }
     } else {
-        AppendLine("[CRASH]   efzSymbolMap=<decode-failed>");
         InterlockedExchange(&g_efzSymbolMapLoadState, kEfzSymbolMapStateUnavailable);
     }
 

@@ -942,7 +942,7 @@ void RestartKeyMonitoring() {
     // Start monitoring thread once
     keyMonitorRunning.store(true);
     std::thread(MonitorKeys).detach();
-    LogOut("[KEYBINDS] Key monitoring thread started", true);
+    // Note: MonitorKeys logs "[KEYBINDS] Key monitoring thread started" itself.
 }
 
 void DebugInputs() {

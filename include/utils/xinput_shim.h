@@ -29,4 +29,10 @@ namespace XInputShim {
     const XINPUT_STATE* GetCachedState(int index); // returns pointer or nullptr if disconnected
     bool IsGenericFallbackSlot(int index);
     std::string GetSlotDisplayName(int index);
+
+    // Returns a friendly controller display name that the background watcher thread
+    // pre-computes off the game thread. Reads are non-blocking (try_lock with stale
+    // fallback), so this is safe to call from per-frame UI code.
+    // Returns true if the published name was used; false if a fallback string was written.
+    bool GetPublishedControllerName(int index, char* buf, size_t bufLen);
 }

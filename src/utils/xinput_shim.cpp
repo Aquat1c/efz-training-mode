@@ -1,4 +1,5 @@
 #include "../include/utils/xinput_shim.h"
+#include "../include/utils/controller_names.h"
 #include "../include/core/logger.h"
 #include "../include/core/globals.h"
 #include "../include/utils/utilities.h"
@@ -56,6 +57,42 @@ namespace {
     std::mutex g_snapshotMutex;
     std::atomic<bool> g_watcherStarted{ false };
     std::atomic<bool> g_hasInitialSnapshot{ false };
+
+    // ---- Published controller display names (computed on the watcher thread) ----
+    // The game thread reads these with a brief try_lock; if contended, it falls back
+    // to a stale local copy. Decouples the per-frame UI label refresh from any slow
+    // Windows API the name lookup may touch (Raw Input enumeration, HID open, etc.).
+    std::mutex g_namesMutex;
+    char g_publishedNames[4][96] = {};
+    bool g_publishedNamesValid[4] = { false, false, false, false };
+    DWORD g_lastNamesPublishTick = 0;
+    unsigned g_lastNamesPublishMask = 0xFFFFFFFFu;
+
+    void PublishControllerNamesUnlocked(unsigned mask) {
+        // Called from the watcher thread WITHOUT g_snapshotMutex held. Safe to call
+        // GetControllerNameForIndex (which may briefly try_lock g_snapshotMutex).
+        std::string names[4];
+        for (int i = 0; i < 4; ++i) {
+            if (((mask >> i) & 1u) == 0) {
+                char buf[64];
+                _snprintf_s(buf, sizeof(buf), _TRUNCATE, "Pad %d (Disconnected)", i);
+                names[i] = buf;
+            } else {
+                names[i] = ::GetControllerNameForIndex(i);
+                if (names[i].empty()) {
+                    char buf[64];
+                    _snprintf_s(buf, sizeof(buf), _TRUNCATE, "Controller %d", i);
+                    names[i] = buf;
+                }
+            }
+        }
+        std::lock_guard<std::mutex> lock(g_namesMutex);
+        for (int i = 0; i < 4; ++i) {
+            _snprintf_s(g_publishedNames[i], sizeof(g_publishedNames[i]), _TRUNCATE,
+                        "%s", names[i].c_str());
+            g_publishedNamesValid[i] = true;
+        }
+    }
 
     HMODULE TryLoad(const char* dll) {
         HMODULE h = LoadLibraryA(dll);
@@ -573,7 +610,24 @@ namespace {
 
     void LogSlotSummaryLocked();
 
-    void UpdateSnapshotLocked() {
+    // Native XInput polling can block several seconds per disconnected slot on some
+    // systems/drivers. We must NOT hold g_snapshotMutex during that call, otherwise the
+    // render thread (which also takes the mutex via GetState/GetCapabilities) will stall
+    // for many seconds whenever the watcher hits a slow native poll. So we perform the
+    // native poll lock-free into a local buffer and pass it to UpdateSnapshotLocked.
+    static void PollNativeSnapshotUnlocked(std::array<XINPUT_STATE, 4>& outStates,
+                                           unsigned& outMask) {
+        outMask = 0;
+        for (DWORD i = 0; i < 4; ++i) {
+            if (GetNativeState(i, &outStates[i]) == ERROR_SUCCESS) {
+                outMask |= (1u << i);
+            } else {
+                ZeroMemory(&outStates[i], sizeof(XINPUT_STATE));
+            }
+        }
+    }
+
+    void UpdateSnapshotLocked(const std::array<XINPUT_STATE, 4>& nativeStates, unsigned nativeMask) {
         DWORD now = GetTickCount();
 
         // Avoid re-enumerating DirectInput devices on a fixed 5s cadence while a stable pad
@@ -585,16 +639,6 @@ namespace {
         const bool noKnownGenericPads = g_genericPads.empty();
         if (firstGenericEnum || (noKnownGenericPads && (now - g_lastGenericEnumTick >= 5000))) {
             EnumerateGenericPadsLocked(firstGenericEnum);
-        }
-
-        std::array<XINPUT_STATE, 4> nativeStates{};
-        unsigned nativeMask = 0;
-        for (DWORD i = 0; i < 4; ++i) {
-            if (GetNativeState(i, &nativeStates[i]) == ERROR_SUCCESS) {
-                nativeMask |= (1u << i);
-            } else {
-                ZeroMemory(&nativeStates[i], sizeof(XINPUT_STATE));
-            }
         }
 
         auto collectGenericStates = [&]() {
@@ -665,9 +709,16 @@ namespace {
             }
 
             DWORD sleepMs = 16;
+            // Poll native XInput slots WITHOUT holding the snapshot mutex; XInputGetState
+            // can stall multiple seconds per disconnected slot on some systems.
+            std::array<XINPUT_STATE, 4> nativeStatesLocal{};
+            unsigned nativeMaskLocal = 0;
+            PollNativeSnapshotUnlocked(nativeStatesLocal, nativeMaskLocal);
+            unsigned combinedMaskAfter = 0;
             {
                 std::lock_guard<std::mutex> lock(g_snapshotMutex);
-                UpdateSnapshotLocked();
+                UpdateSnapshotLocked(nativeStatesLocal, nativeMaskLocal);
+                combinedMaskAfter = g_cachedMask;
                 if (g_cachedMask == 0 && g_genericPads.empty()) {
                     sleepMs = 250;
                 } else {
@@ -676,6 +727,19 @@ namespace {
                     // increased wakeups on the background thread.
                     sleepMs = 16;
                 }
+            }
+            // Refresh published display names off the game thread. Throttled to once
+            // every 2s, or immediately on mask change, so name lookup work (which can
+            // touch Raw Input enumeration) never costs the render thread anything.
+            const DWORD nowTick = GetTickCount();
+            const bool maskChanged = combinedMaskAfter != g_lastNamesPublishMask;
+            const bool namesDue = g_lastNamesPublishTick == 0
+                || (nowTick - g_lastNamesPublishTick) >= 2000
+                || maskChanged;
+            if (namesDue) {
+                PublishControllerNamesUnlocked(combinedMaskAfter);
+                g_lastNamesPublishTick = nowTick;
+                g_lastNamesPublishMask = combinedMaskAfter;
             }
             if (!g_efzWindowActive.load(std::memory_order_relaxed)
                 && !g_guiActive.load(std::memory_order_relaxed)) {
@@ -739,14 +803,21 @@ namespace XInputShim {
         if (!st || idx > 3) return ERROR_DEVICE_NOT_CONNECTED;
         EnsureWatcherStarted();
         if (!g_hasInitialSnapshot.load(std::memory_order_acquire)) {
+            // First-call init: poll natives lock-free, then publish under the lock.
+            std::array<XINPUT_STATE, 4> firstStates{};
+            unsigned firstMask = 0;
+            PollNativeSnapshotUnlocked(firstStates, firstMask);
             std::lock_guard<std::mutex> lock(g_snapshotMutex);
             if (!g_hasInitialSnapshot.load(std::memory_order_relaxed)) {
-                UpdateSnapshotLocked();
+                UpdateSnapshotLocked(firstStates, firstMask);
             }
         }
         RefreshSnapshotOncePerFrame();
-        std::lock_guard<std::mutex> lock(g_snapshotMutex);
-        if (((g_cachedMask >> idx) & 1u) == 0) {
+        // Try to take the mutex briefly; if the watcher is mid-publish, fall back to a
+        // lockless read of the cached state so the render thread NEVER stalls on us.
+        std::unique_lock<std::mutex> lock(g_snapshotMutex, std::try_to_lock);
+        const unsigned mask = g_cachedMask;
+        if (((mask >> idx) & 1u) == 0) {
             return ERROR_DEVICE_NOT_CONNECTED;
         }
         *st = g_cachedStates[idx];
@@ -762,13 +833,16 @@ namespace XInputShim {
         }
 
         if (!g_hasInitialSnapshot.load(std::memory_order_acquire)) {
+            std::array<XINPUT_STATE, 4> firstStates{};
+            unsigned firstMask = 0;
+            PollNativeSnapshotUnlocked(firstStates, firstMask);
             std::lock_guard<std::mutex> initLock(g_snapshotMutex);
             if (!g_hasInitialSnapshot.load(std::memory_order_relaxed)) {
-                UpdateSnapshotLocked();
+                UpdateSnapshotLocked(firstStates, firstMask);
             }
         }
         RefreshSnapshotOncePerFrame();
-        std::lock_guard<std::mutex> lock(g_snapshotMutex);
+        std::unique_lock<std::mutex> lock(g_snapshotMutex, std::try_to_lock);
         if (!g_cachedGenericSlots[idx]) {
             return ERROR_DEVICE_NOT_CONNECTED;
         }
@@ -804,6 +878,28 @@ namespace XInputShim {
     unsigned GetConnectedMaskCached() { return g_cachedMask; }
     unsigned GetNativeConnectedMaskCached() { return g_cachedNativeMask; }
     unsigned GetGenericConnectedMaskCached() { return g_cachedGenericMask; }
+
+    bool GetPublishedControllerName(int index, char* buf, size_t bufLen) {
+        if (!buf || bufLen == 0) return false;
+        if (index < 0 || index > 3) {
+            buf[0] = '\0';
+            return false;
+        }
+        // Try the names lock briefly; if contended, fall back to a generic label so we
+        // never stall the render thread on this read.
+        std::unique_lock<std::mutex> lock(g_namesMutex, std::try_to_lock);
+        if (lock.owns_lock() && g_publishedNamesValid[index]) {
+            _snprintf_s(buf, bufLen, _TRUNCATE, "%s", g_publishedNames[index]);
+            return true;
+        }
+        // Fallback: derive a name from the (lockless) cached mask.
+        if (((g_cachedMask >> index) & 1u) == 0) {
+            _snprintf_s(buf, bufLen, _TRUNCATE, "Pad %d (Disconnected)", index);
+        } else {
+            _snprintf_s(buf, bufLen, _TRUNCATE, "Controller %d", index);
+        }
+        return false;
+    }
 
     const XINPUT_STATE* GetCachedState(int index) {
         if (!IsPadConnectedCached(index)) return nullptr;
