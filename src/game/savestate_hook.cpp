@@ -44,6 +44,14 @@ namespace {
 
     SavedModState s_savedModState{};
 
+    void CanonicalizeSavedControlState(SavedModState& state) {
+        if (state.localSide != 0 && state.localSide != 1) {
+            state.localSide = 0;
+        }
+        state.p1CpuFlag = static_cast<uint8_t>((state.localSide == 1) ? 1u : 0u);
+        state.p2CpuFlag = static_cast<uint8_t>((state.localSide == 1) ? 0u : 1u);
+    }
+
     void CaptureModState() {
         s_savedModState.valid = true;
         s_savedModState.p2ControlWasOverridden = g_p2ControlOverridden;
@@ -62,6 +70,7 @@ namespace {
                 SafeReadMemory(gameStatePtr + GAMESTATE_OFF_P2_CPU_FLAG, &s_savedModState.p2CpuFlag, sizeof(uint8_t));
             }
         }
+        CanonicalizeSavedControlState(s_savedModState);
 
         s_savedModState.macroState = MacroController::GetState();
         s_savedModState.macroSlot = MacroController::GetCurrentSlot();
@@ -83,19 +92,31 @@ namespace {
             return;
         }
 
+        CanonicalizeSavedControlState(s_savedModState);
         g_p2ControlOverridden = s_savedModState.p2ControlWasOverridden;
         g_originalP2ControlFlag = s_savedModState.originalP2ControlFlag;
 
         int currentSide = SwitchPlayers::GetLocalSide();
-        if (currentSide != s_savedModState.localSide && s_savedModState.localSide >= 0) {
+        if (s_savedModState.localSide >= 0) {
             LogOut("[SAVESTATE][REVIVAL] Restoring local side from " + std::to_string(currentSide) + " to " + std::to_string(s_savedModState.localSide), true);
-            SwitchPlayers::SetLocalSide(s_savedModState.localSide);
+            if (!SwitchPlayers::ReapplyLocalSide(s_savedModState.localSide)
+                && !SwitchPlayers::RestoreEngineControlState(s_savedModState.localSide,
+                                                             s_savedModState.p1CpuFlag,
+                                                             s_savedModState.p2CpuFlag)) {
+                if (s_savedModState.localSide == 1) {
+                    SwitchPlayers::MarkSwapped();
+                } else {
+                    SwitchPlayers::ClearSwapFlag();
+                }
+            }
         }
 
         uintptr_t base = GetEFZBase();
         if (base) {
             uintptr_t gameStatePtr = 0;
             if (SafeReadMemory(base + EFZ_BASE_OFFSET_GAME_STATE, &gameStatePtr, sizeof(gameStatePtr)) && gameStatePtr) {
+                const uint8_t activePlayer = static_cast<uint8_t>(s_savedModState.localSide);
+                SafeWriteMemory(gameStatePtr + GAMESTATE_OFF_ACTIVE_PLAYER, &activePlayer, sizeof(activePlayer));
                 SafeWriteMemory(gameStatePtr + GAMESTATE_OFF_P1_CPU_FLAG, &s_savedModState.p1CpuFlag, sizeof(uint8_t));
                 SafeWriteMemory(gameStatePtr + GAMESTATE_OFF_P2_CPU_FLAG, &s_savedModState.p2CpuFlag, sizeof(uint8_t));
             }
