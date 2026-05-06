@@ -4,6 +4,7 @@
 #include "../include/gui/custom_menu/input.h"
 #include "../include/gui/custom_menu/sound.h"
 #include "../include/utils/config.h"
+#include "../include/utils/xinput_shim.h"
 #include "../3rdparty/imgui/imgui.h"
 
 #include <windows.h>
@@ -1388,6 +1389,77 @@ bool TickPopupIfOpen(ImDrawList* dl, const ScreenLayout& layout) {
 // ===== Hotkey binding =====
 namespace KeybindAPI { void TickInput(); }
 
+constexpr uint32_t kKeybindLtBit = 0x10000u;
+constexpr uint32_t kKeybindRtBit = 0x20000u;
+constexpr int kKeybindTriggerThreshold = 30;
+
+uint32_t PollRelevantGamepadMask() {
+    XInputShim::RefreshSnapshotOncePerFrame();
+
+    const int controllerIndex = Config::GetSettings().controllerIndex;
+    uint32_t mask = 0;
+    auto accumulate = [&](const XINPUT_STATE& state) {
+        mask |= state.Gamepad.wButtons;
+        if (state.Gamepad.bLeftTrigger > kKeybindTriggerThreshold) mask |= kKeybindLtBit;
+        if (state.Gamepad.bRightTrigger > kKeybindTriggerThreshold) mask |= kKeybindRtBit;
+    };
+
+    if (controllerIndex >= 0 && controllerIndex <= 3) {
+        if (const XINPUT_STATE* state = XInputShim::GetCachedState(controllerIndex)) {
+            accumulate(*state);
+        }
+        return mask;
+    }
+
+    for (int i = 0; i < 4; ++i) {
+        if (const XINPUT_STATE* state = XInputShim::GetCachedState(i)) {
+            accumulate(*state);
+        }
+    }
+    return mask;
+}
+
+int FirstCapturedGamepadMask(uint32_t mask) {
+    static const int kCapturePriority[] = {
+        XINPUT_GAMEPAD_A,
+        XINPUT_GAMEPAD_B,
+        XINPUT_GAMEPAD_X,
+        XINPUT_GAMEPAD_Y,
+        XINPUT_GAMEPAD_LEFT_SHOULDER,
+        XINPUT_GAMEPAD_RIGHT_SHOULDER,
+        XINPUT_GAMEPAD_BACK,
+        XINPUT_GAMEPAD_START,
+        XINPUT_GAMEPAD_LEFT_THUMB,
+        XINPUT_GAMEPAD_RIGHT_THUMB,
+        XINPUT_GAMEPAD_DPAD_UP,
+        XINPUT_GAMEPAD_DPAD_DOWN,
+        XINPUT_GAMEPAD_DPAD_LEFT,
+        XINPUT_GAMEPAD_DPAD_RIGHT,
+        static_cast<int>(kKeybindLtBit),
+        static_cast<int>(kKeybindRtBit),
+    };
+
+    for (int button : kCapturePriority) {
+        if ((mask & static_cast<uint32_t>(button)) != 0) {
+            return button;
+        }
+    }
+    return 0;
+}
+
+void SnapshotKeyboardState(bool (&prevPressed)[256]) {
+    for (int vk = 0; vk < 256; ++vk) {
+        prevPressed[vk] = (GetAsyncKeyState(vk) & 0x8000) != 0;
+    }
+}
+
+bool KeyEdge(bool (&prevPressed)[256], int vk) {
+    const bool now = (GetAsyncKeyState(vk) & 0x8000) != 0;
+    const bool was = prevPressed[vk];
+    prevPressed[vk] = now;
+    return now && !was;
+}
+
 struct KeybindState {
     bool active = false;
     char title[48] = "";              // shown to user (e.g. "OPEN MENU")
@@ -1395,13 +1467,16 @@ struct KeybindState {
     char iniSection[16] = "";         // INI section to persist into
     char iniKey[32]    = "";          // INI key to persist
     bool prevPressed[256] = {};
+    uint32_t prevGamepadMask = 0;
+    bool captureGamepad = false;
     bool primed = false;              // false on the first frame so a held key
-                                      // (the Activate that opened binding) is
+                                      // or button (the Activate that opened binding) is
                                       // treated as already-down
 };
 KeybindState g_keybind;
 
 bool IsKeybindActive() { return g_keybind.active; }
+bool IsGamepadKeybindActive() { return g_keybind.active && g_keybind.captureGamepad; }
 
 void OpenKeybind(const char* title, int* field,
                  const char* section, const char* key) {
@@ -1413,11 +1488,27 @@ void OpenKeybind(const char* title, int* field,
     g_keybind.settingsField = field;
     strncpy_s(g_keybind.iniSection, sizeof(g_keybind.iniSection), section, _TRUNCATE);
     strncpy_s(g_keybind.iniKey, sizeof(g_keybind.iniKey), key, _TRUNCATE);
+    g_keybind.captureGamepad = false;
+    g_keybind.prevGamepadMask = 0;
     // Snapshot all keys as currently-pressed so the Activate edge that opened
     // this binding doesn't immediately register as a capture.
-    for (int vk = 0; vk < 256; ++vk) {
-        g_keybind.prevPressed[vk] = (GetAsyncKeyState(vk) & 0x8000) != 0;
-    }
+    SnapshotKeyboardState(g_keybind.prevPressed);
+    g_keybind.primed = false;
+}
+
+void OpenGamepadKeybind(const char* title, int* field,
+                        const char* section, const char* key) {
+    if (!field || !title || !section || !key) return;
+    if (!Input::IsGameWindowActive()) return;
+
+    g_keybind.active = true;
+    strncpy_s(g_keybind.title, sizeof(g_keybind.title), title, _TRUNCATE);
+    g_keybind.settingsField = field;
+    strncpy_s(g_keybind.iniSection, sizeof(g_keybind.iniSection), section, _TRUNCATE);
+    strncpy_s(g_keybind.iniKey, sizeof(g_keybind.iniKey), key, _TRUNCATE);
+    g_keybind.captureGamepad = true;
+    SnapshotKeyboardState(g_keybind.prevPressed);
+    g_keybind.prevGamepadMask = PollRelevantGamepadMask();
     g_keybind.primed = false;
 }
 
@@ -1426,6 +1517,8 @@ void CloseKeybind() {
     g_keybind.settingsField = nullptr;
     g_keybind.iniSection[0] = '\0';
     g_keybind.iniKey[0] = '\0';
+    g_keybind.captureGamepad = false;
+    g_keybind.prevGamepadMask = 0;
 }
 
 bool VkIsBindable(int vk) {
@@ -1450,17 +1543,57 @@ namespace KeybindAPI {
         if (!g_keybind.active) return;
         if (!Input::IsGameWindowActive()) {
             memset(g_keybind.prevPressed, 0, sizeof(g_keybind.prevPressed));
+            g_keybind.prevGamepadMask = 0;
             g_keybind.primed = false;
             return;
         }
 
         // Cancel
-        const bool escNow = (GetAsyncKeyState(VK_ESCAPE) & 0x8000) != 0;
-        const bool escWas = g_keybind.prevPressed[VK_ESCAPE];
-        g_keybind.prevPressed[VK_ESCAPE] = escNow;
-        if (escNow && !escWas) {
+        if (KeyEdge(g_keybind.prevPressed, VK_ESCAPE)) {
             CloseKeybind();
             Input::ResetEdges();
+            return;
+        }
+
+        if (g_keybind.captureGamepad) {
+            const uint32_t currentMask = PollRelevantGamepadMask();
+            const bool anyHeld = currentMask != 0;
+
+            if (!g_keybind.primed) {
+                g_keybind.prevGamepadMask = currentMask;
+                if (!anyHeld) g_keybind.primed = true;
+                return;
+            }
+
+            const uint32_t edgeMask = currentMask & ~g_keybind.prevGamepadMask;
+            g_keybind.prevGamepadMask = currentMask;
+
+            const int cancelMask = Config::GetSettings().gpToggleMenuButton;
+            if (cancelMask >= 0 && (edgeMask & static_cast<uint32_t>(cancelMask)) != 0) {
+                CloseKeybind();
+                Input::ResetEdges();
+                return;
+            }
+
+            if (KeyEdge(g_keybind.prevPressed, VK_DELETE) ||
+                KeyEdge(g_keybind.prevPressed, VK_BACK)) {
+                if (g_keybind.settingsField) {
+                    *g_keybind.settingsField = -1;
+                    Config::SetSetting(g_keybind.iniSection, g_keybind.iniKey, "-1");
+                }
+                CloseKeybind();
+                Input::ResetEdges();
+                return;
+            }
+
+            const int captured = FirstCapturedGamepadMask(edgeMask);
+            if (captured && g_keybind.settingsField) {
+                *g_keybind.settingsField = captured;
+                Config::SetSetting(g_keybind.iniSection, g_keybind.iniKey,
+                                   Config::GetGamepadButtonName(captured));
+                CloseKeybind();
+                Input::ResetEdges();
+            }
             return;
         }
 
@@ -1507,7 +1640,7 @@ bool TickKeybindIfActive(ImDrawList* dl, const ScreenLayout& layout) {
 
     // Centered modal box similar to popup geom but smaller.
     const float boxW = 320.0f;
-    const float boxH = 120.0f;
+    const float boxH = g_keybind.captureGamepad ? 136.0f : 120.0f;
     const float bx = layout.panelX + (kPanelW - boxW) * 0.5f;
     const float by = layout.contentTopY + ((layout.contentBottomY - layout.contentTopY) - boxH) * 0.5f;
 
@@ -1526,12 +1659,32 @@ bool TickKeybindIfActive(ImDrawList* dl, const ScreenLayout& layout) {
     };
 
     centerText(by + 14.0f, g_keybind.title, kTextHeader);
-    if (!g_keybind.primed) {
-        centerText(by + 50.0f, "RELEASE ALL KEYS...", kTextInactive);
+    if (g_keybind.captureGamepad) {
+        char cancelBuf[96];
+        const int cancelMask = Config::GetSettings().gpToggleMenuButton;
+        if (cancelMask >= 0) {
+            _snprintf_s(cancelBuf, sizeof(cancelBuf), _TRUNCATE,
+                        "%s TO CANCEL",
+                        Config::GetGamepadButtonName(cancelMask).c_str());
+        } else {
+            _snprintf_s(cancelBuf, sizeof(cancelBuf), _TRUNCATE,
+                        "ESC TO CANCEL");
+        }
+        if (!g_keybind.primed) {
+            centerText(by + 46.0f, "RELEASE ALL INPUTS...", kTextInactive);
+        } else {
+            centerText(by + 46.0f, "PRESS A CONTROLLER BUTTON", kTextActive);
+        }
+        centerText(by + 74.0f, "DELETE / BACKSPACE TO DISABLE", kTextInactive);
+        centerText(by + 100.0f, cancelBuf, kTextInactive);
     } else {
-        centerText(by + 50.0f, "PRESS A KEY", kTextActive);
+        if (!g_keybind.primed) {
+            centerText(by + 50.0f, "RELEASE ALL KEYS...", kTextInactive);
+        } else {
+            centerText(by + 50.0f, "PRESS A KEY", kTextActive);
+        }
+        centerText(by + 80.0f, "ESC TO CANCEL", kTextInactive);
     }
-    centerText(by + 80.0f, "ESC TO CANCEL", kTextInactive);
 
     return true;
 }
