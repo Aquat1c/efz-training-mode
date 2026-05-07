@@ -1217,7 +1217,12 @@ namespace ImGuiImpl {
         // Restore original window procedure
         HWND hostWindow = GetActiveHostWindow();
         if (hostWindow && g_originalWndProc) {
-            SetWindowLongPtr(hostWindow, GWLP_WNDPROC, (LONG_PTR)g_originalWndProc);
+            WNDPROC currentWndProc = reinterpret_cast<WNDPROC>(GetWindowLongPtr(hostWindow, GWLP_WNDPROC));
+            if (currentWndProc == ImGuiWndProc) {
+                SetWindowLongPtr(hostWindow, GWLP_WNDPROC, (LONG_PTR)g_originalWndProc);
+            } else {
+                LogOut("[IMGUI] Skipping WndProc restore because another hook owns the window proc", true);
+            }
         }
         
         ImGui_ImplDX9_Shutdown();

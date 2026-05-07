@@ -441,7 +441,13 @@ HRESULT WINAPI DirectDrawHook::HookedFlip(IDirectDrawSurface7* This, IDirectDraw
 
 // --- REVISED AND CORRECTED D3D9 EndScene Hook ---
 HRESULT WINAPI HookedEndScene(LPDIRECT3DDEVICE9 pDevice) {
+    if (!g_EndSceneObserved.load()) g_EndSceneObserved.store(true);
+
     if (g_onlineModeActive.load(std::memory_order_relaxed)) {
+        return oEndScene(pDevice);
+    }
+
+    if (!g_EndSceneHookEnabled.load(std::memory_order_acquire)) {
         return oEndScene(pDevice);
     }
 
@@ -495,8 +501,6 @@ HRESULT WINAPI HookedEndScene(LPDIRECT3DDEVICE9 pDevice) {
             }
         }
     } _frameTimerScope;
-    // Mark that EndScene was observed at least once
-    if (!g_EndSceneObserved.load()) g_EndSceneObserved.store(true);
     if (!pDevice) {
         SetEndScenePhase("original EndScene: null device");
         return oEndScene(pDevice);
@@ -1695,25 +1699,6 @@ bool DirectDrawHook::SetD3D9Active(bool active) {
     const bool currentlyEnabled = g_EndSceneHookEnabled.load(std::memory_order_acquire);
     if (currentlyEnabled == active) {
         return true;
-    }
-
-    const MH_STATUS rc = active
-        ? MH_EnableHook(g_EndSceneTarget)
-        : MH_DisableHook(g_EndSceneTarget);
-    if (rc != MH_OK
-        && !(active && rc == MH_ERROR_ENABLED)
-        && !(!active && rc == MH_ERROR_DISABLED)) {
-        const char* es = MH_StatusToString(rc);
-        LogOut(
-            std::string("[OVERLAY] Failed to ")
-            + (active ? "enable" : "disable")
-            + " EndScene hook: "
-            + (es ? es : "<unknown>"),
-            true);
-        if (active) {
-            g_ExternalMenuFallbackNeeded.store(true, std::memory_order_release);
-        }
-        return false;
     }
 
     g_EndSceneHookEnabled.store(active, std::memory_order_release);

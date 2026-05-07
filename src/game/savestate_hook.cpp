@@ -10,6 +10,7 @@
 #include "../../include/core/memory.h"
 #include "../../include/core/constants.h"
 #include "../../include/gui/overlay.h"
+#include "../../include/utils/minhook_utils.h"
 #include "../../include/utils/utilities.h"
 #include "../../3rdparty/minhook/include/MinHook.h"
 #include <windows.h>
@@ -199,25 +200,17 @@ namespace SavestateHook {
         bool loadHookOk = false;
         bool saveHookOk = false;
 
-        if (MH_CreateHook(reinterpret_cast<LPVOID>(s_loadStateAddr),
-                          reinterpret_cast<LPVOID>(&HookedLoadState),
-                          reinterpret_cast<void**>(&oLoadState)) == MH_OK) {
-            if (MH_EnableHook(reinterpret_cast<LPVOID>(s_loadStateAddr)) == MH_OK) {
-                loadHookOk = true;
-            } else {
-                MH_RemoveHook(reinterpret_cast<LPVOID>(s_loadStateAddr));
-            }
-        }
+        loadHookOk = MinHookUtils::CreateAndEnableHook(reinterpret_cast<LPVOID>(s_loadStateAddr),
+                                                       reinterpret_cast<LPVOID>(&HookedLoadState),
+                                                       reinterpret_cast<void**>(&oLoadState),
+                                                       "[SAVESTATE][REVIVAL]",
+                                                       "LoadState");
 
-        if (MH_CreateHook(reinterpret_cast<LPVOID>(s_saveStateAddr),
-                          reinterpret_cast<LPVOID>(&HookedSaveState),
-                          reinterpret_cast<void**>(&oSaveState)) == MH_OK) {
-            if (MH_EnableHook(reinterpret_cast<LPVOID>(s_saveStateAddr)) == MH_OK) {
-                saveHookOk = true;
-            } else {
-                MH_RemoveHook(reinterpret_cast<LPVOID>(s_saveStateAddr));
-            }
-        }
+        saveHookOk = MinHookUtils::CreateAndEnableHook(reinterpret_cast<LPVOID>(s_saveStateAddr),
+                                                       reinterpret_cast<LPVOID>(&HookedSaveState),
+                                                       reinterpret_cast<void**>(&oSaveState),
+                                                       "[SAVESTATE][REVIVAL]",
+                                                       "SaveState");
 
         if (!loadHookOk && !saveHookOk) {
             LogOut("[SAVESTATE][REVIVAL] Failed to install any hooks", true);
@@ -238,14 +231,14 @@ namespace SavestateHook {
         if (!s_installed.load()) return;
 
         if (s_loadStateAddr) {
-            MH_DisableHook(reinterpret_cast<LPVOID>(s_loadStateAddr));
-            MH_RemoveHook(reinterpret_cast<LPVOID>(s_loadStateAddr));
+            (void)MinHookUtils::DisableHook(reinterpret_cast<LPVOID>(s_loadStateAddr), "[SAVESTATE][REVIVAL]", "LoadState");
+            (void)MinHookUtils::RemoveHook(reinterpret_cast<LPVOID>(s_loadStateAddr), "[SAVESTATE][REVIVAL]", "LoadState");
             s_loadStateAddr = 0;
         }
 
         if (s_saveStateAddr) {
-            MH_DisableHook(reinterpret_cast<LPVOID>(s_saveStateAddr));
-            MH_RemoveHook(reinterpret_cast<LPVOID>(s_saveStateAddr));
+            (void)MinHookUtils::DisableHook(reinterpret_cast<LPVOID>(s_saveStateAddr), "[SAVESTATE][REVIVAL]", "SaveState");
+            (void)MinHookUtils::RemoveHook(reinterpret_cast<LPVOID>(s_saveStateAddr), "[SAVESTATE][REVIVAL]", "SaveState");
             s_saveStateAddr = 0;
         }
 
