@@ -1,6 +1,7 @@
 #include "../include/utils/audio_control.h"
 
 #include "../include/utils/config.h"
+#include "../include/utils/extended_config_bridge.h"
 #include "../include/core/constants.h"
 #include "../include/core/logger.h"
 #include "../include/core/memory.h"
@@ -513,7 +514,13 @@ int __fastcall HookedSetSoundVolume(void* soundManagerPtr, void*, unsigned short
     int adjustedVolumeLevel = volumeLevel;
     uintptr_t gameSystemPtr = 0;
     if (IsCurrentBgmBuffer(soundManagerPtr, bufferIndex, gameSystemPtr)) {
-        adjustedVolumeLevel = PercentToDirectSoundVolume(GetConfiguredBgmVolumePercent(), volumeLevel);
+        const int configuredAbsoluteVolume = GetConfiguredBgmDirectSoundVolume();
+        const bool alreadySharedAbsolute =
+            ExtendedConfigBridge::IsSharedAudioActive()
+            && std::abs(volumeLevel - configuredAbsoluteVolume) <= 2;
+        if (!alreadySharedAbsolute) {
+            adjustedVolumeLevel = PercentToDirectSoundVolume(GetConfiguredBgmVolumePercent(), volumeLevel);
+        }
     }
 
     SetSoundVolumeFn setSoundVolume = ResolveSetSoundVolume();
@@ -668,6 +675,7 @@ bool PlayBackgroundMusic(uintptr_t gameSystemPtr, unsigned short trackNumber) {
 
 void ApplyConfiguredVolumesNow() {
     TraceAudio("[AUDIO][TRACE] ApplyConfiguredVolumesNow begin");
+    ExtendedConfigBridge::ImportAudioSettingsIfAvailable(false);
     const uintptr_t gameSystemPtr = GetGameStatePtr();
     if (gameSystemPtr) {
         if (!SehApplyBgmVolumeToGameSystem(gameSystemPtr)) {

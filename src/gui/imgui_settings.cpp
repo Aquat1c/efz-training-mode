@@ -13,6 +13,7 @@
 #include "../include/utils/debug_log.h"
 #include "../include/input/framestep.h"
 #include "../include/utils/audio_control.h"
+#include "../include/utils/extended_config_bridge.h"
 #include "../include/utils/network.h"
 #include <windows.h>
 #include <Xinput.h>
@@ -327,11 +328,15 @@ namespace ImGuiSettings {
                 ImGui::SetNextItemWidth(200);
                 if (ImGui::SliderInt("##BgmVolumePercent", &bgmVolumePercent, 0, 100, "%d%%")) {
                     Config::SetSetting("General", "bgmVolumePercent", std::to_string(bgmVolumePercent));
+                    ExtendedConfigBridge::PublishAudioSettings(Config::GetSettings().bgmVolumePercent,
+                                                               Config::GetSettings().seVolumePercent);
                     AudioControl::ApplyConfiguredVolumesNow();
                 }
                 ImGui::SameLine();
                 if (ImGui::Button("Reset##BgmVolumePercent")) {
                     Config::SetSetting("General", "bgmVolumePercent", "100");
+                    ExtendedConfigBridge::PublishAudioSettings(Config::GetSettings().bgmVolumePercent,
+                                                               Config::GetSettings().seVolumePercent);
                     AudioControl::ApplyConfiguredVolumesNow();
                 }
 
@@ -341,11 +346,15 @@ namespace ImGuiSettings {
                 ImGui::SetNextItemWidth(200);
                 if (ImGui::SliderInt("##SeVolumePercent", &seVolumePercent, 0, 100, "%d%%")) {
                     Config::SetSetting("General", "seVolumePercent", std::to_string(seVolumePercent));
+                    ExtendedConfigBridge::PublishAudioSettings(Config::GetSettings().bgmVolumePercent,
+                                                               Config::GetSettings().seVolumePercent);
                     AudioControl::ApplyConfiguredVolumesNow();
                 }
                 ImGui::SameLine();
                 if (ImGui::Button("Reset##SeVolumePercent")) {
                     Config::SetSetting("General", "seVolumePercent", "100");
+                    ExtendedConfigBridge::PublishAudioSettings(Config::GetSettings().bgmVolumePercent,
+                                                               Config::GetSettings().seVolumePercent);
                     AudioControl::ApplyConfiguredVolumesNow();
                 }
 

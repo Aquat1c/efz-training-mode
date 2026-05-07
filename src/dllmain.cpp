@@ -25,6 +25,7 @@
 #include "../3rdparty/minhook/include/MinHook.h" 
 #include "../include/utils/bgm_control.h"
 #include "../include/utils/audio_control.h"
+#include "../include/utils/extended_config_bridge.h"
 #include "../include/game/game_state.h"
 #include "../include/core/globals.h"  
 #include "../include/game/collision_hook.h"
@@ -329,6 +330,8 @@ void InitializeConfig() {
     LogOut("[SYSTEM] Initializing configuration system...", true);
     if (Config::Initialize()) {
         LogOut("[SYSTEM] Configuration loaded successfully", true);
+        ExtendedConfigBridge::Refresh(true);
+        ExtendedConfigBridge::ImportAudioSettingsIfAvailable(true);
         
         // Apply settings
         detailedLogging = Config::GetSettings().detailedLogging;
