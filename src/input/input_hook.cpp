@@ -12,6 +12,7 @@
 #include "../include/game/practice_patch.h"
 #include "../include/input/input_buffer.h" // for g_bufferFreezingActive
 #include "../include/input/immediate_input.h"
+#include "../include/utils/minhook_utils.h"
 #include "../include/game/auto_action.h"
 #include "../include/input/injection_control.h"
 #include <windows.h>
@@ -126,29 +127,6 @@ bool ResolveInputHookTargets(uintptr_t& targetAddr, uintptr_t& pollAddr) {
     return true;
 }
 
-bool SetInputHookTargetEnabled(uintptr_t targetAddr, bool active, const char* label) {
-    if (!targetAddr) {
-        return false;
-    }
-
-    const MH_STATUS rc = active
-        ? MH_EnableHook(reinterpret_cast<LPVOID>(targetAddr))
-        : MH_DisableHook(reinterpret_cast<LPVOID>(targetAddr));
-    if (rc == MH_OK
-        || (active && rc == MH_ERROR_ENABLED)
-        || (!active && rc == MH_ERROR_DISABLED)) {
-        return true;
-    }
-
-    LogOut(
-        std::string("[INPUT_HOOK] Failed to ")
-        + (active ? "enable " : "disable ")
-        + label
-        + " hook at "
-        + FormatHexAddress(targetAddr),
-        true);
-    return false;
-}
 } // namespace
 
 // Vanilla-only input routing swap flag
@@ -176,7 +154,8 @@ void SetVanillaSwapInputRouting(bool enable) {
 // Our poll hook. Use __fastcall to match __thiscall trampoline signature.
 static int __fastcall HookedPollPlayerInputState(int inputManagerPtr, int /*edx*/, unsigned int playerIndex)
 {
-    if (g_onlineModeActive.load(std::memory_order_relaxed)) {
+    if (!s_inputHooksEnabled.load(std::memory_order_acquire)
+        || g_onlineModeActive.load(std::memory_order_relaxed)) {
         return oPollPlayerInputState ? oPollPlayerInputState(inputManagerPtr, playerIndex) : 0;
     }
 
@@ -199,7 +178,8 @@ static int __fastcall HookedPollPlayerInputState(int inputManagerPtr, int /*edx*
 // Our custom function that will be called instead of the original.
 // We use __fastcall for __thiscall hooks from MinHook.
 int __fastcall HookedProcessCharacterInput(int characterPtr, int edx) {
-    if (g_onlineModeActive.load(std::memory_order_relaxed)) {
+    if (!s_inputHooksEnabled.load(std::memory_order_acquire)
+        || g_onlineModeActive.load(std::memory_order_relaxed)) {
         return oProcessCharacterInput(characterPtr);
     }
 
@@ -390,14 +370,25 @@ void InstallInputHook() {
     s_pollTargetAddr = pollAddr;
 
     if (!s_inputHooksCreated.load(std::memory_order_acquire)) {
-        if (MH_CreateHook((LPVOID)targetAddr, &HookedProcessCharacterInput, (LPVOID*)&oProcessCharacterInput) != MH_OK) {
-            LogOut("[INPUT_HOOK] Failed to create hook at address " + FormatHexAddress(targetAddr), true);
+        if (!MinHookUtils::CreateHook(reinterpret_cast<LPVOID>(targetAddr),
+                                      reinterpret_cast<void*>(&HookedProcessCharacterInput),
+                                      reinterpret_cast<void**>(&oProcessCharacterInput),
+                                      "[INPUT_HOOK]",
+                                      "processCharacterInput")) {
             return;
         }
 
-        if (MH_CreateHook((LPVOID)pollAddr, &HookedPollPlayerInputState, (LPVOID*)&oPollPlayerInputState) != MH_OK) {
-            LogOut("[INPUT_HOOK] Failed to create poll hook at address " + FormatHexAddress(pollAddr), true);
-            MH_RemoveHook((LPVOID)targetAddr);
+        if (!MinHookUtils::CreateHook(reinterpret_cast<LPVOID>(pollAddr),
+                                      reinterpret_cast<void*>(&HookedPollPlayerInputState),
+                                      reinterpret_cast<void**>(&oPollPlayerInputState),
+                                      "[INPUT_HOOK]",
+                                      "pollPlayerInputState")) {
+            (void)MinHookUtils::RemoveHook(reinterpret_cast<LPVOID>(targetAddr), "[INPUT_HOOK]", "processCharacterInput");
+            return;
+        }
+
+        if (!MinHookUtils::EnableHook(reinterpret_cast<LPVOID>(targetAddr), "[INPUT_HOOK]", "processCharacterInput")
+            || !MinHookUtils::EnableHook(reinterpret_cast<LPVOID>(pollAddr), "[INPUT_HOOK]", "pollPlayerInputState")) {
             return;
         }
 
@@ -427,24 +418,18 @@ void SetInputHookActive(bool active) {
         return;
     }
 
-    const bool processOk = SetInputHookTargetEnabled(s_processTargetAddr, active, "processCharacterInput");
-    const bool pollOk = SetInputHookTargetEnabled(s_pollTargetAddr, active, "pollPlayerInputState");
-    if (!processOk || !pollOk) {
-        return;
-    }
-
     s_inputHooksEnabled.store(active, std::memory_order_release);
     LogOut(std::string("[INPUT_HOOK] Input hooks ") + (active ? "enabled" : "disabled"), true);
 }
 
 void RemoveInputHook() {
     if (s_processTargetAddr) {
-        MH_DisableHook((LPVOID)s_processTargetAddr);
-        MH_RemoveHook((LPVOID)s_processTargetAddr);
+        (void)MinHookUtils::DisableHook((LPVOID)s_processTargetAddr, "[INPUT_HOOK]", "processCharacterInput");
+        (void)MinHookUtils::RemoveHook((LPVOID)s_processTargetAddr, "[INPUT_HOOK]", "processCharacterInput");
     }
     if (s_pollTargetAddr) {
-        MH_DisableHook((LPVOID)s_pollTargetAddr);
-        MH_RemoveHook((LPVOID)s_pollTargetAddr);
+        (void)MinHookUtils::DisableHook((LPVOID)s_pollTargetAddr, "[INPUT_HOOK]", "pollPlayerInputState");
+        (void)MinHookUtils::RemoveHook((LPVOID)s_pollTargetAddr, "[INPUT_HOOK]", "pollPlayerInputState");
     }
     s_inputHooksEnabled.store(false, std::memory_order_release);
     s_inputHooksCreated.store(false, std::memory_order_release);

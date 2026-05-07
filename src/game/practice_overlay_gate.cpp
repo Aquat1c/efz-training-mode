@@ -2,6 +2,7 @@
 #include "../../include/game/efzrevival_addrs.h" // future: version-aware toggles
 #include "../../include/core/logger.h"
 #include "../../include/game/practice_hotkey_gate.h" // for menu visibility notification if needed
+#include "../../include/utils/minhook_utils.h"
 #include "../../include/utils/network.h" // IsEfzRevivalVersionSupported
 #include "../../3rdparty/minhook/include/MinHook.h"
 #include <windows.h>
@@ -18,9 +19,11 @@ namespace {
 
     template<typename T> bool MakeHook(void* target, void* detour, T** original) {
         if (!target) return false;
-        if (MH_CreateHook(target, detour, reinterpret_cast<void**>(original)) != MH_OK) return false;
-        if (MH_EnableHook(target) != MH_OK) { MH_RemoveHook(target); return false; }
-        return true;
+        return MinHookUtils::CreateAndEnableHook(target,
+                                                 detour,
+                                                 reinterpret_cast<void**>(original),
+                                                 "[HOTKEY]",
+                                                 "practice overlay gate");
     }
 
     using ToggleFn = void(__thiscall*)(void* self);

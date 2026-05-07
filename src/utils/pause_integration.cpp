@@ -8,6 +8,7 @@
 #include "../include/game/practice_offsets.h"
 #include "../include/game/efzrevival_addrs.h"
 #include "../include/utils/network.h" // GetEfzRevivalVersion, EfzRevivalVersion
+#include "../include/utils/minhook_utils.h"
 // MinHook for capturing Practice controller pointer
 #include "../3rdparty/minhook/include/MinHook.h"
 #include <windows.h>
@@ -352,14 +353,22 @@ namespace {
         }
         bool anyHook = false;
         if (tickTarget) {
-            if (MH_CreateHook(tickTarget, &HookedPracticeTick, reinterpret_cast<void**>(&oPracticeTick)) == MH_OK
-                && MH_EnableHook(tickTarget) == MH_OK) {
+            if (MinHookUtils::CreateAndEnableHook(tickTarget,
+                                                  reinterpret_cast<void*>(&HookedPracticeTick),
+                                                  reinterpret_cast<void**>(&oPracticeTick),
+                                                  "[PAUSE]",
+                                                  "PracticeTick")) {
                 s_practiceTickHookCreated.store(true, std::memory_order_relaxed);
                 anyHook = true;
                 LogOut("[PAUSE] PracticeTick hook active", detailedLogging.load());
             }
         }
-        if (pauseTarget && MH_CreateHook(pauseTarget, &HookedTogglePause, reinterpret_cast<void**>(&oTogglePause)) == MH_OK && MH_EnableHook(pauseTarget) == MH_OK) {
+        if (pauseTarget
+            && MinHookUtils::CreateAndEnableHook(pauseTarget,
+                                                 reinterpret_cast<void*>(&HookedTogglePause),
+                                                 reinterpret_cast<void**>(&oTogglePause),
+                                                 "[PAUSE]",
+                                                 "TogglePause")) {
             s_togglePauseHookCreated.store(true, std::memory_order_relaxed);
             anyHook = true; LogOut("[PAUSE] TogglePause hook active", detailedLogging.load());
         }
@@ -493,21 +502,15 @@ namespace {
         void* target = rva ? reinterpret_cast<void*>(efzBase + rva) : nullptr;
         if (!target) return;
         s_battleContextHookTarget = reinterpret_cast<uintptr_t>(target);
-        auto rcCreate = MH_CreateHook(target, &HookedRenderBattleScreen, reinterpret_cast<void**>(&oRenderBattleScreen));
-        if (rcCreate != MH_OK && rcCreate != MH_ERROR_ALREADY_CREATED) {
+        if (!MinHookUtils::CreateAndEnableHook(target,
+                                               reinterpret_cast<void*>(&HookedRenderBattleScreen),
+                                               reinterpret_cast<void**>(&oRenderBattleScreen),
+                                               "[PAUSE]",
+                                               "RenderBattleScreen")) {
             if (!s_battleContextHookLoggedFail.exchange(true)) {
                 std::ostringstream oss; oss << "[PAUSE] Failed to create RenderBattleScreen hook at VA=0x" << std::hex << (uintptr_t)target;
                 LogOut(oss.str(), true);
             }
-            return;
-        }
-        auto rcEnable = MH_EnableHook(target);
-        if (rcEnable != MH_OK && rcEnable != MH_ERROR_ENABLED) {
-            if (!s_battleContextHookLoggedFail.exchange(true)) {
-                std::ostringstream oss; oss << "[PAUSE] Failed to enable RenderBattleScreen hook at VA=0x" << std::hex << (uintptr_t)target;
-                LogOut(oss.str(), true);
-            }
-            // Don't remove the hook if it was already created; just bail
             return;
         }
         s_battleContextHookInstalled.store(true);

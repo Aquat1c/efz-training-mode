@@ -14,6 +14,7 @@
 #include <iomanip>
 #include "../include/core/constants.h"
 #include "../include/gui/overlay.h"
+#include "../include/utils/minhook_utils.h"
 
 // Offset of handlePlayerToPlayerCollision relative to module base
 static constexpr uintptr_t HANDLE_P2P_COLLISION_OFFSET = 0x367F60;
@@ -43,28 +44,6 @@ bool ResolveCollisionHookTarget(uintptr_t& targetAddr) {
     return true;
 }
 
-bool SetCollisionHookEnabledInternal(bool active) {
-    if (!s_collisionHookTargetAddr) {
-        return false;
-    }
-
-    const MH_STATUS rc = active
-        ? MH_EnableHook(reinterpret_cast<LPVOID>(s_collisionHookTargetAddr))
-        : MH_DisableHook(reinterpret_cast<LPVOID>(s_collisionHookTargetAddr));
-    if (rc == MH_OK
-        || (active && rc == MH_ERROR_ENABLED)
-        || (!active && rc == MH_ERROR_DISABLED)) {
-        return true;
-    }
-
-    LogOut(
-        std::string("[COLLISION_HOOK] Failed to ")
-        + (active ? "enable" : "disable")
-        + " collision hook at "
-        + FormatHexAddress(s_collisionHookTargetAddr),
-        true);
-    return false;
-}
 } // namespace
 
 // Identify which player owns this frame-data by scanning both player bases for a matching field.
@@ -91,7 +70,8 @@ static void IdentifyPlayerByFrameData(uintptr_t frameDataPtr, int& outPlayerNum,
 
 // We use __fastcall wrapper to intercept __thiscall
 static int __fastcall HookedHandleP2PCollision(void* gameSystem, void* /*edx*/, int attackerPtr, int defenderPtr, int attackerFrameData, const void* defenderFrameData) {
-    if (g_onlineModeActive.load(std::memory_order_relaxed)) {
+    if (!s_collisionHookEnabled.load(std::memory_order_acquire)
+        || g_onlineModeActive.load(std::memory_order_relaxed)) {
         return oHandleP2PCollision(gameSystem, attackerPtr, defenderPtr, attackerFrameData, defenderFrameData);
     }
 
@@ -152,8 +132,11 @@ void InstallCollisionHook() {
     s_collisionHookTargetAddr = targetAddr;
 
     if (!s_collisionHookCreated.load(std::memory_order_acquire)) {
-        if (MH_CreateHook((LPVOID)targetAddr, &HookedHandleP2PCollision, (LPVOID*)&oHandleP2PCollision) != MH_OK) {
-            LogOut("[COLLISION_HOOK] Failed to create hook at address " + FormatHexAddress(targetAddr), true);
+        if (!MinHookUtils::CreateAndEnableHook(reinterpret_cast<LPVOID>(targetAddr),
+                                               reinterpret_cast<void*>(&HookedHandleP2PCollision),
+                                               reinterpret_cast<void**>(&oHandleP2PCollision),
+                                               "[COLLISION_HOOK]",
+                                               "handleP2PCollision")) {
             return;
         }
         s_collisionHookCreated.store(true, std::memory_order_release);
@@ -181,18 +164,14 @@ void SetCollisionHookActive(bool active) {
         return;
     }
 
-    if (!SetCollisionHookEnabledInternal(active)) {
-        return;
-    }
-
     s_collisionHookEnabled.store(active, std::memory_order_release);
     LogOut(std::string("[COLLISION_HOOK] Collision hook ") + (active ? "enabled" : "disabled"), true);
 }
 
 void RemoveCollisionHook() {
     if (!s_collisionHookTargetAddr) return;
-    MH_DisableHook((LPVOID)s_collisionHookTargetAddr);
-    MH_RemoveHook((LPVOID)s_collisionHookTargetAddr);
+    (void)MinHookUtils::DisableHook((LPVOID)s_collisionHookTargetAddr, "[COLLISION_HOOK]", "handleP2PCollision");
+    (void)MinHookUtils::RemoveHook((LPVOID)s_collisionHookTargetAddr, "[COLLISION_HOOK]", "handleP2PCollision");
     s_collisionHookEnabled.store(false, std::memory_order_release);
     s_collisionHookCreated.store(false, std::memory_order_release);
     s_collisionHookTargetAddr = 0;
