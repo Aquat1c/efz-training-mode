@@ -5,7 +5,7 @@
 #include "../include/core/constants.h"
 #include "../include/core/memory.h"
 #include "../include/core/logger.h"
-#include "../include/gui/gui.h"
+#include "../include/gui/settings_apply.h"
 #include "../include/utils/config.h"
 #include "../include/gui/overlay.h"
 #include "../include/gui/framebar.h"
@@ -4067,10 +4067,10 @@ namespace ImGuiGui {
                     short mv = uiSample2.moveID2;
                     if (!uiSample2.actionable2) deferred = true;
                 }
-                // Apply all values (HP/Meter/X/Y/RF and character-specific) via legacy ApplySettings.
-                // Engine F4 recovery safety is handled inside ApplySettings itself, to mirror non-ImGui behaviour.
-                LogOut("[IMGUI_GUI] Calling ApplySettings from ImGui (base!=0)", true);
-                ApplySettings(&displayData);
+                // Commit the remaining low-level runtime writes through the shared runtime-applier.
+                // Engine F4 recovery safety is handled there so the in-game and fallback hosts stay aligned.
+                LogOut("[IMGUI_GUI] Calling ApplyRuntimeSettings from ImGui (base!=0)", true);
+                ApplyRuntimeSettings(&displayData);
 
                 // Run one enforcement tick immediately so infinite toggles take effect without waiting for the next cadence
                 CharacterSettings::TickCharacterEnforcements(base, displayData);

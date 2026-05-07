@@ -2,6 +2,7 @@
 #include "../include/utils/xinput_shim.h"
 #include "../include/core/logger.h"
 #include "../include/gui/imgui_gui.h"
+#include "../include/gui/custom_menu/renderer.h"
 #include "../include/game/practice_hotkey_gate.h"
 namespace PracticeOverlayGate { void SetMenuVisible(bool); }
 #include "../include/gui/overlay.h" 
@@ -19,6 +20,7 @@ namespace PracticeOverlayGate { void SetMenuVisible(bool); }
 #include <cmath>
 // Throttle timers
 #include <chrono>
+#include <thread>
 // Hotkey cooldown
 #include "../include/input/input_handler.h"
 
@@ -39,6 +41,14 @@ namespace CharacterSettings {
 }
 static IDirect3DDevice9* g_d3dDevice = nullptr;
 static WNDPROC g_originalWndProc = nullptr;
+static HWND g_imguiHostWindow = nullptr;
+static bool g_externalFallbackHost = false;
+static std::atomic<bool> g_externalFallbackThreadRunning{false};
+static std::atomic<bool> g_externalFallbackReady{false};
+static std::atomic<bool> g_externalFallbackInitFailed{false};
+static std::atomic<bool> g_externalFallbackExit{false};
+static HWND g_externalFallbackWindow = nullptr;
+static const char* kFallbackWindowClassName = "EFZ_TM_IMGUI_FALLBACK";
 
 // Virtual cursor/gamepad state
 static bool g_useVirtualCursor = false;
@@ -53,6 +63,13 @@ static bool g_resetVirtualCursorOnOpen = false;
 // Track applied font scale to rebuild atlas only when needed
 static float g_lastFontScaleApplied = 0.0f; // 0 = uninitialized
 static int   g_lastFontModeApplied  = -1;   // -1 = uninitialized
+
+static HWND GetActiveHostWindow() {
+    if (g_imguiHostWindow && IsWindow(g_imguiHostWindow)) {
+        return g_imguiHostWindow;
+    }
+    return FindEFZWindow();
+}
 
 static inline float ClampF(float v, float lo, float hi) {
     if (v < lo) return lo;
@@ -172,7 +189,7 @@ static void ReleaseGamepadNavInputs(ImGuiIO& io) {
 // Poll XInput and update a software mouse cursor
 static void UpdateVirtualCursor(ImGuiIO& io) {
     const auto& cfg = Config::GetSettings();
-    HWND hwnd = FindEFZWindow();
+    HWND hwnd = GetActiveHostWindow();
     float clientW = io.DisplaySize.x;
     float clientH = io.DisplaySize.y;
     bool fullscreen = false;
@@ -728,10 +745,28 @@ LRESULT CALLBACK ImGuiWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
     return CallWindowProc(g_originalWndProc, hWnd, msg, wParam, lParam);
 }
 
+LRESULT CALLBACK FallbackWindowProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    if (msg == WM_CLOSE) {
+        if (g_imguiVisible) {
+            ImGuiImpl::ToggleVisibility();
+        }
+        return 0;
+    }
+
+    if (g_imguiInitialized && g_externalFallbackHost) {
+        const LRESULT handled = ImGuiImpl::WndProc(hWnd, msg, wParam, lParam);
+        if (handled != 0) {
+            return handled;
+        }
+    }
+
+    return DefWindowProc(hWnd, msg, wParam, lParam);
+}
+
 namespace ImGuiImpl {
     // Get DPI scale factor for the window
     static float GetDpiScale() {
-        HWND hwnd = FindEFZWindow();
+        HWND hwnd = GetActiveHostWindow();
         if (!hwnd) {
             LogOut("[IMGUI] GetDpiScale: No EFZ window found, returning 1.0", true);
             return 1.0f;
@@ -825,118 +860,352 @@ namespace ImGuiImpl {
         LogOut((std::string("[IMGUI] Rebuilt font atlas: scale=") + std::to_string(sRounded) +
             ", px=" + std::to_string((int)targetPx) + ", font=" + (fontMode==0?"Default":"Segoe UI")).c_str(), true);
     }
-    bool Initialize(IDirect3DDevice9* device) {
-        // Fast path: already initialized
-        if (g_imguiInitialized)
-            return true;
+    namespace {
+        bool InitializeForHost(IDirect3DDevice9* device, HWND hostWindow, bool hookWndProc, bool externalFallback) {
+            if (g_imguiInitialized) {
+                return g_externalFallbackHost == externalFallback;
+            }
 
-        // Prevent concurrent initialization attempts (race between EndScene calls)
-        bool expected = false;
-        if (!s_imguiInitInProgress.compare_exchange_strong(expected, true)) {
-            // Another thread is already initializing - wait briefly and check result
-            Sleep(50);
-            return g_imguiInitialized;
-        }
+            bool expected = false;
+            if (!s_imguiInitInProgress.compare_exchange_strong(expected, true)) {
+                Sleep(50);
+                return g_imguiInitialized && g_externalFallbackHost == externalFallback;
+            }
 
-        // Double-check after acquiring the lock
-        if (g_imguiInitialized) {
+            if (g_imguiInitialized) {
+                s_imguiInitInProgress.store(false);
+                return g_externalFallbackHost == externalFallback;
+            }
+
+            if (!device) {
+                LogOut("[IMGUI] Error: No valid D3D device provided", true);
+                s_imguiInitInProgress.store(false);
+                return false;
+            }
+
+            if (!hostWindow) {
+                LogOut("[IMGUI] Error: No valid host window for ImGui", true);
+                s_imguiInitInProgress.store(false);
+                return false;
+            }
+
+            LogOut(std::string("[IMGUI] Initializing ImGui for ") + (externalFallback ? "fallback window" : "game window"), true);
+
+            bool createdContext = false;
+            g_d3dDevice = device;
+            g_imguiHostWindow = hostWindow;
+            g_externalFallbackHost = externalFallback;
+            g_originalWndProc = nullptr;
+
+            ImGui_ImplWin32_EnableDpiAwareness();
+            LogOut("[IMGUI] Enabled DPI awareness", true);
+
+            IMGUI_CHECKVERSION();
+            ImGui::CreateContext();
+            createdContext = true;
+            ImGuiIO& io = ImGui::GetIO(); (void)io;
+
+            io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+            io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
+
+            {
+                const auto& cfg = Config::GetSettings();
+                io.KeyRepeatDelay = ClampF(cfg.guiNavRepeatDelay, 0.05f, 1.0f);
+                io.KeyRepeatRate  = ClampF(cfg.guiNavRepeatRate,  0.01f, 0.50f);
+            }
+
+            io.Fonts->Flags |= ImFontAtlasFlags_NoPowerOfTwoHeight;
+            io.Fonts->TexGlyphPadding = 1;
+
+            ImGui::StyleColorsDark();
+
+            ImGuiStyle& style = ImGui::GetStyle();
+            style.Alpha = 1.0f;
+            if (style.WindowMinSize.x < 1.0f) style.WindowMinSize.x = 16.0f;
+            if (style.WindowMinSize.y < 1.0f) style.WindowMinSize.y = 16.0f;
+
+            if (!ImGui_ImplWin32_Init(hostWindow)) {
+                LogOut("[IMGUI] Error: ImGui_ImplWin32_Init failed", true);
+                ImGui::DestroyContext();
+                g_d3dDevice = nullptr;
+                g_imguiHostWindow = nullptr;
+                g_externalFallbackHost = false;
+                s_imguiInitInProgress.store(false);
+                return false;
+            }
+
+            if (!ImGui_ImplDX9_Init(device)) {
+                LogOut("[IMGUI] Error: ImGui_ImplDX9_Init failed", true);
+                ImGui_ImplWin32_Shutdown();
+                ImGui::DestroyContext();
+                g_d3dDevice = nullptr;
+                g_imguiHostWindow = nullptr;
+                g_externalFallbackHost = false;
+                s_imguiInitInProgress.store(false);
+                return false;
+            }
+
+            {
+                float initScale = Config::GetSettings().uiScale;
+                UpdateFontAtlasForScale(initScale);
+            }
+
+            if (hookWndProc) {
+                SetLastError(0);
+                g_originalWndProc = (WNDPROC)SetWindowLongPtr(hostWindow, GWLP_WNDPROC, (LONG_PTR)ImGuiWndProc);
+                DWORD wndProcErr = GetLastError();
+                if (!g_originalWndProc && wndProcErr != 0) {
+                    LogOut("[IMGUI] Error: Failed to hook window procedure (err=" + std::to_string(wndProcErr) + ")", true);
+                    ImGui_ImplDX9_Shutdown();
+                    ImGui_ImplWin32_Shutdown();
+                    if (createdContext) {
+                        ImGui::DestroyContext();
+                    }
+                    g_d3dDevice = nullptr;
+                    g_imguiHostWindow = nullptr;
+                    g_externalFallbackHost = false;
+                    s_imguiInitInProgress.store(false);
+                    return false;
+                }
+            }
+
+            io.BackendFlags |= ImGuiBackendFlags_HasMouseCursors;
+            io.BackendFlags |= ImGuiBackendFlags_HasGamepad;
+            io.BackendFlags &= ~ImGuiBackendFlags_HasSetMousePos;
+
+            ImGuiGui::Initialize();
+
+            g_imguiInitialized = true;
             s_imguiInitInProgress.store(false);
+            LogOut(std::string("[IMGUI] ImGui initialized successfully for ") + (externalFallback ? "fallback window" : "game window"), true);
             return true;
         }
 
-        LogOut("[IMGUI] Initializing ImGui", true);
-        
-        if (!device) {
-            LogOut("[IMGUI] Error: No valid D3D device provided", true);
-            s_imguiInitInProgress.store(false);
-            return false;
+        void SetVisibilityInternal(bool visible) {
+            g_imguiVisible = visible;
+            ::menuOpen.store(visible);
+            CharacterSettings::g_guiVisible.store(g_imguiVisible, std::memory_order_relaxed);
+
+            if (g_externalFallbackHost && g_externalFallbackWindow && IsWindow(g_externalFallbackWindow)) {
+                if (visible) {
+                    ShowWindow(g_externalFallbackWindow, SW_SHOWNORMAL);
+                    SetForegroundWindow(g_externalFallbackWindow);
+                    SetFocus(g_externalFallbackWindow);
+                } else {
+                    ShowWindow(g_externalFallbackWindow, SW_HIDE);
+                }
+            }
+
+            if (g_imguiVisible) {
+                LogOut("[IMGUI] ImGui interface opened - will render continuously until closed", true);
+                g_resetVirtualCursorOnOpen = true;
+                ImGuiGui::RequestInitialNavFocus();
+                if (ImGui::GetCurrentContext()) {
+                    ImGuiIO& io = ImGui::GetIO();
+                    XInputShim::RefreshSnapshotOncePerFrame();
+                    unsigned mask = XInputShim::GetConnectedMaskCached();
+                    unsigned nativeMask = XInputShim::GetNativeConnectedMaskCached();
+                    unsigned genericMask = XInputShim::GetGenericConnectedMaskCached();
+                    char buf[256];
+                    io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
+                    io.BackendFlags |= ImGuiBackendFlags_HasGamepad;
+                    _snprintf_s(buf, sizeof(buf), _TRUNCATE, "[IMGUI] Open: NavEnableGamepad=%d BackendHasGamepad=%d GamepadMask=0x%X (xinput=0x%X generic=0x%X, forced)",
+                        (io.ConfigFlags & ImGuiConfigFlags_NavEnableGamepad) ? 1 : 0,
+                        (io.BackendFlags & ImGuiBackendFlags_HasGamepad) ? 1 : 0,
+                        mask, nativeMask, genericMask);
+                    LogOut(buf, true);
+                    LogOut("[IMGUI] Keyboard fallback for nav is active (Arrow/Enter/Escape)", true);
+                }
+                ImGuiGui::RefreshLocalData();
+            } else {
+                LogOut("[IMGUI] ImGui interface closed", true);
+                if (ImGui::GetCurrentContext()) {
+                    ImGuiIO& io = ImGui::GetIO();
+                    char buf[256];
+                    _snprintf_s(buf, sizeof(buf), _TRUNCATE, "[IMGUI] Close: NavEnableGamepad=%d BackendHasGamepad=%d",
+                        (io.ConfigFlags & ImGuiConfigFlags_NavEnableGamepad) ? 1 : 0,
+                        (io.BackendFlags & ImGuiBackendFlags_HasGamepad) ? 1 : 0);
+                    LogOut(buf, true);
+                }
+                StartHotkeyCooldown();
+            }
+
+            PauseIntegration::OnMenuVisibilityChanged(g_imguiVisible);
+            PracticeHotkeyGate::NotifyMenuVisibility(g_imguiVisible);
+            PracticeOverlayGate::SetMenuVisible(g_imguiVisible);
+            CharacterSettings::g_guiVisible.store(g_imguiVisible, std::memory_order_relaxed);
+
+            static bool stateLogged = false;
+            if (!stateLogged) {
+                LogOut("[IMGUI] Visibility state persistence confirmed", true);
+                stateLogged = true;
+            }
         }
-        
-        // Enable DPI awareness for crisp rendering
-        ImGui_ImplWin32_EnableDpiAwareness();
-        LogOut("[IMGUI] Enabled DPI awareness", true);
-        
-        g_d3dDevice = device;
 
-        IMGUI_CHECKVERSION();
-        ImGui::CreateContext();
-        ImGuiIO& io = ImGui::GetIO(); (void)io;
-        
-    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
-    // Re-enable gamepad navigation for ImGui
-    io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
+        void RunFallbackWindowThread() {
+            g_externalFallbackThreadRunning.store(true, std::memory_order_release);
+            g_externalFallbackReady.store(false, std::memory_order_release);
+            g_externalFallbackInitFailed.store(false, std::memory_order_release);
 
-    // Apply configurable nav repeat timings
-    {
-        const auto& cfg = Config::GetSettings();
-        io.KeyRepeatDelay = ClampF(cfg.guiNavRepeatDelay, 0.05f, 1.0f);
-        io.KeyRepeatRate  = ClampF(cfg.guiNavRepeatRate,  0.01f, 0.50f);
+            const HINSTANCE instance = GetModuleHandleA(nullptr);
+            WNDCLASSA wc = {};
+            wc.lpfnWndProc = FallbackWindowProc;
+            wc.hInstance = instance;
+            wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
+            wc.lpszClassName = kFallbackWindowClassName;
+            ATOM atom = RegisterClassA(&wc);
+            if (atom == 0) {
+                DWORD le = GetLastError();
+                if (le != ERROR_CLASS_ALREADY_EXISTS) {
+                    LogOut("[IMGUI] Failed to register fallback window class", true);
+                    g_externalFallbackInitFailed.store(true, std::memory_order_release);
+                    g_externalFallbackThreadRunning.store(false, std::memory_order_release);
+                    return;
+                }
+            }
+
+            const DWORD style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
+            RECT rect{0, 0, 960, 720};
+            AdjustWindowRect(&rect, style, FALSE);
+            HWND hwnd = CreateWindowExA(
+                0,
+                kFallbackWindowClassName,
+                "EFZ Training Mode",
+                style,
+                CW_USEDEFAULT,
+                CW_USEDEFAULT,
+                rect.right - rect.left,
+                rect.bottom - rect.top,
+                nullptr,
+                nullptr,
+                instance,
+                nullptr);
+            if (!hwnd) {
+                LogOut("[IMGUI] Failed to create fallback window", true);
+                g_externalFallbackInitFailed.store(true, std::memory_order_release);
+                g_externalFallbackThreadRunning.store(false, std::memory_order_release);
+                UnregisterClassA(kFallbackWindowClassName, instance);
+                return;
+            }
+            g_externalFallbackWindow = hwnd;
+
+            LPDIRECT3D9 d3d9 = Direct3DCreate9(D3D_SDK_VERSION);
+            if (!d3d9) {
+                LogOut("[IMGUI] Failed to create D3D9 object for fallback window", true);
+                DestroyWindow(hwnd);
+                g_externalFallbackWindow = nullptr;
+                g_externalFallbackInitFailed.store(true, std::memory_order_release);
+                g_externalFallbackThreadRunning.store(false, std::memory_order_release);
+                UnregisterClassA(kFallbackWindowClassName, instance);
+                return;
+            }
+
+            D3DPRESENT_PARAMETERS d3dpp = {};
+            d3dpp.Windowed = TRUE;
+            d3dpp.SwapEffect = D3DSWAPEFFECT_DISCARD;
+            d3dpp.BackBufferFormat = D3DFMT_UNKNOWN;
+            d3dpp.PresentationInterval = D3DPRESENT_INTERVAL_ONE;
+            d3dpp.hDeviceWindow = hwnd;
+
+            IDirect3DDevice9* device = nullptr;
+            HRESULT hr = d3d9->CreateDevice(
+                D3DADAPTER_DEFAULT,
+                D3DDEVTYPE_HAL,
+                hwnd,
+                D3DCREATE_SOFTWARE_VERTEXPROCESSING,
+                &d3dpp,
+                &device);
+            if (FAILED(hr) || !device) {
+                LogOut("[IMGUI] Failed to create D3D9 device for fallback window", true);
+                d3d9->Release();
+                DestroyWindow(hwnd);
+                g_externalFallbackWindow = nullptr;
+                g_externalFallbackInitFailed.store(true, std::memory_order_release);
+                g_externalFallbackThreadRunning.store(false, std::memory_order_release);
+                UnregisterClassA(kFallbackWindowClassName, instance);
+                return;
+            }
+
+            if (!InitializeForHost(device, hwnd, false, true)) {
+                LogOut("[IMGUI] Failed to initialize ImGui for fallback window", true);
+                device->Release();
+                d3d9->Release();
+                DestroyWindow(hwnd);
+                g_externalFallbackWindow = nullptr;
+                g_externalFallbackInitFailed.store(true, std::memory_order_release);
+                g_externalFallbackThreadRunning.store(false, std::memory_order_release);
+                UnregisterClassA(kFallbackWindowClassName, instance);
+                return;
+            }
+
+            ShowWindow(hwnd, SW_HIDE);
+            UpdateWindow(hwnd);
+            g_externalFallbackReady.store(true, std::memory_order_release);
+
+            while (!g_externalFallbackExit.load(std::memory_order_acquire) && !g_isShuttingDown.load(std::memory_order_relaxed)) {
+                MSG msg;
+                while (PeekMessage(&msg, nullptr, 0, 0, PM_REMOVE)) {
+                    if (msg.message == WM_QUIT) {
+                        g_externalFallbackExit.store(true, std::memory_order_release);
+                        break;
+                    }
+                    TranslateMessage(&msg);
+                    DispatchMessage(&msg);
+                }
+
+                if (g_externalFallbackExit.load(std::memory_order_acquire) || g_isShuttingDown.load(std::memory_order_relaxed)) {
+                    break;
+                }
+
+                if (!g_imguiVisible) {
+                    Sleep(16);
+                    continue;
+                }
+
+                HRESULT coop = device->TestCooperativeLevel();
+                if (coop == D3DERR_DEVICELOST) {
+                    Sleep(16);
+                    continue;
+                }
+                if (coop == D3DERR_DEVICENOTRESET) {
+                    ImGui_ImplDX9_InvalidateDeviceObjects();
+                    if (SUCCEEDED(device->Reset(&d3dpp))) {
+                        ImGui_ImplDX9_CreateDeviceObjects();
+                    } else {
+                        Sleep(16);
+                    }
+                    continue;
+                }
+
+                device->Clear(0, nullptr, D3DCLEAR_TARGET, D3DCOLOR_XRGB(12, 12, 16), 1.0f, 0);
+                if (SUCCEEDED(device->BeginScene())) {
+                    RenderFrame();
+                    device->EndScene();
+                }
+                device->Present(nullptr, nullptr, nullptr, nullptr);
+            }
+
+            if (g_imguiInitialized && g_externalFallbackHost) {
+                Shutdown();
+            }
+
+            device->Release();
+            d3d9->Release();
+            DestroyWindow(hwnd);
+            g_externalFallbackWindow = nullptr;
+            g_externalFallbackReady.store(false, std::memory_order_release);
+            g_externalFallbackInitFailed.store(false, std::memory_order_release);
+            g_externalFallbackExit.store(false, std::memory_order_release);
+            g_externalFallbackThreadRunning.store(false, std::memory_order_release);
+            UnregisterClassA(kFallbackWindowClassName, instance);
+        }
     }
 
-    // Make font atlas slightly cheaper to render (DX9)
-    io.Fonts->Flags |= ImFontAtlasFlags_NoPowerOfTwoHeight; // avoid unnecessary atlas stretch
-    io.Fonts->TexGlyphPadding = 1;
-        
-        ImGui::StyleColorsDark();
-        
-    ImGuiStyle& style = ImGui::GetStyle();
-    // Avoid baseline upscaling here; per-window UI scale is applied in imgui_gui.cpp
-    // Keeping default metrics ensures more integer-aligned sizes and reduces blur
-    style.Alpha = 1.0f; // prefer opaque rendering for cheaper blending
-    // Safety: ensure valid minimum window size to satisfy ImGui asserts
-    if (style.WindowMinSize.x < 1.0f) style.WindowMinSize.x = 16.0f;
-    if (style.WindowMinSize.y < 1.0f) style.WindowMinSize.y = 16.0f;
-        
-        HWND gameWindow = FindEFZWindow();
-        if (!gameWindow) {
-            LogOut("[IMGUI] Error: Couldn't find EFZ window", true);
+    bool Initialize(IDirect3DDevice9* device) {
+        if (g_externalFallbackHost) {
             return false;
         }
-        
-        if (!ImGui_ImplWin32_Init(gameWindow)) {
-            LogOut("[IMGUI] Error: ImGui_ImplWin32_Init failed", true);
-            return false;
-        }
-        
-        if (!ImGui_ImplDX9_Init(device)) {
-            LogOut("[IMGUI] Error: ImGui_ImplDX9_Init failed", true);
-            ImGui_ImplWin32_Shutdown();
-            return false;
-        }
-
-    // Build crisp font atlas at the configured UI scale right after backend init
-        {
-            float initScale = Config::GetSettings().uiScale;
-            UpdateFontAtlasForScale(initScale);
-        }
-        
-    // Clear last error before SetWindowLongPtr to get accurate error info
-    SetLastError(0);
-    g_originalWndProc = (WNDPROC)SetWindowLongPtr(gameWindow, GWLP_WNDPROC, (LONG_PTR)ImGuiWndProc);
-    DWORD wndProcErr = GetLastError();
-    if (!g_originalWndProc && wndProcErr != 0) {
-            // Genuine failure - SetWindowLongPtr returned NULL with an error
-            LogOut("[IMGUI] Error: Failed to hook window procedure (err=" + std::to_string(wndProcErr) + ")", true);
-            ImGui_ImplDX9_Shutdown();
-            ImGui_ImplWin32_Shutdown();
-            s_imguiInitInProgress.store(false);
-            return false;
-        }
-    // Note: NULL return with no error means previous WndProc was NULL (rare but valid)
-        
-    // Let ImGui know we can provide inputs. Disable HasSetMousePos so ImGui doesn't warp OS cursor,
-    // we manage OS cursor explicitly (e.g., on middle-click).
-    io.BackendFlags |= ImGuiBackendFlags_HasMouseCursors;
-    io.BackendFlags |= ImGuiBackendFlags_HasGamepad;
-    io.BackendFlags &= ~ImGuiBackendFlags_HasSetMousePos;
-
-    ImGuiGui::Initialize();
-        
-        g_imguiInitialized = true;
-        s_imguiInitInProgress.store(false);  // Release init lock
-        LogOut("[IMGUI] ImGui initialized successfully", true);
-        
-        return true;
+        return InitializeForHost(device, FindEFZWindow(), true, false);
     }
     
     void Shutdown() {
@@ -946,9 +1215,9 @@ namespace ImGuiImpl {
         LogOut("[IMGUI] Shutting down ImGui", true);
         
         // Restore original window procedure
-        HWND gameWindow = FindEFZWindow();
-        if (gameWindow && g_originalWndProc) {
-            SetWindowLongPtr(gameWindow, GWLP_WNDPROC, (LONG_PTR)g_originalWndProc);
+        HWND hostWindow = GetActiveHostWindow();
+        if (hostWindow && g_originalWndProc) {
+            SetWindowLongPtr(hostWindow, GWLP_WNDPROC, (LONG_PTR)g_originalWndProc);
         }
         
         ImGui_ImplDX9_Shutdown();
@@ -958,11 +1227,55 @@ namespace ImGuiImpl {
         g_imguiInitialized = false;
         g_imguiVisible = false;
         g_d3dDevice = nullptr;
+        g_originalWndProc = nullptr;
+        g_imguiHostWindow = nullptr;
+        g_externalFallbackHost = false;
     }
     
     
     bool IsInitialized() {
         return g_imguiInitialized;
+    }
+
+    bool ShowFallbackWindow() {
+        if (g_onlineModeActive.load(std::memory_order_relaxed)) {
+            LogOut("[IMGUI] Ignoring fallback window request while netplay suspend is active", true);
+            return false;
+        }
+
+        if (g_externalFallbackReady.load(std::memory_order_acquire) && g_externalFallbackHost) {
+            if (!g_imguiVisible) {
+                SetVisibilityInternal(true);
+            } else if (g_externalFallbackWindow && IsWindow(g_externalFallbackWindow)) {
+                ShowWindow(g_externalFallbackWindow, SW_SHOWNORMAL);
+                SetForegroundWindow(g_externalFallbackWindow);
+            }
+            return true;
+        }
+
+        if (!g_externalFallbackThreadRunning.load(std::memory_order_acquire)) {
+            g_externalFallbackExit.store(false, std::memory_order_release);
+            std::thread(RunFallbackWindowThread).detach();
+        }
+
+        const DWORD start = GetTickCount();
+        while (!g_externalFallbackReady.load(std::memory_order_acquire)
+            && !g_externalFallbackInitFailed.load(std::memory_order_acquire)
+            && (GetTickCount() - start) < 3000) {
+            Sleep(10);
+        }
+
+        if (!g_externalFallbackReady.load(std::memory_order_acquire)) {
+            LogOut("[IMGUI] Fallback window did not become ready", true);
+            return false;
+        }
+
+        SetVisibilityInternal(true);
+        return true;
+    }
+
+    bool IsExternalFallbackHost() {
+        return g_externalFallbackHost;
     }
     
     void ToggleVisibility() {
@@ -971,67 +1284,7 @@ namespace ImGuiImpl {
             return;
         }
 
-        g_imguiVisible = !g_imguiVisible;
-        CharacterSettings::g_guiVisible.store(g_imguiVisible, std::memory_order_relaxed);
-        
-        if (g_imguiVisible) {
-            LogOut("[IMGUI] ImGui interface opened - will render continuously until closed", true);
-            // Ensure virtual cursor (dot) starts hidden until fresh physical mouse movement while menu is open
-            g_resetVirtualCursorOnOpen = true;
-            ImGuiGui::RequestInitialNavFocus();
-            // Log nav flags on open
-            if (ImGui::GetCurrentContext()) {
-                ImGuiIO& io = ImGui::GetIO();
-                // Use cached XInput snapshot
-                XInputShim::RefreshSnapshotOncePerFrame();
-                unsigned mask = XInputShim::GetConnectedMaskCached();
-                unsigned nativeMask = XInputShim::GetNativeConnectedMaskCached();
-                unsigned genericMask = XInputShim::GetGenericConnectedMaskCached();
-                char buf[256];
-                // Force-enable nav flags on open for reliability
-                io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
-                io.BackendFlags |= ImGuiBackendFlags_HasGamepad;
-                _snprintf_s(buf, sizeof(buf), _TRUNCATE, "[IMGUI] Open: NavEnableGamepad=%d BackendHasGamepad=%d GamepadMask=0x%X (xinput=0x%X generic=0x%X, forced)",
-                    (io.ConfigFlags & ImGuiConfigFlags_NavEnableGamepad) ? 1 : 0,
-                    (io.BackendFlags & ImGuiBackendFlags_HasGamepad) ? 1 : 0,
-                    mask, nativeMask, genericMask);
-                LogOut(buf, true);
-                LogOut("[IMGUI] Keyboard fallback for nav is active (Arrow/Enter/Escape)", true);
-                // (burst debug window removed)
-            }
-            // Refresh local data now so UI reflects current state on first frame
-            ImGuiGui::RefreshLocalData();
-        } else {
-            LogOut("[IMGUI] ImGui interface closed", true);
-            if (ImGui::GetCurrentContext()) {
-                ImGuiIO& io = ImGui::GetIO();
-                char buf[256];
-                _snprintf_s(buf, sizeof(buf), _TRUNCATE, "[IMGUI] Close: NavEnableGamepad=%d BackendHasGamepad=%d",
-                    (io.ConfigFlags & ImGuiConfigFlags_NavEnableGamepad) ? 1 : 0,
-                    (io.BackendFlags & ImGuiBackendFlags_HasGamepad) ? 1 : 0);
-                LogOut(buf, true);
-            }
-            
-            // BUGFIX: Reset the global menuOpen flag when ImGui is closed
-            // Use global namespace resolution operator (::) to access the global variable
-            ::menuOpen.store(false);
-            
-            // Start hotkey cooldown to prevent accidental activation
-            StartHotkeyCooldown();
-        }
-
-        // Practice Pause integration: mirror EfzRevival pause when menu visible
-    PauseIntegration::OnMenuVisibilityChanged(g_imguiVisible);
-    PracticeHotkeyGate::NotifyMenuVisibility(g_imguiVisible);
-    PracticeOverlayGate::SetMenuVisible(g_imguiVisible);
-    CharacterSettings::g_guiVisible.store(g_imguiVisible, std::memory_order_relaxed);
-        
-        // Ensure the visibility state persists by setting it in a global
-        static bool stateLogged = false;
-        if (!stateLogged) {
-            LogOut("[IMGUI] Visibility state persistence confirmed", true);
-            stateLogged = true;
-        }
+        SetVisibilityInternal(!g_imguiVisible);
     }
     
     bool IsVisible() {
@@ -1078,7 +1331,7 @@ namespace ImGuiImpl {
         io.DisplayFramebufferScale = ImVec2(1.0f, 1.0f);
 
         // Remap OS mouse to backbuffer coordinates (letterbox/pillarbox aware, DPI-robust)
-        HWND hwnd = FindEFZWindow();
+        HWND hwnd = GetActiveHostWindow();
         if (hwnd) {
             RECT rcClient{};
             if (GetClientRect(hwnd, &rcClient)) {
@@ -1149,6 +1402,12 @@ namespace ImGuiImpl {
         }
         
         try {
+            const bool useCustomMenu = g_externalFallbackHost || Config::GetSettings().useCustomMenu;
+
+            if (useCustomMenu) {
+                CustomMenu::PrepareFrame();
+            }
+
             // Prepare backend new-frame data first
             ImGui_ImplDX9_NewFrame();
             ImGui_ImplWin32_NewFrame();
@@ -1165,12 +1424,13 @@ namespace ImGuiImpl {
             // Maintain pause while menu is visible (guards against stray unfreeze)
             PauseIntegration::MaintainFreezeWhileMenuVisible();
 
-
-            // Keep font atlas in sync with current UI scale for crisp text
-            UpdateFontAtlasForScale(Config::GetSettings().uiScale);
-
-            // Render the GUI
-            ImGuiGui::RenderGui();
+            if (useCustomMenu) {
+                CustomMenu::Render();
+            } else {
+                // Keep font atlas in sync with current UI scale for crisp text
+                UpdateFontAtlasForScale(Config::GetSettings().uiScale);
+                ImGuiGui::RenderGui();
+            }
             
             // End frame and render
             ImGui::EndFrame();

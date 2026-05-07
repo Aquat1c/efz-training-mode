@@ -3,6 +3,7 @@
 #include "../include/gui/custom_menu/theme.h"
 #include "../include/gui/custom_menu/input.h"
 #include "../include/gui/custom_menu/sound.h"
+#include "../include/core/constants.h"
 #include "../include/utils/config.h"
 #include "../include/utils/xinput_shim.h"
 #include "../3rdparty/imgui/imgui.h"
@@ -18,6 +19,114 @@
 namespace CustomMenu::Screens {
 
 namespace {
+
+int ActionNormalBase(int action) {
+    if (action >= ACTION_5A && action <= ACTION_2D) return (action / 4) * 4;
+    if (action >= ACTION_JA && action <= ACTION_JD) return ACTION_JA;
+    if (action >= ACTION_6A && action <= ACTION_4D) return ACTION_6A + ((action - ACTION_6A) / 4) * 4;
+    return -1;
+}
+
+bool PopupActionUsesButtonStrength(int action) {
+    switch (action) {
+        case ACTION_QCF:
+        case ACTION_DP:
+        case ACTION_QCB:
+        case ACTION_421:
+        case ACTION_SUPER1:
+        case ACTION_SUPER2:
+        case ACTION_236236:
+        case ACTION_214214:
+        case ACTION_641236:
+        case ACTION_463214:
+        case ACTION_412:
+        case ACTION_22:
+        case ACTION_4123641236:
+        case ACTION_6321463214:
+            return true;
+        default:
+            return false;
+    }
+}
+
+const char* const kGroupedActionChoices[] = {
+    "5X (STANDING)",
+    "2X (CROUCHING)",
+    "jX (AIR)",
+    "QCF (236)",
+    "DP (623)",
+    "QCB (214)",
+    "421",
+    "SUPER1 (41236)",
+    "SUPER2 (214236)",
+    "236236",
+    "214214",
+    "641236",
+    "463214",
+    "412",
+    "22",
+    "4123641236",
+    "6321463214",
+    "JUMP",
+    "BACKDASH",
+    "FORWARD DASH",
+    "BLOCK",
+    "FINAL MEMORY",
+    "6X (FORWARD)",
+    "4X (BACK)"
+};
+
+const int kGroupedActionValues[] = {
+    ACTION_5A,
+    ACTION_2A,
+    ACTION_JA,
+    ACTION_QCF,
+    ACTION_DP,
+    ACTION_QCB,
+    ACTION_421,
+    ACTION_SUPER1,
+    ACTION_SUPER2,
+    ACTION_236236,
+    ACTION_214214,
+    ACTION_641236,
+    ACTION_463214,
+    ACTION_412,
+    ACTION_22,
+    ACTION_4123641236,
+    ACTION_6321463214,
+    ACTION_JUMP,
+    ACTION_BACKDASH,
+    ACTION_FORWARD_DASH,
+    ACTION_BLOCK,
+    ACTION_FINAL_MEMORY,
+    ACTION_6A,
+    ACTION_4A
+};
+
+constexpr int kGroupedActionCount = sizeof(kGroupedActionValues) / sizeof(kGroupedActionValues[0]);
+
+int ActionToGroupedChoiceIndex(int action) {
+    const int grouped = ActionNormalBase(action) >= 0 ? ActionNormalBase(action) : action;
+    for (int i = 0; i < kGroupedActionCount; ++i) {
+        if (kGroupedActionValues[i] == grouped) {
+            return i;
+        }
+    }
+    return 0;
+}
+
+int ActionStrengthSecondaryCount(const Row& r) {
+    if (!r.choiceIdxPtr) return 0;
+
+    const int action = *r.choiceIdxPtr;
+    if (ActionNormalBase(action) >= 0 || PopupActionUsesButtonStrength(action)) {
+        return 4;
+    }
+    if (action == ACTION_JUMP) {
+        return 3;
+    }
+    return 0;
+}
 
 // Info rows are focusable so keyboard nav can scroll through paragraph text
 // (Help pages especially). Activate is a no-op on Info (the switch in
@@ -683,6 +792,7 @@ struct PopupState {
     unsigned int* maskPtr = nullptr;         // multi-select target
     int* companionIdxPtr = nullptr;          // paired-choice secondary target
     const char* const* choices = nullptr;
+    const int* choiceValueMap = nullptr;     // optional mapped target values for displayed choices
     int choiceCount = 0;
     int focusIdx = 0;
     float scrollPx = 0.0f;
@@ -691,7 +801,124 @@ struct PopupState {
 };
 PopupState g_popup;
 
+struct PopupGeom {
+    float px, py, popupW, popupH;
+    float listX, listY, listW, listH;
+    float rowH;
+};
+
 inline bool PopupIsMulti() { return g_popup.maskPtr != nullptr; }
+inline bool PopupUsesMappedChoiceValues() { return g_popup.choiceValueMap != nullptr; }
+
+int PopupColumnCount() {
+    return g_popup.choiceCount >= 12 ? 2 : 1;
+}
+
+int PopupRowCount() {
+    const int columns = PopupColumnCount();
+    return columns > 0 ? (g_popup.choiceCount + columns - 1) / columns : g_popup.choiceCount;
+}
+
+float PopupColumnGap() {
+    return 12.0f;
+}
+
+float PopupHeaderHeight() {
+    ImFont* bFont = Layout::BodyFont();
+    const float bPx = bFont ? bFont->FontSize : 13.0f;
+    return bPx + 18.0f;
+}
+
+int PopupIndexRow(int index) {
+    const int rows = PopupRowCount();
+    return rows > 0 ? index % rows : 0;
+}
+
+int PopupIndexColumn(int index) {
+    const int rows = PopupRowCount();
+    return rows > 0 ? index / rows : 0;
+}
+
+int PopupCellToIndex(int column, int row) {
+    const int rows = PopupRowCount();
+    if (rows <= 0) return -1;
+    const int index = column * rows + row;
+    return (index >= 0 && index < g_popup.choiceCount) ? index : -1;
+}
+
+float PopupColumnWidth(const PopupGeom& g) {
+    const int columns = PopupColumnCount();
+    if (columns <= 1) {
+        return g.listW;
+    }
+    return (g.listW - PopupColumnGap() * static_cast<float>(columns - 1)) / static_cast<float>(columns);
+}
+
+bool PopupItemRect(const PopupGeom& g, int index, float& x0, float& y0, float& x1, float& y1) {
+    const int row = PopupIndexRow(index);
+    const int column = PopupIndexColumn(index);
+    const float columnWidth = PopupColumnWidth(g);
+    x0 = g.listX + static_cast<float>(column) * (columnWidth + PopupColumnGap());
+    y0 = g.listY + static_cast<float>(row) * g.rowH - g_popup.scrollPx;
+    x1 = x0 + columnWidth;
+    y1 = y0 + g.rowH;
+    return !(y1 <= g.listY || y0 >= g.listY + g.listH);
+}
+
+int PopupIndexFromPoint(const PopupGeom& g, float x, float y) {
+    if (x < g.listX || x > g.listX + g.listW || y < g.listY || y > g.listY + g.listH) {
+        return -1;
+    }
+
+    const int columns = PopupColumnCount();
+    const float columnWidth = PopupColumnWidth(g);
+    const float stride = columnWidth + PopupColumnGap();
+    int column = static_cast<int>((x - g.listX) / (stride > 0.0f ? stride : 1.0f));
+    if (column < 0) column = 0;
+    if (column >= columns) column = columns - 1;
+
+    const float localX = x - (g.listX + static_cast<float>(column) * stride);
+    if (localX < 0.0f || localX > columnWidth) {
+        return -1;
+    }
+
+    const int row = static_cast<int>((y - g.listY + g_popup.scrollPx) / g.rowH);
+    if (row < 0 || row >= PopupRowCount()) {
+        return -1;
+    }
+
+    return PopupCellToIndex(column, row);
+}
+
+void PopupMoveFocus(int rowDelta, int columnDelta) {
+    if (g_popup.choiceCount <= 0) return;
+
+    const int columns = PopupColumnCount();
+    if (columns <= 1) {
+        if (rowDelta < 0) {
+            g_popup.focusIdx = (g_popup.focusIdx - 1 + g_popup.choiceCount) % g_popup.choiceCount;
+        } else if (rowDelta > 0) {
+            g_popup.focusIdx = (g_popup.focusIdx + 1) % g_popup.choiceCount;
+        }
+        return;
+    }
+
+    const int rows = PopupRowCount();
+    int row = PopupIndexRow(g_popup.focusIdx);
+    int column = PopupIndexColumn(g_popup.focusIdx);
+
+    row = (row + rowDelta + rows) % rows;
+    column = (column + columnDelta + columns) % columns;
+
+    int next = PopupCellToIndex(column, row);
+    while (next < 0 && row > 0) {
+        --row;
+        next = PopupCellToIndex(column, row);
+    }
+    if (next >= 0) {
+        g_popup.focusIdx = next;
+    }
+}
 
 void OpenDropdownPopup(const Row& r) {
     if (!r.choiceIdxPtr || r.choiceCount <= 0 || !r.choices) return;
@@ -699,9 +926,17 @@ void OpenDropdownPopup(const Row& r) {
     g_popup.choiceIdxPtr = r.choiceIdxPtr;
     g_popup.maskPtr = nullptr;
     g_popup.companionIdxPtr = (r.kind == RowKind::ActionStrength) ? r.choice2IdxPtr : nullptr;
-    g_popup.choices = r.choices;
-    g_popup.choiceCount = r.choiceCount;
-    g_popup.focusIdx = *r.choiceIdxPtr;
+    if (r.kind == RowKind::ActionStrength) {
+        g_popup.choices = kGroupedActionChoices;
+        g_popup.choiceValueMap = kGroupedActionValues;
+        g_popup.choiceCount = kGroupedActionCount;
+        g_popup.focusIdx = ActionToGroupedChoiceIndex(*r.choiceIdxPtr);
+    } else {
+        g_popup.choices = r.choices;
+        g_popup.choiceValueMap = nullptr;
+        g_popup.choiceCount = r.choiceCount;
+        g_popup.focusIdx = *r.choiceIdxPtr;
+    }
     g_popup.scrollPx = 0.0f;
     g_popup.onChange = r.onChange;
     g_popup.onPrimaryChoiceChange = r.onPrimaryChoiceChange;
@@ -715,6 +950,7 @@ void OpenMaskPopup(const Row& r) {
     g_popup.maskPtr = r.maskPtr;
     g_popup.companionIdxPtr = nullptr;
     g_popup.choices = r.choices;
+    g_popup.choiceValueMap = nullptr;
     g_popup.choiceCount = r.choiceCount;
     g_popup.focusIdx = 0;
     g_popup.scrollPx = 0.0f;
@@ -729,6 +965,7 @@ void ClosePopup() {
     g_popup.maskPtr = nullptr;
     g_popup.companionIdxPtr = nullptr;
     g_popup.choices = nullptr;
+    g_popup.choiceValueMap = nullptr;
     g_popup.choiceCount = 0;
     g_popup.focusIdx = 0;
     g_popup.scrollPx = 0.0f;
@@ -740,23 +977,17 @@ bool PopupActive() { return g_popup.active; }
 
 void PopupEnsureFocusVisible(float viewportH) {
     const float rowH = Theme::kRowHeight;
-    const float desiredY = g_popup.focusIdx * rowH;
+    const float desiredY = static_cast<float>(PopupIndexRow(g_popup.focusIdx)) * rowH;
     if (desiredY < g_popup.scrollPx) {
         g_popup.scrollPx = desiredY;
     } else if (desiredY + rowH > g_popup.scrollPx + viewportH) {
         g_popup.scrollPx = desiredY + rowH - viewportH;
     }
-    const float total = g_popup.choiceCount * rowH;
+    const float total = static_cast<float>(PopupRowCount()) * rowH;
     const float maxScroll = (total > viewportH) ? (total - viewportH) : 0.0f;
     if (g_popup.scrollPx < 0.0f) g_popup.scrollPx = 0.0f;
     if (g_popup.scrollPx > maxScroll) g_popup.scrollPx = maxScroll;
 }
-
-struct PopupGeom {
-    float px, py, popupW, popupH;
-    float listX, listY, listW, listH;
-    float rowH;
-};
 
 PopupGeom ComputePopupGeom(const ScreenLayout& layout) {
     using namespace Theme;
@@ -764,24 +995,31 @@ PopupGeom ComputePopupGeom(const ScreenLayout& layout) {
     g.rowH   = kRowHeight;
     ImFont* bFont = Layout::BodyFont();
     const float bPx = bFont ? bFont->FontSize : 13.0f;
+    const float headerHeight = PopupHeaderHeight();
     const float prefixW = Layout::MeasureTextW(bFont, bPx, PopupIsMulti() ? "> [X] " : "> ");
     float widestChoiceW = 0.0f;
     for (int i = 0; i < g_popup.choiceCount; ++i) {
         const char* text = (g_popup.choices && g_popup.choices[i]) ? g_popup.choices[i] : "";
         widestChoiceW = (std::max)(widestChoiceW, Layout::MeasureTextW(bFont, bPx, text));
     }
-    g.popupW = (std::max)(320.0f, widestChoiceW + prefixW + 28.0f);
+    const int columns = PopupColumnCount();
+    const float perColumnWidth = widestChoiceW + prefixW + 28.0f;
+    g.popupW = (std::max)(320.0f,
+                          perColumnWidth * static_cast<float>(columns)
+                          + PopupColumnGap() * static_cast<float>(columns - 1)
+                          + 16.0f);
     const float maxW = kPanelW - 16.0f;
     if (g.popupW > maxW) g.popupW = maxW;
     const float maxH = (layout.contentBottomY - layout.contentTopY) - 20.0f;
-    const float desiredH = g_popup.choiceCount * g.rowH + 16.0f;
+    const float desiredH = static_cast<float>(PopupRowCount()) * g.rowH + headerHeight + 8.0f;
     g.popupH = (desiredH < maxH) ? desiredH : maxH;
     g.px = layout.panelX + (kPanelW - g.popupW) * 0.5f;
     g.py = layout.contentTopY + ((layout.contentBottomY - layout.contentTopY) - g.popupH) * 0.5f;
     g.listX = g.px + 8.0f;
-    g.listY = g.py + 8.0f;
+    g.listY = g.py + headerHeight;
     g.listW = g.popupW - 16.0f;
-    g.listH = g.popupH - 16.0f;
+    g.listH = g.popupH - headerHeight - 8.0f;
+    if (g.listH < g.rowH) g.listH = g.rowH;
     return g;
 }
 
@@ -797,7 +1035,7 @@ void PopupTickInputOnly(const ScreenLayout& layout) {
         if (isMulti) {
             *g_popup.maskPtr ^= (1u << i);
         } else {
-            *g_popup.choiceIdxPtr = i;
+            *g_popup.choiceIdxPtr = PopupUsesMappedChoiceValues() ? g_popup.choiceValueMap[i] : i;
             if (g_popup.onPrimaryChoiceChange) {
                 g_popup.onPrimaryChoiceChange(g_popup.choiceIdxPtr, g_popup.companionIdxPtr);
             }
@@ -839,8 +1077,10 @@ void PopupTickInputOnly(const ScreenLayout& layout) {
         }
     }
 
-    if (navUp)   { g_popup.focusIdx = (g_popup.focusIdx - 1 + g_popup.choiceCount) % g_popup.choiceCount; Sound::PlayCursor(); }
-    if (navDown) { g_popup.focusIdx = (g_popup.focusIdx + 1) % g_popup.choiceCount; Sound::PlayCursor(); }
+    if (navUp)    { PopupMoveFocus(-1, 0); Sound::PlayCursor(); }
+    if (navDown)  { PopupMoveFocus(+1, 0); Sound::PlayCursor(); }
+    if (navLeft && PopupColumnCount() > 1)  { PopupMoveFocus(0, -1); Sound::PlayCursor(); }
+    if (navRight && PopupColumnCount() > 1) { PopupMoveFocus(0, +1); Sound::PlayCursor(); }
     if (activate) {
         toggleAt(g_popup.focusIdx);
         Sound::PlayDecision();
@@ -857,15 +1097,13 @@ void PopupTickInputOnly(const ScreenLayout& layout) {
 
     const bool mouseLeftEdge = Input::MouseLeftEdge();
     if (!keyboardOrPadEdge && mouseLeftEdge) {
-        for (int i = 0; i < g_popup.choiceCount; ++i) {
-            const float ry = g.listY + i * g.rowH - g_popup.scrollPx;
-            if (ry < g.listY) continue;
-            if (ry + g.rowH > g.listY + g.listH) break;
-            if (Input::MouseHovering(g.listX, ry, g.listW, g.rowH)) {
-                toggleAt(i);
+        const auto mouse = Input::GetMouse();
+        if (mouse.valid) {
+            const int hovered = PopupIndexFromPoint(g, mouse.x, mouse.y);
+            if (hovered >= 0) {
+                toggleAt(hovered);
                 Sound::PlayDecision();
                 if (!isMulti) { ClosePopup(); return; }
-                break;
             }
         }
         // Click outside popup dismisses.
@@ -876,13 +1114,11 @@ void PopupTickInputOnly(const ScreenLayout& layout) {
         }
     }
     if (!keyboardOrPadEdge && s_popupMouseMoved) {
-        for (int i = 0; i < g_popup.choiceCount; ++i) {
-            const float ry = g.listY + i * g.rowH - g_popup.scrollPx;
-            if (ry < g.listY) continue;
-            if (ry + g.rowH > g.listY + g.listH) break;
-            if (Input::MouseHovering(g.listX, ry, g.listW, g.rowH)) {
-                g_popup.focusIdx = i;
-                break;
+        const auto mouse = Input::GetMouse();
+        if (mouse.valid) {
+            const int hovered = PopupIndexFromPoint(g, mouse.x, mouse.y);
+            if (hovered >= 0) {
+                g_popup.focusIdx = hovered;
             }
         }
     }
@@ -909,20 +1145,22 @@ void PopupRender(ImDrawList* dl, const ScreenLayout& layout) {
     const bool isMulti = PopupIsMulti();
     Layout::DrawString(dl, bFont, bPx, g.px + 10.0f, titleY, kTextHeader,
                        isMulti ? "MULTI-SELECT (ESC TO CLOSE)" : "SELECT");
-    dl->AddLine(ImVec2(g.px + 8.0f, titleY + bPx + 4.0f),
-                ImVec2(g.px + g.popupW - 8.0f, titleY + bPx + 4.0f), kRule, 1.0f);
+    dl->AddLine(ImVec2(g.px + 8.0f, g.listY - 4.0f),
+                ImVec2(g.px + g.popupW - 8.0f, g.listY - 4.0f), kRule, 1.0f);
 
     dl->PushClipRect(ImVec2(g.listX, g.listY),
                      ImVec2(g.listX + g.listW, g.listY + g.listH),
                      true);
     for (int i = 0; i < g_popup.choiceCount; ++i) {
-        const float ry = g.listY + i * g.rowH - g_popup.scrollPx;
-        if (ry + g.rowH <= g.listY) continue;
-        if (ry >= g.listY + g.listH) break;
+        float x0 = 0.0f;
+        float y0 = 0.0f;
+        float x1 = 0.0f;
+        float y1 = 0.0f;
+        if (!PopupItemRect(g, i, x0, y0, x1, y1)) continue;
         const bool focused = (i == g_popup.focusIdx);
         if (focused) {
-            dl->AddRectFilled(ImVec2(g.listX, ry),
-                              ImVec2(g.listX + g.listW, ry + g.rowH),
+            dl->AddRectFilled(ImVec2(x0, y0),
+                              ImVec2(x1, y1),
                               kSelectedFill);
         }
         char line[256];
@@ -936,14 +1174,14 @@ void PopupRender(ImDrawList* dl, const ScreenLayout& layout) {
             _snprintf_s(line, sizeof(line), _TRUNCATE, "%s %s", mark, g_popup.choices[i]);
         }
         Layout::DrawString(dl, bFont, bPx,
-                           g.listX + 4.0f,
-                           ry + (g.rowH - bPx) * 0.5f,
+                           x0 + 4.0f,
+                           y0 + (g.rowH - bPx) * 0.5f,
                            focused ? kTextActive : kTextInactive, line);
     }
     dl->PopClipRect();
 
     // Scroll indicator
-    const float total = g_popup.choiceCount * g.rowH;
+    const float total = static_cast<float>(PopupRowCount()) * g.rowH;
     if (total > g.listH) {
         const float barX = g.px + g.popupW - 4.0f;
         const float frac = g_popup.scrollPx / (total - g.listH);
@@ -1375,11 +1613,14 @@ bool HandleRowsInput(const ScreenLayout& layout,
                     break;
                 }
                 bool changed = false;
-                if (ShiftHeld() && r.choice2IdxPtr && r.choice2Count > 0 && (navLeft || navRight)) {
+                const int secondaryCount = ActionStrengthSecondaryCount(r);
+                const bool useSecondaryNav = r.choice2IdxPtr && secondaryCount > 0 && !ShiftHeld();
+                if (useSecondaryNav && (navLeft || navRight)) {
                     int& idx = *r.choice2IdxPtr;
+                    if (idx < 0 || idx >= secondaryCount) idx = 0;
                     idx = navLeft
-                        ? (idx - 1 + r.choice2Count) % r.choice2Count
-                        : (idx + 1) % r.choice2Count;
+                        ? (idx - 1 + secondaryCount) % secondaryCount
+                        : (idx + 1) % secondaryCount;
                     if (r.onSecondaryChoiceChange) {
                         r.onSecondaryChoiceChange(r.choiceIdxPtr, r.choice2IdxPtr);
                     }
