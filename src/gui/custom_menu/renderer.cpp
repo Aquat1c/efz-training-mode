@@ -1374,7 +1374,7 @@ void HandleMainScreenInput(const MainLayout& L, const GuiValueLocks::State& lock
 // ===== Top-level render/input dispatch =====
 void MaybeRefreshOnOpen() {
     const bool visibleNow = ImGuiImpl::IsVisible();
-    const bool customNow  = Config::GetSettings().useCustomMenu;
+    const bool customNow  = ImGuiImpl::IsExternalFallbackHost() || Config::GetSettings().useCustomMenu;
 
     if (visibleNow && !g_shell.menuWasVisible) {
         LogMenuTrace("MaybeRefreshOnOpen: visibility 0->1 (custom=%d), beginning open sequence", customNow ? 1 : 0);

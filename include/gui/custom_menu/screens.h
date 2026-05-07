@@ -28,7 +28,7 @@ enum class RowKind : uint8_t {
     FloatNumber,  // float value
     DoubleNumber, // double value
     Choices,      // int index into choices[]; L/R cycles inline
-    ActionStrength, // paired choices; Activate opens primary picker, Shift+L/R adjusts secondary
+    ActionStrength, // paired choices; Activate opens primary picker, L/R adjusts secondary when used
     Dropdown,     // int index into choices[]; Activate opens modal popup
     MaskPicker,   // uint32 bitmask; Activate opens multi-select popup
     Submenu,      // drill into another list page; Back returns to the parent

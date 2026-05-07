@@ -1,4 +1,5 @@
 #pragma once
+
 #include "../utils/utilities.h"
 
-void OpenMenu();
+void ApplyRuntimeSettings(DisplayData* data);

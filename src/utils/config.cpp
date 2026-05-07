@@ -200,7 +200,7 @@ namespace Config {
             }
             
             file << "[General]\n";
-            file << "; Use the modern ImGui interface (1) or the legacy Win32 dialog (0)\n";
+            file << "; Compatibility flag for ImGui-hosted helpers. The configuration menu now always uses ImGui/fallback hosts.\n";
             file << "useImGui = 1\n";
             file << "; Render the EFZ-native custom menu instead of the legacy ImGui list (1 = yes, 0 = no)\n";
             file << "useCustomMenu = 1\n";
@@ -742,7 +742,7 @@ namespace Config {
             };
 
             file << "[General]\n";
-            file << "; Use the modern ImGui interface (1) or the legacy Win32 dialog (0)\n";
+            file << "; Compatibility flag for ImGui-hosted helpers. The configuration menu now always uses ImGui/fallback hosts.\n";
             file << "useImGui = " << (settings.useImGui ? "1" : "0") << "\n";
             file << "; Render the EFZ-native custom menu instead of the legacy ImGui list (1 = yes, 0 = no)\n";
             file << "useCustomMenu = " << (settings.useCustomMenu ? "1" : "0") << "\n";

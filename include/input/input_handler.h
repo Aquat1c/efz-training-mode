@@ -48,7 +48,6 @@ void DetectKeyBindingsWithWinAPI();
 int MapEFZKeyToVK(unsigned short efzKey);
 bool ReadKeyMappingsFromIni();
 bool ReadDirectInputKeyboardState(BYTE* keyboardState);
-void ShowEditDataDialog(HWND hParent); // Forward declaration for GUI function
 
 // Hotkey cooldown management (called when menu closes)
 void StartHotkeyCooldown();

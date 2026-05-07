@@ -264,6 +264,7 @@ bool g_mirrorAdaptiveStance = false;
 int  g_mirrorDummyBlockMode = 0;   // 0..3 via SetDummyAutoBlockMode
 int  g_mirrorPracticeStance = 0;   // 0=Standing,1=Jumping,2=Crouching
 bool g_mirrorFmBypass     = false;
+int  g_mirrorAirtechMode  = 0;     // 0=disabled/neutral,1=forward,2=back
 
 void RefreshOpponentMirrors() {
     g_mirrorRandomBlock     = RandomBlock::IsEnabled();
@@ -383,11 +384,15 @@ void OnTriggerActionChanged(int* action, int* strength) {
     if (!action || !strength) return;
     *action = ClampIndex(*action, kActionCount);
     if (IsNormalAction(*action)) {
-        *strength = (*action - NormalActionBase(*action)) & 3;
+        const int base = NormalActionBase(*action);
+        *strength = ClampIndex(*strength, 4);
+        *action = base + *strength;
     } else if (*action == ACTION_JUMP) {
         *strength = ClampIndex(*strength, 3);
-    } else {
+    } else if (ActionUsesButtonStrength(*action)) {
         *strength = ClampIndex(*strength, 4);
+    } else {
+        *strength = 0;
     }
 }
 
@@ -413,12 +418,23 @@ const char* FormatTriggerActionStrength(const Row& row) {
 
     const int action = row.choiceIdxPtr ? ClampIndex(*row.choiceIdxPtr, kActionCount) : 0;
     const int strength = row.choice2IdxPtr ? *row.choice2IdxPtr : 0;
-    const char* actionName = (row.choices && action >= 0 && action < row.choiceCount)
-        ? row.choices[action]
-        : "?";
+    const char* actionName = "?";
+    switch (NormalActionBase(action) >= 0 ? NormalActionBase(action) : action) {
+        case ACTION_5A: actionName = "5X (STANDING)"; break;
+        case ACTION_2A: actionName = "2X (CROUCHING)"; break;
+        case ACTION_JA: actionName = "jX (AIR)"; break;
+        case ACTION_6A: actionName = "6X (FORWARD)"; break;
+        case ACTION_4A: actionName = "4X (BACK)"; break;
+        default:
+            actionName = (row.choices && action >= 0 && action < row.choiceCount)
+                ? row.choices[action]
+                : "?";
+            break;
+    }
 
     if (IsNormalAction(action)) {
-        _snprintf_s(buf, sizeof(buffers[0]), _TRUNCATE, "%s", actionName);
+        const int btn = ClampIndex(strength, 4);
+        _snprintf_s(buf, sizeof(buffers[0]), _TRUNCATE, "%s  %s", actionName, kStrengthChoices[btn]);
     } else if (action == ACTION_JUMP) {
         const int dir = ClampIndex(strength, 3);
         _snprintf_s(buf, sizeof(buffers[0]), _TRUNCATE, "%s  %s", actionName, kJumpDirChoicesAuto[dir]);
@@ -2481,7 +2497,7 @@ Row* BuildHelpBasicsRows(int& count) {
     s_rows[n++] = Info("Random Block, Random RG, and Always RG can conflict. Turning one on can turn others off automatically.");
     s_rows[n++] = Spacer();
     s_rows[n++] = Header("TRAINING TOOLS");
-    s_rows[n++] = Info("Auto-Airtech can recover neutral, forward, or backward. Delay adds frames before tech, which is useful for testing late airtech situations.");
+    s_rows[n++] = Info("Auto-Airtech uses Neutral as disabled, or Forward and Back to recover in that direction. Delay adds frames before tech, which is useful for testing late airtech situations.");
     s_rows[n++] = Info("Auto-Jump makes P1, P2, or both sides jump neutral, forward, or backward when able.");
     s_rows[n++] = Info("Final Memory: Allow at any HP removes HP checks. Turn it off when you want normal game requirements.");
     s_rows[n++] = Spacer();
@@ -3282,8 +3298,8 @@ const char* const kDummyStanceChoices[3] = { "STAND", "JUMP", "CROUCH" };
 
 bool AdaptiveHidesStance() { return g_mirrorAdaptiveStance; }
 
-// DisplayData::airtechDelay / jumpDirection etc. are plain ints; no indirection
-// mirror needed. Just bind rows to them directly and call OnAutoApply on change.
+// Most recovery/movement settings bind directly to DisplayData. Auto-Airtech uses
+// a small mirror because the custom menu exposes disabled/forward/back as one row.
 
 const char* ValDefenseSummary() {
     if (g_mirrorRandomBlock) return "RANDOM BLOCK";
@@ -3295,8 +3311,16 @@ const char* ValDefenseSummary() {
 
 const char* ValRecoverySummary() {
     const auto& d = ImGuiGui::guiState.localData;
-    if (d.autoAirtech) return "AIRTECH";
-    return "OFF";
+    if (!d.autoAirtech) return "OFF";
+    return ClampIndex(d.airtechDirection, 2) == 0 ? "FORWARD" : "BACK";
+}
+
+void OnAirtechMode() {
+    auto& d = ImGuiGui::guiState.localData;
+    const int mode = ClampIndex(g_mirrorAirtechMode, 3);
+    d.autoAirtech = mode != 0;
+    d.airtechDirection = (mode > 0) ? (mode - 1) : 0;
+    OnAutoApply();
 }
 
 const char* ValMovementSummary() {
@@ -3324,10 +3348,10 @@ Row* BuildOpponentRecoveryRows(int& count) {
     static Row s_rows[8];
     int n = 0;
     auto& d = ImGuiGui::guiState.localData;
+    g_mirrorAirtechMode = d.autoAirtech ? (ClampIndex(d.airtechDirection, 2) + 1) : 0;
 
     s_rows[n++] = Header("RECOVERY");
-    s_rows[n++] = Toggle   ("AUTO-AIRTECH",            &d.autoAirtech,      OnAutoApply);
-    s_rows[n++] = ChoicesRow("  AIRTECH DIRECTION",    &d.airtechDirection, kAirtechDirChoices, 3, OnAutoApply);
+    s_rows[n++] = ChoicesRow("AUTO-AIRTECH",           &g_mirrorAirtechMode, kAirtechDirChoices, 3, OnAirtechMode);
     s_rows[n++] = IntNum   ("  AIRTECH DELAY",         &d.airtechDelay,     0, 60, 1, 5, OnAutoApply);
     count = n;
     return s_rows;

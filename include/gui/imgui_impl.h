@@ -31,6 +31,12 @@ namespace ImGuiImpl {
     
     // Toggle ImGui visibility
     void ToggleVisibility();
+
+    // Open the standalone fallback ImGui window when in-game rendering is unavailable.
+    bool ShowFallbackWindow();
+
+    // True while the separate fallback ImGui host window owns the current menu.
+    bool IsExternalFallbackHost();
     
     // Check if ImGui is visible
     bool IsVisible();
