@@ -86,7 +86,7 @@ file(GLOB GAME_SOURCES "src/game/*.cpp")
 file(GLOB GUI_SOURCES CONFIGURE_DEPENDS "src/gui/*.cpp")
 file(GLOB GUI_CUSTOM_MENU_SOURCES CONFIGURE_DEPENDS "src/gui/custom_menu/*.cpp")
 file(GLOB INPUT_SOURCES "src/input/*.cpp")
-file(GLOB UTILS_SOURCES "src/utils/*.cpp")
+file(GLOB UTILS_SOURCES CONFIGURE_DEPENDS "src/utils/*.cpp")
 set(RESOURCE_SOURCES "src/resources/efz_training_resources.rc")
 
 # Remove duplicate legacy files

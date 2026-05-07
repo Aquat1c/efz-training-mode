@@ -35,6 +35,7 @@
 #include "../include/utils/switch_players.h"
 #include "../include/utils/bgm_control.h"
 #include "../include/utils/audio_control.h"
+#include "../include/utils/extended_config_bridge.h"
 #include "../include/input/framestep.h"
 #include "../include/input/input_motion.h"
 #include "../include/core/memory.h"
@@ -480,10 +481,14 @@ void OnRestrictPractice() {
 }
 void OnBgmVolume() {
     PersistInt("General", "bgmVolumePercent", MutableSettings().bgmVolumePercent);
+    ExtendedConfigBridge::PublishAudioSettings(MutableSettings().bgmVolumePercent,
+                                               MutableSettings().seVolumePercent);
     AudioControl::ApplyConfiguredVolumesNow();
 }
 void OnSeVolume() {
     PersistInt("General", "seVolumePercent", MutableSettings().seVolumePercent);
+    ExtendedConfigBridge::PublishAudioSettings(MutableSettings().bgmVolumePercent,
+                                               MutableSettings().seVolumePercent);
     AudioControl::ApplyConfiguredVolumesNow();
 }
 
