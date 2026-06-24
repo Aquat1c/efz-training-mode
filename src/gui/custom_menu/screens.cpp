@@ -722,6 +722,25 @@ Row ActionStrengthRow(const char* label,
     return r;
 }
 
+Row TriggerButtonRow(const char* label,
+                     int* action, int* strength,
+                     int* dashFollowupMirror,
+                     void (*onChange)(),
+                     bool (*isDisabled)(),
+                     bool (*isHidden)()) {
+    Row r{};
+    r.kind = RowKind::TriggerButton;
+    r.label = label;
+    r.choiceIdxPtr = action;
+    r.choice2IdxPtr = strength;
+    r.intPtr = dashFollowupMirror;
+    r.valueFormatter = FormatTriggerButtonRow;
+    r.onChange = onChange;
+    r.isDisabled = isDisabled;
+    r.isHidden = isHidden;
+    return r;
+}
+
 Row DropdownRow(const char* label, int* idx, const char* const* items, int n,
                 void (*onChange)(),
                 bool (*isDisabled)(),
@@ -1381,6 +1400,11 @@ void RenderList(ImDrawList* dl, const ScreenLayout& layout,
                 Layout::DrawRowDrill(dl, x, y, w, r.label, val, focused, disabled);
                 break;
             }
+            case RowKind::TriggerButton: {
+                const char* val = r.valueFormatter ? r.valueFormatter(r) : "(NONE)";
+                Layout::DrawRowLabelValue(dl, x, y, w, r.label, val, focused, disabled);
+                break;
+            }
             case RowKind::Dropdown: {
                 const int idx = (r.choiceIdxPtr ? *r.choiceIdxPtr : 0);
                 const char* val = (r.choices && idx >= 0 && idx < r.choiceCount)
@@ -1639,6 +1663,18 @@ bool HandleRowsInput(const ScreenLayout& layout,
                 fire(changed);
                 break;
             }
+            case RowKind::TriggerButton: {
+                if (disabled) break;
+                bool changed = false;
+                if (navLeft) {
+                    changed = AdjustTriggerButtonRow(r, -1);
+                } else if (navRight || activate) {
+                    changed = AdjustTriggerButtonRow(r, +1);
+                }
+                if (changed) Sound::PlayCursor();
+                fire(changed);
+                break;
+            }
             case RowKind::Dropdown: {
                 if (disabled) break;
                 if (activate) { OpenDropdownPopup(r); break; }
@@ -1703,6 +1739,57 @@ bool HandleListInput(const ScreenLayout& layout,
 
 bool IsPopupActive() { return PopupActive(); }
 bool IsSubmenuActive() { return g_submenus.depth > 0; }
+
+const char* ActiveSubmenuTitle() {
+    if (g_submenus.depth <= 0) return nullptr;
+    return g_submenus.frames[g_submenus.depth - 1].title;
+}
+
+bool IsValuesPlayerEditorActive() {
+    const char* title = ActiveSubmenuTitle();
+    return title && strcmp(title, "PLAYER VALUES") == 0;
+}
+
+bool IsValuesContinuousRecoveryActive() {
+    const char* title = ActiveSubmenuTitle();
+    return title && strcmp(title, "CONTINUOUS RECOVERY") == 0;
+}
+
+bool IsValuesColumnEditorActive() {
+    return IsValuesPlayerEditorActive() || IsValuesContinuousRecoveryActive();
+}
+
+void CloseTopSubmenu() {
+    CloseOneSubmenu();
+}
+
+MenuNavigationRequest g_pendingMenuNav;
+bool g_hasPendingMenuNav = false;
+
+void RequestMenuNavigation(const MenuNavigationRequest& request) {
+    g_pendingMenuNav = request;
+    g_hasPendingMenuNav = true;
+}
+
+bool ConsumeMenuNavigation(MenuNavigationRequest& out) {
+    if (!g_hasPendingMenuNav) return false;
+    out = g_pendingMenuNav;
+    g_hasPendingMenuNav = false;
+    return true;
+}
+
+void OpenSubmenuDirect(RowListBuilder builder, const char* title, int focusRow) {
+    if (!builder || g_submenus.depth >= kMaxSubmenuDepth) return;
+    SubmenuFrame& f = g_submenus.frames[g_submenus.depth++];
+    f.title = (title && title[0]) ? title : "SUBMENU";
+    f.builder = builder;
+    f.focus = (focusRow < 0) ? 0 : focusRow;
+    f.scroll = ScrollState{};
+    StartSubmenuAnimation(+1);
+    Sound::PlayDecision();
+    Input::ResetEdges();
+}
+
 bool ConsumeFocusAboveRequest() {
     const bool requested = g_focusAboveRequested;
     g_focusAboveRequested = false;

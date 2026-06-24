@@ -385,12 +385,55 @@ struct MainState {
 };
 MainState g_main;
 
+constexpr int kCrColRowCount = Screens::CrEditorRowCount;
+
 const char* MainModeName(MainMode mode) {
     switch (mode) {
         case MainMode::Browse: return "BROWSE";
         case MainMode::Adjust: return "ADJUST";
     }
     return "UNKNOWN";
+}
+
+struct CrMainState {
+    int row = 0; // visible-row index (compact layout)
+    int player = 0;
+    MainMode mode = MainMode::Browse;
+};
+CrMainState g_cr;
+
+int g_crVisiblePhysical[kCrColRowCount];
+int g_crVisibleCount = 0;
+
+void CrRebuildVisibleRows() {
+    g_crVisibleCount = 0;
+    for (int i = 0; i < kCrColRowCount; ++i) {
+        if (!Screens::CrRowHidden(0, i) || !Screens::CrRowHidden(1, i)) {
+            g_crVisiblePhysical[g_crVisibleCount++] = i;
+        }
+    }
+    if (g_crVisibleCount == 0) {
+        g_crVisiblePhysical[g_crVisibleCount++] = 0;
+    }
+    if (g_cr.row >= g_crVisibleCount) {
+        g_cr.row = g_crVisibleCount - 1;
+    }
+}
+
+int CrPhysicalRow(int visRow) {
+    if (visRow < 0) visRow = 0;
+    if (visRow >= g_crVisibleCount) visRow = g_crVisibleCount - 1;
+    return g_crVisiblePhysical[visRow];
+}
+
+int CrP2FocusStart() {
+    return g_crVisibleCount;
+}
+
+void SetCrMode(MainMode mode, const char* reason) {
+    if (g_cr.mode == mode) return;
+    g_cr.mode = mode;
+    LogMenuDetail("CR mode -> %s (%s)", MainModeName(mode), reason ? reason : "?");
 }
 
 struct EditState {
@@ -974,6 +1017,44 @@ void ComputeTabRects(MainLayout& L) {
 void SetActiveTopTab(int newTop, const char* reason);
 void SetActiveSubTab(int top, int newSub, const char* reason);
 
+bool PaneToTabs(int pane, int& top, int& sub) {
+    for (int t = 0; t < TT_COUNT; ++t) {
+        for (int s = 0; s < kTopTabs[t].subCount; ++s) {
+            if (kTopTabs[t].subs[s].pane == pane) {
+                top = t;
+                sub = s;
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+void ApplyPendingMenuNavigation() {
+    Screens::MenuNavigationRequest req{};
+    if (!Screens::ConsumeMenuNavigation(req)) return;
+
+    int top = 0;
+    int sub = 0;
+    if (!PaneToTabs(req.pane, top, sub)) return;
+
+    CancelEditMode();
+    SetActiveTopTab(top, "menu shortcut");
+    SetActiveSubTab(top, sub, "menu shortcut");
+    ResetMainState("menu shortcut");
+
+    if (req.pane >= 0 && req.pane < PANE_COUNT) {
+        g_shell.focusPerPane[req.pane] = (req.focusRow < 0) ? 0 : req.focusRow;
+        g_shell.scrollPerPane[req.pane] = Screens::ScrollState{};
+    }
+    SetFocusRegion(FocusRegion::Content, "menu shortcut");
+
+    if (req.submenuBuilder) {
+        Screens::OpenSubmenuDirect(req.submenuBuilder, req.submenuTitle, req.submenuFocusRow);
+    }
+    Input::ResetEdges();
+}
+
 bool HandleTabBarClick(const MainLayout& L) {
     if (Screens::IsPopupActive() || Screens::IsKeybindActive() || Screens::IsTextEditorActive()) return false;
     if (!Input::MouseLeftEdge()) return false;
@@ -1150,6 +1231,241 @@ void RenderMainScreen(const MainLayout& L, const GuiValueLocks::State& locks) {
     }
 }
 
+struct DualColumnLayout {
+    float colLeftX = 0.0f;
+    float colRightX = 0.0f;
+    float colW = 0.0f;
+    float dataStartY = 0.0f;
+    int   visibleCount = 0;
+    float rowY[kCrColRowCount]{};
+};
+
+int CrComposeFocus(int visRow, int player) {
+    if (visRow < 0) visRow = 0;
+    if (visRow >= g_crVisibleCount) visRow = g_crVisibleCount - 1;
+    if (player < 0) player = 0;
+    if (player > 1) player = 1;
+    return (player == 0) ? visRow : (CrP2FocusStart() + visRow);
+}
+
+void CrDecodeFocus(int focus, int& visRow, int& player) {
+    if (focus < 0) focus = 0;
+    const int maxFocus = CrP2FocusStart() + g_crVisibleCount - 1;
+    if (focus > maxFocus) focus = maxFocus;
+    player = (focus >= CrP2FocusStart()) ? 1 : 0;
+    visRow = (player == 0) ? focus : (focus - CrP2FocusStart());
+}
+
+int CrCurFocus() {
+    return CrComposeFocus(g_cr.row, g_cr.player);
+}
+
+void CrSetFocus(int newFocus, const char* reason) {
+    int row = 0;
+    int player = 0;
+    CrDecodeFocus(newFocus, row, player);
+    if (g_cr.row == row && g_cr.player == player) return;
+    g_cr.row = row;
+    g_cr.player = player;
+    if (!reason || !strstr(reason, "mouse")) {
+        Sound::PlayCursor();
+    }
+}
+
+bool CrRowFocusable(int player, int visRow) {
+    const int physical = CrPhysicalRow(visRow);
+    return !Screens::CrRowHidden(player, physical);
+}
+
+int CrClampFocusIndex(int focus) {
+    const int maxFocus = CrP2FocusStart() + g_crVisibleCount - 1;
+    for (int i = 0; i <= maxFocus; ++i) {
+        const int candidate = (focus + i) % (maxFocus + 1);
+        int visRow = 0;
+        int player = 0;
+        CrDecodeFocus(candidate, visRow, player);
+        if (CrRowFocusable(player, visRow)) return candidate;
+    }
+    return 0;
+}
+
+DualColumnLayout ComputeCrLayout(const MainLayout& L) {
+    CrRebuildVisibleRows();
+
+    DualColumnLayout C{};
+    C.colLeftX = L.colLeftX;
+    C.colRightX = L.colRightX;
+    C.colW = L.colW;
+    C.dataStartY = L.dataStartY;
+    C.visibleCount = g_crVisibleCount;
+    float y = L.dataStartY + Theme::kRowHeight + Theme::kSectionPadY;
+    for (int i = 0; i < g_crVisibleCount; ++i) {
+        C.rowY[i] = y;
+        y += Theme::kRowHeight;
+    }
+    return C;
+}
+
+void RenderCrScreen(const DualColumnLayout& C) {
+    ImDrawList* dl = ImGui::GetBackgroundDrawList();
+    if (!dl) return;
+
+    const int focus = CrCurFocus();
+
+    Layout::DrawHeader(dl, C.colLeftX,  C.dataStartY, C.colW, "PLAYER 1 RECOVERY");
+    Layout::DrawHeader(dl, C.colRightX, C.dataStartY, C.colW, "PLAYER 2 RECOVERY");
+
+    for (int vi = 0; vi < C.visibleCount; ++vi) {
+        const int physical = CrPhysicalRow(vi);
+        const int p1Focus = CrComposeFocus(vi, 0);
+        const int p2Focus = CrComposeFocus(vi, 1);
+        char buf[48];
+
+        if (!Screens::CrRowHidden(0, physical)) {
+            Screens::CrFormatCell(0, physical, buf, sizeof(buf));
+            Layout::DrawRowLabelValue(dl, C.colLeftX, C.rowY[vi], C.colW,
+                                      Screens::CrRowLabel(physical), buf,
+                                      focus == p1Focus, false);
+        }
+        if (!Screens::CrRowHidden(1, physical)) {
+            Screens::CrFormatCell(1, physical, buf, sizeof(buf));
+            Layout::DrawRowLabelValue(dl, C.colRightX, C.rowY[vi], C.colW,
+                                      Screens::CrRowLabel(physical), buf,
+                                      focus == p2Focus, false);
+        }
+    }
+}
+
+void HandleCrScreenInput(const DualColumnLayout& C) {
+    const bool keyboardOrPadEdge = Input::NavUp() || Input::NavDown() ||
+                                   Input::NavLeft() || Input::NavRight() ||
+                                   Input::Activate() || Input::Back() ||
+                                   Input::SwitchPlayer();
+
+    if (!keyboardOrPadEdge && g_mouse.movedThisFrame) {
+        for (int vi = 0; vi < C.visibleCount; ++vi) {
+            const int physical = CrPhysicalRow(vi);
+            if (!Screens::CrRowHidden(0, physical) &&
+                Input::MouseHovering(C.colLeftX, C.rowY[vi], C.colW, Theme::kRowHeight)) {
+                SetCrMode(MainMode::Browse, "mouse hover");
+                CrSetFocus(CrComposeFocus(vi, 0), "mouse hover");
+                break;
+            }
+            if (!Screens::CrRowHidden(1, physical) &&
+                Input::MouseHovering(C.colRightX, C.rowY[vi], C.colW, Theme::kRowHeight)) {
+                SetCrMode(MainMode::Browse, "mouse hover");
+                CrSetFocus(CrComposeFocus(vi, 1), "mouse hover");
+                break;
+            }
+        }
+    }
+
+    if (!keyboardOrPadEdge && Input::MouseLeftEdge()) {
+        for (int vi = 0; vi < C.visibleCount; ++vi) {
+            const int physical = CrPhysicalRow(vi);
+            int hit = -1;
+            if (!Screens::CrRowHidden(0, physical) &&
+                Input::MouseHovering(C.colLeftX, C.rowY[vi], C.colW, Theme::kRowHeight)) {
+                hit = CrComposeFocus(vi, 0);
+            } else if (!Screens::CrRowHidden(1, physical) &&
+                       Input::MouseHovering(C.colRightX, C.rowY[vi], C.colW, Theme::kRowHeight)) {
+                hit = CrComposeFocus(vi, 1);
+            }
+            if (hit < 0) continue;
+
+            int visRow = 0;
+            int player = 0;
+            CrDecodeFocus(hit, visRow, player);
+            if (CrCurFocus() != hit) {
+                SetCrMode(MainMode::Browse, "mouse click");
+                CrSetFocus(hit, "mouse click");
+                return;
+            }
+            if (!CrRowFocusable(player, visRow)) return;
+            SetCrMode(MainMode::Adjust, "mouse click adjust");
+            Sound::PlayDecision();
+            return;
+        }
+    }
+
+    int focus = CrClampFocusIndex(CrCurFocus());
+    int visRow = 0;
+    int player = 0;
+    CrDecodeFocus(focus, visRow, player);
+    g_cr.row = visRow;
+    g_cr.player = player;
+
+    const bool navUp = Input::NavUp();
+    const bool navDown = Input::NavDown();
+    const bool navLeft = Input::NavLeft();
+    const bool navRight = Input::NavRight();
+    const bool activate = Input::Activate();
+    const bool back = Input::Back();
+    const bool switchPlayer = Input::SwitchPlayer();
+    const int physical = CrPhysicalRow(g_cr.row);
+
+    if (switchPlayer) {
+        CrSetFocus(CrComposeFocus(g_cr.row, 1 - g_cr.player),
+            (g_cr.mode == MainMode::Browse) ? "d button switch player" : "d button switch player (adjust)");
+        return;
+    }
+
+    if (g_cr.mode == MainMode::Browse) {
+        if (navUp && g_cr.row > 0) {
+            CrSetFocus(CrComposeFocus(g_cr.row - 1, g_cr.player), "browse nav up");
+        }
+        if (navDown && g_cr.row < C.visibleCount - 1) {
+            CrSetFocus(CrComposeFocus(g_cr.row + 1, g_cr.player), "browse nav down");
+        }
+        if (navLeft && g_cr.player > 0) {
+            CrSetFocus(CrComposeFocus(g_cr.row, g_cr.player - 1), "browse player left");
+        }
+        if (navRight && g_cr.player < 1) {
+            CrSetFocus(CrComposeFocus(g_cr.row, g_cr.player + 1), "browse player right");
+        }
+        if (activate) {
+            if (!CrRowFocusable(g_cr.player, g_cr.row)) return;
+            SetCrMode(MainMode::Adjust, "browse activate");
+            Sound::PlayDecision();
+            return;
+        }
+        if (back) {
+            if (Screens::IsSubmenuActive()) {
+                Screens::CloseTopSubmenu();
+                Sound::PlayDecision();
+            } else {
+                ImGuiImpl::ToggleVisibility();
+                Sound::PlayDecision();
+            }
+            return;
+        }
+        return;
+    }
+
+    const bool bigStep = navUp || navDown;
+    if (navLeft) {
+        Screens::CrAdjustCell(g_cr.player, physical, -1, bigStep);
+        Sound::PlayCursor();
+    } else if (navRight) {
+        Screens::CrAdjustCell(g_cr.player, physical, +1, bigStep);
+        Sound::PlayCursor();
+    } else if (navUp) {
+        Screens::CrAdjustCell(g_cr.player, physical, -1, true);
+        Sound::PlayCursor();
+    } else if (navDown) {
+        Screens::CrAdjustCell(g_cr.player, physical, +1, true);
+        Sound::PlayCursor();
+    } else if (activate) {
+        Screens::CrActivateCell(g_cr.player, physical);
+        Sound::PlayCursor();
+    }
+
+    if (back) {
+        SetCrMode(MainMode::Browse, "adjust back");
+        Sound::PlayDecision();
+    }
+}
+
 // ===== Tab bar render =====
 void RenderTabBar(const MainLayout& L) {
     ImDrawList* dl = ImGui::GetBackgroundDrawList();
@@ -1322,9 +1638,14 @@ void HandleMainScreenInput(const MainLayout& L, const GuiValueLocks::State& lock
             return;
         }
         if (back) {
-            LogMenuDetail("Back pressed -> close from %s", ScreenName(ActivePane()));
-            Sound::PlayDecision();
-            ImGuiImpl::ToggleVisibility();
+            if (Screens::IsSubmenuActive()) {
+                Screens::CloseTopSubmenu();
+                Sound::PlayDecision();
+            } else {
+                LogMenuDetail("Back pressed -> close from %s", ScreenName(ActivePane()));
+                Sound::PlayDecision();
+                ImGuiImpl::ToggleVisibility();
+            }
             return;
         }
         return;
@@ -1472,6 +1793,8 @@ void Render() {
 
     if (!ImGuiImpl::IsVisible()) return;
 
+    ApplyPendingMenuNavigation();
+
     ++s_renderFrame;
     const DWORD renderStartMs = GetTickCount();
     const bool traceThisFrame = (s_framesSinceOpen < 8);
@@ -1530,7 +1853,8 @@ void Render() {
     ImDrawList* dl = ImGui::GetBackgroundDrawList();
     if (!dl) return;
     const ImVec2 origin = Layout::DrawPanel(dl, "TRAINING SETTINGS");
-    const GuiValueLocks::State valueLocks = GuiValueLocks::Compute(ImGuiGui::guiState.localData);
+    GuiValueLocks::State valueLocks = GuiValueLocks::Compute(ImGuiGui::guiState.localData);
+    Screens::CorrectValueLocksForEngineRegenUi(valueLocks);
 
     MainLayout L = ComputeMainLayout(origin.y);
     ComputeTabRects(L);
@@ -1547,18 +1871,75 @@ void Render() {
     ApplyContentAnimation(contentL);
 
     if (activePane == PANE_VALUES) {
-        bool valuesInputEnabled = !tabClickConsumed &&
-                                  g_shell.focusRegion == FocusRegion::Content &&
-                                  !tabFocusConsumed;
-        if (valuesInputEnabled &&
-            g_main.mode == MainMode::Browse &&
-            g_main.row == 0 &&
-            Input::NavUp()) {
-            MoveFocusAboveContent("values top nav up");
-            valuesInputEnabled = false;
+        Screens::RefreshSecondaryScreenMirrors();
+
+        Screens::ScreenLayout sl{};
+        sl.panelX         = L.panelTL.x;
+        sl.contentX       = L.panelTL.x + Theme::kPanelPadX;
+        sl.contentW       = Theme::kPanelW - Theme::kPanelPadX * 2.0f;
+        sl.contentTopY    = L.dataStartY;
+        sl.contentBottomY = Theme::PanelBottomRight().y - 40.0f;
+        sl.animOffsetX    = CurrentPaneOffsetX();
+        sl.animOffsetY    = CurrentOpenOffsetY();
+        sl.inputEnabled   = g_shell.focusRegion == FocusRegion::Content && !tabFocusConsumed;
+
+        MainLayout contentL = L;
+        ApplyContentAnimation(contentL);
+
+        if (Screens::IsValuesColumnEditorActive()) {
+            static bool s_crEditorWasActive = false;
+            const bool crEditor = Screens::IsValuesContinuousRecoveryActive();
+            if (crEditor && !s_crEditorWasActive) {
+                g_cr = CrMainState{};
+            }
+            s_crEditorWasActive = crEditor;
+
+            const bool valuesInputEnabled = !tabClickConsumed && sl.inputEnabled;
+            if (Screens::IsValuesPlayerEditorActive()) {
+                if (valuesInputEnabled &&
+                    g_main.mode == MainMode::Browse &&
+                    g_main.row == 0 &&
+                    Input::NavUp()) {
+                    MoveFocusAboveContent("values top nav up");
+                } else if (valuesInputEnabled) {
+                    HandleMainScreenInput(contentL, valueLocks);
+                }
+                RenderMainScreen(contentL, valueLocks);
+            } else if (Screens::IsValuesContinuousRecoveryActive()) {
+                const DualColumnLayout crL = ComputeCrLayout(contentL);
+                if (valuesInputEnabled &&
+                    g_cr.mode == MainMode::Browse &&
+                    g_cr.row == 0 &&
+                    Input::NavUp()) {
+                    MoveFocusAboveContent("cr top nav up");
+                } else if (valuesInputEnabled) {
+                    HandleCrScreenInput(crL);
+                }
+                RenderCrScreen(crL);
+            }
+        } else {
+            int& focus = g_shell.focusPerPane[PANE_VALUES];
+            Screens::ScrollState& scroll = g_shell.scrollPerPane[PANE_VALUES];
+            bool backEdge = false;
+            SehTickPane("Values", &Screens::TickValues, dl, sl, focus, scroll, backEdge);
+
+            if (g_shell.focusRegion == FocusRegion::Content && Screens::ConsumeFocusAboveRequest()) {
+                MoveFocusAboveContent("list top nav up");
+            }
+
+            Screens::TickPopupIfOpen(dl, sl);
+            Screens::TickKeybindIfActive(dl, sl);
+            if (g_shell.keybindWasActive && !Screens::IsKeybindActive()) {
+                g_shell.prevMenuKeyDown = true;
+            }
+            g_shell.keybindWasActive = Screens::IsKeybindActive();
+
+            if (!tabClickConsumed && g_shell.focusRegion == FocusRegion::Content && backEdge) {
+                LogMenuDetail("Back pressed -> close from %s", ScreenName(activePane));
+                ImGuiImpl::ToggleVisibility();
+                return;
+            }
         }
-        if (valuesInputEnabled) HandleMainScreenInput(contentL, valueLocks);
-        RenderMainScreen(contentL, valueLocks);
     } else {
         // Secondary list-based panes share the same render/input driver.
         Screens::ScreenLayout sl{};
@@ -1672,11 +2053,13 @@ void Render() {
         hint = SettingsTabActive()
             ? "L/R CHANGE SUBTAB   UP TABS   DOWN ENTER OPTIONS   D SAVE   ESC CLOSE"
             : "L/R CHANGE SUBTAB   UP TABS   DOWN ENTER OPTIONS   ESC CLOSE";
-    } else if (Screens::IsSubmenuActive()) {
-        hint = SettingsTabActive()
-            ? "UP/DOWN MOVE   ENTER SELECT   D SAVE   ESC BACK"
-            : "UP/DOWN MOVE   ENTER SELECT   ESC BACK";
-    } else if (ActivePane() == PANE_VALUES) {
+    } else if (Screens::IsValuesContinuousRecoveryActive()) {
+        if (g_cr.mode == MainMode::Browse) {
+            hint = "UP/DOWN ROW   L/R OR D SWITCH PLAYER   ENTER ADJUST   ESC BACK";
+        } else {
+            hint = "L/R SMALL   U/D BIG   D SWITCH PLAYER   ENTER TOGGLE   ESC BACK";
+        }
+    } else if (Screens::IsValuesPlayerEditorActive()) {
         const int focus = CurFocus();
         const bool focusLocked = RowIsLocked(valueLocks, focus);
         statusText = LockStatusText(valueLocks, focus);
@@ -1693,6 +2076,12 @@ void Render() {
         } else {
             hint = "L/R SMALL   U/D BIG   D SWITCH PLAYER   ENTER TYPE   ESC BACK";
         }
+    } else if (Screens::IsSubmenuActive()) {
+        hint = SettingsTabActive()
+            ? "UP/DOWN MOVE   ENTER SELECT   D SAVE   ESC BACK"
+            : "UP/DOWN MOVE   ENTER SELECT   ESC BACK";
+    } else if (ActivePane() == PANE_VALUES && !Screens::IsValuesColumnEditorActive()) {
+        hint = "UP/DOWN MOVE   L/R ADJUST   ENTER SELECT   ESC BACK";
     } else if (SettingsTabActive()) {
         hint = "U/D MOVE   L/R ADJUST   D SAVE   ENTER PICK   PGUP/PGDN TOP";
     } else {
