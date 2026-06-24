@@ -35,7 +35,6 @@
 #include "../include/utils/debug_log.h"
 #include "../include/game/efzrevival_addrs.h"
 #include "../include/input/framestep.h"
-#include "../include/game/custom_savestate.h"
 #include "../include/game/savestate_hook.h"
 // forward declaration for overlay gate
 namespace PracticeOverlayGate { void EnsureInstalled(); void SetMenuVisible(bool); }
@@ -185,14 +184,8 @@ void DelayedInitialization(HMODULE hModule) {
         // Initialize both the mod-owned custom savestate backend and the
         // Revival hook fallback/tracking path.
         try {
-            const bool customReady = CustomSavestate::Install();
             const bool revivalReady = SavestateHook::Install();
-            if (customReady || revivalReady) {
-                LogOut("[SAVESTATE] Custom backend=" + std::string(customReady ? "ready" : "not-ready")
-                    + " | Revival hooks=" + (revivalReady ? "ready" : "not-ready"), true);
-            } else {
-                LogOut("[SAVESTATE] No savestate backend initialized", true);
-            }
+            LogOut(std::string("[SAVESTATE] Revival hooks=") + (revivalReady ? "ready" : "not-ready"), true);
         } catch (...) {
             LogOut("[SAVESTATE] Exception while initializing savestate systems", true);
         }
@@ -385,7 +378,6 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
             RemoveInputHook();
             RemoveCollisionHook();
             StopBGMSuppressionPoller();
-            CustomSavestate::Uninstall();
             SavestateHook::Uninstall();
             // Stop any active overlay rendering
             if (g_guiActive.load()) {

@@ -50,7 +50,7 @@
 
 // Battle screen render (thiscall battleContext)
 #ifndef EFZ_RVA_RENDER_BATTLE_SCREEN
-#define EFZ_RVA_RENDER_BATTLE_SCREEN 0x007642A0
+#define EFZ_RVA_RENDER_BATTLE_SCREEN 0x003642A0
 #endif
 
 // Central patch toggler context/function

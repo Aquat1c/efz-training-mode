@@ -1,6 +1,7 @@
 #include <fstream>
 #include <iomanip>
 #include <chrono>
+#include <sstream>
 #include <vector>
 #include <thread>
 #include <atomic>
@@ -11,6 +12,7 @@
 
 #include "../include/core/memory.h"   
 #include "../include/core/constants.h" 
+#include "../include/game/efzrevival_addrs.h"
 #include "../3rdparty/detours/include/detours.h"
 #include <algorithm>
 #include "../include/gui/imgui_impl.h"
@@ -401,8 +403,10 @@ static float GetDpiScale() {
 
 // --- D3D9 Hooking Globals ---
 typedef HRESULT(WINAPI* EndScene_t)(LPDIRECT3DDEVICE9);
+HRESULT WINAPI HookedEndScene(LPDIRECT3DDEVICE9 pDevice);
 static EndScene_t oEndScene = nullptr;
 static void* g_EndSceneTarget = nullptr; // store target vtable entry for cleanup
+static const char* g_EndSceneTargetSource = "none";
 static std::atomic<bool> g_EndSceneHookEnabled{ false };
 // Track if our EndScene hook has ever been called (for diagnostics)
 static std::atomic<bool> g_EndSceneObserved{ false };
@@ -410,7 +414,282 @@ static std::atomic<bool> g_EndSceneObserved{ false };
 static std::atomic<bool> g_ExternalMenuFallbackNeeded{ false };
 // Track ImGui init state within EndScene with atomic for thread safety
 static std::atomic<bool> g_endSceneImguiInit{ false };
+static std::atomic<bool> g_endSceneRelatchInProgress{ false };
 // --- End D3D9 Globals ---
+
+namespace {
+
+constexpr size_t kEndSceneVtableIndex = 42;
+// DDRAW decomp shows EfzRender::initTextRender/resetDev using ((DWORD*)this + 17)
+// as the active IDirect3DDevice9*.
+constexpr uintptr_t kEfzRenderDeviceOffset = 17u * sizeof(uintptr_t);
+
+struct EndSceneHookCandidate {
+    void* target = nullptr;
+    const char* source = nullptr;
+    uintptr_t renderObject = 0;
+    uintptr_t device = 0;
+    uintptr_t vtable = 0;
+    std::string modulePath;
+};
+
+std::string FormatPointerValue(uintptr_t value) {
+    char buffer[32] = {};
+    _snprintf_s(buffer, sizeof(buffer), _TRUNCATE, "0x%08IX", value);
+    return std::string(buffer);
+}
+
+std::string DescribeModuleForAddress(void* address) {
+    if (!address) {
+        return "<null>";
+    }
+
+    MEMORY_BASIC_INFORMATION mbi{};
+    if (VirtualQuery(address, &mbi, sizeof(mbi)) == 0 || !mbi.AllocationBase) {
+        return "<unknown>";
+    }
+
+    char pathBuf[MAX_PATH] = {};
+    const DWORD count = GetModuleFileNameA(reinterpret_cast<HMODULE>(mbi.AllocationBase), pathBuf, MAX_PATH);
+    if (count == 0) {
+        return "<unknown>";
+    }
+    return std::string(pathBuf, count);
+}
+
+bool ReadPointerValue(uintptr_t address, uintptr_t& outValue) {
+    outValue = 0;
+    return address != 0 && SafeReadMemory(address, &outValue, sizeof(outValue)) && outValue != 0;
+}
+
+void LogEndSceneCandidate(const EndSceneHookCandidate& candidate, const char* prefix) {
+    if (!candidate.target) {
+        return;
+    }
+
+    std::ostringstream oss;
+    oss << (prefix ? prefix : "[OVERLAY][D3D9]")
+        << " source=" << (candidate.source ? candidate.source : "unknown")
+        << " target=" << FormatPointerValue(reinterpret_cast<uintptr_t>(candidate.target))
+        << " module=" << candidate.modulePath;
+    if (candidate.renderObject) {
+        oss << " render=" << FormatPointerValue(candidate.renderObject);
+    }
+    if (candidate.device) {
+        oss << " device=" << FormatPointerValue(candidate.device);
+    }
+    if (candidate.vtable) {
+        oss << " vtable=" << FormatPointerValue(candidate.vtable);
+    }
+    LogOut(oss.str(), true);
+}
+
+bool BuildEndSceneCandidateFromRenderObject(uintptr_t renderObject, const char* source, EndSceneHookCandidate& outCandidate) {
+    uintptr_t device = 0;
+    if (!ReadPointerValue(renderObject + kEfzRenderDeviceOffset, device)) {
+        return false;
+    }
+
+    uintptr_t vtable = 0;
+    if (!ReadPointerValue(device, vtable)) {
+        return false;
+    }
+
+    uintptr_t endSceneTarget = 0;
+    if (!ReadPointerValue(vtable + (kEndSceneVtableIndex * sizeof(uintptr_t)), endSceneTarget)) {
+        return false;
+    }
+
+    outCandidate.target = reinterpret_cast<void*>(endSceneTarget);
+    outCandidate.source = source;
+    outCandidate.renderObject = renderObject;
+    outCandidate.device = device;
+    outCandidate.vtable = vtable;
+    outCandidate.modulePath = DescribeModuleForAddress(reinterpret_cast<void*>(endSceneTarget));
+    return true;
+}
+
+bool TryResolveLiveEndSceneFromDdrawExport(EndSceneHookCandidate& outCandidate) {
+    HMODULE ddrawModule = GetModuleHandleA("ddraw.dll");
+    if (!ddrawModule) {
+        return false;
+    }
+
+    using GetEfzRenderFn = void* (__cdecl*)();
+    auto getEfzRender = reinterpret_cast<GetEfzRenderFn>(GetProcAddress(ddrawModule, "getEfzRender"));
+    if (!getEfzRender) {
+        return false;
+    }
+
+    uintptr_t renderObject = reinterpret_cast<uintptr_t>(getEfzRender());
+    if (!renderObject) {
+        LogOut("[OVERLAY][D3D9] getEfzRender export returned null", true);
+        return false;
+    }
+
+    if (!BuildEndSceneCandidateFromRenderObject(renderObject, "live-ddraw-export", outCandidate)) {
+        LogOut("[OVERLAY][D3D9] Failed to resolve EndScene from DDRAW getEfzRender() object", true);
+        return false;
+    }
+    return true;
+}
+
+bool TryResolveLiveEndSceneFromRevival(EndSceneHookCandidate& outCandidate) {
+    HMODULE revivalModule = GetModuleHandleA("EfzRevival.dll");
+    if (!revivalModule) {
+        return false;
+    }
+
+    const uintptr_t renderCtxRva = EFZ_RVA_RenderContextGlobal();
+    if (!renderCtxRva) {
+        return false;
+    }
+
+    uintptr_t renderObject = 0;
+    const uintptr_t renderObjectAddr = reinterpret_cast<uintptr_t>(revivalModule) + renderCtxRva;
+    if (!ReadPointerValue(renderObjectAddr, renderObject)) {
+        LogOut("[OVERLAY][D3D9] Revival render-context pointer is not ready yet at " + FormatPointerValue(renderObjectAddr), detailedLogging.load());
+        return false;
+    }
+
+    if (!BuildEndSceneCandidateFromRenderObject(renderObject, "live-revival-renderctx", outCandidate)) {
+        LogOut("[OVERLAY][D3D9] Failed to resolve EndScene from Revival render context", true);
+        return false;
+    }
+    return true;
+}
+
+bool TryResolveLiveEndSceneCandidate(EndSceneHookCandidate& outCandidate) {
+    if (TryResolveLiveEndSceneFromDdrawExport(outCandidate)) {
+        return true;
+    }
+    return TryResolveLiveEndSceneFromRevival(outCandidate);
+}
+
+bool AttachEndSceneHookForCandidate(const EndSceneHookCandidate& candidate, const char* trigger) {
+    if (!candidate.target) {
+        return false;
+    }
+
+    std::ostringstream oss;
+    oss << "[OVERLAY][D3D9] Attaching EndScene hook"
+        << " trigger=" << (trigger ? trigger : "unknown")
+        << " source=" << (candidate.source ? candidate.source : "unknown")
+        << " target=" << FormatPointerValue(reinterpret_cast<uintptr_t>(candidate.target))
+        << " module=" << candidate.modulePath;
+    LogOut(oss.str(), true);
+
+    MH_STATUS cr = MH_CreateHook(candidate.target, HookedEndScene, reinterpret_cast<void**>(&oEndScene));
+    if (cr != MH_OK && cr != MH_ERROR_ALREADY_CREATED) {
+        const char* status = MH_StatusToString(cr);
+        LogOut(std::string("[OVERLAY][D3D9] Failed to create EndScene hook source=")
+               + (candidate.source ? candidate.source : "unknown")
+               + " status=" + (status ? status : "<unknown>"),
+               true);
+        return false;
+    }
+
+    if (g_onlineModeActive.load(std::memory_order_relaxed)) {
+        LogOut("[OVERLAY][D3D9] Aborting EndScene enable because netplay suspend became active during attach", true);
+        if (cr == MH_OK) {
+            MH_RemoveHook(candidate.target);
+        }
+        return false;
+    }
+
+    MH_STATUS er = MH_EnableHook(candidate.target);
+    if (er != MH_OK && er != MH_ERROR_ENABLED) {
+        const char* status = MH_StatusToString(er);
+        LogOut(std::string("[OVERLAY][D3D9] Failed to enable EndScene hook source=")
+               + (candidate.source ? candidate.source : "unknown")
+               + " status=" + (status ? status : "<unknown>"),
+               true);
+        if (cr == MH_OK) {
+            MH_RemoveHook(candidate.target);
+        }
+        return false;
+    }
+
+    g_EndSceneTarget = candidate.target;
+    g_EndSceneTargetSource = candidate.source ? candidate.source : "unknown";
+    DirectDrawHook::isHooked = true;
+    g_EndSceneObserved.store(false, std::memory_order_release);
+    g_EndSceneHookEnabled.store(true, std::memory_order_release);
+    g_ExternalMenuFallbackNeeded.store(false, std::memory_order_release);
+    LogEndSceneCandidate(candidate, "[OVERLAY][D3D9] EndScene hook attached");
+    return true;
+}
+
+void RemoveEndSceneHookTarget(void* target) {
+    if (!target) {
+        return;
+    }
+    MH_DisableHook(target);
+    MH_RemoveHook(target);
+}
+
+bool TryRelatchEndSceneToLiveTarget(const char* trigger) {
+    bool expected = false;
+    if (!g_endSceneRelatchInProgress.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
+        return false;
+    }
+
+    EndSceneHookCandidate liveCandidate{};
+    const bool haveLiveCandidate = TryResolveLiveEndSceneCandidate(liveCandidate);
+    if (haveLiveCandidate) {
+        LogEndSceneCandidate(liveCandidate, "[OVERLAY][D3D9] Resolved live EndScene candidate");
+    }
+
+    if (!haveLiveCandidate || !liveCandidate.target) {
+        LogOut(std::string("[OVERLAY][D3D9] Live EndScene relatch skipped trigger=")
+               + (trigger ? trigger : "unknown")
+               + " reason=no-live-candidate",
+               true);
+        g_endSceneRelatchInProgress.store(false, std::memory_order_release);
+        return false;
+    }
+
+    if (liveCandidate.target == g_EndSceneTarget) {
+        LogOut(std::string("[OVERLAY][D3D9] Live EndScene candidate already matches current hook target source=")
+               + g_EndSceneTargetSource,
+               true);
+        g_endSceneRelatchInProgress.store(false, std::memory_order_release);
+        return false;
+    }
+
+    void* previousTarget = g_EndSceneTarget;
+    const char* previousSource = g_EndSceneTargetSource;
+    RemoveEndSceneHookTarget(previousTarget);
+    g_EndSceneTarget = nullptr;
+    DirectDrawHook::isHooked = false;
+    g_EndSceneHookEnabled.store(false, std::memory_order_release);
+
+    if (AttachEndSceneHookForCandidate(liveCandidate, trigger)) {
+        LogOut(std::string("[OVERLAY][D3D9] Live EndScene relatch succeeded previousSource=")
+               + (previousSource ? previousSource : "unknown")
+               + " newSource=" + (liveCandidate.source ? liveCandidate.source : "unknown"),
+               true);
+        g_endSceneRelatchInProgress.store(false, std::memory_order_release);
+        return true;
+    }
+
+    if (previousTarget && previousTarget != liveCandidate.target) {
+        EndSceneHookCandidate previousCandidate{};
+        previousCandidate.target = previousTarget;
+        previousCandidate.source = previousSource ? previousSource : "previous";
+        previousCandidate.modulePath = DescribeModuleForAddress(previousTarget);
+        if (AttachEndSceneHookForCandidate(previousCandidate, "restore-after-relatch-failure")) {
+            LogOut("[OVERLAY][D3D9] Restored previous EndScene hook after live relatch failure", true);
+        } else {
+            LogOut("[OVERLAY][D3D9] Failed to restore previous EndScene hook after live relatch failure", true);
+        }
+    }
+
+    g_endSceneRelatchInProgress.store(false, std::memory_order_release);
+    return false;
+}
+
+} // namespace
 
 // --- FIX: Add missing implementations for obsolete DirectDraw hooks ---
 HRESULT WINAPI DirectDrawHook::HookedDirectDrawCreate(GUID* lpGUID, LPVOID* lplpDD, IUnknown* pUnkOuter) {
@@ -1599,7 +1878,7 @@ bool DirectDrawHook::InitializeD3D9() {
         return false;
     }
     
-    // Get the function pointer for EndScene
+    // Get the baseline function pointer for EndScene from a stock dummy device.
     void** vTable = *reinterpret_cast<void***>(tempDevice);
     void* endSceneAddr = vTable[42]; // EndScene is at index 42
     {
@@ -1608,44 +1887,57 @@ bool DirectDrawHook::InitializeD3D9() {
         _snprintf_s(ptrbuf2, sizeof(ptrbuf2), _TRUNCATE, "%p", endSceneAddr);
         LogOut(std::string("[OVERLAY][D3D9] Device VTable=") + ptrbuf1 + " EndScene@42=" + ptrbuf2, true);
     }
-    g_EndSceneTarget = endSceneAddr;
-    
-    // Create the hook using MinHook
-    LogOut("[OVERLAY] Hooking EndScene", detailedLogging.load());
-    MH_STATUS cr = MH_CreateHook(endSceneAddr, HookedEndScene, reinterpret_cast<void**>(&oEndScene));
-    if (cr != MH_OK) {
-        const char* es = MH_StatusToString(cr);
-        LogOut(std::string("[OVERLAY] Failed to create hook for EndScene: ") + (es ? es : "<unknown>"), true);
-        g_ExternalMenuFallbackNeeded.store(true, std::memory_order_release);
-        tempDevice->Release();
-        d3d9->Release();
-        s_d3d9InitInProgress.store(false);
-        return false;
+
+    EndSceneHookCandidate stockCandidate{};
+    stockCandidate.target = endSceneAddr;
+    stockCandidate.source = "stock-dummy-device";
+    stockCandidate.modulePath = DescribeModuleForAddress(endSceneAddr);
+    LogEndSceneCandidate(stockCandidate, "[OVERLAY][D3D9] Baseline EndScene candidate");
+
+    EndSceneHookCandidate liveCandidate{};
+    const bool haveLiveCandidate = TryResolveLiveEndSceneCandidate(liveCandidate);
+    if (haveLiveCandidate) {
+        LogEndSceneCandidate(liveCandidate, "[OVERLAY][D3D9] Live EndScene candidate");
+        if (liveCandidate.target != stockCandidate.target) {
+            LogOut("[OVERLAY][D3D9] Live EndScene target differs from stock entry; preferring live candidate to chain behind vtable owners", true);
+        } else {
+            LogOut("[OVERLAY][D3D9] Live EndScene target matches stock entry", detailedLogging.load());
+        }
+    } else {
+        LogOut("[OVERLAY][D3D9] Live EndScene candidate unavailable; using stock dummy-device target", true);
     }
+
+    const EndSceneHookCandidate* primaryCandidate = (haveLiveCandidate && liveCandidate.target) ? &liveCandidate : &stockCandidate;
+    const EndSceneHookCandidate* fallbackCandidate = (primaryCandidate == &liveCandidate && liveCandidate.target != stockCandidate.target)
+        ? &stockCandidate
+        : nullptr;
 
     if (g_onlineModeActive.load(std::memory_order_relaxed)) {
         s_lastD3D9InitDeferredForNetplay.store(true, std::memory_order_release);
         LogOut("[OVERLAY] Aborting EndScene enable because netplay suspend became active during initialization.", true);
-        MH_RemoveHook(endSceneAddr);
         tempDevice->Release();
         d3d9->Release();
         if (dummyWnd) {
             DestroyWindow(dummyWnd);
             UnregisterClassA("EFZ_TM_D3D9_DUMMY", GetModuleHandleA(nullptr));
         }
-        g_EndSceneTarget = nullptr;
         s_d3d9InitInProgress.store(false);
         return false;
     }
-    
-    // Enable the hook
-    MH_STATUS er = MH_EnableHook(endSceneAddr);
-    if (er != MH_OK) {
-        const char* es = MH_StatusToString(er);
-        LogOut(std::string("[OVERLAY] Failed to enable EndScene hook: ") + (es ? es : "<unknown>"), true);
+
+    bool attached = AttachEndSceneHookForCandidate(*primaryCandidate, "startup");
+    if (!attached && fallbackCandidate) {
+        LogOut("[OVERLAY][D3D9] Primary live EndScene attach failed; retrying with stock target", true);
+        attached = AttachEndSceneHookForCandidate(*fallbackCandidate, "startup-fallback");
+    }
+    if (!attached) {
         g_ExternalMenuFallbackNeeded.store(true, std::memory_order_release);
         tempDevice->Release();
         d3d9->Release();
+        if (dummyWnd) {
+            DestroyWindow(dummyWnd);
+            UnregisterClassA("EFZ_TM_D3D9_DUMMY", GetModuleHandleA(nullptr));
+        }
         s_d3d9InitInProgress.store(false);
         return false;
     }
@@ -1658,19 +1950,24 @@ bool DirectDrawHook::InitializeD3D9() {
         UnregisterClassA("EFZ_TM_D3D9_DUMMY", GetModuleHandleA(nullptr));
     }
     
-    isHooked = true;
-    g_EndSceneHookEnabled.store(true, std::memory_order_release);
-    g_ExternalMenuFallbackNeeded.store(false, std::memory_order_release);
     s_d3d9InitInProgress.store(false);  // Release init lock
     LogOut("[OVERLAY] D3D9 EndScene hook installed successfully.", true);
 
-    // Diagnostic: Verify EndScene is observed soon; otherwise log hints why overlay might appear missing
+    // Diagnostic: Verify EndScene is observed soon; if not, try to relatch to the live target once.
     std::thread([]{
         Sleep(6000);
         if (!g_EndSceneObserved.load()) {
+            if (TryRelatchEndSceneToLiveTarget("watchdog")) {
+                Sleep(4000);
+            }
+        }
+        if (!g_EndSceneObserved.load()) {
             g_ExternalMenuFallbackNeeded.store(true, std::memory_order_release);
             LogOut("[OVERLAY][D3D9] EndScene not observed within 6s after hook enable.", true);
-            LogOut("[OVERLAY][D3D9] Possible causes: EFZ is not rendering via D3D9 yet (no wrapper), game not yet in a render loop, or another overlay modified the vtable.", true);
+            LogOut(std::string("[OVERLAY][D3D9] Current hook source=") + g_EndSceneTargetSource
+                   + " target=" + FormatPointerValue(reinterpret_cast<uintptr_t>(g_EndSceneTarget)),
+                   true);
+            LogOut("[OVERLAY][D3D9] Possible causes: EFZ is not rendering via D3D9 yet (no wrapper), game not yet in a render loop, or another overlay modified the live vtable after our attach.", true);
         }
     }).detach();
     return true;
@@ -1698,14 +1995,24 @@ bool DirectDrawHook::SetD3D9Active(bool active) {
 
     const bool currentlyEnabled = g_EndSceneHookEnabled.load(std::memory_order_acquire);
     if (currentlyEnabled == active) {
+        if (active
+            && !g_EndSceneObserved.load(std::memory_order_acquire)
+            && g_ExternalMenuFallbackNeeded.load(std::memory_order_acquire)) {
+            (void)TryRelatchEndSceneToLiveTarget("reactivate");
+        }
         return true;
     }
 
     g_EndSceneHookEnabled.store(active, std::memory_order_release);
     if (!active) {
         g_ExternalMenuFallbackNeeded.store(false, std::memory_order_release);
+    } else if (!g_EndSceneObserved.load(std::memory_order_acquire)
+               && g_ExternalMenuFallbackNeeded.load(std::memory_order_acquire)) {
+        (void)TryRelatchEndSceneToLiveTarget("enable");
     }
-    LogOut(std::string("[OVERLAY] D3D9 EndScene hook ") + (active ? "enabled" : "disabled"), true);
+    LogOut(std::string("[OVERLAY] D3D9 EndScene hook ") + (active ? "enabled" : "disabled")
+           + " source=" + g_EndSceneTargetSource,
+           true);
     return true;
 }
 
@@ -1717,6 +2024,7 @@ void DirectDrawHook::ShutdownD3D9() {
         MH_RemoveHook(g_EndSceneTarget);
         g_EndSceneTarget = nullptr;
     }
+    g_EndSceneTargetSource = "none";
     g_EndSceneHookEnabled.store(false, std::memory_order_release);
     isHooked = false;
     
