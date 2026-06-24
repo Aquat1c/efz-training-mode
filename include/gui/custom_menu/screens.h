@@ -1,5 +1,7 @@
 #pragma once
 
+#include "../value_lock_state.h"
+
 // Generic "list screen" framework for the custom menu.
 //
 // Secondary screens (AUTO, CHARS, SETTINGS, HELP and their sub-pages) all
@@ -29,6 +31,7 @@ enum class RowKind : uint8_t {
     DoubleNumber, // double value
     Choices,      // int index into choices[]; L/R cycles inline
     ActionStrength, // paired choices; Activate opens primary picker, L/R adjusts secondary when used
+    TriggerButton,  // contextual A/B/C/S, jump dir, or dash follow-up for auto-action triggers
     Dropdown,     // int index into choices[]; Activate opens modal popup
     MaskPicker,   // uint32 bitmask; Activate opens multi-select popup
     Submenu,      // drill into another list page; Back returns to the parent
@@ -153,6 +156,15 @@ Row ActionStrengthRow(const char* label,
                       void (*onChange)() = nullptr,
                       bool (*isDisabled)() = nullptr,
                       bool (*isHidden)() = nullptr);
+// Auto-action button column: reads/writes action+strength (or dash follow-up via intPtr).
+Row TriggerButtonRow(const char* label,
+                     int* action, int* strength,
+                     int* dashFollowupMirror = nullptr,
+                     void (*onChange)() = nullptr,
+                     bool (*isDisabled)() = nullptr,
+                     bool (*isHidden)() = nullptr);
+const char* FormatTriggerButtonRow(const Row& row);
+bool AdjustTriggerButtonRow(const Row& row, int direction);
 // Dropdown: shows the currently-selected choice label and opens a modal popup
 // listing all options on Activate. Ideal for long option lists (10+ items).
 Row DropdownRow(const char* label, int* idx, const char* const* items, int n,
@@ -227,7 +239,25 @@ void RefreshSecondaryScreenMirrors();
 void TickOpponent(ImDrawList* dl, const ScreenLayout& layout, int& focus, ScrollState& scroll, bool& backEdge);
 void TickOptions (ImDrawList* dl, const ScreenLayout& layout, int& focus, ScrollState& scroll, bool& backEdge);
 void TickMenu    (ImDrawList* dl, const ScreenLayout& layout, int& focus, ScrollState& scroll, bool& backEdge);
-// (VALUES sub-pane is rendered specially by the 2-column renderer; not a list screen.)
+void TickValues  (ImDrawList* dl, const ScreenLayout& layout, int& focus, ScrollState& scroll, bool& backEdge);
+
+// VALUES sub-views rendered as P1|P2 column editors (see custom_menu/renderer.cpp).
+bool IsValuesPlayerEditorActive();
+bool IsValuesContinuousRecoveryActive();
+bool IsValuesColumnEditorActive();
+void CloseTopSubmenu();
+
+// Continuous recovery column editor bindings (P1 left, P2 right).
+constexpr int CrEditorRowCount = 8;
+bool CrRowHidden(int player, int row);
+const char* CrRowLabel(int row);
+void CrFormatCell(int player, int row, char* buf, size_t bufSz);
+void CrAdjustCell(int player, int row, int direction, bool bigStep);
+void CrActivateCell(int player, int row);
+void ResetContinuousRecoveryEditorState();
+
+// Engine regen UI mirrors — used to fix F4/F5 param ambiguity and value locks.
+void CorrectValueLocksForEngineRegenUi(GuiValueLocks::State& locks);
 
 // AUTO top-tab sub-panes:
 void TickTriggers(ImDrawList* dl, const ScreenLayout& layout, int& focus, ScrollState& scroll, bool& backEdge);
@@ -258,6 +288,37 @@ void ResetHotswapMenuSeed();
 bool IsTextEditorActive();
 void ResetTextEditor();
 bool ConsumeFocusAboveRequest();
+
+// Cross-tab navigation (queued from MAIN > MENU shortcuts; applied next frame).
+struct MenuNavigationRequest {
+    int pane = 0;
+    int focusRow = 0;
+    RowListBuilder submenuBuilder = nullptr;
+    const char* submenuTitle = nullptr;
+    int submenuFocusRow = 0;
+};
+
+// Pane ids mirror renderer.cpp `Pane` enum — keep in sync.
+namespace MenuPane {
+    constexpr int Values           = 0;
+    constexpr int Opponent         = 1;
+    constexpr int Options          = 2;
+    constexpr int Menu             = 3;
+    constexpr int Triggers         = 4;
+    constexpr int Macros           = 5;
+    constexpr int Chars            = 6;
+    constexpr int SettingsGeneral  = 7;
+    constexpr int SettingsHotkeys  = 8;
+    constexpr int SettingsDebug    = 9;
+    constexpr int HelpStart        = 10;
+    constexpr int HelpGuide        = 11;
+    constexpr int HelpResources    = 12;
+    constexpr int HelpAbout        = 13;
+}
+
+void RequestMenuNavigation(const MenuNavigationRequest& request);
+bool ConsumeMenuNavigation(MenuNavigationRequest& out);
+void OpenSubmenuDirect(RowListBuilder builder, const char* title, int focusRow = 0);
 
 // Hotkey-binding overlay. While active, every captured key or controller
 // button is written into the active config setting. The renderer should call
