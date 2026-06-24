@@ -3030,7 +3030,7 @@ Row* BuildHelpAboutRows(int& count) {
     s_rows[n++] = Header("EFZ TRAINING MODE");
     s_rows[n++] = Info(g_helpVersionStr);
     s_rows[n++] = Info(g_helpBuildStr);
-    s_rows[n++] = Info("A training toolkit for Eternal Fighter Zero — frame data, drills, macros, and matchup tools in one place.");
+    s_rows[n++] = Info("A training toolkit for Eternal Fighter Zero - frame data, drills, macros, and matchup tools in one place.");
     s_rows[n++] = Info("Find the newest version and release notes on GitHub.");
     s_rows[n++] = Action("OPEN GITHUB RELEASES", OpenGithubReleases, ValWiki);
     s_rows[n++] = Spacer();
@@ -3042,10 +3042,10 @@ Row* BuildHelpAboutRows(int& count) {
     s_rows[n++] = Header("WHAT YOU GET");
     s_rows[n++] = Info("Frame advantage display, Combo Statistics, Framebar, practice snapshots, and continuous recovery.");
     s_rows[n++] = Info("Dummy auto-actions, input macros, character-specific settings, and match hotswap without leaving Practice.");
-    s_rows[n++] = Info("Everything is configurable from this menu — no editing files by hand.");
+    s_rows[n++] = Info("Everything is configurable from this menu - no editing files by hand.");
     s_rows[n++] = Spacer();
     s_rows[n++] = Header("CONTROLS");
-    s_rows[n++] = Info("Play with keyboard and mouse, or use a gamepad — extensive controller support is built in.");
+    s_rows[n++] = Info("Play with keyboard and mouse, or use a gamepad - extensive controller support is built in.");
     s_rows[n++] = Info("Xbox, PlayStation, and most common gamepads use the same button bindings.");
     s_rows[n++] = Info("Open, navigate, and close the menu from your pad. Rebind anything under Settings > Hotkeys.");
     s_rows[n++] = Spacer();
@@ -4750,7 +4750,7 @@ void RefreshEngineRegenMirrors() {
             g_f5Mode = 2;
             g_f4Mode = 0;
         } else if (a == 1000 && b == 9999 && g_f4Mode == 1) {
-            // F4 "Full Blue" uses the same Param A/B as F5 Full — keep UI on F4.
+            // F4 "Full Blue" uses the same Param A/B as F5 Full - keep UI on F4.
             g_f5Mode = 0;
         } else {
             g_f5Mode = 1;
@@ -4916,7 +4916,7 @@ void RunPracticeSavestateSave() {
     if (SavestateHook::TriggerSave()) {
         DirectDrawHook::AddMessage("Practice state saved.", "SAVESTATE", RGB(120, 255, 120), 1200, 0, 120);
     } else {
-        DirectDrawHook::AddMessage("Save failed — enter Practice mode first.", "SAVESTATE", RGB(255, 120, 120), 1800, 0, 120);
+        DirectDrawHook::AddMessage("Save failed - enter Practice mode first.", "SAVESTATE", RGB(255, 120, 120), 1800, 0, 120);
     }
 }
 
@@ -4924,7 +4924,7 @@ void RunPracticeSavestateLoad() {
     if (SavestateHook::TriggerLoad()) {
         DirectDrawHook::AddMessage("Practice state loaded.", "SAVESTATE", RGB(120, 255, 120), 1200, 0, 120);
     } else {
-        DirectDrawHook::AddMessage("Load failed — save a state first.", "SAVESTATE", RGB(255, 120, 120), 1800, 0, 120);
+        DirectDrawHook::AddMessage("Load failed - save a state first.", "SAVESTATE", RGB(255, 120, 120), 1800, 0, 120);
     }
 }
 
@@ -4974,7 +4974,7 @@ Row* BuildSavestateOptionsRows(int& count) {
     s_rows[n++] = Spacer();
     s_rows[n++] = Header("OPTIONS");
     s_rows[n++] = Toggle("LOAD CUSTOM PALETTES", &s.savestateLoadCustomPalettes, OnSavestateLoadCustomPalettes);
-    s_rows[n++] = Info("Turn off if a load shows broken colors — keeps palette numbers but uses default colors.");
+    s_rows[n++] = Info("Turn off if a load shows broken colors - keeps palette numbers but uses default colors.");
     s_rows[n++] = Spacer();
     s_rows[n++] = Header("HOTKEYS");
     s_rows[n++] = Info("Assign Save, Load, and slot keys under Settings > Hotkeys > Savestate.");
@@ -5799,7 +5799,7 @@ void TickSettingsHotkeys(ImDrawList* dl, const ScreenLayout& layout, int& focus,
 void TickSettingsDebug(ImDrawList* dl, const ScreenLayout& layout, int& focus, ScrollState& scroll, bool& backEdge) {
     // Throttle the runtime poll: SafeReadMemory, GetModuleHandleA, RF freeze
     // queries, and string formatting all happen on the render thread and only
-    // need to feel "live" — 100 ms is well below human perception while
+    // need to feel "live" - 100 ms is well below human perception while
     // dramatically cheaper than per-frame.
     constexpr DWORD kDebugRuntimeMirrorRefreshMs = 100;
     static DWORD s_lastDebugRuntimeRefresh = 0;
