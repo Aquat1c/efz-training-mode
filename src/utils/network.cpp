@@ -190,10 +190,15 @@ bool ProcessHasActiveUdpConnection() {
 }
 
 bool ValidateExportHeader(const EFZNetplayState& state) {
+    // Forward-compatible validation (see SHARED_STATE_V7_INTEGRATION.md):
+    // do NOT hard-fail on a higher producer version or a larger struct — newer
+    // trailing fields are simply ignored (and individually gated by
+    // capabilityFlags). We only require the header to be valid and large enough
+    // to contain the fields we actually read. The copy below clamps to our own
+    // sizeof so a bigger producer struct can never overrun our buffer.
     return state.magic == EFZ_NETPLAY_STATE_MAGIC
-        && state.version <= EFZ_NETPLAY_STATE_VERSION
-        && state.structSize >= kRequiredExportSize
-        && state.structSize <= sizeof(EFZNetplayState);
+        && state.version >= 4u   // capability/flow fields we depend on are v4+
+        && state.structSize >= kRequiredExportSize;
 }
 
 bool CopyStableExportSnapshot(const EFZNetplayState* raw, EFZNetplayState& outState) {
@@ -208,7 +213,13 @@ bool CopyStableExportSnapshot(const EFZNetplayState* raw, EFZNetplayState& outSt
 
         uint32_t seqBefore = raw->stateSeq;
         EFZNetplayState local = {};
-        std::memcpy(&local, raw, header.structSize);
+        // Clamp the copy to our own struct size: a newer producer may publish a
+        // larger struct (structSize > sizeof) — copy only what we understand so
+        // we never overrun `local`, and leave unknown trailing fields zeroed.
+        const size_t copyBytes = (header.structSize < sizeof(EFZNetplayState))
+            ? static_cast<size_t>(header.structSize)
+            : sizeof(EFZNetplayState);
+        std::memcpy(&local, raw, copyBytes);
         uint32_t seqAfter = raw->stateSeq;
 
         if (seqBefore != seqAfter) {
@@ -734,6 +745,16 @@ void RefreshNetplayRuntimeState() {
             hasSession
             && exportState.sessionPhase != EFZ_PHASE_IDLE
             && !phaseTerminal;
+        // v7 behavioral correction (see SHARED_STATE_V7_INTEGRATION.md):
+        // A host can keep a listener alive while using EFZ normally ("async
+        // hosting"). That reports activityPhase == HOST_IDLE while the session
+        // sits in a connecting phase — which would otherwise trip phaseActive
+        // and suspend training. Background hosting is NOT a live match, so we
+        // must stay active. A genuine charselect/match (inFlow) always wins.
+        const bool hostIdleBackground =
+            hasActivity
+            && exportState.activityPhase == EFZ_ACTIVITY_HOST_IDLE
+            && !inFlow;
         bool legacyOnline = false;
         OnlineState legacyState = OnlineState::Offline;
         std::string legacyReason;
@@ -741,8 +762,12 @@ void RefreshNetplayRuntimeState() {
             legacyOnline = DetectLegacyOnlineState(legacyState, legacyReason);
             nextState.legacyOnlineState = legacyState;
         }
-        const bool exportOwnsRuntime =
+        bool exportOwnsRuntime =
             inMenu || inFlow || activityActive || phaseActive || legacyOnline;
+        if (hostIdleBackground) {
+            // Background async hosting only — coexist with the local session.
+            exportOwnsRuntime = false;
+        }
 
         nextState.inNetplayMenu = inMenu;
         nextState.inNetplayCharacterSelect = inCharSelect;
@@ -758,7 +783,8 @@ void RefreshNetplayRuntimeState() {
                << " phase=" << (hasSession ? std::to_string(exportState.sessionPhase) : std::string("n/a"))
                << " activity=" << (hasActivity ? std::to_string(exportState.activityPhase) : std::string("n/a"))
                << " menu=" << (inMenu ? "1" : "0")
-               << " flow=" << (inFlow ? "1" : "0");
+               << " flow=" << (inFlow ? "1" : "0")
+               << " hostIdle=" << (hostIdleBackground ? "1" : "0");
         if (!hasRelevantCaps) {
             reason << " legacyFallback=" << OnlineStateName(legacyState)
                    << " legacyReason=" << legacyReason;

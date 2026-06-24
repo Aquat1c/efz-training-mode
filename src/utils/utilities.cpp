@@ -39,7 +39,6 @@
 #include "../include/game/macro_controller.h"
 #include "../include/game/collision_hook.h"
 #include "../include/game/final_memory_patch.h"
-#include "../include/game/custom_savestate.h"
 #include "../include/game/savestate_hook.h"
 #include "../include/input/input_hook.h"         
 #include "../3rdparty/minhook/include/MinHook.h" 
@@ -952,7 +951,6 @@ void EnterNetplaySuspend() {
     SetCollisionHookActive(false);
     PauseIntegration::SetRuntimeHooksActive(false);
     DirectDrawHook::SetD3D9Active(false);
-    CustomSavestate::Uninstall();
     SavestateHook::Uninstall();
 
     if (g_featuresEnabled.load()) {
@@ -1039,7 +1037,6 @@ void ExitNetplaySuspend() {
     InstallCollisionHook();
     PauseIntegration::SetRuntimeHooksActive(true);
     DirectDrawHook::SetD3D9Active(true);
-    CustomSavestate::Install();
     SavestateHook::Install();
 
     LogOut(

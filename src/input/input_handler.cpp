@@ -32,7 +32,7 @@
 #include "../include/game/frame_monitor.h" // AreCharactersInitialized, GamePhase
 #include "../include/game/auto_action.h" // CancelAutoActionsAndMacros
 #include "../include/game/character_settings.h"
-#include "../include/game/custom_savestate.h"
+#include "../include/game/savestate_hook.h"
 #include "../include/input/framestep.h"
 #include "../include/utils/xp_compat.h"
 #include <Xinput.h>
@@ -621,50 +621,24 @@ void MonitorKeys() {
                     }
                     keyHandled = true;
                 }
-            } else if (IsKeyPressed(savestatePrevSlotKey, false)) {
-                if (CustomSavestate::GetConfiguredBackendMode() == CustomSavestate::BackendMode::Revival) {
-                    DirectDrawHook::AddMessage("Custom savestate slot keys are disabled in Revival mode", "SAVESTATE", RGB(255, 180, 120), 1200, 0, 100);
-                } else if (GetCurrentGameMode() == GameMode::Practice && !g_guiActive.load()) {
-                    const int slot = CustomSavestate::CycleActiveDiskSlot(-1);
-                    std::string text = slot == 0
-                        ? "Savestate Slot 0 (Initial)"
-                        : std::string("Savestate Slot ") + std::to_string(slot);
-                    DirectDrawHook::AddMessage(text.c_str(), "SAVESTATE", RGB(180, 220, 255), 900, 0, 100);
-                } else {
-                    DirectDrawHook::AddMessage("Savestate slot keys are available only in Practice", "SAVESTATE", RGB(255, 180, 120), 1200, 0, 100);
-                }
-                keyHandled = true;
-            } else if (IsKeyPressed(savestateNextSlotKey, false)) {
-                if (CustomSavestate::GetConfiguredBackendMode() == CustomSavestate::BackendMode::Revival) {
-                    DirectDrawHook::AddMessage("Custom savestate slot keys are disabled in Revival mode", "SAVESTATE", RGB(255, 180, 120), 1200, 0, 100);
-                } else if (GetCurrentGameMode() == GameMode::Practice && !g_guiActive.load()) {
-                    const int slot = CustomSavestate::CycleActiveDiskSlot(1);
-                    std::string text = slot == 0
-                        ? "Savestate Slot 0 (Initial)"
-                        : std::string("Savestate Slot ") + std::to_string(slot);
-                    DirectDrawHook::AddMessage(text.c_str(), "SAVESTATE", RGB(180, 220, 255), 900, 0, 100);
-                } else {
-                    DirectDrawHook::AddMessage("Savestate slot keys are available only in Practice", "SAVESTATE", RGB(255, 180, 120), 1200, 0, 100);
-                }
-                keyHandled = true;
             } else if (IsKeyPressed(savestateSaveKey, false)) {
-                if (CustomSavestate::GetConfiguredBackendMode() == CustomSavestate::BackendMode::Revival) {
-                    DirectDrawHook::AddMessage("Custom savestate save is disabled in Revival mode", "SAVESTATE", RGB(255, 180, 120), 1200, 0, 100);
-                } else if (GetCurrentGameMode() == GameMode::Practice
+                if (GetCurrentGameMode() == GameMode::Practice
                         && GetCurrentGamePhase() == GamePhase::Match
                         && AreCharactersInitialized()) {
-                    CustomSavestate::SaveSelectedSlot();
+                    if (!SavestateHook::TriggerSave()) {
+                        DirectDrawHook::AddMessage("Savestate save unavailable (Revival not ready)", "SAVESTATE", RGB(255, 180, 120), 1200, 0, 100);
+                    }
                 } else {
                     DirectDrawHook::AddMessage("Savestate save is available only during Practice Match", "SAVESTATE", RGB(255, 180, 120), 1200, 0, 100);
                 }
                 keyHandled = true;
             } else if (IsKeyPressed(savestateLoadKey, false)) {
-                if (CustomSavestate::GetConfiguredBackendMode() == CustomSavestate::BackendMode::Revival) {
-                    DirectDrawHook::AddMessage("Custom savestate load is disabled in Revival mode", "SAVESTATE", RGB(255, 180, 120), 1200, 0, 100);
-                } else if (GetCurrentGameMode() == GameMode::Practice
+                if (GetCurrentGameMode() == GameMode::Practice
                         && GetCurrentGamePhase() == GamePhase::Match
                         && AreCharactersInitialized()) {
-                    CustomSavestate::LoadSelectedSlot();
+                    if (!SavestateHook::TriggerLoad()) {
+                        DirectDrawHook::AddMessage("Savestate load unavailable (Revival not ready)", "SAVESTATE", RGB(255, 180, 120), 1200, 0, 100);
+                    }
                 } else {
                     DirectDrawHook::AddMessage("Savestate load is available only during Practice Match", "SAVESTATE", RGB(255, 180, 120), 1200, 0, 100);
                 }

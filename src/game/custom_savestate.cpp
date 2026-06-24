@@ -1313,7 +1313,8 @@ size_t RefreshRestoreTargetPlayerStatePointers(std::vector<uint8_t>& snapshotPla
                                               const char* label,
                                               std::ostringstream& sampleLog,
                                               size_t& sampleCount,
-                                              size_t maxSamples) {
+                                              size_t maxSamples,
+                                              bool preserveStancePointers) {
     size_t replaced = RefreshExplicitPointerFields(snapshotPlayerState,
                                                   livePlayerState,
                                                   kPlayerStateRuntimePointerBlockOffset,
@@ -1322,14 +1323,24 @@ size_t RefreshRestoreTargetPlayerStatePointers(std::vector<uint8_t>& snapshotPla
                                                   sampleLog,
                                                   sampleCount,
                                                   maxSamples);
-    replaced += RefreshExplicitPointerFields(snapshotPlayerState,
-                                             livePlayerState,
-                                             kPlayerStateAnimationDataTableOffset,
-                                             sizeof(uint32_t),
-                                             label,
-                                             sampleLog,
-                                             sampleCount,
-                                             maxSamples);
+    // player+0x10 (active animation table) and player+0x164 (active collision/move
+    // table) are the fields Rumi's stance toggle swaps between her Shinai and
+    // barehanded resource sets. RefreshExplicitPointerFields blindly forces them
+    // to the *current live* value, which silently reverts a saved barehanded
+    // snapshot to whatever stance is live. For a same-session working restore the
+    // captured pointers still address valid (loaded) resource tables, so preserve
+    // them verbatim to keep the saved stance. Cross-session disk restores still
+    // refresh them (the tables were reallocated and a stale pointer would crash).
+    if (!preserveStancePointers) {
+        replaced += RefreshExplicitPointerFields(snapshotPlayerState,
+                                                 livePlayerState,
+                                                 kPlayerStateAnimationDataTableOffset,
+                                                 sizeof(uint32_t),
+                                                 label,
+                                                 sampleLog,
+                                                 sampleCount,
+                                                 maxSamples);
+    }
     replaced += RefreshExplicitPointerFields(snapshotPlayerState,
                                              livePlayerState,
                                              kPlayerStateImageSurfaceArrayOffset,
@@ -1340,20 +1351,49 @@ size_t RefreshRestoreTargetPlayerStatePointers(std::vector<uint8_t>& snapshotPla
                                              maxSamples);
     // efz.exe handlePlayerCollisions reads player+0x164 as the collision/frame-data table base.
     // Preserve the live pointer explicitly so post-restore collision processing never reuses a stale table.
-    replaced += RefreshExplicitPointerFields(snapshotPlayerState,
-                                             livePlayerState,
-                                             kPlayerStateCollisionDataTableOffset,
-                                             sizeof(uint32_t),
-                                             label,
-                                             sampleLog,
-                                             sampleCount,
-                                             maxSamples);
+    if (!preserveStancePointers) {
+        replaced += RefreshExplicitPointerFields(snapshotPlayerState,
+                                                 livePlayerState,
+                                                 kPlayerStateCollisionDataTableOffset,
+                                                 sizeof(uint32_t),
+                                                 label,
+                                                 sampleLog,
+                                                 sampleCount,
+                                                 maxSamples);
+    }
+    // The generic committed-private rehydration below remaps ANY field whose saved
+    // value differs from live and looks like a committed-private heap pointer — and
+    // Rumi's resource-table addresses qualify. So when preserving the stance, take
+    // the saved +0x10 / +0x164 values now (they are still the saved values because
+    // the explicit refresh above was skipped) and write them back afterward.
+    uint32_t savedAnimTablePtr = 0;
+    uint32_t savedMoveTablePtr = 0;
+    bool haveSavedAnim = false;
+    bool haveSavedMove = false;
+    if (preserveStancePointers) {
+        if (kPlayerStateAnimationDataTableOffset + sizeof(uint32_t) <= snapshotPlayerState.size()) {
+            std::memcpy(&savedAnimTablePtr, snapshotPlayerState.data() + kPlayerStateAnimationDataTableOffset, sizeof(savedAnimTablePtr));
+            haveSavedAnim = true;
+        }
+        if (kPlayerStateCollisionDataTableOffset + sizeof(uint32_t) <= snapshotPlayerState.size()) {
+            std::memcpy(&savedMoveTablePtr, snapshotPlayerState.data() + kPlayerStateCollisionDataTableOffset, sizeof(savedMoveTablePtr));
+            haveSavedMove = true;
+        }
+    }
+
     replaced += RehydrateCommittedPrivatePointers(snapshotPlayerState,
                                                   livePlayerState,
                                                   label,
                                                   sampleLog,
                                                   sampleCount,
                                                   maxSamples);
+
+    if (haveSavedAnim) {
+        std::memcpy(snapshotPlayerState.data() + kPlayerStateAnimationDataTableOffset, &savedAnimTablePtr, sizeof(savedAnimTablePtr));
+    }
+    if (haveSavedMove) {
+        std::memcpy(snapshotPlayerState.data() + kPlayerStateCollisionDataTableOffset, &savedMoveTablePtr, sizeof(savedMoveTablePtr));
+    }
     return replaced;
 }
 
@@ -1407,8 +1447,11 @@ bool RefreshRestoreTargetSessionPointers(Snapshot& snapshot, std::string& outDet
     const size_t battleReplaced = RefreshRestoreTargetBattleContextPointers(snapshot.battleContext, liveBattleContext, samples, sampleCount, maxSamples);
     const size_t cameraReplaced = RehydrateCommittedPrivatePointers(snapshot.cameraSubfield, liveCameraSubfield, "camera", samples, sampleCount, maxSamples);
     const size_t gameStateReplaced = RefreshRestoreTargetGameStatePointers(snapshot.gameState, liveGameState, samples, sampleCount, maxSamples);
-    const size_t p1Replaced = RefreshRestoreTargetPlayerStatePointers(snapshot.p1State, liveP1State, "p1", samples, sampleCount, maxSamples);
-    const size_t p2Replaced = RefreshRestoreTargetPlayerStatePointers(snapshot.p2State, liveP2State, "p2", samples, sampleCount, maxSamples);
+    // Working (same-session) restores preserve Rumi's stance pointers; cross-session
+    // disk restores must refresh them because the resource tables were reallocated.
+    const bool preserveStancePointers = !snapshot.fromDisk;
+    const size_t p1Replaced = RefreshRestoreTargetPlayerStatePointers(snapshot.p1State, liveP1State, "p1", samples, sampleCount, maxSamples, preserveStancePointers);
+    const size_t p2Replaced = RefreshRestoreTargetPlayerStatePointers(snapshot.p2State, liveP2State, "p2", samples, sampleCount, maxSamples, preserveStancePointers);
 
     std::ostringstream oss;
     oss << "battle=" << battleReplaced
@@ -2892,7 +2935,12 @@ bool RestoreSnapshot(const Snapshot& snapshot, std::string& outReason, bool engi
     const bool gameStateOk = WriteMemoryBlock(gameStatePtr, gameStateBytes);
     const bool p1Ok = WriteMemoryBlock(p1Base, snapshot.p1State);
     const bool p2Ok = WriteMemoryBlock(p2Base, snapshot.p2State);
-    const bool renderOk = WriteMemoryBlock(base + kRenderBitmapOffset, snapshot.renderBitmap);
+    // Revival never restores render-side surfaces in a savestate — sprites are
+    // re-derived from the restored logic state each frame. Writing back a stale
+    // captured render bitmap is a source of the sprite/visual "bleed", so leave
+    // the live surface untouched (1:1 with Revival). Still captured for snapshot
+    // diagnostics/format stability; just not written on restore.
+    const bool renderOk = true;
 
     {
         std::ostringstream oss;
@@ -3325,6 +3373,13 @@ SnapshotActionResult RestoreWorkingSnapshotInternalImpl(std::string& outReason,
         }
     }
 
+    // Pointer rehydration keeps resource/runtime pointers (stage, effect, bullet
+    // and sprite resource tables, opponent/gameState/render/input/sound) valid on
+    // restore — it must run for every restore. The Rumi-stance carve-out is NOT
+    // done here (that would also disable the resource-pointer fixups and corrupt
+    // stages/effects/bullets); it is handled field-selectively inside
+    // RefreshRestoreTargetPlayerStatePointers, which preserves the saved stance
+    // pointers (+0x10 / +0x164) for same-session working restores.
     std::string pointerRefreshDetail;
     if (RefreshRestoreTargetSessionPointers(snapshot, pointerRefreshDetail)) {
         LogSavestateTrace("restore pointer refresh", pointerRefreshDetail);

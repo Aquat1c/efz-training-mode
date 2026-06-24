@@ -6,6 +6,7 @@
 #include "../../include/game/macro_controller.h"
 #include "../../include/game/practice_offsets.h"
 #include "../../include/utils/switch_players.h"
+#include "../../include/utils/pause_integration.h"
 #include "../../include/core/logger.h"
 #include "../../include/core/memory.h"
 #include "../../include/core/constants.h"
@@ -244,6 +245,30 @@ namespace SavestateHook {
 
         s_installed.store(false);
         LogOut("[SAVESTATE][REVIVAL] Hooks uninstalled", true);
+    }
+
+    bool TriggerSave() {
+        if (!s_installed.load() || !oSaveState) return false;
+        void* ptr = PauseIntegration::GetPracticeControllerPtr();
+        if (!ptr) ptr = PauseIntegration::ResolvePracticeControllerPtrNow(false, true, "savestate hotkey save");
+        if (!ptr) {
+            LogOut("[SAVESTATE][REVIVAL] TriggerSave: Practice controller unavailable", true);
+            return false;
+        }
+        HookedSaveState(ptr, nullptr);
+        return true;
+    }
+
+    bool TriggerLoad() {
+        if (!s_installed.load() || !oLoadState) return false;
+        void* ptr = PauseIntegration::GetPracticeControllerPtr();
+        if (!ptr) ptr = PauseIntegration::ResolvePracticeControllerPtrNow(false, true, "savestate hotkey load");
+        if (!ptr) {
+            LogOut("[SAVESTATE][REVIVAL] TriggerLoad: Practice controller unavailable", true);
+            return false;
+        }
+        HookedLoadState(ptr, nullptr);
+        return true;
     }
 
     bool IsInstalled() {

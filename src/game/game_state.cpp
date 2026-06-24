@@ -6,6 +6,7 @@
 #include "../include/utils/network.h"
 #include "../include/utils/pause_integration.h"
 #include "../include/utils/switch_players.h"
+#include "../include/utils/bgm_control.h"
 #include "../include/gui/gui.h"
 #include "../include/gui/imgui_impl.h"
 #include "frame_monitor.h"
@@ -149,6 +150,14 @@ namespace {
 
         if (result == SCREEN_CHARACTER_SELECT) {
             LogOut("[FRONTEND] Battle cleanup completed; overriding next screen to Title", true);
+            // Vanilla silences the OST when returning to the title screen by
+            // switching to BGM slot 150. This Battle->Title override skips the
+            // character-select screen where that normally happens, so without
+            // this the match/stage track (e.g. one set by a hotswap) keeps
+            // playing on the title. Mirror vanilla explicitly.
+            if (const uintptr_t gameStatePtr = GetGameStatePtr()) {
+                PlayBGM(gameStatePtr, 150);
+            }
             return SCREEN_TITLE;
         }
 

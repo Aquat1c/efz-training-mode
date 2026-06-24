@@ -63,7 +63,53 @@ namespace {
     std::atomic<bool> s_battleContextHookInstalled{false};
     std::atomic<bool> s_battleContextHookEnabled{false};
     std::atomic<bool> s_battleContextHookLoggedFail{false};
+    std::atomic<bool> s_battleContextHookUnavailable{false};
     uintptr_t s_battleContextHookTarget = 0;
+
+    bool IsExecutableProtection(DWORD protection) {
+        switch (protection & 0xFFu) {
+        case PAGE_EXECUTE:
+        case PAGE_EXECUTE_READ:
+        case PAGE_EXECUTE_READWRITE:
+        case PAGE_EXECUTE_WRITECOPY:
+            return true;
+        default:
+            return false;
+        }
+    }
+
+    bool ValidateBattleContextHookTarget(uintptr_t target) {
+        MEMORY_BASIC_INFORMATION mbi{};
+        if (!target || VirtualQuery(reinterpret_cast<LPCVOID>(target), &mbi, sizeof(mbi)) == 0) {
+            if (!s_battleContextHookLoggedFail.exchange(true)) {
+                std::ostringstream oss;
+                oss << "[PAUSE] RenderBattleScreen target validation failed at 0x" << std::hex << target
+                    << " reason=VirtualQuery";
+                LogOut(oss.str(), true);
+            }
+            s_battleContextHookUnavailable.store(true, std::memory_order_relaxed);
+            return false;
+        }
+
+        if (mbi.State != MEM_COMMIT || !IsExecutableProtection(mbi.Protect)) {
+            if (!s_battleContextHookLoggedFail.exchange(true)) {
+                char modulePath[MAX_PATH] = {};
+                std::ostringstream oss;
+                oss << "[PAUSE] RenderBattleScreen target is not executable at 0x" << std::hex << target
+                    << " state=0x" << mbi.State
+                    << " protect=0x" << mbi.Protect;
+                if (mbi.AllocationBase
+                    && GetModuleFileNameA(reinterpret_cast<HMODULE>(mbi.AllocationBase), modulePath, MAX_PATH) > 0) {
+                    oss << " module=" << modulePath;
+                }
+                LogOut(oss.str(), true);
+            }
+            s_battleContextHookUnavailable.store(true, std::memory_order_relaxed);
+            return false;
+        }
+
+        return true;
+    }
 
     bool SetCapturedHookEnabled(uintptr_t target, bool active, const char* label) {
         if (!target) {
@@ -486,6 +532,9 @@ namespace {
     }
 
     void EnsureBattleContextHook() {
+        if (s_battleContextHookUnavailable.load(std::memory_order_relaxed)) {
+            return;
+        }
         if (s_battleContextHookInstalled.load()) {
             if (!s_battleContextHookEnabled.load(std::memory_order_relaxed) && s_battleContextHookTarget) {
                 if (SetCapturedHookEnabled(s_battleContextHookTarget, true, "RenderBattleScreen")) {
@@ -502,17 +551,39 @@ namespace {
         void* target = rva ? reinterpret_cast<void*>(efzBase + rva) : nullptr;
         if (!target) return;
         s_battleContextHookTarget = reinterpret_cast<uintptr_t>(target);
-        if (!MinHookUtils::CreateAndEnableHook(target,
-                                               reinterpret_cast<void*>(&HookedRenderBattleScreen),
-                                               reinterpret_cast<void**>(&oRenderBattleScreen),
-                                               "[PAUSE]",
-                                               "RenderBattleScreen")) {
-            if (!s_battleContextHookLoggedFail.exchange(true)) {
-                std::ostringstream oss; oss << "[PAUSE] Failed to create RenderBattleScreen hook at VA=0x" << std::hex << (uintptr_t)target;
-                LogOut(oss.str(), true);
-            }
+        if (!ValidateBattleContextHookTarget(s_battleContextHookTarget)) {
             return;
         }
+
+        const MH_STATUS rcCreate = MH_CreateHook(target,
+                                                 reinterpret_cast<void*>(&HookedRenderBattleScreen),
+                                                 reinterpret_cast<void**>(&oRenderBattleScreen));
+        if (rcCreate != MH_OK && rcCreate != MH_ERROR_ALREADY_CREATED) {
+            if (!s_battleContextHookLoggedFail.exchange(true)) {
+                std::ostringstream oss;
+                oss << "[PAUSE] Failed to create RenderBattleScreen at 0x" << std::hex << (uintptr_t)target
+                    << " status=" << (MH_StatusToString(rcCreate) ? MH_StatusToString(rcCreate) : "<unknown>");
+                LogOut(oss.str(), true);
+            }
+            s_battleContextHookUnavailable.store(true, std::memory_order_relaxed);
+            return;
+        }
+
+        const MH_STATUS rcEnable = MH_EnableHook(target);
+        if (rcEnable != MH_OK && rcEnable != MH_ERROR_ENABLED) {
+            if (!s_battleContextHookLoggedFail.exchange(true)) {
+                std::ostringstream oss;
+                oss << "[PAUSE] Failed to enable RenderBattleScreen at 0x" << std::hex << (uintptr_t)target
+                    << " status=" << (MH_StatusToString(rcEnable) ? MH_StatusToString(rcEnable) : "<unknown>");
+                LogOut(oss.str(), true);
+            }
+            if (rcCreate == MH_OK) {
+                MH_RemoveHook(target);
+            }
+            s_battleContextHookUnavailable.store(true, std::memory_order_relaxed);
+            return;
+        }
+
         s_battleContextHookInstalled.store(true);
         s_battleContextHookEnabled.store(true);
         LogOut("[PAUSE] RenderBattleScreen hook installed (capturing battleContext)", detailedLogging.load());

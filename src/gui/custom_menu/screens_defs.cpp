@@ -3350,7 +3350,7 @@ Row* BuildOpponentRecoveryRows(int& count) {
     auto& d = ImGuiGui::guiState.localData;
     g_mirrorAirtechMode = d.autoAirtech ? (ClampIndex(d.airtechDirection, 2) + 1) : 0;
 
-    s_rows[n++] = Header("RECOVERY");
+    s_rows[n++] = Header("AUTO-AIRTECH");
     s_rows[n++] = ChoicesRow("AUTO-AIRTECH",           &g_mirrorAirtechMode, kAirtechDirChoices, 3, OnAirtechMode);
     s_rows[n++] = IntNum   ("  AIRTECH DELAY",         &d.airtechDelay,     0, 60, 1, 5, OnAutoApply);
     count = n;
@@ -3380,7 +3380,7 @@ Row* BuildOpponentRows(int& count) {
     s_rows[n++] = Spacer();
     s_rows[n++] = Header("OPPONENT MENUS");
     s_rows[n++] = Submenu("DEFENSE",  "DEFENSE",  BuildOpponentDefenseRows,  ValDefenseSummary);
-    s_rows[n++] = Submenu("RECOVERY", "RECOVERY", BuildOpponentRecoveryRows, ValRecoverySummary);
+    s_rows[n++] = Submenu("AUTO-AIRTECH", "AUTO-AIRTECH", BuildOpponentRecoveryRows, ValRecoverySummary);
     s_rows[n++] = Submenu("MOVEMENT", "MOVEMENT", BuildOpponentMovementRows, ValMovementSummary);
 
     count = n;
@@ -4593,7 +4593,8 @@ Row* BuildOptionsRows(int& count) {
 
     s_rows[n++] = Spacer();
     s_rows[n++] = Header("OPTION MENUS");
-    s_rows[n++] = Submenu("SAVESTATES", "SAVESTATES", BuildDebugSavestateRows, ValDebugSavestate);
+    // Custom savestate backend removed (dysfunctional). Savestates now run purely
+    // through EfzRevival's native save/load via the mod hotkeys.
     s_rows[n++] = Submenu("RECOVERY", "RECOVERY", BuildRecoveryOptionsRows, ValRecoveryOptions);
     s_rows[n++] = Submenu("OVERLAYS", "OVERLAYS", BuildOverlayOptionsRows,  ValOverlays);
 

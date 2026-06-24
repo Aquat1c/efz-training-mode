@@ -20,6 +20,7 @@ uintptr_t EFZ_RVA_MapReset();
 uintptr_t EFZ_RVA_CleanupPair();
 uintptr_t EFZ_RVA_RenderBattleScreen();
 uintptr_t EFZ_RVA_GameModePtrArray();
+uintptr_t EFZ_RVA_RenderContextGlobal();
 // Deprecated: this accessor intentionally returns 0.
 // The previously used RVAs overlap Revival session-pointer globals and are not
 // valid Practice-controller pointers.

@@ -158,7 +158,9 @@ uintptr_t EFZ_RVA_CleanupPair() {
 
 uintptr_t EFZ_RVA_RenderBattleScreen() {
     uintptr_t r = 0;
-    r = 0x007642A0;
+    // The decomp label is VA 0x007642A0 with the default 0x00400000 image base.
+    // Callers add efz.exe base, so this accessor must return the RVA.
+    r = 0x003642A0;
     LogAddrOnce("RenderBattleScreen", r);
     return r;
 }
@@ -170,6 +172,16 @@ uintptr_t EFZ_RVA_GameModePtrArray() {
         else if (IsH()) r = 0x790110; // likely unchanged for 1.02h
         else if (IsI()) r = 0x790110; // likely unchanged for 1.02i; fast-path only
     LogAddrOnce("GameModePtrArray", r);
+    return r;
+}
+
+uintptr_t EFZ_RVA_RenderContextGlobal() {
+    uintptr_t r = 0;
+    EfzRevivalVersion v = GetEfzRevivalVersion();
+    if (v == EfzRevivalVersion::Revival102f || IsE()) r = 0x00A0778;
+    else if (IsH()) r = 0x00A0798;
+    else if (IsI()) r = 0x00A17A8;
+    LogAddrOnce("RenderContextGlobal", r);
     return r;
 }
 

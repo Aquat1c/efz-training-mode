@@ -253,6 +253,20 @@ static void UpdateVirtualCursor(ImGuiIO& io) {
     }
     s_releasedGamepadWhileHidden = false;
 
+    // The custom menu (Config::useCustomMenu) owns its own keyboard/dpad input
+    // model and reads io.MousePos only for *real* mouse hover. The gamepad-driven
+    // virtual cursor below is a legacy-ImGui-menu feature; while the custom menu
+    // is active it would feed analog-stick motion (including resting stick drift)
+    // into io.MousePos every frame, which the custom menu interprets as the mouse
+    // sweeping across rows — the "menu navigates by itself in fullscreen when a
+    // controller is plugged" bug. Skip it so io.MousePos reflects only the real
+    // OS cursor fed by PreNewFrameInputs(); dpad/keyboard nav is unaffected.
+    if (cfg.useCustomMenu) {
+        ReleaseGamepadNavInputs(io);
+        g_useVirtualCursor = false;
+        return;
+    }
+
     // Determine current client rect for clamping and centering
     if (g_useVirtualCursor && (!wasActive || regainedFocus)) {
         // Center cursor on first activation OR when window regains focus

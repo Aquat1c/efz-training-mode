@@ -6,7 +6,6 @@
 #include "../include/game/auto_action.h"
 #include "../include/game/collision_hook.h"
 #include "../include/game/combo_overlay.h"
-#include "../include/game/custom_savestate.h"
 #include "../include/game/character_settings.h"
 #include "../include/game/frame_monitor.h"
 #include "../include/game/game_state.h"
@@ -861,7 +860,6 @@ void LogQueuedRequest(GamePhase phase,
 void CompleteReload(GamePhase currentPhase) {
     const unsigned short bgmTrack = static_cast<unsigned short>(s_requestedBgmTrack.load(std::memory_order_relaxed));
     const uintptr_t gameStatePtr = GetGameStatePtr();
-    const bool restoredWorkingSnapshot = CustomSavestate::ConsumeHotswapRestoreApplied();
     {
         std::ostringstream oss;
         oss << "[HOTSWAP] completing reload"
@@ -874,13 +872,7 @@ void CompleteReload(GamePhase currentPhase) {
     }
     if (gameStatePtr) {
         const int liveBgmTrack = GetBGMSlot(gameStatePtr);
-        if (restoredWorkingSnapshot) {
-            std::ostringstream oss;
-            oss << "[HOTSWAP] skipped BGM override because deferred savestate restore already ran"
-                << " liveTrack=" << liveBgmTrack
-                << " requestedTrack=" << bgmTrack;
-            LogOut(oss.str(), true);
-        } else if (PlayBGM(gameStatePtr, bgmTrack)) {
+        if (PlayBGM(gameStatePtr, bgmTrack)) {
             LogOut("[HOTSWAP] applied BGM override track=" + std::to_string(bgmTrack), true);
         } else {
             std::ostringstream oss;
@@ -892,18 +884,14 @@ void CompleteReload(GamePhase currentPhase) {
         LogOut("[HOTSWAP] skipped BGM override because game state pointer was unavailable", true);
     }
 
-    if (!restoredWorkingSnapshot) {
-        InvalidateGameStatePtrCache();
-        InvalidatePlayerBaseCache();
-        CharacterSettings::InvalidateAllCharacterPointerCaches();
-        InvalidateAutoActionCharacterCaches("character hotswap reload immediate");
-        PauseIntegration::ResetCachedPointers("character hotswap reload immediate");
-        ResetCollisionHookSessionCaches("character hotswap reload immediate");
-        ComboOverlay::ResetState("character hotswap reload immediate");
-        LogOut("[HOTSWAP] applied immediate session reset before lifecycle resync", true);
-    } else {
-        LogOut("[HOTSWAP] skipped immediate session reset because deferred savestate restore already invalidated state", true);
-    }
+    InvalidateGameStatePtrCache();
+    InvalidatePlayerBaseCache();
+    CharacterSettings::InvalidateAllCharacterPointerCaches();
+    InvalidateAutoActionCharacterCaches("character hotswap reload immediate");
+    PauseIntegration::ResetCachedPointers("character hotswap reload immediate");
+    ResetCollisionHookSessionCaches("character hotswap reload immediate");
+    ComboOverlay::ResetState("character hotswap reload immediate");
+    LogOut("[HOTSWAP] applied immediate session reset before lifecycle resync", true);
     RequestRuntimeLifecycleResync("character hotswap reload complete");
     LogOut("[HOTSWAP] reload completed and lifecycle resync requested", true);
     s_state.store(RequestState::Idle, std::memory_order_release);
