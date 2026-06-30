@@ -984,9 +984,7 @@ namespace ImGuiGui {
                     if (ImGui::Checkbox("Intersection Boxes", &projectileIntersections)) {
                         Config::SetSetting("General", "collisionDisplayProjectileIntersections", projectileIntersections ? "1" : "0");
                     }
-#if EFZ_ENABLE_NAGAMORI_COLLISION_DEBUG
                     ImGui::TextDisabled("Mizuka note display settings are in the Character tab.");
-#endif
                     ImGui::Unindent();
                 }
 
@@ -2399,7 +2397,6 @@ namespace ImGuiGui {
         // ---------- GLOBAL SETTINGS SECTION (TOP) ----------
         // (Minagi conversion checkbox moved to Debug tab)
 
-#if EFZ_ENABLE_NAGAMORI_COLLISION_DEBUG
         const bool hasMizuka =
             p1CharID == CHAR_ID_MIZUKA || p1CharID == CHAR_ID_NAGAMORI ||
             p2CharID == CHAR_ID_MIZUKA || p2CharID == CHAR_ID_NAGAMORI;
@@ -2417,7 +2414,6 @@ namespace ImGuiGui {
             }
             ImGui::TextDisabled("Uses Display Overlays > Projectile Interactions as the master switch.");
         }
-#endif
         
         // Ikumi - Infinite Blood Mode
         if (p1CharID == CHAR_ID_IKUMI || p2CharID == CHAR_ID_IKUMI) {

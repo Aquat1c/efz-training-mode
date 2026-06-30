@@ -71,10 +71,8 @@ constexpr std::size_t kProjectileDestroyedOffset = 0x80u;
 constexpr std::size_t kProjectileLifeOffset = 0x84u;
 constexpr int kProjectileSlotCount = 64;
 
-#if EFZ_ENABLE_NAGAMORI_COLLISION_DEBUG
 constexpr std::size_t kOffsetActionFrameTick = 0x0Cu;
 constexpr std::size_t kNagamoriActivationFlagBaseOffset = 12652u;
-#endif
 
 constexpr uint32_t kColorHitOutline = 0xFFFF2828u;       // red
 constexpr uint32_t kColorHurtOutline = 0xFF00DC00u;      // green
@@ -83,10 +81,8 @@ constexpr uint32_t kColorProjectileOutline = 0xFF28C8FFu; // cyan
 constexpr uint32_t kColorProjectileInactiveOutline = 0xAA28C8FFu;
 constexpr uint32_t kColorProjectileDot = 0xFFFFFFFFu;
 constexpr uint32_t kColorProjectileIntersect = 0xFFFF40FFu; // magenta
-#if EFZ_ENABLE_NAGAMORI_COLLISION_DEBUG
 constexpr uint32_t kColorNagamoriRange = 0xFFFFA000u;       // orange
 constexpr uint32_t kColorNagamoriAffected = 0xFFFFE070u;
-#endif
 
 using TransformEntityHitboxFn = int* (__stdcall*)(int* outRect, unsigned short* entityHeader, int* localRect);
 using TransformCharacterHitboxFn = int* (__stdcall*)(int* outRect, int characterSnapshot, int* localRect);
@@ -120,15 +116,12 @@ struct ProjectileInfo {
     float screenY = 0.0f;
     std::vector<RectI> hitRects;
     bool hasCollisionRect = false;
-#if EFZ_ENABLE_NAGAMORI_COLLISION_DEBUG
     bool nagamoriOwner = false;
     bool nagamoriFlagged = false;
-#endif
     RectI gameRect;
     RectI screenRect;
 };
 
-#if EFZ_ENABLE_NAGAMORI_COLLISION_DEBUG
 struct NagamoriActivationRange {
     uintptr_t owner = 0;
     int sourceSlot = -1;
@@ -143,7 +136,6 @@ struct NagamoriActivationRange {
     bool sourceIsCharacter = false;
     RectI screenRect;
 };
-#endif
 
 std::mutex g_mutex;
 std::atomic<bool> g_initialized{false};
@@ -247,10 +239,8 @@ bool AnyProjectileInteractionSubLayerEnabled() {
     return s.collisionDisplayProjectileBoxes
         || s.collisionDisplayProjectileOrigins
         || s.collisionDisplayProjectileIntersections
-#if EFZ_ENABLE_NAGAMORI_COLLISION_DEBUG
         || s.collisionDisplayNagamoriRanges
         || s.collisionDisplayNagamoriAffected
-#endif
         ;
 }
 
@@ -729,7 +719,6 @@ void AppendProjectilePhysicalBoxes(const ProjectileInfo& projectile,
                           : FillAlphaByte(inactiveCollisionFillMultiplier));
 }
 
-#if EFZ_ENABLE_NAGAMORI_COLLISION_DEBUG
 bool IsNagamoriOwner(uintptr_t owner) {
     char name[16] = {};
     if (!ReadBytes(owner + CHARACTER_NAME_OFFSET, name, sizeof(name) - 1)) {
@@ -737,7 +726,6 @@ bool IsNagamoriOwner(uintptr_t owner) {
     }
     return std::strncmp(name, "nagamori", 8) == 0;
 }
-#endif
 
 int16_t ReadProjectilePriority(uintptr_t owner, uint16_t pattern) {
     uintptr_t animTable = 0;
@@ -869,7 +857,6 @@ bool ReadProjectileInfo(int playerIndex,
     out.priority = ReadProjectilePriority(owner, pattern);
     out.x = x;
     out.y = y;
-#if EFZ_ENABLE_NAGAMORI_COLLISION_DEBUG
     out.nagamoriOwner = IsNagamoriOwner(owner);
     if (out.nagamoriOwner) {
         uint8_t flag = 0;
@@ -877,7 +864,6 @@ bool ReadProjectileInfo(int playerIndex,
             ReadValue(owner + kNagamoriActivationFlagBaseOffset + static_cast<uintptr_t>(slotIndex), flag)
             && flag != 0;
     }
-#endif
     MapWorldPointToScreen(x, y, camX, camY, &out.screenX, &out.screenY);
 
     uint8_t frameBlob[kFrameBlobBytes] = {};
@@ -959,7 +945,6 @@ void CollectProjectiles(int camX, int camY, std::vector<ProjectileInfo>& out) {
     CollectPlayerProjectiles(2, GetPlayerObject(2), camX, camY, out);
 }
 
-#if EFZ_ENABLE_NAGAMORI_COLLISION_DEBUG
 bool IsDiscreteNagamoriTriggerFrame(const ProjectileInfo& projectile, uint16_t triggerFrame) {
     // Nagamori's projectile update calls markEntitiesInRange() before it
     // increments entry+0x04 (frame tick). The overlay samples after update, so
@@ -1274,7 +1259,6 @@ bool PointInActivationRange(const ProjectileInfo& projectile, const NagamoriActi
         && std::fabs(projectile.x - range.centerX) < static_cast<double>(range.rangeX)
         && std::fabs(projectile.y - range.centerY) < static_cast<double>(range.rangeY);
 }
-#endif
 
 bool ProjectilePriorityCollisionEligible(const ProjectileInfo& projectile) {
     // EFZ's projectile-vs-projectile priority collision path requires
@@ -1451,17 +1435,14 @@ void AppendProjectileInteractions(int camX, int camY) {
     const bool showProjectileBoxes = settings.collisionDisplayProjectileBoxes;
     const bool showProjectileOrigins = settings.collisionDisplayProjectileOrigins;
     const bool showProjectileIntersections = settings.collisionDisplayProjectileIntersections;
-#if EFZ_ENABLE_NAGAMORI_COLLISION_DEBUG
     const bool showNagamoriRanges = settings.collisionDisplayNagamoriRanges;
     const bool showNagamoriAffected = settings.collisionDisplayNagamoriAffected;
     const bool needNagamoriRanges = showNagamoriRanges || showNagamoriAffected;
-#endif
 
     std::vector<ProjectileInfo> projectiles;
     projectiles.reserve(32);
     CollectProjectiles(camX, camY, projectiles);
 
-#if EFZ_ENABLE_NAGAMORI_COLLISION_DEBUG
     std::vector<NagamoriActivationRange> activationRanges;
     activationRanges.reserve(projectiles.size());
     if (needNagamoriRanges) {
@@ -1478,7 +1459,6 @@ void AppendProjectileInteractions(int camX, int camY) {
                                                  showProjectileOrigins,
                                                  activationRanges);
     }
-#endif
 
     for (const ProjectileInfo& projectile : projectiles) {
         const bool priorityCollisionEligible = ProjectilePriorityCollisionEligible(projectile);
@@ -1487,15 +1467,10 @@ void AppendProjectileInteractions(int camX, int camY) {
         }
 
         if (showProjectileOrigins) {
-#if EFZ_ENABLE_NAGAMORI_COLLISION_DEBUG
             AppendOverlayDot(projectile.screenX, projectile.screenY, projectile.nagamoriFlagged ? 3.5f : 2.5f,
                              projectile.nagamoriFlagged ? kColorNagamoriAffected : kColorProjectileDot);
-#else
-            AppendOverlayDot(projectile.screenX, projectile.screenY, 2.5f, kColorProjectileDot);
-#endif
         }
 
-#if EFZ_ENABLE_NAGAMORI_COLLISION_DEBUG
         if (showNagamoriAffected && projectile.nagamoriFlagged && projectile.hasCollisionRect) {
             AppendOverlayRect(projectile.screenRect, kColorNagamoriAffected, FillAlphaByte(0.56f));
         }
@@ -1534,8 +1509,6 @@ void AppendProjectileInteractions(int camX, int camY) {
                                               0.24f);
             }
         }
-
-#endif
     }
 
     if (showProjectileIntersections) {
@@ -1552,17 +1525,11 @@ void AppendProjectileInteractions(int camX, int camY) {
 
                 const bool priorityPair =
                     ProjectilePriorityCollisionEligible(a) && ProjectilePriorityCollisionEligible(b);
-#if EFZ_ENABLE_NAGAMORI_COLLISION_DEBUG
                 const bool nagamoriSetplayPair =
                     a.nagamoriOwner && b.nagamoriOwner && a.owner == b.owner;
                 if (!priorityPair && !nagamoriSetplayPair) {
                     continue;
                 }
-#else
-                if (!priorityPair) {
-                    continue;
-                }
-#endif
 
                 RectI intersection{};
                 if (IntersectRects(a.screenRect, b.screenRect, &intersection)) {
@@ -1572,7 +1539,6 @@ void AppendProjectileInteractions(int camX, int camY) {
         }
     }
 
-#if EFZ_ENABLE_NAGAMORI_COLLISION_DEBUG
     if (showNagamoriAffected) {
         for (const NagamoriActivationRange& range : activationRanges) {
             for (const ProjectileInfo& projectile : projectiles) {
@@ -1595,7 +1561,6 @@ void AppendProjectileInteractions(int camX, int camY) {
             }
         }
     }
-#endif
 }
 
 void RebuildOverlayBoxesLocked() {

@@ -98,9 +98,7 @@ bool HasMio()      { return P1Or(CHAR_ID_MIO); }
 bool HasNeyuki()   { return P1Or(CHAR_ID_NAYUKI); }
 bool HasMai()      { return P1Or(CHAR_ID_MAI); }
 bool HasMinagi()   { return P1Or(CHAR_ID_MINAGI); }
-#if EFZ_ENABLE_NAGAMORI_COLLISION_DEBUG
 bool HasMizuka()   { return P1Or(CHAR_ID_MIZUKA) || P1Or(CHAR_ID_NAGAMORI); }
-#endif
 
 bool NotIkumi()  { return !HasIkumi(); }
 bool NotMisuzu() { return !HasMisuzu(); }
@@ -118,11 +116,8 @@ bool NotMinagi() { return !HasMinagi(); }
 bool NoneOfTheAbove() {
     return !HasIkumi() && !HasMisuzu() && !HasMishio() && !HasAkiko() &&
            !HasNayuki() && !HasKano()  && !HasRumi()   && !HasDoppel() &&
-           !HasMio()   && !HasNeyuki() && !HasMai()    && !HasMinagi()
-#if EFZ_ENABLE_NAGAMORI_COLLISION_DEBUG
-           && !HasMizuka()
-#endif
-           ;
+           !HasMio()   && !HasNeyuki() && !HasMai()    && !HasMinagi() &&
+           !HasMizuka();
 }
 
 bool CharsDetected() {
@@ -156,10 +151,8 @@ void OnCollisionDisplayAlpha()       { PersistInt ("General", "collisionDisplayF
 void OnCollisionProjectileBoxes()    { PersistBool("General", "collisionDisplayProjectileBoxes", MutableSettings().collisionDisplayProjectileBoxes); }
 void OnCollisionProjectileOrigins()  { PersistBool("General", "collisionDisplayProjectileOrigins", MutableSettings().collisionDisplayProjectileOrigins); }
 void OnCollisionProjectileIntersections() { PersistBool("General", "collisionDisplayProjectileIntersections", MutableSettings().collisionDisplayProjectileIntersections); }
-#if EFZ_ENABLE_NAGAMORI_COLLISION_DEBUG
 void OnCollisionNagamoriRanges()     { PersistBool("General", "collisionDisplayNagamoriRanges", MutableSettings().collisionDisplayNagamoriRanges); }
 void OnCollisionNagamoriAffected()   { PersistBool("General", "collisionDisplayNagamoriAffected", MutableSettings().collisionDisplayNagamoriAffected); }
-#endif
 void OnCrRequire()       { PersistBool ("General", "crRequireBothNeutral",   MutableSettings().crRequireBothNeutral); }
 void OnCrDelay()         { PersistInt  ("General", "crBothNeutralDelayMs",   MutableSettings().crBothNeutralDelayMs); }
 void OnAutoFixHp()       { PersistBool ("General", "autoFixHPOnNeutral",     MutableSettings().autoFixHPOnNeutral); }
@@ -853,9 +846,7 @@ Row* BuildDisplayOverlayRows(int& count) {
                          OnCollisionProjectileOrigins, nullptr, CollisionProjectileOptionsHidden);
     s_rows[n++] = Toggle("  INTERSECTION BOXES", &s.collisionDisplayProjectileIntersections,
                          OnCollisionProjectileIntersections, nullptr, CollisionProjectileOptionsHidden);
-#if EFZ_ENABLE_NAGAMORI_COLLISION_DEBUG
     s_rows[n++] = Info("Mizuka note display settings are under Character Settings when Mizuka is in the match.");
-#endif
     s_rows[n++] = Info("Origin dots are EFZ projectile anchors / activation points, not collision centers.");
 
     count = n;
@@ -2880,9 +2871,7 @@ Row* BuildHelpCharacterRows(int& count) {
     s_rows[n++] = Info("Mai: Status, Ghost Time, Charge Timer, Awaken Timer, Infinite Ghost/Charge/Awaken, No Charge Cooldown, and Aggressive Summon control Mini-Mai setups.");
     s_rows[n++] = Info("Mai also has Force Summon, Force Despawn, and Ghost Target X/Y with Apply Ghost Position for exact setup placement.");
     s_rows[n++] = Info("Minagi: Always Readied keeps Michiru ready, and Michiru Target X/Y with Apply Michiru Position places her for setup testing.");
-#if EFZ_ENABLE_NAGAMORI_COLLISION_DEBUG
     s_rows[n++] = Info("Mizuka: Note Trigger Ranges and Affected Notes control the note interaction overlays.");
-#endif
     count = n;
     return s_rows;
 }
@@ -3373,20 +3362,18 @@ void AddCharacterLockRows(Row* rows, int& n) {
     }
 }
 
-#if EFZ_ENABLE_NAGAMORI_COLLISION_DEBUG
 void AddMizukaNoteDisplayRows(Row* rows, int& n) {
     if (!HasMizuka()) {
         return;
     }
 
-    auto& s = MutableSettings();
     rows[n++] = Header("MIZUKA NOTES DISPLAY");
+    auto& s = MutableSettings();
     rows[n++] = Toggle("NOTE TRIGGER RANGES", &s.collisionDisplayNagamoriRanges, OnCollisionNagamoriRanges);
     rows[n++] = Toggle("AFFECTED NOTES", &s.collisionDisplayNagamoriAffected, OnCollisionNagamoriAffected);
     rows[n++] = Info("Uses Display Overlays > Projectile Interactions as the master switch.");
     rows[n++] = Spacer();
 }
-#endif
 
 void AddIkumiRows(Row* rows, int& n, DisplayData& d, int player) {
     if (player == 1) {
@@ -3625,9 +3612,7 @@ Row* BuildCharsRows(int& count) {
 
     s_rows[n++] = Spacer();
     AddCharacterLockRows(s_rows, n);
-#if EFZ_ENABLE_NAGAMORI_COLLISION_DEBUG
     AddMizukaNoteDisplayRows(s_rows, n);
-#endif
 
     const bool p1HasRows = CharHasCustomRows(d.p1CharID);
     const bool p2HasRows = CharHasCustomRows(d.p2CharID);
@@ -3641,11 +3626,7 @@ Row* BuildCharsRows(int& count) {
         }
     }
 
-    if (!p1HasRows && !p2HasRows
-#if EFZ_ENABLE_NAGAMORI_COLLISION_DEBUG
-        && !HasMizuka()
-#endif
-        ) {
+    if (!p1HasRows && !p2HasRows && !HasMizuka()) {
         s_rows[n++] = Header("STATUS");
         s_rows[n++] = Info("No supported character controls in this matchup.");
     }
