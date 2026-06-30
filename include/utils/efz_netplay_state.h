@@ -1,5 +1,5 @@
 // ===========================================================================
-// EFZ Netplay State Export — Public Interface
+// EFZ Netplay State Export - Public Interface
 // ===========================================================================
 //
 // Shared between efz_netplay_mod and consumer mods (e.g., EFZRichPresence).
@@ -7,13 +7,13 @@
 // In-game Netplay creates a named shared memory block and populates it each
 // frame.  Consumer mods open the same block to read the latest state.
 //
-// Access methods (both operate in-process — all DLLs live inside EFZ.exe):
+// Access methods (both operate in-process - all DLLs live inside EFZ.exe):
 //
-//   1. Named shared memory  — name: "EFZNetplay_State"
+//   1. Named shared memory  - name: "EFZNetplay_State"
 //      OpenFileMappingA(FILE_MAP_READ, FALSE, "EFZNetplay_State")
 //      then MapViewOfFile(..., FILE_MAP_READ, 0, 0, sizeof(EFZNetplayState))
 //
-//   2. DLL export           — EFZNetplay_GetState()
+//   2. DLL export           - EFZNetplay_GetState()
 //      HMODULE mod = GetModuleHandleA("efz_netplay_mod");
 //      auto fn = (const EFZNetplayState*(__cdecl*)(void))
 //                GetProcAddress(mod, "EFZNetplay_GetState");
@@ -40,7 +40,7 @@ extern "C" {
 #define EFZ_NETPLAY_STATE_SHM_NAME    "EFZNetplay_State"
 
 // ---------------------------------------------------------------------------
-// Capability bits — each bit indicates a field group is actively populated.
+// Capability bits - each bit indicates a field group is actively populated.
 // Consumers should check these bits before interpreting the corresponding
 // fields.  Bits may be zero when the data source is unavailable (e.g. the
 // charselect screen object is not allocated, or the game system pointer is
@@ -61,7 +61,7 @@ extern "C" {
 #define EFZ_CAP_CONNECTION    (1u << 12) // connectionAddress  (v7)
 
 // ---------------------------------------------------------------------------
-// Session mode — mutually exclusive values describing the local player's role
+// Session mode - mutually exclusive values describing the local player's role
 // in the current (or most recent) netplay session.
 // ---------------------------------------------------------------------------
 enum EFZNetplaySessionMode
@@ -74,7 +74,7 @@ enum EFZNetplaySessionMode
 };
 
 // ---------------------------------------------------------------------------
-// Session phase — lifecycle of the netplay connection.
+// Session phase - lifecycle of the netplay connection.
 // Mirrors the internal NetbridgePhase enum.
 // ---------------------------------------------------------------------------
 enum EFZNetplaySessionPhase
@@ -88,7 +88,7 @@ enum EFZNetplaySessionPhase
 };
 
 // ---------------------------------------------------------------------------
-// Activity phase — high-level description of what the local player is doing
+// Activity phase - high-level description of what the local player is doing
 // right now within the netplay lifecycle.  More granular than the session
 // phase and the v3 boolean flags.
 // ---------------------------------------------------------------------------
@@ -106,13 +106,13 @@ enum EFZNetplayActivityPhase
                                       // player uses EFZ normally (practice/menus).
                                       // sessionMode stays EFZ_SESSION_HOSTING.
                                       // Consumers should treat this as "netplay
-                                      // is engaged" but NOT a live match — e.g. a
+                                      // is engaged" but NOT a live match - e.g. a
                                       // training mod can keep running instead of
                                       // disabling, and need not suspend input.
 };
 
 // ---------------------------------------------------------------------------
-// End reason — why the most recent session/match ended.  Latches until the
+// End reason - why the most recent session/match ended.  Latches until the
 // next session starts or the activity phase leaves IDLE.
 // ---------------------------------------------------------------------------
 enum EFZNetplayEndReason
@@ -127,7 +127,7 @@ enum EFZNetplayEndReason
 };
 
 // ---------------------------------------------------------------------------
-// Netplay menu sub-screen — which page of the netplay menu is active.
+// Netplay menu sub-screen - which page of the netplay menu is active.
 // Only meaningful when inNetplayMenu is non-zero.
 // ---------------------------------------------------------------------------
 enum EFZNetplayMenuScreen
@@ -143,7 +143,7 @@ enum EFZNetplayMenuScreen
 };
 
 // ---------------------------------------------------------------------------
-// Netplay menu detail — menu-specific subview / mode.
+// Netplay menu detail - menu-specific subview / mode.
 // Only meaningful when inNetplayMenu is non-zero.
 // The value depends on netplayMenuScreen.
 // ---------------------------------------------------------------------------
@@ -183,7 +183,7 @@ struct EFZNetplayState
     // --- Header (validation) -----------------------------------------------
     uint32_t magic;              // Must equal EFZ_NETPLAY_STATE_MAGIC
     uint32_t version;            // EFZ_NETPLAY_STATE_VERSION at time of write
-    uint32_t structSize;         // sizeof(EFZNetplayState) — for forward compat
+    uint32_t structSize;         // sizeof(EFZNetplayState) - for forward compat
     uint32_t lastUpdateTick;     // GetTickCount() at last write
 
     // --- Session identity --------------------------------------------------
@@ -213,26 +213,26 @@ struct EFZNetplayState
     uint8_t  netplayMenuDetail;  // EFZNetplayMenuDetail enum (menu-specific
                                  // subview / mode; only valid when
                                  // inNetplayMenu is non-zero)
-    uint8_t  _pad0;              // Alignment padding — reserved, must be 0
+    uint8_t  _pad0;              // Alignment padding - reserved, must be 0
 
     // --- EfzRevival version (v2) -------------------------------------------
-    // Null-terminated version tag (e.g. "1.02e", "1.02i").
+    // Null-terminated version tag (e.g. "1.02e", "1.02j").
     // Empty string if EfzRevival.dll is not loaded or unrecognised.
-    // Supported versions: 1.02e, 1.02f, 1.02g, 1.02h, 1.02i
+    // Supported versions: 1.02e, 1.02f, 1.02g, 1.02h, 1.02i, 1.02j
     char     revivalVersion[16];
 
     // --- Game-flow flags (v3) ----------------------------------------------
     // These three flags are mutually exclusive in normal flow:
-    //   inNetplayMenu=1            — netplay menu overlay is open
-    //   inNetplayCharacterSelect=1 — online character-select screen
-    //   inNetplayMatch=1           — active online match / round
-    //   all zero                   — offline / idle / transitioning
+    //   inNetplayMenu=1            - netplay menu overlay is open
+    //   inNetplayCharacterSelect=1 - online character-select screen
+    //   inNetplayMatch=1           - active online match / round
+    //   all zero                   - offline / idle / transitioning
     uint8_t  inNetplayCharacterSelect; // Non-zero during online charselect
     uint8_t  inNetplayMatch;           // Non-zero during online match
-    uint8_t  _pad1[2];                 // Alignment padding — reserved, must be 0
+    uint8_t  _pad1[2];                 // Alignment padding - reserved, must be 0
 
     // --- Capability / sequence / identity (v4) -----------------------------
-    uint32_t capabilityFlags;    // Bitmask of EFZ_CAP_* — indicates which field
+    uint32_t capabilityFlags;    // Bitmask of EFZ_CAP_* - indicates which field
                                  // groups are actively populated this tick
     uint32_t stateSeq;           // Monotonically increasing sequence number,
                                  // incremented every Update() call.  Consumers
@@ -244,11 +244,11 @@ struct EFZNetplayState
                                  // (scores reset to 0-0).  Zero before first set.
 
     // --- Activity / end reason (v4) ----------------------------------------
-    uint8_t  activityPhase;      // EFZNetplayActivityPhase — current high-level
+    uint8_t  activityPhase;      // EFZNetplayActivityPhase - current high-level
                                  // activity within the netplay lifecycle
-    uint8_t  endReason;          // EFZNetplayEndReason — why the last session
+    uint8_t  endReason;          // EFZNetplayEndReason - why the last session
                                  // ended.  Latches until next session starts.
-    uint8_t  _pad2[2];          // Alignment padding — reserved, must be 0
+    uint8_t  _pad2[2];          // Alignment padding - reserved, must be 0
 
     // --- Character-select context (v4) -------------------------------------
     // Only meaningful when activityPhase == EFZ_ACTIVITY_CHAR_SELECT or
@@ -259,7 +259,7 @@ struct EFZNetplayState
     uint8_t  p2Locked;           // Non-zero if P2 has locked in their pick
     uint8_t  localCursorCharId;  // Character under local player's cursor
                                  // (0xFF = unavailable)
-    uint8_t  _pad3[3];          // Alignment padding — reserved, must be 0
+    uint8_t  _pad3[3];          // Alignment padding - reserved, must be 0
 
     // --- Match context (v4) ------------------------------------------------
     // Only meaningful when activityPhase == EFZ_ACTIVITY_MATCH or
@@ -268,22 +268,22 @@ struct EFZNetplayState
     uint8_t  roundIndex;         // Current round within the match (0-based,
                                  // 0xFF = unknown)
     uint8_t  isRoundActive;      // Non-zero when a round is in progress
-    uint8_t  _pad4;              // Alignment padding — reserved, must be 0
+    uint8_t  _pad4;              // Alignment padding - reserved, must be 0
     uint16_t roundTimerFrames;   // Round timer in frames (0xFFFF = unknown)
-    uint8_t  _pad5[2];          // Alignment padding — reserved, must be 0
+    uint8_t  _pad5[2];          // Alignment padding - reserved, must be 0
 
     // --- Async hosting (v7) ------------------------------------------------
     // Populated when EFZ_CAP_ASYNC_HOST is set. Lets consumers know a host
     // listener is alive even while the local player is on another screen
-    // (practice/menus) — i.e. activityPhase == EFZ_ACTIVITY_HOST_IDLE and
-    // sessionMode == EFZ_SESSION_HOSTING — so they can coexist instead of
+    // (practice/menus) - i.e. activityPhase == EFZ_ACTIVITY_HOST_IDLE and
+    // sessionMode == EFZ_SESSION_HOSTING - so they can coexist instead of
     // fully disabling. Distinct from a live match (inNetplayMatch).
     uint8_t  asyncHostActive;     // Non-zero: async host listener engaged
     uint8_t  asyncHostMinimized;  // Non-zero: hosting overlay minimized (local play)
     uint8_t  asyncHostPeerFound;  // Non-zero: peer connected, prompt held for accept
     uint8_t  asyncHostTimedOut;   // Non-zero: held prompt timed out (rehost offered)
     uint16_t hostPort;            // Port we are hosting on (0 = n/a)
-    uint8_t  _pad6[2];           // Alignment padding — reserved, must be 0
+    uint8_t  _pad6[2];           // Alignment padding - reserved, must be 0
 
     // --- Extended network metrics (v7) -------------------------------------
     // Populated when EFZ_CAP_NET_DETAIL is set (from the delay-prompt metrics).

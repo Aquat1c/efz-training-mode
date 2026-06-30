@@ -5,6 +5,7 @@
 #include "../../include/game/combo_overlay.h"
 #include "../../include/game/macro_controller.h"
 #include "../../include/game/practice_offsets.h"
+#include "../../include/game/practice_hotkey_gate.h"
 #include "../../include/utils/switch_players.h"
 #include "../../include/utils/pause_integration.h"
 #include "../../include/core/logger.h"
@@ -12,6 +13,7 @@
 #include "../../include/core/constants.h"
 #include "../../include/gui/overlay.h"
 #include "../../include/utils/minhook_utils.h"
+#include "../../include/utils/network.h"
 #include "../../include/utils/utilities.h"
 #include "../../3rdparty/minhook/include/MinHook.h"
 #include <windows.h>
@@ -23,6 +25,7 @@ namespace {
     std::atomic<bool> s_installed{false};
     std::atomic<unsigned int> s_saveCount{0};
     std::atomic<unsigned int> s_loadCount{0};
+    std::atomic<bool> s_inlineDispatcherMode{false};
 
     uintptr_t s_loadStateAddr = 0;
     uintptr_t s_saveStateAddr = 0;
@@ -45,6 +48,9 @@ namespace {
     };
 
     SavedModState s_savedModState{};
+
+    constexpr uint8_t kInlineSaveAction = 1u << 0;
+    constexpr uint8_t kInlineLoadAction = 1u << 1;
 
     void CanonicalizeSavedControlState(SavedModState& state) {
         if (state.localSide != 0 && state.localSide != 1) {
@@ -133,17 +139,13 @@ namespace {
         LogOut(oss.str(), true);
     }
 
-    bool __fastcall HookedLoadState(void* self, void* /*edx*/) {
-        if (g_onlineModeActive.load(std::memory_order_relaxed)) {
-            return oLoadState ? oLoadState(self) : false;
-        }
-
+    void BeginTrackedLoad() {
         LogOut("[SAVESTATE][REVIVAL] === LOAD STATE BEGIN ===", true);
         CancelAutoActionsAndMacros();
+    }
 
-        bool result = oLoadState ? oLoadState(self) : false;
+    void FinishTrackedLoad(bool result) {
         s_loadCount.fetch_add(1, std::memory_order_relaxed);
-
         RestoreModState();
         ComboOverlay::ResetState("revival savestate load");
         if (uintptr_t base = GetEFZBase()) {
@@ -152,6 +154,27 @@ namespace {
 
         LogOut("[SAVESTATE][REVIVAL] === LOAD STATE END (result=" + std::string(result ? "true" : "false") + ") ===", true);
         DirectDrawHook::AddMessage("Revival State Loaded", "savestate", RGB(100, 255, 100), 1500, 0, 100);
+    }
+
+    void BeginTrackedSave() {
+        LogOut("[SAVESTATE][REVIVAL] === SAVE STATE BEGIN ===", true);
+        CaptureModState();
+    }
+
+    void FinishTrackedSave() {
+        s_saveCount.fetch_add(1, std::memory_order_relaxed);
+        LogOut("[SAVESTATE][REVIVAL] === SAVE STATE END ===", true);
+        DirectDrawHook::AddMessage("Revival State Saved", "savestate", RGB(255, 255, 100), 1500, 0, 100);
+    }
+
+    bool __fastcall HookedLoadState(void* self, void* /*edx*/) {
+        if (g_onlineModeActive.load(std::memory_order_relaxed)) {
+            return oLoadState ? oLoadState(self) : false;
+        }
+
+        BeginTrackedLoad();
+        bool result = oLoadState ? oLoadState(self) : false;
+        FinishTrackedLoad(result);
         return result;
     }
 
@@ -163,16 +186,11 @@ namespace {
             return;
         }
 
-        LogOut("[SAVESTATE][REVIVAL] === SAVE STATE BEGIN ===", true);
-        CaptureModState();
-
+        BeginTrackedSave();
         if (oSaveState) {
             oSaveState(self);
         }
-        s_saveCount.fetch_add(1, std::memory_order_relaxed);
-
-        LogOut("[SAVESTATE][REVIVAL] === SAVE STATE END ===", true);
-        DirectDrawHook::AddMessage("Revival State Saved", "savestate", RGB(255, 255, 100), 1500, 0, 100);
+        FinishTrackedSave();
     }
 }
 
@@ -197,6 +215,31 @@ namespace SavestateHook {
         uintptr_t base = reinterpret_cast<uintptr_t>(mod);
         s_loadStateAddr = base + loadRva;
         s_saveStateAddr = base + saveRva;
+
+        if (GetEfzRevivalVersion() == EfzRevivalVersion::Revival102j) {
+            // J keeps callable save/load bodies, but its hotkey dispatcher
+            // inlines the same operations. Keep these pointers for explicit
+            // menu/hotkey commands and let PracticeHotkeyGate bracket native
+            // dispatcher actions through Begin/EndInlinePracticeHotkey.
+            if (!PracticeHotkeyGate::Install()) {
+                s_loadStateAddr = 0;
+                s_saveStateAddr = 0;
+                LogOut("[SAVESTATE][REVIVAL] J dispatcher integration requires the verified hotkey gate", true);
+                return false;
+            }
+
+            oLoadState = reinterpret_cast<LoadStateFn>(s_loadStateAddr);
+            oSaveState = reinterpret_cast<SaveStateFn>(s_saveStateAddr);
+            s_inlineDispatcherMode.store(true, std::memory_order_release);
+            s_installed.store(true, std::memory_order_release);
+
+            std::ostringstream oss;
+            oss << "[SAVESTATE][REVIVAL] J dispatcher integration ready"
+                << " - callable Load RVA=0x" << std::hex << loadRva
+                << " Save RVA=0x" << saveRva;
+            LogOut(oss.str(), true);
+            return true;
+        }
 
         bool loadHookOk = false;
         bool saveHookOk = false;
@@ -231,6 +274,16 @@ namespace SavestateHook {
     void Uninstall() {
         if (!s_installed.load()) return;
 
+        if (s_inlineDispatcherMode.exchange(false, std::memory_order_acq_rel)) {
+            s_loadStateAddr = 0;
+            s_saveStateAddr = 0;
+            oLoadState = nullptr;
+            oSaveState = nullptr;
+            s_installed.store(false);
+            LogOut("[SAVESTATE][REVIVAL] J dispatcher integration uninstalled", true);
+            return;
+        }
+
         if (s_loadStateAddr) {
             (void)MinHookUtils::DisableHook(reinterpret_cast<LPVOID>(s_loadStateAddr), "[SAVESTATE][REVIVAL]", "LoadState");
             (void)MinHookUtils::RemoveHook(reinterpret_cast<LPVOID>(s_loadStateAddr), "[SAVESTATE][REVIVAL]", "LoadState");
@@ -245,6 +298,55 @@ namespace SavestateHook {
 
         s_installed.store(false);
         LogOut("[SAVESTATE][REVIVAL] Hooks uninstalled", true);
+    }
+
+    uint8_t BeginInlinePracticeHotkey(void* practiceController, int key) {
+        if (!s_installed.load(std::memory_order_acquire)
+            || !s_inlineDispatcherMode.load(std::memory_order_acquire)
+            || !practiceController
+            || key == 0
+            || GetCurrentGameMode() != GameMode::Practice
+            || !IsMatchPhase()
+            || g_onlineModeActive.load(std::memory_order_relaxed)) {
+            return 0;
+        }
+
+        const uintptr_t saveOffset = EFZ_Practice_SaveHotkeyOffset();
+        const uintptr_t loadOffset = EFZ_Practice_LoadHotkeyOffset();
+        if (!saveOffset || !loadOffset) return 0;
+
+        int saveKey = -1;
+        int loadKey = -1;
+        const uintptr_t practice = reinterpret_cast<uintptr_t>(practiceController);
+        if (!SafeReadMemory(practice + saveOffset, &saveKey, sizeof(saveKey))
+            || !SafeReadMemory(practice + loadOffset, &loadKey, sizeof(loadKey))) {
+            return 0;
+        }
+
+        uint8_t actions = 0;
+        if (key == saveKey) {
+            actions |= kInlineSaveAction;
+            BeginTrackedSave();
+        }
+        if (key == loadKey) {
+            actions |= kInlineLoadAction;
+            BeginTrackedLoad();
+        }
+        return actions;
+    }
+
+    void EndInlinePracticeHotkey(uint8_t actionMask) {
+        if (!s_inlineDispatcherMode.load(std::memory_order_acquire)) return;
+
+        // The J dispatcher executes its save branch before its load branch.
+        if ((actionMask & kInlineSaveAction) != 0) {
+            FinishTrackedSave();
+        }
+        if ((actionMask & kInlineLoadAction) != 0) {
+            // The inlined load path has no meaningful boolean result at the
+            // dispatcher boundary; reaching this point means it returned.
+            FinishTrackedLoad(true);
+        }
     }
 
     bool TriggerSave() {

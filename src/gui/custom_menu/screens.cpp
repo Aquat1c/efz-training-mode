@@ -431,6 +431,28 @@ struct SubmenuState {
 SubmenuState g_submenus;
 bool g_focusAboveRequested = false;
 
+unsigned int g_popupMouseFrame = ~0u;
+float g_popupLastMouseX = -1.0f;
+float g_popupLastMouseY = -1.0f;
+bool g_popupMouseMoved = false;
+
+unsigned int g_listMouseFrame = ~0u;
+float g_listLastMouseX = -1.0f;
+float g_listLastMouseY = -1.0f;
+bool g_listMouseMoved = false;
+
+void ResetMouseTrackingState() {
+    g_popupMouseFrame = ~0u;
+    g_popupLastMouseX = -1.0f;
+    g_popupLastMouseY = -1.0f;
+    g_popupMouseMoved = false;
+
+    g_listMouseFrame = ~0u;
+    g_listLastMouseX = -1.0f;
+    g_listLastMouseY = -1.0f;
+    g_listMouseMoved = false;
+}
+
 float Clamp01(float v) {
     if (v < 0.0f) return 0.0f;
     if (v > 1.0f) return 1.0f;
@@ -460,6 +482,7 @@ void StartSubmenuAnimation(int dir) {
 
 void OpenSubmenu(const Row& r) {
     if (!r.submenuBuilder || g_submenus.depth >= kMaxSubmenuDepth) return;
+    ResetMouseTrackingState();
     SubmenuFrame& f = g_submenus.frames[g_submenus.depth++];
     f.title = (r.submenuTitle && r.submenuTitle[0]) ? r.submenuTitle : r.label;
     f.builder = r.submenuBuilder;
@@ -472,6 +495,7 @@ void OpenSubmenu(const Row& r) {
 
 void CloseOneSubmenu() {
     if (g_submenus.depth <= 0) return;
+    ResetMouseTrackingState();
     --g_submenus.depth;
     StartSubmenuAnimation(-1);
     Sound::PlayDecision();
@@ -941,6 +965,7 @@ void PopupMoveFocus(int rowDelta, int columnDelta) {
 
 void OpenDropdownPopup(const Row& r) {
     if (!r.choiceIdxPtr || r.choiceCount <= 0 || !r.choices) return;
+    ResetMouseTrackingState();
     g_popup.active = true;
     g_popup.choiceIdxPtr = r.choiceIdxPtr;
     g_popup.maskPtr = nullptr;
@@ -964,6 +989,7 @@ void OpenDropdownPopup(const Row& r) {
 
 void OpenMaskPopup(const Row& r) {
     if (!r.maskPtr || r.choiceCount <= 0 || !r.choices) return;
+    ResetMouseTrackingState();
     g_popup.active = true;
     g_popup.choiceIdxPtr = nullptr;
     g_popup.maskPtr = r.maskPtr;
@@ -979,6 +1005,7 @@ void OpenMaskPopup(const Row& r) {
 }
 
 void ClosePopup() {
+    ResetMouseTrackingState();
     g_popup.active = false;
     g_popup.choiceIdxPtr = nullptr;
     g_popup.maskPtr = nullptr;
@@ -1071,26 +1098,22 @@ void PopupTickInputOnly(const ScreenLayout& layout) {
     const bool keyboardOrPadEdge = navUp || navDown || navLeft || navRight ||
                                    activate || back || Input::SwitchPlayer();
 
-    static unsigned int s_popupMouseFrame = ~0u;
-    static float s_popupLastMouseX = -1.0f;
-    static float s_popupLastMouseY = -1.0f;
-    static bool s_popupMouseMoved = false;
     const unsigned int frame = ImGui::GetFrameCount();
-    if (frame != s_popupMouseFrame) {
-        s_popupMouseFrame = frame;
-        s_popupMouseMoved = false;
+    if (frame != g_popupMouseFrame) {
+        g_popupMouseFrame = frame;
+        g_popupMouseMoved = false;
         auto m = Input::GetMouse();
         if (m.valid) {
-            if (s_popupLastMouseX < 0.0f && s_popupLastMouseY < 0.0f) {
-                s_popupLastMouseX = m.x;
-                s_popupLastMouseY = m.y;
+            if (g_popupLastMouseX < 0.0f && g_popupLastMouseY < 0.0f) {
+                g_popupLastMouseX = m.x;
+                g_popupLastMouseY = m.y;
             } else {
-                const float dx = m.x - s_popupLastMouseX;
-                const float dy = m.y - s_popupLastMouseY;
+                const float dx = m.x - g_popupLastMouseX;
+                const float dy = m.y - g_popupLastMouseY;
                 if ((dx * dx + dy * dy) > 1.0f) {
-                    s_popupMouseMoved = true;
-                    s_popupLastMouseX = m.x;
-                    s_popupLastMouseY = m.y;
+                    g_popupMouseMoved = true;
+                    g_popupLastMouseX = m.x;
+                    g_popupLastMouseY = m.y;
                 }
             }
         }
@@ -1132,7 +1155,7 @@ void PopupTickInputOnly(const ScreenLayout& layout) {
             return;
         }
     }
-    if (!keyboardOrPadEdge && s_popupMouseMoved) {
+    if (!keyboardOrPadEdge && g_popupMouseMoved) {
         const auto mouse = Input::GetMouse();
         if (mouse.valid) {
             const int hovered = PopupIndexFromPoint(g, mouse.x, mouse.y);
@@ -1503,26 +1526,22 @@ bool HandleRowsInput(const ScreenLayout& layout,
     // Mouse hover should not continuously steal focus from keyboard/gamepad
     // navigation. Only let hover retarget focus when the cursor actually moved
     // this frame, or when the user clicks a row.
-    static unsigned int s_mouseFrame = ~0u;
-    static float s_lastMouseX = -1.0f;
-    static float s_lastMouseY = -1.0f;
-    static bool s_mouseMoved = false;
     const unsigned int frame = ImGui::GetFrameCount();
-    if (frame != s_mouseFrame) {
-        s_mouseFrame = frame;
-        s_mouseMoved = false;
+    if (frame != g_listMouseFrame) {
+        g_listMouseFrame = frame;
+        g_listMouseMoved = false;
         auto m = Input::GetMouse();
         if (m.valid) {
-            if (s_lastMouseX < 0.0f && s_lastMouseY < 0.0f) {
-                s_lastMouseX = m.x;
-                s_lastMouseY = m.y;
+            if (g_listLastMouseX < 0.0f && g_listLastMouseY < 0.0f) {
+                g_listLastMouseX = m.x;
+                g_listLastMouseY = m.y;
             } else {
-                const float dx = m.x - s_lastMouseX;
-                const float dy = m.y - s_lastMouseY;
+                const float dx = m.x - g_listLastMouseX;
+                const float dy = m.y - g_listLastMouseY;
                 if ((dx * dx + dy * dy) > 1.0f) {
-                    s_mouseMoved = true;
-                    s_lastMouseX = m.x;
-                    s_lastMouseY = m.y;
+                    g_listMouseMoved = true;
+                    g_listLastMouseX = m.x;
+                    g_listLastMouseY = m.y;
                 }
             }
         }
@@ -1530,7 +1549,7 @@ bool HandleRowsInput(const ScreenLayout& layout,
 
     const bool mouseLeftEdge = Input::MouseLeftEdge();
     bool clickActivated = false;
-    if (!keyboardOrPadEdge && (s_mouseMoved || mouseLeftEdge)) {
+    if (!keyboardOrPadEdge && (g_listMouseMoved || mouseLeftEdge)) {
         for (int i = 0; i < rowCount; ++i) {
             if (!rects[i].visible) continue;
             if (!RowIsFocusable(rows[i])) continue;
@@ -1780,6 +1799,7 @@ bool ConsumeMenuNavigation(MenuNavigationRequest& out) {
 
 void OpenSubmenuDirect(RowListBuilder builder, const char* title, int focusRow) {
     if (!builder || g_submenus.depth >= kMaxSubmenuDepth) return;
+    ResetMouseTrackingState();
     SubmenuFrame& f = g_submenus.frames[g_submenus.depth++];
     f.title = (title && title[0]) ? title : "SUBMENU";
     f.builder = builder;
@@ -1798,6 +1818,11 @@ bool ConsumeFocusAboveRequest() {
 
 void ResetSubmenus() {
     g_submenus = SubmenuState{};
+    ResetMouseTrackingState();
+}
+
+void ResetMouseTracking() {
+    ResetMouseTrackingState();
 }
 
 bool TickPopupIfOpen(ImDrawList* dl, const ScreenLayout& layout) {
@@ -1949,7 +1974,7 @@ void CloseKeybind() {
 }
 
 bool VkIsBindable(int vk) {
-    // Disallow mouse buttons and pure modifiers — the user almost never wants
+    // Disallow mouse buttons and pure modifiers - the user almost never wants
     // to bind those, and they'd interfere with menu navigation.
     if (vk >= 0x01 && vk <= 0x06) return false;     // mouse
     if (vk == VK_SHIFT || vk == VK_LSHIFT || vk == VK_RSHIFT) return false;

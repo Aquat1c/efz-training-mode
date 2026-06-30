@@ -25,6 +25,17 @@ static inline bool IsH() {
 static inline bool IsI() {
     return GetEfzRevivalVersion() == EfzRevivalVersion::Revival102i;
 }
+static inline bool IsJ() {
+    return GetEfzRevivalVersion() == EfzRevivalVersion::Revival102j
+        && IsEfzRevival102jVerifiedBuild();
+}
+
+bool EFZ_SupportsNativePracticeSideSwitch() {
+    const EfzRevivalVersion v = GetEfzRevivalVersion();
+    return IsEfzRevivalVersionSupported(v)
+        && v != EfzRevivalVersion::Vanilla
+        && v != EfzRevivalVersion::Revival102j;
+}
 
 static void LogAddrOnce(const char* label, uintptr_t rva) {
     static std::atomic<bool> s_once{false};
@@ -38,6 +49,8 @@ static void LogAddrOnce(const char* label, uintptr_t rva) {
     } else if (IsH()) {
         EfzRevivalVersion vdet = GetEfzRevivalVersion();
         verName = (vdet == EfzRevivalVersion::Revival102i) ? "1.02i" : "1.02h";
+    } else if (IsJ()) {
+        verName = "1.02j";
     }
     oss << "[ADDR] Version=" << verName
         << " | " << label << " RVA=0x" << std::hex << rva;
@@ -52,7 +65,7 @@ static void LogAddrOnce(const char* label, uintptr_t rva) {
 
 int EFZ_PatchToggleUnfreezeParam() {
     EfzRevivalVersion v = GetEfzRevivalVersion();
-    if (IsFSubframe() || v == EfzRevivalVersion::Revival102g || IsH()) return 3; // 0=freeze, 3=normal speed
+    if (IsFSubframe() || v == EfzRevivalVersion::Revival102g || IsH() || IsJ()) return 3; // 0=freeze, 3=normal speed
     return 1; // 1.02e and classic 1.02f behavior
 }
 
@@ -62,7 +75,8 @@ uintptr_t EFZ_RVA_PatchToggler() {
     if (IsFSubframe() || v == EfzRevivalVersion::Revival102g) r = 0x006B4C0; // 1.02f subframe / 1.02g
     else if (IsLegacyEFamily()) r = 0x006B2A0;
     else if (IsI()) r = 0x006BD50; // 1.02i (different from 1.02h)
-        else if (IsH()) r = 0x006BB00; // 1.02h
+    else if (IsH()) r = 0x006BB00; // 1.02h
+    else if (IsJ()) r = 0x0077F40; // 1.02j MinGW; verified visual patch selector
     LogAddrOnce("PatchToggler", r);
     return r;
 }
@@ -72,8 +86,9 @@ uintptr_t EFZ_RVA_PatchCtx() {
     EfzRevivalVersion v = GetEfzRevivalVersion();
     if (v == EfzRevivalVersion::Revival102f) r = 0x00A0760; // 1.02f
     else if (IsE()) r = 0x00A0760;
-        else if (IsI()) r = 0x00A1790; // 1.02i
-        else if (IsH()) r = 0x00A0780; // 1.02h
+    else if (IsI()) r = 0x00A1790; // 1.02i
+    else if (IsH()) r = 0x00A0780; // 1.02h
+    else if (IsJ()) r = 0x014E8C0; // 1.02j patch-context object
     LogAddrOnce("PatchCtx", r);
     return r;
 }
@@ -85,8 +100,9 @@ uintptr_t EFZ_RVA_TogglePause() {
     else if (IsFClassic()) r = 0x0075750;  // 1.02f classic
         else if (v == EfzRevivalVersion::Revival102e) r = 0x0075720;  // 1.02e
         else if (v == EfzRevivalVersion::Revival102g) r = 0x00759C0;  // 1.02g
-        else if (IsI()) r = 0x0076710;  // 1.02i
-        else if (IsH()) r = 0x0076170;  // 1.02h
+    else if (IsI()) r = 0x0076710;  // 1.02i
+    else if (IsH()) r = 0x0076170;  // 1.02h
+    else if (IsJ()) r = 0x007DB60;  // 1.02j; toggles +0xDC, resets +0xD8
     LogAddrOnce("TogglePause", r);
     return r;
 }
@@ -103,6 +119,7 @@ uintptr_t EFZ_RVA_PracticeTick() {
         // 0x74F40/0x74FF0 helper path is not reliable for match-entry capture.
         else if (IsI()) r = 0x0075F60;  // 1.02i
         else if (IsH()) r = 0x00759C0;  // 1.02h
+        else if (IsJ()) r = 0x007D6B0;  // 1.02j single-step/render body
     LogAddrOnce("PracticeTick", r);
     return r;
 }
@@ -171,6 +188,8 @@ uintptr_t EFZ_RVA_GameModePtrArray() {
         if (v == EfzRevivalVersion::Revival102f || IsE()) r = 0x790110;
         else if (IsH()) r = 0x790110; // likely unchanged for 1.02h
         else if (IsI()) r = 0x790110; // likely unchanged for 1.02i; fast-path only
+        // Deliberately unavailable for J: 0x790110 belongs to efz.exe, while
+        // this legacy scanner incorrectly treats it as a Revival DLL RVA.
     LogAddrOnce("GameModePtrArray", r);
     return r;
 }
@@ -181,6 +200,7 @@ uintptr_t EFZ_RVA_RenderContextGlobal() {
     if (v == EfzRevivalVersion::Revival102f || IsE()) r = 0x00A0778;
     else if (IsH()) r = 0x00A0798;
     else if (IsI()) r = 0x00A17A8;
+    else if (IsJ()) r = 0x014E8D8;
     LogAddrOnce("RenderContextGlobal", r);
     return r;
 }
@@ -203,6 +223,7 @@ uintptr_t EFZ_RVA_PracticeDispatcher() {
     else if (v == EfzRevivalVersion::Revival102g) r = 0x0075CC0;  // 1.02g sub_10075CC0
     else if (IsI()) r = 0x0076A30;
     else if (IsH()) r = 0x0076490;
+    else if (IsJ()) r = 0x007CF60; // J vtable[4]; save/load bodies are inlined here
     // For unsupported versions: return 0 (don't guess addresses)
     LogAddrOnce("PracticeDispatcher", r);
     return r;
@@ -210,19 +231,23 @@ uintptr_t EFZ_RVA_PracticeDispatcher() {
 
 // Version-aware Practice controller offset accessors
 uintptr_t EFZ_Practice_PauseFlagOffset() {
+    if (IsJ()) return 0xDC;
     return 0xB4;  // All versions
 }
 
 uintptr_t EFZ_Practice_StepFlagOffset() {
+    if (IsJ()) return 0xD4;
     return 0xAC;  // All versions
 }
 
 uintptr_t EFZ_Practice_StepCounterOffset() {
+    if (IsJ()) return 0xD8;
     return 0xB0;  // All versions
 }
 
 uintptr_t EFZ_Practice_PauseHotkeyOffset() {
     EfzRevivalVersion v = GetEfzRevivalVersion();
+    if (IsJ()) return 0x200;
     if (v == EfzRevivalVersion::Revival102i) return 0x1D8;
     if (v == EfzRevivalVersion::Revival102e
         || v == EfzRevivalVersion::Revival102f
@@ -235,6 +260,7 @@ uintptr_t EFZ_Practice_PauseHotkeyOffset() {
 
 uintptr_t EFZ_Practice_StepHotkeyOffset() {
     EfzRevivalVersion v = GetEfzRevivalVersion();
+    if (IsJ()) return 0x204;
     if (v == EfzRevivalVersion::Revival102i) return 0x1DC;
     if (v == EfzRevivalVersion::Revival102e
         || v == EfzRevivalVersion::Revival102f
@@ -247,6 +273,7 @@ uintptr_t EFZ_Practice_StepHotkeyOffset() {
 
 uintptr_t EFZ_Practice_SaveHotkeyOffset() {
     EfzRevivalVersion v = GetEfzRevivalVersion();
+    if (IsJ()) return 0x208;
     if (v == EfzRevivalVersion::Revival102i) return 0x1E0;
     if (v == EfzRevivalVersion::Revival102e
         || v == EfzRevivalVersion::Revival102f
@@ -259,6 +286,7 @@ uintptr_t EFZ_Practice_SaveHotkeyOffset() {
 
 uintptr_t EFZ_Practice_LoadHotkeyOffset() {
     EfzRevivalVersion v = GetEfzRevivalVersion();
+    if (IsJ()) return 0x20C;
     if (v == EfzRevivalVersion::Revival102i) return 0x1E4;
     if (v == EfzRevivalVersion::Revival102e
         || v == EfzRevivalVersion::Revival102f
@@ -270,28 +298,35 @@ uintptr_t EFZ_Practice_LoadHotkeyOffset() {
 }
 
 uintptr_t EFZ_Practice_LocalSideOffset() {
+    if (IsJ()) return 0; // field removed with J's compact Practice layout
     return IsI() ? 0x688 : 0x680;
 }
 uintptr_t EFZ_Practice_RemoteSideOffset() {
+    if (IsJ()) return 0; // field removed with J's compact Practice layout
     return IsI() ? 0x692 : 0x684;
 }
 
 uintptr_t EFZ_Practice_InitSourceSideOffset() {
+    if (IsJ()) return 0; // field removed with J's compact Practice layout
     return IsI() ? 0x952 : 0x944;
 }
 
 uintptr_t EFZ_Practice_SideBufPrimaryOffset() {
+    if (IsJ()) return 0;
     return 0x338;  // 824 decimal = 0x338 hex (ALL VERSIONS)
 }
 uintptr_t EFZ_Practice_SideBufSecondaryOffset() {
+    if (IsJ()) return 0;
     return 0x33C;  // 828 decimal = 0x33C hex (ALL VERSIONS)
 }
-uintptr_t EFZ_Practice_SharedInputVectorOffset() { return 0x1240; }
+uintptr_t EFZ_Practice_SharedInputVectorOffset() {
+    return IsJ() ? 0 : 0x1240;
+}
 
 int EFZ_Practice_MapResetIndexBias() {
     // Map array index base used at init when calling MapReset
     // 1.02i uses (local + 105); e/h use (local + 104)
-    return IsI() ? 105 : 104;
+    return IsJ() ? 0 : (IsI() ? 105 : 104);
 }
 
 // Overlay toggle functions - simple bool toggles for display flags
@@ -344,6 +379,7 @@ uintptr_t EFZ_RVA_LoadState() {
     else if (v == EfzRevivalVersion::Revival102g) r = 0x0075BE0;  // sub_10075BE0
     else if (v == EfzRevivalVersion::Revival102h) r = 0x00763B0;  // sub_100763B0
     else if (v == EfzRevivalVersion::Revival102i) r = 0x0076950;  // sub_10076950
+    else if (IsJ()) r = 0x007E040;  // callable J load body; hotkey path is inlined
     LogAddrOnce("LoadState", r);
     return r;
 }
@@ -358,6 +394,7 @@ uintptr_t EFZ_RVA_SaveState() {
     else if (v == EfzRevivalVersion::Revival102g) r = 0x0075C50;  // sub_10075C50
     else if (v == EfzRevivalVersion::Revival102h) r = 0x0076420;  // sub_10076420
     else if (v == EfzRevivalVersion::Revival102i) r = 0x00769C0;  // sub_100769C0
+    else if (IsJ()) r = 0x007E0F0;  // callable J save body; hotkey path is inlined
     LogAddrOnce("SaveState", r);
     return r;
 }
@@ -374,6 +411,7 @@ uintptr_t EFZ_RVA_PracticeHotkeyHandler() {
     else if (v == EfzRevivalVersion::Revival102g) r = 0x0075CC0;  // sub_10075CC0
     else if (v == EfzRevivalVersion::Revival102h) r = 0x0076490;  // sub_10076490
     else if (v == EfzRevivalVersion::Revival102i) r = 0x0076A30;  // sub_10076A30
+    else if (IsJ()) r = 0x007CF60;  // sub_7007CF60, J vtable[4]
     LogAddrOnce("PracticeHotkeyHandler", r);
     return r;
 }

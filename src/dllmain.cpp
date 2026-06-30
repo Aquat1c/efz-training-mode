@@ -29,6 +29,7 @@
 #include "../include/game/game_state.h"
 #include "../include/core/globals.h"  
 #include "../include/game/collision_hook.h"
+#include "../include/game/collision_display.h"
 #include "../include/game/practice_hotkey_gate.h"
 #include "../include/game/practice_offsets.h"
 #include "../include/utils/crash_handler.h"
@@ -105,10 +106,7 @@ static DWORD WINAPI DelayedInitializationThreadProc(LPVOID param) {
 void DelayedInitialization(HMODULE hModule) {
     try {
         WriteStartupLog("Delayed initialization thread entered");
-
-        // Short delay to ensure the game has started properly
-        Sleep(1500);
-        WriteStartupLog("Starting delayed initialization");
+        WriteStartupLog("Starting early initialization");
 
         // Initialize logging system (starts title updater thread)
         WriteStartupLog("Initializing logging system...");
@@ -160,9 +158,58 @@ void DelayedInitialization(HMODULE hModule) {
             return; // Early exit if MinHook fails
         }
         LogOut("[SYSTEM] MinHook initialized successfully.", true);
+
+        bool audioHooksReady = false;
+        // Audio hooks target stable efz.exe functions and should be present
+        // before the game's first BGM/SE load/play calls when possible. Keep
+        // heavier gameplay/UI systems behind the old startup delay below.
+        try {
+            const uintptr_t efzBase = GetEFZBase();
+            audioHooksReady = AudioControl::InstallHooks(efzBase);
+            if (audioHooksReady) {
+                LogOut("[AUDIO] Runtime audio hooks installed during early initialization; volume sync deferred", true);
+            } else {
+                LogOut("[AUDIO] Runtime audio hooks were not installed.", true);
+            }
+        } catch (...) {
+            LogOut("[AUDIO] Exception while installing runtime audio hooks.", true);
+        }
+
+        // Short delay before the heavier systems that depend on the game having
+        // reached a stable runtime state. If Revival is loaded but has not yet
+        // written its EFZ audio JMPs, use this same delay as a tight retry
+        // window so our stack-preserving chain attaches as soon as Revival is
+        // ready instead of waiting for the later heavy-system retry.
+        {
+            constexpr DWORD kStartupStabilizeDelayMs = 1500;
+            constexpr DWORD kAudioRetryIntervalMs = 10;
+            const DWORD waitStart = GetTickCount();
+
+            while (!audioHooksReady && (GetTickCount() - waitStart) < kStartupStabilizeDelayMs) {
+                Sleep(kAudioRetryIntervalMs);
+                try {
+                    const uintptr_t efzBase = GetEFZBase();
+                    audioHooksReady = AudioControl::InstallHooks(efzBase);
+                    if (audioHooksReady) {
+                        LogOut("[AUDIO] Runtime audio hooks installed during startup wait; volume sync deferred", true);
+                        break;
+                    }
+                } catch (...) {
+                    LogOut("[AUDIO] Exception while retrying runtime audio hooks during startup wait.", true);
+                    break;
+                }
+            }
+
+            const DWORD elapsed = GetTickCount() - waitStart;
+            if (elapsed < kStartupStabilizeDelayMs) {
+                Sleep(kStartupStabilizeDelayMs - elapsed);
+            }
+        }
+        WriteStartupLog("Starting delayed initialization");
         
         // Initialize framestep system (vanilla / supported Revival)
         Framestep::Initialize();
+        CollisionDisplay::Initialize();
 
         // Suppress EFZ DirectInput battle hotkeys while our menu is open and
         // support menu-driven front-end exits.
@@ -229,14 +276,29 @@ void DelayedInitialization(HMODULE hModule) {
             LogOut("[SYSTEM] Exception while installing collision hook.", true);
         }
         try {
-            const uintptr_t efzBase = GetEFZBase();
-            if (AudioControl::InstallHooks(efzBase)) {
-                AudioControl::ApplyConfiguredVolumesNow();
-            } else {
-                LogOut("[AUDIO] Runtime audio hooks were not installed.", true);
+            if (!audioHooksReady) {
+                const uintptr_t efzBase = GetEFZBase();
+                audioHooksReady = AudioControl::InstallHooks(efzBase);
+                if (audioHooksReady) {
+                    LogOut("[AUDIO] Runtime audio hooks installed during delayed retry", true);
+                }
+            }
+
+            if (audioHooksReady) {
+                bool audioReady = AudioControl::EnableVolumeApplicationIfSoundReady(0, "delayed initialization");
+                for (int attempt = 0; !audioReady && attempt < 20; ++attempt) {
+                    Sleep(50);
+                    audioReady = AudioControl::EnableVolumeApplicationIfSoundReady(0, "delayed initialization poll");
+                }
+
+                if (audioReady) {
+                    AudioControl::ApplyConfiguredVolumesNow();
+                } else {
+                    LogOut("[AUDIO] Runtime volume sync remains deferred; EFZ sound buffers are not ready yet.", true);
+                }
             }
         } catch (...) {
-            LogOut("[AUDIO] Exception while installing runtime audio hooks.", true);
+            LogOut("[AUDIO] Exception while applying runtime audio settings.", true);
         }
         try {
             StartBGMSuppressionPoller();
@@ -377,6 +439,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
         try {
             RemoveInputHook();
             RemoveCollisionHook();
+            CollisionDisplay::Shutdown();
             StopBGMSuppressionPoller();
             SavestateHook::Uninstall();
             // Stop any active overlay rendering

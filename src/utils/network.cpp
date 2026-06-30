@@ -32,6 +32,7 @@ constexpr size_t kRequiredExportSize =
 
 std::atomic<int> s_cachedRevivalVer{0};
 std::atomic<int> s_cachedRevivalFlavor{0};
+std::atomic<int> s_cachedRevival102jVerification{0}; // 0=unchecked, 1=valid, -1=invalid
 
 std::mutex s_reasonMutex;
 std::string s_lastOnlineReason;
@@ -49,6 +50,8 @@ HANDLE s_sharedStateHandle = nullptr;
 const EFZNetplayState* s_sharedStateView = nullptr;
 HMODULE s_exportModule = nullptr;
 NetplayGetStateFn s_exportFn = nullptr;
+
+bool TryReadExportSnapshot(EFZNetplayState& outState, NetplayStateSource& outSource);
 
 void SetOnlineReason(const std::string& reason) {
     std::lock_guard<std::mutex> lock(s_reasonMutex);
@@ -165,6 +168,152 @@ bool LooksLikeRevivalPatchToggler(HMODULE module, uintptr_t rva) {
     return hits >= 8;
 }
 
+bool VerifyRevival102jPeProfile(HMODULE module) {
+    if (!module) return false;
+
+    IMAGE_DOS_HEADER dos{};
+    const uintptr_t base = reinterpret_cast<uintptr_t>(module);
+    if (!SafeReadMemory(base, &dos, sizeof(dos))
+        || dos.e_magic != IMAGE_DOS_SIGNATURE
+        || dos.e_lfanew <= 0
+        || dos.e_lfanew > 0x1000) {
+        return false;
+    }
+
+    IMAGE_NT_HEADERS32 nt{};
+    if (!SafeReadMemory(base + static_cast<uintptr_t>(dos.e_lfanew), &nt, sizeof(nt))
+        || nt.Signature != IMAGE_NT_SIGNATURE
+        || nt.OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR32_MAGIC) {
+        return false;
+    }
+
+    // Revival 1.02j's verified MinGW binary profile. Requiring both values
+    // keeps all J-only hooks and global reads fail-closed on rebuilt DLLs.
+    if (nt.FileHeader.TimeDateStamp != 0x6A36A6AEu
+        || nt.OptionalHeader.SizeOfImage != 0x001D9000u) {
+        return false;
+    }
+
+    // Also pin the critical Practice ABI. J inserted separate full/deleting
+    // destructor slots, moving post-init/tick/hotkey to vtable[2..4]. This
+    // prevents a same-title DLL with an incompatible vtable from being patched.
+    uintptr_t practiceVtable[5] = {};
+    if (!SafeReadMemory(base + 0x0016FF80u, practiceVtable, sizeof(practiceVtable))) {
+        return false;
+    }
+    return practiceVtable[2] == base + 0x0007DE40u
+        && practiceVtable[3] == base + 0x0007E140u
+        && practiceVtable[4] == base + 0x0007CF60u;
+}
+
+bool ReadModulePeProfile(HMODULE module, uint32_t& outTimeDateStamp, uint32_t& outSizeOfImage) {
+    outTimeDateStamp = 0;
+    outSizeOfImage = 0;
+    if (!module) return false;
+
+    IMAGE_DOS_HEADER dos{};
+    const uintptr_t base = reinterpret_cast<uintptr_t>(module);
+    if (!SafeReadMemory(base, &dos, sizeof(dos))
+        || dos.e_magic != IMAGE_DOS_SIGNATURE
+        || dos.e_lfanew <= 0
+        || dos.e_lfanew > 0x1000) {
+        return false;
+    }
+
+    IMAGE_NT_HEADERS32 nt{};
+    if (!SafeReadMemory(base + static_cast<uintptr_t>(dos.e_lfanew), &nt, sizeof(nt))
+        || nt.Signature != IMAGE_NT_SIGNATURE
+        || nt.OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR32_MAGIC) {
+        return false;
+    }
+
+    outTimeDateStamp = nt.FileHeader.TimeDateStamp;
+    outSizeOfImage = nt.OptionalHeader.SizeOfImage;
+    return true;
+}
+
+EfzRevivalVersion ParseRevivalVersionText(std::string text, bool requireRevivalMarker) {
+    if (text.empty()) {
+        return EfzRevivalVersion::Unknown;
+    }
+
+    std::transform(text.begin(), text.end(), text.begin(),
+                   [](unsigned char c) { return static_cast<char>(tolower(c)); });
+
+    if (requireRevivalMarker && text.find("-revival-") == std::string::npos) {
+        return EfzRevivalVersion::Vanilla;
+    }
+
+    if (text.find("1.02f") != std::string::npos) return EfzRevivalVersion::Revival102f;
+    if (text.find("1.02e") != std::string::npos) return EfzRevivalVersion::Revival102e;
+    if (text.find("1.02g") != std::string::npos) return EfzRevivalVersion::Revival102g;
+    if (text.find("1.02h") != std::string::npos) return EfzRevivalVersion::Revival102h;
+    if (text.find("1.02i") != std::string::npos) return EfzRevivalVersion::Revival102i;
+    if (text.find("1.02j") != std::string::npos) return EfzRevivalVersion::Revival102j;
+
+    if (requireRevivalMarker && text.find("-revival-") != std::string::npos) {
+        return EfzRevivalVersion::Other;
+    }
+    return EfzRevivalVersion::Unknown;
+}
+
+EfzRevivalVersion DetectRevivalVersionFromExportState() {
+    EFZNetplayState state{};
+    NetplayStateSource source = NetplayStateSource::None;
+    if (!TryReadExportSnapshot(state, source)) {
+        return EfzRevivalVersion::Unknown;
+    }
+    if ((state.capabilityFlags & EFZ_CAP_REVIVAL) == 0 || state.revivalVersion[0] == '\0') {
+        return EfzRevivalVersion::Unknown;
+    }
+
+    return ParseRevivalVersionText(std::string(state.revivalVersion), false);
+}
+
+EfzRevivalVersion DetectRevivalVersionFromDllProfile() {
+    HMODULE module = GetModuleHandleA("EfzRevival.dll");
+    if (!module) {
+        return EfzRevivalVersion::Unknown;
+    }
+
+    uint32_t timeDateStamp = 0;
+    uint32_t sizeOfImage = 0;
+    if (!ReadModulePeProfile(module, timeDateStamp, sizeOfImage)) {
+        return EfzRevivalVersion::Other;
+    }
+
+    if (sizeOfImage == 0x000B2000u) {
+        switch (timeDateStamp) {
+        case 0x5EA876B0u: return EfzRevivalVersion::Revival102e;
+        case 0x5F8C58A3u:
+        case 0x6085E718u: return EfzRevivalVersion::Revival102f;
+        case 0x6240CE73u: return EfzRevivalVersion::Revival102g;
+        case 0x62929371u: return EfzRevivalVersion::Revival102h;
+        default: break;
+        }
+    }
+    if (timeDateStamp == 0x63BF27EAu && sizeOfImage == 0x000B3000u) {
+        return EfzRevivalVersion::Revival102i;
+    }
+    if (timeDateStamp == 0x6A36A6AEu && sizeOfImage == 0x001D9000u) {
+        return VerifyRevival102jPeProfile(module)
+            ? EfzRevivalVersion::Revival102j
+            : EfzRevivalVersion::Other;
+    }
+
+    return EfzRevivalVersion::Other;
+}
+
+const char* DetectionSourceName(int source) {
+    switch (source) {
+    case 1: return "title";
+    case 2: return "netplay-export";
+    case 3: return "dll-profile";
+    case 4: return "loaded-dll";
+    default: return "unknown";
+    }
+}
+
 bool ProcessHasActiveUdpConnection() {
     DWORD currentPid = GetCurrentProcessId();
 
@@ -191,7 +340,7 @@ bool ProcessHasActiveUdpConnection() {
 
 bool ValidateExportHeader(const EFZNetplayState& state) {
     // Forward-compatible validation (see SHARED_STATE_V7_INTEGRATION.md):
-    // do NOT hard-fail on a higher producer version or a larger struct — newer
+    // do NOT hard-fail on a higher producer version or a larger struct - newer
     // trailing fields are simply ignored (and individually gated by
     // capabilityFlags). We only require the header to be valid and large enough
     // to contain the fields we actually read. The copy below clamps to our own
@@ -214,7 +363,7 @@ bool CopyStableExportSnapshot(const EFZNetplayState* raw, EFZNetplayState& outSt
         uint32_t seqBefore = raw->stateSeq;
         EFZNetplayState local = {};
         // Clamp the copy to our own struct size: a newer producer may publish a
-        // larger struct (structSize > sizeof) — copy only what we understand so
+        // larger struct (structSize > sizeof) - copy only what we understand so
         // we never overrun `local`, and leave unknown trailing fields zeroed.
         const size_t copyBytes = (header.structSize < sizeof(EFZNetplayState))
             ? static_cast<size_t>(header.structSize)
@@ -468,28 +617,77 @@ void CommitRuntimeState(const NetplayRuntimeState& nextState) {
 EfzRevivalVersion GetEfzRevivalVersion() {
     int cached = s_cachedRevivalVer.load(std::memory_order_acquire);
     if (cached != 0) {
-        return static_cast<EfzRevivalVersion>(cached);
+        const EfzRevivalVersion cachedVersion = static_cast<EfzRevivalVersion>(cached);
+        // The training DLL can initialize before Revival's delayed loader. Vanilla is
+        // therefore non-final: once EfzRevival.dll appears, parse/fingerprint again
+        // instead of misclassifying the whole session. "Other" is also rechecked so
+        // an InGameNetplay export that appears later can refine a title-less run.
+        if (cachedVersion != EfzRevivalVersion::Vanilla
+            && cachedVersion != EfzRevivalVersion::Other
+            || GetModuleHandleA("EfzRevival.dll") == nullptr) {
+            return cachedVersion;
+        }
     }
 
+    int detectionSource = 0;
     std::string title = GetEFZWindowTitleA();
-    if (title.empty()) {
-        return EfzRevivalVersion::Unknown;
+    EfzRevivalVersion version = EfzRevivalVersion::Unknown;
+    if (!title.empty()) {
+        version = ParseRevivalVersionText(title, true);
+        if (version != EfzRevivalVersion::Unknown
+            && version != EfzRevivalVersion::Vanilla
+            && version != EfzRevivalVersion::Other) {
+            detectionSource = 1;
+        }
     }
 
-    std::transform(title.begin(), title.end(), title.begin(),
-                   [](unsigned char c) { return static_cast<char>(tolower(c)); });
-
-    EfzRevivalVersion version = EfzRevivalVersion::Vanilla;
-    if (title.find("-revival-") != std::string::npos) {
-        if (title.find("1.02f") != std::string::npos) version = EfzRevivalVersion::Revival102f;
-        else if (title.find("1.02e") != std::string::npos) version = EfzRevivalVersion::Revival102e;
-        else if (title.find("1.02g") != std::string::npos) version = EfzRevivalVersion::Revival102g;
-        else if (title.find("1.02h") != std::string::npos) version = EfzRevivalVersion::Revival102h;
-        else if (title.find("1.02i") != std::string::npos) version = EfzRevivalVersion::Revival102i;
-        else version = EfzRevivalVersion::Other;
+    if (version == EfzRevivalVersion::Unknown
+        || version == EfzRevivalVersion::Vanilla
+        || version == EfzRevivalVersion::Other) {
+        EfzRevivalVersion exportVersion = DetectRevivalVersionFromExportState();
+        if (exportVersion != EfzRevivalVersion::Unknown
+            && exportVersion != EfzRevivalVersion::Vanilla
+            && exportVersion != EfzRevivalVersion::Other) {
+            version = exportVersion;
+            detectionSource = 2;
+        }
     }
 
-    s_cachedRevivalVer.store(static_cast<int>(version), std::memory_order_release);
+    if (version == EfzRevivalVersion::Unknown
+        || version == EfzRevivalVersion::Vanilla
+        || version == EfzRevivalVersion::Other) {
+        EfzRevivalVersion dllVersion = DetectRevivalVersionFromDllProfile();
+        if (dllVersion != EfzRevivalVersion::Unknown) {
+            version = dllVersion;
+            detectionSource = 3;
+        }
+    }
+
+    if (version == EfzRevivalVersion::Unknown && !title.empty()) {
+        version = EfzRevivalVersion::Vanilla;
+    }
+    if (version == EfzRevivalVersion::Vanilla && GetModuleHandleA("EfzRevival.dll") != nullptr) {
+        version = EfzRevivalVersion::Other;
+        detectionSource = 4;
+    }
+
+    const int previous = s_cachedRevivalVer.exchange(static_cast<int>(version), std::memory_order_acq_rel);
+    if (previous != 0 && previous != static_cast<int>(version)) {
+        // Flavor and PE verification are derived from the detected version. Discard
+        // any Vanilla-era result when a delayed Revival load changes that version.
+        s_cachedRevivalFlavor.store(0, std::memory_order_release);
+        s_cachedRevival102jVerification.store(0, std::memory_order_release);
+        LogOut("[REVIVAL] Refreshed cached version after delayed EfzRevival.dll load", true);
+    }
+    if (detectionSource != 0 && previous != static_cast<int>(version)) {
+        std::ostringstream oss;
+        oss << "[REVIVAL] Detected " << EfzRevivalVersionName(version)
+            << " via " << DetectionSourceName(detectionSource);
+        if (!title.empty() && detectionSource != 1) {
+            oss << " (title='" << title << "')";
+        }
+        LogOut(oss.str(), true);
+    }
     return version;
 }
 
@@ -546,6 +744,32 @@ bool IsEfzRevival102fClassicBuild() {
     return GetEfzRevivalDllFlavor() == EfzRevivalDllFlavor::Revival102fClassic;
 }
 
+bool IsEfzRevival102jVerifiedBuild() {
+    if (GetEfzRevivalVersion() != EfzRevivalVersion::Revival102j) {
+        return false;
+    }
+
+    const int cached = s_cachedRevival102jVerification.load(std::memory_order_acquire);
+    if (cached != 0) {
+        return cached > 0;
+    }
+
+    HMODULE module = GetModuleHandleA("EfzRevival.dll");
+    if (!module) {
+        // DLL injection can happen after our initialization. Do not cache a
+        // missing module as a permanent failure.
+        return false;
+    }
+
+    const bool valid = VerifyRevival102jPeProfile(module);
+    s_cachedRevival102jVerification.store(valid ? 1 : -1, std::memory_order_release);
+    LogOut(valid
+        ? "[REVIVAL] Verified EfzRevival 1.02j MinGW binary profile"
+        : "[REVIVAL] Rejected 1.02j title: DLL PE profile does not match the supported build",
+        true);
+    return valid;
+}
+
 const char* EfzRevivalVersionName(EfzRevivalVersion v) {
     switch (v) {
     case EfzRevivalVersion::Unknown: return "Unknown";
@@ -560,6 +784,7 @@ const char* EfzRevivalVersionName(EfzRevivalVersion v) {
     case EfzRevivalVersion::Revival102g: return "Revival 1.02g";
     case EfzRevivalVersion::Revival102h: return "Revival 1.02h";
     case EfzRevivalVersion::Revival102i: return "Revival 1.02i";
+    case EfzRevivalVersion::Revival102j: return "Revival 1.02j";
     case EfzRevivalVersion::Other: return "Revival (Other)";
     default: return "(invalid)";
     }
@@ -594,6 +819,8 @@ bool IsEfzRevivalVersionSupported(EfzRevivalVersion v) {
     case EfzRevivalVersion::Revival102h:
     case EfzRevivalVersion::Revival102i:
         return true;
+    case EfzRevivalVersion::Revival102j:
+        return IsEfzRevival102jVerifiedBuild();
     case EfzRevivalVersion::Revival102f: {
         EfzRevivalDllFlavor flavor = GetEfzRevivalDllFlavor();
         return flavor == EfzRevivalDllFlavor::Revival102fClassic
@@ -624,6 +851,10 @@ OnlineState ReadEfzRevivalOnlineState() {
         || version == EfzRevivalVersion::Other) {
         return OnlineState::Unknown;
     }
+    if (version == EfzRevivalVersion::Revival102j
+        && !IsEfzRevival102jVerifiedBuild()) {
+        return OnlineState::Unknown;
+    }
 
     HMODULE revivalModule = GetModuleHandleA("EfzRevival.dll");
     if (!revivalModule) {
@@ -631,14 +862,48 @@ OnlineState ReadEfzRevivalOnlineState() {
     }
 
     uintptr_t base = reinterpret_cast<uintptr_t>(revivalModule);
+    if (version == EfzRevivalVersion::Revival102j) {
+        int rawRole = -1;
+        uintptr_t session = 0;
+        uintptr_t vtable = 0;
+        if (!SafeReadMemory(base + 0x0014EC40u, &rawRole, sizeof(rawRole))
+            || !SafeReadMemory(base + 0x0014E980u, &session, sizeof(session))
+            || !session
+            || !SafeReadMemory(session, &vtable, sizeof(vtable))) {
+            return OnlineState::Unknown;
+        }
+
+        uintptr_t expectedVtable = 0;
+        switch (rawRole) {
+        case 0: expectedVtable = base + 0x0016FEF0u; break; // rollback
+        case 1: expectedVtable = base + 0x0016FF20u; break; // spectator
+        case 2: expectedVtable = base + 0x0016FF80u; break; // practice
+        case 3: expectedVtable = base + 0x0016FEB0u; break; // compact/tournament
+        default: return OnlineState::Unknown;
+        }
+        if (vtable != expectedVtable) {
+            if (shouldLog) {
+                LogOut("[ONLINE_STATE] Rejected J role read: session vtable does not match role", true);
+            }
+            return OnlineState::Unknown;
+        }
+
+        const OnlineState state = mapState(rawRole);
+        SetOnlineReason(std::string("Verified J role RVA 0x14EC40 => ") + OnlineStateName(state));
+        return state;
+    }
+
     uintptr_t ctx = 0;
     uintptr_t ctxPtrAddr = base + 0x26A4;
-    if (shouldLog) {
+    if (shouldLog && version != EfzRevivalVersion::Revival102j) {
         LogOut("[ONLINE_STATE] Checking pointer-based path at EfzRevival.dll+0x26A4 (VA=0x"
             + FormatHexAddress(ctxPtrAddr) + ")", true);
     }
 
-    if (SafeReadMemory(ctxPtrAddr, &ctx, sizeof(ctx)) && ctx != 0) {
+    // J removed this legacy context layout. Its role is a verified direct
+    // global below, so never interpret dll+0x26A4 as a J pointer.
+    if (version != EfzRevivalVersion::Revival102j
+        && SafeReadMemory(ctxPtrAddr, &ctx, sizeof(ctx)) && ctx != 0) {
         size_t offset = (version == EfzRevivalVersion::Revival102i) ? 0x37C : 0x370;
         int raw = 0;
         uintptr_t stateAddr = ctx + offset;
@@ -748,7 +1013,7 @@ void RefreshNetplayRuntimeState() {
         // v7 behavioral correction (see SHARED_STATE_V7_INTEGRATION.md):
         // A host can keep a listener alive while using EFZ normally ("async
         // hosting"). That reports activityPhase == HOST_IDLE while the session
-        // sits in a connecting phase — which would otherwise trip phaseActive
+        // sits in a connecting phase - which would otherwise trip phaseActive
         // and suspend training. Background hosting is NOT a live match, so we
         // must stay active. A genuine charselect/match (inFlow) always wins.
         const bool hostIdleBackground =
@@ -765,7 +1030,7 @@ void RefreshNetplayRuntimeState() {
         bool exportOwnsRuntime =
             inMenu || inFlow || activityActive || phaseActive || legacyOnline;
         if (hostIdleBackground) {
-            // Background async hosting only — coexist with the local session.
+            // Background async hosting only - coexist with the local session.
             exportOwnsRuntime = false;
         }
 

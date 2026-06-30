@@ -283,7 +283,7 @@ static void LogCharacterSelectDiagnostics() {
     // Practice controller diagnostics (best-effort)
     PauseIntegration::EnsurePracticePointerCapture();
     void* prac = PauseIntegration::GetPracticeControllerPtr();
-    if (prac) {
+    if (prac && EFZ_SupportsNativePracticeSideSwitch()) {
         uint8_t* pr = reinterpret_cast<uint8_t*>(prac);
         int local=-1, remote=-1; uintptr_t prim=0, sec=0; int initSrc=-1; uint8_t guiPos=0xFF;
         SafeReadMemory((uintptr_t)pr + PRACTICE_OFF_LOCAL_SIDE_IDX, &local, sizeof(local));
@@ -297,8 +297,10 @@ static void LogCharacterSelectDiagnostics() {
            << "  primary=" << FM_Hex(prim) << " secondary=" << FM_Hex(sec)
            << "  initSrc=" << initSrc << "  GUI_POS(+0x24)=" << (int)guiPos;
         LogOut(os.str(), true); os.str(""); os.clear();
-    } else {
+    } else if (EFZ_SupportsNativePracticeSideSwitch()) {
         LogOut("[CS][DIAG] Practice controller: <unavailable>", true);
+    } else if (GetEfzRevivalVersion() == EfzRevivalVersion::Revival102j) {
+        LogOut("[CS][DIAG] Practice routing fields: unavailable in 1.02j compact layout", true);
     }
 
     // Our override/patch states
@@ -1111,11 +1113,13 @@ void FrameDataMonitor() {
                     // So consistency means: (active == 0 && guiPos == 1) OR (active == 1 && guiPos == 0).
                     bool guiConsistent = true; // default to true if we cannot read it
                     uint8_t guiPos = 0xFF;
-                    PauseIntegration::EnsurePracticePointerCapture();
-                    if (void* prac = PauseIntegration::GetPracticeControllerPtr()) {
-                        SafeReadMemory((uintptr_t)prac + PRACTICE_OFF_GUI_POS, &guiPos, sizeof(guiPos));
-                        if (guiPos == 0u || guiPos == 1u) {
-                            guiConsistent = ((active == 0u && guiPos == 1u) || (active == 1u && guiPos == 0u));
+                    if (EFZ_SupportsNativePracticeSideSwitch()) {
+                        PauseIntegration::EnsurePracticePointerCapture();
+                        if (void* prac = PauseIntegration::GetPracticeControllerPtr()) {
+                            SafeReadMemory((uintptr_t)prac + PRACTICE_OFF_GUI_POS, &guiPos, sizeof(guiPos));
+                            if (guiPos == 0u || guiPos == 1u) {
+                                guiConsistent = ((active == 0u && guiPos == 1u) || (active == 1u && guiPos == 0u));
+                            }
                         }
                     }
                     // Additional gate: only capture baseline when we observe the expected default Practice mapping (P1 human, P2 CPU)
@@ -1152,12 +1156,16 @@ void FrameDataMonitor() {
                             bool okA = true; // we are not writing active here intentionally
                             // If Practice controller exists and GUI_POS disagrees with desired active, align it
                             bool okGui = true;
-                            if (void* prac = PauseIntegration::GetPracticeControllerPtr()) {
-                                uint8_t curGui = 0xFF;
-                                SafeReadMemory((uintptr_t)prac + PRACTICE_OFF_GUI_POS, &curGui, sizeof(curGui));
-                                // Align GUI to the engine-reported active player (not baseline) to keep UI consistent
-                                if ((curGui == 0u || curGui == 1u) && curGui != active) {
-                                    uint8_t newGui = active; okGui = SafeWriteMemory((uintptr_t)prac + PRACTICE_OFF_GUI_POS, &newGui, sizeof(newGui));
+                            if (EFZ_SupportsNativePracticeSideSwitch()) {
+                                void* prac = PauseIntegration::GetPracticeControllerPtr();
+                                if (prac) {
+                                    uint8_t curGui = 0xFF;
+                                    SafeReadMemory((uintptr_t)prac + PRACTICE_OFF_GUI_POS, &curGui, sizeof(curGui));
+                                    // Align GUI to the engine-reported active player (not baseline) to keep UI consistent
+                                    if ((curGui == 0u || curGui == 1u) && curGui != active) {
+                                        uint8_t newGui = active;
+                                        okGui = SafeWriteMemory((uintptr_t)prac + PRACTICE_OFF_GUI_POS, &newGui, sizeof(newGui));
+                                    }
                                 }
                             }
                             // Mark for post-CS CPU flag application if needed

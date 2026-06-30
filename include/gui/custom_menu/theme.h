@@ -5,7 +5,7 @@
 namespace CustomMenu::Theme {
 
 // ===== Canvas =====
-// Virtual design resolution — all coordinates are in this space.
+// Virtual design resolution - all coordinates are in this space.
 constexpr float kCanvasW = 640.0f;
 constexpr float kCanvasH = 480.0f;
 
@@ -36,7 +36,7 @@ constexpr ImU32 kButtonActiveBg  = IM_COL32(255, 255, 255,  40);
 constexpr ImU32 kButtonHoverBg   = IM_COL32(255, 255, 255,  20);
 
 // ===== Panel metrics =====
-// Main menu panel — full-width, like EFZ's native option/replay screens.
+// Main menu panel - full-width, like EFZ's native option/replay screens.
 constexpr float kPanelW          = 640.0f;
 constexpr float kPanelH          = 480.0f;
 constexpr float kPanelPadX       = 28.0f;

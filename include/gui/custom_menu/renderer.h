@@ -9,7 +9,7 @@ namespace CustomMenu {
 void PrepareFrame();
 
 // Called once per EndScene frame from HookedEndScene (gated by
-// Config::useCustomMenu). Queries ImGuiImpl::IsVisible() internally — only
+// Config::useCustomMenu). Queries ImGuiImpl::IsVisible() internally - only
 // draws when the menu is open.
 //
 // Uses ImGui::GetBackgroundDrawList() on the 640x480 render target and does

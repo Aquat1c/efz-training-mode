@@ -13,10 +13,10 @@ bool IsGameWindowActive();
 void ResetEdges();
 
 // Edge-detected navigation queries. Each returns true exactly once per "press"
-// — where "press" is the foreground-window-gated physical state sampled in
+// - where "press" is the foreground-window-gated physical state sampled in
 // input.cpp.
 //
-// Safe to query multiple times within the same frame — internally cached so
+// Safe to query multiple times within the same frame - internally cached so
 // every query sees the same physical snapshot.
 
 bool NavUp();
@@ -34,12 +34,12 @@ bool Back();
 // Switch active player column on the Values screen: EFZ D button / gamepad Y.
 bool SwitchPlayer();
 
-// Tab navigation — cycles top-level tabs. LB/RB on controller; PageUp/PageDown
+// Tab navigation - cycles top-level tabs. LB/RB on controller; PageUp/PageDown
 // on keyboard.
 bool TopTabPrev();
 bool TopTabNext();
 
-// Sub-tab navigation — cycles sub-tabs within the active top tab.
+// Sub-tab navigation - cycles sub-tabs within the active top tab.
 // LT/RT trigger bits on controller; '[' / ']' on keyboard.
 bool SubTabPrev();
 bool SubTabNext();

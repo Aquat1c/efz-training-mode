@@ -3,6 +3,10 @@
 #include <string>
 #include <unordered_map>
 
+#ifndef EFZ_ENABLE_NAGAMORI_COLLISION_DEBUG
+#define EFZ_ENABLE_NAGAMORI_COLLISION_DEBUG 0
+#endif
+
 namespace Config {
     struct Settings {
         // General settings
@@ -20,6 +24,18 @@ namespace Config {
     int  seVolumePercent;        // 0..100, 100 = current/default SE level
     int  frameBarTimingMode;     // 0 = subframes, 1 = visual frames
     int  frameBarDetailMode;     // 0 = full, 1 = compact, 2 = bars only
+    bool collisionDisplayHitboxes;
+    bool collisionDisplayHurtboxes;
+    bool collisionDisplayCollisionBoxes;
+    bool collisionDisplayProjectileInteractions;
+    int  collisionDisplayFillAlphaPercent; // 0..100 box fill alpha; outlines stay readable
+    bool collisionDisplayProjectileBoxes;
+    bool collisionDisplayProjectileOrigins;
+    bool collisionDisplayProjectileIntersections;
+#if EFZ_ENABLE_NAGAMORI_COLLISION_DEBUG
+    bool collisionDisplayNagamoriRanges;
+    bool collisionDisplayNagamoriAffected;
+#endif
     bool enableCharacterSelectLogger; // NEW: Toggle per-frame Character Select flag logger
     bool showPracticeEntryHint;   // NEW: Show practice overlay hint once per session
     float uiScale;               // NEW: UI scale for ImGui window (e.g., 0.80..1.20)

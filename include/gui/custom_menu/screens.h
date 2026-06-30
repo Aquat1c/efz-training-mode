@@ -48,7 +48,7 @@ struct Row {
     RowKind kind;
     const char* label;
 
-    // Data hooks — only the one relevant to `kind` is used.
+    // Data hooks - only the one relevant to `kind` is used.
     bool*  boolPtr;
 
     RowCustomRenderer customDraw;
@@ -256,7 +256,7 @@ void CrAdjustCell(int player, int row, int direction, bool bigStep);
 void CrActivateCell(int player, int row);
 void ResetContinuousRecoveryEditorState();
 
-// Engine regen UI mirrors — used to fix F4/F5 param ambiguity and value locks.
+// Engine regen UI mirrors - used to fix F4/F5 param ambiguity and value locks.
 void CorrectValueLocksForEngineRegenUi(GuiValueLocks::State& locks);
 
 // AUTO top-tab sub-panes:
@@ -277,13 +277,14 @@ void TickHelpGuide    (ImDrawList* dl, const ScreenLayout& layout, int& focus, S
 void TickHelpResources(ImDrawList* dl, const ScreenLayout& layout, int& focus, ScrollState& scroll, bool& backEdge);
 void TickHelpAbout    (ImDrawList* dl, const ScreenLayout& layout, int& focus, ScrollState& scroll, bool& backEdge);
 
-// Popup (modal dropdown) state — exposed so the renderer can draw it last
+// Popup (modal dropdown) state - exposed so the renderer can draw it last
 // (so it overlays the screen) and query whether it's currently consuming
 // input.
 bool IsPopupActive();
 bool TickPopupIfOpen(ImDrawList* dl, const ScreenLayout& layout);
 bool IsSubmenuActive();
 void ResetSubmenus();
+void ResetMouseTracking();
 void ResetHotswapMenuSeed();
 bool IsTextEditorActive();
 void ResetTextEditor();
@@ -298,7 +299,7 @@ struct MenuNavigationRequest {
     int submenuFocusRow = 0;
 };
 
-// Pane ids mirror renderer.cpp `Pane` enum — keep in sync.
+// Pane ids mirror renderer.cpp `Pane` enum - keep in sync.
 namespace MenuPane {
     constexpr int Values           = 0;
     constexpr int Opponent         = 1;

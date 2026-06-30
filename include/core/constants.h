@@ -173,14 +173,14 @@
 #define IC_FLASH_DURATION 89        // 29.66 visual frames * 3
 #define SUPERFLASH_BLACK_BG_OFFSET 1  // First subframe of black bg isn't part of freeze
 
-// Untech memory offset (also: "recovery cooldown" in canPerformAirRecovery —
+// Untech memory offset (also: "recovery cooldown" in canPerformAirRecovery -
 // gates when the defender can air-tech).
 #define UNTECH_OFFSET 0x124
 
 // Multi-purpose state-timer (short, +0x14A/330). On the *defender* this is the
 // remaining blockstun/hitstun freeze; on the *attacker* it's the hit-hitstop
 // frames remaining (set from attack_data +194 / +196 the moment the attack
-// resolves — see processProjectileCollision in efz.c). Decremented every
+// resolves - see processProjectileCollision in efz.c). Decremented every
 // non-frozen frame for whichever player it belongs to. Despite the historical
 // "blockstun" name, this is the field that drives **shared hit-hitstop**:
 // when both players have +0x14A > 0 the engine doesn't advance gameplay timers
@@ -231,12 +231,12 @@
 
 // "Cooldown" / lockout counter family (each decrements while opponent's
 // hitstop is 0). Their write sites confirm specific semantics:
-//   +0x138 (312)  guard-cancel / "no-RG" lockout — gates RG eligibility
+//   +0x138 (312)  guard-cancel / "no-RG" lockout - gates RG eligibility
 //                 (wiki: 10F cooldown after a missed RG attempt)
 //   +0x130 (304)  byte-sized frame lockout refreshed by frame hit flags and
 //                 checked by collision code for some airborne interactions
-//   +0x13A (314)  generic state lockout — set to 1/2 by character scripts
-//   +0x13C (316)  "in special state" — checked by hit handler to forbid RG
+//   +0x13A (314)  generic state lockout - set to 1/2 by character scripts
+//   +0x13C (316)  "in special state" - checked by hit handler to forbid RG
 //   +0x13E (318)  per-state cooldown
 //   +0x140 (320)  per-state cooldown
 #define PLAYER_FRAME_LOCKOUT_OFFSET    0x130
@@ -255,7 +255,7 @@
 // Set on the *attacker* by the hit handler the frame the attack resolves.
 #define PLAYER_HIT_STATE_OFFSET   0x168
 
-// Attacker move countdown — decremented by 1 every time an attack resolves
+// Attacker move countdown - decremented by 1 every time an attack resolves
 // (RG / block / hit / throw). Used by the engine to time "attack ended" state.
 #define PLAYER_ATTACK_TIMER_OFFSET 0x16C
 
@@ -285,7 +285,7 @@
 #define PLAYER_WALLBOUNCE_FLAG_OFFSET 0x128 // DWORD (attack flag bit 0x400)
 #define PLAYER_GROUND_BOUNCE_FLAG_OFFSET 0x12C // DWORD (attack flag bit 0x800)
 
-// Pre-hit HP snapshot — combo display reads this minus current HP for damage.
+// Pre-hit HP snapshot - combo display reads this minus current HP for damage.
 // Already exists as HP_BAR_OFFSET (0x10C); see existing constant above.
 
 // ===== Attack-data fields (within frame_data 200-byte block) =====
@@ -295,10 +295,10 @@
 #define ATTACK_DATA_BASE_DAMAGE_OFFSET    0xA0  // short
 #define ATTACK_DATA_CHIP_DAMAGE_OFFSET    0xA8  // short
 #define ATTACK_DATA_FLAGS_OFFSET          0xAA  // word (already FRAME_ATTACK_PROPS_OFFSET)
-#define ATTACK_DATA_AIR_HIT_OVERRIDE      0xAC  // short — defender moveID for air-hit reaction
+#define ATTACK_DATA_AIR_HIT_OVERRIDE      0xAC  // short - defender moveID for air-hit reaction
 #define ATTACK_DATA_GROUND_HIT_OVERRIDE   0xAE  // short
 #define ATTACK_DATA_HIT_FLAGS_OFFSET      0xB0  // word (already FRAME_HIT_PROPS_OFFSET)
-#define ATTACK_DATA_GUARD_FLAGS_OFFSET    0xB2  // word — stun duration scalar
+#define ATTACK_DATA_GUARD_FLAGS_OFFSET    0xB2  // word - stun duration scalar
 #define ATTACK_DATA_METER_GAIN_BLOCK      0xB6  // short
 #define ATTACK_DATA_KNOCKBACK_X           0xB8  // float
 #define ATTACK_DATA_KNOCKBACK_Y           0xBC  // float

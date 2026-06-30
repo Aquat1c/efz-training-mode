@@ -15,6 +15,10 @@
 #include <thread>
 #include <vector>
 
+#ifndef EFZ_ENABLE_INPUT_LOGS
+#define EFZ_ENABLE_INPUT_LOGS 0
+#endif
+
 namespace XInputShim {
     std::atomic<bool> g_LogGenericPadInputDebug{false};
 }
@@ -38,6 +42,11 @@ namespace {
         DWORD packetCounter = 0;
         bool connected = false;
         bool neutralStateValid = false;
+        WORD startupBlockedButtons = 0;
+        int startupBlockWarmupFrames = 8;
+        bool startupBlockedLeftTrigger = false;
+        bool startupBlockedRightTrigger = false;
+        int startupTriggerBlockWarmupFrames = 8;
         std::string lastInputDebugSummary;
     };
 
@@ -424,8 +433,88 @@ namespace {
     }
 
     static void MapAxisDpadFallback(const GenericPad& pad, WORD& buttons) {
+        // Axis fallback is useful for older DirectInput-only pads, but it is
+        // unsafe before we have observed a neutral sample. Some DualSense-mode
+        // leverless/mixbox devices report unused axes parked at full extremes;
+        // treating those raw values as directions makes the menu hold Up/Left
+        // forever while the controller is idle.
+        if (!pad.neutralStateValid) {
+            return;
+        }
         const AxisPairCandidate best = ResolveStrongestNavAxisPair(pad);
         MapAxisPairToDpad(best.x, best.y, buttons);
+    }
+
+    static WORD ApplyStartupHeldButtonBlock(GenericPad& pad, WORD buttons) {
+        // If a DirectInput device enumerates with buttons/POV already reported
+        // down, treat those as "held before we started listening" and suppress
+        // them until they release. This mirrors the menu edge reset rule and
+        // prevents devices with bogus idle POV/button state from immediately
+        // becoming valid UI navigation.
+        if (pad.startupBlockWarmupFrames > 0) {
+            const WORD newlyBlocked = static_cast<WORD>(buttons & ~pad.startupBlockedButtons);
+            pad.startupBlockedButtons |= buttons;
+            --pad.startupBlockWarmupFrames;
+            if (newlyBlocked && detailedLogging.load()) {
+#if EFZ_ENABLE_INPUT_LOGS
+                std::ostringstream oss;
+                oss << "[GAMEPAD] DirectInput startup-held buttons masked for "
+                    << pad.name << " buttons=0x" << std::hex << std::uppercase
+                    << static_cast<unsigned>(newlyBlocked)
+                    << std::dec << " until release";
+                LogOut(oss.str(), true);
+#endif
+            }
+        }
+
+        if (pad.startupBlockedButtons == 0) {
+            return buttons;
+        }
+
+        const WORD blockedStillHeld = static_cast<WORD>(buttons & pad.startupBlockedButtons);
+        const WORD filtered = static_cast<WORD>(buttons & ~blockedStillHeld);
+        pad.startupBlockedButtons = blockedStillHeld;
+        return filtered;
+    }
+
+    static void ApplyStartupHeldTriggerBlock(GenericPad& pad, BYTE& leftTrigger, BYTE& rightTrigger) {
+        constexpr BYTE kHeldThreshold = 30;
+        const bool leftHeld = leftTrigger > kHeldThreshold;
+        const bool rightHeld = rightTrigger > kHeldThreshold;
+
+        if (pad.startupTriggerBlockWarmupFrames > 0) {
+            const bool newlyBlockedLeft = leftHeld && !pad.startupBlockedLeftTrigger;
+            const bool newlyBlockedRight = rightHeld && !pad.startupBlockedRightTrigger;
+            pad.startupBlockedLeftTrigger = pad.startupBlockedLeftTrigger || leftHeld;
+            pad.startupBlockedRightTrigger = pad.startupBlockedRightTrigger || rightHeld;
+            --pad.startupTriggerBlockWarmupFrames;
+            if ((newlyBlockedLeft || newlyBlockedRight) && detailedLogging.load()) {
+#if EFZ_ENABLE_INPUT_LOGS
+                std::ostringstream oss;
+                oss << "[GAMEPAD] DirectInput startup-held triggers masked for "
+                    << pad.name
+                    << " LT=" << static_cast<int>(leftTrigger)
+                    << " RT=" << static_cast<int>(rightTrigger)
+                    << " until release";
+                LogOut(oss.str(), true);
+#endif
+            }
+        }
+
+        if (pad.startupBlockedLeftTrigger) {
+            if (leftHeld) {
+                leftTrigger = 0;
+            } else {
+                pad.startupBlockedLeftTrigger = false;
+            }
+        }
+        if (pad.startupBlockedRightTrigger) {
+            if (rightHeld) {
+                rightTrigger = 0;
+            } else {
+                pad.startupBlockedRightTrigger = false;
+            }
+        }
     }
 
     static SHORT ClampAxisToShort(LONG value) {
@@ -466,6 +555,7 @@ namespace {
     }
 
     static void MaybeLogGenericPadInput(GenericPad& pad, const XINPUT_STATE& state) {
+#if EFZ_ENABLE_INPUT_LOGS
         if (!XInputShim::g_LogGenericPadInputDebug.load()) return;
         if (!RawStateHasInterestingInput(pad) && state.Gamepad.wButtons == 0
             && state.Gamepad.bLeftTrigger == 0 && state.Gamepad.bRightTrigger == 0) {
@@ -506,6 +596,10 @@ namespace {
             << (pad.neutralStateValid ? AxisDelta(pad.rawState.lRz, pad.neutralState.lRz) : pad.rawState.lRz) << ";"
             << (pad.neutralStateValid ? AxisDelta(pad.rawState.rglSlider[0], pad.neutralState.rglSlider[0]) : pad.rawState.rglSlider[0]) << ","
             << (pad.neutralStateValid ? AxisDelta(pad.rawState.rglSlider[1], pad.neutralState.rglSlider[1]) : pad.rawState.rglSlider[1]) << ")"
+            << " startupBlock=0x" << std::hex << std::uppercase << pad.startupBlockedButtons
+            << std::dec
+            << " startupTrigBlock=" << (pad.startupBlockedLeftTrigger ? "L" : "-")
+            << (pad.startupBlockedRightTrigger ? "R" : "-")
             << " synthetic{buttons=0x" << std::hex << std::uppercase << state.Gamepad.wButtons
             << std::dec
             << " LT=" << static_cast<int>(state.Gamepad.bLeftTrigger)
@@ -520,6 +614,10 @@ namespace {
             pad.lastInputDebugSummary = summary;
             LogOut(summary, true);
         }
+#else
+        (void)pad;
+        (void)state;
+#endif
     }
 
     XINPUT_STATE BuildSyntheticState(GenericPad& pad) {
@@ -562,18 +660,22 @@ namespace {
         if ((buttons & (XINPUT_GAMEPAD_DPAD_UP | XINPUT_GAMEPAD_DPAD_DOWN | XINPUT_GAMEPAD_DPAD_LEFT | XINPUT_GAMEPAD_DPAD_RIGHT)) == 0) {
             MapAxisDpadFallback(pad, buttons);
         }
+        buttons = ApplyStartupHeldButtonBlock(pad, buttons);
 
         state.Gamepad.wButtons = buttons;
-        state.Gamepad.bLeftTrigger = ButtonDown(pad.rawState, 6) ? 255 : 0;
-        state.Gamepad.bRightTrigger = ButtonDown(pad.rawState, 7) ? 255 : 0;
-        if (state.Gamepad.bLeftTrigger == 0 && state.Gamepad.bRightTrigger == 0) {
+        BYTE leftTrigger = ButtonDown(pad.rawState, 6) ? 255 : 0;
+        BYTE rightTrigger = ButtonDown(pad.rawState, 7) ? 255 : 0;
+        if (leftTrigger == 0 && rightTrigger == 0) {
             // Some DirectInput pads expose analog triggers on Z/Rz instead of digital buttons.
-            state.Gamepad.bLeftTrigger = TriggerFromAxisPositive(-pad.rawState.lZ);
-            state.Gamepad.bRightTrigger = TriggerFromAxisPositive(pad.rawState.lZ);
-            if (state.Gamepad.bRightTrigger == 0) {
-                state.Gamepad.bRightTrigger = TriggerFromAxisPositive(pad.rawState.lRz);
+            leftTrigger = TriggerFromAxisPositive(-pad.rawState.lZ);
+            rightTrigger = TriggerFromAxisPositive(pad.rawState.lZ);
+            if (rightTrigger == 0) {
+                rightTrigger = TriggerFromAxisPositive(pad.rawState.lRz);
             }
         }
+        ApplyStartupHeldTriggerBlock(pad, leftTrigger, rightTrigger);
+        state.Gamepad.bLeftTrigger = leftTrigger;
+        state.Gamepad.bRightTrigger = rightTrigger;
         LONG leftStickX = 0;
         LONG leftStickY = 0;
         ResolvePreferredLeftStickAxes(pad, leftStickX, leftStickY);

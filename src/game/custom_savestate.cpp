@@ -1362,7 +1362,7 @@ size_t RefreshRestoreTargetPlayerStatePointers(std::vector<uint8_t>& snapshotPla
                                                  maxSamples);
     }
     // The generic committed-private rehydration below remaps ANY field whose saved
-    // value differs from live and looks like a committed-private heap pointer — and
+    // value differs from live and looks like a committed-private heap pointer - and
     // Rumi's resource-table addresses qualify. So when preserving the stance, take
     // the saved +0x10 / +0x164 values now (they are still the saved values because
     // the explicit refresh above was skipped) and write them back afterward.
@@ -2236,6 +2236,7 @@ SnapshotVersionFamily ClassifySnapshotVersionFamily(uint32_t versionValue) {
     case EfzRevivalVersion::Revival102g:
     case EfzRevivalVersion::Revival102h:
     case EfzRevivalVersion::Revival102i:
+    case EfzRevivalVersion::Revival102j:
         return SnapshotVersionFamily::Revival102x;
     default:
         return SnapshotVersionFamily::Other;
@@ -2935,7 +2936,7 @@ bool RestoreSnapshot(const Snapshot& snapshot, std::string& outReason, bool engi
     const bool gameStateOk = WriteMemoryBlock(gameStatePtr, gameStateBytes);
     const bool p1Ok = WriteMemoryBlock(p1Base, snapshot.p1State);
     const bool p2Ok = WriteMemoryBlock(p2Base, snapshot.p2State);
-    // Revival never restores render-side surfaces in a savestate — sprites are
+    // Revival never restores render-side surfaces in a savestate - sprites are
     // re-derived from the restored logic state each frame. Writing back a stale
     // captured render bitmap is a source of the sprite/visual "bleed", so leave
     // the live surface untouched (1:1 with Revival). Still captured for snapshot
@@ -3354,6 +3355,7 @@ SnapshotActionResult RestoreWorkingSnapshotInternalImpl(std::string& outReason,
         return SnapshotActionResult::GuardBlocked;
     }
 
+    const bool restoreStartedFromOwnedFramestepPause = Framestep::OwnsPauseState();
     Framestep::CancelActiveState(engineOnlyLocalSideRestore
                                      ? "savestate restore control reconcile"
                                      : "savestate restore");
@@ -3375,7 +3377,7 @@ SnapshotActionResult RestoreWorkingSnapshotInternalImpl(std::string& outReason,
 
     // Pointer rehydration keeps resource/runtime pointers (stage, effect, bullet
     // and sprite resource tables, opponent/gameState/render/input/sound) valid on
-    // restore — it must run for every restore. The Rumi-stance carve-out is NOT
+    // restore - it must run for every restore. The Rumi-stance carve-out is NOT
     // done here (that would also disable the resource-pointer fixups and corrupt
     // stages/effects/bullets); it is handled field-selectively inside
     // RefreshRestoreTargetPlayerStatePointers, which preserves the saved stance
@@ -3400,6 +3402,7 @@ SnapshotActionResult RestoreWorkingSnapshotInternalImpl(std::string& outReason,
             return SnapshotActionResult::RuntimeFailure;
         }
     }
+    Framestep::FinishSavestateRestore(restoreStartedFromOwnedFramestepPause);
     s_postRestoreStabilizationFrames.store(kPostRestoreStabilizationFrames, std::memory_order_release);
     LogSavestateTrace("restore stabilize arm",
                       "skipHeavyFrames=" + std::to_string(kPostRestoreStabilizationFrames));

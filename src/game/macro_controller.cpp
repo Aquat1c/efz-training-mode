@@ -9,6 +9,7 @@
 #include "../include/input/input_buffer.h"    // INPUT_BUFFER_* constants
 #include "../include/input/injection_control.h" // g_forceBypass
 #include "../include/input/input_motion.h"      // g_manualInputOverride/g_manualInputMask
+#include "../include/input/input_hook.h"        // playback poll-consumption audit
 #include "../include/game/auto_action.h" // Enable/Restore P2 control helpers
 #include "../include/utils/switch_players.h"
 #include "../include/utils/pause_integration.h"
@@ -21,6 +22,7 @@
 #include <iomanip>
 #include <cctype>
 #include <algorithm>
+#include <mutex>
 
 // Forward decls in case headers aren't visible due to include order in some TU configs
 extern uintptr_t GetEFZBase();
@@ -67,6 +69,11 @@ namespace {
     std::atomic<MacroController::State> s_state{ MacroController::State::Idle };
     Slot s_slots[kMaxSlots];
     std::atomic<int> s_curSlot{1}; // 1-based
+    // Recording ticks run on the frame-monitor thread while record/stop hotkeys run on
+    // the input thread. Protect slot mutation and explicitly gate ticks during finalization
+    // so the authoritative stream cannot grow while it is being sealed and dumped.
+    std::mutex s_recordMutex;
+    bool s_recordFinalizing = false;
     // Remember local side to restore after recording
     std::atomic<int> s_prevLocalSide{-1}; // -1 means unknown
     // Overlay banner ID (permanent message)
@@ -111,6 +118,7 @@ namespace {
     // Playback synchronization: track last seen buffer index to detect when engine advances
     uint16_t s_lastSeenBufIdx = 0xFFFF;  // Last buffer index we observed
     bool s_playbackBufIdxSyncInitialized = false;
+    bool s_playbackPollAuditLogged = false;
 
     // Logging state for move ID tracking
     bool s_logPrevMoveIdInit = false;
@@ -428,6 +436,7 @@ namespace {
         s_finishGuardActive = false; s_finishGuardFramesLeft = 0; s_finishGuardStartMoveId = 0;
         // Reset playback buffer index synchronization
         s_lastSeenBufIdx = 0xFFFF; s_playbackBufIdxSyncInitialized = false;
+        s_playbackPollAuditLogged = false;
         s_logPrevMoveIdInit = false; s_logPrevMoveId = 0;
         s_firstAttackSeen = false;
         ImmediateInput::Clear(2);
@@ -446,8 +455,13 @@ namespace {
     }
 
     void FinishRecording() {
-        MacroController::State st = s_state.load();
-        if (st != MacroController::State::Recording) return;
+        std::unique_lock<std::mutex> recordLock(s_recordMutex);
+        if (s_state.load(std::memory_order_acquire) != MacroController::State::Recording
+            || s_recordFinalizing) {
+            return;
+        }
+        s_recordFinalizing = true;
+
         // Flush any pending span
         if (s_recSpanTicks > 0) {
             int slotIdx = ClampSlot(s_curSlot.load()) - 1;
@@ -488,7 +502,16 @@ namespace {
             }
             s_slots[slotIdx].bufEndIdx = endIdx;
         }
-    s_recSpanTicks = 0; s_recLastMask = 0; s_recLastBuf = 0; s_recPrevBufIdx = -1; s_recLastFacing = 0;
+        s_recSpanTicks = 0;
+        s_recLastMask = 0;
+        s_recLastBuf = 0;
+        s_recPrevBufIdx = -1;
+        s_recLastFacing = 0;
+
+        // The slot is now sealed. Release the writer lock before the intentionally
+        // verbose diagnostics; frame ticks will see s_recordFinalizing and return.
+        recordLock.unlock();
+
         // Snapshot P2 buffer and immediate regs at end
         LogP2BufferSnapshot("end");
         LogP2ImmediateSnapshot("end");
@@ -532,7 +555,11 @@ namespace {
             }
         }
             }
-                s_state.store(MacroController::State::Idle);
+        {
+            std::lock_guard<std::mutex> lock(s_recordMutex);
+            s_state.store(MacroController::State::Idle, std::memory_order_release);
+            s_recordFinalizing = false;
+        }
         // Restore P2 control if we overrode it during pre-record
         if (g_p2ControlOverridden) RestoreP2ControlState();
         // Swap back to P1 local side after recording for convenience
@@ -614,6 +641,12 @@ void Tick() {
 
     State st = s_state.load();
     if (st == State::Recording) {
+        std::unique_lock<std::mutex> recordLock(s_recordMutex);
+        if (s_state.load(std::memory_order_acquire) != State::Recording
+            || s_recordFinalizing) {
+            return;
+        }
+
         // Frame-step aware progression:
         // - When not frozen: advance every 3rd internal frame (approx 64 Hz).
         // - When frozen (paused): only advance when P2's input buffer index has advanced (indicates a stepped frame).
@@ -779,7 +812,7 @@ void Tick() {
             // Probe current MoveID
             uint16_t mv = GetPlayerMoveID(2);
             bool activated = IsActivationMove(mv);
-            if (activated || s_finishGuardFramesLeft <= 0) {
+                if (activated || s_finishGuardFramesLeft <= 0) {
                 // Finalize: restore control and cleanup
                 s_finishGuardActive = false;
                 s_state.store(State::Idle);
@@ -813,7 +846,8 @@ void Tick() {
                        " slot=" + std::to_string(s_curSlot.load()) +
                        " lastMoveID=" + std::to_string((int)mv) +
                        " streamBytes=" + std::to_string((int)s_slots[slotIdx].macroStream.size()) +
-                       " bufWrites=" + std::to_string((int)s_slots[slotIdx].bufStream.size()), true);
+                       " bufWrites=" + std::to_string((int)s_slots[slotIdx].bufStream.size()) +
+                       " pollHits=" + std::to_string(GetInputPollOverrideHitCount(2)), true);
                 DirectDrawHook::AddMessage("Macro: Replay finished", "MACRO", RGB(180,255,180), 1200, 0, 120);
                 return;
             }
@@ -857,8 +891,16 @@ void Tick() {
             (void)ClearPlayerCommandFlags(2);
             return;
         }
-        // Replay runs every internal frame to better match engine read cadence
-        if (ReadGamespeedFrozen()) return; // pause-safe
+        // Replay runs every internal frame to better match engine read cadence.
+        // While paused/frozen, keep the poll override alive but only advance the
+        // macro cursor when a real frame-step signal is observed. Recording uses
+        // the same frozen-step gate, so playback stays aligned with macros made
+        // under frame stepping instead of waiting for tiny unpaused windows.
+        const bool playbackFrozen = ReadGamespeedFrozen();
+        bool playbackStepAdvanced = false;
+        if (playbackFrozen) {
+            playbackStepAdvanced = PauseIntegration::ConsumeStepAdvance();
+        }
         // Pause while buffer-freeze is active for P2 to avoid fighting the engine
         if (g_bufferFreezingActive.load() && (g_activeFreezePlayer.load() == 2 || g_activeFreezePlayer.load() == 0)) return;
         int slotIdx = ClampSlot(s_curSlot.load()) - 1;
@@ -897,6 +939,7 @@ void Tick() {
             }
             
             // Check if buffer index has changed since last check (indicates real engine frame advance)
+            bool bufferAdvanced = false;
             bool shouldAdvanceStream = false;
             if (haveIdx && s_playbackBufIdxSyncInitialized && 
                 s_playStreamIndex < s_slots[slotIdx].macroStream.size()) {
@@ -904,9 +947,16 @@ void Tick() {
                 // Only advance if buffer index is different from last seen
                 // This naturally handles double-Tick since buffer only changes once per real engine frame
                 if (curBufIdx != s_lastSeenBufIdx) {
-                    shouldAdvanceStream = true;
-                    s_lastSeenBufIdx = curBufIdx;
+                    bufferAdvanced = true;
                 }
+            }
+            if (s_playStreamIndex < s_slots[slotIdx].macroStream.size()) {
+                shouldAdvanceStream = playbackFrozen
+                    ? (bufferAdvanced || playbackStepAdvanced)
+                    : bufferAdvanced;
+            }
+            if (bufferAdvanced) {
+                s_lastSeenBufIdx = curBufIdx;
             }
             
             if (shouldAdvanceStream && s_playStreamIndex < s_slots[slotIdx].macroStream.size()) {
@@ -986,14 +1036,28 @@ void Tick() {
                   // }
                 ++s_playStreamIndex;
             }
+
+            if (!s_playbackPollAuditLogged) {
+                const uint32_t pollHits = GetInputPollOverrideHitCount(2);
+                if (pollHits != 0) {
+                    LogOut("[MACRO][PLAY] Verified P2 poll override consumption; hits="
+                        + std::to_string(pollHits), true);
+                    s_playbackPollAuditLogged = true;
+                } else if (s_playStreamIndex >= 8) {
+                    LogOut("[MACRO][PLAY][ERROR] Playback cursor advanced without any P2 poll override consumption", true);
+                    s_playbackPollAuditLogged = true;
+                }
+            }
             // Every frame: write some of this tick's buffer bytes via engine by overriding the poll,
             // and set per-frame poll override to the intended immediate mask for exact engine cadence.
             const uint8_t DIR_MASK = (GAME_INPUT_UP | GAME_INPUT_DOWN | GAME_INPUT_LEFT | GAME_INPUT_RIGHT);
             const uint8_t BTN_MASK = (GAME_INPUT_A | GAME_INPUT_B | GAME_INPUT_C | GAME_INPUT_D);
             // Baseline applies fully from the first subframe; buffer button bits for this subframe override as they appear
             uint8_t frameMask = s_baselineMask;
-            // Determine frames remaining in this tick (including this frame): 3 at s_frameDiv==0, 2 at 1, 1 at 2
-            int framesLeft = 3 - s_frameDiv;
+            // Determine frames remaining in this tick (including this frame): 3 at s_frameDiv==0, 2 at 1, 1 at 2.
+            // While frame-stepping from pause, this Tick corresponds to a single real stepped frame, so flush the
+            // current tick's recorded buffer writes in that one opportunity instead of spreading them over idle ticks.
+            int framesLeft = playbackFrozen ? 1 : (3 - s_frameDiv);
             // Compute how many writes to issue this subframe to finish by end of tick (ceil division)
             int writesToDo = 0;
             if (s_writesLeftThisTick > 0 && framesLeft > 0) {
@@ -1057,7 +1121,8 @@ void Tick() {
             }
         } else {
             // Fallback to existing RLE span playback (legacy path)
-            if (s_frameDiv == 0 && s_playSpanRemaining <= 0) {
+            const bool legacySpanAdvance = playbackFrozen ? playbackStepAdvanced : (s_frameDiv == 0);
+            if (legacySpanAdvance && s_playSpanRemaining <= 0) {
                 if (s_playIndex >= s_slots[slotIdx].spans.size()) {
                     // End via spans: defer to next tick boundary then perform full neutral clear tick
                     s_finishPendingClearTick = true;
@@ -1084,7 +1149,7 @@ void Tick() {
                        " (" + MaskToButtons(sp.buf) + ") ticks=" + std::to_string(sp.ticks) +
                        " recFacing=" + std::to_string((int)sp.facing) + " curFacing=" + std::to_string(curFacing) +
                        " -> applied=0x" + ToHexString((int)maskToApply, 2) + " [poll-override]", true);
-            } else if (s_playSpanRemaining > 0) {
+            } else if (legacySpanAdvance && s_playSpanRemaining > 0) {
                 s_playSpanRemaining--;
                 if (s_playSpanRemaining <= 0) {
                     // Force a neutral edge between spans to ensure clean transitions via poll
@@ -1106,13 +1171,8 @@ void ToggleRecord() {
     if (st == State::Idle) {
         // Enter PreRecord: swap controls to make P2 local and remember current side
         if (GetCurrentGameMode() == GameMode::Practice) {
-            PauseIntegration::EnsurePracticePointerCapture();
-            void* p = PauseIntegration::ResolvePracticeControllerPtrNow(
-                false,
-                true,
-                "MacroController::ToggleRecord");
-            int curLocal = 0;
-            bool readOk = (p && SafeReadMemory((uintptr_t)p + PRACTICE_OFF_LOCAL_SIDE_IDX, &curLocal, sizeof(curLocal)));
+            const int curLocal = SwitchPlayers::GetLocalSide();
+            const bool readOk = (curLocal == 0 || curLocal == 1);
             if (readOk) {
                 s_prevLocalSide.store(curLocal);
                 if (curLocal != 1) {
@@ -1236,6 +1296,7 @@ void Play() {
     // Ensure P2 is human-controlled during playback
     EnableP2ControlForAutoAction();
     // Drive inputs via poll override while playing for exact engine cadence
+    ResetInputPollOverrideHitCount(2);
     g_pollOverrideActive[2].store(true, std::memory_order_relaxed);
     g_forceBypass[2].store(false);
     g_injectImmediateOnly[2].store(false);
@@ -1309,6 +1370,7 @@ void PlayFromTick(int startTick) {
     }
     
     EnableP2ControlForAutoAction();
+    ResetInputPollOverrideHitCount(2);
     g_pollOverrideActive[2].store(true, std::memory_order_relaxed);
     g_forceBypass[2].store(false);
     g_injectImmediateOnly[2].store(false);

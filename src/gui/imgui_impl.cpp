@@ -258,7 +258,7 @@ static void UpdateVirtualCursor(ImGuiIO& io) {
     // virtual cursor below is a legacy-ImGui-menu feature; while the custom menu
     // is active it would feed analog-stick motion (including resting stick drift)
     // into io.MousePos every frame, which the custom menu interprets as the mouse
-    // sweeping across rows — the "menu navigates by itself in fullscreen when a
+    // sweeping across rows - the "menu navigates by itself in fullscreen when a
     // controller is plugged" bug. Skip it so io.MousePos reflects only the real
     // OS cursor fed by PreNewFrameInputs(); dpad/keyboard nav is unaffected.
     if (cfg.useCustomMenu) {
@@ -556,7 +556,7 @@ static void UpdateVirtualCursor(ImGuiIO& io) {
         io.AddKeyEvent(ImGuiKey_GamepadDpadRight, kDpadR);
         io.AddKeyEvent(ImGuiKey_GamepadDpadUp,    kDpadU);
         io.AddKeyEvent(ImGuiKey_GamepadDpadDown,  kDpadD);
-        // LStick: fully zeroed — nav is handled exclusively by gated dpad above.
+        // LStick: fully zeroed - nav is handled exclusively by gated dpad above.
         // ImGui reads AnalogValue directly in NavUpdate regardless of the bool,
         // so passing non-zero analog would double-trigger every nav step.
         io.AddKeyAnalogEvent(ImGuiKey_GamepadLStickLeft,  false, 0.f);
@@ -733,7 +733,7 @@ LRESULT CALLBACK ImGuiWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
     // ImGui's Win32 backend.  Arrow keys (and their game-bound equivalents)
     // generate WM_KEYDOWN messages that ImGui_ImplWin32_WndProcHandler converts
     // into ImGuiKey_UpArrow / DownArrow / LeftArrow / RightArrow nav triggers,
-    // which fire independently of our gated gamepad dpad — causing double-navigation.
+    // which fire independently of our gated gamepad dpad - causing double-navigation.
     // We handle ALL directional nav ourselves in PreNewFrameInputs, so suppress
     // these here to prevent a second input path.
     if (g_imguiVisible && (msg == WM_KEYDOWN || msg == WM_KEYUP)) {

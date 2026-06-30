@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cstdint>
+
 // Savestate Hook
 // Hooks the EfzRevival Practice mode save/load state functions so the mod can
 // track Revival-owned savestate activity and restore mod-side state around it.
@@ -21,6 +23,12 @@ namespace SavestateHook {
     // Practice controller could not be resolved.
     bool TriggerSave();
     bool TriggerLoad();
+
+    // J inlines native save/load inside its hotkey dispatcher. The hotkey gate
+    // brackets that dispatcher with these callbacks so mod-state tracking is
+    // preserved without installing a second hook at the same address.
+    uint8_t BeginInlinePracticeHotkey(void* practiceController, int key);
+    void EndInlinePracticeHotkey(uint8_t actionMask);
 
     // Check if hooks are currently installed
     bool IsInstalled();

@@ -332,14 +332,34 @@ namespace {
         return ok;
     }
 
-    void ClearActiveFramestepState(Backend backend, const char* reason) {
-        const bool hadState = s_stepRequested.load()
+    bool HasActiveFramestepState() {
+        return s_stepRequested.load()
             || s_paused.load()
             || s_inFrameStep.load()
             || s_visualPatchesApplied.load()
             || s_wePaused.load()
             || s_pendingRevivalNativeSteps.load() > 0
             || g_FramestepStatusId != -1;
+    }
+
+    bool OwnsPauseStateForRestore(Backend backend) {
+        if (UsesRevivalNativeStep(backend)) {
+            return s_wePaused.load()
+                || s_inFrameStep.load()
+                || s_stepRequested.load()
+                || s_pendingRevivalNativeSteps.load() > 0;
+        }
+
+        return s_paused.load()
+            || s_inFrameStep.load()
+            || s_stepRequested.load()
+            || s_visualPatchesApplied.load()
+            || s_vanillaHookStepActive.load()
+            || s_pendingVanillaSubsteps.load() > 0;
+    }
+
+    void ClearActiveFramestepState(Backend backend, const char* reason, bool forceNativeUnpause = false) {
+        const bool hadState = HasActiveFramestepState();
 
         s_stepRequested.store(false);
         s_menuWasVisible.store(false);
@@ -347,7 +367,7 @@ namespace {
         s_restoreWePausedAfterMenu.store(false);
 
         if (UsesRevivalNativeStep(backend)) {
-            if (s_wePaused.load() && PauseIntegration::IsPracticePaused()) {
+            if ((forceNativeUnpause || s_wePaused.load()) && PauseIntegration::IsPracticePaused()) {
                 PauseIntegration::SetPracticePausedForFramestep(false);
             }
             s_paused.store(false);
@@ -981,6 +1001,17 @@ namespace Framestep {
 
     void CancelActiveState(const char* reason) {
         ClearActiveFramestepState(GetBackend(), reason ? reason : "external reset");
+    }
+
+    bool OwnsPauseState() {
+        Backend backend = GetBackend();
+        return OwnsPauseStateForRestore(backend);
+    }
+
+    void FinishSavestateRestore(bool restoreStartedFromOwnedPause) {
+        ClearActiveFramestepState(GetBackend(),
+                                  "savestate restore complete",
+                                  restoreStartedFromOwnedPause);
     }
 
     void TogglePause() {

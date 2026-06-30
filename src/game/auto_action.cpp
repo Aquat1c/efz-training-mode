@@ -188,7 +188,7 @@ struct TriggerFlowTracker {
     int startFrame = 0;
     short startMoveID = -1;
     short lastMoveID = -1;
-    std::string reason;
+    const char* reason = "Unknown";
 };
 
 static TriggerFlowTracker g_flowTrackers[3];
@@ -217,31 +217,24 @@ static void BeginFlowSequence(int playerNum, const char* reason, short prevMoveI
     tracker.startMoveID = currMoveID;
     tracker.lastMoveID = currMoveID;
     tracker.reason = reason ? reason : "Unknown";
-    LogOut("=================", true);
-    LogOut("[AUTO-ACTION][FLOW] P" + std::to_string(playerNum) + " sequence begin: reason=" + tracker.reason +
-           " prev=" + std::to_string(prevMoveID) + " curr=" + std::to_string(currMoveID) +
-           " frame=" + std::to_string(tracker.startFrame), true);
+    (void)prevMoveID;
 }
 
-static void LogFlowSequenceEvent(int playerNum, const std::string& label, short prevMoveID, short currMoveID) {
+static void LogFlowSequenceEvent(int playerNum, const char* label, short prevMoveID, short currMoveID) {
     TriggerFlowTracker& tracker = GetFlowTracker(playerNum);
     if (!tracker.active) return;
     tracker.lastMoveID = currMoveID;
-    LogOut("[AUTO-ACTION][FLOW] P" + std::to_string(playerNum) + " " + label +
-           " prev=" + std::to_string(prevMoveID) + " curr=" + std::to_string(currMoveID) +
-           " frame=" + std::to_string(frameCounter.load()), true);
+    (void)label;
+    (void)prevMoveID;
 }
 
 static void EndFlowSequence(int playerNum, const char* reason, short currMoveID) {
     TriggerFlowTracker& tracker = GetFlowTracker(playerNum);
     if (!tracker.active) return;
-    int duration = frameCounter.load() - tracker.startFrame;
-    std::string endReason = reason ? reason : "Unknown";
-    LogOut("[AUTO-ACTION][FLOW] P" + std::to_string(playerNum) + " sequence end: reason=" + endReason +
-           " duration=" + std::to_string(duration) + "F lastMove=" + std::to_string(currMoveID), true);
-    LogOut("=================", true);
+    (void)reason;
+    (void)currMoveID;
     tracker.active = false;
-    tracker.reason.clear();
+    tracker.reason = "Unknown";
     tracker.startFrame = 0;
     tracker.startMoveID = -1;
     tracker.lastMoveID = -1;
@@ -270,11 +263,8 @@ static void MaybeAutoCloseFlowSequence(int playerNum, short prevMoveID, short cu
         EndFlowSequence(playerNum, "SequenceAutoClosed", currMoveID);
     } else if (tracker.lastMoveID != currMoveID) {
         tracker.lastMoveID = currMoveID;
-        if (detailedLogging.load()) {
-            LogOut("[AUTO-ACTION][FLOW] P" + std::to_string(playerNum) + " move transition inside sequence prev=" +
-                   std::to_string(prevMoveID) + " curr=" + std::to_string(currMoveID), true);
-        }
     }
+    (void)prevMoveID;
 }
 
 static bool p1TriggerActive = false;
@@ -1463,7 +1453,7 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
                     s_p1WakeMacroStartTick = 0;
                     const char* tag = isSpecial ? "special" : (isMacro ? "macro" : "hold");
                     LogOut(std::string("[AUTO-ACTION] P1 wake ") + tag + " metadata stored", true);
-                    LogFlowSequenceEvent(1, "wake metadata stored action=" + std::to_string(actionType), prevMoveID1, moveID1);
+                    LogFlowSequenceEvent(1, "wake metadata stored", prevMoveID1, moveID1);
                 } else if (detailedLogging.load()) {
                     LogOut("[AUTO-ACTION] P1 wake pre-arm skipped (delay>0 or unsupported action)", true);
                 }
@@ -1489,7 +1479,7 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
                     bool p1Facing = GetPlayerFacingDirection(1);
                     bool ok = ExecuteWakeSpecialNow(1, at, moveID1, s_p1WakePrearmStrength);
                     LogOut("[AUTO-ACTION] P1 wake special early buffer (frame " + std::to_string(s_p1WakeMoveID96FrameCount) + "/" + std::to_string(risingTicks) + ", charID=" + std::to_string(charID) + ", facing=" + (p1Facing?"right":"left") + ") " + std::string(ok?"ok":"fail"), true);
-                    LogFlowSequenceEvent(1, "wake early buffer f" + std::to_string(s_p1WakeMoveID96FrameCount) + " action=" + std::to_string(at), prevMoveID1, moveID1);
+                    LogFlowSequenceEvent(1, "wake early buffer", prevMoveID1, moveID1);
                     s_p1WakeBufferFrozen = ok;
                 }
                 
@@ -1612,7 +1602,7 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
                 LogOut("[AUTO-ACTION] P1 wake exec (fallback): action=" + std::to_string(s_p1WakePrearmActionType) +
                        " special=" + std::to_string(s_p1WakePrearmIsSpecial) +
                        " frame=" + std::to_string(frameCounter.load()), true);
-                    LogFlowSequenceEvent(1, "wake exec attempt action=" + std::to_string(s_p1WakePrearmActionType), prevMoveID1, moveID1);
+                    LogFlowSequenceEvent(1, "wake exec attempt", prevMoveID1, moveID1);
                     g_lastActiveTriggerType.store(TRIGGER_ON_WAKEUP);
                     g_lastActiveTriggerFrame.store(frameCounter.load());
                     if (s_p1WakePrearmActionType >= 0) {
@@ -1675,7 +1665,7 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
         
         // Apply the trigger if any condition was met
         if (shouldTrigger) {
-            LogFlowSequenceEvent(1, std::string("trigger=") + TriggerTypeLabel(triggerType) + " delay=" + std::to_string(delay), prevMoveID1, moveID1);
+            LogFlowSequenceEvent(1, "trigger delay", prevMoveID1, moveID1);
             AutoActionLogScope seqScope("TriggerSequence", 1, triggerType);
             StartTriggerDelay(1, triggerType, actionMoveID, delay);
         }
@@ -2098,7 +2088,7 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
                                " strength=" + std::to_string(s_p2WakePrearmStrength) +
                                " macroPicked=" + (s_p2WakeOptionPicked ? "true" : "false"), true);
                     }
-                    LogFlowSequenceEvent(2, "wake metadata stored action=" + std::to_string(actionType),
+                    LogFlowSequenceEvent(2, "wake metadata stored",
                                          prevMoveID2, moveID2);
                 } else if (detailedLogging.load()) {
                     std::string reason;
@@ -2176,7 +2166,7 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
                     bool p2Facing = GetPlayerFacingDirection(2);
                     bool ok = ExecuteWakeSpecialNow(2, at, moveID2, s_p2WakePrearmStrength);
                     LogOut("[AUTO-ACTION] P2 wake special early buffer (frame " + std::to_string(s_p2WakeMoveID96FrameCount) + "/" + std::to_string(risingTicks) + ", charID=" + std::to_string(charID) + ", facing=" + (p2Facing?"right":"left") + ") " + std::string(ok?"ok":"fail"), true);
-                    LogFlowSequenceEvent(2, "wake early buffer f" + std::to_string(s_p2WakeMoveID96FrameCount) + " action=" + std::to_string(at), prevMoveID2, moveID2);
+                    LogFlowSequenceEvent(2, "wake early buffer", prevMoveID2, moveID2);
                     s_p2WakeBufferFrozen = ok;
                 }
             }
@@ -2258,7 +2248,7 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
                 LogOut("[AUTO-ACTION] P2 wake exec (fallback): action=" + std::to_string(s_p2WakePrearmActionType) +
                        " special=" + std::to_string(s_p2WakePrearmIsSpecial) +
                        " frame=" + std::to_string(frameCounter.load()), true);
-                    LogFlowSequenceEvent(2, "wake exec attempt action=" + std::to_string(s_p2WakePrearmActionType), prevMoveID2, moveID2);
+                    LogFlowSequenceEvent(2, "wake exec attempt", prevMoveID2, moveID2);
                     g_lastActiveTriggerType.store(TRIGGER_ON_WAKEUP);
                     g_lastActiveTriggerFrame.store(frameCounter.load());
                     if (s_p2WakePrearmActionType >= 0) {
@@ -2343,7 +2333,7 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
         }
         
         if (shouldTrigger) {
-            LogFlowSequenceEvent(2, std::string("trigger=") + TriggerTypeLabel(triggerType) + " delay=" + std::to_string(delay), prevMoveID2, moveID2);
+            LogFlowSequenceEvent(2, "trigger delay", prevMoveID2, moveID2);
             AutoActionLogScope seqScope("TriggerSequence", 2, triggerType);
             StartTriggerDelay(2, triggerType, actionMoveID, delay);
         } else {

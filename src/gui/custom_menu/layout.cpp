@@ -372,7 +372,7 @@ void DrawRowDrill(
     DrawString(dl, bFont, bPx, x + kRowPadX, textY, labelCol, label);
 
     // Draw arrow as a simple ">" (the kDrillGlyph UTF-8 triangle requires the
-    // font to include it — ITC Bolt may not, so use ASCII for safety).
+    // font to include it - ITC Bolt may not, so use ASCII for safety).
     const char* arrow = ">";
     const float aw = MeasureTextW(bFont, bPx, arrow);
 

@@ -14,7 +14,7 @@ ImFont* BodyFont();
 ImFont* HeaderFont();
 
 // Convenience wrappers that pick a sensible pixel size (0 = use font's default
-// SizePixels). Safe to call with nullptr font — then falls back to ImGui's
+// SizePixels). Safe to call with nullptr font - then falls back to ImGui's
 // default font.
 // Named DrawString to sidestep the winuser.h `DrawText` macro collision.
 void DrawString(ImDrawList* dl, ImFont* font, float px, float x, float y, ImU32 col, const char* text);
@@ -40,7 +40,7 @@ void DrawTabBar(ImDrawList* dl, float x, float y, float w,
 // ===== Rows =====
 // Each row primitive takes its own rect and a `focused` flag. They draw both
 // the subtle selected-row background (if focused) and the row content. No
-// hit-testing, no input — caller owns focus state.
+// hit-testing, no input - caller owns focus state.
 
 // Section header (uppercase, dim, top padding). Adds kSectionPadY above and
 // kRuleInsetX-indented content.

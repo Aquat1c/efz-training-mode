@@ -23,6 +23,8 @@ This project is a DLL mod that loads via EFZ Mod Manager. It adds a configurable
    ```
    EFZ/                          ← your game folder (where efz.exe lives)
    ├── efz.exe
+   ├── EfzRevival.dll               
+   ├── EfzRevival.exe                
    ├── EfzModManager.ini         ← mod enable list (edit this)
    └── mods/
        └── efz_training_mode/    ← mod folder (name matches the DLL)
@@ -45,7 +47,7 @@ This project is a DLL mod that loads via EFZ Mod Manager. It adds a configurable
 
    Launch the game wit Revival for full functionality (Practice mode, snapshots, and other Revival features). With the mod enabled in `EfzModManager.ini`, EFZ Mod Manager loads it automatically on startup.
 
-   > **Note:** If you also use **InGameNetplay**, that mod has its own launch requirement — launch through **`efz.exe`** when it is enabled. See the InGameNetplay README for details. That rule does not apply to EFZ Training Mode on its own.
+   > **Note:** If you also use **InGameNetplay**, that mod has its own launch requirement - launch through **`efz.exe`** when it is enabled. See the InGameNetplay README for details. That rule does not apply to EFZ Training Mode on its own.
 
 **First Run**
 - The mod loads in-game. Open the training menu with the menu hotkey (default: `3`).
@@ -198,12 +200,12 @@ External libraries:
 ---
 
 **Compatibility**
-- The mod fully tested on:
+- The mod supports:
   - Vanilla EFZ (no Revival)
-  - Eternal Fighter Zero -Revival- 1.02e
-  - Eternal Fighter Zero -Revival- 1.02h
-  - Eternal Fighter Zero -Revival- 1.02i
-- On other versions, the mod should work fine as well but some features might not work properly.
+  - Eternal Fighter Zero -Revival- 1.02e, 1.02g and 1.02f
+  - Eternal Fighter Zero -Revival- 1.02h!!!
+  - Eternal Fighter Zero -Revival- 1.02i!!!
+  - Eternal Fighter Zero -Revival- 1.02j
 
 ---
 
