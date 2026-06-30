@@ -10,6 +10,7 @@
 #include "../include/gui/overlay.h"
 #include "../include/gui/framebar.h"
 #include "../include/game/character_settings.h"
+#include "../include/game/collision_display.h"
 #include "../include/game/combo_overlay.h"
 #include "../include/game/frame_monitor.h"
 #include "../include/game/per_frame_sample.h" // Unified per-frame sample (fix build: undefined PerFrameSample)
@@ -939,6 +940,53 @@ namespace ImGuiGui {
                     }
                     showWrappedTooltip("Full shows every status line and marker. Compact keeps core timing. Bars Only hides text and detailed marker strips.");
 
+                    ImGui::Unindent();
+                }
+
+                ImGui::Spacing();
+                ImGui::SeparatorText("Display Overlays");
+                bool showHitboxes = Config::GetSettings().collisionDisplayHitboxes;
+                if (ImGui::Checkbox("Hitboxes", &showHitboxes)) {
+                    CollisionDisplay::SetLayerEnabled(0, showHitboxes);
+                }
+                bool showHurtboxes = Config::GetSettings().collisionDisplayHurtboxes;
+                if (ImGui::Checkbox("Hurtboxes", &showHurtboxes)) {
+                    CollisionDisplay::SetLayerEnabled(1, showHurtboxes);
+                }
+                bool showCollisionBoxes = Config::GetSettings().collisionDisplayCollisionBoxes;
+                if (ImGui::Checkbox("Collision Boxes", &showCollisionBoxes)) {
+                    CollisionDisplay::SetLayerEnabled(2, showCollisionBoxes);
+                }
+                bool showProjectileInteractions = Config::GetSettings().collisionDisplayProjectileInteractions;
+                if (ImGui::Checkbox("Projectile Interactions", &showProjectileInteractions)) {
+                    CollisionDisplay::SetLayerEnabled(3, showProjectileInteractions);
+                }
+                showWrappedTooltip("Replaces Revival's display hotkeys with this mod's scaled overlay renderer.");
+
+                int collisionAlpha = Config::GetSettings().collisionDisplayFillAlphaPercent;
+                ImGui::SetNextItemWidth(180);
+                if (ImGui::SliderInt("Box Fill Alpha", &collisionAlpha, 0, 100, "%d%%")) {
+                    Config::SetSetting("General", "collisionDisplayFillAlphaPercent", std::to_string(collisionAlpha));
+                }
+
+                if (showProjectileInteractions) {
+                    ImGui::Indent();
+                    bool projectileBoxes = Config::GetSettings().collisionDisplayProjectileBoxes;
+                    if (ImGui::Checkbox("Projectile Boxes", &projectileBoxes)) {
+                        Config::SetSetting("General", "collisionDisplayProjectileBoxes", projectileBoxes ? "1" : "0");
+                    }
+                    bool projectileOrigins = Config::GetSettings().collisionDisplayProjectileOrigins;
+                    if (ImGui::Checkbox("Origin / Range Dots", &projectileOrigins)) {
+                        Config::SetSetting("General", "collisionDisplayProjectileOrigins", projectileOrigins ? "1" : "0");
+                    }
+                    showWrappedTooltip("Dots use EFZ projectile anchors / activation points, not collision-box centers.");
+                    bool projectileIntersections = Config::GetSettings().collisionDisplayProjectileIntersections;
+                    if (ImGui::Checkbox("Intersection Boxes", &projectileIntersections)) {
+                        Config::SetSetting("General", "collisionDisplayProjectileIntersections", projectileIntersections ? "1" : "0");
+                    }
+#if EFZ_ENABLE_NAGAMORI_COLLISION_DEBUG
+                    ImGui::TextDisabled("Mizuka note display settings are in the Character tab.");
+#endif
                     ImGui::Unindent();
                 }
 
@@ -2071,6 +2119,36 @@ namespace ImGuiGui {
 
                             ImGui::EndTabItem();
                         }
+                        // Box Display
+                        if (ImGui::BeginTabItem("Box Display")) {
+                            ImGui::TextWrapped("Box Display draws simple colored shapes over the match so you can see what the game is checking.");
+                            ImGui::TextWrapped("Enable it from Main -> Options -> Display Overlays. It is meant for Practice match screens.");
+                            ImGui::Dummy(ImVec2(1, 4));
+
+                            ImGui::TextDisabled("Character boxes");
+                            BulletTextWrapped("Red boxes are hitboxes. If they touch the opponent's hurtbox, the move can hit.");
+                            BulletTextWrapped("Green boxes are hurtboxes. This is where that character can be hit.");
+                            BulletTextWrapped("Yellow boxes are collision boxes, also called pushboxes. They show the body space characters use for pushing and spacing.");
+                            ImGui::Dummy(ImVec2(1, 4));
+
+                            ImGui::TextDisabled("Projectile boxes");
+                            BulletTextWrapped("Blue boxes on bullets/projectiles show the projectile collision area the engine is checking.");
+                            BulletTextWrapped("Bright blue means the projectile is active for projectile interaction. Faint blue means it exists, but is not active for that check right now.");
+                            BulletTextWrapped("The blue box is not always the full sprite. Some projectiles are larger or smaller than the picture on screen.");
+                            ImGui::Dummy(ImVec2(1, 4));
+
+                            ImGui::TextDisabled("Projectile helpers");
+                            BulletTextWrapped("White dots mark projectile origin points. Think of them as the projectile's anchor, not the center of its blue box.");
+                            BulletTextWrapped("Magenta boxes show where two active projectile boxes overlap. Use this to check clashes and projectile interactions.");
+                            BulletTextWrapped("If a projectile returns or changes state, its visible sprite may keep moving even when its blue interaction box is gone.");
+                            ImGui::Dummy(ImVec2(1, 4));
+
+                            ImGui::TextDisabled("Reading it");
+                            BulletTextWrapped("Boxes are engine data, not artwork. Trust the boxes when they disagree with the sprite.");
+                            BulletTextWrapped("Use Box Fill Alpha to make filled areas lighter or darker. The outlines stay strong so the box edges remain readable.");
+                            BulletTextWrapped("Turn layers on one at a time if the screen gets noisy: Hitboxes, Hurtboxes, Collision Boxes, then Projectile Interactions.");
+                            ImGui::EndTabItem();
+                        }
                         // Recovery (Consolidated: per-player + Automatic Recovery info)
                         if (ImGui::BeginTabItem("Recovery")) {
                             ImGui::SeparatorText("Continuous Recovery (Per-Player)");
@@ -2272,7 +2350,7 @@ namespace ImGuiGui {
                         }
                         ImGui::Dummy(ImVec2(1, 4));
                         ImGui::SeparatorText("Compatibility");
-                        ImGui::TextWrapped("Supported EfzRevival builds: Vanilla EFZ (no Revival), EfzRevival 1.02e, 1.02f, 1.02g, 1.02h!!!, 1.02i!!!.");
+                        ImGui::TextWrapped("Supported EfzRevival builds: Vanilla EFZ (no Revival), EfzRevival 1.02e, 1.02f, 1.02g, 1.02h!!!, 1.02i!!!, and the verified 1.02j MinGW build.");
                     }
                     ImGui::Dummy(ImVec2(1, 4));
                     ImGui::SeparatorText("Overview");
@@ -2320,6 +2398,26 @@ namespace ImGuiGui {
         
         // ---------- GLOBAL SETTINGS SECTION (TOP) ----------
         // (Minagi conversion checkbox moved to Debug tab)
+
+#if EFZ_ENABLE_NAGAMORI_COLLISION_DEBUG
+        const bool hasMizuka =
+            p1CharID == CHAR_ID_MIZUKA || p1CharID == CHAR_ID_NAGAMORI ||
+            p2CharID == CHAR_ID_MIZUKA || p2CharID == CHAR_ID_NAGAMORI;
+        if (hasMizuka) {
+            hasFeatures = true;
+
+            ImGui::SeparatorText("Mizuka Notes Display");
+            bool mizukaNoteRanges = Config::GetSettings().collisionDisplayNagamoriRanges;
+            if (ImGui::Checkbox("Note Trigger Ranges (Mizuka)", &mizukaNoteRanges)) {
+                Config::SetSetting("General", "collisionDisplayNagamoriRanges", mizukaNoteRanges ? "1" : "0");
+            }
+            bool mizukaAffectedNotes = Config::GetSettings().collisionDisplayNagamoriAffected;
+            if (ImGui::Checkbox("Affected Notes (Mizuka)", &mizukaAffectedNotes)) {
+                Config::SetSetting("General", "collisionDisplayNagamoriAffected", mizukaAffectedNotes ? "1" : "0");
+            }
+            ImGui::TextDisabled("Uses Display Overlays > Projectile Interactions as the master switch.");
+        }
+#endif
         
         // Ikumi - Infinite Blood Mode
         if (p1CharID == CHAR_ID_IKUMI || p2CharID == CHAR_ID_IKUMI) {
@@ -3245,14 +3343,7 @@ namespace ImGuiGui {
         // Practice Switch Players control
         if (GetCurrentGameMode() == GameMode::Practice) {
             ImGui::SeparatorText("Switch Players (Practice)");
-            int curLocal = -1;
-            PauseIntegration::EnsurePracticePointerCapture();
-            if (void* p = PauseIntegration::ResolvePracticeControllerPtrNow(
-                    false,
-                    GetCurrentGamePhase() == GamePhase::Match,
-                    "ImGuiGui::RenderDebugInputTab")) {
-                SafeReadMemory((uintptr_t)p + PRACTICE_OFF_LOCAL_SIDE_IDX, &curLocal, sizeof(curLocal));
-            }
+            int curLocal = SwitchPlayers::GetLocalSide();
             if (ImGui::Button("Toggle Switch Players")) {
                 bool ok = SwitchPlayers::ToggleLocalSide();
                 if (!ok) {
@@ -3260,13 +3351,7 @@ namespace ImGuiGui {
                     DirectDrawHook::AddMessage("Switch Players: FAILED", "SYSTEM", RGB(255,100,100), 1500, 0, 100);
                 } else {
                     // Re-read after toggle for display
-                    curLocal = -1;
-                    if (void* p2 = PauseIntegration::ResolvePracticeControllerPtrNow(
-                            false,
-                            GetCurrentGamePhase() == GamePhase::Match,
-                            "ImGuiGui::RenderDebugInputTabAfterToggle")) {
-                        SafeReadMemory((uintptr_t)p2 + PRACTICE_OFF_LOCAL_SIDE_IDX, &curLocal, sizeof(curLocal));
-                    }
+                    curLocal = SwitchPlayers::GetLocalSide();
                     DirectDrawHook::AddMessage(curLocal == 0 ? "Local: P1" : (curLocal == 1 ? "Local: P2" : "Local: ?"),
                                                "SYSTEM", RGB(100,255,100), 1500, 0, 100);
                 }

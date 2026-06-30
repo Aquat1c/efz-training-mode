@@ -4,7 +4,6 @@
 #include "../include/core/logger.h"
 #include "../include/core/constants.h"
 #include "../include/utils/utilities.h"
-#include "../include/utils/network.h" // IsEfzRevivalVersionSupported
 
 #include "../include/input/input_core.h"
 
@@ -18,9 +17,12 @@
 #include <windows.h>
 #include <vector>
 #include <atomic>
+#include <array>
+#include <cstring>
 #include <sstream>
 #include <iomanip>
 #include <chrono>
+#include <mutex>
 #include "../include/input/immediate_input.h"
 
 // Local helper to format a single byte as two-digit hex (uppercase)
@@ -40,6 +42,17 @@ std::atomic<bool> g_forceBypass[3] = { false, false, false };
 // Poll override: when active, our poll hook returns this mask instead of device state (index 0 unused).
 std::atomic<bool> g_pollOverrideActive[3] = { false, false, false };
 std::atomic<uint8_t> g_pollOverrideMask[3] = { 0, 0, 0 };
+static std::atomic<uint32_t> g_pollOverrideHitCount[3] = { 0, 0, 0 };
+
+void ResetInputPollOverrideHitCount(int playerNum) {
+    if (playerNum != 1 && playerNum != 2) return;
+    g_pollOverrideHitCount[playerNum].store(0, std::memory_order_release);
+}
+
+uint32_t GetInputPollOverrideHitCount(int playerNum) {
+    if (playerNum != 1 && playerNum != 2) return 0;
+    return g_pollOverrideHitCount[playerNum].load(std::memory_order_acquire);
+}
 
 // Arming state for motion-token neutralization and optional staged cleanup
 static std::atomic<bool> s_armedNeutralize[3] = { false, false, false };
@@ -112,6 +125,9 @@ static const uintptr_t POLL_INPUT_STATE_FUNC_OFFSET = 0x0CD00;
 namespace {
 std::atomic<bool> s_inputHooksCreated{false};
 std::atomic<bool> s_inputHooksEnabled{false};
+std::atomic<int> s_processInputPlayerContext{0};
+std::atomic<bool> s_loggedPollContextReroute[3] = { false, false, false };
+std::atomic<bool> s_loggedPollOverrideHumanForce[3] = { false, false, false };
 uintptr_t s_processTargetAddr = 0;
 uintptr_t s_pollTargetAddr = 0;
 
@@ -129,26 +145,187 @@ bool ResolveInputHookTargets(uintptr_t& targetAddr, uintptr_t& pollAddr) {
 
 } // namespace
 
-// Vanilla-only input routing swap flag
-static std::atomic<bool> g_swapVanillaRouting{false};
+// Engine-only input ownership fallback. Revival's Practice SwitchPlayers hotkey swaps
+// these same adjacent 16-byte live control maps in EFZ's input-manager object. Keeping
+// the swap at this layer preserves P1's physical controls for the P2 character without
+// changing character player indices or hijacking unrelated poll call sites.
 static std::atomic<bool> g_loggedRoutingStateOnce{false};
-// Check if Revival is loaded AND supported (not just present)
-static inline bool RevivalLoaded() { 
-    return GetModuleHandleA("EfzRevival.dll") != nullptr && IsEfzRevivalVersionSupported(); 
+namespace {
+
+constexpr uintptr_t kInputManagerObjectRva = 0x003B0968u;
+constexpr uintptr_t kP1BindingOffset = 448u;
+constexpr size_t kBindingCount = 8u;
+
+using BindingBlock = std::array<uint16_t, kBindingCount>;
+
+struct BindingPair {
+    BindingBlock p1{};
+    BindingBlock p2{};
+};
+static_assert(sizeof(BindingPair) == 32, "EFZ control-map pair must remain exactly 32 bytes");
+
+struct BindingSwapState {
+    bool active{false};
+    BindingPair baseline{};
+};
+
+std::mutex g_bindingSwapMutex;
+BindingSwapState g_bindingSwapState;
+
+bool BindingPairsEqual(const BindingPair& lhs, const BindingPair& rhs) {
+    return std::memcmp(&lhs, &rhs, sizeof(BindingPair)) == 0;
 }
-void SetVanillaSwapInputRouting(bool enable) {
-    bool prev = g_swapVanillaRouting.load(std::memory_order_relaxed);
-    if (prev != enable) {
-        g_swapVanillaRouting.store(enable, std::memory_order_relaxed);
-        std::ostringstream oss; oss << "[INPUT_HOOK] Vanilla routing swap " << (enable?"ENABLED":"DISABLED");
-        LogOut(oss.str(), true);
-    } else {
-        // If the state hasn't changed, log this condition at most once globally
-        if (!g_loggedRoutingStateOnce.exchange(true, std::memory_order_relaxed)) {
-            std::ostringstream oss; oss << "[INPUT_HOOK] Vanilla routing swap " << (enable?"ENABLED":"DISABLED");
-            LogOut(oss.str(), true);
-        }
+
+BindingPair MakeSwappedBindingPair(const BindingPair& source) {
+    BindingPair result{};
+    result.p1 = source.p2;
+    result.p2 = source.p1;
+    return result;
+}
+
+uintptr_t GetBindingPairAddress() {
+    const uintptr_t base = GetEFZBase();
+    return base ? base + kInputManagerObjectRva + kP1BindingOffset : 0;
+}
+
+bool ReadBindingPair(BindingPair& outPair) {
+    const uintptr_t address = GetBindingPairAddress();
+    return address != 0 && SafeReadMemory(address, &outPair, sizeof(outPair));
+}
+
+bool WriteAndVerifyBindingPair(const BindingPair& pair) {
+    const uintptr_t address = GetBindingPairAddress();
+    if (!address || !SafeWriteMemory(address, &pair, sizeof(pair))) {
+        return false;
     }
+
+    BindingPair verify{};
+    return SafeReadMemory(address, &verify, sizeof(verify))
+        && BindingPairsEqual(verify, pair);
+}
+
+std::string FormatBindingBlock(const BindingBlock& block) {
+    std::ostringstream oss;
+    oss << std::hex << std::uppercase << std::setfill('0');
+    for (size_t i = 0; i < block.size(); ++i) {
+        if (i != 0) oss << ' ';
+        oss << std::setw(4) << static_cast<unsigned int>(block[i]);
+    }
+    return oss.str();
+}
+
+struct ScopedProcessInputPlayerContext {
+    explicit ScopedProcessInputPlayerContext(int playerNum)
+        : previous(s_processInputPlayerContext.load(std::memory_order_relaxed)) {
+        s_processInputPlayerContext.store(playerNum, std::memory_order_relaxed);
+    }
+
+    ~ScopedProcessInputPlayerContext() {
+        s_processInputPlayerContext.store(previous, std::memory_order_relaxed);
+    }
+
+    int previous;
+};
+
+int CallOriginalProcessCharacterInputWithContext(int characterPtr, int playerNum) {
+    ScopedProcessInputPlayerContext context(playerNum);
+    return oProcessCharacterInput ? oProcessCharacterInput(characterPtr) : 0;
+}
+
+void EnsureHumanControlForActivePollOverride(int characterPtr, int playerNum) {
+    if ((playerNum != 1 && playerNum != 2) || characterPtr == 0) {
+        return;
+    }
+    if (!g_pollOverrideActive[playerNum].load(std::memory_order_relaxed)) {
+        return;
+    }
+
+    uint32_t aiFlag = 0;
+    if (!SafeReadMemory(static_cast<uintptr_t>(characterPtr) + AI_CONTROL_FLAG_OFFSET,
+                        &aiFlag,
+                        sizeof(aiFlag))) {
+        return;
+    }
+    if (aiFlag == 0) {
+        return;
+    }
+
+    const uint32_t humanControlFlag = 0;
+    const bool okWrite = SafeWriteMemory(static_cast<uintptr_t>(characterPtr) + AI_CONTROL_FLAG_OFFSET,
+                                         &humanControlFlag,
+                                         sizeof(humanControlFlag));
+    uint32_t after = aiFlag;
+    SafeReadMemory(static_cast<uintptr_t>(characterPtr) + AI_CONTROL_FLAG_OFFSET,
+                   &after,
+                   sizeof(after));
+
+    if (!s_loggedPollOverrideHumanForce[playerNum].exchange(true, std::memory_order_relaxed)
+        || !okWrite
+        || after != 0) {
+        std::ostringstream oss;
+        oss << "[INPUT_HOOK][POLL_OVERRIDE] Forced P" << playerNum
+            << " AI flag human for engine poll path @0x" << std::hex
+            << (static_cast<uintptr_t>(characterPtr) + AI_CONTROL_FLAG_OFFSET)
+            << std::dec
+            << " before=" << aiFlag
+            << " after=" << after
+            << " okWrite=" << (okWrite ? "1" : "0");
+        LogOut(oss.str(), true);
+    }
+}
+
+} // namespace
+
+bool SetVanillaSwapInputRouting(bool enable) {
+    std::lock_guard<std::mutex> lock(g_bindingSwapMutex);
+    const bool previous = g_bindingSwapState.active;
+
+    if (previous == enable) {
+        if (!g_loggedRoutingStateOnce.exchange(true, std::memory_order_relaxed)) {
+            LogOut(std::string("[INPUT_HOOK] Engine control-map swap already ")
+                + (enable ? "ENABLED" : "DISABLED"), true);
+        }
+        return true;
+    }
+
+    BindingPair current{};
+    if (!ReadBindingPair(current)) {
+        LogOut("[INPUT_HOOK][ERROR] Cannot read EFZ P1/P2 live control maps", true);
+        return false;
+    }
+
+    if (enable) {
+        const BindingPair swapped = MakeSwappedBindingPair(current);
+        if (!WriteAndVerifyBindingPair(swapped)) {
+            LogOut("[INPUT_HOOK][ERROR] Failed to write/verify EFZ P1/P2 live control-map swap", true);
+            return false;
+        }
+
+        g_bindingSwapState.baseline = current;
+        g_bindingSwapState.active = true;
+        g_loggedRoutingStateOnce.store(false, std::memory_order_relaxed);
+
+        std::ostringstream oss;
+        oss << "[INPUT_HOOK] Verified engine live control-map swap at 0x" << std::hex
+            << std::uppercase << GetBindingPairAddress()
+            << " | P1<-oldP2 [" << FormatBindingBlock(swapped.p1)
+            << "] P2<-oldP1 [" << FormatBindingBlock(swapped.p2) << ']';
+        LogOut(oss.str(), true);
+        return true;
+    }
+
+    // Restore the exact baseline captured when the current swapped pair was applied.
+    // If EFZ already restored it, leave memory untouched and only clear our state.
+    const bool alreadyRestored = BindingPairsEqual(current, g_bindingSwapState.baseline);
+    if (!alreadyRestored && !WriteAndVerifyBindingPair(g_bindingSwapState.baseline)) {
+        LogOut("[INPUT_HOOK][ERROR] Failed to restore/verify EFZ P1/P2 live control maps", true);
+        return false;
+    }
+
+    g_bindingSwapState = BindingSwapState{};
+    g_loggedRoutingStateOnce.store(false, std::memory_order_relaxed);
+    LogOut("[INPUT_HOOK] Restored verified default P1/P2 live control maps", true);
+    return true;
 }
 
 // Our poll hook. Use __fastcall to match __thiscall trampoline signature.
@@ -160,17 +337,35 @@ static int __fastcall HookedPollPlayerInputState(int inputManagerPtr, int /*edx*
     }
 
     // Engine uses 0 for P1 and 1 for P2; our globals use 1=P1, 2=P2.
-    unsigned int idx = (playerIndex <= 1) ? (playerIndex + 1) : 0;
-    if (idx <= 2) {
-        if (g_pollOverrideActive[idx].load(std::memory_order_relaxed)) {
-            return static_cast<int>(g_pollOverrideMask[idx].load(std::memory_order_relaxed));
+    const unsigned int idxFromPollArg = (playerIndex <= 1) ? (playerIndex + 1) : 0;
+
+    // Prefer the character currently being processed over the raw poll argument.
+    // Side-switching paths can make EFZ poll P1's physical binding while it is
+    // processing the P2 character; macro playback still needs to feed the P2
+    // character in that case.
+    const int processContext = s_processInputPlayerContext.load(std::memory_order_relaxed);
+    const unsigned int idxFromProcessContext =
+        (processContext == 1 || processContext == 2) ? static_cast<unsigned int>(processContext) : 0;
+
+    if (idxFromProcessContext <= 2 && idxFromProcessContext != 0
+        && g_pollOverrideActive[idxFromProcessContext].load(std::memory_order_relaxed)) {
+        if (idxFromPollArg != 0 && idxFromPollArg != idxFromProcessContext
+            && !s_loggedPollContextReroute[idxFromProcessContext].exchange(true, std::memory_order_relaxed)) {
+            std::ostringstream oss;
+            oss << "[INPUT_HOOK][POLL_OVERRIDE] Context-routed poll override: process=P"
+                << idxFromProcessContext
+                << " rawPollIndex=" << playerIndex
+                << " rawPollPlayer=P" << idxFromPollArg;
+            LogOut(oss.str(), true);
         }
+        g_pollOverrideHitCount[idxFromProcessContext].fetch_add(1, std::memory_order_relaxed);
+        return static_cast<int>(g_pollOverrideMask[idxFromProcessContext].load(std::memory_order_relaxed));
     }
-    // Engine-routing fallback: when armed, flip the polled index regardless of whether
-    // Revival is loaded. This flag is only enabled by the engine-only side-switch path.
-    if (g_swapVanillaRouting.load(std::memory_order_relaxed)) {
-        unsigned int swapped = (playerIndex == 0) ? 1u : (playerIndex == 1 ? 0u : playerIndex);
-        return oPollPlayerInputState ? oPollPlayerInputState(inputManagerPtr, swapped) : 0;
+
+    if (idxFromPollArg <= 2 && idxFromPollArg != 0
+        && g_pollOverrideActive[idxFromPollArg].load(std::memory_order_relaxed)) {
+        g_pollOverrideHitCount[idxFromPollArg].fetch_add(1, std::memory_order_relaxed);
+        return static_cast<int>(g_pollOverrideMask[idxFromPollArg].load(std::memory_order_relaxed));
     }
     return oPollPlayerInputState ? oPollPlayerInputState(inputManagerPtr, playerIndex) : 0;
 }
@@ -233,7 +428,7 @@ int __fastcall HookedProcessCharacterInput(int characterPtr, int edx) {
             }
             g_lastInjectedMask[playerNum] = 0;
             // Intentionally skip tail cleanup during freeze
-            return oProcessCharacterInput(characterPtr);
+            return CallOriginalProcessCharacterInputWithContext(characterPtr, playerNum);
         }
     }
 
@@ -305,7 +500,8 @@ int __fastcall HookedProcessCharacterInput(int characterPtr, int edx) {
             // Some parts of the original function can overwrite immediate registers mid-frame.
             // Pre-write ensures the game reads our state; post-write stabilizes the final state for this tick.
             WritePlayerInputImmediate(playerNum, currentMask);
-            int ret = oProcessCharacterInput(characterPtr);
+            EnsureHumanControlForActivePollOverride(characterPtr, playerNum);
+            int ret = CallOriginalProcessCharacterInputWithContext(characterPtr, playerNum);
             WritePlayerInputImmediate(playerNum, currentMask);
             g_lastInjectedMask[playerNum] = currentMask;
             g_wasBypassBuffered[playerNum] = false;
@@ -325,7 +521,8 @@ int __fastcall HookedProcessCharacterInput(int characterPtr, int edx) {
         if (haveDesired) {
             // Pre-write desired state
             WritePlayerInputImmediate(playerNum, desired);
-            int ret = oProcessCharacterInput(characterPtr);
+            EnsureHumanControlForActivePollOverride(characterPtr, playerNum);
+            int ret = CallOriginalProcessCharacterInputWithContext(characterPtr, playerNum);
             // Post-write to ensure final state for this tick
             WritePlayerInputImmediate(playerNum, desired);
             s_lastDesired[playerNum] = desired;
@@ -354,7 +551,8 @@ int __fastcall HookedProcessCharacterInput(int characterPtr, int edx) {
         g_lastInjectedMask[playerNum] = 0;
     }
     {
-        int ret = oProcessCharacterInput(characterPtr);
+        EnsureHumanControlForActivePollOverride(characterPtr, playerNum);
+        int ret = CallOriginalProcessCharacterInputWithContext(characterPtr, playerNum);
         MaybePerformTailCleanup(playerNum);
         return ret;
     }
@@ -423,6 +621,7 @@ void SetInputHookActive(bool active) {
 }
 
 void RemoveInputHook() {
+    (void)SetVanillaSwapInputRouting(false);
     if (s_processTargetAddr) {
         (void)MinHookUtils::DisableHook((LPVOID)s_processTargetAddr, "[INPUT_HOOK]", "processCharacterInput");
         (void)MinHookUtils::RemoveHook((LPVOID)s_processTargetAddr, "[INPUT_HOOK]", "processCharacterInput");

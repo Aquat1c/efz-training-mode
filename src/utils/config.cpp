@@ -227,6 +227,23 @@ namespace Config {
             file << "frameBarTimingMode = 0\n";
             file << "; FrameBar detail: 0 = full, 1 = compact, 2 = bars only\n";
             file << "frameBarDetailMode = 0\n\n";
+            file << "; Collision / hitbox overlay display (Practice only)\n";
+            file << "collisionDisplayHitboxes = 0\n";
+            file << "collisionDisplayHurtboxes = 0\n";
+            file << "collisionDisplayCollisionBoxes = 0\n";
+            file << "collisionDisplayProjectileInteractions = 0\n";
+            file << "; Box fill alpha percent. Outlines stay readable.\n";
+            file << "collisionDisplayFillAlphaPercent = 25\n";
+            file << "; Projectile interaction sub-layers\n";
+            file << "collisionDisplayProjectileBoxes = 1\n";
+            file << "collisionDisplayProjectileOrigins = 1\n";
+            file << "collisionDisplayProjectileIntersections = 1\n";
+#if EFZ_ENABLE_NAGAMORI_COLLISION_DEBUG
+            file << "collisionDisplayNagamoriRanges = 1\n";
+            file << "collisionDisplayNagamoriAffected = 1\n\n";
+#else
+            file << "\n";
+#endif
             file << "; Log active player / CPU flags during Character Select (1 = yes, 0 = no)\n";
             file << "enableCharacterSelectLogger = 1\n\n";
 
@@ -461,6 +478,20 @@ namespace Config {
             if (settings.frameBarDetailMode < 0 || settings.frameBarDetailMode > 2) {
                 settings.frameBarDetailMode = 0;
             }
+            settings.collisionDisplayHitboxes = GetValueBool("General", "collisionDisplayHitboxes", false);
+            settings.collisionDisplayHurtboxes = GetValueBool("General", "collisionDisplayHurtboxes", false);
+            settings.collisionDisplayCollisionBoxes = GetValueBool("General", "collisionDisplayCollisionBoxes", false);
+            settings.collisionDisplayProjectileInteractions = GetValueBool("General", "collisionDisplayProjectileInteractions", false);
+            settings.collisionDisplayFillAlphaPercent = GetValueInt("General", "collisionDisplayFillAlphaPercent", 25);
+            if (settings.collisionDisplayFillAlphaPercent < 0) settings.collisionDisplayFillAlphaPercent = 0;
+            if (settings.collisionDisplayFillAlphaPercent > 100) settings.collisionDisplayFillAlphaPercent = 100;
+            settings.collisionDisplayProjectileBoxes = GetValueBool("General", "collisionDisplayProjectileBoxes", true);
+            settings.collisionDisplayProjectileOrigins = GetValueBool("General", "collisionDisplayProjectileOrigins", true);
+            settings.collisionDisplayProjectileIntersections = GetValueBool("General", "collisionDisplayProjectileIntersections", true);
+#if EFZ_ENABLE_NAGAMORI_COLLISION_DEBUG
+            settings.collisionDisplayNagamoriRanges = GetValueBool("General", "collisionDisplayNagamoriRanges", true);
+            settings.collisionDisplayNagamoriAffected = GetValueBool("General", "collisionDisplayNagamoriAffected", true);
+#endif
             // Default ON so older configs without this key enable it automatically
             settings.enableCharacterSelectLogger = GetValueBool("General", "enableCharacterSelectLogger", true);
             settings.showPracticeEntryHint = GetValueBool("General", "showPracticeEntryHint", true);
@@ -769,6 +800,23 @@ namespace Config {
             file << "frameBarTimingMode = " << settings.frameBarTimingMode << "\n";
             file << "; FrameBar detail: 0 = full, 1 = compact, 2 = bars only\n";
             file << "frameBarDetailMode = " << settings.frameBarDetailMode << "\n\n";
+            file << "; Collision / hitbox overlay display (Practice only)\n";
+            file << "collisionDisplayHitboxes = " << (settings.collisionDisplayHitboxes ? "1" : "0") << "\n";
+            file << "collisionDisplayHurtboxes = " << (settings.collisionDisplayHurtboxes ? "1" : "0") << "\n";
+            file << "collisionDisplayCollisionBoxes = " << (settings.collisionDisplayCollisionBoxes ? "1" : "0") << "\n";
+            file << "collisionDisplayProjectileInteractions = " << (settings.collisionDisplayProjectileInteractions ? "1" : "0") << "\n";
+            file << "; Box fill alpha percent. Outlines stay readable.\n";
+            file << "collisionDisplayFillAlphaPercent = " << settings.collisionDisplayFillAlphaPercent << "\n";
+            file << "; Projectile interaction sub-layers\n";
+            file << "collisionDisplayProjectileBoxes = " << (settings.collisionDisplayProjectileBoxes ? "1" : "0") << "\n";
+            file << "collisionDisplayProjectileOrigins = " << (settings.collisionDisplayProjectileOrigins ? "1" : "0") << "\n";
+            file << "collisionDisplayProjectileIntersections = " << (settings.collisionDisplayProjectileIntersections ? "1" : "0") << "\n";
+#if EFZ_ENABLE_NAGAMORI_COLLISION_DEBUG
+            file << "collisionDisplayNagamoriRanges = " << (settings.collisionDisplayNagamoriRanges ? "1" : "0") << "\n";
+            file << "collisionDisplayNagamoriAffected = " << (settings.collisionDisplayNagamoriAffected ? "1" : "0") << "\n\n";
+#else
+            file << "\n";
+#endif
             file << "; Log active player / CPU flags during Character Select (1 = yes, 0 = no)\n";
             file << "enableCharacterSelectLogger = " << (settings.enableCharacterSelectLogger ? "1" : "0") << "\n\n";
             file << "; Show a one-time Practice hint about opening the overlay (1 = yes, 0 = no)\n";
@@ -940,6 +988,22 @@ namespace Config {
                 try { settings.frameBarDetailMode = std::stoi(value); } catch (...) { settings.frameBarDetailMode = 0; }
                 if (settings.frameBarDetailMode < 0 || settings.frameBarDetailMode > 2) settings.frameBarDetailMode = 0;
             }
+            if (k == "collisiondisplayhitboxes") settings.collisionDisplayHitboxes = (value == "1" || value == "true");
+            if (k == "collisiondisplayhurtboxes") settings.collisionDisplayHurtboxes = (value == "1" || value == "true");
+            if (k == "collisiondisplaycollisionboxes") settings.collisionDisplayCollisionBoxes = (value == "1" || value == "true");
+            if (k == "collisiondisplayprojectileinteractions") settings.collisionDisplayProjectileInteractions = (value == "1" || value == "true");
+            if (k == "collisiondisplayfillalphapercent") {
+                try { settings.collisionDisplayFillAlphaPercent = std::stoi(value); } catch (...) { settings.collisionDisplayFillAlphaPercent = 25; }
+                if (settings.collisionDisplayFillAlphaPercent < 0) settings.collisionDisplayFillAlphaPercent = 0;
+                if (settings.collisionDisplayFillAlphaPercent > 100) settings.collisionDisplayFillAlphaPercent = 100;
+            }
+            if (k == "collisiondisplayprojectileboxes") settings.collisionDisplayProjectileBoxes = (value == "1" || value == "true");
+            if (k == "collisiondisplayprojectileorigins") settings.collisionDisplayProjectileOrigins = (value == "1" || value == "true");
+            if (k == "collisiondisplayprojectileintersections") settings.collisionDisplayProjectileIntersections = (value == "1" || value == "true");
+#if EFZ_ENABLE_NAGAMORI_COLLISION_DEBUG
+            if (k == "collisiondisplaynagamoriranges") settings.collisionDisplayNagamoriRanges = (value == "1" || value == "true");
+            if (k == "collisiondisplaynagamoriaffected") settings.collisionDisplayNagamoriAffected = (value == "1" || value == "true");
+#endif
             if (k == "restricttopracticemode") settings.restrictToPracticeMode = (value == "1");
             if (k == "framestepenabled") settings.framestepEnabled = (value == "1" || value == "true");
             if (k == "suppressrevivalframestep") settings.suppressRevivalFramestep = (value == "1" || value == "true");

@@ -1,6 +1,8 @@
 #include "../../include/game/practice_hotkey_gate.h"
 #include "../../include/game/practice_offsets.h"
 #include "../../include/game/efzrevival_addrs.h" // version-aware RVAs
+#include "../../include/game/collision_display.h"
+#include "../../include/game/savestate_hook.h"
 #include "../../include/core/logger.h"
 #include "../../include/core/constants.h"
 #include "../../include/core/memory.h"
@@ -20,7 +22,10 @@ namespace {
     static std::string ToHex(uint32_t v){ std::ostringstream oss; oss<<std::hex<<v; return oss.str(); }
     // Target is a method (original __thiscall). It compares incoming key (a2) against configured hotkeys.
     // Prototype: char/bool return, takes (this, int a2). We detour as __fastcall and forward correctly.
-    using HotkeyEvalFn = char (__thiscall*)(void* self, int a2);
+    // J's MinGW dispatcher returns a pointer-sized value while legacy builds
+    // only consume AL. Preserve the full EAX value; legacy callers still see
+    // the same low byte.
+    using HotkeyEvalFn = uintptr_t (__fastcall*)(void* self, void* edxValue, int a2);
     HotkeyEvalFn oHotkeyEval = nullptr;
     std::atomic<bool> s_installed{false};
     std::atomic<uint64_t> s_suppressedFrames{0};
@@ -29,20 +34,29 @@ namespace {
     // Forward declaration of scanner (fallback). Returns 0 if not found.
     uintptr_t ScanForHotkeyEvaluator();
 
-    char __fastcall HookedHotkeyEval(void* self, void* /*edx*/, int a2) {
+    uintptr_t __fastcall HookedHotkeyEval(void* self, void* edxValue, int a2) {
         PauseIntegration::NotePracticeControllerCandidate(self, "PracticeDispatcher");
         if (Gate_IsMenuVisible()) {
             // Suppress all practice hotkey side-effects this frame
             s_suppressedFrames.fetch_add(1, std::memory_order_relaxed);
             return 0; // early exit, indicate not handled
         }
-        // Custom savestate backend removed — Practice save/load hotkeys fall
+        // Custom savestate backend removed - Practice save/load hotkeys fall
         // through to EfzRevival's native handler below.
         if (Framestep::ShouldSuppressRevivalHotkey(self, a2)) {
             s_suppressedFrames.fetch_add(1, std::memory_order_relaxed);
             return 0;
         }
-        return oHotkeyEval ? oHotkeyEval(self, a2) : 0;
+        if (CollisionDisplay::ShouldSuppressRevivalHotkey(self, a2)) {
+            s_suppressedFrames.fetch_add(1, std::memory_order_relaxed);
+            return 0;
+        }
+        const uint8_t inlineActions = SavestateHook::BeginInlinePracticeHotkey(self, a2);
+        // Preserve EDX as well as ECX/stack. Legacy __thiscall dispatchers
+        // ignore it; J's MinGW body carries it through one auxiliary branch.
+        const uintptr_t result = oHotkeyEval ? oHotkeyEval(self, edxValue, a2) : 0;
+        SavestateHook::EndInlinePracticeHotkey(inlineActions);
+        return result;
     }
 
     uintptr_t ResolveHotkeyEvaluatorRva() {

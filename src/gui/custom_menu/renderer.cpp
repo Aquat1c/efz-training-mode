@@ -445,7 +445,7 @@ struct EditState {
 EditState g_edit;
 
 // Mouse state used to decide whether "hover == focus". We only let mouse
-// hover steal focus when the user has actually moved the mouse — otherwise
+// hover steal focus when the user has actually moved the mouse - otherwise
 // a stationary cursor would constantly override keyboard selection.
 struct MouseState {
     float lastX = -1.0f;
@@ -535,7 +535,7 @@ ValueRow g_valueRowsAll[12] = {
     {"RF",    nullptr, nullptr, GetRf1, SetRf1, 0, 0,          0.0, (double)MAX_RF, 0, 0,   10.0, 100.0, true,  "%.0f"},
     {"X",     nullptr, nullptr, GetX1,  SetX1,  0, 0,          -2000.0, 2000.0, 0, 0, 1.0, 10.0,  true,  "%.1f"},
     {"Y",     nullptr, nullptr, GetY1,  SetY1,  0, 0,          -2000.0, 2000.0, 0, 0, 1.0, 10.0,  true,  "%.1f"},
-    // P1 IC color (placeholder — handled specially in render/input)
+    // P1 IC color (placeholder - handled specially in render/input)
     {"IC",    nullptr, nullptr, nullptr, nullptr, 0, 0,        0.0, 0.0,      0, 0, 0.0, 0.0,   false, nullptr},
     // P2 numeric rows
     {"HP",    GetHp2, SetHp2, nullptr, nullptr, 0, MAX_HP,     0.0, 0.0,      50,  500, 0.0,  0.0,   false, nullptr},
@@ -884,7 +884,7 @@ bool MenuKeyEdge() {
     return edge;
 }
 
-// ===== Layout rectangles — computed once per render so input and draw agree =====
+// ===== Layout rectangles - computed once per render so input and draw agree =====
 // Row Y positions for the main screen content area.
 struct MainLayout {
     ImVec2 panelTL;
@@ -1095,6 +1095,13 @@ void MaybeMouseReturnFocusToContent(const MainLayout& L, bool tabClickConsumed) 
     if (g_shell.focusRegion == FocusRegion::Content) return;
     if (tabClickConsumed) return;
     if (!g_mouse.movedThisFrame && !Input::MouseLeftEdge()) return;
+    const bool keyboardOrPadEdge = Input::NavUp() || Input::NavDown() ||
+                                   Input::NavLeft() || Input::NavRight() ||
+                                   Input::Activate() || Input::Back() ||
+                                   Input::SwitchPlayer() ||
+                                   Input::TopTabPrev() || Input::TopTabNext() ||
+                                   Input::SubTabPrev() || Input::SubTabNext();
+    if (keyboardOrPadEdge) return;
 
     const auto m = Input::GetMouse();
     if (!m.valid) return;
@@ -1549,7 +1556,7 @@ void HandleMainScreenInput(const MainLayout& L, const GuiValueLocks::State& lock
         }
     }
 
-    // Mouse click — route per-rect
+    // Mouse click - route per-rect
     if (!keyboardOrPadEdge && Input::MouseLeftEdge()) {
         // Data rows in either column
         for (int i = 0; i < kColRowCount; ++i) {
@@ -1588,7 +1595,7 @@ void HandleMainScreenInput(const MainLayout& L, const GuiValueLocks::State& lock
         }
     }
 
-    // Keyboard/controller nav — explicit browse/adjust modes.
+    // Keyboard/controller nav - explicit browse/adjust modes.
     //   Browse: Up/Down = row, Left/Right = player column, Enter = adjust.
     //   Adjust: Left/Right = small step (or set color), Up/Down = big step,
     //           Enter = text edit for numeric rows, Esc = back to browse.
@@ -1713,6 +1720,7 @@ void MaybeRefreshOnOpen() {
         g_shell.keybindWasActive = false;
         g_mouse.lastX = g_mouse.lastY = -1.0f;
         g_mouse.movedThisFrame = false;
+        SehInvokeStep("open: Screens::ResetMouseTracking", &Screens::ResetMouseTracking);
         StartOpenAnimation();
         LogMenuTrace("open: state reset done; calling Screens::ResetSubmenus");
         SehInvokeStep("open: Screens::ResetSubmenus", &Screens::ResetSubmenus);
@@ -1735,6 +1743,9 @@ void MaybeRefreshOnOpen() {
         ResetMainState("switch to custom");
         CancelEditMode();
         g_shell.keybindWasActive = false;
+        g_mouse.lastX = g_mouse.lastY = -1.0f;
+        g_mouse.movedThisFrame = false;
+        SehInvokeStep("switch-to-custom: ResetMouseTracking", &Screens::ResetMouseTracking);
         StartOpenAnimation();
         SehInvokeStep("switch-to-custom: ResetSubmenus", &Screens::ResetSubmenus);
         SehInvokeStep("switch-to-custom: ResetHotswapMenuSeed", &Screens::ResetHotswapMenuSeed);
@@ -1808,7 +1819,7 @@ void Render() {
 
     UpdateMouseState();
 
-    // Global menu-key close — same hotkey used to open.
+    // Global menu-key close - same hotkey used to open.
     if (!Screens::IsKeybindActive() && !Screens::IsTextEditorActive() && MenuKeyEdge()) {
         CancelEditMode();
         LogMenuDetail("Closing menu via menu hotkey from %s", ScreenName(ActivePane()));

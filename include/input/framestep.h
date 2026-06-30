@@ -25,6 +25,14 @@ namespace Framestep {
     // Clear any active pause/step state without toggling through the hotkeys.
     void CancelActiveState(const char* reason = nullptr);
 
+    // True when the current pause/step state is owned by our framestep logic,
+    // not merely observed from Revival's native pause flag.
+    bool OwnsPauseState();
+
+    // Final restore-side cleanup. The bool must be captured before the restore
+    // write, because restoring game memory can reintroduce stale pause metadata.
+    void FinishSavestateRestore(bool restoreStartedFromOwnedPause);
+
     // Handle pause toggle (Space key)
     void TogglePause();
 

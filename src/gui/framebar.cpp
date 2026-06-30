@@ -24,48 +24,48 @@ namespace {
 struct Cell {
     Cat   cat       = Cat::None;
     short moveID    = 0;
-    // +0x14A — multi-purpose state timer. On the *attacker* this is hit-hitstop
+    // +0x14A - multi-purpose state timer. On the *attacker* this is hit-hitstop
     // remaining (set from attack_data+194 the moment of resolution); on the
     // *defender* it is blockstun / hitstun freeze remaining. Field name kept
     // as `blockstun` for compatibility with existing code; rendered as "ST".
     short blockstun = 0;
-    // +0x124 — untech / recovery-cooldown counter. Set on hit to a function of
+    // +0x124 - untech / recovery-cooldown counter. Set on hit to a function of
     // attack_data+178 and combo damage scaling. Defender can air-tech once
     // this drops below the move's hit-floor.
     short untech    = 0;
-    // +0x0A — current frame index within the active move's animation.
+    // +0x0A - current frame index within the active move's animation.
     short frameIdx  = 0;
-    // +0x14C — *local* superflash freeze. Only the activator of an IC/super
+    // +0x14C - *local* superflash freeze. Only the activator of an IC/super
     // has this > 0; while non-zero on either player the engine pauses the
     // flash counter (+0x30C4) and gameplay timers stop ticking. Rendered "SF".
     short hitstop   = 0;
-    // +0x14E — frames since leaving ground. RG locks at >= 30 internal.
+    // +0x14E - frames since leaving ground. RG locks at >= 30 internal.
     short airTime   = 0;
-    // +0x174 — combo length the attacker has on opponent.
+    // +0x174 - combo length the attacker has on opponent.
     short combo     = 0;
-    // +0x104 — combo drop window (180 → 0).
+    // +0x104 - combo drop window (180 → 0).
     short comboTimer= 0;
-    // +0x138 — RG-attempt cooldown (engine's actual 10F lock-out).
+    // +0x138 - RG-attempt cooldown (engine's actual 10F lock-out).
     short rgCooldown= 0;
-    // +0x130 / +0x140 — decomp-derived collision/air-interaction lockouts.
+    // +0x130 / +0x140 - decomp-derived collision/air-interaction lockouts.
     unsigned char frameLockout = 0;
     short collisionLockout = 0;
-    // +0x16C — attacker move countdown; engine decrements after each resolve.
+    // +0x16C - attacker move countdown; engine decrements after each resolve.
     short attackTimer = 0;
-    // +0x168 — hit-state machine: 0=none, 2=block/RG, 3=hit, 6=throw, 7=special.
+    // +0x168 - hit-state machine: 0=none, 2=block/RG, 3=hit, 6=throw, 7=special.
     int   hitState  = 0;
-    // +0x170 — guard / RC-marked flag (defender in guard, or attacker
+    // +0x170 - guard / RC-marked flag (defender in guard, or attacker
     // marked-as-RGd by defender's RG).
     int   guardFlag = 0;
-    // +0x144 — counter-hit confirmed this frame (set when both attack flag
+    // +0x144 - counter-hit confirmed this frame (set when both attack flag
     // 0x2000 and defender hit-flag 0x2000 align).
     int   counterHit= 0;
-    // +0x134 — Guard Gauge (0..360, depletes per subframe at wiki rates).
+    // +0x134 - Guard Gauge (0..360, depletes per subframe at wiki rates).
     float guardGauge= 0;
-    // +0x30C4 — flash overlay visual counter (counts down per non-frozen
+    // +0x30C4 - flash overlay visual counter (counts down per non-frozen
     // frame). Different from `hitstop` above.
     int   superflash= 0;
-    // frame_data + 0xAA / + 0xB0 — attack and hit property bitfields read
+    // frame_data + 0xAA / + 0xB0 - attack and hit property bitfields read
     // from the current 200-byte frame data block.
     unsigned short atkFlags = 0;
     unsigned short hitFlags = 0;
@@ -129,7 +129,7 @@ std::mutex g_lock;
 //                remain on screen. The next time activity resumes the bar is
 //                cleared and a fresh sequence starts.
 //
-// This `Latched` step is what we were missing — previously we eagerly cleared
+// This `Latched` step is what we were missing - previously we eagerly cleared
 // the bar at tail timeout, which felt jumpy. MBAACC keeps the last sequence
 // visible until something interesting happens again.
 constexpr int kIdleTailSubframes = 180;     // roughly one second at subframe cadence
@@ -1462,9 +1462,9 @@ void TickSample() {
     } else {
         if (g_idleTailFrames < IdleTailMaxFrames()) {
             ++g_idleTailFrames;
-            // still in tail — advance and sample so post-action frames render
+            // still in tail - advance and sample so post-action frames render
         } else {
-            // tail expired — latch and stop advancing. Existing cells stay.
+            // tail expired - latch and stop advancing. Existing cells stay.
             g_latched = true;
             g_p1.prevMoveID = p1.moveID;
             g_p1.prevAirborne = IsAirborneForMovement(p1);
@@ -1665,7 +1665,7 @@ void Render(const DrawCtx& ctx) {
                     ImVec2(tx(cx + 3.0f),  ty(y + baseRowH)),
                     IM_COL32(180, 90, 255, 190));
             }
-            // Hitstop stripe — shared hit-hitstop only. Super/IC flash uses
+            // Hitstop stripe - shared hit-hitstop only. Super/IC flash uses
             // its own magenta category so it does not read as hitstop.
             if (showAdvancedMarkers && cell.inHitstop) {
                 dl->AddRectFilled(
@@ -1681,7 +1681,7 @@ void Render(const DrawCtx& ctx) {
                     ImVec2(tx(cx + cellW - 0.5f), ty(y + baseRowH)),
                     IM_COL32(255, 50, 50, 230));
             }
-            // Projectile presence — thin orange tick at top of cell
+            // Projectile presence - thin orange tick at top of cell
             if (showCoreMarkers && cell.projectiles > 0) {
                 dl->AddRectFilled(
                     ImVec2(tx(cx),                ty(y)),
@@ -1743,7 +1743,7 @@ void Render(const DrawCtx& ctx) {
                     IM_COL32(255, 255, 255, 240), 1.0f);
             }
             // Hit-state edge: bright yellow flash when an attack just connected
-            // (hitState 2/3/6/7 — block, hit, throw, special). Engine sets this
+            // (hitState 2/3/6/7 - block, hit, throw, special). Engine sets this
             // on the attacker the frame the resolution happens.
             if (showAdvancedMarkers && cell.hitState != 0) {
                 ImU32 col = IM_COL32(255, 220, 0, 230);     // yellow = hit
@@ -1754,14 +1754,14 @@ void Render(const DrawCtx& ctx) {
                     ImVec2(tx(cx + cellW),         ty(y + baseRowH + 1.0f)),
                     col);
             }
-            // Counter-hit flash — magenta block at top half of cell
+            // Counter-hit flash - magenta block at top half of cell
             if (showAdvancedMarkers && cell.counterHit) {
                 dl->AddRectFilled(
                     ImVec2(tx(cx),                ty(y + 1.0f)),
                     ImVec2(tx(cx + cellW - 0.5f), ty(y + baseRowH * 0.45f)),
                     IM_COL32(255, 60, 200, 220));
             }
-            // Tech-window indicator — when the defender's untech timer is
+            // Tech-window indicator - when the defender's untech timer is
             // ticking down (i.e. they're in air-hitstun and will eventually
             // be able to airtech), draw a 1px yellow line at top so you can
             // see the window shrinking frame-by-frame.
@@ -1790,7 +1790,7 @@ void Render(const DrawCtx& ctx) {
     const Cell& cl2 = latest(g_p2);
     // Field legend:
     //   ST  = +0x14A engine state-timer (hit-hitstop on attacker, blockstun/
-    //         hitstun freeze on defender) — 0 means the engine is ticking.
+    //         hitstun freeze on defender) - 0 means the engine is ticking.
     //   UT  = +0x124 untech / stun-duration set by the most-recent hit.
     //   SF  = +0x14C super-flash freeze on this player (only the activator).
     //   AT  = +0x14E airTime counter (RG locks at >= 30 internal frames).

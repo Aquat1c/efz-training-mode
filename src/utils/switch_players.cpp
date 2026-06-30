@@ -17,12 +17,84 @@
 #include <iomanip>
 
 namespace {
-    // Check if EfzRevival is loaded. For unsupported versions, treat as vanilla.
+    // Only the legacy MSVC Revival builds expose the large Practice routing
+    // object this file edits. J is otherwise supported, but its compact MinGW
+    // Practice object removed those fields, so use the engine-only path there.
     static inline bool IsRevivalLoaded() {
-        return GetModuleHandleA("EfzRevival.dll") != nullptr && IsEfzRevivalVersionSupported();
+        return GetModuleHandleA("EfzRevival.dll") != nullptr
+            && EFZ_SupportsNativePracticeSideSwitch();
     }
     static inline bool UseRevivalLiveSideField(EfzRevivalVersion ver) {
         return ver == EfzRevivalVersion::Revival102h || ver == EfzRevivalVersion::Revival102i;
+    }
+    static inline bool UseRevivalJDisplaySideField() {
+        return GetEfzRevivalVersion() == EfzRevivalVersion::Revival102j
+            && IsEfzRevival102jVerifiedBuild();
+    }
+    static bool SetRevivalJPracticeDisplaySide(int desiredLocal, const char* reason, bool logMissingPractice = true) {
+        if (!UseRevivalJDisplaySideField()) {
+            return true;
+        }
+        if (desiredLocal != 0 && desiredLocal != 1) {
+            return false;
+        }
+
+        // 1.02j keeps the compact MinGW Practice layout, so we must not use the
+        // legacy Revival local/remote/buffer offsets.  The live Practice overlay
+        // does still use +0x24:
+        //   ctor: *(practice + 0x24) = 1
+        //   render: "Player" label uses +0x24 directly
+        //   render: input history uses ((+0x24 + 1) mod 2) * 0x74 + *(+0xC8)
+        // Therefore the field has the same meaning as h/i's live side selector:
+        // 1 = display/drive P1, 0 = display/drive P2.
+        const int displaySideField = (desiredLocal == 0) ? 1 : 0;
+
+        PauseIntegration::EnsurePracticePointerCapture();
+        void* practiceRaw = PauseIntegration::GetPracticeControllerPtr();
+        if (!practiceRaw) {
+            practiceRaw = PauseIntegration::ResolvePracticeControllerPtrNow(
+                /*allowCharacterSelect=*/false,
+                /*allowLooseValidation=*/true,
+                reason ? reason : "J display side sync");
+        }
+
+        static std::atomic<bool> s_loggedMissingJPractice{false};
+        if (!practiceRaw) {
+            if (logMissingPractice && !s_loggedMissingJPractice.exchange(true, std::memory_order_relaxed)) {
+                std::ostringstream oss;
+                oss << "[SWITCH][J][WARN] Practice pointer unavailable; display side not synced"
+                    << " desiredLocal=" << desiredLocal
+                    << " reason=" << (reason ? reason : "unspecified");
+                LogOut(oss.str(), true);
+            }
+            return false;
+        }
+        s_loggedMissingJPractice.store(false, std::memory_order_relaxed);
+
+        uintptr_t fieldAddr = reinterpret_cast<uintptr_t>(practiceRaw) + PRACTICE_OFF_GUI_POS;
+        int before = -1;
+        int after = -1;
+        const bool okBefore = SafeReadMemory(fieldAddr, &before, sizeof(before));
+        const bool okWrite = SafeWriteMemory(fieldAddr, &displaySideField, sizeof(displaySideField));
+        const bool okAfter = SafeReadMemory(fieldAddr, &after, sizeof(after));
+        const bool ok = okWrite && okAfter && after == displaySideField;
+
+        if (!ok || !okBefore || before != displaySideField) {
+            std::ostringstream oss;
+            oss << "[SWITCH][J] Display side sync"
+                << " practice=0x" << std::hex << reinterpret_cast<uintptr_t>(practiceRaw)
+                << " field=0x" << fieldAddr
+                << std::dec
+                << " desiredLocal=" << desiredLocal
+                << " write=" << displaySideField
+                << " before=" << (okBefore ? before : -1)
+                << " after=" << (okAfter ? after : -1)
+                << " ok=" << (ok ? 1 : 0)
+                << " reason=" << (reason ? reason : "unspecified");
+            LogOut(oss.str(), true);
+        }
+
+        return ok;
     }
     static int ReadEngineActivePlayer() {
         uintptr_t efzBase = GetEFZBase();
@@ -713,12 +785,14 @@ namespace SwitchPlayers {
 
         // Critical: swap control routing in vanilla so that when P2 is local, P2 uses P1's controls.
         // enable=true when desiredLocal==1 (P2 local), disable when desiredLocal==0 (P1 local)
-        SetVanillaSwapInputRouting(desiredLocal == 1);
+        const bool routingOk = SetVanillaSwapInputRouting(desiredLocal == 1);
+        const bool jDisplayOk = SetRevivalJPracticeDisplaySide(desiredLocal, "engine-only side set");
 
         std::ostringstream oss;
         oss << "[SWITCH][VANILLA] Engine-only swap -> active=" << (int)activePlayer
             << " P1CPU=" << (int)p1CpuFlag << " P2CPU=" << (int)p2CpuFlag
-            << " gameState=0x" << std::hex << gameStatePtr;
+            << " gameState=0x" << std::hex << gameStatePtr
+            << std::dec << " jDisplay=" << (jDisplayOk ? 1 : 0);
         LogOut(oss.str(), true);
 
         // Arm late neutralization on the side becoming AI to prevent residual motions
@@ -727,7 +801,7 @@ namespace SwitchPlayers {
     (void)NeutralizeMotionToken(aiPlayer);
         InputHook_ArmTokenNeutralize(aiPlayer, /*alsoDoFullCleanup=*/true);
 
-        return okA && ok1 && ok2;
+        return okA && ok1 && ok2 && routingOk;
     }
     static bool ApplySet(uint8_t* practice, int desiredLocal, bool forceApply = false) {
         if (!practice) return false;
@@ -1168,7 +1242,9 @@ namespace SwitchPlayers {
         }
 
         // Hand routing back to Revival's real side mapping before rebuilding Practice state.
-        SetVanillaSwapInputRouting(false);
+        if (!SetVanillaSwapInputRouting(false)) {
+            LogOut("[SWITCH][WARN] Failed to restore engine control maps before native Practice reapply", true);
+        }
 
         const bool success = ApplySet(reinterpret_cast<uint8_t*>(p), sideIdx, /*forceApply=*/true);
         if (success) {
@@ -1202,7 +1278,8 @@ namespace SwitchPlayers {
     // This helper is used as a temporary Revival fallback during savestate restore.
     // Keep vanilla routing disabled there and let the deferred Practice remap rebuild
     // the real mapping once the Practice controller is stable.
-    SetVanillaSwapInputRouting(useVanillaRouting);
+    const bool routingOk = SetVanillaSwapInputRouting(useVanillaRouting);
+        const bool jDisplayOk = SetRevivalJPracticeDisplaySide(sideIdx, "engine control restore");
         displayData.p2ControlEnabled = (sideIdx == 1);
         SetSwapFlagForLocalSide(sideIdx);
 
@@ -1219,11 +1296,12 @@ namespace SwitchPlayers {
             << " P1CPU=" << static_cast<int>(p1CpuFlag)
             << " P2CPU=" << static_cast<int>(p2CpuFlag)
                 << " routeSwap=" << (useVanillaRouting ? 1 : 0)
+            << " jDisplay=" << (jDisplayOk ? 1 : 0)
             << " inputCleanup=" << (armInputCleanup ? 1 : 0)
             << " gameState=0x" << std::hex << gameStatePtr;
         LogOut(oss.str(), true);
 
-        return okActive && okP1 && okP2;
+        return okActive && okP1 && okP2 && routingOk;
     }
 
     int GetLocalSide() {
@@ -1294,6 +1372,7 @@ namespace SwitchPlayers {
                     }
                 }
             }
+            SetRevivalJPracticeDisplaySide(0, "menu reset", /*logMissingPractice=*/false);
             s_sidesAreSwapped.store(false, std::memory_order_relaxed);
             return wroteFlags;
         }

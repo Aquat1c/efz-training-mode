@@ -233,6 +233,12 @@ void AppendLine(const char* line) {
     OutputDebugStringA("\n");
 }
 
+void AppendDiagnosticLine(const char* line) {
+    AppendLineToFile(g_debugLogPath, line);
+    OutputDebugStringA(line);
+    OutputDebugStringA("\n");
+}
+
 void AppendFormat(const char* format, ...) {
     char buffer[2048] = {0};
     va_list args;
@@ -240,6 +246,15 @@ void AppendFormat(const char* format, ...) {
     _vsnprintf_s(buffer, sizeof(buffer), _TRUNCATE, format, args);
     va_end(args);
     AppendLine(buffer);
+}
+
+void AppendDiagnosticFormat(const char* format, ...) {
+    char buffer[2048] = {0};
+    va_list args;
+    va_start(args, format);
+    _vsnprintf_s(buffer, sizeof(buffer), _TRUNCATE, format, args);
+    va_end(args);
+    AppendDiagnosticLine(buffer);
 }
 
 const char* ExceptionCodeName(DWORD code) {
@@ -1776,17 +1791,17 @@ void Install(HMODULE selfModule) {
     }
     g_previousFilter = SetUnhandledExceptionFilter(&UnhandledCrashFilter);
 
-    // Visible install banner so it is obvious in logs that the crash handler is
-    // active and which optional features are gated by env flags.
-    AppendLine("[CRASH] CrashHandler::Install completed");
-    AppendFormat("[CRASH]   debugLog=%s", g_debugLogPath[0] ? g_debugLogPath : "<unavailable>");
-    AppendFormat("[CRASH]   crashLog=%s", g_crashLogPath[0] ? g_crashLogPath : "<unavailable>");
-    AppendFormat("[CRASH]   dumpDir=%s", g_dumpDirectory[0] ? g_dumpDirectory : "<unavailable>");
-    AppendFormat("[CRASH]   firstChanceVEH=%s symbolWarmup=%s detailedDump=%s keepAlive=%s",
-                 IsEnvironmentFlagEnabled(kFirstChanceCrashCaptureEnv) ? "on" : "off",
-                 IsEnvironmentFlagEnabled(kSymbolWarmupEnv) ? "on" : "off",
-                 IsEnvironmentFlagEnabled(kDetailedDumpEnv) ? "on" : "off",
-                 IsEnvironmentFlagEnabled(kKeepAliveOnCrashEnv) ? "on" : "off");
+    // Visible install banner for diagnostics, but do not touch
+    // efz_training_crash.log unless an actual crash report is being written.
+    AppendDiagnosticLine("[CRASH] CrashHandler::Install completed");
+    AppendDiagnosticFormat("[CRASH]   debugLog=%s", g_debugLogPath[0] ? g_debugLogPath : "<unavailable>");
+    AppendDiagnosticFormat("[CRASH]   crashLog=%s", g_crashLogPath[0] ? g_crashLogPath : "<unavailable>");
+    AppendDiagnosticFormat("[CRASH]   dumpDir=%s", g_dumpDirectory[0] ? g_dumpDirectory : "<unavailable>");
+    AppendDiagnosticFormat("[CRASH]   firstChanceVEH=%s symbolWarmup=%s detailedDump=%s keepAlive=%s",
+                           IsEnvironmentFlagEnabled(kFirstChanceCrashCaptureEnv) ? "on" : "off",
+                           IsEnvironmentFlagEnabled(kSymbolWarmupEnv) ? "on" : "off",
+                           IsEnvironmentFlagEnabled(kDetailedDumpEnv) ? "on" : "off",
+                           IsEnvironmentFlagEnabled(kKeepAliveOnCrashEnv) ? "on" : "off");
 
     // Probe (but do not load) the optional EFZ decompilation symbol map so the
     // log clearly shows whether function names will be available in dumps. We do
@@ -1796,7 +1811,7 @@ void Install(HMODULE selfModule) {
     if (DecodeEfzSymbolMapPath(efzMapProbe, sizeof(efzMapProbe))) {
         const bool present = FileExists(efzMapProbe);
         if (present) {
-            AppendLine("[CRASH]   efzSymbolMap=available (parsing deferred to warmup thread)");
+            AppendDiagnosticLine("[CRASH]   efzSymbolMap=available (parsing deferred to warmup thread)");
         } else {
             // Pre-mark unavailable so crash-time lookups short-circuit instantly.
             // Skip logging the path entirely when it isn't present.
@@ -1821,10 +1836,10 @@ void Install(HMODULE selfModule) {
                 lstrcpynA(ext, ".pdb", 5);
             }
         }
-        AppendFormat("[CRASH]   selfDll=%s pdb=%s present=%s",
-                     selfDllPath,
-                     selfPdbPath,
-                     FileExists(selfPdbPath) ? "yes" : "no");
+        AppendDiagnosticFormat("[CRASH]   selfDll=%s pdb=%s present=%s",
+                               selfDllPath,
+                               selfPdbPath,
+                               FileExists(selfPdbPath) ? "yes" : "no");
     }
 }
 

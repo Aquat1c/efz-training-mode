@@ -1,6 +1,6 @@
 #pragma once
 //
-// FrameBar — per-player strip showing each sampled state
+// FrameBar - per-player strip showing each sampled state
 // (idle/walk/jump/attack/blockstun/hitstun/etc.) color-coded.
 //
 // Concept ported from MBAACC Extended Training Mode by fangdreth (see

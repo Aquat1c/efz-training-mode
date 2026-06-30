@@ -479,10 +479,20 @@ namespace {
         if (g_onlineModeActive.load(std::memory_order_relaxed)) {
             return oRenderBattleScreen ? oRenderBattleScreen(battleContext) : FALSE;
         }
-        if (battleContext) s_battleContext.store(battleContext, std::memory_order_relaxed);
-        {
-            std::ostringstream oss; oss << "[PAUSE] RenderBattleScreen bc=0x" << std::hex << (uintptr_t)battleContext;
-            LogOut(oss.str(), false);
+        if (battleContext) {
+            s_battleContext.store(battleContext, std::memory_order_relaxed);
+
+            // This hook runs once per rendered battle frame. Keep the capture,
+            // but only log meaningful pointer transitions; logging every call
+            // floods efz_training_debug.log even when nothing is wrong.
+            static uintptr_t s_lastLoggedBattleContext = 0;
+            const uintptr_t current = reinterpret_cast<uintptr_t>(battleContext);
+            if (current != s_lastLoggedBattleContext) {
+                s_lastLoggedBattleContext = current;
+                std::ostringstream oss;
+                oss << "[PAUSE] RenderBattleScreen captured battleContext=0x" << std::hex << current;
+                LogOut(oss.str(), detailedLogging.load());
+            }
         }
         return oRenderBattleScreen ? oRenderBattleScreen(battleContext) : FALSE;
     }

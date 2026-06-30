@@ -98,6 +98,9 @@ bool HasMio()      { return P1Or(CHAR_ID_MIO); }
 bool HasNeyuki()   { return P1Or(CHAR_ID_NAYUKI); }
 bool HasMai()      { return P1Or(CHAR_ID_MAI); }
 bool HasMinagi()   { return P1Or(CHAR_ID_MINAGI); }
+#if EFZ_ENABLE_NAGAMORI_COLLISION_DEBUG
+bool HasMizuka()   { return P1Or(CHAR_ID_MIZUKA) || P1Or(CHAR_ID_NAGAMORI); }
+#endif
 
 bool NotIkumi()  { return !HasIkumi(); }
 bool NotMisuzu() { return !HasMisuzu(); }
@@ -115,7 +118,11 @@ bool NotMinagi() { return !HasMinagi(); }
 bool NoneOfTheAbove() {
     return !HasIkumi() && !HasMisuzu() && !HasMishio() && !HasAkiko() &&
            !HasNayuki() && !HasKano()  && !HasRumi()   && !HasDoppel() &&
-           !HasMio()   && !HasNeyuki() && !HasMai()    && !HasMinagi();
+           !HasMio()   && !HasNeyuki() && !HasMai()    && !HasMinagi()
+#if EFZ_ENABLE_NAGAMORI_COLLISION_DEBUG
+           && !HasMizuka()
+#endif
+           ;
 }
 
 bool CharsDetected() {
@@ -141,6 +148,18 @@ void OnComboHideMenu()   { PersistBool ("General", "comboOverlayHideWhenImGuiVis
 void OnComboResume()     { PersistBool ("General", "comboOverlayResumeAfterImGui",  MutableSettings().comboOverlayResumeAfterImGui); }
 void OnComboRfMult()     { PersistBool ("General", "comboOverlayShowRfMultiplier",  MutableSettings().comboOverlayShowRfMultiplier); }
 void OnComboRawScale()   { PersistBool ("General", "comboOverlayShowRawScale",      MutableSettings().comboOverlayShowRawScale); }
+void OnCollisionDisplayHitboxes()    { PersistBool("General", "collisionDisplayHitboxes", MutableSettings().collisionDisplayHitboxes); }
+void OnCollisionDisplayHurtboxes()   { PersistBool("General", "collisionDisplayHurtboxes", MutableSettings().collisionDisplayHurtboxes); }
+void OnCollisionDisplayPushboxes()   { PersistBool("General", "collisionDisplayCollisionBoxes", MutableSettings().collisionDisplayCollisionBoxes); }
+void OnCollisionDisplayProjectiles() { PersistBool("General", "collisionDisplayProjectileInteractions", MutableSettings().collisionDisplayProjectileInteractions); }
+void OnCollisionDisplayAlpha()       { PersistInt ("General", "collisionDisplayFillAlphaPercent", MutableSettings().collisionDisplayFillAlphaPercent); }
+void OnCollisionProjectileBoxes()    { PersistBool("General", "collisionDisplayProjectileBoxes", MutableSettings().collisionDisplayProjectileBoxes); }
+void OnCollisionProjectileOrigins()  { PersistBool("General", "collisionDisplayProjectileOrigins", MutableSettings().collisionDisplayProjectileOrigins); }
+void OnCollisionProjectileIntersections() { PersistBool("General", "collisionDisplayProjectileIntersections", MutableSettings().collisionDisplayProjectileIntersections); }
+#if EFZ_ENABLE_NAGAMORI_COLLISION_DEBUG
+void OnCollisionNagamoriRanges()     { PersistBool("General", "collisionDisplayNagamoriRanges", MutableSettings().collisionDisplayNagamoriRanges); }
+void OnCollisionNagamoriAffected()   { PersistBool("General", "collisionDisplayNagamoriAffected", MutableSettings().collisionDisplayNagamoriAffected); }
+#endif
 void OnCrRequire()       { PersistBool ("General", "crRequireBothNeutral",   MutableSettings().crRequireBothNeutral); }
 void OnCrDelay()         { PersistInt  ("General", "crBothNeutralDelayMs",   MutableSettings().crBothNeutralDelayMs); }
 void OnAutoFixHp()       { PersistBool ("General", "autoFixHPOnNeutral",     MutableSettings().autoFixHPOnNeutral); }
@@ -790,6 +809,56 @@ const char* ValAudioSettings() {
 const char* ValRecoverySettings()  { return MutableSettings().crRequireBothNeutral ? "NEUTRAL" : "ANY"; }
 const char* ValPracticeSettings()  { return MutableSettings().restrictToPracticeMode ? "PRACTICE" : "ANY MODE"; }
 
+bool CollisionProjectileOptionsHidden() {
+    return !MutableSettings().collisionDisplayProjectileInteractions;
+}
+
+const char* ValDisplaySettings() {
+    static char buf[48];
+    const auto& s = MutableSettings();
+    const int enabled =
+        (s.collisionDisplayHitboxes ? 1 : 0)
+        + (s.collisionDisplayHurtboxes ? 1 : 0)
+        + (s.collisionDisplayCollisionBoxes ? 1 : 0)
+        + (s.collisionDisplayProjectileInteractions ? 1 : 0);
+    if (enabled == 0) {
+        return "OFF";
+    }
+    _snprintf_s(buf, sizeof(buf), _TRUNCATE, "%d ON / %d%%", enabled, s.collisionDisplayFillAlphaPercent);
+    return buf;
+}
+
+Row* BuildDisplayOverlayRows(int& count) {
+    static Row s_rows[24];
+    int n = 0;
+    auto& s = MutableSettings();
+
+    s_rows[n++] = Header("HITBOX / COLLISION DISPLAY");
+    s_rows[n++] = Toggle("HITBOXES", &s.collisionDisplayHitboxes, OnCollisionDisplayHitboxes);
+    s_rows[n++] = Toggle("HURTBOXES", &s.collisionDisplayHurtboxes, OnCollisionDisplayHurtboxes);
+    s_rows[n++] = Toggle("COLLISION BOXES", &s.collisionDisplayCollisionBoxes, OnCollisionDisplayPushboxes);
+    s_rows[n++] = Toggle("PROJECTILE INTERACTIONS", &s.collisionDisplayProjectileInteractions, OnCollisionDisplayProjectiles);
+    Row alpha = IntSlider("BOX FILL ALPHA", &s.collisionDisplayFillAlphaPercent, 0, 100, 1, 10, OnCollisionDisplayAlpha);
+    alpha.valueFormatter = FormatPercentRowValue;
+    s_rows[n++] = alpha;
+
+    s_rows[n++] = Spacer();
+    s_rows[n++] = Header("PROJECTILE SUB-LAYERS");
+    s_rows[n++] = Toggle("  PROJECTILE BOXES", &s.collisionDisplayProjectileBoxes,
+                         OnCollisionProjectileBoxes, nullptr, CollisionProjectileOptionsHidden);
+    s_rows[n++] = Toggle("  ORIGIN / RANGE DOTS", &s.collisionDisplayProjectileOrigins,
+                         OnCollisionProjectileOrigins, nullptr, CollisionProjectileOptionsHidden);
+    s_rows[n++] = Toggle("  INTERSECTION BOXES", &s.collisionDisplayProjectileIntersections,
+                         OnCollisionProjectileIntersections, nullptr, CollisionProjectileOptionsHidden);
+#if EFZ_ENABLE_NAGAMORI_COLLISION_DEBUG
+    s_rows[n++] = Info("Mizuka note display settings are under Character Settings when Mizuka is in the match.");
+#endif
+    s_rows[n++] = Info("Origin dots are EFZ projectile anchors / activation points, not collision centers.");
+
+    count = n;
+    return s_rows;
+}
+
 Row* BuildSettingsInterfaceRows(int& count) {
     static Row s_rows[16];
     int n = 0;
@@ -854,6 +923,7 @@ Row* BuildSettingsGeneralRows(int& count) {
 
     s_rows[n++] = Header("GENERAL MENUS");
     s_rows[n++] = Submenu("INTERFACE", "INTERFACE", BuildSettingsInterfaceRows, ValInterfaceSettings);
+    s_rows[n++] = Submenu("DISPLAY",   "DISPLAY OVERLAYS", BuildDisplayOverlayRows, ValDisplaySettings);
     s_rows[n++] = Submenu("AUDIO",     "AUDIO",     BuildSettingsAudioRows,     ValAudioSettings);
     s_rows[n++] = Submenu("RECOVERY",  "RECOVERY",  BuildSettingsRecoveryRows,  ValRecoverySettings);
     s_rows[n++] = Submenu("PRACTICE",  "PRACTICE",  BuildSettingsPracticeRows,  ValPracticeSettings);
@@ -1755,12 +1825,7 @@ void RefreshDebugRuntimeMirrors() {
     g_debugSwitchPlayersAvailable = GetCurrentGameMode() == GameMode::Practice;
     g_debugPracticeLocalSide = -1;
     if (g_debugSwitchPlayersAvailable) {
-        PauseIntegration::EnsurePracticePointerCapture();
-        if (void* practice = PauseIntegration::GetPracticeControllerPtr()) {
-            SafeReadMemory((uintptr_t)practice + PRACTICE_OFF_LOCAL_SIDE_IDX,
-                           &g_debugPracticeLocalSide,
-                           sizeof(g_debugPracticeLocalSide));
-        }
+        g_debugPracticeLocalSide = SwitchPlayers::GetLocalSide();
     }
 
     if (g_debugPracticeLocalSide == 0) {
@@ -1846,7 +1911,6 @@ void RefreshDebugMirrors() {
     g_mirrorRGToasts       = g_ShowRGDebugToasts.load();
     g_mirrorPadInputLog    = XInputShim::g_LogGenericPadInputDebug.load();
     g_mirrorDeepFA         = g_deepFrameAdvDebug.load();
-
     RefreshCustomSavestateMirrors();
 }
 
@@ -1854,7 +1918,6 @@ void OnOverlayBorders() { g_ShowOverlayDebugBorders.store(g_mirrorOverlayBorders
 void OnRGToasts()       { g_ShowRGDebugToasts.store(g_mirrorRGToasts); }
 void OnPadInputLog()    { XInputShim::g_LogGenericPadInputDebug.store(g_mirrorPadInputLog); }
 void OnDeepFA()         { g_deepFrameAdvDebug.store(g_mirrorDeepFA); }
-
 int g_bgmSlot = 1;
 
 char g_hotswapOstTrack08Label[64] = "08 - Character Selection (BME)";
@@ -2074,7 +2137,9 @@ const char* const kFrameBarTimingChoices[2] = { "SUBFRAMES", "VISUAL FRAMES" };
 const char* const kFrameBarDetailChoices[3] = { "FULL", "COMPACT", "BARS ONLY" };
 
 const char* ValDebugLogging() { return MutableSettings().detailedLogging ? "DETAILED" : "NORMAL"; }
-const char* ValDebugOverlays() { return MutableSettings().showFrameBar ? "FRAMEBAR" : "TOOLS"; }
+const char* ValDebugOverlays() {
+    return (g_ShowOverlayDebugBorders.load() || g_ShowRGDebugToasts.load()) ? "ON" : "TOOLS";
+}
 const char* ValDebugSavestate() {
     return CustomSavestate::BackendModeName(CustomSavestate::GetConfiguredBackendMode());
 }
@@ -2113,18 +2178,13 @@ Row* BuildDebugLoggingRows(int& count) {
 }
 
 Row* BuildDebugOverlayRows(int& count) {
-    static Row s_rows[16];
+    static Row s_rows[8];
     int n = 0;
-    auto& s = MutableSettings();
 
-    s_rows[n++] = Header("OVERLAYS");
-    s_rows[n++] = Toggle ("FRAME BAR",                 &s.showFrameBar,            OnFrameBarPersist);
-    s_rows[n++] = ChoicesRow("  FRAME BAR CELLS",      &s.frameBarTimingMode,      kFrameBarTimingChoices, 2, OnFrameBarTiming, nullptr, FrameBarOptionsHidden);
-    s_rows[n++] = ChoicesRow("  FRAME BAR DETAIL",     &s.frameBarDetailMode,      kFrameBarDetailChoices, 3, OnFrameBarDetail, nullptr, FrameBarOptionsHidden);
+    s_rows[n++] = Header("DEBUG OVERLAYS");
+    s_rows[n++] = Info("Gameplay overlays moved to Options > Display Overlays.");
     s_rows[n++] = Toggle ("OVERLAY DEBUG BORDERS",     &g_mirrorOverlayBorders,       OnOverlayBorders);
     s_rows[n++] = Toggle ("RG DEBUG TOASTS",           &g_mirrorRGToasts,             OnRGToasts);
-    s_rows[n++] = Toggle ("COMBO STATISTICS",          &s.showComboStatisticsOverlay, OnShowCombo);
-    s_rows[n++] = FloatNum("FA DURATION (SEC)",        &s.frameAdvantageDisplayDuration, 0.5f, 30.0f, 0.1f, 1.0f, "%.1f", OnFADuration);
     count = n;
     return s_rows;
 }
@@ -2817,6 +2877,9 @@ Row* BuildHelpCharacterRows(int& count) {
     s_rows[n++] = Info("Mai: Status, Ghost Time, Charge Timer, Awaken Timer, Infinite Ghost/Charge/Awaken, No Charge Cooldown, and Aggressive Summon control Mini-Mai setups.");
     s_rows[n++] = Info("Mai also has Force Summon, Force Despawn, and Ghost Target X/Y with Apply Ghost Position for exact setup placement.");
     s_rows[n++] = Info("Minagi: Always Readied keeps Michiru ready, and Michiru Target X/Y with Apply Michiru Position places her for setup testing.");
+#if EFZ_ENABLE_NAGAMORI_COLLISION_DEBUG
+    s_rows[n++] = Info("Mizuka: Note Trigger Ranges and Affected Notes control the note interaction overlays.");
+#endif
     count = n;
     return s_rows;
 }
@@ -2938,6 +3001,36 @@ Row* BuildHelpFramebarRows(int& count) {
     return s_rows;
 }
 
+Row* BuildHelpBoxDisplayRows(int& count) {
+    static Row s_rows[40];
+    int n = 0;
+    s_rows[n++] = Header("BOX DISPLAY");
+    s_rows[n++] = Info("Box Display draws simple colored shapes over the match so you can see what the game is checking.");
+    s_rows[n++] = Info("Enable it from Main > Options > Display Overlays. It is meant for Practice match screens.");
+    s_rows[n++] = Spacer();
+    s_rows[n++] = Header("CHARACTER BOXES");
+    s_rows[n++] = Info("Red boxes are hitboxes. If they touch the opponent's hurtbox, the move can hit.");
+    s_rows[n++] = Info("Green boxes are hurtboxes. This is where that character can be hit.");
+    s_rows[n++] = Info("Yellow boxes are collision boxes, also called pushboxes. They show the body space characters use for pushing and spacing.");
+    s_rows[n++] = Spacer();
+    s_rows[n++] = Header("PROJECTILE BOXES");
+    s_rows[n++] = Info("Blue boxes on bullets/projectiles show the projectile collision area the engine is checking.");
+    s_rows[n++] = Info("Bright blue means the projectile is active for projectile interaction. Faint blue means it exists, but is not active for that check right now.");
+    s_rows[n++] = Info("The blue box is not always the full sprite. Some projectiles are larger or smaller than the picture on screen.");
+    s_rows[n++] = Spacer();
+    s_rows[n++] = Header("PROJECTILE HELPERS");
+    s_rows[n++] = Info("White dots mark projectile origin points. Think of them as the projectile's anchor, not the center of its blue box.");
+    s_rows[n++] = Info("Magenta boxes show where two active projectile boxes overlap. Use this to check clashes and projectile interactions.");
+    s_rows[n++] = Info("If a projectile returns or changes state, its visible sprite may keep moving even when its blue interaction box is gone.");
+    s_rows[n++] = Spacer();
+    s_rows[n++] = Header("READING IT");
+    s_rows[n++] = Info("Boxes are engine data, not artwork. Trust the boxes when they disagree with the sprite.");
+    s_rows[n++] = Info("Use Box Fill Alpha to make filled areas lighter or darker. The outlines stay strong so the box edges remain readable.");
+    s_rows[n++] = Info("Turn layers on one at a time if the screen gets noisy: Hitboxes, Hurtboxes, Collision Boxes, then Projectile Interactions.");
+    count = n;
+    return s_rows;
+}
+
 Row* BuildHelpSavestatesRows(int& count) {
     static Row s_rows[28];
     int n = 0;
@@ -2998,6 +3091,7 @@ Row* BuildHelpGuideRows(int& count) {
     s_rows[n++] = Submenu("PRACTICE SNAPSHOTS",   "PRACTICE SNAPSHOTS",   BuildHelpSavestatesRows, nullptr);
     s_rows[n++] = Submenu("COMBO STATISTICS",   "COMBO STATISTICS",   BuildHelpComboStatisticsRows, nullptr);
     s_rows[n++] = Submenu("FRAMEBAR",           "FRAMEBAR",           BuildHelpFramebarRows,   nullptr);
+    s_rows[n++] = Submenu("BOX DISPLAY",        "BOX DISPLAY",        BuildHelpBoxDisplayRows, nullptr);
     s_rows[n++] = Submenu("RECOVERY",           "RECOVERY",           BuildHelpRecoveryRows,   nullptr);
     s_rows[n++] = Submenu("CHARACTER SETTINGS", "CHARACTER SETTINGS", BuildHelpCharacterRows,  nullptr);
     s_rows[n++] = Submenu("AUTO ACTIONS",       "AUTO ACTIONS",       BuildHelpAutoActionRows, nullptr);
@@ -3036,7 +3130,7 @@ Row* BuildHelpAboutRows(int& count) {
     s_rows[n++] = Spacer();
     s_rows[n++] = Header("YOUR GAME");
     s_rows[n++] = Info(g_helpDetectedVersion);
-    s_rows[n++] = Info("Works with vanilla EFZ and supported EfzRevival builds (1.02e through 1.02i!!!).");
+    s_rows[n++] = Info("Works with vanilla EFZ and supported EfzRevival builds (1.02e through the verified 1.02j MinGW build).");
     s_rows[n++] = Info("Some features may be limited on unsupported or very new Revival versions.");
     s_rows[n++] = Spacer();
     s_rows[n++] = Header("WHAT YOU GET");
@@ -3276,6 +3370,21 @@ void AddCharacterLockRows(Row* rows, int& n) {
     }
 }
 
+#if EFZ_ENABLE_NAGAMORI_COLLISION_DEBUG
+void AddMizukaNoteDisplayRows(Row* rows, int& n) {
+    if (!HasMizuka()) {
+        return;
+    }
+
+    auto& s = MutableSettings();
+    rows[n++] = Header("MIZUKA NOTES DISPLAY");
+    rows[n++] = Toggle("NOTE TRIGGER RANGES", &s.collisionDisplayNagamoriRanges, OnCollisionNagamoriRanges);
+    rows[n++] = Toggle("AFFECTED NOTES", &s.collisionDisplayNagamoriAffected, OnCollisionNagamoriAffected);
+    rows[n++] = Info("Uses Display Overlays > Projectile Interactions as the master switch.");
+    rows[n++] = Spacer();
+}
+#endif
+
 void AddIkumiRows(Row* rows, int& n, DisplayData& d, int player) {
     if (player == 1) {
         rows[n++] = IntNum("BLOOD STOCK",  &d.p1IkumiBlood, 0, IKUMI_BLOOD_MAX, 1, 1, OnAutoApply);
@@ -3513,6 +3622,9 @@ Row* BuildCharsRows(int& count) {
 
     s_rows[n++] = Spacer();
     AddCharacterLockRows(s_rows, n);
+#if EFZ_ENABLE_NAGAMORI_COLLISION_DEBUG
+    AddMizukaNoteDisplayRows(s_rows, n);
+#endif
 
     const bool p1HasRows = CharHasCustomRows(d.p1CharID);
     const bool p2HasRows = CharHasCustomRows(d.p2CharID);
@@ -3526,7 +3638,11 @@ Row* BuildCharsRows(int& count) {
         }
     }
 
-    if (!p1HasRows && !p2HasRows) {
+    if (!p1HasRows && !p2HasRows
+#if EFZ_ENABLE_NAGAMORI_COLLISION_DEBUG
+        && !HasMizuka()
+#endif
+        ) {
         s_rows[n++] = Header("STATUS");
         s_rows[n++] = Info("No supported character controls in this matchup.");
     }
@@ -4985,7 +5101,7 @@ Row* BuildSavestateOptionsRows(int& count) {
 }
 
 Row* BuildOptionsRows(int& count) {
-    static Row s_rows[32];
+    static Row s_rows[40];
     int n = 0;
     auto& s = MutableSettings();
 
@@ -4994,6 +5110,7 @@ Row* BuildOptionsRows(int& count) {
     s_rows[n++] = Toggle("FRAME ADVANTAGE OVERLAY", &g_mirrorFaOverlay, OnFaOverlayPersist);
     s_rows[n++] = FloatNum("FA DURATION (SEC)", &s.frameAdvantageDisplayDuration,
                             0.5f, 30.0f, 0.1f, 1.0f, "%.1f", OnFADuration);
+    s_rows[n++] = Submenu("DISPLAY OVERLAYS", "DISPLAY OVERLAYS", BuildDisplayOverlayRows, ValDisplaySettings);
 
     s_rows[n++] = Spacer();
     s_rows[n++] = Header("FRAME BAR");

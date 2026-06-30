@@ -496,17 +496,10 @@ bool DisablePlayer2InPracticeMode() {
     // to AI when the user hits Apply in the ImGui menu, or their controlled side
     // will suddenly become CPU.
     if (GetCurrentGameMode() == GameMode::Practice && GetCurrentGamePhase() == GamePhase::Match) {
-        PauseIntegration::EnsurePracticePointerCapture();
-        void* practice = PauseIntegration::GetPracticeControllerPtr();
-        if (practice) {
-            int8_t localSide = 0;
-            if (SafeReadMemory((uintptr_t)practice + PRACTICE_OFF_LOCAL_SIDE_IDX, &localSide, sizeof(localSide))) {
-                // localSide: 0 = P1 is local, 1 = P2 is local
-                if (localSide == 1) {
-                    LogOut("[PRACTICE_PATCH] DisableP2Control: Skipping CPU/AI reset because P2 is the current local side", true);
-                    return true; // Leave control mapping as-is when P2 is the human side
-                }
-            }
+        const int localSide = SwitchPlayers::GetLocalSide();
+        if (localSide == 1) {
+            LogOut("[PRACTICE_PATCH] DisableP2Control: Skipping CPU/AI reset because P2 is the current local side", true);
+            return true; // Leave control mapping as-is when P2 is the human side
         }
     }
 
@@ -591,13 +584,13 @@ void EnsureDefaultControlFlagsOnMatchStart() {
     //    Our default enforcement makes P1 human at match start, so set GUI_POS = 1.
     PauseIntegration::EnsurePracticePointerCapture();
     void* practice = PauseIntegration::GetPracticeControllerPtr();
-    if (practice) {
+    if (practice && EFZ_SupportsNativePracticeSideSwitch()) {
         uint8_t guiPos = 1u; // P1
         bool okWrite = SafeWriteMemory((uintptr_t)practice + PRACTICE_OFF_GUI_POS, &guiPos, sizeof(guiPos));
         uint8_t verify = 0xFF; SafeReadMemory((uintptr_t)practice + PRACTICE_OFF_GUI_POS, &verify, sizeof(verify));
         std::ostringstream oss; oss << "[PRACTICE_PATCH] MatchStart: GUI_POS(+0x24) set to " << (int)verify << (okWrite?"":" (fail)");
         LogOut(oss.str(), true);
-    } else {
+    } else if (EFZ_SupportsNativePracticeSideSwitch()) {
         LogOut("[PRACTICE_PATCH] MatchStart: Practice controller not yet confirmed, GUI_POS not updated", true);
     }
 }

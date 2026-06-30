@@ -13,6 +13,7 @@
 #include "../include/core/memory.h"   
 #include "../include/core/constants.h" 
 #include "../include/game/efzrevival_addrs.h"
+#include "../include/game/collision_display.h"
 #include "../3rdparty/detours/include/detours.h"
 #include <algorithm>
 #include "../include/gui/imgui_impl.h"
@@ -62,6 +63,14 @@ namespace {
     UINT g_prevRtW = 0;
     UINT g_prevRtH = 0;
     std::atomic<bool> g_rtSizeLogged{false};  // Use atomic for thread-safe first-log detection
+
+    ImU32 ImColorFromArgb(uint32_t argb) {
+        return IM_COL32(
+            static_cast<int>((argb >> 16) & 0xFFu),
+            static_cast<int>((argb >> 8) & 0xFFu),
+            static_cast<int>(argb & 0xFFu),
+            static_cast<int>((argb >> 24) & 0xFFu));
+    }
 
     bool QueryRenderTargetSize(LPDIRECT3DDEVICE9 pDevice, UINT& outWidth, UINT& outHeight) {
         outWidth = 0;
@@ -1129,7 +1138,8 @@ void DirectDrawHook::RenderD3D9Overlays(LPDIRECT3DDEVICE9 pDevice, UINT rtW, UIN
     // (but still allow the cursor to render on top of the UI)
     const bool menuVisibleNow = ImGuiImpl::IsVisible();
     const bool haveMessages = !permanentSnapshot.empty() || !temporarySnapshot.empty();
-    if (!menuVisibleNow && !g_ShowOverlayDebugBorders.load() && !haveMessages) {
+    const bool haveCollisionOverlay = CollisionDisplay::IsAnyLayerEnabled();
+    if (!menuVisibleNow && !g_ShowOverlayDebugBorders.load() && !haveMessages && !haveCollisionOverlay) {
         return;
     }
 
@@ -1189,6 +1199,32 @@ void DirectDrawHook::RenderD3D9Overlays(LPDIRECT3DDEVICE9 pDevice, UINT rtW, UIN
 
         // Inner game-area border assuming 640x480 letterbox (green)
         bgList->AddRect(ImVec2(ox + 1.0f, oy + 1.0f), ImVec2(ox + gw - 1.0f, oy + gh - 1.0f), IM_COL32(0, 255, 0, 200), 0.0f, 0, 2.0f);
+    }
+
+    // Hitbox / hurtbox / collision display. The collector emits 640x480
+    // virtual framebuffer coordinates, so use the same letterbox-safe mapping
+    // as the rest of the custom overlay.
+    if (haveCollisionOverlay) {
+        CollisionDisplay::RebuildFrame();
+        const std::size_t boxCount = CollisionDisplay::GetOverlayBoxCount();
+        for (std::size_t i = 0; i < boxCount; ++i) {
+            CollisionDisplay::OverlayBox box{};
+            if (!CollisionDisplay::GetOverlayBox(i, &box)) {
+                continue;
+            }
+
+            if (box.shape == CollisionDisplay::ShapeDot) {
+                const ImVec2 center(ox + box.x * scale, oy + box.y * scale);
+                const float radius = (box.w > 0.0f ? box.w : 2.5f) * scale;
+                bgList->AddCircleFilled(center, radius, ImColorFromArgb(box.fillArgb), 16);
+                bgList->AddCircle(center, radius + 1.0f, ImColorFromArgb(box.outlineArgb), 16, 1.0f);
+            } else {
+                const ImVec2 p0(ox + box.x * scale, oy + box.y * scale);
+                const ImVec2 p1(ox + (box.x + box.w) * scale, oy + (box.y + box.h) * scale);
+                bgList->AddRectFilled(p0, p1, ImColorFromArgb(box.fillArgb));
+                bgList->AddRect(p0, p1, ImColorFromArgb(box.outlineArgb), 0.0f, 0, 1.0f);
+            }
+        }
     }
 
     // FrameBar overlay (toggle-gated). Drawn before other messages so message
@@ -1317,16 +1353,25 @@ void DirectDrawHook::RenderD3D9Overlays(LPDIRECT3DDEVICE9 pDevice, UINT rtW, UIN
                 padPos = ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f);
             }
 
+            const bool customMenuActive = Config::GetSettings().useCustomMenu ||
+                                          ImGuiImpl::IsExternalFallbackHost();
+
             // Dot visibility policy:
-            //  - Only show after we've moved the physical mouse OR the analog stick (not the dpad).
+            //  - Only show after we've moved the physical mouse OR, for the legacy ImGui menu,
+            //    the analog stick (not the dpad).
+            //  - The custom menu owns controller navigation directly, so controller analog must
+            //    not synthesize a fullscreen cursor dot there. Otherwise DirectInput fallback
+            //    devices with bogus resting axes can look like stray mouse movement.
             //  - If the controller reports dpad and analog simultaneously (mixbox-style), suppress the dot briefly so only nav cursor moves.
-            static bool  s_dotActivated   = false;  // latched after qualifying movement
+            static bool  s_mouseDotActivated = false;  // latched after real physical mouse movement
+            static bool  s_padDotActivated   = false;  // latched after legacy-menu analog movement
             static float s_dotSuppressSec = 0.0f;   // suppression cooldown while mixed input is detected
             static bool  s_prevMenuVis    = false;  // detect menu open edge to reset state
             // Declare physical mouse tracker near top so we can reset on menu open edge
             static ImVec2 s_lastPhysMouse(-1.f,-1.f);
             if (ImGuiImpl::IsVisible() && !s_prevMenuVis) {
-                s_dotActivated = false;
+                s_mouseDotActivated = false;
+                s_padDotActivated = false;
                 s_dotSuppressSec = 0.0f;
                 // Reset physical mouse tracker so prior movement doesn't immediately activate the dot
                 s_lastPhysMouse = ImVec2(-1.f, -1.f);
@@ -1335,50 +1380,54 @@ void DirectDrawHook::RenderD3D9Overlays(LPDIRECT3DDEVICE9 pDevice, UINT rtW, UIN
 
             // Poll gamepad
             bool padActive = false;
-            XINPUT_STATE state{};
-            if (const XINPUT_STATE* s = XInputShim::GetCachedState(0)) { state = *s; {
-                auto applyDeadzone = [](SHORT v, SHORT dz) -> float {
-                    int iv = (int)v;
-                    if (iv > dz) iv -= dz; else if (iv < -dz) iv += dz; else iv = 0;
-                    float n = (float)iv / (32767.0f - dz);
-                    if (n > 1.f) n = 1.f; if (n < -1.f) n = -1.f;
-                    return n;
-                };
-                float nx = applyDeadzone(state.Gamepad.sThumbLX, XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE);
-                float ny = applyDeadzone(state.Gamepad.sThumbLY, XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE);
-                float dpadX = 0.f, dpadY = 0.f;
-                if (state.Gamepad.wButtons & XINPUT_GAMEPAD_DPAD_RIGHT) dpadX += 1.f;
-                if (state.Gamepad.wButtons & XINPUT_GAMEPAD_DPAD_LEFT)  dpadX -= 1.f;
-                if (state.Gamepad.wButtons & XINPUT_GAMEPAD_DPAD_UP)    dpadY -= 1.f;
-                if (state.Gamepad.wButtons & XINPUT_GAMEPAD_DPAD_DOWN)  dpadY += 1.f;
+            if (!customMenuActive) {
+                XINPUT_STATE state{};
+                if (const XINPUT_STATE* s = XInputShim::GetCachedState(0)) { state = *s; {
+                    auto applyDeadzone = [](SHORT v, SHORT dz) -> float {
+                        int iv = (int)v;
+                        if (iv > dz) iv -= dz; else if (iv < -dz) iv += dz; else iv = 0;
+                        float n = (float)iv / (32767.0f - dz);
+                        if (n > 1.f) n = 1.f; if (n < -1.f) n = -1.f;
+                        return n;
+                    };
+                    float nx = applyDeadzone(state.Gamepad.sThumbLX, XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE);
+                    float ny = applyDeadzone(state.Gamepad.sThumbLY, XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE);
+                    float dpadX = 0.f, dpadY = 0.f;
+                    if (state.Gamepad.wButtons & XINPUT_GAMEPAD_DPAD_RIGHT) dpadX += 1.f;
+                    if (state.Gamepad.wButtons & XINPUT_GAMEPAD_DPAD_LEFT)  dpadX -= 1.f;
+                    if (state.Gamepad.wButtons & XINPUT_GAMEPAD_DPAD_UP)    dpadY -= 1.f;
+                    if (state.Gamepad.wButtons & XINPUT_GAMEPAD_DPAD_DOWN)  dpadY += 1.f;
 
-                const float dt = io.DeltaTime > 0.f ? io.DeltaTime : (1.f/60.f);
-                const bool fast      = (state.Gamepad.wButtons & XINPUT_GAMEPAD_LEFT_SHOULDER) != 0;
-                const float baseSpeed = fast ? 1800.f : 900.f;
+                    const float dt = io.DeltaTime > 0.f ? io.DeltaTime : (1.f/60.f);
+                    const bool fast      = (state.Gamepad.wButtons & XINPUT_GAMEPAD_LEFT_SHOULDER) != 0;
+                    const float baseSpeed = fast ? 1800.f : 900.f;
 
-                // Determine input sources
-                const bool analogMoved = (fabsf(nx) > 0.02f || fabsf(ny) > 0.02f);
-                const bool dpadMoved   = (dpadX != 0.f || dpadY != 0.f);
+                    // Determine input sources
+                    const bool analogMoved = (fabsf(nx) > 0.02f || fabsf(ny) > 0.02f);
+                    const bool dpadMoved   = (dpadX != 0.f || dpadY != 0.f);
 
-                // Mixed input => suppress dot briefly so only navigational cursor responds
-                if (analogMoved && dpadMoved) {
-                    s_dotSuppressSec = 0.25f; // ~250 ms
-                }
+                    // Mixed input => suppress dot briefly so only navigational cursor responds
+                    if (analogMoved && dpadMoved) {
+                        s_dotSuppressSec = 0.25f; // ~250 ms
+                    }
 
-                // Decrement suppression timer
-                if (s_dotSuppressSec > 0.f) {
-                    s_dotSuppressSec -= dt;
-                    if (s_dotSuppressSec < 0.f) s_dotSuppressSec = 0.f;
-                }
+                    // Decrement suppression timer
+                    if (s_dotSuppressSec > 0.f) {
+                        s_dotSuppressSec -= dt;
+                        if (s_dotSuppressSec < 0.f) s_dotSuppressSec = 0.f;
+                    }
 
-                // Activate dot only on pure analog movement (no dpad)
-                if (analogMoved && !dpadMoved) {
-                    s_dotActivated = true;
-                    padActive = true;
-                    padPos.x += nx * baseSpeed * dt;
-                    padPos.y += -ny * baseSpeed * dt;
-                }
-            }}
+                    // Activate dot only on pure analog movement (no dpad)
+                    if (analogMoved && !dpadMoved) {
+                        s_padDotActivated = true;
+                        padActive = true;
+                        padPos.x += nx * baseSpeed * dt;
+                        padPos.y += -ny * baseSpeed * dt;
+                    }
+                }}
+            } else {
+                s_dotSuppressSec = 0.0f;
+            }
 
             // Physical mouse movement detection (ignore backend remap deltas):
             // We only activate from real OS cursor movement (>=2px in client space).
@@ -1396,7 +1445,7 @@ void DirectDrawHook::RenderD3D9Overlays(LPDIRECT3DDEVICE9 pDevice, UINT rtW, UIN
                 }
             }
             if (physicalMouseMoved) {
-                s_dotActivated = true; // real mouse movement only
+                s_mouseDotActivated = true; // real mouse movement only
             }
             ImVec2 dot = physicalMouseMoved ? io.MousePos : (padActive ? padPos : io.MousePos);
 
@@ -1408,7 +1457,9 @@ void DirectDrawHook::RenderD3D9Overlays(LPDIRECT3DDEVICE9 pDevice, UINT rtW, UIN
             dot.y = (dot.y < 0.0f ? 0.0f : (dot.y > maxY ? maxY : dot.y));
 
             // Draw dot only when activated (from physical mouse or pure analog) and not suppressed
-            if (s_dotActivated && s_dotSuppressSec <= 0.f) {
+            const bool dotActivated = s_mouseDotActivated ||
+                                      (!customMenuActive && s_padDotActivated);
+            if (dotActivated && s_dotSuppressSec <= 0.f) {
                 auto cursorList = ImGui::GetForegroundDrawList();
                 if (!cursorList) cursorList = bgList;
                 const float r = 4.5f;

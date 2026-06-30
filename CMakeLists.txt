@@ -2,6 +2,8 @@ cmake_minimum_required(VERSION 3.10)
 project(efz_training_mode)
 
 option(EFZ_XP_COMPAT "Enable Windows XP-oriented compile settings (requires v141_xp-compatible toolset)" OFF)
+option(EFZ_ENABLE_INPUT_LOGS "Enable verbose input/menu navigation trace logging" OFF)
+option(EFZ_ENABLE_NAGAMORI_COLLISION_DEBUG "Enable Nagamori-specific projectile interaction debug overlays" OFF)
 set(EFZ_MINHOOK_SOURCE_DIR "" CACHE PATH "Optional path to a MinHook source tree for source builds")
 
 set(EFZ_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
@@ -173,6 +175,14 @@ endif()
 
 # Create a shared library (DLL)
 add_library(efz_training_mode SHARED ${SOURCES})
+
+if(EFZ_ENABLE_INPUT_LOGS)
+    target_compile_definitions(efz_training_mode PRIVATE EFZ_ENABLE_INPUT_LOGS=1)
+endif()
+
+if(EFZ_ENABLE_NAGAMORI_COLLISION_DEBUG)
+    target_compile_definitions(efz_training_mode PRIVATE EFZ_ENABLE_NAGAMORI_COLLISION_DEBUG=1)
+endif()
 
 # Update include directories to include subdirectories
 target_include_directories(efz_training_mode PRIVATE

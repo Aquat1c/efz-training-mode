@@ -1,6 +1,7 @@
 #include "../include/gui/custom_menu/sound.h"
 #include "../include/core/constants.h"
 #include "../include/core/memory.h"
+#include "../include/utils/audio_control.h"
 #include "../include/utils/utilities.h"
 
 #include <windows.h>
@@ -22,6 +23,10 @@ void Play(unsigned short soundIndex) {
 
     uintptr_t gameSystem = 0;
     if (!SafeReadMemory(base + EFZ_BASE_OFFSET_GAME_STATE, &gameSystem, sizeof(gameSystem)) || !gameSystem) {
+        return;
+    }
+
+    if (!AudioControl::IsCommonSoundEffectReady(gameSystem, soundIndex)) {
         return;
     }
 
