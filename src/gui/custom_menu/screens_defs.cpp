@@ -297,13 +297,16 @@ int  g_mirrorDummyBlockMode = 0;   // 0..3 via SetDummyAutoBlockMode
 int  g_mirrorPracticeStance = 0;   // 0=Standing,1=Jumping,2=Crouching
 bool g_mirrorFmBypass     = false;
 int  g_mirrorAirtechMode  = 0;     // 0=disabled/neutral,1=forward,2=back
+int  g_mirrorAutoJumpTargetIdx = 2; // 0=P1, 1=P2, 2=Both; runtime stores 1/2/3
 
 void RefreshOpponentMirrors() {
+    const auto& d = ImGuiGui::guiState.localData;
     g_mirrorRandomBlock     = RandomBlock::IsEnabled();
     g_mirrorAlwaysRG        = AlwaysRG::IsEnabled();
     g_mirrorRandomRG        = RandomRG::IsEnabled();
     g_mirrorAdaptiveStance  = GetAdaptiveStanceEnabled();
     g_mirrorDummyBlockMode  = GetDummyAutoBlockMode();
+    g_mirrorAutoJumpTargetIdx = (d.jumpTarget == 2) ? 1 : (d.jumpTarget == 3 ? 2 : 0);
     int stance = 0;
     if (GetPracticeBlockMode(stance)) g_mirrorPracticeStance = stance;
 }
@@ -3685,6 +3688,14 @@ void OnAirtechMode() {
     OnAutoApply();
 }
 
+void OnAutoJumpTarget() {
+    static constexpr int kTargetMap[3] = {1, 2, 3};
+    const int idx = ClampIndex(g_mirrorAutoJumpTargetIdx, 3);
+    g_mirrorAutoJumpTargetIdx = idx;
+    ImGuiGui::guiState.localData.jumpTarget = kTargetMap[idx];
+    OnAutoApply();
+}
+
 const char* ValMovementSummary() {
     const auto& d = ImGuiGui::guiState.localData;
     return d.autoJump ? "AUTO-JUMP" : "OFF";
@@ -3724,7 +3735,7 @@ Row* BuildOpponentMovementRows(int& count) {
 
     s_rows[n++] = Toggle   ("AUTO-JUMP",               &d.autoJump,        OnAutoApply);
     s_rows[n++] = ChoicesRow("  JUMP DIRECTION",       &d.jumpDirection,   kJumpDirChoices, 3, OnAutoApply);
-    s_rows[n++] = ChoicesRow("  JUMP TARGET",          &d.jumpTarget,      kJumpTargetChoices, 3, OnAutoApply);
+    s_rows[n++] = ChoicesRow("  JUMP TARGET",          &g_mirrorAutoJumpTargetIdx, kJumpTargetChoices, 3, OnAutoJumpTarget);
     count = n;
     return s_rows;
 }
@@ -3753,7 +3764,7 @@ Row* BuildOpponentRows(int& count) {
     s_rows[n++] = Toggle("AUTO-JUMP", &d.autoJump, OnAutoApply);
     s_rows[n++] = ChoicesRow("  JUMP DIRECTION", &d.jumpDirection, kJumpDirChoices, 3, OnAutoApply,
                              nullptr, MovementJumpDirHidden);
-    s_rows[n++] = ChoicesRow("  JUMP TARGET", &d.jumpTarget, kJumpTargetChoices, 3, OnAutoApply,
+    s_rows[n++] = ChoicesRow("  JUMP TARGET", &g_mirrorAutoJumpTargetIdx, kJumpTargetChoices, 3, OnAutoJumpTarget,
                              nullptr, MovementJumpTargetHidden);
     s_rows[n++] = Spacer();
     s_rows[n++] = Header("DEFENSE");
