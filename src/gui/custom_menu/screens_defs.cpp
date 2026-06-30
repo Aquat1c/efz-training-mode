@@ -2871,7 +2871,7 @@ Row* BuildHelpCharacterRows(int& count) {
     s_rows[n++] = Info("Mai: Status, Ghost Time, Charge Timer, Awaken Timer, Infinite Ghost/Charge/Awaken, No Charge Cooldown, and Aggressive Summon control Mini-Mai setups.");
     s_rows[n++] = Info("Mai also has Force Summon, Force Despawn, and Ghost Target X/Y with Apply Ghost Position for exact setup placement.");
     s_rows[n++] = Info("Minagi: Always Readied keeps Michiru ready, and Michiru Target X/Y with Apply Michiru Position places her for setup testing.");
-    s_rows[n++] = Info("Mizuka: Note Trigger Ranges and Affected Notes control the note interaction overlays.");
+    s_rows[n++] = Info("Mizuka: Note Trigger Ranges and Affected Notes appear when she is in the match and control the note interaction overlays.");
     count = n;
     return s_rows;
 }
@@ -2905,9 +2905,9 @@ Row* BuildHelpMacroRows(int& count) {
     s_rows[n++] = Info(g_helpMacroRecord);
     s_rows[n++] = Info(g_helpMacroPlay);
     s_rows[n++] = Info(g_helpMacroSlot);
-    s_rows[n++] = Info("Record enters Pre-recording, where P1 controls drive P2. Press Record again to start recording, then press it a third time to save.");
+    s_rows[n++] = Info("Record enters Pre-recording, where your usual P1 controls drive P2 for recording. Press Record again to start recording, then press it a third time to save.");
     s_rows[n++] = Info("Play runs the current slot and also exits Pre-recording. Empty slots do nothing.");
-    s_rows[n++] = Info("Playback flips directions for Player 2 automatically. Framestep tools work during playback.");
+    s_rows[n++] = Info("Playback flips directions for Player 2 automatically and handles side swaps so the recorded inputs stay on the right character. Framestep tools work during playback.");
     s_rows[n++] = Spacer();
     s_rows[n++] = Header("CUSTOM MENU TOOLS");
     s_rows[n++] = Info("Serialized Macro opens the text editor, Apply To Slot, Reload From Slot, Clear Slot, clipboard actions, undo/redo, and sample insertion.");
@@ -3014,6 +3014,12 @@ Row* BuildHelpBoxDisplayRows(int& count) {
     s_rows[n++] = Info("White dots mark projectile origin points. Think of them as the projectile's anchor, not the center of its blue box.");
     s_rows[n++] = Info("Magenta boxes show where two active projectile boxes overlap. Use this to check clashes and projectile interactions.");
     s_rows[n++] = Info("If a projectile returns or changes state, its visible sprite may keep moving even when its blue interaction box is gone.");
+    s_rows[n++] = Spacer();
+    s_rows[n++] = Header("MIZUKA NOTES");
+    s_rows[n++] = Info("When Mizuka is in the match, Chars > Mizuka Notes Display adds note interaction helpers.");
+    s_rows[n++] = Info("Note Trigger Ranges draws orange/brown areas where notes can be activated or exploded. Stronger fill means active now; lighter fill is a preview.");
+    s_rows[n++] = Info("Affected Notes highlights notes that are currently affected or inside one of those trigger areas in pale yellow.");
+    s_rows[n++] = Info("These settings are enabled by default, but Main > Options > Display Overlays > Projectile Interactions is still the master switch.");
     s_rows[n++] = Spacer();
     s_rows[n++] = Header("READING IT");
     s_rows[n++] = Info("Boxes are engine data, not artwork. Trust the boxes when they disagree with the sprite.");

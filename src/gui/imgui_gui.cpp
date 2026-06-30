@@ -2141,6 +2141,13 @@ namespace ImGuiGui {
                             BulletTextWrapped("If a projectile returns or changes state, its visible sprite may keep moving even when its blue interaction box is gone.");
                             ImGui::Dummy(ImVec2(1, 4));
 
+                            ImGui::TextDisabled("Mizuka notes");
+                            BulletTextWrapped("When Mizuka is in the match, Character Settings adds Note Trigger Ranges and Affected Notes.");
+                            BulletTextWrapped("Orange/brown areas show where notes can be activated or exploded. Stronger fill means active now; lighter fill is a preview.");
+                            BulletTextWrapped("Pale yellow highlights notes that are currently affected or inside a trigger area.");
+                            BulletTextWrapped("These are enabled by default, but Display Overlays -> Projectile Interactions is still the master switch.");
+                            ImGui::Dummy(ImVec2(1, 4));
+
                             ImGui::TextDisabled("Reading it");
                             BulletTextWrapped("Boxes are engine data, not artwork. Trust the boxes when they disagree with the sprite.");
                             BulletTextWrapped("Use Box Fill Alpha to make filled areas lighter or darker. The outlines stay strong so the box edges remain readable.");
@@ -2203,6 +2210,9 @@ namespace ImGuiGui {
                             ImGui::TextColored(ImVec4(0.7f, 0.9f, 1.0f, 1.0f), "Akiko");
                             ImGui::TextWrapped("Lock Bullet Cycle to keep a specific bullet pattern. Timeslow trigger controls the slowdown effect.");
                             ImGui::TextWrapped("Clean Hit helper shows timing feedback for 623 inputs - if it says 'Too Low', delay your 623; if 'Too High', press faster.");
+                            ImGui::Dummy(ImVec2(1, 4));
+                            ImGui::TextColored(ImVec4(0.7f, 0.9f, 1.0f, 1.0f), "Mizuka");
+                            ImGui::TextWrapped("Note Trigger Ranges and Affected Notes appear when she is in the match. They control the note interaction overlays while Display Overlays -> Projectile Interactions is enabled.");
                             ImGui::EndTabItem();
                         }
                         // Auto Actions
@@ -2219,8 +2229,8 @@ namespace ImGuiGui {
                             ImGui::TextWrapped("You can add extra rows or turn on Use Pool to randomly pick from several actions(might need to resize the window if you can't see the + button).");
                             ImGui::Dummy(ImVec2(1, 4));
                             ImGui::TextDisabled("Notes");
-                            ImGui::TextWrapped("This feature works by enabling P2 controls for a brief period to perform the actions you set up.");
-                            BulletTextWrapped("P2 controls are only enabled for specials/supers/dashes(things which use input buffer). Regular attacks and jumps still retain AI controls (since they use direct input writes).");
+                            ImGui::TextWrapped("Input-buffer actions briefly hand control to the configured target side; simple attacks and jumps use direct writes so AI/auto behavior stays stable.");
+                            BulletTextWrapped("Side swaps are handled so macros and auto-actions do not silently end up on the wrong character.");
                             ImGui::TextWrapped("By default on wake-up action tries to use the special move on the last frame of the wakeup(all characters are properly handled).");
                             BulletTextWrapped("It should also properly handle crossups as well.");
                             ImGui::TextWrapped("Actions are rate-limited to avoid spam; toggling the trigger clears it.");
@@ -2235,12 +2245,12 @@ namespace ImGuiGui {
                             ImGui::TextWrapped("Record, play, and edit inputs as macros. Slots cycle with a hotkey; playback flips directions for P2 automatically.");
                             ImGui::Dummy(ImVec2(1, 2));
                             ImGui::TextDisabled("Quick setup");
-                            BulletTextWrapped("Record: %s enters Pre-recording (P1 controls drive P2); press again to start, then again to save.", GetKeyName(cfg.macroRecordKey).c_str());
+                            BulletTextWrapped("Record: %s enters Pre-recording (your usual P1 controls drive P2); press again to start, then again to save.", GetKeyName(cfg.macroRecordKey).c_str());
                             BulletTextWrapped("Play: %s plays the current slot.", GetKeyName(cfg.macroPlayKey).c_str());
                             BulletTextWrapped("Slots: cycle with %s. Empty slots do nothing.", GetKeyName(cfg.macroSlotKey).c_str());
                             ImGui::Dummy(ImVec2(1, 4));
                             ImGui::TextDisabled("Tips");
-                            ImGui::TextWrapped("Exit Pre-recording with Play (Keyboard: %s, Controller: %s). Frame-step tools work during playback.", GetKeyName(cfg.macroPlayKey).c_str(), Config::GetGamepadButtonName(cfg.gpMacroPlayButton).c_str());
+                            ImGui::TextWrapped("Exit Pre-recording with Play (Keyboard: %s, Controller: %s). Playback handles side swaps automatically, and framestep tools work during playback.", GetKeyName(cfg.macroPlayKey).c_str(), Config::GetGamepadButtonName(cfg.gpMacroPlayButton).c_str());
                             ImGui::Dummy(ImVec2(1, 4));
                             ImGui::TextDisabled("Notation");
                             ImGui::TextWrapped("Write macros as plain text: a header plus tick tokens. Use numpad directions (1..9, 5=neutral) with A/B/C/D (e.g., 5A, 6B, 236C). 'N' is neutral. Repeat packs with xN. Optional per-tick buffers: {k: v1 v2 ...}. Whitespace is flexible; Apply normalizes. Write for P1-facing; P2 playback flips 4/6.");
