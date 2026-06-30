@@ -3,10 +3,6 @@
 #include <string>
 #include <unordered_map>
 
-#ifndef EFZ_ENABLE_NAGAMORI_COLLISION_DEBUG
-#define EFZ_ENABLE_NAGAMORI_COLLISION_DEBUG 0
-#endif
-
 namespace Config {
     struct Settings {
         // General settings
@@ -32,10 +28,8 @@ namespace Config {
     bool collisionDisplayProjectileBoxes;
     bool collisionDisplayProjectileOrigins;
     bool collisionDisplayProjectileIntersections;
-#if EFZ_ENABLE_NAGAMORI_COLLISION_DEBUG
     bool collisionDisplayNagamoriRanges;
     bool collisionDisplayNagamoriAffected;
-#endif
     bool enableCharacterSelectLogger; // NEW: Toggle per-frame Character Select flag logger
     bool showPracticeEntryHint;   // NEW: Show practice overlay hint once per session
     float uiScale;               // NEW: UI scale for ImGui window (e.g., 0.80..1.20)

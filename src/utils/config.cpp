@@ -238,12 +238,8 @@ namespace Config {
             file << "collisionDisplayProjectileBoxes = 1\n";
             file << "collisionDisplayProjectileOrigins = 1\n";
             file << "collisionDisplayProjectileIntersections = 1\n";
-#if EFZ_ENABLE_NAGAMORI_COLLISION_DEBUG
             file << "collisionDisplayNagamoriRanges = 1\n";
             file << "collisionDisplayNagamoriAffected = 1\n\n";
-#else
-            file << "\n";
-#endif
             file << "; Log active player / CPU flags during Character Select (1 = yes, 0 = no)\n";
             file << "enableCharacterSelectLogger = 1\n\n";
 
@@ -488,10 +484,8 @@ namespace Config {
             settings.collisionDisplayProjectileBoxes = GetValueBool("General", "collisionDisplayProjectileBoxes", true);
             settings.collisionDisplayProjectileOrigins = GetValueBool("General", "collisionDisplayProjectileOrigins", true);
             settings.collisionDisplayProjectileIntersections = GetValueBool("General", "collisionDisplayProjectileIntersections", true);
-#if EFZ_ENABLE_NAGAMORI_COLLISION_DEBUG
             settings.collisionDisplayNagamoriRanges = GetValueBool("General", "collisionDisplayNagamoriRanges", true);
             settings.collisionDisplayNagamoriAffected = GetValueBool("General", "collisionDisplayNagamoriAffected", true);
-#endif
             // Default ON so older configs without this key enable it automatically
             settings.enableCharacterSelectLogger = GetValueBool("General", "enableCharacterSelectLogger", true);
             settings.showPracticeEntryHint = GetValueBool("General", "showPracticeEntryHint", true);
@@ -811,12 +805,8 @@ namespace Config {
             file << "collisionDisplayProjectileBoxes = " << (settings.collisionDisplayProjectileBoxes ? "1" : "0") << "\n";
             file << "collisionDisplayProjectileOrigins = " << (settings.collisionDisplayProjectileOrigins ? "1" : "0") << "\n";
             file << "collisionDisplayProjectileIntersections = " << (settings.collisionDisplayProjectileIntersections ? "1" : "0") << "\n";
-#if EFZ_ENABLE_NAGAMORI_COLLISION_DEBUG
             file << "collisionDisplayNagamoriRanges = " << (settings.collisionDisplayNagamoriRanges ? "1" : "0") << "\n";
             file << "collisionDisplayNagamoriAffected = " << (settings.collisionDisplayNagamoriAffected ? "1" : "0") << "\n\n";
-#else
-            file << "\n";
-#endif
             file << "; Log active player / CPU flags during Character Select (1 = yes, 0 = no)\n";
             file << "enableCharacterSelectLogger = " << (settings.enableCharacterSelectLogger ? "1" : "0") << "\n\n";
             file << "; Show a one-time Practice hint about opening the overlay (1 = yes, 0 = no)\n";
@@ -1000,10 +990,8 @@ namespace Config {
             if (k == "collisiondisplayprojectileboxes") settings.collisionDisplayProjectileBoxes = (value == "1" || value == "true");
             if (k == "collisiondisplayprojectileorigins") settings.collisionDisplayProjectileOrigins = (value == "1" || value == "true");
             if (k == "collisiondisplayprojectileintersections") settings.collisionDisplayProjectileIntersections = (value == "1" || value == "true");
-#if EFZ_ENABLE_NAGAMORI_COLLISION_DEBUG
             if (k == "collisiondisplaynagamoriranges") settings.collisionDisplayNagamoriRanges = (value == "1" || value == "true");
             if (k == "collisiondisplaynagamoriaffected") settings.collisionDisplayNagamoriAffected = (value == "1" || value == "true");
-#endif
             if (k == "restricttopracticemode") settings.restrictToPracticeMode = (value == "1");
             if (k == "framestepenabled") settings.framestepEnabled = (value == "1" || value == "true");
             if (k == "suppressrevivalframestep") settings.suppressRevivalFramestep = (value == "1" || value == "true");
