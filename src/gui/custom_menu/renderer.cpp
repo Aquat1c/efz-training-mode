@@ -2,6 +2,7 @@
 #include "../include/gui/custom_menu/fonts.h"
 #include "../include/gui/custom_menu/theme.h"
 #include "../include/gui/custom_menu/layout.h"
+#include "../include/gui/custom_menu/scale.h"
 #include "../include/gui/custom_menu/input.h"
 #include "../include/gui/custom_menu/screens.h"
 #include "../include/gui/custom_menu/sound.h"
@@ -28,30 +29,6 @@
 namespace CustomMenu {
 
 namespace {
-
-// ===== DPI =====
-float GetDpiScaleQuick() {
-    HWND hwnd = GetActiveWindow();
-    if (!hwnd) hwnd = GetForegroundWindow();
-    if (!hwnd) return 1.0f;
-
-    typedef UINT(WINAPI* GetDpiForWindowFunc)(HWND);
-    HMODULE user32 = GetModuleHandleA("user32.dll");
-    if (user32) {
-        auto pGet = (GetDpiForWindowFunc)GetProcAddress(user32, "GetDpiForWindow");
-        if (pGet) {
-            UINT dpi = pGet(hwnd);
-            if (dpi > 0) return (float)dpi / 96.0f;
-        }
-    }
-    HDC hdc = GetDC(hwnd);
-    if (hdc) {
-        int dpiX = GetDeviceCaps(hdc, LOGPIXELSX);
-        ReleaseDC(hwnd, hdc);
-        if (dpiX > 0) return (float)dpiX / 96.0f;
-    }
-    return 1.0f;
-}
 
 // ===== Panes / top tabs / sub tabs =====
 //
@@ -365,12 +342,12 @@ void StartPaneAnimation(int dir) {
 
 float CurrentPaneOffsetX() {
     const float ease = EfzCosEase(AnimT(g_anim.paneTick, kPaneAnimMs));
-    return (1.0f - ease) * kPaneSlidePx * static_cast<float>(g_anim.paneDir);
+    return Scale::Snap((1.0f - ease) * kPaneSlidePx * static_cast<float>(g_anim.paneDir));
 }
 
 float CurrentOpenOffsetY() {
     const float ease = EfzCosEase(AnimT(g_anim.openTick, kOpenAnimMs));
-    return (1.0f - ease) * -kOpenSlidePx;
+    return Scale::Snap((1.0f - ease) * -kOpenSlidePx);
 }
 
 enum class MainMode {
@@ -925,40 +902,41 @@ void ApplyContentAnimation(MainLayout& L) {
 
 MainLayout ComputeMainLayout(float contentTopY) {
     using namespace Theme;
+    const Scale::Metrics& metrics = Scale::Get();
     MainLayout L{};
     L.panelTL   = PanelTopLeft();
     L.contentX  = L.panelTL.x;
     L.contentW  = kPanelW;
-    L.tabBarY   = contentTopY;
-    L.tabBarH   = kTabBarHeight;
+    L.tabBarY   = Scale::Snap(contentTopY);
+    L.tabBarH   = metrics.tabBarHeight;
 
     // Two-column split of the panel interior (used by VALUES pane).
-    const float colGap = 14.0f;
-    L.colW      = (kPanelW - kPanelPadX * 2.0f - colGap) * 0.5f;
-    L.colLeftX  = L.panelTL.x + kPanelPadX;
-    L.colRightX = L.colLeftX + L.colW + colGap;
+    const float colGap = Scale::Snap(14.0f * metrics.layoutScale);
+    L.colW      = Scale::Snap((kPanelW - metrics.panelPadX * 2.0f - colGap) * 0.5f);
+    L.colLeftX  = Scale::Snap(L.panelTL.x + metrics.panelPadX);
+    L.colRightX = Scale::Snap(L.colLeftX + L.colW + colGap);
 
     // Sub-tab strip sits just below the top bar when the active top tab
     // has more than one sub-tab.
-    float y = contentTopY + L.tabBarH + 2.0f;
+    float y = Scale::Snap(contentTopY + L.tabBarH + 2.0f);
     const int top = ClampTopTab(g_shell.activeTopTab);
     if (kTopTabs[top].subCount > 1) {
         L.subBarY = y;
-        L.subBarH = kTabBarHeight - 4.0f;
+        L.subBarH = metrics.tabBarHeight - 4.0f;
         y += L.subBarH + 4.0f;
     } else {
         L.subBarY = 0.0f;
         L.subBarH = 0.0f;
     }
 
-    L.dataStartY = y;
+    L.dataStartY = Scale::Snap(y);
 
     // Column header row (same Y for both columns). Only the VALUES pane
     // uses rowY[]; other panes compute layout via ScreenLayout.
-    y += kRowHeight + kSectionPadY;
+    y = Scale::Snap(L.dataStartY + metrics.rowHeight + metrics.sectionPadY);
     for (int i = 0; i < kColRowCount; ++i) {
-        L.rowY[i] = y;
-        y += kRowHeight;
+        L.rowY[i] = Scale::Snap(y);
+        y += metrics.rowHeight;
     }
 
     return L;
@@ -967,6 +945,7 @@ MainLayout ComputeMainLayout(float contentTopY) {
 // Tab bar rects: top tabs + (optional) sub tabs for the active top.
 void ComputeTabRects(MainLayout& L) {
     using namespace Theme;
+    const Scale::Metrics& metrics = Scale::Get();
     ImFont* bFont = Layout::BodyFont();
     const float bPx = bFont ? bFont->FontSize : 13.0f;
 
@@ -976,17 +955,17 @@ void ComputeTabRects(MainLayout& L) {
     for (int i = 0; i < TT_COUNT; ++i) {
         widths[i] = Layout::MeasureTextW(bFont, bPx, kTopTabs[i].label);
         totalW += widths[i];
-        if (i + 1 < TT_COUNT) totalW += kTabGapX;
+        if (i + 1 < TT_COUNT) totalW += metrics.tabGapX;
     }
-    float x = L.panelTL.x + (kPanelW - totalW) * 0.5f;
-    if (x < L.panelTL.x + kPanelPadX) x = L.panelTL.x + kPanelPadX;
-    const float textY = L.tabBarY + (kTabBarHeight - bPx) * 0.5f;
-    L.tabRectY = textY - 2.0f;
-    L.tabRectH = bPx + 6.0f;
+    float x = Scale::Snap(L.panelTL.x + (kPanelW - totalW) * 0.5f);
+    if (x < L.panelTL.x + metrics.panelPadX) x = L.panelTL.x + metrics.panelPadX;
+    const float textY = Scale::Snap(L.tabBarY + (metrics.tabBarHeight - bPx) * 0.5f);
+    L.tabRectY = Scale::Snap(textY - 2.0f);
+    L.tabRectH = Scale::Snap(bPx + 6.0f);
     for (int i = 0; i < TT_COUNT; ++i) {
-        L.tabRectX[i] = x;
+        L.tabRectX[i] = Scale::Snap(x);
         L.tabRectW[i] = widths[i];
-        x += widths[i] + kTabGapX;
+        x += widths[i] + metrics.tabGapX;
     }
 
     // Sub tabs (if any)
@@ -1000,17 +979,17 @@ void ComputeTabRects(MainLayout& L) {
     for (int i = 0; i < tt.subCount && i < 8; ++i) {
         subWidths[i] = Layout::MeasureTextW(bFont, bPx, tt.subs[i].label);
         subTotalW += subWidths[i];
-        if (i + 1 < tt.subCount) subTotalW += kTabGapX;
+        if (i + 1 < tt.subCount) subTotalW += metrics.tabGapX;
     }
-    float sx = L.panelTL.x + (kPanelW - subTotalW) * 0.5f;
-    if (sx < L.panelTL.x + kPanelPadX) sx = L.panelTL.x + kPanelPadX;
-    const float subTextY = L.subBarY + (L.subBarH - bPx) * 0.5f;
-    L.subRectY = subTextY - 2.0f;
-    L.subRectH = bPx + 6.0f;
+    float sx = Scale::Snap(L.panelTL.x + (kPanelW - subTotalW) * 0.5f);
+    if (sx < L.panelTL.x + metrics.panelPadX) sx = L.panelTL.x + metrics.panelPadX;
+    const float subTextY = Scale::Snap(L.subBarY + (L.subBarH - bPx) * 0.5f);
+    L.subRectY = Scale::Snap(subTextY - 2.0f);
+    L.subRectH = Scale::Snap(bPx + 6.0f);
     for (int i = 0; i < tt.subCount && i < 8; ++i) {
-        L.subRectX[i] = sx;
+        L.subRectX[i] = Scale::Snap(sx);
         L.subRectW[i] = subWidths[i];
-        sx += subWidths[i] + kTabGapX;
+        sx += subWidths[i] + metrics.tabGapX;
     }
 }
 
@@ -1208,22 +1187,23 @@ void RenderMainScreen(const MainLayout& L, const GuiValueLocks::State& locks) {
     using namespace Theme;
 
     const int focus = CurFocus();
+    const Scale::Metrics& metrics = Scale::Get();
     ImFont* bFont = Layout::BodyFont();
     const float bPx = bFont ? bFont->FontSize : 13.0f;
-    const float activeRuleY = L.dataStartY + kSectionPadY + bPx + 2.0f;
+    const float activeRuleY = Scale::Snap(L.dataStartY + metrics.sectionPadY + bPx + 2.0f);
 
     // Column headers share a Y.
     Layout::DrawHeader(dl, L.colLeftX,  L.dataStartY, L.colW, "PLAYER 1 VALUES");
     Layout::DrawHeader(dl, L.colRightX, L.dataStartY, L.colW, "PLAYER 2 VALUES");
     if (g_main.player == 0) {
         dl->AddLine(
-            ImVec2(L.colLeftX + kRuleInsetX - kPanelPadX, activeRuleY),
-            ImVec2(L.colLeftX + L.colW - kRuleInsetX - kPanelPadX, activeRuleY),
+            ImVec2(L.colLeftX + kRuleInsetX - metrics.panelPadX, activeRuleY),
+            ImVec2(L.colLeftX + L.colW - kRuleInsetX - metrics.panelPadX, activeRuleY),
             kTextActive, 1.0f);
     } else {
         dl->AddLine(
-            ImVec2(L.colRightX + kRuleInsetX - kPanelPadX, activeRuleY),
-            ImVec2(L.colRightX + L.colW - kRuleInsetX - kPanelPadX, activeRuleY),
+            ImVec2(L.colRightX + kRuleInsetX - metrics.panelPadX, activeRuleY),
+            ImVec2(L.colRightX + L.colW - kRuleInsetX - metrics.panelPadX, activeRuleY),
             kTextActive, 1.0f);
     }
 
@@ -1298,6 +1278,7 @@ int CrClampFocusIndex(int focus) {
 
 DualColumnLayout ComputeCrLayout(const MainLayout& L) {
     CrRebuildVisibleRows();
+    const Scale::Metrics& metrics = Scale::Get();
 
     DualColumnLayout C{};
     C.colLeftX = L.colLeftX;
@@ -1305,10 +1286,10 @@ DualColumnLayout ComputeCrLayout(const MainLayout& L) {
     C.colW = L.colW;
     C.dataStartY = L.dataStartY;
     C.visibleCount = g_crVisibleCount;
-    float y = L.dataStartY + Theme::kRowHeight + Theme::kSectionPadY;
+    float y = Scale::Snap(L.dataStartY + metrics.rowHeight + metrics.sectionPadY);
     for (int i = 0; i < g_crVisibleCount; ++i) {
-        C.rowY[i] = y;
-        y += Theme::kRowHeight;
+        C.rowY[i] = Scale::Snap(y);
+        y += metrics.rowHeight;
     }
     return C;
 }
@@ -1344,6 +1325,7 @@ void RenderCrScreen(const DualColumnLayout& C) {
 }
 
 void HandleCrScreenInput(const DualColumnLayout& C) {
+    const Scale::Metrics& metrics = Scale::Get();
     const bool keyboardOrPadEdge = Input::NavUp() || Input::NavDown() ||
                                    Input::NavLeft() || Input::NavRight() ||
                                    Input::Activate() || Input::Back() ||
@@ -1353,13 +1335,13 @@ void HandleCrScreenInput(const DualColumnLayout& C) {
         for (int vi = 0; vi < C.visibleCount; ++vi) {
             const int physical = CrPhysicalRow(vi);
             if (!Screens::CrRowHidden(0, physical) &&
-                Input::MouseHovering(C.colLeftX, C.rowY[vi], C.colW, Theme::kRowHeight)) {
+                Input::MouseHovering(C.colLeftX, C.rowY[vi], C.colW, metrics.rowHeight)) {
                 SetCrMode(MainMode::Browse, "mouse hover");
                 CrSetFocus(CrComposeFocus(vi, 0), "mouse hover");
                 break;
             }
             if (!Screens::CrRowHidden(1, physical) &&
-                Input::MouseHovering(C.colRightX, C.rowY[vi], C.colW, Theme::kRowHeight)) {
+                Input::MouseHovering(C.colRightX, C.rowY[vi], C.colW, metrics.rowHeight)) {
                 SetCrMode(MainMode::Browse, "mouse hover");
                 CrSetFocus(CrComposeFocus(vi, 1), "mouse hover");
                 break;
@@ -1372,10 +1354,10 @@ void HandleCrScreenInput(const DualColumnLayout& C) {
             const int physical = CrPhysicalRow(vi);
             int hit = -1;
             if (!Screens::CrRowHidden(0, physical) &&
-                Input::MouseHovering(C.colLeftX, C.rowY[vi], C.colW, Theme::kRowHeight)) {
+                Input::MouseHovering(C.colLeftX, C.rowY[vi], C.colW, metrics.rowHeight)) {
                 hit = CrComposeFocus(vi, 0);
             } else if (!Screens::CrRowHidden(1, physical) &&
-                       Input::MouseHovering(C.colRightX, C.rowY[vi], C.colW, Theme::kRowHeight)) {
+                       Input::MouseHovering(C.colRightX, C.rowY[vi], C.colW, metrics.rowHeight)) {
                 hit = CrComposeFocus(vi, 1);
             }
             if (hit < 0) continue;
@@ -1505,6 +1487,7 @@ void RenderTabBar(const MainLayout& L) {
 
 // ===== Input: Main screen =====
 void HandleMainScreenInput(const MainLayout& L, const GuiValueLocks::State& locks) {
+    const Scale::Metrics& metrics = Scale::Get();
     // Edit-mode branch: consume everything relevant to editing, ignore nav.
     if (g_edit.active) {
         if (RowIsLocked(locks, g_edit.rowIdx)) {
@@ -1543,12 +1526,12 @@ void HandleMainScreenInput(const MainLayout& L, const GuiValueLocks::State& lock
     // edges win for the frame, so a stationary cursor cannot steal focus.
     if (!keyboardOrPadEdge && g_mouse.movedThisFrame) {
         for (int i = 0; i < kColRowCount; ++i) {
-            if (Input::MouseHovering(L.colLeftX, L.rowY[i], L.colW, Theme::kRowHeight)) {
+            if (Input::MouseHovering(L.colLeftX, L.rowY[i], L.colW, metrics.rowHeight)) {
                 SetMainMode(MainMode::Browse, "mouse hover");
                 SetFocus(i, "mouse hover");
                 break;
             }
-            if (Input::MouseHovering(L.colRightX, L.rowY[i], L.colW, Theme::kRowHeight)) {
+            if (Input::MouseHovering(L.colRightX, L.rowY[i], L.colW, metrics.rowHeight)) {
                 SetMainMode(MainMode::Browse, "mouse hover");
                 SetFocus(kP2Start + i, "mouse hover");
                 break;
@@ -1561,9 +1544,9 @@ void HandleMainScreenInput(const MainLayout& L, const GuiValueLocks::State& lock
         // Data rows in either column
         for (int i = 0; i < kColRowCount; ++i) {
             int hit = -1;
-            if (Input::MouseHovering(L.colLeftX, L.rowY[i], L.colW, Theme::kRowHeight))
+            if (Input::MouseHovering(L.colLeftX, L.rowY[i], L.colW, metrics.rowHeight))
                 hit = i;
-            else if (Input::MouseHovering(L.colRightX, L.rowY[i], L.colW, Theme::kRowHeight))
+            else if (Input::MouseHovering(L.colRightX, L.rowY[i], L.colW, metrics.rowHeight))
                 hit = kP2Start + i;
             if (hit < 0) continue;
 
@@ -1776,10 +1759,12 @@ void PrepareFrame() {
     if (!ImGui::GetCurrentContext()) return;
     if (!ImGuiImpl::IsVisible()) return;
 
+    Scale::Update(Config::GetSettings().uiScale);
+
     // This can invalidate/recreate the shared DX9 font texture. Keep it out
     // of Render(), because Render() runs after ImGui::NewFrame() and after
     // overlay text may already have queued draw commands using the old atlas.
-    (void)Fonts::Rebuild(Config::GetSettings().uiScale, GetDpiScaleQuick());
+    (void)Fonts::Rebuild(Config::GetSettings().uiScale);
 }
 
 void Render() {
@@ -1818,6 +1803,8 @@ void Render() {
     }
 
     UpdateMouseState();
+    Scale::Update(Config::GetSettings().uiScale);
+    const Scale::Metrics& metrics = Scale::Get();
 
     // Global menu-key close - same hotkey used to open.
     if (!Screens::IsKeybindActive() && !Screens::IsTextEditorActive() && MenuKeyEdge()) {
@@ -1886,10 +1873,10 @@ void Render() {
 
         Screens::ScreenLayout sl{};
         sl.panelX         = L.panelTL.x;
-        sl.contentX       = L.panelTL.x + Theme::kPanelPadX;
-        sl.contentW       = Theme::kPanelW - Theme::kPanelPadX * 2.0f;
-        sl.contentTopY    = L.dataStartY;
-        sl.contentBottomY = Theme::PanelBottomRight().y - 40.0f;
+        sl.contentX       = Scale::Snap(L.panelTL.x + metrics.panelPadX);
+        sl.contentW       = Theme::kPanelW - metrics.panelPadX * 2.0f;
+        sl.contentTopY    = Scale::Snap(L.dataStartY);
+        sl.contentBottomY = Scale::Snap(Theme::PanelBottomRight().y - 40.0f);
         sl.animOffsetX    = CurrentPaneOffsetX();
         sl.animOffsetY    = CurrentOpenOffsetY();
         sl.inputEnabled   = g_shell.focusRegion == FocusRegion::Content && !tabFocusConsumed;
@@ -1955,10 +1942,10 @@ void Render() {
         // Secondary list-based panes share the same render/input driver.
         Screens::ScreenLayout sl{};
         sl.panelX         = L.panelTL.x;
-        sl.contentX       = L.panelTL.x + Theme::kPanelPadX;
-        sl.contentW       = Theme::kPanelW - Theme::kPanelPadX * 2.0f;
-        sl.contentTopY    = L.dataStartY;
-        sl.contentBottomY = Theme::PanelBottomRight().y - 40.0f;
+        sl.contentX       = Scale::Snap(L.panelTL.x + metrics.panelPadX);
+        sl.contentW       = Theme::kPanelW - metrics.panelPadX * 2.0f;
+        sl.contentTopY    = Scale::Snap(L.dataStartY);
+        sl.contentBottomY = Scale::Snap(Theme::PanelBottomRight().y - 40.0f);
         sl.animOffsetX    = CurrentPaneOffsetX();
         sl.animOffsetY    = CurrentOpenOffsetY();
         sl.inputEnabled   = g_shell.focusRegion == FocusRegion::Content && !tabFocusConsumed;
@@ -2099,10 +2086,10 @@ void Render() {
         hint = "U/D MOVE   L/R ADJUST   SHIFT+L/R 2ND   ENTER PICK   PGUP/PGDN TOP";
     }
 
-    const float hintBoxX = L.panelTL.x + Theme::kPanelPadX;
-    const float hintBoxW = Theme::kPanelW - Theme::kPanelPadX * 2.0f;
-    const float hintBoxH = statusText.empty() ? 26.0f : 40.0f;
-    const float hintBoxY = Theme::PanelBottomRight().y - hintBoxH - 6.0f;
+    const float hintBoxX = Scale::Snap(L.panelTL.x + metrics.panelPadX);
+    const float hintBoxW = Theme::kPanelW - metrics.panelPadX * 2.0f;
+    const float hintBoxH = Scale::Snap(statusText.empty() ? (26.0f * metrics.layoutScale) : (40.0f * metrics.layoutScale));
+    const float hintBoxY = Scale::Snap(Theme::PanelBottomRight().y - hintBoxH - 6.0f);
     dl->AddRectFilled(
         ImVec2(hintBoxX, hintBoxY),
         ImVec2(hintBoxX + hintBoxW, hintBoxY + hintBoxH),
@@ -2115,16 +2102,16 @@ void Render() {
     if (!statusText.empty()) {
         const float statusY = hintBoxY + 5.0f;
         const float sw = Layout::MeasureTextW(bFont, bPx, statusText.c_str());
-        float statusX = L.panelTL.x + (Theme::kPanelW - sw) * 0.5f;
-        if (statusX < L.panelTL.x + Theme::kPanelPadX) statusX = L.panelTL.x + Theme::kPanelPadX;
+        float statusX = Scale::Snap(L.panelTL.x + (Theme::kPanelW - sw) * 0.5f);
+        if (statusX < L.panelTL.x + metrics.panelPadX) statusX = L.panelTL.x + metrics.panelPadX;
         Layout::DrawString(dl, bFont, bPx, statusX, statusY, Theme::kTextStatus, statusText.c_str());
     }
-    const float hintY = statusText.empty()
+    const float hintY = Scale::Snap(statusText.empty()
         ? hintBoxY + (hintBoxH - bPx) * 0.5f
-        : hintBoxY + hintBoxH - bPx - 5.0f;
+        : hintBoxY + hintBoxH - bPx - 5.0f);
     const float hw = Layout::MeasureTextW(bFont, bPx, hint);
-    float hintX = L.panelTL.x + (Theme::kPanelW - hw) * 0.5f;
-    if (hintX < L.panelTL.x + Theme::kPanelPadX) hintX = L.panelTL.x + Theme::kPanelPadX;
+    float hintX = Scale::Snap(L.panelTL.x + (Theme::kPanelW - hw) * 0.5f);
+    if (hintX < L.panelTL.x + metrics.panelPadX) hintX = L.panelTL.x + metrics.panelPadX;
     Layout::DrawString(dl, bFont, bPx, hintX, hintY, Theme::kTextInactive, hint);
 
     const DWORD renderMs = GetTickCount() - renderStartMs;

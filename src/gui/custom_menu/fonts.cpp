@@ -1,5 +1,6 @@
 #include "../include/gui/custom_menu/fonts.h"
 #include "../include/gui/custom_menu/resource_ids.h"
+#include "../include/gui/custom_menu/scale.h"
 #include "../include/core/logger.h"
 #include "../include/utils/config.h"
 #include "../3rdparty/imgui/imgui.h"
@@ -19,11 +20,7 @@ namespace {
 ImFont* g_bodyFont   = nullptr;
 ImFont* g_headerFont = nullptr;
 
-float g_appliedScale = 0.0f;   // uiScale * dpiScale actually applied
-constexpr float kBodyBasePx   = 11.0f;
-constexpr float kHeaderBasePx = 16.0f;
-constexpr float kScaleMin     = 0.70f;
-constexpr float kScaleMax     = 2.50f;
+float g_appliedScale = 0.0f;
 
 std::chrono::steady_clock::time_point g_lastRebuild{};
 
@@ -60,7 +57,7 @@ bool AtlasContainsFont(const ImFontAtlas* atlas, const ImFont* font) {
 
 } // namespace
 
-bool Rebuild(float uiScale, float dpiScale) {
+bool Rebuild(float uiScale) {
     if (!ImGui::GetCurrentContext()) return false;
 
     ImGuiIO& io = ImGui::GetIO();
@@ -69,11 +66,10 @@ bool Rebuild(float uiScale, float dpiScale) {
     auto now = std::chrono::steady_clock::now();
     const bool everRebuilt = (g_lastRebuild.time_since_epoch().count() != 0);
 
-    float combined = uiScale * dpiScale;
-    if (combined < kScaleMin) combined = kScaleMin;
-    if (combined > kScaleMax) combined = kScaleMax;
+    Scale::Update(uiScale);
+    const Scale::Metrics& metrics = Scale::Get();
     // Round to nearest hundredth so tiny scale drift doesn't trigger rebuilds.
-    float rounded = std::floor(combined * 100.0f + 0.5f) / 100.0f;
+    float rounded = std::floor(metrics.fontScale * 100.0f + 0.5f) / 100.0f;
 
     const bool scaleChanged = !(std::fabs(rounded - g_appliedScale) < 0.005f);
     const bool fontsMissing =
@@ -116,7 +112,7 @@ bool Rebuild(float uiScale, float dpiScale) {
         cfgMain.OversampleV = 3;
         cfgMain.PixelSnapH  = false;
 
-        const float mainPx = std::floor(13.0f * rounded + 0.5f);
+        const float mainPx = Scale::Snap(13.0f * rounded);
         const int fontMode = Config::GetSettings().uiFontMode;
         if (fontMode == 1) {
             const char* segoePath = "C:\\Windows\\Fonts\\segoeui.ttf";
@@ -138,8 +134,8 @@ bool Rebuild(float uiScale, float dpiScale) {
     cfgBase.FontDataOwnedByAtlas = true;
 
     // Load body first so it's the default font.
-    const float bodyPx   = std::floor(kBodyBasePx   * rounded + 0.5f);
-    const float headerPx = std::floor(kHeaderBasePx * rounded + 0.5f);
+    const float bodyPx   = metrics.bodyPx;
+    const float headerPx = metrics.headerPx;
 
     ImFontConfig cfgBody = cfgBase;
     cfgBody.SizePixels = bodyPx;

@@ -1,6 +1,7 @@
 #include "../include/gui/custom_menu/screens.h"
 #include "../include/gui/custom_menu/layout.h"
 #include "../include/gui/custom_menu/theme.h"
+#include "../include/gui/custom_menu/scale.h"
 #include "../include/gui/custom_menu/input.h"
 #include "../include/gui/custom_menu/sound.h"
 #include "../include/core/constants.h"
@@ -168,6 +169,22 @@ constexpr float kInfoTextX = 18.0f;
 constexpr float kInfoPadY = 1.0f;
 constexpr float kInfoLineGap = 1.0f;
 
+float InfoPadX() {
+    return Scale::Snap((std::max)(4.0f, kInfoPadX * Scale::Get().layoutScale));
+}
+
+float InfoTextX() {
+    return Scale::Snap((std::max)(10.0f, kInfoTextX * Scale::Get().layoutScale));
+}
+
+float InfoPadY() {
+    return Scale::Snap((std::max)(1.0f, kInfoPadY * Scale::Get().layoutScale));
+}
+
+float InfoLineGap() {
+    return Scale::Snap((std::max)(1.0f, kInfoLineGap * Scale::Get().layoutScale));
+}
+
 void PushWrappedLine(std::vector<std::string>& out, const std::string& line) {
     if (!line.empty()) {
         out.push_back(line);
@@ -230,7 +247,7 @@ struct InfoWrapCacheEntry {
     int fontPxKey = 0;
     std::string text;
     std::vector<std::string> lines;
-    float height = Theme::kRowHeight;
+    float height = 22.0f;
 };
 
 constexpr int kInfoWrapCacheSlots = 160;
@@ -247,7 +264,7 @@ int InfoWrapFontPxKey(float px) {
 
 float InfoTextBlockHeight(size_t lineCount, float px) {
     return static_cast<float>(lineCount) * px +
-           static_cast<float>((lineCount > 0) ? lineCount - 1 : 0) * kInfoLineGap;
+           static_cast<float>((lineCount > 0) ? lineCount - 1 : 0) * InfoLineGap();
 }
 
 void RebuildInfoWrapCacheEntry(InfoWrapCacheEntry& entry,
@@ -267,14 +284,14 @@ void RebuildInfoWrapCacheEntry(InfoWrapCacheEntry& entry,
     entry.lines.clear();
     entry.lines.reserve(4);
     if (!*text) {
-        entry.height = kInfoPadY * 2.0f;
+        entry.height = InfoPadY() * 2.0f;
         return;
     }
 
-    const float textW = (std::max)(32.0f, contentW - kInfoTextX - kInfoPadX);
+    const float textW = (std::max)(32.0f, contentW - InfoTextX() - InfoPadX());
     WrapTextLine(font, px, entry.text.c_str(), textW, entry.lines);
     if (entry.lines.empty()) entry.lines.push_back(entry.text);
-    entry.height = kInfoPadY * 2.0f + InfoTextBlockHeight(entry.lines.size(), px);
+    entry.height = Scale::Snap(InfoPadY() * 2.0f + InfoTextBlockHeight(entry.lines.size(), px));
 }
 
 const InfoWrapCacheEntry& GetInfoWrapCacheEntry(const Row& r, float contentW) {
@@ -323,11 +340,16 @@ float InfoRowHeight(const Row& r, float contentW) {
 }
 
 float RowPixelHeight(const Row& r, float contentW) {
-    if (r.kind == RowKind::Spacer) return Theme::kRowHeight * 0.5f;
-    if (r.kind == RowKind::Header) return Theme::kRowHeight + Theme::kSectionPadY;
+    const Scale::Metrics& metrics = Scale::Get();
+    if (r.kind == RowKind::Spacer) return Scale::Snap(metrics.rowHeight * 0.5f);
+    if (r.kind == RowKind::Header) return metrics.rowHeight + metrics.sectionPadY;
     if (r.kind == RowKind::Info) return InfoRowHeight(r, contentW);
-    if (r.kind == RowKind::Custom) return r.customHeight > 0.0f ? r.customHeight : Theme::kRowHeight;
-    return Theme::kRowHeight;
+    if (r.kind == RowKind::Custom) {
+        return r.customHeight > 0.0f
+            ? Scale::Snap(r.customHeight * metrics.layoutScale)
+            : metrics.rowHeight;
+    }
+    return metrics.rowHeight;
 }
 
 void FormatIntValue(const Row& r, char* buf, size_t bufSz) {
@@ -376,18 +398,18 @@ struct RowRect {
 // [contentTopY, contentBottomY].
 float ComputeRects(const ScreenLayout& layout, const Row* rows, int rowCount,
                    float scrollPx, RowRect* out) {
-    float y = layout.contentTopY + layout.animOffsetY - scrollPx;
+    float y = Scale::Snap(layout.contentTopY + layout.animOffsetY - Scale::Snap(scrollPx));
     for (int i = 0; i < rowCount; ++i) {
         RowRect& r = out[i];
-        r.y = y;
-        r.h = RowPixelHeight(rows[i], layout.contentW);
+        r.y = Scale::Snap(y);
+        r.h = Scale::Snap(RowPixelHeight(rows[i], layout.contentW));
         const bool hidden = RowHidden(rows[i]);
         r.visible = !hidden &&
                     (r.y + r.h) > layout.contentTopY &&
                     r.y < layout.contentBottomY;
         if (!hidden) y += r.h;
     }
-    return y - (layout.contentTopY + layout.animOffsetY - scrollPx);
+    return y - Scale::Snap(layout.contentTopY + layout.animOffsetY - Scale::Snap(scrollPx));
 }
 
 // Forward / backward scan to find next focusable (non-hidden, non-deco) row.
@@ -472,7 +494,7 @@ float EfzCosEase(float t01) {
 float CurrentSubmenuOffsetX() {
     if (g_submenus.animTick == 0) return 0.0f;
     const float ease = EfzCosEase(AnimT(g_submenus.animTick, kSubmenuAnimMs));
-    return (1.0f - ease) * kSubmenuSlidePx * static_cast<float>(g_submenus.animDir);
+    return Scale::Snap((1.0f - ease) * kSubmenuSlidePx * static_cast<float>(g_submenus.animDir));
 }
 
 void StartSubmenuAnimation(int dir) {
@@ -531,8 +553,8 @@ void DrawInfoBlockBackgrounds(ImDrawList* dl, const ScreenLayout& layout,
                               const RowRect* rects) {
     if (!dl || !rows || !rects) return;
     using namespace Theme;
-    const float x = layout.contentX + layout.animOffsetX;
-    const float w = layout.contentW;
+    const float x = Scale::Snap(layout.contentX + layout.animOffsetX);
+    const float w = Scale::Snap(layout.contentW);
 
     for (int i = 0; i < rowCount; ++i) {
         if (!RowStartsInfoBlock(rows, i)) continue;
@@ -544,15 +566,15 @@ void DrawInfoBlockBackgrounds(ImDrawList* dl, const ScreenLayout& layout,
             ++end;
         }
 
-        const float y1 = rects[i].y;
-        const float y2 = rects[end].y + rects[end].h;
+        const float y1 = Scale::Snap(rects[i].y);
+        const float y2 = Scale::Snap(rects[end].y + rects[end].h);
         if (y2 <= layout.contentTopY || y1 >= layout.contentBottomY) {
             i = end;
             continue;
         }
 
-        const float top = y1 + 1.0f;
-        const float bot = y2 - 1.0f;
+        const float top = Scale::Snap(y1 + 1.0f);
+        const float bot = Scale::Snap(y2 - 1.0f);
         dl->AddRectFilled(ImVec2(x - 2.0f, top),
                           ImVec2(x + w + 2.0f, bot),
                           kInfoFill);
@@ -863,13 +885,13 @@ int PopupRowCount() {
 }
 
 float PopupColumnGap() {
-    return 12.0f;
+    return Scale::Snap(12.0f * Scale::Get().layoutScale);
 }
 
 float PopupHeaderHeight() {
     ImFont* bFont = Layout::BodyFont();
     const float bPx = bFont ? bFont->FontSize : 13.0f;
-    return bPx + 18.0f;
+    return Scale::Snap(bPx + 18.0f * Scale::Get().layoutScale);
 }
 
 int PopupIndexRow(int index) {
@@ -901,10 +923,10 @@ bool PopupItemRect(const PopupGeom& g, int index, float& x0, float& y0, float& x
     const int row = PopupIndexRow(index);
     const int column = PopupIndexColumn(index);
     const float columnWidth = PopupColumnWidth(g);
-    x0 = g.listX + static_cast<float>(column) * (columnWidth + PopupColumnGap());
-    y0 = g.listY + static_cast<float>(row) * g.rowH - g_popup.scrollPx;
-    x1 = x0 + columnWidth;
-    y1 = y0 + g.rowH;
+    x0 = Scale::Snap(g.listX + static_cast<float>(column) * (columnWidth + PopupColumnGap()));
+    y0 = Scale::Snap(g.listY + static_cast<float>(row) * g.rowH - Scale::Snap(g_popup.scrollPx));
+    x1 = Scale::Snap(x0 + columnWidth);
+    y1 = Scale::Snap(y0 + g.rowH);
     return !(y1 <= g.listY || y0 >= g.listY + g.listH);
 }
 
@@ -1022,7 +1044,7 @@ void ClosePopup() {
 bool PopupActive() { return g_popup.active; }
 
 void PopupEnsureFocusVisible(float viewportH) {
-    const float rowH = Theme::kRowHeight;
+    const float rowH = Scale::Get().rowHeight;
     const float desiredY = static_cast<float>(PopupIndexRow(g_popup.focusIdx)) * rowH;
     if (desiredY < g_popup.scrollPx) {
         g_popup.scrollPx = desiredY;
@@ -1033,12 +1055,14 @@ void PopupEnsureFocusVisible(float viewportH) {
     const float maxScroll = (total > viewportH) ? (total - viewportH) : 0.0f;
     if (g_popup.scrollPx < 0.0f) g_popup.scrollPx = 0.0f;
     if (g_popup.scrollPx > maxScroll) g_popup.scrollPx = maxScroll;
+    g_popup.scrollPx = Scale::Snap(g_popup.scrollPx);
 }
 
 PopupGeom ComputePopupGeom(const ScreenLayout& layout) {
     using namespace Theme;
+    const Scale::Metrics& metrics = Scale::Get();
     PopupGeom g{};
-    g.rowH   = kRowHeight;
+    g.rowH   = metrics.rowHeight;
     ImFont* bFont = Layout::BodyFont();
     const float bPx = bFont ? bFont->FontSize : 13.0f;
     const float headerHeight = PopupHeaderHeight();
@@ -1049,22 +1073,22 @@ PopupGeom ComputePopupGeom(const ScreenLayout& layout) {
         widestChoiceW = (std::max)(widestChoiceW, Layout::MeasureTextW(bFont, bPx, text));
     }
     const int columns = PopupColumnCount();
-    const float perColumnWidth = widestChoiceW + prefixW + 28.0f;
-    g.popupW = (std::max)(320.0f,
-                          perColumnWidth * static_cast<float>(columns)
-                          + PopupColumnGap() * static_cast<float>(columns - 1)
-                          + 16.0f);
+    const float perColumnWidth = widestChoiceW + prefixW + Scale::Snap(28.0f * metrics.layoutScale);
+    g.popupW = Scale::Snap((std::max)(320.0f * metrics.layoutScale,
+                                      perColumnWidth * static_cast<float>(columns)
+                                      + PopupColumnGap() * static_cast<float>(columns - 1)
+                                      + 16.0f));
     const float maxW = kPanelW - 16.0f;
     if (g.popupW > maxW) g.popupW = maxW;
-    const float maxH = (layout.contentBottomY - layout.contentTopY) - 20.0f;
-    const float desiredH = static_cast<float>(PopupRowCount()) * g.rowH + headerHeight + 8.0f;
+    const float maxH = Scale::Snap((layout.contentBottomY - layout.contentTopY) - 20.0f);
+    const float desiredH = Scale::Snap(static_cast<float>(PopupRowCount()) * g.rowH + headerHeight + 8.0f);
     g.popupH = (desiredH < maxH) ? desiredH : maxH;
-    g.px = layout.panelX + (kPanelW - g.popupW) * 0.5f;
-    g.py = layout.contentTopY + ((layout.contentBottomY - layout.contentTopY) - g.popupH) * 0.5f;
-    g.listX = g.px + 8.0f;
-    g.listY = g.py + headerHeight;
-    g.listW = g.popupW - 16.0f;
-    g.listH = g.popupH - headerHeight - 8.0f;
+    g.px = Scale::Snap(layout.panelX + (kPanelW - g.popupW) * 0.5f);
+    g.py = Scale::Snap(layout.contentTopY + ((layout.contentBottomY - layout.contentTopY) - g.popupH) * 0.5f);
+    g.listX = Scale::Snap(g.px + 8.0f);
+    g.listY = Scale::Snap(g.py + headerHeight);
+    g.listW = Scale::Snap(g.popupW - 16.0f);
+    g.listH = Scale::Snap(g.popupH - headerHeight - 8.0f);
     if (g.listH < g.rowH) g.listH = g.rowH;
     return g;
 }
@@ -1135,7 +1159,7 @@ void PopupTickInputOnly(const ScreenLayout& layout) {
     }
 
     const float wheel = ImGui::GetIO().MouseWheel;
-    if (wheel != 0.0f) g_popup.scrollPx -= wheel * g.rowH * 3.0f;
+    if (wheel != 0.0f) g_popup.scrollPx = Scale::Snap(g_popup.scrollPx - wheel * g.rowH * 3.0f);
 
     const bool mouseLeftEdge = Input::MouseLeftEdge();
     if (!keyboardOrPadEdge && mouseLeftEdge) {
@@ -1177,18 +1201,18 @@ void PopupRender(ImDrawList* dl, const ScreenLayout& layout) {
     const float bPx = bFont ? bFont->FontSize : 13.0f;
 
     // Backdrop + frame
-    dl->AddRectFilled(ImVec2(layout.panelX - 2.0f, layout.contentTopY - 2.0f),
-                      ImVec2(layout.panelX + kPanelW + 2.0f, layout.contentBottomY + 2.0f),
+    dl->AddRectFilled(ImVec2(Scale::Snap(layout.panelX - 2.0f), Scale::Snap(layout.contentTopY - 2.0f)),
+                      ImVec2(Scale::Snap(layout.panelX + kPanelW + 2.0f), Scale::Snap(layout.contentBottomY + 2.0f)),
                       IM_COL32(0, 0, 0, 160));
     dl->AddRectFilled(ImVec2(g.px, g.py), ImVec2(g.px + g.popupW, g.py + g.popupH), kPanel);
     dl->AddRect      (ImVec2(g.px, g.py), ImVec2(g.px + g.popupW, g.py + g.popupH), kRule);
 
-    const float titleY = g.py + 4.0f;
+    const float titleY = Scale::Snap(g.py + 4.0f);
     const bool isMulti = PopupIsMulti();
     Layout::DrawString(dl, bFont, bPx, g.px + 10.0f, titleY, kTextHeader,
                        isMulti ? "MULTI-SELECT (ESC TO CLOSE)" : "SELECT");
-    dl->AddLine(ImVec2(g.px + 8.0f, g.listY - 4.0f),
-                ImVec2(g.px + g.popupW - 8.0f, g.listY - 4.0f), kRule, 1.0f);
+    dl->AddLine(ImVec2(Scale::Snap(g.px + 8.0f), Scale::Snap(g.listY - 4.0f)),
+                ImVec2(Scale::Snap(g.px + g.popupW - 8.0f), Scale::Snap(g.listY - 4.0f)), kRule, 1.0f);
 
     dl->PushClipRect(ImVec2(g.listX, g.listY),
                      ImVec2(g.listX + g.listW, g.listY + g.listH),
@@ -1216,8 +1240,8 @@ void PopupRender(ImDrawList* dl, const ScreenLayout& layout) {
             _snprintf_s(line, sizeof(line), _TRUNCATE, "%s %s", mark, g_popup.choices[i]);
         }
         Layout::DrawString(dl, bFont, bPx,
-                           x0 + 4.0f,
-                           y0 + (g.rowH - bPx) * 0.5f,
+                           Scale::Snap(x0 + 4.0f),
+                           Scale::Snap(y0 + (g.rowH - bPx) * 0.5f),
                            focused ? kTextActive : kTextInactive, line);
     }
     dl->PopClipRect();
@@ -1225,10 +1249,10 @@ void PopupRender(ImDrawList* dl, const ScreenLayout& layout) {
     // Scroll indicator
     const float total = static_cast<float>(PopupRowCount()) * g.rowH;
     if (total > g.listH) {
-        const float barX = g.px + g.popupW - 4.0f;
+        const float barX = Scale::Snap(g.px + g.popupW - 4.0f);
         const float frac = g_popup.scrollPx / (total - g.listH);
-        const float barH = g.listH * (g.listH / total);
-        const float barY = g.listY + (g.listH - barH) * frac;
+        const float barH = Scale::Snap(g.listH * (g.listH / total));
+        const float barY = Scale::Snap(g.listY + (g.listH - barH) * frac);
         dl->AddRectFilled(ImVec2(barX, barY),
                           ImVec2(barX + 2.0f, barY + barH),
                           kRule);
@@ -1275,6 +1299,8 @@ void EnsureFocusVisible(const ScreenLayout& layout,
     scroll.maxScrollPx = (totalH > viewH) ? (totalH - viewH) : 0.0f;
     if (scroll.scrollPx < 0.0f) scroll.scrollPx = 0.0f;
     if (scroll.scrollPx > scroll.maxScrollPx) scroll.scrollPx = scroll.maxScrollPx;
+    scroll.scrollPx = Scale::Snap(scroll.scrollPx);
+    scroll.maxScrollPx = Scale::Snap(scroll.maxScrollPx);
 }
 
 void RenderList(ImDrawList* dl, const ScreenLayout& layout,
@@ -1311,8 +1337,8 @@ void RenderList(ImDrawList* dl, const ScreenLayout& layout,
 
     // Push a clip rect around the scrollable region so rows partially off the
     // top/bottom edge get correctly clipped instead of bleeding into header/hint.
-    dl->PushClipRect(ImVec2(drawLayout.panelX, drawLayout.contentTopY),
-                     ImVec2(drawLayout.panelX + kPanelW, drawLayout.contentBottomY),
+    dl->PushClipRect(ImVec2(Scale::Snap(drawLayout.panelX), Scale::Snap(drawLayout.contentTopY)),
+                     ImVec2(Scale::Snap(drawLayout.panelX + kPanelW), Scale::Snap(drawLayout.contentBottomY)),
                      true);
 
     DrawInfoBlockBackgrounds(dl, drawLayout, drawRows, drawCount, rects);
@@ -1322,9 +1348,9 @@ void RenderList(ImDrawList* dl, const ScreenLayout& layout,
         const Row& r = drawRows[i];
         const bool focused = (i == drawFocus);
         const bool disabled = RowDisabled(r);
-        const float x = drawLayout.contentX + drawLayout.animOffsetX;
+        const float x = Scale::Snap(drawLayout.contentX + drawLayout.animOffsetX);
         const float y = rects[i].y;
-        const float w = drawLayout.contentW;
+        const float w = Scale::Snap(drawLayout.contentW);
 
         switch (r.kind) {
             case RowKind::Header:
@@ -1335,22 +1361,22 @@ void RenderList(ImDrawList* dl, const ScreenLayout& layout,
                 const std::vector<std::string>& lines = wrapped.lines;
                 const float rowH = rects[i].h;
                 const float textBlockH = InfoTextBlockHeight(lines.size(), bPx);
-                const float py0 = y + (std::max)(0.0f, (rowH - textBlockH) * 0.5f);
+                const float py0 = Scale::Snap(y + (std::max)(0.0f, (rowH - textBlockH) * 0.5f));
 
                 // Subtle left-edge cursor when this Info is the focused row,
                 // so keyboard scrolling has a visible anchor without making
                 // body paragraphs noisy. Active text colour brightens too.
                 if (focused) {
                     dl->AddRectFilled(
-                        ImVec2(x + 2.0f,            py0 - 1.0f),
-                        ImVec2(x + 4.0f,            py0 + textBlockH + 1.0f),
+                        ImVec2(Scale::Snap(x + 2.0f), Scale::Snap(py0 - 1.0f)),
+                        ImVec2(Scale::Snap(x + 4.0f), Scale::Snap(py0 + textBlockH + 1.0f)),
                         kTextActive);
                 }
                 const ImU32 textColor = focused ? kTextActive : kTextInactive;
 
-                const float px = x + kInfoTextX;
+                const float px = Scale::Snap(x + InfoTextX());
                 for (size_t li = 0; li < lines.size(); ++li) {
-                    const float py = py0 + static_cast<float>(li) * (bPx + kInfoLineGap);
+                    const float py = Scale::Snap(py0 + static_cast<float>(li) * (bPx + InfoLineGap()));
                     Layout::DrawString(dl, bFont, bPx, px + 1.0f, py + 1.0f,
                                        IM_COL32(0, 0, 0, 190), lines[li].c_str());
                     Layout::DrawString(dl, bFont, bPx, px, py,
@@ -1465,12 +1491,12 @@ void RenderList(ImDrawList* dl, const ScreenLayout& layout,
 
     // Scroll indicator (right edge, inside panel pad area).
     if (drawScroll->maxScrollPx > 0.0f) {
-        const float viewH = drawLayout.contentBottomY - drawLayout.contentTopY;
+        const float viewH = Scale::Snap(drawLayout.contentBottomY - drawLayout.contentTopY);
         const float totalH = viewH + drawScroll->maxScrollPx;
-        const float barX = drawLayout.panelX + kPanelW - 4.0f;
+        const float barX = Scale::Snap(drawLayout.panelX + kPanelW - 4.0f);
         const float frac = drawScroll->scrollPx / drawScroll->maxScrollPx;
-        const float barH = viewH * (viewH / totalH);
-        const float barY = drawLayout.contentTopY + (viewH - barH) * frac;
+        const float barH = Scale::Snap(viewH * (viewH / totalH));
+        const float barY = Scale::Snap(drawLayout.contentTopY + (viewH - barH) * frac);
         dl->AddRectFilled(ImVec2(barX, barY),
                           ImVec2(barX + 2.0f, barY + barH),
                           kRule);
@@ -1510,7 +1536,7 @@ bool HandleRowsInput(const ScreenLayout& layout,
     // Mouse wheel scrolls the list
     const float wheel = ImGui::GetIO().MouseWheel;
     if (wheel != 0.0f) {
-        scroll.scrollPx -= wheel * Theme::kRowHeight * 3.0f;
+        scroll.scrollPx = Scale::Snap(scroll.scrollPx - wheel * Scale::Get().rowHeight * 3.0f);
         if (scroll.scrollPx < 0.0f) scroll.scrollPx = 0.0f;
         if (scroll.scrollPx > scroll.maxScrollPx) scroll.scrollPx = scroll.maxScrollPx;
     }
@@ -1553,7 +1579,7 @@ bool HandleRowsInput(const ScreenLayout& layout,
         for (int i = 0; i < rowCount; ++i) {
             if (!rects[i].visible) continue;
             if (!RowIsFocusable(rows[i])) continue;
-            if (Input::MouseHovering(layout.contentX + layout.animOffsetX, rects[i].y,
+            if (Input::MouseHovering(Scale::Snap(layout.contentX + layout.animOffsetX), rects[i].y,
                                      layout.contentW, rects[i].h)) {
                 focus = i;
                 clickActivated = mouseLeftEdge;
@@ -2097,15 +2123,16 @@ bool TickKeybindIfActive(ImDrawList* dl, const ScreenLayout& layout) {
     if (!g_keybind.active) return true; // closed this frame
 
     using namespace Theme;
+    const Scale::Metrics& metrics = Scale::Get();
 
     // Centered modal box similar to popup geom but smaller.
-    const float boxW = 320.0f;
-    const float boxH = g_keybind.captureGamepad ? 136.0f : 120.0f;
-    const float bx = layout.panelX + (kPanelW - boxW) * 0.5f;
-    const float by = layout.contentTopY + ((layout.contentBottomY - layout.contentTopY) - boxH) * 0.5f;
+    const float boxW = Scale::Snap(320.0f * metrics.layoutScale);
+    const float boxH = Scale::Snap((g_keybind.captureGamepad ? 136.0f : 120.0f) * metrics.layoutScale);
+    const float bx = Scale::Snap(layout.panelX + (kPanelW - boxW) * 0.5f);
+    const float by = Scale::Snap(layout.contentTopY + ((layout.contentBottomY - layout.contentTopY) - boxH) * 0.5f);
 
-    dl->AddRectFilled(ImVec2(layout.panelX - 2.0f, layout.contentTopY - 2.0f),
-                      ImVec2(layout.panelX + kPanelW + 2.0f, layout.contentBottomY + 2.0f),
+    dl->AddRectFilled(ImVec2(Scale::Snap(layout.panelX - 2.0f), Scale::Snap(layout.contentTopY - 2.0f)),
+                      ImVec2(Scale::Snap(layout.panelX + kPanelW + 2.0f), Scale::Snap(layout.contentBottomY + 2.0f)),
                       IM_COL32(0, 0, 0, 160));
     dl->AddRectFilled(ImVec2(bx, by), ImVec2(bx + boxW, by + boxH), kPanel);
     dl->AddRect      (ImVec2(bx, by), ImVec2(bx + boxW, by + boxH), kRule);
@@ -2115,10 +2142,10 @@ bool TickKeybindIfActive(ImDrawList* dl, const ScreenLayout& layout) {
 
     auto centerText = [&](float ty, const char* s, ImU32 col) {
         const float sw = Layout::MeasureTextW(bFont, bPx, s);
-        Layout::DrawString(dl, bFont, bPx, bx + (boxW - sw) * 0.5f, ty, col, s);
+        Layout::DrawString(dl, bFont, bPx, Scale::Snap(bx + (boxW - sw) * 0.5f), ty, col, s);
     };
 
-    centerText(by + 14.0f, g_keybind.title, kTextHeader);
+    centerText(Scale::Snap(by + 14.0f * metrics.layoutScale), g_keybind.title, kTextHeader);
     if (g_keybind.captureGamepad) {
         char cancelBuf[96];
         const int cancelMask = Config::GetSettings().gpToggleMenuButton;
@@ -2131,23 +2158,23 @@ bool TickKeybindIfActive(ImDrawList* dl, const ScreenLayout& layout) {
                         "ESC TO CANCEL");
         }
         if (!g_keybind.primed) {
-            centerText(by + 46.0f, "RELEASE ALL INPUTS...", kTextInactive);
+            centerText(Scale::Snap(by + 46.0f * metrics.layoutScale), "RELEASE ALL INPUTS...", kTextInactive);
         } else {
-            centerText(by + 46.0f, "PRESS A CONTROLLER BUTTON", kTextActive);
+            centerText(Scale::Snap(by + 46.0f * metrics.layoutScale), "PRESS A CONTROLLER BUTTON", kTextActive);
         }
-        centerText(by + 74.0f, "DELETE / BACKSPACE TO DISABLE", kTextInactive);
-        centerText(by + 100.0f, cancelBuf, kTextInactive);
+        centerText(Scale::Snap(by + 74.0f * metrics.layoutScale), "DELETE / BACKSPACE TO DISABLE", kTextInactive);
+        centerText(Scale::Snap(by + 100.0f * metrics.layoutScale), cancelBuf, kTextInactive);
     } else {
         if (!g_keybind.primed) {
-            centerText(by + 50.0f, "RELEASE ALL KEYS...", kTextInactive);
+            centerText(Scale::Snap(by + 50.0f * metrics.layoutScale), "RELEASE ALL KEYS...", kTextInactive);
         } else {
-            centerText(by + 50.0f,
+            centerText(Scale::Snap(by + 50.0f * metrics.layoutScale),
                        g_keybind.disallowMenuReserved
                            ? "PRESS A KEY (NO ENTER / SPACE)"
                            : "PRESS A KEY",
                        kTextActive);
         }
-        centerText(by + 80.0f, "ESC TO CANCEL", kTextInactive);
+        centerText(Scale::Snap(by + 80.0f * metrics.layoutScale), "ESC TO CANCEL", kTextInactive);
     }
 
     return true;
