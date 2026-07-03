@@ -3,6 +3,7 @@ project(efz_training_mode)
 
 option(EFZ_XP_COMPAT "Enable Windows XP-oriented compile settings (requires v141_xp-compatible toolset)" OFF)
 option(EFZ_ENABLE_INPUT_LOGS "Enable verbose input/menu navigation trace logging" OFF)
+option(EFZ_ENABLE_AUTO_ACTION_WAKE_TRACE "Enable verbose auto-action wake/subframe trace logging" OFF)
 set(EFZ_MINHOOK_SOURCE_DIR "" CACHE PATH "Optional path to a MinHook source tree for source builds")
 
 set(EFZ_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
@@ -177,6 +178,10 @@ add_library(efz_training_mode SHARED ${SOURCES})
 
 if(EFZ_ENABLE_INPUT_LOGS)
     target_compile_definitions(efz_training_mode PRIVATE EFZ_ENABLE_INPUT_LOGS=1)
+endif()
+
+if(EFZ_ENABLE_AUTO_ACTION_WAKE_TRACE)
+    target_compile_definitions(efz_training_mode PRIVATE EFZ_ENABLE_AUTO_ACTION_WAKE_TRACE=1)
 endif()
 
 # Update include directories to include subdirectories

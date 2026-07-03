@@ -505,7 +505,7 @@ void UpdateTriggerOverlay() {
         if (g_TriggerOnRGId != -1) { DirectDrawHook::RemovePermanentMessage(g_TriggerOnRGId); g_TriggerOnRGId = -1; }
     };
 
-    if (!autoActionEnabled.load()) {
+    if (!HasAnyAutoActionTriggerEnabled()) {
         remove_all_triggers();
         return;
     }
@@ -514,7 +514,7 @@ void UpdateTriggerOverlay() {
     const int yPosBelowFramestep = 160;
     int yPos = Framestep::IsPaused() ? yPosBelowFramestep : yPosDefault;
     const int yIncrement = 15;
-    int targetPlayer = autoActionPlayer.load();
+    int targetPlayer = ResolveAutoActionTargetPlayer();
 
     auto getActionName = [](int actionType, int customId, int strength) -> std::string {
         std::string strengthLetter = "";
@@ -2004,7 +2004,7 @@ void FrameDataMonitor() {
             
             // Process features in order of priority - NO THROTTLING
             bool moveIDsChanged = (moveID1 != prevMoveID1) || (moveID2 != prevMoveID2);
-            bool criticalFeaturesActive = autoJumpEnabled.load() || autoActionEnabled.load() || autoAirtechEnabled.load();
+            bool criticalFeaturesActive = autoJumpEnabled.load() || HasAnyAutoActionTriggerEnabled() || autoAirtechEnabled.load();
 
             // Process frame advantage only when move IDs change or timers/overlays require ticking
             {

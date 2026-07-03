@@ -125,24 +125,11 @@ void ApplyJump(uintptr_t moveIDAddr, int playerNum, int jumpType) {
 }
 
 bool IsAutoActionActiveForPlayer(int playerNum) {
-    if (!autoActionEnabled.load()) {
+    if (!HasAnyAutoActionTriggerEnabled()) {
         return false;
     }
-    
-    int targetPlayer = autoActionPlayer.load(); // 1=P1, 2=P2, 3=Both
-    bool affectsThisPlayer = (targetPlayer == playerNum || targetPlayer == 3);
-    
-    if (!affectsThisPlayer) {
-        return false;
-    }
-    
-    // Check if any triggers are enabled
-    bool anyTriggerEnabled = triggerAfterBlockEnabled.load() || 
-                            triggerOnWakeupEnabled.load() || 
-                            triggerAfterHitstunEnabled.load() || 
-                            triggerAfterAirtechEnabled.load();
-    
-    if (!anyTriggerEnabled) {
+
+    if (ResolveAutoActionTargetPlayer() != playerNum) {
         return false;
     }
     

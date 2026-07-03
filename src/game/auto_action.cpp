@@ -33,6 +33,11 @@ static inline bool PickRandomRow(int triggerType, TriggerOption &out);
 #include <algorithm>
 #include <vector>
 #include <sstream>
+
+#ifndef EFZ_ENABLE_AUTO_ACTION_WAKE_TRACE
+#define EFZ_ENABLE_AUTO_ACTION_WAKE_TRACE 0
+#endif
+
 // Define the motion input constants if they're not already defined
 #ifndef MOTION_INPUT_UP
 #define MOTION_INPUT_UP INPUT_UP
@@ -104,6 +109,7 @@ struct WakeupTiming {
 };
 
 static const WakeupTiming s_wakeupTimings[] = {
+    { CHAR_ID_MIZUKA,    13 }, // Runtime "nagamori" resolves to this ID
     { CHAR_ID_NAGAMORI,  13 }, 
     { CHAR_ID_MAKOTO,    16 },
     { CHAR_ID_MINAGI,    16 },
@@ -537,6 +543,198 @@ static int  s_p2WakeMacroStartFrame   = -1;
 static int  s_p2WakeMacroStartTick    = 0;   // Tick offset to skip to for wake macros
 static bool s_p2WakeOptionPicked = false;
 
+#if EFZ_ENABLE_AUTO_ACTION_WAKE_TRACE
+static const char* TraceBool(bool value) {
+    return value ? "1" : "0";
+}
+
+static const char* TraceSubframeSuffix(int internalFrame) {
+    static const char* kSuffixes[3] = { "00", "33", "66" };
+    int subframe = internalFrame % 3;
+    if (subframe < 0) subframe += 3;
+    return kSuffixes[subframe];
+}
+
+static const char* TraceMoveClass(short moveID) {
+    switch (moveID) {
+        case IDLE_MOVE_ID: return "idle";
+        case WALK_FWD_ID: return "walk-f";
+        case WALK_BACK_ID: return "walk-b";
+        case CROUCH_ID: return "crouch";
+        case CROUCH_TO_STAND_ID: return "crouch-stand";
+        case GROUNDTECH_PRE: return "gtech-pre";
+        case GROUNDTECH_RECOVERY: return "gtech-96";
+        case GROUNDTECH_START: return "gtech-start";
+        case GROUNDTECH_END: return "gtech-end";
+        case STRAIGHT_JUMP_ID: return "jump-n";
+        case FORWARD_JUMP_ID: return "jump-f";
+        case BACKWARD_JUMP_ID: return "jump-b";
+        case FALLING_ID: return "fall";
+        case FORWARD_DASH_START_ID: return "dash-f-start";
+        case FORWARD_DASH_RECOVERY_ID: return "dash-f-rec";
+        case FORWARD_DASH_RECOVERY_SENTINEL_ID: return "dash-f-sentinel";
+        case BACKWARD_DASH_START_ID: return "dash-b-start";
+        case BACKWARD_DASH_RECOVERY_ID: return "dash-b-rec";
+        case KAORI_FORWARD_DASH_START_ID: return "kaori-dash-f";
+        case STAND_GUARD_ID: return "stand-guard";
+        case CROUCH_GUARD_ID: return "crouch-guard";
+        case AIR_GUARD_ID: return "air-guard";
+        case RG_STAND_ID: return "rg-stand";
+        case RG_CROUCH_ID: return "rg-crouch";
+        case RG_AIR_ID: return "rg-air";
+        default: break;
+    }
+    if (IsHitstun(moveID)) return "hitstun";
+    if (IsLaunched(moveID)) return "launch";
+    if (IsAirtech(moveID)) return "airtech";
+    if (IsThrown(moveID)) return "throw";
+    if (IsFrozen(moveID)) return "frozen";
+    if (IsAttackMove(moveID)) return "attack";
+    if (IsBlockstun(moveID)) return "blockstun";
+    if (IsActionable(moveID)) return "actionable";
+    return "other";
+}
+
+static bool TraceWakeRelevantForPlayer(int playerNum, short prevMoveID, short moveID) {
+    if (IsGroundtech(prevMoveID) || IsGroundtech(moveID)) return true;
+    if (playerNum == 1) {
+        return s_p1WakePrearmed || s_p1WakeMacroQueued || p1DelayState.triggerType == TRIGGER_ON_WAKEUP ||
+               s_p1WakeMoveID96FrameCount > 0 || s_p1WakeMacro96FrameCount > 0;
+    }
+    return s_p2WakePrearmed || s_p2WakeMacroQueued || p2DelayState.triggerType == TRIGGER_ON_WAKEUP ||
+           s_p2WakeMoveID96FrameCount > 0 || s_p2WakeMacro96FrameCount > 0 ||
+           s_p2WakeMacroTokenNeutralizeCountdown > 0;
+}
+
+static bool TraceWakeWindowActive(short moveID1, short moveID2, short prevMoveID1, short prevMoveID2) {
+    static int s_traceWindow[3] = { 0, 0, 0 };
+    static int s_lastUpdatedFrame = -1;
+    const int now = frameCounter.load();
+
+    if (s_lastUpdatedFrame != now) {
+        s_lastUpdatedFrame = now;
+        const bool p1Relevant = TraceWakeRelevantForPlayer(1, prevMoveID1, moveID1);
+        const bool p2Relevant = TraceWakeRelevantForPlayer(2, prevMoveID2, moveID2);
+        if (p1Relevant) {
+            s_traceWindow[1] = 90;
+        } else if (s_traceWindow[1] > 0) {
+            --s_traceWindow[1];
+        }
+        if (p2Relevant) {
+            s_traceWindow[2] = 90;
+        } else if (s_traceWindow[2] > 0) {
+            --s_traceWindow[2];
+        }
+    }
+
+    return s_traceWindow[1] > 0 || s_traceWindow[2] > 0;
+}
+
+static void TraceAppendBufferSnapshot(std::ostringstream& oss, int playerNum) {
+    uintptr_t playerPtr = GetPlayerPointer(playerNum);
+    if (!playerPtr) {
+        oss << " p" << playerNum << "Buf=null";
+        return;
+    }
+
+    uint16_t head = 0;
+    uint8_t last = 0;
+    bool haveHead = SafeReadMemory(playerPtr + INPUT_BUFFER_INDEX_OFFSET, &head, sizeof(head));
+    if (haveHead) {
+        const uint16_t lastIndex = (head > 0) ? static_cast<uint16_t>(head - 1) : 0;
+        (void)SafeReadMemory(playerPtr + INPUT_BUFFER_OFFSET + lastIndex, &last, sizeof(last));
+        oss << " p" << playerNum << "BufHead=" << head
+            << " p" << playerNum << "BufLast=" << static_cast<int>(last);
+    } else {
+        oss << " p" << playerNum << "BufHead=read-fail";
+    }
+}
+
+static void TraceAppendPlayerWakeState(std::ostringstream& oss, int playerNum, short prevMoveID, short moveID) {
+    const bool actionable = IsActionable(moveID);
+    const bool groundtech = IsGroundtech(moveID);
+    oss << " p" << playerNum << "=" << prevMoveID << "->" << moveID
+        << "(" << TraceMoveClass(prevMoveID) << "->" << TraceMoveClass(moveID) << ")"
+        << " act=" << TraceBool(actionable)
+        << " gtech=" << TraceBool(groundtech);
+
+    if (playerNum == 1) {
+        oss << " pre=" << TraceBool(s_p1WakePrearmed)
+            << " spec=" << TraceBool(s_p1WakePrearmIsSpecial)
+            << " macro=" << TraceBool(s_p1WakePrearmIsMacro)
+            << " action=" << s_p1WakePrearmActionType
+            << " str=" << s_p1WakePrearmStrength
+            << " c96=" << s_p1WakeMoveID96FrameCount
+            << " m96=" << s_p1WakeMacro96FrameCount
+            << " mQ=" << TraceBool(s_p1WakeMacroQueued)
+            << " mTarget=" << s_p1WakeMacroTargetFrame
+            << " frozen=" << TraceBool(s_p1WakeBufferFrozen)
+            << " hold=" << TraceBool(s_p1WakeHoldPrimed) << "/" << TraceBool(s_p1WakeHoldIssued)
+            << " dly=" << TraceBool(p1DelayState.isDelaying) << ":" << p1DelayState.delayFramesRemaining
+            << " dTrig=" << TriggerTypeLabel(p1DelayState.triggerType)
+            << " trig=" << TraceBool(p1TriggerActive) << ":" << p1TriggerCooldown;
+    } else {
+        oss << " pre=" << TraceBool(s_p2WakePrearmed)
+            << " spec=" << TraceBool(s_p2WakePrearmIsSpecial)
+            << " macro=" << TraceBool(s_p2WakePrearmIsMacro)
+            << " action=" << s_p2WakePrearmActionType
+            << " str=" << s_p2WakePrearmStrength
+            << " c96=" << s_p2WakeMoveID96FrameCount
+            << " m96=" << s_p2WakeMacro96FrameCount
+            << " mQ=" << TraceBool(s_p2WakeMacroQueued)
+            << " mTarget=" << s_p2WakeMacroTargetFrame
+            << " mSlot=" << s_p2WakeMacroSlot
+            << " opt=" << TraceBool(s_p2WakeOptionPicked)
+            << " frozen=" << TraceBool(s_p2WakeBufferFrozen)
+            << " hold=" << TraceBool(s_p2WakeHoldPrimed) << "/" << TraceBool(s_p2WakeHoldIssued)
+            << " tokenCd=" << s_p2WakeMacroTokenNeutralizeCountdown
+            << " dly=" << TraceBool(p2DelayState.isDelaying) << ":" << p2DelayState.delayFramesRemaining
+            << " dTrig=" << TriggerTypeLabel(p2DelayState.triggerType)
+            << " trig=" << TraceBool(p2TriggerActive) << ":" << p2TriggerCooldown
+            << " restore=" << TraceBool(g_pendingControlRestore.load())
+            << " p2Override=" << TraceBool(g_p2ControlOverridden);
+    }
+    TraceAppendBufferSnapshot(oss, playerNum);
+}
+
+static void TraceAutoActionWakePhase(const char* phase, short moveID1, short moveID2, short prevMoveID1, short prevMoveID2) {
+    if (!TraceWakeWindowActive(moveID1, moveID2, prevMoveID1, prevMoveID2)) return;
+
+    const int internalFrame = frameCounter.load();
+    std::ostringstream oss;
+    oss << "[AA_WAKE_TRACE] phase=" << (phase ? phase : "unknown")
+        << " IF=" << internalFrame
+        << " VF=" << (internalFrame / 3) << "." << TraceSubframeSuffix(internalFrame)
+        << " macroState=" << static_cast<int>(MacroController::GetState())
+        << " freeze=" << TraceBool(g_bufferFreezingActive.load())
+        << " freezeOwner=" << g_activeFreezePlayer.load()
+        << " wakeBuf=" << TraceBool(g_wakeBufferingEnabled.load())
+        << " random=" << TraceBool(triggerRandomizeEnabled.load());
+    TraceAppendPlayerWakeState(oss, 1, prevMoveID1, moveID1);
+    TraceAppendPlayerWakeState(oss, 2, prevMoveID2, moveID2);
+    LogOut(oss.str(), false);
+}
+
+static void TraceAutoActionWakeEvent(const char* eventLabel, int playerNum, short prevMoveID, short moveID, const std::string& extra = std::string()) {
+    if (!TraceWakeRelevantForPlayer(playerNum, prevMoveID, moveID)) return;
+
+    const int internalFrame = frameCounter.load();
+    std::ostringstream oss;
+    oss << "[AA_WAKE_TRACE] event=" << (eventLabel ? eventLabel : "unknown")
+        << " IF=" << internalFrame
+        << " VF=" << (internalFrame / 3) << "." << TraceSubframeSuffix(internalFrame)
+        << " p=" << playerNum;
+    TraceAppendPlayerWakeState(oss, playerNum, prevMoveID, moveID);
+    if (!extra.empty()) {
+        oss << " " << extra;
+    }
+    LogOut(oss.str(), false);
+}
+#else
+static inline void TraceAutoActionWakePhase(const char*, short, short, short, short) {}
+static inline void TraceAutoActionWakeEvent(const char*, int, short, short, const std::string& = std::string()) {}
+#endif
+
 // Lightweight stun/wakeup timing trackers for diagnostics
 struct StunTimers {
     // Start frames for current stuns (-1 if not in that state)
@@ -556,6 +754,8 @@ struct StunTimers {
 static StunTimers s_p1Timers;
 static StunTimers s_p2Timers;
 
+static inline bool AutoActionWorkPending();
+
 // (Deprecated) Pending window for On RG: retained for state reset only
 static bool s_p1RGPending = false;
 static int  s_p1RGExpiry = 0;
@@ -569,11 +769,13 @@ std::atomic<bool> g_tickIntegratedAutoActions{ true };
 void AutoActionsTick_Inline(short moveID1, short moveID2) {
     // Online mode hard stop (never operate in netplay)
     if (g_onlineModeActive.load()) return;
-    if (!autoActionEnabled.load()) return;
+    if (!AutoActionWorkPending()) return;
 
     // Static prevs to compute edges without extra memory traffic
     static short prevMoveID1 = -1;
     static short prevMoveID2 = -1;
+
+    TraceAutoActionWakePhase("tick:begin", moveID1, moveID2, prevMoveID1, prevMoveID2);
     
     // Check if jump state reached after wake hold
     if (s_p1WakeJumpTrackFrame >= 0) {
@@ -607,8 +809,11 @@ void AutoActionsTick_Inline(short moveID1, short moveID2) {
 
     // Process any armed delays first, then evaluate triggers against current moves
     ProcessTriggerDelays(moveID1, moveID2, prevMoveID1, prevMoveID2);
+    TraceAutoActionWakePhase("tick:after-delays", moveID1, moveID2, prevMoveID1, prevMoveID2);
     MonitorAutoActions(moveID1, moveID2, prevMoveID1, prevMoveID2);
+    TraceAutoActionWakePhase("tick:after-monitor", moveID1, moveID2, prevMoveID1, prevMoveID2);
     ClearDelayStatesIfNonActionable(moveID1, moveID2, prevMoveID1, prevMoveID2, "tick");
+    TraceAutoActionWakePhase("tick:after-clear", moveID1, moveID2, prevMoveID1, prevMoveID2);
 
     // Update prevs for next tick
     // if (detailedLogging.load() && (IsGroundtech(prevMoveID2) || IsGroundtech(moveID2))) {
@@ -616,6 +821,7 @@ void AutoActionsTick_Inline(short moveID1, short moveID2) {
     //            " (wasGroundtech=" + std::to_string(IsGroundtech(prevMoveID2)) + 
     //            " isGroundtech=" + std::to_string(IsGroundtech(moveID2)) + ")", true);
     // }
+    TraceAutoActionWakePhase("tick:prev-update", moveID1, moveID2, moveID1, moveID2);
     prevMoveID1 = moveID1;
     prevMoveID2 = moveID2;
 }
@@ -680,15 +886,12 @@ static inline void UpdateStunTimersForPlayer(StunTimers& t, short prevMoveID, sh
 }
 // Lightweight check to skip all auto-action work when nothing can or should run
 static inline bool AutoActionWorkPending() {
-    if (!autoActionEnabled.load()) return false;
     // If macro playback is active, suppress P2 auto-action work to avoid conflicts.
     if (MacroController::GetState() == MacroController::State::Replaying) {
         return false;
     }
     // If any triggers are enabled, we may need to evaluate
-    bool triggersEnabled = triggerAfterBlockEnabled.load() || triggerOnWakeupEnabled.load() ||
-                           triggerAfterHitstunEnabled.load() || triggerAfterAirtechEnabled.load() ||
-                           triggerOnRGEnabled.load();
+    bool triggersEnabled = HasAnyAutoActionTriggerEnabled();
     // If a delay is active, wakeup is pre-armed, cooldowns are running, or restore is pending, keep running
     bool delaysActive = p1DelayState.isDelaying || p2DelayState.isDelaying;
     bool cooldownsActive = p1TriggerActive || p2TriggerActive || (p1TriggerCooldown > 0) || (p2TriggerCooldown > 0);
@@ -914,6 +1117,7 @@ void ProcessTriggerDelays(short moveID1, short moveID2, short prevMoveID1, short
         
     if (remainingAfter <= 0) {
             LogOut("[AUTO-ACTION] P1 delay expired, applying action", true);
+            TraceAutoActionWakeEvent("p1-delay-expired", 1, prevMoveID1, moveID1);
             // Use unified per-frame sample; avoid redundant MOVE_ID resolution
             ApplyAutoAction(1, 0, moveID1, prevMoveID1); // address ignored
             LogOut("[AUTO-ACTION] P1 action applied via input system", true);
@@ -941,6 +1145,7 @@ void ProcessTriggerDelays(short moveID1, short moveID2, short prevMoveID1, short
         
     if (remainingAfter <= 0) {
             LogOut("[AUTO-ACTION] P2 delay expired, applying action", true);
+            TraceAutoActionWakeEvent("p2-delay-expired", 2, prevMoveID2, moveID2);
 
             // If a macro is selected for this trigger and has data, prefer playing it
             int sel = 0;
@@ -1022,6 +1227,12 @@ void StartTriggerDelay(int playerNum, int triggerType, short moveID, int delayFr
            ", p2TrigActive=" + std::to_string(p2TriggerActive) +
            ", p1Cooldown=" + std::to_string(p1TriggerCooldown) +
            ", p2Cooldown=" + std::to_string(p2TriggerCooldown), detailedLogging.load());
+    if (triggerType == TRIGGER_ON_WAKEUP) {
+        const short stateMoveID = static_cast<short>(GetPlayerMoveID(playerNum));
+        TraceAutoActionWakeEvent("start-trigger-delay:wakeup", playerNum, stateMoveID, stateMoveID,
+                                 "pendingActionMoveID=" + std::to_string(moveID) +
+                                 " delayF=" + std::to_string(delayFrames));
+    }
     if (ValidationMetricsEnabled()) {
         ValidationMetrics &vm = GetValidationMetrics();
         if (playerNum == 1) vm.p1TriggerStarts++; else if (playerNum == 2) vm.p2TriggerStarts++;
@@ -1205,10 +1416,6 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
     if (GetCurrentGameMode() != GameMode::Practice) return;
     if (IsNetplaySuspendActive()) return;
     
-    if (!autoActionEnabled.load()) {
-        return;
-    }
-    
     // Fast-path out when there's definitively no work to do this frame
     if (!AutoActionWorkPending()) {
         return;
@@ -1238,10 +1445,7 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
 
     // Note: Do NOT restore on RG exit; we must keep buffer-freeze active until the special actually begins.
     
-    int targetPlayer = autoActionPlayer.load();
-    if (targetPlayer != 3 && SwitchPlayers::GetLocalPlayerIndex() == 2) {
-        targetPlayer = (targetPlayer == 1) ? 2 : 1;
-    }
+    int targetPlayer = ResolveAutoActionTargetPlayer();
     // Throttle trigger diagnostics to ~5s intervals
     static int s_nextTrigDiagFrame = 0; // shared across P1/P2 logs
     auto canLogTrigDiag = [&]() -> bool {
@@ -1453,6 +1657,11 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
                     s_p1WakeMacroStartTick = 0;
                     const char* tag = isSpecial ? "special" : (isMacro ? "macro" : "hold");
                     LogOut(std::string("[AUTO-ACTION] P1 wake ") + tag + " metadata stored", true);
+                    TraceAutoActionWakeEvent("p1-prearm-stored", 1, prevMoveID1, moveID1,
+                                             "kind=" + std::string(tag) +
+                                             " action=" + std::to_string(actionType) +
+                                             " strength=" + std::to_string(s_p1WakePrearmStrength) +
+                                             " delayF=" + std::to_string(userDelayF));
                     LogFlowSequenceEvent(1, "wake metadata stored", prevMoveID1, moveID1);
                 } else if (detailedLogging.load()) {
                     LogOut("[AUTO-ACTION] P1 wake pre-arm skipped (delay>0 or unsupported action)", true);
@@ -1479,6 +1688,13 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
                     bool p1Facing = GetPlayerFacingDirection(1);
                     bool ok = ExecuteWakeSpecialNow(1, at, moveID1, s_p1WakePrearmStrength);
                     LogOut("[AUTO-ACTION] P1 wake special early buffer (frame " + std::to_string(s_p1WakeMoveID96FrameCount) + "/" + std::to_string(risingTicks) + ", charID=" + std::to_string(charID) + ", facing=" + (p1Facing?"right":"left") + ") " + std::string(ok?"ok":"fail"), true);
+                    TraceAutoActionWakeEvent("p1-early-special-freeze", 1, prevMoveID1, moveID1,
+                                             "count96=" + std::to_string(s_p1WakeMoveID96FrameCount) +
+                                             " risingTicks=" + std::to_string(risingTicks) +
+                                             " bufferFrame=" + std::to_string(bufferFrame) +
+                                             " charID=" + std::to_string(charID) +
+                                             " action=" + std::to_string(at) +
+                                             " ok=" + std::to_string(ok));
                     LogFlowSequenceEvent(1, "wake early buffer", prevMoveID1, moveID1);
                     s_p1WakeBufferFrozen = ok;
                 }
@@ -1532,6 +1748,10 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
                                     LogOut("[AUTO-ACTION][MACRO] P1 Pre-buffering wake macro (slot=" + std::to_string(sel) +
                                            ") at frame " + std::to_string(s_p1WakeMacro96FrameCount) +
                                            " (target=" + std::to_string(playStartFrame) + ")", true);
+                                    TraceAutoActionWakeEvent("p1-wake-macro-play", 1, prevMoveID1, moveID1,
+                                                             "slot=" + std::to_string(sel) +
+                                                             " count96=" + std::to_string(s_p1WakeMacro96FrameCount) +
+                                                             " targetTick=" + std::to_string(s_p1WakeMacroTargetFrame));
                                     MacroController::Play();
                                     s_p1WakeMacroQueued = true;
                                     s_p1WakeMacroTargetFrame = -1;
@@ -1549,6 +1769,8 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
                 if (leavingGroundtechThisFrame) {
                     if (IssueWakeImmediateHold(1, s_p1WakePrearmActionType)) {
                         s_p1WakeHoldIssued = true;
+                        TraceAutoActionWakeEvent("p1-wake-hold-issued", 1, prevMoveID1, moveID1,
+                                                 "action=" + std::to_string(s_p1WakePrearmActionType));
                     }
                 }
             }
@@ -1602,6 +1824,9 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
                 LogOut("[AUTO-ACTION] P1 wake exec (fallback): action=" + std::to_string(s_p1WakePrearmActionType) +
                        " special=" + std::to_string(s_p1WakePrearmIsSpecial) +
                        " frame=" + std::to_string(frameCounter.load()), true);
+                    TraceAutoActionWakeEvent("p1-wake-fallback", 1, prevMoveID1, moveID1,
+                                             "action=" + std::to_string(s_p1WakePrearmActionType) +
+                                             " special=" + std::to_string(s_p1WakePrearmIsSpecial));
                     LogFlowSequenceEvent(1, "wake exec attempt", prevMoveID1, moveID1);
                     g_lastActiveTriggerType.store(TRIGGER_ON_WAKEUP);
                     g_lastActiveTriggerFrame.store(frameCounter.load());
@@ -1655,6 +1880,9 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
                 actionMoveID = GetActionMoveID(triggerOnWakeupAction.load(), TRIGGER_ON_WAKEUP, 1);
                 
                 LogOut("[AUTO-ACTION] P1 On Wakeup trigger activated", true);
+                TraceAutoActionWakeEvent("p1-wakeup-trigger", 1, prevMoveID1, moveID1,
+                                         "delayF=" + std::to_string(delay) +
+                                         " actionMoveID=" + std::to_string(actionMoveID));
                 if (detailedLogging.load()) {
                     LogOut("[TRIGGER_TIMING] P1 wake delay=" + std::to_string(s_p1Timers.lastWakeDelay) +
                            ", sinceWake=" + std::to_string(s_p1Timers.sinceWake), true);
@@ -1873,6 +2101,7 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
             s_p2WakeMacroStartFrame = -1;
             s_p2WakeMacroStartTick = 0;
             s_p2WakeOptionPicked = false;
+            TraceAutoActionWakeEvent("p2-wake-macro-groundtech-enter", 2, prevMoveID2, moveID2);
             // if (detailedLogging.load()) {
             //     LogOut("[AUTO-ACTION][MACRO-COUNTER] FIRST FRAME in groundtech, prev=" + std::to_string(prevMoveID2) + " counter=0", true);
             // }
@@ -1880,6 +2109,11 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
             if (HasEnabledRows(TRIGGER_ON_WAKEUP)) {
                 if (PickRandomRow(TRIGGER_ON_WAKEUP, s_p2WakePrePickedOption)) {
                     s_p2WakeOptionPicked = true;
+                    TraceAutoActionWakeEvent("p2-wake-option-picked", 2, prevMoveID2, moveID2,
+                                             "macroSlot=" + std::to_string(s_p2WakePrePickedOption.macroSlot) +
+                                             " delay=" + std::to_string(s_p2WakePrePickedOption.delay) +
+                                             " action=" + std::to_string(s_p2WakePrePickedOption.action) +
+                                             " strength=" + std::to_string(s_p2WakePrePickedOption.strength));
                     if (detailedLogging.load()) {
                         LogOut("[AUTO-ACTION] P2 wake pre-picked option: macroSlot=" + std::to_string(s_p2WakePrePickedOption.macroSlot) +
                                " delay=" + std::to_string(s_p2WakePrePickedOption.delay) +
@@ -1968,6 +2202,15 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
                            " framesToBtn=" + std::to_string(framesToButton) +
                            " playStartFrame=" + std::to_string(playStartFrame), true);
                 }
+                if (s_p2WakeMacro96FrameCount == 0) {
+                    TraceAutoActionWakeEvent("p2-wake-macro-target", 2, prevMoveID2, moveID2,
+                                             "charID=" + std::to_string(charID) +
+                                             " risingFrames=" + std::to_string(risingFrames) +
+                                             " firstButtonTick=" + std::to_string(firstButtonTick) +
+                                             " framesToButton=" + std::to_string(framesToButton) +
+                                             " targetTick=" + std::to_string(s_p2WakeMacroTargetFrame) +
+                                             " playStartFrame=" + std::to_string(playStartFrame));
+                }
             }
         } else if (s_p2WakeMacro96FrameCount == 0) {
             // No valid wake pre-buffer for this 96 cycle
@@ -2003,6 +2246,11 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
                     LogOut("[AUTO-ACTION][MACRO] P2 Pre-buffering wake macro (slot=" + std::to_string(sel) +
                            ") at frame " + std::to_string(s_p2WakeMacro96FrameCount) +
                            " (target=" + std::to_string(s_p2WakeMacroTargetFrame) + ")", true);
+                    TraceAutoActionWakeEvent("p2-wake-macro-play", 2, prevMoveID2, moveID2,
+                                             "slot=" + std::to_string(sel) +
+                                             " count96=" + std::to_string(s_p2WakeMacro96FrameCount) +
+                                             " targetTick=" + std::to_string(s_p2WakeMacroTargetFrame) +
+                                             " startTick=" + std::to_string(s_p2WakeMacroStartTick));
                     // Mark this macro as a wake pre-buffer so that when playback
                     // completes, the restore path preserves the buffered motion.
                     g_macroWakePreserveBuffer.store(true);
@@ -2088,6 +2336,12 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
                                " strength=" + std::to_string(s_p2WakePrearmStrength) +
                                " macroPicked=" + (s_p2WakeOptionPicked ? "true" : "false"), true);
                     }
+                    TraceAutoActionWakeEvent("p2-prearm-stored", 2, prevMoveID2, moveID2,
+                                             "kind=" + std::string(tag) +
+                                             " action=" + std::to_string(actionType) +
+                                             " strength=" + std::to_string(s_p2WakePrearmStrength) +
+                                             " delayF=" + std::to_string(userDelayF) +
+                                             " optionPicked=" + std::to_string(s_p2WakeOptionPicked));
                     LogFlowSequenceEvent(2, "wake metadata stored",
                                          prevMoveID2, moveID2);
                 } else if (detailedLogging.load()) {
@@ -2131,6 +2385,10 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
                        ", target=" + std::to_string(s_p2WakeMacroTargetFrame) +
                        ", prevMove=" + std::to_string(prevMoveID2) +
                        ", currMove=" + std::to_string(moveID2) + ")", true);
+                TraceAutoActionWakeEvent("p2-wake-macro-fallback-96-exit", 2, prevMoveID2, moveID2,
+                                         "slot=" + std::to_string(sel) +
+                                         " count96=" + std::to_string(s_p2WakeMacro96FrameCount) +
+                                         " targetTick=" + std::to_string(s_p2WakeMacroTargetFrame));
                 // Fallback wake macro should also preserve the buffered motion.
                 g_macroWakePreserveBuffer.store(true);
                 MacroController::Play();
@@ -2166,6 +2424,13 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
                     bool p2Facing = GetPlayerFacingDirection(2);
                     bool ok = ExecuteWakeSpecialNow(2, at, moveID2, s_p2WakePrearmStrength);
                     LogOut("[AUTO-ACTION] P2 wake special early buffer (frame " + std::to_string(s_p2WakeMoveID96FrameCount) + "/" + std::to_string(risingTicks) + ", charID=" + std::to_string(charID) + ", facing=" + (p2Facing?"right":"left") + ") " + std::string(ok?"ok":"fail"), true);
+                    TraceAutoActionWakeEvent("p2-early-special-freeze", 2, prevMoveID2, moveID2,
+                                             "count96=" + std::to_string(s_p2WakeMoveID96FrameCount) +
+                                             " risingTicks=" + std::to_string(risingTicks) +
+                                             " bufferFrame=" + std::to_string(bufferFrame) +
+                                             " charID=" + std::to_string(charID) +
+                                             " action=" + std::to_string(at) +
+                                             " ok=" + std::to_string(ok));
                     LogFlowSequenceEvent(2, "wake early buffer", prevMoveID2, moveID2);
                     s_p2WakeBufferFrozen = ok;
                 }
@@ -2176,6 +2441,8 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
                 if (leavingGroundtechThisFrame) {
                     if (IssueWakeImmediateHold(2, s_p2WakePrearmActionType)) {
                         s_p2WakeHoldIssued = true;
+                        TraceAutoActionWakeEvent("p2-wake-hold-issued", 2, prevMoveID2, moveID2,
+                                                 "action=" + std::to_string(s_p2WakePrearmActionType));
                     }
                 }
             }
@@ -2248,6 +2515,9 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
                 LogOut("[AUTO-ACTION] P2 wake exec (fallback): action=" + std::to_string(s_p2WakePrearmActionType) +
                        " special=" + std::to_string(s_p2WakePrearmIsSpecial) +
                        " frame=" + std::to_string(frameCounter.load()), true);
+                    TraceAutoActionWakeEvent("p2-wake-fallback", 2, prevMoveID2, moveID2,
+                                             "action=" + std::to_string(s_p2WakePrearmActionType) +
+                                             " special=" + std::to_string(s_p2WakePrearmIsSpecial));
                     LogFlowSequenceEvent(2, "wake exec attempt", prevMoveID2, moveID2);
                     g_lastActiveTriggerType.store(TRIGGER_ON_WAKEUP);
                     g_lastActiveTriggerFrame.store(frameCounter.load());
@@ -2324,6 +2594,9 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
                 actionMoveID = GetActionMoveID(triggerOnWakeupAction.load(), TRIGGER_ON_WAKEUP, 2);
                 
                 LogOut("[AUTO-ACTION] P2 On Wakeup trigger activated", detailedLogging.load());
+                TraceAutoActionWakeEvent("p2-wakeup-trigger", 2, prevMoveID2, moveID2,
+                                         "delayF=" + std::to_string(delay) +
+                                         " actionMoveID=" + std::to_string(actionMoveID));
                 if (detailedLogging.load()) {
                     LogOut("[TRIGGER_TIMING] P2 wake delay=" + std::to_string(s_p2Timers.lastWakeDelay) +
                            ", sinceWake=" + std::to_string(s_p2Timers.sinceWake), true);
@@ -2563,6 +2836,12 @@ void ClearDelayStatesIfNonActionable(short moveID1, short moveID2, short prevMov
                " visualRemaining=" + std::to_string(remainingVisual) +
                " internalRemaining=" + std::to_string(remainingInternal),
                true);
+        if (clearedTriggerType == TRIGGER_ON_WAKEUP) {
+            TraceAutoActionWakeEvent("p1-delay-cleared", 1, prevMoveID1, moveID1,
+                                     "source=" + clearSource +
+                                     " reason=" + p1Reason +
+                                     " remainingInternal=" + std::to_string(remainingInternal));
+        }
         p1TriggerActive = false;
         p1TriggerCooldown = 0;
     }
@@ -2579,6 +2858,12 @@ void ClearDelayStatesIfNonActionable(short moveID1, short moveID2, short prevMov
                " visualRemaining=" + std::to_string(remainingVisual) +
                " internalRemaining=" + std::to_string(remainingInternal),
                true);
+        if (clearedTriggerType == TRIGGER_ON_WAKEUP) {
+            TraceAutoActionWakeEvent("p2-delay-cleared", 2, prevMoveID2, moveID2,
+                                     "source=" + clearSource +
+                                     " reason=" + p2Reason +
+                                     " remainingInternal=" + std::to_string(remainingInternal));
+        }
         p2TriggerActive = false;
         p2TriggerCooldown = 0;
     }
@@ -2802,6 +3087,17 @@ void ApplyAutoAction(int playerNum, uintptr_t moveIDAddr, short currentMoveID, s
            " strength=" + std::to_string(resolvedStrength) +
            " => motionType=" + std::to_string(motionType) +
            " prelimButtonMask=" + std::to_string(buttonMask), true);
+    if (triggerType == TRIGGER_ON_WAKEUP) {
+        const short traceMoveID = static_cast<short>(GetPlayerMoveID(playerNum));
+        TraceAutoActionWakeEvent("apply-auto-action:wakeup", playerNum,
+                                 (prevMoveID >= 0) ? prevMoveID : traceMoveID,
+                                 traceMoveID,
+                                 "action=" + std::to_string(actionType) +
+                                 " strength=" + std::to_string(resolvedStrength) +
+                                 " motion=" + std::to_string(motionType) +
+                                 " buttonMask=" + std::to_string(buttonMask) +
+                                 " currentArg=" + std::to_string(currentMoveID));
+    }
 
     // If buttonMask is zero, use default
     if (buttonMask == 0) {
@@ -4307,6 +4603,12 @@ static bool IssueWakeImmediateHold(int playerNum, int actionType) {
     }
     
     ImmediateInput::PressFor(playerNum, mask, kWakeHoldTicks);
+    TraceAutoActionWakeEvent("wake-immediate-hold-pressfor", playerNum,
+                             static_cast<short>(currentMoveID),
+                             static_cast<short>(currentMoveID),
+                             "action=" + std::to_string(actionType) +
+                             " mask=" + std::to_string(mask) +
+                             " ticks=" + std::to_string(kWakeHoldTicks));
     LogOut("[AUTO-ACTION] Wake immediate hold issued (p" + std::to_string(playerNum) +
            ", action=" + std::to_string(actionType) +
            ", mask=" + std::to_string(mask) +
@@ -4402,7 +4704,16 @@ static bool ExecuteWakeSpecialNow(int playerNum, int actionType, short currentMo
            " motion=" + std::to_string(motionType) + " btnMask=0x" + btnFmt.str() +
             " currMove=" + std::to_string(currentMoveID) + " facing=" + (facing?"right":"left") +
             " strengthOverride=" + std::to_string(strengthOverride), true);
+    TraceAutoActionWakeEvent("wake-special-freeze-request", playerNum, currentMoveID, currentMoveID,
+                             "motion=" + std::to_string(motionType) +
+                             " btnMask=" + std::to_string(buttonMask) +
+                             " facing=" + std::string(facing ? "right" : "left") +
+                             " strengthOverride=" + std::to_string(strengthOverride));
     bool ok = FreezeBufferForMotion(playerNum, motionType, buttonMask);
+    TraceAutoActionWakeEvent("wake-special-freeze-result", playerNum, currentMoveID, currentMoveID,
+                             "motion=" + std::to_string(motionType) +
+                             " btnMask=" + std::to_string(buttonMask) +
+                             " ok=" + std::to_string(ok));
     if (ok && playerNum == 2) {
         g_lastP2MoveID.store(currentMoveID);
         g_pendingControlRestore.store(true);

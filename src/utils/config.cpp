@@ -11,6 +11,17 @@
 #include <xinput.h>
 
 namespace Config {
+    namespace {
+        constexpr float kUiScaleMin = 0.90f;
+        constexpr float kUiScaleMax = 1.50f;
+
+        float ClampUiScale(float scale) {
+            if (scale < kUiScaleMin) return kUiScaleMin;
+            if (scale > kUiScaleMax) return kUiScaleMax;
+            return scale;
+        }
+    }
+
     // Internal settings storage
     static Settings settings;
     // Initialize defaults for safety
@@ -246,7 +257,7 @@ namespace Config {
             file << "; Show a one-time Practice hint about opening the overlay (1 = yes, 0 = no)\n";
             file << "showPracticeEntryHint = 1\n\n";
 
-            file << "; UI scale for ImGui window (0.80 - 1.20 recommended)\n";
+            file << "; UI scale for ImGui window (0.90 - 1.50)\n";
             file << "uiScale = 0.90\n\n";
             file << "; UI font: 0 = ImGui default font, 1 = Segoe UI (Windows)\n";
             file << "uiFont = 0\n\n";
@@ -502,9 +513,7 @@ namespace Config {
                         } catch (...) { scale = 0.90f; }
                     }
                 }
-                if (scale < 0.70f) scale = 0.70f;
-                if (scale > 1.50f) scale = 1.50f;
-                settings.uiScale = scale;
+                settings.uiScale = ClampUiScale(scale);
             }
 
             // Load UI font mode (0=default, 1=Segoe UI)
@@ -811,7 +820,7 @@ namespace Config {
             file << "enableCharacterSelectLogger = " << (settings.enableCharacterSelectLogger ? "1" : "0") << "\n\n";
             file << "; Show a one-time Practice hint about opening the overlay (1 = yes, 0 = no)\n";
             file << "showPracticeEntryHint = " << (settings.showPracticeEntryHint ? "1" : "0") << "\n\n";
-            file << "; UI scale for ImGui window (0.80 - 1.20 recommended)\n";
+            file << "; UI scale for ImGui window (0.90 - 1.50)\n";
             file << "uiScale = " << settings.uiScale << "\n\n";
             file << "; UI font: 0 = ImGui default font, 1 = Segoe UI (Windows)\n";
             file << "uiFont = " << settings.uiFontMode << "\n\n";
@@ -1003,6 +1012,7 @@ namespace Config {
             if (k == "savestateloadcustompalettes") settings.savestateLoadCustomPalettes = (value == "1" || value == "true");
             if (k == "uiscale") {
                 try { settings.uiScale = std::stof(value); } catch (...) {}
+                settings.uiScale = ClampUiScale(settings.uiScale);
             }
             if (k == "uifont") {
                 try { settings.uiFontMode = std::stoi(value); } catch (...) {}
