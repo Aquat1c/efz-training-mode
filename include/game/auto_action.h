@@ -15,6 +15,7 @@ struct TriggerDelayState {
     int  chosenStrength;   // 0..2 or -1 if not set
     int  chosenMacroSlot;  // 0=None or slot index
     int  chosenCustomId;   // optional, default -1
+    int  chosenDelay;      // visual-frame delay for the chosen option, or -1 if inherited
 };
 
 // Global variables

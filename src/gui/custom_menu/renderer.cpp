@@ -289,6 +289,18 @@ const char* CurrentTransientStatus() {
     return g_transientStatusText.c_str();
 }
 
+float FooterBoxHeight() {
+    return Scale::Snap(44.0f * Scale::Get().layoutScale);
+}
+
+float FooterReserveHeight() {
+    return Scale::Snap(FooterBoxHeight() + 12.0f * Scale::Get().layoutScale);
+}
+
+float ContentBottomY() {
+    return Scale::Snap(Theme::PanelBottomRight().y - FooterReserveHeight());
+}
+
 bool SettingsQuickSaveAllowed() {
     return SettingsTabActive()
         && !Screens::IsPopupActive()
@@ -451,6 +463,22 @@ void UpdateMouseState() {
 bool ShiftHeld() {
     if (!Input::IsGameWindowActive()) return false;
     return (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
+}
+
+std::string FitTextToWidth(ImFont* font, float px, const char* text, float maxW) {
+    if (!text || !*text || maxW <= 0.0f) return "";
+    if (Layout::MeasureTextW(font, px, text) <= maxW) return text;
+
+    std::string out = text;
+    const char* suffix = "...";
+    while (!out.empty()) {
+        out.pop_back();
+        std::string candidate = out + suffix;
+        if (Layout::MeasureTextW(font, px, candidate.c_str()) <= maxW) {
+            return candidate;
+        }
+    }
+    return suffix;
 }
 
 // ===== Values rows descriptor =====
@@ -1084,7 +1112,7 @@ void MaybeMouseReturnFocusToContent(const MainLayout& L, bool tabClickConsumed) 
 
     const auto m = Input::GetMouse();
     if (!m.valid) return;
-    if (m.y >= L.dataStartY && m.y <= Theme::PanelBottomRight().y - 40.0f) {
+    if (m.y >= L.dataStartY && m.y <= ContentBottomY()) {
         SetFocusRegion(FocusRegion::Content, "mouse over content");
     }
 }
@@ -1876,7 +1904,7 @@ void Render() {
         sl.contentX       = Scale::Snap(L.panelTL.x + metrics.panelPadX);
         sl.contentW       = Theme::kPanelW - metrics.panelPadX * 2.0f;
         sl.contentTopY    = Scale::Snap(L.dataStartY);
-        sl.contentBottomY = Scale::Snap(Theme::PanelBottomRight().y - 40.0f);
+        sl.contentBottomY = ContentBottomY();
         sl.animOffsetX    = CurrentPaneOffsetX();
         sl.animOffsetY    = CurrentOpenOffsetY();
         sl.inputEnabled   = g_shell.focusRegion == FocusRegion::Content && !tabFocusConsumed;
@@ -1945,7 +1973,7 @@ void Render() {
         sl.contentX       = Scale::Snap(L.panelTL.x + metrics.panelPadX);
         sl.contentW       = Theme::kPanelW - metrics.panelPadX * 2.0f;
         sl.contentTopY    = Scale::Snap(L.dataStartY);
-        sl.contentBottomY = Scale::Snap(Theme::PanelBottomRight().y - 40.0f);
+        sl.contentBottomY = ContentBottomY();
         sl.animOffsetX    = CurrentPaneOffsetX();
         sl.animOffsetY    = CurrentOpenOffsetY();
         sl.inputEnabled   = g_shell.focusRegion == FocusRegion::Content && !tabFocusConsumed;
@@ -2030,37 +2058,56 @@ void Render() {
     const float bPx = bFont ? bFont->FontSize : 13.0f;
     const char* hint;
     std::string statusText;
+    std::string descriptionText;
+    auto setDescription = [&](const char* text) {
+        if (text && *text) descriptionText = text;
+    };
     if (const char* transientStatus = CurrentTransientStatus()) {
         statusText = transientStatus;
     }
     if (g_edit.active) {
         hint = "0-9 / . / BACKSPACE    ENTER COMMIT    ESC CANCEL";
+        setDescription("Type an exact value for the selected row, then commit or cancel the edit.");
     } else if (Screens::IsKeybindActive()) {
         hint = Screens::IsGamepadKeybindActive()
             ? "RELEASE INPUTS   PRESS BUTTON   MENU CANCEL   DEL DISABLE"
             : "RELEASE KEYS THEN PRESS NEW HOTKEY   ESC CANCEL";
+        setDescription(Screens::IsGamepadKeybindActive()
+            ? "Bind a controller button to this command after releasing the current input."
+            : "Bind a keyboard hotkey to this command after releasing the current keys.");
     } else if (Screens::IsPopupActive()) {
         hint = "UP/DOWN MOVE   ENTER SELECT   ESC CANCEL";
+        setDescription(Screens::CurrentPopupHelpText());
     } else if (Screens::IsTextEditorActive()) {
         hint = "EDIT MACRO TEXT   CTRL+V PASTE   APPLY/DONE BUTTONS   ESC CLOSE";
+        setDescription("Edit the serialized macro text for the selected slot before applying it.");
     } else if (g_shell.focusRegion == FocusRegion::TopTabs) {
         hint = SettingsTabActive()
             ? "L/R CHANGE TAB   DOWN ENTER SUBTABS   D SAVE   ESC CLOSE"
             : "L/R CHANGE TAB   DOWN ENTER SUBTABS   ESC CLOSE";
+        setDescription("Switch between the main menu groups: Main, Auto, Chars, Settings, and Help.");
     } else if (g_shell.focusRegion == FocusRegion::SubTabs) {
         hint = SettingsTabActive()
             ? "L/R CHANGE SUBTAB   UP TABS   DOWN ENTER OPTIONS   D SAVE   ESC CLOSE"
             : "L/R CHANGE SUBTAB   UP TABS   DOWN ENTER OPTIONS   ESC CLOSE";
+        setDescription("Switch between pages inside the current menu group.");
     } else if (Screens::IsValuesContinuousRecoveryActive()) {
         if (g_cr.mode == MainMode::Browse) {
             hint = "UP/DOWN ROW   L/R OR D SWITCH PLAYER   ENTER ADJUST   ESC BACK";
+            setDescription("Choose a continuous-recovery value for either player before adjusting it.");
         } else {
             hint = "L/R SMALL   U/D BIG   D SWITCH PLAYER   ENTER TOGGLE   ESC BACK";
+            setDescription("Adjust the selected continuous-recovery value for the current player.");
         }
     } else if (Screens::IsValuesPlayerEditorActive()) {
         const int focus = CurFocus();
         const bool focusLocked = RowIsLocked(valueLocks, focus);
         statusText = LockStatusText(valueLocks, focus);
+        static char s_desc[160];
+        _snprintf_s(s_desc, sizeof(s_desc), _TRUNCATE,
+                    "Edit %s for the current match; locked values are managed by recovery settings.",
+                    DescribeFocus(PANE_VALUES, focus).c_str());
+        setDescription(s_desc);
         if (g_main.mode == MainMode::Browse) {
             if (focusLocked) {
                 hint = "UP/DOWN ROW   L/R OR D SWITCH PLAYER   ENTER LOCKED   PGUP/PGDN TABS";
@@ -2078,17 +2125,24 @@ void Render() {
         hint = SettingsTabActive()
             ? "UP/DOWN MOVE   ENTER SELECT   D SAVE   ESC BACK"
             : "UP/DOWN MOVE   ENTER SELECT   ESC BACK";
+        setDescription(Screens::CurrentHelpText());
     } else if (ActivePane() == PANE_VALUES && !Screens::IsValuesColumnEditorActive()) {
         hint = "UP/DOWN MOVE   L/R ADJUST   ENTER SELECT   ESC BACK";
+        setDescription(Screens::CurrentHelpText());
     } else if (SettingsTabActive()) {
         hint = "U/D MOVE   L/R ADJUST   D SAVE   ENTER PICK   PGUP/PGDN TOP";
+        setDescription(Screens::CurrentHelpText());
     } else {
         hint = "U/D MOVE   L/R ADJUST   SHIFT+L/R 2ND   ENTER PICK   PGUP/PGDN TOP";
+        setDescription(Screens::CurrentHelpText());
+    }
+    if (descriptionText.empty()) {
+        setDescription("Select a row to adjust its setting or open its detailed menu.");
     }
 
     const float hintBoxX = Scale::Snap(L.panelTL.x + metrics.panelPadX);
     const float hintBoxW = Theme::kPanelW - metrics.panelPadX * 2.0f;
-    const float hintBoxH = Scale::Snap(statusText.empty() ? (26.0f * metrics.layoutScale) : (40.0f * metrics.layoutScale));
+    const float hintBoxH = FooterBoxHeight();
     const float hintBoxY = Scale::Snap(Theme::PanelBottomRight().y - hintBoxH - 6.0f);
     dl->AddRectFilled(
         ImVec2(hintBoxX, hintBoxY),
@@ -2099,20 +2153,23 @@ void Render() {
         ImVec2(hintBoxX + hintBoxW - 0.5f, hintBoxY + hintBoxH - 0.5f),
         Theme::kRule, 0.0f, 0, 1.0f);
 
-    if (!statusText.empty()) {
-        const float statusY = hintBoxY + 5.0f;
-        const float sw = Layout::MeasureTextW(bFont, bPx, statusText.c_str());
-        float statusX = Scale::Snap(L.panelTL.x + (Theme::kPanelW - sw) * 0.5f);
-        if (statusX < L.panelTL.x + metrics.panelPadX) statusX = L.panelTL.x + metrics.panelPadX;
-        Layout::DrawString(dl, bFont, bPx, statusX, statusY, Theme::kTextStatus, statusText.c_str());
-    }
-    const float hintY = Scale::Snap(statusText.empty()
-        ? hintBoxY + (hintBoxH - bPx) * 0.5f
-        : hintBoxY + hintBoxH - bPx - 5.0f);
-    const float hw = Layout::MeasureTextW(bFont, bPx, hint);
-    float hintX = Scale::Snap(L.panelTL.x + (Theme::kPanelW - hw) * 0.5f);
-    if (hintX < L.panelTL.x + metrics.panelPadX) hintX = L.panelTL.x + metrics.panelPadX;
-    Layout::DrawString(dl, bFont, bPx, hintX, hintY, Theme::kTextInactive, hint);
+    const float textPadX = Scale::Snap(8.0f * metrics.layoutScale);
+    const float maxTextW = hintBoxW - textPadX * 2.0f;
+    const std::string topLine = !statusText.empty() ? statusText : descriptionText;
+    const std::string topDraw = FitTextToWidth(bFont, bPx, topLine.c_str(), maxTextW);
+    const ImU32 topCol = !statusText.empty() ? Theme::kTextStatus : Theme::kTextActive;
+    const float topY = Scale::Snap(hintBoxY + 5.0f * metrics.layoutScale);
+    const float topW = Layout::MeasureTextW(bFont, bPx, topDraw.c_str());
+    float topX = Scale::Snap(hintBoxX + (hintBoxW - topW) * 0.5f);
+    if (topX < hintBoxX + textPadX) topX = hintBoxX + textPadX;
+    Layout::DrawString(dl, bFont, bPx, topX, topY, topCol, topDraw.c_str());
+
+    const std::string hintDraw = FitTextToWidth(bFont, bPx, hint, maxTextW);
+    const float hintY = Scale::Snap(hintBoxY + hintBoxH - bPx - 5.0f * metrics.layoutScale);
+    const float hw = Layout::MeasureTextW(bFont, bPx, hintDraw.c_str());
+    float hintX = Scale::Snap(hintBoxX + (hintBoxW - hw) * 0.5f);
+    if (hintX < hintBoxX + textPadX) hintX = hintBoxX + textPadX;
+    Layout::DrawString(dl, bFont, bPx, hintX, hintY, Theme::kTextInactive, hintDraw.c_str());
 
     const DWORD renderMs = GetTickCount() - renderStartMs;
     static DWORD s_lastSlowRenderLog = 0;

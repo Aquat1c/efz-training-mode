@@ -40,6 +40,10 @@ enum class RowKind : uint8_t {
 
 struct Row;
 using RowValueFormatter = const char* (*)(const Row& row);
+using RowAdjuster = bool (*)(const Row& row, int direction);
+using RowChoiceValueFormatter = const char* (*)(const Row& row, int choiceValue);
+using RowChoiceValueAdjuster = bool (*)(const Row& row, int choiceValue, int direction);
+using RowChoiceHelpFormatter = const char* (*)(const Row& row, int choiceValue);
 using PairedChoiceChange = void (*)(int* primary, int* secondary);
 using RowListBuilder = Row* (*)(int& count);
 using RowCustomRenderer = void (*)(ImDrawList* dl, float x, float y, float w, float h);
@@ -47,6 +51,7 @@ using RowCustomRenderer = void (*)(ImDrawList* dl, float x, float y, float w, fl
 struct Row {
     RowKind kind;
     const char* label;
+    const char* helpText;
 
     // Data hooks - only the one relevant to `kind` is used.
     bool*  boolPtr;
@@ -77,12 +82,17 @@ struct Row {
     int*   choiceIdxPtr;
     const char* const* choices;
     int    choiceCount;
+    const int* choiceCategoryMap;       // optional: choices[i] -> category index
+    const char* const* categoryChoices; // optional: category labels for nested dropdowns
+    int    categoryCount;
 
     int*   choice2IdxPtr;
     const char* const* choices2;
     int    choice2Count;
 
-    unsigned int* maskPtr;          // for MaskPicker: bitmask backing store
+    unsigned int* maskPtr;          // for MaskPicker: legacy 32-bit bitmask backing store
+    uint64_t* maskLoPtr;            // for MaskPicker: concrete 128-bit mask, low bits
+    uint64_t* maskHiPtr;            // for MaskPicker: concrete 128-bit mask, high bits
 
     void (*action)();
 
@@ -95,6 +105,10 @@ struct Row {
 
     // Optional formatter/callbacks for paired-choice rows.
     RowValueFormatter valueFormatter;
+    RowAdjuster inlineAdjuster;
+    RowChoiceValueFormatter choiceValueFormatter;
+    RowChoiceValueAdjuster choiceValueAdjuster;
+    RowChoiceHelpFormatter choiceHelpFormatter;
     PairedChoiceChange onPrimaryChoiceChange;
     PairedChoiceChange onSecondaryChoiceChange;
 
@@ -178,6 +192,11 @@ Row MaskPickerRow(const char* label, unsigned int* mask,
                   void (*onChange)() = nullptr,
                   bool (*isDisabled)() = nullptr,
                   bool (*isHidden)() = nullptr);
+Row MaskPickerRow64(const char* label, uint64_t* maskLo, uint64_t* maskHi,
+                    const char* const* items, int n,
+                    void (*onChange)() = nullptr,
+                    bool (*isDisabled)() = nullptr,
+                    bool (*isHidden)() = nullptr);
 Row Submenu(const char* label, const char* title, RowListBuilder builder,
             const char* (*valueFn)() = nullptr,
             bool (*isDisabled)() = nullptr,
@@ -283,6 +302,10 @@ void TickHelpAbout    (ImDrawList* dl, const ScreenLayout& layout, int& focus, S
 bool IsPopupActive();
 bool TickPopupIfOpen(ImDrawList* dl, const ScreenLayout& layout);
 bool IsSubmenuActive();
+const char* CurrentHelpText();
+const char* CurrentPopupHelpText();
+int CurrentPopupFocusedChoiceValue(const Row* sourceRow);
+const char* FormatMaskSelectionSummary(const Row& row, int maxVisibleChoices = 3);
 void ResetSubmenus();
 void ResetMouseTracking();
 void ResetHotswapMenuSeed();

@@ -159,6 +159,391 @@ bool RowDisabled(const Row& r) {
     return r.isDisabled && r.isDisabled();
 }
 
+std::string g_currentHelpText;
+
+bool TextEquals(const char* a, const char* b) {
+    return a && b && strcmp(a, b) == 0;
+}
+
+bool TextContains(const char* text, const char* needle) {
+    return text && needle && strstr(text, needle) != nullptr;
+}
+
+const char* CleanLabel(const char* label) {
+    if (!label) return "";
+    while (*label == ' ' || *label == '\t') {
+        ++label;
+    }
+    return label;
+}
+
+bool LabelEquals(const char* label, const char* expected) {
+    return TextEquals(CleanLabel(label), expected);
+}
+
+bool LabelContains(const char* label, const char* needle) {
+    return TextContains(CleanLabel(label), needle);
+}
+
+const char* DefaultActionHelpText(const char* label) {
+    label = CleanLabel(label);
+    if (!label || !*label) return "Runs this menu command.";
+
+    if (TextEquals(label, "OPEN MENU")) return "Sets the input used to open and close the training menu.";
+    if (TextEquals(label, "TELEPORT") || TextEquals(label, "LOAD / TELEPORT")) return "Sets the input used to return to your saved position.";
+    if (TextEquals(label, "SAVE POSITION")) return "Sets the input used to store the current training position.";
+    if (TextEquals(label, "TOGGLE STATS")) return "Sets the input used to show or hide practice statistics.";
+    if (TextEquals(label, "RESET COUNTER")) return "Sets the input used to clear the current counter display.";
+    if (TextEquals(label, "HELP")) return "Sets the input used to open help.";
+    if (TextEquals(label, "TOGGLE OVERLAY")) return "Sets the input used to show or hide the overlay.";
+    if (TextEquals(label, "SWITCH PLAYERS")) return "Sets the input used to swap which side you control.";
+    if (TextEquals(label, "SWAP POSITIONS")) return "Sets the input used to exchange player positions.";
+    if (TextEquals(label, "SWAP CUSTOM KEY")) return "Sets the input used for the custom position-swap command.";
+
+    if (TextEquals(label, "MACRO RECORD")) return "Sets the input used to start and finish recording macros.";
+    if (TextEquals(label, "MACRO PLAY")) return "Sets the input used to play the selected macro slot.";
+    if (TextEquals(label, "MACRO NEXT SLOT")) return "Sets the input used to advance the active macro slot.";
+    if (TextEquals(label, "RECORD (TOGGLE)")) return "Starts pre-recording, starts capture, then saves the macro on the next press.";
+    if (TextEquals(label, "PLAY")) return "Plays the selected macro slot once.";
+    if (TextEquals(label, "STOP")) return "Stops any macro playback or recording in progress.";
+    if (TextEquals(label, "PREV SLOT")) return "Moves to the previous macro slot.";
+    if (TextEquals(label, "NEXT SLOT")) return "Moves to the next macro slot.";
+    if (TextEquals(label, "EDIT TEXT")) return "Opens the serialized macro text editor for the selected slot.";
+    if (TextEquals(label, "APPLY TO SLOT")) return "Writes the edited macro text into the selected slot.";
+    if (TextEquals(label, "RELOAD FROM SLOT")) return "Restores the editor text from the selected macro slot.";
+    if (TextEquals(label, "CLEAR SLOT")) return "Clears the selected macro slot.";
+    if (TextEquals(label, "COPY")) return "Copies the serialized macro text to the clipboard.";
+    if (TextEquals(label, "PASTE")) return "Pastes macro text from the clipboard into the editor.";
+    if (TextEquals(label, "UNDO")) return "Restores the previous macro text edit.";
+    if (TextEquals(label, "REDO")) return "Re-applies the next macro text edit.";
+    if (TextEquals(label, "INSERT SAMPLE")) return "Inserts a small example macro into the editor.";
+    if (TextEquals(label, "GUIDE")) return "Opens the macro guide page.";
+
+    if (TextEquals(label, "SAVE ACTIVE SLOT")) return "Sets the input used to save into the active savestate slot.";
+    if (TextEquals(label, "LOAD ACTIVE SLOT")) return "Sets the input used to load from the active savestate slot.";
+    if (TextEquals(label, "SLOT PREVIOUS")) return "Sets the input used to move to the previous savestate slot.";
+    if (TextEquals(label, "SLOT NEXT")) return "Sets the input used to move to the next savestate slot.";
+    if (TextEquals(label, "SAVESTATE SAVE")) return "Sets the raw key code used to save the active savestate slot.";
+    if (TextEquals(label, "SAVESTATE LOAD")) return "Sets the raw key code used to load the active savestate slot.";
+    if (TextEquals(label, "SAVE PRACTICE STATE")) return "Captures the current Practice match for manual reloads.";
+    if (TextEquals(label, "LOAD PRACTICE STATE")) return "Restores the last captured Practice match.";
+    if (TextEquals(label, "SAVE CURRENT MATCH")) return "Captures the live match into the working savestate.";
+    if (TextEquals(label, "LOAD CURRENT STATE")) return "Restores the working savestate into the live match.";
+    if (TextEquals(label, "CLEAR CURRENT STATE")) return "Clears the working savestate from memory.";
+    if (TextEquals(label, "LOAD SLOT TO CURRENT STATE")) return "Loads the chosen disk slot into the working savestate.";
+    if (TextEquals(label, "SAVE CURRENT STATE TO SLOT")) return "Writes the working savestate to the chosen disk slot.";
+    if (TextEquals(label, "HOTSWAP TO LOADED MATCH")) return "Applies the loaded match's characters and stage before restoring.";
+    if (TextEquals(label, "KEEP CURRENT MATCH")) return "Keeps the current matchup and dismisses the hotswap prompt.";
+
+    if (TextEquals(label, "UI ACCEPT")) return "Sets the menu confirm input.";
+    if (TextEquals(label, "UI REFRESH")) return "Sets the menu refresh input.";
+    if (TextEquals(label, "UI EXIT")) return "Sets the menu back or close input.";
+    if (TextEquals(label, "FRAMESTEP PAUSE")) return "Sets the input used to pause frame stepping.";
+    if (TextEquals(label, "FRAMESTEP STEP")) return "Sets the input used to advance one frame step.";
+    if (TextEquals(label, "TOGGLE MENU")) return "Sets the controller button used to open and close this menu.";
+    if (TextEquals(label, "TOP TAB PREVIOUS")) return "Sets the controller button for the previous top tab.";
+    if (TextEquals(label, "TOP TAB NEXT")) return "Sets the controller button for the next top tab.";
+    if (TextEquals(label, "SUBTAB PREVIOUS")) return "Sets the controller button for the previous subtab.";
+    if (TextEquals(label, "SUBTAB NEXT")) return "Sets the controller button for the next subtab.";
+    if (TextEquals(label, "SAVE CONTROLLER BINDS")) return "Saves controller bindings to disk.";
+    if (TextEquals(label, "SAVE ALL TO DISK")) return "Saves all menu settings to the config file.";
+    if (TextEquals(label, "RELOAD FROM DISK")) return "Reloads menu settings from the config file.";
+
+    if (TextEquals(label, "TOGGLE SWITCH PLAYERS")) return "Flips the active player-control side for debugging.";
+    if (TextEquals(label, "CANCEL P1 RF FREEZE")) return "Releases Player 1 from the debug RF freeze state.";
+    if (TextEquals(label, "CANCEL P2 RF FREEZE")) return "Releases Player 2 from the debug RF freeze state.";
+    if (TextEquals(label, "PLAY BGM")) return "Starts the selected music track immediately.";
+    if (TextEquals(label, "STOP BGM")) return "Stops the currently playing music track.";
+    if (TextEquals(label, "RUN P1 FINAL MEMORY")) return "Triggers Player 1's Final Memory for testing.";
+    if (TextEquals(label, "RUN P2 FINAL MEMORY")) return "Triggers Player 2's Final Memory for testing.";
+
+    if (TextEquals(label, "EFZ WIKI")) return "Opens the Eternal Fighter Zero wiki in your browser.";
+    if (TextEquals(label, "TRAINING MODE WIKI")) return "Opens the training mode documentation in your browser.";
+    if (TextEquals(label, "EFZ GLOBAL DISCORD")) return "Opens the community Discord invite in your browser.";
+    if (TextContains(label, " WIKI") || TextContains(label, "OPEN P1 WIKI") || TextContains(label, "OPEN P2 WIKI")) {
+        return "Opens the current character's wiki page in your browser.";
+    }
+    if (TextEquals(label, "OPEN GITHUB RELEASES")) return "Opens the release page for downloading updates.";
+
+    if (TextEquals(label, "FORCE SUMMON")) return "Spawns the character-specific helper immediately.";
+    if (TextEquals(label, "FORCE DESPAWN")) return "Removes the character-specific helper immediately.";
+    if (TextEquals(label, "APPLY GHOST POSITION")) return "Moves the ghost helper to the configured position.";
+    if (TextEquals(label, "APPLY MICHIRU POSITION")) return "Moves Michiru to the configured position.";
+    if (TextEquals(label, "REFRESH CHARACTER DATA")) return "Re-detects the current matchup and available character controls.";
+
+    if (TextEquals(label, "CHANGE CHARACTERS / STAGE")) return "Opens match hotswap for characters, palettes, stage, and music.";
+    if (TextEquals(label, "CHARACTER SETTINGS")) return "Opens controls specific to the current characters.";
+    if (TextEquals(label, "ABOUT")) return "Opens version and project information.";
+    if (TextEquals(label, "SOUND SETTINGS")) return "Opens audio and music settings.";
+    if (TextEquals(label, "EXIT TO CHARACTER SELECT")) return "Leaves Practice and returns to character select.";
+    if (TextEquals(label, "EXIT TO TITLE SCREEN")) return "Leaves Practice and returns to the title screen.";
+    if (TextEquals(label, "APPLY SELECTIONS")) return "Applies the selected hotswap changes to the current match.";
+
+    if (LabelContains(label, "SAVE")) return "Saves the selected data or setting.";
+    if (LabelContains(label, "LOAD")) return "Loads the selected data or setting.";
+    if (LabelContains(label, "OPEN")) return "Opens the selected destination.";
+    if (LabelContains(label, "APPLY")) return "Applies the configured value to the live match.";
+    if (LabelContains(label, "CLEAR")) return "Clears the selected value or slot.";
+    if (LabelContains(label, "CANCEL")) return "Cancels the selected active state.";
+    if (LabelContains(label, "FORCE")) return "Forces this character state immediately.";
+    if (LabelContains(label, "EDIT")) return "Opens an editor for this setting.";
+    if (LabelContains(label, "COPY")) return "Copies the selected data to the clipboard.";
+    if (LabelContains(label, "PASTE")) return "Pastes clipboard data into this page.";
+    if (LabelContains(label, "NEXT")) return "Moves to the next item in this group.";
+    if (LabelContains(label, "PREV")) return "Moves to the previous item in this group.";
+    if (LabelContains(label, "EXIT")) return "Leaves the current mode and returns to the selected destination.";
+    if (LabelContains(label, "TOGGLE")) return "Switches the selected command state.";
+    return "Runs this menu command.";
+}
+
+const char* DefaultToggleHelpText(const char* label) {
+    label = CleanLabel(label);
+    if (LabelEquals(label, "HITBOXES")) return "Shows attack boxes on characters and active attacks.";
+    if (LabelEquals(label, "HURTBOXES")) return "Shows vulnerable character boxes used for being hit.";
+    if (LabelEquals(label, "COLLISION BOXES")) return "Shows pushboxes used for player spacing and body collision.";
+    if (LabelEquals(label, "PROJECTILE INTERACTIONS")) return "Shows projectile collision and interaction data.";
+    if (LabelEquals(label, "PROJECTILE BOXES")) return "Shows projectile hit, hurt, and collision boxes.";
+    if (LabelEquals(label, "ORIGIN / RANGE DOTS")) return "Shows projectile anchors and range markers.";
+    if (LabelEquals(label, "INTERSECTION BOXES")) return "Shows where projectile boxes overlap or interact.";
+    if (LabelEquals(label, "USE CUSTOM MENU")) return "Uses this EFZ-style menu instead of the advanced ImGui menu.";
+    if (LabelEquals(label, "PRACTICE OVERLAY HINT")) return "Shows the one-time practice overlay hint when entering training.";
+    if (LabelEquals(label, "CR: BOTH NEUTRAL REQD")) return "Requires both players to return to neutral before continuous recovery restores values.";
+    if (LabelEquals(label, "AUTO-FIX HP<=0")) return "Restores invalid zero-or-lower HP when the characters returns to neutral.";
+    if (LabelEquals(label, "FREEZE RF AFTER CR")) return "Keeps RF fixed after continuous recovery restores it.";
+    if (LabelEquals(label, "FREEZE RF ONLY NEUTRAL")) return "Only freezes RF while both players are neutral.";
+    if (LabelEquals(label, "RESTRICT TO PRACTICE")) return "Limits training-mode features to Practice mode.";
+    if (LabelEquals(label, "CUSTOM SWAP KEY")) return "Enables a separate custom hotkey for position swapping.";
+    if (LabelEquals(label, "LOAD CUSTOM PALETTES")) return "Restores saved custom palette files when loading practice snapshots.";
+    if (LabelEquals(label, "ENABLE P2 CONTROL")) return "Enables P2 controls in Practice mode; F6/F7 stance and blocking hotkeys are unavailable while this is on.";
+    if (LabelEquals(label, "RANDOM BLOCK")) return "Randomizes the active auto-block window instead of blocking every eligible frame.";
+    if (LabelEquals(label, "ADAPTIVE STANCE")) return "Automatically switches the dummy between standing and crouching guard depending on the incoming attack.";
+    if (LabelEquals(label, "ALWAYS RECOIL GUARD")) return "Make the dummy always use Recoil Guard, the game's rules still apply to this(can't RG consecutive rapid hits grounded)";
+    if (LabelEquals(label, "RANDOM RECOIL GUARD")) return "Randomly forces the dummy to Recoil Guard so block checks can become RGs.";
+    if (LabelEquals(label, "COUNTER RG")) return "Tries to Recoil Guard back after your Recoil Guard, when possible.";
+    if (LabelEquals(label, "AUTO-JUMP")) return "Makes the dummy jump automatically using the configured direction and target.";
+    if (LabelEquals(label, "ENABLE")) return "Turns on the selected auto-action trigger.";
+    if (LabelEquals(label, "RANDOM POOL")) return "Lets this trigger pick randomly from the selected action pool.";
+    if (LabelEquals(label, "RANDOMIZE TRIGGERS")) return "Allows enabled triggers to use their random pools during practice.";
+    if (LabelEquals(label, "PRE-BUFFER WAKEUP")) return "Buffers wakeup actions early so fast reversals come out reliably(don't remember if this even works lol).";
+    if (LabelEquals(label, "ENABLE OVERLAY")) return "Shows this overlay during play.";
+    if (LabelEquals(label, "SHOW DETAIL ROW")) return "Adds the extra detail line to the combo statistics overlay.";
+    if (LabelEquals(label, "KEEP FINAL SUMMARY")) return "Leaves the finished combo summary visible after the combo ends.";
+    if (LabelEquals(label, "HIDE WITH MENU")) return "Hides this overlay while the custom menu is open.";
+    if (LabelEquals(label, "RESUME AFTER MENU")) return "Restores this overlay after closing the custom menu.";
+    if (LabelEquals(label, "SHOW RF MULTIPLIER")) return "Displays the RF scaling multiplier in combo statistics.";
+    if (LabelEquals(label, "SHOW RAW SCALE")) return "Displays raw combo scaling values in combo statistics.";
+    if (LabelEquals(label, "FINAL MEMORY AT ANY HP")) return "Allows Final Memory without the normal 3332 HP restriction.";
+    if (LabelEquals(label, "FRAME ADVANTAGE OVERLAY")) return "Shows frame advantage results after blocked or hit attacks.";
+    if (LabelEquals(label, "SHOW FRAME BAR")) return "Shows the per-player timing timeline near the bottom of the screen.";
+    if (LabelEquals(label, "ENABLE FRAMESTEP")) return "Enables pausing and stepping the game frame by frame.";
+    if (LabelEquals(label, "SUPPRESS REVIVAL STEP")) return "Prevents Revival's own framestep from also handling step input.";
+    if (LabelEquals(label, "INCLUDE BUFFERS")) return "Includes input-buffer data when serializing macro text.";
+    if (LabelEquals(label, "DETAILED LOGGING")) return "Writes extra training-mode diagnostics to the log.";
+    if (LabelEquals(label, "DEBUG FILE LOG")) return "Writes debug messages to the external log file.";
+    if (LabelEquals(label, "FPS DIAGNOSTICS")) return "Records frame pacing diagnostics for troubleshooting.";
+    if (LabelEquals(label, "SHOW DEBUG CONSOLE")) return "Opens the debug console window on startup.";
+    if (LabelEquals(label, "CHAR SELECT LOGGER")) return "Logs character-select state while testing hotswap issues.";
+    if (LabelEquals(label, "LOG CONTROLLER INPUT")) return "Logs controller input packets seen by the mod.";
+    if (LabelEquals(label, "LOG DETAILED FA")) return "Logs detailed frame-advantage state transitions.";
+    if (LabelEquals(label, "OVERLAY DEBUG BORDERS")) return "Draws borders around overlay layout regions.";
+    if (LabelEquals(label, "RG DEBUG TOASTS")) return "Shows small on-screen messages when RG helpers change state.";
+    if (LabelEquals(label, "PLAYER 1 CUSTOM PALETTE")) return "Uses Player 1's custom palette file for the hotswap. Only works when the file is present locally.";
+    if (LabelEquals(label, "PLAYER 2 CUSTOM PALETTE")) return "Uses Player 2's custom palette file for the hotswap. Only works when the file is present locally.";
+    if (LabelEquals(label, "NOTE TRIGGER RANGES")) return "Shows Mizukas note trigger ranges during play.";
+    if (LabelEquals(label, "AFFECTED NOTES")) return "Marks Mizukas notes affected by the current trigger range.";
+    if (LabelEquals(label, "MINAGI PROJECTILES -> MICHIRU")) return "No.";
+    if (LabelEquals(label, "BAREHANDED MODE")) return "Forces Rumi into her barehanded state.";
+    if (LabelEquals(label, "KIMCHI ACTIVE")) return "Keeps Rumi's kimchi state active.";
+    if (LabelEquals(label, "ENLIGHTENED")) return "Forces Doppel into enlightened mode/Gold Doppel mode.";
+    if (LabelEquals(label, "ALWAYS READIED")) return "Michiru goes into the readied stance as soon as she becomes neutral.";
+
+    if (LabelContains(label, "INFINITE")) return "Keeps the related character resource active instead of letting it expire.";
+    if (LabelContains(label, "LOCK")) return "Keeps this character state fixed at the configured value.";
+    if (LabelContains(label, "FREEZE")) return "Prevents this value or cycle from advancing normally.";
+    if (LabelContains(label, "SHOW")) return "Displays this extra visual information during play.";
+    if (LabelContains(label, "CUSTOM PALETTE")) return "Uses a custom palette for the selected player. Only works when the file is present locally.";
+    if (LabelContains(label, "AGGRESSIVE")) return "Makes the helper use its more aggressive behavior.";
+    if (LabelContains(label, "COOLDOWN")) return "Removes the usual cooldown restriction for this character action.";
+    if (LabelContains(label, "ACTIVE")) return "Forces or preserves the named active state.";
+    if (LabelContains(label, "ENABLE")) return "Enables this feature for the current practice setup.";
+    return "Turns this setting on or off.";
+}
+
+const char* DefaultNumberHelpText(const char* label) {
+    label = CleanLabel(label);
+    if (LabelEquals(label, "UI SCALE")) return "Changes the size of the custom menu.";
+    if (LabelEquals(label, "BOX FILL ALPHA")) return "Adjusts how opaque filled collision boxes appear.";
+    if (LabelEquals(label, "BGM VOLUME")) return "Adjusts background music volume as a percentage.";
+    if (LabelEquals(label, "SE VOLUME")) return "Adjusts sound-effect volume as a percentage.";
+    if (LabelEquals(label, "CR NEUTRAL DELAY (MS)")) return "Sets how long both players must stay neutral before continuous recovery applies.";
+    if (LabelEquals(label, "AUTO-BLOCK TIMEOUT (MS)")) return "Sets how long auto-block waits in neutral before timing out.";
+    if (LabelEquals(label, "ACTIVE SLOT")) return "Chooses which disk savestate slot to load or save.";
+    if (LabelEquals(label, "CURRENT SLOT")) return "Chooses the active macro slot.";
+    if (LabelEquals(label, "LOCAL SIDE")) return "Sets which player side is treated as local control in the saved state.";
+    if (LabelEquals(label, "AIRTECH DELAY")) return "Waits this many frames before the dummy performs the airtech.";
+    if (LabelEquals(label, "DELAY")) return "Waits this many frames before the dummy starts the selected response.";
+    if (LabelEquals(label, "RF AMOUNT")) return "Sets the RF value restored by custom F4 recovery.";
+    if (LabelEquals(label, "FA DURATION (SEC)")) return "Sets how long frame advantage results stay on screen.";
+    if (LabelEquals(label, "SUMMARY TIME")) return "Sets how long the final combo summary remains visible.";
+
+    if (LabelEquals(label, "HP")) return "Sets the saved health value for this player.";
+    if (LabelEquals(label, "METER")) return "Sets the saved meter value for this player.";
+    if (LabelEquals(label, "RF")) return "Sets the saved RF value for this player.";
+    if (LabelEquals(label, "X")) return "Sets the saved horizontal position for this player.";
+    if (LabelEquals(label, "Y")) return "Sets the saved vertical position for this player.";
+    if (LabelEquals(label, "X VEL")) return "Sets the saved horizontal velocity for this player.";
+    if (LabelEquals(label, "Y VEL")) return "Sets the saved vertical velocity for this player.";
+    if (LabelEquals(label, "CPU")) return "Sets whether the saved player state is CPU-controlled.";
+    if (LabelEquals(label, "BLOOD STOCK")) return "Sets Ikumi's stored blood stock.";
+    if (LabelEquals(label, "FEATHERS")) return "Sets Misuzu's feather count.";
+    if (LabelEquals(label, "BULLET CYCLE")) return "Sets Akiko's current bullet cycle.";
+    if (LabelEquals(label, "JAM COUNT")) return "Sets Neyuki's stored jam count.";
+    if (LabelEquals(label, "MAGIC")) return "Sets Kano's magic stock.";
+    if (LabelEquals(label, "GHOST TIME")) return "Sets how long Mai's ghost remains active.";
+
+    if (LabelContains(label, "TIMER")) return "Sets how long this character state lasts.";
+    if (LabelContains(label, "TARGET X")) return "Sets the helper target's horizontal position.";
+    if (LabelContains(label, "TARGET Y")) return "Sets the helper target's vertical position.";
+    if (LabelContains(label, "BLOOD")) return "Sets Ikumi's stored blood resource.";
+    if (LabelContains(label, "GENOCIDE")) return "Sets Ikumi's genocide timer.";
+    if (LabelContains(label, "LEVEL GAUGE")) return "Sets the character-specific level gauge.";
+    if (LabelContains(label, "POISON LEVEL")) return "Sets Misuzu's poison strength.";
+    if (LabelContains(label, "SNOWBUNNY")) return "Sets how long Nayuki's snow bunnies remain active.";
+    if (LabelContains(label, "CHARGE")) return "Sets Mai's ghost charge timer.";
+    if (LabelContains(label, "AWAKEN")) return "Sets the awakening timer for this character state.";
+    return "Changes this numeric setting.";
+}
+
+const char* DefaultChoiceHelpText(const char* label) {
+    label = CleanLabel(label);
+    if (LabelEquals(label, "UI FONT (ADVANCED MENU)")) return "Chooses which font the advanced ImGui menu uses.";
+    if (LabelEquals(label, "BACKEND")) return "Chooses which savestate backend handles practice snapshots.";
+    if (LabelEquals(label, "TRIGGER")) return "Chooses which auto-action timing you are editing on this page.";
+    if (LabelEquals(label, "ELEMENT")) return "Sets Mishio's current element state.";
+    if (LabelEquals(label, "TIME-SLOW TRIGGER")) return "Chooses when Akiko's time-slow state should activate.";
+    if (LabelEquals(label, "STANCE")) return "Chooses Mio's short or long stance.";
+    if (LabelEquals(label, "STATUS")) return "Chooses Mai's ghost or awakening state.";
+    if (LabelEquals(label, "DUMMY AUTO-BLOCK")) return "Sets when the dummy turns auto-block on during incoming attacks.";
+    if (LabelEquals(label, "DUMMY STANCE")) return "Sets the dummy's F6 stance when Adaptive Stance is off.";
+    if (LabelEquals(label, "AUTO-AIRTECH")) return "Air-recovers automatically in the selected direction after the dummy can tech.";
+    if (LabelEquals(label, "JUMP DIRECTION")) return "Sets neutral, forward, or back jump direction for Auto-Jump.";
+    if (LabelEquals(label, "JUMP TARGET")) return "Chooses whether Auto-Jump applies to P1, P2, or both sides.";
+    if (LabelContains(label, "PALETTE")) return "Chooses the character palette for the hotswap selection.";
+    if (LabelContains(label, "AUTOMATIC HEALTH AND METER RECOVERY (F4)")) return "Uses the game's F4 recovery modes; unavailable while F5 recovery is active.";
+    if (LabelEquals(label, "COLOR")) return "Chooses which IC color custom F4 recovery restores.";
+    if (LabelContains(label, "PRESETS FOR RECOVERY (F5)")) return "Uses the game's F5 recovery preset; turn it off before changing F4.";
+    if (LabelEquals(label, "DETAIL SOURCE")) return "Chooses whether combo detail uses live combo state or the last hit.";
+    if (LabelEquals(label, "CELL STEP")) return "Chooses subframe cells or wider visual-frame cells for the framebar.";
+    if (LabelEquals(label, "DETAIL")) return "Chooses how much timing detail the framebar draws.";
+    if (LabelEquals(label, "STEP MODE")) return "Chooses full-frame or single-subframe steps while paused.";
+    return "Changes this setting's selected mode.";
+}
+
+const char* DefaultDropdownHelpText(const char* label) {
+    label = CleanLabel(label);
+    if (LabelEquals(label, "CONTROLLER FOR MOD INPUTS")) return "Chooses which controller can trigger training-mode pad shortcuts.";
+    if (LabelEquals(label, "BGM TRACK")) return "Chooses the music track to play.";
+    if (LabelEquals(label, "ACTION")) return "Chooses the dummy response for the selected trigger.";
+    if (LabelEquals(label, "MACRO SLOT")) return "Chooses a recorded macro slot to use instead of a single action.";
+    if (LabelContains(label, "CHARACTER")) return "Chooses the character used by the hotswap selection.";
+    if (LabelEquals(label, "STAGE")) return "Chooses the stage used by the hotswap selection.";
+    if (LabelEquals(label, "OST")) return "Chooses the music used by the hotswap selection.";
+    return "Opens a picker for this setting.";
+}
+
+const char* DefaultMaskHelpText(const char* label) {
+    label = CleanLabel(label);
+    if (LabelEquals(label, "ACTION POOL")) return "Chooses the exact move versions Random Pool may roll.";
+    return "Chooses multiple allowed entries for this setting.";
+}
+
+const char* DefaultSubmenuHelpText(const char* label) {
+    label = CleanLabel(label);
+    if (LabelEquals(label, "INTERFACE")) return "Opens menu appearance and behavior settings.";
+    if (LabelEquals(label, "DISPLAY")) return "Opens hitbox, hurtbox, and overlay display settings.";
+    if (LabelEquals(label, "AUDIO")) return "Opens volume and music settings.";
+    if (LabelEquals(label, "RECOVERY")) return "Opens continuous recovery and RF freeze settings.";
+    if (LabelEquals(label, "PRACTICE")) return "Opens practice-mode behavior settings.";
+    if (LabelEquals(label, "CONTINUOUS RECOVERY")) return "Opens per-player continuous recovery controls.";
+    if (LabelEquals(label, "DISPLAY OVERLAYS")) return "Opens overlay visibility and detail settings.";
+    if (LabelEquals(label, "SAVESTATES")) return "Opens practice snapshot save and load settings.";
+    if (LabelEquals(label, "HOTSWAP")) return "Opens character, stage, and music hotswap settings.";
+    if (LabelEquals(label, "PLAYER VALUES")) return "Opens saved health, meter, RF, position, and CPU values.";
+    if (LabelEquals(label, "GAMEPLAY")) return "Opens gameplay hotkey bindings.";
+    if (LabelEquals(label, "SAVESTATE")) return "Opens savestate hotkey bindings.";
+    if (LabelEquals(label, "MACROS")) return "Opens macro controls or macro hotkey bindings.";
+    if (LabelEquals(label, "MENU CONTROL")) return "Opens custom menu navigation bindings.";
+    if (LabelEquals(label, "RAW VK CODES")) return "Opens direct virtual-key code editing.";
+    if (LabelEquals(label, "CONTROLLER")) return "Opens controller binding controls.";
+    if (LabelEquals(label, "SWAP POSITIONS")) return "Opens custom position-swap binding controls.";
+    if (LabelEquals(label, "LOGGING")) return "Opens diagnostic logging toggles.";
+    if (LabelEquals(label, "OVERLAYS")) return "Opens debug overlay toggles.";
+    if (LabelEquals(label, "INPUT / RUNTIME")) return "Opens live practice routing and RF-freeze tools.";
+    if (LabelEquals(label, "BGM")) return "Opens music playback debug tools.";
+    if (LabelEquals(label, "FINAL MEMORY")) return "Opens Final Memory test actions.";
+    if (LabelEquals(label, "CURRENT STATE")) return "Opens the in-memory savestate controls.";
+    if (LabelEquals(label, "SLOTS")) return "Opens disk slot load and save controls.";
+    if (LabelEquals(label, "EDIT P1")) return "Opens editable Player 1 savestate values.";
+    if (LabelEquals(label, "EDIT P2")) return "Opens editable Player 2 savestate values.";
+    if (LabelEquals(label, "EDIT MATCH")) return "Opens editable match-level savestate values.";
+    if (LabelEquals(label, "SERIALIZED MACRO")) return "Opens macro text import, export, and editing tools.";
+    if (LabelEquals(label, "SLOT STATS")) return "Opens timing and buffer stats for the selected macro slot.";
+    if (LabelEquals(label, "QUICK START")) return "Opens the quick-start help page.";
+    if (LabelEquals(label, "POSITION TOOLS")) return "Opens help for saving, loading, and swapping positions.";
+    if (LabelEquals(label, "MENU TIPS")) return "Opens help for navigating this menu.";
+    if (LabelEquals(label, "BASICS")) return "Opens core training-mode usage notes.";
+    if (LabelEquals(label, "PRACTICE SNAPSHOTS")) return "Opens help for savestate snapshots.";
+    if (LabelEquals(label, "COMBO STATISTICS")) return "Opens combo statistics help or overlay settings.";
+    if (LabelEquals(label, "FRAMEBAR")) return "Opens framebar timing help.";
+    if (LabelEquals(label, "BOX DISPLAY")) return "Opens collision display help.";
+    if (LabelEquals(label, "AUTO ACTIONS")) return "Opens auto-action setup help.";
+    if (LabelEquals(label, "ISSUES")) return "Opens troubleshooting notes.";
+    if (LabelContains(label, "HOTKEY")) return "Opens hotkey binding settings.";
+    if (LabelContains(label, "PLAYER")) return "Opens controls for this player or character.";
+    return "Opens this menu page.";
+}
+
+const char* DefaultRowHelpText(const Row& r) {
+    const char* label = (r.label && *r.label) ? r.label : "This row";
+    switch (r.kind) {
+        case RowKind::Info:
+            return "Read this note for context about the current page or setting.";
+        case RowKind::Toggle:
+            return DefaultToggleHelpText(label);
+        case RowKind::IntNumber:
+        case RowKind::IntSlider:
+        case RowKind::FloatNumber:
+        case RowKind::DoubleNumber:
+            return DefaultNumberHelpText(label);
+        case RowKind::Choices:
+            return DefaultChoiceHelpText(label);
+        case RowKind::ActionStrength:
+            return "Choose an action, then adjust its strength or direction when the row supports it.";
+        case RowKind::TriggerButton:
+            return "Choose the button, direction, or dash follow-up used by this auto-action.";
+        case RowKind::Dropdown:
+            return DefaultDropdownHelpText(label);
+        case RowKind::MaskPicker:
+            return DefaultMaskHelpText(label);
+        case RowKind::Submenu:
+            return DefaultSubmenuHelpText(label);
+        case RowKind::Action:
+            return DefaultActionHelpText(label);
+        default:
+            return "Shows contextual information for this row.";
+    }
+}
+
+void SetCurrentHelpFromRow(const Row* rows, int rowCount, int focus) {
+    g_currentHelpText.clear();
+    if (!rows || rowCount <= 0 || focus < 0 || focus >= rowCount) return;
+    const Row& r = rows[focus];
+    const char* text = (r.helpText && *r.helpText) ? r.helpText : DefaultRowHelpText(r);
+    if (text && *text) {
+        g_currentHelpText = text;
+    }
+}
+
 bool ShiftHeld() {
     if (!Input::IsGameWindowActive()) return false;
     return (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
@@ -820,6 +1205,24 @@ Row MaskPickerRow(const char* label, unsigned int* mask,
     return r;
 }
 
+Row MaskPickerRow64(const char* label, uint64_t* maskLo, uint64_t* maskHi,
+                    const char* const* items, int n,
+                    void (*onChange)(),
+                    bool (*isDisabled)(),
+                    bool (*isHidden)()) {
+    Row r{};
+    r.kind = RowKind::MaskPicker;
+    r.label = label;
+    r.maskLoPtr = maskLo;
+    r.maskHiPtr = maskHi;
+    r.choices = items;
+    r.choiceCount = n;
+    r.onChange = onChange;
+    r.isDisabled = isDisabled;
+    r.isHidden = isHidden;
+    return r;
+}
+
 Row Submenu(const char* label, const char* title, RowListBuilder builder,
             const char* (*valueFn)(),
             bool (*isDisabled)(),
@@ -855,12 +1258,25 @@ struct PopupState {
     bool active = false;
     int* choiceIdxPtr = nullptr;             // single-select target
     unsigned int* maskPtr = nullptr;         // multi-select target
+    uint64_t* maskLoPtr = nullptr;           // 128-bit multi-select target, low bits
+    uint64_t* maskHiPtr = nullptr;           // 128-bit multi-select target, high bits
     int* companionIdxPtr = nullptr;          // paired-choice secondary target
     const char* const* choices = nullptr;
     const int* choiceValueMap = nullptr;     // optional mapped target values for displayed choices
     int choiceCount = 0;
+    const char* const* allChoices = nullptr; // source choices for categorized dropdowns
+    int allChoiceCount = 0;
+    const int* choiceCategoryMap = nullptr;
+    const char* const* categoryChoices = nullptr;
+    int categoryCount = 0;
+    bool categoryMode = false;
+    int selectedCategory = 0;
+    const char* filteredChoices[128]{};
+    int filteredChoiceValues[128]{};
+    int filteredChoiceCount = 0;
     int focusIdx = 0;
     float scrollPx = 0.0f;
+    Row sourceRow{};
     void (*onChange)() = nullptr;
     PairedChoiceChange onPrimaryChoiceChange = nullptr;
 };
@@ -872,10 +1288,300 @@ struct PopupGeom {
     float rowH;
 };
 
-inline bool PopupIsMulti() { return g_popup.maskPtr != nullptr; }
+inline bool PopupIsMulti() { return g_popup.maskPtr != nullptr || g_popup.maskLoPtr != nullptr; }
 inline bool PopupUsesMappedChoiceValues() { return g_popup.choiceValueMap != nullptr; }
+inline bool PopupIsCategorized() {
+    return g_popup.categoryChoices != nullptr &&
+           g_popup.choiceCategoryMap != nullptr &&
+           g_popup.categoryCount > 0 &&
+           g_popup.allChoices != nullptr &&
+           g_popup.allChoiceCount > 0;
+}
+inline bool PopupShowsChecks() { return PopupIsMulti() && !(PopupIsCategorized() && g_popup.categoryMode); }
+
+bool PopupMaskBitSet(int choiceValue) {
+    if (choiceValue < 0 || choiceValue >= 128) return false;
+    if (g_popup.maskLoPtr) {
+        if (choiceValue < 64) {
+            return (((*g_popup.maskLoPtr) >> choiceValue) & 1ull) != 0;
+        }
+        return g_popup.maskHiPtr &&
+               (((*g_popup.maskHiPtr) >> (choiceValue - 64)) & 1ull) != 0;
+    }
+    return g_popup.maskPtr &&
+           choiceValue < 32 &&
+           (((*g_popup.maskPtr) >> choiceValue) & 1u) != 0;
+}
+
+void PopupToggleMaskBit(int choiceValue) {
+    if (choiceValue < 0 || choiceValue >= 128) return;
+    if (g_popup.maskLoPtr) {
+        if (choiceValue < 64) {
+            *g_popup.maskLoPtr ^= (1ull << choiceValue);
+        } else if (g_popup.maskHiPtr) {
+            *g_popup.maskHiPtr ^= (1ull << (choiceValue - 64));
+        }
+        return;
+    }
+    if (g_popup.maskPtr && choiceValue < 32) {
+        *g_popup.maskPtr ^= (1u << choiceValue);
+    }
+}
+
+bool RowMaskBitSet(const Row& r, int choiceValue) {
+    if (choiceValue < 0 || choiceValue >= 128) return false;
+    if (r.maskLoPtr) {
+        if (choiceValue < 64) {
+            return (((*r.maskLoPtr) >> choiceValue) & 1ull) != 0;
+        }
+        return r.maskHiPtr &&
+               (((*r.maskHiPtr) >> (choiceValue - 64)) & 1ull) != 0;
+    }
+    return r.maskPtr &&
+           choiceValue < 32 &&
+           (((*r.maskPtr) >> choiceValue) & 1u) != 0;
+}
+
+int RowMaskPopcount(const Row& r) {
+    int popcount = 0;
+    if (r.maskLoPtr) {
+        uint64_t lo = *r.maskLoPtr;
+        uint64_t hi = r.maskHiPtr ? *r.maskHiPtr : 0;
+        while (lo) { popcount += static_cast<int>(lo & 1ull); lo >>= 1; }
+        while (hi) { popcount += static_cast<int>(hi & 1ull); hi >>= 1; }
+    } else if (r.maskPtr) {
+        unsigned int m = *r.maskPtr;
+        while (m) { popcount += static_cast<int>(m & 1u); m >>= 1; }
+    }
+    return popcount;
+}
+
+bool RowUsesCategorizedChoices(const Row& r) {
+    return r.categoryChoices != nullptr &&
+           r.choiceCategoryMap != nullptr &&
+           r.categoryCount > 0 &&
+           r.choices != nullptr &&
+           r.choiceCount > 0;
+}
+
+int ClampPopupIndex(int v, int maxExclusive) {
+    if (maxExclusive <= 0) return 0;
+    if (v < 0) return 0;
+    if (v >= maxExclusive) return maxExclusive - 1;
+    return v;
+}
+
+int PopupChoiceValueAt(int index) {
+    if (index < 0 || index >= g_popup.choiceCount) return 0;
+    return PopupUsesMappedChoiceValues() ? g_popup.choiceValueMap[index] : index;
+}
+
+bool PopupSourceMatchesRow(const Row& row) {
+    const Row& source = g_popup.sourceRow;
+    if (row.maskLoPtr || row.maskHiPtr || row.maskPtr ||
+        source.maskLoPtr || source.maskHiPtr || source.maskPtr) {
+        return row.maskLoPtr == source.maskLoPtr &&
+               row.maskHiPtr == source.maskHiPtr &&
+               row.maskPtr == source.maskPtr;
+    }
+    if (row.choiceIdxPtr || source.choiceIdxPtr) {
+        return row.choiceIdxPtr == source.choiceIdxPtr;
+    }
+    return TextEquals(CleanLabel(row.label), CleanLabel(source.label));
+}
+
+int PopupFocusedChoiceValueForRow(const Row& row) {
+    if (!g_popup.active || !PopupSourceMatchesRow(row)) return -1;
+    if (PopupIsCategorized() && g_popup.categoryMode) return -1;
+    if (g_popup.focusIdx < 0 || g_popup.focusIdx >= g_popup.choiceCount) return -1;
+    return PopupChoiceValueAt(g_popup.focusIdx);
+}
+
+const char* RowChoiceDisplayText(const Row& row, int choiceValue) {
+    if (choiceValue < 0 || choiceValue >= row.choiceCount) return "";
+    if (row.choiceValueFormatter) {
+        const char* formatted = row.choiceValueFormatter(row, choiceValue);
+        if (formatted && *formatted) return formatted;
+    }
+    return (row.choices && row.choices[choiceValue]) ? row.choices[choiceValue] : "";
+}
+
+constexpr int kMaskPreviewMaxVisible = 3;
+constexpr int kMaskPreviewMaxSegments = kMaskPreviewMaxVisible * 2 + 1;
+
+struct MaskPreviewToken {
+    int choiceValue = -1;
+    const char* text = "";
+    bool highlighted = false;
+};
+
+struct MaskSelectionPreview {
+    MaskPreviewToken tokens[kMaskPreviewMaxVisible];
+    int tokenCount = 0;
+    int selectedCount = 0;
+    bool overflow = false;
+    bool hasHighlightedToken = false;
+};
+
+int ClampMaskPreviewMaxVisible(int maxVisibleChoices) {
+    if (maxVisibleChoices <= 0) return 1;
+    if (maxVisibleChoices > kMaskPreviewMaxVisible) return kMaskPreviewMaxVisible;
+    return maxVisibleChoices;
+}
+
+MaskSelectionPreview BuildMaskSelectionPreview(const Row& row, int maxVisibleChoices) {
+    MaskSelectionPreview out{};
+    maxVisibleChoices = ClampMaskPreviewMaxVisible(maxVisibleChoices);
+
+    const int choiceLimit = (std::min)(row.choiceCount, 128);
+    if (choiceLimit <= 0) return out;
+
+    const int focusedChoice = PopupFocusedChoiceValueForRow(row);
+    const bool focusedSelected = focusedChoice >= 0 &&
+                                 focusedChoice < choiceLimit &&
+                                 RowMaskBitSet(row, focusedChoice);
+
+    for (int i = 0; i < choiceLimit; ++i) {
+        if (RowMaskBitSet(row, i)) ++out.selectedCount;
+    }
+    if (out.selectedCount <= 0) return out;
+
+    out.overflow = out.selectedCount > maxVisibleChoices;
+    if (out.overflow && focusedSelected) {
+        out.tokens[out.tokenCount++] = {
+            focusedChoice,
+            RowChoiceDisplayText(row, focusedChoice),
+            true
+        };
+        out.hasHighlightedToken = true;
+    }
+
+    for (int i = 0; i < choiceLimit && out.tokenCount < maxVisibleChoices; ++i) {
+        if (!RowMaskBitSet(row, i) || (out.overflow && focusedSelected && i == focusedChoice)) {
+            continue;
+        }
+        const bool highlighted = focusedSelected && i == focusedChoice;
+        out.tokens[out.tokenCount++] = {
+            i,
+            RowChoiceDisplayText(row, i),
+            highlighted
+        };
+        if (highlighted) out.hasHighlightedToken = true;
+    }
+
+    return out;
+}
+
+void FormatMaskSelectionPreviewText(const MaskSelectionPreview& preview, char* buf, size_t bufSize) {
+    if (!buf || bufSize == 0) return;
+    if (preview.selectedCount <= 0 || preview.tokenCount <= 0) {
+        strncpy_s(buf, bufSize, "EMPTY", _TRUNCATE);
+        return;
+    }
+
+    buf[0] = '\0';
+    for (int i = 0; i < preview.tokenCount; ++i) {
+        if (i > 0) {
+            strncat_s(buf, bufSize, ", ", _TRUNCATE);
+        }
+        const char* text = (preview.tokens[i].text && *preview.tokens[i].text)
+                         ? preview.tokens[i].text
+                         : "?";
+        strncat_s(buf, bufSize, text, _TRUNCATE);
+    }
+    if (preview.overflow) {
+        strncat_s(buf, bufSize, ", ...", _TRUNCATE);
+    }
+}
+
+bool DrawMaskSelectionPreviewRow(ImDrawList* dl, float x, float y, float w,
+                                 const Row& row, bool focused, bool disabled) {
+    if (!LabelEquals(row.label, "ACTION POOL")) return false;
+
+    const MaskSelectionPreview preview = BuildMaskSelectionPreview(row, 3);
+    if (!preview.hasHighlightedToken) return false;
+
+    Layout::TextSegment segments[kMaskPreviewMaxSegments]{};
+    char segmentText[kMaskPreviewMaxSegments][48]{};
+    int segmentCount = 0;
+
+    auto addSegment = [&](const char* text, ImU32 col) {
+        if (segmentCount >= kMaskPreviewMaxSegments || !text || !*text) return;
+        strncpy_s(segmentText[segmentCount], sizeof(segmentText[segmentCount]), text, _TRUNCATE);
+        segments[segmentCount] = { segmentText[segmentCount], col };
+        ++segmentCount;
+    };
+
+    using namespace Theme;
+    for (int i = 0; i < preview.tokenCount; ++i) {
+        if (i > 0) addSegment(", ", kTextInactive);
+        addSegment((preview.tokens[i].text && *preview.tokens[i].text) ? preview.tokens[i].text : "?",
+                   preview.tokens[i].highlighted ? kTextActive : kTextInactive);
+    }
+    if (preview.overflow) {
+        addSegment(", ", kTextInactive);
+        addSegment("...", kTextInactive);
+    }
+
+    Layout::DrawRowDrillSegments(dl, x, y, w, row.label, segments, segmentCount, focused, disabled);
+    return true;
+}
+
+const char* PopupChoiceDisplayText(int index) {
+    if (index < 0 || index >= g_popup.choiceCount) return "";
+    if (!(PopupIsCategorized() && g_popup.categoryMode) &&
+        g_popup.sourceRow.choiceValueFormatter) {
+        const char* formatted = g_popup.sourceRow.choiceValueFormatter(g_popup.sourceRow, PopupChoiceValueAt(index));
+        if (formatted) return formatted;
+    }
+    return (g_popup.choices && g_popup.choices[index]) ? g_popup.choices[index] : "";
+}
+
+bool PopupAdjustFocusedChoice(int direction) {
+    if (direction == 0 ||
+        PopupIsMulti() ||
+        (PopupIsCategorized() && g_popup.categoryMode) ||
+        !g_popup.sourceRow.choiceValueAdjuster) {
+        return false;
+    }
+    if (g_popup.focusIdx < 0 || g_popup.focusIdx >= g_popup.choiceCount) return false;
+    const int choiceValue = PopupChoiceValueAt(g_popup.focusIdx);
+    if (!g_popup.sourceRow.choiceValueAdjuster(g_popup.sourceRow, choiceValue, direction)) {
+        return false;
+    }
+    if (g_popup.onChange) g_popup.onChange();
+    return true;
+}
+
+const char* PopupHelpText() {
+    static char s_buf[240];
+    if (!g_popup.active) return nullptr;
+    if (PopupIsCategorized() && g_popup.categoryMode) {
+        return "Choose an action category, then pick the exact action inside it.";
+    }
+    if (PopupIsMulti() && g_popup.sourceRow.choiceHelpFormatter &&
+        g_popup.focusIdx >= 0 && g_popup.focusIdx < g_popup.choiceCount) {
+        const char* text = g_popup.sourceRow.choiceHelpFormatter(g_popup.sourceRow,
+                                                                 PopupChoiceValueAt(g_popup.focusIdx));
+        if (text && *text) return text;
+    }
+    if (!PopupIsMulti() && g_popup.sourceRow.choiceValueFormatter &&
+        g_popup.focusIdx >= 0 && g_popup.focusIdx < g_popup.choiceCount) {
+        const char* choice = PopupChoiceDisplayText(g_popup.focusIdx);
+        _snprintf_s(s_buf, sizeof(s_buf), _TRUNCATE,
+                    "Select %s for this row; left and right change variants before confirming.",
+                    (choice && *choice) ? choice : "this option");
+        return s_buf;
+    }
+    if (PopupIsMulti()) {
+        return "Toggle each option in this list; selected entries are included in the setting.";
+    }
+    return "Choose one option from this list to apply it.";
+}
 
 int PopupColumnCount() {
+    if (PopupIsCategorized() && g_popup.categoryMode) return 1;
+    if (g_popup.choiceCount >= 54) return 3;
     return g_popup.choiceCount >= 12 ? 2 : 1;
 }
 
@@ -985,18 +1691,105 @@ void PopupMoveFocus(int rowDelta, int columnDelta) {
     }
 }
 
+int PopupCategoryForChoice(int choiceValue) {
+    if (!PopupIsCategorized()) return 0;
+    if (choiceValue < 0 || choiceValue >= g_popup.allChoiceCount) return 0;
+    return ClampPopupIndex(g_popup.choiceCategoryMap[choiceValue], g_popup.categoryCount);
+}
+
+void PopupShowCategoryRoot(int focusCategory) {
+    if (!PopupIsCategorized()) return;
+    g_popup.categoryMode = true;
+    g_popup.choices = g_popup.categoryChoices;
+    g_popup.choiceValueMap = nullptr;
+    g_popup.choiceCount = g_popup.categoryCount;
+    g_popup.focusIdx = ClampPopupIndex(focusCategory, g_popup.categoryCount);
+    g_popup.scrollPx = 0.0f;
+}
+
+void PopupOpenCategory(int category) {
+    if (!PopupIsCategorized()) return;
+    category = ClampPopupIndex(category, g_popup.categoryCount);
+    g_popup.selectedCategory = category;
+    g_popup.filteredChoiceCount = 0;
+    for (int i = 0; i < g_popup.allChoiceCount && g_popup.filteredChoiceCount < 128; ++i) {
+        if (g_popup.choiceCategoryMap[i] != category) continue;
+        const int local = g_popup.filteredChoiceCount++;
+        g_popup.filteredChoices[local] = g_popup.allChoices[i];
+        g_popup.filteredChoiceValues[local] = i;
+    }
+    if (g_popup.filteredChoiceCount <= 0) {
+        PopupShowCategoryRoot(category);
+        return;
+    }
+
+    g_popup.categoryMode = false;
+    g_popup.choices = g_popup.filteredChoices;
+    g_popup.choiceValueMap = g_popup.filteredChoiceValues;
+    g_popup.choiceCount = g_popup.filteredChoiceCount;
+    g_popup.focusIdx = 0;
+    if (g_popup.choiceIdxPtr) {
+        const int current = *g_popup.choiceIdxPtr;
+        for (int i = 0; i < g_popup.filteredChoiceCount; ++i) {
+            if (g_popup.filteredChoiceValues[i] == current) {
+                g_popup.focusIdx = i;
+                break;
+            }
+        }
+    }
+    g_popup.scrollPx = 0.0f;
+}
+
+bool AdjustCategorizedRowChoice(const Row& r, int direction) {
+    if (!r.choiceIdxPtr || direction == 0 || !RowUsesCategorizedChoices(r)) return false;
+    const int current = ClampPopupIndex(*r.choiceIdxPtr, r.choiceCount);
+    const int category = ClampPopupIndex(r.choiceCategoryMap[current], r.categoryCount);
+    int matches[128];
+    int count = 0;
+    int currentLocal = -1;
+    for (int i = 0; i < r.choiceCount && count < 128; ++i) {
+        if (r.choiceCategoryMap[i] != category) continue;
+        if (i == current) currentLocal = count;
+        matches[count++] = i;
+    }
+    if (count <= 0) return false;
+    if (currentLocal < 0) currentLocal = 0;
+    currentLocal = (currentLocal + direction + count) % count;
+    *r.choiceIdxPtr = matches[currentLocal];
+    return true;
+}
+
 void OpenDropdownPopup(const Row& r) {
     if (!r.choiceIdxPtr || r.choiceCount <= 0 || !r.choices) return;
     ResetMouseTrackingState();
     g_popup.active = true;
     g_popup.choiceIdxPtr = r.choiceIdxPtr;
     g_popup.maskPtr = nullptr;
+    g_popup.maskLoPtr = nullptr;
+    g_popup.maskHiPtr = nullptr;
     g_popup.companionIdxPtr = (r.kind == RowKind::ActionStrength) ? r.choice2IdxPtr : nullptr;
+    g_popup.sourceRow = r;
+    g_popup.allChoices = nullptr;
+    g_popup.allChoiceCount = 0;
+    g_popup.choiceCategoryMap = nullptr;
+    g_popup.categoryChoices = nullptr;
+    g_popup.categoryCount = 0;
+    g_popup.categoryMode = false;
+    g_popup.selectedCategory = 0;
+    g_popup.filteredChoiceCount = 0;
     if (r.kind == RowKind::ActionStrength) {
         g_popup.choices = kGroupedActionChoices;
         g_popup.choiceValueMap = kGroupedActionValues;
         g_popup.choiceCount = kGroupedActionCount;
         g_popup.focusIdx = ActionToGroupedChoiceIndex(*r.choiceIdxPtr);
+    } else if (RowUsesCategorizedChoices(r)) {
+        g_popup.allChoices = r.choices;
+        g_popup.allChoiceCount = r.choiceCount;
+        g_popup.choiceCategoryMap = r.choiceCategoryMap;
+        g_popup.categoryChoices = r.categoryChoices;
+        g_popup.categoryCount = r.categoryCount;
+        g_popup.selectedCategory = PopupCategoryForChoice(*r.choiceIdxPtr);
+        PopupShowCategoryRoot(g_popup.selectedCategory);
     } else {
         g_popup.choices = r.choices;
         g_popup.choiceValueMap = nullptr;
@@ -1010,16 +1803,45 @@ void OpenDropdownPopup(const Row& r) {
 }
 
 void OpenMaskPopup(const Row& r) {
-    if (!r.maskPtr || r.choiceCount <= 0 || !r.choices) return;
+    if ((!r.maskPtr && !r.maskLoPtr) || r.choiceCount <= 0 || !r.choices) return;
     ResetMouseTrackingState();
     g_popup.active = true;
     g_popup.choiceIdxPtr = nullptr;
     g_popup.maskPtr = r.maskPtr;
+    g_popup.maskLoPtr = r.maskLoPtr;
+    g_popup.maskHiPtr = r.maskHiPtr;
     g_popup.companionIdxPtr = nullptr;
-    g_popup.choices = r.choices;
-    g_popup.choiceValueMap = nullptr;
-    g_popup.choiceCount = r.choiceCount;
-    g_popup.focusIdx = 0;
+    g_popup.sourceRow = r;
+    g_popup.allChoices = nullptr;
+    g_popup.allChoiceCount = 0;
+    g_popup.choiceCategoryMap = nullptr;
+    g_popup.categoryChoices = nullptr;
+    g_popup.categoryCount = 0;
+    g_popup.categoryMode = false;
+    g_popup.selectedCategory = 0;
+    g_popup.filteredChoiceCount = 0;
+    if (RowUsesCategorizedChoices(r)) {
+        g_popup.allChoices = r.choices;
+        g_popup.allChoiceCount = r.choiceCount;
+        g_popup.choiceCategoryMap = r.choiceCategoryMap;
+        g_popup.categoryChoices = r.categoryChoices;
+        g_popup.categoryCount = r.categoryCount;
+        int focusCategory = 0;
+        if (r.maskPtr || r.maskLoPtr) {
+            for (int i = 0; i < r.choiceCount; ++i) {
+                if (!RowMaskBitSet(r, i)) continue;
+                focusCategory = PopupCategoryForChoice(i);
+                break;
+            }
+        }
+        g_popup.selectedCategory = focusCategory;
+        PopupShowCategoryRoot(focusCategory);
+    } else {
+        g_popup.choices = r.choices;
+        g_popup.choiceValueMap = nullptr;
+        g_popup.choiceCount = r.choiceCount;
+        g_popup.focusIdx = 0;
+    }
     g_popup.scrollPx = 0.0f;
     g_popup.onChange = r.onChange;
     g_popup.onPrimaryChoiceChange = nullptr;
@@ -1031,12 +1853,23 @@ void ClosePopup() {
     g_popup.active = false;
     g_popup.choiceIdxPtr = nullptr;
     g_popup.maskPtr = nullptr;
+    g_popup.maskLoPtr = nullptr;
+    g_popup.maskHiPtr = nullptr;
     g_popup.companionIdxPtr = nullptr;
     g_popup.choices = nullptr;
     g_popup.choiceValueMap = nullptr;
     g_popup.choiceCount = 0;
+    g_popup.allChoices = nullptr;
+    g_popup.allChoiceCount = 0;
+    g_popup.choiceCategoryMap = nullptr;
+    g_popup.categoryChoices = nullptr;
+    g_popup.categoryCount = 0;
+    g_popup.categoryMode = false;
+    g_popup.selectedCategory = 0;
+    g_popup.filteredChoiceCount = 0;
     g_popup.focusIdx = 0;
     g_popup.scrollPx = 0.0f;
+    g_popup.sourceRow = Row{};
     g_popup.onChange = nullptr;
     g_popup.onPrimaryChoiceChange = nullptr;
 }
@@ -1066,10 +1899,10 @@ PopupGeom ComputePopupGeom(const ScreenLayout& layout) {
     ImFont* bFont = Layout::BodyFont();
     const float bPx = bFont ? bFont->FontSize : 13.0f;
     const float headerHeight = PopupHeaderHeight();
-    const float prefixW = Layout::MeasureTextW(bFont, bPx, PopupIsMulti() ? "> [X] " : "> ");
+    const float prefixW = Layout::MeasureTextW(bFont, bPx, PopupShowsChecks() ? "> [X] " : "> ");
     float widestChoiceW = 0.0f;
     for (int i = 0; i < g_popup.choiceCount; ++i) {
-        const char* text = (g_popup.choices && g_popup.choices[i]) ? g_popup.choices[i] : "";
+        const char* text = PopupChoiceDisplayText(i);
         widestChoiceW = (std::max)(widestChoiceW, Layout::MeasureTextW(bFont, bPx, text));
     }
     const int columns = PopupColumnCount();
@@ -1099,11 +1932,17 @@ void PopupTickInputOnly(const ScreenLayout& layout) {
     if (!g_popup.active) return;
     const PopupGeom g = ComputePopupGeom(layout);
     const bool isMulti = PopupIsMulti();
+    const bool showChecks = PopupShowsChecks();
 
-    auto toggleAt = [&](int i) {
-        if (i < 0 || i >= g_popup.choiceCount) return;
+    auto toggleAt = [&](int i) -> bool {
+        if (i < 0 || i >= g_popup.choiceCount) return false;
+        if (PopupIsCategorized() && g_popup.categoryMode) {
+            PopupOpenCategory(i);
+            return false;
+        }
         if (isMulti) {
-            *g_popup.maskPtr ^= (1u << i);
+            const int choiceValue = PopupChoiceValueAt(i);
+            PopupToggleMaskBit(choiceValue);
         } else {
             *g_popup.choiceIdxPtr = PopupUsesMappedChoiceValues() ? g_popup.choiceValueMap[i] : i;
             if (g_popup.onPrimaryChoiceChange) {
@@ -1111,6 +1950,7 @@ void PopupTickInputOnly(const ScreenLayout& layout) {
             }
         }
         if (g_popup.onChange) g_popup.onChange();
+        return !isMulti;
     };
 
     const bool navUp    = Input::NavUp();
@@ -1145,15 +1985,33 @@ void PopupTickInputOnly(const ScreenLayout& layout) {
 
     if (navUp)    { PopupMoveFocus(-1, 0); Sound::PlayCursor(); }
     if (navDown)  { PopupMoveFocus(+1, 0); Sound::PlayCursor(); }
-    if (navLeft && PopupColumnCount() > 1)  { PopupMoveFocus(0, -1); Sound::PlayCursor(); }
-    if (navRight && PopupColumnCount() > 1) { PopupMoveFocus(0, +1); Sound::PlayCursor(); }
+    if (navLeft) {
+        if (PopupAdjustFocusedChoice(-1)) {
+            Sound::PlayCursor();
+        } else if (PopupColumnCount() > 1) {
+            PopupMoveFocus(0, -1);
+            Sound::PlayCursor();
+        }
+    }
+    if (navRight) {
+        if (PopupAdjustFocusedChoice(+1)) {
+            Sound::PlayCursor();
+        } else if (PopupColumnCount() > 1) {
+            PopupMoveFocus(0, +1);
+            Sound::PlayCursor();
+        }
+    }
     if (activate) {
-        toggleAt(g_popup.focusIdx);
+        const bool closeAfterPick = toggleAt(g_popup.focusIdx);
         Sound::PlayDecision();
-        if (!isMulti) { ClosePopup(); return; }
+        if (closeAfterPick) { ClosePopup(); return; }
     }
     if (back) {
         Sound::PlayDecision();
+        if (PopupIsCategorized() && !g_popup.categoryMode) {
+            PopupShowCategoryRoot(g_popup.selectedCategory);
+            return;
+        }
         ClosePopup();
         return;
     }
@@ -1167,9 +2025,9 @@ void PopupTickInputOnly(const ScreenLayout& layout) {
         if (mouse.valid) {
             const int hovered = PopupIndexFromPoint(g, mouse.x, mouse.y);
             if (hovered >= 0) {
-                toggleAt(hovered);
+                const bool closeAfterPick = toggleAt(hovered);
                 Sound::PlayDecision();
-                if (!isMulti) { ClosePopup(); return; }
+                if (closeAfterPick) { ClosePopup(); return; }
             }
         }
         // Click outside popup dismisses.
@@ -1209,8 +2067,18 @@ void PopupRender(ImDrawList* dl, const ScreenLayout& layout) {
 
     const float titleY = Scale::Snap(g.py + 4.0f);
     const bool isMulti = PopupIsMulti();
-    Layout::DrawString(dl, bFont, bPx, g.px + 10.0f, titleY, kTextHeader,
-                       isMulti ? "MULTI-SELECT (ESC TO CLOSE)" : "SELECT");
+    const bool showChecks = PopupShowsChecks();
+    const char* popupTitle = "SELECT";
+    if (PopupIsCategorized()) {
+        if (g_popup.categoryMode) {
+            popupTitle = "SELECT CATEGORY";
+        } else if (g_popup.selectedCategory >= 0 && g_popup.selectedCategory < g_popup.categoryCount) {
+            popupTitle = g_popup.categoryChoices[g_popup.selectedCategory];
+        }
+    } else if (isMulti) {
+        popupTitle = "MULTI-SELECT (ESC TO CLOSE)";
+    }
+    Layout::DrawString(dl, bFont, bPx, g.px + 10.0f, titleY, kTextHeader, popupTitle);
     dl->AddLine(ImVec2(Scale::Snap(g.px + 8.0f), Scale::Snap(g.listY - 4.0f)),
                 ImVec2(Scale::Snap(g.px + g.popupW - 8.0f), Scale::Snap(g.listY - 4.0f)), kRule, 1.0f);
 
@@ -1230,14 +2098,15 @@ void PopupRender(ImDrawList* dl, const ScreenLayout& layout) {
                               kSelectedFill);
         }
         char line[256];
-        if (isMulti) {
-            const bool checked = ((*g_popup.maskPtr) >> i) & 1u;
+        if (showChecks) {
+            const int choiceValue = PopupChoiceValueAt(i);
+            const bool checked = PopupMaskBitSet(choiceValue);
             const char* mark = focused ? ">" : " ";
             _snprintf_s(line, sizeof(line), _TRUNCATE, "%s [%c] %s",
-                        mark, checked ? 'X' : ' ', g_popup.choices[i]);
+                        mark, checked ? 'X' : ' ', PopupChoiceDisplayText(i));
         } else {
             const char* mark = focused ? ">" : " ";
-            _snprintf_s(line, sizeof(line), _TRUNCATE, "%s %s", mark, g_popup.choices[i]);
+            _snprintf_s(line, sizeof(line), _TRUNCATE, "%s %s", mark, PopupChoiceDisplayText(i));
         }
         Layout::DrawString(dl, bFont, bPx,
                            Scale::Snap(x0 + 4.0f),
@@ -1331,6 +2200,7 @@ void RenderList(ImDrawList* dl, const ScreenLayout& layout,
     RowRect rects[128];
     if (drawCount > 128) drawCount = 128;
     ComputeRects(drawLayout, drawRows, drawCount, drawScroll->scrollPx, rects);
+    SetCurrentHelpFromRow(drawRows, drawCount, drawFocus);
 
     ImFont* bFont = Layout::BodyFont();
     const float bPx = bFont ? bFont->FontSize : 13.0f;
@@ -1456,22 +2326,27 @@ void RenderList(ImDrawList* dl, const ScreenLayout& layout,
             }
             case RowKind::Dropdown: {
                 const int idx = (r.choiceIdxPtr ? *r.choiceIdxPtr : 0);
-                const char* val = (r.choices && idx >= 0 && idx < r.choiceCount)
-                                  ? r.choices[idx]
-                                  : "?";
+                const char* val = r.valueFormatter ? r.valueFormatter(r) : nullptr;
+                if (!val) {
+                    val = (r.choices && idx >= 0 && idx < r.choiceCount)
+                          ? r.choices[idx]
+                          : "?";
+                }
                 Layout::DrawRowDrill(dl, x, y, w, r.label, val, focused, disabled);
                 break;
             }
             case RowKind::MaskPicker: {
-                int popcount = 0;
-                if (r.maskPtr) {
-                    unsigned int m = *r.maskPtr;
-                    while (m) { popcount += (m & 1); m >>= 1; }
+                if (DrawMaskSelectionPreviewRow(dl, x, y, w, r, focused, disabled)) {
+                    break;
                 }
+                const char* val = r.valueFormatter ? r.valueFormatter(r) : nullptr;
                 static char s_buf[24];
-                _snprintf_s(s_buf, sizeof(s_buf), _TRUNCATE,
-                            "%d / %d", popcount, r.choiceCount);
-                Layout::DrawRowDrill(dl, x, y, w, r.label, s_buf, focused, disabled);
+                if (!val) {
+                    _snprintf_s(s_buf, sizeof(s_buf), _TRUNCATE,
+                                "%d / %d", RowMaskPopcount(r), r.choiceCount);
+                    val = s_buf;
+                }
+                Layout::DrawRowDrill(dl, x, y, w, r.label, val, focused, disabled);
                 break;
             }
             case RowKind::Submenu: {
@@ -1725,10 +2600,18 @@ bool HandleRowsInput(const ScreenLayout& layout,
                 if (activate) { OpenDropdownPopup(r); break; }
                 // L/R still cycles inline for quick tweaks
                 if (!r.choiceIdxPtr || r.choiceCount <= 0) break;
-                int& idx = *r.choiceIdxPtr;
                 bool changed = false;
-                if (navLeft)  { idx = (idx - 1 + r.choiceCount) % r.choiceCount; changed = true; }
-                if (navRight) { idx = (idx + 1) % r.choiceCount; changed = true; }
+                if (r.inlineAdjuster) {
+                    if (navLeft)  changed = r.inlineAdjuster(r, -1);
+                    if (navRight) changed = r.inlineAdjuster(r, +1);
+                } else if (RowUsesCategorizedChoices(r)) {
+                    if (navLeft)  changed = AdjustCategorizedRowChoice(r, -1);
+                    if (navRight) changed = AdjustCategorizedRowChoice(r, +1);
+                } else {
+                    int& idx = *r.choiceIdxPtr;
+                    if (navLeft)  { idx = (idx - 1 + r.choiceCount) % r.choiceCount; changed = true; }
+                    if (navRight) { idx = (idx + 1) % r.choiceCount; changed = true; }
+                }
                 if (changed) Sound::PlayCursor();
                 fire(changed);
                 break;
@@ -1784,6 +2667,25 @@ bool HandleListInput(const ScreenLayout& layout,
 
 bool IsPopupActive() { return PopupActive(); }
 bool IsSubmenuActive() { return g_submenus.depth > 0; }
+
+const char* CurrentHelpText() {
+    return g_currentHelpText.empty() ? nullptr : g_currentHelpText.c_str();
+}
+
+const char* CurrentPopupHelpText() {
+    return PopupHelpText();
+}
+
+int CurrentPopupFocusedChoiceValue(const Row* sourceRow) {
+    return sourceRow ? PopupFocusedChoiceValueForRow(*sourceRow) : -1;
+}
+
+const char* FormatMaskSelectionSummary(const Row& row, int maxVisibleChoices) {
+    static char s_buf[160];
+    const MaskSelectionPreview preview = BuildMaskSelectionPreview(row, maxVisibleChoices);
+    FormatMaskSelectionPreviewText(preview, s_buf, sizeof(s_buf));
+    return s_buf;
+}
 
 const char* ActiveSubmenuTitle() {
     if (g_submenus.depth <= 0) return nullptr;

@@ -325,11 +325,28 @@ void ResetDisplayDataToDefaults() {
     displayData.afterHitstunActionPoolMask = 0;
     displayData.afterAirtechActionPoolMask = 0;
     displayData.onRGActionPoolMask         = 0;
+    displayData.afterBlockActionPoolMaskLo   = 0;
+    displayData.afterBlockActionPoolMaskHi   = 0;
+    displayData.onWakeupActionPoolMaskLo     = 0;
+    displayData.onWakeupActionPoolMaskHi     = 0;
+    displayData.afterHitstunActionPoolMaskLo = 0;
+    displayData.afterHitstunActionPoolMaskHi = 0;
+    displayData.afterAirtechActionPoolMaskLo = 0;
+    displayData.afterAirtechActionPoolMaskHi = 0;
+    displayData.onRGActionPoolMaskLo         = 0;
+    displayData.onRGActionPoolMaskHi         = 0;
     displayData.afterBlockUseActionPool    = false;
     displayData.onWakeupUseActionPool      = false;
     displayData.afterHitstunUseActionPool  = false;
     displayData.afterAirtechUseActionPool  = false;
     displayData.onRGUseActionPool          = false;
+    for (int i = 0; i < MAX_ACTION_POOL_OPTIONS; ++i) {
+        displayData.afterBlockActionPoolDelays[i]   = -1;
+        displayData.onWakeupActionPoolDelays[i]     = -1;
+        displayData.afterHitstunActionPoolDelays[i] = -1;
+        displayData.afterAirtechActionPoolDelays[i] = -1;
+        displayData.onRGActionPoolDelays[i]         = -1;
+    }
 
     // Per-trigger option rows (randomized selection)
     displayData.afterBlockOptionCount = 0;
@@ -390,11 +407,28 @@ void ResetRuntimeSettingsToDisplayDefaults() {
     triggerAfterHitstunActionPoolMask.store(displayData.afterHitstunActionPoolMask);
     triggerAfterAirtechActionPoolMask.store(displayData.afterAirtechActionPoolMask);
     triggerOnRGActionPoolMask.store(displayData.onRGActionPoolMask);
+    triggerAfterBlockActionPoolMaskLo.store(displayData.afterBlockActionPoolMaskLo);
+    triggerAfterBlockActionPoolMaskHi.store(displayData.afterBlockActionPoolMaskHi);
+    triggerOnWakeupActionPoolMaskLo.store(displayData.onWakeupActionPoolMaskLo);
+    triggerOnWakeupActionPoolMaskHi.store(displayData.onWakeupActionPoolMaskHi);
+    triggerAfterHitstunActionPoolMaskLo.store(displayData.afterHitstunActionPoolMaskLo);
+    triggerAfterHitstunActionPoolMaskHi.store(displayData.afterHitstunActionPoolMaskHi);
+    triggerAfterAirtechActionPoolMaskLo.store(displayData.afterAirtechActionPoolMaskLo);
+    triggerAfterAirtechActionPoolMaskHi.store(displayData.afterAirtechActionPoolMaskHi);
+    triggerOnRGActionPoolMaskLo.store(displayData.onRGActionPoolMaskLo);
+    triggerOnRGActionPoolMaskHi.store(displayData.onRGActionPoolMaskHi);
     triggerAfterBlockUsePool.store(displayData.afterBlockUseActionPool);
     triggerOnWakeupUsePool.store(displayData.onWakeupUseActionPool);
     triggerAfterHitstunUsePool.store(displayData.afterHitstunUseActionPool);
     triggerAfterAirtechUsePool.store(displayData.afterAirtechUseActionPool);
     triggerOnRGUsePool.store(displayData.onRGUseActionPool);
+    for (int i = 0; i < MAX_ACTION_POOL_OPTIONS; ++i) {
+        g_afterBlockActionPoolDelays[i]   = displayData.afterBlockActionPoolDelays[i];
+        g_onWakeupActionPoolDelays[i]     = displayData.onWakeupActionPoolDelays[i];
+        g_afterHitstunActionPoolDelays[i] = displayData.afterHitstunActionPoolDelays[i];
+        g_afterAirtechActionPoolDelays[i] = displayData.afterAirtechActionPoolDelays[i];
+        g_onRGActionPoolDelays[i]         = displayData.onRGActionPoolDelays[i];
+    }
 
     triggerAfterBlockCustomID.store(displayData.customAfterBlock);
     triggerOnWakeupCustomID.store(displayData.customOnWakeup);
@@ -1413,11 +1447,42 @@ std::atomic<uint32_t> triggerOnWakeupActionPoolMask{0};
 std::atomic<uint32_t> triggerAfterHitstunActionPoolMask{0};
 std::atomic<uint32_t> triggerAfterAirtechActionPoolMask{0};
 std::atomic<uint32_t> triggerOnRGActionPoolMask{0};
+std::atomic<uint64_t> triggerAfterBlockActionPoolMaskLo{0};
+std::atomic<uint64_t> triggerAfterBlockActionPoolMaskHi{0};
+std::atomic<uint64_t> triggerOnWakeupActionPoolMaskLo{0};
+std::atomic<uint64_t> triggerOnWakeupActionPoolMaskHi{0};
+std::atomic<uint64_t> triggerAfterHitstunActionPoolMaskLo{0};
+std::atomic<uint64_t> triggerAfterHitstunActionPoolMaskHi{0};
+std::atomic<uint64_t> triggerAfterAirtechActionPoolMaskLo{0};
+std::atomic<uint64_t> triggerAfterAirtechActionPoolMaskHi{0};
+std::atomic<uint64_t> triggerOnRGActionPoolMaskLo{0};
+std::atomic<uint64_t> triggerOnRGActionPoolMaskHi{0};
 std::atomic<bool>     triggerAfterBlockUsePool{false};
 std::atomic<bool>     triggerOnWakeupUsePool{false};
 std::atomic<bool>     triggerAfterHitstunUsePool{false};
 std::atomic<bool>     triggerAfterAirtechUsePool{false};
 std::atomic<bool>     triggerOnRGUsePool{false};
+
+int g_afterBlockActionPoolDelays[MAX_ACTION_POOL_OPTIONS] = {};
+int g_onWakeupActionPoolDelays[MAX_ACTION_POOL_OPTIONS] = {};
+int g_afterHitstunActionPoolDelays[MAX_ACTION_POOL_OPTIONS] = {};
+int g_afterAirtechActionPoolDelays[MAX_ACTION_POOL_OPTIONS] = {};
+int g_onRGActionPoolDelays[MAX_ACTION_POOL_OPTIONS] = {};
+
+namespace {
+struct InitActionPoolDelayDefaults {
+    InitActionPoolDelayDefaults() {
+        for (int i = 0; i < MAX_ACTION_POOL_OPTIONS; ++i) {
+            g_afterBlockActionPoolDelays[i] = -1;
+            g_onWakeupActionPoolDelays[i] = -1;
+            g_afterHitstunActionPoolDelays[i] = -1;
+            g_afterAirtechActionPoolDelays[i] = -1;
+            g_onRGActionPoolDelays[i] = -1;
+        }
+    }
+};
+InitActionPoolDelayDefaults g_initActionPoolDelayDefaults;
+}
 
 // Runtime per-trigger option rows (populated on Apply)
 int           g_afterBlockOptionCount = 0;

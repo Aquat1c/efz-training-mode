@@ -8,6 +8,11 @@ struct ImFont;
 
 namespace CustomMenu::Layout {
 
+struct TextSegment {
+    const char* text;
+    ImU32 color;
+};
+
 // ===== Font accessors =====
 // Returns the requested face, or nullptr if not yet loaded.
 ImFont* BodyFont();
@@ -82,6 +87,11 @@ void DrawRowNumber(
 void DrawRowDrill(
     ImDrawList* dl, float x, float y, float w,
     const char* label, const char* valueText,
+    bool focused, bool disabled = false);
+void DrawRowDrillSegments(
+    ImDrawList* dl, float x, float y, float w,
+    const char* label,
+    const TextSegment* valueSegments, int valueSegmentCount,
     bool focused, bool disabled = false);
 
 // LABEL ..... [====----]  3/8

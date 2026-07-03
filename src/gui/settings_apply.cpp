@@ -45,6 +45,34 @@ void ApplyRuntimeSettings(DisplayData* data) {
         triggerAfterAirtechDelay.store(data->delayAfterAirtech);
         triggerOnRGDelay.store(data->delayOnRG);
 
+        triggerAfterBlockActionPoolMask.store(data->afterBlockActionPoolMask);
+        triggerOnWakeupActionPoolMask.store(data->onWakeupActionPoolMask);
+        triggerAfterHitstunActionPoolMask.store(data->afterHitstunActionPoolMask);
+        triggerAfterAirtechActionPoolMask.store(data->afterAirtechActionPoolMask);
+        triggerOnRGActionPoolMask.store(data->onRGActionPoolMask);
+        triggerAfterBlockActionPoolMaskLo.store(data->afterBlockActionPoolMaskLo);
+        triggerAfterBlockActionPoolMaskHi.store(data->afterBlockActionPoolMaskHi);
+        triggerOnWakeupActionPoolMaskLo.store(data->onWakeupActionPoolMaskLo);
+        triggerOnWakeupActionPoolMaskHi.store(data->onWakeupActionPoolMaskHi);
+        triggerAfterHitstunActionPoolMaskLo.store(data->afterHitstunActionPoolMaskLo);
+        triggerAfterHitstunActionPoolMaskHi.store(data->afterHitstunActionPoolMaskHi);
+        triggerAfterAirtechActionPoolMaskLo.store(data->afterAirtechActionPoolMaskLo);
+        triggerAfterAirtechActionPoolMaskHi.store(data->afterAirtechActionPoolMaskHi);
+        triggerOnRGActionPoolMaskLo.store(data->onRGActionPoolMaskLo);
+        triggerOnRGActionPoolMaskHi.store(data->onRGActionPoolMaskHi);
+        triggerAfterBlockUsePool.store(data->afterBlockUseActionPool);
+        triggerOnWakeupUsePool.store(data->onWakeupUseActionPool);
+        triggerAfterHitstunUsePool.store(data->afterHitstunUseActionPool);
+        triggerAfterAirtechUsePool.store(data->afterAirtechUseActionPool);
+        triggerOnRGUsePool.store(data->onRGUseActionPool);
+        for (int i = 0; i < MAX_ACTION_POOL_OPTIONS; ++i) {
+            g_afterBlockActionPoolDelays[i]   = data->afterBlockActionPoolDelays[i];
+            g_onWakeupActionPoolDelays[i]     = data->onWakeupActionPoolDelays[i];
+            g_afterHitstunActionPoolDelays[i] = data->afterHitstunActionPoolDelays[i];
+            g_afterAirtechActionPoolDelays[i] = data->afterAirtechActionPoolDelays[i];
+            g_onRGActionPoolDelays[i]         = data->onRGActionPoolDelays[i];
+        }
+
         triggerAfterBlockMacroSlot.store(data->macroSlotAfterBlock);
         triggerOnWakeupMacroSlot.store(data->macroSlotOnWakeup);
         triggerAfterHitstunMacroSlot.store(data->macroSlotAfterHitstun);
@@ -55,11 +83,13 @@ void ApplyRuntimeSettings(DisplayData* data) {
         triggerOnWakeupCustomID.store(data->customOnWakeup);
         triggerAfterHitstunCustomID.store(data->customAfterHitstun);
         triggerAfterAirtechCustomID.store(data->customAfterAirtech);
+        triggerOnRGCustomID.store(data->customOnRG);
 
         triggerAfterBlockStrength.store(data->strengthAfterBlock);
         triggerOnWakeupStrength.store(data->strengthOnWakeup);
         triggerAfterHitstunStrength.store(data->strengthAfterHitstun);
         triggerAfterAirtechStrength.store(data->strengthAfterAirtech);
+        triggerOnRGStrength.store(data->strengthOnRG);
 
         uintptr_t base = GetEFZBase();
         if (base) {

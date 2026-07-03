@@ -409,6 +409,58 @@ void DrawRowDrill(
     }
 }
 
+void DrawRowDrillSegments(
+    ImDrawList* dl, float x, float y, float w,
+    const char* label,
+    const TextSegment* valueSegments, int valueSegmentCount,
+    bool focused, bool disabled)
+{
+    using namespace Theme;
+    const Scale::Metrics& metrics = Scale::Get();
+
+    DrawMenuStrip(dl, x, y, w, metrics.rowHeight);
+    if (disabled) DrawRowDisabledOverlay(dl, x, y, w);
+    if (focused) DrawRowChromeFocused(dl, x, y, w, disabled);
+
+    ImFont* bFont = BodyFont();
+    const float bPx = PxFromFont(bFont);
+    const float textY = CenterTextY(y, metrics.rowHeight, bPx);
+
+    const ImU32 labelCol = disabled ? kTextDisabled : (focused ? kTextActive : kTextInactive);
+    const ImU32 arrowCol = disabled ? kTextDisabled : kTextActive;
+
+    DrawString(dl, bFont, bPx, x + metrics.rowPadX, textY, labelCol, label);
+
+    const char* arrow = ">";
+    const float aw = MeasureTextW(bFont, bPx, arrow);
+
+    float cursorX = Scale::Snap(x + w - metrics.rowPadX - aw);
+    DrawString(dl, bFont, bPx, cursorX, textY, arrowCol, arrow);
+
+    if (!valueSegments || valueSegmentCount <= 0) {
+        return;
+    }
+
+    float valueW = 0.0f;
+    for (int i = 0; i < valueSegmentCount; ++i) {
+        if (!valueSegments[i].text || !*valueSegments[i].text) continue;
+        valueW += MeasureTextW(bFont, bPx, valueSegments[i].text);
+    }
+    if (valueW <= 0.0f) {
+        return;
+    }
+
+    constexpr float gap = 10.0f;
+    cursorX = Scale::Snap(cursorX - (gap + valueW));
+    for (int i = 0; i < valueSegmentCount; ++i) {
+        const char* text = valueSegments[i].text;
+        if (!text || !*text) continue;
+        const ImU32 col = disabled ? kTextDisabled : valueSegments[i].color;
+        DrawString(dl, bFont, bPx, cursorX, textY, col, text);
+        cursorX += MeasureTextW(bFont, bPx, text);
+    }
+}
+
 void DrawRowSlider(
     ImDrawList* dl, float x, float y, float w,
     const char* label, const char* valueText, float progress01,
