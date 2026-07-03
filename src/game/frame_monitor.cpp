@@ -662,6 +662,228 @@ void UpdateTriggerOverlay() {
                 }
             };
 
+            auto poolTokenForIndex = [&](int idx) -> std::string {
+                if (idx >= 0 && idx <= 19) {
+                    const char* prefixes[] = { "5", "2", "j", "6", "4" };
+                    const char buttons[] = { 'A', 'B', 'C', 'D' };
+                    const int group = idx / 4;
+                    const int button = idx % 4;
+                    return std::string(prefixes[group]) + buttons[button];
+                }
+                if (idx >= 20 && idx <= 43) {
+                    const char* motions[] = { "236", "623", "214", "421", "412", "22" };
+                    const int local = idx - 20;
+                    const int motion = local / 4;
+                    const int button = local % 4;
+                    const char buttons[] = { 'A', 'B', 'C', 'D' };
+                    return std::string(motions[motion]) + buttons[button];
+                }
+                if (idx >= 44 && idx <= 75) {
+                    const char* motions[] = {
+                        "41236", "214236", "236236", "214214",
+                        "641236", "463214", "4123641236", "6321463214"
+                    };
+                    const int local = idx - 44;
+                    const int motion = local / 4;
+                    const int button = local % 4;
+                    const char buttons[] = { 'A', 'B', 'C', 'D' };
+                    return std::string(motions[motion]) + buttons[button];
+                }
+                switch (idx) {
+                    case 76: return "FM";
+                    case 77: return "Jump";
+                    case 78: return "F.Jump";
+                    case 79: return "B.Jump";
+                    case 80: return "44";
+                    case 81: return "66";
+                    case 82: return "[4]";
+                    default: return "?";
+                }
+            };
+
+            auto concretePoolIndexForAction = [&](int act, int str) -> int {
+                str = (str < 0) ? 0 : str;
+                if (act >= ACTION_5A && act <= ACTION_4D) return act;
+                if (act == ACTION_QCF) return 20 + CLAMP(str, 0, 3);
+                if (act == ACTION_DP) return 24 + CLAMP(str, 0, 3);
+                if (act == ACTION_QCB) return 28 + CLAMP(str, 0, 3);
+                if (act == ACTION_421) return 32 + CLAMP(str, 0, 3);
+                if (act == ACTION_412) return 36 + CLAMP(str, 0, 3);
+                if (act == ACTION_22) return 40 + CLAMP(str, 0, 3);
+                if (act == ACTION_SUPER1) return 44 + CLAMP(str, 0, 3);
+                if (act == ACTION_SUPER2) return 48 + CLAMP(str, 0, 3);
+                if (act == ACTION_236236) return 52 + CLAMP(str, 0, 3);
+                if (act == ACTION_214214) return 56 + CLAMP(str, 0, 3);
+                if (act == ACTION_641236) return 60 + CLAMP(str, 0, 3);
+                if (act == ACTION_463214) return 64 + CLAMP(str, 0, 3);
+                if (act == ACTION_4123641236) return 68 + CLAMP(str, 0, 3);
+                if (act == ACTION_6321463214) return 72 + CLAMP(str, 0, 3);
+                if (act == ACTION_FINAL_MEMORY) return 76;
+                if (act == ACTION_JUMP) return 77 + CLAMP(str, 0, 2);
+                if (act == ACTION_BACKDASH) return 80;
+                if (act == ACTION_FORWARD_DASH) return 81;
+                if (act == ACTION_BLOCK) return 82;
+                return -1;
+            };
+
+            auto poolBitSet = [](uint64_t lo, uint64_t hi, int idx) -> bool {
+                if (idx < 0 || idx >= 83) return false;
+                if (idx < 64) return ((lo >> idx) & 1ull) != 0;
+                return ((hi >> (idx - 64)) & 1ull) != 0;
+            };
+
+            auto setPoolBit = [](uint64_t& lo, uint64_t& hi, int idx) {
+                if (idx < 0 || idx >= 83) return;
+                if (idx < 64) lo |= (1ull << idx);
+                else hi |= (1ull << (idx - 64));
+            };
+
+            auto expandLegacyPool = [&](uint32_t legacyMask, int fallbackStrength, uint64_t& lo, uint64_t& hi) {
+                const int s4 = CLAMP(fallbackStrength, 0, 3);
+                const int s3 = CLAMP(fallbackStrength, 0, 2);
+                auto legacyToConcrete = [&](int motionIdx) -> int {
+                    switch (motionIdx) {
+                        case 0:  return 0 + s4;
+                        case 1:  return 4 + s4;
+                        case 2:  return 8 + s4;
+                        case 3:  return 20 + s4;
+                        case 4:  return 24 + s4;
+                        case 5:  return 28 + s4;
+                        case 6:  return 32 + s4;
+                        case 7:  return 44 + s4;
+                        case 8:  return 48 + s4;
+                        case 9:  return 52 + s4;
+                        case 10: return 56 + s4;
+                        case 11: return 60 + s4;
+                        case 12: return 64 + s4;
+                        case 13: return 36 + s4;
+                        case 14: return 40 + s4;
+                        case 15: return 68 + s4;
+                        case 16: return 72 + s4;
+                        case 17: return 77 + s3;
+                        case 18: return 80;
+                        case 19: return 81;
+                        case 20: return 82;
+                        case 21: return 76;
+                        case 22: return 12 + s4;
+                        case 23: return 16 + s4;
+                        default: return -1;
+                    }
+                };
+                for (int bit = 0; bit < 24; ++bit) {
+                    if ((legacyMask & (1u << bit)) == 0) continue;
+                    setPoolBit(lo, hi, legacyToConcrete(bit));
+                }
+            };
+
+            auto getPoolConfig = [&](uint64_t& lo, uint64_t& hi, bool& usePool) {
+                uint32_t legacy = 0;
+                switch (triggerType) {
+                    case TRIGGER_AFTER_BLOCK:
+                        legacy = triggerAfterBlockActionPoolMask.load();
+                        lo = triggerAfterBlockActionPoolMaskLo.load();
+                        hi = triggerAfterBlockActionPoolMaskHi.load();
+                        usePool = triggerAfterBlockUsePool.load();
+                        break;
+                    case TRIGGER_ON_WAKEUP:
+                        legacy = triggerOnWakeupActionPoolMask.load();
+                        lo = triggerOnWakeupActionPoolMaskLo.load();
+                        hi = triggerOnWakeupActionPoolMaskHi.load();
+                        usePool = triggerOnWakeupUsePool.load();
+                        break;
+                    case TRIGGER_AFTER_HITSTUN:
+                        legacy = triggerAfterHitstunActionPoolMask.load();
+                        lo = triggerAfterHitstunActionPoolMaskLo.load();
+                        hi = triggerAfterHitstunActionPoolMaskHi.load();
+                        usePool = triggerAfterHitstunUsePool.load();
+                        break;
+                    case TRIGGER_AFTER_AIRTECH:
+                        legacy = triggerAfterAirtechActionPoolMask.load();
+                        lo = triggerAfterAirtechActionPoolMaskLo.load();
+                        hi = triggerAfterAirtechActionPoolMaskHi.load();
+                        usePool = triggerAfterAirtechUsePool.load();
+                        break;
+                    case TRIGGER_ON_RG:
+                        legacy = triggerOnRGActionPoolMask.load();
+                        lo = triggerOnRGActionPoolMaskLo.load();
+                        hi = triggerOnRGActionPoolMaskHi.load();
+                        usePool = triggerOnRGUsePool.load();
+                        break;
+                    default:
+                        lo = 0;
+                        hi = 0;
+                        usePool = false;
+                        return;
+                }
+                if ((lo | hi) == 0 && legacy != 0) {
+                    expandLegacyPool(legacy, strength, lo, hi);
+                }
+            };
+
+            auto activePoolChoiceIndex = [&]() -> int {
+                const bool recentlyActive = g_lastActiveTriggerType.load() == triggerType &&
+                                            frameCounter.load() - g_lastActiveTriggerFrame.load() < 96;
+                if (!recentlyActive) return -1;
+
+                const TriggerDelayState* state = nullptr;
+                if (targetPlayer == 1 || targetPlayer == 3) {
+                    state = &p1DelayState;
+                    if (state->triggerType == triggerType && state->chosenAction >= 0) {
+                        return concretePoolIndexForAction(state->chosenAction, state->chosenStrength);
+                    }
+                }
+                if (targetPlayer == 2 || targetPlayer == 3) {
+                    state = &p2DelayState;
+                    if (state->triggerType == triggerType && state->chosenAction >= 0) {
+                        return concretePoolIndexForAction(state->chosenAction, state->chosenStrength);
+                    }
+                }
+                return -1;
+            };
+
+            auto formatPoolSummary = [&]() -> std::string {
+                uint64_t lo = 0;
+                uint64_t hi = 0;
+                bool usePool = false;
+                getPoolConfig(lo, hi, usePool);
+                if (!usePool) return std::string();
+                if ((lo | hi) == 0) return "Random: Empty";
+
+                int selected[83];
+                int selectedCount = 0;
+                for (int idx = 0; idx < 83; ++idx) {
+                    if (poolBitSet(lo, hi, idx)) selected[selectedCount++] = idx;
+                }
+                if (selectedCount <= 0) return "Random: Empty";
+
+                const int chosen = activePoolChoiceIndex();
+                const bool chosenSelected = chosen >= 0 && poolBitSet(lo, hi, chosen);
+                const bool overflow = selectedCount > 3;
+
+                int shown[3] = { -1, -1, -1 };
+                int shownCount = 0;
+                if (overflow && chosenSelected) {
+                    shown[shownCount++] = chosen;
+                }
+                for (int i = 0; i < selectedCount && shownCount < 3; ++i) {
+                    if (overflow && chosenSelected && selected[i] == chosen) continue;
+                    shown[shownCount++] = selected[i];
+                }
+
+                std::string result = "Random: ";
+                for (int i = 0; i < shownCount; ++i) {
+                    if (i > 0) result += "/";
+                    const bool markChosen = chosenSelected && shown[i] == chosen;
+                    if (markChosen) result += "[";
+                    result += poolTokenForIndex(shown[i]);
+                    if (markChosen) result += "]";
+                }
+                if (overflow) {
+                    result += "/...";
+                }
+                return result;
+            };
+
             // Determine macro slot for main row display and build slash-separated summary including main row
             int macroSlot = 0;
             switch (triggerType) {
@@ -674,6 +896,7 @@ void UpdateTriggerOverlay() {
             }
 
             std::string combined;
+            const std::string poolSummary = formatPoolSummary();
             const TriggerOption* opts = nullptr; int optCount = 0;
             switch (triggerType) {
                 case TRIGGER_AFTER_BLOCK: opts = g_afterBlockOptions; optCount = g_afterBlockOptionCount; break;
@@ -683,14 +906,18 @@ void UpdateTriggerOverlay() {
                 case TRIGGER_ON_RG: opts = g_onRGOptions; optCount = g_onRGOptionCount; break;
                 default: break;
             }
-            // Always start with the main trigger row token
-            combined = tokenFor(action, strength, macroSlot);
-            // Then append any enabled sub-rows in order
-            if (opts && optCount > 0) {
+            if (!poolSummary.empty()) {
+                combined = poolSummary;
+            } else {
+                // Always start with the main trigger row token
+                combined = tokenFor(action, strength, macroSlot);
+                // Then append any enabled sub-rows in order
+                if (opts && optCount > 0) {
                 for (int i = 0; i < optCount; ++i) {
                     if (!opts[i].enabled) continue;
                     combined += "/";
                     combined += tokenFor(opts[i].action, opts[i].strength, opts[i].macroSlot);
+                }
                 }
             }
 
@@ -1661,7 +1888,7 @@ void FrameDataMonitor() {
             // Update actionability times and announce FA2 once both are known
             auto updateRGFA = [&](RGAnalysis &rg) {
                 if (!rg.active) return;
-                const double kIntToVis = 60.0 / 192.0; // convert internal 192 Hz frames to visual frames
+                const double kIntToVis = 64.0 / 192.0; // 3 internal subframes per EFZ visual frame
 
                 // If the defender gets clipped into a fresh non-RG lockout before ever becoming free,
                 // the original RG exchange has been superseded by a new regular hit/block sequence.

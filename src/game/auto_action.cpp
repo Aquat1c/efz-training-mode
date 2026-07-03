@@ -29,6 +29,7 @@ bool IsThrown(short moveID);
 // Forward declarations for row selection helpers used in StartTriggerDelay
 static inline bool HasEnabledRows(int triggerType);
 static inline bool PickRandomRow(int triggerType, TriggerOption &out);
+static inline bool PickRandomPoolOption(int triggerType, int playerNum, TriggerOption &out);
 #include <cmath>
 #include <algorithm>
 #include <vector>
@@ -158,8 +159,8 @@ static int GetWakeupRisingTicks(int charID) {
 }
 
 // Initialize delay states
-TriggerDelayState p1DelayState = {false, 0, TRIGGER_NONE, 0, -1, -1, 0, -1};
-TriggerDelayState p2DelayState = {false, 0, TRIGGER_NONE, 0, -1, -1, 0, -1};
+TriggerDelayState p1DelayState = {false, 0, TRIGGER_NONE, 0, -1, -1, 0, -1, -1};
+TriggerDelayState p2DelayState = {false, 0, TRIGGER_NONE, 0, -1, -1, 0, -1, -1};
 bool p1ActionApplied = false;
 bool p2ActionApplied = false;
 
@@ -536,11 +537,13 @@ static int  s_p1WakeMacroStartTick    = 0;   // Tick offset to skip to for wake 
 static int  s_p2WakeMacro96FrameCount = 0;
 static bool s_p2WakeMacroQueued       = false;
 // Pre-picked option for this wake sequence (row selection done early in moveID 96)
+static TriggerOption s_p1WakePrePickedOption = {};
 static TriggerOption s_p2WakePrePickedOption = {};
 static int  s_p2WakeMacroTargetFrame  = -1;
 static int  s_p2WakeMacroSlot         = -1;
 static int  s_p2WakeMacroStartFrame   = -1;
 static int  s_p2WakeMacroStartTick    = 0;   // Tick offset to skip to for wake macros
+static bool s_p1WakeOptionPicked = false;
 static bool s_p2WakeOptionPicked = false;
 
 #if EFZ_ENABLE_AUTO_ACTION_WAKE_TRACE
@@ -991,6 +994,7 @@ static void ResetDelayState(TriggerDelayState& state) {
     state.chosenStrength = -1;
     state.chosenMacroSlot = 0;
     state.chosenCustomId = -1;
+    state.chosenDelay = -1;
 }
 
 static bool IsDashLikeState(short moveID) {
@@ -1007,6 +1011,248 @@ static bool IsJumpLikeState(short moveID) {
            moveID == FORWARD_JUMP_ID ||
            moveID == BACKWARD_JUMP_ID ||
            moveID == FALLING_ID;
+}
+
+static inline int TriggerStrengthForType(int triggerType) {
+    switch (triggerType) {
+        case TRIGGER_AFTER_BLOCK:   return triggerAfterBlockStrength.load();
+        case TRIGGER_ON_WAKEUP:     return triggerOnWakeupStrength.load();
+        case TRIGGER_AFTER_HITSTUN: return triggerAfterHitstunStrength.load();
+        case TRIGGER_AFTER_AIRTECH: return triggerAfterAirtechStrength.load();
+        case TRIGGER_ON_RG:         return triggerOnRGStrength.load();
+        default:                    return 0;
+    }
+}
+
+static inline int TriggerDelayForType(int triggerType) {
+    switch (triggerType) {
+        case TRIGGER_AFTER_BLOCK:   return triggerAfterBlockDelay.load();
+        case TRIGGER_ON_WAKEUP:     return triggerOnWakeupDelay.load();
+        case TRIGGER_AFTER_HITSTUN: return triggerAfterHitstunDelay.load();
+        case TRIGGER_AFTER_AIRTECH: return triggerAfterAirtechDelay.load();
+        case TRIGGER_ON_RG:         return triggerOnRGDelay.load();
+        default:                    return 0;
+    }
+}
+
+static inline int TriggerPoolDelayForIndex(int triggerType, int idx) {
+    if (idx < 0 || idx >= MAX_ACTION_POOL_OPTIONS) {
+        return TriggerDelayForType(triggerType);
+    }
+
+    const int* delays = nullptr;
+    switch (triggerType) {
+        case TRIGGER_AFTER_BLOCK:   delays = g_afterBlockActionPoolDelays; break;
+        case TRIGGER_ON_WAKEUP:     delays = g_onWakeupActionPoolDelays; break;
+        case TRIGGER_AFTER_HITSTUN: delays = g_afterHitstunActionPoolDelays; break;
+        case TRIGGER_AFTER_AIRTECH: delays = g_afterAirtechActionPoolDelays; break;
+        case TRIGGER_ON_RG:         delays = g_onRGActionPoolDelays; break;
+        default:                    break;
+    }
+    if (!delays) {
+        return TriggerDelayForType(triggerType);
+    }
+
+    const int explicitDelay = delays[idx];
+    if (explicitDelay < 0) {
+        return TriggerDelayForType(triggerType);
+    }
+    return CLAMP(explicitDelay, 0, 60);
+}
+
+static inline int TriggerCustomIdForType(int triggerType) {
+    switch (triggerType) {
+        case TRIGGER_AFTER_BLOCK:   return triggerAfterBlockCustomID.load();
+        case TRIGGER_ON_WAKEUP:     return triggerOnWakeupCustomID.load();
+        case TRIGGER_AFTER_HITSTUN: return triggerAfterHitstunCustomID.load();
+        case TRIGGER_AFTER_AIRTECH: return triggerAfterAirtechCustomID.load();
+        case TRIGGER_ON_RG:         return triggerOnRGCustomID.load();
+        default:                    return BASE_ATTACK_5A;
+    }
+}
+
+static inline bool TriggerPoolConfigForType(int triggerType, uint32_t& legacyMask,
+                                            uint64_t& maskLo, uint64_t& maskHi,
+                                            bool& usePool) {
+    switch (triggerType) {
+        case TRIGGER_AFTER_BLOCK:
+            legacyMask = triggerAfterBlockActionPoolMask.load();
+            maskLo = triggerAfterBlockActionPoolMaskLo.load();
+            maskHi = triggerAfterBlockActionPoolMaskHi.load();
+            usePool = triggerAfterBlockUsePool.load();
+            break;
+        case TRIGGER_ON_WAKEUP:
+            legacyMask = triggerOnWakeupActionPoolMask.load();
+            maskLo = triggerOnWakeupActionPoolMaskLo.load();
+            maskHi = triggerOnWakeupActionPoolMaskHi.load();
+            usePool = triggerOnWakeupUsePool.load();
+            break;
+        case TRIGGER_AFTER_HITSTUN:
+            legacyMask = triggerAfterHitstunActionPoolMask.load();
+            maskLo = triggerAfterHitstunActionPoolMaskLo.load();
+            maskHi = triggerAfterHitstunActionPoolMaskHi.load();
+            usePool = triggerAfterHitstunUsePool.load();
+            break;
+        case TRIGGER_AFTER_AIRTECH:
+            legacyMask = triggerAfterAirtechActionPoolMask.load();
+            maskLo = triggerAfterAirtechActionPoolMaskLo.load();
+            maskHi = triggerAfterAirtechActionPoolMaskHi.load();
+            usePool = triggerAfterAirtechUsePool.load();
+            break;
+        case TRIGGER_ON_RG:
+            legacyMask = triggerOnRGActionPoolMask.load();
+            maskLo = triggerOnRGActionPoolMaskLo.load();
+            maskHi = triggerOnRGActionPoolMaskHi.load();
+            usePool = triggerOnRGUsePool.load();
+            break;
+        default:
+            legacyMask = 0;
+            maskLo = 0;
+            maskHi = 0;
+            usePool = false;
+            return false;
+    }
+
+    if ((maskLo | maskHi) == 0 && legacyMask != 0) {
+        const int strength = CLAMP(TriggerStrengthForType(triggerType), 0, 3);
+        auto setBit = [&](int index) {
+            if (index < 0 || index >= 128) return;
+            if (index < 64) maskLo |= (1ull << index);
+            else maskHi |= (1ull << (index - 64));
+        };
+        auto legacyToConcrete = [&](int motionIdx) -> int {
+            switch (motionIdx) {
+                case 0:  return 0 + strength;   // 5A-D
+                case 1:  return 4 + strength;   // 2A-D
+                case 2:  return 8 + strength;   // jA-D
+                case 3:  return 20 + strength;  // 236A-D
+                case 4:  return 24 + strength;  // 623A-D
+                case 5:  return 28 + strength;  // 214A-D
+                case 6:  return 32 + strength;  // 421A-D
+                case 7:  return 44 + strength;  // 41236A-D
+                case 8:  return 48 + strength;  // 214236A-D
+                case 9:  return 52 + strength;  // 236236A-D
+                case 10: return 56 + strength;  // 214214A-D
+                case 11: return 60 + strength;  // 641236A-D
+                case 12: return 64 + strength;  // 463214A-D
+                case 13: return 36 + strength;  // 412A-D
+                case 14: return 40 + strength;  // 22A-D
+                case 15: return 68 + strength;  // 4123641236A-D
+                case 16: return 72 + strength;  // 6321463214A-D
+                case 17: return 77 + CLAMP(TriggerStrengthForType(triggerType), 0, 2);
+                case 18: return 80;
+                case 19: return 81;
+                case 20: return 82;
+                case 21: return 76;
+                case 22: return 12 + strength;  // 6A-D
+                case 23: return 16 + strength;  // 4A-D
+                default: return -1;
+            }
+        };
+        for (int bit = 0; bit < 24; ++bit) {
+            if ((legacyMask & (1u << bit)) == 0) continue;
+            setBit(legacyToConcrete(bit));
+        }
+    }
+
+    return true;
+}
+
+static inline TriggerOption MapConcretePoolIndexToOption(int idx, int triggerType) {
+    int action = ACTION_5A;
+    int strength = 0;
+    if (idx >= 0 && idx <= 19) {
+        action = idx;
+        strength = idx % 4;
+    } else if (idx >= 20 && idx <= 43) {
+        const int local = idx - 20;
+        strength = local % 4;
+        switch (local / 4) {
+            case 0: action = ACTION_QCF; break;
+            case 1: action = ACTION_DP; break;
+            case 2: action = ACTION_QCB; break;
+            case 3: action = ACTION_421; break;
+            case 4: action = ACTION_412; break;
+            case 5: action = ACTION_22; break;
+            default: action = ACTION_QCF; break;
+        }
+    } else if (idx >= 44 && idx <= 75) {
+        const int local = idx - 44;
+        strength = local % 4;
+        switch (local / 4) {
+            case 0: action = ACTION_SUPER1; break;
+            case 1: action = ACTION_SUPER2; break;
+            case 2: action = ACTION_236236; break;
+            case 3: action = ACTION_214214; break;
+            case 4: action = ACTION_641236; break;
+            case 5: action = ACTION_463214; break;
+            case 6: action = ACTION_4123641236; break;
+            case 7: action = ACTION_6321463214; break;
+            default: action = ACTION_SUPER1; break;
+        }
+    } else {
+        switch (idx) {
+            case 76: action = ACTION_FINAL_MEMORY; strength = 0; break;
+            case 77: action = ACTION_JUMP; strength = 0; break;
+            case 78: action = ACTION_JUMP; strength = 1; break;
+            case 79: action = ACTION_JUMP; strength = 2; break;
+            case 80: action = ACTION_BACKDASH; strength = 0; break;
+            case 81: action = ACTION_FORWARD_DASH; strength = 0; break;
+            case 82: action = ACTION_BLOCK; strength = 0; break;
+            default: action = ACTION_5A; strength = 0; break;
+        }
+    }
+    return TriggerOption{
+        true,
+        action,
+        strength,
+        TriggerPoolDelayForIndex(triggerType, idx),
+        TriggerCustomIdForType(triggerType),
+        0
+    };
+}
+
+static inline int ResolvePickedDelayForTrigger(int triggerType, int currentDelayFrames, int pickedUserDelay) {
+    pickedUserDelay = CLAMP(pickedUserDelay, 0, 60);
+    switch (triggerType) {
+        case TRIGGER_ON_WAKEUP:
+            return (pickedUserDelay <= 1) ? 0 : (pickedUserDelay - 1);
+        case TRIGGER_ON_RG: {
+            const int baseUserDelay = triggerOnRGDelay.load();
+            const int resolved = currentDelayFrames - baseUserDelay + pickedUserDelay;
+            return resolved < 0 ? 0 : resolved;
+        }
+        default:
+            return pickedUserDelay;
+    }
+}
+
+static inline bool PickRandomPoolOption(int triggerType, int playerNum, TriggerOption& out) {
+    uint32_t legacyMask = 0;
+    uint64_t maskLo = 0;
+    uint64_t maskHi = 0;
+    bool usePool = false;
+    if (!TriggerPoolConfigForType(triggerType, legacyMask, maskLo, maskHi, usePool) ||
+        !usePool || ((maskLo | maskHi) == 0)) {
+        return false;
+    }
+
+    int candidates[128];
+    int count = 0;
+    for (int bit = 0; bit < 83; ++bit) {
+        const bool set = bit < 64
+            ? (((maskLo >> bit) & 1ull) != 0)
+            : (((maskHi >> (bit - 64)) & 1ull) != 0);
+        if (!set) continue;
+        candidates[count++] = bit;
+    }
+    if (count <= 0) return false;
+
+    int seed = frameCounter.load() + playerNum * 31 + triggerType * 17;
+    if (seed < 0) seed = -seed;
+    const int poolIdx = candidates[seed % count];
+    out = MapConcretePoolIndexToOption(poolIdx, triggerType);
+    return true;
 }
 
 static bool ShouldCancelDelayForState(const TriggerDelayState& state, short prevMoveID, short moveID, std::string& reason) {
@@ -1251,16 +1497,51 @@ void StartTriggerDelay(int playerNum, int triggerType, short moveID, int delayFr
         p2TriggerCooldown = TRIGGER_COOLDOWN_FRAMES;
         p2DelayState.triggerType = triggerType;
     }
+
+    TriggerDelayState& dstate = (playerNum == 1) ? p1DelayState : p2DelayState;
+    dstate.chosenAction = -1;
+    dstate.chosenStrength = -1;
+    dstate.chosenMacroSlot = 0;
+    dstate.chosenCustomId = -1;
+    dstate.chosenDelay = -1;
     
-    // If there are per-trigger option rows configured, pick one now and override
-    // both the chosen action parameters and the delay as needed.
-    if (HasEnabledRows(triggerType)) {
-        // Clear any stale chosen values before setting
-        TriggerDelayState& dstate = (playerNum == 1) ? p1DelayState : p2DelayState;
-        dstate.chosenAction = -1;
-        dstate.chosenStrength = -1;
-        dstate.chosenMacroSlot = 0;
-        dstate.chosenCustomId = -1;
+    // Random Pool is picked at trigger-arm time so wakeup pre-buffering and
+    // delayed actions both consume the same concrete action. P2 wakeup may
+    // have already rolled an option while entering groundtech; reuse that
+    // result so the buffered action cannot diverge from the armed action.
+    const bool reuseP1WakePick = (playerNum == 1 &&
+                                  triggerType == TRIGGER_ON_WAKEUP &&
+                                  s_p1WakeOptionPicked);
+    const bool reuseP2WakePick = (playerNum == 2 &&
+                                  triggerType == TRIGGER_ON_WAKEUP &&
+                                  s_p2WakeOptionPicked);
+    TriggerOption poolPick{};
+    if (reuseP1WakePick || reuseP2WakePick) {
+        const TriggerOption& wakePick = reuseP1WakePick ? s_p1WakePrePickedOption : s_p2WakePrePickedOption;
+        dstate.chosenAction = wakePick.action;
+        dstate.chosenStrength = wakePick.strength;
+        dstate.chosenMacroSlot = wakePick.macroSlot;
+        dstate.chosenCustomId = wakePick.customId;
+        dstate.chosenDelay = wakePick.delay;
+        LogOut("[AUTO-ACTION] Wake pre-picked option reused: action=" +
+               std::to_string(wakePick.action) +
+               " strength=" + std::to_string(wakePick.strength) +
+               " macroSlot=" + std::to_string(wakePick.macroSlot) +
+               " delayF=" + std::to_string(delayFrames), true);
+    } else if (PickRandomPoolOption(triggerType, playerNum, poolPick)) {
+        dstate.chosenAction = poolPick.action;
+        dstate.chosenStrength = poolPick.strength;
+        dstate.chosenMacroSlot = poolPick.macroSlot;
+        dstate.chosenCustomId = poolPick.customId;
+        dstate.chosenDelay = poolPick.delay;
+        delayFrames = ResolvePickedDelayForTrigger(triggerType, delayFrames, poolPick.delay);
+        LogOut("[AUTO-ACTION] Pool-selected option applied: action=" + std::to_string(poolPick.action) +
+               " strength=" + std::to_string(poolPick.strength) +
+               " userDelayF=" + std::to_string(poolPick.delay) +
+               " resolvedDelayF=" + std::to_string(delayFrames), true);
+    } else if (HasEnabledRows(triggerType)) {
+        // If there are per-trigger option rows configured, pick one now and
+        // override both the chosen action parameters and the delay as needed.
         TriggerOption picked{};
         if (PickRandomRow(triggerType, picked)) {
             // Stash chosen params on the appropriate delay state so ApplyAutoAction can consume them
@@ -1268,31 +1549,13 @@ void StartTriggerDelay(int playerNum, int triggerType, short moveID, int delayFr
             dstate.chosenStrength  = picked.strength;
             dstate.chosenMacroSlot = picked.macroSlot;
             dstate.chosenCustomId  = picked.customId;
-            // Adjust delay according to trigger semantics
-            int newDelay = delayFrames;
-            switch (triggerType) {
-                case TRIGGER_ON_WAKEUP: {
-                    // Wakeup uses a special mapping: 0/1 => 0, else (n-1)
-                    int user = picked.delay;
-                    newDelay = (user <= 1) ? 0 : (user - 1);
-                    break;
-                }
-                case TRIGGER_ON_RG: {
-                    // Caller passed baseDelayF + userDelayF; replace user part with row delay
-                    int userCfg = triggerOnRGDelay.load();
-                    newDelay = delayFrames - userCfg + picked.delay;
-                    if (newDelay < 0) newDelay = 0;
-                    break;
-                }
-                default:
-                    newDelay = picked.delay; // direct replacement in visual frames
-                    break;
-            }
-            delayFrames = newDelay;
+            dstate.chosenDelay     = picked.delay;
+            delayFrames = ResolvePickedDelayForTrigger(triggerType, delayFrames, picked.delay);
             LogOut("[AUTO-ACTION] Row-selected option applied: action=" + std::to_string(picked.action) +
                    " strength=" + std::to_string(picked.strength) +
                    " macroSlot=" + std::to_string(picked.macroSlot) +
-                   " delayF=" + std::to_string(delayFrames), true);
+                   " userDelayF=" + std::to_string(picked.delay) +
+                   " resolvedDelayF=" + std::to_string(delayFrames), true);
         }
     }
 
@@ -1540,11 +1803,17 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
                        "F + user=" + std::to_string(userDelayF) + "F => total=" + std::to_string(totalDelayF) + "F", true);
                 // Schedule execution exactly at RG stun end (converted to internal frames in StartTriggerDelay)
                 StartTriggerDelay(1, TRIGGER_ON_RG, 0, totalDelayF);
+                const int selectedUserDelayF = (p1DelayState.chosenDelay >= 0)
+                    ? p1DelayState.chosenDelay
+                    : userDelayF;
 
                 // If user requested 0F delay and action is a special/FM, pre-arm now so motion exists on the first actionable frame
-                if (userDelayF == 0 && !s_p1RGPrearmed) {
-                    int at = triggerOnRGAction.load();
-                    int motion = ConvertTriggerActionToMotion(at, TRIGGER_ON_RG);
+                if (selectedUserDelayF == 0 && !s_p1RGPrearmed) {
+                    int at = (p1DelayState.chosenAction >= 0) ? p1DelayState.chosenAction : triggerOnRGAction.load();
+                    int selectedStrength = (p1DelayState.chosenStrength >= 0)
+                        ? p1DelayState.chosenStrength
+                        : GetSpecialMoveStrength(at, TRIGGER_ON_RG);
+                    int motion = ConvertTriggerActionToMotion(at, TRIGGER_ON_RG, selectedStrength);
                     int buttonMask = 0;
                     if ((at >= ACTION_5A && at <= ACTION_2D) || (at >= ACTION_6A && at <= ACTION_4D)) {
                         int button;
@@ -1559,8 +1828,7 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
                         int button = (at - ACTION_JA) % 4;
                         buttonMask = (1 << (4 + button));
                     } else if (at >= ACTION_QCF && at <= ACTION_6321463214) {
-                        int strength = GetSpecialMoveStrength(at, TRIGGER_ON_RG);
-                        buttonMask = (1 << (4 + strength));
+                        buttonMask = (1 << (4 + CLAMP(selectedStrength, 0, 3)));
                     }
                     bool preOk = false;
                     bool isSpec = (motion >= MOTION_236A) || (at == ACTION_FINAL_MEMORY);
@@ -1622,14 +1890,41 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
     if (triggerOnWakeupEnabled.load() && !s_p1WakePrearmed) {
             if (moveID1 == GROUNDTECH_RECOVERY) {
                 if (triggerRandomizeEnabled.load()) { if ((rand() & 1) == 0) { if (detailedLogging.load() && canLogTrigDiag()) LogOut("[AUTO-ACTION] P1 Wake prearm skipped by random gate", true); goto p1_wake_prearm_done; } }
-                int actionType = triggerOnWakeupAction.load();
-                int motionType = ConvertTriggerActionToMotion(actionType, TRIGGER_ON_WAKEUP);
-                int userDelayF = triggerOnWakeupDelay.load();
+                bool enteringGroundtechThisFrame = !IsGroundtech(prevMoveID1) && IsGroundtech(moveID1);
+                if (enteringGroundtechThisFrame) {
+                    s_p1WakeOptionPicked = false;
+                    s_p1WakePrePickedOption = {};
+                    if (PickRandomPoolOption(TRIGGER_ON_WAKEUP, 1, s_p1WakePrePickedOption)) {
+                        s_p1WakeOptionPicked = true;
+                        TraceAutoActionWakeEvent("p1-wake-pool-picked", 1, prevMoveID1, moveID1,
+                                                 "delay=" + std::to_string(s_p1WakePrePickedOption.delay) +
+                                                 " action=" + std::to_string(s_p1WakePrePickedOption.action) +
+                                                 " strength=" + std::to_string(s_p1WakePrePickedOption.strength));
+                    } else if (HasEnabledRows(TRIGGER_ON_WAKEUP)) {
+                        if (PickRandomRow(TRIGGER_ON_WAKEUP, s_p1WakePrePickedOption)) {
+                            s_p1WakeOptionPicked = true;
+                            TraceAutoActionWakeEvent("p1-wake-option-picked", 1, prevMoveID1, moveID1,
+                                                     "macroSlot=" + std::to_string(s_p1WakePrePickedOption.macroSlot) +
+                                                     " delay=" + std::to_string(s_p1WakePrePickedOption.delay) +
+                                                     " action=" + std::to_string(s_p1WakePrePickedOption.action) +
+                                                     " strength=" + std::to_string(s_p1WakePrePickedOption.strength));
+                        }
+                    }
+                }
+
+                int userDelayF = s_p1WakeOptionPicked ? s_p1WakePrePickedOption.delay : triggerOnWakeupDelay.load();
+                if (s_p1WakeOptionPicked) {
+                    userDelayF = (userDelayF <= 1) ? 0 : (userDelayF - 1);
+                }
+                int actionType = s_p1WakeOptionPicked ? s_p1WakePrePickedOption.action : triggerOnWakeupAction.load();
+                int chosenStrength = s_p1WakeOptionPicked ? s_p1WakePrePickedOption.strength : triggerOnWakeupStrength.load();
+                chosenStrength = CLAMP(chosenStrength, 0, 3);
+                int motionType = ConvertTriggerActionToMotion(actionType, TRIGGER_ON_WAKEUP, chosenStrength);
                 // If a macro slot is selected for On Wakeup, avoid pre-arm so that
                 // StartTriggerDelay can fire a macro (including 0F) instead. Allow
                 // pre-arm to proceed if the configured slot is empty to prevent
                 // silent no-ops.
-                int macroSlot = triggerOnWakeupMacroSlot.load();
+                int macroSlot = s_p1WakeOptionPicked ? s_p1WakePrePickedOption.macroSlot : triggerOnWakeupMacroSlot.load();
                 int macroSel = CLAMP(macroSlot, 1, MacroController::GetSlotCount());
                 bool macroHasData = (macroSlot > 0) && MacroController::GetState() != MacroController::State::Recording && !MacroController::IsSlotEmpty(macroSel);
                 bool isDash = (motionType == MOTION_FORWARD_DASH || motionType == MOTION_BACK_DASH);
@@ -1641,8 +1936,6 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
                     s_p1WakePrearmed = true;
                     s_p1WakePrearmIsSpecial = isSpecial;
                     s_p1WakePrearmActionType = actionType;
-                    int chosenStrength = triggerOnWakeupStrength.load();
-                    chosenStrength = CLAMP(chosenStrength, 0, 3);
                     s_p1WakePrearmStrength = chosenStrength;
                     s_p1WakePrearmExpiry = frameCounter.load() + 120;
                     s_p1WakeMoveID96FrameCount = 0;
@@ -1700,8 +1993,11 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
                 }
                 
                 // Macro pre-buffering for P1: calculate optimal playback start frame
-                int macroSlot = triggerOnWakeupMacroSlot.load();
-                int userDelayF = triggerOnWakeupDelay.load();
+                int macroSlot = s_p1WakeOptionPicked ? s_p1WakePrePickedOption.macroSlot : triggerOnWakeupMacroSlot.load();
+                int userDelayF = s_p1WakeOptionPicked ? s_p1WakePrePickedOption.delay : triggerOnWakeupDelay.load();
+                if (s_p1WakeOptionPicked) {
+                    userDelayF = (userDelayF <= 1) ? 0 : (userDelayF - 1);
+                }
                 if (macroSlot > 0 && userDelayF == 0 && !s_p1WakeMacroQueued) {
                     int risingFrames = GetWakeupRisingFrames(charID); // Visual frames at 64Hz (13-39)
                     
@@ -1805,6 +2101,8 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
                 s_p1WakeMacroQueued = false;
                 s_p1WakeMacroTargetFrame = -1;
                 s_p1WakeMacroSlot = -1;
+                s_p1WakeOptionPicked = false;
+                s_p1WakePrePickedOption = {};
             } else if (s_p1WakePrearmed && !s_p1WakePrearmIsSpecial && s_p1WakeHoldIssued && p1BecameActionableFromGroundtech) {
                 LogOut("[AUTO-ACTION] P1 wake hold exec (inputs maintained through wake)", true);
                 LogFlowSequenceEvent(1, "wake hold exec", prevMoveID1, moveID1);
@@ -1819,6 +2117,8 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
                 s_p1WakeMacroQueued = false;
                 s_p1WakeMacroTargetFrame = -1;
                 s_p1WakeMacroSlot = -1;
+                s_p1WakeOptionPicked = false;
+                s_p1WakePrePickedOption = {};
             } else if (s_p1WakePrearmed && !s_p1WakeBufferFrozen && p1BecameActionableFromGroundtech) {
                 AutoActionLogScope wakeScope("WakeImmediateExec", 1, TRIGGER_ON_WAKEUP);
                 LogOut("[AUTO-ACTION] P1 wake exec (fallback): action=" + std::to_string(s_p1WakePrearmActionType) +
@@ -1868,16 +2168,19 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
                 s_p1WakeMacroQueued = false;
                 s_p1WakeMacroTargetFrame = -1;
                 s_p1WakeMacroSlot = -1;
+                s_p1WakeOptionPicked = false;
+                s_p1WakePrePickedOption = {};
             }
             if (!s_p1WakePrearmed && IsGroundtech(prevMoveID1) && IsActionable(moveID1)) {
                 if (triggerRandomizeEnabled.load()) { if ((rand() & 1) == 0) { if (detailedLogging.load() && canLogTrigDiag()) LogOut("[AUTO-ACTION] P1 On Wakeup skipped by random gate", true); goto p1_wakeup_done; } }
                 shouldTrigger = true;
                 triggerType = TRIGGER_ON_WAKEUP;
                 {
-                    int userDelay = triggerOnWakeupDelay.load();
+                    int userDelay = s_p1WakeOptionPicked ? s_p1WakePrePickedOption.delay : triggerOnWakeupDelay.load();
                     delay = (userDelay <= 1) ? 0 : (userDelay - 1);
                 }
-                actionMoveID = GetActionMoveID(triggerOnWakeupAction.load(), TRIGGER_ON_WAKEUP, 1);
+                int actionForMove = s_p1WakeOptionPicked ? s_p1WakePrePickedOption.action : triggerOnWakeupAction.load();
+                actionMoveID = GetActionMoveID(actionForMove, TRIGGER_ON_WAKEUP, 1);
                 
                 LogOut("[AUTO-ACTION] P1 On Wakeup trigger activated", true);
                 TraceAutoActionWakeEvent("p1-wakeup-trigger", 1, prevMoveID1, moveID1,
@@ -1978,11 +2281,17 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
             LogOut("[TRIGGER_DIAG] P2 entered RG (" + std::to_string(moveID2) + ") baseDelay=" + std::to_string(baseDelayF) +
                    "F + user=" + std::to_string(userDelayF) + "F => total=" + std::to_string(totalDelayF) + "F", true);
             StartTriggerDelay(2, TRIGGER_ON_RG, 0, totalDelayF);
+            const int selectedUserDelayF = (p2DelayState.chosenDelay >= 0)
+                ? p2DelayState.chosenDelay
+                : userDelayF;
 
             // If user delay is 0 and action is special/FM, pre-arm now; ensure P2 control override for buffer progression
-            if (userDelayF == 0 && !s_p2RGPrearmed) {
-                int at = triggerOnRGAction.load();
-                int motion = ConvertTriggerActionToMotion(at, TRIGGER_ON_RG);
+            if (selectedUserDelayF == 0 && !s_p2RGPrearmed) {
+                int at = (p2DelayState.chosenAction >= 0) ? p2DelayState.chosenAction : triggerOnRGAction.load();
+                int selectedStrength = (p2DelayState.chosenStrength >= 0)
+                    ? p2DelayState.chosenStrength
+                    : GetSpecialMoveStrength(at, TRIGGER_ON_RG);
+                int motion = ConvertTriggerActionToMotion(at, TRIGGER_ON_RG, selectedStrength);
                 int buttonMask = 0;
                 if ((at >= ACTION_5A && at <= ACTION_2D) || (at >= ACTION_6A && at <= ACTION_4D)) {
                     int button = (at >= ACTION_5A && at <= ACTION_2D) ? ((at - ACTION_5A) % 4) : ((at - ACTION_6A) % 4);
@@ -1991,8 +2300,7 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
                     int button = (at - ACTION_JA) % 4;
                     buttonMask = (1 << (4 + button));
                 } else if (at >= ACTION_QCF && at <= ACTION_6321463214) {
-                    int strength = GetSpecialMoveStrength(at, TRIGGER_ON_RG);
-                    buttonMask = (1 << (4 + strength));
+                    buttonMask = (1 << (4 + CLAMP(selectedStrength, 0, 3)));
                 }
                 bool preOk = false;
                 bool isSpec = (motion >= MOTION_236A) || (at == ACTION_FINAL_MEMORY);
@@ -2106,7 +2414,18 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
             //     LogOut("[AUTO-ACTION][MACRO-COUNTER] FIRST FRAME in groundtech, prev=" + std::to_string(prevMoveID2) + " counter=0", true);
             // }
             // Pre-pick a row now so we know macro slot for pre-buffering timing
-            if (HasEnabledRows(TRIGGER_ON_WAKEUP)) {
+            if (PickRandomPoolOption(TRIGGER_ON_WAKEUP, 2, s_p2WakePrePickedOption)) {
+                s_p2WakeOptionPicked = true;
+                TraceAutoActionWakeEvent("p2-wake-pool-picked", 2, prevMoveID2, moveID2,
+                                         "delay=" + std::to_string(s_p2WakePrePickedOption.delay) +
+                                         " action=" + std::to_string(s_p2WakePrePickedOption.action) +
+                                         " strength=" + std::to_string(s_p2WakePrePickedOption.strength));
+                if (detailedLogging.load()) {
+                    LogOut("[AUTO-ACTION] P2 wake pool pre-picked option: action=" +
+                           std::to_string(s_p2WakePrePickedOption.action) +
+                           " strength=" + std::to_string(s_p2WakePrePickedOption.strength), true);
+                }
+            } else if (HasEnabledRows(TRIGGER_ON_WAKEUP)) {
                 if (PickRandomRow(TRIGGER_ON_WAKEUP, s_p2WakePrePickedOption)) {
                     s_p2WakeOptionPicked = true;
                     TraceAutoActionWakeEvent("p2-wake-option-picked", 2, prevMoveID2, moveID2,
@@ -2751,6 +3070,8 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
         s_p1WakeBufferFrozen = false;
         s_p1WakeHoldPrimed = false;
         s_p1WakeHoldIssued = false;
+        s_p1WakeOptionPicked = false;
+        s_p1WakePrePickedOption = {};
     }
     if (s_p2WakePrearmed && now > s_p2WakePrearmExpiry) {
         int delta = now - s_p2WakePrearmExpiry;
@@ -2767,6 +3088,8 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
         s_p2WakeBufferFrozen = false;
         s_p2WakeHoldPrimed = false;
         s_p2WakeHoldIssued = false;
+        s_p2WakeOptionPicked = false;
+        s_p2WakePrePickedOption = {};
     }
     // Clear RG pre-arm flags if window passed without execution
     if (s_p1RGPrearmed && now > s_p1RGPrearmExpiry) {
@@ -2876,51 +3199,6 @@ void ClearDelayStatesIfNonActionable() {
 
 // Replace the ApplyAutoAction function with this implementation:
 void ApplyAutoAction(int playerNum, uintptr_t moveIDAddr, short currentMoveID, short prevMoveID) {
-    // Helper: map UI motion index to action type (uses per-trigger strength for normals)
-    auto MapMotionIndexToActionType = [&](int idx, int triggerType)->int {
-        int strength = GetSpecialMoveStrength(ACTION_5A, triggerType); // 0=A,1=B,2=C,3=D
-        switch (idx) {
-            case 0: return (strength==0?ACTION_5A:(strength==1?ACTION_5B:(strength==2?ACTION_5C:ACTION_5D)));
-            case 1: return (strength==0?ACTION_2A:(strength==1?ACTION_2B:(strength==2?ACTION_2C:ACTION_2D)));
-            case 2: return (strength==0?ACTION_JA:(strength==1?ACTION_JB:(strength==2?ACTION_JC:ACTION_JD)));
-            case 3: return ACTION_QCF; case 4: return ACTION_DP; case 5: return ACTION_QCB; case 6: return ACTION_421;
-            case 7: return ACTION_SUPER1; case 8: return ACTION_SUPER2; case 9: return ACTION_236236; case 10: return ACTION_214214;
-            case 11: return ACTION_641236; case 12: return ACTION_463214; case 13: return ACTION_412; case 14: return ACTION_22;
-            case 15: return ACTION_4123641236; case 16: return ACTION_6321463214; case 17: return ACTION_JUMP; case 18: return ACTION_BACKDASH;
-            case 19: return ACTION_FORWARD_DASH; case 20: return ACTION_BLOCK; case 21: return ACTION_FINAL_MEMORY;
-            case 22: return (strength==0?ACTION_6A:(strength==1?ACTION_6B:(strength==2?ACTION_6C:ACTION_6D)));
-            case 23: return (strength==0?ACTION_4A:(strength==1?ACTION_4B:(strength==2?ACTION_4C:ACTION_4D)));
-            default: return ACTION_5A;
-        }
-    };
-
-    // Helper: try select a random action type from the pool for this trigger
-    auto TryPickFromPool = [&](int triggerType, int player)->std::pair<bool,int> {
-        uint32_t mask = 0; bool usePool = false;
-        switch (triggerType) {
-            case TRIGGER_AFTER_BLOCK:   mask = triggerAfterBlockActionPoolMask.load(); usePool = triggerAfterBlockUsePool.load(); break;
-            case TRIGGER_ON_WAKEUP:     mask = triggerOnWakeupActionPoolMask.load();   usePool = triggerOnWakeupUsePool.load(); break;
-            case TRIGGER_AFTER_HITSTUN: mask = triggerAfterHitstunActionPoolMask.load(); usePool = triggerAfterHitstunUsePool.load(); break;
-            case TRIGGER_AFTER_AIRTECH: mask = triggerAfterAirtechActionPoolMask.load(); usePool = triggerAfterAirtechUsePool.load(); break;
-            case TRIGGER_ON_RG:         mask = triggerOnRGActionPoolMask.load();       usePool = triggerOnRGUsePool.load(); break;
-            default: break;
-        }
-        if (!usePool || mask == 0) return {false, 0};
-        std::vector<int> candidates;
-        candidates.reserve(8);
-        for (int bit = 0; bit < 24; ++bit) {
-            if (mask & (1u << bit)) {
-                candidates.push_back(MapMotionIndexToActionType(bit, triggerType));
-            }
-        }
-        if (candidates.empty()) return {false, 0};
-        int r = 0;
-        int n = (int)candidates.size();
-        int seed = frameCounter.load() + player*31;
-        if (n > 0) r = (seed < 0 ? -seed : seed) % n;
-        return {true, candidates[r]};
-    };
-
     // If caller didn't provide current move id, try to read it for better restore tracking
     if (currentMoveID == 0 && moveIDAddr != 0) {
         SafeReadMemory(moveIDAddr, &currentMoveID, sizeof(short));
@@ -2939,9 +3217,9 @@ void ApplyAutoAction(int playerNum, uintptr_t moveIDAddr, short currentMoveID, s
         actionType = dstate.chosenAction;
     } else {
         // Else prefer multi-pool selection if enabled and configured
-        auto poolPick = TryPickFromPool(triggerType, playerNum);
-        if (poolPick.first) {
-            actionType = poolPick.second;
+        TriggerOption poolPick{};
+        if (PickRandomPoolOption(triggerType, playerNum, poolPick)) {
+            actionType = poolPick.action;
         } else {
             switch (triggerType) {
                 case TRIGGER_AFTER_BLOCK:
@@ -4190,8 +4468,8 @@ void CancelAutoActionsAndMacros() {
               << " triggerType=" << p2DelayState.triggerType;
     LogOut(logStream.str(), true);
     
-    p1DelayState = {false, 0, TRIGGER_NONE, 0, -1, -1, 0, -1};
-    p2DelayState = {false, 0, TRIGGER_NONE, 0, -1, -1, 0, -1};
+    p1DelayState = {false, 0, TRIGGER_NONE, 0, -1, -1, 0, -1, -1};
+    p2DelayState = {false, 0, TRIGGER_NONE, 0, -1, -1, 0, -1, -1};
     LogOut("[CANCEL][DELAY] Reset both delay states", true);
 
     // =========================================================================
@@ -4329,6 +4607,8 @@ void CancelAutoActionsAndMacros() {
     s_p1WakeMacroTargetFrame = -1; s_p1WakeMacroSlot = -1; s_p1WakeMacroStartTick = 0;
     s_p2WakeMacro96FrameCount = 0; s_p2WakeMacroQueued = false;
     s_p2WakeMacroTargetFrame = -1; s_p2WakeMacroSlot = -1; s_p2WakeMacroStartFrame = -1; s_p2WakeMacroStartTick = 0;
+    s_p1WakeOptionPicked = false;
+    s_p1WakePrePickedOption = {};
     s_p2WakeOptionPicked = false;
     s_p2WakePrePickedOption = {};
 
@@ -4402,8 +4682,8 @@ void ClearAllAutoActionTriggers() {
     }
 
     // Reset delay states (including chosen row fields)
-    p1DelayState = {false, 0, TRIGGER_NONE, 0, -1, -1, 0, -1};
-    p2DelayState = {false, 0, TRIGGER_NONE, 0, -1, -1, 0, -1};
+    p1DelayState = {false, 0, TRIGGER_NONE, 0, -1, -1, 0, -1, -1};
+    p2DelayState = {false, 0, TRIGGER_NONE, 0, -1, -1, 0, -1, -1};
 
     // Reset action applied markers
     p1ActionApplied = false;

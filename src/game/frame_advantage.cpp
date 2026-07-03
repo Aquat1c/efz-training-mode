@@ -64,6 +64,25 @@ void ResetFrameAdvantageScratchState() {
     g_faScratch = FrameAdvantageScratchState{};
 }
 
+void ClearGapAnchorForDefender(int defender) {
+    if (defender == 1) {
+        g_faScratch.p1LastDefenderFreeFrame = -1;
+        g_faScratch.p1FreezeAccumSinceFree = 0;
+    } else if (defender == 2) {
+        g_faScratch.p2LastDefenderFreeFrame = -1;
+        g_faScratch.p2FreezeAccumSinceFree = 0;
+    }
+}
+
+bool HasResolvedFrameAdvantageDisplayOrPending() {
+    return frameAdvState.p1AdvantageCalculated ||
+           frameAdvState.p2AdvantageCalculated ||
+           g_faScratch.pendingAdvantageAttacker != 0 ||
+           g_displayUntilTimeMs != 0 ||
+           g_FrameAdvantageId != -1 ||
+           g_FrameAdvantage2Id != -1;
+}
+
 void ClearFrameAdvantageOverlayMessages() {
     if (g_FrameAdvantageId != -1) {
         DirectDrawHook::RemovePermanentMessage(g_FrameAdvantageId);
@@ -491,7 +510,7 @@ void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, shor
     bool p1_becomes_actionable = !IsActionable(prevMoveID1) && IsDefenderFreeForFA(prevMoveID1, moveID1, faSample.actionable1);
     bool p2_becomes_actionable = !IsActionable(prevMoveID2) && IsDefenderFreeForFA(prevMoveID2, moveID2, faSample.actionable2);
 
-    if (p1_becomes_actionable) {
+    if (p1_becomes_actionable && frameAdvState.p1Defending && frameAdvState.p1DefenderFreeInternalFrame == -1) {
         p1_last_defender_free_frame = currentInternalFrame;
         p1_freeze_accum_since_free = 0;
         #if defined(ENABLE_FRAME_ADV_DEBUG)
@@ -500,7 +519,7 @@ void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, shor
         #endif
     }
 
-    if (p2_becomes_actionable) {
+    if (p2_becomes_actionable && frameAdvState.p2Defending && frameAdvState.p2DefenderFreeInternalFrame == -1) {
         p2_last_defender_free_frame = currentInternalFrame;
         p2_freeze_accum_since_free = 0;
         #if defined(ENABLE_FRAME_ADV_DEBUG)
@@ -593,12 +612,14 @@ void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, shor
                    " m1=" + std::to_string(moveID1) + " m2=" + std::to_string(moveID2), true);
         }
 
+        const bool hadResolvedFrameAdvantage = HasResolvedFrameAdvantageDisplayOrPending();
+
         // A fresh regular contact takes precedence over any previous RG/FA display,
         // even when it comes from a later hit of the same move rather than a new attack edge.
         ClearFrameAdvantageDisplay();
         
         // Calculate gap if there was a previous defender free frame (string of attacks)
-        if (p2_last_defender_free_frame != -1) {
+        if (!hadResolvedFrameAdvantage && p2_last_defender_free_frame != -1) {
             int gapFramesRaw = currentInternalFrame - p2_last_defender_free_frame;
             int gapFrames = gapFramesRaw - p2_freeze_accum_since_free;
             if (gapFrames < 0) gapFrames = 0;
@@ -633,6 +654,8 @@ void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, shor
                            ", freeze-removed=" + std::to_string(p2_freeze_accum_since_free) + ")", true);
                 }
             }
+        } else if (hadResolvedFrameAdvantage) {
+            ClearGapAnchorForDefender(2);
         }
         
         // CRUCIAL CHANGE: Don't reset the entire state for strings of attacks
@@ -721,12 +744,14 @@ void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, shor
                    " atkEdge=" + std::to_string(p2_attack_edge) +
                    " m1=" + std::to_string(moveID1) + " m2=" + std::to_string(moveID2), true);
         }
+        const bool hadResolvedFrameAdvantage = HasResolvedFrameAdvantageDisplayOrPending();
+
         // A fresh regular contact takes precedence over any previous RG/FA display,
         // even when it comes from a later hit of the same move rather than a new attack edge.
         ClearFrameAdvantageDisplay();
         
         // Calculate gap if there was a previous defender free frame (string of attacks)
-        if (p1_last_defender_free_frame != -1) {
+        if (!hadResolvedFrameAdvantage && p1_last_defender_free_frame != -1) {
             int gapFramesRaw = currentInternalFrame - p1_last_defender_free_frame;
             int gapFrames = gapFramesRaw - p1_freeze_accum_since_free;
             if (gapFrames < 0) gapFrames = 0;
@@ -761,6 +786,8 @@ void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, shor
                            ", freeze-removed=" + std::to_string(p1_freeze_accum_since_free) + ")", true);
                 }
             }
+        } else if (hadResolvedFrameAdvantage) {
+            ClearGapAnchorForDefender(1);
         }
         
         // CRUCIAL CHANGE: Don't reset the entire state for strings of attacks
@@ -1038,9 +1065,13 @@ void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, shor
         frameAdvState.p1AdvantageCalculated = true;
         
         QueuePendingRegularFrameAdvantage(1, frameAdvantage, currentInternalFrame, g_faScratch.p2DefenderFreeNeedsDelay);
+        ClearGapAnchorForDefender(2);
         
-        // Reset attack state for the next sequence while preserving defender state
+        // Reset exchange state for the next sequence; FA has consumed the defender-free anchor.
         frameAdvState.p1Attacking = false;
+        frameAdvState.p2Defending = false;
+        frameAdvState.p2InBlockstun = false;
+        frameAdvState.p2InHitstun = false;
         frameAdvState.p1AttackStartInternalFrame = -1;
         frameAdvState.p1ActionableInternalFrame = -1;
     }
@@ -1063,9 +1094,13 @@ void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, shor
         frameAdvState.p2AdvantageCalculated = true;
         
         QueuePendingRegularFrameAdvantage(2, frameAdvantage, currentInternalFrame, g_faScratch.p1DefenderFreeNeedsDelay);
+        ClearGapAnchorForDefender(1);
         
-        // Reset attack state for the next sequence while preserving defender state
+        // Reset exchange state for the next sequence; FA has consumed the defender-free anchor.
         frameAdvState.p2Attacking = false;
+        frameAdvState.p1Defending = false;
+        frameAdvState.p1InBlockstun = false;
+        frameAdvState.p1InHitstun = false;
         frameAdvState.p2AttackStartInternalFrame = -1;
         frameAdvState.p2ActionableInternalFrame = -1;
     }

@@ -197,14 +197,29 @@ bool g_mirrorInfiniteFeather = false;
 bool g_mirrorInfiniteElement = false;
 bool g_mirrorInfiniteAwakened = false;
 
-// Per-trigger pool mirrors (mask + use-pool flag).
-unsigned int g_poolMaskAB, g_poolMaskWU, g_poolMaskAH, g_poolMaskAA, g_poolMaskRG;
+// Per-trigger pool mirrors (concrete 128-bit masks + use-pool flag).
+uint64_t g_poolMaskABLo, g_poolMaskABHi;
+uint64_t g_poolMaskWULo, g_poolMaskWUHi;
+uint64_t g_poolMaskAHLo, g_poolMaskAHHi;
+uint64_t g_poolMaskAALo, g_poolMaskAAHi;
+uint64_t g_poolMaskRGLo, g_poolMaskRGHi;
 bool g_useMaskAB, g_useMaskWU, g_useMaskAH, g_useMaskAA, g_useMaskRG;
 
 int GetMotionIndexForAction(int action);
+void RefreshTriggerActionChoices();
+int GetTriggerActionChoiceIndex(int action, int strength);
+const char* FormatTriggerActionChoiceRow(const Row& row);
+void ExpandLegacyActionPoolMask(uint32_t legacyMask, int strength, uint64_t& lo, uint64_t& hi);
+void InitializeAddedPoolDelaysForTrigger(int triggerIdx,
+                                         uint64_t oldLo, uint64_t oldHi,
+                                         uint64_t newLo, uint64_t newHi);
+bool NormalizeSelectedPoolDelaysForTrigger(int triggerIdx,
+                                           uint64_t maskLo, uint64_t maskHi,
+                                           bool initializeMissing);
 
 // Per-trigger motion index mirrors (0..23 grouped action space).
 int g_motionIdxAB, g_motionIdxWU, g_motionIdxAH, g_motionIdxAA, g_motionIdxRG;
+int g_actionPickIdxAB, g_actionPickIdxWU, g_actionPickIdxAH, g_actionPickIdxAA, g_actionPickIdxRG;
 int g_selectedAutoTrigger = 0;
 int g_mirrorFwdDashFollowup = 0;
 
@@ -215,35 +230,131 @@ void RefreshAutoMirrors() {
     g_mirrorCounterRG  = g_counterRGEnabled.load();
     g_mirrorFaOverlay  = g_showFrameAdvantageOverlay.load();
 
-    g_poolMaskAB = (unsigned int)triggerAfterBlockActionPoolMask.load();
-    g_poolMaskWU = (unsigned int)triggerOnWakeupActionPoolMask.load();
-    g_poolMaskAH = (unsigned int)triggerAfterHitstunActionPoolMask.load();
-    g_poolMaskAA = (unsigned int)triggerAfterAirtechActionPoolMask.load();
-    g_poolMaskRG = (unsigned int)triggerOnRGActionPoolMask.load();
+    g_poolMaskABLo = triggerAfterBlockActionPoolMaskLo.load();
+    g_poolMaskABHi = triggerAfterBlockActionPoolMaskHi.load();
+    g_poolMaskWULo = triggerOnWakeupActionPoolMaskLo.load();
+    g_poolMaskWUHi = triggerOnWakeupActionPoolMaskHi.load();
+    g_poolMaskAHLo = triggerAfterHitstunActionPoolMaskLo.load();
+    g_poolMaskAHHi = triggerAfterHitstunActionPoolMaskHi.load();
+    g_poolMaskAALo = triggerAfterAirtechActionPoolMaskLo.load();
+    g_poolMaskAAHi = triggerAfterAirtechActionPoolMaskHi.load();
+    g_poolMaskRGLo = triggerOnRGActionPoolMaskLo.load();
+    g_poolMaskRGHi = triggerOnRGActionPoolMaskHi.load();
+    if ((g_poolMaskABLo | g_poolMaskABHi) == 0) ExpandLegacyActionPoolMask(triggerAfterBlockActionPoolMask.load(), d.strengthAfterBlock, g_poolMaskABLo, g_poolMaskABHi);
+    if ((g_poolMaskWULo | g_poolMaskWUHi) == 0) ExpandLegacyActionPoolMask(triggerOnWakeupActionPoolMask.load(), d.strengthOnWakeup, g_poolMaskWULo, g_poolMaskWUHi);
+    if ((g_poolMaskAHLo | g_poolMaskAHHi) == 0) ExpandLegacyActionPoolMask(triggerAfterHitstunActionPoolMask.load(), d.strengthAfterHitstun, g_poolMaskAHLo, g_poolMaskAHHi);
+    if ((g_poolMaskAALo | g_poolMaskAAHi) == 0) ExpandLegacyActionPoolMask(triggerAfterAirtechActionPoolMask.load(), d.strengthAfterAirtech, g_poolMaskAALo, g_poolMaskAAHi);
+    if ((g_poolMaskRGLo | g_poolMaskRGHi) == 0) ExpandLegacyActionPoolMask(triggerOnRGActionPoolMask.load(), d.strengthOnRG, g_poolMaskRGLo, g_poolMaskRGHi);
     g_useMaskAB  = triggerAfterBlockUsePool.load();
     g_useMaskWU  = triggerOnWakeupUsePool.load();
     g_useMaskAH  = triggerAfterHitstunUsePool.load();
     g_useMaskAA  = triggerAfterAirtechUsePool.load();
     g_useMaskRG  = triggerOnRGUsePool.load();
 
+    g_mirrorFwdDashFollowup = forwardDashFollowup.load();
+    RefreshTriggerActionChoices();
     g_motionIdxAB = GetMotionIndexForAction(d.actionAfterBlock);
     g_motionIdxWU = GetMotionIndexForAction(d.actionOnWakeup);
     g_motionIdxAH = GetMotionIndexForAction(d.actionAfterHitstun);
     g_motionIdxAA = GetMotionIndexForAction(d.actionAfterAirtech);
     g_motionIdxRG = GetMotionIndexForAction(d.actionOnRG);
-    g_mirrorFwdDashFollowup = forwardDashFollowup.load();
+    g_actionPickIdxAB = GetTriggerActionChoiceIndex(d.actionAfterBlock, d.strengthAfterBlock);
+    g_actionPickIdxWU = GetTriggerActionChoiceIndex(d.actionOnWakeup, d.strengthOnWakeup);
+    g_actionPickIdxAH = GetTriggerActionChoiceIndex(d.actionAfterHitstun, d.strengthAfterHitstun);
+    g_actionPickIdxAA = GetTriggerActionChoiceIndex(d.actionAfterAirtech, d.strengthAfterAirtech);
+    g_actionPickIdxRG = GetTriggerActionChoiceIndex(d.actionOnRG, d.strengthOnRG);
 }
 
-void OnPoolMaskAB() { triggerAfterBlockActionPoolMask.store((uint32_t)g_poolMaskAB); }
-void OnPoolMaskWU() { triggerOnWakeupActionPoolMask.store((uint32_t)g_poolMaskWU); }
-void OnPoolMaskAH() { triggerAfterHitstunActionPoolMask.store((uint32_t)g_poolMaskAH); }
-void OnPoolMaskAA() { triggerAfterAirtechActionPoolMask.store((uint32_t)g_poolMaskAA); }
-void OnPoolMaskRG() { triggerOnRGActionPoolMask.store((uint32_t)g_poolMaskRG); }
-void OnUseMaskAB()  { triggerAfterBlockUsePool.store(g_useMaskAB); }
-void OnUseMaskWU()  { triggerOnWakeupUsePool.store(g_useMaskWU); }
-void OnUseMaskAH()  { triggerAfterHitstunUsePool.store(g_useMaskAH); }
-void OnUseMaskAA()  { triggerAfterAirtechUsePool.store(g_useMaskAA); }
-void OnUseMaskRG()  { triggerOnRGUsePool.store(g_useMaskRG); }
+void OnPoolMaskAB() {
+    auto& d = ImGuiGui::guiState.localData;
+    const uint64_t oldLo = d.afterBlockActionPoolMaskLo;
+    const uint64_t oldHi = d.afterBlockActionPoolMaskHi;
+    d.afterBlockActionPoolMaskLo = g_poolMaskABLo; d.afterBlockActionPoolMaskHi = g_poolMaskABHi;
+    d.afterBlockActionPoolMask = 0;
+    InitializeAddedPoolDelaysForTrigger(0, oldLo, oldHi, g_poolMaskABLo, g_poolMaskABHi);
+    triggerAfterBlockActionPoolMaskLo.store(g_poolMaskABLo); triggerAfterBlockActionPoolMaskHi.store(g_poolMaskABHi);
+    triggerAfterBlockActionPoolMask.store(0);
+    OnAutoApply();
+}
+void OnPoolMaskWU() {
+    auto& d = ImGuiGui::guiState.localData;
+    const uint64_t oldLo = d.onWakeupActionPoolMaskLo;
+    const uint64_t oldHi = d.onWakeupActionPoolMaskHi;
+    d.onWakeupActionPoolMaskLo = g_poolMaskWULo; d.onWakeupActionPoolMaskHi = g_poolMaskWUHi;
+    d.onWakeupActionPoolMask = 0;
+    InitializeAddedPoolDelaysForTrigger(1, oldLo, oldHi, g_poolMaskWULo, g_poolMaskWUHi);
+    triggerOnWakeupActionPoolMaskLo.store(g_poolMaskWULo); triggerOnWakeupActionPoolMaskHi.store(g_poolMaskWUHi);
+    triggerOnWakeupActionPoolMask.store(0);
+    OnAutoApply();
+}
+void OnPoolMaskAH() {
+    auto& d = ImGuiGui::guiState.localData;
+    const uint64_t oldLo = d.afterHitstunActionPoolMaskLo;
+    const uint64_t oldHi = d.afterHitstunActionPoolMaskHi;
+    d.afterHitstunActionPoolMaskLo = g_poolMaskAHLo; d.afterHitstunActionPoolMaskHi = g_poolMaskAHHi;
+    d.afterHitstunActionPoolMask = 0;
+    InitializeAddedPoolDelaysForTrigger(2, oldLo, oldHi, g_poolMaskAHLo, g_poolMaskAHHi);
+    triggerAfterHitstunActionPoolMaskLo.store(g_poolMaskAHLo); triggerAfterHitstunActionPoolMaskHi.store(g_poolMaskAHHi);
+    triggerAfterHitstunActionPoolMask.store(0);
+    OnAutoApply();
+}
+void OnPoolMaskAA() {
+    auto& d = ImGuiGui::guiState.localData;
+    const uint64_t oldLo = d.afterAirtechActionPoolMaskLo;
+    const uint64_t oldHi = d.afterAirtechActionPoolMaskHi;
+    d.afterAirtechActionPoolMaskLo = g_poolMaskAALo; d.afterAirtechActionPoolMaskHi = g_poolMaskAAHi;
+    d.afterAirtechActionPoolMask = 0;
+    InitializeAddedPoolDelaysForTrigger(3, oldLo, oldHi, g_poolMaskAALo, g_poolMaskAAHi);
+    triggerAfterAirtechActionPoolMaskLo.store(g_poolMaskAALo); triggerAfterAirtechActionPoolMaskHi.store(g_poolMaskAAHi);
+    triggerAfterAirtechActionPoolMask.store(0);
+    OnAutoApply();
+}
+void OnPoolMaskRG() {
+    auto& d = ImGuiGui::guiState.localData;
+    const uint64_t oldLo = d.onRGActionPoolMaskLo;
+    const uint64_t oldHi = d.onRGActionPoolMaskHi;
+    d.onRGActionPoolMaskLo = g_poolMaskRGLo; d.onRGActionPoolMaskHi = g_poolMaskRGHi;
+    d.onRGActionPoolMask = 0;
+    InitializeAddedPoolDelaysForTrigger(4, oldLo, oldHi, g_poolMaskRGLo, g_poolMaskRGHi);
+    triggerOnRGActionPoolMaskLo.store(g_poolMaskRGLo); triggerOnRGActionPoolMaskHi.store(g_poolMaskRGHi);
+    triggerOnRGActionPoolMask.store(0);
+    OnAutoApply();
+}
+void OnUseMaskAB()  {
+    auto& d = ImGuiGui::guiState.localData;
+    d.afterBlockUseActionPool = g_useMaskAB;
+    if (g_useMaskAB) NormalizeSelectedPoolDelaysForTrigger(0, g_poolMaskABLo, g_poolMaskABHi, true);
+    triggerAfterBlockUsePool.store(g_useMaskAB);
+    OnAutoApply();
+}
+void OnUseMaskWU()  {
+    auto& d = ImGuiGui::guiState.localData;
+    d.onWakeupUseActionPool = g_useMaskWU;
+    if (g_useMaskWU) NormalizeSelectedPoolDelaysForTrigger(1, g_poolMaskWULo, g_poolMaskWUHi, true);
+    triggerOnWakeupUsePool.store(g_useMaskWU);
+    OnAutoApply();
+}
+void OnUseMaskAH()  {
+    auto& d = ImGuiGui::guiState.localData;
+    d.afterHitstunUseActionPool = g_useMaskAH;
+    if (g_useMaskAH) NormalizeSelectedPoolDelaysForTrigger(2, g_poolMaskAHLo, g_poolMaskAHHi, true);
+    triggerAfterHitstunUsePool.store(g_useMaskAH);
+    OnAutoApply();
+}
+void OnUseMaskAA()  {
+    auto& d = ImGuiGui::guiState.localData;
+    d.afterAirtechUseActionPool = g_useMaskAA;
+    if (g_useMaskAA) NormalizeSelectedPoolDelaysForTrigger(3, g_poolMaskAALo, g_poolMaskAAHi, true);
+    triggerAfterAirtechUsePool.store(g_useMaskAA);
+    OnAutoApply();
+}
+void OnUseMaskRG()  {
+    auto& d = ImGuiGui::guiState.localData;
+    d.onRGUseActionPool = g_useMaskRG;
+    if (g_useMaskRG) NormalizeSelectedPoolDelaysForTrigger(4, g_poolMaskRGLo, g_poolMaskRGHi, true);
+    triggerOnRGUsePool.store(g_useMaskRG);
+    OnAutoApply();
+}
 
 void OnRandomizeToggle()    { ImGuiGui::guiState.localData.randomizeTriggers = g_mirrorRandomize; OnAutoApply(); }
 void OnWakeBufferToggle()   { g_wakeBufferingEnabled.store(g_mirrorWakeBuffer); }
@@ -314,7 +425,13 @@ void OnRandomRG() {
     RandomRG::SetEnabled(g_mirrorRandomRG);
 }
 void OnAdaptiveStance() { SetAdaptiveStanceEnabled(g_mirrorAdaptiveStance); }
-void OnDummyBlockMode() { SetDummyAutoBlockMode(g_mirrorDummyBlockMode); }
+void OnDummyBlockMode() {
+    SetDummyAutoBlockMode(g_mirrorDummyBlockMode);
+    if (g_mirrorDummyBlockMode == 0 && g_mirrorRandomBlock) {
+        g_mirrorRandomBlock = false;
+        RandomBlock::SetEnabled(false);
+    }
+}
 void OnPracticeStance() { SetPracticeBlockMode(g_mirrorPracticeStance); }
 void OnFmBypass()       { SetFinalMemoryBypass(g_mirrorFmBypass); }
 
@@ -337,7 +454,7 @@ const char* const kActionNames[39] = {
 };
 constexpr int kActionCount = 39;
 
-const char* const kStrengthChoices[4] = { "A", "B", "C", "S" };
+const char* const kStrengthChoices[4] = { "A", "B", "C", "D" };
 const char* const kJumpDirChoicesAuto[3] = { "NEUTRAL", "FORWARD", "BACK" };
 const char* const kFdFollowupChoices[7] = {
     "NO FOLLOW-UP", "A", "B", "C", "2A", "2B", "2C"
@@ -373,15 +490,39 @@ const char* const kTriggerMotionChoices[] = {
 };
 constexpr int kTriggerMotionCount = sizeof(kTriggerMotionChoices) / sizeof(kTriggerMotionChoices[0]);
 
-// Random action pools are stored as category bits, not raw ACTION_* ids.
-// Keep this in the same order as ApplyAutoAction()'s MapMotionIndexToActionType().
-const char* const kActionPoolNames[24] = {
-    "5X", "2X", "jX", "QCF (236)", "DP (623)", "QCB (214)", "421",
-    "SUPER1 (41236)", "SUPER2 (214236)", "236236", "214214",
-    "641236", "463214", "412", "22", "4123641236", "6321463214",
-    "JUMP", "BACKDASH", "FORWARD DASH", "BLOCK", "FINAL MEMORY", "6X", "4X"
+// Random action pools are stored as concrete action+variant bits. This lets
+// the user choose both 623A and 623B, or only one of them, without relying on
+// the trigger's current button setting.
+const char* const kActionPoolNames[] = {
+    "5A", "5B", "5C", "5D",
+    "2A", "2B", "2C", "2D",
+    "jA", "jB", "jC", "jD",
+    "6A", "6B", "6C", "6D",
+    "4A", "4B", "4C", "4D",
+
+    "236A", "236B", "236C", "236D",
+    "623A", "623B", "623C", "623D",
+    "214A", "214B", "214C", "214D",
+    "421A", "421B", "421C", "421D",
+    "412A", "412B", "412C", "412D",
+    "22A", "22B", "22C", "22D",
+
+    "41236A", "41236B", "41236C", "41236D",
+    "214236A", "214236B", "214236C", "214236D",
+    "236236A", "236236B", "236236C", "236236D",
+    "214214A", "214214B", "214214C", "214214D",
+    "641236A", "641236B", "641236C", "641236D",
+    "463214A", "463214B", "463214C", "463214D",
+    "4123641236A", "4123641236B", "4123641236C", "4123641236D",
+    "6321463214A", "6321463214B", "6321463214C", "6321463214D",
+    "FINAL MEMORY",
+
+    "JUMP NEUTRAL", "JUMP FORWARD", "JUMP BACK",
+    "BACKDASH", "FORWARD DASH",
+    "BLOCK"
 };
-constexpr int kActionPoolCount = 24;
+constexpr int kActionPoolCount = sizeof(kActionPoolNames) / sizeof(kActionPoolNames[0]);
+static_assert(kActionPoolCount <= 128, "Action pool mask uses two 64-bit words");
 
 int ClampIndex(int v, int maxExclusive) {
     if (v < 0) return 0;
@@ -628,6 +769,546 @@ const char* TriggerButtonChoiceLabel(TriggerButtonMode mode, int idx) {
     }
 }
 
+struct TriggerActionChoice {
+    int motionIdx;
+    int action;
+    int strength;
+    int dashFollowup; // -1 when the action does not use forward-dash follow-up.
+    int category;
+};
+
+enum TriggerActionCategory {
+    kTriggerActionCategoryNormals = 0,
+    kTriggerActionCategoryCommandNormals,
+    kTriggerActionCategorySpecials,
+    kTriggerActionCategorySupers,
+    kTriggerActionCategoryMovement,
+    kTriggerActionCategoryDefense,
+    kTriggerActionCategoryCount
+};
+
+const char* const kTriggerActionCategoryChoices[kTriggerActionCategoryCount] = {
+    "NORMALS",
+    "COMMAND NORMALS",
+    "SPECIALS",
+    "SUPERS",
+    "MOVEMENT",
+    "DEFENSE"
+};
+
+int ActionPoolCategoryForIndex(int index) {
+    if (index >= 0 && index <= 11) return kTriggerActionCategoryNormals;
+    if (index >= 12 && index <= 19) return kTriggerActionCategoryCommandNormals;
+    if (index >= 20 && index <= 43) return kTriggerActionCategorySpecials;
+    if (index >= 44 && index <= 76) return kTriggerActionCategorySupers;
+    if (index >= 77 && index <= 81) return kTriggerActionCategoryMovement;
+    return kTriggerActionCategoryDefense;
+}
+
+int kActionPoolCategoryMap[kActionPoolCount] = {};
+bool g_actionPoolCategoryMapReady = false;
+
+void EnsureActionPoolCategoryMap() {
+    if (g_actionPoolCategoryMapReady) return;
+    for (int i = 0; i < kActionPoolCount; ++i) {
+        kActionPoolCategoryMap[i] = ActionPoolCategoryForIndex(i);
+    }
+    g_actionPoolCategoryMapReady = true;
+}
+
+void SetConcretePoolBit(uint64_t& lo, uint64_t& hi, int index) {
+    if (index < 0 || index >= kActionPoolCount) return;
+    if (index < 64) {
+        lo |= (1ull << index);
+    } else {
+        hi |= (1ull << (index - 64));
+    }
+}
+
+bool ConcretePoolBitSet(uint64_t lo, uint64_t hi, int index) {
+    if (index < 0 || index >= kActionPoolCount) return false;
+    if (index < 64) return ((lo >> index) & 1ull) != 0;
+    return ((hi >> (index - 64)) & 1ull) != 0;
+}
+
+int ClampPoolDelay(int value) {
+    if (value < 0) return 0;
+    if (value > 60) return 60;
+    return value;
+}
+
+int* PoolDelayArrayForTriggerIndex(int triggerIdx) {
+    auto& d = ImGuiGui::guiState.localData;
+    switch (triggerIdx) {
+        case 0: return d.afterBlockActionPoolDelays;
+        case 1: return d.onWakeupActionPoolDelays;
+        case 2: return d.afterHitstunActionPoolDelays;
+        case 3: return d.afterAirtechActionPoolDelays;
+        case 4: return d.onRGActionPoolDelays;
+        default: return nullptr;
+    }
+}
+
+int DefaultDelayForTriggerIndex(int triggerIdx) {
+    const auto& d = ImGuiGui::guiState.localData;
+    switch (triggerIdx) {
+        case 0: return ClampPoolDelay(d.delayAfterBlock);
+        case 1: return ClampPoolDelay(d.delayOnWakeup);
+        case 2: return ClampPoolDelay(d.delayAfterHitstun);
+        case 3: return ClampPoolDelay(d.delayAfterAirtech);
+        case 4: return ClampPoolDelay(d.delayOnRG);
+        default: return 0;
+    }
+}
+
+void CurrentPoolMaskForTriggerIndex(int triggerIdx, uint64_t& lo, uint64_t& hi) {
+    switch (triggerIdx) {
+        case 0: lo = g_poolMaskABLo; hi = g_poolMaskABHi; return;
+        case 1: lo = g_poolMaskWULo; hi = g_poolMaskWUHi; return;
+        case 2: lo = g_poolMaskAHLo; hi = g_poolMaskAHHi; return;
+        case 3: lo = g_poolMaskAALo; hi = g_poolMaskAAHi; return;
+        case 4: lo = g_poolMaskRGLo; hi = g_poolMaskRGHi; return;
+        default: lo = 0; hi = 0; return;
+    }
+}
+
+bool PoolEnabledForTriggerIndex(int triggerIdx) {
+    switch (triggerIdx) {
+        case 0: return g_useMaskAB;
+        case 1: return g_useMaskWU;
+        case 2: return g_useMaskAH;
+        case 3: return g_useMaskAA;
+        case 4: return g_useMaskRG;
+        default: return false;
+    }
+}
+
+int EffectivePoolDelayForIndex(const int* delays, int index, int defaultDelay) {
+    if (!delays || index < 0 || index >= MAX_ACTION_POOL_OPTIONS) return defaultDelay;
+    return delays[index] < 0 ? defaultDelay : ClampPoolDelay(delays[index]);
+}
+
+bool NormalizeSelectedPoolDelaysForTrigger(int triggerIdx,
+                                           uint64_t maskLo, uint64_t maskHi,
+                                           bool initializeMissing) {
+    int* delays = PoolDelayArrayForTriggerIndex(triggerIdx);
+    if (!delays) return false;
+
+    bool changed = false;
+    const int defaultDelay = DefaultDelayForTriggerIndex(triggerIdx);
+    for (int i = 0; i < kActionPoolCount && i < MAX_ACTION_POOL_OPTIONS; ++i) {
+        if (!ConcretePoolBitSet(maskLo, maskHi, i)) continue;
+        if (delays[i] < 0) {
+            if (initializeMissing) {
+                delays[i] = defaultDelay;
+                changed = true;
+            }
+            continue;
+        }
+        const int clamped = ClampPoolDelay(delays[i]);
+        if (clamped != delays[i]) {
+            delays[i] = clamped;
+            changed = true;
+        }
+    }
+    return changed;
+}
+
+void InitializeAddedPoolDelaysForTrigger(int triggerIdx,
+                                         uint64_t oldLo, uint64_t oldHi,
+                                         uint64_t newLo, uint64_t newHi) {
+    int* delays = PoolDelayArrayForTriggerIndex(triggerIdx);
+    if (!delays) return;
+
+    const int defaultDelay = DefaultDelayForTriggerIndex(triggerIdx);
+    for (int i = 0; i < kActionPoolCount && i < MAX_ACTION_POOL_OPTIONS; ++i) {
+        if (!ConcretePoolBitSet(newLo, newHi, i) ||
+            ConcretePoolBitSet(oldLo, oldHi, i)) {
+            continue;
+        }
+        if (delays[i] < 0) {
+            delays[i] = defaultDelay;
+        }
+    }
+    NormalizeSelectedPoolDelaysForTrigger(triggerIdx, newLo, newHi, true);
+}
+
+int ConcretePoolIndexForLegacyMotion(int motionIdx, int strength) {
+    strength = ClampIndex(strength, 4);
+    switch (motionIdx) {
+        case 0:  return 0 + strength;   // 5A-D
+        case 1:  return 4 + strength;   // 2A-D
+        case 2:  return 8 + strength;   // jA-D
+        case 3:  return 20 + strength;  // 236A-D
+        case 4:  return 24 + strength;  // 623A-D
+        case 5:  return 28 + strength;  // 214A-D
+        case 6:  return 32 + strength;  // 421A-D
+        case 7:  return 44 + strength;  // 41236A-D
+        case 8:  return 48 + strength;  // 214236A-D
+        case 9:  return 52 + strength;  // 236236A-D
+        case 10: return 56 + strength;  // 214214A-D
+        case 11: return 60 + strength;  // 641236A-D
+        case 12: return 64 + strength;  // 463214A-D
+        case 13: return 36 + strength;  // 412A-D
+        case 14: return 40 + strength;  // 22A-D
+        case 15: return 68 + strength;  // 4123641236A-D
+        case 16: return 72 + strength;  // 6321463214A-D
+        case 17: return 77 + ClampIndex(strength, 3); // jump direction
+        case 18: return 80;             // backdash
+        case 19: return 81;             // forward dash
+        case 20: return 82;             // block
+        case 21: return 76;             // Final Memory
+        case 22: return 12 + strength;  // 6A-D
+        case 23: return 16 + strength;  // 4A-D
+        default: return -1;
+    }
+}
+
+void ExpandLegacyActionPoolMask(uint32_t legacyMask, int strength, uint64_t& lo, uint64_t& hi) {
+    lo = 0;
+    hi = 0;
+    for (int bit = 0; bit < 24; ++bit) {
+        if ((legacyMask & (1u << bit)) == 0) continue;
+        SetConcretePoolBit(lo, hi, ConcretePoolIndexForLegacyMotion(bit, strength));
+    }
+}
+
+const char* FormatActionPoolChoice(const Row&, int choiceValue) {
+    choiceValue = ClampIndex(choiceValue, kActionPoolCount);
+    return kActionPoolNames[choiceValue];
+}
+
+const char* FormatActionPoolChoiceHelp(const Row&, int choiceValue) {
+    static char s_buf[176];
+    choiceValue = ClampIndex(choiceValue, kActionPoolCount);
+    const char* name = kActionPoolNames[choiceValue];
+    const int category = ActionPoolCategoryForIndex(choiceValue);
+    const char* kind = "response";
+    switch (category) {
+        case kTriggerActionCategoryNormals:
+        case kTriggerActionCategoryCommandNormals:
+            kind = "normal";
+            break;
+        case kTriggerActionCategorySpecials:
+            kind = "special";
+            break;
+        case kTriggerActionCategorySupers:
+            kind = "super";
+            break;
+        case kTriggerActionCategoryMovement:
+            kind = "movement option";
+            break;
+        case kTriggerActionCategoryDefense:
+            kind = "defensive response";
+            break;
+        default:
+            break;
+    }
+    _snprintf_s(s_buf, sizeof(s_buf), _TRUNCATE,
+                "Adds %s as an exact %s; only checked entries can be rolled by Random Pool.",
+                name, kind);
+    return s_buf;
+}
+
+const char* FormatActionPoolSummary(const Row& row) {
+    return FormatMaskSelectionSummary(row, 3);
+}
+
+constexpr int kMaxTriggerActionChoices = 96;
+TriggerActionChoice g_triggerActionChoices[kMaxTriggerActionChoices];
+char g_triggerActionLabels[kMaxTriggerActionChoices][48];
+char g_triggerActionShortLabels[kMaxTriggerActionChoices][32];
+const char* g_triggerActionChoiceArr[kMaxTriggerActionChoices];
+int g_triggerActionCategoryMap[kMaxTriggerActionChoices];
+int g_triggerActionChoiceCount = 0;
+
+int TriggerActionCategoryForMotion(int motionIdx) {
+    switch (motionIdx) {
+        case 0:
+        case 1:
+        case 2:
+            return kTriggerActionCategoryNormals;
+        case 22:
+        case 23:
+            return kTriggerActionCategoryCommandNormals;
+        case 3:
+        case 4:
+        case 5:
+        case 6:
+        case 13:
+        case 14:
+            return kTriggerActionCategorySpecials;
+        case 7:
+        case 8:
+        case 9:
+        case 10:
+        case 11:
+        case 12:
+        case 15:
+        case 16:
+        case 21:
+            return kTriggerActionCategorySupers;
+        default:
+            return kTriggerActionCategoryMovement;
+    }
+}
+
+const char* TriggerActionLabelForMotion(int motionIdx) {
+    switch (motionIdx) {
+        case 0:  return "STANDING";
+        case 1:  return "CROUCHING";
+        case 2:  return "AIR";
+        case 3:  return "QCF (236)";
+        case 4:  return "DP (623)";
+        case 5:  return "QCB (214)";
+        case 6:  return "421";
+        case 7:  return "SUPER1 (41236)";
+        case 8:  return "SUPER2 (214236)";
+        case 9:  return "236236";
+        case 10: return "214214";
+        case 11: return "641236";
+        case 12: return "463214";
+        case 13: return "412";
+        case 14: return "22";
+        case 15: return "4123641236";
+        case 16: return "6321463214";
+        case 17: return "JUMP";
+        case 18: return "BACKDASH";
+        case 19: return "FORWARD DASH";
+        case 20: return "BLOCK";
+        case 21: return "FINAL MEMORY";
+        case 22: return "FORWARD NORMAL";
+        case 23: return "BACK NORMAL";
+        default: return "";
+    }
+}
+
+void AddTriggerActionChoice(int category,
+                            int motionIdx,
+                            const char* shortLabel,
+                            int action,
+                            int strength,
+                            int dashFollowup) {
+    if (g_triggerActionChoiceCount >= kMaxTriggerActionChoices) return;
+    const int i = g_triggerActionChoiceCount++;
+    category = ClampIndex(category, kTriggerActionCategoryCount);
+    motionIdx = ClampIndex(motionIdx, kTriggerMotionCount);
+    g_triggerActionChoices[i] = { motionIdx, action, strength, dashFollowup, category };
+    g_triggerActionCategoryMap[i] = category;
+    strncpy_s(g_triggerActionShortLabels[i], sizeof(g_triggerActionShortLabels[i]), shortLabel, _TRUNCATE);
+    strncpy_s(g_triggerActionLabels[i], sizeof(g_triggerActionLabels[i]), shortLabel, _TRUNCATE);
+    g_triggerActionChoiceArr[i] = g_triggerActionLabels[i];
+}
+
+void AddMotionActionChoice(int motionIdx) {
+    AddTriggerActionChoice(TriggerActionCategoryForMotion(motionIdx),
+                           motionIdx,
+                           TriggerActionLabelForMotion(motionIdx),
+                           MapMotionIndexToAction(motionIdx, 0),
+                           0,
+                           -1);
+}
+
+void RefreshTriggerActionChoices() {
+    if (g_triggerActionChoiceCount > 0) return;
+
+    const int normalMotions[] = { 0, 1, 2 };
+    for (int motionIdx : normalMotions) {
+        AddMotionActionChoice(motionIdx);
+    }
+
+    const int commandNormalMotions[] = { 22, 23 };
+    for (int motionIdx : commandNormalMotions) {
+        AddMotionActionChoice(motionIdx);
+    }
+
+    const int specialMotions[] = { 3, 4, 5, 6, 13, 14 };
+    for (int motionIdx : specialMotions) {
+        AddMotionActionChoice(motionIdx);
+    }
+
+    const int superMotions[] = { 7, 8, 9, 10, 11, 12, 15, 16 };
+    for (int motionIdx : superMotions) {
+        AddMotionActionChoice(motionIdx);
+    }
+
+    AddTriggerActionChoice(kTriggerActionCategorySupers, 21, "FINAL MEMORY", ACTION_FINAL_MEMORY, 0, -1);
+
+    AddTriggerActionChoice(kTriggerActionCategoryMovement, 17, "JUMP", ACTION_JUMP, 0, -1);
+    AddTriggerActionChoice(kTriggerActionCategoryMovement, 18, "BACKDASH", ACTION_BACKDASH, 0, -1);
+    AddTriggerActionChoice(kTriggerActionCategoryMovement, 19, "FORWARD DASH", ACTION_FORWARD_DASH, 0, 0);
+    AddTriggerActionChoice(kTriggerActionCategoryDefense, 20, "BLOCK", ACTION_BLOCK, 0, -1);
+}
+
+int GetTriggerActionChoiceIndex(int action, int strength) {
+    RefreshTriggerActionChoices();
+    if (g_triggerActionChoiceCount <= 0) return 0;
+
+    const int motionIdx = GetMotionIndexForAction(action);
+
+    for (int i = 0; i < g_triggerActionChoiceCount; ++i) {
+        const TriggerActionChoice& choice = g_triggerActionChoices[i];
+        if (choice.motionIdx != motionIdx) continue;
+        return i;
+    }
+    return 0;
+}
+
+void ApplyTriggerActionChoiceIndex(int selectedIdx, int& action, int& strength) {
+    RefreshTriggerActionChoices();
+    if (g_triggerActionChoiceCount <= 0) return;
+    selectedIdx = ClampIndex(selectedIdx, g_triggerActionChoiceCount);
+    const TriggerActionChoice& choice = g_triggerActionChoices[selectedIdx];
+    const TriggerButtonMode mode = GetTriggerButtonMode(choice.action);
+    switch (mode) {
+        case TriggerButtonMode::Abcd: {
+            const int buttonIdx = ClampIndex(strength, 4);
+            action = MapMotionIndexToAction(choice.motionIdx, buttonIdx);
+            strength = buttonIdx;
+            break;
+        }
+        case TriggerButtonMode::JumpDir:
+            action = choice.action;
+            strength = ClampIndex(strength, 3);
+            break;
+        case TriggerButtonMode::FdFollowup:
+            action = choice.action;
+            strength = 0;
+            g_mirrorFwdDashFollowup = ClampIndex(g_mirrorFwdDashFollowup, 7);
+            forwardDashFollowup.store(g_mirrorFwdDashFollowup);
+            break;
+        default:
+            action = choice.action;
+            strength = choice.strength;
+            break;
+    }
+}
+
+const char* FormatTriggerActionChoiceLabel(int choiceIdx,
+                                           int strength,
+                                           int dashFollowup,
+                                           bool hideNoDashFollowup) {
+    if (g_triggerActionChoiceCount <= 0) return "?";
+    choiceIdx = ClampIndex(choiceIdx, g_triggerActionChoiceCount);
+    const TriggerActionChoice& choice = g_triggerActionChoices[choiceIdx];
+    const char* baseLabel = g_triggerActionShortLabels[choiceIdx];
+    const TriggerButtonMode mode = GetTriggerButtonMode(choice.action);
+    static char s_buf[64];
+    switch (mode) {
+        case TriggerButtonMode::Abcd:
+            _snprintf_s(s_buf, sizeof(s_buf), _TRUNCATE, "%s %s",
+                        baseLabel,
+                        TriggerButtonChoiceLabel(mode, ClampIndex(strength, 4)));
+            return s_buf;
+        case TriggerButtonMode::JumpDir:
+            _snprintf_s(s_buf, sizeof(s_buf), _TRUNCATE, "%s %s",
+                        baseLabel,
+                        TriggerButtonChoiceLabel(mode, ClampIndex(strength, 3)));
+            return s_buf;
+        case TriggerButtonMode::FdFollowup:
+            dashFollowup = ClampIndex(dashFollowup, 7);
+            if (hideNoDashFollowup && dashFollowup == 0) return baseLabel;
+            _snprintf_s(s_buf, sizeof(s_buf), _TRUNCATE, "%s > %s",
+                        baseLabel,
+                        TriggerButtonChoiceLabel(mode, dashFollowup));
+            return s_buf;
+        default:
+            return baseLabel;
+    }
+}
+
+const char* FormatTriggerActionChoiceRow(const Row& row) {
+    RefreshTriggerActionChoices();
+    if (!row.choiceIdxPtr || g_triggerActionChoiceCount <= 0) return "?";
+    int idx = ClampIndex(*row.choiceIdxPtr, g_triggerActionChoiceCount);
+    const int action = row.choice2IdxPtr ? *row.choice2IdxPtr : g_triggerActionChoices[idx].action;
+    const int strength = row.intPtr ? *row.intPtr : g_triggerActionChoices[idx].strength;
+    if (row.choice2IdxPtr) {
+        idx = GetTriggerActionChoiceIndex(action, strength);
+    }
+
+    return FormatTriggerActionChoiceLabel(idx, strength, g_mirrorFwdDashFollowup, true);
+}
+
+const char* FormatTriggerActionPopupChoice(const Row& row, int choiceValue) {
+    RefreshTriggerActionChoices();
+    if (g_triggerActionChoiceCount <= 0) return "?";
+    choiceValue = ClampIndex(choiceValue, g_triggerActionChoiceCount);
+    const int strength = row.intPtr ? *row.intPtr : g_triggerActionChoices[choiceValue].strength;
+    return FormatTriggerActionChoiceLabel(choiceValue, strength, g_mirrorFwdDashFollowup, false);
+}
+
+bool AdjustTriggerActionPopupChoice(const Row& row, int choiceValue, int direction) {
+    if (!row.intPtr || direction == 0) return false;
+    RefreshTriggerActionChoices();
+    if (g_triggerActionChoiceCount <= 0) return false;
+    choiceValue = ClampIndex(choiceValue, g_triggerActionChoiceCount);
+    const TriggerActionChoice& choice = g_triggerActionChoices[choiceValue];
+    const TriggerButtonMode mode = GetTriggerButtonMode(choice.action);
+    const int count = TriggerButtonChoiceCount(mode);
+    if (count <= 0) return false;
+
+    switch (mode) {
+        case TriggerButtonMode::Abcd:
+        case TriggerButtonMode::JumpDir:
+            *row.intPtr = (*row.intPtr + direction + count) % count;
+            return true;
+        case TriggerButtonMode::FdFollowup:
+            g_mirrorFwdDashFollowup = (g_mirrorFwdDashFollowup + direction + count) % count;
+            forwardDashFollowup.store(g_mirrorFwdDashFollowup);
+            return true;
+        default:
+            return false;
+    }
+}
+
+bool AdjustTriggerActionChoiceRow(const Row& row, int direction) {
+    if (!row.choice2IdxPtr || !row.intPtr || direction == 0) return false;
+    int action = *row.choice2IdxPtr;
+    int strength = *row.intPtr;
+    const TriggerButtonMode mode = GetTriggerButtonMode(action);
+    const int count = TriggerButtonChoiceCount(mode);
+    if (count <= 0) return false;
+
+    int dashFollowup = g_mirrorFwdDashFollowup;
+    int idx = GetTriggerButtonIndex(action, strength, dashFollowup, mode);
+    idx = (idx + direction + count) % count;
+
+    ApplyTriggerButtonIndex(action, strength, &g_mirrorFwdDashFollowup, mode, idx);
+    *row.choice2IdxPtr = action;
+    *row.intPtr = strength;
+    if (row.choiceIdxPtr) {
+        *row.choiceIdxPtr = GetTriggerActionChoiceIndex(action, strength);
+    }
+    return true;
+}
+
+void OnTriggerActionAfterBlock() {
+    auto& d = ImGuiGui::guiState.localData;
+    ApplyTriggerActionChoiceIndex(g_actionPickIdxAB, d.actionAfterBlock, d.strengthAfterBlock);
+    OnAutoApply();
+}
+void OnTriggerActionOnWakeup() {
+    auto& d = ImGuiGui::guiState.localData;
+    ApplyTriggerActionChoiceIndex(g_actionPickIdxWU, d.actionOnWakeup, d.strengthOnWakeup);
+    OnAutoApply();
+}
+void OnTriggerActionAfterHitstun() {
+    auto& d = ImGuiGui::guiState.localData;
+    ApplyTriggerActionChoiceIndex(g_actionPickIdxAH, d.actionAfterHitstun, d.strengthAfterHitstun);
+    OnAutoApply();
+}
+void OnTriggerActionAfterAirtech() {
+    auto& d = ImGuiGui::guiState.localData;
+    ApplyTriggerActionChoiceIndex(g_actionPickIdxAA, d.actionAfterAirtech, d.strengthAfterAirtech);
+    OnAutoApply();
+}
+void OnTriggerActionOnRG() {
+    auto& d = ImGuiGui::guiState.localData;
+    ApplyTriggerActionChoiceIndex(g_actionPickIdxRG, d.actionOnRG, d.strengthOnRG);
+    OnAutoApply();
+}
+
 void OnTriggerMotionAfterBlock() {
     auto& d = ImGuiGui::guiState.localData;
     ApplyMotionToTrigger(g_motionIdxAB, d.actionAfterBlock, d.strengthAfterBlock);
@@ -719,6 +1400,12 @@ bool HideWUPool() { return !g_useMaskWU; }
 bool HideAHPool() { return !g_useMaskAH; }
 bool HideAAPool() { return !g_useMaskAA; }
 bool HideRGPool() { return !g_useMaskRG; }
+
+bool HideABRegularDelay() { return g_useMaskAB; }
+bool HideWURegularDelay() { return g_useMaskWU; }
+bool HideAHRegularDelay() { return g_useMaskAH; }
+bool HideAARegularDelay() { return g_useMaskAA; }
+bool HideRGRegularDelay() { return g_useMaskRG; }
 
 // Macro slot picker list. Rebuilt once per frame to match the current slot count.
 constexpr int kMaxMacroSlotEntries = 17;   // 1 "none" + up to 16 slots
@@ -3134,34 +3821,175 @@ Row* BuildHelpAboutRows(int& count) {
 }
 
 // ===== AUTO / TRIGGERS =====
+Row WithHelp(Row row, const char* helpText) {
+    row.helpText = helpText;
+    return row;
+}
+
+int SelectedPoolActionCount(int triggerIdx) {
+    uint64_t lo = 0;
+    uint64_t hi = 0;
+    CurrentPoolMaskForTriggerIndex(triggerIdx, lo, hi);
+    int count = 0;
+    for (int i = 0; i < kActionPoolCount; ++i) {
+        if (ConcretePoolBitSet(lo, hi, i)) ++count;
+    }
+    return count;
+}
+
+const char* ValPoolDelaySummary() {
+    static char s_buf[64];
+    const int triggerIdx = ClampIndex(g_selectedAutoTrigger, 5);
+    if (!PoolEnabledForTriggerIndex(triggerIdx)) {
+        return "";
+    }
+
+    uint64_t lo = 0;
+    uint64_t hi = 0;
+    CurrentPoolMaskForTriggerIndex(triggerIdx, lo, hi);
+    const int* delays = PoolDelayArrayForTriggerIndex(triggerIdx);
+    const int defaultDelay = DefaultDelayForTriggerIndex(triggerIdx);
+
+    int selected = 0;
+    int firstDelay = -1;
+    bool mixed = false;
+    for (int i = 0; i < kActionPoolCount; ++i) {
+        if (!ConcretePoolBitSet(lo, hi, i)) continue;
+        const int effectiveDelay = EffectivePoolDelayForIndex(delays, i, defaultDelay);
+        if (selected == 0) {
+            firstDelay = effectiveDelay;
+        } else if (effectiveDelay != firstDelay) {
+            mixed = true;
+        }
+        ++selected;
+    }
+
+    if (selected <= 0) {
+        return "EMPTY";
+    }
+    if (mixed) {
+        _snprintf_s(s_buf, sizeof(s_buf), _TRUNCATE,
+                    "%d MOVES / MIXED", selected);
+    } else {
+        _snprintf_s(s_buf, sizeof(s_buf), _TRUNCATE,
+                    "%d %s / %dF",
+                    selected,
+                    selected == 1 ? "MOVE" : "MOVES",
+                    firstDelay);
+    }
+    return s_buf;
+}
+
+Row* BuildPoolDelayRows(int& count) {
+    static Row s_rows[96];
+    static char s_labels[MAX_ACTION_POOL_OPTIONS][48];
+    static char s_help[MAX_ACTION_POOL_OPTIONS][128];
+
+    int n = 0;
+    const int triggerIdx = ClampIndex(g_selectedAutoTrigger, 5);
+    uint64_t lo = 0;
+    uint64_t hi = 0;
+    CurrentPoolMaskForTriggerIndex(triggerIdx, lo, hi);
+    int* delays = PoolDelayArrayForTriggerIndex(triggerIdx);
+
+    s_rows[n++] = Header("POOL DELAYS");
+    if (!PoolEnabledForTriggerIndex(triggerIdx)) {
+        s_rows[n++] = Info("Turn on Random Pool to edit per-move delays.");
+        count = n;
+        return s_rows;
+    }
+    if (!delays || (lo | hi) == 0) {
+        s_rows[n++] = Info("Select moves in Action Pool first.");
+        count = n;
+        return s_rows;
+    }
+
+    const bool normalized = NormalizeSelectedPoolDelaysForTrigger(triggerIdx, lo, hi, true);
+    if (normalized) {
+        OnAutoApply();
+    }
+
+    s_rows[n++] = Info("Each selected move uses its own delay when Random Pool rolls it.");
+    for (int i = 0; i < kActionPoolCount && n < 94; ++i) {
+        if (!ConcretePoolBitSet(lo, hi, i)) continue;
+        _snprintf_s(s_labels[i], sizeof(s_labels[i]), _TRUNCATE,
+                    "%s DELAY", kActionPoolNames[i]);
+        _snprintf_s(s_help[i], sizeof(s_help[i]), _TRUNCATE,
+                    "Waits this many frames when Random Pool rolls %s.",
+                    kActionPoolNames[i]);
+        s_rows[n++] = WithHelp(IntNum(s_labels[i],
+                                      &delays[i],
+                                      0,
+                                      60,
+                                      1,
+                                      5,
+                                      OnAutoApply),
+                               s_help[i]);
+    }
+
+    count = n;
+    return s_rows;
+}
+
 void AddTriggerRows(Row* rows, int& n,
                     const char* title,
                     bool* enabled,
-                    int* motionIdx,
-                    void (*onMotion)(),
+                    int* actionPickIdx,
+                    void (*onActionPick)(),
                     int* action,
                     int* strength,
                     int* macroSlot,
                     int* delay,
                     bool* usePool,
-                    unsigned int* poolMask,
+                    uint64_t* poolMaskLo,
+                    uint64_t* poolMaskHi,
                     void (*onUsePool)(),
                     void (*onPoolMask)(),
+                    bool (*hideRegularDelay)(),
                     bool (*hideSingleAction)(),
-                    bool (*hideButton)(),
                     bool (*hidePool)()) {
     rows[n++] = Header(title);
-    rows[n++] = Toggle        ("ENABLE",        enabled, OnAutoApply);
-    rows[n++] = DropdownRow   ("ACTION",        motionIdx, kTriggerMotionChoices, kTriggerMotionCount,
-                               onMotion, nullptr, hideSingleAction);
-    rows[n++] = TriggerButtonRow("BUTTON",      action, strength, &g_mirrorFwdDashFollowup,
-                                 OnAutoApply, nullptr, hideButton);
-    rows[n++] = IntNum        ("DELAY",         delay, 0, 60, 1, 5, OnAutoApply);
-    rows[n++] = DropdownRow   ("MACRO SLOT",    macroSlot, g_macroSlotChoiceArr, g_macroSlotChoiceCount,
-                               OnAutoApply);
-    rows[n++] = Toggle        ("RANDOM POOL",   usePool, onUsePool);
-    rows[n++] = MaskPickerRow ("ACTION POOL",   poolMask, kActionPoolNames, kActionPoolCount,
-                               onPoolMask, nullptr, hidePool);
+    rows[n++] = WithHelp(Toggle("ENABLE", enabled, OnAutoApply),
+                         "Enables this trigger so the dummy responds when this situation happens.");
+    Row actionRow = DropdownRow("ACTION",        actionPickIdx, g_triggerActionChoiceArr, g_triggerActionChoiceCount,
+                                onActionPick, nullptr, hideSingleAction);
+    actionRow.choice2IdxPtr = action;
+    actionRow.intPtr = strength;
+    actionRow.valueFormatter = FormatTriggerActionChoiceRow;
+    actionRow.inlineAdjuster = AdjustTriggerActionChoiceRow;
+    actionRow.choiceValueFormatter = FormatTriggerActionPopupChoice;
+    actionRow.choiceValueAdjuster = AdjustTriggerActionPopupChoice;
+    actionRow.choiceCategoryMap = g_triggerActionCategoryMap;
+    actionRow.categoryChoices = kTriggerActionCategoryChoices;
+    actionRow.categoryCount = kTriggerActionCategoryCount;
+    actionRow.helpText = "Chooses what the dummy performs for this trigger; left and right change the button or variant.";
+    rows[n++] = actionRow;
+    rows[n++] = WithHelp(IntNum("DELAY", delay, 0, 60, 1, 5, OnAutoApply, nullptr, hideRegularDelay),
+                         "Waits this many frames before the dummy starts the selected response.");
+    rows[n++] = WithHelp(DropdownRow("MACRO SLOT", macroSlot, g_macroSlotChoiceArr, g_macroSlotChoiceCount,
+                                     OnAutoApply),
+                         "Runs a recorded macro instead of the single selected action when a slot is chosen.");
+    rows[n++] = WithHelp(Toggle("RANDOM POOL", usePool, onUsePool),
+                         "Chooses randomly from the action pool instead of always using one response.");
+    EnsureActionPoolCategoryMap();
+    Row poolRow = MaskPickerRow64("ACTION POOL", poolMaskLo, poolMaskHi,
+                                  kActionPoolNames, kActionPoolCount,
+                                  onPoolMask, nullptr, hidePool);
+    poolRow.choiceCategoryMap = kActionPoolCategoryMap;
+    poolRow.categoryChoices = kTriggerActionCategoryChoices;
+    poolRow.categoryCount = kTriggerActionCategoryCount;
+    poolRow.valueFormatter = FormatActionPoolSummary;
+    poolRow.choiceValueFormatter = FormatActionPoolChoice;
+    poolRow.choiceHelpFormatter = FormatActionPoolChoiceHelp;
+    poolRow.helpText = "Selects the exact move versions Random Pool is allowed to roll.";
+    rows[n++] = poolRow;
+    rows[n++] = WithHelp(Submenu("POOL DELAYS",
+                                 "POOL DELAYS",
+                                 BuildPoolDelayRows,
+                                 ValPoolDelaySummary,
+                                 nullptr,
+                                 hidePool),
+                         "Sets a separate delay for each selected Random Pool move.");
 }
 
 const char* AutoActionTargetInfo() {
@@ -3175,6 +4003,7 @@ Row* BuildTriggersRows(int& count) {
     static Row s_rows[40];
     int n = 0;
     auto& d = ImGuiGui::guiState.localData;
+    RefreshTriggerActionChoices();
     static const char* const kAutoTriggerChoices[5] = {
         "AFTER BLOCK",
         "ON WAKEUP",
@@ -3184,68 +4013,82 @@ Row* BuildTriggersRows(int& count) {
     };
 
     s_rows[n++] = Header("AUTO ACTIONS");
-    s_rows[n++] = Info      (AutoActionTargetInfo());
+    s_rows[n++] = WithHelp(Info(AutoActionTargetInfo()),
+                           "Auto Actions control the opponent side by default, so P1 training inputs stay local.");
     g_selectedAutoTrigger = ClampIndex(g_selectedAutoTrigger, 5);
-    s_rows[n++] = ChoicesRow("TRIGGER", &g_selectedAutoTrigger, kAutoTriggerChoices, 5);
+    s_rows[n++] = WithHelp(ChoicesRow("TRIGGER", &g_selectedAutoTrigger, kAutoTriggerChoices, 5),
+                           "Chooses which auto-action timing you are editing on this page.");
 
     s_rows[n++] = Spacer();
     switch (g_selectedAutoTrigger) {
         case 0:
             g_motionIdxAB = GetMotionIndexForAction(d.actionAfterBlock);
+            g_actionPickIdxAB = GetTriggerActionChoiceIndex(d.actionAfterBlock, d.strengthAfterBlock);
             AddTriggerRows(s_rows, n, "AFTER BLOCK",
                            &d.triggerAfterBlock,
-                           &g_motionIdxAB, OnTriggerMotionAfterBlock,
+                           &g_actionPickIdxAB, OnTriggerActionAfterBlock,
                            &d.actionAfterBlock, &d.strengthAfterBlock,
                            &d.macroSlotAfterBlock, &d.delayAfterBlock,
-                           &g_useMaskAB, &g_poolMaskAB, OnUseMaskAB, OnPoolMaskAB,
-                           HideABSingleAction, HideABButton, HideABPool);
+                           &g_useMaskAB, &g_poolMaskABLo, &g_poolMaskABHi, OnUseMaskAB, OnPoolMaskAB,
+                           HideABRegularDelay,
+                           HideABSingleAction, HideABPool);
             break;
         case 1:
             g_motionIdxWU = GetMotionIndexForAction(d.actionOnWakeup);
+            g_actionPickIdxWU = GetTriggerActionChoiceIndex(d.actionOnWakeup, d.strengthOnWakeup);
             AddTriggerRows(s_rows, n, "ON WAKEUP",
                            &d.triggerOnWakeup,
-                           &g_motionIdxWU, OnTriggerMotionOnWakeup,
+                           &g_actionPickIdxWU, OnTriggerActionOnWakeup,
                            &d.actionOnWakeup, &d.strengthOnWakeup,
                            &d.macroSlotOnWakeup, &d.delayOnWakeup,
-                           &g_useMaskWU, &g_poolMaskWU, OnUseMaskWU, OnPoolMaskWU,
-                           HideWUSingleAction, HideWUButton, HideWUPool);
+                           &g_useMaskWU, &g_poolMaskWULo, &g_poolMaskWUHi, OnUseMaskWU, OnPoolMaskWU,
+                           HideWURegularDelay,
+                           HideWUSingleAction, HideWUPool);
             break;
         case 2:
             g_motionIdxAH = GetMotionIndexForAction(d.actionAfterHitstun);
+            g_actionPickIdxAH = GetTriggerActionChoiceIndex(d.actionAfterHitstun, d.strengthAfterHitstun);
             AddTriggerRows(s_rows, n, "AFTER HITSTUN",
                            &d.triggerAfterHitstun,
-                           &g_motionIdxAH, OnTriggerMotionAfterHitstun,
+                           &g_actionPickIdxAH, OnTriggerActionAfterHitstun,
                            &d.actionAfterHitstun, &d.strengthAfterHitstun,
                            &d.macroSlotAfterHitstun, &d.delayAfterHitstun,
-                           &g_useMaskAH, &g_poolMaskAH, OnUseMaskAH, OnPoolMaskAH,
-                           HideAHSingleAction, HideAHButton, HideAHPool);
+                           &g_useMaskAH, &g_poolMaskAHLo, &g_poolMaskAHHi, OnUseMaskAH, OnPoolMaskAH,
+                           HideAHRegularDelay,
+                           HideAHSingleAction, HideAHPool);
             break;
         case 3:
             g_motionIdxAA = GetMotionIndexForAction(d.actionAfterAirtech);
+            g_actionPickIdxAA = GetTriggerActionChoiceIndex(d.actionAfterAirtech, d.strengthAfterAirtech);
             AddTriggerRows(s_rows, n, "AFTER AIRTECH",
                            &d.triggerAfterAirtech,
-                           &g_motionIdxAA, OnTriggerMotionAfterAirtech,
+                           &g_actionPickIdxAA, OnTriggerActionAfterAirtech,
                            &d.actionAfterAirtech, &d.strengthAfterAirtech,
                            &d.macroSlotAfterAirtech, &d.delayAfterAirtech,
-                           &g_useMaskAA, &g_poolMaskAA, OnUseMaskAA, OnPoolMaskAA,
-                           HideAASingleAction, HideAAButton, HideAAPool);
+                           &g_useMaskAA, &g_poolMaskAALo, &g_poolMaskAAHi, OnUseMaskAA, OnPoolMaskAA,
+                           HideAARegularDelay,
+                           HideAASingleAction, HideAAPool);
             break;
         default:
             g_motionIdxRG = GetMotionIndexForAction(d.actionOnRG);
+            g_actionPickIdxRG = GetTriggerActionChoiceIndex(d.actionOnRG, d.strengthOnRG);
             AddTriggerRows(s_rows, n, "ON RECOIL GUARD",
                            &d.triggerOnRG,
-                           &g_motionIdxRG, OnTriggerMotionOnRG,
+                           &g_actionPickIdxRG, OnTriggerActionOnRG,
                            &d.actionOnRG, &d.strengthOnRG,
                            &d.macroSlotOnRG, &d.delayOnRG,
-                           &g_useMaskRG, &g_poolMaskRG, OnUseMaskRG, OnPoolMaskRG,
-                           HideRGSingleAction, HideRGButton, HideRGPool);
+                           &g_useMaskRG, &g_poolMaskRGLo, &g_poolMaskRGHi, OnUseMaskRG, OnPoolMaskRG,
+                           HideRGRegularDelay,
+                           HideRGSingleAction, HideRGPool);
             break;
     }
 
     s_rows[n++] = Spacer();
     s_rows[n++] = Header("GLOBAL");
-    s_rows[n++] = Toggle    ("RANDOMIZE TRIGGERS",    &g_mirrorRandomize,  OnRandomizeToggle);
-    s_rows[n++] = Toggle    ("PRE-BUFFER WAKEUP",     &g_mirrorWakeBuffer, OnWakeBufferToggle);
+    s_rows[n++] = WithHelp(Toggle("RANDOMIZE TRIGGERS", &g_mirrorRandomize, OnRandomizeToggle),
+                           "Allows enabled triggers to pick from their random pools during practice.");
+    s_rows[n++] = WithHelp(Toggle("PRE-BUFFER WAKEUP", &g_mirrorWakeBuffer, OnWakeBufferToggle),
+                           "Buffers wakeup actions early so the dummy can perform fast reversals reliably.");
 
     count = n;
     return s_rows;
@@ -3605,16 +4448,25 @@ const char* const kJumpTargetChoices[3] = { "P1", "P2", "BOTH" };
 const char* const kDummyBlockChoices[4] = { "OFF", "ALL", "FIRST HIT", "AFTER HIT" };
 const char* const kDummyStanceChoices[3] = { "STAND", "JUMP", "CROUCH" };
 
-bool AdaptiveHidesStance() { return g_mirrorAdaptiveStance; }
+bool RandomBlockHidden() { return g_mirrorDummyBlockMode == 0 && !g_mirrorRandomBlock; }
+bool AdaptiveStanceHidden() { return g_mirrorDummyBlockMode == 0 && !g_mirrorAdaptiveStance; }
+bool AdaptiveDisablesStance() { return g_mirrorDummyBlockMode != 0 && g_mirrorAdaptiveStance; }
+bool CounterRGDisabled() { return g_mirrorAlwaysRG; }
+bool MovementJumpDirHidden();
+bool MovementJumpTargetHidden();
+bool AirtechDelayHidden();
 
 // Most recovery/movement settings bind directly to DisplayData. Auto-Airtech uses
 // a small mirror because the custom menu exposes disabled/forward/back as one row.
 
 const char* ValDefenseSummary() {
-    if (g_mirrorRandomBlock) return "RANDOM BLOCK";
     if (g_mirrorAlwaysRG) return "ALWAYS RG";
     if (g_mirrorRandomRG) return "RANDOM RG";
-    if (g_mirrorDummyBlockMode != 0) return kDummyBlockChoices[g_mirrorDummyBlockMode];
+    if (g_mirrorDummyBlockMode != 0) {
+        if (g_mirrorRandomBlock) return "RANDOM BLOCK";
+        if (g_mirrorAdaptiveStance) return "ADAPTIVE BLOCK";
+        return kDummyBlockChoices[g_mirrorDummyBlockMode];
+    }
     return "OFF";
 }
 
@@ -3649,13 +4501,22 @@ Row* BuildOpponentDefenseRows(int& count) {
     static Row s_rows[16];
     int n = 0;
 
-    s_rows[n++] = ChoicesRow("DUMMY AUTO-BLOCK",       &g_mirrorDummyBlockMode,    kDummyBlockChoices, 4, OnDummyBlockMode);
-    s_rows[n++] = Toggle    ("RANDOM BLOCK",           &g_mirrorRandomBlock,       OnRandomBlock);
-    s_rows[n++] = Toggle    ("ADAPTIVE STANCE",        &g_mirrorAdaptiveStance,    OnAdaptiveStance);
-    s_rows[n++] = ChoicesRow("DUMMY STANCE",           &g_mirrorPracticeStance,    kDummyStanceChoices, 3, OnPracticeStance, AdaptiveHidesStance);
-    s_rows[n++] = Toggle    ("ALWAYS RECOIL GUARD",    &g_mirrorAlwaysRG,          OnAlwaysRG);
-    s_rows[n++] = Toggle    ("RANDOM RECOIL GUARD",    &g_mirrorRandomRG,          OnRandomRG);
-    s_rows[n++] = Toggle    ("COUNTER RG",             &g_mirrorCounterRG,         OnCounterRGToggle);
+    s_rows[n++] = WithHelp(ChoicesRow("DUMMY AUTO-BLOCK", &g_mirrorDummyBlockMode,
+                                      kDummyBlockChoices, 4, OnDummyBlockMode),
+                           "Sets when the dummy turns auto-block on during incoming attacks.");
+    s_rows[n++] = WithHelp(Toggle("RANDOM BLOCK", &g_mirrorRandomBlock, OnRandomBlock,
+                                  nullptr, RandomBlockHidden),
+                           "Randomizes the active auto-block window instead of blocking every eligible frame.");
+    s_rows[n++] = WithHelp(Toggle("ADAPTIVE STANCE", &g_mirrorAdaptiveStance, OnAdaptiveStance,
+                                  nullptr, AdaptiveStanceHidden),
+                           "Automatically switches the dummy between standing and crouching guard for incoming attacks.");
+    s_rows[n++] = WithHelp(Toggle("ALWAYS RECOIL GUARD", &g_mirrorAlwaysRG, OnAlwaysRG),
+                           "Keeps the dummy's Recoil Guard armed whenever the game allows it.");
+    s_rows[n++] = WithHelp(Toggle("RANDOM RECOIL GUARD", &g_mirrorRandomRG, OnRandomRG),
+                           "Randomly arms Recoil Guard so block checks can become RGs.");
+    s_rows[n++] = WithHelp(Toggle("COUNTER RG", &g_mirrorCounterRG, OnCounterRGToggle,
+                                  CounterRGDisabled),
+                           "Tries to Recoil Guard back after your Recoil Guard; unavailable while Always RG is on.");
     count = n;
     return s_rows;
 }
@@ -3666,8 +4527,12 @@ Row* BuildOpponentRecoveryRows(int& count) {
     auto& d = ImGuiGui::guiState.localData;
     g_mirrorAirtechMode = d.autoAirtech ? (ClampIndex(d.airtechDirection, 2) + 1) : 0;
 
-    s_rows[n++] = ChoicesRow("AUTO-AIRTECH",           &g_mirrorAirtechMode, kAirtechDirChoices, 3, OnAirtechMode);
-    s_rows[n++] = IntNum   ("  AIRTECH DELAY",         &d.airtechDelay,     0, 60, 1, 5, OnAutoApply);
+    s_rows[n++] = WithHelp(ChoicesRow("AUTO-AIRTECH", &g_mirrorAirtechMode,
+                                      kAirtechDirChoices, 3, OnAirtechMode),
+                           "Air-recovers automatically in the selected direction after the dummy can tech.");
+    s_rows[n++] = WithHelp(IntNum("  AIRTECH DELAY", &d.airtechDelay, 0, 60, 1, 5, OnAutoApply,
+                                  nullptr, AirtechDelayHidden),
+                           "Waits this many frames after airtech is available before recovering.");
     count = n;
     return s_rows;
 }
@@ -3677,9 +4542,16 @@ Row* BuildOpponentMovementRows(int& count) {
     int n = 0;
     auto& d = ImGuiGui::guiState.localData;
 
-    s_rows[n++] = Toggle   ("AUTO-JUMP",               &d.autoJump,        OnAutoApply);
-    s_rows[n++] = ChoicesRow("  JUMP DIRECTION",       &d.jumpDirection,   kJumpDirChoices, 3, OnAutoApply);
-    s_rows[n++] = ChoicesRow("  JUMP TARGET",          &g_mirrorAutoJumpTargetIdx, kJumpTargetChoices, 3, OnAutoJumpTarget);
+    s_rows[n++] = WithHelp(Toggle("AUTO-JUMP", &d.autoJump, OnAutoApply),
+                           "Makes the dummy jump automatically after returning to neutral.");
+    s_rows[n++] = WithHelp(ChoicesRow("  JUMP DIRECTION", &d.jumpDirection,
+                                      kJumpDirChoices, 3, OnAutoApply,
+                                      nullptr, MovementJumpDirHidden),
+                           "Sets neutral, forward, or back jump direction for Auto-Jump.");
+    s_rows[n++] = WithHelp(ChoicesRow("  JUMP TARGET", &g_mirrorAutoJumpTargetIdx,
+                                      kJumpTargetChoices, 3, OnAutoJumpTarget,
+                                      nullptr, MovementJumpTargetHidden),
+                           "Chooses whether Auto-Jump applies to P1, P2, or both sides.");
     count = n;
     return s_rows;
 }
@@ -3701,15 +4573,28 @@ Row* BuildOpponentRows(int& count) {
     g_mirrorAirtechMode = d.autoAirtech ? (ClampIndex(d.airtechDirection, 2) + 1) : 0;
 
     s_rows[n++] = Header("OPPONENT");
-    s_rows[n++] = Toggle("ENABLE P2 CONTROL", &d.p2ControlEnabled, OnAutoApply);
-    s_rows[n++] = ChoicesRow("AUTO-AIRTECH", &g_mirrorAirtechMode, kAirtechDirChoices, 3, OnAirtechMode);
-    s_rows[n++] = IntNum("  AIRTECH DELAY", &d.airtechDelay, 0, 60, 1, 5, OnAutoApply,
-                         nullptr, AirtechDelayHidden);
-    s_rows[n++] = Toggle("AUTO-JUMP", &d.autoJump, OnAutoApply);
-    s_rows[n++] = ChoicesRow("  JUMP DIRECTION", &d.jumpDirection, kJumpDirChoices, 3, OnAutoApply,
-                             nullptr, MovementJumpDirHidden);
-    s_rows[n++] = ChoicesRow("  JUMP TARGET", &g_mirrorAutoJumpTargetIdx, kJumpTargetChoices, 3, OnAutoJumpTarget,
-                             nullptr, MovementJumpTargetHidden);
+    s_rows[n++] = WithHelp(Toggle("ENABLE P2 CONTROL", &d.p2ControlEnabled, OnAutoApply),
+                           "Enables P2 controls in Practice mode; F6/F7 stance and blocking hotkeys are unavailable while this is on.");
+    s_rows[n++] = WithHelp(ChoicesRow("DUMMY STANCE", &g_mirrorPracticeStance,
+                                      kDummyStanceChoices, 3, OnPracticeStance,
+                                      AdaptiveDisablesStance),
+                           "Sets the dummy's F6 stance when Adaptive Stance is off.");
+    s_rows[n++] = WithHelp(ChoicesRow("AUTO-AIRTECH", &g_mirrorAirtechMode,
+                                      kAirtechDirChoices, 3, OnAirtechMode),
+                           "Air-recovers automatically in the selected direction after the dummy can tech.");
+    s_rows[n++] = WithHelp(IntNum("  AIRTECH DELAY", &d.airtechDelay, 0, 60, 1, 5, OnAutoApply,
+                                  nullptr, AirtechDelayHidden),
+                           "Waits this many frames after airtech is available before recovering.");
+    s_rows[n++] = WithHelp(Toggle("AUTO-JUMP", &d.autoJump, OnAutoApply),
+                           "Makes the dummy jump automatically after returning to neutral.");
+    s_rows[n++] = WithHelp(ChoicesRow("  JUMP DIRECTION", &d.jumpDirection,
+                                      kJumpDirChoices, 3, OnAutoApply,
+                                      nullptr, MovementJumpDirHidden),
+                           "Sets neutral, forward, or back jump direction for Auto-Jump.");
+    s_rows[n++] = WithHelp(ChoicesRow("  JUMP TARGET", &g_mirrorAutoJumpTargetIdx,
+                                      kJumpTargetChoices, 3, OnAutoJumpTarget,
+                                      nullptr, MovementJumpTargetHidden),
+                           "Chooses whether Auto-Jump applies to P1, P2, or both sides.");
     s_rows[n++] = Spacer();
     s_rows[n++] = Header("DEFENSE");
     {
@@ -4660,7 +5545,8 @@ Row* BuildMenuRows(int& count) {
     s_rows[n++] = Header("SHORTCUTS");
     s_rows[n++] = Action("CHANGE CHARACTERS / STAGE", NavToHotswap, ValHotswapApply);
     s_rows[n++] = Action("CHARACTER SETTINGS", NavToChars);
-    s_rows[n++] = Action("HELP", NavToHelp);
+    s_rows[n++] = WithHelp(Action("HELP", NavToHelp),
+                           "Opens help pages with setup notes and troubleshooting.");
     s_rows[n++] = Action("ABOUT", NavToAbout);
     s_rows[n++] = Action("SOUND SETTINGS", NavToSound, ValAudioSettings);
 
@@ -4983,30 +5869,6 @@ Row* BuildValuesRootRows(int& count) {
     return s_rows;
 }
 
-void RunPracticeSavestateSave() {
-    if (SavestateHook::TriggerSave()) {
-        DirectDrawHook::AddMessage("Practice state saved.", "SAVESTATE", RGB(120, 255, 120), 1200, 0, 120);
-    } else {
-        DirectDrawHook::AddMessage("Save failed - enter Practice mode first.", "SAVESTATE", RGB(255, 120, 120), 1800, 0, 120);
-    }
-}
-
-void RunPracticeSavestateLoad() {
-    if (SavestateHook::TriggerLoad()) {
-        DirectDrawHook::AddMessage("Practice state loaded.", "SAVESTATE", RGB(120, 255, 120), 1200, 0, 120);
-    } else {
-        DirectDrawHook::AddMessage("Load failed - save a state first.", "SAVESTATE", RGB(255, 120, 120), 1800, 0, 120);
-    }
-}
-
-const char* ValSavestateOptions() {
-    static char s_buf[48];
-    const unsigned saves = SavestateHook::GetSaveCount();
-    const unsigned loads = SavestateHook::GetLoadCount();
-    _snprintf_s(s_buf, sizeof(s_buf), _TRUNCATE, "S%u L%u", saves, loads);
-    return s_buf;
-}
-
 Row* BuildComboStatisticsRows(int& count) {
     static Row s_rows[16];
     int n = 0;
@@ -5031,28 +5893,6 @@ Row* BuildComboStatisticsRows(int& count) {
 
 const char* ValComboStatistics() {
     return MutableSettings().showComboStatisticsOverlay ? "ON" : "OFF";
-}
-
-Row* BuildSavestateOptionsRows(int& count) {
-    static Row s_rows[16];
-    int n = 0;
-    auto& s = MutableSettings();
-
-    s_rows[n++] = Header("PRACTICE SNAPSHOTS");
-    s_rows[n++] = Info("Save and load the current Practice match through EfzRevival. Use this for retry loops and setup practice.");
-    s_rows[n++] = Action("SAVE PRACTICE STATE", RunPracticeSavestateSave);
-    s_rows[n++] = Action("LOAD PRACTICE STATE", RunPracticeSavestateLoad);
-    s_rows[n++] = Spacer();
-    s_rows[n++] = Header("OPTIONS");
-    s_rows[n++] = Toggle("LOAD CUSTOM PALETTES", &s.savestateLoadCustomPalettes, OnSavestateLoadCustomPalettes);
-    s_rows[n++] = Info("Turn off if a load shows broken colors - keeps palette numbers but uses default colors.");
-    s_rows[n++] = Spacer();
-    s_rows[n++] = Header("HOTKEYS");
-    s_rows[n++] = Info("Assign Save, Load, and slot keys under Settings > Hotkeys > Savestate.");
-    s_rows[n++] = Info("Hotkeys write to the active slot immediately. The menu buttons above always target the live match.");
-
-    count = n;
-    return s_rows;
 }
 
 Row* BuildOptionsRows(int& count) {
@@ -5098,7 +5938,6 @@ Row* BuildOptionsRows(int& count) {
 
     s_rows[n++] = Spacer();
     s_rows[n++] = Header("OPTION MENUS");
-    s_rows[n++] = Submenu("SAVESTATES", "SAVESTATES", BuildSavestateOptionsRows, ValSavestateOptions);
     s_rows[n++] = Submenu("HOTSWAP", "MATCH HOTSWAP", BuildHotswapOptionsRows, ValHotswapApply);
 
     count = n;

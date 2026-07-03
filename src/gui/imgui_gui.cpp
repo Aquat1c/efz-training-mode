@@ -3946,11 +3946,28 @@ namespace ImGuiGui {
     guiState.localData.afterHitstunActionPoolMask = triggerAfterHitstunActionPoolMask.load();
     guiState.localData.afterAirtechActionPoolMask = triggerAfterAirtechActionPoolMask.load();
     guiState.localData.onRGActionPoolMask         = triggerOnRGActionPoolMask.load();
+    guiState.localData.afterBlockActionPoolMaskLo   = triggerAfterBlockActionPoolMaskLo.load();
+    guiState.localData.afterBlockActionPoolMaskHi   = triggerAfterBlockActionPoolMaskHi.load();
+    guiState.localData.onWakeupActionPoolMaskLo     = triggerOnWakeupActionPoolMaskLo.load();
+    guiState.localData.onWakeupActionPoolMaskHi     = triggerOnWakeupActionPoolMaskHi.load();
+    guiState.localData.afterHitstunActionPoolMaskLo = triggerAfterHitstunActionPoolMaskLo.load();
+    guiState.localData.afterHitstunActionPoolMaskHi = triggerAfterHitstunActionPoolMaskHi.load();
+    guiState.localData.afterAirtechActionPoolMaskLo = triggerAfterAirtechActionPoolMaskLo.load();
+    guiState.localData.afterAirtechActionPoolMaskHi = triggerAfterAirtechActionPoolMaskHi.load();
+    guiState.localData.onRGActionPoolMaskLo         = triggerOnRGActionPoolMaskLo.load();
+    guiState.localData.onRGActionPoolMaskHi         = triggerOnRGActionPoolMaskHi.load();
     guiState.localData.afterBlockUseActionPool    = triggerAfterBlockUsePool.load();
     guiState.localData.onWakeupUseActionPool      = triggerOnWakeupUsePool.load();
     guiState.localData.afterHitstunUseActionPool  = triggerAfterHitstunUsePool.load();
     guiState.localData.afterAirtechUseActionPool  = triggerAfterAirtechUsePool.load();
     guiState.localData.onRGUseActionPool          = triggerOnRGUsePool.load();
+    for (int i = 0; i < MAX_ACTION_POOL_OPTIONS; ++i) {
+        guiState.localData.afterBlockActionPoolDelays[i]   = g_afterBlockActionPoolDelays[i];
+        guiState.localData.onWakeupActionPoolDelays[i]     = g_onWakeupActionPoolDelays[i];
+        guiState.localData.afterHitstunActionPoolDelays[i] = g_afterHitstunActionPoolDelays[i];
+        guiState.localData.afterAirtechActionPoolDelays[i] = g_afterAirtechActionPoolDelays[i];
+        guiState.localData.onRGActionPoolDelays[i]         = g_onRGActionPoolDelays[i];
+    }
 
     // Per-trigger custom IDs
     guiState.localData.customAfterBlock    = triggerAfterBlockCustomID.load();
@@ -4044,11 +4061,28 @@ namespace ImGuiGui {
             triggerAfterHitstunActionPoolMask.store(displayData.afterHitstunActionPoolMask);
             triggerAfterAirtechActionPoolMask.store(displayData.afterAirtechActionPoolMask);
             triggerOnRGActionPoolMask.store(displayData.onRGActionPoolMask);
+            triggerAfterBlockActionPoolMaskLo.store(displayData.afterBlockActionPoolMaskLo);
+            triggerAfterBlockActionPoolMaskHi.store(displayData.afterBlockActionPoolMaskHi);
+            triggerOnWakeupActionPoolMaskLo.store(displayData.onWakeupActionPoolMaskLo);
+            triggerOnWakeupActionPoolMaskHi.store(displayData.onWakeupActionPoolMaskHi);
+            triggerAfterHitstunActionPoolMaskLo.store(displayData.afterHitstunActionPoolMaskLo);
+            triggerAfterHitstunActionPoolMaskHi.store(displayData.afterHitstunActionPoolMaskHi);
+            triggerAfterAirtechActionPoolMaskLo.store(displayData.afterAirtechActionPoolMaskLo);
+            triggerAfterAirtechActionPoolMaskHi.store(displayData.afterAirtechActionPoolMaskHi);
+            triggerOnRGActionPoolMaskLo.store(displayData.onRGActionPoolMaskLo);
+            triggerOnRGActionPoolMaskHi.store(displayData.onRGActionPoolMaskHi);
             triggerAfterBlockUsePool.store(displayData.afterBlockUseActionPool);
             triggerOnWakeupUsePool.store(displayData.onWakeupUseActionPool);
             triggerAfterHitstunUsePool.store(displayData.afterHitstunUseActionPool);
             triggerAfterAirtechUsePool.store(displayData.afterAirtechUseActionPool);
             triggerOnRGUsePool.store(displayData.onRGUseActionPool);
+            for (int i = 0; i < MAX_ACTION_POOL_OPTIONS; ++i) {
+                g_afterBlockActionPoolDelays[i]   = displayData.afterBlockActionPoolDelays[i];
+                g_onWakeupActionPoolDelays[i]     = displayData.onWakeupActionPoolDelays[i];
+                g_afterHitstunActionPoolDelays[i] = displayData.afterHitstunActionPoolDelays[i];
+                g_afterAirtechActionPoolDelays[i] = displayData.afterAirtechActionPoolDelays[i];
+                g_onRGActionPoolDelays[i]         = displayData.onRGActionPoolDelays[i];
+            }
 
             // Per-trigger custom IDs
             triggerAfterBlockCustomID.store(displayData.customAfterBlock);
