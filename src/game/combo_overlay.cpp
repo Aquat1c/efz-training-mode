@@ -19,11 +19,7 @@
 #include <string>
 
 namespace {
-    constexpr uintptr_t COMBO_COUNT_OFFSET = 0xF4;
     constexpr uintptr_t COMBO_SCALE_DISPLAY_OFFSET = 0xF8;
-    constexpr uintptr_t COMBO_DAMAGE_OFFSET = 0x100;
-    constexpr uintptr_t COMBO_TIMER_OFFSET = 0x104;
-    constexpr uintptr_t COMBO_SCALE_RAW_OFFSET = 0x178;
     constexpr uintptr_t GAME_DATA_PTR_OFFSET = 0x7C;
     constexpr uintptr_t DIFFICULTY_SETTING_OFFSET = 4964;
     constexpr uintptr_t RF_MODE_SETTING_OFFSET = 4976;
@@ -150,21 +146,21 @@ namespace {
             return false;
         }
 
-        int hitCount = 0;
+        short hitCount = 0;
         int totalDamage = 0;
-        int timer = 0;
+        short timer = 0;
         double scaleDisplayRaw = 100.0;
         double scaleRaw = 10000.0;
-        if (!SafeReadMemory(playerPtr + COMBO_COUNT_OFFSET, &hitCount, sizeof(hitCount))) return false;
-        if (!SafeReadMemory(playerPtr + COMBO_DAMAGE_OFFSET, &totalDamage, sizeof(totalDamage))) return false;
-        SafeReadMemory(playerPtr + COMBO_TIMER_OFFSET, &timer, sizeof(timer));
+        if (!SafeReadMemory(playerPtr + PLAYER_COMBO_COUNTER_OFFSET, &hitCount, sizeof(hitCount))) return false;
+        if (!SafeReadMemory(playerPtr + PLAYER_COMBO_DAMAGE_OFFSET, &totalDamage, sizeof(totalDamage))) return false;
+        SafeReadMemory(playerPtr + PLAYER_COMBO_TIMER_OFFSET, &timer, sizeof(timer));
         SafeReadMemory(playerPtr + COMBO_SCALE_DISPLAY_OFFSET, &scaleDisplayRaw, sizeof(scaleDisplayRaw));
-        SafeReadMemory(playerPtr + COMBO_SCALE_RAW_OFFSET, &scaleRaw, sizeof(scaleRaw));
+        SafeReadMemory(playerPtr + PLAYER_COMBO_DAMAGE_SCALING_OFFSET, &scaleRaw, sizeof(scaleRaw));
 
         out.valid = true;
-        out.hitCount = (std::max)(0, hitCount);
+        out.hitCount = (std::max)(0, static_cast<int>(hitCount));
         out.totalDamage = (std::max)(0, totalDamage);
-        out.timer = (std::max)(0, timer);
+        out.timer = (std::max)(0, static_cast<int>(timer));
         out.scaleRaw = (std::isfinite(scaleRaw) && scaleRaw > 0.0) ? scaleRaw : 10000.0;
         out.scalePercent = (std::isfinite(scaleDisplayRaw) && scaleDisplayRaw > 0.0)
             ? scaleDisplayRaw
@@ -303,8 +299,12 @@ namespace {
         return player.hitstun > 0 || player.untech > 0;
     }
 
+    bool HasActiveComboRuntime(const ComboRuntime& runtime) {
+        return runtime.valid && runtime.hitCount > 0 && runtime.timer > 0;
+    }
+
     bool IsRuntimeIdle(const ComboRuntime& runtime) {
-        return !runtime.valid || (runtime.hitCount <= 0 && runtime.totalDamage <= 0 && runtime.timer <= 0);
+        return !HasActiveComboRuntime(runtime);
     }
 
     bool ShouldWaitForIdleBaseline(const ComboRuntime& combo1,
@@ -363,6 +363,33 @@ namespace {
 
     bool ComboProgressed(const ComboRuntime& runtime) {
         return runtime.hitCount > g_state.hitCount || runtime.totalDamage > g_state.totalDamage;
+    }
+
+    const ComboRuntime& RuntimeForSide(int side, const ComboRuntime& combo1, const ComboRuntime& combo2) {
+        return (side == 1) ? combo1 : combo2;
+    }
+
+    const PlayerMetrics& MetricsForSide(int side, const PlayerMetrics& p1, const PlayerMetrics& p2) {
+        return (side == 1) ? p1 : p2;
+    }
+
+    int DamageToDefenderForAttacker(int attackerSide, int damageToP1, int damageToP2) {
+        return (attackerSide == 1) ? damageToP2 : damageToP1;
+    }
+
+    ComboRuntime RuntimeOrSyntheticForDamageEdge(
+        int attackerSide,
+        const ComboRuntime& runtime,
+        int defenderDamage)
+    {
+        if (HasActiveComboRuntime(runtime)) {
+            return runtime;
+        }
+
+        const bool continuingLiveCombo = g_state.live && g_state.attackerSide == attackerSide;
+        const int hitCount = continuingLiveCombo ? (g_state.hitCount + 1) : 1;
+        const int totalDamage = continuingLiveCombo ? (g_state.totalDamage + defenderDamage) : defenderDamage;
+        return BuildSyntheticRuntime(runtime, hitCount, totalDamage);
     }
 
     void RemoveMessage(int& id) {
@@ -774,42 +801,46 @@ namespace ComboOverlay {
 
         int attackerSide = 0;
         ComboRuntime currentCombo{};
-        if (combo1.valid && combo1.hitCount > 0) {
+
+        const bool p1HitP2ThisFrame = damageToP2 > 0 && damageToP1 == 0;
+        const bool p2HitP1ThisFrame = damageToP1 > 0 && damageToP2 == 0;
+
+        if (p1HitP2ThisFrame) {
             attackerSide = 1;
-            currentCombo = combo1;
-        }
-        if (combo2.valid && combo2.hitCount > 0 && (!attackerSide || ScoreRuntime(combo2) > ScoreRuntime(currentCombo))) {
+            currentCombo = RuntimeOrSyntheticForDamageEdge(1, combo1, damageToP2);
+        } else if (p2HitP1ThisFrame) {
             attackerSide = 2;
-            currentCombo = combo2;
-        }
+            currentCombo = RuntimeOrSyntheticForDamageEdge(2, combo2, damageToP1);
+        } else if (g_state.live) {
+            const int defenderSide = (g_state.attackerSide == 1) ? 2 : 1;
+            const ComboRuntime& liveRuntime = RuntimeForSide(g_state.attackerSide, combo1, combo2);
+            const PlayerMetrics& liveDefender = MetricsForSide(defenderSide, p1, p2);
+            const int liveDamageDelta = DamageToDefenderForAttacker(g_state.attackerSide, damageToP1, damageToP2);
 
-        if (!attackerSide) {
-            if (!g_state.live) {
-                if (damageToP2 > 0 && damageToP1 == 0 && IsComboVictimState(p2)) {
-                    attackerSide = 1;
-                    currentCombo = BuildSyntheticRuntime(combo1, 1, damageToP2);
-                } else if (damageToP1 > 0 && damageToP2 == 0 && IsComboVictimState(p1)) {
-                    attackerSide = 2;
-                    currentCombo = BuildSyntheticRuntime(combo2, 1, damageToP1);
-                }
-            } else {
-                const int defenderSide = (g_state.attackerSide == 1) ? 2 : 1;
-                const PlayerMetrics& liveDefender = (defenderSide == 1) ? p1 : p2;
-                const int liveDamageDelta = (defenderSide == 1) ? damageToP1 : damageToP2;
-
-                if (IsComboVictimState(liveDefender)) {
-                    attackerSide = g_state.attackerSide;
-                    currentCombo = BuildSyntheticRuntime(
-                        (attackerSide == 1) ? combo1 : combo2,
-                        g_state.hitCount,
-                        g_state.totalDamage);
-                    if (liveDamageDelta > 0) {
-                        currentCombo.hitCount = g_state.hitCount + 1;
-                        currentCombo.totalDamage = g_state.totalDamage + liveDamageDelta;
-                    }
+            if (HasActiveComboRuntime(liveRuntime)) {
+                attackerSide = g_state.attackerSide;
+                currentCombo = liveRuntime;
+            } else if (IsComboVictimState(liveDefender)) {
+                attackerSide = g_state.attackerSide;
+                currentCombo = BuildSyntheticRuntime(liveRuntime, g_state.hitCount, g_state.totalDamage);
+                if (liveDamageDelta > 0) {
+                    currentCombo.hitCount = g_state.hitCount + 1;
+                    currentCombo.totalDamage = g_state.totalDamage + liveDamageDelta;
                 }
             }
         }
+
+        if (!attackerSide) {
+            if (HasActiveComboRuntime(combo1)) {
+                attackerSide = 1;
+                currentCombo = combo1;
+            }
+            if (HasActiveComboRuntime(combo2) && (!attackerSide || ScoreRuntime(combo2) > ScoreRuntime(currentCombo))) {
+                attackerSide = 2;
+                currentCombo = combo2;
+            }
+        }
+
         if (attackerSide != 0) {
             const PlayerMetrics& attacker = (attackerSide == 1) ? p1 : p2;
             const PlayerMetrics& defender = (attackerSide == 1) ? p2 : p1;

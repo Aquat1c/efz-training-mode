@@ -187,7 +187,6 @@ const char* CurrentConfigPathInfo() {
 // Atomic-backed bools exposed via a local static mirror.
 // The generic row system wants a bool*; we refresh from the atomic each frame
 // inside the per-screen entry, and write back on change via onChange.
-bool g_mirrorAutoAction    = false;
 bool g_mirrorRandomize     = false;
 bool g_mirrorWakeBuffer    = false;
 bool g_mirrorCounterRG     = false;
@@ -197,9 +196,6 @@ bool g_mirrorInfiniteFeather = false;
 bool g_mirrorInfiniteElement = false;
 bool g_mirrorInfiniteAwakened = false;
 
-int  g_mirrorAutoActionPlayer = 1; // 1=P1, 2=P2, 3=Both
-int  g_mirrorAutoActionPlayerIdx = 0; // 0=P1, 1=P2, 2=Both (choices index)
-
 // Per-trigger pool mirrors (mask + use-pool flag).
 unsigned int g_poolMaskAB, g_poolMaskWU, g_poolMaskAH, g_poolMaskAA, g_poolMaskRG;
 bool g_useMaskAB, g_useMaskWU, g_useMaskAH, g_useMaskAA, g_useMaskRG;
@@ -208,19 +204,15 @@ int GetMotionIndexForAction(int action);
 
 // Per-trigger motion index mirrors (0..23 grouped action space).
 int g_motionIdxAB, g_motionIdxWU, g_motionIdxAH, g_motionIdxAA, g_motionIdxRG;
+int g_selectedAutoTrigger = 0;
 int g_mirrorFwdDashFollowup = 0;
 
 void RefreshAutoMirrors() {
     const auto& d = ImGuiGui::guiState.localData;
-    g_mirrorAutoAction = d.autoAction;
     g_mirrorRandomize  = d.randomizeTriggers;
     g_mirrorWakeBuffer = g_wakeBufferingEnabled.load();
     g_mirrorCounterRG  = g_counterRGEnabled.load();
     g_mirrorFaOverlay  = g_showFrameAdvantageOverlay.load();
-
-    const int p = d.autoActionPlayer;
-    g_mirrorAutoActionPlayerIdx = (p == 2) ? 1 : (p == 3 ? 2 : 0);
-    g_mirrorAutoActionPlayer = p;
 
     g_poolMaskAB = (unsigned int)triggerAfterBlockActionPoolMask.load();
     g_poolMaskWU = (unsigned int)triggerOnWakeupActionPoolMask.load();
@@ -252,19 +244,10 @@ void OnUseMaskAH()  { triggerAfterHitstunUsePool.store(g_useMaskAH); }
 void OnUseMaskAA()  { triggerAfterAirtechUsePool.store(g_useMaskAA); }
 void OnUseMaskRG()  { triggerOnRGUsePool.store(g_useMaskRG); }
 
-void OnAutoActionToggle()   { ImGuiGui::guiState.localData.autoAction = g_mirrorAutoAction; OnAutoApply(); }
 void OnRandomizeToggle()    { ImGuiGui::guiState.localData.randomizeTriggers = g_mirrorRandomize; OnAutoApply(); }
 void OnWakeBufferToggle()   { g_wakeBufferingEnabled.store(g_mirrorWakeBuffer); }
 void OnCounterRGToggle()    { g_counterRGEnabled.store(g_mirrorCounterRG); OnAutoApply(); }
 void OnFaOverlayToggle()    { g_showFrameAdvantageOverlay.store(g_mirrorFaOverlay); OnAutoApply(); }
-void OnAutoActionTarget()   {
-    const int map[3] = {1, 2, 3};
-    const int idx = g_mirrorAutoActionPlayerIdx;
-    const int p = (idx >= 0 && idx < 3) ? map[idx] : 1;
-    ImGuiGui::guiState.localData.autoActionPlayer = p;
-    g_mirrorAutoActionPlayer = p;
-    OnAutoApply();
-}
 
 void RefreshCharMirrors() {
     const auto& d = ImGuiGui::guiState.localData;
@@ -335,7 +318,6 @@ void OnPracticeStance() { SetPracticeBlockMode(g_mirrorPracticeStance); }
 void OnFmBypass()       { SetFinalMemoryBypass(g_mirrorFmBypass); }
 
 // ===== Choices dictionaries =====
-const char* const kTargetChoices[3] = { "P1", "P2", "BOTH" };
 const char* const kElementChoices[4] = { "NONE", "FIRE", "LIGHT", "AWAKE" };
 const char* const kStanceChoices[2]  = { "SHORT", "LONG" };
 const char* const kRumiModeChoices[2] = { "SHINAI", "BARE" };
@@ -860,7 +842,7 @@ Row* BuildSettingsInterfaceRows(int& count) {
 
     s_rows[n++] = Header("INTERFACE");
     s_rows[n++] = Toggle    ("USE CUSTOM MENU",        &s.useCustomMenu,       OnUseCustomMenu);
-    s_rows[n++] = FloatNum  ("UI SCALE",               &s.uiScale,      0.70f, 1.50f, 0.05f, 0.10f, "%.2f", OnUiScale);
+    s_rows[n++] = FloatNum  ("UI SCALE",               &s.uiScale,      0.90f, 1.50f, 0.05f, 0.10f, "%.2f", OnUiScale);
     s_rows[n++] = ChoicesRow("UI FONT (ADVANCED MENU)", &s.uiFontMode,   kUiFontChoices, 2, OnUiFont);
     s_rows[n++] = Toggle    ("PRACTICE OVERLAY HINT",  &s.showPracticeEntryHint, OnPracticeHint);
     count = n;
@@ -2881,12 +2863,13 @@ Row* BuildHelpAutoActionRows(int& count) {
     int n = 0;
     s_rows[n++] = Header("AUTO ACTIONS");
     s_rows[n++] = Info("Auto Actions make the dummy act on key moments: On Wakeup, After Block, After Hitstun, After Airtech, or on Recoil Guard.");
-    s_rows[n++] = Info("Enable the Auto Action system first, then enable the triggers you want. Target defaults to Player 2, but you can apply it to P1 or both players.");
+    s_rows[n++] = Info("Select a trigger at the top of the Triggers page, then edit its action controls on that same page. Auto Actions target the side opposite local control, P2 by default.");
     s_rows[n++] = Info("Randomize Triggers adds a coin-flip so a trigger can sometimes skip activation. Pre-buffer Wakeup performs wake specials, dashes, and macros slightly early.");
     s_rows[n++] = Spacer();
     s_rows[n++] = Header("PER TRIGGER");
-    s_rows[n++] = Info("Pick an action: normals, forward/back normals, specials, supers, jump, dash/backdash, block, Final Memory, or a macro slot.");
-    s_rows[n++] = Info("Set the button if the action needs one, add an optional delay, or turn on Random Pool to pick from several actions.");
+    s_rows[n++] = Info("Enable turns the selected trigger on. Action covers normals, forward/back normals, specials, supers, jump, dash/backdash, block, and Final Memory.");
+    s_rows[n++] = Info("Button appears only when the chosen action needs one. Delay applies after the trigger condition is detected.");
+    s_rows[n++] = Info("Macro Slot plays a recorded slot. Random Pool opens a multi-select action pool for that trigger.");
     s_rows[n++] = Spacer();
     s_rows[n++] = Header("NOTES");
     s_rows[n++] = Info("This feature briefly enables P2 controls for specials, supers, dashes, and other input-buffer actions. Regular attacks and jumps use direct writes and keep AI control.");
@@ -3165,130 +3148,101 @@ void AddTriggerRows(Row* rows, int& n,
                     bool (*hideButton)(),
                     bool (*hidePool)()) {
     rows[n++] = Header(title);
-    rows[n++] = Toggle        ("  ENABLE",      enabled, OnAutoApply);
-    rows[n++] = Toggle        ("  RANDOM POOL", usePool, onUsePool);
-    rows[n++] = DropdownRow   ("  ACTION",      motionIdx, kTriggerMotionChoices, kTriggerMotionCount,
+    rows[n++] = Toggle        ("ENABLE",        enabled, OnAutoApply);
+    rows[n++] = DropdownRow   ("ACTION",        motionIdx, kTriggerMotionChoices, kTriggerMotionCount,
                                onMotion, nullptr, hideSingleAction);
-    rows[n++] = TriggerButtonRow("  BUTTON",    action, strength, &g_mirrorFwdDashFollowup,
+    rows[n++] = TriggerButtonRow("BUTTON",      action, strength, &g_mirrorFwdDashFollowup,
                                  OnAutoApply, nullptr, hideButton);
-    rows[n++] = MaskPickerRow ("  ACTION POOL", poolMask, kActionPoolNames, kActionPoolCount,
+    rows[n++] = IntNum        ("DELAY",         delay, 0, 60, 1, 5, OnAutoApply);
+    rows[n++] = DropdownRow   ("MACRO SLOT",    macroSlot, g_macroSlotChoiceArr, g_macroSlotChoiceCount,
+                               OnAutoApply);
+    rows[n++] = Toggle        ("RANDOM POOL",   usePool, onUsePool);
+    rows[n++] = MaskPickerRow ("ACTION POOL",   poolMask, kActionPoolNames, kActionPoolCount,
                                onPoolMask, nullptr, hidePool);
-    rows[n++] = IntNum        ("  DELAY",       delay, 0, 60, 1, 5, OnAutoApply);
-    rows[n++] = DropdownRow   ("  MACRO",       macroSlot, g_macroSlotChoiceArr, g_macroSlotChoiceCount, OnAutoApply);
 }
 
-const char* FormatTriggerSummary(bool enabled, bool usePool, int delay) {
-    static char s_buf[5][32];
-    static int s_idx = 0;
-    char* buf = s_buf[s_idx++ % 5];
-    if (!enabled) {
-        _snprintf_s(buf, sizeof(s_buf[0]), _TRUNCATE, "OFF");
-    } else if (usePool) {
-        _snprintf_s(buf, sizeof(s_buf[0]), _TRUNCATE, "POOL / %dF", delay);
-    } else {
-        _snprintf_s(buf, sizeof(s_buf[0]), _TRUNCATE, "ON / %dF", delay);
-    }
-    return buf;
-}
-
-const char* ValTriggerAB() { const auto& d = ImGuiGui::guiState.localData; return FormatTriggerSummary(d.triggerAfterBlock,    g_useMaskAB, d.delayAfterBlock); }
-const char* ValTriggerWU() { const auto& d = ImGuiGui::guiState.localData; return FormatTriggerSummary(d.triggerOnWakeup,       g_useMaskWU, d.delayOnWakeup); }
-const char* ValTriggerAH() { const auto& d = ImGuiGui::guiState.localData; return FormatTriggerSummary(d.triggerAfterHitstun,   g_useMaskAH, d.delayAfterHitstun); }
-const char* ValTriggerAA() { const auto& d = ImGuiGui::guiState.localData; return FormatTriggerSummary(d.triggerAfterAirtech,   g_useMaskAA, d.delayAfterAirtech); }
-const char* ValTriggerRG() { const auto& d = ImGuiGui::guiState.localData; return FormatTriggerSummary(d.triggerOnRG,           g_useMaskRG, d.delayOnRG); }
-
-Row* BuildAfterBlockRows(int& count) {
-    static Row s_rows[20];
-    int n = 0;
-    auto& d = ImGuiGui::guiState.localData;
-    g_motionIdxAB = GetMotionIndexForAction(d.actionAfterBlock);
-    AddTriggerRows(s_rows, n, "AFTER BLOCK",
-                   &d.triggerAfterBlock, &g_motionIdxAB, OnTriggerMotionAfterBlock,
-                   &d.actionAfterBlock, &d.strengthAfterBlock,
-                   &d.macroSlotAfterBlock, &d.delayAfterBlock,
-                   &g_useMaskAB, &g_poolMaskAB, OnUseMaskAB, OnPoolMaskAB,
-                   HideABSingleAction, HideABButton, HideABPool);
-    count = n;
-    return s_rows;
-}
-
-Row* BuildWakeupRows(int& count) {
-    static Row s_rows[20];
-    int n = 0;
-    auto& d = ImGuiGui::guiState.localData;
-    g_motionIdxWU = GetMotionIndexForAction(d.actionOnWakeup);
-    AddTriggerRows(s_rows, n, "ON WAKEUP",
-                   &d.triggerOnWakeup, &g_motionIdxWU, OnTriggerMotionOnWakeup,
-                   &d.actionOnWakeup, &d.strengthOnWakeup,
-                   &d.macroSlotOnWakeup, &d.delayOnWakeup,
-                   &g_useMaskWU, &g_poolMaskWU, OnUseMaskWU, OnPoolMaskWU,
-                   HideWUSingleAction, HideWUButton, HideWUPool);
-    count = n;
-    return s_rows;
-}
-
-Row* BuildHitstunRows(int& count) {
-    static Row s_rows[20];
-    int n = 0;
-    auto& d = ImGuiGui::guiState.localData;
-    g_motionIdxAH = GetMotionIndexForAction(d.actionAfterHitstun);
-    AddTriggerRows(s_rows, n, "AFTER HITSTUN",
-                   &d.triggerAfterHitstun, &g_motionIdxAH, OnTriggerMotionAfterHitstun,
-                   &d.actionAfterHitstun, &d.strengthAfterHitstun,
-                   &d.macroSlotAfterHitstun, &d.delayAfterHitstun,
-                   &g_useMaskAH, &g_poolMaskAH, OnUseMaskAH, OnPoolMaskAH,
-                   HideAHSingleAction, HideAHButton, HideAHPool);
-    count = n;
-    return s_rows;
-}
-
-Row* BuildAirtechRows(int& count) {
-    static Row s_rows[20];
-    int n = 0;
-    auto& d = ImGuiGui::guiState.localData;
-    g_motionIdxAA = GetMotionIndexForAction(d.actionAfterAirtech);
-    AddTriggerRows(s_rows, n, "AFTER AIRTECH",
-                   &d.triggerAfterAirtech, &g_motionIdxAA, OnTriggerMotionAfterAirtech,
-                   &d.actionAfterAirtech, &d.strengthAfterAirtech,
-                   &d.macroSlotAfterAirtech, &d.delayAfterAirtech,
-                   &g_useMaskAA, &g_poolMaskAA, OnUseMaskAA, OnPoolMaskAA,
-                   HideAASingleAction, HideAAButton, HideAAPool);
-    count = n;
-    return s_rows;
-}
-
-Row* BuildRecoilGuardRows(int& count) {
-    static Row s_rows[20];
-    int n = 0;
-    auto& d = ImGuiGui::guiState.localData;
-    g_motionIdxRG = GetMotionIndexForAction(d.actionOnRG);
-    AddTriggerRows(s_rows, n, "ON RECOIL GUARD",
-                   &d.triggerOnRG, &g_motionIdxRG, OnTriggerMotionOnRG,
-                   &d.actionOnRG, &d.strengthOnRG,
-                   &d.macroSlotOnRG, &d.delayOnRG,
-                   &g_useMaskRG, &g_poolMaskRG, OnUseMaskRG, OnPoolMaskRG,
-                   HideRGSingleAction, HideRGButton, HideRGPool);
-    count = n;
-    return s_rows;
+const char* AutoActionTargetInfo() {
+    static char s_buf[64];
+    const int target = ResolveAutoActionTargetPlayer();
+    _snprintf_s(s_buf, sizeof(s_buf), _TRUNCATE, "TARGET: P%d (OPPONENT SIDE)", target);
+    return s_buf;
 }
 
 Row* BuildTriggersRows(int& count) {
-    static Row s_rows[32];
+    static Row s_rows[40];
     int n = 0;
+    auto& d = ImGuiGui::guiState.localData;
+    static const char* const kAutoTriggerChoices[5] = {
+        "AFTER BLOCK",
+        "ON WAKEUP",
+        "AFTER HITSTUN",
+        "AFTER AIRTECH",
+        "ON RECOIL GUARD"
+    };
 
-    s_rows[n++] = Header("GLOBAL");
-    s_rows[n++] = Toggle    ("ENABLE AUTO ACTION",    &g_mirrorAutoAction, OnAutoActionToggle);
-    s_rows[n++] = ChoicesRow("TARGET",                &g_mirrorAutoActionPlayerIdx, kTargetChoices, 3, OnAutoActionTarget);
-    s_rows[n++] = Toggle    ("RANDOMIZE TRIGGERS",    &g_mirrorRandomize,  OnRandomizeToggle);
-    s_rows[n++] = Toggle    ("PRE-BUFFER WAKEUP",     &g_mirrorWakeBuffer, OnWakeBufferToggle);
+    s_rows[n++] = Header("AUTO ACTIONS");
+    s_rows[n++] = Info      (AutoActionTargetInfo());
+    g_selectedAutoTrigger = ClampIndex(g_selectedAutoTrigger, 5);
+    s_rows[n++] = ChoicesRow("TRIGGER", &g_selectedAutoTrigger, kAutoTriggerChoices, 5);
 
     s_rows[n++] = Spacer();
-    s_rows[n++] = Header("TRIGGER MENUS");
-    s_rows[n++] = Submenu("AFTER BLOCK",       "AFTER BLOCK",       BuildAfterBlockRows,  ValTriggerAB);
-    s_rows[n++] = Submenu("ON WAKEUP",         "ON WAKEUP",         BuildWakeupRows,      ValTriggerWU);
-    s_rows[n++] = Submenu("AFTER HITSTUN",     "AFTER HITSTUN",     BuildHitstunRows,     ValTriggerAH);
-    s_rows[n++] = Submenu("AFTER AIRTECH",     "AFTER AIRTECH",     BuildAirtechRows,     ValTriggerAA);
-    s_rows[n++] = Submenu("ON RECOIL GUARD",   "ON RECOIL GUARD",   BuildRecoilGuardRows, ValTriggerRG);
+    switch (g_selectedAutoTrigger) {
+        case 0:
+            g_motionIdxAB = GetMotionIndexForAction(d.actionAfterBlock);
+            AddTriggerRows(s_rows, n, "AFTER BLOCK",
+                           &d.triggerAfterBlock,
+                           &g_motionIdxAB, OnTriggerMotionAfterBlock,
+                           &d.actionAfterBlock, &d.strengthAfterBlock,
+                           &d.macroSlotAfterBlock, &d.delayAfterBlock,
+                           &g_useMaskAB, &g_poolMaskAB, OnUseMaskAB, OnPoolMaskAB,
+                           HideABSingleAction, HideABButton, HideABPool);
+            break;
+        case 1:
+            g_motionIdxWU = GetMotionIndexForAction(d.actionOnWakeup);
+            AddTriggerRows(s_rows, n, "ON WAKEUP",
+                           &d.triggerOnWakeup,
+                           &g_motionIdxWU, OnTriggerMotionOnWakeup,
+                           &d.actionOnWakeup, &d.strengthOnWakeup,
+                           &d.macroSlotOnWakeup, &d.delayOnWakeup,
+                           &g_useMaskWU, &g_poolMaskWU, OnUseMaskWU, OnPoolMaskWU,
+                           HideWUSingleAction, HideWUButton, HideWUPool);
+            break;
+        case 2:
+            g_motionIdxAH = GetMotionIndexForAction(d.actionAfterHitstun);
+            AddTriggerRows(s_rows, n, "AFTER HITSTUN",
+                           &d.triggerAfterHitstun,
+                           &g_motionIdxAH, OnTriggerMotionAfterHitstun,
+                           &d.actionAfterHitstun, &d.strengthAfterHitstun,
+                           &d.macroSlotAfterHitstun, &d.delayAfterHitstun,
+                           &g_useMaskAH, &g_poolMaskAH, OnUseMaskAH, OnPoolMaskAH,
+                           HideAHSingleAction, HideAHButton, HideAHPool);
+            break;
+        case 3:
+            g_motionIdxAA = GetMotionIndexForAction(d.actionAfterAirtech);
+            AddTriggerRows(s_rows, n, "AFTER AIRTECH",
+                           &d.triggerAfterAirtech,
+                           &g_motionIdxAA, OnTriggerMotionAfterAirtech,
+                           &d.actionAfterAirtech, &d.strengthAfterAirtech,
+                           &d.macroSlotAfterAirtech, &d.delayAfterAirtech,
+                           &g_useMaskAA, &g_poolMaskAA, OnUseMaskAA, OnPoolMaskAA,
+                           HideAASingleAction, HideAAButton, HideAAPool);
+            break;
+        default:
+            g_motionIdxRG = GetMotionIndexForAction(d.actionOnRG);
+            AddTriggerRows(s_rows, n, "ON RECOIL GUARD",
+                           &d.triggerOnRG,
+                           &g_motionIdxRG, OnTriggerMotionOnRG,
+                           &d.actionOnRG, &d.strengthOnRG,
+                           &d.macroSlotOnRG, &d.delayOnRG,
+                           &g_useMaskRG, &g_poolMaskRG, OnUseMaskRG, OnPoolMaskRG,
+                           HideRGSingleAction, HideRGButton, HideRGPool);
+            break;
+    }
+
+    s_rows[n++] = Spacer();
+    s_rows[n++] = Header("GLOBAL");
+    s_rows[n++] = Toggle    ("RANDOMIZE TRIGGERS",    &g_mirrorRandomize,  OnRandomizeToggle);
+    s_rows[n++] = Toggle    ("PRE-BUFFER WAKEUP",     &g_mirrorWakeBuffer, OnWakeBufferToggle);
 
     count = n;
     return s_rows;

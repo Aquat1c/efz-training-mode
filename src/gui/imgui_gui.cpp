@@ -1085,15 +1085,12 @@ namespace ImGuiGui {
                 ImGuiTabItemFlags _setTrig = (rq2 == 0) ? ImGuiTabItemFlags_SetSelected : 0;
                 if (ImGui::BeginTabItem("Triggers", nullptr, _setTrig)) {
                     guiState.autoActionSubTab = 0;
-                // Auto-action master toggle
-                bool enabled = guiState.localData.autoAction;
-                if (ImGui::Checkbox("Enable Auto Action System", &enabled)) {
-                    guiState.localData.autoAction = enabled;
-                }
+                const int autoActionTarget = ResolveAutoActionTargetPlayer();
+                ImGui::Text("Target: P%d (opponent side)", autoActionTarget);
 
                 // Wake buffering toggle (debug): pre-buffer wake specials/dashes vs frame1 inject
                 bool wakeBuf = g_wakeBufferingEnabled.load();
-                if (ImGui::Checkbox("Pre-buffer wake specials/dashes/macroses", &wakeBuf)) {
+                if (ImGui::Checkbox("Pre-buffer Wakeup", &wakeBuf)) {
                     g_wakeBufferingEnabled.store(wakeBuf);
                     LogOut(std::string("[IMGUI] Wake buffering mode: ") + (wakeBuf ? "BUFFERED (early freeze)" : "FRAME1 (no early freeze)"), true);
                 }
@@ -1104,18 +1101,10 @@ namespace ImGuiGui {
                 // Global: Randomize all triggers toggle (placed with master/wake settings)
                 {
                     bool randTrig = guiState.localData.randomizeTriggers;
-                    if (ImGui::Checkbox("Randomize chance to fire the trigger", &randTrig)) {
+                    if (ImGui::Checkbox("Randomize Triggers", &randTrig)) {
                         guiState.localData.randomizeTriggers = randTrig;
                     }
-                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("When ON, each trigger attempt has a fifty percent chance chance to be skipped.");
-                }
-
-                // Player target selector
-                ImGui::Text("Apply To:");
-                const char* playerItems[] = { "P1 Only", "P2 Only", "Both Players" };
-                int playerIndex = guiState.localData.autoActionPlayer - 1; // Convert 1-based to 0-based
-                if (ImGui::Combo("Target", &playerIndex, playerItems, IM_ARRAYSIZE(playerItems))) {
-                    guiState.localData.autoActionPlayer = playerIndex + 1; // Convert back to 1-based
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("When ON, each trigger attempt has a fifty percent chance to be skipped.");
                 }
 
                 ImGui::Separator();
@@ -2220,9 +2209,9 @@ namespace ImGuiGui {
                             ImGui::TextWrapped("Make the dummy act on key moments: On Wakeup, After Block/Hitstun/Airtech, or on Recoil Guard.");
                             ImGui::Dummy(ImVec2(1, 2));
                             ImGui::TextDisabled("Quick setup");
-                            BulletTextWrapped("Enable it by checking the first checkbox in the menu(Enable Auto Action System) and check the desired triggers as well. You can also change which side it applies to, by default it's always set to P2");
-                            BulletTextWrapped("You can enable the Randomize triggers option, which adds a coin-flip to make the triggers sometimes skip the activation.");
-                            BulletTextWrapped("Pre-buffering of wake specials/dashes performs wake inputs slightly early. This might help with testing input crossups and some other things.");
+                            BulletTextWrapped("Enable the trigger rows you want. Auto Actions target the side opposite local control, P2 by default.");
+                            BulletTextWrapped("Randomize Triggers adds a coin-flip so trigger attempts sometimes skip activation.");
+                            BulletTextWrapped("Pre-buffer Wakeup performs wake specials, dashes, and macros slightly early.");
                             ImGui::Dummy(ImVec2(1, 4));
                             ImGui::TextDisabled("Per trigger");
                             ImGui::TextWrapped("Pick an action (normals, forward/back normals, specials, supers, jump, dash/backdash, block, Final Memory, or a Macro slot), the button if needed, and an optional delay.");
@@ -2237,7 +2226,7 @@ namespace ImGuiGui {
                             ImGui::TextWrapped("'After Airtech' here is separate from Auto-Airtech; you need to enable auto-airtech for After Airtech trigger to work.");
                             ImGui::Dummy(ImVec2(1, 4));
                             ImGui::TextDisabled("Tip: Testing Wakeup Timing");
-                            ImGui::TextWrapped("You can enable 'Pre-buffer wake specials/dashes/macroses' to test wakeup macroses - it'll try to buffer the macro during the rising frames of wakeup.");
+                            ImGui::TextWrapped("Use Pre-buffer Wakeup to test wakeup macros; it buffers the macro during the rising frames of wakeup.");
                             ImGui::EndTabItem();
                         }
                         // Macros
@@ -3925,10 +3914,6 @@ namespace ImGuiGui {
                std::to_string(p1ICValue) + ", P2=" + std::to_string(p2ICValue), true);
 
     // --- Sync auto-action and trigger settings from atomics into the GUI state ---
-    // Master auto-action
-    guiState.localData.autoAction = autoActionEnabled.load();
-    guiState.localData.autoActionPlayer = autoActionPlayer.load();
-
     // Per-trigger enables
     guiState.localData.triggerAfterBlock   = triggerAfterBlockEnabled.load();
     guiState.localData.triggerOnWakeup     = triggerOnWakeupEnabled.load();
@@ -3936,6 +3921,10 @@ namespace ImGuiGui {
     guiState.localData.triggerAfterAirtech = triggerAfterAirtechEnabled.load();
     guiState.localData.triggerOnRG         = triggerOnRGEnabled.load();
     guiState.localData.randomizeTriggers   = triggerRandomizeEnabled.load();
+
+    // Auto-action master/target are derived from trigger rows and local side.
+    guiState.localData.autoAction = HasAnyAutoActionTriggerEnabled(guiState.localData);
+    guiState.localData.autoActionPlayer = ResolveAutoActionTargetPlayer();
 
     // Per-trigger delays
     guiState.localData.delayAfterBlock     = triggerAfterBlockDelay.load();
@@ -4021,7 +4010,9 @@ namespace ImGuiGui {
             jumpDirection.store(displayData.jumpDirection);
             jumpTarget.store(displayData.jumpTarget);
 
-            // Auto-action master settings
+            // Auto-action master/target are derived from trigger rows and local side.
+            displayData.autoAction = HasAnyAutoActionTriggerEnabled(displayData);
+            displayData.autoActionPlayer = ResolveAutoActionTargetPlayer();
             autoActionEnabled.store(displayData.autoAction);
             autoActionPlayer.store(displayData.autoActionPlayer);
 

@@ -425,6 +425,10 @@ struct DisplayData {
 
 extern DisplayData displayData;
 
+bool HasAnyAutoActionTriggerEnabled();
+bool HasAnyAutoActionTriggerEnabled(const DisplayData& data);
+int ResolveAutoActionTargetPlayer();
+
 // Structure to hold detected key bindings
 struct KeyBindings {
     // Input device type

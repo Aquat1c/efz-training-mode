@@ -23,6 +23,7 @@
 #include "../include/game/always_rg.h"
 #include "../include/game/random_rg.h"
 #include "../include/game/random_block.h"
+#include "../include/utils/switch_players.h"
 #include <sstream>
 #include <iomanip>
 #include <iostream>
@@ -358,6 +359,8 @@ void ResetRuntimeSettingsToDisplayDefaults() {
     p1Jumping.store(false);
     p2Jumping.store(false);
 
+    displayData.autoAction = HasAnyAutoActionTriggerEnabled(displayData);
+    displayData.autoActionPlayer = ResolveAutoActionTargetPlayer();
     autoActionEnabled.store(displayData.autoAction);
     autoActionType.store(displayData.autoActionType);
     autoActionCustomID.store(displayData.autoActionCustomID);
@@ -512,7 +515,7 @@ void ResetPracticeMatchSessionState(const char* reason) {
         << " fmInstalled=" << (IsFinalMemoryBypassInstalled() ? "1" : "0")
         << " wakeBuf=" << (g_wakeBufferingEnabled.load() ? "1" : "0")
         << " counterRG=" << (g_counterRGEnabled.load() ? "1" : "0")
-        << " autoActionPlayer=" << autoActionPlayer.load();
+        << " autoActionTarget=" << ResolveAutoActionTargetPlayer();
     LogOut(oss.str(), true);
 }
 
@@ -1453,6 +1456,32 @@ std::atomic<int> triggerOnWakeupMacroSlot{ 0 };
 std::atomic<int> triggerAfterHitstunMacroSlot{ 0 };
 std::atomic<int> triggerAfterAirtechMacroSlot{ 0 };
 std::atomic<int> triggerOnRGMacroSlot{ 0 };
+
+bool HasAnyAutoActionTriggerEnabled(const DisplayData& data) {
+    return data.triggerAfterBlock ||
+           data.triggerOnWakeup ||
+           data.triggerAfterHitstun ||
+           data.triggerAfterAirtech ||
+           data.triggerOnRG;
+}
+
+bool HasAnyAutoActionTriggerEnabled() {
+    return triggerAfterBlockEnabled.load() ||
+           triggerOnWakeupEnabled.load() ||
+           triggerAfterHitstunEnabled.load() ||
+           triggerAfterAirtechEnabled.load() ||
+           triggerOnRGEnabled.load();
+}
+
+int ResolveAutoActionTargetPlayer() {
+    const int remotePlayer = SwitchPlayers::GetRemotePlayerIndex();
+    if (remotePlayer == 1 || remotePlayer == 2) {
+        return remotePlayer;
+    }
+
+    const int localPlayer = SwitchPlayers::GetLocalPlayerIndex();
+    return (localPlayer == 2) ? 1 : 2;
+}
 
 // Debug/experimental: allow buffering (pre-freeze) of wakeup specials/supers/dashes instead of f1 injection
 std::atomic<bool> g_wakeBufferingEnabled{false};

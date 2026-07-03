@@ -25,12 +25,17 @@
 #include <mutex>
 #include "../include/input/immediate_input.h"
 
+#ifndef EFZ_ENABLE_AUTO_ACTION_WAKE_TRACE
+#define EFZ_ENABLE_AUTO_ACTION_WAKE_TRACE 0
+#endif
+
 // Local helper to format a single byte as two-digit hex (uppercase)
 static std::string FormatHexByte(uint8_t value) {
     std::ostringstream oss;
     oss << std::uppercase << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(value);
     return oss.str();
 }
+
 // Static variable to track the previous frame's button mask for edge detection.
 static uint8_t g_lastInjectedMask[3] = {0, 0, 0}; // Index 0 unused, 1 for P1, 2 for P2
 // Track whether we were bypassing original (buffered injection) last frame per player.
@@ -43,6 +48,166 @@ std::atomic<bool> g_forceBypass[3] = { false, false, false };
 std::atomic<bool> g_pollOverrideActive[3] = { false, false, false };
 std::atomic<uint8_t> g_pollOverrideMask[3] = { 0, 0, 0 };
 static std::atomic<uint32_t> g_pollOverrideHitCount[3] = { 0, 0, 0 };
+
+#if EFZ_ENABLE_AUTO_ACTION_WAKE_TRACE
+static const char* TraceBool(bool value) {
+    return value ? "1" : "0";
+}
+
+static const char* TraceSubframeSuffix(int internalFrame) {
+    static const char* kSuffixes[3] = { "00", "33", "66" };
+    int subframe = internalFrame % 3;
+    if (subframe < 0) subframe += 3;
+    return kSuffixes[subframe];
+}
+
+static const char* TraceMoveClass(short moveID) {
+    switch (moveID) {
+        case IDLE_MOVE_ID: return "idle";
+        case WALK_FWD_ID: return "walk-f";
+        case WALK_BACK_ID: return "walk-b";
+        case CROUCH_ID: return "crouch";
+        case CROUCH_TO_STAND_ID: return "crouch-stand";
+        case GROUNDTECH_PRE: return "gtech-pre";
+        case GROUNDTECH_RECOVERY: return "gtech-96";
+        case GROUNDTECH_START: return "gtech-start";
+        case GROUNDTECH_END: return "gtech-end";
+        case STRAIGHT_JUMP_ID: return "jump-n";
+        case FORWARD_JUMP_ID: return "jump-f";
+        case BACKWARD_JUMP_ID: return "jump-b";
+        case FALLING_ID: return "fall";
+        case FORWARD_DASH_START_ID: return "dash-f-start";
+        case FORWARD_DASH_RECOVERY_ID: return "dash-f-rec";
+        case FORWARD_DASH_RECOVERY_SENTINEL_ID: return "dash-f-sentinel";
+        case BACKWARD_DASH_START_ID: return "dash-b-start";
+        case BACKWARD_DASH_RECOVERY_ID: return "dash-b-rec";
+        case KAORI_FORWARD_DASH_START_ID: return "kaori-dash-f";
+        case STAND_GUARD_ID: return "stand-guard";
+        case CROUCH_GUARD_ID: return "crouch-guard";
+        case AIR_GUARD_ID: return "air-guard";
+        case RG_STAND_ID: return "rg-stand";
+        case RG_CROUCH_ID: return "rg-crouch";
+        case RG_AIR_ID: return "rg-air";
+        default: break;
+    }
+    if (IsHitstun(moveID)) return "hitstun";
+    if (IsLaunched(moveID)) return "launch";
+    if (IsAirtech(moveID)) return "airtech";
+    if (IsThrown(moveID)) return "throw";
+    if (IsFrozen(moveID)) return "frozen";
+    if (IsAttackMove(moveID)) return "attack";
+    if (IsBlockstun(moveID)) return "blockstun";
+    if (IsActionable(moveID)) return "actionable";
+    return "other";
+}
+
+static short TraceReadMoveIDFromPtr(uintptr_t playerPtr) {
+    short moveID = -1;
+    if (playerPtr) {
+        (void)SafeReadMemory(playerPtr + MOVE_ID_OFFSET, &moveID, sizeof(moveID));
+    }
+    return moveID;
+}
+
+static bool TraceInputHookWakeWindowActive(short p1MoveID, short p2MoveID) {
+    static int s_traceWindow[3] = { 0, 0, 0 };
+    static int s_lastUpdatedFrame = -1;
+    const int now = frameCounter.load();
+
+    if (s_lastUpdatedFrame != now) {
+        s_lastUpdatedFrame = now;
+        if (IsGroundtech(p1MoveID)) {
+            s_traceWindow[1] = 90;
+        } else if (s_traceWindow[1] > 0) {
+            --s_traceWindow[1];
+        }
+        if (IsGroundtech(p2MoveID)) {
+            s_traceWindow[2] = 90;
+        } else if (s_traceWindow[2] > 0) {
+            --s_traceWindow[2];
+        }
+    }
+
+    return s_traceWindow[1] > 0 || s_traceWindow[2] > 0;
+}
+
+static void TraceAppendQueueState(std::ostringstream& oss, int playerNum) {
+    const bool queueActive = (playerNum == 1) ? p1QueueActive : p2QueueActive;
+    const int queueIndex = (playerNum == 1) ? p1QueueIndex : p2QueueIndex;
+    const int frameCounterForQueue = (playerNum == 1) ? p1FrameCounter : p2FrameCounter;
+    const int motionType = (playerNum == 1) ? p1CurrentMotionType : p2CurrentMotionType;
+    const size_t queueSize = (playerNum == 1) ? p1InputQueue.size() : p2InputQueue.size();
+    oss << " p" << playerNum << "Queue=" << TraceBool(queueActive)
+        << ":" << queueIndex << "/" << queueSize
+        << " qFrame=" << frameCounterForQueue
+        << " qMotion=" << motionType;
+}
+
+static void TraceAppendInputState(std::ostringstream& oss, int playerNum) {
+    oss << " p" << playerNum
+        << " desired=" << static_cast<int>(ImmediateInput::GetCurrentDesired(playerNum))
+        << " remTicks=" << ImmediateInput::GetRemainingTicks(playerNum)
+        << " manual=" << TraceBool(g_manualInputOverride[playerNum].load(std::memory_order_relaxed))
+        << " manualMask=" << static_cast<int>(g_manualInputMask[playerNum].load(std::memory_order_relaxed))
+        << " immediateOnly=" << TraceBool(g_injectImmediateOnly[playerNum].load(std::memory_order_relaxed))
+        << " forceBypass=" << TraceBool(g_forceBypass[playerNum].load(std::memory_order_relaxed))
+        << " poll=" << TraceBool(g_pollOverrideActive[playerNum].load(std::memory_order_relaxed))
+        << " pollMask=" << static_cast<int>(g_pollOverrideMask[playerNum].load(std::memory_order_relaxed))
+        << " lastInjected=" << static_cast<int>(g_lastInjectedMask[playerNum]);
+    TraceAppendQueueState(oss, playerNum);
+}
+
+static void TraceInputHookWakePhase(const char* phase, int playerNum, uintptr_t characterPtr, short entryMoveID, const char* exitPath) {
+    const short p1MoveID = static_cast<short>(GetPlayerMoveID(1));
+    const short p2MoveID = static_cast<short>(GetPlayerMoveID(2));
+    if (!TraceInputHookWakeWindowActive(p1MoveID, p2MoveID)) return;
+
+    const short charMoveID = TraceReadMoveIDFromPtr(characterPtr);
+    const int internalFrame = frameCounter.load();
+    std::ostringstream oss;
+    oss << "[AA_WAKE_TRACE][INPUT_HOOK]"
+        << " phase=" << (phase ? phase : "unknown")
+        << " IF=" << internalFrame
+        << " VF=" << (internalFrame / 3) << "." << TraceSubframeSuffix(internalFrame)
+        << " hookP=" << playerNum
+        << " entryMove=" << entryMoveID << "(" << TraceMoveClass(entryMoveID) << ")"
+        << " charMove=" << charMoveID << "(" << TraceMoveClass(charMoveID) << ")"
+        << " p1Move=" << p1MoveID << "(" << TraceMoveClass(p1MoveID) << ")"
+        << " p2Move=" << p2MoveID << "(" << TraceMoveClass(p2MoveID) << ")"
+        << " exitPath=" << (exitPath ? exitPath : "")
+        << " freeze=" << TraceBool(g_bufferFreezingActive.load(std::memory_order_relaxed))
+        << " freezeOwner=" << g_activeFreezePlayer.load(std::memory_order_relaxed)
+        << " pendingRestore=" << TraceBool(g_pendingControlRestore.load(std::memory_order_relaxed))
+        << " p2Override=" << TraceBool(g_p2ControlOverridden);
+    TraceAppendInputState(oss, 1);
+    TraceAppendInputState(oss, 2);
+    LogOut(oss.str(), false);
+}
+
+struct InputHookWakeTraceScope {
+    InputHookWakeTraceScope(int player, uintptr_t ptr)
+        : playerNum(player), characterPtr(ptr), entryMoveID(TraceReadMoveIDFromPtr(ptr)) {
+        TraceInputHookWakePhase("entry", playerNum, characterPtr, entryMoveID, exitLabel);
+    }
+
+    ~InputHookWakeTraceScope() {
+        TraceInputHookWakePhase("exit", playerNum, characterPtr, entryMoveID, exitLabel);
+    }
+
+    void Mark(const char* phase) {
+        TraceInputHookWakePhase(phase, playerNum, characterPtr, entryMoveID, exitLabel);
+    }
+
+    void SetExit(const char* label) {
+        exitLabel = label;
+    }
+
+    int playerNum;
+    uintptr_t characterPtr;
+    short entryMoveID;
+    const char* exitLabel = "exit";
+};
+#endif
 
 void ResetInputPollOverrideHitCount(int playerNum) {
     if (playerNum != 1 && playerNum != 2) return;
@@ -395,6 +560,10 @@ int __fastcall HookedProcessCharacterInput(int characterPtr, int edx) {
         return oProcessCharacterInput(characterPtr);
     }
 
+#if EFZ_ENABLE_AUTO_ACTION_WAKE_TRACE
+    InputHookWakeTraceScope wakeTrace(playerNum, static_cast<uintptr_t>(characterPtr));
+#endif
+
     // Tick-integrated auto-actions: run once per internal sub-tick before P1 processing
     if (g_tickIntegratedAutoActions.load() && playerNum == 1) {
         short move1 = 0, move2 = 0;
@@ -407,6 +576,9 @@ int __fastcall HookedProcessCharacterInput(int characterPtr, int edx) {
             move2 = -1;
         }
         AutoActionsTick_Inline(move1, move2);
+#if EFZ_ENABLE_AUTO_ACTION_WAKE_TRACE
+        wakeTrace.Mark("after-auto-tick");
+#endif
     }
 
     // Do not inject while a buffer-freeze is active for THIS player; let the game's
@@ -428,6 +600,10 @@ int __fastcall HookedProcessCharacterInput(int characterPtr, int edx) {
             }
             g_lastInjectedMask[playerNum] = 0;
             // Intentionally skip tail cleanup during freeze
+#if EFZ_ENABLE_AUTO_ACTION_WAKE_TRACE
+            wakeTrace.Mark("before-original:freeze-skip");
+            wakeTrace.SetExit("exit:freeze-skip");
+#endif
             return CallOriginalProcessCharacterInputWithContext(characterPtr, playerNum);
         }
     }
@@ -494,6 +670,9 @@ int __fastcall HookedProcessCharacterInput(int characterPtr, int edx) {
             g_lastInjectedMask[playerNum] = currentMask;
             g_wasBypassBuffered[playerNum] = true;
             MaybePerformTailCleanup(playerNum);
+#if EFZ_ENABLE_AUTO_ACTION_WAKE_TRACE
+            wakeTrace.SetExit("exit:bypass-buffered");
+#endif
             return 0;
         } else {
             // For immediate-only, write before AND after calling the game's processor.
@@ -501,11 +680,17 @@ int __fastcall HookedProcessCharacterInput(int characterPtr, int edx) {
             // Pre-write ensures the game reads our state; post-write stabilizes the final state for this tick.
             WritePlayerInputImmediate(playerNum, currentMask);
             EnsureHumanControlForActivePollOverride(characterPtr, playerNum);
+#if EFZ_ENABLE_AUTO_ACTION_WAKE_TRACE
+            wakeTrace.Mark("before-original:immediate-only");
+#endif
             int ret = CallOriginalProcessCharacterInputWithContext(characterPtr, playerNum);
             WritePlayerInputImmediate(playerNum, currentMask);
             g_lastInjectedMask[playerNum] = currentMask;
             g_wasBypassBuffered[playerNum] = false;
             MaybePerformTailCleanup(playerNum);
+#if EFZ_ENABLE_AUTO_ACTION_WAKE_TRACE
+            wakeTrace.SetExit("exit:immediate-only");
+#endif
             return ret;
         }
     } 
@@ -522,6 +707,9 @@ int __fastcall HookedProcessCharacterInput(int characterPtr, int edx) {
             // Pre-write desired state
             WritePlayerInputImmediate(playerNum, desired);
             EnsureHumanControlForActivePollOverride(characterPtr, playerNum);
+#if EFZ_ENABLE_AUTO_ACTION_WAKE_TRACE
+            wakeTrace.Mark("before-original:immediate-desired");
+#endif
             int ret = CallOriginalProcessCharacterInputWithContext(characterPtr, playerNum);
             // Post-write to ensure final state for this tick
             WritePlayerInputImmediate(playerNum, desired);
@@ -529,6 +717,9 @@ int __fastcall HookedProcessCharacterInput(int characterPtr, int edx) {
             g_lastInjectedMask[playerNum] = desired;
             g_wasBypassBuffered[playerNum] = false;
             MaybePerformTailCleanup(playerNum);
+#if EFZ_ENABLE_AUTO_ACTION_WAKE_TRACE
+            wakeTrace.SetExit("exit:immediate-desired");
+#endif
             return ret;
         }
     }
@@ -552,8 +743,14 @@ int __fastcall HookedProcessCharacterInput(int characterPtr, int edx) {
     }
     {
         EnsureHumanControlForActivePollOverride(characterPtr, playerNum);
+#if EFZ_ENABLE_AUTO_ACTION_WAKE_TRACE
+        wakeTrace.Mark("before-original:normal");
+#endif
         int ret = CallOriginalProcessCharacterInputWithContext(characterPtr, playerNum);
         MaybePerformTailCleanup(playerNum);
+#if EFZ_ENABLE_AUTO_ACTION_WAKE_TRACE
+        wakeTrace.SetExit("exit:normal");
+#endif
         return ret;
     }
 }

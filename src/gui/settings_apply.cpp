@@ -22,6 +22,8 @@ void ApplyRuntimeSettings(DisplayData* data) {
         jumpDirection.store(data->jumpDirection);
         jumpTarget.store(data->jumpTarget);
 
+        data->autoAction = HasAnyAutoActionTriggerEnabled(*data);
+        data->autoActionPlayer = ResolveAutoActionTargetPlayer();
         autoActionEnabled.store(data->autoAction);
         autoActionPlayer.store(data->autoActionPlayer);
 
