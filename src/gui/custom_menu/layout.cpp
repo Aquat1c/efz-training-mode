@@ -1,5 +1,6 @@
 #include "../include/gui/custom_menu/layout.h"
 #include "../include/gui/custom_menu/fonts.h"
+#include "../include/gui/custom_menu/scale.h"
 #include "../3rdparty/imgui/imgui.h"
 
 #include <algorithm>
@@ -10,27 +11,33 @@ namespace CustomMenu::Layout {
 namespace {
 
 float PxFromFont(ImFont* font) {
-    return (font && font->FontSize > 0.0f) ? font->FontSize : 13.0f;
+    return (font && font->FontSize > 0.0f) ? font->FontSize : Scale::Get().bodyPx;
 }
 
 // Center a line of text vertically within a row of height h by choosing a top
 // y such that text baseline visually centers.
 float CenterTextY(float y, float h, float textPx) {
-    return y + (h - textPx) * 0.5f;
+    return Scale::Snap(y + (h - textPx) * 0.5f);
 }
 
 void DrawRowDisabledOverlay(ImDrawList* dl, float x, float y, float w) {
     using namespace Theme;
-    dl->AddRectFilled(ImVec2(x - kPanelPadX, y), ImVec2(x + w + kPanelPadX, y + kRowHeight), kDisabledFill);
+    const Scale::Metrics& metrics = Scale::Get();
+    dl->AddRectFilled(ImVec2(Scale::Snap(x - metrics.panelPadX), Scale::Snap(y)),
+                      ImVec2(Scale::Snap(x + w + metrics.panelPadX), Scale::Snap(y + metrics.rowHeight)),
+                      kDisabledFill);
 }
 
 void DrawMenuStrip(ImDrawList* dl, float x, float y, float w, float h, bool strong = false) {
     using namespace Theme;
-    const float sx = x - kPanelPadX;
-    const float sw = w + kPanelPadX * 2.0f;
-    dl->AddRectFilled(ImVec2(sx, y), ImVec2(sx + sw, y + h), strong ? kStripStrong : kStrip);
-    dl->AddLine(ImVec2(sx, y), ImVec2(sx + sw, y), kRule, 1.0f);
-    dl->AddLine(ImVec2(sx, y + h - 1.0f), ImVec2(sx + sw, y + h - 1.0f), kRule, 1.0f);
+    const Scale::Metrics& metrics = Scale::Get();
+    const float sx = Scale::Snap(x - metrics.panelPadX);
+    const float sy = Scale::Snap(y);
+    const float sw = Scale::Snap(w + metrics.panelPadX * 2.0f);
+    const float sh = Scale::Snap(h);
+    dl->AddRectFilled(ImVec2(sx, sy), ImVec2(sx + sw, sy + sh), strong ? kStripStrong : kStrip);
+    dl->AddLine(ImVec2(sx, sy), ImVec2(sx + sw, sy), kRule, 1.0f);
+    dl->AddLine(ImVec2(sx, sy + sh - 1.0f), ImVec2(sx + sw, sy + sh - 1.0f), kRule, 1.0f);
 }
 
 void DrawOutlinedString(ImDrawList* dl, ImFont* font, float px, float x, float y,
@@ -49,27 +56,29 @@ void DrawOutlinedString(ImDrawList* dl, ImFont* font, float px, float x, float y
 // matches EFZ's native menu convention.
 void DrawRowChromeFocused(ImDrawList* dl, float x, float y, float w, bool disabled) {
     using namespace Theme;
-    const float sx = x - kPanelPadX;
-    const float sw = w + kPanelPadX * 2.0f;
+    const Scale::Metrics& metrics = Scale::Get();
+    const float sx = Scale::Snap(x - metrics.panelPadX);
+    const float sy = Scale::Snap(y);
+    const float sw = Scale::Snap(w + metrics.panelPadX * 2.0f);
     const ImU32 fill = disabled ? kDisabledFocus : kSelectedFill;
     const ImU32 cursorCol = disabled ? kCursorDisabled : kTextActive;
-    dl->AddRectFilled(ImVec2(sx, y + 2.0f), ImVec2(sx + sw, y + kRowHeight - 2.0f), fill);
+    dl->AddRectFilled(ImVec2(sx, sy + 2.0f), ImVec2(sx + sw, sy + metrics.rowHeight - 2.0f), fill);
     if (!disabled) {
-        dl->AddLine(ImVec2(sx, y + kRowHeight - 3.0f), ImVec2(sx + sw, y + kRowHeight - 3.0f), kSelectedLine, 1.0f);
+        dl->AddLine(ImVec2(sx, sy + metrics.rowHeight - 3.0f), ImVec2(sx + sw, sy + metrics.rowHeight - 3.0f), kSelectedLine, 1.0f);
     }
     ImFont* f  = Fonts::Body();
     const float px = PxFromFont(f);
-    const float textY = CenterTextY(y, kRowHeight, px);
+    const float textY = CenterTextY(sy, metrics.rowHeight, px);
     // Cursor sits inside the row padding so it doesn't crowd the label.
     if (dl && f) {
-        dl->AddText(f, px, ImVec2(x + 5.0f, textY), cursorCol, ">");
+        dl->AddText(f, px, ImVec2(Scale::Snap(x + 5.0f), textY), cursorCol, ">");
     } else if (dl) {
-        dl->AddText(ImVec2(x + 5.0f, textY), cursorCol, ">");
+        dl->AddText(ImVec2(Scale::Snap(x + 5.0f), textY), cursorCol, ">");
     }
     if (disabled) {
         dl->AddRect(
-            ImVec2(sx + 0.5f, y + 0.5f),
-            ImVec2(sx + sw - 0.5f, y + kRowHeight - 0.5f),
+            ImVec2(sx + 0.5f, sy + 0.5f),
+            ImVec2(sx + sw - 0.5f, sy + metrics.rowHeight - 0.5f),
             kRuleDim, 0.0f, 0, 1.0f);
     }
 }
@@ -81,18 +90,20 @@ ImFont* HeaderFont() { return Fonts::Header(); }
 
 void DrawString(ImDrawList* dl, ImFont* font, float px, float x, float y, ImU32 col, const char* text) {
     if (!dl || !text || !*text) return;
+    const float sx = Scale::Snap(x);
+    const float sy = Scale::Snap(y);
     if (font) {
-        const float sizePx = (px > 0.0f) ? px : font->FontSize;
-        dl->AddText(font, sizePx, ImVec2(x, y), col, text);
+        const float sizePx = Scale::Snap((px > 0.0f) ? px : font->FontSize);
+        dl->AddText(font, sizePx, ImVec2(sx, sy), col, text);
     } else {
-        dl->AddText(ImVec2(x, y), col, text);
+        dl->AddText(ImVec2(sx, sy), col, text);
     }
 }
 
 float MeasureTextW(ImFont* font, float px, const char* text) {
     if (!text || !*text) return 0.0f;
     if (font) {
-        const float sizePx = (px > 0.0f) ? px : font->FontSize;
+        const float sizePx = Scale::Snap((px > 0.0f) ? px : font->FontSize);
         ImVec2 sz = font->CalcTextSizeA(sizePx, FLT_MAX, 0.0f, text);
         return sz.x;
     }
@@ -103,6 +114,7 @@ float MeasureTextW(ImFont* font, float px, const char* text) {
 
 ImVec2 DrawPanel(ImDrawList* dl, const char* title) {
     using namespace Theme;
+    const Scale::Metrics& metrics = Scale::Get();
 
     // Full-screen backdrop
     dl->AddRectFilled(ImVec2(0, 0), ImVec2(kCanvasW, kCanvasH), kBackdrop);
@@ -116,24 +128,26 @@ ImVec2 DrawPanel(ImDrawList* dl, const char* title) {
     const float hPx = PxFromFont(hFont);
 
     // Title strip: black band with hard white rails like EFZ option screens.
-    DrawMenuStrip(dl, tl.x + kPanelPadX, tl.y, kPanelW - kPanelPadX * 2.0f, kTitleRowHeight, true);
+    DrawMenuStrip(dl, tl.x + metrics.panelPadX, tl.y, kPanelW - metrics.panelPadX * 2.0f, metrics.titleRowHeight, true);
 
     if (title && *title) {
         const float tw = MeasureTextW(hFont, hPx, title);
-        const float tx = tl.x + (kPanelW - tw) * 0.5f;
-        const float titleY = CenterTextY(tl.y, kTitleRowHeight, hPx);
+        const float tx = Scale::Snap(tl.x + (kPanelW - tw) * 0.5f);
+        const float titleY = CenterTextY(tl.y, metrics.titleRowHeight, hPx);
         DrawString(dl, hFont, hPx, tx, titleY, kTextActive, title);
     }
 
     (void)br;
-    return ImVec2(tl.x + kPanelPadX, tl.y + kTitleRowHeight + kPanelPadY);
+    return ImVec2(Scale::Snap(tl.x + metrics.panelPadX),
+                  Scale::Snap(tl.y + metrics.titleRowHeight + metrics.panelPadY));
 }
 
 void DrawSectionRule(ImDrawList* dl, float panelX, float y, float panelW, ImU32 col) {
     using namespace Theme;
+    const Scale::Metrics& metrics = Scale::Get();
     dl->AddLine(
-        ImVec2(panelX + kRuleInsetX - kPanelPadX, y),
-        ImVec2(panelX + panelW - kRuleInsetX - kPanelPadX, y),
+        ImVec2(Scale::Snap(panelX + kRuleInsetX - metrics.panelPadX), Scale::Snap(y)),
+        ImVec2(Scale::Snap(panelX + panelW - kRuleInsetX - metrics.panelPadX), Scale::Snap(y)),
         col, 1.0f);
 }
 
@@ -145,6 +159,7 @@ void DrawTabBar(ImDrawList* dl, float x, float y, float w,
 {
     using namespace Theme;
     if (!labels || count <= 0) return;
+    const Scale::Metrics& metrics = Scale::Get();
 
     ImFont* bFont = BodyFont();
     const float bPx = PxFromFont(bFont);
@@ -153,23 +168,23 @@ void DrawTabBar(ImDrawList* dl, float x, float y, float w,
     float totalW = 0.0f;
     for (int i = 0; i < count; ++i) {
         totalW += MeasureTextW(bFont, bPx, labels[i]);
-        if (i + 1 < count) totalW += kTabGapX;
+        if (i + 1 < count) totalW += metrics.tabGapX;
     }
 
     // Center inside (x, x+w)
-    float cursorX = x + (w - totalW) * 0.5f;
+    float cursorX = Scale::Snap(x + (w - totalW) * 0.5f);
     if (cursorX < x) cursorX = x;
 
-    const float textY = CenterTextY(y, kTabBarHeight, bPx);
+    const float textY = CenterTextY(y, metrics.tabBarHeight, bPx);
 
     for (int i = 0; i < count; ++i) {
         const float tw = MeasureTextW(bFont, bPx, labels[i]);
         const bool isActive  = (i == activeIdx);
         const bool isFocused = (i == focusedIdx);
         const ImU32 col = isActive ? kTextActive : kTextInactive;
-        const float boxPadX = 7.0f;
-        const float boxTop = textY - 4.0f;
-        const float boxBottom = textY + bPx + 4.0f;
+        const float boxPadX = Scale::Snap(7.0f * metrics.layoutScale);
+        const float boxTop = Scale::Snap(textY - 4.0f);
+        const float boxBottom = Scale::Snap(textY + bPx + 4.0f);
 
         if (isActive) {
             dl->AddRectFilled(ImVec2(cursorX - boxPadX, boxTop),
@@ -178,7 +193,7 @@ void DrawTabBar(ImDrawList* dl, float x, float y, float w,
             dl->AddRect(ImVec2(cursorX - boxPadX + 0.5f, boxTop + 0.5f),
                         ImVec2(cursorX + tw + boxPadX - 0.5f, boxBottom - 0.5f),
                         isFocused ? kTextActive : kRuleDim, 0.0f, 0, 1.0f);
-            const float underlineY = y + kTabBarHeight - 5.0f;
+            const float underlineY = Scale::Snap(y + metrics.tabBarHeight - 5.0f);
             dl->AddLine(ImVec2(cursorX - 3.0f, underlineY),
                         ImVec2(cursorX + tw + 3.0f, underlineY),
                         kTextActive, 1.0f);
@@ -192,7 +207,7 @@ void DrawTabBar(ImDrawList* dl, float x, float y, float w,
             dl->AddRect(ImVec2(cursorX - boxPadX + 0.5f, boxTop + 0.5f),
                         ImVec2(cursorX + tw + boxPadX - 0.5f, boxBottom - 0.5f),
                         kRuleDim, 0.0f, 0, 1.0f);
-            const float underlineY = y + kTabBarHeight - 6.0f;
+            const float underlineY = Scale::Snap(y + metrics.tabBarHeight - 6.0f);
             dl->AddLine(ImVec2(cursorX - 2.0f, underlineY),
                         ImVec2(cursorX + tw + 2.0f, underlineY),
                         kRuleDim, 1.0f);
@@ -200,7 +215,7 @@ void DrawTabBar(ImDrawList* dl, float x, float y, float w,
 
         DrawOutlinedString(dl, bFont, bPx, cursorX, textY, col, IM_COL32(0, 0, 0, 230), labels[i]);
 
-        cursorX += tw + kTabGapX;
+        cursorX = Scale::Snap(cursorX + tw + metrics.tabGapX);
     }
 }
 
@@ -209,33 +224,36 @@ void DrawTabBar(ImDrawList* dl, float x, float y, float w,
 void DrawHeader(ImDrawList* dl, float x, float y, float w, const char* text) {
     using namespace Theme;
     if (!text || !*text) return;
+    const Scale::Metrics& metrics = Scale::Get();
 
     ImFont* bFont = BodyFont();
     const float bPx = PxFromFont(bFont);
 
     // Strip background + rules (unchanged from before).
-    DrawMenuStrip(dl, x, y, w, kRowHeight, true);
+    DrawMenuStrip(dl, x, y, w, metrics.rowHeight, true);
 
     // Left-edge accent: a 3px bright vertical bar that anchors the header
     // visually to the left edge of the panel. The strip already extends
-    // past `x` by kPanelPadX on both sides, so painting at `x - kPanelPadX`
-    // sits flush with the panel border.
-    const float stripLeft = x - kPanelPadX;
+    // past `x` by the panel padding on both sides, so painting at the strip
+    // left sits flush with the panel border.
+    const float stripLeft = Scale::Snap(x - metrics.panelPadX);
     dl->AddRectFilled(
-        ImVec2(stripLeft,        y + 1.0f),
-        ImVec2(stripLeft + 3.0f, y + kRowHeight - 1.0f),
+        ImVec2(stripLeft,        Scale::Snap(y + 1.0f)),
+        ImVec2(stripLeft + 3.0f, Scale::Snap(y + metrics.rowHeight - 1.0f)),
         kTextActive);
 
     // Text now starts just past the accent bar (a few extra pixels of
     // breathing room) instead of the standard row indent. Headers visually
     // hang off the left edge instead of floating in the middle.
-    const float headerTextX = stripLeft + 8.0f;
-    const float textY = CenterTextY(y, kRowHeight, bPx);
+    const float headerTextX = Scale::Snap(stripLeft + 8.0f);
+    const float textY = CenterTextY(y, metrics.rowHeight, bPx);
     DrawString(dl, bFont, bPx, headerTextX, textY, kTextHeader, text);
 }
 
 void DrawRowSelectedBg(ImDrawList* dl, float x, float y, float w, float h) {
-    dl->AddRectFilled(ImVec2(x, y), ImVec2(x + w, y + h), Theme::kSelectedFill);
+    dl->AddRectFilled(ImVec2(Scale::Snap(x), Scale::Snap(y)),
+                      ImVec2(Scale::Snap(x + w), Scale::Snap(y + h)),
+                      Theme::kSelectedFill);
 }
 
 void DrawRowLabelValue(
@@ -244,23 +262,24 @@ void DrawRowLabelValue(
     bool focused, bool disabled)
 {
     using namespace Theme;
+    const Scale::Metrics& metrics = Scale::Get();
 
-    DrawMenuStrip(dl, x, y, w, kRowHeight);
+    DrawMenuStrip(dl, x, y, w, metrics.rowHeight);
     if (disabled) DrawRowDisabledOverlay(dl, x, y, w);
     if (focused) DrawRowChromeFocused(dl, x, y, w, disabled);
 
     ImFont* bFont = BodyFont();
     const float bPx = PxFromFont(bFont);
-    const float textY = CenterTextY(y, kRowHeight, bPx);
+    const float textY = CenterTextY(y, metrics.rowHeight, bPx);
 
     const ImU32 labelCol = disabled ? kTextDisabled : (focused ? kTextActive : kTextInactive);
     const ImU32 valueCol = disabled ? kTextDisabled : (focused ? kTextActive : kTextInactive);
 
-    DrawString(dl, bFont, bPx, x + kRowPadX, textY, labelCol, label);
+    DrawString(dl, bFont, bPx, x + metrics.rowPadX, textY, labelCol, label);
 
     if (value && *value) {
         const float vw = MeasureTextW(bFont, bPx, value);
-        DrawString(dl, bFont, bPx, x + w - kRowPadX - vw, textY, valueCol, value);
+        DrawString(dl, bFont, bPx, x + w - metrics.rowPadX - vw, textY, valueCol, value);
     }
 }
 
@@ -271,36 +290,37 @@ void DrawRowInlineChoices(
     bool focused, bool disabled)
 {
     using namespace Theme;
+    const Scale::Metrics& metrics = Scale::Get();
 
-    DrawMenuStrip(dl, x, y, w, kRowHeight);
+    DrawMenuStrip(dl, x, y, w, metrics.rowHeight);
     if (disabled) DrawRowDisabledOverlay(dl, x, y, w);
     if (focused) DrawRowChromeFocused(dl, x, y, w, disabled);
 
     ImFont* bFont = BodyFont();
     const float bPx = PxFromFont(bFont);
-    const float textY = CenterTextY(y, kRowHeight, bPx);
+    const float textY = CenterTextY(y, metrics.rowHeight, bPx);
 
     const ImU32 labelCol = disabled ? kTextDisabled : (focused ? kTextActive : kTextInactive);
-    DrawString(dl, bFont, bPx, x + kRowPadX, textY, labelCol, label);
+    DrawString(dl, bFont, bPx, x + metrics.rowPadX, textY, labelCol, label);
 
     if (!choices || choiceCount <= 0) return;
 
     // Measure total choices width
-    constexpr float kChoiceGapX = 14.0f;
+    const float kChoiceGapX = Scale::Snap(14.0f * metrics.layoutScale);
     float totalW = 0.0f;
     for (int i = 0; i < choiceCount; ++i) {
         totalW += MeasureTextW(bFont, bPx, choices[i]);
         if (i + 1 < choiceCount) totalW += kChoiceGapX;
     }
 
-    float cursorX = x + w - kRowPadX - totalW;
+    float cursorX = Scale::Snap(x + w - metrics.rowPadX - totalW);
     for (int i = 0; i < choiceCount; ++i) {
         const float cw = MeasureTextW(bFont, bPx, choices[i]);
         const bool selected = (i == currentIdx);
         const ImU32 col = disabled ? kTextDisabled
                          : (selected ? kTextActive : kTextInactive);
         DrawString(dl, bFont, bPx, cursorX, textY, col, choices[i]);
-        cursorX += cw + kChoiceGapX;
+        cursorX = Scale::Snap(cursorX + cw + kChoiceGapX);
     }
 }
 
@@ -319,17 +339,18 @@ void DrawRowNumber(
     bool focused, bool disabled)
 {
     using namespace Theme;
+    const Scale::Metrics& metrics = Scale::Get();
 
-    DrawMenuStrip(dl, x, y, w, kRowHeight);
+    DrawMenuStrip(dl, x, y, w, metrics.rowHeight);
     if (disabled) DrawRowDisabledOverlay(dl, x, y, w);
     if (focused) DrawRowChromeFocused(dl, x, y, w, disabled);
 
     ImFont* bFont = BodyFont();
     const float bPx = PxFromFont(bFont);
-    const float textY = CenterTextY(y, kRowHeight, bPx);
+    const float textY = CenterTextY(y, metrics.rowHeight, bPx);
 
     const ImU32 labelCol = disabled ? kTextDisabled : (focused ? kTextActive : kTextInactive);
-    DrawString(dl, bFont, bPx, x + kRowPadX, textY, labelCol, label);
+    DrawString(dl, bFont, bPx, x + metrics.rowPadX, textY, labelCol, label);
 
     if (!valueText) valueText = "";
     const char* left  = focused ? "<" : " ";
@@ -342,7 +363,7 @@ void DrawRowNumber(
     constexpr float gap = 8.0f;
     const float totalW = bw + gap + vw + gap + bw;
 
-    float cursorX = x + w - kRowPadX - totalW;
+    float cursorX = Scale::Snap(x + w - metrics.rowPadX - totalW);
     DrawString(dl, bFont, bPx, cursorX, textY, bracketCol, left);
     cursorX += bw + gap;
     DrawString(dl, bFont, bPx, cursorX, textY, valueCol, valueText);
@@ -356,27 +377,28 @@ void DrawRowDrill(
     bool focused, bool disabled)
 {
     using namespace Theme;
+    const Scale::Metrics& metrics = Scale::Get();
 
-    DrawMenuStrip(dl, x, y, w, kRowHeight);
+    DrawMenuStrip(dl, x, y, w, metrics.rowHeight);
     if (disabled) DrawRowDisabledOverlay(dl, x, y, w);
     if (focused) DrawRowChromeFocused(dl, x, y, w, disabled);
 
     ImFont* bFont = BodyFont();
     const float bPx = PxFromFont(bFont);
-    const float textY = CenterTextY(y, kRowHeight, bPx);
+    const float textY = CenterTextY(y, metrics.rowHeight, bPx);
 
     const ImU32 labelCol = disabled ? kTextDisabled : (focused ? kTextActive : kTextInactive);
     const ImU32 valueCol = disabled ? kTextDisabled : (focused ? kTextActive : kTextInactive);
     const ImU32 arrowCol = disabled ? kTextDisabled : kTextActive;
 
-    DrawString(dl, bFont, bPx, x + kRowPadX, textY, labelCol, label);
+    DrawString(dl, bFont, bPx, x + metrics.rowPadX, textY, labelCol, label);
 
     // Draw arrow as a simple ">" (the kDrillGlyph UTF-8 triangle requires the
     // font to include it - ITC Bolt may not, so use ASCII for safety).
     const char* arrow = ">";
     const float aw = MeasureTextW(bFont, bPx, arrow);
 
-    float cursorX = x + w - kRowPadX - aw;
+    float cursorX = Scale::Snap(x + w - metrics.rowPadX - aw);
     DrawString(dl, bFont, bPx, cursorX, textY, arrowCol, arrow);
 
     if (valueText && *valueText) {
@@ -393,17 +415,18 @@ void DrawRowSlider(
     bool focused, bool disabled)
 {
     using namespace Theme;
+    const Scale::Metrics& metrics = Scale::Get();
 
-    DrawMenuStrip(dl, x, y, w, kRowHeight);
+    DrawMenuStrip(dl, x, y, w, metrics.rowHeight);
     if (disabled) DrawRowDisabledOverlay(dl, x, y, w);
     if (focused) DrawRowChromeFocused(dl, x, y, w, disabled);
 
     ImFont* bFont = BodyFont();
     const float bPx = PxFromFont(bFont);
-    const float textY = CenterTextY(y, kRowHeight, bPx);
+    const float textY = CenterTextY(y, metrics.rowHeight, bPx);
 
     const ImU32 labelCol = disabled ? kTextDisabled : (focused ? kTextActive : kTextInactive);
-    DrawString(dl, bFont, bPx, x + kRowPadX, textY, labelCol, label);
+    DrawString(dl, bFont, bPx, x + metrics.rowPadX, textY, labelCol, label);
 
     // Clamp
     if (progress01 < 0.0f) progress01 = 0.0f;
@@ -415,15 +438,15 @@ void DrawRowSlider(
         valueW = MeasureTextW(bFont, bPx, valueText);
     }
 
-    const float trackW = kSliderTrackW;
-    const float trackH = kSliderTrackH;
+    const float trackW = metrics.sliderTrackW;
+    const float trackH = metrics.sliderTrackH;
     constexpr float gap = 10.0f;
 
-    const float rightX = x + w - kRowPadX;
-    const float valueX = rightX - valueW;
-    const float trackRight = (valueW > 0.0f) ? (valueX - gap) : rightX;
-    const float trackLeft  = trackRight - trackW;
-    const float trackY = y + (kRowHeight - trackH) * 0.5f;
+    const float rightX = Scale::Snap(x + w - metrics.rowPadX);
+    const float valueX = Scale::Snap(rightX - valueW);
+    const float trackRight = Scale::Snap((valueW > 0.0f) ? (valueX - gap) : rightX);
+    const float trackLeft  = Scale::Snap(trackRight - trackW);
+    const float trackY = Scale::Snap(y + (metrics.rowHeight - trackH) * 0.5f);
 
     // Track off portion
     const ImU32 trackOffCol = disabled ? kTextDisabled : kSliderTrackOff;
@@ -434,7 +457,7 @@ void DrawRowSlider(
         ImVec2(trackRight, trackY + trackH),
         trackOffCol);
 
-    const float onRight = trackLeft + trackW * progress01;
+    const float onRight = Scale::Snap(trackLeft + trackW * progress01);
     if (onRight > trackLeft) {
         dl->AddRectFilled(
             ImVec2(trackLeft, trackY),
@@ -453,6 +476,10 @@ void DrawButton(
     const char* label, bool focused, bool disabled)
 {
     using namespace Theme;
+    x = Scale::Snap(x);
+    y = Scale::Snap(y);
+    w = Scale::Snap(w);
+    h = Scale::Snap(h);
 
     ImU32 bg = focused ? (disabled ? kDisabledFocus : kButtonActiveBg) : IM_COL32(0,0,0,0);
     if (bg & 0xFF000000) {
@@ -469,7 +496,7 @@ void DrawButton(
     ImFont* bFont = BodyFont();
     const float bPx = PxFromFont(bFont);
     const float tw = MeasureTextW(bFont, bPx, label);
-    const float tx = x + (w - tw) * 0.5f;
+    const float tx = Scale::Snap(x + (w - tw) * 0.5f);
     const float ty = CenterTextY(y, h, bPx);
     const ImU32 textCol = disabled ? kTextDisabled : (focused ? kTextActive : kTextInactive);
     DrawString(dl, bFont, bPx, tx, ty, textCol, label);

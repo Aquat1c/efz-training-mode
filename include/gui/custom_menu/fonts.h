@@ -10,13 +10,10 @@ namespace CustomMenu::Fonts {
 // ImGui's default font.
 //
 // Sizes use io.Fonts->AddFontFromMemoryTTF with pixel-snap and no oversampling
-// to match EFZ's pixel-aligned bitmap aesthetic. Scale is pre-multiplied by
-// the UI scale + DPI scale so glyphs are rasterized at their final RT pixel
-// size (640x480 backbuffer).
-//
-// uiScale is the user's Config::uiScale; dpiScale is from GetDpiForWindow().
-// The two together determine atlas pixel sizes.
-bool Rebuild(float uiScale, float dpiScale);
+// to match EFZ's pixel-aligned bitmap aesthetic. The custom menu renders in
+// the game's fixed 640x480 canvas, so only the user scale participates here;
+// window/DPI presentation scale is handled outside the menu's logical space.
+bool Rebuild(float uiScale);
 
 // Access the loaded faces. Returns nullptr before Rebuild() succeeds.
 // Body is the ~11px row font; Header is the ~16px section-header font.

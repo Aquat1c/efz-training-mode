@@ -218,7 +218,7 @@ namespace ImGuiSettings {
                 ImGui::Text("UI Scale:");
                 ImGui::SameLine();
                 ImGui::SetNextItemWidth(140);
-                if (ImGui::SliderFloat("##UiScale", &uiScale, 0.90f, 1.50f, "%.2f")) {
+                if (ImGui::SliderFloat("##UiScale", &uiScale, 0.70f, 1.50f, "%.2f")) {
                     Config::SetSetting("General", "uiScale", std::to_string(uiScale));
                 }
                 ImGui::SameLine();

@@ -7,6 +7,7 @@
 #include "../include/gui/custom_menu/renderer.h"
 #include "../include/gui/custom_menu/layout.h"
 #include "../include/gui/custom_menu/theme.h"
+#include "../include/gui/custom_menu/scale.h"
 #include "../include/gui/custom_menu/input.h"
 #include "../include/gui/imgui_gui.h"
 #include "../include/utils/utilities.h"
@@ -842,7 +843,7 @@ Row* BuildSettingsInterfaceRows(int& count) {
 
     s_rows[n++] = Header("INTERFACE");
     s_rows[n++] = Toggle    ("USE CUSTOM MENU",        &s.useCustomMenu,       OnUseCustomMenu);
-    s_rows[n++] = FloatNum  ("UI SCALE",               &s.uiScale,      0.90f, 1.50f, 0.05f, 0.10f, "%.2f", OnUiScale);
+    s_rows[n++] = FloatNum  ("UI SCALE",               &s.uiScale,      0.70f, 1.50f, 0.05f, 0.10f, "%.2f", OnUiScale);
     s_rows[n++] = ChoicesRow("UI FONT (ADVANCED MENU)", &s.uiFontMode,   kUiFontChoices, 2, OnUiFont);
     s_rows[n++] = Toggle    ("PRACTICE OVERLAY HINT",  &s.showPracticeEntryHint, OnPracticeHint);
     count = n;
@@ -1099,10 +1100,12 @@ std::string ManualKeybindPreviewText() {
 bool TickManualKeybindEditorIfActive(ImDrawList*, const ScreenLayout& layout) {
     if (!g_manualKeybindEditor.active) return false;
 
-    const float x = layout.panelX + 52.0f;
-    const float y = layout.contentTopY + 26.0f;
-    const float w = Theme::kPanelW - 104.0f;
-    const float h = 184.0f;
+    const CustomMenu::Scale::Metrics& metrics = CustomMenu::Scale::Get();
+    const float marginX = CustomMenu::Scale::Snap(52.0f * metrics.layoutScale);
+    const float x = CustomMenu::Scale::Snap(layout.panelX + marginX);
+    const float y = CustomMenu::Scale::Snap(layout.contentTopY + 26.0f * metrics.layoutScale);
+    const float w = CustomMenu::Scale::Snap(Theme::kPanelW - marginX * 2.0f);
+    const float h = CustomMenu::Scale::Snap(184.0f * metrics.layoutScale);
 
     ImGui::SetNextWindowPos(ImVec2(x, y), ImGuiCond_Always);
     ImGui::SetNextWindowSize(ImVec2(w, h), ImGuiCond_Always);
@@ -5615,10 +5618,13 @@ void ResetTextEditor() {
 bool TickMacroTextEditorIfActive(ImDrawList*, const ScreenLayout& layout) {
     if (!g_macroEditor.active) return false;
 
-    const float x = layout.panelX + 38.0f;
-    const float y = layout.contentTopY + 8.0f;
-    const float w = Theme::kPanelW - 76.0f;
-    const float h = layout.contentBottomY - y - 8.0f;
+    const CustomMenu::Scale::Metrics& metrics = CustomMenu::Scale::Get();
+    const float marginX = CustomMenu::Scale::Snap(38.0f * metrics.layoutScale);
+    const float bottomPad = CustomMenu::Scale::Snap(8.0f * metrics.layoutScale);
+    const float x = CustomMenu::Scale::Snap(layout.panelX + marginX);
+    const float y = CustomMenu::Scale::Snap(layout.contentTopY + bottomPad);
+    const float w = CustomMenu::Scale::Snap(Theme::kPanelW - marginX * 2.0f);
+    const float h = CustomMenu::Scale::Snap(layout.contentBottomY - y - bottomPad);
 
     ImGui::SetNextWindowPos(ImVec2(x, y), ImGuiCond_Always);
     ImGui::SetNextWindowSize(ImVec2(w, h), ImGuiCond_Always);

@@ -12,7 +12,7 @@
 
 namespace Config {
     namespace {
-        constexpr float kUiScaleMin = 0.90f;
+        constexpr float kUiScaleMin = 0.70f;
         constexpr float kUiScaleMax = 1.50f;
 
         float ClampUiScale(float scale) {
@@ -257,7 +257,7 @@ namespace Config {
             file << "; Show a one-time Practice hint about opening the overlay (1 = yes, 0 = no)\n";
             file << "showPracticeEntryHint = 1\n\n";
 
-            file << "; UI scale for ImGui window (0.90 - 1.50)\n";
+            file << "; UI scale for ImGui window (0.70 - 1.50)\n";
             file << "uiScale = 0.90\n\n";
             file << "; UI font: 0 = ImGui default font, 1 = Segoe UI (Windows)\n";
             file << "uiFont = 0\n\n";
@@ -820,7 +820,7 @@ namespace Config {
             file << "enableCharacterSelectLogger = " << (settings.enableCharacterSelectLogger ? "1" : "0") << "\n\n";
             file << "; Show a one-time Practice hint about opening the overlay (1 = yes, 0 = no)\n";
             file << "showPracticeEntryHint = " << (settings.showPracticeEntryHint ? "1" : "0") << "\n\n";
-            file << "; UI scale for ImGui window (0.90 - 1.50)\n";
+            file << "; UI scale for ImGui window (0.70 - 1.50)\n";
             file << "uiScale = " << settings.uiScale << "\n\n";
             file << "; UI font: 0 = ImGui default font, 1 = Segoe UI (Windows)\n";
             file << "uiFont = " << settings.uiFontMode << "\n\n";

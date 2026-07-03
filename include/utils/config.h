@@ -32,7 +32,7 @@ namespace Config {
     bool collisionDisplayNagamoriAffected;
     bool enableCharacterSelectLogger; // NEW: Toggle per-frame Character Select flag logger
     bool showPracticeEntryHint;   // NEW: Show practice overlay hint once per session
-    float uiScale;               // NEW: UI scale for ImGui window (e.g., 0.90..1.50)
+    float uiScale;               // NEW: UI scale for ImGui window (e.g., 0.70..1.50)
     int uiFontMode;              // NEW: UI font selection (0=ImGui default, 1=Segoe UI)
     int savestateBackendMode;    // 0=Custom, 1=Revival, 2=Custom with Revival fallback
     bool savestateLoadCustomPalettes; // 1=restore saved custom palette usage, 0=force default palettes on load
