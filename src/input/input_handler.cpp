@@ -231,8 +231,7 @@ void MonitorKeys() {
         LogOut("[KEYBINDS] Hotkey values from config:", true);
         LogOut("[KEYBINDS] Teleport/Load key: " + GetKeyName(cfg0.teleportKey), true);
         LogOut("[KEYBINDS] Record/Save key: " + GetKeyName(cfg0.recordKey), true);
-        LogOut("[KEYBINDS] Config Menu key: " + GetKeyName(cfg0.configMenuKey), true);
-        LogOut("[KEYBINDS] Toggle ImGui key: " + GetKeyName(cfg0.toggleImGuiKey), true);
+        LogOut("[KEYBINDS] Menu key: Esc (fixed)", true);
     }
 
     // Defer key.ini reads to retries only (avoid duplicate reads during startup)
@@ -287,11 +286,9 @@ void MonitorKeys() {
     const Config::Settings& cfg = Config::GetSettings();
     int teleportKey = (cfg.teleportKey > 0) ? cfg.teleportKey : '1';
     int recordKey = (cfg.recordKey > 0) ? cfg.recordKey : '2';
-    int configMenuKey = (cfg.configMenuKey > 0) ? cfg.configMenuKey : '3';
-    int toggleTitleKey = (cfg.toggleTitleKey > 0) ? cfg.toggleTitleKey : '4';
-    int resetFrameCounterKey = (cfg.resetFrameCounterKey > 0) ? cfg.resetFrameCounterKey : '5';
-    int helpKey = (cfg.helpKey > 0) ? cfg.helpKey : '6';
-    int toggleImGuiKey = (cfg.toggleImGuiKey > 0) ? cfg.toggleImGuiKey : VK_F12;
+    int configMenuKey = VK_ESCAPE;
+    int toggleTitleKey = cfg.toggleTitleKey;
+    int resetFrameCounterKey = cfg.resetFrameCounterKey;
     int savestateSaveKey = (cfg.savestateSaveKey > 0) ? cfg.savestateSaveKey : 'U';
     int savestateLoadKey = (cfg.savestateLoadKey > 0) ? cfg.savestateLoadKey : 'J';
     int savestatePrevSlotKey = (cfg.savestatePrevSlotKey > 0) ? cfg.savestatePrevSlotKey : VK_OEM_COMMA;
@@ -304,7 +301,6 @@ void MonitorKeys() {
     if (windowActive && guiActive) {
         // Flush queued menu toggle presses so they don't reopen immediately after exit
         IsKeyPressed(configMenuKey, false);
-        IsKeyPressed(toggleImGuiKey, false);
 
         XInputShim::RefreshSnapshotOncePerFrame();
         connectedMask = XInputShim::GetConnectedMaskCached();
@@ -435,13 +431,6 @@ void MonitorKeys() {
                         ImGuiImpl::ToggleVisibility();
                     }
                     handled = true;
-                } else if (!handled && gpWentDown(cgp.gpToggleImGuiButton)) {
-                    if (!ImGuiImpl::IsVisible()) {
-                        OpenMenu();
-                    } else {
-                        ImGuiImpl::ToggleVisibility();
-                    }
-                    handled = true;
                 } else if (!handled && gpWentDown(cgp.gpTeleportButton)) {
                     // Teleporting should also cancel any in-progress frame advantage
                     // calculation, since positions/states are being reset artificially.
@@ -506,19 +495,8 @@ void MonitorKeys() {
             if (IsKeyPressed(configMenuKey, false)) {
                 if (!ImGuiImpl::IsVisible()) {
                     OpenMenu();
-                } else {
-                    ImGuiImpl::ToggleVisibility();
                 }
                 Sleep(300); // debounce
-                continue;
-            }
-            if (IsKeyPressed(toggleImGuiKey, false)) {
-                if (!ImGuiImpl::IsVisible()) {
-                    OpenMenu();
-                } else {
-                    ImGuiImpl::ToggleVisibility();
-                }
-                Sleep(150); // debounce
                 continue;
             }
 
@@ -738,7 +716,7 @@ void MonitorKeys() {
                     DirectDrawHook::AddMessage("Position Saved", "SYSTEM", RGB(255, 255, 100), 1500, 0, 100);
                 }
                 keyHandled = true;
-            } else if (IsKeyPressed(toggleTitleKey, true)) {
+            } else if (toggleTitleKey > 0 && IsKeyPressed(toggleTitleKey, true)) {
                 // Toggle stats display instead of detailed title mode
                 bool currentState = g_statsDisplayEnabled.load();
                 bool nextState = !currentState;
@@ -761,7 +739,7 @@ void MonitorKeys() {
                     DirectDrawHook::AddMessage("Stats Display Disabled", "SYSTEM", RGB(255, 255, 0), 1500, 20, 100);
                 }
                 keyHandled = true;
-            } else if (IsKeyPressed(cfg.resetFrameCounterKey, false)) {
+            } else if (resetFrameCounterKey > 0 && IsKeyPressed(resetFrameCounterKey, false)) {
                 ResetFrameCounter();
                 keyHandled = true;
             } else if (cfg.framestepEnabled && IsKeyPressed(cfg.framestepPauseKey > 0 ? cfg.framestepPauseKey : VK_SPACE, false)) {
@@ -776,9 +754,6 @@ void MonitorKeys() {
                     Framestep::RequestFrameStep();
                     keyHandled = true;
                 }
-            } else if (IsKeyPressed(cfg.helpKey, false)) {
-                ShowHotkeyInfo();
-                keyHandled = true;
             } else if (IsKeyPressed(VK_F9, false)) {
                 autoJumpEnabled = !autoJumpEnabled;
                 DirectDrawHook::AddMessage(autoJumpEnabled ? "Auto-Jump: ON" : "Auto-Jump: OFF", "SYSTEM", RGB(255, 165, 0), 1500, 0, 100);
@@ -819,8 +794,9 @@ void MonitorKeys() {
             if (keyHandled) {
                 Sleep(100);
           while (IsKeyPressed(teleportKey, true) || IsKeyPressed(recordKey, true) ||
-              IsKeyPressed(toggleTitleKey, true) || IsKeyPressed(resetFrameCounterKey, true) ||
-              IsKeyPressed(helpKey, true) || IsKeyPressed(VK_F7, true) || IsKeyPressed(VK_F9, true) ||
+              (toggleTitleKey > 0 && IsKeyPressed(toggleTitleKey, true)) ||
+              (resetFrameCounterKey > 0 && IsKeyPressed(resetFrameCounterKey, true)) ||
+              IsKeyPressed(VK_F7, true) || IsKeyPressed(VK_F9, true) ||
               IsKeyPressed(savestateSaveKey, true) || IsKeyPressed(savestateLoadKey, true) ||
               IsKeyPressed(savestatePrevSlotKey, true) || IsKeyPressed(savestateNextSlotKey, true) ||
               IsKeyPressed(cfg.switchPlayersKey > 0 ? cfg.switchPlayersKey : 'L', true) ||
@@ -838,10 +814,8 @@ void MonitorKeys() {
                     ((GetAsyncKeyState(teleportKey) & 0x8000) != 0) ||
                     ((GetAsyncKeyState(recordKey) & 0x8000) != 0) ||
                     ((GetAsyncKeyState(configMenuKey) & 0x8000) != 0) ||
-                    ((GetAsyncKeyState(toggleTitleKey) & 0x8000) != 0) ||
-                    ((GetAsyncKeyState(resetFrameCounterKey) & 0x8000) != 0) ||
-                    ((GetAsyncKeyState(helpKey) & 0x8000) != 0) ||
-                    ((GetAsyncKeyState(toggleImGuiKey) & 0x8000) != 0) ||
+                    (toggleTitleKey > 0 && ((GetAsyncKeyState(toggleTitleKey) & 0x8000) != 0)) ||
+                    (resetFrameCounterKey > 0 && ((GetAsyncKeyState(resetFrameCounterKey) & 0x8000) != 0)) ||
                     ((GetAsyncKeyState(savestateSaveKey) & 0x8000) != 0) ||
                     ((GetAsyncKeyState(savestateLoadKey) & 0x8000) != 0) ||
                     ((GetAsyncKeyState(savestatePrevSlotKey) & 0x8000) != 0) ||

@@ -50,7 +50,7 @@ This project is a DLL mod that loads via EFZ Mod Manager. It adds a configurable
    > **Note:** If you also use **InGameNetplay**, that mod has its own launch requirement - launch through **`efz.exe`** when it is enabled. See the InGameNetplay README for details. That rule does not apply to EFZ Training Mode on its own.
 
 **First Run**
-- The mod loads in-game. Open the training menu with the menu hotkey (default: `3`).
+- The mod loads in-game. Open the training menu with `Esc`.
 - A config file `efz_training_config.ini` is created next to the DLL (`mods\efz_training_mode\`).
 - The debug console is **off** by default. Enable it in Settings → General. Logs since startup are buffered and appear when you turn it on.
 
@@ -131,16 +131,14 @@ This project is a DLL mod that loads via EFZ Mod Manager. It adds a configurable
   - With Up: swap P1 and P2
   - With Down: place at center; with Down+Z: round-start positions
 - `2`: Record current player positions
-- `3`: Open config menu (ImGui overlay)
-- `4`: Toggle stats
-- `7`: Toggle overlay visibility
+- `Esc`: Open or close the training menu
 
 Macros (configurable):
 - `I`: Record
 - `O`: Play
 - `K`: Next Slot
 
-All hotkeys are configurable in Settings → Hotkeys or in `efz_training_config.ini`.
+Most hotkeys are configurable in Settings → Hotkeys or in `efz_training_config.ini`; the menu key is fixed to `Esc`.
 
 ---
 
@@ -160,8 +158,8 @@ All hotkeys are configurable in Settings → Hotkeys or in `efz_training_config.
 - Hotkeys don’t respond
   - Verify online mode isn’t active (features are disabled during online play)
   - Rebind hotkeys in Settings → Hotkeys and try again
-- Overlay not visible
-  - Press the Toggle Overlay hotkey (default `7`) or ensure ImGui UI is enabled in Settings → General
+- Menu not visible
+  - Press `Esc` or ensure ImGui UI is enabled in Settings → General
 - Revival side switch does nothing
   - Side switching in Revival is now intentionally blocked until the mod has confirmed the live Practice controller pointer during an active Practice match
   - If it stays blocked, check the startup/match logs for `[PAUSE] Match-entry confirmed Practice controller=0x...` or `[SWITCH] Revival swap blocked: Practice controller not yet confirmed`

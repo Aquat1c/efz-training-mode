@@ -2010,8 +2010,7 @@ void ShowHotkeyInfo() {
         ImGuiGui::RequestTopTabAbsolute(4);
         LogOut("[GUI] Opening ImGui to Help tab", true);
     } else {
-        LogOut("[GUI] ImGui help shortcut disabled, showing basic hotkey dialog", true);
-        MessageBoxA(NULL, "Hotkeys:\n\nMove: Arrow Keys\nAttack: A, S, D\nJump: W\nSpecial: Q, E\nPause: P\nToggle Debug: F1\nShow Frame Data: F2\nShow Hitboxes: F3\nShow HUD: F4\nShow Console: F5", "Hotkey Info", MB_OK | MB_ICONINFORMATION);
+        LogOut("[GUI] Help shortcut ignored because ImGui is disabled", true);
     }
 }
 

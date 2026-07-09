@@ -214,10 +214,6 @@ struct ShellState {
     bool menuWasVisible = false;
     bool lastWasCustom  = false;
 
-    // Local VK edge detection for the menu hotkey. `input_handler.cpp`
-    // consumes bit-0 of GetAsyncKeyState(configMenuKey) while the menu is
-    // visible, so we track bit-15 (held) ourselves.
-    bool prevMenuKeyDown = false;
     bool keybindWasActive = false;
 };
 ShellState g_shell;
@@ -868,27 +864,6 @@ void ProcessEditTextInput() {
     }
     io.InputQueueCharacters.resize(0);
 }
-
-// ===== Menu hotkey =====
-bool MenuKeyEdge() {
-    if (!Input::IsGameWindowActive()) {
-        // Mask the first foreground frame in case the user re-focuses EFZ
-        // while the menu hotkey is still physically held.
-        g_shell.prevMenuKeyDown = true;
-        return false;
-    }
-
-    const auto& cfg = Config::GetSettings();
-    const int menuKey = (cfg.configMenuKey > 0) ? cfg.configMenuKey : '3';
-    const bool now = (GetAsyncKeyState(menuKey) & 0x8000) != 0;
-    const bool edge = now && !g_shell.prevMenuKeyDown;
-    g_shell.prevMenuKeyDown = now;
-    if (edge) {
-        LogMenuDetail("Menu hotkey edge key=%s", GetKeyName(menuKey).c_str());
-    }
-    return edge;
-}
-
 // ===== Layout rectangles - computed once per render so input and draw agree =====
 // Row Y positions for the main screen content area.
 struct MainLayout {
@@ -1727,7 +1702,6 @@ void MaybeRefreshOnOpen() {
         g_shell.activeTopTab = TT_MAIN;
         ResetMainState("menu open");
         CancelEditMode();
-        g_shell.prevMenuKeyDown = true;      // mask the held-open press
         g_shell.keybindWasActive = false;
         g_mouse.lastX = g_mouse.lastY = -1.0f;
         g_mouse.movedThisFrame = false;
@@ -1833,15 +1807,6 @@ void Render() {
     UpdateMouseState();
     Scale::Update(Config::GetSettings().uiScale);
     const Scale::Metrics& metrics = Scale::Get();
-
-    // Global menu-key close - same hotkey used to open.
-    if (!Screens::IsKeybindActive() && !Screens::IsTextEditorActive() && MenuKeyEdge()) {
-        CancelEditMode();
-        LogMenuDetail("Closing menu via menu hotkey from %s", ScreenName(ActivePane()));
-        Sound::PlayDecision();
-        ImGuiImpl::ToggleVisibility();
-        return;
-    }
 
     // Global tab cycling (top + sub). Blocked while editing a numeric value
     // OR while a dropdown popup is open (popup eats input on its own).
@@ -1955,9 +1920,6 @@ void Render() {
 
             Screens::TickPopupIfOpen(dl, sl);
             Screens::TickKeybindIfActive(dl, sl);
-            if (g_shell.keybindWasActive && !Screens::IsKeybindActive()) {
-                g_shell.prevMenuKeyDown = true;
-            }
             g_shell.keybindWasActive = Screens::IsKeybindActive();
 
             if (!tabClickConsumed && g_shell.focusRegion == FocusRegion::Content && backEdge) {
@@ -2041,9 +2003,6 @@ void Render() {
         // Draw modal overlays last so they sit on top of rows.
         Screens::TickPopupIfOpen(dl, sl);
         Screens::TickKeybindIfActive(dl, sl);
-        if (g_shell.keybindWasActive && !Screens::IsKeybindActive()) {
-            g_shell.prevMenuKeyDown = true;
-        }
         g_shell.keybindWasActive = Screens::IsKeybindActive();
 
         if (!tabClickConsumed && g_shell.focusRegion == FocusRegion::Content && backEdge) {

@@ -162,17 +162,7 @@ static void MaybeShowPracticeOverlayHintOnce() {
         return;
     }
 
-    auto pickKeyName = [](int keyCode) -> std::string {
-        if (keyCode <= 0) return std::string();
-        return Config::GetKeyName(keyCode);
-    };
-    std::string keyboardKey = pickKeyName(cfg.configMenuKey);
-    if (keyboardKey.empty()) {
-        keyboardKey = pickKeyName(cfg.toggleImGuiKey);
-    }
-    if (keyboardKey.empty()) {
-        keyboardKey = "3"; // fallback to legacy default
-    }
+    std::string keyboardKey = "Esc";
 
     std::ostringstream msg;
     msg << "Training menu: press " << keyboardKey;
