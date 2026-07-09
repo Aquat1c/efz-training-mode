@@ -63,11 +63,11 @@ namespace Config {
         // Hotkey settings
         int teleportKey;
         int recordKey;
-        int configMenuKey;
+        int configMenuKey;          // Legacy, ignored; menu uses Esc
         int toggleTitleKey;
         int resetFrameCounterKey;
-        int helpKey;
-        int toggleImGuiKey;
+        int helpKey;                // Legacy, ignored
+        int toggleImGuiKey;         // Legacy, ignored
         int savestateSaveKey;
         int savestateLoadKey;
         int savestatePrevSlotKey;
@@ -101,7 +101,7 @@ namespace Config {
     int gpMacroPlayButton;      // Default: RT (virtual trigger 0x20000)
     int gpMacroSlotButton;      // Default: LT (virtual trigger 0x10000)
         int gpToggleMenuButton;     // Default: XINPUT_GAMEPAD_START
-        int gpToggleImGuiButton;    // Default: -1 (disabled)
+        int gpToggleImGuiButton;    // Legacy, ignored
 
     // UI navigation/controller bindings (rebindable)
     // Top-level tabs cycle (logical order: Main, Auto Action, Settings, Character, Help)

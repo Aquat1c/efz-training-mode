@@ -6,6 +6,7 @@
 #include <thread>
 #include <atomic>
 #include "../include/gui/overlay.h"
+#include "../include/gui/overlay_api.h"
 #include "../include/gui/framebar.h"
 #include "../include/core/logger.h"
 #include "../include/utils/utilities.h"
@@ -812,6 +813,13 @@ HRESULT WINAPI HookedEndScene(LPDIRECT3DDEVICE9 pDevice) {
         return oEndScene(pDevice);
     }
 
+    // Run external overlay renderers (e.g. ImprovedReplayMenu) as early as possible -
+    // BEFORE ImGui initialisation - so they appear on the very first 640x480 frame
+    // instead of waiting ~1s for ImGui to finish initialising. Drawn beneath the
+    // ImGui layer; SEH-guarded per renderer inside DispatchRenderers.
+    SetEndScenePhase("external overlay renderers");
+    OverlayApi::DispatchRenderers(pDevice, rtW, rtH);
+
     // Thread-safe ImGui initialization (only once)
     SetEndScenePhase("ImGui initialization");
     if (!g_endSceneImguiInit.load(std::memory_order_acquire)) {
@@ -951,6 +959,7 @@ HRESULT WINAPI HookedEndScene(LPDIRECT3DDEVICE9 pDevice) {
     SetEndScenePhase("ImGui::Render");
     ImGui::EndFrame();
     ImGui::Render();
+
     // Guard again in case size changed mid-frame
     if (io.DisplaySize.x > 0.0f && io.DisplaySize.y > 0.0f) {
         SetEndScenePhase("ImGui_ImplDX9_RenderDrawData");

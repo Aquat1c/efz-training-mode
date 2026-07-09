@@ -189,13 +189,10 @@ const char* DefaultActionHelpText(const char* label) {
     label = CleanLabel(label);
     if (!label || !*label) return "Runs this menu command.";
 
-    if (TextEquals(label, "OPEN MENU")) return "Sets the input used to open and close the training menu.";
     if (TextEquals(label, "TELEPORT") || TextEquals(label, "LOAD / TELEPORT")) return "Sets the input used to return to your saved position.";
     if (TextEquals(label, "SAVE POSITION")) return "Sets the input used to store the current training position.";
     if (TextEquals(label, "TOGGLE STATS")) return "Sets the input used to show or hide practice statistics.";
     if (TextEquals(label, "RESET COUNTER")) return "Sets the input used to clear the current counter display.";
-    if (TextEquals(label, "HELP")) return "Sets the input used to open help.";
-    if (TextEquals(label, "TOGGLE OVERLAY")) return "Sets the input used to show or hide the overlay.";
     if (TextEquals(label, "SWITCH PLAYERS")) return "Sets the input used to swap which side you control.";
     if (TextEquals(label, "SWAP POSITIONS")) return "Sets the input used to exchange player positions.";
     if (TextEquals(label, "SWAP CUSTOM KEY")) return "Sets the input used for the custom position-swap command.";
@@ -240,7 +237,7 @@ const char* DefaultActionHelpText(const char* label) {
     if (TextEquals(label, "UI EXIT")) return "Sets the menu back or close input.";
     if (TextEquals(label, "FRAMESTEP PAUSE")) return "Sets the input used to pause frame stepping.";
     if (TextEquals(label, "FRAMESTEP STEP")) return "Sets the input used to advance one frame step.";
-    if (TextEquals(label, "TOGGLE MENU")) return "Sets the controller button used to open and close this menu.";
+    if (TextEquals(label, "TOGGLE MENU")) return "Sets the controller button used with Esc to open and close this menu.";
     if (TextEquals(label, "TOP TAB PREVIOUS")) return "Sets the controller button for the previous top tab.";
     if (TextEquals(label, "TOP TAB NEXT")) return "Sets the controller button for the next top tab.";
     if (TextEquals(label, "SUBTAB PREVIOUS")) return "Sets the controller button for the previous subtab.";
@@ -2837,7 +2834,7 @@ bool KeyEdge(bool (&prevPressed)[256], int vk) {
 
 struct KeybindState {
     bool active = false;
-    char title[48] = "";              // shown to user (e.g. "OPEN MENU")
+    char title[48] = "";              // shown to user (e.g. "SAVE POSITION")
     int* settingsField = nullptr;     // mutable pointer into Config::Settings
     char iniSection[16] = "";         // INI section to persist into
     char iniKey[32]    = "";          // INI key to persist

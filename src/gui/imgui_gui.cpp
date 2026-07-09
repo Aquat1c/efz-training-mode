@@ -2030,12 +2030,12 @@ namespace ImGuiGui {
                     if (ImGui::BeginTabBar("##HelpGettingStartedTabs", ImGuiTabBarFlags_None)) {
                         // Quick Start
                         if (ImGui::BeginTabItem("Quick Start")) {
-                            ImGui::TextWrapped("Open the overlay, adjust options, then press Apply at the bottom. While the menu is open, practice hotkeys are disabled and the game auto-pauses; it resumes on close.");
-                            BulletTextWrapped("Open Help: %s", GetKeyName(cfg.helpKey).c_str());
-                            BulletTextWrapped("Toggle Overlay: %s (Controller: %s)", GetKeyName(cfg.toggleImGuiKey).c_str(), Config::GetGamepadButtonName(cfg.gpToggleMenuButton).c_str());
+                            ImGui::TextWrapped("Open the menu, adjust options, then press Apply at the bottom. While the menu is open, practice hotkeys are disabled and the game auto-pauses; it resumes on close.");
+                            BulletTextWrapped("Open Menu: Esc (Controller: %s)", Config::GetGamepadButtonName(cfg.gpToggleMenuButton).c_str());
+                            BulletTextWrapped("Help is available from the Help tab.");
                             BulletTextWrapped("Save Position: %s (Controller: %s)", GetKeyName(cfg.recordKey).c_str(), Config::GetGamepadButtonName(cfg.gpSavePositionButton).c_str());
                             BulletTextWrapped("Load Position: %s (Controller: %s)", GetKeyName(cfg.teleportKey).c_str(), Config::GetGamepadButtonName(cfg.gpTeleportButton).c_str());
-                            BulletTextWrapped("Toggle Stats: %s", GetKeyName(cfg.toggleTitleKey).c_str());
+                            BulletTextWrapped("Toggle Stats: %s", cfg.toggleTitleKey < 0 ? "Disabled" : GetKeyName(cfg.toggleTitleKey).c_str());
                             ImGui::EndTabItem();
                         }
                         // Position Tools
@@ -2054,7 +2054,7 @@ namespace ImGuiGui {
                             BulletTextWrapped("Footer hotkeys: Apply=%s, Refresh=%s, Exit=%s.",
                                 GetKeyName(cfg.uiAcceptKey).c_str(), GetKeyName(cfg.uiRefreshKey).c_str(), GetKeyName(cfg.uiExitKey).c_str());
                             BulletTextWrapped("UI sizing: tweak uiScale/uiFont in the config if text feels off.");
-                            BulletTextWrapped("Open Help quickly with %s.", GetKeyName(cfg.helpKey).c_str());
+                            BulletTextWrapped("Use Esc to move back or close the menu.");
                             ImGui::EndTabItem();
                         }
                         ImGui::EndTabBar();
@@ -2269,7 +2269,7 @@ namespace ImGuiGui {
                             ImGui::SeparatorText("Troubleshooting");
                             BulletTextWrapped("If values look wrong, press F4/F5 to return to Normal mode, then re-apply.");
                             BulletTextWrapped("Continuous Recovery can be limited to neutral in Settings.");
-                            BulletTextWrapped("Open this Help quickly with %s.", GetKeyName(cfg.helpKey).c_str());
+                            BulletTextWrapped("Use the Help tab when you need control notes or troubleshooting.");
                             BulletTextWrapped("If something seems off, go to the main menu and back to Practice.");
 
                             ImGui::Dummy(ImVec2(1, 8));

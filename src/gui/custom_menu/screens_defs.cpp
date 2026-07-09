@@ -1605,8 +1605,12 @@ const char* HotkeyNameValue(int vk) {
     static char buffers[8][64];
     static int next = 0;
     char* buf = buffers[next++ & 7];
-    _snprintf_s(buf, sizeof(buffers[0]), _TRUNCATE, "%s",
-                Config::GetKeyName(vk).c_str());
+    if (vk < 0) {
+        _snprintf_s(buf, sizeof(buffers[0]), _TRUNCATE, "DISABLED");
+    } else {
+        _snprintf_s(buf, sizeof(buffers[0]), _TRUNCATE, "%s",
+                    Config::GetKeyName(vk).c_str());
+    }
     return buf;
 }
 
@@ -1630,13 +1634,10 @@ void BindFooterHotkey(const char* title, int* field, const char* key) {
     OpenKeybind(title, field, "Hotkeys", key, true);
 }
 
-void BindOpenMenu()       { auto& s = MutableSettings(); BindHotkey("OPEN MENU",       &s.configMenuKey,          "ConfigMenuKey"); }
 void BindTeleport()       { auto& s = MutableSettings(); BindHotkey("TELEPORT",        &s.teleportKey,           "TeleportKey"); }
 void BindSavePosition()   { auto& s = MutableSettings(); BindHotkey("SAVE POSITION",   &s.recordKey,             "RecordKey"); }
 void BindToggleStats()    { auto& s = MutableSettings(); BindHotkey("TOGGLE STATS",    &s.toggleTitleKey,        "ToggleTitleKey"); }
 void BindResetCounter()   { auto& s = MutableSettings(); BindHotkey("RESET COUNTER",   &s.resetFrameCounterKey,  "ResetFrameCounterKey"); }
-void BindHelp()           { auto& s = MutableSettings(); BindHotkey("HELP",            &s.helpKey,               "HelpKey"); }
-void BindToggleImGui()    { auto& s = MutableSettings(); BindHotkey("TOGGLE OVERLAY",  &s.toggleImGuiKey,        "ToggleImGuiKey"); }
 void BindSavestateSave()  { auto& s = MutableSettings(); BindHotkey("SAVESTATE SAVE",  &s.savestateSaveKey,      "SavestateSaveKey"); }
 void BindSavestateLoad()  { auto& s = MutableSettings(); BindHotkey("SAVESTATE LOAD",  &s.savestateLoadKey,      "SavestateLoadKey"); }
 void BindSavestatePrev()  { auto& s = MutableSettings(); BindHotkey("SLOT PREVIOUS",   &s.savestatePrevSlotKey,  "SavestatePrevSlotKey"); }
@@ -1858,13 +1859,10 @@ void EditKeyboardHotkey(const char* title, int* field, const char* key, bool dis
     OpenManualKeybindEditor(title, field, "Hotkeys", key, disallowMenuReserved);
 }
 
-void EditOpenMenuVk()       { auto& s = MutableSettings(); EditKeyboardHotkey("OPEN MENU",       &s.configMenuKey,         "ConfigMenuKey"); }
 void EditTeleportVk()       { auto& s = MutableSettings(); EditKeyboardHotkey("TELEPORT",        &s.teleportKey,          "TeleportKey"); }
 void EditSavePositionVk()   { auto& s = MutableSettings(); EditKeyboardHotkey("SAVE POSITION",   &s.recordKey,            "RecordKey"); }
 void EditToggleStatsVk()    { auto& s = MutableSettings(); EditKeyboardHotkey("TOGGLE STATS",    &s.toggleTitleKey,       "ToggleTitleKey"); }
 void EditResetCounterVk()   { auto& s = MutableSettings(); EditKeyboardHotkey("RESET COUNTER",   &s.resetFrameCounterKey, "ResetFrameCounterKey"); }
-void EditHelpVk()           { auto& s = MutableSettings(); EditKeyboardHotkey("HELP",            &s.helpKey,              "HelpKey"); }
-void EditToggleImGuiVk()    { auto& s = MutableSettings(); EditKeyboardHotkey("TOGGLE OVERLAY",  &s.toggleImGuiKey,       "ToggleImGuiKey"); }
 void EditSavestateSaveVk()  { auto& s = MutableSettings(); EditKeyboardHotkey("SAVESTATE SAVE",  &s.savestateSaveKey,     "SavestateSaveKey"); }
 void EditSavestateLoadVk()  { auto& s = MutableSettings(); EditKeyboardHotkey("SAVESTATE LOAD",  &s.savestateLoadKey,     "SavestateLoadKey"); }
 void EditSavestatePrevVk()  { auto& s = MutableSettings(); EditKeyboardHotkey("SLOT PREVIOUS",   &s.savestatePrevSlotKey, "SavestatePrevSlotKey"); }
@@ -1880,13 +1878,10 @@ void EditFramestepPauseVk() { auto& s = MutableSettings(); EditKeyboardHotkey("F
 void EditFramestepStepVk()  { auto& s = MutableSettings(); EditKeyboardHotkey("FRAMESTEP STEP",  &s.framestepStepKey,     "FramestepStepKey"); }
 void EditSwapCustomVk()     { auto& s = MutableSettings(); EditKeyboardHotkey("SWAP CUSTOM KEY", &s.swapCustomKey,        "SwapCustomKey"); }
 
-const char* ValOpenMenu()       { return HotkeyNameValue(Config::GetSettings().configMenuKey); }
 const char* ValTeleport()       { return HotkeyNameValue(Config::GetSettings().teleportKey); }
 const char* ValSavePosition()   { return HotkeyNameValue(Config::GetSettings().recordKey); }
 const char* ValToggleStats()    { return HotkeyNameValue(Config::GetSettings().toggleTitleKey); }
 const char* ValResetCounter()   { return HotkeyNameValue(Config::GetSettings().resetFrameCounterKey); }
-const char* ValHelp()           { return HotkeyNameValue(Config::GetSettings().helpKey); }
-const char* ValToggleImGui()    { return HotkeyNameValue(Config::GetSettings().toggleImGuiKey); }
 const char* ValSavestateSave()  { return HotkeyNameValue(Config::GetSettings().savestateSaveKey); }
 const char* ValSavestateLoad()  { return HotkeyNameValue(Config::GetSettings().savestateLoadKey); }
 const char* ValSavestatePrev()  { return HotkeyNameValue(Config::GetSettings().savestatePrevSlotKey); }
@@ -1901,13 +1896,10 @@ const char* ValUiExit()         { return HotkeyNameValue(Config::GetSettings().u
 const char* ValFramestepPause() { return HotkeyNameValue(Config::GetSettings().framestepPauseKey); }
 const char* ValFramestepStep()  { return HotkeyNameValue(Config::GetSettings().framestepStepKey); }
 const char* ValSwapCustom()     { return HotkeyNameValue(Config::GetSettings().swapCustomKey); }
-const char* ValOpenMenuCode()       { return HotkeyCodeValue(Config::GetSettings().configMenuKey); }
 const char* ValTeleportCode()       { return HotkeyCodeValue(Config::GetSettings().teleportKey); }
 const char* ValSavePositionCode()   { return HotkeyCodeValue(Config::GetSettings().recordKey); }
 const char* ValToggleStatsCode()    { return HotkeyCodeValue(Config::GetSettings().toggleTitleKey); }
 const char* ValResetCounterCode()   { return HotkeyCodeValue(Config::GetSettings().resetFrameCounterKey); }
-const char* ValHelpCode()           { return HotkeyCodeValue(Config::GetSettings().helpKey); }
-const char* ValToggleImGuiCode()    { return HotkeyCodeValue(Config::GetSettings().toggleImGuiKey); }
 const char* ValSavestateSaveCode()  { return HotkeyCodeValue(Config::GetSettings().savestateSaveKey); }
 const char* ValSavestateLoadCode()  { return HotkeyCodeValue(Config::GetSettings().savestateLoadKey); }
 const char* ValSavestatePrevCode()  { return HotkeyCodeValue(Config::GetSettings().savestatePrevSlotKey); }
@@ -1954,7 +1946,6 @@ void BindGpMacroRecord()   { auto& s = MutableSettings(); BindGamepadHotkey("MAC
 void BindGpMacroPlay()     { auto& s = MutableSettings(); BindGamepadHotkey("MACRO PLAY",       &s.gpMacroPlayButton,     "gpMacroPlayButton"); }
 void BindGpMacroSlot()     { auto& s = MutableSettings(); BindGamepadHotkey("MACRO NEXT SLOT",  &s.gpMacroSlotButton,     "gpMacroSlotButton"); }
 void BindGpToggleMenu()    { auto& s = MutableSettings(); BindGamepadHotkey("TOGGLE MENU",      &s.gpToggleMenuButton,    "gpToggleMenuButton"); }
-void BindGpToggleOverlay() { auto& s = MutableSettings(); BindGamepadHotkey("TOGGLE OVERLAY",   &s.gpToggleImGuiButton,   "gpToggleImGuiButton"); }
 void BindGpUiTopTabPrev()  { auto& s = MutableSettings(); BindGamepadHotkey("TOP TAB PREVIOUS", &s.gpUiTopTabPrev,        "gpUiTopTabPrev"); }
 void BindGpUiTopTabNext()  { auto& s = MutableSettings(); BindGamepadHotkey("TOP TAB NEXT",     &s.gpUiTopTabNext,        "gpUiTopTabNext"); }
 void BindGpUiSubTabPrev()  { auto& s = MutableSettings(); BindGamepadHotkey("SUBTAB PREVIOUS",  &s.gpUiSubTabPrev,        "gpUiSubTabPrev"); }
@@ -1977,7 +1968,6 @@ const char* ValGpMacroRecord()   { return GamepadBindNameValue(Config::GetSettin
 const char* ValGpMacroPlay()     { return GamepadBindNameValue(Config::GetSettings().gpMacroPlayButton); }
 const char* ValGpMacroSlot()     { return GamepadBindNameValue(Config::GetSettings().gpMacroSlotButton); }
 const char* ValGpToggleMenu()    { return GamepadBindNameValue(Config::GetSettings().gpToggleMenuButton); }
-const char* ValGpToggleOverlay() { return GamepadBindNameValue(Config::GetSettings().gpToggleImGuiButton); }
 const char* ValGpUiTopTabPrev()  { return GamepadBindNameValue(Config::GetSettings().gpUiTopTabPrev); }
 const char* ValGpUiTopTabNext()  { return GamepadBindNameValue(Config::GetSettings().gpUiTopTabNext); }
 const char* ValGpUiSubTabPrev()  { return GamepadBindNameValue(Config::GetSettings().gpUiSubTabPrev); }
@@ -2032,11 +2022,11 @@ void RefreshHotkeyStrings() {
         : 0;
 }
 
-const char* ValHotkeyGameplay() { return "8 KEYS"; }
+const char* ValHotkeyGameplay() { return "5 KEYS"; }
 const char* ValHotkeySavestate() { return "4 KEYS"; }
 const char* ValHotkeyMacros()   { return "3 KEYS"; }
 const char* ValHotkeyMenu()     { return "5 KEYS"; }
-const char* ValHotkeyController() { return "13 BINDS"; }
+const char* ValHotkeyController() { return "12 BINDS"; }
 const char* ValHotkeyManual()   { return "RAW VK"; }
 
 Row* BuildHotkeysGameplayRows(int& count) {
@@ -2044,13 +2034,10 @@ Row* BuildHotkeysGameplayRows(int& count) {
     int n = 0;
 
     s_rows[n++] = Header("GAMEPLAY HOTKEYS");
-    s_rows[n++] = Action("OPEN MENU",       BindOpenMenu,       ValOpenMenu);
     s_rows[n++] = Action("TELEPORT",        BindTeleport,       ValTeleport);
     s_rows[n++] = Action("SAVE POSITION",   BindSavePosition,   ValSavePosition);
     s_rows[n++] = Action("TOGGLE STATS",    BindToggleStats,    ValToggleStats);
     s_rows[n++] = Action("RESET COUNTER",   BindResetCounter,   ValResetCounter);
-    s_rows[n++] = Action("HELP",            BindHelp,           ValHelp);
-    s_rows[n++] = Action("TOGGLE OVERLAY",  BindToggleImGui,    ValToggleImGui);
     s_rows[n++] = Action("SWITCH PLAYERS",  BindSwitchPlayers,  ValSwitchPlayers);
     count = n;
     return s_rows;
@@ -2118,13 +2105,10 @@ Row* BuildHotkeysManualRows(int& count) {
     s_rows[n++] = Spacer();
 
     s_rows[n++] = Header("GAMEPLAY");
-    s_rows[n++] = Action("OPEN MENU",       EditOpenMenuVk,      ValOpenMenuCode);
     s_rows[n++] = Action("TELEPORT",        EditTeleportVk,      ValTeleportCode);
     s_rows[n++] = Action("SAVE POSITION",   EditSavePositionVk,  ValSavePositionCode);
     s_rows[n++] = Action("TOGGLE STATS",    EditToggleStatsVk,   ValToggleStatsCode);
     s_rows[n++] = Action("RESET COUNTER",   EditResetCounterVk,  ValResetCounterCode);
-    s_rows[n++] = Action("HELP",            EditHelpVk,          ValHelpCode);
-    s_rows[n++] = Action("TOGGLE OVERLAY",  EditToggleImGuiVk,   ValToggleImGuiCode);
     s_rows[n++] = Action("SWITCH PLAYERS",  EditSwitchPlayersVk, ValSwitchPlayersCode);
     s_rows[n++] = Spacer();
 
@@ -2179,7 +2163,6 @@ Row* BuildHotkeysControllerRows(int& count) {
 
     s_rows[n++] = Header("MENU");
     s_rows[n++] = Action("TOGGLE MENU", BindGpToggleMenu, ValGpToggleMenu);
-    s_rows[n++] = Action("TOGGLE OVERLAY", BindGpToggleOverlay, ValGpToggleOverlay);
     s_rows[n++] = Info("Toggle Menu uses the selected controller for both opening and closing the custom menu.");
     s_rows[n++] = Spacer();
 
@@ -3238,10 +3221,9 @@ void RefreshHelpStrings() {
     _snprintf_s(g_helpBuildStr, sizeof(g_helpBuildStr), _TRUNCATE,
                 "Build %s %s", EFZ_TRAINING_MODE_BUILD_DATE, EFZ_TRAINING_MODE_BUILD_TIME);
     _snprintf_s(g_helpOpenHelp, sizeof(g_helpOpenHelp), _TRUNCATE,
-                "Open this Help page: %s.", Config::GetKeyName(s.helpKey).c_str());
+                "Open Help from the Help tab in the menu.");
     _snprintf_s(g_helpToggleOverlay, sizeof(g_helpToggleOverlay), _TRUNCATE,
-                "Toggle the overlay: %s (Controller: %s).",
-                Config::GetKeyName(s.toggleImGuiKey).c_str(),
+                "Open or close the menu: Esc (Controller: %s).",
                 Config::GetGamepadButtonName(s.gpToggleMenuButton).c_str());
     _snprintf_s(g_helpSavePos, sizeof(g_helpSavePos), _TRUNCATE,
                 "Save the current position: %s (Controller: %s).",

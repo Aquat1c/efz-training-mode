@@ -130,7 +130,11 @@ namespace ImGuiSettings {
 
     static bool InputKeyHex(const char* label, int& keyCode, const char* setKeyName) {
         char buf[16] = {0};
-        snprintf(buf, sizeof(buf), "0x%X", keyCode);
+        if (keyCode < 0) {
+            snprintf(buf, sizeof(buf), "-1");
+        } else {
+            snprintf(buf, sizeof(buf), "0x%X", keyCode);
+        }
         ImGui::SetNextItemWidth(90);
         if (ImGui::InputText(label, buf, sizeof(buf))) {
             int parsed = Config::ParseKeyValue(buf);
@@ -139,7 +143,7 @@ namespace ImGuiSettings {
             return true;
         }
         ImGui::SameLine();
-        ImGui::TextDisabled("(%s)", GetKeyName(keyCode).c_str());
+        ImGui::TextDisabled("(%s)", keyCode < 0 ? "Disabled" : GetKeyName(keyCode).c_str());
         ImGui::SameLine();
         // Press-to-bind helper
         static KeyboardCaptureState captureState;
@@ -421,19 +425,13 @@ namespace ImGuiSettings {
             if (ImGui::BeginTabItem("Keyboard Hotkeys")) {
                 int teleport = cfg.teleportKey;
                 int record = cfg.recordKey;
-                int menu = cfg.configMenuKey;
                 int toggleTitle = cfg.toggleTitleKey;
                 int resetFrame = cfg.resetFrameCounterKey;
-                int help = cfg.helpKey;
-                int toggleImGui = cfg.toggleImGuiKey;
 
                 InputKeyHex("Teleport/Load", teleport, "TeleportKey");
                 InputKeyHex("Record/Save", record, "RecordKey");
-                InputKeyHex("Open Config Menu", menu, "ConfigMenuKey");
                 InputKeyHex("Toggle Title", toggleTitle, "ToggleTitleKey");
                 InputKeyHex("Reset Frame Counter", resetFrame, "ResetFrameCounterKey");
-                InputKeyHex("Help", help, "HelpKey");
-                InputKeyHex("Toggle ImGui Overlay", toggleImGui, "ToggleImGuiKey");
 
                 ImGui::Separator();
                 ImGui::SeparatorText("Practice / Macros");
@@ -509,8 +507,7 @@ namespace ImGuiSettings {
                     {"Macro Record",    "gpMacroRecordButton", cfg.gpMacroRecordButton},
                     {"Macro Play",      "gpMacroPlayButton", cfg.gpMacroPlayButton},
                     {"Macro Slot Next", "gpMacroSlotButton", cfg.gpMacroSlotButton},
-                    {"Toggle Menu",     "gpToggleMenuButton", cfg.gpToggleMenuButton},
-                    {"Toggle Overlay",  "gpToggleImGuiButton", cfg.gpToggleImGuiButton}
+                    {"Toggle Menu",     "gpToggleMenuButton", cfg.gpToggleMenuButton}
                 };
 
                 static bool capturing = false;

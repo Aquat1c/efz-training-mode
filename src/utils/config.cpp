@@ -343,20 +343,13 @@ namespace Config {
             file << "; Record current player positions\n";
             file << "RecordKey=0x32      # Default: '2' key\n\n";
             
-            file << "; Open config menu\n";
-            file << "ConfigMenuKey=0x33  # Default: '3' key\n\n";
+            file << "; Toggle title display mode (disabled by default)\n";
+            file << "ToggleTitleKey=-1\n\n";
             
-            file << "; Toggle title display mode\n";
-            file << "ToggleTitleKey=0x34 # Default: '4' key\n\n";
-            
-            file << "; Reset frame counter\n";
-            file << "ResetFrameCounterKey=0x35 # Default: '5' key\n\n";
-            
-            file << "; Show help and clear console\n";
-            file << "HelpKey=0x36        # Default: '6' key\n\n";
-            
-            file << "; Toggle ImGui overlay\n";
-            file << "ToggleImGuiKey=0x37 # Default: '7' key\n";
+            file << "; Reset frame counter (disabled by default)\n";
+            file << "ResetFrameCounterKey=-1\n\n";
+
+            file << "; The training menu opens with Esc. Help is available from the Help tab.\n";
             file << "\n; Custom savestate working snapshot hotkeys\n";
             file << "SavestateSaveKey=0x55  # Default: 'U' key\n";
             file << "SavestateLoadKey=0x4A  # Default: 'J' key\n";
@@ -404,7 +397,6 @@ namespace Config {
             file << "gpMacroPlayButton=RT\n";        // Macro play (was A)
             file << "gpMacroSlotButton=LT\n";        // Cycle macro slot (was B)
             file << "gpToggleMenuButton=START\n";    // Open training menu
-            file << "gpToggleImGuiButton=-1\n";      // Toggle overlay (disabled by default)
 
             // UI navigation bindings (controller)
             file << "; UI navigation: cycle tabs/sub-tabs (rebindable)\n";
@@ -651,14 +643,16 @@ namespace Config {
             settings.comboOverlayShowRfMultiplier = GetValueBool("General", "comboOverlayShowRfMultiplier", false);
             settings.comboOverlayShowRawScale = GetValueBool("General", "comboOverlayShowRawScale", false);
             
-            // Hotkey settings - REVERTED to number key defaults
+            // Hotkey settings
             settings.teleportKey = GetValueInt("Hotkeys", "TeleportKey", 0x31);          // Default: '1'
             settings.recordKey = GetValueInt("Hotkeys", "RecordKey", 0x32);            // Default: '2'
-            settings.configMenuKey = GetValueInt("Hotkeys", "ConfigMenuKey", 0x33);      // Default: '3'
-            settings.toggleTitleKey = GetValueInt("Hotkeys", "ToggleTitleKey", 0x34);     // Default: '4'
-            settings.resetFrameCounterKey = GetValueInt("Hotkeys", "ResetFrameCounterKey", 0x35); // Default: '5'
-            settings.helpKey = GetValueInt("Hotkeys", "HelpKey", 0x36);                // Default: '6'
-            settings.toggleImGuiKey = GetValueInt("Hotkeys", "ToggleImGuiKey", 0x37);      // Default: '7'            
+            settings.configMenuKey = -1;                                                // Menu is fixed to Esc
+            settings.toggleTitleKey = GetValueInt("Hotkeys", "ToggleTitleKey", -1);
+            if (settings.toggleTitleKey == 0x34) settings.toggleTitleKey = -1;
+            settings.resetFrameCounterKey = GetValueInt("Hotkeys", "ResetFrameCounterKey", -1);
+            if (settings.resetFrameCounterKey == 0x35) settings.resetFrameCounterKey = -1;
+            settings.helpKey = -1;
+            settings.toggleImGuiKey = -1;
             settings.savestateSaveKey = GetValueInt("Hotkeys", "SavestateSaveKey", 0x55); // 'U'
             settings.savestateLoadKey = GetValueInt("Hotkeys", "SavestateLoadKey", 0x4A); // 'J'
             settings.savestatePrevSlotKey = GetValueInt("Hotkeys", "SavestatePrevSlotKey", 0xBC); // ','
@@ -695,7 +689,7 @@ namespace Config {
             settings.gpMacroPlayButton      = getPad("gpmacroplaybutton", "RT");
             settings.gpMacroSlotButton      = getPad("gpmacroslotbutton", "LT");
             settings.gpToggleMenuButton     = getPad("gptogglemenubutton", "START");
-            settings.gpToggleImGuiButton    = getPad("gptoggleimguibutton", "-1");
+            settings.gpToggleImGuiButton    = -1;
             // UI navigation bindings (controller)
             settings.gpUiTopTabPrev         = getPad("gpuitoptabprev", "LB");
             settings.gpUiTopTabNext         = getPad("gpuitoptabnext", "RB");
@@ -713,11 +707,9 @@ namespace Config {
             LogOut("[CONFIG] SuppressRevivalFramestep: " + std::to_string(settings.suppressRevivalFramestep), true);
             LogOut("[CONFIG] TeleportKey: " + std::to_string(settings.teleportKey) + " (" + GetKeyName(settings.teleportKey) + ")", true);
             LogOut("[CONFIG] RecordKey: " + std::to_string(settings.recordKey) + " (" + GetKeyName(settings.recordKey) + ")", true);
-            LogOut("[CONFIG] ConfigMenuKey: " + std::to_string(settings.configMenuKey) + " (" + GetKeyName(settings.configMenuKey) + ")", true);
-            LogOut("[CONFIG] ToggleTitleKey: " + std::to_string(settings.toggleTitleKey) + " (" + GetKeyName(settings.toggleTitleKey) + ")", true);
-            LogOut("[CONFIG] ResetFrameCounterKey: " + std::to_string(settings.resetFrameCounterKey) + " (" + GetKeyName(settings.resetFrameCounterKey) + ")", true);
-            LogOut("[CONFIG] HelpKey: " + std::to_string(settings.helpKey) + " (" + GetKeyName(settings.helpKey) + ")", true);
-            LogOut("[CONFIG] ToggleImGuiKey: " + std::to_string(settings.toggleImGuiKey) + " (" + GetKeyName(settings.toggleImGuiKey) + ")", true);
+            LogOut("[CONFIG] MenuKey: Esc (fixed)", true);
+            LogOut("[CONFIG] ToggleTitleKey: " + std::to_string(settings.toggleTitleKey) + " (" + (settings.toggleTitleKey < 0 ? std::string("Disabled") : GetKeyName(settings.toggleTitleKey)) + ")", true);
+            LogOut("[CONFIG] ResetFrameCounterKey: " + std::to_string(settings.resetFrameCounterKey) + " (" + (settings.resetFrameCounterKey < 0 ? std::string("Disabled") : GetKeyName(settings.resetFrameCounterKey)) + ")", true);
             LogOut("[CONFIG] SavestateSaveKey: " + std::to_string(settings.savestateSaveKey) + " (" + GetKeyName(settings.savestateSaveKey) + ")", true);
             LogOut("[CONFIG] SavestateLoadKey: " + std::to_string(settings.savestateLoadKey) + " (" + GetKeyName(settings.savestateLoadKey) + ")", true);
             LogOut("[CONFIG] SavestatePrevSlotKey: " + std::to_string(settings.savestatePrevSlotKey) + " (" + GetKeyName(settings.savestatePrevSlotKey) + ")", true);
@@ -741,7 +733,6 @@ namespace Config {
             LogOut("[CONFIG] gpMacroPlayButton: " + GetGamepadButtonName(settings.gpMacroPlayButton), true);
             LogOut("[CONFIG] gpMacroSlotButton: " + GetGamepadButtonName(settings.gpMacroSlotButton), true);
             LogOut("[CONFIG] gpToggleMenuButton: " + GetGamepadButtonName(settings.gpToggleMenuButton), true);
-            LogOut("[CONFIG] gpToggleImGuiButton: " + GetGamepadButtonName(settings.gpToggleImGuiButton), true);
             LogOut("[CONFIG] gpUiTopTabPrev: " + GetGamepadButtonName(settings.gpUiTopTabPrev), true);
             LogOut("[CONFIG] gpUiTopTabNext: " + GetGamepadButtonName(settings.gpUiTopTabNext), true);
             LogOut("[CONFIG] gpUiSubTabPrev: " + GetGamepadButtonName(settings.gpUiSubTabPrev), true);
@@ -892,11 +883,8 @@ namespace Config {
             file << "; Use virtual-key codes (hexadecimal, e.g., 0x70 for F1)\n";
             file << "TeleportKey=" << toHexString(settings.teleportKey) << "\n";
             file << "RecordKey=" << toHexString(settings.recordKey) << "\n";
-            file << "ConfigMenuKey=" << toHexString(settings.configMenuKey) << "\n";
             file << "ToggleTitleKey=" << toHexString(settings.toggleTitleKey) << "\n";
             file << "ResetFrameCounterKey=" << toHexString(settings.resetFrameCounterKey) << "\n";
-            file << "HelpKey=" << toHexString(settings.helpKey) << "\n";
-            file << "ToggleImGuiKey=" << toHexString(settings.toggleImGuiKey) << "\n";
             file << "SavestateSaveKey=" << toHexString(settings.savestateSaveKey) << "\n";
             file << "SavestateLoadKey=" << toHexString(settings.savestateLoadKey) << "\n";
             file << "SavestatePrevSlotKey=" << toHexString(settings.savestatePrevSlotKey) << "\n";
@@ -929,7 +917,6 @@ namespace Config {
             writePad("gpMacroPlayButton", settings.gpMacroPlayButton);
             writePad("gpMacroSlotButton", settings.gpMacroSlotButton);
             writePad("gpToggleMenuButton", settings.gpToggleMenuButton);
-            writePad("gpToggleImGuiButton", settings.gpToggleImGuiButton);
             writePad("gpUiTopTabPrev", settings.gpUiTopTabPrev);
             writePad("gpUiTopTabNext", settings.gpUiTopTabNext);
             writePad("gpUiSubTabPrev", settings.gpUiSubTabPrev);
@@ -1059,11 +1046,8 @@ namespace Config {
             int intValue = ParseKeyValue(value);
             if (k == "teleportkey") settings.teleportKey = intValue;
             if (k == "recordkey") settings.recordKey = intValue;
-            if (k == "configmenukey") settings.configMenuKey = intValue;
-            if (k == "toggletitlekey") settings.toggleTitleKey = intValue;
-            if (k == "resetframecounterkey") settings.resetFrameCounterKey = intValue;
-            if (k == "helpkey") settings.helpKey = intValue;
-            if (k == "toggleimguikey") settings.toggleImGuiKey = intValue;
+            if (k == "toggletitlekey") settings.toggleTitleKey = (intValue == 0x34) ? -1 : intValue;
+            if (k == "resetframecounterkey") settings.resetFrameCounterKey = (intValue == 0x35) ? -1 : intValue;
             if (k == "savestatesavekey") settings.savestateSaveKey = intValue;
             if (k == "savestateloadkey") settings.savestateLoadKey = intValue;
             if (k == "savestateprevslotkey") settings.savestatePrevSlotKey = intValue;
@@ -1088,7 +1072,6 @@ namespace Config {
             if (k == "gpmacroplaybutton") settings.gpMacroPlayButton = ParseGamepadButton(value);
             if (k == "gpmacroslotbutton") settings.gpMacroSlotButton = ParseGamepadButton(value);
             if (k == "gptogglemenubutton") settings.gpToggleMenuButton = ParseGamepadButton(value);
-            if (k == "gptoggleimguibutton") settings.gpToggleImGuiButton = ParseGamepadButton(value);
             if (k == "gpuitoptabprev") settings.gpUiTopTabPrev = ParseGamepadButton(value);
             if (k == "gpuitoptabnext") settings.gpUiTopTabNext = ParseGamepadButton(value);
             if (k == "gpuisubtabprev") settings.gpUiSubTabPrev = ParseGamepadButton(value);
