@@ -21,9 +21,11 @@
 #include <commctrl.h>
 #include "../include/gui/imgui_impl.h"
 #include "../include/gui/overlay.h"
+#include "../include/gui/custom_menu/screens.h"
 #include "../include/utils/config.h"
 #include "../include/input/input_motion.h" // For QueueMotionInput
 #include "../include/utils/bgm_control.h"
+#include "../include/game/mission/mission_engine.h" // Mission record/playback hotkeys
 #include "../include/input/input_freeze.h"
 #include "../include/game/practice_patch.h"
 #include "../include/game/game_state.h"
@@ -298,6 +300,34 @@ void MonitorKeys() {
     bool windowActive = g_efzWindowActive.load();
     bool guiActive = g_guiActive.load();
 
+    // Exclusive mission demonstration mode owns P1's engine poll. Suppress the
+    // entire mod hotkey router so no save/load/macro/position action can alter
+    // the clip; Escape is the sole keyboard cancellation command.
+    static bool s_demoEscWasDown = false;
+    if (windowActive && Mission::Engine::Demo::IsActive()) {
+        const bool escDown = (GetAsyncKeyState(VK_ESCAPE) & 0x8000) != 0;
+        if (escDown && !s_demoEscWasDown) Mission::Engine::Demo::Cancel();
+        s_demoEscWasDown = escDown;
+        XInputShim::RefreshSnapshotOncePerFrame();
+        connectedMask = XInputShim::GetConnectedMaskCached();
+        for (int i = 0; i < 4; ++i) {
+            if (((connectedMask >> i) & 1u) == 0) continue;
+            if (const XINPUT_STATE* cached = XInputShim::GetCachedState(i)) prevPads[i] = *cached;
+        }
+        Sleep(8);
+        continue;
+    }
+    if (s_demoEscWasDown) {
+        // Do not let the cancel press become a fresh menu-open edge when the
+        // short restoration phase ends while Escape is still physically held.
+        if ((GetAsyncKeyState(VK_ESCAPE) & 0x8000) == 0) {
+            s_demoEscWasDown = false;
+            (void)IsKeyPressed(configMenuKey, false); // flush the completed press
+        }
+        Sleep(8);
+        continue;
+    }
+
     if (windowActive && guiActive) {
         // Flush queued menu toggle presses so they don't reopen immediately after exit
         IsKeyPressed(configMenuKey, false);
@@ -422,10 +452,30 @@ void MonitorKeys() {
                 }
 
                 bool handled = false;
+                const auto recPhase = Mission::Engine::Recorder::GetPhase();
+                const bool recorderOwnsHotkeys =
+                    recPhase == Mission::Engine::Recorder::Phase::CountIn ||
+                    recPhase == Mission::Engine::Recorder::Phase::Recording;
+                if (recorderOwnsHotkeys) {
+                    if (gpWentDown(cgp.gpToggleMenuButton)) {
+                        Mission::Engine::Recorder::Advance();
+                        CustomMenu::Screens::OpenMissionBrowser();
+                        OpenMenu();
+                        handled = true;
+                    } else if (gpWentDown(cgp.gpMacroRecordButton)) {
+                        Mission::Engine::Recorder::Advance();
+                        handled = true;
+                    }
+                    prev = cur;
+                    return handled;
+                }
                 // Process in priority order (single action per press)
                 // Unified menu toggle: gpToggleMenuButton now acts as open/close (ImGui preferred path)
                 if (!handled && gpWentDown(cgp.gpToggleMenuButton)) {
                     if (!ImGuiImpl::IsVisible()) {
+                        if (Mission::Engine::Recorder::IsSessionActive()) {
+                            CustomMenu::Screens::OpenMissionBrowser();
+                        }
                         OpenMenu();
                     } else {
                         ImGuiImpl::ToggleVisibility();
@@ -446,7 +496,8 @@ void MonitorKeys() {
                 } else if (!handled && gpWentDown(cgp.gpSwitchPlayersButton)) {
                     // Guard: disable switch-players while macro prerecord/recording is active
                     auto st = MacroController::GetState();
-                    if (st == MacroController::State::PreRecord || st == MacroController::State::Recording) {
+                    if (Mission::Engine::Recorder::IsSessionActive() ||
+                        st == MacroController::State::PreRecord || st == MacroController::State::Recording) {
                         DirectDrawHook::AddMessage("Switch Players disabled during Macro PreRecord/Recording", "SYSTEM", RGB(255,200,120), 1200, 0, 100);
                         handled = true;
                     } else {
@@ -462,16 +513,24 @@ void MonitorKeys() {
                     }
                 } else if (!handled && gpWentDown(cgp.gpMacroRecordButton)) {
                     if (GetCurrentGamePhase() == GamePhase::Match && AreCharactersInitialized()) {
-                        MacroController::ToggleRecord();
-                        DirectDrawHook::AddMessage(MacroController::GetStatusLine().c_str(), "MACRO", RGB(200,220,255), 900, 0, 120);
+                        if (Mission::Engine::Recorder::IsSessionActive()) {
+                            Mission::Engine::Recorder::Advance();
+                        } else {
+                            MacroController::ToggleRecord();
+                            DirectDrawHook::AddMessage(MacroController::GetStatusLine().c_str(), "MACRO", RGB(200,220,255), 900, 0, 120);
+                        }
                     } else {
                         DirectDrawHook::AddMessage("Macro controls available only during Match", "MACRO", RGB(255,180,120), 900, 0, 120);
                     }
                     handled = true;
                 } else if (!handled && gpWentDown(cgp.gpMacroPlayButton)) {
                     if (GetCurrentGamePhase() == GamePhase::Match && AreCharactersInitialized()) {
-                        MacroController::Play();
-                        DirectDrawHook::AddMessage(MacroController::GetStatusLine().c_str(), "MACRO", RGB(180,255,180), 900, 0, 120);
+                        if (Mission::Engine::Recorder::IsSessionActive()) {
+                            DirectDrawHook::AddMessage("Macro playback is unavailable during mission authoring", "MISSION", RGB(255,200,120), 1200, 0, 120);
+                        } else {
+                            MacroController::Play();
+                            DirectDrawHook::AddMessage(MacroController::GetStatusLine().c_str(), "MACRO", RGB(180,255,180), 900, 0, 120);
+                        }
                     } else {
                         DirectDrawHook::AddMessage("Macro controls available only during Match", "MACRO", RGB(255,180,120), 900, 0, 120);
                     }
@@ -536,6 +595,20 @@ void MonitorKeys() {
                 }
             }
 
+            const auto recorderPhase = Mission::Engine::Recorder::GetPhase();
+            const bool recorderOwnsHotkeys =
+                recorderPhase == Mission::Engine::Recorder::Phase::CountIn ||
+                recorderPhase == Mission::Engine::Recorder::Phase::Recording;
+            if (!keyHandled && recorderOwnsHotkeys) {
+                if (IsKeyPressed(cfg.macroRecordKey > 0 ? cfg.macroRecordKey : 'I', false)) {
+                    Mission::Engine::Recorder::Advance();
+                    keyHandled = true;
+                } else {
+                    Sleep(8);
+                    continue;
+                }
+            }
+
             // 3) Remaining keyboard-only actions
             if (!keyHandled) {
                 // Skip all hotkeys on character select screen (including menu toggles)
@@ -587,7 +660,8 @@ void MonitorKeys() {
                 if (IsKeyPressed(cfg.switchPlayersKey > 0 ? cfg.switchPlayersKey : 'L', false)) {
                 // Debug hotkey: Toggle local/remote players in Practice
                 auto st = MacroController::GetState();
-                if (st == MacroController::State::PreRecord || st == MacroController::State::Recording) {
+                if (Mission::Engine::Recorder::IsSessionActive() ||
+                    st == MacroController::State::PreRecord || st == MacroController::State::Recording) {
                     DirectDrawHook::AddMessage("Switch Players disabled during Macro PreRecord/Recording", "SYSTEM", RGB(255,200,120), 1200, 0, 100);
                     keyHandled = true;
                 } else if (GetCurrentGameMode() == GameMode::Practice && !g_guiActive.load()) {
@@ -761,8 +835,12 @@ void MonitorKeys() {
             } else if (IsKeyPressed(cfg.macroRecordKey > 0 ? cfg.macroRecordKey : 'I', false)) {
                 // Macro controls are Match-only
                 if (GetCurrentGamePhase() == GamePhase::Match && AreCharactersInitialized()) {
-                    MacroController::ToggleRecord();
-                    DirectDrawHook::AddMessage(MacroController::GetStatusLine().c_str(), "MACRO", RGB(200, 220, 255), 900, 0, 120);
+                    if (Mission::Engine::Recorder::IsSessionActive()) {
+                        Mission::Engine::Recorder::Advance();
+                    } else {
+                        MacroController::ToggleRecord();
+                        DirectDrawHook::AddMessage(MacroController::GetStatusLine().c_str(), "MACRO", RGB(200, 220, 255), 900, 0, 120);
+                    }
                 } else {
                     DirectDrawHook::AddMessage("Macro controls available only during Match", "MACRO", RGB(255, 180, 120), 900, 0, 120);
                 }
@@ -770,8 +848,12 @@ void MonitorKeys() {
             } else if (IsKeyPressed(cfg.macroPlayKey > 0 ? cfg.macroPlayKey : 'O', false)) {
                 // Macro controls are Match-only
                 if (GetCurrentGamePhase() == GamePhase::Match && AreCharactersInitialized()) {
-                    MacroController::Play();
-                    DirectDrawHook::AddMessage(MacroController::GetStatusLine().c_str(), "MACRO", RGB(180, 255, 180), 900, 0, 120);
+                    if (Mission::Engine::Recorder::IsSessionActive()) {
+                        DirectDrawHook::AddMessage("Macro playback is unavailable during mission authoring", "MISSION", RGB(255,200,120), 1200, 0, 120);
+                    } else {
+                        MacroController::Play();
+                        DirectDrawHook::AddMessage(MacroController::GetStatusLine().c_str(), "MACRO", RGB(180, 255, 180), 900, 0, 120);
+                    }
                 } else {
                     DirectDrawHook::AddMessage("Macro controls available only during Match", "MACRO", RGB(255, 180, 120), 900, 0, 120);
                 }
@@ -801,7 +883,7 @@ void MonitorKeys() {
               IsKeyPressed(savestatePrevSlotKey, true) || IsKeyPressed(savestateNextSlotKey, true) ||
               IsKeyPressed(cfg.switchPlayersKey > 0 ? cfg.switchPlayersKey : 'L', true) ||
               IsKeyPressed(cfg.macroRecordKey > 0 ? cfg.macroRecordKey : 'I', true) ||
-              IsKeyPressed(cfg.macroPlayKey > 0 ? cfg.macroPlayKey : 'O', true) ||
+               IsKeyPressed(cfg.macroPlayKey > 0 ? cfg.macroPlayKey : 'O', true) ||
               (cfg.framestepEnabled && IsKeyPressed(cfg.framestepPauseKey > 0 ? cfg.framestepPauseKey : VK_SPACE, true)) ||
               (cfg.framestepEnabled && IsKeyPressed(cfg.framestepStepKey > 0 ? cfg.framestepStepKey : 'P', true))) {
                     Sleep(10);

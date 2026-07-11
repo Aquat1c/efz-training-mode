@@ -8,6 +8,8 @@
 #include "../include/gui/overlay.h"
 #include "../include/gui/overlay_api.h"
 #include "../include/gui/framebar.h"
+#include "../include/game/mission/mission_render.h"
+#include "../include/game/practice_menu/mission_title_screen.h"
 #include "../include/core/logger.h"
 #include "../include/utils/utilities.h"
 
@@ -843,7 +845,11 @@ HRESULT WINAPI HookedEndScene(LPDIRECT3DDEVICE9 pDevice) {
         }
     }
 
-    if (ImGuiImpl::IsVisible() && Config::GetSettings().useCustomMenu) {
+    // The title MISSIONS/TUTORIAL screens draw with the custom-menu fonts, so
+    // PrepareFrame (atlas rebuild) must also run while they are up even though
+    // the pause menu itself is closed.
+    if ((ImGuiImpl::IsVisible() && Config::GetSettings().useCustomMenu) ||
+        PracticeMenu::TitleScreen::WantsDraw()) {
         SetEndScenePhase("CustomMenu::PrepareFrame");
         CustomMenu::PrepareFrame();
     }
@@ -1148,7 +1154,9 @@ void DirectDrawHook::RenderD3D9Overlays(LPDIRECT3DDEVICE9 pDevice, UINT rtW, UIN
     const bool menuVisibleNow = ImGuiImpl::IsVisible();
     const bool haveMessages = !permanentSnapshot.empty() || !temporarySnapshot.empty();
     const bool haveCollisionOverlay = CollisionDisplay::IsAnyLayerEnabled();
-    if (!menuVisibleNow && !g_ShowOverlayDebugBorders.load() && !haveMessages && !haveCollisionOverlay) {
+    const bool titleScreenActive = PracticeMenu::TitleScreen::WantsDraw();
+    if (!menuVisibleNow && !g_ShowOverlayDebugBorders.load() && !haveMessages &&
+        !haveCollisionOverlay && !titleScreenActive) {
         return;
     }
 
@@ -1244,6 +1252,17 @@ void DirectDrawHook::RenderD3D9Overlays(LPDIRECT3DDEVICE9 pDevice, UINT rtW, UIN
         fbCtx.oy = oy;
         fbCtx.scale = scale;
         FrameBar::Render(fbCtx);
+    }
+
+    // Mission combo recipe (active-mission only; no-op otherwise).
+    if (!menuVisibleNow) {
+        Mission::Render::Draw(pDevice, bgList, ox, oy, scale);
+    }
+
+    // Title MISSIONS/TUTORIAL screens (custom-menu-styled, drawn over the
+    // vanilla title backdrop while the practice submenu delegates to them).
+    if (titleScreenActive) {
+        PracticeMenu::TitleScreen::Draw(bgList);
     }
 
     // Optional: draw a single combined background for split frame-advantage messages

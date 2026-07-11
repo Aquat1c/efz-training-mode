@@ -1,4 +1,5 @@
 #include "../include/game/game_state.h"
+#include "../include/game/mission/mission_engine.h"
 
 #include "../include/core/memory.h"
 #include "../include/core/constants.h"
@@ -9,6 +10,7 @@
 #include "../include/utils/bgm_control.h"
 #include "../include/gui/gui.h"
 #include "../include/gui/imgui_impl.h"
+#include "../include/gui/custom_menu/screens.h"
 #include "frame_monitor.h"
 #include "../include/core/logger.h"
 #include "../3rdparty/minhook/include/MinHook.h"
@@ -27,6 +29,7 @@ namespace {
     constexpr uintptr_t RVA_BATTLE_HOTKEYS = 0x00365660;     // efz.exe 0x00765660
     constexpr uint8_t SCREEN_TITLE = 0;
     constexpr uint8_t SCREEN_CHARACTER_SELECT = 1;
+    constexpr uint8_t SCREEN_LOADING = 2;
     constexpr uint8_t SCREEN_BATTLE = 3;
     constexpr uintptr_t SCREEN_EXIT_FLAG_OFFSET = 45;
     constexpr uintptr_t BATTLE_ENGINE_PAUSE_OFFSET = 1416;
@@ -34,6 +37,7 @@ namespace {
     enum class PendingExitOverride : int {
         None = 0,
         Title = 1,
+        Loading = 2,
     };
 
     using BattleUpdateFn = char (__thiscall *)(void* battleContext);
@@ -131,7 +135,9 @@ namespace {
             callback(battleContext);
         }
 
-        if (s_pendingExitOverride.load(std::memory_order_acquire) != static_cast<int>(PendingExitOverride::Title)) {
+        const PendingExitOverride exitOverride = static_cast<PendingExitOverride>(
+            s_pendingExitOverride.load(std::memory_order_acquire));
+        if (exitOverride == PendingExitOverride::None) {
             return result;
         }
 
@@ -149,6 +155,11 @@ namespace {
         s_pendingExitOverrideFrames.store(0, std::memory_order_relaxed);
 
         if (result == SCREEN_CHARACTER_SELECT) {
+            if (exitOverride == PendingExitOverride::Loading) {
+                LogOut("[FRONTEND] Battle cleanup completed; overriding next screen to Loading", true);
+                return SCREEN_LOADING;
+            }
+
             LogOut("[FRONTEND] Battle cleanup completed; overriding next screen to Title", true);
             // Vanilla silences the OST when returning to the title screen by
             // switching to BGM slot 150. This Battle->Title override skips the
@@ -168,6 +179,31 @@ namespace {
         const bool practiceBattle = IsPracticeBattleHotkeyContext();
         bool escDown = false;
         const bool gameActive = practiceBattle && PollEscapeIfGameActive(escDown);
+
+        if (practiceBattle && Mission::Engine::Demo::IsActive()) {
+            const bool wasHeld = s_practiceEscHeld.exchange(gameActive && escDown,
+                                                             std::memory_order_acq_rel);
+            if (gameActive && escDown && !wasHeld) {
+                LogOut("[MISSION][DEMO] Practice ESC intercepted; canceling demonstration", true);
+                Mission::Engine::Demo::Cancel();
+            }
+            // The native battle dispatcher owns pause/menu and several battle
+            // shortcuts; none may run during an exclusive demonstration.
+            return 0;
+        }
+
+        if (practiceBattle && Mission::Engine::Recorder::OwnsCaptureHotkeys()) {
+            const bool wasHeld = s_practiceEscHeld.exchange(gameActive && escDown,
+                                                             std::memory_order_acq_rel);
+            if (gameActive && escDown && !wasHeld) {
+                // Menu entry is a safe authoring interrupt: CountIn returns to
+                // PreRecord; Recording seals at the capture boundary into Review.
+                Mission::Engine::Recorder::Advance();
+                CustomMenu::Screens::OpenMissionBrowser();
+                OpenMenu();
+            }
+            return 0;
+        }
 
         if (ImGuiImpl::IsVisible()) {
             if (practiceBattle) {
@@ -192,6 +228,9 @@ namespace {
             const bool wasHeld = s_practiceEscHeld.exchange(true, std::memory_order_acq_rel);
             if (!wasHeld) {
                 LogOut("[FRONTEND] Practice ESC intercepted; opening training menu", true);
+                if (Mission::Engine::Recorder::IsSessionActive()) {
+                    CustomMenu::Screens::OpenMissionBrowser();
+                }
                 OpenMenu();
             }
             return 0;
@@ -389,6 +428,8 @@ bool CanRequestFrontendExit(FrontendExitTarget target) {
     switch (target) {
     case FrontendExitTarget::CharacterSelect:
         return screen == SCREEN_BATTLE;
+    case FrontendExitTarget::Loading:
+        return screen == SCREEN_BATTLE && GetCurrentGameMode() == GameMode::Practice;
     case FrontendExitTarget::Title:
         return screen == SCREEN_BATTLE || screen == SCREEN_CHARACTER_SELECT || screen == SCREEN_TITLE;
     default:
@@ -411,12 +452,15 @@ bool RequestFrontendExit(FrontendExitTarget target) {
     }
 
     if (screen == SCREEN_BATTLE) {
-        if (target == FrontendExitTarget::Title) {
+        if (target == FrontendExitTarget::Title || target == FrontendExitTarget::Loading) {
             if (!hooksReady) {
-                LogOut("[FRONTEND] Exit to Title unavailable because the battle update hook is inactive", true);
+                LogOut("[FRONTEND] Requested exit override unavailable because the battle update hook is inactive", true);
                 return false;
             }
-            s_pendingExitOverride.store(static_cast<int>(PendingExitOverride::Title), std::memory_order_release);
+            const PendingExitOverride overrideTarget = target == FrontendExitTarget::Title
+                ? PendingExitOverride::Title
+                : PendingExitOverride::Loading;
+            s_pendingExitOverride.store(static_cast<int>(overrideTarget), std::memory_order_release);
             s_pendingExitOverrideFrames.store(120, std::memory_order_relaxed);
         } else {
             s_pendingExitOverride.store(static_cast<int>(PendingExitOverride::None), std::memory_order_release);
@@ -430,15 +474,20 @@ bool RequestFrontendExit(FrontendExitTarget target) {
             return false;
         }
 
-        ResetModSessionForFrontendExit(target == FrontendExitTarget::Title
+        const char* resetReason = target == FrontendExitTarget::Title
             ? "MenuExitToTitle"
-            : "MenuExitToCharacterSelect");
+            : (target == FrontendExitTarget::Loading
+                ? "MissionDirectReload"
+                : "MenuExitToCharacterSelect");
+        ResetModSessionForFrontendExit(resetReason);
         CloseTrainingMenuForFrontendExit();
 
-        LogOut(target == FrontendExitTarget::Title
+        const char* requestLog = target == FrontendExitTarget::Title
             ? "[FRONTEND] Requested exit to Title through battle cleanup"
-            : "[FRONTEND] Requested exit to Character Select through battle cleanup",
-            true);
+            : (target == FrontendExitTarget::Loading
+                ? "[FRONTEND] Requested direct Loading through battle cleanup"
+                : "[FRONTEND] Requested exit to Character Select through battle cleanup");
+        LogOut(requestLog, true);
         return true;
     }
 

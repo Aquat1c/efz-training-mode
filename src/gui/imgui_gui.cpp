@@ -3475,12 +3475,15 @@ namespace ImGuiGui {
             /*if (ImGui::Button("Log BGM State")) {
                 LogBGMState(gameStatePtr);
             }*/
-            static int bgmSlot = 0;
-            ImGui::InputInt("Set BGM Slot (index)", &bgmSlot);
-            if (ImGui::Button("Set BGM Slot")) {
-                PlayBGM(gameStatePtr, static_cast<unsigned short>(bgmSlot));
+            static int bgmTrack = 0;
+            ImGui::InputInt("Set BGM Track", &bgmTrack);
+            if (ImGui::Button("Play BGM Track")) {
+                PlayBGM(gameStatePtr, static_cast<unsigned short>(bgmTrack));
             }
-            ImGui::Text("Current BGM Slot: %d", GetBGMSlot(gameStatePtr));
+            const unsigned short observedTrack = GetLastBgmTrack();
+            if (observedTrack == 0xFFFFu) ImGui::Text("Current BGM Track: unknown");
+            else ImGui::Text("Current BGM Track: %u", static_cast<unsigned>(observedTrack));
+            ImGui::Text("Current BGM Buffer: %d", GetBGMBufferIndex(gameStatePtr));
             ImGui::Text("Current BGM Volume: %d", GetBGMVolume(gameStatePtr));
         } else {
             ImGui::Text("Game state pointer not available.");

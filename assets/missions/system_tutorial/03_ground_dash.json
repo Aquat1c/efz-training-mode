@@ -1,0 +1,19 @@
+{
+    "format": 1,
+    "type": "tutorial",
+    "category": "movement",
+    "difficulty": 2,
+    "name": "Ground Dash",
+    "description": "Dash forward twice. Dashes cover ground much faster than walking and are essential for converting an opening into offense.",
+    "player": { "character": "nanase", "pos": { "x": -150.0, "y": 0.0 }, "meter": 3000 },
+    "dummy": { "character": "misuzu", "pos": { "x": 150.0, "y": 0.0 } },
+    "stage": 0,
+    "bgm": -1,
+    "steps": [
+        { "notation": "66", "ids": [163], "req": "move", "maxGap": 5760 },
+        { "notation": "66", "ids": [163], "req": "move", "maxGap": 5760 }
+    ],
+    "failTimer": 5760,
+    "score": [{ "label": "Clear" }],
+    "hint": ["Tap toward the opponent twice quickly. Return to neutral briefly before the second dash."]
+}

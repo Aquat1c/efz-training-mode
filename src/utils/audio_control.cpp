@@ -1,5 +1,6 @@
 #include "../include/utils/audio_control.h"
 
+#include "../include/utils/bgm_control.h"
 #include "../include/utils/config.h"
 #include "../include/utils/extended_config_bridge.h"
 #include "../include/core/constants.h"
@@ -929,6 +930,10 @@ bool InstallRevivalAudioChainHooks(uintptr_t efzBase) {
 }
 
 void __fastcall HookedPlayBackgroundMusic(uintptr_t gameSystemPtr, void*, unsigned short trackNumber) {
+    // GameSystem+0xF26 is only the allocated sound-buffer index. Capture the
+    // logical track argument at the game entry point so mission metadata never
+    // confuses those two ID spaces.
+    SetLastBgmTrack(trackNumber);
     if (g_originalPlayBackgroundMusic) {
         SehCallPlayBackgroundMusic(g_originalPlayBackgroundMusic, gameSystemPtr, trackNumber);
     }
@@ -1112,6 +1117,9 @@ bool PlayBackgroundMusic(uintptr_t gameSystemPtr, unsigned short trackNumber) {
         LogOut("[AUDIO][SEH] Exception in requested playBackgroundMusic call", true);
         return false;
     }
+    // Calls through g_originalPlayBackgroundMusic use the trampoline and do not
+    // re-enter HookedPlayBackgroundMusic.
+    SetLastBgmTrack(trackNumber);
     if (RuntimeAudioControlSuppressed("playBackgroundMusic volume follow-up")) {
         return true;
     }

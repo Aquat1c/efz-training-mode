@@ -10,6 +10,7 @@
 #include "../include/gui/custom_menu/scale.h"
 #include "../include/gui/custom_menu/input.h"
 #include "../include/gui/imgui_gui.h"
+#include "../include/gui/imgui_impl.h"
 #include "../include/utils/utilities.h"
 #include "../include/utils/config.h"
 #include "../include/core/constants.h"
@@ -22,6 +23,8 @@
 #include "../include/game/random_block.h"
 #include "../include/game/final_memory_patch.h"
 #include "../include/game/macro_controller.h"
+#include "../include/game/mission/mission_engine.h"
+#include "../include/game/mission/mission_data.h"
 #include "../include/game/custom_savestate.h"
 #include "../include/game/savestate_hook.h"
 #include "../include/game/fm_commands.h"
@@ -2246,12 +2249,13 @@ int SavedSavestateSelectId(uint8_t rawCharId) {
         return -1;
     }
 
-    const int internalCharId = static_cast<int>(rawCharId);
-    if (internalCharId < CHAR_ID_AKANE || internalCharId > CHAR_ID_KANO) {
+    // Custom savestate headers capture characterObject+141, which is already
+    // the character-select ID consumed by CharacterHotswap::QueueReload.
+    const int selectId = static_cast<int>(rawCharId);
+    if (selectId < 0 || selectId >= CharacterHotswap::kCharacterSelectCount) {
         return -1;
     }
-
-    return CharacterSelectIdFromInternalCharacterId(internalCharId);
+    return selectId;
 }
 
 const char* SavedSavestateDisplayName(uint8_t rawCharId) {
@@ -2565,6 +2569,33 @@ void RefreshDebugMirrors() {
 
 void OnOverlayBorders() { g_ShowOverlayDebugBorders.store(g_mirrorOverlayBorders); }
 void OnRGToasts()       { g_ShowRGDebugToasts.store(g_mirrorRGToasts); }
+static bool g_mirrorMissionInspector = false;
+void OnMissionInspector() { Mission::Engine::SetInspectorEnabled(g_mirrorMissionInspector); }
+void ActSaveRecordedMission() {
+    std::string msg;
+    const bool ok = Mission::Engine::Recorder::SaveRecorded(msg);
+    DirectDrawHook::AddMessage(ok ? ("Mission saved: " + msg) : ("Save failed: " + msg),
+        "SYSTEM", ok ? RGB(180, 255, 220) : RGB(255, 120, 120), 3500, 0, 120);
+}
+void ActLoadLatestMission() {
+    std::string msg;
+    const bool ok = Mission::Engine::Runner::LoadLatestRecorded(msg);
+    DirectDrawHook::AddMessage(ok ? ("Mission loaded: " + msg) : ("Load failed: " + msg),
+        "SYSTEM", ok ? RGB(180, 255, 220) : RGB(255, 120, 120), 3000, 0, 120);
+}
+void ActResetMission() {
+    if (Mission::Engine::Runner::IsActive()) {
+        Mission::Engine::Runner::Reset();
+        DirectDrawHook::AddMessage("Mission reset", "SYSTEM", RGB(180, 255, 220), 1500, 0, 120);
+    }
+}
+const char* ValMissionRecordSteps() {
+    static char b[48];
+    _snprintf_s(b, sizeof(b), _TRUNCATE, "%d steps / %d setup breaks",
+                Mission::Engine::Recorder::GetStepCount(),
+                Mission::Engine::Recorder::GetComboEndCount());
+    return b;
+}
 void OnPadInputLog()    { XInputShim::g_LogGenericPadInputDebug.store(g_mirrorPadInputLog); }
 void OnDeepFA()         { g_deepFrameAdvDebug.store(g_mirrorDeepFA); }
 int g_bgmSlot = 1;
@@ -2702,32 +2733,36 @@ unsigned short TrackForNamedOstChoice(int choiceIdx) {
 }
 
 int CharacterSelectIdFromInternalCharacterId(int internalCharId) {
-    switch (internalCharId) {
-        case CHAR_ID_AKANE:    return 4;
-        case CHAR_ID_AKIKO:    return 16;
-        case CHAR_ID_IKUMI:    return 14;
-        case CHAR_ID_MISAKI:   return 7;
-        case CHAR_ID_SAYURI:   return 9;
-        case CHAR_ID_KANNA:    return 19;
-        case CHAR_ID_KAORI:    return 13;
-        case CHAR_ID_MAKOTO:   return 3;
-        case CHAR_ID_MINAGI:   return 21;
-        case CHAR_ID_MIO:      return 11;
-        case CHAR_ID_MISHIO:   return 15;
-        case CHAR_ID_MISUZU:   return 23;
-        case CHAR_ID_MIZUKA:   return 6;
-        case CHAR_ID_NAGAMORI: return 6;
-        case CHAR_ID_NANASE:   return 0;
-        case CHAR_ID_EXNANASE: return 12;
-        case CHAR_ID_NAYUKI:   return 10;
-        case CHAR_ID_NAYUKIB:  return 17;
-        case CHAR_ID_SHIORI:   return 8;
-        case CHAR_ID_AYU:      return 1;
-        case CHAR_ID_MAI:      return 2;
-        case CHAR_ID_MAYU:     return 5;
-        case CHAR_ID_MIZUKAB:  return 18;
-        case CHAR_ID_KANO:     return 20;
-        default:               return 4;
+    const std::string resourceName = CharacterSettings::GetCharacterInternalName(internalCharId);
+    return CharacterHotswap::GetSelectIdForResourceName(resourceName.c_str());
+}
+void ActArmMissionRecording() {
+    Mission::Engine::Recorder::Arm();
+    if (ImGuiImpl::IsVisible()) ImGuiImpl::ToggleVisibility();
+}
+void ActAdvanceMissionRecording() {
+    const auto phase = Mission::Engine::Recorder::GetPhase();
+    Mission::Engine::Recorder::Advance();
+    if (phase == Mission::Engine::Recorder::Phase::PreRecord && ImGuiImpl::IsVisible()) {
+        ImGuiImpl::ToggleVisibility();
+    }
+}
+void ActRetakeMissionRecording() {
+    Mission::Engine::Recorder::Retake();
+    if (ImGuiImpl::IsVisible()) ImGuiImpl::ToggleVisibility();
+}
+void ActDiscardMissionRecording() {
+    Mission::Engine::Recorder::Cancel();
+    DirectDrawHook::AddMessage("Mission recording discarded", "SYSTEM",
+                               RGB(255, 200, 120), 1200, 0, 120);
+}
+const char* ValMissionAuthoringState() {
+    switch (Mission::Engine::Recorder::GetPhase()) {
+        case Mission::Engine::Recorder::Phase::PreRecord: return "PRE-RECORD";
+        case Mission::Engine::Recorder::Phase::CountIn:   return "COUNT-IN";
+        case Mission::Engine::Recorder::Phase::Recording: return "RECORDING";
+        case Mission::Engine::Recorder::Phase::Review:    return "REVIEW";
+        default: return "IDLE";
     }
 }
 
@@ -2741,7 +2776,9 @@ void SeedDebugBgmChoiceIfNeeded() {
 
     uintptr_t gameStatePtr = GetGameStatePtr();
     if (gameStatePtr) {
-        const int currentTrack = GetBGMSlot(gameStatePtr);
+        const unsigned short observedTrack = GetLastBgmTrack();
+        const int currentTrack = observedTrack == 0xFFFFu
+            ? -1 : static_cast<int>(observedTrack);
         const int ostChoice = FindNamedOstChoiceIndexByTrack(currentTrack);
         if (ostChoice >= 0) {
             g_bgmSlot = ostChoice;
@@ -2826,14 +2863,163 @@ Row* BuildDebugLoggingRows(int& count) {
     return s_rows;
 }
 
+// ---- Mission browser: packs (assets\missions\<pack>\pack.json) + recorded ----
+struct MissionBrowserEntry { std::string label; std::string path; };
+static std::vector<MissionBrowserEntry> g_missionEntries;
+static bool g_missionListDirty = true;
+constexpr int kMissionBrowserMax = 12;
+
+static void ScanMissionEntries() {
+    g_missionEntries.clear();
+    const std::string root = Mission::ResolveMissionsRoot();
+    if (root.empty()) return;
+    // Pack scenarios first.
+    for (const std::string& pj : Mission::DiscoverPackJsonPaths(root)) {
+        Mission::Pack pack; std::string err;
+        if (!Mission::LoadPack(pj, pack, err)) continue;
+        for (const auto& sc : pack.scenarios) {
+            if ((int)g_missionEntries.size() >= kMissionBrowserMax) return;
+            MissionBrowserEntry e;
+            e.label = (pack.name.empty() ? std::string("PACK") : pack.name) + ": "
+                    + (sc.name.empty() ? sc.file : sc.name);
+            e.path = pack.folderPath + "\\" + sc.file;
+            g_missionEntries.push_back(std::move(e));
+        }
+    }
+    // Then loose recorded missions (newest first by name is fine for a scaffold).
+    const std::string search = root + "\\_recorded\\*.json";
+    WIN32_FIND_DATAA fd = {};
+    HANDLE h = FindFirstFileA(search.c_str(), &fd);
+    if (h != INVALID_HANDLE_VALUE) {
+        do {
+            if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
+            if ((int)g_missionEntries.size() >= kMissionBrowserMax) break;
+            MissionBrowserEntry e;
+            e.label = std::string("REC: ") + fd.cFileName;
+            e.path = root + "\\_recorded\\" + fd.cFileName;
+            g_missionEntries.push_back(std::move(e));
+        } while (FindNextFileA(h, &fd));
+        FindClose(h);
+    }
+}
+
+static void LoadMissionEntry(int i) {
+    if (i < 0 || i >= (int)g_missionEntries.size()) return;
+    std::string msg;
+    const bool ok = Mission::Engine::Runner::Load(g_missionEntries[i].path, msg);
+    DirectDrawHook::AddMessage(ok ? ("Mission: " + msg) : ("Load failed: " + msg),
+        "SYSTEM", ok ? RGB(180, 255, 220) : RGB(255, 120, 120), 2500, 0, 120);
+    if (ok && ImGuiImpl::IsVisible()) ImGuiImpl::ToggleVisibility();
+}
+static void ActMissionEntry0()  { LoadMissionEntry(0); }
+static void ActMissionEntry1()  { LoadMissionEntry(1); }
+static void ActMissionEntry2()  { LoadMissionEntry(2); }
+static void ActMissionEntry3()  { LoadMissionEntry(3); }
+static void ActMissionEntry4()  { LoadMissionEntry(4); }
+static void ActMissionEntry5()  { LoadMissionEntry(5); }
+static void ActMissionEntry6()  { LoadMissionEntry(6); }
+static void ActMissionEntry7()  { LoadMissionEntry(7); }
+static void ActMissionEntry8()  { LoadMissionEntry(8); }
+static void ActMissionEntry9()  { LoadMissionEntry(9); }
+static void ActMissionEntry10() { LoadMissionEntry(10); }
+static void ActMissionEntry11() { LoadMissionEntry(11); }
+static void ActMissionRescan()  { g_missionListDirty = true; }
+
+static void ActMissionPlayDemo() {
+    std::string msg;
+    const bool ok = Mission::Engine::Demo::PlayLoaded(msg);
+    DirectDrawHook::AddMessage(ok ? "Preparing mission demonstration..." : ("Demo: " + msg),
+        "SYSTEM", ok ? RGB(180, 255, 220) : RGB(255, 180, 120), 1800, 0, 120);
+    if (ok && ImGuiImpl::IsVisible()) ImGuiImpl::ToggleVisibility();
+}
+static void ActMissionPreviewRecording() {
+    std::string msg;
+    const bool ok = Mission::Engine::Demo::PlayRecording(msg);
+    DirectDrawHook::AddMessage(ok ? "Preparing recorded preview..." : ("Preview: " + msg),
+        "SYSTEM", ok ? RGB(180, 255, 220) : RGB(255, 180, 120), 1800, 0, 120);
+    if (ok && ImGuiImpl::IsVisible()) ImGuiImpl::ToggleVisibility();
+}
+
+static Row* BuildMissionBrowserRows(int& count) {
+    static Row s_rows[32];
+    static char bindingLine[160];
+    if (g_missionListDirty) { ScanMissionEntries(); g_missionListDirty = false; }
+    int n = 0;
+    s_rows[n++] = Header("MISSION AUTHORING");
+    _snprintf_s(bindingLine, sizeof(bindingLine), _TRUNCATE,
+                "Macro Record: %s", Mission::Engine::Recorder::GetMacroRecordBindingLabel().c_str());
+    s_rows[n++] = Info(bindingLine);
+    const auto recPhase = Mission::Engine::Recorder::GetPhase();
+    if (recPhase == Mission::Engine::Recorder::Phase::Idle) {
+        s_rows[n++] = Action("NEW RECORDING (PRE-RECORD)", ActArmMissionRecording,
+                             ValMissionAuthoringState);
+        s_rows[n++] = Info("Capture starts only after you arrange the setup and explicitly start the count-in.");
+    } else if (recPhase == Mission::Engine::Recorder::Phase::PreRecord) {
+        s_rows[n++] = Info("PRE-RECORD: arrange positions/resources. Nothing is being captured yet.");
+        s_rows[n++] = Action("START COUNT-IN", ActAdvanceMissionRecording, ValMissionRecordSteps);
+        s_rows[n++] = Action("DISCARD SESSION", ActDiscardMissionRecording);
+    } else if (recPhase == Mission::Engine::Recorder::Phase::CountIn) {
+        s_rows[n++] = Info("COUNT-IN: close the menu and release all P1 controls.");
+        s_rows[n++] = Action("DISCARD SESSION", ActDiscardMissionRecording);
+    } else if (recPhase == Mission::Engine::Recorder::Phase::Recording) {
+        s_rows[n++] = Info("RECORDING: P1 inputs and recipe steps are captured together.");
+        s_rows[n++] = Info("A real recovery edge followed by more inputs becomes an explicit setup break.");
+        s_rows[n++] = Action("STOP & REVIEW", ActAdvanceMissionRecording, ValMissionRecordSteps);
+        s_rows[n++] = Action("DISCARD SESSION", ActDiscardMissionRecording);
+    } else {
+        s_rows[n++] = Info("REVIEW: the clip is not saved until you choose Save.");
+        s_rows[n++] = Info("Setup breaks preserve multi-part combos; Retake is the only retry boundary.");
+        s_rows[n++] = Action("PREVIEW DEMONSTRATION", ActMissionPreviewRecording);
+        s_rows[n++] = Action("SAVE RECORDED MISSION", ActSaveRecordedMission, ValMissionRecordSteps);
+        s_rows[n++] = Action("RETAKE FROM BASELINE", ActRetakeMissionRecording);
+        s_rows[n++] = Action("DISCARD SESSION", ActDiscardMissionRecording);
+    }
+
+    if (recPhase != Mission::Engine::Recorder::Phase::Idle) {
+        count = n;
+        return s_rows;
+    }
+
+    s_rows[n++] = Spacer();
+    s_rows[n++] = Header("LOADED MISSION");
+    s_rows[n++] = Action("WATCH DEMONSTRATION", ActMissionPlayDemo);
+    s_rows[n++] = Action("RESET PLAYER ATTEMPT", ActResetMission);
+    s_rows[n++] = Spacer();
+    s_rows[n++] = Header("MISSION LIBRARY");
+    s_rows[n++] = Action("RESCAN FOLDER", ActMissionRescan);
+    static void (*const kFns[kMissionBrowserMax])() = {
+        ActMissionEntry0, ActMissionEntry1, ActMissionEntry2,  ActMissionEntry3,
+        ActMissionEntry4, ActMissionEntry5, ActMissionEntry6,  ActMissionEntry7,
+        ActMissionEntry8, ActMissionEntry9, ActMissionEntry10, ActMissionEntry11,
+    };
+    for (int i = 0; i < (int)g_missionEntries.size() && i < kMissionBrowserMax && n < 31; ++i) {
+        s_rows[n++] = Action(g_missionEntries[i].label.c_str(), kFns[i]);
+    }
+    if (g_missionEntries.empty()) {
+        s_rows[n++] = Info("No missions found under assets\\missions.");
+    }
+    count = n;
+    return s_rows;
+}
+static const char* ValMissionBrowser() {
+    static char b[24];
+    _snprintf_s(b, sizeof(b), _TRUNCATE, "%d found", (int)g_missionEntries.size());
+    return b;
+}
+
+
 Row* BuildDebugOverlayRows(int& count) {
-    static Row s_rows[8];
+    static Row s_rows[14];
     int n = 0;
 
     s_rows[n++] = Header("DEBUG OVERLAYS");
     s_rows[n++] = Info("Gameplay overlays moved to Options > Display Overlays.");
     s_rows[n++] = Toggle ("OVERLAY DEBUG BORDERS",     &g_mirrorOverlayBorders,       OnOverlayBorders);
     s_rows[n++] = Toggle ("RG DEBUG TOASTS",           &g_mirrorRGToasts,             OnRGToasts);
+    s_rows[n++] = Header("MISSIONS");
+    s_rows[n++] = Toggle ("MOVE-ID INSPECTOR",         &g_mirrorMissionInspector,     OnMissionInspector);
+    s_rows[n++] = Action ("LOAD LATEST RECORDED",      ActLoadLatestMission);
+    s_rows[n++] = Submenu("MISSIONS & AUTHORING",       "MISSIONS", BuildMissionBrowserRows, ValMissionAuthoringState);
     count = n;
     return s_rows;
 }
@@ -3563,6 +3749,7 @@ Row* BuildHelpMacroRows(int& count) {
     s_rows[n++] = Info("Record enters Pre-recording, where your usual P1 controls drive P2 for recording. Press Record again to start recording, then press it a third time to save.");
     s_rows[n++] = Info("Play runs the current slot and also exits Pre-recording. Empty slots do nothing.");
     s_rows[n++] = Info("Playback flips directions for Player 2 automatically and handles side swaps so the recorded inputs stay on the right character. Framestep tools work during playback.");
+    s_rows[n++] = Info("Mission authoring reuses Macro Record for PRE-RECORD, a three-second count-in, and Stop-to-Review. Its synchronized P1 demo clip is separate from all eight macro slots.");
     s_rows[n++] = Spacer();
     s_rows[n++] = Header("CUSTOM MENU TOOLS");
     s_rows[n++] = Info("Serialized Macro opens the text editor, Apply To Slot, Reload From Slot, Clear Slot, clipboard actions, undo/redo, and sample insertion.");
@@ -5010,9 +5197,10 @@ bool ReadCurrentHotswapState(HotswapCurrentState& state) {
             state.stageId = static_cast<int>(currentStage);
             state.stageValid = state.stageId >= 0 && state.stageId < kNamedStageChoiceCount;
         }
-        state.bgmTrack = GetBGMSlot(gameStatePtr);
-        state.bgmValid = true;
     }
+    const unsigned short observedTrack = GetLastBgmTrack();
+    state.bgmValid = observedTrack != 0xFFFFu;
+    if (state.bgmValid) state.bgmTrack = static_cast<int>(observedTrack);
 
     LogHotswapRuntimeStateIfChanged(state);
 
@@ -6030,6 +6218,19 @@ bool AdjustTriggerButtonRow(const Row& row, int direction) {
 
 // ===== Public per-screen entry points =====
 
+void OpenMissionBrowser() {
+    g_missionListDirty = true;              // rescan on open
+    MenuNavigationRequest req;
+    req.pane = MenuPane::SettingsDebug;     // the pane hosting the mission rows
+    req.submenuBuilder = BuildMissionBrowserRows;
+    req.submenuTitle = "MISSIONS";
+    RequestMenuNavigation(req);
+}
+
+void NotifyMissionLibraryChanged() {
+    g_missionListDirty = true;
+}
+
 void ResetHotswapMenuSeed() {
     ResetHotswapMenuSeedState();
 }
@@ -6141,14 +6342,48 @@ void MacroApplyTextToSlot() {
 }
 
 void MacroRecord() {
+    if (Mission::Engine::Recorder::IsSessionActive()) {
+        const auto phase = Mission::Engine::Recorder::GetPhase();
+        if (phase == Mission::Engine::Recorder::Phase::Review) {
+            OpenMissionBrowser();
+            return;
+        }
+        Mission::Engine::Recorder::Advance();
+        if (phase == Mission::Engine::Recorder::Phase::PreRecord &&
+            ImGuiImpl::IsVisible()) {
+            ImGuiImpl::ToggleVisibility();
+        }
+        return;
+    }
+    const auto before = MacroController::GetState();
     MacroController::ToggleRecord();
     DirectDrawHook::AddMessage(MacroController::GetStatusLine().c_str(), "MACRO", RGB(200, 220, 255), 900, 0, 120);
+    if (before == MacroController::State::PreRecord &&
+        MacroController::GetState() == MacroController::State::Recording &&
+        ImGuiImpl::IsVisible()) {
+        ImGuiImpl::ToggleVisibility();
+    }
 }
 void MacroPlay() {
+    if (Mission::Engine::Recorder::IsSessionActive()) {
+        DirectDrawHook::AddMessage("Macro playback is unavailable during mission authoring",
+                                   "MISSION", RGB(255, 200, 120), 1200, 0, 120);
+        return;
+    }
     MacroController::Play();
     DirectDrawHook::AddMessage(MacroController::GetStatusLine().c_str(), "MACRO", RGB(180, 255, 180), 900, 0, 120);
 }
 void MacroStop() {
+    if (Mission::Engine::Recorder::IsSessionActive()) {
+        if (Mission::Engine::Recorder::GetPhase() ==
+            Mission::Engine::Recorder::Phase::Recording) {
+            Mission::Engine::Recorder::Advance();
+        } else {
+            DirectDrawHook::AddMessage("Use Missions & Authoring to Retake or Discard this session",
+                                       "MISSION", RGB(255, 200, 120), 1400, 0, 120);
+        }
+        return;
+    }
     MacroController::Stop();
     DirectDrawHook::AddMessage(MacroController::GetStatusLine().c_str(), "MACRO", RGB(255, 220, 120), 900, 0, 120);
 }
@@ -6241,6 +6476,24 @@ const char* MacroStateStr() {
     _snprintf_s(buf, sizeof(buf), _TRUNCATE, "SLOT %d/%d",
                 MacroController::GetCurrentSlot(), MacroController::GetSlotCount());
     return buf;
+}
+
+const char* MacroPrimaryActionLabel() {
+    if (Mission::Engine::Recorder::IsSessionActive()) {
+        switch (Mission::Engine::Recorder::GetPhase()) {
+            case Mission::Engine::Recorder::Phase::PreRecord: return "START MISSION COUNT-IN";
+            case Mission::Engine::Recorder::Phase::Recording: return "STOP MISSION & REVIEW";
+            case Mission::Engine::Recorder::Phase::Review: return "TAKE READY - OPEN MISSIONS";
+            default: return "MISSION CAPTURE IN PROGRESS";
+        }
+    }
+    switch (MacroController::GetState()) {
+        case MacroController::State::Idle:      return "ARM RECORDING (PRE-RECORD)";
+        case MacroController::State::PreRecord: return "START CAPTURE";
+        case MacroController::State::Recording: return "STOP & KEEP CLIP";
+        case MacroController::State::Replaying: return "STOP PLAYBACK";
+    }
+    return "RECORD";
 }
 
 const char* MacroSlotEmptyStr() {
@@ -6410,9 +6663,19 @@ Row* BuildMacrosRows(int& count) {
 
     s_rows[n++] = Header("MACRO CONTROLLER");
     s_rows[n++] = Info(status);
+    const auto phase = MacroController::GetState();
+    if (phase == MacroController::State::Idle) {
+        s_rows[n++] = Info("Arm first, arrange the dummy, then start capture. Recording never begins on the arm press.");
+    } else if (phase == MacroController::State::PreRecord) {
+        s_rows[n++] = Info("PRE-RECORD: P2 is under your control; start when the setup and your hands are ready.");
+    } else if (phase == MacroController::State::Recording) {
+        s_rows[n++] = Info("RECORDING: use Macro Record again, or open this menu and stop, to keep the clip.");
+    } else {
+        s_rows[n++] = Info("PLAYBACK: recorded input owns P2 until the clip finishes or Stop is selected.");
+    }
     s_rows[n++] = IntNum("CURRENT SLOT", &g_macroSlotMirror, 1, MacroController::GetSlotCount(),
                          1, 1, OnMacroSlotChanged);
-    s_rows[n++] = Action("RECORD (TOGGLE)", MacroRecord, MacroStateStr);
+    s_rows[n++] = Action(MacroPrimaryActionLabel(), MacroRecord, MacroStateStr);
     s_rows[n++] = Action("PLAY",            MacroPlay,   MacroSlotEmptyStr);
     s_rows[n++] = Action("STOP",            MacroStop);
     s_rows[n++] = Action("PREV SLOT",       MacroPrevSlot);

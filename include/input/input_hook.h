@@ -26,6 +26,12 @@ bool SetVanillaSwapInputRouting(bool enable);
 void ResetInputPollOverrideHitCount(int playerNum);
 uint32_t GetInputPollOverrideHitCount(int playerNum);
 
+// Mission deadline bridge: records attack-button rising edges from the exact
+// value returned by EFZ's input-poll hook. Consume clears the pending edge bits;
+// the monotonic serial is diagnostic and does not itself identify a game event.
+uint8_t ConsumeInputPollAttackEdges(int playerNum);
+uint32_t GetInputPollSerial(int playerNum);
+
 // Arm a late-in-frame motion-token neutralization for the given player. If alsoDoFullCleanup
 // is true, the hook will wait for the input buffer head to be stable for a couple frames
 // (and no buffer-freeze is active) before performing a FullCleanupAfterToggle.

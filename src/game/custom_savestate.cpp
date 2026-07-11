@@ -2331,7 +2331,10 @@ bool ReadSnapshotRuntimeMetadata(uintptr_t gameStatePtr,
         return false;
     }
 
-    outBgmTrack = static_cast<uint16_t>(GetBGMSlot(gameStatePtr));
+    // Legacy snapshot metadata stores the active sound-buffer handle here, not
+    // a logical BGM track. Keep the disk field stable while naming the read
+    // honestly; it is not used to call PlayBGM during restore.
+    outBgmTrack = static_cast<uint16_t>(GetBGMBufferIndex(gameStatePtr));
     return true;
 }
 

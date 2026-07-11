@@ -38,6 +38,8 @@
 #include "../include/game/character_settings.h"
 #include "../include/game/game_state.h"
 #include "../include/game/macro_controller.h"
+#include "../include/game/character_hotswap.h"
+#include "../include/game/mission/mission_engine.h"
 #include "../include/game/collision_hook.h"
 #include "../include/game/final_memory_patch.h"
 #include "../include/game/savestate_hook.h"
@@ -497,6 +499,10 @@ void ResetRuntimeSettingsToDisplayDefaults() {
 }
 
 void ResetPracticeMatchSessionState(const char* reason) {
+    // Invalidate destination proof before any asynchronous consumer can observe
+    // the reset in progress. The lifecycle generation below is a second guard.
+    CharacterHotswap::InvalidateCompletedPracticeLoadReceipt();
+    Mission::Engine::NotifyPracticeSessionReset(reason);
     Framestep::CancelActiveState(reason ? reason : "practice match reset");
     ResetDisplayDataToDefaults();
     ResetRuntimeSettingsToDisplayDefaults();

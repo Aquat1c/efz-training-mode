@@ -1,5 +1,6 @@
 #include "../include/gui/custom_menu/renderer.h"
 #include "../include/gui/custom_menu/fonts.h"
+#include "../include/game/practice_menu/mission_title_screen.h" // title screens use our fonts
 #include "../include/gui/custom_menu/theme.h"
 #include "../include/gui/custom_menu/layout.h"
 #include "../include/gui/custom_menu/scale.h"
@@ -1759,7 +1760,9 @@ void MaybeRefreshOnOpen() {
 
 void PrepareFrame() {
     if (!ImGui::GetCurrentContext()) return;
-    if (!ImGuiImpl::IsVisible()) return;
+    // The title MISSIONS/TUTORIAL screens draw with the custom-menu fonts too,
+    // so the atlas must also be ready while they are up (menu closed).
+    if (!ImGuiImpl::IsVisible() && !PracticeMenu::TitleScreen::WantsDraw()) return;
 
     Scale::Update(Config::GetSettings().uiScale);
 

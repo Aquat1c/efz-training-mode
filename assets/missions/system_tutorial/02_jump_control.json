@@ -1,0 +1,20 @@
+{
+    "format": 1,
+    "type": "tutorial",
+    "category": "movement",
+    "difficulty": 1,
+    "name": "Jump Control",
+    "description": "Perform a neutral jump, a forward jump, and a backward jump. Direction changes the space your jump controls.",
+    "player": { "character": "nanase", "pos": { "x": -100.0, "y": 0.0 }, "meter": 3000 },
+    "dummy": { "character": "misuzu", "pos": { "x": 100.0, "y": 0.0 } },
+    "stage": 0,
+    "bgm": -1,
+    "steps": [
+        { "notation": "8", "ids": [4], "req": "move", "maxGap": 5760 },
+        { "notation": "9", "ids": [5], "req": "move", "maxGap": 5760 },
+        { "notation": "7", "ids": [6], "req": "move", "maxGap": 5760 }
+    ],
+    "failTimer": 5760,
+    "score": [{ "label": "Clear" }],
+    "hint": ["Let the character land between jumps. 8 is neutral, 9 is toward the opponent, and 7 is away."]
+}
