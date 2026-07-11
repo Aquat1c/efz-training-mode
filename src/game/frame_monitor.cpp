@@ -1,5 +1,6 @@
 #include "../include/game/frame_monitor.h"
 #include "../include/game/macro_controller.h"
+#include "../include/game/mission/mission_engine.h"
 #include "../include/game/auto_airtech.h"
 #include "../include/game/auto_jump.h"
 #include "../include/game/auto_action.h" // ensure ClearAllAutoActionTriggers declaration
@@ -1704,6 +1705,11 @@ void FrameDataMonitor() {
             // Outside actual gameplay -> only do lightweight logic
             if (currentPhase != GamePhase::Match) {
                 lightweightTick();
+                // The mission engine must tick in EVERY phase: it drives the
+                // char-select auto-drive for title mission picks and discards
+                // a live recording when the match is left. Its internals are
+                // phase-gated; the game snapshot is simply invalid here.
+                Mission::Engine::Tick();
                 prevMoveID1 = 0;
                 prevMoveID2 = 0;
                 skipHeavy = true;
@@ -2237,6 +2243,9 @@ void FrameDataMonitor() {
 
             // FrameBar: per-subframe sampler (cheap when toggle is off).
             FrameBar::TickSample();
+
+            // Mission engine: per-frame snapshot (move-IDs / combo) + inspector.
+            Mission::Engine::Tick();
 
             // Practice-only: Defense helpers
             // Always RG takes effect when enabled; Random RG mimics Revival's per-frame coin flip.

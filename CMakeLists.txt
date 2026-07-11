@@ -85,6 +85,8 @@ set(IMGUI_SOURCES
 file(GLOB ROOT_SOURCES "src/*.cpp")
 file(GLOB CORE_SOURCES "src/core/*.cpp")
 file(GLOB GAME_SOURCES "src/game/*.cpp")
+file(GLOB GAME_PRACTICE_MENU_SOURCES CONFIGURE_DEPENDS "src/game/practice_menu/*.cpp")
+file(GLOB GAME_MISSION_SOURCES CONFIGURE_DEPENDS "src/game/mission/*.cpp")
 file(GLOB GUI_SOURCES CONFIGURE_DEPENDS "src/gui/*.cpp")
 file(GLOB GUI_CUSTOM_MENU_SOURCES CONFIGURE_DEPENDS "src/gui/custom_menu/*.cpp")
 file(GLOB INPUT_SOURCES "src/input/*.cpp")
@@ -105,6 +107,8 @@ set(SOURCES
     ${ROOT_SOURCES}
     ${CORE_SOURCES}
     ${GAME_SOURCES}
+    ${GAME_PRACTICE_MENU_SOURCES}
+    ${GAME_MISSION_SOURCES}
     ${GUI_SOURCES}
     ${GUI_CUSTOM_MENU_SOURCES}
     ${INPUT_SOURCES}
@@ -197,6 +201,7 @@ target_include_directories(efz_training_mode PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/imgui
     ${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/imgui/backends
     ${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/minhook/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/json/single_include
 )
 
 set(EFZ_THIRD_PARTY_LINKS
@@ -272,3 +277,54 @@ set_target_properties(efz_training_mode PROPERTIES
 # This ensures all dependencies are statically linked
 set_property(TARGET efz_training_mode PROPERTY
     MSVC_RUNTIME_LIBRARY "${EFZ_MSVC_RUNTIME_LIBRARY}")
+
+include(CTest)
+if(BUILD_TESTING)
+    add_executable(character_hotswap_transition_tests
+        tests/character_hotswap_transition_tests.cpp)
+    target_include_directories(character_hotswap_transition_tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    set_property(TARGET character_hotswap_transition_tests PROPERTY
+        MSVC_RUNTIME_LIBRARY "${EFZ_MSVC_RUNTIME_LIBRARY}")
+    add_test(NAME character_hotswap_transition_tests
+             COMMAND character_hotswap_transition_tests)
+
+    add_executable(mission_sequence_policy_tests
+        tests/mission_sequence_policy_tests.cpp)
+    target_include_directories(mission_sequence_policy_tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    set_property(TARGET mission_sequence_policy_tests PROPERTY
+        MSVC_RUNTIME_LIBRARY "${EFZ_MSVC_RUNTIME_LIBRARY}")
+    add_test(NAME mission_sequence_policy_tests
+             COMMAND mission_sequence_policy_tests)
+
+    add_executable(mission_data_tests
+        tests/mission_data_tests.cpp
+        src/game/mission/mission_data.cpp)
+    target_include_directories(mission_data_tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/json/single_include)
+    set_property(TARGET mission_data_tests PROPERTY
+        MSVC_RUNTIME_LIBRARY "${EFZ_MSVC_RUNTIME_LIBRARY}")
+    add_test(NAME mission_data_tests COMMAND mission_data_tests)
+
+    add_executable(mission_movedata_union_tests
+        tests/mission_movedata_union_tests.cpp)
+    target_include_directories(mission_movedata_union_tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/json/single_include)
+    set_property(TARGET mission_movedata_union_tests PROPERTY
+        MSVC_RUNTIME_LIBRARY "${EFZ_MSVC_RUNTIME_LIBRARY}")
+    add_test(NAME mission_movedata_union_tests
+             COMMAND mission_movedata_union_tests
+                     "${CMAKE_CURRENT_SOURCE_DIR}/assets/movedata/nanase.json"
+                     "${CMAKE_CURRENT_SOURCE_DIR}/assets/movedata/nanase2.json")
+
+    find_program(EFZ_PYTHON_EXECUTABLE NAMES python python3)
+    if(EFZ_PYTHON_EXECUTABLE)
+        add_test(NAME mission_entity_manifest_check
+                 COMMAND "${EFZ_PYTHON_EXECUTABLE}"
+                         "${CMAKE_CURRENT_SOURCE_DIR}/tools/pat_movedata/entity_census.py"
+                         --check)
+    endif()
+endif()

@@ -16,6 +16,7 @@
 #include "../include/input/immediate_input.h"
 #include "../include/game/fm_commands.h" // Final Memory execution
 #include "../include/game/macro_controller.h" // Integrate macros with triggers
+#include "../include/game/mission/mission_engine.h"
 #include "../include/game/character_settings.h" // For authoritative character ID mapping
 #include "../include/game/frame_analysis.h" // For IsThrown/IsHitstun/IsLaunched helpers
 #include "../include/game/per_frame_sample.h" // Unified per-frame sample accessor
@@ -772,6 +773,7 @@ std::atomic<bool> g_tickIntegratedAutoActions{ true };
 void AutoActionsTick_Inline(short moveID1, short moveID2) {
     // Online mode hard stop (never operate in netplay)
     if (g_onlineModeActive.load()) return;
+    if (Mission::Engine::Demo::IsActive()) return;
     if (!AutoActionWorkPending()) return;
 
     // Static prevs to compute edges without extra memory traffic
@@ -3105,6 +3107,7 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
 // Back-compat wrapper now using unified per-frame sample to avoid extra memory reads
 void MonitorAutoActions() {
     static short s_prevMoveID1 = 0, s_prevMoveID2 = 0;
+    if (Mission::Engine::Demo::IsActive()) return;
     if (!AutoActionWorkPending()) {
         if (detailedLogging.load()) {
             static int s_lastIdleLogFrame = 0;
@@ -3124,6 +3127,7 @@ void MonitorAutoActions() {
 }
 
 void MonitorAutoActions(short moveID1, short moveID2, short prevMoveID1, short prevMoveID2) {
+    if (Mission::Engine::Demo::IsActive()) return;
     const PerFrameSample &sample = GetCurrentPerFrameSample();
     short m1  = (sample.moveID1     == moveID1     ? sample.moveID1     : moveID1);
     short m2  = (sample.moveID2     == moveID2     ? sample.moveID2     : moveID2);
@@ -4660,11 +4664,20 @@ void CancelAutoActionsAndMacros() {
         g_manualInputMask[p].store(0);
         g_injectImmediateOnly[p].store(false);
     }
+
+    // Queued motion injection is a separate owner from the atomics above. If it
+    // survives cancellation, input_hook can still overwrite immediate inputs
+    // (and can contaminate an exclusive mission demonstration).
+    p1QueueActive = false;
+    p2QueueActive = false;
+    p1QueueIndex = p2QueueIndex = 0;
+    p1FrameCounter = p2FrameCounter = 0;
+    p1CurrentMotionType = p2CurrentMotionType = MOTION_NONE;
     
     // Clear immediate input registers
     ImmediateInput::Clear(1);
     ImmediateInput::Clear(2);
-    LogOut("[CANCEL][INJECT] Cleared all input injection state and immediate registers", true);
+    LogOut("[CANCEL][INJECT] Cleared injection state, motion queues, and immediate registers", true);
 
     LogOut("[CANCEL] === END CancelAutoActionsAndMacros - Triggers remain enabled ===", true);
 }

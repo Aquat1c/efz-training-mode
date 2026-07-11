@@ -4,6 +4,7 @@
 #include "../../include/game/character_settings.h"
 #include "../../include/game/combo_overlay.h"
 #include "../../include/game/macro_controller.h"
+#include "../../include/game/mission/mission_engine.h"
 #include "../../include/game/practice_offsets.h"
 #include "../../include/game/practice_hotkey_gate.h"
 #include "../../include/utils/switch_players.h"
@@ -148,6 +149,9 @@ namespace {
         s_loadCount.fetch_add(1, std::memory_order_relaxed);
         RestoreModState();
         ComboOverlay::ResetState("revival savestate load");
+        // Mission recorder/runner resynchronize across the rollback (fresh
+        // recording attempt; a manual load mid-run resets the run).
+        Mission::Engine::NotifyStateLoaded();
         if (uintptr_t base = GetEFZBase()) {
             CharacterSettings::TickCharacterEnforcements(base, displayData);
         }

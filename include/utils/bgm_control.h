@@ -18,7 +18,11 @@ bool StopBGM(uintptr_t gameStatePtr);
 // Play a BGM track by index (calls game's play logic if possible)
 bool PlayBGM(uintptr_t gameStatePtr, unsigned short trackNumber);
 
-// Get current BGM slot/index
+// Get the active DirectSound buffer index. This is NOT the logical BGM track
+// number accepted by PlayBGM; it is useful only for buffer-level volume work.
+int GetBGMBufferIndex(uintptr_t gameStatePtr);
+
+// Legacy name retained for existing buffer-level callers.
 int GetBGMSlot(uintptr_t gameStatePtr);
 
 // Get current BGM volume (DirectSound scale)
@@ -32,7 +36,8 @@ void SetBGMSuppressed(bool suppress); // no-op
 bool IsBGMSuppressed();               // always false
 bool InstallBGMHook(uintptr_t efzBase);
 
-// Get/set last BGM track for toggling/resume
+// Get/set the last logical BGM track observed at playBackgroundMusic.
+// 0xFFFF means that no track has been observed in this process.
 unsigned short GetLastBgmTrack();
 void SetLastBgmTrack(unsigned short track);
 bool SetBGMVolumeViaGame(uintptr_t gameSystemPtr, int volumeLevel);

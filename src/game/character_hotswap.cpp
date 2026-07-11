@@ -1,4 +1,5 @@
 #include "../include/game/character_hotswap.h"
+#include "../include/game/character_hotswap_transition.h"
 
 #include "../include/core/constants.h"
 #include "../include/core/logger.h"
@@ -10,12 +11,15 @@
 #include "../include/game/frame_monitor.h"
 #include "../include/game/game_state.h"
 #include "../include/utils/bgm_control.h"
+#include "../include/utils/minhook_utils.h"
+#include "../include/utils/network.h"
 #include "../include/utils/pause_integration.h"
 #include "../include/utils/utilities.h"
 
 #include <windows.h>
 
 #include <atomic>
+#include <cstring>
 #include <sstream>
 #include <string>
 
@@ -24,11 +28,18 @@ namespace {
 
 constexpr uintptr_t RVA_SCREEN_TABLE = 0x00390110;
 constexpr uintptr_t RVA_INITIALIZE_SELECTED_CHARACTER = 0x003586B0;
+constexpr uintptr_t RVA_UPDATE_LOADING_SCREEN = 0x0036C790;
+constexpr uintptr_t RVA_CREATE_CHARACTER_FOR_PLAYER = 0x0036DA20;
+constexpr uintptr_t RVA_CLEANUP_PLAYER_OBJECT = 0x00001920;
 
+constexpr uint8_t SCREEN_TITLE = 0;
 constexpr uint8_t SCREEN_CHARACTER_SELECT = 1;
+constexpr uint8_t SCREEN_LOADING = 2;
+constexpr uint8_t SCREEN_BATTLE = 3;
 
 constexpr uintptr_t CS_SLOT_P1_PTR_OFFSET = 20;
 constexpr uintptr_t CS_SLOT_P2_PTR_OFFSET = 24;
+constexpr uintptr_t CS_LIFECYCLE_OFFSET = 44;
 constexpr uintptr_t CS_P1_STATE_OFFSET = 1182;
 constexpr uintptr_t CS_P2_STATE_OFFSET = 1183;
 constexpr uintptr_t CS_SELECTED_P1_CHAR_OFFSET = 1340;
@@ -38,8 +49,20 @@ constexpr uintptr_t CS_SELECTED_P2_COLOR_OFFSET = 1343;
 constexpr uintptr_t CS_STAGE_AUTOCONFIRM_TIMER_OFFSET = 1344;
 
 constexpr uintptr_t GAME_SYSTEM_STAGE_OFFSET = 3890;
+constexpr uintptr_t GAME_SYSTEM_SPECIAL_STAGE_OFFSET = 4928;
 constexpr uintptr_t GAME_SYSTEM_P1_CUSTOM_PALETTE_FLAG_OFFSET = 4920;
 constexpr uintptr_t GAME_SYSTEM_P2_CUSTOM_PALETTE_FLAG_OFFSET = 4924;
+constexpr uintptr_t GAME_SYSTEM_ACTIVE_PLAYER_OFFSET = 4930;
+constexpr uintptr_t GAME_SYSTEM_P1_CPU_OFFSET = 4931;
+constexpr uintptr_t GAME_SYSTEM_P2_CPU_OFFSET = 4932;
+constexpr uintptr_t GAME_SYSTEM_ROUND_COUNT_OFFSET = 4942;
+constexpr uintptr_t GAME_SYSTEM_MATCH_INDEX_OFFSET = 4952;
+constexpr uintptr_t GAME_SYSTEM_PROGRESSION_MASK_OFFSET = 4956;
+constexpr uintptr_t GAME_SYSTEM_PROGRESSION_FLAGS_OFFSET = 4960;
+constexpr uintptr_t GAME_SYSTEM_MODE_OFFSET = 4964;
+constexpr uintptr_t GAME_SYSTEM_CONTINUE_OFFSET = 4984;
+constexpr uintptr_t GAME_SYSTEM_NEXT_STAGE_OFFSET = 4985;
+constexpr uintptr_t GAME_SYSTEM_REPLAY_IO_MODE_OFFSET = 82563;
 
 constexpr uintptr_t CHARACTER_OBJECT_SELECT_ID_OFFSET = 141;
 constexpr uintptr_t CHARACTER_OBJECT_PALETTE_INDEX_OFFSET = 142;
@@ -48,13 +71,21 @@ constexpr int STAGE_COUNT = 23;
 constexpr int PALETTE_SLOT_COUNT = 6;
 constexpr int PALETTE_INDEX_FIRST = 0;
 constexpr int kWaitExitTicks = 900;
-constexpr int kWaitLoadingTicks = 450;
+constexpr int kWaitLoadingTicks = 1800;
 constexpr int kWaitMatchTicks = 1800;
 
 using InitializeSelectedCharacterFn = int(__thiscall*)(int* screenContext,
                                                        int characterSlotPtr,
                                                        int opponentSlotPtr,
                                                        char playerIndex);
+using UpdateLoadingScreenFn = char(__thiscall*)(int* loadingContext);
+using CreateCharacterForPlayerFn = int(__thiscall*)(int* loadingContext,
+                                                    int characterSlotPtr,
+                                                    int opponentSlotPtr,
+                                                    char playerIndex,
+                                                    char characterSelectId);
+using CleanupPlayerObjectFn = unsigned short*(__thiscall*)(unsigned short* character,
+                                                          char freeMemory);
 
 enum class RequestState : uint8_t {
     Idle = 0,
@@ -90,6 +121,25 @@ struct RawApplyResult {
     DWORD sehCode = 0;
 };
 
+struct RawDirectBootstrapResult {
+    uintptr_t loadingContext = 0;
+    uintptr_t gameSystem = 0;
+    uintptr_t p1SlotStorage = 0;
+    uintptr_t p2SlotStorage = 0;
+    uintptr_t p1Character = 0;
+    uintptr_t p2Character = 0;
+    uint8_t p1SelectIdReadback = 0xFF;
+    uint8_t p2SelectIdReadback = 0xFF;
+    uint8_t p1ColorReadback = PALETTE_INDEX_FIRST;
+    uint8_t p2ColorReadback = PALETTE_INDEX_FIRST;
+    DWORD p1CpuReadback = 0;
+    DWORD p2CpuReadback = 0;
+    DWORD sehCode = 0;
+    int failureStep = 0;
+    bool p1Created = false;
+    bool p2Created = false;
+};
+
 struct CustomPaletteLookupResult {
     bool valid = false;
     bool rootExists = false;
@@ -112,10 +162,26 @@ std::atomic<int> s_requestedP2CustomPalette{0};
 std::atomic<int> s_requestedStage{0};
 std::atomic<int> s_requestedBgmTrack{0};
 std::atomic<int> s_waitTicks{0};
+std::atomic<bool> s_directBootstrapInstalled{false};
+std::atomic<bool> s_directBootstrapPending{false};
+std::atomic<bool> s_loadingHandoffComplete{false};
+std::atomic<bool> s_completedReceiptAvailable{false};
+std::atomic<uint32_t> s_completedReceiptGeneration{0};
+std::atomic<int> s_completedP1Char{-1};
+std::atomic<int> s_completedP2Char{-1};
+std::atomic<int> s_completedP1Color{0};
+std::atomic<int> s_completedP2Color{0};
+std::atomic<int> s_completedP1Custom{0};
+std::atomic<int> s_completedP2Custom{0};
+std::atomic<int> s_completedStage{-1};
+std::atomic<int> s_completedBgm{-1};
+UpdateLoadingScreenFn s_originalUpdateLoadingScreen = nullptr;
+uintptr_t s_updateLoadingScreenTarget = 0;
 GamePhase s_lastActivePhase = GamePhase::Unknown;
+int s_characterSelectReadyTicks = 0;
 
-bool IsValidCharacterId(int charId) {
-    return charId >= CHAR_ID_AKANE && charId <= CHAR_ID_KANO;
+bool IsValidSelectId(int selectId) {
+    return selectId >= 0 && selectId < kCharacterSelectCount;
 }
 
 bool IsValidStageId(int stageId) {
@@ -504,6 +570,9 @@ void SetState(RequestState nextState, UiStatus nextStatus, const char* reason) {
     s_state.store(nextState, std::memory_order_release);
     s_uiStatus.store(nextStatus, std::memory_order_release);
     s_waitTicks.store(0, std::memory_order_relaxed);
+    if (nextState == RequestState::PendingApply) {
+        s_characterSelectReadyTicks = 0;
+    }
 
     std::ostringstream oss;
     oss << "[HOTSWAP] state " << RequestStateName(prevState)
@@ -524,6 +593,8 @@ void FailRequest(const char* reason, GamePhase currentPhase) {
         << " reason=" << (reason ? reason : "unknown");
     AppendRequestedReloadSummary(oss);
     LogOut(oss.str(), true);
+    s_directBootstrapPending.store(false, std::memory_order_release);
+    s_loadingHandoffComplete.store(false, std::memory_order_release);
     s_state.store(RequestState::Failed, std::memory_order_release);
     s_uiStatus.store(UiStatus::Failed, std::memory_order_release);
     s_waitTicks.store(0, std::memory_order_relaxed);
@@ -548,6 +619,105 @@ bool ResolveCharacterSelectContext(uintptr_t& outScreenContext, uintptr_t& outGa
     }
 
     return true;
+}
+
+void InvalidateCompletedReceipt() {
+    s_completedReceiptAvailable.store(false, std::memory_order_release);
+    s_completedReceiptGeneration.store(0, std::memory_order_release);
+}
+
+void PublishCompletedReceipt() {
+    s_completedP1Char.store(s_requestedP1Char.load(std::memory_order_relaxed),
+                            std::memory_order_relaxed);
+    s_completedP2Char.store(s_requestedP2Char.load(std::memory_order_relaxed),
+                            std::memory_order_relaxed);
+    s_completedP1Color.store(s_requestedP1Color.load(std::memory_order_relaxed),
+                             std::memory_order_relaxed);
+    s_completedP2Color.store(s_requestedP2Color.load(std::memory_order_relaxed),
+                             std::memory_order_relaxed);
+    s_completedP1Custom.store(s_requestedP1CustomPalette.load(std::memory_order_relaxed),
+                              std::memory_order_relaxed);
+    s_completedP2Custom.store(s_requestedP2CustomPalette.load(std::memory_order_relaxed),
+                              std::memory_order_relaxed);
+    s_completedStage.store(s_requestedStage.load(std::memory_order_relaxed),
+                           std::memory_order_relaxed);
+    s_completedBgm.store(s_requestedBgmTrack.load(std::memory_order_relaxed),
+                         std::memory_order_relaxed);
+    s_completedReceiptGeneration.store(GetRuntimeLifecycleGeneration(),
+                                       std::memory_order_relaxed);
+    s_completedReceiptAvailable.store(true, std::memory_order_release);
+}
+
+bool ResolveLoadingContext(uintptr_t& outLoadingContext,
+                           uintptr_t& outGameSystem,
+                           uintptr_t& outP1SlotStorage,
+                           uintptr_t& outP2SlotStorage,
+                           bool requireEmptySlots) {
+    outLoadingContext = 0;
+    outGameSystem = 0;
+    outP1SlotStorage = 0;
+    outP2SlotStorage = 0;
+
+    const uintptr_t base = GetEFZBase();
+    if (!base) {
+        return false;
+    }
+
+    const uintptr_t screenSlot = base + RVA_SCREEN_TABLE
+        + 4u * static_cast<uintptr_t>(SCREEN_LOADING);
+    uintptr_t globalGameSystem = 0;
+    uintptr_t graphicsSystem = 0;
+    uintptr_t inputSystem = 0;
+    uintptr_t soundSystem = 0;
+    uintptr_t p1Character = 0;
+    uintptr_t p2Character = 0;
+    if (!SafeReadMemory(screenSlot, &outLoadingContext, sizeof(outLoadingContext))
+        || !outLoadingContext
+        || !SafeReadMemory(outLoadingContext + CS_SLOT_P1_PTR_OFFSET,
+                           &outP1SlotStorage, sizeof(outP1SlotStorage))
+        || !outP1SlotStorage
+        || !SafeReadMemory(outLoadingContext + CS_SLOT_P2_PTR_OFFSET,
+                           &outP2SlotStorage, sizeof(outP2SlotStorage))
+        || !outP2SlotStorage
+        || !SafeReadMemory(outLoadingContext + 28, &outGameSystem, sizeof(outGameSystem))
+        || !outGameSystem
+        || !SafeReadMemory(base + EFZ_BASE_OFFSET_GAME_STATE,
+                           &globalGameSystem, sizeof(globalGameSystem))
+        || globalGameSystem != outGameSystem
+        || !SafeReadMemory(outLoadingContext + 32, &graphicsSystem, sizeof(graphicsSystem))
+        || !graphicsSystem
+        || !SafeReadMemory(outLoadingContext + 36, &inputSystem, sizeof(inputSystem))
+        || !inputSystem
+        || !SafeReadMemory(outLoadingContext + 40, &soundSystem, sizeof(soundSystem))
+        || !soundSystem
+        || !SafeReadMemory(outP1SlotStorage, &p1Character, sizeof(p1Character))
+        || !SafeReadMemory(outP2SlotStorage, &p2Character, sizeof(p2Character))) {
+        return false;
+    }
+
+    // Direct construction may only claim the two global owner slots after the
+    // previous battle's official cleanup has emptied them. Match-origin queues
+    // validate the static context first, then the Loading hook checks emptiness
+    // again after Battle has completed that cleanup.
+    return !requireEmptySlots || (p1Character == 0 && p2Character == 0);
+}
+
+bool CharacterSelectReadyForApply() {
+    uintptr_t screenContext = 0;
+    uintptr_t gameSystem = 0;
+    if (!ResolveCharacterSelectContext(screenContext, gameSystem)) {
+        return false;
+    }
+
+    uint8_t lifecycle = 0xFF;
+    uintptr_t p1SlotStorage = 0;
+    uintptr_t p2SlotStorage = 0;
+    return SafeReadMemory(screenContext + CS_LIFECYCLE_OFFSET, &lifecycle, sizeof(lifecycle))
+        && lifecycle == 0
+        && SafeReadMemory(screenContext + CS_SLOT_P1_PTR_OFFSET, &p1SlotStorage, sizeof(p1SlotStorage))
+        && p1SlotStorage != 0
+        && SafeReadMemory(screenContext + CS_SLOT_P2_PTR_OFFSET, &p2SlotStorage, sizeof(p2SlotStorage))
+        && p2SlotStorage != 0;
 }
 
 bool CaptureCharacterSelectPaletteSelection(PaletteSelection& outSelection) {
@@ -706,6 +876,13 @@ void SanitizeRequestedPaletteSelection(int p1CharId, int p2CharId, PaletteSelect
         selection.p2UseCustomPalette = false;
     }
 
+    // Character Select never allows an exact mirror to keep the same color;
+    // reproduce that rule when the screen is skipped so both palette mappings
+    // remain distinguishable and native resource selection sees a valid pair.
+    if (p1CharId == p2CharId && selection.p1Color == selection.p2Color) {
+        selection.p2Color = (selection.p2Color + 1) % PALETTE_SLOT_COUNT;
+    }
+
     ResolveRequestedCustomPalette(p1CharId, "P1", selection.p1Color, selection.p1UseCustomPalette);
     ResolveRequestedCustomPalette(p2CharId, "P2", selection.p2Color, selection.p2UseCustomPalette);
 
@@ -719,6 +896,281 @@ void SanitizeRequestedPaletteSelection(int p1CharId, int p2CharId, PaletteSelect
         << " custom=" << (selection.p1UseCustomPalette ? 1 : 0) << "/" << (selection.p2UseCustomPalette ? 1 : 0)
         << " changed=" << (!PaletteSelectionsEqual(originalSelection, selection) ? 1 : 0);
     LogOut(oss.str(), true);
+}
+
+bool SehCreateDirectPracticeFighters(RawDirectBootstrapResult& outResult) {
+    outResult = RawDirectBootstrapResult{};
+
+    __try {
+        const uintptr_t base = GetEFZBase();
+        if (!base) {
+            outResult.failureStep = 1;
+            return false;
+        }
+
+        outResult.failureStep = 2;
+        if (!ResolveLoadingContext(outResult.loadingContext,
+                                   outResult.gameSystem,
+                                   outResult.p1SlotStorage,
+                                   outResult.p2SlotStorage,
+                                   true)) {
+            return false;
+        }
+
+        uint8_t gameMode = 0xFF;
+        uintptr_t stageHelper = 0;
+        outResult.failureStep = 3;
+        if (!SafeReadMemory(outResult.gameSystem + GAME_SYSTEM_MODE_OFFSET,
+                            &gameMode, sizeof(gameMode))
+            || gameMode != static_cast<uint8_t>(GameMode::Practice)
+            || !SafeReadMemory(outResult.gameSystem + 4988,
+                               &stageHelper, sizeof(stageHelper))
+            || stageHelper != 0) {
+            return false;
+        }
+
+        // Character Select normally establishes these globals before Loading.
+        // Direct Practice loading must reproduce that small subset while
+        // explicitly leaving replay I/O disabled.
+        const uint8_t zeroByte = 0;
+        const uint8_t oneByte = 1;
+        const uint8_t twoRounds = 2;
+        const DWORD zeroDword = 0;
+        const uint8_t stage = static_cast<uint8_t>(s_requestedStage.load(std::memory_order_relaxed));
+        const DWORD p1Custom = s_requestedP1CustomPalette.load(std::memory_order_relaxed) ? 1u : 0u;
+        const DWORD p2Custom = s_requestedP2CustomPalette.load(std::memory_order_relaxed) ? 1u : 0u;
+        const uint8_t clearedInputs[12] = {};
+        outResult.failureStep = 4;
+        if (!SafeWriteMemory(outResult.gameSystem + 12, clearedInputs, sizeof(clearedInputs))
+            || !SafeWriteMemory(outResult.gameSystem + GAME_SYSTEM_ACTIVE_PLAYER_OFFSET,
+                                &zeroByte, sizeof(zeroByte))
+            || !SafeWriteMemory(outResult.gameSystem + GAME_SYSTEM_P1_CPU_OFFSET,
+                                &zeroByte, sizeof(zeroByte))
+            || !SafeWriteMemory(outResult.gameSystem + GAME_SYSTEM_P2_CPU_OFFSET,
+                                &oneByte, sizeof(oneByte))
+            || !SafeWriteMemory(outResult.gameSystem + GAME_SYSTEM_ROUND_COUNT_OFFSET,
+                                &twoRounds, sizeof(twoRounds))
+            || !SafeWriteMemory(outResult.gameSystem + GAME_SYSTEM_MATCH_INDEX_OFFSET,
+                                &oneByte, sizeof(oneByte))
+            || !SafeWriteMemory(outResult.gameSystem + GAME_SYSTEM_PROGRESSION_MASK_OFFSET,
+                                &zeroDword, sizeof(zeroDword))
+            || !SafeWriteMemory(outResult.gameSystem + GAME_SYSTEM_PROGRESSION_FLAGS_OFFSET,
+                                &zeroDword, sizeof(zeroDword))
+            || !SafeWriteMemory(outResult.gameSystem + GAME_SYSTEM_SPECIAL_STAGE_OFFSET,
+                                &zeroByte, sizeof(zeroByte))
+            || !SafeWriteMemory(outResult.gameSystem + GAME_SYSTEM_CONTINUE_OFFSET,
+                                &zeroByte, sizeof(zeroByte))
+            || !SafeWriteMemory(outResult.gameSystem + GAME_SYSTEM_NEXT_STAGE_OFFSET,
+                                &zeroByte, sizeof(zeroByte))
+            || !SafeWriteMemory(outResult.gameSystem + GAME_SYSTEM_REPLAY_IO_MODE_OFFSET,
+                                &zeroByte, sizeof(zeroByte))
+            || !SafeWriteMemory(outResult.gameSystem + GAME_SYSTEM_STAGE_OFFSET,
+                                &stage, sizeof(stage))
+            || !SafeWriteMemory(outResult.gameSystem + GAME_SYSTEM_P1_CUSTOM_PALETTE_FLAG_OFFSET,
+                                &p1Custom, sizeof(p1Custom))
+            || !SafeWriteMemory(outResult.gameSystem + GAME_SYSTEM_P2_CUSTOM_PALETTE_FLAG_OFFSET,
+                                &p2Custom, sizeof(p2Custom))) {
+            return false;
+        }
+
+        const auto createCharacter = reinterpret_cast<CreateCharacterForPlayerFn>(
+            base + RVA_CREATE_CHARACTER_FOR_PLAYER);
+        if (!createCharacter) {
+            outResult.failureStep = 5;
+            return false;
+        }
+
+        const int p1SelectId = s_requestedP1Char.load(std::memory_order_relaxed);
+        const int p2SelectId = s_requestedP2Char.load(std::memory_order_relaxed);
+        outResult.failureStep = 6;
+        createCharacter(reinterpret_cast<int*>(outResult.loadingContext),
+                        static_cast<int>(outResult.p1SlotStorage),
+                        static_cast<int>(outResult.p2SlotStorage),
+                        0,
+                        static_cast<char>(p1SelectId));
+        if (!SafeReadMemory(outResult.p1SlotStorage,
+                            &outResult.p1Character, sizeof(outResult.p1Character))
+            || !outResult.p1Character) {
+            return false;
+        }
+        outResult.p1Created = true;
+
+        outResult.failureStep = 7;
+        createCharacter(reinterpret_cast<int*>(outResult.loadingContext),
+                        static_cast<int>(outResult.p2SlotStorage),
+                        static_cast<int>(outResult.p1SlotStorage),
+                        1,
+                        static_cast<char>(p2SelectId));
+        if (!SafeReadMemory(outResult.p2SlotStorage,
+                            &outResult.p2Character, sizeof(outResult.p2Character))
+            || !outResult.p2Character) {
+            return false;
+        }
+        outResult.p2Created = true;
+
+        const uint8_t p1Color = static_cast<uint8_t>(
+            s_requestedP1Color.load(std::memory_order_relaxed));
+        const uint8_t p2Color = static_cast<uint8_t>(
+            s_requestedP2Color.load(std::memory_order_relaxed));
+        outResult.failureStep = 8;
+        if (!SafeWriteMemory(outResult.p1Character + CHARACTER_OBJECT_PALETTE_INDEX_OFFSET,
+                             &p1Color, sizeof(p1Color))
+            || !SafeWriteMemory(outResult.p2Character + CHARACTER_OBJECT_PALETTE_INDEX_OFFSET,
+                                &p2Color, sizeof(p2Color))
+            || !SafeReadMemory(outResult.p1Character + CHARACTER_OBJECT_SELECT_ID_OFFSET,
+                               &outResult.p1SelectIdReadback,
+                               sizeof(outResult.p1SelectIdReadback))
+            || !SafeReadMemory(outResult.p2Character + CHARACTER_OBJECT_SELECT_ID_OFFSET,
+                               &outResult.p2SelectIdReadback,
+                               sizeof(outResult.p2SelectIdReadback))
+            || !SafeReadMemory(outResult.p1Character + CHARACTER_OBJECT_PALETTE_INDEX_OFFSET,
+                               &outResult.p1ColorReadback,
+                               sizeof(outResult.p1ColorReadback))
+            || !SafeReadMemory(outResult.p2Character + CHARACTER_OBJECT_PALETTE_INDEX_OFFSET,
+                               &outResult.p2ColorReadback,
+                               sizeof(outResult.p2ColorReadback))
+            || !SafeReadMemory(outResult.p1Character + 164,
+                               &outResult.p1CpuReadback, sizeof(outResult.p1CpuReadback))
+            || !SafeReadMemory(outResult.p2Character + 164,
+                               &outResult.p2CpuReadback, sizeof(outResult.p2CpuReadback))) {
+            return false;
+        }
+
+        outResult.failureStep = 9;
+        return outResult.p1SelectIdReadback == static_cast<uint8_t>(p1SelectId)
+            && outResult.p2SelectIdReadback == static_cast<uint8_t>(p2SelectId)
+            && outResult.p1ColorReadback == p1Color
+            && outResult.p2ColorReadback == p2Color
+            && outResult.p1CpuReadback == 0
+            && outResult.p2CpuReadback == 1;
+    } __except (outResult.sehCode = GetExceptionCode(), EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+void CleanupPartialDirectPracticeFighters(const RawDirectBootstrapResult& result) {
+    __try {
+        const uintptr_t base = GetEFZBase();
+        if (!base) return;
+        const auto cleanupPlayer = reinterpret_cast<CleanupPlayerObjectFn>(
+            base + RVA_CLEANUP_PLAYER_OBJECT);
+        if (!cleanupPlayer) return;
+
+        uintptr_t p1Character = result.p1Character;
+        uintptr_t p2Character = result.p2Character;
+        if (!p1Character && result.failureStep >= 6 && result.p1SlotStorage) {
+            SafeReadMemory(result.p1SlotStorage, &p1Character, sizeof(p1Character));
+        }
+        if (!p2Character && result.failureStep >= 7 && result.p2SlotStorage) {
+            SafeReadMemory(result.p2SlotStorage, &p2Character, sizeof(p2Character));
+        }
+
+        if (p2Character && result.failureStep >= 7) {
+            cleanupPlayer(reinterpret_cast<unsigned short*>(p2Character), 1);
+            const uintptr_t zero = 0;
+            SafeWriteMemory(result.p2SlotStorage, &zero, sizeof(zero));
+            SafeWriteMemory(result.loadingContext + 16, &zero, sizeof(zero));
+        }
+        if (p1Character && result.failureStep >= 6) {
+            cleanupPlayer(reinterpret_cast<unsigned short*>(p1Character), 1);
+            const uintptr_t zero = 0;
+            SafeWriteMemory(result.p1SlotStorage, &zero, sizeof(zero));
+            SafeWriteMemory(result.loadingContext + 12, &zero, sizeof(zero));
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {}
+}
+
+bool PracticeLoadingIsMissingFighters(int* loadingContext) {
+    if (!loadingContext) return false;
+    uintptr_t gameSystem = 0;
+    uintptr_t p1SlotStorage = 0;
+    uintptr_t p2SlotStorage = 0;
+    uintptr_t p1Character = 0;
+    uintptr_t p2Character = 0;
+    uint8_t gameMode = 0xFF;
+    const uintptr_t context = reinterpret_cast<uintptr_t>(loadingContext);
+    return SafeReadMemory(context + 28, &gameSystem, sizeof(gameSystem))
+        && gameSystem
+        && SafeReadMemory(gameSystem + GAME_SYSTEM_MODE_OFFSET, &gameMode, sizeof(gameMode))
+        && gameMode == static_cast<uint8_t>(GameMode::Practice)
+        && SafeReadMemory(context + CS_SLOT_P1_PTR_OFFSET, &p1SlotStorage, sizeof(p1SlotStorage))
+        && p1SlotStorage
+        && SafeReadMemory(context + CS_SLOT_P2_PTR_OFFSET, &p2SlotStorage, sizeof(p2SlotStorage))
+        && p2SlotStorage
+        && SafeReadMemory(p1SlotStorage, &p1Character, sizeof(p1Character))
+        && SafeReadMemory(p2SlotStorage, &p2Character, sizeof(p2Character))
+        && (!p1Character || !p2Character);
+}
+
+char __fastcall HookedUpdateLoadingScreen(int* loadingContext, void* /*edx*/) {
+    if (!s_directBootstrapPending.exchange(false, std::memory_order_acq_rel)) {
+        // Practice's native setup has no fighter-construction branch. If an
+        // interrupted/stale direct transition ever reaches Loading with empty
+        // slots, fail closed to Character Select instead of allowing the common
+        // setup tail to dereference null fighters.
+        if (PracticeLoadingIsMissingFighters(loadingContext)) {
+            LogOut("[HOTSWAP][DIRECT] guarded Practice Loading with empty fighter slot; returning to Character Select", true);
+            return static_cast<char>(SCREEN_CHARACTER_SELECT);
+        }
+        const char nextScreen = s_originalUpdateLoadingScreen
+            ? s_originalUpdateLoadingScreen(loadingContext)
+            : static_cast<char>(SCREEN_CHARACTER_SELECT);
+        const RequestState state = s_state.load(std::memory_order_acquire);
+        if (nextScreen == 3 && (state == RequestState::AwaitingLoading ||
+                               state == RequestState::AwaitingMatch)) {
+            s_loadingHandoffComplete.store(true, std::memory_order_release);
+        }
+        return nextScreen;
+    }
+
+    if (IsNetplaySuspendActive() || IsNetplaySessionActive()) {
+        FailRequest("direct Loading canceled because netplay became active", GamePhase::Loading);
+        return static_cast<char>(SCREEN_CHARACTER_SELECT);
+    }
+
+    RawDirectBootstrapResult result{};
+    if (!SehCreateDirectPracticeFighters(result)) {
+        CleanupPartialDirectPracticeFighters(result);
+        std::ostringstream oss;
+        oss << "[HOTSWAP][DIRECT] Loading bootstrap failed"
+            << " step=" << result.failureStep
+            << " seh=" << result.sehCode
+            << " loading=" << Hex(result.loadingContext)
+            << " gs=" << Hex(result.gameSystem)
+            << " slots=" << Hex(result.p1SlotStorage) << "/" << Hex(result.p2SlotStorage)
+            << " chars=" << Hex(result.p1Character) << "/" << Hex(result.p2Character)
+            << "; returning to Character Select fallback";
+        LogOut(oss.str(), true);
+        SetState(RequestState::AwaitingCharacterSelect,
+                 UiStatus::Exiting,
+                 "direct Loading bootstrap failed; selector fallback");
+        return static_cast<char>(SCREEN_CHARACTER_SELECT);
+    }
+
+    {
+        std::ostringstream oss;
+        oss << "[HOTSWAP][DIRECT] fighters created on EFZ Loading thread"
+            << " loading=" << Hex(result.loadingContext)
+            << " gs=" << Hex(result.gameSystem)
+            << " p1=" << GetCharacterSelectName(result.p1SelectIdReadback)
+            << "(" << static_cast<int>(result.p1SelectIdReadback) << ")"
+            << " p2=" << GetCharacterSelectName(result.p2SelectIdReadback)
+            << "(" << static_cast<int>(result.p2SelectIdReadback) << ")"
+            << " palette=" << (static_cast<int>(result.p1ColorReadback) + 1)
+            << "/" << (static_cast<int>(result.p2ColorReadback) + 1)
+            << " cpu=" << result.p1CpuReadback << "/" << result.p2CpuReadback;
+        LogOut(oss.str(), true);
+    }
+
+    const char nextScreen = s_originalUpdateLoadingScreen
+        ? s_originalUpdateLoadingScreen(loadingContext)
+        : static_cast<char>(SCREEN_CHARACTER_SELECT);
+    if (nextScreen != 3) {
+        FailRequest("native Loading did not transition to Battle", GamePhase::Loading);
+    } else {
+        s_loadingHandoffComplete.store(true, std::memory_order_release);
+    }
+    return nextScreen;
 }
 
 bool SehApplySelections(int p1CharId,
@@ -740,6 +1192,12 @@ bool SehApplySelections(int p1CharId,
         if (!ResolveCharacterSelectContext(outResult.screenContext, outResult.gameSystem)) {
             return false;
         }
+
+        // Prevent a held title/menu input from racing the synthetic selection
+        // on the same frame. Character Select repolls these bytes normally on
+        // later frames, after it has already entered the stage auto-confirm path.
+        const uint8_t clearedInputs[12] = {};
+        SafeWriteMemory(outResult.gameSystem + 12, clearedInputs, sizeof(clearedInputs));
 
         int p1SlotStorage = 0;
         int p2SlotStorage = 0;
@@ -840,7 +1298,7 @@ void LogQueuedRequest(GamePhase phase,
                       int p1CharId,
                       int p2CharId,
                       int stageId,
-                      unsigned short bgmTrack,
+                      int bgmTrack,
                       const PaletteSelection& paletteSelection) {
     std::ostringstream oss;
     oss << "[HOTSWAP] queued reload"
@@ -858,7 +1316,7 @@ void LogQueuedRequest(GamePhase phase,
 }
 
 void CompleteReload(GamePhase currentPhase) {
-    const unsigned short bgmTrack = static_cast<unsigned short>(s_requestedBgmTrack.load(std::memory_order_relaxed));
+    const int requestedBgmTrack = s_requestedBgmTrack.load(std::memory_order_relaxed);
     const uintptr_t gameStatePtr = GetGameStatePtr();
     {
         std::ostringstream oss;
@@ -870,18 +1328,21 @@ void CompleteReload(GamePhase currentPhase) {
         AppendRequestedReloadSummary(oss);
         LogOut(oss.str(), true);
     }
-    if (gameStatePtr) {
-        const int liveBgmTrack = GetBGMSlot(gameStatePtr);
+    if (gameStatePtr && requestedBgmTrack >= 0) {
+        const int liveBgmBuffer = GetBGMBufferIndex(gameStatePtr);
+        const unsigned short bgmTrack = static_cast<unsigned short>(requestedBgmTrack);
         if (PlayBGM(gameStatePtr, bgmTrack)) {
-            LogOut("[HOTSWAP] applied BGM override track=" + std::to_string(bgmTrack), true);
+            LogOut("[HOTSWAP] applied BGM override track=" + std::to_string(requestedBgmTrack), true);
         } else {
             std::ostringstream oss;
-            oss << "[HOTSWAP] failed to apply BGM override track=" << bgmTrack
-                << " liveTrackBeforeCall=" << liveBgmTrack;
+            oss << "[HOTSWAP] failed to apply BGM override track=" << requestedBgmTrack
+                << " liveBufferBeforeCall=" << liveBgmBuffer;
             LogOut(oss.str(), true);
         }
-    } else {
+    } else if (!gameStatePtr) {
         LogOut("[HOTSWAP] skipped BGM override because game state pointer was unavailable", true);
+    } else {
+        LogOut("[HOTSWAP] keeping native stage BGM (mission bgm=-1)", true);
     }
 
     InvalidateGameStatePtrCache();
@@ -894,6 +1355,9 @@ void CompleteReload(GamePhase currentPhase) {
     LogOut("[HOTSWAP] applied immediate session reset before lifecycle resync", true);
     RequestRuntimeLifecycleResync("character hotswap reload complete");
     LogOut("[HOTSWAP] reload completed and lifecycle resync requested", true);
+    PublishCompletedReceipt();
+    s_directBootstrapPending.store(false, std::memory_order_release);
+    s_loadingHandoffComplete.store(false, std::memory_order_release);
     s_state.store(RequestState::Idle, std::memory_order_release);
     s_uiStatus.store(UiStatus::Completed, std::memory_order_release);
     s_waitTicks.store(0, std::memory_order_relaxed);
@@ -901,6 +1365,230 @@ void CompleteReload(GamePhase currentPhase) {
 }
 
 } // namespace
+
+bool InstallDirectPracticeBootstrap() {
+    if (s_directBootstrapInstalled.load(std::memory_order_acquire)) {
+        return true;
+    }
+
+    const uintptr_t base = GetEFZBase();
+    if (!base) {
+        return false;
+    }
+
+    const uintptr_t updateTarget = base + RVA_UPDATE_LOADING_SCREEN;
+    const uintptr_t createTarget = base + RVA_CREATE_CHARACTER_FOR_PLAYER;
+    const uintptr_t cleanupTarget = base + RVA_CLEANUP_PLAYER_OBJECT;
+    static const uint8_t kExpectedUpdate[] = {0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x4C};
+    static const uint8_t kExpectedCreate[] = {0x55, 0x8B, 0xEC, 0x81, 0xEC, 0xD0, 0x00, 0x00, 0x00};
+    static const uint8_t kExpectedCleanup[] = {0x55, 0x8B, 0xEC, 0x51, 0x89, 0x4D, 0xFC};
+    uint8_t updateBytes[sizeof(kExpectedUpdate)] = {};
+    uint8_t createBytes[sizeof(kExpectedCreate)] = {};
+    uint8_t cleanupBytes[sizeof(kExpectedCleanup)] = {};
+    if (!SafeReadMemory(updateTarget, updateBytes, sizeof(updateBytes))
+        || std::memcmp(updateBytes, kExpectedUpdate, sizeof(kExpectedUpdate)) != 0
+        || !SafeReadMemory(createTarget, createBytes, sizeof(createBytes))
+        || std::memcmp(createBytes, kExpectedCreate, sizeof(kExpectedCreate)) != 0
+        || !SafeReadMemory(cleanupTarget, cleanupBytes, sizeof(cleanupBytes))
+        || std::memcmp(cleanupBytes, kExpectedCleanup, sizeof(kExpectedCleanup)) != 0) {
+        LogOut("[HOTSWAP][DIRECT] executable signatures did not match; Character Select fallback retained", true);
+        return false;
+    }
+
+    bool alreadyCreated = false;
+    if (!MinHookUtils::CreateHook(reinterpret_cast<void*>(updateTarget),
+                                  reinterpret_cast<void*>(&HookedUpdateLoadingScreen),
+                                  reinterpret_cast<void**>(&s_originalUpdateLoadingScreen),
+                                  "[HOTSWAP][DIRECT]",
+                                  "updateLoadingScreen",
+                                  &alreadyCreated)
+        || alreadyCreated
+        || !s_originalUpdateLoadingScreen) {
+        LogOut("[HOTSWAP][DIRECT] Loading hook is already owned or unavailable; selector fallback retained", true);
+        s_originalUpdateLoadingScreen = nullptr;
+        return false;
+    }
+    if (!MinHookUtils::EnableHook(reinterpret_cast<void*>(updateTarget),
+                                  "[HOTSWAP][DIRECT]",
+                                  "updateLoadingScreen")) {
+        MinHookUtils::RemoveHook(reinterpret_cast<void*>(updateTarget),
+                                 "[HOTSWAP][DIRECT]",
+                                 "updateLoadingScreen");
+        s_originalUpdateLoadingScreen = nullptr;
+        return false;
+    }
+
+    s_updateLoadingScreenTarget = updateTarget;
+    s_directBootstrapInstalled.store(true, std::memory_order_release);
+    LogOut("[HOTSWAP][DIRECT] native Practice Loading bootstrap installed", true);
+    return true;
+}
+
+void UninstallDirectPracticeBootstrap() {
+    s_directBootstrapPending.store(false, std::memory_order_release);
+    s_loadingHandoffComplete.store(false, std::memory_order_release);
+    if (s_directBootstrapInstalled.exchange(false, std::memory_order_acq_rel)
+        && s_updateLoadingScreenTarget) {
+        MinHookUtils::DisableHook(reinterpret_cast<void*>(s_updateLoadingScreenTarget),
+                                  "[HOTSWAP][DIRECT]",
+                                  "updateLoadingScreen");
+        MinHookUtils::RemoveHook(reinterpret_cast<void*>(s_updateLoadingScreenTarget),
+                                 "[HOTSWAP][DIRECT]",
+                                 "updateLoadingScreen");
+    }
+    s_updateLoadingScreenTarget = 0;
+    s_originalUpdateLoadingScreen = nullptr;
+}
+
+bool QueueDirectPracticeLoad(int p1SelectId,
+                             int p2SelectId,
+                             int stageId,
+                             const PaletteSelection& requestedPaletteSelection,
+                             int bgmTrack) {
+    if (!IsValidSelectId(p1SelectId) || !IsValidSelectId(p2SelectId)
+        || !IsValidStageId(stageId) || bgmTrack < -1 || bgmTrack > 0xFFFF) {
+        LogOut("[HOTSWAP][DIRECT] request rejected: mission selection is out of range", true);
+        return false;
+    }
+    if (!s_directBootstrapInstalled.load(std::memory_order_acquire)) {
+        LogOut("[HOTSWAP][DIRECT] request unavailable: Loading hook is not installed", true);
+        return false;
+    }
+    if (IsNetplaySuspendActive() || IsNetplaySessionActive()) {
+        LogOut("[HOTSWAP][DIRECT] request rejected while netplay suspension/session is active", true);
+        return false;
+    }
+    if (IsActiveState(s_state.load(std::memory_order_acquire))) {
+        LogOut("[HOTSWAP][DIRECT] request ignored because another reload is active", true);
+        return false;
+    }
+
+    const GamePhase phase = GetCurrentGamePhase();
+    uint8_t rawScreen = 0xFF;
+    const uintptr_t base = GetEFZBase();
+    if (base) {
+        SafeReadMemory(base + EFZ_BASE_OFFSET_SCREEN_STATE,
+                       &rawScreen, sizeof(rawScreen));
+    }
+    const bool fromTitle = rawScreen == SCREEN_TITLE
+        && (phase == GamePhase::Menu || phase == GamePhase::Unknown);
+    const bool fromMatch = rawScreen == SCREEN_BATTLE && phase == GamePhase::Match
+        && GetCurrentGameMode() == GameMode::Practice
+        && CanRequestFrontendExit(FrontendExitTarget::Loading);
+    if (!fromTitle && !fromMatch) {
+        LogOut("[HOTSWAP][DIRECT] request unavailable outside Title/local Practice Match", true);
+        return false;
+    }
+
+    uintptr_t loadingContext = 0;
+    uintptr_t gameSystem = 0;
+    uintptr_t p1SlotStorage = 0;
+    uintptr_t p2SlotStorage = 0;
+    if (!ResolveLoadingContext(loadingContext,
+                               gameSystem,
+                               p1SlotStorage,
+                               p2SlotStorage,
+                               fromTitle)) {
+        LogOut("[HOTSWAP][DIRECT] Loading context is not ready/empty; selector fallback retained", true);
+        return false;
+    }
+
+    PaletteSelection paletteSelection = requestedPaletteSelection;
+    SanitizeRequestedPaletteSelection(p1SelectId, p2SelectId, paletteSelection);
+    InvalidateCompletedReceipt();
+    s_requestedP1Char.store(p1SelectId, std::memory_order_relaxed);
+    s_requestedP2Char.store(p2SelectId, std::memory_order_relaxed);
+    s_requestedP1Color.store(paletteSelection.p1Color, std::memory_order_relaxed);
+    s_requestedP2Color.store(paletteSelection.p2Color, std::memory_order_relaxed);
+    s_requestedP1CustomPalette.store(paletteSelection.p1UseCustomPalette ? 1 : 0,
+                                     std::memory_order_relaxed);
+    s_requestedP2CustomPalette.store(paletteSelection.p2UseCustomPalette ? 1 : 0,
+                                     std::memory_order_relaxed);
+    s_requestedStage.store(stageId, std::memory_order_relaxed);
+    s_requestedBgmTrack.store(bgmTrack, std::memory_order_relaxed);
+    s_directBootstrapPending.store(true, std::memory_order_release);
+    s_loadingHandoffComplete.store(false, std::memory_order_release);
+
+    std::ostringstream oss;
+    oss << "[HOTSWAP][DIRECT] queued Practice Loading"
+        << " origin=" << (fromMatch ? "match" : "title")
+        << " p1=" << GetCharacterSelectName(p1SelectId) << "(" << p1SelectId << ")"
+        << " p2=" << GetCharacterSelectName(p2SelectId) << "(" << p2SelectId << ")"
+        << " stage=" << stageId
+        << " bgm=" << bgmTrack
+        << " palette=" << (paletteSelection.p1Color + 1)
+        << "/" << (paletteSelection.p2Color + 1)
+        << " loading=" << Hex(loadingContext);
+    LogOut(oss.str(), true);
+
+    if (fromMatch) {
+        SetState(RequestState::PendingExitRequest,
+                 UiStatus::Exiting,
+                 "leaving match through native cleanup for direct Loading");
+    } else {
+        SetState(RequestState::AwaitingLoading,
+                 UiStatus::WaitingLoading,
+                 "title will hand off directly to Loading");
+    }
+    return true;
+}
+
+bool IsDirectPracticeLoadPending() {
+    return s_directBootstrapPending.load(std::memory_order_acquire);
+}
+
+void CancelDirectPracticeLoad(const char* reason) {
+    const bool hadPending =
+        s_directBootstrapPending.exchange(false, std::memory_order_acq_rel);
+    s_loadingHandoffComplete.store(false, std::memory_order_release);
+    if (!hadPending) {
+        return;
+    }
+    s_state.store(RequestState::Idle, std::memory_order_release);
+    s_uiStatus.store(UiStatus::Ready, std::memory_order_release);
+    s_waitTicks.store(0, std::memory_order_relaxed);
+    LogOut(std::string("[HOTSWAP][DIRECT] pending title load canceled: ")
+           + (reason ? reason : "unspecified"), true);
+}
+
+bool ConsumeCompletedPracticeLoad(int p1SelectId,
+                                  int p2SelectId,
+                                  int stageId,
+                                  const PaletteSelection& paletteSelection,
+                                  int bgmTrack) {
+    if (!s_completedReceiptAvailable.exchange(false, std::memory_order_acq_rel)) {
+        return false;
+    }
+    const uint32_t receiptGeneration =
+        s_completedReceiptGeneration.exchange(0, std::memory_order_acq_rel);
+    const uint32_t currentGeneration = GetRuntimeLifecycleGeneration();
+    const bool generationMatches =
+        CharacterHotswap::Transition::ReceiptGenerationMatches(
+            receiptGeneration, currentGeneration);
+    const bool matches = generationMatches &&
+        s_completedP1Char.load(std::memory_order_relaxed) == p1SelectId &&
+        s_completedP2Char.load(std::memory_order_relaxed) == p2SelectId &&
+        s_completedP1Color.load(std::memory_order_relaxed) == paletteSelection.p1Color &&
+        s_completedP2Color.load(std::memory_order_relaxed) == paletteSelection.p2Color &&
+        s_completedP1Custom.load(std::memory_order_relaxed) ==
+            (paletteSelection.p1UseCustomPalette ? 1 : 0) &&
+        s_completedP2Custom.load(std::memory_order_relaxed) ==
+            (paletteSelection.p2UseCustomPalette ? 1 : 0) &&
+        s_completedStage.load(std::memory_order_relaxed) == stageId &&
+        s_completedBgm.load(std::memory_order_relaxed) == bgmTrack;
+    std::ostringstream receiptLog;
+    receiptLog << "[HOTSWAP] completed Practice receipt "
+               << (matches ? "accepted" : "rejected")
+               << " generation=" << receiptGeneration
+               << "/" << currentGeneration
+               << " tuple=" << (generationMatches ? "checked" : "stale");
+    LogOut(receiptLog.str(), true);
+    return matches;
+}
+
+void InvalidateCompletedPracticeLoadReceipt() {
+    InvalidateCompletedReceipt();
+}
 
 const char* GetDisplayNameForSelectId(int selectId) {
     return GetCharacterSelectName(selectId);
@@ -911,17 +1599,36 @@ const char* GetResourceNameForSelectId(int selectId) {
     return resourceName ? resourceName : "unknown";
 }
 
-bool QueueReload(int p1CharId, int p2CharId, int stageId, unsigned short bgmTrack) {
+int GetSelectIdForResourceName(const char* resourceName) {
+    if (!resourceName || !resourceName[0]) {
+        return -1;
+    }
+
+    for (int selectId = 0; selectId < kCharacterSelectCount; ++selectId) {
+        const char* candidate = GetCharacterResourceName(selectId);
+        if (candidate && _stricmp(candidate, resourceName) == 0) {
+            return selectId;
+        }
+    }
+    return -1;
+}
+
+bool QueueReload(int p1SelectId, int p2SelectId, int stageId, int bgmTrack) {
     PaletteSelection paletteSelection{};
     if (!ReadCurrentPaletteSelection(paletteSelection)) {
         LogOut("[HOTSWAP] failed to capture current palette selection; defaulting to slot 1 without custom palettes", true);
     }
-    return QueueReload(p1CharId, p2CharId, stageId, paletteSelection, bgmTrack);
+    return QueueReload(p1SelectId, p2SelectId, stageId, paletteSelection, bgmTrack);
 }
 
-bool QueueReload(int p1CharId, int p2CharId, int stageId, const PaletteSelection& requestedPaletteSelection, unsigned short bgmTrack) {
-    if (!IsValidCharacterId(p1CharId) || !IsValidCharacterId(p2CharId) || !IsValidStageId(stageId)) {
+bool QueueReload(int p1SelectId, int p2SelectId, int stageId, const PaletteSelection& requestedPaletteSelection, int bgmTrack) {
+    if (!IsValidSelectId(p1SelectId) || !IsValidSelectId(p2SelectId)
+        || !IsValidStageId(stageId) || bgmTrack < -1 || bgmTrack > 0xFFFF) {
         FailRequest("menu selection out of range", GetCurrentGamePhase());
+        return false;
+    }
+    if (IsNetplaySuspendActive() || IsNetplaySessionActive()) {
+        FailRequest("reload is unavailable while netplay is active", GetCurrentGamePhase());
         return false;
     }
 
@@ -944,18 +1651,21 @@ bool QueueReload(int p1CharId, int p2CharId, int stageId, const PaletteSelection
     }
 
     PaletteSelection paletteSelection = requestedPaletteSelection;
-    SanitizeRequestedPaletteSelection(p1CharId, p2CharId, paletteSelection);
+    SanitizeRequestedPaletteSelection(p1SelectId, p2SelectId, paletteSelection);
+    InvalidateCompletedReceipt();
 
-    s_requestedP1Char.store(p1CharId, std::memory_order_relaxed);
-    s_requestedP2Char.store(p2CharId, std::memory_order_relaxed);
+    s_requestedP1Char.store(p1SelectId, std::memory_order_relaxed);
+    s_requestedP2Char.store(p2SelectId, std::memory_order_relaxed);
     s_requestedP1Color.store(static_cast<int>(paletteSelection.p1Color), std::memory_order_relaxed);
     s_requestedP2Color.store(static_cast<int>(paletteSelection.p2Color), std::memory_order_relaxed);
     s_requestedP1CustomPalette.store(paletteSelection.p1UseCustomPalette ? 1 : 0, std::memory_order_relaxed);
     s_requestedP2CustomPalette.store(paletteSelection.p2UseCustomPalette ? 1 : 0, std::memory_order_relaxed);
     s_requestedStage.store(stageId, std::memory_order_relaxed);
-    s_requestedBgmTrack.store(static_cast<int>(bgmTrack), std::memory_order_relaxed);
+    s_requestedBgmTrack.store(bgmTrack, std::memory_order_relaxed);
+    s_directBootstrapPending.store(false, std::memory_order_release);
+    s_loadingHandoffComplete.store(false, std::memory_order_release);
 
-    LogQueuedRequest(currentPhase, currentMode, p1CharId, p2CharId, stageId, bgmTrack, paletteSelection);
+    LogQueuedRequest(currentPhase, currentMode, p1SelectId, p2SelectId, stageId, bgmTrack, paletteSelection);
 
     if (currentPhase == GamePhase::Match) {
         SetState(RequestState::PendingExitRequest, UiStatus::Exiting, "leaving match for character select");
@@ -987,7 +1697,25 @@ void Tick(GamePhase currentPhase, GameMode /*currentMode*/) {
     switch (state) {
         case RequestState::PendingExitRequest:
             if (currentPhase != GamePhase::Match) {
-                SetState(RequestState::AwaitingCharacterSelect, UiStatus::Exiting, "match already leaving");
+                if (s_directBootstrapPending.load(std::memory_order_acquire)) {
+                    SetState(RequestState::AwaitingLoading,
+                             UiStatus::WaitingLoading,
+                             "match already leaving for direct Loading");
+                } else {
+                    SetState(RequestState::AwaitingCharacterSelect,
+                             UiStatus::Exiting,
+                             "match already leaving");
+                }
+                return;
+            }
+            if (s_directBootstrapPending.load(std::memory_order_acquire)) {
+                if (!RequestFrontendExit(FrontendExitTarget::Loading)) {
+                    FailRequest("RequestFrontendExit(Loading) failed", currentPhase);
+                    return;
+                }
+                SetState(RequestState::AwaitingLoading,
+                         UiStatus::WaitingLoading,
+                         "native battle cleanup requested for direct Loading");
                 return;
             }
             if (!RequestFrontendExit(FrontendExitTarget::CharacterSelect)) {
@@ -1012,6 +1740,23 @@ void Tick(GamePhase currentPhase, GameMode /*currentMode*/) {
                 if (waited > kWaitExitTicks) {
                     FailRequest("character select disappeared before apply", currentPhase);
                 }
+                return;
+            }
+            // The global phase changes before Character Select has necessarily
+            // completed its own +44 lifecycle initialization. Injecting before
+            // that initializer runs is lost when EFZ resets +1182/+1183 and the
+            // selection timers, leaving the player at the grid until A is
+            // pressed manually. Require two observed ready ticks so the write
+            // lands strictly after initialization.
+            if (!CharacterSelectReadyForApply()) {
+                s_characterSelectReadyTicks = 0;
+                return;
+            }
+            ++s_characterSelectReadyTicks;
+            if (s_characterSelectReadyTicks == 1) {
+                LogOut("[HOTSWAP] character select lifecycle ready; waiting one stable tick before injection", true);
+            }
+            if (s_characterSelectReadyTicks < 2) {
                 return;
             }
             {
@@ -1064,21 +1809,53 @@ void Tick(GamePhase currentPhase, GameMode /*currentMode*/) {
             return;
 
         case RequestState::AwaitingLoading:
-            if (currentPhase == GamePhase::Loading) {
+            {
+            using namespace CharacterHotswap::Transition;
+            const ObservedPhase observed = currentPhase == GamePhase::CharacterSelect
+                ? ObservedPhase::CharacterSelect
+                : currentPhase == GamePhase::Loading ? ObservedPhase::Loading
+                : currentPhase == GamePhase::Match ? ObservedPhase::Match
+                : ObservedPhase::Other;
+            const Decision decision = Decide(
+                WaitState::AwaitingLoading, observed,
+                s_directBootstrapPending.load(std::memory_order_acquire),
+                s_loadingHandoffComplete.load(std::memory_order_acquire));
+            if (decision == Decision::DirectFallback) {
+                s_directBootstrapPending.store(false, std::memory_order_release);
+                SetState(RequestState::PendingApply,
+                         UiStatus::Applying,
+                         "direct cleanup returned to Character Select; applying fallback");
+                return;
+            }
+            if (decision == Decision::LoadingObserved) {
                 SetState(RequestState::AwaitingMatch, UiStatus::WaitingMatch, "loading screen reached");
                 return;
             }
-            if (currentPhase == GamePhase::Match) {
+            if (decision == Decision::Complete) {
                 CompleteReload(currentPhase);
                 return;
             }
+            // A request originating in Match remains in the OLD Match for many
+            // ticks while native battle cleanup runs. Treating that phase as the
+            // destination clears s_directBootstrapPending before Loading gets a
+            // chance to recreate the destroyed fighters. Completion is legal
+            // only after this request has observed Loading, or the game-thread
+            // Loading hook has published a successful handoff receipt.
             if (waited > kWaitLoadingTicks) {
                 FailRequest("timed out waiting for loading", currentPhase);
             }
             return;
+            }
 
         case RequestState::AwaitingMatch:
-            if (currentPhase == GamePhase::Match) {
+            if (CharacterHotswap::Transition::Decide(
+                    CharacterHotswap::Transition::WaitState::AwaitingMatch,
+                    currentPhase == GamePhase::Match
+                        ? CharacterHotswap::Transition::ObservedPhase::Match
+                        : CharacterHotswap::Transition::ObservedPhase::Other,
+                    false,
+                    s_loadingHandoffComplete.load(std::memory_order_acquire)) ==
+                CharacterHotswap::Transition::Decision::Complete) {
                 CompleteReload(currentPhase);
                 return;
             }
@@ -1113,8 +1890,8 @@ bool HasCustomPaletteFile(int selectId, int paletteIndex) {
     return lookup.exists;
 }
 
-void SanitizePaletteSelection(int p1CharId, int p2CharId, PaletteSelection& selection) {
-    SanitizeRequestedPaletteSelection(p1CharId, p2CharId, selection);
+void SanitizePaletteSelection(int p1SelectId, int p2SelectId, PaletteSelection& selection) {
+    SanitizeRequestedPaletteSelection(p1SelectId, p2SelectId, selection);
 }
 
 void InvalidateCustomPaletteCache() {
@@ -1126,6 +1903,9 @@ bool IsBusy() {
 }
 
 bool CanQueueReload() {
+    if (IsNetplaySuspendActive() || IsNetplaySessionActive()) {
+        return false;
+    }
     if (IsBusy()) {
         return false;
     }

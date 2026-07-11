@@ -37,6 +37,7 @@
 #include "../include/game/efzrevival_addrs.h"
 #include "../include/input/framestep.h"
 #include "../include/game/savestate_hook.h"
+#include "../include/game/practice_menu/practice_menu.h"
 // forward declaration for overlay gate
 namespace PracticeOverlayGate { void EnsureInstalled(); void SetMenuVisible(bool); }
 #pragma comment(lib, "winmm.lib")
@@ -159,6 +160,38 @@ void DelayedInitialization(HMODULE hModule) {
         }
         LogOut("[SYSTEM] MinHook initialized successfully.", true);
 
+        // Install the title-screen Practice submenu hook FIRST, as early as
+        // possible. efz.exe's title code is mapped from process start, so
+        // deferring this behind the heavy startup delay only created a race
+        // where confirming Practice on the title reached character-select before
+        // our hook existed. We monitor for up to a bounded window and rely on
+        // PracticeMenu::Install()'s vanilla-prologue verification to guarantee we
+        // never patch unexpected/garbage code - on a supported build it succeeds
+        // on the first attempt (a few ms) and we move on immediately; on an
+        // unrecognized build the verify keeps failing and we give up after the
+        // window (Practice simply stays vanilla). Order-independent w.r.t.
+        // InGameNetplay (which patches the vtable/jump-table, not the prologue).
+        {
+            constexpr DWORD kTitleHookWindowMs = 2000;
+            constexpr DWORD kTitleHookRetryMs = 50;
+            const DWORD titleWaitStart = GetTickCount();
+            bool titleHooked = false;
+            while ((GetTickCount() - titleWaitStart) < kTitleHookWindowMs) {
+                try {
+                    if (PracticeMenu::Install()) { titleHooked = true; break; }
+                } catch (...) {
+                    LogOut("[SYSTEM] Exception while installing practice menu hook (early).", true);
+                    break;
+                }
+                Sleep(kTitleHookRetryMs);
+            }
+            if (titleHooked) {
+                LogOut("[PRACTICE_MENU] Title hook installed early (pre-stabilize)", true);
+            } else {
+                LogOut("[PRACTICE_MENU] Title hook not installed within early window (unrecognized title build?)", true);
+            }
+        }
+
         bool audioHooksReady = false;
         // Audio hooks target stable efz.exe functions and should be present
         // before the game's first BGM/SE load/play calls when possible. Keep
@@ -275,6 +308,9 @@ void DelayedInitialization(HMODULE hModule) {
         } catch (...) {
             LogOut("[SYSTEM] Exception while installing collision hook.", true);
         }
+        // NOTE: PracticeMenu::Install() (title-screen Practice submenu) is now
+        // done in the early monitored window right after MH_Initialize above, so
+        // the title hook exists before the player can reach it.
         try {
             if (!audioHooksReady) {
                 const uintptr_t efzBase = GetEFZBase();
@@ -437,6 +473,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
 
         // Clean up hooks safely
         try {
+            PracticeMenu::Uninstall();
             RemoveInputHook();
             RemoveCollisionHook();
             CollisionDisplay::Shutdown();

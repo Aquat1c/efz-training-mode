@@ -1,0 +1,19 @@
+{
+    "format": 1,
+    "type": "tutorial",
+    "category": "start",
+    "difficulty": 1,
+    "name": "Find Your Space",
+    "description": "Walk toward the opponent, then create space by walking back. Fighting-game decisions begin with controlling distance.",
+    "player": { "character": "nanase", "pos": { "x": -120.0, "y": 0.0 }, "meter": 3000 },
+    "dummy": { "character": "misuzu", "pos": { "x": 120.0, "y": 0.0 } },
+    "stage": 0,
+    "bgm": -1,
+    "steps": [
+        { "notation": "6", "ids": [1], "req": "move", "maxGap": 5760 },
+        { "notation": "4", "ids": [2], "req": "move", "maxGap": 5760 }
+    ],
+    "failTimer": 5760,
+    "score": [{ "label": "Clear" }],
+    "hint": ["Tap or hold each direction until the character begins walking. The notation is relative to the side you face."]
+}

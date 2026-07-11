@@ -68,7 +68,17 @@ namespace {
     constexpr int kBannerY = 160;
     std::atomic<MacroController::State> s_state{ MacroController::State::Idle };
     Slot s_slots[kMaxSlots];
+    Slot s_transientPlaybackSlot; // mission demos never overwrite a user slot
+    Slot s_transientRecordingSlot; // mission authoring never overwrites a user slot
+    std::atomic<bool> s_useTransientPlayback{false};
+    std::atomic<bool> s_useTransientRecording{false};
     std::atomic<int> s_curSlot{1}; // 1-based
+    std::atomic<int> s_recordPlayer{2};
+    std::atomic<bool> s_recordStopRequested{false};
+    std::atomic<bool> s_recordTickAdvanced{false};
+    std::atomic<int> s_playPlayer{2};
+    std::atomic<bool> s_exclusiveReplay{false};
+    bool s_recordSwitchesLocalControl = false;
     // Recording ticks run on the frame-monitor thread while record/stop hotkeys run on
     // the input thread. Protect slot mutation and explicitly gate ticks during finalization
     // so the authoritative stream cannot grow while it is being sealed and dumped.
@@ -113,6 +123,16 @@ namespace {
     bool s_finishGuardActive = false;
     int  s_finishGuardFramesLeft = 0;  // internal frames (192 Hz)
     uint16_t s_finishGuardStartMoveId = 0;
+    // The final stream byte must survive until at least one engine poll consumes
+    // it. Without this latch, the same Tick that loaded the last byte replaced
+    // it with neutral before the game could see it.
+    bool s_endStreamPending = false;
+    uint32_t s_endStreamPollHitsAtLatch = 0;
+    int s_endStreamWaitFrames = 0;
+    // A KO/round transition can stop the target input ring before either the
+    // remaining stream or its final-byte acknowledgement advances.  Bound both
+    // waits so an exclusive mission demonstration can always hand control back.
+    int s_playNoProgressFrames = 0;
     // Baseline immediate mask for the current 64 Hz tick
     uint8_t s_baselineMask = 0;
     // Playback synchronization: track last seen buffer index to detect when engine advances
@@ -167,6 +187,19 @@ namespace {
     }
 
     inline int ClampSlot(int s){ if (s < 1) return 1; if (s > kMaxSlots) return kMaxSlots; return s; }
+    inline int ClampPlayer(int p){ return p == 1 ? 1 : 2; }
+
+    Slot& ActivePlaybackSlot() {
+        return s_useTransientPlayback.load(std::memory_order_acquire)
+            ? s_transientPlaybackSlot
+            : s_slots[ClampSlot(s_curSlot.load()) - 1];
+    }
+
+    Slot& ActiveRecordingSlot() {
+        return s_useTransientRecording.load(std::memory_order_acquire)
+            ? s_transientRecordingSlot
+            : s_slots[ClampSlot(s_curSlot.load()) - 1];
+    }
 
     static std::string ToHexString(int value, int width = 2) {
         std::ostringstream oss;
@@ -237,10 +270,13 @@ namespace {
         if (tok.size() == 1 && (tok[0] == 'N' || tok[0] == 'n')) { outMask = 0; return true; }
         char d = tok[0];
         if (d >= 'a' && d <= 'z') d = (char)std::toupper((unsigned char)d);
-        uint8_t dir = NumpadCharToDirMask(d);
+        // Mission data historically allowed bare button tokens ("A", "BC").
+        // Treat them as neutral direction instead of rejecting the whole demo.
+        const bool buttonOnly = (d == 'A' || d == 'B' || d == 'C' || d == 'D');
+        uint8_t dir = buttonOnly ? 0 : NumpadCharToDirMask(d);
         if (dir == 0xFF) return false;
         uint8_t btn = 0;
-        for (size_t i = 1; i < tok.size(); ++i) {
+        for (size_t i = buttonOnly ? 0 : 1; i < tok.size(); ++i) {
             char c = tok[i];
             if (c >= 'a' && c <= 'z') c = (char)std::toupper((unsigned char)c);
             if (c == 'A') btn |= GAME_INPUT_A;
@@ -384,12 +420,13 @@ namespace {
         return out;
     }
 
-    // Diagnostic: dump a tail of P2's input buffer and current index
-    void LogP2BufferSnapshot(const char* label, int tail = 16) {
-        uintptr_t p2Ptr = GetPlayerPointer(2);
-        if (!p2Ptr) { LogOut(std::string("[MACRO][BUF] ") + label + ": P2 ptr null", true); return; }
+    // Diagnostic: dump a tail of the selected player's input buffer and current index.
+    void LogPlayerBufferSnapshot(int playerNum, const char* label, int tail = 16) {
+        const int player = ClampPlayer(playerNum);
+        uintptr_t playerPtr = GetPlayerPointer(player);
+        if (!playerPtr) { LogOut(std::string("[MACRO][BUF] ") + label + ": P" + std::to_string(player) + " ptr null", true); return; }
         uint16_t idx = 0;
-        if (!SafeReadMemory(p2Ptr + INPUT_BUFFER_INDEX_OFFSET, &idx, sizeof(idx))) {
+        if (!SafeReadMemory(playerPtr + INPUT_BUFFER_INDEX_OFFSET, &idx, sizeof(idx))) {
             LogOut(std::string("[MACRO][BUF] ") + label + ": index read failed", true);
             return;
         }
@@ -398,10 +435,10 @@ namespace {
         for (int i = 0; i < tail; ++i) {
             int w = ((int)idx - (tail - 1 - i));
             w %= (int)INPUT_BUFFER_SIZE; if (w < 0) w += (int)INPUT_BUFFER_SIZE;
-            uint8_t v = 0; SafeReadMemory(p2Ptr + INPUT_BUFFER_OFFSET + (uintptr_t)w, &v, sizeof(v));
+            uint8_t v = 0; SafeReadMemory(playerPtr + INPUT_BUFFER_OFFSET + (uintptr_t)w, &v, sizeof(v));
             vals[i] = v;
         }
-        std::ostringstream ss; ss << "[MACRO][BUF] " << label << ": P2 idx=" << idx << " tail=" << tail << " vals=";
+        std::ostringstream ss; ss << "[MACRO][BUF] " << label << ": P" << player << " idx=" << idx << " tail=" << tail << " vals=";
         for (int i = 0; i < tail; ++i) {
             ss << std::hex << std::uppercase << std::setfill('0') << std::setw(2) << (int)vals[i];
             if (i + 1 < tail) ss << ' ';
@@ -409,19 +446,20 @@ namespace {
         LogOut(ss.str(), true);
     }
 
-    // Diagnostic: read and log P2 immediate registers (H/V and A-D)
-    void LogP2ImmediateSnapshot(const char* label) {
-        uintptr_t p2Ptr = GetPlayerPointer(2);
-        if (!p2Ptr) { LogOut(std::string("[MACRO][IMM] ") + label + ": P2 ptr null", true); return; }
+    // Diagnostic: read and log the selected player's immediate registers.
+    void LogPlayerImmediateSnapshot(int playerNum, const char* label) {
+        const int player = ClampPlayer(playerNum);
+        uintptr_t playerPtr = GetPlayerPointer(player);
+        if (!playerPtr) { LogOut(std::string("[MACRO][IMM] ") + label + ": P" + std::to_string(player) + " ptr null", true); return; }
         uint8_t h=0, v=0, a=0, b=0, c=0, d=0;
-        SafeReadMemory(p2Ptr + INPUT_HORIZONTAL_OFFSET, &h, sizeof(h));
-        SafeReadMemory(p2Ptr + INPUT_VERTICAL_OFFSET, &v, sizeof(v));
-        SafeReadMemory(p2Ptr + INPUT_BUTTON_A_OFFSET, &a, sizeof(a));
-        SafeReadMemory(p2Ptr + INPUT_BUTTON_B_OFFSET, &b, sizeof(b));
-        SafeReadMemory(p2Ptr + INPUT_BUTTON_C_OFFSET, &c, sizeof(c));
-        SafeReadMemory(p2Ptr + INPUT_BUTTON_D_OFFSET, &d, sizeof(d));
+        SafeReadMemory(playerPtr + INPUT_HORIZONTAL_OFFSET, &h, sizeof(h));
+        SafeReadMemory(playerPtr + INPUT_VERTICAL_OFFSET, &v, sizeof(v));
+        SafeReadMemory(playerPtr + INPUT_BUTTON_A_OFFSET, &a, sizeof(a));
+        SafeReadMemory(playerPtr + INPUT_BUTTON_B_OFFSET, &b, sizeof(b));
+        SafeReadMemory(playerPtr + INPUT_BUTTON_C_OFFSET, &c, sizeof(c));
+        SafeReadMemory(playerPtr + INPUT_BUTTON_D_OFFSET, &d, sizeof(d));
         std::ostringstream ss;
-        ss << "[MACRO][IMM] " << label << ": H=" << (int)h << " V=" << (int)v
+        ss << "[MACRO][IMM] " << label << ": P" << player << " H=" << (int)h << " V=" << (int)v
            << " A=" << (int)a << " B=" << (int)b << " C=" << (int)c << " D=" << (int)d;
         LogOut(ss.str(), true);
     }
@@ -434,11 +472,14 @@ namespace {
         s_tickBufQueue.clear(); s_tickBufHead = 0; s_writesLeftThisTick = 0;
         s_finishing = false; s_finishNeutralFrames = 0; s_finishPendingClearTick = false;
         s_finishGuardActive = false; s_finishGuardFramesLeft = 0; s_finishGuardStartMoveId = 0;
+        s_endStreamPending = false; s_endStreamPollHitsAtLatch = 0;
+        s_endStreamWaitFrames = 0; s_playNoProgressFrames = 0;
         // Reset playback buffer index synchronization
         s_lastSeenBufIdx = 0xFFFF; s_playbackBufIdxSyncInitialized = false;
         s_playbackPollAuditLogged = false;
         s_logPrevMoveIdInit = false; s_logPrevMoveId = 0;
         s_firstAttackSeen = false;
+        ImmediateInput::Clear(1);
         ImmediateInput::Clear(2);
         // Default hook behavior
         g_forceBypass[1].store(false);
@@ -454,19 +495,21 @@ namespace {
         g_pollOverrideMask[2].store(0);
     }
 
-    void FinishRecording() {
+    void FinishRecording(bool captureUnobservedTail = true) {
         std::unique_lock<std::mutex> recordLock(s_recordMutex);
         if (s_state.load(std::memory_order_acquire) != MacroController::State::Recording
             || s_recordFinalizing) {
             return;
         }
         s_recordFinalizing = true;
+        const bool embeddedMissionCapture =
+            s_useTransientRecording.load(std::memory_order_acquire);
+        Slot& recordSlot = ActiveRecordingSlot();
 
         // Flush any pending span
         if (s_recSpanTicks > 0) {
-            int slotIdx = ClampSlot(s_curSlot.load()) - 1;
-            s_slots[slotIdx].spans.push_back({ static_cast<Mask>(s_recLastMask & 0xFF), static_cast<Mask>(s_recLastBuf & 0xFF), s_recSpanTicks, (int8_t)s_recLastFacing });
-            s_slots[slotIdx].hasData = !s_slots[slotIdx].spans.empty();
+            recordSlot.spans.push_back({ static_cast<Mask>(s_recLastMask & 0xFF), static_cast<Mask>(s_recLastBuf & 0xFF), s_recSpanTicks, (int8_t)s_recLastFacing });
+            recordSlot.hasData = !recordSlot.spans.empty();
             // Log final span
             LogOut(std::string("[MACRO][REC] span imm=0x") + ToHexString((int)(s_recLastMask & 0xFF), 2) +
                    " (" + MaskToButtons((Mask)(s_recLastMask & 0xFF)) + ") buf=0x" + ToHexString((int)(s_recLastBuf & 0xFF), 2) +
@@ -474,33 +517,34 @@ namespace {
                    " facing=" + std::to_string(s_recLastFacing), true);
         }
         // Capture any remaining buffer entries up to current index at finish (diagnostic stream for engine buffer)
-        uintptr_t p2Ptr = GetPlayerPointer(2);
+        const int recordPlayer = ClampPlayer(s_recordPlayer.load(std::memory_order_acquire));
+        uintptr_t playerPtr = GetPlayerPointer(recordPlayer);
         uint16_t endIdx = 0;
-        if (p2Ptr && SafeReadMemory(p2Ptr + INPUT_BUFFER_INDEX_OFFSET, &endIdx, sizeof(endIdx))) {
-            int slotIdx = ClampSlot(s_curSlot.load()) - 1;
+        if (captureUnobservedTail && playerPtr &&
+            SafeReadMemory(playerPtr + INPUT_BUFFER_INDEX_OFFSET, &endIdx, sizeof(endIdx))) {
             // Append entries from s_recPrevBufIdx -> endIdx (exclusive of endIdx, inclusive start)
             if (s_recPrevBufIdx >= 0) {
-                size_t beforeSize = s_slots[slotIdx].bufStream.size();
+                size_t beforeSize = recordSlot.bufStream.size();
                 int cur = s_recPrevBufIdx;
                 while (cur != endIdx) {
                     uint8_t v = 0;
-                    SafeReadMemory(p2Ptr + INPUT_BUFFER_OFFSET + (uintptr_t)cur, &v, sizeof(v));
-                    s_slots[slotIdx].bufStream.push_back(v);
+                    SafeReadMemory(playerPtr + INPUT_BUFFER_OFFSET + (uintptr_t)cur, &v, sizeof(v));
+                    recordSlot.bufStream.push_back(v);
                     cur = (cur + 1) % (int)INPUT_BUFFER_SIZE;
                 }
                 // Attribute any tail entries to the last recorder tick for completeness
-                size_t added = s_slots[slotIdx].bufStream.size() - beforeSize;
+                size_t added = recordSlot.bufStream.size() - beforeSize;
                 if (added > 0) {
-                    if (!s_slots[slotIdx].bufCountsPerTick.empty()) {
-                        s_slots[slotIdx].bufCountsPerTick.back() = static_cast<uint16_t>(
-                            (uint32_t)s_slots[slotIdx].bufCountsPerTick.back() + (uint32_t)added);
+                    if (!recordSlot.bufCountsPerTick.empty()) {
+                        recordSlot.bufCountsPerTick.back() = static_cast<uint16_t>(
+                            (uint32_t)recordSlot.bufCountsPerTick.back() + (uint32_t)added);
                     } else {
                         // If there were no ticks recorded (edge case), start with the added amount
-                        s_slots[slotIdx].bufCountsPerTick.push_back(static_cast<uint16_t>(added));
+                        recordSlot.bufCountsPerTick.push_back(static_cast<uint16_t>(added));
                     }
                 }
             }
-            s_slots[slotIdx].bufEndIdx = endIdx;
+            recordSlot.bufEndIdx = endIdx;
         }
         s_recSpanTicks = 0;
         s_recLastMask = 0;
@@ -512,37 +556,36 @@ namespace {
         // verbose diagnostics; frame ticks will see s_recordFinalizing and return.
         recordLock.unlock();
 
-        // Snapshot P2 buffer and immediate regs at end
-        LogP2BufferSnapshot("end");
-        LogP2ImmediateSnapshot("end");
+        // Snapshot the selected player's buffer and immediate registers at end.
+        LogPlayerBufferSnapshot(recordPlayer, "end");
+        LogPlayerImmediateSnapshot(recordPlayer, "end");
       // Summary
-        int slotIdx = ClampSlot(s_curSlot.load()) - 1;
-        int totalTicks = 0; for (auto &sp : s_slots[slotIdx].spans) totalTicks += sp.ticks;
-     LogOut("[MACRO][REC] finished slot=" + std::to_string(s_curSlot.load()) +
-               " spans=" + std::to_string((int)s_slots[slotIdx].spans.size()) +
+        const int slotNum = s_useTransientRecording.load(std::memory_order_acquire) ? 0 : s_curSlot.load();
+        int totalTicks = 0; for (auto &sp : recordSlot.spans) totalTicks += sp.ticks;
+     LogOut("[MACRO][REC] finished slot=" + std::to_string(slotNum) +
+               " spans=" + std::to_string((int)recordSlot.spans.size()) +
          " ticks=" + std::to_string(totalTicks) +
-         " streamBytes=" + std::to_string((int)s_slots[slotIdx].macroStream.size()) +
-               " bufEntries=" + std::to_string((int)s_slots[slotIdx].bufStream.size()) +
-         " bufTicks=" + std::to_string((int)s_slots[slotIdx].bufCountsPerTick.size()) +
-               " bufIdxStart=" + std::to_string((int)s_slots[slotIdx].bufStartIdx) +
-               " bufIdxEnd=" + std::to_string((int)s_slots[slotIdx].bufEndIdx), true);
+         " streamBytes=" + std::to_string((int)recordSlot.macroStream.size()) +
+               " bufEntries=" + std::to_string((int)recordSlot.bufStream.size()) +
+         " bufTicks=" + std::to_string((int)recordSlot.bufCountsPerTick.size()) +
+               " bufIdxStart=" + std::to_string((int)recordSlot.bufStartIdx) +
+               " bufIdxEnd=" + std::to_string((int)recordSlot.bufEndIdx), true);
       // Full stream dumps for analysis
       {
-        int slotNum = s_curSlot.load();
-        LogVectorHex("macroStream", slotNum, "rec-finish", s_slots[slotIdx].macroStream);
-        LogVectorHex("bufStream", slotNum, "rec-finish", s_slots[slotIdx].bufStream);
-        LogVectorU16("bufCountsPerTick", slotNum, "rec-finish", s_slots[slotIdx].bufCountsPerTick);
-        LogVectorU16("bufIndexPerTick", slotNum, "rec-finish", s_slots[slotIdx].bufIndexPerTick);
-                LogTickReasons("rec-finish", slotNum, s_slots[slotIdx].tickReason);
-        LogPerTickOverview(slotNum, "rec-finish", s_slots[slotIdx].macroStream, s_slots[slotIdx].bufCountsPerTick, s_slots[slotIdx].bufIndexPerTick);
-        LogVectorHex("immPerTick(raw)", slotNum, "rec-finish", s_slots[slotIdx].immPerTick);
-        LogVectorHex("bufLatestPerTick", slotNum, "rec-finish", s_slots[slotIdx].bufLatestPerTick);
+        LogVectorHex("macroStream", slotNum, "rec-finish", recordSlot.macroStream);
+        LogVectorHex("bufStream", slotNum, "rec-finish", recordSlot.bufStream);
+        LogVectorU16("bufCountsPerTick", slotNum, "rec-finish", recordSlot.bufCountsPerTick);
+        LogVectorU16("bufIndexPerTick", slotNum, "rec-finish", recordSlot.bufIndexPerTick);
+                LogTickReasons("rec-finish", slotNum, recordSlot.tickReason);
+        LogPerTickOverview(slotNum, "rec-finish", recordSlot.macroStream, recordSlot.bufCountsPerTick, recordSlot.bufIndexPerTick);
+        LogVectorHex("immPerTick(raw)", slotNum, "rec-finish", recordSlot.immPerTick);
+        LogVectorHex("bufLatestPerTick", slotNum, "rec-finish", recordSlot.bufLatestPerTick);
         if (kEnableFullBufferSnapshots) {
-            std::ostringstream ss; ss << "[MACRO][DUMP] slot=" << slotNum << " rec-finish fullBufferSnapshots count=" << s_slots[slotIdx].fullBufferSnapshots.size() << " (each=" << (int)INPUT_BUFFER_SIZE << ")"; LogOut(ss.str(), true);
+            std::ostringstream ss; ss << "[MACRO][DUMP] slot=" << slotNum << " rec-finish fullBufferSnapshots count=" << recordSlot.fullBufferSnapshots.size() << " (each=" << (int)INPUT_BUFFER_SIZE << ")"; LogOut(ss.str(), true);
             // To avoid massive spam, dump only first and last snapshot (if distinct)
-            if (!s_slots[slotIdx].fullBufferSnapshots.empty()) {
+            if (!recordSlot.fullBufferSnapshots.empty()) {
                 auto dumpSnap = [&](size_t i, const char* tag){
-                    const auto &snap = s_slots[slotIdx].fullBufferSnapshots[i];
+                    const auto &snap = recordSlot.fullBufferSnapshots[i];
                     std::ostringstream hdr; hdr << "[MACRO][DUMP]   snapshot[" << i << "](" << tag << "):"; LogOut(hdr.str(), true);
                     std::ostringstream line; size_t count=0; for (size_t b=0;b<snap.size();++b){ if(count==0){ line<<"[MACRO][DUMP]     "; }
                         line<< std::hex << std::uppercase << std::setfill('0') << std::setw(2) << (int)snap[b]; if (b+1<snap.size()) line<<' ';
@@ -551,7 +594,7 @@ namespace {
                     if(count>0) LogOut(line.str(), true);
                 };
                 dumpSnap(0, "first");
-                if (s_slots[slotIdx].fullBufferSnapshots.size() > 1) dumpSnap(s_slots[slotIdx].fullBufferSnapshots.size()-1, "last");
+                if (recordSlot.fullBufferSnapshots.size() > 1) dumpSnap(recordSlot.fullBufferSnapshots.size()-1, "last");
             }
         }
             }
@@ -560,18 +603,22 @@ namespace {
             s_state.store(MacroController::State::Idle, std::memory_order_release);
             s_recordFinalizing = false;
         }
-        // Restore P2 control if we overrode it during pre-record
-        if (g_p2ControlOverridden) RestoreP2ControlState();
-        // Swap back to P1 local side after recording for convenience
-        SwitchPlayers::SetLocalSide(0);
-        // Recording forcibly restores default mapping; clear swap tracking flag
-        // so Character Select/menu reset logic doesn't think sides are still swapped.
-        SwitchPlayers::ClearSwapFlag();
+        // Ordinary macro recording borrows P2/local-side control. Mission demo
+        // recording targets P1 and must leave the match's control mapping alone.
+        if (recordPlayer == 2 && s_recordSwitchesLocalControl) {
+            if (g_p2ControlOverridden) RestoreP2ControlState();
+            SwitchPlayers::SetLocalSide(0);
+            SwitchPlayers::ClearSwapFlag();
+        }
+        s_recordSwitchesLocalControl = false;
         s_prevLocalSide.store(-1);
-        LogOut("[MACRO][REC] post-finish: local side set to P1", true);
+        LogOut("[MACRO][REC] post-finish: P" + std::to_string(recordPlayer) + " capture released", true);
         // Remove persistent banner
         if (s_macroBannerId != -1) { DirectDrawHook::RemovePermanentMessage(s_macroBannerId); s_macroBannerId = -1; }
-        DirectDrawHook::AddMessage("Macro: Recording stopped", "MACRO", RGB(255,220,120), 1200, 0, 120);
+        if (!embeddedMissionCapture) {
+            DirectDrawHook::AddMessage("Macro: Recording stopped", "MACRO",
+                                       RGB(255,220,120), 1200, 0, 120);
+        }
     }
 
     std::string StateName(MacroController::State st) {
@@ -584,17 +631,17 @@ namespace {
         return "?";
     }
 
-    uint8_t ReadRecordSourceMask() {
-        // Build unified mask from P2 immediate registers (independent of local side)
-        uintptr_t p2Ptr = GetPlayerPointer(2);
-        if (!p2Ptr) return 0;
+    uint8_t ReadRecordSourceMask(int playerNum) {
+        // Build a unified mask from the selected player's immediate registers.
+        uintptr_t playerPtr = GetPlayerPointer(ClampPlayer(playerNum));
+        if (!playerPtr) return 0;
         uint8_t h=0, v=0, a=0, b=0, c=0, d=0;
-        SafeReadMemory(p2Ptr + INPUT_HORIZONTAL_OFFSET, &h, sizeof(h));
-        SafeReadMemory(p2Ptr + INPUT_VERTICAL_OFFSET, &v, sizeof(v));
-        SafeReadMemory(p2Ptr + INPUT_BUTTON_A_OFFSET, &a, sizeof(a));
-        SafeReadMemory(p2Ptr + INPUT_BUTTON_B_OFFSET, &b, sizeof(b));
-        SafeReadMemory(p2Ptr + INPUT_BUTTON_C_OFFSET, &c, sizeof(c));
-        SafeReadMemory(p2Ptr + INPUT_BUTTON_D_OFFSET, &d, sizeof(d));
+        SafeReadMemory(playerPtr + INPUT_HORIZONTAL_OFFSET, &h, sizeof(h));
+        SafeReadMemory(playerPtr + INPUT_VERTICAL_OFFSET, &v, sizeof(v));
+        SafeReadMemory(playerPtr + INPUT_BUTTON_A_OFFSET, &a, sizeof(a));
+        SafeReadMemory(playerPtr + INPUT_BUTTON_B_OFFSET, &b, sizeof(b));
+        SafeReadMemory(playerPtr + INPUT_BUTTON_C_OFFSET, &c, sizeof(c));
+        SafeReadMemory(playerPtr + INPUT_BUTTON_D_OFFSET, &d, sizeof(d));
         uint8_t mask = 0;
         if (h == 1) mask |= GAME_INPUT_RIGHT; else if (h == 255) mask |= GAME_INPUT_LEFT;
         if (v == 1) mask |= GAME_INPUT_DOWN;  else if (v == 255) mask |= GAME_INPUT_UP;
@@ -605,16 +652,16 @@ namespace {
         return mask;
     }
 
-    // Read the most recently written P2 input buffer value (unified mask)
-    uint8_t ReadP2BufferLatestMask() {
-        uintptr_t p2Ptr = GetPlayerPointer(2);
-        if (!p2Ptr) return 0;
+    // Read the most recently written input-buffer value for the selected player.
+    uint8_t ReadBufferLatestMask(int playerNum) {
+        uintptr_t playerPtr = GetPlayerPointer(ClampPlayer(playerNum));
+        if (!playerPtr) return 0;
         uint16_t idx = 0;
-        if (!SafeReadMemory(p2Ptr + INPUT_BUFFER_INDEX_OFFSET, &idx, sizeof(idx))) return 0;
+        if (!SafeReadMemory(playerPtr + INPUT_BUFFER_INDEX_OFFSET, &idx, sizeof(idx))) return 0;
         int last = ((int)idx - 1);
         last %= (int)INPUT_BUFFER_SIZE; if (last < 0) last += (int)INPUT_BUFFER_SIZE;
         uint8_t val = 0;
-        SafeReadMemory(p2Ptr + INPUT_BUFFER_OFFSET + (uintptr_t)last, &val, sizeof(val));
+        SafeReadMemory(playerPtr + INPUT_BUFFER_OFFSET + (uintptr_t)last, &val, sizeof(val));
         return val;
     }
 }
@@ -622,6 +669,12 @@ namespace {
 namespace MacroController {
 
 void Tick() {
+    s_recordTickAdvanced.store(false, std::memory_order_release);
+    if (s_recordStopRequested.exchange(false, std::memory_order_acq_rel) &&
+        s_state.load(std::memory_order_acquire) == State::Recording) {
+        FinishRecording(false);
+        return;
+    }
     // Only operate during a valid match with characters initialized
     if (GetCurrentGamePhase() != GamePhase::Match || !AreCharactersInitialized()) return;
 
@@ -641,6 +694,8 @@ void Tick() {
 
     State st = s_state.load();
     if (st == State::Recording) {
+        const int recordPlayer = ClampPlayer(s_recordPlayer.load(std::memory_order_acquire));
+        Slot& recordSlot = ActiveRecordingSlot();
         std::unique_lock<std::mutex> recordLock(s_recordMutex);
         if (s_state.load(std::memory_order_acquire) != State::Recording
             || s_recordFinalizing) {
@@ -649,13 +704,13 @@ void Tick() {
 
         // Frame-step aware progression:
         // - When not frozen: advance every 3rd internal frame (approx 64 Hz).
-        // - When frozen (paused): only advance when P2's input buffer index has advanced (indicates a stepped frame).
+        // - When frozen (paused): only advance when the selected input buffer advances.
     const bool frozen = ReadGamespeedFrozen();
         // Probe current buffer index once up front to decide whether to progress while frozen
         uint16_t idxProbe = 0; bool haveIdx = false; bool bufAdvanced = false;
         {
-            uintptr_t p2PtrProbe = GetPlayerPointer(2);
-            if (p2PtrProbe && SafeReadMemory(p2PtrProbe + INPUT_BUFFER_INDEX_OFFSET, &idxProbe, sizeof(idxProbe))) {
+            uintptr_t playerPtrProbe = GetPlayerPointer(recordPlayer);
+            if (playerPtrProbe && SafeReadMemory(playerPtrProbe + INPUT_BUFFER_INDEX_OFFSET, &idxProbe, sizeof(idxProbe))) {
                 haveIdx = true;
                 if (s_recPrevBufIdx >= 0 && (uint16_t)s_recPrevBufIdx != idxProbe) bufAdvanced = true;
             }
@@ -690,37 +745,37 @@ void Tick() {
         else if (bufAdvanced && stepAdvanced) reasonCode='X';
         else if (bufAdvanced) reasonCode='B';
         else if (stepAdvanced) reasonCode='S';
-        // If buffer-freeze is active for P2, avoid progressing to keep streams aligned
-        if (g_bufferFreezingActive.load() && (g_activeFreezePlayer.load() == 2 || g_activeFreezePlayer.load() == 0)) return;
-        uint8_t immMask = ReadRecordSourceMask();
+        // If buffer-freeze owns this player, avoid progressing to keep streams aligned.
+        if (g_bufferFreezingActive.load() &&
+            (g_activeFreezePlayer.load() == recordPlayer || g_activeFreezePlayer.load() == 0)) return;
+        uint8_t immMask = ReadRecordSourceMask(recordPlayer);
         uint8_t immMaskRaw = immMask; // preserve original before any merging
-        int facing = ReadFacingSign(2);
+        int facing = ReadFacingSign(recordPlayer);
         uint8_t buf  = 0;
         bool noWritesThisTick = false; // track if engine produced zero buffer writes (pre-synthesis)
-        uint8_t latestBufValPreSynth = ReadP2BufferLatestMask();
+        uint8_t latestBufValPreSynth = ReadBufferLatestMask(recordPlayer);
         // Capture all new buffer entries since last tick
         {
-            uintptr_t p2Ptr = GetPlayerPointer(2);
+            uintptr_t playerPtr = GetPlayerPointer(recordPlayer);
             uint16_t idx = 0;
-            if (p2Ptr && SafeReadMemory(p2Ptr + INPUT_BUFFER_INDEX_OFFSET, &idx, sizeof(idx)) && s_recPrevBufIdx >= 0) {
-                int slotIdx = ClampSlot(s_curSlot.load()) - 1;
-                size_t beforeSize = s_slots[slotIdx].bufStream.size();
+            if (playerPtr && SafeReadMemory(playerPtr + INPUT_BUFFER_INDEX_OFFSET, &idx, sizeof(idx)) && s_recPrevBufIdx >= 0) {
+                size_t beforeSize = recordSlot.bufStream.size();
                 uint8_t addedBtnUnion = 0; // union of A-D seen in new entries this tick
                 int cur = s_recPrevBufIdx;
                 while (cur != idx) {
                     uint8_t v = 0;
-                    SafeReadMemory(p2Ptr + INPUT_BUFFER_OFFSET + (uintptr_t)cur, &v, sizeof(v));
-                    s_slots[slotIdx].bufStream.push_back(v);
+                    SafeReadMemory(playerPtr + INPUT_BUFFER_OFFSET + (uintptr_t)cur, &v, sizeof(v));
+                    recordSlot.bufStream.push_back(v);
                     addedBtnUnion |= (v & (GAME_INPUT_A | GAME_INPUT_B | GAME_INPUT_C | GAME_INPUT_D));
                     cur = (cur + 1) % (int)INPUT_BUFFER_SIZE;
                 }
                 s_recPrevBufIdx = idx;
                 // Record how many entries the engine produced this recorder tick
-                size_t added = s_slots[slotIdx].bufStream.size() - beforeSize;
-                s_slots[slotIdx].bufCountsPerTick.push_back(static_cast<uint16_t>(added));
-                s_slots[slotIdx].bufIndexPerTick.push_back(idx);
+                size_t added = recordSlot.bufStream.size() - beforeSize;
+                recordSlot.bufCountsPerTick.push_back(static_cast<uint16_t>(added));
+                recordSlot.bufIndexPerTick.push_back(idx);
                 if (added > 0) {
-                    buf = s_slots[slotIdx].bufStream.back();
+                    buf = recordSlot.bufStream.back();
                     // Merge buttons seen anywhere in this tick's new entries into our immediate view
                     if (addedBtnUnion) {
                         uint8_t immButtons = (uint8_t)(immMask & (GAME_INPUT_A | GAME_INPUT_B | GAME_INPUT_C | GAME_INPUT_D));
@@ -732,7 +787,7 @@ void Tick() {
                 }
             }
         }
-        if (buf == 0) buf = ReadP2BufferLatestMask();
+        if (buf == 0) buf = ReadBufferLatestMask(recordPlayer);
         // If we advanced due to a frame-step (no buffer writes, likely neutral delay) and the immediate
         // differs from the last recorded mask, treat immediate as authoritative for this logical tick.
         // This prevents neutral delays being merged into the prior action span because the last buffer
@@ -752,34 +807,33 @@ void Tick() {
         uint8_t mask = (dirBits | btnBits);
         // EfzRevival-style: Write one byte per logic tick into per-slot macro stream
         {
-            int slotIdx = ClampSlot(s_curSlot.load()) - 1;
-            s_slots[slotIdx].macroStream.push_back(mask);
-            if (s_slots[slotIdx].tickReason.size() < s_slots[slotIdx].macroStream.size()) {
-                s_slots[slotIdx].tickReason.push_back(reasonCode);
+            recordSlot.macroStream.push_back(mask);
+            s_recordTickAdvanced.store(true, std::memory_order_release);
+            if (recordSlot.tickReason.size() < recordSlot.macroStream.size()) {
+                recordSlot.tickReason.push_back(reasonCode);
             }
             // Per-tick raw immediate & latest buffer (pre-synthetic) capture
-            s_slots[slotIdx].immPerTick.push_back(immMaskRaw);
-            s_slots[slotIdx].bufLatestPerTick.push_back(latestBufValPreSynth);
+            recordSlot.immPerTick.push_back(immMaskRaw);
+            recordSlot.bufLatestPerTick.push_back(latestBufValPreSynth);
             if (kEnableFullBufferSnapshots) {
-                uintptr_t p2PtrSnap = GetPlayerPointer(2);
+                uintptr_t playerPtrSnap = GetPlayerPointer(recordPlayer);
                 std::vector<uint8_t> snap;
-                if (p2PtrSnap) {
+                if (playerPtrSnap) {
                     snap.resize(INPUT_BUFFER_SIZE, 0);
                     for (size_t bi = 0; bi < snap.size(); ++bi) {
-                        uint8_t v=0; SafeReadMemory(p2PtrSnap + INPUT_BUFFER_OFFSET + (uintptr_t)bi, &v, sizeof(v)); snap[bi]=v;
+                        uint8_t v=0; SafeReadMemory(playerPtrSnap + INPUT_BUFFER_OFFSET + (uintptr_t)bi, &v, sizeof(v)); snap[bi]=v;
                     }
                 }
-                s_slots[slotIdx].fullBufferSnapshots.push_back(std::move(snap));
+                recordSlot.fullBufferSnapshots.push_back(std::move(snap));
             }
         }
         // Ensure we "capture the buffer" every recorder tick: if the engine produced
         // zero new raw buffer writes this tick (common for neutral frame-steps), synthesize
         // one entry so playback can reproduce a per-tick buffer cadence and precise delays.
         {
-            int slotIdx = ClampSlot(s_curSlot.load()) - 1;
-            if (!s_slots[slotIdx].bufCountsPerTick.empty() && s_slots[slotIdx].bufCountsPerTick.back() == 0) {
-                s_slots[slotIdx].bufStream.push_back(mask); // synthetic neutral/held state
-                s_slots[slotIdx].bufCountsPerTick.back() = 1;
+            if (!recordSlot.bufCountsPerTick.empty() && recordSlot.bufCountsPerTick.back() == 0) {
+                recordSlot.bufStream.push_back(mask); // synthetic neutral/held state
+                recordSlot.bufCountsPerTick.back() = 1;
                 buf = mask; // treat buffer value as this synthetic entry for span comparison logic
                 LogOut(std::string("[MACRO][REC] synthetic-buf write (neutral tick) reason=") + reasonCode, true);
             }
@@ -793,9 +847,8 @@ void Tick() {
             if (s_recLastReason != reasonCode) s_recLastReason = 'M';
             s_recSpanTicks++;
         } else {
-            int slotIdx = ClampSlot(s_curSlot.load()) - 1;
-            s_slots[slotIdx].spans.push_back({ static_cast<Mask>(s_recLastMask & 0xFF), static_cast<Mask>(s_recLastBuf & 0xFF), s_recSpanTicks, (int8_t)s_recLastFacing });
-            s_slots[slotIdx].hasData = true;
+            recordSlot.spans.push_back({ static_cast<Mask>(s_recLastMask & 0xFF), static_cast<Mask>(s_recLastBuf & 0xFF), s_recSpanTicks, (int8_t)s_recLastFacing });
+            recordSlot.hasData = true;
             // Log completed span (immediate vs buffer)
             LogOut(std::string("[MACRO][REC] span imm=0x") + ToHexString((int)(s_recLastMask & 0xFF), 2) +
                    " (" + MaskToButtons((Mask)(s_recLastMask & 0xFF)) + ") buf=0x" + ToHexString((int)(s_recLastBuf & 0xFF), 2) +
@@ -804,30 +857,34 @@ void Tick() {
             s_recLastMask = mask; s_recLastBuf = mask; s_recLastFacing = facing; s_recSpanTicks = 1; s_recLastReason = reasonCode;
         }
     } else if (st == State::Replaying) {
+        const int playPlayer = ClampPlayer(s_playPlayer.load(std::memory_order_acquire));
+        Slot& playSlot = ActivePlaybackSlot();
         // Finish guard: after neutral clear tick, hold neutral until moveID activation or timeout
         if (s_finishGuardActive) {
             // Keep neutral override while guarding
-            g_pollOverrideMask[2].store(0, std::memory_order_relaxed);
-            g_pollOverrideActive[2].store(true, std::memory_order_relaxed);
+            g_pollOverrideMask[playPlayer].store(0, std::memory_order_relaxed);
+            g_pollOverrideActive[playPlayer].store(true, std::memory_order_relaxed);
             // Probe current MoveID
-            uint16_t mv = GetPlayerMoveID(2);
+            uint16_t mv = GetPlayerMoveID(playPlayer);
             bool activated = IsActivationMove(mv);
                 if (activated || s_finishGuardFramesLeft <= 0) {
                 // Finalize: restore control and cleanup
                 s_finishGuardActive = false;
+                const bool keepExclusiveHold = s_exclusiveReplay.load(std::memory_order_acquire);
                 s_state.store(State::Idle);
-                ImmediateInput::Clear(2);
-                (void)ClearPlayerCommandFlags(2);
-                g_pollOverrideActive[2].store(false, std::memory_order_relaxed);
-                g_forceBypass[2].store(false);
-                g_injectImmediateOnly[2].store(false);
+                ImmediateInput::Clear(playPlayer);
+                (void)ClearPlayerCommandFlags(playPlayer);
+                g_pollOverrideMask[playPlayer].store(0, std::memory_order_relaxed);
+                g_pollOverrideActive[playPlayer].store(keepExclusiveHold, std::memory_order_release);
+                g_forceBypass[playPlayer].store(false);
+                g_injectImmediateOnly[playPlayer].store(false);
                 if (s_macroBannerId != -1) { DirectDrawHook::RemovePermanentMessage(s_macroBannerId); s_macroBannerId = -1; }
                 // For wake-prebuffered macros, we want to preserve the entire
                 // input buffer and motion token so the motion can still be
                 // recognized on wake. In that case, only restore control
                 // flags. For all other macros, perform the standard full
                 // restore which clears buffer and neutralizes the token.
-                if (g_macroWakePreserveBuffer.load()) {
+                if (playPlayer == 2 && g_macroWakePreserveBuffer.load()) {
                     g_macroWakePreserveBuffer.store(false);
                     // Signal auto-action that a wake-prebuffered macro has
                     // fully finished so it can schedule a delayed
@@ -838,17 +895,25 @@ void Tick() {
                     }
                 } else {
                     // Neutralize motion token before giving control back to AI to prevent stray motions
-                    (void)NeutralizeMotionToken(2);
-                    if (g_p2ControlOverridden) RestoreP2ControlState();
+                    (void)NeutralizeMotionToken(playPlayer);
+                    if (playPlayer == 2 && g_p2ControlOverridden) RestoreP2ControlState();
                 }
-                int slotIdx = ClampSlot(s_curSlot.load()) - 1;
                 LogOut(std::string("[MACRO][PLAY] finish-guard exit ") + (activated?"on-activation":"on-timeout") +
-                       " slot=" + std::to_string(s_curSlot.load()) +
-                       " lastMoveID=" + std::to_string((int)mv) +
-                       " streamBytes=" + std::to_string((int)s_slots[slotIdx].macroStream.size()) +
-                       " bufWrites=" + std::to_string((int)s_slots[slotIdx].bufStream.size()) +
-                       " pollHits=" + std::to_string(GetInputPollOverrideHitCount(2)), true);
-                DirectDrawHook::AddMessage("Macro: Replay finished", "MACRO", RGB(180,255,180), 1200, 0, 120);
+                   " slot=" + std::to_string(s_curSlot.load()) +
+                   " lastMoveID=" + std::to_string((int)mv) +
+                   " player=P" + std::to_string(playPlayer) +
+                   " streamBytes=" + std::to_string((int)playSlot.macroStream.size()) +
+                   " bufWrites=" + std::to_string((int)playSlot.bufStream.size()) +
+                   " pollHits=" + std::to_string(GetInputPollOverrideHitCount(playPlayer)), true);
+                if (!keepExclusiveHold) {
+                    s_exclusiveReplay.store(false, std::memory_order_release);
+                    s_useTransientPlayback.store(false, std::memory_order_release);
+                }
+                if (!keepExclusiveHold &&
+                    !s_useTransientPlayback.load(std::memory_order_acquire)) {
+                    DirectDrawHook::AddMessage("Macro: Replay finished", "MACRO",
+                                               RGB(180,255,180), 1200, 0, 120);
+                }
                 return;
             }
             // Count down guard frames
@@ -869,14 +934,14 @@ void Tick() {
         }
         // While waiting for the next boundary, maintain neutral override to avoid tail holds
         if (s_finishPendingClearTick && s_frameDiv != 0) {
-            g_pollOverrideMask[2].store(0, std::memory_order_relaxed);
-            g_pollOverrideActive[2].store(true, std::memory_order_relaxed);
+            g_pollOverrideMask[playPlayer].store(0, std::memory_order_relaxed);
+            g_pollOverrideActive[playPlayer].store(true, std::memory_order_relaxed);
             return;
         }
         if (s_finishing) {
             // Drive a neutral poll override for the duration of the clear tick
-            g_pollOverrideMask[2].store(0, std::memory_order_relaxed);
-            g_pollOverrideActive[2].store(true, std::memory_order_relaxed);
+            g_pollOverrideMask[playPlayer].store(0, std::memory_order_relaxed);
+            g_pollOverrideActive[playPlayer].store(true, std::memory_order_relaxed);
             if (s_finishNeutralFrames > 0) {
                 s_finishNeutralFrames--;
                 return; // keep neutral for remaining subframes
@@ -886,9 +951,30 @@ void Tick() {
             s_finishGuardActive = true;
             // Default guard window: 6 internal frames (~2 visual frames)
             s_finishGuardFramesLeft = 6;
-            s_finishGuardStartMoveId = GetPlayerMoveID(2);
+            s_finishGuardStartMoveId = GetPlayerMoveID(playPlayer);
             // Keep neutral override active during guard and clear command flags once
-            (void)ClearPlayerCommandFlags(2);
+            (void)ClearPlayerCommandFlags(playPlayer);
+            return;
+        }
+        if (s_endStreamPending) {
+            const uint32_t pollHits = GetInputPollOverrideHitCount(playPlayer);
+            if (pollHits == s_endStreamPollHitsAtLatch && ++s_endStreamWaitFrames < 12) {
+                // Keep the final byte authoritative until a later engine poll
+                // has consumed it at least once.
+                g_pollOverrideActive[playPlayer].store(true, std::memory_order_release);
+                return;
+            }
+            if (pollHits == s_endStreamPollHitsAtLatch) {
+                LogOut("[MACRO][PLAY][WARN] final input poll was not acknowledged; "
+                       "continuing neutral cleanup after bounded hold", true);
+            }
+            s_endStreamPending = false;
+            s_endStreamWaitFrames = 0;
+            s_finishPendingClearTick = true;
+            s_baselineMask = 0;
+            g_pollOverrideMask[playPlayer].store(0, std::memory_order_relaxed);
+            g_pollOverrideActive[playPlayer].store(true, std::memory_order_release);
+            (void)ClearPlayerCommandFlags(playPlayer);
             return;
         }
         // Replay runs every internal frame to better match engine read cadence.
@@ -901,35 +987,48 @@ void Tick() {
         if (playbackFrozen) {
             playbackStepAdvanced = PauseIntegration::ConsumeStepAdvance();
         }
-        // Pause while buffer-freeze is active for P2 to avoid fighting the engine
-        if (g_bufferFreezingActive.load() && (g_activeFreezePlayer.load() == 2 || g_activeFreezePlayer.load() == 0)) return;
-        int slotIdx = ClampSlot(s_curSlot.load()) - 1;
+        // Pause while buffer-freeze owns the playback player.
+        if (g_bufferFreezingActive.load() &&
+            (g_activeFreezePlayer.load() == playPlayer || g_activeFreezePlayer.load() == 0)) return;
         // Prefer stream playback if present. Fallback to spans if no stream captured.
-        bool useStream = !s_slots[slotIdx].macroStream.empty();
-        if (!s_slots[slotIdx].hasData || (s_slots[slotIdx].spans.empty() && !useStream)) {
+        bool useStream = !playSlot.macroStream.empty();
+        if (!playSlot.hasData || (playSlot.spans.empty() && !useStream)) {
             // Nothing to play
             s_state.store(State::Idle);
-            ImmediateInput::Clear(2);
-            (void)ClearPlayerCommandFlags(2);
-            g_manualInputOverride[2].store(false);
-            g_forceBypass[2].store(false);
-            g_injectImmediateOnly[2].store(false);
+            ImmediateInput::Clear(playPlayer);
+            (void)ClearPlayerCommandFlags(playPlayer);
+            g_manualInputOverride[playPlayer].store(false);
+            g_forceBypass[playPlayer].store(false);
+            g_injectImmediateOnly[playPlayer].store(false);
+            g_pollOverrideMask[playPlayer].store(0, std::memory_order_relaxed);
+            g_pollOverrideActive[playPlayer].store(false, std::memory_order_release);
+            if (s_macroBannerId != -1) {
+                DirectDrawHook::RemovePermanentMessage(s_macroBannerId);
+                s_macroBannerId = -1;
+            }
             // If we had taken control, neutralize and restore to AI
-            if (g_p2ControlOverridden) {
-                (void)NeutralizeMotionToken(2);
+            if (playPlayer == 2 && g_p2ControlOverridden) {
+                (void)NeutralizeMotionToken(playPlayer);
                 RestoreP2ControlState();
             }
-            DirectDrawHook::AddMessage("Macro: Replay empty", "MACRO", RGB(255,120,120), 1000, 0, 120);
+            const bool embeddedPlayback = s_exclusiveReplay.load(std::memory_order_acquire) ||
+                s_useTransientPlayback.load(std::memory_order_acquire);
+            s_exclusiveReplay.store(false, std::memory_order_release);
+            s_useTransientPlayback.store(false, std::memory_order_release);
+            if (!embeddedPlayback) {
+                DirectDrawHook::AddMessage("Macro: Replay empty", "MACRO",
+                                           RGB(255,120,120), 1000, 0, 120);
+            }
             return;
         }
         if (useStream) {
             // Playback synchronization: advance stream once per engine frame (when buffer index changes)
             // This is simpler and more robust than trying to match recorded indices with offsets
             
-            // Read current P2 buffer index
-            uintptr_t p2Ptr = GetPlayerPointer(2);
+            // Read the target player's buffer index.
+            uintptr_t playerPtr = GetPlayerPointer(playPlayer);
             uint16_t curBufIdx = 0;
-            bool haveIdx = p2Ptr && SafeReadMemory(p2Ptr + INPUT_BUFFER_INDEX_OFFSET, &curBufIdx, sizeof(curBufIdx));
+            bool haveIdx = playerPtr && SafeReadMemory(playerPtr + INPUT_BUFFER_INDEX_OFFSET, &curBufIdx, sizeof(curBufIdx));
             
             // Initialize on first call
             if (haveIdx && !s_playbackBufIdxSyncInitialized) {
@@ -942,7 +1041,7 @@ void Tick() {
             bool bufferAdvanced = false;
             bool shouldAdvanceStream = false;
             if (haveIdx && s_playbackBufIdxSyncInitialized && 
-                s_playStreamIndex < s_slots[slotIdx].macroStream.size()) {
+                s_playStreamIndex < playSlot.macroStream.size()) {
                 
                 // Only advance if buffer index is different from last seen
                 // This naturally handles double-Tick since buffer only changes once per real engine frame
@@ -950,7 +1049,7 @@ void Tick() {
                     bufferAdvanced = true;
                 }
             }
-            if (s_playStreamIndex < s_slots[slotIdx].macroStream.size()) {
+            if (s_playStreamIndex < playSlot.macroStream.size()) {
                 shouldAdvanceStream = playbackFrozen
                     ? (bufferAdvanced || playbackStepAdvanced)
                     : bufferAdvanced;
@@ -958,14 +1057,34 @@ void Tick() {
             if (bufferAdvanced) {
                 s_lastSeenBufIdx = curBufIdx;
             }
+
+            if (shouldAdvanceStream) {
+                s_playNoProgressFrames = 0;
+            } else if (!playbackFrozen && s_playStreamIndex < playSlot.macroStream.size()) {
+                if (++s_playNoProgressFrames > 384) {
+                    LogOut("[MACRO][PLAY][WARN] input buffer stopped advancing; "
+                           "ending replay after two-second watchdog", true);
+                    s_playNoProgressFrames = 0;
+                    s_tickBufQueue.clear();
+                    s_tickBufHead = 0;
+                    s_writesLeftThisTick = 0;
+                    s_baselineMask = 0;
+                    s_finishPendingClearTick = true;
+                    g_pollOverrideMask[playPlayer].store(0, std::memory_order_relaxed);
+                    g_pollOverrideActive[playPlayer].store(true, std::memory_order_release);
+                    return;
+                }
+            } else if (playbackFrozen) {
+                s_playNoProgressFrames = 0;
+            }
             
-            if (shouldAdvanceStream && s_playStreamIndex < s_slots[slotIdx].macroStream.size()) {
-                uint8_t mask = s_slots[slotIdx].macroStream[s_playStreamIndex];
+            if (shouldAdvanceStream && s_playStreamIndex < playSlot.macroStream.size()) {
+                uint8_t mask = playSlot.macroStream[s_playStreamIndex];
                 // Facing-aware: if recorded facing is unknown (0), assume P1-facing (+1)
                 int8_t recFacing = 0;
                 if (!s_streamFacingPerTick.empty() && s_playStreamIndex < s_streamFacingPerTick.size()) recFacing = s_streamFacingPerTick[s_playStreamIndex];
                 if (recFacing == 0) recFacing = +1;
-                int curFacing = ReadFacingSign(2);
+                int curFacing = ReadFacingSign(playPlayer);
                 if (curFacing != 0 && recFacing != curFacing) {
                     mask = FlipMaskHoriz(mask);
                 }
@@ -975,18 +1094,18 @@ void Tick() {
                 // This ensures motion recognition works because the D,D,C pattern appears
                 // in the exact same buffer positions relative to the index as during recording.
                 if (kEnableFullBufferSnapshots && 
-                    s_playStreamIndex < s_slots[slotIdx].fullBufferSnapshots.size() &&
-                    !s_slots[slotIdx].fullBufferSnapshots[s_playStreamIndex].empty()) {
+                    s_playStreamIndex < playSlot.fullBufferSnapshots.size() &&
+                    !playSlot.fullBufferSnapshots[s_playStreamIndex].empty()) {
                     
-                    const auto& snapshot = s_slots[slotIdx].fullBufferSnapshots[s_playStreamIndex];
+                    const auto& snapshot = playSlot.fullBufferSnapshots[s_playStreamIndex];
                     // Get the recorded buffer index for this tick
                     uint16_t recBufIdx = 0;
-                    if (s_playStreamIndex < s_slots[slotIdx].bufIndexPerTick.size()) {
-                        recBufIdx = s_slots[slotIdx].bufIndexPerTick[s_playStreamIndex];
+                    if (s_playStreamIndex < playSlot.bufIndexPerTick.size()) {
+                        recBufIdx = playSlot.bufIndexPerTick[s_playStreamIndex];
                     }
                     
-                    // Write the full buffer snapshot to P2's input buffer
-                    if (p2Ptr && snapshot.size() == INPUT_BUFFER_SIZE) {
+                    // Write the full buffer snapshot to the target player's input buffer.
+                    if (playerPtr && snapshot.size() == INPUT_BUFFER_SIZE) {
                         // Apply facing flip if needed
                         std::vector<uint8_t> adjustedSnapshot = snapshot;
                         if (curFacing != 0 && recFacing != curFacing) {
@@ -995,9 +1114,9 @@ void Tick() {
                             }
                         }
                         // Write full buffer
-                        SafeWriteMemory(p2Ptr + INPUT_BUFFER_OFFSET, adjustedSnapshot.data(), INPUT_BUFFER_SIZE);
+                        SafeWriteMemory(playerPtr + INPUT_BUFFER_OFFSET, adjustedSnapshot.data(), INPUT_BUFFER_SIZE);
                         // Also set the buffer index to match the recorded index
-                        SafeWriteMemory(p2Ptr + INPUT_BUFFER_INDEX_OFFSET, &recBufIdx, sizeof(recBufIdx));
+                        SafeWriteMemory(playerPtr + INPUT_BUFFER_INDEX_OFFSET, &recBufIdx, sizeof(recBufIdx));
                         // Update our tracking to the recorded index so we detect when engine advances from there
                         s_lastSeenBufIdx = recBufIdx;
                     }
@@ -1007,15 +1126,15 @@ void Tick() {
                 s_tickBufQueue.clear();
                 s_tickBufHead = 0;
                 s_writesLeftThisTick = 0;
-                if (s_playStreamIndex < s_slots[slotIdx].bufCountsPerTick.size()) {
-                    uint16_t writesThisTick = s_slots[slotIdx].bufCountsPerTick[s_playStreamIndex];
+                if (s_playStreamIndex < playSlot.bufCountsPerTick.size()) {
+                    uint16_t writesThisTick = playSlot.bufCountsPerTick[s_playStreamIndex];
                     s_writesLeftThisTick = writesThisTick;
-                    for (uint16_t i = 0; i < writesThisTick && s_playBufStreamIndex < s_slots[slotIdx].bufStream.size(); ++i) {
-                        uint8_t raw = s_slots[slotIdx].bufStream[s_playBufStreamIndex++];
+                    for (uint16_t i = 0; i < writesThisTick && s_playBufStreamIndex < playSlot.bufStream.size(); ++i) {
+                        uint8_t raw = playSlot.bufStream[s_playBufStreamIndex++];
                         int8_t recFacingRaw = 0;
                         if (!s_streamFacingPerTick.empty() && s_playStreamIndex < s_streamFacingPerTick.size()) recFacingRaw = s_streamFacingPerTick[s_playStreamIndex];
                         if (recFacingRaw == 0) recFacingRaw = +1;
-                        int curFacingRaw = ReadFacingSign(2);
+                        int curFacingRaw = ReadFacingSign(playPlayer);
                         if (curFacingRaw != 0 && recFacingRaw != curFacingRaw) {
                             raw = FlipMaskHoriz(raw);
                         }
@@ -1038,13 +1157,14 @@ void Tick() {
             }
 
             if (!s_playbackPollAuditLogged) {
-                const uint32_t pollHits = GetInputPollOverrideHitCount(2);
+                const uint32_t pollHits = GetInputPollOverrideHitCount(playPlayer);
                 if (pollHits != 0) {
-                    LogOut("[MACRO][PLAY] Verified P2 poll override consumption; hits="
+                    LogOut("[MACRO][PLAY] Verified P" + std::to_string(playPlayer)
+                        + " poll override consumption; hits="
                         + std::to_string(pollHits), true);
                     s_playbackPollAuditLogged = true;
                 } else if (s_playStreamIndex >= 8) {
-                    LogOut("[MACRO][PLAY][ERROR] Playback cursor advanced without any P2 poll override consumption", true);
+                    LogOut("[MACRO][PLAY][ERROR] Playback cursor advanced without target poll override consumption", true);
                     s_playbackPollAuditLogged = true;
                 }
             }
@@ -1088,62 +1208,57 @@ void Tick() {
                 }
             }
 
-            // Drive the engine's poll directly this frame (P2 = index 2).
+            // Drive the target player's engine poll directly this frame.
             // This ensures the buffer history ring receives the correct macro inputs.
-            g_pollOverrideMask[2].store(frameMask, std::memory_order_relaxed);
-            g_pollOverrideActive[2].store(true, std::memory_order_relaxed);
-            g_forceBypass[2].store(false);
+            g_pollOverrideMask[playPlayer].store(frameMask, std::memory_order_relaxed);
+            g_pollOverrideActive[playPlayer].store(true, std::memory_order_relaxed);
+            g_forceBypass[playPlayer].store(false);
 
             if (suppressImmediate) {
                 // Force immediate state to Neutral (0) while preserving buffer write above.
                 // This prevents the character from reacting to the buffered directions/inputs until the trigger.
-                g_manualInputMask[2].store(0, std::memory_order_relaxed);
-                g_manualInputOverride[2].store(true, std::memory_order_relaxed);
+                g_manualInputMask[playPlayer].store(0, std::memory_order_relaxed);
+                g_manualInputOverride[playPlayer].store(true, std::memory_order_relaxed);
                 // Use BUFFERED path (bypass original) so we can control both immediate (0) and buffer (via poll override)
-                g_injectImmediateOnly[2].store(false, std::memory_order_relaxed);
+                g_injectImmediateOnly[playPlayer].store(false, std::memory_order_relaxed);
             } else {
                 // Normal playback: Immediate state matches Poll state (engine handles it)
-                g_manualInputOverride[2].store(false, std::memory_order_relaxed);
-                g_injectImmediateOnly[2].store(false, std::memory_order_relaxed);
+                g_manualInputOverride[playPlayer].store(false, std::memory_order_relaxed);
+                g_injectImmediateOnly[playPlayer].store(false, std::memory_order_relaxed);
             }
-            g_injectImmediateOnly[2].store(false);
+            g_injectImmediateOnly[playPlayer].store(false);
             // End condition: after last tick and queue drained
-            if (s_playStreamIndex >= s_slots[slotIdx].macroStream.size() && s_tickBufHead >= s_tickBufQueue.size() && s_writesLeftThisTick == 0) {
-                // Defer to the next tick boundary, then inject a full neutral clear tick.
-                // IMPORTANT: Neutralize immediately so we don't keep holding the last mask for leftover subframes.
-                s_finishPendingClearTick = true;
-                s_baselineMask = 0;
-                g_pollOverrideMask[2].store(0, std::memory_order_relaxed);
-                g_pollOverrideActive[2].store(true, std::memory_order_relaxed);
-                // Early clear of command flags as we enter finish sequence
-                (void)ClearPlayerCommandFlags(2);
+            if (s_playStreamIndex >= playSlot.macroStream.size() && s_tickBufHead >= s_tickBufQueue.size() && s_writesLeftThisTick == 0) {
+                s_endStreamPending = true;
+                s_endStreamPollHitsAtLatch = GetInputPollOverrideHitCount(playPlayer);
+                s_endStreamWaitFrames = 0;
                 return;
             }
         } else {
             // Fallback to existing RLE span playback (legacy path)
             const bool legacySpanAdvance = playbackFrozen ? playbackStepAdvanced : (s_frameDiv == 0);
             if (legacySpanAdvance && s_playSpanRemaining <= 0) {
-                if (s_playIndex >= s_slots[slotIdx].spans.size()) {
+                if (s_playIndex >= playSlot.spans.size()) {
                     // End via spans: defer to next tick boundary then perform full neutral clear tick
                     s_finishPendingClearTick = true;
                     // Early clear of command flags as we enter finish sequence (spans path)
-                    (void)ClearPlayerCommandFlags(2);
+                    (void)ClearPlayerCommandFlags(playPlayer);
                     return;
                 }
-                const RLESpan &sp = s_slots[slotIdx].spans[s_playIndex++];
+                const RLESpan &sp = playSlot.spans[s_playIndex++];
                 s_playSpanRemaining = sp.ticks;
                 // Determine current facing and flip if needed
-                int curFacing = ReadFacingSign(2);
+                int curFacing = ReadFacingSign(playPlayer);
                 uint8_t maskToApply = sp.mask;
                 int recFacing = (sp.facing == 0) ? +1 : sp.facing;
                 if (curFacing != 0 && recFacing != curFacing) {
                     maskToApply = FlipMaskHoriz(maskToApply);
                 }
                 // For RLE fallback, also use poll override so engine cadence is preserved
-                g_pollOverrideMask[2].store(maskToApply, std::memory_order_relaxed);
-                g_pollOverrideActive[2].store(true, std::memory_order_relaxed);
-                g_forceBypass[2].store(false);
-                g_injectImmediateOnly[2].store(false);
+                g_pollOverrideMask[playPlayer].store(maskToApply, std::memory_order_relaxed);
+                g_pollOverrideActive[playPlayer].store(true, std::memory_order_relaxed);
+                g_forceBypass[playPlayer].store(false);
+                g_injectImmediateOnly[playPlayer].store(false);
                 LogOut(std::string("[MACRO][PLAY] span imm=0x") + ToHexString((int)sp.mask, 2) +
                        " (" + MaskToButtons(sp.mask) + ") buf=0x" + ToHexString((int)sp.buf, 2) +
                        " (" + MaskToButtons(sp.buf) + ") ticks=" + std::to_string(sp.ticks) +
@@ -1153,260 +1268,236 @@ void Tick() {
                 s_playSpanRemaining--;
                 if (s_playSpanRemaining <= 0) {
                     // Force a neutral edge between spans to ensure clean transitions via poll
-                    ImmediateInput::Clear(2);
-                    g_pollOverrideMask[2].store(0, std::memory_order_relaxed);
+                    ImmediateInput::Clear(playPlayer);
+                    g_pollOverrideMask[playPlayer].store(0, std::memory_order_relaxed);
                 }
             }
         }
+    }
+}
+
+bool BeginPlayerRecording(int playerNum, bool switchLocalControl) {
+    if (GetCurrentGamePhase() != GamePhase::Match || !AreCharactersInitialized()) {
+        DirectDrawHook::AddMessage("Macro controls available only during Match", "MACRO", RGB(255, 180, 120), 900, 0, 120);
+        return false;
+    }
+    if (s_state.load(std::memory_order_acquire) != State::Idle) return false;
+
+    const int player = ClampPlayer(playerNum);
+    s_recordPlayer.store(player, std::memory_order_release);
+    s_recordStopRequested.store(false, std::memory_order_release);
+    s_recordSwitchesLocalControl = switchLocalControl && player == 2;
+    // P1/no-swap is the mission-authoring policy and gets an ephemeral clip.
+    s_useTransientRecording.store(player == 1 && !switchLocalControl, std::memory_order_release);
+
+    if (s_recordSwitchesLocalControl && GetCurrentGameMode() == GameMode::Practice) {
+        const int curLocal = SwitchPlayers::GetLocalSide();
+        if (curLocal == 0 || curLocal == 1) s_prevLocalSide.store(curLocal);
+        if (curLocal != 1) {
+            SwitchPlayers::SetLocalSide(1);
+            SwitchPlayers::MarkSwapped();
+        }
+        EnableP2ControlForAutoAction();
+    }
+
+    s_state.store(State::PreRecord, std::memory_order_release);
+    if (!s_useTransientRecording.load(std::memory_order_acquire)) {
+        const std::string label = "Macro: PreRecord";
+        if (s_macroBannerId == -1) {
+            s_macroBannerId = DirectDrawHook::AddPermanentMessage(label, RGB(255,255,0), kBannerX, kBannerY);
+        } else {
+            DirectDrawHook::UpdatePermanentMessage(s_macroBannerId, label, RGB(255,255,0));
+        }
+    }
+    LogOut("[MACRO] PreRecord: player=P" + std::to_string(player)
+        + " transient=" + std::to_string(s_useTransientRecording.load() ? 1 : 0), true);
+    return true;
+}
+
+bool StartPlayerRecording() {
+    if (s_state.load(std::memory_order_acquire) != State::PreRecord) return false;
+    const int player = ClampPlayer(s_recordPlayer.load(std::memory_order_acquire));
+    std::lock_guard<std::mutex> lock(s_recordMutex);
+    if (s_state.load(std::memory_order_acquire) != State::PreRecord) return false;
+
+    Slot& recordSlot = ActiveRecordingSlot();
+    recordSlot = Slot{};
+    s_recLastMask = 0;
+    s_recLastBuf = 0;
+    s_recLastFacing = 0;
+    s_recSpanTicks = 0;
+    s_recPrevBufIdx = -1;
+    s_frameDiv = 0;
+    s_recordFinalizing = false;
+
+    uintptr_t playerPtr = GetPlayerPointer(player);
+    uint16_t startIdx = 0;
+    if (playerPtr && SafeReadMemory(playerPtr + INPUT_BUFFER_INDEX_OFFSET, &startIdx, sizeof(startIdx))) {
+        recordSlot.bufStartIdx = startIdx;
+        s_recPrevBufIdx = startIdx;
+    }
+
+    s_state.store(State::Recording, std::memory_order_release);
+    if (!s_useTransientRecording.load(std::memory_order_acquire)) {
+        const std::string label = "Macro: Recording";
+        if (s_macroBannerId == -1) {
+            s_macroBannerId = DirectDrawHook::AddPermanentMessage(label, RGB(255,80,80), kBannerX, kBannerY);
+        } else {
+            DirectDrawHook::UpdatePermanentMessage(s_macroBannerId, label, RGB(255,80,80));
+        }
+    }
+    LogOut("[MACRO][REC] started player=P" + std::to_string(player)
+        + " slot=" + std::to_string(s_useTransientRecording.load() ? 0 : s_curSlot.load()), true);
+    LogPlayerBufferSnapshot(player, "start");
+    LogPlayerImmediateSnapshot(player, "start");
+    return true;
+}
+
+bool FinishPlayerRecording() {
+    if (s_state.load(std::memory_order_acquire) != State::Recording) return false;
+    const bool boundaryStop = s_recordStopRequested.exchange(false, std::memory_order_acq_rel);
+    FinishRecording(!boundaryStop);
+    return s_state.load(std::memory_order_acquire) == State::Idle;
+}
+
+void RequestRecordingStopAtBoundary() {
+    if (s_state.load(std::memory_order_acquire) == State::Recording) {
+        s_recordStopRequested.store(true, std::memory_order_release);
     }
 }
 
 void ToggleRecord() {
-    // Guard: only during live match
-    if (GetCurrentGamePhase() != GamePhase::Match || !AreCharactersInitialized()) {
-        DirectDrawHook::AddMessage("Macro controls available only during Match", "MACRO", RGB(255, 180, 120), 900, 0, 120);
-        return;
-    }
-    State st = s_state.load();
+    const State st = s_state.load(std::memory_order_acquire);
     if (st == State::Idle) {
-        // Enter PreRecord: swap controls to make P2 local and remember current side
-        if (GetCurrentGameMode() == GameMode::Practice) {
-            const int curLocal = SwitchPlayers::GetLocalSide();
-            const bool readOk = (curLocal == 0 || curLocal == 1);
-            if (readOk) {
-                s_prevLocalSide.store(curLocal);
-                if (curLocal != 1) {
-                    // make P2 local for easier recording and mark swapped
-                    SwitchPlayers::SetLocalSide(1);
-                    SwitchPlayers::MarkSwapped();
-                }
-            } else {
-                // Vanilla fallback: if we can't read the practice controller local side,
-                // still force P2 local so the user controls P2 during macro recording.
-                // This path does not touch Revival-specific state and uses our unified
-                // side-switcher which already guards Revival vs vanilla under the hood.
-                SwitchPlayers::SetLocalSide(1);
-                SwitchPlayers::MarkSwapped();
-            }
-            EnableP2ControlForAutoAction(); // ensure P2 is human-controlled
-        }
-        s_state.store(State::PreRecord);
-        // Persistent yellow banner (lower left, non-overlapping with status)
-        if (s_macroBannerId == -1) {
-            s_macroBannerId = DirectDrawHook::AddPermanentMessage("Macro: PreRecord", RGB(255,255,0), kBannerX, kBannerY);
-        } else {
-            DirectDrawHook::UpdatePermanentMessage(s_macroBannerId, "Macro: PreRecord", RGB(255,255,0));
-        }
-        LogOut("[MACRO] PreRecord: prevLocal=" + std::to_string(s_prevLocalSide.load()) +
-               " -> nowLocal=P2  slot=" + std::to_string(s_curSlot.load()), true);
+        (void)BeginPlayerRecording(2, true);
     } else if (st == State::PreRecord) {
-        // Start recording into current slot
-        int slotIdx = ClampSlot(s_curSlot.load()) - 1;
-        s_slots[slotIdx].spans.clear();
-        s_slots[slotIdx].hasData = false;
-            s_slots[slotIdx].macroStream.clear();
-            s_slots[slotIdx].bufStream.clear();
-            s_slots[slotIdx].bufCountsPerTick.clear();
-            s_slots[slotIdx].bufIndexPerTick.clear();
-            s_slots[slotIdx].tickReason.clear();
-            s_slots[slotIdx].immPerTick.clear();
-            s_slots[slotIdx].bufLatestPerTick.clear();
-            s_slots[slotIdx].fullBufferSnapshots.clear();
-            s_slots[slotIdx].bufStartIdx = 0;
-            s_slots[slotIdx].bufEndIdx = 0;
-            s_recLastMask = 0; s_recSpanTicks = 0; s_frameDiv = 0;
-            // Record starting buffer index
-            {
-                uintptr_t p2Ptr = GetPlayerPointer(2);
-                uint16_t startIdx = 0;
-                if (p2Ptr && SafeReadMemory(p2Ptr + INPUT_BUFFER_INDEX_OFFSET, &startIdx, sizeof(startIdx))) {
-                    s_slots[slotIdx].bufStartIdx = startIdx;
-                    s_recPrevBufIdx = startIdx;
-                } else {
-                    s_recPrevBufIdx = -1;
-                }
-            }
-        s_state.store(State::Recording);
-        // Update persistent banner to red
-        if (s_macroBannerId == -1) {
-            s_macroBannerId = DirectDrawHook::AddPermanentMessage("Macro: Recording", RGB(255,80,80), kBannerX, kBannerY);
-        } else {
-            DirectDrawHook::UpdatePermanentMessage(s_macroBannerId, "Macro: Recording", RGB(255,80,80));
-        }
-     LogOut("[MACRO][REC] started slot=" + std::to_string(s_curSlot.load()) +
-         " source=P2 -> sink=P2", true);
-    // Snapshot P2 buffer and immediate regs at start
-    LogP2BufferSnapshot("start");
-    LogP2ImmediateSnapshot("start");
+        (void)StartPlayerRecording();
     } else if (st == State::Recording) {
-        FinishRecording();
+        (void)FinishPlayerRecording();
     } else if (st == State::Replaying) {
-        // Stop replay
-        s_state.store(State::Idle);
-        ResetPlayback();
-        // Remove banner when stopping
-        if (s_macroBannerId != -1) { DirectDrawHook::RemovePermanentMessage(s_macroBannerId); s_macroBannerId = -1; }
+        Stop();
         DirectDrawHook::AddMessage("Macro: Replay stopped", "MACRO", RGB(255,200,180), 1000, 0, 120);
     }
 }
 
-void Play() {
-    // Guard: only during live match
-    if (GetCurrentGamePhase() != GamePhase::Match || !AreCharactersInitialized()) {
-        DirectDrawHook::AddMessage("Macro controls available only during Match", "MACRO", RGB(255, 180, 120), 900, 0, 120);
-        return;
+static bool StartPlayback(int playerNum, bool exclusiveInput, int startTick) {
+    if (GetCurrentGamePhase() != GamePhase::Match || !AreCharactersInitialized()) return false;
+    if (s_state.load(std::memory_order_acquire) != State::Idle) return false;
+
+    Slot& slot = ActivePlaybackSlot();
+    const bool useStream = !slot.macroStream.empty();
+    if (!slot.hasData || (slot.spans.empty() && !useStream)) return false;
+    if (startTick < 0) startTick = 0;
+    if (useStream && startTick >= static_cast<int>(slot.macroStream.size())) return false;
+
+    const int player = ClampPlayer(playerNum);
+    ResetPlayback();
+    s_playPlayer.store(player, std::memory_order_release);
+    s_exclusiveReplay.store(exclusiveInput, std::memory_order_release);
+    s_playStreamIndex = static_cast<size_t>(startTick);
+    if (startTick > 0 && !slot.bufCountsPerTick.empty()) {
+        size_t skippedWrites = 0;
+        const size_t stop = (std::min)(static_cast<size_t>(startTick),
+                                       slot.bufCountsPerTick.size());
+        for (size_t i = 0; i < stop; ++i) skippedWrites += slot.bufCountsPerTick[i];
+        s_playBufStreamIndex = (std::min)(skippedWrites, slot.bufStream.size());
     }
-    // If we're in PreRecord, treat Play as a cancel of PreRecord
-    if (s_state.load() == State::PreRecord) {
-        // Ensure we unswap first, then stop
+
+    if (GetCurrentGameMode() == GameMode::Practice) {
+        // Mission demonstrations and normal dummy macros are both authored from
+        // the P1-facing notation space. Keep P1 as the local menu side.
+        SwitchPlayers::SetLocalSide(0);
+    }
+
+    if (!slot.macroStream.empty() && !slot.spans.empty()) {
+        const size_t total = slot.macroStream.size();
+        s_streamFacingPerTick.reserve(total);
+        for (const auto& sp : slot.spans) {
+            for (int t = 0; t < sp.ticks && s_streamFacingPerTick.size() < total; ++t) {
+                s_streamFacingPerTick.push_back(sp.facing);
+            }
+            if (s_streamFacingPerTick.size() >= total) break;
+        }
+        while (s_streamFacingPerTick.size() < total) s_streamFacingPerTick.push_back(0);
+    }
+
+    if (player == 2) EnableP2ControlForAutoAction();
+    ResetInputPollOverrideHitCount(player);
+    g_pollOverrideMask[player].store(0, std::memory_order_relaxed);
+    g_pollOverrideActive[player].store(true, std::memory_order_release);
+    g_forceBypass[player].store(false);
+    g_injectImmediateOnly[player].store(false);
+    s_state.store(State::Replaying, std::memory_order_release);
+
+    const std::string label = exclusiveInput ? "DEMONSTRATION | ESC = STOP" : "Macro: Replaying";
+    if (s_macroBannerId == -1) {
+        s_macroBannerId = DirectDrawHook::AddPermanentMessage(label, RGB(120,255,120), kBannerX, kBannerY);
+    } else {
+        DirectDrawHook::UpdatePermanentMessage(s_macroBannerId, label, RGB(120,255,120));
+    }
+
+    int totalTicks = 0;
+    for (const auto& sp : slot.spans) totalTicks += sp.ticks;
+    const int slotNum = s_useTransientPlayback.load(std::memory_order_acquire) ? 0 : s_curSlot.load();
+    LogOut("[MACRO][PLAY] started slot=" + std::to_string(slotNum)
+        + " player=P" + std::to_string(player)
+        + " ticks=" + std::to_string(totalTicks)
+        + " streamBytes=" + std::to_string(slot.macroStream.size())
+        + " exclusive=" + std::to_string(exclusiveInput ? 1 : 0), true);
+    return true;
+}
+
+void Play() {
+    if (s_state.load(std::memory_order_acquire) == State::PreRecord) {
         UnswapThenStop();
         DirectDrawHook::AddMessage("Macro: PreRecord canceled", "MACRO", RGB(255, 200, 120), 900, 0, 120);
         return;
     }
-    // If currently recording, disallow play
-    if (s_state.load() == State::Recording) {
+    if (s_state.load(std::memory_order_acquire) == State::Recording) {
         DirectDrawHook::AddMessage("Macro: Cannot play while recording", "MACRO", RGB(255, 180, 120), 900, 0, 120);
         return;
     }
-    // Prepare playback
-    int slotIdx = ClampSlot(s_curSlot.load()) - 1;
-    if ((!s_slots[slotIdx].hasData || s_slots[slotIdx].spans.empty()) && s_slots[slotIdx].macroStream.empty()) {
-        DirectDrawHook::AddMessage("Macro: Slot empty", "MACRO", RGB(255,120,120), 1000, 0, 120);
-        return;
-    }
-    ResetPlayback();
-    // Ensure player control: we control P1 locally while P2 is macro-driven.
-    if (GetCurrentGameMode() == GameMode::Practice) {
-        SwitchPlayers::SetLocalSide(0); // P1 is local side
-    }
-    // Precompute per-tick recorded facing for stream playback from RLE spans
-    if (!s_slots[slotIdx].macroStream.empty() && !s_slots[slotIdx].spans.empty()) {
-        size_t total = s_slots[slotIdx].macroStream.size();
-        s_streamFacingPerTick.clear();
-        s_streamFacingPerTick.reserve(total);
-        for (const auto &sp : s_slots[slotIdx].spans) {
-            for (int t = 0; t < sp.ticks && s_streamFacingPerTick.size() < total; ++t) {
-                s_streamFacingPerTick.push_back(sp.facing);
-            }
-            if (s_streamFacingPerTick.size() >= total) break;
-        }
-        // If spans underflowed due to mismatch, pad remaining with 0 (unknown)
-        while (s_streamFacingPerTick.size() < total) s_streamFacingPerTick.push_back(0);
-    }
-    // Ensure P2 is human-controlled during playback
-    EnableP2ControlForAutoAction();
-    // Drive inputs via poll override while playing for exact engine cadence
-    ResetInputPollOverrideHitCount(2);
-    g_pollOverrideActive[2].store(true, std::memory_order_relaxed);
-    g_forceBypass[2].store(false);
-    g_injectImmediateOnly[2].store(false);
-    s_state.store(State::Replaying);
-    // Persistent green banner
-    if (s_macroBannerId == -1) {
-        s_macroBannerId = DirectDrawHook::AddPermanentMessage("Macro: Replaying", RGB(120,255,120), kBannerX, kBannerY);
-    } else {
-        DirectDrawHook::UpdatePermanentMessage(s_macroBannerId, "Macro: Replaying", RGB(120,255,120));
-    }
-    int totalTicks = 0; for (auto &sp : s_slots[slotIdx].spans) totalTicks += sp.ticks;
-    LogOut("[MACRO][PLAY] started slot=" + std::to_string(s_curSlot.load()) +
-           " spans=" + std::to_string((int)s_slots[slotIdx].spans.size()) +
-           " ticks=" + std::to_string(totalTicks) +
-           " streamBytes=" + std::to_string((int)s_slots[slotIdx].macroStream.size()) +
-           " sink=P2 (poll-override)", true);
-    // Dump streams at playback start for analysis
-    {
-        int slotNum = s_curSlot.load();
-        LogVectorHex("macroStream", slotNum, "play-start", s_slots[slotIdx].macroStream);
-        LogVectorHex("bufStream", slotNum, "play-start", s_slots[slotIdx].bufStream);
-        LogVectorU16("bufCountsPerTick", slotNum, "play-start", s_slots[slotIdx].bufCountsPerTick);
-        LogVectorU16("bufIndexPerTick", slotNum, "play-start", s_slots[slotIdx].bufIndexPerTick);
-        if (!s_streamFacingPerTick.empty()) {
-            std::vector<uint8_t> face;
-            face.reserve(s_streamFacingPerTick.size());
-            for (auto f : s_streamFacingPerTick) face.push_back((uint8_t)f);
-            LogVectorHex("streamFacingPerTick(+1/-1/0)", slotNum, "play-start", face);
-        }
-        LogPerTickOverview(slotNum, "play-start", s_slots[slotIdx].macroStream, s_slots[slotIdx].bufCountsPerTick, s_slots[slotIdx].bufIndexPerTick);
+    if (s_state.load(std::memory_order_acquire) != State::Idle) return;
+    s_useTransientPlayback.store(false, std::memory_order_release);
+    if (!StartPlayback(2, false, 0)) {
+        DirectDrawHook::AddMessage("Macro: Slot empty or unavailable", "MACRO", RGB(255,120,120), 1000, 0, 120);
     }
 }
 
 void PlayFromTick(int startTick) {
-    // Start playback from a specific tick offset.
-    // Used for wakeup macros to skip ahead and ensure the first attack button
-    // lands during the buffer window.
-    if (GetCurrentGamePhase() != GamePhase::Match || !AreCharactersInitialized()) return;
-    if (s_state.load() == State::Recording) return;
-    
-    int slotIdx = ClampSlot(s_curSlot.load()) - 1;
-    if (s_slots[slotIdx].macroStream.empty()) return;
-    
-    // Clamp startTick to valid range
-    if (startTick < 0) startTick = 0;
-    if (startTick >= static_cast<int>(s_slots[slotIdx].macroStream.size())) {
-        // Nothing to play
-        return;
-    }
-    
-    ResetPlayback();
-    s_playStreamIndex = static_cast<size_t>(startTick);
-    
-    // Ensure player control: we control P1 locally while P2 is macro-driven.
-    if (GetCurrentGameMode() == GameMode::Practice) {
-        SwitchPlayers::SetLocalSide(0); // P1 is local side
-    }
-    
-    // Precompute per-tick recorded facing for stream playback from RLE spans
-    if (!s_slots[slotIdx].spans.empty()) {
-        size_t total = s_slots[slotIdx].macroStream.size();
-        s_streamFacingPerTick.clear();
-        s_streamFacingPerTick.reserve(total);
-        for (const auto &sp : s_slots[slotIdx].spans) {
-            for (int t = 0; t < sp.ticks && s_streamFacingPerTick.size() < total; ++t) {
-                s_streamFacingPerTick.push_back(sp.facing);
-            }
-            if (s_streamFacingPerTick.size() >= total) break;
-        }
-        while (s_streamFacingPerTick.size() < total) s_streamFacingPerTick.push_back(0);
-    }
-    
-    EnableP2ControlForAutoAction();
-    ResetInputPollOverrideHitCount(2);
-    g_pollOverrideActive[2].store(true, std::memory_order_relaxed);
-    g_forceBypass[2].store(false);
-    g_injectImmediateOnly[2].store(false);
-    s_state.store(State::Replaying);
-    
-    if (s_macroBannerId == -1) {
-        s_macroBannerId = DirectDrawHook::AddPermanentMessage("Macro: Replaying", RGB(120,255,120), kBannerX, kBannerY);
-    } else {
-        DirectDrawHook::UpdatePermanentMessage(s_macroBannerId, "Macro: Replaying", RGB(120,255,120));
-    }
-    
-    LogOut("[MACRO][PLAY-FROM] started slot=" + std::to_string(s_curSlot.load()) +
-           " startTick=" + std::to_string(startTick) +
-           " totalTicks=" + std::to_string((int)s_slots[slotIdx].macroStream.size()), true);
+    if (s_state.load(std::memory_order_acquire) != State::Idle) return;
+    s_useTransientPlayback.store(false, std::memory_order_release);
+    (void)StartPlayback(2, false, startTick);
 }
 
 void Stop() {
     // Stop can be called anytime; no gating so it can clean up if needed
     State st = s_state.load();
+    const int playPlayer = ClampPlayer(s_playPlayer.load(std::memory_order_acquire));
+    const int recordPlayer = ClampPlayer(s_recordPlayer.load(std::memory_order_acquire));
     if (st == State::Recording) FinishRecording();
     s_state.store(State::Idle);
+    s_recordStopRequested.store(false, std::memory_order_release);
     ResetPlayback();
-    g_manualInputOverride[2].store(false);
-    g_forceBypass[2].store(false);
-    g_pollOverrideActive[2].store(false);
-    g_pollOverrideMask[2].store(0);
-    // Ensure engine command flags are cleared on manual stop
-    (void)ClearPlayerCommandFlags(2);
+    g_manualInputOverride[playPlayer].store(false);
+    g_forceBypass[playPlayer].store(false);
+    g_pollOverrideActive[playPlayer].store(false);
+    g_pollOverrideMask[playPlayer].store(0);
+    (void)ClearPlayerCommandFlags(playPlayer);
+    if (st == State::Recording || st == State::PreRecord) {
+        (void)ClearPlayerCommandFlags(recordPlayer);
+    }
+    s_exclusiveReplay.store(false, std::memory_order_release);
+    s_useTransientPlayback.store(false, std::memory_order_release);
     // Remove banner and restore side
     if (s_macroBannerId != -1) { DirectDrawHook::RemovePermanentMessage(s_macroBannerId); s_macroBannerId = -1; }
-    if (g_p2ControlOverridden) RestoreP2ControlState();
+    if (g_p2ControlOverridden && (playPlayer == 2 || recordPlayer == 2)) RestoreP2ControlState();
     int prev = s_prevLocalSide.load();
     if (prev == 0 || prev == 1) {
         SwitchPlayers::SetLocalSide(prev);
         s_prevLocalSide.store(-1);
     }
+    s_recordSwitchesLocalControl = false;
 }
 
 // When exiting during PreRecord/Recording or on menu entry,
@@ -1431,6 +1522,18 @@ bool IsSlotEmpty(int slot) {
     return !(s.hasData && hasAny);
 }
 MacroController::State GetState() { return s_state.load(); }
+bool DidAdvanceRecordingTick() { return s_recordTickAdvanced.load(std::memory_order_acquire); }
+bool IsExclusivePlayback() {
+    return s_exclusiveReplay.load(std::memory_order_acquire);
+}
+int GetPlaybackPlayer() { return ClampPlayer(s_playPlayer.load(std::memory_order_acquire)); }
+void ReleaseExclusivePlaybackHold() {
+    if (!s_exclusiveReplay.exchange(false, std::memory_order_acq_rel)) return;
+    const int player = ClampPlayer(s_playPlayer.load(std::memory_order_acquire));
+    g_pollOverrideMask[player].store(0, std::memory_order_relaxed);
+    g_pollOverrideActive[player].store(false, std::memory_order_release);
+    s_useTransientPlayback.store(false, std::memory_order_release);
+}
 
 std::string GetStatusLine() {
     std::ostringstream os;
@@ -1520,9 +1623,7 @@ void PrevSlot() {
 // ---- Serialization / Deserialization implementation ----
 namespace MacroController {
 
-std::string SerializeSlot(int slot, bool includeBuffers) {
-    slot = ClampSlot(slot);
-    const Slot& s = s_slots[slot - 1];
+static std::string SerializeClip(const Slot& s, bool includeBuffers) {
     // Build per-tick macro masks
     std::vector<uint8_t> ticks;
     std::vector<int8_t> faces; // recorded facing per tick (-1 left, +1 right, 0 unknown)
@@ -1614,6 +1715,18 @@ std::string SerializeSlot(int slot, bool includeBuffers) {
     return out.str();
 }
 
+std::string SerializeSlot(int slot, bool includeBuffers) {
+    slot = ClampSlot(slot);
+    return SerializeClip(s_slots[slot - 1], includeBuffers);
+}
+
+std::string SerializeLastPlayerRecording(bool includeBuffers) {
+    const Slot& clip = s_useTransientRecording.load(std::memory_order_acquire)
+        ? s_transientRecordingSlot
+        : s_slots[ClampSlot(s_curSlot.load()) - 1];
+    return SerializeClip(clip, includeBuffers);
+}
+
 static void ClearSlotForImport(Slot& s) {
     s.spans.clear();
     s.macroStream.clear();
@@ -1681,10 +1794,8 @@ static void BuildSyntheticSnapshotsFromBuf(Slot& s) {
     }
 }
 
-bool DeserializeSlot(int slot, const std::string& text, std::string& errorOut) {
+static bool DeserializeClip(Slot& dst, const std::string& text, std::string& errorOut) {
     errorOut.clear();
-    slot = ClampSlot(slot);
-    Slot& dst = s_slots[slot - 1];
 
     // Tokenize with brace-aware scanning
     std::vector<std::string> tokens;
@@ -1879,6 +1990,44 @@ bool DeserializeSlot(int slot, const std::string& text, std::string& errorOut) {
     // playback can restore a consistent history window.
     if (kEnableFullBufferSnapshots) {
         BuildSyntheticSnapshotsFromBuf(dst);
+    }
+    return true;
+}
+
+bool DeserializeSlot(int slot, const std::string& text, std::string& errorOut) {
+    slot = ClampSlot(slot);
+    return DeserializeClip(s_slots[slot - 1], text, errorOut);
+}
+
+bool ValidateSerialized(const std::string& text, std::string& errorOut) {
+    Slot parsed;
+    if (!DeserializeClip(parsed, text, errorOut)) return false;
+    if (!parsed.hasData) {
+        errorOut = "Macro is empty";
+        return false;
+    }
+    return true;
+}
+
+bool PlaySerializedForPlayer(const std::string& text, int playerNum,
+                             bool exclusiveInput, std::string& errorOut) {
+    Slot parsed;
+    if (!DeserializeClip(parsed, text, errorOut)) return false;
+    if (!parsed.hasData) {
+        errorOut = "Demonstration is empty";
+        return false;
+    }
+    if (s_state.load(std::memory_order_acquire) != State::Idle) {
+        errorOut = "Another macro session is active";
+        return false;
+    }
+
+    s_transientPlaybackSlot = std::move(parsed);
+    s_useTransientPlayback.store(true, std::memory_order_release);
+    if (!StartPlayback(playerNum, exclusiveInput, 0)) {
+        s_useTransientPlayback.store(false, std::memory_order_release);
+        errorOut = "Demonstration cannot start in the current game state";
+        return false;
     }
     return true;
 }

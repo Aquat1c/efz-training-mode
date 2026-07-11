@@ -89,6 +89,7 @@ reference_projects/
 decompilations/
 docs/
 dumpbin/
+tools/
 # OS-specific files
 .DS_Store
 .DS_Store?

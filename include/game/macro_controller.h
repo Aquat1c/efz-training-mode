@@ -4,9 +4,9 @@
 #include <string>
 
 // Lightweight Practice-owned macro controller (NOW mode first cut).
-// - Two-press record: first press enters PreRecord (cycles slot, grants P2 control),
-//   second press starts recording; third press stops.
-// - Replay: immediate input (ImmediateInput::Set/Clear) driven by recorded run-lengths.
+// - Three-stage record: arm PreRecord (grants P2 control), explicitly start,
+//   then stop and keep the clip.
+// - Replay: per-player engine poll override driven by recorded input frames.
 // - Pause/frame-step safe: progression halts when game speed is frozen (gamespeed==0).
 
 namespace MacroController {
@@ -32,6 +32,7 @@ struct SlotStats {
 
 // Call once per internal frame from the Frame Monitor (Match phase only)
 void Tick();
+bool DidAdvanceRecordingTick(); // true for the current frame-monitor pass
 
 // Hotkeys
 void ToggleRecord();   // Idle -> PreRecord -> Recording -> Idle(stop)
@@ -39,6 +40,25 @@ void Play();           // Start replay current slot if present
 void PlayFromTick(int startTick); // Start replay from a specific tick offset
 void Stop();           // Force stop (record/replay), restore state
 void UnswapThenStop(); // Restore default mapping (unswap+CPU) first, then stop
+
+// Player-selectable recording/replay used by mission demonstrations. Regular
+// Practice macros keep using P2 through ToggleRecord()/Play(); mission capture
+// uses P1 without swapping local control.
+bool BeginPlayerRecording(int playerNum, bool switchLocalControl = false);
+bool StartPlayerRecording();
+bool FinishPlayerRecording();
+void RequestRecordingStopAtBoundary();
+std::string SerializeLastPlayerRecording(bool includeBuffers);
+
+// Parse and play a temporary macro without replacing any of the eight user
+// slots. `exclusiveInput` marks the replay as owning gameplay input; callers
+// should gate their frontend so only an explicit cancel command is accepted.
+bool PlaySerializedForPlayer(const std::string& text, int playerNum,
+                             bool exclusiveInput, std::string& errorOut);
+bool ValidateSerialized(const std::string& text, std::string& errorOut);
+bool IsExclusivePlayback();
+int  GetPlaybackPlayer();
+void ReleaseExclusivePlaybackHold();
 
 // Slot helpers
 int  GetCurrentSlot();           // 1-based slot index

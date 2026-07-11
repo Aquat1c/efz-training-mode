@@ -25,13 +25,14 @@ bool IsInCharacterSelectScreen();
 
 enum class FrontendExitTarget : uint8_t {
     CharacterSelect = 1,
+    Loading = 2,
     Title = 0,
 };
 
 // Installs lightweight front-end safety hooks:
 // - suppresses EFZ's DirectInput ESC/F-key battle hotkeys while our menu is open
 // - redirects Practice ESC to the training menu instead of EFZ's character-select exit
-// - lets requested battle cleanup return to Title instead of Character Select
+// - lets requested battle cleanup return to Title or Loading instead of Character Select
 bool EnsureFrontendControlHooksInstalled();
 
 using BattleUpdateCallback = void (*)(void* battleContext);

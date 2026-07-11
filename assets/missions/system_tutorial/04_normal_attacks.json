@@ -1,0 +1,20 @@
+{
+    "format": 1,
+    "type": "tutorial",
+    "category": "offense",
+    "difficulty": 1,
+    "name": "Normal Attacks",
+    "description": "Perform a standing light, crouching light, and a heavy normal. Notice how speed and reach change with the button and direction.",
+    "player": { "character": "nanase", "pos": { "x": -120.0, "y": 0.0 }, "meter": 3000 },
+    "dummy": { "character": "misuzu", "pos": { "x": 120.0, "y": 0.0 } },
+    "stage": 0,
+    "bgm": -1,
+    "steps": [
+        { "notation": "5A", "ids": [200], "req": "move", "maxGap": 5760 },
+        { "notation": "2A", "ids": [204], "req": "move", "maxGap": 5760 },
+        { "notation": "5C/2C", "ids": [203, 206], "req": "move", "maxGap": 5760 }
+    ],
+    "failTimer": 5760,
+    "score": [{ "label": "Clear" }],
+    "hint": ["5 means no direction. 2 means hold down. A is fastest; C is usually slower and stronger."]
+}

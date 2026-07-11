@@ -13,6 +13,7 @@
 #include "../include/input/immediate_input.h"
 #include "../include/utils/minhook_utils.h"
 #include "../include/game/auto_action.h"
+#include "../include/game/macro_controller.h"
 #include "../include/input/injection_control.h"
 #include <windows.h>
 #include <vector>
@@ -48,6 +49,9 @@ std::atomic<bool> g_forceBypass[3] = { false, false, false };
 std::atomic<bool> g_pollOverrideActive[3] = { false, false, false };
 std::atomic<uint8_t> g_pollOverrideMask[3] = { 0, 0, 0 };
 static std::atomic<uint32_t> g_pollOverrideHitCount[3] = { 0, 0, 0 };
+static std::atomic<uint8_t> g_lastPolledMask[3] = { 0, 0, 0 };
+static std::atomic<uint8_t> g_pendingPollAttackEdges[3] = { 0, 0, 0 };
+static std::atomic<uint32_t> g_inputPollSerial[3] = { 0, 0, 0 };
 
 #if EFZ_ENABLE_AUTO_ACTION_WAKE_TRACE
 static const char* TraceBool(bool value) {
@@ -217,6 +221,16 @@ void ResetInputPollOverrideHitCount(int playerNum) {
 uint32_t GetInputPollOverrideHitCount(int playerNum) {
     if (playerNum != 1 && playerNum != 2) return 0;
     return g_pollOverrideHitCount[playerNum].load(std::memory_order_acquire);
+}
+
+uint8_t ConsumeInputPollAttackEdges(int playerNum) {
+    if (playerNum != 1 && playerNum != 2) return 0;
+    return g_pendingPollAttackEdges[playerNum].exchange(0, std::memory_order_acq_rel);
+}
+
+uint32_t GetInputPollSerial(int playerNum) {
+    if (playerNum != 1 && playerNum != 2) return 0;
+    return g_inputPollSerial[playerNum].load(std::memory_order_acquire);
 }
 
 // Arming state for motion-token neutralization and optional staged cleanup
@@ -493,6 +507,22 @@ bool SetVanillaSwapInputRouting(bool enable) {
     return true;
 }
 
+static int RecordInputPollResult(unsigned int player, int result) {
+    if (player == 1 || player == 2) {
+        constexpr uint8_t kAttackButtons = 0xF0; // A/B/C/D
+        const uint8_t mask = static_cast<uint8_t>(result);
+        const uint8_t previous =
+            g_lastPolledMask[player].exchange(mask, std::memory_order_acq_rel);
+        const uint8_t rising = static_cast<uint8_t>(
+            mask & static_cast<uint8_t>(~previous) & kAttackButtons);
+        if (rising != 0) {
+            g_pendingPollAttackEdges[player].fetch_or(rising, std::memory_order_release);
+        }
+        g_inputPollSerial[player].fetch_add(1, std::memory_order_release);
+    }
+    return result;
+}
+
 // Our poll hook. Use __fastcall to match __thiscall trampoline signature.
 static int __fastcall HookedPollPlayerInputState(int inputManagerPtr, int /*edx*/, unsigned int playerIndex)
 {
@@ -524,15 +554,23 @@ static int __fastcall HookedPollPlayerInputState(int inputManagerPtr, int /*edx*
             LogOut(oss.str(), true);
         }
         g_pollOverrideHitCount[idxFromProcessContext].fetch_add(1, std::memory_order_relaxed);
-        return static_cast<int>(g_pollOverrideMask[idxFromProcessContext].load(std::memory_order_relaxed));
+        return RecordInputPollResult(
+            idxFromProcessContext,
+            static_cast<int>(g_pollOverrideMask[idxFromProcessContext].load(std::memory_order_relaxed)));
     }
 
     if (idxFromPollArg <= 2 && idxFromPollArg != 0
         && g_pollOverrideActive[idxFromPollArg].load(std::memory_order_relaxed)) {
         g_pollOverrideHitCount[idxFromPollArg].fetch_add(1, std::memory_order_relaxed);
-        return static_cast<int>(g_pollOverrideMask[idxFromPollArg].load(std::memory_order_relaxed));
+        return RecordInputPollResult(
+            idxFromPollArg,
+            static_cast<int>(g_pollOverrideMask[idxFromPollArg].load(std::memory_order_relaxed)));
     }
-    return oPollPlayerInputState ? oPollPlayerInputState(inputManagerPtr, playerIndex) : 0;
+    const int result = oPollPlayerInputState
+        ? oPollPlayerInputState(inputManagerPtr, playerIndex) : 0;
+    const unsigned int logicalPlayer = idxFromProcessContext != 0
+        ? idxFromProcessContext : idxFromPollArg;
+    return RecordInputPollResult(logicalPlayer, result);
 }
 
 // Our custom function that will be called instead of the original.
@@ -610,7 +648,10 @@ int __fastcall HookedProcessCharacterInput(int characterPtr, int edx) {
 
     // REVERTED LOGIC: The queue system now handles all injection states.
     bool shouldInject = false;
-    if (playerNum > 0) {
+    const bool exclusiveMacroOwnsPlayer = playerNum > 0 &&
+        MacroController::IsExclusivePlayback() &&
+        MacroController::GetPlaybackPlayer() == playerNum;
+    if (playerNum > 0 && !exclusiveMacroOwnsPlayer) {
         if (g_manualInputOverride[playerNum].load()) {
             shouldInject = true;
         } else if (playerNum == 1 && p1QueueActive) {

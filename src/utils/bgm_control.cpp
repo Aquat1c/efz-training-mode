@@ -8,6 +8,7 @@
 #include "../3rdparty/minhook/include/MinHook.h"
 #include <thread>
 #include <chrono>
+#include <atomic>
 
 // Offsets
 constexpr uintptr_t BGM_SLOT_OFFSET   = 0xF26;
@@ -21,7 +22,7 @@ static PlayBGMFunc oPlayBGM = nullptr;
 // Helper to get efz.exe base (implement this if not present)
 extern uintptr_t GetEFZBase();
 
-static unsigned short g_lastBgmTrack = 0; // Track of last requested playBGM for manual controls
+static std::atomic<unsigned int> g_lastBgmTrack{0xFFFFu};
 
 bool StopBGM(uintptr_t gameSystemPtr) {
     if (!gameSystemPtr) return false;
@@ -33,6 +34,9 @@ bool StopBGM(uintptr_t gameSystemPtr) {
     StopBGMFunc stopBGM = (StopBGMFunc)(efzBase + 0x6A10); // 0x406A10 RVA
     LogOut("[BGM] Calling game's stopBackgroundMusic...", true);
     stopBGM(gameSystemPtr);
+    // Track 150 is EFZ's established "OFF" selection. Preserve silence as a
+    // reproducible logical presentation state instead of leaving a stale track.
+    SetLastBgmTrack(150);
     LogOut("[BGM] Called stopBackgroundMusic.", true);
     return true;
 }
@@ -44,14 +48,19 @@ bool PlayBGM(uintptr_t gameSystemPtr, unsigned short trackNumber) {
         LogOut("[BGM] playBackgroundMusic request failed for track " + std::to_string(trackNumber), true);
         return false;
     }
+    SetLastBgmTrack(trackNumber);
     LogOut("[BGM] playBackgroundMusic request succeeded.", true);
     return true;
 }
 
-int GetBGMSlot(uintptr_t gameStatePtr) {
+int GetBGMBufferIndex(uintptr_t gameStatePtr) {
     uint16_t slot = 0;
     SafeReadMemory(gameStatePtr + 0xF26, &slot, sizeof(uint16_t));
     return static_cast<int>(slot);
+}
+
+int GetBGMSlot(uintptr_t gameStatePtr) {
+    return GetBGMBufferIndex(gameStatePtr);
 }
 
 int GetBGMVolume(uintptr_t gameStatePtr) {
@@ -101,11 +110,11 @@ void SetBGMSuppressed(bool /*suppress*/) {}
 bool IsBGMSuppressed() { return false; }
 
 unsigned short GetLastBgmTrack() {
-    return g_lastBgmTrack;
+    return static_cast<unsigned short>(g_lastBgmTrack.load(std::memory_order_acquire));
 }
 
 void SetLastBgmTrack(unsigned short track) {
-    g_lastBgmTrack = track;
+    g_lastBgmTrack.store(track, std::memory_order_release);
 }
 
 // Set BGM volume using the game's internal setSoundVolume function

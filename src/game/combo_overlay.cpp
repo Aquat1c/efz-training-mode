@@ -6,6 +6,7 @@
 #include "../include/game/collision_hook.h"
 #include "../include/gui/imgui_impl.h"
 #include "../include/gui/overlay.h"
+#include "../include/game/mission/mission_engine.h" // suppress overlay during missions
 #include "../include/utils/config.h"
 #include "../include/utils/switch_players.h"
 #include "../include/utils/utilities.h"
@@ -629,6 +630,12 @@ namespace {
     void RenderUnlocked(unsigned long long nowMs) {
         const Config::Settings& cfg = Config::GetSettings();
         if (!cfg.showComboStatisticsOverlay) {
+            ClearDisplayUnlocked();
+            return;
+        }
+        // A running mission draws its recipe in the same screen area - the combo
+        // stats overlay would overlap it, so it yields while a mission is active.
+        if (Mission::Engine::Runner::IsActive()) {
             ClearDisplayUnlocked();
             return;
         }

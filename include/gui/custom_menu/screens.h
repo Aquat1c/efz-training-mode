@@ -344,6 +344,11 @@ void RequestMenuNavigation(const MenuNavigationRequest& request);
 bool ConsumeMenuNavigation(MenuNavigationRequest& out);
 void OpenSubmenuDirect(RowListBuilder builder, const char* title, int focusRow = 0);
 
+// Queue the mission browser (packs + recorded) to open on the next menu frame.
+// Used by the title MISSION entry after Practice launches.
+void OpenMissionBrowser();
+void NotifyMissionLibraryChanged();
+
 // Hotkey-binding overlay. While active, every captured key or controller
 // button is written into the active config setting. The renderer should call
 // TickKeybindIfActive() to render the overlay and process input. Returns
