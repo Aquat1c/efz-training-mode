@@ -1,6 +1,6 @@
 {
  "char": "ayu",
- "note": "RAW specials + universals; motions are research-grade, correct in-game",
+ "note": "RAW command extraction + user-confirmed notation overrides",
  "notation": {
   "4": "8",
   "5": "9",
@@ -9,7 +9,7 @@
   "15": "dj9",
   "16": "dj7",
   "163": "66",
-  "164": "66",
+  "164": "44",
   "165": "j.66",
   "166": "j.44",
   "167": "IC",
@@ -24,6 +24,10 @@
   "207": "j.A",
   "208": "j.B",
   "209": "j.C",
+  "230": "66A",
+  "231": "66B",
+  "232": "66C",
+  "233": "662A",
   "250": "623A",
   "251": "623C",
   "252": "623B",

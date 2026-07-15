@@ -2,6 +2,7 @@
 #include "../include/utils/xinput_shim.h"
 #include "../include/core/logger.h"
 #include "../include/gui/imgui_gui.h"
+#include "../include/gui/custom_menu/fonts.h"
 #include "../include/gui/custom_menu/renderer.h"
 #include "../include/game/practice_hotkey_gate.h"
 namespace PracticeOverlayGate { void SetMenuVisible(bool); }
@@ -841,6 +842,7 @@ namespace ImGuiImpl {
         const float targetPx = roundf(basePx * sRounded);
 
         ImGui_ImplDX9_InvalidateDeviceObjects();
+        CustomMenu::Fonts::InvalidateAtlasReferences();
         io.Fonts->Clear();
         io.Fonts->Flags |= ImFontAtlasFlags_NoPowerOfTwoHeight;
         io.Fonts->TexGlyphPadding = 1;

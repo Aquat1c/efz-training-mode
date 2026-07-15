@@ -5,10 +5,15 @@
 #include <sstream>
 #include <iomanip>
 #include <mutex>
+#include <atomic>
 
 namespace DebugLog {
-    // Enable/disable detailed logging to file
-    extern bool g_EnableDebugLog;
+    // Compatibility flag for startup configuration. Runtime callers should use
+    // SetEnabled() so enabling opens the file and disabling flushes/closes it.
+    extern std::atomic<bool> g_EnableDebugLog;
+
+    bool IsEnabled();
+    bool SetEnabled(bool enabled);
     
     // Initialize the debug log file
     void Initialize();
@@ -22,7 +27,7 @@ namespace DebugLog {
     // Write memory read operation
     template<typename T>
     void LogRead(const std::string& label, uintptr_t address, T value) {
-        if (!g_EnableDebugLog) return;
+        if (!IsEnabled()) return;
         std::ostringstream oss;
         oss << "[READ] " << label << " @0x" << std::hex << std::uppercase << address 
             << " = 0x" << std::setw(sizeof(T)*2) << std::setfill('0') << (uint64_t)value 
@@ -33,7 +38,7 @@ namespace DebugLog {
     // Write memory write operation with before/after values
     template<typename T>
     void LogWrite(const std::string& label, uintptr_t address, T before, T after) {
-        if (!g_EnableDebugLog) return;
+        if (!IsEnabled()) return;
         std::ostringstream oss;
         oss << "[WRITE] " << label << " @0x" << std::hex << std::uppercase << address 
             << " : 0x" << std::setw(sizeof(T)*2) << std::setfill('0') << (uint64_t)before 

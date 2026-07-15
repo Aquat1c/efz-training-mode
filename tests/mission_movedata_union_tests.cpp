@@ -77,8 +77,8 @@ int main(int argc, char** argv) {
         Check(metadata.attacks[id],
               "base super attack capability survives the alternate entry");
     }
-    Check(metadata.classes[413] == Cls::SuperEntity && metadata.attacks[413],
-          "alternate super entity augments the base inventory");
+    Check(metadata.classes[413] == Cls::Projectile && metadata.attacks[413],
+          "alternate thrown-Shinai projectile augments the base inventory");
     Check(metadata.classes[414] == Cls::Projectile && metadata.attacks[414],
           "alternate projectile augments the base inventory");
     Check(metadata.classes[417] == Cls::Projectile && metadata.attacks[417],

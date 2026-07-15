@@ -12,6 +12,10 @@ bool SafeWriteMemory(uintptr_t address, const void* data, size_t size);
 // Memory manipulation functions
 uintptr_t ResolvePointer(uintptr_t base, uintptr_t baseOffset, uintptr_t offset);
 void WriteGameMemory(uintptr_t address, const void* data, size_t size);
+// Authoritative variant used by mission/tutorial setup. It verifies the
+// position/state writes immediately and reports failure to the caller.
+bool TrySetPlayerPosition(uintptr_t base, uintptr_t playerOffset, double x, double y,
+                          bool updateMoveID = true);
 void SetPlayerPosition(uintptr_t base, uintptr_t playerOffset, double x, double y, bool updateMoveID = true);
 void UpdatePlayerValues(uintptr_t base, uintptr_t baseOffsetP1, uintptr_t baseOffsetP2);
 void UpdatePlayerValuesExceptRF(uintptr_t base, uintptr_t baseOffsetP1, uintptr_t baseOffsetP2);

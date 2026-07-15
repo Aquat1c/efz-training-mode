@@ -107,4 +107,28 @@ void DrawButton(
     ImDrawList* dl, float x, float y, float w, float h,
     const char* label, bool focused, bool disabled = false);
 
+// ===== Native (in-game) menu primitives =====
+// These reproduce the Revival menu language: beveled metal strips, hard black
+// outlines on uppercase text, a solid title band, and the bottom description
+// box. Coordinates are 640x480 canvas space.
+
+// Uppercase menu text with a hard black outline (readable over anything).
+void DrawOutlinedText(ImDrawList* dl, ImFont* font, float px, float x, float y,
+                      ImU32 col, const char* text);
+
+// Full-width beveled bar (selected = bright steel, disabled = dark).
+void DrawNativeBar(ImDrawList* dl, float x, float y, float w, float h,
+                   bool selected, bool disabled = false);
+
+// Convenience: bar + centered outlined label (the netplay-menu row).
+void DrawNativeBarCentered(ImDrawList* dl, float x, float y, float w, float h,
+                           const char* label, bool selected, bool disabled = false);
+
+// Solid black title band with centered header text; returns the band bottom.
+float DrawTitleBand(ImDrawList* dl, const char* title,
+                    const char* rightStatus = nullptr, float y = 0.0f);
+
+// Black description box with a thin white border (the game's bottom info box).
+void DrawInfoBox(ImDrawList* dl, float x, float y, float w, float h);
+
 } // namespace CustomMenu::Layout

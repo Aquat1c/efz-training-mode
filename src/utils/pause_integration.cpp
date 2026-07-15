@@ -501,7 +501,10 @@ namespace {
     // to avoid fragile render hooks in vanilla.
     static bool RefreshBattleContextFromGameModeArray() {
         uintptr_t efzBase = GetEFZBase(); if (!efzBase) return false;
-        constexpr uintptr_t RVA_GameModeArray = 0x00790110; // game mode array base offset
+        // Base-relative offset of the VA-0x790110 game-mode array (load base
+        // 0x400000). The old 0x00790110 value here computed 0xB90110 and made
+        // this vanilla fallback always fail into the render hook.
+        constexpr uintptr_t RVA_GameModeArray = 0x00390110;
         void* bc = nullptr;
         uintptr_t slot3 = efzBase + RVA_GameModeArray + 4 * 3; // index 3 = battle context
         if (!SafeReadMemory(slot3, &bc, sizeof(bc)) || !bc) return false;
@@ -513,7 +516,10 @@ namespace {
     static bool ResolveGamespeedAddr() {
         if (s_gamespeedAddr.load()) return true;
         uintptr_t efzBase = GetEFZBase(); if (!efzBase) return false;
-        constexpr uintptr_t RVA_GameModeArray = 0x00390110; // game mode array base offset
+        // Offsets here are relative to the load base 0x400000, so this is
+        // VA 0x790110 - the same game-mode array GAME_STATE_DBG walks via
+        // [efz.exe+0x39010C].
+        constexpr uintptr_t RVA_GameModeArray = 0x00390110;
         struct Path { int idx; uintptr_t off; } paths[] = {
             { 1, 0x0F20 },
             { 2, 0x09B8 },
@@ -526,8 +532,12 @@ namespace {
             uintptr_t cand = basePtr + p.off;
             uint8_t probe = 0xFF;
             if (SafeReadMemory(cand, &probe, sizeof(probe))) {
-                // Valid speeds observed in engine: 0 (frozen), 3 (normal)
-                if (probe <= 3) {
+                // Valid speeds observed in engine: 0 (frozen), 3 (normal).
+                // Never LATCH on a 0 probe: a wrong address full of zeroes is
+                // indistinguishable from "frozen" and would stick forever.
+                // Resolution is retried on the next read, when the game is
+                // running and the true byte is nonzero.
+                if (probe >= 1 && probe <= 3) {
                     s_gamespeedAddr.store(cand, std::memory_order_relaxed);
                     std::ostringstream oss; oss << "[PAUSE][ADDR] Gamespeed addr=0x" << std::hex << cand
                         << " via slot=" << std::dec << p.idx << " off=0x" << std::hex << p.off
@@ -537,7 +547,15 @@ namespace {
                 }
             }
         }
-        LogOut("[PAUSE][ADDR] Failed to resolve gamespeed address from GameMode array", true);
+        // Unresolved resolution retries on every read; keep the failure line
+        // from flooding the log at monitor cadence.
+        static DWORD s_lastResolveFailLog = 0;
+        const DWORD now = GetTickCount();
+        if (now - s_lastResolveFailLog > 5000) {
+            s_lastResolveFailLog = now;
+            LogOut("[PAUSE][ADDR] Failed to resolve gamespeed address from GameMode array",
+                   detailedLogging.load());
+        }
         return false;
     }
 
@@ -833,7 +851,20 @@ namespace PauseIntegration {
     }
 
     bool IsPracticePaused() { bool p=false; if (ReadPracticePauseFlag(p)) return p; return false; }
-    bool __cdecl IsGameSpeedFrozen() { uint8_t v=3; if (ReadGamespeed(v)) return v==0; return false; }
+    // Only a positively identified gamespeed byte may declare a freeze. The
+    // heuristic candidates and the legacy battleContext+0x1400 guess read 0 on
+    // Revival while the game is visibly running; treating those as "frozen"
+    // held the mission recorder count-in forever (2026-07-11). Unresolved
+    // means "not frozen" - Revival pauses are still caught by the practice
+    // pause flag above.
+    bool __cdecl IsGameSpeedFrozen() {
+        uintptr_t addr = s_gamespeedAddr.load();
+        if (!addr) { ResolveGamespeedAddr(); addr = s_gamespeedAddr.load(); }
+        if (!addr) return false;
+        uint8_t v = 3;
+        if (!SafeReadMemory(addr, &v, sizeof(v))) return false;
+        return v == 0;
+    }
     bool IsPausedOrFrozen() { return IsPracticePaused() || IsGameSpeedFrozen(); }
 
     bool SetPracticePausedForFramestep(bool paused) {

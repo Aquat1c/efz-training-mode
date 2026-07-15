@@ -8,9 +8,13 @@
 #include "../../../include/utils/utilities.h"  // detailedLogging
 #include "../../../include/game/mission/mission_engine.h"  // SetPendingMissionLoad
 #include "../../../include/game/mission/mission_data.h"      // mission list scan
+#include "../../../include/game/mission/tutorial_support.h"  // capabilities/progress
+#include "../../../include/game/mission/tutorial_session.h"  // Next Lesson registry
 #include "../../../include/game/character_hotswap.h"
 #include "../../../include/game/practice_menu/mission_title_screen.h"
+#include "../../../include/gui/overlay.h"
 
+#include <algorithm>
 #include <string>
 #include <vector>
 
@@ -51,7 +55,7 @@ std::atomic<bool> g_installed{false};
 std::atomic<int>  g_phase{PHASE_INACTIVE};
 std::atomic<bool> g_needPaletteApply{false}; // re-apply our palette on each entry
 float g_animT = 0.0f;   // 0 = fully off-screen (right), 1 = fully in place
-int  g_selection = PracticeMenu::Render::ROW_TUTORIAL;
+int  g_selection = PracticeMenu::Render::ROW_PRACTICE;   // default to the top row
 uint32_t g_lastScreenContext = 0;
 
 // Slide animation tuning (native 320x240 space).
@@ -70,6 +74,11 @@ bool      g_practiceCasePatched = false;
 struct InputState { int horiz = 0; int vert = 0; bool confirm = false; bool cancel = false; };
 InputState g_prevInput;
 
+// Deferred browser reopen (RETURN TO MISSIONS/LESSONS from the session pause
+// menu). Consumed by the title update detour on the first title frame.
+// 0 = none, otherwise TitleScreen::Screen value.
+std::atomic<int> g_pendingReopen{0};
+
 inline float Smoothstep(float t) {
     if (t < 0.0f) t = 0.0f; else if (t > 1.0f) t = 1.0f;
     return t * t * (3.0f - 2.0f * t);
@@ -81,22 +90,83 @@ inline int SlideOffsetPx() {
 
 void Log(const char* msg) { LogOut(std::string("[PRACTICE_MENU] ") + msg, true); }
 
+bool SupportIssueContains(const std::vector<std::string>& issues, const char* needle) {
+    for (const std::string& issue : issues) {
+        if (issue.find(needle) != std::string::npos) return true;
+    }
+    return false;
+}
+
+// RuntimeSupportIssues intentionally uses precise capability/task language for
+// authors and logs. The course browser is for players, so reduce that list to
+// the first useful explanation without exposing schema names or task IDs.
+std::string PlayerFacingUnavailableReason(const std::vector<std::string>& issues) {
+    const bool setup = SupportIssueContains(issues, "exact start state");
+    const bool opponent = SupportIssueContains(issues, "dummy episode") ||
+                          SupportIssueContains(issues, "dummy_script") ||
+                          SupportIssueContains(issues, "injectable action") ||
+                          SupportIssueContains(issues, " trigger '") ||
+                          SupportIssueContains(issues, " start '");
+    const bool exercise = SupportIssueContains(issues, "placeholder") ||
+                          SupportIssueContains(issues, "not authored") ||
+                          SupportIssueContains(issues, "not declared") ||
+                          SupportIssueContains(issues, "unknown dummy episode");
+    const bool demonstration = SupportIssueContains(issues, "demonstration");
+    const bool retry = SupportIssueContains(issues, "failure reset") ||
+                       SupportIssueContains(issues, "checkpoint");
+
+    if (setup) {
+        return "The exact starting position for this lesson is still being prepared.";
+    }
+    if (opponent && exercise) {
+        return "This lesson's exercise and scripted opponent are still being prepared.";
+    }
+    if (opponent) {
+        return "The scripted opponent for this lesson is not ready yet.";
+    }
+    if (exercise) {
+        return "The exercise for this lesson is still being authored.";
+    }
+    if (demonstration) {
+        return "This lesson's demonstration is not ready yet.";
+    }
+    if (retry) {
+        return "This lesson's retry behavior is not ready yet.";
+    }
+    return "The game-event tracking needed to score this lesson accurately is still being completed.";
+}
+
 // Build the browser's rich mission list: every pack scenario + recorded file
 // is fully parsed (name/desc/type/chars/stage/steps) so the screen can group
 // by character and show a proper detail footer. Own frame: safe for C++
 // objects; UpdateDetour's __try only calls it.
 void PopulateMissionEntries() {
+    Mission::TutorialSession::BeginLessonRegistryRefresh();
     std::vector<PracticeMenu::TitleScreen::MissionInfo> out;
     const std::string root = Mission::ResolveMissionsRoot();
+    int libraryErrorCount = 0;
+    std::string firstLibraryError;
+    auto recordLibraryError = [&](const std::string& path,
+                                  const std::string& error) {
+        ++libraryErrorCount;
+        const std::string detail = path + ": " +
+            (error.empty() ? std::string("unknown parse error") : error);
+        if (firstLibraryError.empty()) firstLibraryError = detail;
+        LogOut("[PRACTICE_MENU] library entry skipped: " + detail, true);
+    };
     auto parseOne = [&](const std::string& path,
                         const std::string& source,
                         const std::string& author,
                         const std::string& scenarioDescription,
                         bool locked,
-                        bool recorded) {
+                        bool recorded,
+                        const std::string& packId = std::string()) {
         Mission::Mission mi;
         std::string err;
-        if (!Mission::LoadMission(path, mi, err)) return;
+        if (!Mission::LoadMission(path, mi, err)) {
+            recordLibraryError(path, err);
+            return;
+        }
         PracticeMenu::TitleScreen::MissionInfo e;
         const size_t slash = path.find_last_of("\\/");
         e.name = !mi.name.empty() ? mi.name
@@ -107,10 +177,37 @@ void PopulateMissionEntries() {
         e.character = mi.player.character;
         e.dummy = mi.dummy.character;
         e.source = source;
+        e.packId = packId;
         e.author = author;
         e.category = mi.category;
         e.difficulty = mi.difficulty;
-        e.steps = static_cast<int>(mi.steps.size());
+        e.order = mi.order;
+        e.lessonId = mi.lessonId;
+        e.recommendedAfter = mi.recommendedAfter;
+        if (!mi.summary.empty()) e.description = mi.summary;   // YOU'LL PRACTICE line
+        if (mi.tutorialSchema > 0) {
+            // Capability preflight (§5.7): unsupported requirement = visible
+            // UNAVAILABLE row with a plain reason, never a silent approximation.
+            const auto issues = Mission::Tutorial::RuntimeSupportIssues(mi);
+            if (!issues.empty()) {
+                e.unavailableReason = PlayerFacingUnavailableReason(issues);
+            }
+            if (!packId.empty() && !mi.lessonId.empty()) {
+                const Mission::Tutorial::LessonProgress progress =
+                    Mission::Tutorial::ProgressGet(packId, mi.lessonId);
+                e.cleared = progress.cleared;
+                e.updated = progress.cleared &&
+                    progress.revisionCleared < mi.revision;
+            }
+            if (!mi.lessonId.empty()) {
+                Mission::TutorialSession::RegisterLessonPath(
+                    packId, mi.lessonId, path, mi.name, mi.nextLessonId,
+                    e.unavailableReason.empty());
+            }
+        }
+        e.steps = static_cast<int>(mi.hasLesson
+                                       ? mi.lesson.tasks.size()
+                                       : mi.steps.size());
         e.stage = mi.stage;
         e.bgm = mi.bgm;
         e.recorded = recorded;
@@ -118,26 +215,50 @@ void PopulateMissionEntries() {
         e.hasDemo = !mi.demo.empty();
         e.hasSavestate = !mi.savestate.empty();
         if (!mi.hints.empty()) e.hint = mi.hints.front();
+        // Neutral normals show the button only, matching the in-match glyph strip
+        // (SplitNotation): skip a lowercase position prefix (j./c./f.), then drop a
+        // leading neutral '5' when something follows it ("5A"->"A", "c.5B"->"c.B").
+        auto stripNeutral = [](const std::string& n) -> std::string {
+            size_t i = 0;
+            while (i < n.size() && ((n[i] >= 'a' && n[i] <= 'z') || n[i] == '.')) ++i;
+            if (i < n.size() && n[i] == '5' && i + 1 < n.size() && n[i + 1] != ' ')
+                return n.substr(0, i) + n.substr(i + 1);
+            return n;
+        };
         for (const Mission::Step& step : mi.steps) {
             if (!e.recipe.empty()) e.recipe += "  >  ";
-            if (!step.notation.empty()) e.recipe += step.notation;
+            if (!step.notation.empty()) e.recipe += stripNeutral(step.notation);
             else if (!step.moveIds.empty()) e.recipe += "#" + std::to_string(step.moveIds.front());
             else e.recipe += "?";
         }
         out.push_back(std::move(e));
     };
+    std::vector<std::pair<std::string, std::string>> tutorialCats;
     if (!root.empty()) {
         for (const std::string& pj : Mission::DiscoverPackJsonPaths(root)) {
             Mission::Pack pack; std::string err;
-            if (!Mission::LoadPack(pj, pack, err)) continue;
+            if (!Mission::LoadPack(pj, pack, err)) {
+                recordLibraryError(pj, err);
+                continue;
+            }
             const std::string src = pack.name.empty() ? std::string("PACK") : pack.name;
+            if (!pack.categories.empty()) {
+                std::vector<const Mission::PackCategory*> ordered;
+                for (const auto& c : pack.categories) ordered.push_back(&c);
+                std::stable_sort(ordered.begin(), ordered.end(),
+                                 [](const Mission::PackCategory* a, const Mission::PackCategory* b) {
+                                     return a->order < b->order;
+                                 });
+                for (const auto* c : ordered) tutorialCats.emplace_back(c->id, c->label);
+            }
             for (const auto& sc : pack.scenarios) {
                 parseOne(pack.folderPath + "\\" + sc.file,
                          src,
                          pack.author,
                          sc.description,
                          sc.locked,
-                         false);
+                         false,
+                         pack.id);
             }
         }
         WIN32_FIND_DATAA fd{};
@@ -151,7 +272,29 @@ void PopulateMissionEntries() {
             FindClose(h);
         }
     }
+    Mission::TutorialSession::FinishLessonRegistryRefresh();
+    PracticeMenu::TitleScreen::SetTutorialCategories(std::move(tutorialCats));
     PracticeMenu::TitleScreen::SetMissions(std::move(out));
+    if (libraryErrorCount > 0) {
+        std::string message = "Session library skipped " +
+            std::to_string(libraryErrorCount) +
+            (libraryErrorCount == 1 ? " unreadable file" : " unreadable files");
+        if (!firstLibraryError.empty()) message += "; see the log for details";
+        DirectDrawHook::AddMessage(message.c_str(), "SESSION LIBRARY",
+                                   RGB(255, 175, 120), 4200, 20, 96);
+    }
+}
+
+// Consume the progress store's one-shot recovery warning only when Tutorial
+// is actually entered. A prior Mission-browser scan may have lazily loaded the
+// store through ProgressGet; tutorial_support preserves the warning for here.
+void SurfaceTutorialProgressWarning() {
+    std::string warning;
+    if (Mission::Tutorial::ProgressLoad(warning) || warning.empty()) return;
+    DirectDrawHook::AddMessage(
+        "Tutorial progress was unreadable. It was reset, and the old file was kept as .bad.",
+        "TUTORIAL", RGB(255, 175, 120), 5200, 20, 96);
+    LogOut("[PRACTICE_MENU] " + warning, true);
 }
 
 // Confirm on the MISSIONS screen (own frame): queue the pick for after match
@@ -160,8 +303,20 @@ bool QueueSelectedMission(bool& directLoading) {
     directLoading = false;
     const std::string path = PracticeMenu::TitleScreen::SelectedMissionPath();
     if (path.empty()) return false;
-    PracticeMenu::TitleScreen::BeginSelectedLaunch();
-    Mission::Engine::SetPendingMissionLoad(path);
+    std::string error;
+    if (!Mission::Engine::SetPendingMissionLoad(path, error)) {
+        if (error.empty()) error = "the selected session could not be prepared";
+        const bool tutorial = PracticeMenu::TitleScreen::Current() ==
+                              PracticeMenu::TitleScreen::Screen::Tutorial;
+        const std::string message = std::string(tutorial ? "Lesson" : "Mission") +
+                                    " could not start: " + error;
+        DirectDrawHook::AddMessage(message.c_str(),
+                                   tutorial ? "TUTORIAL" : "MISSION",
+                                   RGB(255, 150, 120), 3000, 20, 96);
+        LogOut("[PRACTICE_MENU] selected launch rejected before leaving browser: " +
+               error, true);
+        return false;
+    }
     directLoading = CharacterHotswap::IsDirectPracticeLoadPending();
     return true;
 }
@@ -175,7 +330,7 @@ extern "C" void __cdecl PracticeMenu_EnterFromCase(uint32_t screenContext) {
     // (C2712): keep string building inside the Log() helper's own frame.
     __try {
         g_lastScreenContext = screenContext;
-        g_selection = PracticeMenu::Render::ROW_TUTORIAL;
+        g_selection = PracticeMenu::Render::ROW_PRACTICE;   // enter on the top row
         PracticeMenu::TitleScreen::Close();
         g_animT = 0.0f;                 // start off-screen, slide in
         g_needPaletteApply.store(true); // our palette was restored to vanilla on last exit
@@ -278,6 +433,7 @@ int Activate(uint32_t sc) {
         case PracticeMenu::Render::ROW_TUTORIAL:
             // Tutorial lessons use the same data-backed library as missions,
             // filtered to type="tutorial" by the dedicated screen.
+            SurfaceTutorialProgressWarning();
             PopulateMissionEntries();
             PracticeMenu::TitleScreen::Open(PracticeMenu::TitleScreen::Screen::Tutorial);
             Log("Tutorial screen opened");
@@ -347,11 +503,50 @@ void RenderAndPresent(uint32_t sc) {
     }
 }
 
+// Consume a deferred reopen request: enter the submenu directly on the
+// requested browser screen (no slide - the player is returning, not arriving).
+// Own frame: C++ objects are safe here; the guarded state writes live in a
+// separate __try helper.
+void ReopenGuardedStateEnter(uint32_t sc) {
+    __try {
+        g_lastScreenContext = sc;
+        g_animT = 1.0f;
+        g_needPaletteApply.store(true);
+        g_prevInput = InputState{0, 0, true, true};
+        g_phase.store(PHASE_ACTIVE);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        g_phase.store(PHASE_INACTIVE);
+    }
+}
+
+void ConsumeReopenRequest(uint32_t sc) {
+    const int reopen = g_pendingReopen.exchange(0);
+    if (reopen == 0) return;
+    const auto screen = static_cast<PracticeMenu::TitleScreen::Screen>(reopen);
+    g_selection = screen == PracticeMenu::TitleScreen::Screen::Tutorial
+                ? PracticeMenu::Render::ROW_TUTORIAL
+                : PracticeMenu::Render::ROW_MISSION;
+    ReopenGuardedStateEnter(sc);
+    if (g_phase.load() != PHASE_INACTIVE) {
+        if (screen == PracticeMenu::TitleScreen::Screen::Tutorial) {
+            SurfaceTutorialProgressWarning();
+        }
+        PopulateMissionEntries();
+        PracticeMenu::TitleScreen::Open(
+            screen, screen == PracticeMenu::TitleScreen::Screen::Tutorial);
+        Log("Browser reopened after session exit");
+    }
+}
+
 // ---- update detour --------------------------------------------------------
 char __fastcall UpdateDetour(uint32_t sc, void* /*edx*/) {
-    const int phase = g_phase.load();
+    int phase = g_phase.load();
     if (phase == PHASE_INACTIVE) {
-        return g_origUpdate ? g_origUpdate(sc) : 0;
+        ConsumeReopenRequest(sc);
+        phase = g_phase.load();
+        if (phase == PHASE_INACTIVE) {
+            return g_origUpdate ? g_origUpdate(sc) : 0;
+        }
     }
 
     __try {
@@ -455,6 +650,12 @@ char __fastcall UpdateDetour(uint32_t sc, void* /*edx*/) {
 
         RenderAndPresent(sc);
     } __except (EXCEPTION_EXECUTE_HANDLER) {
+        // SetPendingMissionLoad and the direct loader are separate owners. A
+        // fault after mission selection but before this detour returns Loading
+        // must retire both, otherwise the selected path silently launches on a
+        // later manual Practice entry. The MissionEngine API preserves generic
+        // browser-only pending mode when no concrete path belongs to this turn.
+        Mission::Engine::CancelPendingMissionLoad("title update exception");
         CharacterHotswap::CancelDirectPracticeLoad("title update exception");
         g_phase.store(PHASE_INACTIVE);
     }
@@ -547,6 +748,7 @@ bool Install() {
 void Uninstall() {
     if (!g_installed.load()) return;
     g_phase.store(PHASE_INACTIVE);
+    Mission::Engine::CancelPendingMissionLoad("Practice menu uninstall");
     CharacterHotswap::CancelDirectPracticeLoad("Practice menu uninstall");
     CharacterHotswap::UninstallDirectPracticeBootstrap();
     UnpatchPracticeCase();
@@ -559,5 +761,9 @@ void Uninstall() {
 }
 
 bool IsSubmenuActive() { return g_phase.load() != PHASE_INACTIVE; }
+
+void RequestTitleReopen(TitleScreen::Screen screen) {
+    g_pendingReopen.store(static_cast<int>(screen));
+}
 
 } // namespace PracticeMenu

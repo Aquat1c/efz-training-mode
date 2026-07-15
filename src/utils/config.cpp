@@ -305,6 +305,8 @@ namespace Config {
             file << "; When waiting to re-arm/disable, require this many milliseconds of continuous neutral before toggling.\n";
             file << "; Default: 10000 (10 seconds). Set 0 to toggle immediately on any neutral edge.\n";
             file << "autoBlockNeutralTimeoutMs = 10000\n\n";
+            file << "; Mission recording count-in in milliseconds (0 = off, default 500).\n";
+            file << "missionRecorderCountInMs = 500\n\n";
 
             file << "; Virtual Cursor (software controller-driven cursor) settings\n";
             file << "; Master enable (1=on,0=off)\n";
@@ -617,6 +619,14 @@ namespace Config {
             }
             // Practice: neutral timeout for dummy auto-block modes (ms)
             settings.autoBlockNeutralTimeoutMs = GetValueInt("General", "autoBlockNeutralTimeoutMs", 10000);
+            settings.missionRecorderCountInMs =
+                GetValueInt("General", "missionRecorderCountInMs", 500);
+            if (settings.missionRecorderCountInMs < 0) {
+                settings.missionRecorderCountInMs = 0;
+            }
+            if (settings.missionRecorderCountInMs > 3000) {
+                settings.missionRecorderCountInMs = 3000;
+            }
             settings.showComboStatisticsOverlay = GetValueBool("General", "showComboStatisticsOverlay", true);
             settings.comboOverlayCompactMode = GetValueBool("General", "comboOverlayCompactMode", true);
             settings.comboOverlayShowDetailRow = GetValueBool("General", "comboOverlayShowDetailRow", false);
@@ -854,6 +864,8 @@ namespace Config {
             // Practice options
             file << "; Practice: Dummy Auto-Block neutral timeout (ms) for First Hit/After First Hit modes.\n";
             file << "autoBlockNeutralTimeoutMs = " << settings.autoBlockNeutralTimeoutMs << "\n\n";
+            file << "; Mission recording count-in in milliseconds (0 = off).\n";
+            file << "missionRecorderCountInMs = " << settings.missionRecorderCountInMs << "\n\n";
             file << "; Virtual Cursor settings\n";
             file << "enableVirtualCursor = " << (settings.enableVirtualCursor?"1":"0") << "\n";
             file << "virtualCursorAllowWindowed = " << (settings.virtualCursorAllowWindowed?"1":"0") << "\n";
@@ -1041,6 +1053,12 @@ namespace Config {
             if (k == "combooverlayshowrfmultiplier") settings.comboOverlayShowRfMultiplier = (value == "1");
             if (k == "combooverlayshowrawscale") settings.comboOverlayShowRawScale = (value == "1");
             if (k == "autoblockneutraltimeoutms") { try { settings.autoBlockNeutralTimeoutMs = std::stoi(value); } catch(...) { settings.autoBlockNeutralTimeoutMs = 10000; } }
+            if (k == "missionrecordercountinms") {
+                try { settings.missionRecorderCountInMs = std::stoi(value); }
+                catch (...) { settings.missionRecorderCountInMs = 500; }
+                if (settings.missionRecorderCountInMs < 0) settings.missionRecorderCountInMs = 0;
+                if (settings.missionRecorderCountInMs > 3000) settings.missionRecorderCountInMs = 3000;
+            }
         }
         else if (sec == "hotkeys") {
             int intValue = ParseKeyValue(value);

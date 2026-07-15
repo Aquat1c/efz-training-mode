@@ -1,12 +1,14 @@
 #include "../include/game/frame_monitor.h"
 #include "../include/game/macro_controller.h"
 #include "../include/game/mission/mission_engine.h"
+#include "../include/game/mission/tutorial_session.h"   // TutorialSession::IsActive (suppress practice hint in lessons)
 #include "../include/game/auto_airtech.h"
 #include "../include/game/auto_jump.h"
 #include "../include/game/auto_action.h" // ensure ClearAllAutoActionTriggers declaration
 #include "../include/game/frame_analysis.h"
 #include "../include/game/frame_advantage.h"
 #include "../include/game/combo_overlay.h"
+#include "../include/game/collision_display.h"
 #include "../include/core/constants.h"
 #include "../include/utils/utilities.h"
 #include "../include/utils/bgm_control.h"
@@ -42,12 +44,14 @@
 void ClearAllAutoActionTriggers();
 #endif
 #include <deque>
+#include <array>
 #include <vector>
 #include <chrono>
 #include <sstream>
 #include <algorithm>
 #include <thread>
 #include <atomic>
+#include <exception>
 #include <iomanip>
 
 // Compile-time gate for verbose Character Select diagnostics (set to 1 locally when needed)
@@ -150,6 +154,35 @@ static std::string FM_Hex(uintptr_t v) {
     return oss.str();
 }
 
+// Mission/tutorial code runs on this detached monitor thread.  An uncaught C++
+// exception would otherwise terminate the whole game without preserving
+// std::exception::what().  Quarantine the session and leave a useful log line;
+// access violations remain under the process crash handler (/EHsc).
+static void TickMissionEngineGuarded() noexcept {
+    try {
+        Mission::Engine::Tick();
+    } catch (const std::exception& e) {
+        try {
+            const std::string detail = e.what() ? e.what() : "unknown std::exception";
+            LogOut("[MISSION][UNHANDLED_EXCEPTION] " + detail, true);
+            DirectDrawHook::AddMessage(("Mission stopped: " + detail).c_str(),
+                                       "MISSION", RGB(255, 120, 120), 5000, 0, 120);
+            Mission::Engine::Runner::Unload();
+        } catch (...) {
+            LogOut("[MISSION][UNHANDLED_EXCEPTION] recovery also failed", true);
+        }
+    } catch (...) {
+        try {
+            LogOut("[MISSION][UNHANDLED_EXCEPTION] non-standard C++ exception", true);
+            DirectDrawHook::AddMessage("Mission stopped after an internal error",
+                                       "MISSION", RGB(255, 120, 120), 5000, 0, 120);
+            Mission::Engine::Runner::Unload();
+        } catch (...) {
+            LogOut("[MISSION][UNHANDLED_EXCEPTION] recovery also failed", true);
+        }
+    }
+}
+
 static void MaybeShowPracticeOverlayHintOnce() {
     if (s_practiceHintShown.load(std::memory_order_relaxed)) return;
     if (!g_featuresEnabled.load()) return;
@@ -157,6 +190,8 @@ static void MaybeShowPracticeOverlayHintOnce() {
 
     const auto& cfg = Config::GetSettings();
     if (!cfg.showPracticeEntryHint) return;
+    // Only in real free-practice: not during a tutorial or any mission/trial.
+    if (::Mission::Engine::Runner::IsActive() || ::Mission::TutorialSession::IsActive()) return;
 
     bool expected = false;
     if (!s_practiceHintShown.compare_exchange_strong(expected, true)) {
@@ -1709,7 +1744,7 @@ void FrameDataMonitor() {
                 // char-select auto-drive for title mission picks and discards
                 // a live recording when the match is left. Its internals are
                 // phase-gated; the game snapshot is simply invalid here.
-                Mission::Engine::Tick();
+                TickMissionEngineGuarded();
                 prevMoveID1 = 0;
                 prevMoveID2 = 0;
                 skipHeavy = true;
@@ -2245,7 +2280,7 @@ void FrameDataMonitor() {
             FrameBar::TickSample();
 
             // Mission engine: per-frame snapshot (move-IDs / combo) + inspector.
-            Mission::Engine::Tick();
+            TickMissionEngineGuarded();
 
             // Practice-only: Defense helpers
             // Always RG takes effect when enabled; Random RG mimics Revival's per-frame coin flip.
@@ -2966,8 +3001,18 @@ bool AreCharactersInitialized() {
 }
 
 void UpdateStatsDisplay() {
+    // Paginated EXTRA-info slot pool. Static so the permanent-message ids persist
+    // across calls; the current page (scrolled with 5/6) is rendered below the
+    // always-on core stats, and these slots are cleared whenever the overlay is off.
+    static int s_statsExtraIds[12] = { -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1 };
+    auto clearStatsExtra = []() {
+        for (int& id : s_statsExtraIds) {
+            if (id != -1) { DirectDrawHook::RemovePermanentMessage(id); id = -1; }
+        }
+    };
     // Always require overlay hook; allow Clean Hit helper to run even if stats are disabled
     if (!DirectDrawHook::isHooked) {
+        clearStatsExtra();
         // Clear any existing messages when overlay is unavailable
         if (g_statsP1ValuesId != -1) {
             DirectDrawHook::RemovePermanentMessage(g_statsP1ValuesId);
@@ -3025,6 +3070,8 @@ void UpdateStatsDisplay() {
     // Stats can be toggled off; keep Clean Hit helper independent of this
     bool statsOn = g_statsDisplayEnabled.load();
     if (!statsOn) {
+        clearStatsExtra();   // the paginated EXTRA pages must also go, or they leak
+                             // on screen and overlap the core stats on re-enter
         // Clear stats lines if they exist while stats are disabled
         if (g_statsP1ValuesId != -1) {
             DirectDrawHook::RemovePermanentMessage(g_statsP1ValuesId);
@@ -3126,6 +3173,7 @@ void UpdateStatsDisplay() {
         }
         if (g_statsBlockstunId != -1) { DirectDrawHook::RemovePermanentMessage(g_statsBlockstunId); g_statsBlockstunId = -1; }
         if (g_statsUntechId != -1) { DirectDrawHook::RemovePermanentMessage(g_statsUntechId); g_statsUntechId = -1; }
+        clearStatsExtra();
         return;
     }
 
@@ -3303,20 +3351,6 @@ void UpdateStatsDisplay() {
             hitLine << "Untech:    P1 " << p1HitLF << "  P2 " << p2HitLF;
             upsert(g_statsBlockstunId, blkLine.str());
             upsert(g_statsUntechId, hitLine.str());
-        }
-
-        // TEMP diagnostic: probe adjacent offset (+0x14C) to validate blockstun pointer choice.
-        // Remove after confirming correct address in live testing.
-        {
-            uintptr_t baseNow = GetEFZBase();
-            uintptr_t p1=ResolvePlayerBaseBestEffort(1, baseNow);
-            uintptr_t p2=ResolvePlayerBaseBestEffort(2, baseNow);
-            short p1Cand=0, p2Cand=0;
-            if (p1) { SafeReadMemory(p1 + BLOCKSTUN_OFFSET + 2, &p1Cand, sizeof(p1Cand)); }
-            if (p2) { SafeReadMemory(p2 + BLOCKSTUN_OFFSET + 2, &p2Cand, sizeof(p2Cand)); }
-            std::stringstream diag;
-            diag << "Blk?(+0x14C): P1 " << (int)(p1Cand < 0 ? 0 : p1Cand) << "  P2 " << (int)(p2Cand < 0 ? 0 : p2Cand);
-            upsert(g_statsAIFlagsId, diag.str()); // reuse AI flags line position temporarily below character lines
         }
 
         // Character-specific: Nayuki (Awake) snowbunnies timer line
@@ -3610,6 +3644,119 @@ void UpdateStatsDisplay() {
 
     if (statsOn) {
         upsert(g_statsMoveIdId, moveIds.str());
+    }
+
+    // Paginated EXTRA debug info (scroll with 5/6 while the overlay is active),
+    // rendered below the always-on core stats. Pages are DYNAMIC: page 0 is an
+    // overview (gauges + entity counts + future mission/tutorial fields), then one
+    // page PER active entity/bullet across BOTH players. g_statsPageCount is
+    // published so the 5/6 handler wraps on the live page count.
+    if (statsOn) {
+        uintptr_t p1b = base ? ResolvePlayerBaseBestEffort(1, base) : 0;
+        uintptr_t p2b = base ? ResolvePlayerBaseBestEffort(2, base) : 0;
+
+        // Snapshot each alive table once and each active entry once.  The
+        // recorder and collision display already use this bounded sampler;
+        // the stats overlay must not independently probe seven fields per
+        // entity every update.
+        using EntityProbe = CollisionDisplay::ProjectileRingSlotProbe;
+        constexpr std::size_t kEntitySlots =
+            CollisionDisplay::kProjectileRingSlotCapacity;
+        std::array<EntityProbe, kEntitySlots> p1Entities{};
+        std::array<EntityProbe, kEntitySlots> p2Entities{};
+        const bool haveP1Entities = CollisionDisplay::ProbeProjectileRing(
+            1, p1Entities.data(), p1Entities.size());
+        const bool haveP2Entities = CollisionDisplay::ProbeProjectileRing(
+            2, p2Entities.data(), p2Entities.size());
+
+        struct EntityPageRef {
+            int player = 0;
+            const EntityProbe* entity = nullptr;
+        };
+        std::array<EntityPageRef, kEntitySlots * 2> entityPages{};
+        std::size_t entityPageCount = 0;
+        int p1Count = 0, p2Count = 0;
+        auto collectEntityPages = [&](bool available,
+                                      const std::array<EntityProbe, kEntitySlots>& probes,
+                                      int player, int& count) {
+            if (!available) return;
+            for (const EntityProbe& entity : probes) {
+                if (!entity.alive) continue;
+                // An unreadable active entry remains a page, matching the old
+                // per-field best-effort display and avoiding a false despawn.
+                if (entity.readable && entity.destroyed != 0) continue;
+                ++count;
+                entityPages[entityPageCount++] = { player, &entity };
+            }
+        };
+        collectEntityPages(haveP1Entities, p1Entities, 1, p1Count);
+        collectEntityPages(haveP2Entities, p2Entities, 2, p2Count);
+
+        // Publish the live page count and clamp the current index.
+        const int count = 1 + static_cast<int>(entityPageCount);
+        g_statsPageCount.store(count);
+        int page = g_statsPageIndex.load();
+        if (page < 0 || page >= count) { page = 0; g_statsPageIndex.store(0); }
+
+        // Only format and read the selected page.  Counting remains cheap and
+        // deterministic, while off-screen entity pages allocate no strings.
+        std::string pageName = "overview";
+        std::vector<std::string> pageLines;
+        if (page == 0) {
+            float g1 = 0.f, g2 = 0.f;
+            short at1 = 0, at2 = 0, fi1 = 0, fi2 = 0;
+            if (p1b) {
+                SafeReadMemory(p1b + PLAYER_GUARD_GAUGE_OFFSET, &g1, sizeof(g1));
+                SafeReadMemory(p1b + PLAYER_ATTACK_TIMER_OFFSET, &at1, sizeof(at1));
+                SafeReadMemory(p1b + CURRENT_FRAME_INDEX_OFFSET, &fi1, sizeof(fi1));
+            }
+            if (p2b) {
+                SafeReadMemory(p2b + PLAYER_GUARD_GAUGE_OFFSET, &g2, sizeof(g2));
+                SafeReadMemory(p2b + PLAYER_ATTACK_TIMER_OFFSET, &at2, sizeof(at2));
+                SafeReadMemory(p2b + CURRENT_FRAME_INDEX_OFFSET, &fi2, sizeof(fi2));
+            }
+            { std::stringstream l; l << "Guard:    P1 " << std::fixed << std::setprecision(0) << g1 << "   P2 " << g2; pageLines.push_back(l.str()); }
+            { std::stringstream l; l << "AtkTimer: P1 " << at1 << "   P2 " << at2; pageLines.push_back(l.str()); }
+            { std::stringstream l; l << "FrameIdx: P1 " << fi1 << "   P2 " << fi2; pageLines.push_back(l.str()); }
+            { std::stringstream l; l << "Entities: P1 " << p1Count << "   P2 " << p2Count; pageLines.push_back(l.str()); }
+        } else {
+            const EntityPageRef& selected = entityPages[static_cast<std::size_t>(page - 1)];
+            const EntityProbe& entity = *selected.entity;
+            { std::stringstream n; n << "P" << selected.player << " ent s" << entity.slot; pageName = n.str(); }
+            if (!entity.readable) {
+                pageLines.push_back("entry unreadable (alive bit retained)");
+            } else {
+                { std::stringstream l; l << "pattern " << entity.pattern << "   life " << entity.life; pageLines.push_back(l.str()); }
+                { std::stringstream l; l << "frame " << entity.frame << ":" << entity.frameTick << "   destroyed " << entity.destroyed; pageLines.push_back(l.str()); }
+                { std::stringstream l; l << "pos (" << std::fixed << std::setprecision(1) << entity.x << ", " << entity.y << ")"; pageLines.push_back(l.str()); }
+            }
+        }
+
+        std::vector<std::string> lines;
+        { std::stringstream h; h << "== EXTRA " << (page + 1) << "/" << count << " (" << pageName << ")  [5/6] =="; lines.push_back(h.str()); }
+        for (const auto& l : pageLines) lines.push_back(l);
+
+        // Permanent messages can't be repositioned in place (UpdatePermanentMessage
+        // is text-only). If the extra block's top moved - main-stat line count changed
+        // or the overlay was just re-enabled - drop the slots so they re-add at the
+        // new startY instead of drifting/overlapping. Stable layout => no re-add, no flicker.
+        static int s_extraTopY = -1;
+        if (startY != s_extraTopY) { clearStatsExtra(); s_extraTopY = startY; }
+
+        const int extraCount = (int)(sizeof(s_statsExtraIds) / sizeof(s_statsExtraIds[0]));
+        for (int i = 0; i < extraCount; ++i) {
+            if (i < (int)lines.size()) {
+                if (s_statsExtraIds[i] == -1) {
+                    s_statsExtraIds[i] = DirectDrawHook::AddPermanentMessage(lines[i], RGB(170, 215, 255), startX, startY);
+                } else {
+                    DirectDrawHook::UpdatePermanentMessage(s_statsExtraIds[i], lines[i], RGB(170, 215, 255));
+                }
+                startY += lineHeight;
+            } else if (s_statsExtraIds[i] != -1) {
+                DirectDrawHook::RemovePermanentMessage(s_statsExtraIds[i]);
+                s_statsExtraIds[i] = -1;
+            }
+        }
     }
 
     return;

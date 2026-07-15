@@ -10,6 +10,8 @@
 
 #include <windows.h>
 
+#include <algorithm>
+
 #include <cstring>
 
 namespace Mission::Setup {
@@ -25,8 +27,23 @@ bool ResourceNamesEqual(const std::string& lhs, const std::string& rhs) {
 // Capture reads displayData (kept fresh by the frame monitor); Apply writes the
 // displayData fields then lets CharacterSettings::ApplyCharacterValues push them.
 
-void CaptureResources(int charId, bool p1, std::map<std::string, int>& out) {
-    DisplayData& d = displayData;
+ResourcePolicy::Family ResourceFamilyForCharacter(int charId) {
+    switch (charId) {
+        case CHAR_ID_MISHIO: return ResourcePolicy::Family::Mishio;
+        case CHAR_ID_MIO: return ResourcePolicy::Family::Mio;
+        case CHAR_ID_KANO: return ResourcePolicy::Family::Kano;
+        case CHAR_ID_MAI: return ResourcePolicy::Family::Mai;
+        case CHAR_ID_IKUMI: return ResourcePolicy::Family::Ikumi;
+        case CHAR_ID_MISUZU: return ResourcePolicy::Family::Misuzu;
+        case CHAR_ID_NANASE: return ResourcePolicy::Family::Rumi;
+        case CHAR_ID_AKIKO: return ResourcePolicy::Family::Akiko;
+        case CHAR_ID_NAYUKI: return ResourcePolicy::Family::Neyuki;
+        default: return ResourcePolicy::Family::None;
+    }
+}
+
+void CaptureResources(const DisplayData& d, int charId, bool p1,
+                      std::map<std::string, int>& out) {
     switch (charId) {
         case CHAR_ID_MISHIO:
             out["element"] = p1 ? d.p1MishioElement : d.p2MishioElement; break;
@@ -51,6 +68,7 @@ void CaptureResources(int charId, bool p1, std::map<std::string, int>& out) {
             break;
         case CHAR_ID_NANASE:
             out["barehanded"]  = (p1 ? d.p1RumiBarehanded : d.p2RumiBarehanded) ? 1 : 0;
+            out["kimchiActive"] = (p1 ? d.p1RumiKimchiActive : d.p2RumiKimchiActive) ? 1 : 0;
             out["kimchiTimer"] = p1 ? d.p1RumiKimchiTimer : d.p2RumiKimchiTimer;
             break;
         case CHAR_ID_AKIKO:
@@ -63,9 +81,9 @@ void CaptureResources(int charId, bool p1, std::map<std::string, int>& out) {
     }
 }
 
-void ApplyResources(int charId, bool p1, const std::map<std::string, int>& res) {
+void ApplyResources(DisplayData& d, int charId, bool p1,
+                    const std::map<std::string, int>& res) {
     if (res.empty()) return;
-    DisplayData& d = displayData;
     auto get = [&](const char* k, int cur) {
         auto it = res.find(k);
         return it != res.end() ? it->second : cur;
@@ -97,6 +115,7 @@ void ApplyResources(int charId, bool p1, const std::map<std::string, int>& res) 
             break;
         case CHAR_ID_NANASE:
             (p1 ? d.p1RumiBarehanded : d.p2RumiBarehanded) = get("barehanded", (p1 ? d.p1RumiBarehanded : d.p2RumiBarehanded) ? 1 : 0) != 0;
+            (p1 ? d.p1RumiKimchiActive : d.p2RumiKimchiActive) = get("kimchiActive", (p1 ? d.p1RumiKimchiActive : d.p2RumiKimchiActive) ? 1 : 0) != 0;
             (p1 ? d.p1RumiKimchiTimer : d.p2RumiKimchiTimer) = get("kimchiTimer", p1 ? d.p1RumiKimchiTimer : d.p2RumiKimchiTimer);
             break;
         case CHAR_ID_AKIKO:
@@ -109,68 +128,281 @@ void ApplyResources(int charId, bool p1, const std::map<std::string, int>& res) 
     }
 }
 
+bool ReadResourceValue(uintptr_t base, int charId, bool p1,
+                       const std::string& key, int& valueOut) {
+    const uintptr_t playerOffset = p1 ? EFZ_BASE_OFFSET_P1 : EFZ_BASE_OFFSET_P2;
+    auto readInt = [&](uintptr_t field) {
+        const uintptr_t address = ResolvePointer(base, playerOffset, field);
+        return address && SafeReadMemory(address, &valueOut, sizeof(valueOut));
+    };
+    auto readByte = [&](uintptr_t field, uint8_t& value) {
+        const uintptr_t address = ResolvePointer(base, playerOffset, field);
+        return address && SafeReadMemory(address, &value, sizeof(value));
+    };
+
+    switch (charId) {
+        case CHAR_ID_MISHIO:
+            return key == "element" && readInt(MISHIO_ELEMENT_OFFSET);
+        case CHAR_ID_MIO:
+            return key == "stance" && readInt(MIO_STANCE_OFFSET);
+        case CHAR_ID_KANO:
+            return key == "magic" && readInt(KANO_MAGIC_OFFSET);
+        case CHAR_ID_MAI: {
+            uint8_t status = 0;
+            if (!readByte(MAI_STATUS_OFFSET, status)) return false;
+            if (key == "status") {
+                valueOut = static_cast<int>(status);
+                return true;
+            }
+            int timer = 0;
+            const uintptr_t timerAddress = ResolvePointer(base, playerOffset, MAI_MULTI_TIMER_OFFSET);
+            if (!timerAddress || !SafeReadMemory(timerAddress, &timer, sizeof(timer))) return false;
+            if (key == "ghostTime") {
+                valueOut = status == 1 ? timer : 0;
+                return true;
+            }
+            if (key == "ghostCharge") {
+                valueOut = status == 3 ? timer : 0;
+                return true;
+            }
+            return false;
+        }
+        case CHAR_ID_IKUMI:
+            if (key == "blood") return readInt(IKUMI_BLOOD_OFFSET);
+            if (key == "genocide") return readInt(IKUMI_GENOCIDE_OFFSET);
+            return key == "levelGauge" && readInt(IKUMI_LEVEL_GAUGE_OFFSET);
+        case CHAR_ID_MISUZU:
+            if (key == "feathers") return readInt(MISUZU_FEATHER_OFFSET);
+            if (key == "poisonTimer") return readInt(MISUZU_POISON_TIMER_OFFSET);
+            return key == "poisonLevel" && readInt(MISUZU_POISON_LEVEL_OFFSET);
+        case CHAR_ID_NANASE: {
+            if (key == "barehanded") {
+                uint8_t mode = 0;
+                uint8_t gate = 0;
+                if (!readByte(RUMI_MODE_BYTE_OFFSET, mode) ||
+                    !readByte(RUMI_WEAPON_GATE_OFFSET, gate)) return false;
+                valueOut = mode != 0 || gate != 0 ? 1 : 0;
+                return true;
+            }
+            if (key == "kimchiActive") {
+                if (!readInt(RUMI_KIMCHI_ACTIVE_OFFSET)) return false;
+                valueOut = valueOut != 0 ? 1 : 0;
+                return true;
+            }
+            return key == "kimchiTimer" && readInt(RUMI_KIMCHI_TIMER_OFFSET);
+        }
+        case CHAR_ID_AKIKO:
+            return key == "bulletCycle" && readInt(AKIKO_BULLET_CYCLE_OFFSET);
+        case CHAR_ID_NAYUKI:
+            return key == "jam" && readInt(NEYUKI_JAM_COUNT_OFFSET);
+        default:
+            return false;
+    }
+}
+
+bool VerifyResources(uintptr_t base, int charId, bool p1,
+                     const std::map<std::string, int>& resources,
+                     std::string& errorOut) {
+    const ResourcePolicy::Family family = ResourceFamilyForCharacter(charId);
+    const char* side = p1 ? "learner" : "dummy";
+    for (const auto& resource : resources) {
+        const ResourcePolicy::Verification verification =
+            ResourcePolicy::Classify(family, resource.first);
+        if (verification == ResourcePolicy::Verification::Unsupported) {
+            errorOut = std::string("The lesson uses an unsupported ") + side +
+                " resource: " + resource.first + ".";
+            return false;
+        }
+        int observed = 0;
+        if (!ReadResourceValue(base, charId, p1, resource.first, observed)) {
+            errorOut = std::string("The lesson could not verify the ") + side +
+                " resource " + resource.first + ".";
+            return false;
+        }
+        const int expected = resource.first == "barehanded" ||
+                             resource.first == "kimchiActive"
+            ? (resource.second != 0 ? 1 : 0) : resource.second;
+        if (observed != expected) {
+            if (verification == ResourcePolicy::Verification::RequiresActionable) {
+                errorOut = "Rumi's weapon mode could not be prepared while she was busy. Restart the lesson.";
+            } else {
+                errorOut = std::string("The lesson could not set the ") + side +
+                    " resource " + resource.first + ".";
+            }
+            return false;
+        }
+    }
+    return true;
+}
+
+bool ValidateResourceKeys(int charId, bool p1,
+                          const std::map<std::string, int>& resources,
+                          std::string& errorOut) {
+    const ResourcePolicy::Family family = ResourceFamilyForCharacter(charId);
+    for (const auto& resource : resources) {
+        if (ResourcePolicy::Classify(family, resource.first) ==
+            ResourcePolicy::Verification::Unsupported) {
+            errorOut = std::string("The lesson uses an unsupported ") +
+                (p1 ? "learner" : "dummy") + " resource: " +
+                resource.first + ".";
+            return false;
+        }
+    }
+    return true;
+}
+
 // ---- deferred apply state ----------------------------------------------------
 bool  g_pending = false;
 int   g_pendingTimeout = 0;
 ::Mission::Mission g_pendingMission;   // copy of the mission whose setup to apply
+bool g_pendingApplyValues = false;
+int g_pendingP1SelectId = -1;
+int g_pendingP2SelectId = -1;
+int g_pendingStage = -1;
+int g_pendingBgm = -1;
+CharacterHotswap::PaletteSelection g_pendingPalette{};
+std::string g_failure;
 
 // Write the value block (positions/HP/meter/RF/IC/resources) - characters must
 // already be correct.
-void ApplyValues(const ::Mission::Mission& m) {
+bool ApplyValues(const ::Mission::Mission& m, std::string& errorOut) {
     uintptr_t base = GetEFZBase();
-    if (!base) return;
+    if (!base) {
+        errorOut = "the game memory base is unavailable";
+        return false;
+    }
+    bool ok = true;
 
-    // Positions (0 = keep default).
-    if (m.player.posX != 0.0 || m.player.posY != 0.0)
-        SetPlayerPosition(base, EFZ_BASE_OFFSET_P1, m.player.posX, m.player.posY, true);
-    if (m.dummy.posX != 0.0 || m.dummy.posY != 0.0)
-        SetPlayerPosition(base, EFZ_BASE_OFFSET_P2, m.dummy.posX, m.dummy.posY, true);
+    // Positions: presence-aware (P0.2). hasPos distinguishes "unset" from an
+    // explicit (0,0); legacy zero-pair skip is kept only for files without
+    // presence info (both fields defaulted, hasPos false).
+    if (m.player.hasPos || m.player.posX != 0.0 || m.player.posY != 0.0) {
+        ok = TrySetPlayerPosition(base, EFZ_BASE_OFFSET_P1,
+                                  m.player.posX, m.player.posY, true) && ok;
+    }
+    if (m.dummy.hasPos || m.dummy.posX != 0.0 || m.dummy.posY != 0.0) {
+        ok = TrySetPlayerPosition(base, EFZ_BASE_OFFSET_P2,
+                                  m.dummy.posX, m.dummy.posY, true) && ok;
+    }
 
-    // HP / meter (direct writes; only the fields the mission specifies).
+    // HP (32-bit) / SP meter (16-bit! P0.1 - the game treats METER_OFFSET as a
+    // word; a 4-byte write would clobber the adjacent field). SP clamps 0..3000.
+    auto writeExact = [&](uintptr_t address, const void* value, size_t size) {
+        unsigned char observed[sizeof(double)] = {};
+        return address && size <= sizeof(observed) &&
+            SafeWriteMemory(address, value, size) &&
+            SafeReadMemory(address, observed, size) &&
+            std::memcmp(observed, value, size) == 0;
+    };
     auto writeInt = [&](uintptr_t off, uintptr_t field, int v) {
         uintptr_t addr = ResolvePointer(base, off, field);
-        if (addr) SafeWriteMemory(addr, &v, sizeof(int));
+        const bool wrote = writeExact(addr, &v, sizeof(v));
+        ok = ok && wrote;
+        return wrote;
+    };
+    auto writeMeter = [&](uintptr_t off, int v) {
+        if (v < 0) return true;
+        const uint16_t clamped = static_cast<uint16_t>((std::min)(3000, (std::max)(0, v)));
+        uintptr_t addr = ResolvePointer(base, off, METER_OFFSET);
+        const bool wrote = writeExact(addr, &clamped, sizeof(clamped));
+        ok = ok && wrote;
+        return wrote;
     };
     if (m.player.hp >= 0)    writeInt(EFZ_BASE_OFFSET_P1, HP_OFFSET, m.player.hp);
     if (m.dummy.hp >= 0)     writeInt(EFZ_BASE_OFFSET_P2, HP_OFFSET, m.dummy.hp);
-    if (m.player.meter >= 0) writeInt(EFZ_BASE_OFFSET_P1, METER_OFFSET, m.player.meter);
-    if (m.dummy.meter >= 0)  writeInt(EFZ_BASE_OFFSET_P2, METER_OFFSET, m.dummy.meter);
+    writeMeter(EFZ_BASE_OFFSET_P1, m.player.meter);
+    writeMeter(EFZ_BASE_OFFSET_P2, m.dummy.meter);
 
     // RF (helper handles both players + engine regen params).
     if (m.player.rf >= 0 || m.dummy.rf >= 0) {
-        const double rf1 = m.player.rf >= 0 ? static_cast<double>(m.player.rf) : displayData.rf1;
-        const double rf2 = m.dummy.rf  >= 0 ? static_cast<double>(m.dummy.rf)  : displayData.rf2;
-        SetRFValuesDirect(rf1, rf2);
+        double rf1 = static_cast<double>(m.player.rf);
+        double rf2 = static_cast<double>(m.dummy.rf);
+        if (m.player.rf < 0) {
+            const uintptr_t addr = ResolvePointer(base, EFZ_BASE_OFFSET_P1, RF_OFFSET);
+            ok = addr && SafeReadMemory(addr, &rf1, sizeof(rf1)) && ok;
+        }
+        if (m.dummy.rf < 0) {
+            const uintptr_t addr = ResolvePointer(base, EFZ_BASE_OFFSET_P2, RF_OFFSET);
+            ok = addr && SafeReadMemory(addr, &rf2, sizeof(rf2)) && ok;
+        }
+        if (ok) ok = SetRFValuesDirect(rf1, rf2) && ok;
     }
 
     // IC color.
-    if (m.player.blueIC >= 0) SetICColorPlayer(1, m.player.blueIC != 0);
-    if (m.dummy.blueIC  >= 0) SetICColorPlayer(2, m.dummy.blueIC != 0);
+    if (m.player.blueIC >= 0) ok = SetICColorPlayer(1, m.player.blueIC != 0) && ok;
+    if (m.dummy.blueIC  >= 0) ok = SetICColorPlayer(2, m.dummy.blueIC != 0) && ok;
 
     // Guard gauge (float 0..360).
     auto writeGuard = [&](uintptr_t off, int v) {
-        if (v < 0) return;
+        if (v < 0) return true;
         uintptr_t addr = ResolvePointer(base, off, PLAYER_GUARD_GAUGE_OFFSET);
         float f = static_cast<float>(v);
-        if (addr) SafeWriteMemory(addr, &f, sizeof(f));
+        const bool wrote = writeExact(addr, &f, sizeof(f));
+        ok = ok && wrote;
+        return wrote;
     };
     writeGuard(EFZ_BASE_OFFSET_P1, m.player.guard);
     writeGuard(EFZ_BASE_OFFSET_P2, m.dummy.guard);
 
-    // Character-specific resources -> displayData -> game.
-    ApplyResources(displayData.p1CharID, true, m.player.resources);
-    ApplyResources(displayData.p2CharID, false, m.dummy.resources);
+    // Character-specific resources -> one setup snapshot -> game. Resolve the
+    // character IDs from the authored resource names: immediately after a
+    // native reload, displayData can still describe the previous session for
+    // one monitor sample even though the matching completion receipt is valid.
+    DisplayData setupData = displayData;
+    const int authoredP1Id = m.player.character.empty()
+        ? setupData.p1CharID
+        : CharacterSettings::GetCharacterID(m.player.character);
+    const int authoredP2Id = m.dummy.character.empty()
+        ? setupData.p2CharID
+        : CharacterSettings::GetCharacterID(m.dummy.character);
+    if (authoredP1Id >= 0) setupData.p1CharID = authoredP1Id;
+    if (authoredP2Id >= 0) setupData.p2CharID = authoredP2Id;
+    if (!ValidateResourceKeys(setupData.p1CharID, true, m.player.resources, errorOut) ||
+        !ValidateResourceKeys(setupData.p2CharID, false, m.dummy.resources, errorOut)) {
+        LogOut("[MISSION][SETUP] " + errorOut, true);
+        return false;
+    }
+    // Seed the adapter from the destination match, not the monitor's previous
+    // session sample, so applying one authored key cannot overwrite unrelated
+    // character fields with stale values.
+    CharacterSettings::ReadCharacterValues(base, setupData, true);
+    ApplyResources(setupData, setupData.p1CharID, true, m.player.resources);
+    ApplyResources(setupData, setupData.p2CharID, false, m.dummy.resources);
     if (!m.player.resources.empty() || !m.dummy.resources.empty()) {
-        CharacterSettings::ApplyCharacterValues(base, displayData);
+        // Mission setup is intentionally independent of the training settings
+        // GUI. Without this explicit one-shot override, the shared character
+        // writer skips authored resources while the GUI is hidden (for example
+        // Rumi's weapon mode in the Recoil Armor lesson).
+        CharacterSettings::ApplyCharacterValues(base, setupData, true);
+        if (!VerifyResources(base, setupData.p1CharID, true,
+                             m.player.resources, errorOut) ||
+            !VerifyResources(base, setupData.p2CharID, false,
+                             m.dummy.resources, errorOut)) {
+            LogOut("[MISSION][SETUP] " + errorOut, true);
+            return false;
+        }
     }
 
+    if (!ok) {
+        errorOut = "the lesson could not verify its starting position, health, meter, or gauge values";
+        LogOut("[MISSION][SETUP] value application failed (" + m.name + ")", true);
+        return false;
+    }
     LogOut("[MISSION][SETUP] values applied (" + m.name + ")", true);
+    return true;
 }
 
 } // namespace
 
 void Capture(::Mission::Mission& m) {
-    const DisplayData& d = displayData;
+    DisplayData d = displayData;
+    const uintptr_t base = GetEFZBase();
+    if (base) {
+        // Recording normally happens with the settings GUI hidden, where the
+        // monitor intentionally skips character-resource polling. Take one
+        // authoritative snapshot so the mission does not capture stale values.
+        CharacterSettings::ReadCharacterValues(base, d, true);
+    }
     m.player.character = CharacterSettings::GetCharacterInternalName(d.p1CharID);
     m.dummy.character  = CharacterSettings::GetCharacterInternalName(d.p2CharID);
     CharacterHotswap::PaletteSelection palette{};
@@ -178,6 +410,8 @@ void Capture(::Mission::Mission& m) {
         m.player.palette = palette.p1Color;
         m.dummy.palette = palette.p2Color;
     }
+    m.player.hasPos = true;   // captured positions are always explicit (P0.2)
+    m.dummy.hasPos  = true;
     m.player.posX = d.x1; m.player.posY = d.y1;
     m.dummy.posX  = d.x2; m.dummy.posY  = d.y2;
     m.player.hp = d.hp1;       m.dummy.hp = d.hp2;
@@ -188,11 +422,10 @@ void Capture(::Mission::Mission& m) {
     m.dummy.blueIC  = d.p2BlueIC ? 1 : 0;
     m.player.resources.clear();
     m.dummy.resources.clear();
-    CaptureResources(d.p1CharID, true, m.player.resources);
-    CaptureResources(d.p2CharID, false, m.dummy.resources);
+    CaptureResources(d, d.p1CharID, true, m.player.resources);
+    CaptureResources(d, d.p2CharID, false, m.dummy.resources);
 
     // Guard gauge (player+0x134, float 0..360).
-    uintptr_t base = GetEFZBase();
     if (base) {
         auto readGuard = [&](uintptr_t off) -> int {
             uintptr_t addr = ResolvePointer(base, off, PLAYER_GUARD_GAUGE_OFFSET);
@@ -225,6 +458,12 @@ void Capture(::Mission::Mission& m) {
 
 bool Apply(const ::Mission::Mission& m, bool applyValues, bool forceFreshMatch,
            bool allowReload, bool acceptPreparedSession) {
+    if (g_pending) {
+        g_failure = "another lesson start is still being prepared";
+        LogOut("[MISSION][SETUP] rejected overlapping setup transaction", true);
+        return false;
+    }
+    g_failure.clear();
     const std::string currentP1Resource =
         CharacterSettings::GetCharacterInternalName(displayData.p1CharID);
     const std::string currentP2Resource =
@@ -328,14 +567,23 @@ bool Apply(const ::Mission::Mission& m, bool applyValues, bool forceFreshMatch,
                 p1SelectId, p2SelectId, stage, requestedPalette, bgm);
         }
         if (queued) {
+            // Keep setup pending even when an embedded savestate supplies the
+            // values. The state restore must not run merely because the reload
+            // stopped being busy; it needs the same matching completion receipt.
+            g_pending = true;
+            g_pendingTimeout = 0;
+            g_pendingMission = m;
+            g_pendingApplyValues = applyValues;
+            g_pendingP1SelectId = p1SelectId;
+            g_pendingP2SelectId = p2SelectId;
+            g_pendingStage = stage;
+            g_pendingBgm = bgm;
+            g_pendingPalette = requestedPalette;
             if (applyValues) {
-                g_pending = true;
-                g_pendingTimeout = 0;
-                g_pendingMission = m;
                 LogOut("[MISSION][SETUP] native reload queued -> values deferred", true);
             } else {
-                g_pending = false;
-                LogOut("[MISSION][SETUP] native reload queued (values left to state restore)", true);
+                LogOut("[MISSION][SETUP] native reload queued -> state restore held for matching receipt",
+                       true);
             }
             return true;
         }
@@ -353,24 +601,79 @@ bool Apply(const ::Mission::Mission& m, bool applyValues, bool forceFreshMatch,
                    std::to_string(m.bgm), true);
         }
     }
-    if (applyValues) ApplyValues(m);
+    if (applyValues) {
+        std::string error;
+        if (!ApplyValues(m, error)) {
+            g_failure = error.empty()
+                ? std::string("the authored start values could not be applied")
+                : error;
+            return false;
+        }
+    }
     return true;
 }
 
 void Tick() {
     if (!g_pending) return;
-    if (++g_pendingTimeout > 60 * 30) {   // ~30s safety
+    const bool timedOut = ++g_pendingTimeout > 192 * 30;
+    const bool busy = CharacterHotswap::IsBusy();
+    const bool inMatch = GetCurrentGamePhase() == GamePhase::Match;
+    if (timedOut) {
         g_pending = false;
+        g_failure = "the character/stage reload did not settle before setup timed out";
         LogOut("[MISSION][SETUP] deferred apply timed out", true);
         return;
     }
-    if (CharacterHotswap::IsBusy()) return;
-    if (GetCurrentGamePhase() != GamePhase::Match) return;
-    // Hotswap done and we're in a match: push the values.
+    if (busy || !inMatch) return;
+
+    const bool receiptMatched = CharacterHotswap::ConsumeCompletedPracticeLoad(
+        g_pendingP1SelectId, g_pendingP2SelectId, g_pendingStage,
+        g_pendingPalette, g_pendingBgm);
+    const auto effect = DeferredPolicy::DecideSettle(
+        false, false, true, receiptMatched, g_pendingApplyValues);
     g_pending = false;
-    ApplyValues(g_pendingMission);
+    if (effect == DeferredPolicy::SettleEffect::Fail) {
+        g_failure = "the character/stage reload did not produce the requested match";
+        LogOut("[MISSION][SETUP] deferred apply rejected: matching completion receipt missing",
+               true);
+        return;
+    }
+    if (effect == DeferredPolicy::SettleEffect::ReleaseForStateRestore) {
+        LogOut("[MISSION][SETUP] reload receipt accepted -> embedded state restore released",
+               true);
+        return;
+    }
+
+    // Matching hotswap completed and we're in its destination match: push the
+    // value block before the runner is allowed to capture its root baseline.
+    std::string error;
+    if (!ApplyValues(g_pendingMission, error)) g_failure = error;
 }
 
 bool IsPending() { return g_pending; }
+
+void Cancel(const char* reason) {
+    if (g_pending) {
+        LogOut(std::string("[MISSION][SETUP] pending transaction canceled") +
+               (reason && *reason ? std::string(": ") + reason : std::string()), true);
+    }
+    g_pending = false;
+    g_pendingTimeout = 0;
+    g_pendingMission = ::Mission::Mission{};
+    g_pendingApplyValues = false;
+    g_pendingP1SelectId = -1;
+    g_pendingP2SelectId = -1;
+    g_pendingStage = -1;
+    g_pendingBgm = -1;
+    g_pendingPalette = CharacterHotswap::PaletteSelection{};
+    g_failure.clear();
+}
+
+bool TakeFailure(std::string& errorOut) {
+    if (g_failure.empty()) return false;
+    errorOut.swap(g_failure);
+    g_failure.clear();
+    return true;
+}
 
 } // namespace Mission::Setup

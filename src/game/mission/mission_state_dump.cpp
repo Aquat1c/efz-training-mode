@@ -1,4 +1,5 @@
 #include "../../../include/game/mission/mission_state_dump.h"
+#include "../../../include/game/mission/savestate_entity_layout.h"
 
 #include "../../../include/game/savestate_hook.h"
 #include "../../../include/utils/pause_integration.h"
@@ -10,6 +11,7 @@
 
 #include <cstdint>
 #include <cstring>
+#include <sstream>
 #include <vector>
 
 // Offsets/sizes below come from the raw decomps (verified for every supported
@@ -236,6 +238,12 @@ void Reconcile(std::vector<uint8_t>& mix, uintptr_t freshBase, const RegionLayou
     // a per-session choice), heap object ptr +4988, resource object +82440,
     // speed trigger +82556..82561, replay IO mode/handle +82563..82568.
     keepFresh(L.gameState + 0, 3748);
+    // Sound tables sit IMMEDIATELY after the prefix: the 65-entry system SE
+    // id table (words @+3748, loadSoundEffects) and the BGM buffer id
+    // (+3878, = the 0xF26 field). loadWaveFile hands out DirectSound buffer
+    // ids in SESSION LOAD ORDER, so another session's ids play the wrong
+    // sounds on every hit/guard/system cue.
+    keepFresh(L.gameState + 3748, 132);
     keepFresh(L.gameState + 4920, 8);
     keepFresh(L.gameState + 4988, 4);
     keepFresh(L.gameState + 82440, 4);
@@ -244,12 +252,35 @@ void Reconcile(std::vector<uint8_t>& mix, uintptr_t freshBase, const RegionLayou
 
     // Character states: animation table +16 / image surface array +20,
     // runtime pointer block dwords 30..34 (+120..140), collision table +356.
-    // NOTE Rumi/Nanase stance swaps +16/+356 pairs - the mission setup layer
-    // re-applies stance resources after the restore, which re-derives them.
+    // NOTE: Rumi/Nanase stance swaps +16/+356 pairs. Fresh-winning them is
+    // necessary for cross-session safety but currently selects the fresh
+    // session's resource pair; exact barehanded-state re-derivation remains a
+    // separate, explicitly documented live-verification item.
     for (const size_t off : { L.p1, L.p2 }) {
         keepFresh(off + 16, 8);
         keepFresh(off + 120, 20);
         keepFresh(off + 356, 4);
+        // Character SE bank: 50 DirectSound buffer ids (loadCharacterSounds,
+        // char+612..712). Same session-load-order handles as the system table
+        // above - stale ids made every move play the wrong sound.
+        keepFresh(off + 612, 100);
+        // Entity ring: each of the 64 slots (base +1232, stride 152) caches
+        // the animation-table pointer at slot+8. It is written ONCE at
+        // character load and NOT rewritten on spawn
+        // (initializeEntityData skips slot bytes +8..+24), so a stale
+        // pointer crashes calculateEntityHitbox on the first projectile
+        // collision (field crash: Akiko bullets, EIP 0x767623). This is the
+        // ONLY pointer a live entity carries: the per-entity dword table at
+        // +720..976 holds the spawn template's "entity ID" (an integer,
+        // zero-defaulted and zeroed again on deactivate - never
+        // dereferenced), so ring contents including LIVE entities present at
+        // the recorder's frame-zero save restore cross-session as data.
+        for (std::size_t slot = 0;
+             slot < ::Mission::SavestateEntityLayout::kSlotCount; ++slot) {
+            keepFresh(off +
+                      ::Mission::SavestateEntityLayout::SlotAnimPointerField(slot),
+                      sizeof(uint32_t));
+        }
     }
 
     // Optional trailing practice object (gameState[+4988] payload): its layout
@@ -268,6 +299,89 @@ void Reconcile(std::vector<uint8_t>& mix, uintptr_t freshBase, const RegionLayou
     }
     // (Surface pixels between L.tail and the trailing object keep the FILE's
     // bytes - one frame of saved imagery, exactly like Revival's own load.)
+}
+
+std::string DescribeEntityInventory(
+    const ::Mission::SavestateEntityLayout::Inventory& inventory) {
+    if (!inventory.valid) return "invalid";
+    std::ostringstream out;
+    out << "alive=" << inventory.aliveCount
+        << " mask=0x" << std::hex << inventory.aliveMask
+        << " checksum=0x" << inventory.checksum << std::dec
+        << " cursors=" << inventory.tail << '/' << inventory.next;
+    return out.str();
+}
+
+::Mission::SavestateEntityLayout::Inventory PayloadEntityInventory(
+    const std::vector<uint8_t>& payload, size_t playerOffset, uint32_t playerSize) {
+    if (playerOffset > payload.size() || playerSize > payload.size() - playerOffset) {
+        return {};
+    }
+    return ::Mission::SavestateEntityLayout::Inspect(
+        payload.data() + playerOffset, playerSize);
+}
+
+bool ReadLiveEntityInventory(int playerIndex, uint32_t playerSize,
+                             ::Mission::SavestateEntityLayout::Inventory& out) {
+    const uintptr_t base = GetPlayerBase(playerIndex);
+    if (!base) return false;
+    std::vector<uint8_t> state(playerSize);
+    if (!SafeReadMemory(base, state.data(), state.size())) return false;
+    out = ::Mission::SavestateEntityLayout::Inspect(state.data(), state.size());
+    return out.valid;
+}
+
+// Revival is expected to restore the full character records, including both
+// entity rings. Verify that invariant immediately. If a version-specific
+// post-load fixup cleared or altered the ring, write back the already
+// reconciled entity-state span once and verify again instead of silently
+// starting a mission without its staged projectiles.
+bool VerifyOrRepairLiveEntityState(const std::vector<uint8_t>& payload,
+                                   const RegionLayout& L, std::string& err) {
+    struct PlayerRegion { int index; size_t offset; uint32_t size; };
+    const PlayerRegion players[] = {
+        { 1, L.p1, L.sz1 },
+        { 2, L.p2, L.sz2 },
+    };
+    for (const PlayerRegion& player : players) {
+        const auto expected = PayloadEntityInventory(payload, player.offset, player.size);
+        ::Mission::SavestateEntityLayout::Inventory live;
+        if (!expected.valid || !ReadLiveEntityInventory(player.index, player.size, live)) {
+            err = "entity ring verification unavailable for P" +
+                  std::to_string(player.index);
+            return false;
+        }
+        if (::Mission::SavestateEntityLayout::Equivalent(expected, live)) {
+            LogOut("[MISSION][STATE][ENTITY] verified P" +
+                   std::to_string(player.index) + " " +
+                   DescribeEntityInventory(live), true);
+            continue;
+        }
+
+        LogOut("[MISSION][STATE][ENTITY] P" + std::to_string(player.index) +
+               " post-load mismatch expected{" + DescribeEntityInventory(expected) +
+               "} live{" + DescribeEntityInventory(live) + "}; repairing exact ring", true);
+        const uintptr_t liveBase = GetPlayerBase(player.index);
+        constexpr size_t stateOffset =
+            ::Mission::SavestateEntityLayout::kEntityStateOffset;
+        constexpr size_t stateSize =
+            ::Mission::SavestateEntityLayout::kEntityStateEnd - stateOffset;
+        if (!liveBase || player.offset + stateOffset > payload.size() ||
+            stateSize > payload.size() - player.offset - stateOffset ||
+            !SafeWriteMemory(liveBase + stateOffset,
+                             payload.data() + player.offset + stateOffset,
+                             stateSize) ||
+            !ReadLiveEntityInventory(player.index, player.size, live) ||
+            !::Mission::SavestateEntityLayout::Equivalent(expected, live)) {
+            err = "entity ring restore mismatch for P" +
+                  std::to_string(player.index);
+            return false;
+        }
+        LogOut("[MISSION][STATE][ENTITY] repaired P" +
+               std::to_string(player.index) + " " +
+               DescribeEntityInventory(live), true);
+    }
+    return true;
 }
 
 } // namespace
@@ -315,9 +429,19 @@ bool Capture(std::string& outB64, std::string& outErr) {
         outErr = "buffer read failed";
         return false;
     }
+    const std::vector<uint8_t> payload(blob.begin() + sizeof(hdr), blob.end());
+    const auto p1Entities = PayloadEntityInventory(payload, L.p1, L.sz1);
+    const auto p2Entities = PayloadEntityInventory(payload, L.p2, L.sz2);
+    if (!p1Entities.valid || !p2Entities.valid) {
+        outErr = "snapshot does not contain complete entity rings";
+        return false;
+    }
     outB64 = B64Encode(blob);
     LogOut("[MISSION][STATE] dumped " + std::to_string(len) + " bytes (chars " +
            std::to_string(p1) + "/" + std::to_string(p2) + ")", true);
+    LogOut("[MISSION][STATE][ENTITY] captured P1{" +
+           DescribeEntityInventory(p1Entities) + "} P2{" +
+           DescribeEntityInventory(p2Entities) + "}", true);
     return true;
 }
 
@@ -372,6 +496,7 @@ bool Restore(const std::string& b64, std::string& outErr) {
         return false;
     }
     if (!SavestateHook::TriggerLoad()) { outErr = "TriggerLoad failed"; return false; }
+    if (!VerifyOrRepairLiveEntityState(mix, L, outErr)) return false;
 
     LogOut("[MISSION][STATE] restored " + std::to_string(len) + " bytes into live session", true);
     return true;

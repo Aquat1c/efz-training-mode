@@ -15,6 +15,15 @@ struct InputFrame {
 
 // Motion queueing functions
 bool QueueMotionInput(int playerNum, int motionType, int buttonMask = 0);
+
+// Exclusive queue lease used by tutorial dummy episodes.  It prevents an
+// auto-action from replacing the dummy's in-flight queue and lets teardown
+// clear only the queue owned by the matching token.
+bool AcquireTutorialMotionQueue(int playerNum, uint64_t& tokenOut);
+bool TutorialMotionQueueLeaseActive(int playerNum);
+bool QueueTutorialMotionInput(int playerNum, uint64_t token, int motionType,
+                              int buttonMask = 0);
+void ReleaseTutorialMotionQueue(int playerNum, uint64_t token);
 uint8_t DetermineButtonFromMotionType(int motionType);
 std::string GetMotionTypeName(int motionType);
 void ProcessInputQueues();

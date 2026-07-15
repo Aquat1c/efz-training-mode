@@ -1223,6 +1223,15 @@ namespace ImGuiGui {
                 || action == ACTION_6A || action == ACTION_6B || action == ACTION_6C || action == ACTION_6D
                 || action == ACTION_4A || action == ACTION_4B || action == ACTION_4C || action == ACTION_4D;
         };
+        auto ExtractNormalButtonIndex = [](int action, int fallback)->int {
+            switch (action) {
+                case ACTION_5A: case ACTION_2A: case ACTION_JA: case ACTION_6A: case ACTION_4A: return 0;
+                case ACTION_5B: case ACTION_2B: case ACTION_JB: case ACTION_6B: case ACTION_4B: return 1;
+                case ACTION_5C: case ACTION_2C: case ACTION_JC: case ACTION_6C: case ACTION_4C: return 2;
+                case ACTION_5D: case ACTION_2D: case ACTION_JD: case ACTION_6D: case ACTION_4D: return 3;
+                default: return fallback < 0 ? 0 : (fallback > 3 ? 3 : fallback);
+            }
+        };
         auto IsSpecialMoveAction = [](int action)->bool {
             switch (action) {
                 case ACTION_QCF: case ACTION_DP: case ACTION_QCB: case ACTION_421:
@@ -1242,13 +1251,15 @@ namespace ImGuiGui {
                 default: return ACTION_5A;
             }
         };
-        auto MapMotionIndexToAction = [&](int idx)->int {
+        auto MapMotionIndexToAction = [&](int idx, int buttonIdx = 0)->int {
+            buttonIdx = buttonIdx < 0 ? 0 : (buttonIdx > 3 ? 3 : buttonIdx);
             switch (idx) {
                 case 17: return ACTION_JUMP; case 18: return ACTION_BACKDASH; case 19: return ACTION_FORWARD_DASH; case 20: return ACTION_BLOCK; case 21: return ACTION_FINAL_MEMORY;
                 case 3: return ACTION_QCF; case 4: return ACTION_DP; case 5: return ACTION_QCB; case 6: return ACTION_421; case 7: return ACTION_SUPER1;
                 case 8: return ACTION_SUPER2; case 9: return ACTION_236236; case 10: return ACTION_214214; case 11: return ACTION_641236; case 12: return ACTION_463214;
                 case 13: return ACTION_412; case 14: return ACTION_22; case 15: return ACTION_4123641236; case 16: return ACTION_6321463214;
-                case 22: return ACTION_6A; case 23: return ACTION_4A; // default A for fwd/back group; Option column refines button
+                case 22: return buttonIdx==0?ACTION_6A:(buttonIdx==1?ACTION_6B:(buttonIdx==2?ACTION_6C:ACTION_6D));
+                case 23: return buttonIdx==0?ACTION_4A:(buttonIdx==1?ACTION_4B:(buttonIdx==2?ACTION_4C:ACTION_4D));
                 default: return ACTION_5A; // for Standing/Crouching/Jumping, actual A/B/C chosen via Option column
             }
         };
@@ -1355,13 +1366,14 @@ namespace ImGuiGui {
                     } else {
                         *triggers[i].macroSlot = 0;
                         if (newMotionIndex <= 2) {
-                            int currentButtonIdx = 0;
-                            if (IsNormalAttackAction(*triggers[i].action)) {
-                                switch (*triggers[i].action) { case ACTION_5A: case ACTION_2A: case ACTION_JA: currentButtonIdx = 0; break; case ACTION_5B: case ACTION_2B: case ACTION_JB: currentButtonIdx = 1; break; case ACTION_5C: case ACTION_2C: case ACTION_JC: currentButtonIdx = 2; break; default: currentButtonIdx = 0; break; }
-                            } else { currentButtonIdx = *triggers[i].strength; }
+                            int currentButtonIdx = IsNormalAttackAction(*triggers[i].action)
+                                ? ExtractNormalButtonIndex(*triggers[i].action, *triggers[i].strength)
+                                : *triggers[i].strength;
                             *triggers[i].action = MapPostureAndButtonToAction(newMotionIndex, currentButtonIdx);
                         } else {
-                            *triggers[i].action = MapMotionIndexToAction(newMotionIndex);
+                            const int currentButtonIdx = ExtractNormalButtonIndex(
+                                *triggers[i].action, *triggers[i].strength);
+                            *triggers[i].action = MapMotionIndexToAction(newMotionIndex, currentButtonIdx);
                         }
                     }
                 }
@@ -1480,9 +1492,13 @@ namespace ImGuiGui {
                             int slots = MacroController::GetSlotCount(); if (opts[r].macroSlot == 0 && slots > 0) opts[r].macroSlot = 1;
                         } else {
                             opts[r].macroSlot = 0;
+                            const int btnIdx = ExtractNormalButtonIndex(opts[r].action, opts[r].strength);
                             if (newIdx <= 2) {
-                                int btnIdx = opts[r].strength; opts[r].action = MapPostureAndButtonToAction(newIdx, btnIdx);
-                            } else { opts[r].action = MapMotionIndexToAction(newIdx); }
+                                opts[r].action = MapPostureAndButtonToAction(newIdx, btnIdx);
+                            } else {
+                                opts[r].action = MapMotionIndexToAction(newIdx, btnIdx);
+                            }
+                            if (IsNormalAttackAction(opts[r].action)) opts[r].strength = btnIdx;
                         }
                     }
                     // Button column
@@ -2434,7 +2450,28 @@ namespace ImGuiGui {
                 ImGui::EndTooltip();
             }
         }
-        
+
+        // Shiori - Infinite Shield (reuses Ikumi's +0x314C resource slot)
+        if (p1CharID == CHAR_ID_SHIORI || p2CharID == CHAR_ID_SHIORI) {
+            hasFeatures = true;
+
+            bool infiniteShield = guiState.localData.infiniteShioriShield;
+            if (ImGui::Checkbox("Infinite Shield (Shiori)", &infiniteShield)) {
+                guiState.localData.infiniteShioriShield = infiniteShield;
+            }
+
+            ImGui::SameLine();
+            ImGui::TextDisabled("(?)");
+            if (ImGui::IsItemHovered()) {
+                ImGui::BeginTooltip();
+                ImGui::PushTextWrapPos(ImGui::GetFontSize() * 35.0f);
+                ImGui::TextUnformatted("Freezes Shiori's 5S shield gauge so the shield never depletes.\n"
+                                       "This patch is only applied in Practice Mode.");
+                ImGui::PopTextWrapPos();
+                ImGui::EndTooltip();
+            }
+        }
+
         // Misuzu - Infinite Feather Mode
         if (p1CharID == CHAR_ID_MISUZU || p2CharID == CHAR_ID_MISUZU) {
             hasFeatures = true;
@@ -2488,7 +2525,8 @@ namespace ImGuiGui {
             ImGui::Separator();
             
             // Debug info: enforcement is inline via FrameDataMonitor at ~16 Hz
-            if (guiState.localData.infiniteBloodMode || guiState.localData.infiniteFeatherMode ||
+            if (guiState.localData.infiniteBloodMode || guiState.localData.infiniteShioriShield ||
+                guiState.localData.infiniteFeatherMode ||
                 guiState.localData.infiniteMishioElement || guiState.localData.infiniteMishioAwakened ||
                 guiState.localData.p1RumiInfiniteShinai || guiState.localData.p2RumiInfiniteShinai ||
                 guiState.localData.p1RumiInfiniteKimchi || guiState.localData.p2RumiInfiniteKimchi) {

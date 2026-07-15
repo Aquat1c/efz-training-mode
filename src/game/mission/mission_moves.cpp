@@ -31,7 +31,10 @@ const std::unordered_map<int, Entry>& Table() {
         // in-game behaviour is the airdashes; captured mid-combo.)
         {165,                  {"j.66", true}}, // forward airdash
         {166,                  {"j.44", true}}, // backward airdash
-        {FORWARD_DASH_START_ID,{"66",  true}},  // 163 dash
+        {FORWARD_DASH_START_ID,{"66",  true}},  // 163 ground forward dash
+                                                // (universal except Kaori = 250)
+        {164,                  {"44",  true}},  // 164 ground backdash (universal,
+                                                // all characters incl. Kaori)
 
         // --- universal ground normals ---
         {200, {"5A", false}},
@@ -41,6 +44,15 @@ const std::unordered_map<int, Entry>& Table() {
         {204, {"2A", false}},
         {205, {"2B", false}},
         {206, {"2C", false}},
+
+        // --- universal dash normals (user-confirmed 2026-07-12 on
+        //     Nayuki + Misaki; treated as universal until a char disproves) ---
+        {230, {"66A",  false}},
+        {231, {"66B",  false}},
+        {232, {"66C",  false}},
+        {233, {"662A", false}},
+        {234, {"662B", false}},
+        {235, {"662C", false}},
 
         // --- universal air normals ---
         {207, {"j.A", false}},

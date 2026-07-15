@@ -3,14 +3,30 @@
 
 #include "../include/core/logger.h"
 #include "../include/utils/config.h"
-#include "../include/gui/imgui_impl.h"  
+#include "../include/gui/imgui_impl.h"
 #include "../include/gui/overlay.h"
+#include "../include/game/mission/mission_engine.h"
+#include "../include/game/mission/mission_pause_menu.h"
 
 void OpenMenu() {
     // Check if we're in EFZ window
     UpdateWindowActiveState();
     if (!g_efzWindowActive.load()) {
         LogOut("[GUI] EFZ window not active, cannot open menu", true);
+        return;
+    }
+
+    // A running trial/tutorial session or an active recording capture owns its
+    // own pause surface. The Practice training menu is NOT allowed there - its
+    // savestate/character/macro tools would corrupt the authored session or
+    // splice into the take. The recorder's PRE-RECORD and REVIEW phases keep
+    // the Practice menu on purpose: arranging the start position needs the
+    // practice tools, and Review needs the authoring pane. The same press
+    // resumes.
+    if (Mission::Engine::Recorder::OwnsCaptureHotkeys() ||
+        (Mission::Engine::Runner::IsActive() &&
+         !Mission::Engine::Recorder::IsSessionActive())) {
+        Mission::PauseMenu::Toggle();
         return;
     }
 

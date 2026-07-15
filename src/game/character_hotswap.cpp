@@ -163,8 +163,20 @@ std::atomic<int> s_requestedStage{0};
 std::atomic<int> s_requestedBgmTrack{0};
 std::atomic<int> s_waitTicks{0};
 std::atomic<bool> s_directBootstrapInstalled{false};
-std::atomic<bool> s_directBootstrapPending{false};
-std::atomic<bool> s_loadingHandoffComplete{false};
+std::atomic<bool> s_directBootstrapCleanupIncomplete{false};
+using DirectBootstrapState = CharacterHotswap::Transition::DirectBootstrapState;
+// One atomic owns the direct loader's whole lifecycle. Keeping Armed,
+// one-shot entry, and the successful Battle handoff in a single state prevents
+// the monitor and game-thread hook from observing mixed request generations.
+std::atomic<DirectBootstrapState> s_directBootstrapState{DirectBootstrapState::Idle};
+// Cancellation after the game-thread loader has entered is logically deferred:
+// native fighter/stage ownership must finish transferring to Battle before the
+// request can be finalized without publishing a mission completion receipt.
+std::atomic<bool> s_directAbortAfterHandoff{false};
+// Character-Select reloads use the same Loading hook but do not own the direct
+// bootstrap state. Keep their skipped-Loading-phase receipt separate so it can
+// never masquerade as a direct Battle handoff.
+std::atomic<bool> s_selectorLoadingHandoffComplete{false};
 std::atomic<bool> s_completedReceiptAvailable{false};
 std::atomic<uint32_t> s_completedReceiptGeneration{0};
 std::atomic<int> s_completedP1Char{-1};
@@ -190,6 +202,29 @@ bool IsValidStageId(int stageId) {
 
 bool IsValidPaletteIndex(int paletteIndex) {
     return paletteIndex >= 0 && paletteIndex < PALETTE_SLOT_COUNT;
+}
+
+bool DirectBootstrapOwnsTransaction() {
+    return CharacterHotswap::Transition::OwnsDirectLoadingTransaction(
+        s_directBootstrapState.load(std::memory_order_acquire));
+}
+
+bool DirectBootstrapHasBattleHandoff() {
+    return CharacterHotswap::Transition::HasDirectLoadingBattleHandoff(
+        s_directBootstrapState.load(std::memory_order_acquire));
+}
+
+bool AnyOwnedLoadingHandoffComplete() {
+    return DirectBootstrapHasBattleHandoff() ||
+        s_selectorLoadingHandoffComplete.load(std::memory_order_acquire);
+}
+
+bool CompletionReceiptAuthorized() {
+    const DirectBootstrapState state =
+        s_directBootstrapState.load(std::memory_order_acquire);
+    return state == DirectBootstrapState::Idle ||
+        CharacterHotswap::Transition::DirectCompletionReceiptAllowed(
+            state, s_directAbortAfterHandoff.load(std::memory_order_acquire));
 }
 
 bool PaletteSelectionsEqual(const PaletteSelection& lhs, const PaletteSelection& rhs) {
@@ -593,8 +628,17 @@ void FailRequest(const char* reason, GamePhase currentPhase) {
         << " reason=" << (reason ? reason : "unknown");
     AppendRequestedReloadSummary(oss);
     LogOut(oss.str(), true);
-    s_directBootstrapPending.store(false, std::memory_order_release);
-    s_loadingHandoffComplete.store(false, std::memory_order_release);
+    s_selectorLoadingHandoffComplete.store(false, std::memory_order_release);
+    const DirectBootstrapState directState =
+        s_directBootstrapState.load(std::memory_order_acquire);
+    if (directState == DirectBootstrapState::Entered ||
+        directState == DirectBootstrapState::BattleHandoff) {
+        s_directAbortAfterHandoff.store(true, std::memory_order_release);
+    } else {
+        s_directBootstrapState.store(DirectBootstrapState::Idle,
+                                     std::memory_order_release);
+        s_directAbortAfterHandoff.store(false, std::memory_order_release);
+    }
     s_state.store(RequestState::Failed, std::memory_order_release);
     s_uiStatus.store(UiStatus::Failed, std::memory_order_release);
     s_waitTicks.store(0, std::memory_order_relaxed);
@@ -1080,7 +1124,7 @@ void CleanupPartialDirectPracticeFighters(const RawDirectBootstrapResult& result
     } __except (EXCEPTION_EXECUTE_HANDLER) {}
 }
 
-bool PracticeLoadingIsMissingFighters(int* loadingContext) {
+bool PracticeLoadingIsReadyForDirectBootstrap(int* loadingContext) {
     if (!loadingContext) return false;
     uintptr_t gameSystem = 0;
     uintptr_t p1SlotStorage = 0;
@@ -1099,31 +1143,90 @@ bool PracticeLoadingIsMissingFighters(int* loadingContext) {
         && p2SlotStorage
         && SafeReadMemory(p1SlotStorage, &p1Character, sizeof(p1Character))
         && SafeReadMemory(p2SlotStorage, &p2Character, sizeof(p2Character))
-        && (!p1Character || !p2Character);
+        && !p1Character
+        && !p2Character;
 }
 
 char __fastcall HookedUpdateLoadingScreen(int* loadingContext, void* /*edx*/) {
-    if (!s_directBootstrapPending.exchange(false, std::memory_order_acq_rel)) {
-        // Practice's native setup has no fighter-construction branch. If an
-        // interrupted/stale direct transition ever reaches Loading with empty
-        // slots, fail closed to Character Select instead of allowing the common
-        // setup tail to dereference null fighters.
-        if (PracticeLoadingIsMissingFighters(loadingContext)) {
-            LogOut("[HOTSWAP][DIRECT] guarded Practice Loading with empty fighter slot; returning to Character Select", true);
+    DirectBootstrapState directState =
+        s_directBootstrapState.load(std::memory_order_acquire);
+    const auto directAction =
+        CharacterHotswap::Transition::DecideDirectLoadingAction(directState);
+    if (directAction == CharacterHotswap::Transition::DirectLoadingAction::NativeUpdate) {
+        // Ordinary Loading updates remain native except for the exact stale
+        // Practice pre-loader condition below. Never apply a one-missing-slot
+        // guard after a completed native loader call: ownership, not mutable
+        // transferred slot contents, identifies our transaction.
+        // A canceled/timed-out Armed request can still have a delayed transition
+        // to Practice Loading queued by the frontend. Both owner slots being
+        // empty is the narrow pre-loader signature for that stale transition;
+        // redirect it before Practice's native-only tail dereferences nulls.
+        // Character-Select Loading has constructed slots, and an owned
+        // post-loader transaction never reaches this branch.
+        if (PracticeLoadingIsReadyForDirectBootstrap(loadingContext)) {
+            LogOut("[HOTSWAP][DIRECT] unowned Practice Loading had two empty fighter slots; returning to Character Select", true);
             return static_cast<char>(SCREEN_CHARACTER_SELECT);
         }
         const char nextScreen = s_originalUpdateLoadingScreen
             ? s_originalUpdateLoadingScreen(loadingContext)
             : static_cast<char>(SCREEN_CHARACTER_SELECT);
-        const RequestState state = s_state.load(std::memory_order_acquire);
-        if (nextScreen == 3 && (state == RequestState::AwaitingLoading ||
-                               state == RequestState::AwaitingMatch)) {
-            s_loadingHandoffComplete.store(true, std::memory_order_release);
+        const RequestState requestState = s_state.load(std::memory_order_acquire);
+        if (nextScreen == SCREEN_BATTLE &&
+            (requestState == RequestState::AwaitingLoading ||
+             requestState == RequestState::AwaitingMatch)) {
+            s_selectorLoadingHandoffComplete.store(true,
+                                                    std::memory_order_release);
         }
         return nextScreen;
     }
 
+    if (directAction == CharacterHotswap::Transition::DirectLoadingAction::ReturnBattle) {
+        return static_cast<char>(SCREEN_BATTLE);
+    }
+    if (directAction == CharacterHotswap::Transition::DirectLoadingAction::HoldLoading) {
+        return static_cast<char>(SCREEN_LOADING);
+    }
+
+    DirectBootstrapState expectedEntry = DirectBootstrapState::Armed;
+    if (!s_directBootstrapState.compare_exchange_strong(
+            expectedEntry, DirectBootstrapState::Entered,
+            std::memory_order_acq_rel,
+            std::memory_order_acquire)) {
+        // EFZ can poll the Loading updater again before the frontend commits
+        // its returned screen.  The owned native loader is one-shot: preserve
+        // its proven Battle result instead of inspecting the now-transferred
+        // fighter slots or invoking the loader a second time.
+        if (expectedEntry == DirectBootstrapState::BattleHandoff) {
+            return static_cast<char>(SCREEN_BATTLE);
+        }
+        if (expectedEntry == DirectBootstrapState::Entered) {
+            return static_cast<char>(SCREEN_LOADING);
+        }
+        // Cancellation won the race after this callback observed Armed. The
+        // Practice slots are still empty, so invoking the native-only path
+        // would be the same null-fighter hazard the entry guard prevents.
+        return static_cast<char>(SCREEN_CHARACTER_SELECT);
+    }
+
+    // Empty fighter-owner slots are a precondition only at the first owned
+    // direct-Loading entry.  They are expected to change during the native
+    // loader and cannot safely be used as a global post-load guard.
+    if (!PracticeLoadingIsReadyForDirectBootstrap(loadingContext)) {
+        s_selectorLoadingHandoffComplete.store(false, std::memory_order_release);
+        s_directBootstrapState.store(DirectBootstrapState::Idle,
+                                     std::memory_order_release);
+        s_directAbortAfterHandoff.store(false, std::memory_order_release);
+        LogOut("[HOTSWAP][DIRECT] Loading entry precondition failed; returning to Character Select fallback", true);
+        SetState(RequestState::AwaitingCharacterSelect,
+                 UiStatus::Exiting,
+                 "direct Loading entry was not empty/ready; selector fallback");
+        return static_cast<char>(SCREEN_CHARACTER_SELECT);
+    }
+
     if (IsNetplaySuspendActive() || IsNetplaySessionActive()) {
+        s_directBootstrapState.store(DirectBootstrapState::Idle,
+                                     std::memory_order_release);
+        s_directAbortAfterHandoff.store(false, std::memory_order_release);
         FailRequest("direct Loading canceled because netplay became active", GamePhase::Loading);
         return static_cast<char>(SCREEN_CHARACTER_SELECT);
     }
@@ -1141,6 +1244,10 @@ char __fastcall HookedUpdateLoadingScreen(int* loadingContext, void* /*edx*/) {
             << " chars=" << Hex(result.p1Character) << "/" << Hex(result.p2Character)
             << "; returning to Character Select fallback";
         LogOut(oss.str(), true);
+        s_selectorLoadingHandoffComplete.store(false, std::memory_order_release);
+        s_directBootstrapState.store(DirectBootstrapState::Idle,
+                                     std::memory_order_release);
+        s_directAbortAfterHandoff.store(false, std::memory_order_release);
         SetState(RequestState::AwaitingCharacterSelect,
                  UiStatus::Exiting,
                  "direct Loading bootstrap failed; selector fallback");
@@ -1166,9 +1273,29 @@ char __fastcall HookedUpdateLoadingScreen(int* loadingContext, void* /*edx*/) {
         ? s_originalUpdateLoadingScreen(loadingContext)
         : static_cast<char>(SCREEN_CHARACTER_SELECT);
     if (nextScreen != 3) {
+        // This callback owns the failed native transition and is returning a
+        // non-Battle destination, so no deferred Battle cleanup is required.
+        s_directBootstrapState.store(DirectBootstrapState::Idle,
+                                     std::memory_order_release);
+        s_directAbortAfterHandoff.store(false, std::memory_order_release);
         FailRequest("native Loading did not transition to Battle", GamePhase::Loading);
     } else {
-        s_loadingHandoffComplete.store(true, std::memory_order_release);
+        DirectBootstrapState expected = DirectBootstrapState::Entered;
+        if (!s_directBootstrapState.compare_exchange_strong(
+                expected, DirectBootstrapState::BattleHandoff,
+                std::memory_order_acq_rel,
+                std::memory_order_acquire)) {
+            // Native setup has already transferred fighter/stage ownership and
+            // returned Battle. Overriding that result to Character Select can
+            // double-clean the transferred context. Preserve the handoff and
+            // finalize the logical cancellation after Match is observed.
+            s_directAbortAfterHandoff.store(true, std::memory_order_release);
+            s_directBootstrapState.store(DirectBootstrapState::BattleHandoff,
+                                         std::memory_order_release);
+            s_state.store(RequestState::Failed, std::memory_order_release);
+            s_uiStatus.store(UiStatus::Failed, std::memory_order_release);
+            LogOut("[HOTSWAP][DIRECT] loader completed after logical cancellation; deferring cleanup until Battle", true);
+        }
     }
     return nextScreen;
 }
@@ -1315,7 +1442,7 @@ void LogQueuedRequest(GamePhase phase,
     LogOut(oss.str(), true);
 }
 
-void CompleteReload(GamePhase currentPhase) {
+void CompleteReload(GamePhase currentPhase, bool publishReceipt = true) {
     const int requestedBgmTrack = s_requestedBgmTrack.load(std::memory_order_relaxed);
     const uintptr_t gameStatePtr = GetGameStatePtr();
     {
@@ -1328,7 +1455,9 @@ void CompleteReload(GamePhase currentPhase) {
         AppendRequestedReloadSummary(oss);
         LogOut(oss.str(), true);
     }
-    if (gameStatePtr && requestedBgmTrack >= 0) {
+    if (!publishReceipt) {
+        LogOut("[HOTSWAP][DIRECT] skipped mission BGM override for canceled handoff", true);
+    } else if (gameStatePtr && requestedBgmTrack >= 0) {
         const int liveBgmBuffer = GetBGMBufferIndex(gameStatePtr);
         const unsigned short bgmTrack = static_cast<unsigned short>(requestedBgmTrack);
         if (PlayBGM(gameStatePtr, bgmTrack)) {
@@ -1355,11 +1484,16 @@ void CompleteReload(GamePhase currentPhase) {
     LogOut("[HOTSWAP] applied immediate session reset before lifecycle resync", true);
     RequestRuntimeLifecycleResync("character hotswap reload complete");
     LogOut("[HOTSWAP] reload completed and lifecycle resync requested", true);
-    PublishCompletedReceipt();
-    s_directBootstrapPending.store(false, std::memory_order_release);
-    s_loadingHandoffComplete.store(false, std::memory_order_release);
-    s_state.store(RequestState::Idle, std::memory_order_release);
-    s_uiStatus.store(UiStatus::Completed, std::memory_order_release);
+    if (publishReceipt) PublishCompletedReceipt();
+    else InvalidateCompletedReceipt();
+    s_selectorLoadingHandoffComplete.store(false, std::memory_order_release);
+    s_directBootstrapState.store(DirectBootstrapState::Idle,
+                                 std::memory_order_release);
+    s_directAbortAfterHandoff.store(false, std::memory_order_release);
+    s_state.store(publishReceipt ? RequestState::Idle : RequestState::Failed,
+                  std::memory_order_release);
+    s_uiStatus.store(publishReceipt ? UiStatus::Completed : UiStatus::Failed,
+                     std::memory_order_release);
     s_waitTicks.store(0, std::memory_order_relaxed);
     s_lastActivePhase = currentPhase;
 }
@@ -1369,6 +1503,10 @@ void CompleteReload(GamePhase currentPhase) {
 bool InstallDirectPracticeBootstrap() {
     if (s_directBootstrapInstalled.load(std::memory_order_acquire)) {
         return true;
+    }
+    if (s_directBootstrapCleanupIncomplete.load(std::memory_order_acquire)) {
+        LogOut("[HOTSWAP][DIRECT] install blocked after incomplete prior hook cleanup", true);
+        return false;
     }
 
     const uintptr_t base = GetEFZBase();
@@ -1411,31 +1549,61 @@ bool InstallDirectPracticeBootstrap() {
     if (!MinHookUtils::EnableHook(reinterpret_cast<void*>(updateTarget),
                                   "[HOTSWAP][DIRECT]",
                                   "updateLoadingScreen")) {
-        MinHookUtils::RemoveHook(reinterpret_cast<void*>(updateTarget),
-                                 "[HOTSWAP][DIRECT]",
-                                 "updateLoadingScreen");
-        s_originalUpdateLoadingScreen = nullptr;
+        if (MinHookUtils::RemoveHook(reinterpret_cast<void*>(updateTarget),
+                                     "[HOTSWAP][DIRECT]",
+                                     "updateLoadingScreen")) {
+            s_originalUpdateLoadingScreen = nullptr;
+        } else {
+            // The detour should still be disabled, but retain its trampoline in
+            // case removal actually left it callable.
+            s_updateLoadingScreenTarget = updateTarget;
+            s_directBootstrapCleanupIncomplete.store(true,
+                                                     std::memory_order_release);
+            LogOut("[HOTSWAP][DIRECT] failed hook removal retained its trampoline", true);
+        }
         return false;
     }
 
     s_updateLoadingScreenTarget = updateTarget;
     s_directBootstrapInstalled.store(true, std::memory_order_release);
+    s_directBootstrapCleanupIncomplete.store(false, std::memory_order_release);
     LogOut("[HOTSWAP][DIRECT] native Practice Loading bootstrap installed", true);
     return true;
 }
 
 void UninstallDirectPracticeBootstrap() {
-    s_directBootstrapPending.store(false, std::memory_order_release);
-    s_loadingHandoffComplete.store(false, std::memory_order_release);
-    if (s_directBootstrapInstalled.exchange(false, std::memory_order_acq_rel)
-        && s_updateLoadingScreenTarget) {
-        MinHookUtils::DisableHook(reinterpret_cast<void*>(s_updateLoadingScreenTarget),
-                                  "[HOTSWAP][DIRECT]",
-                                  "updateLoadingScreen");
-        MinHookUtils::RemoveHook(reinterpret_cast<void*>(s_updateLoadingScreenTarget),
-                                 "[HOTSWAP][DIRECT]",
-                                 "updateLoadingScreen");
+    s_selectorLoadingHandoffComplete.store(false, std::memory_order_release);
+    const DirectBootstrapState state =
+        s_directBootstrapState.load(std::memory_order_acquire);
+    if (state == DirectBootstrapState::Entered ||
+        state == DirectBootstrapState::BattleHandoff) {
+        s_directAbortAfterHandoff.store(true, std::memory_order_release);
+    } else {
+        s_directBootstrapState.store(DirectBootstrapState::Idle,
+                                     std::memory_order_release);
+        s_directAbortAfterHandoff.store(false, std::memory_order_release);
     }
+    if (state == DirectBootstrapState::Entered) {
+        LogOut("[HOTSWAP][DIRECT] uninstall deferred while native Loading callback is executing", true);
+        return;
+    }
+    if (s_directBootstrapInstalled.load(std::memory_order_acquire) &&
+        s_updateLoadingScreenTarget) {
+        (void)MinHookUtils::DisableHook(
+            reinterpret_cast<void*>(s_updateLoadingScreenTarget),
+            "[HOTSWAP][DIRECT]", "updateLoadingScreen");
+        if (!MinHookUtils::RemoveHook(
+                reinterpret_cast<void*>(s_updateLoadingScreenTarget),
+                "[HOTSWAP][DIRECT]", "updateLoadingScreen")) {
+            LogOut("[HOTSWAP][DIRECT] uninstall incomplete; retaining hook trampoline", true);
+            s_directBootstrapInstalled.store(false, std::memory_order_release);
+            s_directBootstrapCleanupIncomplete.store(true,
+                                                     std::memory_order_release);
+            return;
+        }
+    }
+    s_directBootstrapInstalled.store(false, std::memory_order_release);
+    s_directBootstrapCleanupIncomplete.store(false, std::memory_order_release);
     s_updateLoadingScreenTarget = 0;
     s_originalUpdateLoadingScreen = nullptr;
 }
@@ -1460,6 +1628,10 @@ bool QueueDirectPracticeLoad(int p1SelectId,
     }
     if (IsActiveState(s_state.load(std::memory_order_acquire))) {
         LogOut("[HOTSWAP][DIRECT] request ignored because another reload is active", true);
+        return false;
+    }
+    if (DirectBootstrapOwnsTransaction()) {
+        LogOut("[HOTSWAP][DIRECT] request ignored until the prior loader handoff is finalized", true);
         return false;
     }
 
@@ -1506,8 +1678,13 @@ bool QueueDirectPracticeLoad(int p1SelectId,
                                      std::memory_order_relaxed);
     s_requestedStage.store(stageId, std::memory_order_relaxed);
     s_requestedBgmTrack.store(bgmTrack, std::memory_order_relaxed);
-    s_directBootstrapPending.store(true, std::memory_order_release);
-    s_loadingHandoffComplete.store(false, std::memory_order_release);
+    // Publish the fully initialized transaction in one release store. The
+    // Loading hook and phase monitor cannot pair this request with state from a
+    // prior handoff.
+    s_selectorLoadingHandoffComplete.store(false, std::memory_order_release);
+    s_directBootstrapState.store(DirectBootstrapState::Armed,
+                                 std::memory_order_release);
+    s_directAbortAfterHandoff.store(false, std::memory_order_release);
 
     std::ostringstream oss;
     oss << "[HOTSWAP][DIRECT] queued Practice Loading"
@@ -1534,20 +1711,32 @@ bool QueueDirectPracticeLoad(int p1SelectId,
 }
 
 bool IsDirectPracticeLoadPending() {
-    return s_directBootstrapPending.load(std::memory_order_acquire);
+    return DirectBootstrapOwnsTransaction();
 }
 
 void CancelDirectPracticeLoad(const char* reason) {
-    const bool hadPending =
-        s_directBootstrapPending.exchange(false, std::memory_order_acq_rel);
-    s_loadingHandoffComplete.store(false, std::memory_order_release);
+    const DirectBootstrapState previousState =
+        s_directBootstrapState.load(std::memory_order_acquire);
+    const bool deferred = previousState == DirectBootstrapState::Entered ||
+                          previousState == DirectBootstrapState::BattleHandoff;
+    if (deferred) {
+        s_directAbortAfterHandoff.store(true, std::memory_order_release);
+    } else {
+        s_directBootstrapState.store(DirectBootstrapState::Idle,
+                                     std::memory_order_release);
+        s_directAbortAfterHandoff.store(false, std::memory_order_release);
+    }
+    s_selectorLoadingHandoffComplete.store(false, std::memory_order_release);
+    const bool hadPending = previousState != DirectBootstrapState::Idle;
     if (!hadPending) {
         return;
     }
-    s_state.store(RequestState::Idle, std::memory_order_release);
-    s_uiStatus.store(UiStatus::Ready, std::memory_order_release);
+    s_state.store(deferred ? RequestState::Failed : RequestState::Idle,
+                  std::memory_order_release);
+    s_uiStatus.store(deferred ? UiStatus::Failed : UiStatus::Ready,
+                     std::memory_order_release);
     s_waitTicks.store(0, std::memory_order_relaxed);
-    LogOut(std::string("[HOTSWAP][DIRECT] pending title load canceled: ")
+    LogOut(std::string("[HOTSWAP][DIRECT] owned Practice load canceled: ")
            + (reason ? reason : "unspecified"), true);
 }
 
@@ -1631,6 +1820,10 @@ bool QueueReload(int p1SelectId, int p2SelectId, int stageId, const PaletteSelec
         FailRequest("reload is unavailable while netplay is active", GetCurrentGamePhase());
         return false;
     }
+    if (DirectBootstrapOwnsTransaction()) {
+        LogOut("[HOTSWAP] selector reload rejected until direct loader handoff is finalized", true);
+        return false;
+    }
 
     const RequestState state = s_state.load(std::memory_order_acquire);
     if (IsActiveState(state)) {
@@ -1662,8 +1855,10 @@ bool QueueReload(int p1SelectId, int p2SelectId, int stageId, const PaletteSelec
     s_requestedP2CustomPalette.store(paletteSelection.p2UseCustomPalette ? 1 : 0, std::memory_order_relaxed);
     s_requestedStage.store(stageId, std::memory_order_relaxed);
     s_requestedBgmTrack.store(bgmTrack, std::memory_order_relaxed);
-    s_directBootstrapPending.store(false, std::memory_order_release);
-    s_loadingHandoffComplete.store(false, std::memory_order_release);
+    s_selectorLoadingHandoffComplete.store(false, std::memory_order_release);
+    s_directBootstrapState.store(DirectBootstrapState::Idle,
+                                 std::memory_order_release);
+    s_directAbortAfterHandoff.store(false, std::memory_order_release);
 
     LogQueuedRequest(currentPhase, currentMode, p1SelectId, p2SelectId, stageId, bgmTrack, paletteSelection);
 
@@ -1678,6 +1873,14 @@ bool QueueReload(int p1SelectId, int p2SelectId, int stageId, const PaletteSelec
 
 void Tick(GamePhase currentPhase, GameMode /*currentMode*/) {
     const RequestState state = s_state.load(std::memory_order_acquire);
+    if (state == RequestState::Failed &&
+        s_directAbortAfterHandoff.load(std::memory_order_acquire) &&
+        DirectBootstrapHasBattleHandoff() &&
+        currentPhase == GamePhase::Match) {
+        LogOut("[HOTSWAP][DIRECT] canceled loader reached Battle; finalizing without completion receipt", true);
+        CompleteReload(currentPhase, false);
+        return;
+    }
     if (!IsActiveState(state)) {
         if (state == RequestState::Idle) {
             s_lastActivePhase = GamePhase::Unknown;
@@ -1697,7 +1900,7 @@ void Tick(GamePhase currentPhase, GameMode /*currentMode*/) {
     switch (state) {
         case RequestState::PendingExitRequest:
             if (currentPhase != GamePhase::Match) {
-                if (s_directBootstrapPending.load(std::memory_order_acquire)) {
+                if (DirectBootstrapOwnsTransaction()) {
                     SetState(RequestState::AwaitingLoading,
                              UiStatus::WaitingLoading,
                              "match already leaving for direct Loading");
@@ -1708,7 +1911,7 @@ void Tick(GamePhase currentPhase, GameMode /*currentMode*/) {
                 }
                 return;
             }
-            if (s_directBootstrapPending.load(std::memory_order_acquire)) {
+            if (DirectBootstrapOwnsTransaction()) {
                 if (!RequestFrontendExit(FrontendExitTarget::Loading)) {
                     FailRequest("RequestFrontendExit(Loading) failed", currentPhase);
                     return;
@@ -1818,10 +2021,14 @@ void Tick(GamePhase currentPhase, GameMode /*currentMode*/) {
                 : ObservedPhase::Other;
             const Decision decision = Decide(
                 WaitState::AwaitingLoading, observed,
-                s_directBootstrapPending.load(std::memory_order_acquire),
-                s_loadingHandoffComplete.load(std::memory_order_acquire));
+                DirectBootstrapOwnsTransaction(),
+                AnyOwnedLoadingHandoffComplete());
             if (decision == Decision::DirectFallback) {
-                s_directBootstrapPending.store(false, std::memory_order_release);
+                s_selectorLoadingHandoffComplete.store(false,
+                                                        std::memory_order_release);
+                s_directBootstrapState.store(DirectBootstrapState::Idle,
+                                             std::memory_order_release);
+                s_directAbortAfterHandoff.store(false, std::memory_order_release);
                 SetState(RequestState::PendingApply,
                          UiStatus::Applying,
                          "direct cleanup returned to Character Select; applying fallback");
@@ -1832,15 +2039,16 @@ void Tick(GamePhase currentPhase, GameMode /*currentMode*/) {
                 return;
             }
             if (decision == Decision::Complete) {
-                CompleteReload(currentPhase);
+                CompleteReload(currentPhase, CompletionReceiptAuthorized());
                 return;
             }
             // A request originating in Match remains in the OLD Match for many
             // ticks while native battle cleanup runs. Treating that phase as the
-            // destination clears s_directBootstrapPending before Loading gets a
-            // chance to recreate the destroyed fighters. Completion is legal
-            // only after this request has observed Loading, or the game-thread
-            // Loading hook has published a successful handoff receipt.
+            // destination must not clear the owned direct transaction before
+            // Loading gets a chance to recreate the destroyed fighters.
+            // Completion is legal only after this request has observed Loading,
+            // or the game-thread Loading hook has published a successful
+            // handoff receipt.
             if (waited > kWaitLoadingTicks) {
                 FailRequest("timed out waiting for loading", currentPhase);
             }
@@ -1854,9 +2062,9 @@ void Tick(GamePhase currentPhase, GameMode /*currentMode*/) {
                         ? CharacterHotswap::Transition::ObservedPhase::Match
                         : CharacterHotswap::Transition::ObservedPhase::Other,
                     false,
-                    s_loadingHandoffComplete.load(std::memory_order_acquire)) ==
+                    AnyOwnedLoadingHandoffComplete()) ==
                 CharacterHotswap::Transition::Decision::Complete) {
-                CompleteReload(currentPhase);
+                CompleteReload(currentPhase, CompletionReceiptAuthorized());
                 return;
             }
             if (waited > kWaitMatchTicks) {
@@ -1899,7 +2107,8 @@ void InvalidateCustomPaletteCache() {
 }
 
 bool IsBusy() {
-    return IsActiveState(s_state.load(std::memory_order_acquire));
+    return IsActiveState(s_state.load(std::memory_order_acquire)) ||
+           DirectBootstrapOwnsTransaction();
 }
 
 bool CanQueueReload() {

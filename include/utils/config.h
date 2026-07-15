@@ -140,6 +140,9 @@ namespace Config {
         // Practice: Dummy Auto-Block behavior
         // Continuous neutral timeout used by event-driven modes (ms). Defaults to 10000 (10s).
         int autoBlockNeutralTimeoutMs;
+        // Mission authoring pre-record count-in. 0 starts after the neutral
+        // release gate; default 500 ms, configurable up to 3 seconds.
+        int missionRecorderCountInMs;
     };
     
     // Initialize configuration system

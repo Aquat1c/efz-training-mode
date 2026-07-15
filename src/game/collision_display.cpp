@@ -12,6 +12,7 @@
 #include <windows.h>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cctype>
 #include <cmath>
@@ -1612,6 +1613,78 @@ bool ConsumeDisplayHotkeyLocked(int key) {
 }
 
 } // namespace
+
+bool ProbeProjectileRing(int playerIndex, ProjectileRingSlotProbe* outSlots,
+                         std::size_t outCapacity) {
+    if ((playerIndex != 1 && playerIndex != 2) || !outSlots ||
+        outCapacity < kProjectileRingSlotCapacity) {
+        return false;
+    }
+
+    const uintptr_t owner = GetPlayerObject(playerIndex);
+    if (!owner) return false;
+
+    uint32_t aliveFlags[kProjectileRingSlotCapacity] = {};
+    if (!ReadBytes(owner + kProjectileAliveFlagsOffset,
+                   aliveFlags, sizeof(aliveFlags))) {
+        return false;
+    }
+
+    constexpr std::size_t kProbeEntryBytes =
+        kProjectileLifeOffset + sizeof(int16_t);
+    for (std::size_t slotIndex = 0;
+         slotIndex < kProjectileRingSlotCapacity; ++slotIndex) {
+        ProjectileRingSlotProbe& out = outSlots[slotIndex];
+        out = ProjectileRingSlotProbe{};
+        out.slot = static_cast<int>(slotIndex);
+        out.readable = true;
+        out.alive = aliveFlags[slotIndex] != 0;
+        if (!out.alive) continue;
+
+        const uintptr_t entryBase = owner + kProjectileEntryBaseOffset +
+            kProjectileEntryStride * static_cast<uintptr_t>(slotIndex);
+        uint8_t entry[kProbeEntryBytes] = {};
+        if (!ReadBytes(entryBase, entry, sizeof(entry))) {
+            // The alive bit was readable but its entry was not. Preserve this
+            // distinction so a consumer cannot manufacture a despawn edge.
+            out.readable = false;
+            continue;
+        }
+        std::memcpy(&out.pattern, entry + kProjectilePatternOffset,
+                    sizeof(out.pattern));
+        std::memcpy(&out.frame, entry + kProjectileFrameOffset,
+                    sizeof(out.frame));
+        std::memcpy(&out.frameTick, entry + kProjectileFrameTickOffset,
+                    sizeof(out.frameTick));
+        std::memcpy(&out.x, entry + kProjectileXOffset, sizeof(out.x));
+        std::memcpy(&out.y, entry + kProjectileYOffset, sizeof(out.y));
+        std::memcpy(&out.destroyed, entry + kProjectileDestroyedOffset,
+                    sizeof(out.destroyed));
+        std::memcpy(&out.life, entry + kProjectileLifeOffset,
+                    sizeof(out.life));
+    }
+    return true;
+}
+
+int ProbeProjectileLifeForPattern(int playerIndex, uint16_t pattern) {
+    std::array<ProjectileRingSlotProbe, kProjectileRingSlotCapacity> slots{};
+    if (!ProbeProjectileRing(playerIndex, slots.data(), slots.size())) {
+        return kProjectileLifeProbeUnavailable;
+    }
+    int maxLife = -1;
+    for (const ProjectileRingSlotProbe& slot : slots) {
+        if (slot.alive && !slot.readable) {
+            // Its pattern is unknown, so this sample cannot prove that the
+            // requested projectile disappeared.
+            return kProjectileLifeProbeUnavailable;
+        }
+        if (!slot.alive || slot.pattern != pattern) continue;
+        if (static_cast<int>(slot.life) > maxLife) {
+            maxLife = static_cast<int>(slot.life);
+        }
+    }
+    return maxLife;
+}
 
 void Initialize() {
     if (g_initialized.exchange(true)) {

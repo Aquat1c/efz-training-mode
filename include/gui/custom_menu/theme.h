@@ -35,6 +35,31 @@ constexpr ImU32 kSliderTrackOff  = IM_COL32(150, 150, 150, 120);
 constexpr ImU32 kButtonActiveBg  = IM_COL32(255, 255, 255,  40);
 constexpr ImU32 kButtonHoverBg   = IM_COL32(255, 255, 255,  20);
 
+// ===== Native bar palette =====
+// The in-game Revival menu look: full-width beveled metal strips over the
+// backdrop, uppercase text with a hard black outline, black title band, and
+// the black/white-bordered description box at the bottom of the screen.
+constexpr ImU32 kBarTop          = IM_COL32( 86,  86,  86, 255);
+constexpr ImU32 kBarMid          = IM_COL32(138, 138, 138, 255);
+constexpr ImU32 kBarBot          = IM_COL32( 56,  56,  56, 255);
+constexpr ImU32 kBarSelTop       = IM_COL32(148, 148, 148, 255);
+constexpr ImU32 kBarSelMid       = IM_COL32(216, 216, 216, 255);
+constexpr ImU32 kBarSelBot       = IM_COL32(102, 102, 102, 255);
+constexpr ImU32 kBarDisTop       = IM_COL32( 50,  50,  50, 255);
+constexpr ImU32 kBarDisMid       = IM_COL32( 72,  72,  72, 255);
+constexpr ImU32 kBarDisBot       = IM_COL32( 34,  34,  34, 255);
+constexpr ImU32 kBarEdgeLight    = IM_COL32(255, 255, 255, 175);
+constexpr ImU32 kBarEdgeDark     = IM_COL32(  0,   0,   0, 205);
+constexpr ImU32 kBarText         = IM_COL32(176, 176, 176, 255);
+constexpr ImU32 kBarTextSel      = IM_COL32(255, 255, 255, 255);
+constexpr ImU32 kBarTextDis      = IM_COL32(108, 108, 108, 255);
+constexpr ImU32 kTextOutline     = IM_COL32(  0,   0,   0, 235);
+constexpr ImU32 kBandFill        = IM_COL32(  0,   0,   0, 238);
+constexpr ImU32 kBoxFill         = IM_COL32(  0,   0,   0, 238);
+constexpr ImU32 kBoxBorder       = IM_COL32(230, 230, 230, 235);
+constexpr float kBarH            = 26.0f;   // native strip height at scale 1
+constexpr float kBandH           = 30.0f;   // title band height at scale 1
+
 // ===== Panel metrics =====
 // Main menu panel - full-width, like EFZ's native option/replay screens.
 constexpr float kPanelW          = 640.0f;

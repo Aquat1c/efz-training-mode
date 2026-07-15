@@ -554,4 +554,77 @@ void DrawButton(
     DrawString(dl, bFont, bPx, tx, ty, textCol, label);
 }
 
+// ===== Native (in-game) menu primitives =====
+
+void DrawOutlinedText(ImDrawList* dl, ImFont* font, float px, float x, float y,
+                      ImU32 col, const char* text) {
+    if (!dl || !text || !*text) return;
+    DrawOutlinedString(dl, font, px, x, y, col, Theme::kTextOutline, text);
+}
+
+void DrawNativeBar(ImDrawList* dl, float x, float y, float w, float h,
+                   bool selected, bool disabled) {
+    using namespace Theme;
+    if (!dl || w <= 0.0f || h <= 0.0f) return;
+    const float sx = Scale::Snap(x);
+    const float sy = Scale::Snap(y);
+    const float ex = Scale::Snap(x + w);
+    const float ey = Scale::Snap(y + h);
+    const float my = Scale::Snap(y + h * 0.42f);   // highlight sits above center
+    const ImU32 top = disabled ? kBarDisTop : (selected ? kBarSelTop : kBarTop);
+    const ImU32 mid = disabled ? kBarDisMid : (selected ? kBarSelMid : kBarMid);
+    const ImU32 bot = disabled ? kBarDisBot : (selected ? kBarSelBot : kBarBot);
+    dl->AddRectFilledMultiColor(ImVec2(sx, sy), ImVec2(ex, my), top, top, mid, mid);
+    dl->AddRectFilledMultiColor(ImVec2(sx, my), ImVec2(ex, ey), mid, mid, bot, bot);
+    dl->AddLine(ImVec2(sx, sy), ImVec2(ex, sy), kBarEdgeLight, 1.0f);
+    dl->AddLine(ImVec2(sx, ey - 1.0f), ImVec2(ex, ey - 1.0f), kBarEdgeDark, 1.0f);
+}
+
+void DrawNativeBarCentered(ImDrawList* dl, float x, float y, float w, float h,
+                           const char* label, bool selected, bool disabled) {
+    using namespace Theme;
+    DrawNativeBar(dl, x, y, w, h, selected, disabled);
+    if (!label || !*label) return;
+    ImFont* f = Fonts::Body();
+    const float px = PxFromFont(f);
+    const float tw = MeasureTextW(f, px, label);
+    const ImU32 col = disabled ? kBarTextDis : (selected ? kBarTextSel : kBarText);
+    DrawOutlinedText(dl, f, px, x + (w - tw) * 0.5f, CenterTextY(y, h, px), col, label);
+}
+
+float DrawTitleBand(ImDrawList* dl, const char* title, const char* rightStatus, float y) {
+    using namespace Theme;
+    const Scale::Metrics& metrics = Scale::Get();
+    const float h = Scale::Snap(kBandH * metrics.layoutScale);
+    const float y1 = y + h;
+    dl->AddRectFilled(ImVec2(0.0f, Scale::Snap(y)), ImVec2(kCanvasW, Scale::Snap(y1)), kBandFill);
+    dl->AddLine(ImVec2(0.0f, Scale::Snap(y1) - 1.0f), ImVec2(kCanvasW, Scale::Snap(y1) - 1.0f),
+                kBoxBorder, 1.0f);
+    ImFont* hf = Fonts::Header();
+    const float hpx = (hf && hf->FontSize > 0.0f) ? hf->FontSize : metrics.headerPx;
+    if (title && *title) {
+        const float tw = MeasureTextW(hf, hpx, title);
+        DrawOutlinedText(dl, hf, hpx, (kCanvasW - tw) * 0.5f, CenterTextY(y, h, hpx),
+                         kTextActive, title);
+    }
+    if (rightStatus && *rightStatus) {
+        ImFont* bf = Fonts::Body();
+        const float bpx = PxFromFont(bf);
+        const float sw = MeasureTextW(bf, bpx, rightStatus);
+        DrawOutlinedText(dl, bf, bpx, kCanvasW - 14.0f - sw, CenterTextY(y, h, bpx),
+                         kTextStatus, rightStatus);
+    }
+    return y1;
+}
+
+void DrawInfoBox(ImDrawList* dl, float x, float y, float w, float h) {
+    using namespace Theme;
+    const float sx = Scale::Snap(x);
+    const float sy = Scale::Snap(y);
+    const float ex = Scale::Snap(x + w);
+    const float ey = Scale::Snap(y + h);
+    dl->AddRectFilled(ImVec2(sx, sy), ImVec2(ex, ey), kBoxFill);
+    dl->AddRect(ImVec2(sx + 0.5f, sy + 0.5f), ImVec2(ex - 0.5f, ey - 0.5f), kBoxBorder, 0.0f, 0, 1.0f);
+}
+
 } // namespace CustomMenu::Layout

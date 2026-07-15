@@ -1,6 +1,6 @@
 {
  "char": "minagi",
- "note": "RAW specials + universals; motions are research-grade, correct in-game",
+ "note": "RAW command extraction + user-confirmed notation overrides",
  "notation": {
   "4": "8",
   "5": "9",
@@ -9,7 +9,7 @@
   "15": "dj9",
   "16": "dj7",
   "163": "66",
-  "164": "66",
+  "164": "44",
   "165": "j.66",
   "166": "j.44",
   "167": "IC",
@@ -24,6 +24,15 @@
   "207": "j.A",
   "208": "j.B",
   "209": "j.C",
+  "230": "66A",
+  "231": "66B",
+  "232": "66C",
+  "233": "662A",
+  "234": "662B",
+  "235": "662C",
+  "250": "5S (summon readied)",
+  "251": "4S (Michiru run back)",
+  "252": "6S (Michiru run fwd)",
   "253": "236A",
   "254": "236B",
   "255": "236C",
@@ -62,6 +71,7 @@
   "311": "j.214214C",
   "312": "214236A",
   "313": "214236B",
-  "314": "214236C"
+  "314": "214236C",
+  "315": "FM"
  }
 }

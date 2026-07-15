@@ -246,13 +246,17 @@
 #define PLAYER_STATE_COOLDOWN3_OFFSET 0x13E
 #define PLAYER_STATE_COOLDOWN4_OFFSET 0x140
 
-// Hit-state machine flag (DWORD).
-//   0 = neutral / nothing
-//   2 = block or RG just landed
-//   3 = hit just landed
-//   6 = throw connected
-//   7 = special-attack connected (e.g. airthrow chain)
-// Set on the *attacker* by the hit handler the frame the attack resolves.
+// Producer-dependent collision/result latch (DWORD). Diagnostic only: this is
+// not a stable contact-result enum and a raw value must not satisfy a typed
+// mission predicate by itself. Observed writers include:
+//   0 = no latched value
+//   2 = block, RG, or Guard Point paths
+//   3 = ordinary hit paths; some FIC scripts also force 3 on whiff
+//   5 = entity-interaction paths
+//   6 = throw paths and character-specific counter paths
+//   7 = a hit-path variant
+// Direct player collision usually writes the attacker's field, but scripts and
+// entity resolvers write it too. Use resolver-local evidence for exact results.
 #define PLAYER_HIT_STATE_OFFSET   0x168
 
 // Attacker move countdown - decremented by 1 every time an attack resolves
@@ -434,7 +438,12 @@
 #define BASE_ATTACK_2D        211   // Crouching D
 #define BASE_ATTACK_JD        212   // Jumping D
 
-#define BASE_AIRTHROW         241   // Air throw
+// Universal air-throw action: 248 is the attempt/startup; a successful catch
+// transitions the thrower to 249. Grade 249 so a missed check that becomes j.C
+// cannot satisfy an air-throw objective.
+#define AIR_THROW_STARTUP_ID  248
+#define AIR_THROW_SUCCESS_ID  249
+#define BASE_AIRTHROW         AIR_THROW_SUCCESS_ID
 
 // Auto-action trigger points
 #define TRIGGER_NONE          0
@@ -577,6 +586,13 @@
 // Maximum values
 #define IKUMI_BLOOD_MAX      8       // Blood ranges from 0-8
 #define IKUMI_GENOCIDE_MAX   1260    // Depletes by 3 every frames
+
+// Shiori's character-specific shield gauge reuses the same per-character resource
+// slot as Ikumi's blood meter (player + 0x314C), but on a much larger scale.
+// Freezing it at this value keeps the shield from ever depleting (user-verified in
+// Cheat Engine: freeze [efz.exe+0x390104]+0x314C at 1992 = infinite Shiori shield).
+#define SHIORI_SHIELD_OFFSET IKUMI_BLOOD_OFFSET  // 0x314C, shared per-char resource slot
+#define SHIORI_SHIELD_FULL   1992                // "full" shield value that never empties
 
 // Patch configuration for infinite blood mode
 #define IKUMI_GENOCIDE_TIMER_ADDR 0x2A718    // Address to patch genocide timer decrement

@@ -38,6 +38,30 @@ int main() {
     Check(!ReceiptGenerationMatches(0, 0),
           "generation zero is never a valid receipt");
 
+    Check(DecideDirectLoadingAction(DirectBootstrapState::Idle) ==
+              DirectLoadingAction::NativeUpdate,
+          "unowned Loading updates remain fully native");
+    Check(DecideDirectLoadingAction(DirectBootstrapState::Armed) ==
+              DirectLoadingAction::Bootstrap,
+          "only an armed transaction may construct direct fighters");
+    Check(DecideDirectLoadingAction(DirectBootstrapState::Entered) ==
+              DirectLoadingAction::HoldLoading,
+          "a reentrant poll cannot invoke the native loader twice");
+    Check(DecideDirectLoadingAction(DirectBootstrapState::BattleHandoff) ==
+              DirectLoadingAction::ReturnBattle,
+          "post-loader polls preserve the proven Battle destination");
+    Check(OwnsDirectLoadingTransaction(DirectBootstrapState::Armed) &&
+              OwnsDirectLoadingTransaction(DirectBootstrapState::Entered) &&
+              OwnsDirectLoadingTransaction(DirectBootstrapState::BattleHandoff),
+          "direct ownership survives entry until Battle confirmation");
+    Check(!OwnsDirectLoadingTransaction(DirectBootstrapState::Idle),
+          "idle state owns no direct transaction");
+    Check(DirectCompletionReceiptAllowed(DirectBootstrapState::BattleHandoff, false),
+          "a normal Battle handoff may publish its completion receipt");
+    Check(!DirectCompletionReceiptAllowed(DirectBootstrapState::Entered, false) &&
+              !DirectCompletionReceiptAllowed(DirectBootstrapState::BattleHandoff, true),
+          "entered or logically canceled handoffs cannot publish completion receipts");
+
     std::cout << "character_hotswap_transition_tests passed\n";
     return 0;
 }

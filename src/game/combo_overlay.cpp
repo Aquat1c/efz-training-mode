@@ -633,10 +633,13 @@ namespace {
             ClearDisplayUnlocked();
             return;
         }
-        // A running mission draws its recipe in the same screen area - the combo
-        // stats overlay would overlap it, so it yields while a mission is active.
-        if (Mission::Engine::Runner::IsActive()) {
-            ClearDisplayUnlocked();
+        // Mission play, demonstration playback, and authoring all own this part
+        // of the HUD.  Reset instead of only hiding so a combo captured behind
+        // those surfaces cannot reappear as a stale final summary afterward.
+        if (Mission::Engine::Runner::IsActive() ||
+            Mission::Engine::Demo::IsActive() ||
+            Mission::Engine::Recorder::IsSessionActive()) {
+            ResetStateUnlocked("mission-owned gameplay", false, true);
             return;
         }
 
@@ -746,6 +749,16 @@ namespace ComboOverlay {
 
         if (sample.phase != GamePhase::Match || sample.online || !sample.charsInitialized) {
             ResetStateUnlocked("tick outside supported match state", true, true);
+            return;
+        }
+
+        // Do not accumulate hidden combo state while another mission surface
+        // owns gameplay.  The render-time check below remains as a final guard
+        // against an ownership transition later in this tick.
+        if (Mission::Engine::Runner::IsActive() ||
+            Mission::Engine::Demo::IsActive() ||
+            Mission::Engine::Recorder::IsSessionActive()) {
+            ResetStateUnlocked("mission-owned gameplay", false, true);
             return;
         }
 

@@ -22,6 +22,7 @@
 #include "../include/game/practice_patch.h"
 #include "../include/game/always_rg.h"
 #include "../include/game/random_rg.h"
+#include "../include/game/hud_disable.h"
 #include "../include/game/random_block.h"
 #include "../include/utils/switch_players.h"
 #include <sstream>
@@ -136,6 +137,7 @@ void ResetDisplayDataToDefaults() {
     displayData.p1IkumiLevelGauge = 0;
     displayData.p2IkumiLevelGauge = 0;
     displayData.infiniteBloodMode = false;
+    displayData.infiniteShioriShield = false;  // Shiori (reuses Ikumi's +0x314C slot)
     // Misuzu
     displayData.p1MisuzuFeathers = 0;
     displayData.p2MisuzuFeathers = 0;
@@ -518,6 +520,7 @@ void ResetPracticeMatchSessionState(const char* reason) {
     AlwaysRG::SetEnabled(false);
     RandomRG::SetEnabled(false);
     RandomBlock::SetEnabled(false);
+    HudDisable::ResetVisible();   // exiting the match brings the HUD back
 
     SetDummyAutoBlockMode(DAB_None);
     SetAdaptiveStanceEnabled(false);
@@ -1396,6 +1399,8 @@ KeyBindings detectedBindings = {
 
 // Add with other global variables
 std::atomic<bool> g_statsDisplayEnabled(false);
+std::atomic<int> g_statsPageIndex(0);
+std::atomic<int> g_statsPageCount(1);
 int g_statsP1ValuesId = -1;
 int g_statsP2ValuesId = -1;
 int g_statsPositionId = -1;
@@ -1566,18 +1571,9 @@ std::atomic<bool> g_showFrameAdvantageOverlay{true};
 // Deep frame advantage instrumentation toggle
 std::atomic<bool> g_deepFrameAdvDebug{false};
 
-void EnsureLocaleConsistency() {
-    static bool localeSet = false;
-    if (!localeSet) {
-        std::locale::global(std::locale("C"));
-        localeSet = true;
-    }
-}
-
 std::string FormatPosition(double x, double y) {
-    std::locale::global(std::locale("C")); 
-    // This ensures consistent decimal point format
     std::stringstream ss;
+    ss.imbue(std::locale::classic());
     ss << std::fixed << std::setprecision(2) << "X=" << x << " Y=" << y;
     return ss.str();
 }
@@ -1780,8 +1776,6 @@ bool IsActionable(short moveID) {
 // actionable so wake actions can fire ASAP when state 96 ends.
 
 bool IsBlockstun(short moveID) {
-    std::locale::global(std::locale("C")); 
-    
     // Directly check for core blockstun IDs
     if (moveID == STAND_GUARD_ID || 
         moveID == CROUCH_GUARD_ID || 
@@ -1814,13 +1808,10 @@ bool IsBlockstun(short moveID) {
 }
 
 bool IsRecoilGuard(short moveID) {
-    std::locale::global(std::locale("C")); 
-    // This ensures consistent decimal point format
     return moveID == RG_STAND_ID || moveID == RG_CROUCH_ID || moveID == RG_AIR_ID;
 }
 
 bool IsEFZWindowActive() {
-    std::locale::global(std::locale("C")); 
     HWND fg = GetForegroundWindow();
     if (!fg)
         return false;
@@ -1852,10 +1843,6 @@ void CreateDebugConsole() {
     // Start diagnostic logging
     WriteStartupLog("CreateDebugConsole() started");
     WriteStartupLog("Current code page: " + std::to_string(GetConsoleOutputCP()));
-    
-    // Ensure C locale for consistency
-    std::locale::global(std::locale("C"));
-    WriteStartupLog("Locale set to C");
     
     // Create console and ensure success
     WriteStartupLog("Calling AllocConsole()...");
@@ -2069,8 +2056,6 @@ std::string GetKeyName(int virtualKey) {
 }
 
 bool IsDashState(short moveID) {
-    std::locale::global(std::locale("C")); 
-    // This ensures consistent decimal point format
     return moveID == FORWARD_DASH_START_ID || 
            moveID == FORWARD_DASH_RECOVERY_ID ||
            moveID == BACKWARD_DASH_START_ID || 

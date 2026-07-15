@@ -13,9 +13,11 @@
 #include "../include/gui/imgui_impl.h"
 #include "../include/utils/utilities.h"
 #include "../include/utils/config.h"
+#include "../include/utils/debug_log.h"
 #include "../include/core/constants.h"
 #include "../include/core/version.h"
 #include "../include/game/practice_patch.h"
+#include "../include/game/hud_disable.h"
 #include "../include/game/practice_offsets.h"
 #include "../include/game/game_state.h"
 #include "../include/game/always_rg.h"
@@ -91,6 +93,7 @@ bool P1Or(int charId) {
 }
 
 bool HasIkumi()    { return P1Or(CHAR_ID_IKUMI); }
+bool HasShiori()   { return P1Or(CHAR_ID_SHIORI); }
 bool HasMisuzu()   { return P1Or(CHAR_ID_MISUZU); }
 bool HasMishio()   { return P1Or(CHAR_ID_MISHIO); }
 bool HasAkiko()    { return P1Or(CHAR_ID_AKIKO); }
@@ -167,12 +170,18 @@ void OnDetailedLogging() { PersistBool ("General", "detailedLogging",        Mut
 void OnShowConsole()     { PersistBool ("General", "enableConsole",          MutableSettings().enableConsole); }
 void OnFpsDiag()         { PersistBool ("General", "enableFpsDiagnostics",   MutableSettings().enableFpsDiagnostics); }
 void OnAutoBlockTimeout(){ PersistInt  ("General", "autoBlockNeutralTimeoutMs", MutableSettings().autoBlockNeutralTimeoutMs); }
+void OnMissionRecordCountIn(){ PersistInt("General", "missionRecorderCountInMs", MutableSettings().missionRecorderCountInMs); }
 
 void SaveSettingsToDisk(){ Config::SaveSettings(); }
 
 void ReloadSettingsFromDisk() {
     if (Config::LoadSettings()) {
         detailedLogging.store(Config::GetSettings().detailedLogging);
+        if (!DebugLog::SetEnabled(Config::GetSettings().enableDebugFileLog)) {
+            MutableSettings().enableDebugFileLog = false;
+            Config::SetSetting("General", "enableDebugFileLog", "0");
+            LogOut("[CONFIG/UI][SETUP-FAILURE] Could not enable efz_training_debug.log", false);
+        }
         AudioControl::ApplyConfiguredVolumesNow();
         LogOut("[CONFIG/UI] Settings reloaded from ini", false);
         DirectDrawHook::AddMessage("Settings reloaded from disk", "SYSTEM", RGB(180, 255, 220), 1200, 0, 120);
@@ -180,6 +189,12 @@ void ReloadSettingsFromDisk() {
         LogOut("[CONFIG/UI] Settings reload failed", true);
         DirectDrawHook::AddMessage("Settings reload failed", "SYSTEM", RGB(255, 120, 120), 1400, 0, 120);
     }
+}
+
+void OnDebugFileLogging() {
+    auto& enabled = MutableSettings().enableDebugFileLog;
+    if (!DebugLog::SetEnabled(enabled)) enabled = false;
+    PersistBool("General", "enableDebugFileLog", enabled);
 }
 
 const char* CurrentConfigPathInfo() {
@@ -196,6 +211,7 @@ bool g_mirrorWakeBuffer    = false;
 bool g_mirrorCounterRG     = false;
 bool g_mirrorFaOverlay     = false;
 bool g_mirrorInfiniteBlood = false;
+bool g_mirrorInfiniteShioriShield = false;
 bool g_mirrorInfiniteFeather = false;
 bool g_mirrorInfiniteElement = false;
 bool g_mirrorInfiniteAwakened = false;
@@ -367,12 +383,14 @@ void OnFaOverlayToggle()    { g_showFrameAdvantageOverlay.store(g_mirrorFaOverla
 void RefreshCharMirrors() {
     const auto& d = ImGuiGui::guiState.localData;
     g_mirrorInfiniteBlood    = d.infiniteBloodMode;
+    g_mirrorInfiniteShioriShield = d.infiniteShioriShield;
     g_mirrorInfiniteFeather  = d.infiniteFeatherMode;
     g_mirrorInfiniteElement  = d.infiniteMishioElement;
     g_mirrorInfiniteAwakened = d.infiniteMishioAwakened;
 }
 
 void OnInfBlood()    { ImGuiGui::guiState.localData.infiniteBloodMode = g_mirrorInfiniteBlood; OnAutoApply(); }
+void OnInfShioriShield() { ImGuiGui::guiState.localData.infiniteShioriShield = g_mirrorInfiniteShioriShield; OnAutoApply(); }
 void OnInfFeather()  { ImGuiGui::guiState.localData.infiniteFeatherMode = g_mirrorInfiniteFeather; OnAutoApply(); }
 void OnInfElement()  { ImGuiGui::guiState.localData.infiniteMishioElement = g_mirrorInfiniteElement; OnAutoApply(); }
 void OnInfAwakened() { ImGuiGui::guiState.localData.infiniteMishioAwakened = g_mirrorInfiniteAwakened; OnAutoApply(); }
@@ -1578,6 +1596,19 @@ Row* BuildSettingsPracticeRows(int& count) {
     auto& s = MutableSettings();
 
     s_rows[n++] = Header("PRACTICE");
+    Row missionCountIn = IntNum("MISSION RECORD COUNT-IN",
+                                &s.missionRecorderCountInMs,
+                                0, 3000, 100, 500,
+                                OnMissionRecordCountIn);
+    missionCountIn.valueFormatter = [](const Row& row) -> const char* {
+        static char value[32];
+        const int milliseconds = row.intPtr ? *row.intPtr : 0;
+        if (milliseconds <= 0) return "OFF";
+        _snprintf_s(value, sizeof(value), _TRUNCATE, "%.1f SEC",
+                    static_cast<double>(milliseconds) / 1000.0);
+        return value;
+    };
+    s_rows[n++] = missionCountIn;
     s_rows[n++] = IntNum ("AUTO-BLOCK TIMEOUT (MS)",   &s.autoBlockNeutralTimeoutMs, 0, 60000, 500, 5000, OnAutoBlockTimeout);
     s_rows[n++] = Toggle ("RESTRICT TO PRACTICE",      &s.restrictToPracticeMode, OnRestrictPractice);
     count = n;
@@ -2208,6 +2239,18 @@ bool g_mirrorOverlayBorders = false;
 bool g_mirrorRGToasts       = false;
 bool g_mirrorPadInputLog    = false;
 bool g_mirrorDeepFA         = false;
+bool g_mirrorDisableHud     = false;
+// Per-HUD-element hide mirrors (Settings > DEBUG > OVERLAYS > GAME HUD).
+bool g_mirrorHudTopBar      = false;
+bool g_mirrorHudTimer       = false;
+bool g_mirrorHudPortraits   = false;
+bool g_mirrorHudHpBars      = false;
+bool g_mirrorHudRoundDots   = false;
+bool g_mirrorHudNameplates  = false;
+bool g_mirrorHudBottomBar   = false;
+bool g_mirrorHudSpMeter     = false;
+bool g_mirrorHudRfGauge     = false;
+bool g_mirrorHudCombo       = false;
 int g_customSavestateDiskSlot = 0;
 CustomSavestate::EditableFields g_customSavestateFields;
 char g_customSavestateModeInfo[256] = "Mode: custom savestates active";
@@ -2564,11 +2607,64 @@ void RefreshDebugMirrors() {
     g_mirrorRGToasts       = g_ShowRGDebugToasts.load();
     g_mirrorPadInputLog    = XInputShim::g_LogGenericPadInputDebug.load();
     g_mirrorDeepFA         = g_deepFrameAdvDebug.load();
+    g_mirrorDisableHud     = HudDisable::IsHidden();
+    g_mirrorHudTopBar      = HudDisable::IsElementDisabled(HudDisable::ElemTopBar);
+    g_mirrorHudTimer       = HudDisable::IsElementDisabled(HudDisable::ElemTimer);
+    g_mirrorHudPortraits   = HudDisable::IsElementDisabled(HudDisable::ElemPortraits);
+    g_mirrorHudHpBars      = HudDisable::IsElementDisabled(HudDisable::ElemHpBars);
+    g_mirrorHudRoundDots   = HudDisable::IsElementDisabled(HudDisable::ElemRoundDots);
+    g_mirrorHudNameplates  = HudDisable::IsElementDisabled(HudDisable::ElemNameplates);
+    g_mirrorHudBottomBar   = HudDisable::IsElementDisabled(HudDisable::ElemBottomBar);
+    g_mirrorHudSpMeter     = HudDisable::IsElementDisabled(HudDisable::ElemSpMeter);
+    g_mirrorHudRfGauge     = HudDisable::IsElementDisabled(HudDisable::ElemRfGauge);
+    g_mirrorHudCombo       = HudDisable::IsElementDisabled(HudDisable::ElemComboPanel);
     RefreshCustomSavestateMirrors();
 }
 
 void OnOverlayBorders() { g_ShowOverlayDebugBorders.store(g_mirrorOverlayBorders); }
 void OnRGToasts()       { g_ShowRGDebugToasts.store(g_mirrorRGToasts); }
+void OnDisableHud()     { HudDisable::SetHidden(g_mirrorDisableHud); }
+void OnHudElementsChanged() {
+    HudDisable::SetElementDisabled(HudDisable::ElemTopBar,     g_mirrorHudTopBar);
+    HudDisable::SetElementDisabled(HudDisable::ElemTimer,      g_mirrorHudTimer);
+    HudDisable::SetElementDisabled(HudDisable::ElemPortraits,  g_mirrorHudPortraits);
+    HudDisable::SetElementDisabled(HudDisable::ElemHpBars,     g_mirrorHudHpBars);
+    HudDisable::SetElementDisabled(HudDisable::ElemRoundDots,  g_mirrorHudRoundDots);
+    HudDisable::SetElementDisabled(HudDisable::ElemNameplates, g_mirrorHudNameplates);
+    HudDisable::SetElementDisabled(HudDisable::ElemBottomBar,  g_mirrorHudBottomBar);
+    HudDisable::SetElementDisabled(HudDisable::ElemSpMeter,    g_mirrorHudSpMeter);
+    HudDisable::SetElementDisabled(HudDisable::ElemRfGauge,    g_mirrorHudRfGauge);
+    HudDisable::SetElementDisabled(HudDisable::ElemComboPanel, g_mirrorHudCombo);
+}
+const char* ValHudDisable() {
+    if (HudDisable::IsHidden()) return "All hidden";
+    const unsigned bits[] = {
+        HudDisable::ElemTopBar, HudDisable::ElemTimer, HudDisable::ElemPortraits,
+        HudDisable::ElemHpBars, HudDisable::ElemRoundDots, HudDisable::ElemNameplates,
+        HudDisable::ElemBottomBar, HudDisable::ElemSpMeter, HudDisable::ElemRfGauge,
+        HudDisable::ElemComboPanel };
+    for (unsigned b : bits) if (HudDisable::IsElementDisabled(b)) return "Custom";
+    return "Shown";
+}
+Row* BuildHudDisableRows(int& count) {
+    static Row s_rows[16];
+    int n = 0;
+    s_rows[n++] = Header("GAME HUD");
+    s_rows[n++] = Toggle("HIDE ENTIRE HUD", &g_mirrorDisableHud, OnDisableHud);
+    s_rows[n++] = Header("PER ELEMENT");
+    s_rows[n++] = Toggle("Top Bar",     &g_mirrorHudTopBar,     OnHudElementsChanged);
+    s_rows[n++] = Toggle("Timer",       &g_mirrorHudTimer,      OnHudElementsChanged);
+    s_rows[n++] = Toggle("Portraits",   &g_mirrorHudPortraits,  OnHudElementsChanged);
+    s_rows[n++] = Toggle("HP Bars",     &g_mirrorHudHpBars,     OnHudElementsChanged);
+    s_rows[n++] = Toggle("Round Dots",  &g_mirrorHudRoundDots,  OnHudElementsChanged);
+    s_rows[n++] = Toggle("Name Plates", &g_mirrorHudNameplates, OnHudElementsChanged);
+    s_rows[n++] = Toggle("Bottom Bar",  &g_mirrorHudBottomBar,  OnHudElementsChanged);
+    s_rows[n++] = Toggle("SP Meter",    &g_mirrorHudSpMeter,    OnHudElementsChanged);
+    s_rows[n++] = Toggle("RF Gauge",    &g_mirrorHudRfGauge,    OnHudElementsChanged);
+    s_rows[n++] = Toggle("Combo Panel", &g_mirrorHudCombo,      OnHudElementsChanged);
+    count = n;
+    return s_rows;
+}
 static bool g_mirrorMissionInspector = false;
 void OnMissionInspector() { Mission::Engine::SetInspectorEnabled(g_mirrorMissionInspector); }
 void ActSaveRecordedMission() {
@@ -2851,8 +2947,7 @@ Row* BuildDebugLoggingRows(int& count) {
 
     s_rows[n++] = Header("DEBUG LOGGING");
     s_rows[n++] = Toggle ("DETAILED LOGGING",     &s.detailedLogging,      OnDetailedLogging);
-    s_rows[n++] = Toggle ("DEBUG FILE LOG",       &s.enableDebugFileLog,
-        [](){ PersistBool("General", "enableDebugFileLog", MutableSettings().enableDebugFileLog); });
+    s_rows[n++] = Toggle ("DEBUG FILE LOG",       &s.enableDebugFileLog, OnDebugFileLogging);
     s_rows[n++] = Toggle ("FPS DIAGNOSTICS",      &s.enableFpsDiagnostics, OnFpsDiag);
     s_rows[n++] = Toggle ("SHOW DEBUG CONSOLE",   &s.enableConsole,        OnShowConsole);
     s_rows[n++] = Toggle ("CHAR SELECT LOGGER",   &s.enableCharacterSelectLogger,
@@ -2950,13 +3045,30 @@ static Row* BuildMissionBrowserRows(int& count) {
                 "Macro Record: %s", Mission::Engine::Recorder::GetMacroRecordBindingLabel().c_str());
     s_rows[n++] = Info(bindingLine);
     const auto recPhase = Mission::Engine::Recorder::GetPhase();
+    if (recPhase == Mission::Engine::Recorder::Phase::Idle ||
+        recPhase == Mission::Engine::Recorder::Phase::PreRecord) {
+        auto& settings = MutableSettings();
+        Row missionCountIn = IntNum("COUNT-IN",
+                                    &settings.missionRecorderCountInMs,
+                                    0, 3000, 100, 500,
+                                    OnMissionRecordCountIn);
+        missionCountIn.valueFormatter = [](const Row& row) -> const char* {
+            static char value[32];
+            const int milliseconds = row.intPtr ? *row.intPtr : 0;
+            if (milliseconds <= 0) return "OFF";
+            _snprintf_s(value, sizeof(value), _TRUNCATE, "%.1f SEC",
+                        static_cast<double>(milliseconds) / 1000.0);
+            return value;
+        };
+        s_rows[n++] = missionCountIn;
+    }
     if (recPhase == Mission::Engine::Recorder::Phase::Idle) {
         s_rows[n++] = Action("NEW RECORDING (PRE-RECORD)", ActArmMissionRecording,
                              ValMissionAuthoringState);
-        s_rows[n++] = Info("Capture starts only after you arrange the setup and explicitly start the count-in.");
+        s_rows[n++] = Info("Arrange the setup first. Recording locks its exact start after the configured count-in.");
     } else if (recPhase == Mission::Engine::Recorder::Phase::PreRecord) {
         s_rows[n++] = Info("PRE-RECORD: arrange positions/resources. Nothing is being captured yet.");
-        s_rows[n++] = Action("START COUNT-IN", ActAdvanceMissionRecording, ValMissionRecordSteps);
+        s_rows[n++] = Action("START RECORDING", ActAdvanceMissionRecording, ValMissionRecordSteps);
         s_rows[n++] = Action("DISCARD SESSION", ActDiscardMissionRecording);
     } else if (recPhase == Mission::Engine::Recorder::Phase::CountIn) {
         s_rows[n++] = Info("COUNT-IN: close the menu and release all P1 controls.");
@@ -3009,13 +3121,14 @@ static const char* ValMissionBrowser() {
 
 
 Row* BuildDebugOverlayRows(int& count) {
-    static Row s_rows[14];
+    static Row s_rows[16];
     int n = 0;
 
     s_rows[n++] = Header("DEBUG OVERLAYS");
     s_rows[n++] = Info("Gameplay overlays moved to Options > Display Overlays.");
     s_rows[n++] = Toggle ("OVERLAY DEBUG BORDERS",     &g_mirrorOverlayBorders,       OnOverlayBorders);
     s_rows[n++] = Toggle ("RG DEBUG TOASTS",           &g_mirrorRGToasts,             OnRGToasts);
+    s_rows[n++] = Submenu("GAME HUD",                  "GAME HUD", BuildHudDisableRows, ValHudDisable);
     s_rows[n++] = Header("MISSIONS");
     s_rows[n++] = Toggle ("MOVE-ID INSPECTOR",         &g_mirrorMissionInspector,     OnMissionInspector);
     s_rows[n++] = Action ("LOAD LATEST RECORDED",      ActLoadLatestMission);
@@ -3695,7 +3808,7 @@ Row* BuildHelpCharacterRows(int& count) {
     int n = 0;
     s_rows[n++] = Header("CHARACTER SETTINGS");
     s_rows[n++] = Info("Chars only shows controls for characters currently in the match. Match-wide locks appear above the player menus when the matchup supports them.");
-    s_rows[n++] = Info("Match-wide locks: Infinite Ikumi Blood, Infinite Misuzu Feather, Lock Mishio Element, Infinite Mishio Awaken, and Minagi Projectiles -> Michiru.");
+    s_rows[n++] = Info("Match-wide locks: Infinite Ikumi Blood, Infinite Shiori Shield, Infinite Misuzu Feather, Lock Mishio Element, Infinite Mishio Awaken, and Minagi Projectiles -> Michiru.");
     s_rows[n++] = Spacer();
     s_rows[n++] = Header("CHARACTER ROWS");
     s_rows[n++] = Info("Ikumi: set Blood Stock, Genocide Timer, and Level Gauge.");
@@ -3749,7 +3862,7 @@ Row* BuildHelpMacroRows(int& count) {
     s_rows[n++] = Info("Record enters Pre-recording, where your usual P1 controls drive P2 for recording. Press Record again to start recording, then press it a third time to save.");
     s_rows[n++] = Info("Play runs the current slot and also exits Pre-recording. Empty slots do nothing.");
     s_rows[n++] = Info("Playback flips directions for Player 2 automatically and handles side swaps so the recorded inputs stay on the right character. Framestep tools work during playback.");
-    s_rows[n++] = Info("Mission authoring reuses Macro Record for PRE-RECORD, a three-second count-in, and Stop-to-Review. Its synchronized P1 demo clip is separate from all eight macro slots.");
+    s_rows[n++] = Info("Mission authoring reuses Macro Record for PRE-RECORD, a configurable count-in (0.5 sec by default), and Stop-to-Review. Its synchronized P1 demo clip is separate from all eight macro slots.");
     s_rows[n++] = Spacer();
     s_rows[n++] = Header("CUSTOM MENU TOOLS");
     s_rows[n++] = Info("Serialized Macro opens the text editor, Apply To Slot, Reload From Slot, Clear Slot, clipboard actions, undo/redo, and sample insertion.");
@@ -4317,6 +4430,10 @@ void AddCharacterLockRows(Row* rows, int& n) {
     if (HasIkumi()) {
         header();
         rows[n++] = Toggle("INFINITE IKUMI BLOOD", &g_mirrorInfiniteBlood, OnInfBlood);
+    }
+    if (HasShiori()) {
+        header();
+        rows[n++] = Toggle("INFINITE SHIORI SHIELD", &g_mirrorInfiniteShioriShield, OnInfShioriShield);
     }
     if (HasMisuzu()) {
         header();

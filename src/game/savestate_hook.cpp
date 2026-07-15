@@ -5,6 +5,7 @@
 #include "../../include/game/combo_overlay.h"
 #include "../../include/game/macro_controller.h"
 #include "../../include/game/mission/mission_engine.h"
+#include "../../include/game/mission/tutorial_session.h"   // TutorialSession::IsActive (suppress toasts in lessons)
 #include "../../include/game/practice_offsets.h"
 #include "../../include/game/practice_hotkey_gate.h"
 #include "../../include/utils/switch_players.h"
@@ -157,7 +158,13 @@ namespace {
         }
 
         LogOut("[SAVESTATE][REVIVAL] === LOAD STATE END (result=" + std::string(result ? "true" : "false") + ") ===", true);
-        DirectDrawHook::AddMessage("Revival State Loaded", "savestate", RGB(100, 255, 100), 1500, 0, 100);
+        // Only surface savestate toasts in real free-practice: any mission or
+        // tutorial (Runner active) drives its own baseline/checkpoint churn.
+        if (!::Mission::Engine::Runner::IsActive() &&
+            !::Mission::TutorialSession::IsActive() &&
+            !::Mission::Engine::Recorder::IsSessionActive() &&
+            !::Mission::Engine::Demo::IsActive())
+            DirectDrawHook::AddMessage("Revival State Loaded", "savestate", RGB(100, 255, 100), 1500, 0, 100);
     }
 
     void BeginTrackedSave() {
@@ -168,7 +175,11 @@ namespace {
     void FinishTrackedSave() {
         s_saveCount.fetch_add(1, std::memory_order_relaxed);
         LogOut("[SAVESTATE][REVIVAL] === SAVE STATE END ===", true);
-        DirectDrawHook::AddMessage("Revival State Saved", "savestate", RGB(255, 255, 100), 1500, 0, 100);
+        if (!::Mission::Engine::Runner::IsActive() &&
+            !::Mission::TutorialSession::IsActive() &&
+            !::Mission::Engine::Recorder::IsSessionActive() &&
+            !::Mission::Engine::Demo::IsActive())
+            DirectDrawHook::AddMessage("Revival State Saved", "savestate", RGB(255, 255, 100), 1500, 0, 100);
     }
 
     bool __fastcall HookedLoadState(void* self, void* /*edx*/) {
