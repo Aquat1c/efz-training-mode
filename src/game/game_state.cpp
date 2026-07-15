@@ -18,6 +18,8 @@
 #include <atomic>
 #include <sstream>
 #include <iomanip>
+#include <cstring>
+#include <mutex>
 
 static std::atomic<GamePhase> g_phaseCache{ GamePhase::Unknown };
 static std::atomic<int> g_phaseStableFrames{0};
@@ -27,6 +29,10 @@ namespace {
     constexpr uintptr_t RVA_GAME_MODE_ARRAY = 0x00390110;
     constexpr uintptr_t RVA_BATTLE_UPDATE = 0x00363C20;      // efz.exe 0x00763C20
     constexpr uintptr_t RVA_BATTLE_HOTKEYS = 0x00365660;     // efz.exe 0x00765660
+    constexpr uint8_t SIG_BATTLE_UPDATE[] =
+        {0x55,0x8B,0xEC,0x83,0xEC,0x40,0x89,0x4D,0xD0,0xFF,0x15,0xE0};
+    constexpr uint8_t SIG_BATTLE_HOTKEYS[] =
+        {0x55,0x8B,0xEC,0x81,0xEC,0x10,0x01,0x00,0x00,0xA1,0x50,0xF0};
     constexpr uint8_t SCREEN_TITLE = 0;
     constexpr uint8_t SCREEN_CHARACTER_SELECT = 1;
     constexpr uint8_t SCREEN_LOADING = 2;
@@ -47,8 +53,12 @@ namespace {
     BattleHotkeysFn oBattleHotkeys = nullptr;
     std::atomic<bool> s_frontendHooksInstalled{false};
     std::atomic<bool> s_frontendHooksAttempted{false};
+    std::atomic<bool> s_frontendHooksPartial{false};
+    std::mutex s_frontendHookMutex;
     std::atomic<BattleUpdateCallback> s_beforeBattleUpdate{nullptr};
     std::atomic<BattleUpdateCallback> s_afterBattleUpdate{nullptr};
+    std::atomic<uint32_t> s_currentBattleBatch{0};
+    std::atomic<uint32_t> s_completedBattleBatch{0};
     std::atomic<int> s_pendingExitOverride{static_cast<int>(PendingExitOverride::None)};
     std::atomic<int> s_pendingExitOverrideFrames{0};
     std::atomic<bool> s_practiceEscHeld{false};
@@ -125,6 +135,8 @@ namespace {
     }
 
     char __fastcall HookedBattleUpdate(void* battleContext, void* /*edx*/) {
+        const uint32_t batch = s_currentBattleBatch.fetch_add(
+            1, std::memory_order_acq_rel) + 1;
         if (auto callback = s_beforeBattleUpdate.load(std::memory_order_relaxed)) {
             callback(battleContext);
         }
@@ -134,6 +146,7 @@ namespace {
         if (auto callback = s_afterBattleUpdate.load(std::memory_order_relaxed)) {
             callback(battleContext);
         }
+        s_completedBattleBatch.store(batch, std::memory_order_release);
 
         const PendingExitOverride exitOverride = static_cast<PendingExitOverride>(
             s_pendingExitOverride.load(std::memory_order_acquire));
@@ -196,10 +209,10 @@ namespace {
             const bool wasHeld = s_practiceEscHeld.exchange(gameActive && escDown,
                                                              std::memory_order_acq_rel);
             if (gameActive && escDown && !wasHeld) {
-                // Menu entry is a safe authoring interrupt: CountIn returns to
-                // PreRecord; Recording seals at the capture boundary into Review.
-                Mission::Engine::Recorder::Advance();
-                CustomMenu::Screens::OpenMissionBrowser();
+                // The capture phases own their own pause surface (the gate in
+                // OpenMenu routes there). The take is NOT auto-sealed anymore:
+                // the pause menu offers Resume / Cancel Countdown / Stop &
+                // Review / Discard explicitly.
                 OpenMenu();
             }
             return 0;
@@ -361,62 +374,140 @@ bool EnsureFrontendControlHooksInstalled() {
     if (s_frontendHooksInstalled.load(std::memory_order_acquire)) {
         return true;
     }
+    if (s_frontendHooksPartial.load(std::memory_order_acquire)) return false;
+
+    std::lock_guard<std::mutex> hookLock(s_frontendHookMutex);
+    if (s_frontendHooksInstalled.load(std::memory_order_acquire)) return true;
+    if (s_frontendHooksPartial.load(std::memory_order_acquire)) return false;
 
     uintptr_t base = GetEFZBase();
     if (!base) {
         return false;
     }
 
-    bool anyFailed = false;
-
     LPVOID battleUpdateTarget = reinterpret_cast<LPVOID>(base + RVA_BATTLE_UPDATE);
-    MH_STATUS updateStatus = MH_CreateHook(
+    LPVOID battleHotkeysTarget = reinterpret_cast<LPVOID>(base + RVA_BATTLE_HOTKEYS);
+    auto removeOwned = [](LPVOID target, void** original, const char* label) {
+        (void)MH_DisableHook(target);
+        const MH_STATUS status = MH_RemoveHook(target);
+        if (status == MH_OK || status == MH_ERROR_NOT_CREATED) {
+            if (original) *original = nullptr;
+            return true;
+        }
+        LogOut(std::string("[FRONTEND] Failed to remove ") + label +
+               "; retaining trampoline for safety", true);
+        s_frontendHooksPartial.store(true, std::memory_order_release);
+        return false;
+    };
+    // The signature match is ADVISORY, not a gate. SIG_BATTLE_* only equal the
+    // PRISTINE retail prologue ("55 8B EC ..."). Under EfzRevival the battle
+    // update/hotkey routines are already JMP-patched by Revival's own frontend
+    // hooks by the time we run, so the LIVE prologue is a jump stub ("E9 .." /
+    // "FF 25 ..") and never matches the on-disk bytes. That is expected: MinHook
+    // chains onto the pre-hooked target fine, exactly like every other efz.exe
+    // hook installed here (input @0x411BE0, collision @0x767F60, HUD 6/6).
+    // A HARD mismatch-gate here silently disabled the keyboard-ESC menu
+    // suppression (the sole way ESC->Character-Select is blocked in
+    // Training/Mission/Tutorial), leaving only the gamepad Start path. So refuse
+    // only when the target is unreadable; otherwise proceed and let MH_CreateHook
+    // be the real gate. The live bytes are logged once for diagnostics.
+    uint8_t updateBytes[sizeof(SIG_BATTLE_UPDATE)] = {};
+    uint8_t hotkeyBytes[sizeof(SIG_BATTLE_HOTKEYS)] = {};
+    const bool readUpdate = SafeReadMemory(reinterpret_cast<uintptr_t>(battleUpdateTarget),
+                                           updateBytes, sizeof(updateBytes));
+    const bool readHotkey = SafeReadMemory(reinterpret_cast<uintptr_t>(battleHotkeysTarget),
+                                           hotkeyBytes, sizeof(hotkeyBytes));
+    if (!readUpdate || !readHotkey) {
+        const bool alreadyAttempted = s_frontendHooksAttempted.exchange(true);
+        if (!alreadyAttempted) {
+            LogOut("[FRONTEND] Battle hook targets unreadable; control hooks disabled", true);
+        }
+        return false;
+    }
+    const bool sigMatch =
+        std::memcmp(updateBytes, SIG_BATTLE_UPDATE, sizeof(updateBytes)) == 0 &&
+        std::memcmp(hotkeyBytes, SIG_BATTLE_HOTKEYS, sizeof(hotkeyBytes)) == 0;
+    if (!sigMatch) {
+        static std::atomic<bool> s_sigMismatchLogged{false};
+        if (!s_sigMismatchLogged.exchange(true)) {
+            std::ostringstream os;
+            os << "[FRONTEND] Battle prologue differs from retail signature "
+                  "(expected under Revival pre-hook) - hooking anyway. update=";
+            os << std::hex << std::uppercase << std::setfill('0');
+            for (int i = 0; i < 5; ++i) os << std::setw(2) << static_cast<int>(updateBytes[i]) << ' ';
+            os << "hotkey=";
+            for (int i = 0; i < 5; ++i) os << std::setw(2) << static_cast<int>(hotkeyBytes[i]) << ' ';
+            LogOut(os.str(), true);
+        }
+    }
+
+    const MH_STATUS updateStatus = MH_CreateHook(
         battleUpdateTarget,
         reinterpret_cast<LPVOID>(&HookedBattleUpdate),
         reinterpret_cast<void**>(&oBattleUpdate));
-    if (updateStatus == MH_OK || updateStatus == MH_ERROR_ALREADY_CREATED) {
-        MH_STATUS enableStatus = MH_EnableHook(battleUpdateTarget);
-        if (enableStatus != MH_OK && enableStatus != MH_ERROR_ENABLED) {
-            anyFailed = true;
-            LogOut("[FRONTEND] Failed to enable battle update hook", true);
-        }
-    } else {
-        anyFailed = true;
-        LogOut("[FRONTEND] Failed to create battle update hook", true);
+    if (updateStatus != MH_OK) {
+        LogOut(updateStatus == MH_ERROR_ALREADY_CREATED
+            ? "[FRONTEND] Battle update hook already belongs to another owner"
+            : "[FRONTEND] Failed to create battle update hook", true);
+        oBattleUpdate = nullptr;
+        s_frontendHooksAttempted.store(true);
+        return false;
     }
 
-    LPVOID battleHotkeysTarget = reinterpret_cast<LPVOID>(base + RVA_BATTLE_HOTKEYS);
-    MH_STATUS hotkeyStatus = MH_CreateHook(
+    if (MH_EnableHook(battleUpdateTarget) != MH_OK) {
+        (void)removeOwned(battleUpdateTarget,
+                          reinterpret_cast<void**>(&oBattleUpdate),
+                          "battle update hook");
+        LogOut("[FRONTEND] Failed to enable battle update hook", true);
+        s_frontendHooksAttempted.store(true);
+        return false;
+    }
+
+    const MH_STATUS hotkeyStatus = MH_CreateHook(
         battleHotkeysTarget,
         reinterpret_cast<LPVOID>(&HookedBattleHotkeys),
         reinterpret_cast<void**>(&oBattleHotkeys));
-    if (hotkeyStatus == MH_OK || hotkeyStatus == MH_ERROR_ALREADY_CREATED) {
-        MH_STATUS enableStatus = MH_EnableHook(battleHotkeysTarget);
-        if (enableStatus != MH_OK && enableStatus != MH_ERROR_ENABLED) {
-            anyFailed = true;
-            LogOut("[FRONTEND] Failed to enable battle hotkey gate", true);
-        }
-    } else {
-        anyFailed = true;
-        LogOut("[FRONTEND] Failed to create battle hotkey gate", true);
+    if (hotkeyStatus != MH_OK) {
+        (void)removeOwned(battleUpdateTarget,
+                          reinterpret_cast<void**>(&oBattleUpdate),
+                          "battle update hook");
+        oBattleHotkeys = nullptr;
+        LogOut(hotkeyStatus == MH_ERROR_ALREADY_CREATED
+            ? "[FRONTEND] Battle hotkey hook already belongs to another owner"
+            : "[FRONTEND] Failed to create battle hotkey gate", true);
+        s_frontendHooksAttempted.store(true);
+        return false;
     }
 
-    if (!anyFailed) {
-        s_frontendHooksInstalled.store(true, std::memory_order_release);
-        LogOut("[FRONTEND] Control hooks installed", true);
-        return true;
+    if (MH_EnableHook(battleHotkeysTarget) != MH_OK) {
+        (void)removeOwned(battleHotkeysTarget,
+                          reinterpret_cast<void**>(&oBattleHotkeys),
+                          "battle hotkey hook");
+        (void)removeOwned(battleUpdateTarget,
+                          reinterpret_cast<void**>(&oBattleUpdate),
+                          "battle update hook");
+        LogOut("[FRONTEND] Failed to enable battle hotkey gate; install rolled back", true);
+        s_frontendHooksAttempted.store(true);
+        return false;
     }
 
-    const bool alreadyAttempted = s_frontendHooksAttempted.exchange(true);
-    if (!alreadyAttempted) {
-        LogOut("[FRONTEND] Control hooks unavailable; menu ESC suppression and title override disabled", true);
-    }
-    return false;
+    s_frontendHooksInstalled.store(true, std::memory_order_release);
+    s_frontendHooksPartial.store(false, std::memory_order_release);
+    LogOut("[FRONTEND] Control hooks installed transactionally", true);
+    return true;
 }
 
 void SetBattleUpdateCallbacks(BattleUpdateCallback beforeUpdate, BattleUpdateCallback afterUpdate) {
     s_beforeBattleUpdate.store(beforeUpdate, std::memory_order_relaxed);
     s_afterBattleUpdate.store(afterUpdate, std::memory_order_relaxed);
+}
+
+uint32_t GetCurrentBattleUpdateBatch() {
+    return s_currentBattleBatch.load(std::memory_order_acquire);
+}
+
+uint32_t GetCompletedBattleUpdateBatch() {
+    return s_completedBattleBatch.load(std::memory_order_acquire);
 }
 
 bool CanRequestFrontendExit(FrontendExitTarget target) {

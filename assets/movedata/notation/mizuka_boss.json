@@ -1,6 +1,6 @@
 {
  "char": "mizuka_boss",
- "note": "RAW specials + universals; motions are research-grade, correct in-game",
+ "note": "RAW command extraction + user-confirmed notation overrides",
  "notation": {
   "250": "236A",
   "251": "236B",

@@ -11,6 +11,51 @@ enum class WaitState : uint8_t { AwaitingLoading, AwaitingMatch };
 enum class ObservedPhase : uint8_t { Other, CharacterSelect, Loading, Match };
 enum class Decision : uint8_t { Wait, DirectFallback, LoadingObserved, Complete };
 
+// Game-thread state for the one-shot direct Practice loader. The transaction
+// remains owned after the native loader returns so later Loading polls cannot
+// reinterpret its transferred/empty slots as a new failure.
+enum class DirectBootstrapState : uint8_t {
+    Idle = 0,
+    Armed,
+    Entered,
+    BattleHandoff,
+};
+
+enum class DirectLoadingAction : uint8_t {
+    NativeUpdate = 0,
+    Bootstrap,
+    HoldLoading,
+    ReturnBattle,
+};
+
+constexpr DirectLoadingAction DecideDirectLoadingAction(
+        DirectBootstrapState state) {
+    switch (state) {
+        case DirectBootstrapState::Armed:
+            return DirectLoadingAction::Bootstrap;
+        case DirectBootstrapState::Entered:
+            return DirectLoadingAction::HoldLoading;
+        case DirectBootstrapState::BattleHandoff:
+            return DirectLoadingAction::ReturnBattle;
+        case DirectBootstrapState::Idle:
+        default:
+            return DirectLoadingAction::NativeUpdate;
+    }
+}
+
+constexpr bool OwnsDirectLoadingTransaction(DirectBootstrapState state) {
+    return state != DirectBootstrapState::Idle;
+}
+
+constexpr bool HasDirectLoadingBattleHandoff(DirectBootstrapState state) {
+    return state == DirectBootstrapState::BattleHandoff;
+}
+
+constexpr bool DirectCompletionReceiptAllowed(DirectBootstrapState state,
+                                              bool abortAfterHandoff) {
+    return state == DirectBootstrapState::BattleHandoff && !abortAfterHandoff;
+}
+
 constexpr Decision Decide(WaitState state,
                           ObservedPhase phase,
                           bool directBootstrapPending,

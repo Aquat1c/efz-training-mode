@@ -3,14 +3,20 @@
 #include <windows.h>
 #include <chrono>
 #include <ctime>
+#include <cctype>
+#include <cstring>
 
 namespace DebugLog {
-    // Enable detailed logging (set to true for debugging)
-    bool g_EnableDebugLog = true;
+    // File tracing is intentionally opt-in. Startup code may assign this atomic
+    // before Initialize(); runtime code must use SetEnabled().
+    std::atomic<bool> g_EnableDebugLog{false};
     
     static std::ofstream g_LogFile;
     static std::mutex g_LogMutex;
     static bool g_Initialized = false;
+    static bool g_HasOpenedThisSession = false;
+    static unsigned g_LinesSinceFlush = 0;
+    static std::chrono::steady_clock::time_point g_LastFlushAt;
     
     // Get the DLL directory
     static std::string GetDllDirectory() {
@@ -26,62 +32,188 @@ namespace DebugLog {
         }
         return "";
     }
-    
-    void Initialize() {
-        if (g_Initialized) return;
 
-        if (!g_EnableDebugLog) {
-            g_Initialized = true;
-            return;
+    static bool ContainsNoCase(const std::string& value, const char* needle) {
+        if (!needle || !*needle) return true;
+        const size_t needleLen = std::strlen(needle);
+        if (needleLen > value.size()) return false;
+        for (size_t i = 0; i + needleLen <= value.size(); ++i) {
+            size_t j = 0;
+            for (; j < needleLen; ++j) {
+                const unsigned char lhs = static_cast<unsigned char>(value[i + j]);
+                const unsigned char rhs = static_cast<unsigned char>(needle[j]);
+                if (std::tolower(lhs) != std::tolower(rhs)) break;
+            }
+            if (j == needleLen) return true;
         }
-        
-        std::lock_guard<std::mutex> lock(g_LogMutex);
-        
+        return false;
+    }
+
+    static bool IsUrgentMessage(const std::string& message) {
+        if (ContainsNoCase(message, "[urgent]") ||
+            ContainsNoCase(message, "[error]") ||
+            ContainsNoCase(message, "[fatal]") ||
+            ContainsNoCase(message, "[crash]") ||
+            ContainsNoCase(message, "[exception]") ||
+            ContainsNoCase(message, "[seh]") ||
+            ContainsNoCase(message, "overflow")) {
+            return true;
+        }
+        // Setup failures often use a feature-specific prefix before [SETUP], so
+        // do not require one exact category spelling.
+        return ContainsNoCase(message, "setup") &&
+               (ContainsNoCase(message, "fail") ||
+                ContainsNoCase(message, "error") ||
+                ContainsNoCase(message, "exception"));
+    }
+
+    static void GetLocalTime(std::time_t value, std::tm& out) {
+        out = {};
+        localtime_s(&out, &value);
+    }
+
+    static void WriteRuntimeMarkerLocked(const char* marker) {
+        if (!g_LogFile.is_open()) return;
+        const auto now = std::chrono::system_clock::now();
+        const auto time = std::chrono::system_clock::to_time_t(now);
+        std::tm local{};
+        GetLocalTime(time, local);
+        char timeStr[32] = {};
+        std::strftime(timeStr, sizeof(timeStr), "%H:%M:%S", &local);
+        g_LogFile << "[" << timeStr << "] " << marker << "\n";
+    }
+
+    // g_LogMutex must be held. The first successful open in a DLL lifetime starts
+    // a fresh file; later runtime re-enables append to that same session.
+    static bool OpenLogFileLocked() {
+        if (g_LogFile.is_open()) return true;
+
         std::string dllDir = GetDllDirectory();
-        std::string logPath = dllDir + "\\efz_training_debug.log";
-        
-        g_LogFile.open(logPath, std::ios::out | std::ios::trunc);
-        
-        if (g_LogFile.is_open()) {
-            // Write header with timestamp
-            auto now = std::chrono::system_clock::now();
-            auto time = std::chrono::system_clock::to_time_t(now);
-            char timeStr[100];
-            strftime(timeStr, sizeof(timeStr), "%Y-%m-%d %H:%M:%S", localtime(&time));
-            
+        if (dllDir.empty()) dllDir = ".";
+        const std::string logPath = dllDir + "\\efz_training_debug.log";
+
+        g_LogFile.clear();
+        const std::ios::openmode mode = std::ios::out |
+            (g_HasOpenedThisSession ? std::ios::app : std::ios::trunc);
+        g_LogFile.open(logPath, mode);
+        if (!g_LogFile.is_open()) {
+            const std::string failure =
+                "[EFZ_TM][SETUP-FAILURE] Could not open debug log: " + logPath + "\n";
+            OutputDebugStringA(failure.c_str());
+            return false;
+        }
+
+        const auto now = std::chrono::system_clock::now();
+        const auto time = std::chrono::system_clock::to_time_t(now);
+        std::tm local{};
+        GetLocalTime(time, local);
+        char timeStr[100] = {};
+
+        if (!g_HasOpenedThisSession) {
+            std::strftime(timeStr, sizeof(timeStr), "%Y-%m-%d %H:%M:%S", &local);
             g_LogFile << "========================================\n";
             g_LogFile << "EFZ Training Mode Debug Log\n";
             g_LogFile << "Session Start: " << timeStr << "\n";
             g_LogFile << "Log File: " << logPath << "\n";
             g_LogFile << "========================================\n\n";
-            g_LogFile.flush();
+            g_HasOpenedThisSession = true;
+        } else {
+            WriteRuntimeMarkerLocked("Debug file logging enabled at runtime");
         }
-        
-        g_Initialized = true;
+
+        g_LinesSinceFlush = 0;
+        g_LastFlushAt = std::chrono::steady_clock::now();
+        g_LogFile.flush();
+        return true;
+    }
+
+    bool IsEnabled() {
+        return g_EnableDebugLog.load(std::memory_order_acquire);
+    }
+
+    bool SetEnabled(bool enabled) {
+        std::lock_guard<std::mutex> lock(g_LogMutex);
+
+        if (!enabled) {
+            // Publish disabled before closing. A writer which observed the old value
+            // rechecks it after taking this same mutex and cannot write after close.
+            g_EnableDebugLog.store(false, std::memory_order_release);
+            if (g_LogFile.is_open()) {
+                WriteRuntimeMarkerLocked("Debug file logging disabled at runtime");
+                g_LogFile.flush();
+                g_LogFile.close();
+                g_LogFile.clear();
+            }
+            g_LinesSinceFlush = 0;
+            return true;
+        }
+
+        // Before Initialize(), remember the startup intent; Initialize() owns the
+        // first open. Once initialized, make the file ready before publishing true.
+        if (!g_Initialized) {
+            g_EnableDebugLog.store(true, std::memory_order_release);
+            return true;
+        }
+        if (!OpenLogFileLocked()) {
+            g_EnableDebugLog.store(false, std::memory_order_release);
+            return false;
+        }
+        g_EnableDebugLog.store(true, std::memory_order_release);
+        return true;
+    }
+
+    void Initialize() {
+        std::lock_guard<std::mutex> lock(g_LogMutex);
+        if (!g_Initialized) g_Initialized = true;
+        if (g_EnableDebugLog.load(std::memory_order_acquire) &&
+            !OpenLogFileLocked()) {
+            g_EnableDebugLog.store(false, std::memory_order_release);
+        }
     }
     
     void Write(const std::string& message) {
-        if (!g_EnableDebugLog || !g_Initialized) return;
+        if (!IsEnabled()) return;
         
         std::lock_guard<std::mutex> lock(g_LogMutex);
-        
+        if (!g_Initialized ||
+            !g_EnableDebugLog.load(std::memory_order_acquire)) return;
+
+        // Also tolerate a legacy direct atomic assignment after initialization.
+        // Runtime UI code uses SetEnabled(), so this is only a compatibility path.
+        if (!g_LogFile.is_open() && !OpenLogFileLocked()) {
+            g_EnableDebugLog.store(false, std::memory_order_release);
+            return;
+        }
+
         if (g_LogFile.is_open()) {
             // Get timestamp
             auto now = std::chrono::system_clock::now();
             auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                 now.time_since_epoch()) % 1000;
             auto time = std::chrono::system_clock::to_time_t(now);
-            char timeStr[100];
-            strftime(timeStr, sizeof(timeStr), "%H:%M:%S", localtime(&time));
+            std::tm local{};
+            GetLocalTime(time, local);
+            char timeStr[100] = {};
+            std::strftime(timeStr, sizeof(timeStr), "%H:%M:%S", &local);
             
-            g_LogFile << "[" << timeStr << "." << std::setfill('0') << std::setw(3) 
+            g_LogFile << "[" << timeStr << "." << std::setfill('0') << std::setw(3)
                       << ms.count() << "] " << message << "\n";
-            g_LogFile.flush();
+            // Batch ordinary disk flushes so per-frame tracing does not synchronously
+            // hit the disk for every line.  Bound the delay as well as the line count,
+            // and flush diagnostic failures immediately: losing the only ERROR/SEH
+            // line during a hard crash makes the debug build much less useful.
+            const auto steadyNow = std::chrono::steady_clock::now();
+            if (++g_LinesSinceFlush >= 16 || IsUrgentMessage(message) ||
+                steadyNow - g_LastFlushAt >= std::chrono::milliseconds(250)) {
+                g_LogFile.flush();
+                g_LinesSinceFlush = 0;
+                g_LastFlushAt = steadyNow;
+            }
         }
     }
     
     void WriteHex(const std::string& label, uintptr_t address, const void* data, size_t size) {
-        if (!g_EnableDebugLog || !g_Initialized) return;
+        if (!IsEnabled()) return;
         
         std::ostringstream oss;
         oss << "[HEXDUMP] " << label << " @0x" << std::hex << std::uppercase << address 
@@ -96,26 +228,29 @@ namespace DebugLog {
     }
     
     void Flush() {
-        if (!g_EnableDebugLog || !g_Initialized) return;
-        
         std::lock_guard<std::mutex> lock(g_LogMutex);
         if (g_LogFile.is_open()) {
             g_LogFile.flush();
+            g_LinesSinceFlush = 0;
+            g_LastFlushAt = std::chrono::steady_clock::now();
         }
     }
     
     void Shutdown() {
-        if (!g_Initialized) return;
-        
         std::lock_guard<std::mutex> lock(g_LogMutex);
-        
+        g_EnableDebugLog.store(false, std::memory_order_release);
         if (g_LogFile.is_open()) {
             g_LogFile << "\n========================================\n";
             g_LogFile << "Session End\n";
             g_LogFile << "========================================\n";
+            g_LogFile.flush();
             g_LogFile.close();
+            g_LogFile.clear();
         }
-        
+
         g_Initialized = false;
+        g_HasOpenedThisSession = false;
+        g_LinesSinceFlush = 0;
+        g_LastFlushAt = {};
     }
 }

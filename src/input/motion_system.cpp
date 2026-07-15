@@ -10,6 +10,7 @@
 #include <vector>
 #include <sstream>
 #include <algorithm>
+#include <atomic>
 
 // Global variables for motion input system
 std::vector<InputFrame> p1InputQueue;
@@ -24,6 +25,11 @@ bool p2QueueActive = false;
 // New diagnostic globals
 int p1CurrentMotionType = MOTION_NONE;
 int p2CurrentMotionType = MOTION_NONE;
+
+namespace {
+std::atomic<uint64_t> g_tutorialQueueToken[3]{};
+std::atomic<uint64_t> g_nextTutorialQueueToken{1};
+}
 
 // Returns the button mask for a given motion type (used for input queueing)
 uint8_t DetermineButtonFromMotionType(int motionType) {
@@ -211,7 +217,7 @@ void ProcessInputQueues() {
 }
 
 // Queues a motion input for the specified player
-bool QueueMotionInput(int playerNum, int motionType, int buttonMask) {
+static bool QueueMotionInputImpl(int playerNum, int motionType, int buttonMask) {
     if (playerNum < 1 || playerNum > 2) return false;
     
     // Get the player's facing direction
@@ -433,20 +439,16 @@ bool QueueMotionInput(int playerNum, int motionType, int buttonMask) {
             // Jumping normals: hold up + button
             addInput(GAME_INPUT_UP, buttonMask, BTN_FRAMES);
             break;
-        case MOTION_6A: case MOTION_6B: case MOTION_6C: {
-            // Forward normals (relative)
-            bool facingRight = GetPlayerFacingDirection(playerNum);
-            uint8_t forwardDir = facingRight ? GAME_INPUT_RIGHT : GAME_INPUT_LEFT;
-            addInput(forwardDir, buttonMask, BTN_FRAMES);
+        case MOTION_6A: case MOTION_6B: case MOTION_6C:
+            // Forward normals. Pass the CANONICAL forward (right); addInput() applies
+            // the facing flip. Pre-computing the facing here would double-flip it, so a
+            // left-facing 6B injected as back+B and came out as 5B.
+            addInput(GAME_INPUT_RIGHT, buttonMask, BTN_FRAMES);
             break;
-        }
-        case MOTION_4A: case MOTION_4B: case MOTION_4C: {
-            // Back normals (relative)
-            bool facingRight = GetPlayerFacingDirection(playerNum);
-            uint8_t backDir = facingRight ? GAME_INPUT_LEFT : GAME_INPUT_RIGHT;
-            addInput(backDir, buttonMask, BTN_FRAMES);
+        case MOTION_4A: case MOTION_4B: case MOTION_4C:
+            // Back normals. Canonical back (left); addInput() applies the facing flip.
+            addInput(GAME_INPUT_LEFT, buttonMask, BTN_FRAMES);
             break;
-        }
             
         default:
             LogOut("[INPUT_MOTION] WARNING: Unknown motion type " + std::to_string(motionType), true);
@@ -495,6 +497,62 @@ bool QueueMotionInput(int playerNum, int motionType, int buttonMask) {
     }
     
     return true;
+}
+
+bool QueueMotionInput(int playerNum, int motionType, int buttonMask) {
+    if (playerNum < 1 || playerNum > 2) return false;
+    if (g_tutorialQueueToken[playerNum].load(std::memory_order_acquire) != 0) {
+        LogOut("[INPUT_MOTION] Queue rejected: tutorial owns P" +
+               std::to_string(playerNum), true);
+        return false;
+    }
+    return QueueMotionInputImpl(playerNum, motionType, buttonMask);
+}
+
+bool AcquireTutorialMotionQueue(int playerNum, uint64_t& tokenOut) {
+    tokenOut = 0;
+    if (playerNum < 1 || playerNum > 2) return false;
+    const bool active = playerNum == 1 ? p1QueueActive : p2QueueActive;
+    if (active) return false;
+    uint64_t expected = 0;
+    uint64_t token = g_nextTutorialQueueToken.fetch_add(1, std::memory_order_relaxed);
+    if (token == 0) token = g_nextTutorialQueueToken.fetch_add(1, std::memory_order_relaxed);
+    if (!g_tutorialQueueToken[playerNum].compare_exchange_strong(
+            expected, token, std::memory_order_acq_rel)) return false;
+    tokenOut = token;
+    return true;
+}
+
+bool TutorialMotionQueueLeaseActive(int playerNum) {
+    return playerNum >= 1 && playerNum <= 2 &&
+        g_tutorialQueueToken[playerNum].load(std::memory_order_acquire) != 0;
+}
+
+bool QueueTutorialMotionInput(int playerNum, uint64_t token, int motionType,
+                              int buttonMask) {
+    if (playerNum < 1 || playerNum > 2 || token == 0 ||
+        g_tutorialQueueToken[playerNum].load(std::memory_order_acquire) != token)
+        return false;
+    return QueueMotionInputImpl(playerNum, motionType, buttonMask);
+}
+
+void ReleaseTutorialMotionQueue(int playerNum, uint64_t token) {
+    if (playerNum < 1 || playerNum > 2 || token == 0 ||
+        g_tutorialQueueToken[playerNum].load(std::memory_order_acquire) != token)
+        return;
+    std::vector<InputFrame>& queue = playerNum == 1 ? p1InputQueue : p2InputQueue;
+    bool& active = playerNum == 1 ? p1QueueActive : p2QueueActive;
+    int& index = playerNum == 1 ? p1QueueIndex : p2QueueIndex;
+    int& counter = playerNum == 1 ? p1FrameCounter : p2FrameCounter;
+    int& motion = playerNum == 1 ? p1CurrentMotionType : p2CurrentMotionType;
+    active = false;
+    index = 0;
+    counter = 0;
+    motion = MOTION_NONE;
+    queue.clear();
+    uint64_t expected = token;
+    (void)g_tutorialQueueToken[playerNum].compare_exchange_strong(
+        expected, 0, std::memory_order_acq_rel);
 }
 
 // Wrapper for auto action system

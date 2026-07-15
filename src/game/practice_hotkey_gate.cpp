@@ -4,6 +4,7 @@
 #include "../../include/game/collision_display.h"
 #include "../../include/game/savestate_hook.h"
 #include "../../include/game/mission/mission_engine.h"
+#include "../../include/game/mission/tutorial_session.h"
 #include "../../include/core/logger.h"
 #include "../../include/core/constants.h"
 #include "../../include/core/memory.h"
@@ -37,7 +38,8 @@ namespace {
 
     uintptr_t __fastcall HookedHotkeyEval(void* self, void* edxValue, int a2) {
         PauseIntegration::NotePracticeControllerCandidate(self, "PracticeDispatcher");
-        if (Gate_IsMenuVisible() || Mission::Engine::Demo::IsActive() ||
+        if (Gate_IsMenuVisible() || Mission::TutorialSession::IsActive() ||
+            Mission::Engine::Demo::IsActive() ||
             Mission::Engine::Recorder::OwnsCaptureHotkeys()) {
             // Suppress all practice hotkey side-effects this frame
             s_suppressedFrames.fetch_add(1, std::memory_order_relaxed);

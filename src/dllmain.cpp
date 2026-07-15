@@ -29,6 +29,7 @@
 #include "../include/game/game_state.h"
 #include "../include/core/globals.h"  
 #include "../include/game/collision_hook.h"
+#include "../include/game/hud_disable.h"
 #include "../include/game/collision_display.h"
 #include "../include/game/practice_hotkey_gate.h"
 #include "../include/game/practice_offsets.h"
@@ -308,6 +309,11 @@ void DelayedInitialization(HMODULE hModule) {
         } catch (...) {
             LogOut("[SYSTEM] Exception while installing collision hook.", true);
         }
+        try {
+            HudDisable::Install();
+        } catch (...) {
+            LogOut("[SYSTEM] Exception while installing HUD-disable hook.", true);
+        }
         // NOTE: PracticeMenu::Install() (title-screen Practice submenu) is now
         // done in the early monitored window right after MH_Initialize above, so
         // the title hook exists before the player can reach it.
@@ -445,7 +451,10 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
     g_hSelfModule = hModule;
         CrashHandler::Install(hModule);
         WriteEarlyLoaderTrace("DLL_PROCESS_ATTACH reached");
-        DisableThreadLibraryCalls(hModule);
+        // The XP build links the static CRT (/MT). Microsoft explicitly
+        // disallows DisableThreadLibraryCalls for that configuration; leave
+        // normal thread notifications enabled instead of relying on a failed
+        // suppression call.
         if (HANDLE initThread = CreateThread(nullptr, 0, DelayedInitializationThreadProc, hModule, 0, nullptr)) {
             WriteEarlyLoaderTrace("Delayed initialization thread created");
             CloseHandle(initThread);
@@ -455,15 +464,23 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
         }
         break;
     case DLL_PROCESS_DETACH:
-        // Signal shutdown to all threads
+        // Signal-only during process termination. Windows is already reclaiming
+        // process resources and DllMain holds the loader lock; waiting for
+        // workers, flushing streams, or asking MinHook/DirectX to unload here
+        // can deadlock the exit path.
         g_isShuttingDown = true;
         g_featuresEnabled = false;
+        if (lpReserved != nullptr) {
+            break;
+        }
 
-        // Shutdown debug log
+        // Explicit FreeLibrary remains a legacy best-effort path. A future
+        // injector-facing shutdown API must quiesce and join every worker before
+        // calling FreeLibrary; do not use this branch as that lifecycle API.
         DebugLog::Shutdown();
 
         // CRITICAL: Stop buffer freezing FIRST
-        StopBufferFreezing();
+        StopBufferFreezingIgnoringTutorialLease();
         ForceRestoreFinalMemoryHPBypass("DLL_PROCESS_DETACH");
 
         // Then restore P2 control
@@ -476,6 +493,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
             PracticeMenu::Uninstall();
             RemoveInputHook();
             RemoveCollisionHook();
+            HudDisable::Remove();
             CollisionDisplay::Shutdown();
             StopBGMSuppressionPoller();
             SavestateHook::Uninstall();

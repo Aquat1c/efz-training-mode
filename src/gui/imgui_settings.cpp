@@ -122,8 +122,16 @@ namespace ImGuiSettings {
                 LogOut(std::string("[CONFIG/UI] detailedLogging set to ") + (value ? "true" : "false"), false);
             }
             else if (std::string(key) == "enableDebugFileLog") {
-                DebugLog::g_EnableDebugLog = value;
-                LogOut(std::string("[CONFIG/UI] enableDebugFileLog set to ") + (value ? "true" : "false"), false);
+                if (!DebugLog::SetEnabled(value)) {
+                    // Keep the persisted/UI state honest when the file could not be
+                    // opened. SetEnabled already reports the failure to the debugger.
+                    value = false;
+                    Config::SetSetting(section, key, "0");
+                    LogOut("[CONFIG/UI][SETUP-FAILURE] Could not enable efz_training_debug.log", false);
+                } else {
+                    LogOut(std::string("[CONFIG/UI] enableDebugFileLog set to ") +
+                           (value ? "true" : "false"), false);
+                }
             }
         }
     }
@@ -303,6 +311,28 @@ namespace ImGuiSettings {
                 }
                 ImGui::TextDisabled("Appears when the first Practice match starts");
 
+                float missionCountInSeconds =
+                    static_cast<float>(cfg.missionRecorderCountInMs) / 1000.0f;
+                ImGui::Text("Mission recording count-in:");
+                ImGui::SameLine();
+                ImGui::SetNextItemWidth(200);
+                if (ImGui::SliderFloat("##MissionRecordCountIn",
+                                       &missionCountInSeconds,
+                                       0.0f, 3.0f, "%.1f sec")) {
+                    const int rawMilliseconds = static_cast<int>(
+                        missionCountInSeconds * 1000.0f + 0.5f);
+                    const int milliseconds = ((rawMilliseconds + 50) / 100) * 100;
+                    Config::SetSetting("General", "missionRecorderCountInMs",
+                                       std::to_string(milliseconds));
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Reset##MissionRecordCountIn")) {
+                    Config::SetSetting("General", "missionRecorderCountInMs", "500");
+                }
+                if (ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip("Delay before a mission recording starts. The exact baseline is saved immediately after it. Set 0 to disable the countdown.");
+                }
+
                 int abTimeoutMs = cfg.autoBlockNeutralTimeoutMs;
                 int abTimeoutSec = (abTimeoutMs + 500) / 1000; // round to nearest second for UI
                 ImGui::Text("Auto-Block neutral timeout:");
@@ -475,9 +505,17 @@ namespace ImGuiSettings {
                 }
                 ImGui::SameLine();
                 if (ImGui::Button("Reload from disk")) {
-                    Config::LoadSettings();
-                    detailedLogging.store(Config::GetSettings().detailedLogging);
-                    LogOut("[CONFIG/UI] Settings reloaded from ini", false);
+                    if (Config::LoadSettings()) {
+                        detailedLogging.store(Config::GetSettings().detailedLogging);
+                        if (!DebugLog::SetEnabled(Config::GetSettings().enableDebugFileLog)) {
+                            Config::SetSetting("General", "enableDebugFileLog", "0");
+                            LogOut("[CONFIG/UI][SETUP-FAILURE] Reloaded settings, but could not enable efz_training_debug.log", false);
+                        } else {
+                            LogOut("[CONFIG/UI] Settings reloaded from ini", false);
+                        }
+                    } else {
+                        LogOut("[CONFIG/UI][SETUP-FAILURE] Settings reload failed", false);
+                    }
                 }
 
                 ImGui::Dummy(ImVec2(1,6));

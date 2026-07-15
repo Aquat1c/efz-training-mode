@@ -13,7 +13,6 @@
 #include <windows.h>
 #include <thread>
 #include <atomic>
-#include <locale>
 #include <mutex>
 #include <dinput.h>
 #include <sstream>
@@ -22,6 +21,8 @@
 #include "../include/gui/imgui_impl.h"
 #include "../include/gui/overlay.h"
 #include "../include/gui/custom_menu/screens.h"
+#include "../include/game/mission/mission_pause_menu.h"
+#include "../include/game/mission/tutorial_session.h"
 #include "../include/utils/config.h"
 #include "../include/input/input_motion.h" // For QueueMotionInput
 #include "../include/utils/bgm_control.h"
@@ -187,13 +188,6 @@ bool IsDIKeyPressed(BYTE* keyboardState, DWORD dikCode) {
 // Helper function at the top to handle keyboard input more reliably
 bool IsKeyPressed(int vKey, bool checkState) {
     SHORT keyState;
-    // Set C locale once to avoid repeated global locale churn
-    static bool s_localeSet = false;
-    if (!s_localeSet) {
-        try { std::locale::global(std::locale("C")); } catch (...) {}
-        s_localeSet = true;
-    }
-    
     // Use both methods to increase reliability across keyboard layouts
     if (checkState) {
         // Check if key is pressed right now (synchronous)
@@ -302,7 +296,8 @@ void MonitorKeys() {
 
     // Exclusive mission demonstration mode owns P1's engine poll. Suppress the
     // entire mod hotkey router so no save/load/macro/position action can alter
-    // the clip; Escape is the sole keyboard cancellation command.
+    // the clip. Escape and the configured Menu/Start action are protected
+    // cancellation commands.
     static bool s_demoEscWasDown = false;
     if (windowActive && Mission::Engine::Demo::IsActive()) {
         const bool escDown = (GetAsyncKeyState(VK_ESCAPE) & 0x8000) != 0;
@@ -310,9 +305,24 @@ void MonitorKeys() {
         s_demoEscWasDown = escDown;
         XInputShim::RefreshSnapshotOncePerFrame();
         connectedMask = XInputShim::GetConnectedMaskCached();
+        auto padBindingDown = [](const XINPUT_STATE& state, int binding) {
+            constexpr int LT_MASK = 0x10000;
+            constexpr int RT_MASK = 0x20000;
+            if (binding == LT_MASK) return state.Gamepad.bLeftTrigger >= 50;
+            if (binding == RT_MASK) return state.Gamepad.bRightTrigger >= 50;
+            if (binding < 0) return false;
+            return (state.Gamepad.wButtons & static_cast<WORD>(binding & 0xFFFF)) != 0;
+        };
         for (int i = 0; i < 4; ++i) {
             if (((connectedMask >> i) & 1u) == 0) continue;
-            if (const XINPUT_STATE* cached = XInputShim::GetCachedState(i)) prevPads[i] = *cached;
+            if (cfg.controllerIndex >= 0 && cfg.controllerIndex <= 3 &&
+                i != cfg.controllerIndex) continue;
+            if (const XINPUT_STATE* cached = XInputShim::GetCachedState(i)) {
+                const bool menuNow = padBindingDown(*cached, cfg.gpToggleMenuButton);
+                const bool menuWas = padBindingDown(prevPads[i], cfg.gpToggleMenuButton);
+                if (menuNow && !menuWas) Mission::Engine::Demo::Cancel();
+                prevPads[i] = *cached;
+            }
         }
         Sleep(8);
         continue;
@@ -327,6 +337,41 @@ void MonitorKeys() {
         Sleep(8);
         continue;
     }
+
+    // A tutorial session leases the match from ordinary Practice actions.
+    // Keep only the lesson menu action alive; pages/choices read their own
+    // focused Confirm/Cancel controls and gameplay remains physical in Active.
+    static bool s_tutorialEscWasDown = true;
+    if (windowActive && Mission::TutorialSession::IsActive()) {
+        const bool escDown = (GetAsyncKeyState(VK_ESCAPE) & 0x8000) != 0;
+        if (escDown && !s_tutorialEscWasDown) OpenMenu();
+        s_tutorialEscWasDown = escDown;
+
+        XInputShim::RefreshSnapshotOncePerFrame();
+        connectedMask = XInputShim::GetConnectedMaskCached();
+        auto padBindingDown = [](const XINPUT_STATE& state, int binding) {
+            constexpr int LT_MASK = 0x10000;
+            constexpr int RT_MASK = 0x20000;
+            if (binding == LT_MASK) return state.Gamepad.bLeftTrigger >= 50;
+            if (binding == RT_MASK) return state.Gamepad.bRightTrigger >= 50;
+            if (binding < 0) return false;
+            return (state.Gamepad.wButtons & static_cast<WORD>(binding & 0xFFFF)) != 0;
+        };
+        for (int i = 0; i < 4; ++i) {
+            if (((connectedMask >> i) & 1u) == 0) continue;
+            if (cfg.controllerIndex >= 0 && cfg.controllerIndex <= 3 &&
+                i != cfg.controllerIndex) continue;
+            if (const XINPUT_STATE* cached = XInputShim::GetCachedState(i)) {
+                const bool menuNow = padBindingDown(*cached, cfg.gpToggleMenuButton);
+                const bool menuWas = padBindingDown(prevPads[i], cfg.gpToggleMenuButton);
+                if (menuNow && !menuWas) OpenMenu();
+                prevPads[i] = *cached;
+            }
+        }
+        Sleep(8);
+        continue;
+    }
+    s_tutorialEscWasDown = true;
 
     if (windowActive && guiActive) {
         // Flush queued menu toggle presses so they don't reopen immediately after exit
@@ -458,11 +503,12 @@ void MonitorKeys() {
                     recPhase == Mission::Engine::Recorder::Phase::Recording;
                 if (recorderOwnsHotkeys) {
                     if (gpWentDown(cgp.gpToggleMenuButton)) {
-                        Mission::Engine::Recorder::Advance();
-                        CustomMenu::Screens::OpenMissionBrowser();
+                        // Routes to the recording pause menu (gate in OpenMenu);
+                        // the take is no longer auto-sealed by a menu press.
                         OpenMenu();
                         handled = true;
-                    } else if (gpWentDown(cgp.gpMacroRecordButton)) {
+                    } else if (gpWentDown(cgp.gpMacroRecordButton) &&
+                               !Mission::PauseMenu::IsOpen()) {
                         Mission::Engine::Recorder::Advance();
                         handled = true;
                     }
@@ -600,7 +646,8 @@ void MonitorKeys() {
                 recorderPhase == Mission::Engine::Recorder::Phase::CountIn ||
                 recorderPhase == Mission::Engine::Recorder::Phase::Recording;
             if (!keyHandled && recorderOwnsHotkeys) {
-                if (IsKeyPressed(cfg.macroRecordKey > 0 ? cfg.macroRecordKey : 'I', false)) {
+                if (!Mission::PauseMenu::IsOpen() &&
+                    IsKeyPressed(cfg.macroRecordKey > 0 ? cfg.macroRecordKey : 'I', false)) {
                     Mission::Engine::Recorder::Advance();
                     keyHandled = true;
                 } else {
@@ -790,11 +837,14 @@ void MonitorKeys() {
                     DirectDrawHook::AddMessage("Position Saved", "SYSTEM", RGB(255, 255, 100), 1500, 0, 100);
                 }
                 keyHandled = true;
-            } else if (toggleTitleKey > 0 && IsKeyPressed(toggleTitleKey, true)) {
-                // Toggle stats display instead of detailed title mode
+            } else if (IsKeyPressed('4', false) || (toggleTitleKey > 0 && IsKeyPressed(toggleTitleKey, true))) {
+                // Toggle the debug-info (stats) overlay. The legacy '4' hotkey is
+                // re-enabled here directly (its old config binding was scrubbed);
+                // a custom toggleTitleKey still works too.
                 bool currentState = g_statsDisplayEnabled.load();
                 bool nextState = !currentState;
                 g_statsDisplayEnabled.store(nextState);
+                if (nextState) g_statsPageIndex.store(0);   // start on the first page
 
                 // Disable combo overlay while stats display is active, restore when off
                 static bool s_comboOverlayWasEnabled = false;
@@ -812,6 +862,18 @@ void MonitorKeys() {
                     LogOut("[STATS] Stats display disabled", true);
                     DirectDrawHook::AddMessage("Stats Display Disabled", "SYSTEM", RGB(255, 255, 0), 1500, 20, 100);
                 }
+                keyHandled = true;
+            } else if (g_statsDisplayEnabled.load() && IsKeyPressed('5', false)) {
+                // Debug overlay active only: scroll extra-info page backward.
+                int n = g_statsPageCount.load(); if (n < 1) n = 1;
+                int p = g_statsPageIndex.load();
+                g_statsPageIndex.store((p - 1 + n) % n);
+                keyHandled = true;
+            } else if (g_statsDisplayEnabled.load() && IsKeyPressed('6', false)) {
+                // Debug overlay active only: scroll extra-info page forward.
+                int n = g_statsPageCount.load(); if (n < 1) n = 1;
+                int p = g_statsPageIndex.load();
+                g_statsPageIndex.store((p + 1) % n);
                 keyHandled = true;
             } else if (resetFrameCounterKey > 0 && IsKeyPressed(resetFrameCounterKey, false)) {
                 ResetFrameCounter();

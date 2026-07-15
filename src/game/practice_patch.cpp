@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <sstream>
 #include <iomanip>
+#include <mutex>
 #include "../include/core/memory.h"
 #include "../include/core/logger.h"
 #include "../include/game/game_state.h"
@@ -15,6 +16,7 @@
 #include "../include/game/per_frame_sample.h"
 #include "../include/gui/overlay.h"
 #include "../include/input/input_core.h"  // Include this to get AI_CONTROL_FLAG_OFFSET
+#include "../include/input/input_hook.h"  // normal-pulse raw-register lease
 #include "../include/input/input_motion.h" // for direction/stance constants
 #include "../include/game/guard_overrides.h" // character/move grounded overheads
 #include "../include/game/character_settings.h" // character ID from name
@@ -33,6 +35,13 @@
 const uintptr_t P2_CPU_FLAG_OFFSET = 4932; // RIGHT side shutter (P2's spatial position)
 const uintptr_t PRACTICE_BLOCK_MODE_OFFSET = 4934;   // 0..2
 const uintptr_t PRACTICE_AUTO_BLOCK_OFFSET = 4936;   // dword, 0/1
+
+namespace {
+std::mutex g_autoBlockWriteMutex;
+std::atomic<uint64_t> g_autoBlockWriteGeneration{0};
+std::atomic<uint64_t> g_tutorialAutoBlockToken{0};
+std::atomic<uint64_t> g_nextTutorialAutoBlockToken{1};
+}
 
 // Forward declarations for helper functions
 std::string FormatHexAddress(uintptr_t address);
@@ -607,6 +616,7 @@ bool GetPracticeAutoBlockEnabled(bool &enabledOut) {
 }
 
 bool SetPracticeAutoBlockEnabled(bool enabled, const char* reason) {
+    std::lock_guard<std::mutex> lk(g_autoBlockWriteMutex);
     if (GetCurrentGameMode() != GameMode::Practice) return false;
     if (IsNetplaySuspendActive()) return false;
     uintptr_t gs = GetGameStatePtr(); if (!gs) return false;
@@ -614,9 +624,16 @@ bool SetPracticeAutoBlockEnabled(bool enabled, const char* reason) {
     // Read current to avoid redundant writes/logs
     uint32_t cur = 0;
     SafeReadMemory(gs + PRACTICE_AUTO_BLOCK_OFFSET, &cur, sizeof(cur));
-    if (cur == val) return true; // no change
+    if (cur == val) {
+        // Still count an explicit setter call. During a tutorial block lease,
+        // choosing the already-forced value is meaningful user/owner intent
+        // and must prevent our later compare-and-restore from undoing it.
+        g_autoBlockWriteGeneration.fetch_add(1, std::memory_order_release);
+        return true;
+    }
     bool ok = SafeWriteMemory(gs + PRACTICE_AUTO_BLOCK_OFFSET, &val, sizeof(val));
     if (ok) {
+        g_autoBlockWriteGeneration.fetch_add(1, std::memory_order_release);
         std::ostringstream oss;
         oss << "Auto-Block " << (enabled ? "ON" : "OFF")
             << " (was " << (cur ? "ON" : "OFF") << ")";
@@ -626,6 +643,34 @@ bool SetPracticeAutoBlockEnabled(bool enabled, const char* reason) {
         LogOut(std::string("[PRACTICE_PATCH] ") + oss.str(), true);
     }
     return ok;
+}
+
+uint64_t GetPracticeAutoBlockWriteGeneration() {
+    return g_autoBlockWriteGeneration.load(std::memory_order_acquire);
+}
+
+bool RestorePracticeAutoBlockIfUnchanged(bool enabled,
+                                         uint64_t expectedGeneration,
+                                         bool expectedCurrent,
+                                         const char* reason) {
+    std::lock_guard<std::mutex> lk(g_autoBlockWriteMutex);
+    if (g_autoBlockWriteGeneration.load(std::memory_order_relaxed) != expectedGeneration)
+        return false;
+    if (GetCurrentGameMode() != GameMode::Practice || IsNetplaySuspendActive()) return false;
+    uintptr_t gs = GetGameStatePtr(); if (!gs) return false;
+    uint32_t cur = 0;
+    if (!SafeReadMemory(gs + PRACTICE_AUTO_BLOCK_OFFSET, &cur, sizeof(cur)) ||
+        (cur != 0) != expectedCurrent) return false;
+    const uint32_t val = enabled ? 1u : 0u;
+    if (cur == val) return true;
+    if (!SafeWriteMemory(gs + PRACTICE_AUTO_BLOCK_OFFSET, &val, sizeof(val))) return false;
+    g_autoBlockWriteGeneration.fetch_add(1, std::memory_order_release);
+    std::ostringstream oss;
+    oss << "Auto-Block " << (enabled ? "ON" : "OFF")
+        << " (conditional tutorial restore)";
+    if (reason && *reason) oss << " [reason: " << reason << "]";
+    LogOut(std::string("[PRACTICE_PATCH] ") + oss.str(), true);
+    return true;
 }
 
 // (moved below static variables and helper definitions)
@@ -912,6 +957,24 @@ void SetExternalAutoBlockController(bool enabled) {
     g_externalAbController.store(enabled);
 }
 
+bool AcquireTutorialAutoBlockController(uint64_t& tokenOut) {
+    tokenOut = 0;
+    uint64_t expected = 0;
+    uint64_t token = g_nextTutorialAutoBlockToken.fetch_add(1, std::memory_order_relaxed);
+    if (token == 0) token = g_nextTutorialAutoBlockToken.fetch_add(1, std::memory_order_relaxed);
+    if (!g_tutorialAutoBlockToken.compare_exchange_strong(
+            expected, token, std::memory_order_acq_rel)) return false;
+    tokenOut = token;
+    return true;
+}
+
+void ReleaseTutorialAutoBlockController(uint64_t token) {
+    if (token == 0) return;
+    uint64_t expected = token;
+    (void)g_tutorialAutoBlockToken.compare_exchange_strong(
+        expected, 0, std::memory_order_acq_rel);
+}
+
 // Helper: read stance/direction fields for P2, and Y positions for attacker(P1)
 static bool ReadP2BlockFields(uint8_t &dirOut, uint8_t &stanceOut) {
     uintptr_t p2 = GetPlayerBase(SwitchPlayers::GetRemotePlayerIndex()); if (!p2) return false;
@@ -923,8 +986,12 @@ static bool ReadP2BlockFields(uint8_t &dirOut, uint8_t &stanceOut) {
 }
 
 static bool WriteP2BlockStance(uint8_t stance) {
-    uintptr_t p2 = GetPlayerBase(SwitchPlayers::GetRemotePlayerIndex()); if (!p2) return false;
-    return SafeWriteMemory(p2 + 393, &stance, sizeof(stance));
+    const int dummyPlayer = SwitchPlayers::GetRemotePlayerIndex();
+    if (!TryAcquireImmediateInputWriteLease(dummyPlayer)) return false;
+    uintptr_t p2 = GetPlayerBase(dummyPlayer);
+    const bool ok = p2 && SafeWriteMemory(p2 + 393, &stance, sizeof(stance));
+    ReleaseImmediateInputWriteLease(dummyPlayer);
+    return ok;
 }
 
 // Assist: lightly nudge P2 direction to match stance for faster recognition by engine
@@ -933,7 +1000,12 @@ static bool WriteP2BlockStance(uint8_t stance) {
 // guardLevel: 0=None, 1=High, 2=Low, 3=Any
 static void AssistP2DirectionForStance(uint8_t desiredStance, bool wantGuard, int guardLevel) {
     const int dummyPlayer = SwitchPlayers::GetRemotePlayerIndex();
-    uintptr_t p2 = GetPlayerBase(dummyPlayer); if (!p2) return;
+    if (!TryAcquireImmediateInputWriteLease(dummyPlayer)) return;
+    uintptr_t p2 = GetPlayerBase(dummyPlayer);
+    if (!p2) {
+        ReleaseImmediateInputWriteLease(dummyPlayer);
+        return;
+    }
     uint8_t dir = 0; SafeReadMemory(p2 + 392, &dir, sizeof(dir));
     // Stance vertical assist
     if (desiredStance == 1) {
@@ -960,6 +1032,7 @@ static void AssistP2DirectionForStance(uint8_t desiredStance, bool wantGuard, in
         }
     }
     SafeWriteMemory(p2 + 392, &dir, sizeof(dir));
+    ReleaseImmediateInputWriteLease(dummyPlayer);
 }
 
 static bool ReadPositions(double &p1Y, double &p2Y) {
@@ -1237,7 +1310,9 @@ void MonitorDummyAutoBlock(short p1MoveID, short p2MoveID, short prevP1MoveID, s
     // Apply desired autoblock state only if user override is active or custom modes require it,
     // and no external controller is currently managing writes to +4936
     bool overrideEffective = g_abOverrideActive.load() || (mode == DAB_FirstHitThenOff) || (mode == DAB_EnableAfterFirstHit);
-    if (overrideEffective && !g_externalAbController.load() && abOn != s_lastAbOn) {
+    const bool externalController = g_externalAbController.load() ||
+        g_tutorialAutoBlockToken.load(std::memory_order_acquire) != 0;
+    if (overrideEffective && !externalController && abOn != s_lastAbOn) {
         const char* why = nullptr;
         if (mode == DAB_FirstHitThenOff) {
             why = abOn ? "FirstHitThenOff: re-enable (hit/neutral)" : "FirstHitThenOff: disable (block)";
@@ -1263,30 +1338,34 @@ void MonitorDummyAutoBlock(short p1MoveID, short p2MoveID, short prevP1MoveID, s
                 if (s_lastAbFlag == -1) {
                     // First sample on entering Practice: initialize and sync display to actual flag (no announcement)
                     s_lastAbFlag = curFlag;
-                    int curMode = g_dummyAutoBlockMode.load();
-                    if (curMode == DAB_All && curFlag == 0) {
-                        SetDummyAutoBlockModeFromSync(DAB_None);
-                        LogOut("[DUMMY_AB] Sync(init): Game autoblock OFF -> mode set to None", true);
-                    } else if (curMode == DAB_None && curFlag == 1) {
-                        SetDummyAutoBlockModeFromSync(DAB_All);
-                        LogOut("[DUMMY_AB] Sync(init): Game autoblock ON -> mode set to All", true);
+                    if (!externalController) {
+                        int curMode = g_dummyAutoBlockMode.load();
+                        if (curMode == DAB_All && curFlag == 0) {
+                            SetDummyAutoBlockModeFromSync(DAB_None);
+                            LogOut("[DUMMY_AB] Sync(init): Game autoblock OFF -> mode set to None", true);
+                        } else if (curMode == DAB_None && curFlag == 1) {
+                            SetDummyAutoBlockModeFromSync(DAB_All);
+                            LogOut("[DUMMY_AB] Sync(init): Game autoblock ON -> mode set to All", true);
+                        }
                     }
                 } else if (curFlag != s_lastAbFlag) {
-                    // Emit overlay once per actual memory change
-                    DirectDrawHook::AddMessage(curFlag ? "Block: ON" : "Block: OFF",
-                                               "SYSTEM",
-                                               curFlag ? RGB(100, 255, 100) : RGB(255, 255, 100),
-                                               1500,
-                                               0,
-                                               100);
-                    // Keep UI combobox in sync with actual game flag, but only for the simple None/All modes
-                    int curMode = g_dummyAutoBlockMode.load();
-                    if (curMode == DAB_All && curFlag == 0) {
-                        SetDummyAutoBlockModeFromSync(DAB_None);
-                        LogOut("[DUMMY_AB] Sync: Game cleared autoblock -> mode set to None", true);
-                    } else if (curMode == DAB_None && curFlag == 1) {
-                        SetDummyAutoBlockModeFromSync(DAB_All);
-                        LogOut("[DUMMY_AB] Sync: Game enabled autoblock -> mode set to All", true);
+                    if (!externalController) {
+                        // Tutorial block episodes are intentionally temporary;
+                        // do not rewrite the user's mode or show a settings toast.
+                        DirectDrawHook::AddMessage(curFlag ? "Block: ON" : "Block: OFF",
+                                                   "SYSTEM",
+                                                   curFlag ? RGB(100, 255, 100) : RGB(255, 255, 100),
+                                                   1500,
+                                                   0,
+                                                   100);
+                        int curMode = g_dummyAutoBlockMode.load();
+                        if (curMode == DAB_All && curFlag == 0) {
+                            SetDummyAutoBlockModeFromSync(DAB_None);
+                            LogOut("[DUMMY_AB] Sync: Game autoblock OFF -> mode set to None", true);
+                        } else if (curMode == DAB_None && curFlag == 1) {
+                            SetDummyAutoBlockModeFromSync(DAB_All);
+                            LogOut("[DUMMY_AB] Sync: Game autoblock ON -> mode set to All", true);
+                        }
                     }
                     s_lastAbFlag = curFlag;
                 }
@@ -1312,7 +1391,11 @@ void MonitorDummyAutoBlock(short p1MoveID, short p2MoveID, short prevP1MoveID, s
         uintptr_t baseAI = GetPlayerBase(dummyPlayer);
         if (!baseAI) return; // can't evaluate
         uint32_t aiFlag = 1; SafeReadMemory(baseAI + AI_CONTROL_FLAG_OFFSET, &aiFlag, sizeof(aiFlag));
-        if (aiFlag == 0) {
+        // A tutorial block episode leases P2 to human (aiFlag 0) but only to guard,
+        // not to inject attacks - adaptive stance (a direct stance memory write, not
+        // input) must still run so the dummy crouch-blocks lows / stand-blocks
+        // overheads. Only skip for a genuine auto-action injection lease.
+        if (aiFlag == 0 && g_tutorialAutoBlockToken.load(std::memory_order_acquire) == 0) {
             // Suppressed; optional throttled debug
             static int s_aiGateDbg = 0; if (detailedLogging.load() && (s_aiGateDbg++ & 0x3F) == 0) {
                 LogOut("[ADAPTIVE] Skipping stance logic (P2 under player control)", true);
@@ -1392,18 +1475,33 @@ void MonitorDummyAutoBlock(short p1MoveID, short p2MoveID, short prevP1MoveID, s
                         }
                     }
                     if (detailedLogging.load()) {
-                        std::ostringstream os;
-                        os << "[ADAPTIVE] stance change: P2 "
-                           << (curStance==1?"crouch":"stand") << " -> "
-                           << (desiredStance==1?"crouch":"stand")
-                           << " | move=" << st
-                           << " frame=" << fr
-                           << " atk=0x" << std::hex << std::uppercase << atkFlags
-                           << " hit=0x" << hitFlags
-                           << " grd=0x" << grdFlags
-                           << std::dec
-                           << " t=" << XPCompat::GetTickCount64Compat();
-                        LogOut(os.str(), true);
+                        // Throttle: on a CPU dummy the engine can re-derive the
+                        // stance byte (+393) from the dummy's neutral input each
+                        // frame, so adaptive re-asserts the same crouch write every
+                        // frame. That is harmless (the dummy still guards) but must
+                        // not flood the log ("haywire"). Log the first occurrence of
+                        // a given from->to transition, then at most once per second.
+                        static uint8_t s_lastLogFrom = 0xFF, s_lastLogTo = 0xFF;
+                        static unsigned long long s_lastStanceLogMs = 0;
+                        const bool sameTransition =
+                            (s_lastLogFrom == curStance && s_lastLogTo == desiredStance);
+                        if (!sameTransition || (now - s_lastStanceLogMs) >= 1000ULL) {
+                            s_lastLogFrom = curStance;
+                            s_lastLogTo = desiredStance;
+                            s_lastStanceLogMs = now;
+                            std::ostringstream os;
+                            os << "[ADAPTIVE] stance change: P2 "
+                               << (curStance==1?"crouch":"stand") << " -> "
+                               << (desiredStance==1?"crouch":"stand")
+                               << " | move=" << st
+                               << " frame=" << fr
+                               << " atk=0x" << std::hex << std::uppercase << atkFlags
+                               << " hit=0x" << hitFlags
+                               << " grd=0x" << grdFlags
+                               << std::dec
+                               << " t=" << now;
+                            LogOut(os.str(), true);
+                        }
                     }
                 }
             } else {

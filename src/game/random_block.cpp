@@ -6,21 +6,42 @@
 #include "../include/utils/utilities.h" // ::IsActionable
 #include <cstdlib>
 #include <atomic>
+#include <mutex>
 
 namespace RandomBlock {
     static std::atomic<bool> g_enabled{false};
     static std::atomic<int>  g_lastApplied{-1}; // -1 unknown, 0 off, 1 on
     // Pending OFF deferral when guard/inactionable
     static std::atomic<bool> g_pendingOff{false};
+    static std::mutex g_writeMutex;
+    static std::atomic<uint64_t> g_generation{0};
 
-    void SetEnabled(bool enabled) {
+    static void ApplyEnabled(bool enabled) {
         g_enabled.store(enabled);
         g_pendingOff.store(false);
         g_lastApplied.store(-1);
         LogOut(std::string("[RANDOM_BLOCK] ") + (enabled ? "ENABLED" : "DISABLED"), true);
     }
 
+    void SetEnabled(bool enabled) {
+        std::lock_guard<std::mutex> lk(g_writeMutex);
+        ApplyEnabled(enabled);
+        g_generation.fetch_add(1, std::memory_order_release);
+    }
+
     bool IsEnabled() { return g_enabled.load(); }
+
+    uint64_t GetMutationGeneration() {
+        return g_generation.load(std::memory_order_acquire);
+    }
+
+    bool SetEnabledIfGeneration(bool enabled, uint64_t expectedGeneration) {
+        std::lock_guard<std::mutex> lk(g_writeMutex);
+        if (g_generation.load(std::memory_order_relaxed) != expectedGeneration) return false;
+        ApplyEnabled(enabled);
+        g_generation.store(expectedGeneration + 1, std::memory_order_release);
+        return true;
+    }
 
     // Helper: conservative guard/actionability classification for P2 using move IDs
     static inline bool IsP2BlockingOrBlockstun(short moveId) {

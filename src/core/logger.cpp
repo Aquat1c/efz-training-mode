@@ -10,7 +10,7 @@
 #include "../include/core/constants.h"
 #include <iostream>
 #include <sstream> // Required for std::ostringstream
-#include <vector>
+#include <deque>
 #include <chrono>
 #include <iomanip>
 #include <windows.h>
@@ -32,7 +32,8 @@ std::atomic<bool> detailedDebugOutput(false);
 std::atomic<bool> g_reducedLogging(true);
 
 // Buffer logs until console is ready so enabling console later shows early logs
-static std::vector<std::string> g_pendingConsoleLogs;
+static std::deque<std::string> g_pendingConsoleLogs;
+static size_t g_pendingConsoleLogsDropped = 0;
 std::atomic<bool> g_consoleReady{false};
 static std::atomic<int> g_logMatchInternalFrame{-1};
 
@@ -64,7 +65,7 @@ void LogOut(const std::string& msg, bool consoleOutput) {
     // The dedicated debug log is meant to capture the runtime trace even when
     // the console is disabled or later crashes out. When enabled, forward all
     // non-empty messages there instead of a tiny category whitelist.
-    if (DebugLog::g_EnableDebugLog && !msg.empty()) {
+    if (DebugLog::IsEnabled() && !msg.empty()) {
         DebugLog::Write(msg);
     }
     
@@ -100,7 +101,12 @@ void LogOut(const std::string& msg, bool consoleOutput) {
             currentCategory == "DASH_DEBUG" ||
             currentCategory == "AUTO_GUARD" ||
             currentCategory == "CRG" ||
-            currentCategory == "RG";
+            currentCategory == "RG" ||
+            // CancelAutoActionsAndMacros dumps ~26 lines on the game thread EVERY
+            // savestate load (i.e. every trial reload); it's a pure state diagnostic.
+            // Gate it so the default (detailedLogging off) doesn't pay that per-reload
+            // logging burst on the game thread.
+            currentCategory == "CANCEL";
         if (isDetailedDebugMsg && !detailedLogging.load()) {
             return;
         }
@@ -129,10 +135,26 @@ void LogOut(const std::string& msg, bool consoleOutput) {
             return tsoss.str();
         };
 
-        // Buffer until console window exists (store formatted with timestamp)
+        // Buffer until console window exists (store formatted with timestamp). This
+        // buffer is only drained when a live console appears (FlushPendingConsoleLogs);
+        // with the default enableConsole=0 that never happens, so it would grow
+        // unbounded for the whole session. Keep an O(1) fixed-capacity deque and
+        // report overflow to the file log immediately without recursing through
+        // LogOut while g_logMutex is held.
         if (!g_consoleReady.load() || GetConsoleWindow() == nullptr) {
             std::string formatted = msg.empty() ? std::string() : (buildPrefix() + msg);
-            g_pendingConsoleLogs.emplace_back(formatted);
+            constexpr size_t kMaxPending = 2000;
+            if (g_pendingConsoleLogs.size() >= kMaxPending) {
+                g_pendingConsoleLogs.pop_front();
+                ++g_pendingConsoleLogsDropped;
+                if (g_pendingConsoleLogsDropped == 1 ||
+                    (g_pendingConsoleLogsDropped % 500) == 0) {
+                    DebugLog::Write("[LOGGER][OVERFLOW] Pending console buffer full; dropped " +
+                                    std::to_string(g_pendingConsoleLogsDropped) +
+                                    " oldest line(s)");
+                }
+            }
+            g_pendingConsoleLogs.emplace_back(std::move(formatted));
             return;
         }
 
@@ -372,6 +394,10 @@ void UpdateConsoleTitle() {
 void FlushPendingConsoleLogs() {
     std::lock_guard<std::mutex> lock(g_logMutex);
     if (g_consoleReady.load() && GetConsoleWindow() != nullptr) {
+        if (g_pendingConsoleLogsDropped != 0) {
+            std::cout << "[LOGGER][OVERFLOW] " << g_pendingConsoleLogsDropped
+                      << " old buffered console line(s) were dropped" << std::endl;
+        }
         for (const auto& line : g_pendingConsoleLogs) {
             // Already stored with timestamp prefix above; write directly
             if (line.empty()) {
@@ -398,6 +424,7 @@ void FlushPendingConsoleLogs() {
             std::cout << line << std::endl;
         }
         g_pendingConsoleLogs.clear();
+        g_pendingConsoleLogsDropped = 0;
     }
 }
 

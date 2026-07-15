@@ -28,4 +28,11 @@ void Clear(int playerNum);
 uint8_t GetCurrentDesired(int playerNum);
 int GetRemainingTicks(int playerNum);
 
+// Tutorial-only exclusive lease. Regular Set/PressFor/Clear calls are ignored
+// for this player while the token is held, so a jump cue cannot overwrite (or
+// later clear) another producer's timed hold.
+bool AcquireTutorialLease(int playerNum, uint64_t& tokenOut);
+bool PressForTutorial(int playerNum, uint64_t token, uint8_t mask, int ticks);
+void ReleaseTutorialLease(int playerNum, uint64_t token);
+
 } // namespace ImmediateInput

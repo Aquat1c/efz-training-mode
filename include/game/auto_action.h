@@ -1,6 +1,7 @@
 #pragma once
 #include <windows.h>
 #include <atomic>
+#include <cstdint>
 #include <string>  
 #include "../include/core/constants.h"
 
@@ -57,6 +58,16 @@ extern uint32_t g_originalP2ControlFlag;
 
 void RestoreP2ControlState();
 void EnableP2ControlForAutoAction();
+
+// Tutorial dummy input needs exclusive, transactional ownership of P2.  The
+// legacy auto-action flag is process-global and its normal restore path assumes
+// that P2 started as a CPU.  These token APIs instead snapshot both live
+// control flags and restore them only if the same battle objects still exist.
+// While a tutorial token is held, legacy auto-actions cannot seize or restore
+// P2 control.  Release is idempotent; a stale token is ignored.
+bool AcquireTutorialP2Control(uint64_t& tokenOut);
+bool TutorialP2ControlLeaseActive();
+void ReleaseTutorialP2Control(uint64_t token);
 void ProcessAutoControlRestore();
 void ProcessTriggerCooldowns();
 
@@ -77,6 +88,16 @@ void InvalidateAutoActionCharacterCaches(const char* reason);
 // Use this when loading savestates or resetting positions to abort in-progress
 // executions while preserving user-configured triggers for future activations.
 void CancelAutoActionsAndMacros();
+
+// Scoped native P2 wake producer used by tutorial reversal episodes. Acquire
+// snapshots/applies the full trigger tuple under the producer mutex; Release
+// synchronously cancels runtime state and conditionally restores each setting.
+bool AcquireTutorialP2WakeProducer(int action, int strength, uint64_t& tokenOut);
+void ReleaseTutorialP2WakeProducer(uint64_t token);
+
+// Synchronously cancel only P2's native wake runtime. P1's menu lease and
+// macros are untouched.
+void CancelTutorialP2WakeProducer();
 
 // Tick-integrated execution
 // When enabled, auto-actions are evaluated once per internal engine tick from the input hook

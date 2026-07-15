@@ -8,6 +8,7 @@
 #include "../../include/game/savestate_hook.h"
 #include "../../include/game/efzrevival_addrs.h"
 #include "../../include/game/game_state.h"
+#include "../../include/game/mission/savestate_entity_layout.h"
 #include "../../include/game/macro_controller.h"
 #include "../../include/game/practice_offsets.h"
 #include "../../include/core/constants.h"
@@ -41,7 +42,10 @@ constexpr uintptr_t kBattleContextArrayIndex = 3;
 constexpr uintptr_t kFKeyLatchOffset = 0x003B1290;
 constexpr uintptr_t kRenderBitmapOffset = 0x003B0964;
 constexpr uintptr_t kCharacterIdOffset = 141;
-constexpr uintptr_t kCameraSubfieldOffset = 272;
+// Revival's second battle-context region begins at BYTE +1088. The old value
+// 272 came from treating a decompiler's dword index as a byte offset and merely
+// duplicated bytes +272..608 instead of capturing the camera/timer tail.
+constexpr uintptr_t kCameraSubfieldOffset = 1088;
 constexpr uintptr_t kBattleContextGameSpeedOffset = 1400;
 constexpr uintptr_t kGameStateStageOffset = 3890;
 constexpr size_t kFpuStateSize = 108;
@@ -67,6 +71,8 @@ constexpr size_t kGameStateResourcePointerTableSize = (920u * sizeof(uint32_t)) 
 constexpr size_t kRenderBitmapSize = 0x400;
 constexpr bool kSelectiveDiskSnapshotGameStateRestore = true;
 constexpr size_t kGameStateRuntimeOwnedPrefixSize = 3748;
+constexpr size_t kGameStateSoundIdTableOffset = 3748;
+constexpr size_t kGameStateSoundIdTableSize = 132; // 65 system SE words + BGM word
 constexpr size_t kGameStateHeapBufferOffset = 4988;
 constexpr size_t kGameStateHeapBufferSize = sizeof(uint32_t);
 constexpr size_t kGameStateRoundEventOffset = 4944;
@@ -95,6 +101,8 @@ constexpr size_t kPlayerStatePlayerIndexOffset = 140;
 constexpr size_t kPlayerStateIdentityByteOffset = 141;
 constexpr size_t kPlayerStatePaletteIndexOffset = 142;
 constexpr size_t kPlayerStateCollisionDataTableOffset = 356;
+constexpr size_t kPlayerStateSoundIdTableOffset = 612;
+constexpr size_t kPlayerStateSoundIdTableSize = 100; // 50 character SE words
 constexpr uintptr_t kGameStateSoundManagerOffset = 8;
 constexpr uintptr_t kCharacterSoundManagerOffset = 136;
 constexpr uintptr_t kSoundManagerBufferTableOffset = 1216;
@@ -1135,6 +1143,76 @@ bool WriteMemoryBlock(uintptr_t address, const std::vector<uint8_t>& bytes) {
     return !bytes.empty() && SafeWriteMemory(address, bytes.data(), bytes.size());
 }
 
+std::string DescribeEntityInventory(
+    const ::Mission::SavestateEntityLayout::Inventory& inventory) {
+    if (!inventory.valid) {
+        return "invalid";
+    }
+
+    std::ostringstream oss;
+    oss << "tail=" << inventory.tail
+        << " next=" << inventory.next
+        << " alive=" << inventory.aliveCount
+        << " mask=0x" << std::hex << std::uppercase << inventory.aliveMask
+        << " checksum=0x" << inventory.checksum;
+    return oss.str();
+}
+
+bool VerifyEntityRingsAtMemory(
+    const char* phase,
+    uintptr_t p1Base,
+    uintptr_t p2Base,
+    const std::vector<uint8_t>& expectedP1State,
+    const std::vector<uint8_t>& expectedP2State,
+    std::string& outReason) {
+    namespace EntityLayout = ::Mission::SavestateEntityLayout;
+
+    const EntityLayout::Inventory expectedP1 =
+        EntityLayout::Inspect(expectedP1State.data(), expectedP1State.size());
+    const EntityLayout::Inventory expectedP2 =
+        EntityLayout::Inspect(expectedP2State.data(), expectedP2State.size());
+    if (!expectedP1.valid || !expectedP2.valid) {
+        outReason = std::string(phase) +
+            " entity-ring verification failed: player-state payload is truncated";
+        LogSavestateTrace("entity ring verify", outReason);
+        return false;
+    }
+
+    std::vector<uint8_t> liveP1State;
+    std::vector<uint8_t> liveP2State;
+    if (!ReadMemoryBlock(p1Base, liveP1State, EntityLayout::kEntityStateEnd) ||
+        !ReadMemoryBlock(p2Base, liveP2State, EntityLayout::kEntityStateEnd)) {
+        outReason = std::string(phase) +
+            " entity-ring verification failed: could not read live player state";
+        LogSavestateTrace("entity ring verify", outReason);
+        return false;
+    }
+
+    const EntityLayout::Inventory liveP1 =
+        EntityLayout::Inspect(liveP1State.data(), liveP1State.size());
+    const EntityLayout::Inventory liveP2 =
+        EntityLayout::Inspect(liveP2State.data(), liveP2State.size());
+    const bool p1Matches = EntityLayout::Equivalent(expectedP1, liveP1);
+    const bool p2Matches = EntityLayout::Equivalent(expectedP2, liveP2);
+
+    std::ostringstream detail;
+    detail << "phase=" << phase
+           << " p1=" << (p1Matches ? "ok" : "mismatch")
+           << " expected{" << DescribeEntityInventory(expectedP1) << "}"
+           << " live{" << DescribeEntityInventory(liveP1) << "}"
+           << " p2=" << (p2Matches ? "ok" : "mismatch")
+           << " expected{" << DescribeEntityInventory(expectedP2) << "}"
+           << " live{" << DescribeEntityInventory(liveP2) << "}";
+    LogSavestateTrace("entity ring verify", detail.str());
+
+    if (!p1Matches || !p2Matches) {
+        outReason = std::string(phase) +
+            " entity-ring verification failed; see [SAVESTATE][TRACE] for details";
+        return false;
+    }
+    return true;
+}
+
 bool IsCommittedPrivatePointerValue(uint32_t value) {
     if (value < 0x01000000u || value >= 0x7FFF0000u) {
         return false;
@@ -1188,6 +1266,43 @@ size_t RehydrateCommittedPrivatePointers(std::vector<uint8_t>& snapshotBytes,
         }
     }
 
+    return replaced;
+}
+
+size_t RehydrateCommittedPrivatePointersRange(
+    std::vector<uint8_t>& snapshotBytes,
+    const std::vector<uint8_t>& liveBytes,
+    size_t begin,
+    size_t end,
+    const char* label,
+    std::ostringstream& sampleLog,
+    size_t& sampleCount,
+    size_t maxSamples) {
+    const size_t limit = (std::min)(snapshotBytes.size(), liveBytes.size());
+    begin = (std::min)(begin, limit);
+    end = (std::min)(end, limit);
+    size_t replaced = 0;
+    for (size_t offset = begin; offset + sizeof(uint32_t) <= end;
+         offset += sizeof(uint32_t)) {
+        uint32_t savedValue = 0;
+        uint32_t liveValue = 0;
+        std::memcpy(&savedValue, snapshotBytes.data() + offset, sizeof(savedValue));
+        std::memcpy(&liveValue, liveBytes.data() + offset, sizeof(liveValue));
+        if (savedValue == liveValue || savedValue == 0 || liveValue == 0 ||
+            !IsCommittedPrivatePointerValue(savedValue) ||
+            !IsCommittedPrivatePointerValue(liveValue)) {
+            continue;
+        }
+        std::memcpy(snapshotBytes.data() + offset, &liveValue, sizeof(liveValue));
+        ++replaced;
+        if (sampleCount < maxSamples) {
+            if (sampleCount != 0) sampleLog << "; ";
+            sampleLog << label << "+0x" << std::hex << std::uppercase << offset
+                      << std::dec << ':' << Hex32(savedValue) << "->"
+                      << Hex32(liveValue);
+            ++sampleCount;
+        }
+    }
     return replaced;
 }
 
@@ -1341,6 +1456,32 @@ size_t RefreshRestoreTargetPlayerStatePointers(std::vector<uint8_t>& snapshotPla
                                                  sampleCount,
                                                  maxSamples);
     }
+    // DirectSound buffer IDs are allocated in session load order. They are
+    // small integer handles, not pointers, so VirtualQuery cannot identify
+    // them for a cross-session disk restore.
+    replaced += PreserveExplicitByteRange(snapshotPlayerState,
+                                          livePlayerState,
+                                          kPlayerStateSoundIdTableOffset,
+                                          kPlayerStateSoundIdTableSize,
+                                          label,
+                                          sampleLog,
+                                          sampleCount,
+                                          maxSamples);
+    // Each inline entity slot caches the active character animation-table
+    // pointer at slot+8. Refresh all 64 explicitly; an old disk-session address
+    // may no longer be committed and is exactly what the heuristic misses.
+    for (size_t slot = 0;
+         slot < ::Mission::SavestateEntityLayout::kSlotCount; ++slot) {
+        replaced += RefreshExplicitPointerFields(
+            snapshotPlayerState,
+            livePlayerState,
+            ::Mission::SavestateEntityLayout::SlotAnimPointerField(slot),
+            sizeof(uint32_t),
+            label,
+            sampleLog,
+            sampleCount,
+            maxSamples);
+    }
     replaced += RefreshExplicitPointerFields(snapshotPlayerState,
                                              livePlayerState,
                                              kPlayerStateImageSurfaceArrayOffset,
@@ -1381,12 +1522,18 @@ size_t RefreshRestoreTargetPlayerStatePointers(std::vector<uint8_t>& snapshotPla
         }
     }
 
-    replaced += RehydrateCommittedPrivatePointers(snapshotPlayerState,
-                                                  livePlayerState,
-                                                  label,
-                                                  sampleLog,
-                                                  sampleCount,
-                                                  maxSamples);
+    // The rest of the entity ring is opaque gameplay data. Do not rewrite
+    // pointer-shaped positions, timers, masks, or IDs through a VirtualQuery
+    // heuristic; only the proven slot+8 fields above are session-local.
+    replaced += RehydrateCommittedPrivatePointersRange(
+        snapshotPlayerState, livePlayerState, 0,
+        ::Mission::SavestateEntityLayout::kEntityStateOffset,
+        label, sampleLog, sampleCount, maxSamples);
+    replaced += RehydrateCommittedPrivatePointersRange(
+        snapshotPlayerState, livePlayerState,
+        ::Mission::SavestateEntityLayout::kEntityStateEnd,
+        (std::min)(snapshotPlayerState.size(), livePlayerState.size()),
+        label, sampleLog, sampleCount, maxSamples);
 
     if (haveSavedAnim) {
         std::memcpy(snapshotPlayerState.data() + kPlayerStateAnimationDataTableOffset, &savedAnimTablePtr, sizeof(savedAnimTablePtr));
@@ -2205,12 +2352,21 @@ size_t RefreshRestoreTargetGameStatePointers(std::vector<uint8_t>& snapshotGameS
                                             std::ostringstream& sampleLog,
                                             size_t& sampleCount,
                                             size_t maxSamples) {
-    return RehydrateCommittedPrivatePointers(snapshotGameState,
-                                             liveGameState,
-                                             "game",
-                                             sampleLog,
-                                             sampleCount,
-                                             maxSamples);
+    size_t replaced = PreserveExplicitByteRange(snapshotGameState,
+                                                liveGameState,
+                                                kGameStateSoundIdTableOffset,
+                                                kGameStateSoundIdTableSize,
+                                                "game",
+                                                sampleLog,
+                                                sampleCount,
+                                                maxSamples);
+    replaced += RehydrateCommittedPrivatePointers(snapshotGameState,
+                                                  liveGameState,
+                                                  "game",
+                                                  sampleLog,
+                                                  sampleCount,
+                                                  maxSamples);
+    return replaced;
 }
 
 bool ReadSnapshotRuntimeMetadata(uintptr_t gameStatePtr,
@@ -2669,6 +2825,18 @@ bool CaptureSnapshot(Snapshot& outSnapshot, std::string& outReason) {
         return false;
     }
 
+    // Prove that both complete inline entity rings made it into the snapshot.
+    // This specifically catches lost projectiles/summons instead of allowing a
+    // superficially successful save containing only scalar player state.
+    if (!VerifyEntityRingsAtMemory("capture",
+                                   p1Base,
+                                   p2Base,
+                                   outSnapshot.p1State,
+                                   outSnapshot.p2State,
+                                   outReason)) {
+        return false;
+    }
+
     std::string capturedSoundDetail;
     CaptureSoundState(gameStatePtr, p1Base, p2Base, outSnapshot, capturedSoundDetail);
     LogSavestateTrace("capture sound", capturedSoundDetail);
@@ -2959,6 +3127,18 @@ bool RestoreSnapshot(const Snapshot& snapshot, std::string& outReason, bool engi
 
     if (!(battleOk && cameraOk && gameStateOk && p1Ok && p2Ok && renderOk)) {
         outReason = "failed to write one or more snapshot regions";
+        return false;
+    }
+
+    // Verify the gameplay bytes of both restored entity rings while ignoring
+    // only the proven session-local slot+8 animation pointers. A load that
+    // drops an on-field projectile is a restore failure, not a partial success.
+    if (!VerifyEntityRingsAtMemory("restore",
+                                   p1Base,
+                                   p2Base,
+                                   snapshot.p1State,
+                                   snapshot.p2State,
+                                   outReason)) {
         return false;
     }
 

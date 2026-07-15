@@ -1,5 +1,6 @@
 #include "../include/input/immediate_input.h"
 #include "../include/input/input_core.h"
+#include "../include/input/input_hook.h"
 #include "../include/core/logger.h"
 #include "../include/core/memory.h"
 #include "../include/utils/utilities.h" // for g_onlineModeActive
@@ -7,6 +8,25 @@
 #include <chrono>
 
 namespace ImmediateInput {
+
+namespace {
+
+class ImmediateWriteLease {
+public:
+    explicit ImmediateWriteLease(int playerNum)
+        : playerNum_(playerNum), acquired_(
+              TryAcquireImmediateInputWriteLease(playerNum)) {}
+    ~ImmediateWriteLease() {
+        if (acquired_) ReleaseImmediateInputWriteLease(playerNum_);
+    }
+    explicit operator bool() const { return acquired_; }
+
+private:
+    int playerNum_{0};
+    bool acquired_{false};
+};
+
+} // namespace
 
 static std::thread s_thread;
 static std::atomic<bool> s_running{false};
@@ -21,6 +41,8 @@ struct Slot {
 };
 
 static Slot s_slot[3]; // 1=P1, 2=P2
+static std::atomic<uint64_t> s_tutorialToken[3]{};
+static std::atomic<uint64_t> s_nextTutorialToken{1};
 
 static void Worker() {
     // CRITICAL: Never run during online mode
@@ -50,6 +72,12 @@ static void Worker() {
         next += kVisualFrameDuration;
 
         for (int p = 1; p <= 2; ++p) {
+            // A hook-owned AI normal must survive from its post-AI write to
+            // EFZ's later character consumer. Pause this wall-clock writer for
+            // the complete raw pulse/release transaction instead of racing it.
+            ImmediateWriteLease writeLease(p);
+            if (!writeLease) continue;
+
             // Use acquire to ensure we see desired before checking ticks
             uint8_t curDesired = s_slot[p].desired.load(std::memory_order_acquire);
             int t = s_slot[p].ticks.load(std::memory_order_relaxed);
@@ -139,7 +167,8 @@ static void Worker() {
 
     // On exit, ensure neutral
     for (int p = 1; p <= 2; ++p) {
-        WritePlayerInputImmediate(p, 0);
+        ImmediateWriteLease writeLease(p);
+        if (writeLease) WritePlayerInputImmediate(p, 0);
         s_slot[p].lastWritten.store(0, std::memory_order_relaxed);
         s_slot[p].desired.store(0, std::memory_order_relaxed);
         s_slot[p].ticks.store(0, std::memory_order_relaxed);
@@ -171,7 +200,7 @@ void Stop() {
 
 bool IsRunning() { return s_running.load(); }
 
-void Set(int playerNum, uint8_t mask) {
+static void SetImpl(int playerNum, uint8_t mask) {
     if (playerNum < 1 || playerNum > 2) return;
     // If mask is non-zero and equals the last written, request a neutral edge once
     uint8_t last = s_slot[playerNum].lastWritten.load(std::memory_order_relaxed);
@@ -182,10 +211,17 @@ void Set(int playerNum, uint8_t mask) {
     s_slot[playerNum].desired.store(mask, std::memory_order_relaxed);
 }
 
-void PressFor(int playerNum, uint8_t mask, int ticks) {
+void Set(int playerNum, uint8_t mask) {
+    if (playerNum < 1 || playerNum > 2 ||
+        s_tutorialToken[playerNum].load(std::memory_order_acquire) != 0) return;
+    SetImpl(playerNum, mask);
+}
+
+static void PressForImpl(int playerNum, uint8_t mask, int ticks) {
     if (playerNum < 1 || playerNum > 2 || ticks <= 0) return;
     const uint8_t last = s_slot[playerNum].lastWritten.load(std::memory_order_relaxed);
-    if (mask != 0) {
+    ImmediateWriteLease writeLease(playerNum);
+    if (mask != 0 && writeLease) {
         // Prime the immediate register now so delayed actions do not wait for the next 64 Hz worker tick.
         if (last != 0) {
             WritePlayerInputImmediate(playerNum, 0);
@@ -203,13 +239,27 @@ void PressFor(int playerNum, uint8_t mask, int ticks) {
     s_slot[playerNum].ticks.store((ticks > 1) ? (ticks - 1) : 1, std::memory_order_relaxed);
 }
 
-void Clear(int playerNum) {
+void PressFor(int playerNum, uint8_t mask, int ticks) {
+    if (playerNum < 1 || playerNum > 2 ||
+        s_tutorialToken[playerNum].load(std::memory_order_acquire) != 0) return;
+    PressForImpl(playerNum, mask, ticks);
+}
+
+static void ClearImpl(int playerNum) {
     if (playerNum < 1 || playerNum > 2) return;
     s_slot[playerNum].desired.store(0, std::memory_order_relaxed);
     s_slot[playerNum].ticks.store(0, std::memory_order_relaxed);
-    // Immediate neutral write will occur on the next tick; proactively clear now
-    WritePlayerInputImmediate(playerNum, 0);
+    // Immediate neutral write will occur on the next tick; proactively clear
+    // now unless an AI normal owns the registers through its consumer window.
+    ImmediateWriteLease writeLease(playerNum);
+    if (writeLease) WritePlayerInputImmediate(playerNum, 0);
     s_slot[playerNum].lastWritten.store(0, std::memory_order_relaxed);
+}
+
+void Clear(int playerNum) {
+    if (playerNum < 1 || playerNum > 2 ||
+        s_tutorialToken[playerNum].load(std::memory_order_acquire) != 0) return;
+    ClearImpl(playerNum);
 }
 
 uint8_t GetCurrentDesired(int playerNum) {
@@ -220,6 +270,43 @@ uint8_t GetCurrentDesired(int playerNum) {
 int GetRemainingTicks(int playerNum) {
     if (playerNum < 1 || playerNum > 2) return 0;
     return s_slot[playerNum].ticks.load(std::memory_order_relaxed);
+}
+
+bool AcquireTutorialLease(int playerNum, uint64_t& tokenOut) {
+    tokenOut = 0;
+    if (playerNum < 1 || playerNum > 2) return false;
+    if (s_slot[playerNum].desired.load(std::memory_order_acquire) != 0 ||
+        s_slot[playerNum].ticks.load(std::memory_order_acquire) != 0) return false;
+    uint64_t expected = 0;
+    uint64_t token = s_nextTutorialToken.fetch_add(1, std::memory_order_relaxed);
+    if (token == 0) token = s_nextTutorialToken.fetch_add(1, std::memory_order_relaxed);
+    if (!s_tutorialToken[playerNum].compare_exchange_strong(
+            expected, token, std::memory_order_acq_rel)) return false;
+    tokenOut = token;
+    return true;
+}
+
+bool PressForTutorial(int playerNum, uint64_t token, uint8_t mask, int ticks) {
+    if (playerNum < 1 || playerNum > 2 || token == 0 || ticks <= 0 ||
+        s_tutorialToken[playerNum].load(std::memory_order_acquire) != token)
+        return false;
+    PressForImpl(playerNum, mask, ticks);
+    return true;
+}
+
+void ReleaseTutorialLease(int playerNum, uint64_t token) {
+    if (playerNum < 1 || playerNum > 2 || token == 0 ||
+        s_tutorialToken[playerNum].load(std::memory_order_acquire) != token)
+        return;
+    s_slot[playerNum].desired.store(0, std::memory_order_relaxed);
+    s_slot[playerNum].ticks.store(0, std::memory_order_relaxed);
+    s_slot[playerNum].needNeutralEdge.store(false, std::memory_order_relaxed);
+    ImmediateWriteLease writeLease(playerNum);
+    if (writeLease) WritePlayerInputImmediate(playerNum, 0);
+    s_slot[playerNum].lastWritten.store(0, std::memory_order_relaxed);
+    uint64_t expected = token;
+    (void)s_tutorialToken[playerNum].compare_exchange_strong(
+        expected, 0, std::memory_order_acq_rel);
 }
 
 } // namespace ImmediateInput

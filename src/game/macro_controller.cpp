@@ -1391,6 +1391,9 @@ static bool StartPlayback(int playerNum, bool exclusiveInput, int startTick) {
     if (useStream && startTick >= static_cast<int>(slot.macroStream.size())) return false;
 
     const int player = ClampPlayer(playerNum);
+    // Playback owns the complete input lane. Serialize its takeover against a
+    // normal pulse before publishing poll-override/controller state.
+    CancelAutoActionNormalPulse(player);
     ResetPlayback();
     s_playPlayer.store(player, std::memory_order_release);
     s_exclusiveReplay.store(exclusiveInput, std::memory_order_release);
@@ -1429,7 +1432,9 @@ static bool StartPlayback(int playerNum, bool exclusiveInput, int startTick) {
     g_injectImmediateOnly[player].store(false);
     s_state.store(State::Replaying, std::memory_order_release);
 
-    const std::string label = exclusiveInput ? "DEMONSTRATION | ESC = STOP" : "Macro: Replaying";
+    const std::string label = exclusiveInput
+        ? "DEMONSTRATION | ESC / MENU = STOP"
+        : "Macro: Replaying";
     if (s_macroBannerId == -1) {
         s_macroBannerId = DirectDrawHook::AddPermanentMessage(label, RGB(120,255,120), kBannerX, kBannerY);
     } else {

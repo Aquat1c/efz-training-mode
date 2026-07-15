@@ -1,6 +1,8 @@
 #include "../include/gui/custom_menu/renderer.h"
 #include "../include/gui/custom_menu/fonts.h"
 #include "../include/game/practice_menu/mission_title_screen.h" // title screens use our fonts
+#include "../include/game/mission/mission_pause_menu.h"         // session pause menu uses them too
+#include "../include/game/mission/tutorial_session.h"           // tutorial pages/cards too
 #include "../include/gui/custom_menu/theme.h"
 #include "../include/gui/custom_menu/layout.h"
 #include "../include/gui/custom_menu/scale.h"
@@ -1760,9 +1762,12 @@ void MaybeRefreshOnOpen() {
 
 void PrepareFrame() {
     if (!ImGui::GetCurrentContext()) return;
-    // The title MISSIONS/TUTORIAL screens draw with the custom-menu fonts too,
-    // so the atlas must also be ready while they are up (menu closed).
-    if (!ImGuiImpl::IsVisible() && !PracticeMenu::TitleScreen::WantsDraw()) return;
+    // The title MISSIONS/TUTORIAL screens and the mission/lesson pause menu
+    // draw with the custom-menu fonts too, so the atlas must also be ready
+    // while they are up (menu closed).
+    if (!ImGuiImpl::IsVisible() && !PracticeMenu::TitleScreen::WantsDraw() &&
+        !Mission::PauseMenu::WantsDraw() &&
+        !Mission::TutorialSession::WantsDraw()) return;
 
     Scale::Update(Config::GetSettings().uiScale);
 

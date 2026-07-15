@@ -38,6 +38,12 @@ bool EnsureFrontendControlHooksInstalled();
 using BattleUpdateCallback = void (*)(void* battleContext);
 void SetBattleUpdateCallbacks(BattleUpdateCallback beforeUpdate, BattleUpdateCallback afterUpdate);
 
+// Monotonic IDs around the exact game-thread Battle update. Collision-hook
+// events carry the active ID; consumers only read through the completed ID so
+// a monitor tick cannot observe half of one game update.
+uint32_t GetCurrentBattleUpdateBatch();
+uint32_t GetCompletedBattleUpdateBatch();
+
 bool CanRequestFrontendExit(FrontendExitTarget target);
 bool RequestFrontendExit(FrontendExitTarget target);
 

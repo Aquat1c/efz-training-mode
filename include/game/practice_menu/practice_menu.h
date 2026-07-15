@@ -15,6 +15,8 @@
 // See project memory: tutorial-trial-mode, and shared_documentation/
 // NETPLAY_MENU_INTEGRATION.md.
 
+#include "mission_title_screen.h"
+
 namespace PracticeMenu {
 
 // Install the title hooks + Practice-case entry patch. Safe to call once during
@@ -28,5 +30,11 @@ void Uninstall();
 
 // True while the Practice submenu is on screen (owns title input/render).
 bool IsSubmenuActive();
+
+// Deferred browser reopen: "RETURN TO MISSIONS/LESSONS" from the in-match
+// pause menu exits to the title screen; the next title update consumes this
+// request and opens the practice submenu directly on the given screen so the
+// player lands back in the browser instead of the root title menu.
+void RequestTitleReopen(TitleScreen::Screen screen);
 
 } // namespace PracticeMenu

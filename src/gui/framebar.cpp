@@ -52,7 +52,8 @@ struct Cell {
     short collisionLockout = 0;
     // +0x16C - attacker move countdown; engine decrements after each resolve.
     short attackTimer = 0;
-    // +0x168 - hit-state machine: 0=none, 2=block/RG, 3=hit, 6=throw, 7=special.
+    // +0x168 - raw producer-dependent collision/result latch. It is useful as
+    // a diagnostic marker, but its numeric values are not typed outcomes.
     int   hitState  = 0;
     // +0x170 - guard / RC-marked flag (defender in guard, or attacker
     // marked-as-RGd by defender's RG).
@@ -411,6 +412,8 @@ Cat ClassifySample(Side& side, const Sample& s) {
     if (m == FORWARD_AIRTECH) return Cat::AirtechFwd;
     if (m == BACKWARD_AIRTECH) return Cat::AirtechBack;
     if (IsGroundtech(m))     return Cat::Groundtech;
+    // Raw 6 is retained as a legacy visual hint, but counter paths can write it
+    // too; unlike IsThrown(m), it is not an authoritative throw classification.
     if (s.hitState == 6 || IsThrown(m)) return Cat::Thrown;
     if (m == STAND_GUARD_ID || m == CROUCH_GUARD_ID || m == AIR_GUARD_ID
         || m == CROUCH_GUARD_STUN1 || m == CROUCH_GUARD_STUN2)
@@ -1742,13 +1745,12 @@ void Render(const DrawCtx& ctx) {
                     ImVec2(tx(cx + 0.5f), ty(y + baseRowH + 1.0f)),
                     IM_COL32(255, 255, 255, 240), 1.0f);
             }
-            // Hit-state edge: bright yellow flash when an attack just connected
-            // (hitState 2/3/6/7 - block, hit, throw, special). Engine sets this
-            // on the attacker the frame the resolution happens.
+            // Raw +0x168 activity marker. Colors distinguish observed numeric
+            // values only; they must not be read as authoritative outcomes.
             if (showAdvancedMarkers && cell.hitState != 0) {
-                ImU32 col = IM_COL32(255, 220, 0, 230);     // yellow = hit
-                if (cell.hitState == 2) col = IM_COL32(80, 200, 255, 230); // cyan = block/RG
-                if (cell.hitState == 6) col = IM_COL32(180, 60, 200, 230); // purple = throw
+                ImU32 col = IM_COL32(255, 220, 0, 230);     // default raw value
+                if (cell.hitState == 2) col = IM_COL32(80, 200, 255, 230); // raw 2
+                if (cell.hitState == 6) col = IM_COL32(180, 60, 200, 230); // raw 6
                 dl->AddRectFilled(
                     ImVec2(tx(cx + cellW - 1.5f), ty(y - 1.0f)),
                     ImVec2(tx(cx + cellW),         ty(y + baseRowH + 1.0f)),
@@ -1805,7 +1807,7 @@ void Render(const DrawCtx& ctx) {
     //   TOT = total engine-busy frames seen in this sequence.
     //   GG  = +0x134 Guard Gauge (0..360).
     //   B/R = decomp-style can-block/can-RG result vs opponent current attack.
-    //   HitS= +0x168 hit-state flag (2=block/RG, 3=hit, 6=throw, 7=special).
+    //   HitS= raw +0x168 producer latch (diagnostic, not a typed result).
     //   CH  = +0x144 counter-hit flag this frame.
     //   HST = shared hit-hitstop. SF still reports the local superflash freeze.
     char buf[160] = {}, buf2[160] = {}, buf3[160] = {}, buf4[160] = {};

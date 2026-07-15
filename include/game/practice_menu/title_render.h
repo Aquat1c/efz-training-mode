@@ -11,13 +11,15 @@
 
 namespace PracticeMenu::Render {
 
-// Logical submenu rows, in draw order (top -> bottom). These map 1:1 to the two
-// sprite lanes in assets/title_ob2.dat (unselected lane + selected/highlight
-// lane). There is no BACK row - the cancel button returns to the title menu.
+// Logical submenu rows, in draw order (top -> bottom). The enum index IS the sheet
+// row AND the screen row (DrawRows uses it for both srcY and destY), so this order
+// MUST match the label order baked into assets/title_ob2.dat (currently
+// Practice / Mission / Tutorial). The two sprite lanes are unselected + selected/
+// highlight. There is no BACK row - the cancel button returns to the title menu.
 enum Row : int {
-    ROW_TUTORIAL = 0,
+    ROW_PRACTICE = 0,
     ROW_MISSION,
-    ROW_PRACTICE,
+    ROW_TUTORIAL,
     ROW_COUNT
 };
 

@@ -82,14 +82,14 @@ set(IMGUI_SOURCES
 )
 
 # Define source files using file globs for subfolders
-file(GLOB ROOT_SOURCES "src/*.cpp")
-file(GLOB CORE_SOURCES "src/core/*.cpp")
-file(GLOB GAME_SOURCES "src/game/*.cpp")
+file(GLOB ROOT_SOURCES CONFIGURE_DEPENDS "src/*.cpp")
+file(GLOB CORE_SOURCES CONFIGURE_DEPENDS "src/core/*.cpp")
+file(GLOB GAME_SOURCES CONFIGURE_DEPENDS "src/game/*.cpp")
 file(GLOB GAME_PRACTICE_MENU_SOURCES CONFIGURE_DEPENDS "src/game/practice_menu/*.cpp")
 file(GLOB GAME_MISSION_SOURCES CONFIGURE_DEPENDS "src/game/mission/*.cpp")
 file(GLOB GUI_SOURCES CONFIGURE_DEPENDS "src/gui/*.cpp")
 file(GLOB GUI_CUSTOM_MENU_SOURCES CONFIGURE_DEPENDS "src/gui/custom_menu/*.cpp")
-file(GLOB INPUT_SOURCES "src/input/*.cpp")
+file(GLOB INPUT_SOURCES CONFIGURE_DEPENDS "src/input/*.cpp")
 file(GLOB UTILS_SOURCES CONFIGURE_DEPENDS "src/utils/*.cpp")
 set(RESOURCE_SOURCES "src/resources/efz_training_resources.rc")
 
@@ -243,7 +243,11 @@ if(MSVC)
         STATIC_LIBRARY_FLAGS "/LTCG")
 
     target_compile_options(efz_training_mode PRIVATE
-        "$<$<CONFIG:Release>:/Zi>"
+        /FS
+        # Embed Release object debug records. This still produces the linked
+        # DLL PDB, while avoiding per-object references to a shared vc*.pdb
+        # (and the resulting LNK4099 warnings in parallel builds).
+        "$<$<CONFIG:Release>:/Z7>"
     )
 
     target_link_options(efz_training_mode PRIVATE
@@ -298,15 +302,36 @@ if(BUILD_TESTING)
     add_test(NAME mission_sequence_policy_tests
              COMMAND mission_sequence_policy_tests)
 
+    add_executable(tutorial_session_policy_tests
+        tests/tutorial_session_policy_tests.cpp)
+    target_include_directories(tutorial_session_policy_tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    set_property(TARGET tutorial_session_policy_tests PROPERTY
+        MSVC_RUNTIME_LIBRARY "${EFZ_MSVC_RUNTIME_LIBRARY}")
+    add_test(NAME tutorial_session_policy_tests
+             COMMAND tutorial_session_policy_tests)
+
+    add_executable(normal_input_policy_tests
+        tests/normal_input_policy_tests.cpp)
+    target_include_directories(normal_input_policy_tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    set_property(TARGET normal_input_policy_tests PROPERTY
+        MSVC_RUNTIME_LIBRARY "${EFZ_MSVC_RUNTIME_LIBRARY}")
+    add_test(NAME normal_input_policy_tests
+             COMMAND normal_input_policy_tests)
+
     add_executable(mission_data_tests
         tests/mission_data_tests.cpp
-        src/game/mission/mission_data.cpp)
+        src/game/mission/mission_data.cpp
+        src/game/mission/tutorial_support.cpp)
     target_include_directories(mission_data_tests PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/include
         ${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/json/single_include)
     set_property(TARGET mission_data_tests PROPERTY
         MSVC_RUNTIME_LIBRARY "${EFZ_MSVC_RUNTIME_LIBRARY}")
-    add_test(NAME mission_data_tests COMMAND mission_data_tests)
+    add_test(NAME mission_data_tests
+             COMMAND mission_data_tests
+                     "${CMAKE_CURRENT_SOURCE_DIR}/assets/missions/core_tutorial")
 
     add_executable(mission_movedata_union_tests
         tests/mission_movedata_union_tests.cpp)

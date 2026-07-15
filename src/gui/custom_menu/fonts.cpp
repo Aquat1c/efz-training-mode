@@ -1,6 +1,7 @@
 #include "../include/gui/custom_menu/fonts.h"
 #include "../include/gui/custom_menu/resource_ids.h"
 #include "../include/gui/custom_menu/scale.h"
+#include "../include/game/mission/mission_render.h"
 #include "../include/core/logger.h"
 #include "../include/utils/config.h"
 #include "../3rdparty/imgui/imgui.h"
@@ -19,10 +20,13 @@ namespace {
 
 ImFont* g_bodyFont   = nullptr;
 ImFont* g_headerFont = nullptr;
+ImFont* g_tutorialReadableFont = nullptr;
+ImFont* g_tutorialHeaderFont = nullptr;
 
 float g_appliedScale = 0.0f;
+int g_appliedFontMode = -1;
 
-std::chrono::steady_clock::time_point g_lastRebuild{};
+std::chrono::steady_clock::time_point g_lastAttempt{};
 
 struct ResourceBlob {
     const void* data = nullptr;
@@ -57,6 +61,14 @@ bool AtlasContainsFont(const ImFontAtlas* atlas, const ImFont* font) {
 
 } // namespace
 
+void InvalidateAtlasReferences() {
+    g_bodyFont = nullptr;
+    g_headerFont = nullptr;
+    g_tutorialReadableFont = nullptr;
+    g_tutorialHeaderFont = nullptr;
+    Mission::Render::InvalidateTextLayouts();
+}
+
 bool Rebuild(float uiScale) {
     if (!ImGui::GetCurrentContext()) return false;
 
@@ -64,24 +76,32 @@ bool Rebuild(float uiScale) {
 
     // Throttle rebuilds: at most once per 500ms to absorb scale oscillations.
     auto now = std::chrono::steady_clock::now();
-    const bool everRebuilt = (g_lastRebuild.time_since_epoch().count() != 0);
+    const bool everAttempted = (g_lastAttempt.time_since_epoch().count() != 0);
 
     Scale::Update(uiScale);
     const Scale::Metrics& metrics = Scale::Get();
     // Round to nearest hundredth so tiny scale drift doesn't trigger rebuilds.
     float rounded = std::floor(metrics.fontScale * 100.0f + 0.5f) / 100.0f;
+    const int fontMode = Config::GetSettings().uiFontMode;
 
     const bool scaleChanged = !(std::fabs(rounded - g_appliedScale) < 0.005f);
+    const bool modeChanged = fontMode != g_appliedFontMode;
     const bool fontsMissing =
         !AtlasContainsFont(io.Fonts, g_bodyFont) ||
         !AtlasContainsFont(io.Fonts, g_headerFont) ||
+        !AtlasContainsFont(io.Fonts, g_tutorialReadableFont) ||
+        !AtlasContainsFont(io.Fonts, g_tutorialHeaderFont) ||
         io.FontDefault == nullptr;
-    if (!scaleChanged && !fontsMissing) return true;
+    if (!scaleChanged && !modeChanged && !fontsMissing) return true;
 
-    if (!fontsMissing && everRebuilt &&
-        (now - g_lastRebuild) < std::chrono::milliseconds(500)) {
-        return true; // defer; will pick up on a later call
+    if (!fontsMissing && everAttempted &&
+        (now - g_lastAttempt) < std::chrono::milliseconds(500)) {
+        // An intact atlas can defer a scale/mode adjustment. Missing faces
+        // must be repaired immediately because their accessors were invalidated
+        // by an external atlas clear and no usable custom font remains.
+        return true;
     }
+    g_lastAttempt = now;
 
     ResourceBlob blob = LoadEmbeddedFont();
     if (!blob.data || blob.size == 0) {
@@ -99,6 +119,7 @@ bool Rebuild(float uiScale) {
     };
 
     ImGui_ImplDX9_InvalidateDeviceObjects();
+    InvalidateAtlasReferences();
     io.Fonts->Clear();
     io.Fonts->Flags |= ImFontAtlasFlags_NoPowerOfTwoHeight;
     io.Fonts->TexGlyphPadding = 1;
@@ -113,7 +134,6 @@ bool Rebuild(float uiScale) {
         cfgMain.PixelSnapH  = false;
 
         const float mainPx = Scale::Snap(13.0f * rounded);
-        const int fontMode = Config::GetSettings().uiFontMode;
         if (fontMode == 1) {
             const char* segoePath = "C:\\Windows\\Fonts\\segoeui.ttf";
             DWORD fa = GetFileAttributesA(segoePath);
@@ -137,6 +157,32 @@ bool Rebuild(float uiScale) {
     const float bodyPx   = metrics.bodyPx;
     const float headerPx = metrics.headerPx;
 
+    // Tutorial text is authored in the same 640x480 logical space as the
+    // custom menu, but the completed draw list is commonly enlarged 2-4x for
+    // modern render targets. Dedicated denser faces preserve source detail
+    // through that transform. They share the existing ImGui atlas, so this is
+    // a one-time memory/startup cost and does not introduce another texture or
+    // draw call during play.
+    {
+        ImFontConfig cfgTutorial;
+        cfgTutorial.OversampleH = 2;
+        cfgTutorial.OversampleV = 2;
+        cfgTutorial.PixelSnapH = false;
+        const float tutorialPx = Scale::Snap(26.0f * rounded);
+        cfgTutorial.SizePixels = tutorialPx;
+        if (fontMode == 1) {
+            const char* segoePath = "C:\\Windows\\Fonts\\segoeui.ttf";
+            const DWORD fa = GetFileAttributesA(segoePath);
+            if (fa != INVALID_FILE_ATTRIBUTES && !(fa & FILE_ATTRIBUTE_DIRECTORY)) {
+                g_tutorialReadableFont =
+                    io.Fonts->AddFontFromFileTTF(segoePath, tutorialPx, &cfgTutorial);
+            }
+        }
+        if (!g_tutorialReadableFont) {
+            g_tutorialReadableFont = io.Fonts->AddFontDefault(&cfgTutorial);
+        }
+    }
+
     ImFontConfig cfgBody = cfgBase;
     cfgBody.SizePixels = bodyPx;
     void* bodyBytes = copyBlob();
@@ -151,6 +197,15 @@ bool Rebuild(float uiScale) {
         ? io.Fonts->AddFontFromMemoryTTF(headerBytes, (int)blob.size, headerPx, &cfgHeader)
         : nullptr;
 
+    ImFontConfig cfgTutorialHeader = cfgBase;
+    const float tutorialHeaderPx = Scale::Snap(32.0f * rounded);
+    cfgTutorialHeader.SizePixels = tutorialHeaderPx;
+    void* tutorialHeaderBytes = copyBlob();
+    g_tutorialHeaderFont = tutorialHeaderBytes
+        ? io.Fonts->AddFontFromMemoryTTF(tutorialHeaderBytes, (int)blob.size,
+                                        tutorialHeaderPx, &cfgTutorialHeader)
+        : nullptr;
+
     // ImGui also needs a default font that covers the rest of the UI context
     // for any code path that doesn't PushFont.
     io.FontDefault = mainFont ? mainFont : g_bodyFont;
@@ -159,16 +214,19 @@ bool Rebuild(float uiScale) {
         LogOut("[CUSTOM_MENU][FONT] Failed to recreate DX9 device objects after font rebuild.", true);
         g_bodyFont = nullptr;
         g_headerFont = nullptr;
+        g_tutorialReadableFont = nullptr;
+        g_tutorialHeaderFont = nullptr;
         return false;
     }
 
     g_appliedScale = rounded;
-    g_lastRebuild = now;
-
-    char msg[160];
+    g_appliedFontMode = fontMode;
+    char msg[192];
     _snprintf_s(msg, sizeof(msg), _TRUNCATE,
-        "[CUSTOM_MENU][FONT] Loaded ITC Bolt Bold: body=%.0fpx header=%.0fpx scale=%.2f",
-        bodyPx, headerPx, rounded);
+        "[CUSTOM_MENU][FONT] Loaded menu fonts: body=%.0fpx header=%.0fpx "
+        "tutorial-readable=%.0fpx tutorial-header=%.0fpx scale=%.2f",
+        bodyPx, headerPx, Scale::Snap(26.0f * rounded),
+        Scale::Snap(32.0f * rounded), rounded);
     LogOut(msg, true);
 
     return (g_bodyFont != nullptr && g_headerFont != nullptr);
@@ -176,10 +234,15 @@ bool Rebuild(float uiScale) {
 
 ImFont* Body()     { return g_bodyFont; }
 ImFont* Header()   { return g_headerFont; }
+ImFont* TutorialReadable() { return g_tutorialReadableFont; }
+ImFont* TutorialHeader() { return g_tutorialHeaderFont; }
 bool    IsLoaded() {
     if (!ImGui::GetCurrentContext()) return false;
     ImGuiIO& io = ImGui::GetIO();
-    return AtlasContainsFont(io.Fonts, g_bodyFont) && AtlasContainsFont(io.Fonts, g_headerFont);
+    return AtlasContainsFont(io.Fonts, g_bodyFont) &&
+           AtlasContainsFont(io.Fonts, g_headerFont) &&
+           AtlasContainsFont(io.Fonts, g_tutorialReadableFont) &&
+           AtlasContainsFont(io.Fonts, g_tutorialHeaderFont);
 }
 
 } // namespace CustomMenu::Fonts

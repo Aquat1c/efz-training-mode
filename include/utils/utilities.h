@@ -160,7 +160,10 @@ struct DisplayData {
     int p1IkumiLevelGauge; // 0..99 (100 triggers level up)
     int p2IkumiLevelGauge;
     bool infiniteBloodMode;  // Enables freeze patch for blood
-    
+
+    // Shiori (reuses Ikumi's per-character resource slot, player + 0x314C)
+    bool infiniteShioriShield;  // Freezes Shiori's shield gauge so it never depletes
+
     // Misuzu
     int p1MisuzuFeathers;
     int p2MisuzuFeathers;
@@ -567,6 +570,12 @@ void UpdateWindowActiveState();
 
 // Add these after the other global state variables
 extern std::atomic<bool> g_statsDisplayEnabled;
+// Debug-info overlay page (scrolled with 5/6 while the overlay is active). Below
+// the always-on core stats, an EXTRA-info area is paginated: page 0 = overview,
+// then one page per active entity/bullet. g_statsPageCount is published live by
+// UpdateStatsDisplay (dynamic with the entity count); the 5/6 handler wraps on it.
+extern std::atomic<int> g_statsPageIndex;
+extern std::atomic<int> g_statsPageCount;
 extern int g_statsP1ValuesId;
 extern int g_statsP2ValuesId;
 extern int g_statsPositionId;

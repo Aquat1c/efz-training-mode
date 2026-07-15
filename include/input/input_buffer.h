@@ -3,6 +3,8 @@
 #include <vector>
 #include <atomic>
 #include <thread>
+#include <mutex>
+#include <cstdint>
 #include "input_core.h"
 
 // Input buffer constants
@@ -21,9 +23,18 @@ extern uint16_t g_frozenIndexValue;
 // Which player currently owns an active buffer-freeze session (0 = none)
 extern std::atomic<int> g_activeFreezePlayer;
 
+// Serializes lease ownership, freeze publication, and stop/reset.  The
+// worker itself operates on an immutable snapshot and is invalidated through
+// a monotonically increasing generation, so a detached predecessor cannot
+// write or clean up a newer session.
+extern std::recursive_mutex g_bufferFreezeControlMutex;
+
 // Buffer freezing functions
 //bool FreezeBufferForMotion(int playerNum, int motionType, int buttonMask, int optimalIndex);
-void FreezeBufferValuesThread(int playerNum);
+uint64_t StartBufferFreezeWorker(int playerNum);
 bool CaptureAndFreezeBuffer(int playerNum, uint16_t startIndex, uint16_t length, int motionType = -1, int buttonMask = 0);
 bool FreezeBufferIndex(int playerNum, uint16_t indexValue);
 void StopBufferFreezing();
+// Internal token-validated tutorial path; ordinary callers must use
+// StopBufferFreezing(), which will not tear down a tutorial-owned freeze.
+void StopBufferFreezingIgnoringTutorialLease();

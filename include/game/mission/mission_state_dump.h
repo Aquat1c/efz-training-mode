@@ -11,14 +11,16 @@
 //   Restore:  (characters must already match - hotswap first)
 //             TriggerSave            - fresh restore records with CURRENT
 //                                      session addresses + current buffer len
-//             verify lengths/chars   - mismatch = abort (caller falls back to
-//                                      value-level Mission::Setup)
+//             verify lengths/chars   - mismatch = abort; exact-state callers
+//                                      must surface the failure
 //             pointer reconciliation - pointer-bearing ranges inside the file
 //                                      payload are overwritten with the fresh
 //                                      session's bytes (stale heap pointers
 //                                      from another session would crash)
 //             overwrite buffer + TriggerLoad -> Revival memmoves the payload
-//             into live memory through its own record walk.
+//             into live memory through its own record walk
+//             verify both entity rings -> repair from the reconciled payload
+//                                      once or fail explicitly.
 //
 // Full RE + per-version layout: shared_documentation/REVIVAL_PRACTICE_SAVELOAD_RE.md
 // and MISSION_SAVESTATE_AND_RECORDING_DESIGN.md (descriptor matrix, region

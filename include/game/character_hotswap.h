@@ -34,6 +34,8 @@ void UninstallDirectPracticeBootstrap();
 bool QueueDirectPracticeLoad(int p1SelectId, int p2SelectId, int stageId,
                              const PaletteSelection& paletteSelection,
                              int bgmTrack); // -1 keeps native stage music
+// True for the full owned Title/Match -> Loading -> Battle transaction, not
+// merely until the first Loading-update callback consumes the request.
 bool IsDirectPracticeLoadPending();
 void CancelDirectPracticeLoad(const char* reason);
 

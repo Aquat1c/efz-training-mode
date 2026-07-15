@@ -1,4 +1,5 @@
 #pragma once
+#include <string>
 //
 // Mission recipe renderer (M3 scaffold).
 //
@@ -13,13 +14,37 @@
 // gif_player.cpp).
 
 struct ImDrawList;
+struct ImFont;
 
 namespace Mission::Render {
+
+struct RichTextMetrics {
+    float width = 0.0f;
+    float height = 0.0f;
+};
 
 // Draw the recipe for the active mission (no-op if none). `device` is the live
 // IDirect3DDevice9* (as void*); ox/oy/scale map the 640x480 virtual space into
 // the current render target's inner 4:3 area.
 void Draw(void* device, ImDrawList* dl, float ox, float oy, float scale);
+
+// Shared tutorial rich-text renderer. It resolves {dir:}, {btn:}, and
+// {input:} tokens through assets/controls, including a styled neutral-5 tile,
+// and wraps atomically so notation is never split from its button glyph.
+float MeasureRichTextHeight(void* device, ImFont* font, float fontPx,
+                            const std::string& text, float maxWidth);
+// Returns the widest used line as well as total wrapped height. The result is
+// produced by the same bounded cached layout used by DrawRichText, allowing
+// compact HUD strips to follow their content without re-tokenizing each frame.
+RichTextMetrics MeasureRichText(void* device, ImFont* font, float fontPx,
+                                const std::string& text, float maxWidth);
+void DrawRichText(void* device, ImDrawList* dl, ImFont* font, float fontPx,
+                  float x, float y, unsigned int color,
+                  const std::string& text, float maxWidth);
+
+// Font-atlas rebuilds invalidate cached ImFont/layout associations without
+// requiring the separate control-icon texture to be decoded again.
+void InvalidateTextLayouts();
 
 // Release icon textures (device loss / shutdown).
 void ReleaseTextures();

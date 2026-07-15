@@ -1,0 +1,76 @@
+{
+  "format": 1,
+  "tutorialSchema": 1,
+  "type": "tutorial",
+  "id": "efz.fundamentals.screen",
+  "revision": 4,
+  "category": "fundamentals",
+  "order": 30,
+  "difficulty": 1,
+  "name": "Reading the Screen",
+  "summary": "Find Life, RF, SP, combo Power, and the juggle gauge.",
+  "description": "Find Life, RF, SP, combo Power, and the juggle gauge.",
+  "player": {
+    "character": "nayukib",
+    "pos": {
+      "x": 250.0,
+      "y": 0.0
+    }
+  },
+  "dummy": {
+    "character": "misaki",
+    "pos": {
+      "x": 390.0,
+      "y": 0.0
+    }
+  },
+  "stage": 4,
+  "requires": [
+    "pages",
+    "progress_store",
+    "task_checkpoints",
+    "tutorial_tasks"
+  ],
+  "lesson": {
+    "completion": "pages",
+    "flow": {
+      "wrongAction": "coach",
+      "failureReset": "taskCheckpoint",
+      "preserveCompletedTasks": true
+    },
+    "pages": [
+      {
+        "id": "p0",
+        "title": "Life and Rounds",
+        "showHud": "top",
+        "text": "Each {term:Life Gauge} is at the top. Everyone starts with the same life, and the marks beside it show rounds won. EFZ has no round timer: the number in the middle is {term:FPS}, normally 64 under Revival."
+      },
+      {
+        "id": "p1",
+        "title": "SP and RF",
+        "showHud": "bottom",
+        "text": "At the bottom, the large {term:SP Gauge} stores up to three Super levels. The smaller {term:RF Gauge} below it powers RF Attacks and Instant Charge. You will practice both later."
+      },
+      {
+        "id": "p2",
+        "title": "Combos and Juggles",
+        "text": "During a combo, the display shows hits, damage, and {term:Power}. Power affects damage and how long later hits can keep the opponent airborne. A separate gauge appears under a juggled character and changes color as their chance to recover gets close."
+      },
+      {
+        "id": "p3",
+        "title": "Character Resources",
+        "text": "Some characters have an extra meter of their own. That character's guide explains how it works."
+      }
+    ]
+  },
+  "sourceRefs": [
+    "mizuumi:hud-menus@333586",
+    "mizuumi:game-mechanics@473180"
+  ],
+  "next": {
+    "lessonId": "efz.fundamentals.walk_crouch"
+  },
+  "recommendedAfter": [
+    "efz.fundamentals.combo_notation"
+  ]
+}

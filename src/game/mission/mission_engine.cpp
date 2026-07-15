@@ -4,9 +4,12 @@
 #include "../../../include/game/mission/mission_movedata.h"
 #include "../../../include/game/mission/mission_sequence_policy.h"
 #include "../../../include/game/mission/mission_setup.h"
+#include "../../../include/game/mission/recorder_entity_trace.h"
 #include "../../../include/game/mission/move_notation_tables.h"  // per-char notation (generated)
 #include "../../../include/game/character_settings.h"            // GetCharacterInternalName
 #include "../../../include/game/macro_controller.h"
+#include "../../../include/game/collision_hook.h"
+#include "../../../include/game/collision_display.h"  // bounded raw entity-ring probe
 
 #include "../../../include/core/constants.h"
 #include "../../../include/core/logger.h"
@@ -16,10 +19,12 @@
 #include "../../../include/gui/gui.h"                 // OpenMenu (mission mode)
 #include "../../../include/gui/imgui_impl.h"           // menu visibility (baseline save gate)
 #include "../../../include/game/savestate_hook.h"      // TrialMode-style auto retry
+#include "../../../include/game/mission/mission_pause_menu.h" // session pause surface
+#include "../../../include/game/mission/tutorial_session.h"    // tutorialSchema runtime
+#include "../../../include/game/mission/tutorial_support.h"    // lesson launch preflight
 #include "../../../include/game/mission/mission_state_dump.h" // embedded start states
 #include "../../../include/game/character_hotswap.h"   // char-select auto-drive
 #include "../../../include/gui/custom_menu/screens.h" // OpenMissionBrowser
-#include "../../../include/game/practice_menu/mission_title_screen.h"
 #include "../../../include/game/game_state.h"
 #include "../../../include/game/auto_action.h"
 #include "../../../include/input/injection_control.h"
@@ -30,9 +35,13 @@
 #include <windows.h>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cstdio>
+#include <fstream>
 #include <mutex>
+#include <optional>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -41,12 +50,23 @@ namespace Mission::Engine {
 namespace {
 
 Snapshot g_snapshot;
+uint32_t g_contactReadCursor = 0;
+uint32_t g_contactReadEpoch = 0;
+uint32_t g_contactOverflowLoggedEpoch = 0;
+uint32_t g_contactOverflowLoggedCursor = 0;
 std::atomic<bool> g_inspector{false};
 std::atomic<bool> g_pendingMissionMode{false}; // title MISSION -> auto-open browser
+std::atomic<bool> g_pendingMissionSawCharacterSelect{false};
 std::atomic<bool> g_pendingRecordMode{false};  // title RECORD -> auto-arm recorder
 std::atomic<bool> g_pendingRecordSawCharacterSelect{false};
-std::mutex  g_pendingLoadMx;                   // guards g_pendingLoadPath
-std::string g_pendingLoadPath;                 // title mission pick -> load on match
+// One title-picked launch is prepared before the browser releases ownership.
+// Both fields are guarded by the same mutex and are published/consumed/cleared
+// together: the source path remains presentation/diagnostic identity, while the
+// parsed Mission is the immutable runtime payload. Match entry must never
+// reopen a file that may have changed after the player selected it.
+std::mutex  g_pendingLoadMx;
+std::string g_pendingLoadPath;
+std::optional<::Mission::Mission> g_pendingLoadMission;
 // Pre-parsed setup of the pending mission. The preferred route constructs both
 // fighters on EFZ's Loading thread and skips Character Select; these fields are
 // retained for the guarded selector fallback.
@@ -58,6 +78,17 @@ std::atomic<int>  g_pendingP1Palette{0};
 std::atomic<int>  g_pendingP2Palette{0};
 std::atomic<int>  g_pendingStage{-1};
 std::atomic<int>  g_pendingBgm{-1};
+
+void ClearPendingMatchMetadata() {
+    g_pendingHaveChars.store(false, std::memory_order_release);
+    g_pendingCsQueued.store(false, std::memory_order_release);
+    g_pendingP1SelectId.store(-1, std::memory_order_relaxed);
+    g_pendingP2SelectId.store(-1, std::memory_order_relaxed);
+    g_pendingP1Palette.store(0, std::memory_order_relaxed);
+    g_pendingP2Palette.store(0, std::memory_order_relaxed);
+    g_pendingStage.store(-1, std::memory_order_relaxed);
+    g_pendingBgm.store(-1, std::memory_order_relaxed);
+}
 
 // ---- recorder state ----
 struct CapturedStep {
@@ -74,8 +105,14 @@ struct CapturedStep {
                                // event and this move (delayed-button allowance)
     bool        comboEndAfter = false; // a recorded combo alive->dead edge occurred
                                        // after this step and before the next one
-    bool        connected = false; // made CONTACT (hit or blocked) via +0x168 edge -
-                                   // separates deliberate whiffs from blocked hits
+    bool        connected = false; // legacy +0x168 sampled-edge heuristic used by
+                                   // format 1; not an authoritative typed contact
+    int         charState = -1;    // P1 character-state stamp at move start (-1 = n/a;
+                                   // Akiko = bullet cycle 0..2 -> rekka crit variant)
+    int         damage = 0;        // combo-damage delta this step's hits produced
+                                   // (0 = whiff/blocked/no requirement)
+    short       automaticFollowupId = 0; // observed no-input phase accepted as part
+                                         // of this action (character-specific)
 };
 std::atomic<bool> g_recActive{false};
 using RecorderPhase = ::Mission::Engine::Recorder::Phase;
@@ -86,11 +123,28 @@ std::atomic<int> g_recStepCountView{0};
 std::atomic<int> g_recComboEndCountView{0};
 std::atomic<int> g_recCountInView{0};
 std::atomic<int> g_recBannerId{-1};
+std::atomic<unsigned long> g_recSaveSequence{0};
+struct RecorderBannerInputs {
+    RecorderPhase phase = RecorderPhase::Idle;
+    int countIn = 0;
+    int steps = 0;
+    int comboEnds = 0;
+    int displayedSecond = -1;
+    bool interrupted = true;
+    std::string binding;
+};
+std::mutex g_recBannerMx;
+RecorderBannerInputs g_recBannerInputs;
+bool g_recBannerInputsValid = false;
 int g_recReleaseFrames = 0;
 int g_recCountInFrames = 0;
+int g_recCountInTargetTicks = 0;
+bool g_recCountInElapsed = false; // capture/start on the following clear tick
 std::vector<CapturedStep> g_recSteps;   // kept after stop until the next start / save
 short g_recLastAttackId = 0;   // last attack move-ID recorded (0 = none / reset)
 int   g_recComboAtStart = 0;   // combo count when the current step's move began
+int   g_recDamageAtStart = 0;  // combo damage when the current step's move began
+                               // (per-step delta = clean-hit/crit variant fingerprint)
 short g_recRecentToken = 99;   // most recent non-99 motion token (command index), for pairing
 int   g_recRecentTokenAge = 999; // frames since g_recRecentToken was seen
 int   g_recFrame = 0;          // recorder EFFECTIVE frame counter (freeze frames excluded,
@@ -105,9 +159,79 @@ bool  g_recAnyLanded = false;  // this attempt landed at least one hit
 bool  g_recComboWasAlive = false;
 int   g_recPendingComboEndStep = -1; // candidate committed only if a later step exists
 int   g_recComboEndFrame = 0;        // gap anchor: actual recovery edge, not last hit
-int   g_recPrevHitState = 0;   // previous frame +0x168 (contact edge detection)
+int   g_recPrevHitState = 0;   // previous raw +0x168 (legacy edge heuristic)
 short g_recPrevMove = 0;       // same-ID re-entry detection (5A -> 5A, etc.)
 short g_recPrevFrameIdx = 0;
+// Fresh-input evidence for same-move re-entry: a genuine re-cancel is caused
+// by a button press or a newly recognized command; an animation-loop frame
+// wrap has neither. Ages are in internal ticks and freeze-gated like g_recFrame.
+int   g_recAttackEdgeAge = 999;   // ticks since EFZ consumed a P1 attack-button edge
+int   g_recTokenEdgeAge = 999;    // ticks since the token went 99 -> value (edge, not level:
+                                  // +0x262 can hold its value for a move's whole duration)
+short g_recPrevTokenSample = 99;
+int   g_recAkikoRekkaRep = 0;     // C-rekka rep index (Akiko crosses behind per rep, so
+                                  // the PHYSICAL input alternates 623C/421C)
+
+// Authoring-only, cast-wide raw entity trace. This is deliberately separate
+// from CapturedStep: sampled ring edges cannot become strict format-1 recipe
+// requirements or notation suffixes. The fixed POD buffer bounds memory even
+// during an abnormally long take; overflow is written into the sidecar header.
+enum class RecEntityTraceKind : uint8_t {
+    Baseline = 0,
+    Spawn,
+    Morph,
+    Despawn,
+    Contact,
+};
+
+struct RecEntitySlotState {
+    bool established = false;
+    bool alive = false;
+    uint16_t pattern = 0;
+    uint16_t frame = 0;
+    int16_t life = 0;
+    uint32_t destroyed = 0;
+};
+
+struct RecEntityTraceEvent {
+    RecEntityTraceKind kind = RecEntityTraceKind::Baseline;
+    int effectiveFrame = 0;
+    int player = 1;
+    int characterId = -1;
+    int afterStep = -1;       // zero-based CapturedStep index; -1 = before opener
+    int slot = -1;
+    int pattern = -1;         // current pattern; -1 on a sampled despawn
+    int priorPattern = -1;
+    int entityFrame = 0;
+    int life = 0;
+    uint32_t destroyed = 0;
+    ::Mission::MoveData::Cls entityClass = ::Mission::MoveData::Cls::Unknown;
+    bool attack = false;
+    bool sampled = true;
+
+    // Populated only for exact entity->player resolver journal records.
+    uint32_t contactSequence = 0;
+    uint32_t contactBatch = 0;
+    int defender = 0;
+    ::Mission::Contact::Result contactResult = ::Mission::Contact::Result::None;
+    int lifeBefore = 0;
+    int destroyedBefore = 0;
+    int comboBefore = 0;
+    int comboAfter = 0;
+    int hpBefore = 0;
+    int hpAfter = 0;
+};
+
+constexpr std::size_t kRecEntityTraceCapacity = 4096;
+std::array<std::array<RecEntitySlotState,
+                      CollisionDisplay::kProjectileRingSlotCapacity>, 2>
+    g_recEntitySlots{};
+std::array<RecEntityTraceEvent, kRecEntityTraceCapacity> g_recEntityTrace{};
+std::size_t g_recEntityTraceCount = 0;
+uint32_t g_recEntityTraceDropped = 0;
+bool g_recEntityContactHookObserved = false;
+bool g_recContactJournalOverflowObserved = false;
+std::array<bool, 2> g_recEntityProbeUnavailableLogged{};
 ::Mission::Mission g_recSetup; // setup metadata snapshot taken at record start
 
 // Derive a numpad+button notation from P1's current input (facing-relative:
@@ -122,7 +246,11 @@ std::string AutoNotation() {
     if (in & INPUT_UP)    v = +1;
     if (in & INPUT_DOWN)  v = -1;
     const int numpad = 5 + h + 3 * v;   // 1..9
-    std::string s(1, static_cast<char>('0' + numpad));
+    const bool hasButton = (in & (INPUT_A | INPUT_B | INPUT_C | INPUT_D)) != 0;
+    std::string s;
+    // Neutral (5) with a button is written as just the button ("5A" -> "A"); keep the
+    // digit for pure directions and every non-neutral input (2A, 6C, dash, jump...).
+    if (!(numpad == 5 && hasButton)) s.push_back(static_cast<char>('0' + numpad));
     if (in & INPUT_A) s.push_back('A');
     if (in & INPUT_B) s.push_back('B');
     if (in & INPUT_C) s.push_back('C');
@@ -139,6 +267,10 @@ RunnerPhase g_runPhase = RunnerPhase::Idle;
 int  g_runStep = 0;         // steps satisfied so far
 std::atomic<int> g_runFailedStep{-1}; // failed recipe index; survives the retry reset
 int  g_runBaseline = 0;     // combo count at the last satisfied step
+int  g_runDamageBaseline = 0; // combo damage at the current step's baseline
+                              // (per-step delta check against Step::damage)
+int  g_runRetryDelay = 0;   // monitor ticks left before the auto-retry load fires
+                            // (grace so the player can SEE what failed)
 int  g_runAttempts = 0;
 ::Mission::SequencePolicy::DelayedActionWindow g_runGapWindow;
 int  g_runBestTier = -1;
@@ -154,8 +286,8 @@ bool g_runComboWasAlive = false; // combo alive last frame (drop = alive->dead e
 int  g_runPrevComboCount = 0;    // detects sampled N->1 wake-up rollover
 uint8_t g_runPrevInputs = 0;     // sampled attack-button edge for deadline grace
 bool g_runAwaitingComboEnd = false; // current recipe requires an authored combo.end
-int  g_runPrevHitState = 0;      // previous +0x168 (contact edge for Connect steps)
-bool g_runConnectSeen = false;   // armed step made contact (hit or blocked)
+int  g_runPrevHitState = 0;      // previous raw +0x168 (legacy edge heuristic)
+bool g_runConnectSeen = false;   // format-1 Connect heuristic observed an edge
 // Score across explicit combo parts. EFZ's live combo fields reset at recovery,
 // so retain each segment's maxima before consuming combo.end.
 ::Mission::SequencePolicy::SegmentScore g_runScore;
@@ -165,16 +297,32 @@ bool g_runConnectSeen = false;   // armed step made contact (hit or blocked)
 bool g_runSavePending = false;   // a baseline save is owed
 bool g_runStateSaved = false;    // baseline exists -> drops may auto-load
 int  g_runSaveSettle = 0;        // consecutive eligible ticks before saving
+int  g_runSaveRetries = 0;       // failed TriggerSave attempts (controller race)
+int  g_runSaveElapsed = 0;       // all startup ticks, including pre-eligibility stalls
+std::string g_runSaveBlocker;    // latest concrete reason the checkpoint could not settle
+constexpr int kRunSaveDeadlineTicks = 5760; // ~30 seconds at the 192 Hz monitor cadence
 bool g_runSelfLoad = false;      // a TriggerLoad WE issued is in flight (so the
                                  // savestate-load notification can tell a manual
                                  // load from our own auto-retry)
+class ScopedRunnerSelfLoad {
+public:
+    ScopedRunnerSelfLoad() : previous_(g_runSelfLoad) { g_runSelfLoad = true; }
+    ~ScopedRunnerSelfLoad() { g_runSelfLoad = previous_; }
+    ScopedRunnerSelfLoad(const ScopedRunnerSelfLoad&) = delete;
+    ScopedRunnerSelfLoad& operator=(const ScopedRunnerSelfLoad&) = delete;
+private:
+    bool previous_;
+};
 // Embedded start state (Mission.savestate): restore is deferred until the
 // match settles after the mission's hotswap; the restored buffer then doubles
 // as the auto-retry baseline (no separate baseline save needed).
 bool g_runRestorePending = false;
 int  g_runRestoreSettle = 0;
-int  g_runRestoreTimeout = 0;   // stuck-pending safety (falls back to values)
+int  g_runRestoreTimeout = 0;   // stuck-pending safety (exact startup fails closed)
 std::atomic<bool> g_runStartupInputHeld{false};
+bool g_runStartupPollSnapshotValid = false;
+bool g_runStartupPollSavedActive = false;
+uint8_t g_runStartupPollSavedMask = 0;
 
 // Demonstration session. Preparation/restoration is frame-thread-owned; the
 // public frontend only queues a request by changing this phase.
@@ -186,6 +334,9 @@ int  g_demoSettleFrames = 0;
 bool g_demoFinishedThisTick = false;
 std::string g_demoText;
 bool g_demoFromRecorder = false;
+bool g_demoTutorialHandoff = false;
+Demo::RestoreResult g_demoRestoreResult = Demo::RestoreResult::None;
+std::string g_demoRestoreMessage;
 
 std::string MacroRecordBindingLabel() {
     const auto& cfg = Config::GetSettings();
@@ -200,70 +351,116 @@ std::string MacroRecordBindingLabel() {
 }
 
 void RemoveRecorderBanner() {
-    const int id = g_recBannerId.exchange(-1, std::memory_order_acq_rel);
+    int id = -1;
+    {
+        std::lock_guard<std::mutex> lock(g_recBannerMx);
+        g_recBannerInputsValid = false;
+        id = g_recBannerId.exchange(-1, std::memory_order_acq_rel);
+    }
     if (id != -1) DirectDrawHook::RemovePermanentMessage(id);
 }
 
+bool SameRecorderBannerInputs(const RecorderBannerInputs& a,
+                              const RecorderBannerInputs& b) {
+    return a.phase == b.phase &&
+           a.countIn == b.countIn &&
+           a.steps == b.steps &&
+           a.comboEnds == b.comboEnds &&
+           a.displayedSecond == b.displayedSecond &&
+           a.interrupted == b.interrupted &&
+           a.binding == b.binding;
+}
+
+void InvalidateRecorderBannerInputs() {
+    std::lock_guard<std::mutex> lock(g_recBannerMx);
+    g_recBannerInputsValid = false;
+}
+
 void RefreshRecorderBanner() {
-    const RecorderPhase phase = g_recPhase.load(std::memory_order_acquire);
-    if (phase == RecorderPhase::Idle || Demo::IsActive() ||
-        GetCurrentGamePhase() != GamePhase::Match) {
-        RemoveRecorderBanner();
+    RecorderBannerInputs inputs;
+    inputs.phase = g_recPhase.load(std::memory_order_acquire);
+    inputs.countIn = g_recCountInView.load(std::memory_order_acquire);
+    inputs.steps = g_recStepCountView.load(std::memory_order_acquire);
+    inputs.comboEnds = g_recComboEndCountView.load(std::memory_order_acquire);
+    inputs.displayedSecond = inputs.phase == RecorderPhase::Recording
+        ? (std::max)(0, g_recFrame / 192)
+        : -1;
+    inputs.interrupted = inputs.phase == RecorderPhase::Idle || Demo::IsActive() ||
+                         GetCurrentGamePhase() != GamePhase::Match;
+    if (inputs.phase != RecorderPhase::Idle) {
+        inputs.binding = MacroRecordBindingLabel();
+    }
+
+    std::lock_guard<std::mutex> lock(g_recBannerMx);
+    if (g_recBannerInputsValid &&
+        SameRecorderBannerInputs(inputs, g_recBannerInputs)) {
+        return;
+    }
+    g_recBannerInputs = inputs;
+    g_recBannerInputsValid = true;
+
+    if (inputs.interrupted) {
+        const int id = g_recBannerId.exchange(-1, std::memory_order_acq_rel);
+        if (id != -1) DirectDrawHook::RemovePermanentMessage(id);
         return;
     }
 
-    const std::string binding = MacroRecordBindingLabel();
-    const int steps = g_recStepCountView.load(std::memory_order_acquire);
-    const int breaks = g_recComboEndCountView.load(std::memory_order_acquire);
     char text[256];
     COLORREF color = RGB(255, 230, 120);
-    switch (phase) {
+    switch (inputs.phase) {
         case RecorderPhase::PreRecord:
-            _snprintf_s(text, sizeof(text), _TRUNCATE,
-                        "MISSION PRE-RECORD | arrange the start | %s = start countdown",
-                        binding.c_str());
+            if (Config::GetSettings().missionRecorderCountInMs > 0) {
+                _snprintf_s(text, sizeof(text), _TRUNCATE,
+                            "MISSION PRE-RECORD | arrange the start | %s = record after %.1fs",
+                            inputs.binding.c_str(),
+                            static_cast<double>(
+                                Config::GetSettings().missionRecorderCountInMs) /
+                                1000.0);
+            } else {
+                _snprintf_s(text, sizeof(text), _TRUNCATE,
+                            "MISSION PRE-RECORD | arrange the start | %s = record on release",
+                            inputs.binding.c_str());
+            }
             break;
         case RecorderPhase::CountIn: {
-            const int count = g_recCountInView.load(std::memory_order_acquire);
-            _snprintf_s(text, sizeof(text), _TRUNCATE,
-                        "MISSION COUNT-IN %d | release all controls | %s = cancel",
-                        count > 0 ? count : 3,
-                        binding.c_str());
+            if (inputs.countIn > 0) {
+                _snprintf_s(text, sizeof(text), _TRUNCATE,
+                            "MISSION COUNT-IN %.1fs | release controls | %s = cancel",
+                            static_cast<double>(inputs.countIn) / 1000.0,
+                            inputs.binding.c_str());
+            } else {
+                _snprintf_s(text, sizeof(text), _TRUNCATE,
+                            "MISSION READY | locking exact start | %s = cancel",
+                            inputs.binding.c_str());
+            }
             break;
         }
         case RecorderPhase::Recording: {
             color = RGB(255, 100, 100);
-            const int seconds = (std::max)(0, g_recFrame / 192);
             _snprintf_s(text, sizeof(text), _TRUNCATE,
                         "MISSION RECORDING %02d:%02d | %d action%s, %d setup break%s | %s = stop & review",
-                        seconds / 60, seconds % 60, steps, steps == 1 ? "" : "s",
-                        breaks, breaks == 1 ? "" : "s", binding.c_str());
+                        inputs.displayedSecond / 60, inputs.displayedSecond % 60,
+                        inputs.steps, inputs.steps == 1 ? "" : "s",
+                        inputs.comboEnds, inputs.comboEnds == 1 ? "" : "s",
+                        inputs.binding.c_str());
             break;
         }
         case RecorderPhase::Review:
             color = RGB(180, 230, 255);
             _snprintf_s(text, sizeof(text), _TRUNCATE,
                         "MISSION REVIEW | %d action%s, %d setup break%s | open menu to preview, save, retake, or discard",
-                        steps, steps == 1 ? "" : "s", breaks,
-                        breaks == 1 ? "" : "s");
+                        inputs.steps, inputs.steps == 1 ? "" : "s",
+                        inputs.comboEnds, inputs.comboEnds == 1 ? "" : "s");
             break;
         case RecorderPhase::Idle:
         default:
-            RemoveRecorderBanner();
             return;
     }
 
     int id = g_recBannerId.load(std::memory_order_acquire);
     if (id == -1) {
-        const int created = DirectDrawHook::AddPermanentMessage(text, color, 20, 60);
-        int expected = -1;
-        if (!g_recBannerId.compare_exchange_strong(expected, created,
-                                                    std::memory_order_acq_rel)) {
-            DirectDrawHook::RemovePermanentMessage(created);
-            id = expected;
-        } else {
-            id = created;
-        }
+        id = DirectDrawHook::AddPermanentMessage(text, color, 20, 60);
+        g_recBannerId.store(id, std::memory_order_release);
     }
     if (id != -1) DirectDrawHook::UpdatePermanentMessage(id, text, color);
 }
@@ -338,6 +535,51 @@ void SkipRoundIntro(const char* why) {
 
 // Active P1 character ID (drives which movedata/<char>.json is queried).
 int P1Char() { return displayData.p1CharID; }
+int PlayerChar(int playerIndex) {
+    return playerIndex == 2 ? displayData.p2CharID : displayData.p1CharID;
+}
+
+// Live P1 character-state read for step stamping/validation. displayData's
+// copies can be stale while the menu is closed and no locks force character
+// reads, so read the byte directly. Akiko: bullet cycle 0..2 - which 236 item
+// comes out next. It does NOT drive rekka clean hits (those are positional,
+// see ClassifyAkikoCleanHit); it is recorded so item-based routes reproduce.
+// -1 = no trackable state.
+int ReadP1CharStateLive() {
+    if (P1Char() != CHAR_ID_AKIKO) return -1;
+    const uintptr_t base = GetEFZBase();
+    if (!base) return -1;
+    const uintptr_t addr = ResolvePointer(base, EFZ_BASE_OFFSET_P1,
+                                          AKIKO_BULLET_CYCLE_OFFSET);
+    int v = -1;
+    if (!addr || !SafeReadMemory(addr, &v, sizeof(v))) return -1;
+    return (std::min)(2, (std::max)(0, v));
+}
+
+// Akiko clean hits are POSITIONAL and roll ONLY on the LAST hit of 623
+// (moves 259 A/B, 254 C): the Y-delta attacker-minus-defender at the hit
+// decides the variant. Thresholds mirror the live SHOW CLEAN HIT helper in
+// frame_monitor.cpp: C full (47,53), C partial (40,60); A/B clean (32,48).
+// Returns a notation suffix ("" = no clean hit / not a finisher).
+bool IsAkikoRekkaFinisher(short move) {
+    return move == AKIKO_MOVE_623_LAST_C || move == AKIKO_MOVE_623_LAST_AB;
+}
+const char* ClassifyAkikoCleanHit(short move) {
+    if (P1Char() != CHAR_ID_AKIKO || !IsAkikoRekkaFinisher(move)) return "";
+    const uintptr_t p1 = GetPlayerBase(1);
+    const uintptr_t p2 = GetPlayerBase(2);
+    if (!p1 || !p2) return "";
+    double y1 = 0.0, y2 = 0.0;
+    if (!SafeReadMemory(p1 + YPOS_OFFSET, &y1, sizeof(y1)) ||
+        !SafeReadMemory(p2 + YPOS_OFFSET, &y2, sizeof(y2))) return "";
+    const double diff = y1 - y2;
+    if (move == AKIKO_MOVE_623_LAST_C) {
+        if (diff > 47.0 && diff < 53.0) return " (clean hit)";
+        if (diff > 40.0 && diff < 60.0) return " (partial clean)";
+        return "";
+    }
+    return (diff > 32.0 && diff < 48.0) ? " (clean hit)" : "";
+}
 
 // One-line classification of a move-ID for the inspector.
 const char* ClassifyMove(short m) {
@@ -401,7 +643,12 @@ std::string CaptureNotation(short moveId) {
 
 int LastRecordedLandedStep() {
     for (int i = static_cast<int>(g_recSteps.size()) - 1; i >= 0; --i) {
-        if (g_recSteps[i].landed) return i;
+        // A combo boundary (comboEndAfter) must never attach to an OPTIONAL step -
+        // BuildDraft validation rejects that ("comboEndAfter cannot be attached to
+        // optional step"). Skip any optional authoring decoration so the boundary
+        // lands on the previous required hit. Raw entity observations never enter
+        // this list; they live only in the authoring sidecar.
+        if (g_recSteps[i].landed && !g_recSteps[i].optional) return i;
     }
     return -1;
 }
@@ -422,10 +669,211 @@ bool CommitPendingRecordedComboEnd(const char* reason) {
     return true;
 }
 
+const char* RecEntityTraceKindName(RecEntityTraceKind kind) {
+    switch (kind) {
+        case RecEntityTraceKind::Baseline: return "baseline";
+        case RecEntityTraceKind::Spawn:    return "spawn";
+        case RecEntityTraceKind::Morph:    return "morph";
+        case RecEntityTraceKind::Despawn:  return "despawn";
+        case RecEntityTraceKind::Contact:  return "contact";
+        default:                           return "unknown";
+    }
+}
+
+int RecorderAfterStep() {
+    return g_recSteps.empty() ? -1 : static_cast<int>(g_recSteps.size()) - 1;
+}
+
+void FillRecEntityMetadata(RecEntityTraceEvent& event, int metadataPattern) {
+    if (metadataPattern < 0) return;
+    event.entityClass = ::Mission::MoveData::GetClass(
+        event.characterId, metadataPattern);
+    event.attack = ::Mission::MoveData::IsAttack(
+        event.characterId, metadataPattern);
+}
+
+void AppendRecEntityTrace(const RecEntityTraceEvent& event) {
+    if (g_recEntityTraceCount < g_recEntityTrace.size()) {
+        g_recEntityTrace[g_recEntityTraceCount++] = event;
+        return;
+    }
+    if (g_recEntityTraceDropped++ == 0) {
+        LogOut("[MISSION][REC][ENTITY] authoring trace capacity reached; "
+               "later raw events will be counted but not stored", true);
+    }
+}
+
+// Sample both complete player rings once. These are endpoint observations, so a slot
+// transition says only what changed between samples. It does not establish
+// producer lineage, cross-slot order, or contact and can never alter format-1
+// steps. Unknown/cosmetic patterns are retained verbatim for every character.
+void RecorderCaptureEntityRing() {
+    for (int playerIndex = 1; playerIndex <= 2; ++playerIndex) {
+        const std::size_t playerSlot = static_cast<std::size_t>(playerIndex - 1);
+        std::array<CollisionDisplay::ProjectileRingSlotProbe,
+                   CollisionDisplay::kProjectileRingSlotCapacity> current{};
+        if (!CollisionDisplay::ProbeProjectileRing(
+                playerIndex, current.data(), current.size())) {
+            if (!g_recEntityProbeUnavailableLogged[playerSlot]) {
+                g_recEntityProbeUnavailableLogged[playerSlot] = true;
+                LogOut("[MISSION][REC][ENTITY] P" + std::to_string(playerIndex) +
+                       " ring sample unavailable; prior slot state retained "
+                       "(no despawn inferred)", true);
+            }
+            continue;
+        }
+        if (g_recEntityProbeUnavailableLogged[playerSlot]) {
+            g_recEntityProbeUnavailableLogged[playerSlot] = false;
+            LogOut("[MISSION][REC][ENTITY] P" + std::to_string(playerIndex) +
+                   " ring sampling recovered", true);
+        }
+
+        const int charId = PlayerChar(playerIndex);
+        (void)::Mission::MoveData::EnsureLoaded(charId);
+        for (std::size_t slot = 0; slot < current.size(); ++slot) {
+            const auto& now = current[slot];
+            RecEntitySlotState& prior = g_recEntitySlots[playerSlot][slot];
+            if (!now.readable) continue;
+
+            const auto transition =
+                ::Mission::RecorderEntityTrace::ClassifySampledSlotTransition(
+                    prior.established, prior.alive, prior.pattern,
+                    now.alive, now.pattern);
+            if (transition != ::Mission::RecorderEntityTrace::
+                                  SampledSlotTransition::None) {
+                RecEntityTraceEvent event;
+                event.effectiveFrame = g_recFrame;
+                event.player = playerIndex;
+                event.characterId = charId;
+                event.afterStep = RecorderAfterStep();
+                event.slot = static_cast<int>(slot);
+                event.sampled = true;
+
+                int metadataPattern = -1;
+                switch (transition) {
+                case ::Mission::RecorderEntityTrace::
+                         SampledSlotTransition::Baseline:
+                    event.kind = RecEntityTraceKind::Baseline;
+                    event.pattern = now.pattern;
+                    metadataPattern = now.pattern;
+                    break;
+                case ::Mission::RecorderEntityTrace::
+                         SampledSlotTransition::Spawn:
+                    event.kind = RecEntityTraceKind::Spawn;
+                    event.pattern = now.pattern;
+                    metadataPattern = now.pattern;
+                    break;
+                case ::Mission::RecorderEntityTrace::
+                         SampledSlotTransition::Morph:
+                    event.kind = RecEntityTraceKind::Morph;
+                    event.pattern = now.pattern;
+                    event.priorPattern = prior.pattern;
+                    metadataPattern = now.pattern;
+                    break;
+                case ::Mission::RecorderEntityTrace::
+                         SampledSlotTransition::Despawn:
+                    event.kind = RecEntityTraceKind::Despawn;
+                    event.pattern = -1;
+                    event.priorPattern = prior.pattern;
+                    // No current entity entry exists. Preserve the final live
+                    // sample explicitly; the JSON labels this basis.
+                    event.entityFrame = prior.frame;
+                    event.life = prior.life;
+                    event.destroyed = prior.destroyed;
+                    metadataPattern = prior.pattern;
+                    break;
+                    default:
+                        break;
+                }
+                if (now.alive && event.kind != RecEntityTraceKind::Despawn) {
+                    event.entityFrame = now.frame;
+                    event.life = now.life;
+                    event.destroyed = now.destroyed;
+                }
+                FillRecEntityMetadata(event, metadataPattern);
+                AppendRecEntityTrace(event);
+
+                LogOut("[MISSION][REC][ENTITY] sampled P" +
+                       std::to_string(playerIndex) + " " +
+                       std::string(RecEntityTraceKindName(event.kind)) +
+                       " slot=" + std::to_string(event.slot) +
+                       " pattern=" + std::to_string(event.pattern) +
+                       " prior=" + std::to_string(event.priorPattern) +
+                       " afterStep=" + std::to_string(event.afterStep), true);
+            }
+
+            prior.established = true;
+            prior.alive = now.alive;
+            if (now.alive) {
+                prior.pattern = now.pattern;
+                prior.frame = now.frame;
+                prior.life = now.life;
+                prior.destroyed = now.destroyed;
+            } else {
+                prior.pattern = 0;
+                prior.frame = 0;
+                prior.life = 0;
+                prior.destroyed = 0;
+            }
+        }
+    }
+}
+
+// Preserve hook-backed entity->opponent contacts from either owner beside the
+// unordered two-player ring observations.
+// observations. The collision journal supplies an exact resolver transaction,
+// but this development sidecar still does not compile it into a recipe node or
+// assert producer lineage.
+void RecorderCaptureEntityContacts(const Snapshot& s) {
+    g_recEntityContactHookObserved =
+        g_recEntityContactHookObserved || s.entityContactHookReady;
+    g_recContactJournalOverflowObserved =
+        g_recContactJournalOverflowObserved || s.contactEventOverflow;
+
+    for (std::size_t i = 0; i < s.contactEventCount; ++i) {
+        const auto& contact = s.contactEvents[i];
+        if (contact.source != ::Mission::Contact::Source::Entity ||
+            (contact.attacker != 1 && contact.attacker != 2)) {
+            continue;
+        }
+        // The event itself proves that the hook produced a committed journal
+        // record even if the readiness flag changed before this monitor read.
+        g_recEntityContactHookObserved = true;
+
+        RecEntityTraceEvent event;
+        event.kind = RecEntityTraceKind::Contact;
+        event.effectiveFrame = g_recFrame;
+        event.player = contact.attacker;
+        const int charId = PlayerChar(contact.attacker);
+        (void)::Mission::MoveData::EnsureLoaded(charId);
+        event.characterId = charId;
+        event.afterStep = RecorderAfterStep();
+        event.slot = contact.entitySlot;
+        event.pattern = contact.entityPattern;
+        event.entityFrame = contact.attackerFrame;
+        event.life = contact.timerAfter;
+        event.destroyed = static_cast<uint32_t>(contact.rawStateAfter);
+        event.sampled = false;
+        event.contactSequence = contact.sequence;
+        event.contactBatch = contact.batchId;
+        event.defender = contact.defender;
+        event.contactResult = contact.result;
+        event.lifeBefore = contact.timerBefore;
+        event.destroyedBefore = contact.rawStateBefore;
+        event.comboBefore = contact.comboBefore;
+        event.comboAfter = contact.comboAfter;
+        event.hpBefore = contact.defenderHpBefore;
+        event.hpAfter = contact.defenderHpAfter;
+        FillRecEntityMetadata(event, event.pattern);
+        AppendRecEntityTrace(event);
+    }
+}
+
 void RecorderCapture(const Snapshot& s, bool advanceLogicalTick) {
     const short cur = s.p1Move;
-    // Observe moves/contact on every 192 Hz monitor pass so short-lived move IDs
-    // and +0x168 contact pulses cannot fall between macro samples.  Only advance
+    // Observe moves and the legacy raw latch on every 192 Hz monitor pass so
+    // short-lived move IDs and +0x168 pulses cannot fall between macro samples.
+    // Only advance
     // timing on the macro stream's authoritative 64 Hz tick; one such tick is
     // three EFZ internal ticks, which is also the unit used by mission maxGap /
     // maxDelay and the runner's timers.
@@ -438,6 +886,19 @@ void RecorderCapture(const Snapshot& s, bool advanceLogicalTick) {
     else if (advanceTime && g_recRecentTokenAge < 999) {
         g_recRecentTokenAge = (std::min)(999, g_recRecentTokenAge + 3);
     }
+    // Fresh-input evidence used by the same-move re-entry gate below. Attack
+    // edges come from EFZ's own input poll; the token contributes only on its
+    // 99 -> value EDGE because it can hold the value for the move's duration
+    // (the five spurious j.IC steps were all stamped with the lingering 52).
+    if (s.p1PolledAttackEdges != 0) g_recAttackEdgeAge = 0;
+    else if (advanceTime && g_recAttackEdgeAge < 999) {
+        g_recAttackEdgeAge = (std::min)(999, g_recAttackEdgeAge + 3);
+    }
+    if (s.p1Token != 99 && g_recPrevTokenSample == 99) g_recTokenEdgeAge = 0;
+    else if (advanceTime && g_recTokenEdgeAge < 999) {
+        g_recTokenEdgeAge = (std::min)(999, g_recTokenEdgeAge + 3);
+    }
+    g_recPrevTokenSample = s.p1Token;
     // Capture attacks AND known combo-relevant moves the attack classifier misses
     // (IC / air IC via the table). Movement (jump/dash) counts only mid-combo, so
     // neutral hops/dashes aren't recorded as steps.
@@ -455,8 +916,9 @@ void RecorderCapture(const Snapshot& s, bool advanceLogicalTick) {
         g_recComboWasAlive, comboActive, g_recPrevCombo, s.p1Combo);
     const bool comboEndedEdge = comboBoundary !=
         ::Mission::SequencePolicy::SampledComboBoundary::None;
-    // CONTACT edge (+0x168 leaves 0): the current capture-move touched the
-    // opponent - hit OR blocked. A deliberate whiff never produces this.
+    // Legacy format-1 connect heuristic: associate a raw +0x168 0->nonzero edge
+    // with the current capture move. This is retained for file compatibility;
+    // scripts/entities can produce false positives and it is not typed contact.
     const bool contactEdge = (g_recPrevHitState == 0) && (s.p1HitState != 0);
     g_recPrevHitState = s.p1HitState;
     if (contactEdge && !g_recSteps.empty() && cur == g_recLastAttackId) {
@@ -483,6 +945,7 @@ void RecorderCapture(const Snapshot& s, bool advanceLogicalTick) {
                     ::Mission::SequencePolicy::RecordedActionBaselineAfterBoundary(
                         g_recComboAtStart, activeStep, lastLanded, active.landed);
                 if (g_recComboAtStart != oldBaseline) {
+                    g_recDamageAtStart = 0;   // new combo counts damage from zero
                     LogOut("[MISSION][REC] rebased pre-started Part-2 action after "
                            "sampled combo boundary", true);
                 }
@@ -500,10 +963,57 @@ void RecorderCapture(const Snapshot& s, bool advanceLogicalTick) {
         // without an intervening neutral ID (5A -> 5A). EFZ resets +0xA to the
         // start of the animation for the new instance, matching Runner's edge
         // detector and preserving both authored steps.
+        //
+        // The frame-rewind edge alone is still not enough for the recorder.
+        // Some move scripts RE-EXECUTE themselves while held in place (air IC
+        // float, air dash, a whiffed air normal's falling tail): each restart
+        // rewinds the frame index AND re-writes the command token, and mashing
+        // a button supplies "fresh input" for restarts that produce nothing.
+        // The reliable rule is semantic: a same-move re-entry is only a new
+        // authored step if the PREVIOUS instance actually did something
+        // (landed or made contact). A contactless instance re-entering itself
+        // collapses into the existing step - whiff-mash then hit records as
+        // one step that must land, and true chains (5A hit -> 5A) keep both
+        // steps. Double projectile casts are unaffected: they pass through
+        // recovery/neutral between casts and arrive via the ID-change path.
+        constexpr int kReentryInputWindowTicks = 12;   // ~4 visual frames
+        const bool freshInput =
+            g_recAttackEdgeAge <= kReentryInputWindowTicks ||
+            g_recTokenEdgeAge <= kReentryInputWindowTicks;
+        const bool priorInstanceDidSomething = !g_recSteps.empty() &&
+            g_recSteps.back().moveId == cur &&
+            (g_recSteps.back().landed || g_recSteps.back().connected);
         const bool sameMoveReentered = cur == g_recLastAttackId &&
-            cur == g_recPrevMove && ::Mission::SequencePolicy::IsMoveInstanceEdge(
+            cur == g_recPrevMove && priorInstanceDidSomething && freshInput &&
+            ::Mission::SequencePolicy::IsMoveInstanceEdge(
                 cur, s.p1FrameIdx, g_recPrevMove, g_recPrevFrameIdx);
-        if (cur != g_recLastAttackId || sameMoveReentered) {
+        const bool akikoVacuumHitTransition =
+            P1Char() == CHAR_ID_AKIKO && !g_recSteps.empty() &&
+            g_recSteps.back().moveId == g_recPrevMove &&
+            ::Mission::SequencePolicy::IsAkikoVacuumHitTransition(g_recPrevMove, cur);
+        const bool rumiThrowSuccessTransition =
+            P1Char() == CHAR_ID_NANASE && !g_recSteps.empty() &&
+            g_recSteps.back().moveId == g_recPrevMove &&
+            ::Mission::SequencePolicy::IsRumiCommandThrowSuccessTransition(
+                g_recPrevMove, cur);
+        const bool automaticPhaseTransition =
+            akikoVacuumHitTransition || rumiThrowSuccessTransition;
+        if (automaticPhaseTransition) {
+            // Keep the authored input step armed so the following hit/contact
+            // is credited to it. The automatic phase becomes an accepted
+            // playback alias instead of a fake second player input.
+            g_recSteps.back().automaticFollowupId = cur;
+            g_recLastAttackId = cur;
+            if (contactEdge) g_recSteps.back().connected = true;
+            LogOut(std::string("[MISSION][REC] ") +
+                   (akikoVacuumHitTransition ? "Akiko 41236 hit" :
+                                               "Rumi 41236 success") +
+                   " automatic phase " +
+                   std::to_string(g_recPrevMove) + "->" + std::to_string(cur) +
+                   " merged into one step", true);
+        }
+        if (!automaticPhaseTransition &&
+            (cur != g_recLastAttackId || sameMoveReentered)) {
             int gapAnchor = g_recLastEventFrame;
             if (g_recPendingComboEndStep >= 0 &&
                 g_recPendingComboEndStep < static_cast<int>(g_recSteps.size())) {
@@ -514,7 +1024,27 @@ void RecorderCapture(const Snapshot& s, bool advanceLogicalTick) {
             cs.moveId = cur;
             cs.landed = false;
             cs.notation = CaptureNotation(cur);
+            // Akiko C-rekka chain (start 257, followups 258, finisher 254):
+            // she crosses behind the opponent on reps, so the PHYSICAL input
+            // alternates - the full chain is 623C 623C 421C 623C 421C 623C.
+            // The generated table's per-move names ("623C rekka2") cannot
+            // express that, so track the rep index and name reps by parity.
+            if (P1Char() == CHAR_ID_AKIKO) {
+                if (cur == 257) {
+                    g_recAkikoRekkaRep = 1;
+                    cs.notation = "623C";
+                } else if ((cur == 258 || cur == 254) && g_recAkikoRekkaRep > 0) {
+                    ++g_recAkikoRekkaRep;
+                    cs.notation = (g_recAkikoRekkaRep % 2 == 0) ? "623C" : "421C";
+                } else {
+                    g_recAkikoRekkaRep = 0;
+                }
+            }
             cs.req = static_cast<int>(::Mission::StepReq::Move); // upgraded to Land once it connects
+            // Character-state stamp (Akiko: 236-item bullet cycle) - kept for
+            // item-route determinism only. Clean hits are positional and are
+            // classified at the finisher's LANDING hit, not here.
+            cs.charState = ReadP1CharStateLive();
             // Stamp the command index that produced this move (facing-independent),
             // if one was recognized within the last few frames. Confirms specials.
             cs.cmdToken = (g_recRecentTokenAge <= 4) ? g_recRecentToken : 99;
@@ -527,6 +1057,7 @@ void RecorderCapture(const Snapshot& s, bool advanceLogicalTick) {
             g_recStepCountView.store(static_cast<int>(g_recSteps.size()), std::memory_order_release);
             g_recLastAttackId = cur;
             g_recComboAtStart = s.p1Combo;
+            g_recDamageAtStart = s.p1ComboDamage;
             // Persistent moveID<->command pairing for building the per-char table.
             LogOut("[MISSION][REC] step move=" + std::to_string(cur) +
                    " cmd=" + std::to_string(cs.cmdToken) +
@@ -541,7 +1072,19 @@ void RecorderCapture(const Snapshot& s, bool advanceLogicalTick) {
             const int hits = s.p1Combo - g_recComboAtStart;
             const bool newHit = hits > st.hits;
             if (newHit) {
+                // Akiko rekka finisher: classify the positional clean-hit
+                // variant at the LANDING hit (that is when the roll happens)
+                // and record it in the notation. The per-step damage check
+                // enforces reproduction; this makes the requirement readable.
+                if (hits == 1 && st.hits == 0 && IsAkikoRekkaFinisher(st.moveId)) {
+                    const char* tag = ClassifyAkikoCleanHit(st.moveId);
+                    if (*tag && st.notation.find("clean") == std::string::npos) {
+                        st.notation += tag;
+                        LogOut(std::string("[MISSION][REC] finisher variant:") + tag, true);
+                    }
+                }
                 st.hits = hits;
+                st.damage = (std::max)(0, s.p1ComboDamage - g_recDamageAtStart);
                 // If this action began during knockdown and first hit only after
                 // recovery, the hit itself proves there is a later segment.
                 const int currentIndex = static_cast<int>(g_recSteps.size()) - 1;
@@ -593,6 +1136,12 @@ void RecorderCapture(const Snapshot& s, bool advanceLogicalTick) {
     g_recComboWasAlive = comboActive;
     g_recPrevMove = s.p1Move;
     g_recPrevFrameIdx = s.p1FrameIdx;
+    // Ring lifecycle is sampled once per authoritative, unfrozen recorder tick.
+    // Hook-backed contact records are drained on every monitor pass so a short
+    // resolver event between macro ticks is not lost. Neither path mutates the
+    // linear format-1 recipe.
+    if (advanceTime) RecorderCaptureEntityRing();
+    RecorderCaptureEntityContacts(s);
 }
 
 // A NEW instance of a step's move this frame: the move-ID changed onto a match,
@@ -662,6 +1211,7 @@ void RunnerDrop() {
     g_runPhase = RunnerPhase::Dropped;
     g_runStep = 0;
     g_runBaseline = 0;
+    g_runDamageBaseline = 0;
     g_runGapWindow.Reset();
     g_runComboWasAlive = false;
     g_runPrevComboCount = 0;
@@ -670,17 +1220,30 @@ void RunnerDrop() {
     ResetRunScore();
     LogOut("[MISSION][RUN] DROP step=" + std::to_string(failedStep) +
            " attempts=" + std::to_string(g_runAttempts), true);
-    // TrialMode-style retry: snap back to the mission's start state. Never while
-    // a hotswap/setup is still driving the match, and never under the recorder
-    // (a rollback mid-capture corrupts the recording; recording also unloads the
-    // runner, so this is defense in depth).
+    // TrialMode-style retry: snap back to the mission's start state - but only
+    // after a short grace so the player can SEE what failed (the drop reason
+    // message and the red recipe step) instead of being yanked back instantly.
+    g_runRetryDelay = 96;   // ~0.5s at the monitor's 192Hz cadence
+}
+
+// Deferred auto-retry (armed by RunnerDrop). Never while a hotswap/setup is
+// still driving the match, and never under the recorder (a rollback
+// mid-capture corrupts the recording; recording also unloads the runner, so
+// this is defense in depth). A manual load during the grace clears the phase,
+// which cancels the pending fire.
+void TickAutoRetry() {
+    if (::Mission::TutorialSession::IsActive()) { g_runRetryDelay = 0; return; }
+    if (g_runRetryDelay <= 0 || g_runPhase != RunnerPhase::Dropped) {
+        if (g_runPhase != RunnerPhase::Dropped) g_runRetryDelay = 0;
+        return;
+    }
+    if (--g_runRetryDelay > 0) return;
     if (g_runStateSaved && SavestateHook::IsInstalled() &&
         !g_recActive.load() &&
         GetCurrentGamePhase() == GamePhase::Match &&
         !CharacterHotswap::IsBusy() && !::Mission::Setup::IsPending()) {
-        g_runSelfLoad = true;
+        ScopedRunnerSelfLoad selfLoad;
         const bool ok = SavestateHook::TriggerLoad();
-        g_runSelfLoad = false;
         if (ok) {
             LogOut("[MISSION][RUN] auto-loaded baseline savestate for retry", true);
             // The baseline is save-gated to the active round, but stay safe
@@ -714,6 +1277,37 @@ bool IsComboStepMove(short m) {
     return ::Mission::Moves::IsKnownComboMove(m) && !::Mission::Moves::IsMovementMove(m);
 }
 
+// Per-step damage validation at satisfaction time. Hit-variant mechanics
+// (Mizuka clean hits, Akiko rekka crits) keep the move ID but change the
+// step's damage by thousands, so the rest of the recorded combo can't
+// reproduce; ordinary variance stays inside the policy tolerance (500).
+// Returns false after dropping the run with the real reason.
+bool StepDamageAcceptable(const ::Mission::Step& st, const Snapshot& s, int stepIdx) {
+    const int observed = s.p1ComboDamage - g_runDamageBaseline;
+    if (!::Mission::SequencePolicy::StepDamageDiverged(st.damage, observed)) {
+        return true;
+    }
+    // Akiko's 623 finisher variant is positional (Y-delta at the last hit) -
+    // name the real cause instead of a generic strength complaint.
+    const bool cleanHitStep = !st.moveIds.empty() &&
+        IsAkikoRekkaFinisher(static_cast<short>(st.moveIds.front())) &&
+        P1Char() == CHAR_ID_AKIKO;
+    char msg[128];
+    if (cleanHitStep) {
+        _snprintf_s(msg, sizeof(msg), _TRUNCATE,
+                    "Clean-hit spacing was off: +%d damage (recorded +%d)",
+                    observed, st.damage);
+    } else {
+        _snprintf_s(msg, sizeof(msg), _TRUNCATE,
+                    "Wrong hit strength: +%d damage (recorded +%d)", observed, st.damage);
+    }
+    DirectDrawHook::AddMessage(msg, "mission_run", RGB(255, 160, 160), 1800, 20, 96);
+    LogOut(std::string("[MISSION][RUN] ") + msg + " at step " +
+           std::to_string(stepIdx), true);
+    RunnerDrop();
+    return false;
+}
+
 // Advance bookkeeping when the current step is satisfied.
 void AdvanceStep(const Snapshot& s, int total) {
     ObserveRunScore(s);
@@ -721,6 +1315,7 @@ void AdvanceStep(const Snapshot& s, int total) {
         g_runMission.steps[g_runStep].comboEndAfter;
     g_runStep++;
     g_runBaseline = s.p1Combo;
+    g_runDamageBaseline = s.p1ComboDamage;
     g_runGapWindow.Reset();
     g_runArmed = false;
     g_runArmedFrames = 0;
@@ -746,6 +1341,7 @@ void AdvanceStep(const Snapshot& s, int total) {
         g_runArmedFrames = 0;
         g_runConnectSeen = false;
         g_runBaseline = s.p1Combo;
+        g_runDamageBaseline = s.p1ComboDamage;
     }
 }
 
@@ -753,8 +1349,10 @@ void TickRun(const Snapshot& s) {
     const int total = static_cast<int>(g_runMission.steps.size());
     if (total == 0) { g_runPrevMove = s.p1Move; g_runPrevFrameIdx = s.p1FrameIdx; return; }
 
-    // Contact edge (+0x168 leaves 0) while armed: the step's move touched the
-    // opponent (hit or blocked) - satisfies StepReq::Connect.
+    TickAutoRetry();   // deferred post-drop baseline load (grace elapsed)
+
+    // Legacy format-1 Connect heuristic: a raw +0x168 0->nonzero edge while
+    // armed satisfies StepReq::Connect. Do not reuse this for typed predicates.
     const bool contactEdge = (g_runPrevHitState == 0) && (s.p1HitState != 0);
     g_runPrevHitState = s.p1HitState;
     if (contactEdge && g_runArmed) g_runConnectSeen = true;
@@ -769,6 +1367,7 @@ void TickRun(const Snapshot& s) {
             g_runArmedFrames = 0;
             g_runConnectSeen = false;
             g_runBaseline = (s.p1Combo > 0) ? s.p1Combo : 0;
+            g_runDamageBaseline = (s.p1Combo > 0) ? s.p1ComboDamage : 0;
             g_runPhase = RunnerPhase::Idle;   // clear a shown DROPPED once they retry
         }
         if (g_runArmed) {
@@ -776,12 +1375,16 @@ void TickRun(const Snapshot& s) {
             if (st.maxDelay > 0 && g_runArmedFrames > st.maxDelay) {
                 g_runArmed = false;           // window expired; wait for a fresh attempt
             } else if (ArmedStepSatisfied(st, s)) {
-                // This is the retry boundary: the opener actually connected/met
-                // its requirement, so the old failure marker can finally clear.
-                g_runFailedStep.store(-1);
-                g_runPhase = RunnerPhase::InProgress;
-                g_runStep = 0;
-                AdvanceStep(s, total);
+                if (StepDamageAcceptable(st, s, 0)) {
+                    // This is the retry boundary: the opener actually connected/met
+                    // its requirement, so the old failure marker can finally clear.
+                    g_runFailedStep.store(-1);
+                    g_runPhase = RunnerPhase::InProgress;
+                    g_runStep = 0;
+                    AdvanceStep(s, total);
+                } else {
+                    g_runArmed = false;
+                }
             }
         }
     } else if (g_runPhase == RunnerPhase::InProgress) {
@@ -818,6 +1421,7 @@ void TickRun(const Snapshot& s) {
                 g_runAwaitingComboEnd = false;
                 consumedRequiredBoundary = true;
                 g_runBaseline = 0;
+                g_runDamageBaseline = 0;
                 g_runGapWindow.Reset();
                 LogOut("[MISSION][RUN] consumed required combo.end; nextStep=" +
                        std::to_string(g_runStep) +
@@ -870,15 +1474,39 @@ void TickRun(const Snapshot& s) {
             if (g_runPhase == RunnerPhase::InProgress && g_runStep < total) {
                 const ::Mission::Step& st = g_runMission.steps[g_runStep];
                 if (!g_runArmed && StepArmEdge(st, s)) {
-                    actionStartedThisTick = true;
-                    g_runArmed = true;
-                    g_runArmedFrames = 0;
-                    g_runConnectSeen = false;
-                    g_runGapWindow.Reset();       // performing the move is progress
-                    // Residual hits from the previous move must not count toward
-                    // this step; a consumed combo.end already rebased this to zero.
-                    g_runBaseline = ::Mission::SequencePolicy::RunnerArmBaseline(
-                        s.p1Combo, consumedRequiredBoundary);
+                    // Character-state requirement (Akiko: 236-item bullet
+                    // cycle). A diverged cycle means a different item comes
+                    // out and an item-based route stops reproducing, so fail
+                    // HERE with the real reason instead of a later timeout.
+                    // Clean hits are NOT this - they are positional and are
+                    // enforced by the per-step damage check at satisfaction.
+                    // Unreadable live state (different character, resolve
+                    // failure) skips the check.
+                    const int liveState = st.charState >= 0 ? ReadP1CharStateLive() : -1;
+                    if (st.charState >= 0 && liveState >= 0 && liveState != st.charState) {
+                        char msg[96];
+                        _snprintf_s(msg, sizeof(msg), _TRUNCATE,
+                                    "Wrong item cycle: %d, recorded %d",
+                                    liveState, st.charState);
+                        DirectDrawHook::AddMessage(msg, "mission_run",
+                                                   RGB(255, 160, 160), 1800, 20, 96);
+                        LogOut(std::string("[MISSION][RUN] ") + msg +
+                               " at step " + std::to_string(g_runStep), true);
+                        RunnerDrop();
+                        g_runArmed = false;
+                    } else {
+                        actionStartedThisTick = true;
+                        g_runArmed = true;
+                        g_runArmedFrames = 0;
+                        g_runConnectSeen = false;
+                        g_runGapWindow.Reset();   // performing the move is progress
+                        // Residual hits from the previous move must not count toward
+                        // this step; a consumed combo.end already rebased this to zero.
+                        g_runBaseline = ::Mission::SequencePolicy::RunnerArmBaseline(
+                            s.p1Combo, consumedRequiredBoundary);
+                        g_runDamageBaseline =
+                            consumedRequiredBoundary ? 0 : s.p1ComboDamage;
+                    }
                 }
                 if (g_runArmed) {
                     if (!s.freezeActive) ++g_runArmedFrames;
@@ -901,7 +1529,11 @@ void TickRun(const Snapshot& s) {
                             RunnerDrop();
                         } else if (satisfaction == ::Mission::SequencePolicy::
                                                        StepSatisfactionDecision::Advance) {
-                            AdvanceStep(s, total);
+                            if (StepDamageAcceptable(st, s, g_runStep)) {
+                                AdvanceStep(s, total);
+                            } else {
+                                g_runArmed = false;
+                            }
                         }
                     }
                 }
@@ -959,6 +1591,7 @@ void ResetRecorderCaptureState() {
     g_recComboEndCountView.store(0, std::memory_order_release);
     g_recLastAttackId = 0;
     g_recComboAtStart = 0;
+    g_recDamageAtStart = 0;
     g_recRecentToken = 99;
     g_recRecentTokenAge = 999;
     g_recFrame = 0;
@@ -971,7 +1604,21 @@ void ResetRecorderCaptureState() {
     g_recPrevHitState = 0;
     g_recPrevMove = 0;
     g_recPrevFrameIdx = 0;
+    g_recAttackEdgeAge = 999;
+    g_recTokenEdgeAge = 999;
+    g_recPrevTokenSample = 99;
+    g_recAkikoRekkaRep = 0;
+    for (auto& playerSlots : g_recEntitySlots) {
+        playerSlots.fill(RecEntitySlotState{});
+    }
+    g_recEntityTrace.fill(RecEntityTraceEvent{});
+    g_recEntityTraceCount = 0;
+    g_recEntityTraceDropped = 0;
+    g_recEntityContactHookObserved = false;
+    g_recContactJournalOverflowObserved = false;
+    g_recEntityProbeUnavailableLogged.fill(false);
     g_recCountInView.store(0, std::memory_order_release);
+    InvalidateRecorderBannerInputs();
 }
 
 void ShowRecorderState(const char* text, COLORREF color, int duration = 900) {
@@ -984,6 +1631,8 @@ void EnterRecorderPreRecord(bool keepSetup) {
     g_recActive.store(false, std::memory_order_release);
     g_recReleaseFrames = 0;
     g_recCountInFrames = 0;
+    g_recCountInTargetTicks = 0;
+    g_recCountInElapsed = false;
     g_recCountInView.store(0, std::memory_order_release);
     if (!keepSetup) {
         ResetRecorderCaptureState();
@@ -993,33 +1642,36 @@ void EnterRecorderPreRecord(bool keepSetup) {
     LogOut("[MISSION][REC] entered pre-record", true);
 }
 
-void CaptureRecorderBaseline() {
+bool CaptureRecorderBaseline(std::string& outError) {
+    outError.clear();
     ResetRecorderCaptureState();
     g_recSetup = ::Mission::Mission();
     ::Mission::Setup::Capture(g_recSetup);
-    if (GetCurrentGamePhase() == GamePhase::Match && ::Mission::StateDump::Available()) {
-        std::string sdErr;
-        if (::Mission::StateDump::Capture(g_recSetup.savestate, sdErr)) {
-            LogOut("[MISSION][REC] start-state dump attached (" +
-                   std::to_string(g_recSetup.savestate.size()) + " chars b64)", true);
-        } else {
-            LogOut("[MISSION][REC] start-state dump skipped: " + sdErr, true);
-        }
+    if (GetCurrentGamePhase() != GamePhase::Match) {
+        outError = "recording baseline requires an active match";
+        return false;
     }
+    if (!::Mission::StateDump::Available()) {
+        outError = "exact savestate capture is unavailable";
+        return false;
+    }
+    if (!::Mission::StateDump::Capture(g_recSetup.savestate, outError)) {
+        g_recSetup.savestate.clear();
+        return false;
+    }
+    LogOut("[MISSION][REC] frame-zero start-state dump attached (" +
+           std::to_string(g_recSetup.savestate.size()) + " chars b64)", true);
+    return true;
 }
 
 bool RestoreRecorderBaseline() {
-    bool restored = false;
-    if (!g_recSetup.savestate.empty() && ::Mission::StateDump::Available()) {
-        std::string err;
-        restored = ::Mission::StateDump::Restore(g_recSetup.savestate, err);
-        if (!restored) LogOut("[MISSION][REC] retake state restore failed: " + err, true);
+    if (g_recSetup.savestate.empty() || !::Mission::StateDump::Available()) {
+        LogOut("[MISSION][REC] exact baseline restore unavailable", true);
+        return false;
     }
-    if (!restored && !::Mission::Setup::Apply(
-            g_recSetup, /*applyValues=*/true, /*forceFreshMatch=*/false,
-            /*allowReload=*/false)) {
-        LogOut("[MISSION][REC] retake refused because the live session no longer matches the baseline",
-               true);
+    std::string err;
+    if (!::Mission::StateDump::Restore(g_recSetup.savestate, err)) {
+        LogOut("[MISSION][REC] exact baseline restore failed: " + err, true);
         return false;
     }
     SkipRoundIntro("mission retake");
@@ -1036,6 +1688,8 @@ void ProcessRecorderCommand() {
         if (MacroController::GetState() != MacroController::State::Idle) MacroController::Stop();
         g_recActive.store(false, std::memory_order_release);
         g_recPhase.store(RecorderPhase::Idle, std::memory_order_release);
+        g_recCountInTargetTicks = 0;
+        g_recCountInElapsed = false;
         ResetRecorderCaptureState();
         g_recSetup = ::Mission::Mission();
         DirectDrawHook::RemoveMessagesByCategory("mission_record");
@@ -1080,19 +1734,36 @@ void ProcessRecorderCommand() {
                               RGB(255, 190, 120), 1500);
             return;
         }
+        // The author requested recording. The optional count-in is only a short
+        // release/ready window; the exact baseline is captured on the clear
+        // tick immediately after it ends, directly before synchronized input
+        // recording begins.
+        CancelAutoActionsAndMacros();
+        ResetRecorderCaptureState();
+        g_recSetup = ::Mission::Mission();
         g_recReleaseFrames = 0;
         g_recCountInFrames = 0;
-        g_recCountInView.store(3, std::memory_order_release);
+        g_recCountInTargetTicks =
+            ::Mission::SequencePolicy::RecorderCountInTicksFromMs(
+                Config::GetSettings().missionRecorderCountInMs);
+        g_recCountInElapsed = false;
+        g_recCountInView.store(
+            (std::max)(0, Config::GetSettings().missionRecorderCountInMs),
+            std::memory_order_release);
         g_recPhase.store(RecorderPhase::CountIn, std::memory_order_release);
-        LogOut("[MISSION][REC] waiting for neutral count-in; baseline capture deferred to GO", true);
+        LogOut("[MISSION][REC] waiting for neutral count-in ms=" +
+               std::to_string(Config::GetSettings().missionRecorderCountInMs), true);
     } else if (advance == ::Mission::Engine::Recorder::AdvanceEffect::CancelCountIn) {
         // The same physical control is a safe toggle during the countdown. It
         // never starts a partial take and never discards Review data.
         g_recReleaseFrames = 0;
         g_recCountInFrames = 0;
+        g_recCountInTargetTicks = 0;
+        g_recCountInElapsed = false;
         g_recCountInView.store(0, std::memory_order_release);
-        g_recPhase.store(RecorderPhase::PreRecord, std::memory_order_release);
-        ShowRecorderState("Countdown canceled; starting position was not captured",
+        ResetRecorderCaptureState();
+        EnterRecorderPreRecord(false);
+        ShowRecorderState("Countdown canceled; arrange the start and record again",
                           RGB(255, 220, 120), 1200);
         LogOut("[MISSION][REC] count-in canceled", true);
     } else if (advance == ::Mission::Engine::Recorder::AdvanceEffect::StopToReview) {
@@ -1128,51 +1799,101 @@ void TickRecorderFrontend(const Snapshot& s) {
         return;
     }
     if (phase != RecorderPhase::CountIn) return;
-    if (!s.valid || GetCurrentGamePhase() != GamePhase::Match || ImGuiImpl::IsVisible() ||
-        ::Mission::Setup::IsPending() || CharacterHotswap::IsBusy() ||
-        PauseIntegration::IsPracticePaused() || PauseIntegration::IsGameSpeedFrozen()) {
+    // Every reset path names its blocker after ~1s of continuous stall. A
+    // gamespeed false positive (heuristic/legacy addresses reading 0 while the
+    // game ran) once held this gate forever with no output; a silent count-in
+    // reset must not be able to happen again.
+    static int s_countInBlockedTicks = 0;
+    const char* blocker = nullptr;
+    if (!s.valid)                                       blocker = "match state unreadable";
+    else if (GetCurrentGamePhase() != GamePhase::Match) blocker = "not in a match";
+    else if (ImGuiImpl::IsVisible() ||
+             ::Mission::PauseMenu::IsOpen())            blocker = "menu is open";
+    else if (::Mission::Setup::IsPending())             blocker = "mission setup pending";
+    else if (CharacterHotswap::IsBusy())                blocker = "character load in progress";
+    else if (PauseIntegration::IsPracticePaused())      blocker = "practice is paused";
+    else if (PauseIntegration::IsGameSpeedFrozen())     blocker = "game speed is frozen";
+    else if (GetPlayerInputs(1) != 0)                   blocker = "release all P1 controls";
+    if (blocker) {
         g_recReleaseFrames = 0;
         g_recCountInFrames = 0;
-        g_recCountInView.store(3, std::memory_order_release);
+        g_recCountInElapsed = false;
+        g_recCountInView.store(
+            ::Mission::SequencePolicy::RecorderCountInRemainingMs(
+                g_recCountInTargetTicks),
+            std::memory_order_release);
+        if (++s_countInBlockedTicks % 192 == 0) {
+            ShowRecorderState((std::string("COUNT-IN waiting: ") + blocker).c_str(),
+                              RGB(255, 190, 120), 1100);
+            LogOut(std::string("[MISSION][REC] count-in blocked: ") + blocker, true);
+        }
         return;
     }
-
-    if (GetPlayerInputs(1) != 0) {
-        g_recReleaseFrames = 0;
-        g_recCountInFrames = 0;
-        g_recCountInView.store(3, std::memory_order_release);
-        return;
-    }
+    s_countInBlockedTicks = 0;
     if (g_recReleaseFrames < 6) {
         ++g_recReleaseFrames;
         return;
     }
-    if (!s.freezeActive) ++g_recCountInFrames;
-    constexpr int kCountInTicks = 576; // three seconds at EFZ's 192 Hz internal cadence
-    const int framesLeft = kCountInTicks - g_recCountInFrames;
-    const int count = framesLeft > 384 ? 3 : framesLeft > 192 ? 2 : 1;
-    g_recCountInView.store(count, std::memory_order_release);
-    if (g_recCountInFrames < kCountInTicks) return;
+    if (!g_recCountInElapsed) {
+        if (!s.freezeActive && g_recCountInFrames < g_recCountInTargetTicks) {
+            ++g_recCountInFrames;
+        }
+        const int remainingTicks =
+            (std::max)(0, g_recCountInTargetTicks - g_recCountInFrames);
+        g_recCountInView.store(
+            ::Mission::SequencePolicy::RecorderCountInRemainingMs(remainingTicks),
+            std::memory_order_release);
+        if (g_recCountInFrames < g_recCountInTargetTicks) return;
+
+        // Deliberately wait one complete mission tick after the countdown
+        // reaches zero. The next clear tick is the exact frame-zero save/start
+        // boundary requested by the author.
+        g_recCountInElapsed = true;
+        return;
+    }
 
     // Frame-zero boundary: clear stale action/queue owners, capture the exact
-    // baseline, then arm+start the P1 input stream on this same monitor tick.
+    // current world (including both entity rings), seed those rings as baseline
+    // observations, then start the P1 input stream without another live tick.
     CancelAutoActionsAndMacros();
-    CaptureRecorderBaseline();
+    std::string baselineError;
+    if (!CaptureRecorderBaseline(baselineError)) {
+        ResetRecorderCaptureState();
+        EnterRecorderPreRecord(false);
+        ShowRecorderState(("Recording did not start: " + baselineError).c_str(),
+                          RGB(255, 120, 120), 2400);
+        LogOut("[MISSION][REC] frame-zero capture failed: " + baselineError, true);
+        return;
+    }
+    ResetRecorderCaptureState();
+    RecorderCaptureEntityRing();
     if (!MacroController::BeginPlayerRecording(1, false) ||
         !MacroController::StartPlayerRecording()) {
         MacroController::Stop();
-        g_recPhase.store(RecorderPhase::PreRecord, std::memory_order_release);
-        g_recCountInView.store(0, std::memory_order_release);
+        EnterRecorderPreRecord(false);
         ShowRecorderState("Mission input capture failed; press Macro Record to retry",
                           RGB(255, 120, 120), 1800);
         return;
     }
-    g_recPrevCombo = s.p1Combo;
-    g_recComboWasAlive = (s.p1Combo > 0) || s.p2InStun;
-    g_recPrevHitState = s.p1HitState;
-    g_recPrevMove = s.p1Move;
-    g_recPrevFrameIdx = s.p1FrameIdx;
+    // `s` was sampled at the beginning of this mission tick, before queue
+    // cancellation and the exact frame-zero save. Seed from live memory so
+    // those boundary operations cannot look like the first recorded transition.
+    const uintptr_t frameZeroP1 = GetPlayerBase(1);
+    const uintptr_t frameZeroP2 = GetPlayerBase(2);
+    const int frameZeroCombo = frameZeroP1
+        ? (std::max)(0, static_cast<int>(
+              ReadShort(frameZeroP1, PLAYER_COMBO_COUNTER_OFFSET)))
+        : 0;
+    const short frameZeroP2Move = ReadMove(frameZeroP2);
+    g_recPrevCombo = frameZeroCombo;
+    g_recComboWasAlive = frameZeroCombo > 0 || IsHitstun(frameZeroP2Move) ||
+                         IsLaunched(frameZeroP2Move) || IsBlockstun(frameZeroP2Move);
+    g_recPrevHitState = ReadInt(frameZeroP1, 0x168);
+    g_recPrevMove = ReadMove(frameZeroP1);
+    g_recPrevFrameIdx = ReadShort(frameZeroP1, 0xA);
     g_recCountInView.store(0, std::memory_order_release);
+    g_recCountInTargetTicks = 0;
+    g_recCountInElapsed = false;
     g_recActive.store(true, std::memory_order_release);
     g_recPhase.store(RecorderPhase::Recording, std::memory_order_release);
     LogOut("[MISSION][REC] synchronized P1 step+input capture started", true);
@@ -1183,6 +1904,7 @@ void ResetRunForDemo() {
     g_runStep = 0;
     g_runFailedStep.store(-1, std::memory_order_release);
     g_runBaseline = 0;
+    g_runDamageBaseline = 0;
     g_runGapWindow.Reset();
     g_runBestTier = -1;
     g_runArmed = false;
@@ -1203,33 +1925,161 @@ void HoldDemoP1Neutral(bool hold) {
     g_pollOverrideActive[1].store(hold, std::memory_order_release);
 }
 
+// Clear only the terminal tutorial handoff. While a new demonstration is
+// replacing it, releaseNeutral is false so ownership moves without exposing a
+// physical-input poll. Unload/session-reset paths pass true because no owner
+// follows.
+void ClearDemoTutorialHandoff(bool releaseNeutral) {
+    if (g_demoRestoreResult != Demo::RestoreResult::None && releaseNeutral) {
+        HoldDemoP1Neutral(false);
+    }
+    g_demoRestoreResult = Demo::RestoreResult::None;
+    g_demoRestoreMessage.clear();
+    g_demoTutorialHandoff = false;
+}
+
+void PublishDemoTutorialRestore(Demo::RestoreResult result,
+                                const std::string& message) {
+    g_demoRestoreResult = result;
+    g_demoRestoreMessage = message;
+    // Keep the direct demo owner authoritative until TutorialSession freezes
+    // or acquires its own release-to-neutral lease on a fresh-snapshot tick.
+    HoldDemoP1Neutral(true);
+}
+
 void SetRunnerStartupInputHold(bool hold) {
-    g_runStartupInputHeld.store(hold, std::memory_order_release);
     if (hold) {
+        if (!g_runStartupInputHeld.exchange(true, std::memory_order_acq_rel)) {
+            g_runStartupPollSnapshotValid = true;
+            g_runStartupPollSavedActive =
+                g_pollOverrideActive[1].load(std::memory_order_acquire);
+            g_runStartupPollSavedMask =
+                g_pollOverrideMask[1].load(std::memory_order_acquire);
+        }
         g_pollOverrideMask[1].store(0, std::memory_order_relaxed);
         g_pollOverrideActive[1].store(true, std::memory_order_release);
-    } else if (!Demo::IsActive() && !MacroController::IsExclusivePlayback()) {
-        g_pollOverrideMask[1].store(0, std::memory_order_relaxed);
-        g_pollOverrideActive[1].store(false, std::memory_order_release);
+        return;
+    }
+    if (!g_runStartupInputHeld.exchange(false, std::memory_order_acq_rel)) return;
+    if (g_runStartupPollSnapshotValid && !Demo::IsActive() &&
+        !MacroController::IsExclusivePlayback()) {
+        // Restore only while the zero hold is still recognizably ours. A newer
+        // playback owner wins and is never collapsed to the saved state.
+        if (g_pollOverrideMask[1].load(std::memory_order_acquire) == 0) {
+            g_pollOverrideMask[1].store(g_runStartupPollSavedMask,
+                                        std::memory_order_relaxed);
+        }
+        if (g_pollOverrideActive[1].load(std::memory_order_acquire)) {
+            g_pollOverrideActive[1].store(g_runStartupPollSavedActive,
+                                          std::memory_order_release);
+        }
+    }
+    g_runStartupPollSnapshotValid = false;
+}
+
+// Return the first condition that prevents a value-level mission baseline from
+// settling on this sample.  This is intentionally shared by the eligibility
+// gate and the eventual deadline report: a tutorial must not sit forever on a
+// hidden precondition, and the player should be told which precondition failed.
+std::string RunnerBaselineSaveBlocker(const Snapshot& s) {
+    if (!g_runActive.load(std::memory_order_acquire)) {
+        return "the mission session stopped";
+    }
+    if (g_runRestorePending) {
+        return "the exact start-state restore did not finish";
+    }
+    if (!s.valid) {
+        return "the fighters were not ready";
+    }
+    if (GetCurrentGamePhase() != GamePhase::Match) {
+        return "the Practice match did not become active";
+    }
+    if (::Mission::PauseMenu::IsOpen()) {
+        return "the lesson menu remained open";
+    }
+    if (ImGuiImpl::IsVisible()) {
+        return "another menu remained open";
+    }
+    if (PauseIntegration::IsPracticePaused()) {
+        return "Practice remained paused";
+    }
+    if (PauseIntegration::IsGameSpeedFrozen()) {
+        return "the match remained frozen";
+    }
+    if (::Mission::Setup::IsPending()) {
+        return "the lesson setup did not finish";
+    }
+    if (CharacterHotswap::IsBusy()) {
+        return "the fighter load did not finish";
+    }
+    if (g_recActive.load(std::memory_order_acquire)) {
+        return "mission recording remained active";
+    }
+    if (RoundIntroActive()) {
+        return "the round intro did not finish";
+    }
+    if (!SavestateHook::IsInstalled()) {
+        return "the checkpoint system was not available";
+    }
+    return std::string();
+}
+
+void FailRunnerBaselineSave(const std::string& blocker) {
+    const std::string reason = blocker.empty()
+        ? std::string("the checkpoint system did not become ready")
+        : blocker;
+    g_runSavePending = false;
+    g_runSaveSettle = 0;
+    g_runSaveRetries = 0;
+    g_runSaveElapsed = 0;
+    g_runSaveBlocker.clear();
+    g_runStateSaved = false;
+
+    const bool lesson = g_runMission.tutorialSchema > 0 && g_runMission.hasLesson;
+    const std::string message = lesson
+        ? "The lesson checkpoint could not be created because " + reason +
+              ". Return to Lessons and launch it again."
+        : "The mission checkpoint could not be created because " + reason +
+              ". Retry will be unavailable for this run.";
+    LogOut("[MISSION][RUN] baseline startup failed: " + reason, true);
+    if (lesson) {
+        ::Mission::TutorialSession::NotifyStartupFailure(message);
+    } else {
+        DirectDrawHook::AddMessage(message.c_str(), "MISSION",
+                                   RGB(255, 120, 120), 4200, 0, 120);
     }
 }
 
 bool RestoreDemoBaseline(std::string& errorOut) {
     const ::Mission::Mission& baseline = g_demoFromRecorder ? g_recSetup : g_runMission;
     bool ok = false;
-    g_runSelfLoad = true;
-    if (!baseline.savestate.empty() && ::Mission::StateDump::Available()) {
-        ok = ::Mission::StateDump::Restore(baseline.savestate, errorOut);
-    } else if (!g_demoFromRecorder && g_runStateSaved && SavestateHook::IsInstalled()) {
+    ScopedRunnerSelfLoad selfLoad;
+    // A loaded mission already owns a verified same-session Revival baseline.
+    // Prefer it: it is the exact state the runner retries from and avoids
+    // re-running cross-session header/layout checks against an attempt that has
+    // naturally changed since startup. Unsaved recorder previews use their
+    // embedded frame-zero dump because they do not own a runner checkpoint.
+    const auto source = ::Mission::SequencePolicy::DecideDemoBaselineSource(
+        g_demoFromRecorder,
+        g_runStateSaved && SavestateHook::IsInstalled(),
+        !baseline.savestate.empty() && ::Mission::StateDump::Available());
+    if (source == ::Mission::SequencePolicy::DemoBaselineSource::RunnerCheckpoint) {
         ok = SavestateHook::TriggerLoad();
         if (!ok) errorOut = "mission baseline load was unavailable";
+    } else if (source == ::Mission::SequencePolicy::DemoBaselineSource::EmbeddedDump) {
+        ok = ::Mission::StateDump::Restore(baseline.savestate, errorOut);
     } else {
-        ok = ::Mission::Setup::Apply(
-            baseline, /*applyValues=*/true, /*forceFreshMatch=*/false,
-            /*allowReload=*/false);
-        if (!ok) errorOut = "live session no longer matches the demonstration baseline";
+        // A demonstration is a baseline-bracketed transaction.  Value-level
+        // Setup::Apply is not a restore and, worse, asks whether the *current*
+        // live session still matches the mission before replay starts.  A
+        // perfectly ordinary played attempt has diverged by definition, so
+        // that fallback could reject WATCH DEMONSTRATION before the state was
+        // ever rewound.  Only an exact embedded dump or the runner-owned
+        // Revival checkpoint is a valid demonstration source.
+        errorOut = g_demoFromRecorder
+            ? "recording baseline is unavailable; retake the recording"
+            : "mission baseline is unavailable; restart the mission";
     }
-    g_runSelfLoad = false;
     if (ok) SkipRoundIntro("mission demonstration baseline");
     return ok;
 }
@@ -1257,11 +2107,22 @@ void TickDemo(const Snapshot& s) {
     if (!s.valid || GetCurrentGamePhase() != GamePhase::Match) {
         if (MacroController::GetState() != MacroController::State::Idle) MacroController::Stop();
         MacroController::ReleaseExclusivePlaybackHold();
-        HoldDemoP1Neutral(false);
+        const std::string error =
+            "the demonstration left the active match before the lesson baseline was restored";
+        if (g_demoTutorialHandoff) {
+            PublishDemoTutorialRestore(Demo::RestoreResult::RestoreFailed, error);
+        } else {
+            HoldDemoP1Neutral(false);
+            ClearDemoTutorialHandoff(false);
+        }
         g_demoText.clear();
         g_demoFromRecorder = false;
         g_demoBaselineIssued = false;
         g_demoPhase.store(DemoPhase::Idle, std::memory_order_release);
+        // This Snapshot predates the terminal transition. It is never the
+        // sample from which runner/tutorial validation resumes.
+        g_demoFinishedThisTick = true;
+        LogOut("[MISSION][DEMO] restore handoff failed: " + error, true);
         return;
     }
 
@@ -1299,14 +2160,26 @@ void TickDemo(const Snapshot& s) {
         HoldDemoP1Neutral(true);
         if (!restored) {
             MacroController::ReleaseExclusivePlaybackHold();
-            HoldDemoP1Neutral(false);
+            const std::string error = err.empty()
+                ? std::string("the lesson baseline restore failed") : err;
+            if (g_demoTutorialHandoff) {
+                PublishDemoTutorialRestore(
+                    Demo::RestoreResult::RestoreFailed, error);
+            } else {
+                HoldDemoP1Neutral(false);
+                ClearDemoTutorialHandoff(false);
+            }
             g_demoText.clear();
             g_demoFromRecorder = false;
             g_demoBaselineIssued = false;
             g_demoPhase.store(DemoPhase::Idle, std::memory_order_release);
-            DirectDrawHook::AddMessage(("Demo restore failed: " + err).c_str(), "MISSION",
-                                       RGB(255, 120, 120), 2200, 0, 120);
-            LogOut("[MISSION][DEMO] baseline restore failed: " + err, true);
+            g_demoFinishedThisTick = true;
+            if (!g_demoTutorialHandoff) {
+                DirectDrawHook::AddMessage(
+                    ("Demo restore failed: " + error).c_str(), "MISSION",
+                    RGB(255, 120, 120), 2200, 0, 120);
+            }
+            LogOut("[MISSION][DEMO] baseline restore failed: " + error, true);
             return;
         }
         if (!g_demoFromRecorder) ResetRunForDemo();
@@ -1332,27 +2205,354 @@ void TickDemo(const Snapshot& s) {
         LogOut("[MISSION][DEMO] exclusive P1 playback started", true);
     } else if (phase == DemoPhase::Restoring) {
         if (!g_demoFromRecorder) ResetRunForDemo();
+        const bool recorderPreview = g_demoFromRecorder;
         MacroController::ReleaseExclusivePlaybackHold();
-        HoldDemoP1Neutral(false);
+        if (g_demoTutorialHandoff) {
+            PublishDemoTutorialRestore(
+                Demo::RestoreResult::Restored, "lesson baseline restored");
+        } else {
+            HoldDemoP1Neutral(false);
+            ClearDemoTutorialHandoff(false);
+        }
         g_demoText.clear();
         g_demoBaselineIssued = false;
         g_demoPhase.store(DemoPhase::Idle, std::memory_order_release);
+        // This is exclusively a stale-Snapshot guard. Tutorial ownership is
+        // carried by g_demoRestoreResult until explicit acknowledgement.
         g_demoFinishedThisTick = true;
-        DirectDrawHook::AddMessage(g_demoFromRecorder
+        DirectDrawHook::AddMessage(recorderPreview
                                        ? "Preview finished - back to Review"
                                        : "Demonstration finished - your turn", "MISSION",
                                    RGB(180, 255, 220), 1800, 0, 120);
         g_demoFromRecorder = false;
-        LogOut("[MISSION][DEMO] baseline restored; player control released", true);
+        LogOut(g_demoTutorialHandoff
+                   ? "[MISSION][DEMO] baseline restored; awaiting tutorial acknowledgement"
+                   : "[MISSION][DEMO] baseline restored; player control released", true);
     }
+}
+
+std::string JsonEscape(const std::string& value) {
+    std::string escaped;
+    escaped.reserve(value.size() + 8);
+    for (unsigned char c : value) {
+        switch (c) {
+            case '\"': escaped += "\\\""; break;
+            case '\\': escaped += "\\\\"; break;
+            case '\b': escaped += "\\b"; break;
+            case '\f': escaped += "\\f"; break;
+            case '\n': escaped += "\\n"; break;
+            case '\r': escaped += "\\r"; break;
+            case '\t': escaped += "\\t"; break;
+            default:
+                // Recorder resource names and paths are ordinary ASCII. Keep
+                // hand-written control characters from producing invalid JSON.
+                escaped.push_back(c < 0x20 ? ' ' : static_cast<char>(c));
+                break;
+        }
+    }
+    return escaped;
+}
+
+const char* RecContactResultName(::Mission::Contact::Result result) {
+    switch (result) {
+        case ::Mission::Contact::Result::Hit:         return "hit";
+        case ::Mission::Contact::Result::Block:       return "block";
+        case ::Mission::Contact::Result::RecoilGuard: return "recoil_guard";
+        case ::Mission::Contact::Result::Throw:       return "throw";
+        case ::Mission::Contact::Result::SpecialHit:  return "special_hit";
+        case ::Mission::Contact::Result::GuardPoint:  return "guard_point";
+        case ::Mission::Contact::Result::Unknown:     return "unknown";
+        default:                                      return "none";
+    }
+}
+
+void WriteNullableInt(std::ostream& out, int value) {
+    if (value < 0) out << "null";
+    else out << value;
+}
+
+bool WriteRecorderEntityTraceSidecar(const std::string& missionPath,
+                                     std::string& outPath,
+                                     std::string& outError) {
+    outPath = missionPath;
+    const std::size_t dot = outPath.find_last_of('.');
+    if (dot != std::string::npos) outPath.resize(dot);
+    outPath += ".entities.jsonl";
+
+    std::ofstream out(outPath, std::ios::binary | std::ios::trunc);
+    if (!out.is_open()) {
+        outError = "cannot create " + outPath;
+        return false;
+    }
+
+    const std::string p1Resource = !g_recSetup.player.character.empty()
+        ? g_recSetup.player.character
+        : CharacterSettings::GetCharacterInternalName(P1Char());
+    const std::string p2Resource = !g_recSetup.dummy.character.empty()
+        ? g_recSetup.dummy.character
+        : CharacterSettings::GetCharacterInternalName(PlayerChar(2));
+    out << "{\"record\":\"metadata\",\"schema\":\"efz_recorder_entity_trace\""
+           ",\"version\":2,\"authoring_only\":true,\"sampled\":true"
+           ",\"unordered\":true,\"non_strict\":true,\"slotCapacity\":"
+        << CollisionDisplay::kProjectileRingSlotCapacity
+        << ",\"playersSampled\":2"
+        << ",\"effectiveFrameUnit\":\"freeze-excluded EFZ internal ticks\""
+           ",\"p1CharacterId\":" << P1Char()
+        << ",\"p1Resource\":\"" << JsonEscape(p1Resource) << "\""
+        << ",\"p2CharacterId\":" << PlayerChar(2)
+        << ",\"p2Resource\":\"" << JsonEscape(p2Resource) << "\""
+        << ",\"eventCount\":" << g_recEntityTraceCount
+        << ",\"droppedEvents\":" << g_recEntityTraceDropped
+        << ",\"entityContactHookObserved\":"
+        << (g_recEntityContactHookObserved ? "true" : "false")
+        << ",\"contactJournalOverflow\":"
+        << (g_recContactJournalOverflowObserved ? "true" : "false")
+        << "}\n";
+
+    for (std::size_t i = 0; i < g_recEntityTraceCount; ++i) {
+        const RecEntityTraceEvent& event = g_recEntityTrace[i];
+        const std::string eventResource =
+            CharacterSettings::GetCharacterInternalName(event.characterId);
+        const char* className = ::Mission::MoveData::ClassName(event.entityClass);
+        if (!className || !className[0]) className = "unknown";
+        const bool isContact = event.kind == RecEntityTraceKind::Contact;
+
+        out << "{\"record\":\""
+            << (isContact ? "entity_contact" : "entity_lifecycle")
+            << "\",\"event\":\"" << RecEntityTraceKindName(event.kind) << "\""
+            << ",\"evidence\":\""
+            << (isContact ? "resolver_hook" : "ring_sample") << "\""
+            << ",\"authoring_only\":true"
+            << ",\"sampled\":" << (event.sampled ? "true" : "false")
+            << ",\"unordered\":true,\"non_strict\":true"
+            << ",\"effectiveFrame\":" << event.effectiveFrame
+            << ",\"characterId\":" << event.characterId
+            << ",\"resource\":\"" << JsonEscape(eventResource) << "\""
+            << ",\"player\":" << event.player << ",\"slot\":" << event.slot
+            << ",\"pattern\":";
+        WriteNullableInt(out, event.pattern);
+        out << ",\"priorPattern\":";
+        WriteNullableInt(out, event.priorPattern);
+        out << ",\"class\":\"" << className << "\""
+            << ",\"attack\":" << (event.attack ? "true" : "false")
+            << ",\"frame\":" << event.entityFrame
+            << ",\"life\":" << event.life
+            << ",\"destroyed\":" << event.destroyed
+            << ",\"afterStep\":" << event.afterStep
+            << ",\"sampleBasis\":\""
+            << (isContact ? "resolver_transaction" :
+                event.kind == RecEntityTraceKind::Despawn
+                    ? "last_alive_sample" : "current_sample")
+            << "\"";
+        if (isContact) {
+            out << ",\"sequence\":" << event.contactSequence
+                << ",\"batch\":" << event.contactBatch
+                << ",\"defender\":" << event.defender
+                << ",\"result\":\""
+                << RecContactResultName(event.contactResult) << "\""
+                << ",\"lifeBefore\":" << event.lifeBefore
+                << ",\"destroyedBefore\":" << event.destroyedBefore
+                << ",\"comboBefore\":" << event.comboBefore
+                << ",\"comboAfter\":" << event.comboAfter
+                << ",\"hpBefore\":" << event.hpBefore
+                << ",\"hpAfter\":" << event.hpAfter;
+        }
+        out << "}\n";
+    }
+    out.flush();
+    if (!out.good()) {
+        outError = "write failed for " + outPath;
+        return false;
+    }
+    return true;
+}
+
+// Claim the final mission basename before serialization. The former tick-only
+// name could collide when two saves happened in one millisecond (or after the
+// 32-bit tick counter wrapped), and SaveMission would silently truncate the
+// earlier take. Timestamp + tick + a process-local sequence makes collisions
+// exceptional; CREATE_NEW is still the authority, with bounded retry for a
+// second process or a pre-existing file.
+bool ReserveRecordedMissionPath(const std::string& dir,
+                                std::string& outPath,
+                                std::string& outError) {
+    SYSTEMTIME now = {};
+    GetLocalTime(&now);
+    const unsigned long tick = static_cast<unsigned long>(GetTickCount());
+    constexpr int kMaxAttempts = 128;
+
+    for (int attempt = 0; attempt < kMaxAttempts; ++attempt) {
+        const unsigned long sequence =
+            g_recSaveSequence.fetch_add(1, std::memory_order_relaxed) + 1;
+        char name[96];
+        _snprintf_s(name, sizeof(name), _TRUNCATE,
+                    "recorded_%04u%02u%02u_%02u%02u%02u_%08lX_%06lu.json",
+                    static_cast<unsigned int>(now.wYear),
+                    static_cast<unsigned int>(now.wMonth),
+                    static_cast<unsigned int>(now.wDay),
+                    static_cast<unsigned int>(now.wHour),
+                    static_cast<unsigned int>(now.wMinute),
+                    static_cast<unsigned int>(now.wSecond),
+                    tick, sequence);
+        const std::string candidate = dir + "\\" + name;
+        HANDLE file = CreateFileA(candidate.c_str(), GENERIC_WRITE, 0, nullptr,
+                                  CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (file != INVALID_HANDLE_VALUE) {
+            CloseHandle(file);
+            outPath = candidate;
+            return true;
+        }
+
+        const DWORD error = GetLastError();
+        if (error == ERROR_FILE_EXISTS || error == ERROR_ALREADY_EXISTS) {
+            continue;
+        }
+        outError = "cannot reserve " + candidate + " (Windows error " +
+                   std::to_string(static_cast<unsigned long>(error)) + ")";
+        return false;
+    }
+
+    outError = "cannot choose a unique recorded mission filename after " +
+               std::to_string(kMaxAttempts) + " attempts";
+    return false;
+}
+
+// This is the complete data/capability boundary shared by ordinary in-match
+// loads and title-prepared loads. A title transaction is not published until
+// this succeeds, so Match entry only has to publish the already accepted value
+// object; it never reparses or discovers a late lesson-capability failure.
+bool ValidateMissionForRuntime(const ::Mission::Mission& mission,
+                               const std::string& sourcePath,
+                               std::string& outError) {
+    // Steps are the format-1 contract; schema lessons validate through the
+    // tutorial session instead and may be pure page/choice content (0-1, 1-3).
+    const bool isLesson = mission.tutorialSchema > 0 && mission.hasLesson;
+    if (mission.steps.empty() && !isLesson) {
+        outError = "mission has no steps: " + sourcePath;
+        return false;
+    }
+    if (isLesson) {
+        const auto issues = ::Mission::Tutorial::RuntimeSupportIssues(mission);
+        if (!issues.empty()) {
+            outError = "lesson is unavailable: ";
+            const size_t shown = (std::min)(issues.size(), static_cast<size_t>(3));
+            for (size_t i = 0; i < shown; ++i) {
+                if (i) outError += "; ";
+                outError += issues[i];
+            }
+            if (issues.size() > shown) {
+                outError += "; +" + std::to_string(issues.size() - shown) + " more";
+            }
+            return false;
+        }
+        if (mission.requiresExactBaseline &&
+            (mission.savestate.empty() || !::Mission::StateDump::Available())) {
+            outError = "lesson requires an exact start state, but it is unavailable";
+            return false;
+        }
+    }
+    for (size_t i = 0; i < mission.steps.size(); ++i) {
+        if (!mission.steps[i].comboEndAfter) continue;
+        if (mission.steps[i].optional) {
+            outError = "comboEndAfter cannot be attached to optional step " +
+                       std::to_string(i);
+            return false;
+        }
+        if (i + 1 >= mission.steps.size()) {
+            outError = "comboEndAfter requires a following setup/Part-2 step at " +
+                       std::to_string(i);
+            return false;
+        }
+    }
+    outError.clear();
+    return true;
+}
+
+bool ParseAndValidateMission(const std::string& sourcePath,
+                             ::Mission::Mission& missionOut,
+                             std::string& outError) {
+    if (!::Mission::LoadMission(sourcePath, missionOut, outError)) return false;
+    return ValidateMissionForRuntime(missionOut, sourcePath, outError);
 }
 
 } // namespace
 
+// Internal value-load boundary used by both Runner::Load(path) and the title
+// transaction consumer. It deliberately is not part of mission_engine.h: only
+// this translation unit may claim that a Mission has passed the shared runtime
+// validation above.
+namespace Runner {
+bool LoadPrepared(::Mission::Mission mission, const std::string& sourcePath,
+                  std::string& outMsg, bool forceFreshMatch);
+}
+
 void Tick() {
+    // Session pause menu first: while it is open the world is frozen and the
+    // menu owns navigation input; it also self-closes if the session died.
+    ::Mission::PauseMenu::Tick();
+
     std::lock_guard<std::recursive_mutex> runStateLock(g_runStateMx);
     g_demoFinishedThisTick = false;
     Snapshot s;
+    s.contactEventEpoch = GetContactEventEpoch();
+    s.directContactHookReady = IsDirectContactHookReady();
+    s.entityContactHookReady = IsEntityContactHookReady();
+    if (g_contactReadEpoch != s.contactEventEpoch) {
+        // Savestate/hotswap/world reset: start after the reset watermark so no
+        // pre-restore transaction can satisfy a new attempt.
+        g_contactReadEpoch = s.contactEventEpoch;
+        g_contactReadCursor = GetContactEventWatermark();
+        g_contactOverflowLoggedEpoch = 0;
+        g_contactOverflowLoggedCursor = 0;
+    } else {
+        const auto read = ReadCommittedContactEvents(
+            g_contactReadCursor, g_contactReadEpoch,
+            GetCompletedBattleUpdateBatch(), s.contactEvents.data(),
+            s.contactEvents.size());
+        g_contactReadCursor = read.consumedThrough;
+        s.contactEventCount = static_cast<uint8_t>(read.count);
+        s.contactEventOverflow = read.overflow;
+        if (detailedLogging.load(std::memory_order_relaxed)) {
+            for (size_t i = 0; i < read.count; ++i) {
+                const auto& event = s.contactEvents[i];
+                const char* source = event.source == ::Mission::Contact::Source::Entity
+                    ? "entity" : event.source == ::Mission::Contact::Source::DirectPlayer
+                    ? "direct" : "none";
+                std::ostringstream trace;
+                trace << "[CONTACT][EVENT] seq=" << event.sequence
+                      << " epoch=" << event.worldEpoch
+                      << " batch=" << event.batchId
+                      << " source=" << source
+                      << " owner=" << static_cast<int>(event.attacker)
+                      << " target=" << static_cast<int>(event.defender)
+                      << " slot=" << event.entitySlot
+                      << " pattern=" << event.entityPattern
+                      << " result=" << ::Mission::Contact::ResultName(event.result)
+                      << " move=" << event.attackerMove
+                      << " frame=" << event.attackerFrame
+                      << " raw=" << event.rawStateBefore
+                      << "->" << event.rawStateAfter
+                      << " timer_life=" << event.timerBefore
+                      << "->" << event.timerAfter
+                      << " combo=" << event.comboBefore
+                      << "->" << event.comboAfter
+                      << " hp=" << event.defenderHpBefore
+                      << "->" << event.defenderHpAfter
+                      << " defenderMove=" << event.defenderMoveBefore
+                      << "->" << event.defenderMove;
+                LogOut(trace.str(), true);
+            }
+        }
+        if (read.overflow &&
+            (g_contactOverflowLoggedEpoch != g_contactReadEpoch ||
+             g_contactOverflowLoggedCursor != read.consumedThrough)) {
+            g_contactOverflowLoggedEpoch = g_contactReadEpoch;
+            g_contactOverflowLoggedCursor = read.consumedThrough;
+            LogOut("[CONTACT][OVERFLOW] contact evidence was lost epoch=" +
+                   std::to_string(g_contactReadEpoch) + " consumedThrough=" +
+                   std::to_string(read.consumedThrough), true);
+        }
+    }
     s.p1PolledAttackEdges = ConsumeInputPollAttackEdges(1);
     s.p1InputPollSerial = GetInputPollSerial(1);
     const uintptr_t p1 = GetPlayerBase(1);
@@ -1361,6 +2561,7 @@ void Tick() {
     if (s.valid) {
         s.p1Move = ReadMove(p1);
         s.p2Move = ReadMove(p2);
+        s.p2FrameIdx = ReadShort(p2, 0xA);              // P2 frame index within the move
         const int rawCombo = static_cast<int>(ReadShort(p1, PLAYER_COMBO_COUNTER_OFFSET));
         s.p1Combo = rawCombo > 0 ? rawCombo : 0;
         s.p1ComboDamage = ReadInt(p1, PLAYER_COMBO_DAMAGE_OFFSET);
@@ -1371,10 +2572,17 @@ void Tick() {
         s.p1FrameIdx = ReadShort(p1, 0xA);              // frame index within the move
         // Global freeze: superflash (+0x14C, spellflash of IC/supers - engine
         // timers stop while nonzero on either side) or contact hitstop (+0x14A).
+        // The IC/BIC/FIC superflash is NOT reliably reflected in +0x14C (see
+        // frame_advantage.cpp), so also detect it by move ID (167 ground / 171 air
+        // IC). Otherwise the sequence gap timer counts through the IC screen freeze
+        // and the next step (e.g. Red-IC 5C > 22C > 2C) times out.
         const short p1SF = ReadShort(p1, 0x14C), p2SF = ReadShort(p2, 0x14C);
         const short p1HS = ReadShort(p1, 0x14A), p2HS = ReadShort(p2, 0x14A);
-        s.freezeActive = (p1SF > 0) || (p2SF > 0) || (p1HS > 0) || (p2HS > 0);
-        s.p1HitState = ReadInt(p1, 0x168);  // 0=none, 2=block, 3=hit (contact edge)
+        const bool icFreeze =
+            s.p1Move == GROUND_IC_ID || s.p1Move == AIR_IC_ID ||
+            s.p2Move == GROUND_IC_ID || s.p2Move == AIR_IC_ID;
+        s.freezeActive = (p1SF > 0) || (p2SF > 0) || (p1HS > 0) || (p2HS > 0) || icFreeze;
+        s.p1HitState = ReadInt(p1, 0x168);  // raw producer latch; diagnostic/legacy only
     }
     g_snapshot = s;
 
@@ -1386,6 +2594,26 @@ void Tick() {
 
     // Drive a hotswap-deferred mission setup (chars loaded -> apply values).
     ::Mission::Setup::Tick();
+    std::string setupFailure;
+    if (::Mission::Setup::TakeFailure(setupFailure)) {
+        g_runSavePending = false;
+        g_runRestorePending = false;
+        g_runSaveRetries = 0;
+        g_runStateSaved = false;
+        SetRunnerStartupInputHold(false);
+        const std::string playerMessage =
+            "The lesson start state could not be applied: " + setupFailure +
+            ". Return to Lessons and try again.";
+        if (g_runActive.load(std::memory_order_acquire) &&
+            g_runMission.tutorialSchema > 0 && g_runMission.hasLesson) {
+            ::Mission::TutorialSession::NotifyStartupFailure(playerMessage);
+        } else {
+            g_runActive.store(false, std::memory_order_release);
+            DirectDrawHook::AddMessage(playerMessage.c_str(), "MISSION",
+                                       RGB(255, 120, 120), 3500, 0, 120);
+        }
+        LogOut("[MISSION][SETUP] runner startup aborted: " + setupFailure, true);
+    }
 
     // Frontend threads only enqueue authoring commands. Consume them here so
     // setup capture and recorder state are never mutated concurrently.
@@ -1421,14 +2649,16 @@ void Tick() {
     // Embedded start-state restore: once the match settles after the mission's
     // hotswap, inject the mission's Revival savestate dump (buffer swap +
     // pointer reconciliation). The restored buffer IS the mission start state,
-    // so it doubles as the auto-retry baseline. If the clear-window never
-    // settles (~30s of Match with something blocking), fall back to values -
-    // a mission must never run with NO setup at all.
+    // so it doubles as the auto-retry baseline. Exact-state missions never
+    // degrade to value-only setup: a timeout or integrity failure is surfaced
+    // and the runner remains unavailable rather than silently dropping staged
+    // entities.
     if (g_runRestorePending && s.valid && g_runActive.load() &&
         GetCurrentGamePhase() == GamePhase::Match) {
         const bool clear = !ImGuiImpl::IsVisible() && !::Mission::Setup::IsPending() &&
                            !CharacterHotswap::IsBusy() && !g_recActive.load() &&
-                           !RoundIntroActive();
+                           !RoundIntroActive() && !::Mission::PauseMenu::IsOpen() &&
+                           !PauseIntegration::IsPausedOrFrozen();
         if (!clear) g_runRestoreSettle = 0;
         const bool doRestore = clear && ++g_runRestoreSettle > 60;
         const bool doTimeout = !doRestore && ++g_runRestoreTimeout > 5760;
@@ -1440,9 +2670,8 @@ void Tick() {
                                           : std::string();
             bool ok = false;
             if (doRestore) {
-                g_runSelfLoad = true;   // the TriggerLoad inside is ours
+                ScopedRunnerSelfLoad selfLoad; // TriggerLoad inside is ours
                 ok = ::Mission::StateDump::Restore(g_runMission.savestate, sdErr);
-                g_runSelfLoad = false;
                 // StateDump restore cancels injection owners in its load preamble.
                 SetRunnerStartupInputHold(true);
             }
@@ -1451,13 +2680,20 @@ void Tick() {
                 g_runSavePending = false;   // buffer already holds the baseline
                 g_runStateSaved = true;
                 LogOut("[MISSION][RUN] embedded start state restored (auto-retry armed)", true);
-                PracticeMenu::TitleScreen::FinishLaunch();
             } else {
-                LogOut("[MISSION][RUN] state restore failed (" + sdErr +
-                       ") - falling back to value-level setup", true);
-                ::Mission::Setup::Apply(g_runMission);   // chars already match
-                g_runSavePending = true;    // classic baseline save instead
-                PracticeMenu::TitleScreen::FinishLaunch();
+                g_runSavePending = false;
+                g_runStateSaved = false;
+                const std::string message =
+                    "The exact mission start state could not be restored: " + sdErr;
+                LogOut("[MISSION][RUN] " + message, true);
+                if (g_runMission.tutorialSchema > 0 && g_runMission.hasLesson) {
+                    ::Mission::TutorialSession::NotifyStartupFailure(message);
+                } else {
+                    DirectDrawHook::AddMessage(message.c_str(), "MISSION",
+                                               RGB(255, 120, 120), 3500, 0, 120);
+                    g_runActive.store(false, std::memory_order_release);
+                    SetRunnerStartupInputHold(false);
+                }
             }
         }
     } else {
@@ -1468,45 +2704,72 @@ void Tick() {
     // Mission baseline savestate: after load/reset, save once the first UNPAUSED
     // gameplay frame settles (menu closed, match running, past the round intro,
     // two stable ticks) so every drop can snap back to it before player input
-    // or runner validation is released.
-    if (g_runSavePending && !g_runRestorePending && s.valid && g_runActive.load() &&
-        GetCurrentGamePhase() == GamePhase::Match && !ImGuiImpl::IsVisible() &&
-        !::Mission::Setup::IsPending() && !CharacterHotswap::IsBusy() &&
-        !g_recActive.load() && !RoundIntroActive()) {
-        if (++g_runSaveSettle >= 2) {
-            g_runSavePending = false;
+    // or runner validation is released. The deadline covers the WHOLE pending
+    // interval, including Loading/setup/pause stalls before TriggerSave is ever
+    // eligible; only the two-tick settle counter is freeze-gated.
+    if (g_runSavePending) {
+        ++g_runSaveElapsed;
+        const std::string blocker = RunnerBaselineSaveBlocker(s);
+        if (!blocker.empty()) {
+            g_runSaveBlocker = blocker;
             g_runSaveSettle = 0;
-            if (SavestateHook::IsInstalled() && SavestateHook::TriggerSave()) {
+        } else if (++g_runSaveSettle >= 2) {
+            g_runSaveSettle = 0;
+            if (SavestateHook::TriggerSave()) {
+                g_runSavePending = false;
+                g_runSaveRetries = 0;
+                g_runSaveElapsed = 0;
+                g_runSaveBlocker.clear();
                 g_runStateSaved = true;
                 LogOut("[MISSION][RUN] baseline savestate captured (auto-retry armed)", true);
             } else {
-                LogOut("[MISSION][RUN] baseline save unavailable (no auto-retry)", true);
+                ++g_runSaveRetries;
+                g_runSaveBlocker = "the Practice checkpoint controller was not ready";
+                // Right after match entry the Practice controller may not be
+                // captured yet (PracticeTick lands ~200ms in) - keep the save
+                // owed and retry on the next settle until the whole-startup
+                // deadline expires.
+                if (g_runSaveRetries == 1 || (g_runSaveRetries % 384) == 0) {
+                    LogOut("[MISSION][RUN] baseline save not ready (attempt " +
+                           std::to_string(g_runSaveRetries) + "); retrying", true);
+                }
             }
+        }
+        if (g_runSavePending && g_runSaveElapsed >= kRunSaveDeadlineTicks) {
+            FailRunnerBaselineSave(g_runSaveBlocker);
         }
     } else {
         g_runSaveSettle = 0;
+        g_runSaveElapsed = 0;
+        g_runSaveBlocker.clear();
     }
     if (g_runStartupInputHeld.load(std::memory_order_acquire) &&
         !g_runRestorePending && !g_runSavePending) {
         SetRunnerStartupInputHold(false);
     }
 
-    if (g_pendingMissionMode.load()) {
-        const GamePhase phase = GetCurrentGamePhase();
-        if (phase == GamePhase::CharacterSelect) {
-            PracticeMenu::TitleScreen::SetLaunchStage(
-                PracticeMenu::TitleScreen::LaunchStage::Fighters);
-        } else if (phase == GamePhase::Loading) {
-            PracticeMenu::TitleScreen::SetLaunchStage(
-                PracticeMenu::TitleScreen::LaunchStage::Loading);
-        }
-    }
-
     // Guarded fallback only. Normal title missions go Title -> Loading -> Match
     // and create fighters on EFZ's game thread without visiting this screen.
+    const GamePhase pendingMissionPhase = GetCurrentGamePhase();
+    if (g_pendingMissionMode.load(std::memory_order_acquire) &&
+        pendingMissionPhase == GamePhase::CharacterSelect) {
+        g_pendingMissionSawCharacterSelect.store(true, std::memory_order_release);
+    }
+    if (PendingLaunchPolicy::ReachedSelectorExit(
+            g_pendingMissionMode.load(std::memory_order_acquire),
+            g_pendingMissionSawCharacterSelect.load(std::memory_order_acquire),
+            pendingMissionPhase == GamePhase::Menu)) {
+        const bool canceled = CancelPendingMissionLoad("Character Select exit");
+        g_pendingMissionSawCharacterSelect.store(false, std::memory_order_release);
+        if (canceled) {
+            CharacterHotswap::CancelDirectPracticeLoad("Character Select exit");
+            LogOut("[MISSION] pending title launch canceled after player left Character Select",
+                   true);
+        }
+    }
     if (g_pendingMissionMode.load() && g_pendingHaveChars.load() &&
         !g_pendingCsQueued.load() &&
-        GetCurrentGamePhase() == GamePhase::CharacterSelect &&
+        pendingMissionPhase == GamePhase::CharacterSelect &&
         CharacterHotswap::CanQueueReload()) {
         const int stage = g_pendingStage.load() >= 0 ? g_pendingStage.load() : 0;
         const int bgm = g_pendingBgm.load();
@@ -1521,10 +2784,9 @@ void Tick() {
         }
     }
 
-    // A failed hotswap request is no longer "busy". Without an escape hatch the
-    // launch cover would then sit over a perfectly usable character-select
-    // screen forever. Give the driver a short grace window, then reveal manual
-    // selection while keeping the pending mission load alive for match entry.
+    // A failed hotswap request is no longer "busy". Give the auto-drive a short
+    // grace window, then hand Character Select back to the player while keeping
+    // the pending mission load alive for match entry.
     static int s_pendingCsDriveIdle = 0;
     if (g_pendingMissionMode.load() && g_pendingHaveChars.load() &&
         g_pendingCsQueued.load() &&
@@ -1533,7 +2795,6 @@ void Tick() {
         if (++s_pendingCsDriveIdle > 30) {
             s_pendingCsDriveIdle = 0;
             g_pendingHaveChars.store(false);
-            PracticeMenu::TitleScreen::FinishLaunch();
             LogOut("[MISSION] character-select auto-drive stopped; revealing manual selection",
                    true);
             DirectDrawHook::AddMessage(
@@ -1552,39 +2813,47 @@ void Tick() {
     static int s_missionEntrySettle = 0;
     if (g_pendingMissionMode.load() && s.valid &&
         GetCurrentGamePhase() == GamePhase::Match) {
-        PracticeMenu::TitleScreen::SetLaunchStage(
-            PracticeMenu::TitleScreen::LaunchStage::MatchSetup);
         SkipRoundIntro("pending mission entry");
         if (!CharacterHotswap::IsBusy() && ++s_missionEntrySettle >= 2) {
             s_missionEntrySettle = 0;
             g_pendingMissionMode.store(false);
+            g_pendingMissionSawCharacterSelect.store(false, std::memory_order_release);
             std::string path;
+            std::optional<::Mission::Mission> preparedMission;
             {
                 std::lock_guard<std::mutex> lk(g_pendingLoadMx);
                 path.swap(g_pendingLoadPath);
+                preparedMission.swap(g_pendingLoadMission);
             }
-            if (!path.empty()) {
-                // Title-picked mission: load it directly (Setup::Apply hotswaps).
+            // The fallback matchup belongs to exactly the transaction just
+            // consumed. Leaving it populated lets a later pathless generic
+            // browser launch replay stale fighters/stage at Character Select.
+            ClearPendingMatchMetadata();
+            const auto consume = PendingLaunchPolicy::DecideConsume(
+                !path.empty(), preparedMission.has_value());
+            if (consume == PendingLaunchPolicy::ConsumeEffect::LoadPreparedMission) {
+                // Title-picked mission: publish the exact value accepted by
+                // the browser. The source file is intentionally not reopened.
                 std::string msg;
-                if (Runner::Load(path, msg, /*forceFreshMatch=*/false)) {
+                if (Runner::LoadPrepared(std::move(*preparedMission), path, msg,
+                                         /*forceFreshMatch=*/false)) {
                     LogOut("[MISSION] mission mode: loaded '" + msg + "' after match entry", true);
-                    // Embedded states keep the launch cover up through their
-                    // pointer-reconciled restore; value-only missions are ready
-                    // as soon as Runner::Load applies their setup.
-                    if (!g_runRestorePending) {
-                        PracticeMenu::TitleScreen::FinishLaunch();
-                    }
                 } else {
                     LogOut("[MISSION] mission mode: load failed: " + msg, true);
                     DirectDrawHook::AddMessage(("Mission load failed: " + msg).c_str(), "MISSION",
                                                RGB(255, 120, 120), 2500, 0, 120);
-                    PracticeMenu::TitleScreen::FinishLaunch();
                 }
-            } else {
-                PracticeMenu::TitleScreen::FinishLaunch();
+            } else if (consume == PendingLaunchPolicy::ConsumeEffect::OpenGenericBrowser) {
                 CustomMenu::Screens::OpenMissionBrowser();
                 OpenMenu();
                 LogOut("[MISSION] mission mode: opened browser after match entry", true);
+            } else {
+                const std::string msg =
+                    "the prepared title mission transaction was incomplete";
+                LogOut("[MISSION] mission mode: " + msg, true);
+                DirectDrawHook::AddMessage(("Mission load failed: " + msg).c_str(),
+                                           "MISSION", RGB(255, 120, 120),
+                                           2500, 0, 120);
             }
         }
     } else {
@@ -1634,7 +2903,11 @@ void Tick() {
     // mission whose start state is not set yet.
     if (s.valid && g_runActive.load() && !g_runRestorePending && !g_runSavePending &&
         !::Mission::Setup::IsPending() && !Demo::IsActive() && !g_demoFinishedThisTick) {
-        TickRun(s);
+        if (::Mission::TutorialSession::IsActive()) {
+            ::Mission::TutorialSession::Tick(s);   // schema lessons: session owns validation
+        } else {
+            TickRun(s);
+        }
     }
     if (g_inspector.load() && s.valid) {
         DrawInspector(s);
@@ -1650,6 +2923,16 @@ Snapshot GetSnapshot() {
 void SetPendingMissionMode(bool on) {
     g_pendingMissionMode.store(on);
     if (on) {
+        // This API represents the pathless Practice -> mission-browser flow.
+        // Retire every field owned by an older concrete title selection.
+        {
+            std::lock_guard<std::mutex> lk(g_pendingLoadMx);
+            g_pendingLoadPath.clear();
+            g_pendingLoadMission.reset();
+        }
+        ClearPendingMatchMetadata();
+        CharacterHotswap::CancelDirectPracticeLoad("generic mission browser entry");
+        g_pendingMissionSawCharacterSelect.store(false, std::memory_order_release);
         g_pendingRecordMode.store(false);   // mutually exclusive title picks
         g_pendingRecordSawCharacterSelect.store(false, std::memory_order_release);
     }
@@ -1660,12 +2943,46 @@ void SetPendingRecordMode(bool on) {
     g_pendingRecordSawCharacterSelect.store(false, std::memory_order_release);
     if (on) {
         g_pendingMissionMode.store(false);
-        std::lock_guard<std::mutex> lk(g_pendingLoadMx);
-        g_pendingLoadPath.clear();
+        {
+            std::lock_guard<std::mutex> lk(g_pendingLoadMx);
+            g_pendingLoadPath.clear();
+            g_pendingLoadMission.reset();
+        }
+        ClearPendingMatchMetadata();
+        CharacterHotswap::CancelDirectPracticeLoad("recording mode replaced mission launch");
     }
 }
 
-void SetPendingMissionLoad(const std::string& missionPath) {
+bool SetPendingMissionLoad(const std::string& missionPath, std::string& errorOut) {
+    errorOut.clear();
+    if (CharacterHotswap::IsBusy()) {
+        errorOut = "another character load is still in progress";
+        LogOut("[MISSION] pending launch rejected while character loader owns a transaction",
+               true);
+        return false;
+    }
+    // Parse and run the same runtime/capability boundary as Runner::Load before
+    // publishing either half of the title transaction. A stale, malformed, or
+    // unsupported lesson must leave the browser open instead of failing only
+    // after Character Select/Match entry.
+    ::Mission::Mission m;
+    if (!ParseAndValidateMission(missionPath, m, errorOut)) {
+        LogOut("[MISSION] pending launch rejected during preflight: " + errorOut,
+               true);
+        return false;
+    }
+    const int p1SelectId = CharacterHotswap::GetSelectIdForResourceName(
+        m.player.character.c_str());
+    const int p2SelectId = CharacterHotswap::GetSelectIdForResourceName(
+        m.dummy.character.c_str());
+    const bool isTutorial = m.tutorialSchema > 0 && m.hasLesson;
+    if (isTutorial && (p1SelectId < 0 || p2SelectId < 0)) {
+        errorOut = "the lesson's required fighters could not be resolved";
+        LogOut("[MISSION] pending tutorial launch rejected: unresolved resource names p1='" +
+               m.player.character + "' p2='" + m.dummy.character + "'", true);
+        return false;
+    }
+
     // A title launch owns presentation until its baseline is ready. Remove the
     // previous attempt's short-lived status immediately instead of letting it
     // leak through the launch cover.
@@ -1673,20 +2990,14 @@ void SetPendingMissionLoad(const std::string& missionPath) {
     {
         std::lock_guard<std::mutex> lk(g_pendingLoadMx);
         g_pendingLoadPath = missionPath;
+        g_pendingLoadMission = m;
     }
     // Pre-parse the pinned mission matchup before leaving Title. The direct
     // request mirrors Replay PLAY's supported return-to-Loading route while
     // keeping game mode 1; Character Select remains a validated fallback.
     g_pendingHaveChars.store(false);
     g_pendingCsQueued.store(false);
-    ::Mission::Mission m;
-    std::string err;
-    if (::Mission::LoadMission(missionPath, m, err)) {
-        const int p1SelectId = CharacterHotswap::GetSelectIdForResourceName(
-            m.player.character.c_str());
-        const int p2SelectId = CharacterHotswap::GetSelectIdForResourceName(
-            m.dummy.character.c_str());
-        if (p1SelectId >= 0 && p2SelectId >= 0) {
+    if (p1SelectId >= 0 && p2SelectId >= 0) {
             g_pendingP1SelectId.store(p1SelectId);
             g_pendingP2SelectId.store(p2SelectId);
             g_pendingP1Palette.store(m.player.palette);
@@ -1704,21 +3015,15 @@ void SetPendingMissionLoad(const std::string& missionPath) {
             const int stage = m.stage >= 0 ? m.stage : 0;
             if (CharacterHotswap::QueueDirectPracticeLoad(
                     p1SelectId, p2SelectId, stage, palette, m.bgm)) {
-                PracticeMenu::TitleScreen::SetLaunchStage(
-                    PracticeMenu::TitleScreen::LaunchStage::Fighters);
                 LogOut("[MISSION] direct Practice Loading armed (Character Select skipped)", true);
             } else {
                 LogOut("[MISSION] direct Practice Loading unavailable; selector fallback armed", true);
             }
-        } else {
-            LogOut("[MISSION] cannot prepare pinned matchup: unresolved resource names p1='" +
-                   m.player.character + "' p2='" + m.dummy.character + "'", true);
-            PracticeMenu::TitleScreen::FinishLaunch();
-        }
     } else {
-        LogOut("[MISSION] cannot pre-parse pending mission: " + err, true);
-        PracticeMenu::TitleScreen::FinishLaunch();
+        LogOut("[MISSION] cannot prepare pinned matchup: unresolved resource names p1='" +
+               m.player.character + "' p2='" + m.dummy.character + "'", true);
     }
+    g_pendingMissionSawCharacterSelect.store(false, std::memory_order_release);
     g_pendingMissionMode.store(true);
     g_pendingRecordMode.store(false);   // a mission pick cancels a pending record
     g_pendingRecordSawCharacterSelect.store(false, std::memory_order_release);
@@ -1727,6 +3032,33 @@ void SetPendingMissionLoad(const std::string& missionPath) {
                 ? " (direct Loading)"
                 : (g_pendingHaveChars.load() ? " (Character Select fallback)"
                                        : " (no chars in json - manual select)")), true);
+    return true;
+}
+
+bool CancelPendingMissionLoad(const char* reason) {
+    bool clearedSpecificMission = false;
+    {
+        std::lock_guard<std::mutex> lk(g_pendingLoadMx);
+        const auto effect = PendingLaunchPolicy::DecideCancel(
+            !g_pendingLoadPath.empty() || g_pendingLoadMission.has_value());
+        if (effect == PendingLaunchPolicy::CancelEffect::ClearSpecificMission) {
+            g_pendingLoadPath.clear();
+            g_pendingLoadMission.reset();
+            clearedSpecificMission = true;
+        }
+    }
+    if (!clearedSpecificMission) {
+        // SetPendingMissionMode(true) intentionally has no selected path: it
+        // owns the normal Practice -> browser flow, not this failed launch.
+        return false;
+    }
+
+    g_pendingMissionMode.store(false, std::memory_order_release);
+    g_pendingMissionSawCharacterSelect.store(false, std::memory_order_release);
+    ClearPendingMatchMetadata();
+    LogOut(std::string("[MISSION] pending title mission canceled: ") +
+           (reason && *reason ? reason : "unspecified"), true);
+    return true;
 }
 
 void SetInspectorEnabled(bool on) {
@@ -1767,7 +3099,7 @@ std::string GetMacroRecordBindingLabel() { return MacroRecordBindingLabel(); }
 
 namespace Demo {
 
-bool PlayLoaded(std::string& outMsg) {
+bool PlayLoaded(std::string& outMsg, bool tutorialHandoff) {
     std::lock_guard<std::recursive_mutex> lock(g_runStateMx);
     outMsg.clear();
     if (!g_runActive.load(std::memory_order_acquire)) {
@@ -1799,10 +3131,24 @@ bool PlayLoaded(std::string& outMsg) {
         outMsg = "demonstration is already active";
         return false;
     }
+    const bool tutorialActive = ::Mission::TutorialSession::IsActive();
+    if (tutorialActive && !tutorialHandoff) {
+        outMsg = "use Watch Demonstration from the Lesson Menu";
+        return false;
+    }
+    if (tutorialHandoff && !tutorialActive) {
+        outMsg = "no active tutorial can receive the demonstration";
+        return false;
+    }
 
+    // A successful new request supersedes any terminal handoff without
+    // exposing P1 between owners. Failed requests above leave it untouched.
+    ClearDemoTutorialHandoff(false);
     g_demoText = g_runMission.demo;
     DirectDrawHook::RemoveMessagesByCategory("mission_run");
     g_demoFromRecorder = false;
+    g_demoTutorialHandoff = RequiresTutorialRestoreAcknowledgement(
+        tutorialHandoff, false, tutorialActive);
     g_demoCancelRequested.store(false, std::memory_order_release);
     g_demoBaselineIssued = false;
     g_demoSettleFrames = 0;
@@ -1838,9 +3184,12 @@ bool PlayRecording(std::string& outMsg) {
         outMsg = "recorded clip is invalid: " + parseError;
         return false;
     }
+    ClearDemoTutorialHandoff(false);
     g_demoText = clip;
     DirectDrawHook::RemoveMessagesByCategory("mission_run");
     g_demoFromRecorder = true;
+    g_demoTutorialHandoff = RequiresTutorialRestoreAcknowledgement(
+        false, true, ::Mission::TutorialSession::IsActive());
     g_demoCancelRequested.store(false, std::memory_order_release);
     g_demoBaselineIssued = false;
     g_demoSettleFrames = 0;
@@ -1856,6 +3205,23 @@ void Cancel() {
 bool IsActive() { return g_demoPhase.load(std::memory_order_acquire) != Phase::Idle; }
 Phase GetPhase() { return g_demoPhase.load(std::memory_order_acquire); }
 
+RestoreResult PeekTutorialRestore(std::string& outMessage) {
+    std::lock_guard<std::recursive_mutex> lock(g_runStateMx);
+    outMessage = g_demoRestoreMessage;
+    return g_demoRestoreResult;
+}
+
+void AcknowledgeTutorialRestore() {
+    std::lock_guard<std::recursive_mutex> lock(g_runStateMx);
+    if (g_demoRestoreResult == RestoreResult::None) return;
+    const RestoreResult acknowledged = g_demoRestoreResult;
+    ClearDemoTutorialHandoff(true);
+    LogOut(acknowledged == RestoreResult::Restored
+               ? "[MISSION][DEMO] tutorial acknowledged restored baseline; direct neutral released"
+               : "[MISSION][DEMO] tutorial acknowledged restore failure; frozen error owns the return",
+           true);
+}
+
 } // namespace Demo
 
 void NotifyPracticeSessionReset(const char* reason) {
@@ -1865,6 +3231,14 @@ void NotifyPracticeSessionReset(const char* reason) {
     const DemoPhase demoPhase = g_demoPhase.load(std::memory_order_acquire);
     const bool hadRecorder = recorderPhase != RecorderPhase::Idle;
     const bool hadDemo = demoPhase != DemoPhase::Idle;
+    const bool hadRunner = g_runActive.load(std::memory_order_acquire) ||
+                           ::Mission::TutorialSession::IsActive();
+    const std::string resetReason = reason && *reason ? reason : "unspecified";
+    const bool runnerOwnedReload = hadRunner &&
+        (resetReason == "MissionDirectReload" ||
+         (resetReason == "PracticeMatchExit" &&
+          GetCurrentGamePhase() == GamePhase::Loading &&
+          (CharacterHotswap::IsBusy() || ::Mission::Setup::IsPending())));
 
     // Reset synchronously: this path is also used while the frame monitor is
     // suspended, where queuing Recorder::Cancel/Demo::Cancel would leave stale
@@ -1879,6 +3253,8 @@ void NotifyPracticeSessionReset(const char* reason) {
     g_recPhase.store(RecorderPhase::Idle, std::memory_order_release);
     g_recReleaseFrames = 0;
     g_recCountInFrames = 0;
+    g_recCountInTargetTicks = 0;
+    g_recCountInElapsed = false;
     ResetRecorderCaptureState();
     g_recSetup = ::Mission::Mission();
     DirectDrawHook::RemoveMessagesByCategory("mission_record");
@@ -1888,6 +3264,9 @@ void NotifyPracticeSessionReset(const char* reason) {
         MacroController::ReleaseExclusivePlaybackHold();
         HoldDemoP1Neutral(false);
     }
+    // Phase is already Idle while a tutorial terminal result awaits its fresh
+    // snapshot acknowledgement, so hadDemo alone cannot detect this owner.
+    ClearDemoTutorialHandoff(true);
     g_demoCancelRequested.store(false, std::memory_order_release);
     g_demoPhase.store(DemoPhase::Idle, std::memory_order_release);
     g_demoBaselineIssued = false;
@@ -1895,6 +3274,17 @@ void NotifyPracticeSessionReset(const char* reason) {
     g_demoFinishedThisTick = false;
     g_demoText.clear();
     g_demoFromRecorder = false;
+    ResetContactEventJournal(reason);
+
+    if (hadRunner && !runnerOwnedReload) {
+        if (g_runActive.load(std::memory_order_acquire)) Runner::Unload();
+        else ::Mission::TutorialSession::End("Practice-session reset");
+        g_runMission = ::Mission::Mission{};
+        LogOut("[MISSION][RUN] invalidated for Practice-session reset reason=" +
+               resetReason, true);
+    } else if (runnerOwnedReload) {
+        LogOut("[MISSION][RUN] preserved across owned Practice Loading transaction", true);
+    }
 
     if (hadRecorder || hadDemo) {
         LogOut(std::string("[MISSION] cleared ") +
@@ -1908,6 +3298,8 @@ void NotifyPracticeSessionReset(const char* reason) {
 // A savestate was just restored (Revival hotkey or our own auto-retry). Timing
 // measured across a rollback is meaningless, so both consumers resynchronize.
 void NotifyStateLoaded() {
+    ResetContactEventJournal("savestate load");
+    ::Mission::TutorialSession::NotifyStateLoaded();
     // Recorder: abort the synchronized take as a unit. Clearing only recipe
     // steps while the macro stream kept its pre-load bytes created an impossible
     // recipe/demo pair. The author explicitly starts a fresh count-in instead.
@@ -1917,6 +3309,8 @@ void NotifyStateLoaded() {
         ResetRecorderCaptureState();
         g_recReleaseFrames = 0;
         g_recCountInFrames = 0;
+        g_recCountInTargetTicks = 0;
+        g_recCountInElapsed = false;
         g_recPhase.store(RecorderPhase::PreRecord, std::memory_order_release);
         ShowRecorderState("State loaded: take discarded; press Macro Record for a fresh count-in",
                           RGB(255, 200, 120), 1800);
@@ -1942,14 +3336,21 @@ bool BuildDraft(::Mission::Mission& out) {
     m.dummy  = g_recSetup.dummy;
     m.stage  = g_recSetup.stage;
     m.bgm    = g_recSetup.bgm;
-    m.savestate = g_recSetup.savestate;   // exact start state (may be empty)
+    m.savestate = g_recSetup.savestate;   // mandatory exact frame-zero state
     for (const CapturedStep& cs : g_recSteps) {
         ::Mission::Step st;
         st.notation = cs.notation;        // auto-derived; author refines in the editor
         st.moveIds.push_back(static_cast<int>(cs.moveId));
+        if (cs.automaticFollowupId > 0) {
+            st.moveIds.push_back(static_cast<int>(cs.automaticFollowupId));
+        }
         st.req = static_cast<::Mission::StepReq>(cs.req);
         st.optional = cs.optional;
         st.comboEndAfter = cs.comboEndAfter;
+        st.charState = cs.charState;      // Akiko rekka crit determinism (-1 = n/a)
+        if (cs.landed && cs.damage > 0) {
+            st.damage = cs.damage;        // hit-variant fingerprint (clean hit/crit)
+        }
         // Multi-hit move: require the observed hit count.
         if (cs.landed && cs.hits > 1) {
             st.req = ::Mission::StepReq::Hits;
@@ -1989,24 +3390,50 @@ bool SaveRecorded(std::string& outMsg) {
     }
     ::Mission::Mission m;
     if (!BuildDraft(m)) { outMsg = "no steps captured"; return false; }
+    if (m.savestate.empty()) {
+        outMsg = "exact start state is missing; retake the recording";
+        return false;
+    }
 
     const std::string root = ::Mission::ResolveMissionsRoot();
     if (root.empty()) { outMsg = "cannot resolve missions root"; return false; }
     const std::string dir = root + "\\_recorded";
     CreateDirectoryA(root.c_str(), nullptr);
     CreateDirectoryA(dir.c_str(), nullptr);
-    char name[64];
-    _snprintf_s(name, sizeof(name), _TRUNCATE, "recorded_%lu.json", static_cast<unsigned long>(GetTickCount()));
-    const std::string path = dir + "\\" + name;
 
     std::string err;
-    if (!::Mission::SaveMission(path, m, err)) { outMsg = err; return false; }
-    outMsg = path;
+    std::string acceptedPath;
+    if (!ReserveRecordedMissionPath(dir, acceptedPath, err)) {
+        outMsg = err;
+        return false;
+    }
+    if (!::Mission::SaveMission(acceptedPath, m, err)) {
+        // This empty reservation belongs to this save attempt. Do not leave it
+        // in the mission browser when serialization fails.
+        DeleteFileA(acceptedPath.c_str());
+        outMsg = err;
+        return false;
+    }
+    std::string tracePath;
+    std::string traceError;
+    if (WriteRecorderEntityTraceSidecar(acceptedPath, tracePath, traceError)) {
+        LogOut("[MISSION][REC][ENTITY] wrote " +
+               std::to_string(g_recEntityTraceCount) +
+               " raw event(s), dropped=" +
+               std::to_string(g_recEntityTraceDropped) + " -> " + tracePath, true);
+    } else {
+        LogOut("[MISSION][REC][ENTITY] sidecar write failed: " + traceError, true);
+        DirectDrawHook::AddMessage(
+            "Mission saved, but its raw entity trace could not be written",
+            "MISSION", RGB(255, 180, 120), 3000, 0, 120);
+    }
+    outMsg = acceptedPath;
     g_recPhase.store(Phase::Idle, std::memory_order_release);
     DirectDrawHook::RemoveMessagesByCategory("mission_record");
     RemoveRecorderBanner();
     CustomMenu::Screens::NotifyMissionLibraryChanged();
-    LogOut("[MISSION][REC] saved " + std::to_string(m.steps.size()) + " step(s) -> " + path, true);
+    LogOut("[MISSION][REC] saved " + std::to_string(m.steps.size()) +
+           " step(s) -> " + acceptedPath, true);
     return true;
 }
 
@@ -2019,6 +3446,7 @@ static void ResetProgress() {
     g_runStep = 0;
     g_runFailedStep.store(-1);
     g_runBaseline = 0;
+    g_runDamageBaseline = 0;
     g_runGapWindow.Reset();
     g_runBestTier = -1;
     g_runArmed = false;
@@ -2044,26 +3472,15 @@ bool Load(const std::string& path, std::string& outMsg, bool forceFreshMatch) {
         return false;
     }
     ::Mission::Mission m;
-    std::string err;
-    if (!::Mission::LoadMission(path, m, err)) { outMsg = err; return false; }
-    if (m.steps.empty()) { outMsg = "mission has no steps: " + path; return false; }
-    for (size_t i = 0; i < m.steps.size(); ++i) {
-        if (!m.steps[i].comboEndAfter) continue;
-        if (m.steps[i].optional) {
-            outMsg = "comboEndAfter cannot be attached to optional step " +
-                     std::to_string(i);
-            return false;
-        }
-        if (i + 1 >= m.steps.size()) {
-            outMsg = "comboEndAfter requires a following setup/Part-2 step at " +
-                     std::to_string(i);
-            return false;
-        }
-    }
+    if (!ParseAndValidateMission(path, m, outMsg)) return false;
+    return LoadPrepared(std::move(m), path, outMsg, forceFreshMatch);
+}
 
+bool LoadPrepared(::Mission::Mission mission, const std::string& sourcePath,
+                  std::string& outMsg, bool forceFreshMatch) {
     std::lock_guard<std::recursive_mutex> lock(g_runStateMx);
-    // Parsing happened without blocking the monitor/render threads.  Recheck
-    // ownership now that mission state can be published atomically.
+    // Parsing/preflight happened without blocking the monitor/render threads.
+    // Recheck ownership now that mission state can be published atomically.
     if (Demo::IsActive()) {
         outMsg = "cancel the active demonstration first";
         return false;
@@ -2072,16 +3489,26 @@ bool Load(const std::string& path, std::string& outMsg, bool forceFreshMatch) {
         outMsg = "save or discard the active recording session first";
         return false;
     }
+    // Replacing the loaded runner is also a tutorial-session reset. Retire a
+    // terminal handoff whose old Demo phase is already Idle before publishing
+    // the new mission and its input owners.
+    ClearDemoTutorialHandoff(true);
     // A mission startup owns P1 until its exact baseline is ready.  Cancel
     // ordinary macros and motion queues before enabling the neutral poll hold,
     // otherwise an immediate-input owner can contaminate that baseline.
     CancelAutoActionsAndMacros();
-    g_runMission = std::move(m);
+    g_runMission = std::move(mission);
     g_runAttempts = 0;
     ResetProgress();
     g_runStateSaved = false;
     g_runSaveSettle = 0;
+    g_runSaveRetries = 0;
+    g_runSaveElapsed = 0;
+    g_runSaveBlocker.clear();
     g_runRestoreSettle = 0;
+    g_runRestoreTimeout = 0;
+    const bool isTutorial =
+        g_runMission.tutorialSchema > 0 && g_runMission.hasLesson;
     // Embedded start state: hotswap only, then restore the dump on settle (it
     // becomes the retry baseline). Otherwise: value-level setup + baseline save.
     g_runRestorePending = !g_runMission.savestate.empty() && ::Mission::StateDump::Available();
@@ -2094,19 +3521,50 @@ bool Load(const std::string& path, std::string& outMsg, bool forceFreshMatch) {
                                  forceFreshMatch,
                                  /*allowReload=*/true,
                                  /*acceptPreparedSession=*/!forceFreshMatch)) {
-        g_runActive.store(false);
         g_runSavePending = false;
         g_runRestorePending = false;
         SetRunnerStartupInputHold(false);
-        outMsg = "mission setup could not start a clean Practice session";
+        std::string setupFailure;
+        const std::string failureMessage = ::Mission::Setup::TakeFailure(setupFailure)
+            ? "lesson start state could not be applied: " + setupFailure
+            : "mission setup could not start a clean Practice session";
+        if (StartupFailurePolicy::Decide(isTutorial) ==
+                StartupFailurePolicy::Effect::RetainTutorialError &&
+            ::Mission::TutorialSession::Begin(g_runMission)) {
+            // Error deliberately has no restart row until a baseline exists,
+            // but it retains the runner/lesson identity, freezes the divergent
+            // world, and gives the player a durable Return to Lessons path.
+            ::Mission::TutorialSession::NotifyStartupFailure(
+                "The " + failureMessage + ". Return to Lessons and try again.");
+            outMsg = g_runMission.name.empty() ? sourcePath : g_runMission.name;
+            LogOut("[MISSION][RUN] tutorial setup failed; retained durable Error: " +
+                   failureMessage, true);
+            return true;
+        }
+
+        // Ordinary missions have no startup Error frontend. Tear their
+        // publication down completely rather than leaving an inactive runner
+        // or a previous tutorial/dummy lease behind.
+        g_runActive.store(false);
+        ::Mission::TutorialSession::End("mission setup failed");
+        g_runMission = ::Mission::Mission{};
+        ResetProgress();
+        outMsg = failureMessage;
         LogOut("[MISSION][RUN] load aborted: " + outMsg, true);
         return false;
     }
     if (g_runRestorePending) {
         LogOut("[MISSION][RUN] embedded start state present - will restore on settle", true);
     }
-    outMsg = g_runMission.name.empty() ? path : g_runMission.name;
+    outMsg = g_runMission.name.empty() ? sourcePath : g_runMission.name;
     LogOut("[MISSION][RUN] loaded '" + outMsg + "' (" + std::to_string(g_runMission.steps.size()) + " steps)", true);
+    // tutorialSchema lessons hand validation/presentation to the session
+    // runtime; the runner stays the loader/baseline owner (TickRun bypassed).
+    if (isTutorial) {
+        ::Mission::TutorialSession::Begin(g_runMission);
+    } else {
+        ::Mission::TutorialSession::End("non-tutorial load");
+    }
     return true;
 }
 
@@ -2132,6 +3590,7 @@ bool LoadLatestRecorded(std::string& outMsg) {
 
 void Unload() {
     std::lock_guard<std::recursive_mutex> lock(g_runStateMx);
+    ::Mission::Setup::Cancel("runner unloaded");
     if (Demo::IsActive()) {
         MacroController::Stop();
         MacroController::ReleaseExclusivePlaybackHold();
@@ -2142,14 +3601,19 @@ void Unload() {
         g_demoCancelRequested.store(false, std::memory_order_release);
         g_demoPhase.store(DemoPhase::Idle, std::memory_order_release);
     }
+    ClearDemoTutorialHandoff(true);
     g_runActive.store(false);
     g_runSavePending = false;
     g_runStateSaved = false;
+    g_runSaveRetries = 0;
+    g_runSaveElapsed = 0;
+    g_runSaveBlocker.clear();
     g_runRestorePending = false;
     g_runRestoreSettle = 0;
     g_runRestoreTimeout = 0;
     SetRunnerStartupInputHold(false);
     DirectDrawHook::RemoveMessagesByCategory("mission_run");
+    ::Mission::TutorialSession::End("runner unload");
     ResetProgress();
 }
 
@@ -2164,6 +3628,29 @@ bool  IsActive() { return g_runActive.load(std::memory_order_acquire); }
 Phase GetPhase() {
     std::lock_guard<std::recursive_mutex> lock(g_runStateMx);
     return g_runPhase;
+}
+bool RequestBaselineRestore(std::string& outMsg) {
+    std::lock_guard<std::recursive_mutex> lock(g_runStateMx);
+    if (!g_runActive.load(std::memory_order_acquire)) { outMsg = "no active session"; return false; }
+    if (!g_runStateSaved || !SavestateHook::IsInstalled()) { outMsg = "no baseline saved"; return false; }
+    if (g_recActive.load() || CharacterHotswap::IsBusy() || ::Mission::Setup::IsPending()) {
+        outMsg = "restore blocked (busy)";
+        return false;
+    }
+    ScopedRunnerSelfLoad selfLoad;
+    const bool ok = SavestateHook::TriggerLoad();
+    if (ok) SkipRoundIntro("tutorial checkpoint restore");
+    else outMsg = "baseline load failed";
+    return ok;
+}
+bool HasBaseline() {
+    std::lock_guard<std::recursive_mutex> lock(g_runStateMx);
+    return g_runActive.load(std::memory_order_acquire) &&
+           g_runStateSaved && SavestateHook::IsInstalled();
+}
+bool HasDemo() {
+    std::lock_guard<std::recursive_mutex> lock(g_runStateMx);
+    return g_runActive.load(std::memory_order_acquire) && !g_runMission.demo.empty();
 }
 int CurrentStep() {
     std::lock_guard<std::recursive_mutex> lock(g_runStateMx);

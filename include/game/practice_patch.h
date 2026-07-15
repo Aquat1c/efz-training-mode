@@ -1,4 +1,5 @@
 #pragma once
+#include <cstdint>
 #include <string>
 
 // Helper function to format memory addresses as hex strings
@@ -34,6 +35,11 @@ void EnsureDefaultControlFlagsOnMatchStart();
 // Optional 'reason' is logged whenever the flag actually changes (for diagnostics)
 bool SetPracticeAutoBlockEnabled(bool enabled, const char* reason = nullptr);
 bool GetPracticeAutoBlockEnabled(bool &enabledOut);
+uint64_t GetPracticeAutoBlockWriteGeneration();
+bool RestorePracticeAutoBlockIfUnchanged(bool enabled,
+                                         uint64_t expectedGeneration,
+                                         bool expectedCurrent,
+                                         const char* reason = nullptr);
 
 // Sync internal Dummy Auto-Block mode to the current game flag (+4936).
 // If clearOverride is true, stop overriding the flag from our custom modes
@@ -76,3 +82,8 @@ bool GetCurrentDesiredAutoBlockOn(bool &onOut);
 // Hint that an external controller (e.g., Random Block) will perform the +4936 write this frame,
 // so MonitorDummyAutoBlock should skip its own write.
 void SetExternalAutoBlockController(bool enabled);
+
+// Long-lived writer exclusion for deterministic tutorial block episodes.  It
+// composes with the existing one-frame RandomBlock controller flag.
+bool AcquireTutorialAutoBlockController(uint64_t& tokenOut);
+void ReleaseTutorialAutoBlockController(uint64_t token);

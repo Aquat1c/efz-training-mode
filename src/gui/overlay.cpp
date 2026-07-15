@@ -9,6 +9,8 @@
 #include "../include/gui/overlay_api.h"
 #include "../include/gui/framebar.h"
 #include "../include/game/mission/mission_render.h"
+#include "../include/game/mission/mission_pause_menu.h"
+#include "../include/game/mission/tutorial_session.h"
 #include "../include/game/practice_menu/mission_title_screen.h"
 #include "../include/core/logger.h"
 #include "../include/utils/utilities.h"
@@ -97,6 +99,78 @@ namespace {
         outWidth = desc.Width;
         outHeight = desc.Height;
         return true;
+    }
+
+    struct VirtualDrawRange {
+        int firstVertex = 0;
+        int firstCommand = 0;
+    };
+
+    // Full-screen mission/tutorial surfaces author in EFZ's 640x480 virtual
+    // canvas. Isolate their draw commands so both geometry AND scissor rects
+    // can be mapped into the render target's letterboxed 4:3 game area without
+    // mutating commands emitted by another overlay.
+    VirtualDrawRange BeginVirtualDrawRange(ImDrawList* dl) {
+        if (!dl) return {};
+        if (dl->CmdBuffer.empty() || dl->CmdBuffer.back().ElemCount != 0) {
+            dl->AddDrawCmd();
+        }
+        return {dl->VtxBuffer.Size, dl->CmdBuffer.Size - 1};
+    }
+
+    void EndVirtualDrawRange(ImDrawList* dl, const VirtualDrawRange& range,
+                             float ox, float oy, float scale,
+                             float gameWidth, float gameHeight) {
+        if (!dl) return;
+
+        // EFZ's normal EndScene target is already the authored 640x480
+        // canvas. Avoid walking every tutorial vertex/command in that common
+        // case; the trailing command still isolates later overlays.
+        const ImVec2 displayPos = ImGui::GetMainViewport()->Pos;
+        const ImVec2 displaySize = ImGui::GetIO().DisplaySize;
+        const bool identityTransform =
+            std::fabs(ox) < 0.001f && std::fabs(oy) < 0.001f &&
+            std::fabs(scale - 1.0f) < 0.001f &&
+            std::fabs(gameWidth - 640.0f) < 0.001f &&
+            std::fabs(gameHeight - 480.0f) < 0.001f &&
+            std::fabs(displayPos.x) < 0.001f &&
+            std::fabs(displayPos.y) < 0.001f &&
+            std::fabs(displaySize.x - 640.0f) < 0.001f &&
+            std::fabs(displaySize.y - 480.0f) < 0.001f;
+        if (identityTransform) {
+            dl->AddDrawCmd();
+            return;
+        }
+
+        for (int i = range.firstVertex; i < dl->VtxBuffer.Size; ++i) {
+            ImDrawVert& vertex = dl->VtxBuffer[i];
+            vertex.pos.x = ox + vertex.pos.x * scale;
+            vertex.pos.y = oy + vertex.pos.y * scale;
+        }
+
+        const auto nearlyEqualClip = [](float a, float b) {
+            return std::fabs(a - b) < 0.5f;
+        };
+        for (int i = range.firstCommand; i < dl->CmdBuffer.Size; ++i) {
+            ImDrawCmd& cmd = dl->CmdBuffer[i];
+            ImVec4& clip = cmd.ClipRect;
+            const bool fullDisplay =
+                nearlyEqualClip(clip.x, displayPos.x) &&
+                nearlyEqualClip(clip.y, displayPos.y) &&
+                nearlyEqualClip(clip.z, displayPos.x + displaySize.x) &&
+                nearlyEqualClip(clip.w, displayPos.y + displaySize.y);
+            if (fullDisplay) {
+                clip = ImVec4(ox, oy, ox + gameWidth, oy + gameHeight);
+            } else {
+                clip.x = ox + clip.x * scale;
+                clip.y = oy + clip.y * scale;
+                clip.z = ox + clip.z * scale;
+                clip.w = oy + clip.w * scale;
+            }
+        }
+        // Prevent later messages from appending to a command whose clip rect
+        // was converted from virtual coordinates.
+        dl->AddDrawCmd();
     }
 
     bool IsEfzFullscreenCached() {
@@ -845,11 +919,14 @@ HRESULT WINAPI HookedEndScene(LPDIRECT3DDEVICE9 pDevice) {
         }
     }
 
-    // The title MISSIONS/TUTORIAL screens draw with the custom-menu fonts, so
-    // PrepareFrame (atlas rebuild) must also run while they are up even though
-    // the pause menu itself is closed.
+    // The title MISSIONS/TUTORIAL screens and the mission/lesson pause menu
+    // draw with the custom-menu fonts, so PrepareFrame (atlas rebuild) must
+    // also run while they are up even though the practice menu itself is
+    // closed.
     if ((ImGuiImpl::IsVisible() && Config::GetSettings().useCustomMenu) ||
-        PracticeMenu::TitleScreen::WantsDraw()) {
+        PracticeMenu::TitleScreen::WantsDraw() ||
+        Mission::PauseMenu::WantsDraw() ||
+        Mission::TutorialSession::WantsDraw()) {
         SetEndScenePhase("CustomMenu::PrepareFrame");
         CustomMenu::PrepareFrame();
     }
@@ -1155,8 +1232,11 @@ void DirectDrawHook::RenderD3D9Overlays(LPDIRECT3DDEVICE9 pDevice, UINT rtW, UIN
     const bool haveMessages = !permanentSnapshot.empty() || !temporarySnapshot.empty();
     const bool haveCollisionOverlay = CollisionDisplay::IsAnyLayerEnabled();
     const bool titleScreenActive = PracticeMenu::TitleScreen::WantsDraw();
+    const bool missionPauseActive = Mission::PauseMenu::WantsDraw();
+    const bool tutorialActive = Mission::TutorialSession::WantsDraw();
     if (!menuVisibleNow && !g_ShowOverlayDebugBorders.load() && !haveMessages &&
-        !haveCollisionOverlay && !titleScreenActive) {
+        !haveCollisionOverlay && !titleScreenActive && !missionPauseActive &&
+        !tutorialActive) {
         return;
     }
 
@@ -1254,15 +1334,35 @@ void DirectDrawHook::RenderD3D9Overlays(LPDIRECT3DDEVICE9 pDevice, UINT rtW, UIN
         FrameBar::Render(fbCtx);
     }
 
-    // Mission combo recipe (active-mission only; no-op otherwise).
-    if (!menuVisibleNow) {
+    // Mission combo recipe (active-mission only; no-op otherwise). Hidden
+    // under both the practice menu and the session pause menu.
+    // TutorialSession owns its complete in-match presentation. Avoid taking
+    // the ordinary mission renderer's locks/copies only to discover that a
+    // tutorial has no combo recipe to draw.
+    if (!menuVisibleNow && !missionPauseActive && !tutorialActive) {
         Mission::Render::Draw(pDevice, bgList, ox, oy, scale);
     }
 
     // Title MISSIONS/TUTORIAL screens (custom-menu-styled, drawn over the
     // vanilla title backdrop while the practice submenu delegates to them).
     if (titleScreenActive) {
-        PracticeMenu::TitleScreen::Draw(bgList);
+        const VirtualDrawRange range = BeginVirtualDrawRange(bgList);
+        PracticeMenu::TitleScreen::Draw(pDevice, bgList);
+        EndVirtualDrawRange(bgList, range, ox, oy, scale, gw, gh);
+    }
+
+    // Tutorial session surfaces (pages / live requirements / choice / completion).
+    if (tutorialActive && !menuVisibleNow && !missionPauseActive) {
+        const VirtualDrawRange range = BeginVirtualDrawRange(bgList);
+        Mission::TutorialSession::Draw(pDevice, bgList);
+        EndVirtualDrawRange(bgList, range, ox, oy, scale, gw, gh);
+    }
+
+    // Mission/lesson pause menu: dimmed card over the frozen match.
+    if (missionPauseActive) {
+        const VirtualDrawRange range = BeginVirtualDrawRange(bgList);
+        Mission::PauseMenu::Draw(bgList);
+        EndVirtualDrawRange(bgList, range, ox, oy, scale, gw, gh);
     }
 
     // Optional: draw a single combined background for split frame-advantage messages
@@ -2103,6 +2203,8 @@ void DirectDrawHook::ShutdownD3D9() {
         MH_RemoveHook(g_EndSceneTarget);
         g_EndSceneTarget = nullptr;
     }
+    Mission::TutorialSession::ReleaseRenderThreadState();
+    Mission::Render::ReleaseTextures();
     g_EndSceneTargetSource = "none";
     g_EndSceneHookEnabled.store(false, std::memory_order_release);
     isHooked = false;

@@ -22,17 +22,19 @@ using namespace PracticeMenu::EfzTitle;
 
 namespace {
 
-// ---- sheet layout (measured 1:1 from title_ob2.png, 120x95, top-down) ------
-// The sheet has two lanes of 3 rows each, pitch 14px, glyph in the top ~7px of
-// each cell (rest is the white transparent key, or the teal highlight bar for
-// selected rows):
+// ---- sheet layout (measured 1:1 from title_ob2.dat, 120x95, top-down) ------
+// The sheet has two lanes of 3 rows each at a 14px pitch. Only the first 8px
+// of each mapped row belong to the visible sprite. The remaining cell padding
+// contains near-white, non-keyed separator pixels, and the last scanline of a
+// full 14px crop reaches the following selected rail. Blit the visible height,
+// but retain the authored pitch and on-screen spacing:
 //   Unselected lane: src Y = 4, 18, 32   (kUnselBaseY + row*kRowPitch)
 //   Selected   lane: src Y = 49, 63, 77  (kSelBaseY   + row*kRowPitch)
 constexpr int kSheetW     = 120; // full sprite width
-constexpr int kRowH       = 14;  // source/dest cell height
+constexpr int kRowH       = 8;   // visible sprite height; do not copy cell padding
 constexpr int kRowPitch   = 14;  // stride between rows within a lane
-constexpr int kUnselBaseY = 4;   // top of the unselected TUTORIAL glyph
-constexpr int kSelBaseY   = 49;  // top of the selected TUTORIAL glyph (teal bar)
+constexpr int kUnselBaseY = 4;   // top of the first unselected row (PRACTICE)
+constexpr int kSelBaseY   = 49;  // top of the first selected row (PRACTICE + teal bar)
 
 // ---- on-screen placement (native 320x240) ----------------------------------
 // The vanilla title menu draws at screen dest (195,130) with a 14px row pitch
