@@ -25,9 +25,12 @@ static inline bool IsH() {
 static inline bool IsI() {
     return GetEfzRevivalVersion() == EfzRevivalVersion::Revival102i;
 }
+static inline const EfzRevival102jProfile* JProfile() {
+    if (GetEfzRevivalVersion() != EfzRevivalVersion::Revival102j) return nullptr;
+    return FindEfzRevival102jProfileByBuild(GetEfzRevival102jBuild());
+}
 static inline bool IsJ() {
-    return GetEfzRevivalVersion() == EfzRevivalVersion::Revival102j
-        && IsEfzRevival102jVerifiedBuild();
+    return JProfile() != nullptr;
 }
 
 bool EFZ_SupportsNativePracticeSideSwitch() {
@@ -76,7 +79,7 @@ uintptr_t EFZ_RVA_PatchToggler() {
     else if (IsLegacyEFamily()) r = 0x006B2A0;
     else if (IsI()) r = 0x006BD50; // 1.02i (different from 1.02h)
     else if (IsH()) r = 0x006BB00; // 1.02h
-    else if (IsJ()) r = 0x0077F40; // 1.02j MinGW; verified visual patch selector
+    else if (const EfzRevival102jProfile* j = JProfile()) r = j->patchTogglerRva;
     LogAddrOnce("PatchToggler", r);
     return r;
 }
@@ -88,7 +91,7 @@ uintptr_t EFZ_RVA_PatchCtx() {
     else if (IsE()) r = 0x00A0760;
     else if (IsI()) r = 0x00A1790; // 1.02i
     else if (IsH()) r = 0x00A0780; // 1.02h
-    else if (IsJ()) r = 0x014E8C0; // 1.02j patch-context object
+    else if (const EfzRevival102jProfile* j = JProfile()) r = j->patchContextRva;
     LogAddrOnce("PatchCtx", r);
     return r;
 }
@@ -102,7 +105,7 @@ uintptr_t EFZ_RVA_TogglePause() {
         else if (v == EfzRevivalVersion::Revival102g) r = 0x00759C0;  // 1.02g
     else if (IsI()) r = 0x0076710;  // 1.02i
     else if (IsH()) r = 0x0076170;  // 1.02h
-    else if (IsJ()) r = 0x007DB60;  // 1.02j; toggles +0xDC, resets +0xD8
+    else if (const EfzRevival102jProfile* j = JProfile()) r = j->togglePauseRva;
     LogAddrOnce("TogglePause", r);
     return r;
 }
@@ -119,7 +122,7 @@ uintptr_t EFZ_RVA_PracticeTick() {
         // 0x74F40/0x74FF0 helper path is not reliable for match-entry capture.
         else if (IsI()) r = 0x0075F60;  // 1.02i
         else if (IsH()) r = 0x00759C0;  // 1.02h
-        else if (IsJ()) r = 0x007D6B0;  // 1.02j single-step/render body
+        else if (const EfzRevival102jProfile* j = JProfile()) r = j->practiceStepRenderRva;
     LogAddrOnce("PracticeTick", r);
     return r;
 }
@@ -200,7 +203,7 @@ uintptr_t EFZ_RVA_RenderContextGlobal() {
     if (v == EfzRevivalVersion::Revival102f || IsE()) r = 0x00A0778;
     else if (IsH()) r = 0x00A0798;
     else if (IsI()) r = 0x00A17A8;
-    else if (IsJ()) r = 0x014E8D8;
+    else if (const EfzRevival102jProfile* j = JProfile()) r = j->renderContextGlobalRva;
     LogAddrOnce("RenderContextGlobal", r);
     return r;
 }
@@ -223,7 +226,7 @@ uintptr_t EFZ_RVA_PracticeDispatcher() {
     else if (v == EfzRevivalVersion::Revival102g) r = 0x0075CC0;  // 1.02g sub_10075CC0
     else if (IsI()) r = 0x0076A30;
     else if (IsH()) r = 0x0076490;
-    else if (IsJ()) r = 0x007CF60; // J vtable[4]; save/load bodies are inlined here
+    else if (const EfzRevival102jProfile* j = JProfile()) r = j->practiceDispatcherRva;
     // For unsupported versions: return 0 (don't guess addresses)
     LogAddrOnce("PracticeDispatcher", r);
     return r;
@@ -379,7 +382,7 @@ uintptr_t EFZ_RVA_LoadState() {
     else if (v == EfzRevivalVersion::Revival102g) r = 0x0075BE0;  // sub_10075BE0
     else if (v == EfzRevivalVersion::Revival102h) r = 0x00763B0;  // sub_100763B0
     else if (v == EfzRevivalVersion::Revival102i) r = 0x0076950;  // sub_10076950
-    else if (IsJ()) r = 0x007E040;  // callable J load body; hotkey path is inlined
+    else if (const EfzRevival102jProfile* j = JProfile()) r = j->loadStateRva;
     LogAddrOnce("LoadState", r);
     return r;
 }
@@ -394,7 +397,7 @@ uintptr_t EFZ_RVA_SaveState() {
     else if (v == EfzRevivalVersion::Revival102g) r = 0x0075C50;  // sub_10075C50
     else if (v == EfzRevivalVersion::Revival102h) r = 0x0076420;  // sub_10076420
     else if (v == EfzRevivalVersion::Revival102i) r = 0x00769C0;  // sub_100769C0
-    else if (IsJ()) r = 0x007E0F0;  // callable J save body; hotkey path is inlined
+    else if (const EfzRevival102jProfile* j = JProfile()) r = j->saveStateRva;
     LogAddrOnce("SaveState", r);
     return r;
 }
@@ -411,7 +414,7 @@ uintptr_t EFZ_RVA_PracticeHotkeyHandler() {
     else if (v == EfzRevivalVersion::Revival102g) r = 0x0075CC0;  // sub_10075CC0
     else if (v == EfzRevivalVersion::Revival102h) r = 0x0076490;  // sub_10076490
     else if (v == EfzRevivalVersion::Revival102i) r = 0x0076A30;  // sub_10076A30
-    else if (IsJ()) r = 0x007CF60;  // sub_7007CF60, J vtable[4]
+    else if (const EfzRevival102jProfile* j = JProfile()) r = j->practiceDispatcherRva;
     LogAddrOnce("PracticeHotkeyHandler", r);
     return r;
 }

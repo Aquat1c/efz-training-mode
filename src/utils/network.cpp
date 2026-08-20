@@ -32,7 +32,8 @@ constexpr size_t kRequiredExportSize =
 
 std::atomic<int> s_cachedRevivalVer{0};
 std::atomic<int> s_cachedRevivalFlavor{0};
-std::atomic<int> s_cachedRevival102jVerification{0}; // 0=unchecked, 1=valid, -1=invalid
+// 0=unchecked, -1=rejected, positive values are EfzRevival102jBuild.
+std::atomic<int> s_cachedRevival102jBuild{0};
 
 std::mutex s_reasonMutex;
 std::string s_lastOnlineReason;
@@ -168,8 +169,8 @@ bool LooksLikeRevivalPatchToggler(HMODULE module, uintptr_t rva) {
     return hits >= 8;
 }
 
-bool VerifyRevival102jPeProfile(HMODULE module) {
-    if (!module) return false;
+const EfzRevival102jProfile* VerifyRevival102jPeProfile(HMODULE module) {
+    if (!module) return nullptr;
 
     IMAGE_DOS_HEADER dos{};
     const uintptr_t base = reinterpret_cast<uintptr_t>(module);
@@ -177,33 +178,36 @@ bool VerifyRevival102jPeProfile(HMODULE module) {
         || dos.e_magic != IMAGE_DOS_SIGNATURE
         || dos.e_lfanew <= 0
         || dos.e_lfanew > 0x1000) {
-        return false;
+        return nullptr;
     }
 
     IMAGE_NT_HEADERS32 nt{};
     if (!SafeReadMemory(base + static_cast<uintptr_t>(dos.e_lfanew), &nt, sizeof(nt))
         || nt.Signature != IMAGE_NT_SIGNATURE
         || nt.OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR32_MAGIC) {
-        return false;
+        return nullptr;
     }
 
-    // Revival 1.02j's verified MinGW binary profile. Requiring both values
-    // keeps all J-only hooks and global reads fail-closed on rebuilt DLLs.
-    if (nt.FileHeader.TimeDateStamp != 0x6A36A6AEu
-        || nt.OptionalHeader.SizeOfImage != 0x001D9000u) {
-        return false;
-    }
+    const EfzRevival102jProfile* profile = FindEfzRevival102jProfileByPeIdentity(
+        nt.FileHeader.TimeDateStamp,
+        nt.OptionalHeader.SizeOfImage);
+    if (!profile) return nullptr;
 
-    // Also pin the critical Practice ABI. J inserted separate full/deleting
-    // destructor slots, moving post-init/tick/hotkey to vtable[2..4]. This
-    // prevents a same-title DLL with an incompatible vtable from being patched.
     uintptr_t practiceVtable[5] = {};
-    if (!SafeReadMemory(base + 0x0016FF80u, practiceVtable, sizeof(practiceVtable))) {
-        return false;
+    if (!SafeReadMemory(
+            base + profile->practiceVtableRva,
+            practiceVtable,
+            sizeof(practiceVtable))) {
+        return nullptr;
     }
-    return practiceVtable[2] == base + 0x0007DE40u
-        && practiceVtable[3] == base + 0x0007E140u
-        && practiceVtable[4] == base + 0x0007CF60u;
+    // Preserve the established J admission contract: pin the post-init, main
+    // tick, and hotkey-dispatcher slots that training mode actually consumes.
+    for (size_t i = 2; i <= 4; ++i) {
+        if (practiceVtable[i] != base + profile->practiceVtableSlots[i]) {
+            return nullptr;
+        }
+    }
+    return profile;
 }
 
 bool ReadModulePeProfile(HMODULE module, uint32_t& outTimeDateStamp, uint32_t& outSizeOfImage) {
@@ -295,7 +299,7 @@ EfzRevivalVersion DetectRevivalVersionFromDllProfile() {
     if (timeDateStamp == 0x63BF27EAu && sizeOfImage == 0x000B3000u) {
         return EfzRevivalVersion::Revival102i;
     }
-    if (timeDateStamp == 0x6A36A6AEu && sizeOfImage == 0x001D9000u) {
+    if (FindEfzRevival102jProfileByPeIdentity(timeDateStamp, sizeOfImage) != nullptr) {
         return VerifyRevival102jPeProfile(module)
             ? EfzRevivalVersion::Revival102j
             : EfzRevivalVersion::Other;
@@ -676,7 +680,7 @@ EfzRevivalVersion GetEfzRevivalVersion() {
         // Flavor and PE verification are derived from the detected version. Discard
         // any Vanilla-era result when a delayed Revival load changes that version.
         s_cachedRevivalFlavor.store(0, std::memory_order_release);
-        s_cachedRevival102jVerification.store(0, std::memory_order_release);
+        s_cachedRevival102jBuild.store(0, std::memory_order_release);
         LogOut("[REVIVAL] Refreshed cached version after delayed EfzRevival.dll load", true);
     }
     if (detectionSource != 0 && previous != static_cast<int>(version)) {
@@ -744,30 +748,38 @@ bool IsEfzRevival102fClassicBuild() {
     return GetEfzRevivalDllFlavor() == EfzRevivalDllFlavor::Revival102fClassic;
 }
 
-bool IsEfzRevival102jVerifiedBuild() {
+EfzRevival102jBuild GetEfzRevival102jBuild() {
     if (GetEfzRevivalVersion() != EfzRevivalVersion::Revival102j) {
-        return false;
+        return EfzRevival102jBuild::Unknown;
     }
 
-    const int cached = s_cachedRevival102jVerification.load(std::memory_order_acquire);
+    const int cached = s_cachedRevival102jBuild.load(std::memory_order_acquire);
     if (cached != 0) {
-        return cached > 0;
+        return cached > 0
+            ? static_cast<EfzRevival102jBuild>(cached)
+            : EfzRevival102jBuild::Unknown;
     }
 
     HMODULE module = GetModuleHandleA("EfzRevival.dll");
     if (!module) {
         // DLL injection can happen after our initialization. Do not cache a
         // missing module as a permanent failure.
-        return false;
+        return EfzRevival102jBuild::Unknown;
     }
 
-    const bool valid = VerifyRevival102jPeProfile(module);
-    s_cachedRevival102jVerification.store(valid ? 1 : -1, std::memory_order_release);
-    LogOut(valid
+    const EfzRevival102jProfile* profile = VerifyRevival102jPeProfile(module);
+    s_cachedRevival102jBuild.store(
+        profile ? static_cast<int>(profile->build) : -1,
+        std::memory_order_release);
+    LogOut(profile
         ? "[REVIVAL] Verified EfzRevival 1.02j MinGW binary profile"
         : "[REVIVAL] Rejected 1.02j title: DLL PE profile does not match the supported build",
         true);
-    return valid;
+    return profile ? profile->build : EfzRevival102jBuild::Unknown;
+}
+
+bool IsEfzRevival102jVerifiedBuild() {
+    return GetEfzRevival102jBuild() != EfzRevival102jBuild::Unknown;
 }
 
 const char* EfzRevivalVersionName(EfzRevivalVersion v) {
@@ -863,24 +875,26 @@ OnlineState ReadEfzRevivalOnlineState() {
 
     uintptr_t base = reinterpret_cast<uintptr_t>(revivalModule);
     if (version == EfzRevivalVersion::Revival102j) {
+        const EfzRevival102jProfile* profile = FindEfzRevival102jProfileByBuild(
+            GetEfzRevival102jBuild());
+        if (!profile) {
+            return OnlineState::Unknown;
+        }
+
         int rawRole = -1;
         uintptr_t session = 0;
         uintptr_t vtable = 0;
-        if (!SafeReadMemory(base + 0x0014EC40u, &rawRole, sizeof(rawRole))
-            || !SafeReadMemory(base + 0x0014E980u, &session, sizeof(session))
+        if (!SafeReadMemory(base + profile->roleRva, &rawRole, sizeof(rawRole))
+            || !SafeReadMemory(base + profile->sessionPtrRva, &session, sizeof(session))
             || !session
             || !SafeReadMemory(session, &vtable, sizeof(vtable))) {
             return OnlineState::Unknown;
         }
 
-        uintptr_t expectedVtable = 0;
-        switch (rawRole) {
-        case 0: expectedVtable = base + 0x0016FEF0u; break; // rollback
-        case 1: expectedVtable = base + 0x0016FF20u; break; // spectator
-        case 2: expectedVtable = base + 0x0016FF80u; break; // practice
-        case 3: expectedVtable = base + 0x0016FEB0u; break; // compact/tournament
-        default: return OnlineState::Unknown;
+        if (rawRole < 0 || rawRole >= static_cast<int>(profile->roleVtableRvas.size())) {
+            return OnlineState::Unknown;
         }
+        const uintptr_t expectedVtable = base + profile->roleVtableRvas[rawRole];
         if (vtable != expectedVtable) {
             if (shouldLog) {
                 LogOut("[ONLINE_STATE] Rejected J role read: session vtable does not match role", true);

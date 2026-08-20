@@ -203,7 +203,7 @@ External libraries:
   - Eternal Fighter Zero -Revival- 1.02e, 1.02g and 1.02f
   - Eternal Fighter Zero -Revival- 1.02h!!!
   - Eternal Fighter Zero -Revival- 1.02i!!!
-  - Eternal Fighter Zero -Revival- 1.02j
+  - Eternal Fighter Zero -Revival- 1.02j (original and 2026-08-02 compile profiles)
 
 ---
 

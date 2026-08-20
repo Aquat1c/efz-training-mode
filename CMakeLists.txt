@@ -4,6 +4,9 @@ project(efz_training_mode)
 option(EFZ_XP_COMPAT "Enable Windows XP-oriented compile settings (requires v141_xp-compatible toolset)" OFF)
 option(EFZ_ENABLE_INPUT_LOGS "Enable verbose input/menu navigation trace logging" OFF)
 option(EFZ_ENABLE_AUTO_ACTION_WAKE_TRACE "Enable verbose auto-action wake/subframe trace logging" OFF)
+option(EFZ_ENABLE_EXPERIMENTAL_TRIAL_TUTORIAL
+       "Enable the unfinished trial/tutorial modes and their title-screen Practice patch"
+       OFF)
 set(EFZ_MINHOOK_SOURCE_DIR "" CACHE PATH "Optional path to a MinHook source tree for source builds")
 
 set(EFZ_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
@@ -188,6 +191,10 @@ if(EFZ_ENABLE_AUTO_ACTION_WAKE_TRACE)
     target_compile_definitions(efz_training_mode PRIVATE EFZ_ENABLE_AUTO_ACTION_WAKE_TRACE=1)
 endif()
 
+if(EFZ_ENABLE_EXPERIMENTAL_TRIAL_TUTORIAL)
+    target_compile_definitions(efz_training_mode PRIVATE EFZ_ENABLE_EXPERIMENTAL_TRIAL_TUTORIAL=1)
+endif()
+
 # Update include directories to include subdirectories
 target_include_directories(efz_training_mode PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
@@ -284,6 +291,15 @@ set_property(TARGET efz_training_mode PROPERTY
 
 include(CTest)
 if(BUILD_TESTING)
+    add_executable(revival_profile_tests
+        tests/revival_profile_tests.cpp)
+    target_include_directories(revival_profile_tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    set_property(TARGET revival_profile_tests PROPERTY
+        MSVC_RUNTIME_LIBRARY "${EFZ_MSVC_RUNTIME_LIBRARY}")
+    add_test(NAME revival_profile_tests
+             COMMAND revival_profile_tests)
+
     add_executable(character_hotswap_transition_tests
         tests/character_hotswap_transition_tests.cpp)
     target_include_directories(character_hotswap_transition_tests PRIVATE

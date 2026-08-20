@@ -161,17 +161,11 @@ void DelayedInitialization(HMODULE hModule) {
         }
         LogOut("[SYSTEM] MinHook initialized successfully.", true);
 
-        // Install the title-screen Practice submenu hook FIRST, as early as
-        // possible. efz.exe's title code is mapped from process start, so
-        // deferring this behind the heavy startup delay only created a race
-        // where confirming Practice on the title reached character-select before
-        // our hook existed. We monitor for up to a bounded window and rely on
-        // PracticeMenu::Install()'s vanilla-prologue verification to guarantee we
-        // never patch unexpected/garbage code - on a supported build it succeeds
-        // on the first attempt (a few ms) and we move on immediately; on an
-        // unrecognized build the verify keeps failing and we give up after the
-        // window (Practice simply stays vanilla). Order-independent w.r.t.
-        // InGameNetplay (which patches the vtable/jump-table, not the prologue).
+        // The unfinished trial/tutorial flow is retained for future work, but
+        // default builds leave EFZ's title screen and vanilla Practice entry
+        // untouched. Opting in also enables the title update detour, Practice
+        // case patch, and direct-Loading bootstrap used exclusively by that flow.
+#if defined(EFZ_ENABLE_EXPERIMENTAL_TRIAL_TUTORIAL)
         {
             constexpr DWORD kTitleHookWindowMs = 2000;
             constexpr DWORD kTitleHookRetryMs = 50;
@@ -192,6 +186,9 @@ void DelayedInitialization(HMODULE hModule) {
                 LogOut("[PRACTICE_MENU] Title hook not installed within early window (unrecognized title build?)", true);
             }
         }
+#else
+        LogOut("[PRACTICE_MENU] Title patch and trial/tutorial modes are disabled for this build", true);
+#endif
 
         bool audioHooksReady = false;
         AudioControl::HookInstallResult audioHookResult = AudioControl::HookInstallResult::Failed;
@@ -292,9 +289,8 @@ void DelayedInitialization(HMODULE hModule) {
         } catch (...) {
             LogOut("[SYSTEM] Exception while installing HUD-disable hook.", true);
         }
-        // NOTE: PracticeMenu::Install() (title-screen Practice submenu) is now
-        // done in the early monitored window right after MH_Initialize above, so
-        // the title hook exists before the player can reach it.
+        // When experimental trial/tutorial support is enabled, its title hook is
+        // installed in the early monitored window immediately after MH_Initialize.
         try {
             if (!audioHooksReady) {
                 const uintptr_t efzBase = GetEFZBase();

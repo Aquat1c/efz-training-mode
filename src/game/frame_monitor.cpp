@@ -158,11 +158,15 @@ static std::string FM_Hex(uintptr_t v) {
     return oss.str();
 }
 
-// Mission/tutorial code runs on this detached monitor thread.  An uncaught C++
-// exception would otherwise terminate the whole game without preserving
-// std::exception::what().  Quarantine the session and leave a useful log line;
-// access violations remain under the process crash handler (/EHsc).
+// When the experimental modes are enabled, their runtime runs on this detached
+// monitor thread. An uncaught C++ exception would otherwise terminate the whole
+// game without preserving std::exception::what(). Quarantine the session and
+// leave a useful log line; access violations remain under the process crash
+// handler (/EHsc).
 static void TickMissionEngineGuarded() noexcept {
+#if !defined(EFZ_ENABLE_EXPERIMENTAL_TRIAL_TUTORIAL)
+    return;
+#else
     try {
         Mission::Engine::Tick();
     } catch (const std::exception& e) {
@@ -185,6 +189,7 @@ static void TickMissionEngineGuarded() noexcept {
             LogOut("[MISSION][UNHANDLED_EXCEPTION] recovery also failed", true);
         }
     }
+#endif
 }
 
 static void MaybeShowPracticeOverlayHintOnce() {
@@ -1769,10 +1774,10 @@ void FrameDataMonitor() {
             // Outside actual gameplay -> only do lightweight logic
             if (currentPhase != GamePhase::Match) {
                 lightweightTick();
-                // The mission engine must tick in EVERY phase: it drives the
-                // char-select auto-drive for title mission picks and discards
-                // a live recording when the match is left. Its internals are
-                // phase-gated; the game snapshot is simply invalid here.
+                // When the experimental modes are enabled, their engine must
+                // tick in EVERY phase: it drives title-launch transitions and
+                // discards a live recording when the match is left. The helper
+                // is a compile-time no-op in default builds.
                 TickMissionEngineGuarded();
                 prevMoveID1 = 0;
                 prevMoveID2 = 0;
@@ -2314,7 +2319,8 @@ void FrameDataMonitor() {
             // FrameBar: per-subframe sampler (cheap when toggle is off).
             FrameBar::TickSample();
 
-            // Mission engine: per-frame snapshot (move-IDs / combo) + inspector.
+            // Experimental mission engine: per-frame snapshot (move-IDs / combo)
+            // plus inspector. This is a compile-time no-op in default builds.
             TickMissionEngineGuarded();
 
             // Fallback driver when the native input-hook tick is disabled.
