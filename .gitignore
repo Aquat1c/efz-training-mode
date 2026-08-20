@@ -59,7 +59,7 @@ ipch/
 *.vssscc
 .builds
 *.pidb
-
+.zed/
 # Compiled binaries
 *.dll
 *.exe
@@ -84,7 +84,12 @@ ipch/
 *.swp
 *~
 *.sublime-workspace
-
+shared_documentation/
+reference_projects/
+decompilations/
+docs/
+dumpbin/
+tools/
 # OS-specific files
 .DS_Store
 .DS_Store?

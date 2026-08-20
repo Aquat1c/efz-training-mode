@@ -1,6 +1,8 @@
 #include "../include/utils/config.h"
 #include "../include/core/logger.h"
 #include "../include/utils/utilities.h"
+#include "../include/input/efz_input_bindings.h"
+#include "../include/core/di_keycodes.h"
 
 #include <fstream>
 #include <sstream>
@@ -11,6 +13,17 @@
 #include <xinput.h>
 
 namespace Config {
+    namespace {
+        constexpr float kUiScaleMin = 0.70f;
+        constexpr float kUiScaleMax = 1.50f;
+
+        float ClampUiScale(float scale) {
+            if (scale < kUiScaleMin) return kUiScaleMin;
+            if (scale > kUiScaleMax) return kUiScaleMax;
+            return scale;
+        }
+    }
+
     // Internal settings storage
     static Settings settings;
     // Initialize defaults for safety
@@ -193,6 +206,55 @@ namespace Config {
         LogOut("[CONFIG] Creating default config file at: " + configFilePath, true);
         
         try {
+            EFZInputBindings::BindingSet nativeBindings{};
+            std::string nativeBindingPath;
+            std::string nativeBindingError;
+            const bool hasNativeBindings = EFZInputBindings::LoadActiveKeyIni(
+                nativeBindings, nativeBindingPath, nativeBindingError);
+
+            std::array<bool, 256> reservedDik{};
+            std::array<int, 24> reservedPads{};
+            std::size_t reservedPadCount = 0;
+            EFZInputBindings::CollectReservations(
+                nativeBindings, reservedDik, reservedPads, reservedPadCount);
+            std::array<bool, 256> reservedVk{};
+            for (std::size_t dik = 0; dik < reservedDik.size(); ++dik) {
+                if (!reservedDik[dik]) continue;
+                const int vk = MapDIKToVK(static_cast<int>(dik));
+                if (vk > 0 && vk < static_cast<int>(reservedVk.size())) {
+                    reservedVk[static_cast<std::size_t>(vk)] = true;
+                }
+            }
+            // Fixed menu controls are not configurable mod hotkeys.  Reserving
+            // them here prevents a fresh config from assigning one key two UI
+            // meanings even when EFZ itself does not use it.
+            constexpr int fixedUiKeys[] = {
+                VK_ESCAPE, VK_RETURN, VK_UP, VK_DOWN, VK_LEFT, VK_RIGHT,
+                VK_PRIOR, VK_NEXT, VK_OEM_4, VK_OEM_6,
+            };
+            for (int vk : fixedUiKeys) reservedVk[static_cast<std::size_t>(vk)] = true;
+
+            const EFZInputBindings::FirstRunKeyboardPlan keyboardPlan =
+                EFZInputBindings::BuildFirstRunKeyboardPlan(reservedVk);
+            const EFZInputBindings::FirstRunGamepadPlan gamepadPlan =
+                EFZInputBindings::BuildFirstRunGamepadPlan(
+                    reservedPads.data(), reservedPadCount);
+
+            if (hasNativeBindings) {
+                LogOut("[CONFIG][FIRST_RUN] Derived conflict-free defaults from both players in " +
+                       nativeBindingPath, true);
+            } else {
+                LogOut("[CONFIG][FIRST_RUN] Native bindings unavailable; using conflict-free stock defaults: " +
+                       nativeBindingError, true);
+            }
+
+            auto keyValue = [](int value) {
+                if (value < 0) return std::string("-1");
+                std::ostringstream oss;
+                oss << "0x" << std::hex << std::uppercase << value;
+                return oss.str();
+            };
+
             std::ofstream file(configFilePath);
             if (!file.is_open()) {
                 LogOut("[CONFIG] Error: Could not open config file for writing.", true);
@@ -200,8 +262,10 @@ namespace Config {
             }
             
             file << "[General]\n";
-            file << "; Use the modern ImGui interface (1) or the legacy Win32 dialog (0)\n";
+            file << "; Compatibility flag for ImGui-hosted helpers. The configuration menu now always uses ImGui/fallback hosts.\n";
             file << "useImGui = 1\n";
+            file << "; Render the EFZ-native custom menu instead of the legacy ImGui list (1 = yes, 0 = no)\n";
+            file << "useCustomMenu = 1\n";
             file << "; Enable detailed debug messages in the console (1 = yes, 0 = no)\n";
             file << "detailedLogging = 0\n";
             file << "; Enable writing efz_training_debug.log (1 = yes, 0 = no)\n";
@@ -210,15 +274,48 @@ namespace Config {
             file << "enableConsole = 0\n";
             file << "; Restrict functionality to Practice Mode only (1 = yes, 0 = no)\n";
             file << "restrictToPracticeMode = 1\n\n";
+            file << "; Enable this mod's framestep hotkeys/runtime (1 = yes, 0 = no)\n";
+            file << "framestepEnabled = 1\n";
+            file << "; Suppress Revival's native pause/step hotkeys while this mod owns framestep (1 = yes, 0 = no)\n";
+            file << "suppressRevivalFramestep = 1\n\n";
             file << "; Enable FPS/timing diagnostics in logs (1 = yes, 0 = no)\n";
             file << "enableFpsDiagnostics = 0\n\n";
+            file << "; Show per-player FrameBar overlay (1 = yes, 0 = no)\n";
+            file << "showFrameBar = 0\n\n";
+            file << "; Audio volume levels as percent of the current default mix (0-100)\n";
+            file << "bgmVolumePercent = 100\n";
+            file << "seVolumePercent = 100\n\n";
+            file << "; FrameBar cell cadence: 0 = subframes, 1 = visual frames\n";
+            file << "frameBarTimingMode = 0\n";
+            file << "; FrameBar detail: 0 = full, 1 = compact, 2 = bars only\n";
+            file << "frameBarDetailMode = 0\n\n";
+            file << "; Collision / hitbox overlay display (Practice only)\n";
+            file << "collisionDisplayHitboxes = 0\n";
+            file << "collisionDisplayHurtboxes = 0\n";
+            file << "collisionDisplayCollisionBoxes = 0\n";
+            file << "collisionDisplayProjectileInteractions = 0\n";
+            file << "; Per-player ordinary box filters (master layers above still apply)\n";
+            file << "collisionDisplayP1Hitboxes = 1\n";
+            file << "collisionDisplayP2Hitboxes = 1\n";
+            file << "collisionDisplayP1Hurtboxes = 1\n";
+            file << "collisionDisplayP2Hurtboxes = 1\n";
+            file << "collisionDisplayP1CollisionBoxes = 1\n";
+            file << "collisionDisplayP2CollisionBoxes = 1\n";
+            file << "; Box fill alpha percent. Outlines stay readable.\n";
+            file << "collisionDisplayFillAlphaPercent = 25\n";
+            file << "; Projectile interaction sub-layers\n";
+            file << "collisionDisplayProjectileBoxes = 1\n";
+            file << "collisionDisplayProjectileOrigins = 1\n";
+            file << "collisionDisplayProjectileIntersections = 1\n";
+            file << "collisionDisplayNagamoriRanges = 1\n";
+            file << "collisionDisplayNagamoriAffected = 1\n\n";
             file << "; Log active player / CPU flags during Character Select (1 = yes, 0 = no)\n";
             file << "enableCharacterSelectLogger = 1\n\n";
 
             file << "; Show a one-time Practice hint about opening the overlay (1 = yes, 0 = no)\n";
             file << "showPracticeEntryHint = 1\n\n";
 
-            file << "; UI scale for ImGui window (0.80 - 1.20 recommended)\n";
+            file << "; UI scale for ImGui window (0.70 - 1.50)\n";
             file << "uiScale = 0.90\n\n";
             file << "; UI font: 0 = ImGui default font, 1 = Segoe UI (Windows)\n";
             file << "uiFont = 0\n\n";
@@ -227,9 +324,9 @@ namespace Config {
             file << "; ImGui navigation tuning\n";
             file << "; Analog threshold for keyboard-fallback nav (0..1). Default 0.45\n";
             file << "guiNavAnalogThreshold = 0.45\n";
-            file << "; Key repeat timings (seconds). Defaults 0.30 delay, 0.06 rate\n";
-            file << "guiNavRepeatDelay = 0.30\n";
-            file << "guiNavRepeatRate = 0.06\n\n";
+            file << "; Key repeat timings (seconds). Defaults 0.50 delay, 0.15 rate\n";
+            file << "guiNavRepeatDelay = 0.50\n";
+            file << "guiNavRepeatRate = 0.15\n\n";
 
             // Right-stick scrolling
             file << "; Right-stick to mouse wheel (GUI)\n";
@@ -266,6 +363,8 @@ namespace Config {
             file << "; When waiting to re-arm/disable, require this many milliseconds of continuous neutral before toggling.\n";
             file << "; Default: 10000 (10 seconds). Set 0 to toggle immediately on any neutral edge.\n";
             file << "autoBlockNeutralTimeoutMs = 10000\n\n";
+            file << "; Mission recording count-in in milliseconds (0 = off, default 500).\n";
+            file << "missionRecorderCountInMs = 500\n\n";
 
             file << "; Virtual Cursor (software controller-driven cursor) settings\n";
             file << "; Master enable (1=on,0=off)\n";
@@ -283,9 +382,16 @@ namespace Config {
             file << "; Controller selection: -1 = All, 0..3 = XInput user index\n";
             file << "controllerIndex = -1\n\n";
 
+            file << "; Savestate backend: 0=Custom, 1=Revival, 2=Custom with Revival fallback\n";
+            file << "savestateBackendMode = 2\n\n";
+            file << "; Restore saved custom .pal usage when loading savestates (1=yes, 0=use default palettes)\n";
+            file << "savestateLoadCustomPalettes = 1\n\n";
+
             // (Practice-specific tuning is hardcoded now)
             
             file << "[Hotkeys]\n";
+            file << "; First-run defaults were derived from EFZ's active P1/P2 bindings. Existing configs are never rewritten automatically.\n";
+            file << "FirstRunBindingSource=" << (hasNativeBindings ? "key.ini" : "stock") << "\n";
             file << "; Use virtual-key codes (hexadecimal, e.g., 0x70 for F1)\n";
             file << "; See key code definitions at: https://docs.microsoft.com/en-us/windows/win32/inputdev/virtual-key-codes\n";
             file << "; Common keys: \n";
@@ -294,46 +400,44 @@ namespace Config {
             file << "; - 0x70-0x7B: Function keys F1-F12\n\n";
             
             file << "; Teleport players to recorded positions\n";
-            file << "TeleportKey=0x31    # Default: '1' key\n\n";
+            file << "TeleportKey=" << keyValue(keyboardPlan.teleport) << "\n\n";
             
             file << "; Record current player positions\n";
-            file << "RecordKey=0x32      # Default: '2' key\n\n";
+            file << "RecordKey=" << keyValue(keyboardPlan.recordPosition) << "\n\n";
             
-            file << "; Open config menu\n";
-            file << "ConfigMenuKey=0x33  # Default: '3' key\n\n";
+            file << "; Toggle title display mode (disabled by default)\n";
+            file << "ToggleTitleKey=-1\n\n";
             
-            file << "; Toggle title display mode\n";
-            file << "ToggleTitleKey=0x34 # Default: '4' key\n\n";
-            
-            file << "; Reset frame counter\n";
-            file << "ResetFrameCounterKey=0x35 # Default: '5' key\n\n";
-            
-            file << "; Show help and clear console\n";
-            file << "HelpKey=0x36        # Default: '6' key\n\n";
-            
-            file << "; Toggle ImGui overlay\n";
-            file << "ToggleImGuiKey=0x37 # Default: '7' key\n";
+            file << "; Reset frame counter (disabled by default)\n";
+            file << "ResetFrameCounterKey=-1\n\n";
+
+            file << "; The training menu opens with Esc. Help is available from the Help tab.\n";
+            file << "\n; Custom savestate working snapshot hotkeys\n";
+            file << "SavestateSaveKey=" << keyValue(keyboardPlan.savestateSave) << "\n";
+            file << "SavestateLoadKey=" << keyValue(keyboardPlan.savestateLoad) << "\n";
+            file << "SavestatePrevSlotKey=" << keyValue(keyboardPlan.savestatePrevious) << "\n";
+            file << "SavestateNextSlotKey=" << keyValue(keyboardPlan.savestateNext) << "\n";
 
             file << "\n; Practice: Switch Players toggle (Practice only)\n";
-            file << "SwitchPlayersKey=0x4C  # Default: 'L' key\n";
+            file << "SwitchPlayersKey=" << keyValue(keyboardPlan.switchPlayers) << "\n";
             file << "; Macro: Record (two-press)\n";
-            file << "MacroRecordKey=0x49     # Default: 'I' key\n";
+            file << "MacroRecordKey=" << keyValue(keyboardPlan.macroRecord) << "\n";
             file << "; Macro: Play (replay)\n";
-            file << "MacroPlayKey=0x4F       # Default: 'O' key\n";
+            file << "MacroPlayKey=" << keyValue(keyboardPlan.macroPlay) << "\n";
             file << "; Macro: Cycle Slot (next)\n";
-            file << "MacroSlotKey=0x4B       # Default: 'K' key\n";
+            file << "MacroSlotKey=" << keyValue(keyboardPlan.macroSlot) << "\n";
             file << "\n; UI footer actions (Apply / Refresh / Exit)\n";
             file << "; Avoid using in-game bound keys (Enter/Escape/Space). Defaults: E, R, Q.\n";
-            file << "UIAcceptKey=0x45        # 'E' (Apply)\n";
-            file << "UIRefreshKey=0x52       # 'R' (Refresh)\n";
-            file << "UIExitKey=0x51          # 'Q' (Exit)\n";
+            file << "UIAcceptKey=" << keyValue(keyboardPlan.uiAccept) << "\n";
+            file << "UIRefreshKey=" << keyValue(keyboardPlan.uiRefresh) << "\n";
+            file << "UIExitKey=" << keyValue(keyboardPlan.uiExit) << "\n";
 
-            // Framestep hotkeys (vanilla EFZ only)
-            file << "\n; Framestep (vanilla EFZ only)\n";
+            // Framestep hotkeys (vanilla EFZ / supported Revival)
+            file << "\n; Framestep (vanilla EFZ / supported Revival)\n";
             file << "; Pause toggle\n";
-            file << "FramestepPauseKey=0x20  # Default: Space\n";
+            file << "FramestepPauseKey=" << keyValue(keyboardPlan.framestepPause) << "\n";
             file << "; Step forward one frame (when paused)\n";
-            file << "FramestepStepKey=0x50   # Default: 'P'\n";
+            file << "FramestepStepKey=" << keyValue(keyboardPlan.framestepStep) << "\n";
 
             // Swap Positions custom binding
             file << "\n; Swap Positions custom binding\n";
@@ -346,24 +450,23 @@ namespace Config {
             file << "\n; Controller bindings (XInput) \n";
             file << "; Use symbolic names (e.g. A, B, X, Y, LB, RB, BACK, START, L3, R3, DPAD_UP, DPAD_DOWN, DPAD_LEFT, DPAD_RIGHT) or hex mask (e.g. 0x2000). -1 disables.\n";
             file << "; Triggers (LT, RT) are treated as virtual buttons (threshold based).\n";
-            file << "gpTeleportButton=BACK\n";       // Teleport
-            file << "gpSavePositionButton=L3\n";     // Save current positions
-            file << "gpSwitchPlayersButton=RB\n";    // Toggle local side (practice)
+            file << "gpTeleportButton=" << GetGamepadButtonName(gamepadPlan.teleport) << "\n";
+            file << "gpSavePositionButton=" << GetGamepadButtonName(gamepadPlan.savePosition) << "\n";
+            file << "gpSwitchPlayersButton=" << GetGamepadButtonName(gamepadPlan.switchPlayers) << "\n";
             // ABXY reserved for UI (A=confirm, B=back). Use shoulders/triggers/sticks instead.
-            file << "gpSwapPositionsButton=R3\n";    // Swap player coordinates (was Y)
-            file << "gpMacroRecordButton=LB\n";      // Macro record (was X)
-            file << "gpMacroPlayButton=RT\n";        // Macro play (was A)
-            file << "gpMacroSlotButton=LT\n";        // Cycle macro slot (was B)
-            file << "gpToggleMenuButton=START\n";    // Open training menu
-            file << "gpToggleImGuiButton=-1\n";      // Toggle overlay (disabled by default)
+            file << "gpSwapPositionsButton=" << GetGamepadButtonName(gamepadPlan.swapPositions) << "\n";
+            file << "gpMacroRecordButton=" << GetGamepadButtonName(gamepadPlan.macroRecord) << "\n";
+            file << "gpMacroPlayButton=" << GetGamepadButtonName(gamepadPlan.macroPlay) << "\n";
+            file << "gpMacroSlotButton=" << GetGamepadButtonName(gamepadPlan.macroSlot) << "\n";
+            file << "gpToggleMenuButton=" << GetGamepadButtonName(gamepadPlan.toggleMenu) << "\n";
 
             // UI navigation bindings (controller)
             file << "; UI navigation: cycle tabs/sub-tabs (rebindable)\n";
-            file << "; Defaults: LB/RB = previous/next top-level tab; LT/RT = previous/next active sub-tab\n";
-            file << "gpUiTopTabPrev=LB\n";
-            file << "gpUiTopTabNext=RB\n";
-            file << "gpUiSubTabPrev=LT\n";
-            file << "gpUiSubTabNext=RT\n";
+            file << "; D-pad focus navigation reaches tabs and sub-tabs without consuming extra buttons.\n";
+            file << "gpUiTopTabPrev=" << GetGamepadButtonName(gamepadPlan.topTabPrevious) << "\n";
+            file << "gpUiTopTabNext=" << GetGamepadButtonName(gamepadPlan.topTabNext) << "\n";
+            file << "gpUiSubTabPrev=" << GetGamepadButtonName(gamepadPlan.subTabPrevious) << "\n";
+            file << "gpUiSubTabNext=" << GetGamepadButtonName(gamepadPlan.subTabNext) << "\n";
             
             file.close();
             
@@ -412,11 +515,50 @@ namespace Config {
         
         try {
             settings.useImGui = GetValueBool("General", "useImGui", true);
+            // Migrate older configs that predate this key to the custom menu by default.
+            settings.useCustomMenu = GetValueBool("General", "useCustomMenu", true);
             settings.detailedLogging = GetValueBool("General", "detailedLogging", false);
             settings.enableDebugFileLog = GetValueBool("General", "enableDebugFileLog", false);
             settings.enableConsole = GetValueBool("General", "enableConsole", false);
             settings.restrictToPracticeMode = GetValueBool("General", "restrictToPracticeMode", true);
+            settings.framestepEnabled = GetValueBool("General", "framestepEnabled", true);
+            settings.suppressRevivalFramestep = GetValueBool("General", "suppressRevivalFramestep", true);
             settings.enableFpsDiagnostics = GetValueBool("General", "enableFpsDiagnostics", false);
+            settings.showFrameBar = GetValueBool("General", "showFrameBar", false);
+            settings.bgmVolumePercent = GetValueInt("General", "bgmVolumePercent", 100);
+            if (settings.bgmVolumePercent < 0) settings.bgmVolumePercent = 0;
+            if (settings.bgmVolumePercent > 100) settings.bgmVolumePercent = 100;
+            settings.seVolumePercent = GetValueInt("General", "seVolumePercent", 100);
+            if (settings.seVolumePercent < 0) settings.seVolumePercent = 0;
+            if (settings.seVolumePercent > 100) settings.seVolumePercent = 100;
+            settings.frameBarTimingMode = GetValueInt("General", "frameBarTimingMode", 0);
+            if (settings.frameBarTimingMode < 0 || settings.frameBarTimingMode > 1) {
+                settings.frameBarTimingMode = 0;
+            }
+            settings.frameBarDetailMode = GetValueInt("General", "frameBarDetailMode", 0);
+            if (settings.frameBarDetailMode < 0 || settings.frameBarDetailMode > 2) {
+                settings.frameBarDetailMode = 0;
+            }
+            settings.collisionDisplayHitboxes = GetValueBool("General", "collisionDisplayHitboxes", false);
+            settings.collisionDisplayHurtboxes = GetValueBool("General", "collisionDisplayHurtboxes", false);
+            settings.collisionDisplayCollisionBoxes = GetValueBool("General", "collisionDisplayCollisionBoxes", false);
+            settings.collisionDisplayProjectileInteractions = GetValueBool("General", "collisionDisplayProjectileInteractions", false);
+            // Missing keys mean an older config: preserve the former behavior
+            // where an enabled layer always drew both players.
+            settings.collisionDisplayP1Hitboxes = GetValueBool("General", "collisionDisplayP1Hitboxes", true);
+            settings.collisionDisplayP2Hitboxes = GetValueBool("General", "collisionDisplayP2Hitboxes", true);
+            settings.collisionDisplayP1Hurtboxes = GetValueBool("General", "collisionDisplayP1Hurtboxes", true);
+            settings.collisionDisplayP2Hurtboxes = GetValueBool("General", "collisionDisplayP2Hurtboxes", true);
+            settings.collisionDisplayP1CollisionBoxes = GetValueBool("General", "collisionDisplayP1CollisionBoxes", true);
+            settings.collisionDisplayP2CollisionBoxes = GetValueBool("General", "collisionDisplayP2CollisionBoxes", true);
+            settings.collisionDisplayFillAlphaPercent = GetValueInt("General", "collisionDisplayFillAlphaPercent", 25);
+            if (settings.collisionDisplayFillAlphaPercent < 0) settings.collisionDisplayFillAlphaPercent = 0;
+            if (settings.collisionDisplayFillAlphaPercent > 100) settings.collisionDisplayFillAlphaPercent = 100;
+            settings.collisionDisplayProjectileBoxes = GetValueBool("General", "collisionDisplayProjectileBoxes", true);
+            settings.collisionDisplayProjectileOrigins = GetValueBool("General", "collisionDisplayProjectileOrigins", true);
+            settings.collisionDisplayProjectileIntersections = GetValueBool("General", "collisionDisplayProjectileIntersections", true);
+            settings.collisionDisplayNagamoriRanges = GetValueBool("General", "collisionDisplayNagamoriRanges", true);
+            settings.collisionDisplayNagamoriAffected = GetValueBool("General", "collisionDisplayNagamoriAffected", true);
             // Default ON so older configs without this key enable it automatically
             settings.enableCharacterSelectLogger = GetValueBool("General", "enableCharacterSelectLogger", true);
             settings.showPracticeEntryHint = GetValueBool("General", "showPracticeEntryHint", true);
@@ -433,9 +575,7 @@ namespace Config {
                         } catch (...) { scale = 0.90f; }
                     }
                 }
-                if (scale < 0.70f) scale = 0.70f;
-                if (scale > 1.50f) scale = 1.50f;
-                settings.uiScale = scale;
+                settings.uiScale = ClampUiScale(scale);
             }
 
             // Load UI font mode (0=default, 1=Segoe UI)
@@ -475,8 +615,8 @@ namespace Config {
             {
                 auto sectionIt = iniData.find("general");
                 float thr = 0.45f;
-                float repDelay = 0.30f;
-                float repRate = 0.06f;
+                float repDelay = 0.50f;
+                float repRate = 0.15f;
                 bool scrollEnable = true;
                 float scrollScale = 10.0f;
                 if (sectionIt != iniData.end()) {
@@ -491,8 +631,8 @@ namespace Config {
                         return defv;
                     };
                     thr = getf("guinavanalogthreshold", 0.45f);
-                    repDelay = getf("guinavrepeatdelay", 0.30f);
-                    repRate = getf("guinavrepeatrate", 0.06f);
+                    repDelay = getf("guinavrepeatdelay", 0.50f);
+                    repRate = getf("guinavrepeatrate", 0.15f);
                     scrollEnable = geti("guiscrollrightstickenable", true);
                     scrollScale = getf("guiscrollrightstickscale", 10.0f);
                 }
@@ -547,6 +687,14 @@ namespace Config {
             }
             // Practice: neutral timeout for dummy auto-block modes (ms)
             settings.autoBlockNeutralTimeoutMs = GetValueInt("General", "autoBlockNeutralTimeoutMs", 10000);
+            settings.missionRecorderCountInMs =
+                GetValueInt("General", "missionRecorderCountInMs", 500);
+            if (settings.missionRecorderCountInMs < 0) {
+                settings.missionRecorderCountInMs = 0;
+            }
+            if (settings.missionRecorderCountInMs > 3000) {
+                settings.missionRecorderCountInMs = 3000;
+            }
             settings.showComboStatisticsOverlay = GetValueBool("General", "showComboStatisticsOverlay", true);
             settings.comboOverlayCompactMode = GetValueBool("General", "comboOverlayCompactMode", true);
             settings.comboOverlayShowDetailRow = GetValueBool("General", "comboOverlayShowDetailRow", false);
@@ -573,14 +721,20 @@ namespace Config {
             settings.comboOverlayShowRfMultiplier = GetValueBool("General", "comboOverlayShowRfMultiplier", false);
             settings.comboOverlayShowRawScale = GetValueBool("General", "comboOverlayShowRawScale", false);
             
-            // Hotkey settings - REVERTED to number key defaults
+            // Hotkey settings
             settings.teleportKey = GetValueInt("Hotkeys", "TeleportKey", 0x31);          // Default: '1'
             settings.recordKey = GetValueInt("Hotkeys", "RecordKey", 0x32);            // Default: '2'
-            settings.configMenuKey = GetValueInt("Hotkeys", "ConfigMenuKey", 0x33);      // Default: '3'
-            settings.toggleTitleKey = GetValueInt("Hotkeys", "ToggleTitleKey", 0x34);     // Default: '4'
-            settings.resetFrameCounterKey = GetValueInt("Hotkeys", "ResetFrameCounterKey", 0x35); // Default: '5'
-            settings.helpKey = GetValueInt("Hotkeys", "HelpKey", 0x36);                // Default: '6'
-            settings.toggleImGuiKey = GetValueInt("Hotkeys", "ToggleImGuiKey", 0x37);      // Default: '7'            
+            settings.configMenuKey = -1;                                                // Menu is fixed to Esc
+            settings.toggleTitleKey = GetValueInt("Hotkeys", "ToggleTitleKey", -1);
+            if (settings.toggleTitleKey == 0x34) settings.toggleTitleKey = -1;
+            settings.resetFrameCounterKey = GetValueInt("Hotkeys", "ResetFrameCounterKey", -1);
+            if (settings.resetFrameCounterKey == 0x35) settings.resetFrameCounterKey = -1;
+            settings.helpKey = -1;
+            settings.toggleImGuiKey = -1;
+            settings.savestateSaveKey = GetValueInt("Hotkeys", "SavestateSaveKey", 0x55); // 'U'
+            settings.savestateLoadKey = GetValueInt("Hotkeys", "SavestateLoadKey", 0x4A); // 'J'
+            settings.savestatePrevSlotKey = GetValueInt("Hotkeys", "SavestatePrevSlotKey", 0xBC); // ','
+            settings.savestateNextSlotKey = GetValueInt("Hotkeys", "SavestateNextSlotKey", 0xBE); // '.'
             // Additional configurable hotkeys
             settings.switchPlayersKey = GetValueInt("Hotkeys", "SwitchPlayersKey", 0x4C); // 'L'
             settings.macroRecordKey   = GetValueInt("Hotkeys", "MacroRecordKey",   0x49); // 'I'
@@ -589,7 +743,7 @@ namespace Config {
             settings.uiAcceptKey      = GetValueInt("Hotkeys", "UIAcceptKey",     0x45); // 'E'
             settings.uiRefreshKey     = GetValueInt("Hotkeys", "UIRefreshKey",    0x52); // 'R'
             settings.uiExitKey        = GetValueInt("Hotkeys", "UIExitKey",       0x51); // 'Q'
-            // Framestep keys (vanilla EFZ only)
+            // Framestep keys (vanilla EFZ / supported Revival)
             settings.framestepPauseKey = GetValueInt("Hotkeys", "FramestepPauseKey", 0x20); // VK_SPACE
             settings.framestepStepKey  = GetValueInt("Hotkeys", "FramestepStepKey",  0x50); // 'P'
             // Swap custom binding
@@ -613,24 +767,31 @@ namespace Config {
             settings.gpMacroPlayButton      = getPad("gpmacroplaybutton", "RT");
             settings.gpMacroSlotButton      = getPad("gpmacroslotbutton", "LT");
             settings.gpToggleMenuButton     = getPad("gptogglemenubutton", "START");
-            settings.gpToggleImGuiButton    = getPad("gptoggleimguibutton", "-1");
+            settings.gpToggleImGuiButton    = -1;
             // UI navigation bindings (controller)
             settings.gpUiTopTabPrev         = getPad("gpuitoptabprev", "LB");
             settings.gpUiTopTabNext         = getPad("gpuitoptabnext", "RB");
             settings.gpUiSubTabPrev         = getPad("gpuisubtabprev", "LT");
             settings.gpUiSubTabNext         = getPad("gpuisubtabnext", "RT");
+            settings.savestateBackendMode   = GetValueInt("General", "savestateBackendMode", 2);
+            if (settings.savestateBackendMode < 0 || settings.savestateBackendMode > 2) settings.savestateBackendMode = 2;
+            settings.savestateLoadCustomPalettes = GetValueBool("General", "savestateLoadCustomPalettes", true);
             LogOut("[CONFIG] Settings loaded successfully", true);
             LogOut("[CONFIG] UseImGui: " + std::to_string(settings.useImGui), true);
             LogOut("[CONFIG] DetailedLogging: " + std::to_string(settings.detailedLogging), true);
             LogOut("[CONFIG] EnableDebugFileLog: " + std::to_string(settings.enableDebugFileLog), true);
             LogOut("[CONFIG] EnableConsole: " + std::to_string(settings.enableConsole), true);
+            LogOut("[CONFIG] FramestepEnabled: " + std::to_string(settings.framestepEnabled), true);
+            LogOut("[CONFIG] SuppressRevivalFramestep: " + std::to_string(settings.suppressRevivalFramestep), true);
             LogOut("[CONFIG] TeleportKey: " + std::to_string(settings.teleportKey) + " (" + GetKeyName(settings.teleportKey) + ")", true);
             LogOut("[CONFIG] RecordKey: " + std::to_string(settings.recordKey) + " (" + GetKeyName(settings.recordKey) + ")", true);
-            LogOut("[CONFIG] ConfigMenuKey: " + std::to_string(settings.configMenuKey) + " (" + GetKeyName(settings.configMenuKey) + ")", true);
-            LogOut("[CONFIG] ToggleTitleKey: " + std::to_string(settings.toggleTitleKey) + " (" + GetKeyName(settings.toggleTitleKey) + ")", true);
-            LogOut("[CONFIG] ResetFrameCounterKey: " + std::to_string(settings.resetFrameCounterKey) + " (" + GetKeyName(settings.resetFrameCounterKey) + ")", true);
-            LogOut("[CONFIG] HelpKey: " + std::to_string(settings.helpKey) + " (" + GetKeyName(settings.helpKey) + ")", true);
-            LogOut("[CONFIG] ToggleImGuiKey: " + std::to_string(settings.toggleImGuiKey) + " (" + GetKeyName(settings.toggleImGuiKey) + ")", true);
+            LogOut("[CONFIG] MenuKey: Esc (fixed)", true);
+            LogOut("[CONFIG] ToggleTitleKey: " + std::to_string(settings.toggleTitleKey) + " (" + (settings.toggleTitleKey < 0 ? std::string("Disabled") : GetKeyName(settings.toggleTitleKey)) + ")", true);
+            LogOut("[CONFIG] ResetFrameCounterKey: " + std::to_string(settings.resetFrameCounterKey) + " (" + (settings.resetFrameCounterKey < 0 ? std::string("Disabled") : GetKeyName(settings.resetFrameCounterKey)) + ")", true);
+            LogOut("[CONFIG] SavestateSaveKey: " + std::to_string(settings.savestateSaveKey) + " (" + GetKeyName(settings.savestateSaveKey) + ")", true);
+            LogOut("[CONFIG] SavestateLoadKey: " + std::to_string(settings.savestateLoadKey) + " (" + GetKeyName(settings.savestateLoadKey) + ")", true);
+            LogOut("[CONFIG] SavestatePrevSlotKey: " + std::to_string(settings.savestatePrevSlotKey) + " (" + GetKeyName(settings.savestatePrevSlotKey) + ")", true);
+            LogOut("[CONFIG] SavestateNextSlotKey: " + std::to_string(settings.savestateNextSlotKey) + " (" + GetKeyName(settings.savestateNextSlotKey) + ")", true);
             LogOut("[CONFIG] SwitchPlayersKey: " + std::to_string(settings.switchPlayersKey) + " (" + GetKeyName(settings.switchPlayersKey) + ")", true);
             LogOut("[CONFIG] MacroRecordKey: " + std::to_string(settings.macroRecordKey) + " (" + GetKeyName(settings.macroRecordKey) + ")", true);
             LogOut("[CONFIG] MacroPlayKey: " + std::to_string(settings.macroPlayKey) + " (" + GetKeyName(settings.macroPlayKey) + ")", true);
@@ -650,7 +811,6 @@ namespace Config {
             LogOut("[CONFIG] gpMacroPlayButton: " + GetGamepadButtonName(settings.gpMacroPlayButton), true);
             LogOut("[CONFIG] gpMacroSlotButton: " + GetGamepadButtonName(settings.gpMacroSlotButton), true);
             LogOut("[CONFIG] gpToggleMenuButton: " + GetGamepadButtonName(settings.gpToggleMenuButton), true);
-            LogOut("[CONFIG] gpToggleImGuiButton: " + GetGamepadButtonName(settings.gpToggleImGuiButton), true);
             LogOut("[CONFIG] gpUiTopTabPrev: " + GetGamepadButtonName(settings.gpUiTopTabPrev), true);
             LogOut("[CONFIG] gpUiTopTabNext: " + GetGamepadButtonName(settings.gpUiTopTabNext), true);
             LogOut("[CONFIG] gpUiSubTabPrev: " + GetGamepadButtonName(settings.gpUiSubTabPrev), true);
@@ -658,6 +818,8 @@ namespace Config {
             LogOut("[CONFIG] enableFpsDiagnostics: " + std::to_string(settings.enableFpsDiagnostics), true);
             LogOut("[CONFIG] uiScale: " + std::to_string(settings.uiScale), true);
             LogOut("[CONFIG] uiFontMode: " + std::to_string(settings.uiFontMode), true);
+            LogOut("[CONFIG] savestateBackendMode: " + std::to_string(settings.savestateBackendMode), true);
+            LogOut("[CONFIG] savestateLoadCustomPalettes: " + std::to_string(settings.savestateLoadCustomPalettes), true);
             
             return true;
         }
@@ -683,8 +845,10 @@ namespace Config {
             };
 
             file << "[General]\n";
-            file << "; Use the modern ImGui interface (1) or the legacy Win32 dialog (0)\n";
+            file << "; Compatibility flag for ImGui-hosted helpers. The configuration menu now always uses ImGui/fallback hosts.\n";
             file << "useImGui = " << (settings.useImGui ? "1" : "0") << "\n";
+            file << "; Render the EFZ-native custom menu instead of the legacy ImGui list (1 = yes, 0 = no)\n";
+            file << "useCustomMenu = " << (settings.useCustomMenu ? "1" : "0") << "\n";
             file << "; Enable detailed debug messages in the console (1 = yes, 0 = no)\n";
             file << "detailedLogging = " << (settings.detailedLogging ? "1" : "0") << "\n";
             file << "; Enable writing efz_training_debug.log (1 = yes, 0 = no)\n";
@@ -693,13 +857,46 @@ namespace Config {
             file << "enableConsole = " << (settings.enableConsole ? "1" : "0") << "\n";
             file << "; Restrict functionality to Practice Mode only (1 = yes, 0 = no)\n";
             file << "restrictToPracticeMode = " << (settings.restrictToPracticeMode ? "1" : "0") << "\n\n";
+            file << "; Enable this mod's framestep hotkeys/runtime (1 = yes, 0 = no)\n";
+            file << "framestepEnabled = " << (settings.framestepEnabled ? "1" : "0") << "\n";
+            file << "; Suppress Revival's native pause/step hotkeys while this mod owns framestep (1 = yes, 0 = no)\n";
+            file << "suppressRevivalFramestep = " << (settings.suppressRevivalFramestep ? "1" : "0") << "\n\n";
             file << "; Enable FPS/timing diagnostics in logs (1 = yes, 0 = no)\n";
             file << "enableFpsDiagnostics = " << (settings.enableFpsDiagnostics ? "1" : "0") << "\n\n";
+            file << "; Show per-player FrameBar overlay (1 = yes, 0 = no)\n";
+            file << "showFrameBar = " << (settings.showFrameBar ? "1" : "0") << "\n\n";
+            file << "; Audio volume levels as percent of the current default mix (0-100)\n";
+            file << "bgmVolumePercent = " << settings.bgmVolumePercent << "\n";
+            file << "seVolumePercent = " << settings.seVolumePercent << "\n\n";
+            file << "; FrameBar cell cadence: 0 = subframes, 1 = visual frames\n";
+            file << "frameBarTimingMode = " << settings.frameBarTimingMode << "\n";
+            file << "; FrameBar detail: 0 = full, 1 = compact, 2 = bars only\n";
+            file << "frameBarDetailMode = " << settings.frameBarDetailMode << "\n\n";
+            file << "; Collision / hitbox overlay display (Practice only)\n";
+            file << "collisionDisplayHitboxes = " << (settings.collisionDisplayHitboxes ? "1" : "0") << "\n";
+            file << "collisionDisplayHurtboxes = " << (settings.collisionDisplayHurtboxes ? "1" : "0") << "\n";
+            file << "collisionDisplayCollisionBoxes = " << (settings.collisionDisplayCollisionBoxes ? "1" : "0") << "\n";
+            file << "collisionDisplayProjectileInteractions = " << (settings.collisionDisplayProjectileInteractions ? "1" : "0") << "\n";
+            file << "; Per-player ordinary box filters (master layers above still apply)\n";
+            file << "collisionDisplayP1Hitboxes = " << (settings.collisionDisplayP1Hitboxes ? "1" : "0") << "\n";
+            file << "collisionDisplayP2Hitboxes = " << (settings.collisionDisplayP2Hitboxes ? "1" : "0") << "\n";
+            file << "collisionDisplayP1Hurtboxes = " << (settings.collisionDisplayP1Hurtboxes ? "1" : "0") << "\n";
+            file << "collisionDisplayP2Hurtboxes = " << (settings.collisionDisplayP2Hurtboxes ? "1" : "0") << "\n";
+            file << "collisionDisplayP1CollisionBoxes = " << (settings.collisionDisplayP1CollisionBoxes ? "1" : "0") << "\n";
+            file << "collisionDisplayP2CollisionBoxes = " << (settings.collisionDisplayP2CollisionBoxes ? "1" : "0") << "\n";
+            file << "; Box fill alpha percent. Outlines stay readable.\n";
+            file << "collisionDisplayFillAlphaPercent = " << settings.collisionDisplayFillAlphaPercent << "\n";
+            file << "; Projectile interaction sub-layers\n";
+            file << "collisionDisplayProjectileBoxes = " << (settings.collisionDisplayProjectileBoxes ? "1" : "0") << "\n";
+            file << "collisionDisplayProjectileOrigins = " << (settings.collisionDisplayProjectileOrigins ? "1" : "0") << "\n";
+            file << "collisionDisplayProjectileIntersections = " << (settings.collisionDisplayProjectileIntersections ? "1" : "0") << "\n";
+            file << "collisionDisplayNagamoriRanges = " << (settings.collisionDisplayNagamoriRanges ? "1" : "0") << "\n";
+            file << "collisionDisplayNagamoriAffected = " << (settings.collisionDisplayNagamoriAffected ? "1" : "0") << "\n\n";
             file << "; Log active player / CPU flags during Character Select (1 = yes, 0 = no)\n";
             file << "enableCharacterSelectLogger = " << (settings.enableCharacterSelectLogger ? "1" : "0") << "\n\n";
             file << "; Show a one-time Practice hint about opening the overlay (1 = yes, 0 = no)\n";
             file << "showPracticeEntryHint = " << (settings.showPracticeEntryHint ? "1" : "0") << "\n\n";
-            file << "; UI scale for ImGui window (0.80 - 1.20 recommended)\n";
+            file << "; UI scale for ImGui window (0.70 - 1.50)\n";
             file << "uiScale = " << settings.uiScale << "\n\n";
             file << "; UI font: 0 = ImGui default font, 1 = Segoe UI (Windows)\n";
             file << "uiFont = " << settings.uiFontMode << "\n\n";
@@ -742,6 +939,8 @@ namespace Config {
             // Practice options
             file << "; Practice: Dummy Auto-Block neutral timeout (ms) for First Hit/After First Hit modes.\n";
             file << "autoBlockNeutralTimeoutMs = " << settings.autoBlockNeutralTimeoutMs << "\n\n";
+            file << "; Mission recording count-in in milliseconds (0 = off).\n";
+            file << "missionRecorderCountInMs = " << settings.missionRecorderCountInMs << "\n\n";
             file << "; Virtual Cursor settings\n";
             file << "enableVirtualCursor = " << (settings.enableVirtualCursor?"1":"0") << "\n";
             file << "virtualCursorAllowWindowed = " << (settings.virtualCursorAllowWindowed?"1":"0") << "\n";
@@ -753,6 +952,11 @@ namespace Config {
             // Controller selection
             file << "; Controller selection: -1 = All, 0..3 = XInput user index\n";
             file << "controllerIndex = " << settings.controllerIndex << "\n\n";
+
+            file << "; Savestate backend: 0=Custom, 1=Revival, 2=Custom with Revival fallback\n";
+            file << "savestateBackendMode = " << settings.savestateBackendMode << "\n\n";
+            file << "; Restore saved custom .pal usage when loading savestates (1=yes, 0=use default palettes)\n";
+            file << "savestateLoadCustomPalettes = " << (settings.savestateLoadCustomPalettes ? "1" : "0") << "\n\n";
 
             // (Practice tuning omitted)
             file << "; Show the debug console window (1 = yes, 0 = no)\n";
@@ -766,11 +970,12 @@ namespace Config {
             file << "; Use virtual-key codes (hexadecimal, e.g., 0x70 for F1)\n";
             file << "TeleportKey=" << toHexString(settings.teleportKey) << "\n";
             file << "RecordKey=" << toHexString(settings.recordKey) << "\n";
-            file << "ConfigMenuKey=" << toHexString(settings.configMenuKey) << "\n";
             file << "ToggleTitleKey=" << toHexString(settings.toggleTitleKey) << "\n";
             file << "ResetFrameCounterKey=" << toHexString(settings.resetFrameCounterKey) << "\n";
-            file << "HelpKey=" << toHexString(settings.helpKey) << "\n";
-            file << "ToggleImGuiKey=" << toHexString(settings.toggleImGuiKey) << "\n";
+            file << "SavestateSaveKey=" << toHexString(settings.savestateSaveKey) << "\n";
+            file << "SavestateLoadKey=" << toHexString(settings.savestateLoadKey) << "\n";
+            file << "SavestatePrevSlotKey=" << toHexString(settings.savestatePrevSlotKey) << "\n";
+            file << "SavestateNextSlotKey=" << toHexString(settings.savestateNextSlotKey) << "\n";
             file << "SwitchPlayersKey=" << toHexString(settings.switchPlayersKey) << "\n";
             file << "MacroRecordKey=" << toHexString(settings.macroRecordKey) << "\n";
             file << "MacroPlayKey=" << toHexString(settings.macroPlayKey) << "\n";
@@ -799,7 +1004,6 @@ namespace Config {
             writePad("gpMacroPlayButton", settings.gpMacroPlayButton);
             writePad("gpMacroSlotButton", settings.gpMacroSlotButton);
             writePad("gpToggleMenuButton", settings.gpToggleMenuButton);
-            writePad("gpToggleImGuiButton", settings.gpToggleImGuiButton);
             writePad("gpUiTopTabPrev", settings.gpUiTopTabPrev);
             writePad("gpUiTopTabNext", settings.gpUiTopTabNext);
             writePad("gpUiSubTabPrev", settings.gpUiSubTabPrev);
@@ -834,13 +1038,61 @@ namespace Config {
         // Update the appropriate setting (case-insensitive keys)
         if (sec == "general") {
             if (k == "useimgui" || k == "useimgui ") settings.useImGui = (value == "1");
+            if (k == "usecustommenu") settings.useCustomMenu = (value == "1");
             if (k == "detailedlogging") settings.detailedLogging = (value == "1");
             if (k == "enabledebugfilelog") settings.enableDebugFileLog = (value == "1");
             if (k == "enableconsole") settings.enableConsole = (value == "1");
+            if (k == "showframebar") settings.showFrameBar = (value == "1");
+            if (k == "bgmvolumepercent") {
+                try { settings.bgmVolumePercent = std::stoi(value); } catch (...) { settings.bgmVolumePercent = 100; }
+                if (settings.bgmVolumePercent < 0) settings.bgmVolumePercent = 0;
+                if (settings.bgmVolumePercent > 100) settings.bgmVolumePercent = 100;
+            }
+            if (k == "sevolumepercent") {
+                try { settings.seVolumePercent = std::stoi(value); } catch (...) { settings.seVolumePercent = 100; }
+                if (settings.seVolumePercent < 0) settings.seVolumePercent = 0;
+                if (settings.seVolumePercent > 100) settings.seVolumePercent = 100;
+            }
+            if (k == "framebartimingmode") {
+                try { settings.frameBarTimingMode = std::stoi(value); } catch (...) { settings.frameBarTimingMode = 0; }
+                if (settings.frameBarTimingMode < 0 || settings.frameBarTimingMode > 1) settings.frameBarTimingMode = 0;
+            }
+            if (k == "framebardetailmode") {
+                try { settings.frameBarDetailMode = std::stoi(value); } catch (...) { settings.frameBarDetailMode = 0; }
+                if (settings.frameBarDetailMode < 0 || settings.frameBarDetailMode > 2) settings.frameBarDetailMode = 0;
+            }
+            if (k == "collisiondisplayhitboxes") settings.collisionDisplayHitboxes = (value == "1" || value == "true");
+            if (k == "collisiondisplayhurtboxes") settings.collisionDisplayHurtboxes = (value == "1" || value == "true");
+            if (k == "collisiondisplaycollisionboxes") settings.collisionDisplayCollisionBoxes = (value == "1" || value == "true");
+            if (k == "collisiondisplayprojectileinteractions") settings.collisionDisplayProjectileInteractions = (value == "1" || value == "true");
+            if (k == "collisiondisplayp1hitboxes") settings.collisionDisplayP1Hitboxes = (value == "1" || value == "true");
+            if (k == "collisiondisplayp2hitboxes") settings.collisionDisplayP2Hitboxes = (value == "1" || value == "true");
+            if (k == "collisiondisplayp1hurtboxes") settings.collisionDisplayP1Hurtboxes = (value == "1" || value == "true");
+            if (k == "collisiondisplayp2hurtboxes") settings.collisionDisplayP2Hurtboxes = (value == "1" || value == "true");
+            if (k == "collisiondisplayp1collisionboxes") settings.collisionDisplayP1CollisionBoxes = (value == "1" || value == "true");
+            if (k == "collisiondisplayp2collisionboxes") settings.collisionDisplayP2CollisionBoxes = (value == "1" || value == "true");
+            if (k == "collisiondisplayfillalphapercent") {
+                try { settings.collisionDisplayFillAlphaPercent = std::stoi(value); } catch (...) { settings.collisionDisplayFillAlphaPercent = 25; }
+                if (settings.collisionDisplayFillAlphaPercent < 0) settings.collisionDisplayFillAlphaPercent = 0;
+                if (settings.collisionDisplayFillAlphaPercent > 100) settings.collisionDisplayFillAlphaPercent = 100;
+            }
+            if (k == "collisiondisplayprojectileboxes") settings.collisionDisplayProjectileBoxes = (value == "1" || value == "true");
+            if (k == "collisiondisplayprojectileorigins") settings.collisionDisplayProjectileOrigins = (value == "1" || value == "true");
+            if (k == "collisiondisplayprojectileintersections") settings.collisionDisplayProjectileIntersections = (value == "1" || value == "true");
+            if (k == "collisiondisplaynagamoriranges") settings.collisionDisplayNagamoriRanges = (value == "1" || value == "true");
+            if (k == "collisiondisplaynagamoriaffected") settings.collisionDisplayNagamoriAffected = (value == "1" || value == "true");
             if (k == "restricttopracticemode") settings.restrictToPracticeMode = (value == "1");
+            if (k == "framestepenabled") settings.framestepEnabled = (value == "1" || value == "true");
+            if (k == "suppressrevivalframestep") settings.suppressRevivalFramestep = (value == "1" || value == "true");
             if (k == "showpracticeentryhint") settings.showPracticeEntryHint = (value == "1");
+            if (k == "savestatebackendmode") {
+                try { settings.savestateBackendMode = std::stoi(value); } catch (...) { settings.savestateBackendMode = 2; }
+                if (settings.savestateBackendMode < 0 || settings.savestateBackendMode > 2) settings.savestateBackendMode = 2;
+            }
+            if (k == "savestateloadcustompalettes") settings.savestateLoadCustomPalettes = (value == "1" || value == "true");
             if (k == "uiscale") {
                 try { settings.uiScale = std::stof(value); } catch (...) {}
+                settings.uiScale = ClampUiScale(settings.uiScale);
             }
             if (k == "uifont") {
                 try { settings.uiFontMode = std::stoi(value); } catch (...) {}
@@ -882,16 +1134,23 @@ namespace Config {
             if (k == "combooverlayshowrfmultiplier") settings.comboOverlayShowRfMultiplier = (value == "1");
             if (k == "combooverlayshowrawscale") settings.comboOverlayShowRawScale = (value == "1");
             if (k == "autoblockneutraltimeoutms") { try { settings.autoBlockNeutralTimeoutMs = std::stoi(value); } catch(...) { settings.autoBlockNeutralTimeoutMs = 10000; } }
+            if (k == "missionrecordercountinms") {
+                try { settings.missionRecorderCountInMs = std::stoi(value); }
+                catch (...) { settings.missionRecorderCountInMs = 500; }
+                if (settings.missionRecorderCountInMs < 0) settings.missionRecorderCountInMs = 0;
+                if (settings.missionRecorderCountInMs > 3000) settings.missionRecorderCountInMs = 3000;
+            }
         }
         else if (sec == "hotkeys") {
             int intValue = ParseKeyValue(value);
             if (k == "teleportkey") settings.teleportKey = intValue;
             if (k == "recordkey") settings.recordKey = intValue;
-            if (k == "configmenukey") settings.configMenuKey = intValue;
-            if (k == "toggletitlekey") settings.toggleTitleKey = intValue;
-            if (k == "resetframecounterkey") settings.resetFrameCounterKey = intValue;
-            if (k == "helpkey") settings.helpKey = intValue;
-            if (k == "toggleimguikey") settings.toggleImGuiKey = intValue;
+            if (k == "toggletitlekey") settings.toggleTitleKey = (intValue == 0x34) ? -1 : intValue;
+            if (k == "resetframecounterkey") settings.resetFrameCounterKey = (intValue == 0x35) ? -1 : intValue;
+            if (k == "savestatesavekey") settings.savestateSaveKey = intValue;
+            if (k == "savestateloadkey") settings.savestateLoadKey = intValue;
+            if (k == "savestateprevslotkey") settings.savestatePrevSlotKey = intValue;
+            if (k == "savestatenextslotkey") settings.savestateNextSlotKey = intValue;
             if (k == "switchplayerskey") settings.switchPlayersKey = intValue;
             if (k == "macrorecordkey") settings.macroRecordKey = intValue;
             if (k == "macroplaykey") settings.macroPlayKey = intValue;
@@ -912,7 +1171,6 @@ namespace Config {
             if (k == "gpmacroplaybutton") settings.gpMacroPlayButton = ParseGamepadButton(value);
             if (k == "gpmacroslotbutton") settings.gpMacroSlotButton = ParseGamepadButton(value);
             if (k == "gptogglemenubutton") settings.gpToggleMenuButton = ParseGamepadButton(value);
-            if (k == "gptoggleimguibutton") settings.gpToggleImGuiButton = ParseGamepadButton(value);
             if (k == "gpuitoptabprev") settings.gpUiTopTabPrev = ParseGamepadButton(value);
             if (k == "gpuitoptabnext") settings.gpUiTopTabNext = ParseGamepadButton(value);
             if (k == "gpuisubtabprev") settings.gpUiSubTabPrev = ParseGamepadButton(value);

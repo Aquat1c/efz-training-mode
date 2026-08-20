@@ -1,6 +1,7 @@
 // Always RG arming module
 #pragma once
 #include <atomic>
+#include <cstdint>
 
 // Minimal API for arming Recoil Guard (RG) continuously for the practice dummy.
 // Usage:
@@ -11,5 +12,7 @@
 namespace AlwaysRG {
 	void SetEnabled(bool enabled);
 	bool IsEnabled();
+	uint64_t GetMutationGeneration();
+	bool SetEnabledIfGeneration(bool enabled, uint64_t expectedGeneration);
 	void Tick(short p1MoveId, short p2MoveId);
 }

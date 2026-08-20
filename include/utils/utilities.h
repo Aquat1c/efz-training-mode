@@ -9,6 +9,7 @@
 extern std::atomic<bool> menuOpen;
 extern std::atomic<int> frameCounter;
 extern std::atomic<bool> detailedLogging;
+extern std::atomic<bool> g_deepFrameAdvDebug;
 extern std::atomic<bool> autoAirtechEnabled;  // New: Controls auto-airtech feature
 extern std::atomic<int> autoAirtechDirection; // New: 0=forward, 1=backward
 extern std::atomic<bool> autoJumpEnabled;     // Controls auto-jump feature
@@ -116,6 +117,10 @@ extern std::atomic<bool> g_injectImmediateOnly[3]; // Index 0 unused, 1=P1, 2=P2
 #define MAX_TRIGGER_OPTIONS 8
 #endif
 
+#ifndef MAX_ACTION_POOL_OPTIONS
+#define MAX_ACTION_POOL_OPTIONS 128
+#endif
+
 // A single row entry for a trigger: action choice with its own strength/button, delay and optional macro/custom
 struct TriggerOption {
     bool enabled;     // whether this row participates in random selection
@@ -124,6 +129,7 @@ struct TriggerOption {
     int  delay;       // visual frames (0 = immediate)
     int  customId;    // for custom actions (if used)
     int  macroSlot;   // 0=None, 1..MaxSlots
+    int  chargeFollowup; // 0=Off, 1=IC after contact, 2=FIC before contact
 };
 struct DisplayData {
     int hp1, hp2;
@@ -155,7 +161,10 @@ struct DisplayData {
     int p1IkumiLevelGauge; // 0..99 (100 triggers level up)
     int p2IkumiLevelGauge;
     bool infiniteBloodMode;  // Enables freeze patch for blood
-    
+
+    // Shiori (reuses Ikumi's per-character resource slot, player + 0x314C)
+    bool infiniteShioriShield;  // Freezes Shiori's shield gauge so it never depletes
+
     // Misuzu
     int p1MisuzuFeathers;
     int p2MisuzuFeathers;
@@ -226,6 +235,13 @@ struct DisplayData {
     int strengthAfterAirtech;
     int strengthOnRG;
 
+    // Optional native 22C follow-up for the selected attack.
+    int chargeAfterBlock;
+    int chargeOnWakeup;
+    int chargeAfterHitstun;
+    int chargeAfterAirtech;
+    int chargeOnRG;
+
     // Per-trigger macro selection (0=None, 1..MaxSlots)
     int macroSlotAfterBlock;
     int macroSlotOnWakeup;
@@ -269,7 +285,7 @@ struct DisplayData {
     // Neyuki (Sleepy Nayuki) – Jam count (0..9)
     int  p1NeyukiJamCount;
     int  p2NeyukiJamCount;
-    bool p1NeyukiLockJam;  // when true, restore jam count on wakeup (moveID 96)
+    bool p1NeyukiLockJam;  // when true, restore jam count on wakeup/neutral recovery
     bool p2NeyukiLockJam;
 
     // Mio – stance control (0=Short,1=Long) and optional lock
@@ -395,14 +411,43 @@ struct DisplayData {
     double p2RecoveryRfCustom;
     bool  p2RecoveryRfForceBlueIC;
 
-    // Multi-action pools per trigger (UI selects a set of actions; engine will pick one at random)
-    // Bitmask mapping follows the motion index space used by the UI (0..23). Bit set => eligible.
-    // These are UI-facing snapshots; runtime atomics mirror these for execution.
+    // Legacy multi-action pools per trigger. Bitmask mapping follows the old
+    // grouped motion index space used by the UI (0..23). Kept so older runtime
+    // state can be imported into the concrete pools below.
     uint32_t afterBlockActionPoolMask;
     uint32_t onWakeupActionPoolMask;
     uint32_t afterHitstunActionPoolMask;
     uint32_t afterAirtechActionPoolMask;
     uint32_t onRGActionPoolMask;
+
+    // Concrete multi-action pools per trigger. Low/high form a 128-bit mask
+    // over explicit action+variant entries: 623A and 623B are separate bits,
+    // normals use their concrete ACTION_* ids, and jumps store direction.
+    uint64_t afterBlockActionPoolMaskLo;
+    uint64_t afterBlockActionPoolMaskHi;
+    uint64_t onWakeupActionPoolMaskLo;
+    uint64_t onWakeupActionPoolMaskHi;
+    uint64_t afterHitstunActionPoolMaskLo;
+    uint64_t afterHitstunActionPoolMaskHi;
+    uint64_t afterAirtechActionPoolMaskLo;
+    uint64_t afterAirtechActionPoolMaskHi;
+    uint64_t onRGActionPoolMaskLo;
+    uint64_t onRGActionPoolMaskHi;
+
+    // Per concrete pool action delays. -1 means inherit the trigger's normal delay.
+    int afterBlockActionPoolDelays[MAX_ACTION_POOL_OPTIONS];
+    int onWakeupActionPoolDelays[MAX_ACTION_POOL_OPTIONS];
+    int afterHitstunActionPoolDelays[MAX_ACTION_POOL_OPTIONS];
+    int afterAirtechActionPoolDelays[MAX_ACTION_POOL_OPTIONS];
+    int onRGActionPoolDelays[MAX_ACTION_POOL_OPTIONS];
+
+    // Per concrete pool action charge mode (0=Off, 1=IC, 2=FIC).
+    int afterBlockActionPoolCharges[MAX_ACTION_POOL_OPTIONS];
+    int onWakeupActionPoolCharges[MAX_ACTION_POOL_OPTIONS];
+    int afterHitstunActionPoolCharges[MAX_ACTION_POOL_OPTIONS];
+    int afterAirtechActionPoolCharges[MAX_ACTION_POOL_OPTIONS];
+    int onRGActionPoolCharges[MAX_ACTION_POOL_OPTIONS];
+
     bool     afterBlockUseActionPool;
     bool     onWakeupUseActionPool;
     bool     afterHitstunUseActionPool;
@@ -423,6 +468,10 @@ struct DisplayData {
 };
 
 extern DisplayData displayData;
+
+bool HasAnyAutoActionTriggerEnabled();
+bool HasAnyAutoActionTriggerEnabled(const DisplayData& data);
+int ResolveAutoActionTargetPlayer();
 
 // Structure to hold detected key bindings
 struct KeyBindings {
@@ -457,13 +506,45 @@ extern std::atomic<int> triggerAfterHitstunAction;
 extern std::atomic<int> triggerAfterAirtechAction;
 extern std::atomic<int> triggerOnRGAction;
 
-// Per-trigger multi-action pool configuration
-// Bitmask uses UI motion indices (0..23). When enabled and mask!=0, engine picks one randomly at fire time.
+extern std::atomic<int> triggerAfterBlockCharge;
+extern std::atomic<int> triggerOnWakeupCharge;
+extern std::atomic<int> triggerAfterHitstunCharge;
+extern std::atomic<int> triggerAfterAirtechCharge;
+extern std::atomic<int> triggerOnRGCharge;
+
+// Legacy per-trigger multi-action pool configuration.
+// Bitmask uses old UI motion indices (0..23). Runtime imports these only when
+// the concrete pool mask below is empty.
 extern std::atomic<uint32_t> triggerAfterBlockActionPoolMask;
 extern std::atomic<uint32_t> triggerOnWakeupActionPoolMask;
 extern std::atomic<uint32_t> triggerAfterHitstunActionPoolMask;
 extern std::atomic<uint32_t> triggerAfterAirtechActionPoolMask;
 extern std::atomic<uint32_t> triggerOnRGActionPoolMask;
+
+// Concrete per-trigger multi-action pool configuration.
+extern std::atomic<uint64_t> triggerAfterBlockActionPoolMaskLo;
+extern std::atomic<uint64_t> triggerAfterBlockActionPoolMaskHi;
+extern std::atomic<uint64_t> triggerOnWakeupActionPoolMaskLo;
+extern std::atomic<uint64_t> triggerOnWakeupActionPoolMaskHi;
+extern std::atomic<uint64_t> triggerAfterHitstunActionPoolMaskLo;
+extern std::atomic<uint64_t> triggerAfterHitstunActionPoolMaskHi;
+extern std::atomic<uint64_t> triggerAfterAirtechActionPoolMaskLo;
+extern std::atomic<uint64_t> triggerAfterAirtechActionPoolMaskHi;
+extern std::atomic<uint64_t> triggerOnRGActionPoolMaskLo;
+extern std::atomic<uint64_t> triggerOnRGActionPoolMaskHi;
+
+extern int g_afterBlockActionPoolDelays[MAX_ACTION_POOL_OPTIONS];
+extern int g_onWakeupActionPoolDelays[MAX_ACTION_POOL_OPTIONS];
+extern int g_afterHitstunActionPoolDelays[MAX_ACTION_POOL_OPTIONS];
+extern int g_afterAirtechActionPoolDelays[MAX_ACTION_POOL_OPTIONS];
+extern int g_onRGActionPoolDelays[MAX_ACTION_POOL_OPTIONS];
+
+extern int g_afterBlockActionPoolCharges[MAX_ACTION_POOL_OPTIONS];
+extern int g_onWakeupActionPoolCharges[MAX_ACTION_POOL_OPTIONS];
+extern int g_afterHitstunActionPoolCharges[MAX_ACTION_POOL_OPTIONS];
+extern int g_afterAirtechActionPoolCharges[MAX_ACTION_POOL_OPTIONS];
+extern int g_onRGActionPoolCharges[MAX_ACTION_POOL_OPTIONS];
+
 extern std::atomic<bool>     triggerAfterBlockUsePool;
 extern std::atomic<bool>     triggerOnWakeupUsePool;
 extern std::atomic<bool>     triggerAfterHitstunUsePool;
@@ -516,6 +597,12 @@ void UpdateWindowActiveState();
 
 // Add these after the other global state variables
 extern std::atomic<bool> g_statsDisplayEnabled;
+// Debug-info overlay page (scrolled with 5/6 while the overlay is active). Below
+// the always-on core stats, an EXTRA-info area is paginated: page 0 = overview,
+// then one page per active entity/bullet. g_statsPageCount is published live by
+// UpdateStatsDisplay (dynamic with the entity count); the 5/6 handler wraps on it.
+extern std::atomic<int> g_statsPageIndex;
+extern std::atomic<int> g_statsPageCount;
 extern int g_statsP1ValuesId;
 extern int g_statsP2ValuesId;
 extern int g_statsPositionId;

@@ -1,5 +1,6 @@
 #pragma once
 #include <atomic>
+#include <cstdint>
 #include <string>
 #include "../include/core/constants.h"
 #include "../include/game/game_state.h"
@@ -82,8 +83,13 @@ int GetAttackLevel(short blockstunMoveID);
 bool IsDashState(short moveID);
 
 // Auto-action related functions
+enum class AutoActionApplyResult : uint8_t;
 extern short GetActionMoveID(int actionType, int triggerType, int playerNum);
-void ApplyAutoAction(int playerNum, uintptr_t moveIDAddr, short currentMoveID, short prevMoveID);
+AutoActionApplyResult ApplyAutoAction(int playerNum, uintptr_t moveIDAddr,
+                                      short currentMoveID, short prevMoveID,
+                                      uint64_t* motionGenerationOut,
+                                      uint64_t* normalGenerationOut,
+                                      uint64_t* recipeGenerationOut);
 extern bool p1ActionApplied;
 extern bool p2ActionApplied;
 

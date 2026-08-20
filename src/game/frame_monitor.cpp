@@ -1,17 +1,25 @@
 #include "../include/game/frame_monitor.h"
 #include "../include/game/macro_controller.h"
+#include "../include/game/mission/mission_engine.h"
+#include "../include/game/mission/tutorial_session.h"   // TutorialSession::IsActive (suppress practice hint in lessons)
 #include "../include/game/auto_airtech.h"
 #include "../include/game/auto_jump.h"
 #include "../include/game/auto_action.h" // ensure ClearAllAutoActionTriggers declaration
+#include "../include/game/auto_action_charge.h"
+#include "../include/game/kaori_recoil_duck.h"
+#include "../include/game/character_action_catalog.h"
 #include "../include/game/frame_analysis.h"
 #include "../include/game/frame_advantage.h"
 #include "../include/game/combo_overlay.h"
+#include "../include/game/collision_display.h"
 #include "../include/core/constants.h"
 #include "../include/utils/utilities.h"
 #include "../include/utils/bgm_control.h"
+#include "../include/utils/audio_control.h"
 #include "../include/core/memory.h"
 #include "../include/core/logger.h"
 #include "../include/gui/overlay.h"
+#include "../include/gui/framebar.h"
 #include "../include/game/game_state.h"
 #include "../include/game/per_frame_sample.h" // unified sampling context
 #include "../include/input/input_buffer.h"
@@ -20,11 +28,12 @@
 #include "../include/utils/network.h"
 #include "../include/utils/pause_integration.h" // PauseIntegration::EnsurePracticePointerCapture/GetPracticeControllerPtr
 #include "../include/utils/switch_players.h"    // SwitchPlayers::ResetControlMappingForMenusToP1
-#include "../include/input/framestep.h"          // Framestep system for vanilla EFZ
+#include "../include/input/framestep.h"          // Framestep system
 #define DISABLE_ATTACK_READER 1
 #include "../include/game/attack_reader.h"
 #include "../include/game/practice_patch.h"
 #include "../include/game/character_settings.h"
+#include "../include/game/character_hotswap.h"
 #include "../include/game/final_memory_patch.h"
 #include "../include/game/macro_controller.h"
 #include "../include/game/always_rg.h"
@@ -39,12 +48,14 @@
 void ClearAllAutoActionTriggers();
 #endif
 #include <deque>
+#include <array>
 #include <vector>
 #include <chrono>
 #include <sstream>
 #include <algorithm>
 #include <thread>
 #include <atomic>
+#include <exception>
 #include <iomanip>
 
 // Compile-time gate for verbose Character Select diagnostics (set to 1 locally when needed)
@@ -147,6 +158,40 @@ static std::string FM_Hex(uintptr_t v) {
     return oss.str();
 }
 
+// When the experimental modes are enabled, their runtime runs on this detached
+// monitor thread. An uncaught C++ exception would otherwise terminate the whole
+// game without preserving std::exception::what(). Quarantine the session and
+// leave a useful log line; access violations remain under the process crash
+// handler (/EHsc).
+static void TickMissionEngineGuarded() noexcept {
+#if !defined(EFZ_ENABLE_EXPERIMENTAL_TRIAL_TUTORIAL)
+    return;
+#else
+    try {
+        Mission::Engine::Tick();
+    } catch (const std::exception& e) {
+        try {
+            const std::string detail = e.what() ? e.what() : "unknown std::exception";
+            LogOut("[MISSION][UNHANDLED_EXCEPTION] " + detail, true);
+            DirectDrawHook::AddMessage(("Mission stopped: " + detail).c_str(),
+                                       "MISSION", RGB(255, 120, 120), 5000, 0, 120);
+            Mission::Engine::Runner::Unload();
+        } catch (...) {
+            LogOut("[MISSION][UNHANDLED_EXCEPTION] recovery also failed", true);
+        }
+    } catch (...) {
+        try {
+            LogOut("[MISSION][UNHANDLED_EXCEPTION] non-standard C++ exception", true);
+            DirectDrawHook::AddMessage("Mission stopped after an internal error",
+                                       "MISSION", RGB(255, 120, 120), 5000, 0, 120);
+            Mission::Engine::Runner::Unload();
+        } catch (...) {
+            LogOut("[MISSION][UNHANDLED_EXCEPTION] recovery also failed", true);
+        }
+    }
+#endif
+}
+
 static void MaybeShowPracticeOverlayHintOnce() {
     if (s_practiceHintShown.load(std::memory_order_relaxed)) return;
     if (!g_featuresEnabled.load()) return;
@@ -154,23 +199,15 @@ static void MaybeShowPracticeOverlayHintOnce() {
 
     const auto& cfg = Config::GetSettings();
     if (!cfg.showPracticeEntryHint) return;
+    // Only in real free-practice: not during a tutorial or any mission/trial.
+    if (::Mission::Engine::Runner::IsActive() || ::Mission::TutorialSession::IsActive()) return;
 
     bool expected = false;
     if (!s_practiceHintShown.compare_exchange_strong(expected, true)) {
         return;
     }
 
-    auto pickKeyName = [](int keyCode) -> std::string {
-        if (keyCode <= 0) return std::string();
-        return Config::GetKeyName(keyCode);
-    };
-    std::string keyboardKey = pickKeyName(cfg.configMenuKey);
-    if (keyboardKey.empty()) {
-        keyboardKey = pickKeyName(cfg.toggleImGuiKey);
-    }
-    if (keyboardKey.empty()) {
-        keyboardKey = "3"; // fallback to legacy default
-    }
+    std::string keyboardKey = "Esc";
 
     std::ostringstream msg;
     msg << "Training menu: press " << keyboardKey;
@@ -281,7 +318,7 @@ static void LogCharacterSelectDiagnostics() {
     // Practice controller diagnostics (best-effort)
     PauseIntegration::EnsurePracticePointerCapture();
     void* prac = PauseIntegration::GetPracticeControllerPtr();
-    if (prac) {
+    if (prac && EFZ_SupportsNativePracticeSideSwitch()) {
         uint8_t* pr = reinterpret_cast<uint8_t*>(prac);
         int local=-1, remote=-1; uintptr_t prim=0, sec=0; int initSrc=-1; uint8_t guiPos=0xFF;
         SafeReadMemory((uintptr_t)pr + PRACTICE_OFF_LOCAL_SIDE_IDX, &local, sizeof(local));
@@ -295,8 +332,10 @@ static void LogCharacterSelectDiagnostics() {
            << "  primary=" << FM_Hex(prim) << " secondary=" << FM_Hex(sec)
            << "  initSrc=" << initSrc << "  GUI_POS(+0x24)=" << (int)guiPos;
         LogOut(os.str(), true); os.str(""); os.clear();
-    } else {
+    } else if (EFZ_SupportsNativePracticeSideSwitch()) {
         LogOut("[CS][DIAG] Practice controller: <unavailable>", true);
+    } else if (GetEfzRevivalVersion() == EfzRevivalVersion::Revival102j) {
+        LogOut("[CS][DIAG] Practice routing fields: unavailable in 1.02j compact layout", true);
     }
 
     // Our override/patch states
@@ -393,7 +432,9 @@ static void ResetControlOnCharacterSelect() {
     if (g_p2ControlOverridden) {
         RestoreP2ControlState();
     }
-    g_pendingControlRestore.store(false);
+    if (!g_p2ControlOverridden.load(std::memory_order_acquire)) {
+        g_pendingControlRestore.store(false, std::memory_order_release);
+    }
 
     // Clear poll override/injection flags for both players
     for (int i = 1; i <= 2; ++i) {
@@ -501,19 +542,21 @@ void UpdateTriggerOverlay() {
         if (g_TriggerOnRGId != -1) { DirectDrawHook::RemovePermanentMessage(g_TriggerOnRGId); g_TriggerOnRGId = -1; }
     };
 
-    if (!autoActionEnabled.load()) {
+    if (!HasAnyAutoActionTriggerEnabled()) {
         remove_all_triggers();
         return;
     }
 
-    int yPos = 140;
+    const int yPosDefault = 140;
+    const int yPosBelowFramestep = 160;
+    int yPos = Framestep::IsPaused() ? yPosBelowFramestep : yPosDefault;
     const int yIncrement = 15;
-    int targetPlayer = autoActionPlayer.load();
+    int targetPlayer = ResolveAutoActionTargetPlayer();
 
     auto getActionName = [](int actionType, int customId, int strength) -> std::string {
         std::string strengthLetter = "";
         
-        // Determine strength letter (A, B, C)
+        // Determine the concrete button used by button-variant actions.
         if (actionType == ACTION_QCF ||
             actionType == ACTION_DP ||
             actionType == ACTION_QCB ||
@@ -527,13 +570,21 @@ void UpdateTriggerOverlay() {
             actionType == ACTION_412 ||
             actionType == ACTION_22 ||
             actionType == ACTION_4123641236 ||
-            actionType == ACTION_6321463214) {
+            actionType == ACTION_6321463214 ||
+            actionType == ACTION_1X ||
+            actionType == ACTION_3X ||
+            actionType == ACTION_J2X ||
+            actionType == ACTION_J6X ||
+            actionType == ACTION_66X ||
+            actionType == ACTION_662X ||
+            actionType == ACTION_664X) {
             
             // Convert strength number to letter
             switch(strength) {
                 case 0: strengthLetter = "A"; break;
                 case 1: strengthLetter = "B"; break;
                 case 2: strengthLetter = "C"; break;
+                case 3: strengthLetter = "S"; break;
                 default: strengthLetter = "A"; break;
             }
         }
@@ -564,7 +615,7 @@ void UpdateTriggerOverlay() {
             case ACTION_QCB: return "214" + strengthLetter; // QCB + strength
             case ACTION_421: return "421" + strengthLetter; // Half-circle down + strength
             case ACTION_SUPER1: return "41236" + strengthLetter; // HCF + strength
-            case ACTION_SUPER2: return "214236" + strengthLetter; // Hybrid replaces removed 63214
+            case ACTION_SUPER2: return "2141236" + strengthLetter;
             case ACTION_236236: return "236236" + strengthLetter; // Double QCF + strength
             case ACTION_214214: return "214214" + strengthLetter; // Double QCB + strength
             case ACTION_641236: return "641236" + strengthLetter; // Pretzel variant
@@ -573,6 +624,14 @@ void UpdateTriggerOverlay() {
             case ACTION_22: return "22" + strengthLetter;         // Down-Down
             case ACTION_4123641236: return "4123641236" + strengthLetter; // Double 41236
             case ACTION_6321463214: return "6321463214" + strengthLetter;
+            case ACTION_1X: return "1" + strengthLetter;
+            case ACTION_3X: return "3" + strengthLetter;
+            case ACTION_J2X: return "j.2" + strengthLetter;
+            case ACTION_J6X: return "j.6" + strengthLetter;
+            case ACTION_66X: return "66" + strengthLetter;
+            case ACTION_662X: return "662" + strengthLetter;
+            case ACTION_664X: return "664" + strengthLetter;
+            case ACTION_KAORI_RECOIL_DUCK: return "Kaori 44~66";
             case ACTION_JUMP: return "Jump";
             case ACTION_BACKDASH: return "Backdash";
             case ACTION_FORWARD_DASH: {
@@ -619,7 +678,7 @@ void UpdateTriggerOverlay() {
                     case ACTION_QCB: return std::string("214") + letter(str);
                     case ACTION_421: return std::string("421") + letter(str);
                     case ACTION_SUPER1: return std::string("41236") + letter(str);
-                    case ACTION_SUPER2: return std::string("214236") + letter(str);
+                    case ACTION_SUPER2: return std::string("2141236") + letter(str);
                     case ACTION_236236: return std::string("236236") + letter(str);
                     case ACTION_214214: return std::string("214214") + letter(str);
                     case ACTION_641236: return std::string("641236") + letter(str);
@@ -628,6 +687,14 @@ void UpdateTriggerOverlay() {
                     case ACTION_22:  return std::string("22") + letter(str);
                     case ACTION_4123641236: return std::string("4123641236") + letter(str);
                     case ACTION_6321463214: return std::string("6321463214") + letter(str);
+                    case ACTION_1X: return std::string("1") + letter(str);
+                    case ACTION_3X: return std::string("3") + letter(str);
+                    case ACTION_J2X: return std::string("j.2") + letter(str);
+                    case ACTION_J6X: return std::string("j.6") + letter(str);
+                    case ACTION_66X: return std::string("66") + letter(str);
+                    case ACTION_662X: return std::string("662") + letter(str);
+                    case ACTION_664X: return std::string("664") + letter(str);
+                    case ACTION_KAORI_RECOIL_DUCK: return "44~66";
                     case ACTION_JUMP: {
                         // strength: 0=neutral jump, 1=forward jump, 2=backward jump
                         int s = (str < 0 ? 0 : (str > 2 ? 2 : str));
@@ -656,6 +723,212 @@ void UpdateTriggerOverlay() {
                 }
             };
 
+            auto poolTokenForIndex = [&](int idx) -> std::string {
+                int poolAction = ACTION_NONE;
+                int poolStrength = 0;
+                if (!CharacterActionCatalog::PoolIndexToAction(
+                        idx, poolAction, poolStrength)) {
+                    return "?";
+                }
+                switch (poolAction) {
+                    case ACTION_FINAL_MEMORY: return "FM";
+                    case ACTION_JUMP:
+                        if (poolStrength == 1) return "F.Jump";
+                        if (poolStrength == 2) return "B.Jump";
+                        return "Jump";
+                    case ACTION_BACKDASH: return "44";
+                    // A pool entry for the plain forward dash must not inherit
+                    // the separate global dash-followup selector.
+                    case ACTION_FORWARD_DASH: return "66";
+                    case ACTION_BLOCK: return "[4]";
+                    default: return tokenFor(poolAction, poolStrength, 0);
+                }
+            };
+
+            auto concretePoolIndexForAction = [&](int act, int str) -> int {
+                str = (str < 0) ? 0 : str;
+                if (act == ACTION_JUMP) {
+                    str = CLAMP(str, 0, 2);
+                } else if (act == ACTION_FINAL_MEMORY ||
+                           act == ACTION_BACKDASH ||
+                           act == ACTION_FORWARD_DASH ||
+                           act == ACTION_BLOCK ||
+                           act == ACTION_KAORI_RECOIL_DUCK) {
+                    str = 0;
+                } else {
+                    str = CLAMP(str, 0, 3);
+                }
+
+                for (int idx = 0; idx < CharacterActionCatalog::kPoolCount; ++idx) {
+                    int poolAction = ACTION_NONE;
+                    int poolStrength = 0;
+                    if (CharacterActionCatalog::PoolIndexToAction(
+                            idx, poolAction, poolStrength) &&
+                        poolAction == act && poolStrength == str) {
+                        return idx;
+                    }
+                }
+                return -1;
+            };
+
+            auto poolBitSet = [](uint64_t lo, uint64_t hi, int idx) -> bool {
+                if (idx < 0 || idx >= CharacterActionCatalog::kPoolCount) return false;
+                if (idx < 64) return ((lo >> idx) & 1ull) != 0;
+                return ((hi >> (idx - 64)) & 1ull) != 0;
+            };
+
+            auto setPoolBit = [](uint64_t& lo, uint64_t& hi, int idx) {
+                if (idx < 0 || idx >= CharacterActionCatalog::kPoolCount) return;
+                if (idx < 64) lo |= (1ull << idx);
+                else hi |= (1ull << (idx - 64));
+            };
+
+            auto expandLegacyPool = [&](uint32_t legacyMask, int fallbackStrength, uint64_t& lo, uint64_t& hi) {
+                const int s4 = CLAMP(fallbackStrength, 0, 3);
+                const int s3 = CLAMP(fallbackStrength, 0, 2);
+                auto legacyToConcrete = [&](int motionIdx) -> int {
+                    switch (motionIdx) {
+                        case 0:  return 0 + s4;
+                        case 1:  return 4 + s4;
+                        case 2:  return 8 + s4;
+                        case 3:  return 20 + s4;
+                        case 4:  return 24 + s4;
+                        case 5:  return 28 + s4;
+                        case 6:  return 32 + s4;
+                        case 7:  return 44 + s4;
+                        case 8:  return 48 + s4;
+                        case 9:  return 52 + s4;
+                        case 10: return 56 + s4;
+                        case 11: return 60 + s4;
+                        case 12: return 64 + s4;
+                        case 13: return 36 + s4;
+                        case 14: return 40 + s4;
+                        case 15: return 68 + s4;
+                        case 16: return 72 + s4;
+                        case 17: return 77 + s3;
+                        case 18: return 80;
+                        case 19: return 81;
+                        case 20: return 82;
+                        case 21: return 76;
+                        case 22: return 12 + s4;
+                        case 23: return 16 + s4;
+                        default: return -1;
+                    }
+                };
+                for (int bit = 0; bit < 24; ++bit) {
+                    if ((legacyMask & (1u << bit)) == 0) continue;
+                    setPoolBit(lo, hi, legacyToConcrete(bit));
+                }
+            };
+
+            auto getPoolConfig = [&](uint64_t& lo, uint64_t& hi, bool& usePool) {
+                uint32_t legacy = 0;
+                switch (triggerType) {
+                    case TRIGGER_AFTER_BLOCK:
+                        legacy = triggerAfterBlockActionPoolMask.load();
+                        lo = triggerAfterBlockActionPoolMaskLo.load();
+                        hi = triggerAfterBlockActionPoolMaskHi.load();
+                        usePool = triggerAfterBlockUsePool.load();
+                        break;
+                    case TRIGGER_ON_WAKEUP:
+                        legacy = triggerOnWakeupActionPoolMask.load();
+                        lo = triggerOnWakeupActionPoolMaskLo.load();
+                        hi = triggerOnWakeupActionPoolMaskHi.load();
+                        usePool = triggerOnWakeupUsePool.load();
+                        break;
+                    case TRIGGER_AFTER_HITSTUN:
+                        legacy = triggerAfterHitstunActionPoolMask.load();
+                        lo = triggerAfterHitstunActionPoolMaskLo.load();
+                        hi = triggerAfterHitstunActionPoolMaskHi.load();
+                        usePool = triggerAfterHitstunUsePool.load();
+                        break;
+                    case TRIGGER_AFTER_AIRTECH:
+                        legacy = triggerAfterAirtechActionPoolMask.load();
+                        lo = triggerAfterAirtechActionPoolMaskLo.load();
+                        hi = triggerAfterAirtechActionPoolMaskHi.load();
+                        usePool = triggerAfterAirtechUsePool.load();
+                        break;
+                    case TRIGGER_ON_RG:
+                        legacy = triggerOnRGActionPoolMask.load();
+                        lo = triggerOnRGActionPoolMaskLo.load();
+                        hi = triggerOnRGActionPoolMaskHi.load();
+                        usePool = triggerOnRGUsePool.load();
+                        break;
+                    default:
+                        lo = 0;
+                        hi = 0;
+                        usePool = false;
+                        return;
+                }
+                if ((lo | hi) == 0 && legacy != 0) {
+                    expandLegacyPool(legacy, strength, lo, hi);
+                }
+            };
+
+            auto activePoolChoiceIndex = [&]() -> int {
+                const bool recentlyActive = g_lastActiveTriggerType.load() == triggerType &&
+                                            frameCounter.load() - g_lastActiveTriggerFrame.load() < 96;
+                if (!recentlyActive) return -1;
+
+                const TriggerDelayState* state = nullptr;
+                if (targetPlayer == 1 || targetPlayer == 3) {
+                    state = &p1DelayState;
+                    if (state->triggerType == triggerType && state->chosenAction >= 0) {
+                        return concretePoolIndexForAction(state->chosenAction, state->chosenStrength);
+                    }
+                }
+                if (targetPlayer == 2 || targetPlayer == 3) {
+                    state = &p2DelayState;
+                    if (state->triggerType == triggerType && state->chosenAction >= 0) {
+                        return concretePoolIndexForAction(state->chosenAction, state->chosenStrength);
+                    }
+                }
+                return -1;
+            };
+
+            auto formatPoolSummary = [&]() -> std::string {
+                uint64_t lo = 0;
+                uint64_t hi = 0;
+                bool usePool = false;
+                getPoolConfig(lo, hi, usePool);
+                if (!usePool) return std::string();
+                if ((lo | hi) == 0) return "Random: Empty";
+
+                int selected[CharacterActionCatalog::kPoolCount];
+                int selectedCount = 0;
+                for (int idx = 0; idx < CharacterActionCatalog::kPoolCount; ++idx) {
+                    if (poolBitSet(lo, hi, idx)) selected[selectedCount++] = idx;
+                }
+                if (selectedCount <= 0) return "Random: Empty";
+
+                const int chosen = activePoolChoiceIndex();
+                const bool chosenSelected = chosen >= 0 && poolBitSet(lo, hi, chosen);
+                const bool overflow = selectedCount > 3;
+
+                int shown[3] = { -1, -1, -1 };
+                int shownCount = 0;
+                if (overflow && chosenSelected) {
+                    shown[shownCount++] = chosen;
+                }
+                for (int i = 0; i < selectedCount && shownCount < 3; ++i) {
+                    if (overflow && chosenSelected && selected[i] == chosen) continue;
+                    shown[shownCount++] = selected[i];
+                }
+
+                std::string result = "Random: ";
+                for (int i = 0; i < shownCount; ++i) {
+                    if (i > 0) result += "/";
+                    const bool markChosen = chosenSelected && shown[i] == chosen;
+                    if (markChosen) result += "[";
+                    result += poolTokenForIndex(shown[i]);
+                    if (markChosen) result += "]";
+                }
+                if (overflow) {
+                    result += "/...";
+                }
+                return result;
+            };
+
             // Determine macro slot for main row display and build slash-separated summary including main row
             int macroSlot = 0;
             switch (triggerType) {
@@ -668,6 +941,7 @@ void UpdateTriggerOverlay() {
             }
 
             std::string combined;
+            const std::string poolSummary = formatPoolSummary();
             const TriggerOption* opts = nullptr; int optCount = 0;
             switch (triggerType) {
                 case TRIGGER_AFTER_BLOCK: opts = g_afterBlockOptions; optCount = g_afterBlockOptionCount; break;
@@ -677,14 +951,18 @@ void UpdateTriggerOverlay() {
                 case TRIGGER_ON_RG: opts = g_onRGOptions; optCount = g_onRGOptionCount; break;
                 default: break;
             }
-            // Always start with the main trigger row token
-            combined = tokenFor(action, strength, macroSlot);
-            // Then append any enabled sub-rows in order
-            if (opts && optCount > 0) {
+            if (!poolSummary.empty()) {
+                combined = poolSummary;
+            } else {
+                // Always start with the main trigger row token
+                combined = tokenFor(action, strength, macroSlot);
+                // Then append any enabled sub-rows in order
+                if (opts && optCount > 0) {
                 for (int i = 0; i < optCount; ++i) {
                     if (!opts[i].enabled) continue;
                     combined += "/";
                     combined += tokenFor(opts[i].action, opts[i].strength, opts[i].macroSlot);
+                }
                 }
             }
 
@@ -814,14 +1092,14 @@ void FrameDataMonitor() {
     // Improved scheduling target time (accumulative to avoid drift)
     auto startTime = clock::now();
     auto expectedNext = startTime + targetFrameTime; // next frame boundary
-    int netplayRefreshCounter = 15;
-    bool lastNetplayMenuActive = GetNetplayRuntimeState().inNetplayMenu;
     uint32_t lastLifecycleGeneration = GetRuntimeLifecycleGeneration();
     GameMode lastFmSyncMode = GameMode::Unknown;
     GamePhase lastFmSyncPhase = GamePhase::Unknown;
     bool lastFmSyncFeatures = g_featuresEnabled.load(std::memory_order_relaxed);
     bool lastFmSyncNetplay = g_onlineModeActive.load(std::memory_order_relaxed);
     int matchLogAnchorInternal = -1;
+    bool audioHookOwnershipTerminal = false;
+    DWORD lastAudioHookResolveTick = GetTickCount() - 1000u;
 
     while (!g_isShuttingDown) {
         auto frameStart = clock::now();
@@ -837,28 +1115,34 @@ void FrameDataMonitor() {
             expectedNext = frameStart + targetFrameTime;
         }
 
-        if (++netplayRefreshCounter >= 16) {
-            netplayRefreshCounter = 0;
-            RefreshNetplayRuntimeState();
-            const NetplayRuntimeState netplayState = GetNetplayRuntimeState();
-            const bool shouldSuspend = netplayState.suspendTraining;
-            const bool isSuspended = g_onlineModeActive.load();
-            if (shouldSuspend && !isSuspended) {
-                LogOut("[NETPLAY] Frame monitor requested suspend: " + GetLastOnlineDetectionReason(), true);
-                EnterNetplaySuspend();
-            } else if (!shouldSuspend && isSuspended) {
-                LogOut("[NETPLAY] Frame monitor requested resume: " + GetLastOnlineDetectionReason(), true);
-                ExitNetplaySuspend();
-            }
+        ConsumeRuntimeLifecycleResyncRequests();
 
-            if (netplayState.inNetplayMenu && !lastNetplayMenuActive) {
-                LogOut("[NETPLAY] Frame monitor detected netplay menu entry; auditing residual training state", true);
-                AuditNetplayMenuEntryState();
+        // Host resolution is intentionally persistent.  EfzRevival.dll may be
+        // injected after this mod's fixed startup window, so module absence at
+        // startup must never cause us to claim the two EFZ entrypoints that
+        // Revival will later rewrite.
+        const DWORD audioResolveNow = GetTickCount();
+        if (!audioHookOwnershipTerminal
+            && static_cast<DWORD>(audioResolveNow - lastAudioHookResolveTick) >= 1000u) {
+            lastAudioHookResolveTick = audioResolveNow;
+            const uintptr_t efzBase = GetEFZBase();
+            if (efzBase) {
+                const AudioControl::HookInstallResult audioResult = AudioControl::InstallHooks(
+                    efzBase,
+                    AudioControl::HookInstallPhase::HostResolved);
+                if (audioResult != AudioControl::HookInstallResult::Deferred) {
+                    audioHookOwnershipTerminal = true;
+                    LogOut(std::string("[AUDIO] persistent host resolution result=")
+                           + AudioControl::HookInstallResultName(audioResult), true);
+                    if (audioResult == AudioControl::HookInstallResult::Ready
+                        && AudioControl::EnableVolumeApplicationIfSoundReady(
+                            0, "persistent host resolution")) {
+                        AudioControl::ApplyConfiguredVolumesNow();
+                    }
+                }
             }
-            lastNetplayMenuActive = netplayState.inNetplayMenu;
         }
 
-        ConsumeRuntimeLifecycleResyncRequests();
         const uint32_t lifecycleGeneration = GetRuntimeLifecycleGeneration();
         if (lifecycleGeneration != lastLifecycleGeneration) {
             cachedMoveIDAddr1 = 0;
@@ -873,12 +1157,18 @@ void FrameDataMonitor() {
                 + std::to_string(lifecycleGeneration), detailedLogging.load());
         }
 
-    if (g_onlineModeActive.load()) {
-        g_lastSample.online = true;
-        matchLogAnchorInternal = -1;
-        SetCurrentLogMatchInternalFrame(-1);
-        goto FRAME_MONITOR_FRAME_END;
-    }
+        if (g_onlineModeActive.load(std::memory_order_acquire)) {
+            if (highResActive) {
+                timeEndPeriod(1);
+                highResActive = false;
+            }
+            g_lastSample.online = true;
+            matchLogAnchorInternal = -1;
+            SetCurrentLogMatchInternalFrame(-1);
+            std::this_thread::sleep_for(std::chrono::milliseconds(250));
+            expectedNext = clock::now() + targetFrameTime;
+            continue;
+        }
 
     // Refresh core pointer cache once per loop iteration
     RefreshPointerCache();
@@ -926,7 +1216,7 @@ void FrameDataMonitor() {
         }
     }
     
-    // Update framestep system (vanilla only, input monitoring and frame advance)
+    // Update framestep system (vanilla / supported Revival)
     Framestep::Update();
     // Update framestep overlay status
     Framestep::UpdateOverlayStatus();
@@ -941,10 +1231,7 @@ void FrameDataMonitor() {
             
             // Also clear any pending delays and restore control
             if (p1DelayState.isDelaying || p2DelayState.isDelaying) {
-                p1DelayState.isDelaying = false;
-                p2DelayState.isDelaying = false;
-                p1DelayState.triggerType = TRIGGER_NONE;
-                p2DelayState.triggerType = TRIGGER_NONE;
+                ClearAllAutoActionTriggers();
                 LogOut("[FRAME MONITOR] Cleared delay states due to phase change", true);
             }
             
@@ -983,17 +1270,9 @@ void FrameDataMonitor() {
                 StopRFFreeze();
                 ResetActionFlags();
 
-                // Clear all auto-action states
-                p1DelayState = {false, 0, TRIGGER_NONE, 0, -1, -1, 0, -1};
-                p2DelayState = {false, 0, TRIGGER_NONE, 0, -1, -1, 0, -1};
-                p1ActionApplied = false;
-                p2ActionApplied = false;
-
-                // Restore P2 control
-                if (g_p2ControlOverridden) {
-                    RestoreP2ControlState();
-                    g_p2ControlOverridden = false;
-                }
+                // Clear every delay field and retire any producer/consumer
+                // generation before the old battle objects disappear.
+                ClearAllAutoActionTriggers();
 
                 if (leavingPracticeMatch && g_featuresEnabled.load()) {
                     std::ostringstream oss;
@@ -1084,6 +1363,8 @@ void FrameDataMonitor() {
             s_lastPhaseMode = currentMode;
         }
 
+        CharacterHotswap::Tick(currentPhase, currentMode);
+
         // Character Select handling: run per-frame, not only on phase-change edge
         if (currentPhase == GamePhase::CharacterSelect) {
 #if ENABLE_CS_DEBUG_LOGS
@@ -1122,11 +1403,13 @@ void FrameDataMonitor() {
                     // So consistency means: (active == 0 && guiPos == 1) OR (active == 1 && guiPos == 0).
                     bool guiConsistent = true; // default to true if we cannot read it
                     uint8_t guiPos = 0xFF;
-                    PauseIntegration::EnsurePracticePointerCapture();
-                    if (void* prac = PauseIntegration::GetPracticeControllerPtr()) {
-                        SafeReadMemory((uintptr_t)prac + PRACTICE_OFF_GUI_POS, &guiPos, sizeof(guiPos));
-                        if (guiPos == 0u || guiPos == 1u) {
-                            guiConsistent = ((active == 0u && guiPos == 1u) || (active == 1u && guiPos == 0u));
+                    if (EFZ_SupportsNativePracticeSideSwitch()) {
+                        PauseIntegration::EnsurePracticePointerCapture();
+                        if (void* prac = PauseIntegration::GetPracticeControllerPtr()) {
+                            SafeReadMemory((uintptr_t)prac + PRACTICE_OFF_GUI_POS, &guiPos, sizeof(guiPos));
+                            if (guiPos == 0u || guiPos == 1u) {
+                                guiConsistent = ((active == 0u && guiPos == 1u) || (active == 1u && guiPos == 0u));
+                            }
                         }
                     }
                     // Additional gate: only capture baseline when we observe the expected default Practice mapping (P1 human, P2 CPU)
@@ -1163,12 +1446,16 @@ void FrameDataMonitor() {
                             bool okA = true; // we are not writing active here intentionally
                             // If Practice controller exists and GUI_POS disagrees with desired active, align it
                             bool okGui = true;
-                            if (void* prac = PauseIntegration::GetPracticeControllerPtr()) {
-                                uint8_t curGui = 0xFF;
-                                SafeReadMemory((uintptr_t)prac + PRACTICE_OFF_GUI_POS, &curGui, sizeof(curGui));
-                                // Align GUI to the engine-reported active player (not baseline) to keep UI consistent
-                                if ((curGui == 0u || curGui == 1u) && curGui != active) {
-                                    uint8_t newGui = active; okGui = SafeWriteMemory((uintptr_t)prac + PRACTICE_OFF_GUI_POS, &newGui, sizeof(newGui));
+                            if (EFZ_SupportsNativePracticeSideSwitch()) {
+                                void* prac = PauseIntegration::GetPracticeControllerPtr();
+                                if (prac) {
+                                    uint8_t curGui = 0xFF;
+                                    SafeReadMemory((uintptr_t)prac + PRACTICE_OFF_GUI_POS, &curGui, sizeof(curGui));
+                                    // Align GUI to the engine-reported active player (not baseline) to keep UI consistent
+                                    if ((curGui == 0u || curGui == 1u) && curGui != active) {
+                                        uint8_t newGui = active;
+                                        okGui = SafeWriteMemory((uintptr_t)prac + PRACTICE_OFF_GUI_POS, &newGui, sizeof(newGui));
+                                    }
                                 }
                             }
                             // Mark for post-CS CPU flag application if needed
@@ -1236,8 +1523,11 @@ void FrameDataMonitor() {
             // Leaving Character Select: apply any deferred CPU flag baseline once
             s_characterSelectPhaseFrames = 0;
             if (GetCurrentGameMode() == GameMode::Practice && s_pendingPostCsCpuApply && s_csBaseline.valid) {
+                std::lock_guard<std::recursive_mutex> controlLock(g_p2ControlMutex);
                 uintptr_t gs = 0; uintptr_t base = GetEFZBase();
-                if (base && SafeReadMemory(base + EFZ_BASE_OFFSET_GAME_STATE, &gs, sizeof(gs)) && gs) {
+                if (!g_onlineModeActive.load(std::memory_order_acquire) &&
+                    GetCurrentGameMode() == GameMode::Practice &&
+                    base && SafeReadMemory(base + EFZ_BASE_OFFSET_GAME_STATE, &gs, sizeof(gs)) && gs) {
                     uint8_t wantP1 = s_csBaseline.p1Cpu;
                     uint8_t wantP2 = s_csBaseline.p2Cpu;
                     bool ok1 = SafeWriteMemory(gs + GAMESTATE_OFF_P1_CPU_FLAG, &wantP1, sizeof(wantP1));
@@ -1397,12 +1687,6 @@ void FrameDataMonitor() {
                 // Reset action flags and restore P2 control state
                 ResetActionFlags();
                 
-                // Clear delay states
-                p1DelayState.isDelaying = false;
-                p1DelayState.triggerType = TRIGGER_NONE;
-                p2DelayState.isDelaying = false;
-                p2DelayState.triggerType = TRIGGER_NONE;
-
                 // Hard clear of all auto-action trigger internals (cooldowns, last active, etc.)
                 ClearAllAutoActionTriggers();
 
@@ -1490,6 +1774,11 @@ void FrameDataMonitor() {
             // Outside actual gameplay -> only do lightweight logic
             if (currentPhase != GamePhase::Match) {
                 lightweightTick();
+                // When the experimental modes are enabled, their engine must
+                // tick in EVERY phase: it drives title-launch transitions and
+                // discards a live recording when the match is left. The helper
+                // is a compile-time no-op in default builds.
+                TickMissionEngineGuarded();
                 prevMoveID1 = 0;
                 prevMoveID2 = 0;
                 skipHeavy = true;
@@ -1633,7 +1922,9 @@ void FrameDataMonitor() {
          << "  FA1(endFreeze)=" << rg.fa1F << "F"
          << "  FA2(th)=" << rg.fa2ThF << "F"
              << "  cRG window: until attacker recovers/cancels";
-                LogOut(std::string("[RG][FM] ") + os.str(), true);
+                if (g_deepFrameAdvDebug.load()) {
+                    LogOut(std::string("[RG][FM] ") + os.str(), true);
+                }
                 // One-shot overlay toast (gated by debug flag)
                 if (g_ShowRGDebugToasts.load()) {
                     DirectDrawHook::AddMessage(os.str(), "RG", RGB(120, 200, 255), 1500, 0, 140);
@@ -1652,7 +1943,9 @@ void FrameDataMonitor() {
                     rg.cRGOpen = false;
                     std::ostringstream os; os.setf(std::ios::fixed); os << std::setprecision(2);
                     os << "RG: cRG window closed for P" << rg.defender << " (attacker now actionable/cancelled)";
-                    LogOut(std::string("[RG][FM] ") + os.str(), detailedLogging.load());
+                    if (g_deepFrameAdvDebug.load()) {
+                        LogOut(std::string("[RG][FM] ") + os.str(), true);
+                    }
                     // No overlay toast on close to reduce noise
                 }
             };
@@ -1660,7 +1953,27 @@ void FrameDataMonitor() {
             // Update actionability times and announce FA2 once both are known
             auto updateRGFA = [&](RGAnalysis &rg) {
                 if (!rg.active) return;
-                const double kIntToVis = 60.0 / 192.0; // convert internal 192 Hz frames to visual frames
+                const double kIntToVis = 64.0 / 192.0; // 3 internal subframes per EFZ visual frame
+
+                // If the defender gets clipped into a fresh non-RG lockout before ever becoming free,
+                // the original RG exchange has been superseded by a new regular hit/block sequence.
+                // Let the normal FA tracker own that later contact instead of measuring through it as RG FA.
+                if (rg.defActionableAt < 0) {
+                    short defMoveNow = (rg.defender == 1) ? rgSample.moveID1 : rgSample.moveID2;
+                    bool defenderEnteredFreshLockout =
+                        !IsRecoilGuard(defMoveNow) &&
+                        (IsBlockstunState(defMoveNow) || IsHitstun(defMoveNow) || IsThrown(defMoveNow));
+                    if (defenderEnteredFreshLockout) {
+                        std::ostringstream os;
+                        os << "RG: cancelled for P" << rg.defender
+                           << " because a fresh non-RG contact started before defender recovery";
+                        if (g_deepFrameAdvDebug.load()) {
+                            LogOut(std::string("[RG][FM] ") + os.str(), true);
+                        }
+                        rg = RGAnalysis{};
+                        return;
+                    }
+                }
 
                 // Track attacker actionable timestamp
                 if (rg.atkActionableAt < 0) {
@@ -1672,7 +1985,9 @@ void FrameDataMonitor() {
                         {
                             std::ostringstream os; os.setf(std::ios::fixed); os << std::setprecision(2);
                             os << "RG: Attacker actionable (P" << rg.attacker << ")";
-                            LogOut(std::string("[RG][FM] ") + os.str(), true);
+                            if (g_deepFrameAdvDebug.load()) {
+                                LogOut(std::string("[RG][FM] ") + os.str(), true);
+                            }
                             if (g_ShowRGDebugToasts.load()) {
                                 DirectDrawHook::AddMessage(os.str(), "RG", RGB(160, 255, 160), 1200, 0, 156);
                             }
@@ -1689,7 +2004,9 @@ void FrameDataMonitor() {
                         {
                             std::ostringstream os; os.setf(std::ios::fixed); os << std::setprecision(2);
                             os << "RG: Defender actionable (P" << rg.defender << ")";
-                            LogOut(std::string("[RG][FM] ") + os.str(), true);
+                            if (g_deepFrameAdvDebug.load()) {
+                                LogOut(std::string("[RG][FM] ") + os.str(), true);
+                            }
                             if (g_ShowRGDebugToasts.load()) {
                                 DirectDrawHook::AddMessage(os.str(), "RG", RGB(255, 240, 160), 1200, 0, 156);
                             }
@@ -1708,7 +2025,9 @@ void FrameDataMonitor() {
                           os << "RG: P" << rg.defender
                               << "  FA1(endFreeze)=" << rg.fa1F << "F"
                               << "  FA2(meas)=" << rg.fa2F << "F";
-                    LogOut(std::string("[RG][FM] ") + os.str(), true);
+                    if (g_deepFrameAdvDebug.load()) {
+                        LogOut(std::string("[RG][FM] ") + os.str(), true);
+                    }
                     if (g_ShowRGDebugToasts.load()) {
                         DirectDrawHook::AddMessage(os.str(), "RG", RGB(120, 200, 255), 1500, 0, 156);
                     }
@@ -1761,11 +2080,11 @@ void FrameDataMonitor() {
                         } else {
                             g_FrameAdvantage2Id = DirectDrawHook::AddPermanentMessage(rightText, rightColor, rightX, baseY);
                         }
-                        // Set display timer for RG messages (configurable via .ini, default 8 seconds)
-                        frameAdvState.displayUntilInternalFrame = nowInt + GetDisplayDurationInternalFrames();
+                        // RG FA shares the same wall-clock lifetime as regular FA.
+                        ArmFrameAdvantageDisplayTimer();
                         #if defined(ENABLE_FRAME_ADV_DEBUG)
                         LogOut("[RG_DEBUG] Set RG timer: nowInt=" + std::to_string(nowInt) + 
-                               " expiry=" + std::to_string(frameAdvState.displayUntilInternalFrame), true);
+                               " suppressUntil=" + std::to_string(g_SkipRegularFAOverlayUntilFrame.load()), true);
                         #endif
                     } else {
                         // If hidden, ensure any existing FA messages are cleared
@@ -1977,7 +2296,7 @@ void FrameDataMonitor() {
             
             // Process features in order of priority - NO THROTTLING
             bool moveIDsChanged = (moveID1 != prevMoveID1) || (moveID2 != prevMoveID2);
-            bool criticalFeaturesActive = autoJumpEnabled.load() || autoActionEnabled.load() || autoAirtechEnabled.load();
+            bool criticalFeaturesActive = autoJumpEnabled.load() || HasAnyAutoActionTriggerEnabled() || autoAirtechEnabled.load();
 
             // Process frame advantage only when move IDs change or timers/overlays require ticking
             {
@@ -1988,17 +2307,43 @@ void FrameDataMonitor() {
                 }
             }
             
-            // Run dummy auto-block using unified sample (still every frame for precision)
-            MonitorDummyAutoBlock(GetCurrentPerFrameSample());
+            // Recorder capture and demonstration playback own a deterministic
+            // world/input transaction. Keep persistent Practice helpers from
+            // rewriting the authored baseline or contributing unrecorded input;
+            // their settings remain unchanged and resume after ownership ends.
+            if (!Mission::Engine::IsPracticeAutomationSuppressed()) {
+                // Run dummy auto-block using unified sample (still every frame for precision)
+                MonitorDummyAutoBlock(GetCurrentPerFrameSample());
+            }
 
-            // Practice-only: Defense helpers
-            // Always RG takes effect when enabled; Random RG mimics Revival's per-frame coin flip.
-            AlwaysRG::Tick(moveID1, moveID2);
-            RandomRG::Tick(moveID1, moveID2);
-            // Random Block: per-frame coin flip for the autoblock flag with safe OFF deferral
-            RandomBlock::Tick(moveID1, moveID2);
+            // FrameBar: per-subframe sampler (cheap when toggle is off).
+            FrameBar::TickSample();
 
-            if (moveIDsChanged || criticalFeaturesActive) {
+            // Experimental mission engine: per-frame snapshot (move-IDs / combo)
+            // plus inspector. This is a compile-time no-op in default builds.
+            TickMissionEngineGuarded();
+
+            // Fallback driver when the native input-hook tick is disabled.
+            // The active-mask fast path makes this a single atomic read while
+            // no IC/FIC follow-up is pending.
+            if (!g_tickIntegratedAutoActions.load() &&
+                !Mission::Engine::IsPracticeAutomationSuppressed()) {
+                TickAutoActionChargeFollowups();
+                KaoriRecoilDuck::Tick();
+            }
+
+            // Practice-only: Defense helpers. Randomized/persistent helpers are
+            // quarantined while a mission take or demonstration owns the match.
+            if (!Mission::Engine::IsPracticeAutomationSuppressed()) {
+                // Always RG takes effect when enabled; Random RG mimics Revival's per-frame coin flip.
+                AlwaysRG::Tick(moveID1, moveID2);
+                RandomRG::Tick(moveID1, moveID2);
+                // Random Block: per-frame coin flip for the autoblock flag with safe OFF deferral
+                RandomBlock::Tick(moveID1, moveID2);
+            }
+
+            if (!Mission::Engine::IsPracticeAutomationSuppressed() &&
+                (moveIDsChanged || criticalFeaturesActive)) {
                 // STEP 1: Process auto-actions FIRST (highest priority)
                 // When tick-integrated mode is active, auto-actions are driven directly from the
                 // engine's per-tick input hook; skip here to avoid double-processing.
@@ -2068,7 +2413,23 @@ void FrameDataMonitor() {
                     return t;
                 };
                 
-                if (moveIDsChanged) {
+                const bool automationSuppressed =
+                    Mission::Engine::IsPracticeAutomationSuppressed();
+                if (automationSuppressed) {
+                    // Continuous Recovery may own an RF freeze independently
+                    // of its settings. Retire that live effect for the
+                    // deterministic transaction; normal eligibility restarts
+                    // it after the transaction when appropriate.
+                    if (s_crRFFreezeP1) {
+                        StopRFFreezePlayer(1);
+                        s_crRFFreezeP1 = false;
+                    }
+                    if (s_crRFFreezeP2) {
+                        StopRFFreezePlayer(2);
+                        s_crRFFreezeP2 = false;
+                    }
+                }
+                if (moveIDsChanged && !automationSuppressed) {
                     // Engine regen gating: if engine-managed regen (F4/F5) is active, do not perform CR writes
                     uint16_t engineParamA=0, engineParamB=0; EngineRegenMode regenMode = EngineRegenMode::Unknown;
                     bool gotParams = GetEngineRegenStatus(regenMode, engineParamA, engineParamB);
@@ -2278,7 +2639,8 @@ void FrameDataMonitor() {
                 }
 
                 // Auto-fix HP anomalies in neutral: if enabled, and a side is neutral with HP<=0, set to 9999.
-                if (Config::GetSettings().autoFixHPOnNeutral) {
+                if (!automationSuppressed &&
+                    Config::GetSettings().autoFixHPOnNeutral) {
                     uintptr_t baseNow = s_ptrCache.base;
                     uintptr_t p1B = ResolvePlayerBaseBestEffort(1, baseNow);
                     uintptr_t p2B = ResolvePlayerBaseBestEffort(2, baseNow);
@@ -2710,8 +3072,18 @@ bool AreCharactersInitialized() {
 }
 
 void UpdateStatsDisplay() {
+    // Paginated EXTRA-info slot pool. Static so the permanent-message ids persist
+    // across calls; the current page (scrolled with 5/6) is rendered below the
+    // always-on core stats, and these slots are cleared whenever the overlay is off.
+    static int s_statsExtraIds[12] = { -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1 };
+    auto clearStatsExtra = []() {
+        for (int& id : s_statsExtraIds) {
+            if (id != -1) { DirectDrawHook::RemovePermanentMessage(id); id = -1; }
+        }
+    };
     // Always require overlay hook; allow Clean Hit helper to run even if stats are disabled
     if (!DirectDrawHook::isHooked) {
+        clearStatsExtra();
         // Clear any existing messages when overlay is unavailable
         if (g_statsP1ValuesId != -1) {
             DirectDrawHook::RemovePermanentMessage(g_statsP1ValuesId);
@@ -2769,6 +3141,8 @@ void UpdateStatsDisplay() {
     // Stats can be toggled off; keep Clean Hit helper independent of this
     bool statsOn = g_statsDisplayEnabled.load();
     if (!statsOn) {
+        clearStatsExtra();   // the paginated EXTRA pages must also go, or they leak
+                             // on screen and overlap the core stats on re-enter
         // Clear stats lines if they exist while stats are disabled
         if (g_statsP1ValuesId != -1) {
             DirectDrawHook::RemovePermanentMessage(g_statsP1ValuesId);
@@ -2870,6 +3244,7 @@ void UpdateStatsDisplay() {
         }
         if (g_statsBlockstunId != -1) { DirectDrawHook::RemovePermanentMessage(g_statsBlockstunId); g_statsBlockstunId = -1; }
         if (g_statsUntechId != -1) { DirectDrawHook::RemovePermanentMessage(g_statsUntechId); g_statsUntechId = -1; }
+        clearStatsExtra();
         return;
     }
 
@@ -3047,20 +3422,6 @@ void UpdateStatsDisplay() {
             hitLine << "Untech:    P1 " << p1HitLF << "  P2 " << p2HitLF;
             upsert(g_statsBlockstunId, blkLine.str());
             upsert(g_statsUntechId, hitLine.str());
-        }
-
-        // TEMP diagnostic: probe adjacent offset (+0x14C) to validate blockstun pointer choice.
-        // Remove after confirming correct address in live testing.
-        {
-            uintptr_t baseNow = GetEFZBase();
-            uintptr_t p1=ResolvePlayerBaseBestEffort(1, baseNow);
-            uintptr_t p2=ResolvePlayerBaseBestEffort(2, baseNow);
-            short p1Cand=0, p2Cand=0;
-            if (p1) { SafeReadMemory(p1 + BLOCKSTUN_OFFSET + 2, &p1Cand, sizeof(p1Cand)); }
-            if (p2) { SafeReadMemory(p2 + BLOCKSTUN_OFFSET + 2, &p2Cand, sizeof(p2Cand)); }
-            std::stringstream diag;
-            diag << "Blk?(+0x14C): P1 " << (int)(p1Cand < 0 ? 0 : p1Cand) << "  P2 " << (int)(p2Cand < 0 ? 0 : p2Cand);
-            upsert(g_statsAIFlagsId, diag.str()); // reuse AI flags line position temporarily below character lines
         }
 
         // Character-specific: Nayuki (Awake) snowbunnies timer line
@@ -3354,6 +3715,119 @@ void UpdateStatsDisplay() {
 
     if (statsOn) {
         upsert(g_statsMoveIdId, moveIds.str());
+    }
+
+    // Paginated EXTRA debug info (scroll with 5/6 while the overlay is active),
+    // rendered below the always-on core stats. Pages are DYNAMIC: page 0 is an
+    // overview (gauges + entity counts + future mission/tutorial fields), then one
+    // page PER active entity/bullet across BOTH players. g_statsPageCount is
+    // published so the 5/6 handler wraps on the live page count.
+    if (statsOn) {
+        uintptr_t p1b = base ? ResolvePlayerBaseBestEffort(1, base) : 0;
+        uintptr_t p2b = base ? ResolvePlayerBaseBestEffort(2, base) : 0;
+
+        // Snapshot each alive table once and each active entry once.  The
+        // recorder and collision display already use this bounded sampler;
+        // the stats overlay must not independently probe seven fields per
+        // entity every update.
+        using EntityProbe = CollisionDisplay::ProjectileRingSlotProbe;
+        constexpr std::size_t kEntitySlots =
+            CollisionDisplay::kProjectileRingSlotCapacity;
+        std::array<EntityProbe, kEntitySlots> p1Entities{};
+        std::array<EntityProbe, kEntitySlots> p2Entities{};
+        const bool haveP1Entities = CollisionDisplay::ProbeProjectileRing(
+            1, p1Entities.data(), p1Entities.size());
+        const bool haveP2Entities = CollisionDisplay::ProbeProjectileRing(
+            2, p2Entities.data(), p2Entities.size());
+
+        struct EntityPageRef {
+            int player = 0;
+            const EntityProbe* entity = nullptr;
+        };
+        std::array<EntityPageRef, kEntitySlots * 2> entityPages{};
+        std::size_t entityPageCount = 0;
+        int p1Count = 0, p2Count = 0;
+        auto collectEntityPages = [&](bool available,
+                                      const std::array<EntityProbe, kEntitySlots>& probes,
+                                      int player, int& count) {
+            if (!available) return;
+            for (const EntityProbe& entity : probes) {
+                if (!entity.alive) continue;
+                // An unreadable active entry remains a page, matching the old
+                // per-field best-effort display and avoiding a false despawn.
+                if (entity.readable && entity.destroyed != 0) continue;
+                ++count;
+                entityPages[entityPageCount++] = { player, &entity };
+            }
+        };
+        collectEntityPages(haveP1Entities, p1Entities, 1, p1Count);
+        collectEntityPages(haveP2Entities, p2Entities, 2, p2Count);
+
+        // Publish the live page count and clamp the current index.
+        const int count = 1 + static_cast<int>(entityPageCount);
+        g_statsPageCount.store(count);
+        int page = g_statsPageIndex.load();
+        if (page < 0 || page >= count) { page = 0; g_statsPageIndex.store(0); }
+
+        // Only format and read the selected page.  Counting remains cheap and
+        // deterministic, while off-screen entity pages allocate no strings.
+        std::string pageName = "overview";
+        std::vector<std::string> pageLines;
+        if (page == 0) {
+            float g1 = 0.f, g2 = 0.f;
+            short at1 = 0, at2 = 0, fi1 = 0, fi2 = 0;
+            if (p1b) {
+                SafeReadMemory(p1b + PLAYER_GUARD_GAUGE_OFFSET, &g1, sizeof(g1));
+                SafeReadMemory(p1b + PLAYER_ATTACK_TIMER_OFFSET, &at1, sizeof(at1));
+                SafeReadMemory(p1b + CURRENT_FRAME_INDEX_OFFSET, &fi1, sizeof(fi1));
+            }
+            if (p2b) {
+                SafeReadMemory(p2b + PLAYER_GUARD_GAUGE_OFFSET, &g2, sizeof(g2));
+                SafeReadMemory(p2b + PLAYER_ATTACK_TIMER_OFFSET, &at2, sizeof(at2));
+                SafeReadMemory(p2b + CURRENT_FRAME_INDEX_OFFSET, &fi2, sizeof(fi2));
+            }
+            { std::stringstream l; l << "Guard:    P1 " << std::fixed << std::setprecision(0) << g1 << "   P2 " << g2; pageLines.push_back(l.str()); }
+            { std::stringstream l; l << "AtkTimer: P1 " << at1 << "   P2 " << at2; pageLines.push_back(l.str()); }
+            { std::stringstream l; l << "FrameIdx: P1 " << fi1 << "   P2 " << fi2; pageLines.push_back(l.str()); }
+            { std::stringstream l; l << "Entities: P1 " << p1Count << "   P2 " << p2Count; pageLines.push_back(l.str()); }
+        } else {
+            const EntityPageRef& selected = entityPages[static_cast<std::size_t>(page - 1)];
+            const EntityProbe& entity = *selected.entity;
+            { std::stringstream n; n << "P" << selected.player << " ent s" << entity.slot; pageName = n.str(); }
+            if (!entity.readable) {
+                pageLines.push_back("entry unreadable (alive bit retained)");
+            } else {
+                { std::stringstream l; l << "pattern " << entity.pattern << "   life " << entity.life; pageLines.push_back(l.str()); }
+                { std::stringstream l; l << "frame " << entity.frame << ":" << entity.frameTick << "   destroyed " << entity.destroyed; pageLines.push_back(l.str()); }
+                { std::stringstream l; l << "pos (" << std::fixed << std::setprecision(1) << entity.x << ", " << entity.y << ")"; pageLines.push_back(l.str()); }
+            }
+        }
+
+        std::vector<std::string> lines;
+        { std::stringstream h; h << "== EXTRA " << (page + 1) << "/" << count << " (" << pageName << ")  [5/6] =="; lines.push_back(h.str()); }
+        for (const auto& l : pageLines) lines.push_back(l);
+
+        // Permanent messages can't be repositioned in place (UpdatePermanentMessage
+        // is text-only). If the extra block's top moved - main-stat line count changed
+        // or the overlay was just re-enabled - drop the slots so they re-add at the
+        // new startY instead of drifting/overlapping. Stable layout => no re-add, no flicker.
+        static int s_extraTopY = -1;
+        if (startY != s_extraTopY) { clearStatsExtra(); s_extraTopY = startY; }
+
+        const int extraCount = (int)(sizeof(s_statsExtraIds) / sizeof(s_statsExtraIds[0]));
+        for (int i = 0; i < extraCount; ++i) {
+            if (i < (int)lines.size()) {
+                if (s_statsExtraIds[i] == -1) {
+                    s_statsExtraIds[i] = DirectDrawHook::AddPermanentMessage(lines[i], RGB(170, 215, 255), startX, startY);
+                } else {
+                    DirectDrawHook::UpdatePermanentMessage(s_statsExtraIds[i], lines[i], RGB(170, 215, 255));
+                }
+                startY += lineHeight;
+            } else if (s_statsExtraIds[i] != -1) {
+                DirectDrawHook::RemovePermanentMessage(s_statsExtraIds[i]);
+                s_statsExtraIds[i] = -1;
+            }
+        }
     }
 
     return;

@@ -10,6 +10,9 @@
 #include "../include/core/logger.h"
 #include "../include/input/input_motion.h"
 #include "../include/input/immediate_input.h"
+#include "../include/input/input_hook.h"
+#include "../include/input/input_buffer.h"
+#include "../include/input/motion_system.h"
 #include <chrono>
 #include <cmath>
 
@@ -125,24 +128,24 @@ void ApplyJump(uintptr_t moveIDAddr, int playerNum, int jumpType) {
 }
 
 bool IsAutoActionActiveForPlayer(int playerNum) {
-    if (!autoActionEnabled.load()) {
+    // A timed ImmediateInput press is an owned edge (wake jump/block, etc.).
+    // Auto-jump uses the untimed Set path itself, so checking remaining ticks
+    // distinguishes another producer without mistaking its own held direction.
+    if (ImmediateInput::GetRemainingTicks(playerNum) > 0 ||
+        IsAutoActionNormalPulseActive(playerNum) ||
+        IsAutoActionNormalPulseOwningImmediateRegisters(playerNum) ||
+        GetMotionQueueSnapshot(playerNum).active ||
+        (g_bufferFreezingActive.load(std::memory_order_acquire) &&
+         (g_activeFreezePlayer.load(std::memory_order_acquire) == 0 ||
+          g_activeFreezePlayer.load(std::memory_order_acquire) == playerNum))) {
+        return true;
+    }
+
+    if (!HasAnyAutoActionTriggerEnabled()) {
         return false;
     }
-    
-    int targetPlayer = autoActionPlayer.load(); // 1=P1, 2=P2, 3=Both
-    bool affectsThisPlayer = (targetPlayer == playerNum || targetPlayer == 3);
-    
-    if (!affectsThisPlayer) {
-        return false;
-    }
-    
-    // Check if any triggers are enabled
-    bool anyTriggerEnabled = triggerAfterBlockEnabled.load() || 
-                            triggerOnWakeupEnabled.load() || 
-                            triggerAfterHitstunEnabled.load() || 
-                            triggerAfterAirtechEnabled.load();
-    
-    if (!anyTriggerEnabled) {
+
+    if (ResolveAutoActionTargetPlayer() != playerNum) {
         return false;
     }
     

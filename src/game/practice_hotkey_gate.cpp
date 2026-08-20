@@ -1,9 +1,15 @@
 #include "../../include/game/practice_hotkey_gate.h"
 #include "../../include/game/practice_offsets.h"
 #include "../../include/game/efzrevival_addrs.h" // version-aware RVAs
+#include "../../include/game/collision_display.h"
+#include "../../include/game/savestate_hook.h"
+#include "../../include/game/mission/mission_engine.h"
+#include "../../include/game/mission/mission_pause_menu.h"
+#include "../../include/game/mission/tutorial_session.h"
 #include "../../include/core/logger.h"
 #include "../../include/core/constants.h"
 #include "../../include/core/memory.h"
+#include "../../include/input/framestep.h"
 #include "../../include/utils/pause_integration.h"
 #include "../../3rdparty/minhook/include/MinHook.h"
 #include <windows.h>
@@ -19,7 +25,10 @@ namespace {
     static std::string ToHex(uint32_t v){ std::ostringstream oss; oss<<std::hex<<v; return oss.str(); }
     // Target is a method (original __thiscall). It compares incoming key (a2) against configured hotkeys.
     // Prototype: char/bool return, takes (this, int a2). We detour as __fastcall and forward correctly.
-    using HotkeyEvalFn = char (__thiscall*)(void* self, int a2);
+    // J's MinGW dispatcher returns a pointer-sized value while legacy builds
+    // only consume AL. Preserve the full EAX value; legacy callers still see
+    // the same low byte.
+    using HotkeyEvalFn = uintptr_t (__fastcall*)(void* self, void* edxValue, int a2);
     HotkeyEvalFn oHotkeyEval = nullptr;
     std::atomic<bool> s_installed{false};
     std::atomic<uint64_t> s_suppressedFrames{0};
@@ -28,14 +37,71 @@ namespace {
     // Forward declaration of scanner (fallback). Returns 0 if not found.
     uintptr_t ScanForHotkeyEvaluator();
 
-    char __fastcall HookedHotkeyEval(void* self, void* /*edx*/, int a2) {
+    enum class RunnerCheckpointKey : uint8_t {
+        Other,
+        SaveOrLoad,
+        Unreadable,
+    };
+
+    RunnerCheckpointKey ClassifyRunnerCheckpointKey(void* self, int key) {
+        if (!self || key == 0) return RunnerCheckpointKey::Other;
+        const uintptr_t saveOffset = EFZ_Practice_SaveHotkeyOffset();
+        const uintptr_t loadOffset = EFZ_Practice_LoadHotkeyOffset();
+        if (!saveOffset || !loadOffset) {
+            return RunnerCheckpointKey::Unreadable;
+        }
+
+        int saveKey = -1;
+        int loadKey = -1;
+        const uintptr_t practice = reinterpret_cast<uintptr_t>(self);
+        if (!SafeReadMemory(practice + saveOffset, &saveKey, sizeof(saveKey)) ||
+            !SafeReadMemory(practice + loadOffset, &loadKey, sizeof(loadKey))) {
+            return RunnerCheckpointKey::Unreadable;
+        }
+        return key == saveKey || key == loadKey
+            ? RunnerCheckpointKey::SaveOrLoad
+            : RunnerCheckpointKey::Other;
+    }
+
+    uintptr_t __fastcall HookedHotkeyEval(void* self, void* edxValue, int a2) {
         PauseIntegration::NotePracticeControllerCandidate(self, "PracticeDispatcher");
-        if (Gate_IsMenuVisible()) {
+        if (Gate_IsMenuVisible() || Mission::PauseMenu::IsOpen() ||
+            Mission::TutorialSession::IsActive() ||
+            Mission::Engine::Demo::IsActive() ||
+            Mission::Engine::Recorder::OwnsCaptureHotkeys() ||
+            Mission::Engine::Recorder::IsMenuInputHandoffActive()) {
             // Suppress all practice hotkey side-effects this frame
             s_suppressedFrames.fetch_add(1, std::memory_order_relaxed);
             return 0; // early exit, indicate not handled
         }
-        return oHotkeyEval ? oHotkeyEval(self, a2) : 0;
+        if (Mission::Engine::Runner::IsActive()) {
+            const RunnerCheckpointKey checkpointKey =
+                ClassifyRunnerCheckpointKey(self, a2);
+            if (checkpointKey != RunnerCheckpointKey::Other) {
+                // The runner owns Revival's single Practice checkpoint. A
+                // manual save would silently replace it while g_runStateSaved
+                // remained true; fail closed if the configured keys cannot be
+                // read, but leave every confirmed non-savestate hotkey alone.
+                s_suppressedFrames.fetch_add(1, std::memory_order_relaxed);
+                return 0;
+            }
+        }
+        // Custom savestate backend removed - Practice save/load hotkeys fall
+        // through to EfzRevival's native handler below.
+        if (Framestep::ShouldSuppressRevivalHotkey(self, a2)) {
+            s_suppressedFrames.fetch_add(1, std::memory_order_relaxed);
+            return 0;
+        }
+        if (CollisionDisplay::ShouldSuppressRevivalHotkey(self, a2)) {
+            s_suppressedFrames.fetch_add(1, std::memory_order_relaxed);
+            return 0;
+        }
+        const uint8_t inlineActions = SavestateHook::BeginInlinePracticeHotkey(self, a2);
+        // Preserve EDX as well as ECX/stack. Legacy __thiscall dispatchers
+        // ignore it; J's MinGW body carries it through one auxiliary branch.
+        const uintptr_t result = oHotkeyEval ? oHotkeyEval(self, edxValue, a2) : 0;
+        SavestateHook::EndInlinePracticeHotkey(inlineActions);
+        return result;
     }
 
     uintptr_t ResolveHotkeyEvaluatorRva() {
@@ -51,18 +117,8 @@ namespace {
                 return candidate;
             }
         }
-        // Fallback: try legacy constant fast-path (previously stable across builds used by this project)
-        {
-            uintptr_t candidate = reinterpret_cast<uintptr_t>(mod) + static_cast<uintptr_t>(EFZREV_RVA_PRACTICE_HOTKEY_EVAL);
-            uint8_t firstBytes[5] = {0};
-            if (SafeReadMemory(candidate, firstBytes, sizeof(firstBytes))) {
-                // Heuristic: typical function prologue or push/mov pattern
-                if (firstBytes[0] == 0x55 || firstBytes[0] == 0x8B || firstBytes[0] == 0x53) {
-                    return candidate;
-                }
-            }
-        }
-        // Fallback: pattern scan (not fully implemented; stub for future upgrade)
+        // If version-aware lookup declines, do not guess a legacy RVA. The old
+        // fast path can overlap unrelated code in split 1.02f builds.
         return ScanForHotkeyEvaluator();
     }
 

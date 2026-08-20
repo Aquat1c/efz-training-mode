@@ -1,7 +1,9 @@
 #include "../include/utils/xinput_shim.h"
+#include "../include/utils/controller_names.h"
 #include "../include/core/logger.h"
 #include "../include/core/globals.h"
 #include "../include/utils/utilities.h"
+#include "../include/input/generic_pad_axis_policy.h"
 
 #define DIRECTINPUT_VERSION 0x0800
 #include <dinput.h>
@@ -14,6 +16,10 @@
 #include <thread>
 #include <vector>
 
+namespace XInputShim {
+    std::atomic<bool> g_LogGenericPadInputDebug{false};
+}
+
 namespace {
     HMODULE g_xinput = nullptr;
     const char* g_name = nullptr;
@@ -23,32 +29,80 @@ namespace {
     PFN_XInputGetState pGetState = nullptr;
     PFN_XInputGetCapabilities pGetCaps = nullptr;
     PFN_XInputEnable pEnable = nullptr;
+    std::array<XINPUT_CAPABILITIES, XInputShim::kControllerSlotCount> g_nativeCapabilities{};
+    unsigned g_nativeCapabilitiesMask = 0;
 
     struct GenericPad {
         LPDIRECTINPUTDEVICE8 device = nullptr;
         std::string name;
         DIJOYSTATE2 rawState{};
+        DIJOYSTATE2 neutralState{};
         XINPUT_STATE syntheticState{};
         DWORD packetCounter = 0;
         bool connected = false;
+        DWORD povObjectCount = 0;
+        bool neutralStateValid = false;
+        GenericPadAxisPolicy::AxisPairCalibration leftStickCalibration{};
+        GenericPadAxisPolicy::AxisPairCalibration rightStickCalibration{};
+        GenericPadAxisPolicy::DigitalNeutralGate povDpadGate{};
+        GenericPadAxisPolicy::DigitalNeutralGate buttonDpadGate{};
+        WORD startupBlockedButtons = 0;
+        int startupBlockWarmupFrames = 8;
+        bool startupBlockedLeftTrigger = false;
+        bool startupBlockedRightTrigger = false;
+        int startupTriggerBlockWarmupFrames = 8;
+        std::string lastInputDebugSummary;
+        bool inputDebugWasEnabled = false;
+        DWORD lastInputDebugLogTick = 0;
     };
 
     LPDIRECTINPUT8 g_directInput = nullptr;
     std::vector<GenericPad> g_genericPads;
     bool g_directInputInitAttempted = false;
-    DWORD g_lastRefreshTick = 0;
     DWORD g_lastGenericEnumTick = 0;
-    unsigned g_cachedMask = 0;
-    unsigned g_cachedNativeMask = 0;
-    unsigned g_cachedGenericMask = 0;
-    XINPUT_STATE g_cachedStates[4] = {};
-    bool g_cachedGenericSlots[4] = { false, false, false, false };
-    std::string g_cachedSlotNames[4];
+    XInputShim::Snapshot g_cachedSnapshot{};
     std::string g_lastSlotSummary;
     std::string g_lastGenericInventorySummary;
+    // Publication only.  No XInput/DirectInput call, enumeration, string
+    // formatting, or controller-name lookup may run while this is held.
     std::mutex g_snapshotMutex;
     std::atomic<bool> g_watcherStarted{ false };
-    std::atomic<bool> g_hasInitialSnapshot{ false };
+
+    // ---- Published controller display names (computed on the watcher thread) ----
+    // The game thread reads these with a brief try_lock; if contended, it falls back
+    // to a stale local copy. Decouples the per-frame UI label refresh from any slow
+    // Windows API the name lookup may touch (Raw Input enumeration, HID open, etc.).
+    std::mutex g_namesMutex;
+    char g_publishedNames[4][96] = {};
+    bool g_publishedNamesValid[4] = { false, false, false, false };
+    DWORD g_lastNamesPublishTick = 0;
+    unsigned g_lastNamesPublishMask = 0xFFFFFFFFu;
+
+    void PublishControllerNamesUnlocked(unsigned mask) {
+        // Called from the watcher thread WITHOUT g_snapshotMutex held. Safe to call
+        // GetControllerNameForIndex (which may briefly try_lock g_snapshotMutex).
+        std::string names[4];
+        for (int i = 0; i < 4; ++i) {
+            if (((mask >> i) & 1u) == 0) {
+                char buf[64];
+                _snprintf_s(buf, sizeof(buf), _TRUNCATE, "Pad %d (Disconnected)", i);
+                names[i] = buf;
+            } else {
+                names[i] = ::GetControllerNameForIndex(i);
+                if (names[i].empty()) {
+                    char buf[64];
+                    _snprintf_s(buf, sizeof(buf), _TRUNCATE, "Controller %d", i);
+                    names[i] = buf;
+                }
+            }
+        }
+        std::lock_guard<std::mutex> lock(g_namesMutex);
+        for (int i = 0; i < 4; ++i) {
+            _snprintf_s(g_publishedNames[i], sizeof(g_publishedNames[i]), _TRUNCATE,
+                        "%s", names[i].c_str());
+            g_publishedNamesValid[i] = true;
+        }
+    }
 
     HMODULE TryLoad(const char* dll) {
         HMODULE h = LoadLibraryA(dll);
@@ -139,12 +193,19 @@ namespace {
         ConfigureAxisRange(device, DIJOFS_RX);
         ConfigureAxisRange(device, DIJOFS_RY);
         ConfigureAxisRange(device, DIJOFS_RZ);
+        ConfigureAxisRange(device, DIJOFS_SLIDER(0));
+        ConfigureAxisRange(device, DIJOFS_SLIDER(1));
 
         device->Acquire();
 
         GenericPad pad;
         pad.device = device;
         pad.name = NarrowDeviceName(instance->tszProductName);
+        DIDEVCAPS caps{};
+        caps.dwSize = sizeof(caps);
+        if (SUCCEEDED(device->GetCapabilities(&caps))) {
+            pad.povObjectCount = caps.dwPOVs;
+        }
         pads->push_back(pad);
         return DIENUM_CONTINUE;
     }
@@ -233,6 +294,52 @@ namespace {
 
         pad.rawState = state;
         pad.connected = true;
+
+        const bool hasButtons = [&]() {
+            for (int i = 0; i < 128; ++i) {
+                if (state.rgbButtons[i] & 0x80) return true;
+            }
+            return false;
+        }();
+        bool hasPov = false;
+        for (int i = 0; i < 4; ++i) {
+            if (GenericPadAxisPolicy::IsDirectionalPov(state.rgdwPOV[i])) {
+                hasPov = true;
+                break;
+            }
+        }
+        // Axis calibration must not depend on every button/POV being released:
+        // a device with one bogus held bit would otherwise publish raw axes
+        // forever.  Capture scalar baselines immediately, then independently
+        // accept only plausible position-axis centres for the two sticks.
+        if (!pad.neutralStateValid) {
+            pad.neutralState = state;
+            pad.neutralStateValid = true;
+        }
+        if (GenericPadAxisPolicy::ObserveNeutral(
+                pad.leftStickCalibration, state.lX, state.lY)) {
+            pad.neutralState.lX = state.lX;
+            pad.neutralState.lY = state.lY;
+        }
+        if (GenericPadAxisPolicy::ObserveNeutral(
+                pad.rightStickCalibration, state.lRx, state.lRy)) {
+            pad.neutralState.lRx = state.lRx;
+            pad.neutralState.lRy = state.lRy;
+        }
+        if (!hasButtons && !hasPov) {
+            GenericPadAxisPolicy::RelaxNeutral(
+                pad.leftStickCalibration, state.lX, state.lY);
+            GenericPadAxisPolicy::RelaxNeutral(
+                pad.rightStickCalibration, state.lRx, state.lRy);
+            if (pad.leftStickCalibration.valid) {
+                pad.neutralState.lX = pad.leftStickCalibration.neutralX;
+                pad.neutralState.lY = pad.leftStickCalibration.neutralY;
+            }
+            if (pad.rightStickCalibration.valid) {
+                pad.neutralState.lRx = pad.rightStickCalibration.neutralX;
+                pad.neutralState.lRy = pad.rightStickCalibration.neutralY;
+            }
+        }
         return true;
     }
 
@@ -240,13 +347,141 @@ namespace {
         return index >= 0 && index < 128 && (state.rgbButtons[index] & 0x80) != 0;
     }
 
-    static void MapPovToDpad(const DIJOYSTATE2& state, WORD& buttons) {
-        DWORD pov = state.rgdwPOV[0];
-        if (pov == 0xFFFFFFFF) return;
-        if (pov >= 31500 || pov <= 4500) buttons |= XINPUT_GAMEPAD_DPAD_UP;
-        if (pov >= 4500 && pov <= 13500) buttons |= XINPUT_GAMEPAD_DPAD_RIGHT;
-        if (pov >= 13500 && pov <= 22500) buttons |= XINPUT_GAMEPAD_DPAD_DOWN;
-        if (pov >= 22500 && pov <= 31500) buttons |= XINPUT_GAMEPAD_DPAD_LEFT;
+    static std::uint8_t RawPovDirections(const DIJOYSTATE2& state) {
+        std::uint8_t directions = 0;
+        for (int i = 0; i < 4; ++i) {
+            directions |= GenericPadAxisPolicy::PovDirections(state.rgdwPOV[i]);
+        }
+        return directions;
+    }
+
+    static std::uint8_t RawButtonDpadDirections(const DIJOYSTATE2& state) {
+        std::uint8_t directions = 0;
+        // A number of DirectInput-only fight sticks / leverless controllers expose directions
+        // as digital buttons instead of POV. The common layout is buttons 12..15.
+        if (ButtonDown(state, 12)) directions |= GenericPadAxisPolicy::PovUp;
+        if (ButtonDown(state, 13)) directions |= GenericPadAxisPolicy::PovDown;
+        if (ButtonDown(state, 14)) directions |= GenericPadAxisPolicy::PovLeft;
+        if (ButtonDown(state, 15)) directions |= GenericPadAxisPolicy::PovRight;
+        return directions;
+    }
+
+    static void MapDirectionsToDpad(std::uint8_t directions, WORD& buttons) {
+        if (directions & GenericPadAxisPolicy::PovUp) buttons |= XINPUT_GAMEPAD_DPAD_UP;
+        if (directions & GenericPadAxisPolicy::PovRight) buttons |= XINPUT_GAMEPAD_DPAD_RIGHT;
+        if (directions & GenericPadAxisPolicy::PovDown) buttons |= XINPUT_GAMEPAD_DPAD_DOWN;
+        if (directions & GenericPadAxisPolicy::PovLeft) buttons |= XINPUT_GAMEPAD_DPAD_LEFT;
+    }
+
+    static bool AxisPairActive(LONG x, LONG y, LONG threshold = 6000) {
+        return x >= threshold || x <= -threshold || y >= threshold || y <= -threshold;
+    }
+
+    static LONG AxisDelta(LONG value, LONG neutral) {
+        return value - neutral;
+    }
+
+    static LONG AxisAbs(LONG value) {
+        return (value < 0) ? -value : value;
+    }
+
+    static void MapAxisPairToDpad(LONG x, LONG y, WORD& buttons, LONG threshold = 6000) {
+        if (x <= -threshold) buttons |= XINPUT_GAMEPAD_DPAD_LEFT;
+        if (x >= threshold) buttons |= XINPUT_GAMEPAD_DPAD_RIGHT;
+        if (y >= threshold) buttons |= XINPUT_GAMEPAD_DPAD_UP;
+        if (y <= -threshold) buttons |= XINPUT_GAMEPAD_DPAD_DOWN;
+    }
+
+    static void ResolvePreferredLeftStickAxes(const GenericPad& pad, LONG& outX, LONG& outY) {
+        outX = 0;
+        outY = 0;
+        if (!pad.leftStickCalibration.valid) return;
+        outX = AxisDelta(pad.rawState.lX, pad.leftStickCalibration.neutralX);
+        outY = -AxisDelta(pad.rawState.lY, pad.leftStickCalibration.neutralY);
+    }
+
+    static void MapAxisDpadFallback(const GenericPad& pad, WORD& buttons) {
+        // Axis fallback is useful for older DirectInput-only pads, but it is
+        // unsafe before we have observed a neutral sample. Some DualSense-mode
+        // leverless/mixbox devices report unused axes parked at full extremes;
+        // treating those raw values as directions makes the menu hold Up/Left
+        // forever while the controller is idle.
+        if (!pad.leftStickCalibration.valid) {
+            return;
+        }
+        const LONG x = AxisDelta(
+            pad.rawState.lX, pad.leftStickCalibration.neutralX);
+        const LONG y = -AxisDelta(
+            pad.rawState.lY, pad.leftStickCalibration.neutralY);
+        MapAxisPairToDpad(x, y, buttons);
+    }
+
+    static WORD ApplyStartupHeldButtonBlock(GenericPad& pad, WORD buttons) {
+        // If a DirectInput device enumerates with buttons/POV already reported
+        // down, treat those as "held before we started listening" and suppress
+        // them until they release. This mirrors the menu edge reset rule and
+        // prevents devices with bogus idle POV/button state from immediately
+        // becoming valid UI navigation.
+        if (pad.startupBlockWarmupFrames > 0) {
+            const WORD newlyBlocked = static_cast<WORD>(buttons & ~pad.startupBlockedButtons);
+            pad.startupBlockedButtons |= buttons;
+            --pad.startupBlockWarmupFrames;
+            if (newlyBlocked && detailedLogging.load()) {
+                std::ostringstream oss;
+                oss << "[GAMEPAD] DirectInput startup-held buttons masked for "
+                    << pad.name << " buttons=0x" << std::hex << std::uppercase
+                    << static_cast<unsigned>(newlyBlocked)
+                    << std::dec << " until release";
+                LogOut(oss.str(), true);
+            }
+        }
+
+        if (pad.startupBlockedButtons == 0) {
+            return buttons;
+        }
+
+        const WORD blockedStillHeld = static_cast<WORD>(buttons & pad.startupBlockedButtons);
+        const WORD filtered = static_cast<WORD>(buttons & ~blockedStillHeld);
+        pad.startupBlockedButtons = blockedStillHeld;
+        return filtered;
+    }
+
+    static void ApplyStartupHeldTriggerBlock(GenericPad& pad, BYTE& leftTrigger, BYTE& rightTrigger) {
+        constexpr BYTE kHeldThreshold = 30;
+        const bool leftHeld = leftTrigger > kHeldThreshold;
+        const bool rightHeld = rightTrigger > kHeldThreshold;
+
+        if (pad.startupTriggerBlockWarmupFrames > 0) {
+            const bool newlyBlockedLeft = leftHeld && !pad.startupBlockedLeftTrigger;
+            const bool newlyBlockedRight = rightHeld && !pad.startupBlockedRightTrigger;
+            pad.startupBlockedLeftTrigger = pad.startupBlockedLeftTrigger || leftHeld;
+            pad.startupBlockedRightTrigger = pad.startupBlockedRightTrigger || rightHeld;
+            --pad.startupTriggerBlockWarmupFrames;
+            if ((newlyBlockedLeft || newlyBlockedRight) && detailedLogging.load()) {
+                std::ostringstream oss;
+                oss << "[GAMEPAD] DirectInput startup-held triggers masked for "
+                    << pad.name
+                    << " LT=" << static_cast<int>(leftTrigger)
+                    << " RT=" << static_cast<int>(rightTrigger)
+                    << " until release";
+                LogOut(oss.str(), true);
+            }
+        }
+
+        if (pad.startupBlockedLeftTrigger) {
+            if (leftHeld) {
+                leftTrigger = 0;
+            } else {
+                pad.startupBlockedLeftTrigger = false;
+            }
+        }
+        if (pad.startupBlockedRightTrigger) {
+            if (rightHeld) {
+                rightTrigger = 0;
+            } else {
+                pad.startupBlockedRightTrigger = false;
+            }
+        }
     }
 
     static SHORT ClampAxisToShort(LONG value) {
@@ -261,6 +496,128 @@ namespace {
         return static_cast<BYTE>((value * 255) / 32767);
     }
 
+    static bool RawStateHasInterestingInput(const GenericPad& pad) {
+        const DIJOYSTATE2& state = pad.rawState;
+        for (int i = 0; i < 128; ++i) {
+            if (ButtonDown(state, i)) return true;
+        }
+        for (int i = 0; i < 4; ++i) {
+            if (GenericPadAxisPolicy::IsDirectionalPov(state.rgdwPOV[i])) return true;
+        }
+        const LONG kAxisNoise = 6000;
+        if (pad.leftStickCalibration.valid ||
+            pad.rightStickCalibration.valid || pad.neutralStateValid) {
+            return AxisPairActive(AxisDelta(state.lX, pad.neutralState.lX), AxisDelta(state.lY, pad.neutralState.lY), kAxisNoise)
+                || AxisPairActive(AxisDelta(state.lRx, pad.neutralState.lRx), AxisDelta(state.lRy, pad.neutralState.lRy), kAxisNoise)
+                || AxisAbs(AxisDelta(state.lZ, pad.neutralState.lZ)) >= kAxisNoise
+                || AxisAbs(AxisDelta(state.lRz, pad.neutralState.lRz)) >= kAxisNoise
+                || AxisAbs(AxisDelta(state.rglSlider[0], pad.neutralState.rglSlider[0])) >= kAxisNoise
+                || AxisAbs(AxisDelta(state.rglSlider[1], pad.neutralState.rglSlider[1])) >= kAxisNoise;
+        }
+        return AxisPairActive(state.lX, state.lY, kAxisNoise)
+            || AxisPairActive(state.lRx, state.lRy, kAxisNoise)
+            || AxisAbs(state.lZ) >= kAxisNoise
+            || AxisAbs(state.lRz) >= kAxisNoise
+            || AxisAbs(state.rglSlider[0]) >= kAxisNoise
+            || AxisAbs(state.rglSlider[1]) >= kAxisNoise;
+    }
+
+    static void MaybeLogGenericPadInput(GenericPad& pad, const XINPUT_STATE& state) {
+        const bool enabled =
+            XInputShim::g_LogGenericPadInputDebug.load(std::memory_order_relaxed);
+        if (!enabled) {
+            pad.inputDebugWasEnabled = false;
+            return;
+        }
+        const bool justEnabled = !pad.inputDebugWasEnabled;
+        if (justEnabled) {
+            // Force exactly one complete idle/calibration sample whenever the
+            // release-runtime diagnostic is enabled. Subsequent output remains
+            // state-change-only through lastInputDebugSummary.
+            pad.inputDebugWasEnabled = true;
+            pad.lastInputDebugSummary.clear();
+        }
+
+        std::ostringstream rawBtns;
+        bool first = true;
+        for (int i = 0; i < 128; ++i) {
+            if (!ButtonDown(pad.rawState, i)) continue;
+            if (!first) rawBtns << ",";
+            rawBtns << i;
+            first = false;
+        }
+        if (first) rawBtns << "-";
+
+        std::ostringstream povs;
+        for (int i = 0; i < 4; ++i) {
+            if (i != 0) povs << ",";
+            if (!GenericPadAxisPolicy::IsDirectionalPov(pad.rawState.rgdwPOV[i])) povs << "-";
+            else povs << pad.rawState.rgdwPOV[i];
+        }
+
+        std::ostringstream oss;
+        oss << "[GAMEPAD][GENERIC] " << pad.name
+            << " interesting=" << (RawStateHasInterestingInput(pad) ? 1 : 0)
+            << " povObjects=" << pad.povObjectCount
+            << " rawButtons=[" << rawBtns.str() << "]"
+            << " pov=[" << povs.str() << "]"
+            << " axes=("
+            << pad.rawState.lX << "," << pad.rawState.lY << "," << pad.rawState.lZ << ","
+            << pad.rawState.lRx << "," << pad.rawState.lRy << "," << pad.rawState.lRz << ";"
+            << pad.rawState.rglSlider[0] << "," << pad.rawState.rglSlider[1] << ")"
+            << " deltaAxes=("
+            << (pad.neutralStateValid ? AxisDelta(pad.rawState.lX, pad.neutralState.lX) : pad.rawState.lX) << ","
+            << (pad.neutralStateValid ? AxisDelta(pad.rawState.lY, pad.neutralState.lY) : pad.rawState.lY) << ","
+            << (pad.neutralStateValid ? AxisDelta(pad.rawState.lZ, pad.neutralState.lZ) : pad.rawState.lZ) << ","
+            << (pad.neutralStateValid ? AxisDelta(pad.rawState.lRx, pad.neutralState.lRx) : pad.rawState.lRx) << ","
+            << (pad.neutralStateValid ? AxisDelta(pad.rawState.lRy, pad.neutralState.lRy) : pad.rawState.lRy) << ","
+            << (pad.neutralStateValid ? AxisDelta(pad.rawState.lRz, pad.neutralState.lRz) : pad.rawState.lRz) << ";"
+            << (pad.neutralStateValid ? AxisDelta(pad.rawState.rglSlider[0], pad.neutralState.rglSlider[0]) : pad.rawState.rglSlider[0]) << ","
+            << (pad.neutralStateValid ? AxisDelta(pad.rawState.rglSlider[1], pad.neutralState.rglSlider[1]) : pad.rawState.rglSlider[1]) << ")"
+            << " calibration{L="
+            << (pad.leftStickCalibration.valid ? "ready" : "waiting")
+            << "/" << static_cast<unsigned>(pad.leftStickCalibration.stableSamples)
+            << "@" << pad.leftStickCalibration.neutralX << ","
+            << pad.leftStickCalibration.neutralY
+            << " R="
+            << (pad.rightStickCalibration.valid ? "ready" : "waiting")
+            << "/" << static_cast<unsigned>(pad.rightStickCalibration.stableSamples)
+            << "@" << pad.rightStickCalibration.neutralX << ","
+            << pad.rightStickCalibration.neutralY
+            << " POV=" << (pad.povDpadGate.armed ? "ready" : "waiting")
+            << "/" << static_cast<unsigned>(pad.povDpadGate.neutralSamples)
+            << " BTN=" << (pad.buttonDpadGate.armed ? "ready" : "waiting")
+            << "/" << static_cast<unsigned>(pad.buttonDpadGate.neutralSamples)
+            << "}"
+            << " startupBlock=0x" << std::hex << std::uppercase << pad.startupBlockedButtons
+            << std::dec
+            << " startupTrigBlock=" << (pad.startupBlockedLeftTrigger ? "L" : "-")
+            << (pad.startupBlockedRightTrigger ? "R" : "-")
+            << " synthetic{buttons=0x" << std::hex << std::uppercase << state.Gamepad.wButtons
+            << std::dec
+            << " LT=" << static_cast<int>(state.Gamepad.bLeftTrigger)
+            << " RT=" << static_cast<int>(state.Gamepad.bRightTrigger)
+            << " LX=" << state.Gamepad.sThumbLX
+            << " LY=" << state.Gamepad.sThumbLY
+            << " RX=" << state.Gamepad.sThumbRX
+            << " RY=" << state.Gamepad.sThumbRY
+            << "}";
+        const std::string summary = oss.str();
+        if (summary != pad.lastInputDebugSummary) {
+            const DWORD now = GetTickCount();
+            const bool syntheticChanged =
+                memcmp(&state.Gamepad, &pad.syntheticState.Gamepad,
+                       sizeof(XINPUT_GAMEPAD)) != 0;
+            if (justEnabled || syntheticChanged ||
+                pad.lastInputDebugLogTick == 0 ||
+                (now - pad.lastInputDebugLogTick) >= 250) {
+                pad.lastInputDebugSummary = summary;
+                pad.lastInputDebugLogTick = now;
+                LogOut(summary, true);
+            }
+        }
+    }
+
     XINPUT_STATE BuildSyntheticState(GenericPad& pad) {
         XINPUT_STATE state{};
         WORD buttons = 0;
@@ -272,32 +629,91 @@ namespace {
         if (ButtonDown(pad.rawState, 3)) buttons |= XINPUT_GAMEPAD_Y; // Triangle
         if (ButtonDown(pad.rawState, 4)) buttons |= XINPUT_GAMEPAD_LEFT_SHOULDER;
         if (ButtonDown(pad.rawState, 5)) buttons |= XINPUT_GAMEPAD_RIGHT_SHOULDER;
-        if (ButtonDown(pad.rawState, 8)) buttons |= XINPUT_GAMEPAD_BACK;
-        if (ButtonDown(pad.rawState, 9)) buttons |= XINPUT_GAMEPAD_START;
-        if (ButtonDown(pad.rawState, 10)) buttons |= XINPUT_GAMEPAD_LEFT_THUMB;
-        if (ButtonDown(pad.rawState, 11)) buttons |= XINPUT_GAMEPAD_RIGHT_THUMB;
-        MapPovToDpad(pad.rawState, buttons);
-
-        state.Gamepad.wButtons = buttons;
-        state.Gamepad.bLeftTrigger = ButtonDown(pad.rawState, 6) ? 255 : 0;
-        state.Gamepad.bRightTrigger = ButtonDown(pad.rawState, 7) ? 255 : 0;
-        if (state.Gamepad.bLeftTrigger == 0 && state.Gamepad.bRightTrigger == 0) {
-            // Some DirectInput pads expose analog triggers on Z/Rz instead of digital buttons.
-            state.Gamepad.bLeftTrigger = TriggerFromAxisPositive(-pad.rawState.lZ);
-            state.Gamepad.bRightTrigger = TriggerFromAxisPositive(pad.rawState.lZ);
-            if (state.Gamepad.bRightTrigger == 0) {
-                state.Gamepad.bRightTrigger = TriggerFromAxisPositive(pad.rawState.lRz);
+        const auto anyButtonIn = [&](const int* indices, size_t count) {
+            for (size_t i = 0; i < count; ++i) {
+                if (ButtonDown(pad.rawState, indices[i])) return true;
+            }
+            return false;
+        };
+        static const int kBackCandidates[] = { 8, 16, 24, 32, 40, 48, 56 };
+        static const int kStartCandidates[] = { 9, 17, 25, 33, 41, 49, 57 };
+        static const int kLeftThumbCandidates[] = { 10, 18, 26, 34, 42, 50, 58 };
+        static const int kRightThumbCandidates[] = { 11, 19, 27, 35, 43, 51, 59 };
+        if (anyButtonIn(kBackCandidates, sizeof(kBackCandidates) / sizeof(kBackCandidates[0]))) {
+            buttons |= XINPUT_GAMEPAD_BACK;
+        }
+        if (anyButtonIn(kStartCandidates, sizeof(kStartCandidates) / sizeof(kStartCandidates[0]))) {
+            buttons |= XINPUT_GAMEPAD_START;
+        }
+        if (anyButtonIn(kLeftThumbCandidates, sizeof(kLeftThumbCandidates) / sizeof(kLeftThumbCandidates[0]))) {
+            buttons |= XINPUT_GAMEPAD_LEFT_THUMB;
+        }
+        if (anyButtonIn(kRightThumbCandidates, sizeof(kRightThumbCandidates) / sizeof(kRightThumbCandidates[0]))) {
+            buttons |= XINPUT_GAMEPAD_RIGHT_THUMB;
+        }
+        const std::uint8_t povDirections = RawPovDirections(pad.rawState);
+        if (GenericPadAxisPolicy::ObserveDigitalNeutral(
+                pad.povDpadGate, povDirections)) {
+            MapDirectionsToDpad(povDirections, buttons);
+        }
+        if ((buttons & (XINPUT_GAMEPAD_DPAD_UP | XINPUT_GAMEPAD_DPAD_DOWN | XINPUT_GAMEPAD_DPAD_LEFT | XINPUT_GAMEPAD_DPAD_RIGHT)) == 0 &&
+            GenericPadAxisPolicy::ShouldUseButtonDpadFallback(
+                pad.povObjectCount)) {
+            const std::uint8_t buttonDirections =
+                RawButtonDpadDirections(pad.rawState);
+            if (GenericPadAxisPolicy::ObserveDigitalNeutral(
+                    pad.buttonDpadGate, buttonDirections)) {
+                MapDirectionsToDpad(buttonDirections, buttons);
             }
         }
-        state.Gamepad.sThumbLX = ClampAxisToShort(pad.rawState.lX);
-        state.Gamepad.sThumbLY = ClampAxisToShort(-pad.rawState.lY);
-        state.Gamepad.sThumbRX = ClampAxisToShort(pad.rawState.lRx);
-        state.Gamepad.sThumbRY = ClampAxisToShort(-pad.rawState.lRy);
+        if ((buttons & (XINPUT_GAMEPAD_DPAD_UP | XINPUT_GAMEPAD_DPAD_DOWN | XINPUT_GAMEPAD_DPAD_LEFT | XINPUT_GAMEPAD_DPAD_RIGHT)) == 0) {
+            MapAxisDpadFallback(pad, buttons);
+        }
+        // Every direction source above has its own observed-neutral gate. Keep
+        // the general startup-held filter for action/menu buttons, but do not
+        // swallow the first legitimate DPad press after that neutral period.
+        constexpr WORD kDpadMask = XINPUT_GAMEPAD_DPAD_UP |
+            XINPUT_GAMEPAD_DPAD_DOWN | XINPUT_GAMEPAD_DPAD_LEFT |
+            XINPUT_GAMEPAD_DPAD_RIGHT;
+        const WORD dpadButtons = static_cast<WORD>(buttons & kDpadMask);
+        buttons = static_cast<WORD>(
+            ApplyStartupHeldButtonBlock(
+                pad, static_cast<WORD>(buttons & ~kDpadMask)) |
+            dpadButtons);
+
+        state.Gamepad.wButtons = buttons;
+        BYTE leftTrigger = ButtonDown(pad.rawState, 6) ? 255 : 0;
+        BYTE rightTrigger = ButtonDown(pad.rawState, 7) ? 255 : 0;
+        if (leftTrigger == 0 && rightTrigger == 0 && pad.neutralStateValid) {
+            // Some DirectInput pads expose analog triggers on Z/Rz instead of digital buttons.
+            const LONG zDelta = AxisDelta(pad.rawState.lZ, pad.neutralState.lZ);
+            const LONG rzDelta = AxisDelta(pad.rawState.lRz, pad.neutralState.lRz);
+            leftTrigger = TriggerFromAxisPositive(-zDelta);
+            rightTrigger = TriggerFromAxisPositive(zDelta);
+            if (rightTrigger == 0) {
+                rightTrigger = TriggerFromAxisPositive(rzDelta);
+            }
+        }
+        ApplyStartupHeldTriggerBlock(pad, leftTrigger, rightTrigger);
+        state.Gamepad.bLeftTrigger = leftTrigger;
+        state.Gamepad.bRightTrigger = rightTrigger;
+        LONG leftStickX = 0;
+        LONG leftStickY = 0;
+        ResolvePreferredLeftStickAxes(pad, leftStickX, leftStickY);
+        state.Gamepad.sThumbLX = ClampAxisToShort(leftStickX);
+        state.Gamepad.sThumbLY = ClampAxisToShort(leftStickY);
+        if (pad.rightStickCalibration.valid) {
+            state.Gamepad.sThumbRX = ClampAxisToShort(
+                AxisDelta(pad.rawState.lRx, pad.rightStickCalibration.neutralX));
+            state.Gamepad.sThumbRY = ClampAxisToShort(
+                -AxisDelta(pad.rawState.lRy, pad.rightStickCalibration.neutralY));
+        }
 
         if (memcmp(&state.Gamepad, &pad.syntheticState.Gamepad, sizeof(XINPUT_GAMEPAD)) != 0) {
             ++pad.packetCounter;
         }
         state.dwPacketNumber = pad.packetCounter;
+        MaybeLogGenericPadInput(pad, state);
         pad.syntheticState = state;
         return state;
     }
@@ -308,15 +724,55 @@ namespace {
         return pGetState(idx, st);
     }
 
-    DWORD GetNativeCapabilities(DWORD idx, DWORD flags, XINPUT_CAPABILITIES* caps) {
+    DWORD GetNativeCapabilities(DWORD idx, DWORD flags,
+                                XINPUT_CAPABILITIES* caps) {
         if (!g_xinput && !XInputShim::Init()) return ERROR_DEVICE_NOT_CONNECTED;
         if (!pGetCaps) return ERROR_DEVICE_NOT_CONNECTED;
         return pGetCaps(idx, flags, caps);
     }
 
-    void LogSlotSummaryLocked();
+    void LogSlotSummary(const XInputShim::Snapshot& snapshot);
 
-    void UpdateSnapshotLocked() {
+    // Native XInput polling can block several seconds per disconnected slot on some
+    // systems/drivers. We must NOT hold g_snapshotMutex during that call, otherwise the
+    // render thread (which also takes the mutex via GetState/GetCapabilities) will stall
+    // for many seconds whenever the watcher hits a slow native poll. So we perform the
+    // native poll lock-free into a local buffer and pass it to UpdateSnapshotLocked.
+    static void PollNativeSnapshotUnlocked(std::array<XINPUT_STATE, 4>& outStates,
+                                           unsigned& outMask) {
+        outMask = 0;
+        for (DWORD i = 0; i < 4; ++i) {
+            if (GetNativeState(i, &outStates[i]) == ERROR_SUCCESS) {
+                outMask |= (1u << i);
+            } else {
+                ZeroMemory(&outStates[i], sizeof(XINPUT_STATE));
+            }
+        }
+    }
+
+    static void RefreshNewNativeCapabilitiesUnlocked(unsigned nativeMask) {
+        const unsigned newlyConnected = nativeMask & ~g_nativeCapabilitiesMask;
+        const unsigned disconnected = g_nativeCapabilitiesMask & ~nativeMask;
+        for (int i = 0; i < XInputShim::kControllerSlotCount; ++i) {
+            const unsigned bit = 1u << i;
+            if ((disconnected & bit) != 0) {
+                g_nativeCapabilities[i] = {};
+            }
+            if ((newlyConnected & bit) == 0) continue;
+            XINPUT_CAPABILITIES caps{};
+            if (GetNativeCapabilities(i, XINPUT_FLAG_GAMEPAD, &caps) ==
+                ERROR_SUCCESS) {
+                g_nativeCapabilities[i] = caps;
+            }
+        }
+        g_nativeCapabilitiesMask = nativeMask;
+    }
+
+    // Watcher-thread only: collect every hardware source into a local object.
+    // Publication happens later and never surrounds DirectInput work.
+    void BuildSnapshot(const std::array<XINPUT_STATE, 4>& nativeStates,
+                       unsigned nativeMask,
+                       XInputShim::Snapshot& snapshot) {
         DWORD now = GetTickCount();
 
         // Avoid re-enumerating DirectInput devices on a fixed 5s cadence while a stable pad
@@ -328,16 +784,6 @@ namespace {
         const bool noKnownGenericPads = g_genericPads.empty();
         if (firstGenericEnum || (noKnownGenericPads && (now - g_lastGenericEnumTick >= 5000))) {
             EnumerateGenericPadsLocked(firstGenericEnum);
-        }
-
-        std::array<XINPUT_STATE, 4> nativeStates{};
-        unsigned nativeMask = 0;
-        for (DWORD i = 0; i < 4; ++i) {
-            if (GetNativeState(i, &nativeStates[i]) == ERROR_SUCCESS) {
-                nativeMask |= (1u << i);
-            } else {
-                ZeroMemory(&nativeStates[i], sizeof(XINPUT_STATE));
-            }
         }
 
         auto collectGenericStates = [&]() {
@@ -362,56 +808,97 @@ namespace {
             genericStates = collectGenericStates();
         }
 
-        g_cachedMask = 0;
-        g_cachedNativeMask = nativeMask;
-        g_cachedGenericMask = 0;
-        for (int i = 0; i < 4; ++i) {
-            g_cachedStates[i] = {};
-            g_cachedGenericSlots[i] = false;
-            g_cachedSlotNames[i].clear();
-        }
+        snapshot = {};
+        snapshot.nativeMask = nativeMask;
 
         for (int i = 0; i < 4; ++i) {
             if (((nativeMask >> i) & 1u) == 0) continue;
-            g_cachedStates[i] = nativeStates[i];
-            g_cachedMask |= (1u << i);
+            snapshot.states[i] = nativeStates[i];
+            snapshot.capabilities[i] = g_nativeCapabilities[i];
+            snapshot.capabilitiesValid[i] =
+                g_nativeCapabilities[i].Type != 0 ||
+                g_nativeCapabilities[i].SubType != 0;
+            snapshot.connectedMask |= (1u << i);
         }
 
         int nextGenericSlot = 0;
         for (const auto& entry : genericStates) {
-            while (nextGenericSlot < 4 && ((g_cachedMask >> nextGenericSlot) & 1u) != 0) {
+            while (nextGenericSlot < 4 && ((snapshot.connectedMask >> nextGenericSlot) & 1u) != 0) {
                 ++nextGenericSlot;
             }
             if (nextGenericSlot >= 4) break;
 
-            g_cachedStates[nextGenericSlot] = entry.first;
-            g_cachedGenericSlots[nextGenericSlot] = true;
-            g_cachedSlotNames[nextGenericSlot] = entry.second;
-            g_cachedMask |= (1u << nextGenericSlot);
-            g_cachedGenericMask |= (1u << nextGenericSlot);
+            snapshot.states[nextGenericSlot] = entry.first;
+            snapshot.capabilities[nextGenericSlot].Type = XINPUT_DEVTYPE_GAMEPAD;
+            snapshot.capabilities[nextGenericSlot].SubType = XINPUT_DEVSUBTYPE_GAMEPAD;
+            snapshot.capabilities[nextGenericSlot].Gamepad.wButtons = 0xFFFF;
+            snapshot.capabilities[nextGenericSlot].Gamepad.bLeftTrigger = 0xFF;
+            snapshot.capabilities[nextGenericSlot].Gamepad.bRightTrigger = 0xFF;
+            snapshot.capabilities[nextGenericSlot].Gamepad.sThumbLX = 0x7FFF;
+            snapshot.capabilities[nextGenericSlot].Gamepad.sThumbLY = 0x7FFF;
+            snapshot.capabilities[nextGenericSlot].Gamepad.sThumbRX = 0x7FFF;
+            snapshot.capabilities[nextGenericSlot].Gamepad.sThumbRY = 0x7FFF;
+            snapshot.capabilitiesValid[nextGenericSlot] = true;
+            snapshot.genericSlots[nextGenericSlot] = true;
+            _snprintf_s(snapshot.slotNames[nextGenericSlot],
+                        XInputShim::kControllerSlotNameCapacity, _TRUNCATE,
+                        "%s", entry.second.c_str());
+            snapshot.connectedMask |= (1u << nextGenericSlot);
+            snapshot.genericMask |= (1u << nextGenericSlot);
             ++nextGenericSlot;
         }
+    }
 
-        g_lastRefreshTick = now;
-        g_hasInitialSnapshot.store(true, std::memory_order_release);
-        LogSlotSummaryLocked();
+    void PublishSnapshot(XInputShim::Snapshot snapshot) {
+        {
+            std::lock_guard<std::mutex> lock(g_snapshotMutex);
+            snapshot.generation = g_cachedSnapshot.generation + 1;
+            g_cachedSnapshot = snapshot;
+        }
+        LogSlotSummary(snapshot);
     }
 
     void ControllerWatcherThread() {
         LogOut("[GAMEPAD] Background controller watcher started", true);
         while (!g_isShuttingDown.load(std::memory_order_acquire)) {
+            if (g_onlineModeActive.load(std::memory_order_relaxed)) {
+                // Training features and ImGui navigation are suspended online, so park the
+                // controller watcher instead of continuously polling hardware in the background.
+                Sleep(250);
+                continue;
+            }
+
             DWORD sleepMs = 16;
-            {
-                std::lock_guard<std::mutex> lock(g_snapshotMutex);
-                UpdateSnapshotLocked();
-                if (g_cachedMask == 0 && g_genericPads.empty()) {
-                    sleepMs = 250;
-                } else {
-                    // 60 Hz snapshot refresh is enough for menu navigation and hotkeys.
-                    // The previous 8 ms native polling bought little responsiveness but
-                    // increased wakeups on the background thread.
-                    sleepMs = 16;
-                }
+            // Poll native XInput slots WITHOUT holding the snapshot mutex; XInputGetState
+            // can stall multiple seconds per disconnected slot on some systems.
+            std::array<XINPUT_STATE, 4> nativeStatesLocal{};
+            unsigned nativeMaskLocal = 0;
+            PollNativeSnapshotUnlocked(nativeStatesLocal, nativeMaskLocal);
+            RefreshNewNativeCapabilitiesUnlocked(nativeMaskLocal);
+            XInputShim::Snapshot nextSnapshot{};
+            BuildSnapshot(nativeStatesLocal, nativeMaskLocal, nextSnapshot);
+            const unsigned combinedMaskAfter = nextSnapshot.connectedMask;
+            PublishSnapshot(nextSnapshot);
+            if (combinedMaskAfter == 0 && g_genericPads.empty()) {
+                sleepMs = 250;
+            } else {
+                // 60 Hz snapshot refresh is enough for menu navigation and hotkeys.
+                // The previous 8 ms native polling bought little responsiveness but
+                // increased wakeups on the background thread.
+                sleepMs = 16;
+            }
+            // Refresh published display names off the game thread. Throttled to once
+            // every 2s, or immediately on mask change, so name lookup work (which can
+            // touch Raw Input enumeration) never costs the render thread anything.
+            const DWORD nowTick = GetTickCount();
+            const bool maskChanged = combinedMaskAfter != g_lastNamesPublishMask;
+            const bool namesDue = g_lastNamesPublishTick == 0
+                || (nowTick - g_lastNamesPublishTick) >= 2000
+                || maskChanged;
+            if (namesDue) {
+                PublishControllerNamesUnlocked(combinedMaskAfter);
+                g_lastNamesPublishTick = nowTick;
+                g_lastNamesPublishMask = combinedMaskAfter;
             }
             if (!g_efzWindowActive.load(std::memory_order_relaxed)
                 && !g_guiActive.load(std::memory_order_relaxed)) {
@@ -428,19 +915,19 @@ namespace {
         }
     }
 
-    void LogSlotSummaryLocked() {
+    void LogSlotSummary(const XInputShim::Snapshot& snapshot) {
         std::ostringstream oss;
-        oss << "[GAMEPAD] Snapshot changed: combined=0x" << std::hex << std::uppercase << g_cachedMask
-            << " xinput=0x" << g_cachedNativeMask
-            << " generic=0x" << g_cachedGenericMask;
+        oss << "[GAMEPAD] Snapshot changed: combined=0x" << std::hex << std::uppercase << snapshot.connectedMask
+            << " xinput=0x" << snapshot.nativeMask
+            << " generic=0x" << snapshot.genericMask;
         for (int i = 0; i < 4; ++i) {
-            if (((g_cachedMask >> i) & 1u) == 0) continue;
+            if (!snapshot.IsConnected(i)) continue;
             oss << " slot" << std::dec << i << "="
-                << (g_cachedGenericSlots[i] ? "Generic:" : "XInput:");
-            if (!g_cachedSlotNames[i].empty()) {
-                oss << g_cachedSlotNames[i];
+                << (snapshot.genericSlots[i] ? "Generic:" : "XInput:");
+            if (snapshot.slotNames[i][0] != '\0') {
+                oss << snapshot.slotNames[i];
             } else {
-                oss << (g_cachedGenericSlots[i] ? "DirectInput Controller" : "Pad");
+                oss << (snapshot.genericSlots[i] ? "DirectInput Controller" : "Pad");
             }
         }
         std::string summary = oss.str();
@@ -474,46 +961,37 @@ namespace XInputShim {
     DWORD GetState(DWORD idx, XINPUT_STATE* st) {
         if (!st || idx > 3) return ERROR_DEVICE_NOT_CONNECTED;
         EnsureWatcherStarted();
-        if (!g_hasInitialSnapshot.load(std::memory_order_acquire)) {
-            std::lock_guard<std::mutex> lock(g_snapshotMutex);
-            if (!g_hasInitialSnapshot.load(std::memory_order_relaxed)) {
-                UpdateSnapshotLocked();
-            }
-        }
-        RefreshSnapshotOncePerFrame();
-        std::lock_guard<std::mutex> lock(g_snapshotMutex);
-        if (((g_cachedMask >> idx) & 1u) == 0) {
+        Snapshot snapshot{};
+        CopySnapshot(snapshot);
+        if (!snapshot.CopyState(static_cast<int>(idx), *st)) {
             return ERROR_DEVICE_NOT_CONNECTED;
         }
-        *st = g_cachedStates[idx];
         return ERROR_SUCCESS;
     }
 
     DWORD GetCapabilities(DWORD idx, DWORD flags, XINPUT_CAPABILITIES* caps) {
         if (!caps || idx > 3) return ERROR_DEVICE_NOT_CONNECTED;
         EnsureWatcherStarted();
-
-        if (GetNativeCapabilities(idx, flags, caps) == ERROR_SUCCESS) {
-            return ERROR_SUCCESS;
-        }
-
-        if (!g_hasInitialSnapshot.load(std::memory_order_acquire)) {
-            std::lock_guard<std::mutex> initLock(g_snapshotMutex);
-            if (!g_hasInitialSnapshot.load(std::memory_order_relaxed)) {
-                UpdateSnapshotLocked();
-            }
-        }
-        RefreshSnapshotOncePerFrame();
-        std::lock_guard<std::mutex> lock(g_snapshotMutex);
-        if (!g_cachedGenericSlots[idx]) {
+        (void)flags;
+        Snapshot snapshot{};
+        CopySnapshot(snapshot);
+        if (!snapshot.IsConnected(static_cast<int>(idx))) {
             return ERROR_DEVICE_NOT_CONNECTED;
         }
 
+        if (snapshot.capabilitiesValid[idx]) {
+            *caps = snapshot.capabilities[idx];
+            return ERROR_SUCCESS;
+        }
+
+        // Capabilities are synthesized from the already-published state.  The
+        // old path called into a controller driver from arbitrary UI threads;
+        // a disconnected XInput slot can block there for seconds.
         ZeroMemory(caps, sizeof(*caps));
         caps->Type = XINPUT_DEVTYPE_GAMEPAD;
         caps->SubType = XINPUT_DEVSUBTYPE_GAMEPAD;
         caps->Flags = 0;
-        caps->Gamepad.wButtons = g_cachedStates[idx].Gamepad.wButtons;
+        caps->Gamepad.wButtons = 0xFFFF;
         caps->Gamepad.bLeftTrigger = 0xFF;
         caps->Gamepad.bRightTrigger = 0xFF;
         caps->Gamepad.sThumbLX = 0xFF;
@@ -532,27 +1010,75 @@ namespace XInputShim {
         EnsureWatcherStarted();
     }
 
-    bool IsPadConnectedCached(int index) {
-        if (index < 0 || index > 3) return false;
-        return ((g_cachedMask >> index) & 1u) != 0;
+    void CopySnapshot(Snapshot& out) {
+        EnsureWatcherStarted();
+        std::lock_guard<std::mutex> lock(g_snapshotMutex);
+        out = g_cachedSnapshot;
     }
 
-    unsigned GetConnectedMaskCached() { return g_cachedMask; }
-    unsigned GetNativeConnectedMaskCached() { return g_cachedNativeMask; }
-    unsigned GetGenericConnectedMaskCached() { return g_cachedGenericMask; }
+    bool CopyCachedState(int index, XINPUT_STATE& out) {
+        Snapshot snapshot{};
+        CopySnapshot(snapshot);
+        return snapshot.CopyState(index, out);
+    }
 
-    const XINPUT_STATE* GetCachedState(int index) {
-        if (!IsPadConnectedCached(index)) return nullptr;
-        return &g_cachedStates[index];
+    bool IsPadConnectedCached(int index) {
+        if (index < 0 || index > 3) return false;
+        Snapshot snapshot{};
+        CopySnapshot(snapshot);
+        return snapshot.IsConnected(index);
+    }
+
+    unsigned GetConnectedMaskCached() {
+        Snapshot snapshot{};
+        CopySnapshot(snapshot);
+        return snapshot.connectedMask;
+    }
+    unsigned GetNativeConnectedMaskCached() {
+        Snapshot snapshot{};
+        CopySnapshot(snapshot);
+        return snapshot.nativeMask;
+    }
+    unsigned GetGenericConnectedMaskCached() {
+        Snapshot snapshot{};
+        CopySnapshot(snapshot);
+        return snapshot.genericMask;
+    }
+
+    bool GetPublishedControllerName(int index, char* buf, size_t bufLen) {
+        if (!buf || bufLen == 0) return false;
+        if (index < 0 || index > 3) {
+            buf[0] = '\0';
+            return false;
+        }
+        // Try the names lock briefly; if contended, fall back to a generic label so we
+        // never stall the render thread on this read.
+        std::unique_lock<std::mutex> lock(g_namesMutex, std::try_to_lock);
+        if (lock.owns_lock() && g_publishedNamesValid[index]) {
+            _snprintf_s(buf, bufLen, _TRUNCATE, "%s", g_publishedNames[index]);
+            return true;
+        }
+        Snapshot snapshot{};
+        CopySnapshot(snapshot);
+        if (!snapshot.IsConnected(index)) {
+            _snprintf_s(buf, bufLen, _TRUNCATE, "Pad %d (Disconnected)", index);
+        } else {
+            _snprintf_s(buf, bufLen, _TRUNCATE, "Controller %d", index);
+        }
+        return false;
     }
 
     bool IsGenericFallbackSlot(int index) {
         if (index < 0 || index > 3) return false;
-        return g_cachedGenericSlots[index];
+        Snapshot snapshot{};
+        CopySnapshot(snapshot);
+        return snapshot.genericSlots[index];
     }
 
     std::string GetSlotDisplayName(int index) {
         if (index < 0 || index > 3) return std::string();
-        return g_cachedSlotNames[index];
+        Snapshot snapshot{};
+        CopySnapshot(snapshot);
+        return snapshot.slotNames[index];
     }
 }

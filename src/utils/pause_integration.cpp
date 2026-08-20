@@ -8,11 +8,13 @@
 #include "../include/game/practice_offsets.h"
 #include "../include/game/efzrevival_addrs.h"
 #include "../include/utils/network.h" // GetEfzRevivalVersion, EfzRevivalVersion
+#include "../include/utils/minhook_utils.h"
 // MinHook for capturing Practice controller pointer
 #include "../3rdparty/minhook/include/MinHook.h"
 #include <windows.h>
 #include <atomic>
 #include <cstring>
+#include <mutex>
 #include <sstream>
 
 namespace {
@@ -26,8 +28,22 @@ namespace {
     }
     // === State tracking ===
     std::atomic<bool> s_menuVisible{false};
+    std::mutex s_menuSurfaceMutex;
+    uint8_t s_menuSurfaceMask = 0; // guarded by s_menuSurfaceMutex
+    struct MenuSurfaceRefreshState {
+        bool active = false;
+        PauseIntegration::MenuSurface surface =
+            PauseIntegration::MenuSurface::TutorialPage;
+        uint64_t token = 0;
+    };
+    MenuSurfaceRefreshState s_menuSurfaceRefresh; // guarded by s_menuSurfaceMutex
+    uint64_t s_nextMenuSurfaceRefreshToken = 1;   // guarded by s_menuSurfaceMutex
+    std::atomic<bool> s_menuSurfaceRefreshActive{false};
     std::atomic<void*> s_practicePtr{nullptr};
     std::atomic<bool> s_practiceHooksInstalled{false};
+    std::atomic<bool> s_practiceHooksEnabled{false};
+    std::atomic<bool> s_practiceTickHookCreated{false};
+    std::atomic<bool> s_togglePauseHookCreated{false};
     // Global once-only guard for verbose candidate validation log
     std::atomic<bool> s_loggedValidateOnce{false};
     // Character Select scoped suppression for noisy scan failures
@@ -49,10 +65,84 @@ namespace {
     // Direct gamespeed byte address resolved from game mode array
     std::atomic<uintptr_t> s_gamespeedAddr{0};
     std::atomic<uint32_t> s_lastStepCounter{0};
+    std::atomic<PauseIntegration::StepAdvanceCallback> s_stepAdvanceCallback{nullptr};
     // Vanilla EFZ pause ownership (engine pause via battleContext+0x1416)
     std::atomic<bool> s_weVanillaEnginePause{false};
     // Visual effect patches ownership (for vanilla/unsupported versions)
     std::atomic<bool> s_weAppliedVisualPatches{false};
+    uintptr_t s_practiceTickTarget = 0;
+    uintptr_t s_togglePauseTarget = 0;
+    std::atomic<bool> s_battleContextHookInstalled{false};
+    std::atomic<bool> s_battleContextHookEnabled{false};
+    std::atomic<bool> s_battleContextHookLoggedFail{false};
+    std::atomic<bool> s_battleContextHookUnavailable{false};
+    uintptr_t s_battleContextHookTarget = 0;
+
+    bool IsExecutableProtection(DWORD protection) {
+        switch (protection & 0xFFu) {
+        case PAGE_EXECUTE:
+        case PAGE_EXECUTE_READ:
+        case PAGE_EXECUTE_READWRITE:
+        case PAGE_EXECUTE_WRITECOPY:
+            return true;
+        default:
+            return false;
+        }
+    }
+
+    bool ValidateBattleContextHookTarget(uintptr_t target) {
+        MEMORY_BASIC_INFORMATION mbi{};
+        if (!target || VirtualQuery(reinterpret_cast<LPCVOID>(target), &mbi, sizeof(mbi)) == 0) {
+            if (!s_battleContextHookLoggedFail.exchange(true)) {
+                std::ostringstream oss;
+                oss << "[PAUSE] RenderBattleScreen target validation failed at 0x" << std::hex << target
+                    << " reason=VirtualQuery";
+                LogOut(oss.str(), true);
+            }
+            s_battleContextHookUnavailable.store(true, std::memory_order_relaxed);
+            return false;
+        }
+
+        if (mbi.State != MEM_COMMIT || !IsExecutableProtection(mbi.Protect)) {
+            if (!s_battleContextHookLoggedFail.exchange(true)) {
+                char modulePath[MAX_PATH] = {};
+                std::ostringstream oss;
+                oss << "[PAUSE] RenderBattleScreen target is not executable at 0x" << std::hex << target
+                    << " state=0x" << mbi.State
+                    << " protect=0x" << mbi.Protect;
+                if (mbi.AllocationBase
+                    && GetModuleFileNameA(reinterpret_cast<HMODULE>(mbi.AllocationBase), modulePath, MAX_PATH) > 0) {
+                    oss << " module=" << modulePath;
+                }
+                LogOut(oss.str(), true);
+            }
+            s_battleContextHookUnavailable.store(true, std::memory_order_relaxed);
+            return false;
+        }
+
+        return true;
+    }
+
+    bool SetCapturedHookEnabled(uintptr_t target, bool active, const char* label) {
+        if (!target) {
+            return false;
+        }
+
+        const MH_STATUS rc = active
+            ? MH_EnableHook(reinterpret_cast<void*>(target))
+            : MH_DisableHook(reinterpret_cast<void*>(target));
+        if (rc == MH_OK
+            || (active && rc == MH_ERROR_ENABLED)
+            || (!active && rc == MH_ERROR_DISABLED)) {
+            return true;
+        }
+
+        std::ostringstream oss;
+        oss << "[PAUSE] Failed to " << (active ? "enable " : "disable ")
+            << label << " hook at 0x" << std::hex << target;
+        LogOut(oss.str(), true);
+        return false;
+    }
     
     bool IsEfzRevivalLoaded() {
         // For unsupported versions, treat as vanilla (return false)
@@ -202,11 +292,7 @@ namespace {
             return cached;
         }
 
-        if (allowCharacterSelect) {
-            return nullptr;
-        }
-
-        if (!IsMatchPhase()) {
+        if (!allowCharacterSelect && !IsMatchPhase()) {
             return nullptr;
         }
 
@@ -227,20 +313,24 @@ namespace {
             return oPracticeTick ? oPracticeTick(thisPtr) : 0;
         }
         PauseIntegration::NotePracticeControllerCandidate(thisPtr, "PracticeTick");
-        // Capture pre-step counter if menu visible (so we can neutralize any increment)
-        uint32_t before = 0; bool wantNeutralize = false;
-        if (s_menuVisible.load(std::memory_order_relaxed)) {
-            uintptr_t stepCounterOff = EFZ_Practice_StepCounterOffset();
-            SafeReadMemory(reinterpret_cast<uintptr_t>(thisPtr)+stepCounterOff, &before, sizeof(before));
-            wantNeutralize = true;
+        const auto stepCallback = s_stepAdvanceCallback.load(std::memory_order_relaxed);
+        const bool wantNeutralize = s_menuVisible.load(std::memory_order_relaxed);
+        const uintptr_t stepCounterOff = EFZ_Practice_StepCounterOffset();
+        uint32_t before = 0;
+        bool haveBefore = false;
+        if (stepCallback || wantNeutralize) {
+            haveBefore = SafeReadMemory(reinterpret_cast<uintptr_t>(thisPtr) + stepCounterOff, &before, sizeof(before));
         }
         int ret = oPracticeTick ? oPracticeTick(thisPtr) : 0;
-        if (wantNeutralize) {
+        if (haveBefore) {
             uint32_t after = before;
-            uintptr_t stepCounterOff = EFZ_Practice_StepCounterOffset();
-            if (SafeReadMemory(reinterpret_cast<uintptr_t>(thisPtr)+stepCounterOff, &after, sizeof(after))) {
-                if (after == before + 1) {
-                    SafeWriteMemory(reinterpret_cast<uintptr_t>(thisPtr)+stepCounterOff, &before, sizeof(before));
+            if (SafeReadMemory(reinterpret_cast<uintptr_t>(thisPtr) + stepCounterOff, &after, sizeof(after))) {
+                if (wantNeutralize && after == before + 1) {
+                    SafeWriteMemory(reinterpret_cast<uintptr_t>(thisPtr) + stepCounterOff, &before, sizeof(before));
+                    after = before;
+                }
+                if (stepCallback && after != before) {
+                    stepCallback(before, after);
                 }
             }
         }
@@ -290,13 +380,30 @@ namespace {
         
         // Maintain CS cycle bookkeeping to bound scan/log spam to once per CS
         UpdateCsCycleState();
-        if (s_practiceHooksInstalled.load()) return;
         HMODULE hRev = GetModuleHandleA("EfzRevival.dll");
         if (!hRev) return; // wait for injection
         uintptr_t rvaTick = EFZ_RVA_PracticeTick();
         uintptr_t rvaPause = EFZ_RVA_TogglePause();
         void* tickTarget  = rvaTick ? EFZ_RVA_TO_VA(hRev, rvaTick) : nullptr;
         void* pauseTarget = rvaPause ? EFZ_RVA_TO_VA(hRev, rvaPause) : nullptr;
+        s_practiceTickTarget = reinterpret_cast<uintptr_t>(tickTarget);
+        s_togglePauseTarget = reinterpret_cast<uintptr_t>(pauseTarget);
+        if (s_practiceHooksInstalled.load()) {
+            if (!s_practiceHooksEnabled.load(std::memory_order_relaxed)) {
+                bool anyEnabled = false;
+                if (s_practiceTickHookCreated.load(std::memory_order_relaxed) && s_practiceTickTarget) {
+                    anyEnabled |= SetCapturedHookEnabled(s_practiceTickTarget, true, "PracticeTick");
+                }
+                if (s_togglePauseHookCreated.load(std::memory_order_relaxed) && s_togglePauseTarget) {
+                    anyEnabled |= SetCapturedHookEnabled(s_togglePauseTarget, true, "TogglePause");
+                }
+                if (anyEnabled) {
+                    s_practiceHooksEnabled.store(true, std::memory_order_relaxed);
+                    LogOut("[PAUSE] Practice capture hooks re-enabled", detailedLogging.load());
+                }
+            }
+            return;
+        }
         {
             std::ostringstream oss; oss << "[PAUSE] Installing hooks: PracticeTick=0x" << std::hex << (uintptr_t)tickTarget
                 << " TogglePause=0x" << (uintptr_t)pauseTarget;
@@ -304,16 +411,29 @@ namespace {
         }
         bool anyHook = false;
         if (tickTarget) {
-            if (MH_CreateHook(tickTarget, &HookedPracticeTick, reinterpret_cast<void**>(&oPracticeTick)) == MH_OK
-                && MH_EnableHook(tickTarget) == MH_OK) {
+            if (MinHookUtils::CreateAndEnableHook(tickTarget,
+                                                  reinterpret_cast<void*>(&HookedPracticeTick),
+                                                  reinterpret_cast<void**>(&oPracticeTick),
+                                                  "[PAUSE]",
+                                                  "PracticeTick")) {
+                s_practiceTickHookCreated.store(true, std::memory_order_relaxed);
                 anyHook = true;
                 LogOut("[PAUSE] PracticeTick hook active", detailedLogging.load());
             }
         }
-        if (pauseTarget && MH_CreateHook(pauseTarget, &HookedTogglePause, reinterpret_cast<void**>(&oTogglePause)) == MH_OK && MH_EnableHook(pauseTarget) == MH_OK) {
+        if (pauseTarget
+            && MinHookUtils::CreateAndEnableHook(pauseTarget,
+                                                 reinterpret_cast<void*>(&HookedTogglePause),
+                                                 reinterpret_cast<void**>(&oTogglePause),
+                                                 "[PAUSE]",
+                                                 "TogglePause")) {
+            s_togglePauseHookCreated.store(true, std::memory_order_relaxed);
             anyHook = true; LogOut("[PAUSE] TogglePause hook active", detailedLogging.load());
         }
-        if (anyHook) s_practiceHooksInstalled.store(true);
+        if (anyHook) {
+            s_practiceHooksInstalled.store(true);
+            s_practiceHooksEnabled.store(true);
+        }
     }
 
     // Practice pause flag helpers (flag semantics: 1 = paused, 0 = running)
@@ -327,6 +447,12 @@ namespace {
         void* p = s_practicePtr.load(); if (!p) return false;
         uintptr_t pauseOff = EFZ_Practice_PauseFlagOffset();
         uint8_t v = paused ? 1u : 0u; return SafeWriteMemory(reinterpret_cast<uintptr_t>(p) + pauseOff, &v, sizeof(v));
+    }
+    bool WritePracticeStepFlag(bool stepRequested) {
+        void* p = s_practicePtr.load(); if (!p) return false;
+        uintptr_t stepOff = EFZ_Practice_StepFlagOffset();
+        uint8_t v = stepRequested ? 1u : 0u;
+        return SafeWriteMemory(reinterpret_cast<uintptr_t>(p) + stepOff, &v, sizeof(v));
     }
 
     // Reset the Practice step counter to 0, mirroring the official toggle behavior.
@@ -345,6 +471,19 @@ namespace {
         return ok;
     }
 
+    bool ResolvePracticeForFramestep(const char* reason) {
+        EnsurePracticePtrHookInstalled();
+        if (s_practicePtr.load(std::memory_order_relaxed)) {
+            return true;
+        }
+        void* resolved = ResolvePracticeControllerPtrInternal(false, true, reason);
+        if (resolved) {
+            s_practicePtr.store(resolved, std::memory_order_relaxed);
+            return true;
+        }
+        return false;
+    }
+
     // Hook battle screen render to capture battleContext pointer (legacy path).
     typedef BOOL (__thiscall *tRenderBattleScreen)(void* battleContext);
     static tRenderBattleScreen oRenderBattleScreen = nullptr;
@@ -352,10 +491,20 @@ namespace {
         if (g_onlineModeActive.load(std::memory_order_relaxed)) {
             return oRenderBattleScreen ? oRenderBattleScreen(battleContext) : FALSE;
         }
-        if (battleContext) s_battleContext.store(battleContext, std::memory_order_relaxed);
-        {
-            std::ostringstream oss; oss << "[PAUSE] RenderBattleScreen bc=0x" << std::hex << (uintptr_t)battleContext;
-            LogOut(oss.str(), false);
+        if (battleContext) {
+            s_battleContext.store(battleContext, std::memory_order_relaxed);
+
+            // This hook runs once per rendered battle frame. Keep the capture,
+            // but only log meaningful pointer transitions; logging every call
+            // floods efz_training_debug.log even when nothing is wrong.
+            static uintptr_t s_lastLoggedBattleContext = 0;
+            const uintptr_t current = reinterpret_cast<uintptr_t>(battleContext);
+            if (current != s_lastLoggedBattleContext) {
+                s_lastLoggedBattleContext = current;
+                std::ostringstream oss;
+                oss << "[PAUSE] RenderBattleScreen captured battleContext=0x" << std::hex << current;
+                LogOut(oss.str(), detailedLogging.load());
+            }
         }
         return oRenderBattleScreen ? oRenderBattleScreen(battleContext) : FALSE;
     }
@@ -364,7 +513,10 @@ namespace {
     // to avoid fragile render hooks in vanilla.
     static bool RefreshBattleContextFromGameModeArray() {
         uintptr_t efzBase = GetEFZBase(); if (!efzBase) return false;
-        constexpr uintptr_t RVA_GameModeArray = 0x00790110; // game mode array base offset
+        // Base-relative offset of the VA-0x790110 game-mode array (load base
+        // 0x400000). The old 0x00790110 value here computed 0xB90110 and made
+        // this vanilla fallback always fail into the render hook.
+        constexpr uintptr_t RVA_GameModeArray = 0x00390110;
         void* bc = nullptr;
         uintptr_t slot3 = efzBase + RVA_GameModeArray + 4 * 3; // index 3 = battle context
         if (!SafeReadMemory(slot3, &bc, sizeof(bc)) || !bc) return false;
@@ -376,7 +528,10 @@ namespace {
     static bool ResolveGamespeedAddr() {
         if (s_gamespeedAddr.load()) return true;
         uintptr_t efzBase = GetEFZBase(); if (!efzBase) return false;
-        constexpr uintptr_t RVA_GameModeArray = 0x00390110; // game mode array base offset
+        // Offsets here are relative to the load base 0x400000, so this is
+        // VA 0x790110 - the same game-mode array GAME_STATE_DBG walks via
+        // [efz.exe+0x39010C].
+        constexpr uintptr_t RVA_GameModeArray = 0x00390110;
         struct Path { int idx; uintptr_t off; } paths[] = {
             { 1, 0x0F20 },
             { 2, 0x09B8 },
@@ -389,8 +544,12 @@ namespace {
             uintptr_t cand = basePtr + p.off;
             uint8_t probe = 0xFF;
             if (SafeReadMemory(cand, &probe, sizeof(probe))) {
-                // Valid speeds observed in engine: 0 (frozen), 3 (normal)
-                if (probe <= 3) {
+                // Valid speeds observed in engine: 0 (frozen), 3 (normal).
+                // Never LATCH on a 0 probe: a wrong address full of zeroes is
+                // indistinguishable from "frozen" and would stick forever.
+                // Resolution is retried on the next read, when the game is
+                // running and the true byte is nonzero.
+                if (probe >= 1 && probe <= 3) {
                     s_gamespeedAddr.store(cand, std::memory_order_relaxed);
                     std::ostringstream oss; oss << "[PAUSE][ADDR] Gamespeed addr=0x" << std::hex << cand
                         << " via slot=" << std::dec << p.idx << " off=0x" << std::hex << p.off
@@ -400,39 +559,74 @@ namespace {
                 }
             }
         }
-        LogOut("[PAUSE][ADDR] Failed to resolve gamespeed address from GameMode array", true);
+        // Unresolved resolution retries on every read; keep the failure line
+        // from flooding the log at monitor cadence.
+        static DWORD s_lastResolveFailLog = 0;
+        const DWORD now = GetTickCount();
+        if (now - s_lastResolveFailLog > 5000) {
+            s_lastResolveFailLog = now;
+            LogOut("[PAUSE][ADDR] Failed to resolve gamespeed address from GameMode array",
+                   detailedLogging.load());
+        }
         return false;
     }
 
     void EnsureBattleContextHook() {
-        static std::atomic<bool> installed{false};
-        static std::atomic<bool> loggedFail{false};
-        if (installed.load()) return;
+        if (s_battleContextHookUnavailable.load(std::memory_order_relaxed)) {
+            return;
+        }
+        if (s_battleContextHookInstalled.load()) {
+            if (!s_battleContextHookEnabled.load(std::memory_order_relaxed) && s_battleContextHookTarget) {
+                if (SetCapturedHookEnabled(s_battleContextHookTarget, true, "RenderBattleScreen")) {
+                    s_battleContextHookEnabled.store(true, std::memory_order_relaxed);
+                    LogOut("[PAUSE] RenderBattleScreen hook re-enabled", detailedLogging.load());
+                }
+            }
+            return;
+        }
         // RenderBattleScreen lives in efz.exe, not EfzRevival.dll
         uintptr_t efzBase = GetEFZBase();
         if (!efzBase) return;
         uintptr_t rva = EFZ_RVA_RenderBattleScreen();
         void* target = rva ? reinterpret_cast<void*>(efzBase + rva) : nullptr;
         if (!target) return;
-        auto rcCreate = MH_CreateHook(target, &HookedRenderBattleScreen, reinterpret_cast<void**>(&oRenderBattleScreen));
+        s_battleContextHookTarget = reinterpret_cast<uintptr_t>(target);
+        if (!ValidateBattleContextHookTarget(s_battleContextHookTarget)) {
+            return;
+        }
+
+        const MH_STATUS rcCreate = MH_CreateHook(target,
+                                                 reinterpret_cast<void*>(&HookedRenderBattleScreen),
+                                                 reinterpret_cast<void**>(&oRenderBattleScreen));
         if (rcCreate != MH_OK && rcCreate != MH_ERROR_ALREADY_CREATED) {
-            if (!loggedFail.exchange(true)) {
-                std::ostringstream oss; oss << "[PAUSE] Failed to create RenderBattleScreen hook at VA=0x" << std::hex << (uintptr_t)target;
+            if (!s_battleContextHookLoggedFail.exchange(true)) {
+                std::ostringstream oss;
+                oss << "[PAUSE] Failed to create RenderBattleScreen at 0x" << std::hex << (uintptr_t)target
+                    << " status=" << (MH_StatusToString(rcCreate) ? MH_StatusToString(rcCreate) : "<unknown>");
                 LogOut(oss.str(), true);
             }
+            s_battleContextHookUnavailable.store(true, std::memory_order_relaxed);
             return;
         }
-        auto rcEnable = MH_EnableHook(target);
+
+        const MH_STATUS rcEnable = MH_EnableHook(target);
         if (rcEnable != MH_OK && rcEnable != MH_ERROR_ENABLED) {
-            if (!loggedFail.exchange(true)) {
-                std::ostringstream oss; oss << "[PAUSE] Failed to enable RenderBattleScreen hook at VA=0x" << std::hex << (uintptr_t)target;
+            if (!s_battleContextHookLoggedFail.exchange(true)) {
+                std::ostringstream oss;
+                oss << "[PAUSE] Failed to enable RenderBattleScreen at 0x" << std::hex << (uintptr_t)target
+                    << " status=" << (MH_StatusToString(rcEnable) ? MH_StatusToString(rcEnable) : "<unknown>");
                 LogOut(oss.str(), true);
             }
-            // Don't remove the hook if it was already created; just bail
+            if (rcCreate == MH_OK) {
+                MH_RemoveHook(target);
+            }
+            s_battleContextHookUnavailable.store(true, std::memory_order_relaxed);
             return;
         }
-    installed.store(true);
-    LogOut("[PAUSE] RenderBattleScreen hook installed (capturing battleContext)", detailedLogging.load());
+
+        s_battleContextHookInstalled.store(true);
+        s_battleContextHookEnabled.store(true);
+        LogOut("[PAUSE] RenderBattleScreen hook installed (capturing battleContext)", detailedLogging.load());
     }
 
     // Read/write engine pause flag from battleContext + 0x1416 (int, toggled by in-engine input)
@@ -486,8 +680,8 @@ namespace {
     }
 
     // === Patch toggler wrapper ===
-    // All supported versions (1.02e/h/i) use __thiscall: int func(void* this, char enable)
-    // Unfreeze parameter varies by version (1 for 1.02e, 3 for 1.02h/i). See EFZ_PatchToggleUnfreezeParam().
+    // Supported Revival patch togglers use __thiscall: int func(void* this, char enable).
+    // The normal-speed parameter varies by version; see EFZ_PatchToggleUnfreezeParam().
     typedef int (__thiscall *tPatchToggle)(void* patchCtx, char enable);
     // Official pause toggle (sub_10075720)
     typedef int (__thiscall *tOfficialToggle)(void* thisPtr);
@@ -648,13 +842,15 @@ namespace PauseIntegration {
         EnsurePracticePtrHookInstalled();
         void* resolved = ResolvePracticeControllerPtrInternal(allowCharacterSelect, allowLooseValidation, reason);
         if (resolved) {
-            std::ostringstream oss;
-            oss << "[PAUSE] ResolvePracticeControllerPtrNow"
-                << " reason=" << (reason ? reason : "unspecified")
-                << " allowCS=" << (allowCharacterSelect ? 1 : 0)
-                << " allowLoose=" << (allowLooseValidation ? 1 : 0)
-                << " practice=0x" << std::hex << reinterpret_cast<uintptr_t>(resolved);
-            LogOut(oss.str(), true);
+            if (detailedLogging.load()) {
+                std::ostringstream oss;
+                oss << "[PAUSE] ResolvePracticeControllerPtrNow"
+                    << " reason=" << (reason ? reason : "unspecified")
+                    << " allowCS=" << (allowCharacterSelect ? 1 : 0)
+                    << " allowLoose=" << (allowLooseValidation ? 1 : 0)
+                    << " practice=0x" << std::hex << reinterpret_cast<uintptr_t>(resolved);
+                LogOut(oss.str(), true);
+            }
         } else if (!allowCharacterSelect && IsMatchPhase() && (allowLooseValidation || detailedLogging.load())) {
             std::ostringstream oss;
             oss << "[PAUSE] ResolvePracticeControllerPtrNow failed"
@@ -667,13 +863,69 @@ namespace PauseIntegration {
     }
 
     bool IsPracticePaused() { bool p=false; if (ReadPracticePauseFlag(p)) return p; return false; }
-    bool __cdecl IsGameSpeedFrozen() { uint8_t v=3; if (ReadGamespeed(v)) return v==0; return false; }
+    // Only a positively identified gamespeed byte may declare a freeze. The
+    // heuristic candidates and the legacy battleContext+0x1400 guess read 0 on
+    // Revival while the game is visibly running; treating those as "frozen"
+    // held the mission recorder count-in forever (2026-07-11). Unresolved
+    // means "not frozen" - Revival pauses are still caught by the practice
+    // pause flag above.
+    bool __cdecl IsGameSpeedFrozen() {
+        uintptr_t addr = s_gamespeedAddr.load();
+        if (!addr) { ResolveGamespeedAddr(); addr = s_gamespeedAddr.load(); }
+        if (!addr) return false;
+        uint8_t v = 3;
+        if (!SafeReadMemory(addr, &v, sizeof(v))) return false;
+        return v == 0;
+    }
     bool IsPausedOrFrozen() { return IsPracticePaused() || IsGameSpeedFrozen(); }
+
+    bool SetPracticePausedForFramestep(bool paused) {
+        if (!ResolvePracticeForFramestep(paused ? "framestep pause" : "framestep unpause")) {
+            LogOut("[PAUSE][FRAMESTEP] Practice pointer unavailable", true);
+            return false;
+        }
+
+        bool ok = true;
+        ok = WritePracticeStepFlag(false) && ok;
+        ok = WritePracticePauseFlag(paused) && ok;
+        ok = ResetPracticeStepCounterToZero() && ok;
+        ok = ApplyPatchFreeze(paused) && ok;
+
+        std::ostringstream oss;
+        oss << "[PAUSE][FRAMESTEP] SetPracticePausedForFramestep(" << (paused ? 1 : 0)
+            << ") -> " << (ok ? "OK" : "FAIL");
+        LogOut(oss.str(), true);
+        return ok;
+    }
+
+    bool RequestPracticeSubframeStep() {
+        if (!ResolvePracticeForFramestep("framestep step")) {
+            LogOut("[PAUSE][FRAMESTEP] Cannot request native step: Practice pointer unavailable", true);
+            return false;
+        }
+
+        bool paused = false;
+        if (!ReadPracticePauseFlag(paused) || !paused) {
+            if (!SetPracticePausedForFramestep(true)) {
+                return false;
+            }
+        }
+
+        bool ok = true;
+        ok = WritePracticePauseFlag(true) && ok;
+        ok = WritePracticeStepFlag(true) && ok;
+        LogOut(std::string("[PAUSE][FRAMESTEP] RequestPracticeNativeStep -> ") + (ok ? "OK" : "FAIL"), true);
+        return ok;
+    }
 
     // Persistent pause enforcement: keep game frozen regardless of external unpause attempts
     // ONLY for unsupported Revival versions - vanilla and supported versions handle pause correctly
     void MaintainFreezeWhileMenuVisible() {
         if (!s_menuVisible.load()) return;
+        // A refresh lease deliberately keeps the menu logically visible while
+        // its owner advances a bounded number of real battle updates. Do not
+        // let the persistent fallback path immediately undo that physical thaw.
+        if (s_menuSurfaceRefreshActive.load(std::memory_order_acquire)) return;
         
         // Check if we're dealing with an unsupported Revival version
         HMODULE hRev = GetModuleHandleA("EfzRevival.dll");
@@ -704,8 +956,11 @@ namespace PauseIntegration {
         }
     }
 
-    void OnMenuVisibilityChanged(bool visible) {
-        s_menuVisible.store(visible);
+    void ApplyAggregateMenuVisibility(bool visible,
+                                      bool publishLogicalVisibility = true) {
+        if (publishLogicalVisibility) {
+            s_menuVisible.store(visible, std::memory_order_release);
+        }
         EnsurePracticePtrHookInstalled();
         GameMode mode = GetCurrentGameMode();
         const bool inPractice = (mode == GameMode::Practice);
@@ -836,6 +1091,132 @@ namespace PauseIntegration {
         }
     }
 
+    void FinishMenuSurfaceRefreshLocked(bool reacquire,
+                                        const char* reason) {
+        if (!s_menuSurfaceRefresh.active) return;
+        const uint64_t token = s_menuSurfaceRefresh.token;
+        if (reacquire && s_menuSurfaceMask != 0) {
+            // Keep s_menuVisible asserted: input/hotkey routing must continue
+            // to treat the teaching surface as open throughout the refresh.
+            ApplyAggregateMenuVisibility(true, false);
+        }
+        s_menuSurfaceRefresh = MenuSurfaceRefreshState{};
+        s_menuSurfaceRefreshActive.store(false, std::memory_order_release);
+        std::ostringstream oss;
+        oss << "[PAUSE][SURFACE_REFRESH] end token=" << token
+            << " reacquire=" << (reacquire ? 1 : 0)
+            << " reason=" << (reason ? reason : "unspecified");
+        LogOut(oss.str(), true);
+    }
+
+    void OnMenuSurfaceVisibilityChanged(MenuSurface surface, bool visible) {
+        std::lock_guard<std::mutex> lock(s_menuSurfaceMutex);
+        const uint8_t previous = s_menuSurfaceMask;
+        const uint8_t next = UpdatedMenuSurfaceMask(previous, surface, visible);
+        if (previous == next) {
+            return;
+        }
+
+        // A nested/closing surface transition invalidates the exclusive thaw.
+        // Reacquire first so the ordinary aggregate transition starts from a
+        // coherent physical ownership state.
+        FinishMenuSurfaceRefreshLocked(true, "surface ownership changed");
+
+        s_menuSurfaceMask = next;
+        const bool wasVisible = previous != 0;
+        const bool isVisible = next != 0;
+        if (wasVisible == isVisible) {
+            // A nested surface appeared or disappeared while another owner
+            // retained the physical pause. Do not clear/re-detect ownership.
+            s_menuVisible.store(isVisible, std::memory_order_release);
+            std::ostringstream nested;
+            nested << "[PAUSE] Surface mask 0x" << std::hex
+                   << static_cast<int>(previous) << "->0x"
+                   << static_cast<int>(next) << " (pause retained)";
+            LogOut(nested.str(), detailedLogging.load(std::memory_order_relaxed));
+            return;
+        }
+
+        ApplyAggregateMenuVisibility(isVisible);
+    }
+
+    bool BeginMenuSurfaceRefresh(MenuSurface surface, uint64_t& tokenOut) {
+        tokenOut = 0;
+        std::lock_guard<std::mutex> lock(s_menuSurfaceMutex);
+        const uint8_t bit = MenuSurfaceBit(surface);
+        if (s_menuSurfaceRefresh.active || s_menuSurfaceMask != bit ||
+            !s_menuVisible.load(std::memory_order_acquire) ||
+            !IsPausedOrFrozen()) {
+            return false;
+        }
+
+        uint64_t token = s_nextMenuSurfaceRefreshToken++;
+        if (token == 0) token = s_nextMenuSurfaceRefreshToken++;
+        s_menuSurfaceRefresh.active = true;
+        s_menuSurfaceRefresh.surface = surface;
+        s_menuSurfaceRefresh.token = token;
+        s_menuSurfaceRefreshActive.store(true, std::memory_order_release);
+
+        // Unwind exactly the physical ownership acquired for the aggregate
+        // menu, while leaving the logical surface mask/visibility untouched.
+        ApplyAggregateMenuVisibility(false, false);
+        if (IsPausedOrFrozen()) {
+            // An external pause owner (or a failed physical unpause) means no
+            // real refresh can occur. Restore our coherent pause state now.
+            FinishMenuSurfaceRefreshLocked(true,
+                                           "physical thaw unavailable");
+            return false;
+        }
+
+        tokenOut = token;
+        std::ostringstream oss;
+        oss << "[PAUSE][SURFACE_REFRESH] begin token=" << token
+            << " surface=0x" << std::hex << static_cast<int>(bit);
+        LogOut(oss.str(), true);
+        return true;
+    }
+
+    bool EndMenuSurfaceRefresh(MenuSurface surface, uint64_t token) {
+        std::lock_guard<std::mutex> lock(s_menuSurfaceMutex);
+        if (!token || !s_menuSurfaceRefresh.active ||
+            s_menuSurfaceRefresh.surface != surface ||
+            s_menuSurfaceRefresh.token != token) {
+            return false;
+        }
+        FinishMenuSurfaceRefreshLocked(true, "owner completed");
+        return IsPausedOrFrozen();
+    }
+
+    void ForceCloseAllMenuSurfaces() {
+        std::lock_guard<std::mutex> lock(s_menuSurfaceMutex);
+        if (s_menuSurfaceMask == 0) {
+            s_menuVisible.store(false, std::memory_order_release);
+            return;
+        }
+        FinishMenuSurfaceRefreshLocked(true, "force close");
+        s_menuSurfaceMask = 0;
+        ApplyAggregateMenuVisibility(false);
+    }
+
+    void ReassertMenuSurfacePause(MenuSurface surface) {
+        std::lock_guard<std::mutex> lock(s_menuSurfaceMutex);
+        if ((s_menuSurfaceMask & MenuSurfaceBit(surface)) == 0 ||
+            s_menuSurfaceMask == 0) {
+            return;
+        }
+        if (s_menuSurfaceRefresh.active) {
+            FinishMenuSurfaceRefreshLocked(true, "pause reasserted");
+            return;
+        }
+        LogOut("[PAUSE] Visible surface lost physical pause; reasserting aggregate owner",
+               true);
+        ApplyAggregateMenuVisibility(true);
+    }
+
+    void OnMenuVisibilityChanged(bool visible) {
+        OnMenuSurfaceVisibilityChanged(MenuSurface::ImGui, visible);
+    }
+
     bool ReadStepCounter(uint32_t &outCounter) {
         void* p = s_practicePtr.load(); if (!p) return false;
         uintptr_t stepCounterOff = EFZ_Practice_StepCounterOffset();
@@ -852,6 +1233,10 @@ namespace PauseIntegration {
             return true;
         }
         return false;
+    }
+
+    void SetPracticeStepAdvanceCallback(StepAdvanceCallback callback) {
+        s_stepAdvanceCallback.store(callback, std::memory_order_relaxed);
     }
 
     void ResetCachedPointers(const char* reason) {
@@ -874,6 +1259,41 @@ namespace PauseIntegration {
                 << " battle=0x" << reinterpret_cast<uintptr_t>(battle)
                 << " gamespeed=0x" << gamespeed;
             LogOut(oss.str(), true);
+        }
+    }
+
+    void SetRuntimeHooksActive(bool active) {
+        if (!active) {
+            bool changed = false;
+            if (s_practiceHooksInstalled.load(std::memory_order_relaxed)) {
+                if (s_practiceTickHookCreated.load(std::memory_order_relaxed) && s_practiceTickTarget) {
+                    changed |= SetCapturedHookEnabled(s_practiceTickTarget, false, "PracticeTick");
+                }
+                if (s_togglePauseHookCreated.load(std::memory_order_relaxed) && s_togglePauseTarget) {
+                    changed |= SetCapturedHookEnabled(s_togglePauseTarget, false, "TogglePause");
+                }
+                s_practiceHooksEnabled.store(false, std::memory_order_relaxed);
+            }
+            if (s_battleContextHookInstalled.load(std::memory_order_relaxed) && s_battleContextHookTarget) {
+                changed |= SetCapturedHookEnabled(s_battleContextHookTarget, false, "RenderBattleScreen");
+                s_battleContextHookEnabled.store(false, std::memory_order_relaxed);
+            }
+            if (changed || detailedLogging.load()) {
+                LogOut("[PAUSE] Runtime capture hooks suspended", true);
+            }
+            return;
+        }
+
+        if (g_onlineModeActive.load(std::memory_order_relaxed)) {
+            return;
+        }
+        if (GetCurrentGameMode() != GameMode::Practice) {
+            return;
+        }
+
+        EnsurePracticePtrHookInstalled();
+        if (!RefreshBattleContextFromGameModeArray()) {
+            EnsureBattleContextHook();
         }
     }
 }

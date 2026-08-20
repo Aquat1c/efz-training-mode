@@ -9,16 +9,50 @@ This project is a DLL mod that loads via EFZ Mod Manager. It adds a configurable
 
 
 **Installation**
-- Build the DLL from source (see Building) or download a release.
-- Place `efz_training_mode.dll` in your EFZ mods folder (where you put other EFZ Mod Manager DLLs).
-- Edit `EfzModManager.ini` and append:
-  - `efz_training_mode=1`
-  - EFZ Mod Manager download: https://docs.google.com/spreadsheets/d/1r0nBAaQczj9K4RG5zAVV4uXperDeoSnXaqQBal2-8Us/edit?usp=sharing
+
+1. **Get the mod DLL**
+   - Build from source (see **Building from Source** below), or download a release from [GitHub Releases](https://github.com/Aquat1c/efz-training-mode/releases).
+
+2. **Install EFZ Mod Manager** (if you don't have it already)
+   - Download: [EFZ Mod Manager spreadsheet](https://docs.google.com/spreadsheets/d/1r0nBAaQczj9K4RG5zAVV4uXperDeoSnXaqQBal2-8Us/edit?usp=sharing)
+
+3. **Place the DLL in your mods folder**
+
+   The mod expects this layout inside your game directory:
+
+   ```
+   EFZ/                          ← your game folder (where efz.exe lives)
+   ├── efz.exe
+   ├── EfzRevival.dll               
+   ├── EfzRevival.exe                
+   ├── EfzModManager.ini         ← mod enable list (edit this)
+   └── mods/
+       └── efz_training_mode/    ← mod folder (name matches the DLL)
+           └── efz_training_mode.dll
+   ```
+
+   Example full path: `EFZ\mods\efz_training_mode\efz_training_mode.dll`
+
+4. **Enable the mod in `EfzModManager.ini`**
+
+   Open `EfzModManager.ini` in your **game folder** (next to `efz.exe`, not inside `mods/`) and add:
+
+   ```ini
+   efz_training_mode=1
+   ```
+
+   If other mods are already listed, add this line alongside them.
+
+5. **Launch the game**
+
+   Launch the game wit Revival for full functionality (Practice mode, snapshots, and other Revival features). With the mod enabled in `EfzModManager.ini`, EFZ Mod Manager loads it automatically on startup.
+
+   > **Note:** If you also use **InGameNetplay**, that mod has its own launch requirement - launch through **`efz.exe`** when it is enabled. See the InGameNetplay README for details. That rule does not apply to EFZ Training Mode on its own.
 
 **First Run**
-- The overlay loads in-game; open the menu via the hotkey (default: `3`).
-- A config file `efz_training_config.ini` appears next to the DLL.
-- The console is OFF by default. Enable it in Settings → General. All logs since startup are buffered and will appear when you enable it.
+- The mod loads in-game. Open the training menu with `Esc`.
+- A config file `efz_training_config.ini` is created next to the DLL (`mods\efz_training_mode\`).
+- The debug console is **off** by default. Enable it in Settings → General. Logs since startup are buffered and appear when you turn it on.
 
 ---
 
@@ -97,16 +131,14 @@ This project is a DLL mod that loads via EFZ Mod Manager. It adds a configurable
   - With Up: swap P1 and P2
   - With Down: place at center; with Down+Z: round-start positions
 - `2`: Record current player positions
-- `3`: Open config menu (ImGui overlay)
-- `4`: Toggle stats
-- `7`: Toggle overlay visibility
+- `Esc`: Open or close the training menu
 
 Macros (configurable):
 - `I`: Record
 - `O`: Play
 - `K`: Next Slot
 
-All hotkeys are configurable in Settings → Hotkeys or in `efz_training_config.ini`.
+Most hotkeys are configurable in Settings → Hotkeys or in `efz_training_config.ini`; the menu key is fixed to `Esc`.
 
 ---
 
@@ -126,8 +158,8 @@ All hotkeys are configurable in Settings → Hotkeys or in `efz_training_config.
 - Hotkeys don’t respond
   - Verify online mode isn’t active (features are disabled during online play)
   - Rebind hotkeys in Settings → Hotkeys and try again
-- Overlay not visible
-  - Press the Toggle Overlay hotkey (default `7`) or ensure ImGui UI is enabled in Settings → General
+- Menu not visible
+  - Press `Esc` or ensure ImGui UI is enabled in Settings → General
 - Revival side switch does nothing
   - Side switching in Revival is now intentionally blocked until the mod has confirmed the live Practice controller pointer during an active Practice match
   - If it stays blocked, check the startup/match logs for `[PAUSE] Match-entry confirmed Practice controller=0x...` or `[SWITCH] Revival swap blocked: Practice controller not yet confirmed`
@@ -168,7 +200,7 @@ External libraries:
 **Compatibility**
 - The mod fully tested on:
   - Vanilla EFZ (no Revival, launched via efz.exe)
-  - Eternal Fighter Zero -Revival- 1.02e/1.02g/1.02f/1.02h!!!/1.02i!!!
+  - Eternal Fighter Zero -Revival- 1.02e/1.02g/1.02f/1.02h!!!/1.02i!!!/1.02j
 - On other versions, the mod should work fine as well but some features might not work properly.
 
 ---

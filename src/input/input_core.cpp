@@ -269,16 +269,18 @@ bool ClearPlayerCommandFlags(int playerNum) {
     return ok1 && ok2;
 }
 
-// Write 99 to the motion token slot to neutralize any in-flight recognizer state
+// Write the complete 16-bit sentinel used by EFZ's command consumers.  A
+// one-byte write leaves the old high byte behind and can turn a neutralized
+// command into a different, still-live token.
 bool NeutralizeMotionToken(int playerNum) {
     uintptr_t playerPtr = GetPlayerPointer(playerNum);
     if (!playerPtr) return false;
-    // Write one byte 0x63 (hex) which equals decimal 99
-    uint8_t token = 0x63;
-    bool ok = SafeWriteMemory(playerPtr + MOTION_TOKEN_OFFSET, &token, sizeof(uint8_t));
+    const uint16_t token = 99;
+    bool ok = SafeWriteMemory(playerPtr + MOTION_TOKEN_OFFSET,
+                              &token, sizeof(token));
     if (detailedLogging.load()) {
         LogOut(std::string("[INPUT] Neutralized motion token for P") + std::to_string(playerNum) +
-               std::string(" -> 0x63"), true);
+               std::string(" -> 99 (word)"), true);
     }
     return ok;
 }
@@ -303,6 +305,20 @@ bool FullCleanupAfterToggle(int playerNum) {
 
     // 4) Clear immediate registers to neutral
     okAll = WritePlayerInputImmediate(playerNum, GAME_INPUT_NEUTRAL) && okAll;
+
+    // 5) Clear EFZ's native held-button and human-direction bookkeeping. These
+    // are populated by processCharacterInput independently of +392..397; if
+    // they survive a macro/controller hand-off, the next identical button may
+    // not produce a rising edge and Practice can retain a stale block direction.
+    const uint32_t zero32 = 0;
+    const uint16_t zero16 = 0;
+    constexpr uintptr_t heldOffsets[] = {400, 404, 408, 412};
+    for (uintptr_t offset : heldOffsets) {
+        okAll = SafeWriteMemory(playerPtr + offset, &zero32, sizeof(zero32)) &&
+                okAll;
+    }
+    okAll = SafeWriteMemory(playerPtr + 334, &zero16, sizeof(zero16)) && okAll;
+    okAll = SafeWriteMemory(playerPtr + 336, &zero32, sizeof(zero32)) && okAll;
 
     LogOut(std::string("[INPUT] Full cleanup after toggle for P") + std::to_string(playerNum), true);
     return okAll;

@@ -6,10 +6,21 @@
 #include "../include/core/constants.h"
 #include "../include/game/auto_action_helpers.h"
 #include "../include/game/per_frame_sample.h" // unified per-frame sample accessor
+#include "../include/game/auto_action.h"
+#include "../include/game/macro_controller.h"
+#include "../include/input/auto_action_motion_transaction.h"
+#include "../include/input/immediate_input.h"
+#include "../include/input/injection_control.h"
+#include "../include/input/input_buffer.h"
+#include "../include/input/input_freeze.h"
+#include "../include/input/input_hook.h"
+#include "../include/input/scoped_input_reservation.h"
 #include "../include/input/motion_constants.h"  
 #include <vector>
 #include <sstream>
 #include <algorithm>
+#include <atomic>
+#include <mutex>
 
 // Global variables for motion input system
 std::vector<InputFrame> p1InputQueue;
@@ -25,38 +36,71 @@ bool p2QueueActive = false;
 int p1CurrentMotionType = MOTION_NONE;
 int p2CurrentMotionType = MOTION_NONE;
 
+namespace {
+std::atomic<uint64_t> g_tutorialQueueToken[3]{};
+std::atomic<uint64_t> g_nextTutorialQueueToken{1};
+std::recursive_mutex g_motionQueueMutex;
+
+// Called only while controller -> queue locks are held.  A queued legacy
+// motion is delayed input, so admission must fail instead of caching it behind
+// another producer and releasing it in a later, unrelated gameplay state.
+bool MotionQueueInputLaneBusy(int playerNum) {
+    if (playerNum < 1 || playerNum > 2) return true;
+    const bool queueActive = playerNum == 1 ? p1QueueActive : p2QueueActive;
+    return queueActive ||
+           IsScopedInputReserved(playerNum) ||
+           IsAutoActionMotionTransactionActive(playerNum) ||
+           IsAutoActionNormalPulseActive(playerNum) ||
+           ImmediateInput::TutorialLeaseActive(playerNum) ||
+           TutorialBufferFreezeLeaseActive() ||
+           g_manualInputOverride[playerNum].load(std::memory_order_acquire) ||
+           g_pollOverrideActive[playerNum].load(std::memory_order_acquire) ||
+           ImmediateInput::GetCurrentDesired(playerNum) != 0 ||
+           ImmediateInput::GetRemainingTicks(playerNum) != 0 ||
+           (g_bufferFreezingActive.load(std::memory_order_acquire) &&
+            (g_activeFreezePlayer.load(std::memory_order_acquire) == 0 ||
+             g_activeFreezePlayer.load(std::memory_order_acquire) == playerNum)) ||
+           (MacroController::IsExclusivePlayback() &&
+            MacroController::GetPlaybackPlayer() == playerNum);
+}
+}
+
 // Returns the button mask for a given motion type (used for input queueing)
 uint8_t DetermineButtonFromMotionType(int motionType) {
     switch (motionType) {
     case MOTION_5A: case MOTION_2A: case MOTION_JA: case MOTION_6A: case MOTION_4A:
+    case MOTION_1A: case MOTION_3A: case MOTION_J2A: case MOTION_J6A:
         case MOTION_236A: case MOTION_623A: case MOTION_214A:
         case MOTION_421A: case MOTION_41236A:
     case MOTION_236236A: case MOTION_214214A: case MOTION_641236A:
-        case MOTION_412A: case MOTION_22A: case MOTION_214236A:
+        case MOTION_412A: case MOTION_22A: case MOTION_2141236A:
         case MOTION_463214A: case MOTION_4123641236A: case MOTION_6321463214A:
             return GAME_INPUT_A;
             
     case MOTION_5B: case MOTION_2B: case MOTION_JB: case MOTION_6B: case MOTION_4B:
+    case MOTION_1B: case MOTION_3B: case MOTION_J2B: case MOTION_J6B:
         case MOTION_236B: case MOTION_623B: case MOTION_214B:
         case MOTION_421B: case MOTION_41236B:
     case MOTION_236236B: case MOTION_214214B: case MOTION_641236B:
-        case MOTION_412B: case MOTION_22B: case MOTION_214236B:
+        case MOTION_412B: case MOTION_22B: case MOTION_2141236B:
         case MOTION_463214B: case MOTION_4123641236B: case MOTION_6321463214B:
             return GAME_INPUT_B;
             
     case MOTION_5C: case MOTION_2C: case MOTION_JC: case MOTION_6C: case MOTION_4C:
+    case MOTION_1C: case MOTION_3C: case MOTION_J2C: case MOTION_J6C:
         case MOTION_236C: case MOTION_623C: case MOTION_214C:
         case MOTION_421C: case MOTION_41236C:
     case MOTION_236236C: case MOTION_214214C: case MOTION_641236C:
-        case MOTION_412C: case MOTION_22C: case MOTION_214236C:
+        case MOTION_412C: case MOTION_22C: case MOTION_2141236C:
         case MOTION_463214C: case MOTION_4123641236C: case MOTION_6321463214C:
             return GAME_INPUT_C;
     
     case MOTION_5D: case MOTION_2D: case MOTION_JD: case MOTION_6D: case MOTION_4D:
+    case MOTION_1D: case MOTION_3D: case MOTION_J2D: case MOTION_J6D:
         case MOTION_236D: case MOTION_623D: case MOTION_214D:
         case MOTION_421D: case MOTION_41236D:
     case MOTION_236236D: case MOTION_214214D: case MOTION_641236D:
-        case MOTION_412D: case MOTION_22D: case MOTION_214236D:
+        case MOTION_412D: case MOTION_22D: case MOTION_2141236D:
         case MOTION_463214D: case MOTION_4123641236D: case MOTION_6321463214D:
             return GAME_INPUT_D;
             
@@ -81,6 +125,22 @@ std::string GetMotionTypeName(int motionType) {
     case MOTION_4A: return "4A";
     case MOTION_4B: return "4B";
     case MOTION_4C: return "4C";
+    case MOTION_1A: return "1A";
+    case MOTION_1B: return "1B";
+    case MOTION_1C: return "1C";
+    case MOTION_1D: return "1S";
+    case MOTION_3A: return "3A";
+    case MOTION_3B: return "3B";
+    case MOTION_3C: return "3C";
+    case MOTION_3D: return "3S";
+    case MOTION_J2A: return "j.2A";
+    case MOTION_J2B: return "j.2B";
+    case MOTION_J2C: return "j.2C";
+    case MOTION_J2D: return "j.2S";
+    case MOTION_J6A: return "j.6A";
+    case MOTION_J6B: return "j.6B";
+    case MOTION_J6C: return "j.6C";
+    case MOTION_J6D: return "j.6S";
     case MOTION_5D: return "5S";
     case MOTION_2D: return "2S";
     case MOTION_JD: return "j.S";
@@ -128,10 +188,10 @@ std::string GetMotionTypeName(int motionType) {
         case MOTION_22B: return "22B";
         case MOTION_22C: return "22C";
         case MOTION_22D: return "22S";
-        case MOTION_214236A: return "214236A";
-        case MOTION_214236B: return "214236B";
-        case MOTION_214236C: return "214236C";
-        case MOTION_214236D: return "214236S";
+        case MOTION_2141236A: return "2141236A";
+        case MOTION_2141236B: return "2141236B";
+        case MOTION_2141236C: return "2141236C";
+        case MOTION_2141236D: return "2141236S";
         case MOTION_463214A: return "463214A";
         case MOTION_463214B: return "463214B";
         case MOTION_463214C: return "463214C";
@@ -150,15 +210,15 @@ std::string GetMotionTypeName(int motionType) {
     }
 }
 
-// Helper function to explicitly cast integers to uint8_t to avoid narrowing conversion warnings
-inline uint8_t u8(int value) {
-    return static_cast<uint8_t>(value);
-}
-
 // Update ProcessInputQueues to only manage state, not write inputs.
 // Early-out using unified per-frame sample: if neither queue active, or both sides in bad states
 // (non-actionable and no active queue progress), skip work to reduce overhead.
 void ProcessInputQueues() {
+    // P2 scoped motions, tutorial queues, and this legacy queue all feed the
+    // same native producer.  Mutations use one order: controller -> queue.
+    std::lock_guard<std::recursive_mutex> p2ControlLock(g_p2ControlMutex);
+    std::lock_guard<std::recursive_mutex> queueLock(g_motionQueueMutex);
+    if (g_onlineModeActive.load(std::memory_order_acquire)) return;
     const PerFrameSample &sample = GetCurrentPerFrameSample();
     if (!p1QueueActive && !p2QueueActive) return; // nothing to do
     // If queue is active but player entered hitstun/frozen/throw etc, we still advance to allow natural completion.
@@ -211,7 +271,7 @@ void ProcessInputQueues() {
 }
 
 // Queues a motion input for the specified player
-bool QueueMotionInput(int playerNum, int motionType, int buttonMask) {
+static bool QueueMotionInputImpl(int playerNum, int motionType, int buttonMask) {
     if (playerNum < 1 || playerNum > 2) return false;
     
     // Get the player's facing direction
@@ -341,11 +401,12 @@ bool QueueMotionInput(int playerNum, int motionType, int buttonMask) {
             addInput(GAME_INPUT_DOWN, buttonMask, BTN_FRAMES);       // 2 + button
             break;
 
-        case MOTION_214236A: case MOTION_214236B: case MOTION_214236C:
-            // 214236: QCB then QCF (Down, Down-Back, Back, Down, Down-Forward, Forward + Button)
+        case MOTION_2141236A: case MOTION_2141236B: case MOTION_2141236C:
+            // 2141236: Down, Down-Back, Back, Down-Back, Down, Down-Forward, Forward + Button
             addInput(GAME_INPUT_DOWN, 0, DIR_FRAMES);                // 2
             addInput(GAME_INPUT_DOWN | GAME_INPUT_LEFT, 0, DIR_FRAMES); // 1
             addInput(GAME_INPUT_LEFT, 0, DIR_FRAMES);                // 4
+            addInput(GAME_INPUT_DOWN | GAME_INPUT_LEFT, 0, DIR_FRAMES); // 1
             addInput(GAME_INPUT_DOWN, 0, DIR_FRAMES);                // 2
             addInput(GAME_INPUT_DOWN | GAME_INPUT_RIGHT, 0, DIR_FRAMES); // 3
             addInput(GAME_INPUT_RIGHT, buttonMask, BTN_FRAMES);      // 6 + button
@@ -433,20 +494,16 @@ bool QueueMotionInput(int playerNum, int motionType, int buttonMask) {
             // Jumping normals: hold up + button
             addInput(GAME_INPUT_UP, buttonMask, BTN_FRAMES);
             break;
-        case MOTION_6A: case MOTION_6B: case MOTION_6C: {
-            // Forward normals (relative)
-            bool facingRight = GetPlayerFacingDirection(playerNum);
-            uint8_t forwardDir = facingRight ? GAME_INPUT_RIGHT : GAME_INPUT_LEFT;
-            addInput(forwardDir, buttonMask, BTN_FRAMES);
+        case MOTION_6A: case MOTION_6B: case MOTION_6C:
+            // Forward normals. Pass the CANONICAL forward (right); addInput() applies
+            // the facing flip. Pre-computing the facing here would double-flip it, so a
+            // left-facing 6B injected as back+B and came out as 5B.
+            addInput(GAME_INPUT_RIGHT, buttonMask, BTN_FRAMES);
             break;
-        }
-        case MOTION_4A: case MOTION_4B: case MOTION_4C: {
-            // Back normals (relative)
-            bool facingRight = GetPlayerFacingDirection(playerNum);
-            uint8_t backDir = facingRight ? GAME_INPUT_LEFT : GAME_INPUT_RIGHT;
-            addInput(backDir, buttonMask, BTN_FRAMES);
+        case MOTION_4A: case MOTION_4B: case MOTION_4C:
+            // Back normals. Canonical back (left); addInput() applies the facing flip.
+            addInput(GAME_INPUT_LEFT, buttonMask, BTN_FRAMES);
             break;
-        }
             
         default:
             LogOut("[INPUT_MOTION] WARNING: Unknown motion type " + std::to_string(motionType), true);
@@ -494,6 +551,123 @@ bool QueueMotionInput(int playerNum, int motionType, int buttonMask) {
         }
     }
     
+    return true;
+}
+
+bool QueueMotionInput(int playerNum, int motionType, int buttonMask) {
+    if (playerNum < 1 || playerNum > 2 ||
+        IsScopedInputReserved(playerNum)) return false;
+    std::lock_guard<std::recursive_mutex> p2ControlLock(g_p2ControlMutex);
+    std::lock_guard<std::recursive_mutex> queueLock(g_motionQueueMutex);
+    if (g_onlineModeActive.load(std::memory_order_acquire) ||
+        MotionQueueInputLaneBusy(playerNum)) {
+        return false;
+    }
+    if (g_tutorialQueueToken[playerNum].load(std::memory_order_acquire) != 0) {
+        LogOut("[INPUT_MOTION] Queue rejected: tutorial owns P" +
+               std::to_string(playerNum), true);
+        return false;
+    }
+    return QueueMotionInputImpl(playerNum, motionType, buttonMask);
+}
+
+bool AcquireTutorialMotionQueue(int playerNum, uint64_t& tokenOut) {
+    tokenOut = 0;
+    if (playerNum < 1 || playerNum > 2) return false;
+    std::lock_guard<std::recursive_mutex> p2ControlLock(g_p2ControlMutex);
+    std::lock_guard<std::recursive_mutex> queueLock(g_motionQueueMutex);
+    if (g_onlineModeActive.load(std::memory_order_acquire) ||
+        MotionQueueInputLaneBusy(playerNum)) {
+        return false;
+    }
+    const bool active = playerNum == 1 ? p1QueueActive : p2QueueActive;
+    if (active) return false;
+    uint64_t expected = 0;
+    uint64_t token = g_nextTutorialQueueToken.fetch_add(1, std::memory_order_relaxed);
+    if (token == 0) token = g_nextTutorialQueueToken.fetch_add(1, std::memory_order_relaxed);
+    if (!g_tutorialQueueToken[playerNum].compare_exchange_strong(
+            expected, token, std::memory_order_acq_rel)) return false;
+    tokenOut = token;
+    return true;
+}
+
+bool TutorialMotionQueueLeaseActive(int playerNum) {
+    return playerNum >= 1 && playerNum <= 2 &&
+        g_tutorialQueueToken[playerNum].load(std::memory_order_acquire) != 0;
+}
+
+bool QueueTutorialMotionInput(int playerNum, uint64_t token, int motionType,
+                              int buttonMask) {
+    if (playerNum < 1 || playerNum > 2 || token == 0) return false;
+    std::lock_guard<std::recursive_mutex> p2ControlLock(g_p2ControlMutex);
+    std::lock_guard<std::recursive_mutex> queueLock(g_motionQueueMutex);
+    if (g_onlineModeActive.load(std::memory_order_acquire) ||
+        MotionQueueInputLaneBusy(playerNum) ||
+        g_tutorialQueueToken[playerNum].load(std::memory_order_acquire) != token)
+        return false;
+    return QueueMotionInputImpl(playerNum, motionType, buttonMask);
+}
+
+void ReleaseTutorialMotionQueue(int playerNum, uint64_t token) {
+    if (playerNum < 1 || playerNum > 2 || token == 0) return;
+    std::lock_guard<std::recursive_mutex> p2ControlLock(g_p2ControlMutex);
+    std::lock_guard<std::recursive_mutex> queueLock(g_motionQueueMutex);
+    if (
+        g_tutorialQueueToken[playerNum].load(std::memory_order_acquire) != token)
+        return;
+    std::vector<InputFrame>& queue = playerNum == 1 ? p1InputQueue : p2InputQueue;
+    bool& active = playerNum == 1 ? p1QueueActive : p2QueueActive;
+    int& index = playerNum == 1 ? p1QueueIndex : p2QueueIndex;
+    int& counter = playerNum == 1 ? p1FrameCounter : p2FrameCounter;
+    int& motion = playerNum == 1 ? p1CurrentMotionType : p2CurrentMotionType;
+    active = false;
+    index = 0;
+    counter = 0;
+    motion = MOTION_NONE;
+    queue.clear();
+    uint64_t expected = token;
+    (void)g_tutorialQueueToken[playerNum].compare_exchange_strong(
+        expected, 0, std::memory_order_acq_rel);
+}
+
+MotionQueueSnapshot GetMotionQueueSnapshot(int playerNum) {
+    MotionQueueSnapshot snapshot;
+    if (playerNum < 1 || playerNum > 2) return snapshot;
+    std::lock_guard<std::recursive_mutex> p2ControlLock(g_p2ControlMutex);
+    std::lock_guard<std::recursive_mutex> queueLock(g_motionQueueMutex);
+    const auto& queue = playerNum == 1 ? p1InputQueue : p2InputQueue;
+    snapshot.active = playerNum == 1 ? p1QueueActive : p2QueueActive;
+    snapshot.index = playerNum == 1 ? p1QueueIndex : p2QueueIndex;
+    snapshot.frameCounter = playerNum == 1 ? p1FrameCounter : p2FrameCounter;
+    snapshot.motionType = playerNum == 1 ? p1CurrentMotionType : p2CurrentMotionType;
+    snapshot.size = queue.size();
+    if (snapshot.active && snapshot.index >= 0 &&
+        static_cast<std::size_t>(snapshot.index) < queue.size()) {
+        snapshot.hasCurrentMask = true;
+        snapshot.currentMask = queue[static_cast<std::size_t>(snapshot.index)].inputMask;
+    }
+    return snapshot;
+}
+
+bool ClearMotionInputQueue(int playerNum, bool includeTutorialOwned) {
+    if (playerNum < 1 || playerNum > 2) return false;
+    std::lock_guard<std::recursive_mutex> p2ControlLock(g_p2ControlMutex);
+    std::lock_guard<std::recursive_mutex> queueLock(g_motionQueueMutex);
+    if (!includeTutorialOwned &&
+        g_tutorialQueueToken[playerNum].load(std::memory_order_acquire) != 0) {
+        return false;
+    }
+    std::vector<InputFrame>& queue =
+        playerNum == 1 ? p1InputQueue : p2InputQueue;
+    bool& active = playerNum == 1 ? p1QueueActive : p2QueueActive;
+    int& index = playerNum == 1 ? p1QueueIndex : p2QueueIndex;
+    int& counter = playerNum == 1 ? p1FrameCounter : p2FrameCounter;
+    int& motion = playerNum == 1 ? p1CurrentMotionType : p2CurrentMotionType;
+    active = false;
+    index = 0;
+    counter = 0;
+    motion = MOTION_NONE;
+    queue.clear();
     return true;
 }
 

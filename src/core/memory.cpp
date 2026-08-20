@@ -13,6 +13,7 @@
 #include <sstream>
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 // For global shutdown flag
 #include "../include/core/globals.h"
 
@@ -142,8 +143,14 @@ bool NopMemory(uintptr_t address, size_t length) {
     return true;
 }
 
-// Enhanced version of SetPlayerPosition with better Y-position handling
-void SetPlayerPosition(uintptr_t base, uintptr_t playerOffset, double x, double y, bool updateMoveID) {
+// Enhanced version of SetPlayerPosition with better Y-position handling.
+// Mission/tutorial setup uses the checked entry point so a failed teleport
+// cannot quietly become the baseline for the rest of a lesson.
+bool TrySetPlayerPosition(uintptr_t base, uintptr_t playerOffset, double x, double y, bool updateMoveID) {
+    if (!std::isfinite(x) || !std::isfinite(y)) {
+        LogOut("[MEMORY] Refused a non-finite fighter position", true);
+        return false;
+    }
     // Resolve position pointers
     uintptr_t xAddr = ResolvePointer(base, playerOffset, XPOS_OFFSET);
     uintptr_t yAddr = ResolvePointer(base, playerOffset, YPOS_OFFSET);
@@ -151,21 +158,29 @@ void SetPlayerPosition(uintptr_t base, uintptr_t playerOffset, double x, double 
     
     if (!xAddr || !yAddr) {
         LogOut("[MEMORY] Failed to resolve position pointers", true);
-        return;
+        return false;
     }
+    bool ok = true;
+
+    auto writeAndVerify = [&](uintptr_t address, const void* value, size_t size,
+                              const char* field) {
+        if (!address || !SafeWriteMemory(address, value, size)) {
+            LogOut(std::string("[MEMORY] Failed to write ") + field, true);
+            ok = false;
+            return;
+        }
+        unsigned char observed[sizeof(double)] = {};
+        if (size > sizeof(observed) ||
+            !SafeReadMemory(address, observed, size) ||
+            std::memcmp(observed, value, size) != 0) {
+            LogOut(std::string("[MEMORY] Failed to verify ") + field, true);
+            ok = false;
+        }
+    };
     
-    // Read current Y position to determine if transitioning from air to ground
-    double currentY = 0.0;
-    SafeReadMemory(yAddr, &currentY, sizeof(double));
-    bool wasInAir = (currentY > 0.5);
-    bool willBeGrounded = (y <= 0.5);
-    
-    // Read current move ID to check if character is performing an attack
-    short currentMoveID = 0;
-    if (moveIDAddr) {
-        SafeReadMemory(moveIDAddr, &currentMoveID, sizeof(short));
-    }
-    bool isPerformingMove = (currentMoveID >= 200);
+    // EFZ's world Y is zero on the floor and negative above it. Preserve that
+    // native sign when choosing the post-teleport state.
+    const bool willBeGrounded = y >= -0.5;
     
     // Reset animation frame counters for BOTH players to prevent stuck cloud state
     // This is critical - if one player has cloud, both frame counters can get stuck
@@ -176,34 +191,39 @@ void SetPlayerPosition(uintptr_t base, uintptr_t playerOffset, double x, double 
     if (p2FrameAddr) SafeWriteMemory(p2FrameAddr, &zeroFrame, sizeof(short));
     
     // Set X coordinate
-    if (!SafeWriteMemory(xAddr, &x, sizeof(double))) {
-        LogOut("[MEMORY] Failed to write X position", true);
-    }
+    writeAndVerify(xAddr, &x, sizeof(x), "X position");
     
     // Set Y coordinate
-    if (!SafeWriteMemory(yAddr, &y, sizeof(double))) {
-        LogOut("[MEMORY] Failed to write Y position", true);
-    }
+    writeAndVerify(yAddr, &y, sizeof(y), "Y position");
     
     // Reset X velocity to zero to prevent unintended movement
     uintptr_t xVelAddr = ResolvePointer(base, playerOffset, XVEL_OFFSET);
     if (xVelAddr) {
         double zeroVel = 0.0;
-        SafeWriteMemory(xVelAddr, &zeroVel, sizeof(double));
+        writeAndVerify(xVelAddr, &zeroVel, sizeof(zeroVel), "X velocity");
+    } else {
+        LogOut("[MEMORY] Failed to resolve X velocity pointer", true);
+        ok = false;
     }
     
     // Reset Y velocity to zero to prevent unintended movement
     uintptr_t yVelAddr = ResolvePointer(base, playerOffset, YVEL_OFFSET);
     if (yVelAddr) {
         double zeroVel = 0.0;
-        SafeWriteMemory(yVelAddr, &zeroVel, sizeof(double));
+        writeAndVerify(yVelAddr, &zeroVel, sizeof(zeroVel), "Y velocity");
+    } else {
+        LogOut("[MEMORY] Failed to resolve Y velocity pointer", true);
+        ok = false;
     }
     
     // Reset animation frame counter to prevent stuck animations
     uintptr_t frameCounterAddr = ResolvePointer(base, playerOffset, CURRENT_FRAME_INDEX_OFFSET);
     if (frameCounterAddr) {
         short zeroFrame = 0;
-        SafeWriteMemory(frameCounterAddr, &zeroFrame, sizeof(short));
+        writeAndVerify(frameCounterAddr, &zeroFrame, sizeof(zeroFrame), "animation frame");
+    } else {
+        LogOut("[MEMORY] Failed to resolve animation frame pointer", true);
+        ok = false;
     }
     
     // If requested, update moveID to reset the character state
@@ -219,12 +239,19 @@ void SetPlayerPosition(uintptr_t base, uintptr_t playerOffset, double x, double 
             newMoveID = IDLE_MOVE_ID;
         }
         
-        if (!SafeWriteMemory(moveIDAddr, &newMoveID, sizeof(short))) {
-            LogOut("[MEMORY] Failed to set move ID", true);
-        }
+        writeAndVerify(moveIDAddr, &newMoveID, sizeof(newMoveID), "move ID");
+    } else if (updateMoveID) {
+        LogOut("[MEMORY] Failed to resolve move ID pointer", true);
+        ok = false;
     }
     
     LogOut("[MEMORY] Set position - X: " + std::to_string(x) + ", Y: " + std::to_string(y), detailedLogging.load());
+    return ok;
+}
+
+void SetPlayerPosition(uintptr_t base, uintptr_t playerOffset, double x, double y,
+                       bool updateMoveID) {
+    (void)TrySetPlayerPosition(base, playerOffset, x, y, updateMoveID);
 }
 
 

@@ -13,7 +13,6 @@
 #include <windows.h>
 #include <thread>
 #include <atomic>
-#include <locale>
 #include <mutex>
 #include <dinput.h>
 #include <sstream>
@@ -21,16 +20,22 @@
 #include <commctrl.h>
 #include "../include/gui/imgui_impl.h"
 #include "../include/gui/overlay.h"
+#include "../include/game/mission/mission_pause_menu.h"
+#include "../include/game/mission/tutorial_session.h"
 #include "../include/utils/config.h"
 #include "../include/input/input_motion.h" // For QueueMotionInput
 #include "../include/utils/bgm_control.h"
+#include "../include/game/mission/mission_engine.h" // Mission record/playback hotkeys
 #include "../include/input/input_freeze.h"
+#include "../include/input/efz_input_bindings.h"
 #include "../include/game/practice_patch.h"
 #include "../include/game/game_state.h"
 #include "../include/utils/switch_players.h"
 #include "../include/game/macro_controller.h"
 #include "../include/game/frame_monitor.h" // AreCharactersInitialized, GamePhase
 #include "../include/game/auto_action.h" // CancelAutoActionsAndMacros
+#include "../include/game/character_settings.h"
+#include "../include/game/savestate_hook.h"
 #include "../include/input/framestep.h"
 #include "../include/utils/xp_compat.h"
 #include <Xinput.h>
@@ -183,13 +188,6 @@ bool IsDIKeyPressed(BYTE* keyboardState, DWORD dikCode) {
 // Helper function at the top to handle keyboard input more reliably
 bool IsKeyPressed(int vKey, bool checkState) {
     SHORT keyState;
-    // Set C locale once to avoid repeated global locale churn
-    static bool s_localeSet = false;
-    if (!s_localeSet) {
-        try { std::locale::global(std::locale("C")); } catch (...) {}
-        s_localeSet = true;
-    }
-    
     // Use both methods to increase reliability across keyboard layouts
     if (checkState) {
         // Check if key is pressed right now (synchronous)
@@ -229,8 +227,7 @@ void MonitorKeys() {
         LogOut("[KEYBINDS] Hotkey values from config:", true);
         LogOut("[KEYBINDS] Teleport/Load key: " + GetKeyName(cfg0.teleportKey), true);
         LogOut("[KEYBINDS] Record/Save key: " + GetKeyName(cfg0.recordKey), true);
-        LogOut("[KEYBINDS] Config Menu key: " + GetKeyName(cfg0.configMenuKey), true);
-        LogOut("[KEYBINDS] Toggle ImGui key: " + GetKeyName(cfg0.toggleImGuiKey), true);
+        LogOut("[KEYBINDS] Menu key: Esc (fixed)", true);
     }
 
     // Defer key.ini reads to retries only (avoid duplicate reads during startup)
@@ -285,30 +282,130 @@ void MonitorKeys() {
     const Config::Settings& cfg = Config::GetSettings();
     int teleportKey = (cfg.teleportKey > 0) ? cfg.teleportKey : '1';
     int recordKey = (cfg.recordKey > 0) ? cfg.recordKey : '2';
-    int configMenuKey = (cfg.configMenuKey > 0) ? cfg.configMenuKey : '3';
-    int toggleTitleKey = (cfg.toggleTitleKey > 0) ? cfg.toggleTitleKey : '4';
-    int resetFrameCounterKey = (cfg.resetFrameCounterKey > 0) ? cfg.resetFrameCounterKey : '5';
-    int helpKey = (cfg.helpKey > 0) ? cfg.helpKey : '6';
-    int toggleImGuiKey = (cfg.toggleImGuiKey > 0) ? cfg.toggleImGuiKey : VK_F12;
+    int configMenuKey = VK_ESCAPE;
+    int toggleTitleKey = cfg.toggleTitleKey;
+    int resetFrameCounterKey = cfg.resetFrameCounterKey;
+    int savestateSaveKey = (cfg.savestateSaveKey > 0) ? cfg.savestateSaveKey : 'U';
+    int savestateLoadKey = (cfg.savestateLoadKey > 0) ? cfg.savestateLoadKey : 'J';
+    int savestatePrevSlotKey = (cfg.savestatePrevSlotKey > 0) ? cfg.savestatePrevSlotKey : VK_OEM_COMMA;
+    int savestateNextSlotKey = (cfg.savestateNextSlotKey > 0) ? cfg.savestateNextSlotKey : VK_OEM_PERIOD;
     XINPUT_STATE currentPad{}; // kept for clarity; not used for idle scan
 
     bool windowActive = g_efzWindowActive.load();
     bool guiActive = g_guiActive.load();
 
+    // Exclusive mission demonstration mode owns P1's engine poll. Suppress the
+    // entire mod hotkey router so no save/load/macro/position action can alter
+    // the clip. Escape and the configured Menu/Start action are protected
+    // cancellation commands.
+    static bool s_demoEscWasDown = false;
+    if (windowActive && Mission::Engine::Demo::IsActive()) {
+        const bool escDown = (GetAsyncKeyState(VK_ESCAPE) & 0x8000) != 0;
+        if (escDown && !s_demoEscWasDown) Mission::Engine::Demo::Cancel();
+        s_demoEscWasDown = escDown;
+        XInputShim::RefreshSnapshotOncePerFrame();
+        XInputShim::Snapshot padSnapshot{};
+        XInputShim::CopySnapshot(padSnapshot);
+        connectedMask = padSnapshot.connectedMask;
+        auto padBindingDown = [](const XINPUT_STATE& state, int binding) {
+            constexpr int LT_MASK = 0x10000;
+            constexpr int RT_MASK = 0x20000;
+            if (binding == LT_MASK) return state.Gamepad.bLeftTrigger >= 50;
+            if (binding == RT_MASK) return state.Gamepad.bRightTrigger >= 50;
+            if (binding < 0) return false;
+            return (state.Gamepad.wButtons & static_cast<WORD>(binding & 0xFFFF)) != 0;
+        };
+        for (int i = 0; i < 4; ++i) {
+            if (((connectedMask >> i) & 1u) == 0) continue;
+            if (cfg.controllerIndex >= 0 && cfg.controllerIndex <= 3 &&
+                i != cfg.controllerIndex) continue;
+            XINPUT_STATE cached{};
+            if (padSnapshot.CopyState(i, cached)) {
+                const bool menuNow = padBindingDown(cached, cfg.gpToggleMenuButton);
+                const bool menuWas = padBindingDown(prevPads[i], cfg.gpToggleMenuButton);
+                if (menuNow && !menuWas) Mission::Engine::Demo::Cancel();
+                prevPads[i] = cached;
+            }
+        }
+        Sleep(8);
+        continue;
+    }
+    if (s_demoEscWasDown) {
+        // Do not let the cancel press become a fresh menu-open edge when the
+        // short restoration phase ends while Escape is still physically held.
+        if ((GetAsyncKeyState(VK_ESCAPE) & 0x8000) == 0) {
+            s_demoEscWasDown = false;
+            (void)IsKeyPressed(configMenuKey, false); // flush the completed press
+        }
+        Sleep(8);
+        continue;
+    }
+
+    // Tutorial sessions and a visible contextual mission/recording pause menu
+    // lease the hotkey router. Keep only the Menu action alive so teleport,
+    // save/load, macros, and other Practice commands cannot execute beneath
+    // the dedicated surface. A nested ImGui Practice menu keeps its existing
+    // input owner and is handled by the guiActive branch below.
+    static bool s_contextMenuEscWasDown = true;
+    const bool recorderMenuHandoff =
+        Mission::Engine::Recorder::IsMenuInputHandoffActive() &&
+        !Mission::PauseMenu::IsOpen();
+    const bool contextualPauseOwnsInput =
+        Mission::TutorialSession::IsActive() ||
+        recorderMenuHandoff ||
+        (Mission::PauseMenu::IsOpen() && !ImGuiImpl::IsVisible());
+    if (windowActive && contextualPauseOwnsInput) {
+        const bool allowMenuToggle = !recorderMenuHandoff &&
+            (Mission::TutorialSession::IsActive() ||
+             Mission::PauseMenu::IsOpen());
+        const bool escDown = (GetAsyncKeyState(VK_ESCAPE) & 0x8000) != 0;
+        if (allowMenuToggle && escDown && !s_contextMenuEscWasDown) OpenMenu();
+        s_contextMenuEscWasDown = escDown;
+
+        XInputShim::RefreshSnapshotOncePerFrame();
+        XInputShim::Snapshot padSnapshot{};
+        XInputShim::CopySnapshot(padSnapshot);
+        connectedMask = padSnapshot.connectedMask;
+        auto padBindingDown = [](const XINPUT_STATE& state, int binding) {
+            constexpr int LT_MASK = 0x10000;
+            constexpr int RT_MASK = 0x20000;
+            if (binding == LT_MASK) return state.Gamepad.bLeftTrigger >= 50;
+            if (binding == RT_MASK) return state.Gamepad.bRightTrigger >= 50;
+            if (binding < 0) return false;
+            return (state.Gamepad.wButtons & static_cast<WORD>(binding & 0xFFFF)) != 0;
+        };
+        for (int i = 0; i < 4; ++i) {
+            if (((connectedMask >> i) & 1u) == 0) continue;
+            if (cfg.controllerIndex >= 0 && cfg.controllerIndex <= 3 &&
+                i != cfg.controllerIndex) continue;
+            XINPUT_STATE cached{};
+            if (padSnapshot.CopyState(i, cached)) {
+                const bool menuNow = padBindingDown(cached, cfg.gpToggleMenuButton);
+                const bool menuWas = padBindingDown(prevPads[i], cfg.gpToggleMenuButton);
+                if (allowMenuToggle && menuNow && !menuWas) OpenMenu();
+                prevPads[i] = cached;
+            }
+        }
+        Sleep(8);
+        continue;
+    }
+    s_contextMenuEscWasDown = true;
+
     if (windowActive && guiActive) {
         // Flush queued menu toggle presses so they don't reopen immediately after exit
         IsKeyPressed(configMenuKey, false);
-        IsKeyPressed(toggleImGuiKey, false);
 
         XInputShim::RefreshSnapshotOncePerFrame();
-        connectedMask = XInputShim::GetConnectedMaskCached();
+        XInputShim::Snapshot padSnapshot{};
+        XInputShim::CopySnapshot(padSnapshot);
+        connectedMask = padSnapshot.connectedMask;
         for (int i = 0; i < 4; ++i) {
             if (((connectedMask >> i) & 1u) == 0) {
                 continue;
             }
-            const XINPUT_STATE* cached = XInputShim::GetCachedState(i);
-            if (cached) {
-                prevPads[i] = *cached;
+            XINPUT_STATE cached{};
+            if (padSnapshot.CopyState(i, cached)) {
+                prevPads[i] = cached;
             }
         }
 
@@ -323,9 +420,7 @@ void MonitorKeys() {
             // Helpers
             // Cached polling (snapshot already refreshed earlier in frame by overlay EndScene; fallback refresh here if not yet)
             auto pollPad = [](int idx, XINPUT_STATE& out) {
-                const XINPUT_STATE* s = XInputShim::GetCachedState(idx);
-                if (!s) { ZeroMemory(&out, sizeof(out)); return false; }
-                out = *s; return true;
+                return XInputShim::CopyCachedState(idx, out);
             };
             auto processActionsForPad = [&](int padIndex, const XINPUT_STATE& cur, XINPUT_STATE& prev) -> bool {
                 // Helper: edge detect (just-pressed) for standard buttons & pseudo trigger bits
@@ -356,6 +451,9 @@ void MonitorKeys() {
                         DirectDrawHook::AddMessage("Position Saved", "SYSTEM", RGB(255, 255, 100), 1500, 0, 100);
                     }
                 };
+                auto reapplyCharacterLocks = [&](uintptr_t base) {
+                    CharacterSettings::TickCharacterEnforcements(base, displayData);
+                };
                 auto teleportOrLoad = [&]() {
                     uintptr_t base = GetEFZBase();
                     if (!base) return;
@@ -383,6 +481,7 @@ void MonitorKeys() {
                         LoadPlayerPositions(base);
                         DirectDrawHook::AddMessage("Position Loaded", "SYSTEM", RGB(100, 255, 100), 1500, 0, 100);
                     }
+                    reapplyCharacterLocks(base);
                 };
                 auto swapPositions = [&]() {
                     uintptr_t base = GetEFZBase();
@@ -399,6 +498,7 @@ void MonitorKeys() {
                         SafeReadMemory(yAddr2, &y2, sizeof(double));
                         SetPlayerPosition(base, EFZ_BASE_OFFSET_P1, x2, y2);
                         SetPlayerPosition(base, EFZ_BASE_OFFSET_P2, x1, y1);
+                        reapplyCharacterLocks(base);
                         DirectDrawHook::AddMessage("Positions Swapped", "SYSTEM", RGB(100, 255, 100), 1500, 0, 100);
                     } else {
                         DirectDrawHook::AddMessage("Swap Failed: Can't read positions", "SYSTEM", RGB(255,100,100), 1500, 0, 100);
@@ -415,16 +515,29 @@ void MonitorKeys() {
                 }
 
                 bool handled = false;
+                const auto recPhase = Mission::Engine::Recorder::GetPhase();
+                const bool recorderOwnsHotkeys =
+                    recPhase == Mission::Engine::Recorder::Phase::CountIn ||
+                    recPhase == Mission::Engine::Recorder::Phase::Recording;
+                if (recorderOwnsHotkeys) {
+                    if (gpWentDown(cgp.gpToggleMenuButton)) {
+                        // A nested Practice menu owns its own Back/Menu edge;
+                        // do not toggle the recorder surface underneath it.
+                        // When no nested UI is visible, route to the dedicated
+                        // recording pause menu through OpenMenu's session gate.
+                        if (!ImGuiImpl::IsVisible()) OpenMenu();
+                        handled = true;
+                    } else if (gpWentDown(cgp.gpMacroRecordButton) &&
+                               !Mission::PauseMenu::IsOpen()) {
+                        Mission::Engine::Recorder::Advance();
+                        handled = true;
+                    }
+                    prev = cur;
+                    return handled;
+                }
                 // Process in priority order (single action per press)
                 // Unified menu toggle: gpToggleMenuButton now acts as open/close (ImGui preferred path)
                 if (!handled && gpWentDown(cgp.gpToggleMenuButton)) {
-                    if (!ImGuiImpl::IsVisible()) {
-                        OpenMenu();
-                    } else {
-                        ImGuiImpl::ToggleVisibility();
-                    }
-                    handled = true;
-                } else if (!handled && gpWentDown(cgp.gpToggleImGuiButton)) {
                     if (!ImGuiImpl::IsVisible()) {
                         OpenMenu();
                     } else {
@@ -446,7 +559,8 @@ void MonitorKeys() {
                 } else if (!handled && gpWentDown(cgp.gpSwitchPlayersButton)) {
                     // Guard: disable switch-players while macro prerecord/recording is active
                     auto st = MacroController::GetState();
-                    if (st == MacroController::State::PreRecord || st == MacroController::State::Recording) {
+                    if (Mission::Engine::Recorder::IsSessionActive() ||
+                        st == MacroController::State::PreRecord || st == MacroController::State::Recording) {
                         DirectDrawHook::AddMessage("Switch Players disabled during Macro PreRecord/Recording", "SYSTEM", RGB(255,200,120), 1200, 0, 100);
                         handled = true;
                     } else {
@@ -462,16 +576,24 @@ void MonitorKeys() {
                     }
                 } else if (!handled && gpWentDown(cgp.gpMacroRecordButton)) {
                     if (GetCurrentGamePhase() == GamePhase::Match && AreCharactersInitialized()) {
-                        MacroController::ToggleRecord();
-                        DirectDrawHook::AddMessage(MacroController::GetStatusLine().c_str(), "MACRO", RGB(200,220,255), 900, 0, 120);
+                        if (Mission::Engine::Recorder::IsSessionActive()) {
+                            Mission::Engine::Recorder::Advance();
+                        } else {
+                            MacroController::ToggleRecord();
+                            DirectDrawHook::AddMessage(MacroController::GetStatusLine().c_str(), "MACRO", RGB(200,220,255), 900, 0, 120);
+                        }
                     } else {
                         DirectDrawHook::AddMessage("Macro controls available only during Match", "MACRO", RGB(255,180,120), 900, 0, 120);
                     }
                     handled = true;
                 } else if (!handled && gpWentDown(cgp.gpMacroPlayButton)) {
                     if (GetCurrentGamePhase() == GamePhase::Match && AreCharactersInitialized()) {
-                        MacroController::Play();
-                        DirectDrawHook::AddMessage(MacroController::GetStatusLine().c_str(), "MACRO", RGB(180,255,180), 900, 0, 120);
+                        if (Mission::Engine::Recorder::IsSessionActive()) {
+                            DirectDrawHook::AddMessage("Macro playback is unavailable during mission authoring", "MISSION", RGB(255,200,120), 1200, 0, 120);
+                        } else {
+                            MacroController::Play();
+                            DirectDrawHook::AddMessage(MacroController::GetStatusLine().c_str(), "MACRO", RGB(180,255,180), 900, 0, 120);
+                        }
                     } else {
                         DirectDrawHook::AddMessage("Macro controls available only during Match", "MACRO", RGB(255,180,120), 900, 0, 120);
                     }
@@ -495,19 +617,8 @@ void MonitorKeys() {
             if (IsKeyPressed(configMenuKey, false)) {
                 if (!ImGuiImpl::IsVisible()) {
                     OpenMenu();
-                } else {
-                    ImGuiImpl::ToggleVisibility();
                 }
                 Sleep(300); // debounce
-                continue;
-            }
-            if (IsKeyPressed(toggleImGuiKey, false)) {
-                if (!ImGuiImpl::IsVisible()) {
-                    OpenMenu();
-                } else {
-                    ImGuiImpl::ToggleVisibility();
-                }
-                Sleep(150); // debounce
                 continue;
             }
 
@@ -544,6 +655,21 @@ void MonitorKeys() {
                     if (processActionsForPad(i, cur, prevPads[i])) {
                         keyHandled = true; break;
                     }
+                }
+            }
+
+            const auto recorderPhase = Mission::Engine::Recorder::GetPhase();
+            const bool recorderOwnsHotkeys =
+                recorderPhase == Mission::Engine::Recorder::Phase::CountIn ||
+                recorderPhase == Mission::Engine::Recorder::Phase::Recording;
+            if (!keyHandled && recorderOwnsHotkeys) {
+                if (!Mission::PauseMenu::IsOpen() &&
+                    IsKeyPressed(cfg.macroRecordKey > 0 ? cfg.macroRecordKey : 'I', false)) {
+                    Mission::Engine::Recorder::Advance();
+                    keyHandled = true;
+                } else {
+                    Sleep(8);
+                    continue;
                 }
             }
 
@@ -598,7 +724,8 @@ void MonitorKeys() {
                 if (IsKeyPressed(cfg.switchPlayersKey > 0 ? cfg.switchPlayersKey : 'L', false)) {
                 // Debug hotkey: Toggle local/remote players in Practice
                 auto st = MacroController::GetState();
-                if (st == MacroController::State::PreRecord || st == MacroController::State::Recording) {
+                if (Mission::Engine::Recorder::IsSessionActive() ||
+                    st == MacroController::State::PreRecord || st == MacroController::State::Recording) {
                     DirectDrawHook::AddMessage("Switch Players disabled during Macro PreRecord/Recording", "SYSTEM", RGB(255,200,120), 1200, 0, 100);
                     keyHandled = true;
                 } else if (GetCurrentGameMode() == GameMode::Practice && !g_guiActive.load()) {
@@ -610,6 +737,36 @@ void MonitorKeys() {
                     }
                     keyHandled = true;
                 }
+            } else if (IsKeyPressed(savestateSaveKey, false)) {
+                if (Mission::Engine::Runner::IsActive()) {
+                    DirectDrawHook::AddMessage(
+                        "Savestate save disabled while a mission owns its checkpoint",
+                        "SAVESTATE", RGB(255, 180, 120), 1500, 0, 100);
+                } else if (GetCurrentGameMode() == GameMode::Practice
+                        && GetCurrentGamePhase() == GamePhase::Match
+                        && AreCharactersInitialized()) {
+                    if (!SavestateHook::TriggerSave()) {
+                        DirectDrawHook::AddMessage("Savestate save unavailable (Revival not ready)", "SAVESTATE", RGB(255, 180, 120), 1200, 0, 100);
+                    }
+                } else {
+                    DirectDrawHook::AddMessage("Savestate save is available only during Practice Match", "SAVESTATE", RGB(255, 180, 120), 1200, 0, 100);
+                }
+                keyHandled = true;
+            } else if (IsKeyPressed(savestateLoadKey, false)) {
+                if (Mission::Engine::Runner::IsActive()) {
+                    DirectDrawHook::AddMessage(
+                        "Savestate load disabled while a mission owns its checkpoint",
+                        "SAVESTATE", RGB(255, 180, 120), 1500, 0, 100);
+                } else if (GetCurrentGameMode() == GameMode::Practice
+                        && GetCurrentGamePhase() == GamePhase::Match
+                        && AreCharactersInitialized()) {
+                    if (!SavestateHook::TriggerLoad()) {
+                        DirectDrawHook::AddMessage("Savestate load unavailable (Revival not ready)", "SAVESTATE", RGB(255, 180, 120), 1200, 0, 100);
+                    }
+                } else {
+                    DirectDrawHook::AddMessage("Savestate load is available only during Practice Match", "SAVESTATE", RGB(255, 180, 120), 1200, 0, 100);
+                }
+                keyHandled = true;
             } else if (IsKeyPressed(teleportKey, true)) {
                 // Cancel auto-actions and macros before any position change
                 CancelAutoActionsAndMacros();
@@ -620,6 +777,7 @@ void MonitorKeys() {
                     if (base) {
                         SetPlayerPosition(base, EFZ_BASE_OFFSET_P1, p1StartX, startY);
                         SetPlayerPosition(base, EFZ_BASE_OFFSET_P2, p2StartX, startY);
+                        CharacterSettings::TickCharacterEnforcements(base, displayData);
                         DirectDrawHook::AddMessage("Round Start Position", "SYSTEM", RGB(100, 255, 100), 1500, 0, 100);
                     }
                     keyHandled = true;
@@ -630,6 +788,7 @@ void MonitorKeys() {
                     if (base) {
                         SetPlayerPosition(base, EFZ_BASE_OFFSET_P1, centerX, teleportY);
                         SetPlayerPosition(base, EFZ_BASE_OFFSET_P2, centerX, teleportY);
+                        CharacterSettings::TickCharacterEnforcements(base, displayData);
                         DirectDrawHook::AddMessage("Players Centered", "SYSTEM", RGB(100, 255, 100), 1500, 0, 100);
                     }
                     keyHandled = true;
@@ -640,6 +799,7 @@ void MonitorKeys() {
                     if (base) {
                         SetPlayerPosition(base, EFZ_BASE_OFFSET_P1, leftX, teleportY);
                         SetPlayerPosition(base, EFZ_BASE_OFFSET_P2, leftX, teleportY);
+                        CharacterSettings::TickCharacterEnforcements(base, displayData);
                         DirectDrawHook::AddMessage("Left Corner", "SYSTEM", RGB(100, 255, 100), 1500, 0, 100);
                     }
                     keyHandled = true;
@@ -650,6 +810,7 @@ void MonitorKeys() {
                     if (base) {
                         SetPlayerPosition(base, EFZ_BASE_OFFSET_P1, rightX, teleportY);
                         SetPlayerPosition(base, EFZ_BASE_OFFSET_P2, rightX, teleportY);
+                        CharacterSettings::TickCharacterEnforcements(base, displayData);
                         DirectDrawHook::AddMessage("Right Corner", "SYSTEM", RGB(100, 255, 100), 1500, 0, 100);
                     }
                     keyHandled = true;
@@ -676,6 +837,7 @@ void MonitorKeys() {
                             // Swap positions
                             SetPlayerPosition(base, EFZ_BASE_OFFSET_P1, tempX2, tempY2);
                             SetPlayerPosition(base, EFZ_BASE_OFFSET_P2, tempX1, tempY1);
+                            CharacterSettings::TickCharacterEnforcements(base, displayData);
                             DirectDrawHook::AddMessage("Positions Swapped", "SYSTEM", RGB(100, 255, 100), 1500, 0, 100);
                         } else {
                             DirectDrawHook::AddMessage("Swap Failed: Can't read positions", "SYSTEM", RGB(255,100,100), 1500, 0, 100);
@@ -688,6 +850,7 @@ void MonitorKeys() {
                     uintptr_t base = GetEFZBase();
                     if (base) {
                         LoadPlayerPositions(base);
+                        CharacterSettings::TickCharacterEnforcements(base, displayData);
                         DirectDrawHook::AddMessage("Position Loaded", "SYSTEM", RGB(100, 255, 100), 1500, 0, 100);
                     }
                     keyHandled = true;
@@ -699,37 +862,59 @@ void MonitorKeys() {
                     DirectDrawHook::AddMessage("Position Saved", "SYSTEM", RGB(255, 255, 100), 1500, 0, 100);
                 }
                 keyHandled = true;
-            } else if (IsKeyPressed(toggleTitleKey, true)) {
-                // Toggle stats display instead of detailed title mode
+            } else if (IsKeyPressed('4', false) || (toggleTitleKey > 0 && IsKeyPressed(toggleTitleKey, true))) {
+                // Toggle the debug-info (stats) overlay. The legacy '4' hotkey is
+                // re-enabled here directly (its old config binding was scrubbed);
+                // a custom toggleTitleKey still works too.
                 bool currentState = g_statsDisplayEnabled.load();
-                g_statsDisplayEnabled.store(!currentState);
-                
-                if (g_statsDisplayEnabled.load()) {
+                bool nextState = !currentState;
+                g_statsDisplayEnabled.store(nextState);
+                if (nextState) g_statsPageIndex.store(0);   // start on the first page
+
+                // Disable combo overlay while stats display is active, restore when off
+                static bool s_comboOverlayWasEnabled = false;
+                if (nextState) {
+                    s_comboOverlayWasEnabled = cfg.showComboStatisticsOverlay;
+                    if (s_comboOverlayWasEnabled) {
+                        Config::SetSetting("General", "showComboStatisticsOverlay", "0");
+                    }
                     LogOut("[STATS] Stats display enabled", true);
                     DirectDrawHook::AddMessage("Stats Display Enabled", "SYSTEM", RGB(255, 255, 0), 1500, 20, 100);
                 } else {
+                    if (s_comboOverlayWasEnabled) {
+                        Config::SetSetting("General", "showComboStatisticsOverlay", "1");
+                    }
                     LogOut("[STATS] Stats display disabled", true);
                     DirectDrawHook::AddMessage("Stats Display Disabled", "SYSTEM", RGB(255, 255, 0), 1500, 20, 100);
                 }
                 keyHandled = true;
-            } else if (IsKeyPressed(cfg.resetFrameCounterKey, false)) {
+            } else if (g_statsDisplayEnabled.load() && IsKeyPressed('5', false)) {
+                // Debug overlay active only: scroll extra-info page backward.
+                int n = g_statsPageCount.load(); if (n < 1) n = 1;
+                int p = g_statsPageIndex.load();
+                g_statsPageIndex.store((p - 1 + n) % n);
+                keyHandled = true;
+            } else if (g_statsDisplayEnabled.load() && IsKeyPressed('6', false)) {
+                // Debug overlay active only: scroll extra-info page forward.
+                int n = g_statsPageCount.load(); if (n < 1) n = 1;
+                int p = g_statsPageIndex.load();
+                g_statsPageIndex.store((p + 1) % n);
+                keyHandled = true;
+            } else if (resetFrameCounterKey > 0 && IsKeyPressed(resetFrameCounterKey, false)) {
                 ResetFrameCounter();
                 keyHandled = true;
-            } else if (IsKeyPressed(cfg.framestepPauseKey > 0 ? cfg.framestepPauseKey : VK_SPACE, false)) {
-                // Framestep: Toggle pause (vanilla EFZ only)
+            } else if (cfg.framestepEnabled && IsKeyPressed(cfg.framestepPauseKey > 0 ? cfg.framestepPauseKey : VK_SPACE, false)) {
+                // Framestep: Toggle pause
                 if (Framestep::IsEnabled()) {
                     Framestep::TogglePause();
                     keyHandled = true;
                 }
-            } else if (IsKeyPressed(cfg.framestepStepKey > 0 ? cfg.framestepStepKey : 'P', false)) {
-                // Framestep: Step forward one frame (vanilla EFZ only)
-                if (Framestep::IsEnabled() && Framestep::IsPaused()) {
+            } else if (cfg.framestepEnabled && IsKeyPressed(cfg.framestepStepKey > 0 ? cfg.framestepStepKey : 'P', false)) {
+                // Framestep: Step forward
+                if (Framestep::IsEnabled()) {
                     Framestep::RequestFrameStep();
                     keyHandled = true;
                 }
-            } else if (IsKeyPressed(cfg.helpKey, false)) {
-                ShowHotkeyInfo();
-                keyHandled = true;
             } else if (IsKeyPressed(VK_F9, false)) {
                 autoJumpEnabled = !autoJumpEnabled;
                 DirectDrawHook::AddMessage(autoJumpEnabled ? "Auto-Jump: ON" : "Auto-Jump: OFF", "SYSTEM", RGB(255, 165, 0), 1500, 0, 100);
@@ -737,8 +922,12 @@ void MonitorKeys() {
             } else if (IsKeyPressed(cfg.macroRecordKey > 0 ? cfg.macroRecordKey : 'I', false)) {
                 // Macro controls are Match-only
                 if (GetCurrentGamePhase() == GamePhase::Match && AreCharactersInitialized()) {
-                    MacroController::ToggleRecord();
-                    DirectDrawHook::AddMessage(MacroController::GetStatusLine().c_str(), "MACRO", RGB(200, 220, 255), 900, 0, 120);
+                    if (Mission::Engine::Recorder::IsSessionActive()) {
+                        Mission::Engine::Recorder::Advance();
+                    } else {
+                        MacroController::ToggleRecord();
+                        DirectDrawHook::AddMessage(MacroController::GetStatusLine().c_str(), "MACRO", RGB(200, 220, 255), 900, 0, 120);
+                    }
                 } else {
                     DirectDrawHook::AddMessage("Macro controls available only during Match", "MACRO", RGB(255, 180, 120), 900, 0, 120);
                 }
@@ -746,8 +935,12 @@ void MonitorKeys() {
             } else if (IsKeyPressed(cfg.macroPlayKey > 0 ? cfg.macroPlayKey : 'O', false)) {
                 // Macro controls are Match-only
                 if (GetCurrentGamePhase() == GamePhase::Match && AreCharactersInitialized()) {
-                    MacroController::Play();
-                    DirectDrawHook::AddMessage(MacroController::GetStatusLine().c_str(), "MACRO", RGB(180, 255, 180), 900, 0, 120);
+                    if (Mission::Engine::Recorder::IsSessionActive()) {
+                        DirectDrawHook::AddMessage("Macro playback is unavailable during mission authoring", "MISSION", RGB(255,200,120), 1200, 0, 120);
+                    } else {
+                        MacroController::Play();
+                        DirectDrawHook::AddMessage(MacroController::GetStatusLine().c_str(), "MACRO", RGB(180, 255, 180), 900, 0, 120);
+                    }
                 } else {
                     DirectDrawHook::AddMessage("Macro controls available only during Match", "MACRO", RGB(255, 180, 120), 900, 0, 120);
                 }
@@ -770,13 +963,16 @@ void MonitorKeys() {
             if (keyHandled) {
                 Sleep(100);
           while (IsKeyPressed(teleportKey, true) || IsKeyPressed(recordKey, true) ||
-              IsKeyPressed(toggleTitleKey, true) || IsKeyPressed(resetFrameCounterKey, true) ||
-              IsKeyPressed(helpKey, true) || IsKeyPressed(VK_F7, true) || IsKeyPressed(VK_F9, true) ||
+              (toggleTitleKey > 0 && IsKeyPressed(toggleTitleKey, true)) ||
+              (resetFrameCounterKey > 0 && IsKeyPressed(resetFrameCounterKey, true)) ||
+              IsKeyPressed(VK_F7, true) || IsKeyPressed(VK_F9, true) ||
+              IsKeyPressed(savestateSaveKey, true) || IsKeyPressed(savestateLoadKey, true) ||
+              IsKeyPressed(savestatePrevSlotKey, true) || IsKeyPressed(savestateNextSlotKey, true) ||
               IsKeyPressed(cfg.switchPlayersKey > 0 ? cfg.switchPlayersKey : 'L', true) ||
               IsKeyPressed(cfg.macroRecordKey > 0 ? cfg.macroRecordKey : 'I', true) ||
-              IsKeyPressed(cfg.macroPlayKey > 0 ? cfg.macroPlayKey : 'O', true) ||
-              IsKeyPressed(cfg.framestepPauseKey > 0 ? cfg.framestepPauseKey : VK_SPACE, true) ||
-              IsKeyPressed(cfg.framestepStepKey > 0 ? cfg.framestepStepKey : 'P', true)) {
+               IsKeyPressed(cfg.macroPlayKey > 0 ? cfg.macroPlayKey : 'O', true) ||
+              (cfg.framestepEnabled && IsKeyPressed(cfg.framestepPauseKey > 0 ? cfg.framestepPauseKey : VK_SPACE, true)) ||
+              (cfg.framestepEnabled && IsKeyPressed(cfg.framestepStepKey > 0 ? cfg.framestepStepKey : 'P', true))) {
                     Sleep(10);
                 }
                 // Reset polling interval after handling input
@@ -787,17 +983,19 @@ void MonitorKeys() {
                     ((GetAsyncKeyState(teleportKey) & 0x8000) != 0) ||
                     ((GetAsyncKeyState(recordKey) & 0x8000) != 0) ||
                     ((GetAsyncKeyState(configMenuKey) & 0x8000) != 0) ||
-                    ((GetAsyncKeyState(toggleTitleKey) & 0x8000) != 0) ||
-                    ((GetAsyncKeyState(resetFrameCounterKey) & 0x8000) != 0) ||
-                    ((GetAsyncKeyState(helpKey) & 0x8000) != 0) ||
-                    ((GetAsyncKeyState(toggleImGuiKey) & 0x8000) != 0) ||
+                    (toggleTitleKey > 0 && ((GetAsyncKeyState(toggleTitleKey) & 0x8000) != 0)) ||
+                    (resetFrameCounterKey > 0 && ((GetAsyncKeyState(resetFrameCounterKey) & 0x8000) != 0)) ||
+                    ((GetAsyncKeyState(savestateSaveKey) & 0x8000) != 0) ||
+                    ((GetAsyncKeyState(savestateLoadKey) & 0x8000) != 0) ||
+                    ((GetAsyncKeyState(savestatePrevSlotKey) & 0x8000) != 0) ||
+                    ((GetAsyncKeyState(savestateNextSlotKey) & 0x8000) != 0) ||
                     ((GetAsyncKeyState(VK_F7) & 0x8000) != 0) ||
                     ((GetAsyncKeyState(VK_F9) & 0x8000) != 0) ||
                     ((GetAsyncKeyState(cfg.switchPlayersKey > 0 ? cfg.switchPlayersKey : 'L') & 0x8000) != 0) ||
                     ((GetAsyncKeyState(cfg.macroRecordKey > 0 ? cfg.macroRecordKey : 'I') & 0x8000) != 0) ||
                     ((GetAsyncKeyState(cfg.macroPlayKey > 0 ? cfg.macroPlayKey : 'O') & 0x8000) != 0) ||
-                    ((GetAsyncKeyState(cfg.framestepPauseKey > 0 ? cfg.framestepPauseKey : VK_SPACE) & 0x8000) != 0) ||
-                    ((GetAsyncKeyState(cfg.framestepStepKey > 0 ? cfg.framestepStepKey : 'P') & 0x8000) != 0) ||
+                    (cfg.framestepEnabled && ((GetAsyncKeyState(cfg.framestepPauseKey > 0 ? cfg.framestepPauseKey : VK_SPACE) & 0x8000) != 0)) ||
+                    (cfg.framestepEnabled && ((GetAsyncKeyState(cfg.framestepStepKey > 0 ? cfg.framestepStepKey : 'P') & 0x8000) != 0)) ||
                     ((GetAsyncKeyState(cfg.macroSlotKey > 0 ? cfg.macroSlotKey : 'K') & 0x8000) != 0);
                 auto anyControllerActive = [&]() -> bool {
                     unsigned mask = connectedMask;
@@ -805,9 +1003,8 @@ void MonitorKeys() {
                     XInputShim::RefreshSnapshotOncePerFrame();
                     for (int i = 0; i < 4; ++i) {
                         if (((mask >> i) & 1u) == 0) continue;
-                        const XINPUT_STATE* cached = XInputShim::GetCachedState(i);
-                        if (!cached) continue;
-                        const XINPUT_STATE& cur = *cached;
+                        XINPUT_STATE cur{};
+                        if (!XInputShim::CopyCachedState(i, cur)) continue;
                         if (cur.dwPacketNumber != prevPads[i].dwPacketNumber) return true;
                         if (cur.Gamepad.wButtons != 0) return true;
                         if (cur.Gamepad.bLeftTrigger || cur.Gamepad.bRightTrigger) return true;
@@ -861,7 +1058,7 @@ void RestartKeyMonitoring() {
     // Start monitoring thread once
     keyMonitorRunning.store(true);
     std::thread(MonitorKeys).detach();
-    LogOut("[KEYBINDS] Key monitoring thread started", true);
+    // Note: MonitorKeys logs "[KEYBINDS] Key monitoring thread started" itself.
 }
 
 void DebugInputs() {
@@ -898,84 +1095,179 @@ std::atomic<int> startFrameCount(0);
 
 // Complete the ReadKeyMappingsFromIni function
 bool ReadKeyMappingsFromIni() {
-    // Allow shared reads so we don't fight the game holding the file open
-    HANDLE configFile = CreateFileA("key.ini", GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
-    if (configFile == INVALID_HANDLE_VALUE) {
-        LogOut("[INPUT] Failed to open key.ini - using default key bindings", true);
+    EFZInputBindings::BindingSet bindings{};
+    std::string sourcePath;
+    std::string error;
+    if (!EFZInputBindings::LoadActiveKeyIni(bindings, sourcePath, error)) {
+        LogOut("[INPUT] Failed to read active EFZ bindings - using input fallbacks: " + error, true);
         return false;
     }
 
-    DWORD fileSize = GetFileSize(configFile, NULL);
-    if (fileSize < 32) { // At least 2 controllers with 16 bytes each
-        LogOut("[INPUT] key.ini file too small", true);
-        CloseHandle(configFile);
-        return false;
-    }
-
-    // Allocate buffer and read file
-    void* fileBuffer = operator new(fileSize);
-    if (!fileBuffer) {
-        CloseHandle(configFile);
-        return false;
-    }
-
-    DWORD bytesRead = 0;
-    if (!ReadFile(configFile, fileBuffer, fileSize, &bytesRead, NULL)) {
-        operator delete(fileBuffer);
-        CloseHandle(configFile);
-        return false;
-    }
-
-    // Focus on Player 1's mappings (first 16 bytes)
-    // In key.ini, the mapping order is: ↓↑←→ABCD
-    unsigned char* p1Data = (unsigned char*)fileBuffer;
-
-    // Read P1's direction keys (the first 4 button pairs)
     struct KeyMapping {
-        int offset;
+        EFZInputBindings::Action action;
         const char* name;
         int* bindingPtr;
     } keyMaps[] = {
-        // Correct mapping: Down -> downKey, Up -> upKey
-        { 0, "Down", &detectedBindings.downKey },
-        { 2, "Up", &detectedBindings.upKey },
-        { 4, "Left", &detectedBindings.leftKey },
-        { 6, "Right", &detectedBindings.rightKey },
-        { 8, "A (Light)", &detectedBindings.aButton },
-        { 10, "B (Medium)", &detectedBindings.bButton },
-        { 12, "C (Heavy)", &detectedBindings.cButton },
-        { 14, "D (Special)", &detectedBindings.dButton },
+        { EFZInputBindings::Action::Up, "Up", &detectedBindings.upKey },
+        { EFZInputBindings::Action::Down, "Down", &detectedBindings.downKey },
+        { EFZInputBindings::Action::Left, "Left", &detectedBindings.leftKey },
+        { EFZInputBindings::Action::Right, "Right", &detectedBindings.rightKey },
+        { EFZInputBindings::Action::A, "A (Light)", &detectedBindings.aButton },
+        { EFZInputBindings::Action::B, "B (Medium)", &detectedBindings.bButton },
+        { EFZInputBindings::Action::C, "C (Heavy)", &detectedBindings.cButton },
+        { EFZInputBindings::Action::D, "D (Special)", &detectedBindings.dButton },
     };
 
-    // Only emit this noisy read when detailed logging is enabled
-    LogOut("[INPUT] Reading key bindings from key.ini", detailedLogging.load());
-    for (int i = 0; i < 8; i++) {
-        unsigned char byte1 = p1Data[keyMaps[i].offset];
-        unsigned char byte2 = p1Data[keyMaps[i].offset + 1];
-        
-        // Calculate the key value using the same formula as the game
-        unsigned short keyValue = (byte1 << 8) | byte2;
-        if (byte1 != 0) {
-            keyValue--;
+    bool anyKeyboardDirection = false;
+    bool anyKeyboardAttack = false;
+    bool anyController = false;
+    LogOut("[INPUT] Reading typed P1/P2 bindings from " + sourcePath,
+           detailedLogging.load());
+    const auto& p1 = bindings.players[0];
+    for (std::size_t i = 0; i < sizeof(keyMaps) / sizeof(keyMaps[0]); ++i) {
+        const std::size_t action = static_cast<std::size_t>(keyMaps[i].action);
+        const EFZInputBindings::Binding& binding = p1.actions[action];
+        int vkKey = 0;
+        if (binding.valid &&
+            binding.device == EFZInputBindings::DeviceKind::Keyboard) {
+            vkKey = MapDIKToVK(binding.code);
+            if (i < 4) anyKeyboardDirection = anyKeyboardDirection || vkKey != 0;
+            else anyKeyboardAttack = anyKeyboardAttack || vkKey != 0;
+        } else if (binding.valid) {
+            anyController = true;
         }
-
-        // Map this value to a virtual key code
-        int vkKey = MapEFZKeyToVK(keyValue);
         *keyMaps[i].bindingPtr = vkKey;
 
-         // Per-key line can be extremely chatty; gate behind detailedLogging
-         LogOut("[INPUT] P1 " + std::string(keyMaps[i].name) + " = " +
-             GetKeyName(vkKey) + " (raw value: " + std::to_string(keyValue) + ")", detailedLogging.load());
+        if (detailedLogging.load()) {
+            const char* device = !binding.valid ? "unmapped"
+                : binding.device == EFZInputBindings::DeviceKind::Keyboard ? "keyboard"
+                : binding.device == EFZInputBindings::DeviceKind::Joystick1 ? "joystick1"
+                : "joystick2";
+            LogOut("[INPUT] P1 " + std::string(keyMaps[i].name) +
+                   " device=" + device + " code=" +
+                   std::to_string(binding.code) +
+                   (vkKey ? " vk=" + GetKeyName(vkKey) : std::string()), true);
+        }
     }
 
-    // Set flags to indicate we've detected the bindings
-    detectedBindings.directionsDetected = true;
-    detectedBindings.attacksDetected = true;
-    detectedBindings.inputDevice = INPUT_DEVICE_KEYBOARD;
-    detectedBindings.deviceName = "Keyboard (from key.ini)";
+    // These flags describe keyboard mirrors only. Controller actions remain
+    // typed and are consumed through EFZ's logical input/XInput fallback; they
+    // must never be projected onto arbitrary virtual-key codes.
+    detectedBindings.directionsDetected = anyKeyboardDirection;
+    detectedBindings.attacksDetected = anyKeyboardAttack;
+    detectedBindings.inputDevice = anyController &&
+        (!anyKeyboardDirection || !anyKeyboardAttack)
+        ? INPUT_DEVICE_GAMEPAD : INPUT_DEVICE_KEYBOARD;
+    detectedBindings.deviceName = anyController
+        ? (anyKeyboardDirection || anyKeyboardAttack
+            ? "Mixed EFZ controls (from key.ini)"
+            : "Controller (from key.ini)")
+        : "Keyboard (from key.ini)";
 
-    operator delete(fileBuffer);
-    CloseHandle(configFile);
+    // Existing configs are user-owned and are never silently rewritten.  Do
+    // still surface collisions against both EFZ players (and duplicate mod
+    // functions) so a migrated install is diagnosable from one startup log.
+    std::array<bool, 256> reservedVk{};
+    std::array<int, 24> reservedPads{};
+    std::size_t reservedPadCount = 0;
+    std::array<bool, 256> ignoredDik{};
+    EFZInputBindings::CollectReservations(
+        bindings, ignoredDik, reservedPads, reservedPadCount);
+    for (const EFZInputBindings::PlayerBindings& player : bindings.players) {
+        for (const EFZInputBindings::Binding& binding : player.actions) {
+            if (!binding.valid ||
+                binding.device != EFZInputBindings::DeviceKind::Keyboard) continue;
+            const int vk = MapDIKToVK(binding.code);
+            if (vk > 0 && vk < static_cast<int>(reservedVk.size())) {
+                reservedVk[static_cast<std::size_t>(vk)] = true;
+            }
+        }
+    }
+    const Config::Settings& cfg = Config::GetSettings();
+    struct NamedValue { const char* name; int value; };
+    const NamedValue keyboardFunctions[] = {
+        {"Teleport", cfg.teleportKey}, {"Record Position", cfg.recordKey},
+        {"Savestate Save", cfg.savestateSaveKey},
+        {"Savestate Load", cfg.savestateLoadKey},
+        {"Savestate Previous", cfg.savestatePrevSlotKey},
+        {"Savestate Next", cfg.savestateNextSlotKey},
+        {"Switch Players", cfg.switchPlayersKey},
+        {"Macro Record", cfg.macroRecordKey},
+        {"Macro Play", cfg.macroPlayKey}, {"Macro Slot", cfg.macroSlotKey},
+        {"UI Accept", cfg.uiAcceptKey}, {"UI Refresh", cfg.uiRefreshKey},
+        {"UI Exit", cfg.uiExitKey},
+        {"Framestep Pause", cfg.framestepPauseKey},
+        {"Framestep Step", cfg.framestepStepKey},
+    };
+    const NamedValue padFunctions[] = {
+        {"Pad Teleport", cfg.gpTeleportButton},
+        {"Pad Save Position", cfg.gpSavePositionButton},
+        {"Pad Switch Players", cfg.gpSwitchPlayersButton},
+        {"Pad Swap Positions", cfg.gpSwapPositionsButton},
+        {"Pad Macro Record", cfg.gpMacroRecordButton},
+        {"Pad Macro Play", cfg.gpMacroPlayButton},
+        {"Pad Macro Slot", cfg.gpMacroSlotButton},
+        {"Pad Menu", cfg.gpToggleMenuButton},
+        {"Pad Top Tab Previous", cfg.gpUiTopTabPrev},
+        {"Pad Top Tab Next", cfg.gpUiTopTabNext},
+        {"Pad Sub-tab Previous", cfg.gpUiSubTabPrev},
+        {"Pad Sub-tab Next", cfg.gpUiSubTabNext},
+    };
+    std::ostringstream conflictSummary;
+    int conflictCount = 0;
+    auto appendConflict = [&](const std::string& text) {
+        if (conflictCount++ != 0) conflictSummary << "; ";
+        conflictSummary << text;
+    };
+    for (std::size_t i = 0;
+         i < sizeof(keyboardFunctions) / sizeof(keyboardFunctions[0]); ++i) {
+        const int value = keyboardFunctions[i].value;
+        if (value > 0 && value < static_cast<int>(reservedVk.size()) &&
+            reservedVk[static_cast<std::size_t>(value)]) {
+            appendConflict(std::string(keyboardFunctions[i].name) +
+                           " uses EFZ key " + GetKeyName(value));
+        }
+        if (value < 0) continue;
+        for (std::size_t j = i + 1;
+             j < sizeof(keyboardFunctions) / sizeof(keyboardFunctions[0]); ++j) {
+            if (value == keyboardFunctions[j].value) {
+                appendConflict(std::string(keyboardFunctions[i].name) +
+                               " and " + keyboardFunctions[j].name +
+                               " both use " + GetKeyName(value));
+            }
+        }
+    }
+    for (std::size_t i = 0;
+         i < sizeof(padFunctions) / sizeof(padFunctions[0]); ++i) {
+        const int value = padFunctions[i].value;
+        if (value >= 0 && EFZInputBindings::Contains(
+                reservedPads.data(), reservedPadCount, value)) {
+            appendConflict(std::string(padFunctions[i].name) +
+                           " uses EFZ control " +
+                           Config::GetGamepadButtonName(value));
+        }
+        if (value < 0) continue;
+        for (std::size_t j = i + 1;
+             j < sizeof(padFunctions) / sizeof(padFunctions[0]); ++j) {
+            if (value == padFunctions[j].value) {
+                appendConflict(std::string(padFunctions[i].name) +
+                               " and " + padFunctions[j].name +
+                               " both use " +
+                               Config::GetGamepadButtonName(value));
+            }
+        }
+    }
+    static std::string lastConflictSummary;
+    const std::string summary = conflictSummary.str();
+    if (summary != lastConflictSummary) {
+        lastConflictSummary = summary;
+        if (summary.empty()) {
+            LogOut("[INPUT][BIND_AUDIT] EFZ P1/P2 and mod function bindings are conflict-free", true);
+        } else {
+            LogOut("[INPUT][BIND_AUDIT] " + std::to_string(conflictCount) +
+                   " conflict(s) in existing config (not auto-rewritten): " + summary, true);
+        }
+    }
     return true;
 }
 

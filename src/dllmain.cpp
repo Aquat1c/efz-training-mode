@@ -7,6 +7,7 @@
 #include "../include/utils/xp_compat.h"
 #include "../include/core/memory.h"
 #include "../include/utils/utilities.h"
+#include "../include/gui/framebar.h"
 #include "../include/input/input_buffer.h"
 #include "../include/core/logger.h"
 #include "../include/game/frame_monitor.h"
@@ -23,15 +24,21 @@
 #include "../include/input/input_hook.h" 
 #include "../3rdparty/minhook/include/MinHook.h" 
 #include "../include/utils/bgm_control.h"
+#include "../include/utils/audio_control.h"
+#include "../include/utils/extended_config_bridge.h"
 #include "../include/game/game_state.h"
 #include "../include/core/globals.h"  
 #include "../include/game/collision_hook.h"
+#include "../include/game/hud_disable.h"
+#include "../include/game/collision_display.h"
 #include "../include/game/practice_hotkey_gate.h"
 #include "../include/game/practice_offsets.h"
+#include "../include/utils/crash_handler.h"
 #include "../include/utils/debug_log.h"
 #include "../include/game/efzrevival_addrs.h"
 #include "../include/input/framestep.h"
 #include "../include/game/savestate_hook.h"
+#include "../include/game/practice_menu/practice_menu.h"
 // forward declaration for overlay gate
 namespace PracticeOverlayGate { void EnsureInstalled(); void SetMenuVisible(bool); }
 #pragma comment(lib, "winmm.lib")
@@ -101,10 +108,7 @@ static DWORD WINAPI DelayedInitializationThreadProc(LPVOID param) {
 void DelayedInitialization(HMODULE hModule) {
     try {
         WriteStartupLog("Delayed initialization thread entered");
-
-        // Short delay to ensure the game has started properly
-        Sleep(1500);
-        WriteStartupLog("Starting delayed initialization");
+        WriteStartupLog("Starting early initialization");
 
         // Initialize logging system (starts title updater thread)
         WriteStartupLog("Initializing logging system...");
@@ -112,6 +116,8 @@ void DelayedInitialization(HMODULE hModule) {
         WriteStartupLog("Logging system initialized");
         WriteStartupLog(XPCompat::GetRuntimeSummary());
         LogOut(XPCompat::GetRuntimeSummary(), true);
+
+        CrashHandler::WarmupSymbolMaps();
 
         // Initialize configuration system first so we can gate file logging
         InitializeConfig();
@@ -154,9 +160,69 @@ void DelayedInitialization(HMODULE hModule) {
             return; // Early exit if MinHook fails
         }
         LogOut("[SYSTEM] MinHook initialized successfully.", true);
+
+        // The unfinished trial/tutorial flow is retained for future work, but
+        // default builds leave EFZ's title screen and vanilla Practice entry
+        // untouched. Opting in also enables the title update detour, Practice
+        // case patch, and direct-Loading bootstrap used exclusively by that flow.
+#if defined(EFZ_ENABLE_EXPERIMENTAL_TRIAL_TUTORIAL)
+        {
+            constexpr DWORD kTitleHookWindowMs = 2000;
+            constexpr DWORD kTitleHookRetryMs = 50;
+            const DWORD titleWaitStart = GetTickCount();
+            bool titleHooked = false;
+            while ((GetTickCount() - titleWaitStart) < kTitleHookWindowMs) {
+                try {
+                    if (PracticeMenu::Install()) { titleHooked = true; break; }
+                } catch (...) {
+                    LogOut("[SYSTEM] Exception while installing practice menu hook (early).", true);
+                    break;
+                }
+                Sleep(kTitleHookRetryMs);
+            }
+            if (titleHooked) {
+                LogOut("[PRACTICE_MENU] Title hook installed early (pre-stabilize)", true);
+            } else {
+                LogOut("[PRACTICE_MENU] Title hook not installed within early window (unrecognized title build?)", true);
+            }
+        }
+#else
+        LogOut("[PRACTICE_MENU] Title patch and trial/tutorial modes are disabled for this build", true);
+#endif
+
+        bool audioHooksReady = false;
+        AudioControl::HookInstallResult audioHookResult = AudioControl::HookInstallResult::Failed;
+        // Install only the four EFZ audio hooks that Revival does not own.
+        // playSoundBuffer/setSoundVolume must remain pristine until the delayed
+        // host/version resolution below; otherwise Revival can copy MinHook's
+        // relative JMP into its own trampoline without relocating it.
+        try {
+            const uintptr_t efzBase = GetEFZBase();
+            audioHookResult = AudioControl::InstallHooks(
+                efzBase,
+                AudioControl::HookInstallPhase::CommonOnly);
+            LogOut(std::string("[AUDIO] Early common-hook phase result=")
+                   + AudioControl::HookInstallResultName(audioHookResult)
+                   + "; contested audio ownership remains deferred", true);
+        } catch (...) {
+            LogOut("[AUDIO] Exception while installing early non-conflicting audio hooks.", true);
+        }
+
+        // Keep the original stabilization delay, but deliberately do not touch
+        // Revival's two contested EFZ entrypoints anywhere in this window.
+        {
+            constexpr DWORD kStartupStabilizeDelayMs = 1500;
+            Sleep(kStartupStabilizeDelayMs);
+        }
+        WriteStartupLog("Starting delayed initialization");
         
-        // Initialize framestep system (vanilla only)
+        // Initialize framestep system (vanilla / supported Revival)
         Framestep::Initialize();
+        CollisionDisplay::Initialize();
+
+        // Suppress EFZ DirectInput battle hotkeys while our menu is open and
+        // support menu-driven front-end exits.
+        EnsureFrontendControlHooksInstalled();
 
         // Attempt to install Practice hotkey gate (will succeed only after EfzRevival.dll present)
         try {
@@ -171,38 +237,14 @@ void DelayedInitialization(HMODULE hModule) {
             LogOut("[HOTKEY] Exception while installing practice hotkey gate", true);
         }
 
-        // Attempt to install savestate hooks (for tracking save/load state in Practice mode)
+        // Initialize both the mod-owned custom savestate backend and the
+        // Revival hook fallback/tracking path.
         try {
-            if (SavestateHook::Install()) {
-                LogOut("[SAVESTATE] Savestate hooks installed successfully", true);
-            } else {
-                LogOut("[SAVESTATE] Savestate hooks not installed (unsupported version or EfzRevival not loaded)", true);
-            }
+            const bool revivalReady = SavestateHook::Install();
+            LogOut(std::string("[SAVESTATE] Revival hooks=") + (revivalReady ? "ready" : "not-ready"), true);
         } catch (...) {
-            LogOut("[SAVESTATE] Exception while installing savestate hooks", true);
+            LogOut("[SAVESTATE] Exception while initializing savestate systems", true);
         }
-
-        // Install hooks (with guards)
-        try {
-            InstallInputHook();
-        } catch (...) {
-            LogOut("[SYSTEM] Exception while installing input hook.", true);
-        }
-        try {
-            InstallCollisionHook();
-        } catch (...) {
-            LogOut("[SYSTEM] Exception while installing collision hook.", true);
-        }
-        try {
-            StartBGMSuppressionPoller();
-        } catch (...) {
-            LogOut("[SYSTEM] Exception while starting BGM suppression poller.", true);
-        }
-
-        // Safety baseline: if a previous injected session left FM bypass patched,
-        // restore the original HP checks before this runtime decides whether to
-        // reapply it for local practice.
-        ForceRestoreFinalMemoryHPBypass("startup baseline");
 
         RefreshNetplayRuntimeState();
         {
@@ -230,6 +272,78 @@ void DelayedInitialization(HMODULE hModule) {
         } else {
             LogOut("[NETPLAY] Startup entering active local mode", true);
         }
+
+        // Install hooks (with guards)
+        try {
+            InstallInputHook();
+        } catch (...) {
+            LogOut("[SYSTEM] Exception while installing input hook.", true);
+        }
+        try {
+            InstallCollisionHook();
+        } catch (...) {
+            LogOut("[SYSTEM] Exception while installing collision hook.", true);
+        }
+        try {
+            HudDisable::Install();
+        } catch (...) {
+            LogOut("[SYSTEM] Exception while installing HUD-disable hook.", true);
+        }
+        // When experimental trial/tutorial support is enabled, its title hook is
+        // installed in the early monitored window immediately after MH_Initialize.
+        try {
+            if (!audioHooksReady) {
+                const uintptr_t efzBase = GetEFZBase();
+                audioHookResult = AudioControl::InstallHooks(
+                    efzBase,
+                    AudioControl::HookInstallPhase::HostResolved);
+                for (int attempt = 0;
+                     audioHookResult == AudioControl::HookInstallResult::Deferred && attempt < 20;
+                     ++attempt) {
+                    Sleep(50);
+                    audioHookResult = AudioControl::InstallHooks(
+                        efzBase,
+                        AudioControl::HookInstallPhase::HostResolved);
+                }
+                audioHooksReady = audioHookResult == AudioControl::HookInstallResult::Ready;
+                if (audioHooksReady) {
+                    LogOut("[AUDIO] Runtime audio ownership resolved and hooks are ready", true);
+                } else {
+                    LogOut(std::string("[AUDIO] Runtime audio ownership result=")
+                           + AudioControl::HookInstallResultName(audioHookResult), true);
+                }
+            }
+
+            // The four common hooks and the absolute DirectSound volume sync do
+            // not depend on ownership of playSoundBuffer/setSoundVolume.  Keep
+            // them active while a late Revival host is deliberately deferred.
+            if (audioHookResult != AudioControl::HookInstallResult::Suppressed) {
+                bool audioReady = AudioControl::EnableVolumeApplicationIfSoundReady(0, "delayed initialization");
+                for (int attempt = 0; !audioReady && attempt < 20; ++attempt) {
+                    Sleep(50);
+                    audioReady = AudioControl::EnableVolumeApplicationIfSoundReady(0, "delayed initialization poll");
+                }
+
+                if (audioReady) {
+                    AudioControl::ApplyConfiguredVolumesNow();
+                } else {
+                    LogOut("[AUDIO] Runtime volume sync remains deferred; EFZ sound buffers are not ready yet"
+                           " (contested hook ownership may still be pending).", true);
+                }
+            }
+        } catch (...) {
+            LogOut("[AUDIO] Exception while applying runtime audio settings.", true);
+        }
+        try {
+            StartBGMSuppressionPoller();
+        } catch (...) {
+            LogOut("[SYSTEM] Exception while starting BGM suppression poller.", true);
+        }
+
+        // Safety baseline: if a previous injected session left FM bypass patched,
+        // restore the original HP checks before this runtime decides whether to
+        // reapply it for local practice.
+        ForceRestoreFinalMemoryHPBypass("startup baseline");
 
     // Final Memory HP bypass is now manual via Debug tab to avoid unintended changes.
 
@@ -262,6 +376,8 @@ void DelayedInitialization(HMODULE hModule) {
             try {
                 if (DirectDrawHook::InitializeD3D9()) {
                     LogOut("[SYSTEM] D3D9 Overlay system initialized.", true);
+                } else if (DirectDrawHook::WasLastD3D9InitDeferredForNetplay()) {
+                    LogOut("[SYSTEM] D3D9 overlay initialization deferred because netplay suspend is active; resume path will retry.", true);
                 } else {
                     LogOut("[SYSTEM] Failed to initialize D3D9 Overlay system.", true);
                     static bool s_warnedNoD3D9 = false;
@@ -303,11 +419,15 @@ void InitializeConfig() {
     LogOut("[SYSTEM] Initializing configuration system...", true);
     if (Config::Initialize()) {
         LogOut("[SYSTEM] Configuration loaded successfully", true);
+        ExtendedConfigBridge::Refresh(true);
+        ExtendedConfigBridge::ImportAudioSettingsIfAvailable(true);
         
         // Apply settings
         detailedLogging = Config::GetSettings().detailedLogging;
     // Keep file debug logging in sync with config flag
     DebugLog::g_EnableDebugLog = Config::GetSettings().enableDebugFileLog;
+    // FrameBar overlay enable mirror
+    FrameBar::g_enabled.store(Config::GetSettings().showFrameBar);
     // Console visibility will be handled post-init in DelayedInitialization
     }
     else {
@@ -321,8 +441,12 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
     case DLL_PROCESS_ATTACH:
     // Keep our module handle available for any future runtime services that need it.
     g_hSelfModule = hModule;
+        CrashHandler::Install(hModule);
         WriteEarlyLoaderTrace("DLL_PROCESS_ATTACH reached");
-        DisableThreadLibraryCalls(hModule);
+        // The XP build links the static CRT (/MT). Microsoft explicitly
+        // disallows DisableThreadLibraryCalls for that configuration; leave
+        // normal thread notifications enabled instead of relying on a failed
+        // suppression call.
         if (HANDLE initThread = CreateThread(nullptr, 0, DelayedInitializationThreadProc, hModule, 0, nullptr)) {
             WriteEarlyLoaderTrace("Delayed initialization thread created");
             CloseHandle(initThread);
@@ -332,15 +456,23 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
         }
         break;
     case DLL_PROCESS_DETACH:
-        // Signal shutdown to all threads
+        // Signal-only during process termination. Windows is already reclaiming
+        // process resources and DllMain holds the loader lock; waiting for
+        // workers, flushing streams, or asking MinHook/DirectX to unload here
+        // can deadlock the exit path.
         g_isShuttingDown = true;
         g_featuresEnabled = false;
+        if (lpReserved != nullptr) {
+            break;
+        }
 
-        // Shutdown debug log
+        // Explicit FreeLibrary remains a legacy best-effort path. A future
+        // injector-facing shutdown API must quiesce and join every worker before
+        // calling FreeLibrary; do not use this branch as that lifecycle API.
         DebugLog::Shutdown();
 
         // CRITICAL: Stop buffer freezing FIRST
-        StopBufferFreezing();
+        StopBufferFreezingIgnoringTutorialLease();
         ForceRestoreFinalMemoryHPBypass("DLL_PROCESS_DETACH");
 
         // Then restore P2 control
@@ -350,8 +482,11 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
 
         // Clean up hooks safely
         try {
+            PracticeMenu::Uninstall();
             RemoveInputHook();
             RemoveCollisionHook();
+            HudDisable::Remove();
+            CollisionDisplay::Shutdown();
             StopBGMSuppressionPoller();
             SavestateHook::Uninstall();
             // Stop any active overlay rendering
@@ -364,6 +499,11 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
 
         // Give threads a moment to clean up
         Sleep(100);
+
+        // Revival callback hooks hold an explicit module reference. Remove
+        // those hooks first, but never call FreeLibrary while DllMain owns the
+        // loader lock; retain the reference safely until process exit.
+        AudioControl::ShutdownHooks(false);
 
         // Uninitialize MinHook
         MH_Uninitialize();

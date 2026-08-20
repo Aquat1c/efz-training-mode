@@ -5,7 +5,13 @@
 // for functions/globals we call or hook, switching based on the detected EfzRevival version.
 // For unknown/unsupported versions, these return 0 so callers can skip the operation safely.
 
-// Returns the correct unfreeze parameter for the patch toggler: 1 for 1.02e, 3 for 1.02h/i.
+// Whether the version has the legacy large Practice routing layout used by
+// SwitchPlayers. 1.02j is supported for critical training hooks but must use
+// the engine-only side-switch path.
+bool EFZ_SupportsNativePracticeSideSwitch();
+
+// Returns the correct normal-speed parameter for the patch toggler.
+// 1.02f subframe, 1.02g, and h/i use 3 for normal speed; 1.02e/classic-f use 1.
 int EFZ_PatchToggleUnfreezeParam();
 
 uintptr_t EFZ_RVA_PatchToggler();
@@ -19,6 +25,7 @@ uintptr_t EFZ_RVA_MapReset();
 uintptr_t EFZ_RVA_CleanupPair();
 uintptr_t EFZ_RVA_RenderBattleScreen();
 uintptr_t EFZ_RVA_GameModePtrArray();
+uintptr_t EFZ_RVA_RenderContextGlobal();
 // Deprecated: this accessor intentionally returns 0.
 // The previously used RVAs overlap Revival session-pointer globals and are not
 // valid Practice-controller pointers.
@@ -27,10 +34,14 @@ uintptr_t EFZ_RVA_PracticeControllerPtr();
 uintptr_t EFZ_RVA_PracticeDispatcher();
 
 // Version-aware Practice controller offsets.
-// Pause/step fields are stable across the supported Revival versions.
-uintptr_t EFZ_Practice_PauseFlagOffset();    // 0xB4
-uintptr_t EFZ_Practice_StepFlagOffset();     // 0xAC
-uintptr_t EFZ_Practice_StepCounterOffset();  // 0xB0
+// J uses its compact MinGW Practice layout; accessors return its verified fields.
+uintptr_t EFZ_Practice_PauseFlagOffset();    // e-i: 0xB4, j: 0xDC
+uintptr_t EFZ_Practice_StepFlagOffset();     // e-i: 0xAC, j: 0xD4
+uintptr_t EFZ_Practice_StepCounterOffset();  // e-i: 0xB0, j: 0xD8
+uintptr_t EFZ_Practice_PauseHotkeyOffset();  // e/f/g/h: 0x1D4, i: 0x1D8
+uintptr_t EFZ_Practice_StepHotkeyOffset();   // e/f/g/h: 0x1D8, i: 0x1DC
+uintptr_t EFZ_Practice_SaveHotkeyOffset();   // e/f/g/h: 0x1DC, i: 0x1E0
+uintptr_t EFZ_Practice_LoadHotkeyOffset();   // e/f/g/h: 0x1E0, i: 0x1E4
 
 // Side selection and related Practice controller fields
 uintptr_t EFZ_Practice_LocalSideOffset();    // 0x680 for 1.02e/h, 0x688 for 1.02i

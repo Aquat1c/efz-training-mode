@@ -76,6 +76,7 @@
 #define WALK_BACK_ID 2
 #define CROUCH_ID 3
 #define CROUCH_TO_STAND_ID 7
+#define PREJUMP_ID 8
 #define LANDING_ID 13
 #define STAND_GUARD_ID 151
 #define CROUCH_GUARD_ID 153
@@ -109,11 +110,14 @@
 #define FORWARD_JUMP_ID 5
 #define BACKWARD_JUMP_ID 6
 #define FALLING_ID 9
+#define DOUBLE_JUMP_NEUTRAL_ID 14
+#define DOUBLE_JUMP_FWD_ID 15
+#define DOUBLE_JUMP_BACK_ID 16
 // Multiple landing variants 10/11/12 are used; keep 13 as legacy/alt
 #define LANDING_1_ID 10
 #define LANDING_2_ID 11
 #define LANDING_3_ID 12
-#define LANDING_ID 13 
+#define LANDING_ID 13
 
 // Special Stun States
 #define FIRE_STATE 81
@@ -169,12 +173,167 @@
 #define IC_FLASH_DURATION 89        // 29.66 visual frames * 3
 #define SUPERFLASH_BLACK_BG_OFFSET 1  // First subframe of black bg isn't part of freeze
 
-// Untech memory offset
+// Untech memory offset (also: "recovery cooldown" in canPerformAirRecovery -
+// gates when the defender can air-tech).
 #define UNTECH_OFFSET 0x124
 
-// Blockstun/guard freeze counter (short)
-// As per CE entry: [efz.exe + EFZ_BASE_OFFSET_P1/P2] + 0x14A
+// Multi-purpose state-timer (short, +0x14A/330). On the *defender* this is the
+// remaining blockstun/hitstun freeze; on the *attacker* it's the hit-hitstop
+// frames remaining (set from attack_data +194 / +196 the moment the attack
+// resolves - see processProjectileCollision in efz.c). Decremented every
+// non-frozen frame for whichever player it belongs to. Despite the historical
+// "blockstun" name, this is the field that drives **shared hit-hitstop**:
+// when both players have +0x14A > 0 the engine doesn't advance gameplay timers
+// (mirrors MBAACC's `nSharedHitstop` heuristic).
 #define BLOCKSTUN_OFFSET 0x14A
+#define HITSTOP_FREEZE_OFFSET BLOCKSTUN_OFFSET   // alias for attacker-side reads
+
+// "I am causing the screen to freeze" counter (short, +0x14C/332).
+// Set by character scripts that enter Initial Charge / Super flash to fixed
+// durations (60/90/120 internal frames). While > 0 on either player the
+// engine pauses the flash visual counter (+0x30C4) and the screen is frozen
+// because of that player's super.
+// Decompilation: efz.c:14432, 14538, 14577 (case 0xAB = AIR_IC_ID), 16422 etc.
+//                set via `*(_WORD*)(this+332) = 60/90/120`.
+//                Read at efz.c:195038 to gate flash counter ticks.
+// NOT to be confused with hit-hitstop, which lives in BLOCKSTUN_OFFSET +0x14A.
+#define SUPERFLASH_FREEZE_OFFSET 0x14C
+// Backwards-compat alias retained while we migrate consumers.
+#define HITSTOP_OFFSET SUPERFLASH_FREEZE_OFFSET
+
+// Air time counter (short). Frames since the character last touched the ground.
+// canPerformRecoilGuard uses `>= 30` as a threshold for "in air too long".
+#define AIRTIME_OFFSET 0x14E
+
+// Combo timer (short). Counts down from 180 frames after each hit; when it
+// reaches 0 the combo counter resets. (decompilation: applyAttackDamage)
+#define PLAYER_COMBO_TIMER_OFFSET 0x104
+
+// Total combo damage so far (DWORD).
+#define PLAYER_COMBO_DAMAGE_OFFSET 0x100
+
+// Combo length the *attacker* has on the opponent (short).
+#define PLAYER_COMBO_COUNTER_OFFSET 0x174
+
+// Combo damage scaling multiplier (double, displayed as N/100).
+#define PLAYER_COMBO_DAMAGE_SCALING_OFFSET 0x178
+
+// Superflash / IC freeze counter (DWORD). Counts down once per non-frozen frame.
+#define PLAYER_SUPERFLASH_COUNTER_OFFSET 0x30C4
+
+// ===== Hit-resolution / RG state (decompiled from sub_767F60) =====
+//
+// updateCharacterTimers (efz.c:9925) and the post-hit handler at
+// processProjectileCollision/handlePlayerToPlayerCollision expose several
+// short-counter fields that decrement per non-frozen visual frame. Names are
+// based on observed semantics, not the decompilation comments (which are
+// AI-generated and unreliable).
+
+// "Cooldown" / lockout counter family (each decrements while opponent's
+// hitstop is 0). Their write sites confirm specific semantics:
+//   +0x138 (312)  guard-cancel / "no-RG" lockout - gates RG eligibility
+//                 (wiki: 10F cooldown after a missed RG attempt)
+//   +0x130 (304)  byte-sized frame lockout refreshed by frame hit flags and
+//                 checked by collision code for some airborne interactions
+//   +0x13A (314)  generic state lockout - set to 1/2 by character scripts
+//   +0x13C (316)  "in special state" - checked by hit handler to forbid RG
+//   +0x13E (318)  per-state cooldown
+//   +0x140 (320)  per-state cooldown
+#define PLAYER_FRAME_LOCKOUT_OFFSET    0x130
+#define PLAYER_RG_COOLDOWN_OFFSET     0x138
+#define PLAYER_STATE_LOCKOUT_OFFSET   0x13A
+#define PLAYER_SPECIAL_STATE_OFFSET   0x13C
+#define PLAYER_STATE_COOLDOWN3_OFFSET 0x13E
+#define PLAYER_STATE_COOLDOWN4_OFFSET 0x140
+
+// Producer-dependent collision/result latch (DWORD). Diagnostic only: this is
+// not a stable contact-result enum and a raw value must not satisfy a typed
+// mission predicate by itself. Observed writers include:
+//   0 = no latched value
+//   2 = block, RG, or Guard Point paths
+//   3 = ordinary hit paths; some FIC scripts also force 3 on whiff
+//   5 = entity-interaction paths
+//   6 = throw paths and character-specific counter paths
+//   7 = a hit-path variant
+// Direct player collision usually writes the attacker's field, but scripts and
+// entity resolvers write it too. Use resolver-local evidence for exact results.
+#define PLAYER_HIT_STATE_OFFSET   0x168
+
+// Attacker move countdown - decremented by 1 every time an attack resolves
+// (RG / block / hit / throw). Used by the engine to time "attack ended" state.
+#define PLAYER_ATTACK_TIMER_OFFSET 0x16C
+
+// Guard / countered flag (DWORD).
+//   0 = not in a guard state
+//   1 = in block/guard state OR (on the *attacker*) "marked as countered" by RG
+#define PLAYER_GUARD_FLAG_OFFSET   0x170
+
+// Guard Gauge (float, max 360). Depletes per subframe at:
+//   neutral             0.075
+//   grounded hitstun    0.2
+//   air hitstun         1.0
+// Refilled by chip damage (BlockedMoveBaseDamage / 30) per blocked move.
+#define PLAYER_GUARD_GAUGE_OFFSET  0x134
+
+// Counter-hit flag (DWORD) on the *attacker*. Set when their attack landed on
+// a defender flagged as counter-hit eligible (defender frame_data+176 bit
+// 0x2000). Cleared at the start of every collision pass.
+#define PLAYER_COUNTER_HIT_FLAG_OFFSET 0x144
+
+// Knockback velocities applied by the most recent hit (set on the defender).
+#define PLAYER_HIT_XVEL_OFFSET 0xC0   // double
+#define PLAYER_HIT_YVEL_OFFSET 0xC8   // double
+#define PLAYER_PHYSICS_FLAG_OFFSET 0xD0  // DWORD set to 1 after a hit lands
+
+// Per-hit knockdown flags written by the hit handler.
+#define PLAYER_WALLBOUNCE_FLAG_OFFSET 0x128 // DWORD (attack flag bit 0x400)
+#define PLAYER_GROUND_BOUNCE_FLAG_OFFSET 0x12C // DWORD (attack flag bit 0x800)
+
+// Pre-hit HP snapshot - combo display reads this minus current HP for damage.
+// Already exists as HP_BAR_OFFSET (0x10C); see existing constant above.
+
+// ===== Attack-data fields (within frame_data 200-byte block) =====
+// Verified from `applyAttackDamage` and the hit handler. All offsets here are
+// relative to the start of the same 200-byte frame_data block whose first 80
+// bytes hold the 5 hurtboxes and the next 64 bytes hold the 4 attack boxes.
+#define ATTACK_DATA_BASE_DAMAGE_OFFSET    0xA0  // short
+#define ATTACK_DATA_CHIP_DAMAGE_OFFSET    0xA8  // short
+#define ATTACK_DATA_FLAGS_OFFSET          0xAA  // word (already FRAME_ATTACK_PROPS_OFFSET)
+#define ATTACK_DATA_AIR_HIT_OVERRIDE      0xAC  // short - defender moveID for air-hit reaction
+#define ATTACK_DATA_GROUND_HIT_OVERRIDE   0xAE  // short
+#define ATTACK_DATA_HIT_FLAGS_OFFSET      0xB0  // word (already FRAME_HIT_PROPS_OFFSET)
+#define ATTACK_DATA_GUARD_FLAGS_OFFSET    0xB2  // word - stun duration scalar
+#define ATTACK_DATA_METER_GAIN_BLOCK      0xB6  // short
+#define ATTACK_DATA_KNOCKBACK_X           0xB8  // float
+#define ATTACK_DATA_KNOCKBACK_Y           0xBC  // float
+#define ATTACK_DATA_ATTACKER_HITSTOP      0xC2  // short
+#define ATTACK_DATA_DEFENDER_HITSTOP      0xC4  // short
+
+// Newly-mapped attack flag bits (frame_data + 0xAA, set on attacker frame):
+#define FRAME_ATTACK_FLAG_THROW_ATTACK    0x0100  // throw vs strike
+#define FRAME_ATTACK_FLAG_WALLBOUNCE      0x0400
+#define FRAME_ATTACK_FLAG_GROUND_BOUNCE   0x0800
+#define FRAME_ATTACK_FLAG_COUNTER_MOVE    0x2000  // CH-causing move
+
+// Newly-mapped hit-property flag bits (frame_data + 0xB0):
+#define FRAME_HIT_FLAG_COUNTER_SETUP      0x0200  // counter-eligible state
+#define FRAME_HIT_FLAG_AIRTHROW_VULN      0x0800
+#define FRAME_HIT_FLAG_GROUND_THROW_VULN  0x1000
+#define FRAME_HIT_FLAG_COUNTER_VULN       0x2000  // defender in CH-vulnerable state
+
+// Frame-data block flags (within the 200-byte frame_data block at +80 attack-boxes).
+//   ATTACK_PROPS_OFFSET (170/0xAA) low byte:
+//     0x01 = stand-blockable, 0x02 = crouch-blockable, 0x04 = "special anim",
+//     0x40 = airborne-attack flag, 0x80 = block-disable
+//   HIT_PROPS_OFFSET (176/0xB0):
+//     0x10 = blockable hit, 0x20 = defender immune
+#define FRAME_ATTACK_FLAG_STAND_BLOCKABLE   0x0001
+#define FRAME_ATTACK_FLAG_CROUCH_BLOCKABLE  0x0002
+#define FRAME_ATTACK_FLAG_SPECIAL_ANIM      0x0004
+#define FRAME_ATTACK_FLAG_AIRBORNE          0x0040
+#define FRAME_ATTACK_FLAG_BLOCK_DISABLE     0x0080
+#define FRAME_HIT_FLAG_BLOCKABLE            0x0010
+#define FRAME_HIT_FLAG_DEFENDER_IMMUNE      0x0020
 
 // Tech recovery frames
 #define AIRTECH_VULNERABLE_FRAMES 16
@@ -235,6 +394,13 @@
 #define CROUCHING_BLOCK_LVL2_B 155  // Same as CROUCH_GUARD_STUN2
 
 // Dash states
+// Verified universal movement IDs.  The older START/RECOVERY aliases below
+// predate the move-ID audit and are retained for source compatibility only;
+// 164/166 are directional dash states, not recovery phases.
+#define GROUND_FORWARD_DASH_ID 163
+#define GROUND_BACKWARD_DASH_ID 164
+#define AIR_FORWARD_DASH_ID 165
+#define AIR_BACKWARD_DASH_ID 166
 #define FORWARD_DASH_START_ID 163
 #define FORWARD_DASH_RECOVERY_ID 164
 #define FORWARD_DASH_RECOVERY_SENTINEL_ID 178 // New: variant recovery state used for clean control handoff
@@ -243,6 +409,9 @@
 // Character-specific exceptions
 // Kaori's forward dash start state uses MoveID 250 instead of the universal 163.
 #define KAORI_FORWARD_DASH_START_ID 250
+// Kaori's 44~66 Recoil Ducking destination.  EFZ enters this only when a
+// native forward dash command is consumed during backdash 164, frame 4/5.
+#define KAORI_RECOIL_DUCK_ID 251
 
 // Frame advantage constants (internal frames)
 #define FRAME_ADV_LVL1_BLOCK 9
@@ -279,7 +448,12 @@
 #define BASE_ATTACK_2D        211   // Crouching D
 #define BASE_ATTACK_JD        212   // Jumping D
 
-#define BASE_AIRTHROW         241   // Air throw
+// Universal air-throw action: 248 is the attempt/startup; a successful catch
+// transitions the thrower to 249. Grade 249 so a missed check that becomes j.C
+// cannot satisfy an air-throw objective.
+#define AIR_THROW_STARTUP_ID  248
+#define AIR_THROW_SUCCESS_ID  249
+#define BASE_AIRTHROW         AIR_THROW_SUCCESS_ID
 
 // Auto-action trigger points
 #define TRIGGER_NONE          0
@@ -322,9 +496,11 @@
 #define ACTION_QCF           20
 #define ACTION_DP            21
 #define ACTION_QCB           22
-#define ACTION_421           23  // Half-circle down (421)
-#define ACTION_SUPER1        24  // 41236 (HCF)
-#define ACTION_SUPER2        25  // 214236 hybrid (replaces removed 63214)
+#define ACTION_421           23  // 421 command family
+#define ACTION_SUPER1        24  // Legacy name/value: 41236 (ordinary special family)
+#define ACTION_41236         ACTION_SUPER1
+#define ACTION_SUPER2        25  // Legacy name/value: 2141236 super family
+#define ACTION_2141236       ACTION_SUPER2
 #define ACTION_236236        26  // Double QCF
 #define ACTION_214214        27  // Double QCB
 #define ACTION_JUMP          28
@@ -338,6 +514,20 @@
 #define ACTION_22            36
 #define ACTION_4123641236    37
 #define ACTION_6321463214    38
+// Character-specific normal recipes.  These are appended so saved ACTION_*
+// values and legacy random-pool bit positions never change.
+#define ACTION_1X            39
+#define ACTION_3X            40
+#define ACTION_J2X           41
+#define ACTION_J6X           42
+#define ACTION_66X           43
+#define ACTION_662X          44
+#define ACTION_664X          45
+// Kaori-only staged recipe: native 44 first, then native 66 during the
+// backdash action's frame-index 4/5 cancel window.  It cannot be represented
+// faithfully as one combined input-history pattern.
+#define ACTION_KAORI_RECOIL_DUCK 46
+#define ACTION_COUNT         47
 
 // Default delay for triggers
 #define DEFAULT_TRIGGER_DELAY 0  // Default delay for all triggers
@@ -400,8 +590,8 @@
 #define CHAR_ID_MIO       9
 #define CHAR_ID_MISHIO    10
 #define CHAR_ID_MISUZU    11
-#define CHAR_ID_MIZUKA    12  // Actually Nagamori in files
-#define CHAR_ID_NAGAMORI  13
+#define CHAR_ID_MIZUKA        12  // Mizuka Nagamori; resource/file name "nagamori"
+#define CHAR_ID_UNKNOWN_BOSS  13  // Boss UNKNOWN; resource/file name "mizuka"
 #define CHAR_ID_NANASE    14  // Actually Rumi in files
 #define CHAR_ID_EXNANASE  15  // Actually Doppel in files
 #define CHAR_ID_NAYUKI    16  // Actually Nayuki (Neyuki) in files
@@ -410,7 +600,7 @@
 #define CHAR_ID_AYU       19
 #define CHAR_ID_MAI       20
 #define CHAR_ID_MAYU      21
-#define CHAR_ID_MIZUKAB   22  // Actually Unknown in files
+#define CHAR_ID_UNKNOWN   22  // Playable UNKNOWN; resource/file name "mizukab"
 #define CHAR_ID_KANO      23
 
 // Character-specific offsets
@@ -422,6 +612,13 @@
 // Maximum values
 #define IKUMI_BLOOD_MAX      8       // Blood ranges from 0-8
 #define IKUMI_GENOCIDE_MAX   1260    // Depletes by 3 every frames
+
+// Shiori's character-specific shield gauge reuses the same per-character resource
+// slot as Ikumi's blood meter (player + 0x314C), but on a much larger scale.
+// Freezing it at this value keeps the shield from ever depleting (user-verified in
+// Cheat Engine: freeze [efz.exe+0x390104]+0x314C at 1992 = infinite Shiori shield).
+#define SHIORI_SHIELD_OFFSET IKUMI_BLOOD_OFFSET  // 0x314C, shared per-char resource slot
+#define SHIORI_SHIELD_FULL   1992                // "full" shield value that never empties
 
 // Patch configuration for infinite blood mode
 #define IKUMI_GENOCIDE_TIMER_ADDR 0x2A718    // Address to patch genocide timer decrement
@@ -496,6 +693,14 @@
 // Writing 99 here neutralizes any in-flight motion command recognition to prevent
 // unintended transitions after control handoffs or macro playback.
 #define MOTION_TOKEN_OFFSET 0x262
+
+// Air-mobility runtime counters. Decompilation shows both bytes reset on
+// landing (updateCharacterMovementState), and character scripts increment them
+// when air dashes / double jumps are consumed. Semantics vary slightly by
+// character, so display them as raw engine counters rather than treating them
+// as universal limits.
+#define AIR_MOBILITY_COUNTER1_OFFSET 0x159
+#define AIR_MOBILITY_COUNTER2_OFFSET 0x15A
 
 // Add these input offset constants after the existing offset definitions
 

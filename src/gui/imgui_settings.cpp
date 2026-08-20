@@ -12,6 +12,8 @@
 #include "../include/game/game_state.h"
 #include "../include/utils/debug_log.h"
 #include "../include/input/framestep.h"
+#include "../include/utils/audio_control.h"
+#include "../include/utils/extended_config_bridge.h"
 #include "../include/utils/network.h"
 #include <windows.h>
 #include <Xinput.h>
@@ -24,6 +26,94 @@ namespace ImGuiSettings {
     static constexpr uint32_t GP_RT_BIT = 0x20000; // Right Trigger
     static constexpr int GP_TRIGGER_THRESH = 30;
 
+    struct KeyboardCaptureState {
+        bool active = false;
+        bool armed = false;
+        std::string which;
+        bool prevPressed[256] = {};
+    };
+
+    static bool IsKeyboardBindableVk(int vk) {
+        if (vk <= 0) return false;
+        if (vk >= 0x01 && vk <= 0x06) return false;
+        if (vk == VK_SHIFT || vk == VK_LSHIFT || vk == VK_RSHIFT) return false;
+        if (vk == VK_CONTROL || vk == VK_LCONTROL || vk == VK_RCONTROL) return false;
+        if (vk == VK_MENU || vk == VK_LMENU || vk == VK_RMENU) return false;
+        if (vk == VK_LWIN || vk == VK_RWIN) return false;
+        if (vk == VK_CLEAR) return false;
+        if (vk == VK_ESCAPE) return false;
+        return true;
+    }
+
+    static void BeginKeyboardCapture(KeyboardCaptureState& state, const char* cfgKey) {
+        state.active = true;
+        state.armed = false;
+        state.which = cfgKey ? cfgKey : "";
+        for (int vk = 0; vk < 256; ++vk) {
+            state.prevPressed[vk] = (GetAsyncKeyState(vk) & 0x8000) != 0;
+        }
+    }
+
+    static void CancelKeyboardCapture(KeyboardCaptureState& state) {
+        state.active = false;
+        state.armed = false;
+        state.which.clear();
+    }
+
+    static bool PollKeyboardCapture(KeyboardCaptureState& state,
+                                    int& keyCode,
+                                    const char* cfgKey,
+                                    bool disallowFooterKeys = false) {
+        if (!state.active || state.which != (cfgKey ? cfgKey : "")) {
+            return false;
+        }
+
+        const bool escNow = (GetAsyncKeyState(VK_ESCAPE) & 0x8000) != 0;
+        const bool escWas = state.prevPressed[VK_ESCAPE];
+        state.prevPressed[VK_ESCAPE] = escNow;
+        if (escNow && !escWas) {
+            CancelKeyboardCapture(state);
+            return false;
+        }
+
+        bool anyHeld = false;
+        int captured = 0;
+        for (int vk = 0; vk < 256; ++vk) {
+            if (!IsKeyboardBindableVk(vk)) continue;
+
+            const bool now = (GetAsyncKeyState(vk) & 0x8000) != 0;
+            const bool was = state.prevPressed[vk];
+            state.prevPressed[vk] = now;
+
+            if (now) anyHeld = true;
+            if (state.armed && now && !was && captured == 0) {
+                captured = vk;
+            }
+        }
+
+        if (!state.armed) {
+            if (!anyHeld) state.armed = true;
+            return false;
+        }
+
+        if (captured == 0) {
+            return false;
+        }
+
+        if (disallowFooterKeys && (captured == VK_RETURN || captured == VK_SPACE)) {
+            LogOut("[CONFIG/UI] Disallowed footer key (Enter/Space) ignored", false);
+            CancelKeyboardCapture(state);
+            return false;
+        }
+
+        keyCode = captured;
+        char hexBuf[16];
+        snprintf(hexBuf, sizeof(hexBuf), "0x%X", keyCode);
+        Config::SetSetting("Hotkeys", cfgKey, hexBuf);
+        CancelKeyboardCapture(state);
+        return true;
+    }
+
     static void CheckboxApply(const char* label, bool& value, const char* section, const char* key) {
         if (ImGui::Checkbox(label, &value)) {
             Config::SetSetting(section, key, value ? "1" : "0");
@@ -32,15 +122,27 @@ namespace ImGuiSettings {
                 LogOut(std::string("[CONFIG/UI] detailedLogging set to ") + (value ? "true" : "false"), false);
             }
             else if (std::string(key) == "enableDebugFileLog") {
-                DebugLog::g_EnableDebugLog = value;
-                LogOut(std::string("[CONFIG/UI] enableDebugFileLog set to ") + (value ? "true" : "false"), false);
+                if (!DebugLog::SetEnabled(value)) {
+                    // Keep the persisted/UI state honest when the file could not be
+                    // opened. SetEnabled already reports the failure to the debugger.
+                    value = false;
+                    Config::SetSetting(section, key, "0");
+                    LogOut("[CONFIG/UI][SETUP-FAILURE] Could not enable efz_training_debug.log", false);
+                } else {
+                    LogOut(std::string("[CONFIG/UI] enableDebugFileLog set to ") +
+                           (value ? "true" : "false"), false);
+                }
             }
         }
     }
 
     static bool InputKeyHex(const char* label, int& keyCode, const char* setKeyName) {
         char buf[16] = {0};
-        snprintf(buf, sizeof(buf), "0x%X", keyCode);
+        if (keyCode < 0) {
+            snprintf(buf, sizeof(buf), "-1");
+        } else {
+            snprintf(buf, sizeof(buf), "0x%X", keyCode);
+        }
         ImGui::SetNextItemWidth(90);
         if (ImGui::InputText(label, buf, sizeof(buf))) {
             int parsed = Config::ParseKeyValue(buf);
@@ -49,32 +151,20 @@ namespace ImGuiSettings {
             return true;
         }
         ImGui::SameLine();
-        ImGui::TextDisabled("(%s)", GetKeyName(keyCode).c_str());
+        ImGui::TextDisabled("(%s)", keyCode < 0 ? "Disabled" : GetKeyName(keyCode).c_str());
         ImGui::SameLine();
         // Press-to-bind helper
-        static bool capturing = false;
-        static std::string capturingKey;
+        static KeyboardCaptureState captureState;
         std::string btnId = std::string("Bind##") + setKeyName;
-        if (!capturing) {
+        if (!captureState.active) {
             if (ImGui::Button(btnId.c_str())) {
-                capturing = true;
-                capturingKey = setKeyName;
+                BeginKeyboardCapture(captureState, setKeyName);
                 LogOut(std::string("[CONFIG/UI] Capturing key for ") + setKeyName + "... press any key", false);
             }
-        } else if (capturing && capturingKey == setKeyName) {
-            ImGui::TextColored(ImVec4(1,1,0,1), "Press any key...");
-            for (int vk = 0x01; vk <= 0xFE; ++vk) {
-                SHORT state = GetAsyncKeyState(vk);
-                if (state & 0x8000) {
-                    keyCode = vk;
-                    char hexBuf[16];
-                    snprintf(hexBuf, sizeof(hexBuf), "0x%X", keyCode);
-                    Config::SetSetting("Hotkeys", setKeyName, hexBuf);
-                    LogOut(std::string("[CONFIG/UI] ") + setKeyName + " bound to " + GetKeyName(keyCode) + " (" + hexBuf + ")", false);
-                    capturing = false;
-                    capturingKey.clear();
-                    break;
-                }
+        } else if (captureState.which == setKeyName) {
+            ImGui::TextColored(ImVec4(1,1,0,1), captureState.armed ? "Press any key..." : "Release all keys...");
+            if (PollKeyboardCapture(captureState, keyCode, setKeyName)) {
+                LogOut(std::string("[CONFIG/UI] ") + setKeyName + " bound to " + GetKeyName(keyCode), false);
             }
         }
         return false;
@@ -83,16 +173,16 @@ namespace ImGuiSettings {
     // Aggregate all XInput pads into a single logical mask with trigger pseudo-bits.
     static uint32_t PollAggregatedGamepadMask(uint32_t* padsConnectedMask = nullptr) {
         XInputShim::RefreshSnapshotOncePerFrame();
+        XInputShim::Snapshot snapshot{};
+        XInputShim::CopySnapshot(snapshot);
         uint32_t agg = 0;
-        uint32_t connected = 0;
+        const uint32_t connected = snapshot.connectedMask;
         for (int i = 0; i < 4; ++i) {
-            const XINPUT_STATE* st = XInputShim::GetCachedState(i);
-            if (st) {
-                connected |= (1u << i);
-                agg |= st->Gamepad.wButtons;
-                if (st->Gamepad.bLeftTrigger > GP_TRIGGER_THRESH) agg |= GP_LT_BIT;
-                if (st->Gamepad.bRightTrigger > GP_TRIGGER_THRESH) agg |= GP_RT_BIT;
-            }
+            if (!snapshot.IsConnected(i)) continue;
+            const XINPUT_STATE& state = snapshot.states[i];
+            agg |= state.Gamepad.wButtons;
+            if (state.Gamepad.bLeftTrigger > GP_TRIGGER_THRESH) agg |= GP_LT_BIT;
+            if (state.Gamepad.bRightTrigger > GP_TRIGGER_THRESH) agg |= GP_RT_BIT;
         }
         if (padsConnectedMask) *padsConnectedMask = connected;
         return agg;
@@ -105,28 +195,14 @@ namespace ImGuiSettings {
         ImGui::TextDisabled("[%s]", GetKeyName(keyCode).c_str());
         ImGui::SameLine();
         std::string btnId = std::string("Rebind##") + cfgKey;
-        static bool capturing = false; // shared (only one at a time)
-        static std::string which;
-        if (!capturing) {
-            if (ImGui::Button(btnId.c_str())) { capturing = true; which = cfgKey; }
-        } else if (capturing && which == cfgKey) {
+        static KeyboardCaptureState captureState;
+        if (!captureState.active) {
+            if (ImGui::Button(btnId.c_str())) { BeginKeyboardCapture(captureState, cfgKey); }
+        } else if (captureState.which == cfgKey) {
             ImGui::SameLine();
-            ImGui::TextColored(ImVec4(1,1,0,1), "Press a key (no Enter/Escape/Space)...");
-            for (int vk = 0x01; vk <= 0xFE; ++vk) {
-                SHORT st = GetAsyncKeyState(vk);
-                if (st & 0x8000) {
-                    if (vk == VK_RETURN || vk == VK_ESCAPE || vk == VK_SPACE) {
-                        LogOut("[CONFIG/UI] Disallowed footer key (Enter/Escape/Space) ignored", false);
-                        capturing = false; which.clear();
-                        break;
-                    }
-                    keyCode = vk;
-                    char hexBuf[16]; snprintf(hexBuf, sizeof(hexBuf), "0x%X", keyCode);
-                    Config::SetSetting("Hotkeys", cfgKey, hexBuf);
-                    LogOut(std::string("[CONFIG/UI] ") + cfgKey + " footer key -> " + GetKeyName(keyCode), false);
-                    capturing = false; which.clear();
-                    break;
-                }
+            ImGui::TextColored(ImVec4(1,1,0,1), captureState.armed ? "Press a key (no Enter/Space)..." : "Release all keys...");
+            if (PollKeyboardCapture(captureState, keyCode, cfgKey, true)) {
+                LogOut(std::string("[CONFIG/UI] ") + cfgKey + " footer key -> " + GetKeyName(keyCode), false);
             }
         }
     }
@@ -235,6 +311,28 @@ namespace ImGuiSettings {
                 }
                 ImGui::TextDisabled("Appears when the first Practice match starts");
 
+                float missionCountInSeconds =
+                    static_cast<float>(cfg.missionRecorderCountInMs) / 1000.0f;
+                ImGui::Text("Mission recording count-in:");
+                ImGui::SameLine();
+                ImGui::SetNextItemWidth(200);
+                if (ImGui::SliderFloat("##MissionRecordCountIn",
+                                       &missionCountInSeconds,
+                                       0.0f, 3.0f, "%.1f sec")) {
+                    const int rawMilliseconds = static_cast<int>(
+                        missionCountInSeconds * 1000.0f + 0.5f);
+                    const int milliseconds = ((rawMilliseconds + 50) / 100) * 100;
+                    Config::SetSetting("General", "missionRecorderCountInMs",
+                                       std::to_string(milliseconds));
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Reset##MissionRecordCountIn")) {
+                    Config::SetSetting("General", "missionRecorderCountInMs", "500");
+                }
+                if (ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip("Delay before a mission recording starts. The exact baseline is saved immediately after it. Set 0 to disable the countdown.");
+                }
+
                 int abTimeoutMs = cfg.autoBlockNeutralTimeoutMs;
                 int abTimeoutSec = (abTimeoutMs + 500) / 1000; // round to nearest second for UI
                 ImGui::Text("Auto-Block neutral timeout:");
@@ -252,6 +350,46 @@ namespace ImGuiSettings {
                 }
                 if (ImGui::IsItemHovered()) {
                     ImGui::SetTooltip("When using First Hit/After First Hit modes, require this much continuous neutral before re-arming/disabling. 0 = toggle on the first neutral frame.");
+                }
+
+                ImGui::Spacing();
+                ImGui::Separator();
+                ImGui::SeparatorText("Audio");
+
+                int bgmVolumePercent = cfg.bgmVolumePercent;
+                ImGui::Text("BGM Volume:");
+                ImGui::SameLine();
+                ImGui::SetNextItemWidth(200);
+                if (ImGui::SliderInt("##BgmVolumePercent", &bgmVolumePercent, 0, 100, "%d%%")) {
+                    Config::SetSetting("General", "bgmVolumePercent", std::to_string(bgmVolumePercent));
+                    ExtendedConfigBridge::PublishAudioSettings(Config::GetSettings().bgmVolumePercent,
+                                                               Config::GetSettings().seVolumePercent);
+                    AudioControl::ApplyConfiguredVolumesNow();
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Reset##BgmVolumePercent")) {
+                    Config::SetSetting("General", "bgmVolumePercent", "100");
+                    ExtendedConfigBridge::PublishAudioSettings(Config::GetSettings().bgmVolumePercent,
+                                                               Config::GetSettings().seVolumePercent);
+                    AudioControl::ApplyConfiguredVolumesNow();
+                }
+
+                int seVolumePercent = cfg.seVolumePercent;
+                ImGui::Text("SE Volume:");
+                ImGui::SameLine();
+                ImGui::SetNextItemWidth(200);
+                if (ImGui::SliderInt("##SeVolumePercent", &seVolumePercent, 0, 100, "%d%%")) {
+                    Config::SetSetting("General", "seVolumePercent", std::to_string(seVolumePercent));
+                    ExtendedConfigBridge::PublishAudioSettings(Config::GetSettings().bgmVolumePercent,
+                                                               Config::GetSettings().seVolumePercent);
+                    AudioControl::ApplyConfiguredVolumesNow();
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Reset##SeVolumePercent")) {
+                    Config::SetSetting("General", "seVolumePercent", "100");
+                    ExtendedConfigBridge::PublishAudioSettings(Config::GetSettings().bgmVolumePercent,
+                                                               Config::GetSettings().seVolumePercent);
+                    AudioControl::ApplyConfiguredVolumesNow();
                 }
 
                 ImGui::Spacing();
@@ -317,19 +455,13 @@ namespace ImGuiSettings {
             if (ImGui::BeginTabItem("Keyboard Hotkeys")) {
                 int teleport = cfg.teleportKey;
                 int record = cfg.recordKey;
-                int menu = cfg.configMenuKey;
                 int toggleTitle = cfg.toggleTitleKey;
                 int resetFrame = cfg.resetFrameCounterKey;
-                int help = cfg.helpKey;
-                int toggleImGui = cfg.toggleImGuiKey;
 
                 InputKeyHex("Teleport/Load", teleport, "TeleportKey");
                 InputKeyHex("Record/Save", record, "RecordKey");
-                InputKeyHex("Open Config Menu", menu, "ConfigMenuKey");
                 InputKeyHex("Toggle Title", toggleTitle, "ToggleTitleKey");
                 InputKeyHex("Reset Frame Counter", resetFrame, "ResetFrameCounterKey");
-                InputKeyHex("Help", help, "HelpKey");
-                InputKeyHex("Toggle ImGui Overlay", toggleImGui, "ToggleImGuiKey");
 
                 ImGui::Separator();
                 ImGui::SeparatorText("Practice / Macros");
@@ -343,13 +475,19 @@ namespace ImGuiSettings {
                 InputKeyHex("Macro: Next Slot", macroSlot, "MacroSlotKey");
 
                 ImGui::Separator();
-                if (GetEfzRevivalVersion() == EfzRevivalVersion::Vanilla) {
-                    ImGui::SeparatorText("Framestep (vanilla EFZ only)");
-                    int fsPause = cfg.framestepPauseKey;
-                    int fsStep  = cfg.framestepStepKey;
-                    InputKeyHex("Framestep: Toggle Pause", fsPause, "FramestepPauseKey");
-                    InputKeyHex("Framestep: Step Frame", fsStep, "FramestepStepKey");
+                ImGui::SeparatorText("Framestep");
+                bool fsEnabled = cfg.framestepEnabled;
+                if (ImGui::Checkbox("Enable Framestep", &fsEnabled)) {
+                    Config::SetSetting("General", "framestepEnabled", fsEnabled ? "1" : "0");
                 }
+                bool suppressRevival = cfg.suppressRevivalFramestep;
+                if (ImGui::Checkbox("Suppress Revival Framestep", &suppressRevival)) {
+                    Config::SetSetting("General", "suppressRevivalFramestep", suppressRevival ? "1" : "0");
+                }
+                int fsPause = cfg.framestepPauseKey;
+                int fsStep  = cfg.framestepStepKey;
+                InputKeyHex("Framestep: Toggle Pause", fsPause, "FramestepPauseKey");
+                InputKeyHex("Framestep: Step Frame", fsStep, "FramestepStepKey");
 
                 ImGui::Separator();
                 ImGui::SeparatorText("Swap Positions");
@@ -367,9 +505,17 @@ namespace ImGuiSettings {
                 }
                 ImGui::SameLine();
                 if (ImGui::Button("Reload from disk")) {
-                    Config::LoadSettings();
-                    detailedLogging.store(Config::GetSettings().detailedLogging);
-                    LogOut("[CONFIG/UI] Settings reloaded from ini", false);
+                    if (Config::LoadSettings()) {
+                        detailedLogging.store(Config::GetSettings().detailedLogging);
+                        if (!DebugLog::SetEnabled(Config::GetSettings().enableDebugFileLog)) {
+                            Config::SetSetting("General", "enableDebugFileLog", "0");
+                            LogOut("[CONFIG/UI][SETUP-FAILURE] Reloaded settings, but could not enable efz_training_debug.log", false);
+                        } else {
+                            LogOut("[CONFIG/UI] Settings reloaded from ini", false);
+                        }
+                    } else {
+                        LogOut("[CONFIG/UI][SETUP-FAILURE] Settings reload failed", false);
+                    }
                 }
 
                 ImGui::Dummy(ImVec2(1,6));
@@ -399,8 +545,7 @@ namespace ImGuiSettings {
                     {"Macro Record",    "gpMacroRecordButton", cfg.gpMacroRecordButton},
                     {"Macro Play",      "gpMacroPlayButton", cfg.gpMacroPlayButton},
                     {"Macro Slot Next", "gpMacroSlotButton", cfg.gpMacroSlotButton},
-                    {"Toggle Menu",     "gpToggleMenuButton", cfg.gpToggleMenuButton},
-                    {"Toggle Overlay",  "gpToggleImGuiButton", cfg.gpToggleImGuiButton}
+                    {"Toggle Menu",     "gpToggleMenuButton", cfg.gpToggleMenuButton}
                 };
 
                 static bool capturing = false;
@@ -464,11 +609,14 @@ namespace ImGuiSettings {
                     int idx = Config::GetSettings().controllerIndex;
                     int current = idx; // -1 = All
                     std::string labelAll = "All (Any)";
-                    std::string lbl0 = ::GetControllerNameForIndex(0);
-                    std::string lbl1 = ::GetControllerNameForIndex(1);
-                    std::string lbl2 = ::GetControllerNameForIndex(2);
-                    std::string lbl3 = ::GetControllerNameForIndex(3);
-                    const char* items[] = { labelAll.c_str(), lbl0.c_str(), lbl1.c_str(), lbl2.c_str(), lbl3.c_str() };
+                    // Use names pre-published by the background controller watcher so the
+                    // render thread never invokes XInput/RawInput enumeration directly.
+                    char nm0[96] = {}, nm1[96] = {}, nm2[96] = {}, nm3[96] = {};
+                    XInputShim::GetPublishedControllerName(0, nm0, sizeof(nm0));
+                    XInputShim::GetPublishedControllerName(1, nm1, sizeof(nm1));
+                    XInputShim::GetPublishedControllerName(2, nm2, sizeof(nm2));
+                    XInputShim::GetPublishedControllerName(3, nm3, sizeof(nm3));
+                    const char* items[] = { labelAll.c_str(), nm0, nm1, nm2, nm3 };
                     int comboIndex = (current < 0) ? 0 : (current + 1);
                     ImGui::TextUnformatted("Controller for mod inputs"); ImGui::SameLine();
                     if (ImGui::BeginCombo("##controllerIndex", items[comboIndex])) {

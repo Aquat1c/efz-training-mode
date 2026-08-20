@@ -17,12 +17,117 @@
 #include <iomanip>
 
 namespace {
-    // Check if EfzRevival is loaded. For unsupported versions, treat as vanilla.
-    static inline bool IsRevivalLoaded() {
-        return GetModuleHandleA("EfzRevival.dll") != nullptr && IsEfzRevivalVersionSupported();
+    // Unified side-switch model -- every build now behaves like 1.02j.
+    //
+    // Side switching is realized purely through efz.exe's engine control-map swap
+    // (SetVanillaSwapInputRouting) plus the engine game-state flags, and we only
+    // additionally mirror Revival's on-screen "display side" into the Practice
+    // controller at +0x24. We no longer drive Revival's legacy per-version Practice
+    // routing object (the +0x680 side fields / CleanupPair / RefreshMappingBlock
+    // path), which was the only version-dependent, non-idempotent mechanism.
+    //
+    // Why: only the engine control-map swap is version-independent, and every
+    // engine-only write is an idempotent set-to-state operation. That means a
+    // forced same-side reapply (e.g. restoring a Revival savestate while already on
+    // the saved side) can no longer toggle the human's controls -- the class of bug
+    // simply cannot occur. The native Practice path further down is retained (still
+    // compiled) but is gated off here so it is never selected at runtime; it can be
+    // deleted once this model is validated on every build.
+    static inline bool UseNativePracticeSideSwitch() { return false; }
+
+    // True when the Revival DLL is present at all (any build). Used to decide
+    // whether to mirror the display side into the Practice controller.
+    static inline bool RevivalDllPresent() {
+        return GetModuleHandleA("EfzRevival.dll") != nullptr;
     }
     static inline bool UseRevivalLiveSideField(EfzRevivalVersion ver) {
         return ver == EfzRevivalVersion::Revival102h || ver == EfzRevivalVersion::Revival102i;
+    }
+    // The Practice controller exposes an on-screen "display side" at +0x24 on every
+    // Revival build (e/f/g: GUI_POS byte, h/i: live-side dword, j: display dword).
+    // Mirror it whenever the Revival DLL is loaded and a Practice controller exists.
+    static inline bool UseRevivalDisplaySideField() {
+        return RevivalDllPresent();
+    }
+    static bool SetRevivalPracticeDisplaySide(int desiredLocal, const char* reason, bool logMissingPractice = true) {
+        if (!UseRevivalDisplaySideField()) {
+            return true;
+        }
+        if (desiredLocal != 0 && desiredLocal != 1) {
+            return false;
+        }
+
+        // The Practice overlay tracks the displayed/driven side at +0x24 on every
+        // Revival build:
+        //   ctor: *(practice + 0x24) = 1
+        //   render: "Player" label uses +0x24 directly
+        //   render: input history uses ((+0x24 + 1) mod 2) * 0x74 + *(+0xC8)
+        // Meaning is uniform: 1 = display/drive P1, 0 = display/drive P2.
+        const int displaySideField = (desiredLocal == 0) ? 1 : 0;
+
+        PauseIntegration::EnsurePracticePointerCapture();
+        void* practiceRaw = PauseIntegration::GetPracticeControllerPtr();
+        if (!practiceRaw) {
+            practiceRaw = PauseIntegration::ResolvePracticeControllerPtrNow(
+                /*allowCharacterSelect=*/false,
+                /*allowLooseValidation=*/true,
+                reason ? reason : "display side sync");
+        }
+
+        static std::atomic<bool> s_loggedMissingDispPractice{false};
+        if (!practiceRaw) {
+            if (logMissingPractice && !s_loggedMissingDispPractice.exchange(true, std::memory_order_relaxed)) {
+                std::ostringstream oss;
+                oss << "[SWITCH][DISP][WARN] Practice pointer unavailable; display side not synced"
+                    << " desiredLocal=" << desiredLocal
+                    << " reason=" << (reason ? reason : "unspecified");
+                LogOut(oss.str(), true);
+            }
+            return false;
+        }
+        s_loggedMissingDispPractice.store(false, std::memory_order_relaxed);
+
+        uintptr_t fieldAddr = reinterpret_cast<uintptr_t>(practiceRaw) + PRACTICE_OFF_GUI_POS;
+        // Field width per build: h/i store the live side and j the display side as a
+        // dword at +0x24; e/f/g keep GUI_POS as a single byte with meaningful
+        // neighbouring fields, so a dword write there would clobber them.
+        const EfzRevivalVersion ver = GetEfzRevivalVersion();
+        const bool wideField = UseRevivalLiveSideField(ver)
+                            || ver == EfzRevivalVersion::Revival102j;
+        int before = -1;
+        int after = -1;
+        bool okBefore = false, okWrite = false, okAfter = false;
+        if (wideField) {
+            okBefore = SafeReadMemory(fieldAddr, &before, sizeof(before));
+            okWrite  = SafeWriteMemory(fieldAddr, &displaySideField, sizeof(displaySideField));
+            okAfter  = SafeReadMemory(fieldAddr, &after, sizeof(after));
+        } else {
+            uint8_t b8 = 0xFF, a8 = 0xFF;
+            const uint8_t w8 = static_cast<uint8_t>(displaySideField);
+            okBefore = SafeReadMemory(fieldAddr, &b8, sizeof(b8));
+            okWrite  = SafeWriteMemory(fieldAddr, &w8, sizeof(w8));
+            okAfter  = SafeReadMemory(fieldAddr, &a8, sizeof(a8));
+            before = okBefore ? static_cast<int>(b8) : -1;
+            after  = okAfter ? static_cast<int>(a8) : -1;
+        }
+        const bool ok = okWrite && okAfter && after == displaySideField;
+
+        if (!ok || !okBefore || before != displaySideField) {
+            std::ostringstream oss;
+            oss << "[SWITCH][DISP] Display side sync"
+                << " practice=0x" << std::hex << reinterpret_cast<uintptr_t>(practiceRaw)
+                << " field=0x" << fieldAddr
+                << std::dec
+                << " desiredLocal=" << desiredLocal
+                << " write=" << displaySideField
+                << " before=" << (okBefore ? before : -1)
+                << " after=" << (okAfter ? after : -1)
+                << " ok=" << (ok ? 1 : 0)
+                << " reason=" << (reason ? reason : "unspecified");
+            LogOut(oss.str(), true);
+        }
+
+        return ok;
     }
     static int ReadEngineActivePlayer() {
         uintptr_t efzBase = GetEFZBase();
@@ -57,8 +162,83 @@ namespace {
 
         return ReadEngineActivePlayer();
     }
+
     // Track whether sides were swapped during the current match
     static std::atomic<bool> s_sidesAreSwapped{false};
+
+    static std::string DescribeEngineControlState() {
+        uintptr_t efzBase = GetEFZBase();
+        uintptr_t gameStatePtr = 0;
+        uint8_t activePlayer = 0xFF;
+        uint8_t p1CpuFlag = 0xFF;
+        uint8_t p2CpuFlag = 0xFF;
+        if (efzBase) {
+            if (SafeReadMemory(efzBase + EFZ_BASE_OFFSET_GAME_STATE, &gameStatePtr, sizeof(gameStatePtr)) && gameStatePtr) {
+                SafeReadMemory(gameStatePtr + GAMESTATE_OFF_ACTIVE_PLAYER, &activePlayer, sizeof(activePlayer));
+                SafeReadMemory(gameStatePtr + GAMESTATE_OFF_P1_CPU_FLAG, &p1CpuFlag, sizeof(p1CpuFlag));
+                SafeReadMemory(gameStatePtr + GAMESTATE_OFF_P2_CPU_FLAG, &p2CpuFlag, sizeof(p2CpuFlag));
+            }
+        }
+
+        std::ostringstream oss;
+        oss << "gameState=0x" << std::hex << gameStatePtr
+            << std::dec
+            << " active=" << (activePlayer == 0xFF ? -1 : static_cast<int>(activePlayer))
+            << " p1Cpu=" << (p1CpuFlag == 0xFF ? -1 : static_cast<int>(p1CpuFlag))
+            << " p2Cpu=" << (p2CpuFlag == 0xFF ? -1 : static_cast<int>(p2CpuFlag))
+            << " swapped=" << (s_sidesAreSwapped.load(std::memory_order_relaxed) ? 1 : 0);
+        return oss.str();
+    }
+
+    static std::string DescribePracticeRoutingState(uint8_t* practice) {
+        if (!practice) {
+            return "practice=0x0";
+        }
+
+        const EfzRevivalVersion ver = GetEfzRevivalVersion();
+        int local = -1;
+        int remote = -1;
+        int initSource = -1;
+        const int effectiveLocal = ReadEffectivePracticeLocalSide(practice);
+        uint8_t guiPos = 0xFF;
+        uintptr_t primary = 0;
+        uintptr_t secondary = 0;
+        SafeReadMemory((uintptr_t)practice + EFZ_Practice_LocalSideOffset(), &local, sizeof(local));
+        SafeReadMemory((uintptr_t)practice + EFZ_Practice_RemoteSideOffset(), &remote, sizeof(remote));
+        SafeReadMemory((uintptr_t)practice + PRACTICE_OFF_GUI_POS, &guiPos, sizeof(guiPos));
+        SafeReadMemory((uintptr_t)practice + EFZ_Practice_InitSourceSideOffset(), &initSource, sizeof(initSource));
+        SafeReadMemory((uintptr_t)practice + PRACTICE_OFF_SIDE_BUF_PRIMARY, &primary, sizeof(primary));
+        SafeReadMemory((uintptr_t)practice + PRACTICE_OFF_SIDE_BUF_SECONDARY, &secondary, sizeof(secondary));
+
+        uintptr_t baseLocal = (uintptr_t)practice + PRACTICE_OFF_BUF_LOCAL_BASE;
+        uintptr_t baseRemote = (uintptr_t)practice + PRACTICE_OFF_BUF_REMOTE_BASE;
+        if (UseRevivalLiveSideField(ver)) {
+            baseLocal = (uintptr_t)practice + 0x314;
+            baseRemote = (uintptr_t)practice + 0x320;
+        }
+
+        std::ostringstream oss;
+        oss << "practice=0x" << std::hex << (uintptr_t)practice
+            << std::dec
+            << " local=" << local
+            << " remote=" << remote
+            << " effectiveLocal=" << effectiveLocal
+            << " initSource=" << initSource
+            << " gui=" << (guiPos == 0xFF ? -1 : static_cast<int>(guiPos))
+            << " primary=0x" << std::hex << primary
+            << " secondary=0x" << secondary
+            << " baseLocal=0x" << baseLocal
+            << " baseRemote=0x" << baseRemote;
+        return oss.str();
+    }
+
+    static inline void SetSwapFlagForLocalSide(int sideIdx) {
+        s_sidesAreSwapped.store(sideIdx == 1, std::memory_order_relaxed);
+    }
+
+    static void LogRefreshOnlyRepairSkip() {
+        LogOut("[SWITCH] Refresh-only reapply repaired Practice fields without CleanupPair/RefreshMappingBlock", true);
+    }
     
     // Character Select–scoped log suppression for missing Practice controller during menu resets
     static std::atomic<bool> s_csActive{false};
@@ -404,7 +584,7 @@ namespace {
         void unfreeze() {
             if (!ctx || !active) return;
             DebugLog::Write("--- UNFREEZE BEGIN ---");
-            int unfreezeParam = EFZ_PatchToggleUnfreezeParam(); // 1 for e, 3 for h/i
+            int unfreezeParam = EFZ_PatchToggleUnfreezeParam(); // version-specific normal-speed parameter
             std::ostringstream oss;
             oss << "Unfreezing game - ctx=0x" << std::hex << std::uppercase << (uintptr_t)ctx 
                 << " param=" << std::dec << unfreezeParam;
@@ -638,12 +818,14 @@ namespace SwitchPlayers {
 
         // Critical: swap control routing in vanilla so that when P2 is local, P2 uses P1's controls.
         // enable=true when desiredLocal==1 (P2 local), disable when desiredLocal==0 (P1 local)
-        SetVanillaSwapInputRouting(desiredLocal == 1);
+        const bool routingOk = SetVanillaSwapInputRouting(desiredLocal == 1);
+        const bool jDisplayOk = SetRevivalPracticeDisplaySide(desiredLocal, "engine-only side set");
 
         std::ostringstream oss;
         oss << "[SWITCH][VANILLA] Engine-only swap -> active=" << (int)activePlayer
             << " P1CPU=" << (int)p1CpuFlag << " P2CPU=" << (int)p2CpuFlag
-            << " gameState=0x" << std::hex << gameStatePtr;
+            << " gameState=0x" << std::hex << gameStatePtr
+            << std::dec << " jDisplay=" << (jDisplayOk ? 1 : 0);
         LogOut(oss.str(), true);
 
         // Arm late neutralization on the side becoming AI to prevent residual motions
@@ -652,9 +834,9 @@ namespace SwitchPlayers {
     (void)NeutralizeMotionToken(aiPlayer);
         InputHook_ArmTokenNeutralize(aiPlayer, /*alsoDoFullCleanup=*/true);
 
-        return okA && ok1 && ok2;
+        return okA && ok1 && ok2 && routingOk;
     }
-    static bool ApplySet(uint8_t* practice, int desiredLocal) {
+    static bool ApplySet(uint8_t* practice, int desiredLocal, bool forceApply = false) {
         if (!practice) return false;
         if (desiredLocal != 0 && desiredLocal != 1) return false;
 
@@ -681,17 +863,27 @@ namespace SwitchPlayers {
         
         // Read current
         int curLocal = ReadEffectivePracticeLocalSide(practice);
+        const bool refreshOnlyReapply = (curLocal == desiredLocal && forceApply);
         DebugLog::LogRead("practice.localSide[INITIAL]", (uintptr_t)practice + EFZ_Practice_LocalSideOffset(), curLocal);
         
         // Dump DETAILED state before any changes
         DumpPracticeStateDetailed(practice, "BEFORE SWITCH");
         DumpPracticeState(practice, "before");
         
-        if (curLocal == desiredLocal) {
+        if (curLocal == desiredLocal && !forceApply) {
             LogOut("[SWITCH] Local side already set; no changes", true);
             DebugLog::Write("No changes needed - already at desired local side");
             DebugLog::Write("========================================");
             return true;
+        }
+        if (refreshOnlyReapply) {
+            LogOut("[SWITCH] Force reapplying local side mapping despite matching live side", true);
+            DebugLog::Write("Force reapplying local side mapping despite matching live side");
+            std::ostringstream oss;
+            oss << "[SWITCH][REFRESH_ONLY] before desiredLocal=" << desiredLocal
+                << " | " << DescribePracticeRoutingState(practice)
+                << " | " << DescribeEngineControlState();
+            LogOut(oss.str(), true);
         }
         // Only freeze around E-path edits; H/I path will emulate engine hotkey without extra bracketing.
         EFZFreezeGuard guard; // used for 1.02e only
@@ -772,20 +964,44 @@ namespace SwitchPlayers {
                 const int liveSideField = (desiredLocal == 0) ? 1 : 0;
                 LogRW<int>("practice.liveSide[+0x24]", (uintptr_t)practice + PRACTICE_OFF_GUI_POS, liveSideField);
 
-                // Then perform a single swap via CleanupPair on patch ctx so the new local gets the previous local's controls
-                HMODULE hMod = GetModuleHandleA("EfzRevival.dll");
-                uintptr_t ctxRva = EFZ_RVA_PatchCtx();
-                uintptr_t cleanRva = EFZ_RVA_CleanupPair(); // sub_1006CCE0(g) / sub_1006D320(h) / sub_1006D5F0(i)
-                if (hMod && ctxRva && cleanRva) {
-                    auto fnCleanup = reinterpret_cast<int(__thiscall*)(void*)>(reinterpret_cast<uintptr_t>(hMod) + cleanRva);
-                    void* patchCtx = reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(hMod) + ctxRva);
-                    int rc = 0;
-                    bool ok = SehSafe_CleanupPair(fnCleanup, patchCtx, &rc);
-                    std::ostringstream oss; oss << "[SWITCH][G/H/I] CleanupPair(ctx) -> "
-                        << (ok?"rc=":"EXC rc=") << rc << " ctx=0x" << std::hex << (uintptr_t)patchCtx;
-                    LogOut(oss.str(), true);
+                // Reseat Revival's live input routing.
+                //
+                // On g/h/i this is the ONLY operation that actually re-points the physical
+                // controller at the new local side. Revival's native SwitchPlayers hotkey does the
+                // same thing: sub_10076490 toggles the +0x24 swap latch and calls
+                // sub_1006D320(&dword_100A0780) (== CleanupPair on the patch ctx) to refresh the
+                // runtime context (see shared_documentation/switch_players.md). Unlike 1.02j -- whose
+                // compact Practice layout dropped the +0x680 side fields (LocalSideOffset()==0) and
+                // re-derives routing from the engine flags every tick -- g/h/i cache the active input
+                // pair and only rebuild it when CleanupPair runs, so a genuine side change MUST call
+                // it. Skipping it entirely (an earlier "j-aligned" attempt) left P2 human-flagged but
+                // still driven by P1's pad.
+                //
+                // CleanupPair *swaps* the active pair on every call, so we must NOT run it on a
+                // forced same-side reapply (refreshOnlyReapply). Restoring a Revival savestate while
+                // already on the saved side is a same-side reapply: the field/flag writes above have
+                // already reconciled state, and an extra CleanupPair would flip the human's controls
+                // with nothing to cancel it. This mirrors the 1.02e guard below and matches 1.02j,
+                // which never reseats. A real side change still falls through and reseats.
+                if (refreshOnlyReapply) {
+                    LogOut("[SWITCH][G/H/I] Same-side reapply: skipping CleanupPair (fields/flags reconciled only)", true);
                 } else {
-                    LogOut("[SWITCH][G/H/I] CleanupPair or ctx not available; skipped", true);
+                    HMODULE hMod = GetModuleHandleA("EfzRevival.dll");
+                    uintptr_t ctxRva = EFZ_RVA_PatchCtx();
+                    uintptr_t cleanRva = EFZ_RVA_CleanupPair(); // sub_1006CCE0(g) / sub_1006D320(h) / sub_1006D5F0(i); 0 on j
+                    if (hMod && ctxRva && cleanRva) {
+                        auto fnCleanup = reinterpret_cast<int(__thiscall*)(void*)>(reinterpret_cast<uintptr_t>(hMod) + cleanRva);
+                        void* patchCtx = reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(hMod) + ctxRva);
+                        int rc = 0;
+                        bool ok = SehSafe_CleanupPair(fnCleanup, patchCtx, &rc);
+                        std::ostringstream oss; oss << "[SWITCH][G/H/I] CleanupPair(ctx) -> "
+                            << (ok?"rc=":"EXC rc=") << rc << " ctx=0x" << std::hex << (uintptr_t)patchCtx;
+                        LogOut(oss.str(), true);
+                    } else {
+                        // 1.02j (and any build with no CleanupPair RVA) lands here: the switch is
+                        // realized entirely by the field/flag writes, which is correct for j's layout.
+                        LogOut("[SWITCH][G/H/I] CleanupPair or ctx not available; relying on field/flag writes (1.02j path)", true);
+                    }
                 }
 
                 // Update engine-facing flags and GUI to reflect the new local side
@@ -816,10 +1032,12 @@ namespace SwitchPlayers {
                 }
 
                 // Arm late neutralization for the side becoming AI
-                {
+                if (!refreshOnlyReapply) {
                     int aiPlayer = (desiredLocal == 1) ? 1 : 2;
                     (void)NeutralizeMotionToken(aiPlayer);
                     InputHook_ArmTokenNeutralize(aiPlayer, /*alsoDoFullCleanup=*/true);
+                } else {
+                    LogOut("[SWITCH][G/H/I] Refresh-only reapply skipped AI-side input cleanup", true);
                 }
 
                 DebugLog::Write("[SWITCH][G/H/I] Single-swap path finished; returning");
@@ -884,14 +1102,22 @@ namespace SwitchPlayers {
 
         // Now that engine/practice flags reflect the intended human side, reset per-side mapping and cleanup input pair
         // so that the rebind logic observes the correct target (fixes third-press misassignment).
-    // 1.02e only; H/I returned earlier.
-    PostSwitchRefresh(practice);
+        // Same-side restore reconcile has already repaired the live Practice fields above; rerunning
+        // CleanupPair/RefreshMappingBlock there toggles the active input pair every other restore.
+        // 1.02e only; H/I returned earlier.
+        if (refreshOnlyReapply) {
+            LogRefreshOnlyRepairSkip();
+        } else {
+            PostSwitchRefresh(practice);
+        }
 
         // Arm late neutralization for the side becoming AI on E-version as well
-        {
+        if (!refreshOnlyReapply) {
             int aiPlayer = (desiredLocal == 1) ? 1 : 2;
             (void)NeutralizeMotionToken(aiPlayer);
             InputHook_ArmTokenNeutralize(aiPlayer, /*alsoDoFullCleanup=*/true);
+        } else {
+            LogOut("[SWITCH] Refresh-only reapply skipped AI-side input cleanup", true);
         }
 
         // Diagnostics: verify final values
@@ -918,6 +1144,13 @@ namespace SwitchPlayers {
         bool p1Human = IsAIControlFlagHuman(1);
         bool p2Human = IsAIControlFlagHuman(2);
         LogOut(std::string("[SWITCH] AI flags after toggle: P1=") + (p1Human?"Human":"AI") + ", P2=" + (p2Human?"Human":"AI"), true);
+        if (refreshOnlyReapply) {
+            std::ostringstream oss;
+            oss << "[SWITCH][REFRESH_ONLY] after desiredLocal=" << desiredLocal
+                << " | " << DescribePracticeRoutingState(practice)
+                << " | " << DescribeEngineControlState();
+            LogOut(oss.str(), true);
+        }
     // Verify GUI/buffer display position at +0x24
     uint8_t guiPosR = 0; SafeReadMemory((uintptr_t)practice + PRACTICE_OFF_GUI_POS, &guiPosR, sizeof(guiPosR));
     LogOut(std::string("[SWITCH] Practice +0x24 GUI pos (1=P1,0=P2): ") + (guiPosR?"1":"0"), true);
@@ -975,7 +1208,7 @@ namespace SwitchPlayers {
             return false;
         }
         // Vanilla path: if EfzRevival is not loaded, operate on engine flags only
-        if (!IsRevivalLoaded()) {
+        if (!UseNativePracticeSideSwitch()) {
             uintptr_t efzBase = GetEFZBase();
             if (!efzBase) return false;
             uintptr_t gs = 0; if (!SafeReadMemory(efzBase + EFZ_BASE_OFFSET_GAME_STATE, &gs, sizeof(gs)) || !gs) return false;
@@ -983,6 +1216,7 @@ namespace SwitchPlayers {
             int desired = (curActive == 0) ? 1 : 0;
             bool success = ApplyEngineOnlySet(desired);
             if (success) {
+                displayData.p2ControlEnabled = (desired == 1);
                 // Set flag true if swapping TO P2 (desired=1), false if returning TO P1 (desired=0)
                 s_sidesAreSwapped.store(desired == 1, std::memory_order_relaxed);
                 LogOut(desired == 1 ? "[SWITCH] Toggle succeeded - sides now swapped (flag set)" : "[SWITCH] Toggle succeeded - returned to default (flag cleared)", true);
@@ -1001,6 +1235,7 @@ namespace SwitchPlayers {
         int desired = (curLocal == 0) ? 1 : 0;
         bool success = ApplySet(practice, desired);
         if (success) {
+            displayData.p2ControlEnabled = (desired == 1);
             // Set flag true if swapping TO P2 (desired=1), false if returning TO P1 (desired=0)
             s_sidesAreSwapped.store(desired == 1, std::memory_order_relaxed);
             LogOut(desired == 1 ? "[SWITCH] Toggle succeeded - sides now swapped (flag set)" : "[SWITCH] Toggle succeeded - returned to default (flag cleared)", true);
@@ -1017,8 +1252,13 @@ namespace SwitchPlayers {
             LogOut("[SWITCH] Ignored set outside of match phase", true);
             return false;
         }
-        if (!IsRevivalLoaded()) {
-            return ApplyEngineOnlySet(sideIdx);
+        if (!UseNativePracticeSideSwitch()) {
+            const bool success = ApplyEngineOnlySet(sideIdx);
+            if (success) {
+                displayData.p2ControlEnabled = (sideIdx == 1);
+                SetSwapFlagForLocalSide(sideIdx);
+            }
+            return success;
         }
         PauseIntegration::EnsurePracticePointerCapture();
         void* p = PauseIntegration::GetPracticeControllerPtr();
@@ -1026,14 +1266,106 @@ namespace SwitchPlayers {
             LogOut("[SWITCH] Revival SetLocalSide blocked: Practice controller not yet confirmed", true);
             return false;
         }
-        return ApplySet(reinterpret_cast<uint8_t*>(p), sideIdx);
+        const bool success = ApplySet(reinterpret_cast<uint8_t*>(p), sideIdx);
+        if (success) {
+            displayData.p2ControlEnabled = (sideIdx == 1);
+            SetSwapFlagForLocalSide(sideIdx);
+        }
+        return success;
+    }
+
+    bool ReapplyLocalSide(int sideIdx) {
+        if (g_onlineModeActive.load()) return false;
+
+        if (GetCurrentGameMode() != GameMode::Practice) return false;
+        if (!IsMatchPhase()) {
+            LogOut("[SWITCH] Ignored reapply outside of match phase", true);
+            return false;
+        }
+
+        if (!UseNativePracticeSideSwitch()) {
+            const bool success = ApplyEngineOnlySet(sideIdx);
+            if (success) {
+                displayData.p2ControlEnabled = (sideIdx == 1);
+                s_sidesAreSwapped.store(sideIdx == 1, std::memory_order_relaxed);
+            }
+            return success;
+        }
+
+        PauseIntegration::EnsurePracticePointerCapture();
+        void* p = PauseIntegration::GetPracticeControllerPtr();
+        if (!p) {
+            return false;
+        }
+
+        // Hand routing back to Revival's real side mapping before rebuilding Practice state.
+        if (!SetVanillaSwapInputRouting(false)) {
+            LogOut("[SWITCH][WARN] Failed to restore engine control maps before native Practice reapply", true);
+        }
+
+        const bool success = ApplySet(reinterpret_cast<uint8_t*>(p), sideIdx, /*forceApply=*/true);
+        if (success) {
+            displayData.p2ControlEnabled = (sideIdx == 1);
+            s_sidesAreSwapped.store(sideIdx == 1, std::memory_order_relaxed);
+        }
+        return success;
+    }
+
+    bool RestoreEngineControlState(int sideIdx, uint8_t p1CpuFlag, uint8_t p2CpuFlag, bool armInputCleanup) {
+        if (g_onlineModeActive.load()) return false;
+        if (GetCurrentGameMode() != GameMode::Practice) return false;
+        if (sideIdx != 0 && sideIdx != 1) return false;
+
+        uintptr_t efzBase = GetEFZBase();
+        if (!efzBase) return false;
+
+        uintptr_t gameStatePtr = 0;
+        if (!SafeReadMemory(efzBase + EFZ_BASE_OFFSET_GAME_STATE, &gameStatePtr, sizeof(gameStatePtr)) || !gameStatePtr) {
+            return false;
+        }
+
+        const uint8_t activePlayer = static_cast<uint8_t>(sideIdx);
+        const bool okActive = SafeWriteMemory(gameStatePtr + GAMESTATE_OFF_ACTIVE_PLAYER, &activePlayer, sizeof(activePlayer));
+        const bool okP1 = SafeWriteMemory(gameStatePtr + GAMESTATE_OFF_P1_CPU_FLAG, &p1CpuFlag, sizeof(p1CpuFlag));
+        const bool okP2 = SafeWriteMemory(gameStatePtr + GAMESTATE_OFF_P2_CPU_FLAG, &p2CpuFlag, sizeof(p2CpuFlag));
+    // Engine control-map swap is the routing mechanism for every build now:
+    // enable it when the local side is P2, disable it for P1. This is idempotent,
+    // so calling it on a same-side restore is a no-op (no control toggle).
+    const bool useVanillaRouting = (sideIdx == 1);
+
+        SetAIControlFlag(1, p1CpuFlag == 0u);
+        SetAIControlFlag(2, p2CpuFlag == 0u);
+    const bool routingOk = SetVanillaSwapInputRouting(useVanillaRouting);
+        const bool jDisplayOk = SetRevivalPracticeDisplaySide(sideIdx, "engine control restore");
+        displayData.p2ControlEnabled = (sideIdx == 1);
+        SetSwapFlagForLocalSide(sideIdx);
+
+        const int aiPlayer = (p1CpuFlag != 0u && p2CpuFlag == 0u) ? 1
+                            : (p2CpuFlag != 0u && p1CpuFlag == 0u) ? 2
+                            : 0;
+        if (armInputCleanup && aiPlayer != 0) {
+            (void)NeutralizeMotionToken(aiPlayer);
+            InputHook_ArmTokenNeutralize(aiPlayer, /*alsoDoFullCleanup=*/true);
+        }
+
+        std::ostringstream oss;
+        oss << "[SWITCH][ENGINE_ONLY] Restored active=" << static_cast<int>(activePlayer)
+            << " P1CPU=" << static_cast<int>(p1CpuFlag)
+            << " P2CPU=" << static_cast<int>(p2CpuFlag)
+                << " routeSwap=" << (useVanillaRouting ? 1 : 0)
+            << " jDisplay=" << (jDisplayOk ? 1 : 0)
+            << " inputCleanup=" << (armInputCleanup ? 1 : 0)
+            << " gameState=0x" << std::hex << gameStatePtr;
+        LogOut(oss.str(), true);
+
+        return okActive && okP1 && okP2 && routingOk;
     }
 
     int GetLocalSide() {
         // Returns 0 (P1 local), 1 (P2 local), or -1 if unable to read
         if (GetCurrentGameMode() != GameMode::Practice) return -1;
         
-        if (!IsRevivalLoaded()) {
+        if (!UseNativePracticeSideSwitch()) {
             // Vanilla path: check active player flag from game state
             uintptr_t efzBase = GetEFZBase();
             if (!efzBase) return -1;
@@ -1056,6 +1388,14 @@ namespace SwitchPlayers {
         return ReadEffectivePracticeLocalSide(reinterpret_cast<uint8_t*>(p));
     }
 
+    int GetLocalPlayerIndex() {
+        return GetLocalSide() == 1 ? 2 : 1;
+    }
+
+    int GetRemotePlayerIndex() {
+        return GetLocalPlayerIndex() == 1 ? 2 : 1;
+    }
+
     bool ResetControlMappingForMenusToP1() {
         // CRITICAL: Never modify game state during online mode
         if (g_onlineModeActive.load()) return false;
@@ -1069,7 +1409,7 @@ namespace SwitchPlayers {
         SetVanillaSwapInputRouting(false);
 
         // If EfzRevival is not loaded OR unsupported version, use vanilla logic
-        if (!IsRevivalLoaded()) {
+        if (!UseNativePracticeSideSwitch()) {
             bool wroteFlags = false;
             uintptr_t efzBase = GetEFZBase();
             if (efzBase) {
@@ -1089,6 +1429,7 @@ namespace SwitchPlayers {
                     }
                 }
             }
+            SetRevivalPracticeDisplaySide(0, "menu reset", /*logMissingPractice=*/false);
             s_sidesAreSwapped.store(false, std::memory_order_relaxed);
             return wroteFlags;
         }
@@ -1128,11 +1469,12 @@ namespace SwitchPlayers {
         if (efzBase) {
             uintptr_t gameStatePtr = 0;
             if (SafeReadMemory(efzBase + EFZ_BASE_OFFSET_GAME_STATE, &gameStatePtr, sizeof(gameStatePtr)) && gameStatePtr) {
-                uint8_t p1Cpu = 0xFF, p2Cpu = 0xFF;
+                uint8_t activePlayer = 0xFF, p1Cpu = 0xFF, p2Cpu = 0xFF;
+                SafeReadMemory(gameStatePtr + GAMESTATE_OFF_ACTIVE_PLAYER, &activePlayer, sizeof(activePlayer));
                 SafeReadMemory(gameStatePtr + GAMESTATE_OFF_P1_CPU_FLAG, &p1Cpu, sizeof(p1Cpu));
                 SafeReadMemory(gameStatePtr + GAMESTATE_OFF_P2_CPU_FLAG, &p2Cpu, sizeof(p2Cpu));
                 // Default Practice mapping: P1 human (0), P2 CPU (1)
-                engineFlagsNeedReset = (p1Cpu != 0 || p2Cpu != 1);
+                engineFlagsNeedReset = (activePlayer != 0 || p1Cpu != 0 || p2Cpu != 1);
             }
         }
         
@@ -1211,14 +1553,32 @@ namespace SwitchPlayers {
             return true;
         }
 
+        if (!practiceStateIsDefault) {
+            // Character Select is sensitive to Revival's CleanupPair/RefreshMappingBlock path.
+            // If our match-scope swap flag is not set, only repair passive state fields here.
+            // Manual swaps and macro recording still use the full reset branch above.
+            int local = 0, remote = 1, guiPos = 1;
+            SafeWriteMemory((uintptr_t)practice + EFZ_Practice_LocalSideOffset(), &local, sizeof(local));
+            SafeWriteMemory((uintptr_t)practice + EFZ_Practice_RemoteSideOffset(), &remote, sizeof(remote));
+            SafeWriteMemory((uintptr_t)practice + PRACTICE_OFF_GUI_POS, &guiPos, sizeof(guiPos));
+            SetVanillaSwapInputRouting(false);
+            s_sidesAreSwapped.store(false, std::memory_order_relaxed);
+            LogOut("[SWITCH][MENU] Repaired passive Practice menu fields without mapping refresh", true);
+        }
+
         // Practice state is default but engine flags need fixing - just write the flags
         if (engineFlagsNeedReset && efzBase) {
             uintptr_t gameStatePtr = 0;
             if (SafeReadMemory(efzBase + EFZ_BASE_OFFSET_GAME_STATE, &gameStatePtr, sizeof(gameStatePtr)) && gameStatePtr) {
+                uint8_t activePlayer = 0u;
                 uint8_t p1Human = 0, p2Cpu = 1;
+                SafeWriteMemory(gameStatePtr + GAMESTATE_OFF_ACTIVE_PLAYER, &activePlayer, sizeof(activePlayer));
                 SafeWriteMemory(gameStatePtr + GAMESTATE_OFF_P1_CPU_FLAG, &p1Human, sizeof(p1Human));
                 SafeWriteMemory(gameStatePtr + GAMESTATE_OFF_P2_CPU_FLAG, &p2Cpu, sizeof(p2Cpu));
-                LogOut("[SWITCH][MENU] Fixed engine CPU flags without input swap", true);
+                SetAIControlFlag(1, /*human=*/true);
+                SetAIControlFlag(2, /*human=*/false);
+                s_sidesAreSwapped.store(false, std::memory_order_relaxed);
+                LogOut("[SWITCH][MENU] Fixed engine active/CPU/AI flags without input swap", true);
             }
         }
 

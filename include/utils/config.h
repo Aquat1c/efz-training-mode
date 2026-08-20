@@ -7,15 +7,45 @@ namespace Config {
     struct Settings {
         // General settings
         bool useImGui;
+        bool useCustomMenu;          // Render the EFZ-native custom menu (default true for new and migrated configs)
         bool detailedLogging;
         bool enableDebugFileLog;   // NEW: Enable writing efz_training_debug.log (file debug logging)
         bool restrictToPracticeMode; // NEW: Restrict to practice mode
+    bool framestepEnabled;      // Enable our framestep hotkeys/runtime
+    bool suppressRevivalFramestep; // Suppress Revival's native pause/step hotkeys while our framestep is active
     bool enableConsole;          // NEW: Show/Hide console window
     bool enableFpsDiagnostics;   // NEW: Enable FPS/timing diagnostics output
+    bool showFrameBar;           // NEW: Per-player frame-state strip (color-coded)
+    int  bgmVolumePercent;       // 0..100, 100 = current/default BGM level
+    int  seVolumePercent;        // 0..100, 100 = current/default SE level
+    int  frameBarTimingMode;     // 0 = subframes, 1 = visual frames
+    int  frameBarDetailMode;     // 0 = full, 1 = compact, 2 = bars only
+    bool collisionDisplayHitboxes;
+    bool collisionDisplayHurtboxes;
+    bool collisionDisplayCollisionBoxes;
+    bool collisionDisplayProjectileInteractions;
+    // Per-player filters for the three ordinary collision layers. The layer
+    // toggles above remain masters (and retain Revival hotkey compatibility).
+    // These default ON so an existing/global layer keeps its old appearance
+    // until the user deliberately hides one side.
+    bool collisionDisplayP1Hitboxes;
+    bool collisionDisplayP2Hitboxes;
+    bool collisionDisplayP1Hurtboxes;
+    bool collisionDisplayP2Hurtboxes;
+    bool collisionDisplayP1CollisionBoxes;
+    bool collisionDisplayP2CollisionBoxes;
+    int  collisionDisplayFillAlphaPercent; // 0..100 box fill alpha; outlines stay readable
+    bool collisionDisplayProjectileBoxes;
+    bool collisionDisplayProjectileOrigins;
+    bool collisionDisplayProjectileIntersections;
+    bool collisionDisplayNagamoriRanges;
+    bool collisionDisplayNagamoriAffected;
     bool enableCharacterSelectLogger; // NEW: Toggle per-frame Character Select flag logger
     bool showPracticeEntryHint;   // NEW: Show practice overlay hint once per session
-    float uiScale;               // NEW: UI scale for ImGui window (e.g., 0.80..1.20)
+    float uiScale;               // NEW: UI scale for ImGui window (e.g., 0.70..1.50)
     int uiFontMode;              // NEW: UI font selection (0=ImGui default, 1=Segoe UI)
+    int savestateBackendMode;    // 0=Custom, 1=Revival, 2=Custom with Revival fallback
+    bool savestateLoadCustomPalettes; // 1=restore saved custom palette usage, 0=force default palettes on load
 
     // ImGui navigation tuning
     float guiNavAnalogThreshold; // Analog threshold (0..1) to treat stick as a digital dpad for fallback nav
@@ -43,11 +73,15 @@ namespace Config {
         // Hotkey settings
         int teleportKey;
         int recordKey;
-        int configMenuKey;
+        int configMenuKey;          // Legacy, ignored; menu uses Esc
         int toggleTitleKey;
         int resetFrameCounterKey;
-        int helpKey;
-        int toggleImGuiKey;
+        int helpKey;                // Legacy, ignored
+        int toggleImGuiKey;         // Legacy, ignored
+        int savestateSaveKey;
+        int savestateLoadKey;
+        int savestatePrevSlotKey;
+        int savestateNextSlotKey;
 
         // Practice/macro hotkeys (configurable)
         int switchPlayersKey;   // Default: 'L'
@@ -55,7 +89,7 @@ namespace Config {
         int macroPlayKey;       // Default: 'O'
         int macroSlotKey;       // NEW: Cycle macro slot (Default: 'K')
 
-        // Framestep hotkeys (configurable; vanilla EFZ only)
+        // Framestep hotkeys (configurable; vanilla EFZ / supported Revival)
         int framestepPauseKey;  // Default: VK_SPACE
         int framestepStepKey;   // Default: 'P'
 
@@ -77,7 +111,7 @@ namespace Config {
     int gpMacroPlayButton;      // Default: RT (virtual trigger 0x20000)
     int gpMacroSlotButton;      // Default: LT (virtual trigger 0x10000)
         int gpToggleMenuButton;     // Default: XINPUT_GAMEPAD_START
-        int gpToggleImGuiButton;    // Default: -1 (disabled)
+        int gpToggleImGuiButton;    // Legacy, ignored
 
     // UI navigation/controller bindings (rebindable)
     // Top-level tabs cycle (logical order: Main, Auto Action, Settings, Character, Help)
@@ -116,6 +150,9 @@ namespace Config {
         // Practice: Dummy Auto-Block behavior
         // Continuous neutral timeout used by event-driven modes (ms). Defaults to 10000 (10s).
         int autoBlockNeutralTimeoutMs;
+        // Mission authoring pre-record count-in. 0 starts after the neutral
+        // release gate; default 500 ms, configurable up to 3 seconds.
+        int missionRecorderCountInMs;
     };
     
     // Initialize configuration system

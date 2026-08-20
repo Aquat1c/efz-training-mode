@@ -27,6 +27,25 @@
 #define MOTION_4C        118
 #define MOTION_4D        119
 
+// Character-specific command-normal directions.  Button selection remains a
+// four-wide group, matching the universal normal ranges above.
+#define MOTION_1A        120
+#define MOTION_1B        121
+#define MOTION_1C        122
+#define MOTION_1D        123
+#define MOTION_3A        124
+#define MOTION_3B        125
+#define MOTION_3C        126
+#define MOTION_3D        127
+#define MOTION_J2A       128
+#define MOTION_J2B       129
+#define MOTION_J2C       130
+#define MOTION_J2D       131
+#define MOTION_J6A       132
+#define MOTION_J6B       133
+#define MOTION_J6C       134
+#define MOTION_J6D       135
+
 // Special move motion constants
 #define MOTION_236A      200  // QCF + A
 #define MOTION_236B      201  // QCF + B
@@ -75,11 +94,16 @@
 #define MOTION_22C       308
 #define MOTION_22D       323
 
-// 214236 (QCB then QCF) hybrid
-#define MOTION_214236A   309
-#define MOTION_214236B   310
-#define MOTION_214236C   311
-#define MOTION_214236D   324
+// 2141236 super.  Keep the old 214236 spellings as source aliases because the
+// numeric motion IDs are persisted by older configurations.
+#define MOTION_2141236A  309
+#define MOTION_2141236B  310
+#define MOTION_2141236C  311
+#define MOTION_2141236D  324
+#define MOTION_214236A   MOTION_2141236A
+#define MOTION_214236B   MOTION_2141236B
+#define MOTION_214236C   MOTION_2141236C
+#define MOTION_214236D   MOTION_2141236D
 
 // 463214 (reverse 41236) pattern: 4,6,3,2,1,4 (interpreted with diagonals) + button
 #define MOTION_463214A   312

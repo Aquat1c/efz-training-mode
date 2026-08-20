@@ -1,14 +1,21 @@
 #include "../../include/game/savestate_hook.h"
 #include "../../include/game/efzrevival_addrs.h"
 #include "../../include/game/auto_action.h"
+#include "../../include/game/character_settings.h"
 #include "../../include/game/combo_overlay.h"
 #include "../../include/game/macro_controller.h"
+#include "../../include/game/mission/mission_engine.h"
+#include "../../include/game/mission/tutorial_session.h"   // TutorialSession::IsActive (suppress toasts in lessons)
 #include "../../include/game/practice_offsets.h"
+#include "../../include/game/practice_hotkey_gate.h"
 #include "../../include/utils/switch_players.h"
+#include "../../include/utils/pause_integration.h"
 #include "../../include/core/logger.h"
 #include "../../include/core/memory.h"
 #include "../../include/core/constants.h"
 #include "../../include/gui/overlay.h"
+#include "../../include/utils/minhook_utils.h"
+#include "../../include/utils/network.h"
 #include "../../include/utils/utilities.h"
 #include "../../3rdparty/minhook/include/MinHook.h"
 #include <windows.h>
@@ -17,63 +24,54 @@
 #include <sstream>
 
 namespace {
-    // Hook state
     std::atomic<bool> s_installed{false};
     std::atomic<unsigned int> s_saveCount{0};
     std::atomic<unsigned int> s_loadCount{0};
+    std::atomic<bool> s_inlineDispatcherMode{false};
 
-    // Target addresses
     uintptr_t s_loadStateAddr = 0;
     uintptr_t s_saveStateAddr = 0;
 
-    // Original function pointers
-    // VS/Practice mode Load State: bool __thiscall sub_10075910(int *this)
     using LoadStateFn = bool (__thiscall*)(void* self);
     LoadStateFn oLoadState = nullptr;
 
-    // VS/Practice mode Save State: void __thiscall sub_10075980(int this)
     using SaveStateFn = void (__thiscall*)(void* self);
     SaveStateFn oSaveState = nullptr;
 
-    // =========================================================================
-    // Captured mod state at savestate time
-    // =========================================================================
     struct SavedModState {
         bool valid = false;
-        
-        // Control state
         bool p2ControlWasOverridden = false;
         uint32_t originalP2ControlFlag = 1;
-        
-        // CPU flags at game state level
         uint8_t p1CpuFlag = 0;
         uint8_t p2CpuFlag = 1;
-        
-        // Local side (which player is being controlled: 0=P1, 1=P2)
         int localSide = 0;
-        
-        // Macro state
         MacroController::State macroState = MacroController::State::Idle;
         int macroSlot = 1;
     };
-    
+
     SavedModState s_savedModState{};
 
-    // =========================================================================
-    // Capture current mod state (called on save)
-    // =========================================================================
+    constexpr uint8_t kInlineSaveAction = 1u << 0;
+    constexpr uint8_t kInlineLoadAction = 1u << 1;
+
+    void CanonicalizeSavedControlState(SavedModState& state) {
+        if (state.localSide != 0 && state.localSide != 1) {
+            state.localSide = 0;
+        }
+        state.p1CpuFlag = static_cast<uint8_t>((state.localSide == 1) ? 1u : 0u);
+        state.p2CpuFlag = static_cast<uint8_t>((state.localSide == 1) ? 0u : 1u);
+    }
+
     void CaptureModState() {
         s_savedModState.valid = true;
-        
-        // Capture P2 control override state
         s_savedModState.p2ControlWasOverridden = g_p2ControlOverridden;
         s_savedModState.originalP2ControlFlag = g_originalP2ControlFlag;
-        
-        // Capture local side (which player is being controlled)
+
         s_savedModState.localSide = SwitchPlayers::GetLocalSide();
-        if (s_savedModState.localSide < 0) s_savedModState.localSide = 0; // default to P1 if unable to read
-        
-        // Capture CPU flags from game state
+        if (s_savedModState.localSide < 0) {
+            s_savedModState.localSide = 0;
+        }
+
         uintptr_t base = GetEFZBase();
         if (base) {
             uintptr_t gameStatePtr = 0;
@@ -82,110 +80,132 @@ namespace {
                 SafeReadMemory(gameStatePtr + GAMESTATE_OFF_P2_CPU_FLAG, &s_savedModState.p2CpuFlag, sizeof(uint8_t));
             }
         }
-        
-        // Capture macro state
+        CanonicalizeSavedControlState(s_savedModState);
+
         s_savedModState.macroState = MacroController::GetState();
         s_savedModState.macroSlot = MacroController::GetCurrentSlot();
-        
+
         std::ostringstream oss;
-        oss << "[SAVESTATE] Captured mod state: p2Override=" << (s_savedModState.p2ControlWasOverridden ? "true" : "false")
+        oss << "[SAVESTATE][REVIVAL] Captured mod state: p2Override=" << (s_savedModState.p2ControlWasOverridden ? "true" : "false")
             << " origP2Flag=" << s_savedModState.originalP2ControlFlag
             << " localSide=" << s_savedModState.localSide
-            << " p1Cpu=" << (int)s_savedModState.p1CpuFlag
-            << " p2Cpu=" << (int)s_savedModState.p2CpuFlag
-            << " macroState=" << (int)s_savedModState.macroState
+            << " p1Cpu=" << static_cast<int>(s_savedModState.p1CpuFlag)
+            << " p2Cpu=" << static_cast<int>(s_savedModState.p2CpuFlag)
+            << " macroState=" << static_cast<int>(s_savedModState.macroState)
             << " macroSlot=" << s_savedModState.macroSlot;
         LogOut(oss.str(), true);
     }
 
-    // =========================================================================
-    // Restore captured mod state (called after load)
-    // =========================================================================
     void RestoreModState() {
         if (!s_savedModState.valid) {
-            LogOut("[SAVESTATE] No valid mod state to restore", true);
+            LogOut("[SAVESTATE][REVIVAL] No valid mod state to restore", true);
             return;
         }
-        
-        // Restore P2 control tracking state
-        // Note: The actual game memory will be restored by the savestate itself,
-        // but we need to sync our tracking variables
+
+        CanonicalizeSavedControlState(s_savedModState);
         g_p2ControlOverridden = s_savedModState.p2ControlWasOverridden;
         g_originalP2ControlFlag = s_savedModState.originalP2ControlFlag;
-        
-        // Restore local side (which player is being controlled)
+
         int currentSide = SwitchPlayers::GetLocalSide();
-        if (currentSide != s_savedModState.localSide && s_savedModState.localSide >= 0) {
-            LogOut("[SAVESTATE] Restoring local side from " + std::to_string(currentSide) + " to " + std::to_string(s_savedModState.localSide), true);
-            SwitchPlayers::SetLocalSide(s_savedModState.localSide);
+        if (s_savedModState.localSide >= 0) {
+            LogOut("[SAVESTATE][REVIVAL] Restoring local side from " + std::to_string(currentSide) + " to " + std::to_string(s_savedModState.localSide), true);
+            if (!SwitchPlayers::ReapplyLocalSide(s_savedModState.localSide)
+                && !SwitchPlayers::RestoreEngineControlState(s_savedModState.localSide,
+                                                             s_savedModState.p1CpuFlag,
+                                                             s_savedModState.p2CpuFlag)) {
+                if (s_savedModState.localSide == 1) {
+                    SwitchPlayers::MarkSwapped();
+                } else {
+                    SwitchPlayers::ClearSwapFlag();
+                }
+            }
         }
-        
-        // Restore CPU flags to what they were when saved
-        // This handles cases where an auto-action modified them before loading
+
         uintptr_t base = GetEFZBase();
         if (base) {
             uintptr_t gameStatePtr = 0;
             if (SafeReadMemory(base + EFZ_BASE_OFFSET_GAME_STATE, &gameStatePtr, sizeof(gameStatePtr)) && gameStatePtr) {
+                const uint8_t activePlayer = static_cast<uint8_t>(s_savedModState.localSide);
+                SafeWriteMemory(gameStatePtr + GAMESTATE_OFF_ACTIVE_PLAYER, &activePlayer, sizeof(activePlayer));
                 SafeWriteMemory(gameStatePtr + GAMESTATE_OFF_P1_CPU_FLAG, &s_savedModState.p1CpuFlag, sizeof(uint8_t));
                 SafeWriteMemory(gameStatePtr + GAMESTATE_OFF_P2_CPU_FLAG, &s_savedModState.p2CpuFlag, sizeof(uint8_t));
             }
         }
-        
+
         std::ostringstream oss;
-        oss << "[SAVESTATE] Restored mod state: p2Override=" << (g_p2ControlOverridden ? "true" : "false")
+        oss << "[SAVESTATE][REVIVAL] Restored mod state: p2Override=" << (g_p2ControlOverridden ? "true" : "false")
             << " origP2Flag=" << g_originalP2ControlFlag
             << " localSide=" << s_savedModState.localSide
-            << " p1Cpu=" << (int)s_savedModState.p1CpuFlag
-            << " p2Cpu=" << (int)s_savedModState.p2CpuFlag;
+            << " p1Cpu=" << static_cast<int>(s_savedModState.p1CpuFlag)
+            << " p2Cpu=" << static_cast<int>(s_savedModState.p2CpuFlag);
         LogOut(oss.str(), true);
     }
 
-    // Hooked Load State function (VS/Practice mode)
+    void BeginTrackedLoad() {
+        LogOut("[SAVESTATE][REVIVAL] === LOAD STATE BEGIN ===", true);
+        CancelAutoActionsAndMacros();
+    }
+
+    void FinishTrackedLoad(bool result) {
+        s_loadCount.fetch_add(1, std::memory_order_relaxed);
+        RestoreModState();
+        ComboOverlay::ResetState("revival savestate load");
+        // Mission recorder/runner resynchronize across the rollback (fresh
+        // recording attempt; a manual load mid-run resets the run).
+        Mission::Engine::NotifyStateLoaded();
+        if (uintptr_t base = GetEFZBase()) {
+            CharacterSettings::TickCharacterEnforcements(base, displayData);
+        }
+
+        LogOut("[SAVESTATE][REVIVAL] === LOAD STATE END (result=" + std::string(result ? "true" : "false") + ") ===", true);
+        // Only surface savestate toasts in real free-practice: any mission or
+        // tutorial (Runner active) drives its own baseline/checkpoint churn.
+        if (!::Mission::Engine::Runner::IsActive() &&
+            !::Mission::TutorialSession::IsActive() &&
+            !::Mission::Engine::Recorder::IsSessionActive() &&
+            !::Mission::Engine::Demo::IsActive())
+            DirectDrawHook::AddMessage("Revival State Loaded", "savestate", RGB(100, 255, 100), 1500, 0, 100);
+    }
+
+    void BeginTrackedSave() {
+        LogOut("[SAVESTATE][REVIVAL] === SAVE STATE BEGIN ===", true);
+        CaptureModState();
+    }
+
+    void FinishTrackedSave() {
+        s_saveCount.fetch_add(1, std::memory_order_relaxed);
+        LogOut("[SAVESTATE][REVIVAL] === SAVE STATE END ===", true);
+        if (!::Mission::Engine::Runner::IsActive() &&
+            !::Mission::TutorialSession::IsActive() &&
+            !::Mission::Engine::Recorder::IsSessionActive() &&
+            !::Mission::Engine::Demo::IsActive())
+            DirectDrawHook::AddMessage("Revival State Saved", "savestate", RGB(255, 255, 100), 1500, 0, 100);
+    }
+
     bool __fastcall HookedLoadState(void* self, void* /*edx*/) {
         if (g_onlineModeActive.load(std::memory_order_relaxed)) {
             return oLoadState ? oLoadState(self) : false;
         }
 
-        LogOut("[SAVESTATE] === LOAD STATE BEGIN ===", true);
-        
-        // Cancel any active auto-actions/macros BEFORE loading state
-        // This ensures clean state when the savestate is restored
-        CancelAutoActionsAndMacros();
-        
+        BeginTrackedLoad();
         bool result = oLoadState ? oLoadState(self) : false;
-        s_loadCount.fetch_add(1, std::memory_order_relaxed);
-        
-        // Restore our captured mod state after the game state is loaded
-        RestoreModState();
-        ComboOverlay::ResetState("savestate load");
-        
-        LogOut("[SAVESTATE] === LOAD STATE END (result=" + std::string(result ? "true" : "false") + ") ===", true);
-        
-        // Display message at same position as Position Loaded (0, 100)
-        DirectDrawHook::AddMessage("State Loaded", "savestate", RGB(100, 255, 100), 1500, 0, 100);
-        
+        FinishTrackedLoad(result);
         return result;
     }
 
-    // Hooked Save State function (VS/Practice mode)
     void __fastcall HookedSaveState(void* self, void* /*edx*/) {
         if (g_onlineModeActive.load(std::memory_order_relaxed)) {
-            if (oSaveState) oSaveState(self);
+            if (oSaveState) {
+                oSaveState(self);
+            }
             return;
         }
 
-        LogOut("[SAVESTATE] === SAVE STATE BEGIN ===", true);
-        
-        // Capture our mod state before the game saves its state
-        CaptureModState();
-        
-        if (oSaveState) oSaveState(self);
-        s_saveCount.fetch_add(1, std::memory_order_relaxed);
-        
-        LogOut("[SAVESTATE] === SAVE STATE END ===", true);
-        
-        // Display message at same position as Position Saved (0, 100)
-        DirectDrawHook::AddMessage("State Saved", "savestate", RGB(255, 255, 100), 1500, 0, 100);
+        BeginTrackedSave();
+        if (oSaveState) {
+            oSaveState(self);
+        }
+        FinishTrackedSave();
     }
 }
 
@@ -193,88 +213,179 @@ namespace SavestateHook {
     bool Install() {
         if (s_installed.load()) return true;
 
-        // Check if EfzRevival.dll is loaded
         HMODULE mod = GetModuleHandleA("EfzRevival.dll");
         if (!mod) {
-            LogOut("[SAVESTATE] EfzRevival.dll not loaded; cannot install hooks", true);
+            LogOut("[SAVESTATE][REVIVAL] EfzRevival.dll not loaded; cannot install hooks", true);
             return false;
         }
 
-        // Get RVAs for save/load state functions
         uintptr_t loadRva = EFZ_RVA_LoadState();
         uintptr_t saveRva = EFZ_RVA_SaveState();
 
         if (!loadRva || !saveRva) {
-            LogOut("[SAVESTATE] Unsupported EfzRevival version; savestate hooks not available", true);
+            LogOut("[SAVESTATE][REVIVAL] Unsupported EfzRevival version; hooks not available", true);
             return false;
         }
 
-        // Calculate absolute addresses
         uintptr_t base = reinterpret_cast<uintptr_t>(mod);
         s_loadStateAddr = base + loadRva;
         s_saveStateAddr = base + saveRva;
 
-        // Create hooks
+        if (GetEfzRevivalVersion() == EfzRevivalVersion::Revival102j) {
+            // J keeps callable save/load bodies, but its hotkey dispatcher
+            // inlines the same operations. Keep these pointers for explicit
+            // menu/hotkey commands and let PracticeHotkeyGate bracket native
+            // dispatcher actions through Begin/EndInlinePracticeHotkey.
+            if (!PracticeHotkeyGate::Install()) {
+                s_loadStateAddr = 0;
+                s_saveStateAddr = 0;
+                LogOut("[SAVESTATE][REVIVAL] J dispatcher integration requires the verified hotkey gate", true);
+                return false;
+            }
+
+            oLoadState = reinterpret_cast<LoadStateFn>(s_loadStateAddr);
+            oSaveState = reinterpret_cast<SaveStateFn>(s_saveStateAddr);
+            s_inlineDispatcherMode.store(true, std::memory_order_release);
+            s_installed.store(true, std::memory_order_release);
+
+            std::ostringstream oss;
+            oss << "[SAVESTATE][REVIVAL] J dispatcher integration ready"
+                << " - callable Load RVA=0x" << std::hex << loadRva
+                << " Save RVA=0x" << saveRva;
+            LogOut(oss.str(), true);
+            return true;
+        }
+
         bool loadHookOk = false;
         bool saveHookOk = false;
 
-        // Hook Load State
-        if (MH_CreateHook(reinterpret_cast<LPVOID>(s_loadStateAddr),
-                         reinterpret_cast<LPVOID>(&HookedLoadState),
-                         reinterpret_cast<void**>(&oLoadState)) == MH_OK) {
-            if (MH_EnableHook(reinterpret_cast<LPVOID>(s_loadStateAddr)) == MH_OK) {
-                loadHookOk = true;
-            } else {
-                MH_RemoveHook(reinterpret_cast<LPVOID>(s_loadStateAddr));
-            }
-        }
+        loadHookOk = MinHookUtils::CreateAndEnableHook(reinterpret_cast<LPVOID>(s_loadStateAddr),
+                                                       reinterpret_cast<LPVOID>(&HookedLoadState),
+                                                       reinterpret_cast<void**>(&oLoadState),
+                                                       "[SAVESTATE][REVIVAL]",
+                                                       "LoadState");
 
-        // Hook Save State
-        if (MH_CreateHook(reinterpret_cast<LPVOID>(s_saveStateAddr),
-                         reinterpret_cast<LPVOID>(&HookedSaveState),
-                         reinterpret_cast<void**>(&oSaveState)) == MH_OK) {
-            if (MH_EnableHook(reinterpret_cast<LPVOID>(s_saveStateAddr)) == MH_OK) {
-                saveHookOk = true;
-            } else {
-                MH_RemoveHook(reinterpret_cast<LPVOID>(s_saveStateAddr));
-            }
-        }
+        saveHookOk = MinHookUtils::CreateAndEnableHook(reinterpret_cast<LPVOID>(s_saveStateAddr),
+                                                       reinterpret_cast<LPVOID>(&HookedSaveState),
+                                                       reinterpret_cast<void**>(&oSaveState),
+                                                       "[SAVESTATE][REVIVAL]",
+                                                       "SaveState");
 
         if (!loadHookOk && !saveHookOk) {
-            LogOut("[SAVESTATE] Failed to install any savestate hooks", true);
+            LogOut("[SAVESTATE][REVIVAL] Failed to install any hooks", true);
             return false;
         }
 
         s_installed.store(true);
-
-        // Log success
         std::ostringstream oss;
-        oss << "[SAVESTATE] Hooks installed - Load: " << (loadHookOk ? "OK" : "FAILED")
+        oss << "[SAVESTATE][REVIVAL] Hooks installed - Load: " << (loadHookOk ? "OK" : "FAILED")
             << " (RVA=0x" << std::hex << loadRva << ")"
             << ", Save: " << (saveHookOk ? "OK" : "FAILED")
             << " (RVA=0x" << std::hex << saveRva << ")";
         LogOut(oss.str(), true);
-
         return true;
     }
 
     void Uninstall() {
         if (!s_installed.load()) return;
 
+        if (s_inlineDispatcherMode.exchange(false, std::memory_order_acq_rel)) {
+            s_loadStateAddr = 0;
+            s_saveStateAddr = 0;
+            oLoadState = nullptr;
+            oSaveState = nullptr;
+            s_installed.store(false);
+            LogOut("[SAVESTATE][REVIVAL] J dispatcher integration uninstalled", true);
+            return;
+        }
+
         if (s_loadStateAddr) {
-            MH_DisableHook(reinterpret_cast<LPVOID>(s_loadStateAddr));
-            MH_RemoveHook(reinterpret_cast<LPVOID>(s_loadStateAddr));
+            (void)MinHookUtils::DisableHook(reinterpret_cast<LPVOID>(s_loadStateAddr), "[SAVESTATE][REVIVAL]", "LoadState");
+            (void)MinHookUtils::RemoveHook(reinterpret_cast<LPVOID>(s_loadStateAddr), "[SAVESTATE][REVIVAL]", "LoadState");
             s_loadStateAddr = 0;
         }
 
         if (s_saveStateAddr) {
-            MH_DisableHook(reinterpret_cast<LPVOID>(s_saveStateAddr));
-            MH_RemoveHook(reinterpret_cast<LPVOID>(s_saveStateAddr));
+            (void)MinHookUtils::DisableHook(reinterpret_cast<LPVOID>(s_saveStateAddr), "[SAVESTATE][REVIVAL]", "SaveState");
+            (void)MinHookUtils::RemoveHook(reinterpret_cast<LPVOID>(s_saveStateAddr), "[SAVESTATE][REVIVAL]", "SaveState");
             s_saveStateAddr = 0;
         }
 
         s_installed.store(false);
-        LogOut("[SAVESTATE] Hooks uninstalled", true);
+        LogOut("[SAVESTATE][REVIVAL] Hooks uninstalled", true);
+    }
+
+    uint8_t BeginInlinePracticeHotkey(void* practiceController, int key) {
+        if (!s_installed.load(std::memory_order_acquire)
+            || !s_inlineDispatcherMode.load(std::memory_order_acquire)
+            || !practiceController
+            || key == 0
+            || GetCurrentGameMode() != GameMode::Practice
+            || !IsMatchPhase()
+            || g_onlineModeActive.load(std::memory_order_relaxed)) {
+            return 0;
+        }
+
+        const uintptr_t saveOffset = EFZ_Practice_SaveHotkeyOffset();
+        const uintptr_t loadOffset = EFZ_Practice_LoadHotkeyOffset();
+        if (!saveOffset || !loadOffset) return 0;
+
+        int saveKey = -1;
+        int loadKey = -1;
+        const uintptr_t practice = reinterpret_cast<uintptr_t>(practiceController);
+        if (!SafeReadMemory(practice + saveOffset, &saveKey, sizeof(saveKey))
+            || !SafeReadMemory(practice + loadOffset, &loadKey, sizeof(loadKey))) {
+            return 0;
+        }
+
+        uint8_t actions = 0;
+        if (key == saveKey) {
+            actions |= kInlineSaveAction;
+            BeginTrackedSave();
+        }
+        if (key == loadKey) {
+            actions |= kInlineLoadAction;
+            BeginTrackedLoad();
+        }
+        return actions;
+    }
+
+    void EndInlinePracticeHotkey(uint8_t actionMask) {
+        if (!s_inlineDispatcherMode.load(std::memory_order_acquire)) return;
+
+        // The J dispatcher executes its save branch before its load branch.
+        if ((actionMask & kInlineSaveAction) != 0) {
+            FinishTrackedSave();
+        }
+        if ((actionMask & kInlineLoadAction) != 0) {
+            // The inlined load path has no meaningful boolean result at the
+            // dispatcher boundary; reaching this point means it returned.
+            FinishTrackedLoad(true);
+        }
+    }
+
+    bool TriggerSave() {
+        if (!s_installed.load() || !oSaveState) return false;
+        void* ptr = PauseIntegration::GetPracticeControllerPtr();
+        if (!ptr) ptr = PauseIntegration::ResolvePracticeControllerPtrNow(false, true, "savestate hotkey save");
+        if (!ptr) {
+            LogOut("[SAVESTATE][REVIVAL] TriggerSave: Practice controller unavailable", true);
+            return false;
+        }
+        HookedSaveState(ptr, nullptr);
+        return true;
+    }
+
+    bool TriggerLoad() {
+        if (!s_installed.load() || !oLoadState) return false;
+        void* ptr = PauseIntegration::GetPracticeControllerPtr();
+        if (!ptr) ptr = PauseIntegration::ResolvePracticeControllerPtrNow(false, true, "savestate hotkey load");
+        if (!ptr) {
+            LogOut("[SAVESTATE][REVIVAL] TriggerLoad: Practice controller unavailable", true);
+            return false;
+        }
+        HookedLoadState(ptr, nullptr);
+        return true;
     }
 
     bool IsInstalled() {

@@ -5,19 +5,63 @@
 #include "../include/core/logger.h"
 #include "../include/core/constants.h"
 #include "../include/input/input_buffer.h"
+#include "../include/input/auto_action_motion_transaction.h"
+#include "../include/input/immediate_input.h"
+#include "../include/input/injection_control.h"
+#include "../include/input/input_hook.h"
 #include "../include/utils/utilities.h"
 #include "../include/game/game_state.h"
+#include "../include/game/macro_controller.h"
 #include "../include/input/motion_system.h"
 #include "../include/input/input_motion.h" 
+#include "../include/input/scoped_input_reservation.h"
 #include "../include/game/frame_monitor.h"
+#include "../include/game/auto_action.h"
 #include "../include/utils/xp_compat.h"
 // These functions are implemented in input_buffer.cpp
-extern void FreezeBufferValuesThread(int playerNum);
 extern bool CaptureAndFreezeBuffer(int playerNum, uint16_t startIndex, uint16_t length, int motionType, int buttonMask);
 extern bool FreezeBufferIndex(int playerNum, uint16_t indexValue);
 extern void StopBufferFreezing(void);
+extern void StopBufferFreezingIgnoringTutorialLease(void);
+
+namespace {
+std::atomic<uint64_t> g_tutorialFreezeToken{0};
+std::atomic<uint64_t> g_nextTutorialFreezeToken{1};
+struct FreezeSessionState {
+    std::atomic<bool> active{false};
+    std::atomic<bool> threadRunning{false};
+    uint16_t originalIndex{0};
+    bool originalIndexValid{false};
+};
+FreezeSessionState g_freezeSession[3]; // 1,2 (ignore 0)
+
+// Buffer freezing owns EFZ's detector history for the selected fighter.  A
+// reservation alone covers future IC/FIC/staged recipes, but already-live
+// motion, normal, macro, manual, immediate, and legacy-queue owners also need
+// an admission check so a freeze cannot cache input behind them and fire later.
+bool BufferFreezeInputLaneBusy(int playerNum) {
+    if (playerNum < 1 || playerNum > 2) return true;
+    return IsScopedInputReserved(playerNum) ||
+           IsAutoActionMotionTransactionActive(playerNum) ||
+           IsAutoActionNormalPulseActive(playerNum) ||
+           ImmediateInput::TutorialLeaseActive(playerNum) ||
+           TutorialMotionQueueLeaseActive(playerNum) ||
+           g_manualInputOverride[playerNum].load(std::memory_order_acquire) ||
+           g_pollOverrideActive[playerNum].load(std::memory_order_acquire) ||
+           ImmediateInput::GetCurrentDesired(playerNum) != 0 ||
+           ImmediateInput::GetRemainingTicks(playerNum) != 0 ||
+           GetMotionQueueSnapshot(playerNum).active ||
+           (MacroController::IsExclusivePlayback() &&
+            MacroController::GetPlaybackPlayer() == playerNum);
+}
+}
 // Helper to freeze the perfect Dragon Punch motion
 bool FreezePerfectDragonPunch(int playerNum) {
+    std::lock_guard<std::recursive_mutex> p2ControlLock(g_p2ControlMutex);
+    std::lock_guard<std::recursive_mutex> controlLock(g_bufferFreezeControlMutex);
+    if (g_onlineModeActive.load(std::memory_order_acquire)) return false;
+    if (BufferFreezeInputLaneBusy(playerNum)) return false;
+    if (TutorialBufferFreezeLeaseActive()) return false;
     // Stop any existing freeze thread
     StopBufferFreezing();
     
@@ -58,9 +102,7 @@ bool FreezePerfectDragonPunch(int playerNum) {
     g_indexFreezingActive = true;
     
     // Start freezing thread
-    g_bufferFreezingActive = true;
-    g_bufferFreezeThread = std::thread(FreezeBufferValuesThread, playerNum);
-    g_bufferFreezeThread.detach();  // Detach to prevent termination
+    StartBufferFreezeWorker(playerNum);
     
     if (detailedLogging.load()) {
         LogOut("[BUFFER_FREEZE] Perfect Dragon Punch motion freezing activated at index " + 
@@ -71,6 +113,11 @@ bool FreezePerfectDragonPunch(int playerNum) {
 
 // Enhanced version with diagnostic dump and adjusted index placement
 bool FreezePerfectDragonPunchEnhanced(int playerNum) {
+    std::lock_guard<std::recursive_mutex> p2ControlLock(g_p2ControlMutex);
+    std::lock_guard<std::recursive_mutex> controlLock(g_bufferFreezeControlMutex);
+    if (g_onlineModeActive.load(std::memory_order_acquire)) return false;
+    if (BufferFreezeInputLaneBusy(playerNum)) return false;
+    if (TutorialBufferFreezeLeaseActive()) return false;
     // Stop any existing freeze thread
     StopBufferFreezing();
     
@@ -133,12 +180,7 @@ bool FreezePerfectDragonPunchEnhanced(int playerNum) {
     }
     
     // Start freezing thread
-    g_bufferFreezingActive = true;
-    g_bufferFreezeThread = std::thread([playerNum]() {
-    if (detailedLogging.load()) { LogOut("[BUFFER_DEBUG] Enhanced freeze thread starting", true); }
-        FreezeBufferValuesThread(playerNum);
-    });
-    g_bufferFreezeThread.detach();  // Detach to prevent termination
+    StartBufferFreezeWorker(playerNum);
     
     if (detailedLogging.load()) {
         LogOut("[BUFFER_DEBUG] Enhanced DP buffer freeze activated for P" + 
@@ -148,6 +190,11 @@ bool FreezePerfectDragonPunchEnhanced(int playerNum) {
 }
 
 bool ComboFreezeDP(int playerNum) {
+    std::lock_guard<std::recursive_mutex> p2ControlLock(g_p2ControlMutex);
+    std::lock_guard<std::recursive_mutex> controlLock(g_bufferFreezeControlMutex);
+    if (g_onlineModeActive.load(std::memory_order_acquire)) return false;
+    if (BufferFreezeInputLaneBusy(playerNum)) return false;
+    if (TutorialBufferFreezeLeaseActive()) return false;
     // Stop any existing freeze thread
     StopBufferFreezing();
     
@@ -180,100 +227,22 @@ bool ComboFreezeDP(int playerNum) {
     // Target index where we want to maintain the pattern
     g_frozenIndexValue = 149;
     g_frozenBufferValues = dpMotion;
+    g_frozenBufferStartIndex = 144;
     g_frozenBufferLength = static_cast<uint16_t>(dpMotion.size());
     
     // Enable buffer and index manipulation
     g_indexFreezingActive = true;
-    g_bufferFreezingActive = true;
-    
-    // Start buffer freeze thread
-    g_bufferFreezeThread = std::thread([playerNum, dpMotion]() {
-        if (detailedLogging.load()) { LogOut("[BUFFER_COMBO] Starting DP pattern buffer freeze thread", true); }
-        uintptr_t playerPtr = GetPlayerPointer(playerNum);
-        if (!playerPtr) return;
-
-        const unsigned long long startMs = XPCompat::GetTickCount64Compat();
-        unsigned long long lastLogMs = startMs;
-        int counter = 0;
-        uint16_t lastIndex = 0;
-        short lastMoveID = -1;
-        int sleepMs = 2;           // brief aggressive phase
-        const int maxSleepMs = 4;  // then back off
-
-        // Main freeze loop
-        while (g_bufferFreezingActive) {
-            if (g_onlineModeActive.load()) break;                   // never operate online
-            if (GetCurrentGamePhase() != GamePhase::Match) break;   // only in match
-            unsigned long long now = XPCompat::GetTickCount64Compat();
-            if (now - startMs > 4000ULL) break;                     // safety timeout ~4s
-
-            // Read current index and moveID for monitoring
-            uint16_t currentIndex = 0;
-            short moveID = 0;
-            SafeReadMemory(playerPtr + INPUT_BUFFER_INDEX_OFFSET, &currentIndex, sizeof(uint16_t));
-
-            // Optional: Read moveID for sparse logging
-            uintptr_t moveIDAddr = ResolvePointer(GetEFZBase(),
-                (playerNum == 1) ? EFZ_BASE_OFFSET_P1 : EFZ_BASE_OFFSET_P2,
-                MOVE_ID_OFFSET);
-            if (moveIDAddr) {
-                SafeReadMemory(moveIDAddr, &moveID, sizeof(short));
-                if (moveID != lastMoveID && moveID != 0) {
-                    if (now - lastLogMs >= 250ULL) { // throttle
-                        if (detailedLogging.load()) {
-                            LogOut("[BUFFER_COMBO] MoveID: " + std::to_string(lastMoveID) + " -> " + std::to_string(moveID), true);
-                        }
-                        lastLogMs = now;
-                    }
-                    lastMoveID = moveID;
-                }
-            }
-
-            // Allow index to float in 149-152 range, only reset if it's outside
-            if (currentIndex < 147 || currentIndex > 152) {
-                SafeWriteMemory(playerPtr + INPUT_BUFFER_INDEX_OFFSET, &g_frozenIndexValue, sizeof(uint16_t));
-                currentIndex = g_frozenIndexValue;
-            }
-
-            // Write the pattern near the current index with smaller spread (-1..1)
-            for (int offset = -1; offset <= 1; offset++) {
-                int basePos = (currentIndex - static_cast<int>(dpMotion.size()) / 2 + offset) % INPUT_BUFFER_SIZE;
-                if (basePos < 0) basePos += INPUT_BUFFER_SIZE;
-                for (size_t i = 0; i < dpMotion.size(); i++) {
-                    uint16_t writeIndex = static_cast<uint16_t>((basePos + static_cast<int>(i)) % INPUT_BUFFER_SIZE);
-                    SafeWriteMemory(playerPtr + INPUT_BUFFER_OFFSET + writeIndex, &dpMotion[i], sizeof(uint8_t));
-                }
-            }
-
-            // Write the known-good location less frequently
-            if ((counter % 10) == 0) {
-                const int knownGoodStart = 144;
-                for (size_t i = 0; i < dpMotion.size(); i++) {
-                    SafeWriteMemory(playerPtr + INPUT_BUFFER_OFFSET + knownGoodStart + static_cast<int>(i), &dpMotion[i], sizeof(uint8_t));
-                }
-            }
-
-            // Sparse status log
-            if ((currentIndex != lastIndex) && (now - lastLogMs >= 250ULL)) {
-                if (detailedLogging.load()) { LogOut("[BUFFER_COMBO] Maintaining at index " + std::to_string(currentIndex), true); }
-                lastIndex = currentIndex;
-                lastLogMs = now;
-            }
-
-            counter++;
-            if (sleepMs < maxSleepMs && (now - startMs) > 250ULL) sleepMs = maxSleepMs;
-            std::this_thread::sleep_for(std::chrono::milliseconds(sleepMs));
-        }
-    });
-    g_bufferFreezeThread.detach();
+    StartBufferFreezeWorker(playerNum);
     
     if (detailedLogging.load()) { LogOut("[BUFFER_COMBO] DP buffer pattern freeze activated", true); }
     return true;
 }
 
-bool FreezeBufferForMotion(int playerNum, int motionType, int buttonMask, int optimalIndex) {
+static bool FreezeBufferForMotionImpl(int playerNum, int motionType, int buttonMask,
+                                      int optimalIndex) {
+    if (g_onlineModeActive.load(std::memory_order_acquire)) return false;
     // Stop any existing freeze thread
-    StopBufferFreezing();
+    StopBufferFreezingIgnoringTutorialLease();
     
     // Get player pointer and facing direction
     uintptr_t playerPtr = GetPlayerPointer(playerNum);
@@ -438,13 +407,14 @@ bool FreezeBufferForMotion(int playerNum, int motionType, int buttonMask, int op
             };
             break;
         }
-        case MOTION_214236A: case MOTION_214236B: case MOTION_214236C: case MOTION_214236D: {
-            // 214236: Down, Down-Back, Back, Down, Down-Forward, Forward + Button
+        case MOTION_2141236A: case MOTION_2141236B: case MOTION_2141236C: case MOTION_2141236D: {
+            // 2141236: Down, Down-Back, Back, Down-Back, Down, Down-Forward, Forward + Button
             pattern = {
                 0x00, 0x00,
                 down, down,
                 downBack, downBack,
                 back, back,
+                downBack, downBack,
                 down, down,
                 downFwd, downFwd,
                 fwd,
@@ -572,10 +542,7 @@ bool FreezeBufferForMotion(int playerNum, int motionType, int buttonMask, int op
     g_frozenIndexValue = (startIndex + g_frozenBufferLength - 1) % INPUT_BUFFER_SIZE;
     g_indexFreezingActive = true;
     
-    // Start freezing thread
-    g_bufferFreezingActive = true;
-    g_bufferFreezeThread = std::thread(FreezeBufferValuesThread, playerNum);
-    g_bufferFreezeThread.detach();
+    StartBufferFreezeWorker(playerNum);
     
     if (detailedLogging.load()) {
         LogOut("[BUFFER_FREEZE] Buffer freeze for " + motionLabel + " activated at index " + 
@@ -584,18 +551,75 @@ bool FreezeBufferForMotion(int playerNum, int motionType, int buttonMask, int op
     return true;
 }
 
-namespace {
-    struct FreezeSessionState {
-        std::atomic<bool> active{false};
-        std::atomic<bool> threadRunning{false};
-        uint16_t originalIndex{0};
-        bool originalIndexValid{false};
-    };
-    FreezeSessionState g_freezeSession[3]; // 1,2 (ignore 0)
+bool FreezeBufferForMotion(int playerNum, int motionType, int buttonMask, int optimalIndex) {
+    std::lock_guard<std::recursive_mutex> p2ControlLock(g_p2ControlMutex);
+    std::lock_guard<std::recursive_mutex> controlLock(g_bufferFreezeControlMutex);
+    if (g_onlineModeActive.load(std::memory_order_acquire)) return false;
+    if (BufferFreezeInputLaneBusy(playerNum)) return false;
+    if (g_tutorialFreezeToken.load(std::memory_order_acquire) != 0) {
+        LogOut("[BUFFER_FREEZE] Start rejected: tutorial dummy owns the freeze engine", true);
+        return false;
+    }
+    return FreezeBufferForMotionImpl(playerNum, motionType, buttonMask, optimalIndex);
+}
+
+bool AcquireTutorialBufferFreeze(uint64_t& tokenOut) {
+    std::lock_guard<std::recursive_mutex> p2ControlLock(g_p2ControlMutex);
+    std::lock_guard<std::recursive_mutex> controlLock(g_bufferFreezeControlMutex);
+    tokenOut = 0;
+    if (g_onlineModeActive.load(std::memory_order_acquire)) return false;
+    if (BufferFreezeInputLaneBusy(1) || BufferFreezeInputLaneBusy(2)) return false;
+    if (g_bufferFreezingActive.load(std::memory_order_acquire) ||
+        g_freezeSession[1].active.load(std::memory_order_acquire) ||
+        g_freezeSession[2].active.load(std::memory_order_acquire)) return false;
+    uint64_t expected = 0;
+    uint64_t token = g_nextTutorialFreezeToken.fetch_add(1, std::memory_order_relaxed);
+    if (token == 0) token = g_nextTutorialFreezeToken.fetch_add(1, std::memory_order_relaxed);
+    if (!g_tutorialFreezeToken.compare_exchange_strong(
+            expected, token, std::memory_order_acq_rel)) return false;
+    tokenOut = token;
+    return true;
+}
+
+bool TutorialBufferFreezeLeaseActive() {
+    return g_tutorialFreezeToken.load(std::memory_order_acquire) != 0;
+}
+
+bool FreezeBufferForTutorial(uint64_t token, int playerNum, int motionType,
+                             int buttonMask, int optimalIndex) {
+    std::lock_guard<std::recursive_mutex> p2ControlLock(g_p2ControlMutex);
+    std::lock_guard<std::recursive_mutex> controlLock(g_bufferFreezeControlMutex);
+    if (g_onlineModeActive.load(std::memory_order_acquire)) return false;
+    if (token == 0 ||
+        g_tutorialFreezeToken.load(std::memory_order_acquire) != token) return false;
+    if (BufferFreezeInputLaneBusy(playerNum)) return false;
+    return FreezeBufferForMotionImpl(playerNum, motionType, buttonMask, optimalIndex);
+}
+
+void StopTutorialBufferFreeze(uint64_t token) {
+    std::lock_guard<std::recursive_mutex> p2ControlLock(g_p2ControlMutex);
+    std::lock_guard<std::recursive_mutex> controlLock(g_bufferFreezeControlMutex);
+    if (token == 0 ||
+        g_tutorialFreezeToken.load(std::memory_order_acquire) != token) return;
+    StopBufferFreezingIgnoringTutorialLease();
+}
+
+void ReleaseTutorialBufferFreeze(uint64_t token) {
+    std::lock_guard<std::recursive_mutex> p2ControlLock(g_p2ControlMutex);
+    std::lock_guard<std::recursive_mutex> controlLock(g_bufferFreezeControlMutex);
+    if (token == 0 ||
+        g_tutorialFreezeToken.load(std::memory_order_acquire) != token) return;
+    StopBufferFreezingIgnoringTutorialLease();
+    uint64_t expected = token;
+    (void)g_tutorialFreezeToken.compare_exchange_strong(
+        expected, 0, std::memory_order_acq_rel);
 }
 
 // Clear (zero) entire buffer + index safely
 void ClearPlayerInputBuffer(int playerNum) {
+    std::lock_guard<std::recursive_mutex> p2ControlLock(g_p2ControlMutex);
+    std::lock_guard<std::recursive_mutex> freezeLock(g_bufferFreezeControlMutex);
+    if (g_onlineModeActive.load(std::memory_order_acquire)) return;
     uintptr_t playerPtr = GetPlayerPointer(playerNum);
     if (!playerPtr) return;
     // Bulk clear the entire buffer region in one write
@@ -607,6 +631,17 @@ void ClearPlayerInputBuffer(int playerNum) {
 }
 
 void BeginBufferFreezeSession(int playerNum, std::string_view label) {
+    std::lock_guard<std::recursive_mutex> p2ControlLock(g_p2ControlMutex);
+    std::lock_guard<std::recursive_mutex> controlLock(g_bufferFreezeControlMutex);
+    if (g_onlineModeActive.load(std::memory_order_acquire)) return;
+    if (BufferFreezeInputLaneBusy(playerNum)) {
+        LogOut("[BUFFER_FREEZE] Session start rejected: another input owner is active", true);
+        return;
+    }
+    if (TutorialBufferFreezeLeaseActive()) {
+        LogOut("[BUFFER_FREEZE] Session start rejected: tutorial dummy owns the freeze engine", true);
+        return;
+    }
     StopBufferFreezing();
     std::this_thread::sleep_for(std::chrono::milliseconds(5));
     auto &s = g_freezeSession[playerNum];
@@ -626,15 +661,26 @@ void BeginBufferFreezeSession(int playerNum, std::string_view label) {
 }
 
 void EndBufferFreezeSession(int playerNum, const char* reason, bool clearGlobals) {
+    std::lock_guard<std::recursive_mutex> p2ControlLock(g_p2ControlMutex);
+    std::lock_guard<std::recursive_mutex> controlLock(g_bufferFreezeControlMutex);
+    if (TutorialBufferFreezeLeaseActive()) return;
     auto &s = g_freezeSession[playerNum];
     if (!s.active.load()) return;
+    if (g_onlineModeActive.load(std::memory_order_acquire)) {
+        s.active.store(false, std::memory_order_release);
+        s.threadRunning.store(false, std::memory_order_release);
+        s.originalIndexValid = false;
+        if (clearGlobals) {
+            g_frozenBufferLength = 0;
+            g_frozenBufferValues.clear();
+        }
+        return;
+    }
 
     using clock = std::chrono::steady_clock;
     auto tStart = clock::now();
 
-    // Signal stop
-    g_bufferFreezingActive = false;
-    g_indexFreezingActive  = false;
+    StopBufferFreezingIgnoringTutorialLease();
 
     // Wait briefly if a thread may still be winding down
     auto tWaitStart = clock::now();
@@ -698,6 +744,11 @@ void EndBufferFreezeSession(int playerNum, const char* reason, bool clearGlobals
 
 // Generic pattern freeze for bespoke sequences (Final Memory, multi-phase inputs, etc.)
 bool FreezeBufferWithPattern(int playerNum, const std::vector<uint8_t>& patternIn) {
+    std::lock_guard<std::recursive_mutex> p2ControlLock(g_p2ControlMutex);
+    std::lock_guard<std::recursive_mutex> controlLock(g_bufferFreezeControlMutex);
+    if (g_onlineModeActive.load(std::memory_order_acquire)) return false;
+    if (BufferFreezeInputLaneBusy(playerNum)) return false;
+    if (TutorialBufferFreezeLeaseActive()) return false;
     StopBufferFreezing();
     if (patternIn.empty()) return false;
     uintptr_t playerPtr = GetPlayerPointer(playerNum);
@@ -721,15 +772,18 @@ bool FreezeBufferWithPattern(int playerNum, const std::vector<uint8_t>& patternI
     g_frozenBufferLength = static_cast<uint16_t>(pattern.size());
     g_frozenIndexValue = (startIndex + g_frozenBufferLength - 1) % INPUT_BUFFER_SIZE;
     g_indexFreezingActive = true;
-    g_bufferFreezingActive = true;
-    g_bufferFreezeThread = std::thread(FreezeBufferValuesThread, playerNum);
-    g_bufferFreezeThread.detach();
+    StartBufferFreezeWorker(playerNum);
     LogOut("[BUFFER_FREEZE] Generic pattern freeze active (len=" + std::to_string(pattern.size()) + ") P" + std::to_string(playerNum), true);
     return true;
 }
 
 // Overload with index advance capability.
 bool FreezeBufferWithPattern(int playerNum, const std::vector<uint8_t>& patternIn, int extraNeutralFrames) {
+    std::lock_guard<std::recursive_mutex> p2ControlLock(g_p2ControlMutex);
+    std::lock_guard<std::recursive_mutex> controlLock(g_bufferFreezeControlMutex);
+    if (g_onlineModeActive.load(std::memory_order_acquire)) return false;
+    if (BufferFreezeInputLaneBusy(playerNum)) return false;
+    if (TutorialBufferFreezeLeaseActive()) return false;
     if (extraNeutralFrames <= 0) {
         return FreezeBufferWithPattern(playerNum, patternIn);
     }
@@ -755,9 +809,7 @@ bool FreezeBufferWithPattern(int playerNum, const std::vector<uint8_t>& patternI
     g_frozenBufferLength = static_cast<uint16_t>(pattern.size());
     g_frozenIndexValue = (startIndex + g_frozenBufferLength + extraNeutralFrames - 1) % INPUT_BUFFER_SIZE;
     g_indexFreezingActive = true;
-    g_bufferFreezingActive = true;
-    g_bufferFreezeThread = std::thread(FreezeBufferValuesThread, playerNum);
-    g_bufferFreezeThread.detach();
+    StartBufferFreezeWorker(playerNum);
     LogOut("[BUFFER_FREEZE] Pattern freeze+advance (len=" + std::to_string(pattern.size()) + "+" + std::to_string(extraNeutralFrames) + ") idx=" + std::to_string(g_frozenIndexValue) + " P" + std::to_string(playerNum), true);
     return true;
 }

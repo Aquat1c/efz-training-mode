@@ -38,6 +38,71 @@ std::atomic<int> g_SkipRegularFAOverlayUntilFrame{0};
 // Wall-clock timer for FA message display (in milliseconds since epoch)
 static ULONGLONG g_displayUntilTimeMs = 0;
 
+namespace {
+
+struct FrameAdvantageScratchState {
+    int p1LastDefenderFreeFrame = -1;
+    int p2LastDefenderFreeFrame = -1;
+    int p1FreezeAccumSinceFree = 0;
+    int p2FreezeAccumSinceFree = 0;
+    int p1FreezeAfterAtkActionable = 0;
+    int p2FreezeAfterAtkActionable = 0;
+    int p1HitConnectCooldown = 0;
+    int p2HitConnectCooldown = 0;
+    int p1LastAttackEdgeFrame = -1;
+    int p2LastAttackEdgeFrame = -1;
+    bool p1DefenderFreeNeedsDelay = false;
+    bool p2DefenderFreeNeedsDelay = false;
+    int pendingAdvantageAttacker = 0;
+    int pendingAdvantageInternal = 0;
+    int pendingAdvantageReadyInternalFrame = -1;
+};
+
+FrameAdvantageScratchState g_faScratch{};
+
+void ResetFrameAdvantageScratchState() {
+    g_faScratch = FrameAdvantageScratchState{};
+}
+
+void ClearGapAnchorForDefender(int defender) {
+    if (defender == 1) {
+        g_faScratch.p1LastDefenderFreeFrame = -1;
+        g_faScratch.p1FreezeAccumSinceFree = 0;
+    } else if (defender == 2) {
+        g_faScratch.p2LastDefenderFreeFrame = -1;
+        g_faScratch.p2FreezeAccumSinceFree = 0;
+    }
+}
+
+bool HasResolvedFrameAdvantageDisplayOrPending() {
+    return frameAdvState.p1AdvantageCalculated ||
+           frameAdvState.p2AdvantageCalculated ||
+           g_faScratch.pendingAdvantageAttacker != 0 ||
+           g_displayUntilTimeMs != 0 ||
+           g_FrameAdvantageId != -1 ||
+           g_FrameAdvantage2Id != -1;
+}
+
+void ClearFrameAdvantageOverlayMessages() {
+    if (g_FrameAdvantageId != -1) {
+        DirectDrawHook::RemovePermanentMessage(g_FrameAdvantageId);
+        g_FrameAdvantageId = -1;
+    }
+    if (g_FrameAdvantage2Id != -1) {
+        DirectDrawHook::RemovePermanentMessage(g_FrameAdvantage2Id);
+        g_FrameAdvantage2Id = -1;
+    }
+    if (g_FrameGapId != -1) {
+        DirectDrawHook::RemovePermanentMessage(g_FrameGapId);
+        g_FrameGapId = -1;
+    }
+}
+
+} // namespace
+
+constexpr int kStaleResetInternalFrames = static_cast<int>(INTERNAL_FRAMES_PER_SECOND * 21.0);
+constexpr int kPendingRegularFADisplayInternalFrames = 90; // 30 visual frames
+
 // Helper function to get display duration in milliseconds from config
 static ULONGLONG GetDisplayDurationMs() {
     // Get duration from config (in seconds), convert to milliseconds
@@ -46,6 +111,62 @@ static ULONGLONG GetDisplayDurationMs() {
     if (durationSeconds < 0.5f) durationSeconds = 0.5f;
     if (durationSeconds > 30.0f) durationSeconds = 30.0f;
     return static_cast<ULONGLONG>(durationSeconds * 1000.0f);
+}
+
+void ArmFrameAdvantageDisplayTimer() {
+    g_displayUntilTimeMs = XPCompat::GetTickCount64Compat() + GetDisplayDurationMs();
+    frameAdvState.displayUntilInternalFrame = -1;
+}
+
+void CancelPendingRegularFrameAdvantage() {
+    g_faScratch.pendingAdvantageAttacker = 0;
+    g_faScratch.pendingAdvantageInternal = 0;
+    g_faScratch.pendingAdvantageReadyInternalFrame = -1;
+}
+
+void QueuePendingRegularFrameAdvantage(int attacker, int frameAdvantageInternal, int currentInternalFrame, bool delayDisplay) {
+    g_faScratch.pendingAdvantageAttacker = attacker;
+    g_faScratch.pendingAdvantageInternal = frameAdvantageInternal;
+    g_faScratch.pendingAdvantageReadyInternalFrame = delayDisplay
+        ? currentInternalFrame + kPendingRegularFADisplayInternalFrames
+        : currentInternalFrame;
+}
+
+void FlushPendingRegularFrameAdvantage(int currentInternalFrame, ULONGLONG currentTimeMs) {
+    if (g_faScratch.pendingAdvantageAttacker == 0) return;
+    if (currentInternalFrame < g_faScratch.pendingAdvantageReadyInternalFrame) return;
+
+    const int frameAdvantage = g_faScratch.pendingAdvantageInternal;
+    const int attacker = g_faScratch.pendingAdvantageAttacker;
+    const std::string frameAdvText = FormatFrameAdvantage(frameAdvantage);
+
+    if (g_showFrameAdvantageOverlay.load() && currentInternalFrame >= g_SkipRegularFAOverlayUntilFrame.load()) {
+        if (g_FrameGapId != -1) {
+            DirectDrawHook::RemovePermanentMessage(g_FrameGapId);
+            g_FrameGapId = -1;
+            frameAdvState.gapDisplayUntilInternalFrame = -1;
+        }
+
+        if (g_FrameAdvantageId != -1) {
+            DirectDrawHook::UpdatePermanentMessage(g_FrameAdvantageId, frameAdvText,
+                frameAdvantage >= 0 ? RGB(0, 255, 0) : RGB(255, 0, 0));
+        } else {
+            g_FrameAdvantageId = DirectDrawHook::AddPermanentMessage(frameAdvText,
+                frameAdvantage >= 0 ? RGB(0, 255, 0) : RGB(255, 0, 0), 305, 430);
+        }
+        if (g_FrameAdvantage2Id != -1) {
+            DirectDrawHook::RemovePermanentMessage(g_FrameAdvantage2Id);
+            g_FrameAdvantage2Id = -1;
+        }
+
+        g_displayUntilTimeMs = currentTimeMs + GetDisplayDurationMs();
+    }
+
+    LogOut(std::string("[FRAME_ADV] P") + std::to_string(attacker) +
+           "->P" + std::to_string(3 - attacker) +
+           " Frame Advantage: " + frameAdvText, true);
+
+    CancelPendingRegularFrameAdvantage();
 }
 
 // Legacy helper function kept for frame monitor compatibility
@@ -94,6 +215,9 @@ void ResetFrameAdvantageState() {
     frameAdvState.p2InitialBlockstunMoveID = 0;
     frameAdvState.displayUntilInternalFrame = -1;
     frameAdvState.gapDisplayUntilInternalFrame = -1;
+    g_displayUntilTimeMs = 0;
+    g_SkipRegularFAOverlayUntilFrame.store(0);
+    ResetFrameAdvantageScratchState();
     
     if (detailedLogging.load()) {
     #if defined(ENABLE_FRAME_ADV_DEBUG)
@@ -101,91 +225,25 @@ void ResetFrameAdvantageState() {
     #endif
     }
 
-    // Clear any existing display
-    if (g_FrameAdvantageId != -1) {
-        DirectDrawHook::RemovePermanentMessage(g_FrameAdvantageId);
-        g_FrameAdvantageId = -1;
-    }
-    if (g_FrameAdvantage2Id != -1) {
-        DirectDrawHook::RemovePermanentMessage(g_FrameAdvantage2Id);
-        g_FrameAdvantage2Id = -1;
-    }
-    if (g_FrameGapId != -1) {
-        DirectDrawHook::RemovePermanentMessage(g_FrameGapId);
-        g_FrameGapId = -1;
-    }
+    ClearFrameAdvantageOverlayMessages();
 }
 
 // Helper to clear any active frame advantage overlay/message without
 // touching the underlying tracking state. Useful for actions like teleport.
 void ClearFrameAdvantageDisplay() {
     g_displayUntilTimeMs = 0;
+    g_SkipRegularFAOverlayUntilFrame.store(0);
     frameAdvState.displayUntilInternalFrame = -1;
     frameAdvState.gapDisplayUntilInternalFrame = -1;
-
-    if (g_FrameAdvantageId != -1) {
-        DirectDrawHook::RemovePermanentMessage(g_FrameAdvantageId);
-        g_FrameAdvantageId = -1;
-    }
-    if (g_FrameAdvantage2Id != -1) {
-        DirectDrawHook::RemovePermanentMessage(g_FrameAdvantage2Id);
-        g_FrameAdvantage2Id = -1;
-    }
-    if (g_FrameGapId != -1) {
-        DirectDrawHook::RemovePermanentMessage(g_FrameGapId);
-        g_FrameGapId = -1;
-    }
+    CancelPendingRegularFrameAdvantage();
+    ClearFrameAdvantageOverlayMessages();
 }
 
 // Cancel any in-progress or queued frame advantage calculation.
 // This is used for artificial state changes (e.g., teleport/reset) where
 // continuing the current exchange would produce meaningless results.
 void CancelFrameAdvantageCalculation() {
-    // Clear any on-screen messages and timers
-    ClearFrameAdvantageDisplay();
-
-    // Reset core attacking/defending and timing state
-    frameAdvState.p1Attacking = false;
-    frameAdvState.p2Attacking = false;
-    frameAdvState.p1Defending = false;
-    frameAdvState.p2Defending = false;
-    frameAdvState.p1ActionableInternalFrame = -1;
-    frameAdvState.p2ActionableInternalFrame = -1;
-    frameAdvState.p1DefenderFreeInternalFrame = -1;
-    frameAdvState.p2DefenderFreeInternalFrame = -1;
-    frameAdvState.p1AdvantageCalculated = false;
-    frameAdvState.p2AdvantageCalculated = false;
-    frameAdvState.p1FrameAdvantage = 0.0;
-    frameAdvState.p2FrameAdvantage = 0.0;
-
-    // Also reset gap-related tracking by reinitializing the static locals
-    // via a small lambda that returns references to them.
-    auto resetLocals = []() {
-        // These mirror the static locals declared at the top of MonitorFrameAdvantage.
-        static int &p1_last_defender_free_frame = *([](){ static int v = -1; return &v; })();
-        static int &p2_last_defender_free_frame = *([](){ static int v = -1; return &v; })();
-        static int &p1_freeze_accum_since_free = *([](){ static int v = 0; return &v; })();
-        static int &p2_freeze_accum_since_free = *([](){ static int v = 0; return &v; })();
-        static int &p1_freeze_after_atk_actionable = *([](){ static int v = 0; return &v; })();
-        static int &p2_freeze_after_atk_actionable = *([](){ static int v = 0; return &v; })();
-        static int &p1_hit_connect_cooldown = *([](){ static int v = 0; return &v; })();
-        static int &p2_hit_connect_cooldown = *([](){ static int v = 0; return &v; })();
-        static int &p1_last_attack_edge_frame = *([](){ static int v = -1; return &v; })();
-        static int &p2_last_attack_edge_frame = *([](){ static int v = -1; return &v; })();
-
-        p1_last_defender_free_frame = -1;
-        p2_last_defender_free_frame = -1;
-        p1_freeze_accum_since_free = 0;
-        p2_freeze_accum_since_free = 0;
-        p1_freeze_after_atk_actionable = 0;
-        p2_freeze_after_atk_actionable = 0;
-        p1_hit_connect_cooldown = 0;
-        p2_hit_connect_cooldown = 0;
-        p1_last_attack_edge_frame = -1;
-        p2_last_attack_edge_frame = -1;
-    };
-
-    resetLocals();
+    ResetFrameAdvantageState();
 
 #if defined(ENABLE_FRAME_ADV_DEBUG)
     if (detailedLogging.load()) {
@@ -296,9 +354,44 @@ bool IsAttackMove(short moveID) {
            (moveID >= 400 && moveID <= 500);
 }
 
+bool IsDefenderFreeForFA(short prevMoveID, short moveID, bool actionable) {
+    if (!actionable) return false;
+    if (moveID != FALLING_ID) return true;
+    return IsAirtech(prevMoveID);
+}
+
+bool ShouldDelayRegularFADisplay(short prevMoveID, short moveID) {
+    const bool isLanding = moveID == LANDING_ID ||
+                           moveID == LANDING_1_ID ||
+                           moveID == LANDING_2_ID ||
+                           moveID == LANDING_3_ID;
+    return IsGroundtech(prevMoveID) ||
+           IsAirtech(prevMoveID) ||
+           prevMoveID == FALLING_ID ||
+           moveID == FALLING_ID ||
+           isLanding;
+}
+
 void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, short prevMoveID2) {
+    if (g_deepFrameAdvDebug.load()) {
+        static bool s_loggedOnce = false;
+        if (!s_loggedOnce) {
+            LogOut("[FA_DIAG] MonitorFrameAdvantage ACTIVE - first call", true);
+            s_loggedOnce = true;
+        }
+    }
     int currentInternalFrame = GetCurrentInternalFrame();
     ULONGLONG currentTimeMs = XPCompat::GetTickCount64Compat();
+    int &p1_last_defender_free_frame = g_faScratch.p1LastDefenderFreeFrame;
+    int &p2_last_defender_free_frame = g_faScratch.p2LastDefenderFreeFrame;
+    int &p1_freeze_accum_since_free = g_faScratch.p1FreezeAccumSinceFree;
+    int &p2_freeze_accum_since_free = g_faScratch.p2FreezeAccumSinceFree;
+    int &p1_freeze_after_atk_actionable = g_faScratch.p1FreezeAfterAtkActionable;
+    int &p2_freeze_after_atk_actionable = g_faScratch.p2FreezeAfterAtkActionable;
+    int &p1_hit_connect_cooldown = g_faScratch.p1HitConnectCooldown;
+    int &p2_hit_connect_cooldown = g_faScratch.p2HitConnectCooldown;
+    int &p1_last_attack_edge_frame = g_faScratch.p1LastAttackEdgeFrame;
+    int &p2_last_attack_edge_frame = g_faScratch.p2LastAttackEdgeFrame;
     
     // Debug logging to track timer state
     static int debugLogCounter = 0;
@@ -311,28 +404,9 @@ void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, shor
         #endif
     }
     
-    // For gap detection
-    static int p1_last_defender_free_frame = -1;
-    static int p2_last_defender_free_frame = -1;
-    // Accumulate freeze frames between defender free and next connect (subtract from gap)
-    static int p1_freeze_accum_since_free = 0;
-    static int p2_freeze_accum_since_free = 0;
-    // Accumulate freeze that occurs AFTER attacker becomes actionable but BEFORE defender becomes actionable
-    // This prevents inflated advantage caused by IC/BIC/FIC (22C) or superflash-style global freezes.
-    static int p1_freeze_after_atk_actionable = 0;
-    static int p2_freeze_after_atk_actionable = 0;
-    
-    // Cooldowns for hit detection - REDUCED to improve string detection
-    static int p1_hit_connect_cooldown = 0;
-    static int p2_hit_connect_cooldown = 0;
-    
     // Reduce cooldowns
     if (p1_hit_connect_cooldown > 0) p1_hit_connect_cooldown--;
     if (p2_hit_connect_cooldown > 0) p2_hit_connect_cooldown--;
-
-    // Track recent attack start edges to allow fallback arming when defender becomes non-actionable
-    static int p1_last_attack_edge_frame = -1;
-    static int p2_last_attack_edge_frame = -1;
     const bool p1_attack_edge = IsAttackMove(moveID1) && !IsAttackMove(prevMoveID1);
     const bool p2_attack_edge = IsAttackMove(moveID2) && !IsAttackMove(prevMoveID2);
     if (p1_attack_edge) p1_last_attack_edge_frame = currentInternalFrame;
@@ -360,11 +434,6 @@ void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, shor
         lastLoggedMoveID2 = moveID2;
     }
 
-    // Force-enable detailed FA logging when overlay is shown to aid diagnosis (can be relaxed later)
-    if (g_showFrameAdvantageOverlay.load()) {
-        detailedLogging.store(true);
-    }
-    
     // Check if the display timer has expired (using wall-clock time)
             if (g_displayUntilTimeMs != 0 && currentTimeMs >= g_displayUntilTimeMs) {
         #if defined(ENABLE_FRAME_ADV_DEBUG)
@@ -383,6 +452,8 @@ void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, shor
             g_FrameAdvantage2Id = -1;
         }
         g_displayUntilTimeMs = 0;
+        g_SkipRegularFAOverlayUntilFrame.store(0);
+        frameAdvState.displayUntilInternalFrame = -1;
     }
     
     // Check if the gap display timer has expired (using frame-based timer)
@@ -428,16 +499,18 @@ void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, shor
         }
         // Clear wall-clock timer
         g_displayUntilTimeMs = 0;
+        g_SkipRegularFAOverlayUntilFrame.store(0);
+        frameAdvState.displayUntilInternalFrame = -1;
     }
     
     // Neutral timeout removed - display timer handles message clearing now
     // (The configurable 8-second timer controls when messages disappear)
     
     // Detect when defender becomes actionable again (robust vs knockdown/tech/wakeup) for gap detection
-    bool p1_becomes_actionable = !IsActionable(prevMoveID1) && faSample.actionable1;
-    bool p2_becomes_actionable = !IsActionable(prevMoveID2) && faSample.actionable2;
+    bool p1_becomes_actionable = !IsActionable(prevMoveID1) && IsDefenderFreeForFA(prevMoveID1, moveID1, faSample.actionable1);
+    bool p2_becomes_actionable = !IsActionable(prevMoveID2) && IsDefenderFreeForFA(prevMoveID2, moveID2, faSample.actionable2);
 
-    if (p1_becomes_actionable) {
+    if (p1_becomes_actionable && frameAdvState.p1Defending && frameAdvState.p1DefenderFreeInternalFrame == -1) {
         p1_last_defender_free_frame = currentInternalFrame;
         p1_freeze_accum_since_free = 0;
         #if defined(ENABLE_FRAME_ADV_DEBUG)
@@ -446,7 +519,7 @@ void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, shor
         #endif
     }
 
-    if (p2_becomes_actionable) {
+    if (p2_becomes_actionable && frameAdvState.p2Defending && frameAdvState.p2DefenderFreeInternalFrame == -1) {
         p2_last_defender_free_frame = currentInternalFrame;
         p2_freeze_accum_since_free = 0;
         #if defined(ENABLE_FRAME_ADV_DEBUG)
@@ -483,23 +556,70 @@ void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, shor
     // STEP 1: Detect if an attack connects (P1 attacking P2)
     bool p2_entering_blockstun = IsBlockstunState(moveID2) && !IsBlockstunState(prevMoveID2);
     bool p2_entering_hitstun = IsHitstun(moveID2) && !IsHitstun(prevMoveID2);
+    bool p2_entering_launch = IsLaunched(moveID2) && !IsLaunched(prevMoveID2);
     bool p2_entering_thrown   = IsThrown(moveID2)    && !IsThrown(prevMoveID2);
     // Fallback: treat transition from actionable->non-actionable as a connect if it occurs shortly after an attack edge
     bool p2_entering_nonactionable = IsActionable(prevMoveID2) && !faSample.actionable2;
     bool p1_recent_attack_window = (p1_last_attack_edge_frame >= 0) && (currentInternalFrame - p1_last_attack_edge_frame <= 60);
     
-    // Suppress false "connect" detection caused by IC/BIC/FIC superflash or global freeze frames
-    bool superflashActive = PauseIntegration::IsGameSpeedFrozen() ||
-                            (moveID1 == GROUND_IC_ID || moveID1 == AIR_IC_ID) ||
+    // Suppress false "connect" detection caused by IC/BIC/FIC superflash
+    // NOTE: Previously included PauseIntegration::IsGameSpeedFrozen() but this
+    // can return true permanently when the gamespeed address resolves incorrectly
+    // on certain game versions (e.g. Revival 1.02e slot=1 reading stale 0).
+    // The IC move ID checks alone are sufficient to detect superflash states.
+    bool superflashActive = (moveID1 == GROUND_IC_ID || moveID1 == AIR_IC_ID) ||
                             (moveID2 == GROUND_IC_ID || moveID2 == AIR_IC_ID);
 
+    if (g_deepFrameAdvDebug.load()) {
+        static short s_diagPrevM1 = -1, s_diagPrevM2 = -1;
+        if (moveID1 != s_diagPrevM1 || moveID2 != s_diagPrevM2) {
+            LogOut("[FA_DIAG] MoveChange frame=" + std::to_string(currentInternalFrame) +
+                   " p1=" + std::to_string(prevMoveID1) + "->" + std::to_string(moveID1) +
+                   " p2=" + std::to_string(prevMoveID2) + "->" + std::to_string(moveID2) +
+                   " p2Block=" + std::to_string(IsBlockstunState(moveID2)) +
+                   " p2Hit=" + std::to_string(IsHitstun(moveID2)) +
+                   " p2Launch=" + std::to_string(IsLaunched(moveID2)) +
+                   " p2Thrown=" + std::to_string(IsThrown(moveID2)) +
+                   " p1Atk=" + std::to_string(IsAttackMove(moveID1)) +
+                   " p1Act=" + std::to_string(faSample.actionable1) +
+                   " p2Act=" + std::to_string(faSample.actionable2) +
+                   " p2BlockEdge=" + std::to_string(p2_entering_blockstun) +
+                   " p2HitEdge=" + std::to_string(p2_entering_hitstun) +
+                   " p2LaunchEdge=" + std::to_string(p2_entering_launch) +
+                   " p2ThrownEdge=" + std::to_string(p2_entering_thrown) +
+                   " superflash=" + std::to_string(superflashActive) +
+                   " p1AtkEdge=" + std::to_string(p1_attack_edge) +
+                   " cooldown=" + std::to_string(p1_hit_connect_cooldown),
+                   detailedLogging.load());
+            s_diagPrevM1 = moveID1;
+            s_diagPrevM2 = moveID2;
+        }
+    }
+
     if (!superflashActive &&
-        ((p2_entering_blockstun || p2_entering_hitstun || p2_entering_thrown || (p2_entering_nonactionable && p1_recent_attack_window))
-         || (p1_attack_edge && !faSample.actionable2))
+        (p2_entering_blockstun || p2_entering_hitstun || p2_entering_launch || p2_entering_thrown ||
+         (p2_entering_nonactionable && p1_recent_attack_window))
         && p1_hit_connect_cooldown == 0) {
+
+        if (g_deepFrameAdvDebug.load()) {
+            LogOut("[FA_DIAG] STEP1 P1->P2 CONNECT at frame=" + std::to_string(currentInternalFrame) +
+                   " block=" + std::to_string(p2_entering_blockstun) +
+                   " hit=" + std::to_string(p2_entering_hitstun) +
+                   " launch=" + std::to_string(p2_entering_launch) +
+                   " thrown=" + std::to_string(p2_entering_thrown) +
+                   " nonact=" + std::to_string(p2_entering_nonactionable) +
+                   " atkEdge=" + std::to_string(p1_attack_edge) +
+                   " m1=" + std::to_string(moveID1) + " m2=" + std::to_string(moveID2), true);
+        }
+
+        const bool hadResolvedFrameAdvantage = HasResolvedFrameAdvantageDisplayOrPending();
+
+        // A fresh regular contact takes precedence over any previous RG/FA display,
+        // even when it comes from a later hit of the same move rather than a new attack edge.
+        ClearFrameAdvantageDisplay();
         
         // Calculate gap if there was a previous defender free frame (string of attacks)
-        if (p2_last_defender_free_frame != -1) {
+        if (!hadResolvedFrameAdvantage && p2_last_defender_free_frame != -1) {
             int gapFramesRaw = currentInternalFrame - p2_last_defender_free_frame;
             int gapFrames = gapFramesRaw - p2_freeze_accum_since_free;
             if (gapFrames < 0) gapFrames = 0;
@@ -528,12 +648,14 @@ void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, shor
                     frameAdvState.gapDisplayUntilInternalFrame = currentInternalFrame + 60;
                 }
                 
-                if (detailedLogging.load()) {
+                if (g_deepFrameAdvDebug.load()) {
                     LogOut(std::string("[FRAME_ADV] Gap detected: ") + gapText +
                            " (raw=" + std::to_string(gapFramesRaw) +
                            ", freeze-removed=" + std::to_string(p2_freeze_accum_since_free) + ")", true);
                 }
             }
+        } else if (hadResolvedFrameAdvantage) {
+            ClearGapAnchorForDefender(2);
         }
         
         // CRUCIAL CHANGE: Don't reset the entire state for strings of attacks
@@ -562,6 +684,7 @@ void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, shor
         frameAdvState.p1Defending = false; // Opponent is attacking, so P1 is not defending in this exchange
         frameAdvState.p1AttackStartInternalFrame = currentInternalFrame;
         frameAdvState.p2DefenderFreeInternalFrame = -1; // Reset only this defender variable
+        g_faScratch.p2DefenderFreeNeedsDelay = false;
     // Reset freeze accumulator for this exchange
     p1_freeze_after_atk_actionable = 0;
         
@@ -570,7 +693,7 @@ void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, shor
             frameAdvState.p2InHitstun = false;
             frameAdvState.p2BlockstunStartInternalFrame = currentInternalFrame;
             frameAdvState.p2InitialBlockstunMoveID = moveID2;
-        } else if (p2_entering_hitstun) {
+        } else if (p2_entering_hitstun || p2_entering_launch) {
             frameAdvState.p2InBlockstun = false;
             frameAdvState.p2InHitstun = true;
             frameAdvState.p2HitstunStartInternalFrame = currentInternalFrame;
@@ -600,18 +723,35 @@ void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, shor
     // STEP 2: Detect if an attack connects (P2 attacking P1) - mirror of P1 logic
     bool p1_entering_blockstun = IsBlockstunState(moveID1) && !IsBlockstunState(prevMoveID1);
     bool p1_entering_hitstun = IsHitstun(moveID1) && !IsHitstun(prevMoveID1);
+    bool p1_entering_launch = IsLaunched(moveID1) && !IsLaunched(prevMoveID1);
     bool p1_entering_thrown   = IsThrown(moveID1)    && !IsThrown(prevMoveID1);
     bool p1_entering_nonactionable = IsActionable(prevMoveID1) && !faSample.actionable1;
     bool p2_recent_attack_window = (p2_last_attack_edge_frame >= 0) && (currentInternalFrame - p2_last_attack_edge_frame <= 60);
     
     // Mirror connect suppression for P2
     if (!superflashActive &&
-        ((p1_entering_blockstun || p1_entering_hitstun || p1_entering_thrown || (p1_entering_nonactionable && p2_recent_attack_window))
-         || (p2_attack_edge && !faSample.actionable1))
+        (p1_entering_blockstun || p1_entering_hitstun || p1_entering_launch || p1_entering_thrown ||
+         (p1_entering_nonactionable && p2_recent_attack_window))
         && p2_hit_connect_cooldown == 0) {
+
+        if (g_deepFrameAdvDebug.load()) {
+            LogOut("[FA_DIAG] STEP2 P2->P1 CONNECT at frame=" + std::to_string(currentInternalFrame) +
+                   " block=" + std::to_string(p1_entering_blockstun) +
+                   " hit=" + std::to_string(p1_entering_hitstun) +
+                   " launch=" + std::to_string(p1_entering_launch) +
+                   " thrown=" + std::to_string(p1_entering_thrown) +
+                   " nonact=" + std::to_string(p1_entering_nonactionable) +
+                   " atkEdge=" + std::to_string(p2_attack_edge) +
+                   " m1=" + std::to_string(moveID1) + " m2=" + std::to_string(moveID2), true);
+        }
+        const bool hadResolvedFrameAdvantage = HasResolvedFrameAdvantageDisplayOrPending();
+
+        // A fresh regular contact takes precedence over any previous RG/FA display,
+        // even when it comes from a later hit of the same move rather than a new attack edge.
+        ClearFrameAdvantageDisplay();
         
         // Calculate gap if there was a previous defender free frame (string of attacks)
-        if (p1_last_defender_free_frame != -1) {
+        if (!hadResolvedFrameAdvantage && p1_last_defender_free_frame != -1) {
             int gapFramesRaw = currentInternalFrame - p1_last_defender_free_frame;
             int gapFrames = gapFramesRaw - p1_freeze_accum_since_free;
             if (gapFrames < 0) gapFrames = 0;
@@ -640,12 +780,14 @@ void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, shor
                     frameAdvState.gapDisplayUntilInternalFrame = currentInternalFrame + 60;
                 }
                 
-                if (detailedLogging.load()) {
+                if (g_deepFrameAdvDebug.load()) {
                     LogOut(std::string("[FRAME_ADV] Gap detected: ") + gapText +
                            " (raw=" + std::to_string(gapFramesRaw) +
                            ", freeze-removed=" + std::to_string(p1_freeze_accum_since_free) + ")", true);
                 }
             }
+        } else if (hadResolvedFrameAdvantage) {
+            ClearGapAnchorForDefender(1);
         }
         
         // CRUCIAL CHANGE: Don't reset the entire state for strings of attacks
@@ -674,6 +816,7 @@ void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, shor
         frameAdvState.p2Defending = false; // Opponent is attacking, so P2 is not defending in this exchange
         frameAdvState.p2AttackStartInternalFrame = currentInternalFrame;
         frameAdvState.p1DefenderFreeInternalFrame = -1; // Reset only this defender variable
+        g_faScratch.p1DefenderFreeNeedsDelay = false;
     // Reset freeze accumulator for this exchange
     p2_freeze_after_atk_actionable = 0;
         
@@ -682,7 +825,7 @@ void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, shor
             frameAdvState.p1InHitstun = false;
             frameAdvState.p1BlockstunStartInternalFrame = currentInternalFrame;
             frameAdvState.p1InitialBlockstunMoveID = moveID1;
-        } else if (p1_entering_hitstun) {
+        } else if (p1_entering_hitstun || p1_entering_launch) {
             frameAdvState.p1InBlockstun = false;
             frameAdvState.p1InHitstun = true;
             frameAdvState.p1HitstunStartInternalFrame = currentInternalFrame;
@@ -711,16 +854,28 @@ void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, shor
     // STEP 3: Detect when attacker exits recovery
     if (frameAdvState.p1Attacking && frameAdvState.p1ActionableInternalFrame == -1) {
         bool attackerRecoveryEdge = (!IsActionable(prevMoveID1) && faSample.actionable1);
+        if (g_deepFrameAdvDebug.load()) {
+            static int s_step3LogDecim = 0;
+            if ((s_step3LogDecim++ % 48) == 0) {
+                LogOut("[FA_DIAG] STEP3_WAIT P1atk: prevM1=" + std::to_string(prevMoveID1) +
+                       " curM1=" + std::to_string(moveID1) +
+                       " IsActionable(prev)=" + std::to_string(IsActionable(prevMoveID1)) +
+                       " actionable1=" + std::to_string(faSample.actionable1) +
+                       " edge=" + std::to_string(attackerRecoveryEdge), detailedLogging.load());
+            }
+        }
         if (attackerRecoveryEdge) {
             frameAdvState.p1ActionableInternalFrame = currentInternalFrame;
-         #if defined(ENABLE_FRAME_ADV_DEBUG)
-         LogOut("[FRAME_ADV_DEBUG] P1 attacker recovery ended at frame " + 
-             std::to_string(currentInternalFrame) +
-             " (prevMoveID=" + std::to_string(prevMoveID1) +
-             ", currMoveID=" + std::to_string(moveID1) +
-             ", actionable1=" + std::to_string(faSample.actionable1) + ")",
-             detailedLogging.load());
-         #endif
+         if (g_deepFrameAdvDebug.load()) {
+             LogOut("[FA_DIAG] STEP3 P1 attacker recovery at frame=" + std::to_string(currentInternalFrame) +
+                    " prevM1=" + std::to_string(prevMoveID1) + " curM1=" + std::to_string(moveID1), true);
+             LogOut("[FRAME_ADV_DEBUG] P1 attacker recovery ended at frame " + 
+                 std::to_string(currentInternalFrame) +
+                 " (prevMoveID=" + std::to_string(prevMoveID1) +
+                 ", currMoveID=" + std::to_string(moveID1) +
+                 ", actionable1=" + std::to_string(faSample.actionable1) + ")",
+                 detailedLogging.load());
+         }
         }
     }
     
@@ -738,6 +893,40 @@ void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, shor
          #endif
         }
     }
+
+    // If the attacker was already actionable and spends that advantage on a new action
+    // before the defender becomes free, the next recovery should become the new FA anchor.
+    if (frameAdvState.p1Attacking &&
+        frameAdvState.p1ActionableInternalFrame != -1 &&
+        frameAdvState.p2DefenderFreeInternalFrame == -1) {
+        bool attackerRecommitted = IsActionable(prevMoveID1) && !faSample.actionable1;
+        if (attackerRecommitted) {
+            if (g_deepFrameAdvDebug.load()) {
+                LogOut("[FA_DIAG] STEP3_RESET P1 actionable anchor cleared by new action at frame=" +
+                       std::to_string(currentInternalFrame) +
+                       " prevM1=" + std::to_string(prevMoveID1) +
+                       " curM1=" + std::to_string(moveID1), true);
+            }
+            frameAdvState.p1ActionableInternalFrame = -1;
+            p1_freeze_after_atk_actionable = 0;
+        }
+    }
+
+    if (frameAdvState.p2Attacking &&
+        frameAdvState.p2ActionableInternalFrame != -1 &&
+        frameAdvState.p1DefenderFreeInternalFrame == -1) {
+        bool attackerRecommitted = IsActionable(prevMoveID2) && !faSample.actionable2;
+        if (attackerRecommitted) {
+            if (g_deepFrameAdvDebug.load()) {
+                LogOut("[FA_DIAG] STEP3_RESET P2 actionable anchor cleared by new action at frame=" +
+                       std::to_string(currentInternalFrame) +
+                       " prevM2=" + std::to_string(prevMoveID2) +
+                       " curM2=" + std::to_string(moveID2), true);
+            }
+            frameAdvState.p2ActionableInternalFrame = -1;
+            p2_freeze_after_atk_actionable = 0;
+        }
+    }
     
     // STEP 4: Detect when defender becomes actionable (covers knockdowns, ground/air tech, wakeup)
     if (frameAdvState.p2Defending && frameAdvState.p2DefenderFreeInternalFrame == -1) {
@@ -747,19 +936,34 @@ void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, shor
         // Only exclude landing if they were defending (hit/blocking)
         bool shouldExcludeLanding = isLanding && frameAdvState.p2Defending;
         
-        bool defenderFreeEdge = (!IsActionable(prevMoveID2) && faSample.actionable2 && !shouldExcludeLanding);
+        bool defenderFreeEdge = (!IsActionable(prevMoveID2) && IsDefenderFreeForFA(prevMoveID2, moveID2, faSample.actionable2) && !shouldExcludeLanding);
+        if (g_deepFrameAdvDebug.load()) {
+            static int s_step4LogDecim = 0;
+            if ((s_step4LogDecim++ % 48) == 0) {
+                LogOut("[FA_DIAG] STEP4_WAIT P2def: prevM2=" + std::to_string(prevMoveID2) +
+                       " curM2=" + std::to_string(moveID2) +
+                       " IsActionable(prev)=" + std::to_string(IsActionable(prevMoveID2)) +
+                       " actionable2=" + std::to_string(faSample.actionable2) +
+                       " landing=" + std::to_string(isLanding) +
+                       " excludeLanding=" + std::to_string(shouldExcludeLanding) +
+                       " edge=" + std::to_string(defenderFreeEdge), detailedLogging.load());
+            }
+        }
         if (defenderFreeEdge) {
             frameAdvState.p2DefenderFreeInternalFrame = currentInternalFrame;
-            #if defined(ENABLE_FRAME_ADV_DEBUG)
-            LogOut("[FRAME_ADV_DEBUG] P2 defender actionable at frame " + 
-                std::to_string(currentInternalFrame) +
-                " (prevMoveID=" + std::to_string(prevMoveID2) +
-                ", currMoveID=" + std::to_string(moveID2) +
-                ", actionable2=" + std::to_string(faSample.actionable2) +
-                ", isLanding=" + std::to_string(isLanding) +
-                ", shouldExcludeLanding=" + std::to_string(shouldExcludeLanding) + ")",
-                detailedLogging.load());
-            #endif
+            g_faScratch.p2DefenderFreeNeedsDelay = ShouldDelayRegularFADisplay(prevMoveID2, moveID2);
+            if (g_deepFrameAdvDebug.load()) {
+                LogOut("[FA_DIAG] STEP4 P2 defender free at frame=" + std::to_string(currentInternalFrame) +
+                       " prevM2=" + std::to_string(prevMoveID2) + " curM2=" + std::to_string(moveID2), true);
+                LogOut("[FRAME_ADV_DEBUG] P2 defender actionable at frame " + 
+                    std::to_string(currentInternalFrame) +
+                    " (prevMoveID=" + std::to_string(prevMoveID2) +
+                    ", currMoveID=" + std::to_string(moveID2) +
+                    ", actionable2=" + std::to_string(faSample.actionable2) +
+                    ", isLanding=" + std::to_string(isLanding) +
+                    ", shouldExcludeLanding=" + std::to_string(shouldExcludeLanding) + ")",
+                    detailedLogging.load());
+            }
         }
     }
 
@@ -770,9 +974,10 @@ void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, shor
         // Only exclude landing if they were defending (hit/blocking)
         bool shouldExcludeLanding = isLanding && frameAdvState.p1Defending;
         
-        bool defenderFreeEdge = (!IsActionable(prevMoveID1) && faSample.actionable1 && !shouldExcludeLanding);
+        bool defenderFreeEdge = (!IsActionable(prevMoveID1) && IsDefenderFreeForFA(prevMoveID1, moveID1, faSample.actionable1) && !shouldExcludeLanding);
         if (defenderFreeEdge) {
             frameAdvState.p1DefenderFreeInternalFrame = currentInternalFrame;
+            g_faScratch.p1DefenderFreeNeedsDelay = ShouldDelayRegularFADisplay(prevMoveID1, moveID1);
             #if defined(ENABLE_FRAME_ADV_DEBUG)
             LogOut("[FRAME_ADV_DEBUG] P1 defender actionable at frame " + 
                 std::to_string(currentInternalFrame) +
@@ -795,9 +1000,10 @@ void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, shor
     if (frameAdvState.p1Attacking && frameAdvState.p1ActionableInternalFrame != -1 && frameAdvState.p2DefenderFreeInternalFrame == -1) {
         // Defender remained actionable (never lost actionability) implies whiff sequence;
         // If we detect attacker actionable and defender already actionable, synthesize immediate zero or negative adv.
-        if (faSample.actionable2) {
+        if (IsDefenderFreeForFA(prevMoveID2, moveID2, faSample.actionable2)) {
             // defender was never locked: treat advantage as (defender frame - attacker recovery frame)
             frameAdvState.p2DefenderFreeInternalFrame = frameAdvState.p1ActionableInternalFrame; // same frame
+            g_faScratch.p2DefenderFreeNeedsDelay = false;
             #if defined(ENABLE_FRAME_ADV_DEBUG)
             LogOut("[FRAME_ADV_DEBUG] Synthetic defender free (P2) at frame " + std::to_string(frameAdvState.p2DefenderFreeInternalFrame) +
                 " (whiff/cancel sequence)", detailedLogging.load());
@@ -805,8 +1011,9 @@ void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, shor
         }
     }
     if (frameAdvState.p2Attacking && frameAdvState.p2ActionableInternalFrame != -1 && frameAdvState.p1DefenderFreeInternalFrame == -1) {
-        if (faSample.actionable1) {
+        if (IsDefenderFreeForFA(prevMoveID1, moveID1, faSample.actionable1)) {
             frameAdvState.p1DefenderFreeInternalFrame = frameAdvState.p2ActionableInternalFrame;
+            g_faScratch.p1DefenderFreeNeedsDelay = false;
             #if defined(ENABLE_FRAME_ADV_DEBUG)
             LogOut("[FRAME_ADV_DEBUG] Synthetic defender free (P1) at frame " + std::to_string(frameAdvState.p1DefenderFreeInternalFrame) +
                 " (whiff/cancel sequence)", detailedLogging.load());
@@ -815,14 +1022,36 @@ void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, shor
     }
     
     // STEP 5: Calculate frame advantage when all necessary data is available
+    if (g_deepFrameAdvDebug.load()) {
+        if (frameAdvState.p1Attacking || frameAdvState.p2Attacking) {
+            static int s_step5LogDecim = 0;
+            if ((s_step5LogDecim++ % 48) == 0) {
+                LogOut("[FA_DIAG] STEP5_STATE: p1Atk=" + std::to_string(frameAdvState.p1Attacking) +
+                       " p1Calc=" + std::to_string(frameAdvState.p1AdvantageCalculated) +
+                       " p1AtkFrame=" + std::to_string(frameAdvState.p1ActionableInternalFrame) +
+                       " p2DefFree=" + std::to_string(frameAdvState.p2DefenderFreeInternalFrame) +
+                       " p2Atk=" + std::to_string(frameAdvState.p2Attacking) +
+                       " p2Calc=" + std::to_string(frameAdvState.p2AdvantageCalculated) +
+                       " p2AtkFrame=" + std::to_string(frameAdvState.p2ActionableInternalFrame) +
+                       " p1DefFree=" + std::to_string(frameAdvState.p1DefenderFreeInternalFrame) +
+                       " p1Def=" + std::to_string(frameAdvState.p1Defending) +
+                       " p2Def=" + std::to_string(frameAdvState.p2Defending) +
+                       " skipUntil=" + std::to_string(g_SkipRegularFAOverlayUntilFrame.load()) +
+                       " curFrame=" + std::to_string(currentInternalFrame), detailedLogging.load());
+            }
+        }
+    }
     if (frameAdvState.p1Attacking && !frameAdvState.p1AdvantageCalculated &&
         frameAdvState.p1ActionableInternalFrame != -1 && frameAdvState.p2DefenderFreeInternalFrame != -1) {
         
-        #if defined(ENABLE_FRAME_ADV_DEBUG)
-        LogOut("[FA_CALC] P1 attacking - atkActionable=" + std::to_string(frameAdvState.p1ActionableInternalFrame) + 
-               " defFree=" + std::to_string(frameAdvState.p2DefenderFreeInternalFrame) + 
-               " p1Move=" + std::to_string(moveID1) + " p2Move=" + std::to_string(moveID2), true);
-        #endif
+        if (g_deepFrameAdvDebug.load()) {
+            LogOut("[FA_DIAG] STEP5 CALCULATING P1->P2: atkActionable=" +
+                   std::to_string(frameAdvState.p1ActionableInternalFrame) +
+                   " defFree=" + std::to_string(frameAdvState.p2DefenderFreeInternalFrame), true);
+            LogOut("[FA_CALC] P1 attacking - atkActionable=" + std::to_string(frameAdvState.p1ActionableInternalFrame) + 
+                   " defFree=" + std::to_string(frameAdvState.p2DefenderFreeInternalFrame) + 
+                   " p1Move=" + std::to_string(moveID1) + " p2Move=" + std::to_string(moveID2), true);
+        }
         
         // Calculate frame advantage (defender free - attacker actionable)
         // Positive: Attacker has advantage
@@ -835,45 +1064,14 @@ void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, shor
         frameAdvState.p1FrameAdvantage = frameAdvantage;
         frameAdvState.p1AdvantageCalculated = true;
         
-        // Format the advantage display with proper sign and subframe precision
-        // FormatFrameAdvantage already includes the "+" for positive values
-        std::string frameAdvText = FormatFrameAdvantage(frameAdvantage);
+        QueuePendingRegularFrameAdvantage(1, frameAdvantage, currentInternalFrame, g_faScratch.p2DefenderFreeNeedsDelay);
+        ClearGapAnchorForDefender(2);
         
-        // Display the calculated advantage (unless suppressed by RG overlay takeover)
-        if (g_showFrameAdvantageOverlay.load() && currentInternalFrame >= g_SkipRegularFAOverlayUntilFrame.load()) {
-            // Clear any gap message when FA is displayed (they use the same position)
-            if (g_FrameGapId != -1) {
-                DirectDrawHook::RemovePermanentMessage(g_FrameGapId);
-                g_FrameGapId = -1;
-                frameAdvState.gapDisplayUntilInternalFrame = -1;
-            }
-            
-            if (g_FrameAdvantageId != -1) {
-                DirectDrawHook::UpdatePermanentMessage(g_FrameAdvantageId, frameAdvText, 
-                    frameAdvantage >= 0 ? RGB(0, 255, 0) : RGB(255, 0, 0));
-            } else {
-                g_FrameAdvantageId = DirectDrawHook::AddPermanentMessage(frameAdvText, 
-                    frameAdvantage >= 0 ? RGB(0, 255, 0) : RGB(255, 0, 0), 305, 430);
-            }
-            // Ensure any secondary RG segment is removed when regular FA takes over
-            if (g_FrameAdvantage2Id != -1) {
-                DirectDrawHook::RemovePermanentMessage(g_FrameAdvantage2Id);
-                g_FrameAdvantage2Id = -1;
-            }
-            
-            // Set display duration using wall-clock time (real seconds, not frames)
-            g_displayUntilTimeMs = currentTimeMs + GetDisplayDurationMs();
-                     #if defined(ENABLE_FRAME_ADV_DEBUG)
-                     LogOut("[FA_TIMER] P1 FA timer set - current=" + std::to_string(currentTimeMs) + 
-                         " duration=" + std::to_string(GetDisplayDurationMs()) + "ms" +
-                         " expiry=" + std::to_string(g_displayUntilTimeMs), true);
-                     #endif
-        }
-        
-        LogOut("[FRAME_ADV] P1->P2 Frame Advantage: " + frameAdvText, true);
-        
-        // Reset attack state for the next sequence while preserving defender state
+        // Reset exchange state for the next sequence; FA has consumed the defender-free anchor.
         frameAdvState.p1Attacking = false;
+        frameAdvState.p2Defending = false;
+        frameAdvState.p2InBlockstun = false;
+        frameAdvState.p2InHitstun = false;
         frameAdvState.p1AttackStartInternalFrame = -1;
         frameAdvState.p1ActionableInternalFrame = -1;
     }
@@ -895,45 +1093,14 @@ void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, shor
         frameAdvState.p2FrameAdvantage = frameAdvantage;
         frameAdvState.p2AdvantageCalculated = true;
         
-        // Format the advantage display with proper sign and subframe precision
-        // FormatFrameAdvantage already includes the "+" for positive values
-        std::string frameAdvText = FormatFrameAdvantage(frameAdvantage);
+        QueuePendingRegularFrameAdvantage(2, frameAdvantage, currentInternalFrame, g_faScratch.p1DefenderFreeNeedsDelay);
+        ClearGapAnchorForDefender(1);
         
-        // Display the calculated advantage (unless suppressed by RG overlay takeover)
-        if (g_showFrameAdvantageOverlay.load() && currentInternalFrame >= g_SkipRegularFAOverlayUntilFrame.load()) {
-            // Clear any gap message when FA is displayed (they use the same position)
-            if (g_FrameGapId != -1) {
-                DirectDrawHook::RemovePermanentMessage(g_FrameGapId);
-                g_FrameGapId = -1;
-                frameAdvState.gapDisplayUntilInternalFrame = -1;
-            }
-            
-            if (g_FrameAdvantageId != -1) {
-                DirectDrawHook::UpdatePermanentMessage(g_FrameAdvantageId, frameAdvText, 
-                    frameAdvantage >= 0 ? RGB(0, 255, 0) : RGB(255, 0, 0));
-            } else {
-                g_FrameAdvantageId = DirectDrawHook::AddPermanentMessage(frameAdvText, 
-                    frameAdvantage >= 0 ? RGB(0, 255, 0) : RGB(255, 0, 0), 305, 430);
-            }
-            // Ensure any secondary RG segment is removed when regular FA takes over
-            if (g_FrameAdvantage2Id != -1) {
-                DirectDrawHook::RemovePermanentMessage(g_FrameAdvantage2Id);
-                g_FrameAdvantage2Id = -1;
-            }
-            
-            // Set display duration using wall-clock time (real seconds, not frames)
-            g_displayUntilTimeMs = currentTimeMs + GetDisplayDurationMs();
-                     #if defined(ENABLE_FRAME_ADV_DEBUG)
-                     LogOut("[FA_TIMER] P2 FA timer set - current=" + std::to_string(currentTimeMs) + 
-                         " duration=" + std::to_string(GetDisplayDurationMs()) + "ms" +
-                         " expiry=" + std::to_string(g_displayUntilTimeMs), true);
-                     #endif
-        }
-        
-        LogOut("[FRAME_ADV] P2->P1 Frame Advantage: " + frameAdvText, true);
-        
-        // Reset attack state for the next sequence while preserving defender state
+        // Reset exchange state for the next sequence; FA has consumed the defender-free anchor.
         frameAdvState.p2Attacking = false;
+        frameAdvState.p1Defending = false;
+        frameAdvState.p1InBlockstun = false;
+        frameAdvState.p1InHitstun = false;
         frameAdvState.p2AttackStartInternalFrame = -1;
         frameAdvState.p2ActionableInternalFrame = -1;
     }
@@ -960,9 +1127,20 @@ void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, shor
             staleFrameCounter = 0; // actively waiting: don't consider this stale
         } else {
             staleFrameCounter++;
+            if (g_deepFrameAdvDebug.load() && (staleFrameCounter % 192) == 0) {
+                LogOut("[FA_DIAG] STALE ticking: count=" + std::to_string(staleFrameCounter) +
+                       " p1Atk=" + std::to_string(frameAdvState.p1Attacking) +
+                       " p1Calc=" + std::to_string(frameAdvState.p1AdvantageCalculated) +
+                       " p1AtkFrame=" + std::to_string(frameAdvState.p1ActionableInternalFrame) +
+                       " p2DefFree=" + std::to_string(frameAdvState.p2DefenderFreeInternalFrame) +
+                       " p2Atk=" + std::to_string(frameAdvState.p2Attacking) +
+                       " p2Calc=" + std::to_string(frameAdvState.p2AdvantageCalculated) +
+                       " p2AtkFrame=" + std::to_string(frameAdvState.p2ActionableInternalFrame) +
+                       " p1DefFree=" + std::to_string(frameAdvState.p1DefenderFreeInternalFrame), true);
+            }
         }
-        // If we've been tracking without progress for more than 6 seconds, reset to avoid getting stuck
-        if (staleFrameCounter > 1152) {  // ~6 seconds at 192 fps
+        // If we've been tracking without progress for more than 20 seconds, reset to avoid getting stuck.
+        if (staleFrameCounter > kStaleResetInternalFrames) {
             LogOut("[FRAME_ADV] Stale state detected (no progress), resetting", true);
             ResetFrameAdvantageState();
             staleFrameCounter = 0;
@@ -976,6 +1154,8 @@ void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, shor
     } else {
         staleFrameCounter = 0;
     }
+
+    FlushPendingRegularFrameAdvantage(currentInternalFrame, currentTimeMs);
 }
 
 bool IsFrameAdvantageActive() {
@@ -989,6 +1169,8 @@ FrameAdvantageState GetFrameAdvantageState() {
 
 // Returns true if any FA-related timers/overlays require ticking even without moveID changes
 bool FrameAdvantageTimersActive() {
+    // Pending FA debounce needs ticking even after the active exchange ends.
+    if (g_faScratch.pendingAdvantageAttacker != 0) return true;
     // If a wall-clock display timer is active, we need to tick
     if (g_displayUntilTimeMs != 0) return true;
     // If the gap overlay timer is active, we need to tick
