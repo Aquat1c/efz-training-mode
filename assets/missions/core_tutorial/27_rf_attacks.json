@@ -3,7 +3,7 @@
   "tutorialSchema": 1,
   "type": "tutorial",
   "id": "efz.offense.rf_attacks",
-  "revision": 14,
+  "revision": 15,
   "category": "offense",
   "order": 250,
   "difficulty": 3,
@@ -53,6 +53,7 @@
       {
         "id": "p0",
         "title": "RF Versions",
+        "showHud": "rf",
         "text": "Many Specials have a beefed-up RF version, usually done with C - better damage, priority, or invulnerability. The price: half the gauge at Red, a quarter at Light Blue. Ask for one without enough RF and the B version comes out instead."
       },
       {

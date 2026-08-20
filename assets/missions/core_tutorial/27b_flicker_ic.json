@@ -3,7 +3,7 @@
   "tutorialSchema": 1,
   "type": "tutorial",
   "id": "efz.offense.flicker_ic",
-  "revision": 7,
+  "revision": 9,
   "category": "offense",
   "order": 255,
   "difficulty": 3,
@@ -52,7 +52,8 @@
       {
         "id": "p0",
         "title": "Flicker Instant Charge",
-        "text": "Normally you IC after an attack hits or gets guarded. But some moves hide a short, fixed window where you can IC BEFORE they connect - that's Flicker Instant Charge, or FIC. The input is always {input:22C}; your RF Gauge color decides whether you get Red IC or Blue IC."
+        "showHud": "red_ic",
+        "text": "Normally you IC after an attack hits or gets guarded. Some moves instead have a short, fixed window where you can IC BEFORE they connect - that is Flicker Instant Charge, or FIC. The input is always {input:22C}; {tone:red_ic|Red RF} gives Red FIC and {tone:blue_ic|Light Blue RF} gives Blue FIC."
       },
       {
         "id": "p1",
@@ -117,9 +118,9 @@
   },
   "sourceRefs": [
     "mizuumi:game-mechanics@473180#Flicker_Instant_Charge_.28FIC.29",
-    "local:shared_documentation/move_command_maps/sayuri.json::236A move 250",
+    "local:shared_documentation/MOVE_COMMAND_MAPS.md::sayuri / 236A move 250",
     "local:shared_documentation/MISSION_ENTITY_CAST_CENSUS.md::Sayuri",
-    "local:assets/movedata/notation/sayuri.json::250",
+    "local:include/game/mission/move_notation_tables.h::sayuri move 250",
     "local:shared_documentation/MISSION_ENTITY_TRACKING_AND_RESET_DESIGN.md::3.7"
   ],
   "next": {

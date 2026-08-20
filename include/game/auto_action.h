@@ -2,6 +2,7 @@
 #include <windows.h>
 #include <atomic>
 #include <cstdint>
+#include <mutex>
 #include <string>  
 #include "../include/core/constants.h"
 
@@ -17,6 +18,24 @@ struct TriggerDelayState {
     int  chosenMacroSlot;  // 0=None or slot index
     int  chosenCustomId;   // optional, default -1
     int  chosenDelay;      // visual-frame delay for the chosen option, or -1 if inherited
+    int  chosenChargeFollowup; // 0=Off, 1=IC on contact, 2=FIC window
+    // P2 buffered commands are asynchronous: submission only admits a native
+    // producer/consumer transaction. Keep that generation attached to the
+    // exact selected option until EFZ either consumes or rejects it.
+    uint64_t pendingMotionGeneration;
+    // Normal pulses have the same two-stage producer/consumer contract and
+    // therefore cannot be completed at queue admission either.
+    uint64_t pendingNormalGeneration;
+    // Multi-command staged recipes publish their own outcome; their first
+    // native motion must not be mistaken for completion of the whole action.
+    uint64_t pendingRecipeGeneration;
+    int      dispatchAttempts;
+};
+
+enum class AutoActionApplyResult : uint8_t {
+    Accepted,
+    Busy,
+    Invalid,
 };
 
 // Global variables
@@ -46,15 +65,23 @@ void ClearDelayStatesIfNonActionable();
 void ClearDelayStatesIfNonActionable(short moveID1, short moveID2, short prevMoveID1, short prevMoveID2, const char* source);
 
 // Function declaration for the special move logic
-void ApplyAutoAction(int playerNum, uintptr_t moveIDAddr, short currentMoveID, short prevMoveID);
+AutoActionApplyResult ApplyAutoAction(int playerNum, uintptr_t moveIDAddr,
+                                      short currentMoveID, short prevMoveID,
+                                      uint64_t* motionGenerationOut = nullptr,
+                                      uint64_t* normalGenerationOut = nullptr,
+                                      uint64_t* recipeGenerationOut = nullptr);
 
 // Helper functions for motion selection
 int GetSpecialMoveStrength(int actionType, int triggerType);
 std::string GetTriggerName(int triggerType);
 
 // Variables to track P2 control state for auto-actions
-extern bool g_p2ControlOverridden;
+extern std::atomic<bool> g_p2ControlOverridden;
 extern uint32_t g_originalP2ControlFlag;
+// Serializes every writer of the character-level P2 AI flag.  Scoped motion
+// delivery, legacy macro ownership, and the Practice synchronization thread
+// must all hold this mutex while reading/changing that flag.
+extern std::recursive_mutex g_p2ControlMutex;
 
 void RestoreP2ControlState();
 void EnableP2ControlForAutoAction();
@@ -67,7 +94,7 @@ void EnableP2ControlForAutoAction();
 // P2 control.  Release is idempotent; a stale token is ignored.
 bool AcquireTutorialP2Control(uint64_t& tokenOut);
 bool TutorialP2ControlLeaseActive();
-void ReleaseTutorialP2Control(uint64_t token);
+bool ReleaseTutorialP2Control(uint64_t token);
 void ProcessAutoControlRestore();
 void ProcessTriggerCooldowns();
 

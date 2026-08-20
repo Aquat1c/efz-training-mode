@@ -3,7 +3,7 @@
   "tutorialSchema": 1,
   "type": "tutorial",
   "id": "efz.fundamentals.screen",
-  "revision": 4,
+  "revision": 7,
   "category": "fundamentals",
   "order": 30,
   "difficulty": 1,
@@ -15,14 +15,20 @@
     "pos": {
       "x": 250.0,
       "y": 0.0
-    }
+    },
+    "meter": 1000,
+    "rf": 500,
+    "blueIC": 0
   },
   "dummy": {
     "character": "misaki",
     "pos": {
       "x": 390.0,
       "y": 0.0
-    }
+    },
+    "meter": 3000,
+    "rf": 1000,
+    "blueIC": 1
   },
   "stage": 4,
   "requires": [
@@ -42,22 +48,40 @@
       {
         "id": "p0",
         "title": "Life and Rounds",
-        "showHud": "top",
-        "text": "Each {term:Life Gauge} is at the top. Everyone starts with the same life, and the marks beside it show rounds won. EFZ has no round timer: the number in the middle is {term:FPS}, normally 64 under Revival."
+        "showHud": "life",
+        "text": "Each {tone:life|Life Gauge} is at the top. The {tone:rounds|Round Marks} beside it show rounds won. EFZ has no round timer: the middle readout is {tone:fps|FPS}, normally 64 under Revival."
       },
       {
         "id": "p1",
         "title": "SP and RF",
-        "showHud": "bottom",
-        "text": "At the bottom, the large {term:SP Gauge} stores up to three Super levels. The smaller {term:RF Gauge} below it powers RF Attacks and Instant Charge. You will practice both later."
+        "showHud": "meter_states",
+        "text": "The large {tone:sp|SP Gauge} stores up to three Super levels. Here the left fighter has {tone:sp|one SP level} and {tone:red_ic|Red RF}; the right has {tone:sp|three SP levels} and {tone:blue_ic|Light Blue RF}. Both use {input:22C}: Red RF gives {tone:red_ic|Red IC}, while Light Blue RF gives {tone:blue_ic|Blue IC}."
       },
       {
         "id": "p2",
-        "title": "Combos and Juggles",
-        "text": "During a combo, the display shows hits, damage, and {term:Power}. Power affects damage and how long later hits can keep the opponent airborne. A separate gauge appears under a juggled character and changes color as their chance to recover gets close."
+        "title": "Combo Power",
+        "text": "During a combo, the readout shows hits, damage, and {tone:power|Power}. Power affects damage and usually affects how much juggle time the next hit adds. The move used, height, and character also matter."
       },
       {
         "id": "p3",
+        "title": "Juggle Gauge",
+        "showHud": "juggle",
+        "text": "When a fighter is launched, a {tone:juggle|cyan Juggle Gauge} appears beneath them. It shows how long they remain unable to recover in the air."
+      },
+      {
+        "id": "p4",
+        "title": "Juggle Gauge: Yellow",
+        "showHud": "juggle_yellow",
+        "text": "At {tone:juggle_yellow|20 visual frames or less}, the Juggle Gauge turns yellow. This is your warning that the opponent will soon be able to recover."
+      },
+      {
+        "id": "p5",
+        "title": "Juggle Gauge: Red",
+        "showHud": "juggle_red",
+        "text": "At {tone:juggle_red|10 visual frames or less}, the gauge turns red. When it empties, air recovery becomes available."
+      },
+      {
+        "id": "p6",
         "title": "Character Resources",
         "text": "Some characters have an extra meter of their own. That character's guide explains how it works."
       }

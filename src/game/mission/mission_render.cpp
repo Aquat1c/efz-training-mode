@@ -1,6 +1,10 @@
 #include "../../../include/game/mission/mission_render.h"
+#include "../../../include/game/mission/tutorial_color_policy.h"
 #include "../../../include/game/mission/mission_engine.h"
 #include "../../../include/game/mission/mission_data.h"
+#include "../../../include/game/mission/entity_notation_tables.h"
+#include "../../../include/game/mission/entity_command_origin_policy.h"
+#include "../../../include/game/mission/mission_entity_presentation_policy.h"
 #include "../../../include/game/practice_menu/mission_title_screen.h"
 
 #include "../../../3rdparty/imgui/imgui.h"
@@ -18,6 +22,7 @@
 #include <iterator>
 #include <map>
 #include <string>
+#include <utility>
 #include <vector>
 
 #pragma comment(lib, "gdiplus.lib")
@@ -238,11 +243,13 @@ void SplitNotation(const std::string& notation, std::string& prefixOut,
 
 enum class RichPieceKind { Text, Icon };
 
+namespace TutorialColors = ::Mission::TutorialColorPolicy;
+
 struct RichPiece {
     RichPieceKind kind = RichPieceKind::Text;
     std::string text;
     char icon = 0;
-    bool accent = false;
+    TutorialColors::Tone tone = TutorialColors::Tone::Default;
 };
 
 struct RichAtom {
@@ -280,7 +287,7 @@ struct CachedRichDocument {
 // Fixed-size identity for the ordinary Mission recipe layout.  The previous
 // cache used a formatted mission-name string, which both allocated on the hot
 // path and aliased same-name recipes, recycled fonts, and letterbox origins.
-// Hash the complete Step payload without constructing a serialization, then
+// Hash the complete recipe payload without constructing a serialization, then
 // keep every non-recipe input that affects CalcTextSizeA or cell placement as a
 // directly comparable scalar.
 struct RecipeFingerprint {
@@ -315,21 +322,100 @@ struct RecipeFingerprint {
     }
 };
 
+::Mission::EntityPresentationPolicy::RequirementCounts PresentationCounts(
+    const ::Mission::EntityContactRequirement& requirement) {
+    ::Mission::EntityPresentationPolicy::RequirementCounts counts;
+    counts.recordedContacts = requirement.contactsRequired;
+    counts.recordedComboHits = requirement.comboHitsRequired;
+    counts.minimumContacts = requirement.minimumContactsRequired;
+    counts.minimumComboHits = requirement.minimumComboHitsRequired;
+    counts.fanout = !requirement.fanoutMembers.empty();
+    return counts;
+}
+
 RecipeFingerprint FingerprintRecipe(const ::Mission::Mission& mission) {
     RecipeFingerprint fingerprint;
+    // Entity pattern names are character-local (#405 is a Mizuka note
+    // explosion but a Rumi shockwave bullet), so the cached layout must not be
+    // shared by otherwise-identical missions with different P1 resources.
+    fingerprint.AddString(mission.player.character);
     fingerprint.AddU64(static_cast<uint64_t>(mission.steps.size()));
     for (const ::Mission::Step& step : mission.steps) {
         fingerprint.AddString(step.notation);
         fingerprint.AddU64(static_cast<uint64_t>(step.moveIds.size()));
         for (int moveId : step.moveIds) fingerprint.AddI32(moveId);
+        fingerprint.AddBool(step.entityCommand.present);
+        fingerprint.AddI32(step.entityCommand.slot);
+        fingerprint.AddI32(step.entityCommand.generation);
+        fingerprint.AddI32(step.entityCommand.rootPattern);
+        fingerprint.AddI32(step.entityCommand.activationPattern);
+        fingerprint.AddI32(step.expectedAttackMask);
         fingerprint.AddByte(static_cast<uint8_t>(step.req));
         fingerprint.AddI32(step.hitsRequired);
+        fingerprint.AddBool(step.allowPartialHits);
         fingerprint.AddBool(step.optional);
         fingerprint.AddI32(step.maxDelay);
         fingerprint.AddI32(step.maxGap);
         fingerprint.AddBool(step.comboEndAfter);
         fingerprint.AddI32(step.charState);
         fingerprint.AddI32(step.damage);
+        fingerprint.AddBool(step.directContact);
+        fingerprint.AddString(step.contactResult);
+    }
+    // Entity contacts are concurrent obligations rather than ordinary action
+    // steps, but their complete persisted payload affects the visible recipe.
+    // Include every field so same-name/same-step missions cannot alias a stale
+    // projectile row in the render cache.
+    fingerprint.AddBool(mission.strictEntityContacts);
+    fingerprint.AddU64(static_cast<uint64_t>(mission.entityContacts.size()));
+    for (const ::Mission::EntityContactRequirement& requirement :
+         mission.entityContacts) {
+        fingerprint.AddString(requirement.notation);
+        fingerprint.AddI32(requirement.owner);
+        fingerprint.AddI32(requirement.target);
+        fingerprint.AddI32(requirement.slot);
+        fingerprint.AddI32(requirement.generation);
+        fingerprint.AddU64(static_cast<uint64_t>(requirement.patterns.size()));
+        for (int pattern : requirement.patterns) fingerprint.AddI32(pattern);
+        fingerprint.AddString(requirement.result);
+        fingerprint.AddI32(requirement.contactsRequired);
+        fingerprint.AddI32(requirement.comboHitsRequired);
+        fingerprint.AddI32(requirement.minimumContactsRequired);
+        fingerprint.AddI32(requirement.minimumComboHitsRequired);
+        // Member identities do not affect layout individually, but changing
+        // between an exact requirement and a flexible fanout does.
+        fingerprint.AddU64(
+            static_cast<uint64_t>(requirement.fanoutMembers.size()));
+        fingerprint.AddString(requirement.producerLifecycle);
+        fingerprint.AddI32(requirement.producerPattern);
+        fingerprint.AddI32(requirement.producerPriorPattern);
+        fingerprint.AddI32(requirement.opensAfterAction);
+        fingerprint.AddI32(requirement.semanticSourceAction);
+        fingerprint.AddI32(requirement.semanticSourceMove);
+        fingerprint.AddI32(requirement.contactAfterAction);
+        fingerprint.AddI32(requirement.afterStep);
+        fingerprint.AddI32(requirement.afterStepContact);
+        fingerprint.AddI32(requirement.dueBeforeStep);
+        fingerprint.AddI32(requirement.dueBeforeStepContact);
+        fingerprint.AddI32(requirement.segment);
+        fingerprint.AddI32(requirement.maxDelay);
+        fingerprint.AddI32(requirement.damage);
+        fingerprint.AddBool(requirement.comboEndAfter);
+    }
+    fingerprint.AddU64(
+        static_cast<uint64_t>(mission.entityLifecycles.size()));
+    for (const ::Mission::EntityLifecycleRequirement& requirement :
+         mission.entityLifecycles) {
+        fingerprint.AddString(requirement.notation);
+        fingerprint.AddI32(requirement.owner);
+        fingerprint.AddI32(requirement.slot);
+        fingerprint.AddI32(requirement.generation);
+        fingerprint.AddString(requirement.lifecycle);
+        fingerprint.AddI32(requirement.pattern);
+        fingerprint.AddI32(requirement.priorPattern);
+        fingerprint.AddI32(requirement.opensAfterAction);
+        fingerprint.AddI32(requirement.segment);
+        fingerprint.AddI32(requirement.maxDelay);
     }
     return fingerprint;
 }
@@ -398,8 +484,10 @@ void AppendRichAtom(std::vector<RichAtom>& out, RichAtom atom, bool glue) {
     out.push_back(std::move(atom));
 }
 
-void AppendTextAtoms(std::vector<RichAtom>& out, const std::string& text,
-                     bool accent = false, bool glueFirst = false) {
+void AppendTextAtoms(
+    std::vector<RichAtom>& out, const std::string& text,
+    TutorialColors::Tone tone = TutorialColors::Tone::Default,
+    bool glueFirst = false) {
     std::string word;
     bool glue = glueFirst;
     auto flush = [&]() {
@@ -407,7 +495,7 @@ void AppendTextAtoms(std::vector<RichAtom>& out, const std::string& text,
         RichAtom atom;
         RichPiece piece;
         piece.text.swap(word);
-        piece.accent = accent;
+        piece.tone = tone;
         atom.pieces.push_back(std::move(piece));
         AppendRichAtom(out, std::move(atom), glue);
         glue = false;
@@ -434,15 +522,20 @@ RichAtom NotationAtom(const std::string& notation) {
     RichAtom atom;
     std::string prefix, icons, suffix;
     SplitNotation(notation, prefix, icons, suffix);
-    if (!prefix.empty()) atom.pieces.push_back({RichPieceKind::Text, prefix, 0, false});
-    for (char icon : icons) atom.pieces.push_back({RichPieceKind::Icon, {}, icon, false});
+    if (!prefix.empty()) atom.pieces.push_back(
+        {RichPieceKind::Text, prefix, 0, TutorialColors::Tone::Default});
+    for (char icon : icons) atom.pieces.push_back(
+        {RichPieceKind::Icon, {}, icon, TutorialColors::Tone::Default});
     if (!suffix.empty()) {
         if (!atom.pieces.empty()) {
-            atom.pieces.push_back({RichPieceKind::Text, " ", 0, false});
+            atom.pieces.push_back(
+                {RichPieceKind::Text, " ", 0, TutorialColors::Tone::Default});
         }
-        atom.pieces.push_back({RichPieceKind::Text, suffix, 0, false});
+        atom.pieces.push_back(
+            {RichPieceKind::Text, suffix, 0, TutorialColors::Tone::Default});
     }
-    if (atom.pieces.empty()) atom.pieces.push_back({RichPieceKind::Text, notation, 0, false});
+    if (atom.pieces.empty()) atom.pieces.push_back(
+        {RichPieceKind::Text, notation, 0, TutorialColors::Tone::Default});
     return atom;
 }
 
@@ -459,7 +552,7 @@ std::vector<RichAtom> ParseRichAtoms(const std::string& source) {
         plain.push_back(ch);
     };
     auto flushPlain = [&]() {
-        AppendTextAtoms(out, plain, false, plainGlue);
+        AppendTextAtoms(out, plain, TutorialColors::Tone::Default, plainGlue);
         plain.clear();
         plainGlue = false;
     };
@@ -489,7 +582,18 @@ std::vector<RichAtom> ParseRichAtoms(const std::string& source) {
                 RichPieceKind::Text,
                 bar == std::string::npos ? value
                     : value.substr(0, bar) + " (" + value.substr(bar + 1) + ")",
-                0, true});
+                0, TutorialColors::Tone::Accent});
+            AppendRichAtom(out, std::move(atom), glueToken);
+        } else if (kind == "tone") {
+            const size_t bar = value.find('|');
+            const std::string key = bar == std::string::npos
+                ? value : value.substr(0, bar);
+            const std::string label = bar == std::string::npos
+                ? value : value.substr(bar + 1);
+            RichAtom atom;
+            atom.pieces.push_back({
+                RichPieceKind::Text, label, 0,
+                TutorialColors::ParseTone(key.c_str())});
             AppendRichAtom(out, std::move(atom), glueToken);
         } else if (kind == "ui") {
             std::string label = value;
@@ -497,12 +601,14 @@ std::vector<RichAtom> ParseRichAtoms(const std::string& source) {
                 std::toupper(static_cast<unsigned char>(ch)));
             RichAtom atom;
             atom.pieces.push_back(
-                {RichPieceKind::Text, "[" + label + "]", 0, true});
+                {RichPieceKind::Text, "[" + label + "]", 0,
+                 TutorialColors::Tone::Accent});
             AppendRichAtom(out, std::move(atom), glueToken);
         } else {
             RichAtom atom;
             atom.pieces.push_back(
-                {RichPieceKind::Text, "{" + token + "}", 0, true});
+                {RichPieceKind::Text, "{" + token + "}", 0,
+                 TutorialColors::Tone::Accent});
             AppendRichAtom(out, std::move(atom), glueToken);
         }
         glueNextPlain = close + 1 < source.size() &&
@@ -662,8 +768,13 @@ float LayoutRichText(IDirect3DDevice9* dev, ImDrawList* dl, ImFont* font,
                 }
             }
         } else {
-            const ImU32 pieceColor = piece.accent
-                ? IM_COL32(130, 235, 235, 255) : color;
+            ImU32 pieceColor = color;
+            if (piece.tone != TutorialColors::Tone::Default) {
+                const TutorialColors::Rgba semantic =
+                    TutorialColors::Color(piece.tone);
+                pieceColor = IM_COL32(
+                    semantic.r, semantic.g, semantic.b, semantic.a);
+            }
             dl->AddText(font, fontPx,
                         ImVec2(x0 + placed.x,
                                y0 + placed.lineY +
@@ -705,20 +816,41 @@ void DrawRichText(void* device, ImDrawList* dl, ImFont* font, float fontPx,
                          x, y, static_cast<ImU32>(color), text, maxWidth, true);
 }
 
+bool WantsDraw() {
+    // Keep top-level routing lock-free. Exact setup/demo visibility is checked
+    // together with the coherent snapshot inside Draw, requiring only one
+    // runner-mutex acquisition on frames that can actually paint a recipe.
+    return Engine::Runner::IsActive() &&
+           !PracticeMenu::TitleScreen::WantsDraw();
+}
+
 void Draw(void* device, ImDrawList* dl, float ox, float oy, float scale) {
-    if (!dl || !device) return;
-    // Startup/restore, title launch UI, and demonstration playback each own the
-    // presentation surface. The trial recipe is player-attempt UI and must not
-    // leak behind those layers (the old launch screenshot showed both at once).
-    if (PracticeMenu::TitleScreen::WantsDraw() || Engine::Demo::IsActive() ||
-        !Engine::Runner::IsReadyForPlayer()) return;
+    if (!dl || !device || !WantsDraw()) return;
+    // Startup/restore and title launch UI retain their exclusive transition
+    // surfaces. A loaded demonstration's Playing phase deliberately shares
+    // this exact recipe renderer with the subsequent player attempt.
     ::Mission::Mission mission;
     int cur = 0;
     int failed = -1;
     int curHits = 0;
+    int entitySegment = 0;
+    int failedEntityRequirement = -1;
     bool armed = false;
-    if (!Engine::Runner::GetRenderSnapshot(mission, cur, failed, armed, curHits) ||
+    // Retain capacity across render frames; GetRenderSnapshot overwrites the
+    // contents under the runner lock, while most frames keep the same count.
+    static std::vector<int> entityContactsSeen;
+    static std::vector<int> entityComboHitsSeen;
+    static std::vector<int> entityLifecyclesSeen;
+    if (!Engine::Runner::GetRenderSnapshot(
+            mission, cur, failed, armed, curHits,
+            &entityContactsSeen, &entityComboHitsSeen,
+            &entitySegment, &failedEntityRequirement,
+            /*requireVisibleRecipe=*/true,
+            &entityLifecyclesSeen) ||
         mission.steps.empty()) return;
+    // Entity-schedule failures already identify their causal projectile row.
+    // Do not also accuse the next player action, which may never have started.
+    if (failedEntityRequirement >= 0) failed = -1;
     const ::Mission::Mission* m = &mission;
 
     IDirect3DDevice9* dev = reinterpret_cast<IDirect3DDevice9*>(device);
@@ -775,7 +907,35 @@ void Draw(void* device, ImDrawList* dl, float ox, float oy, float scale) {
         }
     }
 
-    struct Cell { std::string prefix, icons, text; float x = 0, y = 0, w = 0, pw = 0; };
+    struct Cell {
+        std::string prefix, icons, text;
+        float x = 0, y = 0, w = 0, pw = 0;
+        bool setupBoundary = false;
+    };
+    struct EntityRow {
+        // A delayed projectile/summon contact is a recipe token, not a
+        // diagnostics row.  Keep the same prefix/icon/suffix split as player
+        // actions so `214B (HIT)` uses the normal direction and button glyphs.
+        std::string prefix;
+        std::string icons;
+        std::string text;
+        std::string label;
+        std::string result;
+        const char* family = nullptr;
+        const char* role = "ENTITY";
+        ::Mission::EntityPresentationPolicy::Identity identity;
+        std::vector<int> requirementIndices;
+        int contactsRequired = 0;
+        int comboHitsRequired = 0;
+        bool comboEndAfter = false;
+        bool customLabel = false;
+        bool commandOrigin = false;
+        float x = 0, y = 0, w = 0, pw = 0;
+        int anchor = 0; // draw immediately before this action; total = terminal
+    };
+    struct SetupMarker { float x = 0, y = 0, w = 0; };
+    struct FlowDivider { float x = 0, y = 0; };
+    struct FlowStrip { float y = 0, end = 0; };
 
     // Aspect-correct icon width at the target height (a map lookup; used by the
     // cached layout AND the per-frame draw pass).
@@ -816,11 +976,21 @@ void Draw(void* device, ImDrawList* dl, float ox, float oy, float scale) {
     static RecipeLayoutKey s_layoutKey;
     static bool s_haveLayoutKey = false;
     static std::vector<Cell> s_cells;
+    static std::vector<EntityRow> s_entityRows;
+    static std::vector<std::vector<int>> s_inlineRequirements;
+    static std::vector<SetupMarker> s_setupMarkers;
+    static std::vector<FlowDivider> s_flowDividers;
+    static std::vector<FlowStrip> s_flowStrips;
     {
         if (!s_haveLayoutKey || !(s_layoutKey == layoutKey)) {
             s_layoutKey = layoutKey;
             s_haveLayoutKey = true;
             s_cells.assign(total, Cell{});
+            s_entityRows.clear();
+            s_inlineRequirements.assign(static_cast<std::size_t>(total), {});
+            s_setupMarkers.clear();
+            s_flowDividers.clear();
+            s_flowStrips.clear();
             for (int i = 0; i < total; ++i) {
                 const ::Mission::Step& st = m->steps[i];
                 std::string note = st.notation;
@@ -831,59 +1001,479 @@ void Draw(void* device, ImDrawList* dl, float ox, float oy, float scale) {
                     note = b;
                 }
                 SplitNotation(note, s_cells[i].prefix, s_cells[i].icons, s_cells[i].text);
-                if (i > 0 && m->steps[i - 1].comboEndAfter) {
+                const bool followsEntityBoundary = std::any_of(
+                    m->entityContacts.begin(), m->entityContacts.end(),
+                    [i](const ::Mission::EntityContactRequirement& requirement) {
+                        return requirement.comboEndAfter &&
+                               requirement.dueBeforeStep == i;
+                    });
+                if ((i > 0 && m->steps[i - 1].comboEndAfter) ||
+                    followsEntityBoundary) {
                     // Explicit recovery boundary: a new combo segment/setup, not an
                     // ordinary link whose delay should force a retry.
-                    s_cells[i].prefix = "[SETUP] " + s_cells[i].prefix;
+                    s_cells[i].setupBoundary = true;
                 }
                 if (st.req == ::Mission::StepReq::Hits && st.hitsRequired > 1) {
                     char b[16];
-                    if (i == cur && armed)
-                        _snprintf_s(b, sizeof(b), _TRUNCATE, " %d/%d", curHits, st.hitsRequired);
-                    else
+                    if (st.allowPartialHits) {
+                        if (i == cur && armed) {
+                            _snprintf_s(b, sizeof(b), _TRUNCATE, " %d hit%s",
+                                        curHits, curHits == 1 ? "" : "s");
+                        } else {
+                            _snprintf_s(b, sizeof(b), _TRUNCATE, " x1+");
+                        }
+                    } else if (i == cur && armed) {
+                        _snprintf_s(b, sizeof(b), _TRUNCATE, " %d/%d", curHits,
+                                    st.hitsRequired);
+                    } else {
                         _snprintf_s(b, sizeof(b), _TRUNCATE, " x%d", st.hitsRequired);
+                    }
                     s_cells[i].text += b;
                 }
                 if (st.maxDelay > 0) s_cells[i].prefix = "~" + s_cells[i].prefix; // delayed hit
                 if (st.optional)     s_cells[i].text += "?";                       // optional
             }
+
+            // Project the exact raw requirements into user-facing obligations.
+            // Capture and scoring retain every raw phase; only this cached view
+            // may attach an ordinary projectile to its cast or fold verified
+            // phases/children into one setplay family.
+            for (std::size_t i = 0; i < m->entityContacts.size(); ++i) {
+                const ::Mission::EntityContactRequirement& requirement =
+                    m->entityContacts[i];
+                const auto presentationCounts =
+                    PresentationCounts(requirement);
+                const int presentedContacts =
+                    ::Mission::EntityPresentationPolicy::RequiredContacts(
+                        presentationCounts);
+                const int primaryPattern = !requirement.patterns.empty()
+                    ? requirement.patterns.front() : 0;
+                const bool declaredExactSemanticSource =
+                    ::Mission::SemanticSourcePolicy::IsExact(
+                        requirement.semanticSourceAction,
+                        requirement.semanticSourceMove);
+                const bool legacySemanticSource =
+                    ::Mission::SemanticSourcePolicy::IsLegacyAbsent(
+                        requirement.semanticSourceAction,
+                        requirement.semanticSourceMove);
+                // New recordings distinguish "not proven" from "old file".
+                // Only an exact source (or the compatibility inference used
+                // by older files) may absorb a persistent hit into a move.
+                // An explicitly unresolved source deliberately has no owner
+                // cell even if a later identical setter happens to be active.
+                const ::Mission::Step* declaredSourceStep =
+                    declaredExactSemanticSource &&
+                    requirement.semanticSourceAction >= 0 &&
+                    requirement.semanticSourceAction < total
+                        ? &m->steps[static_cast<std::size_t>(
+                              requirement.semanticSourceAction)]
+                        : nullptr;
+                const bool exactSemanticSource = declaredSourceStep &&
+                    std::find(declaredSourceStep->moveIds.begin(),
+                              declaredSourceStep->moveIds.end(),
+                              requirement.semanticSourceMove) !=
+                        declaredSourceStep->moveIds.end();
+                const int commandAction = requirement.opensAfterAction;
+                const ::Mission::Step* declaredCommandStep =
+                    commandAction >= 0 && commandAction < total &&
+                    m->steps[static_cast<std::size_t>(commandAction)]
+                        .entityCommand.present
+                        ? &m->steps[static_cast<std::size_t>(commandAction)]
+                        : nullptr;
+                const auto* boundCommandOrigin = declaredCommandStep
+                    ? ::Mission::EntityCommandOriginPolicy::
+                          ValidateBoundCommand(
+                              m->player.character.c_str(),
+                              declaredCommandStep->entityCommand.slot,
+                              declaredCommandStep->entityCommand.generation,
+                              declaredCommandStep->entityCommand.rootPattern,
+                              declaredCommandStep->entityCommand
+                                  .activationPattern,
+                              declaredCommandStep->expectedAttackMask)
+                    : nullptr;
+                const bool commandObjectiveMatches =
+                    declaredCommandStep && requirement.fanoutMembers.empty() &&
+                    ::Mission::EntityCommandOriginPolicy::
+                        ContactObjectiveBindsCommand(
+                            boundCommandOrigin,
+                            declaredCommandStep->entityCommand.slot,
+                            declaredCommandStep->entityCommand.generation,
+                            requirement.slot,
+                            requirement.generation,
+                            requirement.patterns.size() == 1,
+                            requirement.patterns.empty()
+                                ? -1
+                                : requirement.patterns.front(),
+                            requirement.producerLifecycle == "morph",
+                            requirement.producerLifecycle == "spawn",
+                            requirement.producerPattern,
+                            requirement.producerPriorPattern);
+                const bool exactCommandSource = declaredCommandStep &&
+                    declaredCommandStep->moveIds.empty() &&
+                    requirement.opensAfterAction == commandAction &&
+                    commandObjectiveMatches &&
+                    requirement.contactAfterAction >= commandAction;
+                const int ownerAction = exactCommandSource
+                    ? commandAction
+                    : ::Mission::EntityPresentationPolicy::SelectOwnerAction(
+                          exactSemanticSource, legacySemanticSource,
+                          requirement.semanticSourceAction,
+                          requirement.opensAfterAction, total);
+                const int producerMove = exactSemanticSource
+                    ? requirement.semanticSourceMove
+                    : ownerAction >= 0 &&
+                              !m->steps[static_cast<std::size_t>(
+                                  ownerAction)].moveIds.empty()
+                        ? m->steps[static_cast<std::size_t>(ownerAction)]
+                              .moveIds.front()
+                        : -1;
+                const auto* semantic = ::Mission::EntityNames::LookupSemantic(
+                    m->player.character.c_str(), primaryPattern, producerMove);
+                const char* outcome =
+                    requirement.result == "hit" ? "HIT" :
+                    requirement.result == "special" ? "SPECIAL HIT" :
+                    requirement.result == "block" ? "BLOCK" :
+                    requirement.result == "recoil_guard" ? "RG" :
+                    requirement.result == "throw" ? "THROW" :
+                    requirement.result == "guard_point" ? "GUARD POINT" :
+                    "CONTACT";
+
+                const auto* persistedSemanticCandidate =
+                    requirement.patterns.size() == 1
+                    ? ::Mission::EntityNames::
+                          LookupSemanticForGeneratedContactNotation(
+                              m->player.character.c_str(), primaryPattern,
+                              outcome, presentedContacts,
+                              requirement.notation)
+                    : nullptr;
+                const bool persistedSemanticMatchesSource =
+                    ::Mission::EntityPresentationPolicy::
+                        PersistedSemanticMatchesSource(
+                            persistedSemanticCandidate != nullptr,
+                            exactSemanticSource,
+                            persistedSemanticCandidate
+                                ? persistedSemanticCandidate->producerMove : -1,
+                            producerMove);
+                const auto* persistedSemantic =
+                    persistedSemanticMatchesSource
+                        ? persistedSemanticCandidate : nullptr;
+                // Prefer the live producer-qualified alias when the sampled
+                // action proves one. Persisted notation is a fallback for
+                // delayed children whose contact-time producer gate no longer
+                // points at their visible setter; it must not downgrade an
+                // exact Shiori fan cast to the old generic `2141236` alias.
+                if (persistedSemantic &&
+                    (!semantic || semantic->producerMove < 0) &&
+                    (!exactSemanticSource ||
+                     persistedSemantic->producerMove == producerMove)) {
+                    semantic = persistedSemantic;
+                }
+                // Preflight rejects these, but keep the draw path defensive:
+                // a persisted controller/recovery/VFX can never acquire a
+                // synthetic "(HIT)" row merely because it has a catalog name.
+                if (semantic && !::Mission::EntityNames::CanOwnRecordedContact(
+                                    semantic->disposition)) {
+                    continue;
+                }
+                const bool semanticResolved = semantic &&
+                    ::Mission::EntityNames::HasResolvedContactPresentation(
+                        semantic->disposition);
+                const bool mapped = exactCommandSource || semanticResolved ||
+                    (!semantic && primaryPattern > 0 &&
+                     ::Mission::EntityNames::Lookup(
+                         m->player.character.c_str(), primaryPattern) != nullptr);
+
+                const bool generated = exactCommandSource ||
+                    requirement.notation.empty() ||
+                    persistedSemantic != nullptr ||
+                    (requirement.patterns.size() == 1 &&
+                     ::Mission::EntityNames::IsGeneratedContactNotation(
+                        m->player.character.c_str(), primaryPattern, outcome,
+                        presentedContacts, requirement.notation,
+                        producerMove));
+                const bool customLabel = !generated;
+                // Never infer a command label from the contact PAT alone. The
+                // persisted input-only Step proves the causal S edge and exact
+                // root transition; older/unbound traces stay raw/semantic.
+                const auto* commandOrigin = exactCommandSource &&
+                        generated && !customLabel &&
+                        requirement.patterns.size() == 1
+                    ? boundCommandOrigin
+                    : nullptr;
+
+                ::Mission::EntityPresentationPolicy::Timing timing;
+                timing.opensAfterAction = ownerAction;
+                timing.contactAfterAction = requirement.contactAfterAction;
+                timing.afterStep = requirement.afterStep;
+                timing.afterStepContact = requirement.afterStepContact;
+                timing.dueBeforeStep = requirement.dueBeforeStep;
+                timing.dueBeforeStepContact = requirement.dueBeforeStepContact;
+                timing.comboEndAfter = requirement.comboEndAfter;
+                const bool failedRequirement =
+                    static_cast<int>(i) == failedEntityRequirement;
+                const bool semanticStandalone = semanticResolved &&
+                    ::Mission::EntityNames::IsAlwaysStandalone(semantic->role);
+                const ::Mission::Step* ownerStep = ownerAction >= 0
+                    ? &m->steps[static_cast<std::size_t>(ownerAction)]
+                    : nullptr;
+                int sourceSegment = 0;
+                if (ownerAction >= 0) {
+                    for (int stepIndex = 0; stepIndex < ownerAction;
+                         ++stepIndex) {
+                        if (m->steps[static_cast<std::size_t>(stepIndex)]
+                                .comboEndAfter) {
+                            ++sourceSegment;
+                        }
+                    }
+                    // Entity-owned recovery boundaries also begin a new
+                    // segment before their due action. Count only earlier
+                    // requirements so the current contact cannot advance its
+                    // own source segment.
+                    for (std::size_t priorIndex = 0; priorIndex < i;
+                         ++priorIndex) {
+                        const auto& prior = m->entityContacts[priorIndex];
+                        if (prior.comboEndAfter &&
+                            prior.dueBeforeStep >= 0 &&
+                            prior.dueBeforeStep <= ownerAction) {
+                            ++sourceSegment;
+                        }
+                    }
+                }
+                ::Mission::EntityPresentationPolicy::ExactProducerHit
+                    exactProducerHit;
+                exactProducerHit.action = ownerAction;
+                exactProducerHit.exactSource =
+                    exactSemanticSource || exactCommandSource;
+                // The result changes grading, not whether an immediate entity
+                // contact belongs to its exact producer cell.  Block/RG/guard
+                // point contacts must not grow a duplicate action either.
+                exactProducerHit.generated = generated && !customLabel;
+                exactProducerHit.resolvedContact =
+                    semanticResolved || exactCommandSource;
+                exactProducerHit.actionEligible = ownerStep &&
+                    !ownerStep->optional &&
+                    (!ownerStep->moveIds.empty() || exactCommandSource);
+                exactProducerHit.commandSource = exactCommandSource;
+                exactProducerHit.ordinaryProjectile = semantic &&
+                    semantic->role == ::Mission::EntityNames::
+                        PresentationRole::InlineProjectile;
+                exactProducerHit.producerMoveMatches = semantic && ownerStep &&
+                    semantic->producerMove >= 0 &&
+                    semantic->producerMove == producerMove;
+                exactProducerHit.sourceSegmentMatches = ownerAction >= 0 &&
+                    sourceSegment == requirement.segment;
+                exactProducerHit.sourceComboEndBeforeContact = ownerStep &&
+                    ownerStep->comboEndAfter;
+                const bool inlineExactProducerHit =
+                    ::Mission::EntityPresentationPolicy::
+                        CanInlineExactProducerHit(exactProducerHit, timing);
+                bool display = ::Mission::EntityPresentationPolicy::ShouldDisplay(
+                    mapped,
+                    (semanticStandalone && !inlineExactProducerHit) ||
+                        customLabel,
+                    failedRequirement, timing, inlineExactProducerHit);
+                if (!display && ownerAction >= 0) {
+                    s_inlineRequirements[static_cast<std::size_t>(ownerAction)]
+                        .push_back(static_cast<int>(i));
+                    // Immediate projectile contact is already represented by
+                    // its producer move. Keep the hidden requirement attached
+                    // so pending/failure tint still grades that cell, but do
+                    // not duplicate the move or append an implementation-facing
+                    // "(hit)" suffix.
+                    continue;
+                }
+                // A requirement with no valid action cell falls through to a
+                // standalone raw/mapped row and therefore never disappears.
+
+                EntityRow candidate;
+                candidate.family = semanticResolved && !customLabel
+                    ? semantic->family : nullptr;
+                candidate.role = semanticResolved && !customLabel
+                    ? ::Mission::EntityNames::RoleLabel(semantic->role)
+                    : mapped ? "PROJECTILE" : "ENTITY";
+                candidate.result = outcome;
+                candidate.customLabel = customLabel;
+                candidate.commandOrigin = commandOrigin != nullptr;
+                candidate.comboEndAfter = requirement.comboEndAfter;
+                candidate.label = customLabel
+                    ? requirement.notation
+                    : commandOrigin
+                        ? commandOrigin->notation
+                    : semanticResolved && semantic->label
+                        ? semantic->label
+                        : primaryPattern > 0
+                            ? std::string("#") +
+                                  std::to_string(primaryPattern)
+                            : std::string("#?");
+                if (candidate.commandOrigin &&
+                    !::Mission::EntityNames::ContainsOutcomeCaseInsensitive(
+                        candidate.label, outcome)) {
+                    candidate.label += " (";
+                    candidate.label += outcome;
+                    candidate.label += ")";
+                }
+                if (!candidate.customLabel && !candidate.commandOrigin &&
+                    !::Mission::EntityNames::ContainsOutcomeCaseInsensitive(
+                        candidate.label, outcome)) {
+                    candidate.label += " (";
+                    candidate.label += outcome;
+                    candidate.label += ")";
+                }
+                // Preserve the visible hit order. A projectile may land during
+                // another move's startup, before that move's direct hit, so the
+                // exact due barrier takes precedence over the latest action
+                // which happened to be in progress.
+                candidate.anchor = ::Mission::EntityPresentationPolicy::
+                    DisplayAnchor(requirement.contactAfterAction,
+                                  requirement.dueBeforeStep,
+                                  requirement.afterStep, total);
+                candidate.identity.family = candidate.family;
+                candidate.identity.owner = requirement.owner;
+                candidate.identity.target = requirement.target;
+                candidate.identity.segment = requirement.segment;
+                candidate.identity.slot = requirement.slot;
+                candidate.identity.generation = requirement.generation;
+                // Cross-instance grouping needs the same exact semantic
+                // ownership proof as inlining.  A lifecycle gate says when a
+                // child became gradeable; it does not prove that two legacy or
+                // explicitly-unresolved slots came from the same cast.  Those
+                // rows may still fold through SameInstance below.
+                candidate.identity.producerAction = exactCommandSource
+                    ? commandAction
+                    : exactSemanticSource
+                        ? requirement.semanticSourceAction
+                        : -1;
+                candidate.identity.contactAfterAction =
+                    requirement.contactAfterAction;
+                candidate.identity.afterStep = requirement.afterStep;
+                candidate.identity.afterStepContact =
+                    requirement.afterStepContact;
+                candidate.identity.dueStep = requirement.dueBeforeStep;
+                candidate.identity.dueContact =
+                    requirement.dueBeforeStepContact;
+
+                EntityRow* row = nullptr;
+                if (candidate.family) {
+                    for (auto existing = s_entityRows.rbegin();
+                         existing != s_entityRows.rend(); ++existing) {
+                        if (std::strcmp(existing->role, candidate.role) != 0 ||
+                            existing->label != candidate.label ||
+                            existing->comboEndAfter !=
+                                candidate.comboEndAfter) {
+                            continue;
+                        }
+                        if (::Mission::EntityPresentationPolicy::CanFold(
+                                existing->identity, candidate.identity,
+                                existing->result.c_str(),
+                                candidate.result.c_str())) {
+                            row = &*existing;
+                            break;
+                        }
+                    }
+                }
+                if (!row) {
+                    s_entityRows.push_back(std::move(candidate));
+                    row = &s_entityRows.back();
+                }
+                row->requirementIndices.push_back(static_cast<int>(i));
+                row->contactsRequired +=
+                    ::Mission::EntityPresentationPolicy::
+                        RequiredContacts(presentationCounts);
+                row->comboHitsRequired +=
+                    ::Mission::EntityPresentationPolicy::
+                        RequiredComboHits(presentationCounts);
+                row->comboEndAfter = row->comboEndAfter ||
+                    requirement.comboEndAfter;
+            }
+
+            for (EntityRow& row : s_entityRows) {
+                const std::string displayLabel = row.customLabel
+                    ? row.label
+                    : ::Mission::EntityPresentationPolicy::
+                          FriendlyOutcomeLabel(row.label, row.result);
+                SplitNotation(displayLabel, row.prefix, row.icons, row.text);
+                if (!row.customLabel) {
+                    row.text += ::Mission::EntityPresentationPolicy::
+                        CompactCountSuffix(
+                            row.contactsRequired, row.comboHitsRequired);
+                }
+            }
+
             // ---- layout pass (positions + wrapping) ----
             auto textW = [&](const std::string& t) -> float {
                 if (t.empty()) return 0.0f;
                 return font->CalcTextSizeA(fontSz, FLT_MAX, 0.0f, t.c_str()).x + 1.0f * S;
             };
+            std::vector<std::vector<std::size_t>> rowsAtAnchor(
+                static_cast<std::size_t>(total + 1));
+            for (std::size_t i = 0; i < s_entityRows.size(); ++i) {
+                rowsAtAnchor[static_cast<std::size_t>(s_entityRows[i].anchor)]
+                    .push_back(i);
+            }
             float x = x0;
             float y = oy + 96.0f * S + fontSz + 4.0f * S;   // below the header line
-            for (int i = 0; i < total; ++i) {
-                Cell& c = s_cells[i];
+            float lineEnd = x0;
+            auto finishLine = [&]() {
+                if (lineEnd > x0) s_flowStrips.push_back({y, lineEnd});
+            };
+            auto nextLine = [&]() {
+                finishLine();
+                x = x0;
+                lineEnd = x0;
+                y += cellH + lineGap;
+            };
+            auto placeFlowItem = [&](float width, float& itemX, float& itemY) {
+                if (x + width > xMax && x > x0) nextLine();
+                if (x > x0) {
+                    s_flowDividers.push_back({x - cellGap * 0.5f, y});
+                }
+                itemX = x;
+                itemY = y;
+                lineEnd = (std::max)(lineEnd, x + width);
+                x += width + cellGap;
+            };
+            for (int anchor = 0; anchor <= total; ++anchor) {
+                for (std::size_t rowIndex :
+                     rowsAtAnchor[static_cast<std::size_t>(anchor)]) {
+                    EntityRow& row = s_entityRows[rowIndex];
+                    row.pw = textW(row.prefix);
+                    row.w = row.pw + textW(row.text);
+                    for (char ch : row.icons) row.w += iconW(ch);
+                    if (row.w < iconH) row.w = iconH;
+                    placeFlowItem(row.w, row.x, row.y);
+                }
+                if (anchor == total) break;
+
+                Cell& c = s_cells[static_cast<std::size_t>(anchor)];
+                if (c.setupBoundary) {
+                    SetupMarker marker;
+                    marker.w = textW("SETUP") + 7.0f * S;
+                    placeFlowItem(marker.w, marker.x, marker.y);
+                    s_setupMarkers.push_back(marker);
+                }
                 c.pw = textW(c.prefix);           // cached: reused by the draw pass
                 float w = c.pw + textW(c.text);
                 for (char ch : c.icons) w += iconW(ch);
                 if (w < iconH) w = iconH;
-                if (x + w > xMax && x > x0) { x = x0; y += cellH + lineGap; }
-                c.x = x; c.y = y; c.w = w;
-                x += w + cellGap;
+                c.w = w;
+                placeFlowItem(c.w, c.x, c.y);
             }
+            finishLine();
         }
     }
     std::vector<Cell>& cells = s_cells;
+    std::vector<EntityRow>& entityRows = s_entityRows;
+    std::vector<SetupMarker>& setupMarkers = s_setupMarkers;
+    std::vector<FlowDivider>& flowDividers = s_flowDividers;
+    std::vector<FlowStrip>& flowStrips = s_flowStrips;
     const float headerY = oy + 96.0f * S;
 
     // ---- strips (one translucent band per wrapped line, CCCaster-style) ----
-    {
-        float lineY = -1.0f, lineEnd = 0.0f;
-        auto flush = [&]() {
-            if (lineY >= 0.0f) {
-                dl->AddRectFilled(ImVec2(x0 - 4.0f * S, lineY - pad),
-                                  ImVec2(lineEnd + 4.0f * S, lineY + cellH + pad),
-                                  IM_COL32(0, 0, 0, 165), 3.0f * S);
-            }
-        };
-        for (const Cell& c : cells) {
-            if (c.y != lineY) { flush(); lineY = c.y; lineEnd = c.x + c.w; }
-            else if (c.x + c.w > lineEnd) lineEnd = c.x + c.w;
-        }
-        flush();
+    for (const FlowStrip& strip : flowStrips) {
+        dl->AddRectFilled(ImVec2(x0 - 4.0f * S, strip.y - pad),
+                          ImVec2(strip.end + 4.0f * S,
+                                 strip.y + cellH + pad),
+                          IM_COL32(0, 0, 0, 165), 3.0f * S);
     }
 
     // Header (progress) on its own mini-strip.
@@ -909,23 +1499,171 @@ void Draw(void* device, ImDrawList* dl, float ox, float oy, float scale) {
     const ImU32 kTintCurrent = IM_COL32(255, 255, 255, 255);
     const ImU32 kTintNext    = IM_COL32(255, 255, 255, 175);
     const ImU32 kTintFailed  = IM_COL32(255, 110, 110, 255);
+    const ImU32 kTintPending = IM_COL32(255, 235, 110, 255);
     const ImU32 kSepCol      = IM_COL32(150, 160, 175, 190);  // step divider chevron
+    auto entitySatisfied = [&](int requirementIndex) -> bool {
+        if (requirementIndex < 0 ||
+            requirementIndex >= static_cast<int>(m->entityContacts.size())) {
+            return false;
+        }
+        const std::size_t index = static_cast<std::size_t>(requirementIndex);
+        const ::Mission::EntityContactRequirement& requirement =
+            m->entityContacts[index];
+        const int contacts = index < entityContactsSeen.size()
+            ? entityContactsSeen[index] : 0;
+        const int comboHits = index < entityComboHitsSeen.size()
+            ? entityComboHitsSeen[index] : 0;
+        return ::Mission::EntityPresentationPolicy::RequirementSatisfied(
+            PresentationCounts(requirement), contacts, comboHits);
+    };
+    auto inlinePending = [&](int stepIndex) -> bool {
+        if (stepIndex < 0 ||
+            stepIndex >= static_cast<int>(s_inlineRequirements.size())) {
+            return false;
+        }
+        const auto& attached = s_inlineRequirements[
+            static_cast<std::size_t>(stepIndex)];
+        return std::any_of(attached.begin(), attached.end(),
+            [&](int requirementIndex) {
+                return !entitySatisfied(requirementIndex);
+            });
+    };
+    auto inlineFailed = [&](int stepIndex) -> bool {
+        if (stepIndex < 0 ||
+            stepIndex >= static_cast<int>(s_inlineRequirements.size())) {
+            return false;
+        }
+        const auto& attached = s_inlineRequirements[
+            static_cast<std::size_t>(stepIndex)];
+        return std::find(attached.begin(), attached.end(),
+                         failedEntityRequirement) != attached.end();
+    };
+    auto lifecyclePending = [&](int stepIndex) -> bool {
+        for (std::size_t i = 0; i < m->entityLifecycles.size(); ++i) {
+            if (m->entityLifecycles[i].opensAfterAction != stepIndex) continue;
+            if (i >= entityLifecyclesSeen.size() ||
+                entityLifecyclesSeen[i] == 0) {
+                return true;
+            }
+        }
+        return false;
+    };
     auto tintOf = [&](int i) -> ImU32 {
-        if (i == failed) return kTintFailed;
+        if (i == failed || inlineFailed(i)) return kTintFailed;
+        const bool inlineOwnerStarted = i < cur || (i == cur && armed);
+        if ((inlinePending(i) || lifecyclePending(i)) &&
+            inlineOwnerStarted) {
+            return kTintPending;
+        }
         if (i < cur)     return kTintDone;
         if (i == cur)    return kTintCurrent;
         return kTintNext;
     };
+    int activeEntity = -1;
+    for (std::size_t i = 0; i < m->entityContacts.size(); ++i) {
+        if (!entitySatisfied(static_cast<int>(i))) {
+            activeEntity = static_cast<int>(i);
+            break;
+        }
+    }
+    auto entityGateStarted = [&](int requirementIndex) -> bool {
+        if (requirementIndex < 0 ||
+            requirementIndex >= static_cast<int>(m->entityContacts.size())) {
+            return false;
+        }
+        const ::Mission::EntityContactRequirement& requirement =
+            m->entityContacts[static_cast<std::size_t>(requirementIndex)];
+        const bool actionGate = requirement.opensAfterAction < 0 ||
+            cur > requirement.opensAfterAction ||
+            (cur == requirement.opensAfterAction && armed);
+        const bool contactActionGate = requirement.contactAfterAction < 0 ||
+            cur > requirement.contactAfterAction ||
+            (cur == requirement.contactAfterAction && armed);
+        const bool contactGate = requirement.afterStep < 0 ||
+            cur > requirement.afterStep;
+        return actionGate && contactActionGate && contactGate &&
+               entitySegment == requirement.segment;
+    };
+    auto rowContains = [](const EntityRow& row, int requirementIndex) {
+        return std::find(row.requirementIndices.begin(),
+                         row.requirementIndices.end(), requirementIndex) !=
+               row.requirementIndices.end();
+    };
+    auto entityRowSatisfied = [&](const EntityRow& row) -> bool {
+        const int satisfiedMembers = static_cast<int>(std::count_if(
+            row.requirementIndices.begin(), row.requirementIndices.end(),
+            entitySatisfied));
+        return ::Mission::EntityPresentationPolicy::AllSatisfied(
+            satisfiedMembers,
+            static_cast<int>(row.requirementIndices.size()));
+    };
+    auto entityRowGateStarted = [&](const EntityRow& row) -> bool {
+        const auto unfinished = std::find_if(
+            row.requirementIndices.begin(), row.requirementIndices.end(),
+            [&](int requirementIndex) {
+                return !entitySatisfied(requirementIndex);
+            });
+        return unfinished != row.requirementIndices.end() &&
+               entityGateStarted(*unfinished);
+    };
+    auto entityRowHasProgress = [&](const EntityRow& row) -> bool {
+        return std::any_of(
+            row.requirementIndices.begin(), row.requirementIndices.end(),
+            [&](int requirementIndex) {
+                if (requirementIndex < 0) return false;
+                const std::size_t index =
+                    static_cast<std::size_t>(requirementIndex);
+                return (index < entityContactsSeen.size() &&
+                        entityContactsSeen[index] > 0) ||
+                       (index < entityComboHitsSeen.size() &&
+                        entityComboHitsSeen[index] > 0);
+            });
+    };
+    auto entityTintOf = [&](const EntityRow& row) -> ImU32 {
+        if (rowContains(row, failedEntityRequirement)) return kTintFailed;
+        if (entityRowSatisfied(row)) return kTintDone;
+        if (rowContains(row, activeEntity) &&
+            entityRowGateStarted(row)) return kTintCurrent;
+        return kTintNext;
+    };
 
     // Pass 1: backgrounds (current/failed step underline) - AddRectFilled, no texture.
+    for (const SetupMarker& marker : setupMarkers) {
+        dl->AddRectFilled(ImVec2(marker.x, marker.y + 2.0f * S),
+                          ImVec2(marker.x + 1.5f * S,
+                                 marker.y + cellH - 2.0f * S),
+                          IM_COL32(105, 235, 235, 230));
+    }
     for (int i = 0; i < total; ++i) {
-        if (i != cur && i != failed) continue;
+        const bool inlineOwnerStarted = i < cur || (i == cur && armed);
+        const bool attachedPending = inlinePending(i) && inlineOwnerStarted;
+        const bool attachedFailed = inlineFailed(i);
+        if (i != cur && i != failed && !attachedPending && !attachedFailed) continue;
         const Cell& c = cells[i];
         ImU32 bar = IM_COL32(105, 235, 235, 230);
-        if (i == failed) bar = IM_COL32(255, 90, 90, 240);
-        else if (armed)  bar = IM_COL32(255, 235, 110, 240);
+        if (i == failed || attachedFailed) {
+            bar = IM_COL32(255, 90, 90, 240);
+        } else if (armed || attachedPending) {
+            bar = IM_COL32(255, 235, 110, 240);
+        }
         dl->AddRectFilled(ImVec2(c.x - 1.0f * S, c.y + cellH + 1.0f * S),
                           ImVec2(c.x + c.w + 1.0f * S, c.y + cellH + 2.5f * S), bar);
+    }
+    for (const EntityRow& row : entityRows) {
+        const bool entityFailed = rowContains(row, failedEntityRequirement);
+        const bool entityActive = rowContains(row, activeEntity) &&
+            entityRowGateStarted(row);
+        if (!entityFailed && !entityActive) continue;
+        const bool hasProgress = entityActive && entityRowHasProgress(row);
+        const ImU32 bar = entityFailed
+            ? IM_COL32(255, 90, 90, 240)
+            : hasProgress
+                ? IM_COL32(255, 235, 110, 240)
+                : IM_COL32(105, 235, 235, 230);
+        dl->AddRectFilled(ImVec2(row.x - 1.0f * S,
+                                 row.y + cellH + 1.0f * S),
+                          ImVec2((std::min)(row.x + row.w + 1.0f * S, xMax),
+                                 row.y + cellH + 2.5f * S), bar);
     }
 
     // Pass 2: glyphs - every AddImage uses the one atlas texture -> a single batch.
@@ -948,19 +1686,45 @@ void Draw(void* device, ImDrawList* dl, float ox, float oy, float scale) {
             ix += w;
         }
     }
+    for (const EntityRow& row : entityRows) {
+        const ImU32 tint = entityTintOf(row);
+        const float iy = row.y + pad;
+        float ix = row.x + row.pw;
+        for (char ch : row.icons) {
+            const float w = iconW(ch);
+            auto it = g_icons.find(ch);
+            if (ch == '5') {
+                DrawNeutralTile(dl, font,
+                                (std::min)(fontSz, iconH - 2.0f),
+                                ix, iy, iconH, tint);
+            } else if (it != g_icons.end() && g_atlasTex) {
+                dl->AddImage(reinterpret_cast<ImTextureID>(g_atlasTex),
+                             ImVec2(ix, iy), ImVec2(ix + w, iy + iconH),
+                             ImVec2(it->second.u0, it->second.v0),
+                             ImVec2(it->second.u1, it->second.v1), tint);
+            }
+            ix += w;
+        }
+    }
 
     // Pass 3: text - prefix, step-divider chevrons, unknown-glyph fallback, suffix -
     // all use the font texture -> a single batch. sepW measured once, not per divider.
     const float sepW = font->CalcTextSizeA(fontSz, FLT_MAX, 0.0f, ">").x;
+    for (const FlowDivider& divider : flowDividers) {
+        const float ty = divider.y + (cellH - fontSz) * 0.5f;
+        dl->AddText(font, fontSz,
+                    ImVec2(divider.x - sepW * 0.5f, ty), kSepCol, ">");
+    }
+    for (const SetupMarker& marker : setupMarkers) {
+        const float ty = marker.y + (cellH - fontSz) * 0.5f;
+        dl->AddText(font, fontSz,
+                    ImVec2(marker.x + 4.0f * S, ty),
+                    IM_COL32(105, 235, 235, 235), "SETUP");
+    }
     for (int i = 0; i < total; ++i) {
         const Cell& c = cells[i];
         const ImU32 tint = tintOf(i);
         const float ty = c.y + (cellH - fontSz) * 0.5f;
-        if (i > 0 && cells[i - 1].y == c.y) {
-            const float gapL = cells[i - 1].x + cells[i - 1].w;
-            dl->AddText(font, fontSz,
-                        ImVec2(gapL + (c.x - gapL - sepW) * 0.5f, ty), kSepCol, ">");
-        }
         float ix = c.x;
         if (!c.prefix.empty()) {
             dl->AddText(font, fontSz, ImVec2(ix, ty), tint, c.prefix.c_str());
@@ -975,6 +1739,29 @@ void Draw(void* device, ImDrawList* dl, float ox, float oy, float scale) {
         }
         if (!c.text.empty()) {
             dl->AddText(font, fontSz, ImVec2(ix + 1.0f * S, ty), tint, c.text.c_str());
+        }
+    }
+    for (const EntityRow& row : entityRows) {
+        const ImU32 tint = entityTintOf(row);
+        const float ty = row.y + (cellH - fontSz) * 0.5f;
+        float ix = row.x;
+        if (!row.prefix.empty()) {
+            dl->AddText(font, fontSz, ImVec2(ix, ty), tint,
+                        row.prefix.c_str());
+        }
+        ix += row.pw;
+        for (char ch : row.icons) {
+            if (ch != '5' && g_icons.find(ch) == g_icons.end()) {
+                char b[2] = { ch, 0 };
+                dl->AddText(font, fontSz,
+                            ImVec2(ix + 1.0f * S, ty), tint, b);
+            }
+            ix += iconW(ch);
+        }
+        if (!row.text.empty()) {
+            dl->AddText(font, fontSz,
+                        ImVec2(ix + 1.0f * S, ty), tint,
+                        row.text.c_str());
         }
     }
 }

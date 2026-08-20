@@ -51,10 +51,33 @@ constexpr bool MergeProfileAttack(bool existing, bool incoming) {
     return existing || incoming;
 }
 
+// Lifecycle-only authoring has to be conservative. Attack metadata is the
+// strongest signal; projectile/super-entity classes remain attack-capable even
+// if a particular baked profile failed to expose an attack frame. A completely
+// unmapped >=400 pattern is also review-required, except EFZ's shared 495..499
+// system-helper range. Known inert `entity` rows remain legal setup/VFX.
+constexpr bool IsCommonSystemHelperCandidateId(int moveId) {
+    return moveId >= 495 && moveId <= 499;
+}
+
+constexpr bool LifecycleRequiresGrade(Cls cls, bool attack, int moveId) {
+    return attack || cls == Cls::Projectile || cls == Cls::SuperEntity ||
+           (cls == Cls::Unknown && moveId >= 400 &&
+            !IsCommonSystemHelperCandidateId(moveId));
+}
+
 static_assert(MergeProfileClass(Cls::Super, Cls::System, 301) == Cls::Super,
               "alternate union must retain special/super capture");
 static_assert(MergeProfileClass(Cls::Projectile, Cls::Entity, 421) == Cls::Projectile,
               "alternate union must retain attack-capable entity class");
+static_assert(LifecycleRequiresGrade(Cls::Unknown, false, 405),
+              "unmapped combat-ring patterns must not silently become motion-only");
+static_assert(LifecycleRequiresGrade(Cls::Projectile, false, 405),
+              "projectile class remains conservative without an attack bit");
+static_assert(!LifecycleRequiresGrade(Cls::Entity, false, 405),
+              "known inert helpers may remain lifecycle-only setup");
+static_assert(!LifecycleRequiresGrade(Cls::Unknown, false, 497),
+              "shared system helpers retain their presentation-only exception");
 
 } // namespace Detail
 

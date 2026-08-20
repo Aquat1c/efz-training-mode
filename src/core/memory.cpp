@@ -147,6 +147,10 @@ bool NopMemory(uintptr_t address, size_t length) {
 // Mission/tutorial setup uses the checked entry point so a failed teleport
 // cannot quietly become the baseline for the rest of a lesson.
 bool TrySetPlayerPosition(uintptr_t base, uintptr_t playerOffset, double x, double y, bool updateMoveID) {
+    if (!std::isfinite(x) || !std::isfinite(y)) {
+        LogOut("[MEMORY] Refused a non-finite fighter position", true);
+        return false;
+    }
     // Resolve position pointers
     uintptr_t xAddr = ResolvePointer(base, playerOffset, XPOS_OFFSET);
     uintptr_t yAddr = ResolvePointer(base, playerOffset, YPOS_OFFSET);
@@ -174,18 +178,9 @@ bool TrySetPlayerPosition(uintptr_t base, uintptr_t playerOffset, double x, doub
         }
     };
     
-    // Read current Y position to determine if transitioning from air to ground
-    double currentY = 0.0;
-    SafeReadMemory(yAddr, &currentY, sizeof(double));
-    bool wasInAir = (currentY > 0.5);
-    bool willBeGrounded = (y <= 0.5);
-    
-    // Read current move ID to check if character is performing an attack
-    short currentMoveID = 0;
-    if (moveIDAddr) {
-        SafeReadMemory(moveIDAddr, &currentMoveID, sizeof(short));
-    }
-    bool isPerformingMove = (currentMoveID >= 200);
+    // EFZ's world Y is zero on the floor and negative above it. Preserve that
+    // native sign when choosing the post-teleport state.
+    const bool willBeGrounded = y >= -0.5;
     
     // Reset animation frame counters for BOTH players to prevent stuck cloud state
     // This is critical - if one player has cloud, both frame counters can get stuck

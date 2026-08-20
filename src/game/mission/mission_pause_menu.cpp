@@ -35,12 +35,15 @@ namespace {
 
 namespace L = CustomMenu::Layout;
 namespace T = CustomMenu::Theme;
+namespace Rec = ::Mission::Engine::Recorder;
 
 enum class Context : int {
     Mission = 0,   // trial / scenario runner session
     Lesson,        // tutorial runner session
+    PreRecord,     // recorder setup is live; no capture yet
     CountIn,       // recorder countdown owns the session
     Recording,     // recorder capture owns the session
+    Review,        // sealed recorder take awaits authoring decisions
 };
 
 enum class Item : int {
@@ -51,8 +54,13 @@ enum class Item : int {
     NextLesson,        // lesson: after clear only
     WatchDemo,
     ReturnToBrowser,
+    StartRecording,
+    OpenAuthoring,
+    OpenPractice,
     CancelCountdown,
     StopReview,
+    PreviewRecording,
+    RetakeRecording,
     DiscardRecording,
 };
 
@@ -66,18 +74,31 @@ struct State {
     std::string nextLessonName;
     std::vector<Item> items;
     bool hasDemo = false;
-    // Intro/choice/review/complete already hold the tutorial pause.  The
-    // mission pause menu borrows that freeze instead of replacing its owner.
+    bool captureSuspensionOwned = false;
+    bool confirming = false;
+    Item confirmationItem = Item::DiscardRecording;
+    int confirmationSelection = 0; // safe KEEP choice is always first
+    // Retained for close-path compatibility; new opens always publish their
+    // own nested MissionPause surface so tutorial refresh/teardown cannot
+    // unpause underneath this menu.
     bool borrowedTutorialFreeze = false;
 };
 
 std::mutex g_mx;
 State g_state;
 std::atomic<bool> g_openFlag{false};   // lock-free fast path for gates
-// STOP & REVIEW handoff: once the queued Advance lands the recorder in Review,
-// open the ordinary Practice menu on its authoring pane (the old direct flow).
-std::atomic<bool> g_pendingReviewMenu{false};
+// STOP & REVIEW must briefly resume to seal one post-request macro boundary.
+// Once the recorder publishes Review, reopen this dedicated surface rather
+// than falling into the ordinary Practice menu.
+std::atomic<bool> g_pendingReviewPause{false};
 std::atomic<bool> g_inputSyncRequested{false};
+
+// Trial/Tutorial pause rows share the title browser's restrained EFZ menu
+// language: hard black strips, a single white separator between rows, and a
+// quiet steel-white focus lift. Recorder pause contexts keep their existing
+// authoring presentation.
+constexpr ImU32 kSessionRowRule    = IM_COL32(255, 255, 255, 78);
+constexpr ImU32 kSessionRowRuleHot = IM_COL32(255, 255, 255, 210);
 
 std::string Upper(std::string s) {
     for (char& c : s) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
@@ -85,27 +106,22 @@ std::string Upper(std::string s) {
 }
 
 bool IsRecorderContext(Context c) {
-    return c == Context::CountIn || c == Context::Recording;
+    return c == Context::PreRecord || c == Context::CountIn ||
+           c == Context::Recording || c == Context::Review;
 }
 
-bool CanBorrowTutorialFreeze() {
-    if (!::Mission::TutorialSession::IsActive()) return false;
-    const auto phase = ::Mission::TutorialSession::GetPhase();
-    const bool tutorialOwnsFreeze =
-        phase == ::Mission::TutorialSession::Phase::Intro ||
-        phase == ::Mission::TutorialSession::Phase::ConfirmExit ||
-        phase == ::Mission::TutorialSession::Phase::Choice ||
-        phase == ::Mission::TutorialSession::Phase::Review ||
-        phase == ::Mission::TutorialSession::Phase::Complete ||
-        phase == ::Mission::TutorialSession::Phase::Error;
-    return tutorialOwnsFreeze;
+bool IsCaptureContext(Context c) {
+    return c == Context::CountIn || c == Context::Recording;
 }
 
 const char* ItemLabel(Item item, Context ctx) {
     const bool lesson = ctx == Context::Lesson;
     switch (item) {
         case Item::Resume:
-            return IsRecorderContext(ctx) ? "RESUME"
+            return ctx == Context::PreRecord ? "RESUME SETUP"
+                 : ctx == Context::CountIn ? "RESUME COUNTDOWN"
+                 : ctx == Context::Recording ? "RESUME RECORDING"
+                 : ctx == Context::Review ? "RETURN TO MATCH"
                  : (lesson ? "RESUME LESSON" : "RESUME");
         case Item::Retry:           return lesson ? "RESTART LESSON" : "RETRY MISSION";
         case Item::RetryTask:       return "RETRY CURRENT TASK";
@@ -113,8 +129,15 @@ const char* ItemLabel(Item item, Context ctx) {
         case Item::NextLesson:      return "NEXT LESSON";
         case Item::WatchDemo:       return lesson ? "WATCH EXAMPLE" : "WATCH DEMONSTRATION";
         case Item::ReturnToBrowser: return lesson ? "RETURN TO LESSONS" : "RETURN TO MISSIONS";
+        case Item::StartRecording:  return "START RECORDING";
+        case Item::OpenAuthoring:   return ctx == Context::Review
+                                                ? "REVIEW & SAVE"
+                                                : "RECORD & AUTHOR";
+        case Item::OpenPractice:    return "PRACTICE SETTINGS";
         case Item::CancelCountdown: return "CANCEL COUNTDOWN";
         case Item::StopReview:      return "STOP & REVIEW";
+        case Item::PreviewRecording:return "PREVIEW DEMONSTRATION";
+        case Item::RetakeRecording: return "RETAKE FROM BASELINE";
         case Item::DiscardRecording:return "DISCARD RECORDING";
     }
     return "";
@@ -124,10 +147,14 @@ const char* ItemHint(Item item, Context ctx) {
     const bool lesson = ctx == Context::Lesson;
     switch (item) {
         case Item::Resume:
-            return ctx == Context::CountIn
+            return ctx == Context::PreRecord
+                       ? "Return to the match and finish arranging the recording setup."
+                       : ctx == Context::CountIn
                        ? "Return to the countdown; release the controls to start."
                        : ctx == Context::Recording
                        ? "Continue capturing from exactly where you paused."
+                       : ctx == Context::Review
+                       ? "Close this menu without changing the saved take."
                        : "Continue from exactly where you paused.";
         case Item::Retry:
             return lesson ? "Restore the lesson's start and try again."
@@ -143,14 +170,224 @@ const char* ItemHint(Item item, Context ctx) {
         case Item::ReturnToBrowser:
             return lesson ? "Leave this lesson and return to the lesson browser."
                           : "Leave this mission and return to the mission browser.";
+        case Item::StartRecording:
+            return "Lock the prepared start after the configured count-in, then begin capturing.";
+        case Item::OpenAuthoring:
+            return ctx == Context::Review
+                       ? "Open the authoring form to name, preview, save, or publish this take."
+                       : "Open the dedicated recording and pack workshop.";
+        case Item::OpenPractice:
+            return "Open the normal Practice menu. The recording stays paused; Back returns here.";
         case Item::CancelCountdown:
             return "Return to PRE-RECORD; nothing has been captured yet.";
         case Item::StopReview:
-            return "Seal the take and open the authoring menu to preview or save.";
+            return "Seal the take, then open the dedicated recording review menu.";
+        case Item::PreviewRecording:
+            return "Restore the recorded start and watch the captured input demonstration.";
+        case Item::RetakeRecording:
+            return "Discard this take, restore its exact start, and return to PRE-RECORD.";
         case Item::DiscardRecording:
             return "Throw away this authoring session entirely.";
     }
     return "";
+}
+
+Context RecorderContextForPhase(Rec::Phase phase) {
+    using Phase = Rec::Phase;
+    switch (phase) {
+        case Phase::PreRecord: return Context::PreRecord;
+        case Phase::CountIn:   return Context::CountIn;
+        case Phase::Recording: return Context::Recording;
+        case Phase::Review:    return Context::Review;
+        case Phase::Idle:
+        default:               return Context::Mission;
+    }
+}
+
+bool ConfigureRecorderStateLocked(Rec::Phase phase) {
+    if (!Rec::UsesDedicatedPauseMenu(phase)) return false;
+
+    g_state.context = RecorderContextForPhase(phase);
+    g_state.sessionName = "NEW RECORDING";
+    g_state.items.clear();
+    g_state.selection = 0;
+    g_state.confirming = false;
+    g_state.confirmationSelection = 0;
+
+    const int steps = Rec::GetStepCount();
+    const int breaks = Rec::GetComboEndCount();
+    char progress[96] = {};
+    switch (g_state.context) {
+        case Context::PreRecord:
+            g_state.title = "RECORDING SETUP";
+            g_state.progress = "PRE-RECORD  |  NOTHING CAPTURED YET";
+            g_state.items.push_back(Item::Resume);
+            g_state.items.push_back(Item::StartRecording);
+            g_state.items.push_back(Item::OpenAuthoring);
+            g_state.items.push_back(Item::OpenPractice);
+            g_state.items.push_back(Item::DiscardRecording);
+            break;
+        case Context::CountIn:
+            g_state.title = "COUNTDOWN PAUSED";
+            g_state.progress = "COUNTDOWN  |  NOTHING CAPTURED YET";
+            g_state.items.push_back(Item::Resume);
+            g_state.items.push_back(Item::CancelCountdown);
+            g_state.items.push_back(Item::OpenPractice);
+            g_state.items.push_back(Item::DiscardRecording);
+            break;
+        case Context::Recording:
+            g_state.title = "RECORDING PAUSED";
+            _snprintf_s(progress, sizeof(progress), _TRUNCATE,
+                        "%d ACTION%s  |  %d SETUP BREAK%s", steps,
+                        steps == 1 ? "" : "S", breaks,
+                        breaks == 1 ? "" : "S");
+            g_state.progress = progress;
+            g_state.items.push_back(Item::Resume);
+            g_state.items.push_back(Item::StopReview);
+            g_state.items.push_back(Item::OpenPractice);
+            g_state.items.push_back(Item::DiscardRecording);
+            break;
+        case Context::Review:
+            g_state.title = "RECORDING REVIEW";
+            if (Rec::HasPreviewableTake()) {
+                _snprintf_s(progress, sizeof(progress), _TRUNCATE,
+                            "%d ACTION%s CAPTURED  |  %d SETUP BREAK%s", steps,
+                            steps == 1 ? "" : "S", breaks,
+                            breaks == 1 ? "" : "S");
+            } else {
+                _snprintf_s(progress, sizeof(progress), _TRUNCATE,
+                            "%d ACTION%s  |  RETAKE RECOMMENDED", steps,
+                            steps == 1 ? "" : "S");
+            }
+            g_state.progress = progress;
+            g_state.items.push_back(Item::Resume);
+            g_state.items.push_back(Item::OpenAuthoring);
+            if (Rec::HasPreviewableTake()) {
+                g_state.items.push_back(Item::PreviewRecording);
+            }
+            g_state.items.push_back(Item::RetakeRecording);
+            g_state.items.push_back(Item::OpenPractice);
+            g_state.items.push_back(Item::DiscardRecording);
+            break;
+        case Context::Mission:
+        case Context::Lesson:
+            return false;
+    }
+    return true;
+}
+
+// Keep a recorder menu coherent if its phase changes while a nested Practice
+// surface is visible or while an asynchronous recorder command settles.  The
+// visible MissionPause owner remains in place; only live capture phases own
+// the recipe/macro suspension lease.
+bool SyncRecorderContextLocked() {
+    if (!g_state.open || !IsRecorderContext(g_state.context)) return true;
+
+    const Rec::Phase phase = Rec::GetPhase();
+    if (!Rec::UsesDedicatedPauseMenu(phase)) return false;
+
+    const bool shouldOwnCapture = Rec::IsCapturePhase(phase);
+    if (shouldOwnCapture != g_state.captureSuspensionOwned) {
+        Rec::SetCaptureMenuOpen(shouldOwnCapture);
+        g_state.captureSuspensionOwned = shouldOwnCapture;
+    }
+
+    if (g_state.context != RecorderContextForPhase(phase)) {
+        return ConfigureRecorderStateLocked(phase);
+    }
+    return true;
+}
+
+bool NeedsConfirmation(Item item) {
+    return item == Item::RetakeRecording ||
+           item == Item::DiscardRecording;
+}
+
+bool UsesRecorderCommandHandoff(Item item) {
+    return item == Item::StartRecording ||
+           item == Item::CancelCountdown ||
+           item == Item::StopReview ||
+           item == Item::RetakeRecording ||
+           item == Item::DiscardRecording;
+}
+
+const char* ConfirmationPrompt(Item item, Context ctx) {
+    return item == Item::RetakeRecording
+               ? "RETAKE THIS RECORDING?"
+               : (ctx == Context::PreRecord || ctx == Context::CountIn
+                      ? "DISCARD THIS SESSION?"
+                      : "DISCARD THIS RECORDING?");
+}
+
+const char* ConfirmationHint(Item item, Context ctx) {
+    if (item == Item::RetakeRecording) {
+        return "The current take will be erased. Its exact start and mission details are kept.";
+    }
+    if (ctx == Context::PreRecord || ctx == Context::CountIn) {
+        return "The prepared start and unsaved mission details will be erased. No take has been captured.";
+    }
+    if (ctx == Context::Recording) {
+        return "The live capture and its unsaved mission details will be erased.";
+    }
+    return "The captured take and its unsaved mission details will be erased.";
+}
+
+const char* ConfirmationLabel(Item item, Context ctx, int selection) {
+    if (selection == 0) {
+        if (item == Item::RetakeRecording) return "KEEP THIS TAKE";
+        return (ctx == Context::PreRecord || ctx == Context::CountIn)
+                   ? "KEEP SESSION"
+                   : (ctx == Context::Review ? "KEEP THIS TAKE"
+                                             : "KEEP RECORDING");
+    }
+    return item == Item::RetakeRecording ? "RETAKE FROM BASELINE"
+                                         : "DISCARD RECORDING";
+}
+
+void DrawSessionPauseRow(ImDrawList* dl, ImFont* font, float px,
+                         float x, float y, float w, float h,
+                         const char* label, bool selected) {
+    if (!dl || !label || w <= 0.0f || h <= 0.0f) return;
+    const float sx = CustomMenu::Scale::Snap(x);
+    const float sy = CustomMenu::Scale::Snap(y);
+    const float ex = CustomMenu::Scale::Snap(x + w);
+    const float ey = CustomMenu::Scale::Snap(y + h);
+
+    L::DrawSessionRowChrome(dl, x, y, w, h, selected);
+
+    const float tw = L::MeasureTextW(font, px, label);
+    const float tx = x + (w - tw) * 0.5f;
+    const float ty = y + (h - px) * 0.5f;
+    dl->PushClipRect(ImVec2(sx + 10.0f, sy), ImVec2(ex - 10.0f, ey), true);
+    if (selected) {
+        L::DrawOutlinedText(dl, font, px, tx, ty, T::kTextActive, label);
+    } else {
+        L::DrawString(dl, font, px, tx, ty, T::kTextInactive, label);
+    }
+    dl->PopClipRect();
+}
+
+float MeasureWrappedHeight(ImFont* font, float px, const char* text,
+                           float wrapWidth) {
+    if (!text || !*text) return 0.0f;
+    if (font) {
+        return font->CalcTextSizeA(px, 1000000.0f, wrapWidth, text).y;
+    }
+    return ImGui::CalcTextSize(text, nullptr, false, wrapWidth).y;
+}
+
+void DrawWrappedText(ImDrawList* dl, ImFont* font, float px,
+                     float x, float y, float width, float height,
+                     ImU32 color, const char* text) {
+    if (!dl || !text || !*text || width <= 0.0f || height <= 0.0f) return;
+    const ImVec2 pos(x, y);
+    dl->PushClipRect(pos, ImVec2(x + width, y + height), true);
+    if (font) {
+        dl->AddText(font, px, pos, color, text, nullptr, width);
+    } else {
+        L::DrawString(dl, font, px, x, y, color, text);
+    }
+    dl->PopClipRect();
 }
 
 // Executes the confirmed row on the frame-monitor thread after the menu has
@@ -178,7 +415,6 @@ void Execute(Item item, Context ctx) {
             {
                 std::string restoreMessage;
                 if (::Mission::Engine::Runner::RequestBaselineRestore(restoreMessage)) {
-                    ::Mission::Engine::Runner::Reset();
                     LogOut("[MISSION][PAUSE] retry via runner-owned baseline", true);
                 } else {
                     DirectDrawHook::AddMessage(
@@ -229,14 +465,63 @@ void Execute(Item item, Context ctx) {
             }
             break;
         }
+        case Item::StartRecording:
+            ::Mission::Engine::Recorder::Advance();
+            LogOut("[MISSION][PAUSE] recording count-in started from dedicated menu",
+                   true);
+            break;
+        case Item::OpenAuthoring:
+            // Acquire ImGui while this dedicated surface still owns the pause;
+            // only then release MissionPause. This avoids a live-world gap and
+            // leaves the dedicated menu intact if ImGui cannot initialize.
+            CustomMenu::Screens::OpenMissionBrowser();
+            if (!OpenPracticeMenuDirect()) {
+                DirectDrawHook::AddMessage(
+                    "The authoring menu could not be opened; the recording was kept",
+                    "MISSION", RGB(255, 180, 120), 2200, 0, 120);
+                LogOut("[MISSION][PAUSE] explicit authoring handoff failed", true);
+            } else {
+                Close();
+                LogOut("[MISSION][PAUSE] explicit authoring handoff opened", true);
+            }
+            break;
+        case Item::OpenPractice:
+            CustomMenu::Screens::OpenPracticeRoot();
+            if (!OpenPracticeMenuDirect()) {
+                DirectDrawHook::AddMessage(
+                    "Practice settings could not be opened; recording is still paused",
+                    "MISSION", RGB(255, 180, 120), 2200, 0, 120);
+                LogOut("[MISSION][PAUSE] nested Practice menu failed to open", true);
+            } else {
+                g_inputSyncRequested.store(true, std::memory_order_release);
+                LogOut("[MISSION][PAUSE] nested Practice menu opened; capture remains suspended",
+                       true);
+            }
+            break;
         case Item::CancelCountdown:
             ::Mission::Engine::Recorder::Advance();   // CountIn -> PreRecord (safe)
             LogOut("[MISSION][PAUSE] countdown canceled from pause menu", true);
             break;
         case Item::StopReview:
             ::Mission::Engine::Recorder::Advance();   // Recording -> Review (sealed)
-            g_pendingReviewMenu.store(true, std::memory_order_release);
-            LogOut("[MISSION][PAUSE] capture stopped from pause menu; Review menu pending", true);
+            g_pendingReviewPause.store(true, std::memory_order_release);
+            LogOut("[MISSION][PAUSE] capture stopped; dedicated Review menu pending",
+                   true);
+            break;
+        case Item::PreviewRecording: {
+            std::string message;
+            if (!::Mission::Engine::Demo::PlayRecording(message)) {
+                DirectDrawHook::AddMessage(
+                    ("Preview unavailable: " + message).c_str(), "MISSION",
+                    RGB(255, 180, 120), 2200, 0, 120);
+                LogOut("[MISSION][PAUSE] recording preview refused: " + message,
+                       true);
+            }
+            break;
+        }
+        case Item::RetakeRecording:
+            ::Mission::Engine::Recorder::Retake();
+            LogOut("[MISSION][PAUSE] confirmed recorder retake", true);
             break;
         case Item::DiscardRecording:
             ::Mission::Engine::Recorder::Cancel();
@@ -248,18 +533,38 @@ void Execute(Item item, Context ctx) {
 void CloseLocked() {
     if (!g_state.open) return;
     const bool borrowedTutorialFreeze = g_state.borrowedTutorialFreeze;
+    const bool recorderContext = IsRecorderContext(g_state.context);
+    const bool captureSuspensionOwned =
+        recorderContext && g_state.captureSuspensionOwned;
+    const bool recorderStillCapturing = Rec::NeedsCaptureMenuHandoff(
+        captureSuspensionOwned, Rec::GetPhase());
     g_state.open = false;
     g_state.borrowedTutorialFreeze = false;
+    g_state.confirming = false;
+    g_state.confirmationSelection = 0;
+    g_state.captureSuspensionOwned = false;
     g_openFlag.store(false, std::memory_order_release);
+    if (captureSuspensionOwned) {
+        if (recorderStillCapturing) {
+            // Transfer the physical freeze before this visible surface
+            // releases it, avoiding a live-world gap. Recorder::Tick then
+            // releases this provisional pause owner while its zero-input lease
+            // drains the menu button and resynchronizes both streams.
+            PauseIntegration::OnMenuSurfaceVisibilityChanged(
+                PauseIntegration::MenuSurface::RecorderHandoff, true);
+        }
+        Rec::SetCaptureMenuOpen(false);
+    }
     if (!borrowedTutorialFreeze) {
-        PauseIntegration::OnMenuVisibilityChanged(false);
+        PauseIntegration::OnMenuSurfaceVisibilityChanged(
+            PauseIntegration::MenuSurface::MissionPause, false);
     }
 }
 
 // True while a context this menu owns is live in a match.
 bool OwningContextAlive() {
     if (GetCurrentGamePhase() != GamePhase::Match) return false;
-    return ::Mission::Engine::Recorder::OwnsCaptureHotkeys() ||
+    return ::Mission::Engine::Recorder::IsSessionActive() ||
            ::Mission::Engine::Runner::IsActive();
 }
 
@@ -276,13 +581,13 @@ bool Open() {
     if (ImGuiImpl::IsVisible()) return false;
 
     const Recorder::Phase recPhase = Recorder::GetPhase();
-    const bool capture = recPhase == Recorder::Phase::CountIn ||
-                         recPhase == Recorder::Phase::Recording;
+    const bool recorderSession = Recorder::UsesDedicatedPauseMenu(recPhase);
+    const bool capture = Recorder::IsCapturePhase(recPhase);
     // Preparing has no durable checkpoint yet. DemoSuspended remains an owned
     // restore transaction for one fresh Tutorial tick after Demo becomes idle;
     // opening Restart in that interval could change phase before Tutorial
     // acknowledges the result and strand Demo's direct P1-neutral lease.
-    if (!capture && ::Mission::TutorialSession::IsActive()) {
+    if (!recorderSession && ::Mission::TutorialSession::IsActive()) {
         const auto tutorialPhase = ::Mission::TutorialSession::GetPhase();
         if (!::Mission::TutorialSession::SessionMenuAllowed(tutorialPhase)) {
             LogOut(tutorialPhase ==
@@ -293,8 +598,6 @@ bool Open() {
             return false;
         }
     }
-    const bool borrowTutorialFreeze = !capture && CanBorrowTutorialFreeze();
-
     std::lock_guard<std::mutex> lk(g_mx);
     if (g_state.open) return true;
     g_state.items.clear();
@@ -302,26 +605,12 @@ bool Open() {
     g_state.selection = 0;
     g_state.hasDemo = false;
     g_state.borrowedTutorialFreeze = false;
+    g_state.captureSuspensionOwned = false;
+    g_state.confirming = false;
+    g_state.confirmationSelection = 0;
 
-    if (capture) {
-        g_state.context = recPhase == Recorder::Phase::CountIn ? Context::CountIn
-                                                               : Context::Recording;
-        g_state.title = "RECORDING PAUSED";
-        g_state.sessionName = "NEW RECORDING";
-        char progress[64];
-        if (g_state.context == Context::CountIn) {
-            _snprintf_s(progress, sizeof(progress), _TRUNCATE,
-                        "COUNTDOWN  |  NOTHING CAPTURED YET");
-        } else {
-            const int steps = Recorder::GetStepCount();
-            _snprintf_s(progress, sizeof(progress), _TRUNCATE,
-                        "%d ACTION%s CAPTURED", steps, steps == 1 ? "" : "S");
-        }
-        g_state.progress = progress;
-        g_state.items.push_back(Item::Resume);
-        g_state.items.push_back(g_state.context == Context::CountIn
-                                    ? Item::CancelCountdown : Item::StopReview);
-        g_state.items.push_back(Item::DiscardRecording);
+    if (recorderSession) {
+        if (!ConfigureRecorderStateLocked(recPhase)) return false;
     } else {
         if (!Runner::IsActive()) return false;
         ::Mission::Mission mission;
@@ -394,12 +683,23 @@ bool Open() {
     }
 
     g_state.open = true;
-    g_state.borrowedTutorialFreeze = borrowTutorialFreeze &&
-                                     g_state.context == Context::Lesson;
+    // Always take a nested surface. PauseIntegration retains the existing
+    // physical pause when TutorialPage already owns it, while the atomic mask
+    // transition also cancels any in-flight tutorial refresh before this menu
+    // becomes visible.
+    g_state.borrowedTutorialFreeze = false;
     g_openFlag.store(true, std::memory_order_release);
     g_inputSyncRequested.store(true, std::memory_order_release);
     if (!g_state.borrowedTutorialFreeze) {
-        PauseIntegration::OnMenuVisibilityChanged(true);
+        PauseIntegration::OnMenuSurfaceVisibilityChanged(
+            PauseIntegration::MenuSurface::MissionPause, true);
+    }
+    if (capture) {
+        Recorder::SetCaptureMenuOpen(true);
+        g_state.captureSuspensionOwned = true;
+    }
+    if (g_state.context == Context::Review) {
+        g_pendingReviewPause.store(false, std::memory_order_release);
     }
     LogOut(std::string("[MISSION][PAUSE] opened (context=") +
            std::to_string(static_cast<int>(g_state.context)) +
@@ -425,22 +725,48 @@ void Toggle() {
         if (now - previous < 250) return;
     } while (!s_lastToggleTick.compare_exchange_weak(
         previous, now, std::memory_order_acq_rel, std::memory_order_relaxed));
-    if (IsOpen()) Close();
-    else Open();
+    if (IsOpen()) {
+        bool dismissedConfirmation = false;
+        {
+            std::lock_guard<std::mutex> lk(g_mx);
+            if (g_state.open && g_state.confirming) {
+                g_state.confirming = false;
+                g_state.confirmationSelection = 0;
+                dismissedConfirmation = true;
+                g_inputSyncRequested.store(true, std::memory_order_release);
+            }
+        }
+        // Escape/Menu acts like Back while a destructive confirmation is
+        // visible. A second deliberate press resumes from the normal list.
+        if (!dismissedConfirmation) Close();
+    } else {
+        Open();
+    }
+}
+
+void NotifyRecorderEnteredReview() {
+    // Only STOP & REVIEW requests an automatic return. Other transitions into
+    // Review (for example an external authoring command) must not open a menu
+    // the player did not ask for.
+    if (!g_pendingReviewPause.exchange(false, std::memory_order_acq_rel)) return;
+    if (Rec::GetPhase() != Rec::Phase::Review || !Open()) {
+        // Tick provides a bounded fallback if the render/menu state was still
+        // changing on this exact recorder boundary.
+        g_pendingReviewPause.store(true, std::memory_order_release);
+    }
 }
 
 void Tick() {
     // STOP & REVIEW handoff: once the queued Advance actually reaches Review,
-    // open the Practice menu on the authoring pane (preview/save/retake live
-    // there). Runs with the pause menu closed.
-    if (g_pendingReviewMenu.load(std::memory_order_acquire) && !IsOpen()) {
-        const auto phase = ::Mission::Engine::Recorder::GetPhase();
-        if (phase == ::Mission::Engine::Recorder::Phase::Review) {
-            g_pendingReviewMenu.store(false, std::memory_order_release);
-            CustomMenu::Screens::OpenMissionBrowser();
-            OpenMenu();
-        } else if (phase != ::Mission::Engine::Recorder::Phase::Recording) {
-            g_pendingReviewMenu.store(false, std::memory_order_release);
+    // reopen this dedicated menu, never the ordinary Practice menu. The
+    // recorder normally calls NotifyRecorderEnteredReview synchronously;
+    // this fallback covers a temporarily unavailable menu/render state.
+    if (g_pendingReviewPause.load(std::memory_order_acquire) && !IsOpen()) {
+        const Rec::Phase phase = Rec::GetPhase();
+        if (phase == Rec::Phase::Review) {
+            NotifyRecorderEnteredReview();
+        } else if (phase != Rec::Phase::Recording) {
+            g_pendingReviewPause.store(false, std::memory_order_release);
         }
     }
 
@@ -452,7 +778,21 @@ void Tick() {
         Close();
         return;
     }
+    {
+        std::lock_guard<std::mutex> lk(g_mx);
+        if (!SyncRecorderContextLocked()) {
+            CloseLocked();
+            return;
+        }
+    }
     PauseIntegration::MaintainFreezeWhileMenuVisible();
+    if (ImGuiImpl::IsVisible()) {
+        // Practice settings are nested under this recorder surface. Preserve
+        // both freeze and capture ownership; Back reveals the recorder pause
+        // menu instead of silently resuming the take.
+        g_inputSyncRequested.store(true, std::memory_order_release);
+        return;
+    }
     UpdateWindowActiveState();
     const bool windowActive = g_efzWindowActive.load(std::memory_order_relaxed);
     const HWND gameWindow = FindEFZWindow();
@@ -484,19 +824,20 @@ void Tick() {
     }
 
     bool padUp = false, padDown = false, padA = false, padB = false;
-    const unsigned mask = focused ? XInputShim::GetConnectedMaskCached() : 0;
+    XInputShim::Snapshot padSnapshot{};
+    if (focused) XInputShim::CopySnapshot(padSnapshot);
+    const unsigned mask = padSnapshot.connectedMask;
     const int selectedPad = Config::GetSettings().controllerIndex;
     for (int i = 0; i < 4; ++i) {
         if (!(mask & (1u << i))) continue;
         if (selectedPad >= 0 && selectedPad <= 3 && i != selectedPad) continue;
-        const XINPUT_STATE* st = XInputShim::GetCachedState(i);
-        if (!st) continue;
-        padUp   |= (st->Gamepad.wButtons & XINPUT_GAMEPAD_DPAD_UP) != 0 ||
-                   st->Gamepad.sThumbLY > 16000;
-        padDown |= (st->Gamepad.wButtons & XINPUT_GAMEPAD_DPAD_DOWN) != 0 ||
-                   st->Gamepad.sThumbLY < -16000;
-        padA    |= (st->Gamepad.wButtons & XINPUT_GAMEPAD_A) != 0;
-        padB    |= (st->Gamepad.wButtons & XINPUT_GAMEPAD_B) != 0;
+        const XINPUT_STATE& state = padSnapshot.states[i];
+        padUp   |= (state.Gamepad.wButtons & XINPUT_GAMEPAD_DPAD_UP) != 0 ||
+                   state.Gamepad.sThumbLY > 16000;
+        padDown |= (state.Gamepad.wButtons & XINPUT_GAMEPAD_DPAD_DOWN) != 0 ||
+                   state.Gamepad.sThumbLY < -16000;
+        padA    |= (state.Gamepad.wButtons & XINPUT_GAMEPAD_A) != 0;
+        padB    |= (state.Gamepad.wButtons & XINPUT_GAMEPAD_B) != 0;
     }
 
     const int vert = (upKey || padUp) ? -1 : ((downKey || padDown) ? 1 : 0);
@@ -538,7 +879,16 @@ void Tick() {
     s_prevCancel = cancel;
 
     if (cancelEdge) {
-        Close();
+        bool closeMenu = true;
+        {
+            std::lock_guard<std::mutex> lk(g_mx);
+            if (g_state.open && g_state.confirming) {
+                g_state.confirming = false;
+                g_state.confirmationSelection = 0;
+                closeMenu = false;
+            }
+        }
+        if (closeMenu) Close();
         return;
     }
 
@@ -548,26 +898,65 @@ void Tick() {
     {
         std::lock_guard<std::mutex> lk(g_mx);
         if (!g_state.open) return;
-        const int count = static_cast<int>(g_state.items.size());
-        if (vertEdge != 0 && count > 0) {
-            g_state.selection = (g_state.selection + (vertEdge > 0 ? 1 : -1) + count) % count;
-        }
-        if (confirmEdge && count > 0) {
-            confirmed = g_state.items[g_state.selection];
-            ctx = g_state.context;
-            doExecute = true;
-            CloseLocked();   // release the freeze before restore/exit actions
+        if (g_state.confirming) {
+            constexpr int kConfirmationChoices = 2;
+            if (vertEdge != 0) {
+                g_state.confirmationSelection =
+                    (g_state.confirmationSelection +
+                     (vertEdge > 0 ? 1 : -1) + kConfirmationChoices) %
+                    kConfirmationChoices;
+            }
+            if (confirmEdge) {
+                if (g_state.confirmationSelection == 0) {
+                    // KEEP is deliberately the default and non-destructive.
+                    g_state.confirming = false;
+                    g_state.confirmationSelection = 0;
+                } else {
+                    confirmed = g_state.confirmationItem;
+                    ctx = g_state.context;
+                    doExecute = true;
+                    if (UsesRecorderCommandHandoff(confirmed)) {
+                        Rec::BeginMenuCommandHandoff();
+                    }
+                    CloseLocked();
+                }
+            }
+        } else {
+            const int count = static_cast<int>(g_state.items.size());
+            if (vertEdge != 0 && count > 0) {
+                g_state.selection =
+                    (g_state.selection + (vertEdge > 0 ? 1 : -1) + count) %
+                    count;
+            }
+            if (confirmEdge && count > 0) {
+                confirmed = g_state.items[g_state.selection];
+                ctx = g_state.context;
+                if (NeedsConfirmation(confirmed)) {
+                    g_state.confirming = true;
+                    g_state.confirmationItem = confirmed;
+                    g_state.confirmationSelection = 0;
+                } else {
+                    doExecute = true;
+                    if (confirmed != Item::OpenPractice &&
+                        confirmed != Item::OpenAuthoring) {
+                        if (UsesRecorderCommandHandoff(confirmed)) {
+                            Rec::BeginMenuCommandHandoff();
+                        }
+                        CloseLocked();   // release before restore/exit actions
+                    }
+                }
+            }
         }
     }
     if (doExecute) Execute(confirmed, ctx);
 }
 
 bool WantsDraw() {
-    return IsOpen();
+    return IsOpen() && !ImGuiImpl::IsVisible();
 }
 
 void Draw(ImDrawList* dl) {
-    if (!dl || !IsOpen()) return;
+    if (!dl || !IsOpen() || ImGuiImpl::IsVisible()) return;
     State s;
     {
         std::lock_guard<std::mutex> lk(g_mx);
@@ -575,49 +964,129 @@ void Draw(ImDrawList* dl) {
     }
     if (!s.open) return;
 
-    // Native in-game look: dim the frozen match, title band, full-width
-    // beveled bars, description box at the bottom (the Revival menu language).
+    // Native in-game look: dim the frozen match, title band, ruled session
+    // rows, and the description box at the bottom.
     CustomMenu::Scale::Update(Config::GetSettings().uiScale);
     ImFont* body = L::BodyFont();
     const CustomMenu::Scale::Metrics& metrics = CustomMenu::Scale::Get();
     const float smallPx = (std::max)(8.0f, metrics.bodyPx - 2.0f);
     const float ls = metrics.layoutScale;
     const float barH = T::kBarH * ls;
+    const bool sessionContext = s.context == Context::Mission ||
+                                s.context == Context::Lesson;
+    const bool confirmation = s.confirming;
+    const char* displayTitle = confirmation
+        ? ConfirmationPrompt(s.confirmationItem, s.context)
+        : s.title.c_str();
 
     dl->AddRectFilled(ImVec2(0, 0), ImVec2(T::kCanvasW, T::kCanvasH), IM_COL32(0, 0, 0, 150));
 
-    // Title band with the session name + progress on the right.
-    const std::string status = s.sessionName + "   " + s.progress;
-    const float bandBot = L::DrawTitleBand(dl, s.title.c_str(), status.c_str());
+    // Title and recording/session metadata use separate strips. Combining the
+    // recorder's action count with its centered title collided at 1.50x UI
+    // scale and made the dedicated menu look like a broken Practice header.
+    const float bandBot = L::DrawTitleBand(dl, displayTitle);
+    const float metaH = CustomMenu::Scale::Snap(
+        (std::max)(20.0f, smallPx + 8.0f));
+    const float metaBot = bandBot + metaH;
+    const float metaSplit = sessionContext ? 370.0f : 180.0f;
+    dl->AddRectFilled(ImVec2(0.0f, bandBot),
+                      ImVec2(T::kCanvasW, metaBot), T::kStripStrong);
+    dl->AddLine(ImVec2(0.0f, metaBot - 1.0f),
+                ImVec2(T::kCanvasW, metaBot - 1.0f),
+                kSessionRowRule, 1.0f);
+    const float metaY = bandBot + (metaH - smallPx) * 0.5f;
+    dl->PushClipRect(ImVec2(14.0f, bandBot),
+                     ImVec2(metaSplit - 10.0f, metaBot), true);
+    L::DrawString(dl, body, smallPx, 14.0f, metaY,
+                  T::kTextActive, s.sessionName.c_str());
+    dl->PopClipRect();
+    const float progressW = L::MeasureTextW(
+        body, smallPx, s.progress.c_str());
+    dl->PushClipRect(ImVec2(metaSplit, bandBot),
+                     ImVec2(T::kCanvasW - 14.0f, metaBot), true);
+    L::DrawString(dl, body, smallPx,
+                  (std::max)(metaSplit,
+                      T::kCanvasW - 14.0f - progressW),
+                  metaY, T::kTextStatus, s.progress.c_str());
+    dl->PopClipRect();
 
     // Action bars, centered stack like the game's netplay/settings menus.
     const float bx0 = 70.0f, bx1 = T::kCanvasW - 70.0f;
-    const int count = static_cast<int>(s.items.size());
-    const float stackH = count * barH + (count - 1) * 5.0f;
-    const float footH = 42.0f * ls;
-    const float areaTop = bandBot + 12.0f;
+    const int count = confirmation ? 2 : static_cast<int>(s.items.size());
+    const int requestedSelection = confirmation
+        ? s.confirmationSelection : s.selection;
+    const int selectedIndex = count > 0
+        ? (std::max)(0, (std::min)(requestedSelection, count - 1)) : 0;
+    const Item selectedItem = !confirmation && count > 0
+        ? s.items[selectedIndex] : Item::Resume;
+    const char* selectedHint = confirmation
+        ? ConfirmationHint(s.confirmationItem, s.context)
+        : (count > 0 ? ItemHint(selectedItem, s.context)
+                     : "No actions are available.");
+    constexpr const char* controlsLine1 =
+        "UP / DOWN: SELECT    CONFIRM: ACCEPT";
+    const char* controlsLine2 = confirmation
+        ? "BACK / MENU / ESC: CANCEL"
+        : "MENU / ESC: RESUME";
+    const float footerTextW = T::kCanvasW - 52.0f;
+    const float hintH = (std::max)(smallPx,
+        MeasureWrappedHeight(body, smallPx, selectedHint, footerTextW));
+    const float footerPad = CustomMenu::Scale::Snap(
+        (std::max)(5.0f, 7.0f * ls));
+    const float footerGap = CustomMenu::Scale::Snap(
+        (std::max)(4.0f, 6.0f * ls));
+    const float controlGap = CustomMenu::Scale::Snap(
+        (std::max)(2.0f, 3.0f * ls));
+    const float measuredFootH = footerPad * 2.0f + hintH + footerGap +
+                                smallPx * 2.0f + controlGap;
+    const float footH = (std::max)(42.0f * ls, measuredFootH);
+    const float rowGap = sessionContext ? 0.0f : 5.0f;
+    const float stackH = count > 0
+        ? count * barH + (count - 1) * rowGap : 0.0f;
+    const float areaTop = metaBot + 12.0f;
     const float areaBot = T::kCanvasH - footH - 20.0f;
     float y = areaTop + (std::max)(0.0f, (areaBot - areaTop - stackH) * 0.5f);
+    if (sessionContext && count > 0) {
+        dl->AddLine(ImVec2(bx0, CustomMenu::Scale::Snap(y)),
+                    ImVec2(bx1, CustomMenu::Scale::Snap(y)),
+                    kSessionRowRule, 1.0f);
+    }
     for (int i = 0; i < count; ++i) {
-        const Item item = s.items[i];
         const bool disabled = false;
-        std::string label = ItemLabel(item, s.context);
-        if (item == Item::NextLesson && !s.nextLessonName.empty()) {
-            label += " - " + Upper(s.nextLessonName);
+        std::string label;
+        if (confirmation) {
+            label = ConfirmationLabel(s.confirmationItem, s.context, i);
+        } else {
+            const Item item = s.items[i];
+            label = ItemLabel(item, s.context);
+            if (item == Item::NextLesson && !s.nextLessonName.empty()) {
+                label += " - " + Upper(s.nextLessonName);
+            }
         }
-        L::DrawNativeBarCentered(dl, bx0, y, bx1 - bx0, barH,
-                                 label.c_str(), i == s.selection, disabled);
-        y += barH + 5.0f;
+        if (sessionContext) {
+            DrawSessionPauseRow(dl, body, metrics.bodyPx,
+                                bx0, y, bx1 - bx0, barH,
+                                label.c_str(), i == selectedIndex);
+        } else {
+            L::DrawNativeBarCentered(dl, bx0, y, bx1 - bx0, barH,
+                                     label.c_str(), i == selectedIndex, disabled);
+        }
+        y += barH + rowGap;
     }
 
-    // Bottom description box: highlighted row's explanation + control hints.
-    const Item sel = s.items[(std::max)(0, (std::min)(s.selection, count - 1))];
-    L::DrawInfoBox(dl, 12.0f, T::kCanvasH - footH - 8.0f, T::kCanvasW - 24.0f, footH);
-    L::DrawString(dl, body, smallPx, 26.0f, T::kCanvasH - footH - 8.0f + 7.0f,
-                  T::kTextActive, ItemHint(sel, s.context));
-    L::DrawString(dl, body, smallPx, 26.0f, T::kCanvasH - footH - 8.0f + 7.0f + smallPx + 6.0f,
-                  T::kTextStatus,
-                  "UP / DOWN: SELECT    CONFIRM: ACCEPT    MENU / ESC: RESUME");
+    // Bottom description box. Session controls are pre-split and its height
+    // follows wrapped text at 1.50x; recorder presentation remains unchanged.
+    const float footerY = T::kCanvasH - footH - 8.0f;
+    L::DrawInfoBox(dl, 12.0f, footerY, T::kCanvasW - 24.0f, footH);
+    float textY = footerY + footerPad;
+    DrawWrappedText(dl, body, smallPx, 26.0f, textY,
+                    footerTextW, hintH, T::kTextActive, selectedHint);
+    textY += hintH + footerGap;
+    L::DrawString(dl, body, smallPx, 26.0f, textY,
+                  T::kTextStatus, controlsLine1);
+    textY += smallPx + controlGap;
+    L::DrawString(dl, body, smallPx, 26.0f, textY,
+                  T::kTextStatus, controlsLine2);
 }
 
 } // namespace Mission::PauseMenu

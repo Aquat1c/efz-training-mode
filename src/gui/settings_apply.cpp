@@ -39,6 +39,12 @@ void ApplyRuntimeSettings(DisplayData* data) {
         triggerAfterAirtechAction.store(data->actionAfterAirtech);
         triggerOnRGAction.store(data->actionOnRG);
 
+        triggerAfterBlockCharge.store(data->chargeAfterBlock);
+        triggerOnWakeupCharge.store(data->chargeOnWakeup);
+        triggerAfterHitstunCharge.store(data->chargeAfterHitstun);
+        triggerAfterAirtechCharge.store(data->chargeAfterAirtech);
+        triggerOnRGCharge.store(data->chargeOnRG);
+
         triggerAfterBlockDelay.store(data->delayAfterBlock);
         triggerOnWakeupDelay.store(data->delayOnWakeup);
         triggerAfterHitstunDelay.store(data->delayAfterHitstun);
@@ -71,6 +77,11 @@ void ApplyRuntimeSettings(DisplayData* data) {
             g_afterHitstunActionPoolDelays[i] = data->afterHitstunActionPoolDelays[i];
             g_afterAirtechActionPoolDelays[i] = data->afterAirtechActionPoolDelays[i];
             g_onRGActionPoolDelays[i]         = data->onRGActionPoolDelays[i];
+            g_afterBlockActionPoolCharges[i]   = data->afterBlockActionPoolCharges[i];
+            g_onWakeupActionPoolCharges[i]     = data->onWakeupActionPoolCharges[i];
+            g_afterHitstunActionPoolCharges[i] = data->afterHitstunActionPoolCharges[i];
+            g_afterAirtechActionPoolCharges[i] = data->afterAirtechActionPoolCharges[i];
+            g_onRGActionPoolCharges[i]         = data->onRGActionPoolCharges[i];
         }
 
         triggerAfterBlockMacroSlot.store(data->macroSlotAfterBlock);

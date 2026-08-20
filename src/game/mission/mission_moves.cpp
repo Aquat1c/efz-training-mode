@@ -19,7 +19,7 @@ const std::unordered_map<int, Entry>& Table() {
         {GROUND_IC_ID, {"IC",   false}},   // 167
         {AIR_IC_ID,    {"j.IC", false}},   // 171 (air IC / j.22C)
 
-        // --- combo-relevant movement (only counted mid-combo) ---
+        // --- combo/setup-relevant movement (scope decided by recorder) ---
         {STRAIGHT_JUMP_ID,     {"8",   true}},  // 4  neutral jump
         {FORWARD_JUMP_ID,      {"9",   true}},  // 5  jump forward
         {BACKWARD_JUMP_ID,     {"7",   true}},  // 6  jump back
@@ -44,15 +44,6 @@ const std::unordered_map<int, Entry>& Table() {
         {204, {"2A", false}},
         {205, {"2B", false}},
         {206, {"2C", false}},
-
-        // --- universal dash normals (user-confirmed 2026-07-12 on
-        //     Nayuki + Misaki; treated as universal until a char disproves) ---
-        {230, {"66A",  false}},
-        {231, {"66B",  false}},
-        {232, {"66C",  false}},
-        {233, {"662A", false}},
-        {234, {"662B", false}},
-        {235, {"662C", false}},
 
         // --- universal air normals ---
         {207, {"j.A", false}},

@@ -1,4 +1,12 @@
 #include "../../../include/game/mission/mission_data.h"
+#include "../../../include/game/mission/contact_event.h"
+#include "../../../include/game/mission/entity_command_origin_policy.h"
+#include "../../../include/game/mission/entity_notation_tables.h"
+#include "../../../include/game/mission/mission_entity_fanout_policy.h"
+#include "../../../include/game/mission/mission_entity_presentation_policy.h"
+#include "../../../include/game/mission/mission_entity_review_policy.h"
+#include "../../../include/game/mission/mission_legacy_semantic_source_policy.h"
+#include "../../../include/game/mission/mission_sequence_policy.h"
 #include "../../../include/game/mission/tutorial_episode_policy.h"
 #include "../../../include/game/mission/tutorial_state_policy.h"
 
@@ -9,6 +17,7 @@
 #include <fstream>
 #include <algorithm>
 #include <cctype>
+#include <limits>
 #include <map>
 #include <set>
 #include <sstream>
@@ -54,6 +63,47 @@ bool WriteFile(const std::string& path, const std::string& content) {
 }
 
 // ---- json -> struct (tolerant) ----
+EntityCommandOrigin ParseEntityCommandOrigin(const json& j) {
+    EntityCommandOrigin origin;
+    origin.present = true;
+    origin.slot = j.value("slot", -1);
+    origin.generation = j.value("generation", 0);
+    origin.rootPattern = j.value("rootPattern", -1);
+    origin.activationPattern = j.value("activationPattern", -1);
+    return origin;
+}
+
+bool ValidateEntityCommandOriginJson(const json& j, std::string& detailOut) {
+    detailOut.clear();
+    if (!j.is_object()) {
+        detailOut = "is not an object";
+        return false;
+    }
+    const char* const fields[] = {
+        "slot", "generation", "rootPattern", "activationPattern"
+    };
+    for (const char* field : fields) {
+        if (!j.contains(field) || !j[field].is_number_integer()) {
+            detailOut = std::string("has missing or non-integer ") + field;
+            return false;
+        }
+    }
+    const int slot = j["slot"].get<int>();
+    const int generation = j["generation"].get<int>();
+    const int rootPattern = j["rootPattern"].get<int>();
+    const int activationPattern = j["activationPattern"].get<int>();
+    if (slot < 0 ||
+        slot >= ::Mission::EntityCommandOriginPolicy::
+                    kEntityRingSlotCapacity ||
+        generation <= 0 || rootPattern <= 0 ||
+        rootPattern > 0xFFFF || activationPattern <= 0 ||
+        activationPattern > 0xFFFF) {
+        detailOut = "has an out-of-range identity field";
+        return false;
+    }
+    return true;
+}
+
 Step ParseStep(const json& j) {
     Step s;
     s.notation = j.value("notation", std::string());
@@ -62,8 +112,19 @@ Step ParseStep(const json& j) {
             if (id.is_number_integer()) s.moveIds.push_back(id.get<int>());
         }
     }
+    if (j.contains("entityCommand") && j["entityCommand"].is_object()) {
+        s.entityCommand = ParseEntityCommandOrigin(j["entityCommand"]);
+    }
+    s.expectedAttackMask = j.value("expectedAttackMask", 0);
     s.req = StepReqFromString(j.value("req", std::string("land")));
     s.hitsRequired = j.value("hits", 1);
+    s.directContact = j.value("contactSource", std::string()) == "direct";
+    // Missing means strict here. LoadMission selectively migrates files that it
+    // can identify as old recorder output; an old hand-authored exact-count
+    // mission must not silently become lenient merely because it predates this
+    // field.
+    s.allowPartialHits = j.value("allowPartialHits", false);
+    s.contactResult = j.value("contactResult", std::string());
     s.optional = j.value("optional", false);
     s.maxDelay = j.value("maxDelay", 0);
     s.maxGap = j.value("maxGap", 0);
@@ -78,6 +139,807 @@ Step ParseStep(const json& j) {
     s.charState = j.value("charState", -1);
     s.damage = j.value("damage", 0);
     return s;
+}
+
+EntityContactFanoutMember ParseEntityContactFanoutMember(const json& j) {
+    EntityContactFanoutMember member;
+    member.slot = j.value("slot", -1);
+    member.generation = j.value("generation", 0);
+    if (j.contains("patterns") && j["patterns"].is_array()) {
+        for (const auto& pattern : j["patterns"]) {
+            if (pattern.is_number_integer()) {
+                member.patterns.push_back(pattern.get<int>());
+            }
+        }
+    } else if (j.contains("pattern") &&
+               j["pattern"].is_number_integer()) {
+        member.patterns.push_back(j["pattern"].get<int>());
+    }
+    member.producerLifecycle =
+        j.value("producerLifecycle", std::string());
+    member.producerPattern = j.value("producerPattern", -1);
+    member.producerPriorPattern = j.value("producerPriorPattern", -1);
+    member.contactsObserved = j.value("contactsObserved", 1);
+    member.comboHitsObserved = j.value("comboHitsObserved", 0);
+    member.damageObserved = j.value("damageObserved", 0);
+    return member;
+}
+
+EntityContactRequirement ParseEntityContact(const json& j) {
+    EntityContactRequirement e;
+    e.notation = j.value("notation", std::string());
+    e.owner = j.value("owner", 1);
+    e.target = j.value("target", 2);
+    e.slot = j.value("slot", -1);
+    e.generation = j.value("generation", 0);
+    if (j.contains("patterns") && j["patterns"].is_array()) {
+        for (const auto& pattern : j["patterns"]) {
+            if (pattern.is_number_integer()) {
+                e.patterns.push_back(pattern.get<int>());
+            }
+        }
+    } else if (j.contains("pattern") && j["pattern"].is_number_integer()) {
+        e.patterns.push_back(j["pattern"].get<int>());
+    }
+    e.result = j.value("result", std::string("hit"));
+    e.contactsRequired = j.value("contactsRequired", j.value("count", 1));
+    e.comboHitsRequired = j.value("comboHitsRequired", 0);
+    e.minimumContactsRequired = j.value("minimumContactsRequired", 0);
+    e.minimumComboHitsRequired = j.value("minimumComboHitsRequired", 0);
+    if (j.contains("fanoutMembers") && j["fanoutMembers"].is_array()) {
+        for (const auto& member : j["fanoutMembers"]) {
+            if (member.is_object()) {
+                e.fanoutMembers.push_back(
+                    ParseEntityContactFanoutMember(member));
+            }
+        }
+    }
+    e.producerLifecycle = j.value("producerLifecycle", std::string());
+    e.producerPattern = j.value("producerPattern", -1);
+    e.producerPriorPattern = j.value("producerPriorPattern", -1);
+    e.opensAfterAction = j.value("opensAfterAction", j.value("armOnStep", -1));
+    e.semanticSourceAction = j.value(
+        "semanticSourceAction",
+        ::Mission::SemanticSourcePolicy::kLegacyAbsent);
+    e.semanticSourceMove = j.value(
+        "semanticSourceMove",
+        ::Mission::SemanticSourcePolicy::kLegacyAbsent);
+    e.contactAfterAction = j.value("contactAfterAction", -1);
+    e.afterStep = j.value("afterStep", -1);
+    e.afterStepContact = j.value("afterStepContact", -1);
+    e.dueBeforeStep = j.value("dueBeforeStep", j.value("beforeStep", -1));
+    e.dueBeforeStepContact = j.value("dueBeforeStepContact", -1);
+    e.segment = j.value("segment", 0);
+    e.maxDelay = j.value("maxDelay", 0);
+    e.damage = j.value("damage", 0);
+    e.comboEndAfter = j.value("comboEndAfter", false);
+    return e;
+}
+
+bool ValidateEntityContactSemanticSourceJson(const json& j,
+                                             std::string& detailOut) {
+    detailOut.clear();
+    const bool hasAction = j.contains("semanticSourceAction");
+    const bool hasMove = j.contains("semanticSourceMove");
+    if (hasAction != hasMove) {
+        detailOut = "has only one semantic source field";
+        return false;
+    }
+    if (!hasAction) return true;
+    if (!j["semanticSourceAction"].is_number_integer() ||
+        !j["semanticSourceMove"].is_number_integer()) {
+        detailOut = "has non-integer semantic source provenance";
+        return false;
+    }
+    const int action = j["semanticSourceAction"].get<int>();
+    const int move = j["semanticSourceMove"].get<int>();
+    // -2 is reserved for field absence.  Serializing it would let a new,
+    // ambiguous recording re-enter the legacy inference path on reload.
+    if (::Mission::SemanticSourcePolicy::IsLegacyAbsent(action, move) ||
+        !::Mission::SemanticSourcePolicy::ValidPersistedPair(action, move)) {
+        detailOut = "has invalid semantic source provenance";
+        return false;
+    }
+    return true;
+}
+
+bool ValidateEntityContactFanoutJson(const json& j,
+                                     std::string& detailOut) {
+    detailOut.clear();
+    const bool hasMembers = j.contains("fanoutMembers");
+    if (!hasMembers) {
+        if (j.contains("minimumContactsRequired") ||
+            j.contains("minimumComboHitsRequired")) {
+            detailOut = "has fanout minima without fanoutMembers";
+            return false;
+        }
+        return true;
+    }
+    if (!j["fanoutMembers"].is_array() ||
+        j["fanoutMembers"].size() < 2) {
+        detailOut = "has fewer than two fanoutMembers";
+        return false;
+    }
+    if (!j.contains("minimumContactsRequired") ||
+        !j["minimumContactsRequired"].is_number_integer() ||
+        !j.contains("minimumComboHitsRequired") ||
+        !j["minimumComboHitsRequired"].is_number_integer()) {
+        detailOut = "has missing or non-integer fanout minima";
+        return false;
+    }
+    const int minimumContacts = j["minimumContactsRequired"].get<int>();
+    const int minimumComboHits = j["minimumComboHitsRequired"].get<int>();
+    const int observedContacts = j.value("contactsRequired", 1);
+    const int observedComboHits = j.value("comboHitsRequired", 0);
+    if (minimumContacts < 1 || minimumComboHits < 0 ||
+        observedContacts < minimumContacts ||
+        observedComboHits < minimumComboHits ||
+        j.value("slot", -1) != -1 || j.value("generation", 0) != 0) {
+        detailOut = "has inconsistent fanout minima or aggregate identity";
+        return false;
+    }
+
+    std::set<std::pair<int, int>> identities;
+    for (std::size_t index = 0; index < j["fanoutMembers"].size(); ++index) {
+        const json& member = j["fanoutMembers"][index];
+        if (!member.is_object()) {
+            detailOut = "has a non-object fanout member";
+            return false;
+        }
+        const char* requiredIntegerFields[] = {
+            "slot", "generation", "producerPattern", "contactsObserved",
+            "comboHitsObserved"};
+        for (const char* field : requiredIntegerFields) {
+            if (!member.contains(field) ||
+                !member[field].is_number_integer()) {
+                detailOut = std::string("has fanout member with missing or non-integer ") +
+                    field;
+                return false;
+            }
+        }
+        if (!member.contains("producerLifecycle") ||
+            !member["producerLifecycle"].is_string() ||
+            !member.contains("patterns") ||
+            !member["patterns"].is_array() ||
+            member["patterns"].empty()) {
+            detailOut = "has fanout member with incomplete producer identity";
+            return false;
+        }
+        const int slot = member["slot"].get<int>();
+        const int generation = member["generation"].get<int>();
+        const int producerPattern = member["producerPattern"].get<int>();
+        const int contacts = member["contactsObserved"].get<int>();
+        const int comboHits = member["comboHitsObserved"].get<int>();
+        const int damage = member.value("damageObserved", 0);
+        const int priorPattern = member.value("producerPriorPattern", -1);
+        const std::string lifecycle =
+            member["producerLifecycle"].get<std::string>();
+        if (slot < 0 || generation <= 0 || producerPattern <= 0 ||
+            contacts < 0 || comboHits < 0 || damage < 0 ||
+            !identities.emplace(slot, generation).second ||
+            (lifecycle != "baseline" && lifecycle != "spawn" &&
+             lifecycle != "morph") ||
+            (lifecycle == "morph"
+                 ? priorPattern <= 0 || priorPattern == producerPattern
+                 : priorPattern >= 0)) {
+            detailOut = "has invalid fanout member lineage or observed counts";
+            return false;
+        }
+        for (const json& pattern : member["patterns"]) {
+            if (!pattern.is_number_integer() || pattern.get<int>() <= 0 ||
+                pattern.get<int>() > 65535) {
+                detailOut = "has invalid fanout member pattern";
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+EntityLifecycleRequirement ParseEntityLifecycle(const json& j) {
+    EntityLifecycleRequirement e;
+    e.notation = j.value("notation", std::string());
+    e.owner = j.value("owner", 1);
+    e.slot = j.value("slot", -1);
+    e.generation = j.value("generation", 0);
+    e.lifecycle = j.value("lifecycle", std::string());
+    e.pattern = j.value("pattern", -1);
+    e.priorPattern = j.value("priorPattern", -1);
+    e.opensAfterAction = j.value("opensAfterAction", -1);
+    e.segment = j.value("segment", 0);
+    e.maxDelay = j.value("maxDelay", 0);
+    return e;
+}
+
+bool ValidateEntityLifecycleJson(const json& j, std::string& detailOut) {
+    detailOut.clear();
+    const auto requireInteger = [&](const char* field) {
+        if (!j.contains(field) || j[field].is_number_integer()) return true;
+        detailOut = std::string("has non-integer ") + field;
+        return false;
+    };
+    if (j.contains("notation") && !j["notation"].is_string()) {
+        detailOut = "has non-string notation";
+        return false;
+    }
+    if (j.contains("lifecycle") && !j["lifecycle"].is_string()) {
+        detailOut = "has non-string lifecycle";
+        return false;
+    }
+    if (!requireInteger("owner") || !requireInteger("slot") ||
+        !requireInteger("generation") || !requireInteger("pattern") ||
+        !requireInteger("priorPattern") ||
+        !requireInteger("opensAfterAction") || !requireInteger("segment") ||
+        !requireInteger("maxDelay")) {
+        return false;
+    }
+    const int owner = j.value("owner", 1);
+    const int slot = j.value("slot", -1);
+    const int generation = j.value("generation", 0);
+    const int pattern = j.value("pattern", -1);
+    const int priorPattern = j.value("priorPattern", -1);
+    const int opensAfterAction = j.value("opensAfterAction", -1);
+    const int segment = j.value("segment", 0);
+    const int maxDelay = j.value("maxDelay", 0);
+    if (owner < 1 || owner > 2) {
+        detailOut = "has owner outside 1..2";
+        return false;
+    }
+    if (slot < -1 || generation < 0 || pattern < -1 || pattern > 65535 ||
+        priorPattern < -1 || priorPattern > 65535 ||
+        opensAfterAction < -1 || segment < 0 || maxDelay < 0) {
+        detailOut = "has an out-of-range numeric field";
+        return false;
+    }
+    if (j.contains("lifecycle")) {
+        const std::string lifecycle = j["lifecycle"].get<std::string>();
+        if (!lifecycle.empty() && lifecycle != "baseline" &&
+            lifecycle != "spawn" && lifecycle != "morph" &&
+            lifecycle != "despawn") {
+            detailOut = "has unsupported lifecycle kind";
+            return false;
+        }
+    }
+    return true;
+}
+
+// Direct-contact ordinals captured inside a variable multi-hit are not stable:
+// a legal replay may continue after fewer contacts.  Preserve only the stable
+// facts that the recording proves:
+//   * an interleaved entity happened after the move connected at least once;
+//   * an entity due after contact one may remain exact;
+//   * later due ordinals become a whole-action deadline (-1).
+// If the entity followed the recorded final contact, afterStepContact remains a
+// whole-action gate. Action-start due barriers (0) remain exact and useful.
+void NormalizeFlexibleEntityContactBarriers(Mission& mission) {
+    for (EntityContactRequirement& requirement : mission.entityContacts) {
+        if (requirement.afterStepContact > 0 && requirement.afterStep >= 0 &&
+            requirement.afterStep < static_cast<int>(mission.steps.size()) &&
+            mission.steps[static_cast<std::size_t>(requirement.afterStep)]
+                .allowPartialHits) {
+            const Step& step = mission.steps[
+                static_cast<std::size_t>(requirement.afterStep)];
+            requirement.afterStepContact =
+                requirement.afterStepContact < step.hitsRequired ? 1 : -1;
+        }
+        if (requirement.dueBeforeStepContact > 1 &&
+            requirement.dueBeforeStep >= 0 &&
+            requirement.dueBeforeStep < static_cast<int>(mission.steps.size()) &&
+            mission.steps[static_cast<std::size_t>(requirement.dueBeforeStep)]
+                .allowPartialHits) {
+            requirement.dueBeforeStepContact = -1;
+        }
+    }
+}
+
+const char* EntityContactOutcome(const std::string& result) {
+    if (result == "hit") return "HIT";
+    if (result == "special") return "SPECIAL HIT";
+    if (result == "block") return "BLOCK";
+    if (result == "recoil_guard") return "RG";
+    if (result == "throw") return "THROW";
+    if (result == "guard_point") return "GUARD POINT";
+    return "CONTACT";
+}
+
+bool HasExactCuratedFanoutIdentity(
+    const EntityContactRequirement& requirement, int pattern) {
+    if (requirement.fanoutMembers.empty() || requirement.slot != -1 ||
+        requirement.generation != 0 ||
+        requirement.minimumContactsRequired < 1) {
+        return false;
+    }
+    std::set<std::pair<int, int>> identities;
+    for (const EntityContactFanoutMember& member :
+         requirement.fanoutMembers) {
+        if (member.slot < 0 || member.generation <= 0 ||
+            member.patterns.size() != 1 ||
+            member.patterns.front() != pattern ||
+            member.producerLifecycle != "spawn" ||
+            member.producerPattern != pattern ||
+            member.producerPriorPattern >= 0 ||
+            !identities.emplace(member.slot, member.generation).second) {
+            return false;
+        }
+    }
+    return true;
+}
+
+// Older v3/v4 recordings predate explicit presentation provenance. Promote a
+// legacy-absent source only when the persisted schedule itself proves the
+// exact one-action shape accepted by CanInlineExactProducerHit. This changes
+// presentation metadata only; raw slot/generation/pattern grading is intact.
+// Anything ambiguous deliberately remains -2/-2 and therefore visible.
+void PromoteLegacySemanticSources(Mission& mission) {
+    using namespace ::Mission::EntityNames;
+    using namespace ::Mission::EntityPresentationPolicy;
+    using ::Mission::LegacySemanticSourcePolicy::AccumulateMove;
+    using ::Mission::LegacySemanticSourcePolicy::MoveSelection;
+    using ::Mission::LegacySemanticSourcePolicy::SelectMove;
+
+    const char* character = mission.player.character.c_str();
+    for (EntityContactRequirement& requirement : mission.entityContacts) {
+        if (!::Mission::SemanticSourcePolicy::IsLegacyAbsent(
+                requirement.semanticSourceAction,
+                requirement.semanticSourceMove) ||
+            requirement.patterns.size() != 1 ||
+            requirement.owner != 1 || requirement.target != 2 ||
+            requirement.producerLifecycle != "spawn" ||
+            requirement.producerPriorPattern >= 0) {
+            continue;
+        }
+
+        const int pattern = requirement.patterns.front();
+        const bool fanout = !requirement.fanoutMembers.empty();
+        const bool exactIdentity = fanout
+            ? HasExactCuratedFanoutIdentity(requirement, pattern)
+            : requirement.slot >= 0 && requirement.generation > 0;
+        const int sourceAction = requirement.opensAfterAction;
+        if (!exactIdentity || pattern <= 0 ||
+            requirement.producerPattern != pattern ||
+            sourceAction < 0 ||
+            sourceAction >= static_cast<int>(mission.steps.size()) ||
+            requirement.contactAfterAction != sourceAction) {
+            continue;
+        }
+
+        const Step& source =
+            mission.steps[static_cast<std::size_t>(sourceAction)];
+        if (source.optional || source.moveIds.empty()) continue;
+
+        MoveSelection selection;
+        for (const int move : source.moveIds) {
+            const SemanticNote* exact =
+                LookupExactProducerSemantic(character, pattern, move);
+            const bool exactContact = exact &&
+                HasResolvedContactPresentation(exact->disposition) &&
+                (!fanout || ::Mission::EntityFanoutPolicy::IsFlexibleFanout(
+                    mission.player.character, pattern, move));
+            selection = AccumulateMove(selection, move, exactContact);
+        }
+
+        const SemanticNote* wildcard =
+            LookupWildcardSemantic(character, pattern);
+        const bool allowOrdinaryWildcard = !fanout && wildcard &&
+            wildcard->role == PresentationRole::InlineProjectile &&
+            HasResolvedContactPresentation(wildcard->disposition) &&
+            !HasProducerQualifiedPersistentContactVariant(character,
+                                                          pattern);
+        const int sourceMove = SelectMove(selection, allowOrdinaryWildcard);
+        if (sourceMove <= 0) continue;
+
+        const SemanticNote* exact =
+            LookupExactProducerSemantic(character, pattern, sourceMove);
+        const SemanticNote* semantic = exact ? exact : wildcard;
+        if (!semantic ||
+            !HasResolvedContactPresentation(semantic->disposition)) {
+            continue;
+        }
+
+        const char* outcome = EntityContactOutcome(requirement.result);
+        const int presentedContacts = fanout
+            ? requirement.minimumContactsRequired
+            : requirement.contactsRequired;
+        const bool generated = requirement.notation.empty() ||
+            LookupSemanticForGeneratedContactNotation(
+                character, pattern, outcome, presentedContacts,
+                requirement.notation) != nullptr ||
+            IsGeneratedContactNotation(character, pattern, outcome,
+                                       presentedContacts,
+                                       requirement.notation, sourceMove);
+
+        Timing timing;
+        timing.opensAfterAction = sourceAction;
+        timing.contactAfterAction = requirement.contactAfterAction;
+        timing.afterStep = requirement.afterStep;
+        timing.afterStepContact = requirement.afterStepContact;
+        timing.dueBeforeStep = requirement.dueBeforeStep;
+        timing.dueBeforeStepContact = requirement.dueBeforeStepContact;
+        timing.comboEndAfter = requirement.comboEndAfter;
+
+        ExactProducerHit candidate;
+        candidate.action = sourceAction;
+        candidate.exactSource = true;
+        candidate.generated = generated;
+        candidate.resolvedContact = true;
+        candidate.actionEligible = true;
+        candidate.ordinaryProjectile =
+            semantic->role == PresentationRole::InlineProjectile;
+        candidate.producerMoveMatches = exact &&
+            exact->producerMove == sourceMove;
+        if (!CanInlineExactProducerHit(candidate, timing)) continue;
+
+        requirement.semanticSourceAction = sourceAction;
+        requirement.semanticSourceMove = sourceMove;
+    }
+}
+
+constexpr const char* kEntityScheduleRuntimeMarkerV3 =
+    "runtime:entity-contact-schedule-v3";
+constexpr const char* kEntityScheduleRuntimeMarkerV4 =
+    "runtime:entity-lifecycle-schedule-v4";
+constexpr const char* kEntityScheduleRuntimeMarkerV5 =
+    "runtime:entity-fanout-schedule-v5";
+
+int FanoutProducerMove(const Mission& mission,
+                       int producerAction,
+                       int attackChildPattern) {
+    if (producerAction < 0 ||
+        producerAction >= static_cast<int>(mission.steps.size())) {
+        return -1;
+    }
+    const Step& producer =
+        mission.steps[static_cast<std::size_t>(producerAction)];
+    for (const int moveId : producer.moveIds) {
+        if (EntityFanoutPolicy::IsFlexibleFanout(
+                mission.player.character, attackChildPattern, moveId)) {
+            return moveId;
+        }
+    }
+    return -1;
+}
+
+bool HasUpgradeableFanoutMarker(const Mission& mission) {
+    int upgradeableMarkers = 0;
+    for (const std::string& review : mission.reviewRequired) {
+        if (review == kEntityScheduleRuntimeMarkerV5) return false;
+        if (review == kEntityScheduleRuntimeMarkerV3 ||
+            review == kEntityScheduleRuntimeMarkerV4) {
+            ++upgradeableMarkers;
+        }
+    }
+    return upgradeableMarkers == 1;
+}
+
+bool IsExactFanoutContactCandidate(
+    const Mission& mission,
+    const EntityContactRequirement& requirement) {
+    return requirement.fanoutMembers.empty() &&
+           requirement.minimumContactsRequired == 0 &&
+           requirement.minimumComboHitsRequired == 0 &&
+           requirement.owner == 1 && requirement.target == 2 &&
+           requirement.slot >= 0 && requirement.generation > 0 &&
+           requirement.patterns.size() == 1 &&
+           requirement.patterns.front() == 435 &&
+           requirement.result == "hit" &&
+           requirement.contactsRequired == 1 &&
+           requirement.comboHitsRequired == 1 &&
+           requirement.producerLifecycle == "spawn" &&
+           requirement.producerPattern == 435 &&
+           requirement.producerPriorPattern < 0 &&
+           FanoutProducerMove(mission, requirement.opensAfterAction,
+                              requirement.patterns.front()) >= 0;
+}
+
+bool SameFanoutEpisode(const EntityContactRequirement& left,
+                       const EntityContactRequirement& right) {
+    return left.owner == right.owner && left.target == right.target &&
+           left.result == right.result &&
+           left.producerLifecycle == right.producerLifecycle &&
+           left.producerPattern == right.producerPattern &&
+           left.producerPriorPattern == right.producerPriorPattern &&
+           left.opensAfterAction == right.opensAfterAction &&
+           left.semanticSourceAction == right.semanticSourceAction &&
+           left.semanticSourceMove == right.semanticSourceMove &&
+           left.contactAfterAction == right.contactAfterAction &&
+           left.afterStep == right.afterStep &&
+           left.afterStepContact == right.afterStepContact &&
+           left.dueBeforeStep == right.dueBeforeStep &&
+           left.dueBeforeStepContact == right.dueBeforeStepContact &&
+           left.segment == right.segment;
+}
+
+bool SameFanoutIdentity(const EntityContactFanoutMember& member,
+                        int slot,
+                        int generation) {
+    return member.slot == slot && member.generation == generation;
+}
+
+EntityContactFanoutMember FanoutMemberFromContact(
+    const EntityContactRequirement& requirement) {
+    EntityContactFanoutMember member;
+    member.slot = requirement.slot;
+    member.generation = requirement.generation;
+    member.patterns = requirement.patterns;
+    member.producerLifecycle = requirement.producerLifecycle;
+    member.producerPattern = requirement.producerPattern;
+    member.producerPriorPattern = requirement.producerPriorPattern;
+    member.contactsObserved = requirement.contactsRequired;
+    member.comboHitsObserved = requirement.comboHitsRequired;
+    member.damageObserved = requirement.damage;
+    return member;
+}
+
+bool IsFanoutSiblingLifecycle(
+    const Mission& mission,
+    const EntityContactRequirement& episode,
+    const EntityLifecycleRequirement& lifecycle) {
+    if (lifecycle.owner != episode.owner || lifecycle.slot < 0 ||
+        lifecycle.generation <= 0 || lifecycle.lifecycle != "spawn" ||
+        lifecycle.pattern != 435 || lifecycle.priorPattern >= 0 ||
+        lifecycle.opensAfterAction != episode.opensAfterAction ||
+        lifecycle.segment != episode.segment ||
+        FanoutProducerMove(mission, lifecycle.opensAfterAction,
+                           lifecycle.pattern) < 0) {
+        return false;
+    }
+    return std::none_of(
+        episode.fanoutMembers.begin(), episode.fanoutMembers.end(),
+        [&](const EntityContactFanoutMember& member) {
+            return SameFanoutIdentity(member, lifecycle.slot,
+                                      lifecycle.generation);
+        });
+}
+
+EntityContactFanoutMember FanoutMemberFromLifecycle(
+    const EntityLifecycleRequirement& lifecycle) {
+    EntityContactFanoutMember member;
+    member.slot = lifecycle.slot;
+    member.generation = lifecycle.generation;
+    member.patterns = {lifecycle.pattern};
+    member.producerLifecycle = lifecycle.lifecycle;
+    member.producerPattern = lifecycle.pattern;
+    member.producerPriorPattern = lifecycle.priorPattern;
+    member.contactsObserved = 0;
+    member.comboHitsObserved = 0;
+    member.damageObserved = 0;
+    return member;
+}
+
+int SaturatingAdd(int left, int right) {
+    if (right <= 0) return left;
+    if (left > (std::numeric_limits<int>::max)() - right) {
+        return (std::numeric_limits<int>::max)();
+    }
+    return left + right;
+}
+
+bool HasFanoutMarkerV5(const Mission& mission) {
+    int v5Markers = 0;
+    for (const std::string& review : mission.reviewRequired) {
+        if (review == kEntityScheduleRuntimeMarkerV5) {
+            ++v5Markers;
+        } else if (review == kEntityScheduleRuntimeMarkerV3 ||
+                   review == kEntityScheduleRuntimeMarkerV4) {
+            return false;
+        }
+    }
+    return v5Markers == 1;
+}
+
+// The first v5 recorder build deliberately kept a combo-ending child outside
+// Shiori's flexible episode. That made one randomized sibling mandatory and
+// produced a second presentation token for the same cast. Repair only that
+// exact generated shape: one existing curated fanout immediately followed by
+// an exact sibling from the same producer/timing episode which owns the
+// recovery boundary. NormalizeFlexibleEntityFanoutEpisodes is opt-in, so this
+// path runs only for generated recorded_* files and never rewrites authored
+// v5 missions.
+bool RepairSplitFlexibleFanoutBoundaryV5(Mission& mission) {
+    if (!mission.strictEntityContacts || !HasFanoutMarkerV5(mission)) {
+        return false;
+    }
+
+    bool changed = false;
+    for (std::size_t index = 0; index + 1 < mission.entityContacts.size();) {
+        EntityContactRequirement& episode = mission.entityContacts[index];
+        const EntityContactRequirement& sibling =
+            mission.entityContacts[index + 1];
+        const int producerMove = FanoutProducerMove(
+            mission, episode.opensAfterAction,
+            episode.patterns.size() == 1 ? episode.patterns.front() : -1);
+        const bool curatedEpisode = !episode.fanoutMembers.empty() &&
+            episode.minimumContactsRequired == 1 &&
+            episode.minimumComboHitsRequired == 1 &&
+            episode.owner == 1 && episode.target == 2 &&
+            episode.slot == -1 && episode.generation == 0 &&
+            episode.patterns.size() == 1 &&
+            episode.patterns.front() == 435 &&
+            episode.result == "hit" &&
+            episode.producerLifecycle == "spawn" &&
+            episode.producerPattern == 435 &&
+            episode.producerPriorPattern < 0 && producerMove >= 0;
+        if (!curatedEpisode || episode.comboEndAfter ||
+            !sibling.comboEndAfter ||
+            !IsExactFanoutContactCandidate(mission, sibling) ||
+            !SameFanoutEpisode(episode, sibling)) {
+            ++index;
+            continue;
+        }
+
+        const bool duplicateIdentity = std::any_of(
+            episode.fanoutMembers.begin(), episode.fanoutMembers.end(),
+            [&](const EntityContactFanoutMember& member) {
+                return SameFanoutIdentity(member, sibling.slot,
+                                          sibling.generation);
+            });
+        if (duplicateIdentity) {
+            ++index;
+            continue;
+        }
+
+        episode.fanoutMembers.push_back(FanoutMemberFromContact(sibling));
+        episode.contactsRequired = SaturatingAdd(
+            episode.contactsRequired, sibling.contactsRequired);
+        episode.comboHitsRequired = SaturatingAdd(
+            episode.comboHitsRequired, sibling.comboHitsRequired);
+        episode.damage = SaturatingAdd(episode.damage, sibling.damage);
+        episode.maxDelay = (std::max)(episode.maxDelay, sibling.maxDelay);
+        episode.comboEndAfter = true;
+        mission.entityContacts.erase(mission.entityContacts.begin() +
+                                     static_cast<std::ptrdiff_t>(index + 1));
+        changed = true;
+        ++index;
+    }
+    return changed;
+}
+
+bool UpgradeFanoutMarker(Mission& mission) {
+    bool changed = false;
+    std::vector<std::string> reviews;
+    reviews.reserve(mission.reviewRequired.size());
+    for (const std::string& review : mission.reviewRequired) {
+        if (review == kEntityScheduleRuntimeMarkerV3 ||
+            review == kEntityScheduleRuntimeMarkerV4) {
+            changed = true;
+            continue;
+        }
+        reviews.push_back(review);
+    }
+    reviews.push_back(kEntityScheduleRuntimeMarkerV5);
+    mission.reviewRequired = std::move(reviews);
+    return changed;
+}
+
+bool NormalizeFlexibleEntityFanoutEpisodesImpl(Mission& mission) {
+    if (!mission.strictEntityContacts) {
+        return false;
+    }
+    if (HasFanoutMarkerV5(mission)) {
+        return RepairSplitFlexibleFanoutBoundaryV5(mission);
+    }
+    if (!HasUpgradeableFanoutMarker(mission)) return false;
+
+    bool changed = false;
+    std::vector<EntityContactRequirement> normalized;
+    normalized.reserve(mission.entityContacts.size());
+    std::vector<bool> consumed(mission.entityContacts.size(), false);
+    std::vector<bool> blockedByDuplicateIdentity(
+        mission.entityContacts.size(), false);
+    for (std::size_t begin = 0; begin < mission.entityContacts.size();
+         ++begin) {
+        if (consumed[begin]) continue;
+        const EntityContactRequirement& first = mission.entityContacts[begin];
+        if (blockedByDuplicateIdentity[begin] ||
+            !IsExactFanoutContactCandidate(mission, first)) {
+            normalized.push_back(first);
+            continue;
+        }
+
+        std::vector<std::size_t> episodeContacts;
+        episodeContacts.push_back(begin);
+        std::set<std::pair<int, int>> identities;
+        identities.emplace(first.slot, first.generation);
+        bool duplicateIdentity = false;
+        for (std::size_t index = begin + 1;
+             index < mission.entityContacts.size(); ++index) {
+            const EntityContactRequirement& candidate =
+                mission.entityContacts[index];
+            if (!IsExactFanoutContactCandidate(mission, candidate) ||
+                !SameFanoutEpisode(first, candidate)) {
+                continue;
+            }
+            episodeContacts.push_back(index);
+            if (!identities.emplace(candidate.slot,
+                                    candidate.generation).second) {
+                duplicateIdentity = true;
+            }
+        }
+        if (duplicateIdentity) {
+            for (const std::size_t index : episodeContacts) {
+                blockedByDuplicateIdentity[index] = true;
+            }
+            normalized.push_back(first);
+            continue;
+        }
+
+        EntityContactRequirement episode = first;
+        episode.slot = -1;
+        episode.generation = 0;
+        episode.minimumContactsRequired = 1;
+        episode.minimumComboHitsRequired = 1;
+        episode.contactsRequired = 0;
+        episode.comboHitsRequired = 0;
+        episode.damage = 0;
+        episode.maxDelay = 0;
+        episode.comboEndAfter = false;
+        episode.fanoutMembers.clear();
+        for (const std::size_t index : episodeContacts) {
+            const EntityContactRequirement& requirement =
+                mission.entityContacts[index];
+            episode.fanoutMembers.push_back(
+                FanoutMemberFromContact(requirement));
+            episode.contactsRequired = SaturatingAdd(
+                episode.contactsRequired, requirement.contactsRequired);
+            episode.comboHitsRequired = SaturatingAdd(
+                episode.comboHitsRequired, requirement.comboHitsRequired);
+            episode.damage = SaturatingAdd(episode.damage,
+                                           requirement.damage);
+            episode.maxDelay = (std::max)(episode.maxDelay,
+                                          requirement.maxDelay);
+            episode.comboEndAfter = episode.comboEndAfter ||
+                requirement.comboEndAfter;
+        }
+
+        std::vector<bool> absorbLifecycle(
+            mission.entityLifecycles.size(), false);
+        if (!duplicateIdentity) {
+            for (std::size_t lifecycleIndex = 0;
+                 lifecycleIndex < mission.entityLifecycles.size();
+                 ++lifecycleIndex) {
+                const EntityLifecycleRequirement& lifecycle =
+                    mission.entityLifecycles[lifecycleIndex];
+                if (!IsFanoutSiblingLifecycle(mission, episode, lifecycle)) {
+                    continue;
+                }
+                episode.fanoutMembers.push_back(
+                    FanoutMemberFromLifecycle(lifecycle));
+                episode.maxDelay = (std::max)(episode.maxDelay,
+                                              lifecycle.maxDelay);
+                absorbLifecycle[lifecycleIndex] = true;
+            }
+        }
+
+        if (episode.fanoutMembers.size() < 2) {
+            normalized.push_back(first);
+            continue;
+        }
+
+        normalized.push_back(std::move(episode));
+        for (std::size_t index = 1; index < episodeContacts.size(); ++index) {
+            consumed[episodeContacts[index]] = true;
+        }
+        if (std::find(absorbLifecycle.begin(), absorbLifecycle.end(), true) !=
+            absorbLifecycle.end()) {
+            std::vector<EntityLifecycleRequirement> lifecycles;
+            lifecycles.reserve(mission.entityLifecycles.size());
+            for (std::size_t lifecycleIndex = 0;
+                 lifecycleIndex < mission.entityLifecycles.size();
+                 ++lifecycleIndex) {
+                if (!absorbLifecycle[lifecycleIndex]) {
+                    lifecycles.push_back(
+                        mission.entityLifecycles[lifecycleIndex]);
+                }
+            }
+            mission.entityLifecycles = std::move(lifecycles);
+        }
+        changed = true;
+    }
+
+    if (!changed) return false;
+    mission.entityContacts = std::move(normalized);
+    UpgradeFanoutMarker(mission);
+    return true;
 }
 
 std::map<std::string, int> ParseResources(const json& j) {
@@ -149,9 +1011,30 @@ ScoreTier ParseScore(const json& j) {
 json StepToJson(const Step& s) {
     json j;
     j["notation"] = s.notation;
-    j["ids"] = s.moveIds;
+    if (!s.moveIds.empty()) j["ids"] = s.moveIds;
+    if (s.entityCommand.present) {
+        j["entityCommand"] = {
+            {"slot", s.entityCommand.slot},
+            {"generation", s.entityCommand.generation},
+            {"rootPattern", s.entityCommand.rootPattern},
+            {"activationPattern", s.entityCommand.activationPattern}
+        };
+    }
+    if (s.expectedAttackMask != 0) {
+        j["expectedAttackMask"] = s.expectedAttackMask;
+    }
     j["req"] = StepReqToString(s.req);
     if (s.req == StepReq::Hits) j["hits"] = s.hitsRequired;
+    if (s.directContact) j["contactSource"] = "direct";
+    // Write both true and false for direct multi-hit steps.  Omitting false
+    // would make a deliberately strict step look like a pre-key recording and
+    // therefore migrate to the flexible policy on its next load.
+    if (s.directContact && s.req == StepReq::Hits && s.hitsRequired > 1) {
+        j["allowPartialHits"] = s.allowPartialHits;
+    }
+    if (s.directContact && !s.contactResult.empty()) {
+        j["contactResult"] = s.contactResult;
+    }
     if (s.optional) j["optional"] = true;
     if (s.maxDelay > 0) j["maxDelay"] = s.maxDelay;
     if (s.maxGap > 0) j["maxGap"] = s.maxGap;
@@ -161,12 +1044,114 @@ json StepToJson(const Step& s) {
     return j;
 }
 
+json EntityContactFanoutMemberToJson(
+    const EntityContactFanoutMember& member) {
+    json j;
+    j["slot"] = member.slot;
+    j["generation"] = member.generation;
+    j["patterns"] = member.patterns;
+    j["producerLifecycle"] = member.producerLifecycle;
+    j["producerPattern"] = member.producerPattern;
+    if (member.producerPriorPattern >= 0) {
+        j["producerPriorPattern"] = member.producerPriorPattern;
+    }
+    j["contactsObserved"] = member.contactsObserved;
+    j["comboHitsObserved"] = member.comboHitsObserved;
+    if (member.damageObserved > 0) {
+        j["damageObserved"] = member.damageObserved;
+    }
+    return j;
+}
+
+json EntityContactToJson(const EntityContactRequirement& e) {
+    json j;
+    if (!e.notation.empty()) j["notation"] = e.notation;
+    j["owner"] = e.owner;
+    j["target"] = e.target;
+    j["slot"] = e.slot;
+    if (e.generation > 0) j["generation"] = e.generation;
+    j["patterns"] = e.patterns;
+    j["result"] = e.result;
+    j["contactsRequired"] = e.contactsRequired;
+    if (e.comboHitsRequired > 0) j["comboHitsRequired"] = e.comboHitsRequired;
+    if (!e.fanoutMembers.empty()) {
+        j["minimumContactsRequired"] = e.minimumContactsRequired;
+        j["minimumComboHitsRequired"] = e.minimumComboHitsRequired;
+        j["fanoutMembers"] = json::array();
+        for (const EntityContactFanoutMember& member : e.fanoutMembers) {
+            j["fanoutMembers"].push_back(
+                EntityContactFanoutMemberToJson(member));
+        }
+    }
+    if (!e.producerLifecycle.empty() || e.producerPattern >= 0 ||
+        e.producerPriorPattern >= 0) {
+        j["producerLifecycle"] = e.producerLifecycle;
+        j["producerPattern"] = e.producerPattern;
+        if (e.producerPriorPattern >= 0) {
+            j["producerPriorPattern"] = e.producerPriorPattern;
+        }
+    }
+    j["opensAfterAction"] = e.opensAfterAction;
+    if (!::Mission::SemanticSourcePolicy::IsLegacyAbsent(
+            e.semanticSourceAction, e.semanticSourceMove)) {
+        j["semanticSourceAction"] = e.semanticSourceAction;
+        j["semanticSourceMove"] = e.semanticSourceMove;
+    }
+    if (e.contactAfterAction >= 0) {
+        j["contactAfterAction"] = e.contactAfterAction;
+    }
+    j["afterStep"] = e.afterStep;
+    if (e.afterStepContact > 0) {
+        j["afterStepContact"] = e.afterStepContact;
+    }
+    if (e.dueBeforeStep >= 0) j["dueBeforeStep"] = e.dueBeforeStep;
+    if (e.dueBeforeStep >= 0 && e.dueBeforeStepContact >= 0) {
+        j["dueBeforeStepContact"] = e.dueBeforeStepContact;
+    }
+    if (e.segment > 0) j["segment"] = e.segment;
+    if (e.maxDelay > 0) j["maxDelay"] = e.maxDelay;
+    if (e.damage > 0) j["damage"] = e.damage;
+    if (e.comboEndAfter) j["comboEndAfter"] = true;
+    return j;
+}
+
+json EntityLifecycleToJson(const EntityLifecycleRequirement& e) {
+    json j;
+    if (!e.notation.empty()) j["notation"] = e.notation;
+    j["owner"] = e.owner;
+    j["slot"] = e.slot;
+    if (e.generation > 0) j["generation"] = e.generation;
+    if (!e.lifecycle.empty()) j["lifecycle"] = e.lifecycle;
+    if (e.pattern >= 0) j["pattern"] = e.pattern;
+    if (e.priorPattern >= 0) j["priorPattern"] = e.priorPattern;
+    j["opensAfterAction"] = e.opensAfterAction;
+    if (e.segment > 0) j["segment"] = e.segment;
+    if (e.maxDelay > 0) j["maxDelay"] = e.maxDelay;
+    return j;
+}
+
 bool IsGeneratedRecordingPath(const std::string& path) {
     const size_t slash = path.find_last_of("\\/");
     std::string name = path.substr(slash == std::string::npos ? 0 : slash + 1);
     std::transform(name.begin(), name.end(), name.begin(),
                    [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
     return name.rfind("recorded_", 0) == 0;
+}
+
+bool HasLegacyUngradedLifecycleReview(const Mission& mission) {
+    for (const std::string& reason : mission.reviewRequired) {
+        int pattern = -1;
+        int slot = -1;
+        int generation = 0;
+        if (::Mission::EntityReviewPolicy::
+                ParseLegacyUngradedLifecycleReason(
+                    reason, pattern, slot, generation) &&
+            !::Mission::EntityReviewPolicy::IsObsoletePostContactReview(
+                mission, reason)) {
+            return true;
+        }
+    }
+    return false;
 }
 
 json PlayerToJson(const PlayerSetup& p) {
@@ -435,13 +1420,13 @@ LessonTask ParseLessonTask(const json& j) {
     }
     if (j.contains("pos") && j["pos"].is_object()) {
         t.hasPos = true;
-        t.posX = j["pos"].value("x", 0.0f);
-        t.posY = j["pos"].value("y", 0.0f);
+        t.posX = j["pos"].value("x", 0.0);
+        t.posY = j["pos"].value("y", 0.0);
     }
     if (j.contains("dummyPos") && j["dummyPos"].is_object()) {
         t.hasDummyPos = true;
-        t.dummyPosX = j["dummyPos"].value("x", 0.0f);
-        t.dummyPosY = j["dummyPos"].value("y", 0.0f);
+        t.dummyPosX = j["dummyPos"].value("x", 0.0);
+        t.dummyPosY = j["dummyPos"].value("y", 0.0);
     }
     if (j.contains("seed") && j["seed"].is_object()) {
         auto parseSeed = [](const json& s, TaskStateSeed& out) {
@@ -692,6 +1677,12 @@ json EpisodeToJson(const DummyEpisode& e) {
 }
 
 } // namespace
+
+bool NormalizeFlexibleEntityFanoutEpisodes(Mission& mission,
+                                            bool allowInference) {
+    if (!allowInference) return false;
+    return NormalizeFlexibleEntityFanoutEpisodesImpl(mission);
+}
 
 bool ValidateLesson(const Mission& m, std::string& errorOut) {
     if (m.tutorialSchema <= 0) return true;
@@ -1270,6 +2261,12 @@ bool LoadMission(const std::string& path, Mission& out, std::string& errorOut) {
         const json j = json::parse(text);
         Mission m;
         m.format = j.value("format", 1);
+        if (m.format != 1) {
+            errorOut = "unsupported mission format " + std::to_string(m.format) +
+                " in " + path;
+            return false;
+        }
+        m.id = j.value("id", std::string());
         m.type = j.value("type", std::string("combo"));
         m.category = j.value("category", std::string());
         m.difficulty = j.value("difficulty", 0);
@@ -1293,9 +2290,169 @@ bool LoadMission(const std::string& path, Mission& out, std::string& errorOut) {
             // value is unambiguously unsafe. Track 150 means OFF in both uses.
             m.bgm = -1;
         }
+        const bool migrateLegacyRecordedMultiHits =
+            IsGeneratedRecordingPath(path) ||
+            j.contains("recordingDiagnostics") ||
+            (j.value("strictEntityContacts", false) &&
+             j.contains("demo") && j.contains("savestate"));
         if (j.contains("steps") && j["steps"].is_array()) {
-            for (const auto& s : j["steps"]) m.steps.push_back(ParseStep(s));
+            for (std::size_t stepIndex = 0; stepIndex < j["steps"].size(); ++stepIndex) {
+                const auto& s = j["steps"][stepIndex];
+                if (!s.is_object()) {
+                    errorOut = "step " + std::to_string(stepIndex) +
+                        " is not an object in " + path;
+                    return false;
+                }
+                if (s.contains("contactSource") &&
+                    (!s["contactSource"].is_string() ||
+                     s["contactSource"].get<std::string>() != "direct")) {
+                    errorOut = "step " + std::to_string(stepIndex) +
+                        " has unsupported contactSource in " + path;
+                    return false;
+                }
+                if (s.contains("contactResult")) {
+                    if (!s["contactResult"].is_string() ||
+                        !s.contains("contactSource") ||
+                        !::Mission::Contact::ValidResultRequirement(
+                            s["contactResult"].get<std::string>()) ||
+                        s["contactResult"].get<std::string>() == "whiff") {
+                        errorOut = "step " + std::to_string(stepIndex) +
+                            " has unsupported contactResult in " + path;
+                        return false;
+                    }
+                }
+                if (s.contains("expectedAttackMask") &&
+                    (!s["expectedAttackMask"].is_number_integer() ||
+                     !::Mission::SequencePolicy::ValidExpectedAttackMask(
+                         s["expectedAttackMask"].get<int>()))) {
+                    errorOut = "step " + std::to_string(stepIndex) +
+                        " has invalid expectedAttackMask (A/B/C/D bits only) in " +
+                        path;
+                    return false;
+                }
+                if (s.contains("allowPartialHits") &&
+                    !s["allowPartialHits"].is_boolean()) {
+                    errorOut = "step " + std::to_string(stepIndex) +
+                        " has invalid allowPartialHits in " + path;
+                    return false;
+                }
+                if (s.contains("entityCommand")) {
+                    std::string entityCommandError;
+                    if (!ValidateEntityCommandOriginJson(
+                            s["entityCommand"], entityCommandError)) {
+                        errorOut = "step " + std::to_string(stepIndex) +
+                            " entityCommand " + entityCommandError + " in " +
+                            path;
+                        return false;
+                    }
+                }
+                Step parsed = ParseStep(s);
+                if (!s.contains("allowPartialHits") &&
+                    migrateLegacyRecordedMultiHits && parsed.directContact &&
+                    parsed.req == StepReq::Hits && parsed.hitsRequired > 1) {
+                    parsed.allowPartialHits = true;
+                }
+                m.steps.push_back(std::move(parsed));
+            }
         }
+        m.strictEntityContacts = j.value("strictEntityContacts", false);
+        if (j.contains("entityContacts")) {
+            if (!j["entityContacts"].is_array()) {
+                errorOut = "entityContacts is not an array in " + path;
+                return false;
+            }
+            for (std::size_t contactIndex = 0;
+                 contactIndex < j["entityContacts"].size(); ++contactIndex) {
+                const auto& contact = j["entityContacts"][contactIndex];
+                if (!contact.is_object()) {
+                    errorOut = "entity contact " + std::to_string(contactIndex) +
+                        " is not an object in " + path;
+                    return false;
+                }
+                std::string fanoutError;
+                if (!ValidateEntityContactFanoutJson(contact, fanoutError)) {
+                    errorOut = "entity contact " +
+                        std::to_string(contactIndex) + " " + fanoutError +
+                        " in " + path;
+                    return false;
+                }
+                std::string semanticSourceError;
+                if (!ValidateEntityContactSemanticSourceJson(
+                        contact, semanticSourceError)) {
+                    errorOut = "entity contact " +
+                        std::to_string(contactIndex) + " " +
+                        semanticSourceError + " in " + path;
+                    return false;
+                }
+                EntityContactRequirement parsed =
+                    ParseEntityContact(contact);
+                if (::Mission::SemanticSourcePolicy::IsExact(
+                        parsed.semanticSourceAction,
+                        parsed.semanticSourceMove)) {
+                    if (parsed.semanticSourceAction >=
+                            static_cast<int>(m.steps.size())) {
+                        errorOut = "entity contact " +
+                            std::to_string(contactIndex) +
+                            " has semantic source action outside the recipe in " +
+                            path;
+                        return false;
+                    }
+                    const Step& source = m.steps[static_cast<std::size_t>(
+                        parsed.semanticSourceAction)];
+                    if (std::find(source.moveIds.begin(), source.moveIds.end(),
+                                  parsed.semanticSourceMove) ==
+                        source.moveIds.end()) {
+                        errorOut = "entity contact " +
+                            std::to_string(contactIndex) +
+                            " has semantic source move outside its action in " +
+                            path;
+                        return false;
+                    }
+                    if ((parsed.opensAfterAction >= 0 &&
+                         parsed.semanticSourceAction >
+                             parsed.opensAfterAction) ||
+                        (parsed.contactAfterAction >= 0 &&
+                         parsed.semanticSourceAction >
+                             parsed.contactAfterAction)) {
+                        errorOut = "entity contact " +
+                            std::to_string(contactIndex) +
+                            " has semantic source after its lifecycle/contact gate in " +
+                            path;
+                        return false;
+                    }
+                }
+                m.entityContacts.push_back(std::move(parsed));
+            }
+        }
+        if (j.contains("entityLifecycles")) {
+            if (!j["entityLifecycles"].is_array()) {
+                errorOut = "entityLifecycles is not an array in " + path;
+                return false;
+            }
+            for (std::size_t lifecycleIndex = 0;
+                 lifecycleIndex < j["entityLifecycles"].size();
+                 ++lifecycleIndex) {
+                const auto& lifecycle =
+                    j["entityLifecycles"][lifecycleIndex];
+                if (!lifecycle.is_object()) {
+                    errorOut = "entity lifecycle " +
+                        std::to_string(lifecycleIndex) +
+                        " is not an object in " + path;
+                    return false;
+                }
+                std::string lifecycleError;
+                if (!ValidateEntityLifecycleJson(lifecycle, lifecycleError)) {
+                    errorOut = "entity lifecycle " +
+                        std::to_string(lifecycleIndex) + " " +
+                        lifecycleError + " in " + path;
+                    return false;
+                }
+                m.entityLifecycles.push_back(
+                    ParseEntityLifecycle(lifecycle));
+            }
+        }
+        NormalizeFlexibleEntityContactBarriers(m);
+        PromoteLegacySemanticSources(m);
         m.demo = j.value("demo", std::string());
         m.savestate = j.value("savestate", std::string());
         m.failTimer = j.value("failTimer", j.value("fail_timer", 60));
@@ -1305,9 +2462,46 @@ bool LoadMission(const std::string& path, Mission& out, std::string& errorOut) {
         if (j.contains("hint") && j["hint"].is_array()) {
             for (const auto& h : j["hint"]) if (h.is_string()) m.hints.push_back(h.get<std::string>());
         }
+        if (j.contains("reviewRequired")) {
+            if (!j["reviewRequired"].is_array()) {
+                errorOut = "reviewRequired is not an array in " + path;
+                return false;
+            }
+            for (const auto& item : j["reviewRequired"]) {
+                if (!item.is_string() || item.get<std::string>().empty()) {
+                    errorOut = "reviewRequired contains an invalid reason in " + path;
+                    return false;
+                }
+                m.reviewRequired.push_back(item.get<std::string>());
+            }
+        }
+        if (j.contains("recordingDiagnostics")) {
+            if (!j["recordingDiagnostics"].is_array()) {
+                errorOut = "recordingDiagnostics is not an array in " + path;
+                return false;
+            }
+            for (const auto& item : j["recordingDiagnostics"]) {
+                if (!item.is_string() || item.get<std::string>().empty()) {
+                    errorOut = "recordingDiagnostics contains an invalid entry in " + path;
+                    return false;
+                }
+                m.recordingDiagnostics.push_back(item.get<std::string>());
+            }
+        }
+        // Old generated v3/v4 takes recorded every interchangeable attacking
+        // child as an ordered obligation. Upgrade those takes in memory only;
+        // an authored mission at any other path retains exact-count semantics.
+        // A v3 legacy whiff review must first be proven against its adjacent
+        // recorder sidecar and promoted to an exact lifecycle objective. If
+        // fanout normalization ran first, it would replace the v3 marker with
+        // v5 and make that fail-closed migration deliberately inapplicable.
+        if (!HasLegacyUngradedLifecycleReview(m)) {
+            NormalizeFlexibleEntityFanoutEpisodes(
+                m, IsGeneratedRecordingPath(path));
+        }
         // ---- tutorialSchema 1 ----
         m.tutorialSchema = j.value("tutorialSchema", 0);
-        m.lessonId = j.value("id", std::string());
+        m.lessonId = m.id;
         m.revision = j.value("revision", 1);
         m.summary = j.value("summary", std::string());
         if (j.contains("sourceRefs") && j["sourceRefs"].is_array()) {
@@ -1360,8 +2554,42 @@ bool LoadMission(const std::string& path, Mission& out, std::string& errorOut) {
 
 bool SaveMission(const std::string& path, const Mission& m, std::string& errorOut) {
     try {
+        for (std::size_t stepIndex = 0; stepIndex < m.steps.size(); ++stepIndex) {
+            if (!::Mission::SequencePolicy::ValidExpectedAttackMask(
+                    m.steps[stepIndex].expectedAttackMask)) {
+                errorOut = "step " + std::to_string(stepIndex) +
+                    " has invalid expectedAttackMask (A/B/C/D bits only)";
+                return false;
+            }
+            if (m.steps[stepIndex].allowPartialHits &&
+                (!m.steps[stepIndex].directContact ||
+                 m.steps[stepIndex].req != StepReq::Hits ||
+                 m.steps[stepIndex].hitsRequired <= 1)) {
+                errorOut = "step " + std::to_string(stepIndex) +
+                    " has allowPartialHits without a direct multi-hit requirement";
+                return false;
+            }
+            if (m.steps[stepIndex].entityCommand.present) {
+                const EntityCommandOrigin& command =
+                    m.steps[stepIndex].entityCommand;
+                const json encoded = {
+                    {"slot", command.slot},
+                    {"generation", command.generation},
+                    {"rootPattern", command.rootPattern},
+                    {"activationPattern", command.activationPattern}
+                };
+                std::string entityCommandError;
+                if (!ValidateEntityCommandOriginJson(encoded,
+                                                     entityCommandError)) {
+                    errorOut = "step " + std::to_string(stepIndex) +
+                        " entityCommand " + entityCommandError;
+                    return false;
+                }
+            }
+        }
         json j;
         j["format"] = m.format;
+        if (!m.id.empty()) j["id"] = m.id;
         j["type"] = m.type;
         if (!m.category.empty()) j["category"] = m.category;
         if (m.difficulty > 0) j["difficulty"] = m.difficulty;
@@ -1377,10 +2605,77 @@ bool SaveMission(const std::string& path, const Mission& m, std::string& errorOu
         }
         j["steps"] = json::array();
         for (const Step& s : m.steps) j["steps"].push_back(StepToJson(s));
+        // A standalone entity-lifecycle objective uses the same strict
+        // frame-zero lineage contract as a contact schedule.  Persist the
+        // strict bit even when the recording contains no entity contact;
+        // otherwise lifecycle-only v4 takes reload as non-strict and are
+        // correctly rejected by runtime readiness validation.
+        if (!m.entityContacts.empty() || !m.entityLifecycles.empty()) {
+            j["strictEntityContacts"] = m.strictEntityContacts;
+        }
+        if (!m.entityContacts.empty()) {
+            j["entityContacts"] = json::array();
+            for (const EntityContactRequirement& e : m.entityContacts) {
+                if (!::Mission::SemanticSourcePolicy::ValidPersistedPair(
+                        e.semanticSourceAction, e.semanticSourceMove)) {
+                    errorOut = "entity contact " +
+                        std::to_string(j["entityContacts"].size()) +
+                        " has invalid semantic source provenance";
+                    return false;
+                }
+                if (::Mission::SemanticSourcePolicy::IsExact(
+                        e.semanticSourceAction, e.semanticSourceMove)) {
+                    if (e.semanticSourceAction >=
+                            static_cast<int>(m.steps.size()) ||
+                        std::find(
+                            m.steps[static_cast<std::size_t>(
+                                e.semanticSourceAction)].moveIds.begin(),
+                            m.steps[static_cast<std::size_t>(
+                                e.semanticSourceAction)].moveIds.end(),
+                            e.semanticSourceMove) ==
+                            m.steps[static_cast<std::size_t>(
+                                e.semanticSourceAction)].moveIds.end() ||
+                        (e.opensAfterAction >= 0 &&
+                         e.semanticSourceAction > e.opensAfterAction) ||
+                        (e.contactAfterAction >= 0 &&
+                         e.semanticSourceAction > e.contactAfterAction)) {
+                        errorOut = "entity contact " +
+                            std::to_string(j["entityContacts"].size()) +
+                            " has semantic source outside its exact action/gates";
+                        return false;
+                    }
+                }
+                json encoded = EntityContactToJson(e);
+                std::string fanoutError;
+                if (!ValidateEntityContactFanoutJson(encoded,
+                                                     fanoutError)) {
+                    errorOut = "entity contact " +
+                        std::to_string(j["entityContacts"].size()) + " " +
+                        fanoutError;
+                    return false;
+                }
+                std::string semanticSourceError;
+                if (!ValidateEntityContactSemanticSourceJson(
+                        encoded, semanticSourceError)) {
+                    errorOut = "entity contact " +
+                        std::to_string(j["entityContacts"].size()) + " " +
+                        semanticSourceError;
+                    return false;
+                }
+                j["entityContacts"].push_back(std::move(encoded));
+            }
+        }
+        if (!m.entityLifecycles.empty()) {
+            j["entityLifecycles"] = json::array();
+            for (const EntityLifecycleRequirement& e : m.entityLifecycles) {
+                j["entityLifecycles"].push_back(
+                    EntityLifecycleToJson(e));
+            }
+        }
         // ---- tutorialSchema 1 ----
         if (m.tutorialSchema > 0) {
             j["tutorialSchema"] = m.tutorialSchema;
-            j["id"] = m.lessonId;
+            j["id"] = m.lessonId.empty() ? m.id : m.lessonId;
             j["revision"] = m.revision;
             if (!m.summary.empty()) j["summary"] = m.summary;
             if (!m.sourceRefs.empty()) j["sourceRefs"] = m.sourceRefs;
@@ -1417,6 +2712,10 @@ bool SaveMission(const std::string& path, const Mission& m, std::string& errorOu
         j["score"] = json::array();
         for (const ScoreTier& t : m.scores) j["score"].push_back(ScoreToJson(t));
         if (!m.hints.empty()) j["hint"] = m.hints;
+        if (!m.reviewRequired.empty()) j["reviewRequired"] = m.reviewRequired;
+        if (!m.recordingDiagnostics.empty()) {
+            j["recordingDiagnostics"] = m.recordingDiagnostics;
+        }
         if (!WriteFile(path, j.dump(4))) { errorOut = "cannot write " + path; return false; }
         return true;
     } catch (const std::exception& e) {
@@ -1435,8 +2734,10 @@ bool LoadPack(const std::string& path, Pack& out, std::string& errorOut) {
         p.id = j.value("id", std::string());
         p.name = j.value("name", std::string());
         p.author = j.value("author", std::string());
+        p.version = j.value("version", std::string());
         p.character = j.value("character", std::string());
         p.description = j.value("description", std::string());
+        p.editable = j.value("editable", false);
         p.curriculumRevision = j.value("curriculumRevision", 0);
         if (j.contains("categories") && j["categories"].is_array()) {
             for (const auto& c : j["categories"]) {
@@ -1454,6 +2755,7 @@ bool LoadPack(const std::string& path, Pack& out, std::string& errorOut) {
                 sc.name = s.value("name", std::string());
                 sc.file = s.value("file", std::string());
                 sc.description = s.value("description", std::string());
+                sc.category = s.value("category", std::string());
                 sc.preview = s.value("preview", std::string());
                 sc.locked = s.value("locked", s.value("may_be_locked", false));
                 sc.id = s.value("id", std::string());
@@ -1486,8 +2788,10 @@ bool SavePack(const std::string& path, const Pack& p, std::string& errorOut) {
         if (!p.id.empty()) j["id"] = p.id;
         j["name"] = p.name;
         if (!p.author.empty()) j["author"] = p.author;
+        if (!p.version.empty()) j["version"] = p.version;
         if (!p.character.empty()) j["character"] = p.character;
         if (!p.description.empty()) j["description"] = p.description;
+        if (p.editable) j["editable"] = true;
         if (p.curriculumRevision > 0) j["curriculumRevision"] = p.curriculumRevision;
         if (!p.categories.empty()) {
             json cats = json::array();
@@ -1507,6 +2811,7 @@ bool SavePack(const std::string& path, const Pack& p, std::string& errorOut) {
             sj["name"] = s.name;
             sj["file"] = s.file;
             if (!s.description.empty()) sj["description"] = s.description;
+            if (!s.category.empty()) sj["category"] = s.category;
             if (!s.preview.empty()) sj["preview"] = s.preview;
             if (s.locked) sj["locked"] = true;
             if (!s.id.empty()) sj["id"] = s.id;
@@ -1551,6 +2856,10 @@ std::vector<std::string> DiscoverPackJsonPaths(const std::string& rootDir) {
         }
     } while (FindNextFileA(h, &fd));
     FindClose(h);
+    std::sort(result.begin(), result.end(), [](const std::string& lhs,
+                                                const std::string& rhs) {
+        return _stricmp(lhs.c_str(), rhs.c_str()) < 0;
+    });
     return result;
 }
 

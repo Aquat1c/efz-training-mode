@@ -8,6 +8,7 @@
 #include "../../../include/utils/utilities.h"  // detailedLogging
 #include "../../../include/game/mission/mission_engine.h"  // SetPendingMissionLoad
 #include "../../../include/game/mission/mission_data.h"      // mission list scan
+#include "../../../include/game/mission/mission_authoring.h" // safe pack scenario paths
 #include "../../../include/game/mission/tutorial_support.h"  // capabilities/progress
 #include "../../../include/game/mission/tutorial_session.h"  // Next Lesson registry
 #include "../../../include/game/character_hotswap.h"
@@ -136,6 +137,45 @@ std::string PlayerFacingUnavailableReason(const std::vector<std::string>& issues
     return "The game-event tracking needed to score this lesson accurately is still being completed.";
 }
 
+std::string PlayerFacingRuntimeUnavailableReason(const std::string& error,
+                                                 bool recorded,
+                                                 const std::string& sourcePath) {
+    const std::string subject = recorded ? "recording" : "mission";
+    if (error.find("mission needs author review:") != std::string::npos) {
+        const std::size_t separator = error.find(':');
+        const std::string reasons = separator == std::string::npos
+            ? std::string() : error.substr(separator + 1);
+        return "This " + subject + " needs review before it can be played" +
+            (reasons.empty() ? std::string(".") : std::string(":") + reasons);
+    }
+    if (error.find("uncompiled entity contacts") != std::string::npos ||
+        error.find("entity-contact schedule") != std::string::npos) {
+        return "This " + subject +
+            " has incomplete projectile-hit data. Retake or review it before playing.";
+    }
+    if (error.find("contact tracking") != std::string::npos ||
+        error.find("collision hook") != std::string::npos) {
+        return "The contact tracking needed to score this " + subject +
+            " is unavailable.";
+    }
+    if (error.find("has no steps") != std::string::npos) {
+        return "This " + subject + " has no playable steps yet.";
+    }
+
+    std::string detail = error;
+    const std::size_t pathAt = sourcePath.empty()
+        ? std::string::npos : detail.find(sourcePath);
+    if (pathAt != std::string::npos) {
+        detail.erase(pathAt, sourcePath.size());
+        while (!detail.empty() &&
+               (detail.back() == ' ' || detail.back() == ':')) {
+            detail.pop_back();
+        }
+    }
+    if (detail.empty()) detail = "its runtime requirements are not available";
+    return "This " + subject + " cannot be played: " + detail;
+}
+
 // Build the browser's rich mission list: every pack scenario + recorded file
 // is fully parsed (name/desc/type/chars/stage/steps) so the screen can group
 // by character and show a proper detail footer. Own frame: safe for C++
@@ -160,7 +200,10 @@ void PopulateMissionEntries() {
                         const std::string& scenarioDescription,
                         bool locked,
                         bool recorded,
-                        const std::string& packId = std::string()) {
+                        const std::string& packId,
+                        const std::string& packVersion,
+                        const Mission::Scenario* scenario,
+                        const Mission::Pack* pack) {
         Mission::Mission mi;
         std::string err;
         if (!Mission::LoadMission(path, mi, err)) {
@@ -169,22 +212,43 @@ void PopulateMissionEntries() {
         }
         PracticeMenu::TitleScreen::MissionInfo e;
         const size_t slash = path.find_last_of("\\/");
-        e.name = !mi.name.empty() ? mi.name
+        e.name = scenario && !scenario->name.empty() ? scenario->name
+               : !mi.name.empty() ? mi.name
                : (slash != std::string::npos ? path.substr(slash + 1) : path);
         e.path = path;
-        e.description = !mi.description.empty() ? mi.description : scenarioDescription;
+        e.description = !scenarioDescription.empty()
+            ? scenarioDescription : mi.description;
         e.type = mi.type;
         e.character = mi.player.character;
         e.dummy = mi.dummy.character;
         e.source = source;
         e.packId = packId;
+        if (pack) e.packFolder = pack->folderPath;
         e.author = author;
-        e.category = mi.category;
-        e.difficulty = mi.difficulty;
-        e.order = mi.order;
-        e.lessonId = mi.lessonId;
-        e.recommendedAfter = mi.recommendedAfter;
+        e.packVersion = packVersion;
+        if (pack) e.packDescription = pack->description;
+        e.category = scenario && !scenario->category.empty()
+            ? scenario->category : mi.category;
+        if (pack && !e.category.empty()) {
+            for (const Mission::PackCategory& category : pack->categories) {
+                if (category.id != e.category) continue;
+                e.categoryLabel = category.label;
+                e.categoryDescription = category.description;
+                e.categoryOrder = category.order;
+                break;
+            }
+        }
+        e.difficulty = scenario && scenario->difficulty > 0
+            ? scenario->difficulty : mi.difficulty;
+        e.order = scenario && scenario->order > 0 ? scenario->order : mi.order;
+        e.lessonId = scenario && !scenario->id.empty() ? scenario->id : mi.lessonId;
+        e.recommendedAfter = scenario && !scenario->recommendedAfter.empty()
+            ? scenario->recommendedAfter : mi.recommendedAfter;
         if (!mi.summary.empty()) e.description = mi.summary;   // YOU'LL PRACTICE line
+        std::string runtimeReadinessError;
+        const bool runtimeReady =
+            Mission::Engine::ValidateMissionRuntimeReadiness(
+                mi, path, runtimeReadinessError);
         if (mi.tutorialSchema > 0) {
             // Capability preflight (§5.7): unsupported requirement = visible
             // UNAVAILABLE row with a plain reason, never a silent approximation.
@@ -192,6 +256,16 @@ void PopulateMissionEntries() {
             if (!issues.empty()) {
                 e.unavailableReason = PlayerFacingUnavailableReason(issues);
             }
+        }
+        // Use the complete runner preflight for every browser row, including
+        // loose recordings. Tutorial capability failures keep their tailored
+        // lesson wording; all other runtime-invalid entries stay visible but
+        // cannot be selected.
+        if (!runtimeReady && e.unavailableReason.empty()) {
+            e.unavailableReason = PlayerFacingRuntimeUnavailableReason(
+                runtimeReadinessError, recorded, path);
+        }
+        if (mi.tutorialSchema > 0) {
             if (!packId.empty() && !mi.lessonId.empty()) {
                 const Mission::Tutorial::LessonProgress progress =
                     Mission::Tutorial::ProgressGet(packId, mi.lessonId);
@@ -242,7 +316,41 @@ void PopulateMissionEntries() {
                 continue;
             }
             const std::string src = pack.name.empty() ? std::string("PACK") : pack.name;
-            if (!pack.categories.empty()) {
+            const std::size_t packEntryStart = out.size();
+            for (const auto& sc : pack.scenarios) {
+                std::string missionPath;
+                std::string componentError;
+                if (!Mission::Authoring::ResolveScenarioMissionPath(
+                        pack.folderPath, sc.file, missionPath, componentError)) {
+                    recordLibraryError(pj,
+                        "unsafe scenario file '" + sc.file + "': " +
+                        (componentError.empty() ? std::string("path could not be resolved")
+                                                : componentError));
+                    continue;
+                }
+                parseOne(missionPath,
+                         src,
+                         pack.author,
+                         sc.description,
+                         sc.locked,
+                         false,
+                         pack.id,
+                         pack.version,
+                         &sc,
+                         &pack);
+            }
+            // Only tutorial packs contribute to the Tutorial category rail.
+            // Determine that from the parsed missions as well as the optional
+            // curriculum marker so third-party tutorials remain compatible
+            // without letting ordinary local trial categories leak into it.
+            bool containsTutorial = pack.curriculumRevision > 0;
+            for (std::size_t i = packEntryStart; i < out.size(); ++i) {
+                if (out[i].type == "tutorial") {
+                    containsTutorial = true;
+                    break;
+                }
+            }
+            if (containsTutorial && !pack.categories.empty()) {
                 std::vector<const Mission::PackCategory*> ordered;
                 for (const auto& c : pack.categories) ordered.push_back(&c);
                 std::stable_sort(ordered.begin(), ordered.end(),
@@ -251,15 +359,6 @@ void PopulateMissionEntries() {
                                  });
                 for (const auto* c : ordered) tutorialCats.emplace_back(c->id, c->label);
             }
-            for (const auto& sc : pack.scenarios) {
-                parseOne(pack.folderPath + "\\" + sc.file,
-                         src,
-                         pack.author,
-                         sc.description,
-                         sc.locked,
-                         false,
-                         pack.id);
-            }
         }
         WIN32_FIND_DATAA fd{};
         HANDLE h = FindFirstFileA((root + "\\_recorded\\*.json").c_str(), &fd);
@@ -267,7 +366,8 @@ void PopulateMissionEntries() {
             do {
                 if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
                 parseOne(root + "\\_recorded\\" + fd.cFileName,
-                         "RECORDED", "LOCAL CAPTURE", std::string(), false, true);
+                         "RECORDED", "LOCAL CAPTURE", std::string(), false, true,
+                         std::string(), std::string(), nullptr, nullptr);
             } while (FindNextFileA(h, &fd));
             FindClose(h);
         }
@@ -621,6 +721,17 @@ char __fastcall UpdateDetour(uint32_t sc, void* /*edx*/) {
                             g_phase.store(PHASE_INACTIVE);
                             return 1;
                         }
+                        if (act == PracticeMenu::TitleScreen::ConfirmAction::Author) {
+                            // Pack Workshop is an in-match editor so it can
+                            // share the same controller-safe custom menu and
+                            // recorder handoff surfaces. It does not arm or
+                            // create a recording.
+                            Mission::Engine::SetPendingMissionMode(true);
+                            PracticeMenu::TitleScreen::Close();
+                            LaunchPractice(sc);
+                            g_phase.store(PHASE_INACTIVE);
+                            return 1;
+                        }
                     } else if (cancelEdge || escEdge) {
                         // Walks up one level first; closes only from the top.
                         if (!PracticeMenu::TitleScreen::Back()) {
@@ -641,6 +752,8 @@ char __fastcall UpdateDetour(uint32_t sc, void* /*edx*/) {
                 } else if (cancelEdge || escEdge) {
                     BeginLeave(); // start slide-out; keep rendering this frame
                 } else if (vertEdge != 0) {
+                    reinterpret_cast<PlaySfxFn>(Resolve(kVaPlaySfx))(
+                        reinterpret_cast<void*>(gc), kSfxCursor);
                     g_selection += vertEdge;
                     if (g_selection < 0) g_selection = PracticeMenu::Render::ROW_COUNT - 1;
                     if (g_selection >= PracticeMenu::Render::ROW_COUNT) g_selection = 0;

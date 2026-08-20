@@ -3,7 +3,9 @@
 #include "game/mission/mission_setup.h"
 #include "game/mission/contact_event.h"
 #include "game/mission/recorder_entity_trace.h"
+#include "game/mission/mission_semantic_source_policy.h"
 #include "game/mission/savestate_entity_layout.h"
+#include "utils/pause_integration.h"
 
 #include <cstring>
 #include <cstdlib>
@@ -32,6 +34,155 @@ int main() {
     Check(RecorderCountInRemainingMs(96) == 500 &&
           RecorderCountInRemainingMs(1) == 6,
           "count-in HUD time rounds upward and never announces an early start");
+    Check(RecorderMenuNeutralPollCount(true, true, 0, 1) == 0 &&
+          RecorderMenuNeutralPollCount(false, false, 0, 1) == 1 &&
+          RecorderMenuNeutralPollCount(false, true, 4, 1) == 0 &&
+          RecorderMenuNeutralPollCount(false, true, 0, 0) == 1 &&
+          RecorderMenuNeutralPollCount(false, true, 0, 1) == 2 &&
+          !RecorderMenuReleaseReady(true, 2) &&
+          !RecorderMenuReleaseReady(false, 1) &&
+          RecorderMenuReleaseReady(false, 2),
+          "recorder menus resume only after both UI surfaces close and two fresh neutral polls");
+    Check(!RecorderPhysicalPauseReleaseReady(false, false) &&
+          !RecorderPhysicalPauseReleaseReady(true, true) &&
+          RecorderPhysicalPauseReleaseReady(true, false) &&
+          !RecorderMenuReleaseReady(false, 0),
+          "a completed hidden handoff releases physical pause before native neutral polls release its input lease");
+    using PauseSurface = PauseIntegration::MenuSurface;
+    constexpr uint8_t recorderPause = PauseIntegration::UpdatedMenuSurfaceMask(
+        0, PauseSurface::MissionPause, true);
+    constexpr uint8_t nestedPractice = PauseIntegration::UpdatedMenuSurfaceMask(
+        recorderPause, PauseSurface::ImGui, true);
+    constexpr uint8_t returnedToRecorder = PauseIntegration::UpdatedMenuSurfaceMask(
+        nestedPractice, PauseSurface::ImGui, false);
+    constexpr uint8_t resumeHandoff = PauseIntegration::UpdatedMenuSurfaceMask(
+        returnedToRecorder, PauseSurface::RecorderHandoff, true);
+    constexpr uint8_t hiddenDuringHandoff = PauseIntegration::UpdatedMenuSurfaceMask(
+        resumeHandoff, PauseSurface::MissionPause, false);
+    constexpr uint8_t commandAndCaptureHandoffs =
+        PauseIntegration::UpdatedMenuSurfaceMask(
+            hiddenDuringHandoff, PauseSurface::RecorderCommandHandoff, true);
+    constexpr uint8_t commandHandoffOnly =
+        PauseIntegration::UpdatedMenuSurfaceMask(
+            commandAndCaptureHandoffs, PauseSurface::RecorderHandoff, false);
+    constexpr uint8_t demoTransitionNested =
+        PauseIntegration::UpdatedMenuSurfaceMask(
+            commandHandoffOnly, PauseSurface::DemoTransition, true);
+    constexpr uint8_t demoTransitionOnly =
+        PauseIntegration::UpdatedMenuSurfaceMask(
+            demoTransitionNested,
+            PauseSurface::RecorderCommandHandoff, false);
+    Check(recorderPause != 0 && nestedPractice != 0 &&
+          returnedToRecorder == recorderPause &&
+          hiddenDuringHandoff != 0 &&
+          commandAndCaptureHandoffs != hiddenDuringHandoff &&
+          commandHandoffOnly == PauseIntegration::MenuSurfaceBit(
+              PauseSurface::RecorderCommandHandoff) &&
+          PauseIntegration::UpdatedMenuSurfaceMask(
+              commandHandoffOnly,
+              PauseSurface::RecorderCommandHandoff, false) == 0 &&
+          demoTransitionOnly == PauseIntegration::MenuSurfaceBit(
+              PauseSurface::DemoTransition) &&
+          PauseIntegration::UpdatedMenuSurfaceMask(
+              demoTransitionOnly, PauseSurface::DemoTransition, false) == 0,
+          "nested Practice, recorder handoffs, and demo restore transactions transfer pause without an unowned gap");
+    Check(RecorderAttackBatchIsFresh(112, 100, 12) &&
+          !RecorderAttackBatchIsFresh(113, 100, 12) &&
+          !RecorderAttackBatchIsFresh(99, 100, 12),
+          "only a nearby pending press can classify the current follow-up");
+    Check(ExpectedAttackMaskFromNotation("5A") == kAttackButtonA,
+          "notation derives A strength");
+    Check(ExpectedAttackMaskFromNotation("c.5B") == kAttackButtonB,
+          "notation derives close B strength");
+    Check(ExpectedAttackMaskFromNotation("623C finish") == kAttackButtonC,
+          "notation derives C without descriptive suffix noise");
+    Check(ExpectedAttackMaskFromNotation("214A/B/C") ==
+              (kAttackButtonA | kAttackButtonB | kAttackButtonC),
+          "notation derives alternative strengths");
+    Check(ExpectedAttackMaskFromFinalNotationStep(
+              "41236*~236A~236B") == kAttackButtonB &&
+          ExpectedAttackMaskFromFinalNotationStep(
+              "FM (S)~A~B~C~A") == kAttackButtonA &&
+          ExpectedAttackMaskFromFinalNotationStep(
+              "214*~5B~4/5/6") == kAttackButtonB &&
+          ExpectedAttackMaskFromFinalNotationStep(
+              "214A/B/C") ==
+              (kAttackButtonA | kAttackButtonB | kAttackButtonC),
+          "follow-up causality uses the final entered route step");
+    Check(ExpectedAttackMaskFromNotation("BIC") == kAttackButtonC &&
+              ExpectedAttackMaskFromNotation("j.IC") == kAttackButtonC,
+          "IC-family notation derives C");
+    Check(ExpectedAttackMaskFromNotation("5S") == kAttackButtonD &&
+              ExpectedAttackMaskFromNotation("5S (magic charged)") ==
+                  kAttackButtonD,
+          "S notation maps to D without treating magic as IC");
+    Check(ExpectedAttackMaskFromNotation("magic") == 0 &&
+              ExpectedAttackMaskFromNotation("FM") == 0,
+          "descriptive letters do not become attack strengths");
+    Check(ValidExpectedAttackMask(0) &&
+          ValidExpectedAttackMask(kAttackButtonA) &&
+          ValidExpectedAttackMask(kAttackButtonA | kAttackButtonC) &&
+          !ValidExpectedAttackMask(-1) &&
+          !ValidExpectedAttackMask(1) &&
+          !ValidExpectedAttackMask(256),
+          "persisted causal masks accept only zero or A/B/C/D bits");
+    Check(ExpectedAttackMaskForAction("", 200) == kAttackButtonA &&
+          ExpectedAttackMaskForAction("", 208) == kAttackButtonB &&
+          ExpectedAttackMaskForAction("", 167) == kAttackButtonC &&
+          ExpectedAttackMaskForAction("FM", 313) == 0,
+          "universal move IDs provide a conservative notation fallback");
+    constexpr RecorderAttackEdgeCandidate causalCandidates[] = {
+        {40, kAttackButtonB, 100},
+        {41, kAttackButtonA, 103}, // newer, but unrelated failed press
+        {44, kAttackButtonB, 104}, // from a future poll, not yet eligible
+    };
+    Check(SelectNewestEligibleAttackEdge(
+              causalCandidates, 3, 42, 108,
+              kRecorderInputCausalityWindowTicks, kAttackButtonB) == 0,
+          "newest eligible matching edge skips a fresher wrong button and a future poll");
+    Check(SelectNewestEligibleAttackEdge(
+              causalCandidates, 3, 42, 108,
+              kRecorderInputCausalityWindowTicks, kAttackButtonA) == 1,
+          "the matching fresh edge is selected for its own action strength");
+    Check(SelectNewestEligibleAttackEdge(
+              causalCandidates, 3, 42, 200, 12, kAttackButtonB) == -1,
+          "historical matching input cannot become a later action's cause");
+    Check(BoundCausalAttackMask(kAttackButtonA | kAttackButtonB,
+                                kAttackButtonB) == kAttackButtonB &&
+          BoundCausalAttackMask(kAttackButtonA | kAttackButtonB, 0) ==
+              (kAttackButtonA | kAttackButtonB),
+          "known actions persist their causal strength, while unknown actions retain the observed edge");
+    Check(ShouldFoldKnownAutomaticPhase(true) &&
+          !ShouldFoldKnownAutomaticPhase(false),
+          "catalogued automatic phases always fold regardless of input noise");
+    Check(DeadlineAttackEdgeMatches(kAttackButtonB, kAttackButtonB) &&
+          !DeadlineAttackEdgeMatches(kAttackButtonA, kAttackButtonB) &&
+          DeadlineAttackEdgeMatches(kAttackButtonA, 0),
+          "new delayed grace is strength-specific while legacy zero remains any-edge");
+    Check(IsLegacyUnmatchedInputDiagnostic(
+              "2 attack input batch(es) did not become recorded moves: A at frame 996 (poll 2791); retake or remove those presses") &&
+          !IsLegacyUnmatchedInputDiagnostic(
+              "exact contact journal overflowed during recording") &&
+          !IsLegacyUnmatchedInputDiagnostic(
+              "attack input batch did not become a move") &&
+          !IsLegacyUnmatchedInputDiagnostic(
+              "integrity failed: 2 attack input batch(es) did not become recorded moves: A; retake or remove those presses"),
+          "only the exact historical unmatched-input review text is nonblocking");
+    Check(!RecorderStopWaitExpired(false, false, 384, 384) &&
+          RecorderStopWaitExpired(false, false, 385, 384) &&
+          !RecorderStopWaitExpired(true, false, 999, 384) &&
+          !RecorderStopWaitExpired(false, true, 999, 384),
+          "recording stop has a bounded running-game watchdog only");
+    Check(!PracticeAutomationSuppressed(false, false) &&
+          PracticeAutomationSuppressed(true, false) &&
+          PracticeAutomationSuppressed(false, true) &&
+          PracticeAutomationSuppressed(true, true),
+          "persistent Practice automation is quarantined for recorder capture and every demo phase");
+    Check(EmbeddedSavestateCanLoad(false, false) &&
+          EmbeddedSavestateCanLoad(false, true) &&
+          EmbeddedSavestateCanLoad(true, true) &&
+          !EmbeddedSavestateCanLoad(true, false),
+          "an embedded savestate fails closed when exact restore is unavailable");
     Check(DecideDemoBaselineSource(false, true, true) ==
               DemoBaselineSource::RunnerCheckpoint,
           "loaded demonstrations prefer the verified same-session checkpoint");
@@ -41,6 +192,53 @@ int main() {
     Check(DecideDemoBaselineSource(false, false, false) ==
               DemoBaselineSource::None,
           "demonstrations never substitute value setup for a missing restore source");
+    Check(DemoTrialRecipeActive(true, false, true, true) &&
+          !DemoTrialRecipeActive(false, false, true, true) &&
+          !DemoTrialRecipeActive(true, true, true, true) &&
+          !DemoTrialRecipeActive(true, false, false, true) &&
+          !DemoTrialRecipeActive(true, false, true, false),
+          "only a loaded Playing demonstration with runner steps owns the trial recipe bar");
+    Check(kDemoTerminalRecipeHoldTicks >= 4,
+          "a terminal demo recipe crosses multiple ordinary render frames before restore");
+    Check(kDemoRecipeSettleTimeoutTicks > kDemoTerminalRecipeHoldTicks,
+          "post-input recipe settlement outlives the short frozen presentation hold");
+    using DemoEnd = DemoRecipeEndAction;
+    Check(DecideDemoRecipeEnd(false, false, 0) ==
+              DemoEnd::ContinuePlayback &&
+          DecideDemoRecipeEnd(false, true, 0) ==
+              DemoEnd::ContinuePlayback &&
+          DecideDemoRecipeEnd(true, false, 0) ==
+              DemoEnd::SettleFinalContacts &&
+          DecideDemoRecipeEnd(true, false, 20) ==
+              DemoEnd::SettleFinalContacts &&
+          DecideDemoRecipeEnd(true, true, 20) ==
+              DemoEnd::HoldTerminalFrame &&
+          DecideDemoRecipeEnd(true, false, 1) ==
+              DemoEnd::FailThenHold,
+          "demo input completion settles pending contacts before terminal hold or bounded failure");
+    Check(RunnerDropAttemptDelta(false) == 1 &&
+          RunnerDropRetryDelay(false, 96) == 96 &&
+          RunnerDropAttemptDelta(true) == 0 &&
+          RunnerDropRetryDelay(true, 96) == 0,
+          "demo recipe divergence cannot count a player try or schedule checkpoint retry");
+    using Mission::SequencePolicy::DecideDemoRoundEvent;
+    using Mission::SequencePolicy::DemoRoundEventAction;
+    Check(DecideDemoRoundEvent(false, 12, true) ==
+              DemoRoundEventAction::Continue &&
+          DecideDemoRoundEvent(true, 12, true) ==
+              DemoRoundEventAction::NormalizeRestoreTransient &&
+          DecideDemoRoundEvent(true, 1, true) ==
+              DemoRoundEventAction::NormalizeRestoreTransient &&
+          DecideDemoRoundEvent(true, 0, true) ==
+              DemoRoundEventAction::RestoreBaseline &&
+          DecideDemoRoundEvent(true, 12, false) ==
+              DemoRoundEventAction::RestoreBaseline,
+          "post-restore round fields normalize only inside the bounded demo startup window while both fighters remain alive");
+    Check(SnapshotCanResumeAfterRestore(false, false, false) &&
+          !SnapshotCanResumeAfterRestore(true, false, false) &&
+          !SnapshotCanResumeAfterRestore(false, true, false) &&
+          !SnapshotCanResumeAfterRestore(false, false, true),
+          "runner validation never consumes the pre-restore demo sample");
     using Mission::Engine::Demo::RequiresTutorialRestoreAcknowledgement;
     Check(RequiresTutorialRestoreAcknowledgement(true, false, true),
           "a lesson-command loaded demo waits for tutorial restore acknowledgement");
@@ -73,6 +271,31 @@ int main() {
           !ReachedSelectorExit(true, true, false) &&
           !ReachedSelectorExit(false, true, true),
           "selector-exit cancellation requires the complete pending launch transition");
+    using Mission::Engine::PendingLaunchPolicy::StartupInputOwned;
+    Check(StartupInputOwned(true, false, false) &&
+          StartupInputOwned(false, true, false) &&
+          StartupInputOwned(false, false, true),
+          "P1 remains neutral across pending-title and runner baseline ownership");
+    Check(!StartupInputOwned(false, false, false),
+          "P1 startup neutral releases only after both launch owners retire");
+    using Mission::Engine::PendingLaunchPolicy::CanReleaseStartupInput;
+    Check(CanReleaseStartupInput(false, false, false, false, false),
+          "an ordinary mission releases P1 when its baseline is ready");
+    Check(!CanReleaseStartupInput(false, false, false, true, false) &&
+          CanReleaseStartupInput(false, false, false, true, true),
+          "a tutorial releases P1 only after freeze/task ownership is established");
+    Check(!CanReleaseStartupInput(true, false, false, true, true) &&
+          !CanReleaseStartupInput(false, true, false, true, true) &&
+          !CanReleaseStartupInput(false, false, true, true, true),
+          "tutorial handoff cannot bypass pending title or baseline ownership");
+
+    using Mission::Engine::StartupRestorePolicy::CanAttempt;
+    Check(CanAttempt(true, true),
+          "exact-state restore starts only after world and Practice ownership settle");
+    Check(!CanAttempt(true, false),
+          "a clear Match cannot race restore ahead of PracticeTick controller capture");
+    Check(!CanAttempt(false, true) && !CanAttempt(false, false),
+          "Practice controller readiness cannot bypass ordinary restore blockers");
 
     using StartupFailure = Mission::Engine::StartupFailurePolicy::Effect;
     using Mission::Engine::StartupFailurePolicy::Decide;
@@ -114,6 +337,27 @@ int main() {
 
     using Recorder = Mission::Engine::Recorder::Phase;
     using Advance = Mission::Engine::Recorder::AdvanceEffect;
+    Check(!Mission::Engine::Recorder::UsesDedicatedPauseMenu(Recorder::Idle) &&
+          Mission::Engine::Recorder::UsesDedicatedPauseMenu(Recorder::PreRecord) &&
+          Mission::Engine::Recorder::UsesDedicatedPauseMenu(Recorder::CountIn) &&
+          Mission::Engine::Recorder::UsesDedicatedPauseMenu(Recorder::Recording) &&
+          Mission::Engine::Recorder::UsesDedicatedPauseMenu(Recorder::Review),
+          "every live mission-authoring phase owns the dedicated Recording menu");
+    Check(!Mission::Engine::Recorder::IsCapturePhase(Recorder::Idle) &&
+          !Mission::Engine::Recorder::IsCapturePhase(Recorder::PreRecord) &&
+          Mission::Engine::Recorder::IsCapturePhase(Recorder::CountIn) &&
+          Mission::Engine::Recorder::IsCapturePhase(Recorder::Recording) &&
+          !Mission::Engine::Recorder::IsCapturePhase(Recorder::Review),
+          "only countdown and live recording own capture suspension");
+    Check(Mission::Engine::Recorder::NeedsCaptureMenuHandoff(
+              true, Recorder::Recording) &&
+          Mission::Engine::Recorder::NeedsCaptureMenuHandoff(
+              true, Recorder::CountIn) &&
+          !Mission::Engine::Recorder::NeedsCaptureMenuHandoff(
+              true, Recorder::Review) &&
+          !Mission::Engine::Recorder::NeedsCaptureMenuHandoff(
+              false, Recorder::Recording),
+          "only an owned live-capture suspension transfers to neutral handoff");
     Check(Mission::Engine::Recorder::DecideAdvance(Recorder::PreRecord) ==
               Advance::BeginCountIn,
           "Macro Record starts the authoring countdown");
@@ -142,6 +386,67 @@ int main() {
     Check(ClassifySampledSlotTransition(true, true, 405, false, 0) ==
               EntityTransition::Despawn,
           "a live-to-dead slot edge is sampled as despawn");
+    Check(Mission::RecorderEntityTrace::
+              AllocationAdvancedWithoutObservedSpawn(true, 9, 12, 0),
+          "allocator movement exposes a spawn retired between samples");
+    Check(!Mission::RecorderEntityTrace::
+               AllocationAdvancedWithoutObservedSpawn(true, 9, 12, 1),
+          "an observed spawn explains ordinary allocator movement");
+    Check(Mission::RecorderEntityTrace::ContactGradesLifecycle(12, 12) &&
+              !Mission::RecorderEntityTrace::ContactGradesLifecycle(11, 12),
+          "a contact grades only its nearest lifecycle producer phase");
+    using namespace Mission::SemanticSourcePolicy;
+    Check(AccumulateCandidateAction(kExplicitUnresolved, 4) == 4 &&
+              AccumulateCandidateAction(4, 4) == 4,
+          "repeated lifecycle phases from one action retain one exact source");
+    Check(AccumulateCandidateAction(4, 9) == kAmbiguousSelection &&
+              FinalizeCandidateAction(kAmbiguousSelection) ==
+                  kExplicitUnresolved,
+          "an old child overlapping a later identical setter stays standalone");
+    Check(ResolveOrdinaryBirthAction(true, false, 2, 9, true) == 2,
+          "a slow ordinary projectile keeps its spawn action instead of a later contact morph");
+    Check(ResolveOrdinaryBirthAction(false, true, -1, 9, true) ==
+              kExplicitUnresolved &&
+              ResolveOrdinaryBirthAction(true, false, 2, 9, false) ==
+                  kExplicitUnresolved,
+          "baseline and action-order-ambiguous ordinary projectiles stay standalone");
+    Check(CandidateLifecycleEligible(true, false, false, true, true, true) &&
+              !CandidateLifecycleEligible(true, false, true, false, true,
+                                          true),
+          "a baseline puppet accepts an exact command morph, never a fake birth");
+    Check(CandidateLifecycleEligible(false, true, true, false, false, true) &&
+              !CandidateLifecycleEligible(false, true, false, true, false,
+                                          true),
+          "a new entity accepts its controller birth but not an unrelated later morph");
+    CandidateSelection source;
+    source = AccumulateCandidate(source, 4, 253);
+    source = AccumulateCandidate(source, 4, 253);
+    Check(FinalizeCandidate(source).action == 4 &&
+              FinalizeCandidate(source).move == 253,
+          "duplicate lifecycle edges retain one exact action/move source");
+    source = AccumulateCandidate(source, 4, 254);
+    Check(IsExplicitUnresolved(FinalizeCandidate(source).action,
+                               FinalizeCandidate(source).move),
+          "two competing source move IDs fail closed after primary precedence");
+    const CandidateSelection mizukabPrimary = FinalizeCandidate(
+        AccumulateStepMoveCandidate({}, 4, 314, true, 315, true));
+    const CandidateSelection mioAlias = FinalizeCandidate(
+        AccumulateStepMoveCandidate({}, 7, 250, false, 273, true));
+    Check(mizukabPrimary.action == 4 && mizukabPrimary.move == 314 &&
+              mioAlias.action == 7 && mioAlias.move == 273,
+          "primary Mizukab context and Mio automatic-only context resolve deterministically");
+    CandidateSelection otherAction;
+    otherAction = AccumulateCandidate(otherAction, 4, 253);
+    otherAction = AccumulateCandidate(otherAction, 9, 253);
+    Check(IsExplicitUnresolved(FinalizeCandidate(otherAction).action,
+                               FinalizeCandidate(otherAction).move),
+          "the same move from two distinct actions fails closed");
+    Check(IsLegacyAbsent(kLegacyAbsent, kLegacyAbsent) &&
+              IsExplicitUnresolved(kExplicitUnresolved,
+                                   kExplicitUnresolved) &&
+              IsExact(2, 253) &&
+              !ValidPersistedPair(kLegacyAbsent, kExplicitUnresolved),
+          "legacy, unresolved, and exact provenance cannot collapse together");
 
     Check(IsMoveInstanceEdge(200, 0, 0, 0),
           "changing onto a move starts an action instance");
@@ -153,6 +458,62 @@ int main() {
           "ordinary animation advance is not a new action instance");
     Check(!IsMoveInstanceEdge(171, 5, 171, 17),
           "a looping animation wrapping to a mid-anim frame is not a new instance");
+    Check(!IsCausallyCredibleMoveInstanceEdge(207, 2, 207, 3, false),
+          "an uncorroborated j.A 3->2 animation wrap is not a second action");
+    Check(IsCausallyCredibleMoveInstanceEdge(200, 2, 200, 8, true),
+          "a fresh matching A edge preserves a repeated same-ID normal");
+    Check(IsCausallyCredibleMoveInstanceEdge(208, 0, 207, 3, false),
+          "a move-ID transition stays authoritative without sampled input");
+    Check(!FlexibleMultiHitCanFinalize(true, 0, true, false, false),
+          "a flexible multi-hit still has to connect at least once");
+    Check(!FlexibleMultiHitCanFinalize(true, 4, false, false, false),
+          "partial contacts alone do not advance an active multi-hit early");
+    Check(FlexibleMultiHitCanFinalize(true, 4, false, true, false) &&
+              FlexibleMultiHitCanFinalize(true, 4, false, false, true),
+          "a correct continuation or combo boundary accepts a partial multi-hit");
+    Check(!FlexibleMultiHitCanFinalize(false, 4, true, true, true),
+          "authored strict hit counts never inherit recorder leniency");
+    using StrictDecision = StrictActionInstanceDecision;
+    Check(DecideStrictActionInstance(
+              true, true, false,
+              false, false, true, true,
+              false, false, false) == StrictDecision::RejectUnexpected,
+          "a same-ID restart of the completed previous step is an extra strict action");
+    Check(DecideStrictActionInstance(
+              false, true, true,
+              true, true, false, false,
+              false, false, false) == StrictDecision::Ignore,
+          "an advancing same-ID multi-hit phase is not mistaken for another action");
+    Check(DecideStrictActionInstance(
+              true, true, true,
+              true, true, false, false,
+              true, false, false) == StrictDecision::AcceptAutomaticPhase,
+          "an ID-changing alias within the armed step remains one automatic action");
+    Check(DecideStrictActionInstance(
+              true, true, false,
+              false, false, true, true,
+              true, false, false) == StrictDecision::AcceptAutomaticPhase,
+          "a flattened automatic follow-up may finish after its step advances");
+    Check(DecideStrictActionInstance(
+              true, true, true,
+              true, true, false, false,
+              false, false, false) == StrictDecision::RejectUnexpected,
+          "restarting an already armed same-ID step cannot replace its first instance");
+    Check(DecideStrictActionInstance(
+              true, true, true,
+              true, true, false, false,
+              false, true, false) == StrictDecision::AcceptNextOverlap,
+          "a repeated-ID next step survives same-sample contact/cancel overlap");
+    Check(DecideStrictActionInstance(
+              true, true, false,
+              false, false, false, false,
+              true, false, true) == StrictDecision::SkipOptional,
+          "a fresh action may still skip authored optional steps");
+    Check(DecideStrictActionInstance(
+              true, true, false,
+              true, false, false, false,
+              true, false, false) == StrictDecision::AcceptExpected,
+          "the unarmed expected action starts normally");
     Check(DirectTransitionSatisfied(true, true, true),
           "a fresh destination directly following its authored source is a cancel transition");
     Check(!DirectTransitionSatisfied(true, true, false),
@@ -270,6 +631,19 @@ int main() {
     Check(DetectSampledComboBoundary(true, true, 2, 3) ==
               SampledComboBoundary::None,
           "ordinary increasing combo counts are not boundaries");
+    Check(ContactBeginsNewComboBaseline(0, 1) &&
+          ContactBeginsNewComboBaseline(2, 1) &&
+          !ContactBeginsNewComboBaseline(1, 2) &&
+          !ContactBeginsNewComboBaseline(2, 2),
+          "exact contact baselines accept zero and positive counter rollovers only");
+    Check(ExactContactBeginsNewCombo(true, true, 0, 1, 41, 37) &&
+          ExactContactBeginsNewCombo(true, true, 2, 1, 42, 41),
+          "ordered zero and 2-to-1 contacts prove unsampled Part-2 boundaries");
+    Check(!ExactContactBeginsNewCombo(false, true, 0, 1, 1, 0) &&
+              !ExactContactBeginsNewCombo(true, false, 0, 1, 41, 37) &&
+              !ExactContactBeginsNewCombo(true, true, 1, 2, 41, 37) &&
+              !ExactContactBeginsNewCombo(true, true, 0, 1, 37, 37),
+          "first-ever, defended, continuous, and stale contacts do not invent boundaries");
 
     Check(DecideStepSatisfaction(false, true, false) ==
               StepSatisfactionDecision::Wait,
@@ -335,6 +709,21 @@ int main() {
     contact.rawAttackerState = 3;
     Check(Mission::Contact::ClassifyDirect(contact) == ContactResult::Hit,
           "a consumed direct collision with combo gain is a hit");
+    Check(Mission::Contact::CorroboratesComboRestart(
+              2, 1, 9336, 8645, true, 3),
+          "damage plus hit reaction proves an atomic 2-to-1 combo restart");
+    Check(!Mission::Contact::CorroboratesComboRestart(
+               2, 1, 9336, 8645, false, 3) &&
+              !Mission::Contact::CorroboratesComboRestart(
+                  2, 1, 9336, 9336, true, 3) &&
+              !Mission::Contact::CorroboratesComboRestart(
+                  2, 1, 9336, 8645, true, 2),
+          "counter rollover alone cannot masquerade as a committed hit");
+    contact = {};
+    contact.resolved = true; contact.comboRestarted = true;
+    contact.rawAttackerState = 3;
+    Check(Mission::Contact::ClassifyDirect(contact) == ContactResult::Hit,
+          "a corroborated direct combo restart is an ordinary hit");
     contact = {};
     contact.resolved = true; contact.defenderBlocked = true;
     contact.rawAttackerState = 2;
@@ -373,6 +762,12 @@ int main() {
     entityContact.comboIncreased = true;
     Check(Mission::Contact::ClassifyEntity(entityContact) == ContactResult::Hit,
           "entity state 3 plus resolver-local combo gain is a hit");
+    entityContact.comboIncreased = false;
+    entityContact.comboRestarted = true;
+    Check(Mission::Contact::ClassifyEntity(entityContact) == ContactResult::Hit,
+          "entity state 3 plus a corroborated combo restart is a hit");
+    entityContact.comboRestarted = false;
+    entityContact.comboIncreased = true;
     entityContact.rawEntityState = 7;
     Check(Mission::Contact::ClassifyEntity(entityContact) == ContactResult::SpecialHit,
           "entity state 7 plus resolver-local combo gain is the hit variant");

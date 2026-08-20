@@ -10,6 +10,9 @@ namespace CustomMenu::Layout {
 
 namespace {
 
+constexpr ImU32 kSessionRowRule    = IM_COL32(255, 255, 255, 78);
+constexpr ImU32 kSessionRowRuleHot = IM_COL32(255, 255, 255, 210);
+
 float PxFromFont(ImFont* font) {
     return (font && font->FontSize > 0.0f) ? font->FontSize : Scale::Get().bodyPx;
 }
@@ -60,11 +63,13 @@ void DrawRowChromeFocused(ImDrawList* dl, float x, float y, float w, bool disabl
     const float sx = Scale::Snap(x - metrics.panelPadX);
     const float sy = Scale::Snap(y);
     const float sw = Scale::Snap(w + metrics.panelPadX * 2.0f);
-    const ImU32 fill = disabled ? kDisabledFocus : kSelectedFill;
+    const ImU32 fill = disabled ? kDisabledFocus : kRowFocusFill;
     const ImU32 cursorCol = disabled ? kCursorDisabled : kTextActive;
     dl->AddRectFilled(ImVec2(sx, sy + 2.0f), ImVec2(sx + sw, sy + metrics.rowHeight - 2.0f), fill);
     if (!disabled) {
-        dl->AddLine(ImVec2(sx, sy + metrics.rowHeight - 3.0f), ImVec2(sx + sw, sy + metrics.rowHeight - 3.0f), kSelectedLine, 1.0f);
+        dl->AddLine(ImVec2(sx, sy + metrics.rowHeight - 3.0f),
+                    ImVec2(sx + sw, sy + metrics.rowHeight - 3.0f),
+                    kRowFocusLine, 1.0f);
     }
     ImFont* f  = Fonts::Body();
     const float px = PxFromFont(f);
@@ -273,7 +278,9 @@ void DrawRowLabelValue(
     const float textY = CenterTextY(y, metrics.rowHeight, bPx);
 
     const ImU32 labelCol = disabled ? kTextDisabled : (focused ? kTextActive : kTextInactive);
-    const ImU32 valueCol = disabled ? kTextDisabled : (focused ? kTextActive : kTextInactive);
+    // Native option screens keep the configured value bright even while a
+    // different row owns focus; only the label dims.
+    const ImU32 valueCol = disabled ? kTextDisabled : kTextActive;
 
     DrawString(dl, bFont, bPx, x + metrics.rowPadX, textY, labelCol, label);
 
@@ -317,7 +324,7 @@ void DrawRowInlineChoices(
     for (int i = 0; i < choiceCount; ++i) {
         const float cw = MeasureTextW(bFont, bPx, choices[i]);
         const bool selected = (i == currentIdx);
-        const ImU32 col = disabled ? kTextDisabled
+        const ImU32 col = disabled ? (selected ? kTextLockedValue : kTextDisabled)
                          : (selected ? kTextActive : kTextInactive);
         DrawString(dl, bFont, bPx, cursorX, textY, col, choices[i]);
         cursorX = Scale::Snap(cursorX + cw + kChoiceGapX);
@@ -388,7 +395,7 @@ void DrawRowDrill(
     const float textY = CenterTextY(y, metrics.rowHeight, bPx);
 
     const ImU32 labelCol = disabled ? kTextDisabled : (focused ? kTextActive : kTextInactive);
-    const ImU32 valueCol = disabled ? kTextDisabled : (focused ? kTextActive : kTextInactive);
+    const ImU32 valueCol = disabled ? kTextDisabled : kTextActive;
     const ImU32 arrowCol = disabled ? kTextDisabled : kTextActive;
 
     DrawString(dl, bFont, bPx, x + metrics.rowPadX, textY, labelCol, label);
@@ -518,7 +525,7 @@ void DrawRowSlider(
     }
 
     if (valueText && *valueText) {
-        const ImU32 valueCol = disabled ? kTextDisabled : (focused ? kTextActive : kTextInactive);
+        const ImU32 valueCol = disabled ? kTextDisabled : kTextActive;
         DrawString(dl, bFont, bPx, valueX, textY, valueCol, valueText);
     }
 }
@@ -560,6 +567,25 @@ void DrawOutlinedText(ImDrawList* dl, ImFont* font, float px, float x, float y,
                       ImU32 col, const char* text) {
     if (!dl || !text || !*text) return;
     DrawOutlinedString(dl, font, px, x, y, col, Theme::kTextOutline, text);
+}
+
+void DrawSessionRowChrome(ImDrawList* dl, float x, float y, float w, float h,
+                          bool selected) {
+    using namespace Theme;
+    if (!dl || w <= 0.0f || h <= 0.0f) return;
+    const float sx = Scale::Snap(x);
+    const float sy = Scale::Snap(y);
+    const float ex = Scale::Snap(x + w);
+    const float ey = Scale::Snap(y + h);
+
+    dl->AddRectFilled(ImVec2(sx, sy), ImVec2(ex, ey), kStripStrong);
+    if (selected) {
+        dl->AddRectFilled(ImVec2(sx, sy), ImVec2(ex, ey), kRowFocusFill);
+        dl->AddRectFilled(ImVec2(sx, sy), ImVec2(sx + 2.0f, ey),
+                          kSessionRowRuleHot);
+    }
+    dl->AddLine(ImVec2(sx, ey - 1.0f), ImVec2(ex, ey - 1.0f),
+                selected ? kSessionRowRuleHot : kSessionRowRule, 1.0f);
 }
 
 void DrawNativeBar(ImDrawList* dl, float x, float y, float w, float h,

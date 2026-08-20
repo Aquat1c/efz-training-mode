@@ -4,6 +4,7 @@
 #include "../../include/game/collision_display.h"
 #include "../../include/game/savestate_hook.h"
 #include "../../include/game/mission/mission_engine.h"
+#include "../../include/game/mission/mission_pause_menu.h"
 #include "../../include/game/mission/tutorial_session.h"
 #include "../../include/core/logger.h"
 #include "../../include/core/constants.h"
@@ -36,14 +37,54 @@ namespace {
     // Forward declaration of scanner (fallback). Returns 0 if not found.
     uintptr_t ScanForHotkeyEvaluator();
 
+    enum class RunnerCheckpointKey : uint8_t {
+        Other,
+        SaveOrLoad,
+        Unreadable,
+    };
+
+    RunnerCheckpointKey ClassifyRunnerCheckpointKey(void* self, int key) {
+        if (!self || key == 0) return RunnerCheckpointKey::Other;
+        const uintptr_t saveOffset = EFZ_Practice_SaveHotkeyOffset();
+        const uintptr_t loadOffset = EFZ_Practice_LoadHotkeyOffset();
+        if (!saveOffset || !loadOffset) {
+            return RunnerCheckpointKey::Unreadable;
+        }
+
+        int saveKey = -1;
+        int loadKey = -1;
+        const uintptr_t practice = reinterpret_cast<uintptr_t>(self);
+        if (!SafeReadMemory(practice + saveOffset, &saveKey, sizeof(saveKey)) ||
+            !SafeReadMemory(practice + loadOffset, &loadKey, sizeof(loadKey))) {
+            return RunnerCheckpointKey::Unreadable;
+        }
+        return key == saveKey || key == loadKey
+            ? RunnerCheckpointKey::SaveOrLoad
+            : RunnerCheckpointKey::Other;
+    }
+
     uintptr_t __fastcall HookedHotkeyEval(void* self, void* edxValue, int a2) {
         PauseIntegration::NotePracticeControllerCandidate(self, "PracticeDispatcher");
-        if (Gate_IsMenuVisible() || Mission::TutorialSession::IsActive() ||
+        if (Gate_IsMenuVisible() || Mission::PauseMenu::IsOpen() ||
+            Mission::TutorialSession::IsActive() ||
             Mission::Engine::Demo::IsActive() ||
-            Mission::Engine::Recorder::OwnsCaptureHotkeys()) {
+            Mission::Engine::Recorder::OwnsCaptureHotkeys() ||
+            Mission::Engine::Recorder::IsMenuInputHandoffActive()) {
             // Suppress all practice hotkey side-effects this frame
             s_suppressedFrames.fetch_add(1, std::memory_order_relaxed);
             return 0; // early exit, indicate not handled
+        }
+        if (Mission::Engine::Runner::IsActive()) {
+            const RunnerCheckpointKey checkpointKey =
+                ClassifyRunnerCheckpointKey(self, a2);
+            if (checkpointKey != RunnerCheckpointKey::Other) {
+                // The runner owns Revival's single Practice checkpoint. A
+                // manual save would silently replace it while g_runStateSaved
+                // remained true; fail closed if the configured keys cannot be
+                // read, but leave every confirmed non-savestate hotkey alone.
+                s_suppressedFrames.fetch_add(1, std::memory_order_relaxed);
+                return 0;
+            }
         }
         // Custom savestate backend removed - Practice save/load hotkeys fall
         // through to EfzRevival's native handler below.

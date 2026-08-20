@@ -1234,9 +1234,10 @@ void DirectDrawHook::RenderD3D9Overlays(LPDIRECT3DDEVICE9 pDevice, UINT rtW, UIN
     const bool titleScreenActive = PracticeMenu::TitleScreen::WantsDraw();
     const bool missionPauseActive = Mission::PauseMenu::WantsDraw();
     const bool tutorialActive = Mission::TutorialSession::WantsDraw();
+    const bool missionRecipeActive = Mission::Render::WantsDraw();
     if (!menuVisibleNow && !g_ShowOverlayDebugBorders.load() && !haveMessages &&
         !haveCollisionOverlay && !titleScreenActive && !missionPauseActive &&
-        !tutorialActive) {
+        !tutorialActive && !missionRecipeActive) {
         return;
     }
 
@@ -1510,7 +1511,7 @@ void DirectDrawHook::RenderD3D9Overlays(LPDIRECT3DDEVICE9 pDevice, UINT rtW, UIN
             bool padActive = false;
             if (!customMenuActive) {
                 XINPUT_STATE state{};
-                if (const XINPUT_STATE* s = XInputShim::GetCachedState(0)) { state = *s; {
+                if (XInputShim::CopyCachedState(0, state)) {
                     auto applyDeadzone = [](SHORT v, SHORT dz) -> float {
                         int iv = (int)v;
                         if (iv > dz) iv -= dz; else if (iv < -dz) iv += dz; else iv = 0;
@@ -1552,7 +1553,7 @@ void DirectDrawHook::RenderD3D9Overlays(LPDIRECT3DDEVICE9 pDevice, UINT rtW, UIN
                         padPos.x += nx * baseSpeed * dt;
                         padPos.y += -ny * baseSpeed * dt;
                     }
-                }}
+                }
             } else {
                 s_dotSuppressSec = 0.0f;
             }

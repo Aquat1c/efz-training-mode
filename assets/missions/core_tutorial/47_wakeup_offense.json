@@ -352,8 +352,8 @@
   "sourceRefs": [
     "mizuumi:advanced-mechanics@457885",
     "mizuumi:strategy@460572",
-    "local:shared_documentation/move_command_maps/misaki.json::214C move 252",
-    "local:assets/movedata/notation/nayukib.json::200,201,203,253",
+    "local:shared_documentation/MOVE_COMMAND_MAPS.md::misaki / 214C move 252",
+    "local:include/game/mission/move_notation_tables.h::nayukib moves 200,201,203,253",
     "local:docs/info/strategy/Eternal Fighter Zero_Strategy - Mizuumi Wiki.html"
   ],
   "next": {

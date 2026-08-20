@@ -27,10 +27,12 @@
 #include "../include/game/macro_controller.h"
 #include "../include/game/mission/mission_engine.h"
 #include "../include/game/mission/mission_data.h"
+#include "../include/game/mission/mission_authoring.h"
 #include "../include/game/custom_savestate.h"
 #include "../include/game/savestate_hook.h"
 #include "../include/game/fm_commands.h"
 #include "../include/game/character_settings.h"
+#include "../include/game/character_action_catalog.h"
 #include "../include/game/character_hotswap.h"
 #include "../include/gui/overlay.h"
 #include "../include/gui/framebar.h"
@@ -51,6 +53,8 @@
 
 #include <windows.h>
 #include <algorithm>
+#include <atomic>
+#include <cctype>
 #include <cstdio>
 #include <cstring>
 #include <sstream>
@@ -105,7 +109,7 @@ bool HasMio()      { return P1Or(CHAR_ID_MIO); }
 bool HasNeyuki()   { return P1Or(CHAR_ID_NAYUKI); }
 bool HasMai()      { return P1Or(CHAR_ID_MAI); }
 bool HasMinagi()   { return P1Or(CHAR_ID_MINAGI); }
-bool HasMizuka()   { return P1Or(CHAR_ID_MIZUKA) || P1Or(CHAR_ID_NAGAMORI); }
+bool HasMizuka()   { return P1Or(CHAR_ID_MIZUKA); }
 
 bool NotIkumi()  { return !HasIkumi(); }
 bool NotMisuzu() { return !HasMisuzu(); }
@@ -154,6 +158,12 @@ void OnCollisionDisplayHitboxes()    { PersistBool("General", "collisionDisplayH
 void OnCollisionDisplayHurtboxes()   { PersistBool("General", "collisionDisplayHurtboxes", MutableSettings().collisionDisplayHurtboxes); }
 void OnCollisionDisplayPushboxes()   { PersistBool("General", "collisionDisplayCollisionBoxes", MutableSettings().collisionDisplayCollisionBoxes); }
 void OnCollisionDisplayProjectiles() { PersistBool("General", "collisionDisplayProjectileInteractions", MutableSettings().collisionDisplayProjectileInteractions); }
+void OnCollisionDisplayP1Hitboxes()  { PersistBool("General", "collisionDisplayP1Hitboxes", MutableSettings().collisionDisplayP1Hitboxes); }
+void OnCollisionDisplayP2Hitboxes()  { PersistBool("General", "collisionDisplayP2Hitboxes", MutableSettings().collisionDisplayP2Hitboxes); }
+void OnCollisionDisplayP1Hurtboxes() { PersistBool("General", "collisionDisplayP1Hurtboxes", MutableSettings().collisionDisplayP1Hurtboxes); }
+void OnCollisionDisplayP2Hurtboxes() { PersistBool("General", "collisionDisplayP2Hurtboxes", MutableSettings().collisionDisplayP2Hurtboxes); }
+void OnCollisionDisplayP1Pushboxes() { PersistBool("General", "collisionDisplayP1CollisionBoxes", MutableSettings().collisionDisplayP1CollisionBoxes); }
+void OnCollisionDisplayP2Pushboxes() { PersistBool("General", "collisionDisplayP2CollisionBoxes", MutableSettings().collisionDisplayP2CollisionBoxes); }
 void OnCollisionDisplayAlpha()       { PersistInt ("General", "collisionDisplayFillAlphaPercent", MutableSettings().collisionDisplayFillAlphaPercent); }
 void OnCollisionProjectileBoxes()    { PersistBool("General", "collisionDisplayProjectileBoxes", MutableSettings().collisionDisplayProjectileBoxes); }
 void OnCollisionProjectileOrigins()  { PersistBool("General", "collisionDisplayProjectileOrigins", MutableSettings().collisionDisplayProjectileOrigins); }
@@ -225,8 +235,10 @@ uint64_t g_poolMaskRGLo, g_poolMaskRGHi;
 bool g_useMaskAB, g_useMaskWU, g_useMaskAH, g_useMaskAA, g_useMaskRG;
 
 int GetMotionIndexForAction(int action);
+int EffectiveAutoActionCharId();
 void RefreshTriggerActionChoices();
 int GetTriggerActionChoiceIndex(int action, int strength);
+bool NormalizeTriggerActionForCatalog(int& action, int& strength);
 const char* FormatTriggerActionChoiceRow(const Row& row);
 void ExpandLegacyActionPoolMask(uint32_t legacyMask, int strength, uint64_t& lo, uint64_t& hi);
 void InitializeAddedPoolDelaysForTrigger(int triggerIdx,
@@ -243,7 +255,7 @@ int g_selectedAutoTrigger = 0;
 int g_mirrorFwdDashFollowup = 0;
 
 void RefreshAutoMirrors() {
-    const auto& d = ImGuiGui::guiState.localData;
+    auto& d = ImGuiGui::guiState.localData;
     g_mirrorRandomize  = d.randomizeTriggers;
     g_mirrorWakeBuffer = g_wakeBufferingEnabled.load();
     g_mirrorCounterRG  = g_counterRGEnabled.load();
@@ -272,6 +284,18 @@ void RefreshAutoMirrors() {
 
     g_mirrorFwdDashFollowup = forwardDashFollowup.load();
     RefreshTriggerActionChoices();
+    bool normalized = false;
+    normalized = NormalizeTriggerActionForCatalog(
+                     d.actionAfterBlock, d.strengthAfterBlock) || normalized;
+    normalized = NormalizeTriggerActionForCatalog(
+                     d.actionOnWakeup, d.strengthOnWakeup) || normalized;
+    normalized = NormalizeTriggerActionForCatalog(
+                     d.actionAfterHitstun, d.strengthAfterHitstun) || normalized;
+    normalized = NormalizeTriggerActionForCatalog(
+                     d.actionAfterAirtech, d.strengthAfterAirtech) || normalized;
+    normalized = NormalizeTriggerActionForCatalog(
+                     d.actionOnRG, d.strengthOnRG) || normalized;
+    if (normalized) OnAutoApply();
     g_motionIdxAB = GetMotionIndexForAction(d.actionAfterBlock);
     g_motionIdxWU = GetMotionIndexForAction(d.actionOnWakeup);
     g_motionIdxAH = GetMotionIndexForAction(d.actionAfterHitstun);
@@ -462,20 +486,23 @@ const char* const kStanceChoices[2]  = { "SHORT", "LONG" };
 const char* const kRumiModeChoices[2] = { "SHINAI", "BARE" };
 
 // Dense action-index list (matches ACTION_xxx constant values 0..38 in constants.h).
-const char* const kActionNames[39] = {
-    "5A","5B","5C","5D",
-    "2A","2B","2C","2D",
-    "jA","jB","jC","jD",
-    "6A","6B","6C","6D",
-    "4A","4B","4C","4D",
+const char* const kActionNames[ACTION_COUNT] = {
+    "5A","5B","5C","5S",
+    "2A","2B","2C","2S",
+    "jA","jB","jC","jS",
+    "6A","6B","6C","6S",
+    "4A","4B","4C","4S",
     "QCF (236)", "DP (623)", "QCB (214)", "421",
-    "SUPER1 (41236)", "SUPER2 (214236)", "236236", "214214",
+    "41236", "2141236", "236236", "214214",
     "JUMP", "BACKDASH", "FORWARD DASH", "BLOCK", "FINAL MEMORY",
-    "641236", "463214", "412", "22", "4123641236", "6321463214"
+    "641236", "463214", "412", "22", "4123641236", "6321463214",
+    "1X", "3X", "j.2X", "j.6X", "66X", "662X", "664X",
+    "KAORI 44~66"
 };
-constexpr int kActionCount = 39;
+constexpr int kActionCount = ACTION_COUNT;
 
-const char* const kStrengthChoices[4] = { "A", "B", "C", "D" };
+const char* const kStrengthChoices[4] = { "A", "B", "C", "S" };
+const char* const kChargeFollowupChoices[3] = { "OFF", "IC ON CONTACT", "FIC WINDOW" };
 const char* const kJumpDirChoicesAuto[3] = { "NEUTRAL", "FORWARD", "BACK" };
 const char* const kFdFollowupChoices[7] = {
     "NO FOLLOW-UP", "A", "B", "C", "2A", "2B", "2C"
@@ -491,8 +518,8 @@ const char* const kTriggerMotionChoices[] = {
     "DP (623)",
     "QCB (214)",
     "421",
-    "SUPER1 (41236)",
-    "SUPER2 (214236)",
+    "41236",
+    "2141236",
     "236236",
     "214214",
     "641236",
@@ -507,7 +534,15 @@ const char* const kTriggerMotionChoices[] = {
     "BLOCK",
     "FINAL MEMORY",
     "6X (FORWARD)",
-    "4X (BACK)"
+    "4X (BACK)",
+    "1X (DOWN-BACK)",
+    "3X (DOWN-FORWARD)",
+    "j.2X (AIR DOWN)",
+    "j.6X (AIR FORWARD)",
+    "66X (DASH NORMAL)",
+    "662X (DASH LOW)",
+    "664X (DASH BACK NORMAL)",
+    "44~66 (KAORI RECOIL DUCKING)"
 };
 constexpr int kTriggerMotionCount = sizeof(kTriggerMotionChoices) / sizeof(kTriggerMotionChoices[0]);
 
@@ -515,35 +550,48 @@ constexpr int kTriggerMotionCount = sizeof(kTriggerMotionChoices) / sizeof(kTrig
 // the user choose both 623A and 623B, or only one of them, without relying on
 // the trigger's current button setting.
 const char* const kActionPoolNames[] = {
-    "5A", "5B", "5C", "5D",
-    "2A", "2B", "2C", "2D",
-    "jA", "jB", "jC", "jD",
-    "6A", "6B", "6C", "6D",
-    "4A", "4B", "4C", "4D",
+    "5A", "5B", "5C", "5S",
+    "2A", "2B", "2C", "2S",
+    "jA", "jB", "jC", "jS",
+    "6A", "6B", "6C", "6S",
+    "4A", "4B", "4C", "4S",
 
-    "236A", "236B", "236C", "236D",
-    "623A", "623B", "623C", "623D",
-    "214A", "214B", "214C", "214D",
-    "421A", "421B", "421C", "421D",
-    "412A", "412B", "412C", "412D",
-    "22A", "22B", "22C", "22D",
+    "236A", "236B", "236C", "236S",
+    "623A", "623B", "623C", "623S",
+    "214A", "214B", "214C", "214S",
+    "421A", "421B", "421C", "421S",
+    "412A", "412B", "412C", "412S",
+    "22A", "22B", "22C", "22S",
 
-    "41236A", "41236B", "41236C", "41236D",
-    "214236A", "214236B", "214236C", "214236D",
-    "236236A", "236236B", "236236C", "236236D",
-    "214214A", "214214B", "214214C", "214214D",
-    "641236A", "641236B", "641236C", "641236D",
-    "463214A", "463214B", "463214C", "463214D",
-    "4123641236A", "4123641236B", "4123641236C", "4123641236D",
-    "6321463214A", "6321463214B", "6321463214C", "6321463214D",
+    "41236A", "41236B", "41236C", "41236S",
+    "2141236A", "2141236B", "2141236C", "2141236S",
+    "236236A", "236236B", "236236C", "236236S",
+    "214214A", "214214B", "214214C", "214214S",
+    "641236A", "641236B", "641236C", "641236S",
+    "463214A", "463214B", "463214C", "463214S",
+    "4123641236A", "4123641236B", "4123641236C", "4123641236S",
+    "6321463214A", "6321463214B", "6321463214C", "6321463214S",
     "FINAL MEMORY",
 
     "JUMP NEUTRAL", "JUMP FORWARD", "JUMP BACK",
     "BACKDASH", "FORWARD DASH",
-    "BLOCK"
+    "BLOCK",
+
+    // Appended catalog recipes.  These indices are stable and must never be
+    // inserted into the 0..82 legacy pool range.
+    "1A", "1B", "1C", "1S",
+    "3A", "3B", "3C", "3S",
+    "j.2A", "j.2B", "j.2C", "j.2S",
+    "j.6A", "j.6B", "j.6C", "j.6S",
+    "66A", "66B", "66C", "66S",
+    "662A", "662B", "662C", "662S",
+    "664A", "664B", "664C", "664S",
+    "KAORI 44~66"
 };
 constexpr int kActionPoolCount = sizeof(kActionPoolNames) / sizeof(kActionPoolNames[0]);
 static_assert(kActionPoolCount <= 128, "Action pool mask uses two 64-bit words");
+static_assert(kActionPoolCount == CharacterActionCatalog::kPoolCount,
+              "catalog and UI pool indices drifted");
 
 int ClampIndex(int v, int maxExclusive) {
     if (v < 0) return 0;
@@ -578,6 +626,13 @@ bool ActionUsesButtonStrength(int action) {
         case ACTION_22:
         case ACTION_4123641236:
         case ACTION_6321463214:
+        case ACTION_1X:
+        case ACTION_3X:
+        case ACTION_J2X:
+        case ACTION_J6X:
+        case ACTION_66X:
+        case ACTION_662X:
+        case ACTION_664X:
             return true;
         default:
             return false;
@@ -585,6 +640,22 @@ bool ActionUsesButtonStrength(int action) {
 }
 
 bool IsSpecialMoveAction(int action) {
+    return ActionUsesButtonStrength(action);
+}
+
+bool ActionSupportsChargeFollowup(int action) {
+    if (action == ACTION_JUMP || action == ACTION_BACKDASH ||
+        action == ACTION_FORWARD_DASH || action == ACTION_BLOCK ||
+        action == ACTION_FINAL_MEMORY ||
+        action == ACTION_KAORI_RECOIL_DUCK || action == ACTION_66X ||
+        action == ACTION_662X || action == ACTION_664X) {
+        return false;
+    }
+    if (action >= ACTION_5A && action <= ACTION_4D) return true;
+    if (action == ACTION_1X || action == ACTION_3X ||
+        action == ACTION_J2X || action == ACTION_J6X) {
+        return true;
+    }
     return ActionUsesButtonStrength(action);
 }
 
@@ -653,6 +724,14 @@ int MapMotionIndexToAction(int motionIdx, int buttonIdx) {
         case 16: return ACTION_6321463214;
         case 22: return buttonIdx == 0 ? ACTION_6A : (buttonIdx == 1 ? ACTION_6B : (buttonIdx == 2 ? ACTION_6C : ACTION_6D));
         case 23: return buttonIdx == 0 ? ACTION_4A : (buttonIdx == 1 ? ACTION_4B : (buttonIdx == 2 ? ACTION_4C : ACTION_4D));
+        case 24: return ACTION_1X;
+        case 25: return ACTION_3X;
+        case 26: return ACTION_J2X;
+        case 27: return ACTION_J6X;
+        case 28: return ACTION_66X;
+        case 29: return ACTION_662X;
+        case 30: return ACTION_664X;
+        case 31: return ACTION_KAORI_RECOIL_DUCK;
         default: return MapPostureAndButtonToAction(motionIdx, buttonIdx);
     }
 }
@@ -683,6 +762,14 @@ int GetMotionIndexForAction(int action) {
         case ACTION_FORWARD_DASH: return 19;
         case ACTION_BLOCK: return 20;
         case ACTION_FINAL_MEMORY: return 21;
+        case ACTION_1X: return 24;
+        case ACTION_3X: return 25;
+        case ACTION_J2X: return 26;
+        case ACTION_J6X: return 27;
+        case ACTION_66X: return 28;
+        case ACTION_662X: return 29;
+        case ACTION_664X: return 30;
+        case ACTION_KAORI_RECOIL_DUCK: return 31;
         default: return 0;
     }
 }
@@ -711,7 +798,9 @@ enum class TriggerButtonMode {
 };
 
 TriggerButtonMode GetTriggerButtonMode(int action) {
-    if (action == ACTION_BLOCK || action == ACTION_BACKDASH || action == ACTION_FINAL_MEMORY) {
+    if (action == ACTION_BLOCK || action == ACTION_BACKDASH ||
+        action == ACTION_FINAL_MEMORY ||
+        action == ACTION_KAORI_RECOIL_DUCK) {
         return TriggerButtonMode::NoneLabel;
     }
     if (action == ACTION_JUMP) return TriggerButtonMode::JumpDir;
@@ -820,20 +909,33 @@ const char* const kTriggerActionCategoryChoices[kTriggerActionCategoryCount] = {
 int ActionPoolCategoryForIndex(int index) {
     if (index >= 0 && index <= 11) return kTriggerActionCategoryNormals;
     if (index >= 12 && index <= 19) return kTriggerActionCategoryCommandNormals;
-    if (index >= 20 && index <= 43) return kTriggerActionCategorySpecials;
-    if (index >= 44 && index <= 76) return kTriggerActionCategorySupers;
+    // Kano's selectable 22 entry is 22B and is a super. Other characters use
+    // this input family as a special.
+    if (index >= 40 && index <= 43 &&
+        EffectiveAutoActionCharId() == CHAR_ID_KANO) {
+        return kTriggerActionCategorySupers;
+    }
+    if ((index >= 20 && index <= 47)) return kTriggerActionCategorySpecials;
+    if (index >= 48 && index <= 76) return kTriggerActionCategorySupers;
     if (index >= 77 && index <= 81) return kTriggerActionCategoryMovement;
+    if (index == CharacterActionCatalog::kPoolKaoriRecoilDuck) {
+        return kTriggerActionCategoryMovement;
+    }
+    if (index >= CharacterActionCatalog::kPool1X) return kTriggerActionCategoryCommandNormals;
     return kTriggerActionCategoryDefense;
 }
 
 int kActionPoolCategoryMap[kActionPoolCount] = {};
 bool g_actionPoolCategoryMapReady = false;
+int g_actionPoolCategoryChar = -999;
 
 void EnsureActionPoolCategoryMap() {
-    if (g_actionPoolCategoryMapReady) return;
+    const int charId = EffectiveAutoActionCharId();
+    if (g_actionPoolCategoryMapReady && g_actionPoolCategoryChar == charId) return;
     for (int i = 0; i < kActionPoolCount; ++i) {
         kActionPoolCategoryMap[i] = ActionPoolCategoryForIndex(i);
     }
+    g_actionPoolCategoryChar = charId;
     g_actionPoolCategoryMapReady = true;
 }
 
@@ -965,7 +1067,7 @@ int ConcretePoolIndexForLegacyMotion(int motionIdx, int strength) {
         case 5:  return 28 + strength;  // 214A-D
         case 6:  return 32 + strength;  // 421A-D
         case 7:  return 44 + strength;  // 41236A-D
-        case 8:  return 48 + strength;  // 214236A-D
+        case 8:  return 48 + strength;  // 2141236A-D
         case 9:  return 52 + strength;  // 236236A-D
         case 10: return 56 + strength;  // 214214A-D
         case 11: return 60 + strength;  // 641236A-D
@@ -1042,6 +1144,80 @@ char g_triggerActionShortLabels[kMaxTriggerActionChoices][32];
 const char* g_triggerActionChoiceArr[kMaxTriggerActionChoices];
 int g_triggerActionCategoryMap[kMaxTriggerActionChoices];
 int g_triggerActionChoiceCount = 0;
+int g_triggerActionCatalogChar = -999;
+
+int EffectiveAutoActionCharId() {
+    const auto& d = ImGuiGui::guiState.localData;
+    const bool p1 = ResolveAutoActionTargetPlayer() == 1;
+    const char* name = p1 ? d.p1CharName : d.p2CharName;
+    if (!name || name[0] == '\0') return -1;
+    return p1 ? d.p1CharID : d.p2CharID;
+}
+
+int* PoolChargeArrayForTriggerIndex(int triggerIdx) {
+    auto& d = ImGuiGui::guiState.localData;
+    switch (triggerIdx) {
+        case 0: return d.afterBlockActionPoolCharges;
+        case 1: return d.onWakeupActionPoolCharges;
+        case 2: return d.afterHitstunActionPoolCharges;
+        case 3: return d.afterAirtechActionPoolCharges;
+        case 4: return d.onRGActionPoolCharges;
+        default: return nullptr;
+    }
+}
+
+bool FilterActionPoolChoice(const Row&, int choiceValue) {
+    return CharacterActionCatalog::IsPoolIndexAvailable(
+        EffectiveAutoActionCharId(), choiceValue);
+}
+
+bool MotionChoiceAvailable(int charId, int motionIdx) {
+    if (motionIdx >= 0 && motionIdx <= 2) return true;
+    if (motionIdx == 22 || motionIdx == 23) {
+        const int first = motionIdx == 22 ? ACTION_6A : ACTION_4A;
+        for (int strength = 0; strength < 4; ++strength) {
+            if (CharacterActionCatalog::IsAvailable(
+                    charId, first + strength, strength)) return true;
+        }
+        return false;
+    }
+    const int action = MapMotionIndexToAction(motionIdx, 0);
+    return CharacterActionCatalog::AnyAvailable(charId, action);
+}
+
+int AvailableStrengthForMotion(int charId, int motionIdx, int preferred) {
+    preferred = ClampIndex(preferred, 4);
+    if (motionIdx == 22 || motionIdx == 23) {
+        const int first = motionIdx == 22 ? ACTION_6A : ACTION_4A;
+        if (CharacterActionCatalog::IsAvailable(
+                charId, first + preferred, preferred)) return preferred;
+        for (int strength = 0; strength < 4; ++strength) {
+            if (CharacterActionCatalog::IsAvailable(
+                    charId, first + strength, strength)) return strength;
+        }
+        return 0;
+    }
+    return CharacterActionCatalog::FirstAvailableStrength(
+        charId, MapMotionIndexToAction(motionIdx, preferred), preferred);
+}
+
+int NextAvailableStrengthForMotion(int charId, int motionIdx,
+                                   int current, int direction) {
+    current = ClampIndex(current, 4);
+    for (int step = 0; step < 4; ++step) {
+        current = (current + (direction > 0 ? 1 : 3)) & 3;
+        if (motionIdx == 22 || motionIdx == 23) {
+            const int first = motionIdx == 22 ? ACTION_6A : ACTION_4A;
+            if (CharacterActionCatalog::IsAvailable(
+                    charId, first + current, current)) return current;
+        } else if (CharacterActionCatalog::IsAvailable(
+                       charId, MapMotionIndexToAction(motionIdx, current),
+                       current)) {
+            return current;
+        }
+    }
+    return AvailableStrengthForMotion(charId, motionIdx, current);
+}
 
 int TriggerActionCategoryForMotion(int motionIdx) {
     switch (motionIdx) {
@@ -1051,15 +1227,24 @@ int TriggerActionCategoryForMotion(int motionIdx) {
             return kTriggerActionCategoryNormals;
         case 22:
         case 23:
+        case 24:
+        case 25:
+        case 26:
+        case 27:
+        case 28:
+        case 29:
+        case 30:
             return kTriggerActionCategoryCommandNormals;
+        case 31:
+            return kTriggerActionCategoryMovement;
         case 3:
         case 4:
         case 5:
         case 6:
         case 13:
         case 14:
+        case 7: // 41236 is an ordinary special input family.
             return kTriggerActionCategorySpecials;
-        case 7:
         case 8:
         case 9:
         case 10:
@@ -1083,8 +1268,8 @@ const char* TriggerActionLabelForMotion(int motionIdx) {
         case 4:  return "DP (623)";
         case 5:  return "QCB (214)";
         case 6:  return "421";
-        case 7:  return "SUPER1 (41236)";
-        case 8:  return "SUPER2 (214236)";
+        case 7:  return "41236";
+        case 8:  return "2141236";
         case 9:  return "236236";
         case 10: return "214214";
         case 11: return "641236";
@@ -1100,6 +1285,14 @@ const char* TriggerActionLabelForMotion(int motionIdx) {
         case 21: return "FINAL MEMORY";
         case 22: return "FORWARD NORMAL";
         case 23: return "BACK NORMAL";
+        case 24: return "DOWN-BACK NORMAL";
+        case 25: return "DOWN-FORWARD NORMAL";
+        case 26: return "AIR DOWN NORMAL";
+        case 27: return "AIR FORWARD NORMAL";
+        case 28: return "DASH NORMAL";
+        case 29: return "DASH LOW";
+        case 30: return "DASH-BACK NORMAL";
+        case 31: return "RECOIL DUCKING (44~66)";
         default: return "";
     }
 }
@@ -1131,7 +1324,10 @@ void AddMotionActionChoice(int motionIdx) {
 }
 
 void RefreshTriggerActionChoices() {
-    if (g_triggerActionChoiceCount > 0) return;
+    const int charId = EffectiveAutoActionCharId();
+    if (g_triggerActionChoiceCount > 0 && g_triggerActionCatalogChar == charId) return;
+    g_triggerActionChoiceCount = 0;
+    g_triggerActionCatalogChar = charId;
 
     const int normalMotions[] = { 0, 1, 2 };
     for (int motionIdx : normalMotions) {
@@ -1140,25 +1336,73 @@ void RefreshTriggerActionChoices() {
 
     const int commandNormalMotions[] = { 22, 23 };
     for (int motionIdx : commandNormalMotions) {
-        AddMotionActionChoice(motionIdx);
+        if (MotionChoiceAvailable(charId, motionIdx)) AddMotionActionChoice(motionIdx);
     }
 
-    const int specialMotions[] = { 3, 4, 5, 6, 13, 14 };
+    const int extendedCommandNormalMotions[] = { 24, 25, 26, 27, 28, 29, 30 };
+    for (int motionIdx : extendedCommandNormalMotions) {
+        if (MotionChoiceAvailable(charId, motionIdx)) AddMotionActionChoice(motionIdx);
+    }
+
+    const int specialMotions[] = { 3, 4, 5, 6, 7, 13, 14 };
     for (int motionIdx : specialMotions) {
-        AddMotionActionChoice(motionIdx);
+        if (!MotionChoiceAvailable(charId, motionIdx)) continue;
+        if (motionIdx == 14 && charId == CHAR_ID_KANO) {
+            AddTriggerActionChoice(kTriggerActionCategorySupers, motionIdx,
+                                   TriggerActionLabelForMotion(motionIdx),
+                                   MapMotionIndexToAction(motionIdx, 0),
+                                   0, -1);
+        } else {
+            AddMotionActionChoice(motionIdx);
+        }
     }
 
-    const int superMotions[] = { 7, 8, 9, 10, 11, 12, 15, 16 };
+    const int superMotions[] = { 8, 9, 10, 11, 12, 15, 16 };
     for (int motionIdx : superMotions) {
-        AddMotionActionChoice(motionIdx);
+        if (MotionChoiceAvailable(charId, motionIdx)) AddMotionActionChoice(motionIdx);
     }
 
-    AddTriggerActionChoice(kTriggerActionCategorySupers, 21, "FINAL MEMORY", ACTION_FINAL_MEMORY, 0, -1);
+    if (MotionChoiceAvailable(charId, 21)) {
+        AddTriggerActionChoice(kTriggerActionCategorySupers, 21,
+                               "FINAL MEMORY", ACTION_FINAL_MEMORY, 0, -1);
+    }
 
     AddTriggerActionChoice(kTriggerActionCategoryMovement, 17, "JUMP", ACTION_JUMP, 0, -1);
     AddTriggerActionChoice(kTriggerActionCategoryMovement, 18, "BACKDASH", ACTION_BACKDASH, 0, -1);
     AddTriggerActionChoice(kTriggerActionCategoryMovement, 19, "FORWARD DASH", ACTION_FORWARD_DASH, 0, 0);
+    if (MotionChoiceAvailable(charId, 31)) {
+        AddTriggerActionChoice(kTriggerActionCategoryMovement, 31,
+                               "RECOIL DUCKING (44~66)",
+                               ACTION_KAORI_RECOIL_DUCK, 0, -1);
+    }
     AddTriggerActionChoice(kTriggerActionCategoryDefense, 20, "BLOCK", ACTION_BLOCK, 0, -1);
+}
+
+bool NormalizeTriggerActionForCatalog(int& action, int& strength) {
+    const int charId = EffectiveAutoActionCharId();
+    if (!CharacterActionCatalog::IsKnownCharacter(charId)) return false;
+
+    const int catalogStrength =
+        (action >= ACTION_5A && action <= ACTION_4D)
+            ? (action & 3)
+            : ClampIndex(strength, 4);
+    if (CharacterActionCatalog::IsAvailable(
+            charId, action, catalogStrength)) {
+        return false;
+    }
+
+    const int oldAction = action;
+    const int oldStrength = strength;
+    const int motionIdx = GetMotionIndexForAction(action);
+    if (motionIdx >= 0 && MotionChoiceAvailable(charId, motionIdx) &&
+        GetTriggerButtonMode(action) == TriggerButtonMode::Abcd) {
+        strength = AvailableStrengthForMotion(charId, motionIdx, strength);
+        action = MapMotionIndexToAction(motionIdx, strength);
+    } else {
+        action = ACTION_5A;
+        strength = 0;
+    }
+    return action != oldAction || strength != oldStrength;
 }
 
 int GetTriggerActionChoiceIndex(int action, int strength) {
@@ -1183,7 +1427,8 @@ void ApplyTriggerActionChoiceIndex(int selectedIdx, int& action, int& strength) 
     const TriggerButtonMode mode = GetTriggerButtonMode(choice.action);
     switch (mode) {
         case TriggerButtonMode::Abcd: {
-            const int buttonIdx = ClampIndex(strength, 4);
+            const int buttonIdx = AvailableStrengthForMotion(
+                EffectiveAutoActionCharId(), choice.motionIdx, strength);
             action = MapMotionIndexToAction(choice.motionIdx, buttonIdx);
             strength = buttonIdx;
             break;
@@ -1255,7 +1500,12 @@ const char* FormatTriggerActionPopupChoice(const Row& row, int choiceValue) {
     RefreshTriggerActionChoices();
     if (g_triggerActionChoiceCount <= 0) return "?";
     choiceValue = ClampIndex(choiceValue, g_triggerActionChoiceCount);
-    const int strength = row.intPtr ? *row.intPtr : g_triggerActionChoices[choiceValue].strength;
+    const TriggerActionChoice& choice = g_triggerActionChoices[choiceValue];
+    int strength = row.intPtr ? *row.intPtr : choice.strength;
+    if (GetTriggerButtonMode(choice.action) == TriggerButtonMode::Abcd) {
+        strength = AvailableStrengthForMotion(
+            EffectiveAutoActionCharId(), choice.motionIdx, strength);
+    }
     return FormatTriggerActionChoiceLabel(choiceValue, strength, g_mirrorFwdDashFollowup, false);
 }
 
@@ -1271,6 +1521,10 @@ bool AdjustTriggerActionPopupChoice(const Row& row, int choiceValue, int directi
 
     switch (mode) {
         case TriggerButtonMode::Abcd:
+            *row.intPtr = NextAvailableStrengthForMotion(
+                EffectiveAutoActionCharId(), choice.motionIdx,
+                *row.intPtr, direction);
+            return true;
         case TriggerButtonMode::JumpDir:
             *row.intPtr = (*row.intPtr + direction + count) % count;
             return true;
@@ -1293,7 +1547,13 @@ bool AdjustTriggerActionChoiceRow(const Row& row, int direction) {
 
     int dashFollowup = g_mirrorFwdDashFollowup;
     int idx = GetTriggerButtonIndex(action, strength, dashFollowup, mode);
-    idx = (idx + direction + count) % count;
+    if (mode == TriggerButtonMode::Abcd) {
+        idx = NextAvailableStrengthForMotion(
+            EffectiveAutoActionCharId(), GetMotionIndexForAction(action),
+            idx, direction);
+    } else {
+        idx = (idx + direction + count) % count;
+    }
 
     ApplyTriggerButtonIndex(action, strength, &g_mirrorFwdDashFollowup, mode, idx);
     *row.choice2IdxPtr = action;
@@ -1428,6 +1688,27 @@ bool HideAHRegularDelay() { return g_useMaskAH; }
 bool HideAARegularDelay() { return g_useMaskAA; }
 bool HideRGRegularDelay() { return g_useMaskRG; }
 
+bool HideABCharge() {
+    const auto& d = ImGuiGui::guiState.localData;
+    return HideABSingleAction() || !ActionSupportsChargeFollowup(d.actionAfterBlock);
+}
+bool HideWUCharge() {
+    const auto& d = ImGuiGui::guiState.localData;
+    return HideWUSingleAction() || !ActionSupportsChargeFollowup(d.actionOnWakeup);
+}
+bool HideAHCharge() {
+    const auto& d = ImGuiGui::guiState.localData;
+    return HideAHSingleAction() || !ActionSupportsChargeFollowup(d.actionAfterHitstun);
+}
+bool HideAACharge() {
+    const auto& d = ImGuiGui::guiState.localData;
+    return HideAASingleAction() || !ActionSupportsChargeFollowup(d.actionAfterAirtech);
+}
+bool HideRGCharge() {
+    const auto& d = ImGuiGui::guiState.localData;
+    return HideRGSingleAction() || !ActionSupportsChargeFollowup(d.actionOnRG);
+}
+
 // Macro slot picker list. Rebuilt once per frame to match the current slot count.
 constexpr int kMaxMacroSlotEntries = 17;   // 1 "none" + up to 16 slots
 static const char* g_macroSlotChoiceArr[kMaxMacroSlotEntries];
@@ -1500,13 +1781,28 @@ bool CollisionProjectileOptionsHidden() {
     return !MutableSettings().collisionDisplayProjectileInteractions;
 }
 
+bool CollisionHitboxPlayerOptionsHidden() {
+    return !MutableSettings().collisionDisplayHitboxes;
+}
+
+bool CollisionHurtboxPlayerOptionsHidden() {
+    return !MutableSettings().collisionDisplayHurtboxes;
+}
+
+bool CollisionPushboxPlayerOptionsHidden() {
+    return !MutableSettings().collisionDisplayCollisionBoxes;
+}
+
 const char* ValDisplaySettings() {
     static char buf[48];
     const auto& s = MutableSettings();
     const int enabled =
-        (s.collisionDisplayHitboxes ? 1 : 0)
-        + (s.collisionDisplayHurtboxes ? 1 : 0)
-        + (s.collisionDisplayCollisionBoxes ? 1 : 0)
+        (s.collisionDisplayHitboxes && s.collisionDisplayP1Hitboxes ? 1 : 0)
+        + (s.collisionDisplayHitboxes && s.collisionDisplayP2Hitboxes ? 1 : 0)
+        + (s.collisionDisplayHurtboxes && s.collisionDisplayP1Hurtboxes ? 1 : 0)
+        + (s.collisionDisplayHurtboxes && s.collisionDisplayP2Hurtboxes ? 1 : 0)
+        + (s.collisionDisplayCollisionBoxes && s.collisionDisplayP1CollisionBoxes ? 1 : 0)
+        + (s.collisionDisplayCollisionBoxes && s.collisionDisplayP2CollisionBoxes ? 1 : 0)
         + (s.collisionDisplayProjectileInteractions ? 1 : 0);
     if (enabled == 0) {
         return "OFF";
@@ -1522,8 +1818,26 @@ Row* BuildDisplayOverlayRows(int& count) {
 
     s_rows[n++] = Header("HITBOX / COLLISION DISPLAY");
     s_rows[n++] = Toggle("HITBOXES", &s.collisionDisplayHitboxes, OnCollisionDisplayHitboxes);
+    s_rows[n++] = Toggle("  P1 HITBOXES", &s.collisionDisplayP1Hitboxes,
+                         OnCollisionDisplayP1Hitboxes, nullptr,
+                         CollisionHitboxPlayerOptionsHidden);
+    s_rows[n++] = Toggle("  P2 HITBOXES", &s.collisionDisplayP2Hitboxes,
+                         OnCollisionDisplayP2Hitboxes, nullptr,
+                         CollisionHitboxPlayerOptionsHidden);
     s_rows[n++] = Toggle("HURTBOXES", &s.collisionDisplayHurtboxes, OnCollisionDisplayHurtboxes);
+    s_rows[n++] = Toggle("  P1 HURTBOXES", &s.collisionDisplayP1Hurtboxes,
+                         OnCollisionDisplayP1Hurtboxes, nullptr,
+                         CollisionHurtboxPlayerOptionsHidden);
+    s_rows[n++] = Toggle("  P2 HURTBOXES", &s.collisionDisplayP2Hurtboxes,
+                         OnCollisionDisplayP2Hurtboxes, nullptr,
+                         CollisionHurtboxPlayerOptionsHidden);
     s_rows[n++] = Toggle("COLLISION BOXES", &s.collisionDisplayCollisionBoxes, OnCollisionDisplayPushboxes);
+    s_rows[n++] = Toggle("  P1 COLLISION BOXES", &s.collisionDisplayP1CollisionBoxes,
+                         OnCollisionDisplayP1Pushboxes, nullptr,
+                         CollisionPushboxPlayerOptionsHidden);
+    s_rows[n++] = Toggle("  P2 COLLISION BOXES", &s.collisionDisplayP2CollisionBoxes,
+                         OnCollisionDisplayP2Pushboxes, nullptr,
+                         CollisionPushboxPlayerOptionsHidden);
     s_rows[n++] = Toggle("PROJECTILE INTERACTIONS", &s.collisionDisplayProjectileInteractions, OnCollisionDisplayProjectiles);
     Row alpha = IntSlider("BOX FILL ALPHA", &s.collisionDisplayFillAlphaPercent, 0, 100, 1, 10, OnCollisionDisplayAlpha);
     alpha.valueFormatter = FormatPercentRowValue;
@@ -1537,6 +1851,7 @@ Row* BuildDisplayOverlayRows(int& count) {
                          OnCollisionProjectileOrigins, nullptr, CollisionProjectileOptionsHidden);
     s_rows[n++] = Toggle("  INTERSECTION BOXES", &s.collisionDisplayProjectileIntersections,
                          OnCollisionProjectileIntersections, nullptr, CollisionProjectileOptionsHidden);
+    s_rows[n++] = Info("P1 / P2 filters include that fighter and owned projectile boxes. Diagnostic dots and ranges use the controls below.");
     s_rows[n++] = Info("Mizuka note display settings are under Character Settings when Mizuka is in the match.");
     s_rows[n++] = Info("Origin dots are EFZ projectile anchors / activation points, not collision centers.");
 
@@ -1596,19 +1911,6 @@ Row* BuildSettingsPracticeRows(int& count) {
     auto& s = MutableSettings();
 
     s_rows[n++] = Header("PRACTICE");
-    Row missionCountIn = IntNum("MISSION RECORD COUNT-IN",
-                                &s.missionRecorderCountInMs,
-                                0, 3000, 100, 500,
-                                OnMissionRecordCountIn);
-    missionCountIn.valueFormatter = [](const Row& row) -> const char* {
-        static char value[32];
-        const int milliseconds = row.intPtr ? *row.intPtr : 0;
-        if (milliseconds <= 0) return "OFF";
-        _snprintf_s(value, sizeof(value), _TRUNCATE, "%.1f SEC",
-                    static_cast<double>(milliseconds) / 1000.0);
-        return value;
-    };
-    s_rows[n++] = missionCountIn;
     s_rows[n++] = IntNum ("AUTO-BLOCK TIMEOUT (MS)",   &s.autoBlockNeutralTimeoutMs, 0, 60000, 500, 5000, OnAutoBlockTimeout);
     s_rows[n++] = Toggle ("RESTRICT TO PRACTICE",      &s.restrictToPracticeMode, OnRestrictPractice);
     count = n;
@@ -2024,9 +2326,11 @@ void RefreshHotkeyStrings() {
     static unsigned s_lastGenericMask = 0xFFFFFFFFu;
 
     const DWORD now = GetTickCount();
-    const unsigned controllerMask = XInputShim::GetConnectedMaskCached();
-    const unsigned nativeMask = XInputShim::GetNativeConnectedMaskCached();
-    const unsigned genericMask = XInputShim::GetGenericConnectedMaskCached();
+    XInputShim::Snapshot controllerSnapshot{};
+    XInputShim::CopySnapshot(controllerSnapshot);
+    const unsigned controllerMask = controllerSnapshot.connectedMask;
+    const unsigned nativeMask = controllerSnapshot.nativeMask;
+    const unsigned genericMask = controllerSnapshot.genericMask;
     // Bumped from 2s to 10s: building these labels can hit the XInput shim, which is
     // cheap when slots are connected but historically expensive when slots are empty.
     // Mask-change still forces an immediate rebuild, so hot-plug is unaffected.
@@ -2667,12 +2971,6 @@ Row* BuildHudDisableRows(int& count) {
 }
 static bool g_mirrorMissionInspector = false;
 void OnMissionInspector() { Mission::Engine::SetInspectorEnabled(g_mirrorMissionInspector); }
-void ActSaveRecordedMission() {
-    std::string msg;
-    const bool ok = Mission::Engine::Recorder::SaveRecorded(msg);
-    DirectDrawHook::AddMessage(ok ? ("Mission saved: " + msg) : ("Save failed: " + msg),
-        "SYSTEM", ok ? RGB(180, 255, 220) : RGB(255, 120, 120), 3500, 0, 120);
-}
 void ActLoadLatestMission() {
     std::string msg;
     const bool ok = Mission::Engine::Runner::LoadLatestRecorded(msg);
@@ -2681,8 +2979,13 @@ void ActLoadLatestMission() {
 }
 void ActResetMission() {
     if (Mission::Engine::Runner::IsActive()) {
-        Mission::Engine::Runner::Reset();
-        DirectDrawHook::AddMessage("Mission reset", "SYSTEM", RGB(180, 255, 220), 1500, 0, 120);
+        std::string restoreMessage;
+        const bool restored =
+            Mission::Engine::Runner::RequestBaselineRestore(restoreMessage);
+        DirectDrawHook::AddMessage(
+            restored ? "Mission reset" : "Mission reset unavailable: " + restoreMessage,
+            "SYSTEM", restored ? RGB(180, 255, 220) : RGB(255, 180, 120),
+            restored ? 1500 : 2400, 0, 120);
     }
 }
 const char* ValMissionRecordSteps() {
@@ -2832,7 +3135,10 @@ int CharacterSelectIdFromInternalCharacterId(int internalCharId) {
     const std::string resourceName = CharacterSettings::GetCharacterInternalName(internalCharId);
     return CharacterHotswap::GetSelectIdForResourceName(resourceName.c_str());
 }
+void InvalidateMissionReviewReadiness();
+void RequestInvalidateMissionReviewReadiness();
 void ActArmMissionRecording() {
+    PrepareNewMissionAuthoringSession();
     Mission::Engine::Recorder::Arm();
     if (ImGuiImpl::IsVisible()) ImGuiImpl::ToggleVisibility();
 }
@@ -2844,6 +3150,7 @@ void ActAdvanceMissionRecording() {
     }
 }
 void ActRetakeMissionRecording() {
+    RequestInvalidateMissionReviewReadiness();
     Mission::Engine::Recorder::Retake();
     if (ImGuiImpl::IsVisible()) ImGuiImpl::ToggleVisibility();
 }
@@ -2958,75 +3265,1125 @@ Row* BuildDebugLoggingRows(int& count) {
     return s_rows;
 }
 
-// ---- Mission browser: packs (assets\missions\<pack>\pack.json) + recorded ----
-struct MissionBrowserEntry { std::string label; std::string path; };
-static std::vector<MissionBrowserEntry> g_missionEntries;
-static bool g_missionListDirty = true;
-constexpr int kMissionBrowserMax = 12;
+// Mission authoring owns a small, pane-local text modal rather than adding a
+// string pointer to every Row in the generic menu DSL.  The target always
+// belongs to the persistent authoring form (never to a per-frame Row), so it
+// remains valid while the modal is open and across recorder Retakes.
+struct MissionTextEditorState {
+    bool active = false;
+    bool wantFocus = false;
+    bool multiline = false;
+    const char* title = "MISSION TEXT";
+    const char* help = "Enter the text shown in the mission browser.";
+    std::size_t maxBytes = 0;
+    std::string* target = nullptr;
+    std::string original;
+    std::vector<char> buffer;
+};
+MissionTextEditorState g_missionTextEditor;
 
-static void ScanMissionEntries() {
-    g_missionEntries.clear();
-    const std::string root = Mission::ResolveMissionsRoot();
-    if (root.empty()) return;
-    // Pack scenarios first.
-    for (const std::string& pj : Mission::DiscoverPackJsonPaths(root)) {
-        Mission::Pack pack; std::string err;
-        if (!Mission::LoadPack(pj, pack, err)) continue;
-        for (const auto& sc : pack.scenarios) {
-            if ((int)g_missionEntries.size() >= kMissionBrowserMax) return;
-            MissionBrowserEntry e;
-            e.label = (pack.name.empty() ? std::string("PACK") : pack.name) + ": "
-                    + (sc.name.empty() ? sc.file : sc.name);
-            e.path = pack.folderPath + "\\" + sc.file;
-            g_missionEntries.push_back(std::move(e));
+void OpenMissionTextEditor(const char* title, const char* help,
+                           std::string* target, bool multiline,
+                           std::size_t maxBytes) {
+    if (!target) return;
+    g_missionTextEditor.active = true;
+    g_missionTextEditor.wantFocus = true;
+    g_missionTextEditor.multiline = multiline;
+    g_missionTextEditor.title = (title && *title) ? title : "MISSION TEXT";
+    g_missionTextEditor.help = (help && *help)
+        ? help : "Enter the text shown in the mission browser.";
+    g_missionTextEditor.maxBytes = maxBytes;
+    g_missionTextEditor.target = target;
+    g_missionTextEditor.original = *target;
+    const std::size_t capacity = (std::max)(maxBytes + 1u, target->size() + 1u);
+    g_missionTextEditor.buffer.assign(capacity, '\0');
+    if (!target->empty()) {
+        memcpy(g_missionTextEditor.buffer.data(), target->data(),
+               (std::min)(target->size(), capacity - 1));
+    }
+    Input::ResetEdges();
+}
+
+void CloseMissionTextEditor(bool commit) {
+    if (!g_missionTextEditor.active) return;
+    if (g_missionTextEditor.target) {
+        *g_missionTextEditor.target = commit
+            ? std::string(g_missionTextEditor.buffer.data())
+            : g_missionTextEditor.original;
+    }
+    g_missionTextEditor = MissionTextEditorState{};
+    Input::ResetEdges();
+}
+
+constexpr const char* kAuthorDifficultyChoices[] = {
+    "CHOOSE DIFFICULTY", "NOVICE", "BEGINNER", "INTERMEDIATE", "ADVANCED", "EXPERT"
+};
+constexpr int kAuthorDifficultyChoiceCount =
+    static_cast<int>(sizeof(kAuthorDifficultyChoices) /
+                     sizeof(kAuthorDifficultyChoices[0]));
+constexpr const char* kAuthorTypeChoices[] = { "TRIAL", "MISSION" };
+constexpr int kAuthorTypeChoiceCount =
+    static_cast<int>(sizeof(kAuthorTypeChoices) / sizeof(kAuthorTypeChoices[0]));
+constexpr const char* kMissingAuthoringPackWarning =
+    "The selected pack is no longer available. Choose a destination again.";
+
+struct MissionAuthoringForm {
+    Mission::Engine::Recorder::Phase previousPhase =
+        Mission::Engine::Recorder::Phase::Idle;
+    bool sessionSeeded = false;
+    bool packsLoaded = false;
+
+    std::string name;
+    std::string description;
+    int difficultyIndex = 0;
+    int typeIndex = 0;
+    int packIndex = 0;
+    bool packSelectionValid = true;
+    bool missingPackWarning = false;
+    int categoryIndex = 0;
+    std::string rememberedPackPath;
+
+    std::vector<Mission::Authoring::PackSummary> packs;
+    std::vector<std::string> packLabels;
+    std::vector<const char*> packChoices;
+    std::vector<std::string> categoryLabels;
+    std::vector<const char*> categoryChoices;
+    std::vector<std::string> missionLabels;
+    std::vector<const char*> missionChoices;
+
+    // Existing-library editor. The seed keys are stable IDs/paths, not
+    // display labels; renaming a field never changes the selected object.
+    std::string editSeedPackPath;
+    std::string editSeedCategoryId;
+    std::string editSeedMissionId;
+    std::string editPackName;
+    std::string editPackAuthor;
+    std::string editPackDescription;
+    std::string editPackVersion;
+    std::string editCategoryName;
+    std::string editCategoryDescription;
+    int missionIndex = 0;
+    std::string editMissionName;
+    std::string editMissionDescription;
+    int editMissionTypeIndex = 0;
+    int editMissionDifficultyIndex = 1;
+    int editMissionCategoryIndex = 0;
+
+    std::string newPackName;
+    std::string newPackAuthor;
+    std::string newPackDescription;
+    std::string newPackVersion = "1.0.0";
+    std::string newCategoryName;
+    std::string newCategoryDescription;
+    std::string status;
+    bool reviewReadinessCaptured = false;
+    bool takePublishReady = false;
+    std::string takePublishBlocker;
+    bool categoryChoicesDirty = false;
+    bool rescanPending = false;
+    bool createPackPending = false;
+    bool createCategoryPending = false;
+    bool updatePackPending = false;
+    bool updateCategoryPending = false;
+    bool updateMissionPending = false;
+    bool invalidateReadinessPending = false;
+};
+MissionAuthoringForm g_missionAuthoring;
+std::atomic<bool> g_prepareNewMissionAuthoringRequested{false};
+std::atomic<bool> g_authoringRescanRequested{false};
+
+void RequestInvalidateMissionReviewReadiness() {
+    g_missionAuthoring.invalidateReadinessPending = true;
+}
+
+void InvalidateMissionReviewReadiness() {
+    g_missionAuthoring.reviewReadinessCaptured = false;
+    g_missionAuthoring.takePublishReady = false;
+    g_missionAuthoring.takePublishBlocker.clear();
+}
+
+void ShowMissionAuthoringResult(bool ok, const std::string& text) {
+    g_missionAuthoring.status = text;
+    DirectDrawHook::AddMessage(
+        text.c_str(), "MISSION AUTHORING",
+        ok ? RGB(180, 255, 220) : RGB(255, 130, 120),
+        ok ? 2600 : 4200, 0, 120);
+}
+
+void RebuildAuthoringCategoryChoices() {
+    auto& form = g_missionAuthoring;
+    form.categoryLabels.clear();
+    form.categoryChoices.clear();
+    if (form.packSelectionValid && form.packIndex >= 0 &&
+        form.packIndex < static_cast<int>(form.packs.size())) {
+        const auto& categories = form.packs[form.packIndex].categories;
+        form.categoryLabels.reserve(categories.size());
+        for (const auto& category : categories) {
+            form.categoryLabels.push_back(
+                category.label.empty() ? category.id : category.label);
         }
     }
-    // Then loose recorded missions (newest first by name is fine for a scaffold).
-    const std::string search = root + "\\_recorded\\*.json";
-    WIN32_FIND_DATAA fd = {};
-    HANDLE h = FindFirstFileA(search.c_str(), &fd);
-    if (h != INVALID_HANDLE_VALUE) {
-        do {
-            if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
-            if ((int)g_missionEntries.size() >= kMissionBrowserMax) break;
-            MissionBrowserEntry e;
-            e.label = std::string("REC: ") + fd.cFileName;
-            e.path = root + "\\_recorded\\" + fd.cFileName;
-            g_missionEntries.push_back(std::move(e));
-        } while (FindNextFileA(h, &fd));
-        FindClose(h);
+    form.categoryChoices.reserve(form.categoryLabels.size());
+    for (const std::string& label : form.categoryLabels) {
+        form.categoryChoices.push_back(label.c_str());
+    }
+    if (form.categoryChoices.empty()) {
+        form.categoryIndex = 0;
+    } else if (form.categoryIndex < 0 ||
+               form.categoryIndex >= static_cast<int>(form.categoryChoices.size())) {
+        form.categoryIndex = 0;
     }
 }
 
-static void LoadMissionEntry(int i) {
-    if (i < 0 || i >= (int)g_missionEntries.size()) return;
-    std::string msg;
-    const bool ok = Mission::Engine::Runner::Load(g_missionEntries[i].path, msg);
-    DirectDrawHook::AddMessage(ok ? ("Mission: " + msg) : ("Load failed: " + msg),
-        "SYSTEM", ok ? RGB(180, 255, 220) : RGB(255, 120, 120), 2500, 0, 120);
-    if (ok && ImGuiImpl::IsVisible()) ImGuiImpl::ToggleVisibility();
-}
-static void ActMissionEntry0()  { LoadMissionEntry(0); }
-static void ActMissionEntry1()  { LoadMissionEntry(1); }
-static void ActMissionEntry2()  { LoadMissionEntry(2); }
-static void ActMissionEntry3()  { LoadMissionEntry(3); }
-static void ActMissionEntry4()  { LoadMissionEntry(4); }
-static void ActMissionEntry5()  { LoadMissionEntry(5); }
-static void ActMissionEntry6()  { LoadMissionEntry(6); }
-static void ActMissionEntry7()  { LoadMissionEntry(7); }
-static void ActMissionEntry8()  { LoadMissionEntry(8); }
-static void ActMissionEntry9()  { LoadMissionEntry(9); }
-static void ActMissionEntry10() { LoadMissionEntry(10); }
-static void ActMissionEntry11() { LoadMissionEntry(11); }
-static void ActMissionRescan()  { g_missionListDirty = true; }
+const Mission::Authoring::PackSummary* SelectedAuthoringPack();
+const Mission::PackCategory* SelectedAuthoringCategory();
 
-static void ActMissionPlayDemo() {
-    std::string msg;
-    const bool ok = Mission::Engine::Demo::PlayLoaded(msg);
-    DirectDrawHook::AddMessage(ok ? "Preparing mission demonstration..." : ("Demo: " + msg),
-        "SYSTEM", ok ? RGB(180, 255, 220) : RGB(255, 180, 120), 1800, 0, 120);
-    if (ok && ImGuiImpl::IsVisible()) ImGuiImpl::ToggleVisibility();
+void RebuildAuthoringMissionChoices() {
+    auto& form = g_missionAuthoring;
+    form.missionLabels.clear();
+    form.missionChoices.clear();
+    if (form.packSelectionValid && form.packIndex >= 0 &&
+        form.packIndex < static_cast<int>(form.packs.size())) {
+        const auto& missions = form.packs[form.packIndex].scenarios;
+        form.missionLabels.reserve(missions.size());
+        for (const auto& mission : missions) {
+            form.missionLabels.push_back(
+                mission.name.empty() ? mission.id : mission.name);
+        }
+    }
+    form.missionChoices.reserve(form.missionLabels.size());
+    for (const std::string& label : form.missionLabels) {
+        form.missionChoices.push_back(label.c_str());
+    }
+    if (form.missionChoices.empty()) {
+        form.missionIndex = 0;
+    } else if (form.missionIndex < 0 ||
+               form.missionIndex >= static_cast<int>(form.missionChoices.size())) {
+        form.missionIndex = 0;
+    }
 }
+
+void SeedSelectedAuthoringEditors(bool force = false) {
+    auto& form = g_missionAuthoring;
+    const auto* pack = SelectedAuthoringPack();
+    if (!pack) {
+        form.editSeedPackPath.clear();
+        form.editSeedCategoryId.clear();
+        form.editSeedMissionId.clear();
+        return;
+    }
+    if (force || form.editSeedPackPath != pack->packJsonPath) {
+        form.editSeedPackPath = pack->packJsonPath;
+        form.editPackName = pack->name;
+        form.editPackAuthor = pack->author;
+        form.editPackDescription = pack->description;
+        form.editPackVersion = pack->version;
+        form.editSeedCategoryId.clear();
+        form.editSeedMissionId.clear();
+    }
+
+    const auto* category = SelectedAuthoringCategory();
+    const std::string categoryId = category ? category->id : std::string();
+    if (force || form.editSeedCategoryId != categoryId) {
+        form.editSeedCategoryId = categoryId;
+        form.editCategoryName = category ? category->label : std::string();
+        form.editCategoryDescription = category ? category->description : std::string();
+    }
+
+    const Mission::Authoring::ScenarioSummary* mission = nullptr;
+    if (form.missionIndex >= 0 &&
+        form.missionIndex < static_cast<int>(pack->scenarios.size())) {
+        mission = &pack->scenarios[form.missionIndex];
+    }
+    const std::string missionId = mission ? mission->id : std::string();
+    if (force || form.editSeedMissionId != missionId) {
+        form.editSeedMissionId = missionId;
+        form.editMissionName = mission ? mission->name : std::string();
+        form.editMissionDescription = mission ? mission->description : std::string();
+        form.editMissionDifficultyIndex = mission && mission->difficulty >= 1 &&
+                                                   mission->difficulty <= 5
+            ? mission->difficulty : 1;
+        const std::string type = mission ? mission->type : std::string();
+        form.editMissionTypeIndex = _stricmp(type.c_str(), "mission") == 0 ? 1 : 0;
+        form.editMissionCategoryIndex = 0;
+        if (mission) {
+            for (int i = 0; i < static_cast<int>(pack->categories.size()); ++i) {
+                if (pack->categories[i].id == mission->categoryId) {
+                    form.editMissionCategoryIndex = i;
+                    break;
+                }
+            }
+        }
+    }
+}
+
+bool RefreshAuthoringPacks(bool keepSelection = true) {
+    auto& form = g_missionAuthoring;
+    form.status.clear();
+    std::string wanted = keepSelection ? form.rememberedPackPath : std::string();
+    std::string wantedCategoryId;
+    std::string wantedMissionId;
+    if (keepSelection && form.packSelectionValid && form.packIndex >= 0 &&
+        form.packIndex < static_cast<int>(form.packs.size())) {
+        const auto& previousCategories = form.packs[form.packIndex].categories;
+        if (form.categoryIndex >= 0 &&
+            form.categoryIndex < static_cast<int>(previousCategories.size())) {
+            wantedCategoryId = previousCategories[form.categoryIndex].id;
+        }
+        const auto& previousMissions = form.packs[form.packIndex].scenarios;
+        if (form.missionIndex >= 0 &&
+            form.missionIndex < static_cast<int>(previousMissions.size())) {
+            wantedMissionId = previousMissions[form.missionIndex].id;
+        }
+    }
+    if (wanted.empty() && form.packIndex >= 0 &&
+        form.packIndex < static_cast<int>(form.packs.size())) {
+        wanted = form.packs[form.packIndex].packJsonPath;
+    }
+
+    std::vector<Mission::Authoring::PackSummary> discovered;
+    std::string error;
+    if (!Mission::Authoring::EnumeratePackSummaries(
+            Mission::ResolveMissionsRoot(), discovered, error)) {
+        form.status = "Pack scan failed: " + error;
+        discovered.clear();
+        form.packs.clear();
+        form.packLabels.clear();
+        form.packChoices.clear();
+        form.categoryLabels.clear();
+        form.categoryChoices.clear();
+        form.missionLabels.clear();
+        form.missionChoices.clear();
+        form.packSelectionValid = false;
+        form.missingPackWarning = false;
+        form.packsLoaded = true;
+        return false;
+    }
+    if (!error.empty()) form.status = "Pack scan warning: " + error;
+
+    // Bundled/tutorial packs remain readable in the Play browser. Only packs
+    // explicitly created for local authoring are mutation targets here.
+    form.packs.clear();
+    for (auto& pack : discovered) {
+        if (pack.editable) form.packs.push_back(std::move(pack));
+    }
+    form.packLabels.clear();
+    form.packChoices.clear();
+    int selected = 0;
+    bool foundWanted = wanted.empty();
+    std::vector<std::string> baseLabels;
+    baseLabels.reserve(form.packs.size());
+    for (const auto& pack : form.packs) {
+        std::string label = pack.name.empty() ? pack.id : pack.name;
+        if (!pack.version.empty()) label += "  v" + pack.version;
+        baseLabels.push_back(std::move(label));
+    }
+    for (int i = 0; i < static_cast<int>(form.packs.size()); ++i) {
+        const auto& pack = form.packs[i];
+        std::string label = baseLabels[i];
+        bool duplicateDisplay = false;
+        for (int j = 0; j < static_cast<int>(baseLabels.size()); ++j) {
+            if (i != j && _stricmp(baseLabels[i].c_str(), baseLabels[j].c_str()) == 0) {
+                duplicateDisplay = true;
+                break;
+            }
+        }
+        if (duplicateDisplay) {
+            // Folder is the final discriminator: copied manifests can retain
+            // the same pack id, author, name, and version.
+            const std::size_t packSlash = pack.packJsonPath.find_last_of("\\/");
+            const std::string folder = packSlash == std::string::npos
+                ? pack.packJsonPath : pack.packJsonPath.substr(0, packSlash);
+            const std::size_t folderSlash = folder.find_last_of("\\/");
+            const std::string discriminator = folderSlash == std::string::npos
+                ? folder : folder.substr(folderSlash + 1);
+            if (!discriminator.empty()) label += "  [" + discriminator + "]";
+        }
+        form.packLabels.push_back(std::move(label));
+        if (!wanted.empty() && pack.packJsonPath == wanted) {
+            selected = i;
+            foundWanted = true;
+        }
+    }
+    form.packChoices.reserve(form.packLabels.size());
+    for (const std::string& label : form.packLabels) {
+        form.packChoices.push_back(label.c_str());
+    }
+    form.packIndex = form.packs.empty() ? 0 : selected;
+    form.packSelectionValid = !form.packs.empty() && foundWanted;
+    form.missingPackWarning = !form.packs.empty() && !wanted.empty() && !foundWanted;
+    if (form.packSelectionValid) {
+        form.rememberedPackPath = form.packs[form.packIndex].packJsonPath;
+        form.categoryIndex = 0;
+        form.missionIndex = 0;
+        if (!wantedCategoryId.empty()) {
+            const auto& categories = form.packs[form.packIndex].categories;
+            for (int i = 0; i < static_cast<int>(categories.size()); ++i) {
+                if (categories[i].id == wantedCategoryId) {
+                    form.categoryIndex = i;
+                    break;
+                }
+            }
+        }
+        if (!wantedMissionId.empty()) {
+            const auto& missions = form.packs[form.packIndex].scenarios;
+            for (int i = 0; i < static_cast<int>(missions.size()); ++i) {
+                if (missions[i].id == wantedMissionId) {
+                    form.missionIndex = i;
+                    break;
+                }
+            }
+        }
+    } else if (form.missingPackWarning) {
+        if (form.status.empty()) form.status = kMissingAuthoringPackWarning;
+        else form.status += std::string(" ") + kMissingAuthoringPackWarning;
+    }
+    form.packsLoaded = true;
+    RebuildAuthoringCategoryChoices();
+    RebuildAuthoringMissionChoices();
+    SeedSelectedAuthoringEditors(true);
+    return true;
+}
+
+void SeedMissionAuthoringSessionIfNeeded(
+    Mission::Engine::Recorder::Phase phase) {
+    auto& form = g_missionAuthoring;
+    const bool enteringSession =
+        phase != Mission::Engine::Recorder::Phase::Idle &&
+        form.previousPhase == Mission::Engine::Recorder::Phase::Idle;
+    if (enteringSession) {
+        form.name.clear();
+        form.description.clear();
+        form.difficultyIndex = 0;
+        form.typeIndex = 0;
+        form.status.clear();
+        form.reviewReadinessCaptured = false;
+        form.sessionSeeded = true;
+        RefreshAuthoringPacks(true);
+    } else if (!form.packsLoaded) {
+        RefreshAuthoringPacks(true);
+    }
+    if (phase == Mission::Engine::Recorder::Phase::Idle) {
+        form.sessionSeeded = false;
+    }
+    form.previousPhase = phase;
+}
+
+void RefreshRecordedTakeReadiness() {
+    auto& form = g_missionAuthoring;
+    form.takePublishBlocker.clear();
+    form.takePublishReady = Mission::Engine::Recorder::CanPublishRecorded(
+        form.takePublishBlocker);
+    form.reviewReadinessCaptured = true;
+}
+
+const Mission::Authoring::PackSummary* SelectedAuthoringPack() {
+    const auto& form = g_missionAuthoring;
+    return form.packSelectionValid && form.packIndex >= 0 &&
+           form.packIndex < static_cast<int>(form.packs.size())
+        ? &form.packs[form.packIndex] : nullptr;
+}
+
+const Mission::PackCategory* SelectedAuthoringCategory() {
+    const auto* pack = SelectedAuthoringPack();
+    const int index = g_missionAuthoring.categoryIndex;
+    return pack && index >= 0 && index < static_cast<int>(pack->categories.size())
+        ? &pack->categories[index] : nullptr;
+}
+
+void OnAuthoringPackChanged() {
+    auto& form = g_missionAuthoring;
+    const bool wasMissing = form.missingPackWarning;
+    form.packSelectionValid = form.packIndex >= 0 &&
+        form.packIndex < static_cast<int>(form.packs.size());
+    form.missingPackWarning = false;
+    if (form.packSelectionValid && wasMissing) {
+        const std::size_t warningPos = form.status.find(kMissingAuthoringPackWarning);
+        if (warningPos != std::string::npos) {
+            std::size_t eraseFrom = warningPos;
+            if (eraseFrom > 0 && form.status[eraseFrom - 1] == ' ') --eraseFrom;
+            form.status.erase(eraseFrom, std::strlen(kMissingAuthoringPackWarning) +
+                                         (warningPos - eraseFrom));
+        }
+    }
+    form.categoryIndex = 0;
+    form.missionIndex = 0;
+    if (const auto* pack = SelectedAuthoringPack()) {
+        form.rememberedPackPath = pack->packJsonPath;
+    }
+    // Dropdown input is handled after this frame's Rows are built but before
+    // they render. Rebuilding the vector here would invalidate the sibling
+    // CATEGORY Row's raw choices pointer. The next builder pass applies it.
+    form.categoryChoicesDirty = true;
+    form.editSeedPackPath.clear();
+}
+
+void OnAuthoringCategoryChanged() {
+    g_missionAuthoring.editSeedCategoryId.clear();
+}
+
+void OnAuthoringMissionChanged() {
+    g_missionAuthoring.editSeedMissionId.clear();
+}
+
+void ActEditTrialName() {
+    OpenMissionTextEditor("SESSION NAME", "Required. This is the title players see in the browser.",
+                          &g_missionAuthoring.name, false, 128);
+}
+void ActEditTrialDescription() {
+    OpenMissionTextEditor("WHAT THIS TEACHES",
+        "Describe the route, setup, or skill the player should learn.",
+        &g_missionAuthoring.description, true, 4096);
+}
+void ActEditNewPackName() {
+    OpenMissionTextEditor("PACK NAME", "Required. Folder and stable ID are generated safely.",
+                          &g_missionAuthoring.newPackName, false, 128);
+}
+void ActEditNewPackAuthor() {
+    OpenMissionTextEditor("PACK AUTHOR", "Optional author or team credit.",
+                          &g_missionAuthoring.newPackAuthor, false, 128);
+}
+void ActEditNewPackDescription() {
+    OpenMissionTextEditor("PACK DESCRIPTION", "Explain the pack's scope and intended audience.",
+                          &g_missionAuthoring.newPackDescription, true, 4096);
+}
+void ActEditNewPackVersion() {
+    OpenMissionTextEditor("PACK VERSION", "Display version, for example 1.0.0.",
+                          &g_missionAuthoring.newPackVersion, false, 32);
+}
+void ActEditNewCategoryName() {
+    OpenMissionTextEditor("CATEGORY NAME", "Required. Examples: Fundamentals or Corner Routes.",
+                          &g_missionAuthoring.newCategoryName, false, 96);
+}
+void ActEditNewCategoryDescription() {
+    OpenMissionTextEditor("CATEGORY DESCRIPTION", "Optional one-line purpose for this section.",
+                          &g_missionAuthoring.newCategoryDescription, true, 1024);
+}
+void ActEditExistingPackName() {
+    OpenMissionTextEditor("PACK NAME", "Rename the selected pack without changing its stable ID or folder.",
+                          &g_missionAuthoring.editPackName, false, 128);
+}
+void ActEditExistingPackAuthor() {
+    OpenMissionTextEditor("PACK AUTHOR", "Author or team credit shown in the browser.",
+                          &g_missionAuthoring.editPackAuthor, false, 128);
+}
+void ActEditExistingPackDescription() {
+    OpenMissionTextEditor("PACK DESCRIPTION", "Describe this collection for players browsing it.",
+                          &g_missionAuthoring.editPackDescription, true, 4096);
+}
+void ActEditExistingPackVersion() {
+    OpenMissionTextEditor("PACK VERSION", "Display version only; stable pack identity is unchanged.",
+                          &g_missionAuthoring.editPackVersion, false, 32);
+}
+void ActEditExistingCategoryName() {
+    OpenMissionTextEditor("CATEGORY NAME", "Rename this category without changing its stable ID.",
+                          &g_missionAuthoring.editCategoryName, false, 96);
+}
+void ActEditExistingCategoryDescription() {
+    OpenMissionTextEditor("CATEGORY DESCRIPTION", "Describe what players will find in this section.",
+                          &g_missionAuthoring.editCategoryDescription, true, 1024);
+}
+void ActEditExistingMissionName() {
+    OpenMissionTextEditor("MISSION NAME", "Rename this published session without changing its file or stable ID.",
+                          &g_missionAuthoring.editMissionName, false, 128);
+}
+void ActEditExistingMissionDescription() {
+    OpenMissionTextEditor("WHAT THIS TEACHES", "Revise the player-facing objective; recorded gameplay stays unchanged.",
+                          &g_missionAuthoring.editMissionDescription, true, 4096);
+}
+
+bool HasNonWhitespace(const std::string& value) {
+    for (unsigned char c : value) {
+        if (!std::isspace(c)) return true;
+    }
+    return false;
+}
+
+const char* ValTrialName() {
+    return HasNonWhitespace(g_missionAuthoring.name)
+        ? g_missionAuthoring.name.c_str() : "REQUIRED";
+}
+const char* ValTrialDescription() {
+    return HasNonWhitespace(g_missionAuthoring.description) ? "SET" : "ADD SUMMARY";
+}
+const char* ValNewPackName() {
+    return HasNonWhitespace(g_missionAuthoring.newPackName)
+        ? g_missionAuthoring.newPackName.c_str() : "REQUIRED";
+}
+const char* ValNewPackAuthor() {
+    return HasNonWhitespace(g_missionAuthoring.newPackAuthor)
+        ? g_missionAuthoring.newPackAuthor.c_str() : "OPTIONAL";
+}
+const char* ValNewPackDescription() {
+    return HasNonWhitespace(g_missionAuthoring.newPackDescription) ? "SET" : "OPTIONAL";
+}
+const char* ValNewPackVersion() {
+    return HasNonWhitespace(g_missionAuthoring.newPackVersion)
+        ? g_missionAuthoring.newPackVersion.c_str() : "1.0.0";
+}
+const char* ValNewCategoryName() {
+    return HasNonWhitespace(g_missionAuthoring.newCategoryName)
+        ? g_missionAuthoring.newCategoryName.c_str() : "REQUIRED";
+}
+const char* ValNewCategoryDescription() {
+    return HasNonWhitespace(g_missionAuthoring.newCategoryDescription) ? "SET" : "OPTIONAL";
+}
+const char* ValExistingPackName() {
+    return HasNonWhitespace(g_missionAuthoring.editPackName)
+        ? g_missionAuthoring.editPackName.c_str() : "REQUIRED";
+}
+const char* ValExistingPackAuthor() {
+    return HasNonWhitespace(g_missionAuthoring.editPackAuthor)
+        ? g_missionAuthoring.editPackAuthor.c_str() : "OPTIONAL";
+}
+const char* ValExistingPackDescription() {
+    return HasNonWhitespace(g_missionAuthoring.editPackDescription) ? "SET" : "OPTIONAL";
+}
+const char* ValExistingPackVersion() {
+    return HasNonWhitespace(g_missionAuthoring.editPackVersion)
+        ? g_missionAuthoring.editPackVersion.c_str() : "1.0";
+}
+const char* ValExistingCategoryName() {
+    return HasNonWhitespace(g_missionAuthoring.editCategoryName)
+        ? g_missionAuthoring.editCategoryName.c_str() : "REQUIRED";
+}
+const char* ValExistingCategoryDescription() {
+    return HasNonWhitespace(g_missionAuthoring.editCategoryDescription) ? "SET" : "OPTIONAL";
+}
+const char* ValExistingMissionName() {
+    return HasNonWhitespace(g_missionAuthoring.editMissionName)
+        ? g_missionAuthoring.editMissionName.c_str() : "REQUIRED";
+}
+const char* ValExistingMissionDescription() {
+    return HasNonWhitespace(g_missionAuthoring.editMissionDescription) ? "SET" : "OPTIONAL";
+}
+const char* ValSelectedExistingMission() {
+    const auto* pack = SelectedAuthoringPack();
+    const int index = g_missionAuthoring.missionIndex;
+    if (!pack || index < 0 || index >= static_cast<int>(pack->scenarios.size())) {
+        return "NO PUBLISHED MISSIONS";
+    }
+    const auto& mission = pack->scenarios[index];
+    return mission.name.empty() ? mission.id.c_str() : mission.name.c_str();
+}
+const char* ValSelectedPack() {
+    const auto* pack = SelectedAuthoringPack();
+    return pack ? pack->name.c_str() : "CREATE A PACK";
+}
+const char* ValSelectedCategory() {
+    const auto* category = SelectedAuthoringCategory();
+    return category ? category->label.c_str() : "ADD A CATEGORY";
+}
+const char* FormatAuthoringPackDropdown(const Row& row) {
+    if (!g_missionAuthoring.packSelectionValid) return "CHOOSE PACK";
+    const int index = row.choiceIdxPtr ? *row.choiceIdxPtr : -1;
+    return row.choices && index >= 0 && index < row.choiceCount
+        ? row.choices[index] : "CHOOSE PACK";
+}
+const char* ValAuthoringStatus() {
+    const auto phase = Mission::Engine::Recorder::GetPhase();
+    if (phase != Mission::Engine::Recorder::Phase::Review) return "DRAFT SETUP";
+    if (!HasNonWhitespace(g_missionAuthoring.name) ||
+        g_missionAuthoring.difficultyIndex <= 0 ||
+        !SelectedAuthoringPack() ||
+        !SelectedAuthoringCategory()) {
+        return "NEEDS DETAILS";
+    }
+    return g_missionAuthoring.takePublishReady ? "READY TO PUBLISH" : "NEEDS REVIEW";
+}
+
+bool CreatePackDisabled() {
+    return !HasNonWhitespace(g_missionAuthoring.newPackName);
+}
+bool AddCategoryDisabled() {
+    return !SelectedAuthoringPack() ||
+           !HasNonWhitespace(g_missionAuthoring.newCategoryName);
+}
+bool UpdatePackDisabled() {
+    return !SelectedAuthoringPack() ||
+           !HasNonWhitespace(g_missionAuthoring.editPackName);
+}
+bool UpdateCategoryDisabled() {
+    return !SelectedAuthoringCategory() ||
+           !HasNonWhitespace(g_missionAuthoring.editCategoryName);
+}
+bool UpdateMissionDisabled() {
+    const auto* pack = SelectedAuthoringPack();
+    return !pack || g_missionAuthoring.missionIndex < 0 ||
+           g_missionAuthoring.missionIndex >= static_cast<int>(pack->scenarios.size()) ||
+           !HasNonWhitespace(g_missionAuthoring.editMissionName) ||
+           g_missionAuthoring.editMissionDifficultyIndex < 1 ||
+           g_missionAuthoring.editMissionDifficultyIndex > 5 ||
+           g_missionAuthoring.editMissionCategoryIndex < 0 ||
+           g_missionAuthoring.editMissionCategoryIndex >=
+               static_cast<int>(pack->categories.size());
+}
+bool PackSelectionDisabled() { return !SelectedAuthoringPack(); }
+bool PublishRecordedDisabled() {
+    return Mission::Engine::Recorder::GetPhase() != Mission::Engine::Recorder::Phase::Review ||
+           !HasNonWhitespace(g_missionAuthoring.name) ||
+           g_missionAuthoring.difficultyIndex <= 0 ||
+           !SelectedAuthoringPack() ||
+           !SelectedAuthoringCategory() || !g_missionAuthoring.takePublishReady;
+}
+
+void ActRefreshAuthoringPacks() {
+    g_missionAuthoring.rescanPending = true;
+}
+
+void ExecuteCreateAuthoringPack() {
+    auto& form = g_missionAuthoring;
+    Mission::Authoring::CreatePackResult created;
+    std::string error;
+    const std::string version = form.newPackVersion.empty()
+        ? std::string("1.0.0") : form.newPackVersion;
+    if (!Mission::Authoring::CreatePack(Mission::ResolveMissionsRoot(),
+            form.newPackName, form.newPackAuthor, form.newPackDescription,
+            version, created, error)) {
+        ShowMissionAuthoringResult(false, "Pack creation failed: " + error);
+        return;
+    }
+    form.rememberedPackPath = created.packJsonPath;
+    form.newPackName.clear();
+    form.newPackDescription.clear();
+    RefreshAuthoringPacks(true);
+    ShowMissionAuthoringResult(true, "Created pack " + created.packId);
+}
+
+void ExecuteCreateAuthoringCategory() {
+    auto& form = g_missionAuthoring;
+    const auto* selected = SelectedAuthoringPack();
+    if (!selected) {
+        ShowMissionAuthoringResult(false, "Create or select a pack first");
+        return;
+    }
+    const std::string packPath = selected->packJsonPath;
+    Mission::PackCategory created;
+    std::string error;
+    if (!Mission::Authoring::AddCategory(Mission::ResolveMissionsRoot(),
+                                         packPath, form.newCategoryName,
+                                         form.newCategoryDescription,
+                                         created, error)) {
+        ShowMissionAuthoringResult(false, "Category creation failed: " + error);
+        return;
+    }
+    form.rememberedPackPath = packPath;
+    form.newCategoryName.clear();
+    form.newCategoryDescription.clear();
+    RefreshAuthoringPacks(true);
+    if (const auto* pack = SelectedAuthoringPack()) {
+        for (int i = 0; i < static_cast<int>(pack->categories.size()); ++i) {
+            if (pack->categories[i].id == created.id) {
+                form.categoryIndex = i;
+                break;
+            }
+        }
+    }
+    RebuildAuthoringCategoryChoices();
+    ShowMissionAuthoringResult(true, "Added category " + created.label);
+}
+
+void ExecuteUpdateAuthoringPack() {
+    auto& form = g_missionAuthoring;
+    const auto* selected = SelectedAuthoringPack();
+    if (!selected) {
+        ShowMissionAuthoringResult(false, "Select an editable pack first");
+        return;
+    }
+    const std::string packPath = selected->packJsonPath;
+    Mission::Authoring::PackMetadata metadata;
+    metadata.name = form.editPackName;
+    metadata.author = form.editPackAuthor;
+    metadata.description = form.editPackDescription;
+    metadata.version = form.editPackVersion;
+    std::string error;
+    const bool ok = Mission::Authoring::UpdatePackMetadata(
+        Mission::ResolveMissionsRoot(), packPath, metadata, error);
+    if (ok) {
+        form.rememberedPackPath = packPath;
+        RefreshAuthoringPacks(true);
+    }
+    ShowMissionAuthoringResult(ok,
+        ok ? "Pack details updated" : "Pack update failed: " + error);
+}
+
+void ExecuteUpdateAuthoringCategory() {
+    auto& form = g_missionAuthoring;
+    const auto* pack = SelectedAuthoringPack();
+    const auto* category = SelectedAuthoringCategory();
+    if (!pack || !category) {
+        ShowMissionAuthoringResult(false, "Select an editable category first");
+        return;
+    }
+    const std::string packPath = pack->packJsonPath;
+    const std::string categoryId = category->id;
+    Mission::Authoring::CategoryMetadata metadata;
+    metadata.label = form.editCategoryName;
+    metadata.description = form.editCategoryDescription;
+    std::string error;
+    const bool ok = Mission::Authoring::UpdateCategoryMetadata(
+        Mission::ResolveMissionsRoot(), packPath, categoryId, metadata, error);
+    if (ok) {
+        form.rememberedPackPath = packPath;
+        RefreshAuthoringPacks(true);
+        if (const auto* refreshed = SelectedAuthoringPack()) {
+            for (int i = 0; i < static_cast<int>(refreshed->categories.size()); ++i) {
+                if (refreshed->categories[i].id == categoryId) {
+                    form.categoryIndex = i;
+                    break;
+                }
+            }
+        }
+        SeedSelectedAuthoringEditors(true);
+    }
+    ShowMissionAuthoringResult(ok,
+        ok ? "Category details updated" : "Category update failed: " + error);
+}
+
+void ExecuteUpdateAuthoringMission() {
+    auto& form = g_missionAuthoring;
+    const auto* pack = SelectedAuthoringPack();
+    if (!pack || form.missionIndex < 0 ||
+        form.missionIndex >= static_cast<int>(pack->scenarios.size()) ||
+        form.editMissionCategoryIndex < 0 ||
+        form.editMissionCategoryIndex >= static_cast<int>(pack->categories.size())) {
+        ShowMissionAuthoringResult(false, "Select an editable mission and category first");
+        return;
+    }
+    const std::string packPath = pack->packJsonPath;
+    const std::string missionId = pack->scenarios[form.missionIndex].id;
+    Mission::Authoring::ExistingMissionMetadata metadata;
+    metadata.name = form.editMissionName;
+    metadata.description = form.editMissionDescription;
+    metadata.type = form.editMissionTypeIndex == 1 ? "mission" : "combo";
+    metadata.difficulty = form.editMissionDifficultyIndex;
+    metadata.categoryId = pack->categories[form.editMissionCategoryIndex].id;
+    std::string error;
+    const bool ok = Mission::Authoring::UpdateMissionMetadata(
+        Mission::ResolveMissionsRoot(), packPath, missionId, metadata, error);
+    if (ok) {
+        form.rememberedPackPath = packPath;
+        RefreshAuthoringPacks(true);
+        if (const auto* refreshed = SelectedAuthoringPack()) {
+            for (int i = 0; i < static_cast<int>(refreshed->scenarios.size()); ++i) {
+                if (refreshed->scenarios[i].id == missionId) {
+                    form.missionIndex = i;
+                    break;
+                }
+            }
+        }
+        SeedSelectedAuthoringEditors(true);
+    }
+    ShowMissionAuthoringResult(ok,
+        ok ? "Mission details updated" : "Mission update failed: " + error);
+}
+
+void ActCreateAuthoringPack() {
+    g_missionAuthoring.createPackPending = true;
+}
+
+void ActCreateAuthoringCategory() {
+    g_missionAuthoring.createCategoryPending = true;
+}
+
+void ActUpdateAuthoringPack() { g_missionAuthoring.updatePackPending = true; }
+void ActUpdateAuthoringCategory() { g_missionAuthoring.updateCategoryPending = true; }
+void ActUpdateAuthoringMission() { g_missionAuthoring.updateMissionPending = true; }
+
+void ProcessPendingMissionAuthoringActions() {
+    auto& form = g_missionAuthoring;
+    if (g_authoringRescanRequested.exchange(false,
+            std::memory_order_acq_rel)) {
+        form.rescanPending = true;
+    }
+    if (g_prepareNewMissionAuthoringRequested.exchange(false,
+            std::memory_order_acq_rel)) {
+        form.name.clear();
+        form.description.clear();
+        form.difficultyIndex = 0;
+        form.typeIndex = 0;
+        form.status.clear();
+        form.reviewReadinessCaptured = false;
+        form.takePublishReady = false;
+        form.takePublishBlocker.clear();
+        form.sessionSeeded = true;
+        form.previousPhase = Mission::Engine::Recorder::Phase::Idle;
+        RefreshAuthoringPacks(true);
+    }
+    if (form.invalidateReadinessPending) {
+        form.invalidateReadinessPending = false;
+        InvalidateMissionReviewReadiness();
+    }
+    if (form.createPackPending) {
+        form.createPackPending = false;
+        ExecuteCreateAuthoringPack();
+    }
+    if (form.createCategoryPending) {
+        form.createCategoryPending = false;
+        ExecuteCreateAuthoringCategory();
+    }
+    if (form.updatePackPending) {
+        form.updatePackPending = false;
+        ExecuteUpdateAuthoringPack();
+    }
+    if (form.updateCategoryPending) {
+        form.updateCategoryPending = false;
+        ExecuteUpdateAuthoringCategory();
+    }
+    if (form.updateMissionPending) {
+        form.updateMissionPending = false;
+        ExecuteUpdateAuthoringMission();
+    }
+    if (form.rescanPending) {
+        form.rescanPending = false;
+        const bool ok = RefreshAuthoringPacks(true);
+        if (!ok) {
+            ShowMissionAuthoringResult(false, form.status);
+        } else if (!form.status.empty()) {
+            DirectDrawHook::AddMessage(form.status.c_str(), "MISSION AUTHORING",
+                                       RGB(255, 205, 120), 4200, 0, 120);
+        } else {
+            ShowMissionAuthoringResult(
+                true, std::to_string(form.packs.size()) + " editable pack(s) found");
+        }
+    }
+    if (form.categoryChoicesDirty) {
+        form.categoryChoicesDirty = false;
+        RebuildAuthoringCategoryChoices();
+        RebuildAuthoringMissionChoices();
+        SeedSelectedAuthoringEditors(true);
+    }
+    SeedSelectedAuthoringEditors(false);
+}
+
+Mission::Authoring::MissionMetadata CurrentMissionMetadata() {
+    Mission::Authoring::MissionMetadata metadata;
+    metadata.name = g_missionAuthoring.name;
+    metadata.description = g_missionAuthoring.description;
+    metadata.type = g_missionAuthoring.typeIndex == 1 ? "mission" : "combo";
+    // Index zero is an intentional UNRATED draft state. Published sessions
+    // require one of the five user-selected ratings (1..5).
+    metadata.difficulty = g_missionAuthoring.difficultyIndex;
+    return metadata;
+}
+
+void ActSaveRecordedDraft() {
+    std::string message;
+    const bool ok = Mission::Engine::Recorder::SaveRecordedDraft(
+        CurrentMissionMetadata(), message);
+    ShowMissionAuthoringResult(ok,
+        ok ? "Draft saved to Recorded" : "Draft save failed: " + message);
+}
+
+void ActPublishRecordedMission() {
+    const auto* pack = SelectedAuthoringPack();
+    const auto* category = SelectedAuthoringCategory();
+    if (!pack || !category) {
+        ShowMissionAuthoringResult(false, "Select a pack and category first");
+        return;
+    }
+    const std::string packPath = pack->packJsonPath;
+    const std::string categoryId = category->id;
+    std::string message;
+    const bool ok = Mission::Engine::Recorder::PublishRecorded(
+        packPath, categoryId, CurrentMissionMetadata(), message);
+    ShowMissionAuthoringResult(ok,
+        ok ? "Published to " + pack->name : "Publish failed: " + message);
+    if (ok) {
+        // The current frame can still hold Row choice pointers into the pack
+        // vectors. Rebuild them at the start of the next menu tick.
+        g_missionAuthoring.rescanPending = true;
+    }
+}
+
+Row* BuildCreatePackRows(int& count) {
+    static Row rows[16];
+    int n = 0;
+    rows[n++] = Header("NEW MISSION PACK");
+    rows[n++] = Info("A pack is the shareable top-level collection shown in the browser.");
+    rows[n++] = Action("PACK NAME", ActEditNewPackName, ValNewPackName);
+    rows[n++] = Action("AUTHOR / CREDITS", ActEditNewPackAuthor, ValNewPackAuthor);
+    rows[n++] = Action("DESCRIPTION", ActEditNewPackDescription, ValNewPackDescription);
+    rows[n++] = Action("VERSION", ActEditNewPackVersion, ValNewPackVersion);
+    rows[n++] = Action("CREATE PACK", ActCreateAuthoringPack, nullptr, CreatePackDisabled);
+    count = n;
+    return rows;
+}
+
+Row* BuildCreateCategoryRows(int& count) {
+    static Row rows[14];
+    int n = 0;
+    rows[n++] = Header("NEW CATEGORY");
+    rows[n++] = Info("Categories keep a pack's recommended path readable without locking missions.");
+    rows[n++] = Action("CATEGORY NAME", ActEditNewCategoryName, ValNewCategoryName);
+    rows[n++] = Action("DESCRIPTION", ActEditNewCategoryDescription, ValNewCategoryDescription);
+    rows[n++] = Action("ADD TO SELECTED PACK", ActCreateAuthoringCategory,
+                       ValSelectedPack, AddCategoryDisabled);
+    count = n;
+    return rows;
+}
+
+Row* BuildMissionDetailsRows(int& count) {
+    static Row rows[24];
+    int n = 0;
+    auto& form = g_missionAuthoring;
+    rows[n++] = Header("MISSION DETAILS");
+    rows[n++] = Action("NAME", ActEditTrialName, ValTrialName);
+    rows[n++] = Action("WHAT THIS TEACHES", ActEditTrialDescription, ValTrialDescription);
+    rows[n++] = DropdownRow("LIBRARY TYPE", &form.typeIndex,
+                            kAuthorTypeChoices, kAuthorTypeChoiceCount);
+    rows[n++] = DropdownRow("DIFFICULTY", &form.difficultyIndex,
+                            kAuthorDifficultyChoices, kAuthorDifficultyChoiceCount);
+    if (form.difficultyIndex <= 0) {
+        rows[n++] = Info("Choose a difficulty to publish. Recorded drafts may stay unrated.");
+    }
+    rows[n++] = Spacer();
+    rows[n++] = Header("DESTINATION");
+    if (form.packChoices.empty()) {
+        rows[n++] = Info("No editable packs exist yet. Create one to publish this session.");
+    } else {
+        Row packRow = DropdownRow("PACK", &form.packIndex,
+                                  form.packChoices.data(),
+                                  static_cast<int>(form.packChoices.size()),
+                                  OnAuthoringPackChanged);
+        packRow.valueFormatter = FormatAuthoringPackDropdown;
+        rows[n++] = packRow;
+        if (form.categoryChoices.empty()) {
+            rows[n++] = Info("The selected pack has no categories. Add one before publishing.");
+        } else {
+            rows[n++] = DropdownRow("CATEGORY", &form.categoryIndex,
+                                    form.categoryChoices.data(),
+                                    static_cast<int>(form.categoryChoices.size()));
+        }
+    }
+    rows[n++] = Submenu("CREATE NEW PACK", "CREATE PACK", BuildCreatePackRows);
+    rows[n++] = Submenu("ADD CATEGORY", "CREATE CATEGORY", BuildCreateCategoryRows,
+                        ValSelectedPack, PackSelectionDisabled);
+    rows[n++] = Action("RESCAN PACKS", ActRefreshAuthoringPacks);
+    if (!form.status.empty()) {
+        rows[n++] = Spacer();
+        rows[n++] = Header("STATUS");
+        rows[n++] = Info(form.status.c_str());
+    }
+    count = n;
+    return rows;
+}
+
+Row* BuildEditPackRows(int& count) {
+    static Row rows[16];
+    int n = 0;
+    SeedSelectedAuthoringEditors(false);
+    rows[n++] = Header("EDIT PACK DETAILS");
+    rows[n++] = Info("Display metadata only. The pack ID and folder stay unchanged.");
+    rows[n++] = Action("PACK NAME", ActEditExistingPackName, ValExistingPackName);
+    rows[n++] = Action("AUTHOR / CREDITS", ActEditExistingPackAuthor,
+                       ValExistingPackAuthor);
+    rows[n++] = Action("DESCRIPTION", ActEditExistingPackDescription,
+                       ValExistingPackDescription);
+    rows[n++] = Action("VERSION", ActEditExistingPackVersion,
+                       ValExistingPackVersion);
+    rows[n++] = Action("SAVE PACK DETAILS", ActUpdateAuthoringPack, nullptr,
+                       UpdatePackDisabled);
+    count = n;
+    return rows;
+}
+
+Row* BuildEditCategoryRows(int& count) {
+    static Row rows[12];
+    int n = 0;
+    SeedSelectedAuthoringEditors(false);
+    rows[n++] = Header("EDIT CATEGORY DETAILS");
+    rows[n++] = Info("The category ID and order stay unchanged.");
+    rows[n++] = Action("CATEGORY NAME", ActEditExistingCategoryName,
+                       ValExistingCategoryName);
+    rows[n++] = Action("DESCRIPTION", ActEditExistingCategoryDescription,
+                       ValExistingCategoryDescription);
+    rows[n++] = Action("SAVE CATEGORY DETAILS", ActUpdateAuthoringCategory,
+                       nullptr, UpdateCategoryDisabled);
+    count = n;
+    return rows;
+}
+
+Row* BuildEditMissionRows(int& count) {
+    static Row rows[18];
+    int n = 0;
+    auto& form = g_missionAuthoring;
+    SeedSelectedAuthoringEditors(false);
+    rows[n++] = Header("EDIT PUBLISHED MISSION");
+    rows[n++] = Info("Recorded setup, inputs, steps, contacts, file, ID, and order stay unchanged.");
+    rows[n++] = Action("NAME", ActEditExistingMissionName,
+                       ValExistingMissionName);
+    rows[n++] = Action("WHAT THIS TEACHES", ActEditExistingMissionDescription,
+                       ValExistingMissionDescription);
+    rows[n++] = DropdownRow("LIBRARY TYPE", &form.editMissionTypeIndex,
+                            kAuthorTypeChoices, kAuthorTypeChoiceCount);
+    rows[n++] = DropdownRow("DIFFICULTY", &form.editMissionDifficultyIndex,
+                            kAuthorDifficultyChoices, kAuthorDifficultyChoiceCount);
+    if (form.categoryChoices.empty()) {
+        rows[n++] = Info("This pack has no category destination.");
+    } else {
+        rows[n++] = DropdownRow("CATEGORY", &form.editMissionCategoryIndex,
+                                form.categoryChoices.data(),
+                                static_cast<int>(form.categoryChoices.size()));
+    }
+    rows[n++] = Action("SAVE MISSION DETAILS", ActUpdateAuthoringMission,
+                       nullptr, UpdateMissionDisabled);
+    count = n;
+    return rows;
+}
+
+Row* BuildPackWorkshopRows(int& count) {
+    static Row rows[28];
+    int n = 0;
+    auto& form = g_missionAuthoring;
+    rows[n++] = Header("PACK WORKSHOP");
+    rows[n++] = Info("Manage local editable packs. Stable IDs, files, order, and recorded gameplay are preserved.");
+    if (!form.packChoices.empty()) {
+        Row packRow = DropdownRow("ACTIVE PACK", &form.packIndex,
+                                  form.packChoices.data(),
+                                  static_cast<int>(form.packChoices.size()),
+                                  OnAuthoringPackChanged);
+        packRow.valueFormatter = FormatAuthoringPackDropdown;
+        rows[n++] = packRow;
+        rows[n++] = Submenu("EDIT PACK DETAILS", "EDIT PACK", BuildEditPackRows,
+                            ValExistingPackName, UpdatePackDisabled);
+        rows[n++] = Spacer();
+        rows[n++] = Header("CATEGORIES");
+        if (!form.categoryChoices.empty()) {
+            rows[n++] = DropdownRow("ACTIVE CATEGORY", &form.categoryIndex,
+                                    form.categoryChoices.data(),
+                                    static_cast<int>(form.categoryChoices.size()),
+                                    OnAuthoringCategoryChanged);
+            rows[n++] = Submenu("EDIT CATEGORY DETAILS", "EDIT CATEGORY",
+                                BuildEditCategoryRows, ValExistingCategoryName,
+                                UpdateCategoryDisabled);
+        } else {
+            rows[n++] = Info("This pack has no categories.");
+        }
+        rows[n++] = Spacer();
+        rows[n++] = Header("PUBLISHED MISSIONS");
+        if (!form.missionChoices.empty()) {
+            rows[n++] = DropdownRow("ACTIVE MISSION", &form.missionIndex,
+                                    form.missionChoices.data(),
+                                    static_cast<int>(form.missionChoices.size()),
+                                    OnAuthoringMissionChanged);
+            rows[n++] = Submenu("EDIT MISSION DETAILS", "EDIT MISSION",
+                                BuildEditMissionRows, ValSelectedExistingMission,
+                                UpdateMissionDisabled);
+        } else {
+            rows[n++] = Info("No published missions are in this pack yet.");
+        }
+    } else {
+        rows[n++] = Info("No editable mission packs found.");
+    }
+    rows[n++] = Submenu("CREATE NEW PACK", "CREATE PACK", BuildCreatePackRows);
+    rows[n++] = Submenu("ADD CATEGORY", "CREATE CATEGORY", BuildCreateCategoryRows,
+                        ValSelectedPack, PackSelectionDisabled);
+    rows[n++] = Action("RESCAN PACKS", ActRefreshAuthoringPacks);
+    count = n;
+    return rows;
+}
+
 static void ActMissionPreviewRecording() {
     std::string msg;
     const bool ok = Mission::Engine::Demo::PlayRecording(msg);
@@ -3038,13 +4395,18 @@ static void ActMissionPreviewRecording() {
 static Row* BuildMissionBrowserRows(int& count) {
     static Row s_rows[32];
     static char bindingLine[160];
-    if (g_missionListDirty) { ScanMissionEntries(); g_missionListDirty = false; }
+    ProcessPendingMissionAuthoringActions();
     int n = 0;
-    s_rows[n++] = Header("MISSION AUTHORING");
+    s_rows[n++] = Header("RECORD & AUTHOR");
     _snprintf_s(bindingLine, sizeof(bindingLine), _TRUNCATE,
                 "Macro Record: %s", Mission::Engine::Recorder::GetMacroRecordBindingLabel().c_str());
     s_rows[n++] = Info(bindingLine);
     const auto recPhase = Mission::Engine::Recorder::GetPhase();
+    SeedMissionAuthoringSessionIfNeeded(recPhase);
+    if (recPhase == Mission::Engine::Recorder::Phase::Review &&
+        !g_missionAuthoring.reviewReadinessCaptured) {
+        RefreshRecordedTakeReadiness();
+    }
     if (recPhase == Mission::Engine::Recorder::Phase::Idle ||
         recPhase == Mission::Engine::Recorder::Phase::PreRecord) {
         auto& settings = MutableSettings();
@@ -3066,8 +4428,12 @@ static Row* BuildMissionBrowserRows(int& count) {
         s_rows[n++] = Action("NEW RECORDING (PRE-RECORD)", ActArmMissionRecording,
                              ValMissionAuthoringState);
         s_rows[n++] = Info("Arrange the setup first. Recording locks its exact start after the configured count-in.");
+        s_rows[n++] = Submenu("PACK WORKSHOP", "PACK WORKSHOP", BuildPackWorkshopRows,
+                              ValSelectedPack);
     } else if (recPhase == Mission::Engine::Recorder::Phase::PreRecord) {
         s_rows[n++] = Info("PRE-RECORD: arrange positions/resources. Nothing is being captured yet.");
+        s_rows[n++] = Submenu("MISSION DETAILS & DESTINATION", "MISSION DETAILS",
+                              BuildMissionDetailsRows, ValSelectedPack);
         s_rows[n++] = Action("START RECORDING", ActAdvanceMissionRecording, ValMissionRecordSteps);
         s_rows[n++] = Action("DISCARD SESSION", ActDiscardMissionRecording);
     } else if (recPhase == Mission::Engine::Recorder::Phase::CountIn) {
@@ -3079,47 +4445,27 @@ static Row* BuildMissionBrowserRows(int& count) {
         s_rows[n++] = Action("STOP & REVIEW", ActAdvanceMissionRecording, ValMissionRecordSteps);
         s_rows[n++] = Action("DISCARD SESSION", ActDiscardMissionRecording);
     } else {
+        s_rows[n++] = Header(ValAuthoringStatus());
         s_rows[n++] = Info("REVIEW: the clip is not saved until you choose Save.");
-        s_rows[n++] = Info("Setup breaks preserve multi-part combos; Retake is the only retry boundary.");
+        s_rows[n++] = Info("Preview and edit the player-facing details. Retake keeps your pack, category, and text.");
+        if (!g_missionAuthoring.takePublishReady &&
+            !g_missionAuthoring.takePublishBlocker.empty()) {
+            s_rows[n++] = Info(g_missionAuthoring.takePublishBlocker.c_str());
+        }
         s_rows[n++] = Action("PREVIEW DEMONSTRATION", ActMissionPreviewRecording);
-        s_rows[n++] = Action("SAVE RECORDED MISSION", ActSaveRecordedMission, ValMissionRecordSteps);
+        s_rows[n++] = Submenu("EDIT MISSION DETAILS", "MISSION DETAILS",
+                              BuildMissionDetailsRows, ValSelectedPack);
+        s_rows[n++] = Action("PUBLISH TO PACK", ActPublishRecordedMission,
+                             ValSelectedCategory, PublishRecordedDisabled);
+        s_rows[n++] = Action("SAVE AS RECORDED DRAFT", ActSaveRecordedDraft,
+                             ValMissionRecordSteps);
         s_rows[n++] = Action("RETAKE FROM BASELINE", ActRetakeMissionRecording);
         s_rows[n++] = Action("DISCARD SESSION", ActDiscardMissionRecording);
     }
 
-    if (recPhase != Mission::Engine::Recorder::Phase::Idle) {
-        count = n;
-        return s_rows;
-    }
-
-    s_rows[n++] = Spacer();
-    s_rows[n++] = Header("LOADED MISSION");
-    s_rows[n++] = Action("WATCH DEMONSTRATION", ActMissionPlayDemo);
-    s_rows[n++] = Action("RESET PLAYER ATTEMPT", ActResetMission);
-    s_rows[n++] = Spacer();
-    s_rows[n++] = Header("MISSION LIBRARY");
-    s_rows[n++] = Action("RESCAN FOLDER", ActMissionRescan);
-    static void (*const kFns[kMissionBrowserMax])() = {
-        ActMissionEntry0, ActMissionEntry1, ActMissionEntry2,  ActMissionEntry3,
-        ActMissionEntry4, ActMissionEntry5, ActMissionEntry6,  ActMissionEntry7,
-        ActMissionEntry8, ActMissionEntry9, ActMissionEntry10, ActMissionEntry11,
-    };
-    for (int i = 0; i < (int)g_missionEntries.size() && i < kMissionBrowserMax && n < 31; ++i) {
-        s_rows[n++] = Action(g_missionEntries[i].label.c_str(), kFns[i]);
-    }
-    if (g_missionEntries.empty()) {
-        s_rows[n++] = Info("No missions found under assets\\missions.");
-    }
     count = n;
     return s_rows;
 }
-static const char* ValMissionBrowser() {
-    static char b[24];
-    _snprintf_s(b, sizeof(b), _TRUNCATE, "%d found", (int)g_missionEntries.size());
-    return b;
-}
-
-
 Row* BuildDebugOverlayRows(int& count) {
     static Row s_rows[16];
     int n = 0;
@@ -3129,10 +4475,6 @@ Row* BuildDebugOverlayRows(int& count) {
     s_rows[n++] = Toggle ("OVERLAY DEBUG BORDERS",     &g_mirrorOverlayBorders,       OnOverlayBorders);
     s_rows[n++] = Toggle ("RG DEBUG TOASTS",           &g_mirrorRGToasts,             OnRGToasts);
     s_rows[n++] = Submenu("GAME HUD",                  "GAME HUD", BuildHudDisableRows, ValHudDisable);
-    s_rows[n++] = Header("MISSIONS");
-    s_rows[n++] = Toggle ("MOVE-ID INSPECTOR",         &g_mirrorMissionInspector,     OnMissionInspector);
-    s_rows[n++] = Action ("LOAD LATEST RECORDED",      ActLoadLatestMission);
-    s_rows[n++] = Submenu("MISSIONS & AUTHORING",       "MISSIONS", BuildMissionBrowserRows, ValMissionAuthoringState);
     count = n;
     return s_rows;
 }
@@ -3603,14 +4945,14 @@ void RefreshHelpStrings() {
             case CHAR_ID_MISAKI:   path = "Misaki_Kawana"; break;
             case CHAR_ID_MISHIO:   path = "Mishio_Amano"; break;
             case CHAR_ID_MISUZU:   path = "Misuzu_Kamio"; break;
-            case CHAR_ID_MIZUKA:
-            case CHAR_ID_NAGAMORI: path = "Mizuka_Nagamori"; break;
+            case CHAR_ID_MIZUKA:        path = "Mizuka_Nagamori"; break;
+            case CHAR_ID_UNKNOWN_BOSS:
+            case CHAR_ID_UNKNOWN:       path = "UNKNOWN"; break;
             case CHAR_ID_NANASE:   path = "Rumi_Nanase"; break;
             case CHAR_ID_SAYURI:   path = "Sayuri_Kurata"; break;
             case CHAR_ID_SHIORI:   path = "Shiori_Misaka"; break;
             case CHAR_ID_NAYUKI:   path = "Nayuki_Minase_(asleep)"; break;
             case CHAR_ID_NAYUKIB:  path = "Nayuki_Minase_(awake)"; break;
-            case CHAR_ID_MIZUKAB:  path = "UNKNOWN"; break;
             default: break;
         }
         if (!path) return;
@@ -4137,6 +5479,8 @@ const char* ValPoolDelaySummary() {
     bool mixed = false;
     for (int i = 0; i < kActionPoolCount; ++i) {
         if (!ConcretePoolBitSet(lo, hi, i)) continue;
+        if (!CharacterActionCatalog::IsPoolIndexAvailable(
+                EffectiveAutoActionCharId(), i)) continue;
         const int effectiveDelay = EffectivePoolDelayForIndex(delays, i, defaultDelay);
         if (selected == 0) {
             firstDelay = effectiveDelay;
@@ -4163,9 +5507,11 @@ const char* ValPoolDelaySummary() {
 }
 
 Row* BuildPoolDelayRows(int& count) {
-    static Row s_rows[96];
+    static Row s_rows[224];
     static char s_labels[MAX_ACTION_POOL_OPTIONS][48];
     static char s_help[MAX_ACTION_POOL_OPTIONS][128];
+    static char s_chargeLabels[MAX_ACTION_POOL_OPTIONS][48];
+    static char s_chargeHelp[MAX_ACTION_POOL_OPTIONS][160];
 
     int n = 0;
     const int triggerIdx = ClampIndex(g_selectedAutoTrigger, 5);
@@ -4173,14 +5519,15 @@ Row* BuildPoolDelayRows(int& count) {
     uint64_t hi = 0;
     CurrentPoolMaskForTriggerIndex(triggerIdx, lo, hi);
     int* delays = PoolDelayArrayForTriggerIndex(triggerIdx);
+    int* charges = PoolChargeArrayForTriggerIndex(triggerIdx);
 
-    s_rows[n++] = Header("POOL DELAYS");
+    s_rows[n++] = Header("POOL OPTIONS");
     if (!PoolEnabledForTriggerIndex(triggerIdx)) {
         s_rows[n++] = Info("Turn on Random Pool to edit per-move delays.");
         count = n;
         return s_rows;
     }
-    if (!delays || (lo | hi) == 0) {
+    if (!delays || !charges || (lo | hi) == 0) {
         s_rows[n++] = Info("Select moves in Action Pool first.");
         count = n;
         return s_rows;
@@ -4191,9 +5538,11 @@ Row* BuildPoolDelayRows(int& count) {
         OnAutoApply();
     }
 
-    s_rows[n++] = Info("Each selected move uses its own delay when Random Pool rolls it.");
-    for (int i = 0; i < kActionPoolCount && n < 94; ++i) {
+    s_rows[n++] = Info("Each selected move keeps its own delay and optional IC/FIC follow-up.");
+    for (int i = 0; i < kActionPoolCount && n < 222; ++i) {
         if (!ConcretePoolBitSet(lo, hi, i)) continue;
+        if (!CharacterActionCatalog::IsPoolIndexAvailable(
+                EffectiveAutoActionCharId(), i)) continue;
         _snprintf_s(s_labels[i], sizeof(s_labels[i]), _TRUNCATE,
                     "%s DELAY", kActionPoolNames[i]);
         _snprintf_s(s_help[i], sizeof(s_help[i]), _TRUNCATE,
@@ -4207,6 +5556,25 @@ Row* BuildPoolDelayRows(int& count) {
                                       5,
                                       OnAutoApply),
                                s_help[i]);
+        int action = ACTION_5A;
+        int strength = 0;
+        if (CharacterActionCatalog::PoolIndexToAction(i, action, strength) &&
+            ActionSupportsChargeFollowup(action)) {
+            charges[i] = ClampIndex(charges[i], 3);
+            _snprintf_s(s_chargeLabels[i], sizeof(s_chargeLabels[i]), _TRUNCATE,
+                        "%s AFTER MOVE", kActionPoolNames[i]);
+            _snprintf_s(s_chargeHelp[i], sizeof(s_chargeHelp[i]), _TRUNCATE,
+                        "Off does nothing. IC waits for %s to connect; FIC uses its native fixed window.",
+                        kActionPoolNames[i]);
+            s_rows[n++] = WithHelp(ChoicesRow(s_chargeLabels[i],
+                                              &charges[i],
+                                              kChargeFollowupChoices,
+                                              3,
+                                              OnAutoApply),
+                                   s_chargeHelp[i]);
+        } else {
+            charges[i] = 0;
+        }
     }
 
     count = n;
@@ -4222,6 +5590,7 @@ void AddTriggerRows(Row* rows, int& n,
                     int* strength,
                     int* macroSlot,
                     int* delay,
+                    int* chargeFollowup,
                     bool* usePool,
                     uint64_t* poolMaskLo,
                     uint64_t* poolMaskHi,
@@ -4229,7 +5598,8 @@ void AddTriggerRows(Row* rows, int& n,
                     void (*onPoolMask)(),
                     bool (*hideRegularDelay)(),
                     bool (*hideSingleAction)(),
-                    bool (*hidePool)()) {
+                    bool (*hidePool)(),
+                    bool (*hideCharge)()) {
     rows[n++] = Header(title);
     rows[n++] = WithHelp(Toggle("ENABLE", enabled, OnAutoApply),
                          "Enables this trigger so the dummy responds when this situation happens.");
@@ -4248,6 +5618,10 @@ void AddTriggerRows(Row* rows, int& n,
     rows[n++] = actionRow;
     rows[n++] = WithHelp(IntNum("DELAY", delay, 0, 60, 1, 5, OnAutoApply, nullptr, hideRegularDelay),
                          "Waits this many frames before the dummy starts the selected response.");
+    rows[n++] = WithHelp(ChoicesRow("AFTER MOVE", chargeFollowup,
+                                    kChargeFollowupChoices, 3,
+                                    OnAutoApply, nullptr, hideCharge),
+                         "Off does nothing. IC waits for contact before 22C; FIC uses the move's native fixed 22C window.");
     rows[n++] = WithHelp(DropdownRow("MACRO SLOT", macroSlot, g_macroSlotChoiceArr, g_macroSlotChoiceCount,
                                      OnAutoApply),
                          "Runs a recorded macro instead of the single selected action when a slot is chosen.");
@@ -4263,15 +5637,16 @@ void AddTriggerRows(Row* rows, int& n,
     poolRow.valueFormatter = FormatActionPoolSummary;
     poolRow.choiceValueFormatter = FormatActionPoolChoice;
     poolRow.choiceHelpFormatter = FormatActionPoolChoiceHelp;
+    poolRow.choiceFilter = FilterActionPoolChoice;
     poolRow.helpText = "Selects the exact move versions Random Pool is allowed to roll.";
     rows[n++] = poolRow;
-    rows[n++] = WithHelp(Submenu("POOL DELAYS",
-                                 "POOL DELAYS",
+    rows[n++] = WithHelp(Submenu("POOL OPTIONS",
+                                 "POOL OPTIONS",
                                  BuildPoolDelayRows,
                                  ValPoolDelaySummary,
                                  nullptr,
                                  hidePool),
-                         "Sets a separate delay for each selected Random Pool move.");
+                         "Sets a separate delay and IC/FIC follow-up for each selected Random Pool move.");
 }
 
 const char* AutoActionTargetInfo() {
@@ -4310,10 +5685,10 @@ Row* BuildTriggersRows(int& count) {
                            &d.triggerAfterBlock,
                            &g_actionPickIdxAB, OnTriggerActionAfterBlock,
                            &d.actionAfterBlock, &d.strengthAfterBlock,
-                           &d.macroSlotAfterBlock, &d.delayAfterBlock,
+                           &d.macroSlotAfterBlock, &d.delayAfterBlock, &d.chargeAfterBlock,
                            &g_useMaskAB, &g_poolMaskABLo, &g_poolMaskABHi, OnUseMaskAB, OnPoolMaskAB,
                            HideABRegularDelay,
-                           HideABSingleAction, HideABPool);
+                           HideABSingleAction, HideABPool, HideABCharge);
             break;
         case 1:
             g_motionIdxWU = GetMotionIndexForAction(d.actionOnWakeup);
@@ -4322,10 +5697,10 @@ Row* BuildTriggersRows(int& count) {
                            &d.triggerOnWakeup,
                            &g_actionPickIdxWU, OnTriggerActionOnWakeup,
                            &d.actionOnWakeup, &d.strengthOnWakeup,
-                           &d.macroSlotOnWakeup, &d.delayOnWakeup,
+                           &d.macroSlotOnWakeup, &d.delayOnWakeup, &d.chargeOnWakeup,
                            &g_useMaskWU, &g_poolMaskWULo, &g_poolMaskWUHi, OnUseMaskWU, OnPoolMaskWU,
                            HideWURegularDelay,
-                           HideWUSingleAction, HideWUPool);
+                           HideWUSingleAction, HideWUPool, HideWUCharge);
             break;
         case 2:
             g_motionIdxAH = GetMotionIndexForAction(d.actionAfterHitstun);
@@ -4334,10 +5709,10 @@ Row* BuildTriggersRows(int& count) {
                            &d.triggerAfterHitstun,
                            &g_actionPickIdxAH, OnTriggerActionAfterHitstun,
                            &d.actionAfterHitstun, &d.strengthAfterHitstun,
-                           &d.macroSlotAfterHitstun, &d.delayAfterHitstun,
+                           &d.macroSlotAfterHitstun, &d.delayAfterHitstun, &d.chargeAfterHitstun,
                            &g_useMaskAH, &g_poolMaskAHLo, &g_poolMaskAHHi, OnUseMaskAH, OnPoolMaskAH,
                            HideAHRegularDelay,
-                           HideAHSingleAction, HideAHPool);
+                           HideAHSingleAction, HideAHPool, HideAHCharge);
             break;
         case 3:
             g_motionIdxAA = GetMotionIndexForAction(d.actionAfterAirtech);
@@ -4346,10 +5721,10 @@ Row* BuildTriggersRows(int& count) {
                            &d.triggerAfterAirtech,
                            &g_actionPickIdxAA, OnTriggerActionAfterAirtech,
                            &d.actionAfterAirtech, &d.strengthAfterAirtech,
-                           &d.macroSlotAfterAirtech, &d.delayAfterAirtech,
+                           &d.macroSlotAfterAirtech, &d.delayAfterAirtech, &d.chargeAfterAirtech,
                            &g_useMaskAA, &g_poolMaskAALo, &g_poolMaskAAHi, OnUseMaskAA, OnPoolMaskAA,
                            HideAARegularDelay,
-                           HideAASingleAction, HideAAPool);
+                           HideAASingleAction, HideAAPool, HideAACharge);
             break;
         default:
             g_motionIdxRG = GetMotionIndexForAction(d.actionOnRG);
@@ -4358,10 +5733,10 @@ Row* BuildTriggersRows(int& count) {
                            &d.triggerOnRG,
                            &g_actionPickIdxRG, OnTriggerActionOnRG,
                            &d.actionOnRG, &d.strengthOnRG,
-                           &d.macroSlotOnRG, &d.delayOnRG,
+                           &d.macroSlotOnRG, &d.delayOnRG, &d.chargeOnRG,
                            &g_useMaskRG, &g_poolMaskRGLo, &g_poolMaskRGHi, OnUseMaskRG, OnPoolMaskRG,
                            HideRGRegularDelay,
-                           HideRGSingleAction, HideRGPool);
+                           HideRGSingleAction, HideRGPool, HideRGCharge);
             break;
     }
 
@@ -4735,6 +6110,12 @@ const char* const kDummyBlockChoices[4] = { "OFF", "ALL", "FIRST HIT", "AFTER HI
 const char* const kDummyStanceChoices[3] = { "STAND", "JUMP", "CROUCH" };
 
 bool RandomBlockHidden() { return g_mirrorDummyBlockMode == 0 && !g_mirrorRandomBlock; }
+bool RandomBlockDisablesBlockMode() { return g_mirrorRandomBlock; }
+const char* RandomBlockModeHelp() {
+    return g_mirrorRandomBlock
+        ? "Random Block is using this configured blocking window. Turn Random Block off to change it."
+        : "Choose when the dummy may auto-block: never, every hit, only the first hit, or only after the first hit.";
+}
 bool AdaptiveStanceHidden() { return g_mirrorDummyBlockMode == 0 && !g_mirrorAdaptiveStance; }
 bool AdaptiveDisablesStance() { return g_mirrorDummyBlockMode != 0 && g_mirrorAdaptiveStance; }
 bool CounterRGDisabled() { return g_mirrorAlwaysRG; }
@@ -4788,8 +6169,9 @@ Row* BuildOpponentDefenseRows(int& count) {
     int n = 0;
 
     s_rows[n++] = WithHelp(ChoicesRow("DUMMY AUTO-BLOCK", &g_mirrorDummyBlockMode,
-                                      kDummyBlockChoices, 4, OnDummyBlockMode),
-                           "Sets when the dummy turns auto-block on during incoming attacks.");
+                                      kDummyBlockChoices, 4, OnDummyBlockMode,
+                                      RandomBlockDisablesBlockMode),
+                           RandomBlockModeHelp());
     s_rows[n++] = WithHelp(Toggle("RANDOM BLOCK", &g_mirrorRandomBlock, OnRandomBlock,
                                   nullptr, RandomBlockHidden),
                            "Randomizes the active auto-block window instead of blocking every eligible frame.");
@@ -6336,16 +7718,33 @@ bool AdjustTriggerButtonRow(const Row& row, int direction) {
 // ===== Public per-screen entry points =====
 
 void OpenMissionBrowser() {
-    g_missionListDirty = true;              // rescan on open
+    g_authoringRescanRequested.store(true, std::memory_order_release);
     MenuNavigationRequest req;
-    req.pane = MenuPane::SettingsDebug;     // the pane hosting the mission rows
+    // This is a dedicated route; it deliberately does not depend on a hidden
+    // row in ordinary Practice Debug.
+    req.pane = MenuPane::SettingsDebug;
     req.submenuBuilder = BuildMissionBrowserRows;
-    req.submenuTitle = "MISSIONS";
+    req.submenuTitle = "RECORD & AUTHOR";
     RequestMenuNavigation(req);
 }
 
+void OpenPracticeRoot() {
+    ResetSubmenus();
+    MenuNavigationRequest req{};
+    req.pane = MenuPane::Values;
+    req.focusRow = 0;
+    RequestMenuNavigation(req);
+}
+
+void PrepareNewMissionAuthoringSession() {
+    // The title-entry path calls this from the frame-monitor owner immediately
+    // before opening the menu. Publish only a request; the menu/render owner
+    // applies every string/vector mutation on its next builder pass.
+    g_prepareNewMissionAuthoringRequested.store(true, std::memory_order_release);
+}
+
 void NotifyMissionLibraryChanged() {
-    g_missionListDirty = true;
+    g_authoringRescanRequested.store(true, std::memory_order_release);
 }
 
 void ResetHotswapMenuSeed() {
@@ -6496,7 +7895,7 @@ void MacroStop() {
             Mission::Engine::Recorder::Phase::Recording) {
             Mission::Engine::Recorder::Advance();
         } else {
-            DirectDrawHook::AddMessage("Use Missions & Authoring to Retake or Discard this session",
+            DirectDrawHook::AddMessage("Use Record & Author to Retake or Discard this session",
                                        "MISSION", RGB(255, 200, 120), 1400, 0, 120);
         }
         return;
@@ -6808,15 +8207,77 @@ Row* BuildMacrosRows(int& count) {
 }
 
 bool IsTextEditorActive() {
-    return g_macroEditor.active;
+    return g_macroEditor.active || g_missionTextEditor.active;
 }
 
 void ResetTextEditor() {
     g_macroEditor.active = false;
     g_macroEditor.wantFocus = false;
+    g_missionTextEditor = MissionTextEditorState{};
 }
 
 bool TickMacroTextEditorIfActive(ImDrawList*, const ScreenLayout& layout) {
+    if (g_missionTextEditor.active) {
+        const CustomMenu::Scale::Metrics& metrics = CustomMenu::Scale::Get();
+        const float marginX = CustomMenu::Scale::Snap(38.0f * metrics.layoutScale);
+        const float bottomPad = CustomMenu::Scale::Snap(8.0f * metrics.layoutScale);
+        const float x = CustomMenu::Scale::Snap(layout.panelX + marginX);
+        const float y = CustomMenu::Scale::Snap(layout.contentTopY + bottomPad);
+        const float w = CustomMenu::Scale::Snap(Theme::kPanelW - marginX * 2.0f);
+        const float h = CustomMenu::Scale::Snap(layout.contentBottomY - y - bottomPad);
+
+        ImGui::SetNextWindowPos(ImVec2(x, y), ImGuiCond_Always);
+        ImGui::SetNextWindowSize(ImVec2(w, h), ImGuiCond_Always);
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.0f);
+        ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.0f, 0.0f, 0.0f, 0.94f));
+        ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(1.0f, 1.0f, 1.0f, 0.86f));
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 1.0f, 1.0f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0.04f, 0.04f, 0.04f, 0.96f));
+        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.12f, 0.12f, 0.12f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.22f, 0.22f, 0.22f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.35f, 0.35f, 0.35f, 1.0f));
+
+        const ImGuiWindowFlags flags =
+            ImGuiWindowFlags_NoCollapse |
+            ImGuiWindowFlags_NoResize |
+            ImGuiWindowFlags_NoMove |
+            ImGuiWindowFlags_NoSavedSettings;
+        if (ImGui::Begin(g_missionTextEditor.title, nullptr, flags)) {
+            ImGui::TextDisabled("%s", g_missionTextEditor.help);
+            ImGui::TextDisabled("%zu / %zu bytes",
+                strnlen_s(g_missionTextEditor.buffer.data(),
+                          g_missionTextEditor.buffer.size()),
+                g_missionTextEditor.maxBytes);
+            if (g_missionTextEditor.wantFocus) {
+                ImGui::SetKeyboardFocusHere();
+                g_missionTextEditor.wantFocus = false;
+            }
+            if (g_missionTextEditor.multiline) {
+                const float editorH = (std::max)(100.0f,
+                    ImGui::GetContentRegionAvail().y - 38.0f);
+                ImGui::InputTextMultiline("##mission_text_editor",
+                                          g_missionTextEditor.buffer.data(),
+                                          g_missionTextEditor.buffer.size(),
+                                          ImVec2(-1.0f, editorH));
+            } else {
+                ImGui::InputText("##mission_text_editor",
+                                 g_missionTextEditor.buffer.data(),
+                                 g_missionTextEditor.buffer.size());
+            }
+
+            if (ImGui::Button("Done")) CloseMissionTextEditor(true);
+            ImGui::SameLine();
+            if (ImGui::Button("Cancel")) CloseMissionTextEditor(false);
+            if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
+                CloseMissionTextEditor(false);
+            }
+        }
+        ImGui::End();
+        ImGui::PopStyleColor(7);
+        ImGui::PopStyleVar(2);
+        return true;
+    }
     if (!g_macroEditor.active) return false;
 
     const CustomMenu::Scale::Metrics& metrics = CustomMenu::Scale::Get();
@@ -7073,6 +8534,11 @@ void TickSettingsHotkeys(ImDrawList* dl, const ScreenLayout& layout, int& focus,
     TickListScreen(dl, layout, "HOTKEYS", rows, n, focus, scroll, backEdge);
 }
 void TickSettingsDebug(ImDrawList* dl, const ScreenLayout& layout, int& focus, ScrollState& scroll, bool& backEdge) {
+    // Authoring callbacks only set request flags. Apply them before any active
+    // submenu builds Rows so raw choice/value pointers stay valid through the
+    // complete input-and-render pass, including nested pack/category screens.
+    ProcessPendingMissionAuthoringActions();
+
     // Throttle the runtime poll: SafeReadMemory, GetModuleHandleA, RF freeze
     // queries, and string formatting all happen on the render thread and only
     // need to feel "live" - 100 ms is well below human perception while
@@ -7085,6 +8551,15 @@ void TickSettingsDebug(ImDrawList* dl, const ScreenLayout& layout, int& focus, S
         RefreshDebugRuntimeMirrors();
     }
     int n = 0; Row* rows = BuildSettingsDebugRows(n);
+    if (IsTextEditorActive()) {
+        ClampFocus(rows, n, focus);
+        backEdge = false;
+        // RenderList substitutes the active Missions submenu, so the authoring
+        // form remains visible beneath its modal without accepting navigation.
+        RenderList(dl, layout, "DEBUG", rows, n, focus, scroll);
+        TickMacroTextEditorIfActive(dl, layout);
+        return;
+    }
     TickListScreen(dl, layout, "DEBUG", rows, n, focus, scroll, backEdge);
 }
 

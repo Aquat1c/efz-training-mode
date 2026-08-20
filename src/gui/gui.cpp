@@ -16,24 +16,38 @@ void OpenMenu() {
         return;
     }
 
-    // A running trial/tutorial session or an active recording capture owns its
-    // own pause surface. The Practice training menu is NOT allowed there - its
-    // savestate/character/macro tools would corrupt the authored session or
-    // splice into the take. The recorder's PRE-RECORD and REVIEW phases keep
-    // the Practice menu on purpose: arranging the start position needs the
-    // practice tools, and Review needs the authoring pane. The same press
-    // resumes.
-    if (Mission::Engine::Recorder::OwnsCaptureHotkeys() ||
-        (Mission::Engine::Runner::IsActive() &&
-         !Mission::Engine::Recorder::IsSessionActive())) {
+    if (Mission::Engine::Recorder::IsMenuInputHandoffActive() &&
+        !Mission::PauseMenu::IsOpen()) {
+        // A phase-changing recorder command is still frozen behind its
+        // neutral-input handoff. Do not replace that transaction with either
+        // Practice or another contextual surface.
+        LogOut("[GUI] Recording menu handoff active; menu press deferred", true);
+        return;
+    }
+
+    // Every live mission-authoring phase owns the dedicated Recording menu;
+    // setup and review must not silently fall through to Practice. Practice
+    // Settings remains available as an explicit nested row in that menu.
+    if (Mission::Engine::Recorder::IsSessionActive() ||
+        Mission::Engine::Runner::IsActive()) {
         Mission::PauseMenu::Toggle();
         return;
+    }
+
+    (void)OpenPracticeMenuDirect();
+}
+
+bool OpenPracticeMenuDirect() {
+    UpdateWindowActiveState();
+    if (!g_efzWindowActive.load()) {
+        LogOut("[GUI] EFZ window not active, cannot open Practice menu", true);
+        return false;
     }
 
     // Don't open menu if it's already open
     if (menuOpen) {
         LogOut("[GUI] Menu already open", detailedLogging.load());
-        return;
+        return ImGuiImpl::IsVisible();
     }
 
     LogOut("[GUI] Opening config menu", detailedLogging.load());
@@ -45,14 +59,15 @@ void OpenMenu() {
         if (!ImGuiImpl::ShowFallbackWindow()) {
             LogOut("[GUI] Failed to open fallback ImGui window", true);
             menuOpen = false;
-            return;
+            return false;
         }
         menuOpen = true;
-        return;
+        return true;
     }
 
     LogOut("[GUI] Using in-game ImGui visibility toggle", detailedLogging.load());
     ImGuiImpl::ToggleVisibility();
     menuOpen = ImGuiImpl::IsVisible();
+    return menuOpen.load();
 }
 

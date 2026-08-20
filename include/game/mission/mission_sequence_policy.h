@@ -1,6 +1,9 @@
 #pragma once
 
 #include <algorithm>
+#include <cstddef>
+#include <cstdint>
+#include <string>
 
 namespace Mission::SequencePolicy {
 
@@ -21,11 +24,277 @@ constexpr int RecorderCountInRemainingMs(int remainingTicks) {
               kMissionMonitorTicksPerSecond;
 }
 
+// Closing a recorder/menu surface is not itself permission to resume capture.
+// Two fresh, physically neutral P1 polls are required so the confirm/back
+// button that closed the UI cannot become the first input in the take.
+constexpr int RecorderMenuNeutralPollCount(bool anyMenuVisible,
+                                           bool freshPoll,
+                                           unsigned physicalMask,
+                                           int currentCount) {
+    if (anyMenuVisible || !freshPoll) return anyMenuVisible ? 0 : currentCount;
+    return physicalMask == 0 ? (std::min)(2, currentCount + 1) : 0;
+}
+
+constexpr bool RecorderMenuReleaseReady(bool anyMenuVisible,
+                                        int neutralPollCount) {
+    return !anyMenuVisible && neutralPollCount >= 2;
+}
+
+// A recorder handoff's physical pause and its input quarantine are separate
+// gates. Native character-input polls do not advance under EFZ's official
+// Practice pause, so keeping the pause surface until neutral polls arrive
+// deadlocks the handoff. Once the protected command/close transaction is done
+// and no UI remains visible, let the world poll again while the zero-input
+// lease continues to suppress the button that dismissed the menu.
+constexpr bool RecorderPhysicalPauseReleaseReady(bool handoffReady,
+                                                  bool anyMenuVisible) {
+    return handoffReady && !anyMenuVisible;
+}
+
+// Pending failed presses are retained for Review, but only a press close to the
+// current transition can prove that a table-known follow-up was player-entered.
+// Historical unmatched input must not turn later automatic hit phases into
+// authored recipe steps.
+constexpr bool RecorderAttackBatchIsFresh(int currentFrame, int batchFrame,
+                                          int windowTicks) {
+    const int age = currentFrame - batchFrame;
+    return age >= 0 && age <= windowTicks;
+}
+
+// The recorder observes the button edge before EFZ publishes the resulting
+// move instance.  Keep that causal bridge bounded, but long enough for the
+// game's buffered specials/cancels (the same 30-visual-frame envelope used by
+// the runner's delayed-button commit grace).
+constexpr int kRecorderInputCausalityWindowTicks = 90;
+constexpr uint8_t kAttackButtonA = 0x10;
+constexpr uint8_t kAttackButtonB = 0x20;
+constexpr uint8_t kAttackButtonC = 0x40;
+constexpr uint8_t kAttackButtonD = 0x80;
+constexpr uint8_t kAttackButtonMask =
+    kAttackButtonA | kAttackButtonB | kAttackButtonC | kAttackButtonD;
+
+constexpr bool ValidExpectedAttackMask(int mask) {
+    return mask >= 0 && mask <= 255 &&
+           (mask & ~static_cast<int>(kAttackButtonMask)) == 0;
+}
+
+constexpr char UpperAscii(char value) {
+    return value >= 'a' && value <= 'z'
+        ? static_cast<char>(value - ('a' - 'A'))
+        : value;
+}
+
+constexpr bool IsNotationButtonBoundary(char value) {
+    return value == '\0' || value == ' ' || value == '\t' ||
+           value == '/' || value == ')' || value == '(' || value == '~' ||
+           value == '-' || value == '+';
+}
+
+constexpr uint8_t AttackButtonBit(char value) {
+    return UpperAscii(value) == 'A' ? kAttackButtonA
+         : UpperAscii(value) == 'B' ? kAttackButtonB
+         : UpperAscii(value) == 'C' ? kAttackButtonC
+         : UpperAscii(value) == 'D' ? kAttackButtonD
+         : 0;
+}
+
+constexpr uint8_t ExpectedAttackMaskFromNotationRange(
+    const char* notation, std::size_t begin, std::size_t end) {
+    uint8_t result = 0;
+    for (std::size_t index = begin; index < end; ++index) {
+        const char current = UpperAscii(notation[index]);
+        const char previous = index == begin ? '\0' : notation[index - 1];
+        const char next = index + 1 < end ? notation[index + 1] : '\0';
+        const bool icTokenStart = index == begin ||
+            IsNotationButtonBoundary(previous) || previous == '.' ||
+            ((UpperAscii(previous) == 'B' || UpperAscii(previous) == 'F') &&
+             (index == begin + 1 ||
+              IsNotationButtonBoundary(notation[index - 2])));
+        if (current == 'I' && UpperAscii(next) == 'C' && icTokenStart &&
+            IsNotationButtonBoundary(
+                index + 2 < end ? notation[index + 2] : '\0')) {
+            result = static_cast<uint8_t>(result | kAttackButtonC);
+            continue;
+        }
+
+        const bool strengthPrefix = index == begin ||
+            (previous >= '0' && previous <= '9') || previous == '.' ||
+            previous == '/' || previous == '~' || previous == ' ';
+        if (!strengthPrefix || !IsNotationButtonBoundary(next)) continue;
+
+        const uint8_t button = AttackButtonBit(current);
+        if (button != 0) {
+            result = static_cast<uint8_t>(result | button);
+        } else if (current == 'S') {
+            // EFZ's S notation is the physical D/special button.
+            result = static_cast<uint8_t>(result | kAttackButtonD);
+        }
+    }
+    return result;
+}
+
+// Extract only notation-strength tokens, not arbitrary letters inside labels.
+// This accepts 5A, c.5B, j.C, 214A/B/C and the character-specific 5S spelling.
+// IC/BIC/FIC are always performed with C.  A bare descriptive name such as FM
+// deliberately stays unknown and falls back to the observed causal edge.
+constexpr uint8_t ExpectedAttackMaskFromNotation(const char* notation) {
+    if (notation == nullptr) return 0;
+    std::size_t length = 0;
+    while (notation[length] != '\0') ++length;
+    return ExpectedAttackMaskFromNotationRange(notation, 0, length);
+}
+
+// Route labels retain their full history (for example FM~A~B~C), but recorder
+// causality belongs to the final player-entered step.  Return the newest `~`
+// segment containing a strength token; direction-only suffixes such as
+// `~5B~4/5/6` therefore correctly fall back to B.
+constexpr uint8_t ExpectedAttackMaskFromFinalNotationStep(
+    const char* notation) {
+    if (notation == nullptr) return 0;
+    std::size_t segmentStart = 0;
+    uint8_t latest = 0;
+    for (std::size_t index = 0;; ++index) {
+        if (notation[index] != '~' && notation[index] != '\0') continue;
+        const uint8_t segment = ExpectedAttackMaskFromNotationRange(
+            notation, segmentStart, index);
+        if (segment != 0) latest = segment;
+        if (notation[index] == '\0') return latest;
+        segmentStart = index + 1;
+    }
+}
+
+constexpr uint8_t ExpectedAttackMaskFromMoveId(int moveId) {
+    switch (moveId) {
+        case 167: // ground IC
+        case 171: // air IC
+        case 203: case 206: case 209:
+        case 232: case 235:
+            return kAttackButtonC;
+        case 200: case 204: case 207:
+        case 230: case 233:
+            return kAttackButtonA;
+        case 201: case 202: case 205: case 208:
+        case 231: case 234:
+            return kAttackButtonB;
+        default:
+            return 0;
+    }
+}
+
+constexpr uint8_t ExpectedAttackMaskForAction(const char* notation,
+                                              int moveId) {
+    const uint8_t fromNotation = ExpectedAttackMaskFromNotation(notation);
+    return fromNotation != 0 ? fromNotation
+                             : ExpectedAttackMaskFromMoveId(moveId);
+}
+
+constexpr bool AttackEdgeMatchesExpected(uint8_t observedMask,
+                                         uint8_t expectedMask) {
+    const uint8_t observedAttack =
+        static_cast<uint8_t>(observedMask & kAttackButtonMask);
+    return observedAttack != 0 &&
+           (expectedMask == 0 || (observedAttack & expectedMask) != 0);
+}
+
+constexpr uint8_t BoundCausalAttackMask(uint8_t observedMask,
+                                        uint8_t derivedExpectedMask) {
+    const uint8_t observedAttack =
+        static_cast<uint8_t>(observedMask & kAttackButtonMask);
+    return derivedExpectedMask != 0
+        ? static_cast<uint8_t>(observedAttack & derivedExpectedMask)
+        : observedAttack;
+}
+
+struct RecorderAttackEdgeCandidate {
+    uint32_t serial = 0;
+    uint8_t mask = 0;
+    int frame = 0;
+};
+
+// Newest-first selection matters when a failed press and the buffered press
+// that actually produced the move coexist in the journal.  A known strength
+// skips unrelated fresher edges; unknown notation accepts only a recent edge
+// and keeps all older/unmatched presses as diagnostics.
+constexpr int SelectNewestEligibleAttackEdge(
+    const RecorderAttackEdgeCandidate* candidates, std::size_t count,
+    uint32_t currentPollSerial, int currentFrame, int windowTicks,
+    uint8_t expectedMask) {
+    if (candidates == nullptr) return -1;
+    for (std::size_t index = count; index-- > 0;) {
+        const RecorderAttackEdgeCandidate& candidate = candidates[index];
+        if (candidate.serial == 0 ||
+            static_cast<int32_t>(currentPollSerial - candidate.serial) < 0 ||
+            !RecorderAttackBatchIsFresh(currentFrame, candidate.frame,
+                                        windowTicks) ||
+            !AttackEdgeMatchesExpected(candidate.mask, expectedMask)) {
+            continue;
+        }
+        return static_cast<int>(index);
+    }
+    return -1;
+}
+
+// Catalogued automatic and internal phases are aliases of the preceding
+// player action.  A coincidental button edge cannot turn one into a new step;
+// player-selected continuations carry MoveRole::InputFollowup instead.
+constexpr bool ShouldFoldKnownAutomaticPhase(bool knownAutomaticPhase) {
+    return knownAutomaticPhase;
+}
+
+// Format-1 files predating expectedAttackMask preserve their former any-attack
+// deadline grace. New recordings arm grace only for the current step's button.
+constexpr bool DeadlineAttackEdgeMatches(uint8_t observedMask,
+                                         uint8_t expectedMask) {
+    return AttackEdgeMatchesExpected(observedMask, expectedMask);
+}
+
+inline bool IsLegacyUnmatchedInputDiagnostic(const std::string& reason) {
+    static const std::string prefix =
+        " attack input batch(es) did not become recorded moves:";
+    static const std::string suffix =
+        "; retake or remove those presses";
+    std::size_t countEnd = 0;
+    while (countEnd < reason.size() &&
+           reason[countEnd] >= '0' && reason[countEnd] <= '9') {
+        ++countEnd;
+    }
+    return countEnd > 0 &&
+           reason.compare(countEnd, prefix.size(), prefix) == 0 &&
+           reason.size() >= suffix.size() &&
+           reason.compare(reason.size() - suffix.size(), suffix.size(),
+                          suffix) == 0;
+}
+
+constexpr bool RecorderStopWaitExpired(bool macroTickAdvanced, bool paused,
+                                       int waitedTicks, int maxWaitTicks) {
+    return !macroTickAdvanced && !paused && waitedTicks > maxWaitTicks;
+}
+
+// Mission capture and demonstration playback are deterministic transactions.
+// Persistent Practice helpers (auto jump/airtech, random guard/block, recovery,
+// and configured auto-action triggers) must not contribute unrecorded input or
+// state changes while either transaction owns the match.  The helpers are
+// suppressed rather than disabled, so the user's settings remain untouched and
+// resume naturally after the transaction's terminal boundary.
+constexpr bool PracticeAutomationSuppressed(bool demoActive,
+                                             bool recorderCaptureActive) {
+    return demoActive || recorderCaptureActive;
+}
+
 enum class DemoBaselineSource {
     None = 0,
     RunnerCheckpoint,
     EmbeddedDump,
 };
+
+// An authored embedded state is part of the mission contract, not an optional
+// optimization.  If the exact restore backend is unavailable, the mission
+// must remain unavailable instead of silently rebuilding a different baseline
+// from value-level setup.
+constexpr bool EmbeddedSavestateCanLoad(bool hasEmbeddedSavestate,
+                                        bool stateDumpAvailable) {
+    return !hasEmbeddedSavestate || stateDumpAvailable;
+}
 
 // Loaded mission playback should use the already-verified same-session retry
 // checkpoint. Recorder previews have no such ownership and use their embedded
@@ -41,6 +310,91 @@ constexpr DemoBaselineSource DecideDemoBaselineSource(
     return DemoBaselineSource::None;
 }
 
+// The ordinary trial recipe can double as a read-only playback timeline, but
+// only for a loaded mission.  PREPARING/RESTORING own their transition UI and
+// an unsaved recorder preview has no runner recipe whose cursor can be graded.
+// Keep this predicate shared by the engine observer and render routing so they
+// cannot drift into a visible-but-frozen (or tracked-but-hidden) state again.
+constexpr bool DemoTrialRecipeActive(bool demoPlaying, bool recorderPreview,
+                                     bool runnerActive, bool hasSteps) {
+    return demoPlaying && !recorderPreview && runnerActive && hasSteps;
+}
+
+// When the macro ends on the same monitor sample that satisfies the final
+// action, keep the frozen Playing presentation alive long enough to cross at
+// least a few ordinary 60 Hz render frames. Without this, zero-tail clips can
+// advance the cursor and enter Restoring before EndScene ever draws it.
+constexpr int kDemoTerminalRecipeHoldTicks = 12;
+
+// Macro playback becomes Idle once its final input has been consumed and its
+// command activation guard retires. The resulting attack/projectile can still
+// be in startup. Keep the world running under exclusive neutral for a bounded
+// settlement window so delayed final contacts can finish the authored recipe.
+constexpr int kDemoRecipeSettleTimeoutTicks = 768; // four seconds at 192 Hz
+
+enum class DemoRecipeEndAction {
+    ContinuePlayback = 0,
+    SettleFinalContacts,
+    HoldTerminalFrame,
+    FailThenHold,
+};
+
+// Input playback ending and trial grading ending are separate events. A move
+// can be activated while its direct/projectile contact is still pending.
+constexpr DemoRecipeEndAction DecideDemoRecipeEnd(
+    bool macroIdle, bool runnerTerminal, int settleTicksRemaining) {
+    if (!macroIdle) return DemoRecipeEndAction::ContinuePlayback;
+    if (runnerTerminal) return DemoRecipeEndAction::HoldTerminalFrame;
+    return settleTicksRemaining == 1
+        ? DemoRecipeEndAction::FailThenHold
+        : DemoRecipeEndAction::SettleFinalContacts;
+}
+
+// Demo recipe grading is presentation-only.  A divergent authored clip may
+// latch its failed step for the bar, but it must never count as a player try or
+// arm the runner's checkpoint auto-retry while exclusive playback owns P1.
+constexpr int RunnerDropAttemptDelta(bool demoPresentation) {
+    return demoPresentation ? 0 : 1;
+}
+
+constexpr int RunnerDropRetryDelay(bool demoPresentation,
+                                   int ordinaryRetryDelay) {
+    return demoPresentation ? 0 : ordinaryRetryDelay;
+}
+
+enum class DemoRoundEventAction {
+    Continue = 0,
+    NormalizeRestoreTransient,
+    RestoreBaseline,
+};
+
+// Loading a Revival checkpoint restores an active-round image, but EFZ can
+// re-publish its saved round-event fields on the first live update after the
+// load returns.  That one-frame handoff is not a new intro/KO.  Give the demo
+// a short, bounded startup window in which such a field reassertion is
+// normalized; once the window closes, the same signal is a genuine round
+// transition and the demonstration must rewind immediately.
+constexpr int kDemoRoundRestoreSettleTicks = 12;
+constexpr DemoRoundEventAction DecideDemoRoundEvent(
+    bool roundEventActive, int restoreSettleTicksRemaining,
+    bool bothFightersAlive) {
+    if (!roundEventActive) return DemoRoundEventAction::Continue;
+    return restoreSettleTicksRemaining > 0 && bothFightersAlive
+        ? DemoRoundEventAction::NormalizeRestoreTransient
+        : DemoRoundEventAction::RestoreBaseline;
+}
+
+// A Snapshot is sampled before exact mission/demo restore transactions run in
+// Engine::Tick. Any restore therefore invalidates that sample, even when a
+// demo also reaches Idle before the bottom-of-tick runner gate. Keep the
+// explicit terminal latch as a second defence for handoff-only paths.
+constexpr bool SnapshotCanResumeAfterRestore(bool restoredWorldThisTick,
+                                             bool demoActive,
+                                             bool terminalHandoffThisTick) {
+    return !restoredWorldThisTick && !demoActive &&
+           !terminalHandoffThisTick;
+}
+
 // EFZ can cancel a move into another instance with the same move ID. The move
 // frame counter (+0xA) resets to the animation head at that boundary. A bare
 // "frame went backwards" test is NOT sufficient: looping animations (air IC
@@ -54,6 +408,93 @@ constexpr bool IsMoveInstanceEdge(short currentMove, short currentFrame,
                                   short previousMove, short previousFrame) {
     return currentMove != previousMove ||
            (currentFrame < previousFrame && currentFrame <= kMoveRestartFrameMax);
+}
+
+// A same-ID frame rewind is only a credible new action when EFZ's own input
+// poll also consumed the button that produces that move. Air-normal/airdash
+// animation tails can wrap 3->2 with no new action at all; treating that visual
+// loop as a second j.A made otherwise correct recordings fail. A move-ID
+// change remains authoritative and needs no input corroboration.
+constexpr bool IsCausallyCredibleMoveInstanceEdge(
+    short currentMove, short currentFrame,
+    short previousMove, short previousFrame,
+    bool matchingAttackEdge) {
+    if (currentMove != previousMove) return true;
+    return matchingAttackEdge &&
+           IsMoveInstanceEdge(currentMove, currentFrame,
+                              previousMove, previousFrame);
+}
+
+// Recorder-created direct multi-hits may make fewer contacts at different
+// spacing. They are allowed to finish only after at least one exact hit and a
+// structural continuation proof; merely touching once while the move remains
+// active is not enough to skip the rest of its authored timing.
+constexpr bool FlexibleMultiHitCanFinalize(bool allowPartialHits,
+                                           int observedHits,
+                                           bool moveEnded,
+                                           bool expectedNextActionStarted,
+                                           bool comboBoundaryObserved) {
+    return allowPartialHits && observedHits > 0 &&
+           (moveEnded || expectedNextActionStarted || comboBoundaryObserved);
+}
+
+// Strict trial playback grades action *instances*, not merely move-ID changes.
+// In particular, pressing a repeated normal again rewinds the move frame while
+// leaving the ID unchanged.  Once the current recipe step is already armed,
+// that is another authored action and must not be silently absorbed by the
+// first instance.
+//
+// Two transitions deliberately remain legal:
+//  - recorder-authored automatic phases are flattened into one Step::moveIds
+//    set, so an ID-changing transition whose source and destination both match
+//    that step is still the same action;
+//  - a delayed-hit step may overlap the next authored action.  Repeated-ID
+//    recipes use this path too when the prior contact and next cancel arrive in
+//    the same monitor sample.
+// A same-ID animation that simply keeps advancing is not an instance edge and
+// therefore never reaches the strict decision at all (ordinary multi-hit
+// phases remain untouched).
+enum class StrictActionInstanceDecision {
+    Ignore,
+    AcceptExpected,
+    AcceptAutomaticPhase,
+    AcceptNextOverlap,
+    SkipOptional,
+    RejectUnexpected,
+};
+
+constexpr StrictActionInstanceDecision DecideStrictActionInstance(
+    bool instanceEdge,
+    bool comboStepMove,
+    bool currentStepArmed,
+    bool matchesCurrentStep,
+    bool previousMoveMatchesCurrentStep,
+    bool matchesPreviousStep,
+    bool previousMoveMatchesPreviousStep,
+    bool moveIdChanged,
+    bool matchesNextOverlap,
+    bool matchesOptionalAhead) {
+    if (!instanceEdge || !comboStepMove) {
+        return StrictActionInstanceDecision::Ignore;
+    }
+
+    const bool currentAutomaticPhase = currentStepArmed && moveIdChanged &&
+        matchesCurrentStep && previousMoveMatchesCurrentStep;
+    const bool previousAutomaticPhase = moveIdChanged &&
+        matchesPreviousStep && previousMoveMatchesPreviousStep;
+    if (currentAutomaticPhase || previousAutomaticPhase) {
+        return StrictActionInstanceDecision::AcceptAutomaticPhase;
+    }
+    if (currentStepArmed && matchesNextOverlap) {
+        return StrictActionInstanceDecision::AcceptNextOverlap;
+    }
+    if (matchesCurrentStep && !currentStepArmed) {
+        return StrictActionInstanceDecision::AcceptExpected;
+    }
+    if (matchesOptionalAhead) {
+        return StrictActionInstanceDecision::SkipOptional;
+    }
+    return StrictActionInstanceDecision::RejectUnexpected;
 }
 
 // A cancel/transition destination is creditable only on a fresh destination
@@ -132,6 +573,27 @@ constexpr SampledComboBoundary DetectSampledComboBoundary(
         return SampledComboBoundary::CounterRollover;
     }
     return SampledComboBoundary::None;
+}
+
+// Resolver transactions can prove a recovery boundary that the sampled combo
+// counter never exposes. Usually the first Part-2 contact sees comboBefore==0;
+// if recovery and the next collision share the native transaction, EFZ can
+// instead expose the counter rolling directly from N to a smaller positive M.
+constexpr bool ContactBeginsNewComboBaseline(int comboBefore,
+                                             int comboAfter) {
+    return comboBefore == 0 ||
+           (comboBefore > 0 && comboAfter > 0 && comboAfter < comboBefore);
+}
+
+constexpr bool ExactContactBeginsNewCombo(bool anyPriorLanded,
+                                          bool committedHit,
+                                          int comboBefore,
+                                          int comboAfter,
+                                          unsigned int sequence,
+                                          unsigned int priorLandedSequence) {
+    return anyPriorLanded && committedHit &&
+           ContactBeginsNewComboBaseline(comboBefore, comboAfter) &&
+           sequence != 0 && sequence > priorLandedSequence;
 }
 
 // A setup/meaty action is allowed to begin while the defender is still in the

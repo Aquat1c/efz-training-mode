@@ -210,6 +210,43 @@ bool LayerEnabledFromSettings(int layerIndex) {
     }
 }
 
+bool PlayerLayerFilterEnabledFromSettings(int layerIndex, int playerIndex) {
+    if (playerIndex != 1 && playerIndex != 2) {
+        return false;
+    }
+
+    const Config::Settings& s = Config::GetSettings();
+    const bool p1 = playerIndex == 1;
+    switch (layerIndex) {
+    case 0:
+        return p1 ? s.collisionDisplayP1Hitboxes
+                  : s.collisionDisplayP2Hitboxes;
+    case 1:
+        return p1 ? s.collisionDisplayP1Hurtboxes
+                  : s.collisionDisplayP2Hurtboxes;
+    case 2:
+        return p1 ? s.collisionDisplayP1CollisionBoxes
+                  : s.collisionDisplayP2CollisionBoxes;
+    case 3:
+        // Origins, trigger ranges, and affected-note markers have their own
+        // diagnostic controls. The ordinary owner filters are applied only to
+        // the physical hit/collision rectangles inside that shared layer.
+        return true;
+    default:
+        return false;
+    }
+}
+
+bool PlayerLayerEnabledFromSettings(int layerIndex, int playerIndex) {
+    return LayerEnabledFromSettings(layerIndex) &&
+           PlayerLayerFilterEnabledFromSettings(layerIndex, playerIndex);
+}
+
+bool AnyPlayerEnabledForLayer(int layerIndex) {
+    return PlayerLayerEnabledFromSettings(layerIndex, 1) ||
+           PlayerLayerEnabledFromSettings(layerIndex, 2);
+}
+
 const char* LayerConfigKey(int layerIndex) {
     switch (layerIndex) {
     case 0:
@@ -228,7 +265,7 @@ const char* LayerConfigKey(int layerIndex) {
 uint8_t CurrentLayerMaskFromSettings() {
     uint8_t mask = 0;
     for (int i = 0; i < kLayerCount; ++i) {
-        if (LayerEnabledFromSettings(i)) {
+        if (AnyPlayerEnabledForLayer(i)) {
             mask = static_cast<uint8_t>(mask | (1u << i));
         }
     }
@@ -699,14 +736,19 @@ void AppendOverlayDot(float x, float y, float radius, uint32_t fillColor, uint32
 
 void AppendProjectilePhysicalBoxes(const ProjectileInfo& projectile,
                                    bool priorityCollisionEligible,
+                                   bool showHitRects,
+                                   bool showCollisionRect,
                                    float hitFillMultiplier = 0.30f,
                                    float activeCollisionFillMultiplier = 0.38f,
                                    float inactiveCollisionFillMultiplier = 0.16f) {
-    for (const RectI& hitRect : projectile.hitRects) {
-        AppendOverlayRect(hitRect, kColorHitOutline, FillAlphaByte(hitFillMultiplier));
+    if (showHitRects) {
+        for (const RectI& hitRect : projectile.hitRects) {
+            AppendOverlayRect(hitRect, kColorHitOutline,
+                              FillAlphaByte(hitFillMultiplier));
+        }
     }
 
-    if (!projectile.hasCollisionRect) {
+    if (!showCollisionRect || !projectile.hasCollisionRect) {
         return;
     }
 
@@ -1427,8 +1469,15 @@ void CollectPlayerBoxes(int playerIndex, int boxType, int camX, int camY, std::v
 }
 
 void CollectLayer(int boxType, int camX, int camY, std::vector<DrawRect>& out) {
-    CollectPlayerBoxes(1, boxType, camX, camY, out);
-    CollectPlayerBoxes(2, boxType, camX, camY, out);
+    // A player's filter owns both the fighter and every projectile/entity in
+    // that fighter's ring. This makes "P2 hitboxes OFF" unambiguous: a P2
+    // fireball cannot remain visible after P2's character hitbox disappears.
+    if (PlayerLayerEnabledFromSettings(boxType, 1)) {
+        CollectPlayerBoxes(1, boxType, camX, camY, out);
+    }
+    if (PlayerLayerEnabledFromSettings(boxType, 2)) {
+        CollectPlayerBoxes(2, boxType, camX, camY, out);
+    }
 }
 
 void AppendProjectileInteractions(int camX, int camY) {
@@ -1463,8 +1512,16 @@ void AppendProjectileInteractions(int camX, int camY) {
 
     for (const ProjectileInfo& projectile : projectiles) {
         const bool priorityCollisionEligible = ProjectilePriorityCollisionEligible(projectile);
-        if (showProjectileBoxes) {
-            AppendProjectilePhysicalBoxes(projectile, priorityCollisionEligible);
+        const bool showOwnerHitRects =
+            PlayerLayerFilterEnabledFromSettings(0, projectile.playerIndex);
+        const bool showOwnerCollisionRect =
+            PlayerLayerFilterEnabledFromSettings(2, projectile.playerIndex);
+        if (showProjectileBoxes &&
+            (showOwnerHitRects || showOwnerCollisionRect)) {
+            AppendProjectilePhysicalBoxes(projectile,
+                                          priorityCollisionEligible,
+                                          showOwnerHitRects,
+                                          showOwnerCollisionRect);
         }
 
         if (showProjectileOrigins) {
@@ -1505,6 +1562,8 @@ void AppendProjectileInteractions(int camX, int camY) {
                 // one of the orange note-trigger helper rectangles.
                 AppendProjectilePhysicalBoxes(projectile,
                                               priorityCollisionEligible,
+                                              showOwnerHitRects,
+                                              showOwnerCollisionRect,
                                               0.54f,
                                               0.58f,
                                               0.24f);
@@ -1515,12 +1574,15 @@ void AppendProjectileInteractions(int camX, int camY) {
     if (showProjectileIntersections) {
         for (std::size_t i = 0; i < projectiles.size(); ++i) {
             const ProjectileInfo& a = projectiles[i];
-            if (!a.hasCollisionRect) {
+            if (!a.hasCollisionRect ||
+                !PlayerLayerFilterEnabledFromSettings(2, a.playerIndex)) {
                 continue;
             }
             for (std::size_t j = i + 1; j < projectiles.size(); ++j) {
                 const ProjectileInfo& b = projectiles[j];
-                if (!b.hasCollisionRect || (a.owner == b.owner && a.slot == b.slot)) {
+                if (!b.hasCollisionRect ||
+                    !PlayerLayerFilterEnabledFromSettings(2, b.playerIndex) ||
+                    (a.owner == b.owner && a.slot == b.slot)) {
                     continue;
                 }
 
@@ -1614,12 +1676,42 @@ bool ConsumeDisplayHotkeyLocked(int key) {
 
 } // namespace
 
+bool ProbeBattleCameraOffsets(int* outCameraX, int* outCameraY) {
+    if (!outCameraX || !outCameraY) {
+        return false;
+    }
+
+    const uintptr_t gameplayScreen = ReadActiveGameplayScreen();
+    int cameraX = 0;
+    int cameraY = 0;
+    if (!gameplayScreen ||
+        !ReadCameraOffsets(gameplayScreen, &cameraX, &cameraY)) {
+        return false;
+    }
+
+    // Ordinary battle projection stays within a few hundred pixels, including
+    // screen shake. This broad guard rejects stale/wrong-object reads without
+    // clipping any legitimate stage camera motion.
+    constexpr int kCameraSanityLimit = 4096;
+    if (cameraX < -kCameraSanityLimit || cameraX > kCameraSanityLimit ||
+        cameraY < -kCameraSanityLimit || cameraY > kCameraSanityLimit) {
+        return false;
+    }
+
+    *outCameraX = cameraX;
+    *outCameraY = cameraY;
+    return true;
+}
+
 bool ProbeProjectileRing(int playerIndex, ProjectileRingSlotProbe* outSlots,
-                         std::size_t outCapacity) {
+                         std::size_t outCapacity,
+                         ProjectileRingCursorProbe* outCursors) {
     if ((playerIndex != 1 && playerIndex != 2) || !outSlots ||
         outCapacity < kProjectileRingSlotCapacity) {
         return false;
     }
+
+    if (outCursors) *outCursors = ProjectileRingCursorProbe{};
 
     const uintptr_t owner = GetPlayerObject(playerIndex);
     if (!owner) return false;
@@ -1662,6 +1754,18 @@ bool ProbeProjectileRing(int playerIndex, ProjectileRingSlotProbe* outSlots,
                     sizeof(out.destroyed));
         std::memcpy(&out.life, entry + kProjectileLifeOffset,
                     sizeof(out.life));
+    }
+
+    if (outCursors) {
+        uint16_t cursors[2] = {};
+        if (ReadBytes(owner + kProjectileTailOffset,
+                      cursors, sizeof(cursors)) &&
+            cursors[0] < kProjectileRingSlotCapacity &&
+            cursors[1] < kProjectileRingSlotCapacity) {
+            outCursors->readable = true;
+            outCursors->allocationCursor = cursors[0];
+            outCursors->scanHead = cursors[1];
+        }
     }
     return true;
 }

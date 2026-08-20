@@ -4,9 +4,10 @@
 //
 // Entries are either:
 //   * ACTION  - attacks / specials / supers / IC. Always a combo step ("land").
-//   * MOVEMENT- jumps / dashes. Only a combo step when performed mid-combo
-//               (jump-cancel / IAD / dash-cancel), so neutral movement is
-//               ignored. Requirement is "move" (perform, no hit).
+//   * MOVEMENT- jumps / dashes. A step while a combo is active or while an
+//               authored post-recovery setup segment is open (jump-cancel,
+//               IAD, oki movement); pre-combo positioning is ignored.
+//               Requirement is "move" (perform, no hit).
 //
 // Universal move-IDs (same across characters) come from our existing
 // core/constants.h names: base normals 200-209, jumps (4/5/6/14-16), dash (163),
@@ -22,7 +23,7 @@ const char* Notation(int moveId);
 // In the table at all (action or movement).
 bool IsKnownComboMove(int moveId);
 
-// A movement move (jump/dash): only counted as a step while a combo is active.
+// A movement move (jump/dash): recorder policy decides combo/setup scope.
 bool IsMovementMove(int moveId);
 
 } // namespace Mission::Moves

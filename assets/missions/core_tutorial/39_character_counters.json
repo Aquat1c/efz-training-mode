@@ -137,8 +137,8 @@
   },
   "sourceRefs": [
     "mizuumi:advanced-mechanics@457885",
-    "local:shared_documentation/move_command_maps/shiori.json",
-    "local:shared_documentation/move_command_maps/misaki.json"
+    "local:shared_documentation/MOVE_COMMAND_MAPS.md::shiori",
+    "local:shared_documentation/MOVE_COMMAND_MAPS.md::misaki"
   ],
   "next": {
     "lessonId": "efz.strategy.useful_range"

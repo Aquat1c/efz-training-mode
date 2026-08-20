@@ -103,7 +103,7 @@
  },
  "sourceRefs": [
   "mizuumi:game-mechanics@473180",
-  "local:shared_documentation/move_command_maps/shiori.json"
+  "local:shared_documentation/MOVE_COMMAND_MAPS.md::shiori"
  ],
  "next": {
   "lessonId": "efz.offense.specials_2"

@@ -1,6 +1,8 @@
 #include "../include/utils/config.h"
 #include "../include/core/logger.h"
 #include "../include/utils/utilities.h"
+#include "../include/input/efz_input_bindings.h"
+#include "../include/core/di_keycodes.h"
 
 #include <fstream>
 #include <sstream>
@@ -204,6 +206,55 @@ namespace Config {
         LogOut("[CONFIG] Creating default config file at: " + configFilePath, true);
         
         try {
+            EFZInputBindings::BindingSet nativeBindings{};
+            std::string nativeBindingPath;
+            std::string nativeBindingError;
+            const bool hasNativeBindings = EFZInputBindings::LoadActiveKeyIni(
+                nativeBindings, nativeBindingPath, nativeBindingError);
+
+            std::array<bool, 256> reservedDik{};
+            std::array<int, 24> reservedPads{};
+            std::size_t reservedPadCount = 0;
+            EFZInputBindings::CollectReservations(
+                nativeBindings, reservedDik, reservedPads, reservedPadCount);
+            std::array<bool, 256> reservedVk{};
+            for (std::size_t dik = 0; dik < reservedDik.size(); ++dik) {
+                if (!reservedDik[dik]) continue;
+                const int vk = MapDIKToVK(static_cast<int>(dik));
+                if (vk > 0 && vk < static_cast<int>(reservedVk.size())) {
+                    reservedVk[static_cast<std::size_t>(vk)] = true;
+                }
+            }
+            // Fixed menu controls are not configurable mod hotkeys.  Reserving
+            // them here prevents a fresh config from assigning one key two UI
+            // meanings even when EFZ itself does not use it.
+            constexpr int fixedUiKeys[] = {
+                VK_ESCAPE, VK_RETURN, VK_UP, VK_DOWN, VK_LEFT, VK_RIGHT,
+                VK_PRIOR, VK_NEXT, VK_OEM_4, VK_OEM_6,
+            };
+            for (int vk : fixedUiKeys) reservedVk[static_cast<std::size_t>(vk)] = true;
+
+            const EFZInputBindings::FirstRunKeyboardPlan keyboardPlan =
+                EFZInputBindings::BuildFirstRunKeyboardPlan(reservedVk);
+            const EFZInputBindings::FirstRunGamepadPlan gamepadPlan =
+                EFZInputBindings::BuildFirstRunGamepadPlan(
+                    reservedPads.data(), reservedPadCount);
+
+            if (hasNativeBindings) {
+                LogOut("[CONFIG][FIRST_RUN] Derived conflict-free defaults from both players in " +
+                       nativeBindingPath, true);
+            } else {
+                LogOut("[CONFIG][FIRST_RUN] Native bindings unavailable; using conflict-free stock defaults: " +
+                       nativeBindingError, true);
+            }
+
+            auto keyValue = [](int value) {
+                if (value < 0) return std::string("-1");
+                std::ostringstream oss;
+                oss << "0x" << std::hex << std::uppercase << value;
+                return oss.str();
+            };
+
             std::ofstream file(configFilePath);
             if (!file.is_open()) {
                 LogOut("[CONFIG] Error: Could not open config file for writing.", true);
@@ -243,6 +294,13 @@ namespace Config {
             file << "collisionDisplayHurtboxes = 0\n";
             file << "collisionDisplayCollisionBoxes = 0\n";
             file << "collisionDisplayProjectileInteractions = 0\n";
+            file << "; Per-player ordinary box filters (master layers above still apply)\n";
+            file << "collisionDisplayP1Hitboxes = 1\n";
+            file << "collisionDisplayP2Hitboxes = 1\n";
+            file << "collisionDisplayP1Hurtboxes = 1\n";
+            file << "collisionDisplayP2Hurtboxes = 1\n";
+            file << "collisionDisplayP1CollisionBoxes = 1\n";
+            file << "collisionDisplayP2CollisionBoxes = 1\n";
             file << "; Box fill alpha percent. Outlines stay readable.\n";
             file << "collisionDisplayFillAlphaPercent = 25\n";
             file << "; Projectile interaction sub-layers\n";
@@ -332,6 +390,8 @@ namespace Config {
             // (Practice-specific tuning is hardcoded now)
             
             file << "[Hotkeys]\n";
+            file << "; First-run defaults were derived from EFZ's active P1/P2 bindings. Existing configs are never rewritten automatically.\n";
+            file << "FirstRunBindingSource=" << (hasNativeBindings ? "key.ini" : "stock") << "\n";
             file << "; Use virtual-key codes (hexadecimal, e.g., 0x70 for F1)\n";
             file << "; See key code definitions at: https://docs.microsoft.com/en-us/windows/win32/inputdev/virtual-key-codes\n";
             file << "; Common keys: \n";
@@ -340,10 +400,10 @@ namespace Config {
             file << "; - 0x70-0x7B: Function keys F1-F12\n\n";
             
             file << "; Teleport players to recorded positions\n";
-            file << "TeleportKey=0x31    # Default: '1' key\n\n";
+            file << "TeleportKey=" << keyValue(keyboardPlan.teleport) << "\n\n";
             
             file << "; Record current player positions\n";
-            file << "RecordKey=0x32      # Default: '2' key\n\n";
+            file << "RecordKey=" << keyValue(keyboardPlan.recordPosition) << "\n\n";
             
             file << "; Toggle title display mode (disabled by default)\n";
             file << "ToggleTitleKey=-1\n\n";
@@ -353,31 +413,31 @@ namespace Config {
 
             file << "; The training menu opens with Esc. Help is available from the Help tab.\n";
             file << "\n; Custom savestate working snapshot hotkeys\n";
-            file << "SavestateSaveKey=0x55  # Default: 'U' key\n";
-            file << "SavestateLoadKey=0x4A  # Default: 'J' key\n";
-            file << "SavestatePrevSlotKey=0xBC  # Default: ',' key\n";
-            file << "SavestateNextSlotKey=0xBE  # Default: '.' key\n";
+            file << "SavestateSaveKey=" << keyValue(keyboardPlan.savestateSave) << "\n";
+            file << "SavestateLoadKey=" << keyValue(keyboardPlan.savestateLoad) << "\n";
+            file << "SavestatePrevSlotKey=" << keyValue(keyboardPlan.savestatePrevious) << "\n";
+            file << "SavestateNextSlotKey=" << keyValue(keyboardPlan.savestateNext) << "\n";
 
             file << "\n; Practice: Switch Players toggle (Practice only)\n";
-            file << "SwitchPlayersKey=0x4C  # Default: 'L' key\n";
+            file << "SwitchPlayersKey=" << keyValue(keyboardPlan.switchPlayers) << "\n";
             file << "; Macro: Record (two-press)\n";
-            file << "MacroRecordKey=0x49     # Default: 'I' key\n";
+            file << "MacroRecordKey=" << keyValue(keyboardPlan.macroRecord) << "\n";
             file << "; Macro: Play (replay)\n";
-            file << "MacroPlayKey=0x4F       # Default: 'O' key\n";
+            file << "MacroPlayKey=" << keyValue(keyboardPlan.macroPlay) << "\n";
             file << "; Macro: Cycle Slot (next)\n";
-            file << "MacroSlotKey=0x4B       # Default: 'K' key\n";
+            file << "MacroSlotKey=" << keyValue(keyboardPlan.macroSlot) << "\n";
             file << "\n; UI footer actions (Apply / Refresh / Exit)\n";
             file << "; Avoid using in-game bound keys (Enter/Escape/Space). Defaults: E, R, Q.\n";
-            file << "UIAcceptKey=0x45        # 'E' (Apply)\n";
-            file << "UIRefreshKey=0x52       # 'R' (Refresh)\n";
-            file << "UIExitKey=0x51          # 'Q' (Exit)\n";
+            file << "UIAcceptKey=" << keyValue(keyboardPlan.uiAccept) << "\n";
+            file << "UIRefreshKey=" << keyValue(keyboardPlan.uiRefresh) << "\n";
+            file << "UIExitKey=" << keyValue(keyboardPlan.uiExit) << "\n";
 
             // Framestep hotkeys (vanilla EFZ / supported Revival)
             file << "\n; Framestep (vanilla EFZ / supported Revival)\n";
             file << "; Pause toggle\n";
-            file << "FramestepPauseKey=0x20  # Default: Space\n";
+            file << "FramestepPauseKey=" << keyValue(keyboardPlan.framestepPause) << "\n";
             file << "; Step forward one frame (when paused)\n";
-            file << "FramestepStepKey=0x50   # Default: 'P'\n";
+            file << "FramestepStepKey=" << keyValue(keyboardPlan.framestepStep) << "\n";
 
             // Swap Positions custom binding
             file << "\n; Swap Positions custom binding\n";
@@ -390,23 +450,23 @@ namespace Config {
             file << "\n; Controller bindings (XInput) \n";
             file << "; Use symbolic names (e.g. A, B, X, Y, LB, RB, BACK, START, L3, R3, DPAD_UP, DPAD_DOWN, DPAD_LEFT, DPAD_RIGHT) or hex mask (e.g. 0x2000). -1 disables.\n";
             file << "; Triggers (LT, RT) are treated as virtual buttons (threshold based).\n";
-            file << "gpTeleportButton=BACK\n";       // Teleport
-            file << "gpSavePositionButton=L3\n";     // Save current positions
-            file << "gpSwitchPlayersButton=RB\n";    // Toggle local side (practice)
+            file << "gpTeleportButton=" << GetGamepadButtonName(gamepadPlan.teleport) << "\n";
+            file << "gpSavePositionButton=" << GetGamepadButtonName(gamepadPlan.savePosition) << "\n";
+            file << "gpSwitchPlayersButton=" << GetGamepadButtonName(gamepadPlan.switchPlayers) << "\n";
             // ABXY reserved for UI (A=confirm, B=back). Use shoulders/triggers/sticks instead.
-            file << "gpSwapPositionsButton=R3\n";    // Swap player coordinates (was Y)
-            file << "gpMacroRecordButton=LB\n";      // Macro record (was X)
-            file << "gpMacroPlayButton=RT\n";        // Macro play (was A)
-            file << "gpMacroSlotButton=LT\n";        // Cycle macro slot (was B)
-            file << "gpToggleMenuButton=START\n";    // Open training menu
+            file << "gpSwapPositionsButton=" << GetGamepadButtonName(gamepadPlan.swapPositions) << "\n";
+            file << "gpMacroRecordButton=" << GetGamepadButtonName(gamepadPlan.macroRecord) << "\n";
+            file << "gpMacroPlayButton=" << GetGamepadButtonName(gamepadPlan.macroPlay) << "\n";
+            file << "gpMacroSlotButton=" << GetGamepadButtonName(gamepadPlan.macroSlot) << "\n";
+            file << "gpToggleMenuButton=" << GetGamepadButtonName(gamepadPlan.toggleMenu) << "\n";
 
             // UI navigation bindings (controller)
             file << "; UI navigation: cycle tabs/sub-tabs (rebindable)\n";
-            file << "; Defaults: LB/RB = previous/next top-level tab; LT/RT = previous/next active sub-tab\n";
-            file << "gpUiTopTabPrev=LB\n";
-            file << "gpUiTopTabNext=RB\n";
-            file << "gpUiSubTabPrev=LT\n";
-            file << "gpUiSubTabNext=RT\n";
+            file << "; D-pad focus navigation reaches tabs and sub-tabs without consuming extra buttons.\n";
+            file << "gpUiTopTabPrev=" << GetGamepadButtonName(gamepadPlan.topTabPrevious) << "\n";
+            file << "gpUiTopTabNext=" << GetGamepadButtonName(gamepadPlan.topTabNext) << "\n";
+            file << "gpUiSubTabPrev=" << GetGamepadButtonName(gamepadPlan.subTabPrevious) << "\n";
+            file << "gpUiSubTabNext=" << GetGamepadButtonName(gamepadPlan.subTabNext) << "\n";
             
             file.close();
             
@@ -483,6 +543,14 @@ namespace Config {
             settings.collisionDisplayHurtboxes = GetValueBool("General", "collisionDisplayHurtboxes", false);
             settings.collisionDisplayCollisionBoxes = GetValueBool("General", "collisionDisplayCollisionBoxes", false);
             settings.collisionDisplayProjectileInteractions = GetValueBool("General", "collisionDisplayProjectileInteractions", false);
+            // Missing keys mean an older config: preserve the former behavior
+            // where an enabled layer always drew both players.
+            settings.collisionDisplayP1Hitboxes = GetValueBool("General", "collisionDisplayP1Hitboxes", true);
+            settings.collisionDisplayP2Hitboxes = GetValueBool("General", "collisionDisplayP2Hitboxes", true);
+            settings.collisionDisplayP1Hurtboxes = GetValueBool("General", "collisionDisplayP1Hurtboxes", true);
+            settings.collisionDisplayP2Hurtboxes = GetValueBool("General", "collisionDisplayP2Hurtboxes", true);
+            settings.collisionDisplayP1CollisionBoxes = GetValueBool("General", "collisionDisplayP1CollisionBoxes", true);
+            settings.collisionDisplayP2CollisionBoxes = GetValueBool("General", "collisionDisplayP2CollisionBoxes", true);
             settings.collisionDisplayFillAlphaPercent = GetValueInt("General", "collisionDisplayFillAlphaPercent", 25);
             if (settings.collisionDisplayFillAlphaPercent < 0) settings.collisionDisplayFillAlphaPercent = 0;
             if (settings.collisionDisplayFillAlphaPercent > 100) settings.collisionDisplayFillAlphaPercent = 100;
@@ -809,6 +877,13 @@ namespace Config {
             file << "collisionDisplayHurtboxes = " << (settings.collisionDisplayHurtboxes ? "1" : "0") << "\n";
             file << "collisionDisplayCollisionBoxes = " << (settings.collisionDisplayCollisionBoxes ? "1" : "0") << "\n";
             file << "collisionDisplayProjectileInteractions = " << (settings.collisionDisplayProjectileInteractions ? "1" : "0") << "\n";
+            file << "; Per-player ordinary box filters (master layers above still apply)\n";
+            file << "collisionDisplayP1Hitboxes = " << (settings.collisionDisplayP1Hitboxes ? "1" : "0") << "\n";
+            file << "collisionDisplayP2Hitboxes = " << (settings.collisionDisplayP2Hitboxes ? "1" : "0") << "\n";
+            file << "collisionDisplayP1Hurtboxes = " << (settings.collisionDisplayP1Hurtboxes ? "1" : "0") << "\n";
+            file << "collisionDisplayP2Hurtboxes = " << (settings.collisionDisplayP2Hurtboxes ? "1" : "0") << "\n";
+            file << "collisionDisplayP1CollisionBoxes = " << (settings.collisionDisplayP1CollisionBoxes ? "1" : "0") << "\n";
+            file << "collisionDisplayP2CollisionBoxes = " << (settings.collisionDisplayP2CollisionBoxes ? "1" : "0") << "\n";
             file << "; Box fill alpha percent. Outlines stay readable.\n";
             file << "collisionDisplayFillAlphaPercent = " << settings.collisionDisplayFillAlphaPercent << "\n";
             file << "; Projectile interaction sub-layers\n";
@@ -990,6 +1065,12 @@ namespace Config {
             if (k == "collisiondisplayhurtboxes") settings.collisionDisplayHurtboxes = (value == "1" || value == "true");
             if (k == "collisiondisplaycollisionboxes") settings.collisionDisplayCollisionBoxes = (value == "1" || value == "true");
             if (k == "collisiondisplayprojectileinteractions") settings.collisionDisplayProjectileInteractions = (value == "1" || value == "true");
+            if (k == "collisiondisplayp1hitboxes") settings.collisionDisplayP1Hitboxes = (value == "1" || value == "true");
+            if (k == "collisiondisplayp2hitboxes") settings.collisionDisplayP2Hitboxes = (value == "1" || value == "true");
+            if (k == "collisiondisplayp1hurtboxes") settings.collisionDisplayP1Hurtboxes = (value == "1" || value == "true");
+            if (k == "collisiondisplayp2hurtboxes") settings.collisionDisplayP2Hurtboxes = (value == "1" || value == "true");
+            if (k == "collisiondisplayp1collisionboxes") settings.collisionDisplayP1CollisionBoxes = (value == "1" || value == "true");
+            if (k == "collisiondisplayp2collisionboxes") settings.collisionDisplayP2CollisionBoxes = (value == "1" || value == "true");
             if (k == "collisiondisplayfillalphapercent") {
                 try { settings.collisionDisplayFillAlphaPercent = std::stoi(value); } catch (...) { settings.collisionDisplayFillAlphaPercent = 25; }
                 if (settings.collisionDisplayFillAlphaPercent < 0) settings.collisionDisplayFillAlphaPercent = 0;

@@ -14,6 +14,7 @@
 #include <windows.h>
 #include <atomic>
 #include <cstring>
+#include <mutex>
 #include <sstream>
 
 namespace {
@@ -27,6 +28,17 @@ namespace {
     }
     // === State tracking ===
     std::atomic<bool> s_menuVisible{false};
+    std::mutex s_menuSurfaceMutex;
+    uint8_t s_menuSurfaceMask = 0; // guarded by s_menuSurfaceMutex
+    struct MenuSurfaceRefreshState {
+        bool active = false;
+        PauseIntegration::MenuSurface surface =
+            PauseIntegration::MenuSurface::TutorialPage;
+        uint64_t token = 0;
+    };
+    MenuSurfaceRefreshState s_menuSurfaceRefresh; // guarded by s_menuSurfaceMutex
+    uint64_t s_nextMenuSurfaceRefreshToken = 1;   // guarded by s_menuSurfaceMutex
+    std::atomic<bool> s_menuSurfaceRefreshActive{false};
     std::atomic<void*> s_practicePtr{nullptr};
     std::atomic<bool> s_practiceHooksInstalled{false};
     std::atomic<bool> s_practiceHooksEnabled{false};
@@ -910,6 +922,10 @@ namespace PauseIntegration {
     // ONLY for unsupported Revival versions - vanilla and supported versions handle pause correctly
     void MaintainFreezeWhileMenuVisible() {
         if (!s_menuVisible.load()) return;
+        // A refresh lease deliberately keeps the menu logically visible while
+        // its owner advances a bounded number of real battle updates. Do not
+        // let the persistent fallback path immediately undo that physical thaw.
+        if (s_menuSurfaceRefreshActive.load(std::memory_order_acquire)) return;
         
         // Check if we're dealing with an unsupported Revival version
         HMODULE hRev = GetModuleHandleA("EfzRevival.dll");
@@ -940,8 +956,11 @@ namespace PauseIntegration {
         }
     }
 
-    void OnMenuVisibilityChanged(bool visible) {
-        s_menuVisible.store(visible);
+    void ApplyAggregateMenuVisibility(bool visible,
+                                      bool publishLogicalVisibility = true) {
+        if (publishLogicalVisibility) {
+            s_menuVisible.store(visible, std::memory_order_release);
+        }
         EnsurePracticePtrHookInstalled();
         GameMode mode = GetCurrentGameMode();
         const bool inPractice = (mode == GameMode::Practice);
@@ -1070,6 +1089,132 @@ namespace PauseIntegration {
                 LogOut("[PAUSE][VANILLA] Engine pause cleared on menu close", true);
             }
         }
+    }
+
+    void FinishMenuSurfaceRefreshLocked(bool reacquire,
+                                        const char* reason) {
+        if (!s_menuSurfaceRefresh.active) return;
+        const uint64_t token = s_menuSurfaceRefresh.token;
+        if (reacquire && s_menuSurfaceMask != 0) {
+            // Keep s_menuVisible asserted: input/hotkey routing must continue
+            // to treat the teaching surface as open throughout the refresh.
+            ApplyAggregateMenuVisibility(true, false);
+        }
+        s_menuSurfaceRefresh = MenuSurfaceRefreshState{};
+        s_menuSurfaceRefreshActive.store(false, std::memory_order_release);
+        std::ostringstream oss;
+        oss << "[PAUSE][SURFACE_REFRESH] end token=" << token
+            << " reacquire=" << (reacquire ? 1 : 0)
+            << " reason=" << (reason ? reason : "unspecified");
+        LogOut(oss.str(), true);
+    }
+
+    void OnMenuSurfaceVisibilityChanged(MenuSurface surface, bool visible) {
+        std::lock_guard<std::mutex> lock(s_menuSurfaceMutex);
+        const uint8_t previous = s_menuSurfaceMask;
+        const uint8_t next = UpdatedMenuSurfaceMask(previous, surface, visible);
+        if (previous == next) {
+            return;
+        }
+
+        // A nested/closing surface transition invalidates the exclusive thaw.
+        // Reacquire first so the ordinary aggregate transition starts from a
+        // coherent physical ownership state.
+        FinishMenuSurfaceRefreshLocked(true, "surface ownership changed");
+
+        s_menuSurfaceMask = next;
+        const bool wasVisible = previous != 0;
+        const bool isVisible = next != 0;
+        if (wasVisible == isVisible) {
+            // A nested surface appeared or disappeared while another owner
+            // retained the physical pause. Do not clear/re-detect ownership.
+            s_menuVisible.store(isVisible, std::memory_order_release);
+            std::ostringstream nested;
+            nested << "[PAUSE] Surface mask 0x" << std::hex
+                   << static_cast<int>(previous) << "->0x"
+                   << static_cast<int>(next) << " (pause retained)";
+            LogOut(nested.str(), detailedLogging.load(std::memory_order_relaxed));
+            return;
+        }
+
+        ApplyAggregateMenuVisibility(isVisible);
+    }
+
+    bool BeginMenuSurfaceRefresh(MenuSurface surface, uint64_t& tokenOut) {
+        tokenOut = 0;
+        std::lock_guard<std::mutex> lock(s_menuSurfaceMutex);
+        const uint8_t bit = MenuSurfaceBit(surface);
+        if (s_menuSurfaceRefresh.active || s_menuSurfaceMask != bit ||
+            !s_menuVisible.load(std::memory_order_acquire) ||
+            !IsPausedOrFrozen()) {
+            return false;
+        }
+
+        uint64_t token = s_nextMenuSurfaceRefreshToken++;
+        if (token == 0) token = s_nextMenuSurfaceRefreshToken++;
+        s_menuSurfaceRefresh.active = true;
+        s_menuSurfaceRefresh.surface = surface;
+        s_menuSurfaceRefresh.token = token;
+        s_menuSurfaceRefreshActive.store(true, std::memory_order_release);
+
+        // Unwind exactly the physical ownership acquired for the aggregate
+        // menu, while leaving the logical surface mask/visibility untouched.
+        ApplyAggregateMenuVisibility(false, false);
+        if (IsPausedOrFrozen()) {
+            // An external pause owner (or a failed physical unpause) means no
+            // real refresh can occur. Restore our coherent pause state now.
+            FinishMenuSurfaceRefreshLocked(true,
+                                           "physical thaw unavailable");
+            return false;
+        }
+
+        tokenOut = token;
+        std::ostringstream oss;
+        oss << "[PAUSE][SURFACE_REFRESH] begin token=" << token
+            << " surface=0x" << std::hex << static_cast<int>(bit);
+        LogOut(oss.str(), true);
+        return true;
+    }
+
+    bool EndMenuSurfaceRefresh(MenuSurface surface, uint64_t token) {
+        std::lock_guard<std::mutex> lock(s_menuSurfaceMutex);
+        if (!token || !s_menuSurfaceRefresh.active ||
+            s_menuSurfaceRefresh.surface != surface ||
+            s_menuSurfaceRefresh.token != token) {
+            return false;
+        }
+        FinishMenuSurfaceRefreshLocked(true, "owner completed");
+        return IsPausedOrFrozen();
+    }
+
+    void ForceCloseAllMenuSurfaces() {
+        std::lock_guard<std::mutex> lock(s_menuSurfaceMutex);
+        if (s_menuSurfaceMask == 0) {
+            s_menuVisible.store(false, std::memory_order_release);
+            return;
+        }
+        FinishMenuSurfaceRefreshLocked(true, "force close");
+        s_menuSurfaceMask = 0;
+        ApplyAggregateMenuVisibility(false);
+    }
+
+    void ReassertMenuSurfacePause(MenuSurface surface) {
+        std::lock_guard<std::mutex> lock(s_menuSurfaceMutex);
+        if ((s_menuSurfaceMask & MenuSurfaceBit(surface)) == 0 ||
+            s_menuSurfaceMask == 0) {
+            return;
+        }
+        if (s_menuSurfaceRefresh.active) {
+            FinishMenuSurfaceRefreshLocked(true, "pause reasserted");
+            return;
+        }
+        LogOut("[PAUSE] Visible surface lost physical pause; reasserting aggregate owner",
+               true);
+        ApplyAggregateMenuVisibility(true);
+    }
+
+    void OnMenuVisibilityChanged(bool visible) {
+        OnMenuSurfaceVisibilityChanged(MenuSurface::ImGui, visible);
     }
 
     bool ReadStepCounter(uint32_t &outCounter) {

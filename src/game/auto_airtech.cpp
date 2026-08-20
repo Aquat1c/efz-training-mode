@@ -2,18 +2,30 @@
 #include "../include/core/constants.h"
 #include "../include/utils/utilities.h"
 #include "../include/utils/network.h"
+#include "../include/game/auto_action.h"
 #include "../include/game/game_state.h"
+#include "../include/game/macro_controller.h"
 
 #include "../include/core/memory.h"
 #include "../include/core/logger.h"
+#include "../include/input/auto_action_motion_transaction.h"
+#include "../include/input/immediate_input.h"
+#include "../include/input/injection_control.h"
+#include "../include/input/input_buffer.h"
 #include "../include/input/input_core.h" // for WritePlayerInputImmediate and GAME_INPUT_*
+#include "../include/input/input_freeze.h"
+#include "../include/input/input_hook.h"
+#include "../include/input/motion_system.h"
+#include "../include/input/scoped_input_reservation.h"
 #include "../include/game/validation_metrics.h" // validation metrics instrumentation
 #include <thread>
 #include <atomic>
 #include <chrono>
+#include <mutex>
 
 namespace {
 constexpr int kInternalTicksPerVisualFrame = 3;
+bool s_airtechOverrideOwned[3] = {false, false, false};
 
 inline int VisualFramesToInternalTicks(int visualFrames) {
     return (visualFrames <= 0) ? 0 : (visualFrames * kInternalTicksPerVisualFrame);
@@ -21,6 +33,49 @@ inline int VisualFramesToInternalTicks(int visualFrames) {
 
 inline int InternalTicksToVisualFramesCeil(int internalTicks) {
     return (internalTicks <= 0) ? 0 : ((internalTicks + kInternalTicksPerVisualFrame - 1) / kInternalTicksPerVisualFrame);
+}
+
+bool PublishAirtechOverride(int playerNum, uint8_t mask, bool buffered) {
+    std::lock_guard<std::recursive_mutex> controlLock(g_p2ControlMutex);
+    if (g_onlineModeActive.load(std::memory_order_acquire) ||
+        IsScopedInputReserved(playerNum) ||
+        IsAutoActionMotionTransactionActive(playerNum) ||
+        IsAutoActionNormalPulseActive(playerNum) ||
+        ImmediateInput::TutorialLeaseActive(playerNum) ||
+        TutorialMotionQueueLeaseActive(playerNum) ||
+        TutorialBufferFreezeLeaseActive() ||
+        g_pollOverrideActive[playerNum].load(std::memory_order_acquire) ||
+        (MacroController::IsExclusivePlayback() &&
+         MacroController::GetPlaybackPlayer() == playerNum) ||
+        ImmediateInput::GetCurrentDesired(playerNum) != 0 ||
+        ImmediateInput::GetRemainingTicks(playerNum) != 0 ||
+        (g_bufferFreezingActive.load(std::memory_order_acquire) &&
+         (g_activeFreezePlayer.load(std::memory_order_acquire) == 0 ||
+          g_activeFreezePlayer.load(std::memory_order_acquire) == playerNum)) ||
+        (g_manualInputOverride[playerNum].load(std::memory_order_acquire) &&
+         !s_airtechOverrideOwned[playerNum])) {
+        return false;
+    }
+    g_manualInputMask[playerNum].store(mask, std::memory_order_release);
+    g_manualInputOverride[playerNum].store(true, std::memory_order_release);
+    // Airtech normally needs the buffered path so EFZ sees a clean edge in
+    // its native history; callers may still request an immediate-only pulse.
+    g_injectImmediateOnly[playerNum].store(!buffered,
+                                            std::memory_order_release);
+    s_airtechOverrideOwned[playerNum] = true;
+    return true;
+}
+
+bool ReleaseAirtechOverride(int playerNum) {
+    std::lock_guard<std::recursive_mutex> controlLock(g_p2ControlMutex);
+    if (!s_airtechOverrideOwned[playerNum]) return true;
+    if (IsScopedInputReserved(playerNum)) return false;
+    g_manualInputOverride[playerNum].store(false, std::memory_order_release);
+    g_manualInputMask[playerNum].store(0, std::memory_order_release);
+    g_injectImmediateOnly[playerNum].store(false,
+                                            std::memory_order_release);
+    s_airtechOverrideOwned[playerNum] = false;
+    return true;
 }
 } // namespace
 
@@ -169,9 +224,7 @@ void MonitorAutoAirtech(short moveID1, short moveID2) {
             *readyTick >= 0 || *isAirteching || *wasAirtechable ||
             g_manualInputOverride[playerNum].load() || g_manualInputMask[playerNum].load() != 0;
 
-        g_manualInputOverride[playerNum].store(false);
-        g_manualInputMask[playerNum].store(0);
-        g_injectImmediateOnly[playerNum].store(false);
+        (void)ReleaseAirtechOverride(playerNum);
         *readyTick = -1;
         *lastRemainingVisual = -1;
         *injectRemaining = 0;
@@ -219,8 +272,8 @@ void MonitorAutoAirtech(short moveID1, short moveID2) {
         g_airtechP1Airtechable.store(false);
         g_airtechP2Airtechable.store(false);
         // Release any lingering manual overrides (paranoia)
-        if (g_manualInputOverride[1].load()) { g_manualInputOverride[1].store(false); g_manualInputMask[1].store(0); }
-        if (g_manualInputOverride[2].load()) { g_manualInputOverride[2].store(false); g_manualInputMask[2].store(0); }
+        if (g_manualInputOverride[1].load()) (void)ReleaseAirtechOverride(1);
+        if (g_manualInputOverride[2].load()) (void)ReleaseAirtechOverride(2);
         static auto s_lastDisabledBeat = std::chrono::steady_clock::now();
         auto nowBeat = std::chrono::steady_clock::now();
         if (detailedLogging.load() && (nowBeat - s_lastDisabledBeat) >= std::chrono::seconds(30)) {
@@ -327,13 +380,6 @@ void MonitorAutoAirtech(short moveID1, short moveID2) {
             default: buttonMask = GAME_INPUT_C; break;
         }
         return horzMask | buttonMask;
-    };
-
-    auto applyOverrideMask = [](int playerNum, uint8_t mask, bool buffered) {
-        g_manualInputMask[playerNum].store(mask);
-        g_manualInputOverride[playerNum].store(true);
-        // For airtech we WANT buffer writes so the engine sees the edge in history
-        g_injectImmediateOnly[playerNum].store(!buffered ? true : false);
     };
 
     // If enabled, manage delay/injection per player independently
@@ -474,21 +520,21 @@ void MonitorAutoAirtech(short moveID1, short moveID2) {
         // P1 state machine
         if (p1PreNeutral > 0) {
             // Force neutral (buffered) so a clean edge is generated
-            applyOverrideMask(1, 0, true);
-            p1PreNeutral--;
-            p1AttemptActive = false;
+            if (PublishAirtechOverride(1, 0, true)) {
+                p1PreNeutral--;
+                p1AttemptActive = false;
+            }
         } else if (p1InjectRemaining > 0) {
             if (!p1AttemptActive) {
                 uint8_t mask = composeMaskForAttempt(1, p1AttemptCount - 1);
-                applyOverrideMask(1, mask, true); // buffered
-                p1AttemptActive = true;
+                if (PublishAirtechOverride(1, mask, true)) { // buffered
+                    p1AttemptActive = true;
+                }
             }
-            p1InjectRemaining--;
+            if (p1AttemptActive) p1InjectRemaining--;
         } else if (p1AttemptActive) {
             // Release after attempt
-            g_manualInputOverride[1].store(false);
-            g_manualInputMask[1].store(0);
-            g_injectImmediateOnly[1].store(false);
+            (void)ReleaseAirtechOverride(1);
             p1AttemptActive = false;
             LogOut("[AUTO-AIRTECH] P1 attempt window complete", detailedLogging.load());
             // Schedule next attempt if still airtechable and attempts remain
@@ -502,20 +548,20 @@ void MonitorAutoAirtech(short moveID1, short moveID2) {
 
         // P2 state machine
         if (p2PreNeutral > 0) {
-            applyOverrideMask(2, 0, true);
-            p2PreNeutral--;
-            p2AttemptActive = false;
+            if (PublishAirtechOverride(2, 0, true)) {
+                p2PreNeutral--;
+                p2AttemptActive = false;
+            }
         } else if (p2InjectRemaining > 0) {
             if (!p2AttemptActive) {
                 uint8_t mask = composeMaskForAttempt(2, p2AttemptCount - 1);
-                applyOverrideMask(2, mask, true);
-                p2AttemptActive = true;
+                if (PublishAirtechOverride(2, mask, true)) {
+                    p2AttemptActive = true;
+                }
             }
-            p2InjectRemaining--;
+            if (p2AttemptActive) p2InjectRemaining--;
         } else if (p2AttemptActive) {
-            g_manualInputOverride[2].store(false);
-            g_manualInputMask[2].store(0);
-            g_injectImmediateOnly[2].store(false);
+            (void)ReleaseAirtechOverride(2);
             p2AttemptActive = false;
             LogOut("[AUTO-AIRTECH] P2 attempt window complete", detailedLogging.load());
             if (!p2IsAirteching && IsPlayerAirtechable(moveID2,2) && p2AttemptCount < kMaxRetryAttempts) {
@@ -528,9 +574,7 @@ void MonitorAutoAirtech(short moveID1, short moveID2) {
     } else {
         // If disabled mid-window, ensure we release any active overrides cleanly
         if (p1WasInjecting || g_manualInputOverride[1].load()) {
-            g_manualInputOverride[1].store(false);
-            g_manualInputMask[1].store(0);
-            g_injectImmediateOnly[1].store(false);
+            (void)ReleaseAirtechOverride(1);
             p1WasInjecting = false;
             p1InjectRemaining = 0;
             p1DelayReadyTick = -1;
@@ -541,9 +585,7 @@ void MonitorAutoAirtech(short moveID1, short moveID2) {
             p1AttemptActive = false;
         }
         if (p2WasInjecting || g_manualInputOverride[2].load()) {
-            g_manualInputOverride[2].store(false);
-            g_manualInputMask[2].store(0);
-            g_injectImmediateOnly[2].store(false);
+            (void)ReleaseAirtechOverride(2);
             p2WasInjecting = false;
             p2InjectRemaining = 0;
             p2DelayReadyTick = -1;

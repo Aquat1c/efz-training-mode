@@ -14,17 +14,29 @@
 #include <cstdint>
 #include <array>
 #include <string>
+#include <vector>
 
 #include "contact_event.h"
 
 // Forward declaration so the recipe renderer can read the active mission's steps
 // without this header pulling in the full data model.
-namespace Mission { struct Mission; }
+namespace Mission {
+struct Mission;
+namespace Authoring { struct MissionMetadata; }
+}
 
 namespace Mission::Engine {
 
 struct Snapshot {
-    static constexpr size_t kMaxContactEvents = 16;
+    // Match the producer journal capacity. ReadCommittedContactEvents consumes
+    // through the closed batch; a smaller drain buffer would discard dense
+    // projectile/summon barrages (Misuzu already reaches 14 in one window).
+    static constexpr size_t kMaxContactEvents = 128;
+    static constexpr size_t kMaxPolledAttackEdges = 128;
+    struct PolledAttackEdge {
+        uint32_t serial = 0;
+        uint8_t mask = 0;
+    };
     bool  valid = false;   // both player bases resolved this frame
     short p1Move = 0;      // P1 current move-ID (playerBase + 0x8)
     short p2Move = 0;
@@ -36,7 +48,16 @@ struct Snapshot {
     int   p1ComboDamage = 0; // P1's combo damage (+0x100)
     uint8_t p1Inputs = 0;  // sampled post-poll P1 input mask (deadline grace only)
     uint8_t p1PolledAttackEdges = 0; // attack edges consumed by EFZ since last Tick
-    uint32_t p1InputPollSerial = 0;  // diagnostic poll serial for those edges
+    uint32_t p1PolledAttackEdgeSerial = 0; // coherent serial watermark for that edge batch
+    // Ordered per-poll evidence used by mission recording.  The aggregate
+    // fields above remain available to deadline/tutorial code, but they cannot
+    // distinguish A,A from one coalesced A or preserve A,B ordering.
+    std::array<PolledAttackEdge, kMaxPolledAttackEdges>
+        p1PolledAttackEdgeEvents{};
+    uint8_t p1PolledAttackEdgeCount = 0;
+    uint32_t p1PolledAttackEdgesDropped = 0;
+    bool p1PolledAttackEdgeOverflow = false;
+    uint32_t p1InputPollSerial = 0;  // most recent P1 poll (deadline diagnostics)
     bool  p1Attacking = false; // IsAttackMove(p1Move)
     bool  p2InStun = false;    // P2 in hitstun / launched / blockstun (opponent "in combo")
     // Engine command index for P1 (MOTION_TOKEN_OFFSET, +0x262). The detector writes
@@ -63,6 +84,9 @@ struct Snapshot {
     std::array<::Mission::Contact::Event, kMaxContactEvents> contactEvents{};
     uint8_t contactEventCount = 0;
     uint32_t contactEventEpoch = 0;
+    // Closed producer batch used to order a contact against a move sampled in
+    // this Snapshot. Events from an older batch precede a newly observed step.
+    uint32_t completedBattleUpdateBatch = 0;
     bool contactEventOverflow = false;
     bool directContactHookReady = false;
     bool entityContactHookReady = false;
@@ -80,6 +104,13 @@ void SetPendingMissionMode(bool on);
 // publish that exact value after the prepared match settles. False means the
 // browser must remain open; no pending/direct-load ownership is published.
 bool SetPendingMissionLoad(const std::string& missionPath, std::string& errorOut);
+
+// Read-only browser/preflight boundary for an already parsed mission. This is
+// the same capability validation used by Runner and title-prepared launches;
+// it does not publish or mutate a pending launch transaction.
+bool ValidateMissionRuntimeReadiness(const ::Mission::Mission& mission,
+                                     const std::string& sourcePath,
+                                     std::string& outError);
 
 // Cancel one title-picked mission that has not yet been consumed on Match
 // entry. The selected path + prepared Mission are one ownership token: both
@@ -131,6 +162,27 @@ namespace PendingLaunchPolicy {
                                        bool nowAtMenu) {
         return missionModePending && sawCharacterSelect && nowAtMenu;
     }
+
+    // The same zero-poll owner spans two runtime states: the prepared title
+    // transaction before Runner::LoadPrepared, then the runner's exact
+    // restore/save transaction. There must never be a release frame between
+    // them or a retained menu direction can become the mission's first move.
+    constexpr bool StartupInputOwned(bool concreteTitlePending,
+                                     bool runnerRestorePending,
+                                     bool runnerSavePending) {
+        return concreteTitlePending || runnerRestorePending || runnerSavePending;
+    }
+
+    constexpr bool CanReleaseStartupInput(bool concreteTitlePending,
+                                          bool runnerRestorePending,
+                                          bool runnerSavePending,
+                                          bool tutorialActive,
+                                          bool tutorialOwnerEstablished) {
+        return !StartupInputOwned(concreteTitlePending,
+                                  runnerRestorePending,
+                                  runnerSavePending) &&
+               (!tutorialActive || tutorialOwnerEstablished);
+    }
 }
 
 namespace StartupFailurePolicy {
@@ -144,6 +196,18 @@ namespace StartupFailurePolicy {
     // must still abort rather than pretending to be playable.
     constexpr Effect Decide(bool isTutorial) {
         return isTutorial ? Effect::RetainTutorialError : Effect::AbortRunner;
+    }
+}
+
+namespace StartupRestorePolicy {
+    // StateDump::Restore starts by asking Revival to build a fresh native
+    // checkpoint descriptor. After title/menu re-entry, the match can look
+    // settled several monitor samples before PracticeTick has published the
+    // trusted Practice controller needed by that save. Treat controller
+    // ownership as a restore precondition, not as a terminal restore error.
+    constexpr bool CanAttempt(bool worldSettled,
+                              bool practiceControllerReady) {
+        return worldSettled && practiceControllerReady;
     }
 }
 
@@ -182,6 +246,26 @@ bool IsInspectorEnabled();
 // mission's step.moveIds so authors never hand-map IDs.
 namespace Recorder {
     enum class Phase : uint8_t { Idle, PreRecord, CountIn, Recording, Review };
+
+    // Every non-idle authoring phase owns the dedicated Recording menu. Keep
+    // this separate from capture-hotkey ownership: PRE-RECORD still needs the
+    // ordinary setup tools while the menu is closed, and REVIEW has no live
+    // input stream to capture.
+    constexpr bool UsesDedicatedPauseMenu(Phase phase) {
+        return phase != Phase::Idle;
+    }
+
+    constexpr bool IsCapturePhase(Phase phase) {
+        return phase == Phase::CountIn || phase == Phase::Recording;
+    }
+
+    // Closing a visible capture menu must not expose the button used to close
+    // it to either EFZ or the synchronized macro stream.  Non-capture phases
+    // have no live stream and therefore need no neutral-input handoff.
+    constexpr bool NeedsCaptureMenuHandoff(bool suspensionOwned, Phase phase) {
+        return suspensionOwned && IsCapturePhase(phase);
+    }
+
     enum class AdvanceEffect : uint8_t {
         None,
         BeginCountIn,
@@ -213,10 +297,23 @@ namespace Recorder {
     bool IsActive();           // true only while frames are being captured
     bool IsSessionActive();    // PreRecord, CountIn, Recording, or Review
     bool OwnsCaptureHotkeys(); // CountIn/Recording: suppress unrelated Practice shortcuts
+    // Recorder pause / nested Practice settings ownership. Opening suspends
+    // both recipe and macro capture and forces P1 neutral. Closing requests a
+    // release-to-neutral handoff; capture resumes only after the UI is gone
+    // and fresh neutral physical polls have been observed.
+    void SetCaptureMenuOpen(bool open);
+    bool IsCaptureMenuSuspended();
+    bool IsMenuInputHandoffActive();
+    // Phase-changing rows keep a physical pause through their queued command,
+    // then retain a separate zero-input owner until physical P1 has returned
+    // neutral. This prevents Confirm from becoming a gameplay input or racing
+    // a baseline restore without waiting for polls under a frozen world.
+    void BeginMenuCommandHandoff();
     Phase GetPhase();
     int  GetStepCount();       // steps captured so far
     int  GetComboEndCount();   // explicit setup/okizeme boundaries committed in this take
     int  GetCountInValue();    // remaining milliseconds while counting down
+    bool HasPreviewableTake(); // Review owns a sealed, parseable input clip
 
     // Human-readable form of the controls that actually reach Macro Record
     // (for example "KEY I / PAD LB"). Mission authoring deliberately reuses
@@ -228,12 +325,25 @@ namespace Recorder {
     // Returns false if nothing was captured.
     bool BuildDraft(::Mission::Mission& out);
 
-    // Build a Mission from the captured steps + synchronized P1 clip, then save
-    // it under assets\missions\_recorded\. A sibling `.entities.jsonl` keeps the
-    // cast-wide raw ring lifecycle/contact authoring trace; it is explicitly
-    // sampled/unordered/non-strict and never adds format-1 steps. Returns true
-    // on success (outMsg = mission path) or false (outMsg = error).
+    // Save the reviewed take to the loose `_recorded` inbox. Metadata is
+    // applied when supplied, but drafts deliberately remain saveable even when
+    // they still carry author-review obligations.
     bool SaveRecorded(std::string& outMsg);
+    bool SaveRecordedDraft(const ::Mission::Authoring::MissionMetadata& metadata,
+                           std::string& outMsg);
+
+    // Lightweight authoring gate for the Review UI. The returned reason is
+    // player-facing and uses the same obligation policy as PublishRecorded.
+    bool CanPublishRecorded(std::string& outReason);
+
+    // Publish the reviewed take into an authored pack/category and update the
+    // manifest transactionally. Unlike a draft save, publishing refuses an
+    // unresolved author-review obligation. Any failure leaves Review active so
+    // the take can be fixed, retaken, or saved as a draft.
+    bool PublishRecorded(const std::string& packJsonPath,
+                         const std::string& categoryId,
+                         const ::Mission::Authoring::MissionMetadata& metadata,
+                         std::string& outMsg);
 }
 
 // ---- Demonstration playback ----
@@ -269,6 +379,12 @@ namespace Demo {
     void AcknowledgeTutorialRestore();
 }
 
+// True for the complete deterministic ownership window: recorder CountIn /
+// Recording, or demonstration Preparing / Playing / terminal Restoring.  This
+// is a read-only quarantine; Practice helper settings are not modified and
+// resume after ownership ends.
+bool IsPracticeAutomationSuppressed();
+
 // ---- Runner (M2c): exact-sequence validation state machine ----
 // Loads a mission and, each frame, tracks the player's progress through the
 // ordered steps: start on step 0, advance when the player performs the next
@@ -284,7 +400,10 @@ namespace Runner {
               bool forceFreshMatch = true);
     bool LoadLatestRecorded(std::string& outMsg); // newest assets\missions\_recorded\*.json
     void Unload();
-    void Reset();          // retry: keep mission, reset progress, ++attempts
+    // Logical-only retry retained for legacy v1/v2 schedules. Strict-v3 entity
+    // schedules reject it because producer lineage must be rebound by restoring
+    // the runner-owned baseline through RequestBaselineRestore.
+    void Reset();
     // Restore the mission/lesson root baseline through the runner's owner
     // (the tutorial session's checkpoint transaction). False when no baseline
     // exists or a restore cannot run right now.
@@ -307,11 +426,19 @@ namespace Runner {
     bool  CurrentStepArmed(); // current step's move performed, waiting on its hit(s)
     bool  IsReadyForPlayer(); // setup/baseline complete and normal attempt UI may render
 
-    // Coherent copy for the render thread; mission data and runner status are
+    // Coherent copy for presentation code; mission data and runner status are
     // published under one lock so loading another mission cannot invalidate UI
-    // strings/vectors mid-draw.
+    // strings/vectors mid-draw. requireVisibleRecipe folds the player-ready or
+    // loaded-demo-Playing gate into that same lock; pause-menu callers leave it
+    // false because they need session metadata while the world is frozen.
     bool GetRenderSnapshot(::Mission::Mission& missionOut, int& currentStepOut,
-                           int& failedStepOut, bool& armedOut, int& currentHitsOut);
+                           int& failedStepOut, bool& armedOut, int& currentHitsOut,
+                           std::vector<int>* entityContactsSeenOut = nullptr,
+                           std::vector<int>* entityComboHitsSeenOut = nullptr,
+                           int* entitySegmentOut = nullptr,
+                           int* failedEntityRequirementOut = nullptr,
+                           bool requireVisibleRecipe = false,
+                           std::vector<int>* entityLifecyclesSeenOut = nullptr);
 }
 
 } // namespace Mission::Engine

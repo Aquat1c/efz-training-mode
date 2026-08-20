@@ -48,6 +48,7 @@
 #include <atomic>
 #include <cctype>
 #include <cfloat>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -99,14 +100,18 @@ struct UiTaskModel {
     std::string neutralLabel;
     std::string prompt;
     std::string cueText;
+    // Compiled once from LessonAction::notation. Only explicit linear
+    // sequences use this rail; branch-on-outcome tasks need branch-aware UI.
+    std::vector<std::string> actions;
     std::vector<std::string> options;
 };
 
 struct UiPageModel {
     std::string title;
     std::string text;
-    std::string introActions;
-    std::string reviewActions;
+    std::array<std::string, 3> introActions;
+    std::array<std::string, 3> reviewActions;
+    HudPolicy::HudFocus hudFocus = HudPolicy::HudFocus::None;
 };
 
 // Immutable presentation data compiled once in Begin(). Draw snapshots retain
@@ -123,10 +128,43 @@ struct UiModel {
     std::vector<UiPageModel> pages;
     std::vector<UiTaskModel> tasks;
     std::vector<std::string> completeOptions;
-    std::string choiceActions;
-    std::string completeActions;
-    std::string confirmActions;
-    std::string errorActions;
+    std::vector<std::string> completeHints;
+    std::string choiceHint;
+    std::array<std::string, 3> choiceActions;
+    std::array<std::string, 3> completeActions;
+    std::array<std::string, 3> confirmActions;
+    std::array<std::string, 3> errorActions;
+};
+
+// Frozen page-only lease used to expose EFZ's native world-space juggle bar.
+// Every touched field is captured and restored before gameplay can unpause.
+// The applied signature prevents a late restore from overwriting a savestate
+// or any other newer owner of the same player object.
+struct JugglePreviewFields {
+    short move = 0;
+    short frame = 0;
+    short animTimer = 0;
+    double x = 0.0;
+    double y = 0.0;
+    double xVelocity = 0.0;
+    double yVelocity = 0.0;
+    short untech = 0;
+    std::uint32_t wallbounce = 0;
+};
+
+struct JugglePreviewLease {
+    bool held = false;
+    uintptr_t playerBase = 0;
+    std::uint32_t lifecycleGeneration = 0;
+    HudPolicy::HudFocus focus = HudPolicy::HudFocus::None;
+    JugglePreviewFields saved;
+    JugglePreviewFields applied;
+    bool outlineValid = false;
+    HudPolicy::Rect outline;
+    bool refreshActive = false;
+    std::uint64_t refreshToken = 0;
+    std::uint32_t refreshStartBatch = 0;
+    int refreshWatchdogTicks = 0;
 };
 
 struct State {
@@ -145,6 +183,7 @@ struct State {
     bool feedbackSuccess = true;
     int feedbackTicks = 0;
     int neutralTicks = 0;
+    uint32_t neutralObservedSerial = 0;
     bool cleared = false;
     bool clearRecorded = false;
     int attemptsThisRun = 0;
@@ -197,7 +236,12 @@ struct State {
     int   prevHitState = 0;
     bool  comboWasAlive = false;
     bool  frozenLeaseHeld = false;
+    bool  freezeConfirmed = false;
     bool  neutralInputLeaseHeld = false;
+    JugglePreviewLease jugglePreview;
+    int   jugglePreviewSuppressedPage = -1;
+    int   jugglePreviewObservedPage = -1;
+    bool  introWorldAdvanced = false;
     int   freezeReassertCooldown = 0;
     int   holdTicks = 0;          // post-detection completion hold (see kCompleteHold)
     int   inputCommitGrace = 0;   // consumed button edge waiting for its move instance
@@ -354,6 +398,11 @@ struct UiSnapshot {
     bool feedbackSuccess = true;
     int feedbackTicks = 0;
     bool episodeCueActive = false;
+    int sequenceIndex = 0;
+    bool sequenceArmed = false;
+    bool freezeConfirmed = false;
+    bool juggleOutlineValid = false;
+    HudPolicy::Rect juggleOutline;
     std::string feedbackSource;
 };
 
@@ -488,6 +537,10 @@ bool FrozenPhase(Phase p) {
            p == Phase::Review || p == Phase::Complete || p == Phase::Error;
 }
 
+bool PhaseNeedsNeutralInput(Phase p) {
+    return FrozenPhase(p) || p == Phase::NeutralGate || p == Phase::Feedback;
+}
+
 const char* PhaseName(Phase p) {
     switch (p) {
         case Phase::Idle:          return "idle";
@@ -549,25 +602,26 @@ std::shared_ptr<const UiModel> BuildUiModel(const ::Mission::Mission& lesson,
         UiPageModel uiPage;
         uiPage.title = TextPolicy::NormalizeUiText(page.title);
         uiPage.text = TextPolicy::NormalizeUiText(page.text);
+        uiPage.hudFocus = HudPolicy::ParseHudFocus(page.showHud.c_str());
         const bool haveNextPage = i + 1 < lesson.lesson.pages.size();
         const std::string nextIntro = haveNextPage
-            ? "{btn:A}  NEXT PAGE"
+            ? "{btn:A} NEXT PAGE"
             : lesson.lesson.completion == "pages"
-                ? "{btn:A}  FINISH LESSON"
-                : "{btn:A}  BEGIN LESSON";
+                ? "{btn:A} FINISH LESSON"
+                : "{btn:A} BEGIN LESSON";
         const std::string nextReview = haveNextPage
-            ? "{btn:A}  NEXT PAGE"
-            : "{btn:A}  RETURN TO LESSON";
+            ? "{btn:A} NEXT PAGE"
+            : "{btn:A} RETURN TO TASK";
         const std::string backIntro = i > 0
-            ? "{btn:B}  PREVIOUS"
-            : "{btn:B}  LEAVE";
+            ? "{btn:B} PREVIOUS PAGE"
+            : "{btn:B} RETURN TO LESSONS";
         const std::string backReview = i > 0
-            ? "{btn:B}  PREVIOUS"
-            : "{btn:B}  RETURN";
-        uiPage.introActions =
-            nextIntro + "  |  " + backIntro + "  |  ESC  LESSON MENU";
-        uiPage.reviewActions =
-            nextReview + "  |  " + backReview + "  |  ESC  LESSON MENU";
+            ? "{btn:B} PREVIOUS PAGE"
+            : "{btn:B} RETURN TO TASK";
+        uiPage.introActions = {
+            nextIntro, backIntro, "{ui:ESC} LESSON MENU"};
+        uiPage.reviewActions = {
+            nextReview, backReview, "{ui:ESC} LESSON MENU"};
         model->pages.push_back(std::move(uiPage));
     }
     model->tasks.reserve(lesson.lesson.tasks.size());
@@ -583,6 +637,12 @@ std::shared_ptr<const UiModel> BuildUiModel(const ::Mission::Mission& lesson,
         // released before the task becomes live.
         uiTask.neutralLabel = "Release attack buttons, then: " + uiTask.label;
         uiTask.prompt = TextPolicy::NormalizeUiText(task.prompt);
+        uiTask.actions.reserve(task.sequence.size());
+        for (const ::Mission::LessonAction& action : task.sequence) {
+            uiTask.actions.push_back(!action.notation.empty()
+                ? TextPolicy::NotationToRich(action.notation)
+                : TextPolicy::HumanizeIdentifier(action.id));
+        }
         if (!task.script.empty()) {
             for (const ::Mission::DummyEpisode& episode : lesson.lesson.episodes) {
                 if (episode.id == task.script) {
@@ -613,28 +673,508 @@ std::shared_ptr<const UiModel> BuildUiModel(const ::Mission::Mission& lesson,
             std::string(skippedUnavailable > 0
                             ? "NEXT AVAILABLE LESSON - " : "NEXT LESSON - ") +
             Upper(nextName));
+        model->completeHints.push_back(
+            skippedUnavailable > 0
+                ? "Continue to the next available lesson."
+                : "Continue to the next lesson.");
     }
     model->completeOptions.push_back("TRY AGAIN");
+    model->completeHints.push_back(
+        "Restart this lesson from its prepared starting state.");
     model->completeOptions.push_back("RETURN TO LESSONS");
-    model->choiceActions =
-        "UP/DOWN CHOOSE  |  {btn:A} SELECT  |  ESC MENU";
-    model->completeActions =
-        "UP/DOWN CHOOSE  |  {btn:A} SELECT  |  ESC MENU";
-    model->confirmActions =
-        "UP / DOWN  CHOOSE  |  {btn:A} SELECT  |  {btn:B} KEEP READING";
-    model->errorActions = "ESC  MENU";
+    model->completeHints.push_back(
+        "Return to the Tutorial browser and choose another lesson.");
+    model->choiceHint = "Choose the answer that best matches the lesson.";
+    model->choiceActions = {
+        "UP / DOWN: CHOOSE", "{btn:A} SELECT", "{ui:ESC} LESSON MENU"};
+    model->completeActions = model->choiceActions;
+    model->confirmActions = {
+        "UP / DOWN: CHOOSE", "{btn:A} SELECT", "{btn:B} KEEP READING"};
+    model->errorActions = {
+        std::string(), "{ui:ESC} LESSON MENU", std::string()};
     return model;
 }
 
+bool ReadJugglePreviewFields(uintptr_t player,
+                             JugglePreviewFields& fields) {
+    return player &&
+        SafeReadMemory(player + MOVE_ID_OFFSET,
+                       &fields.move, sizeof(fields.move)) &&
+        SafeReadMemory(player + CURRENT_FRAME_INDEX_OFFSET,
+                       &fields.frame, sizeof(fields.frame)) &&
+        SafeReadMemory(player + STATE_SUBFRAME_COUNTER_OFFSET,
+                       &fields.animTimer, sizeof(fields.animTimer)) &&
+        SafeReadMemory(player + XPOS_OFFSET, &fields.x, sizeof(fields.x)) &&
+        SafeReadMemory(player + YPOS_OFFSET, &fields.y, sizeof(fields.y)) &&
+        SafeReadMemory(player + XVEL_OFFSET,
+                       &fields.xVelocity, sizeof(fields.xVelocity)) &&
+        SafeReadMemory(player + YVEL_OFFSET,
+                       &fields.yVelocity, sizeof(fields.yVelocity)) &&
+        SafeReadMemory(player + UNTECH_OFFSET,
+                       &fields.untech, sizeof(fields.untech)) &&
+        SafeReadMemory(player + PLAYER_WALLBOUNCE_FLAG_OFFSET,
+                       &fields.wallbounce, sizeof(fields.wallbounce));
+}
+
+bool JugglePreviewFieldsEqual(const JugglePreviewFields& lhs,
+                              const JugglePreviewFields& rhs) {
+    return lhs.move == rhs.move && lhs.frame == rhs.frame &&
+           lhs.animTimer == rhs.animTimer &&
+           lhs.x == rhs.x && lhs.y == rhs.y &&
+           lhs.xVelocity == rhs.xVelocity &&
+           lhs.yVelocity == rhs.yVelocity &&
+           lhs.untech == rhs.untech && lhs.wallbounce == rhs.wallbounce;
+}
+
+template <typename T>
+bool WritePreviewValue(uintptr_t address, const T& value) {
+    T observed{};
+    return address && SafeWriteMemory(address, &value, sizeof(value)) &&
+           SafeReadMemory(address, &observed, sizeof(observed)) &&
+           std::memcmp(&observed, &value, sizeof(value)) == 0;
+}
+
+bool WriteJugglePreviewFields(uintptr_t player,
+                              const JugglePreviewFields& fields,
+                              bool staging) {
+    if (!player) return false;
+    bool ok = true;
+    // During staging, make the harmless airborne hit-reaction state visible
+    // only after every dependent value is ready. During restoration, hide the
+    // native bar first by restoring the original move before the other fields.
+    if (!staging) {
+        ok = WritePreviewValue(player + MOVE_ID_OFFSET, fields.move) && ok;
+        ok = WritePreviewValue(player + CURRENT_FRAME_INDEX_OFFSET,
+                               fields.frame) && ok;
+        ok = WritePreviewValue(player + STATE_SUBFRAME_COUNTER_OFFSET,
+                               fields.animTimer) && ok;
+    }
+    ok = WritePreviewValue(player + XPOS_OFFSET, fields.x) && ok;
+    ok = WritePreviewValue(player + YPOS_OFFSET, fields.y) && ok;
+    ok = WritePreviewValue(player + XVEL_OFFSET, fields.xVelocity) && ok;
+    ok = WritePreviewValue(player + YVEL_OFFSET, fields.yVelocity) && ok;
+    ok = WritePreviewValue(player + UNTECH_OFFSET, fields.untech) && ok;
+    ok = WritePreviewValue(player + PLAYER_WALLBOUNCE_FLAG_OFFSET,
+                           fields.wallbounce) && ok;
+    if (staging) {
+        ok = WritePreviewValue(player + STATE_SUBFRAME_COUNTER_OFFSET,
+                               fields.animTimer) && ok;
+        ok = WritePreviewValue(player + CURRENT_FRAME_INDEX_OFFSET,
+                               fields.frame) && ok;
+        ok = WritePreviewValue(player + MOVE_ID_OFFSET, fields.move) && ok;
+    }
+    return ok;
+}
+
+void AbandonJugglePreviewLocked() {
+    if (g_s.jugglePreview.refreshActive) {
+        const std::uint64_t token = g_s.jugglePreview.refreshToken;
+        g_s.jugglePreview.refreshActive = false;
+        g_s.jugglePreview.refreshToken = 0;
+        (void)PauseIntegration::EndMenuSurfaceRefresh(
+            PauseIntegration::MenuSurface::TutorialPage, token);
+        if (g_s.frozenLeaseHeld &&
+            !PauseIntegration::IsPausedOrFrozen()) {
+            PauseIntegration::ReassertMenuSurfacePause(
+                PauseIntegration::MenuSurface::TutorialPage);
+        }
+        g_s.freezeConfirmed = g_s.frozenLeaseHeld &&
+            PauseIntegration::IsPausedOrFrozen();
+    }
+    g_s.jugglePreview = JugglePreviewLease{};
+}
+
+// The tutorial monitor and EFZ's battle update run on different threads. A
+// physical pause prevents another battle call from being scheduled, but one
+// call that already entered the hook may still be writing player fields. Wait
+// only for the fixed batch observed immediately after pausing; repeatedly
+// sampling the current batch would risk chasing unrelated render-side calls.
+bool WaitForBattleBatchCompletionLocked(std::uint32_t targetBatch) {
+    constexpr DWORD kTimeoutMs = 50;
+    const DWORD startTick = ::GetTickCount();
+    do {
+        if (HudPolicy::BattleBatchReached(
+                targetBatch, GetCompletedBattleUpdateBatch())) {
+            return true;
+        }
+        ::Sleep(1);
+    } while (static_cast<DWORD>(::GetTickCount() - startTick) < kTimeoutMs);
+    return HudPolicy::BattleBatchReached(
+        targetBatch, GetCompletedBattleUpdateBatch());
+}
+
+bool FinishJugglePreviewRefreshLocked(bool normalizePresentation);
+
+void RestoreJugglePreviewLocked() {
+    if (g_s.jugglePreview.refreshActive) {
+        (void)FinishJugglePreviewRefreshLocked(false);
+    }
+    if (!g_s.jugglePreview.held) return;
+    const JugglePreviewLease lease = g_s.jugglePreview;
+    AbandonJugglePreviewLocked();
+
+    JugglePreviewFields current;
+    const uintptr_t currentP2 = GetPlayerBase(2);
+    if (GetRuntimeLifecycleGeneration() != lease.lifecycleGeneration ||
+        currentP2 != lease.playerBase ||
+        !ReadJugglePreviewFields(currentP2, current) ||
+        !JugglePreviewFieldsEqual(current, lease.applied)) {
+        LogOut("[TUTORIAL][JUGGLE_PREVIEW] restore skipped; player state "
+               "was replaced by a newer owner", true);
+        return;
+    }
+    const bool restored =
+        WriteJugglePreviewFields(currentP2, lease.saved, false);
+    LogOut(std::string("[TUTORIAL][JUGGLE_PREVIEW] restore ") +
+           (restored ? "complete" : "failed"), true);
+}
+
+bool BuildJugglePreviewOutline(uintptr_t player,
+                               const JugglePreviewFields& fields,
+                               HudPolicy::Rect& outline) {
+    int cameraX = 0;
+    int cameraY = 0;
+    std::uint8_t facing = 0;
+    if (!player ||
+        !std::isfinite(fields.x) || !std::isfinite(fields.y) ||
+        !CollisionDisplay::ProbeBattleCameraOffsets(&cameraX, &cameraY) ||
+        !SafeReadMemory(player + FACING_DIRECTION_OFFSET,
+                        &facing, sizeof(facing)) ||
+        !HudPolicy::IsKnownFacingByte(facing)) {
+        return false;
+    }
+    const int width = HudPolicy::JuggleWidth(fields.untech);
+    if (width <= 0) return false;
+    // Mirror EFZ's native HUD routine at 0x00761B91 exactly: player doubles
+    // are converted to integer native pixels before camera offsets are added,
+    // and the three one-pixel rows widen a left-facing gauge by two pixels.
+    const int originX = cameraX + static_cast<int>(fields.x);
+    const int left = HudPolicy::FacesRight(facing)
+        ? originX : originX - width - 2;
+    const int top = cameraY + static_cast<int>(fields.y) + 209;
+    constexpr float margin = 3.0f;
+    outline = {
+        static_cast<float>(left * 2) - margin,
+        static_cast<float>(top * 2) - margin,
+        static_cast<float>((width + 2) * 2) + margin * 2.0f,
+        10.0f + margin * 2.0f,
+    };
+    const HudPolicy::Rect rail = HudPolicy::JugglePreviewRail();
+    return std::isfinite(outline.x) && std::isfinite(outline.y) &&
+           std::isfinite(outline.w) && std::isfinite(outline.h) &&
+           outline.x >= rail.x && outline.y >= rail.y &&
+           outline.x + outline.w <= rail.x + rail.w &&
+           outline.y + outline.h <= rail.y + rail.h;
+}
+
+bool IsJugglePreviewRefreshEnvelope(const JugglePreviewLease& lease,
+                                    const JugglePreviewFields& current) {
+    const double dx = current.x - lease.applied.x;
+    const double dy = current.y - lease.applied.y;
+    const double absDx = dx < 0.0 ? -dx : dx;
+    const double absDy = dy < 0.0 ? -dy : dy;
+    return current.move >= LAUNCHED_HITSTUN_START &&
+           current.move <= LAUNCHED_HITSTUN_END &&
+           current.y < 0.0 && absDx <= 32.0 && absDy <= 64.0 &&
+           current.untech > 0 && current.untech <= lease.applied.untech &&
+           current.wallbounce == 0;
+}
+
+// A failed bounded thaw must never leave the synthetic fighter state behind or
+// immediately restage it at the 192 Hz tutorial tick rate. Restore only while
+// the same world/player still owns the lease and the battle thread is paused;
+// otherwise a newer game state is authoritative and must not be overwritten.
+bool SuppressAndReleaseJugglePreviewLocked(const char* reason,
+                                           bool restoreOwnedState) {
+    const JugglePreviewLease lease = g_s.jugglePreview;
+    bool restored = false;
+    if (restoreOwnedState && lease.held &&
+        GetRuntimeLifecycleGeneration() == lease.lifecycleGeneration &&
+        GetPlayerBase(2) == lease.playerBase &&
+        PauseIntegration::IsPausedOrFrozen()) {
+        restored = WriteJugglePreviewFields(
+            lease.playerBase, lease.saved, false);
+    }
+    AbandonJugglePreviewLocked();
+    g_s.jugglePreviewSuppressedPage = g_s.page;
+    LogOut(std::string("[TUTORIAL][JUGGLE_PREVIEW] ") + reason +
+           "; preview disabled for this page, rollback=" +
+           (restored ? "complete" :
+            (restoreOwnedState ? "not-owned" : "unsafe")), true);
+    return restored;
+}
+
+bool FinishJugglePreviewRefreshLocked(bool normalizePresentation) {
+    if (!g_s.jugglePreview.refreshActive) return true;
+
+    const std::uint64_t token = g_s.jugglePreview.refreshToken;
+    g_s.jugglePreview.refreshActive = false;
+    g_s.jugglePreview.refreshToken = 0;
+    bool paused = PauseIntegration::EndMenuSurfaceRefresh(
+        PauseIntegration::MenuSurface::TutorialPage, token);
+    if (!paused && g_s.frozenLeaseHeld) {
+        // A nested surface can cancel the token before this owner observes it.
+        // The aggregate may already be paused; otherwise force a coherent
+        // reacquisition before touching staged player fields.
+        paused = PauseIntegration::IsPausedOrFrozen();
+        if (!paused) {
+            PauseIntegration::ReassertMenuSurfacePause(
+                PauseIntegration::MenuSurface::TutorialPage);
+            paused = PauseIntegration::IsPausedOrFrozen();
+        }
+    }
+    if (!paused) {
+        (void)SuppressAndReleaseJugglePreviewLocked(
+            "physical pause could not be reacquired", false);
+        return false;
+    }
+
+    // Re-pausing stops new scheduling, but a battle call which crossed the
+    // pause boundary may still be in flight. Quiesce that fixed call before
+    // reading, normalizing, or restoring any player fields.
+    g_s.freezeConfirmed = false;
+    const std::uint32_t settleTarget = GetCurrentBattleUpdateBatch();
+    if (!WaitForBattleBatchCompletionLocked(settleTarget)) {
+        (void)SuppressAndReleaseJugglePreviewLocked(
+            "refresh settle timed out", false);
+        return false;
+    }
+
+    if (GetRuntimeLifecycleGeneration() !=
+            g_s.jugglePreview.lifecycleGeneration ||
+        GetPlayerBase(2) != g_s.jugglePreview.playerBase) {
+        (void)SuppressAndReleaseJugglePreviewLocked(
+            "world ownership changed", false);
+        return false;
+    }
+    g_s.freezeConfirmed = g_s.frozenLeaseHeld &&
+        PauseIntegration::IsPausedOrFrozen();
+    if (!g_s.freezeConfirmed) {
+        (void)SuppressAndReleaseJugglePreviewLocked(
+            "physical pause was lost at the refresh settle barrier", false);
+        return false;
+    }
+
+    JugglePreviewFields observed;
+    if (!ReadJugglePreviewFields(g_s.jugglePreview.playerBase, observed) ||
+        !IsJugglePreviewRefreshEnvelope(g_s.jugglePreview, observed)) {
+        (void)SuppressAndReleaseJugglePreviewLocked(
+            "refresh left the staged hit-reaction envelope", true);
+        return false;
+    }
+
+    if (!normalizePresentation) {
+        // The engine legitimately advanced frame/timer/untech during the thaw.
+        // Publish that evolved state as the exact restore signature first.
+        g_s.jugglePreview.applied = observed;
+        return true;
+    }
+
+    // The paused battle surface contains exactly this engine-observed state.
+    // Do not rewrite canonical position/untech values after the final native
+    // draw: the ImGui outline would then describe new memory while EFZ still
+    // presents the preceding simulated frame (most visibly for long cyan and
+    // yellow bars). Publish the observed state as both the outline source and
+    // the signature that authorizes the eventual exact rollback.
+    g_s.jugglePreview.applied = observed;
+    g_s.jugglePreview.outlineValid = BuildJugglePreviewOutline(
+        g_s.jugglePreview.playerBase, observed,
+        g_s.jugglePreview.outline);
+    if (!g_s.jugglePreview.outlineValid) {
+        (void)SuppressAndReleaseJugglePreviewLocked(
+            "refreshed gauge projected outside its preview rail", true);
+        return false;
+    }
+    LogOut("[TUTORIAL][JUGGLE_PREVIEW] refresh complete batches=" +
+           std::to_string(static_cast<std::uint32_t>(
+               GetCompletedBattleUpdateBatch() -
+               g_s.jugglePreview.refreshStartBatch)) +
+           " move=" + std::to_string(observed.move) +
+           " frame=" + std::to_string(observed.frame) +
+           " timer=" + std::to_string(observed.animTimer) +
+           " untech=" + std::to_string(observed.untech) +
+           " x=" + std::to_string(observed.x) +
+           " y=" + std::to_string(observed.y) +
+           " outline=" + std::to_string(g_s.jugglePreview.outline.x) +
+           "," + std::to_string(g_s.jugglePreview.outline.y) +
+           "," + std::to_string(g_s.jugglePreview.outline.w) +
+           "," + std::to_string(g_s.jugglePreview.outline.h), true);
+    return true;
+}
+
+bool StageJugglePreviewLocked(HudPolicy::HudFocus focus) {
+    if (!HudPolicy::IsJuggleFocus(focus)) {
+        RestoreJugglePreviewLocked();
+        return false;
+    }
+    if (g_s.jugglePreviewSuppressedPage == g_s.page) {
+        return false;
+    }
+    // A refresh deliberately clears freezeConfirmed while retaining the same
+    // staged lease. Do not mistake that bounded physical thaw for pause loss.
+    if (g_s.jugglePreview.held && g_s.jugglePreview.focus == focus) return true;
+    if (!g_s.freezeConfirmed || !PauseIntegration::IsPausedOrFrozen()) {
+        RestoreJugglePreviewLocked();
+        return false;
+    }
+    // A frozen page does not need a 192 Hz memory poll. State-load and pause
+    // loss callbacks explicitly abandon/restore this lease, while the exit
+    // path performs the signature check before writing anything back.
+    RestoreJugglePreviewLocked();
+
+    // SetFreeze may have raced a battle call that had already entered EFZ's
+    // update hook. Never stage synthetic player fields until that fixed batch
+    // has published its completion.
+    const std::uint32_t pauseSettleTarget = GetCurrentBattleUpdateBatch();
+    if (!WaitForBattleBatchCompletionLocked(pauseSettleTarget) ||
+        !PauseIntegration::IsPausedOrFrozen()) {
+        LogOut("[TUTORIAL][JUGGLE_PREVIEW] staging deferred; battle update "
+               "did not settle behind the presentation pause", true);
+        return false;
+    }
+
+    const uintptr_t player = GetPlayerBase(2);
+    JugglePreviewFields saved;
+    if (!player || !ReadJugglePreviewFields(player, saved)) return false;
+
+    int cameraX = 0;
+    int cameraY = 0;
+    std::uint8_t facing = 0;
+    if (!CollisionDisplay::ProbeBattleCameraOffsets(&cameraX, &cameraY) ||
+        !SafeReadMemory(player + FACING_DIRECTION_OFFSET,
+                        &facing, sizeof(facing))) {
+        return false;
+    }
+    if (!HudPolicy::IsKnownFacingByte(facing)) {
+        g_s.jugglePreviewSuppressedPage = g_s.page;
+        LogOut("[TUTORIAL][JUGGLE_PREVIEW] staging rejected; unknown EFZ "
+               "facing byte=" + std::to_string(facing), true);
+        return false;
+    }
+
+    JugglePreviewFields applied = saved;
+    applied.move = LAUNCHED_HITSTUN_START;
+    applied.frame = 0;
+    applied.animTimer = 0;
+    applied.untech = HudPolicy::JugglePreviewUntech(focus);
+    applied.wallbounce = 0;
+    applied.xVelocity = 0.0;
+    applied.yVelocity = 0.0;
+    // Centre the native bar in the unobscured right preview rail. The gauge
+    // grows away from the character origin according to facing direction.
+    const int width = HudPolicy::JuggleWidth(applied.untech);
+    constexpr int desiredGaugeCenterNative = 254; // virtual x ~= 508
+    const double desiredOrigin = HudPolicy::FacesRight(facing)
+        ? static_cast<double>(desiredGaugeCenterNative - width / 2)
+        : static_cast<double>(desiredGaugeCenterNative + width / 2);
+    applied.x = desiredOrigin - static_cast<double>(cameraX);
+    applied.y = 145.0 - 209.0 - static_cast<double>(cameraY); // virtual y ~= 290
+
+    // EFZ clamps battle X to the playable 20..619 range and uses negative Y
+    // above the ground. Reject an impossible projection before touching P2;
+    // otherwise the engine can clamp it during the two-frame refresh and the
+    // stored synthetic coordinate no longer has an exact owner to restore.
+    HudPolicy::Rect plannedOutline{};
+    const bool savedFinite =
+        std::isfinite(saved.x) && std::isfinite(saved.y) &&
+        std::isfinite(saved.xVelocity) && std::isfinite(saved.yVelocity);
+    const bool appliedFinite =
+        std::isfinite(applied.x) && std::isfinite(applied.y) &&
+        std::isfinite(applied.xVelocity) && std::isfinite(applied.yVelocity);
+    if (!savedFinite || !appliedFinite ||
+        applied.x < 20.0 || applied.x > 619.0 ||
+        applied.y >= 0.0 || applied.y < -1024.0 ||
+        !BuildJugglePreviewOutline(player, applied, plannedOutline)) {
+        g_s.jugglePreviewSuppressedPage = g_s.page;
+        LogOut("[TUTORIAL][JUGGLE_PREVIEW] staging rejected before write; "
+               "double position or on-screen projection was invalid", true);
+        return false;
+    }
+
+    if (!WriteJugglePreviewFields(player, applied, true)) {
+        (void)WriteJugglePreviewFields(player, saved, false);
+        g_s.jugglePreviewSuppressedPage = g_s.page;
+        LogOut("[TUTORIAL][JUGGLE_PREVIEW] staging failed; original fields "
+               "restored", true);
+        return false;
+    }
+
+    g_s.jugglePreview.held = true;
+    g_s.jugglePreview.playerBase = player;
+    g_s.jugglePreview.lifecycleGeneration =
+        GetRuntimeLifecycleGeneration();
+    g_s.jugglePreview.focus = focus;
+    g_s.jugglePreview.saved = saved;
+    g_s.jugglePreview.applied = applied;
+    g_s.jugglePreview.outlineValid = true;
+    g_s.jugglePreview.outline = plannedOutline;
+    bool refreshStarted = false;
+    // Intro pages may advance exactly two battle updates so EFZ initializes
+    // the native frame/render state. Review must preserve the live combat
+    // situation byte-for-byte and therefore never takes this lease.
+    if (g_s.phase == Phase::Intro &&
+        g_efzWindowActive.load(std::memory_order_relaxed) &&
+        !::Mission::PauseMenu::IsOpen()) {
+        std::uint64_t refreshToken = 0;
+        if (PauseIntegration::BeginMenuSurfaceRefresh(
+                PauseIntegration::MenuSurface::TutorialPage,
+                refreshToken)) {
+            // Sample after the synchronous thaw. A battle call already in
+            // flight when the pause was released must not count toward the two
+            // post-thaw calls that initialize the render-side animation state.
+            g_s.jugglePreview.refreshStartBatch =
+                GetCurrentBattleUpdateBatch();
+            g_s.jugglePreview.refreshActive = true;
+            g_s.jugglePreview.refreshToken = refreshToken;
+            g_s.jugglePreview.refreshWatchdogTicks = 0;
+            g_s.freezeConfirmed = false;
+            g_s.introWorldAdvanced = true;
+            refreshStarted = true;
+        }
+    }
+    LogOut("[TUTORIAL][JUGGLE_PREVIEW] staged P2 untech=" +
+           std::to_string(applied.untech) +
+           " move=" + std::to_string(applied.move) +
+           " outline=" +
+           std::to_string(g_s.jugglePreview.outlineValid ? 1 : 0) +
+           " refresh=" + std::to_string(refreshStarted ? 1 : 0), true);
+    return true;
+}
+
+void SetNeutralInputLease(bool on);
+
 void SetFreeze(bool on) {
-    if (on == g_s.frozenLeaseHeld) return;
+    // Frozen teaching surfaces also own a zero P1 poll. Physical pause can be
+    // cleared briefly while Practice state is recreated; this second layer
+    // prevents a page-confirm press or held direction from moving the learner.
+    if (on) SetNeutralInputLease(true);
+    if (on && g_s.jugglePreview.refreshActive) {
+        (void)FinishJugglePreviewRefreshLocked(true);
+    }
+    if (!on) RestoreJugglePreviewLocked();
+    if (on == g_s.frozenLeaseHeld) {
+        g_s.freezeConfirmed = on && PauseIntegration::IsPausedOrFrozen();
+        return;
+    }
     g_s.frozenLeaseHeld = on;
+    g_s.freezeConfirmed = false;
     if (!on) g_s.freezeReassertCooldown = 0;
-    PauseIntegration::OnMenuVisibilityChanged(on);
+    PauseIntegration::OnMenuSurfaceVisibilityChanged(
+        PauseIntegration::MenuSurface::TutorialPage, on);
+    if (on) {
+        g_s.freezeConfirmed = PauseIntegration::IsPausedOrFrozen();
+    }
 }
 
 void SetNeutralInputLease(bool on) {
-    if (on == g_s.neutralInputLeaseHeld) return;
+    if (on == g_s.neutralInputLeaseHeld) {
+        if (on) {
+            g_pollOverrideMask[1].store(0, std::memory_order_relaxed);
+            SetPollOverridePhysicalObservation(1, true);
+            g_pollOverrideActive[1].store(true, std::memory_order_release);
+        }
+        return;
+    }
     if (on) {
         g_s.neutralPollSnapshotValid = true;
         g_s.neutralPollSavedActive =
@@ -671,26 +1211,92 @@ void SetNeutralInputLease(bool on) {
 }
 
 void EnsureFreezeLocked() {
+    if (g_s.jugglePreview.refreshActive) {
+        // The preview owns a tokenized physical thaw; the tutorial surface is
+        // still logically visible and will reacquire through that token.
+        g_s.freezeConfirmed = false;
+        return;
+    }
     if (!g_s.frozenLeaseHeld) {
         SetFreeze(true);
         return;
     }
-    if (PauseIntegration::IsPausedOrFrozen()) {
+    SetNeutralInputLease(true);
+    g_s.freezeConfirmed = PauseIntegration::IsPausedOrFrozen();
+    if (g_s.freezeConfirmed) {
         g_s.freezeReassertCooldown = 0;
         return;
     }
+    // Never leave the synthetic page-only fighter fields alive while the
+    // physical pause is absent, even for one reacquisition tick.
+    RestoreJugglePreviewLocked();
     if (g_s.freezeReassertCooldown > 0) {
         --g_s.freezeReassertCooldown;
         return;
     }
 
     // A direct Loading transition recreates Practice state after Begin() and
-    // can silently clear the physical pause.  Invalidate the stale local lease
-    // and reacquire it instead of trusting the old boolean forever.
+    // can silently clear the physical pause. The named tutorial surface still
+    // owns the aggregate pause, so explicitly reassert it rather than adding a
+    // duplicate visibility owner.
     LogOut("[TUTORIAL] presentation pause was lost; reacquiring", true);
-    g_s.frozenLeaseHeld = false;
-    SetFreeze(true);
+    PauseIntegration::ReassertMenuSurfacePause(
+        PauseIntegration::MenuSurface::TutorialPage);
+    g_s.freezeConfirmed = PauseIntegration::IsPausedOrFrozen();
     g_s.freezeReassertCooldown = 30;
+}
+
+bool TickJugglePreviewRefreshLocked() {
+    if (!g_s.jugglePreview.refreshActive) return false;
+    ++g_s.jugglePreview.refreshWatchdogTicks;
+    g_s.freezeConfirmed = false;
+
+    HudPolicy::HudFocus pageFocus = HudPolicy::HudFocus::None;
+    if (g_s.uiModel && g_s.page >= 0 &&
+        g_s.page < static_cast<int>(g_s.uiModel->pages.size())) {
+        pageFocus = g_s.uiModel->pages[
+            static_cast<size_t>(g_s.page)].hudFocus;
+    }
+    const bool worldReplaced =
+        GetRuntimeLifecycleGeneration() !=
+            g_s.jugglePreview.lifecycleGeneration;
+    const bool ownerChanged = GetPlayerBase(2) !=
+        g_s.jugglePreview.playerBase;
+    const bool surfaceChanged = g_s.phase != Phase::Intro ||
+        pageFocus != g_s.jugglePreview.focus;
+    const bool interrupted = ::Mission::PauseMenu::IsOpen() ||
+        !g_efzWindowActive.load(std::memory_order_relaxed);
+
+    if (worldReplaced) {
+        // A savestate/lifecycle replacement is authoritative. Reacquire the
+        // page pause, but never write a pre-load player snapshot over it.
+        LogOut("[TUTORIAL][JUGGLE_PREVIEW] refresh abandoned after "
+               "runtime lifecycle replacement", true);
+        AbandonJugglePreviewLocked();
+        return true;
+    }
+    if (ownerChanged || surfaceChanged || interrupted) {
+        const bool signatureOwned =
+            FinishJugglePreviewRefreshLocked(false);
+        if (signatureOwned) RestoreJugglePreviewLocked();
+        LogOut("[TUTORIAL][JUGGLE_PREVIEW] refresh cancelled before "
+               "completion", true);
+        return true;
+    }
+
+    const std::uint32_t completed = GetCompletedBattleUpdateBatch();
+    const bool updatesComplete = HudPolicy::JugglePreviewRefreshComplete(
+        g_s.jugglePreview.refreshStartBatch, completed);
+    const bool timedOut = g_s.jugglePreview.refreshWatchdogTicks >=
+        HudPolicy::JugglePreviewRefreshWatchdogTicks();
+    if (!updatesComplete && !timedOut) return true;
+
+    if (timedOut && !updatesComplete) {
+        LogOut("[TUTORIAL][JUGGLE_PREVIEW] refresh watchdog expired; "
+               "reacquiring without further world advance", true);
+    }
+    (void)FinishJugglePreviewRefreshLocked(true);
+    return true; // consume navigation on the exact re-pause tick as well
 }
 
 const ::Mission::LessonTask* CurrentTaskLocked() {
@@ -736,16 +1342,14 @@ bool ApplyTaskPositionLocked(const ::Mission::LessonTask* t, std::string& errorO
     }
     if (t->hasPos) {
         if (!TrySetPlayerPosition(base, EFZ_BASE_OFFSET_P1,
-                                  static_cast<double>(t->posX),
-                                  static_cast<double>(t->posY), true)) {
+                                  t->posX, t->posY, true)) {
             errorOut = "The lesson could not place your character for this task.";
             return false;
         }
     }
     if (t->hasDummyPos) {
         if (!TrySetPlayerPosition(base, EFZ_BASE_OFFSET_P2,
-                                  static_cast<double>(t->dummyPosX),
-                                  static_cast<double>(t->dummyPosY), true)) {
+                                  t->dummyPosX, t->dummyPosY, true)) {
             errorOut = "The lesson could not place the dummy for this task.";
             return false;
         }
@@ -998,9 +1602,9 @@ void ResetEpisodeDiagnosticsLocked() {
 std::string EpisodeDriveContextLocked(const ::Mission::DummyEpisode* episode) {
     const ::Mission::LessonTask* task = CurrentTaskLocked();
     std::ostringstream out;
-    const int desiredMask = p2QueueActive && p2QueueIndex >= 0 &&
-        static_cast<std::size_t>(p2QueueIndex) < p2InputQueue.size()
-        ? static_cast<int>(p2InputQueue[p2QueueIndex].inputMask)
+    const MotionQueueSnapshot queue = GetMotionQueueSnapshot(2);
+    const int desiredMask = queue.hasCurrentMask
+        ? static_cast<int>(queue.currentMask)
         : static_cast<int>(ImmediateInput::GetCurrentDesired(2));
     out << "lesson=" << g_s.lesson.lessonId
         << " task=" << (task ? task->id : std::string("?"))
@@ -1018,9 +1622,9 @@ std::string EpisodeDriveContextLocked(const ::Mission::DummyEpisode* episode) {
         << " worldFreeze=" << (g_s.episodeDiagLoggedFreeze ? 1 : 0)
         << " inputFreeze=" << (g_s.episodeFreeze ? 1 : 0)
         << " cueBlocked=" << (g_s.episodeCueBlockedThisTick ? 1 : 0)
-        << " queue=" << (p2QueueActive ? 1 : 0)
-        << ':' << p2QueueIndex << '/' << p2InputQueue.size()
-        << " queueMotion=" << p2CurrentMotionType
+        << " queue=" << (queue.active ? 1 : 0)
+        << ':' << queue.index << '/' << queue.size
+        << " queueMotion=" << queue.motionType
         << " desiredMask=" << desiredMask
         << " leases={p2:" << (g_s.p2ControlToken != 0 ? 1 : 0)
         << ",motion:" << (g_s.motionQueueToken != 0 ? 1 : 0)
@@ -1176,8 +1780,9 @@ void ReleaseEpisodeOwnersLocked() {
     }
     g_s.injectImmediateOnlyTouched = false;
     if (g_s.p2ControlToken != 0) {
-        ReleaseTutorialP2Control(g_s.p2ControlToken);
-        g_s.p2ControlToken = 0;
+        if (ReleaseTutorialP2Control(g_s.p2ControlToken)) {
+            g_s.p2ControlToken = 0;
+        }
     }
 
     if (g_s.autoBlockTouched) {
@@ -2200,8 +2805,9 @@ void TickEpisodeLocked(const ::Mission::Engine::Snapshot& s) {
         const auto releaseAnswerPuppet = []() {
             ReleaseDummyFreezeLocked();
             if (g_s.p2ControlToken != 0) {
-                ReleaseTutorialP2Control(g_s.p2ControlToken);
-                g_s.p2ControlToken = 0;
+                if (ReleaseTutorialP2Control(g_s.p2ControlToken)) {
+                    g_s.p2ControlToken = 0;
+                }
             }
             if (g_s.injectImmediateOnlyTouched &&
                 !g_injectImmediateOnly[2].load(std::memory_order_acquire)) {
@@ -2521,7 +3127,6 @@ void ArmTaskLocked(int index, bool carryState = false) {
         // A continuation is part of the live situation just created by the
         // prior task. Do not zero P1 input or wait through a feedback/neutral
         // gate while a shield, SP state, knockdown, or cancel window expires.
-        SetNeutralInputLease(false);
         std::string setupError;
         if (!ApplyTaskPositionLocked(t, setupError) ||
             !ApplyTaskSeedsLocked(t, setupError)) {
@@ -2531,10 +3136,17 @@ void ArmTaskLocked(int index, bool carryState = false) {
         BeginTaskMetricsLocked();
         g_s.phase = Phase::TaskActive;
         SetFreeze(false);
+        SetNeutralInputLease(false);
         StartTaskEpisodeLocked();
     } else {
         g_s.phase = Phase::NeutralGate;
         g_s.neutralTicks = 0;
+        uint8_t observedPoll = 0;
+        uint32_t observedSerial = 0;
+        const bool observedPollValid = TryGetLastObservedPhysicalPoll(
+            1, observedPoll, &observedSerial);
+        g_s.neutralObservedSerial = NeutralGateObservedSerialBaseline(
+            observedPollValid, observedSerial);
         SetFreeze(false);
     }
     LogOut("[TUTORIAL][TASK] arm lesson=" + g_s.lesson.lessonId +
@@ -2589,6 +3201,7 @@ void ResumeFromReviewLocked() {
     // exactly where they were while the game is frozen.
     g_s.phase = g_s.reviewReturn;
     SetFreeze(FrozenPhase(g_s.phase));
+    SetNeutralInputLease(PhaseNeedsNeutralInput(g_s.phase));
 }
 
 void StartFeedbackLocked(bool success, const std::string& text) {
@@ -2763,21 +3376,22 @@ UiInput PollUiEdges(bool syncOnly = false) {
 
     bool padUp = false, padDown = false, padLeft = false, padRight = false;
     bool padA = false, padB = false, padX = false, padY = false;
-    const unsigned mask = focused ? XInputShim::GetConnectedMaskCached() : 0;
+    XInputShim::Snapshot padSnapshot{};
+    if (focused) XInputShim::CopySnapshot(padSnapshot);
+    const unsigned mask = padSnapshot.connectedMask;
     const int selectedPad = Config::GetSettings().controllerIndex;
     for (int i = 0; i < 4; ++i) {
         if (!(mask & (1u << i))) continue;
         if (selectedPad >= 0 && selectedPad <= 3 && i != selectedPad) continue;
-        const XINPUT_STATE* st = XInputShim::GetCachedState(i);
-        if (!st) continue;
-        padUp    |= (st->Gamepad.wButtons & XINPUT_GAMEPAD_DPAD_UP) != 0 || st->Gamepad.sThumbLY > 16000;
-        padDown  |= (st->Gamepad.wButtons & XINPUT_GAMEPAD_DPAD_DOWN) != 0 || st->Gamepad.sThumbLY < -16000;
-        padLeft  |= (st->Gamepad.wButtons & XINPUT_GAMEPAD_DPAD_LEFT) != 0 || st->Gamepad.sThumbLX < -16000;
-        padRight |= (st->Gamepad.wButtons & XINPUT_GAMEPAD_DPAD_RIGHT) != 0 || st->Gamepad.sThumbLX > 16000;
-        padA     |= (st->Gamepad.wButtons & XINPUT_GAMEPAD_A) != 0;
-        padB     |= (st->Gamepad.wButtons & XINPUT_GAMEPAD_B) != 0;
-        padX     |= (st->Gamepad.wButtons & XINPUT_GAMEPAD_X) != 0;
-        padY     |= (st->Gamepad.wButtons & XINPUT_GAMEPAD_Y) != 0;
+        const XINPUT_STATE& state = padSnapshot.states[i];
+        padUp    |= (state.Gamepad.wButtons & XINPUT_GAMEPAD_DPAD_UP) != 0 || state.Gamepad.sThumbLY > 16000;
+        padDown  |= (state.Gamepad.wButtons & XINPUT_GAMEPAD_DPAD_DOWN) != 0 || state.Gamepad.sThumbLY < -16000;
+        padLeft  |= (state.Gamepad.wButtons & XINPUT_GAMEPAD_DPAD_LEFT) != 0 || state.Gamepad.sThumbLX < -16000;
+        padRight |= (state.Gamepad.wButtons & XINPUT_GAMEPAD_DPAD_RIGHT) != 0 || state.Gamepad.sThumbLX > 16000;
+        padA     |= (state.Gamepad.wButtons & XINPUT_GAMEPAD_A) != 0;
+        padB     |= (state.Gamepad.wButtons & XINPUT_GAMEPAD_B) != 0;
+        padX     |= (state.Gamepad.wButtons & XINPUT_GAMEPAD_X) != 0;
+        padY     |= (state.Gamepad.wButtons & XINPUT_GAMEPAD_Y) != 0;
     }
 
     const int vert = (upKey || padUp) ? -1 : ((downKey || padDown) ? 1 : 0);
@@ -4264,6 +4878,7 @@ bool Begin(const ::Mission::Mission& lesson) {
     // A direct tutorial-to-tutorial replacement may not have gone through the
     // Complete screen's Next command.  Release the old physical pause before
     // resetting the state bit that records its ownership.
+    RestoreJugglePreviewLocked();
     if (g_s.frozenLeaseHeld) SetFreeze(false);
     if (g_s.neutralInputLeaseHeld) SetNeutralInputLease(false);
     StopTaskEpisodeLocked();
@@ -4304,8 +4919,8 @@ bool Begin(const ::Mission::Mission& lesson) {
 void End(const char* reason) {
     std::lock_guard<std::mutex> lk(g_mx);
     if (!g_s.active) return;
-    SetNeutralInputLease(false);
     SetFreeze(false);
+    SetNeutralInputLease(false);
     StopTaskEpisodeLocked();   // never leave a dummy macro running past the session
     ReleaseRfLockLocked();     // rf_lock is session-scoped, not episode-scoped
     HudDisable::ResetVisible();  // a lesson may have hidden the HUD for its pages
@@ -4332,6 +4947,12 @@ void NotifyStartupFailure(const std::string& message) {
 void NotifyStateLoaded() {
     std::lock_guard<std::mutex> lk(g_mx);
     if (!g_s.active) return;
+    // The load is authoritative. Never write a pre-load preview snapshot back
+    // over it, even if the player object address was reused.
+    AbandonJugglePreviewLocked();
+    g_s.jugglePreviewSuppressedPage = -1;
+    g_s.jugglePreviewObservedPage = -1;
+    g_s.introWorldAdvanced = false;
     StopTaskEpisodeLocked();
     g_s.uiLatchNeedsSync = true;
     if (g_s.neutralInputLeaseHeld) {
@@ -4351,6 +4972,24 @@ bool IsActive() { return g_active.load(std::memory_order_acquire); }
 Phase GetPhase() {
     std::lock_guard<std::mutex> lk(g_mx);
     return g_s.phase;
+}
+
+bool HasStartupInputOwnership() {
+    std::lock_guard<std::mutex> lk(g_mx);
+    if (!g_s.active) return false;
+    if (g_s.phase == Phase::NeutralGate) {
+        return g_s.neutralInputLeaseHeld &&
+               g_pollOverrideActive[1].load(std::memory_order_acquire) &&
+               g_pollOverrideMask[1].load(std::memory_order_acquire) == 0;
+    }
+    if (FrozenPhase(g_s.phase)) {
+        return g_s.frozenLeaseHeld && g_s.freezeConfirmed &&
+               g_s.neutralInputLeaseHeld &&
+               g_pollOverrideActive[1].load(std::memory_order_acquire) &&
+               g_pollOverrideMask[1].load(std::memory_order_acquire) == 0 &&
+               PauseIntegration::IsPausedOrFrozen();
+    }
+    return false;
 }
 
 void BeginLessonRegistryRefresh() {
@@ -4425,32 +5064,91 @@ bool CanRetryCurrentTask() {
             g_s.phase == Phase::Feedback || g_s.phase == Phase::Choice);
 }
 
-// Drive the game HUD from lesson state: while a PAGE is showing, hide the HUD so
-// the stage reads cleanly; a page's showHud reveals the group it teaches ("top" =
-// HP/portraits/timer/rounds, "bottom" = SP+RF meters). Any other phase shows the
-// full HUD. Reapplied every Tick so page navigation takes effect immediately.
+// Drive the game HUD from the page's compiled presentation policy. This stays
+// allocation-free on the 192 Hz path: authored showHud strings are parsed once
+// in BuildUiModel, then only the compact enum reaches Tick and Draw.
 void SyncPageHudLocked() {
     const bool onPage = g_s.phase == Phase::Intro ||
                         g_s.phase == Phase::Review ||
                         g_s.phase == Phase::ConfirmExit;
     if (!onPage) {
+        RestoreJugglePreviewLocked();
+        g_s.jugglePreviewSuppressedPage = -1;
+        g_s.jugglePreviewObservedPage = -1;
         HudDisable::SetHidden(false);
         HudDisable::SetElementMask(0);
         return;
     }
-    std::string sh;
-    if (g_s.page >= 0 && g_s.page < static_cast<int>(g_s.lesson.lesson.pages.size()))
-        sh = g_s.lesson.lesson.pages[g_s.page].showHud;
-    if (sh == "top") {
-        HudDisable::SetHidden(false);
-        HudDisable::SetElementMask(HudDisable::GroupBottom | HudDisable::GroupCombo);
-    } else if (sh == "bottom") {
-        HudDisable::SetHidden(false);
-        HudDisable::SetElementMask(HudDisable::GroupTop | HudDisable::GroupCombo);
-    } else {
-        HudDisable::SetHidden(true);   // hide everything via the engine's own gate
-        HudDisable::SetElementMask(0);
+    if (g_s.jugglePreviewObservedPage != g_s.page) {
+        RestoreJugglePreviewLocked();
+        g_s.jugglePreviewObservedPage = g_s.page;
+        g_s.jugglePreviewSuppressedPage = -1;
     }
+    HudPolicy::HudFocus focus = HudPolicy::HudFocus::None;
+    if (g_s.uiModel && g_s.page >= 0 &&
+        g_s.page < static_cast<int>(g_s.uiModel->pages.size())) {
+        focus = g_s.uiModel->pages[static_cast<size_t>(g_s.page)].hudFocus;
+    }
+
+    const bool keepWorldIndicators = HudPolicy::IsJuggleFocus(focus);
+    if (keepWorldIndicators) {
+        (void)StageJugglePreviewLocked(focus);
+    } else {
+        RestoreJugglePreviewLocked();
+    }
+
+    unsigned visibleMask = 0;
+    switch (focus) {
+        case HudPolicy::HudFocus::Top:
+            visibleMask = HudDisable::GroupTop;
+            break;
+        case HudPolicy::HudFocus::Bottom:
+        case HudPolicy::HudFocus::Meters:
+        case HudPolicy::HudFocus::MeterStates:
+            visibleMask = HudDisable::GroupBottom;
+            break;
+        case HudPolicy::HudFocus::Life:
+            visibleMask = HudDisable::ElemTopBar | HudDisable::ElemTimer |
+                          HudDisable::ElemHpBars | HudDisable::ElemRoundDots;
+            break;
+        case HudPolicy::HudFocus::Sp:
+            visibleMask = HudDisable::ElemBottomBar | HudDisable::ElemSpMeter;
+            break;
+        case HudPolicy::HudFocus::Rf:
+        case HudPolicy::HudFocus::RfStates:
+        case HudPolicy::HudFocus::RedIc:
+        case HudPolicy::HudFocus::BlueIc:
+            visibleMask = HudDisable::ElemBottomBar | HudDisable::ElemRfGauge;
+            break;
+        case HudPolicy::HudFocus::BlueIcMeters:
+            visibleMask = HudDisable::ElemBottomBar |
+                          HudDisable::ElemSpMeter |
+                          HudDisable::ElemRfGauge;
+            break;
+        case HudPolicy::HudFocus::FinalMemory:
+            visibleMask = HudDisable::ElemTopBar | HudDisable::ElemHpBars |
+                          HudDisable::ElemBottomBar | HudDisable::ElemSpMeter;
+            break;
+        case HudPolicy::HudFocus::None:
+        case HudPolicy::HudFocus::Juggle:
+        case HudPolicy::HudFocus::JuggleYellow:
+        case HudPolicy::HudFocus::JuggleRed:
+        default:
+            break;
+    }
+
+    if (visibleMask == 0) {
+        // The juggle gauge is a world-space fill primitive inside EFZ's HUD
+        // renderer. Keep its master pass alive while masking every named
+        // top/bottom/combo blit; ordinary no-focus pages still use the engine
+        // master gate to hide everything.
+        HudDisable::SetHidden(!keepWorldIndicators);
+        HudDisable::SetElementMask(
+            keepWorldIndicators ? HudDisable::GroupAll : 0);
+        return;
+    }
+    HudDisable::SetHidden(false);
+    HudDisable::SetElementMask(HudDisable::GroupAll & ~visibleMask);
 }
 
 void Tick(const ::Mission::Engine::Snapshot& s) {
@@ -4460,9 +5158,17 @@ void Tick(const ::Mission::Engine::Snapshot& s) {
     std::unique_lock<std::mutex> lk(g_mx);
     if (!g_s.active) return;
 
+    bool refreshSuppressesInput = false;
     // Keep the session freeze asserted through pause-menu open/close cycles.
-    if (FrozenPhase(g_s.phase) && !::Mission::PauseMenu::IsOpen()) {
-        EnsureFreezeLocked();
+    if (FrozenPhase(g_s.phase)) {
+        SetNeutralInputLease(true);
+        if (g_s.jugglePreview.refreshActive) {
+            refreshSuppressesInput = TickJugglePreviewRefreshLocked();
+        }
+        if (!::Mission::PauseMenu::IsOpen() &&
+            !g_s.jugglePreview.refreshActive) {
+            EnsureFreezeLocked();
+        }
     }
     if (::Mission::PauseMenu::IsOpen()) {
         (void)PollUiEdges(true);
@@ -4482,7 +5188,12 @@ void Tick(const ::Mission::Engine::Snapshot& s) {
 
     const UiInput sampledInput = PollUiEdges(g_s.uiLatchNeedsSync);
     g_s.uiLatchNeedsSync = false;
-    const UiInput in = FrozenPhase(g_s.phase) ? sampledInput : UiInput{};
+    // Never navigate a teaching surface until the physical pause has been
+    // observed. Polling still updates latches, so a confirm held through the
+    // short PAUSING state cannot fire when the pause becomes valid.
+    const UiInput in = FrozenPhase(g_s.phase) && g_s.freezeConfirmed &&
+                       !refreshSuppressesInput
+        ? sampledInput : UiInput{};
 
     if (g_s.phase == Phase::Preparing) {
         // Engine calls the tutorial only after setup, exact-state restore, and
@@ -4501,6 +5212,7 @@ void Tick(const ::Mission::Engine::Snapshot& s) {
         g_s.prevFrameIdx = s.p1FrameIdx; g_s.prevP2FrameIdx = s.p2FrameIdx;
         g_s.prevCombo = s.p1Combo; g_s.prevHitState = s.p1HitState;
         g_s.comboWasAlive = s.p2InStun || s.p1Combo > 0;
+        SyncPageHudLocked();
         return;
     }
 
@@ -4593,7 +5305,18 @@ void Tick(const ::Mission::Engine::Snapshot& s) {
                 } else if (g_s.lesson.lesson.completion == "pages") {
                     EnterCompleteLocked();
                 } else {
-                    ArmTaskLocked(FirstPendingTaskLocked() < 0 ? 0 : FirstPendingTaskLocked());
+                    ArmTaskLocked(FirstPendingTaskLocked() < 0
+                                      ? 0 : FirstPendingTaskLocked());
+                    if (g_s.introWorldAdvanced &&
+                        g_s.phase != Phase::Error) {
+                        // The preview intentionally advanced two real world
+                        // updates. Restore the runner's root checkpoint before
+                        // task 1 so the teaching drill starts from its exact
+                        // authored state, not from the presentation thaw.
+                        g_s.introWorldAdvanced = false;
+                        deferred.kind = DeferredKind::RestoreCheckpoint;
+                        deferred.sourceLessonId = g_s.lesson.lessonId;
+                    }
                 }
             } else if (in.cancel) {
                 if (g_s.page > 0) {
@@ -4643,25 +5366,33 @@ void Tick(const ::Mission::Engine::Snapshot& s) {
             // SetNeutralInputLease no-ops). Re-assert the override every tick
             // (WITHOUT resetting the observed value) so the observation keeps
             // tracking live input and can still see the release.
-            // The gate exists to stop a STALE ATTACK BUTTON from firing into
-            // the freshly armed task. Directions are harmless - and required:
-            // the player has to walk/crouch to position and pre-roll motion
-            // inputs (a 236236 cannot be entered at all if the gate eats the
-            // stick), so the lease passes directions through and only strips
-            // the attack buttons until the hands-off-buttons window elapses.
+            // The gate exists to stop every stale gameplay input from firing
+            // into the freshly armed task.  In particular, passing Up through
+            // here turns the input used to leave the previous surface into an
+            // unwanted jump on the first live frame.  Motion input starts once
+            // TaskActive owns the poll; this transition deliberately has no
+            // gameplay pre-buffer.
             {
-                const uint8_t observedPoll =
-                    static_cast<uint8_t>(GetLastObservedPhysicalPollMask(1));
-                constexpr uint8_t kAttackButtons =
-                    GAME_INPUT_A | GAME_INPUT_B | GAME_INPUT_C | GAME_INPUT_D;
+                uint8_t observedPoll = 0;
+                uint32_t observedSerial = 0;
+                const bool observedPollValid =
+                    TryGetLastObservedPhysicalPoll(
+                        1, observedPoll, &observedSerial);
+                const bool freshObservedPoll = observedPollValid &&
+                    observedSerial != g_s.neutralObservedSerial;
+                if (freshObservedPoll) {
+                    g_s.neutralObservedSerial = observedSerial;
+                }
                 if (g_s.neutralInputLeaseHeld) {
                     g_pollOverrideMask[1].store(
-                        static_cast<uint8_t>(observedPoll & ~kAttackButtons),
+                        NeutralGatePublishedMask(observedPoll),
                         std::memory_order_relaxed);
                     g_pollOverrideActive[1].store(true, std::memory_order_release);
                 }
-                if ((observedPoll & kAttackButtons) == 0) {
-                    if (++g_s.neutralTicks >= 30) {
+                g_s.neutralTicks = NeutralGateNeutralPollCount(
+                    observedPollValid, freshObservedPoll,
+                    observedPoll, g_s.neutralTicks);
+                if (g_s.neutralTicks >= NeutralGateRequiredFreshPolls()) {
                     std::string setupError;
                     if (!ApplyTaskPositionLocked(CurrentTaskLocked(), setupError) ||
                         !ApplyTaskSeedsLocked(CurrentTaskLocked(), setupError)) {
@@ -4673,9 +5404,6 @@ void Tick(const ::Mission::Engine::Snapshot& s) {
                     BeginTaskMetricsLocked();                       // sensed-metric capture starts
                     // The episode lease was acquired above; its scripted
                     // action begins on the first TaskActive TickCombat.
-                }
-                } else {
-                    g_s.neutralTicks = 0;
                 }
             }
             break;
@@ -5051,6 +5779,14 @@ void Draw(void* device, ImDrawList* dl) {
             s.feedbackSuccess = g_s.feedbackSuccess;
             s.feedbackTicks = g_s.feedbackTicks;
             s.episodeCueActive = g_s.episodeCueDisplayTicks > 0;
+            s.sequenceIndex = g_s.sequenceIndex;
+            s.sequenceArmed = g_s.armedCommitted;
+            s.freezeConfirmed = g_s.freezeConfirmed;
+            s.juggleOutlineValid =
+                g_s.jugglePreview.held &&
+                !g_s.jugglePreview.refreshActive &&
+                g_s.jugglePreview.outlineValid;
+            s.juggleOutline = g_s.jugglePreview.outline;
         }
         if (!s.active || !s.model) {
             return;
@@ -5083,6 +5819,7 @@ void Draw(void* device, ImDrawList* dl) {
     const float prosePx = typography.prosePx;
     const float taskPx = typography.taskPx;
     const float metaPx = typography.metaPx;
+    const float controlsPx = typography.controlsPx;
     const float bannerPx = typography.bannerPx;
     const float pageTitlePx = typography.pageTitlePx;
 
@@ -5095,6 +5832,36 @@ void Draw(void* device, ImDrawList* dl) {
                         const std::string& text, float width) {
         ::Mission::Render::DrawRichText(
             device, dl, font, px, x, y, color, text, width);
+    };
+    auto drawControlGroups = [&] (
+        const HudPolicy::Rect& region,
+        const std::array<std::string, 3>& groups,
+        ImU32 color) {
+        constexpr float boundaries[4] = {0.0f, 0.31f, 0.70f, 1.0f};
+        for (int i = 0; i < 3; ++i) {
+            if (groups[static_cast<size_t>(i)].empty()) continue;
+            const float slotX = region.x +
+                region.w * boundaries[i];
+            const float slotW = region.w *
+                (boundaries[i + 1] - boundaries[i]);
+            const float textW = (std::max)(1.0f, slotW - 8.0f);
+            const ::Mission::Render::RichTextMetrics measured =
+                ::Mission::Render::MeasureRichText(
+                    device, readable, controlsPx,
+                    groups[static_cast<size_t>(i)], textW);
+            const float drawX = slotX +
+                (std::max)(4.0f, (slotW - measured.width) * 0.5f);
+            const float drawY = region.y +
+                (region.h - measured.height) * 0.5f;
+            richDraw(readable, controlsPx, drawX, drawY, color,
+                     groups[static_cast<size_t>(i)], textW);
+        }
+    };
+    auto toneColor = [](TutorialColorPolicy::Tone tone,
+                        std::uint8_t alpha = 255) {
+        const TutorialColorPolicy::Rgba color =
+            TutorialColorPolicy::Color(tone);
+        return IM_COL32(color.r, color.g, color.b, alpha);
     };
     auto drawPanel = [&](float x, float y, float w, float h, ImU32 accent,
                          ImU32 top = T::kBoxFill,
@@ -5163,20 +5930,80 @@ void Draw(void* device, ImDrawList* dl) {
                             T::kTextActive, model.lessonName.c_str());
         dl->PopClipRect();
     };
-    auto drawActionStrip = [&](const std::string& text) {
-        constexpr HudPolicy::Rect actions = HudPolicy::ModalActions();
-        const float x = actions.x;
-        const float y = actions.y;
-        const float w = actions.w;
-        const float h = actions.h;
-        dl->AddRectFilled(ImVec2(x, y), ImVec2(x + w, y + h),
-                          T::kStrip);
-        dl->AddLine(ImVec2(x, y), ImVec2(x + w, y),
-                    T::kRuleDim);
-        const float th = richHeight(readable, metaPx, text, w - 22.0f);
-        richDraw(readable, metaPx, x + 11.0f,
+    auto drawModalHeader = [&](const char* title, const char* status) {
+        L::DrawTitleBand(dl, title, status, 0.0f);
+        constexpr HudPolicy::Rect metaBand = HudPolicy::ModalMetaBand();
+        dl->AddRectFilled(ImVec2(metaBand.x, metaBand.y),
+                          ImVec2(metaBand.x + metaBand.w,
+                                 metaBand.y + metaBand.h),
+                          T::kStripStrong);
+        dl->AddLine(ImVec2(metaBand.x, metaBand.y + metaBand.h - 1.0f),
+                    ImVec2(metaBand.x + metaBand.w,
+                           metaBand.y + metaBand.h - 1.0f),
+                    T::kRuleDim, 1.0f);
+        const float badgeX = 16.0f;
+        L::DrawOutlinedText(dl, meta, metaPx, badgeX,
+                            metaBand.y + (metaBand.h - metaPx) * 0.5f,
+                            T::kInfoAccent,
+                            model.difficultyLabel.c_str());
+        const float badgeW = L::MeasureTextW(
+            meta, metaPx, model.difficultyLabel.c_str());
+        const float dividerX = badgeX + badgeW + 13.0f;
+        dl->AddLine(ImVec2(dividerX, metaBand.y + 6.0f),
+                    ImVec2(dividerX, metaBand.y + metaBand.h - 6.0f),
+                    T::kRuleDim, 1.0f);
+        L::DrawOutlinedText(dl, meta, metaPx, dividerX + 13.0f,
+                            metaBand.y + (metaBand.h - metaPx) * 0.5f,
+                            T::kTextActive, model.lessonName.c_str());
+    };
+    auto drawModalFooter = [&] (
+        const std::string& hint,
+        const std::array<std::string, 3>& controls) {
+        const HudPolicy::Rect footer = HudPolicy::ModalFooter(ui);
+        L::DrawInfoBox(dl, footer.x, footer.y, footer.w, footer.h);
+        const float textX = footer.x + 12.0f;
+        const float textW = footer.w - 24.0f;
+        float controlsH = controlsPx;
+        for (const std::string& group : controls) {
+            if (group.empty()) continue;
+            controlsH = (std::max)(controlsH,
+                richHeight(readable, controlsPx, group, textW * 0.38f));
+        }
+        constexpr float gap = 4.0f;
+        const float maxHintH = (std::max)(
+            taskPx, footer.h - 14.0f - gap - controlsH);
+        float hintPx = prosePx;
+        float hintH = richHeight(readable, hintPx, hint, textW);
+        if (hintH > maxHintH && hintH > 0.0f) {
+            hintPx = (std::max)(taskPx,
+                hintPx * maxHintH / hintH);
+            hintH = richHeight(readable, hintPx, hint, textW);
+        }
+        const float total = hintH + gap + controlsH;
+        const float textY = footer.y +
+            (std::max)(7.0f, (footer.h - total) * 0.5f);
+        dl->PushClipRect(ImVec2(textX, footer.y + 5.0f),
+                         ImVec2(textX + textW,
+                                footer.y + footer.h - 5.0f), true);
+        richDraw(readable, hintPx, textX, textY,
+                 T::kTextActive, hint, textW);
+        drawControlGroups(
+            {textX, textY + hintH + gap, textW, controlsH},
+            controls, T::kTextActive);
+        dl->PopClipRect();
+    };
+    auto drawSessionRichRow = [&](float x, float y, float w, float h,
+                                  const std::string& label, bool selected) {
+        L::DrawSessionRowChrome(dl, x, y, w, h, selected);
+        const float textW = w - 36.0f;
+        const float th = richHeight(readable, taskPx, label, textW);
+        dl->PushClipRect(ImVec2(x + 12.0f, y + 1.0f),
+                         ImVec2(x + w - 12.0f, y + h - 1.0f), true);
+        richDraw(readable, taskPx, x + 18.0f,
                  y + (h - th) * 0.5f - 1.0f,
-                 T::kTextActive, text, w - 22.0f);
+                 selected ? T::kTextActive : T::kTextInactive,
+                 label, textW);
+        dl->PopClipRect();
     };
     auto drawSelectRow = [&](float x, float y, float w, float h,
                              const std::string& label, bool selected) {
@@ -5196,31 +6023,83 @@ void Draw(void* device, ImDrawList* dl) {
 
     if (s.phase == Phase::Intro || s.phase == Phase::Review ||
         s.phase == Phase::ConfirmExit) {
-        dl->AddRectFilled(ImVec2(0, 0), ImVec2(T::kCanvasW, T::kCanvasH),
-                          IM_COL32(0, 0, 0, 72));
+        const UiPageModel* pageModel = pageCount > 0
+            ? &model.pages[static_cast<size_t>((std::max)(
+                  0, (std::min)(s.page, pageCount - 1)))]
+            : nullptr;
+        const HudPolicy::HudFocus hudFocus = pageModel
+            ? pageModel->hudFocus : HudPolicy::HudFocus::None;
+        const HudPolicy::Rect dim = HudPolicy::PageBackdropDim(hudFocus);
+        if (dim.w > 0.0f && dim.h > 0.0f) {
+            dl->AddRectFilled(ImVec2(dim.x, dim.y),
+                              ImVec2(dim.x + dim.w, dim.y + dim.h),
+                              IM_COL32(0, 0, 0, 72));
+        }
+
+        // The native HUD remains fully live. These are only static teaching
+        // outlines, built from the fixed 640x480 HUD map; even the broadest
+        // focus emits 18 inexpensive line primitives and allocates nothing.
+        for (int i = 0; i < HudPolicy::HudFocusRectCount(hudFocus); ++i) {
+            const HudPolicy::Rect focusRect =
+                HudPolicy::HudFocusRect(hudFocus, i);
+            const TutorialColorPolicy::Tone focusTone =
+                HudPolicy::HudFocusTone(hudFocus, i);
+            const TutorialColorPolicy::Rgba semantic =
+                TutorialColorPolicy::Color(focusTone);
+            const ImU32 middle = toneColor(focusTone, 245);
+            const ImU32 inner = IM_COL32(
+                (std::min)(255, static_cast<int>(semantic.r) + 70),
+                (std::min)(255, static_cast<int>(semantic.g) + 70),
+                (std::min)(255, static_cast<int>(semantic.b) + 70), 235);
+            const ImVec2 lo(focusRect.x + 0.5f, focusRect.y + 0.5f);
+            const ImVec2 hi(focusRect.x + focusRect.w - 0.5f,
+                            focusRect.y + focusRect.h - 0.5f);
+            dl->AddRect(lo, hi, IM_COL32(0, 0, 0, 225), 0.0f, 0, 4.0f);
+            dl->AddRect(ImVec2(lo.x + 1.0f, lo.y + 1.0f),
+                        ImVec2(hi.x - 1.0f, hi.y - 1.0f),
+                        middle, 0.0f, 0, 2.0f);
+            dl->AddRect(ImVec2(lo.x + 2.0f, lo.y + 2.0f),
+                        ImVec2(hi.x - 2.0f, hi.y - 2.0f),
+                        inner, 0.0f, 0, 1.0f);
+        }
+
         char pageStatus[32] = {};
         _snprintf_s(pageStatus, sizeof(pageStatus), _TRUNCATE, "PAGE %d / %d",
                     pageCount > 0 ? s.page + 1 : 0, pageCount);
         drawBanner(s.phase == Phase::Review ? "REVIEW" :
-                   model.difficultyLabel.c_str(), nullptr,
-                   HudPolicy::PageBanner());
+                   model.difficultyLabel.c_str(),
+                   s.freezeConfirmed ? "PAUSED" : "PAUSING...",
+                   HudPolicy::PageBannerFor(hudFocus));
 
         if (pageCount <= 0) return;
-        const UiPageModel& page =
-            model.pages[(std::max)(0, (std::min)(s.page, pageCount - 1))];
-        constexpr HudPolicy::Rect pageCard = HudPolicy::PageCard();
-        constexpr float x = pageCard.x;
-        constexpr float y = pageCard.y;
-        constexpr float w = pageCard.w;
-        constexpr float h = pageCard.h;
+        const UiPageModel& page = *pageModel;
+        const HudPolicy::Rect pageCard = HudPolicy::PageCardFor(hudFocus);
+        const float x = pageCard.x;
+        const float y = pageCard.y;
+        const float w = pageCard.w;
+        const float h = pageCard.h;
         drawPanel(x, y, w, h, T::kInfoAccent);
         const std::string& title = page.title.empty() ? model.lessonName : page.title;
-        L::DrawOutlinedText(dl, display, pageTitlePx, x + 18.0f, y + 14.0f,
-                            T::kTextActive, title.c_str());
         const float pageStatusW = L::MeasureTextW(meta, metaPx, pageStatus);
         L::DrawString(dl, meta, metaPx, x + w - 18.0f - pageStatusW,
                       y + 18.0f, IM_COL32(145, 205, 215, 255),
                       pageStatus);
+        const float titleX = x + 18.0f;
+        const float titleRight = x + w - 28.0f - pageStatusW;
+        const float titleAvailable = (std::max)(64.0f, titleRight - titleX);
+        float fittedTitlePx = pageTitlePx;
+        const float titleNatural = display->CalcTextSizeA(
+            fittedTitlePx, FLT_MAX, 0.0f, title.c_str()).x;
+        if (titleNatural > titleAvailable) {
+            fittedTitlePx = (std::max)(13.0f,
+                fittedTitlePx * titleAvailable / titleNatural);
+        }
+        dl->PushClipRect(ImVec2(titleX - 1.0f, y + 5.0f),
+                         ImVec2(titleRight, y + 39.0f), true);
+        L::DrawOutlinedText(dl, display, fittedTitlePx, titleX,
+                            y + 14.0f + (pageTitlePx - fittedTitlePx) * 0.5f,
+                            T::kTextActive, title.c_str());
+        dl->PopClipRect();
         const float ruleY = y + 43.0f;
         dl->AddLine(ImVec2(x + 18.0f, ruleY), ImVec2(x + w - 18.0f, ruleY),
                     IM_COL32(105, 225, 230, 120));
@@ -5241,21 +6120,76 @@ void Draw(void* device, ImDrawList* dl) {
                  page.text, textW);
         dl->PopClipRect();
 
-        const std::string releaseFooter =
-            "RELEASE {btn:A} / {btn:B} TO RETURN TO THE LESSON";
-        const std::string& footer = s.phase == Phase::ConfirmExit
-            ? model.confirmActions
-            : s.phase == Phase::Review
-                ? (s.reviewResumePending ? releaseFooter : page.reviewActions)
-                : page.introActions;
-        constexpr HudPolicy::Rect pageActions = HudPolicy::PageActions();
-        constexpr float fy = pageActions.y;
-        constexpr float fh = pageActions.h;
-        drawPanel(x, fy, w, fh, T::kInfoAccent);
-        const float footerH = richHeight(readable, metaPx, footer, w - 28.0f);
-        richDraw(readable, metaPx, x + 14.0f,
-                 fy + (fh - footerH) * 0.5f - 1.0f,
-                 T::kTextActive, footer, w - 28.0f);
+        const HudPolicy::Rect pageActions =
+            HudPolicy::PageActionsFor(hudFocus);
+        auto drawPageControlGroups = [&] (
+            const std::array<std::string, 3>& controls) {
+            drawPanel(pageActions.x, pageActions.y,
+                      pageActions.w, pageActions.h, T::kInfoAccent);
+            drawControlGroups(
+                {pageActions.x + 10.0f, pageActions.y,
+                 pageActions.w - 20.0f, pageActions.h},
+                controls, T::kTextActive);
+        };
+        auto drawCentredPageControl = [&](const std::string& control) {
+            drawPanel(pageActions.x, pageActions.y,
+                      pageActions.w, pageActions.h, T::kInfoAccent);
+            const float footerW = pageActions.w - 28.0f;
+            const ::Mission::Render::RichTextMetrics measured =
+                ::Mission::Render::MeasureRichText(
+                    device, readable, controlsPx, control, footerW);
+            const float footerX = pageActions.x + 14.0f +
+                (std::max)(0.0f,
+                    (footerW - measured.width) * 0.5f);
+            richDraw(readable, controlsPx, footerX,
+                     pageActions.y +
+                         (pageActions.h - measured.height) * 0.5f - 1.0f,
+                     T::kTextActive, control, footerW);
+        };
+        if (s.phase != Phase::ConfirmExit) {
+            if (s.phase == Phase::Review && s.reviewResumePending) {
+                drawCentredPageControl(
+                    "RELEASE ALL CONTROLS TO RETURN TO THE TASK");
+            } else {
+                drawPageControlGroups(
+                    s.phase == Phase::Review
+                        ? page.reviewActions : page.introActions);
+            }
+        }
+
+        if (HudPolicy::IsJuggleFocus(hudFocus)) {
+            const HudPolicy::Rect rail = HudPolicy::JugglePreviewRail();
+            const TutorialColorPolicy::Tone previewTone =
+                HudPolicy::JugglePreviewTone(hudFocus);
+            const ImU32 previewColor = toneColor(previewTone, 235);
+            dl->AddRect(ImVec2(rail.x + 0.5f, rail.y + 0.5f),
+                        ImVec2(rail.x + rail.w - 0.5f,
+                               rail.y + rail.h - 0.5f),
+                        previewColor, 0.0f, 0, 2.0f);
+            dl->AddRectFilled(ImVec2(rail.x, rail.y),
+                              ImVec2(rail.x + rail.w, rail.y + 24.0f),
+                              T::kStripStrong);
+            const char* previewLabel =
+                hudFocus == HudPolicy::HudFocus::Juggle
+                    ? "JUGGLE TIME"
+                    : hudFocus == HudPolicy::HudFocus::JuggleYellow
+                        ? "20 FRAMES OR LESS"
+                        : "10 FRAMES OR LESS";
+            L::DrawOutlinedText(dl, meta, metaPx, rail.x + 9.0f,
+                                rail.y + (24.0f - metaPx) * 0.5f,
+                                previewColor, previewLabel);
+            if (s.juggleOutlineValid) {
+                const HudPolicy::Rect outline = s.juggleOutline;
+                const ImVec2 lo(outline.x, outline.y);
+                const ImVec2 hi(outline.x + outline.w,
+                                outline.y + outline.h);
+                dl->AddRect(lo, hi, IM_COL32(0, 0, 0, 235),
+                            0.0f, 0, 4.0f);
+                dl->AddRect(ImVec2(lo.x + 1.0f, lo.y + 1.0f),
+                            ImVec2(hi.x - 1.0f, hi.y - 1.0f),
+                            previewColor, 0.0f, 0, 2.0f);
+            }
+        }
 
         if (s.phase == Phase::ConfirmExit) {
             dl->AddRectFilled(ImVec2(0, 0), ImVec2(T::kCanvasW, T::kCanvasH),
@@ -5278,6 +6212,9 @@ void Draw(void* device, ImDrawList* dl) {
                               options[i], s.confirmSel == i);
                 oy += 34.0f;
             }
+            // The confirmation overlay must not dim the controls that operate
+            // it. Draw its fixed navigation slots after the overlay/dialog.
+            drawPageControlGroups(model.confirmActions);
         }
         return;
     }
@@ -5289,111 +6226,125 @@ void Draw(void* device, ImDrawList* dl) {
         char status[32] = {};
         _snprintf_s(status, sizeof(status), _TRUNCATE, "TASK %d / %d",
                     taskCount > 0 ? s.task + 1 : 0, taskCount);
-        drawBanner("QUESTION", nullptr, HudPolicy::PageBanner());
-        constexpr float x = 72.0f;
-        constexpr float y0 = 128.0f;
-        constexpr float w = 496.0f;
+        drawModalHeader("KNOWLEDGE CHECK", status);
+        const HudPolicy::Rect content = HudPolicy::ModalContent(ui);
+        const float x = content.x;
+        const float y0 = content.y;
+        const float w = content.w;
         const std::string& prompt = currentTask->prompt.empty()
             ? currentTask->label : currentTask->prompt;
-        const float promptH = richHeight(readable, prosePx, prompt, w - 36.0f);
-        float totalH = 26.0f + promptH + 14.0f;
-        for (const std::string& option : currentTask->options) {
-            totalH += (std::max)(30.0f,
-                richHeight(readable, taskPx, option, w - 74.0f) + 10.0f) + 6.0f;
-        }
+        const float promptTextH =
+            richHeight(readable, prosePx, prompt, w - 32.0f);
+        const float promptH = (std::max)(68.0f, promptTextH + 38.0f);
         const bool showFeedback = !feedbackText.empty() && s.feedbackTicks > 0;
         const float feedbackH = showFeedback
-            ? richHeight(readable, taskPx, feedbackText, w - 36.0f) + 18.0f
+            ? richHeight(readable, taskPx, feedbackText, w - 32.0f) + 20.0f
             : 0.0f;
-        if (showFeedback) totalH += feedbackH + 6.0f;
-        totalH = (std::min)(286.0f, (std::max)(120.0f, totalH));
-        drawPanel(x, y0, w, totalH, T::kInfoAccent);
-        L::DrawString(dl, meta, metaPx, x + 18.0f, y0 + 10.0f,
-                      IM_COL32(145, 215, 225, 255), "CHOOSE THE BEST ANSWER");
-        const float statusW = L::MeasureTextW(meta, metaPx, status);
-        L::DrawString(dl, meta, metaPx, x + w - 18.0f - statusW,
-                      y0 + 10.0f, T::kTextStatus, status);
-        float y = y0 + 29.0f;
-        richDraw(readable, prosePx, x + 18.0f, y, T::kTextActive,
-                 prompt, w - 36.0f);
-        y += promptH + 12.0f;
+        L::DrawInfoBox(dl, x, y0, w, promptH);
+        L::DrawString(dl, meta, metaPx, x + 16.0f, y0 + 10.0f,
+                      T::kInfoAccent, "CHOOSE THE BEST ANSWER");
+        richDraw(readable, prosePx, x + 16.0f, y0 + 29.0f,
+                 T::kTextActive, prompt, w - 32.0f);
+
+        float y = y0 + promptH + 8.0f;
+        const int optionCount =
+            static_cast<int>(currentTask->options.size());
+        const float reservedFeedback = showFeedback ? feedbackH + 8.0f : 0.0f;
+        const float availableRows =
+            (std::max)(0.0f, content.y + content.h - y - reservedFeedback);
+        const float rowBudget = optionCount > 0
+            ? availableRows / static_cast<float>(optionCount) : 0.0f;
         for (int i = 0; i < static_cast<int>(currentTask->options.size()); ++i) {
             const std::string& option = currentTask->options[i];
-            const float rowH = (std::max)(30.0f,
-                richHeight(readable, taskPx, option, w - 74.0f) + 10.0f);
-            drawSelectRow(x + 14.0f, y, w - 28.0f, rowH,
-                          option, i == s.choiceSel);
-            y += rowH + 6.0f;
+            const float desired = (std::max)(30.0f,
+                richHeight(readable, taskPx, option, w - 36.0f) + 10.0f);
+            const float rowH = (std::max)(26.0f,
+                (std::min)(desired, rowBudget));
+            drawSessionRichRow(x, y, w, rowH,
+                               option, i == s.choiceSel);
+            y += rowH;
         }
-        if (!feedbackText.empty() && s.feedbackTicks > 0) {
-            dl->AddRectFilled(ImVec2(x + 14.0f, y),
-                              ImVec2(x + w - 14.0f, y + feedbackH),
-                              s.feedbackSuccess ? IM_COL32(30, 105, 85, 145)
-                                                : IM_COL32(125, 35, 35, 165));
-            richDraw(readable, taskPx, x + 24.0f, y + 9.0f,
+        if (showFeedback) {
+            y += 8.0f;
+            L::DrawInfoBox(dl, x, y, w, feedbackH);
+            dl->AddRectFilled(
+                ImVec2(x, y), ImVec2(x + 3.0f, y + feedbackH),
+                s.feedbackSuccess ? IM_COL32(105, 235, 190, 230)
+                                  : IM_COL32(255, 105, 105, 230));
+            richDraw(readable, taskPx, x + 16.0f, y + 10.0f,
                      s.feedbackSuccess ? T::kTextActive : IM_COL32(255, 195, 165, 255),
-                     feedbackText, w - 48.0f);
+                     feedbackText, w - 32.0f);
         }
-        drawActionStrip(model.choiceActions);
+        drawModalFooter(model.choiceHint, model.choiceActions);
         return;
     }
 
     if (s.phase == Phase::Complete) {
         dl->AddRectFilled(ImVec2(0, 0), ImVec2(T::kCanvasW, T::kCanvasH),
                           IM_COL32(0, 0, 0, 118));
-        drawBanner("COMPLETE", nullptr, HudPolicy::PageBanner());
-        constexpr float x = 82.0f;
-        constexpr float y0 = 136.0f;
-        constexpr float w = 476.0f;
+        drawModalHeader("LESSON COMPLETE", "CLEARED");
+        const HudPolicy::Rect content = HudPolicy::ModalContent(ui);
+        const float x = content.x;
+        const float y0 = content.y;
+        const float w = content.w;
         static const std::string kDefaultSummary =
             "You completed every task in this lesson.";
         const std::string& summary = model.summary.empty()
             ? kDefaultSummary : model.summary;
         const float summaryTextH =
-            richHeight(readable, prosePx, summary, w - 36.0f);
-        float totalH = 28.0f + summaryTextH + 18.0f + 10.0f;
-        for (const std::string& option : model.completeOptions) {
-            totalH += (std::max)(30.0f,
-                richHeight(readable, taskPx, option, w - 66.0f) + 10.0f) + 6.0f;
-        }
-        drawPanel(x, y0, w, totalH, IM_COL32(105, 235, 190, 220));
-        L::DrawString(dl, meta, metaPx, x + 18.0f, y0 + 10.0f,
-                      IM_COL32(155, 235, 205, 255), "LESSON COMPLETE");
-        float y = y0 + 30.0f;
-        richDraw(readable, prosePx, x + 18.0f, y, T::kTextActive,
-                 summary, w - 36.0f);
-        y += summaryTextH + 16.0f;
+            richHeight(readable, prosePx, summary, w - 32.0f);
+        const float summaryH = (std::max)(66.0f, summaryTextH + 38.0f);
+        L::DrawInfoBox(dl, x, y0, w, summaryH);
+        L::DrawString(dl, meta, metaPx, x + 16.0f, y0 + 10.0f,
+                      IM_COL32(155, 235, 205, 255), "LESSON CLEARED");
+        richDraw(readable, prosePx, x + 16.0f, y0 + 29.0f,
+                 T::kTextActive, summary, w - 32.0f);
+
+        float y = y0 + summaryH + 8.0f;
+        const int optionCount =
+            static_cast<int>(model.completeOptions.size());
+        const float availableRows =
+            (std::max)(0.0f, content.y + content.h - y);
+        const float rowBudget = optionCount > 0
+            ? availableRows / static_cast<float>(optionCount) : 0.0f;
         for (int i = 0; i < static_cast<int>(model.completeOptions.size()); ++i) {
-            const float rowH = (std::max)(30.0f,
+            const float desired = (std::max)(30.0f,
                 richHeight(readable, taskPx, model.completeOptions[i],
-                           w - 66.0f) + 10.0f);
-            drawSelectRow(x + 14.0f, y, w - 28.0f, rowH,
-                          model.completeOptions[i], i == s.completeSel);
-            y += rowH + 6.0f;
+                           w - 36.0f) + 10.0f);
+            const float rowH = (std::max)(26.0f,
+                (std::min)(desired, rowBudget));
+            drawSessionRichRow(x, y, w, rowH,
+                               model.completeOptions[i], i == s.completeSel);
+            y += rowH;
         }
-        drawActionStrip(model.completeActions);
+        static const std::string kCompleteHint =
+            "Choose what you want to do next.";
+        const std::string& selectedHint =
+            s.completeSel >= 0 &&
+            s.completeSel < static_cast<int>(model.completeHints.size())
+                ? model.completeHints[static_cast<size_t>(s.completeSel)]
+                : kCompleteHint;
+        drawModalFooter(selectedHint, model.completeActions);
         return;
     }
 
     if (s.phase == Phase::Error) {
         dl->AddRectFilled(ImVec2(0, 0), ImVec2(T::kCanvasW, T::kCanvasH),
                           IM_COL32(0, 0, 0, 150));
-        drawBanner("ATTENTION", nullptr, HudPolicy::PageBanner());
-        constexpr float x = 72.0f;
-        constexpr float y = 152.0f;
-        constexpr float w = 496.0f;
+        drawModalHeader("LESSON NEEDS ATTENTION", "PAUSED");
+        const HudPolicy::Rect content = HudPolicy::ModalContent(ui);
+        const float x = content.x;
+        const float y = content.y + 38.0f;
+        const float w = content.w;
         float errorPx = prosePx;
         float textH =
             richHeight(readable, errorPx, feedbackText, w - 36.0f);
         static const std::string kErrorHelp =
             "Open the Lesson Menu for the recovery options available right now.";
-        const float helpH =
-            richHeight(readable, taskPx, kErrorHelp, w - 36.0f);
-        constexpr HudPolicy::Rect modalActions = HudPolicy::ModalActions();
-        const float maxH = modalActions.y - y - 8.0f;
+        const float maxH = content.y + content.h - y;
         const float h = (std::min)(maxH,
-            (std::max)(116.0f, textH + helpH + 65.0f));
-        const float availableErrorH = h - helpH - 65.0f;
+            (std::max)(116.0f, textH + 65.0f));
+        const float availableErrorH = h - 55.0f;
         if (textH > availableErrorH && availableErrorH > 0.0f) {
             errorPx = (std::max)(12.0f,
                 errorPx * availableErrorH / textH);
@@ -5406,15 +6357,12 @@ void Draw(void* device, ImDrawList* dl) {
                       IM_COL32(255, 175, 160, 255), "THIS LESSON COULD NOT CONTINUE");
         dl->PushClipRect(ImVec2(x + 18.0f, y + 36.0f),
                          ImVec2(x + w - 18.0f,
-                                y + h - helpH - 20.0f), true);
+                                y + h - 16.0f), true);
         richDraw(readable, errorPx, x + 18.0f, y + 36.0f,
                  IM_COL32(255, 215, 195, 255),
                  feedbackText, w - 36.0f);
         dl->PopClipRect();
-        richDraw(readable, taskPx, x + 18.0f,
-                 y + h - helpH - 14.0f, T::kTextStatus,
-                 kErrorHelp, w - 36.0f);
-        drawActionStrip(model.errorActions);
+        drawModalFooter(kErrorHelp, model.errorActions);
         return;
     }
 
@@ -5433,6 +6381,11 @@ void Draw(void* device, ImDrawList* dl) {
     constexpr float kRowPadY = 4.0f;
     constexpr float kRowGap = 3.0f;
     constexpr float kMinMainW = 44.0f;
+    constexpr float kRailMarkerW = 13.0f;
+    constexpr float kRailTopGap = 5.0f;
+    constexpr float kRailLineGap = 3.0f;
+    constexpr float kRailItemGap = 5.0f;
+    constexpr int kMaxVisibleRailActions = 8;
     const float maxTextW = bounds.w - kCapW + kCapOverlap - kTextPadX * 2.0f;
 
     auto requirementText = [&](int index) -> const std::string& {
@@ -5458,9 +6411,168 @@ void Draw(void* device, ImDrawList* dl) {
         return ::Mission::Render::MeasureRichText(
             device, readable, taskPx, requirementText(index), maxTextW);
     };
+    struct ActionRailMetrics {
+        float width = 0.0f;
+        float height = 0.0f;
+    };
+    auto actionRail = [&](int index, bool draw, float originX, float originY,
+                          bool taskFailed, bool taskDone) {
+        ActionRailMetrics result;
+        if (index != s.task || index < 0 || index >= taskCount) return result;
+        const std::vector<std::string>& actions = model.tasks[index].actions;
+        if (actions.size() < 2) return result;
+
+        const int totalActionCount = static_cast<int>(actions.size());
+        const int visibleActionCount = (std::min)(
+            totalActionCount, kMaxVisibleRailActions);
+        const int currentAction = (std::max)(0, (std::min)(
+            s.sequenceIndex, totalActionCount - 1));
+        const int firstVisibleAction = HudPolicy::ActionWindowStart(
+            totalActionCount, visibleActionCount, currentAction);
+        const int endVisibleAction = firstVisibleAction + visibleActionCount;
+        const bool clipped = visibleActionCount < totalActionCount;
+        const float separatorW = L::MeasureTextW(meta, metaPx, ">");
+        const float itemTextW = (std::max)(24.0f, maxTextW - kRailMarkerW);
+        int first = firstVisibleAction;
+        float lineY = originY;
+        while (first < endVisibleAction) {
+            int end = first;
+            float lineW = 0.0f;
+            float lineH = (std::max)(16.0f, metaPx + 3.0f);
+            while (end < endVisibleAction) {
+                const ::Mission::Render::RichTextMetrics actionMetrics =
+                    ::Mission::Render::MeasureRichText(
+                        device, readable, taskPx, actions[end], itemTextW);
+                const float itemW = kRailMarkerW +
+                    (std::min)(itemTextW, actionMetrics.width);
+                const float prefixW = end == first ? 0.0f
+                    : kRailItemGap + separatorW + kRailItemGap;
+                if (end > first && lineW + prefixW + itemW > maxTextW) break;
+                lineW += prefixW + itemW;
+                lineH = (std::max)(lineH, actionMetrics.height + 3.0f);
+                ++end;
+            }
+            // A single oversized atom is already wrapped by MeasureRichText,
+            // so this is only a defensive progress guarantee.
+            if (end == first) ++end;
+
+            result.width = (std::max)(result.width, lineW);
+            if (result.height > 0.0f) result.height += kRailLineGap;
+            result.height += lineH;
+
+            if (draw) {
+                float cursorX = originX;
+                for (int actionIndex = first; actionIndex < end; ++actionIndex) {
+                    const ::Mission::Render::RichTextMetrics actionMetrics =
+                        ::Mission::Render::MeasureRichText(
+                            device, readable, taskPx, actions[actionIndex], itemTextW);
+                    const float itemW = kRailMarkerW +
+                        (std::min)(itemTextW, actionMetrics.width);
+                    if (actionIndex > first) {
+                        cursorX += kRailItemGap;
+                        L::DrawString(dl, meta, metaPx, cursorX,
+                                      lineY + (lineH - metaPx) * 0.5f,
+                                      IM_COL32(155, 165, 175, 210), ">");
+                        cursorX += separatorW + kRailItemGap;
+                    }
+
+                    const HudPolicy::ActionStepVisualState visual =
+                        HudPolicy::ResolveActionStepVisualState(
+                            actionIndex, s.sequenceIndex, s.sequenceArmed,
+                            taskFailed, taskDone);
+                    ImU32 color = IM_COL32(255, 255, 255, 165);
+                    ImU32 underline = 0;
+                    switch (visual) {
+                        case HudPolicy::ActionStepVisualState::Done:
+                            color = IM_COL32(135, 235, 150, 255);
+                            break;
+                        case HudPolicy::ActionStepVisualState::Failed:
+                            color = IM_COL32(255, 110, 110, 255);
+                            underline = IM_COL32(255, 90, 90, 240);
+                            break;
+                        case HudPolicy::ActionStepVisualState::Armed:
+                            color = IM_COL32(255, 225, 120, 255);
+                            underline = IM_COL32(255, 220, 105, 240);
+                            break;
+                        case HudPolicy::ActionStepVisualState::Current:
+                            color = T::kTextActive;
+                            underline = IM_COL32(105, 235, 235, 230);
+                            break;
+                        case HudPolicy::ActionStepVisualState::Future:
+                            break;
+                    }
+
+                    const float markX = cursorX + 5.0f;
+                    const float markY = lineY + lineH * 0.5f;
+                    if (visual == HudPolicy::ActionStepVisualState::Done) {
+                        dl->AddLine(ImVec2(markX - 4.0f, markY),
+                                    ImVec2(markX - 1.0f, markY + 3.0f),
+                                    color, 1.4f);
+                        dl->AddLine(ImVec2(markX - 1.0f, markY + 3.0f),
+                                    ImVec2(markX + 5.0f, markY - 4.0f),
+                                    color, 1.4f);
+                    } else if (visual == HudPolicy::ActionStepVisualState::Failed) {
+                        dl->AddLine(ImVec2(markX - 3.5f, markY - 3.5f),
+                                    ImVec2(markX + 3.5f, markY + 3.5f),
+                                    color, 1.4f);
+                        dl->AddLine(ImVec2(markX + 3.5f, markY - 3.5f),
+                                    ImVec2(markX - 3.5f, markY + 3.5f),
+                                    color, 1.4f);
+                    } else if (visual == HudPolicy::ActionStepVisualState::Armed) {
+                        dl->AddCircleFilled(ImVec2(markX, markY), 3.5f, color, 8);
+                    } else if (visual == HudPolicy::ActionStepVisualState::Current) {
+                        dl->AddTriangleFilled(ImVec2(markX - 3.0f, markY - 4.0f),
+                                              ImVec2(markX - 3.0f, markY + 4.0f),
+                                              ImVec2(markX + 4.0f, markY), color);
+                    } else {
+                        char number[8]{};
+                        _snprintf_s(number, sizeof(number), _TRUNCATE,
+                                    "%d", actionIndex + 1);
+                        const float numberW = L::MeasureTextW(meta, metaPx, number);
+                        L::DrawString(dl, meta, metaPx,
+                                      markX - numberW * 0.5f,
+                                      markY - metaPx * 0.5f,
+                                      T::kTextInactive, number);
+                    }
+
+                    richDraw(readable, taskPx, cursorX + kRailMarkerW,
+                             lineY + (lineH - actionMetrics.height) * 0.5f,
+                             color, actions[actionIndex], itemTextW);
+                    if (underline != 0) {
+                        dl->AddRectFilled(
+                            ImVec2(cursorX, lineY + lineH - 1.5f),
+                            ImVec2(cursorX + itemW, lineY + lineH), underline);
+                    }
+                    cursorX += itemW;
+                }
+            }
+            lineY += lineH + kRailLineGap;
+            first = end;
+        }
+        if (clipped) {
+            char rangeText[48]{};
+            _snprintf_s(rangeText, sizeof(rangeText), _TRUNCATE,
+                        "STEPS %d-%d OF %d", firstVisibleAction + 1,
+                        endVisibleAction, totalActionCount);
+            const float summaryW = L::MeasureTextW(meta, metaPx, rangeText);
+            const float summaryH = (std::max)(12.0f, metaPx + 2.0f);
+            const float summaryY = originY + result.height + kRailLineGap;
+            result.width = (std::max)(result.width, summaryW);
+            result.height += kRailLineGap + summaryH;
+            if (draw) {
+                L::DrawString(dl, meta, metaPx, originX, summaryY,
+                              IM_COL32(155, 165, 175, 220), rangeText);
+            }
+        }
+        return result;
+    };
     auto requirementHeight = [&](int index) {
         const ::Mission::Render::RichTextMetrics m = requirementMetrics(index);
-        return (std::max)(22.0f, m.height + kRowPadY * 2.0f);
+        const ActionRailMetrics rail = actionRail(
+            index, false, 0.0f, 0.0f, false, false);
+        const float railH = rail.height > 0.0f
+            ? kRailTopGap + rail.height : 0.0f;
+        return (std::max)(22.0f, m.height + railH + kRowPadY * 2.0f);
     };
     const float omissionH = (std::max)(12.0f, metaPx + 4.0f);
     auto windowHeight = [&](int first, int count) {
@@ -5525,11 +6637,16 @@ void Draw(void* device, ImDrawList* dl) {
         const bool waiting = waitingForRelease || waitingForCue;
         const ::Mission::Render::RichTextMetrics textMetrics =
             requirementMetrics(index);
+        const ActionRailMetrics railMetrics = actionRail(
+            index, false, 0.0f, 0.0f, failed, done);
+        const float railH = railMetrics.height > 0.0f
+            ? kRailTopGap + railMetrics.height : 0.0f;
         const float rowH = (std::max)(
-            22.0f, textMetrics.height + kRowPadY * 2.0f);
+            22.0f, textMetrics.height + railH + kRowPadY * 2.0f);
         const float mainW = (std::max)(
             kMinMainW,
-            (std::min)(maxTextW, textMetrics.width) + kTextPadX * 2.0f);
+            (std::max)((std::min)(maxTextW, textMetrics.width),
+                       railMetrics.width) + kTextPadX * 2.0f);
         const float mainX = bounds.x + kCapW - kCapOverlap;
         const float rowRight = mainX + mainW;
 
@@ -5597,9 +6714,15 @@ void Draw(void* device, ImDrawList* dl) {
             : done ? doneColor
             : waiting ? waitingColor
             : current ? T::kTextActive : IM_COL32(255, 255, 255, 175);
-        const float textY = cy + (rowH - textMetrics.height) * 0.5f;
+        const float contentH = textMetrics.height + railH;
+        const float textY = cy + (rowH - contentH) * 0.5f;
         richDraw(readable, taskPx, mainX + kTextPadX, textY,
                  textColor, requirementText(index), maxTextW);
+        if (railMetrics.height > 0.0f) {
+            (void)actionRail(index, true, mainX + kTextPadX,
+                             textY + textMetrics.height + kRailTopGap,
+                             failed, done);
+        }
 
         if (current) {
             const ImU32 underline = failed ? failedColor

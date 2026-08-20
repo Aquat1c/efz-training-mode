@@ -394,6 +394,13 @@
 #define CROUCHING_BLOCK_LVL2_B 155  // Same as CROUCH_GUARD_STUN2
 
 // Dash states
+// Verified universal movement IDs.  The older START/RECOVERY aliases below
+// predate the move-ID audit and are retained for source compatibility only;
+// 164/166 are directional dash states, not recovery phases.
+#define GROUND_FORWARD_DASH_ID 163
+#define GROUND_BACKWARD_DASH_ID 164
+#define AIR_FORWARD_DASH_ID 165
+#define AIR_BACKWARD_DASH_ID 166
 #define FORWARD_DASH_START_ID 163
 #define FORWARD_DASH_RECOVERY_ID 164
 #define FORWARD_DASH_RECOVERY_SENTINEL_ID 178 // New: variant recovery state used for clean control handoff
@@ -402,6 +409,9 @@
 // Character-specific exceptions
 // Kaori's forward dash start state uses MoveID 250 instead of the universal 163.
 #define KAORI_FORWARD_DASH_START_ID 250
+// Kaori's 44~66 Recoil Ducking destination.  EFZ enters this only when a
+// native forward dash command is consumed during backdash 164, frame 4/5.
+#define KAORI_RECOIL_DUCK_ID 251
 
 // Frame advantage constants (internal frames)
 #define FRAME_ADV_LVL1_BLOCK 9
@@ -486,9 +496,11 @@
 #define ACTION_QCF           20
 #define ACTION_DP            21
 #define ACTION_QCB           22
-#define ACTION_421           23  // Half-circle down (421)
-#define ACTION_SUPER1        24  // 41236 (HCF)
-#define ACTION_SUPER2        25  // 214236 hybrid (replaces removed 63214)
+#define ACTION_421           23  // 421 command family
+#define ACTION_SUPER1        24  // Legacy name/value: 41236 (ordinary special family)
+#define ACTION_41236         ACTION_SUPER1
+#define ACTION_SUPER2        25  // Legacy name/value: 2141236 super family
+#define ACTION_2141236       ACTION_SUPER2
 #define ACTION_236236        26  // Double QCF
 #define ACTION_214214        27  // Double QCB
 #define ACTION_JUMP          28
@@ -502,6 +514,20 @@
 #define ACTION_22            36
 #define ACTION_4123641236    37
 #define ACTION_6321463214    38
+// Character-specific normal recipes.  These are appended so saved ACTION_*
+// values and legacy random-pool bit positions never change.
+#define ACTION_1X            39
+#define ACTION_3X            40
+#define ACTION_J2X           41
+#define ACTION_J6X           42
+#define ACTION_66X           43
+#define ACTION_662X          44
+#define ACTION_664X          45
+// Kaori-only staged recipe: native 44 first, then native 66 during the
+// backdash action's frame-index 4/5 cancel window.  It cannot be represented
+// faithfully as one combined input-history pattern.
+#define ACTION_KAORI_RECOIL_DUCK 46
+#define ACTION_COUNT         47
 
 // Default delay for triggers
 #define DEFAULT_TRIGGER_DELAY 0  // Default delay for all triggers
@@ -564,8 +590,8 @@
 #define CHAR_ID_MIO       9
 #define CHAR_ID_MISHIO    10
 #define CHAR_ID_MISUZU    11
-#define CHAR_ID_MIZUKA    12  // Actually Nagamori in files
-#define CHAR_ID_NAGAMORI  13
+#define CHAR_ID_MIZUKA        12  // Mizuka Nagamori; resource/file name "nagamori"
+#define CHAR_ID_UNKNOWN_BOSS  13  // Boss UNKNOWN; resource/file name "mizuka"
 #define CHAR_ID_NANASE    14  // Actually Rumi in files
 #define CHAR_ID_EXNANASE  15  // Actually Doppel in files
 #define CHAR_ID_NAYUKI    16  // Actually Nayuki (Neyuki) in files
@@ -574,7 +600,7 @@
 #define CHAR_ID_AYU       19
 #define CHAR_ID_MAI       20
 #define CHAR_ID_MAYU      21
-#define CHAR_ID_MIZUKAB   22  // Actually Unknown in files
+#define CHAR_ID_UNKNOWN   22  // Playable UNKNOWN; resource/file name "mizukab"
 #define CHAR_ID_KANO      23
 
 // Character-specific offsets

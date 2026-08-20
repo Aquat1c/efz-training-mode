@@ -2,7 +2,7 @@
 #include "../include/core/logger.h"
 #include "../include/utils/config.h"
 #include "../include/utils/utilities.h"     // detectedBindings
-#include "../include/utils/xinput_shim.h"   // XInputShim::GetCachedState
+#include "../include/utils/xinput_shim.h"   // coherent cached controller snapshots
 #include "../3rdparty/imgui/imgui.h"
 
 #include <windows.h>
@@ -12,10 +12,6 @@
 #include <cstdio>
 #include <sstream>
 #include <string>
-
-#ifndef EFZ_ENABLE_INPUT_LOGS
-#define EFZ_ENABLE_INPUT_LOGS 0
-#endif
 
 namespace CustomMenu::Input {
 
@@ -86,7 +82,6 @@ constexpr int kPseudoRightTriggerMask = 0x20000;
 constexpr BYTE kTriggerThreshold = 30;
 
 void LogInputDetail(const char* fmt, ...) {
-#if EFZ_ENABLE_INPUT_LOGS
     if (!detailedLogging.load()) return;
 
     char buf[2048];
@@ -96,9 +91,6 @@ void LogInputDetail(const char* fmt, ...) {
     va_end(args);
 
     LogOut(std::string("[CUSTOM_MENU][INPUT] ") + buf, true);
-#else
-    (void)fmt;
-#endif
 }
 
 bool VkDown(int vk) {
@@ -131,26 +123,23 @@ void Mark(bool& flag, std::string& sourceList, const std::string& source) {
 }
 
 std::string KeySource(const char* label, int vk) {
-#if EFZ_ENABLE_INPUT_LOGS
+    if (!detailedLogging.load()) return {};
     std::ostringstream oss;
     oss << "key:" << label << "=" << GetKeyName(vk) << "(VK=" << vk << ")";
     return oss.str();
-#else
-    (void)label;
-    (void)vk;
-    return {};
-#endif
 }
 
-std::string PadControlSource(int index, const XINPUT_STATE& state, const char* logical, const char* control) {
-#if EFZ_ENABLE_INPUT_LOGS
+std::string PadControlSource(int index, const XINPUT_STATE& state,
+                             bool genericSlot, const char* slotName,
+                             const char* logical, const char* control) {
+    if (!detailedLogging.load()) return {};
     char name[96] = {};
     XInputShim::GetPublishedControllerName(index, name, sizeof(name));
 
     std::ostringstream oss;
     oss << "pad" << index
-        << (XInputShim::IsGenericFallbackSlot(index) ? ":Generic:" : ":XInput:")
-        << (name[0] ? name : XInputShim::GetSlotDisplayName(index).c_str())
+        << (genericSlot ? ":Generic:" : ":XInput:")
+        << (name[0] ? name : (slotName ? slotName : ""))
         << ":" << logical << "=" << control
         << "{pkt=" << state.dwPacketNumber
         << " btn=0x" << std::hex << std::uppercase << static_cast<unsigned>(state.Gamepad.wButtons)
@@ -163,30 +152,25 @@ std::string PadControlSource(int index, const XINPUT_STATE& state, const char* l
         << " RY=" << state.Gamepad.sThumbRY
         << "}";
     return oss.str();
-#else
-    (void)index;
-    (void)state;
-    (void)logical;
-    (void)control;
-    return {};
-#endif
 }
 
 template <typename Fn>
 void ForEachRelevantPadState(const Fn& fn) {
+    XInputShim::Snapshot snapshot{};
+    XInputShim::CopySnapshot(snapshot);
     const int controllerIndex = Config::GetSettings().controllerIndex;
     if (controllerIndex >= 0 && controllerIndex <= 3) {
-        const XINPUT_STATE* state = XInputShim::GetCachedState(controllerIndex);
-        if (state) {
-            fn(controllerIndex, *state);
+        if (snapshot.IsConnected(controllerIndex)) {
+            fn(controllerIndex, snapshot.states[controllerIndex],
+               snapshot.genericSlots[controllerIndex],
+               snapshot.slotNames[controllerIndex]);
         }
         return;
     }
 
     for (int i = 0; i < 4; ++i) {
-        const XINPUT_STATE* state = XInputShim::GetCachedState(i);
-        if (!state) continue;
-        fn(i, *state);
+        if (!snapshot.IsConnected(i)) continue;
+        fn(i, snapshot.states[i], snapshot.genericSlots[i], snapshot.slotNames[i]);
     }
 }
 
@@ -227,19 +211,20 @@ CurState SampleCurrent() {
 
     // Controller nav uses the selected controller when configured, otherwise
     // any cached XInput or DirectInput-synthetic pad may drive the menu.
-    ForEachRelevantPadState([&](int index, const XINPUT_STATE& state) {
+    ForEachRelevantPadState([&](int index, const XINPUT_STATE& state,
+                                bool genericSlot, const char* slotName) {
         const WORD b = state.Gamepad.wButtons;
-        if (b & XINPUT_GAMEPAD_DPAD_UP)    Mark(cur.up,    cur.upSource,    PadControlSource(index, state, "up", "DPAD_UP"));
-        if (b & XINPUT_GAMEPAD_DPAD_DOWN)  Mark(cur.down,  cur.downSource,  PadControlSource(index, state, "down", "DPAD_DOWN"));
-        if (b & XINPUT_GAMEPAD_DPAD_LEFT)  Mark(cur.left,  cur.leftSource,  PadControlSource(index, state, "left", "DPAD_LEFT"));
-        if (b & XINPUT_GAMEPAD_DPAD_RIGHT) Mark(cur.right, cur.rightSource, PadControlSource(index, state, "right", "DPAD_RIGHT"));
-        if (b & XINPUT_GAMEPAD_A)          Mark(cur.activate, cur.activateSource, PadControlSource(index, state, "activate", "A"));
-        if (b & XINPUT_GAMEPAD_B)          Mark(cur.back, cur.backSource, PadControlSource(index, state, "back", "B"));
-        if (b & XINPUT_GAMEPAD_Y)          Mark(cur.switchPlayer, cur.switchPlayerSource, PadControlSource(index, state, "switch", "Y"));
-        if (PadBindingDown(state, cfg.gpUiTopTabPrev)) Mark(cur.topTabPrev, cur.topTabPrevSource, PadControlSource(index, state, "top-prev", Config::GetGamepadButtonName(cfg.gpUiTopTabPrev).c_str()));
-        if (PadBindingDown(state, cfg.gpUiTopTabNext)) Mark(cur.topTabNext, cur.topTabNextSource, PadControlSource(index, state, "top-next", Config::GetGamepadButtonName(cfg.gpUiTopTabNext).c_str()));
-        if (PadBindingDown(state, cfg.gpUiSubTabPrev)) Mark(cur.subTabPrev, cur.subTabPrevSource, PadControlSource(index, state, "sub-prev", Config::GetGamepadButtonName(cfg.gpUiSubTabPrev).c_str()));
-        if (PadBindingDown(state, cfg.gpUiSubTabNext)) Mark(cur.subTabNext, cur.subTabNextSource, PadControlSource(index, state, "sub-next", Config::GetGamepadButtonName(cfg.gpUiSubTabNext).c_str()));
+        if (b & XINPUT_GAMEPAD_DPAD_UP)    Mark(cur.up,    cur.upSource,    PadControlSource(index, state, genericSlot, slotName, "up", "DPAD_UP"));
+        if (b & XINPUT_GAMEPAD_DPAD_DOWN)  Mark(cur.down,  cur.downSource,  PadControlSource(index, state, genericSlot, slotName, "down", "DPAD_DOWN"));
+        if (b & XINPUT_GAMEPAD_DPAD_LEFT)  Mark(cur.left,  cur.leftSource,  PadControlSource(index, state, genericSlot, slotName, "left", "DPAD_LEFT"));
+        if (b & XINPUT_GAMEPAD_DPAD_RIGHT) Mark(cur.right, cur.rightSource, PadControlSource(index, state, genericSlot, slotName, "right", "DPAD_RIGHT"));
+        if (b & XINPUT_GAMEPAD_A)          Mark(cur.activate, cur.activateSource, PadControlSource(index, state, genericSlot, slotName, "activate", "A"));
+        if (b & XINPUT_GAMEPAD_B)          Mark(cur.back, cur.backSource, PadControlSource(index, state, genericSlot, slotName, "back", "B"));
+        if (b & XINPUT_GAMEPAD_Y)          Mark(cur.switchPlayer, cur.switchPlayerSource, PadControlSource(index, state, genericSlot, slotName, "switch", "Y"));
+        if (PadBindingDown(state, cfg.gpUiTopTabPrev)) Mark(cur.topTabPrev, cur.topTabPrevSource, PadControlSource(index, state, genericSlot, slotName, "top-prev", Config::GetGamepadButtonName(cfg.gpUiTopTabPrev).c_str()));
+        if (PadBindingDown(state, cfg.gpUiTopTabNext)) Mark(cur.topTabNext, cur.topTabNextSource, PadControlSource(index, state, genericSlot, slotName, "top-next", Config::GetGamepadButtonName(cfg.gpUiTopTabNext).c_str()));
+        if (PadBindingDown(state, cfg.gpUiSubTabPrev)) Mark(cur.subTabPrev, cur.subTabPrevSource, PadControlSource(index, state, genericSlot, slotName, "sub-prev", Config::GetGamepadButtonName(cfg.gpUiSubTabPrev).c_str()));
+        if (PadBindingDown(state, cfg.gpUiSubTabNext)) Mark(cur.subTabNext, cur.subTabNextSource, PadControlSource(index, state, genericSlot, slotName, "sub-next", Config::GetGamepadButtonName(cfg.gpUiSubTabNext).c_str()));
     });
 
     return cur;
@@ -362,13 +347,14 @@ const Edges& SampleEdges() {
     g_cachedEdges.subTabPrev = cur.subTabPrev && !g_prev.subTabPrev;
     g_cachedEdges.subTabNext = cur.subTabNext && !g_prev.subTabNext;
 
-#if EFZ_ENABLE_INPUT_LOGS
     if (g_cachedEdges.up || g_cachedEdges.down || g_cachedEdges.left ||
         g_cachedEdges.right || g_cachedEdges.activate || g_cachedEdges.back ||
         g_cachedEdges.switchPlayer || g_cachedEdges.topTabPrev ||
         g_cachedEdges.topTabNext || g_cachedEdges.subTabPrev ||
         g_cachedEdges.subTabNext) {
         const auto& cfg = Config::GetSettings();
+        XInputShim::Snapshot padSnapshot{};
+        XInputShim::CopySnapshot(padSnapshot);
         LogInputDetail(
             "Edge U=%d(%s) D=%d(%s) L=%d(%s) R=%d(%s) A=%d B=%d SW=%d TP=%d TN=%d SP=%d SN=%d | held U=%d D=%d L=%d R=%d A=%d B=%d SW=%d TP=%d TN=%d SP=%d SN=%d | rawHeld U=%d D=%d L=%d R=%d A=%d B=%d SW=%d TP=%d TN=%d SP=%d SN=%d blocked=%d | hold U=%u/%u D=%u/%u L=%u/%u R=%u/%u | cfgCtrl=%d masks connected=0x%X native=0x%X generic=0x%X | src U=[%s] D=[%s] L=[%s] R=[%s] A=[%s] B=[%s] SW=[%s] TP=[%s] TN=[%s] SP=[%s] SN=[%s]",
             g_cachedEdges.up ? 1 : 0,
@@ -418,9 +404,9 @@ const Edges& SampleEdges() {
             g_holdRight.heldFrames,
             g_holdRight.framesSinceFire,
             cfg.controllerIndex,
-            XInputShim::GetConnectedMaskCached(),
-            XInputShim::GetNativeConnectedMaskCached(),
-            XInputShim::GetGenericConnectedMaskCached(),
+            padSnapshot.connectedMask,
+            padSnapshot.nativeMask,
+            padSnapshot.genericMask,
             SourceOrDash(cur.upSource),
             SourceOrDash(cur.downSource),
             SourceOrDash(cur.leftSource),
@@ -433,7 +419,6 @@ const Edges& SampleEdges() {
             SourceOrDash(cur.subTabPrevSource),
             SourceOrDash(cur.subTabNextSource));
     }
-#endif
 
     g_prev = cur;
     return g_cachedEdges;
@@ -457,7 +442,8 @@ void ResetEdges() {
     g_holdLeft = HoldState{};
     g_holdRight = HoldState{};
 
-#if EFZ_ENABLE_INPUT_LOGS
+    XInputShim::Snapshot padSnapshot{};
+    XInputShim::CopySnapshot(padSnapshot);
     LogInputDetail(
         "ResetEdges held U=%d D=%d L=%d R=%d A=%d B=%d SW=%d TP=%d TN=%d SP=%d SN=%d | cfgCtrl=%d masks connected=0x%X native=0x%X generic=0x%X | src U=[%s] D=[%s] L=[%s] R=[%s] A=[%s] B=[%s] SW=[%s] TP=[%s] TN=[%s] SP=[%s] SN=[%s] | bindings Up=%s Down=%s Left=%s Right=%s A=%s B=%s C=%s D=%s",
         raw.up ? 1 : 0,
@@ -472,9 +458,9 @@ void ResetEdges() {
         raw.subTabPrev ? 1 : 0,
         raw.subTabNext ? 1 : 0,
         Config::GetSettings().controllerIndex,
-        XInputShim::GetConnectedMaskCached(),
-        XInputShim::GetNativeConnectedMaskCached(),
-        XInputShim::GetGenericConnectedMaskCached(),
+        padSnapshot.connectedMask,
+        padSnapshot.nativeMask,
+        padSnapshot.genericMask,
         SourceOrDash(raw.upSource),
         SourceOrDash(raw.downSource),
         SourceOrDash(raw.leftSource),
@@ -494,7 +480,6 @@ void ResetEdges() {
         detectedBindings.attacksDetected ? GetKeyName(detectedBindings.bButton).c_str() : "<none>",
         detectedBindings.attacksDetected ? GetKeyName(detectedBindings.cButton).c_str() : "<none>",
         detectedBindings.attacksDetected ? GetKeyName(detectedBindings.dButton).c_str() : "<none>");
-#endif
 }
 
 bool NavUp()    { return SampleEdges().up;    }

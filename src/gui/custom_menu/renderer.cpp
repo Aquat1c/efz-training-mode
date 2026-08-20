@@ -2046,8 +2046,8 @@ void Render() {
         hint = "UP/DOWN MOVE   ENTER SELECT   ESC CANCEL";
         setDescription(Screens::CurrentPopupHelpText());
     } else if (Screens::IsTextEditorActive()) {
-        hint = "EDIT MACRO TEXT   CTRL+V PASTE   APPLY/DONE BUTTONS   ESC CLOSE";
-        setDescription("Edit the serialized macro text for the selected slot before applying it.");
+        hint = "TYPE TEXT   CTRL+V PASTE   DONE COMMIT   ESC CANCEL";
+        setDescription("Edit the selected text field, then commit it or return without changing it.");
     } else if (g_shell.focusRegion == FocusRegion::TopTabs) {
         hint = SettingsTabActive()
             ? "L/R CHANGE TAB   DOWN ENTER SUBTABS   D SAVE   ESC CLOSE"

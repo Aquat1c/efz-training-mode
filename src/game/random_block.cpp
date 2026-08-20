@@ -13,13 +13,43 @@ namespace RandomBlock {
     static std::atomic<int>  g_lastApplied{-1}; // -1 unknown, 0 off, 1 on
     // Pending OFF deferral when guard/inactionable
     static std::atomic<bool> g_pendingOff{false};
+    // The physical Practice auto-block flag is randomized while this feature
+    // owns it, but the authored dummy mode remains the source of truth.  Keep
+    // the most recent desired window so disabling Random Block restores the
+    // configured behavior instead of leaking the final coin-flip value.
+    static std::atomic<bool> g_restoreOn{false};
+    static std::atomic<bool> g_restoreKnown{false};
     static std::mutex g_writeMutex;
     static std::atomic<uint64_t> g_generation{0};
 
+    static bool BaselineForMode(int mode) {
+        return mode == DAB_All || mode == DAB_FirstHitThenOff;
+    }
+
     static void ApplyEnabled(bool enabled) {
+        if (enabled) {
+            // Ownership must cover the complete randomization lifetime.  The
+            // low-frequency native-F7 watcher otherwise mistakes a temporary
+            // coin-flip OFF for a user configuration change.
+            SetExternalAutoBlockController(true);
+            g_restoreKnown.store(false, std::memory_order_relaxed);
+        }
         g_enabled.store(enabled);
         g_pendingOff.store(false);
         g_lastApplied.store(-1);
+        if (!enabled) {
+            const bool restoreOn = g_restoreKnown.load(std::memory_order_relaxed)
+                ? g_restoreOn.load(std::memory_order_relaxed)
+                : BaselineForMode(GetDummyAutoBlockMode());
+            (void)SetPracticeAutoBlockEnabled(
+                restoreOn, restoreOn
+                    ? "RandomBlock: restore configured block window ON"
+                    : "RandomBlock: restore configured block window OFF");
+            g_restoreKnown.store(false, std::memory_order_relaxed);
+            // Release only after the authored value is back in +4936, so the
+            // watcher can never observe the final random coin as user intent.
+            SetExternalAutoBlockController(false);
+        }
         LogOut(std::string("[RANDOM_BLOCK] ") + (enabled ? "ENABLED" : "DISABLED"), true);
     }
 
@@ -49,6 +79,7 @@ namespace RandomBlock {
     }
 
     void Tick(short /*p1MoveId*/, short p2MoveId) {
+        std::lock_guard<std::mutex> lk(g_writeMutex);
         if (!g_enabled.load()) return;
         if (GetCurrentGameMode() != GameMode::Practice) return;
         if (GetCurrentGamePhase() != GamePhase::Match) return;
@@ -61,17 +92,17 @@ namespace RandomBlock {
             bool curOn = false; GetPracticeAutoBlockEnabled(curOn);
             wantWindow = curOn;
         }
+        g_restoreOn.store(wantWindow, std::memory_order_relaxed);
+        g_restoreKnown.store(true, std::memory_order_relaxed);
         // Special-case: FirstHitThenOff should HOLD ON deterministically until the first block occurs
         // (i.e., while wantWindow==true for this mode). Do not randomize in this phase.
         int dabMode = GetDummyAutoBlockMode();
         if (dabMode == DAB_FirstHitThenOff && wantWindow) {
             bool curOn = false; if (!GetPracticeAutoBlockEnabled(curOn)) return;
             if (!curOn || g_lastApplied.load() != 1) {
-                SetExternalAutoBlockController(true);
                 if (SetPracticeAutoBlockEnabled(true, "RandomBlock: force ON (FirstHitThenOff window)")) {
                     g_lastApplied.store(1);
                 }
-                SetExternalAutoBlockController(false);
             }
             // Ensure no pending OFF while in the hold-ON window
             g_pendingOff.store(false);
@@ -94,13 +125,10 @@ namespace RandomBlock {
                 }
             }
             int wantVal = wantOnFinal ? 1 : 0;
-            if (wantVal != g_lastApplied.load()) {
-                // Announce external control so MonitorDummyAutoBlock won't write this frame
-                SetExternalAutoBlockController(true);
+            if (curOn != wantOnFinal || wantVal != g_lastApplied.load()) {
                 if (SetPracticeAutoBlockEnabled(wantOnFinal, wantOnFinal ? "RandomBlock: hold ON (deferring OFF)" : "RandomBlock: OFF (mode window closed)")) {
                     g_lastApplied.store(wantVal);
                 }
-                SetExternalAutoBlockController(false);
             }
             return;
         }
@@ -131,13 +159,10 @@ namespace RandomBlock {
         }
 
         int wantVal = wantOn ? 1 : 0;
-        if (wantVal != g_lastApplied.load()) {
-            // Announce external control so MonitorDummyAutoBlock won't write this frame
-            SetExternalAutoBlockController(true);
+        if (curOn != wantOn || wantVal != g_lastApplied.load()) {
             if (SetPracticeAutoBlockEnabled(wantOn, wantOn ? "RandomBlock: coin ON" : "RandomBlock: coin OFF")) {
                 g_lastApplied.store(wantVal);
             }
-            SetExternalAutoBlockController(false);
         }
     }
 }

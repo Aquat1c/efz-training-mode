@@ -116,6 +116,12 @@ void DrawButton(
 void DrawOutlinedText(ImDrawList* dl, ImFont* font, float px, float x, float y,
                       ImU32 col, const char* text);
 
+// Black ruled row used by in-session Mission/Tutorial surfaces. This draws
+// chrome only so callers can supply either plain centered labels or rich,
+// wrapped tutorial text without duplicating the focus treatment.
+void DrawSessionRowChrome(ImDrawList* dl, float x, float y, float w, float h,
+                          bool selected);
+
 // Full-width beveled bar (selected = bright steel, disabled = dark).
 void DrawNativeBar(ImDrawList* dl, float x, float y, float w, float h,
                    bool selected, bool disabled = false);

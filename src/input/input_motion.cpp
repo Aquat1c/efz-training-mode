@@ -8,7 +8,11 @@
 #include "../include/input/input_buffer.h"  
 #include "../include/input/input_debug.h"  
 #include "../include/input/input_core.h"    
+#include "../include/input/auto_action_motion_transaction.h"
 #include "../include/input/shared_constants.h" 
+#include "../include/game/auto_action.h"
+#include "../include/game/auto_action_charge.h"
+#include "../include/game/kaori_recoil_duck.h"
 #include <vector>
 #include <sstream>
 #include <chrono>
@@ -46,6 +50,20 @@ extern std::atomic<uint8_t> g_manualInputMask[3];
 // bool GetPlayerFacingDirection(int playerNum);
 
 void SetAIControlFlag(int playerNum, bool human) {
+    std::unique_lock<std::recursive_mutex> p2ControlLock;
+    if (playerNum == 2) {
+        // A side/control-role change supersedes a short authored P2 command.
+        // Serialize it with the producer and retire the generation before the
+        // new controller flag becomes visible.
+        p2ControlLock = std::unique_lock<std::recursive_mutex>(g_p2ControlMutex);
+        if (g_onlineModeActive.load(std::memory_order_acquire)) return;
+        KaoriRecoilDuck::Cancel(2, "P2 control role changed");
+        CancelAutoActionChargeFollowup(2, "P2 control role changed");
+        CancelP2AutoActionMotionTransaction("P2 control role changed");
+        if (g_onlineModeActive.load(std::memory_order_acquire)) return;
+        if (IsP2AutoActionMotionTransactionActive()) return;
+    }
+
     uintptr_t base = GetEFZBase();
     if (!base) return;
     

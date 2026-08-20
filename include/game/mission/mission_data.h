@@ -20,6 +20,8 @@
 #include <string>
 #include <vector>
 
+#include "mission_semantic_source_policy.h"
+
 namespace Mission {
 
 // How a step is satisfied.
@@ -41,8 +43,9 @@ struct LessonPage {
     std::string title;
     std::string text;     // rich text: {dir:6}/{btn:A}/{input:236A}/{term:..}/{ui:..}
     // While this page is shown the game HUD is hidden so the stage reads cleanly.
-    // showHud reveals a group for pages that teach it: ""/"none" = hide all,
-    // "top" = HP bars/portraits/timer/rounds, "bottom" = SP + RF meters.
+    // showHud reveals a group for pages that teach it: ""/"none" hides all;
+    // legacy "top"/"bottom" reveal a full band; "life", "meters", "sp",
+    // "rf", and "final_memory" reveal and outline the named native elements.
     std::string showHud;
 };
 
@@ -193,11 +196,11 @@ struct LessonTask {
     int completionHoldTicks = -1;           // -1 = session default; 0 = immediate
     bool restoreOnSuccess = false;           // restore root checkpoint as soon as detected
     bool  hasPos = false;                    // reposition P1 when this task arms
-    float posX = 0.0f;                       // (e.g. center the player for a super)
-    float posY = 0.0f;
+    double posX = 0.0;                       // EFZ fighter coordinates are doubles
+    double posY = 0.0;
     bool  hasDummyPos = false;               // independently reposition P2 for this task
-    float dummyPosX = 0.0f;
-    float dummyPosY = 0.0f;
+    double dummyPosX = 0.0;
+    double dummyPosY = 0.0;
     TaskStateSeed playerSeed;                // task_state_seeds: learner baseline
     TaskStateSeed dummySeed;                 // task_state_seeds: dummy baseline
     int afterWakeMaxTicks = 0;               // wakeup_state window (see LessonAction)
@@ -329,11 +332,45 @@ struct Lesson {
     std::vector<DummyEpisode> episodes;
 };
 
+// Exact entity transition which gives an input-only authored command its
+// action identity.  A tagged command has no player move ID: the consumed
+// attack-button edge and this restored slot/generation transition are the
+// proof that it executed.  `present == false` preserves ordinary Step
+// semantics and keeps older mission files source-compatible.
+struct EntityCommandOrigin {
+    bool present = false;
+    int slot = -1;
+    int generation = 0;
+    int rootPattern = -1;
+    int activationPattern = -1;
+};
+
 struct Step {
     std::string      notation;       // display string, e.g. "236B" (icons from assets/controls)
     std::vector<int> moveIds;        // any-of: move-IDs that satisfy this step
+    EntityCommandOrigin entityCommand; // optional exact input-only entity command
+    // Attack-button edge causally consumed by this recorded action. New
+    // recordings persist it so delayed deadline grace cannot be armed by an
+    // unrelated mash; 0 is the backward-compatible legacy/unknown value.
+    int              expectedAttackMask = 0;
     StepReq          req = StepReq::Land;
     int              hitsRequired = 1; // for StepReq::Hits
+    // Recorder-created direct multi-hit steps are route requirements, not an
+    // instruction to reproduce every possible contact of the move.  When this
+    // is true, one or more hits are enough once the player proves the authored
+    // route continued (the move ended, the next expected action began, or an
+    // authored combo boundary occurred).  Deliberately authored exact hit
+    // counts leave this false.  Old direct-contact recordings predate the key;
+    // their missing value is migrated to true by the tolerant JSON loader.
+    bool             allowPartialHits = false;
+    // New format-1 recordings can bind Land/Hits/Connect to the exact direct
+    // player collision resolver. Legacy files leave this false and retain the
+    // aggregate combo/latch adapter. Concurrent entity obligations use the
+    // mission-level entityContacts schedule and never this flag.
+    bool             directContact = false;
+    // Optional typed resolver result for new recordings. Empty preserves
+    // legacy "any committed contact" Connect behavior.
+    std::string      contactResult;
     bool             optional = false; // step may be skipped
     int              maxDelay = 0;     // 0 = unlimited; NON-FROZEN frames the armed step may
                                        // wait for its hit (delayed projectile window)
@@ -356,6 +393,113 @@ struct Step {
                                             // observed delta diverges beyond the policy
                                             // tolerance - catches hit-variant mechanics
                                             // (clean hits, crits) that share a move ID.
+};
+
+// Exact entity->player contacts run beside the linear player-action recipe.
+// They are intentionally concurrent: a projectile may hit repeatedly while
+// later normals are already being performed, so squeezing it into Step::Hits
+// would stall or misattribute the route. This is an ordered contact schedule,
+// not a sampled combo-counter guess: `opensAfterAction` is the exact matched
+// Spawn/Morph producer gate, `contactAfterAction` retains the contact-time
+// action ordering, and `afterStep` is the preceding exact direct-contact
+// barrier, and `dueBeforeStep` is the following authored action barrier (-1 =
+// mission end). Optional contact ordinals preserve resolver order when an
+// entity lands between hits of one direct multi-hit action. Ordinals are
+// one-based; -1 keeps the legacy whole-step barrier. For dueBeforeStepContact,
+// zero is the stricter generated-recording contract "before action start".
+// v1/v2 schedules treat slot/generation as authoring diagnostics. Newly
+// recorded v3 schedules use the exact embedded start state plus a fresh 64-slot
+// ring lineage for every attempt, so slot/generation and the contact-linked
+// Baseline/Spawn/Morph descriptor become strict runtime identity.
+// One exact child admitted by a flexible fanout episode.  The member keeps the
+// same restored-ring identity proof as an ordinary v3 contact requirement;
+// only sibling ordering and the number of children which ultimately connect
+// are flexible. `*Observed` values describe only the authored take; they are
+// neither a replay ceiling nor the episode's completion threshold.
+struct EntityContactFanoutMember {
+    int slot = -1;
+    int generation = 0;
+    std::vector<int> patterns;
+    std::string producerLifecycle;
+    int producerPattern = -1;
+    int producerPriorPattern = -1;
+    int contactsObserved = 1;
+    int comboHitsObserved = 0;
+    int damageObserved = 0;
+};
+
+struct EntityContactRequirement {
+    std::string notation;                // display fallback, e.g. "#443 HIT x4"
+    int owner = 1;
+    int target = 2;
+    int slot = -1;
+    int generation = 0;
+    std::vector<int> patterns;
+    std::string result = "hit";          // Contact::ResultMatches vocabulary
+    int contactsRequired = 1;
+    int comboHitsRequired = 0;
+    // Flexible fanout episodes preserve every eligible child identity below,
+    // while these minima define completion.  The existing required counts are
+    // retained only as aggregate evidence from the authored take; they are not
+    // a replay ceiling because a different valid subset may connect. Empty
+    // members plus zero minima preserve exact pre-v5 behavior.
+    int minimumContactsRequired = 0;
+    int minimumComboHitsRequired = 0;
+    std::vector<EntityContactFanoutMember> fanoutMembers;
+    // v3 producer identity. `producerLifecycle` is baseline|spawn|morph;
+    // producerPattern is the ring pattern linked to the resolver contact and
+    // producerPriorPattern is required only for morph (-1 otherwise).
+    // Empty/default values preserve every v1/v2 file byte-for-byte in meaning.
+    std::string producerLifecycle;
+    int producerPattern = -1;
+    int producerPriorPattern = -1;
+    // Exact lifecycle producer/activation gate (Spawn/Morph lineage).
+    int opensAfterAction = -1;
+    // Presentation provenance is separate from the strict lifecycle gate.
+    // -2/-2 means an older file omitted the fields; -1/-1 means a new
+    // recording explicitly could not prove one causal setter and must remain
+    // a standalone entity hit; non-negative action plus positive move is the
+    // exact source action in this authored take.  These fields never weaken
+    // slot/generation or producer-lifecycle grading.
+    // Fresh in-memory requirements are new data and fail closed until a
+    // recorder/author proves a source. ParseEntityContact alone assigns the
+    // legacy-absent state when old JSON truly omits both fields.
+    int semanticSourceAction =
+        ::Mission::SemanticSourcePolicy::kExplicitUnresolved;
+    int semanticSourceMove =
+        ::Mission::SemanticSourcePolicy::kExplicitUnresolved;
+    // Latest authored action observed before this contact run. Kept separate
+    // from the producer gate because delayed projectiles often land several
+    // normals after their setter was created.
+    int contactAfterAction = -1;
+    int afterStep = -1;
+    int afterStepContact = -1;
+    int dueBeforeStep = -1;
+    int dueBeforeStepContact = -1;
+    int segment = 0;
+    int maxDelay = 0;                    // non-frozen ticks after both gates are open
+    int damage = 0;                      // exact resolver-local HP delta (diagnostic)
+    // The combo segment ends after this entity contact rather than after a
+    // linear player Step.  Omitted/false preserves every existing mission.
+    bool comboEndAfter = false;
+};
+
+// Exact entity activation recorded without a resolver contact.  This keeps a
+// whiffed summon/projectile phase gradeable as lifecycle evidence instead of
+// weakening it to "the player performed the motion".  Runtime validation is
+// responsible for binding the descriptor to an exact restored ring; these
+// defaults keep missions written before the field byte-for-byte compatible.
+struct EntityLifecycleRequirement {
+    std::string notation;             // display fallback, e.g. "236C (SETUP)"
+    int owner = 1;
+    int slot = -1;
+    int generation = 0;
+    std::string lifecycle;            // baseline|spawn|morph|despawn
+    int pattern = -1;
+    int priorPattern = -1;            // required by a strict morph descriptor
+    int opensAfterAction = -1;        // exact authored action-order gate
+    int segment = 0;
+    int maxDelay = 0;                 // non-frozen ticks after the gate opens
 };
 
 struct PlayerSetup {
@@ -408,6 +552,10 @@ struct ScoreTier {
 
 struct Mission {
     int         format = 1;
+    // Stable content id used by authored trial/mission packs. Tutorial files
+    // historically exposed the same JSON field through `lessonId`; both are
+    // populated on load so the older tutorial runtime remains compatible.
+    std::string id;
     std::string type = "combo";
     std::string category;            // browser topic (tutorial: start/movement/offense/systems)
     int         difficulty = 0;      // 0 unspecified, otherwise 1..5 browser rating
@@ -419,6 +567,9 @@ struct Mission {
     int         stage = -1;          // -1 = default / keep
     int         bgm = -1;            // BGM track for hotswap load (-1 = default)
     std::vector<Step>        steps;
+    bool        strictEntityContacts = false;
+    std::vector<EntityContactRequirement> entityContacts;
+    std::vector<EntityLifecycleRequirement> entityLifecycles;
     std::string demo;                // EFZMACRO text (MacroController format)
     // Embedded Revival savestate dump (base64, Mission::StateDump format).
     // Captured at record start; restored after the mission's hotswap settles
@@ -428,6 +579,14 @@ struct Mission {
     int         failTimer = 60;      // frames of no-progress before the combo is a drop
     std::vector<ScoreTier>   scores; // [0] = base clear; [1..] = ranks
     std::vector<std::string> hints;
+    // Recorder guardrail: preserve the take and raw sidecar, but refuse normal
+    // playback until these unresolved authoring obligations are reviewed.
+    std::vector<std::string> reviewRequired;
+    // Non-blocking facts retained from recording (for example, physical
+    // attack presses which deterministically produced no move).  Diagnostics
+    // survive save/load for authoring and debugging, but unlike
+    // reviewRequired they do not make an otherwise valid mission unplayable.
+    std::vector<std::string> recordingDiagnostics;
 
     // ---- tutorialSchema 1 fields (0 = plain mission; see §5.2 of the design) ----
     int         tutorialSchema = 0;
@@ -456,6 +615,7 @@ struct Scenario {
     std::string name;
     std::string file;                // mission json filename, relative to the pack folder
     std::string description;
+    std::string category;            // stable PackCategory id (mirrored by Mission::category)
     std::string preview;             // preview image filename (optional)
     bool        locked = false;      // progression gate (Trials only; invalid for tutorials)
     // Course manifest fields (§5.1) - authoritative for tutorial packs:
@@ -479,8 +639,10 @@ struct Pack {
     std::string id;                  // stable pack id (e.g. "efz.core_tutorial")
     std::string name;
     std::string author;
+    std::string version;             // author-facing release version (e.g. "1.0")
     std::string character;           // primary character short name
     std::string description;
+    bool        editable = false;    // created by the in-game local authoring flow
     int         curriculumRevision = 0;
     std::vector<PackCategory> categories;
     std::vector<Scenario> scenarios;
@@ -495,6 +657,13 @@ bool LoadPack   (const std::string& packJsonPath,    Pack&    out, std::string& 
 bool LoadMission(const std::string& missionJsonPath, Mission& out, std::string& errorOut);
 bool SaveMission(const std::string& missionJsonPath, const Mission& mission, std::string& errorOut);
 bool SavePack   (const std::string& packJsonPath,    const Pack& pack,       std::string& errorOut);
+
+// Coalesce only catalog-curated interchangeable projectile children into one
+// unordered fanout episode. This is also the in-memory compatibility adapter
+// for exact v3/v4 generated recordings; it never changes the file on disk.
+// Returns true when a schedule was upgraded.
+bool NormalizeFlexibleEntityFanoutEpisodes(Mission& mission,
+                                            bool allowInference = false);
 
 // Discover pack folders under a root dir: returns each "<root>/<sub>/pack.json"
 // that exists. Used to populate the mission-select menu.

@@ -3,7 +3,7 @@
  "tutorialSchema": 1,
  "type": "tutorial",
  "id": "efz.offense.final_memory",
- "revision": 4,
+ "revision": 5,
  "category": "offense",
  "order": 260,
  "difficulty": 3,
@@ -43,8 +43,9 @@
   },
   "pages": [
    {
-    "id": "p0",
-    "title": "Final Memory",
+   "id": "p0",
+   "title": "Final Memory",
+    "showHud": "final_memory",
     "text": "Final Memory is the last-resort Super. You need all three SP levels AND your Life at one third or lower - that's when the Life Gauge flashes red. Every character's Final Memory has its own input and its own effect."
    }
   ],

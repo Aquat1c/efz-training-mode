@@ -71,29 +71,1194 @@ int main(int argc, char** argv) {
     Mission::Step first;
     first.notation = "2C";
     first.moveIds = {206};
+    first.expectedAttackMask = 64;
     first.comboEndAfter = true;
+    first.directContact = true;
+    first.contactResult = "recoil_guard";
     Mission::Step second;
     second.notation = "j.B";
     second.moveIds = {208};
     second.maxGap = 460;
-    mission.steps = {first, second};
+    Mission::Step flexible;
+    flexible.notation = "2C";
+    flexible.moveIds = {206};
+    flexible.req = Mission::StepReq::Hits;
+    flexible.hitsRequired = 5;
+    flexible.directContact = true;
+    flexible.contactResult = "hit";
+    flexible.allowPartialHits = true;
+    mission.steps = {first, second, flexible};
+    mission.reviewRequired = {"entity attribution"};
+    mission.recordingDiagnostics = {
+        "A at frame 996 was sampled but produced no move"
+    };
+    mission.demo =
+        "EFZMACRO 1 5 {3: 5 5 5}x2 5A {3: 5A 5 5} 5 {3: 5 5 5}";
 
     std::string error;
     Check(Mission::SaveMission(path, mission, error), "save boundary mission");
     const std::string encoded = ReadAll(path);
     Check(encoded.find("\"comboEndAfter\": true") != std::string::npos,
           "true boundary is serialized explicitly");
+    Check(encoded.find("\"contactSource\": \"direct\"") != std::string::npos,
+          "direct resolver ownership is serialized explicitly");
+    Check(encoded.find("\"contactResult\": \"recoil_guard\"") != std::string::npos,
+          "typed direct-contact result is serialized explicitly");
+    Check(encoded.find("\"expectedAttackMask\": 64") != std::string::npos,
+          "recorded causal attack mask is serialized explicitly");
+    Check(encoded.find("\"allowPartialHits\": true") != std::string::npos,
+          "recorder-flexible multi-hit policy is serialized explicitly");
+    Check(encoded.find("\"reviewRequired\"") != std::string::npos,
+          "author-review guardrail is serialized explicitly");
+    Check(encoded.find("\"recordingDiagnostics\"") != std::string::npos,
+          "non-blocking recording diagnostics are serialized explicitly");
+    Check(encoded.find("EFZMACRO 1") != std::string::npos,
+          "the sealed demonstration is serialized with the mission");
 
     Mission::Mission loaded;
     Check(Mission::LoadMission(path, loaded, error), "load boundary mission");
-    Check(loaded.steps.size() == 2, "step count roundtrips");
+    Check(loaded.steps.size() == 3, "step count roundtrips");
     Check(loaded.steps[0].comboEndAfter, "boundary bool roundtrips");
+    Check(loaded.steps[0].directContact, "direct contact ownership roundtrips");
+    Check(loaded.steps[0].contactResult == "recoil_guard",
+          "typed direct-contact result roundtrips");
+    Check(loaded.steps[0].expectedAttackMask == 64,
+          "recorded causal attack mask roundtrips");
     Check(loaded.steps[1].maxGap == 460, "delayed-button gap roundtrips");
+    Check(loaded.steps[1].expectedAttackMask == 0,
+          "legacy step causal attack mask defaults to unknown");
+    Check(loaded.steps[2].allowPartialHits &&
+              loaded.steps[2].hitsRequired == 5,
+          "flexible multi-hit policy and observed count roundtrip");
+    Check(loaded.reviewRequired == std::vector<std::string>{"entity attribution"},
+          "author-review guardrail roundtrips");
+    Check(loaded.recordingDiagnostics == std::vector<std::string>{
+              "A at frame 996 was sampled but produced no move"},
+          "non-blocking recording diagnostics roundtrip");
+    Check(loaded.demo == mission.demo,
+          "the exact sealed demonstration text roundtrips without normalization");
+
+    loaded.steps[0].expectedAttackMask = 1;
+    Check(!Mission::SaveMission(path, loaded, error) &&
+              error.find("invalid expectedAttackMask") != std::string::npos,
+          "programmatic saves also reject non-attack causal mask bits");
 
     loaded.steps[0].comboEndAfter = false;
+    loaded.steps[0].directContact = false;
+    loaded.steps[0].contactResult.clear();
+    loaded.steps[0].expectedAttackMask = 0;
+    loaded.steps.pop_back();
+    loaded.reviewRequired.clear();
+    loaded.recordingDiagnostics.clear();
     Check(Mission::SaveMission(path, loaded, error), "save legacy-compatible mission");
     Check(ReadAll(path).find("comboEndAfter") == std::string::npos,
           "false boundary is omitted for legacy files");
+    Check(ReadAll(path).find("contactSource") == std::string::npos,
+          "legacy aggregate contact omits resolver ownership");
+    Check(ReadAll(path).find("expectedAttackMask") == std::string::npos,
+          "legacy/unknown causal attack mask is omitted");
+    Check(ReadAll(path).find("recordingDiagnostics") == std::string::npos,
+          "empty recording diagnostics are omitted for old-file compatibility");
+
+    {
+        Mission::Mission commandMission;
+        commandMission.name = "input-only entity command";
+        Mission::Step command;
+        command.notation = "(J.)236S";
+        command.expectedAttackMask = 128;
+        command.req = Mission::StepReq::Move;
+        command.entityCommand.present = true;
+        command.entityCommand.slot = 7;
+        command.entityCommand.generation = 3;
+        command.entityCommand.rootPattern = 401;
+        command.entityCommand.activationPattern = 431;
+        commandMission.steps.push_back(command);
+
+        Check(Mission::SaveMission(path, commandMission, error),
+              "save input-only entity command step");
+        const std::string commandJson = ReadAll(path);
+        Check(commandJson.find("\"entityCommand\"") != std::string::npos &&
+                  commandJson.find("\"rootPattern\": 401") !=
+                      std::string::npos &&
+                  commandJson.find("\"activationPattern\": 431") !=
+                      std::string::npos,
+              "entity command identity is serialized explicitly");
+        Check(commandJson.find("\"ids\"") == std::string::npos,
+              "input-only entity command omits an empty ids array");
+
+        Check(Mission::LoadMission(path, loaded, error) &&
+                  loaded.steps.size() == 1 &&
+                  loaded.steps[0].moveIds.empty() &&
+                  loaded.steps[0].entityCommand.present &&
+                  loaded.steps[0].entityCommand.slot == 7 &&
+                  loaded.steps[0].entityCommand.generation == 3 &&
+                  loaded.steps[0].entityCommand.rootPattern == 401 &&
+                  loaded.steps[0].entityCommand.activationPattern == 431,
+              "input-only entity command identity roundtrips");
+
+        loaded.steps[0].entityCommand.slot = 64;
+        Check(!Mission::SaveMission(path, loaded, error) &&
+                  error.find("entityCommand") != std::string::npos,
+              "programmatic saves reject command slots outside the ring");
+        loaded.steps[0].entityCommand.slot = 7;
+        loaded.steps[0].entityCommand.generation = 0;
+        Check(!Mission::SaveMission(path, loaded, error) &&
+                  error.find("entityCommand") != std::string::npos,
+              "programmatic saves reject incomplete entity command identity");
+    }
+
+    {
+        std::ofstream out(recordedPath, std::ios::binary | std::ios::trunc);
+        out << R"json({"format":1,"name":"bad entity command type","steps":[{"notation":"S","entityCommand":7}]})json";
+    }
+    Check(!Mission::LoadMission(recordedPath, loaded, error) &&
+              error.find("entityCommand is not an object") !=
+                  std::string::npos,
+          "non-object entity command is rejected");
+
+    {
+        std::ofstream out(recordedPath, std::ios::binary | std::ios::trunc);
+        out << R"json({"format":1,"name":"incomplete entity command","steps":[{"notation":"S","entityCommand":{"slot":7,"generation":3,"rootPattern":401}}]})json";
+    }
+    Check(!Mission::LoadMission(recordedPath, loaded, error) &&
+              error.find("missing or non-integer activationPattern") !=
+                  std::string::npos,
+          "incomplete entity command identity is rejected");
+
+    {
+        std::ofstream out(recordedPath, std::ios::binary | std::ios::trunc);
+        out << R"json({"format":1,"name":"invalid entity command","steps":[{"notation":"S","entityCommand":{"slot":7,"generation":0,"rootPattern":401,"activationPattern":431}}]})json";
+    }
+    Check(!Mission::LoadMission(recordedPath, loaded, error) &&
+              error.find("out-of-range identity field") != std::string::npos,
+          "out-of-range entity command identity is rejected");
+
+    {
+        std::ofstream out(recordedPath, std::ios::binary | std::ios::trunc);
+        out << R"json({"format":1,"name":"out-of-ring entity command","steps":[{"notation":"S","entityCommand":{"slot":64,"generation":1,"rootPattern":401,"activationPattern":431}}]})json";
+    }
+    Check(!Mission::LoadMission(recordedPath, loaded, error) &&
+              error.find("out-of-range identity field") != std::string::npos,
+          "entity command slot must fit the restored 64-slot ring");
+
+    {
+        std::ofstream out(recordedPath, std::ios::binary | std::ios::trunc);
+        out << R"json({"format":1,"name":"old exact recording","steps":[{"notation":"2C","ids":[206],"req":"hits","hits":5,"contactSource":"direct","contactResult":"hit"}]})json";
+    }
+    Check(Mission::LoadMission(recordedPath, loaded, error) &&
+              loaded.steps.size() == 1 &&
+              loaded.steps[0].allowPartialHits,
+          "pre-key exact direct recordings migrate to flexible multi-hit playback");
+
+    {
+        std::ofstream out(recordedPath, std::ios::binary | std::ios::trunc);
+        out << R"json({"format":1,"name":"old flexible entity barriers","steps":[{"notation":"2C","ids":[206],"req":"hits","hits":5,"contactSource":"direct","contactResult":"hit"}],"entityContacts":[{"patterns":[405],"afterStep":0,"afterStepContact":4,"dueBeforeStep":0,"dueBeforeStepContact":5},{"patterns":[405],"afterStep":0,"afterStepContact":5,"dueBeforeStep":0,"dueBeforeStepContact":1},{"patterns":[405],"dueBeforeStep":0,"dueBeforeStepContact":0}]})json";
+    }
+    Check(Mission::LoadMission(recordedPath, loaded, error) &&
+              loaded.entityContacts.size() == 3 &&
+              loaded.entityContacts[0].afterStepContact == 1 &&
+              loaded.entityContacts[0].dueBeforeStepContact == -1 &&
+              loaded.entityContacts[1].afterStepContact == -1 &&
+              loaded.entityContacts[1].dueBeforeStepContact == 1 &&
+              loaded.entityContacts[2].dueBeforeStepContact == 0,
+          "legacy flexible multi-hit barriers retain first-contact lower bounds, whole-action completion, and exact action-start gates");
+
+    {
+        std::ofstream out(path, std::ios::binary | std::ios::trunc);
+        out << R"json({"format":1,"name":"old authored exact count","steps":[{"notation":"2C","ids":[206],"req":"hits","hits":5,"contactSource":"direct","contactResult":"hit"}]})json";
+    }
+    Check(Mission::LoadMission(path, loaded, error) &&
+              !loaded.steps[0].allowPartialHits,
+          "an unmarked old hand-authored multi-hit remains strict");
+
+    {
+        std::ofstream out(path, std::ios::binary | std::ios::trunc);
+        out << R"json({"format":1,"name":"strict exact recording","steps":[{"notation":"2C","ids":[206],"req":"hits","hits":5,"contactSource":"direct","contactResult":"hit","allowPartialHits":false}]})json";
+    }
+    Check(Mission::LoadMission(path, loaded, error) &&
+              !loaded.steps[0].allowPartialHits,
+          "an explicitly authored strict direct hit count stays strict");
+
+    {
+        std::ofstream out(path, std::ios::binary | std::ios::trunc);
+        out << R"json({"format":1,"name":"bad partial type","steps":[{"notation":"2C","ids":[206],"req":"hits","hits":5,"contactSource":"direct","allowPartialHits":"yes"}]})json";
+    }
+    Check(!Mission::LoadMission(path, loaded, error) &&
+              error.find("invalid allowPartialHits") != std::string::npos,
+          "non-boolean flexible hit policy fails closed");
+
+    {
+        std::ofstream out(path, std::ios::binary | std::ios::trunc);
+        out << R"json({"format":2,"name":"future","steps":[{"notation":"5A","ids":[200]}]})json";
+    }
+    Check(!Mission::LoadMission(path, loaded, error) &&
+              error.find("unsupported mission format 2") != std::string::npos,
+          "future mission formats fail closed until their runtime exists");
+
+    {
+        std::ofstream out(path, std::ios::binary | std::ios::trunc);
+        out << R"json({"format":1,"name":"bad source","steps":[{"notation":"5A","ids":[200],"contactSource":"entity"}]})json";
+    }
+    Check(!Mission::LoadMission(path, loaded, error) &&
+              error.find("unsupported contactSource") != std::string::npos,
+          "entity contact cannot silently downgrade into a legacy linear step");
+
+    {
+        std::ofstream out(path, std::ios::binary | std::ios::trunc);
+        out << R"json({"format":1,"name":"bad causal mask","steps":[{"notation":"5A","ids":[200],"expectedAttackMask":256}]})json";
+    }
+    Check(!Mission::LoadMission(path, loaded, error) &&
+              error.find("invalid expectedAttackMask") !=
+                  std::string::npos,
+          "out-of-range recorded causal attack mask fails closed");
+
+    {
+        std::ofstream out(path, std::ios::binary | std::ios::trunc);
+        out << R"json({"format":1,"name":"direction causal mask","steps":[{"notation":"5A","ids":[200],"expectedAttackMask":1}]})json";
+    }
+    Check(!Mission::LoadMission(path, loaded, error) &&
+              error.find("invalid expectedAttackMask") !=
+                  std::string::npos,
+          "non-attack bits cannot masquerade as a recorded causal attack mask");
+
+    {
+        std::ofstream out(path, std::ios::binary | std::ios::trunc);
+        out << R"json({"format":1,"name":"bad source type","steps":[{"notation":"5A","ids":[200],"contactSource":7}]})json";
+    }
+    Check(!Mission::LoadMission(path, loaded, error) &&
+              error.find("unsupported contactSource") != std::string::npos,
+          "non-string contactSource fails closed");
+
+    {
+        std::ofstream out(path, std::ios::binary | std::ios::trunc);
+        out << R"json({"format":1,"name":"bad result","steps":[{"notation":"5A","ids":[200],"contactSource":"direct","contactResult":"anything"}]})json";
+    }
+    Check(!Mission::LoadMission(path, loaded, error) &&
+              error.find("unsupported contactResult") != std::string::npos,
+          "unknown typed contact result fails closed");
+
+    {
+        std::ofstream out(path, std::ios::binary | std::ios::trunc);
+        out << R"json({"format":1,"name":"bad review","reviewRequired":"entity","steps":[{"notation":"5A","ids":[200]}]})json";
+    }
+    Check(!Mission::LoadMission(path, loaded, error) &&
+              error.find("reviewRequired is not an array") != std::string::npos,
+          "malformed author-review guardrail cannot disappear during parsing");
+
+    {
+        std::ofstream out(path, std::ios::binary | std::ios::trunc);
+        out << R"json({"format":1,"name":"bad diagnostics","recordingDiagnostics":"input","steps":[{"notation":"5A","ids":[200]}]})json";
+    }
+    Check(!Mission::LoadMission(path, loaded, error) &&
+              error.find("recordingDiagnostics is not an array") != std::string::npos,
+          "malformed recording diagnostics cannot disappear during parsing");
+
+    {
+        std::ofstream out(path, std::ios::binary | std::ios::trunc);
+        out << R"json({"format":1,"name":"bad diagnostic entry","recordingDiagnostics":[""],"steps":[{"notation":"5A","ids":[200]}]})json";
+    }
+    Check(!Mission::LoadMission(path, loaded, error) &&
+              error.find("recordingDiagnostics contains an invalid entry") !=
+                  std::string::npos,
+          "empty recording diagnostic entries fail closed");
+
+    // Entity contacts are a concurrent schedule beside the linear action
+    // recipe. Exercise every persisted selector/barrier so a serializer change
+    // cannot silently erase strict projectile-hit requirements.
+    {
+        Mission::Mission entityMission;
+        entityMission.name = "entity contact serde";
+        entityMission.strictEntityContacts = true;
+        entityMission.reviewRequired = {
+            "runtime:entity-contact-schedule-v2"
+        };
+        Mission::EntityContactRequirement contact;
+        contact.notation = "#443 HIT x4";
+        contact.owner = 1;
+        contact.target = 2;
+        contact.slot = 6;
+        contact.generation = 3;
+        contact.patterns = {443, 454};
+        contact.result = "hit";
+        contact.contactsRequired = 4;
+        contact.comboHitsRequired = 4;
+        contact.opensAfterAction = 2;
+        contact.contactAfterAction = 2;
+        contact.afterStep = 1;
+        contact.afterStepContact = 2;
+        contact.dueBeforeStep = 3;
+        contact.dueBeforeStepContact = 1;
+        contact.segment = 1;
+        contact.maxDelay = 432;
+        contact.damage = 95;
+        contact.comboEndAfter = true;
+        entityMission.entityContacts.push_back(contact);
+
+        Check(Mission::SaveMission(path, entityMission, error),
+              "save strict entity-contact schedule");
+        const std::string entityEncoded = ReadAll(path);
+        Check(entityEncoded.find("\"strictEntityContacts\": true") !=
+                  std::string::npos &&
+              entityEncoded.find("\"entityContacts\"") != std::string::npos &&
+              entityEncoded.find("\"patterns\": [") != std::string::npos &&
+              entityEncoded.find("\"contactAfterAction\": 2") != std::string::npos &&
+              entityEncoded.find("\"afterStepContact\": 2") != std::string::npos &&
+              entityEncoded.find("\"dueBeforeStepContact\": 1") != std::string::npos &&
+              entityEncoded.find("\"comboEndAfter\": true") != std::string::npos,
+              "entity-contact schedule uses canonical JSON fields");
+
+        Mission::Mission entityLoaded;
+        Check(Mission::LoadMission(path, entityLoaded, error),
+              "reload strict entity-contact schedule");
+        Check(entityLoaded.strictEntityContacts &&
+                  entityLoaded.entityContacts.size() == 1 &&
+                  entityLoaded.reviewRequired == std::vector<std::string>{
+                      "runtime:entity-contact-schedule-v2"},
+              "strict entity-contact schedule round-trips");
+        const auto& roundTrip = entityLoaded.entityContacts[0];
+        Check(roundTrip.notation == contact.notation &&
+                  roundTrip.owner == contact.owner &&
+                  roundTrip.target == contact.target &&
+                  roundTrip.slot == contact.slot &&
+                  roundTrip.generation == contact.generation &&
+                  roundTrip.patterns == contact.patterns &&
+                  roundTrip.result == contact.result &&
+                  roundTrip.contactsRequired == contact.contactsRequired &&
+                  roundTrip.comboHitsRequired == contact.comboHitsRequired &&
+                  roundTrip.opensAfterAction == contact.opensAfterAction &&
+                  roundTrip.contactAfterAction ==
+                      contact.contactAfterAction &&
+                  roundTrip.afterStep == contact.afterStep &&
+                  roundTrip.afterStepContact == contact.afterStepContact &&
+                  roundTrip.dueBeforeStep == contact.dueBeforeStep &&
+                  roundTrip.dueBeforeStepContact ==
+                      contact.dueBeforeStepContact &&
+                  roundTrip.segment == contact.segment &&
+                  roundTrip.maxDelay == contact.maxDelay &&
+                  roundTrip.damage == contact.damage &&
+                  roundTrip.comboEndAfter == contact.comboEndAfter,
+              "every entity-contact field round-trips");
+    }
+
+    // v3 adds the contact-linked producer proof without changing the defaults
+    // or meaning of existing v1/v2 schedules.
+    {
+        Mission::Mission lineageMission;
+        lineageMission.name = "entity lineage serde";
+        lineageMission.strictEntityContacts = true;
+        lineageMission.reviewRequired = {
+            "runtime:entity-contact-schedule-v3"
+        };
+        Mission::EntityContactRequirement contact;
+        contact.slot = 11;
+        contact.generation = 2;
+        contact.patterns = {403};
+        contact.producerLifecycle = "morph";
+        contact.producerPattern = 403;
+        contact.producerPriorPattern = 400;
+        contact.opensAfterAction = 4;
+        contact.maxDelay = 90;
+        lineageMission.entityContacts.push_back(contact);
+        Check(Mission::SaveMission(path, lineageMission, error),
+              "save v3 entity lineage");
+        const std::string encoded = ReadAll(path);
+        Check(encoded.find("\"producerLifecycle\": \"morph\"") !=
+                  std::string::npos &&
+              encoded.find("\"producerPattern\": 403") !=
+                  std::string::npos &&
+              encoded.find("\"producerPriorPattern\": 400") !=
+                  std::string::npos,
+              "v3 producer descriptor uses canonical JSON fields");
+        Mission::Mission roundTrip;
+        Check(Mission::LoadMission(path, roundTrip, error) &&
+                  roundTrip.entityContacts.size() == 1 &&
+                  roundTrip.entityContacts[0].producerLifecycle == "morph" &&
+                  roundTrip.entityContacts[0].producerPattern == 403 &&
+                  roundTrip.entityContacts[0].producerPriorPattern == 400,
+              "v3 producer descriptor round-trips");
+    }
+
+    // v5 stores an unordered cast-wide fanout without discarding any exact
+    // restored-ring child identity. A child which whiffed in the take remains
+    // eligible on replay with zero observed contacts.
+    {
+        Mission::Mission fanoutMission;
+        fanoutMission.name = "entity fanout serde";
+        fanoutMission.strictEntityContacts = true;
+        fanoutMission.reviewRequired = {
+            "runtime:entity-fanout-schedule-v5"
+        };
+        Mission::EntityContactRequirement contact;
+        contact.notation = "2141236 (HIT)";
+        contact.slot = -1;
+        contact.patterns = {435};
+        contact.result = "hit";
+        contact.contactsRequired = 1;
+        contact.comboHitsRequired = 1;
+        contact.minimumContactsRequired = 1;
+        contact.minimumComboHitsRequired = 1;
+        contact.producerLifecycle = "spawn";
+        contact.producerPattern = 435;
+        contact.opensAfterAction = 12;
+        // This fixture deliberately models an older v5 file which predates
+        // semantic-source fields. Fresh requirements default unresolved.
+        contact.semanticSourceAction =
+            Mission::SemanticSourcePolicy::kLegacyAbsent;
+        contact.semanticSourceMove =
+            Mission::SemanticSourcePolicy::kLegacyAbsent;
+        contact.contactAfterAction = 12;
+        contact.afterStep = 11;
+        contact.dueBeforeStep = 13;
+        contact.dueBeforeStepContact = 0;
+        Mission::EntityContactFanoutMember hitChild;
+        hitChild.slot = 4;
+        hitChild.generation = 1;
+        hitChild.patterns = {435};
+        hitChild.producerLifecycle = "spawn";
+        hitChild.producerPattern = 435;
+        hitChild.contactsObserved = 1;
+        hitChild.comboHitsObserved = 1;
+        hitChild.damageObserved = 72;
+        Mission::EntityContactFanoutMember whiffedChild = hitChild;
+        whiffedChild.slot = 6;
+        whiffedChild.contactsObserved = 0;
+        whiffedChild.comboHitsObserved = 0;
+        whiffedChild.damageObserved = 0;
+        contact.fanoutMembers = {hitChild, whiffedChild};
+        fanoutMission.entityContacts.push_back(contact);
+
+        Check(Mission::SaveMission(path, fanoutMission, error),
+              "save v5 entity fanout");
+        const std::string encoded = ReadAll(path);
+        Check(encoded.find("\"minimumContactsRequired\": 1") !=
+                  std::string::npos &&
+              encoded.find("\"fanoutMembers\"") != std::string::npos &&
+              encoded.find("\"contactsObserved\": 0") !=
+                  std::string::npos,
+              "fanout JSON explicitly preserves minima and whiffed siblings");
+        Mission::Mission roundTrip;
+        Check(Mission::LoadMission(path, roundTrip, error) &&
+                  roundTrip.entityContacts.size() == 1 &&
+                  roundTrip.entityContacts[0].fanoutMembers.size() == 2 &&
+                  roundTrip.entityContacts[0].minimumContactsRequired == 1 &&
+                  roundTrip.entityContacts[0].minimumComboHitsRequired == 1 &&
+                  roundTrip.entityContacts[0]
+                          .fanoutMembers[1]
+                          .contactsObserved == 0,
+              "explicit fanout round-trips outside a generated path");
+    }
+
+    // Generated v3/v4 Shiori takes are upgraded in memory. Exact hit children
+    // become one episode, while an eligible sibling lifecycle that whiffed in
+    // the take becomes another exact member rather than a mandatory setup row.
+    {
+        Mission::Mission legacy;
+        legacy.name = "legacy Shiori fanout";
+        legacy.player.character = "shiori";
+        legacy.strictEntityContacts = true;
+        legacy.steps.resize(14);
+        legacy.steps[12].moveIds = {312};
+        legacy.reviewRequired = {
+            "author note", "runtime:entity-lifecycle-schedule-v4"
+        };
+        const auto makeContact = [](int slot, int delay, int damage) {
+            Mission::EntityContactRequirement contact;
+            contact.notation = "2141236 (HIT)";
+            contact.slot = slot;
+            contact.generation = 1;
+            contact.patterns = {435};
+            contact.result = "hit";
+            contact.contactsRequired = 1;
+            contact.comboHitsRequired = 1;
+            contact.producerLifecycle = "spawn";
+            contact.producerPattern = 435;
+            contact.opensAfterAction = 12;
+            contact.contactAfterAction = 12;
+            contact.afterStep = 11;
+            contact.dueBeforeStep = 13;
+            contact.dueBeforeStepContact = 0;
+            contact.maxDelay = delay;
+            contact.damage = damage;
+            return contact;
+        };
+        legacy.entityContacts = {
+            makeContact(4, 96, 72), makeContact(6, 150, 71)
+        };
+        Mission::EntityLifecycleRequirement whiffed;
+        whiffed.owner = 1;
+        whiffed.slot = 2;
+        whiffed.generation = 1;
+        whiffed.lifecycle = "spawn";
+        whiffed.pattern = 435;
+        whiffed.opensAfterAction = 12;
+        whiffed.maxDelay = 132;
+        Mission::EntityLifecycleRequirement controller = whiffed;
+        controller.slot = 3;
+        controller.pattern = 436;
+        legacy.entityLifecycles = {whiffed, controller};
+
+        Mission::Mission authoredExact = legacy;
+        Check(!Mission::NormalizeFlexibleEntityFanoutEpisodes(authoredExact) &&
+                  authoredExact.entityContacts.size() == 2,
+              "fanout inference is opt-in for generated recorder output");
+        Check(Mission::SaveMission(recordedPath, authoredExact, error),
+              "save generated-path legacy fanout fixture");
+        Mission::Mission generatedLoad;
+        Check(Mission::LoadMission(recordedPath, generatedLoad, error) &&
+                  generatedLoad.entityContacts.size() == 1 &&
+                  generatedLoad.entityContacts[0].fanoutMembers.size() == 3 &&
+                  generatedLoad.reviewRequired ==
+                      std::vector<std::string>{
+                          "author note",
+                          "runtime:entity-fanout-schedule-v5"},
+              "generated v4 take upgrades only after review markers are parsed");
+        Check(Mission::NormalizeFlexibleEntityFanoutEpisodes(legacy, true) &&
+                  legacy.entityContacts.size() == 1 &&
+                  legacy.entityContacts[0].fanoutMembers.size() == 3 &&
+                  legacy.entityContacts[0].contactsRequired == 2 &&
+                  legacy.entityContacts[0].comboHitsRequired == 2 &&
+                  legacy.entityContacts[0].minimumContactsRequired == 1 &&
+                  legacy.entityContacts[0].minimumComboHitsRequired == 1 &&
+                  legacy.entityContacts[0].maxDelay == 150 &&
+                  legacy.entityContacts[0].damage == 143 &&
+                  legacy.entityLifecycles.size() == 1 &&
+                  legacy.entityLifecycles[0].pattern == 436 &&
+                  legacy.reviewRequired == std::vector<std::string>{
+                      "author note", "runtime:entity-fanout-schedule-v5"},
+              "generated Shiori siblings coalesce without absorbing controller entities");
+    }
+
+    // Recorder rows from other active entities can be interleaved between
+    // Shiori's interchangeable children. They do not split one cast-scoped
+    // fanout, and their own authored order remains unchanged.
+    {
+        Mission::Mission interleaved;
+        interleaved.name = "interleaved Shiori fanout";
+        interleaved.player.character = "shiori";
+        interleaved.strictEntityContacts = true;
+        interleaved.steps.resize(13);
+        interleaved.steps[12].moveIds = {312};
+        interleaved.reviewRequired = {
+            "runtime:entity-contact-schedule-v3"
+        };
+        const auto makeFanout = [](int slot) {
+            Mission::EntityContactRequirement contact;
+            contact.notation = "fanout-" + std::to_string(slot);
+            contact.slot = slot;
+            contact.generation = 1;
+            contact.patterns = {435};
+            contact.result = "hit";
+            contact.contactsRequired = 1;
+            contact.comboHitsRequired = 1;
+            contact.producerLifecycle = "spawn";
+            contact.producerPattern = 435;
+            contact.opensAfterAction = 12;
+            contact.contactAfterAction = 12;
+            contact.afterStep = 11;
+            contact.dueBeforeStep = 12;
+            contact.dueBeforeStepContact = -1;
+            return contact;
+        };
+        const auto makeUnrelated = [](const char* notation, int slot) {
+            Mission::EntityContactRequirement contact;
+            contact.notation = notation;
+            contact.slot = slot;
+            contact.generation = 1;
+            contact.patterns = {433};
+            contact.result = "hit";
+            contact.contactsRequired = 1;
+            contact.comboHitsRequired = 1;
+            return contact;
+        };
+        interleaved.entityContacts = {
+            makeUnrelated("before", 20),
+            makeFanout(4),
+            makeUnrelated("middle", 22),
+            makeFanout(6),
+            makeUnrelated("after", 24),
+        };
+
+        Check(Mission::NormalizeFlexibleEntityFanoutEpisodes(
+                  interleaved, true) &&
+                  interleaved.entityContacts.size() == 4 &&
+                  interleaved.entityContacts[0].notation == "before" &&
+                  interleaved.entityContacts[1].fanoutMembers.size() == 2 &&
+                  interleaved.entityContacts[1].fanoutMembers[0].slot == 4 &&
+                  interleaved.entityContacts[1].fanoutMembers[1].slot == 6 &&
+                  interleaved.entityContacts[2].notation == "middle" &&
+                  interleaved.entityContacts[3].notation == "after",
+              "interleaved Shiori children merge at their first occurrence without reordering unrelated requirements");
+    }
+
+    // Regression for the 2026-07-17 take: eleven randomized children hit,
+    // four siblings whiffed, and the last hit owned the recovery boundary.
+    // All fifteen identities belong to one minimum-one episode; the boundary
+    // must not strand its terminal child as another exact requirement.
+    {
+        Mission::Mission take;
+        take.name = "Shiori shuffled 2141236 take";
+        take.player.character = "shiori";
+        take.strictEntityContacts = true;
+        take.steps.resize(14);
+        take.steps[12].moveIds = {312};
+        take.steps[13].moveIds = {259};
+        take.reviewRequired = {
+            "runtime:entity-lifecycle-schedule-v4"
+        };
+        const int hitSlots[] = {
+            2, 6, 4, 10, 8, 16, 20, 18, 24, 26, 30
+        };
+        for (int index = 0; index < 11; ++index) {
+            Mission::EntityContactRequirement contact;
+            contact.notation = "2141236 (HIT)";
+            contact.slot = hitSlots[index];
+            contact.generation = 1;
+            contact.patterns = {435};
+            contact.result = "hit";
+            contact.contactsRequired = 1;
+            contact.comboHitsRequired = 1;
+            contact.producerLifecycle = "spawn";
+            contact.producerPattern = 435;
+            contact.opensAfterAction = 12;
+            contact.contactAfterAction = 12;
+            contact.afterStep = 11;
+            contact.dueBeforeStep = 13;
+            contact.dueBeforeStepContact = 0;
+            contact.maxDelay = index == 10 ? 222 : 96 + index * 6;
+            contact.damage = 72 - index;
+            contact.comboEndAfter = index == 10;
+            take.entityContacts.push_back(contact);
+        }
+        const int whiffSlots[] = {12, 14, 22, 28};
+        for (int index = 0; index < 4; ++index) {
+            Mission::EntityLifecycleRequirement whiffed;
+            whiffed.notation = "2141236 (SETUP)";
+            whiffed.owner = 1;
+            whiffed.slot = whiffSlots[index];
+            whiffed.generation = 1;
+            whiffed.lifecycle = "spawn";
+            whiffed.pattern = 435;
+            whiffed.opensAfterAction = 12;
+            whiffed.maxDelay = 126 + index * 24;
+            take.entityLifecycles.push_back(whiffed);
+        }
+        Mission::EntityLifecycleRequirement laterSetup;
+        laterSetup.notation = "214A (SETUP)";
+        laterSetup.owner = 1;
+        laterSetup.slot = 33;
+        laterSetup.generation = 1;
+        laterSetup.lifecycle = "spawn";
+        laterSetup.pattern = 433;
+        laterSetup.opensAfterAction = 13;
+        laterSetup.maxDelay = 72;
+        take.entityLifecycles.push_back(laterSetup);
+
+        Check(Mission::SaveMission(path, take, error) &&
+                  Mission::SaveMission(recordedPath, take, error),
+              "save shuffled Shiori migration fixtures");
+        Mission::Mission authoredLoad;
+        Check(Mission::LoadMission(path, authoredLoad, error) &&
+                  authoredLoad.entityContacts.size() == 11 &&
+                  authoredLoad.entityContacts[0].fanoutMembers.empty() &&
+                  authoredLoad.entityLifecycles.size() == 5 &&
+                  authoredLoad.reviewRequired ==
+                      std::vector<std::string>{
+                          "runtime:entity-lifecycle-schedule-v4"},
+              "non-recorded shuffled requirements remain exact");
+        Mission::Mission generatedLoad;
+        Check(Mission::LoadMission(recordedPath, generatedLoad, error) &&
+                  generatedLoad.entityContacts.size() == 1 &&
+                  generatedLoad.entityContacts[0].fanoutMembers.size() == 15 &&
+                  generatedLoad.entityContacts[0].contactsRequired == 11 &&
+                  generatedLoad.entityContacts[0].comboHitsRequired == 11 &&
+                  generatedLoad.entityContacts[0].minimumContactsRequired == 1 &&
+                  generatedLoad.entityContacts[0]
+                          .minimumComboHitsRequired == 1 &&
+                  generatedLoad.entityContacts[0].comboEndAfter &&
+                  generatedLoad.entityContacts[0]
+                          .fanoutMembers[0]
+                          .slot == 2 &&
+                  generatedLoad.entityContacts[0]
+                          .fanoutMembers[2]
+                          .slot == 4 &&
+                  generatedLoad.entityLifecycles.size() == 1 &&
+                  generatedLoad.entityLifecycles[0].pattern == 433 &&
+                  generatedLoad.reviewRequired ==
+                      std::vector<std::string>{
+                          "runtime:entity-fanout-schedule-v5"},
+              "generated shuffled children migrate to one minimum-one fanout");
+        const auto& migratedMembers =
+            generatedLoad.entityContacts[0].fanoutMembers;
+        Check(std::count_if(
+                  migratedMembers.begin(), migratedMembers.end(),
+                  [](const Mission::EntityContactFanoutMember& member) {
+                      return member.contactsObserved == 0 &&
+                             member.comboHitsObserved == 0;
+                  }) == 4 &&
+                  std::any_of(
+                      migratedMembers.begin(), migratedMembers.end(),
+                      [](const Mission::EntityContactFanoutMember& member) {
+                          return member.slot == 30 && member.generation == 1 &&
+                                 member.contactsObserved == 1 &&
+                                 member.comboHitsObserved == 1;
+                      }),
+              "fanout preserves four whiffs and the terminal hit as exact members");
+        Check(Mission::SaveMission(path, generatedLoad, error),
+              "save explicit migrated v5 fanout");
+        Mission::Mission explicitReload;
+        Check(Mission::LoadMission(path, explicitReload, error) &&
+                  explicitReload.entityContacts.size() == 1 &&
+                  explicitReload.entityContacts[0].fanoutMembers.size() == 15 &&
+                  explicitReload.entityContacts[0].comboEndAfter &&
+                  explicitReload.reviewRequired ==
+                      std::vector<std::string>{
+                          "runtime:entity-fanout-schedule-v5"},
+              "explicit v5 fanout round-trips without path inference");
+
+        // The first v5 writer emitted the final combo-ending child as a
+        // second exact requirement. Preserve authored v5 files verbatim, but
+        // repair this narrowly identified generated-recording shape in memory
+        // so existing takes do not require a retake.
+        Mission::Mission splitV5 = generatedLoad;
+        Mission::EntityContactRequirement terminal =
+            take.entityContacts.back();
+        auto& splitEpisode = splitV5.entityContacts.front();
+        splitEpisode.fanoutMembers.erase(std::remove_if(
+            splitEpisode.fanoutMembers.begin(),
+            splitEpisode.fanoutMembers.end(),
+            [](const Mission::EntityContactFanoutMember& member) {
+                return member.slot == 30 && member.generation == 1;
+            }), splitEpisode.fanoutMembers.end());
+        splitEpisode.contactsRequired = 10;
+        splitEpisode.comboHitsRequired = 10;
+        splitEpisode.damage -= terminal.damage;
+        splitEpisode.maxDelay = 198;
+        splitEpisode.comboEndAfter = false;
+        splitV5.entityContacts.push_back(terminal);
+
+        Check(Mission::SaveMission(path, splitV5, error),
+              "save authored split-v5 control");
+        Mission::Mission authoredSplitReload;
+        Check(Mission::LoadMission(path, authoredSplitReload, error) &&
+                  authoredSplitReload.entityContacts.size() == 2 &&
+                  authoredSplitReload.entityContacts[0]
+                          .fanoutMembers.size() == 14 &&
+                  authoredSplitReload.entityContacts[1].slot == 30,
+              "authored split-v5 mission is not inferred or rewritten");
+
+        Check(Mission::SaveMission(recordedPath, splitV5, error),
+              "save generated split-v5 regression fixture");
+        Mission::Mission repairedV5;
+        Check(Mission::LoadMission(recordedPath, repairedV5, error) &&
+                  repairedV5.entityContacts.size() == 1 &&
+                  repairedV5.entityContacts[0].fanoutMembers.size() == 15 &&
+                  repairedV5.entityContacts[0].contactsRequired == 11 &&
+                  repairedV5.entityContacts[0].comboHitsRequired == 11 &&
+                  repairedV5.entityContacts[0].comboEndAfter &&
+                  repairedV5.entityContacts[0].maxDelay == 222,
+              "generated split-v5 terminal child repairs into its fanout");
+    }
+
+    {
+        Mission::Mission actionDueMission;
+        actionDueMission.name = "entity action-start due serde";
+        Mission::EntityContactRequirement contact;
+        contact.patterns = {401};
+        contact.dueBeforeStep = 2;
+        contact.dueBeforeStepContact = 0;
+        actionDueMission.entityContacts.push_back(contact);
+        Check(Mission::SaveMission(path, actionDueMission, error),
+              "save entity action-start due barrier");
+        Check(ReadAll(path).find("\"dueBeforeStepContact\": 0") !=
+                  std::string::npos,
+              "action-start due barrier serializes zero explicitly");
+        Mission::Mission actionDueLoaded;
+        Check(Mission::LoadMission(path, actionDueLoaded, error) &&
+                  actionDueLoaded.entityContacts.size() == 1 &&
+                  actionDueLoaded.entityContacts[0].dueBeforeStepContact == 0,
+              "action-start due barrier round-trips without becoming legacy");
+    }
+
+    {
+        std::ofstream out(path, std::ios::binary | std::ios::trunc);
+        out << R"json({"format":1,"name":"entity defaults","steps":[],"entityContacts":[{}]})json";
+    }
+    Check(Mission::LoadMission(path, loaded, error),
+          "load minimal entity-contact requirement");
+    Check(!loaded.strictEntityContacts && loaded.entityContacts.size() == 1,
+          "entity-contact strictness defaults off");
+    {
+        const auto& defaults = loaded.entityContacts[0];
+        Check(defaults.notation.empty() && defaults.owner == 1 &&
+                  defaults.target == 2 && defaults.slot == -1 &&
+                  defaults.generation == 0 && defaults.patterns.empty() &&
+                  defaults.result == "hit" && defaults.contactsRequired == 1 &&
+                  defaults.comboHitsRequired == 0 &&
+                  defaults.minimumContactsRequired == 0 &&
+                  defaults.minimumComboHitsRequired == 0 &&
+                  defaults.fanoutMembers.empty() &&
+                  defaults.producerLifecycle.empty() &&
+                  defaults.producerPattern == -1 &&
+                  defaults.producerPriorPattern == -1 &&
+                  defaults.opensAfterAction == -1 &&
+                  defaults.semanticSourceAction ==
+                      Mission::SemanticSourcePolicy::kLegacyAbsent &&
+                  defaults.semanticSourceMove ==
+                      Mission::SemanticSourcePolicy::kLegacyAbsent &&
+                  defaults.contactAfterAction == -1 &&
+                  defaults.afterStep == -1 &&
+                  defaults.afterStepContact == -1 &&
+                  defaults.dueBeforeStep == -1 &&
+                  defaults.dueBeforeStepContact == -1 &&
+                  defaults.segment == 0 &&
+                  defaults.maxDelay == 0 && defaults.damage == 0 &&
+                  !defaults.comboEndAfter,
+              "minimal entity contact receives stable parser defaults");
+    }
+
+    // Semantic producer provenance is presentation-only but must retain a
+    // tri-state across JSON: omitted legacy data may use compatibility
+    // inference, new ambiguous data must remain standalone, and exact data is
+    // tied to a real move in a real authored action.
+    {
+        Mission::EntityContactRequirement freshContact;
+        Check(Mission::SemanticSourcePolicy::IsExplicitUnresolved(
+                  freshContact.semanticSourceAction,
+                  freshContact.semanticSourceMove),
+              "a newly constructed contact cannot masquerade as legacy JSON");
+        Mission::Mission semanticMission;
+        semanticMission.name = "entity semantic source serde";
+        Mission::Step setter;
+        setter.notation = "214A";
+        setter.moveIds = {253};
+        semanticMission.steps.push_back(setter);
+        Mission::EntityContactRequirement contact;
+        contact.patterns = {405};
+        contact.opensAfterAction = 0;
+        contact.contactAfterAction = 0;
+        contact.semanticSourceAction = 0;
+        contact.semanticSourceMove = 253;
+        semanticMission.entityContacts.push_back(contact);
+
+        Check(Mission::SaveMission(path, semanticMission, error),
+              "save exact semantic source provenance");
+        const std::string exactEncoded = ReadAll(path);
+        Check(exactEncoded.find("\"semanticSourceAction\": 0") !=
+                  std::string::npos &&
+              exactEncoded.find("\"semanticSourceMove\": 253") !=
+                  std::string::npos,
+              "exact semantic source pair serializes explicitly");
+        Mission::Mission exactLoaded;
+        Check(Mission::LoadMission(path, exactLoaded, error) &&
+                  exactLoaded.entityContacts.size() == 1 &&
+                  exactLoaded.entityContacts[0].semanticSourceAction == 0 &&
+                  exactLoaded.entityContacts[0].semanticSourceMove == 253,
+              "exact semantic source pair round-trips");
+
+        semanticMission.entityContacts[0].semanticSourceAction =
+            Mission::SemanticSourcePolicy::kExplicitUnresolved;
+        semanticMission.entityContacts[0].semanticSourceMove =
+            Mission::SemanticSourcePolicy::kExplicitUnresolved;
+        Check(Mission::SaveMission(path, semanticMission, error),
+              "save explicitly unresolved semantic source");
+        const std::string unresolvedEncoded = ReadAll(path);
+        Check(unresolvedEncoded.find("\"semanticSourceAction\": -1") !=
+                  std::string::npos &&
+              unresolvedEncoded.find("\"semanticSourceMove\": -1") !=
+                  std::string::npos,
+              "new ambiguity cannot disappear into legacy field absence");
+        Mission::Mission unresolvedLoaded;
+        Check(Mission::LoadMission(path, unresolvedLoaded, error) &&
+                  Mission::SemanticSourcePolicy::IsExplicitUnresolved(
+                      unresolvedLoaded.entityContacts[0]
+                          .semanticSourceAction,
+                      unresolvedLoaded.entityContacts[0]
+                          .semanticSourceMove),
+              "explicitly unresolved provenance round-trips");
+
+        semanticMission.entityContacts[0].semanticSourceAction = 0;
+        semanticMission.entityContacts[0].semanticSourceMove = -1;
+        Check(!Mission::SaveMission(path, semanticMission, error) &&
+                  error.find("invalid semantic source provenance") !=
+                      std::string::npos,
+              "mixed semantic source states fail closed on save");
+    }
+    {
+        std::ofstream out(path, std::ios::binary | std::ios::trunc);
+        out << R"json({"format":1,"name":"partial semantic source","steps":[{"notation":"214A","ids":[253]}],"entityContacts":[{"semanticSourceAction":0}]})json";
+    }
+    Check(!Mission::LoadMission(path, loaded, error) &&
+              error.find("only one semantic source field") !=
+                  std::string::npos,
+          "partial semantic source provenance fails closed on load");
+    {
+        std::ofstream out(path, std::ios::binary | std::ios::trunc);
+        out << R"json({"format":1,"name":"wrong semantic source","steps":[{"notation":"214A","ids":[253]}],"entityContacts":[{"opensAfterAction":0,"contactAfterAction":0,"semanticSourceAction":0,"semanticSourceMove":254}]})json";
+    }
+    Check(!Mission::LoadMission(path, loaded, error) &&
+              error.find("semantic source move outside its action") !=
+                  std::string::npos,
+          "semantic source move must belong to its persisted action");
+
+    // Legacy recordings omitted semanticSource*. Upgrade only a spawn whose
+    // exact identity, same-action barriers, generated label, and catalog row
+    // prove one producer move. Saving the in-memory upgrade makes it a
+    // one-time migration; all ambiguous shapes retain legacy absence.
+    {
+        std::ofstream out(path, std::ios::binary | std::ios::trunc);
+        out << R"json({"format":1,"name":"legacy exact producer","player":{"character":"shiori"},"steps":[{"notation":"2141236A","ids":[315]}],"entityContacts":[{"slot":2,"generation":1,"patterns":[435],"producerLifecycle":"spawn","producerPattern":435,"opensAfterAction":0,"contactAfterAction":0,"afterStep":-1}]})json";
+    }
+    Mission::Mission legacyExact;
+    Check(Mission::LoadMission(path, legacyExact, error) &&
+              legacyExact.entityContacts.size() == 1 &&
+              legacyExact.entityContacts[0].semanticSourceAction == 0 &&
+              legacyExact.entityContacts[0].semanticSourceMove == 315,
+          "legacy exact producer-qualified contact gains provenance");
+    Check(Mission::SaveMission(path, legacyExact, error) &&
+              ReadAll(path).find("\"semanticSourceMove\": 315") !=
+                  std::string::npos,
+          "legacy semantic-source promotion persists on the next save");
+
+    {
+        Mission::Mission fanout;
+        fanout.name = "legacy exact Shiori fanout source";
+        fanout.player.character = "shiori";
+        fanout.steps.resize(14);
+        fanout.steps[12].notation = "j.2141236A";
+        fanout.steps[12].moveIds = {312};
+        fanout.steps[13].notation = "j.214A";
+        fanout.steps[13].moveIds = {259};
+        Mission::EntityContactRequirement contact;
+        contact.notation = "j.2141236A (HIT)";
+        contact.slot = -1;
+        contact.generation = 0;
+        contact.patterns = {435};
+        contact.contactsRequired = 10;
+        contact.comboHitsRequired = 10;
+        contact.minimumContactsRequired = 1;
+        contact.minimumComboHitsRequired = 1;
+        contact.producerLifecycle = "spawn";
+        contact.producerPattern = 435;
+        contact.opensAfterAction = 12;
+        contact.semanticSourceAction =
+            Mission::SemanticSourcePolicy::kLegacyAbsent;
+        contact.semanticSourceMove =
+            Mission::SemanticSourcePolicy::kLegacyAbsent;
+        contact.contactAfterAction = 12;
+        contact.afterStep = 11;
+        contact.dueBeforeStep = 13;
+        contact.dueBeforeStepContact = 0;
+        for (int index = 0; index < 14; ++index) {
+            Mission::EntityContactFanoutMember member;
+            member.slot = 2 + index * 2;
+            member.generation = 1;
+            member.patterns = {435};
+            member.producerLifecycle = "spawn";
+            member.producerPattern = 435;
+            member.contactsObserved = index < 10 ? 1 : 0;
+            member.comboHitsObserved = index < 10 ? 1 : 0;
+            contact.fanoutMembers.push_back(member);
+        }
+        fanout.entityContacts.push_back(contact);
+        Check(Mission::SaveMission(path, fanout, error),
+              "save legacy Shiori fanout source fixture");
+        Mission::Mission fanoutLoaded;
+        Check(Mission::LoadMission(path, fanoutLoaded, error) &&
+                  fanoutLoaded.entityContacts.size() == 1 &&
+                  fanoutLoaded.entityContacts[0].semanticSourceAction == 12 &&
+                  fanoutLoaded.entityContacts[0].semanticSourceMove == 312,
+              "curated exact-member fanout gains one cast provenance");
+
+        fanout.entityContacts[0].fanoutMembers[3].producerPattern = 434;
+        Check(Mission::SaveMission(path, fanout, error),
+              "save mismatched legacy fanout control");
+        Mission::Mission mismatchedFanout;
+        Check(Mission::LoadMission(path, mismatchedFanout, error) &&
+                  Mission::SemanticSourcePolicy::IsLegacyAbsent(
+                      mismatchedFanout.entityContacts[0]
+                          .semanticSourceAction,
+                      mismatchedFanout.entityContacts[0]
+                          .semanticSourceMove),
+              "fanout with one mismatched child lineage stays standalone");
+    }
+
+    {
+        std::ofstream out(path, std::ios::binary | std::ios::trunc);
+        out << R"json({"format":1,"name":"legacy wildcard projectile","player":{"character":"akane"},"steps":[{"notation":"214236A","ids":[250]}],"entityContacts":[{"slot":3,"generation":1,"patterns":[400],"producerLifecycle":"spawn","producerPattern":400,"opensAfterAction":0,"contactAfterAction":0}]})json";
+    }
+    Mission::Mission legacyWildcard;
+    Check(Mission::LoadMission(path, legacyWildcard, error) &&
+              legacyWildcard.entityContacts.size() == 1 &&
+              legacyWildcard.entityContacts[0].semanticSourceAction == 0 &&
+              legacyWildcard.entityContacts[0].semanticSourceMove == 250,
+          "one-move ordinary wildcard projectile gains safe provenance");
+
+    {
+        std::ofstream out(path, std::ios::binary | std::ios::trunc);
+        out << R"json({"format":1,"name":"legacy ambiguous persistent","player":{"character":"nagamori"},"steps":[{"notation":"j.214A/B","ids":[255,256]}],"entityContacts":[{"slot":4,"generation":2,"patterns":[405],"producerLifecycle":"spawn","producerPattern":405,"opensAfterAction":0,"contactAfterAction":0}]})json";
+    }
+    Mission::Mission legacyAmbiguous;
+    Check(Mission::LoadMission(path, legacyAmbiguous, error) &&
+              Mission::SemanticSourcePolicy::IsLegacyAbsent(
+                  legacyAmbiguous.entityContacts[0].semanticSourceAction,
+                  legacyAmbiguous.entityContacts[0].semanticSourceMove),
+          "two producer-qualified persistent moves stay standalone");
+
+    {
+        std::ofstream out(path, std::ios::binary | std::ios::trunc);
+        out << R"json({"format":1,"name":"legacy ambiguous wildcard","player":{"character":"akane"},"steps":[{"notation":"needle","ids":[250,251]}],"entityContacts":[{"slot":3,"generation":1,"patterns":[400],"producerLifecycle":"spawn","producerPattern":400,"opensAfterAction":0,"contactAfterAction":0}]})json";
+    }
+    Mission::Mission legacyWildcardAmbiguous;
+    Check(Mission::LoadMission(path, legacyWildcardAmbiguous, error) &&
+              Mission::SemanticSourcePolicy::IsLegacyAbsent(
+                  legacyWildcardAmbiguous.entityContacts[0]
+                      .semanticSourceAction,
+                  legacyWildcardAmbiguous.entityContacts[0]
+                      .semanticSourceMove),
+          "ordinary wildcard with two possible moves stays standalone");
+
+    {
+        std::ofstream out(path, std::ios::binary | std::ios::trunc);
+        out << R"json({"format":1,"name":"legacy delayed contact","player":{"character":"nagamori"},"steps":[{"notation":"j.214A","ids":[255]},{"notation":"5A","ids":[150]}],"entityContacts":[{"slot":4,"generation":2,"patterns":[405],"producerLifecycle":"spawn","producerPattern":405,"opensAfterAction":0,"contactAfterAction":1}]})json";
+    }
+    Mission::Mission legacyDelayed;
+    Check(Mission::LoadMission(path, legacyDelayed, error) &&
+              Mission::SemanticSourcePolicy::IsLegacyAbsent(
+                  legacyDelayed.entityContacts[0].semanticSourceAction,
+                  legacyDelayed.entityContacts[0].semanticSourceMove),
+          "persistent activation after a later action stays standalone");
+
+    {
+        std::ofstream out(path, std::ios::binary | std::ios::trunc);
+        out << R"json({"format":1,"name":"legacy intervening deadline","player":{"character":"shiori"},"steps":[{"notation":"2141236A","ids":[315]},{"notation":"5A","ids":[150]},{"notation":"5B","ids":[160]}],"entityContacts":[{"slot":2,"generation":1,"patterns":[435],"producerLifecycle":"spawn","producerPattern":435,"opensAfterAction":0,"contactAfterAction":0,"dueBeforeStep":2}]})json";
+    }
+    Mission::Mission legacyIntervening;
+    Check(Mission::LoadMission(path, legacyIntervening, error) &&
+              Mission::SemanticSourcePolicy::IsLegacyAbsent(
+                  legacyIntervening.entityContacts[0].semanticSourceAction,
+                  legacyIntervening.entityContacts[0].semanticSourceMove),
+          "an intervening action deadline prevents legacy compaction");
+
+    {
+        std::ofstream out(path, std::ios::binary | std::ios::trunc);
+        out << R"json({"format":1,"name":"legacy custom label","player":{"character":"shiori"},"steps":[{"notation":"2141236A","ids":[315]}],"entityContacts":[{"notation":"AUTHOR OBJECTIVE","slot":2,"generation":1,"patterns":[435],"producerLifecycle":"spawn","producerPattern":435,"opensAfterAction":0,"contactAfterAction":0}]})json";
+    }
+    Mission::Mission legacyCustom;
+    Check(Mission::LoadMission(path, legacyCustom, error) &&
+              Mission::SemanticSourcePolicy::IsLegacyAbsent(
+                  legacyCustom.entityContacts[0].semanticSourceAction,
+                  legacyCustom.entityContacts[0].semanticSourceMove),
+          "authored entity wording is never migrated into a hidden row");
+
+    // A known attack-capable entity that did not contact can be persisted as
+    // an exact lifecycle objective. Exercise every descriptor field so future
+    // recorder/runtime work cannot silently lose strict activation evidence.
+    {
+        Mission::Mission lifecycleMission;
+        lifecycleMission.name = "entity lifecycle serde";
+        lifecycleMission.strictEntityContacts = true;
+        Mission::EntityLifecycleRequirement lifecycle;
+        lifecycle.notation = "236C (SETUP)";
+        lifecycle.owner = 1;
+        lifecycle.slot = 6;
+        lifecycle.generation = 3;
+        lifecycle.lifecycle = "morph";
+        lifecycle.pattern = 406;
+        lifecycle.priorPattern = 400;
+        lifecycle.opensAfterAction = 2;
+        lifecycle.segment = 1;
+        lifecycle.maxDelay = 96;
+        lifecycleMission.entityLifecycles.push_back(lifecycle);
+
+        Check(Mission::SaveMission(path, lifecycleMission, error),
+              "save strict entity-lifecycle objective");
+        const std::string lifecycleEncoded = ReadAll(path);
+        Check(lifecycleEncoded.find("\"entityLifecycles\"") !=
+                  std::string::npos &&
+              lifecycleEncoded.find("\"strictEntityContacts\": true") !=
+                  std::string::npos &&
+              lifecycleEncoded.find("\"lifecycle\": \"morph\"") !=
+                  std::string::npos &&
+              lifecycleEncoded.find("\"pattern\": 406") !=
+                  std::string::npos &&
+              lifecycleEncoded.find("\"priorPattern\": 400") !=
+                  std::string::npos &&
+              lifecycleEncoded.find("\"opensAfterAction\": 2") !=
+                  std::string::npos,
+              "entity-lifecycle objective uses canonical JSON fields");
+
+        Mission::Mission lifecycleLoaded;
+        Check(Mission::LoadMission(path, lifecycleLoaded, error) &&
+                  lifecycleLoaded.strictEntityContacts &&
+                  lifecycleLoaded.entityLifecycles.size() == 1,
+              "reload strict entity-lifecycle objective");
+        const auto& roundTrip = lifecycleLoaded.entityLifecycles[0];
+        Check(roundTrip.notation == lifecycle.notation &&
+                  roundTrip.owner == lifecycle.owner &&
+                  roundTrip.slot == lifecycle.slot &&
+                  roundTrip.generation == lifecycle.generation &&
+                  roundTrip.lifecycle == lifecycle.lifecycle &&
+                  roundTrip.pattern == lifecycle.pattern &&
+                  roundTrip.priorPattern == lifecycle.priorPattern &&
+                  roundTrip.opensAfterAction ==
+                      lifecycle.opensAfterAction &&
+                  roundTrip.segment == lifecycle.segment &&
+                  roundTrip.maxDelay == lifecycle.maxDelay,
+              "every entity-lifecycle field round-trips");
+    }
+
+    {
+        std::ofstream out(path, std::ios::binary | std::ios::trunc);
+        out << R"json({"format":1,"name":"entity lifecycle defaults","entityLifecycles":[{}]})json";
+    }
+    Check(Mission::LoadMission(path, loaded, error) &&
+              loaded.entityLifecycles.size() == 1,
+          "load minimal entity-lifecycle requirement");
+    {
+        const auto& defaults = loaded.entityLifecycles[0];
+        Check(defaults.notation.empty() && defaults.owner == 1 &&
+                  defaults.slot == -1 && defaults.generation == 0 &&
+                  defaults.lifecycle.empty() && defaults.pattern == -1 &&
+                  defaults.priorPattern == -1 &&
+                  defaults.opensAfterAction == -1 &&
+                  defaults.segment == 0 && defaults.maxDelay == 0,
+              "minimal entity lifecycle receives stable parser defaults");
+    }
+
+    {
+        std::ofstream out(path, std::ios::binary | std::ios::trunc);
+        out << R"json({"format":1,"name":"bad lifecycle list","entityLifecycles":{}})json";
+    }
+    Check(!Mission::LoadMission(path, loaded, error) &&
+              error.find("entityLifecycles is not an array") !=
+                  std::string::npos,
+          "malformed entity-lifecycle list fails closed");
+
+    {
+        std::ofstream out(path, std::ios::binary | std::ios::trunc);
+        out << R"json({"format":1,"name":"bad lifecycle entry","entityLifecycles":[7]})json";
+    }
+    Check(!Mission::LoadMission(path, loaded, error) &&
+              error.find("entity lifecycle 0 is not an object") !=
+                  std::string::npos,
+          "non-object entity-lifecycle entry fails closed");
+
+    {
+        std::ofstream out(path, std::ios::binary | std::ios::trunc);
+        out << R"json({"format":1,"name":"bad lifecycle type","entityLifecycles":[{"lifecycle":7}]})json";
+    }
+    Check(!Mission::LoadMission(path, loaded, error) &&
+              error.find("non-string lifecycle") != std::string::npos,
+          "non-string entity lifecycle kind fails closed");
+
+    {
+        std::ofstream out(path, std::ios::binary | std::ios::trunc);
+        out << R"json({"format":1,"name":"bad lifecycle range","entityLifecycles":[{"lifecycle":"morph","pattern":406,"maxDelay":-1}]})json";
+    }
+    Check(!Mission::LoadMission(path, loaded, error) &&
+              error.find("out-of-range numeric field") !=
+                  std::string::npos,
+          "out-of-range entity-lifecycle field fails closed");
 
     {
         std::ofstream out(path, std::ios::binary | std::ios::trunc);
@@ -636,20 +1801,29 @@ int main(int argc, char** argv) {
         std::ofstream out(lessonPath, std::ios::binary | std::ios::trunc);
         out << R"json({"format":1,"tutorialSchema":1,"type":"tutorial","id":"efz.test.rg_chain",
             "lesson":{"completion":"allTasks","tasks":[{"id":"pattern","kind":"combat",
-            "moveIds":[168],"script":"ep","pos":{"x":20,"y":0},
-            "dummyPos":{"x":80,"y":0}}],"dummyScript":{"episodes":[{"id":"ep",
+            "moveIds":[168],"script":"ep","pos":{"x":20.1234567890123,"y":-3.125},
+            "dummyPos":{"x":80.9876543210987,"y":0}}],"dummyScript":{"episodes":[{"id":"ep",
             "ownerTask":"pattern","kind":"macro","action":"5A>5B>2C","approach":"none",
             "start":"taskArmed","repeat":{"mode":"loop","delay":120}}]}}})json";
     }
     Check(Mission::LoadMission(lessonPath, loaded, error) &&
-          loaded.lesson.tasks[0].hasPos && loaded.lesson.tasks[0].posX == 20.0f &&
+          loaded.lesson.tasks[0].hasPos &&
+          std::abs(loaded.lesson.tasks[0].posX - 20.1234567890123) < 1e-12 &&
+          std::abs(loaded.lesson.tasks[0].posY - (-3.125)) < 1e-12 &&
           loaded.lesson.tasks[0].hasDummyPos &&
-          loaded.lesson.tasks[0].dummyPosX == 80.0f &&
+          std::abs(loaded.lesson.tasks[0].dummyPosX - 80.9876543210987) < 1e-12 &&
           loaded.lesson.episodes[0].action == "5A>5B>2C",
-          "contact-chain episode and task-scoped positions for both sides load");
+          "contact-chain episode and double-precision task positions load");
     Check(Mission::SaveMission(lessonPath, loaded, error) &&
           ReadAll(lessonPath).find("\"dummyPos\"") != std::string::npos,
           "task-scoped dummy position serializes");
+    Mission::Mission precisionReload;
+    Check(Mission::LoadMission(lessonPath, precisionReload, error) &&
+          std::abs(precisionReload.lesson.tasks[0].posX -
+                   20.1234567890123) < 1e-12 &&
+          std::abs(precisionReload.lesson.tasks[0].dummyPosX -
+                   80.9876543210987) < 1e-12,
+          "task-scoped fighter positions retain double precision after save/reload");
     {
         std::ofstream out(lessonPath, std::ios::binary | std::ios::trunc);
         out << R"json({"format":1,"tutorialSchema":1,"type":"tutorial","id":"efz.test.bad_rg_chain",

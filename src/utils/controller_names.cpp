@@ -81,21 +81,14 @@ std::string GetControllerNameForIndex(int userIndex) {
 
     if (userIndex < 0 || userIndex > 3) return std::string("All (Any)");
 
-    // Fast lockless early-out: if the cached mask says disconnected, return immediately
-    // without touching XInputShim::GetState (which acquires a mutex shared with the
-    // background watcher and can stall the render thread by multiple seconds).
-    if (!XInputShim::IsPadConnectedCached(userIndex)) {
+    XInputShim::Snapshot snapshot{};
+    XInputShim::CopySnapshot(snapshot);
+    if (!snapshot.IsConnected(userIndex)) {
         return std::string("(Disconnected) Pad ") + std::to_string(userIndex);
     }
 
-    // If not connected, report clearly
-    XINPUT_STATE st{};
-    if (XInputShim::GetState(userIndex, &st) != ERROR_SUCCESS) {
-        return std::string("(Disconnected) Pad ") + std::to_string(userIndex);
-    }
-
-    if (XInputShim::IsGenericFallbackSlot(userIndex)) {
-        std::string name = XInputShim::GetSlotDisplayName(userIndex);
+    if (snapshot.genericSlots[userIndex]) {
+        std::string name = snapshot.slotNames[userIndex];
         if (name.empty()) name = "DirectInput Controller";
         return name + " (DirectInput)";
     }

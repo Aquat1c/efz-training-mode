@@ -12,6 +12,7 @@
 //
 #include <string>
 #include <vector>
+#include <cstdint>
 
 struct ImDrawList;
 
@@ -47,6 +48,34 @@ constexpr bool SessionMenuAllowed(Phase phase) {
 // flawless clear therefore persists zero attempts.
 constexpr int PersistedAttemptDelta(int attemptsThisRun) {
     return attemptsThisRun > 0 ? attemptsThisRun : 0;
+}
+
+// The transition from a reading/task-complete surface into live play is a
+// release gate, not a motion pre-buffer.  Passing directions through here lets
+// the Up/Back input that closed or navigated the previous surface become a
+// jump as soon as EFZ resumes.  Keep every gameplay bit suppressed and require
+// a physically neutral poll before the task can arm.
+constexpr uint8_t NeutralGatePublishedMask(uint8_t /*physicalPoll*/) {
+    return 0;
+}
+
+constexpr bool NeutralGatePollIsReleased(bool sampleValid,
+                                         uint8_t physicalPoll) {
+    return sampleValid && physicalPoll == 0;
+}
+
+constexpr int NeutralGateRequiredFreshPolls() { return 2; }
+
+constexpr uint32_t NeutralGateObservedSerialBaseline(bool sampleValid,
+                                                     uint32_t observedSerial) {
+    return sampleValid ? observedSerial : 0;
+}
+
+constexpr int NeutralGateNeutralPollCount(bool sampleValid, bool freshSample,
+                                          uint8_t physicalPoll,
+                                          int previousCount) {
+    if (!sampleValid || !freshSample) return previousCount;
+    return physicalPoll == 0 ? previousCount + 1 : 0;
 }
 
 // Pure policy used when a demonstration hands control back to the lesson.
@@ -164,6 +193,10 @@ void NotifyStartupFailure(const std::string& message);
 void NotifyStateLoaded();
 bool IsActive();
 Phase GetPhase();
+// True only after startup has a proven successor owner: either EFZ is
+// physically paused for a frozen tutorial surface, or NeutralGate's attributed
+// zero poll is live. Mission::Engine keeps its dedicated P1 gate until then.
+bool HasStartupInputOwnership();
 
 // Monitor-thread tick (called from Engine::Tick in place of TickRun).
 void Tick(const ::Mission::Engine::Snapshot& s);

@@ -4,6 +4,7 @@
 #include "game/mission/tutorial_text_policy.h"
 #include "game/mission/tutorial_state_policy.h"
 #include "input/input_hook.h"
+#include "input/physical_poll_sample_policy.h"
 
 #include <cstdlib>
 #include <iostream>
@@ -23,6 +24,7 @@ int main() {
     namespace StatePolicy = Mission::TutorialStatePolicy;
     namespace EpisodePolicy = Mission::TutorialEpisodePolicy;
     namespace LayoutPolicy = Mission::TutorialLayoutPolicy;
+    namespace ColorPolicy = Mission::TutorialColorPolicy;
     namespace TextPolicy = Mission::TutorialTextPolicy;
     namespace HookPolicy = InputHookPolicy;
 
@@ -60,6 +62,39 @@ int main() {
           PersistedAttemptDelta(1) == 1 &&
           PersistedAttemptDelta(3) == 3,
           "progress persists real misses/restarts and preserves a flawless zero");
+    Check(NeutralGatePublishedMask(0x00) == 0 &&
+          NeutralGatePublishedMask(0x01) == 0 &&
+          NeutralGatePublishedMask(0xFF) == 0 &&
+          NeutralGatePollIsReleased(true, 0x00) &&
+          !NeutralGatePollIsReleased(false, 0x00) &&
+          !NeutralGatePollIsReleased(true, 0x01) &&
+          !NeutralGatePollIsReleased(true, 0x10) &&
+          !NeutralGatePollIsReleased(true, 0xFF),
+          "tutorial task handoff suppresses every gameplay bit and waits for full release");
+    Check(NeutralGateRequiredFreshPolls() == 2 &&
+          NeutralGateObservedSerialBaseline(false, 81) == 0 &&
+          NeutralGateObservedSerialBaseline(true, 81) == 81 &&
+          NeutralGateNeutralPollCount(false, false, 0, 0) == 0 &&
+          NeutralGateNeutralPollCount(true, false, 0, 1) == 1 &&
+          NeutralGateNeutralPollCount(true, true, 0, 0) == 1 &&
+          NeutralGateNeutralPollCount(true, true, 0, 1) == 2 &&
+          NeutralGateNeutralPollCount(true, true, 0x08, 2) == 0,
+          "tutorial release gate counts fresh neutral polls and resets on held directions");
+
+    constexpr uint32_t packedPoll =
+        PhysicalPollSamplePolicy::Pack(42, 0x91);
+    Check(PhysicalPollSamplePolicy::Serial(packedPoll) == 42 &&
+          PhysicalPollSamplePolicy::Mask(packedPoll) == 0x91 &&
+          PhysicalPollSamplePolicy::Serial(
+              PhysicalPollSamplePolicy::Next(packedPoll, 0x20)) == 43 &&
+          PhysicalPollSamplePolicy::Mask(
+              PhysicalPollSamplePolicy::Next(packedPoll, 0x20)) == 0x20 &&
+          PhysicalPollSamplePolicy::Serial(
+              PhysicalPollSamplePolicy::Next(
+                  PhysicalPollSamplePolicy::Pack(
+                      PhysicalPollSamplePolicy::kSerialBits, 0xFF),
+                  0x00)) == 1,
+          "physical poll mask/serial publication policy drifted");
 
     constexpr LayoutPolicy::Typography smallUi =
         LayoutPolicy::TypographyFor(0.70f);
@@ -68,23 +103,181 @@ int main() {
     constexpr LayoutPolicy::Typography largeUi =
         LayoutPolicy::TypographyFor(1.50f);
     Check(smallUi.prosePx >= 12.0f && smallUi.taskPx >= 11.0f &&
-          smallUi.metaPx >= 9.0f && normalUi.prosePx == 13.0f &&
+          smallUi.metaPx >= 9.0f && smallUi.controlsPx >= 11.0f &&
+          normalUi.prosePx == 13.0f && normalUi.controlsPx == 12.0f &&
           largeUi.prosePx <= 16.0f && largeUi.pageTitlePx <= 20.0f,
           "tutorial typography stays readable and bounded at every supported UI scale");
+    using HudFocus = LayoutPolicy::HudFocus;
+    Check(LayoutPolicy::ParseHudFocus("top") == HudFocus::Top &&
+          LayoutPolicy::ParseHudFocus("bottom") == HudFocus::Bottom &&
+          LayoutPolicy::ParseHudFocus("life") == HudFocus::Life &&
+          LayoutPolicy::ParseHudFocus("meters") == HudFocus::Meters &&
+          LayoutPolicy::ParseHudFocus("sp") == HudFocus::Sp &&
+          LayoutPolicy::ParseHudFocus("rf") == HudFocus::Rf &&
+          LayoutPolicy::ParseHudFocus("final_memory") == HudFocus::FinalMemory &&
+          LayoutPolicy::ParseHudFocus("meter_states") == HudFocus::MeterStates &&
+          LayoutPolicy::ParseHudFocus("rf_states") == HudFocus::RfStates &&
+          LayoutPolicy::ParseHudFocus("red_ic") == HudFocus::RedIc &&
+          LayoutPolicy::ParseHudFocus("blue_ic") == HudFocus::BlueIc &&
+          LayoutPolicy::ParseHudFocus("blue_ic_meters") == HudFocus::BlueIcMeters &&
+          LayoutPolicy::ParseHudFocus("juggle") == HudFocus::Juggle &&
+          LayoutPolicy::ParseHudFocus("juggle_yellow") == HudFocus::JuggleYellow &&
+          LayoutPolicy::ParseHudFocus("juggle_red") == HudFocus::JuggleRed &&
+          LayoutPolicy::ParseHudFocus("") == HudFocus::None &&
+          LayoutPolicy::ParseHudFocus("unknown") == HudFocus::None &&
+          LayoutPolicy::ParseHudFocus(nullptr) == HudFocus::None,
+          "authored HUD focus compiles once and preserves legacy focus aliases");
+    constexpr LayoutPolicy::Rect fullDim =
+        LayoutPolicy::PageBackdropDim(HudFocus::None);
+    constexpr LayoutPolicy::Rect topDim =
+        LayoutPolicy::PageBackdropDim(HudFocus::Life);
+    constexpr LayoutPolicy::Rect bottomDim =
+        LayoutPolicy::PageBackdropDim(HudFocus::Rf);
+    constexpr LayoutPolicy::Rect bothDim =
+        LayoutPolicy::PageBackdropDim(HudFocus::FinalMemory);
+    constexpr LayoutPolicy::Rect juggleDim =
+        LayoutPolicy::PageBackdropDim(HudFocus::Juggle);
+    Check(fullDim.x == 0.0f && fullDim.y == 0.0f &&
+          fullDim.w == 640.0f && fullDim.h == 480.0f &&
+          topDim.y == 92.0f && topDim.h == 388.0f &&
+          bottomDim.y == 0.0f && bottomDim.h == 412.0f &&
+          bothDim.y == 92.0f && bothDim.h == 320.0f &&
+          juggleDim.w == 0.0f && juggleDim.h == 0.0f &&
+          LayoutPolicy::KeepsTopHudVisible(HudFocus::Top) &&
+          LayoutPolicy::KeepsTopHudVisible(HudFocus::Life) &&
+          !LayoutPolicy::KeepsTopHudVisible(HudFocus::Meters) &&
+          LayoutPolicy::KeepsBottomHudVisible(HudFocus::Bottom) &&
+          LayoutPolicy::KeepsBottomHudVisible(HudFocus::Sp) &&
+          LayoutPolicy::KeepsBottomHudVisible(HudFocus::MeterStates) &&
+          LayoutPolicy::KeepsBottomHudVisible(HudFocus::BlueIcMeters) &&
+          !LayoutPolicy::KeepsBottomHudVisible(HudFocus::Life),
+          "focused pages dim only complementary playfield and leave juggle previews clear");
+    Check(LayoutPolicy::HudFocusRectCount(HudFocus::None) == 0 &&
+          LayoutPolicy::HudFocusRectCount(HudFocus::Top) == 1 &&
+          LayoutPolicy::HudFocusRectCount(HudFocus::Bottom) == 1 &&
+          LayoutPolicy::HudFocusRectCount(HudFocus::Life) == 5 &&
+          LayoutPolicy::HudFocusRectCount(HudFocus::Meters) == 6 &&
+          LayoutPolicy::HudFocusRectCount(HudFocus::Sp) == 4 &&
+          LayoutPolicy::HudFocusRectCount(HudFocus::Rf) == 2 &&
+          LayoutPolicy::HudFocusRectCount(HudFocus::FinalMemory) == 3 &&
+          LayoutPolicy::HudFocusRectCount(HudFocus::MeterStates) == 6 &&
+          LayoutPolicy::HudFocusRectCount(HudFocus::RfStates) == 2 &&
+          LayoutPolicy::HudFocusRectCount(HudFocus::RedIc) == 1 &&
+          LayoutPolicy::HudFocusRectCount(HudFocus::BlueIc) == 1 &&
+          LayoutPolicy::HudFocusRectCount(HudFocus::BlueIcMeters) == 3 &&
+          LayoutPolicy::HudFocusRectCount(HudFocus::Juggle) == 0,
+          "each HUD focus emits a fixed, bounded number of static outlines");
+    const HudFocus outlinedFocuses[] = {
+        HudFocus::Top, HudFocus::Bottom, HudFocus::Life,
+        HudFocus::Meters, HudFocus::Sp, HudFocus::Rf,
+        HudFocus::FinalMemory, HudFocus::MeterStates,
+        HudFocus::RfStates, HudFocus::RedIc, HudFocus::BlueIc,
+        HudFocus::BlueIcMeters,
+    };
+    bool allHudOutlinesWithinCanvas = true;
+    for (HudFocus focus : outlinedFocuses) {
+        for (int i = 0; i < LayoutPolicy::HudFocusRectCount(focus); ++i) {
+            allHudOutlinesWithinCanvas = allHudOutlinesWithinCanvas &&
+                LayoutPolicy::WithinCanvas(
+                    LayoutPolicy::HudFocusRect(focus, i));
+        }
+    }
+    Check(allHudOutlinesWithinCanvas &&
+          LayoutPolicy::FpsBounds().x == 278.0f &&
+          LayoutPolicy::FpsBounds().y == 6.0f &&
+          LayoutPolicy::FpsBounds().w == 84.0f &&
+          LayoutPolicy::FpsBounds().h == 60.0f &&
+          LayoutPolicy::FpsBounds().x ==
+              LayoutPolicy::P1LifeBounds().x +
+                  LayoutPolicy::P1LifeBounds().w &&
+          LayoutPolicy::FpsBounds().x + LayoutPolicy::FpsBounds().w ==
+              LayoutPolicy::P2LifeBounds().x &&
+          LayoutPolicy::P1RoundsBounds().w == 34.0f &&
+          LayoutPolicy::P2RoundsBounds().x == 362.0f &&
+          LayoutPolicy::P1SpBarBounds().y == 446.0f &&
+          LayoutPolicy::P1SpBarBounds().h == 12.0f &&
+          LayoutPolicy::P1RfBounds().y == 462.0f &&
+          LayoutPolicy::P1RfBounds().h == 8.0f &&
+          LayoutPolicy::P2RfBounds().y == 462.0f,
+          "native Life, round, FPS, SP, and RF outlines use their mapped pixel footprints");
+    Check(LayoutPolicy::JugglePreviewRefreshBattleUpdates() == 2u &&
+          !LayoutPolicy::JugglePreviewRefreshComplete(100u, 101u) &&
+          !LayoutPolicy::JugglePreviewRefreshComplete(102u, 101u) &&
+          LayoutPolicy::JugglePreviewRefreshComplete(100u, 102u) &&
+          LayoutPolicy::JugglePreviewRefreshComplete(0xFFFFFFFFu, 1u) &&
+          !LayoutPolicy::BattleBatchReached(102u, 101u) &&
+          LayoutPolicy::BattleBatchReached(102u, 102u) &&
+          LayoutPolicy::BattleBatchReached(0xFFFFFFFFu, 1u) &&
+          LayoutPolicy::JugglePreviewRefreshWatchdogTicks() >= 32,
+          "juggle preview waits for two post-thaw battle calls and handles batch wraparound");
     Check(LayoutPolicy::WithinCanvas(LayoutPolicy::ActiveRequirements()) &&
           LayoutPolicy::WithinCanvas(LayoutPolicy::BelowStatsRequirements()) &&
-          LayoutPolicy::WithinCanvas(LayoutPolicy::ModalActions()) &&
           LayoutPolicy::WithinCanvas(LayoutPolicy::PageBanner()) &&
           LayoutPolicy::WithinCanvas(LayoutPolicy::PageCard()) &&
           LayoutPolicy::WithinCanvas(LayoutPolicy::PageActions()) &&
+          LayoutPolicy::WithinCanvas(LayoutPolicy::JugglePageBanner()) &&
+          LayoutPolicy::WithinCanvas(LayoutPolicy::JugglePageCard()) &&
+          LayoutPolicy::WithinCanvas(LayoutPolicy::JugglePreviewRail()) &&
+          LayoutPolicy::WithinCanvas(LayoutPolicy::JugglePageActions()) &&
+          LayoutPolicy::WithinCanvas(LayoutPolicy::ModalFooter(0.70f)) &&
+          LayoutPolicy::WithinCanvas(LayoutPolicy::ModalFooter(1.00f)) &&
+          LayoutPolicy::WithinCanvas(LayoutPolicy::ModalFooter(1.50f)) &&
+          LayoutPolicy::WithinCanvas(LayoutPolicy::ModalContent(0.70f)) &&
+          LayoutPolicy::WithinCanvas(LayoutPolicy::ModalContent(1.50f)) &&
           LayoutPolicy::SafeBandsDoNotOverlap() &&
           LayoutPolicy::ActiveRequirements().x <= 16.0f &&
           LayoutPolicy::ActiveRequirements().y >= 96.0f &&
           LayoutPolicy::ActiveRequirements().x +
               LayoutPolicy::ActiveRequirements().w <= 400.0f &&
           LayoutPolicy::PageBanner().y >= 92.0f &&
-          LayoutPolicy::ModalActions().y + LayoutPolicy::ModalActions().h <= 448.0f,
-          "live requirements use the upper-left Trial band and clear native meters");
+          LayoutPolicy::ModalContent(1.50f).y +
+              LayoutPolicy::ModalContent(1.50f).h <
+              LayoutPolicy::ModalFooter(1.50f).y,
+          "live, reading, preview, and modal surfaces remain inside the 640x480 safe canvas");
+    Check(LayoutPolicy::HudFocusTone(HudFocus::Life, 0) ==
+              ColorPolicy::Tone::Life &&
+          LayoutPolicy::HudFocusTone(HudFocus::Life, 2) ==
+              ColorPolicy::Tone::Fps &&
+          LayoutPolicy::HudFocusTone(HudFocus::Life, 3) ==
+              ColorPolicy::Tone::Rounds &&
+          LayoutPolicy::HudFocusTone(HudFocus::MeterStates, 0) ==
+              ColorPolicy::Tone::Sp &&
+          LayoutPolicy::HudFocusTone(HudFocus::MeterStates, 4) ==
+              ColorPolicy::Tone::RedIc &&
+          LayoutPolicy::HudFocusTone(HudFocus::MeterStates, 5) ==
+              ColorPolicy::Tone::BlueIc &&
+          ColorPolicy::ParseTone("life") == ColorPolicy::Tone::Life &&
+          ColorPolicy::ParseTone("blue_ic") == ColorPolicy::Tone::BlueIc &&
+          ColorPolicy::ParseTone("not_a_tone") == ColorPolicy::Tone::Default,
+          "HUD outlines and authored prose share semantic color roles");
+    using JuggleBand = LayoutPolicy::JuggleBand;
+    Check(LayoutPolicy::JuggleBandForUntech(0) == JuggleBand::Hidden &&
+          LayoutPolicy::JuggleBandForUntech(1) == JuggleBand::Red &&
+          LayoutPolicy::JuggleBandForUntech(30) == JuggleBand::Red &&
+          LayoutPolicy::JuggleBandForUntech(31) == JuggleBand::Yellow &&
+          LayoutPolicy::JuggleBandForUntech(60) == JuggleBand::Yellow &&
+          LayoutPolicy::JuggleBandForUntech(61) == JuggleBand::Normal &&
+          LayoutPolicy::JuggleWidth(99) == 99 &&
+          LayoutPolicy::JuggleWidth(100) == 100 &&
+          LayoutPolicy::JuggleWidth(101) == 100 &&
+          LayoutPolicy::JugglePreviewUntech(HudFocus::Juggle) == 100 &&
+          LayoutPolicy::JugglePreviewUntech(HudFocus::JuggleYellow) == 60 &&
+          LayoutPolicy::JugglePreviewUntech(HudFocus::JuggleRed) == 20 &&
+          LayoutPolicy::IsKnownFacingByte(0x01u) &&
+          LayoutPolicy::IsKnownFacingByte(0xFFu) &&
+          !LayoutPolicy::IsKnownFacingByte(0x00u) &&
+          !LayoutPolicy::IsKnownFacingByte(0x02u) &&
+          LayoutPolicy::FacesRight(0x01u) &&
+          !LayoutPolicy::FacesRight(0xFFu),
+          "native juggle previews preserve exact gauge bands, width cap, and EFZ signed facing bytes");
+    Check(LayoutPolicy::JugglePageCard().x +
+              LayoutPolicy::JugglePageCard().w == 336.0f &&
+          LayoutPolicy::JugglePreviewRail().x == 344.0f &&
+          LayoutPolicy::JugglePreviewRail().w == 280.0f &&
+          LayoutPolicy::JugglePageCard().x +
+              LayoutPolicy::JugglePageCard().w <
+              LayoutPolicy::JugglePreviewRail().x,
+          "juggle reading pages reserve enough unobscured width for the full native gauge");
     constexpr LayoutPolicy::Rect upperRequirements =
         LayoutPolicy::RequirementBounds(false);
     constexpr LayoutPolicy::Rect belowStatsRequirements =
@@ -101,6 +294,28 @@ int main() {
           LayoutPolicy::RequirementWindowStart(12, 8, 11) == 4 &&
           LayoutPolicy::RequirementWindowStart(3, 8, 2) == 0,
           "oversized authored checklists keep the current requirement in view");
+    Check(LayoutPolicy::ActionWindowStart(12, 8, 0) == 0 &&
+          LayoutPolicy::ActionWindowStart(12, 8, 6) == 2 &&
+          LayoutPolicy::ActionWindowStart(12, 8, 11) == 4 &&
+          LayoutPolicy::ActionWindowStart(3, 8, 2) == 0 &&
+          LayoutPolicy::ActionWindowStart(0, 8, 0) == 0,
+          "long action rails keep the current authored step in view");
+    using ActionStepState = LayoutPolicy::ActionStepVisualState;
+    Check(LayoutPolicy::ResolveActionStepVisualState(0, 1, false, false, false) ==
+              ActionStepState::Done &&
+          LayoutPolicy::ResolveActionStepVisualState(1, 1, false, false, false) ==
+              ActionStepState::Current &&
+          LayoutPolicy::ResolveActionStepVisualState(1, 1, true, false, false) ==
+              ActionStepState::Armed &&
+          LayoutPolicy::ResolveActionStepVisualState(1, 1, true, true, false) ==
+              ActionStepState::Failed &&
+          LayoutPolicy::ResolveActionStepVisualState(2, 1, false, false, false) ==
+              ActionStepState::Future &&
+          LayoutPolicy::ResolveActionStepVisualState(2, 3, false, false, false) ==
+              ActionStepState::Done &&
+          LayoutPolicy::ResolveActionStepVisualState(4, 0, false, false, true) ==
+              ActionStepState::Done,
+          "tutorial action rails distinguish done, current, committed, failed, and future steps");
     Check(TextPolicy::NotationToRich("normal block") == "normal block" &&
           TextPolicy::NotationToRich("~5A") == "~ {input:5A}" &&
           TextPolicy::NotationToRich("delayed 6C / 4C throw") ==

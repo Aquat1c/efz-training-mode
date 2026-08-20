@@ -272,7 +272,8 @@ namespace CharacterSettings {
         {"mio", CHAR_ID_MIO},
         {"mishio", CHAR_ID_MISHIO},
         {"misuzu", CHAR_ID_MISUZU},
-        {"nagamori", CHAR_ID_MIZUKA},    // Nagamori is actually Mizuka Nagamori
+        {"nagamori", CHAR_ID_MIZUKA},        // Mizuka Nagamori uses her surname in files
+        {"mizuka", CHAR_ID_UNKNOWN_BOSS},   // Boss UNKNOWN
         {"nanase", CHAR_ID_NANASE},      // Nanase is Rumi
         {"exnanase", CHAR_ID_EXNANASE},  // ExNanase is Doppel Nanase
         {"nayuki",  CHAR_ID_NAYUKI},     //  "nayuki" is Sleepy variant (Neyuki)
@@ -281,7 +282,7 @@ namespace CharacterSettings {
         {"ayu", CHAR_ID_AYU},
         {"mai", CHAR_ID_MAI},
         {"mayu", CHAR_ID_MAYU},
-        {"mizukab", CHAR_ID_MIZUKAB},    // MizukaB is Unknown
+        {"mizukab", CHAR_ID_UNKNOWN},        // Playable UNKNOWN
         {"kano", CHAR_ID_KANO}
     };
 
@@ -299,8 +300,8 @@ namespace CharacterSettings {
             case CHAR_ID_MIO:      return "Mio";
             case CHAR_ID_MISHIO:   return "Mishio";
             case CHAR_ID_MISUZU:   return "Misuzu";
-            case CHAR_ID_MIZUKA:   return "Mizuka";
-            case CHAR_ID_NAGAMORI: return "Nagamori";
+            case CHAR_ID_MIZUKA:       return "Mizuka";
+            case CHAR_ID_UNKNOWN_BOSS: return "Unknown (Boss)";
             case CHAR_ID_NANASE:   return "Rumi";
             case CHAR_ID_EXNANASE: return "Doppel";
             case CHAR_ID_NAYUKI:   return "Neyuki";
@@ -309,7 +310,7 @@ namespace CharacterSettings {
             case CHAR_ID_AYU:      return "Ayu";
             case CHAR_ID_MAI:      return "Mai";
             case CHAR_ID_MAYU:     return "Mayu";
-            case CHAR_ID_MIZUKAB:  return "Unknown";
+            case CHAR_ID_UNKNOWN:  return "Unknown";
             case CHAR_ID_KANO:     return "Kano";
             default:               return "Undefined";
         }
@@ -329,8 +330,8 @@ namespace CharacterSettings {
             case CHAR_ID_MIO:      return "mio";
             case CHAR_ID_MISHIO:   return "mishio";
             case CHAR_ID_MISUZU:   return "misuzu";
-            case CHAR_ID_MIZUKA:   return "nagamori";
-            case CHAR_ID_NAGAMORI: return "nagamori";
+            case CHAR_ID_MIZUKA:       return "nagamori";
+            case CHAR_ID_UNKNOWN_BOSS: return "mizuka";
             case CHAR_ID_NANASE:   return "nanase";
             case CHAR_ID_EXNANASE: return "exnanase";
             case CHAR_ID_NAYUKI:   return "nayuki";
@@ -339,7 +340,7 @@ namespace CharacterSettings {
             case CHAR_ID_AYU:      return "ayu";
             case CHAR_ID_MAI:      return "mai";
             case CHAR_ID_MAYU:     return "mayu";
-            case CHAR_ID_MIZUKAB:  return "mizukab";
+            case CHAR_ID_UNKNOWN:  return "mizukab";
             case CHAR_ID_KANO:     return "kano";
             default:               return "unknown";
         }

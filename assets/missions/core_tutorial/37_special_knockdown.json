@@ -144,7 +144,7 @@
   },
   "sourceRefs": [
     "mizuumi:advanced-mechanics@457885",
-    "local:shared_documentation/move_command_maps/mai.json"
+    "local:shared_documentation/MOVE_COMMAND_MAPS.md::mai"
   ],
   "next": {
     "lessonId": "efz.systems.wakeup_vulnerability"

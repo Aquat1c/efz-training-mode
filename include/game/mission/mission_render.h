@@ -26,11 +26,16 @@ struct RichTextMetrics {
 // Draw the recipe for the active mission (no-op if none). `device` is the live
 // IDirect3DDevice9* (as void*); ox/oy/scale map the 640x480 virtual space into
 // the current render target's inner 4:3 area.
+// WantsDraw is a conservative, lock-free routing hint used by the top-level
+// overlay so an active trial remains a render reason even after its legacy
+// status toast is removed. Draw performs the coherent visibility/snapshot gate.
+bool WantsDraw();
 void Draw(void* device, ImDrawList* dl, float ox, float oy, float scale);
 
 // Shared tutorial rich-text renderer. It resolves {dir:}, {btn:}, and
-// {input:} tokens through assets/controls, including a styled neutral-5 tile,
-// and wraps atomically so notation is never split from its button glyph.
+// {input:} tokens through assets/controls, plus cached semantic spans such as
+// {tone:life|Life Gauge}. It includes a styled neutral-5 tile and wraps
+// atomically so notation or a colored phrase is never split internally.
 float MeasureRichTextHeight(void* device, ImFont* font, float fontPx,
                             const std::string& text, float maxWidth);
 // Returns the widest used line as well as total wrapped height. The result is
