@@ -3,7 +3,7 @@
   "tutorialSchema": 1,
   "type": "tutorial",
   "id": "efz.offense.rf_gauge",
-  "revision": 9,
+  "revision": 11,
   "category": "offense",
   "order": 200,
   "difficulty": 2,
@@ -15,14 +15,18 @@
     "pos": {
       "x": 250.0,
       "y": 0.0
-    }
+    },
+    "rf": 500,
+    "blueIC": 0
   },
   "dummy": {
     "character": "misaki",
     "pos": {
       "x": 390.0,
       "y": 0.0
-    }
+    },
+    "rf": 1000,
+    "blueIC": 1
   },
   "stage": 4,
   "requires": [
@@ -48,7 +52,8 @@
       {
         "id": "p0",
         "title": "RF",
-        "text": "See that small RF Gauge? It fills on its own whenever you're free to act - faster while you block, and not at all while you're being hit or knocked down. Red unlocks RF Attacks and IC. At Light Blue, RF Attacks get cheaper and IC becomes Blue IC. One warning: taking hits drains stored Light Blue RF, and the gauge won't start filling again until that Blue stock is gone."
+        "showHud": "rf_states",
+        "text": "The small RF Gauge fills whenever you're free to act - faster while blocking, and not while being hit or knocked down. The left gauge shows {tone:red_ic|Red RF}, which unlocks RF Attacks and {tone:red_ic|Red IC}. The right shows {tone:blue_ic|Light Blue RF}: RF Attacks cost less and {input:22C} becomes {tone:blue_ic|Blue IC}. Taking hits drains stored Light Blue RF."
       }
     ],
     "tasks": [

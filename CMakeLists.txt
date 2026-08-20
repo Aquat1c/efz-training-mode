@@ -302,6 +302,118 @@ if(BUILD_TESTING)
     add_test(NAME mission_sequence_policy_tests
              COMMAND mission_sequence_policy_tests)
 
+    add_executable(macro_playback_start_policy_tests
+        tests/macro_playback_start_policy_tests.cpp)
+    target_include_directories(macro_playback_start_policy_tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    set_property(TARGET macro_playback_start_policy_tests PROPERTY
+        MSVC_RUNTIME_LIBRARY "${EFZ_MSVC_RUNTIME_LIBRARY}")
+    add_test(NAME macro_playback_start_policy_tests
+             COMMAND macro_playback_start_policy_tests)
+
+    add_executable(mission_contact_attribution_policy_tests
+        tests/mission_contact_attribution_policy_tests.cpp)
+    target_include_directories(mission_contact_attribution_policy_tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    set_property(TARGET mission_contact_attribution_policy_tests PROPERTY
+        MSVC_RUNTIME_LIBRARY "${EFZ_MSVC_RUNTIME_LIBRARY}")
+    add_test(NAME mission_contact_attribution_policy_tests
+             COMMAND mission_contact_attribution_policy_tests)
+
+    add_executable(mission_entity_schedule_policy_tests
+        tests/mission_entity_schedule_policy_tests.cpp)
+    target_include_directories(mission_entity_schedule_policy_tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    set_property(TARGET mission_entity_schedule_policy_tests PROPERTY
+        MSVC_RUNTIME_LIBRARY "${EFZ_MSVC_RUNTIME_LIBRARY}")
+    add_test(NAME mission_entity_schedule_policy_tests
+             COMMAND mission_entity_schedule_policy_tests)
+
+    add_executable(mission_entity_lifecycle_policy_tests
+        tests/mission_entity_lifecycle_policy_tests.cpp)
+    target_include_directories(mission_entity_lifecycle_policy_tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    set_property(TARGET mission_entity_lifecycle_policy_tests PROPERTY
+        MSVC_RUNTIME_LIBRARY "${EFZ_MSVC_RUNTIME_LIBRARY}")
+    add_test(NAME mission_entity_lifecycle_policy_tests
+             COMMAND mission_entity_lifecycle_policy_tests)
+
+    add_executable(mission_entity_review_policy_tests
+        tests/mission_entity_review_policy_tests.cpp)
+    target_include_directories(mission_entity_review_policy_tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    set_property(TARGET mission_entity_review_policy_tests PROPERTY
+        MSVC_RUNTIME_LIBRARY "${EFZ_MSVC_RUNTIME_LIBRARY}")
+    add_test(NAME mission_entity_review_policy_tests
+             COMMAND mission_entity_review_policy_tests)
+
+    add_executable(mission_legacy_entity_migration_tests
+        tests/mission_legacy_entity_migration_tests.cpp
+        src/game/mission/mission_legacy_entity_migration.cpp
+        src/game/mission/mission_data.cpp
+        src/game/mission/tutorial_support.cpp)
+    target_include_directories(mission_legacy_entity_migration_tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/json/single_include)
+    set_property(TARGET mission_legacy_entity_migration_tests PROPERTY
+        MSVC_RUNTIME_LIBRARY "${EFZ_MSVC_RUNTIME_LIBRARY}")
+    add_test(NAME mission_legacy_entity_migration_tests
+             COMMAND mission_legacy_entity_migration_tests)
+
+    add_executable(mission_entity_presentation_policy_tests
+        tests/mission_entity_presentation_policy_tests.cpp)
+    target_include_directories(mission_entity_presentation_policy_tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    set_property(TARGET mission_entity_presentation_policy_tests PROPERTY
+        MSVC_RUNTIME_LIBRARY "${EFZ_MSVC_RUNTIME_LIBRARY}")
+    add_test(NAME mission_entity_presentation_policy_tests
+             COMMAND mission_entity_presentation_policy_tests)
+
+    add_executable(mission_render_snapshot_tests
+        tests/mission_render_snapshot_tests.cpp)
+    target_include_directories(mission_render_snapshot_tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    set_property(TARGET mission_render_snapshot_tests PROPERTY
+        MSVC_RUNTIME_LIBRARY "${EFZ_MSVC_RUNTIME_LIBRARY}")
+    add_test(NAME mission_render_snapshot_tests
+             COMMAND mission_render_snapshot_tests)
+
+    add_executable(mission_entity_fanout_policy_tests
+        tests/mission_entity_fanout_policy_tests.cpp)
+    target_include_directories(mission_entity_fanout_policy_tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    set_property(TARGET mission_entity_fanout_policy_tests PROPERTY
+        MSVC_RUNTIME_LIBRARY "${EFZ_MSVC_RUNTIME_LIBRARY}")
+    add_test(NAME mission_entity_fanout_policy_tests
+             COMMAND mission_entity_fanout_policy_tests)
+
+    add_executable(snowbunny_transition_policy_tests
+        tests/snowbunny_transition_policy_tests.cpp)
+    target_include_directories(snowbunny_transition_policy_tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    set_property(TARGET snowbunny_transition_policy_tests PROPERTY
+        MSVC_RUNTIME_LIBRARY "${EFZ_MSVC_RUNTIME_LIBRARY}")
+    add_test(NAME snowbunny_transition_policy_tests
+             COMMAND snowbunny_transition_policy_tests)
+
+    add_executable(entity_contact_phase_bridge_policy_tests
+        tests/entity_contact_phase_bridge_policy_tests.cpp)
+    target_include_directories(entity_contact_phase_bridge_policy_tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    set_property(TARGET entity_contact_phase_bridge_policy_tests PROPERTY
+        MSVC_RUNTIME_LIBRARY "${EFZ_MSVC_RUNTIME_LIBRARY}")
+    add_test(NAME entity_contact_phase_bridge_policy_tests
+             COMMAND entity_contact_phase_bridge_policy_tests)
+
+    add_executable(entity_command_origin_policy_tests
+        tests/entity_command_origin_policy_tests.cpp)
+    target_include_directories(entity_command_origin_policy_tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    set_property(TARGET entity_command_origin_policy_tests PROPERTY
+        MSVC_RUNTIME_LIBRARY "${EFZ_MSVC_RUNTIME_LIBRARY}")
+    add_test(NAME entity_command_origin_policy_tests
+             COMMAND entity_command_origin_policy_tests)
+
     add_executable(tutorial_session_policy_tests
         tests/tutorial_session_policy_tests.cpp)
     target_include_directories(tutorial_session_policy_tests PRIVATE
@@ -320,6 +432,89 @@ if(BUILD_TESTING)
     add_test(NAME normal_input_policy_tests
              COMMAND normal_input_policy_tests)
 
+    add_executable(generic_pad_axis_policy_tests
+        tests/generic_pad_axis_policy_tests.cpp)
+    target_include_directories(generic_pad_axis_policy_tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    set_property(TARGET generic_pad_axis_policy_tests PROPERTY
+        MSVC_RUNTIME_LIBRARY "${EFZ_MSVC_RUNTIME_LIBRARY}")
+    add_test(NAME generic_pad_axis_policy_tests
+             COMMAND generic_pad_axis_policy_tests)
+
+    add_executable(efz_input_bindings_tests
+        tests/efz_input_bindings_tests.cpp)
+    target_include_directories(efz_input_bindings_tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    set_property(TARGET efz_input_bindings_tests PROPERTY
+        MSVC_RUNTIME_LIBRARY "${EFZ_MSVC_RUNTIME_LIBRARY}")
+    add_test(NAME efz_input_bindings_tests
+             COMMAND efz_input_bindings_tests)
+
+    add_executable(input_poll_attack_edge_journal_tests
+        tests/input_poll_attack_edge_journal_tests.cpp)
+    target_include_directories(input_poll_attack_edge_journal_tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    set_property(TARGET input_poll_attack_edge_journal_tests PROPERTY
+        MSVC_RUNTIME_LIBRARY "${EFZ_MSVC_RUNTIME_LIBRARY}")
+    add_test(NAME input_poll_attack_edge_journal_tests
+             COMMAND input_poll_attack_edge_journal_tests)
+
+    add_executable(character_action_catalog_tests
+        tests/character_action_catalog_tests.cpp)
+    target_include_directories(character_action_catalog_tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    set_property(TARGET character_action_catalog_tests PROPERTY
+        MSVC_RUNTIME_LIBRARY "${EFZ_MSVC_RUNTIME_LIBRARY}")
+    add_test(NAME character_action_catalog_tests
+             COMMAND character_action_catalog_tests)
+
+    add_executable(move_notation_tables_tests
+        tests/move_notation_tables_tests.cpp)
+    target_include_directories(move_notation_tables_tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    set_property(TARGET move_notation_tables_tests PROPERTY
+        MSVC_RUNTIME_LIBRARY "${EFZ_MSVC_RUNTIME_LIBRARY}")
+    add_test(NAME move_notation_tables_tests
+             COMMAND move_notation_tables_tests)
+
+    add_executable(entity_semantic_catalog_tests
+        tests/entity_semantic_catalog_tests.cpp)
+    target_include_directories(entity_semantic_catalog_tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/json/single_include)
+    set_property(TARGET entity_semantic_catalog_tests PROPERTY
+        MSVC_RUNTIME_LIBRARY "${EFZ_MSVC_RUNTIME_LIBRARY}")
+    add_test(NAME entity_semantic_catalog_tests
+             COMMAND entity_semantic_catalog_tests
+                     "${CMAKE_CURRENT_SOURCE_DIR}/assets/movedata/entity_manifest.json")
+
+    add_executable(motion_pattern_tests
+        tests/motion_pattern_tests.cpp)
+    target_include_directories(motion_pattern_tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    set_property(TARGET motion_pattern_tests PROPERTY
+        MSVC_RUNTIME_LIBRARY "${EFZ_MSVC_RUNTIME_LIBRARY}")
+    add_test(NAME motion_pattern_tests
+             COMMAND motion_pattern_tests)
+
+    add_executable(auto_action_charge_policy_tests
+        tests/auto_action_charge_policy_tests.cpp)
+    target_include_directories(auto_action_charge_policy_tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    set_property(TARGET auto_action_charge_policy_tests PROPERTY
+        MSVC_RUNTIME_LIBRARY "${EFZ_MSVC_RUNTIME_LIBRARY}")
+    add_test(NAME auto_action_charge_policy_tests
+             COMMAND auto_action_charge_policy_tests)
+
+    add_executable(kaori_recoil_duck_policy_tests
+        tests/kaori_recoil_duck_policy_tests.cpp)
+    target_include_directories(kaori_recoil_duck_policy_tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    set_property(TARGET kaori_recoil_duck_policy_tests PROPERTY
+        MSVC_RUNTIME_LIBRARY "${EFZ_MSVC_RUNTIME_LIBRARY}")
+    add_test(NAME kaori_recoil_duck_policy_tests
+             COMMAND kaori_recoil_duck_policy_tests)
+
     add_executable(mission_data_tests
         tests/mission_data_tests.cpp
         src/game/mission/mission_data.cpp
@@ -332,6 +527,19 @@ if(BUILD_TESTING)
     add_test(NAME mission_data_tests
              COMMAND mission_data_tests
                      "${CMAKE_CURRENT_SOURCE_DIR}/assets/missions/core_tutorial")
+
+    add_executable(mission_authoring_tests
+        tests/mission_authoring_tests.cpp
+        src/game/mission/mission_authoring.cpp
+        src/game/mission/mission_data.cpp
+        src/game/mission/tutorial_support.cpp)
+    target_include_directories(mission_authoring_tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/json/single_include)
+    set_property(TARGET mission_authoring_tests PROPERTY
+        MSVC_RUNTIME_LIBRARY "${EFZ_MSVC_RUNTIME_LIBRARY}")
+    add_test(NAME mission_authoring_tests
+             COMMAND mission_authoring_tests)
 
     add_executable(mission_movedata_union_tests
         tests/mission_movedata_union_tests.cpp)

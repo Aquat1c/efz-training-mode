@@ -129,6 +129,7 @@ struct TriggerOption {
     int  delay;       // visual frames (0 = immediate)
     int  customId;    // for custom actions (if used)
     int  macroSlot;   // 0=None, 1..MaxSlots
+    int  chargeFollowup; // 0=Off, 1=IC after contact, 2=FIC before contact
 };
 struct DisplayData {
     int hp1, hp2;
@@ -233,6 +234,13 @@ struct DisplayData {
     int strengthAfterHitstun;
     int strengthAfterAirtech;
     int strengthOnRG;
+
+    // Optional native 22C follow-up for the selected attack.
+    int chargeAfterBlock;
+    int chargeOnWakeup;
+    int chargeAfterHitstun;
+    int chargeAfterAirtech;
+    int chargeOnRG;
 
     // Per-trigger macro selection (0=None, 1..MaxSlots)
     int macroSlotAfterBlock;
@@ -433,6 +441,13 @@ struct DisplayData {
     int afterAirtechActionPoolDelays[MAX_ACTION_POOL_OPTIONS];
     int onRGActionPoolDelays[MAX_ACTION_POOL_OPTIONS];
 
+    // Per concrete pool action charge mode (0=Off, 1=IC, 2=FIC).
+    int afterBlockActionPoolCharges[MAX_ACTION_POOL_OPTIONS];
+    int onWakeupActionPoolCharges[MAX_ACTION_POOL_OPTIONS];
+    int afterHitstunActionPoolCharges[MAX_ACTION_POOL_OPTIONS];
+    int afterAirtechActionPoolCharges[MAX_ACTION_POOL_OPTIONS];
+    int onRGActionPoolCharges[MAX_ACTION_POOL_OPTIONS];
+
     bool     afterBlockUseActionPool;
     bool     onWakeupUseActionPool;
     bool     afterHitstunUseActionPool;
@@ -491,6 +506,12 @@ extern std::atomic<int> triggerAfterHitstunAction;
 extern std::atomic<int> triggerAfterAirtechAction;
 extern std::atomic<int> triggerOnRGAction;
 
+extern std::atomic<int> triggerAfterBlockCharge;
+extern std::atomic<int> triggerOnWakeupCharge;
+extern std::atomic<int> triggerAfterHitstunCharge;
+extern std::atomic<int> triggerAfterAirtechCharge;
+extern std::atomic<int> triggerOnRGCharge;
+
 // Legacy per-trigger multi-action pool configuration.
 // Bitmask uses old UI motion indices (0..23). Runtime imports these only when
 // the concrete pool mask below is empty.
@@ -517,6 +538,12 @@ extern int g_onWakeupActionPoolDelays[MAX_ACTION_POOL_OPTIONS];
 extern int g_afterHitstunActionPoolDelays[MAX_ACTION_POOL_OPTIONS];
 extern int g_afterAirtechActionPoolDelays[MAX_ACTION_POOL_OPTIONS];
 extern int g_onRGActionPoolDelays[MAX_ACTION_POOL_OPTIONS];
+
+extern int g_afterBlockActionPoolCharges[MAX_ACTION_POOL_OPTIONS];
+extern int g_onWakeupActionPoolCharges[MAX_ACTION_POOL_OPTIONS];
+extern int g_afterHitstunActionPoolCharges[MAX_ACTION_POOL_OPTIONS];
+extern int g_afterAirtechActionPoolCharges[MAX_ACTION_POOL_OPTIONS];
+extern int g_onRGActionPoolCharges[MAX_ACTION_POOL_OPTIONS];
 
 extern std::atomic<bool>     triggerAfterBlockUsePool;
 extern std::atomic<bool>     triggerOnWakeupUsePool;

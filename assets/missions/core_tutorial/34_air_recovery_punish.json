@@ -108,7 +108,7 @@
   },
   "sourceRefs": [
     "mizuumi:game-mechanics@473180",
-    "local:shared_documentation/move_command_maps/misaki.json::236A move 254",
+    "local:shared_documentation/MOVE_COMMAND_MAPS.md::misaki / 236A move 254",
     "local:include/core/constants.h::AIR_THROW_SUCCESS_ID"
   ],
   "next": {

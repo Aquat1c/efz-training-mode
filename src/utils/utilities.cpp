@@ -16,6 +16,8 @@
 #include "../include/input/input_handler.h"
 #include "../include/game/auto_airtech.h"
 #include "../include/game/auto_action.h"
+#include "../include/game/auto_action_charge.h"
+#include "../include/game/kaori_recoil_duck.h"
 #include "../include/game/frame_monitor.h"
 #include "../include/input/input_freeze.h"
 #include "../include/game/practice_offsets.h"
@@ -49,7 +51,9 @@
 #include "../include/input/immediate_input.h"
 #include "../include/input/injection_control.h"
 #include "../include/input/input_buffer.h"
+#include "../include/input/motion_system.h"
 #include "../include/input/input_core.h"
+#include "../include/input/auto_action_motion_transaction.h"
 
 #include "../include/utils/bgm_control.h"
 #include "../include/utils/network.h"
@@ -189,6 +193,11 @@ void ResetDisplayDataToDefaults() {
     displayData.strengthAfterHitstun = 0;
     displayData.strengthAfterAirtech = 0;
     displayData.strengthOnRG = 0;
+    displayData.chargeAfterBlock = 0;
+    displayData.chargeOnWakeup = 0;
+    displayData.chargeAfterHitstun = 0;
+    displayData.chargeAfterAirtech = 0;
+    displayData.chargeOnRG = 0;
     displayData.macroSlotAfterBlock = 0;
     displayData.macroSlotOnWakeup = 0;
     displayData.macroSlotAfterHitstun = 0;
@@ -350,6 +359,11 @@ void ResetDisplayDataToDefaults() {
         displayData.afterHitstunActionPoolDelays[i] = -1;
         displayData.afterAirtechActionPoolDelays[i] = -1;
         displayData.onRGActionPoolDelays[i]         = -1;
+        displayData.afterBlockActionPoolCharges[i]   = 0;
+        displayData.onWakeupActionPoolCharges[i]     = 0;
+        displayData.afterHitstunActionPoolCharges[i] = 0;
+        displayData.afterAirtechActionPoolCharges[i] = 0;
+        displayData.onRGActionPoolCharges[i]         = 0;
     }
 
     // Per-trigger option rows (randomized selection)
@@ -359,11 +373,11 @@ void ResetDisplayDataToDefaults() {
     displayData.afterAirtechOptionCount = 0;
     displayData.onRGOptionCount = 0;
     for (int i = 0; i < MAX_TRIGGER_OPTIONS; ++i) {
-        displayData.afterBlockOptions[i]   = { false, ACTION_5A, 0, 0, (int)BASE_ATTACK_5A, 0 };
-        displayData.onWakeupOptions[i]     = { false, ACTION_5A, 0, 0, (int)BASE_ATTACK_5A, 0 };
-        displayData.afterHitstunOptions[i] = { false, ACTION_5A, 0, 0, (int)BASE_ATTACK_5A, 0 };
-        displayData.afterAirtechOptions[i] = { false, ACTION_JA, 0, 0, (int)BASE_ATTACK_JA, 0 };
-        displayData.onRGOptions[i]         = { false, ACTION_5A, 0, 0, (int)BASE_ATTACK_5A, 0 };
+        displayData.afterBlockOptions[i]   = { false, ACTION_5A, 0, 0, (int)BASE_ATTACK_5A, 0, 0 };
+        displayData.onWakeupOptions[i]     = { false, ACTION_5A, 0, 0, (int)BASE_ATTACK_5A, 0, 0 };
+        displayData.afterHitstunOptions[i] = { false, ACTION_5A, 0, 0, (int)BASE_ATTACK_5A, 0, 0 };
+        displayData.afterAirtechOptions[i] = { false, ACTION_JA, 0, 0, (int)BASE_ATTACK_JA, 0, 0 };
+        displayData.onRGOptions[i]         = { false, ACTION_5A, 0, 0, (int)BASE_ATTACK_5A, 0, 0 };
     }
     
     LogOut("[SYSTEM] DisplayData reset to defaults", true);
@@ -406,6 +420,12 @@ void ResetRuntimeSettingsToDisplayDefaults() {
     triggerAfterAirtechAction.store(displayData.actionAfterAirtech);
     triggerOnRGAction.store(displayData.actionOnRG);
 
+    triggerAfterBlockCharge.store(displayData.chargeAfterBlock);
+    triggerOnWakeupCharge.store(displayData.chargeOnWakeup);
+    triggerAfterHitstunCharge.store(displayData.chargeAfterHitstun);
+    triggerAfterAirtechCharge.store(displayData.chargeAfterAirtech);
+    triggerOnRGCharge.store(displayData.chargeOnRG);
+
     triggerAfterBlockActionPoolMask.store(displayData.afterBlockActionPoolMask);
     triggerOnWakeupActionPoolMask.store(displayData.onWakeupActionPoolMask);
     triggerAfterHitstunActionPoolMask.store(displayData.afterHitstunActionPoolMask);
@@ -432,6 +452,11 @@ void ResetRuntimeSettingsToDisplayDefaults() {
         g_afterHitstunActionPoolDelays[i] = displayData.afterHitstunActionPoolDelays[i];
         g_afterAirtechActionPoolDelays[i] = displayData.afterAirtechActionPoolDelays[i];
         g_onRGActionPoolDelays[i]         = displayData.onRGActionPoolDelays[i];
+        g_afterBlockActionPoolCharges[i]   = displayData.afterBlockActionPoolCharges[i];
+        g_onWakeupActionPoolCharges[i]     = displayData.onWakeupActionPoolCharges[i];
+        g_afterHitstunActionPoolCharges[i] = displayData.afterHitstunActionPoolCharges[i];
+        g_afterAirtechActionPoolCharges[i] = displayData.afterAirtechActionPoolCharges[i];
+        g_onRGActionPoolCharges[i]         = displayData.onRGActionPoolCharges[i];
     }
 
     triggerAfterBlockCustomID.store(displayData.customAfterBlock);
@@ -461,7 +486,7 @@ void ResetRuntimeSettingsToDisplayDefaults() {
             dstArr[i] = srcArr[i];
         }
         for (int i = count; i < MAX_TRIGGER_OPTIONS; ++i) {
-            dstArr[i] = TriggerOption{false, ACTION_5A, 0, 0, (int)BASE_ATTACK_5A, 0};
+            dstArr[i] = TriggerOption{false, ACTION_5A, 0, 0, (int)BASE_ATTACK_5A, 0, 0};
         }
     };
     clampCopy(displayData.afterBlockOptionCount, displayData.afterBlockOptions, g_afterBlockOptionCount, g_afterBlockOptions);
@@ -506,6 +531,8 @@ void ResetPracticeMatchSessionState(const char* reason) {
     CharacterHotswap::InvalidateCompletedPracticeLoadReceipt();
     Mission::Engine::NotifyPracticeSessionReset(reason);
     Framestep::CancelActiveState(reason ? reason : "practice match reset");
+    CancelAllAutoActionChargeFollowups(
+        reason ? reason : "practice match reset");
     ResetDisplayDataToDefaults();
     ResetRuntimeSettingsToDisplayDefaults();
     ClearAllAutoActionTriggers();
@@ -636,15 +663,20 @@ void DisableFeatures() {
     
     // CRITICAL: Restore normal control flags when leaving Practice mode
     // to prevent control swap issues in other modes
-    uintptr_t efzBase = GetEFZBase();
-    if (efzBase) {
-        uintptr_t gameStatePtr = 0;
-        if (SafeReadMemory(efzBase + EFZ_BASE_OFFSET_GAME_STATE, &gameStatePtr, sizeof(uintptr_t)) && gameStatePtr) {
-            // Reset both sides to human (0 = human, 1 = CPU)
-            uint8_t p1Human = 0, p2Human = 0;
-            SafeWriteMemory(gameStatePtr + GAMESTATE_OFF_P1_CPU_FLAG, &p1Human, sizeof(uint8_t));
-            SafeWriteMemory(gameStatePtr + GAMESTATE_OFF_P2_CPU_FLAG, &p2Human, sizeof(uint8_t));
-            LogOut("[SYSTEM] Restored P1/P2 CPU flags to human (0) when disabling features", true);
+    {
+        std::lock_guard<std::recursive_mutex> controlLock(g_p2ControlMutex);
+        if (!g_onlineModeActive.load(std::memory_order_acquire)) {
+            uintptr_t efzBase = GetEFZBase();
+            if (efzBase) {
+                uintptr_t gameStatePtr = 0;
+                if (SafeReadMemory(efzBase + EFZ_BASE_OFFSET_GAME_STATE, &gameStatePtr, sizeof(uintptr_t)) && gameStatePtr) {
+                    // Reset both sides to human (0 = human, 1 = CPU)
+                    uint8_t p1Human = 0, p2Human = 0;
+                    SafeWriteMemory(gameStatePtr + GAMESTATE_OFF_P1_CPU_FLAG, &p1Human, sizeof(uint8_t));
+                    SafeWriteMemory(gameStatePtr + GAMESTATE_OFF_P2_CPU_FLAG, &p2Human, sizeof(uint8_t));
+                    LogOut("[SYSTEM] Restored P1/P2 CPU flags to human (0) when disabling features", true);
+                }
+            }
         }
     }
     
@@ -968,8 +1000,68 @@ void AppendPlayerReadbackSummary(
 } // namespace
 
 void EnterNetplaySuspend() {
-    const bool wasSuspended = g_onlineModeActive.exchange(true);
-    isOnlineMatch.store(true, std::memory_order_release);
+    // Roll back the offline, identity-bound producer while its world is still
+    // eligible for exact cleanup.  Publishing online mode first would make
+    // every later input path refuse the restore and strand authored residue.
+    bool wasSuspended = false;
+    {
+        // Queue publication uses this same mutex and rechecks online mode after
+        // acquiring it. No new P2 generation can slip between rollback and the
+        // online-state publication, and concurrent suspend callers preserve
+        // the original one-winner exchange semantics.
+        std::lock_guard<std::recursive_mutex> controlLock(g_p2ControlMutex);
+        wasSuspended = g_onlineModeActive.load(std::memory_order_acquire);
+        if (!wasSuspended) {
+            // Drain every offline input owner before publishing the online
+            // boundary.  Their post-publication teardown is deliberately
+            // bookkeeping-only, so authored raw/ring/controller state must be
+            // neutralized while this world still belongs to training mode.
+            MacroController::Stop();
+            KaoriRecoilDuck::CancelAll("entering netplay suspend");
+            CancelAllAutoActionChargeFollowups(
+                "entering netplay suspend");
+            ImmediateInput::Stop();
+            StopBufferFreezingIgnoringTutorialLease();
+            (void)ClearMotionInputQueue(1, true);
+            (void)ClearMotionInputQueue(2, true);
+            if (!DrainAutoActionNormalPulsesForOwnershipBoundary()) {
+                LogOut("[NETPLAY] Normal-input cleanup remains pending at ownership boundary", true);
+            }
+            CancelP2AutoActionMotionTransaction("entering netplay suspend");
+            // Cleanup normally completes in one pass; retry a retained
+            // fail-closed cleanup obligation before netplay takes controller
+            // ownership. The later hook-disable path retries once more.
+            for (int retry = 0;
+                 retry < 2 && IsP2AutoActionMotionTransactionActive();
+                 ++retry) {
+                CancelP2AutoActionMotionTransaction(
+                    "entering netplay suspend cleanup retry");
+            }
+            if (IsP2AutoActionMotionTransactionActive()) {
+                LogOut("[NETPLAY] P2 input cleanup remains pending while suspension is published", true);
+            }
+            // The transaction owners above clean only their attributed spans.
+            // A completed wake macro can also leave an intentionally retained
+            // native command token/ring until its post-wake epilogue. Netplay
+            // is a hard ownership boundary, so scrub both complete offline
+            // fighter lanes now while the shared publication lock still blocks
+            // every new mod-owned producer. After online mode is published no
+            // cleanup path is allowed to write these fields.
+            (void)FullCleanupAfterToggle(1);
+            (void)FullCleanupAfterToggle(2);
+            if (g_p2ControlOverridden) {
+                RestoreP2ControlState();
+            }
+        }
+        g_onlineModeActive.store(true, std::memory_order_release);
+        isOnlineMatch.store(true, std::memory_order_release);
+
+        // A failed pre-publication cleanup must not survive as a deferred
+        // memory writer. CleanupP2MotionTxnLocked sees the published online
+        // flag and retires any remaining offline obligation without writes.
+        CancelP2AutoActionMotionTransaction(
+            "netplay ownership boundary published");
+    }
     if (wasSuspended) {
         return;
     }
@@ -1135,19 +1227,18 @@ void AuditNetplayMenuEntryState() {
     }
     menuOpen.store(false);
     g_guiActive.store(false);
-    PauseIntegration::OnMenuVisibilityChanged(false);
+    PauseIntegration::ForceCloseAllMenuSurfaces();
 
     DirectDrawHook::ClearAllMessages();
     ResetOverlayTrackingIds();
 
+    // Online ownership has already been published.  This audit is strictly
+    // read-only: all writable training owners were drained in
+    // EnterNetplaySuspend before publication.
     bool cleanupAttempted[3] = {false, false, false};
     bool cleanupSucceeded[3] = {false, false, false};
     NetplayMenuPlayerReadback readback[3];
     for (int player = 1; player <= 2; ++player) {
-        if (GetPlayerPointer(player) != 0) {
-            cleanupAttempted[player] = true;
-            cleanupSucceeded[player] = FullCleanupAfterToggle(player);
-        }
         readback[player] = CaptureNetplayMenuPlayerReadback(player);
     }
 
@@ -1452,6 +1543,12 @@ std::atomic<int> triggerAfterHitstunAction(ACTION_5A);
 std::atomic<int> triggerAfterAirtechAction(ACTION_5A);
 std::atomic<int> triggerOnRGAction(ACTION_5A);
 
+std::atomic<int> triggerAfterBlockCharge(0);
+std::atomic<int> triggerOnWakeupCharge(0);
+std::atomic<int> triggerAfterHitstunCharge(0);
+std::atomic<int> triggerAfterAirtechCharge(0);
+std::atomic<int> triggerOnRGCharge(0);
+
 // Multi-action pools per trigger (disabled by default)
 std::atomic<uint32_t> triggerAfterBlockActionPoolMask{0};
 std::atomic<uint32_t> triggerOnWakeupActionPoolMask{0};
@@ -1479,6 +1576,11 @@ int g_onWakeupActionPoolDelays[MAX_ACTION_POOL_OPTIONS] = {};
 int g_afterHitstunActionPoolDelays[MAX_ACTION_POOL_OPTIONS] = {};
 int g_afterAirtechActionPoolDelays[MAX_ACTION_POOL_OPTIONS] = {};
 int g_onRGActionPoolDelays[MAX_ACTION_POOL_OPTIONS] = {};
+int g_afterBlockActionPoolCharges[MAX_ACTION_POOL_OPTIONS] = {};
+int g_onWakeupActionPoolCharges[MAX_ACTION_POOL_OPTIONS] = {};
+int g_afterHitstunActionPoolCharges[MAX_ACTION_POOL_OPTIONS] = {};
+int g_afterAirtechActionPoolCharges[MAX_ACTION_POOL_OPTIONS] = {};
+int g_onRGActionPoolCharges[MAX_ACTION_POOL_OPTIONS] = {};
 
 namespace {
 struct InitActionPoolDelayDefaults {

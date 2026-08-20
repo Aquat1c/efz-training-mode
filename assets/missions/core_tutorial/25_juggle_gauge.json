@@ -3,7 +3,7 @@
  "tutorialSchema": 1,
  "type": "tutorial",
  "id": "efz.offense.juggle_gauge",
- "revision": 6,
+ "revision": 8,
  "category": "offense",
  "order": 230,
  "difficulty": 2,
@@ -45,12 +45,20 @@
    {
     "id": "p0",
     "title": "The Juggle Gauge",
-    "text": "The gauge under an airborne opponent shows how long they remain unable to recover. It turns yellow, then red, as that time runs short. Power usually gives the next hit more time, but the previous move, height, and character also matter."
+    "showHud": "juggle",
+    "text": "The {tone:juggle|cyan Juggle Gauge} under a launched opponent shows how long they remain unable to recover. Power usually gives the next hit more time, but the previous move, height, and character also matter."
    },
    {
     "id": "p1",
-    "title": "When It Empties",
-    "text": "When the gauge empties, ordinary juggle hits stop connecting and air recovery becomes available. Stored Guard Gauge can delay the countdown - the Defense section shows it."
+    "title": "Running Low",
+    "showHud": "juggle_yellow",
+    "text": "At {tone:juggle_yellow|20 visual frames or less}, the gauge turns yellow. Stored Guard Gauge can hold this countdown; the Defense section shows that interaction."
+   },
+   {
+    "id": "p2",
+    "title": "Almost Empty",
+    "showHud": "juggle_red",
+    "text": "At {tone:juggle_red|10 visual frames or less}, the gauge turns red. When it empties, ordinary juggle hits stop connecting and air recovery becomes available."
    }
   ],
   "tasks": [

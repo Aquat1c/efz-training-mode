@@ -44,6 +44,13 @@ bool PopupActionUsesButtonStrength(int action) {
         case ACTION_22:
         case ACTION_4123641236:
         case ACTION_6321463214:
+        case ACTION_1X:
+        case ACTION_3X:
+        case ACTION_J2X:
+        case ACTION_J6X:
+        case ACTION_66X:
+        case ACTION_662X:
+        case ACTION_664X:
             return true;
         default:
             return false;
@@ -58,8 +65,8 @@ const char* const kGroupedActionChoices[] = {
     "DP (623)",
     "QCB (214)",
     "421",
-    "SUPER1 (41236)",
-    "SUPER2 (214236)",
+    "41236",
+    "2141236",
     "236236",
     "214214",
     "641236",
@@ -298,6 +305,12 @@ const char* DefaultToggleHelpText(const char* label) {
     if (LabelEquals(label, "HITBOXES")) return "Shows attack boxes on characters and active attacks.";
     if (LabelEquals(label, "HURTBOXES")) return "Shows vulnerable character boxes used for being hit.";
     if (LabelEquals(label, "COLLISION BOXES")) return "Shows pushboxes used for player spacing and body collision.";
+    if (LabelEquals(label, "P1 HITBOXES")) return "Shows Player 1's attack boxes, including projectiles owned by Player 1.";
+    if (LabelEquals(label, "P2 HITBOXES")) return "Shows Player 2's attack boxes, including projectiles owned by Player 2.";
+    if (LabelEquals(label, "P1 HURTBOXES")) return "Shows vulnerable boxes for Player 1 and Player 1's owned entities.";
+    if (LabelEquals(label, "P2 HURTBOXES")) return "Shows vulnerable boxes for Player 2 and Player 2's owned entities.";
+    if (LabelEquals(label, "P1 COLLISION BOXES")) return "Shows Player 1's pushbox and owned projectile collision bodies.";
+    if (LabelEquals(label, "P2 COLLISION BOXES")) return "Shows Player 2's pushbox and owned projectile collision bodies.";
     if (LabelEquals(label, "PROJECTILE INTERACTIONS")) return "Shows projectile collision and interaction data.";
     if (LabelEquals(label, "PROJECTILE BOXES")) return "Shows projectile hit, hurt, and collision boxes.";
     if (LabelEquals(label, "ORIGIN / RANGE DOTS")) return "Shows projectile anchors and range markers.";
@@ -1373,6 +1386,10 @@ int PopupChoiceValueAt(int index) {
     return PopupUsesMappedChoiceValues() ? g_popup.choiceValueMap[index] : index;
 }
 
+bool RowChoiceVisible(const Row& r, int choiceValue) {
+    return !r.choiceFilter || r.choiceFilter(r, choiceValue);
+}
+
 bool PopupSourceMatchesRow(const Row& row) {
     const Row& source = g_popup.sourceRow;
     if (row.maskLoPtr || row.maskHiPtr || row.maskPtr ||
@@ -1439,6 +1456,7 @@ MaskSelectionPreview BuildMaskSelectionPreview(const Row& row, int maxVisibleCho
                                  RowMaskBitSet(row, focusedChoice);
 
     for (int i = 0; i < choiceLimit; ++i) {
+        if (!RowChoiceVisible(row, i)) continue;
         if (RowMaskBitSet(row, i)) ++out.selectedCount;
     }
     if (out.selectedCount <= 0) return out;
@@ -1454,6 +1472,7 @@ MaskSelectionPreview BuildMaskSelectionPreview(const Row& row, int maxVisibleCho
     }
 
     for (int i = 0; i < choiceLimit && out.tokenCount < maxVisibleChoices; ++i) {
+        if (!RowChoiceVisible(row, i)) continue;
         if (!RowMaskBitSet(row, i) || (out.overflow && focusedSelected && i == focusedChoice)) {
             continue;
         }
@@ -1711,6 +1730,7 @@ void PopupOpenCategory(int category) {
     g_popup.filteredChoiceCount = 0;
     for (int i = 0; i < g_popup.allChoiceCount && g_popup.filteredChoiceCount < 128; ++i) {
         if (g_popup.choiceCategoryMap[i] != category) continue;
+        if (!RowChoiceVisible(g_popup.sourceRow, i)) continue;
         const int local = g_popup.filteredChoiceCount++;
         g_popup.filteredChoices[local] = g_popup.allChoices[i];
         g_popup.filteredChoiceValues[local] = i;
@@ -1827,6 +1847,7 @@ void OpenMaskPopup(const Row& r) {
         if (r.maskPtr || r.maskLoPtr) {
             for (int i = 0; i < r.choiceCount; ++i) {
                 if (!RowMaskBitSet(r, i)) continue;
+                if (!RowChoiceVisible(r, i)) continue;
                 focusCategory = PopupCategoryForChoice(i);
                 break;
             }
@@ -1834,9 +1855,22 @@ void OpenMaskPopup(const Row& r) {
         g_popup.selectedCategory = focusCategory;
         PopupShowCategoryRoot(focusCategory);
     } else {
-        g_popup.choices = r.choices;
-        g_popup.choiceValueMap = nullptr;
-        g_popup.choiceCount = r.choiceCount;
+        if (r.choiceFilter) {
+            g_popup.filteredChoiceCount = 0;
+            for (int i = 0; i < r.choiceCount && g_popup.filteredChoiceCount < 128; ++i) {
+                if (!RowChoiceVisible(r, i)) continue;
+                const int local = g_popup.filteredChoiceCount++;
+                g_popup.filteredChoices[local] = r.choices[i];
+                g_popup.filteredChoiceValues[local] = i;
+            }
+            g_popup.choices = g_popup.filteredChoices;
+            g_popup.choiceValueMap = g_popup.filteredChoiceValues;
+            g_popup.choiceCount = g_popup.filteredChoiceCount;
+        } else {
+            g_popup.choices = r.choices;
+            g_popup.choiceValueMap = nullptr;
+            g_popup.choiceCount = r.choiceCount;
+        }
         g_popup.focusIdx = 0;
     }
     g_popup.scrollPx = 0.0f;
@@ -2767,6 +2801,8 @@ constexpr int kKeybindTriggerThreshold = 30;
 
 uint32_t PollRelevantGamepadMask() {
     XInputShim::RefreshSnapshotOncePerFrame();
+    XInputShim::Snapshot snapshot{};
+    XInputShim::CopySnapshot(snapshot);
 
     const int controllerIndex = Config::GetSettings().controllerIndex;
     uint32_t mask = 0;
@@ -2777,15 +2813,15 @@ uint32_t PollRelevantGamepadMask() {
     };
 
     if (controllerIndex >= 0 && controllerIndex <= 3) {
-        if (const XINPUT_STATE* state = XInputShim::GetCachedState(controllerIndex)) {
-            accumulate(*state);
+        if (snapshot.IsConnected(controllerIndex)) {
+            accumulate(snapshot.states[controllerIndex]);
         }
         return mask;
     }
 
     for (int i = 0; i < 4; ++i) {
-        if (const XINPUT_STATE* state = XInputShim::GetCachedState(i)) {
-            accumulate(*state);
+        if (snapshot.IsConnected(i)) {
+            accumulate(snapshot.states[i]);
         }
     }
     return mask;

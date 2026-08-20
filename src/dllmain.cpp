@@ -194,50 +194,28 @@ void DelayedInitialization(HMODULE hModule) {
         }
 
         bool audioHooksReady = false;
-        // Audio hooks target stable efz.exe functions and should be present
-        // before the game's first BGM/SE load/play calls when possible. Keep
-        // heavier gameplay/UI systems behind the old startup delay below.
+        AudioControl::HookInstallResult audioHookResult = AudioControl::HookInstallResult::Failed;
+        // Install only the four EFZ audio hooks that Revival does not own.
+        // playSoundBuffer/setSoundVolume must remain pristine until the delayed
+        // host/version resolution below; otherwise Revival can copy MinHook's
+        // relative JMP into its own trampoline without relocating it.
         try {
             const uintptr_t efzBase = GetEFZBase();
-            audioHooksReady = AudioControl::InstallHooks(efzBase);
-            if (audioHooksReady) {
-                LogOut("[AUDIO] Runtime audio hooks installed during early initialization; volume sync deferred", true);
-            } else {
-                LogOut("[AUDIO] Runtime audio hooks were not installed.", true);
-            }
+            audioHookResult = AudioControl::InstallHooks(
+                efzBase,
+                AudioControl::HookInstallPhase::CommonOnly);
+            LogOut(std::string("[AUDIO] Early common-hook phase result=")
+                   + AudioControl::HookInstallResultName(audioHookResult)
+                   + "; contested audio ownership remains deferred", true);
         } catch (...) {
-            LogOut("[AUDIO] Exception while installing runtime audio hooks.", true);
+            LogOut("[AUDIO] Exception while installing early non-conflicting audio hooks.", true);
         }
 
-        // Short delay before the heavier systems that depend on the game having
-        // reached a stable runtime state. If Revival is loaded but has not yet
-        // written its EFZ audio JMPs, use this same delay as a tight retry
-        // window so our stack-preserving chain attaches as soon as Revival is
-        // ready instead of waiting for the later heavy-system retry.
+        // Keep the original stabilization delay, but deliberately do not touch
+        // Revival's two contested EFZ entrypoints anywhere in this window.
         {
             constexpr DWORD kStartupStabilizeDelayMs = 1500;
-            constexpr DWORD kAudioRetryIntervalMs = 10;
-            const DWORD waitStart = GetTickCount();
-
-            while (!audioHooksReady && (GetTickCount() - waitStart) < kStartupStabilizeDelayMs) {
-                Sleep(kAudioRetryIntervalMs);
-                try {
-                    const uintptr_t efzBase = GetEFZBase();
-                    audioHooksReady = AudioControl::InstallHooks(efzBase);
-                    if (audioHooksReady) {
-                        LogOut("[AUDIO] Runtime audio hooks installed during startup wait; volume sync deferred", true);
-                        break;
-                    }
-                } catch (...) {
-                    LogOut("[AUDIO] Exception while retrying runtime audio hooks during startup wait.", true);
-                    break;
-                }
-            }
-
-            const DWORD elapsed = GetTickCount() - waitStart;
-            if (elapsed < kStartupStabilizeDelayMs) {
-                Sleep(kStartupStabilizeDelayMs - elapsed);
-            }
+            Sleep(kStartupStabilizeDelayMs);
         }
         WriteStartupLog("Starting delayed initialization");
         
@@ -320,13 +298,30 @@ void DelayedInitialization(HMODULE hModule) {
         try {
             if (!audioHooksReady) {
                 const uintptr_t efzBase = GetEFZBase();
-                audioHooksReady = AudioControl::InstallHooks(efzBase);
+                audioHookResult = AudioControl::InstallHooks(
+                    efzBase,
+                    AudioControl::HookInstallPhase::HostResolved);
+                for (int attempt = 0;
+                     audioHookResult == AudioControl::HookInstallResult::Deferred && attempt < 20;
+                     ++attempt) {
+                    Sleep(50);
+                    audioHookResult = AudioControl::InstallHooks(
+                        efzBase,
+                        AudioControl::HookInstallPhase::HostResolved);
+                }
+                audioHooksReady = audioHookResult == AudioControl::HookInstallResult::Ready;
                 if (audioHooksReady) {
-                    LogOut("[AUDIO] Runtime audio hooks installed during delayed retry", true);
+                    LogOut("[AUDIO] Runtime audio ownership resolved and hooks are ready", true);
+                } else {
+                    LogOut(std::string("[AUDIO] Runtime audio ownership result=")
+                           + AudioControl::HookInstallResultName(audioHookResult), true);
                 }
             }
 
-            if (audioHooksReady) {
+            // The four common hooks and the absolute DirectSound volume sync do
+            // not depend on ownership of playSoundBuffer/setSoundVolume.  Keep
+            // them active while a late Revival host is deliberately deferred.
+            if (audioHookResult != AudioControl::HookInstallResult::Suppressed) {
                 bool audioReady = AudioControl::EnableVolumeApplicationIfSoundReady(0, "delayed initialization");
                 for (int attempt = 0; !audioReady && attempt < 20; ++attempt) {
                     Sleep(50);
@@ -336,7 +331,8 @@ void DelayedInitialization(HMODULE hModule) {
                 if (audioReady) {
                     AudioControl::ApplyConfiguredVolumesNow();
                 } else {
-                    LogOut("[AUDIO] Runtime volume sync remains deferred; EFZ sound buffers are not ready yet.", true);
+                    LogOut("[AUDIO] Runtime volume sync remains deferred; EFZ sound buffers are not ready yet"
+                           " (contested hook ownership may still be pending).", true);
                 }
             }
         } catch (...) {
@@ -507,6 +503,11 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
 
         // Give threads a moment to clean up
         Sleep(100);
+
+        // Revival callback hooks hold an explicit module reference. Remove
+        // those hooks first, but never call FreeLibrary while DllMain owns the
+        // loader lock; retain the reference safely until process exit.
+        AudioControl::ShutdownHooks(false);
 
         // Uninitialize MinHook
         MH_Uninitialize();

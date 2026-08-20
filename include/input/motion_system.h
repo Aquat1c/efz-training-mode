@@ -3,6 +3,7 @@
 #include <string>
 #include <vector>
 #include <cstdint>
+#include <cstddef>
 #include "input_core.h"
 
 // Input frame structure
@@ -28,7 +29,23 @@ uint8_t DetermineButtonFromMotionType(int motionType);
 std::string GetMotionTypeName(int motionType);
 void ProcessInputQueues();
 int ConvertActionToMotion(int actionType, int triggerType);
-inline uint8_t u8(int value);
+// Coherent read-only view of the legacy frame queue.  Callers must not sample
+// the exported vector/index globals independently: the frame monitor and input
+// hook can otherwise observe different generations of the queue.
+struct MotionQueueSnapshot {
+    bool active{false};
+    int index{0};
+    int frameCounter{0};
+    int motionType{0};
+    std::size_t size{0};
+    bool hasCurrentMask{false};
+    uint8_t currentMask{0};
+};
+MotionQueueSnapshot GetMotionQueueSnapshot(int playerNum);
+// includeTutorialOwned=false preserves a live tutorial lease.  The netplay
+// ownership boundary passes true after synchronizing with that lease's P2
+// controller barrier, retiring only local queue bookkeeping.
+bool ClearMotionInputQueue(int playerNum, bool includeTutorialOwned = false);
 // Motion input globals
 extern std::vector<InputFrame> p1InputQueue;
 extern std::vector<InputFrame> p2InputQueue;

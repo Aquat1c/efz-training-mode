@@ -38,8 +38,11 @@ const char* const kStageNames[] = {
 };
 constexpr int kStageNameCount = static_cast<int>(sizeof(kStageNames) / sizeof(kStageNames[0]));
 
-const char* const kMissionTabs[] = { "TRIALS", "MISSIONS", "RECORDED", "CREATE" };
-constexpr int kTabCount = 4;
+const char* const kMissionSections[] = {
+    "TRIALS", "MISSIONS", "RECORDED", "RECORD & AUTHOR"
+};
+constexpr int kMissionSectionCount = 4;
+constexpr int kAuthorActionCount = 2;
 
 // Native palette: black panels, white/gray text, steel selection bars - the
 // same language as the game's own settings/netplay screens (no accent color).
@@ -58,19 +61,28 @@ constexpr ImU32 kRule           = IM_COL32(255, 255, 255, 42);
 constexpr ImU32 kHintBg         = IM_COL32(0, 0, 0, 240);
 constexpr ImU32 kGood           = IM_COL32(214, 214, 214, 255);
 constexpr ImU32 kWarn           = IM_COL32(255, 214, 112, 255);
+// Browser-local list strips.  The Mission/Tutorial browser uses EFZ's black
+// rows, white separators, and restrained steel focus without changing its
+// established pane layout.
+constexpr ImU32 kBrowserRowFill     = IM_COL32(0, 0, 0, 218);
+constexpr ImU32 kBrowserRowDisabled = IM_COL32(0, 0, 0, 232);
+constexpr ImU32 kBrowserRowRule     = IM_COL32(255, 255, 255, 78);
+constexpr ImU32 kBrowserRowRuleHot  = IM_COL32(255, 255, 255, 190);
 
 std::mutex g_mx;
 Screen g_screen = Screen::None;
-int g_tab = 0;                 // missions screen tabs
+int g_tab = 0;                 // missions screen right-rail destination
 int g_selection = 0;
 int g_scroll = 0;
 int g_visibleRows = 9;
 std::vector<MissionInfo> g_missions;
 std::vector<int> g_visible;
+int g_missionSelection[kMissionSectionCount] = {};
+int g_missionScroll[kMissionSectionCount] = {};
 
-// Tutorial two-pane focus model (doc §3.2): the lesson pane owns focus on
-// entry; the compact category rail is on the right. Each category remembers
-// its own row and scroll.
+// Shared two-pane focus model: the content pane owns focus on entry and the
+// compact navigation rail is on the right. Each destination remembers its row
+// and scroll while the browser remains open.
 bool g_railFocus = false;
 int g_category = 0;
 std::vector<std::pair<std::string, std::string>> g_packCategories; // ordered key/label
@@ -88,6 +100,20 @@ std::vector<CategoryState> g_categories;
 std::string Upper(std::string s) {
     for (char& c : s) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
     return s;
+}
+
+std::string SourceLabel(const MissionInfo& mission) {
+    std::string label = Upper(mission.source);
+    if (!mission.disambiguateSource) return label;
+    std::string qualifier;
+    if (!mission.packFolder.empty()) {
+        const std::size_t slash = mission.packFolder.find_last_of("\\/");
+        qualifier = slash == std::string::npos
+            ? mission.packFolder : mission.packFolder.substr(slash + 1);
+    }
+    if (qualifier.empty()) qualifier = mission.packId;
+    if (!qualifier.empty()) label += " [" + Upper(qualifier) + "]";
+    return label;
 }
 
 bool IsTutorial(const MissionInfo& m) {
@@ -205,19 +231,45 @@ void RebuildVisibleLocked() {
         const MissionInfo& a = g_missions[lhs];
         const MissionInfo& b = g_missions[rhs];
         if (a.source != b.source) return a.source < b.source;
-        if (a.character != b.character) return a.character < b.character;
+        if (a.packId != b.packId) return a.packId < b.packId;
+        if (a.packFolder != b.packFolder) return a.packFolder < b.packFolder;
+        const int aCategoryOrder = a.categoryOrder > 0 ? a.categoryOrder : 0x7fffffff;
+        const int bCategoryOrder = b.categoryOrder > 0 ? b.categoryOrder : 0x7fffffff;
+        if (aCategoryOrder != bCategoryOrder) return aCategoryOrder < bCategoryOrder;
+        const std::string& aCategory = a.categoryLabel.empty() ? a.category : a.categoryLabel;
+        const std::string& bCategory = b.categoryLabel.empty() ? b.category : b.categoryLabel;
+        if (aCategory != bCategory) return aCategory < bCategory;
+        const int aOrder = a.order > 0 ? a.order : 0x7fffffff;
+        const int bOrder = b.order > 0 ? b.order : 0x7fffffff;
+        if (aOrder != bOrder) return aOrder < bOrder;
+        if (a.difficulty != b.difficulty) return a.difficulty < b.difficulty;
         return a.name < b.name;
     });
-    g_selection = 0;
-    g_scroll = 0;
+    if (g_tab >= 0 && g_tab < kMissionSectionCount) {
+        g_selection = g_missionSelection[g_tab];
+        g_scroll = g_missionScroll[g_tab];
+    } else {
+        g_selection = 0;
+        g_scroll = 0;
+    }
+    if (g_tab == kMissionSectionCount - 1) {
+        if (g_selection < 0 || g_selection >= kAuthorActionCount) g_selection = 0;
+        g_scroll = 0;
+        return;
+    }
     ClampScrollLocked();
 }
 
 void RememberCategoryPosLocked() {
-    if (g_screen != Screen::Tutorial) return;
-    if (g_category < static_cast<int>(g_categories.size())) {
-        g_categories[g_category].sel = g_selection;
-        g_categories[g_category].scroll = g_scroll;
+    if (g_screen == Screen::Tutorial) {
+        if (g_category < static_cast<int>(g_categories.size())) {
+            g_categories[g_category].sel = g_selection;
+            g_categories[g_category].scroll = g_scroll;
+        }
+    } else if (g_screen == Screen::Missions &&
+               g_tab >= 0 && g_tab < kMissionSectionCount) {
+        g_missionSelection[g_tab] = g_selection;
+        g_missionScroll[g_tab] = g_scroll;
     }
 }
 
@@ -237,6 +289,7 @@ struct Snapshot {
     int category = 0;
     std::vector<CategoryState> categories;
     std::vector<MissionInfo> entries;
+    int missionSectionCounts[3] = {};
 };
 
 Snapshot CaptureSnapshot() {
@@ -250,6 +303,12 @@ Snapshot CaptureSnapshot() {
     out.railFocus = g_railFocus;
     out.category = g_category;
     out.categories = g_categories;
+    for (const MissionInfo& mission : g_missions) {
+        if (IsTutorial(mission)) continue;
+        if (mission.recorded) ++out.missionSectionCounts[2];
+        else if (IsTrial(mission)) ++out.missionSectionCounts[0];
+        else ++out.missionSectionCounts[1];
+    }
     out.entries.reserve(g_visible.size());
     for (int i : g_visible) {
         if (i >= 0 && i < static_cast<int>(g_missions.size())) out.entries.push_back(g_missions[i]);
@@ -288,18 +347,29 @@ Geom BeginScreen(ImDrawList* dl, const char* kicker, const char* title, const ch
     // Native title band ("GAME SETTINGS" style): black band, centered header,
     // status on the right, hard white rail underneath. The kicker becomes a
     // small label inside the band's left edge.
-    L::DrawTitleBand(dl, title, status);
+    const float bandBottom = L::DrawTitleBand(dl, title, status);
     L::DrawString(dl, g.body, g.smallPx, 14.0f, (T::kBandH * g.ls - g.smallPx) * 0.5f,
                   T::kTextStatus, kicker);
+
+    // Shift the established browser layout below the scaled title band, but
+    // keep its interior heights stable. Scaling every gap/tab/footer here
+    // would squeeze the Mission detail card at 1.5x and clip its coach note.
+    const float titleShift = bandBottom - T::kBandH;
+    g.headerBottom = 36.0f + titleShift;
+    g.tabsTop = 42.0f + titleShift;
+    g.tabsBottom = 68.0f + titleShift;
+    g.contentTop = 78.0f + titleShift;
+    g.hintTop = 446.0f;
     return g;
 }
 
 void DrawTabs(ImDrawList* dl, const Geom& g, const char* const* labels, int active) {
     const float gap = 4.0f;
-    const float width = (T::kCanvasW - g.margin * 2.0f - gap * (kTabCount - 1)) /
-                        static_cast<float>(kTabCount);
+    const float width = (T::kCanvasW - g.margin * 2.0f -
+                         gap * (kMissionSectionCount - 1)) /
+                        static_cast<float>(kMissionSectionCount);
     const float h = g.tabsBottom - g.tabsTop;
-    for (int i = 0; i < kTabCount; ++i) {
+    for (int i = 0; i < kMissionSectionCount; ++i) {
         const float x0 = g.margin + (width + gap) * i;
         L::DrawNativeBarCentered(dl, x0, g.tabsTop, width, h, labels[i], i == active);
     }
@@ -370,6 +440,34 @@ void DrawScrollbar(ImDrawList* dl, float x, float y0, float y1, int total, int f
     dl->AddRectFilled(ImVec2(x, thumbY), ImVec2(x + 2.0f, thumbY + thumbH), kAccentSoft);
 }
 
+// Draw one title-browser row and report whether it is the focused selection.
+// This is intentionally a tiny immediate-mode primitive: at most the visible
+// rows are emitted and it owns no textures, allocations, animation, or cache.
+bool DrawBrowserRowChrome(ImDrawList* dl, float x0, float y, float x1,
+                          float rowH, bool selected,
+                          bool focused, bool disabled = false) {
+    const float inset = Snap(4.0f * CustomMenu::Scale::Get().layoutScale);
+    const float left = x0 + inset;
+    const float right = x1 - inset;
+    const float h = rowH;
+    const ImU32 fill = disabled ? kBrowserRowDisabled : kBrowserRowFill;
+    dl->AddRectFilled(ImVec2(left, y), ImVec2(right, y + h), fill);
+    if (selected) {
+        const ImU32 selectionFill = focused && !disabled ? kSelection : kSelectionDim;
+        const ImU32 selectionRule = focused && !disabled
+                                  ? kSelectionLine : kBrowserRowRuleHot;
+        dl->AddRectFilled(ImVec2(left, y), ImVec2(right, y + h), selectionFill);
+        dl->AddRectFilled(ImVec2(left, y), ImVec2(left + 2.0f, y + h),
+                          selectionRule);
+    }
+    dl->AddLine(ImVec2(left, y + h - 1.0f), ImVec2(right, y + h - 1.0f),
+                selected && focused && !disabled
+                    ? kSelectionLine
+                    : (selected ? kBrowserRowRuleHot : kBrowserRowRule),
+                1.0f);
+    return selected && focused;
+}
+
 // ---- MISSIONS screen (tab + list + detail) ---------------------------------
 
 void DrawEntryList(ImDrawList* dl, const Geom& g, const Snapshot& s,
@@ -379,7 +477,9 @@ void DrawEntryList(ImDrawList* dl, const Geom& g, const Snapshot& s,
     L::DrawString(dl, g.body, g.smallPx, x0 + 12.0f, y0 + 9.0f, kAccentSoft, "AVAILABLE SESSIONS");
     dl->AddLine(ImVec2(x0 + 10.0f, y0 + 28.0f), ImVec2(x1 - 10.0f, y0 + 28.0f), kRule, 1.0f);
 
-    constexpr float rowH = 34.0f;
+    // Preserve the authored two-line row at 1.0 while making enough room for
+    // the larger body/source fonts at high UI scales.
+    const float rowH = (std::max)(34.0f, g.bodyPx + g.smallPx + 11.0f);
     const float listTop = y0 + 34.0f;
     const int fit = (std::max)(1, static_cast<int>((y1 - listTop - 6.0f) / rowH));
     {
@@ -393,32 +493,39 @@ void DrawEntryList(ImDrawList* dl, const Geom& g, const Snapshot& s,
     for (int i = first; i < last; ++i) {
         const MissionInfo& m = s.entries[i];
         const bool selected = i == s.selection;
-        if (selected) {
-            L::DrawNativeBar(dl, x0 + 4.0f, y, (x1 - 4.0f) - (x0 + 4.0f), rowH - 1.0f, true);
-        } else if (i & 1) {
-            dl->AddRectFilled(ImVec2(x0 + 4.0f, y), ImVec2(x1 - 4.0f, y + rowH - 1.0f), IM_COL32(255, 255, 255, 6));
-        }
+        const bool onBar = DrawBrowserRowChrome(
+            dl, x0, y, x1, rowH, selected, true, m.locked);
         char number[8];
         _snprintf_s(number, sizeof(number), _TRUNCATE, "%02d", i + 1);
+        const float twoLineH = g.bodyPx + 2.0f + g.smallPx;
+        const float primaryY = y + (rowH - twoLineH) * 0.5f;
+        const float secondaryY = primaryY + g.bodyPx + 2.0f;
+        const float singleY = y + (rowH - g.smallPx) * 0.5f;
         const auto rowText = [&](ImFont* f, float px, float tx, float ty, ImU32 col, const char* txt) {
-            if (selected) L::DrawOutlinedText(dl, f, px, tx, ty, col, txt);
+            if (onBar) L::DrawOutlinedText(dl, f, px, tx, ty, col, txt);
             else L::DrawString(dl, f, px, tx, ty, col, txt);
         };
-        rowText(g.body, g.smallPx, x0 + 12.0f, y + 6.0f,
-                selected ? T::kBarTextSel : T::kTextDisabled, number);
-        const ImU32 nameColor = m.locked ? (selected ? T::kBarTextDis : T::kTextDisabled)
-                              : (selected ? T::kBarTextSel : T::kTextInactive);
+        rowText(g.body, g.smallPx, x0 + 12.0f, singleY,
+                onBar ? (m.locked ? T::kBarTextDis : T::kBarTextSel)
+                      : T::kTextDisabled, number);
+        const ImU32 nameColor = m.locked ? (onBar ? T::kBarTextDis : T::kTextDisabled)
+                              : (onBar ? T::kBarTextSel : T::kTextInactive);
         dl->PushClipRect(ImVec2(x0 + 40.0f, y), ImVec2(x1 - 64.0f, y + rowH), true);
-        rowText(g.body, g.bodyPx, x0 + 40.0f, y + 5.0f, nameColor, Upper(m.name).c_str());
-        rowText(g.body, g.smallPx, x0 + 40.0f, y + 20.0f,
-                selected ? T::kBarTextSel : T::kTextStatus, Upper(m.source).c_str());
+        rowText(g.body, g.bodyPx, x0 + 40.0f, primaryY, nameColor, Upper(m.name).c_str());
+        const std::string& category = m.categoryLabel.empty() ? m.category : m.categoryLabel;
+        const std::string group = category.empty()
+            ? SourceLabel(m)
+            : SourceLabel(m) + " / " + Upper(category);
+        rowText(g.body, g.smallPx, x0 + 40.0f, secondaryY,
+                onBar ? (m.locked ? T::kBarTextDis : T::kBarTextSel)
+                      : T::kTextStatus, group.c_str());
         dl->PopClipRect();
         char steps[16];
         _snprintf_s(steps, sizeof(steps), _TRUNCATE, "%d STEP%s", m.steps, m.steps == 1 ? "" : "S");
         const float sw = L::MeasureTextW(g.body, g.smallPx, steps);
-        rowText(g.body, g.smallPx, x1 - 12.0f - sw, y + 11.0f,
-                m.locked ? (selected ? T::kBarTextDis : T::kTextDisabled)
-                         : (selected ? T::kBarTextSel : T::kTextStatus),
+        rowText(g.body, g.smallPx, x1 - 12.0f - sw, singleY,
+                m.locked ? (onBar ? T::kBarTextDis : T::kTextDisabled)
+                         : (onBar ? T::kBarTextSel : T::kTextStatus),
                 m.locked ? "LOCKED" : steps);
         y += rowH;
     }
@@ -463,16 +570,26 @@ void DrawDetail(void* device, ImDrawList* dl, const Geom& g, const MissionInfo* 
 
     dl->AddLine(ImVec2(x, y0 + 154.0f), ImVec2(x1 - 18.0f, y0 + 154.0f), kRule, 1.0f);
     std::string meta = DisplayCharName(m->character) + " vs " + DisplayCharName(m->dummy) +
-                       "  |  " + StageName(m->stage) + "  |  " + Upper(m->source);
+                       "  |  " + StageName(m->stage) + "  |  " + SourceLabel(*m);
+    if (!m->packVersion.empty()) meta += " v" + m->packVersion;
+    const std::string& category = m->categoryLabel.empty() ? m->category : m->categoryLabel;
+    if (!category.empty()) meta += " / " + Upper(category);
     if (!m->author.empty()) meta += " / " + Upper(m->author);
     DrawWrapped(dl, g.body, g.smallPx, ImVec2(x, y0 + 164.0f), T::kTextStatus,
                 meta, x1 - x - 18.0f, 26.0f);
 
-    L::DrawString(dl, g.body, g.smallPx, x, y0 + 198.0f, kAccentSoft, "RECIPE");
+    const std::string& collectionDescription = !m->categoryDescription.empty()
+        ? m->categoryDescription : m->packDescription;
+    if (!collectionDescription.empty()) {
+        DrawWrapped(dl, g.body, g.smallPx, ImVec2(x, y0 + 187.0f), T::kTextDisabled,
+                    collectionDescription, x1 - x - 18.0f, 17.0f);
+    }
+
+    L::DrawString(dl, g.body, g.smallPx, x, y0 + 207.0f, kAccentSoft, "RECIPE");
     // A long recorded combo (30+ steps) overflows a fixed 52px box. Give the recipe
     // the rest of the pane when there is no coach note below it (recorded combos have
     // no objective/note), so far more of the notation is visible before it clips.
-    const float recipeTop = y0 + 213.0f;
+    const float recipeTop = y0 + 222.0f;
     const float recipeBottom = m->hint.empty() ? (y1 - 14.0f) : (y0 + 266.0f);
     DrawRichWrapped(device, dl, g.body, g.bodyPx, ImVec2(x, recipeTop),
                     m->recipe.empty() ? T::kTextDisabled : T::kTextActive,
@@ -495,7 +612,14 @@ void DrawCreate(ImDrawList* dl, const Geom& g, float x0, float y0, float x1, flo
                         "RECORD NEW SESSION");
     L::DrawOutlinedText(dl, g.body, g.bodyPx, x0 + 30.0f, y0 + 49.0f, T::kBarTextSel,
                         "Choose fighters, arrange the start, then capture and review.");
-    L::DrawString(dl, g.body, g.smallPx, x0 + 18.0f, y0 + 98.0f, kAccentSoft, "AUTHORING FLOW");
+    L::DrawString(dl, g.body, g.smallPx, x0 + 18.0f, y0 + 98.0f, kAccentSoft,
+                  "PACKS & CATEGORIES");
+    DrawWrapped(dl, g.body, g.bodyPx, ImVec2(x0 + 18.0f, y0 + 116.0f), T::kTextInactive,
+                "Open Pack Workshop before recording, or choose Create Pack / Add Category in Review. "
+                "Your selected destination and mission details survive a Retake.",
+                x1 - x0 - 36.0f, 48.0f);
+    L::DrawString(dl, g.body, g.smallPx, x0 + 18.0f, y0 + 170.0f, kAccentSoft,
+                  "RECORD, REVIEW, PUBLISH");
     const std::string binding = Mission::Engine::Recorder::GetMacroRecordBindingLabel();
     const int countInMs = Config::GetSettings().missionRecorderCountInMs;
     char countInText[64] = {};
@@ -512,10 +636,10 @@ void DrawCreate(ImDrawList* dl, const Geom& g, float x0, float y0, float x1, flo
         "2. Arrange the exact starting position, resources, and dummy state. Nothing is recorded yet.\n"
         "3. Press " + binding + " to start " + countInText + ", then release the controls.\n"
         "4. The exact start is saved on the next clear frame; then perform the mission exactly as it should be demonstrated.\n"
-        "5. Press " + binding + " again to stop safely in Review. Open the menu to preview, save, retake, or discard.";
-    DrawWrapped(dl, g.body, g.bodyPx, ImVec2(x0 + 18.0f, y0 + 122.0f), T::kTextInactive,
+        "5. Press " + binding + " again to stop safely in Review. Preview the demonstration, name and rate the session, then publish it to a pack or keep it as a Recorded draft.";
+    DrawWrapped(dl, g.body, g.bodyPx, ImVec2(x0 + 18.0f, y0 + 190.0f), T::kTextInactive,
                 flow,
-                x1 - x0 - 36.0f, y1 - y0 - 136.0f);
+                x1 - x0 - 36.0f, y1 - y0 - 204.0f);
 }
 
 // ---- TUTORIAL screen (course pane + category rail) --------------------------
@@ -547,7 +671,10 @@ void DrawCoursePane(void* device, ImDrawList* dl, const Geom& g, const Snapshot&
     // Selected-lesson summary block claims the pane bottom; the list gets the rest.
     const float summaryH = 128.0f;
     const float summaryTop = y1 - summaryH;
-    constexpr float rowH = 30.0f;
+    // Eight lesson rows fit this pane exactly before the summary separator.
+    // Keep the row single-line and vertically centred, just slightly tighter
+    // than the old 30px strip so the final row does not leave a dead gap.
+    constexpr float rowH = 28.0f;
     const float listTop = y0 + 34.0f;
     const int fit = (std::max)(1, static_cast<int>((summaryTop - 8.0f - listTop) / rowH));
     {
@@ -561,20 +688,12 @@ void DrawCoursePane(void* device, ImDrawList* dl, const Geom& g, const Snapshot&
     for (int i = first; i < last; ++i) {
         const MissionInfo& m = s.entries[i];
         const bool selected = i == s.selection;
-        if (selected) {
-            // Focus and selection differ by shape: the focused pane gets the
-            // bright steel bar, an unfocused pane keeps a dim fill while the
-            // rail owns input.
-            if (focused) {
-                L::DrawNativeBar(dl, x0 + 4.0f, y, (x1 - 4.0f) - (x0 + 4.0f), rowH - 1.0f, true);
-            } else {
-                dl->AddRectFilled(ImVec2(x0 + 4.0f, y), ImVec2(x1 - 4.0f, y + rowH - 1.0f),
-                                  kSelectionDim);
-            }
-        } else if (i & 1) {
-            dl->AddRectFilled(ImVec2(x0 + 4.0f, y), ImVec2(x1 - 4.0f, y + rowH - 1.0f), IM_COL32(255, 255, 255, 6));
-        }
-        const bool onBar = selected && focused;
+        const bool unavailable = !m.unavailableReason.empty();
+        // Focus and selection differ by intensity: the focused pane gets the
+        // steel-white lift, while the unfocused pane retains a quieter rail.
+        const bool onBar = DrawBrowserRowChrome(
+            dl, x0, y, x1, rowH, selected, focused,
+            unavailable);
         const auto rowText = [&](ImFont* f, float px, float tx, float ty, ImU32 col, const char* txt) {
             if (onBar) L::DrawOutlinedText(dl, f, px, tx, ty, col, txt);
             else L::DrawString(dl, f, px, tx, ty, col, txt);
@@ -582,7 +701,8 @@ void DrawCoursePane(void* device, ImDrawList* dl, const Geom& g, const Snapshot&
         char number[8];
         _snprintf_s(number, sizeof(number), _TRUNCATE, "%02d", i + 1);
         rowText(g.body, g.smallPx, x0 + 12.0f, y + (rowH - g.smallPx) * 0.5f,
-                onBar ? T::kBarTextSel : (selected ? kAccentSoft : T::kTextDisabled), number);
+                onBar ? (unavailable ? T::kBarTextDis : T::kBarTextSel)
+                      : (selected ? kAccentSoft : T::kTextDisabled), number);
         // Clear mark: filled box + implicit count; open box when uncleared.
         const float mx = x0 + 34.0f;
         const float my = y + rowH * 0.5f;
@@ -591,11 +711,14 @@ void DrawCoursePane(void* device, ImDrawList* dl, const Geom& g, const Snapshot&
                               onBar ? T::kTextOutline : kGood);
         } else {
             dl->AddRect(ImVec2(mx, my - 4.0f), ImVec2(mx + 8.0f, my + 4.0f),
-                        onBar ? T::kTextOutline : IM_COL32(255, 255, 255, 70));
+                        onBar ? (unavailable ? T::kBarTextDis : T::kTextOutline)
+                              : IM_COL32(255, 255, 255, 70));
         }
         dl->PushClipRect(ImVec2(mx + 14.0f, y), ImVec2(x1 - 70.0f, y + rowH), true);
         rowText(g.body, g.bodyPx, mx + 14.0f, y + (rowH - g.bodyPx) * 0.5f,
-                onBar ? T::kBarTextSel : (selected ? T::kTextActive : T::kTextInactive),
+                onBar ? (unavailable ? T::kBarTextDis : T::kBarTextSel)
+                      : (unavailable ? T::kTextDisabled
+                                     : (selected ? T::kTextActive : T::kTextInactive)),
                 Upper(m.name).c_str());
         dl->PopClipRect();
         char tasks[24];
@@ -665,15 +788,8 @@ void DrawCategoryRail(ImDrawList* dl, const Geom& g, const Snapshot& s,
     for (int i = 0; i < static_cast<int>(s.categories.size()); ++i) {
         const CategoryState& c = s.categories[i];
         const bool current = i == s.category;
-        const bool onBar = current && focused;
-        if (current) {
-            if (focused) {
-                L::DrawNativeBar(dl, x0 + 4.0f, y, (x1 - 4.0f) - (x0 + 4.0f), rowH - 4.0f, true);
-            } else {
-                dl->AddRectFilled(ImVec2(x0 + 4.0f, y), ImVec2(x1 - 4.0f, y + rowH - 4.0f),
-                                  kSelectionDim);
-            }
-        }
+        const bool onBar = DrawBrowserRowChrome(
+            dl, x0, y, x1, rowH, current, focused);
         dl->PushClipRect(ImVec2(x0 + 14.0f, y), ImVec2(x1 - 10.0f, y + rowH), true);
         if (onBar) {
             L::DrawOutlinedText(dl, g.body, g.bodyPx, x0 + 14.0f, y + 6.0f,
@@ -712,6 +828,224 @@ void DrawCategoryRail(ImDrawList* dl, const Geom& g, const Snapshot& s,
     }
 }
 
+const char* MissionSectionLabel(int section) {
+    return section >= 0 && section < kMissionSectionCount
+        ? kMissionSections[section] : "MISSIONS";
+}
+
+void DrawMissionLibraryPane(void* device, ImDrawList* dl, const Geom& g,
+                            const Snapshot& s,
+                            float x0, float y0, float x1, float y1) {
+    const bool focused = !s.railFocus;
+    dl->AddRectFilled(ImVec2(x0, y0), ImVec2(x1, y1), kPanel);
+    dl->AddRect(ImVec2(x0, y0), ImVec2(x1, y1),
+                focused ? kPanelBorderHot : kPanelBorder);
+    L::DrawString(dl, g.body, g.smallPx, x0 + 12.0f, y0 + 9.0f,
+                  kAccentSoft, MissionSectionLabel(s.tab));
+    dl->AddLine(ImVec2(x0 + 10.0f, y0 + 28.0f),
+                ImVec2(x1 - 10.0f, y0 + 28.0f), kRule, 1.0f);
+
+    constexpr float summaryH = 142.0f;
+    const float summaryTop = y1 - summaryH;
+    const float listTop = y0 + 34.0f;
+    const float rowH = (std::max)(34.0f, g.bodyPx + g.smallPx + 11.0f);
+    const int fit = (std::max)(1, static_cast<int>(
+        (summaryTop - listTop - 8.0f) / rowH));
+    {
+        std::lock_guard<std::mutex> lk(g_mx);
+        g_visibleRows = fit;
+    }
+    const int maxFirst = (std::max)(0, static_cast<int>(s.entries.size()) - fit);
+    const int first = (std::max)(0, (std::min)(s.scroll, maxFirst));
+    const int last = (std::min)(static_cast<int>(s.entries.size()), first + fit);
+    float y = listTop;
+    for (int i = first; i < last; ++i) {
+        const MissionInfo& mission = s.entries[i];
+        const bool selected = i == s.selection;
+        const bool disabled = mission.locked || !mission.unavailableReason.empty();
+        const bool onBar = DrawBrowserRowChrome(
+            dl, x0, y, x1, rowH, selected, focused, disabled);
+        const auto rowText = [&](ImFont* font, float size, float tx, float ty,
+                                 ImU32 color, const char* text) {
+            if (onBar) L::DrawOutlinedText(dl, font, size, tx, ty, color, text);
+            else L::DrawString(dl, font, size, tx, ty, color, text);
+        };
+        char number[8] = {};
+        _snprintf_s(number, sizeof(number), _TRUNCATE, "%02d", i + 1);
+        const float twoLineH = g.bodyPx + 2.0f + g.smallPx;
+        const float primaryY = y + (rowH - twoLineH) * 0.5f;
+        const float secondaryY = primaryY + g.bodyPx + 2.0f;
+        rowText(g.body, g.smallPx, x0 + 12.0f,
+                y + (rowH - g.smallPx) * 0.5f,
+                onBar ? (disabled ? T::kBarTextDis : T::kBarTextSel)
+                      : T::kTextDisabled,
+                number);
+        dl->PushClipRect(ImVec2(x0 + 40.0f, y),
+                         ImVec2(x1 - 74.0f, y + rowH), true);
+        rowText(g.body, g.bodyPx, x0 + 40.0f, primaryY,
+                onBar ? (disabled ? T::kBarTextDis : T::kBarTextSel)
+                      : (disabled ? T::kTextDisabled : T::kTextInactive),
+                Upper(mission.name).c_str());
+        const std::string& category = mission.categoryLabel.empty()
+            ? mission.category : mission.categoryLabel;
+        const std::string source = category.empty()
+            ? SourceLabel(mission)
+            : SourceLabel(mission) + " / " + Upper(category);
+        rowText(g.body, g.smallPx, x0 + 40.0f, secondaryY,
+                onBar ? (disabled ? T::kBarTextDis : T::kBarTextSel)
+                      : T::kTextStatus,
+                source.c_str());
+        dl->PopClipRect();
+        const std::string right = !mission.unavailableReason.empty()
+            ? "UNAVAILABLE" : mission.locked ? "LOCKED"
+            : DifficultyLabel(mission.difficulty);
+        const float rightW = L::MeasureTextW(g.body, g.smallPx, right.c_str());
+        rowText(g.body, g.smallPx, x1 - 12.0f - rightW,
+                y + (rowH - g.smallPx) * 0.5f,
+                onBar ? (disabled ? T::kBarTextDis : T::kBarTextSel)
+                      : (disabled ? T::kTextDisabled : T::kTextStatus),
+                right.c_str());
+        y += rowH;
+    }
+    if (s.entries.empty()) {
+        L::DrawString(dl, g.body, g.bodyPx, x0 + 14.0f, listTop + 7.0f,
+                      T::kTextDisabled,
+                      s.tab == 2 ? "No recorded drafts are available."
+                                 : "No sessions are available in this section.");
+    }
+    DrawScrollbar(dl, x1 - 4.0f, listTop, summaryTop - 8.0f,
+                  static_cast<int>(s.entries.size()), fit, first);
+
+    dl->AddLine(ImVec2(x0 + 10.0f, summaryTop),
+                ImVec2(x1 - 10.0f, summaryTop), kRule, 1.0f);
+    const MissionInfo* selected =
+        s.selection >= 0 && s.selection < static_cast<int>(s.entries.size())
+            ? &s.entries[s.selection] : nullptr;
+    if (!selected) return;
+    const float sx = x0 + 14.0f;
+    if (!selected->unavailableReason.empty()) {
+        L::DrawString(dl, g.body, g.smallPx, sx, summaryTop + 8.0f,
+                      kWarn, "UNAVAILABLE");
+        DrawWrapped(dl, g.body, g.bodyPx, ImVec2(sx, summaryTop + 24.0f),
+                    T::kTextStatus, selected->unavailableReason,
+                    x1 - sx - 14.0f, 42.0f);
+        return;
+    }
+    const std::string matchup = DifficultyLabel(selected->difficulty) +
+        std::string("  |  ") + DisplayCharName(selected->character) + " vs " +
+        DisplayCharName(selected->dummy);
+    L::DrawString(dl, g.body, g.smallPx, sx, summaryTop + 8.0f,
+                  kAccentSoft, matchup.c_str());
+    DrawRichWrapped(device, dl, g.body, g.bodyPx,
+                    ImVec2(sx, summaryTop + 25.0f),
+                    selected->description.empty() ? T::kTextDisabled
+                                                  : T::kTextInactive,
+                    selected->description.empty() ? "No summary provided."
+                                                  : selected->description,
+                    x1 - sx - 14.0f, 35.0f);
+    L::DrawString(dl, g.body, g.smallPx, sx, summaryTop + 67.0f,
+                  kAccentSoft, "RECIPE");
+    DrawRichWrapped(device, dl, g.body, g.bodyPx,
+                    ImVec2(sx, summaryTop + 84.0f),
+                    selected->recipe.empty() ? T::kTextDisabled : T::kTextActive,
+                    selected->recipe.empty() ? "No recipe preview." : selected->recipe,
+                    x1 - sx - 14.0f, 45.0f);
+}
+
+void DrawMissionAuthorPane(ImDrawList* dl, const Geom& g, const Snapshot& s,
+                           float x0, float y0, float x1, float y1) {
+    const bool focused = !s.railFocus;
+    dl->AddRectFilled(ImVec2(x0, y0), ImVec2(x1, y1), kPanel);
+    dl->AddRect(ImVec2(x0, y0), ImVec2(x1, y1),
+                focused ? kPanelBorderHot : kPanelBorder);
+    L::DrawString(dl, g.body, g.smallPx, x0 + 12.0f, y0 + 9.0f,
+                  kAccentSoft, "RECORD & AUTHOR");
+    dl->AddLine(ImVec2(x0 + 10.0f, y0 + 28.0f),
+                ImVec2(x1 - 10.0f, y0 + 28.0f), kRule, 1.0f);
+
+    struct AuthorAction { const char* label; const char* detail; };
+    const AuthorAction actions[kAuthorActionCount] = {
+        { "START NEW RECORDING",
+          "Choose fighters, arrange the exact start, then capture and review a demonstration." },
+        { "PACK & MISSION WORKSHOP",
+          "Create or rename editable packs and categories, and revise published mission details." },
+    };
+    constexpr float rowH = 62.0f;
+    float y = y0 + 38.0f;
+    for (int i = 0; i < kAuthorActionCount; ++i) {
+        const bool selected = i == s.selection;
+        const bool onBar = DrawBrowserRowChrome(
+            dl, x0, y, x1, rowH, selected, focused);
+        if (onBar) {
+            L::DrawOutlinedText(dl, g.body, g.bodyPx, x0 + 16.0f, y + 9.0f,
+                                T::kBarTextSel, actions[i].label);
+        } else {
+            L::DrawString(dl, g.body, g.bodyPx, x0 + 16.0f, y + 9.0f,
+                          selected ? T::kTextActive : T::kTextInactive,
+                          actions[i].label);
+        }
+        DrawWrapped(dl, g.body, g.smallPx, ImVec2(x0 + 16.0f, y + 29.0f),
+                    onBar ? T::kBarTextSel : T::kTextStatus,
+                    actions[i].detail, x1 - x0 - 32.0f, 27.0f);
+        y += rowH;
+    }
+
+    const float infoY = y + 18.0f;
+    L::DrawString(dl, g.body, g.smallPx, x0 + 16.0f, infoY,
+                  kAccentSoft, "WORKFLOW");
+    const std::string binding = Mission::Engine::Recorder::GetMacroRecordBindingLabel();
+    const std::string flow =
+        "Recording has its own setup, capture, and Review menus. Macro Record is " +
+        binding + ". Pack edits change display metadata only; stable IDs, mission files, "
+        "recorded inputs, and gameplay evidence are preserved.";
+    DrawWrapped(dl, g.body, g.bodyPx, ImVec2(x0 + 16.0f, infoY + 18.0f),
+                T::kTextInactive, flow, x1 - x0 - 32.0f,
+                y1 - infoY - 28.0f);
+}
+
+void DrawMissionRail(ImDrawList* dl, const Geom& g, const Snapshot& s,
+                     float x0, float y0, float x1, float y1) {
+    const bool focused = s.railFocus;
+    dl->AddRectFilled(ImVec2(x0, y0), ImVec2(x1, y1), kPanelStrong);
+    dl->AddRect(ImVec2(x0, y0), ImVec2(x1, y1),
+                focused ? kPanelBorderHot : kPanelBorder);
+    L::DrawString(dl, g.body, g.smallPx, x0 + 12.0f, y0 + 9.0f,
+                  kAccentSoft, "LIBRARY");
+    dl->AddLine(ImVec2(x0 + 10.0f, y0 + 28.0f),
+                ImVec2(x1 - 10.0f, y0 + 28.0f), kRule, 1.0f);
+    constexpr float rowH = 52.0f;
+    float y = y0 + 36.0f;
+    for (int i = 0; i < kMissionSectionCount; ++i) {
+        const bool current = i == s.tab;
+        const bool onBar = DrawBrowserRowChrome(
+            dl, x0, y, x1, rowH, current, focused);
+        if (onBar) {
+            L::DrawOutlinedText(dl, g.body, g.bodyPx, x0 + 14.0f, y + 8.0f,
+                                T::kBarTextSel, kMissionSections[i]);
+        } else {
+            L::DrawString(dl, g.body, g.bodyPx, x0 + 14.0f, y + 8.0f,
+                          current ? T::kTextActive : T::kTextInactive,
+                          kMissionSections[i]);
+        }
+        char count[32] = {};
+        if (i < 3) {
+            _snprintf_s(count, sizeof(count), _TRUNCATE, "%d AVAILABLE",
+                        s.missionSectionCounts[i]);
+        } else {
+            _snprintf_s(count, sizeof(count), _TRUNCATE, "2 TOOLS");
+        }
+        if (onBar) {
+            L::DrawOutlinedText(dl, g.body, g.smallPx, x0 + 14.0f, y + 29.0f,
+                                T::kBarTextSel, count);
+        } else {
+            L::DrawString(dl, g.body, g.smallPx, x0 + 14.0f, y + 29.0f,
+                          T::kTextStatus, count);
+        }
+        y += rowH;
+        if (y + rowH > y1 - 4.0f) break;
+    }
+}
+
 } // namespace
 
 void Open(Screen screen, bool resumeLastLesson) {
@@ -721,6 +1055,10 @@ void Open(Screen screen, bool resumeLastLesson) {
     g_railFocus = false;
     g_selection = 0;
     g_scroll = 0;
+    if (screen == Screen::Missions) {
+        for (int& selection : g_missionSelection) selection = 0;
+        for (int& scroll : g_missionScroll) scroll = 0;
+    }
     RebuildVisibleLocked();
     // A return from battle restores the exact last lesson row. A fresh browser
     // entry follows the open course's first uncleared available lesson. Neither
@@ -836,6 +1174,24 @@ Screen Current() {
 
 void SetMissions(std::vector<MissionInfo>&& missions) {
     std::lock_guard<std::mutex> lk(g_mx);
+    // Pack titles are user-authored and need not be unique. Mark every row
+    // from colliding display names so the UI adds a stable pack qualifier;
+    // otherwise two valid local packs could look like one destination.
+    for (std::size_t i = 0; i < missions.size(); ++i) {
+        for (std::size_t j = i + 1; j < missions.size(); ++j) {
+            if (_stricmp(missions[i].source.c_str(), missions[j].source.c_str()) != 0) {
+                continue;
+            }
+            const bool distinctPack =
+                (!missions[i].packFolder.empty() || !missions[j].packFolder.empty())
+                    ? missions[i].packFolder != missions[j].packFolder
+                    : missions[i].packId != missions[j].packId;
+            if (distinctPack) {
+                missions[i].disambiguateSource = true;
+                missions[j].disambiguateSource = true;
+            }
+        }
+    }
     g_missions = std::move(missions);
     RebuildVisibleLocked();
 }
@@ -843,14 +1199,26 @@ void SetMissions(std::vector<MissionInfo>&& missions) {
 void MoveSelection(int dir) {
     std::lock_guard<std::mutex> lk(g_mx);
     if (g_screen == Screen::None || dir == 0) return;
-    if (g_screen == Screen::Tutorial && g_railFocus) {
-        // Rail focus: Up/Down changes category and restores that category's
-        // remembered lesson row and scroll (doc §3.2).
-        if (g_categories.empty()) return;
+    if (g_railFocus) {
+        // Rail focus: Up/Down changes category/library destination and restores
+        // that pane's remembered row and scroll.
         RememberCategoryPosLocked();
-        const int count = static_cast<int>(g_categories.size());
-        g_category = (g_category + (dir > 0 ? 1 : -1) + count) % count;
+        if (g_screen == Screen::Tutorial) {
+            if (g_categories.empty()) return;
+            const int count = static_cast<int>(g_categories.size());
+            g_category = (g_category + (dir > 0 ? 1 : -1) + count) % count;
+        } else {
+            g_tab = (g_tab + (dir > 0 ? 1 : -1) + kMissionSectionCount) %
+                    kMissionSectionCount;
+        }
         RebuildVisibleLocked();
+        return;
+    }
+    if (g_screen == Screen::Missions &&
+        g_tab == kMissionSectionCount - 1) {
+        g_selection = (g_selection + (dir > 0 ? 1 : -1) +
+                       kAuthorActionCount) % kAuthorActionCount;
+        RememberCategoryPosLocked();
         return;
     }
     if (g_visible.empty()) return;
@@ -863,22 +1231,20 @@ void MoveSelection(int dir) {
 void MoveTab(int dir) {
     std::lock_guard<std::mutex> lk(g_mx);
     if (g_screen == Screen::None || dir == 0) return;
-    if (g_screen == Screen::Tutorial) {
-        // Right moves focus into the category rail; Left returns to the pane.
-        g_railFocus = dir > 0;
-        return;
-    }
-    g_tab = (g_tab + (dir > 0 ? 1 : -1) + kTabCount) % kTabCount;
-    RebuildVisibleLocked();
+    // Right moves focus into the rail; Left returns to the content pane.
+    g_railFocus = dir > 0;
 }
 
 ConfirmAction Confirm() {
     std::lock_guard<std::mutex> lk(g_mx);
-    if (g_screen == Screen::Tutorial && g_railFocus) {
-        g_railFocus = false;   // confirm in the rail returns focus to the course pane
+    if (g_railFocus) {
+        g_railFocus = false;   // confirm in the rail returns focus to content
         return ConfirmAction::None;
     }
-    if (g_screen == Screen::Missions && g_tab == 3) return ConfirmAction::Record;
+    if (g_screen == Screen::Missions &&
+        g_tab == kMissionSectionCount - 1) {
+        return g_selection == 0 ? ConfirmAction::Record : ConfirmAction::Author;
+    }
     const MissionInfo* selected = SelectedLocked();
     if (!selected || selected->locked || selected->path.empty() ||
         !selected->unavailableReason.empty()) {
@@ -889,8 +1255,8 @@ ConfirmAction Confirm() {
 
 bool Back() {
     std::lock_guard<std::mutex> lk(g_mx);
-    if (g_screen == Screen::Tutorial && g_railFocus) {
-        g_railFocus = false;   // cancel in the rail returns to the course pane
+    if (g_railFocus) {
+        g_railFocus = false;   // cancel in the rail returns to content
         return true;
     }
     return false;
@@ -931,9 +1297,13 @@ void Draw(void* device, ImDrawList* dl) {
         const Geom g = BeginScreen(dl, "LEARN BY DOING", "TUTORIAL", status);
         const float y0 = g.headerBottom + 6.0f;
         const float y1 = g.hintTop - 10.0f;
-        const float railX0 = 452.0f;
-        DrawCoursePane(device, dl, g, s, g.margin, y0, railX0 - 12.0f, y1);
-        DrawCategoryRail(dl, g, s, railX0, y0, T::kCanvasW - g.margin, y1);
+        const float railX1 = T::kCanvasW - g.margin;
+        const float railW = (std::max)(164.0f,
+            (std::min)(220.0f, Snap(164.0f * g.ls)));
+        const float railX0 = railX1 - railW;
+        const float paneGap = Snap(12.0f * g.ls);
+        DrawCoursePane(device, dl, g, s, g.margin, y0, railX0 - paneGap, y1);
+        DrawCategoryRail(dl, g, s, railX0, y0, railX1, y1);
         if (s.railFocus) {
             const HintPair hints[] = {
                 { "UP / DOWN", "CHANGE CATEGORY" },
@@ -957,38 +1327,50 @@ void Draw(void* device, ImDrawList* dl) {
         return;
     }
 
+    const int totalAvailable = s.missionSectionCounts[0] +
+                               s.missionSectionCounts[1] +
+                               s.missionSectionCounts[2];
     char status[48];
-    _snprintf_s(status, sizeof(status), _TRUNCATE, "%d AVAILABLE", static_cast<int>(s.entries.size()));
+    _snprintf_s(status, sizeof(status), _TRUNCATE, "%d AVAILABLE", totalAvailable);
     const Geom g = BeginScreen(dl, "PRACTICE LIBRARY", "MISSIONS", status);
-    DrawTabs(dl, g, kMissionTabs, s.tab);
-
-    const float y0 = g.contentTop;
+    const float y0 = g.headerBottom + 6.0f;
     const float y1 = g.hintTop - 10.0f;
-    if (s.tab == 3) {
-        DrawCreate(dl, g, g.margin, y0, T::kCanvasW - g.margin, y1);
+    const float railX1 = T::kCanvasW - g.margin;
+    const float scaledRailW = Snap(164.0f * g.ls);
+    const float railW = (std::max)(164.0f,
+                                   (std::min)(220.0f, scaledRailW));
+    const float railX0 = railX1 - railW;
+    const float paneGap = Snap(12.0f * g.ls);
+    if (s.tab == kMissionSectionCount - 1) {
+        DrawMissionAuthorPane(dl, g, s, g.margin, y0, railX0 - paneGap, y1);
+    } else {
+        DrawMissionLibraryPane(device, dl, g, s, g.margin, y0,
+                               railX0 - paneGap, y1);
+    }
+    DrawMissionRail(dl, g, s, railX0, y0, railX1, y1);
+    if (s.railFocus) {
         const HintPair hints[] = {
-            { "LEFT / RIGHT", "CHANGE TAB" },
-            { "CONFIRM", "OPEN PRACTICE SETUP" },
-            { "CANCEL / ESC", "BACK" },
+            { "UP / DOWN", "CHANGE SECTION" },
+            { "LEFT / CONFIRM", "BROWSE" },
+            { "CANCEL / ESC", "BROWSE" },
         };
         DrawHintBar(dl, g, hints, 3);
         return;
     }
-
-    const float listX0 = g.margin;
-    const float listX1 = 354.0f;
-    const float detailX0 = 368.0f;
-    const float detailX1 = T::kCanvasW - g.margin;
-    DrawEntryList(dl, g, s, listX0, y0, listX1, y1);
-    const MissionInfo* selected = (s.selection >= 0 && s.selection < static_cast<int>(s.entries.size()))
-                                ? &s.entries[s.selection] : nullptr;
+    const MissionInfo* selected =
+        s.selection >= 0 && s.selection < static_cast<int>(s.entries.size())
+            ? &s.entries[s.selection] : nullptr;
+    const bool authorSection = s.tab == kMissionSectionCount - 1;
     const HintPair hints[] = {
-        { "LEFT / RIGHT", "CHANGE TAB" },
         { "UP / DOWN", "SELECT" },
-        { "CONFIRM", selected && selected->locked ? "LOCKED" : "PLAY" },
+        { "RIGHT", "LIBRARY" },
+        { "CONFIRM", authorSection
+                         ? (s.selection == 0 ? "START RECORDING" : "OPEN WORKSHOP")
+                         : selected && !selected->unavailableReason.empty()
+                               ? "UNAVAILABLE"
+                               : selected && selected->locked ? "LOCKED" : "PLAY" },
         { "CANCEL / ESC", "BACK" },
     };
-    DrawDetail(device, dl, g, selected, detailX0, y0, detailX1, y1);
     DrawHintBar(dl, g, hints, 4);
 }
 

@@ -11,6 +11,7 @@
 #include "../include/input/motion_system.h"
 #include "../include/input/input_motion.h"  
 #include "../include/game/game_state.h"  
+#include "../include/game/auto_action.h"
 #include "../include/input/input_freeze.h"
 #include <vector>
 #include <sstream>
@@ -72,7 +73,8 @@ template <typename Fn>
 bool WithOwnedFreezeMemory(uint64_t generation, Fn&& fn) {
     std::lock_guard<std::recursive_mutex> lock(g_bufferFreezeControlMutex);
     if (!OwnsFreezeGeneration(generation) ||
-        !g_bufferFreezingActive.load(std::memory_order_acquire)) {
+        !g_bufferFreezingActive.load(std::memory_order_acquire) ||
+        g_onlineModeActive.load(std::memory_order_acquire)) {
         return false;
     }
     fn();
@@ -232,13 +234,14 @@ static bool RegeneratePatternForFacing(int playerNum, int motionType, int button
             };
             break;
         }
-        case MOTION_214236A: case MOTION_214236B: case MOTION_214236C: {
-            // 214236: Down, Down-Back, Back, Down, Down-Forward, Forward + Button
+        case MOTION_2141236A: case MOTION_2141236B: case MOTION_2141236C: {
+            // 2141236: Down, Down-Back, Back, Down-Back, Down, Down-Forward, Forward + Button
             pattern = {
                 0x00, 0x00,
                 down, down,
                 downBack, downBack,
                 back, back,
+                downBack, downBack,
                 down, down,
                 downFwd, downFwd,
                 fwd,
@@ -644,6 +647,17 @@ static void FreezeBufferValuesThread(BufferFreezeSnapshot state) {
         if (!OwnsFreezeGeneration(generation)) return;
 
         g_freezeInitializedGeneration.store(0, std::memory_order_release);
+        if (g_onlineModeActive.load(std::memory_order_acquire)) {
+            // Netplay owns the live input state.  Retire only private freeze
+            // bookkeeping; an offline worker must never issue a delayed ring
+            // cleanup into the online world.
+            g_bufferFreezingActive.store(false, std::memory_order_release);
+            g_indexFreezingActive.store(false, std::memory_order_release);
+            int expectedPlayer = playerNum;
+            (void)g_activeFreezePlayer.compare_exchange_strong(
+                expectedPlayer, 0);
+            return;
+        }
         if (state.length > 0) {
             uintptr_t playerPtr = GetPlayerPointer(playerNum);
             if (playerPtr) {
@@ -687,6 +701,7 @@ static void FreezeBufferValuesThread(BufferFreezeSnapshot state) {
 
 uint64_t StartBufferFreezeWorker(int playerNum) {
     std::lock_guard<std::recursive_mutex> lock(g_bufferFreezeControlMutex);
+    if (g_onlineModeActive.load(std::memory_order_acquire)) return 0;
 
     BufferFreezeSnapshot state;
     state.generation = NextFreezeGeneration();
@@ -713,6 +728,7 @@ uint64_t StartBufferFreezeWorker(int playerNum) {
 
 // Capture current buffer section and begin freezing it
 bool CaptureAndFreezeBuffer(int playerNum, uint16_t startIndex, uint16_t length, int motionType, int buttonMask) {
+    std::lock_guard<std::recursive_mutex> p2ControlLock(g_p2ControlMutex);
     std::unique_lock<std::recursive_mutex> controlLock(g_bufferFreezeControlMutex);
     if (TutorialBufferFreezeLeaseActive()) return false;
     // CRITICAL: Never run during online mode
@@ -777,6 +793,7 @@ bool CaptureAndFreezeBuffer(int playerNum, uint16_t startIndex, uint16_t length,
     
     // Start freezing
     const uint64_t expectedGeneration = StartBufferFreezeWorker(playerNum);
+    if (expectedGeneration == 0) return false;
     // The worker publishes its startup acknowledgement under the same control
     // mutex. Release publication ownership before waiting for that ack.
     controlLock.unlock();
@@ -822,8 +839,10 @@ bool CaptureAndFreezeBuffer(int playerNum, uint16_t startIndex, uint16_t length,
 
 // Option to also freeze buffer index
 bool FreezeBufferIndex(int playerNum, uint16_t indexValue) {
+    std::lock_guard<std::recursive_mutex> p2ControlLock(g_p2ControlMutex);
     std::lock_guard<std::recursive_mutex> controlLock(g_bufferFreezeControlMutex);
     if (TutorialBufferFreezeLeaseActive()) return false;
+    if (g_onlineModeActive.load(std::memory_order_acquire)) return false;
     uintptr_t playerPtr = GetPlayerPointer(playerNum);
     if (!playerPtr) {
         LogOut("[INPUT_BUFFER] Cannot get player pointer", true);
@@ -839,6 +858,7 @@ bool FreezeBufferIndex(int playerNum, uint16_t indexValue) {
 
 // Function to stop buffer freezing
 void StopBufferFreezingIgnoringTutorialLease() {
+    std::lock_guard<std::recursive_mutex> p2ControlLock(g_p2ControlMutex);
     std::lock_guard<std::recursive_mutex> controlLock(g_bufferFreezeControlMutex);
     if (g_bufferFreezingActive) {
         using clock = std::chrono::steady_clock;
@@ -856,6 +876,14 @@ void StopBufferFreezingIgnoringTutorialLease() {
             LogOut("[INPUT_BUFFER] StopBufferFreezing() called (no active owner)", true);
         }
         
+        // Post-publication calls are bookkeeping-only. EnterNetplaySuspend
+        // performs this stop while still offline and holds both ownership
+        // barriers, so the normal path below can safely retire its ring span.
+        if (g_onlineModeActive.load(std::memory_order_acquire)) {
+            LogOut("[INPUT_BUFFER] Freeze bookkeeping retired without online memory writes", true);
+            return;
+        }
+
     // Wait briefly for thread to wind down (keep minimal to avoid frame hitch)
     auto tWaitStart = clock::now();
     std::this_thread::sleep_for(std::chrono::milliseconds(8));
@@ -895,6 +923,7 @@ void StopBufferFreezingIgnoringTutorialLease() {
 }
 
 void StopBufferFreezing() {
+    std::lock_guard<std::recursive_mutex> p2ControlLock(g_p2ControlMutex);
     std::lock_guard<std::recursive_mutex> controlLock(g_bufferFreezeControlMutex);
     if (TutorialBufferFreezeLeaseActive()) {
         LogOut("[INPUT_BUFFER] Stop rejected: tutorial dummy owns the freeze engine", true);

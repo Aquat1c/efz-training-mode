@@ -92,7 +92,7 @@
  },
  "sourceRefs": [
   "mizuumi:game-mechanics@473180",
-  "local:shared_documentation/move_command_maps/sayuri.json"
+  "local:shared_documentation/MOVE_COMMAND_MAPS.md::sayuri"
  ],
  "next": {
   "lessonId": "efz.offense.rf_gauge"

@@ -32,11 +32,6 @@ extern const uint16_t INPUT_BUFFER_SIZE;
 extern const uintptr_t INPUT_BUFFER_OFFSET;
 extern const uintptr_t INPUT_BUFFER_INDEX_OFFSET;
 
-// Helper to avoid narrowing conversion warnings
-inline uint8_t u8(int value) {
-    return static_cast<uint8_t>(value);
-}
-
 // Core buffer freezing functions
 uint64_t StartBufferFreezeWorker(int playerNum);
 //bool CaptureAndFreezeBuffer(int playerNum, uint16_t startIndex, uint16_t length); // Moved to input_buffer.h

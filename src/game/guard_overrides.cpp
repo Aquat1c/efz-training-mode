@@ -10,8 +10,7 @@ static inline bool InRange(int v, int a, int b) { return v >= a && v <= b; }
 bool IsGroundedOverhead(int charId, int moveId, uintptr_t attackerBase) {
     switch (charId) {
         case CHAR_ID_MIZUKA:
-        case CHAR_ID_NAGAMORI:
-            // Mizuka: 6B
+            // Mizuka Nagamori: 6B
             if (moveId == 216) return true;
             break;
         case CHAR_ID_MINAGI:

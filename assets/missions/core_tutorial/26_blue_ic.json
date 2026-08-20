@@ -3,7 +3,7 @@
   "tutorialSchema": 1,
   "type": "tutorial",
   "id": "efz.offense.blue_ic",
-  "revision": 8,
+  "revision": 10,
   "category": "offense",
   "order": 240,
   "difficulty": 3,
@@ -52,12 +52,14 @@
       {
         "id": "p0",
         "title": "Blue IC",
-        "text": "Instant Charge is always {input:22C}. But when your RF Gauge is Light Blue, that same input becomes Blue IC: BIC spends the stored Blue gauge and restores up to 50 Power, letting your combo keep going where Red IC couldn't."
+        "showHud": "blue_ic",
+        "text": "Instant Charge is always {input:22C}. When your RF Gauge is {tone:blue_ic|Light Blue}, that input becomes {tone:blue_ic|Blue IC}: BIC spends the stored Blue gauge and restores up to {tone:power|50 Power}, letting your combo continue where Red IC could not."
       },
       {
         "id": "p1",
         "title": "The Route",
-        "text": "Your route: {input:66C} > {input:22C} BIC > {input:66B} > ~{input:66B} > {input:236236B}. Remember - the Light Blue gauge is what makes 22C a Blue IC; the attack button doesn't pick the color. You're given enough SP for the B Super, and if the route drops after you've spent RF or SP, your meter comes back for the next try."
+        "showHud": "blue_ic_meters",
+        "text": "Your route: {input:66C} > {input:22C} BIC > {input:66B} > ~{input:66B} > {input:236236B}. The {tone:blue_ic|Light Blue RF Gauge} makes 22C a Blue IC; the attack button does not pick its color. You have {tone:sp|two SP levels} for the B Super, and spent RF or SP is restored after a failed attempt."
       }
     ],
     "tasks": [

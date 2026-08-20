@@ -31,6 +31,12 @@ enum class Result : uint8_t {
 struct DirectEvidence {
     bool resolved = false;          // exact resolver consumed the attack
     bool comboIncreased = false;
+    // A recovery/meaty can begin a new combo entirely inside one collision
+    // update.  EFZ then exposes N -> 1 rather than an observable N -> 0 -> 1,
+    // so a plain greater-than comparison is false even though this is a real
+    // hit.  The hook sets this only with positive-combo, damage, and hit-branch
+    // corroboration; it is not inferred from a counter decrease by itself.
+    bool comboRestarted = false;
     bool defenderBlocked = false;
     bool defenderRecoilGuard = false;
     bool exactThrowBranch = false;
@@ -45,10 +51,24 @@ struct DirectEvidence {
 struct EntityEvidence {
     bool resolved = false;          // this resolver committed some contact path
     bool comboIncreased = false;
+    bool comboRestarted = false;    // corroborated N -> smaller-positive hit
     bool defenderBlocked = false;
     bool defenderRecoilGuard = false;
     int  rawEntityState = 0;        // diagnostic / branch corroboration only
 };
+
+// EFZ can reset an expired combo and apply the meaty hit within one native
+// resolver transaction.  Require every independent hit signal before calling
+// the resulting N -> smaller-positive counter change a restart.  This keeps
+// armor, Guard Point, and producer-latch-only paths conservative.
+constexpr bool CorroboratesComboRestart(int comboBefore, int comboAfter,
+                                        int hpBefore, int hpAfter,
+                                        bool defenderInHitReaction,
+                                        int rawHitState) {
+    return comboBefore > 0 && comboAfter > 0 && comboAfter < comboBefore &&
+           hpAfter < hpBefore && defenderInHitReaction &&
+           (rawHitState == 3 || rawHitState == 7);
+}
 
 // Conservative by construction: ambiguous armor/counter/Guard-Point paths do
 // not become an ordinary hit or block. Unknown can be logged, but can never
@@ -59,7 +79,7 @@ constexpr Result ClassifyDirect(const DirectEvidence& e) {
     if (e.exactThrowBranch) return Result::Throw;
     if (e.exactGuardPointBranch) return Result::GuardPoint;
     if (e.defenderBlocked) return Result::Block;
-    if (e.comboIncreased) {
+    if (e.comboIncreased || e.comboRestarted) {
         return e.rawAttackerState == 7 ? Result::SpecialHit : Result::Hit;
     }
     return Result::Unknown;
@@ -79,7 +99,7 @@ constexpr Result ClassifyEntity(const EntityEvidence& e) {
         return Result::Block;
     }
     if ((e.rawEntityState == 3 || e.rawEntityState == 7) &&
-        e.comboIncreased) {
+        (e.comboIncreased || e.comboRestarted)) {
         return e.rawEntityState == 7 ? Result::SpecialHit : Result::Hit;
     }
     return Result::Unknown;

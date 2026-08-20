@@ -44,6 +44,7 @@ using RowAdjuster = bool (*)(const Row& row, int direction);
 using RowChoiceValueFormatter = const char* (*)(const Row& row, int choiceValue);
 using RowChoiceValueAdjuster = bool (*)(const Row& row, int choiceValue, int direction);
 using RowChoiceHelpFormatter = const char* (*)(const Row& row, int choiceValue);
+using RowChoiceFilter = bool (*)(const Row& row, int choiceValue);
 using PairedChoiceChange = void (*)(int* primary, int* secondary);
 using RowListBuilder = Row* (*)(int& count);
 using RowCustomRenderer = void (*)(ImDrawList* dl, float x, float y, float w, float h);
@@ -109,6 +110,9 @@ struct Row {
     RowChoiceValueFormatter choiceValueFormatter;
     RowChoiceValueAdjuster choiceValueAdjuster;
     RowChoiceHelpFormatter choiceHelpFormatter;
+    // Optional display filter. choiceValue remains the original stable value;
+    // hidden mask choices keep their stored bits and per-entry data intact.
+    RowChoiceFilter choiceFilter;
     PairedChoiceChange onPrimaryChoiceChange;
     PairedChoiceChange onSecondaryChoiceChange;
 
@@ -347,7 +351,13 @@ void OpenSubmenuDirect(RowListBuilder builder, const char* title, int focusRow =
 // Queue the mission browser (packs + recorded) to open on the next menu frame.
 // Used by the title MISSION entry after Practice launches.
 void OpenMissionBrowser();
+// Queue the ordinary Practice values pane with no nested submenu. Used by the
+// recorder pause menu's explicit settings handoff.
+void OpenPracticeRoot();
 void NotifyMissionLibraryChanged();
+// Starts a fresh recorder form while preserving the last chosen pack/category.
+// Retake deliberately does not call this, so authored details survive it.
+void PrepareNewMissionAuthoringSession();
 
 // Hotkey-binding overlay. While active, every captured key or controller
 // button is written into the active config setting. The renderer should call

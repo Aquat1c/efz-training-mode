@@ -10,6 +10,7 @@
 #include "../include/gui/overlay.h"
 #include "../include/gui/framebar.h"
 #include "../include/game/character_settings.h"
+#include "../include/game/character_action_catalog.h"
 #include "../include/game/collision_display.h"
 #include "../include/game/combo_overlay.h"
 #include "../include/game/frame_monitor.h"
@@ -141,7 +142,7 @@ namespace ImGuiGui {
         ACTION_QCB,         // 22 = 214 (QCB)
         ACTION_421,         // 23 = 421 (Half-circle Down)
         ACTION_SUPER1,      // 24 = 41236 (HCF)
-        ACTION_SUPER2,      // 25 = 214236 Hybrid
+        ACTION_SUPER2,      // 25 = legacy ID for 2141236
         ACTION_236236,      // 26 = 236236 (Double QCF)
         ACTION_214214,      // 27 = 214214 (Double QCB)
         ACTION_641236,      // 28 = 641236 Super
@@ -154,7 +155,8 @@ namespace ImGuiGui {
         ACTION_BACKDASH,    // 35 = Backdash
         ACTION_FORWARD_DASH,// 36 = Forward Dash
         ACTION_BLOCK,       // 37 = Block
-        ACTION_FINAL_MEMORY // 38 = Final Memory (per-character)
+        ACTION_FINAL_MEMORY,// 38 = Final Memory (per-character)
+        ACTION_KAORI_RECOIL_DUCK // 39 = Kaori 44~66 staged recipe
     };
 
     // Helper function to convert action type to combo index
@@ -258,14 +260,30 @@ namespace ImGuiGui {
                     int abMode = GetDummyAutoBlockMode();
                     ImGui::SetNextItemWidth(200);
                     // Unlabeled combo; keep ID stable with a hidden label
+                    const bool randomBlockOwnsFlag = RandomBlock::IsEnabled();
+                    if (randomBlockOwnsFlag) ImGui::BeginDisabled(true);
                     if (ImGui::Combo("##RandomBlockMode", &abMode, abNames, 4)) { SetDummyAutoBlockMode(abMode); }
-                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("How the dummy blocks: Off / Block All / Block Only First Hit / Start Blocking After First Hit.\nRandom Block flips a coin each frame when it's turned ON.");
+                    if (randomBlockOwnsFlag) ImGui::EndDisabled();
+                    if (ImGui::IsItemHovered(
+                            ImGuiHoveredFlags_AllowWhenDisabled)) {
+                        ImGui::SetTooltip(randomBlockOwnsFlag
+                        ? "This configured blocking window remains active under Random Block. Turn Random Block off to change it."
+                        : "How the dummy blocks: Off / Block All / Block Only First Hit / Start Blocking After First Hit.\nRandom Block flips a coin each frame when it's turned ON.");
+                    }
                     // After the combo: Random Block and Adaptive Stance checkboxes
                     bool randomBlock = RandomBlock::IsEnabled();
                     if (ImGui::Checkbox("Random Block", &randomBlock)) {
                         // Random Block toggles the game's autoblock flag per frame; avoid conflicts with RG modes
                         bool alwaysRG = AlwaysRG::IsEnabled();
                         bool randomRG = RandomRG::IsEnabled();
+                        // Randomizing an empty blocking window is a visible ON
+                        // state that can never do anything. Make the legacy UI
+                        // choose the ordinary ALL window, matching the custom
+                        // menu's valid-state constraint.
+                        if (randomBlock && abMode == DAB_None) {
+                            SetDummyAutoBlockMode(DAB_All);
+                            abMode = DAB_All;
+                        }
                         if (randomBlock && alwaysRG) { AlwaysRG::SetEnabled(false); }
                         if (randomBlock && randomRG) { RandomRG::SetEnabled(false); }
                         RandomBlock::SetEnabled(randomBlock);
@@ -750,14 +768,14 @@ namespace ImGuiGui {
                     // X position
                     ImGui::TableNextRow();
                     ImGui::TableNextColumn(); ImGui::TextUnformatted("X");
-                    ImGui::TableNextColumn(); { float v = (float)guiState.localData.x1; if (ImGui::InputFloat("##x_p1", &v, 1.0f, 10.0f, "%.2f")) guiState.localData.x1 = v; }
-                    ImGui::TableNextColumn(); { float v = (float)guiState.localData.x2; if (ImGui::InputFloat("##x_p2", &v, 1.0f, 10.0f, "%.2f")) guiState.localData.x2 = v; }
+                    ImGui::TableNextColumn(); ImGui::InputDouble("##x_p1", &guiState.localData.x1, 1.0, 10.0, "%.2f");
+                    ImGui::TableNextColumn(); ImGui::InputDouble("##x_p2", &guiState.localData.x2, 1.0, 10.0, "%.2f");
 
                     // Y position
                     ImGui::TableNextRow();
                     ImGui::TableNextColumn(); ImGui::TextUnformatted("Y");
-                    ImGui::TableNextColumn(); { float v = (float)guiState.localData.y1; if (ImGui::InputFloat("##y_p1", &v, 1.0f, 10.0f, "%.2f")) guiState.localData.y1 = v; }
-                    ImGui::TableNextColumn(); { float v = (float)guiState.localData.y2; if (ImGui::InputFloat("##y_p2", &v, 1.0f, 10.0f, "%.2f")) guiState.localData.y2 = v; }
+                    ImGui::TableNextColumn(); ImGui::InputDouble("##y_p1", &guiState.localData.y1, 1.0, 10.0, "%.2f");
+                    ImGui::TableNextColumn(); ImGui::InputDouble("##y_p2", &guiState.localData.y2, 1.0, 10.0, "%.2f");
                     if (globalValuesLocked) ImGui::BeginDisabled();
 
                     ImGui::EndTable();
@@ -949,19 +967,61 @@ namespace ImGuiGui {
                 if (ImGui::Checkbox("Hitboxes", &showHitboxes)) {
                     CollisionDisplay::SetLayerEnabled(0, showHitboxes);
                 }
+                if (showHitboxes) {
+                    ImGui::Indent();
+                    bool p1Hitboxes = Config::GetSettings().collisionDisplayP1Hitboxes;
+                    if (ImGui::Checkbox("P1 Hitboxes", &p1Hitboxes)) {
+                        Config::SetSetting("General", "collisionDisplayP1Hitboxes",
+                                           p1Hitboxes ? "1" : "0");
+                    }
+                    bool p2Hitboxes = Config::GetSettings().collisionDisplayP2Hitboxes;
+                    if (ImGui::Checkbox("P2 Hitboxes", &p2Hitboxes)) {
+                        Config::SetSetting("General", "collisionDisplayP2Hitboxes",
+                                           p2Hitboxes ? "1" : "0");
+                    }
+                    ImGui::Unindent();
+                }
                 bool showHurtboxes = Config::GetSettings().collisionDisplayHurtboxes;
                 if (ImGui::Checkbox("Hurtboxes", &showHurtboxes)) {
                     CollisionDisplay::SetLayerEnabled(1, showHurtboxes);
+                }
+                if (showHurtboxes) {
+                    ImGui::Indent();
+                    bool p1Hurtboxes = Config::GetSettings().collisionDisplayP1Hurtboxes;
+                    if (ImGui::Checkbox("P1 Hurtboxes", &p1Hurtboxes)) {
+                        Config::SetSetting("General", "collisionDisplayP1Hurtboxes",
+                                           p1Hurtboxes ? "1" : "0");
+                    }
+                    bool p2Hurtboxes = Config::GetSettings().collisionDisplayP2Hurtboxes;
+                    if (ImGui::Checkbox("P2 Hurtboxes", &p2Hurtboxes)) {
+                        Config::SetSetting("General", "collisionDisplayP2Hurtboxes",
+                                           p2Hurtboxes ? "1" : "0");
+                    }
+                    ImGui::Unindent();
                 }
                 bool showCollisionBoxes = Config::GetSettings().collisionDisplayCollisionBoxes;
                 if (ImGui::Checkbox("Collision Boxes", &showCollisionBoxes)) {
                     CollisionDisplay::SetLayerEnabled(2, showCollisionBoxes);
                 }
+                if (showCollisionBoxes) {
+                    ImGui::Indent();
+                    bool p1CollisionBoxes = Config::GetSettings().collisionDisplayP1CollisionBoxes;
+                    if (ImGui::Checkbox("P1 Collision Boxes", &p1CollisionBoxes)) {
+                        Config::SetSetting("General", "collisionDisplayP1CollisionBoxes",
+                                           p1CollisionBoxes ? "1" : "0");
+                    }
+                    bool p2CollisionBoxes = Config::GetSettings().collisionDisplayP2CollisionBoxes;
+                    if (ImGui::Checkbox("P2 Collision Boxes", &p2CollisionBoxes)) {
+                        Config::SetSetting("General", "collisionDisplayP2CollisionBoxes",
+                                           p2CollisionBoxes ? "1" : "0");
+                    }
+                    ImGui::Unindent();
+                }
                 bool showProjectileInteractions = Config::GetSettings().collisionDisplayProjectileInteractions;
                 if (ImGui::Checkbox("Projectile Interactions", &showProjectileInteractions)) {
                     CollisionDisplay::SetLayerEnabled(3, showProjectileInteractions);
                 }
-                showWrappedTooltip("Replaces Revival's display hotkeys with this mod's scaled overlay renderer.");
+                showWrappedTooltip("Replaces Revival's display hotkeys with this mod's scaled overlay renderer. Player filters include each fighter and their owned projectile boxes; diagnostic dots and ranges remain separate.");
 
                 int collisionAlpha = Config::GetSettings().collisionDisplayFillAlphaPercent;
                 ImGui::SetNextItemWidth(180);
@@ -1118,6 +1178,7 @@ namespace ImGuiGui {
             int* strength; // NEW: Add strength member
             int* custom;
             int* macroSlot; // NEW: Per-trigger macro selection (0=None, 1..Max)
+            int* chargeFollowup; // 0=Off, 1=IC on contact, 2=FIC window
             uint32_t* poolMask; // NEW: Multi-action pool bitmask (UI motion indices)
             bool* usePool;      // NEW: Enable random pick from pool
         };
@@ -1125,19 +1186,19 @@ namespace ImGuiGui {
         // Define an array of trigger settings
                 TriggerSettings triggers[] = {
                         { "After Block", &guiState.localData.triggerAfterBlock, &guiState.localData.actionAfterBlock, 
-                            &guiState.localData.delayAfterBlock, &guiState.localData.strengthAfterBlock, &guiState.localData.customAfterBlock, &guiState.localData.macroSlotAfterBlock,
+                            &guiState.localData.delayAfterBlock, &guiState.localData.strengthAfterBlock, &guiState.localData.customAfterBlock, &guiState.localData.macroSlotAfterBlock, &guiState.localData.chargeAfterBlock,
                             &guiState.localData.afterBlockActionPoolMask, &guiState.localData.afterBlockUseActionPool },
                         { "On Wakeup", &guiState.localData.triggerOnWakeup, &guiState.localData.actionOnWakeup, 
-                            &guiState.localData.delayOnWakeup, &guiState.localData.strengthOnWakeup, &guiState.localData.customOnWakeup, &guiState.localData.macroSlotOnWakeup,
+                            &guiState.localData.delayOnWakeup, &guiState.localData.strengthOnWakeup, &guiState.localData.customOnWakeup, &guiState.localData.macroSlotOnWakeup, &guiState.localData.chargeOnWakeup,
                             &guiState.localData.onWakeupActionPoolMask, &guiState.localData.onWakeupUseActionPool },
                         { "After Hitstun", &guiState.localData.triggerAfterHitstun, &guiState.localData.actionAfterHitstun, 
-                            &guiState.localData.delayAfterHitstun, &guiState.localData.strengthAfterHitstun, &guiState.localData.customAfterHitstun, &guiState.localData.macroSlotAfterHitstun,
+                            &guiState.localData.delayAfterHitstun, &guiState.localData.strengthAfterHitstun, &guiState.localData.customAfterHitstun, &guiState.localData.macroSlotAfterHitstun, &guiState.localData.chargeAfterHitstun,
                             &guiState.localData.afterHitstunActionPoolMask, &guiState.localData.afterHitstunUseActionPool },
                         { "After Airtech", &guiState.localData.triggerAfterAirtech, &guiState.localData.actionAfterAirtech, 
-                            &guiState.localData.delayAfterAirtech, &guiState.localData.strengthAfterAirtech, &guiState.localData.customAfterAirtech, &guiState.localData.macroSlotAfterAirtech,
+                            &guiState.localData.delayAfterAirtech, &guiState.localData.strengthAfterAirtech, &guiState.localData.customAfterAirtech, &guiState.localData.macroSlotAfterAirtech, &guiState.localData.chargeAfterAirtech,
                             &guiState.localData.afterAirtechActionPoolMask, &guiState.localData.afterAirtechUseActionPool },
                         { "On RG", &guiState.localData.triggerOnRG, &guiState.localData.actionOnRG,
-                            &guiState.localData.delayOnRG, &guiState.localData.strengthOnRG, &guiState.localData.customOnRG, &guiState.localData.macroSlotOnRG,
+                            &guiState.localData.delayOnRG, &guiState.localData.strengthOnRG, &guiState.localData.customOnRG, &guiState.localData.macroSlotOnRG, &guiState.localData.chargeOnRG,
                             &guiState.localData.onRGActionPoolMask, &guiState.localData.onRGUseActionPool }
                 };
         
@@ -1147,6 +1208,10 @@ namespace ImGuiGui {
             int motionIndex;      // Index for mapping
             bool isCategory;      // True for category headers (non-selectable)
             bool isSeparator;     // True for visual separator lines
+            // Kano's 22B is a super while the same input family is an
+            // ordinary special elsewhere.  0=always, 1=non-Kano 22,
+            // 2=Kano 22; this keeps the per-character menu truthful.
+            int categoryVariant = 0;
         };
         
         const MotionItem motionItemsWithCategories[] = {
@@ -1155,8 +1220,19 @@ namespace ImGuiGui {
             { "  Standing", 0, false, false },
             { "  Crouching", 1, false, false },
             { "  Jumping", 2, false, false },
-            { "  Forward", 22, false, false },
-            { "  Back", 23, false, false },
+            { "", -1, false, true }, // Separator
+
+            // Character-specific normals (filtered by the target fighter).
+            { "COMMAND / DASH NORMALS", -1, true, false },
+            { "  6X (Forward)", 22, false, false },
+            { "  4X (Back)", 23, false, false },
+            { "  1X (Down-back)", 24, false, false },
+            { "  3X (Down-forward)", 25, false, false },
+            { "  j.2X (Air down)", 26, false, false },
+            { "  j.6X (Air forward)", 27, false, false },
+            { "  66X (Dash normal)", 28, false, false },
+            { "  662X (Dash low)", 29, false, false },
+            { "  664X (Dash-back normal)", 30, false, false },
             { "", -1, false, true }, // Separator
             
             // Specials category
@@ -1165,14 +1241,15 @@ namespace ImGuiGui {
             { "  623 (DP)", 4, false, false },
             { "  214 (QCB)", 5, false, false },
             { "  41236 (HCF)", 7, false, false },
-            { "  421 (Half-circle Down)", 6, false, false },
+            { "  421", 6, false, false },
             { "  412", 13, false, false },
-            { "  22", 14, false, false },
+            { "  22", 14, false, false, 1 },
             { "", -1, false, true }, // Separator
             
             // Supers category
             { "SUPERS", -1, true, false },
-            { "  214236 (Hybrid)", 8, false, false },
+            { "  22", 14, false, false, 2 },
+            { "  2141236", 8, false, false },
             { "  236236 (Double QCF)", 9, false, false },
             { "  214214 (Double QCB)", 10, false, false },
             { "  641236", 11, false, false },
@@ -1186,25 +1263,31 @@ namespace ImGuiGui {
             { "OTHERS", -1, true, false },
             { "  Jump", 17, false, false },
             { "  Dash", 19, false, false },
-            { "  Backdash", 18, false, false }
+            { "  Backdash", 18, false, false },
+            { "  Recoil Ducking (44~66)", 31, false, false }
         };
         
         // Keep old flat list for backwards compatibility with some functions
         const char* motionItems[] = {
             "Standing", "Crouching", "Jumping",
-            "236 (QCF)", "623 (DP)", "214 (QCB)", "421 (Half-circle Down)",
-            "41236 (HCF)", "214236 (Hybrid)", "236236 (Double QCF)", "214214 (Double QCB)",
+            "236 (QCF)", "623 (DP)", "214 (QCB)", "421",
+            "41236 (HCF)", "2141236", "236236 (Double QCF)", "214214 (Double QCB)",
             "641236", "463214", "412", "22", "4123641236", "6321463214",
             "Jump", "Backdash", "Forward Dash", "Block", "Final Memory",
-            "Forward Normal", "Back Normal"
+            "Forward Normal", "Back Normal", "1X", "3X", "j.2X", "j.6X",
+            "66X", "662X", "664X", "Recoil Ducking (44~66)"
         };
 
     // Compute a compact width that fits the longest action label (plus arrow/padding), so combos aren't overly wide
         ImGuiStyle& _style = ImGui::GetStyle();
         // Keep combobox compact: make it just wide enough for the longer of "Final Memory" or "Macro"
         const float _labelFinalMemory = ImGui::CalcTextSize("Final Memory").x;
+        const float _labelRecoilDucking =
+            ImGui::CalcTextSize("Recoil Ducking (44~66)").x;
         const float _labelMacro = ImGui::CalcTextSize("Macro").x;
-        const float _baseline = (std::max)(_labelFinalMemory, _labelMacro);
+        const float _baseline = (std::max)(
+            _labelRecoilDucking,
+            (std::max)(_labelFinalMemory, _labelMacro));
         const float actionComboWidth = _baseline + _style.FramePadding.x * 2.0f + ImGui::GetFrameHeight();
         // Shared A/B/C/D (notated as S for Special button) choice for normals/specials strength
         const char* buttonItems[] = { "A", "B", "C", "S" };
@@ -1242,6 +1325,24 @@ namespace ImGuiGui {
                 default: return false;
             }
         };
+        auto IsCatalogNormalGroup = [](int action)->bool {
+            return action >= ACTION_1X && action <= ACTION_664X;
+        };
+        auto ActionSupportsChargeFollowup = [&](int action)->bool {
+            if (action == ACTION_JUMP || action == ACTION_BACKDASH ||
+                action == ACTION_FORWARD_DASH || action == ACTION_BLOCK ||
+                action == ACTION_FINAL_MEMORY ||
+                action == ACTION_KAORI_RECOIL_DUCK || action == ACTION_66X ||
+                action == ACTION_662X || action == ACTION_664X) {
+                return false;
+            }
+            if (action >= ACTION_5A && action <= ACTION_4D) return true;
+            if (action == ACTION_1X || action == ACTION_3X ||
+                action == ACTION_J2X || action == ACTION_J6X) {
+                return true;
+            }
+            return IsSpecialMoveAction(action);
+        };
         auto MapPostureAndButtonToAction = [](int postureIdx, int buttonIdx)->int {
             buttonIdx = (buttonIdx < 0 ? 0 : (buttonIdx > 3 ? 3 : buttonIdx));
             switch (postureIdx) {
@@ -1260,6 +1361,11 @@ namespace ImGuiGui {
                 case 13: return ACTION_412; case 14: return ACTION_22; case 15: return ACTION_4123641236; case 16: return ACTION_6321463214;
                 case 22: return buttonIdx==0?ACTION_6A:(buttonIdx==1?ACTION_6B:(buttonIdx==2?ACTION_6C:ACTION_6D));
                 case 23: return buttonIdx==0?ACTION_4A:(buttonIdx==1?ACTION_4B:(buttonIdx==2?ACTION_4C:ACTION_4D));
+                case 24: return ACTION_1X; case 25: return ACTION_3X;
+                case 26: return ACTION_J2X; case 27: return ACTION_J6X;
+                case 28: return ACTION_66X; case 29: return ACTION_662X;
+                case 30: return ACTION_664X;
+                case 31: return ACTION_KAORI_RECOIL_DUCK;
                 default: return ACTION_5A; // for Standing/Crouching/Jumping, actual A/B/C chosen via Option column
             }
         };
@@ -1277,8 +1383,87 @@ namespace ImGuiGui {
                 case ACTION_SUPER2: return 8; case ACTION_236236: return 9; case ACTION_214214: return 10; case ACTION_641236: return 11; case ACTION_463214: return 12;
                 case ACTION_412: return 13; case ACTION_22: return 14; case ACTION_4123641236: return 15; case ACTION_6321463214: return 16;
                 case ACTION_JUMP: return 17; case ACTION_BACKDASH: return 18; case ACTION_FORWARD_DASH: return 19; case ACTION_BLOCK: return 20; case ACTION_FINAL_MEMORY: return 21;
+                case ACTION_1X: return 24; case ACTION_3X: return 25;
+                case ACTION_J2X: return 26; case ACTION_J6X: return 27;
+                case ACTION_66X: return 28; case ACTION_662X: return 29;
+                case ACTION_664X: return 30;
+                case ACTION_KAORI_RECOIL_DUCK: return 31;
                 default: return -1;
             }
+        };
+        const int catalogTargetPlayer = ResolveAutoActionTargetPlayer();
+        const char* catalogTargetName = catalogTargetPlayer == 1
+            ? guiState.localData.p1CharName : guiState.localData.p2CharName;
+        const int catalogCharId = (!catalogTargetName || catalogTargetName[0] == '\0')
+            ? -1
+            : (catalogTargetPlayer == 1 ? guiState.localData.p1CharID
+                                        : guiState.localData.p2CharID);
+        auto MotionItemVisible = [&](const MotionItem& item)->bool {
+            if (item.categoryVariant == 1) return catalogCharId != CHAR_ID_KANO;
+            if (item.categoryVariant == 2) return catalogCharId == CHAR_ID_KANO;
+            return true;
+        };
+        auto MotionChoiceAvailable = [&](int motionIndex)->bool {
+            if (motionIndex >= 0 && motionIndex <= 2) return true;
+            if (motionIndex == 17 || motionIndex == 18 || motionIndex == 19 ||
+                motionIndex == 20) return true;
+            if (motionIndex == 22 || motionIndex == 23) {
+                const int first = motionIndex == 22 ? ACTION_6A : ACTION_4A;
+                for (int b = 0; b < 4; ++b) {
+                    if (CharacterActionCatalog::IsAvailable(catalogCharId, first + b, b)) return true;
+                }
+                return false;
+            }
+            const int action = MapMotionIndexToAction(motionIndex, 0);
+            return CharacterActionCatalog::AnyAvailable(catalogCharId, action);
+        };
+        auto ButtonAvailable = [&](int action, int button)->bool {
+            button = (std::max)(0, (std::min)(button, 3));
+            if (action >= ACTION_5A && action <= ACTION_5D) {
+                return CharacterActionCatalog::IsAvailable(
+                    catalogCharId, ACTION_5A + button, button);
+            }
+            if (action >= ACTION_2A && action <= ACTION_2D) {
+                return CharacterActionCatalog::IsAvailable(
+                    catalogCharId, ACTION_2A + button, button);
+            }
+            if (action >= ACTION_JA && action <= ACTION_JD) {
+                return CharacterActionCatalog::IsAvailable(
+                    catalogCharId, ACTION_JA + button, button);
+            }
+            if (action >= ACTION_6A && action <= ACTION_6D) {
+                return CharacterActionCatalog::IsAvailable(catalogCharId, ACTION_6A + button, button);
+            }
+            if (action >= ACTION_4A && action <= ACTION_4D) {
+                return CharacterActionCatalog::IsAvailable(catalogCharId, ACTION_4A + button, button);
+            }
+            return CharacterActionCatalog::IsAvailable(catalogCharId, action, button);
+        };
+        auto AvailableButtonCombo = [&](const char* id, int action, int& button)->bool {
+            bool changed = false;
+            if (!ButtonAvailable(action, button)) {
+                for (int b = 0; b < 4; ++b) {
+                    if (ButtonAvailable(action, b)) {
+                        changed = button != b;
+                        button = b;
+                        break;
+                    }
+                }
+            }
+            const char* preview = buttonItems[(std::max)(0, (std::min)(button, 3))];
+            if (ImGui::BeginCombo(id, preview)) {
+                for (int b = 0; b < 4; ++b) {
+                    if (!ButtonAvailable(action, b)) continue;
+                    const bool selected = b == button;
+                    if (ImGui::Selectable(buttonItems[b], selected)) {
+                        button = b;
+                        changed = true;
+                    }
+                    if (selected) ImGui::SetItemDefaultFocus();
+                }
+                ImGui::EndCombo();
+            }
+            return changed;
         };
         // (quick summary and bulk utilities removed per user feedback)
 
@@ -1286,7 +1471,7 @@ namespace ImGuiGui {
 
         // Render as a table for clarity
         ImGuiTableFlags tflags = ImGuiTableFlags_Borders | ImGuiTableFlags_SizingStretchProp;
-        if (ImGui::BeginTable("auto_triggers", 6, tflags)) {
+        if (ImGui::BeginTable("auto_triggers", 7, tflags)) {
             const float onColW = ImGui::GetFrameHeight() + _style.CellPadding.x * 1.5f; // roughly checkbox size
             const float actionColW = actionComboWidth + _style.CellPadding.x * 2.0f;    // match combo width
             const float delayColW = 80.0f;                                              // small, like our input width
@@ -1296,6 +1481,7 @@ namespace ImGuiGui {
             ImGui::TableSetupColumn("Action", ImGuiTableColumnFlags_WidthFixed, actionColW);
             ImGui::TableSetupColumn("Button", ImGuiTableColumnFlags_WidthFixed, 140.0f);
             ImGui::TableSetupColumn("Delay", ImGuiTableColumnFlags_WidthFixed, delayColW);
+            ImGui::TableSetupColumn("After Move", ImGuiTableColumnFlags_WidthFixed, 105.0f);
             ImGui::TableSetupColumn("More", ImGuiTableColumnFlags_WidthFixed, 140.0f);
             ImGui::TableHeadersRow();
 
@@ -1326,8 +1512,15 @@ namespace ImGuiGui {
                 ImGui::SetNextItemWidth(actionComboWidth);
                 int currentMotionIndex = (*triggers[i].macroSlot > 0) ? -2 : GetMotionIndexForAction(*triggers[i].action);
                 // If multi-pool enabled and has selections, show Random(n) label
-                auto popcount32 = [](uint32_t m){ int c=0; while(m){ m &= (m-1); ++c; } return c; };
-                int selectedCount = (*triggers[i].usePool) ? popcount32(*triggers[i].poolMask) : 0;
+                auto availablePoolCount = [&](uint32_t m){
+                    int c = 0;
+                    for (int bit = 0; bit < 24; ++bit) {
+                        if ((m & (1u << bit)) && MotionChoiceAvailable(bit)) ++c;
+                    }
+                    return c;
+                };
+                int selectedCount = (*triggers[i].usePool)
+                    ? availablePoolCount(*triggers[i].poolMask) : 0;
                 const char* currentLabel = nullptr;
                 char randomLabel[32];
                 if (selectedCount > 0) {
@@ -1338,17 +1531,23 @@ namespace ImGuiGui {
                 }
                 if (selectedCount == 0 && currentMotionIndex >= 0) {
                     for (const auto& item : motionItemsWithCategories) {
-                        if (!item.isCategory && !item.isSeparator && item.motionIndex == currentMotionIndex) { currentLabel = item.label; break; }
+                        if (MotionItemVisible(item) && !item.isCategory &&
+                            !item.isSeparator && item.motionIndex == currentMotionIndex) {
+                            currentLabel = item.label;
+                            break;
+                        }
                     }
                 }
                 bool selectionChanged = false; int newMotionIndex = currentMotionIndex; bool newMacroSelected = false;
                 if (ImGui::BeginCombo("##Action", currentLabel)) {
                     for (const auto& item : motionItemsWithCategories) {
+                        if (!MotionItemVisible(item)) continue;
                         if (item.isCategory) {
                             ImGui::TextColored(ImVec4(0.7f, 0.9f, 1.0f, 1.0f), "%s", item.label);
                         } else if (item.isSeparator) {
                             ImGui::Separator();
                         } else {
+                            if (!MotionChoiceAvailable(item.motionIndex)) continue;
                             bool isSelected = (item.motionIndex == currentMotionIndex);
                             if (ImGui::Selectable(item.label, isSelected)) { newMotionIndex = item.motionIndex; selectionChanged = true; }
                             if (isSelected) ImGui::SetItemDefaultFocus();
@@ -1394,7 +1593,8 @@ namespace ImGuiGui {
                 } else if (*triggers[i].action == ACTION_JUMP) {
                     const char* dirItems[] = { "Neutral", "Forward", "Backwards" }; int dir = *triggers[i].strength;
                     if (ImGui::Combo("##JumpDir", &dir, dirItems, IM_ARRAYSIZE(dirItems))) { *triggers[i].strength = (dir < 0 ? 0 : (dir > 2 ? 2 : dir)); }
-                } else if (*triggers[i].action == ACTION_BACKDASH) {
+                } else if (*triggers[i].action == ACTION_BACKDASH ||
+                           *triggers[i].action == ACTION_KAORI_RECOIL_DUCK) {
                     ImGui::TextDisabled("(none)");
                 } else if (*triggers[i].action == ACTION_FORWARD_DASH) {
                     int fdf = forwardDashFollowup.load(); const char* fdItems[] = { "No Follow-up", "A", "B", "C", "2A", "2B", "2C" };
@@ -1402,15 +1602,20 @@ namespace ImGuiGui {
                     ImGui::SameLine(); bool dashMode = forwardDashFollowupDashMode.load(); if (ImGui::Checkbox("DashAtk", &dashMode)) { forwardDashFollowupDashMode.store(dashMode); }
                 } else if (postureIdx >= 0) {
                     switch (*triggers[i].action) { case ACTION_5A: case ACTION_2A: case ACTION_JA: buttonIdx = 0; break; case ACTION_5B: case ACTION_2B: case ACTION_JB: buttonIdx = 1; break; case ACTION_5C: case ACTION_2C: case ACTION_JC: buttonIdx = 2; break; case ACTION_5D: case ACTION_2D: case ACTION_JD: buttonIdx = 3; break; default: buttonIdx = 0; break; }
-                    if (ImGui::Combo("##Btn", &buttonIdx, buttonItems, IM_ARRAYSIZE(buttonItems))) { *triggers[i].action = MapPostureAndButtonToAction(postureIdx, buttonIdx); }
+                    if (AvailableButtonCombo("##Btn", *triggers[i].action, buttonIdx)) { *triggers[i].action = MapPostureAndButtonToAction(postureIdx, buttonIdx); *triggers[i].strength = buttonIdx; }
                 } else if (IsSpecialMoveAction(*triggers[i].action)) {
-                    buttonIdx = *triggers[i].strength; if (ImGui::Combo("##Str", &buttonIdx, buttonItems, IM_ARRAYSIZE(buttonItems))) { *triggers[i].strength = (buttonIdx > 3) ? 3 : buttonIdx; }
+                    buttonIdx = *triggers[i].strength; if (AvailableButtonCombo("##Str", *triggers[i].action, buttonIdx)) { *triggers[i].strength = buttonIdx; }
                 } else if (GetMotionIndexForAction(*triggers[i].action) == 22 || GetMotionIndexForAction(*triggers[i].action) == 23) {
                     int groupIndex = GetMotionIndexForAction(*triggers[i].action);
                     switch (*triggers[i].action) { case ACTION_6A: case ACTION_4A: buttonIdx = 0; break; case ACTION_6B: case ACTION_4B: buttonIdx = 1; break; case ACTION_6C: case ACTION_4C: buttonIdx = 2; break; case ACTION_6D: case ACTION_4D: buttonIdx = 3; break; default: buttonIdx = 0; break; }
-                    if (ImGui::Combo("##FwdBackBtn", &buttonIdx, buttonItems, IM_ARRAYSIZE(buttonItems))) {
+                    if (AvailableButtonCombo("##FwdBackBtn", *triggers[i].action, buttonIdx)) {
                         if (groupIndex == 22) { *triggers[i].action = (buttonIdx==0)?ACTION_6A:(buttonIdx==1)?ACTION_6B:(buttonIdx==2)?ACTION_6C:ACTION_6D; }
                         else { *triggers[i].action = (buttonIdx==0)?ACTION_4A:(buttonIdx==1)?ACTION_4B:(buttonIdx==2)?ACTION_4C:ACTION_4D; }
+                    }
+                } else if (IsCatalogNormalGroup(*triggers[i].action)) {
+                    buttonIdx = *triggers[i].strength;
+                    if (AvailableButtonCombo("##CatalogBtn", *triggers[i].action, buttonIdx)) {
+                        *triggers[i].strength = buttonIdx;
                     }
                 } else {
                     buttonIdx = *triggers[i].strength; if (*triggers[i].action != ACTION_BLOCK) { if (ImGui::Combo("##OtherBtn", &buttonIdx, buttonItems, IM_ARRAYSIZE(buttonItems))) { *triggers[i].strength = (buttonIdx > 3) ? 3 : buttonIdx; } }
@@ -1419,6 +1624,21 @@ namespace ImGuiGui {
                 // Column: Delay
                 ImGui::TableNextColumn(); ImGui::SetNextItemWidth(70);
                 int delayValue = *triggers[i].delay; if (ImGui::InputInt("##Delay", &delayValue, 1, 5)) { *triggers[i].delay = (std::max)(0, delayValue); }
+
+                // Column: optional native Instant Charge follow-up.
+                ImGui::TableNextColumn(); ImGui::SetNextItemWidth(100);
+                {
+                    const char* chargeItems[] = { "Off", "IC", "FIC" };
+                    const bool chargeEligible = *triggers[i].macroSlot == 0 &&
+                        ActionSupportsChargeFollowup(*triggers[i].action);
+                    if (!chargeEligible) *triggers[i].chargeFollowup = 0;
+                    if (!chargeEligible) ImGui::BeginDisabled();
+                    int charge = (std::max)(0, (std::min)(*triggers[i].chargeFollowup, 2));
+                    if (ImGui::Combo("##Charge", &charge, chargeItems, IM_ARRAYSIZE(chargeItems))) {
+                        *triggers[i].chargeFollowup = charge;
+                    }
+                    if (!chargeEligible) ImGui::EndDisabled();
+                }
 
                 // Column: More (Row controls)
                 ImGui::TableNextColumn();
@@ -1432,7 +1652,7 @@ namespace ImGuiGui {
                         else if (i == 3) { optCount = &guiState.localData.afterAirtechOptionCount; opts = guiState.localData.afterAirtechOptions; }
                         else if (i == 4) { optCount = &guiState.localData.onRGOptionCount; opts = guiState.localData.onRGOptions; }
                         if (optCount && opts && *optCount < maxOpts) {
-                            TriggerOption def{ true, ACTION_5A, 0, 0, (int)BASE_ATTACK_5A, 0 };
+                            TriggerOption def{ true, ACTION_5A, 0, 0, (int)BASE_ATTACK_5A, 0, 0 };
                             if (i == 3) def.action = ACTION_JA; // Airtech default JA
                             opts[*optCount] = def; (*optCount)++;
                         }
@@ -1466,16 +1686,22 @@ namespace ImGuiGui {
                     const char* rowLabel = nullptr;
                     if (rowMotionIndex >= 0) {
                         for (const auto& it : motionItemsWithCategories) {
-                            if (!it.isCategory && !it.isSeparator && it.motionIndex == rowMotionIndex) { rowLabel = it.label; break; }
+                            if (MotionItemVisible(it) && !it.isCategory &&
+                                !it.isSeparator && it.motionIndex == rowMotionIndex) {
+                                rowLabel = it.label;
+                                break;
+                            }
                         }
                     } else { rowLabel = (opts[r].macroSlot > 0) ? "Macro" : "Unknown"; }
                     ImGui::SetNextItemWidth(actionComboWidth);
                     bool selChanged = false; int newIdx = rowMotionIndex; bool macroPicked = false;
                     if (ImGui::BeginCombo("##rowAction", rowLabel)) {
                         for (const auto& item : motionItemsWithCategories) {
+                            if (!MotionItemVisible(item)) continue;
                             if (item.isCategory) ImGui::TextColored(ImVec4(0.7f,0.9f,1.0f,1.0f), "%s", item.label);
                             else if (item.isSeparator) ImGui::Separator();
                             else {
+                                if (!MotionChoiceAvailable(item.motionIndex)) continue;
                                 bool isSel = (item.motionIndex == rowMotionIndex);
                                 if (ImGui::Selectable(item.label, isSel)) { newIdx = item.motionIndex; selChanged = true; }
                                 if (isSel) ImGui::SetItemDefaultFocus();
@@ -1517,7 +1743,7 @@ namespace ImGuiGui {
                     } else if (IsNormalAttackAction(opts[r].action)) {
                         int postIdx = GetPostureIndexForAction(opts[r].action);
                         int b = 0; switch (opts[r].action) { case ACTION_5A: case ACTION_2A: case ACTION_JA: case ACTION_6A: case ACTION_4A: b=0; break; case ACTION_5B: case ACTION_2B: case ACTION_JB: case ACTION_6B: case ACTION_4B: b=1; break; case ACTION_5C: case ACTION_2C: case ACTION_JC: case ACTION_6C: case ACTION_4C: b=2; break; case ACTION_5D: case ACTION_2D: case ACTION_JD: case ACTION_6D: case ACTION_4D: b=3; break; default: b=0; break; }
-                        if (ImGui::Combo("##rowBtn", &b, buttonItems, IM_ARRAYSIZE(buttonItems))) {
+                        if (AvailableButtonCombo("##rowBtn", opts[r].action, b)) {
                             if (postIdx == 0) opts[r].action = (b==0?ACTION_5A:(b==1?ACTION_5B:(b==2?ACTION_5C:ACTION_5D)));
                             else if (postIdx == 1) opts[r].action = (b==0?ACTION_2A:(b==1?ACTION_2B:(b==2?ACTION_2C:ACTION_2D)));
                             else if (postIdx == 2) opts[r].action = (b==0?ACTION_JA:(b==1?ACTION_JB:(b==2?ACTION_JC:ACTION_JD)));
@@ -1529,12 +1755,30 @@ namespace ImGuiGui {
                             opts[r].strength = b;
                         }
                     } else if (IsSpecialMoveAction(opts[r].action)) {
-                        int b = opts[r].strength; if (ImGui::Combo("##rowStr", &b, buttonItems, IM_ARRAYSIZE(buttonItems))) { opts[r].strength = (b>3)?3:b; }
+                        int b = opts[r].strength; if (AvailableButtonCombo("##rowStr", opts[r].action, b)) { opts[r].strength = b; }
+                    } else if (IsCatalogNormalGroup(opts[r].action)) {
+                        int b = opts[r].strength;
+                        if (AvailableButtonCombo("##rowCatalog", opts[r].action, b)) opts[r].strength = b;
                     } else { ImGui::TextDisabled("(none)"); }
 
                     // Delay column
                     ImGui::TableNextColumn(); ImGui::SetNextItemWidth(70);
                     int d = opts[r].delay; if (ImGui::InputInt("##rowDelay", &d, 1, 5)) { opts[r].delay = (std::max)(0, d); }
+
+                    // After Move column
+                    ImGui::TableNextColumn(); ImGui::SetNextItemWidth(100);
+                    {
+                        const char* chargeItems[] = { "Off", "IC", "FIC" };
+                        const bool chargeEligible = opts[r].macroSlot == 0 &&
+                            ActionSupportsChargeFollowup(opts[r].action);
+                        if (!chargeEligible) opts[r].chargeFollowup = 0;
+                        if (!chargeEligible) ImGui::BeginDisabled();
+                        int charge = (std::max)(0, (std::min)(opts[r].chargeFollowup, 2));
+                        if (ImGui::Combo("##rowCharge", &charge, chargeItems, IM_ARRAYSIZE(chargeItems))) {
+                            opts[r].chargeFollowup = charge;
+                        }
+                        if (!chargeEligible) ImGui::EndDisabled();
+                    }
 
                     // More column: remove
                     ImGui::TableNextColumn();
@@ -2003,14 +2247,14 @@ namespace ImGuiGui {
             case CHAR_ID_MISAKI:   return "Misaki_Kawana";
             case CHAR_ID_MISHIO:   return "Mishio_Amano";
             case CHAR_ID_MISUZU:   return "Misuzu_Kamio";
-            case CHAR_ID_MIZUKA:   return "Mizuka_Nagamori";   // UNKNOWN(Boss)
-            case CHAR_ID_NAGAMORI: return "Mizuka_Nagamori";   // 
+            case CHAR_ID_MIZUKA:        return "Mizuka_Nagamori";
+            case CHAR_ID_UNKNOWN_BOSS:  return "UNKNOWN";
             case CHAR_ID_NANASE:   return "Rumi_Nanase";       // Rumi
             case CHAR_ID_SAYURI:   return "Sayuri_Kurata";
             case CHAR_ID_SHIORI:   return "Shiori_Misaka";
             case CHAR_ID_NAYUKI:   return "Nayuki_Minase_(asleep)"; // Sleepy
             case CHAR_ID_NAYUKIB:  return "Nayuki_Minase_(awake)";  // Awake
-            case CHAR_ID_MIZUKAB:  return "UNKNOWN";                // Unknown
+            case CHAR_ID_UNKNOWN:  return "UNKNOWN";
             default: return nullptr;
         }
     }
@@ -2413,8 +2657,7 @@ namespace ImGuiGui {
         // (Minagi conversion checkbox moved to Debug tab)
 
         const bool hasMizuka =
-            p1CharID == CHAR_ID_MIZUKA || p1CharID == CHAR_ID_NAGAMORI ||
-            p2CharID == CHAR_ID_MIZUKA || p2CharID == CHAR_ID_NAGAMORI;
+            p1CharID == CHAR_ID_MIZUKA || p2CharID == CHAR_ID_MIZUKA;
         if (hasMizuka) {
             hasFeatures = true;
 
@@ -3981,6 +4224,12 @@ namespace ImGuiGui {
     guiState.localData.actionAfterAirtech  = triggerAfterAirtechAction.load();
     guiState.localData.actionOnRG          = triggerOnRGAction.load();
 
+    guiState.localData.chargeAfterBlock   = triggerAfterBlockCharge.load();
+    guiState.localData.chargeOnWakeup     = triggerOnWakeupCharge.load();
+    guiState.localData.chargeAfterHitstun = triggerAfterHitstunCharge.load();
+    guiState.localData.chargeAfterAirtech = triggerAfterAirtechCharge.load();
+    guiState.localData.chargeOnRG         = triggerOnRGCharge.load();
+
     // Per-trigger multi-action pool config
     guiState.localData.afterBlockActionPoolMask   = triggerAfterBlockActionPoolMask.load();
     guiState.localData.onWakeupActionPoolMask     = triggerOnWakeupActionPoolMask.load();
@@ -4008,6 +4257,11 @@ namespace ImGuiGui {
         guiState.localData.afterHitstunActionPoolDelays[i] = g_afterHitstunActionPoolDelays[i];
         guiState.localData.afterAirtechActionPoolDelays[i] = g_afterAirtechActionPoolDelays[i];
         guiState.localData.onRGActionPoolDelays[i]         = g_onRGActionPoolDelays[i];
+        guiState.localData.afterBlockActionPoolCharges[i]   = g_afterBlockActionPoolCharges[i];
+        guiState.localData.onWakeupActionPoolCharges[i]     = g_onWakeupActionPoolCharges[i];
+        guiState.localData.afterHitstunActionPoolCharges[i] = g_afterHitstunActionPoolCharges[i];
+        guiState.localData.afterAirtechActionPoolCharges[i] = g_afterAirtechActionPoolCharges[i];
+        guiState.localData.onRGActionPoolCharges[i]         = g_onRGActionPoolCharges[i];
     }
 
     // Per-trigger custom IDs
@@ -4096,6 +4350,12 @@ namespace ImGuiGui {
             triggerAfterAirtechAction.store(displayData.actionAfterAirtech);
             triggerOnRGAction.store(displayData.actionOnRG);
 
+            triggerAfterBlockCharge.store(displayData.chargeAfterBlock);
+            triggerOnWakeupCharge.store(displayData.chargeOnWakeup);
+            triggerAfterHitstunCharge.store(displayData.chargeAfterHitstun);
+            triggerAfterAirtechCharge.store(displayData.chargeAfterAirtech);
+            triggerOnRGCharge.store(displayData.chargeOnRG);
+
             // Per-trigger multi-action pools
             triggerAfterBlockActionPoolMask.store(displayData.afterBlockActionPoolMask);
             triggerOnWakeupActionPoolMask.store(displayData.onWakeupActionPoolMask);
@@ -4123,6 +4383,11 @@ namespace ImGuiGui {
                 g_afterHitstunActionPoolDelays[i] = displayData.afterHitstunActionPoolDelays[i];
                 g_afterAirtechActionPoolDelays[i] = displayData.afterAirtechActionPoolDelays[i];
                 g_onRGActionPoolDelays[i]         = displayData.onRGActionPoolDelays[i];
+                g_afterBlockActionPoolCharges[i]   = displayData.afterBlockActionPoolCharges[i];
+                g_onWakeupActionPoolCharges[i]     = displayData.onWakeupActionPoolCharges[i];
+                g_afterHitstunActionPoolCharges[i] = displayData.afterHitstunActionPoolCharges[i];
+                g_afterAirtechActionPoolCharges[i] = displayData.afterAirtechActionPoolCharges[i];
+                g_onRGActionPoolCharges[i]         = displayData.onRGActionPoolCharges[i];
             }
 
             // Per-trigger custom IDs
@@ -4151,7 +4416,7 @@ namespace ImGuiGui {
                 int n = srcCount; if (n < 0) n = 0; if (n > MAX_TRIGGER_OPTIONS) n = MAX_TRIGGER_OPTIONS;
                 dstCount = n;
                 for (int i=0;i<n;i++) dstArr[i] = srcArr[i];
-                for (int i=n;i<MAX_TRIGGER_OPTIONS;i++) dstArr[i] = TriggerOption{false, ACTION_5A, 0, 0, (int)BASE_ATTACK_5A, 0};
+                for (int i=n;i<MAX_TRIGGER_OPTIONS;i++) dstArr[i] = TriggerOption{false, ACTION_5A, 0, 0, (int)BASE_ATTACK_5A, 0, 0};
             };
             clampCopy(displayData.afterBlockOptionCount,    displayData.afterBlockOptions,    g_afterBlockOptionCount,    g_afterBlockOptions);
             clampCopy(displayData.onWakeupOptionCount,      displayData.onWakeupOptions,      g_onWakeupOptionCount,      g_onWakeupOptions);

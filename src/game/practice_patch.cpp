@@ -21,6 +21,9 @@
 #include "../include/game/guard_overrides.h" // character/move grounded overheads
 #include "../include/game/character_settings.h" // character ID from name
 #include "../include/game/auto_action.h" // g_p2ControlOverridden
+#include "../include/game/auto_action_charge.h"
+#include "../include/game/kaori_recoil_duck.h"
+#include "../include/input/auto_action_motion_transaction.h"
 // EfzRevival practice controller offsets and pause integration (for GUI_POS fix at match start)
 #include "../include/game/practice_offsets.h"
 #include "../include/utils/pause_integration.h"
@@ -53,6 +56,16 @@ static bool WriteP2BlockStance(uint8_t stance);
 bool EnablePlayer2InPracticeMode() {
     // CRITICAL: Never modify game state during online mode
     if (g_onlineModeActive.load()) return false;
+
+    // This is an explicit long-lived controller-role change. Serialize it with
+    // the scoped auto-action producer and retire any authored command before
+    // changing either of EFZ's P2 controller flags.
+    std::lock_guard<std::recursive_mutex> controlLock(g_p2ControlMutex);
+    if (g_onlineModeActive.load(std::memory_order_acquire)) return false;
+    KaoriRecoilDuck::Cancel(2, "Practice enabled P2 human control");
+    CancelAutoActionChargeFollowup(2, "Practice enabled P2 human control");
+    CancelP2AutoActionMotionTransaction("Practice enabled P2 human control");
+    if (IsP2AutoActionMotionTransactionActive()) return false;
 
     LogOut("[PRACTICE_PATCH] Attempting to enable Player 2 controls in Practice mode...", true);
 
@@ -293,6 +306,20 @@ void MonitorAndPatchPracticeMode() {
         }
         
     if (currentMode == GameMode::Practice) {
+        {
+            // Snapshot and synchronize controller state under the same barrier
+            // used by native P2 production, auto-actions, and netplay
+            // publication.  Every pointer/flag below is resolved after the
+            // lock, so a stale 500-ms observation cannot be written into a new
+            // match or character instance.
+            std::lock_guard<std::recursive_mutex> controlLock(g_p2ControlMutex);
+            if (g_onlineModeActive.load(std::memory_order_acquire)) {
+                LogOut("[PRACTICE_PATCH] Netplay won P2 control lock; stopping practice monitor", true);
+                return;
+            }
+            const bool stillPractice =
+                GetCurrentGameMode() == GameMode::Practice;
+            if (stillPractice) {
             // Check current P2 CPU flag and AI flag before patching
             uintptr_t gameStatePtr = GetGameStatePtr();
             uint8_t p2CpuFlag = 1; // Default to CPU controlled
@@ -359,6 +386,8 @@ void MonitorAndPatchPracticeMode() {
                 // Do not auto-toggle the P2 CPU flag here. That is controlled by UI actions and SwitchPlayers.
                 // This avoids fighting with side switching logic and eliminates the uncontrollable toggles.
             }
+            }
+        }
             
             // Periodically dump state in practice mode (every 30 cycles = ~15 seconds)
             if (cycleCount % 30 == 0) {
@@ -498,6 +527,13 @@ bool DisablePlayer2InPracticeMode() {
     // CRITICAL: Never modify game state during online mode
     if (g_onlineModeActive.load()) return false;
 
+    std::lock_guard<std::recursive_mutex> controlLock(g_p2ControlMutex);
+    if (g_onlineModeActive.load(std::memory_order_acquire)) return false;
+    KaoriRecoilDuck::Cancel(2, "Practice restored P2 AI control");
+    CancelAutoActionChargeFollowup(2, "Practice restored P2 AI control");
+    CancelP2AutoActionMotionTransaction("Practice restored P2 AI control");
+    if (IsP2AutoActionMotionTransactionActive()) return false;
+
     LogOut("[PRACTICE_PATCH] Attempting to disable Player 2 controls in Practice mode...", true);
 
     // When using EfzRevival side-switching during an active Practice match, P2 can
@@ -549,6 +585,13 @@ void EnsureDefaultControlFlagsOnMatchStart() {
     // Only modify control flags in offline Practice mode
     if (GetCurrentGameMode() != GameMode::Practice) return;
     if (IsNetplaySuspendActive()) return;
+
+    std::lock_guard<std::recursive_mutex> controlLock(g_p2ControlMutex);
+    if (IsNetplaySuspendActive()) return;
+    KaoriRecoilDuck::Cancel(2, "Practice match-start controller reset");
+    CancelAutoActionChargeFollowup(2, "Practice match-start controller reset");
+    CancelP2AutoActionMotionTransaction("Practice match-start controller reset");
+    if (IsP2AutoActionMotionTransactionActive()) return;
     
     uintptr_t gameStatePtr = GetGameStatePtr();
     if (gameStatePtr) {
@@ -727,7 +770,8 @@ static std::atomic<bool> g_adaptiveForceTick{false}; // force immediate evaluati
 static std::atomic<bool> g_abOverrideActive{false}; // when false, follow the game's autoblock flag
 // Expose the current desired autoblock state evaluated each frame by MonitorDummyAutoBlock
 static std::atomic<bool> g_desiredAbOn{false};
-// When true, MonitorDummyAutoBlock will not write to +4936 (Random Block or other controller will own writes)
+// When true, MonitorDummyAutoBlock will not write to or synchronize from +4936
+// (Random Block owns the physical flag for its complete enabled lifetime).
 static std::atomic<bool> g_externalAbController{false};
 
 // Helper: human-readable name for Dummy Auto-Block modes

@@ -370,11 +370,17 @@ static void __fastcall HookedHandleP2PCollision(void* gameSystem, void* /*edx*/,
     const bool timerConsumed = afterAttacker.attackTimer < beforeAttacker.attackTimer;
     const bool stateResolved = afterAttacker.hitState != beforeAttacker.hitState;
     const bool comboIncreased = afterAttacker.combo > beforeAttacker.combo;
+    const bool comboRestarted = Mission::Contact::CorroboratesComboRestart(
+        beforeAttacker.combo, afterAttacker.combo,
+        beforeDefender.hp, afterDefender.hp,
+        IsHitstun(afterDefender.move) || IsLaunched(afterDefender.move),
+        afterAttacker.hitState);
     Mission::Contact::DirectEvidence evidence;
     evidence.resolved = timerConsumed || (stateResolved &&
         (comboIncreased || afterDefender.hp < beforeDefender.hp ||
          afterDefender.move != beforeDefender.move));
     evidence.comboIncreased = comboIncreased;
+    evidence.comboRestarted = comboRestarted;
     evidence.defenderRecoilGuard = IsRecoilGuard(afterDefender.move);
     evidence.defenderBlocked = IsBlockstunState(afterDefender.move) &&
                                !evidence.defenderRecoilGuard;
@@ -473,6 +479,11 @@ static void __fastcall HookedHandleEntityToPlayerCollision(
         (entityStateChanged || lifeConsumed || comboChanged || hpChanged ||
          defenderReactionChanged || playerLatchChanged);
     evidence.comboIncreased = afterOwner.combo > beforeOwner.combo;
+    evidence.comboRestarted = Mission::Contact::CorroboratesComboRestart(
+        beforeOwner.combo, afterOwner.combo,
+        beforeDefender.hp, afterDefender.hp,
+        IsHitstun(afterDefender.move) || IsLaunched(afterDefender.move),
+        afterEntity.rawState);
     evidence.defenderRecoilGuard = IsRecoilGuard(afterDefender.move);
     evidence.defenderBlocked = IsBlockstunState(afterDefender.move) &&
                                !evidence.defenderRecoilGuard;

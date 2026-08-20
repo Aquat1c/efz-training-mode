@@ -20,11 +20,18 @@ constexpr ImU32 kTextActive      = IM_COL32(255, 255, 255, 255);
 constexpr ImU32 kTextInactive    = IM_COL32(150, 150, 150, 235);
 constexpr ImU32 kTextHeader      = IM_COL32(235, 235, 235, 255);
 constexpr ImU32 kTextDisabled    = IM_COL32( 96,  96,  96, 255);
+// A locked row still exposes its configured value; only unavailable choices
+// collapse to the darker disabled tone.
+constexpr ImU32 kTextLockedValue = IM_COL32(205, 205, 205, 235);
 constexpr ImU32 kTextStatus      = IM_COL32(170, 170, 170, 255);
 constexpr ImU32 kInfoFill        = IM_COL32(  4,  16,  18,  126);
 constexpr ImU32 kInfoAccent      = IM_COL32(105, 235, 235,  150);
 constexpr ImU32 kSelectedFill    = IM_COL32( 30, 155, 190,  105);
 constexpr ImU32 kSelectedLine    = IM_COL32(105, 235, 235,  190);
+// List-row focus follows EFZ's option/replay menus: a restrained steel-white
+// lift over the black strip. Cyan remains reserved for tabs and mode accents.
+constexpr ImU32 kRowFocusFill    = IM_COL32(210, 220, 225,  32);
+constexpr ImU32 kRowFocusLine    = IM_COL32(255, 255, 255, 210);
 constexpr ImU32 kDisabledFill    = IM_COL32(0,   0,   0,   120);
 constexpr ImU32 kDisabledFocus   = IM_COL32(255, 255, 255,   18);
 constexpr ImU32 kCursorDisabled  = IM_COL32(120, 120, 120, 255);

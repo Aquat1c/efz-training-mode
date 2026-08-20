@@ -1,5 +1,6 @@
 #include "../include/game/game_state.h"
 #include "../include/game/mission/mission_engine.h"
+#include "../include/game/mission/mission_pause_menu.h"
 
 #include "../include/core/memory.h"
 #include "../include/core/constants.h"
@@ -10,7 +11,6 @@
 #include "../include/utils/bgm_control.h"
 #include "../include/gui/gui.h"
 #include "../include/gui/imgui_impl.h"
-#include "../include/gui/custom_menu/screens.h"
 #include "frame_monitor.h"
 #include "../include/core/logger.h"
 #include "../3rdparty/minhook/include/MinHook.h"
@@ -205,17 +205,39 @@ namespace {
             return 0;
         }
 
-        if (practiceBattle && Mission::Engine::Recorder::OwnsCaptureHotkeys()) {
+        if (practiceBattle &&
+            (Mission::Engine::Recorder::IsSessionActive() ||
+             Mission::Engine::Recorder::IsMenuInputHandoffActive()) &&
+            !ImGuiImpl::IsVisible()) {
             const bool wasHeld = s_practiceEscHeld.exchange(gameActive && escDown,
                                                              std::memory_order_acq_rel);
-            if (gameActive && escDown && !wasHeld) {
-                // The capture phases own their own pause surface (the gate in
-                // OpenMenu routes there). The take is NOT auto-sealed anymore:
-                // the pause menu offers Resume / Cancel Countdown / Stop &
-                // Review / Discard explicitly.
-                OpenMenu();
+            const bool recorderHandoff =
+                Mission::Engine::Recorder::IsMenuInputHandoffActive() &&
+                !Mission::PauseMenu::IsOpen();
+            if (recorderHandoff) {
+                // The command/capture handoff owns the short interval between
+                // surfaces. Ignore Menu entirely; opening Practice after a
+                // discard or toggling the next recorder context here would
+                // break the neutral-input transaction.
+                return 0;
             }
-            return 0;
+            if (gameActive && escDown) {
+                if (!wasHeld) {
+                    // Every non-idle authoring phase owns its dedicated pause
+                    // surface. The take is never auto-sealed by Escape: the
+                    // menu exposes phase-appropriate actions explicitly.
+                    OpenMenu();
+                }
+                return 0;
+            }
+            if (Mission::PauseMenu::IsOpen() ||
+                Mission::Engine::Recorder::OwnsCaptureHotkeys() ||
+                Mission::Engine::Recorder::IsMenuInputHandoffActive()) {
+                // A visible dedicated menu and the two live-capture phases
+                // suppress the native battle dispatcher entirely. PRE-RECORD
+                // and REVIEW otherwise retain normal Practice setup tools.
+                return 0;
+            }
         }
 
         if (ImGuiImpl::IsVisible()) {
@@ -241,9 +263,6 @@ namespace {
             const bool wasHeld = s_practiceEscHeld.exchange(true, std::memory_order_acq_rel);
             if (!wasHeld) {
                 LogOut("[FRONTEND] Practice ESC intercepted; opening training menu", true);
-                if (Mission::Engine::Recorder::IsSessionActive()) {
-                    CustomMenu::Screens::OpenMissionBrowser();
-                }
                 OpenMenu();
             }
             return 0;

@@ -10,6 +10,8 @@
 #include "../include/input/injection_control.h" // g_forceBypass
 #include "../include/input/input_motion.h"      // g_manualInputOverride/g_manualInputMask
 #include "../include/input/input_hook.h"        // playback poll-consumption audit
+#include "../include/input/auto_action_motion_transaction.h"
+#include "../include/input/scoped_input_reservation.h"
 #include "../include/game/auto_action.h" // Enable/Restore P2 control helpers
 #include "../include/utils/switch_players.h"
 #include "../include/utils/pause_integration.h"
@@ -67,6 +69,7 @@ namespace {
     constexpr int kBannerX = 20;
     constexpr int kBannerY = 160;
     std::atomic<MacroController::State> s_state{ MacroController::State::Idle };
+    std::atomic<bool> s_recordingCaptureSuspended{false};
     Slot s_slots[kMaxSlots];
     Slot s_transientPlaybackSlot; // mission demos never overwrite a user slot
     Slot s_transientRecordingSlot; // mission authoring never overwrites a user slot
@@ -76,6 +79,7 @@ namespace {
     std::atomic<int> s_recordPlayer{2};
     std::atomic<bool> s_recordStopRequested{false};
     std::atomic<bool> s_recordTickAdvanced{false};
+    bool s_recordOwnsP2Control = false;
     std::atomic<int> s_playPlayer{2};
     std::atomic<bool> s_exclusiveReplay{false};
     bool s_recordSwitchesLocalControl = false;
@@ -139,6 +143,14 @@ namespace {
     uint16_t s_lastSeenBufIdx = 0xFFFF;  // Last buffer index we observed
     bool s_playbackBufIdxSyncInitialized = false;
     bool s_playbackPollAuditLogged = false;
+    bool s_primedTickAwaitingFirstPoll = false;
+    // Tick zero is prepared while the mission transition still freezes the
+    // world. Keep any raw writes not represented by the first published
+    // subframe until real polls/frame steps acknowledge the remaining cadence.
+    bool s_primedTickDrainPending = false;
+    int s_primedTickSubframesRemaining = 0;
+    uint32_t s_primedTickPollHitsAtLastPublish = 0;
+    uint32_t s_primedTickPollHitsAtLatch = 0;
 
     // Logging state for move ID tracking
     bool s_logPrevMoveIdInit = false;
@@ -212,8 +224,8 @@ namespace {
         // Supers (>=300), specials (>=250), dash starts (explicit), Kaori dash special-case
         if (mv >= 300) return true;           // supers
         if (mv >= 250) return true;           // specials and Kaori forward dash start (250)
-        if (mv == FORWARD_DASH_START_ID) return true;   // 163
-        if (mv == BACKWARD_DASH_START_ID) return true;  // 165
+        if (mv == GROUND_FORWARD_DASH_ID || mv == GROUND_BACKWARD_DASH_ID ||
+            mv == AIR_FORWARD_DASH_ID || mv == AIR_BACKWARD_DASH_ID) return true;
         return false;
     }
 
@@ -464,7 +476,7 @@ namespace {
         LogOut(ss.str(), true);
     }
 
-    void ResetPlayback() {
+    void ResetPlaybackCursor() {
         s_playIndex = 0; s_playSpanRemaining = 0; s_playStreamIndex = 0; s_playBufStreamIndex = 0; s_frameDiv = 0;
         s_callsSinceDiv0 = 0; s_firstDiv0Seen = false;
         s_streamFacingPerTick.clear();
@@ -477,25 +489,192 @@ namespace {
         // Reset playback buffer index synchronization
         s_lastSeenBufIdx = 0xFFFF; s_playbackBufIdxSyncInitialized = false;
         s_playbackPollAuditLogged = false;
+        s_primedTickAwaitingFirstPoll = false;
+        s_primedTickDrainPending = false;
+        s_primedTickSubframesRemaining = 0;
+        s_primedTickPollHitsAtLastPublish = 0;
+        s_primedTickPollHitsAtLatch = 0;
         s_logPrevMoveIdInit = false; s_logPrevMoveId = 0;
         s_firstAttackSeen = false;
-        ImmediateInput::Clear(1);
-        ImmediateInput::Clear(2);
-        // Default hook behavior
-        g_forceBypass[1].store(false);
-        g_forceBypass[2].store(false);
-        g_injectImmediateOnly[1].store(false);
-        g_injectImmediateOnly[2].store(false);
-        g_manualInputOverride[1].store(false);
-        g_manualInputOverride[2].store(false);
-        // Ensure poll override is fully cleared for both players
-        g_pollOverrideActive[1].store(false);
-        g_pollOverrideActive[2].store(false);
-        g_pollOverrideMask[1].store(0);
-        g_pollOverrideMask[2].store(0);
     }
 
-    void FinishRecording(bool captureUnobservedTail = true) {
+    struct PreparedStreamTick {
+        size_t tick = 0;
+        uint8_t mask = 0;
+        bool snapshotRebasedBufferIndex = false;
+    };
+
+    // Load exactly one serialized 64 Hz tick into the playback lanes.  Both
+    // ordinary advancement and frame-zero admission use this function so
+    // facing conversion, optional ring restoration, and raw-buffer cursor
+    // accounting cannot drift into two subtly different implementations.
+    bool PrepareNextStreamTick(Slot& slot, int playPlayer,
+                               uintptr_t playerPtr,
+                               PreparedStreamTick* preparedOut = nullptr,
+                               bool applyFullSnapshot = true) {
+        if (s_playStreamIndex >= slot.macroStream.size()) return false;
+
+        const size_t tick = s_playStreamIndex;
+        uint8_t mask = slot.macroStream[tick];
+        int8_t recordedFacing = 0;
+        if (tick < s_streamFacingPerTick.size()) {
+            recordedFacing = s_streamFacingPerTick[tick];
+        }
+        if (recordedFacing == 0) recordedFacing = +1;
+
+        const int currentFacing = ReadFacingSign(playPlayer);
+        if (currentFacing != 0 && recordedFacing != currentFacing) {
+            mask = FlipMaskHoriz(mask);
+        }
+        s_baselineMask = mask;
+
+        bool snapshotRebasedBufferIndex = false;
+        if (applyFullSnapshot && kEnableFullBufferSnapshots &&
+            tick < slot.fullBufferSnapshots.size() &&
+            !slot.fullBufferSnapshots[tick].empty()) {
+            const auto& snapshot = slot.fullBufferSnapshots[tick];
+            uint16_t recordedBufferIndex = 0;
+            if (tick < slot.bufIndexPerTick.size()) {
+                recordedBufferIndex = slot.bufIndexPerTick[tick];
+            }
+
+            if (playerPtr && snapshot.size() == INPUT_BUFFER_SIZE) {
+                std::vector<uint8_t> adjustedSnapshot = snapshot;
+                if (currentFacing != 0 && recordedFacing != currentFacing) {
+                    for (uint8_t& value : adjustedSnapshot) {
+                        value = FlipMaskHoriz(value);
+                    }
+                }
+                SafeWriteMemory(playerPtr + INPUT_BUFFER_OFFSET,
+                                adjustedSnapshot.data(), INPUT_BUFFER_SIZE);
+                SafeWriteMemory(playerPtr + INPUT_BUFFER_INDEX_OFFSET,
+                                &recordedBufferIndex,
+                                sizeof(recordedBufferIndex));
+                s_lastSeenBufIdx = recordedBufferIndex;
+                snapshotRebasedBufferIndex = true;
+            }
+        }
+
+        s_tickBufQueue.clear();
+        s_tickBufHead = 0;
+        s_writesLeftThisTick = 0;
+        if (tick < slot.bufCountsPerTick.size()) {
+            const uint16_t writesThisTick = slot.bufCountsPerTick[tick];
+            s_writesLeftThisTick = writesThisTick;
+            for (uint16_t i = 0;
+                 i < writesThisTick && s_playBufStreamIndex < slot.bufStream.size();
+                 ++i) {
+                uint8_t raw = slot.bufStream[s_playBufStreamIndex++];
+                if (currentFacing != 0 && recordedFacing != currentFacing) {
+                    raw = FlipMaskHoriz(raw);
+                }
+                s_tickBufQueue.push_back(raw);
+            }
+        }
+
+        ++s_playStreamIndex;
+        if (preparedOut) {
+            preparedOut->tick = tick;
+            preparedOut->mask = mask;
+            preparedOut->snapshotRebasedBufferIndex =
+                snapshotRebasedBufferIndex;
+        }
+        return true;
+    }
+
+    struct PublishedStreamFrame {
+        uint8_t mask = 0;
+        bool endLatched = false;
+    };
+
+    // Publish the currently prepared tick to the native poll lane.  This is
+    // intentionally callable during StartPlayback: aligned mission playback
+    // must make tick 0 authoritative before its caller releases the world.
+    PublishedStreamFrame PublishPreparedStreamFrame(const Slot& slot,
+                                                    int playPlayer,
+                                                    int bufferSubframesLeft,
+                                                    bool allowEndLatch = true) {
+        constexpr uint8_t kDirectionMask =
+            GAME_INPUT_UP | GAME_INPUT_DOWN |
+            GAME_INPUT_LEFT | GAME_INPUT_RIGHT;
+        constexpr uint8_t kButtonMask =
+            GAME_INPUT_A | GAME_INPUT_B | GAME_INPUT_C | GAME_INPUT_D;
+
+        uint8_t frameMask = s_baselineMask;
+        const int writesToDo =
+            MacroController::PlaybackStartPolicy::WritesForSubframe(
+                static_cast<int>(s_writesLeftThisTick),
+                bufferSubframesLeft);
+        for (int write = 0;
+             write < writesToDo && s_tickBufHead < s_tickBufQueue.size();
+             ++write) {
+            const uint8_t raw = s_tickBufQueue[s_tickBufHead++];
+            if (s_writesLeftThisTick > 0) --s_writesLeftThisTick;
+            frameMask = MacroController::PlaybackStartPolicy::
+                PublishMonitorSlice(s_baselineMask, raw,
+                                    kDirectionMask, kButtonMask);
+        }
+        // Do not persist a monitor-time raw sample over the logical tick. EFZ
+        // can consume all three native polls between monitor passes; making a
+        // trailing raw neutral authoritative here erases one-frame attacks
+        // before any poll sees them. Both ordinary and primed playback publish
+        // through this function, so the rule is identical at tick zero.
+
+        bool suppressImmediate = false;
+        if (g_macroWakePreserveBuffer.load()) {
+            const bool hasButtons = (frameMask & kButtonMask) != 0;
+            if (!s_firstAttackSeen) {
+                if (hasButtons) s_firstAttackSeen = true;
+                else suppressImmediate = true;
+            }
+        }
+
+        g_pollOverrideMask[playPlayer].store(frameMask,
+                                             std::memory_order_relaxed);
+        g_pollOverrideActive[playPlayer].store(true,
+                                               std::memory_order_release);
+        g_forceBypass[playPlayer].store(false, std::memory_order_relaxed);
+        if (suppressImmediate) {
+            g_manualInputMask[playPlayer].store(0,
+                                                std::memory_order_relaxed);
+            g_manualInputOverride[playPlayer].store(
+                true, std::memory_order_relaxed);
+        } else {
+            g_manualInputOverride[playPlayer].store(
+                false, std::memory_order_relaxed);
+        }
+        g_injectImmediateOnly[playPlayer].store(false,
+                                                std::memory_order_relaxed);
+
+        const bool endLatched = allowEndLatch &&
+            MacroController::PlaybackStartPolicy::StreamEndCanLatch(
+                static_cast<int>(s_playStreamIndex),
+                static_cast<int>(slot.macroStream.size()),
+                static_cast<int>(s_tickBufQueue.size() -
+                                 (std::min)(s_tickBufHead,
+                                            s_tickBufQueue.size())),
+                static_cast<int>(s_writesLeftThisTick));
+        if (endLatched) {
+            s_endStreamPending = true;
+            s_endStreamPollHitsAtLatch =
+                GetInputPollOverrideHitCount(playPlayer);
+            s_endStreamWaitFrames = 0;
+        }
+        return {frameMask, endLatched};
+    }
+
+    void ClearPlaybackLane(int playerNum, bool clearImmediateMemory) {
+        const int player = ClampPlayer(playerNum);
+        if (clearImmediateMemory) ImmediateInput::Clear(player);
+        g_forceBypass[player].store(false, std::memory_order_release);
+        g_injectImmediateOnly[player].store(false, std::memory_order_release);
+        g_manualInputOverride[player].store(false, std::memory_order_release);
+        g_pollOverrideActive[player].store(false, std::memory_order_release);
+        g_pollOverrideMask[player].store(0, std::memory_order_release);
+    }
+
+    void FinishRecording(bool captureUnobservedTail = true,
+                         Slot* sealedCopy = nullptr) {
         std::unique_lock<std::mutex> recordLock(s_recordMutex);
         if (s_state.load(std::memory_order_acquire) != MacroController::State::Recording
             || s_recordFinalizing) {
@@ -552,6 +731,14 @@ namespace {
         s_recPrevBufIdx = -1;
         s_recLastFacing = 0;
 
+        // A mission recording must retain the identity of the slot that this
+        // exact finish operation sealed.  Copy it before releasing the writer
+        // mutex; selecting "the last recording" afterwards races with a new
+        // ordinary macro session changing s_useTransientRecording/s_curSlot.
+        if (sealedCopy) {
+            *sealedCopy = recordSlot;
+        }
+
         // The slot is now sealed. Release the writer lock before the intentionally
         // verbose diagnostics; frame ticks will see s_recordFinalizing and return.
         recordLock.unlock();
@@ -603,13 +790,18 @@ namespace {
             s_state.store(MacroController::State::Idle, std::memory_order_release);
             s_recordFinalizing = false;
         }
-        // Ordinary macro recording borrows P2/local-side control. Mission demo
-        // recording targets P1 and must leave the match's control mapping alone.
+        // Every P2 recording owns the character-level controller even when the
+        // caller did not request a local-side swap.  Restore that ownership
+        // independently from the Practice binding swap.
+        if (recordPlayer == 2 && s_recordOwnsP2Control &&
+            g_p2ControlOverridden.load(std::memory_order_acquire)) {
+            RestoreP2ControlState();
+        }
         if (recordPlayer == 2 && s_recordSwitchesLocalControl) {
-            if (g_p2ControlOverridden) RestoreP2ControlState();
             SwitchPlayers::SetLocalSide(0);
             SwitchPlayers::ClearSwapFlag();
         }
+        s_recordOwnsP2Control = false;
         s_recordSwitchesLocalControl = false;
         s_prevLocalSide.store(-1);
         LogOut("[MACRO][REC] post-finish: P" + std::to_string(recordPlayer) + " capture released", true);
@@ -670,6 +862,26 @@ namespace MacroController {
 
 void Tick() {
     s_recordTickAdvanced.store(false, std::memory_order_release);
+    const State observedState = s_state.load(std::memory_order_acquire);
+    if (observedState != State::Recording && observedState != State::Replaying) {
+        return;
+    }
+
+    // Macro recording/playback reads or writes the same raw, ring, poll, and
+    // controller lanes as auto actions.  Join the shared ownership boundary so
+    // netplay publication cannot occur in the middle of a macro tick (notably
+    // while playback restores a full 180-byte ring snapshot).
+    std::lock_guard<std::recursive_mutex> controlLock(g_p2ControlMutex);
+    if (g_onlineModeActive.load(std::memory_order_acquire)) return;
+    if (s_state.load(std::memory_order_acquire) != State::Recording &&
+        s_state.load(std::memory_order_acquire) != State::Replaying) {
+        return;
+    }
+    if (s_state.load(std::memory_order_acquire) == State::Recording &&
+        s_recordingCaptureSuspended.load(std::memory_order_acquire)) {
+        return;
+    }
+
     if (s_recordStopRequested.exchange(false, std::memory_order_acq_rel) &&
         s_state.load(std::memory_order_acquire) == State::Recording) {
         FinishRecording(false);
@@ -956,6 +1168,25 @@ void Tick() {
             (void)ClearPlayerCommandFlags(playPlayer);
             return;
         }
+        if (s_primedTickAwaitingFirstPoll) {
+            const uint32_t pollHits =
+                GetInputPollOverrideHitCount(playPlayer);
+            if (pollHits != s_primedTickPollHitsAtLatch) {
+                s_primedTickAwaitingFirstPoll = false;
+                LogOut("[MACRO][PLAY][PRIME] P" +
+                           std::to_string(playPlayer) +
+                           " first poll acknowledged hits=" +
+                           std::to_string(pollHits),
+                       true);
+            } else if (ReadGamespeedFrozen()) {
+                // Mission admission primes while its transition pause is still
+                // held. Do not let the ordinary final-byte watchdog replace a
+                // one-tick clip with neutral before that pause is released.
+                g_pollOverrideActive[playPlayer].store(
+                    true, std::memory_order_release);
+                return;
+            }
+        }
         if (s_endStreamPending) {
             const uint32_t pollHits = GetInputPollOverrideHitCount(playPlayer);
             if (pollHits == s_endStreamPollHitsAtLatch && ++s_endStreamWaitFrames < 12) {
@@ -1040,14 +1271,100 @@ void Tick() {
             // Check if buffer index has changed since last check (indicates real engine frame advance)
             bool bufferAdvanced = false;
             bool shouldAdvanceStream = false;
-            if (haveIdx && s_playbackBufIdxSyncInitialized && 
-                s_playStreamIndex < playSlot.macroStream.size()) {
+            if (haveIdx && s_playbackBufIdxSyncInitialized &&
+                (s_playStreamIndex < playSlot.macroStream.size() ||
+                 s_primedTickDrainPending)) {
                 
                 // Only advance if buffer index is different from last seen
                 // This naturally handles double-Tick since buffer only changes once per real engine frame
                 if (curBufIdx != s_lastSeenBufIdx) {
                     bufferAdvanced = true;
                 }
+            }
+
+            // Prime admission publishes only the first subframe of serialized
+            // tick zero. Drain its remaining raw writes before preparing tick
+            // one, even if the first acknowledged poll already moved EFZ's
+            // ring index. Otherwise a multi-write first tick is overwritten by
+            // the next logical tick and demonstrations lose their opening
+            // buffer cadence.
+            if (s_primedTickDrainPending) {
+                const uint32_t primedPollHits =
+                    GetInputPollOverrideHitCount(playPlayer);
+                const bool primedPollAdvanced =
+                    primedPollHits != s_primedTickPollHitsAtLastPublish;
+                if (!PlaybackStartPolicy::CanPublishNextPrimedSlice(
+                        s_primedTickAwaitingFirstPoll,
+                        primedPollAdvanced, bufferAdvanced,
+                        playbackStepAdvanced)) {
+                    // A transition-owned freeze may intentionally hold the
+                    // first serialized tick indefinitely. Once gameplay is
+                    // unfrozen, however, a torn-down/KO input lane must not
+                    // strand an exclusive demonstration in Replaying forever.
+                    // The ordinary stream watchdog below is unreachable while
+                    // the primed drain owns this branch, so mirror its bounded
+                    // no-progress cleanup here.
+                    if (!playbackFrozen && ++s_playNoProgressFrames > 384) {
+                        LogOut("[MACRO][PLAY][WARN] primed input buffer stopped "
+                               "advancing; ending replay after two-second "
+                               "watchdog", true);
+                        s_playNoProgressFrames = 0;
+                        s_tickBufQueue.clear();
+                        s_tickBufHead = 0;
+                        s_writesLeftThisTick = 0;
+                        s_primedTickDrainPending = false;
+                        s_primedTickSubframesRemaining = 0;
+                        s_primedTickAwaitingFirstPoll = false;
+                        s_baselineMask = 0;
+                        s_finishPendingClearTick = true;
+                        g_pollOverrideMask[playPlayer].store(
+                            0, std::memory_order_relaxed);
+                        g_pollOverrideActive[playPlayer].store(
+                            true, std::memory_order_release);
+                        return;
+                    }
+                    g_pollOverrideActive[playPlayer].store(
+                        true, std::memory_order_release);
+                    return;
+                }
+                if (bufferAdvanced) s_lastSeenBufIdx = curBufIdx;
+                // Anchor this count to admission, not to s_frameDiv: monitor
+                // passes may continue while the transition is frozen and must
+                // not compress the remaining raw states.
+                const int subframesLeft = (std::max)(
+                    1, s_primedTickSubframesRemaining);
+                const bool finalPrimedSlice =
+                    PlaybackStartPolicy::PrimedSliceCanLatchEnd(
+                        s_primedTickSubframesRemaining);
+                const PublishedStreamFrame published =
+                    PublishPreparedStreamFrame(
+                        playSlot, playPlayer, subframesLeft,
+                        finalPrimedSlice);
+                s_primedTickPollHitsAtLastPublish = primedPollHits;
+                if (s_primedTickSubframesRemaining > 0) {
+                    --s_primedTickSubframesRemaining;
+                }
+                const int queuedWrites = static_cast<int>(
+                    s_tickBufQueue.size() -
+                    (std::min)(s_tickBufHead, s_tickBufQueue.size()));
+                s_primedTickDrainPending =
+                    PlaybackStartPolicy::PrimedTickPending(
+                        s_primedTickSubframesRemaining, queuedWrites,
+                        static_cast<int>(s_writesLeftThisTick));
+                if (!s_primedTickDrainPending) {
+                    s_primedTickSubframesRemaining = 0;
+                    // Frozen transition monitor passes may have rotated the
+                    // ordinary divider without consuming a primed cadence
+                    // slot. Re-anchor it here so the next Tick wraps to the
+                    // start of tick one instead of admitting that tick at
+                    // subframe 1/2 and compressing its raw writes.
+                    s_frameDiv = 2;
+                    s_callsSinceDiv0 = 2;
+                    s_firstDiv0Seen = false;
+                }
+                if (published.endLatched) return;
+                s_playNoProgressFrames = 0;
+                return;
             }
             if (s_playStreamIndex < playSlot.macroStream.size()) {
                 shouldAdvanceStream = playbackFrozen
@@ -1078,82 +1395,9 @@ void Tick() {
                 s_playNoProgressFrames = 0;
             }
             
-            if (shouldAdvanceStream && s_playStreamIndex < playSlot.macroStream.size()) {
-                uint8_t mask = playSlot.macroStream[s_playStreamIndex];
-                // Facing-aware: if recorded facing is unknown (0), assume P1-facing (+1)
-                int8_t recFacing = 0;
-                if (!s_streamFacingPerTick.empty() && s_playStreamIndex < s_streamFacingPerTick.size()) recFacing = s_streamFacingPerTick[s_playStreamIndex];
-                if (recFacing == 0) recFacing = +1;
-                int curFacing = ReadFacingSign(playPlayer);
-                if (curFacing != 0 && recFacing != curFacing) {
-                    mask = FlipMaskHoriz(mask);
-                }
-                s_baselineMask = mask;
-                
-                // CRITICAL: Restore the FULL BUFFER SNAPSHOT from recording
-                // This ensures motion recognition works because the D,D,C pattern appears
-                // in the exact same buffer positions relative to the index as during recording.
-                if (kEnableFullBufferSnapshots && 
-                    s_playStreamIndex < playSlot.fullBufferSnapshots.size() &&
-                    !playSlot.fullBufferSnapshots[s_playStreamIndex].empty()) {
-                    
-                    const auto& snapshot = playSlot.fullBufferSnapshots[s_playStreamIndex];
-                    // Get the recorded buffer index for this tick
-                    uint16_t recBufIdx = 0;
-                    if (s_playStreamIndex < playSlot.bufIndexPerTick.size()) {
-                        recBufIdx = playSlot.bufIndexPerTick[s_playStreamIndex];
-                    }
-                    
-                    // Write the full buffer snapshot to the target player's input buffer.
-                    if (playerPtr && snapshot.size() == INPUT_BUFFER_SIZE) {
-                        // Apply facing flip if needed
-                        std::vector<uint8_t> adjustedSnapshot = snapshot;
-                        if (curFacing != 0 && recFacing != curFacing) {
-                            for (size_t i = 0; i < adjustedSnapshot.size(); ++i) {
-                                adjustedSnapshot[i] = FlipMaskHoriz(adjustedSnapshot[i]);
-                            }
-                        }
-                        // Write full buffer
-                        SafeWriteMemory(playerPtr + INPUT_BUFFER_OFFSET, adjustedSnapshot.data(), INPUT_BUFFER_SIZE);
-                        // Also set the buffer index to match the recorded index
-                        SafeWriteMemory(playerPtr + INPUT_BUFFER_INDEX_OFFSET, &recBufIdx, sizeof(recBufIdx));
-                        // Update our tracking to the recorded index so we detect when engine advances from there
-                        s_lastSeenBufIdx = recBufIdx;
-                    }
-                }
-                
-                // Prepare per-tick queue of recorded raw buffer bytes (for poll override backup)
-                s_tickBufQueue.clear();
-                s_tickBufHead = 0;
-                s_writesLeftThisTick = 0;
-                if (s_playStreamIndex < playSlot.bufCountsPerTick.size()) {
-                    uint16_t writesThisTick = playSlot.bufCountsPerTick[s_playStreamIndex];
-                    s_writesLeftThisTick = writesThisTick;
-                    for (uint16_t i = 0; i < writesThisTick && s_playBufStreamIndex < playSlot.bufStream.size(); ++i) {
-                        uint8_t raw = playSlot.bufStream[s_playBufStreamIndex++];
-                        int8_t recFacingRaw = 0;
-                        if (!s_streamFacingPerTick.empty() && s_playStreamIndex < s_streamFacingPerTick.size()) recFacingRaw = s_streamFacingPerTick[s_playStreamIndex];
-                        if (recFacingRaw == 0) recFacingRaw = +1;
-                        int curFacingRaw = ReadFacingSign(playPlayer);
-                        if (curFacingRaw != 0 && recFacingRaw != curFacingRaw) {
-                            raw = FlipMaskHoriz(raw);
-                        }
-                        s_tickBufQueue.push_back(raw);
-                    }
-                }
-                  // Macro advance logging disabled (uncomment for debugging)
-                  // {
-                  //     uint16_t currMoveId = GetPlayerMoveID(2);
-                  //     uint16_t prevMoveId = s_logPrevMoveIdInit ? s_logPrevMoveId : currMoveId;
-                  //     s_logPrevMoveId = currMoveId;
-                  //     s_logPrevMoveIdInit = true;
-                  //     LogOut("[MACRO][ADVANCE] t=" + std::to_string(s_playStreamIndex) +
-                  //         " bufIdx=" + std::to_string(curBufIdx) +
-                  //         " mask=0x" + [mask]{ char b[8]; snprintf(b,8,"%02X",mask); return std::string(b); }() +
-                  //         " prevMoveID=" + std::to_string(prevMoveId) +
-                  //         " currMoveID=" + std::to_string(currMoveId), true);
-                  // }
-                ++s_playStreamIndex;
+            if (shouldAdvanceStream &&
+                s_playStreamIndex < playSlot.macroStream.size()) {
+                (void)PrepareNextStreamTick(playSlot, playPlayer, playerPtr);
             }
 
             if (!s_playbackPollAuditLogged) {
@@ -1168,70 +1412,11 @@ void Tick() {
                     s_playbackPollAuditLogged = true;
                 }
             }
-            // Every frame: write some of this tick's buffer bytes via engine by overriding the poll,
-            // and set per-frame poll override to the intended immediate mask for exact engine cadence.
-            const uint8_t DIR_MASK = (GAME_INPUT_UP | GAME_INPUT_DOWN | GAME_INPUT_LEFT | GAME_INPUT_RIGHT);
-            const uint8_t BTN_MASK = (GAME_INPUT_A | GAME_INPUT_B | GAME_INPUT_C | GAME_INPUT_D);
-            // Baseline applies fully from the first subframe; buffer button bits for this subframe override as they appear
-            uint8_t frameMask = s_baselineMask;
-            // Determine frames remaining in this tick (including this frame): 3 at s_frameDiv==0, 2 at 1, 1 at 2.
-            // While frame-stepping from pause, this Tick corresponds to a single real stepped frame, so flush the
-            // current tick's recorded buffer writes in that one opportunity instead of spreading them over idle ticks.
-            int framesLeft = playbackFrozen ? 1 : (3 - s_frameDiv);
-            // Compute how many writes to issue this subframe to finish by end of tick (ceil division)
-            int writesToDo = 0;
-            if (s_writesLeftThisTick > 0 && framesLeft > 0) {
-                writesToDo = (s_writesLeftThisTick + framesLeft - 1) / framesLeft;
-            }
-            // Issue writesToDo from this tick's queue (clamped)
-            for (int w = 0; w < writesToDo && s_tickBufHead < s_tickBufQueue.size(); ++w) {
-                uint8_t raw = s_tickBufQueue[s_tickBufHead++];
-                // Blend buttons and rely on engine history write from our poll override
-                s_writesLeftThisTick = (s_writesLeftThisTick > 0) ? (uint16_t)(s_writesLeftThisTick - 1) : 0;
-                // Blend button bits if present in any of today writes; later writes can overwrite earlier ones' btns
-                uint8_t btnBits = (raw & BTN_MASK);
-                if (btnBits) frameMask = (uint8_t)((frameMask & DIR_MASK) | btnBits);
-            }
-
-            // Logic to disable immediate input write for pre-buffer macro playback until the first attack button
-            // "Disable immediate inputs(button registers) and only write to the buffer"
-            // Implementation: Use Poll Override to write to buffer, but use Manual Override (Immediate Only) to force neutral immediate state.
-            bool suppressImmediate = false;
-            if (g_macroWakePreserveBuffer.load()) {
-                bool hasButtons = (frameMask & BTN_MASK) != 0;
-                if (!s_firstAttackSeen) {
-                    if (hasButtons) {
-                        s_firstAttackSeen = true;
-                    } else {
-                        suppressImmediate = true;
-                    }
-                }
-            }
-
-            // Drive the target player's engine poll directly this frame.
-            // This ensures the buffer history ring receives the correct macro inputs.
-            g_pollOverrideMask[playPlayer].store(frameMask, std::memory_order_relaxed);
-            g_pollOverrideActive[playPlayer].store(true, std::memory_order_relaxed);
-            g_forceBypass[playPlayer].store(false);
-
-            if (suppressImmediate) {
-                // Force immediate state to Neutral (0) while preserving buffer write above.
-                // This prevents the character from reacting to the buffered directions/inputs until the trigger.
-                g_manualInputMask[playPlayer].store(0, std::memory_order_relaxed);
-                g_manualInputOverride[playPlayer].store(true, std::memory_order_relaxed);
-                // Use BUFFERED path (bypass original) so we can control both immediate (0) and buffer (via poll override)
-                g_injectImmediateOnly[playPlayer].store(false, std::memory_order_relaxed);
-            } else {
-                // Normal playback: Immediate state matches Poll state (engine handles it)
-                g_manualInputOverride[playPlayer].store(false, std::memory_order_relaxed);
-                g_injectImmediateOnly[playPlayer].store(false, std::memory_order_relaxed);
-            }
-            g_injectImmediateOnly[playPlayer].store(false);
-            // End condition: after last tick and queue drained
-            if (s_playStreamIndex >= playSlot.macroStream.size() && s_tickBufHead >= s_tickBufQueue.size() && s_writesLeftThisTick == 0) {
-                s_endStreamPending = true;
-                s_endStreamPollHitsAtLatch = GetInputPollOverrideHitCount(playPlayer);
-                s_endStreamWaitFrames = 0;
+            if (PublishPreparedStreamFrame(
+                    playSlot, playPlayer,
+                    playbackFrozen
+                        ? (playbackStepAdvanced || bufferAdvanced ? 1 : 0)
+                        : (std::max)(1, 3 - s_frameDiv)).endLatched) {
                 return;
             }
         } else {
@@ -1276,7 +1461,144 @@ void Tick() {
     }
 }
 
+namespace {
+
+struct P2MacroLaneStatus {
+    bool normalPulse{false};
+    bool normalRawOwner{false};
+    bool immediateInput{false};
+    bool scopedMotion{false};
+    bool legacyMotionQueue{false};
+    bool tutorialControl{false};
+    bool manualOverride{false};
+    bool pollOverride{false};
+    bool forceBypass{false};
+    bool immediateOnly{false};
+    bool bufferFreeze{false};
+    bool forceHumanThread{false};
+    bool scopedReservation{false};
+
+    bool HasConflict() const {
+        return normalPulse || normalRawOwner || immediateInput || scopedMotion ||
+               legacyMotionQueue || tutorialControl || manualOverride ||
+               pollOverride || forceBypass || immediateOnly || bufferFreeze ||
+               forceHumanThread || scopedReservation;
+    }
+};
+
+P2MacroLaneStatus ReadP2MacroLaneStatus() {
+    P2MacroLaneStatus status;
+    status.normalPulse = IsAutoActionNormalPulseActive(2);
+    status.normalRawOwner =
+        IsAutoActionNormalPulseOwningImmediateRegisters(2);
+    status.immediateInput = ImmediateInput::GetCurrentDesired(2) != 0 ||
+        ImmediateInput::GetRemainingTicks(2) != 0;
+    status.scopedMotion = IsP2AutoActionMotionTransactionActive();
+    const MotionQueueSnapshot queue = GetMotionQueueSnapshot(2);
+    status.legacyMotionQueue = queue.active || TutorialMotionQueueLeaseActive(2);
+    status.tutorialControl = TutorialP2ControlLeaseActive();
+    status.manualOverride =
+        g_manualInputOverride[2].load(std::memory_order_acquire);
+    status.pollOverride =
+        g_pollOverrideActive[2].load(std::memory_order_acquire);
+    status.forceBypass = g_forceBypass[2].load(std::memory_order_acquire);
+    status.immediateOnly =
+        g_injectImmediateOnly[2].load(std::memory_order_acquire);
+    const int freezeOwner = g_activeFreezePlayer.load(std::memory_order_acquire);
+    status.bufferFreeze =
+        g_bufferFreezingActive.load(std::memory_order_acquire) &&
+        (freezeOwner == 0 || freezeOwner == 2);
+    status.forceHumanThread =
+        g_forceHumanControlActive.load(std::memory_order_acquire);
+    status.scopedReservation = IsScopedInputReserved(2);
+    return status;
+}
+
+void LogP2MacroOwnershipFailure(const char* operation,
+                                const P2MacroLaneStatus& status,
+                                bool controllerTracked,
+                                bool controllerHuman) {
+    std::ostringstream oss;
+    oss << "[MACRO][OWNER] P2 " << operation << " takeover rejected"
+        << " tracked=" << (controllerTracked ? 1 : 0)
+        << " human=" << (controllerHuman ? 1 : 0)
+        << " normal=" << (status.normalPulse ? 1 : 0)
+        << " normalRaw=" << (status.normalRawOwner ? 1 : 0)
+        << " immediate=" << (status.immediateInput ? 1 : 0)
+        << " scopedMotion=" << (status.scopedMotion ? 1 : 0)
+        << " queue=" << (status.legacyMotionQueue ? 1 : 0)
+        << " tutorial=" << (status.tutorialControl ? 1 : 0)
+        << " manual=" << (status.manualOverride ? 1 : 0)
+        << " poll=" << (status.pollOverride ? 1 : 0)
+        << " bypass=" << (status.forceBypass ? 1 : 0)
+        << " immediateOnly=" << (status.immediateOnly ? 1 : 0)
+        << " freeze=" << (status.bufferFreeze ? 1 : 0)
+        << " forceHuman=" << (status.forceHumanThread ? 1 : 0);
+    oss << " reserved=" << (status.scopedReservation ? 1 : 0);
+    LogOut(oss.str(), true);
+}
+
+// The macro publishes PreRecord/Replaying only after it owns both the P2
+// controller branch and every input lane it will sample or drive.  A normal
+// that has reached EFZ's producer keeps its raw-register lease until the later
+// character consumer; cancellation can therefore be asynchronous from this
+// caller's point of view and must be verified rather than assumed.
+bool AcquireP2MacroControlOwnership(const char* operation) {
+    if (g_onlineModeActive.load(std::memory_order_acquire)) return false;
+
+    const bool controlledBefore =
+        g_p2ControlOverridden.load(std::memory_order_acquire);
+
+    // Admission is observational: a macro waits for an existing normal rather
+    // than cancelling a command which an auto-action has already authored.
+    // In particular, do not change the AI flag while that normal still owns
+    // +392..397 through EFZ's later move consumer.
+    const P2MacroLaneStatus before = ReadP2MacroLaneStatus();
+    if (before.normalPulse || before.normalRawOwner || before.immediateInput ||
+        before.scopedMotion ||
+        before.legacyMotionQueue || before.tutorialControl ||
+        before.manualOverride || before.pollOverride || before.forceBypass ||
+        before.immediateOnly || before.bufferFreeze || before.forceHumanThread ||
+        before.scopedReservation) {
+        LogP2MacroOwnershipFailure(operation, before, controlledBefore,
+                                   IsAIControlFlagHuman(2));
+        return false;
+    }
+
+    // No timed/continuous ImmediateInput owner exists. Retire only its completed
+    // private edge latch now, after admission has proved this is non-destructive.
+    ImmediateInput::Clear(2);
+
+    // This helper synchronously cancels the short scoped-motion owner, writes
+    // AI=0, reads it back, and sets the tracking flag only on verification.
+    EnableP2ControlForAutoAction();
+
+    const P2MacroLaneStatus after = ReadP2MacroLaneStatus();
+    const bool controllerTracked =
+        g_p2ControlOverridden.load(std::memory_order_acquire);
+    const bool controllerHuman = IsAIControlFlagHuman(2);
+    if (!controllerTracked || !controllerHuman || after.HasConflict()) {
+        LogP2MacroOwnershipFailure(operation, after, controllerTracked,
+                                   controllerHuman);
+        // Do not leak a newly acquired human-control flag when a postcondition
+        // failed.  Never release a controller that belonged to an older owner.
+        if (!controlledBefore && controllerTracked &&
+            !after.tutorialControl) {
+            RestoreP2ControlState();
+        }
+        return false;
+    }
+
+    LogOut(std::string("[MACRO][OWNER] P2 ") + operation +
+           " takeover verified", true);
+    return true;
+}
+
+} // namespace
+
 bool BeginPlayerRecording(int playerNum, bool switchLocalControl) {
+    std::lock_guard<std::recursive_mutex> controlLock(g_p2ControlMutex);
+    if (g_onlineModeActive.load(std::memory_order_acquire)) return false;
     if (GetCurrentGamePhase() != GamePhase::Match || !AreCharactersInitialized()) {
         DirectDrawHook::AddMessage("Macro controls available only during Match", "MACRO", RGB(255, 180, 120), 900, 0, 120);
         return false;
@@ -1284,8 +1606,15 @@ bool BeginPlayerRecording(int playerNum, bool switchLocalControl) {
     if (s_state.load(std::memory_order_acquire) != State::Idle) return false;
 
     const int player = ClampPlayer(playerNum);
+    if (IsScopedInputReserved(player)) return false;
+    if (player == 2 && !AcquireP2MacroControlOwnership("recording")) {
+        return false;
+    }
+
     s_recordPlayer.store(player, std::memory_order_release);
+    s_recordingCaptureSuspended.store(false, std::memory_order_release);
     s_recordStopRequested.store(false, std::memory_order_release);
+    s_recordOwnsP2Control = player == 2;
     s_recordSwitchesLocalControl = switchLocalControl && player == 2;
     // P1/no-swap is the mission-authoring policy and gets an ephemeral clip.
     s_useTransientRecording.store(player == 1 && !switchLocalControl, std::memory_order_release);
@@ -1297,7 +1626,6 @@ bool BeginPlayerRecording(int playerNum, bool switchLocalControl) {
             SwitchPlayers::SetLocalSide(1);
             SwitchPlayers::MarkSwapped();
         }
-        EnableP2ControlForAutoAction();
     }
 
     s_state.store(State::PreRecord, std::memory_order_release);
@@ -1315,6 +1643,8 @@ bool BeginPlayerRecording(int playerNum, bool switchLocalControl) {
 }
 
 bool StartPlayerRecording() {
+    std::lock_guard<std::recursive_mutex> controlLock(g_p2ControlMutex);
+    if (g_onlineModeActive.load(std::memory_order_acquire)) return false;
     if (s_state.load(std::memory_order_acquire) != State::PreRecord) return false;
     const int player = ClampPlayer(s_recordPlayer.load(std::memory_order_acquire));
     std::lock_guard<std::mutex> lock(s_recordMutex);
@@ -1328,7 +1658,10 @@ bool StartPlayerRecording() {
     s_recSpanTicks = 0;
     s_recPrevBufIdx = -1;
     s_frameDiv = 0;
+    s_callsSinceDiv0 = 0;
+    s_firstDiv0Seen = false;
     s_recordFinalizing = false;
+    s_recordingCaptureSuspended.store(false, std::memory_order_release);
 
     uintptr_t playerPtr = GetPlayerPointer(player);
     uint16_t startIdx = 0;
@@ -1354,6 +1687,11 @@ bool StartPlayerRecording() {
 }
 
 bool FinishPlayerRecording() {
+    std::lock_guard<std::recursive_mutex> controlLock(g_p2ControlMutex);
+    if (g_onlineModeActive.load(std::memory_order_acquire)) {
+        Stop();
+        return false;
+    }
     if (s_state.load(std::memory_order_acquire) != State::Recording) return false;
     const bool boundaryStop = s_recordStopRequested.exchange(false, std::memory_order_acq_rel);
     FinishRecording(!boundaryStop);
@@ -1380,24 +1718,75 @@ void ToggleRecord() {
     }
 }
 
-static bool StartPlayback(int playerNum, bool exclusiveInput, int startTick) {
+static bool StartPlayback(int playerNum, bool exclusiveInput, int startTick,
+                          PlaybackStartMode startMode) {
+    std::lock_guard<std::recursive_mutex> controlLock(g_p2ControlMutex);
+    if (g_onlineModeActive.load(std::memory_order_acquire)) return false;
     if (GetCurrentGamePhase() != GamePhase::Match || !AreCharactersInitialized()) return false;
     if (s_state.load(std::memory_order_acquire) != State::Idle) return false;
 
     Slot& slot = ActivePlaybackSlot();
     const bool useStream = !slot.macroStream.empty();
     if (!slot.hasData || (slot.spans.empty() && !useStream)) return false;
+    if (useStream && std::any_of(
+            slot.bufCountsPerTick.begin(), slot.bufCountsPerTick.end(),
+            [](uint16_t count) {
+                return !MacroController::PlaybackStartPolicy::
+                    SupportedRawWriteCount(static_cast<int>(count));
+            })) {
+        LogOut("[MACRO][PLAY] admission rejected: a logical tick contains "
+               "more than three raw input-buffer writes", true);
+        return false;
+    }
     if (startTick < 0) startTick = 0;
-    if (useStream && startTick >= static_cast<int>(slot.macroStream.size())) return false;
+    const PlaybackStartPolicy::Decision startDecision = useStream
+        ? PlaybackStartPolicy::Decide(
+              startMode, startTick, static_cast<int>(slot.macroStream.size()))
+        : PlaybackStartPolicy::Decision{
+              startMode == PlaybackStartMode::Ordinary,
+              false, startTick, startTick};
+    if (!startDecision.valid) return false;
 
     const int player = ClampPlayer(playerNum);
-    // Playback owns the complete input lane. Serialize its takeover against a
-    // normal pulse before publishing poll-override/controller state.
-    CancelAutoActionNormalPulse(player);
-    ResetPlayback();
+    uintptr_t primePlayerPtr = 0;
+    uint16_t primeBufferIndex = 0;
+    if (startDecision.prime) {
+        primePlayerPtr = GetPlayerPointer(player);
+        if (!primePlayerPtr || !SafeReadMemory(
+                primePlayerPtr + INPUT_BUFFER_INDEX_OFFSET,
+                &primeBufferIndex, sizeof(primeBufferIndex))) {
+            LogOut("[MACRO][PLAY][PRIME] P" + std::to_string(player) +
+                       " admission rejected: input buffer unavailable",
+                   true);
+            return false;
+        }
+    }
+    if (IsScopedInputReserved(player)) {
+        LogOut("[MACRO][OWNER] P" + std::to_string(player) +
+                   " playback takeover rejected: input lane reserved",
+               true);
+        return false;
+    }
+    // Validate and acquire before clearing any lane. Failed admission must not
+    // destroy the competing owner it just discovered, and P1 playback must not
+    // touch P2's Practice-dummy state.
+    if (player == 2) {
+        if (!AcquireP2MacroControlOwnership("playback")) return false;
+    } else {
+        if (IsAutoActionNormalPulseActive(player) ||
+            IsAutoActionNormalPulseOwningImmediateRegisters(player) ||
+            ImmediateInput::GetCurrentDesired(player) != 0 ||
+            ImmediateInput::GetRemainingTicks(player) != 0) {
+            LogOut("[MACRO][OWNER] P1 playback takeover rejected: input lane busy",
+                   true);
+            return false;
+        }
+    }
+    ResetPlaybackCursor();
+    ClearPlaybackLane(player, true);
     s_playPlayer.store(player, std::memory_order_release);
     s_exclusiveReplay.store(exclusiveInput, std::memory_order_release);
-    s_playStreamIndex = static_cast<size_t>(startTick);
+    s_playStreamIndex = static_cast<size_t>(startDecision.tickToPrepare);
     if (startTick > 0 && !slot.bufCountsPerTick.empty()) {
         size_t skippedWrites = 0;
         const size_t stop = (std::min)(static_cast<size_t>(startTick),
@@ -1424,12 +1813,67 @@ static bool StartPlayback(int playerNum, bool exclusiveInput, int startTick) {
         while (s_streamFacingPerTick.size() < total) s_streamFacingPerTick.push_back(0);
     }
 
-    if (player == 2) EnableP2ControlForAutoAction();
     ResetInputPollOverrideHitCount(player);
-    g_pollOverrideMask[player].store(0, std::memory_order_relaxed);
-    g_pollOverrideActive[player].store(true, std::memory_order_release);
-    g_forceBypass[player].store(false);
-    g_injectImmediateOnly[player].store(false);
+    if (startDecision.prime) {
+        PreparedStreamTick prepared;
+        if (!PrepareNextStreamTick(
+                slot, player, primePlayerPtr, &prepared,
+                /*applyFullSnapshot=*/false) ||
+            s_playStreamIndex != static_cast<size_t>(
+                startDecision.cursorAfterAdmission)) {
+            // Every validity condition was checked before ownership changed;
+            // this branch is defensive against a future preparation contract
+            // change. Fail closed and return the lane/controller we acquired.
+            ClearPlaybackLane(player, true);
+            ResetPlaybackCursor();
+            s_exclusiveReplay.store(false, std::memory_order_release);
+            if (player == 2 &&
+                g_p2ControlOverridden.load(std::memory_order_acquire)) {
+                RestoreP2ControlState();
+            }
+            LogOut("[MACRO][PLAY][PRIME] internal preparation failed", true);
+            return false;
+        }
+        if (!prepared.snapshotRebasedBufferIndex) {
+            s_lastSeenBufIdx = primeBufferIndex;
+        }
+        s_playbackBufIdxSyncInitialized = true;
+        const PublishedStreamFrame published = PublishPreparedStreamFrame(
+            slot, player, /*bufferSubframesLeft=*/3,
+            /*allowEndLatch=*/false);
+        // Admission published the first of three native cadence slots. Keep
+        // tick zero in control for the other two even when k=0/k=1 consumed
+        // its entire raw queue immediately.
+        s_primedTickSubframesRemaining = 2;
+        const int queuedWrites = static_cast<int>(
+            s_tickBufQueue.size() -
+            (std::min)(s_tickBufHead, s_tickBufQueue.size()));
+        s_primedTickDrainPending =
+            PlaybackStartPolicy::PrimedTickPending(
+                s_primedTickSubframesRemaining, queuedWrites,
+                static_cast<int>(s_writesLeftThisTick));
+        s_primedTickPollHitsAtLatch =
+            GetInputPollOverrideHitCount(player);
+        s_primedTickPollHitsAtLastPublish =
+            s_primedTickPollHitsAtLatch;
+        s_primedTickAwaitingFirstPoll = true;
+        LogOut("[MACRO][PLAY][PRIME] P" + std::to_string(player) +
+                   " tick=" + std::to_string(prepared.tick) +
+                   " mask=0x" + ToHexString(published.mask, 2) +
+                   " next=" + std::to_string(s_playStreamIndex) +
+                   " bufIdx=" + std::to_string(s_lastSeenBufIdx) +
+                   " pollHits=" + std::to_string(
+                       GetInputPollOverrideHitCount(player)),
+               true);
+    } else {
+        // Historical Practice behavior: expose a neutral owner first and let
+        // Tick load the first stream byte only after the input ring advances.
+        g_pollOverrideMask[player].store(0, std::memory_order_relaxed);
+        g_pollOverrideActive[player].store(true, std::memory_order_release);
+        g_forceBypass[player].store(false, std::memory_order_relaxed);
+        g_injectImmediateOnly[player].store(false,
+                                             std::memory_order_relaxed);
+    }
     s_state.store(State::Replaying, std::memory_order_release);
 
     const std::string label = exclusiveInput
@@ -1448,6 +1892,8 @@ static bool StartPlayback(int playerNum, bool exclusiveInput, int startTick) {
         + " player=P" + std::to_string(player)
         + " ticks=" + std::to_string(totalTicks)
         + " streamBytes=" + std::to_string(slot.macroStream.size())
+        + " startMode=" +
+            std::string(startDecision.prime ? "prime" : "ordinary")
         + " exclusive=" + std::to_string(exclusiveInput ? 1 : 0), true);
     return true;
 }
@@ -1463,53 +1909,87 @@ void Play() {
         return;
     }
     if (s_state.load(std::memory_order_acquire) != State::Idle) return;
-    s_useTransientPlayback.store(false, std::memory_order_release);
-    if (!StartPlayback(2, false, 0)) {
+    if (!PlayForPlayer(2, 0, false)) {
         DirectDrawHook::AddMessage("Macro: Slot empty or unavailable", "MACRO", RGB(255,120,120), 1000, 0, 120);
     }
 }
 
 void PlayFromTick(int startTick) {
     if (s_state.load(std::memory_order_acquire) != State::Idle) return;
+    (void)PlayForPlayer(2, startTick, false);
+}
+
+bool PlayForPlayer(int playerNum, int startTick, bool exclusiveInput) {
+    if (s_state.load(std::memory_order_acquire) != State::Idle) return false;
     s_useTransientPlayback.store(false, std::memory_order_release);
-    (void)StartPlayback(2, false, startTick);
+    return StartPlayback(playerNum, exclusiveInput, startTick,
+                         PlaybackStartMode::Ordinary);
 }
 
 void Stop() {
-    // Stop can be called anytime; no gating so it can clean up if needed
+    // Stop participates in the same barrier as producer ticks.  Before online
+    // publication it performs the full memory/controller cleanup; afterward it
+    // is intentionally bookkeeping-only and cannot write over netplay input.
+    std::lock_guard<std::recursive_mutex> controlLock(g_p2ControlMutex);
+    const bool online = g_onlineModeActive.load(std::memory_order_acquire);
     State st = s_state.load();
+    if (st == State::Idle) {
+        // An unconditional UI/menu Stop is not an ownership claim. Never use
+        // the stale last playback side to clear another producer's live lane.
+        s_recordStopRequested.store(false, std::memory_order_release);
+        s_exclusiveReplay.store(false, std::memory_order_release);
+        s_useTransientPlayback.store(false, std::memory_order_release);
+        s_recordingCaptureSuspended.store(false, std::memory_order_release);
+        if (s_macroBannerId != -1) {
+            DirectDrawHook::RemovePermanentMessage(s_macroBannerId);
+            s_macroBannerId = -1;
+        }
+        return;
+    }
     const int playPlayer = ClampPlayer(s_playPlayer.load(std::memory_order_acquire));
     const int recordPlayer = ClampPlayer(s_recordPlayer.load(std::memory_order_acquire));
-    if (st == State::Recording) FinishRecording();
+    const bool ownedP2Playback = st == State::Replaying && playPlayer == 2;
+    const bool ownedP2Recording =
+        (st == State::PreRecord || st == State::Recording) &&
+        recordPlayer == 2 && s_recordOwnsP2Control;
+    if (st == State::Recording && !online) FinishRecording();
     s_state.store(State::Idle);
+    s_recordingCaptureSuspended.store(false, std::memory_order_release);
     s_recordStopRequested.store(false, std::memory_order_release);
-    ResetPlayback();
-    g_manualInputOverride[playPlayer].store(false);
-    g_forceBypass[playPlayer].store(false);
-    g_pollOverrideActive[playPlayer].store(false);
-    g_pollOverrideMask[playPlayer].store(0);
-    (void)ClearPlayerCommandFlags(playPlayer);
-    if (st == State::Recording || st == State::PreRecord) {
+    ResetPlaybackCursor();
+    ClearPlaybackLane(playPlayer, !online);
+    if ((st == State::Recording || st == State::PreRecord) &&
+        recordPlayer != playPlayer) {
+        ClearPlaybackLane(recordPlayer, !online);
+    }
+    if (!online) (void)ClearPlayerCommandFlags(playPlayer);
+    if (!online && (st == State::Recording || st == State::PreRecord)) {
         (void)ClearPlayerCommandFlags(recordPlayer);
     }
     s_exclusiveReplay.store(false, std::memory_order_release);
     s_useTransientPlayback.store(false, std::memory_order_release);
     // Remove banner and restore side
     if (s_macroBannerId != -1) { DirectDrawHook::RemovePermanentMessage(s_macroBannerId); s_macroBannerId = -1; }
-    if (g_p2ControlOverridden && (playPlayer == 2 || recordPlayer == 2)) RestoreP2ControlState();
-    int prev = s_prevLocalSide.load();
-    if (prev == 0 || prev == 1) {
-        SwitchPlayers::SetLocalSide(prev);
-        s_prevLocalSide.store(-1);
+    if (g_p2ControlOverridden.load(std::memory_order_acquire) &&
+        (ownedP2Playback || ownedP2Recording)) {
+        RestoreP2ControlState();
     }
+    int prev = s_prevLocalSide.load();
+    if (!online && (prev == 0 || prev == 1)) {
+        SwitchPlayers::SetLocalSide(prev);
+    }
+    s_prevLocalSide.store(-1);
+    s_recordOwnsP2Control = false;
     s_recordSwitchesLocalControl = false;
 }
 
 // When exiting during PreRecord/Recording or on menu entry,
 // restore default Practice mapping (unswap + CPU flags) first, then stop.
 void UnswapThenStop() {
+    std::lock_guard<std::recursive_mutex> controlLock(g_p2ControlMutex);
     // Prefer explicit unswap/reset in Practice mode so CS/menus are consistent
-    if (GetCurrentGameMode() == GameMode::Practice) {
+    if (!g_onlineModeActive.load(std::memory_order_acquire) &&
+        GetCurrentGameMode() == GameMode::Practice) {
         SwitchPlayers::ResetControlMappingForMenusToP1();
     }
     // Then perform the standard macro stop/cleanup
@@ -1528,6 +2008,37 @@ bool IsSlotEmpty(int slot) {
 }
 MacroController::State GetState() { return s_state.load(); }
 bool DidAdvanceRecordingTick() { return s_recordTickAdvanced.load(std::memory_order_acquire); }
+void SetRecordingCaptureSuspended(bool suspended) {
+    const bool previous = s_recordingCaptureSuspended.exchange(
+        suspended, std::memory_order_acq_rel);
+    if (previous == suspended) return;
+
+    s_recordTickAdvanced.store(false, std::memory_order_release);
+    if (!suspended && s_state.load(std::memory_order_acquire) == State::Recording) {
+        // The recorder's zero-mask poll lease is still active during this
+        // handoff. Rebase to the current head before that lease is released;
+        // any buffer activity caused by opening/closing menus is intentionally
+        // outside the authored clip.
+        std::lock_guard<std::recursive_mutex> controlLock(g_p2ControlMutex);
+        const int player = ClampPlayer(
+            s_recordPlayer.load(std::memory_order_acquire));
+        uintptr_t playerPtr = GetPlayerPointer(player);
+        uint16_t index = 0;
+        if (playerPtr && SafeReadMemory(
+                playerPtr + INPUT_BUFFER_INDEX_OFFSET, &index, sizeof(index))) {
+            s_recPrevBufIdx = index;
+        }
+        s_frameDiv = 0;
+        s_callsSinceDiv0 = 0;
+        s_firstDiv0Seen = false;
+    }
+    LogOut(std::string("[MACRO][REC] capture ") +
+               (suspended ? "suspended" : "resumed at current buffer head"),
+           true);
+}
+bool IsRecordingCaptureSuspended() {
+    return s_recordingCaptureSuspended.load(std::memory_order_acquire);
+}
 bool IsExclusivePlayback() {
     return s_exclusiveReplay.load(std::memory_order_acquire);
 }
@@ -1730,6 +2241,32 @@ std::string SerializeLastPlayerRecording(bool includeBuffers) {
         ? s_transientRecordingSlot
         : s_slots[ClampSlot(s_curSlot.load()) - 1];
     return SerializeClip(clip, includeBuffers);
+}
+
+bool FinishPlayerRecordingAndSerialize(std::string& serializedOut,
+                                       bool includeBuffers) {
+    serializedOut.clear();
+    std::lock_guard<std::recursive_mutex> controlLock(g_p2ControlMutex);
+    if (g_onlineModeActive.load(std::memory_order_acquire)) {
+        Stop();
+        return false;
+    }
+    if (s_state.load(std::memory_order_acquire) != State::Recording) {
+        return false;
+    }
+
+    const bool boundaryStop =
+        s_recordStopRequested.exchange(false, std::memory_order_acq_rel);
+    Slot sealedClip;
+    FinishRecording(!boundaryStop, &sealedClip);
+    if (s_state.load(std::memory_order_acquire) != State::Idle) {
+        return false;
+    }
+
+    // Serialize the mutex-protected copy, not ActiveRecordingSlot() or the
+    // mutable transient/ordinary selector.
+    serializedOut = SerializeClip(sealedClip, includeBuffers);
+    return true;
 }
 
 static void ClearSlotForImport(Slot& s) {
@@ -1944,6 +2481,13 @@ static bool DeserializeClip(Slot& dst, const std::string& text, std::string& err
             size_t q = 0; while (q < inner.size() && std::isspace((unsigned char)inner[q])) ++q;
             uint32_t kVal = 0; size_t q2 = parseUInt(inner, q, kVal);
             if (q2 == q) { errorOut = "Buffer group missing count in '" + pack + "'"; return false; }
+            if (kVal > 65535 ||
+                !MacroController::PlaybackStartPolicy::
+                    SupportedRawWriteCount(static_cast<int>(kVal))) {
+                errorOut = "Buffer group has more than three raw writes in '" +
+                           pack + "'";
+                return false;
+            }
             while (q2 < inner.size() && std::isspace((unsigned char)inner[q2])) ++q2;
             if (q2 >= inner.size() || inner[q2] != ':') { errorOut = "Buffer group missing ':' in '" + pack + "'"; return false; }
             q = q2 + 1;
@@ -2015,11 +2559,17 @@ bool ValidateSerialized(const std::string& text, std::string& errorOut) {
 }
 
 bool PlaySerializedForPlayer(const std::string& text, int playerNum,
-                             bool exclusiveInput, std::string& errorOut) {
+                             bool exclusiveInput, std::string& errorOut,
+                             PlaybackStartMode startMode) {
     Slot parsed;
     if (!DeserializeClip(parsed, text, errorOut)) return false;
     if (!parsed.hasData) {
         errorOut = "Demonstration is empty";
+        return false;
+    }
+    std::lock_guard<std::recursive_mutex> controlLock(g_p2ControlMutex);
+    if (g_onlineModeActive.load(std::memory_order_acquire)) {
+        errorOut = "Demonstration cannot start during netplay";
         return false;
     }
     if (s_state.load(std::memory_order_acquire) != State::Idle) {
@@ -2029,7 +2579,7 @@ bool PlaySerializedForPlayer(const std::string& text, int playerNum,
 
     s_transientPlaybackSlot = std::move(parsed);
     s_useTransientPlayback.store(true, std::memory_order_release);
-    if (!StartPlayback(playerNum, exclusiveInput, 0)) {
+    if (!StartPlayback(playerNum, exclusiveInput, 0, startMode)) {
         s_useTransientPlayback.store(false, std::memory_order_release);
         errorOut = "Demonstration cannot start in the current game state";
         return false;

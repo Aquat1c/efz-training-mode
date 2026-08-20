@@ -1,24 +1,23 @@
 #pragma once
 //
-// Mission/Lesson/Recording pause menu - the ONLY pause surface while a trial,
-// tutorial, or active recording capture owns the session. The Practice
-// training menu (custom/ImGui menu) is blocked in those contexts: its
-// savestates, character tools, macros, and auto-actions would corrupt the
-// authored session or splice into the capture (TUTORIAL_MODE_DESIGN.md §3.8).
+// Mission/Lesson/Recording pause menu - the ONLY default pause surface while a
+// trial, tutorial, or mission-recording session owns the match. Recording
+// exposes Practice Settings through an explicit nested row: the dedicated menu
+// and physical pause remain underneath, so Back returns here. Authoring Details
+// is a separate explicit handoff to the existing metadata/publish workflow.
 //
 // Context is resolved at open time:
 //   trial/mission     : RESUME / RETRY MISSION / WATCH DEMO / RETURN TO MISSIONS
 //   tutorial          : RESUME LESSON / RESTART LESSON / WATCH EXAMPLE /
 //                       RETURN TO LESSONS
-//   count-in          : RESUME / CANCEL COUNTDOWN / DISCARD RECORDING
-//   recording         : RESUME / STOP & REVIEW / DISCARD RECORDING
-//
-// The recorder's PRE-RECORD and REVIEW phases deliberately keep the ordinary
-// Practice menu (arranging the start position needs the practice tools; Review
-// needs the authoring pane) - gui.cpp's OpenMenu() gate only routes here while
-// capture owns the session (CountIn/Recording) or a runner session is active.
-// STOP & REVIEW hands off to the Practice menu automatically once the recorder
-// reaches Review.
+//   pre-record        : RESUME SETUP / START RECORDING / AUTHORING OPTIONS /
+//                       PRACTICE SETTINGS / DISCARD RECORDING
+//   count-in          : RESUME COUNTDOWN / PRACTICE SETTINGS /
+//                       CANCEL COUNTDOWN / DISCARD RECORDING
+//   recording         : RESUME RECORDING / PRACTICE SETTINGS /
+//                       STOP & REVIEW / DISCARD RECORDING
+//   review            : RETURN TO MATCH / REVIEW & SAVE / PREVIEW DEMO /
+//                       RETAKE / PRACTICE SETTINGS / DISCARD RECORDING
 //
 // The game is frozen through PauseIntegration while open (same freeze the
 // Practice menu uses). Input is polled on the frame-monitor thread (Tick) and
@@ -48,6 +47,11 @@ void Close();
 // gui OpenMenu() routes here for the owning contexts: first press opens, next
 // press resumes.
 void Toggle();
+
+// Recorder calls this after the synchronized Stop request has consumed its
+// required post-request input boundary and entered Review. It reopens the
+// dedicated Review context without routing through the Practice menu.
+void NotifyRecorderEnteredReview();
 
 // Frame-monitor thread: freeze maintenance + menu input while open.
 void Tick();

@@ -193,7 +193,7 @@ bool IsKnownEntityPattern(int charId, int moveId) {
 }
 
 bool IsCommonSystemHelperCandidate(int moveId) {
-    return moveId >= 495 && moveId <= 499;
+    return Detail::IsCommonSystemHelperCandidateId(moveId);
 }
 
 const std::vector<int>& Specials(int charId) {

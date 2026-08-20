@@ -11,11 +11,19 @@
 #include "../include/game/practice_patch.h"
 #include "../include/game/game_state.h"
 #include "../include/input/input_buffer.h" // for g_bufferFreezingActive
+#include "../include/input/input_freeze.h"
 #include "../include/input/immediate_input.h"
 #include "../include/utils/minhook_utils.h"
 #include "../include/game/auto_action.h"
+#include "../include/game/auto_action_charge.h"
+#include "../include/game/kaori_recoil_duck.h"
 #include "../include/game/macro_controller.h"
 #include "../include/input/injection_control.h"
+#include "../include/input/auto_action_motion_transaction.h"
+#include "../include/input/auto_action_motion_policy.h"
+#include "../include/input/motion_pattern.h"
+#include "../include/input/scoped_input_reservation.h"
+#include "../include/input/physical_poll_sample_policy.h"
 #include <windows.h>
 #include <vector>
 #include <atomic>
@@ -25,7 +33,8 @@
 #include <iomanip>
 #include <chrono>
 #include <mutex>
-#include "../include/input/immediate_input.h"
+#include <algorithm>
+#include <utility>
 
 #ifndef EFZ_ENABLE_AUTO_ACTION_WAKE_TRACE
 #define EFZ_ENABLE_AUTO_ACTION_WAKE_TRACE 0
@@ -53,10 +62,728 @@ std::atomic<bool> g_pollOverrideActive[3] = { false, false, false };
 std::atomic<uint8_t> g_pollOverrideMask[3] = { 0, 0, 0 };
 static std::atomic<uint32_t> g_pollOverrideHitCount[3] = { 0, 0, 0 };
 static std::atomic<uint8_t> g_lastPolledMask[3] = { 0, 0, 0 };
-static std::atomic<uint8_t> g_pendingPollAttackEdges[3] = { 0, 0, 0 };
+static InputPollAttackEdgeJournalPolicy::Journal<
+    kInputPollAttackEdgeJournalCapacity> g_pollAttackEdgeJournal[3];
 static std::atomic<uint32_t> g_inputPollSerial[3] = { 0, 0, 0 };
 static std::atomic<bool> g_observePhysicalPoll[3] = { false, false, false };
-static std::atomic<uint8_t> g_lastObservedPhysicalPoll[3] = { 0xFF, 0xFF, 0xFF };
+static std::atomic<bool> g_observedPhysicalPollValid[3] = { false, false, false };
+static std::atomic<uint32_t> g_observedPhysicalPollSample[3] = { 0, 0, 0 };
+// Hook-side release cache for ImmediateInput. It is separate from that
+// service's desired/tick state, so a transaction takeover must retire it too.
+static std::atomic<uint8_t> g_lastHookImmediateDesired[3] = { 0, 0, 0 };
+
+namespace {
+
+bool InputHooksReadyForTransactions();
+
+constexpr uintptr_t kPlayerCpuFlagOffset[3] = {0, 4931, 4932};
+constexpr uintptr_t kNativeHeldButtonBase = 400;
+constexpr uintptr_t kNativeAutoBlockTimerOffset = 334;
+constexpr uintptr_t kNativeDirectionalHeldOffset = 336;
+constexpr uint16_t kNoMotionToken = 99;
+constexpr int kMaxBlockedConsumerVisits = 240;
+constexpr int kMaxAuthoredConsumerPasses = 240;
+
+enum class AutoActionMotionTxnPhase : uint8_t {
+    Idle,
+    Prepared,
+    AwaitingConsumer,
+    CleanupPending,
+};
+
+struct AutoActionMotionTxnState {
+    std::recursive_mutex mutex;
+    AutoActionMotionTxnPhase phase{AutoActionMotionTxnPhase::Idle};
+    uint64_t generation{0};
+    uintptr_t gameState{0};
+    uintptr_t character{0};
+    uint8_t cpuFlag{0};
+    uint32_t initialAiFlag{0};
+    int motionType{MOTION_NONE};
+    int buttonMask{0};
+    bool genericPattern{false};
+    bool patternFacingRight{true};
+    std::vector<uint8_t> pattern;
+    int maxConsumerPasses{1};
+    int consumerPasses{0};
+    int blockedConsumerVisits{0};
+    bool consumerBoundaryVisited{false};
+
+    bool pollActive{false};
+    bool pollObserved{false};
+    uint8_t pollMask{0};
+    uint16_t headBefore{0};
+    uint16_t headAfter{0};
+    uint16_t ownedStart{0};
+    uint16_t ownedLength{0};
+    uint16_t tokenAfterProducer{kNoMotionToken};
+    short producerMove{-1};
+    short producerFrame{-1};
+    bool ownsRuntimeState{false};
+    bool aiRestorePending{false};
+    bool maintenanceProducerRan{false};
+    // First terminal reason observed for this generation.  It is not published
+    // to callers until all owned input/controller state has been retired.
+    AutoActionMotionOutcome terminalOutcome{
+        AutoActionMotionOutcome::Unknown};
+
+    std::array<uint32_t, 4> heldBefore{};
+    uint16_t autoBlockTimerBefore{0};
+    uint32_t directionalHeldBefore{0};
+};
+
+AutoActionMotionTxnState s_motionTxn[3];
+std::atomic<bool> s_motionTxnActive[3] = {false, false, false};
+std::atomic<uint64_t> s_nextMotionTxnGeneration[3] = {1, 1, 1};
+constexpr size_t kMotionOutcomeHistorySize = 32;
+struct MotionOutcomeRecord {
+    uint64_t generation{0};
+    AutoActionMotionOutcome outcome{
+        AutoActionMotionOutcome::Unknown};
+};
+std::array<std::array<MotionOutcomeRecord, kMotionOutcomeHistorySize>, 3>
+    s_motionOutcomeHistory{};
+size_t s_motionOutcomeCursor[3] = {0, 0, 0};
+
+bool IsValidTransactionPlayer(int playerNum) {
+    return playerNum == 1 || playerNum == 2;
+}
+
+void RecordMotionOutcomeLocked(int playerNum, uint64_t generation,
+                               AutoActionMotionOutcome outcome) {
+    if (!IsValidTransactionPlayer(playerNum)) return;
+    if (generation == 0) return;
+    auto& history = s_motionOutcomeHistory[playerNum];
+    for (auto& record : history) {
+        if (record.generation == generation) {
+            record.outcome = outcome;
+            return;
+        }
+    }
+    history[s_motionOutcomeCursor[playerNum]] =
+        MotionOutcomeRecord{generation, outcome};
+    s_motionOutcomeCursor[playerNum] =
+        (s_motionOutcomeCursor[playerNum] + 1) % kMotionOutcomeHistorySize;
+}
+
+AutoActionMotionOutcome FindMotionOutcomeLocked(int playerNum,
+                                                uint64_t generation) {
+    if (!IsValidTransactionPlayer(playerNum) || generation == 0) {
+        return AutoActionMotionOutcome::Unknown;
+    }
+    for (const auto& record : s_motionOutcomeHistory[playerNum]) {
+        if (record.generation == generation) return record.outcome;
+    }
+    return AutoActionMotionOutcome::Unknown;
+}
+
+// A failed controller restore is different from ordinary input cleanup: losing
+// it can strand a fighter in temporary human control. The payload is protected
+// by g_p2ControlMutex; the per-player atomic lets each input hook skip the lock
+// in the overwhelmingly common no-obligation path.
+struct PendingAiRestore {
+    uintptr_t gameState{0};
+    uintptr_t character{0};
+    uint32_t aiFlag{0};
+};
+
+PendingAiRestore s_pendingAiRestore[3];
+std::atomic<bool> s_pendingAiRestoreActive[3] = {false, false, false};
+
+const char* MotionTxnPhaseName(AutoActionMotionTxnPhase phase) {
+    switch (phase) {
+        case AutoActionMotionTxnPhase::Idle: return "idle";
+        case AutoActionMotionTxnPhase::Prepared: return "prepared";
+        case AutoActionMotionTxnPhase::AwaitingConsumer: return "await-consumer";
+        case AutoActionMotionTxnPhase::CleanupPending: return "cleanup-pending";
+    }
+    return "unknown";
+}
+
+bool ReadCurrentWorld(int playerNum, uintptr_t& gameState,
+                      uintptr_t& character) {
+    gameState = 0;
+    character = 0;
+    if (!IsValidTransactionPlayer(playerNum)) return false;
+    const uintptr_t base = GetEFZBase();
+    const uintptr_t playerOffset = playerNum == 1
+        ? EFZ_BASE_OFFSET_P1 : EFZ_BASE_OFFSET_P2;
+    return base != 0 &&
+        SafeReadMemory(base + EFZ_BASE_OFFSET_GAME_STATE,
+                       &gameState, sizeof(gameState)) && gameState != 0 &&
+        SafeReadMemory(base + playerOffset,
+                       &character, sizeof(character)) && character != 0;
+}
+
+void ClearPendingAiRestoreLocked(int playerNum) {
+    if (!IsValidTransactionPlayer(playerNum)) return;
+    s_pendingAiRestore[playerNum] = PendingAiRestore{};
+    s_pendingAiRestoreActive[playerNum].store(false,
+                                               std::memory_order_release);
+}
+
+void RememberPendingAiRestoreLocked(int playerNum, uintptr_t gameState,
+                                    uintptr_t character, uint32_t aiFlag) {
+    if (!IsValidTransactionPlayer(playerNum)) return;
+    PendingAiRestore& pending = s_pendingAiRestore[playerNum];
+    pending.gameState = gameState;
+    pending.character = character;
+    pending.aiFlag = aiFlag;
+    s_pendingAiRestoreActive[playerNum].store(true,
+                                              std::memory_order_release);
+}
+
+bool RetryPendingAiRestoreLocked(int playerNum, const char* context) {
+    if (!IsValidTransactionPlayer(playerNum)) return false;
+    if (!s_pendingAiRestoreActive[playerNum].load(
+            std::memory_order_acquire)) {
+        return true;
+    }
+
+    // Once online mode owns controller setup, an offline snapshot must never be
+    // replayed over it. Netplay publication is serialized by this same mutex.
+    if (g_onlineModeActive.load(std::memory_order_acquire)) {
+        LogOut("[AA_INPUT_TXN] P" + std::to_string(playerNum) +
+                   " discarded pending offline AI restore during netplay", true);
+        ClearPendingAiRestoreLocked(playerNum);
+        return true;
+    }
+
+    const PendingAiRestore& pending = s_pendingAiRestore[playerNum];
+    uintptr_t gameState = 0;
+    uintptr_t character = 0;
+    if (!ReadCurrentWorld(playerNum, gameState, character) ||
+        gameState != pending.gameState || character != pending.character) {
+        LogOut("[AA_INPUT_TXN] P" + std::to_string(playerNum) +
+                   " discarded stale pending AI restore after world change", true);
+        ClearPendingAiRestoreLocked(playerNum);
+        return true;
+    }
+
+    const uint32_t desired = pending.aiFlag;
+    if (!SafeWriteMemory(character + AI_CONTROL_FLAG_OFFSET,
+                         &desired, sizeof(desired))) {
+        LogOut("[AA_INPUT_TXN] P" + std::to_string(playerNum) +
+                   " pending AI restore retry failed context=" +
+                   std::string(context ? context : "unspecified"),
+               true);
+        return false;
+    }
+
+    ClearPendingAiRestoreLocked(playerNum);
+    LogOut("[AA_INPUT_TXN] P" + std::to_string(playerNum) +
+               " pending AI restore completed context=" +
+               std::string(context ? context : "unspecified"),
+           true);
+    return true;
+}
+
+bool SameMotionTxnWorldLocked(int playerNum) {
+    if (!IsValidTransactionPlayer(playerNum)) return false;
+    const AutoActionMotionTxnState& txn = s_motionTxn[playerNum];
+    uintptr_t gameState = 0;
+    uintptr_t character = 0;
+    return ReadCurrentWorld(playerNum, gameState, character) &&
+           gameState == txn.gameState && character == txn.character;
+}
+
+void ResetMotionTxnLocked(int playerNum) {
+    if (!IsValidTransactionPlayer(playerNum)) return;
+    AutoActionMotionTxnState& txn = s_motionTxn[playerNum];
+    txn.phase = AutoActionMotionTxnPhase::Idle;
+    txn.generation = 0;
+    txn.gameState = 0;
+    txn.character = 0;
+    txn.cpuFlag = 0;
+    txn.initialAiFlag = 0;
+    txn.motionType = MOTION_NONE;
+    txn.buttonMask = 0;
+    txn.genericPattern = false;
+    txn.patternFacingRight = true;
+    txn.pattern.clear();
+    txn.maxConsumerPasses = 1;
+    txn.consumerPasses = 0;
+    txn.blockedConsumerVisits = 0;
+    txn.consumerBoundaryVisited = false;
+    txn.pollActive = false;
+    txn.pollObserved = false;
+    txn.pollMask = 0;
+    txn.headBefore = 0;
+    txn.headAfter = 0;
+    txn.ownedStart = 0;
+    txn.ownedLength = 0;
+    txn.tokenAfterProducer = kNoMotionToken;
+    txn.producerMove = -1;
+    txn.producerFrame = -1;
+    txn.ownsRuntimeState = false;
+    txn.aiRestorePending = false;
+    txn.maintenanceProducerRan = false;
+    txn.terminalOutcome = AutoActionMotionOutcome::Unknown;
+    txn.heldBefore.fill(0);
+    txn.autoBlockTimerBefore = 0;
+    txn.directionalHeldBefore = 0;
+    s_motionTxnActive[playerNum].store(false, std::memory_order_release);
+}
+
+bool WriteRingSpan(uintptr_t character, uint16_t start,
+                   const uint8_t* data, uint16_t length) {
+    if (length == 0) return true;
+    const uint16_t first = static_cast<uint16_t>(
+        std::min<uint16_t>(length, INPUT_BUFFER_SIZE - start));
+    const uint16_t second = static_cast<uint16_t>(length - first);
+    bool ok = SafeWriteMemory(character + INPUT_BUFFER_OFFSET + start,
+                              data, first);
+    if (second != 0) {
+        ok = SafeWriteMemory(character + INPUT_BUFFER_OFFSET,
+                             data + first, second) && ok;
+    }
+    return ok;
+}
+
+bool ClearRingSpan(uintptr_t character, uint16_t start, uint16_t length) {
+    if (length == 0) return true;
+    std::vector<uint8_t> neutral(length, 0);
+    return WriteRingSpan(character, start, neutral.data(), length);
+}
+
+bool CleanupMotionTxnLocked(
+    int playerNum, const char* reason,
+    AutoActionMotionOutcome outcome = AutoActionMotionOutcome::Failed) {
+    if (!IsValidTransactionPlayer(playerNum)) return true;
+    AutoActionMotionTxnState& txn = s_motionTxn[playerNum];
+    const uint64_t generation = txn.generation;
+    const AutoActionMotionTxnPhase phase = txn.phase;
+    if (txn.terminalOutcome == AutoActionMotionOutcome::Unknown) {
+        txn.terminalOutcome = outcome;
+    }
+    const AutoActionMotionOutcome terminalOutcome = txn.terminalOutcome;
+    const auto publishTerminalOutcome = [&]() {
+        if (generation != 0) {
+            RecordMotionOutcomeLocked(playerNum, generation, terminalOutcome);
+        }
+    };
+
+    // Netplay is a hard ownership boundary.  EnterNetplaySuspend performs
+    // bounded cleanup attempts before publishing this flag; if those writes
+    // could not be proven, no delayed offline obligation may write controller
+    // or input memory after online play owns the fighter. Retire bookkeeping
+    // without touching the new owner's world.
+    if (g_onlineModeActive.load(std::memory_order_acquire)) {
+        LogOut("[AA_INPUT_TXN] P" + std::to_string(playerNum) +
+                   " retired offline gen=" +
+                   std::to_string(generation) +
+                   " without writes at netplay ownership boundary reason=" +
+                   std::string(reason ? reason : "unspecified"),
+               true);
+        // Release ownership before publishing a terminal outcome.  Callers
+        // that observe Accepted may immediately submit a dash normal and must
+        // never race a still-live CleanupPending owner.
+        ResetMotionTxnLocked(playerNum);
+        publishTerminalOutcome();
+        ClearPendingAiRestoreLocked(playerNum);
+        return true;
+    }
+
+    bool sameWorld = SameMotionTxnWorldLocked(playerNum);
+    bool cleanupOk = true;
+    if (sameWorld && txn.ownsRuntimeState) {
+        const uintptr_t character = txn.character;
+        const uint16_t noMotion = kNoMotionToken;
+        const std::array<uint8_t, 3> noCommandState = {0, 0, 0};
+        const std::array<uint8_t, 6> neutralImmediate = {0, 0, 0, 0, 0, 0};
+        const std::array<uint8_t, 4> neutralButtons = {0, 0, 0, 0};
+        const std::array<uint32_t, 4> neutralHeld = {0, 0, 0, 0};
+        const bool preserveRestoredAiState =
+            txn.maintenanceProducerRan && txn.initialAiFlag != 0;
+
+        cleanupOk = ClearRingSpan(character, txn.ownedStart,
+                                  txn.ownedLength) && cleanupOk;
+        cleanupOk = SafeWriteMemory(character + MOTION_TOKEN_OFFSET,
+                                    &noMotion, sizeof(noMotion)) && cleanupOk;
+        cleanupOk = SafeWriteMemory(character + COMMAND_BUFFER_OFFSET,
+                                    noCommandState.data(), noCommandState.size()) && cleanupOk;
+        cleanupOk = preserveRestoredAiState
+            ? (SafeWriteMemory(character + INPUT_BUTTON_A_OFFSET,
+                               neutralButtons.data(), neutralButtons.size()) && cleanupOk)
+            : (SafeWriteMemory(character + INPUT_HORIZONTAL_OFFSET,
+                               neutralImmediate.data(), neutralImmediate.size()) && cleanupOk);
+        const auto& held = txn.initialAiFlag == 0
+            ? txn.heldBefore : neutralHeld;
+        cleanupOk = SafeWriteMemory(character + kNativeHeldButtonBase,
+                                    held.data(), sizeof(held)) && cleanupOk;
+        if (!preserveRestoredAiState) {
+            cleanupOk = SafeWriteMemory(character + kNativeAutoBlockTimerOffset,
+                                        &txn.autoBlockTimerBefore,
+                                        sizeof(txn.autoBlockTimerBefore)) && cleanupOk;
+            cleanupOk = SafeWriteMemory(character + kNativeDirectionalHeldOffset,
+                                        &txn.directionalHeldBefore,
+                                        sizeof(txn.directionalHeldBefore)) && cleanupOk;
+        }
+        if (txn.aiRestorePending) {
+            const bool aiRestored =
+                SafeWriteMemory(character + AI_CONTROL_FLAG_OFFSET,
+                                &txn.initialAiFlag,
+                                sizeof(txn.initialAiFlag));
+            if (!aiRestored) {
+                RememberPendingAiRestoreLocked(
+                    playerNum, txn.gameState, character, txn.initialAiFlag);
+            } else {
+                txn.aiRestorePending = false;
+            }
+            cleanupOk = aiRestored && cleanupOk;
+        }
+    }
+
+    std::ostringstream oss;
+    oss << "[AA_INPUT_TXN] P" << playerNum << " end gen=" << generation
+        << " phase=" << MotionTxnPhaseName(phase)
+        << " reason=" << (reason ? reason : "unspecified")
+        << " sameWorld=" << (sameWorld ? 1 : 0)
+        << " ownedMemory=" << (txn.ownsRuntimeState ? 1 : 0)
+        << " aiMaintenance=" << (txn.maintenanceProducerRan ? 1 : 0)
+        << " cleanup=" << (cleanupOk ? 1 : 0)
+        << " head=" << txn.headBefore << "->" << txn.headAfter
+        << " token=" << txn.tokenAfterProducer
+        << " owned=" << txn.ownedStart << "+" << txn.ownedLength;
+    LogOut(oss.str(), !cleanupOk || !sameWorld || detailedLogging.load());
+    if (cleanupOk || !sameWorld) {
+        ResetMotionTxnLocked(playerNum);
+        publishTerminalOutcome();
+        return true;
+    }
+
+    // Do not publish Idle while a token/history/raw cleanup is unproven. The
+    // next matching producer and consumer hooks retry this world-bound obligation and
+    // suppress the native consumer while it remains live, preventing cached
+    // authored input from executing again.
+    txn.phase = AutoActionMotionTxnPhase::CleanupPending;
+    s_motionTxnActive[playerNum].store(true, std::memory_order_release);
+    return false;
+}
+
+AutoActionMotionSubmitResult QueueMotionPatternCommon(
+                                 int playerNum,
+                                 std::vector<uint8_t> pattern,
+                                 bool patternFacingRight,
+                                 bool genericPattern,
+                                 int motionType,
+                                 int buttonMask,
+                                 int maxConsumerVisits,
+                                 ScopedInputOwner reservationOwner,
+                                 uint64_t reservationToken,
+                                 uint64_t* generationOut) {
+    if (generationOut) *generationOut = 0;
+    if (!IsValidTransactionPlayer(playerNum) || pattern.empty() ||
+        pattern.size() > INPUT_BUFFER_SIZE ||
+        !InputHooksReadyForTransactions() ||
+        g_onlineModeActive.load(std::memory_order_relaxed) || !IsMatchPhase()) {
+        return AutoActionMotionSubmitResult::Invalid;
+    }
+    if (reservationToken != 0) {
+        if (!ScopedInputReservationMatches(
+                playerNum, reservationOwner,
+                reservationToken)) {
+            return AutoActionMotionSubmitResult::Invalid;
+        }
+    } else if (reservationOwner != ScopedInputOwner::None) {
+        return AutoActionMotionSubmitResult::Invalid;
+    } else if (IsScopedInputReserved(playerNum)) {
+        return AutoActionMotionSubmitResult::Busy;
+    }
+
+    // Motion admission is observational: it waits for every existing normal,
+    // tutorial, macro, and manual owner. Take the shared controller lock so no
+    // producer can slip into the hand-off window between checks and publish.
+    std::lock_guard<std::recursive_mutex> controlLock(g_p2ControlMutex);
+    if (!InputHooksReadyForTransactions() ||
+        g_onlineModeActive.load(std::memory_order_acquire) ||
+        !IsMatchPhase()) {
+        return AutoActionMotionSubmitResult::Invalid;
+    }
+    if (reservationToken != 0) {
+        if (!ScopedInputReservationMatches(
+                playerNum, reservationOwner,
+                reservationToken)) {
+            return AutoActionMotionSubmitResult::Invalid;
+        }
+    } else if (reservationOwner != ScopedInputOwner::None) {
+        return AutoActionMotionSubmitResult::Invalid;
+    } else if (IsScopedInputReserved(playerNum)) {
+        return AutoActionMotionSubmitResult::Busy;
+    }
+    if (!RetryPendingAiRestoreLocked(playerNum, "queue preflight")) {
+        return AutoActionMotionSubmitResult::Busy;
+    }
+    AutoActionMotionTxnState& txn = s_motionTxn[playerNum];
+    std::lock_guard<std::recursive_mutex> txnLock(txn.mutex);
+    if (!InputHooksReadyForTransactions() ||
+        g_onlineModeActive.load(std::memory_order_acquire) ||
+        !IsMatchPhase()) {
+        return AutoActionMotionSubmitResult::Invalid;
+    }
+    const bool p2LegacyOwner = playerNum == 2 &&
+        (g_p2ControlOverridden || TutorialP2ControlLeaseActive());
+    if (txn.phase != AutoActionMotionTxnPhase::Idle || p2LegacyOwner ||
+        (MacroController::IsExclusivePlayback() &&
+         MacroController::GetPlaybackPlayer() == playerNum) ||
+        g_pollOverrideActive[playerNum].load(std::memory_order_acquire) ||
+        g_manualInputOverride[playerNum].load(std::memory_order_acquire) ||
+        ImmediateInput::TutorialLeaseActive(playerNum) ||
+        TutorialBufferFreezeLeaseActive() ||
+        ImmediateInput::GetCurrentDesired(playerNum) != 0 ||
+        ImmediateInput::GetRemainingTicks(playerNum) != 0 ||
+        IsAutoActionNormalPulseActive(playerNum) ||
+        IsAutoActionNormalPulseOwningImmediateRegisters(playerNum) ||
+        GetMotionQueueSnapshot(playerNum).active ||
+        TutorialMotionQueueLeaseActive(playerNum) ||
+        (g_bufferFreezingActive.load(std::memory_order_acquire) &&
+         (g_activeFreezePlayer.load(std::memory_order_acquire) == 0 ||
+          g_activeFreezePlayer.load(std::memory_order_acquire) == playerNum))) {
+        LogOut("[AA_INPUT_TXN] queue rejected: another P" +
+                   std::to_string(playerNum) + " input owner is active", true);
+        return AutoActionMotionSubmitResult::Busy;
+    }
+
+    uintptr_t gameState = 0;
+    uintptr_t character = 0;
+    if (!ReadCurrentWorld(playerNum, gameState, character)) {
+        return AutoActionMotionSubmitResult::Invalid;
+    }
+
+    uint8_t cpuFlag = 0;
+    uint32_t aiFlag = 0;
+    if (!SafeReadMemory(gameState + kPlayerCpuFlagOffset[playerNum],
+                        &cpuFlag, sizeof(cpuFlag)) ||
+        !SafeReadMemory(character + AI_CONTROL_FLAG_OFFSET, &aiFlag, sizeof(aiFlag))) {
+        return AutoActionMotionSubmitResult::Invalid;
+    }
+
+    // Every competing-owner and world check has passed. Retire only the
+    // completed worker's private edge latch now; a failed admission must never
+    // neutral-write over tutorial/macro/manual/poll ownership.
+    if (!ImmediateInput::RetireCompletedBookkeeping(playerNum)) {
+        return AutoActionMotionSubmitResult::Busy;
+    }
+    g_lastHookImmediateDesired[playerNum].store(0, std::memory_order_release);
+
+    uint64_t generation = s_nextMotionTxnGeneration[playerNum].fetch_add(
+        1, std::memory_order_acq_rel);
+    if (generation == 0) {
+        generation = s_nextMotionTxnGeneration[playerNum].fetch_add(
+            1, std::memory_order_acq_rel);
+    }
+    txn.phase = AutoActionMotionTxnPhase::Prepared;
+    txn.generation = generation;
+    txn.gameState = gameState;
+    txn.character = character;
+    txn.cpuFlag = cpuFlag;
+    txn.initialAiFlag = aiFlag;
+    txn.motionType = motionType;
+    txn.buttonMask = buttonMask;
+    txn.genericPattern = genericPattern;
+    txn.patternFacingRight = patternFacingRight;
+    txn.pattern = std::move(pattern);
+    txn.maxConsumerPasses = (std::max)(
+        1, (std::min)(maxConsumerVisits, kMaxAuthoredConsumerPasses));
+    txn.consumerPasses = 0;
+    txn.blockedConsumerVisits = 0;
+    txn.consumerBoundaryVisited = false;
+    RecordMotionOutcomeLocked(
+        playerNum, generation, AutoActionMotionOutcome::Pending);
+    s_motionTxnActive[playerNum].store(true, std::memory_order_release);
+    if (generationOut) *generationOut = generation;
+
+    std::ostringstream oss;
+    oss << "[AA_INPUT_TXN] P" << playerNum << " queued gen=" << generation
+        << " motion=" << motionType
+        << " button=0x" << std::hex << buttonMask << std::dec
+        << " len=" << txn.pattern.size()
+        << " wait=" << txn.maxConsumerPasses
+        << " cpu=" << static_cast<int>(cpuFlag)
+        << " ai=" << aiFlag;
+    LogOut(oss.str(), true);
+    return AutoActionMotionSubmitResult::Accepted;
+}
+
+} // namespace
+
+AutoActionMotionSubmitResult SubmitAutoActionMotionTransaction(
+    int playerNum, int motionType, int buttonMask, int maxConsumerVisits,
+    uint64_t* generationOut) {
+    if (!IsValidTransactionPlayer(playerNum)) {
+        if (generationOut) *generationOut = 0;
+        return AutoActionMotionSubmitResult::Invalid;
+    }
+    const bool facingRight = GetPlayerFacingDirection(playerNum);
+    std::vector<uint8_t> pattern;
+    if (!MotionPattern::Build(motionType, static_cast<uint8_t>(buttonMask),
+                              facingRight, pattern)) {
+        if (generationOut) *generationOut = 0;
+        return AutoActionMotionSubmitResult::Invalid;
+    }
+    return QueueMotionPatternCommon(playerNum, std::move(pattern), facingRight,
+                                    false, motionType, buttonMask,
+                                    maxConsumerVisits, ScopedInputOwner::None,
+                                    0, generationOut);
+}
+
+AutoActionMotionSubmitResult SubmitReservedAutoActionMotionTransaction(
+    int playerNum, int motionType, int buttonMask, int maxConsumerVisits,
+    uint64_t reservationToken, uint64_t* generationOut) {
+    return SubmitScopedAutoActionMotionTransaction(
+        playerNum, motionType, buttonMask, maxConsumerVisits,
+        ScopedInputOwner::AutoActionCharge, reservationToken, generationOut);
+}
+
+AutoActionMotionSubmitResult SubmitScopedAutoActionMotionTransaction(
+    int playerNum, int motionType, int buttonMask, int maxConsumerVisits,
+    ScopedInputOwner reservationOwner, uint64_t reservationToken,
+    uint64_t* generationOut) {
+    if (!IsValidTransactionPlayer(playerNum) ||
+        reservationOwner == ScopedInputOwner::None ||
+        reservationToken == 0 ||
+        !ScopedInputReservationMatches(
+            playerNum, reservationOwner, reservationToken)) {
+        if (generationOut) *generationOut = 0;
+        return AutoActionMotionSubmitResult::Invalid;
+    }
+    const bool facingRight = GetPlayerFacingDirection(playerNum);
+    std::vector<uint8_t> pattern;
+    if (!MotionPattern::Build(motionType, static_cast<uint8_t>(buttonMask),
+                              facingRight, pattern)) {
+        if (generationOut) *generationOut = 0;
+        return AutoActionMotionSubmitResult::Invalid;
+    }
+    return QueueMotionPatternCommon(playerNum, std::move(pattern), facingRight,
+                                    false, motionType, buttonMask,
+                                    maxConsumerVisits, reservationOwner,
+                                    reservationToken,
+                                    generationOut);
+}
+
+AutoActionMotionSubmitResult SubmitAutoActionPatternTransaction(
+    int playerNum, const std::vector<uint8_t>& pattern,
+    bool patternFacingRight, int maxConsumerVisits,
+    uint64_t* generationOut) {
+    return QueueMotionPatternCommon(playerNum, pattern, patternFacingRight,
+                                    true, MOTION_NONE, 0,
+                                    maxConsumerVisits, ScopedInputOwner::None,
+                                    0, generationOut);
+}
+
+bool IsAutoActionMotionTransactionActive(int playerNum) {
+    return IsValidTransactionPlayer(playerNum) &&
+        s_motionTxnActive[playerNum].load(std::memory_order_acquire);
+}
+
+AutoActionMotionOutcome GetAutoActionMotionTransactionOutcome(
+    int playerNum, uint64_t generation) {
+    if (!IsValidTransactionPlayer(playerNum)) {
+        return AutoActionMotionOutcome::Unknown;
+    }
+    std::lock_guard<std::recursive_mutex> lock(s_motionTxn[playerNum].mutex);
+    return FindMotionOutcomeLocked(playerNum, generation);
+}
+
+bool CancelAutoActionMotionTransactionIfGeneration(
+    int playerNum, uint64_t generation, const char* reason) {
+    if (!IsValidTransactionPlayer(playerNum) || generation == 0) return false;
+
+    // Match the producer/queue lock order.  The generation comparison is made
+    // while holding the transaction mutex, so a stale deferred cleanup cannot
+    // observe one owner and scrub a successor published immediately after it.
+    std::lock_guard<std::recursive_mutex> controlLock(g_p2ControlMutex);
+    AutoActionMotionTxnState& txn = s_motionTxn[playerNum];
+    std::lock_guard<std::recursive_mutex> lock(txn.mutex);
+    if (!AutoActionMotionPolicy::OwnsCancellationGeneration(
+            txn.phase != AutoActionMotionTxnPhase::Idle,
+            txn.generation, generation)) {
+        return false;
+    }
+
+    (void)CleanupMotionTxnLocked(
+        playerNum, reason ? reason : "generation cancelled",
+        AutoActionMotionOutcome::Cancelled);
+    (void)RetryPendingAiRestoreLocked(
+        playerNum, reason ? reason : "generation cancelled");
+    if (txn.phase == AutoActionMotionTxnPhase::CleanupPending &&
+        txn.generation == generation) {
+        (void)CleanupMotionTxnLocked(
+            playerNum, "generation cancellation cleanup retry",
+            AutoActionMotionOutcome::Cancelled);
+    }
+    return true;
+}
+
+void CancelAutoActionMotionTransaction(int playerNum, const char* reason) {
+    if (!IsValidTransactionPlayer(playerNum)) return;
+    // Match the producer/queue lock order. Cleanup can retry an exact AI-flag
+    // restore, so cancellation is itself a controller writer.
+    std::lock_guard<std::recursive_mutex> controlLock(g_p2ControlMutex);
+    AutoActionMotionTxnState& txn = s_motionTxn[playerNum];
+    std::lock_guard<std::recursive_mutex> lock(txn.mutex);
+    if (txn.phase != AutoActionMotionTxnPhase::Idle) {
+        CleanupMotionTxnLocked(
+            playerNum, reason ? reason : "cancelled",
+            AutoActionMotionOutcome::Cancelled);
+    }
+    (void)RetryPendingAiRestoreLocked(
+        playerNum, reason ? reason : "cancelled");
+    if (txn.phase == AutoActionMotionTxnPhase::CleanupPending) {
+        (void)CleanupMotionTxnLocked(
+            playerNum, "immediate cancellation cleanup retry");
+    }
+}
+
+void CancelAllAutoActionMotionTransactions(const char* reason) {
+    std::lock_guard<std::recursive_mutex> controlLock(g_p2ControlMutex);
+    CancelAutoActionMotionTransaction(1, reason);
+    CancelAutoActionMotionTransaction(2, reason);
+}
+
+P2AutoActionMotionSubmitResult SubmitP2AutoActionMotionTransaction(
+    int motionType, int buttonMask, int consumerWaitPasses,
+    uint64_t* generationOut) {
+    return SubmitAutoActionMotionTransaction(
+        2, motionType, buttonMask, consumerWaitPasses, generationOut);
+}
+
+P2AutoActionMotionSubmitResult SubmitP2AutoActionPatternTransaction(
+    const std::vector<uint8_t>& pattern, bool patternFacingRight,
+    int consumerWaitPasses, uint64_t* generationOut) {
+    return SubmitAutoActionPatternTransaction(
+        2, pattern, patternFacingRight, consumerWaitPasses, generationOut);
+}
+
+bool QueueP2AutoActionMotionTransaction(int motionType, int buttonMask,
+                                        int consumerWaitPasses,
+                                        uint64_t* generationOut) {
+    return SubmitP2AutoActionMotionTransaction(
+               motionType, buttonMask, consumerWaitPasses, generationOut) ==
+           P2AutoActionMotionSubmitResult::Accepted;
+}
+
+bool QueueP2AutoActionPatternTransaction(const std::vector<uint8_t>& pattern,
+                                         bool patternFacingRight,
+                                         int consumerWaitPasses,
+                                         uint64_t* generationOut) {
+    return SubmitP2AutoActionPatternTransaction(
+               pattern, patternFacingRight, consumerWaitPasses, generationOut) ==
+           P2AutoActionMotionSubmitResult::Accepted;
+}
+
+bool IsP2AutoActionMotionTransactionActive() {
+    return IsAutoActionMotionTransactionActive(2);
+}
+
+P2AutoActionMotionOutcome GetP2AutoActionMotionTransactionOutcome(
+    uint64_t generation) {
+    return GetAutoActionMotionTransactionOutcome(2, generation);
+}
+
+void CancelP2AutoActionMotionTransaction(const char* reason) {
+    CancelAutoActionMotionTransaction(2, reason);
+}
 
 #if EFZ_ENABLE_AUTO_ACTION_WAKE_TRACE
 static const char* TraceBool(bool value) {
@@ -141,15 +868,11 @@ static bool TraceInputHookWakeWindowActive(short p1MoveID, short p2MoveID) {
 }
 
 static void TraceAppendQueueState(std::ostringstream& oss, int playerNum) {
-    const bool queueActive = (playerNum == 1) ? p1QueueActive : p2QueueActive;
-    const int queueIndex = (playerNum == 1) ? p1QueueIndex : p2QueueIndex;
-    const int frameCounterForQueue = (playerNum == 1) ? p1FrameCounter : p2FrameCounter;
-    const int motionType = (playerNum == 1) ? p1CurrentMotionType : p2CurrentMotionType;
-    const size_t queueSize = (playerNum == 1) ? p1InputQueue.size() : p2InputQueue.size();
-    oss << " p" << playerNum << "Queue=" << TraceBool(queueActive)
-        << ":" << queueIndex << "/" << queueSize
-        << " qFrame=" << frameCounterForQueue
-        << " qMotion=" << motionType;
+    const MotionQueueSnapshot queue = GetMotionQueueSnapshot(playerNum);
+    oss << " p" << playerNum << "Queue=" << TraceBool(queue.active)
+        << ":" << queue.index << "/" << queue.size
+        << " qFrame=" << queue.frameCounter
+        << " qMotion=" << queue.motionType;
 }
 
 static void TraceAppendInputState(std::ostringstream& oss, int playerNum) {
@@ -229,8 +952,39 @@ uint32_t GetInputPollOverrideHitCount(int playerNum) {
 }
 
 uint8_t ConsumeInputPollAttackEdges(int playerNum) {
+    uint32_t ignoredSerial = 0;
+    return ConsumeInputPollAttackEdgeBatch(playerNum, ignoredSerial);
+}
+
+InputPollAttackEdgeDrainResult DrainInputPollAttackEdgeJournal(
+    int playerNum,
+    InputPollAttackEdgeEvent* eventsOut,
+    std::size_t eventCapacity) {
+    if (playerNum != 1 && playerNum != 2) {
+        return InputPollAttackEdgeDrainResult{};
+    }
+    return g_pollAttackEdgeJournal[playerNum].Drain(eventsOut, eventCapacity);
+}
+
+void ResetInputPollAttackEdgeJournal(int playerNum) {
+    if (playerNum != 1 && playerNum != 2) return;
+    g_pollAttackEdgeJournal[playerNum].Reset();
+}
+
+uint8_t ConsumeInputPollAttackEdgeBatch(int playerNum, uint32_t& serialOut) {
+    serialOut = 0;
     if (playerNum != 1 && playerNum != 2) return 0;
-    return g_pendingPollAttackEdges[playerNum].exchange(0, std::memory_order_acq_rel);
+
+    InputPollAttackEdgeEvent events[kInputPollAttackEdgeJournalCapacity]{};
+    const InputPollAttackEdgeDrainResult drain =
+        DrainInputPollAttackEdgeJournal(playerNum, events,
+                                        kInputPollAttackEdgeJournalCapacity);
+    uint8_t aggregate = 0;
+    for (std::size_t index = 0; index < drain.count; ++index) {
+        aggregate = static_cast<uint8_t>(aggregate | events[index].mask);
+        serialOut = events[index].serial;
+    }
+    return aggregate;
 }
 
 uint32_t GetInputPollSerial(int playerNum) {
@@ -240,8 +994,11 @@ uint32_t GetInputPollSerial(int playerNum) {
 
 void SetPollOverridePhysicalObservation(int playerNum, bool enabled) {
     if (playerNum != 1 && playerNum != 2) return;
-    if (enabled) g_lastObservedPhysicalPoll[playerNum].store(0xFF, std::memory_order_release);
-    g_observePhysicalPoll[playerNum].store(enabled, std::memory_order_release);
+    const bool wasEnabled = g_observePhysicalPoll[playerNum].exchange(
+        enabled, std::memory_order_acq_rel);
+    if (enabled && !wasEnabled) {
+        g_observedPhysicalPollValid[playerNum].store(false, std::memory_order_release);
+    }
 }
 
 bool IsPollOverridePhysicalObservationEnabled(int playerNum) {
@@ -251,7 +1008,29 @@ bool IsPollOverridePhysicalObservationEnabled(int playerNum) {
 
 uint8_t GetLastObservedPhysicalPollMask(int playerNum) {
     if (playerNum != 1 && playerNum != 2) return 0xFF;
-    return g_lastObservedPhysicalPoll[playerNum].load(std::memory_order_acquire);
+    if (!g_observedPhysicalPollValid[playerNum].load(std::memory_order_acquire)) {
+        return 0xFF; // compatibility for older handshake policy callers
+    }
+    return PhysicalPollSamplePolicy::Mask(
+        g_observedPhysicalPollSample[playerNum].load(
+            std::memory_order_acquire));
+}
+
+bool TryGetLastObservedPhysicalPoll(int playerNum, uint8_t& maskOut,
+                                    uint32_t* serialOut) {
+    maskOut = 0;
+    if (serialOut) *serialOut = 0;
+    if (playerNum != 1 && playerNum != 2) return false;
+    if (!g_observedPhysicalPollValid[playerNum].load(std::memory_order_acquire)) {
+        return false;
+    }
+    const uint32_t sample = g_observedPhysicalPollSample[playerNum].load(
+        std::memory_order_acquire);
+    maskOut = PhysicalPollSamplePolicy::Mask(sample);
+    if (serialOut) {
+        *serialOut = PhysicalPollSamplePolicy::Serial(sample);
+    }
+    return true;
 }
 
 // Arming state for motion-token neutralization and optional staged cleanup
@@ -332,6 +1111,16 @@ static const uintptr_t POLL_INPUT_STATE_FUNC_OFFSET = 0x0CD00;
 namespace {
 std::atomic<bool> s_inputHooksCreated{false};
 std::atomic<bool> s_inputHooksEnabled{false};
+// Mission startup is a separate poll owner from macros/auto-actions. Generic
+// cleanup deliberately clears those lanes during hotswap and state restore;
+// this one is retired only by Mission::Engine after its ownership handoff.
+std::atomic<bool> s_p1StartupNeutralGate{false};
+
+bool InputHooksReadyForTransactions() {
+    return s_inputHooksCreated.load(std::memory_order_acquire) &&
+           s_inputHooksEnabled.load(std::memory_order_acquire);
+}
+
 std::atomic<int> s_processInputPlayerContext{0};
 std::atomic<bool> s_loggedPollContextReroute[3] = { false, false, false };
 std::atomic<bool> s_loggedPollOverrideHumanForce[3] = { false, false, false };
@@ -367,10 +1156,67 @@ struct NormalPulseRuntimeSlot {
     uint8_t pressAttempts{0};
     bool retryNeutralPending{false};
     bool abortAfterRetryNeutral{false};
+    // A failed same-world scrub remains an exclusive raw-lane obligation.
+    // Keeping it separate from PulseState lets the requested action retire
+    // without allowing cached input to execute later or be overwritten by a
+    // competing writer before cleanup succeeds.
+    bool cleanupPending{false};
+    NormalInputPolicy::Intent cleanupIntent{};
+    struct OutcomeRecord {
+        uint64_t generation{0};
+        AutoActionNormalPulseOutcome outcome{
+            AutoActionNormalPulseOutcome::Unknown};
+    };
+    std::array<OutcomeRecord, 32> outcomeHistory{};
+    size_t outcomeCursor{0};
 };
 
 NormalPulseRuntimeSlot s_normalPulse[3];
 std::atomic<bool> s_normalRawRegisterOwner[3] = { false, false, false };
+
+void RecordNormalPulseOutcomeLocked(
+    NormalPulseRuntimeSlot& slot,
+    uint64_t generation,
+    AutoActionNormalPulseOutcome outcome) {
+    if (generation == 0 || outcome == AutoActionNormalPulseOutcome::Unknown) {
+        return;
+    }
+    for (auto& record : slot.outcomeHistory) {
+        if (record.generation != generation) continue;
+        // A consumer-confirmed success is terminal. Likewise, never let later
+        // cleanup/cancellation rewrite any already-published terminal result.
+        if (record.outcome != AutoActionNormalPulseOutcome::Pending &&
+            record.outcome != AutoActionNormalPulseOutcome::Unknown) {
+            return;
+        }
+        record.outcome = outcome;
+        return;
+    }
+    slot.outcomeHistory[slot.outcomeCursor] = {generation, outcome};
+    slot.outcomeCursor =
+        (slot.outcomeCursor + 1) % slot.outcomeHistory.size();
+}
+
+AutoActionNormalPulseOutcome FindNormalPulseOutcomeLocked(
+    const NormalPulseRuntimeSlot& slot, uint64_t generation) {
+    if (generation == 0) return AutoActionNormalPulseOutcome::Unknown;
+    for (const auto& record : slot.outcomeHistory) {
+        if (record.generation == generation) return record.outcome;
+    }
+    return AutoActionNormalPulseOutcome::Unknown;
+}
+
+void CancelNormalPulseGenerationsLocked(NormalPulseRuntimeSlot& slot) {
+    const auto current = slot.state.Current();
+    if (current) {
+        RecordNormalPulseOutcomeLocked(
+            slot, current.generation,
+            AutoActionNormalPulseOutcome::Cancelled);
+    }
+    RecordNormalPulseOutcomeLocked(
+        slot, slot.state.PendingGeneration(),
+        AutoActionNormalPulseOutcome::Cancelled);
+}
 
 struct NormalProcessRoute {
     bool active{false};
@@ -516,11 +1362,272 @@ int CallOriginalProcessCharacterInputWithContext(int characterPtr, int playerNum
     return oProcessCharacterInput ? oProcessCharacterInput(characterPtr) : 0;
 }
 
+bool TryRunMotionTransactionProducer(int playerNum, int characterPtr,
+                                     int& resultOut) {
+    if (!IsValidTransactionPlayer(playerNum) ||
+        !s_motionTxnActive[playerNum].load(std::memory_order_acquire) ||
+        characterPtr == 0) {
+        return false;
+    }
+
+    // Keep every AI-flag writer out of the native producer window. The
+    // transaction mutex is recursive because HookedPoll re-enters it from the
+    // original processCharacterInput call on this same thread.
+    std::lock_guard<std::recursive_mutex> controlLock(g_p2ControlMutex);
+    const bool pendingAiReady =
+        RetryPendingAiRestoreLocked(playerNum, "producer preflight");
+    AutoActionMotionTxnState& txn = s_motionTxn[playerNum];
+    std::lock_guard<std::recursive_mutex> txnLock(txn.mutex);
+    if (static_cast<uintptr_t>(characterPtr) != txn.character ||
+        !SameMotionTxnWorldLocked(playerNum) ||
+        g_onlineModeActive.load(std::memory_order_relaxed)) {
+        CleanupMotionTxnLocked(
+            playerNum, "producer world/online mismatch");
+        return false;
+    }
+
+    if (!pendingAiReady) {
+        (void)CleanupMotionTxnLocked(
+            playerNum, "pending controller restore retry");
+        resultOut = characterPtr;
+        return true;
+    }
+
+    if (txn.phase == AutoActionMotionTxnPhase::CleanupPending) {
+        const bool cleaned =
+            CleanupMotionTxnLocked(
+                playerNum, "next producer cleanup retry");
+        if (!cleaned) {
+            resultOut = characterPtr;
+            return true;
+        }
+        return false;
+    }
+
+    if (txn.phase == AutoActionMotionTxnPhase::AwaitingConsumer) {
+        // Wake/RG pre-buffers can cross several ordinary producer passes before
+        // the character is cancellable. Leave the fighter under its real AI
+        // flag so Practice can keep choosing a block direction, then restore
+        // this generation's detector token after the AI producer has had a
+        // chance to replace it.  Attack buttons/command fallbacks stay neutral
+        // so an AI normal cannot outrank or masquerade as the authored move.
+        resultOut = CallOriginalProcessCharacterInputWithContext(
+            characterPtr, playerNum);
+        txn.maintenanceProducerRan = true;
+        const uintptr_t character = txn.character;
+        const std::array<uint8_t, 4> noButtons = {0, 0, 0, 0};
+        const std::array<uint8_t, 3> noCommandState = {0, 0, 0};
+        const bool maintained =
+            SafeWriteMemory(character + MOTION_TOKEN_OFFSET,
+                            &txn.tokenAfterProducer,
+                            sizeof(txn.tokenAfterProducer)) &&
+            SafeWriteMemory(character + INPUT_BUTTON_A_OFFSET,
+                            noButtons.data(), noButtons.size()) &&
+            SafeWriteMemory(character + COMMAND_BUFFER_OFFSET,
+                            noCommandState.data(), noCommandState.size());
+        if (!maintained) {
+            CleanupMotionTxnLocked(
+                playerNum, "pending token maintenance failed");
+        } else if (detailedLogging.load()) {
+            LogOut("[AA_INPUT_TXN] P" + std::to_string(playerNum) +
+                       " maintained gen=" + std::to_string(txn.generation) +
+                       " token=" +
+                       std::to_string(txn.tokenAfterProducer) +
+                       " with native controller restored",
+                   true);
+        }
+        return true;
+    }
+    if (txn.phase != AutoActionMotionTxnPhase::Prepared) return false;
+
+    std::vector<uint8_t> pattern;
+    const bool facingRight = GetPlayerFacingDirection(playerNum);
+    if (txn.genericPattern) {
+        pattern = txn.pattern;
+        if (facingRight != txn.patternFacingRight) {
+            MotionPattern::MirrorHorizontally(pattern);
+        }
+    } else if (!MotionPattern::Build(
+                   txn.motionType,
+                   static_cast<uint8_t>(txn.buttonMask),
+                   facingRight, pattern)) {
+        CleanupMotionTxnLocked(playerNum, "pattern rebuild failed");
+        return false;
+    }
+    if (pattern.empty() || pattern.size() > INPUT_BUFFER_SIZE) {
+        CleanupMotionTxnLocked(playerNum, "invalid pattern length");
+        return false;
+    }
+
+    const uintptr_t character = txn.character;
+    uint16_t head = 0;
+    uint8_t cpuBefore = 0;
+    uint32_t aiBefore = 0;
+    bool preflightOk =
+        SafeReadMemory(character + INPUT_BUFFER_INDEX_OFFSET, &head, sizeof(head)) &&
+        SafeReadMemory(txn.gameState + kPlayerCpuFlagOffset[playerNum],
+                       &cpuBefore, sizeof(cpuBefore)) &&
+        SafeReadMemory(character + AI_CONTROL_FLAG_OFFSET, &aiBefore, sizeof(aiBefore)) &&
+        SafeReadMemory(character + kNativeHeldButtonBase,
+                       txn.heldBefore.data(), sizeof(txn.heldBefore)) &&
+        SafeReadMemory(character + kNativeAutoBlockTimerOffset,
+                       &txn.autoBlockTimerBefore,
+                       sizeof(txn.autoBlockTimerBefore)) &&
+        SafeReadMemory(character + kNativeDirectionalHeldOffset,
+                       &txn.directionalHeldBefore,
+                       sizeof(txn.directionalHeldBefore));
+    if (!preflightOk || head >= INPUT_BUFFER_SIZE) {
+        CleanupMotionTxnLocked(playerNum, "producer preflight failed");
+        return false;
+    }
+    // This is the exact state at the write boundary. Queue-time values are only
+    // diagnostics; a controller change before the producer is preserved here.
+    txn.cpuFlag = cpuBefore;
+    txn.initialAiFlag = aiBefore;
+    txn.ownsRuntimeState = true;
+
+    const AutoActionMotionPolicy::RingPlacement placement =
+        AutoActionMotionPolicy::PlanRingPlacement(
+            head, pattern.size(), INPUT_BUFFER_SIZE);
+    if (!placement.valid) {
+        CleanupMotionTxnLocked(playerNum, "ring placement failed");
+        return false;
+    }
+    const uint16_t prefixLength = placement.prefixLength;
+    const uint16_t start = placement.prefixStart;
+    const uint16_t noMotion = kNoMotionToken;
+    const std::array<uint8_t, 3> noCommandState = {0, 0, 0};
+    const std::array<uint32_t, 4> noHeld = {0, 0, 0, 0};
+    txn.headBefore = head;
+    txn.headAfter = head;
+    txn.ownedStart = placement.ownedStart;
+    txn.ownedLength = placement.ownedLength;
+    bool staged =
+        ClearRingSpan(character, placement.ownedStart,
+                      placement.ownedLength) &&
+        SafeWriteMemory(character + MOTION_TOKEN_OFFSET,
+                        &noMotion, sizeof(noMotion)) &&
+        SafeWriteMemory(character + COMMAND_BUFFER_OFFSET,
+                        noCommandState.data(), noCommandState.size()) &&
+        SafeWriteMemory(character + kNativeHeldButtonBase,
+                        noHeld.data(), sizeof(noHeld));
+    if (prefixLength != 0) {
+        staged = WriteRingSpan(character, start, pattern.data(), prefixLength) && staged;
+    }
+    if (!staged) {
+        CleanupMotionTxnLocked(playerNum, "history staging failed");
+        return false;
+    }
+
+    txn.pollMask = pattern.back();
+    txn.pollObserved = false;
+    txn.pollActive = true;
+    (void)SafeReadMemory(character + MOVE_ID_OFFSET,
+                         &txn.producerMove, sizeof(txn.producerMove));
+    (void)SafeReadMemory(character + CURRENT_FRAME_INDEX_OFFSET,
+                         &txn.producerFrame, sizeof(txn.producerFrame));
+
+    const uint32_t human = 0;
+    const bool humanized = aiBefore == 0 ||
+        SafeWriteMemory(character + AI_CONTROL_FLAG_OFFSET,
+                        &human, sizeof(human));
+    if (!humanized) {
+        txn.pollActive = false;
+        CleanupMotionTxnLocked(playerNum, "temporary human switch failed");
+        return false;
+    }
+    txn.aiRestorePending = aiBefore != 0;
+
+    resultOut = CallOriginalProcessCharacterInputWithContext(
+        characterPtr, playerNum);
+    txn.pollActive = false;
+
+    // The original producer has finished.  Restore the exact flag immediately,
+    // before updateEntityState/collision, and undo synthetic held/autoblock
+    // bookkeeping while retaining the detector token and direction until the
+    // matching consumer runs.
+    bool restored = SafeWriteMemory(character + AI_CONTROL_FLAG_OFFSET,
+                                    &aiBefore, sizeof(aiBefore));
+    if (restored) {
+        txn.aiRestorePending = false;
+    }
+    const auto& heldRestore = aiBefore == 0 ? txn.heldBefore : noHeld;
+    restored = SafeWriteMemory(character + kNativeHeldButtonBase,
+                               heldRestore.data(), sizeof(heldRestore)) && restored;
+    restored = SafeWriteMemory(character + kNativeAutoBlockTimerOffset,
+                               &txn.autoBlockTimerBefore,
+                               sizeof(txn.autoBlockTimerBefore)) && restored;
+    restored = SafeWriteMemory(character + kNativeDirectionalHeldOffset,
+                               &txn.directionalHeldBefore,
+                               sizeof(txn.directionalHeldBefore)) && restored;
+
+    (void)SafeReadMemory(character + INPUT_BUFFER_INDEX_OFFSET,
+                         &txn.headAfter, sizeof(txn.headAfter));
+    (void)SafeReadMemory(character + MOTION_TOKEN_OFFSET,
+                         &txn.tokenAfterProducer,
+                         sizeof(txn.tokenAfterProducer));
+
+    // Special consumers are driven by +610.  Raw button edges and +424/+425
+    // are lower-priority normal/dash fallbacks; leaving them set is how a
+    // rejected special became 5C.  Preserve only horizontal/vertical input.
+    const std::array<uint8_t, 4> noButtons = {0, 0, 0, 0};
+    const bool fallbacksCleared =
+        SafeWriteMemory(character + INPUT_BUTTON_A_OFFSET,
+                        noButtons.data(), noButtons.size()) &&
+        SafeWriteMemory(character + COMMAND_BUFFER_OFFSET,
+                        noCommandState.data(), noCommandState.size());
+
+    const uint16_t expectedHead = placement.expectedHeadAfterPoll;
+    if (!restored || !fallbacksCleared || !txn.pollObserved ||
+        txn.headAfter != expectedHead) {
+        std::ostringstream failure;
+        failure << "producer acknowledgement failed restored=" << (restored ? 1 : 0)
+                << " scrub=" << (fallbacksCleared ? 1 : 0)
+                << " poll=" << (txn.pollObserved ? 1 : 0)
+                << " head=" << head << "->" << txn.headAfter
+                << " expected=" << expectedHead;
+        const std::string reason = failure.str();
+        CleanupMotionTxnLocked(playerNum, reason.c_str());
+        return true;
+    }
+
+    txn.phase = AutoActionMotionTxnPhase::AwaitingConsumer;
+    std::ostringstream oss;
+    oss << "[AA_INPUT_TXN] P" << playerNum
+        << " producer gen=" << txn.generation
+        << " cpu=" << static_cast<int>(cpuBefore)
+        << " ai=" << aiBefore << "->0->" << aiBefore
+        << " facing=" << (facingRight ? "right" : "left")
+        << " poll=0x" << std::hex << static_cast<int>(txn.pollMask)
+        << std::dec << " head=" << head << "->" << txn.headAfter
+        << " token=" << txn.tokenAfterProducer
+        << " owned=" << start << "+" << txn.ownedLength;
+    LogOut(oss.str(), true);
+    return true;
+}
+
+bool MotionConsumerAcceptedLocked(int playerNum,
+                                  short beforeMove, short beforeFrame,
+                                  short afterMove, short afterFrame,
+                                  uint16_t tokenBefore) {
+    if (!IsValidTransactionPlayer(playerNum)) return false;
+    return AutoActionMotionPolicy::ConsumerAccepted(
+        s_motionTxn[playerNum].motionType,
+        beforeMove, beforeFrame, afterMove, afterFrame,
+        tokenBefore, kNoMotionToken);
+}
+
 void EnsureHumanControlForActivePollOverride(int characterPtr, int playerNum) {
     if ((playerNum != 1 && playerNum != 2) || characterPtr == 0) {
         return;
     }
     if (!g_pollOverrideActive[playerNum].load(std::memory_order_relaxed)) {
+        return;
+    }
+
+    std::unique_lock<std::recursive_mutex> controlLock(g_p2ControlMutex);
+    if (IsAutoActionMotionTransactionActive(playerNum) ||
+        !g_pollOverrideActive[playerNum].load(std::memory_order_acquire)) {
         return;
     }
 
@@ -637,7 +1744,8 @@ bool CharacterSupportsDIntent(uintptr_t character,
     return NameEquals(name, "shiori") || NameEquals(name, "nayuki") ||
            NameEquals(name, "mizuka") || NameEquals(name, "mizukaB") ||
            NameEquals(name, "mio") || NameEquals(name, "minagi") ||
-           NameEquals(name, "mai") || NameEquals(name, "kano");
+           NameEquals(name, "mai") || NameEquals(name, "kano") ||
+           NameEquals(name, "nanase");
 }
 
 bool DidConsumerStartRequestedNormal(uintptr_t character,
@@ -650,11 +1758,58 @@ bool DidConsumerStartRequestedNormal(uintptr_t character,
         (afterFrame >= 0 && beforeFrame >= 0 && afterFrame < beforeFrame);
     if (!actionInstanceChanged) return false;
 
-    // Every retail A/B/C consumer enters an action state >= 200.  Directional
-    // movement happens first and remains below 200, so this cannot mistake 6X
-    // or 4X walking for a consumed button.
+    // A competing AI command token can survive its producer and start a
+    // special at this later consumer even though our raw normal was posted.
+    // Prove the requested universal tier (or the bounded command/dash-normal
+    // range) instead of accepting every action >= 200.
     if (intent.button != NormalInputPolicy::kInputD) {
-        return afterMove >= 200;
+        const int button = NormalButtonIndex(intent);
+        if (button < 0 || button > 2) return false;
+
+        if (intent.airborne) {
+            if (intent.direction == NormalInputPolicy::RelativeDirection::Neutral) {
+                return afterMove == static_cast<short>(207 + button);
+            }
+            // Character air command normals (Kano j.2X, Akane/UNKNOWN j.6C,
+            // etc.) occupy the same pre-special band as ground command
+            // normals.  Specials begin at 250+, so this still excludes a
+            // surviving AI command token while accepting the authored raw
+            // direction+button consumer.
+            return afterMove >= 210 && afterMove < 230;
+        }
+
+        switch (intent.direction) {
+            case NormalInputPolicy::RelativeDirection::Neutral:
+                if (button == 0) return afterMove == 200;
+                if (button == 1) return afterMove == 201 || afterMove == 202;
+                return afterMove == 203;
+            case NormalInputPolicy::RelativeDirection::Down:
+                return afterMove == static_cast<short>(204 + button);
+            case NormalInputPolicy::RelativeDirection::DownForward:
+            case NormalInputPolicy::RelativeDirection::DownBack:
+                // 662X uses 233..235, while Mayu 1B and Kano 3C are
+                // character command normals in the 210..229 band. The exact
+                // raw diagonal+button intent was the sole register owner, so
+                // either bounded band is valid consumer proof.
+                return afterMove == static_cast<short>(233 + button) ||
+                       (afterMove >= 210 && afterMove < 230);
+            case NormalInputPolicy::RelativeDirection::Forward:
+            case NormalInputPolicy::RelativeDirection::Back: {
+                const bool matchingBase = button == 0 ? afterMove == 200
+                    : button == 1 ? (afterMove == 201 || afterMove == 202)
+                                  : afterMove == 203;
+                const bool matchingDash =
+                    afterMove == static_cast<short>(230 + button);
+                // Character command normals occupy the shared pre-special
+                // action band. The raw button registers have already been
+                // replaced by this exact intent, while AI specials begin at
+                // 250+, so this remains a strict consumer witness without a
+                // cast-wide fabricated move-ID mapping.
+                const bool commandNormal = afterMove >= 210 && afterMove < 230;
+                return matchingBase || matchingDash || commandNormal;
+            }
+        }
+        return false;
     }
 
     char name[16] = {};
@@ -671,12 +1826,21 @@ bool DidConsumerStartRequestedNormal(uintptr_t character,
     if (NameEquals(name, "mai")) return afterMove == 260 || afterMove == 269;
     if (NameEquals(name, "kano")) return afterMove == 250;
     if (NameEquals(name, "ayu")) return afterMove == 40;
+    if (NameEquals(name, "nanase")) {
+        return afterMove == 248 || afterMove == 249;
+    }
     return false;
 }
 
 enum class NormalRegisterWriteResult : uint8_t {
     Written,
     ClearedAfterFailure,
+    Failed,
+};
+
+enum class NormalCleanupResult : uint8_t {
+    Complete,
+    RetiredWithoutWrites,
     Failed,
 };
 
@@ -744,33 +1908,76 @@ bool ClearNativeNormalHeldLatch(uintptr_t character,
                            &zero, sizeof(zero));
 }
 
-void ClearDeliveredNormalState(int playerNum,
-                               NormalPulseTransport transport,
-                               uintptr_t expectedGameState,
-                               uintptr_t expectedCharacter,
-                               const NormalInputPolicy::Intent& intent) {
+NormalCleanupResult ClearDeliveredNormalState(
+    int playerNum,
+    NormalPulseTransport transport,
+    uintptr_t expectedGameState,
+    uintptr_t expectedCharacter,
+    const NormalInputPolicy::Intent& intent) {
     // Never touch a replacement fighter, or battle memory after online mode
     // has taken ownership. Awaiting requests are cancelled without writes.
     if (g_onlineModeActive.load(std::memory_order_relaxed) ||
         ReadLiveGameState() != expectedGameState ||
         GetPlayerPointer(playerNum) != expectedCharacter) {
-        return;
+        return NormalCleanupResult::RetiredWithoutWrites;
     }
 
     if (transport != NormalPulseTransport::AiPostWrite &&
         transport != NormalPulseTransport::NativePoll) {
-        return;
+        return NormalCleanupResult::Complete;
     }
 
     // Cancellation owns the complete consumer hand-off, not just the selected
     // button byte. Clear direction, all four pulses, both command latches, and
     // the WORD motion token so no partially written input survives this tick.
-    (void)ClearOwnedNormalRegisters(expectedCharacter);
+    bool ok = ClearOwnedNormalRegisters(expectedCharacter);
     if (transport == NormalPulseTransport::NativePoll) {
         // Native polling also updates one 32-bit held latch. Only that latch was
         // synthetic; preserve unrelated physical held-button bookkeeping.
-        (void)ClearNativeNormalHeldLatch(expectedCharacter, intent);
+        ok = ClearNativeNormalHeldLatch(expectedCharacter, intent) && ok;
     }
+    return ok ? NormalCleanupResult::Complete
+              : NormalCleanupResult::Failed;
+}
+
+void RetainFailedNormalCleanupLocked(
+    int playerNum,
+    NormalPulseRuntimeSlot& slot,
+    const NormalInputPolicy::Intent& intent) {
+    slot.cleanupPending = true;
+    slot.cleanupIntent = intent;
+    slot.rawReleaseGuard = true;
+    s_normalRawRegisterOwner[playerNum].store(
+        true, std::memory_order_release);
+    LogOut("[AUTO-NORMAL] Retaining failed same-world cleanup for P" +
+               std::to_string(playerNum),
+           true);
+}
+
+bool RetryPendingNormalCleanupLocked(int playerNum,
+                                     NormalPulseRuntimeSlot& slot) {
+    if (!slot.cleanupPending) return true;
+    const NormalCleanupResult result = ClearDeliveredNormalState(
+        playerNum, slot.transport, slot.gameState, slot.character,
+        slot.cleanupIntent);
+    if (result == NormalCleanupResult::Failed) return false;
+
+    slot.cleanupPending = false;
+    slot.cleanupIntent = {};
+    slot.rawReleaseGuard = false;
+    s_normalRawRegisterOwner[playerNum].store(
+        false, std::memory_order_release);
+    // Any accepted successor selects its transport only after this obligation
+    // is gone.  With no successor, release the old world identity as well.
+    slot.transport = NormalPulseTransport::Unselected;
+    if (!slot.state.Active()) {
+        slot.gameState = 0;
+        slot.character = 0;
+    }
+    LogOut("[AUTO-NORMAL] Completed retained cleanup for P" +
+               std::to_string(playerNum),
+           detailedLogging.load());
+    return true;
 }
 
 } // namespace
@@ -787,8 +1994,39 @@ NormalInputPolicy::SubmitResult QueueAutoActionNormalPulse(
         return NormalInputPolicy::SubmitResult::Invalid;
     }
 
+    if (IsScopedInputReserved(playerNum)) {
+        return NormalInputPolicy::SubmitResult::Busy;
+    }
+
     if (MacroController::IsExclusivePlayback() &&
         MacroController::GetPlaybackPlayer() == playerNum) {
+        return NormalInputPolicy::SubmitResult::Busy;
+    }
+
+    // Scoped motion delivery and normal delivery own the same native
+    // producer/consumer pair. Serialize submission with motion queueing so the
+    // two owners cannot be published concurrently between one another's
+    // preflight checks.
+    std::unique_lock<std::recursive_mutex> p2ControlLock(g_p2ControlMutex);
+    if (IsScopedInputReserved(playerNum)) {
+        return NormalInputPolicy::SubmitResult::Busy;
+    }
+    if (IsAutoActionMotionTransactionActive(playerNum) ||
+        ImmediateInput::TutorialLeaseActive(playerNum) ||
+        TutorialMotionQueueLeaseActive(playerNum) ||
+        TutorialBufferFreezeLeaseActive() ||
+        g_manualInputOverride[playerNum].load(std::memory_order_acquire) ||
+        g_pollOverrideActive[playerNum].load(std::memory_order_acquire) ||
+        (MacroController::IsExclusivePlayback() &&
+         MacroController::GetPlaybackPlayer() == playerNum) ||
+        GetMotionQueueSnapshot(playerNum).active ||
+        (g_bufferFreezingActive.load(std::memory_order_acquire) &&
+         (g_activeFreezePlayer.load(std::memory_order_acquire) == 0 ||
+          g_activeFreezePlayer.load(std::memory_order_acquire) == playerNum))) {
+        return NormalInputPolicy::SubmitResult::Busy;
+    }
+    if (ImmediateInput::GetCurrentDesired(playerNum) != 0 ||
+        ImmediateInput::GetRemainingTicks(playerNum) != 0) {
         return NormalInputPolicy::SubmitResult::Busy;
     }
 
@@ -812,8 +2050,12 @@ NormalInputPolicy::SubmitResult QueueAutoActionNormalPulse(
             g_onlineModeActive.load(std::memory_order_relaxed)) {
             return NormalInputPolicy::SubmitResult::Invalid;
         }
+        if (!RetryPendingNormalCleanupLocked(playerNum, slot)) {
+            return NormalInputPolicy::SubmitResult::Busy;
+        }
         if (slot.state.Active() &&
             (slot.gameState != gameState || slot.character != character)) {
+            CancelNormalPulseGenerationsLocked(slot);
             slot.state.Reset();
             slot.transport = NormalPulseTransport::Unselected;
             slot.gameState = 0;
@@ -826,18 +2068,26 @@ NormalInputPolicy::SubmitResult QueueAutoActionNormalPulse(
             slot.pressAttempts = 0;
             slot.retryNeutralPending = false;
             slot.abortAfterRetryNeutral = false;
+            slot.cleanupPending = false;
+            slot.cleanupIntent = {};
             s_normalRawRegisterOwner[playerNum].store(
                 false, std::memory_order_release);
         }
 
         const bool alreadyActive = slot.state.Active();
         result = slot.state.Submit(intent, timing, &generation);
+        if (result == NormalInputPolicy::SubmitResult::Accepted) {
+            RecordNormalPulseOutcomeLocked(
+                slot, generation, AutoActionNormalPulseOutcome::Pending);
+        }
         if (result == NormalInputPolicy::SubmitResult::Accepted &&
             !alreadyActive) {
             slot.transport = NormalPulseTransport::Unselected;
             slot.gameState = gameState;
             slot.character = character;
             slot.deliveredAnyPhase = false;
+            slot.cleanupPending = false;
+            slot.cleanupIntent = {};
         }
     }
     if (generationOut) *generationOut = generation;
@@ -871,6 +2121,16 @@ bool IsAutoActionNormalPulseActive(int playerNum) {
     return s_normalPulse[playerNum].state.Active();
 }
 
+AutoActionNormalPulseOutcome GetAutoActionNormalPulseOutcome(
+    int playerNum, uint64_t generation) {
+    if (playerNum < 1 || playerNum > 2 || generation == 0) {
+        return AutoActionNormalPulseOutcome::Unknown;
+    }
+    NormalPulseRuntimeSlot& slot = s_normalPulse[playerNum];
+    std::lock_guard<std::recursive_mutex> lock(slot.mutex);
+    return FindNormalPulseOutcomeLocked(slot, generation);
+}
+
 bool IsAutoActionNormalPulseOwningImmediateRegisters(int playerNum) {
     return playerNum >= 1 && playerNum <= 2 &&
         s_normalRawRegisterOwner[playerNum].load(std::memory_order_acquire);
@@ -878,11 +2138,51 @@ bool IsAutoActionNormalPulseOwningImmediateRegisters(int playerNum) {
 
 bool TryAcquireImmediateInputWriteLease(int playerNum) {
     if (playerNum < 1 || playerNum > 2) return false;
+    if (g_onlineModeActive.load(std::memory_order_acquire)) return false;
+
+    // The netplay ownership publication and both transaction queues hold
+    // this barrier. Use it for either player's detached writer so no raw input
+    // write can cross from an offline pre-check into online play.
+    const bool ownershipLocked = g_p2ControlMutex.try_lock();
+    if (!ownershipLocked) return false;
+    if (g_onlineModeActive.load(std::memory_order_acquire) ||
+        IsScopedInputReserved(playerNum) ||
+        IsAutoActionMotionTransactionActive(playerNum) ||
+        g_manualInputOverride[playerNum].load(std::memory_order_acquire) ||
+        g_pollOverrideActive[playerNum].load(std::memory_order_acquire) ||
+        GetMotionQueueSnapshot(playerNum).active ||
+        TutorialMotionQueueLeaseActive(playerNum) ||
+        TutorialBufferFreezeLeaseActive() ||
+        (g_bufferFreezingActive.load(std::memory_order_acquire) &&
+         (g_activeFreezePlayer.load(std::memory_order_acquire) == 0 ||
+          g_activeFreezePlayer.load(std::memory_order_acquire) == playerNum)) ||
+        (MacroController::IsExclusivePlayback() &&
+         MacroController::GetPlaybackPlayer() == playerNum)) {
+        g_p2ControlMutex.unlock();
+        return false;
+    }
     NormalPulseRuntimeSlot& slot = s_normalPulse[playerNum];
-    if (!slot.mutex.try_lock()) return false;
-    if (s_normalRawRegisterOwner[playerNum].load(
-            std::memory_order_acquire)) {
+    if (!slot.mutex.try_lock()) {
+        g_p2ControlMutex.unlock();
+        return false;
+    }
+    if (g_onlineModeActive.load(std::memory_order_acquire) ||
+        IsScopedInputReserved(playerNum) ||
+        s_normalRawRegisterOwner[playerNum].load(
+            std::memory_order_acquire) || slot.state.Active() ||
+        IsAutoActionMotionTransactionActive(playerNum) ||
+        g_manualInputOverride[playerNum].load(std::memory_order_acquire) ||
+        g_pollOverrideActive[playerNum].load(std::memory_order_acquire) ||
+        GetMotionQueueSnapshot(playerNum).active ||
+        TutorialMotionQueueLeaseActive(playerNum) ||
+        TutorialBufferFreezeLeaseActive() ||
+        (g_bufferFreezingActive.load(std::memory_order_acquire) &&
+         (g_activeFreezePlayer.load(std::memory_order_acquire) == 0 ||
+          g_activeFreezePlayer.load(std::memory_order_acquire) == playerNum)) ||
+        (MacroController::IsExclusivePlayback() &&
+         MacroController::GetPlaybackPlayer() == playerNum)) {
         slot.mutex.unlock();
+        g_p2ControlMutex.unlock();
         return false;
     }
     return true;
@@ -891,13 +2191,18 @@ bool TryAcquireImmediateInputWriteLease(int playerNum) {
 void ReleaseImmediateInputWriteLease(int playerNum) {
     if (playerNum < 1 || playerNum > 2) return;
     s_normalPulse[playerNum].mutex.unlock();
+    g_p2ControlMutex.unlock();
 }
 
 void CancelAutoActionNormalPulse(int playerNum) {
     if (playerNum < 1 || playerNum > 2) return;
 
+    std::lock_guard<std::recursive_mutex> controlLock(g_p2ControlMutex);
     NormalPulseRuntimeSlot& slot = s_normalPulse[playerNum];
     std::lock_guard<std::recursive_mutex> lock(slot.mutex);
+    if (!RetryPendingNormalCleanupLocked(playerNum, slot)) {
+        return;
+    }
     const NormalInputPolicy::Snapshot snapshot = slot.state.Current();
     const bool ownsRawLane = s_normalRawRegisterOwner[playerNum].load(
         std::memory_order_acquire);
@@ -907,19 +2212,29 @@ void CancelAutoActionNormalPulse(int playerNum) {
     // Cleanup must happen while the slot mutex and raw-register ownership are
     // still held.  Releasing either first lets the detached ImmediateInput
     // worker acquire the lane and then get overwritten by this cancellation.
+    NormalCleanupResult cleanupResult = NormalCleanupResult::Complete;
     if (hasSelectedTransport && (slot.deliveredAnyPhase || ownsRawLane)) {
-        ClearDeliveredNormalState(playerNum, slot.transport, slot.gameState,
-                                  slot.character, snapshot.intent);
+        cleanupResult = ClearDeliveredNormalState(
+            playerNum, slot.transport, slot.gameState,
+            slot.character, snapshot.intent);
+        if (cleanupResult == NormalCleanupResult::Failed) {
+            RetainFailedNormalCleanupLocked(playerNum, slot, snapshot.intent);
+        }
     }
 
     // A cancellation can arrive after processCharacterInput returns but before
     // this tick's updateEntityState consumer. Keep competing raw writers out
     // until that consumer barrier if any owned phase was already delivered.
-    const bool deferRawRelease = slot.rawReleaseGuard ||
+    const bool cleanupFailed =
+        cleanupResult == NormalCleanupResult::Failed;
+    const bool deferRawRelease = cleanupFailed || slot.rawReleaseGuard ||
         (hasSelectedTransport && ownsRawLane);
 
+    CancelNormalPulseGenerationsLocked(slot);
     slot.state.Reset();
-    slot.transport = NormalPulseTransport::Unselected;
+    if (!cleanupFailed) {
+        slot.transport = NormalPulseTransport::Unselected;
+    }
     if (!deferRawRelease) {
         slot.gameState = 0;
         slot.character = 0;
@@ -941,6 +2256,73 @@ void CancelAutoActionNormalPulse(int playerNum) {
 void CancelAllAutoActionNormalPulses() {
     CancelAutoActionNormalPulse(1);
     CancelAutoActionNormalPulse(2);
+}
+
+bool DrainAutoActionNormalPulsesForOwnershipBoundary() {
+    std::lock_guard<std::recursive_mutex> controlLock(g_p2ControlMutex);
+    // This legacy-named lifecycle barrier is the one synchronous point used
+    // before online ownership is published. Drain both fighters' scoped motion
+    // transactions here too, so the newly supported P1 lane cannot retain a
+    // ring/token/controller restore obligation across that publication.
+    CancelAllAutoActionMotionTransactions(
+        "offline ownership boundary");
+    CancelAllAutoActionNormalPulses();
+    bool allClean = true;
+    for (int playerNum = 1; playerNum <= 2; ++playerNum) {
+        AutoActionMotionTxnState& txn = s_motionTxn[playerNum];
+        {
+            std::lock_guard<std::recursive_mutex> txnLock(txn.mutex);
+            for (int retry = 0;
+                 retry < 2 && txn.phase != AutoActionMotionTxnPhase::Idle;
+                 ++retry) {
+                (void)CleanupMotionTxnLocked(
+                    playerNum, "ownership-boundary cleanup retry",
+                    AutoActionMotionOutcome::Cancelled);
+            }
+            for (int retry = 0;
+                 retry < 2 && s_pendingAiRestoreActive[playerNum].load(
+                     std::memory_order_acquire);
+                 ++retry) {
+                (void)RetryPendingAiRestoreLocked(
+                    playerNum, "ownership-boundary AI restore retry");
+            }
+            if (txn.phase != AutoActionMotionTxnPhase::Idle ||
+                s_pendingAiRestoreActive[playerNum].load(
+                    std::memory_order_acquire)) {
+                allClean = false;
+            }
+        }
+
+        NormalPulseRuntimeSlot& slot = s_normalPulse[playerNum];
+        std::lock_guard<std::recursive_mutex> lock(slot.mutex);
+        for (int retry = 0; retry < 2 && slot.cleanupPending; ++retry) {
+            (void)RetryPendingNormalCleanupLocked(playerNum, slot);
+        }
+        if (slot.cleanupPending) {
+            // Lifecycle-only fallback: unlike an ordinary pulse cancellation,
+            // this boundary may scrub the complete offline input state because
+            // no later training producer is allowed to survive publication.
+            (void)FullCleanupAfterToggle(playerNum);
+            (void)RetryPendingNormalCleanupLocked(playerNum, slot);
+        }
+        if (slot.cleanupPending) {
+            allClean = false;
+            continue;
+        }
+        // No offline producer can cross the enclosing controller barrier. The
+        // later EFZ consumer is not required merely to arbitrate ownership at
+        // this terminal lifecycle boundary; the authored registers are already
+        // proven neutral above.
+        slot.rawReleaseGuard = false;
+        s_normalRawRegisterOwner[playerNum].store(
+            false, std::memory_order_release);
+        if (!slot.state.Active()) {
+            slot.transport = NormalPulseTransport::Unselected;
+            slot.gameState = 0;
+            slot.character = 0;
+        }
+    }
+    return allClean;
 }
 
 namespace {
@@ -994,7 +2376,12 @@ bool CurrentPatAllowsAirNormal(uintptr_t character,
     // cast-wide A/B/C tier anchors used by this rank check; a character may
     // enter a stance-specific move with the same tier. Air-S/D behavior is
     // character-specific and has no fabricated universal anchor.
-    constexpr uintptr_t kAnimEntryRankOffset = 2u;
+    // Native air-normal consumers compare the current PAT row's WORD at +2
+    // against the destination tier anchor at the destination row base (+0).
+    // These offsets are deliberately asymmetric (verified in the decomp for
+    // universal j.A/j.B/j.C destinations 207/208/209).
+    constexpr uintptr_t kCurrentAnimRankOffset = 2u;
+    constexpr uintptr_t kDestinationAnimRankOffset = 0u;
     uint16_t frameIndex = 0;
     uintptr_t animTable = 0;
     uintptr_t frameTable = 0;
@@ -1020,10 +2407,11 @@ bool CurrentPatAllowsAirNormal(uintptr_t character,
                         &frameFlags, sizeof(frameFlags)) ||
         !SafeReadMemory(animTable + ANIM_ENTRY_STRIDE *
                             static_cast<uintptr_t>(moveID) +
-                            kAnimEntryRankOffset,
+                            kCurrentAnimRankOffset,
                         &currentRank, sizeof(currentRank)) ||
         !SafeReadMemory(animTable + ANIM_ENTRY_STRIDE *
-                            static_cast<uintptr_t>(destinationMove),
+                            static_cast<uintptr_t>(destinationMove) +
+                            kDestinationAnimRankOffset,
                         &destinationRank, sizeof(destinationRank)) ||
         !SafeReadMemory(character + PLAYER_HIT_STATE_OFFSET,
                         &contactState, sizeof(contactState))) {
@@ -1112,17 +2500,43 @@ void AbortNormalPulseLocked(NormalPulseRuntimeSlot& slot,
                             int playerNum,
                             const char* reason,
                             bool deferRawRelease = false,
-                            bool preserveAcceptedSuccessor = false) {
-    const bool keepRawLease = deferRawRelease &&
+                            bool preserveAcceptedSuccessor = false,
+                            bool clearOwnedDelivery = true,
+                            AutoActionNormalPulseOutcome terminalOutcome =
+                                AutoActionNormalPulseOutcome::Cancelled) {
+    const NormalInputPolicy::Snapshot retiring = slot.state.Current();
+    NormalCleanupResult cleanupResult = NormalCleanupResult::Complete;
+    if (clearOwnedDelivery && retiring &&
+        slot.transport != NormalPulseTransport::Unselected &&
+        (slot.deliveredAnyPhase ||
+         s_normalRawRegisterOwner[playerNum].load(std::memory_order_acquire))) {
+        cleanupResult = ClearDeliveredNormalState(
+            playerNum, slot.transport, slot.gameState, slot.character,
+            retiring.intent);
+    }
+    const bool cleanupFailed =
+        cleanupResult == NormalCleanupResult::Failed;
+    const bool keepRawLease = (cleanupFailed || deferRawRelease) &&
         s_normalRawRegisterOwner[playerNum].load(std::memory_order_acquire);
+    if (retiring) {
+        RecordNormalPulseOutcomeLocked(
+            slot, retiring.generation, terminalOutcome);
+    }
+    if (!preserveAcceptedSuccessor) {
+        RecordNormalPulseOutcomeLocked(
+            slot, slot.state.PendingGeneration(),
+            AutoActionNormalPulseOutcome::Cancelled);
+    }
     bool successorPromoted = false;
     if (preserveAcceptedSuccessor) {
         successorPromoted = slot.state.RetireCurrent();
     } else {
         slot.state.Reset();
     }
-    slot.transport = NormalPulseTransport::Unselected;
-    if (!keepRawLease && !successorPromoted) {
+    if (!cleanupFailed) {
+        slot.transport = NormalPulseTransport::Unselected;
+    }
+    if (!cleanupFailed && !keepRawLease && !successorPromoted) {
         slot.gameState = 0;
         slot.character = 0;
     }
@@ -1134,7 +2548,13 @@ void AbortNormalPulseLocked(NormalPulseRuntimeSlot& slot,
     slot.pressAttempts = 0;
     slot.retryNeutralPending = false;
     slot.abortAfterRetryNeutral = false;
-    if (!keepRawLease) {
+    if (cleanupFailed && retiring) {
+        RetainFailedNormalCleanupLocked(playerNum, slot, retiring.intent);
+    } else {
+        slot.cleanupPending = false;
+        slot.cleanupIntent = {};
+    }
+    if (!slot.cleanupPending && !keepRawLease) {
         s_normalRawRegisterOwner[playerNum].store(false,
                                                    std::memory_order_release);
     }
@@ -1158,11 +2578,11 @@ bool AbortExpectedImmediateNormal(int playerNum,
         slot.character != expectedCharacter) {
         return false;
     }
-    ClearDeliveredNormalState(playerNum, slot.transport, slot.gameState,
-                              slot.character, current.intent);
     const bool deferRawRelease =
         s_normalRawRegisterOwner[playerNum].load(std::memory_order_acquire);
-    AbortNormalPulseLocked(slot, playerNum, reason, deferRawRelease);
+    AbortNormalPulseLocked(
+        slot, playerNum, reason, deferRawRelease, false, true,
+        AutoActionNormalPulseOutcome::Failed);
     return true;
 }
 
@@ -1170,6 +2590,7 @@ void ReleaseRawGuardAfterConsumer(int playerNum) {
     if (playerNum < 1 || playerNum > 2) return;
     NormalPulseRuntimeSlot& slot = s_normalPulse[playerNum];
     std::lock_guard<std::recursive_mutex> lock(slot.mutex);
+    if (!RetryPendingNormalCleanupLocked(playerNum, slot)) return;
     if (!slot.rawReleaseGuard) return;
     slot.rawReleaseGuard = false;
     s_normalRawRegisterOwner[playerNum].store(false,
@@ -1198,27 +2619,38 @@ void RelinquishPreparedNormalForConflict(
     // AwaitingStart so the higher-priority owner is not deadlocked behind our
     // raw-register lease and the normal can retry from a clean edge later.
     if (slot.retryNeutralPending) {
+        NormalCleanupResult cleanupResult = NormalCleanupResult::Complete;
         if (clearOwnedDelivery) {
-            ClearDeliveredNormalState(playerNum, slot.transport, slot.gameState,
-                                      slot.character, current.intent);
+            cleanupResult = ClearDeliveredNormalState(
+                playerNum, slot.transport, slot.gameState,
+                slot.character, current.intent);
+            if (cleanupResult == NormalCleanupResult::Failed) {
+                RetainFailedNormalCleanupLocked(
+                    playerNum, slot, current.intent);
+            }
         }
         if (current.timing == NormalInputPolicy::Timing::Immediate) {
             AbortNormalPulseLocked(
                 slot, playerNum,
                 "exact-tick retry-neutral conflicted with another input owner",
-                true);
+                true, false, clearOwnedDelivery);
         } else if (slot.state.RestartAwaiting()) {
-            slot.transport = NormalPulseTransport::Unselected;
+            if (cleanupResult != NormalCleanupResult::Failed) {
+                slot.transport = NormalPulseTransport::Unselected;
+            }
             slot.deliveredAnyPhase = false;
-            slot.rawReleaseGuard = false;
+            slot.rawReleaseGuard =
+                cleanupResult == NormalCleanupResult::Failed;
             slot.pressAwaitingConfirmation = false;
             slot.pressBeforeMove = -1;
             slot.pressBeforeFrame = -1;
             slot.pressAttempts = 0;
             slot.retryNeutralPending = false;
             slot.abortAfterRetryNeutral = false;
-            s_normalRawRegisterOwner[playerNum].store(
-                false, std::memory_order_release);
+            if (cleanupResult != NormalCleanupResult::Failed) {
+                s_normalRawRegisterOwner[playerNum].store(
+                    false, std::memory_order_release);
+            }
         }
         return;
     }
@@ -1226,27 +2658,20 @@ void RelinquishPreparedNormalForConflict(
     // owner wins that fighter pass, clear any delivered raw edge and retire it;
     // restarting Press as AwaitingStart would create a late 66X/662X normal.
     if (current.timing == NormalInputPolicy::Timing::Immediate) {
-        if (clearOwnedDelivery) {
-            ClearDeliveredNormalState(playerNum, slot.transport, slot.gameState,
-                                      slot.character, current.intent);
-        }
         const bool deferRawRelease =
             s_normalRawRegisterOwner[playerNum].load(std::memory_order_acquire);
         AbortNormalPulseLocked(slot, playerNum, immediateReason,
-                               deferRawRelease);
+                               deferRawRelease, false,
+                               clearOwnedDelivery);
         return;
     }
     if (current.phase == NormalInputPolicy::Phase::ReleaseNeutral) {
         // Press has already crossed the previous tick's consumer. Remove its
         // residual raw state now and yield; keeping the lease here would stop a
         // tutorial ImmediateInput owner from ever reaching neutral itself.
-        if (clearOwnedDelivery) {
-            ClearDeliveredNormalState(playerNum, slot.transport, slot.gameState,
-                                      slot.character, current.intent);
-        }
         AbortNormalPulseLocked(slot, playerNum,
                                "normal release yielded to another input owner",
-                               false, true);
+                               false, true, clearOwnedDelivery);
         return;
     }
     if ((current.phase != NormalInputPolicy::Phase::Press &&
@@ -1270,6 +2695,9 @@ bool PreparedNormalHasHigherPriorityOwner(int playerNum) {
     if (g_pollOverrideActive[playerNum].load(std::memory_order_relaxed) ||
         (MacroController::IsExclusivePlayback() &&
          MacroController::GetPlaybackPlayer() == playerNum)) {
+        return true;
+    }
+    if (IsAutoActionMotionTransactionActive(playerNum)) {
         return true;
     }
     return playerNum == 2 && TutorialP2ControlLeaseActive() &&
@@ -1355,6 +2783,9 @@ bool TryPrepareNormalRoute(int playerNum,
     bool abortAfterRetryNeutral = false;
     {
         std::lock_guard<std::recursive_mutex> lock(slot.mutex);
+        if (!RetryPendingNormalCleanupLocked(playerNum, slot)) {
+            return false;
+        }
         // This is the first matching fighter pass after a raw release was
         // posted. The previous battle-tick consumer has now run, so the 64-Hz
         // writer may safely resume unless a promoted successor claims it below.
@@ -1769,17 +3200,12 @@ int RunNormalRoute(int characterPtr,
     short afterMove = beforeMove;
     (void)SafeReadMemory(static_cast<uintptr_t>(characterPtr) + MOVE_ID_OFFSET,
                          &afterMove, sizeof(afterMove));
-    const auto clearThisRouteDelivery = [&]() {
-        // A native cleanup may clear held/pulse state only if our HookedPoll
-        // actually won. A macro/poll owner can appear after the preflight; its
-        // same-button edge must remain untouched.
-        if (route.transport == NormalPulseTransport::AiPostWrite ||
-            route.nativePollObserved) {
-            ClearDeliveredNormalState(
-                route.player, route.transport, slot.gameState, slot.character,
-                route.snapshot.intent);
-        }
-    };
+    // A native cleanup may clear held/pulse state only if our HookedPoll
+    // actually won. A macro/poll owner can appear after preflight; its
+    // same-button edge must remain untouched.
+    const bool mayClearThisRouteDelivery =
+        route.transport == NormalPulseTransport::AiPostWrite ||
+        route.nativePollObserved;
     if (route.retryNeutral) {
         if (route.observed) {
             slot.retryNeutralPending = false;
@@ -1792,13 +3218,15 @@ int RunNormalRoute(int characterPtr,
                     : "normal action did not start after 3 consumer attempts";
             AbortNormalPulseLocked(
                 slot, route.player, reason, true,
-                route.snapshot.timing == NormalInputPolicy::Timing::WhenActionable);
+                route.snapshot.timing == NormalInputPolicy::Timing::WhenActionable,
+                true, AutoActionNormalPulseOutcome::Failed);
         } else if (!route.observed && route.abortAfterWrite) {
-            clearThisRouteDelivery();
             AbortNormalPulseLocked(
                 slot, route.player,
                 "final retry-neutral could not be delivered", true,
-                route.snapshot.timing == NormalInputPolicy::Timing::WhenActionable);
+                route.snapshot.timing == NormalInputPolicy::Timing::WhenActionable,
+                mayClearThisRouteDelivery,
+                AutoActionNormalPulseOutcome::Failed);
         } else if (!route.observed) {
             LogOut("[AUTO-NORMAL] Retry-neutral delivery failed P" +
                    std::to_string(route.player) + " gen=" +
@@ -1826,11 +3254,11 @@ int RunNormalRoute(int characterPtr,
         // No matching producer hand-off occurred on the only valid dash tick.
         // Best-effort removal prevents a partially completed native poll from
         // becoming an untracked late press; the request itself must not retry.
-        clearThisRouteDelivery();
         AbortNormalPulseLocked(
             slot, route.player,
             "exact-tick normal was not delivered on its matching fighter pass",
-            true);
+            true, false, mayClearThisRouteDelivery,
+            AutoActionNormalPulseOutcome::Failed);
     } else {
         LogOut("[AUTO-NORMAL] Input pass did not consume/write P" +
                std::to_string(route.player) + " gen=" +
@@ -1850,6 +3278,10 @@ int RunNormalRoute(int characterPtr,
 
 int __fastcall HookedUpdateEntityState(int characterPtr, int /*edx*/) {
     if (!oUpdateEntityState) return characterPtr;
+    if (!s_inputHooksEnabled.load(std::memory_order_acquire) ||
+        g_onlineModeActive.load(std::memory_order_acquire)) {
+        return oUpdateEntityState(characterPtr);
+    }
 
     int playerNum = 0;
     if (characterPtr != 0 &&
@@ -1860,6 +3292,82 @@ int __fastcall HookedUpdateEntityState(int characterPtr, int /*edx*/) {
         playerNum = 2;
     }
 
+    std::unique_lock<std::recursive_mutex> inputConsumerControlLock;
+    if (playerNum != 0) {
+        inputConsumerControlLock = std::unique_lock<std::recursive_mutex>(
+            g_p2ControlMutex);
+        if (!s_inputHooksEnabled.load(std::memory_order_acquire) ||
+            g_onlineModeActive.load(std::memory_order_acquire)) {
+            return oUpdateEntityState(characterPtr);
+        }
+    }
+
+    std::unique_lock<std::recursive_mutex> motionControlLock;
+    std::unique_lock<std::recursive_mutex> motionConsumerLock;
+    AutoActionMotionTxnState* motionTxn = nullptr;
+    bool motionPosted = false;
+    bool suppressMotionConsumerForCleanup = false;
+    short motionBeforeMove = -1;
+    short motionBeforeFrame = -1;
+    uint16_t motionTokenBefore = kNoMotionToken;
+    bool motionConsumerGateKnown = false;
+    bool motionConsumerGateOpen = false;
+    uint16_t motionOwnBlockOrHitstop = 0;
+    uint16_t motionOwnSuperflash = 0;
+    uint16_t motionOpponentSuperflash = 0;
+    if (IsValidTransactionPlayer(playerNum) &&
+        s_motionTxnActive[playerNum].load(std::memory_order_acquire)) {
+        // Match the queue/producer lock order. Cleanup writes the same raw and
+        // controller fields as Practice/tutorial/macro owners, so the complete
+        // consumer barrier—not only the transaction metadata—must be serialized.
+        motionControlLock = std::unique_lock<std::recursive_mutex>(
+            g_p2ControlMutex);
+        motionConsumerLock = std::unique_lock<std::recursive_mutex>(
+            s_motionTxn[playerNum].mutex);
+        motionTxn = &s_motionTxn[playerNum];
+        if (motionTxn->phase == AutoActionMotionTxnPhase::AwaitingConsumer &&
+            motionTxn->character == static_cast<uintptr_t>(characterPtr) &&
+            SameMotionTxnWorldLocked(playerNum)) {
+            motionPosted = true;
+            (void)SafeReadMemory(static_cast<uintptr_t>(characterPtr) + MOVE_ID_OFFSET,
+                                 &motionBeforeMove, sizeof(motionBeforeMove));
+            (void)SafeReadMemory(static_cast<uintptr_t>(characterPtr) +
+                                     CURRENT_FRAME_INDEX_OFFSET,
+                                 &motionBeforeFrame, sizeof(motionBeforeFrame));
+            (void)SafeReadMemory(static_cast<uintptr_t>(characterPtr) +
+                                     MOTION_TOKEN_OFFSET,
+                                 &motionTokenBefore, sizeof(motionTokenBefore));
+            const uintptr_t opponent = GetPlayerPointer(
+                playerNum == 1 ? 2 : 1);
+            motionConsumerGateKnown = opponent != 0 &&
+                SafeReadMemory(static_cast<uintptr_t>(characterPtr) +
+                                   BLOCKSTUN_OFFSET,
+                               &motionOwnBlockOrHitstop,
+                               sizeof(motionOwnBlockOrHitstop)) &&
+                SafeReadMemory(static_cast<uintptr_t>(characterPtr) +
+                                   SUPERFLASH_FREEZE_OFFSET,
+                               &motionOwnSuperflash,
+                               sizeof(motionOwnSuperflash)) &&
+                SafeReadMemory(opponent + SUPERFLASH_FREEZE_OFFSET,
+                               &motionOpponentSuperflash,
+                               sizeof(motionOpponentSuperflash));
+            motionConsumerGateOpen = motionConsumerGateKnown &&
+                AutoActionMotionPolicy::GenericConsumerGateOpen(
+                    motionOwnBlockOrHitstop, motionOwnSuperflash,
+                    motionOpponentSuperflash);
+        } else if (motionTxn->phase ==
+                   AutoActionMotionTxnPhase::CleanupPending) {
+            suppressMotionConsumerForCleanup =
+                !CleanupMotionTxnLocked(
+                    playerNum, "consumer cleanup retry");
+        } else if (motionTxn->phase != AutoActionMotionTxnPhase::Idle &&
+                   motionTxn->phase != AutoActionMotionTxnPhase::Prepared) {
+            suppressMotionConsumerForCleanup =
+                !CleanupMotionTxnLocked(
+                    playerNum, "consumer world/phase mismatch");
+        }
+    }
+
     NormalInputPolicy::Snapshot posted;
     NormalPulseTransport transport = NormalPulseTransport::Unselected;
     short beforeMove = -1;
@@ -1868,7 +3376,7 @@ int __fastcall HookedUpdateEntityState(int characterPtr, int /*edx*/) {
     // Hold this recursive slot lock across the exact consumer call so an
     // asynchronous reset cannot expose a torn command/button combination.
     std::unique_lock<std::recursive_mutex> consumerLock;
-    if (playerNum != 0 &&
+    if (!suppressMotionConsumerForCleanup && playerNum != 0 &&
         s_inputHooksEnabled.load(std::memory_order_acquire)) {
         NormalPulseRuntimeSlot& slot = s_normalPulse[playerNum];
         consumerLock = std::unique_lock<std::recursive_mutex>(slot.mutex);
@@ -1890,7 +3398,120 @@ int __fastcall HookedUpdateEntityState(int characterPtr, int /*edx*/) {
                              &beforeFrame, sizeof(beforeFrame));
     }
 
-    const int result = oUpdateEntityState(characterPtr);
+    const int result = suppressMotionConsumerForCleanup
+        ? characterPtr : oUpdateEntityState(characterPtr);
+
+    if (motionPosted) {
+        AutoActionMotionTxnState& txn = *motionTxn;
+        short motionAfterMove = -1;
+        short motionAfterFrame = -1;
+        uint16_t motionTokenAfter = kNoMotionToken;
+        (void)SafeReadMemory(static_cast<uintptr_t>(characterPtr) + MOVE_ID_OFFSET,
+                             &motionAfterMove, sizeof(motionAfterMove));
+        (void)SafeReadMemory(static_cast<uintptr_t>(characterPtr) +
+                                 CURRENT_FRAME_INDEX_OFFSET,
+                             &motionAfterFrame, sizeof(motionAfterFrame));
+        (void)SafeReadMemory(static_cast<uintptr_t>(characterPtr) +
+                                 MOTION_TOKEN_OFFSET,
+                             &motionTokenAfter, sizeof(motionTokenAfter));
+
+        if (!motionConsumerGateKnown) {
+            CleanupMotionTxnLocked(
+                playerNum, "consumer gate read failed");
+        } else if (!motionConsumerGateOpen) {
+            // The generic wrapper returned before vtable slot 4, so this is not
+            // a command-consumer attempt. Clear the first synthetic direction,
+            // keep the token for the next real opportunity, and use a separate
+            // hard bound so a paused/frozen world cannot retain it forever.
+            const bool firstBoundaryVisit =
+                !txn.consumerBoundaryVisited;
+            txn.consumerBoundaryVisited = true;
+            ++txn.blockedConsumerVisits;
+            if (firstBoundaryVisit) {
+                const std::array<uint8_t, 6> neutralImmediate =
+                    {0, 0, 0, 0, 0, 0};
+                (void)SafeWriteMemory(static_cast<uintptr_t>(characterPtr) +
+                                          INPUT_HORIZONTAL_OFFSET,
+                                      neutralImmediate.data(),
+                                      neutralImmediate.size());
+            }
+
+            const bool expired = txn.blockedConsumerVisits >=
+                kMaxBlockedConsumerVisits;
+            if (firstBoundaryVisit || expired || detailedLogging.load()) {
+                LogOut("[AA_INPUT_TXN] P" + std::to_string(playerNum) +
+                           " consumer gated gen=" +
+                           std::to_string(txn.generation) +
+                           " blocked=" +
+                           std::to_string(txn.blockedConsumerVisits) +
+                           "/" + std::to_string(kMaxBlockedConsumerVisits) +
+                           " own330=" +
+                           std::to_string(motionOwnBlockOrHitstop) +
+                           " opponent332=" +
+                           std::to_string(motionOpponentSuperflash),
+                       true);
+            }
+            if (expired) {
+                CleanupMotionTxnLocked(
+                    playerNum, "consumer gate remained closed");
+            }
+        } else {
+            const bool firstBoundaryVisit =
+                !txn.consumerBoundaryVisited;
+            txn.consumerBoundaryVisited = true;
+
+            const bool accepted = MotionConsumerAcceptedLocked(
+                playerNum,
+                motionBeforeMove, motionBeforeFrame,
+                motionAfterMove, motionAfterFrame, motionTokenBefore);
+            ++txn.consumerPasses;
+
+            std::ostringstream motionLog;
+            motionLog << "[AA_INPUT_TXN] P" << playerNum
+                      << " consumer gen=" << txn.generation
+                      << " pass=" << txn.consumerPasses
+                      << "/" << txn.maxConsumerPasses
+                      << " blocked=" << txn.blockedConsumerVisits
+                      << " move=" << motionBeforeMove << ':' << motionBeforeFrame
+                      << "->" << motionAfterMove << ':' << motionAfterFrame
+                      << " token=" << motionTokenBefore << "->" << motionTokenAfter
+                      << " accepted=" << (accepted ? 1 : 0);
+            const bool importantConsumerPass = accepted ||
+                txn.consumerPasses == 1 ||
+                txn.consumerPasses >= txn.maxConsumerPasses;
+            if (importantConsumerPass || detailedLogging.load()) {
+                LogOut(motionLog.str(), true);
+            }
+
+            if (accepted) {
+                CleanupMotionTxnLocked(
+                    playerNum, "consumer accepted",
+                    AutoActionMotionOutcome::Accepted);
+            } else {
+                // The synthetic final direction/button must never remain as
+                // live dummy input. If earlier gated visits already cleared it,
+                // later producer passes belong to the restored Practice AI and
+                // their block direction must survive.
+                if (firstBoundaryVisit) {
+                    const std::array<uint8_t, 6> neutralImmediate =
+                        {0, 0, 0, 0, 0, 0};
+                    (void)SafeWriteMemory(static_cast<uintptr_t>(characterPtr) +
+                                              INPUT_HORIZONTAL_OFFSET,
+                                          neutralImmediate.data(),
+                                          neutralImmediate.size());
+                }
+                const bool mayWait = motionTokenBefore != kNoMotionToken &&
+                    txn.consumerPasses < txn.maxConsumerPasses;
+                if (!mayWait) {
+                    CleanupMotionTxnLocked(
+                        playerNum,
+                        motionTokenBefore == kNoMotionToken
+                            ? "detector produced no command"
+                            : "consumer rejected/expired");
+                }
+            }
+        }
+    }
     // Release/abort cleanup was posted after this fighter's producer and has
     // now crossed the exact later consumer barrier. Competing 64-Hz writers may
     // resume without racing the just-consumed raw registers.
@@ -1928,6 +3549,9 @@ int __fastcall HookedUpdateEntityState(int characterPtr, int /*edx*/) {
         slot.pressBeforeMove = -1;
         slot.pressBeforeFrame = -1;
         if (started && slot.state.Acknowledge(current)) {
+            RecordNormalPulseOutcomeLocked(
+                slot, posted.generation,
+                AutoActionNormalPulseOutcome::Accepted);
             slot.pressAttempts = 0;
             slot.retryNeutralPending = false;
             slot.abortAfterRetryNeutral = false;
@@ -2016,10 +3640,12 @@ static int RecordInputPollResult(unsigned int player, int result) {
             g_lastPolledMask[player].exchange(mask, std::memory_order_acq_rel);
         const uint8_t rising = static_cast<uint8_t>(
             mask & static_cast<uint8_t>(~previous) & kAttackButtons);
+        const uint32_t serial =
+            g_inputPollSerial[player].fetch_add(1, std::memory_order_acq_rel) + 1;
         if (rising != 0) {
-            g_pendingPollAttackEdges[player].fetch_or(rising, std::memory_order_release);
+            (void)g_pollAttackEdgeJournal[player].Push(
+                InputPollAttackEdgeEvent{serial, rising});
         }
-        g_inputPollSerial[player].fetch_add(1, std::memory_order_release);
     }
     return result;
 }
@@ -2032,9 +3658,9 @@ static int RecordInputPollResult(unsigned int player, int result) {
 // our process hook, which left a valid 66 pattern in memory without ever
 // allowing EFZ to turn it into move 163.
 static uint8_t TutorialP2PollMask() {
-    if (p2QueueActive && p2QueueIndex >= 0 &&
-        static_cast<size_t>(p2QueueIndex) < p2InputQueue.size()) {
-        return p2InputQueue[p2QueueIndex].inputMask;
+    const MotionQueueSnapshot queue = GetMotionQueueSnapshot(2);
+    if (queue.hasCurrentMask) {
+        return queue.currentMask;
     }
     const uint8_t immediate = ImmediateInput::GetCurrentDesired(2);
     if (immediate != 0) {
@@ -2060,7 +3686,7 @@ static InputHookPolicy::TutorialP2InputSource TutorialP2Source() {
          g_activeFreezePlayer.load(std::memory_order_relaxed) == 2)) {
         return InputHookPolicy::TutorialP2InputSource::BufferFreeze;
     }
-    if (p2QueueActive) {
+    if (GetMotionQueueSnapshot(2).active) {
         return InputHookPolicy::TutorialP2InputSource::MotionQueue;
     }
     return ImmediateInput::GetCurrentDesired(2) != 0
@@ -2077,8 +3703,14 @@ static void ObservePhysicalPollIfRequested(unsigned int logicalPlayer,
     }
     const int raw = oPollPlayerInputState
         ? oPollPlayerInputState(inputManagerPtr, playerIndex) : 0;
-    g_lastObservedPhysicalPoll[logicalPlayer].store(
-        static_cast<uint8_t>(raw), std::memory_order_release);
+    const uint32_t previous = g_observedPhysicalPollSample[logicalPlayer].load(
+        std::memory_order_relaxed);
+    const uint32_t sample = PhysicalPollSamplePolicy::Next(
+        previous, static_cast<uint8_t>(raw));
+    g_observedPhysicalPollSample[logicalPlayer].store(
+        sample, std::memory_order_release);
+    g_observedPhysicalPollValid[logicalPlayer].store(
+        true, std::memory_order_release);
 }
 
 // Our poll hook. Use __fastcall to match __thiscall trampoline signature.
@@ -2087,6 +3719,13 @@ static int __fastcall HookedPollPlayerInputState(int inputManagerPtr, int /*edx*
     if (!s_inputHooksEnabled.load(std::memory_order_acquire)
         || g_onlineModeActive.load(std::memory_order_relaxed)) {
         return oPollPlayerInputState ? oPollPlayerInputState(inputManagerPtr, playerIndex) : 0;
+    }
+
+    std::lock_guard<std::recursive_mutex> controlLock(g_p2ControlMutex);
+    if (!s_inputHooksEnabled.load(std::memory_order_acquire) ||
+        g_onlineModeActive.load(std::memory_order_acquire)) {
+        return oPollPlayerInputState
+            ? oPollPlayerInputState(inputManagerPtr, playerIndex) : 0;
     }
 
     // Engine uses 0 for P1 and 1 for P2; our globals use 1=P1, 2=P2.
@@ -2099,6 +3738,34 @@ static int __fastcall HookedPollPlayerInputState(int inputManagerPtr, int /*edx*
     const int processContext = s_processInputPlayerContext.load(std::memory_order_relaxed);
     const unsigned int idxFromProcessContext =
         (processContext == 1 || processContext == 2) ? static_cast<unsigned int>(processContext) : 0;
+
+    // A prepared mission owns P1 before fighters exist and keeps that owner
+    // through Character Select fallback, direct Loading, state restore, and
+    // baseline capture. This route intentionally precedes every ordinary
+    // producer: none may leak a first gameplay input into the authored state.
+    if (InputHookPolicy::P1StartupNeutralApplies(
+            s_p1StartupNeutralGate.load(std::memory_order_acquire),
+            static_cast<int>(idxFromProcessContext),
+            static_cast<int>(idxFromPollArg))) {
+        return RecordInputPollResult(1, 0);
+    }
+
+    // A scoped auto-action transaction owns exactly this fighter's native poll.
+    // It precedes the general override lanes because queue-time conflict checks
+    // guarantee that tutorial/macro/manual owners cannot coexist with it.
+    if (IsValidTransactionPlayer(
+            static_cast<int>(idxFromProcessContext)) &&
+        s_motionTxnActive[idxFromProcessContext].load(
+            std::memory_order_acquire)) {
+        AutoActionMotionTxnState& txn = s_motionTxn[idxFromProcessContext];
+        std::lock_guard<std::recursive_mutex> lock(txn.mutex);
+        if (txn.phase == AutoActionMotionTxnPhase::Prepared &&
+            txn.pollActive) {
+            txn.pollObserved = true;
+            return RecordInputPollResult(
+                idxFromProcessContext, static_cast<int>(txn.pollMask));
+        }
+    }
 
     // The process context is authoritative when side routing makes EFZ poll a
     // different physical binding.  Count this as an override hit so episode
@@ -2176,6 +3843,46 @@ int __fastcall HookedProcessCharacterInput(int characterPtr, int edx) {
         return oProcessCharacterInput(characterPtr);
     }
 
+    // Serialize the complete producer for either fighter with controller-role
+    // changes, detached raw writers, scoped motion transactions, and netplay
+    // publication. This also prevents an already-started normal from crossing
+    // the online boundary and closes the UI/worker race where a
+    // normal or ImmediateInput lane could become live between a motion queue's
+    // conflict check and publication.
+    std::unique_lock<std::recursive_mutex> p2ProducerControlLock;
+    if (playerNum != 0) {
+        p2ProducerControlLock = std::unique_lock<std::recursive_mutex>(g_p2ControlMutex);
+        // Netplay publication uses the same barrier. If this producer waited
+        // behind that publication, bypass every mod-owned writer and let EFZ
+        // process the new owner's input unchanged.
+        if (!s_inputHooksEnabled.load(std::memory_order_acquire) ||
+            g_onlineModeActive.load(std::memory_order_acquire)) {
+            return oProcessCharacterInput(characterPtr);
+        }
+    }
+
+    if (playerNum == 1 &&
+        s_p1StartupNeutralGate.load(std::memory_order_acquire)) {
+        // The startup owner is stronger than every buffered/raw producer.
+        // Neutralize the immediate registers on both sides of EFZ's native
+        // processor; HookedPollPlayerInputState supplies the matching zero
+        // poll while this controller barrier prevents detached writers from
+        // racing the character consumer.
+        (void)WritePlayerInputImmediate(1, 0);
+        const int result =
+            CallOriginalProcessCharacterInputWithContext(characterPtr, 1);
+        (void)WritePlayerInputImmediate(1, 0);
+        g_lastInjectedMask[1] = 0;
+        g_wasBypassBuffered[1] = false;
+        return result;
+    }
+
+    if (s_pendingAiRestoreActive[playerNum].load(
+            std::memory_order_acquire)) {
+        (void)RetryPendingAiRestoreLocked(
+            playerNum, "next native input pass");
+    }
+
 #if EFZ_ENABLE_AUTO_ACTION_WAKE_TRACE
     InputHookWakeTraceScope wakeTrace(playerNum, static_cast<uintptr_t>(characterPtr));
 #endif
@@ -2195,6 +3902,22 @@ int __fastcall HookedProcessCharacterInput(int characterPtr, int edx) {
 #if EFZ_ENABLE_AUTO_ACTION_WAKE_TRACE
         wakeTrace.Mark("after-auto-tick");
 #endif
+    }
+
+    // Buffered auto-actions use one native producer pass. The helper restores
+    // this fighter's exact AI flag before returning; only the detector token
+    // and transaction-owned history survive until HookedUpdateEntityState.
+    if (IsAutoActionMotionTransactionActive(playerNum)) {
+        int transactionResult = 0;
+        if (TryRunMotionTransactionProducer(
+                playerNum, characterPtr, transactionResult)) {
+            g_lastInjectedMask[playerNum] = 0;
+            g_wasBypassBuffered[playerNum] = false;
+#if EFZ_ENABLE_AUTO_ACTION_WAKE_TRACE
+            wakeTrace.SetExit("exit:auto-motion-transaction");
+#endif
+            return transactionResult;
+        }
     }
 
     // Do not inject while a buffer-freeze is active for THIS player; let the game's
@@ -2275,15 +3998,16 @@ int __fastcall HookedProcessCharacterInput(int characterPtr, int edx) {
 
     // REVERTED LOGIC: The queue system now handles all other injection states.
     bool shouldInject = false;
+    const MotionQueueSnapshot legacyQueue =
+        playerNum > 0 ? GetMotionQueueSnapshot(playerNum)
+                      : MotionQueueSnapshot{};
     const bool exclusiveMacroOwnsPlayer = playerNum > 0 &&
         MacroController::IsExclusivePlayback() &&
         MacroController::GetPlaybackPlayer() == playerNum;
     if (playerNum > 0 && !exclusiveMacroOwnsPlayer) {
         if (g_manualInputOverride[playerNum].load()) {
             shouldInject = true;
-        } else if (playerNum == 1 && p1QueueActive) {
-            shouldInject = true;
-        } else if (playerNum == 2 && p2QueueActive) {
+        } else if (legacyQueue.active) {
             shouldInject = true;
         }
     }
@@ -2292,12 +4016,8 @@ int __fastcall HookedProcessCharacterInput(int characterPtr, int edx) {
         uint8_t currentMask = 0;
         if (g_manualInputOverride[playerNum].load()) {
             currentMask = g_manualInputMask[playerNum].load();
-        } else {
-            std::vector<InputFrame>& queue = (playerNum == 1) ? p1InputQueue : p2InputQueue;
-            int& queueIndex = (playerNum == 1) ? p1QueueIndex : p2QueueIndex;
-            if (queueIndex >= 0 && (size_t)queueIndex < queue.size()) {
-                currentMask = queue[queueIndex].inputMask;
-            }
+        } else if (legacyQueue.hasCurrentMask) {
+            currentMask = legacyQueue.currentMask;
         }
         if (g_lastInjectedMask[playerNum] != currentMask) {
             static std::chrono::steady_clock::time_point lastLogAt[3] = { {}, {}, {} };
@@ -2321,7 +4041,7 @@ int __fastcall HookedProcessCharacterInput(int characterPtr, int edx) {
             
             // CRITICAL FIX: Skip buffer writes for dash motions - they're written all at once when queued.
             // Frame-by-frame writes are too slow and get contaminated by neutral inputs from the game.
-            int currentMotion = (playerNum == 1) ? p1CurrentMotionType : p2CurrentMotionType;
+            int currentMotion = legacyQueue.motionType;
             bool isDashMotion = (currentMotion == MOTION_FORWARD_DASH || currentMotion == MOTION_BACK_DASH);
             if (!isDashMotion) {
                 // Special handling for split injection (Immediate=0, Buffer=Macro):
@@ -2367,10 +4087,11 @@ int __fastcall HookedProcessCharacterInput(int characterPtr, int edx) {
     // so that short presses/holds from ImmediateInput are not lost if the game overwrites registers.
     // We write before calling the game's processor (so it can see inputs this frame) and once more
     // after (to guard against late overwrites inside the function).
-    {
-        static uint8_t s_lastDesired[3] = {0, 0, 0};
+    if (!exclusiveMacroOwnsPlayer) {
         uint8_t desired = ImmediateInput::GetCurrentDesired(playerNum);
-        bool haveDesired = (desired != 0) || (s_lastDesired[playerNum] != 0);
+        const uint8_t previousDesired =
+            g_lastHookImmediateDesired[playerNum].load(std::memory_order_acquire);
+        bool haveDesired = (desired != 0) || (previousDesired != 0);
         if (haveDesired) {
             // Pre-write desired state
             WritePlayerInputImmediate(playerNum, desired);
@@ -2381,7 +4102,8 @@ int __fastcall HookedProcessCharacterInput(int characterPtr, int edx) {
             int ret = CallOriginalProcessCharacterInputWithContext(characterPtr, playerNum);
             // Post-write to ensure final state for this tick
             WritePlayerInputImmediate(playerNum, desired);
-            s_lastDesired[playerNum] = desired;
+            g_lastHookImmediateDesired[playerNum].store(
+                desired, std::memory_order_release);
             g_lastInjectedMask[playerNum] = desired;
             g_wasBypassBuffered[playerNum] = false;
             MaybePerformTailCleanup(playerNum);
@@ -2390,6 +4112,13 @@ int __fastcall HookedProcessCharacterInput(int characterPtr, int edx) {
 #endif
             return ret;
         }
+    } else {
+        // Exclusive demonstration playback owns both the raw poll and the
+        // immediate registers for this player. A persistent helper may still
+        // have a stale ImmediateInput desire from before the transaction; do
+        // not let that cached value replace the recorded macro byte.
+        g_lastHookImmediateDesired[playerNum].store(0,
+                                                     std::memory_order_release);
     }
     
     // --- NORMAL MODE ---
@@ -2401,7 +4130,9 @@ int __fastcall HookedProcessCharacterInput(int characterPtr, int edx) {
     }
     // If the immediate input service has a desired mask, apply it just before original processing
     // so the game sees the current immediate inputs this frame (no buffer writes here).
-    uint8_t desired = ImmediateInput::GetCurrentDesired(playerNum);
+    uint8_t desired = exclusiveMacroOwnsPlayer
+        ? 0
+        : ImmediateInput::GetCurrentDesired(playerNum);
     if (desired != 0) {
         WritePlayerInputImmediate(playerNum, desired);
         g_lastInjectedMask[playerNum] = desired;
@@ -2421,6 +4152,25 @@ int __fastcall HookedProcessCharacterInput(int characterPtr, int edx) {
 #endif
         return ret;
     }
+}
+
+void SetP1StartupNeutralGate(bool active) {
+    const bool previous =
+        s_p1StartupNeutralGate.exchange(active, std::memory_order_acq_rel);
+    if (active && !previous) {
+        // Retire any continuous/timed raw P1 source (notably Auto-Jump) before
+        // new fighters can consume it. The gate itself blocks re-admission.
+        ImmediateInput::Clear(1);
+    }
+    if (previous != active) {
+        LogOut(std::string("[INPUT_HOOK][STARTUP_GATE] P1 neutral ") +
+                   (active ? "acquired" : "released"),
+               true);
+    }
+}
+
+bool IsP1StartupNeutralGateActive() {
+    return s_p1StartupNeutralGate.load(std::memory_order_acquire);
 }
 
 void InstallInputHook() {
@@ -2492,6 +4242,17 @@ void InstallInputHook() {
 }
 
 void SetInputHookActive(bool active) {
+    const bool wasEnabled =
+        s_inputHooksEnabled.load(std::memory_order_acquire);
+    if (!active) {
+        // Idempotent shutdown: even if the detours were already disabled, no
+        // accepted producer may remain waiting for a consumer that cannot run.
+        s_inputHooksEnabled.store(false, std::memory_order_release);
+        KaoriRecoilDuck::CancelAll("input hooks disabled");
+        CancelAllAutoActionChargeFollowups("input hooks disabled");
+        CancelAllAutoActionMotionTransactions("input hooks disabled");
+        CancelAllAutoActionNormalPulses();
+    }
     if (!s_inputHooksCreated.load(std::memory_order_acquire)) {
         if (active) {
             InstallInputHook();
@@ -2499,16 +4260,11 @@ void SetInputHookActive(bool active) {
         return;
     }
 
-    const bool currentlyEnabled = s_inputHooksEnabled.load(std::memory_order_acquire);
-    if (currentlyEnabled == active) {
+    if (wasEnabled == active) {
         return;
     }
 
-    if (!active) {
-        // Close submission first, then drain anything already accepted.
-        s_inputHooksEnabled.store(false, std::memory_order_release);
-        CancelAllAutoActionNormalPulses();
-    } else {
+    if (active) {
         s_inputHooksEnabled.store(true, std::memory_order_release);
     }
     LogOut(std::string("[INPUT_HOOK] Input hooks ") + (active ? "enabled" : "disabled"), true);
@@ -2516,6 +4272,9 @@ void SetInputHookActive(bool active) {
 
 void RemoveInputHook() {
     s_inputHooksEnabled.store(false, std::memory_order_release);
+    KaoriRecoilDuck::CancelAll("input hooks removed");
+    CancelAllAutoActionChargeFollowups("input hooks removed");
+    CancelAllAutoActionMotionTransactions("input hooks removed");
     CancelAllAutoActionNormalPulses();
     (void)SetVanillaSwapInputRouting(false);
     if (s_processTargetAddr) {
@@ -2540,6 +4299,7 @@ void RemoveInputHook() {
     for (int playerNum = 1; playerNum <= 2; ++playerNum) {
         NormalPulseRuntimeSlot& slot = s_normalPulse[playerNum];
         std::lock_guard<std::recursive_mutex> lock(slot.mutex);
+        CancelNormalPulseGenerationsLocked(slot);
         slot.state.Reset();
         slot.transport = NormalPulseTransport::Unselected;
         slot.gameState = 0;

@@ -173,16 +173,16 @@ namespace ImGuiSettings {
     // Aggregate all XInput pads into a single logical mask with trigger pseudo-bits.
     static uint32_t PollAggregatedGamepadMask(uint32_t* padsConnectedMask = nullptr) {
         XInputShim::RefreshSnapshotOncePerFrame();
+        XInputShim::Snapshot snapshot{};
+        XInputShim::CopySnapshot(snapshot);
         uint32_t agg = 0;
-        uint32_t connected = 0;
+        const uint32_t connected = snapshot.connectedMask;
         for (int i = 0; i < 4; ++i) {
-            const XINPUT_STATE* st = XInputShim::GetCachedState(i);
-            if (st) {
-                connected |= (1u << i);
-                agg |= st->Gamepad.wButtons;
-                if (st->Gamepad.bLeftTrigger > GP_TRIGGER_THRESH) agg |= GP_LT_BIT;
-                if (st->Gamepad.bRightTrigger > GP_TRIGGER_THRESH) agg |= GP_RT_BIT;
-            }
+            if (!snapshot.IsConnected(i)) continue;
+            const XINPUT_STATE& state = snapshot.states[i];
+            agg |= state.Gamepad.wButtons;
+            if (state.Gamepad.bLeftTrigger > GP_TRIGGER_THRESH) agg |= GP_LT_BIT;
+            if (state.Gamepad.bRightTrigger > GP_TRIGGER_THRESH) agg |= GP_RT_BIT;
         }
         if (padsConnectedMask) *padsConnectedMask = connected;
         return agg;

@@ -80,10 +80,12 @@ bool GetAdaptiveStanceEnabled();
 bool GetCurrentDesiredAutoBlockOn(bool &onOut);
 
 // Hint that an external controller (e.g., Random Block) will perform the +4936 write this frame,
-// so MonitorDummyAutoBlock should skip its own write.
+// so MonitorDummyAutoBlock should skip its own write and native-F7 sync.
+// Random Block holds this for its complete enabled lifetime; tutorial control
+// composes through its separate token below.
 void SetExternalAutoBlockController(bool enabled);
 
 // Long-lived writer exclusion for deterministic tutorial block episodes.  It
-// composes with the existing one-frame RandomBlock controller flag.
+// composes with the existing RandomBlock controller ownership.
 bool AcquireTutorialAutoBlockController(uint64_t& tokenOut);
 void ReleaseTutorialAutoBlockController(uint64_t token);

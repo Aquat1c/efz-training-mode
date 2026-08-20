@@ -3,7 +3,7 @@
   "tutorialSchema": 1,
   "type": "tutorial",
   "id": "efz.strategy.open_guard",
-  "revision": 12,
+  "revision": 13,
   "category": "strategy",
   "order": 440,
   "difficulty": 3,
@@ -59,7 +59,7 @@
       {
         "id": "open_low",
         "kind": "combat",
-        "label": "Open standing guard: {input:c.5B} > {input:f.5B} > {input:2C}",
+        "label": "Open the standing guard",
         "sequence": [
           {
             "id": "chain_c5b",
@@ -108,7 +108,7 @@
       {
         "id": "open_high",
         "kind": "combat",
-        "label": "Open crouching guard: {input:c.5B} > {input:f.5B} > {input:236C}",
+        "label": "Open the crouching guard",
         "sequence": [
           {
             "id": "chain_c5b",
@@ -157,7 +157,7 @@
       {
         "id": "open_throw",
         "kind": "combat",
-        "label": "Poke the guard, walk up, then throw",
+        "label": "Poke, walk in, then throw",
         "sequence": [
           {
             "id": "poke",

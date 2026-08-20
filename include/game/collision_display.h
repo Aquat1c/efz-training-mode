@@ -44,6 +44,12 @@ bool GetOverlayBox(std::size_t index, OverlayBox* outBox);
 // the key was consumed by our replacement display and must not reach Revival.
 bool ShouldSuppressRevivalHotkey(void* practiceController, int key);
 
+// Read the final render camera from EFZ's active battle-screen context. Fighter
+// world coordinates remain IEEE-754 doubles; these two values are the game's
+// native signed 32-bit projection offsets. False means there is no coherent
+// on-screen battle context and callers must not derive or write world positions.
+bool ProbeBattleCameraOffsets(int* outCameraX, int* outCameraY);
+
 // Fixed-layout, read-only view of EFZ's 64-slot per-player entity ring.  A
 // successful ProbeProjectileRing call writes exactly kProjectileRingSlotCapacity
 // entries. `readable == false` means an active entry could not be sampled and
@@ -62,13 +68,26 @@ struct ProjectileRingSlotProbe {
     uint32_t destroyed = 0;
 };
 
+// Allocation/traversal cursors sampled beside the slot endpoints. EFZ's common
+// allocator writes the slot at `allocationCursor` (+0x2CA), then advances it;
+// `scanHead` (+0x2CC) is maintained by the update/collision traversal. These
+// cursors are integrity evidence only, never a replacement for scanning all 64
+// alive flags. `readable == false` means callers cannot use cursor movement to
+// rule out a spawn+despawn that occurred between two endpoint samples.
+struct ProjectileRingCursorProbe {
+    bool readable = false;
+    uint16_t allocationCursor = 0;
+    uint16_t scanHead = 0;
+};
+
 // Reads the alive table once and each active entry at most once. No transforms,
 // allocation, pattern filtering, or gameplay mutation occurs. `outCapacity`
 // must be at least kProjectileRingSlotCapacity; false means no ring snapshot
 // was available. A successful sample is still an endpoint observation, not an
 // atomic cross-slot event ordering guarantee.
 bool ProbeProjectileRing(int playerIndex, ProjectileRingSlotProbe* outSlots,
-                         std::size_t outCapacity);
+                         std::size_t outCapacity,
+                         ProjectileRingCursorProbe* outCursors = nullptr);
 
 // Read-only probe of a player's projectile ring: returns the max `life` among that
 // player's alive projectiles whose pattern == `pattern`, or -1 if a complete

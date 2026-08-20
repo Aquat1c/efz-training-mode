@@ -278,8 +278,8 @@
   },
   "sourceRefs": [
     "mizuumi:advanced-mechanics@457885",
-    "local:shared_documentation/move_command_maps/nagamori.json",
-    "local:shared_documentation/move_command_maps/nanase.json"
+    "local:shared_documentation/MOVE_COMMAND_MAPS.md::nagamori",
+    "local:shared_documentation/MOVE_COMMAND_MAPS.md::nanase"
   ],
   "next": {
     "lessonId": "efz.systems.guard_attacks"

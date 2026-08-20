@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 
 namespace Mission::RecorderEntityTrace {
@@ -13,6 +14,48 @@ enum class SampledSlotTransition : uint8_t {
     Morph,
     Despawn,
 };
+
+// Recorder and strict-v3 playback intentionally share one bounded lifecycle
+// budget. A take that fits the authoring trace must not become unreplayable due
+// to a smaller runtime-only producer history.
+constexpr std::size_t kTraceEventCapacity = 4096;
+
+// If EFZ's common allocation cursor advanced but no dead->live edge survived
+// to the endpoint sample, at least one entity was allocated and retired (or
+// reused) between observations. Slot/generation identity is then unknowable
+// without a spawn hook, so exact authoring/playback must fail closed.
+constexpr bool AllocationAdvancedWithoutObservedSpawn(
+    bool priorCursorEstablished,
+    uint16_t priorAllocationCursor,
+    uint16_t currentAllocationCursor,
+    std::size_t observedSpawnCount) {
+    return priorCursorEstablished &&
+           priorAllocationCursor != currentAllocationCursor &&
+           observedSpawnCount == 0;
+}
+
+// A contact grades only the nearest Baseline/Spawn/Morph producer selected by
+// FindRecordedEntityProducer. Merely sharing a slot and generation is not
+// enough: a later morph in that generation owns later contacts.
+constexpr bool ContactGradesLifecycle(std::size_t lifecycleTraceIndex,
+                                      std::size_t linkedProducerTraceIndex) {
+    return lifecycleTraceIndex == linkedProducerTraceIndex;
+}
+
+// PAT may leave its attack-capable bit set on a phase entered only after the
+// real contact.  Suppression is deliberately evidence-gated: the catalog must
+// identify that phase as recovery, the immediately preceding same-instance
+// event must be a committed contact from the same semantic family, and the
+// trace must show it return to an inert phase or despawn. A fresh, unrelated,
+// or still-live unmatched setup remains review-required.
+constexpr bool CanSuppressCompletedPostContactRecovery(
+    bool catalogSaysPostContactRecovery,
+    bool immediatelyPrecededBySameFamilyCommittedContact,
+    bool laterReturnedInertOrDespawned) {
+    return catalogSaysPostContactRecovery &&
+           immediatelyPrecededBySameFamilyCommittedContact &&
+           laterReturnedInertOrDespawned;
+}
 
 constexpr SampledSlotTransition ClassifySampledSlotTransition(
     bool priorEstablished, bool priorAlive, uint16_t priorPattern,
@@ -41,5 +84,16 @@ static_assert(ClassifySampledSlotTransition(true, true, 400, true, 405) ==
 static_assert(ClassifySampledSlotTransition(true, true, 405, false, 0) ==
                   SampledSlotTransition::Despawn,
               "alive-to-dead slot transition is a sampled despawn");
+static_assert(AllocationAdvancedWithoutObservedSpawn(true, 4, 5, 0),
+              "an invisible allocation must invalidate exact lineage");
+static_assert(!AllocationAdvancedWithoutObservedSpawn(true, 4, 5, 1),
+              "a visible spawn explains ordinary cursor movement");
+static_assert(ContactGradesLifecycle(7, 7) &&
+                  !ContactGradesLifecycle(6, 7),
+              "a later producer phase cannot grade an earlier lifecycle");
+static_assert(CanSuppressCompletedPostContactRecovery(true, true, true) &&
+                  !CanSuppressCompletedPostContactRecovery(true, true, false) &&
+                  !CanSuppressCompletedPostContactRecovery(false, true, true),
+              "post-contact suppression must retain all three proofs");
 
 } // namespace Mission::RecorderEntityTrace

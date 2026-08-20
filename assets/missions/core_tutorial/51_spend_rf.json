@@ -3,7 +3,7 @@
   "tutorialSchema": 1,
   "type": "tutorial",
   "id": "efz.strategy.spend_rf",
-  "revision": 12,
+  "revision": 13,
   "category": "strategy",
   "order": 490,
   "difficulty": 4,
@@ -50,11 +50,13 @@
       {
         "id": "p0",
         "title": "The Math of Red vs Blue",
+        "showHud": "rf",
         "text": "Red RF builds in about 9 seconds; a full Blue gauge takes 35. Per second spent building, Red IC combos pay roughly TWICE the damage of Blue ones - in the time you save up one Blue, you could have spent Red three times."
       },
       {
         "id": "p1",
         "title": "Blue Is Powerful but Volatile",
+        "showHud": "rf",
         "text": "Blue RF DRAINS when you get hit - and most characters have routes built to maximize that drain. Hoarding Blue makes you a target. Blue earns its keep when the threshold arrives naturally mid-combo, or spent on an invincible RF reversal that Red could never cancel."
       },
       {

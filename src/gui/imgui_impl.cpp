@@ -3,6 +3,7 @@
 #include "../include/core/logger.h"
 #include "../include/gui/imgui_gui.h"
 #include "../include/gui/custom_menu/fonts.h"
+#include "../include/gui/custom_menu/input.h"
 #include "../include/gui/custom_menu/renderer.h"
 #include "../include/game/practice_hotkey_gate.h"
 namespace PracticeOverlayGate { void SetMenuVisible(bool); }
@@ -262,7 +263,9 @@ static void UpdateVirtualCursor(ImGuiIO& io) {
     // sweeping across rows - the "menu navigates by itself in fullscreen when a
     // controller is plugged" bug. Skip it so io.MousePos reflects only the real
     // OS cursor fed by PreNewFrameInputs(); dpad/keyboard nav is unaffected.
-    if (cfg.useCustomMenu) {
+    const bool customMenuOwnsNavigation =
+        g_externalFallbackHost || cfg.useCustomMenu;
+    if (customMenuOwnsNavigation) {
         ReleaseGamepadNavInputs(io);
         g_useVirtualCursor = false;
         return;
@@ -334,21 +337,18 @@ static void UpdateVirtualCursor(ImGuiIO& io) {
         s_lastMiddleDown = middleDown;
     }
 
-    // Ensure XInput snapshot is fresh for this frame
+    // Copy one coherent watcher publication for the whole frame.  Never retain
+    // pointers into the concurrently-updated cache.
     XInputShim::RefreshSnapshotOncePerFrame();
-    // Poll from cached snapshot to avoid redundant syscalls
-    auto pollController = [](int index, XINPUT_STATE& out) -> bool {
-        const XINPUT_STATE* s = XInputShim::GetCachedState(index);
-        if (!s) { ZeroMemory(&out, sizeof(out)); return false; }
-        out = *s; return true;
-    };
+    XInputShim::Snapshot padSnapshot{};
+    XInputShim::CopySnapshot(padSnapshot);
 
     static int s_lastActivePad = 0; // remember last pad that produced any input
     XINPUT_STATE states[4]{};
     bool connected[4] = {false,false,false,false};
     unsigned connectedMask = 0;
     for (int i = 0; i < 4; ++i) {
-        connected[i] = pollController(i, states[i]);
+        connected[i] = padSnapshot.CopyState(i, states[i]);
         if (connected[i]) connectedMask |= (1u << i);
     }
 
@@ -415,18 +415,6 @@ static void UpdateVirtualCursor(ImGuiIO& io) {
             // Left stick per-direction max (avoid std::max due to Windows min/max macros)
             float lxNorm = axisToAnalog(gp.sThumbLX, XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE);
             float lyNorm = axisToAnalog(gp.sThumbLY, XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE);
-            if (XInputShim::IsGenericFallbackSlot(i)) {
-                // Generic DirectInput pads sometimes surface their only usable navigation axes
-                // on what looks like the right stick after translation. Prefer the stronger pair.
-                float rxNorm = axisToAnalog(gp.sThumbRX, XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE);
-                float ryNorm = axisToAnalog(gp.sThumbRY, XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE);
-                const float leftStrength = (std::max)(std::fabs(lxNorm), std::fabs(lyNorm));
-                const float rightStrength = (std::max)(std::fabs(rxNorm), std::fabs(ryNorm));
-                if (rightStrength > leftStrength) {
-                    lxNorm = rxNorm;
-                    lyNorm = ryNorm;
-                }
-            }
             {
                 float cLeft  = (lxNorm < 0.f) ? -lxNorm : 0.f;
                 float cRight = (lxNorm > 0.f) ?  lxNorm : 0.f;
@@ -668,19 +656,8 @@ static void UpdateVirtualCursor(ImGuiIO& io) {
                 return n;
             };
             
-            bool genericNavBorrowedRightStick = false;
-            if (XInputShim::IsGenericFallbackSlot(selPad)) {
-                float lxNorm = applyDeadzone(selGp.sThumbLX, XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE);
-                float lyNorm = applyDeadzone(selGp.sThumbLY, XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE);
-                float rxNorm = applyDeadzone(selGp.sThumbRX, XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE);
-                float ryNorm = applyDeadzone(selGp.sThumbRY, XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE);
-                const float leftStrength = (std::max)(std::fabs(lxNorm), std::fabs(lyNorm));
-                const float rightStrength = (std::max)(std::fabs(rxNorm), std::fabs(ryNorm));
-                genericNavBorrowedRightStick = rightStrength > leftStrength;
-            }
-
-            float rx = genericNavBorrowedRightStick ? 0.0f : applyDeadzone(selGp.sThumbRX, XINPUT_GAMEPAD_RIGHT_THUMB_DEADZONE);
-            float ry = genericNavBorrowedRightStick ? 0.0f : applyDeadzone(selGp.sThumbRY, XINPUT_GAMEPAD_RIGHT_THUMB_DEADZONE);
+            float rx = applyDeadzone(selGp.sThumbRX, XINPUT_GAMEPAD_RIGHT_THUMB_DEADZONE);
+            float ry = applyDeadzone(selGp.sThumbRY, XINPUT_GAMEPAD_RIGHT_THUMB_DEADZONE);
             // Small deadzone to avoid noise
             const float dz = 0.15f;
             if (fabsf(rx) < dz) rx = 0.0f;
@@ -998,6 +975,7 @@ namespace ImGuiImpl {
         }
 
         void SetVisibilityInternal(bool visible) {
+            const bool wasVisible = g_imguiVisible;
             g_imguiVisible = visible;
             ::menuOpen.store(visible);
             CharacterSettings::g_guiVisible.store(g_imguiVisible, std::memory_order_relaxed);
@@ -1016,19 +994,29 @@ namespace ImGuiImpl {
                 LogOut("[IMGUI] ImGui interface opened - will render continuously until closed", true);
                 g_resetVirtualCursorOnOpen = true;
                 ImGuiGui::RequestInitialNavFocus();
+                const bool customMenuOwnsNavigation =
+                    g_externalFallbackHost || Config::GetSettings().useCustomMenu;
+                if (!wasVisible && customMenuOwnsNavigation &&
+                    ImGui::GetCurrentContext()) {
+                    // A menu-open press may still be physically held.  Every
+                    // visibility transition gets a fresh release gate, not
+                    // only the renderer's first initialization.
+                    CustomMenu::Input::ResetEdges();
+                }
                 if (ImGui::GetCurrentContext()) {
                     ImGuiIO& io = ImGui::GetIO();
                     XInputShim::RefreshSnapshotOncePerFrame();
-                    unsigned mask = XInputShim::GetConnectedMaskCached();
-                    unsigned nativeMask = XInputShim::GetNativeConnectedMaskCached();
-                    unsigned genericMask = XInputShim::GetGenericConnectedMaskCached();
+                    XInputShim::Snapshot padSnapshot{};
+                    XInputShim::CopySnapshot(padSnapshot);
                     char buf[256];
                     io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
                     io.BackendFlags |= ImGuiBackendFlags_HasGamepad;
                     _snprintf_s(buf, sizeof(buf), _TRUNCATE, "[IMGUI] Open: NavEnableGamepad=%d BackendHasGamepad=%d GamepadMask=0x%X (xinput=0x%X generic=0x%X, forced)",
                         (io.ConfigFlags & ImGuiConfigFlags_NavEnableGamepad) ? 1 : 0,
                         (io.BackendFlags & ImGuiBackendFlags_HasGamepad) ? 1 : 0,
-                        mask, nativeMask, genericMask);
+                        padSnapshot.connectedMask,
+                        padSnapshot.nativeMask,
+                        padSnapshot.genericMask);
                     LogOut(buf, true);
                     LogOut("[IMGUI] Keyboard fallback for nav is active (Arrow/Enter/Escape)", true);
                 }

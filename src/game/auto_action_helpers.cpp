@@ -80,6 +80,18 @@ int ConvertTriggerActionToMotion(int actionType, int triggerType, int strengthOv
     case ACTION_4B: return MOTION_4B;
     case ACTION_4C: return MOTION_4C;
     case ACTION_4D: return MOTION_4D;
+    case ACTION_1X:
+        return strength == 1 ? MOTION_1B : strength == 2 ? MOTION_1C :
+               strength == 3 ? MOTION_1D : MOTION_1A;
+    case ACTION_3X:
+        return strength == 1 ? MOTION_3B : strength == 2 ? MOTION_3C :
+               strength == 3 ? MOTION_3D : MOTION_3A;
+    case ACTION_J2X:
+        return strength == 1 ? MOTION_J2B : strength == 2 ? MOTION_J2C :
+               strength == 3 ? MOTION_J2D : MOTION_J2A;
+    case ACTION_J6X:
+        return strength == 1 ? MOTION_J6B : strength == 2 ? MOTION_J6C :
+               strength == 3 ? MOTION_J6D : MOTION_J6A;
 
         // QCF (236)
         case ACTION_QCF:
@@ -116,12 +128,12 @@ int ConvertTriggerActionToMotion(int actionType, int triggerType, int strengthOv
             if (strength == 3) return MOTION_41236D;
             return MOTION_41236A;
 
-        // Previously Half-circle back (63214) removed. Remapped ACTION_SUPER2 to 214236 hybrid
+        // Legacy ACTION_SUPER2 value now names the real 2141236 input.
         case ACTION_SUPER2:
-            if (strength == 1) return MOTION_214236B;
-            if (strength == 2) return MOTION_214236C;
-            if (strength == 3) return MOTION_214236D;
-            return MOTION_214236A;
+            if (strength == 1) return MOTION_2141236B;
+            if (strength == 2) return MOTION_2141236C;
+            if (strength == 3) return MOTION_2141236D;
+            return MOTION_2141236A;
 
         // Double QCF (236236)
         case ACTION_236236:
@@ -179,6 +191,14 @@ int ConvertTriggerActionToMotion(int actionType, int triggerType, int strengthOv
     case ACTION_JUMP: return MOTION_NONE;
     case ACTION_BACKDASH: return MOTION_BACK_DASH;       // explicit back dash motion token
     case ACTION_FORWARD_DASH: return MOTION_FORWARD_DASH; // explicit forward dash motion token
+    // This is a two-stage runtime recipe (native 44, then native 66 only in
+    // Kaori backdash frame 4/5).  Returning a synthetic motion here would let
+    // wake/RG pre-arm paths collapse it into an unrelated single command.
+    case ACTION_KAORI_RECOIL_DUCK: return MOTION_NONE;
+    case ACTION_66X:
+    case ACTION_662X:
+    case ACTION_664X:
+        return MOTION_FORWARD_DASH; // exact follow-up direction is scheduled by AutoAction
         case ACTION_BLOCK: return MOTION_NONE;
     case ACTION_FINAL_MEMORY: return MOTION_NONE; // Handled by FM subsystem
 

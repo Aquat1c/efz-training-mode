@@ -1,4 +1,5 @@
 #include "input/normal_input_policy.h"
+#include "input/input_hook.h"
 
 #include <cstdlib>
 #include <iostream>
@@ -53,6 +54,20 @@ void TestAllNormalMappings() {
     CheckMotionGroup(MOTION_4A, NormalInputPolicy::RelativeDirection::Back,
                      false, NormalInputPolicy::kInputLeft,
                      NormalInputPolicy::kInputRight);
+    CheckMotionGroup(MOTION_1A, NormalInputPolicy::RelativeDirection::DownBack,
+                     false,
+                     NormalInputPolicy::kInputDown | NormalInputPolicy::kInputLeft,
+                     NormalInputPolicy::kInputDown | NormalInputPolicy::kInputRight);
+    CheckMotionGroup(MOTION_3A, NormalInputPolicy::RelativeDirection::DownForward,
+                     false,
+                     NormalInputPolicy::kInputDown | NormalInputPolicy::kInputRight,
+                     NormalInputPolicy::kInputDown | NormalInputPolicy::kInputLeft);
+    CheckMotionGroup(MOTION_J2A, NormalInputPolicy::RelativeDirection::Down,
+                     true, NormalInputPolicy::kInputDown,
+                     NormalInputPolicy::kInputDown);
+    CheckMotionGroup(MOTION_J6A, NormalInputPolicy::RelativeDirection::Forward,
+                     true, NormalInputPolicy::kInputRight,
+                     NormalInputPolicy::kInputLeft);
 
     const auto ground = NormalInputPolicy::IntentFromMotion(MOTION_5B);
     const auto air = NormalInputPolicy::IntentFromMotion(MOTION_JB);
@@ -247,6 +262,23 @@ void TestRetirePromotesAcceptedSuccessor() {
             "retiring final pulse did not return to idle");
 }
 
+void TestMissionStartupPollRouting() {
+    using InputHookPolicy::LogicalPollPlayer;
+    using InputHookPolicy::P1StartupNeutralApplies;
+    Require(LogicalPollPlayer(1, 2) == 1 &&
+                LogicalPollPlayer(2, 1) == 2 &&
+                LogicalPollPlayer(0, 1) == 1,
+            "startup gate did not preserve process-context routing priority");
+    Require(P1StartupNeutralApplies(true, 1, 2),
+            "startup gate missed context-routed P1 input");
+    Require(P1StartupNeutralApplies(true, 1, 1),
+            "startup gate missed ordinary P1 character polling");
+    Require(!P1StartupNeutralApplies(true, 2, 1) &&
+                !P1StartupNeutralApplies(true, 0, 1) &&
+                !P1StartupNeutralApplies(false, 1, 1),
+            "startup gate suppressed P2, menu input, or an inactive gate");
+}
+
 } // namespace
 
 int main() {
@@ -255,6 +287,7 @@ int main() {
     TestHeldAndRepeatedButtonProtocol();
     TestPreparedPulseCanRelinquishAndRetry();
     TestRetirePromotesAcceptedSuccessor();
+    TestMissionStartupPollRouting();
     std::cout << "normal_input_policy_tests passed\n";
     return 0;
 }

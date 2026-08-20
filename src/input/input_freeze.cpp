@@ -5,11 +5,18 @@
 #include "../include/core/logger.h"
 #include "../include/core/constants.h"
 #include "../include/input/input_buffer.h"
+#include "../include/input/auto_action_motion_transaction.h"
+#include "../include/input/immediate_input.h"
+#include "../include/input/injection_control.h"
+#include "../include/input/input_hook.h"
 #include "../include/utils/utilities.h"
 #include "../include/game/game_state.h"
+#include "../include/game/macro_controller.h"
 #include "../include/input/motion_system.h"
 #include "../include/input/input_motion.h" 
+#include "../include/input/scoped_input_reservation.h"
 #include "../include/game/frame_monitor.h"
+#include "../include/game/auto_action.h"
 #include "../include/utils/xp_compat.h"
 // These functions are implemented in input_buffer.cpp
 extern bool CaptureAndFreezeBuffer(int playerNum, uint16_t startIndex, uint16_t length, int motionType, int buttonMask);
@@ -27,10 +34,33 @@ struct FreezeSessionState {
     bool originalIndexValid{false};
 };
 FreezeSessionState g_freezeSession[3]; // 1,2 (ignore 0)
+
+// Buffer freezing owns EFZ's detector history for the selected fighter.  A
+// reservation alone covers future IC/FIC/staged recipes, but already-live
+// motion, normal, macro, manual, immediate, and legacy-queue owners also need
+// an admission check so a freeze cannot cache input behind them and fire later.
+bool BufferFreezeInputLaneBusy(int playerNum) {
+    if (playerNum < 1 || playerNum > 2) return true;
+    return IsScopedInputReserved(playerNum) ||
+           IsAutoActionMotionTransactionActive(playerNum) ||
+           IsAutoActionNormalPulseActive(playerNum) ||
+           ImmediateInput::TutorialLeaseActive(playerNum) ||
+           TutorialMotionQueueLeaseActive(playerNum) ||
+           g_manualInputOverride[playerNum].load(std::memory_order_acquire) ||
+           g_pollOverrideActive[playerNum].load(std::memory_order_acquire) ||
+           ImmediateInput::GetCurrentDesired(playerNum) != 0 ||
+           ImmediateInput::GetRemainingTicks(playerNum) != 0 ||
+           GetMotionQueueSnapshot(playerNum).active ||
+           (MacroController::IsExclusivePlayback() &&
+            MacroController::GetPlaybackPlayer() == playerNum);
+}
 }
 // Helper to freeze the perfect Dragon Punch motion
 bool FreezePerfectDragonPunch(int playerNum) {
+    std::lock_guard<std::recursive_mutex> p2ControlLock(g_p2ControlMutex);
     std::lock_guard<std::recursive_mutex> controlLock(g_bufferFreezeControlMutex);
+    if (g_onlineModeActive.load(std::memory_order_acquire)) return false;
+    if (BufferFreezeInputLaneBusy(playerNum)) return false;
     if (TutorialBufferFreezeLeaseActive()) return false;
     // Stop any existing freeze thread
     StopBufferFreezing();
@@ -83,7 +113,10 @@ bool FreezePerfectDragonPunch(int playerNum) {
 
 // Enhanced version with diagnostic dump and adjusted index placement
 bool FreezePerfectDragonPunchEnhanced(int playerNum) {
+    std::lock_guard<std::recursive_mutex> p2ControlLock(g_p2ControlMutex);
     std::lock_guard<std::recursive_mutex> controlLock(g_bufferFreezeControlMutex);
+    if (g_onlineModeActive.load(std::memory_order_acquire)) return false;
+    if (BufferFreezeInputLaneBusy(playerNum)) return false;
     if (TutorialBufferFreezeLeaseActive()) return false;
     // Stop any existing freeze thread
     StopBufferFreezing();
@@ -157,7 +190,10 @@ bool FreezePerfectDragonPunchEnhanced(int playerNum) {
 }
 
 bool ComboFreezeDP(int playerNum) {
+    std::lock_guard<std::recursive_mutex> p2ControlLock(g_p2ControlMutex);
     std::lock_guard<std::recursive_mutex> controlLock(g_bufferFreezeControlMutex);
+    if (g_onlineModeActive.load(std::memory_order_acquire)) return false;
+    if (BufferFreezeInputLaneBusy(playerNum)) return false;
     if (TutorialBufferFreezeLeaseActive()) return false;
     // Stop any existing freeze thread
     StopBufferFreezing();
@@ -204,6 +240,7 @@ bool ComboFreezeDP(int playerNum) {
 
 static bool FreezeBufferForMotionImpl(int playerNum, int motionType, int buttonMask,
                                       int optimalIndex) {
+    if (g_onlineModeActive.load(std::memory_order_acquire)) return false;
     // Stop any existing freeze thread
     StopBufferFreezingIgnoringTutorialLease();
     
@@ -370,13 +407,14 @@ static bool FreezeBufferForMotionImpl(int playerNum, int motionType, int buttonM
             };
             break;
         }
-        case MOTION_214236A: case MOTION_214236B: case MOTION_214236C: case MOTION_214236D: {
-            // 214236: Down, Down-Back, Back, Down, Down-Forward, Forward + Button
+        case MOTION_2141236A: case MOTION_2141236B: case MOTION_2141236C: case MOTION_2141236D: {
+            // 2141236: Down, Down-Back, Back, Down-Back, Down, Down-Forward, Forward + Button
             pattern = {
                 0x00, 0x00,
                 down, down,
                 downBack, downBack,
                 back, back,
+                downBack, downBack,
                 down, down,
                 downFwd, downFwd,
                 fwd,
@@ -514,7 +552,10 @@ static bool FreezeBufferForMotionImpl(int playerNum, int motionType, int buttonM
 }
 
 bool FreezeBufferForMotion(int playerNum, int motionType, int buttonMask, int optimalIndex) {
+    std::lock_guard<std::recursive_mutex> p2ControlLock(g_p2ControlMutex);
     std::lock_guard<std::recursive_mutex> controlLock(g_bufferFreezeControlMutex);
+    if (g_onlineModeActive.load(std::memory_order_acquire)) return false;
+    if (BufferFreezeInputLaneBusy(playerNum)) return false;
     if (g_tutorialFreezeToken.load(std::memory_order_acquire) != 0) {
         LogOut("[BUFFER_FREEZE] Start rejected: tutorial dummy owns the freeze engine", true);
         return false;
@@ -523,8 +564,11 @@ bool FreezeBufferForMotion(int playerNum, int motionType, int buttonMask, int op
 }
 
 bool AcquireTutorialBufferFreeze(uint64_t& tokenOut) {
+    std::lock_guard<std::recursive_mutex> p2ControlLock(g_p2ControlMutex);
     std::lock_guard<std::recursive_mutex> controlLock(g_bufferFreezeControlMutex);
     tokenOut = 0;
+    if (g_onlineModeActive.load(std::memory_order_acquire)) return false;
+    if (BufferFreezeInputLaneBusy(1) || BufferFreezeInputLaneBusy(2)) return false;
     if (g_bufferFreezingActive.load(std::memory_order_acquire) ||
         g_freezeSession[1].active.load(std::memory_order_acquire) ||
         g_freezeSession[2].active.load(std::memory_order_acquire)) return false;
@@ -543,13 +587,17 @@ bool TutorialBufferFreezeLeaseActive() {
 
 bool FreezeBufferForTutorial(uint64_t token, int playerNum, int motionType,
                              int buttonMask, int optimalIndex) {
+    std::lock_guard<std::recursive_mutex> p2ControlLock(g_p2ControlMutex);
     std::lock_guard<std::recursive_mutex> controlLock(g_bufferFreezeControlMutex);
+    if (g_onlineModeActive.load(std::memory_order_acquire)) return false;
     if (token == 0 ||
         g_tutorialFreezeToken.load(std::memory_order_acquire) != token) return false;
+    if (BufferFreezeInputLaneBusy(playerNum)) return false;
     return FreezeBufferForMotionImpl(playerNum, motionType, buttonMask, optimalIndex);
 }
 
 void StopTutorialBufferFreeze(uint64_t token) {
+    std::lock_guard<std::recursive_mutex> p2ControlLock(g_p2ControlMutex);
     std::lock_guard<std::recursive_mutex> controlLock(g_bufferFreezeControlMutex);
     if (token == 0 ||
         g_tutorialFreezeToken.load(std::memory_order_acquire) != token) return;
@@ -557,6 +605,7 @@ void StopTutorialBufferFreeze(uint64_t token) {
 }
 
 void ReleaseTutorialBufferFreeze(uint64_t token) {
+    std::lock_guard<std::recursive_mutex> p2ControlLock(g_p2ControlMutex);
     std::lock_guard<std::recursive_mutex> controlLock(g_bufferFreezeControlMutex);
     if (token == 0 ||
         g_tutorialFreezeToken.load(std::memory_order_acquire) != token) return;
@@ -568,6 +617,9 @@ void ReleaseTutorialBufferFreeze(uint64_t token) {
 
 // Clear (zero) entire buffer + index safely
 void ClearPlayerInputBuffer(int playerNum) {
+    std::lock_guard<std::recursive_mutex> p2ControlLock(g_p2ControlMutex);
+    std::lock_guard<std::recursive_mutex> freezeLock(g_bufferFreezeControlMutex);
+    if (g_onlineModeActive.load(std::memory_order_acquire)) return;
     uintptr_t playerPtr = GetPlayerPointer(playerNum);
     if (!playerPtr) return;
     // Bulk clear the entire buffer region in one write
@@ -579,7 +631,13 @@ void ClearPlayerInputBuffer(int playerNum) {
 }
 
 void BeginBufferFreezeSession(int playerNum, std::string_view label) {
+    std::lock_guard<std::recursive_mutex> p2ControlLock(g_p2ControlMutex);
     std::lock_guard<std::recursive_mutex> controlLock(g_bufferFreezeControlMutex);
+    if (g_onlineModeActive.load(std::memory_order_acquire)) return;
+    if (BufferFreezeInputLaneBusy(playerNum)) {
+        LogOut("[BUFFER_FREEZE] Session start rejected: another input owner is active", true);
+        return;
+    }
     if (TutorialBufferFreezeLeaseActive()) {
         LogOut("[BUFFER_FREEZE] Session start rejected: tutorial dummy owns the freeze engine", true);
         return;
@@ -603,10 +661,21 @@ void BeginBufferFreezeSession(int playerNum, std::string_view label) {
 }
 
 void EndBufferFreezeSession(int playerNum, const char* reason, bool clearGlobals) {
+    std::lock_guard<std::recursive_mutex> p2ControlLock(g_p2ControlMutex);
     std::lock_guard<std::recursive_mutex> controlLock(g_bufferFreezeControlMutex);
     if (TutorialBufferFreezeLeaseActive()) return;
     auto &s = g_freezeSession[playerNum];
     if (!s.active.load()) return;
+    if (g_onlineModeActive.load(std::memory_order_acquire)) {
+        s.active.store(false, std::memory_order_release);
+        s.threadRunning.store(false, std::memory_order_release);
+        s.originalIndexValid = false;
+        if (clearGlobals) {
+            g_frozenBufferLength = 0;
+            g_frozenBufferValues.clear();
+        }
+        return;
+    }
 
     using clock = std::chrono::steady_clock;
     auto tStart = clock::now();
@@ -675,7 +744,10 @@ void EndBufferFreezeSession(int playerNum, const char* reason, bool clearGlobals
 
 // Generic pattern freeze for bespoke sequences (Final Memory, multi-phase inputs, etc.)
 bool FreezeBufferWithPattern(int playerNum, const std::vector<uint8_t>& patternIn) {
+    std::lock_guard<std::recursive_mutex> p2ControlLock(g_p2ControlMutex);
     std::lock_guard<std::recursive_mutex> controlLock(g_bufferFreezeControlMutex);
+    if (g_onlineModeActive.load(std::memory_order_acquire)) return false;
+    if (BufferFreezeInputLaneBusy(playerNum)) return false;
     if (TutorialBufferFreezeLeaseActive()) return false;
     StopBufferFreezing();
     if (patternIn.empty()) return false;
@@ -707,7 +779,10 @@ bool FreezeBufferWithPattern(int playerNum, const std::vector<uint8_t>& patternI
 
 // Overload with index advance capability.
 bool FreezeBufferWithPattern(int playerNum, const std::vector<uint8_t>& patternIn, int extraNeutralFrames) {
+    std::lock_guard<std::recursive_mutex> p2ControlLock(g_p2ControlMutex);
     std::lock_guard<std::recursive_mutex> controlLock(g_bufferFreezeControlMutex);
+    if (g_onlineModeActive.load(std::memory_order_acquire)) return false;
+    if (BufferFreezeInputLaneBusy(playerNum)) return false;
     if (TutorialBufferFreezeLeaseActive()) return false;
     if (extraNeutralFrames <= 0) {
         return FreezeBufferWithPattern(playerNum, patternIn);

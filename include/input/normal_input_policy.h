@@ -67,6 +67,22 @@ constexpr Intent IntentFromMotion(int motionType) {
         return {RelativeDirection::Back,
                 ButtonForGroupIndex(motionType - MOTION_4A), false};
     }
+    if (motionType >= MOTION_1A && motionType <= MOTION_1D) {
+        return {RelativeDirection::DownBack,
+                ButtonForGroupIndex(motionType - MOTION_1A), false};
+    }
+    if (motionType >= MOTION_3A && motionType <= MOTION_3D) {
+        return {RelativeDirection::DownForward,
+                ButtonForGroupIndex(motionType - MOTION_3A), false};
+    }
+    if (motionType >= MOTION_J2A && motionType <= MOTION_J2D) {
+        return {RelativeDirection::Down,
+                ButtonForGroupIndex(motionType - MOTION_J2A), true};
+    }
+    if (motionType >= MOTION_J6A && motionType <= MOTION_J6D) {
+        return {RelativeDirection::Forward,
+                ButtonForGroupIndex(motionType - MOTION_J6A), true};
+    }
     return {};
 }
 
@@ -230,6 +246,7 @@ public:
     bool Active() const { return phase_ != Phase::Idle; }
     bool NeedsReleaseNeutral() const { return phase_ == Phase::ReleaseNeutral; }
     bool HasPending() const { return pendingGeneration_ != 0; }
+    uint64_t PendingGeneration() const { return pendingGeneration_; }
 
     bool RestartAwaiting() {
         if (phase_ != Phase::PreNeutral && phase_ != Phase::Press) return false;

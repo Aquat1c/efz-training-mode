@@ -5,6 +5,9 @@
 #include "../include/game/auto_airtech.h"
 #include "../include/game/auto_jump.h"
 #include "../include/game/auto_action.h" // ensure ClearAllAutoActionTriggers declaration
+#include "../include/game/auto_action_charge.h"
+#include "../include/game/kaori_recoil_duck.h"
+#include "../include/game/character_action_catalog.h"
 #include "../include/game/frame_analysis.h"
 #include "../include/game/frame_advantage.h"
 #include "../include/game/combo_overlay.h"
@@ -12,6 +15,7 @@
 #include "../include/core/constants.h"
 #include "../include/utils/utilities.h"
 #include "../include/utils/bgm_control.h"
+#include "../include/utils/audio_control.h"
 #include "../include/core/memory.h"
 #include "../include/core/logger.h"
 #include "../include/gui/overlay.h"
@@ -423,7 +427,9 @@ static void ResetControlOnCharacterSelect() {
     if (g_p2ControlOverridden) {
         RestoreP2ControlState();
     }
-    g_pendingControlRestore.store(false);
+    if (!g_p2ControlOverridden.load(std::memory_order_acquire)) {
+        g_pendingControlRestore.store(false, std::memory_order_release);
+    }
 
     // Clear poll override/injection flags for both players
     for (int i = 1; i <= 2; ++i) {
@@ -545,7 +551,7 @@ void UpdateTriggerOverlay() {
     auto getActionName = [](int actionType, int customId, int strength) -> std::string {
         std::string strengthLetter = "";
         
-        // Determine strength letter (A, B, C)
+        // Determine the concrete button used by button-variant actions.
         if (actionType == ACTION_QCF ||
             actionType == ACTION_DP ||
             actionType == ACTION_QCB ||
@@ -559,13 +565,21 @@ void UpdateTriggerOverlay() {
             actionType == ACTION_412 ||
             actionType == ACTION_22 ||
             actionType == ACTION_4123641236 ||
-            actionType == ACTION_6321463214) {
+            actionType == ACTION_6321463214 ||
+            actionType == ACTION_1X ||
+            actionType == ACTION_3X ||
+            actionType == ACTION_J2X ||
+            actionType == ACTION_J6X ||
+            actionType == ACTION_66X ||
+            actionType == ACTION_662X ||
+            actionType == ACTION_664X) {
             
             // Convert strength number to letter
             switch(strength) {
                 case 0: strengthLetter = "A"; break;
                 case 1: strengthLetter = "B"; break;
                 case 2: strengthLetter = "C"; break;
+                case 3: strengthLetter = "S"; break;
                 default: strengthLetter = "A"; break;
             }
         }
@@ -596,7 +610,7 @@ void UpdateTriggerOverlay() {
             case ACTION_QCB: return "214" + strengthLetter; // QCB + strength
             case ACTION_421: return "421" + strengthLetter; // Half-circle down + strength
             case ACTION_SUPER1: return "41236" + strengthLetter; // HCF + strength
-            case ACTION_SUPER2: return "214236" + strengthLetter; // Hybrid replaces removed 63214
+            case ACTION_SUPER2: return "2141236" + strengthLetter;
             case ACTION_236236: return "236236" + strengthLetter; // Double QCF + strength
             case ACTION_214214: return "214214" + strengthLetter; // Double QCB + strength
             case ACTION_641236: return "641236" + strengthLetter; // Pretzel variant
@@ -605,6 +619,14 @@ void UpdateTriggerOverlay() {
             case ACTION_22: return "22" + strengthLetter;         // Down-Down
             case ACTION_4123641236: return "4123641236" + strengthLetter; // Double 41236
             case ACTION_6321463214: return "6321463214" + strengthLetter;
+            case ACTION_1X: return "1" + strengthLetter;
+            case ACTION_3X: return "3" + strengthLetter;
+            case ACTION_J2X: return "j.2" + strengthLetter;
+            case ACTION_J6X: return "j.6" + strengthLetter;
+            case ACTION_66X: return "66" + strengthLetter;
+            case ACTION_662X: return "662" + strengthLetter;
+            case ACTION_664X: return "664" + strengthLetter;
+            case ACTION_KAORI_RECOIL_DUCK: return "Kaori 44~66";
             case ACTION_JUMP: return "Jump";
             case ACTION_BACKDASH: return "Backdash";
             case ACTION_FORWARD_DASH: {
@@ -651,7 +673,7 @@ void UpdateTriggerOverlay() {
                     case ACTION_QCB: return std::string("214") + letter(str);
                     case ACTION_421: return std::string("421") + letter(str);
                     case ACTION_SUPER1: return std::string("41236") + letter(str);
-                    case ACTION_SUPER2: return std::string("214236") + letter(str);
+                    case ACTION_SUPER2: return std::string("2141236") + letter(str);
                     case ACTION_236236: return std::string("236236") + letter(str);
                     case ACTION_214214: return std::string("214214") + letter(str);
                     case ACTION_641236: return std::string("641236") + letter(str);
@@ -660,6 +682,14 @@ void UpdateTriggerOverlay() {
                     case ACTION_22:  return std::string("22") + letter(str);
                     case ACTION_4123641236: return std::string("4123641236") + letter(str);
                     case ACTION_6321463214: return std::string("6321463214") + letter(str);
+                    case ACTION_1X: return std::string("1") + letter(str);
+                    case ACTION_3X: return std::string("3") + letter(str);
+                    case ACTION_J2X: return std::string("j.2") + letter(str);
+                    case ACTION_J6X: return std::string("j.6") + letter(str);
+                    case ACTION_66X: return std::string("66") + letter(str);
+                    case ACTION_662X: return std::string("662") + letter(str);
+                    case ACTION_664X: return std::string("664") + letter(str);
+                    case ACTION_KAORI_RECOIL_DUCK: return "44~66";
                     case ACTION_JUMP: {
                         // strength: 0=neutral jump, 1=forward jump, 2=backward jump
                         int s = (str < 0 ? 0 : (str > 2 ? 2 : str));
@@ -689,77 +719,61 @@ void UpdateTriggerOverlay() {
             };
 
             auto poolTokenForIndex = [&](int idx) -> std::string {
-                if (idx >= 0 && idx <= 19) {
-                    const char* prefixes[] = { "5", "2", "j", "6", "4" };
-                    const char buttons[] = { 'A', 'B', 'C', 'D' };
-                    const int group = idx / 4;
-                    const int button = idx % 4;
-                    return std::string(prefixes[group]) + buttons[button];
+                int poolAction = ACTION_NONE;
+                int poolStrength = 0;
+                if (!CharacterActionCatalog::PoolIndexToAction(
+                        idx, poolAction, poolStrength)) {
+                    return "?";
                 }
-                if (idx >= 20 && idx <= 43) {
-                    const char* motions[] = { "236", "623", "214", "421", "412", "22" };
-                    const int local = idx - 20;
-                    const int motion = local / 4;
-                    const int button = local % 4;
-                    const char buttons[] = { 'A', 'B', 'C', 'D' };
-                    return std::string(motions[motion]) + buttons[button];
-                }
-                if (idx >= 44 && idx <= 75) {
-                    const char* motions[] = {
-                        "41236", "214236", "236236", "214214",
-                        "641236", "463214", "4123641236", "6321463214"
-                    };
-                    const int local = idx - 44;
-                    const int motion = local / 4;
-                    const int button = local % 4;
-                    const char buttons[] = { 'A', 'B', 'C', 'D' };
-                    return std::string(motions[motion]) + buttons[button];
-                }
-                switch (idx) {
-                    case 76: return "FM";
-                    case 77: return "Jump";
-                    case 78: return "F.Jump";
-                    case 79: return "B.Jump";
-                    case 80: return "44";
-                    case 81: return "66";
-                    case 82: return "[4]";
-                    default: return "?";
+                switch (poolAction) {
+                    case ACTION_FINAL_MEMORY: return "FM";
+                    case ACTION_JUMP:
+                        if (poolStrength == 1) return "F.Jump";
+                        if (poolStrength == 2) return "B.Jump";
+                        return "Jump";
+                    case ACTION_BACKDASH: return "44";
+                    // A pool entry for the plain forward dash must not inherit
+                    // the separate global dash-followup selector.
+                    case ACTION_FORWARD_DASH: return "66";
+                    case ACTION_BLOCK: return "[4]";
+                    default: return tokenFor(poolAction, poolStrength, 0);
                 }
             };
 
             auto concretePoolIndexForAction = [&](int act, int str) -> int {
                 str = (str < 0) ? 0 : str;
-                if (act >= ACTION_5A && act <= ACTION_4D) return act;
-                if (act == ACTION_QCF) return 20 + CLAMP(str, 0, 3);
-                if (act == ACTION_DP) return 24 + CLAMP(str, 0, 3);
-                if (act == ACTION_QCB) return 28 + CLAMP(str, 0, 3);
-                if (act == ACTION_421) return 32 + CLAMP(str, 0, 3);
-                if (act == ACTION_412) return 36 + CLAMP(str, 0, 3);
-                if (act == ACTION_22) return 40 + CLAMP(str, 0, 3);
-                if (act == ACTION_SUPER1) return 44 + CLAMP(str, 0, 3);
-                if (act == ACTION_SUPER2) return 48 + CLAMP(str, 0, 3);
-                if (act == ACTION_236236) return 52 + CLAMP(str, 0, 3);
-                if (act == ACTION_214214) return 56 + CLAMP(str, 0, 3);
-                if (act == ACTION_641236) return 60 + CLAMP(str, 0, 3);
-                if (act == ACTION_463214) return 64 + CLAMP(str, 0, 3);
-                if (act == ACTION_4123641236) return 68 + CLAMP(str, 0, 3);
-                if (act == ACTION_6321463214) return 72 + CLAMP(str, 0, 3);
-                if (act == ACTION_FINAL_MEMORY) return 76;
-                if (act == ACTION_JUMP) return 77 + CLAMP(str, 0, 2);
-                if (act == ACTION_BACKDASH) return 80;
-                if (act == ACTION_FORWARD_DASH) return 81;
-                if (act == ACTION_BLOCK) return 82;
+                if (act == ACTION_JUMP) {
+                    str = CLAMP(str, 0, 2);
+                } else if (act == ACTION_FINAL_MEMORY ||
+                           act == ACTION_BACKDASH ||
+                           act == ACTION_FORWARD_DASH ||
+                           act == ACTION_BLOCK ||
+                           act == ACTION_KAORI_RECOIL_DUCK) {
+                    str = 0;
+                } else {
+                    str = CLAMP(str, 0, 3);
+                }
+
+                for (int idx = 0; idx < CharacterActionCatalog::kPoolCount; ++idx) {
+                    int poolAction = ACTION_NONE;
+                    int poolStrength = 0;
+                    if (CharacterActionCatalog::PoolIndexToAction(
+                            idx, poolAction, poolStrength) &&
+                        poolAction == act && poolStrength == str) {
+                        return idx;
+                    }
+                }
                 return -1;
             };
 
             auto poolBitSet = [](uint64_t lo, uint64_t hi, int idx) -> bool {
-                if (idx < 0 || idx >= 83) return false;
+                if (idx < 0 || idx >= CharacterActionCatalog::kPoolCount) return false;
                 if (idx < 64) return ((lo >> idx) & 1ull) != 0;
                 return ((hi >> (idx - 64)) & 1ull) != 0;
             };
 
             auto setPoolBit = [](uint64_t& lo, uint64_t& hi, int idx) {
-                if (idx < 0 || idx >= 83) return;
+                if (idx < 0 || idx >= CharacterActionCatalog::kPoolCount) return;
                 if (idx < 64) lo |= (1ull << idx);
                 else hi |= (1ull << (idx - 64));
             };
@@ -875,9 +889,9 @@ void UpdateTriggerOverlay() {
                 if (!usePool) return std::string();
                 if ((lo | hi) == 0) return "Random: Empty";
 
-                int selected[83];
+                int selected[CharacterActionCatalog::kPoolCount];
                 int selectedCount = 0;
-                for (int idx = 0; idx < 83; ++idx) {
+                for (int idx = 0; idx < CharacterActionCatalog::kPoolCount; ++idx) {
                     if (poolBitSet(lo, hi, idx)) selected[selectedCount++] = idx;
                 }
                 if (selectedCount <= 0) return "Random: Empty";
@@ -1079,6 +1093,8 @@ void FrameDataMonitor() {
     bool lastFmSyncFeatures = g_featuresEnabled.load(std::memory_order_relaxed);
     bool lastFmSyncNetplay = g_onlineModeActive.load(std::memory_order_relaxed);
     int matchLogAnchorInternal = -1;
+    bool audioHookOwnershipTerminal = false;
+    DWORD lastAudioHookResolveTick = GetTickCount() - 1000u;
 
     while (!g_isShuttingDown) {
         auto frameStart = clock::now();
@@ -1095,6 +1111,33 @@ void FrameDataMonitor() {
         }
 
         ConsumeRuntimeLifecycleResyncRequests();
+
+        // Host resolution is intentionally persistent.  EfzRevival.dll may be
+        // injected after this mod's fixed startup window, so module absence at
+        // startup must never cause us to claim the two EFZ entrypoints that
+        // Revival will later rewrite.
+        const DWORD audioResolveNow = GetTickCount();
+        if (!audioHookOwnershipTerminal
+            && static_cast<DWORD>(audioResolveNow - lastAudioHookResolveTick) >= 1000u) {
+            lastAudioHookResolveTick = audioResolveNow;
+            const uintptr_t efzBase = GetEFZBase();
+            if (efzBase) {
+                const AudioControl::HookInstallResult audioResult = AudioControl::InstallHooks(
+                    efzBase,
+                    AudioControl::HookInstallPhase::HostResolved);
+                if (audioResult != AudioControl::HookInstallResult::Deferred) {
+                    audioHookOwnershipTerminal = true;
+                    LogOut(std::string("[AUDIO] persistent host resolution result=")
+                           + AudioControl::HookInstallResultName(audioResult), true);
+                    if (audioResult == AudioControl::HookInstallResult::Ready
+                        && AudioControl::EnableVolumeApplicationIfSoundReady(
+                            0, "persistent host resolution")) {
+                        AudioControl::ApplyConfiguredVolumesNow();
+                    }
+                }
+            }
+        }
+
         const uint32_t lifecycleGeneration = GetRuntimeLifecycleGeneration();
         if (lifecycleGeneration != lastLifecycleGeneration) {
             cachedMoveIDAddr1 = 0;
@@ -1183,10 +1226,7 @@ void FrameDataMonitor() {
             
             // Also clear any pending delays and restore control
             if (p1DelayState.isDelaying || p2DelayState.isDelaying) {
-                p1DelayState.isDelaying = false;
-                p2DelayState.isDelaying = false;
-                p1DelayState.triggerType = TRIGGER_NONE;
-                p2DelayState.triggerType = TRIGGER_NONE;
+                ClearAllAutoActionTriggers();
                 LogOut("[FRAME MONITOR] Cleared delay states due to phase change", true);
             }
             
@@ -1225,17 +1265,9 @@ void FrameDataMonitor() {
                 StopRFFreeze();
                 ResetActionFlags();
 
-                // Clear all auto-action states
-                p1DelayState = {false, 0, TRIGGER_NONE, 0, -1, -1, 0, -1};
-                p2DelayState = {false, 0, TRIGGER_NONE, 0, -1, -1, 0, -1};
-                p1ActionApplied = false;
-                p2ActionApplied = false;
-
-                // Restore P2 control
-                if (g_p2ControlOverridden) {
-                    RestoreP2ControlState();
-                    g_p2ControlOverridden = false;
-                }
+                // Clear every delay field and retire any producer/consumer
+                // generation before the old battle objects disappear.
+                ClearAllAutoActionTriggers();
 
                 if (leavingPracticeMatch && g_featuresEnabled.load()) {
                     std::ostringstream oss;
@@ -1486,8 +1518,11 @@ void FrameDataMonitor() {
             // Leaving Character Select: apply any deferred CPU flag baseline once
             s_characterSelectPhaseFrames = 0;
             if (GetCurrentGameMode() == GameMode::Practice && s_pendingPostCsCpuApply && s_csBaseline.valid) {
+                std::lock_guard<std::recursive_mutex> controlLock(g_p2ControlMutex);
                 uintptr_t gs = 0; uintptr_t base = GetEFZBase();
-                if (base && SafeReadMemory(base + EFZ_BASE_OFFSET_GAME_STATE, &gs, sizeof(gs)) && gs) {
+                if (!g_onlineModeActive.load(std::memory_order_acquire) &&
+                    GetCurrentGameMode() == GameMode::Practice &&
+                    base && SafeReadMemory(base + EFZ_BASE_OFFSET_GAME_STATE, &gs, sizeof(gs)) && gs) {
                     uint8_t wantP1 = s_csBaseline.p1Cpu;
                     uint8_t wantP2 = s_csBaseline.p2Cpu;
                     bool ok1 = SafeWriteMemory(gs + GAMESTATE_OFF_P1_CPU_FLAG, &wantP1, sizeof(wantP1));
@@ -1647,12 +1682,6 @@ void FrameDataMonitor() {
                 // Reset action flags and restore P2 control state
                 ResetActionFlags();
                 
-                // Clear delay states
-                p1DelayState.isDelaying = false;
-                p1DelayState.triggerType = TRIGGER_NONE;
-                p2DelayState.isDelaying = false;
-                p2DelayState.triggerType = TRIGGER_NONE;
-
                 // Hard clear of all auto-action trigger internals (cooldowns, last active, etc.)
                 ClearAllAutoActionTriggers();
 
@@ -2273,8 +2302,14 @@ void FrameDataMonitor() {
                 }
             }
             
-            // Run dummy auto-block using unified sample (still every frame for precision)
-            MonitorDummyAutoBlock(GetCurrentPerFrameSample());
+            // Recorder capture and demonstration playback own a deterministic
+            // world/input transaction. Keep persistent Practice helpers from
+            // rewriting the authored baseline or contributing unrecorded input;
+            // their settings remain unchanged and resume after ownership ends.
+            if (!Mission::Engine::IsPracticeAutomationSuppressed()) {
+                // Run dummy auto-block using unified sample (still every frame for precision)
+                MonitorDummyAutoBlock(GetCurrentPerFrameSample());
+            }
 
             // FrameBar: per-subframe sampler (cheap when toggle is off).
             FrameBar::TickSample();
@@ -2282,14 +2317,27 @@ void FrameDataMonitor() {
             // Mission engine: per-frame snapshot (move-IDs / combo) + inspector.
             TickMissionEngineGuarded();
 
-            // Practice-only: Defense helpers
-            // Always RG takes effect when enabled; Random RG mimics Revival's per-frame coin flip.
-            AlwaysRG::Tick(moveID1, moveID2);
-            RandomRG::Tick(moveID1, moveID2);
-            // Random Block: per-frame coin flip for the autoblock flag with safe OFF deferral
-            RandomBlock::Tick(moveID1, moveID2);
+            // Fallback driver when the native input-hook tick is disabled.
+            // The active-mask fast path makes this a single atomic read while
+            // no IC/FIC follow-up is pending.
+            if (!g_tickIntegratedAutoActions.load() &&
+                !Mission::Engine::IsPracticeAutomationSuppressed()) {
+                TickAutoActionChargeFollowups();
+                KaoriRecoilDuck::Tick();
+            }
 
-            if (moveIDsChanged || criticalFeaturesActive) {
+            // Practice-only: Defense helpers. Randomized/persistent helpers are
+            // quarantined while a mission take or demonstration owns the match.
+            if (!Mission::Engine::IsPracticeAutomationSuppressed()) {
+                // Always RG takes effect when enabled; Random RG mimics Revival's per-frame coin flip.
+                AlwaysRG::Tick(moveID1, moveID2);
+                RandomRG::Tick(moveID1, moveID2);
+                // Random Block: per-frame coin flip for the autoblock flag with safe OFF deferral
+                RandomBlock::Tick(moveID1, moveID2);
+            }
+
+            if (!Mission::Engine::IsPracticeAutomationSuppressed() &&
+                (moveIDsChanged || criticalFeaturesActive)) {
                 // STEP 1: Process auto-actions FIRST (highest priority)
                 // When tick-integrated mode is active, auto-actions are driven directly from the
                 // engine's per-tick input hook; skip here to avoid double-processing.
@@ -2359,7 +2407,23 @@ void FrameDataMonitor() {
                     return t;
                 };
                 
-                if (moveIDsChanged) {
+                const bool automationSuppressed =
+                    Mission::Engine::IsPracticeAutomationSuppressed();
+                if (automationSuppressed) {
+                    // Continuous Recovery may own an RF freeze independently
+                    // of its settings. Retire that live effect for the
+                    // deterministic transaction; normal eligibility restarts
+                    // it after the transaction when appropriate.
+                    if (s_crRFFreezeP1) {
+                        StopRFFreezePlayer(1);
+                        s_crRFFreezeP1 = false;
+                    }
+                    if (s_crRFFreezeP2) {
+                        StopRFFreezePlayer(2);
+                        s_crRFFreezeP2 = false;
+                    }
+                }
+                if (moveIDsChanged && !automationSuppressed) {
                     // Engine regen gating: if engine-managed regen (F4/F5) is active, do not perform CR writes
                     uint16_t engineParamA=0, engineParamB=0; EngineRegenMode regenMode = EngineRegenMode::Unknown;
                     bool gotParams = GetEngineRegenStatus(regenMode, engineParamA, engineParamB);
@@ -2569,7 +2633,8 @@ void FrameDataMonitor() {
                 }
 
                 // Auto-fix HP anomalies in neutral: if enabled, and a side is neutral with HP<=0, set to 9999.
-                if (Config::GetSettings().autoFixHPOnNeutral) {
+                if (!automationSuppressed &&
+                    Config::GetSettings().autoFixHPOnNeutral) {
                     uintptr_t baseNow = s_ptrCache.base;
                     uintptr_t p1B = ResolvePlayerBaseBestEffort(1, baseNow);
                     uintptr_t p2B = ResolvePlayerBaseBestEffort(2, baseNow);

@@ -24,6 +24,16 @@ namespace Config {
     bool collisionDisplayHurtboxes;
     bool collisionDisplayCollisionBoxes;
     bool collisionDisplayProjectileInteractions;
+    // Per-player filters for the three ordinary collision layers. The layer
+    // toggles above remain masters (and retain Revival hotkey compatibility).
+    // These default ON so an existing/global layer keeps its old appearance
+    // until the user deliberately hides one side.
+    bool collisionDisplayP1Hitboxes;
+    bool collisionDisplayP2Hitboxes;
+    bool collisionDisplayP1Hurtboxes;
+    bool collisionDisplayP2Hurtboxes;
+    bool collisionDisplayP1CollisionBoxes;
+    bool collisionDisplayP2CollisionBoxes;
     int  collisionDisplayFillAlphaPercent; // 0..100 box fill alpha; outlines stay readable
     bool collisionDisplayProjectileBoxes;
     bool collisionDisplayProjectileOrigins;

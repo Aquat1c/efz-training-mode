@@ -3,7 +3,7 @@
  "tutorialSchema": 1,
  "type": "tutorial",
  "id": "efz.offense.red_ic",
- "revision": 6,
+ "revision": 8,
  "category": "offense",
  "order": 210,
  "difficulty": 2,
@@ -51,7 +51,8 @@
    {
     "id": "p0",
     "title": "Instant Charge",
-    "text": "Here's the trick: while your RF Gauge is Red or Light Blue, input {input:22C} the moment an attack connects. IC spends the gauge, chops the attack's recovery short, and freezes the screen for a beat. Keep in mind - only attacks that allow IC can do this."
+    "showHud": "red_ic",
+    "text": "While your RF Gauge is {tone:red_ic|Red}, input {input:22C} the moment an attack connects to perform {tone:red_ic|Red IC}. IC spends the gauge, cuts the attack's recovery short, and briefly freezes the screen. Only attacks that allow IC can use it."
    },
    {
     "id": "p1",
