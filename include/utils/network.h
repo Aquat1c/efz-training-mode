@@ -3,6 +3,7 @@
 #include <string>
 #include <atomic>
 #include "efz_netplay_state.h"
+#include "efz_revival_profile.h"
 
 extern std::atomic<bool> isOnlineMatch;
 
@@ -66,7 +67,9 @@ EfzRevivalVersion GetEfzRevivalVersion();
 EfzRevivalDllFlavor GetEfzRevivalDllFlavor();
 bool IsEfzRevival102fSubframeBuild();
 bool IsEfzRevival102fClassicBuild();
-// True only for the exact supported 1.02j PE profile. J moved critical code,
+// Identifies which verified 1.02j compilation supplies the active RVAs.
+EfzRevival102jBuild GetEfzRevival102jBuild();
+// True only for a supported exact 1.02j PE profile. J moved critical code,
 // globals, vtable slots, and Practice fields, so title detection alone is not
 // sufficient permission to use its RVAs.
 bool IsEfzRevival102jVerifiedBuild();
