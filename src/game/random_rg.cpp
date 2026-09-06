@@ -4,6 +4,7 @@
 #include "../include/core/logger.h"
 #include "../include/game/game_state.h"
 #include "../include/utils/utilities.h" // GetEFZBase
+#include "../include/utils/switch_players.h"
 #include <cstdlib> // rand
 #include <atomic>
 
@@ -25,16 +26,18 @@ namespace RandomRG {
         if (GetCurrentGameMode() != GameMode::Practice) return;
         if (GetCurrentGamePhase() != GamePhase::Match) return;
 
-        uintptr_t base = GetEFZBase();
-        if (!base) return;
-        uintptr_t p2 = 0;
-        if (!SafeReadMemory(base + EFZ_BASE_OFFSET_P2, &p2, sizeof(p2)) || !p2) return;
+        // Arm the practice DUMMY side, not a fixed P2. When the player has
+        // swapped controls onto the P2 side the dummy is P1, so resolve it
+        // through SwitchPlayers exactly as ALWAYS RECOIL GUARD does - otherwise
+        // the two toggles point at different characters after a swap.
+        const uintptr_t dummy = GetPlayerBase(SwitchPlayers::GetRemotePlayerIndex());
+        if (!dummy) return;
 
         // EfzRevival parity: coin flip each frame
         bool heads = (rand() & 1) != 0;
     uint8_t arm = heads ? 0x3C : 0x00;
     // IMPORTANT: RG arm byte is at +334 (decimal), not 0x334.
-    SafeWriteMemory(p2 + 334, &arm, sizeof(arm));
+    SafeWriteMemory(dummy + 334, &arm, sizeof(arm));
 
         // Basic logging only on state change to keep output readable
         if (arm != g_lastArmValue) {

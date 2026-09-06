@@ -10,6 +10,7 @@
 #include "../include/gui/custom_menu/screens.h"
 #include "../include/gui/custom_menu/sound.h"
 #include "../include/gui/value_lock_state.h"
+#include "../include/utils/update_check.h"
 #include "../include/gui/imgui_impl.h"
 #include "../include/gui/imgui_gui.h"
 #include "../include/core/logger.h"
@@ -100,6 +101,35 @@ static const TopTabInfo kTopTabs[TT_COUNT] = {
     {"SETTINGS", kSubs_Settings, 3},
     {"HELP",     kSubs_Help,     4},
 };
+
+// Sub-tab labels are read from TWO places - ComputeTabRects() sizes the click
+// rects and RenderTabBar() draws the strip - and both must see the SAME string
+// or the hit rects drift away from the glyphs. Route every read through this one
+// helper so a badge can never be applied to only one of them.
+//
+// Only HELP (the top tab) and HELP>ABOUT (the sub tab under it) are badged, so
+// the notice points down the path that actually leads to the detail. The static
+// buffers exist only so the returned pointer stays valid for the whole frame.
+// Render thread only - do not call from a worker.
+const char* TopTabLabel(int index) {
+    if (index != TT_HELP || !UpdateCheck::IsUpdateAvailable()) {
+        return kTopTabs[index].label;
+    }
+    static char s_badged[48];
+    _snprintf_s(s_badged, sizeof(s_badged), _TRUNCATE,
+                "%s %s", kTopTabs[index].label, UpdateCheck::BadgeText());
+    return s_badged;
+}
+
+const char* SubTabLabel(const SubTab& sub) {
+    if (sub.pane != PANE_HELP_ABOUT || !UpdateCheck::IsUpdateAvailable()) {
+        return sub.label;
+    }
+    static char s_badged[48];
+    _snprintf_s(s_badged, sizeof(s_badged), _TRUNCATE,
+                "%s %s", sub.label, UpdateCheck::BadgeText());
+    return s_badged;
+}
 
 inline int ClampTopTab(int t) {
     if (t < 0) return 0;
@@ -959,7 +989,7 @@ void ComputeTabRects(MainLayout& L) {
     float totalW = 0.0f;
     float widths[TT_COUNT];
     for (int i = 0; i < TT_COUNT; ++i) {
-        widths[i] = Layout::MeasureTextW(bFont, bPx, kTopTabs[i].label);
+        widths[i] = Layout::MeasureTextW(bFont, bPx, TopTabLabel(i));
         totalW += widths[i];
         if (i + 1 < TT_COUNT) totalW += metrics.tabGapX;
     }
@@ -983,7 +1013,7 @@ void ComputeTabRects(MainLayout& L) {
     float subTotalW = 0.0f;
     float subWidths[8];
     for (int i = 0; i < tt.subCount && i < 8; ++i) {
-        subWidths[i] = Layout::MeasureTextW(bFont, bPx, tt.subs[i].label);
+        subWidths[i] = Layout::MeasureTextW(bFont, bPx, SubTabLabel(tt.subs[i]));
         subTotalW += subWidths[i];
         if (i + 1 < tt.subCount) subTotalW += metrics.tabGapX;
     }
@@ -1468,7 +1498,7 @@ void RenderTabBar(const MainLayout& L) {
 
     // Build top-tab label array on the fly.
     const char* labels[TT_COUNT];
-    for (int i = 0; i < TT_COUNT; ++i) labels[i] = kTopTabs[i].label;
+    for (int i = 0; i < TT_COUNT; ++i) labels[i] = TopTabLabel(i);
 
     Layout::DrawTabBar(
         dl, L.panelTL.x, L.tabBarY, Theme::kPanelW,
@@ -1482,7 +1512,7 @@ void RenderTabBar(const MainLayout& L) {
     if (tt.subCount > 1 && L.subBarH > 0.0f) {
         const char* subLabels[8];
         const int n = tt.subCount > 8 ? 8 : tt.subCount;
-        for (int i = 0; i < n; ++i) subLabels[i] = tt.subs[i].label;
+        for (int i = 0; i < n; ++i) subLabels[i] = SubTabLabel(tt.subs[i]);
         Layout::DrawTabBar(
             dl, L.panelTL.x, L.subBarY, Theme::kPanelW,
             subLabels, n,

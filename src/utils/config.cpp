@@ -274,6 +274,8 @@ namespace Config {
             file << "enableConsole = 0\n";
             file << "; Restrict functionality to Practice Mode only (1 = yes, 0 = no)\n";
             file << "restrictToPracticeMode = 1\n\n";
+            file << "; Check GitHub once per launch for a newer release (1 = yes, 0 = no)\n";
+            file << "checkForUpdates = 1\n\n";
             file << "; Enable this mod's framestep hotkeys/runtime (1 = yes, 0 = no)\n";
             file << "framestepEnabled = 1\n";
             file << "; Suppress Revival's native pause/step hotkeys while this mod owns framestep (1 = yes, 0 = no)\n";
@@ -525,6 +527,7 @@ namespace Config {
             settings.suppressRevivalFramestep = GetValueBool("General", "suppressRevivalFramestep", true);
             settings.enableFpsDiagnostics = GetValueBool("General", "enableFpsDiagnostics", false);
             settings.showFrameBar = GetValueBool("General", "showFrameBar", false);
+            settings.checkForUpdates = GetValueBool("General", "checkForUpdates", true);
             settings.bgmVolumePercent = GetValueInt("General", "bgmVolumePercent", 100);
             if (settings.bgmVolumePercent < 0) settings.bgmVolumePercent = 0;
             if (settings.bgmVolumePercent > 100) settings.bgmVolumePercent = 100;
@@ -857,6 +860,8 @@ namespace Config {
             file << "enableConsole = " << (settings.enableConsole ? "1" : "0") << "\n";
             file << "; Restrict functionality to Practice Mode only (1 = yes, 0 = no)\n";
             file << "restrictToPracticeMode = " << (settings.restrictToPracticeMode ? "1" : "0") << "\n\n";
+            file << "; Check GitHub once per launch for a newer release (1 = yes, 0 = no)\n";
+            file << "checkForUpdates = " << (settings.checkForUpdates ? "1" : "0") << "\n\n";
             file << "; Enable this mod's framestep hotkeys/runtime (1 = yes, 0 = no)\n";
             file << "framestepEnabled = " << (settings.framestepEnabled ? "1" : "0") << "\n";
             file << "; Suppress Revival's native pause/step hotkeys while this mod owns framestep (1 = yes, 0 = no)\n";
@@ -1082,6 +1087,7 @@ namespace Config {
             if (k == "collisiondisplaynagamoriranges") settings.collisionDisplayNagamoriRanges = (value == "1" || value == "true");
             if (k == "collisiondisplaynagamoriaffected") settings.collisionDisplayNagamoriAffected = (value == "1" || value == "true");
             if (k == "restricttopracticemode") settings.restrictToPracticeMode = (value == "1");
+            if (k == "checkforupdates") settings.checkForUpdates = (value == "1" || value == "true");
             if (k == "framestepenabled") settings.framestepEnabled = (value == "1" || value == "true");
             if (k == "suppressrevivalframestep") settings.suppressRevivalFramestep = (value == "1" || value == "true");
             if (k == "showpracticeentryhint") settings.showPracticeEntryHint = (value == "1");
