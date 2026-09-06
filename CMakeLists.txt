@@ -439,6 +439,27 @@ if(BUILD_TESTING)
     add_test(NAME tutorial_session_policy_tests
              COMMAND tutorial_session_policy_tests)
 
+    add_executable(update_check_policy_tests
+        tests/update_check_policy_tests.cpp
+        src/utils/version_compare.cpp)
+    target_include_directories(update_check_policy_tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/json/single_include)
+    set_property(TARGET update_check_policy_tests PROPERTY
+        MSVC_RUNTIME_LIBRARY "${EFZ_MSVC_RUNTIME_LIBRARY}")
+    add_test(NAME update_check_policy_tests
+             COMMAND update_check_policy_tests)
+
+    add_executable(version_compare_tests
+        tests/version_compare_tests.cpp
+        src/utils/version_compare.cpp)
+    target_include_directories(version_compare_tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    set_property(TARGET version_compare_tests PROPERTY
+        MSVC_RUNTIME_LIBRARY "${EFZ_MSVC_RUNTIME_LIBRARY}")
+    add_test(NAME version_compare_tests
+             COMMAND version_compare_tests)
+
     add_executable(normal_input_policy_tests
         tests/normal_input_policy_tests.cpp)
     target_include_directories(normal_input_policy_tests PRIVATE

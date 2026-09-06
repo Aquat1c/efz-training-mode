@@ -6,6 +6,7 @@
 #include "../include/gui/imgui_impl.h"
 #include "../include/gui/overlay.h"
 #include "../include/game/game_state.h"
+#include "../include/utils/update_check.h"
 #include "../include/game/mission/mission_engine.h"
 #include "../include/game/mission/mission_pause_menu.h"
 
@@ -73,6 +74,13 @@ bool OpenPracticeMenuDirect(bool allowOutOfContext) {
     }
 
     LogOut("[GUI] Opening config menu", detailedLogging.load());
+
+    // One-shot, non-blocking, and idempotent. Placed here rather than at either
+    // hotkey site because this is the single chokepoint every opener funnels
+    // through, and it sits after all three refusal gates above - so the check
+    // only ever fires for a user who actually opened the menu in a real match,
+    // never during startup and never on a refused press.
+    UpdateCheck::Start();
 
     const bool d3d9Ready = DirectDrawHook::SetD3D9Active(true);
     const bool useFallbackWindow = !d3d9Ready || DirectDrawHook::ShouldUseExternalMenuFallback();

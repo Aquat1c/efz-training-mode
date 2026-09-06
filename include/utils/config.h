@@ -15,6 +15,7 @@ namespace Config {
     bool suppressRevivalFramestep; // Suppress Revival's native pause/step hotkeys while our framestep is active
     bool enableConsole;          // NEW: Show/Hide console window
     bool enableFpsDiagnostics;   // NEW: Enable FPS/timing diagnostics output
+    bool checkForUpdates;        // NEW: one-shot GitHub release check on menu open
     bool showFrameBar;           // NEW: Per-player frame-state strip (color-coded)
     int  bgmVolumePercent;       // 0..100, 100 = current/default BGM level
     int  seVolumePercent;        // 0..100, 100 = current/default SE level

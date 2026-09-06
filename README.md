@@ -122,6 +122,16 @@ This project is a DLL mod that loads via EFZ Mod Manager. It adds a configurable
 **Online Play Safety**
 - When connected to another player, training-only features are disabled to avoid desyncs.
 - Console auto-hides; hotkeys are suppressed; injected inputs are blocked.
+
+**Update Check**
+- Once per session, the first time you open the training menu, the mod asks GitHub whether a newer
+  release exists. It sends nothing but a `User-Agent` of `efz-training-mode/<version>` and the
+  request path - no machine name, no identifier, no usage data - and it never runs during online play.
+- A `[!]` appears on the **Help** tab and its **About** page when an update is available; opening **About**
+  dismisses it until a newer release ships.
+- Turn it off under **Settings > General > Check for updates**. Any failure (no network, or Windows XP,
+  whose TLS is too old for GitHub) is silent and never retried.
+
 ---
 
 **Default Hotkeys**

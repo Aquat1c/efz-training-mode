@@ -40,6 +40,7 @@
 #include <limits>
 #include "../include/game/character_settings.h"
 #include "../include/game/game_state.h"
+#include "../include/gui/gui.h"   // OpenPracticeMenuDirect (single gated opener)
 #include "../include/game/macro_controller.h"
 #include "../include/game/character_hotswap.h"
 #include "../include/game/mission/mission_engine.h"
@@ -2092,8 +2093,14 @@ void ResetFrameCounter() {
 void ShowHotkeyInfo() {
     // If ImGui is enabled, open it to the help tab
     if (Config::GetSettings().useImGui) {
-        if (!ImGuiImpl::IsVisible()) {
-            ImGuiImpl::ToggleVisibility();
+        // Route through the single opener instead of poking ToggleVisibility
+        // directly. OpenPracticeMenuDirect is what applies the window check, the
+        // gameplay-context gate, and the external-fallback-window path; a raw
+        // toggle here would bypass all three the moment this is wired to a
+        // hotkey. (It currently has no callers - keep it gated anyway.)
+        if (!ImGuiImpl::IsVisible() && !OpenPracticeMenuDirect()) {
+            // The opener already logged why, throttled.
+            return;
         }
         // Use logical index 4 for Help; map to actual via helper
         ImGuiGui::RequestTopTabAbsolute(4);

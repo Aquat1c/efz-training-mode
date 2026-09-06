@@ -16,6 +16,7 @@
 #include "../include/utils/debug_log.h"
 #include "../include/core/constants.h"
 #include "../include/core/version.h"
+#include "../include/utils/update_check.h"
 #include "../include/game/practice_patch.h"
 #include "../include/game/hud_disable.h"
 #include "../include/game/practice_offsets.h"
@@ -508,6 +509,7 @@ const char* const kFdFollowupChoices[7] = {
     "NO FOLLOW-UP", "A", "B", "C", "2A", "2B", "2C"
 };
 const char* const kAkikoSlowChoices[4] = { "INACTIVE", "A", "B", "C" };
+const char* const kAkikoBulletChoices[3] = { "EGG / TUNA", "CARROT / RADISH", "SARDINE / DURIAH" };
 const char* const kMaiStatusChoices[5] = { "INACTIVE", "ACTIVE GHOST", "UNSUMMON", "CHARGING", "AWAKENING" };
 
 const char* const kTriggerMotionChoices[] = {
@@ -1743,6 +1745,9 @@ void OnSavestateBackendMode() {
 void OnSavestateLoadCustomPalettes() {
     PersistBool("General", "savestateLoadCustomPalettes", MutableSettings().savestateLoadCustomPalettes);
 }
+void OnCheckForUpdates() {
+    PersistBool("General", "checkForUpdates", MutableSettings().checkForUpdates);
+}
 void OnRestrictPractice() {
     PersistBool("General", "restrictToPracticeMode", MutableSettings().restrictToPracticeMode);
 }
@@ -1851,9 +1856,9 @@ Row* BuildDisplayOverlayRows(int& count) {
                          OnCollisionProjectileOrigins, nullptr, CollisionProjectileOptionsHidden);
     s_rows[n++] = Toggle("  INTERSECTION BOXES", &s.collisionDisplayProjectileIntersections,
                          OnCollisionProjectileIntersections, nullptr, CollisionProjectileOptionsHidden);
-    s_rows[n++] = Info("P1 / P2 filters include that fighter and owned projectile boxes. Diagnostic dots and ranges use the controls below.");
+    s_rows[n++] = Info("P1 / P2 filters cover that fighter and its projectile boxes. Origin / Range Dots adds the dots that mark projectile anchors and trigger-range centers.");
     s_rows[n++] = Info("Mizuka note display settings are under Character Settings when Mizuka is in the match.");
-    s_rows[n++] = Info("Origin dots are EFZ projectile anchors / activation points, not collision centers.");
+    s_rows[n++] = Info("Origin dots mark a projectile's anchor / activation point, not the center of its boxes.");
 
     count = n;
     return s_rows;
@@ -1869,6 +1874,7 @@ Row* BuildSettingsInterfaceRows(int& count) {
     s_rows[n++] = FloatNum  ("UI SCALE",               &s.uiScale,      0.70f, 1.50f, 0.05f, 0.10f, "%.2f", OnUiScale);
     s_rows[n++] = ChoicesRow("UI FONT (ADVANCED MENU)", &s.uiFontMode,   kUiFontChoices, 2, OnUiFont);
     s_rows[n++] = Toggle    ("PRACTICE OVERLAY HINT",  &s.showPracticeEntryHint, OnPracticeHint);
+    s_rows[n++] = Toggle    ("CHECK FOR UPDATES",       &s.checkForUpdates,     OnCheckForUpdates);
     count = n;
     return s_rows;
 }
@@ -1900,7 +1906,7 @@ Row* BuildSettingsAudioRows(int& count) {
     Row seVolume = IntSlider("SE VOLUME", &s.seVolumePercent, 0, 100, 1, 10, OnSeVolume);
     seVolume.valueFormatter = FormatPercentRowValue;
     s_rows[n++] = seVolume;
-    s_rows[n++] = Info("100% preserves the current default mix.");
+    s_rows[n++] = Info("100% leaves the game's own volume untouched.");
     count = n;
     return s_rows;
 }
@@ -4200,7 +4206,7 @@ Row* BuildCreatePackRows(int& count) {
     static Row rows[16];
     int n = 0;
     rows[n++] = Header("NEW MISSION PACK");
-    rows[n++] = Info("A pack is the shareable top-level collection shown in the browser.");
+    rows[n++] = Info("A pack is the shareable collection of missions shown in the browser.");
     rows[n++] = Action("PACK NAME", ActEditNewPackName, ValNewPackName);
     rows[n++] = Action("AUTHOR / CREDITS", ActEditNewPackAuthor, ValNewPackAuthor);
     rows[n++] = Action("DESCRIPTION", ActEditNewPackDescription, ValNewPackDescription);
@@ -4214,7 +4220,7 @@ Row* BuildCreateCategoryRows(int& count) {
     static Row rows[14];
     int n = 0;
     rows[n++] = Header("NEW CATEGORY");
-    rows[n++] = Info("Categories keep a pack's recommended path readable without locking missions.");
+    rows[n++] = Info("Categories group a pack's missions into a suggested order without locking any of them.");
     rows[n++] = Action("CATEGORY NAME", ActEditNewCategoryName, ValNewCategoryName);
     rows[n++] = Action("DESCRIPTION", ActEditNewCategoryDescription, ValNewCategoryDescription);
     rows[n++] = Action("ADD TO SELECTED PACK", ActCreateAuthoringCategory,
@@ -4235,12 +4241,12 @@ Row* BuildMissionDetailsRows(int& count) {
     rows[n++] = DropdownRow("DIFFICULTY", &form.difficultyIndex,
                             kAuthorDifficultyChoices, kAuthorDifficultyChoiceCount);
     if (form.difficultyIndex <= 0) {
-        rows[n++] = Info("Choose a difficulty to publish. Recorded drafts may stay unrated.");
+        rows[n++] = Info("Publishing needs a difficulty. A recorded draft can stay unrated.");
     }
     rows[n++] = Spacer();
     rows[n++] = Header("DESTINATION");
     if (form.packChoices.empty()) {
-        rows[n++] = Info("No editable packs exist yet. Create one to publish this session.");
+        rows[n++] = Info("No editable packs yet. Create one before you can publish this recording.");
     } else {
         Row packRow = DropdownRow("PACK", &form.packIndex,
                                   form.packChoices.data(),
@@ -4274,7 +4280,7 @@ Row* BuildEditPackRows(int& count) {
     int n = 0;
     SeedSelectedAuthoringEditors(false);
     rows[n++] = Header("EDIT PACK DETAILS");
-    rows[n++] = Info("Display metadata only. The pack ID and folder stay unchanged.");
+    rows[n++] = Info("Edits the displayed text only. The pack ID and folder stay unchanged.");
     rows[n++] = Action("PACK NAME", ActEditExistingPackName, ValExistingPackName);
     rows[n++] = Action("AUTHOR / CREDITS", ActEditExistingPackAuthor,
                        ValExistingPackAuthor);
@@ -4337,7 +4343,7 @@ Row* BuildPackWorkshopRows(int& count) {
     int n = 0;
     auto& form = g_missionAuthoring;
     rows[n++] = Header("PACK WORKSHOP");
-    rows[n++] = Info("Manage local editable packs. Stable IDs, files, order, and recorded gameplay are preserved.");
+    rows[n++] = Info("Edit packs you made locally. IDs, files, order, and recorded gameplay stay untouched.");
     if (!form.packChoices.empty()) {
         Row packRow = DropdownRow("ACTIVE PACK", &form.packIndex,
                                   form.packChoices.data(),
@@ -4427,7 +4433,7 @@ static Row* BuildMissionBrowserRows(int& count) {
     if (recPhase == Mission::Engine::Recorder::Phase::Idle) {
         s_rows[n++] = Action("NEW RECORDING (PRE-RECORD)", ActArmMissionRecording,
                              ValMissionAuthoringState);
-        s_rows[n++] = Info("Arrange the setup first. Recording locks its exact start after the configured count-in.");
+        s_rows[n++] = Info("Arrange the setup first. When the count-in ends the setup is captured and recording starts.");
         s_rows[n++] = Submenu("PACK WORKSHOP", "PACK WORKSHOP", BuildPackWorkshopRows,
                               ValSelectedPack);
     } else if (recPhase == Mission::Engine::Recorder::Phase::PreRecord) {
@@ -4440,14 +4446,14 @@ static Row* BuildMissionBrowserRows(int& count) {
         s_rows[n++] = Info("COUNT-IN: close the menu and release all P1 controls.");
         s_rows[n++] = Action("DISCARD SESSION", ActDiscardMissionRecording);
     } else if (recPhase == Mission::Engine::Recorder::Phase::Recording) {
-        s_rows[n++] = Info("RECORDING: P1 inputs and recipe steps are captured together.");
-        s_rows[n++] = Info("A real recovery edge followed by more inputs becomes an explicit setup break.");
+        s_rows[n++] = Info("RECORDING: your P1 inputs and the mission steps are captured together.");
+        s_rows[n++] = Info("If the combo drops and you keep going, the clip marks a setup break there.");
         s_rows[n++] = Action("STOP & REVIEW", ActAdvanceMissionRecording, ValMissionRecordSteps);
         s_rows[n++] = Action("DISCARD SESSION", ActDiscardMissionRecording);
     } else {
         s_rows[n++] = Header(ValAuthoringStatus());
-        s_rows[n++] = Info("REVIEW: the clip is not saved until you choose Save.");
-        s_rows[n++] = Info("Preview and edit the player-facing details. Retake keeps your pack, category, and text.");
+        s_rows[n++] = Info("REVIEW: nothing is written until you Publish To Pack or Save As Recorded Draft.");
+        s_rows[n++] = Info("Preview the clip and edit the details players see. Retake keeps your pack, category, and text.");
         if (!g_missionAuthoring.takePublishReady &&
             !g_missionAuthoring.takePublishBlocker.empty()) {
             s_rows[n++] = Info(g_missionAuthoring.takePublishBlocker.c_str());
@@ -4537,7 +4543,7 @@ Row* BuildDebugRuntimeRows(int& count) {
     int n = 0;
 
     s_rows[n++] = Header("PRACTICE ROUTING");
-    s_rows[n++] = Info("This is the custom-menu port of the ImGui debug runtime readouts for switch-player and pause troubleshooting.");
+    s_rows[n++] = Info("Live readouts for troubleshooting Switch Players and pause behavior.");
     s_rows[n++] = Action("TOGGLE SWITCH PLAYERS", RunDebugToggleSwitchPlayers, nullptr, DebugSwitchPlayersDisabled);
     s_rows[n++] = Info(g_debugLocalSideInfo);
     s_rows[n++] = Info(g_debugAiControlInfo);
@@ -4832,6 +4838,8 @@ Row* BuildSettingsDebugRows(int& count) {
 // ===== HELP screen =====
 char g_helpVersionStr[64];
 char g_helpBuildStr[64];
+char g_helpUpdateStr[192];
+char g_helpUpdateHeadline[64];
 char g_helpOpenHelp[96];
 char g_helpToggleOverlay[128];
 char g_helpSavePos[128];
@@ -4861,6 +4869,41 @@ void RefreshHelpStrings() {
                 "EFZ Training Mode v%s", EFZ_TRAINING_MODE_VERSION);
     _snprintf_s(g_helpBuildStr, sizeof(g_helpBuildStr), _TRUNCATE,
                 "Build %s %s", EFZ_TRAINING_MODE_BUILD_DATE, EFZ_TRAINING_MODE_BUILD_TIME);
+    // Sole place worker-published update state is copied into a display
+    // buffer. RefreshHelpStrings is already a throttled, SEH-wrapped mirror
+    // step, which keeps the render path single-threaded.
+    // Two surfaces: a SHORT headline drawn in the larger header font by
+    // DrawUpdateNotice (unwrapped, so it must fit one line and only exists when
+    // there is something to announce), and the ordinary wrapped detail line.
+    switch (UpdateCheck::GetStatus()) {
+        case UpdateCheck::Status::UpdateAvailable:
+            _snprintf_s(g_helpUpdateHeadline, sizeof(g_helpUpdateHeadline), _TRUNCATE,
+                        "UPDATE AVAILABLE: %s", UpdateCheck::LatestVersion().c_str());
+            _snprintf_s(g_helpUpdateStr, sizeof(g_helpUpdateStr), _TRUNCATE,
+                        "Open GitHub Releases below to download it.");
+            break;
+        case UpdateCheck::Status::UpToDate:
+            g_helpUpdateHeadline[0] = 0;
+            _snprintf_s(g_helpUpdateStr, sizeof(g_helpUpdateStr), _TRUNCATE,
+                        "You are running the latest release (%s).",
+                        EFZ_TRAINING_MODE_VERSION);
+            break;
+        case UpdateCheck::Status::Disabled:
+            g_helpUpdateHeadline[0] = 0;
+            _snprintf_s(g_helpUpdateStr, sizeof(g_helpUpdateStr), _TRUNCATE,
+                        "Update checking is off. Enable it under Settings > General.");
+            break;
+        case UpdateCheck::Status::Checking:
+            g_helpUpdateHeadline[0] = 0;
+            _snprintf_s(g_helpUpdateStr, sizeof(g_helpUpdateStr), _TRUNCATE,
+                        "Checking GitHub for a newer release...");
+            break;
+        default:
+            g_helpUpdateHeadline[0] = 0;
+            _snprintf_s(g_helpUpdateStr, sizeof(g_helpUpdateStr), _TRUNCATE,
+                        "Find the newest version and release notes on GitHub.");
+            break;
+    }
     _snprintf_s(g_helpOpenHelp, sizeof(g_helpOpenHelp), _TRUNCATE,
                 "Open Help from the Help tab in the menu.");
     _snprintf_s(g_helpToggleOverlay, sizeof(g_helpToggleOverlay), _TRUNCATE,
@@ -4981,6 +5024,31 @@ void OpenP2Wiki() { OpenUrl(g_helpP2WikiUrl); }
 bool P1WikiDisabled() { return g_helpP1WikiUrl[0] == '\0'; }
 bool P2WikiDisabled() { return g_helpP2WikiUrl[0] == '\0'; }
 const char* ValWiki() { return "OPEN"; }
+// Right-aligned value text on the MENU > ABOUT row. Empty string suppresses
+// the value entirely, so this costs nothing when no update is pending.
+const char* ValUpdateBadge() { return UpdateCheck::BadgeText(); }
+
+// The update notice is the one line in ABOUT a user must not miss, so it is
+// drawn in the larger header font with the cyan accent rather than as an
+// ordinary dim Info paragraph. Custom rows own their own drawing, which is the
+// only way to escape the body-font size every other text row uses.
+bool UpdateNoticeHidden() { return !UpdateCheck::HasNewerRelease(); }
+
+void DrawUpdateNotice(ImDrawList* dl, float x, float y, float w, float h) {
+    if (!dl || !g_helpUpdateHeadline[0]) return;
+    ImFont* font = Layout::HeaderFont();
+    const float px = font ? font->FontSize : 18.0f;
+    const float ty = Scale::Snap(y + (h - px) * 0.5f);
+    const float tx = Scale::Snap(x + 6.0f);
+    // Accent bar so the line reads as a callout even before the text is parsed.
+    dl->AddRectFilled(ImVec2(Scale::Snap(x), Scale::Snap(y + 2.0f)),
+                      ImVec2(Scale::Snap(x + 3.0f), Scale::Snap(y + h - 2.0f)),
+                      Theme::kSelectedLine);
+    Layout::DrawString(dl, font, px, tx + 1.0f, ty + 1.0f,
+                       IM_COL32(0, 0, 0, 190), g_helpUpdateHeadline);
+    Layout::DrawString(dl, font, px, tx, ty, Theme::kSelectedLine,
+                       g_helpUpdateHeadline);
+}
 
 void DrawMichiruInline(ImDrawList* dl, float x, float y, float w, float h) {
     if (!dl) return;
@@ -5018,10 +5086,10 @@ Row* BuildHelpQuickStartRows(int& count) {
     int n = 0;
     s_rows[n++] = Header("QUICK START");
     s_rows[n++] = Info("Open the menu during Practice, set up the drill, then close it to keep playing. The game pauses while the menu is open.");
-    s_rows[n++] = Info("Use Main > Opponent for dummy behavior, Main > Options for recovery and overlays, Auto for triggers/macros, and Chars for matchup-specific tools.");
-    s_rows[n++] = Info("Use Main > Menu when you want to return to Character Select or the Title Screen.");
+    s_rows[n++] = Info("Use Main > Opponent for dummy behavior, Main > Values for HP, meter, RF, and recovery, Main > Options for overlays and Frame Bar, Auto for triggers and macros, and Chars for matchup-specific tools.");
+    s_rows[n++] = Info("Main > Menu exits to Character Select or the Title Screen.");
     s_rows[n++] = Info("Most toggles apply as soon as you change them. HP, meter, RF, position, and some character values are applied when you adjust them or confirm an edit.");
-    s_rows[n++] = Info("Practice hotkeys are ignored while the menu is open, then briefly cooled down when it closes so one press does not leak into gameplay.");
+    s_rows[n++] = Info("Practice hotkeys are ignored while the menu is open and for 0.5s after it closes, so a menu press does not leak into the match.");
     s_rows[n++] = Spacer();
     s_rows[n++] = Header("FAST SETUP");
     s_rows[n++] = Info("1. Save a position once for quick spacing resets, or save a full Practice snapshot under Main > Options > Savestates for entire match state.");
@@ -5043,10 +5111,10 @@ Row* BuildHelpPositionRows(int& count) {
     static Row s_rows[18];
     int n = 0;
     s_rows[n++] = Header("POSITION TOOLS");
-    s_rows[n++] = Info("Tap Load Position by itself to return to your saved spot.");
-    s_rows[n++] = Info("Hold Load Position with a direction to place both players without needing to save first.");
-    s_rows[n++] = Info("Load + Down centers both players. Load + Left or Right moves them to the nearest corner.");
-    s_rows[n++] = Info("Load + Down + A returns to round-start spacing. On controller, use D-Pad Down + A + Load.");
+    s_rows[n++] = Info("Tap Teleport by itself to return to your saved spot.");
+    s_rows[n++] = Info("Hold Teleport with a direction to place both players without needing to save first.");
+    s_rows[n++] = Info("Teleport + Down centers both players. Teleport + Left or Right puts both of them in the corner you pressed.");
+    s_rows[n++] = Info("Teleport + Down + A returns to round-start spacing. On controller, use D-Pad Down + A + Teleport.");
     s_rows[n++] = Info(g_helpSwapPos);
     s_rows[n++] = Spacer();
     s_rows[n++] = Header("BINDINGS");
@@ -5103,27 +5171,27 @@ Row* BuildHelpBasicsRows(int& count) {
     static Row s_rows[40];
     int n = 0;
     s_rows[n++] = Header("BASICS");
-    s_rows[n++] = Info("Core dummy behavior lives in Main > Opponent. These are the first options to check when building a drill.");
+    s_rows[n++] = Info("Dummy behavior lives in Main > Opponent: stance, blocking, airtech, and jumps.");
     s_rows[n++] = Info(g_helpSwitchPlayers);
-    s_rows[n++] = Info("P2 Control lets you play from Player 2's side. Some side-switch training keys are disabled while it is on.");
-    s_rows[n++] = Info("Dummy Auto-Block supports Off, Block All, Only Block First Hit, and Block After First Hit.");
-    s_rows[n++] = Info("Adaptive Stance automatically picks high guard against air or overhead attacks and low guard against grounded attacks, so manual stance is hidden while it is on.");
+    s_rows[n++] = Info("P2 Control lets you play from Player 2's side. The game's own F6 stance and F7 auto-block keys stop working while it is on.");
+    s_rows[n++] = Info("Dummy Auto-Block: Off, All, First Hit (blocks once, then drops guard), After Hit (guards only once a hit lands).");
+    s_rows[n++] = Info("Adaptive Stance stands against air attacks and overheads and crouches against grounded attacks. Dummy Stance is greyed out while both it and Dummy Auto-Block are on.");
     s_rows[n++] = Spacer();
     s_rows[n++] = Header("BLOCK AND RG");
     s_rows[n++] = Info("Random Block flips a coin when the dummy is allowed to block; it is useful for hit-confirm practice.");
-    s_rows[n++] = Info("Always RG treats eligible blocks as Recoil Guard. Random RG flips a coin each time the dummy tries to block.");
+    s_rows[n++] = Info("Always Recoil Guard keeps the dummy's RG armed whenever the game allows it. Random Recoil Guard re-arms it at random, so only some blocks come out as RG.");
     s_rows[n++] = Info("Counter RG tries to RG back after you Recoil Guard, where the game allows it.");
-    s_rows[n++] = Info("Random Block, Random RG, and Always RG can conflict. Turning one on can turn others off automatically.");
+    s_rows[n++] = Info("Random Block, Always Recoil Guard, and Random Recoil Guard are mutually exclusive: turning one on turns the other two off.");
     s_rows[n++] = Spacer();
     s_rows[n++] = Header("TRAINING TOOLS");
-    s_rows[n++] = Info("Auto-Airtech uses Neutral as disabled, or Forward and Back to recover in that direction. Delay adds frames before tech, which is useful for testing late airtech situations.");
+    s_rows[n++] = Info("Auto-Airtech: Neutral is off, Forward and Back tech that way. Airtech Delay waits that many frames before teching, for late-tech setups.");
     s_rows[n++] = Info("Auto-Jump makes P1, P2, or both sides jump neutral, forward, or backward when able.");
-    s_rows[n++] = Info("Final Memory: Allow at any HP removes HP checks. Turn it off when you want normal game requirements.");
+    s_rows[n++] = Info("Final Memory At Any HP removes the normal 3332 HP requirement. Turn it off to play by the game's rule.");
     s_rows[n++] = Spacer();
     s_rows[n++] = Header("FRAME ADVANTAGE");
     s_rows[n++] = Info(g_helpFaDuration);
-    s_rows[n++] = Info("Frame Advantage appears after both sides recover. Gaps briefly flash during strings when there is a hole.");
-    s_rows[n++] = Info("During Recoil Guard, FA1 and FA2 labels show advantage for each part.");
+    s_rows[n++] = Info("The number appears once both sides can act again. A yellow Gap readout flashes when your string left the defender free between hits.");
+    s_rows[n++] = Info("A Recoil Guard shows two numbers: advantage at the end of the freeze, then advantage once the RG stun is over.");
     count = n;
     return s_rows;
 }
@@ -5133,13 +5201,13 @@ Row* BuildHelpRecoveryRows(int& count) {
     int n = 0;
     s_rows[n++] = Header("CONTINUOUS RECOVERY");
     s_rows[n++] = Info("Continuous Recovery restores HP, meter, and RF when a side returns to neutral. Configure it per player under Main > Values > Continuous Recovery.");
-    s_rows[n++] = Info("It disables itself while the game's own HP, meter, or RF recovery is active through F4/F5, so both recovery systems do not fight each other.");
-    s_rows[n++] = Info("HP and meter can be Off, preset values, or Custom. RF can use presets or a custom amount; Blue IC is available under RF Custom.");
-    s_rows[n++] = Info("RF Freeze can hold RF after Recovery sets it until you turn Recovery (RF) off, so it will not increase by itself.");
+    s_rows[n++] = Info("It stops applying while the game's own F4 or F5 recovery is running, so the two never fight over the same values.");
+    s_rows[n++] = Info("HP Mode, Meter Mode, and RF Mode each take Off, a preset, or Custom. RF Force Blue IC appears once RF Mode is Custom.");
+    s_rows[n++] = Info("Freeze RF After CR is on by default and pins RF where Continuous Recovery put it until you set RF Mode back to Off.");
     s_rows[n++] = Spacer();
     s_rows[n++] = Header("ENGINE RECOVERY");
     s_rows[n++] = Info("Configure vanilla regeneration directly under Main > Values.");
-    s_rows[n++] = Info("While F5 or F4 is active, manual value edits are disallowed. X/Y positions can still be changed in the Values tab.");
+    s_rows[n++] = Info("F4, F5, or an active Continuous Recovery locks HP, Meter, RF, and IC. X and Y stay editable in Values.");
     s_rows[n++] = Info("Tip: if numbers look wrong, press F4/F5 until the game returns to Normal mode, then re-apply your training values.");
     count = n;
     return s_rows;
@@ -5154,19 +5222,19 @@ Row* BuildHelpCharacterRows(int& count) {
     s_rows[n++] = Spacer();
     s_rows[n++] = Header("CHARACTER ROWS");
     s_rows[n++] = Info("Ikumi: set Blood Stock, Genocide Timer, and Level Gauge.");
-    s_rows[n++] = Info("Misuzu: set Feathers, Infinite Poison, Poison Timer, and Poison Level.");
+    s_rows[n++] = Info("Misuzu: Feathers sets her stock. Poison Level 0 is off, Poison Timer counts the poison down, and Infinite Poison pins that timer at max.");
     s_rows[n++] = Info("Mishio: choose Element and set Awaken Timer; the match-wide locks keep element and awakened state from decaying.");
     s_rows[n++] = Info("Akiko: set Bullet Cycle, Freeze Cycle, Show Clean Hit, Time-Slow Trigger, and Infinite Timeslow.");
-    s_rows[n++] = Info("Nayuki (Awake): Infinite Snow and Snowbunny Timer control bunny duration.");
-    s_rows[n++] = Info("Nayuki (Asleep): Jam Count and Lock Jam Count control stored jams.");
+    s_rows[n++] = Info("Nayuki (Awake): Snowbunny Timer sets how long the bunnies last. Infinite Snow pins it at max.");
+    s_rows[n++] = Info("Nayuki (Asleep): Jam Count sets her stored jams. Lock Jam Count restores that count whenever she is actionable or waking up.");
     s_rows[n++] = Info("Kano: Magic sets the stored magic value, and Lock Magic keeps it from being spent.");
-    s_rows[n++] = Info("Nanase (Rumi): Infinite Shinai, Barehanded Mode, Kimchi Active, Infinite Kimchi, and Kimchi Timer control her weapon and Final Memory state.");
-    s_rows[n++] = Info("Doppel: Enlightened puts Doppel in the Final Memory state.");
-    s_rows[n++] = Info("Mio: Stance switches Short/Long stance, and Lock Stance prevents automatic stance changes.");
-    s_rows[n++] = Info("Mai: Status, Ghost Time, Charge Timer, Awaken Timer, Infinite Ghost/Charge/Awaken, No Charge Cooldown, and Aggressive Summon control Mini-Mai setups.");
-    s_rows[n++] = Info("Mai also has Force Summon, Force Despawn, and Ghost Target X/Y with Apply Ghost Position for exact setup placement.");
+    s_rows[n++] = Info("Nanase (Rumi): Barehanded Mode drops the shinai; Infinite Shinai restores it and overrides Barehanded Mode. Kimchi Active, Kimchi Timer, and Infinite Kimchi drive her Final Memory state.");
+    s_rows[n++] = Info("Doppel: Enlightened puts her in the Final Memory state.");
+    s_rows[n++] = Info("Mio: Stance picks Short or Long. Lock Stance holds her in the stance you picked.");
+    s_rows[n++] = Info("Mai: Status sets Inactive, Active Ghost, Unsummon, Charging, or Awakening. Ghost Time, Charge Timer, and Awaken Timer set that duration, Infinite Ghost/Charge/Awaken hold it, and No Charge Cooldown finishes a charge instantly.");
+    s_rows[n++] = Info("Mai also has Force Summon and Force Despawn; Aggressive Summon lets Force Summon work during Unsummon. Ghost Target X/Y with Apply Ghost Position places the ghost exactly.");
     s_rows[n++] = Info("Minagi: Always Readied keeps Michiru ready, and Michiru Target X/Y with Apply Michiru Position places her for setup testing.");
-    s_rows[n++] = Info("Mizuka: Note Trigger Ranges and Affected Notes appear when she is in the match and control the note interaction overlays.");
+    s_rows[n++] = Info("Mizuka: Note Trigger Ranges and Affected Notes draw her note interactions. Both need Main > Options > Display Overlays > Projectile Interactions on.");
     count = n;
     return s_rows;
 }
@@ -5176,19 +5244,19 @@ Row* BuildHelpAutoActionRows(int& count) {
     int n = 0;
     s_rows[n++] = Header("AUTO ACTIONS");
     s_rows[n++] = Info("Auto Actions make the dummy act on key moments: On Wakeup, After Block, After Hitstun, After Airtech, or on Recoil Guard.");
-    s_rows[n++] = Info("Select a trigger at the top of the Triggers page, then edit its action controls on that same page. Auto Actions target the side opposite local control, P2 by default.");
-    s_rows[n++] = Info("Randomize Triggers adds a coin-flip so a trigger can sometimes skip activation. Pre-buffer Wakeup performs wake specials, dashes, and macros slightly early.");
+    s_rows[n++] = Info("Pick a trigger at the top of the Triggers page and edit its controls right below. Auto Actions run on the side you are not controlling, P2 by default.");
+    s_rows[n++] = Info("Randomize Triggers gives every trigger a 50/50 chance to skip, so your setup is not always answered. Pre-buffer Wakeup starts a wakeup macro early so its first attack is already buffered.");
     s_rows[n++] = Spacer();
     s_rows[n++] = Header("PER TRIGGER");
-    s_rows[n++] = Info("Enable turns the selected trigger on. Action covers normals, forward/back normals, specials, supers, jump, dash/backdash, block, and Final Memory.");
-    s_rows[n++] = Info("Button appears only when the chosen action needs one. Delay applies after the trigger condition is detected.");
-    s_rows[n++] = Info("Macro Slot plays a recorded slot. Random Pool opens a multi-select action pool for that trigger.");
+    s_rows[n++] = Info("Action covers normals, command normals, specials, supers, jumps, dash and backdash, block, and Final Memory. Left and right on the row change the button or variant.");
+    s_rows[n++] = Info("Delay applies after the trigger condition is detected. After Move can add an IC once the move connects, or use the move's own FIC window.");
+    s_rows[n++] = Info("Macro Slot runs a recorded macro instead of the single action. Random Pool rolls from the moves ticked in Action Pool, with per-move delays under Pool Options.");
     s_rows[n++] = Spacer();
     s_rows[n++] = Header("NOTES");
-    s_rows[n++] = Info("This feature briefly enables P2 controls for specials, supers, dashes, and other input-buffer actions. Regular attacks and jumps use direct writes and keep AI control.");
-    s_rows[n++] = Info("By default, wakeup actions try to use the move on the last wakeup frame, with character-specific wakeup handling and crossup support.");
+    s_rows[n++] = Info("Specials, supers, dashes, and macros are fed in as inputs, so the dummy drops off AI control for a moment. Normals and jumps are forced directly and leave AI control alone.");
+    s_rows[n++] = Info("By default a wakeup action aims for the last frame of wakeup, using each character's own wakeup length.");
     s_rows[n++] = Info("Actions are rate-limited to avoid spam; toggling a trigger clears it. After Airtech is separate from Auto-Airtech, so Auto-Airtech must be enabled first.");
-    s_rows[n++] = Info("Tip: enable Pre-buffer Wakeup when testing wakeup macros or input crossups that need early buffering.");
+    s_rows[n++] = Info("Turn on Pre-buffer Wakeup when the wakeup action is a macro. Wakeup specials buffer on their own, and a buffered motion re-aims itself if a crossup swaps sides.");
     count = n;
     return s_rows;
 }
@@ -5197,23 +5265,23 @@ Row* BuildHelpMacroRows(int& count) {
     static Row s_rows[44];
     int n = 0;
     s_rows[n++] = Header("MACROS");
-    s_rows[n++] = Info("Macros record, play, and edit input sequences. Playback flips left/right automatically for Player 2.");
+    s_rows[n++] = Info("Macros record, play, and edit input sequences across eight slots. Playback flips left/right automatically for Player 2.");
     s_rows[n++] = Info(g_helpMacroRecord);
     s_rows[n++] = Info(g_helpMacroPlay);
     s_rows[n++] = Info(g_helpMacroSlot);
     s_rows[n++] = Info("Record enters Pre-recording, where your usual P1 controls drive P2 for recording. Press Record again to start recording, then press it a third time to save.");
-    s_rows[n++] = Info("Play runs the current slot and also exits Pre-recording. Empty slots do nothing.");
-    s_rows[n++] = Info("Playback flips directions for Player 2 automatically and handles side swaps so the recorded inputs stay on the right character. Framestep tools work during playback.");
-    s_rows[n++] = Info("Mission authoring reuses Macro Record for PRE-RECORD, a configurable count-in (0.5 sec by default), and Stop-to-Review. Its synchronized P1 demo clip is separate from all eight macro slots.");
+    s_rows[n++] = Info("Play runs the current slot. During Pre-recording it cancels instead, and an empty slot does nothing.");
+    s_rows[n++] = Info("Playback also follows side swaps, so the recording stays on the character you made it for. Framestep Pause and Step work during playback.");
+    s_rows[n++] = Info("Mission authoring reuses Macro Record for PRE-RECORD, a count-in you can set (0.5 sec by default), then Stop to review. Its P1 demo clip does not use any of the eight macro slots.");
     s_rows[n++] = Spacer();
     s_rows[n++] = Header("CUSTOM MENU TOOLS");
-    s_rows[n++] = Info("Serialized Macro opens the text editor, Apply To Slot, Reload From Slot, Clear Slot, clipboard actions, undo/redo, and sample insertion.");
+    s_rows[n++] = Info("Serialized Macro holds Edit Text, Apply To Slot, Reload From Slot, Clear Slot, Copy, Paste, Undo, Redo, and Insert Sample.");
     s_rows[n++] = Info("Slot Stats shows slot state, total ticks, effective ticks, first button tick, and buffer capture details.");
     s_rows[n++] = Info("The editor's Apply button saves the text into the current slot. Done closes the editor and keeps the draft text; Cancel reloads from the slot.");
     s_rows[n++] = Spacer();
     s_rows[n++] = Header("NOTATION");
     s_rows[n++] = Info("Write macros as plain text: a header plus tick tokens. Use numpad directions 1..9, with 5 or N as neutral, and A/B/C/D for buttons.");
-    s_rows[n++] = Info("Examples include 5A, 6B, and 236C. Repeat packs like 5x3 insert neutral ticks, and per-tick buffers like {3: 6 6 6} write several inputs inside one tick.");
+    s_rows[n++] = Info("Examples include 5A, 6B, and 2C. A token is one direction plus its buttons, so a motion like 236C is written as separate ticks: 2 3 6C. xN repeats the token before it, so 5x3 is three neutral ticks. A group like {3: 6 6 6} writes three inputs inside one tick, and three is the maximum.");
     s_rows[n++] = Info("Whitespace is flexible; Apply To Slot normalizes the text after it parses successfully.");
     s_rows[n++] = Info("Write notation as if Player 1 is facing right. Player 2 playback flips 4 and 6.");
     s_rows[n++] = Info("Example: EFZMACRO 1 5A 5x3 5B 5x3 5C 6 {3: 6 6 6} 2 {3: 2 2 2} 3 {3: 3 3 3} 5B");
@@ -5225,22 +5293,22 @@ Row* BuildHelpComboStatisticsRows(int& count) {
     static Row s_rows[40];
     int n = 0;
     s_rows[n++] = Header("COMBO STATISTICS");
-    s_rows[n++] = Info("Combo Statistics is the compact combo summary overlay drawn at 640x480 game coordinates x=244, y=92 during Practice.");
+    s_rows[n++] = Info("Combo Statistics is a compact damage and resource readout near the top of the screen, just left of center, shown during Practice.");
     s_rows[n++] = Info("It appears only in supported local match states. It clears outside Practice, online sessions, character select, or when the overlay is disabled.");
-    s_rows[n++] = Info("The combo starts from the game's combo counter and damage values. If those are unavailable, the mod can fall back to HP loss while the defender is in hitstun or untech.");
+    s_rows[n++] = Info("Numbers come from the game's own combo counter and damage values, falling back to HP lost while the defender is in hitstun or untech.");
     s_rows[n++] = Spacer();
     s_rows[n++] = Header("WHAT IT SHOWS");
     s_rows[n++] = Info("Move is last hit damage. Combo is total combo damage. Max is the best combo damage seen this match session.");
     s_rows[n++] = Info("HP shows defender HP at combo start, current HP, and total HP lost.");
-    s_rows[n++] = Info("P1 and P2 rows show meter and RF changes during the combo. Resource spends update immediately; passive gains are kept stable so the numbers stay useful.");
+    s_rows[n++] = Info("You and Opp rows show meter and RF changes during the combo, for the side you are playing. Resource spends update immediately; passive gains are kept stable so the numbers stay useful.");
     s_rows[n++] = Info("Proration shows the current damage scaling. Detail Row can add defender untech and, when using Last Hit details, the attacker's current move ID.");
-    s_rows[n++] = Info("Optional RFx and Raw fields show the RF multiplier and raw scale value for deeper combo testing.");
+    s_rows[n++] = Info("RFx shows the RF damage multiplier and Raw shows the scale value behind Proration. Both are off by default.");
     s_rows[n++] = Spacer();
     s_rows[n++] = Header("OPTIONS");
-    s_rows[n++] = Info("Enable it from Main > Options > Combo Statistics.");
-    s_rows[n++] = Info("Show Detail Row adds extra proration and untech information. Detail source chooses between current combo state and last-hit data.");
-    s_rows[n++] = Info("Keep Final Summary leaves the finished combo visible after the combo drops. Summary Time controls how long it lingers.");
-    s_rows[n++] = Info("Hide With Menu removes Combo Statistics while this menu is open. Resume Summary lets the final summary return when the menu closes.");
+    s_rows[n++] = Info("Turn it on with Enable Overlay under Main > Options. It is on by default.");
+    s_rows[n++] = Info("Proration is always shown; Show Detail Row adds defender untech next to it. Detail Source chooses between current combo state and last-hit data.");
+    s_rows[n++] = Info("Keep Final Summary holds the finished combo on screen. Summary Time sets for how long, 0.5 to 30 seconds, default 1.9.");
+    s_rows[n++] = Info("Hide With Menu clears the readout while this menu is open. Resume After Menu brings the final summary back when you close it.");
     s_rows[n++] = Spacer();
     s_rows[n++] = Header("NOTES");
     s_rows[n++] = Info("Max resets when the match/session resets. Combo Statistics is for quick damage and resource checks; use Framebar when you need timing and state breakdowns.");
@@ -5252,9 +5320,9 @@ Row* BuildHelpFramebarRows(int& count) {
     static Row s_rows[56];
     int n = 0;
     s_rows[n++] = Header("FRAMEBAR");
-    s_rows[n++] = Info("Framebar is a per-player timeline near the bottom-center of the screen. Each cell is one subframe by default.");
-    s_rows[n++] = Info("Set Cell Step to Visual Frames if you prefer one cell per displayed game frame instead of subframe detail.");
-    s_rows[n++] = Info("The right edge is the current frame. Older frames are on the left, so scan left-to-right to follow the sequence into the present.");
+    s_rows[n++] = Info("Framebar is a per-player timeline near the bottom-center of the screen. Each cell is one subframe, 1/3 of a visual frame.");
+    s_rows[n++] = Info("Set Cell Step to Visual Frames for one cell per displayed frame instead.");
+    s_rows[n++] = Info("The right edge is the current frame, oldest on the left, so read it left to right.");
     s_rows[n++] = Info("It starts advancing when something important happens: attacks, stun, projectiles, lockout, Recoil Guard, or an overlapping block/RG check.");
     s_rows[n++] = Info("After roughly one second of calm, it freezes in place until the next action. This keeps the last useful sequence visible instead of scrolling through neutral forever.");
     s_rows[n++] = Spacer();
@@ -5262,30 +5330,30 @@ Row* BuildHelpFramebarRows(int& count) {
     s_rows[n++] = Info("Green means neutral movement, walking, crouching, landing, or falling.");
     s_rows[n++] = Info("Yellow means prejump, jump, double jump, airtech, or ground tech.");
     s_rows[n++] = Info("Blue and cyan mean dashes, air dashes, and Recoil Guard windows.");
-    s_rows[n++] = Info("Red means attack startup, active frames, or recovery. Grey means blockstun, hitstun, or launch.");
-    s_rows[n++] = Info("Purple and pink cover throws and superflash. Blue-grey marks shared hitstop.");
+    s_rows[n++] = Info("Red is attacking: dark red startup, bright red active, muted red recovery. Grey is blockstun, hitstun, or launch.");
+    s_rows[n++] = Info("Purple is being thrown, pink is superflash, and blue-grey is shared hitstop.");
     s_rows[n++] = Spacer();
     s_rows[n++] = Header("MARKERS");
     s_rows[n++] = Info("A white vertical line marks the first active frame detected in the current attack sequence.");
     s_rows[n++] = Info("Orange top ticks mark live projectile slots. A second orange tick means the projectile's current frame has attack boxes.");
-    s_rows[n++] = Info("Bright red lower strips mean collision-active character boxes. Dark red means attack data without active collision yet.");
-    s_rows[n++] = Info("Muted brown strips mark the engine's post-hit attack timer; they are not active frames by themselves.");
+    s_rows[n++] = Info("A bright red bottom strip means a live hitbox. Dark red means the move has attack data out but no live box yet.");
+    s_rows[n++] = Info("Muted brown strips are the attacker's post-hit countdown, not active frames.");
     s_rows[n++] = Info("Blue and cyan small strips mean that side can block or Recoil Guard the overlapping character or projectile attack.");
     s_rows[n++] = Info("A dark blue band means shared hitstop. Yellow/magenta flashes call out untech, hit, block/RG, throw, and counter-hit moments.");
     s_rows[n++] = Info("Purple middle marks track air-mobility counters, useful when checking double jumps and air dashes.");
-    s_rows[n++] = Info("Detail controls how much of this appears: Full shows every marker and status line, Compact keeps the main timing data, and Bars Only hides text and extra marker strips.");
+    s_rows[n++] = Info("Detail controls how much of this appears: Full shows every marker and all four status lines, Compact drops to two status lines and keeps only the hitbox strip, the projectile ticks, and the first-active line, and Bars Only shows the colored bars alone with no text and no markers.");
     s_rows[n++] = Spacer();
     s_rows[n++] = Header("STATUS LINES");
-    s_rows[n++] = Info("ID/F is move ID and current animation frame. BX is active/raw character boxes. PB is projectile attack boxes. P is live projectile slots.");
-    s_rows[n++] = Info("ST is the engine state timer. UT is untech or stun duration. SF is superflash freeze. AM is air-mobility counters.");
-    s_rows[n++] = Info("FA is first active frame. ACT is active or projectile frames. TOT is total engine-busy frames.");
-    s_rows[n++] = Info("ATK is the post-hit attacker countdown. FL and CL are frame and collision lockouts. GG is guard gauge.");
-    s_rows[n++] = Info("B and RG tell whether the side can block or Recoil Guard the opponent's overlapping attack. G is the current guard flag.");
-    s_rows[n++] = Info("HS is the hit-state flag. CH is counter-hit. HST means shared hitstop.");
+    s_rows[n++] = Info("ID is the move ID, F is the current animation frame. BX is active/total character boxes, PB is projectile attack boxes, P is how many projectiles are out.");
+    s_rows[n++] = Info("ST is hitstop while attacking, or remaining blockstun/hitstun while defending. UT is untech or stun time from the last hit. SF is superflash freeze on whoever triggered it. AM is air-mobility counters.");
+    s_rows[n++] = Info("FA is the first active frame of the sequence. ACT counts consecutive active frames, character or projectile. TOT is how many frames that side has been busy in this sequence.");
+    s_rows[n++] = Info("ATK is the attacker's countdown after a hit resolves. FL and CL are the frame and collision lockouts. GG is guard gauge, 0 to 360.");
+    s_rows[n++] = Info("B and RG show whether that side can block or Recoil Guard the attack currently overlapping it. G is its guard state.");
+    s_rows[n++] = Info("HS is a raw hit-state readout, not a confirmed hit result. CH is counter-hit. HST means both sides are in shared hitstop.");
     s_rows[n++] = Spacer();
     s_rows[n++] = Header("FRAMESTEP");
-    s_rows[n++] = Info("When the game is paused or framestepping, Framebar advances only when the game actually steps. That makes it useful for reviewing one frame at a time.");
-    s_rows[n++] = Info("Enable it from Main > Options with the Frame Bar category.");
+    s_rows[n++] = Info("While paused or framestepping, Framebar advances only when the game steps, so you can review one frame at a time.");
+    s_rows[n++] = Info("Turn it on with Show Frame Bar under Main > Options.");
     count = n;
     return s_rows;
 }
@@ -5294,33 +5362,33 @@ Row* BuildHelpBoxDisplayRows(int& count) {
     static Row s_rows[40];
     int n = 0;
     s_rows[n++] = Header("BOX DISPLAY");
-    s_rows[n++] = Info("Box Display draws simple colored shapes over the match so you can see what the game is checking.");
-    s_rows[n++] = Info("Enable it from Main > Options > Display Overlays. It is meant for Practice match screens.");
+    s_rows[n++] = Info("Box Display draws the game's real hit, hurt, collision, and projectile boxes over the match.");
+    s_rows[n++] = Info("Enable it from Main > Options > Display Overlays. Boxes only draw during a Practice match, never in netplay.");
     s_rows[n++] = Spacer();
     s_rows[n++] = Header("CHARACTER BOXES");
-    s_rows[n++] = Info("Red boxes are hitboxes. If they touch the opponent's hurtbox, the move can hit.");
-    s_rows[n++] = Info("Green boxes are hurtboxes. This is where that character can be hit.");
-    s_rows[n++] = Info("Yellow boxes are collision boxes, also called pushboxes. They show the body space characters use for pushing and spacing.");
+    s_rows[n++] = Info("Red boxes are hitboxes.");
+    s_rows[n++] = Info("Green boxes are hurtboxes.");
+    s_rows[n++] = Info("Yellow boxes are collision boxes, also called pushboxes.");
     s_rows[n++] = Spacer();
     s_rows[n++] = Header("PROJECTILE BOXES");
-    s_rows[n++] = Info("Blue boxes on bullets/projectiles show the projectile collision area the engine is checking.");
-    s_rows[n++] = Info("Bright blue means the projectile is active for projectile interaction. Faint blue means it exists, but is not active for that check right now.");
-    s_rows[n++] = Info("The blue box is not always the full sprite. Some projectiles are larger or smaller than the picture on screen.");
+    s_rows[n++] = Info("Blue boxes on projectiles are the area the game checks for projectile interactions.");
+    s_rows[n++] = Info("Bright blue means the projectile is active for that check. Faint blue means it is out but not eligible right now.");
+    s_rows[n++] = Info("The blue box does not always match the sprite - projectiles can check bigger or smaller than they look.");
     s_rows[n++] = Spacer();
     s_rows[n++] = Header("PROJECTILE HELPERS");
-    s_rows[n++] = Info("White dots mark projectile origin points. Think of them as the projectile's anchor, not the center of its blue box.");
+    s_rows[n++] = Info("White dots are projectile origin points: the anchor, not the center of the blue box.");
     s_rows[n++] = Info("Magenta boxes show where two active projectile boxes overlap. Use this to check clashes and projectile interactions.");
     s_rows[n++] = Info("If a projectile returns or changes state, its visible sprite may keep moving even when its blue interaction box is gone.");
     s_rows[n++] = Spacer();
     s_rows[n++] = Header("MIZUKA NOTES");
-    s_rows[n++] = Info("When Mizuka is in the match, Chars > Mizuka Notes Display adds note interaction helpers.");
-    s_rows[n++] = Info("Note Trigger Ranges draws orange/brown areas where notes can be activated or exploded. Stronger fill means active now; lighter fill is a preview.");
-    s_rows[n++] = Info("Affected Notes highlights notes that are currently affected or inside one of those trigger areas in pale yellow.");
-    s_rows[n++] = Info("These settings are enabled by default, but Main > Options > Display Overlays > Projectile Interactions is still the master switch.");
+    s_rows[n++] = Info("When Mizuka is in the match, Chars > Mizuka Notes Display adds the two overlays below.");
+    s_rows[n++] = Info("Note Trigger Ranges draws the orange areas where notes can be set off. Strong fill is triggering now, light fill is the range preview.");
+    s_rows[n++] = Info("Affected Notes tints a note pale yellow once it has been set off. Sitting inside a trigger range does not tint a note on its own.");
+    s_rows[n++] = Info("Both are on by default, but nothing draws unless Display Overlays > Projectile Interactions is on.");
     s_rows[n++] = Spacer();
     s_rows[n++] = Header("READING IT");
-    s_rows[n++] = Info("Boxes are engine data, not artwork. Trust the boxes when they disagree with the sprite.");
-    s_rows[n++] = Info("Use Box Fill Alpha to make filled areas lighter or darker. The outlines stay strong so the box edges remain readable.");
+    s_rows[n++] = Info("When a box and the sprite disagree, the box is what the game uses.");
+    s_rows[n++] = Info("Box Fill Alpha changes only the fill. Outlines stay full strength so edges stay readable.");
     s_rows[n++] = Info("Turn layers on one at a time if the screen gets noisy: Hitboxes, Hurtboxes, Collision Boxes, then Projectile Interactions.");
     count = n;
     return s_rows;
@@ -5331,7 +5399,7 @@ Row* BuildHelpSavestatesRows(int& count) {
     int n = 0;
     s_rows[n++] = Header("PRACTICE SNAPSHOTS");
     s_rows[n++] = Info("Practice save/load runs through EfzRevival. Open Main > Options > Savestates for menu actions and palette behavior.");
-    s_rows[n++] = Info("Use snapshots for retry loops, setup lab work, and preserving the full Practice match between attempts.");
+    s_rows[n++] = Info("Use them for retry loops and for keeping a whole setup between attempts. Save and load only work during a Practice match.");
     s_rows[n++] = Info("Position save/load hotkeys only move players. Snapshots capture the whole match state through Revival.");
     s_rows[n++] = Spacer();
     s_rows[n++] = Header("MENU ACTIONS");
@@ -5360,19 +5428,19 @@ Row* BuildHelpIssuesRows(int& count) {
     static Row s_rows[36];
     int n = 0;
     s_rows[n++] = Header("CONFLICTS");
-    s_rows[n++] = Info("Some features auto-disable others to avoid clashes. Random Block, Random RG, and Always RG are mutually exclusive, so turning one on can turn another off.");
-    s_rows[n++] = Info("Counter RG cannot work while Always RG is on.");
-    s_rows[n++] = Info("While the menu is open, practice hotkeys are disabled and the game auto-pauses. Closing the menu starts a brief hotkey cooldown.");
+    s_rows[n++] = Info("Turning on Random Block, Always Recoil Guard, or Random Recoil Guard switches the other two off.");
+    s_rows[n++] = Info("Counter RG is greyed out while Always Recoil Guard is on.");
+    s_rows[n++] = Info("The menu pauses the game and blocks Practice hotkeys, and hotkeys stay off for 0.5s after it closes.");
     s_rows[n++] = Spacer();
     s_rows[n++] = Header("TROUBLESHOOTING");
     s_rows[n++] = Info("If values look wrong, press F4/F5 until the game returns to Normal mode, then re-apply your values.");
-    s_rows[n++] = Info("Continuous Recovery can be limited to neutral in Settings. If something seems off, go back to the main menu and return to Practice.");
+    s_rows[n++] = Info("Settings > Recovery can hold Continuous Recovery until both sides are neutral. If it still looks wrong, leave Practice and re-enter.");
     s_rows[n++] = Info(g_helpOpenHelp);
     s_rows[n++] = Spacer();
     s_rows[n++] = Header("UNSUPPORTED REVIVAL");
-    s_rows[n++] = Info("If your EfzRevival build is not listed as supported, some tools may be disabled and newer builds can introduce unexpected issues.");
-    s_rows[n++] = Info("Avoid unsupported versions for netplay. If problems occur, launching the game directly through efz.exe can be a fallback.");
-    s_rows[n++] = Info("Hotkeys may still be recognized by unsupported builds while this menu is open, but the game should remain paused.");
+    s_rows[n++] = Info("On an unsupported EfzRevival build some tools stop working and others can misbehave.");
+    s_rows[n++] = Info("Do not use an unsupported build for netplay. If the game misbehaves, launch efz.exe directly instead.");
+    s_rows[n++] = Info("On those builds a Practice hotkey can still reach the game while this menu is open, though the pause should still hold.");
     count = n;
     return s_rows;
 }
@@ -5400,13 +5468,13 @@ Row* BuildHelpResourcesRows(int& count) {
     static Row s_rows[18];
     int n = 0;
     s_rows[n++] = Header("GAME RESOURCES");
-    s_rows[n++] = Info("Open helpful external resources in your browser.");
+    s_rows[n++] = Info("Each link below opens in your default browser, outside the game.");
     s_rows[n++] = Action("EFZ WIKI",           OpenEternalFighterZeroWiki, ValWiki);
     s_rows[n++] = Action("TRAINING MODE WIKI", OpenTrainingModeWiki,       ValWiki);
     s_rows[n++] = Action("EFZ GLOBAL DISCORD", OpenEfzDiscord,             ValWiki);
     s_rows[n++] = Spacer();
     s_rows[n++] = Header("CURRENT CHARACTERS");
-    s_rows[n++] = Info("Character wiki links appear when the current matchup can be identified.");
+    s_rows[n++] = Info("The two rows below stay greyed out until each side's character is identified.");
     s_rows[n++] = Action(g_helpP1WikiLabel[0] ? g_helpP1WikiLabel : "OPEN P1 WIKI", OpenP1Wiki, ValWiki, P1WikiDisabled);
     s_rows[n++] = Action(g_helpP2WikiLabel[0] ? g_helpP2WikiLabel : "OPEN P2 WIKI", OpenP2Wiki, ValWiki, P2WikiDisabled);
     count = n;
@@ -5417,10 +5485,11 @@ Row* BuildHelpAboutRows(int& count) {
     static Row s_rows[48];
     int n = 0;
     s_rows[n++] = Header("EFZ TRAINING MODE");
+    s_rows[n++] = Custom(26.0f, DrawUpdateNotice, UpdateNoticeHidden);
     s_rows[n++] = Info(g_helpVersionStr);
     s_rows[n++] = Info(g_helpBuildStr);
     s_rows[n++] = Info("A training toolkit for Eternal Fighter Zero - frame data, drills, macros, and matchup tools in one place.");
-    s_rows[n++] = Info("Find the newest version and release notes on GitHub.");
+    s_rows[n++] = Info(g_helpUpdateStr);
     s_rows[n++] = Action("OPEN GITHUB RELEASES", OpenGithubReleases, ValWiki);
     s_rows[n++] = Spacer();
     s_rows[n++] = Header("YOUR GAME");
@@ -5564,7 +5633,7 @@ Row* BuildPoolDelayRows(int& count) {
             _snprintf_s(s_chargeLabels[i], sizeof(s_chargeLabels[i]), _TRUNCATE,
                         "%s AFTER MOVE", kActionPoolNames[i]);
             _snprintf_s(s_chargeHelp[i], sizeof(s_chargeHelp[i]), _TRUNCATE,
-                        "Off does nothing. IC waits for %s to connect; FIC uses its native fixed window.",
+                        "IC adds 22C once %s connects; FIC uses that move's own fixed 22C window.",
                         kActionPoolNames[i]);
             s_rows[n++] = WithHelp(ChoicesRow(s_chargeLabels[i],
                                               &charges[i],
@@ -5602,7 +5671,7 @@ void AddTriggerRows(Row* rows, int& n,
                     bool (*hideCharge)()) {
     rows[n++] = Header(title);
     rows[n++] = WithHelp(Toggle("ENABLE", enabled, OnAutoApply),
-                         "Enables this trigger so the dummy responds when this situation happens.");
+                         "Turns this trigger on so the dummy performs the action set below.");
     Row actionRow = DropdownRow("ACTION",        actionPickIdx, g_triggerActionChoiceArr, g_triggerActionChoiceCount,
                                 onActionPick, nullptr, hideSingleAction);
     actionRow.choice2IdxPtr = action;
@@ -5621,12 +5690,12 @@ void AddTriggerRows(Row* rows, int& n,
     rows[n++] = WithHelp(ChoicesRow("AFTER MOVE", chargeFollowup,
                                     kChargeFollowupChoices, 3,
                                     OnAutoApply, nullptr, hideCharge),
-                         "Off does nothing. IC waits for contact before 22C; FIC uses the move's native fixed 22C window.");
+                         "IC adds 22C once the move connects; FIC uses the move's own fixed 22C window.");
     rows[n++] = WithHelp(DropdownRow("MACRO SLOT", macroSlot, g_macroSlotChoiceArr, g_macroSlotChoiceCount,
                                      OnAutoApply),
-                         "Runs a recorded macro instead of the single selected action when a slot is chosen.");
+                         "Runs the chosen recorded macro instead of Action. None keeps the single action.");
     rows[n++] = WithHelp(Toggle("RANDOM POOL", usePool, onUsePool),
-                         "Chooses randomly from the action pool instead of always using one response.");
+                         "Rolls a random move from Action Pool instead of always using Action.");
     EnsureActionPoolCategoryMap();
     Row poolRow = MaskPickerRow64("ACTION POOL", poolMaskLo, poolMaskHi,
                                   kActionPoolNames, kActionPoolCount,
@@ -5671,7 +5740,7 @@ Row* BuildTriggersRows(int& count) {
 
     s_rows[n++] = Header("AUTO ACTIONS");
     s_rows[n++] = WithHelp(Info(AutoActionTargetInfo()),
-                           "Auto Actions control the opponent side by default, so P1 training inputs stay local.");
+                           "Auto Actions run on the side you are not playing, so switching sides moves the target.");
     g_selectedAutoTrigger = ClampIndex(g_selectedAutoTrigger, 5);
     s_rows[n++] = WithHelp(ChoicesRow("TRIGGER", &g_selectedAutoTrigger, kAutoTriggerChoices, 5),
                            "Chooses which auto-action timing you are editing on this page.");
@@ -5743,9 +5812,9 @@ Row* BuildTriggersRows(int& count) {
     s_rows[n++] = Spacer();
     s_rows[n++] = Header("GLOBAL");
     s_rows[n++] = WithHelp(Toggle("RANDOMIZE TRIGGERS", &g_mirrorRandomize, OnRandomizeToggle),
-                           "Allows enabled triggers to pick from their random pools during practice.");
+                           "Gives every enabled trigger a 50/50 chance to skip, so your setup is not always answered.");
     s_rows[n++] = WithHelp(Toggle("PRE-BUFFER WAKEUP", &g_mirrorWakeBuffer, OnWakeBufferToggle),
-                           "Buffers wakeup actions early so the dummy can perform fast reversals reliably.");
+                           "Starts a wakeup macro early so its first attack is buffered. Wakeup specials buffer without it.");
 
     count = n;
     return s_rows;
@@ -5838,7 +5907,7 @@ void AddMizukaNoteDisplayRows(Row* rows, int& n) {
     auto& s = MutableSettings();
     rows[n++] = Toggle("NOTE TRIGGER RANGES", &s.collisionDisplayNagamoriRanges, OnCollisionNagamoriRanges);
     rows[n++] = Toggle("AFFECTED NOTES", &s.collisionDisplayNagamoriAffected, OnCollisionNagamoriAffected);
-    rows[n++] = Info("Uses Display Overlays > Projectile Interactions as the master switch.");
+    rows[n++] = Info("Both need Display Overlays > Projectile Interactions turned on.");
     rows[n++] = Spacer();
 }
 
@@ -5880,13 +5949,13 @@ void AddMishioRows(Row* rows, int& n, DisplayData& d, int player) {
 
 void AddAkikoRows(Row* rows, int& n, DisplayData& d, int player) {
     if (player == 1) {
-        rows[n++] = IntNum("BULLET CYCLE", &d.p1AkikoBulletCycle, 0, 5, 1, 1, OnAutoApply);
+        rows[n++] = WithHelp(ChoicesRow("BULLET CYCLE", &d.p1AkikoBulletCycle, kAkikoBulletChoices, 3, OnAutoApply), "Which bullets 236A and 236B throw next. Using either one advances the cycle; Freeze Cycle holds it in place.");
         rows[n++] = Toggle("FREEZE CYCLE", &d.p1AkikoFreezeCycle, OnAutoApply);
         rows[n++] = Toggle("SHOW CLEAN HIT", &d.p1AkikoShowCleanHit, OnAutoApply);
         rows[n++] = ChoicesRow("TIME-SLOW TRIGGER", &d.p1AkikoTimeslowTrigger, kAkikoSlowChoices, 4, OnAutoApply);
         rows[n++] = Toggle("INFINITE TIMESLOW", &d.p1AkikoInfiniteTimeslow, OnAutoApply);
     } else {
-        rows[n++] = IntNum("BULLET CYCLE", &d.p2AkikoBulletCycle, 0, 5, 1, 1, OnAutoApply);
+        rows[n++] = WithHelp(ChoicesRow("BULLET CYCLE", &d.p2AkikoBulletCycle, kAkikoBulletChoices, 3, OnAutoApply), "Which bullets 236A and 236B throw next. Using either one advances the cycle; Freeze Cycle holds it in place.");
         rows[n++] = Toggle("FREEZE CYCLE", &d.p2AkikoFreezeCycle, OnAutoApply);
         rows[n++] = Toggle("SHOW CLEAN HIT", &d.p2AkikoShowCleanHit, OnAutoApply);
         rows[n++] = ChoicesRow("TIME-SLOW TRIGGER", &d.p2AkikoTimeslowTrigger, kAkikoSlowChoices, 4, OnAutoApply);
@@ -6174,14 +6243,14 @@ Row* BuildOpponentDefenseRows(int& count) {
                            RandomBlockModeHelp());
     s_rows[n++] = WithHelp(Toggle("RANDOM BLOCK", &g_mirrorRandomBlock, OnRandomBlock,
                                   nullptr, RandomBlockHidden),
-                           "Randomizes the active auto-block window instead of blocking every eligible frame.");
+                           "Coin-flips the dummy's guard each frame inside the Dummy Auto-Block window, so some hits land.");
     s_rows[n++] = WithHelp(Toggle("ADAPTIVE STANCE", &g_mirrorAdaptiveStance, OnAdaptiveStance,
                                   nullptr, AdaptiveStanceHidden),
                            "Automatically switches the dummy between standing and crouching guard for incoming attacks.");
     s_rows[n++] = WithHelp(Toggle("ALWAYS RECOIL GUARD", &g_mirrorAlwaysRG, OnAlwaysRG),
-                           "Keeps the dummy's Recoil Guard armed whenever the game allows it.");
+                           "Keeps the dummy's Recoil Guard armed. Normal RG rules apply: no grounded RG on two quick hits in a row.");
     s_rows[n++] = WithHelp(Toggle("RANDOM RECOIL GUARD", &g_mirrorRandomRG, OnRandomRG),
-                           "Randomly arms Recoil Guard so block checks can become RGs.");
+                           "Arms the dummy's Recoil Guard on a coin flip each frame, so some blocks come out as RG.");
     s_rows[n++] = WithHelp(Toggle("COUNTER RG", &g_mirrorCounterRG, OnCounterRGToggle,
                                   CounterRGDisabled),
                            "Tries to Recoil Guard back after your Recoil Guard; unavailable while Always RG is on.");
@@ -6211,7 +6280,7 @@ Row* BuildOpponentMovementRows(int& count) {
     auto& d = ImGuiGui::guiState.localData;
 
     s_rows[n++] = WithHelp(Toggle("AUTO-JUMP", &d.autoJump, OnAutoApply),
-                           "Makes the dummy jump automatically after returning to neutral.");
+                           "Makes the selected side jump on its own and again on every landing.");
     s_rows[n++] = WithHelp(ChoicesRow("  JUMP DIRECTION", &d.jumpDirection,
                                       kJumpDirChoices, 3, OnAutoApply,
                                       nullptr, MovementJumpDirHidden),
@@ -6242,11 +6311,11 @@ Row* BuildOpponentRows(int& count) {
 
     s_rows[n++] = Header("OPPONENT");
     s_rows[n++] = WithHelp(Toggle("ENABLE P2 CONTROL", &d.p2ControlEnabled, OnAutoApply),
-                           "Enables P2 controls in Practice mode; F6/F7 stance and blocking hotkeys are unavailable while this is on.");
+                           "Lets you play P2 in Practice. The game's F6 stance and F7 auto-block keys stop working while this is on.");
     s_rows[n++] = WithHelp(ChoicesRow("DUMMY STANCE", &g_mirrorPracticeStance,
                                       kDummyStanceChoices, 3, OnPracticeStance,
                                       AdaptiveDisablesStance),
-                           "Sets the dummy's F6 stance when Adaptive Stance is off.");
+                           "Sets the dummy's F6 stance. Adaptive Stance takes it over while Dummy Auto-Block is on.");
     s_rows[n++] = WithHelp(ChoicesRow("AUTO-AIRTECH", &g_mirrorAirtechMode,
                                       kAirtechDirChoices, 3, OnAirtechMode),
                            "Air-recovers automatically in the selected direction after the dummy can tech.");
@@ -6254,7 +6323,7 @@ Row* BuildOpponentRows(int& count) {
                                   nullptr, AirtechDelayHidden),
                            "Waits this many frames after airtech is available before recovering.");
     s_rows[n++] = WithHelp(Toggle("AUTO-JUMP", &d.autoJump, OnAutoApply),
-                           "Makes the dummy jump automatically after returning to neutral.");
+                           "Makes the selected side jump on its own and again on every landing.");
     s_rows[n++] = WithHelp(ChoicesRow("  JUMP DIRECTION", &d.jumpDirection,
                                       kJumpDirChoices, 3, OnAutoApply,
                                       nullptr, MovementJumpDirHidden),
@@ -7216,7 +7285,7 @@ Row* BuildMenuRows(int& count) {
     s_rows[n++] = Action("CHARACTER SETTINGS", NavToChars);
     s_rows[n++] = WithHelp(Action("HELP", NavToHelp),
                            "Opens help pages with setup notes and troubleshooting.");
-    s_rows[n++] = Action("ABOUT", NavToAbout);
+    s_rows[n++] = Action("ABOUT", NavToAbout, ValUpdateBadge);
     s_rows[n++] = Action("SOUND SETTINGS", NavToSound, ValAudioSettings);
 
     s_rows[n++] = Spacer();
@@ -8185,9 +8254,9 @@ Row* BuildMacrosRows(int& count) {
     } else if (phase == MacroController::State::PreRecord) {
         s_rows[n++] = Info("PRE-RECORD: P2 is under your control; start when the setup and your hands are ready.");
     } else if (phase == MacroController::State::Recording) {
-        s_rows[n++] = Info("RECORDING: use Macro Record again, or open this menu and stop, to keep the clip.");
+        s_rows[n++] = Info("RECORDING: press Macro Record again, or use Stop & Keep Clip here, to save the clip.");
     } else {
-        s_rows[n++] = Info("PLAYBACK: recorded input owns P2 until the clip finishes or Stop is selected.");
+        s_rows[n++] = Info("PLAYBACK: the clip drives P2 until it ends or you pick Stop.");
     }
     s_rows[n++] = IntNum("CURRENT SLOT", &g_macroSlotMirror, 1, MacroController::GetSlotCount(),
                          1, 1, OnMacroSlotChanged);
@@ -8578,6 +8647,9 @@ void TickHelpResources(ImDrawList* dl, const ScreenLayout& layout, int& focus, S
 }
 void TickHelpAbout(ImDrawList* dl, const ScreenLayout& layout, int& focus, ScrollState& scroll, bool& backEdge) {
     int n = 0; Row* rows = BuildHelpAboutRows(n);
+    // Opening ABOUT is the acknowledgement. Internally idempotent, so calling
+    // it every frame the pane is visible is free.
+    UpdateCheck::AcknowledgeLatest();
     TickListScreen(dl, layout, "ABOUT", rows, n, focus, scroll, backEdge);
 }
 
