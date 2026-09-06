@@ -1295,6 +1295,19 @@ namespace ImGuiImpl {
 
         SetVisibilityInternal(!g_imguiVisible);
     }
+
+    void ForceHide() {
+        // Deliberately NO netplay early-return. Callers that close the menu do so
+        // precisely because the world is changing underneath it - entering a
+        // netplay suspend, leaving Match, or tearing features down. ToggleVisibility()
+        // refuses while online, which used to leave menuOpen/g_imguiVisible stuck
+        // true after EnterNetplaySuspend had already published the flag: the menu
+        // was merely hidden by the EndScene bail-out, never actually closed.
+        if (g_imguiVisible) {
+            SetVisibilityInternal(false);
+        }
+        menuOpen.store(false);
+    }
     
     bool IsVisible() {
         return g_imguiVisible;

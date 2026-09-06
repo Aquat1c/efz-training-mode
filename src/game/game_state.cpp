@@ -99,9 +99,7 @@ namespace {
     }
 
     void CloseTrainingMenuForFrontendExit() {
-        if (ImGuiImpl::IsVisible()) {
-            ImGuiImpl::ToggleVisibility();
-        }
+        ImGuiImpl::ForceHide();
         menuOpen.store(false);
     }
 
@@ -387,6 +385,35 @@ bool IsInCharacterSelectScreen() {
 bool IsInGameplayState() {
     uint8_t st = ReadRawScreenState();
     return st == 3; // 3 = In-game
+}
+
+// Single authority for "may a mod-owned modal surface be opened right now".
+//
+// This exists because feature liveness is NOT a phase test: ShouldFeaturesBeActive()
+// (frame_monitor.cpp) reduces to a bare non-null read of the P1 object slot, and
+// efz.exe's character-select screen allocates a fighter into that slot the moment a
+// character is confirmed and never frees it - only the battle screen's cleanup phase
+// zeroes it. So the hotkey thread stays alive across CS, Loading and even the title
+// screen (if the player cancels out after confirming), which is how the training menu
+// could be opened over a live character-select screen.
+bool IsTrainingMenuContext() {
+    if (IsNetplaySuspendActive() || IsNetplaySessionActive()) {
+        return false;
+    }
+    // Undebounced on purpose - see the header comment.
+    if (ReadRawScreenStateNoDebounce() != SCREEN_BATTLE) {
+        return false;
+    }
+    // Honour the user's RESTRICT TO PRACTICE / ANY MODE toggle rather than
+    // hardcoding Practice, which would silently remove a shipped feature.
+    if (!IsValidGameMode(GetCurrentGameMode())) {
+        return false;
+    }
+    // The same second conjunct every other mutating hotkey already pairs with.
+    if (!AreCharactersInitialized()) {
+        return false;
+    }
+    return true;
 }
 
 bool EnsureFrontendControlHooksInstalled() {

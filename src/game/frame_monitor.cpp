@@ -19,6 +19,7 @@
 #include "../include/core/memory.h"
 #include "../include/core/logger.h"
 #include "../include/gui/overlay.h"
+#include "../include/gui/imgui_impl.h"
 #include "../include/gui/framebar.h"
 #include "../include/game/game_state.h"
 #include "../include/game/per_frame_sample.h" // unified sampling context
@@ -1261,6 +1262,21 @@ void FrameDataMonitor() {
             if (lastPhase == GamePhase::Match && currentPhase != GamePhase::Match) {
                 const bool leavingPracticeMatch =
                     (s_lastPhaseMode == GameMode::Practice) || (currentMode == GameMode::Practice);
+
+                // Close the training menu on the PHASE edge, before anything below
+                // tears the match session down. Previously the only implicit close
+                // was inside DisableFeatures(), which fires on the feature
+                // (player-pointer/mode) edge - so a menu opened in a match kept
+                // drawing and kept holding pause ownership across the transition,
+                // then got yanked shut later when the P1 slot finally cleared.
+                // This must run BEFORE ClearAllAutoActionTriggers/
+                // ResetPracticeMatchSessionState so the pause unwind in
+                // ApplyAggregateMenuVisibility releases against the same battle
+                // context it froze.
+                if (ImGuiImpl::IsVisible()) {
+                    LogOut("[SESSION] Training menu force-closed on leaving Match", true);
+                    ImGuiImpl::ForceHide();
+                }
 
                 ComboOverlay::ResetState("phase left match");
 

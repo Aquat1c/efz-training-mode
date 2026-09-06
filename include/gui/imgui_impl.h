@@ -31,6 +31,10 @@ namespace ImGuiImpl {
     
     // Toggle ImGui visibility
     void ToggleVisibility();
+    // Unconditional close. Unlike ToggleVisibility() this is not netplay-gated,
+    // so teardown paths cannot leave menuOpen/g_imguiVisible desynced. Use this
+    // wherever the menu must go away rather than be toggled.
+    void ForceHide();
 
     // Open the standalone fallback ImGui window when in-game rendering is unavailable.
     bool ShowFallbackWindow();

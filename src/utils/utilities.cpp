@@ -732,9 +732,7 @@ void DisableFeatures() {
     g_FrameGapId = -1;
     
     // Close the menu if it's open
-    if (ImGuiImpl::IsVisible()) {
-        ImGuiImpl::ToggleVisibility();
-    }
+    ImGuiImpl::ForceHide();
 
     // Reset all core logic states
     ResetFrameAdvantageState();
@@ -1114,9 +1112,7 @@ void EnterNetplaySuspend() {
     StopBGMSuppressionPoller();
     SetBGMSuppressed(false);
 
-    if (ImGuiImpl::IsVisible()) {
-        ImGuiImpl::ToggleVisibility();
-    }
+    ImGuiImpl::ForceHide();
 
     DirectDrawHook::ClearAllMessages();
     ResetOverlayTrackingIds();
@@ -1222,9 +1218,7 @@ void AuditNetplayMenuEntryState() {
         keyMonitorRunning.store(false);
     }
 
-    if (ImGuiImpl::IsVisible()) {
-        ImGuiImpl::ToggleVisibility();
-    }
+    ImGuiImpl::ForceHide();
     menuOpen.store(false);
     g_guiActive.store(false);
     PauseIntegration::ForceCloseAllMenuSurfaces();
