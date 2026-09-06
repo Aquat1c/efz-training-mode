@@ -5,6 +5,7 @@
 #include "../include/utils/config.h"
 #include "../include/gui/imgui_impl.h"
 #include "../include/gui/overlay.h"
+#include "../include/game/game_state.h"
 #include "../include/game/mission/mission_engine.h"
 #include "../include/game/mission/mission_pause_menu.h"
 
@@ -37,17 +38,38 @@ void OpenMenu() {
     (void)OpenPracticeMenuDirect();
 }
 
-bool OpenPracticeMenuDirect() {
+bool OpenPracticeMenuDirect(bool allowOutOfContext) {
     UpdateWindowActiveState();
     if (!g_efzWindowActive.load()) {
         LogOut("[GUI] EFZ window not active, cannot open Practice menu", true);
         return false;
     }
 
-    // Don't open menu if it's already open
+    // Don't open menu if it's already open.
+    // This MUST stay above the context gate: an already-open menu is never
+    // affected by it, so a user can never be trapped behind a menu they cannot
+    // close after the game leaves a gameplay screen.
     if (menuOpen) {
         LogOut("[GUI] Menu already open", detailedLogging.load());
         return ImGuiImpl::IsVisible();
+    }
+
+    // Feature liveness is a player-pointer test, not a phase test, and efz.exe's
+    // character-select screen leaves that pointer populated from the first
+    // character confirm onward. Without this gate the menu opens over character
+    // select, the loading screen, and the title screen after a cancelled CS -
+    // where nothing suppresses EFZ's own input, so menu navigation also drives
+    // the CS cursor, and where the pause/patch transaction runs against a
+    // context that is not a live match.
+    if (!allowOutOfContext && !IsTrainingMenuContext()) {
+        // Throttle: the menu key may be held down.
+        static DWORD s_lastBlockLog = 0;
+        const DWORD now = GetTickCount();
+        if (now - s_lastBlockLog > 1000) {
+            s_lastBlockLog = now;
+            LogOut("[GUI] Menu open refused: not in a gameplay context", true);
+        }
+        return false;
     }
 
     LogOut("[GUI] Opening config menu", detailedLogging.load());

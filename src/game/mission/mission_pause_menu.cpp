@@ -475,7 +475,7 @@ void Execute(Item item, Context ctx) {
             // only then release MissionPause. This avoids a live-world gap and
             // leaves the dedicated menu intact if ImGui cannot initialize.
             CustomMenu::Screens::OpenMissionBrowser();
-            if (!OpenPracticeMenuDirect()) {
+            if (!OpenPracticeMenuDirect(/*allowOutOfContext=*/true)) {
                 DirectDrawHook::AddMessage(
                     "The authoring menu could not be opened; the recording was kept",
                     "MISSION", RGB(255, 180, 120), 2200, 0, 120);
@@ -487,7 +487,7 @@ void Execute(Item item, Context ctx) {
             break;
         case Item::OpenPractice:
             CustomMenu::Screens::OpenPracticeRoot();
-            if (!OpenPracticeMenuDirect()) {
+            if (!OpenPracticeMenuDirect(/*allowOutOfContext=*/true)) {
                 DirectDrawHook::AddMessage(
                     "Practice settings could not be opened; recording is still paused",
                     "MISSION", RGB(255, 180, 120), 2200, 0, 120);

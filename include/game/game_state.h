@@ -23,6 +23,15 @@ void DebugDumpScreenState();
 bool IsInGameplayState();
 bool IsInCharacterSelectScreen();
 
+// True only where it is safe and meaningful to open a mod-owned modal surface:
+// the undebounced screen byte is the battle screen, the mode passes the user's
+// RESTRICT TO PRACTICE setting, both fighters exist, and no netplay session is
+// live. Deliberately built on the raw screen byte rather than
+// GetCurrentGamePhase(): the phase query lags by up to three calls and is not
+// side-effect free, so polling it from the hotkey thread would perturb the
+// frame monitor's own hysteresis.
+bool IsTrainingMenuContext();
+
 enum class FrontendExitTarget : uint8_t {
     CharacterSelect = 1,
     Loading = 2,
