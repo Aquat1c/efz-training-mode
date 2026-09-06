@@ -279,6 +279,67 @@ void TestMissionStartupPollRouting() {
             "startup gate suppressed P2, menu input, or an inactive gate");
 }
 
+// Recoil Guard is two PAT rows: row 0 is the defender freeze (cancel bit
+// clear), rows 1+ are the RG advantage window (cancel bit set) while the move
+// ID is still 168/169/170. Verified across all 26 retail .pat files:
+// 168 = 20F + 20F (40 total, 42 for sayuri), 169/170 = 22F + 20F (42 total),
+// cancelIntoTier 10 cast-wide. The old ground posture predicate was
+// IsActionable(), a neutral-state whitelist that rejects those IDs outright,
+// so the queued normal could not press until the state ended - 20 visual
+// frames after EFZ would have taken it.
+void TestRecoilGuardCancelEligibility() {
+    using NormalInputPolicy::RecoilGuardCancelEligible;
+
+    // Row 0: freeze. Cancel bit clear -> never eligible, whatever the ranks.
+    Require(!RecoilGuardCancelEligible(true, false, 10, 30, true),
+            "RG freeze row must not open the press window");
+    Require(!RecoilGuardCancelEligible(true, false, 10, 10, false),
+            "RG freeze row must not open the press window without an anchor");
+
+    // Rows 1+: the advantage window. RG cancelIntoTier is 10 and every ground
+    // normal anchor is >= 10, so the rank test always passes out of RG.
+    Require(RecoilGuardCancelEligible(true, true, 10, 10, true),
+            "5A/2A (tier 10) must be startable from the RG advantage window");
+    Require(RecoilGuardCancelEligible(true, true, 10, 20, true),
+            "5B/2B (tier 20) must be startable from the RG advantage window");
+    Require(RecoilGuardCancelEligible(true, true, 10, 30, true),
+            "5C/2C (tier 30) must be startable from the RG advantage window");
+
+    // No cast-wide anchor (6X/4X/1X/3X, D/S): the cancel bit alone decides.
+    Require(RecoilGuardCancelEligible(true, true, 10, 0, false),
+            "an anchorless intent must fall back to the cancel bit");
+
+    // A lower-ranked destination is still refused when the anchor is known.
+    Require(!RecoilGuardCancelEligible(true, true, 30, 10, true),
+            "rank comparison must still reject a lower-tier destination");
+
+    // The relaxation is scoped strictly to Recoil Guard.
+    Require(!RecoilGuardCancelEligible(false, true, 10, 30, true),
+            "non-RG states must not reach the RG relaxation");
+}
+
+// The ground rank anchors must match the consumer witness in
+// DidConsumerStartRequestedNormal: neutral A/B/C -> 200/201/203,
+// down A/B/C -> 204/205/206, everything else anchorless.
+void TestGroundNormalRankAnchors() {
+    using NormalInputPolicy::GroundNormalRankAnchor;
+    using NormalInputPolicy::IntentFromMotion;
+
+    Require(GroundNormalRankAnchor(IntentFromMotion(MOTION_5A)) == 200, "5A anchor drifted");
+    Require(GroundNormalRankAnchor(IntentFromMotion(MOTION_5B)) == 201, "5B anchor drifted");
+    Require(GroundNormalRankAnchor(IntentFromMotion(MOTION_5C)) == 203, "5C anchor drifted");
+    Require(GroundNormalRankAnchor(IntentFromMotion(MOTION_2A)) == 204, "2A anchor drifted");
+    Require(GroundNormalRankAnchor(IntentFromMotion(MOTION_2B)) == 205, "2B anchor drifted");
+    Require(GroundNormalRankAnchor(IntentFromMotion(MOTION_2C)) == 206, "2C anchor drifted");
+
+    // D/S, command normals and air intents have no cast-wide anchor.
+    Require(GroundNormalRankAnchor(IntentFromMotion(MOTION_5D)) == -1, "5D must be anchorless");
+    Require(GroundNormalRankAnchor(IntentFromMotion(MOTION_2D)) == -1, "2D must be anchorless");
+    Require(GroundNormalRankAnchor(IntentFromMotion(MOTION_6C)) == -1, "6C must be anchorless");
+    Require(GroundNormalRankAnchor(IntentFromMotion(MOTION_4B)) == -1, "4B must be anchorless");
+    Require(GroundNormalRankAnchor(IntentFromMotion(MOTION_JC)) == -1, "air intents have no ground anchor");
+}
+
 } // namespace
 
 int main() {
@@ -288,6 +349,8 @@ int main() {
     TestPreparedPulseCanRelinquishAndRetry();
     TestRetirePromotesAcceptedSuccessor();
     TestMissionStartupPollRouting();
+    TestRecoilGuardCancelEligibility();
+    TestGroundNormalRankAnchors();
     std::cout << "normal_input_policy_tests passed\n";
     return 0;
 }

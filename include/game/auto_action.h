@@ -30,6 +30,12 @@ struct TriggerDelayState {
     // native motion must not be mistaken for completion of the whole action.
     uint64_t pendingRecipeGeneration;
     int      dispatchAttempts;
+    // A queued pulse is advanced only by a matching fighter pass, never by
+    // time, so an intent whose posture gate can never open (a j.X selected on
+    // a grounded trigger, a gate held shut by another owner) would otherwise
+    // wait forever - pinning isDelaying/pXTriggerActive and locking every
+    // trigger out for the rest of the round. Bound the wait in internal ticks.
+    int      pendingWaitTicks;
 };
 
 enum class AutoActionApplyResult : uint8_t {
