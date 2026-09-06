@@ -2423,6 +2423,70 @@ bool CurrentPatAllowsAirNormal(uintptr_t character,
            (moveID < 200 || (contactState >= 2 && contactState != 6));
 }
 
+// Recoil Guard's second PAT row IS the RG advantage window: the move ID is
+// still 168/169/170 but the engine's cancel bit is set and it will start any
+// ground normal. IsActionable() is a neutral-state whitelist and rejects those
+// IDs for their whole duration, so a queued On-RG normal could not press until
+// the state ended - 20 visual frames after the window opened. Consult the same
+// live PAT data the air branch already uses, scoped strictly to RG.
+bool CurrentPatAllowsGroundCancelFromRecoilGuard(
+        uintptr_t character,
+        const NormalInputPolicy::Intent& intent,
+        short moveID) {
+    // Cheap short-circuit: nothing else in the game may reach this relaxation.
+    if (!IsRecoilGuard(moveID)) return false;
+
+    const int destinationMove = NormalInputPolicy::GroundNormalRankAnchor(intent);
+    const bool destinationRankKnown = destinationMove >= 0;
+
+    // Same asymmetric offsets as CurrentPatAllowsAirNormal: the current row's
+    // cancel rank lives at anim-entry +2, the destination tier at +0.
+    constexpr uintptr_t kCurrentAnimRankOffset = 2u;
+    constexpr uintptr_t kDestinationAnimRankOffset = 0u;
+    uint16_t frameIndex = 0;
+    uintptr_t animTable = 0;
+    uintptr_t frameTable = 0;
+    uint16_t frameFlags = 0;
+    int16_t currentRank = 0;
+    int16_t destinationRank = 0;
+    // Fail closed on every unreadable field: posture stays exactly as strict as
+    // it is today whenever the PAT tables cannot be walked.
+    if (moveID < 0 || moveID > 1023 ||
+        !SafeReadMemory(character + CURRENT_FRAME_INDEX_OFFSET,
+                        &frameIndex, sizeof(frameIndex)) ||
+        frameIndex > 4095 ||
+        !SafeReadMemory(character + ANIM_TABLE_OFFSET,
+                        &animTable, sizeof(animTable)) ||
+        !animTable ||
+        !SafeReadMemory(animTable + ANIM_ENTRY_STRIDE *
+                            static_cast<uintptr_t>(moveID) +
+                            ANIM_ENTRY_FRAMES_PTR_OFFSET,
+                        &frameTable, sizeof(frameTable)) ||
+        !frameTable ||
+        !SafeReadMemory(frameTable + FRAME_BLOCK_STRIDE *
+                            static_cast<uintptr_t>(frameIndex) +
+                            FRAME_HIT_PROPS_OFFSET,
+                        &frameFlags, sizeof(frameFlags)) ||
+        !SafeReadMemory(animTable + ANIM_ENTRY_STRIDE *
+                            static_cast<uintptr_t>(moveID) +
+                            kCurrentAnimRankOffset,
+                        &currentRank, sizeof(currentRank))) {
+        return false;
+    }
+    if (destinationRankKnown &&
+        !SafeReadMemory(animTable + ANIM_ENTRY_STRIDE *
+                            static_cast<uintptr_t>(destinationMove) +
+                            kDestinationAnimRankOffset,
+                        &destinationRank, sizeof(destinationRank))) {
+        return false;
+    }
+
+    return NormalInputPolicy::RecoilGuardCancelEligible(
+        true, (frameFlags & 0x0008u) != 0,
+        static_cast<int>(currentRank), static_cast<int>(destinationRank),
+        destinationRankKnown);
+}
+
 bool NormalPostureReady(uintptr_t character,
                         const NormalInputPolicy::Snapshot& snapshot) {
     short moveID = -1;
@@ -2446,7 +2510,16 @@ bool NormalPostureReady(uintptr_t character,
 
     const bool landing = moveID == LANDING_ID || moveID == LANDING_1_ID ||
                          moveID == LANDING_2_ID || moveID == LANDING_3_ID;
-    const bool groundReady = !physicallyAirborne && IsActionable(moveID) &&
+    // IsActionable() is a neutral-state whitelist: it rejects Recoil Guard
+    // 168/169/170 for their whole duration, including the cancellable second
+    // PAT row that IS the RG advantage window. EFZ starts a ground normal
+    // there, so consult the live PAT row the same way the air branch does.
+    // Scoped to RG only - every other state keeps the existing predicate.
+    const bool recoilGuardCancel =
+        CurrentPatAllowsGroundCancelFromRecoilGuard(character, snapshot.intent,
+                                                    moveID);
+    const bool groundReady = !physicallyAirborne &&
+                             (IsActionable(moveID) || recoilGuardCancel) &&
                              moveID != FALLING_ID && !landing;
     const bool universalAirButton =
         snapshot.intent.button != NormalInputPolicy::kInputD;

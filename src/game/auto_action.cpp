@@ -1481,6 +1481,33 @@ static void ResetDelayState(TriggerDelayState& state) {
     state.pendingNormalGeneration = 0;
     state.pendingRecipeGeneration = 0;
     state.dispatchAttempts = 0;
+    state.pendingWaitTicks = 0;
+}
+
+// Upper bound on how long a submitted-but-unconsumed normal pulse may hold a
+// trigger. 180 internal ticks = 60 visual frames, comfortably longer than the
+// slowest legitimate wait (Recoil Guard's whole 42-frame state, or an
+// after-airtech ground normal falling to the ground) and far shorter than the
+// unbounded stall it replaces.
+static constexpr int kMaxPendingNormalWaitTicks = 180;
+
+// Retire a queued pulse that is still Pending. Mirrors the wake pre-arm's
+// expiry handling: only cancel while the generation has not resolved, so an
+// already-accepted normal is never disturbed.
+static void CancelPendingNormalPulseIfAny(int playerNum,
+                                          TriggerDelayState& state,
+                                          const char* why) {
+    if (state.pendingNormalGeneration == 0) return;
+    if (GetAutoActionNormalPulseOutcome(playerNum, state.pendingNormalGeneration) ==
+        AutoActionNormalPulseOutcome::Pending) {
+        CancelAutoActionNormalPulse(playerNum);
+        LogOut("[AUTO-ACTION] P" + std::to_string(playerNum) +
+                   " cancelled pending normal gen=" +
+                   std::to_string(state.pendingNormalGeneration) + ": " +
+                   (why ? why : "unspecified"),
+               true);
+    }
+    state.pendingNormalGeneration = 0;
 }
 
 static const char* P2MotionOutcomeLabel(P2AutoActionMotionOutcome outcome) {
@@ -1811,9 +1838,25 @@ static bool ShouldCancelDelayForState(const TriggerDelayState& state, short prev
     // Once a P2 native transaction has been admitted, its resulting attack or
     // dash state is evidence to be consumed, not a reason to erase the delay.
     // The generation publishes its own bounded Accepted/Failed/Cancelled result.
+    //
+    // The exception is a fighter that has been *interrupted*. Hitstun, a throw,
+    // a launch, a freeze or a fresh blockstun is never the queued action's own
+    // result, so holding the delay through one is what let an admitted normal
+    // survive a knockdown and fire later as a stale ghost action on the first
+    // actionable frame of the new state.
     if (state.pendingMotionGeneration != 0 ||
         state.pendingRecipeGeneration != 0 ||
         state.pendingNormalGeneration != 0) {
+        // Deliberately narrow: only unambiguous "this fighter was hit" states.
+        // Airtech and groundtech are recovery states that AFTER_AIRTECH and
+        // ON_WAKEUP legitimately span, and a knockdown is already caught at its
+        // launch/throw/hitstun edge before it ever reaches a tech.
+        const bool freshBlockstun = IsBlockstun(moveID) && !IsBlockstun(prevMoveID);
+        if (IsHitstun(moveID) || IsThrown(moveID) || IsLaunched(moveID) ||
+            IsFrozen(moveID) || freshBlockstun) {
+            reason = "interrupted_while_pending";
+            return true;
+        }
         return false;
     }
 
@@ -1965,7 +2008,25 @@ void ProcessTriggerDelays(short moveID1, short moveID2, short prevMoveID1, short
                 const AutoActionNormalPulseOutcome outcome =
                     GetAutoActionNormalPulseOutcome(1, generation);
                 if (outcome == AutoActionNormalPulseOutcome::Pending) {
-                    p1DelayState.delayFramesRemaining = 1;
+                    if (++p1DelayState.pendingWaitTicks >
+                        kMaxPendingNormalWaitTicks) {
+                        LogOut("[AUTO-ACTION] P1 normal gen=" +
+                                   std::to_string(generation) +
+                                   " never reached a press window within " +
+                                   std::to_string(kMaxPendingNormalWaitTicks) +
+                                   " internal ticks; retiring trigger",
+                               true);
+                        CancelPendingNormalPulseIfAny(
+                            1, p1DelayState,
+                            "pulse exceeded its bounded press window");
+                        CancelAutoActionChargeFollowup(
+                            1, "primary normal never reached a press window");
+                        ResetDelayState(p1DelayState);
+                        p1TriggerActive = false;
+                        p1TriggerCooldown = 0;
+                    } else {
+                        p1DelayState.delayFramesRemaining = 1;
+                    }
                     dispatchThisTick = false;
                 } else if (outcome == AutoActionNormalPulseOutcome::Accepted) {
                     LogOut("[AUTO-ACTION] P1 normal gen=" +
@@ -2015,6 +2076,7 @@ void ProcessTriggerDelays(short moveID1, short moveID2, short prevMoveID1, short
                                true);
                     } else if (normalGeneration != 0) {
                         p1DelayState.pendingNormalGeneration = normalGeneration;
+                        p1DelayState.pendingWaitTicks = 0;
                         ++p1DelayState.dispatchAttempts;
                         p1DelayState.delayFramesRemaining = 1;
                         LogOut("[AUTO-ACTION] P1 normal admitted gen=" +
@@ -2114,6 +2176,24 @@ void ProcessTriggerDelays(short moveID1, short moveID2, short prevMoveID1, short
                 const AutoActionNormalPulseOutcome outcome =
                     GetAutoActionNormalPulseOutcome(2, generation);
                 if (outcome == AutoActionNormalPulseOutcome::Pending) {
+                    if (++p2DelayState.pendingWaitTicks >
+                        kMaxPendingNormalWaitTicks) {
+                        LogOut("[AUTO-ACTION] P2 normal gen=" +
+                                   std::to_string(generation) +
+                                   " never reached a press window within " +
+                                   std::to_string(kMaxPendingNormalWaitTicks) +
+                                   " internal ticks; retiring trigger",
+                               true);
+                        CancelPendingNormalPulseIfAny(
+                            2, p2DelayState,
+                            "pulse exceeded its bounded press window");
+                        CancelAutoActionChargeFollowup(
+                            2, "primary normal never reached a press window");
+                        ResetDelayState(p2DelayState);
+                        p2TriggerActive = false;
+                        p2TriggerCooldown = 0;
+                        return;
+                    }
                     p2DelayState.delayFramesRemaining = 1;
                     LogOut("[AUTO-ACTION] P2 normal gen=" +
                                std::to_string(generation) +
@@ -2283,6 +2363,7 @@ void ProcessTriggerDelays(short moveID1, short moveID2, short prevMoveID1, short
                            true);
                 } else if (normalGeneration != 0) {
                     p2DelayState.pendingNormalGeneration = normalGeneration;
+                    p2DelayState.pendingWaitTicks = 0;
                     ++p2DelayState.dispatchAttempts;
                     p2DelayState.delayFramesRemaining = 1;
                     LogOut("[AUTO-ACTION] P2 normal admitted gen=" +
@@ -2358,8 +2439,10 @@ void StartTriggerDelay(int playerNum, int triggerType, short moveID, int delayFr
     }
     // NOTE: We no longer unconditionally override P2 control here. Override is now done
     // just-in-time only for specials/supers inside ApplyAutoAction (and wake pre-arm
-    // when freezing a special). Normals/jumps/dashes use immediate inputs and do not
-    // require AI flag changes.
+    // when freezing a special). Jumps and dashes still use the immediate lane and do
+    // not require AI flag changes. Normals do NOT: since the immediate-input audit
+    // they go through QueueAutoActionNormalPulse, which reads the live AI flag itself
+    // to pick the NativePoll vs AiPostWrite transport and preserves it either way.
     // Set trigger cooldown to prevent rapid re-triggering
     if (playerNum == 1) {
         p1TriggerActive = true;
@@ -2383,6 +2466,7 @@ void StartTriggerDelay(int playerNum, int triggerType, short moveID, int delayFr
     dstate.pendingNormalGeneration = 0;
     dstate.pendingRecipeGeneration = 0;
     dstate.dispatchAttempts = 0;
+    dstate.pendingWaitTicks = 0;
     
     // Random Pool is picked at trigger-arm time so wakeup pre-buffering and
     // delayed actions both consume the same concrete action. P2 wakeup may
@@ -2540,6 +2624,7 @@ void StartTriggerDelay(int playerNum, int triggerType, short moveID, int delayFr
                 dstate.delayFramesRemaining = 1;
                 dstate.pendingMoveID = 0;
                 dstate.pendingNormalGeneration = normalGeneration;
+                dstate.pendingWaitTicks = 0;
                 dstate.dispatchAttempts = 1;
                 LogOut(std::string("[AUTO-ACTION] Immediate P") +
                            std::to_string(playerNum) +
@@ -4606,6 +4691,9 @@ void ClearDelayStatesIfNonActionable(short moveID1, short moveID2, short prevMov
         const int clearedTriggerType = p1DelayState.triggerType;
         const int remainingInternal = p1DelayState.delayFramesRemaining;
         const int remainingVisual = InternalTicksToVisualFramesCeil(remainingInternal);
+        // ResetDelayState only drops our bookkeeping; without this the pulse
+        // itself stays live and untracked, and would still press later.
+        CancelPendingNormalPulseIfAny(1, p1DelayState, p1Reason.c_str());
         ResetDelayState(p1DelayState);
         LogOut("[AUTO-ACTION][DELAY] Cleared P1 delay source=" + clearSource +
                " trigger=" + TriggerTypeLabel(clearedTriggerType) +
@@ -4628,6 +4716,9 @@ void ClearDelayStatesIfNonActionable(short moveID1, short moveID2, short prevMov
         const int clearedTriggerType = p2DelayState.triggerType;
         const int remainingInternal = p2DelayState.delayFramesRemaining;
         const int remainingVisual = InternalTicksToVisualFramesCeil(remainingInternal);
+        // ResetDelayState only drops our bookkeeping; without this the pulse
+        // itself stays live and untracked, and would still press later.
+        CancelPendingNormalPulseIfAny(2, p2DelayState, p2Reason.c_str());
         ResetDelayState(p2DelayState);
         LogOut("[AUTO-ACTION][DELAY] Cleared P2 delay source=" + clearSource +
                " trigger=" + TriggerTypeLabel(clearedTriggerType) +

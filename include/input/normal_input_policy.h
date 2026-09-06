@@ -131,6 +131,50 @@ constexpr bool PostureEligible(const Intent& intent,
         (intent.airborne ? airActionable : groundActionable);
 }
 
+// EFZ starts a ground normal from the live PAT row's cancel bit (0x8 at
+// FRAME_HIT_PROPS_OFFSET) plus a rank comparison, not from a neutral move-ID
+// whitelist.  Recoil Guard is *two* PAT rows, verified across all 26 retail
+// .pat files: row 0 is the defender freeze (20F for 168, 22F for 169/170,
+// cancel bit CLEAR) and every later row is the RG advantage window (cancel bit
+// SET) during which the move ID is still 168/169/170.  Totals are 40/42/42
+// (42 for sayuri's 168).  A neutral-state whitelist such as IsActionable()
+// cannot express "still 168, but cancellable", so the entire advantage window
+// was unreachable and the queued normal could not press until the state ended
+// - exactly 20 visual frames late.
+//
+// cancelIntoTier is 10 for all three RG IDs cast-wide, and the ground normal
+// destination tiers are >= 10, so the rank test can only ever pass out of RG.
+// destinationRankKnown is false for intents with no cast-wide anchor
+// (6X/4X/1X/3X and the D/S button); falling back to the cancel bit alone is
+// therefore safe.
+constexpr bool RecoilGuardCancelEligible(bool inRecoilGuard,
+                                         bool patCancelBitSet,
+                                         int currentCancelRank,
+                                         int destinationRank,
+                                         bool destinationRankKnown) {
+    if (!inRecoilGuard || !patCancelBitSet) return false;
+    return !destinationRankKnown || currentCancelRank <= destinationRank;
+}
+
+// Cast-wide ground destination anchors, mirroring the consumer witness in
+// DidConsumerStartRequestedNormal (input_hook.cpp): neutral A/B/C -> 200/201/203,
+// down A/B/C -> 204/205/206.  Returns -1 when no cast-wide anchor exists.
+constexpr int GroundNormalRankAnchor(const Intent& intent) {
+    if (intent.airborne) return -1;
+    const int button = intent.button == kInputA ? 0
+                     : intent.button == kInputB ? 1
+                     : intent.button == kInputC ? 2
+                     : -1;
+    if (button < 0) return -1;  // D/S has no cast-wide anchor.
+    if (intent.direction == RelativeDirection::Neutral) {
+        return button == 0 ? 200 : button == 1 ? 201 : 203;
+    }
+    if (intent.direction == RelativeDirection::Down) {
+        return 204 + button;
+    }
+    return -1;  // 6X/4X/1X/3X are character command normals; no anchor.
+}
+
 enum class Phase : uint8_t {
     Idle,
     AwaitingStart,
