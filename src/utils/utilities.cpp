@@ -1656,7 +1656,8 @@ int ResolveAutoActionTargetPlayer() {
     return (localPlayer == 2) ? 1 : 2;
 }
 
-// Debug/experimental: allow buffering (pre-freeze) of wakeup specials/supers/dashes instead of f1 injection
+// Pre-buffer Wakeup: early-start a 0F On-Wakeup macro during state 96 (ON) vs first-actionable-frame
+// playback (OFF). Does not affect wake specials (always early-buffered) or wake dashes (never).
 std::atomic<bool> g_wakeBufferingEnabled{false};
 
 // Global toggle: enable/disable Counter RG early-restore behavior (default OFF)

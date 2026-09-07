@@ -1148,14 +1148,14 @@ namespace ImGuiGui {
                 const int autoActionTarget = ResolveAutoActionTargetPlayer();
                 ImGui::Text("Target: P%d (opponent side)", autoActionTarget);
 
-                // Wake buffering toggle (debug): pre-buffer wake specials/dashes vs frame1 inject
+                // Wake buffering toggle: pre-buffer a 0F wake MACRO early vs play it on the first actionable frame
                 bool wakeBuf = g_wakeBufferingEnabled.load();
                 if (ImGui::Checkbox("Pre-buffer Wakeup", &wakeBuf)) {
                     g_wakeBufferingEnabled.store(wakeBuf);
                     LogOut(std::string("[IMGUI] Wake buffering mode: ") + (wakeBuf ? "BUFFERED (early freeze)" : "FRAME1 (no early freeze)"), true);
                 }
                 if (ImGui::IsItemHovered()) {
-                    ImGui::SetTooltip("On: buffer wake moves slightly early. Off: do them on the first actionable frame.\nUseful for testing tight wakeup timing and wake-up buffering.");
+                    ImGui::SetTooltip("On: start a wakeup macro early so its first attack is buffered. Off: play it on the first actionable frame.\nWakeup specials buffer on their own either way.");
                 }
 
                 // Global: Randomize all triggers toggle (placed with master/wake settings)
@@ -2471,7 +2471,7 @@ namespace ImGuiGui {
                             ImGui::TextDisabled("Quick setup");
                             BulletTextWrapped("Enable the trigger rows you want. Auto Actions target the side opposite local control, P2 by default.");
                             BulletTextWrapped("Randomize Triggers adds a coin-flip so trigger attempts sometimes skip activation.");
-                            BulletTextWrapped("Pre-buffer Wakeup performs wake specials, dashes, and macros slightly early.");
+                            BulletTextWrapped("Pre-buffer Wakeup starts a wakeup macro slightly early so its first attack is buffered; wakeup specials buffer on their own.");
                             ImGui::Dummy(ImVec2(1, 4));
                             ImGui::TextDisabled("Per trigger");
                             ImGui::TextWrapped("Pick an action (normals, forward/back normals, specials, supers, jump, dash/backdash, block, Final Memory, or a Macro slot), the button if needed, and an optional delay.");
@@ -3620,7 +3620,13 @@ namespace ImGuiGui {
         if (GetCurrentGameMode() == GameMode::Practice) {
             ImGui::SeparatorText("Switch Players (Practice)");
             int curLocal = SwitchPlayers::GetLocalSide();
-            if (ImGui::Button("Toggle Switch Players")) {
+            // Disabled while a macro is active: a swap mid-replay hands the human's new
+            // slot to the macro's poll override and restores stale CPU flags afterwards.
+            const bool switchBlockedByMacro = MacroController::GetState() != MacroController::State::Idle;
+            if (switchBlockedByMacro) ImGui::BeginDisabled();
+            const bool toggleSwitchClicked = ImGui::Button("Toggle Switch Players");
+            if (switchBlockedByMacro) ImGui::EndDisabled();
+            if (toggleSwitchClicked) {
                 bool ok = SwitchPlayers::ToggleLocalSide();
                 if (!ok) {
                     LogOut("[DEBUG/UI] SwitchPlayers toggle failed (Practice controller not ready?)", true);

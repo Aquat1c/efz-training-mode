@@ -1898,9 +1898,10 @@ void FrameDataMonitor() {
             static RGAnalysis s_rgP2; // last RG where P2 was the defender
 
             // Transient Counter RG assist:
-            // When the human (P1) RGs the dummy, briefly enable dummy autoblock and arm RG for P2
-            // so it can counter-RG without requiring Always RG to be enabled globally.
+            // When the human (SwitchPlayers::GetLocalPlayerIndex()) RGs the dummy, briefly enable dummy autoblock
+            // and arm RG on the dummy (GetRemotePlayerIndex()) so it can counter-RG without Always RG.
             static bool s_crgAssistActive = false;
+            static int  s_crgAssistHumanP = 1;   // side that opened the assist (the human), latched at activation
             static bool s_crgSavedAutoBlock = false;
             static bool s_crgSavedAutoBlockValid = false;
 
@@ -2119,6 +2120,11 @@ void FrameDataMonitor() {
                 }
             };
 
+            // Resolve sides once per tick, before the lambda below captures them.
+            // The human is whoever holds local control; after a swap that is P2.
+            const int humanP = SwitchPlayers::GetLocalPlayerIndex();
+            const int dummyP = SwitchPlayers::GetRemotePlayerIndex();
+            (void)dummyP;
             auto onRGEdge = [&](int defender, short rgMove) {
                 RGAnalysis &slot = (defender == 1) ? s_rgP1 : s_rgP2;
                 slot = RGAnalysis{}; // reset
@@ -2137,8 +2143,8 @@ void FrameDataMonitor() {
                 slot.openedAtFrame = frameCounter.load();
                 emitRGMessage(slot);
 
-                // If P1 (human) just RG'd and Counter RG is enabled, prepare P2 to counter-RG
-                if (defender == 1) {
+                // If the human just RG'd and Counter RG is enabled, prepare the dummy to counter-RG
+                if (defender == humanP) {
                     if (g_counterRGEnabled.load() && !AlwaysRG::IsEnabled() && GetCurrentGameMode() == GameMode::Practice) {
                         bool curAB = false;
                         if (GetPracticeAutoBlockEnabled(curAB)) {
@@ -2152,6 +2158,7 @@ void FrameDataMonitor() {
                             SetPracticeAutoBlockEnabled(true);
                         }
                         s_crgAssistActive = true;
+                        s_crgAssistHumanP = humanP;
                         if (detailedLogging.load()) {
                             LogOut("[CRG][ASSIST] Activated: enabling dummy autoblock and arming RG during window", true);
                         }
@@ -2175,11 +2182,15 @@ void FrameDataMonitor() {
             updateRGFA(s_rgP1);
             updateRGFA(s_rgP2);
 
-            // Counter RG assist maintenance: arm P2 RG while the P1 RG window is open
+            // Counter RG assist maintenance: arm the dummy's RG while the human's RG window is open
                 if (s_crgAssistActive) {
-                bool windowOpen = (s_rgP1.active && s_rgP1.cRGOpen);
-                bool p2RgEdge = (IsRecoilGuard(moveID2) && !IsRecoilGuard(prevMoveID2));
-                bool stopAssist = !windowOpen || p2RgEdge || (GetCurrentGamePhase() != GamePhase::Match) || (GetCurrentGameMode() != GameMode::Practice);
+                const RGAnalysis& humanRg = (s_crgAssistHumanP == 1) ? s_rgP1 : s_rgP2;
+                bool windowOpen = (humanRg.active && humanRg.cRGOpen);
+                const int dP = 3 - s_crgAssistHumanP;
+                const short dm  = (dP == 1) ? moveID1 : moveID2;
+                const short pdm = (dP == 1) ? prevMoveID1 : prevMoveID2;
+                bool dummyRgEdge = (IsRecoilGuard(dm) && !IsRecoilGuard(pdm));
+                bool stopAssist = !windowOpen || dummyRgEdge || (s_crgAssistHumanP != humanP) || (GetCurrentGamePhase() != GamePhase::Match) || (GetCurrentGameMode() != GameMode::Practice);
                 if (stopAssist) {
                     // Restore previous autoblock setting if we changed it
                     if (s_crgSavedAutoBlockValid && !s_crgSavedAutoBlock) {
@@ -2191,11 +2202,13 @@ void FrameDataMonitor() {
                         LogOut("[CRG][ASSIST] Deactivated: restoring autoblock state", true);
                     }
                 } else {
-                    // Arm RG for P2 by writing 0x3C to [P2 + 334]
-                    uintptr_t p2Ptr = ResolvePlayerBaseBestEffort(2);
-                    if (p2Ptr) {
+                    // Arm RG for the dummy by writing 0x3C to [dummy + 334]. +334 is per-fighter:
+                    // after a swap the dummy is P1, and writing P2 here armed the HUMAN.
+                    uintptr_t dummyPtr = GetPlayerBase(dP);
+                    if (!dummyPtr) dummyPtr = ResolvePlayerBaseBestEffort(dP);
+                    if (dummyPtr) {
                         uint8_t arm = 0x3C;
-                        SafeWriteMemory(p2Ptr + 334, &arm, sizeof(arm));
+                        SafeWriteMemory(dummyPtr + 334, &arm, sizeof(arm));
                     }
                 }
             }

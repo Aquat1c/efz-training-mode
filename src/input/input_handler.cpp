@@ -555,11 +555,12 @@ void MonitorKeys() {
                     swapPositions();
                     handled = true;
                 } else if (!handled && gpWentDown(cgp.gpSwitchPlayersButton)) {
-                    // Guard: disable switch-players while macro prerecord/recording is active
+                    // Guard: disable switch-players while macro prerecord/recording/playback is active (a swap mid-replay leaves the P2 poll override driving the human's new side)
                     auto st = MacroController::GetState();
                     if (Mission::Engine::Recorder::IsSessionActive() ||
-                        st == MacroController::State::PreRecord || st == MacroController::State::Recording) {
-                        DirectDrawHook::AddMessage("Switch Players disabled during Macro PreRecord/Recording", "SYSTEM", RGB(255,200,120), 1200, 0, 100);
+                        st == MacroController::State::PreRecord || st == MacroController::State::Recording ||
+                        st == MacroController::State::Replaying) {
+                        DirectDrawHook::AddMessage("Switch Players disabled during Macro PreRecord/Recording/Playback", "SYSTEM", RGB(255,200,120), 1200, 0, 100);
                         handled = true;
                     } else {
                         if (GetCurrentGameMode() == GameMode::Practice) {
@@ -723,8 +724,9 @@ void MonitorKeys() {
                 // Debug hotkey: Toggle local/remote players in Practice
                 auto st = MacroController::GetState();
                 if (Mission::Engine::Recorder::IsSessionActive() ||
-                    st == MacroController::State::PreRecord || st == MacroController::State::Recording) {
-                    DirectDrawHook::AddMessage("Switch Players disabled during Macro PreRecord/Recording", "SYSTEM", RGB(255,200,120), 1200, 0, 100);
+                    st == MacroController::State::PreRecord || st == MacroController::State::Recording ||
+                    st == MacroController::State::Replaying) {
+                    DirectDrawHook::AddMessage("Switch Players disabled during Macro PreRecord/Recording/Playback", "SYSTEM", RGB(255,200,120), 1200, 0, 100);
                     keyHandled = true;
                 } else if (GetCurrentGameMode() == GameMode::Practice && !g_guiActive.load()) {
                     bool ok = SwitchPlayers::ToggleLocalSide();

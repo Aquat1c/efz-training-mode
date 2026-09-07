@@ -4,6 +4,7 @@
 #include "../include/game/game_state.h"
 #include "../include/core/constants.h"
 #include "../include/utils/utilities.h" // ::IsActionable
+#include "../include/utils/switch_players.h" // GetRemotePlayerIndex - the dummy side
 #include <cstdlib>
 #include <atomic>
 #include <mutex>
@@ -73,16 +74,23 @@ namespace RandomBlock {
         return true;
     }
 
-    // Helper: conservative guard/actionability classification for P2 using move IDs
-    static inline bool IsP2BlockingOrBlockstun(short moveId) {
+    // Helper: conservative guard/actionability classification for the dummy using move IDs
+    static inline bool IsDummyBlockingOrBlockstun(short moveId) {
         return (moveId >= 150 && moveId <= 156); // same range used in practice_patch
     }
 
-    void Tick(short /*p1MoveId*/, short p2MoveId) {
+    void Tick(short p1MoveId, short p2MoveId) {
         std::lock_guard<std::mutex> lk(g_writeMutex);
         if (!g_enabled.load()) return;
         if (GetCurrentGameMode() != GameMode::Practice) return;
         if (GetCurrentGamePhase() != GamePhase::Match) return;
+
+        // Every safety read below must look at the DUMMY, which is P1 after a
+        // control swap. The +4936 write itself is slot-agnostic (the engine applies
+        // it to whichever fighter carries the AI flag); only these gating reads
+        // were hardcoded to P2, so under a swap they inspected the HUMAN.
+        const int dummyPlayer = SwitchPlayers::GetRemotePlayerIndex();
+        const short dummyMoveId = (dummyPlayer == 1) ? p1MoveId : p2MoveId;
 
         // Determine whether the dummy mode currently wants autoblock ON.
         // We'll randomize only during ON windows per the active mode.
@@ -113,12 +121,12 @@ namespace RandomBlock {
             // If the mode does not want AB now, ensure OFF (with safety deferral) and skip randomizing
             bool curOn = false; if (!GetPracticeAutoBlockEnabled(curOn)) return;
             bool wantOnFinal = false;
-            if (IsP2BlockingOrBlockstun(p2MoveId) || !::IsActionable(p2MoveId)) {
+            if (IsDummyBlockingOrBlockstun(dummyMoveId) || !::IsActionable(dummyMoveId)) {
                 g_pendingOff.store(true);
                 wantOnFinal = true; // hold ON until safe
             }
             if (g_pendingOff.load()) {
-                if (!IsP2BlockingOrBlockstun(p2MoveId) && ::IsActionable(p2MoveId)) {
+                if (!IsDummyBlockingOrBlockstun(dummyMoveId) && ::IsActionable(dummyMoveId)) {
                     wantOnFinal = false; g_pendingOff.store(false);
                 } else {
                     wantOnFinal = true;
@@ -141,7 +149,7 @@ namespace RandomBlock {
 
         // Defer turning OFF while guarding or inactionable to avoid cutting guard/creating odd transitions
         if (!wantOn) {
-            if (IsP2BlockingOrBlockstun(p2MoveId) || !::IsActionable(p2MoveId)) {
+            if (IsDummyBlockingOrBlockstun(dummyMoveId) || !::IsActionable(dummyMoveId)) {
                 g_pendingOff.store(true);
                 wantOn = true; // keep ON until safe
             }
@@ -149,7 +157,7 @@ namespace RandomBlock {
 
         // If we previously deferred OFF, attempt to apply when safe now
         if (g_pendingOff.load()) {
-            if (!IsP2BlockingOrBlockstun(p2MoveId) && ::IsActionable(p2MoveId)) {
+            if (!IsDummyBlockingOrBlockstun(dummyMoveId) && ::IsActionable(dummyMoveId)) {
                 // Safe to turn OFF this frame
                 wantOn = false;
                 g_pendingOff.store(false);

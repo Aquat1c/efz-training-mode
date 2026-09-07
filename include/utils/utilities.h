@@ -24,7 +24,9 @@ extern std::atomic<bool> g_featuresEnabled;   // NEW: Master switch for all feat
 extern std::atomic<bool> autoActionEnabled;
 extern std::atomic<int> autoActionType;
 extern std::atomic<int> autoActionCustomID;
-extern std::atomic<int> autoActionPlayer;  // 1=P1, 2=P2, 3=Both
+extern std::atomic<int> autoActionPlayer;  // Cached dummy slot (1 or 2) = SwitchPlayers::GetRemotePlayerIndex().
+                                           // Write-only outside the tutorial lease: the engine re-resolves the
+                                           // target every tick. 3 (Both) is never produced.
 
 // Individual trigger settings - ADD THESE MISSING DECLARATIONS
 extern std::atomic<bool> triggerAfterBlockEnabled;
@@ -642,7 +644,9 @@ extern std::atomic<int> triggerAfterHitstunMacroSlot;
 extern std::atomic<int> triggerAfterAirtechMacroSlot;
 extern std::atomic<int> triggerOnRGMacroSlot;
 
-// Debug toggle: enable pre-buffering (freeze) of wakeup specials/supers/dashes
+// Pre-buffer Wakeup: start a 0F On-Wakeup MACRO early during state 96 so its first attack is
+// buffered; OFF plays it on the first actionable frame. Wake specials always early-buffer and
+// wake dashes never do, regardless of this flag.
 extern std::atomic<bool> g_wakeBufferingEnabled;
 
 // UI: Show/hide the on-screen Frame Advantage overlay (default OFF)
