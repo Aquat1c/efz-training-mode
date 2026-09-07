@@ -265,6 +265,18 @@ struct DisplayData {
     int p1DoppelTechStage;
     int p2DoppelTechStage;
 
+    // Sayuri Kurata - the move she remembers countering, and whether Magical
+    // Cutter is always available out of a grounded block.
+    // Memory choice: 0=OFF, 1=NOTHING, 2=LAST BLOCKED, 3+ = one move of the
+    // CURRENT opponent. The index is presentation only - the resolved move ID
+    // lives in the SayuriCounter module, because the list is rebuilt per
+    // opponent and the same index means a different move against the next one.
+    int p1SayuriMemoryChoice;
+    int p2SayuriMemoryChoice;
+    // Cutter: 0=NORMAL, 1=ALWAYS READY
+    int p1SayuriCutterMode;
+    int p2SayuriCutterMode;
+
     // Nanase (Rumi) – Barehanded mode (full swap of normals+specials)
     bool p1RumiBarehanded;
     bool p2RumiBarehanded;
