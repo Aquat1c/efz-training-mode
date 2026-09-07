@@ -26,6 +26,7 @@
 #include "../include/game/random_rg.h"
 #include "../include/game/hud_disable.h"
 #include "../include/game/random_block.h"
+#include "../include/game/doppel_tech.h"
 #include "../include/utils/switch_players.h"
 #include <sstream>
 #include <iomanip>
@@ -207,6 +208,10 @@ void ResetDisplayDataToDefaults() {
     // Doppel
     displayData.p1DoppelEnlightened = false;
     displayData.p2DoppelEnlightened = false;
+    displayData.p1DoppelTechMode = 0;   // OFF
+    displayData.p2DoppelTechMode = 0;   // OFF
+    displayData.p1DoppelTechStage = 0;  // ALL
+    displayData.p2DoppelTechStage = 0;  // ALL
     // Rumi
     displayData.p1RumiBarehanded = false;
     displayData.p2RumiBarehanded = false;
@@ -523,6 +528,16 @@ void ResetRuntimeSettingsToDisplayDefaults() {
     g_contRecRfModeP2.store(displayData.p2RecoveryRfMode);
     g_contRecRfCustomP2.store(displayData.p2RecoveryRfCustom);
     g_contRecRfForceBlueICP2.store(displayData.p2RecoveryRfForceBlueIC);
+
+    // Doppel Nanase follow-up teching keeps its live settings in its own module,
+    // so the reset has to push the freshly-defaulted DisplayData values through
+    // as well - otherwise the menus would show OFF while the module kept driving
+    // the opponent's escape.
+    DoppelTech::SetMode(1, displayData.p1DoppelTechMode);
+    DoppelTech::SetMode(2, displayData.p2DoppelTechMode);
+    DoppelTech::SetStage(1, displayData.p1DoppelTechStage);
+    DoppelTech::SetStage(2, displayData.p2DoppelTechStage);
+    DoppelTech::ResetState();
 }
 }
 

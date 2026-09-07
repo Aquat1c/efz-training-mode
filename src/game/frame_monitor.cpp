@@ -39,6 +39,7 @@
 #include "../include/game/macro_controller.h"
 #include "../include/game/always_rg.h"
 #include "../include/game/random_rg.h"
+#include "../include/game/doppel_tech.h"
 #include "../include/game/random_block.h"
 #include "../include/game/practice_offsets.h"   // GAMESTATE_OFF_* and practice controller offsets
 #include "../include/input/injection_control.h"  // g_forceBypass/g_injectImmediateOnly/g_pollOverride*
@@ -2389,6 +2390,16 @@ void FrameDataMonitor() {
                 
                 // STEP 3: Auto-airtech (every frame for precision, no throttling)
                 MonitorAutoAirtech(moveID1, moveID2);  
+            }
+
+            // Doppel Nanase follow-up teching. Deliberately OUTSIDE the
+            // moveIDsChanged/criticalFeaturesActive gate above: the module has
+            // to wait for a specific animation frame index inside each follow-up
+            // state, and the ALWAYS mode re-checks Doppel's committed follow-up
+            // on ticks where no move ID changed. It self-gates on
+            // Practice/netplay/character and re-reads Doppel's move ID itself.
+            if (!Mission::Engine::IsPracticeAutomationSuppressed()) {
+                DoppelTech::Tick();
             }
 
             // Continuous Recovery: restore values based on unified sample neutral flags + optional both-neutral delay
