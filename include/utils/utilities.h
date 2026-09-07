@@ -255,6 +255,16 @@ struct DisplayData {
     bool p1DoppelEnlightened;
     bool p2DoppelEnlightened;
 
+    // Doppel Nanase (ExNanase) - how the OPPONENT escapes her command-throw
+    // follow-ups. The row lives on Doppel's side because the field driven by it
+    // sits on Doppel's own struct, but the behaviour described is the opponent's.
+    // Mode:  0=OFF, 1=NEVER, 2=TECH B, 3=TECH C, 4=ALWAYS, 5=RANDOM
+    int p1DoppelTechMode;
+    int p2DoppelTechMode;
+    // Stage: 0=ALL, 1=STAGE 1, 2=STAGE 2, 3=STAGE 3
+    int p1DoppelTechStage;
+    int p2DoppelTechStage;
+
     // Nanase (Rumi) – Barehanded mode (full swap of normals+specials)
     bool p1RumiBarehanded;
     bool p2RumiBarehanded;
