@@ -420,129 +420,141 @@ std::atomic<uint64_t> g_tutorialP2WakeToken{0};
 std::atomic<uint64_t> g_nextTutorialP2WakeToken{1};
 int g_tutorialP2WakeAppliedAction = 0;
 int g_tutorialP2WakeAppliedStrength = 0;
-uint64_t s_p2WakeForcedNeutralToken = 0;
-uint64_t s_p2WakeMacroCleanupToken = 0;
+// Indexed by playerNum (1..2); index 0 is unused. The wake-macro lease
+// machinery serves whichever side is the dummy: P2 by default, P1 after a
+// control swap. Every existing P2 caller passes 2 and is unchanged.
+uint64_t s_wakeForcedNeutralToken[3] = {0, 0, 0};
+uint64_t s_wakeMacroCleanupToken[3] = {0, 0, 0};
+
+static inline bool IsWakeLeasePlayer(int playerNum) {
+    return playerNum == 1 || playerNum == 2;
+}
 
 // Wake-macro neutralization is a short-lived input owner.  Publish and retire
 // it under the same controller barrier as motions, normals, charge follow-ups,
 // and detached immediate input so it cannot erase (or be erased by) a newer
 // producer.  The exact-value check on release is a final fail-closed guard for
 // legacy writers which have not yet migrated to an attributed lease.
-bool TryPublishP2WakeForcedNeutral() {
+bool TryPublishWakeForcedNeutral(int playerNum) {
+    if (!IsWakeLeasePlayer(playerNum)) return false;
     std::lock_guard<std::recursive_mutex> controlLock(g_p2ControlMutex);
     if (ScopedInputReservationMatches(
-            2, ScopedInputOwner::WakeForcedNeutral,
-            s_p2WakeForcedNeutralToken)) {
+            playerNum, ScopedInputOwner::WakeForcedNeutral,
+            s_wakeForcedNeutralToken[playerNum])) {
         return true;
     }
     if (g_onlineModeActive.load(std::memory_order_acquire) ||
-        IsScopedInputReserved(2) ||
-        IsAutoActionMotionTransactionActive(2) ||
-        IsAutoActionNormalPulseActive(2) ||
-        ImmediateInput::TutorialLeaseActive(2) ||
-        TutorialMotionQueueLeaseActive(2) ||
+        IsScopedInputReserved(playerNum) ||
+        IsAutoActionMotionTransactionActive(playerNum) ||
+        IsAutoActionNormalPulseActive(playerNum) ||
+        ImmediateInput::TutorialLeaseActive(playerNum) ||
+        TutorialMotionQueueLeaseActive(playerNum) ||
         TutorialBufferFreezeLeaseActive() ||
-        g_pollOverrideActive[2].load(std::memory_order_acquire) ||
+        g_pollOverrideActive[playerNum].load(std::memory_order_acquire) ||
         (MacroController::IsExclusivePlayback() &&
-         MacroController::GetPlaybackPlayer() == 2) ||
+         MacroController::GetPlaybackPlayer() == playerNum) ||
         (g_bufferFreezingActive.load(std::memory_order_acquire) &&
          (g_activeFreezePlayer.load(std::memory_order_acquire) == 0 ||
-          g_activeFreezePlayer.load(std::memory_order_acquire) == 2)) ||
-        g_manualInputOverride[2].load(std::memory_order_acquire) ||
-        ImmediateInput::GetCurrentDesired(2) != 0 ||
-        ImmediateInput::GetRemainingTicks(2) != 0) {
+          g_activeFreezePlayer.load(std::memory_order_acquire) == playerNum)) ||
+        g_manualInputOverride[playerNum].load(std::memory_order_acquire) ||
+        ImmediateInput::GetCurrentDesired(playerNum) != 0 ||
+        ImmediateInput::GetRemainingTicks(playerNum) != 0) {
         return false;
     }
 
     uint64_t token = 0;
     if (!TryReserveScopedInput(
-            2, ScopedInputOwner::WakeForcedNeutral, token)) {
+            playerNum, ScopedInputOwner::WakeForcedNeutral, token)) {
         return false;
     }
 
-    g_manualInputMask[2].store(0, std::memory_order_release);
-    g_injectImmediateOnly[2].store(true, std::memory_order_release);
-    g_manualInputOverride[2].store(true, std::memory_order_release);
-    s_p2WakeForcedNeutralToken = token;
+    g_manualInputMask[playerNum].store(0, std::memory_order_release);
+    g_injectImmediateOnly[playerNum].store(true, std::memory_order_release);
+    g_manualInputOverride[playerNum].store(true, std::memory_order_release);
+    s_wakeForcedNeutralToken[playerNum] = token;
     return true;
 }
 
-void ReleaseP2WakeForcedNeutral() {
+void ReleaseWakeForcedNeutral(int playerNum) {
+    if (!IsWakeLeasePlayer(playerNum)) return;
     std::lock_guard<std::recursive_mutex> controlLock(g_p2ControlMutex);
-    const uint64_t token = s_p2WakeForcedNeutralToken;
+    const uint64_t token = s_wakeForcedNeutralToken[playerNum];
     if (!ScopedInputReservationMatches(
-            2, ScopedInputOwner::WakeForcedNeutral, token)) {
-        s_p2WakeForcedNeutralToken = 0;
+            playerNum, ScopedInputOwner::WakeForcedNeutral, token)) {
+        s_wakeForcedNeutralToken[playerNum] = 0;
         return;
     }
     const bool stillOwnsExactValue =
-        g_manualInputOverride[2].load(std::memory_order_acquire) &&
-        g_manualInputMask[2].load(std::memory_order_acquire) == 0 &&
-        g_injectImmediateOnly[2].load(std::memory_order_acquire);
+        g_manualInputOverride[playerNum].load(std::memory_order_acquire) &&
+        g_manualInputMask[playerNum].load(std::memory_order_acquire) == 0 &&
+        g_injectImmediateOnly[playerNum].load(std::memory_order_acquire);
     if (stillOwnsExactValue) {
-        g_manualInputOverride[2].store(false, std::memory_order_release);
-        g_manualInputMask[2].store(0, std::memory_order_release);
-        g_injectImmediateOnly[2].store(false, std::memory_order_release);
+        g_manualInputOverride[playerNum].store(false, std::memory_order_release);
+        g_manualInputMask[playerNum].store(0, std::memory_order_release);
+        g_injectImmediateOnly[playerNum].store(false, std::memory_order_release);
     }
     ReleaseScopedInputReservation(
-        2, ScopedInputOwner::WakeForcedNeutral, token);
-    s_p2WakeForcedNeutralToken = 0;
+        playerNum, ScopedInputOwner::WakeForcedNeutral, token);
+    s_wakeForcedNeutralToken[playerNum] = 0;
 }
 
 // The wake-macro epilogue clears EFZ's retained command token and, when
 // necessary, its input ring.  Those are shared resources, so the epilogue
-// must own the P2 input lane for its entire monitoring/countdown lifetime.
-// If another producer is already active we leave the completion signal armed
-// and retry on a later tick instead of deleting that producer's input.
-bool TryBeginP2WakeMacroCleanup() {
+// must own that fighter's input lane for its entire monitoring/countdown
+// lifetime. If another producer is already active we leave the completion
+// signal armed and retry on a later tick instead of deleting that producer's
+// input.
+bool TryBeginWakeMacroCleanup(int playerNum) {
+    if (!IsWakeLeasePlayer(playerNum)) return false;
     std::lock_guard<std::recursive_mutex> controlLock(g_p2ControlMutex);
     if (ScopedInputReservationMatches(
-            2, ScopedInputOwner::WakeMacroCleanup,
-            s_p2WakeMacroCleanupToken)) {
+            playerNum, ScopedInputOwner::WakeMacroCleanup,
+            s_wakeMacroCleanupToken[playerNum])) {
         return true;
     }
 
-    const MotionQueueSnapshot queue = GetMotionQueueSnapshot(2);
+    const MotionQueueSnapshot queue = GetMotionQueueSnapshot(playerNum);
     if (g_onlineModeActive.load(std::memory_order_acquire) ||
-        IsScopedInputReserved(2) ||
-        IsAutoActionMotionTransactionActive(2) ||
-        IsAutoActionNormalPulseActive(2) ||
+        IsScopedInputReserved(playerNum) ||
+        IsAutoActionMotionTransactionActive(playerNum) ||
+        IsAutoActionNormalPulseActive(playerNum) ||
         queue.active ||
-        ImmediateInput::TutorialLeaseActive(2) ||
-        TutorialMotionQueueLeaseActive(2) ||
+        ImmediateInput::TutorialLeaseActive(playerNum) ||
+        TutorialMotionQueueLeaseActive(playerNum) ||
         TutorialBufferFreezeLeaseActive() ||
-        g_pollOverrideActive[2].load(std::memory_order_acquire) ||
-        g_manualInputOverride[2].load(std::memory_order_acquire) ||
-        g_injectImmediateOnly[2].load(std::memory_order_acquire) ||
-        g_forceBypass[2].load(std::memory_order_acquire) ||
-        ImmediateInput::GetCurrentDesired(2) != 0 ||
-        ImmediateInput::GetRemainingTicks(2) != 0 ||
+        g_pollOverrideActive[playerNum].load(std::memory_order_acquire) ||
+        g_manualInputOverride[playerNum].load(std::memory_order_acquire) ||
+        g_injectImmediateOnly[playerNum].load(std::memory_order_acquire) ||
+        g_forceBypass[playerNum].load(std::memory_order_acquire) ||
+        ImmediateInput::GetCurrentDesired(playerNum) != 0 ||
+        ImmediateInput::GetRemainingTicks(playerNum) != 0 ||
         (g_bufferFreezingActive.load(std::memory_order_acquire) &&
          (g_activeFreezePlayer.load(std::memory_order_acquire) == 0 ||
-          g_activeFreezePlayer.load(std::memory_order_acquire) == 2)) ||
+          g_activeFreezePlayer.load(std::memory_order_acquire) == playerNum)) ||
         (MacroController::IsExclusivePlayback() &&
-         MacroController::GetPlaybackPlayer() == 2)) {
+         MacroController::GetPlaybackPlayer() == playerNum)) {
         return false;
     }
 
     uint64_t token = 0;
     if (!TryReserveScopedInput(
-            2, ScopedInputOwner::WakeMacroCleanup, token)) {
+            playerNum, ScopedInputOwner::WakeMacroCleanup, token)) {
         return false;
     }
-    s_p2WakeMacroCleanupToken = token;
+    s_wakeMacroCleanupToken[playerNum] = token;
     return true;
 }
 
-void EndP2WakeMacroCleanup() {
+void EndWakeMacroCleanup(int playerNum) {
+    if (!IsWakeLeasePlayer(playerNum)) return;
     std::lock_guard<std::recursive_mutex> controlLock(g_p2ControlMutex);
-    const uint64_t token = s_p2WakeMacroCleanupToken;
+    const uint64_t token = s_wakeMacroCleanupToken[playerNum];
     if (ScopedInputReservationMatches(
-            2, ScopedInputOwner::WakeMacroCleanup, token)) {
+            playerNum, ScopedInputOwner::WakeMacroCleanup, token)) {
         ReleaseScopedInputReservation(
-            2, ScopedInputOwner::WakeMacroCleanup, token);
+            playerNum, ScopedInputOwner::WakeMacroCleanup, token);
     }
-    s_p2WakeMacroCleanupToken = 0;
+    s_wakeMacroCleanupToken[playerNum] = 0;
 }
 }
 
@@ -683,10 +695,13 @@ static void ProcessDeferredDashFollowups(short curP1, short prevP1, short curP2,
     const bool expired =
         frameCounter.load() > g_dashDeferred.expiryFrame.load();
     if (expired) {
-        if (targetP == 2 && motionGeneration != 0 &&
-            GetP2AutoActionMotionTransactionOutcome(motionGeneration) ==
-                P2AutoActionMotionOutcome::Pending) {
-            CancelP2AutoActionMotionTransaction(
+        // The dash generation belongs to whichever side is the dummy; both
+        // sides now submit through the same transaction.
+        if (motionGeneration != 0 &&
+            GetAutoActionMotionTransactionOutcome(targetP, motionGeneration) ==
+                AutoActionMotionOutcome::Pending) {
+            CancelAutoActionMotionTransaction(
+                targetP,
                 "dash follow-up transaction expired before producer/consumer");
         }
         if (normalGeneration != 0 &&
@@ -698,11 +713,11 @@ static void ProcessDeferredDashFollowups(short curP1, short prevP1, short curP2,
         ResetDeferredDashFollowupState();
         return;
     }
-    if (targetP == 2 && motionGeneration != 0) {
-        const P2AutoActionMotionOutcome outcome =
-            GetP2AutoActionMotionTransactionOutcome(motionGeneration);
-        if (outcome == P2AutoActionMotionOutcome::Pending) return;
-        if (outcome != P2AutoActionMotionOutcome::Accepted) {
+    if (motionGeneration != 0) {
+        const AutoActionMotionOutcome outcome =
+            GetAutoActionMotionTransactionOutcome(targetP, motionGeneration);
+        if (outcome == AutoActionMotionOutcome::Pending) return;
+        if (outcome != AutoActionMotionOutcome::Accepted) {
             LogOut("[AUTO-ACTION] Dash follow-up cancelled with motion generation=" +
                        std::to_string(motionGeneration),
                    true);
@@ -831,10 +846,10 @@ static void ProcessDeferredDashFollowups(short curP1, short prevP1, short curP2,
                    std::to_string(sel) + " gen=" + std::to_string(generation) +
                    " on first dash tick", true);
             
-            // P2's scoped transaction already scrubbed exactly its authored
-            // history at the dash consumer barrier. P1 still uses the legacy
-            // queue and therefore retains its legacy whole-buffer cleanup.
-            if (targetP == 1) {
+            // A scoped transaction already scrubbed exactly its authored
+            // history at the dash consumer barrier. Only a legacy-queue dash
+            // (no generation) retains the legacy whole-buffer cleanup.
+            if (targetP == 1 && motionGeneration == 0) {
                 ClearPlayerInputBuffer(targetP, true);
                 LogOut("[AUTO-ACTION] Cleared legacy P1 dash pattern after dash normal injection", true);
             }
@@ -879,18 +894,24 @@ static void ResetDeferredDashFollowupState() {
 // Grace period: prevent fallback restore from triggering immediately after freeze starts
 static std::atomic<DWORD> g_pendingRestoreTimestamp(0);
 
-// When true, the next macro-driven P2 control restore should preserve
-// the input buffer and motion token (used for wake pre-buffered macros).
+// When true, the next macro-driven control restore should preserve the input
+// buffer and motion token (used for wake pre-buffered macros). The player
+// latch records which side armed it, so the completion signal in
+// MacroController only honours it for that playback (P2 by default, P1 after
+// a control swap) and never for an unrelated P1 playback.
 std::atomic<bool> g_macroWakePreserveBuffer(false);
+std::atomic<int> g_macroWakePreservePlayer(0);
 
-// Set when a wake-prebuffered macro's playback (including finish-guard)
-// has fully completed. Auto-action uses this to schedule monitoring for
-// successful buffered move execution, then cleans up the motion token
-// after the buffered move executes (similar to regular macros).
-std::atomic<bool> g_wakeMacroPlaybackCompleted(false);
-static int s_p2WakeMacroTokenNeutralizeCountdown = 0;
-static short s_p2LastWakeMoveID = -1; // Track moveID transitions for cleanup
-static bool s_p2WakeMoveIDChanged = false; // unused but kept for compatibility
+// Set to the play player (1 or 2; 0 = none) when a wake-prebuffered macro's
+// playback (including finish-guard) has fully completed. Auto-action uses
+// this to schedule monitoring for successful buffered move execution on that
+// fighter, then cleans up its motion token after the buffered move executes
+// (similar to regular macros).
+std::atomic<int> g_wakeMacroPlaybackCompleted(0);
+// Per-player cleanup bookkeeping, indexed by playerNum (index 0 unused).
+static int s_wakeMacroTokenNeutralizeCountdown[3] = {0, 0, 0};
+static short s_lastWakeMoveID[3] = {-1, -1, -1}; // Track moveID transitions for cleanup
+static bool s_wakeMoveIDChanged[3] = {false, false, false}; // unused but kept for compatibility
 
 // Pre-arm flags for On Wakeup: buffer inputs during GROUNDTECH_RECOVERY to fire on wake
 static bool s_p1WakePrearmed = false; // wake pre-arm without early triggerActive
@@ -956,8 +977,10 @@ static bool s_p1WakeOptionPicked = false;
 static bool s_p2WakeOptionPicked = false;
 
 static void ResetWakeRuntimeState() {
-    ReleaseP2WakeForcedNeutral();
-    EndP2WakeMacroCleanup();
+    ReleaseWakeForcedNeutral(1);
+    ReleaseWakeForcedNeutral(2);
+    EndWakeMacroCleanup(1);
+    EndWakeMacroCleanup(2);
     s_p1WakePrearmed = false; s_p1WakePrearmExpiry = 0; s_p1WakePrearmActionType = -1;
     s_p1WakePrearmStrength = -1; s_p1WakePrearmIsSpecial = false; s_p1WakePrearmIsMacro = false;
     s_p1WakePrearmCharge = 0;
@@ -981,10 +1004,13 @@ static void ResetWakeRuntimeState() {
     s_p1WakeOptionPicked = false; s_p1WakePrePickedOption = {};
     s_p2WakeOptionPicked = false; s_p2WakePrePickedOption = {};
     g_macroWakePreserveBuffer.store(false, std::memory_order_release);
-    g_wakeMacroPlaybackCompleted.store(false, std::memory_order_release);
-    s_p2WakeMacroTokenNeutralizeCountdown = 0;
-    s_p2LastWakeMoveID = -1;
-    s_p2WakeMoveIDChanged = false;
+    g_macroWakePreservePlayer.store(0, std::memory_order_release);
+    g_wakeMacroPlaybackCompleted.store(0, std::memory_order_release);
+    for (int p = 1; p <= 2; ++p) {
+        s_wakeMacroTokenNeutralizeCountdown[p] = 0;
+        s_lastWakeMoveID[p] = -1;
+        s_wakeMoveIDChanged[p] = false;
+    }
     s_p1WakeJumpTrackFrame = -1;
     s_p2WakeJumpTrackFrame = -1;
 }
@@ -1045,11 +1071,12 @@ static bool TraceWakeRelevantForPlayer(int playerNum, short prevMoveID, short mo
     if (IsGroundtech(prevMoveID) || IsGroundtech(moveID)) return true;
     if (playerNum == 1) {
         return s_p1WakePrearmed || s_p1WakeMacroQueued || p1DelayState.triggerType == TRIGGER_ON_WAKEUP ||
-               s_p1WakeMoveID96FrameCount > 0 || s_p1WakeMacro96FrameCount > 0;
+               s_p1WakeMoveID96FrameCount > 0 || s_p1WakeMacro96FrameCount > 0 ||
+               s_wakeMacroTokenNeutralizeCountdown[1] > 0;
     }
     return s_p2WakePrearmed || s_p2WakeMacroQueued || p2DelayState.triggerType == TRIGGER_ON_WAKEUP ||
            s_p2WakeMoveID96FrameCount > 0 || s_p2WakeMacro96FrameCount > 0 ||
-           s_p2WakeMacroTokenNeutralizeCountdown > 0;
+           s_wakeMacroTokenNeutralizeCountdown[2] > 0;
 }
 
 static bool TraceWakeWindowActive(short moveID1, short moveID2, short prevMoveID1, short prevMoveID2) {
@@ -1133,7 +1160,7 @@ static void TraceAppendPlayerWakeState(std::ostringstream& oss, int playerNum, s
             << " opt=" << TraceBool(s_p2WakeOptionPicked)
             << " frozen=" << TraceBool(s_p2WakeBufferFrozen)
             << " hold=" << TraceBool(s_p2WakeHoldPrimed) << "/" << TraceBool(s_p2WakeHoldIssued)
-            << " tokenCd=" << s_p2WakeMacroTokenNeutralizeCountdown
+            << " tokenCd=" << s_wakeMacroTokenNeutralizeCountdown[2]
             << " dly=" << TraceBool(p2DelayState.isDelaying) << ":" << p2DelayState.delayFramesRemaining
             << " dTrig=" << TriggerTypeLabel(p2DelayState.triggerType)
             << " trig=" << TraceBool(p2TriggerActive) << ":" << p2TriggerCooldown
@@ -1299,6 +1326,10 @@ static int  s_p1RGPrearmActionType = -1;   // store action to help skip duplicat
 static int  s_p2RGPrearmActionType = -1;
 static int  s_p1RGPrearmExpiry = 0;        // safety expiry (internal frames)
 static int  s_p2RGPrearmExpiry = 0;
+// Generation of the scoped native transaction carrying a pre-armed RG
+// special/FM. Both sides use the same transaction; the P1 slot matters after
+// a control swap (the dummy is P1).
+static uint64_t s_p1RGPrearmGeneration = 0;
 static uint64_t s_p2RGPrearmGeneration = 0;
 
 static inline void UpdateStunTimersForPlayer(StunTimers& t, short prevMoveID, short currMoveID) {
@@ -1351,10 +1382,13 @@ static inline void UpdateStunTimersForPlayer(StunTimers& t, short prevMoveID, sh
 }
 // Lightweight check to skip all auto-action work when nothing can or should run
 static inline bool WakeCleanupWorkPending() {
-    return s_p2WakeForcedNeutralToken != 0 ||
-           s_p2WakeMacroCleanupToken != 0 ||
-           g_wakeMacroPlaybackCompleted.load(std::memory_order_acquire) ||
-           s_p2WakeMacroTokenNeutralizeCountdown > 0;
+    return s_wakeForcedNeutralToken[1] != 0 ||
+           s_wakeForcedNeutralToken[2] != 0 ||
+           s_wakeMacroCleanupToken[1] != 0 ||
+           s_wakeMacroCleanupToken[2] != 0 ||
+           g_wakeMacroPlaybackCompleted.load(std::memory_order_acquire) != 0 ||
+           s_wakeMacroTokenNeutralizeCountdown[1] > 0 ||
+           s_wakeMacroTokenNeutralizeCountdown[2] > 0;
 }
 
 static inline bool AutoActionWorkPending() {
@@ -2058,13 +2092,117 @@ void ProcessTriggerDelays(short moveID1, short moveID2, short prevMoveID1, short
                 }
             }
 
+            // Mirror of the P2 native-transaction wait below: submission only
+            // admits a generation-owned producer/consumer transaction, so the
+            // exact selected option stays alive until EFZ's command consumer
+            // publishes a terminal outcome. After a control swap the dummy is
+            // P1 and its specials/supers/FM/dashes take this same path.
+            if (dispatchThisTick &&
+                p1DelayState.pendingMotionGeneration != 0) {
+                const uint64_t generation =
+                    p1DelayState.pendingMotionGeneration;
+                const AutoActionMotionOutcome outcome =
+                    GetAutoActionMotionTransactionOutcome(1, generation);
+                if (outcome == AutoActionMotionOutcome::Pending) {
+                    p1DelayState.delayFramesRemaining = 1;
+                    LogOut("[AUTO-ACTION] P1 native transaction gen=" +
+                               std::to_string(generation) +
+                               " still pending; retaining the exact delayed option",
+                           detailedLogging.load());
+                    dispatchThisTick = false;
+                } else if (outcome == AutoActionMotionOutcome::Accepted) {
+                    LogOut("[AUTO-ACTION] P1 native transaction gen=" +
+                               std::to_string(generation) +
+                               " was consumed by EFZ; completing delayed action",
+                           true);
+                    if (ValidationMetricsEnabled()) {
+                        GetValidationMetrics().p1ActionsApplied++;
+                    }
+                    ResetDelayState(p1DelayState);
+                    p1ActionApplied = true;
+                    dispatchThisTick = false;
+                } else {
+                    LogOut("[AUTO-ACTION] P1 native transaction gen=" +
+                               std::to_string(generation) +
+                               " ended " + P2MotionOutcomeLabel(outcome) +
+                               " after attempt " +
+                               std::to_string(p1DelayState.dispatchAttempts),
+                           true);
+                    CancelAutoActionChargeFollowup(
+                        1, "primary motion was not accepted");
+                    p1DelayState.pendingMotionGeneration = 0;
+                    if (p1DelayState.dispatchAttempts >=
+                        kMaxAutoActionDispatchAttempts) {
+                        LogOut("[AUTO-ACTION] P1 native transaction exhausted its bounded retries; retiring trigger",
+                               true);
+                        ResetDelayState(p1DelayState);
+                        p1TriggerActive = false;
+                        p1TriggerCooldown = 0;
+                        dispatchThisTick = false;
+                    }
+                }
+            }
+
+            // Queue admission is not execution. Keep the delayed RG action
+            // alive until the pre-armed native transaction publishes a
+            // terminal result (mirror of the P2 gate below).
+            if (dispatchThisTick &&
+                p1DelayState.triggerType == TRIGGER_ON_RG &&
+                s_p1RGPrearmed && s_p1RGPrearmIsSpecial &&
+                s_p1RGPrearmGeneration != 0 &&
+                GetAutoActionMotionTransactionOutcome(
+                    1, s_p1RGPrearmGeneration) ==
+                    AutoActionMotionOutcome::Pending) {
+                p1DelayState.delayFramesRemaining = 1;
+                dispatchThisTick = false;
+            }
+
+            // If a macro is selected for this trigger and has data, prefer
+            // playing it (mirror of the P2 block below). Busy playback keeps
+            // the same slot for the next tick, like every other P1 wait here.
             if (dispatchThisTick) {
+                int sel = TriggerMacroSlotForType(p1DelayState.triggerType);
+                // Prefer row-specific macro slot if set
+                if (p1DelayState.chosenMacroSlot > 0) sel = p1DelayState.chosenMacroSlot;
+                if (sel > 0 && MacroController::GetState() != MacroController::State::Recording) {
+                    sel = CLAMP(sel, 1, MacroController::GetSlotCount());
+                    if (!MacroController::IsSlotEmpty(sel)) {
+                        MacroController::SetCurrentSlot(sel);
+                        if (!(MacroController::GetState() == MacroController::State::Replaying &&
+                              MacroController::GetPlaybackPlayer() == 1)) {
+                            LogOut("[AUTO-ACTION][MACRO] Starting macro playback (slot=" + std::to_string(sel) + ") for P1 on trigger expiry", true);
+                            const bool started = MacroController::PlayForPlayer(1, 0, false);
+                            if (started &&
+                                MacroController::GetState() == MacroController::State::Replaying) {
+                                ResetDelayState(p1DelayState);
+                                p1TriggerActive = false;
+                                p1TriggerCooldown = 0;
+                                if (ValidationMetricsEnabled()) { GetValidationMetrics().p1ActionsApplied++; }
+                            } else {
+                                p1DelayState.delayFramesRemaining = 1;
+                                LogOut("[AUTO-ACTION][MACRO] Playback owner was busy; retrying the same slot next tick", true);
+                            }
+                            dispatchThisTick = false;
+                        }
+                    }
+                }
+            }
+
+            if (dispatchThisTick) {
+                AutoActionApplyResult result = AutoActionApplyResult::Busy;
+                uint64_t motionGeneration = 0;
                 uint64_t recipeGeneration = 0;
                 uint64_t normalGeneration = 0;
-                const AutoActionApplyResult result =
-                    ApplyAutoAction(1, 0, moveID1, prevMoveID1,
-                                    nullptr, &normalGeneration,
-                                    &recipeGeneration);
+                if (!(MacroController::GetState() == MacroController::State::Replaying &&
+                      MacroController::GetPlaybackPlayer() == 1)) {
+                    result = ApplyAutoAction(1, 0, moveID1, prevMoveID1,
+                                             &motionGeneration,
+                                             &normalGeneration,
+                                             &recipeGeneration);
+                } else {
+                    LogOut("[AUTO-ACTION][MACRO] P1 macro active; skipping ApplyAutoAction", detailedLogging.load());
+                    if (ValidationMetricsEnabled()) { GetValidationMetrics().p1SuppressedByMacro++; }
+                }
                 if (result == AutoActionApplyResult::Accepted) {
                     if (recipeGeneration != 0) {
                         p1DelayState.pendingRecipeGeneration = recipeGeneration;
@@ -2073,6 +2211,16 @@ void ProcessTriggerDelays(short moveID1, short moveID2, short prevMoveID1, short
                         LogOut("[AUTO-ACTION] P1 staged recipe admitted gen=" +
                                    std::to_string(recipeGeneration) +
                                    "; waiting for its exact destination",
+                               true);
+                    } else if (motionGeneration != 0) {
+                        p1DelayState.pendingMotionGeneration = motionGeneration;
+                        ++p1DelayState.dispatchAttempts;
+                        p1DelayState.delayFramesRemaining = 1;
+                        LogOut("[AUTO-ACTION] P1 native transaction admitted gen=" +
+                                   std::to_string(motionGeneration) +
+                                   " attempt=" +
+                                   std::to_string(p1DelayState.dispatchAttempts) +
+                                   "; waiting for EFZ's command consumer",
                                true);
                     } else if (normalGeneration != 0) {
                         p1DelayState.pendingNormalGeneration = normalGeneration;
@@ -2309,10 +2457,12 @@ void ProcessTriggerDelays(short moveID1, short moveID2, short prevMoveID1, short
                 sel = CLAMP(sel, 1, MacroController::GetSlotCount());
                 if (!MacroController::IsSlotEmpty(sel)) {
                     MacroController::SetCurrentSlot(sel);
-                    if (MacroController::GetState() != MacroController::State::Replaying) {
+                    if (!(MacroController::GetState() == MacroController::State::Replaying &&
+                          MacroController::GetPlaybackPlayer() == 2)) {
                         LogOut("[AUTO-ACTION][MACRO] Starting macro playback (slot=" + std::to_string(sel) + ") for P2 on trigger expiry", true);
-                        MacroController::Play();
-                        if (MacroController::GetState() == MacroController::State::Replaying) {
+                        const bool started = MacroController::PlayForPlayer(2, 0, false);
+                        if (started &&
+                            MacroController::GetState() == MacroController::State::Replaying) {
                             ResetDelayState(p2DelayState);
                             p2TriggerActive = false;
                             p2TriggerCooldown = 0;
@@ -2331,7 +2481,8 @@ void ProcessTriggerDelays(short moveID1, short moveID2, short prevMoveID1, short
             uint64_t motionGeneration = 0;
             uint64_t normalGeneration = 0;
             uint64_t recipeGeneration = 0;
-            if (MacroController::GetState() != MacroController::State::Replaying) {
+            if (!(MacroController::GetState() == MacroController::State::Replaying &&
+                  MacroController::GetPlaybackPlayer() == 2)) {
                 result = ApplyAutoAction(2, 0, moveID2, prevMoveID2,
                                          &motionGeneration,
                                          &normalGeneration,
@@ -2396,9 +2547,13 @@ void ProcessTriggerDelays(short moveID1, short moveID2, short prevMoveID1, short
 }
 
 void StartTriggerDelay(int playerNum, int triggerType, short moveID, int delayFrames) {
-    // Do not queue P2 trigger delays while a macro is playing; they would fight the macro.
-    if (playerNum == 2 && MacroController::GetState() == MacroController::State::Replaying) {
-        LogOut("[AUTO-ACTION][MACRO] Suppressing P2 StartTriggerDelay during macro playback", detailedLogging.load());
+    // Do not queue trigger delays for a player whose macro is playing; they
+    // would fight the macro. Keyed on the playback player so the dummy slot
+    // (P2 by default, P1 after a control swap) is treated the same way.
+    if (MacroController::GetState() == MacroController::State::Replaying &&
+        MacroController::GetPlaybackPlayer() == playerNum) {
+        LogOut("[AUTO-ACTION][MACRO] Suppressing P" + std::to_string(playerNum) +
+               " StartTriggerDelay during macro playback", detailedLogging.load());
         return;
     }
     // Check if the player is already in a trigger cooldown period
@@ -2437,12 +2592,12 @@ void StartTriggerDelay(int playerNum, int triggerType, short moveID, int delayFr
         ValidationMetrics &vm = GetValidationMetrics();
         if (playerNum == 1) vm.p1TriggerStarts++; else if (playerNum == 2) vm.p2TriggerStarts++;
     }
-    // NOTE: We no longer unconditionally override P2 control here. Override is now done
-    // just-in-time only for specials/supers inside ApplyAutoAction (and wake pre-arm
-    // when freezing a special). Jumps and dashes still use the immediate lane and do
-    // not require AI flag changes. Normals do NOT: since the immediate-input audit
-    // they go through QueueAutoActionNormalPulse, which reads the live AI flag itself
-    // to pick the NativePoll vs AiPostWrite transport and preserves it either way.
+    // NOTE: ApplyAutoAction never overrides the AI flag itself. Specials/supers/FM/dashes go through
+    // the generation-owned motion/pattern transaction (SubmitAutoActionMotionTransaction /
+    // SubmitAutoActionPatternTransaction), which humanizes the target for one producer pass and
+    // restores it; normals go through QueueAutoActionNormalPulse, which reads the live AI flag to
+    // pick NativePoll vs AiPostWrite. Both work for whichever slot is the dummy
+    // (SwitchPlayers::GetRemotePlayerIndex()).
     // Set trigger cooldown to prevent rapid re-triggering
     if (playerNum == 1) {
         p1TriggerActive = true;
@@ -2557,27 +2712,23 @@ void StartTriggerDelay(int playerNum, int triggerType, short moveID, int delayFr
                 ? ResolvePointer(base, EFZ_BASE_OFFSET_P1, MOVE_ID_OFFSET)
                 : ResolvePointer(base, EFZ_BASE_OFFSET_P2, MOVE_ID_OFFSET);
         }
-        // For P2: if a macro slot is selected for this trigger, play it instead
-        if (playerNum == 2) {
-            int sel = TriggerMacroSlotForType(triggerType);
-            // Prefer a row-specific macro slot when present
-            if (playerNum == 2) {
-                if ((triggerType == TRIGGER_AFTER_BLOCK && p2DelayState.chosenMacroSlot > 0) ||
-                    (triggerType == TRIGGER_ON_WAKEUP && p2DelayState.chosenMacroSlot > 0) ||
-                    (triggerType == TRIGGER_AFTER_HITSTUN && p2DelayState.chosenMacroSlot > 0) ||
-                    (triggerType == TRIGGER_AFTER_AIRTECH && p2DelayState.chosenMacroSlot > 0) ||
-                    (triggerType == TRIGGER_ON_RG && p2DelayState.chosenMacroSlot > 0)) {
-                    sel = p2DelayState.chosenMacroSlot;
-                }
-            }
+        // If a macro slot is selected for this trigger, play it instead. The
+        // slot was resolved above (row-specific slot first, else the trigger's
+        // default slot) and the same path serves whichever side is the dummy:
+        // P2 by default, P1 after a control swap.
+        {
+            int sel = selectedMacroSlot;
             if (sel > 0 && MacroController::GetState() != MacroController::State::Recording) {
                 sel = CLAMP(sel, 1, MacroController::GetSlotCount());
                 if (!MacroController::IsSlotEmpty(sel)) {
                     MacroController::SetCurrentSlot(sel);
-                    if (MacroController::GetState() != MacroController::State::Replaying) {
-                        LogOut("[AUTO-ACTION][MACRO] Starting macro playback (slot=" + std::to_string(sel) + ") for P2 (immediate)", true);
-                        MacroController::Play();
-                        if (MacroController::GetState() == MacroController::State::Replaying) {
+                    if (!(MacroController::GetState() == MacroController::State::Replaying &&
+                          MacroController::GetPlaybackPlayer() == playerNum)) {
+                        LogOut("[AUTO-ACTION][MACRO] Starting macro playback (slot=" + std::to_string(sel) +
+                               ") for P" + std::to_string(playerNum) + " (immediate)", true);
+                        const bool started = MacroController::PlayForPlayer(playerNum, 0, false);
+                        if (started &&
+                            MacroController::GetState() == MacroController::State::Replaying) {
                             return;
                         }
                         dstate.isDelaying = true;
@@ -2609,13 +2760,15 @@ void StartTriggerDelay(int playerNum, int triggerType, short moveID, int delayFr
                            std::to_string(recipeGeneration) +
                            "; waiting for its exact destination",
                        true);
-            } else if (playerNum == 2 && motionGeneration != 0) {
+            } else if (motionGeneration != 0) {
                 dstate.isDelaying = true;
                 dstate.delayFramesRemaining = 1;
                 dstate.pendingMoveID = 0;
                 dstate.pendingMotionGeneration = motionGeneration;
                 dstate.dispatchAttempts = 1;
-                LogOut("[AUTO-ACTION] Immediate P2 native transaction admitted gen=" +
+                LogOut(std::string("[AUTO-ACTION] Immediate P") +
+                           std::to_string(playerNum) +
+                           " native transaction admitted gen=" +
                            std::to_string(motionGeneration) +
                            "; waiting for EFZ's command consumer",
                        true);
@@ -2900,15 +3053,28 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
                     bool isSpec = ((motion >= MOTION_236A) && !isDash) ||
                                   (at == ACTION_FINAL_MEMORY);
                     if (isSpec) {
+                        // Mirror of the P2 pre-arm: the scoped transaction is
+                        // the only transport that humanizes an AI-flagged P1
+                        // dummy for the producer pass.
+                        uint64_t prearmGeneration = 0;
                         if (at == ACTION_FINAL_MEMORY) {
                             int charId = displayData.p1CharID;
-                            preOk = ExecuteFinalMemory(1, charId);
-                            s_p1RGPrearmIsSpecial = true;
+                            preOk = ExecuteFinalMemory(
+                                1, charId, 120, &prearmGeneration);
                         } else {
                             // Ensure buffer writes allowed
                             g_injectImmediateOnly[1].store(false);
-                            preOk = FreezeBufferForMotion(1, motion, buttonMask);
+                            preOk = SubmitAutoActionMotionTransaction(
+                                        1, motion, buttonMask, 120,
+                                        &prearmGeneration) ==
+                                    AutoActionMotionSubmitResult::Accepted;
+                        }
+                        if (preOk) {
                             s_p1RGPrearmIsSpecial = true;
+                            s_p1RGPrearmGeneration = prearmGeneration;
+                        } else {
+                            s_p1RGPrearmIsSpecial = false;
+                            s_p1RGPrearmGeneration = 0;
                         }
                     }
                     if (preOk) {
@@ -2916,8 +3082,11 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
                         s_p1RGPrearmActionType = at;
                         s_p1RGPrearmExpiry = frameCounter.load() + (baseDelayF * 3) + 90; // small guard window after actionable
                         LogOut("[AUTO-ACTION][RG] P1 pre-armed at RG entry: action=" + std::to_string(at) +
-                               " motion=" + std::to_string(motion) + " btnMask=" + std::to_string(buttonMask), true);
+                               " motion=" + std::to_string(motion) + " btnMask=" + std::to_string(buttonMask) +
+                               " (scoped transaction)", true);
                     } else if (isSpec) {
+                        s_p1RGPrearmIsSpecial = false;
+                        s_p1RGPrearmGeneration = 0;
                         LogOut("[AUTO-ACTION][RG] P1 pre-arm failed; will attempt on delay expiry", true);
                     }
                 }
@@ -2949,36 +3118,42 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
         p1_after_hitstun_done: ;
         }
         
+        // On Wakeup: pick the configured wake option as soon as groundtech
+        // starts (any of the 97/98/99/96 states), independent of the pre-arm
+        // gate below and of the Pre-buffer Wakeup toggle, exactly like the P2
+        // path. The pre-arm block and the generic On-Wakeup trigger both
+        // consume this same pick, so the buffered action cannot diverge from
+        // the armed action.
+        const bool p1EnteringGroundtech = triggerOnWakeupEnabled.load() &&
+            IsGroundtech(moveID1) && !IsGroundtech(prevMoveID1);
+        if (p1EnteringGroundtech) {
+            s_p1WakeOptionPicked = false;
+            s_p1WakePrePickedOption = {};
+            if (PickRandomPoolOption(TRIGGER_ON_WAKEUP, 1, s_p1WakePrePickedOption)) {
+                s_p1WakeOptionPicked = true;
+                TraceAutoActionWakeEvent("p1-wake-pool-picked", 1, prevMoveID1, moveID1,
+                                         "delay=" + std::to_string(s_p1WakePrePickedOption.delay) +
+                                         " action=" + std::to_string(s_p1WakePrePickedOption.action) +
+                                         " strength=" + std::to_string(s_p1WakePrePickedOption.strength));
+            } else if (HasEnabledRows(TRIGGER_ON_WAKEUP) &&
+                       PickRandomRow(TRIGGER_ON_WAKEUP, 1,
+                                     s_p1WakePrePickedOption)) {
+                s_p1WakeOptionPicked = true;
+                TraceAutoActionWakeEvent("p1-wake-option-picked", 1, prevMoveID1, moveID1,
+                                         "macroSlot=" + std::to_string(s_p1WakePrePickedOption.macroSlot) +
+                                         " delay=" + std::to_string(s_p1WakePrePickedOption.delay) +
+                                         " action=" + std::to_string(s_p1WakePrePickedOption.action) +
+                                         " strength=" + std::to_string(s_p1WakePrePickedOption.strength));
+            }
+        }
+
         // On Wakeup pre-arm: record metadata when delay == 0 and action is a special/FM.
-        // IMPORTANT: If a macro slot is configured for On Wakeup, prefer the generic
-        // trigger->delay->macro path even at 0F so macros can be used for 0F wakeup
-        // reversals. In that case we skip pre-arm entirely and let StartTriggerDelay
-        // handle immediate macro playback on the first actionable wake frame.
+        // IMPORTANT: With Pre-buffer Wakeup OFF a 0F macro row is NOT pre-armed; the generic
+        // On-Wakeup trigger fires StartTriggerDelay(1, ...) which plays the macro on the first
+        // actionable frame (same as the P2 path). With it ON the macro is pre-buffered during 96.
     if (triggerOnWakeupEnabled.load() && !s_p1WakePrearmed) {
             if (moveID1 == GROUNDTECH_RECOVERY) {
                 if (triggerRandomizeEnabled.load()) { if ((rand() & 1) == 0) { if (detailedLogging.load() && canLogTrigDiag()) LogOut("[AUTO-ACTION] P1 Wake prearm skipped by random gate", true); goto p1_wake_prearm_done; } }
-                bool enteringGroundtechThisFrame = !IsGroundtech(prevMoveID1) && IsGroundtech(moveID1);
-                if (enteringGroundtechThisFrame) {
-                    s_p1WakeOptionPicked = false;
-                    s_p1WakePrePickedOption = {};
-                    if (PickRandomPoolOption(TRIGGER_ON_WAKEUP, 1, s_p1WakePrePickedOption)) {
-                        s_p1WakeOptionPicked = true;
-                        TraceAutoActionWakeEvent("p1-wake-pool-picked", 1, prevMoveID1, moveID1,
-                                                 "delay=" + std::to_string(s_p1WakePrePickedOption.delay) +
-                                                 " action=" + std::to_string(s_p1WakePrePickedOption.action) +
-                                                 " strength=" + std::to_string(s_p1WakePrePickedOption.strength));
-                    } else if (HasEnabledRows(TRIGGER_ON_WAKEUP)) {
-                        if (PickRandomRow(TRIGGER_ON_WAKEUP, 1,
-                                          s_p1WakePrePickedOption)) {
-                            s_p1WakeOptionPicked = true;
-                            TraceAutoActionWakeEvent("p1-wake-option-picked", 1, prevMoveID1, moveID1,
-                                                     "macroSlot=" + std::to_string(s_p1WakePrePickedOption.macroSlot) +
-                                                     " delay=" + std::to_string(s_p1WakePrePickedOption.delay) +
-                                                     " action=" + std::to_string(s_p1WakePrePickedOption.action) +
-                                                     " strength=" + std::to_string(s_p1WakePrePickedOption.strength));
-                        }
-                    }
-                }
 
                 int userDelayF = s_p1WakeOptionPicked ? s_p1WakePrePickedOption.delay : triggerOnWakeupDelay.load();
                 if (s_p1WakeOptionPicked) {
@@ -3001,14 +3176,20 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
                 const int chargeFollowup = s_p1WakeOptionPicked
                     ? s_p1WakePrePickedOption.chargeFollowup
                     : triggerOnWakeupCharge.load();
-                // Macros are now a supported pre-arm type (treated like specials for timing)
-                bool isMacro = macroHasData && (userDelayF == 0);
+                // A populated 0F macro row owns this wakeup on both sides
+                // (mirror of P2's dedicatedMacroOwnsWake). With Pre-buffer
+                // Wakeup ON the macro is pre-armed here and started during
+                // state 96; with it OFF nothing is pre-armed and the generic
+                // On-Wakeup trigger plays it on the first actionable frame.
+                const bool dedicatedMacroOwnsWake = macroHasData && (userDelayF == 0);
+                bool isMacro = dedicatedMacroOwnsWake && g_wakeBufferingEnabled.load();
                 // A valid macro owns this wakeup.  Never prime the row's normal
-                // action as a second producer behind the macro playback.
-                bool holdEligible = (userDelayF == 0) && !isSpecial && !isMacro &&
+                // action (or its special) as a second producer behind the macro.
+                bool holdEligible = (userDelayF == 0) && !isSpecial && !dedicatedMacroOwnsWake &&
                                     SupportsImmediateWakeHold(actionType);
-                if (userDelayF == 0 &&
-                    (isSpecial || holdEligible || isMacro)) {
+                const bool shouldPrearm = (userDelayF == 0) &&
+                    (isMacro || (!dedicatedMacroOwnsWake && (isSpecial || holdEligible)));
+                if (shouldPrearm) {
                     s_p1WakePrearmed = true;
                     // A populated wake macro is the complete authored action;
                     // its row's ordinary move must not become a second wake
@@ -3048,9 +3229,27 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
                                              " delayF=" + std::to_string(userDelayF));
                     LogFlowSequenceEvent(1, "wake metadata stored", prevMoveID1, moveID1);
                 } else if (detailedLogging.load()) {
-                    LogOut("[AUTO-ACTION] P1 wake pre-arm skipped (delay>0 or unsupported action)", true);
+                    std::string reason;
+                    if (dedicatedMacroOwnsWake) {
+                        reason = "macro row (generic On-Wakeup trigger plays it on the first actionable frame)";
+                    } else if (userDelayF != 0) {
+                        reason = "delay>0";
+                    } else {
+                        reason = "unsupported action";
+                    }
+                    LogOut("[AUTO-ACTION] P1 wake pre-arm skipped (" + reason + ")", true);
                 }
             p1_wake_prearm_done: ;
+            }
+        }
+
+        // Cleanup Forced Neutral if P1 exited 96 (mirror of the P2 block).
+        if (s_wakeForcedNeutralToken[1] != 0 &&
+            moveID1 != GROUNDTECH_RECOVERY) {
+            const bool macroPlaying =
+                (MacroController::GetState() == MacroController::State::Replaying);
+            if (!macroPlaying) {
+                ReleaseWakeForcedNeutral(1);
             }
         }
 
@@ -3108,7 +3307,8 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
                 if (s_p1WakeOptionPicked) {
                     userDelayF = (userDelayF <= 1) ? 0 : (userDelayF - 1);
                 }
-                if (macroSlot > 0 && userDelayF == 0 && !s_p1WakeMacroQueued) {
+                if (g_wakeBufferingEnabled.load() &&
+                    macroSlot > 0 && userDelayF == 0 && !s_p1WakeMacroQueued) {
                     int risingFrames = GetWakeupRisingFrames(charID); // Visual frames at 64Hz (13-39)
                     
                     // Find the FIRST attack button in the macro
@@ -3146,6 +3346,17 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
                                    " playStartFrame=" + std::to_string(playStartFrame), true);
                         }
                         
+                        // Force Neutral while waiting for the macro so AI
+                        // inputs (e.g. holding Down) cannot cause accidental
+                        // transitions before it starts (mirror of the P2 lease).
+                        if (!s_p1WakeMacroQueued && s_p1WakeMacroSlot > 0) {
+                            const bool macroPlaying =
+                                (MacroController::GetState() == MacroController::State::Replaying);
+                            if (!macroPlaying && s_wakeForcedNeutralToken[1] == 0) {
+                                (void)TryPublishWakeForcedNeutral(1);
+                            }
+                        }
+
                         // Start macro playback at calculated frame
                         if (s_p1WakeMacro96FrameCount >= s_p1WakeMacroTargetFrame) {
                             if (MacroController::GetState() != MacroController::State::Recording) {
@@ -3158,12 +3369,32 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
                                                              "slot=" + std::to_string(sel) +
                                                              " count96=" + std::to_string(s_p1WakeMacro96FrameCount) +
                                                              " targetTick=" + std::to_string(s_p1WakeMacroTargetFrame));
-                                    if (MacroController::PlayForPlayer(1)) {
+                                    // Forced neutral is this wake path's own
+                                    // short lease. Drop it before macro
+                                    // admission so it is not mistaken for an
+                                    // unrelated owner; the waiting branch above
+                                    // re-arms it if the takeover is busy.
+                                    if (s_wakeForcedNeutralToken[1] != 0) {
+                                        ReleaseWakeForcedNeutral(1);
+                                    }
+                                    const bool started = MacroController::PlayForPlayer(
+                                        1, s_p1WakeMacroStartTick, false);
+                                    if (started &&
+                                        MacroController::GetState() == MacroController::State::Replaying) {
+                                        // Publish preserve/queued state atomically
+                                        // with verified playback admission (mirror
+                                        // of the P2 path); the player latch keeps
+                                        // the preserve request bound to P1.
+                                        g_macroWakePreservePlayer.store(1, std::memory_order_release);
+                                        g_macroWakePreserveBuffer.store(true, std::memory_order_release);
                                         s_p1WakeMacroQueued = true;
                                         s_p1WakeMacroTargetFrame = -1;
                                         s_p1WakeMacroSlot = -1;
                                         s_p1WakeBufferFrozen = true; // Mark as buffered to skip fallback path
+                                        s_p1WakeMotionGeneration = 0;
                                     } else {
+                                        g_macroWakePreserveBuffer.store(false, std::memory_order_release);
+                                        g_macroWakePreservePlayer.store(0, std::memory_order_release);
                                         LogOut("[AUTO-ACTION][MACRO] P1 wake playback owner busy; retaining slot for retry",
                                                true);
                                     }
@@ -3301,6 +3532,37 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
                 LogFlowSequenceEvent(1, "wake exec (buffered early)", prevMoveID1, moveID1);
                 s_p1WakeChargeReservation = 0;
                 finishP1WakePrearm();
+            } else if (s_p1WakePrearmed && s_p1WakePrearmIsMacro &&
+                       !s_p1WakeMacroQueued &&
+                       (p1BecameActionableFromGroundtech || IsActionable(moveID1))) {
+                // Pre-buffer Wakeup is ON but the macro never started during
+                // state 96 (target missed or playback owner busy): play it on
+                // the first actionable frame instead, the P1 counterpart of
+                // P2's 96-exit retry. A busy owner leaves the pre-arm armed so
+                // the next tick retries until it expires.
+                const int slot = s_p1WakeOptionPicked
+                    ? s_p1WakePrePickedOption.macroSlot
+                    : triggerOnWakeupMacroSlot.load();
+                const int sel = CLAMP(slot, 1, MacroController::GetSlotCount());
+                if (MacroController::GetState() != MacroController::State::Recording &&
+                    !MacroController::IsSlotEmpty(sel)) {
+                    MacroController::SetCurrentSlot(sel);
+                    if (s_wakeForcedNeutralToken[1] != 0) {
+                        ReleaseWakeForcedNeutral(1);
+                    }
+                    const bool started = MacroController::PlayForPlayer(1, 0, false);
+                    if (started &&
+                        MacroController::GetState() == MacroController::State::Replaying) {
+                        LogOut("[AUTO-ACTION][MACRO] P1 wake macro frame-1 playback (slot=" +
+                               std::to_string(sel) + ")", true);
+                        TraceAutoActionWakeEvent("p1-wake-macro-frame1", 1, prevMoveID1, moveID1,
+                                                 "slot=" + std::to_string(sel));
+                        finishP1WakePrearm();
+                    } else {
+                        LogOut("[AUTO-ACTION][MACRO] P1 wake macro frame-1 playback owner busy; retaining pre-arm for retry",
+                               true);
+                    }
+                }
             } else if (s_p1WakePrearmed && !s_p1WakePrearmIsSpecial &&
                        s_p1WakeHoldIssued &&
                        s_p1WakeNormalGeneration == 0 &&
@@ -3356,8 +3618,19 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
                         if (at == ACTION_JUMP || at == ACTION_BLOCK) {
                             dispatchAccepted = IssueWakeImmediateHold(1, at);
                         } else if (IsDashRecipeAction(at)) {
-                            ResetPlayerInputBufferIndex(1);
-                            dispatchAccepted = QueueMotionInput(1, motionType, 0);
+                            // Mirror of the P2 wake dash: the scoped
+                            // transaction humanizes an AI-flagged P1 dummy
+                            // for its producer pass; the legacy queue did not.
+                            g_injectImmediateOnly[1].store(false);
+                            uint64_t generation = 0;
+                            dispatchAccepted =
+                                SubmitAutoActionMotionTransaction(
+                                    1, motionType, 0, 6, &generation) ==
+                                AutoActionMotionSubmitResult::Accepted;
+                            LogOut("[AUTO-ACTION] P1 wake dash transaction " +
+                                       std::string(dispatchAccepted ? "queued" : "rejected") +
+                                       " gen=" + std::to_string(generation),
+                                   true);
                         } else if (NormalInputPolicy::IsNormalMotion(motionType)) {
                             uint64_t generation = 0;
                             const auto submit = QueueAutoActionNormalPulse(
@@ -3380,9 +3653,18 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
                                 int atStrength = (s_p1WakePrearmStrength >= 0) ? s_p1WakePrearmStrength : GetSpecialMoveStrength(at, TRIGGER_ON_WAKEUP);
                                 buttonMask = (1 << (4 + atStrength));
                             }
+                            uint64_t generation = 0;
                             dispatchAccepted =
-                                FreezeBufferForMotion(1, motionType, buttonMask);
-                            { std::stringstream bm; bm << std::hex << buttonMask; LogOut(std::string("[AUTO-ACTION] P1 wake special frame1 buffer applied (index frozen) btnMask=0x") + bm.str(), true); }
+                                SubmitAutoActionMotionTransaction(
+                                    1, motionType, buttonMask, 6, &generation) ==
+                                AutoActionMotionSubmitResult::Accepted;
+                            std::stringstream bm;
+                            bm << std::hex << buttonMask;
+                            LogOut(std::string("[AUTO-ACTION] P1 wake transaction ") +
+                                       (dispatchAccepted ? "queued" : "rejected") +
+                                       " btnMask=0x" + bm.str() +
+                                       " gen=" + std::to_string(generation),
+                                   true);
                         }
                     }
                 }
@@ -3788,8 +4070,8 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
         // from causing accidental transitions (e.g. Crouch) before the macro starts.
         if (!s_p2WakeMacroQueued && s_p2WakeMacroSlot > 0) {
              bool macroPlaying = (MacroController::GetState() == MacroController::State::Replaying);
-             if (!macroPlaying && s_p2WakeForcedNeutralToken == 0) {
-                 (void)TryPublishP2WakeForcedNeutral();
+             if (!macroPlaying && s_wakeForcedNeutralToken[2] == 0) {
+                 (void)TryPublishWakeForcedNeutral(2);
              }
         }
 
@@ -3818,8 +4100,8 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
                     // it before macro admission so it is not mistaken for an
                     // unrelated owner; the waiting branch will re-arm it if the
                     // takeover is temporarily busy.
-                    if (s_p2WakeForcedNeutralToken != 0) {
-                        ReleaseP2WakeForcedNeutral();
+                    if (s_wakeForcedNeutralToken[2] != 0) {
+                        ReleaseWakeForcedNeutral(2);
                     }
                     const bool started = MacroController::PlayForPlayer(
                         2, s_p2WakeMacroStartTick, false);
@@ -3828,6 +4110,7 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
                         // Publish preserve/queued state atomically with verified
                         // playback admission; a rejected macro must not poison a
                         // later unrelated playback.
+                        g_macroWakePreservePlayer.store(2, std::memory_order_release);
                         g_macroWakePreserveBuffer.store(true, std::memory_order_release);
                         s_p2WakeMacroQueued = true;
                         s_p2WakeMacroTargetFrame = -1;
@@ -3835,6 +4118,7 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
                         s_p2WakeMotionGeneration = 0;
                     } else {
                         g_macroWakePreserveBuffer.store(false, std::memory_order_release);
+                        g_macroWakePreservePlayer.store(0, std::memory_order_release);
                         LogOut("[AUTO-ACTION][MACRO] P2 wake playback owner busy; retaining exact slot/target for retry",
                                true);
                     }
@@ -3989,18 +4273,20 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
                                          "slot=" + std::to_string(sel) +
                                          " count96=" + std::to_string(s_p2WakeMacro96FrameCount) +
                                          " targetTick=" + std::to_string(s_p2WakeMacroTargetFrame));
-                if (s_p2WakeForcedNeutralToken != 0) {
-                    ReleaseP2WakeForcedNeutral();
+                if (s_wakeForcedNeutralToken[2] != 0) {
+                    ReleaseWakeForcedNeutral(2);
                 }
                 const bool started = MacroController::PlayForPlayer(2, 0, false);
                 if (started &&
                     MacroController::GetState() == MacroController::State::Replaying) {
+                    g_macroWakePreservePlayer.store(2, std::memory_order_release);
                     g_macroWakePreserveBuffer.store(true, std::memory_order_release);
                     s_p2WakeMacroQueued = true;
                     s_p2WakeMacroTargetFrame = -1;
                     s_p2WakeMacroSlot = -1;
                 } else {
                     g_macroWakePreserveBuffer.store(false, std::memory_order_release);
+                    g_macroWakePreservePlayer.store(0, std::memory_order_release);
                     s_p2WakeMacroTargetFrame = -2; // actionable-side retry sentinel
                     LogOut("[AUTO-ACTION][MACRO] P2 wake fallback owner busy; retrying the same slot next tick",
                            true);
@@ -4009,11 +4295,11 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
         }
 
         // Cleanup Forced Neutral if we exited 96
-        if (s_p2WakeForcedNeutralToken != 0 &&
+        if (s_wakeForcedNeutralToken[2] != 0 &&
             moveID2 != GROUNDTECH_RECOVERY) {
              bool macroPlaying = (MacroController::GetState() == MacroController::State::Replaying);
              if (!macroPlaying) {
-                 ReleaseP2WakeForcedNeutral();
+                 ReleaseWakeForcedNeutral(2);
              }
         }
 
@@ -4380,109 +4666,124 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
     }
 
     // Post-wake cleanup for wake-prebuffered macros: once playback has
-    // finished and P2 has left any groundtech state, monitor for successful
-    // buffered move execution. When we detect moveID transition from 96
-    // (standing after wake) to a bufferable action (attack/walk/dash/jump),
-    // we know the buffered move executed successfully. At that point:
+    // finished and the dummy has left any groundtech state, monitor for
+    // successful buffered move execution. When we detect moveID transition
+    // from 96 (standing after wake) to a bufferable action
+    // (attack/walk/dash/jump), we know the buffered move executed
+    // successfully. At that point:
     // - If macro has finished: neutralize token immediately
     // - If macro still playing: wait for macro end signal before neutralizing
-    if (g_wakeMacroPlaybackCompleted.load(std::memory_order_acquire)) {
-        if (!IsGroundtech(moveID2)) {
-            if (TryBeginP2WakeMacroCleanup()) {
-                // Macro playback finished; start monitoring for buffered move
-                // execution while the cleanup reservation prevents a newer
-                // producer from entering the shared P2 command lane.
-                const int kWakeMacroTokenNeutralizeDelay = 20;
-                s_p2WakeMacroTokenNeutralizeCountdown =
-                    kWakeMacroTokenNeutralizeDelay;
-                g_wakeMacroPlaybackCompleted.store(
-                    false, std::memory_order_release);
-                // Seed tracking with current moveID (normally 96 = standing
-                // after wake).
-                s_p2LastWakeMoveID = moveID2;
-                s_p2WakeMoveIDChanged = false;
-                if (detailedLogging.load()) {
-                    LogOut("[AUTO-ACTION][MACRO-CLEANUP] Wake macro playback finished; reserved P2 input and monitoring for buffered move execution (current moveID=" +
-                           std::to_string(moveID2) + ")", true);
+    // Everything here is keyed off the macro's play player latched at the
+    // completion signal, so a P1 dummy (after a control swap) is cleaned up
+    // on P1 and the human's P2 lane is never touched.
+    {
+        const int completedPlayer =
+            g_wakeMacroPlaybackCompleted.load(std::memory_order_acquire);
+        if (completedPlayer == 1 || completedPlayer == 2) {
+            const short completedMoveID =
+                (completedPlayer == 1) ? moveID1 : moveID2;
+            if (!IsGroundtech(completedMoveID)) {
+                if (TryBeginWakeMacroCleanup(completedPlayer)) {
+                    // Macro playback finished; start monitoring for buffered
+                    // move execution while the cleanup reservation prevents a
+                    // newer producer from entering that fighter's command lane.
+                    const int kWakeMacroTokenNeutralizeDelay = 20;
+                    s_wakeMacroTokenNeutralizeCountdown[completedPlayer] =
+                        kWakeMacroTokenNeutralizeDelay;
+                    g_wakeMacroPlaybackCompleted.store(
+                        0, std::memory_order_release);
+                    // Seed tracking with current moveID (normally 96 = standing
+                    // after wake).
+                    s_lastWakeMoveID[completedPlayer] = completedMoveID;
+                    s_wakeMoveIDChanged[completedPlayer] = false;
+                    if (detailedLogging.load()) {
+                        LogOut("[AUTO-ACTION][MACRO-CLEANUP] Wake macro playback finished; reserved P" +
+                               std::to_string(completedPlayer) +
+                               " input and monitoring for buffered move execution (current moveID=" +
+                               std::to_string(completedMoveID) + ")", true);
+                    }
                 }
             }
         }
     }
 
     // Wake macro cleanup countdown: monitor for moveID transition from 96 to bufferable action
-    if (s_p2WakeMacroTokenNeutralizeCountdown > 0) {
+    for (int cleanupPlayer = 1; cleanupPlayer <= 2; ++cleanupPlayer) {
+        if (s_wakeMacroTokenNeutralizeCountdown[cleanupPlayer] <= 0) continue;
+        const short cleanupMoveID = (cleanupPlayer == 1) ? moveID1 : moveID2;
         std::lock_guard<std::recursive_mutex> cleanupLock(g_p2ControlMutex);
         if (!ScopedInputReservationMatches(
-                2, ScopedInputOwner::WakeMacroCleanup,
-                s_p2WakeMacroCleanupToken)) {
+                cleanupPlayer, ScopedInputOwner::WakeMacroCleanup,
+                s_wakeMacroCleanupToken[cleanupPlayer])) {
             // Fail closed.  Never perform an unattributed whole-buffer clear;
             // re-arm the completion signal so admission can be retried.
-            s_p2WakeMacroTokenNeutralizeCountdown = 0;
-            s_p2WakeMoveIDChanged = false;
-            s_p2WakeMacroCleanupToken = 0;
+            s_wakeMacroTokenNeutralizeCountdown[cleanupPlayer] = 0;
+            s_wakeMoveIDChanged[cleanupPlayer] = false;
+            s_wakeMacroCleanupToken[cleanupPlayer] = 0;
             g_wakeMacroPlaybackCompleted.store(
-                true, std::memory_order_release);
-            LogOut("[AUTO-ACTION][MACRO-CLEANUP] Lost cleanup reservation; deferred without touching P2 input",
+                cleanupPlayer, std::memory_order_release);
+            LogOut("[AUTO-ACTION][MACRO-CLEANUP] Lost cleanup reservation; deferred without touching P" +
+                       std::to_string(cleanupPlayer) + " input",
                    detailedLogging.load());
-        } else {
+            continue;
+        }
         // Check if moveID transitioned from 96 (standing) to a bufferable action
-        bool moveIDWas96 = (s_p2LastWakeMoveID == GROUNDTECH_RECOVERY);
-        bool moveIDNowBufferable = IsBufferableAction(moveID2);
-        
+        bool moveIDWas96 = (s_lastWakeMoveID[cleanupPlayer] == GROUNDTECH_RECOVERY);
+        bool moveIDNowBufferable = IsBufferableAction(cleanupMoveID);
+
         if (moveIDWas96 && moveIDNowBufferable) {
             // Buffered move executed! Check if macro is still playing
             bool macroStillPlaying = (MacroController::GetState() == MacroController::State::Replaying);
-            
+
             if (macroStillPlaying) {
                 // Defensive race handling: do not hold the cleanup lane across
                 // active replay. Release it and let the completion signal arm
                 // a fresh cleanup after the macro really becomes idle.
                 if (detailedLogging.load()) {
-                    LogOut("[AUTO-ACTION][MACRO-CLEANUP] Buffered move executed (96→" + std::to_string(moveID2) +
+                    LogOut("[AUTO-ACTION][MACRO-CLEANUP] Buffered move executed (96->" + std::to_string(cleanupMoveID) +
                            "), macro still playing - released cleanup reservation", true);
                 }
-                s_p2WakeMacroTokenNeutralizeCountdown = 0;
-                s_p2LastWakeMoveID = moveID2;
+                s_wakeMacroTokenNeutralizeCountdown[cleanupPlayer] = 0;
+                s_lastWakeMoveID[cleanupPlayer] = cleanupMoveID;
                 g_wakeMacroPlaybackCompleted.store(
-                    true, std::memory_order_release);
-                EndP2WakeMacroCleanup();
+                    cleanupPlayer, std::memory_order_release);
+                EndWakeMacroCleanup(cleanupPlayer);
             } else {
                 // Single-move macro: buffered move executed and macro finished
                 // Clean up immediately
-                (void)NeutralizeMotionToken(2);
-                (void)ClearPlayerInputBuffer(2);
-                s_p2WakeMacroTokenNeutralizeCountdown = 0;
-                s_p2WakeMoveIDChanged = false;
-                EndP2WakeMacroCleanup();
+                (void)NeutralizeMotionToken(cleanupPlayer);
+                (void)ClearPlayerInputBuffer(cleanupPlayer);
+                s_wakeMacroTokenNeutralizeCountdown[cleanupPlayer] = 0;
+                s_wakeMoveIDChanged[cleanupPlayer] = false;
+                EndWakeMacroCleanup(cleanupPlayer);
                 if (detailedLogging.load()) {
-                    LogOut("[AUTO-ACTION][MACRO-CLEANUP] Buffered move executed (96→" + std::to_string(moveID2) +
+                    LogOut("[AUTO-ACTION][MACRO-CLEANUP] Buffered move executed (96->" + std::to_string(cleanupMoveID) +
                            "), macro finished - immediate cleanup", true);
                 }
             }
         } else {
             // Update tracking
-            if (moveID2 != s_p2LastWakeMoveID) {
-                s_p2WakeMoveIDChanged = true;
-                s_p2LastWakeMoveID = moveID2;
+            if (cleanupMoveID != s_lastWakeMoveID[cleanupPlayer]) {
+                s_wakeMoveIDChanged[cleanupPlayer] = true;
+                s_lastWakeMoveID[cleanupPlayer] = cleanupMoveID;
             }
-            
+
             // Decrement countdown
-            s_p2WakeMacroTokenNeutralizeCountdown--;
-            
-            if (s_p2WakeMacroTokenNeutralizeCountdown == 0) {
+            s_wakeMacroTokenNeutralizeCountdown[cleanupPlayer]--;
+
+            if (s_wakeMacroTokenNeutralizeCountdown[cleanupPlayer] == 0) {
                 // Fallback: countdown expired without detecting buffered move
                 // This shouldn't happen in normal cases, but clean up anyway
-                (void)NeutralizeMotionToken(2);
-                if (moveID2 >= 200) {
-                    (void)ClearPlayerInputBuffer(2);
+                (void)NeutralizeMotionToken(cleanupPlayer);
+                if (cleanupMoveID >= 200) {
+                    (void)ClearPlayerInputBuffer(cleanupPlayer);
                 }
-                EndP2WakeMacroCleanup();
+                EndWakeMacroCleanup(cleanupPlayer);
                 if (detailedLogging.load()) {
-                    LogOut("[AUTO-ACTION][MACRO-CLEANUP] Countdown expired (moveID=" + std::to_string(moveID2) +
+                    LogOut("[AUTO-ACTION][MACRO-CLEANUP] Countdown expired (moveID=" + std::to_string(cleanupMoveID) +
                            ") - fallback cleanup", true);
                 }
             }
-        }
         }
     }
     
@@ -4616,7 +4917,16 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
     // Clear RG pre-arm flags if window passed without execution
     if (s_p1RGPrearmed && now > s_p1RGPrearmExpiry) {
         LogOut("[AUTO-ACTION][RG] P1 RG pre-arm expired (no execution)", detailedLogging.load());
+        if (s_p1RGPrearmGeneration != 0 &&
+            GetAutoActionMotionTransactionOutcome(
+                1, s_p1RGPrearmGeneration) ==
+                AutoActionMotionOutcome::Pending) {
+            (void)CancelAutoActionMotionTransactionIfGeneration(
+                1, s_p1RGPrearmGeneration,
+                "RG pre-arm expired before native acceptance");
+        }
         s_p1RGPrearmed = false; s_p1RGPrearmIsSpecial = false; s_p1RGPrearmActionType = -1;
+        s_p1RGPrearmGeneration = 0;
     }
     if (s_p2RGPrearmed && now > s_p2RGPrearmExpiry) {
         LogOut("[AUTO-ACTION][RG] P2 RG pre-arm expired (no execution)", detailedLogging.load());
@@ -4807,10 +5117,33 @@ AutoActionApplyResult ApplyAutoAction(int playerNum, uintptr_t moveIDAddr,
     // delay expiry; Pending/Accepted must not be injected twice.
     if (triggerType == TRIGGER_ON_RG) {
         if (playerNum == 1 && s_p1RGPrearmed && s_p1RGPrearmIsSpecial) {
-            LogOut("[AUTO-ACTION][RG] P1 was pre-armed; skipping duplicate ApplyAutoAction", true);
-            p1TriggerActive = false; p1TriggerCooldown = 0;
-            s_p1RGPrearmed = false; s_p1RGPrearmIsSpecial = false; s_p1RGPrearmActionType = -1;
-            return AutoActionApplyResult::Accepted;
+            const AutoActionMotionOutcome outcome =
+                GetAutoActionMotionTransactionOutcome(
+                    1, s_p1RGPrearmGeneration);
+            if (outcome == AutoActionMotionOutcome::Pending) {
+                LogOut("[AUTO-ACTION][RG] P1 pre-arm still pending; deferring duplicate ApplyAutoAction",
+                       detailedLogging.load());
+                return AutoActionApplyResult::Busy;
+            }
+            if (outcome == AutoActionMotionOutcome::Accepted) {
+                LogOut("[AUTO-ACTION][RG] P1 pre-arm generation=" +
+                           std::to_string(s_p1RGPrearmGeneration) +
+                           " outcome=" +
+                           "accepted" +
+                           "; skipping duplicate ApplyAutoAction",
+                       true);
+                p1TriggerActive = false; p1TriggerCooldown = 0;
+                s_p1RGPrearmed = false;
+                s_p1RGPrearmIsSpecial = false;
+                s_p1RGPrearmActionType = -1;
+                s_p1RGPrearmGeneration = 0;
+                return AutoActionApplyResult::Accepted;
+            }
+            LogOut("[AUTO-ACTION][RG] P1 pre-arm did not execute; retrying at delay expiry", true);
+            s_p1RGPrearmed = false;
+            s_p1RGPrearmIsSpecial = false;
+            s_p1RGPrearmActionType = -1;
+            s_p1RGPrearmGeneration = 0;
         }
         if (playerNum == 2 && s_p2RGPrearmed && s_p2RGPrearmIsSpecial) {
             const P2AutoActionMotionOutcome outcome =
@@ -4870,14 +5203,13 @@ AutoActionApplyResult ApplyAutoAction(int playerNum, uintptr_t moveIDAddr,
             bool ok = ExecuteFinalMemory(
                 playerNum, charId, 1, &fmGeneration, &fmSubmit);
             if (ok) {
-                if (playerNum == 2) {
-                    if (motionGenerationOut) {
-                        *motionGenerationOut = fmGeneration;
-                    }
-                    LogOut("[AUTO-ACTION][FM] P2 Final Memory queued as scoped input transaction", true);
-                } else {
-                    p1TriggerActive = false; p1TriggerCooldown = 0; 
+                // Both sides queue FM as a scoped transaction; the caller's
+                // delay state waits for its generation like any special.
+                if (motionGenerationOut) {
+                    *motionGenerationOut = fmGeneration;
                 }
+                LogOut("[AUTO-ACTION][FM] P" + std::to_string(playerNum) +
+                       " Final Memory queued as scoped input transaction", true);
                 LogOut("[AUTO-ACTION][FM] Final Memory pattern dispatched", true);
                 return AutoActionApplyResult::Accepted;
             } else {
@@ -5094,24 +5426,24 @@ AutoActionApplyResult ApplyAutoAction(int playerNum, uintptr_t moveIDAddr,
         bool isForwardDash = actionType != ACTION_BACKDASH &&
                              actionType != ACTION_BACK_DASH;
         uint64_t dashMotionGeneration = 0;
-        if (playerNum == 2) {
-            const P2AutoActionMotionSubmitResult submit =
-                SubmitP2AutoActionMotionTransaction(
-                    motionType, 0, 1, &dashMotionGeneration);
-            success = submit == P2AutoActionMotionSubmitResult::Accepted;
+        // Both fighters use the generation-owned transaction. It humanizes an
+        // AI-flagged target for exactly one producer pass, which the legacy
+        // P1 queue never did: after a control swap the dummy is P1 and EFZ's
+        // AI branch never scans the ring, so a queued dash silently never
+        // came out.
+        {
+            const AutoActionMotionSubmitResult submit =
+                SubmitAutoActionMotionTransaction(
+                    playerNum, motionType, 0, 1, &dashMotionGeneration);
+            success = submit == AutoActionMotionSubmitResult::Accepted;
             if (success && motionGenerationOut) {
                 *motionGenerationOut = dashMotionGeneration;
             }
-            applyResult = submit == P2AutoActionMotionSubmitResult::Accepted
+            applyResult = submit == AutoActionMotionSubmitResult::Accepted
                 ? AutoActionApplyResult::Accepted
-                : submit == P2AutoActionMotionSubmitResult::Busy
+                : submit == AutoActionMotionSubmitResult::Busy
                     ? AutoActionApplyResult::Busy
                     : AutoActionApplyResult::Invalid;
-        } else {
-            ResetPlayerInputBufferIndex(playerNum);
-            success = QueueMotionInput(playerNum, motionType, 0);
-            applyResult = success ? AutoActionApplyResult::Accepted
-                                  : AutoActionApplyResult::Busy;
         }
         if (success && isForwardDash) {
             int fdf = 0;
@@ -5165,34 +5497,34 @@ AutoActionApplyResult ApplyAutoAction(int playerNum, uintptr_t moveIDAddr,
         LogOut("[AUTO-ACTION] Applying special move " + GetMotionTypeName(motionType) +
                " via native buffer transaction", true);
         g_injectImmediateOnly[playerNum].store(false);
-        if (playerNum == 2) {
+        // Same generation-owned transaction for both fighters (see the dash
+        // path above); the legacy P1 buffer freeze never humanized an
+        // AI-flagged P1 dummy.
+        {
             uint64_t specialMotionGeneration = 0;
-            const P2AutoActionMotionSubmitResult submit =
-                SubmitP2AutoActionMotionTransaction(
-                    motionType, buttonMask,
+            const AutoActionMotionSubmitResult submit =
+                SubmitAutoActionMotionTransaction(
+                    playerNum, motionType, buttonMask,
                     triggerType == TRIGGER_ON_RG ? 120 : 1,
                     &specialMotionGeneration);
-            success = submit == P2AutoActionMotionSubmitResult::Accepted;
+            success = submit == AutoActionMotionSubmitResult::Accepted;
             if (success && motionGenerationOut) {
                 *motionGenerationOut = specialMotionGeneration;
             }
-            applyResult = submit == P2AutoActionMotionSubmitResult::Accepted
+            applyResult = submit == AutoActionMotionSubmitResult::Accepted
                 ? AutoActionApplyResult::Accepted
-                : submit == P2AutoActionMotionSubmitResult::Busy
+                : submit == AutoActionMotionSubmitResult::Busy
                     ? AutoActionApplyResult::Busy
                     : AutoActionApplyResult::Invalid;
-        } else {
-            success = FreezeBufferForMotion(playerNum, motionType, buttonMask);
-            applyResult = success ? AutoActionApplyResult::Accepted
-                                  : AutoActionApplyResult::Busy;
         }
     }
-    
+
     // (Deferred dash follow-ups processed centrally each frame now)
 
     if (success) {
-        if (playerNum == 2 && isSpecialMove) {
-            LogOut("[AUTO-ACTION] P2 special transaction armed", true);
+        if (isSpecialMove) {
+            LogOut("[AUTO-ACTION] P" + std::to_string(playerNum) +
+                   " special transaction armed", true);
         }
         if (chargeSelection != 0 &&
             ActionSupportsChargeFollowup(actionType)) {
@@ -6240,7 +6572,7 @@ bool AutoGuard(int playerNum, int opponentPtr) {
 static void ConsumeTutorialP2WakeCancel() {
     const bool hadWakeState =
         s_p2WakePrearmed || s_p2WakeMacroQueued ||
-        s_p2WakeMacroTokenNeutralizeCountdown > 0 ||
+        s_wakeMacroTokenNeutralizeCountdown[2] > 0 ||
         (p2DelayState.isDelaying &&
          p2DelayState.triggerType == TRIGGER_ON_WAKEUP) ||
         (g_bufferFreezingActive.load(std::memory_order_acquire) &&
@@ -6288,9 +6620,10 @@ static void ConsumeTutorialP2WakeCancel() {
     s_p2WakeMacroSlot = -1;
     s_p2WakeMacroStartFrame = -1;
     s_p2WakeMacroStartTick = 0;
-    ReleaseP2WakeForcedNeutral();
-    EndP2WakeMacroCleanup();
-    s_p2WakeMacroTokenNeutralizeCountdown = 0;
+    // Tutorial-owned P2 cleanup: this scoped path never alters P1 state.
+    ReleaseWakeForcedNeutral(2);
+    EndWakeMacroCleanup(2);
+    s_wakeMacroTokenNeutralizeCountdown[2] = 0;
     s_p2WakeOptionPicked = false;
     s_p2WakePrePickedOption = {};
 
@@ -6598,6 +6931,7 @@ void CancelAutoActionsAndMacros() {
     s_p2RGPending = false; s_p2RGExpiry = 0;
     s_p1RGPrearmed = false; s_p1RGPrearmIsSpecial = false; s_p1RGPrearmActionType = -1; s_p1RGPrearmExpiry = 0;
     s_p2RGPrearmed = false; s_p2RGPrearmIsSpecial = false; s_p2RGPrearmActionType = -1; s_p2RGPrearmExpiry = 0;
+    s_p1RGPrearmGeneration = 0;
     s_p2RGPrearmGeneration = 0;
 
     // =========================================================================
@@ -6654,17 +6988,21 @@ void CancelAutoActionsAndMacros() {
     // 11. WAKE MACRO COMPLETION TRACKING RESET
     // =========================================================================
     bool wakePreserve = g_macroWakePreserveBuffer.load();
-    bool wakeCompleted = g_wakeMacroPlaybackCompleted.load();
-    
+    const int wakeCompleted = g_wakeMacroPlaybackCompleted.load();
+
     logStream.str(""); logStream.clear();
     logStream << "[CANCEL][WAKE_COMPLETE] preserveBuffer=" << (wakePreserve ? "true" : "false")
-              << " playbackCompleted=" << (wakeCompleted ? "true" : "false")
-              << " tokenCountdown=" << s_p2WakeMacroTokenNeutralizeCountdown;
+              << " playbackCompleted=" << (wakeCompleted != 0 ? "true" : "false")
+              << " player=" << wakeCompleted
+              << " tokenCountdown(P1/P2)=" << s_wakeMacroTokenNeutralizeCountdown[1]
+              << "/" << s_wakeMacroTokenNeutralizeCountdown[2];
     LogOut(logStream.str(), true);
-    
+
     g_macroWakePreserveBuffer.store(false);
-    g_wakeMacroPlaybackCompleted.store(false);
-    s_p2WakeMacroTokenNeutralizeCountdown = 0;
+    g_macroWakePreservePlayer.store(0);
+    g_wakeMacroPlaybackCompleted.store(0);
+    s_wakeMacroTokenNeutralizeCountdown[1] = 0;
+    s_wakeMacroTokenNeutralizeCountdown[2] = 0;
     ResetWakeRuntimeState();
 
     // =========================================================================
@@ -6773,6 +7111,7 @@ void ClearAllAutoActionTriggers() {
     // Clear RG pre-arm state
     s_p1RGPrearmed = false; s_p1RGPrearmIsSpecial = false; s_p1RGPrearmActionType = -1; s_p1RGPrearmExpiry = 0;
     s_p2RGPrearmed = false; s_p2RGPrearmIsSpecial = false; s_p2RGPrearmActionType = -1; s_p2RGPrearmExpiry = 0;
+    s_p1RGPrearmGeneration = 0;
     s_p2RGPrearmGeneration = 0;
 
     // Hard/session resets must not leave a wake request that can fire on a
@@ -7081,9 +7420,9 @@ static bool ExecuteWakeSpecialNow(int playerNum, int actionType,
             LogOut("[AUTO-ACTION][FM] Wake special aborted: unknown character", true);
             return false;
         }
-        return ExecuteFinalMemory(playerNum, charId,
-                                  playerNum == 2 ? 6 : 1,
-                                  generationOut);
+        // Both sides now dispatch FM through the scoped pattern transaction,
+        // so the authored wake window applies to P1 as well.
+        return ExecuteFinalMemory(playerNum, charId, 6, generationOut);
     }
 
     int motionType = ConvertTriggerActionToMotion(
