@@ -695,6 +695,54 @@
 #define DOPPEL_TOKEN_A_SUPER_QCB 110  // 214214A (stages 2/3)
 #define DOPPEL_TOKEN_B_SUPER_QCB 111  // 214214B (stages 2/3)
 
+// ---------------------------------------------------------------------------
+// Sayuri Kurata - counter memory ("Ah, got your skill~") and Magical Cutter.
+// ---------------------------------------------------------------------------
+// DWORD on SAYURI's OWN player struct at +0x3150 (12624 decimal) holding the
+// OPPONENT's raw move ID, zero-extended from their +0x08. Her 214 counter stance
+// is the only writer; the two readers compare the opponent's live move ID against
+// it on the entry frame of grounded blockstun and arm the Magical Cutter on a
+// match. 999 is the "nothing remembered" sentinel the constructor and the round
+// reset write - not 0, because 0 is a real move ID (standing neutral).
+//
+// WARNING: +0x3150 (12624) is the engine's SHARED per-character value slot and is
+// already aliased six other ways in this header: IKUMI_GENOCIDE_OFFSET (:610),
+// AKIKO_BULLET_CYCLE_OFFSET (:797), MIO_STANCE_OFFSET (:817), KANO_MAGIC_OFFSET
+// (:822), NAYUKIB_SNOWBUNNY_TIMER_OFFSET (:827) and MAI_SUMMON_FLASH_FLAG_OFFSET
+// (:870). Every read and every write must sit behind a CHAR_ID_SAYURI gate; there
+// is no safe ungated access.
+#define SAYURI_COUNTER_MEMORY_OFFSET 0x3150  // 12624 decimal
+#define SAYURI_COUNTER_MEMORY_EMPTY  999     // "nothing remembered" sentinel
+
+// DWORD on SAYURI's own struct at +0x3138 (12600 decimal). 1 means "the move she
+// is currently blocking is the one she remembers", which is what lets A/B/C
+// cancel the blockstun into Magical Cutter. The engine sets it on the blockstun
+// entry frame and clears it again on a mismatch.
+//
+// WARNING: this is the SAME offset as DOPPEL_TECH_LATCH_OFFSET (:670) and carries
+// the same hazard. Outside grounded blockstun it is Sayuri's generic per-move
+// scratch DWORD, used by well over a hundred sites in her own handler, and it
+// means something different again on every other character. Both the character
+// gate and a freshly read move-ID gate are correctness requirements here, not
+// defensiveness.
+#define SAYURI_CUTTER_ARMED_OFFSET 0x3138  // 12600 decimal
+
+// The white "ready" flash the engine paints alongside the armed flag: a flat
+// colour blit, not a state. BYTE colour index, then a DWORD tick countdown.
+#define SAYURI_FLASH_COLOR_OFFSET 0x30B8  // 12472 decimal, BYTE
+#define SAYURI_FLASH_TIMER_OFFSET 0x30BC  // 12476 decimal, DWORD
+#define SAYURI_FLASH_COLOR_WHITE  177
+#define SAYURI_FLASH_TICKS        10
+
+// Sayuri move IDs. 214A/B/C all produce the one counter stance.
+#define SAYURI_MOVE_COUNTER        256  // 214A/B/C counter stance
+#define SAYURI_MOVE_COUNTER_THROW  299  // the catch: turn and throw
+#define SAYURI_MOVE_MAGICAL_CUTTER 258  // rising kick out of grounded blockstun
+// Grounded blockstun - the only window in which either field above means
+// anything - is STANDING_BLOCK_LVL1..3 / CROUCHING_BLOCK_LVL1..LVL2_B (150-155),
+// already defined at :388-394; reuse those. Air blockstun (AIR_GUARD_ID 156) is
+// excluded by the engine and must be excluded here too.
+
 // Nanase (Rumi) weapon/barehand mode swap
 // Native toggleCharacterMode routine
 #define TOGGLE_CHARACTER_MODE_RVA 0x0008E140

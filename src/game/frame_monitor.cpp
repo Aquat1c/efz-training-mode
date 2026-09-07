@@ -40,6 +40,7 @@
 #include "../include/game/always_rg.h"
 #include "../include/game/random_rg.h"
 #include "../include/game/doppel_tech.h"
+#include "../include/game/sayuri_counter.h"
 #include "../include/game/random_block.h"
 #include "../include/game/practice_offsets.h"   // GAMESTATE_OFF_* and practice controller offsets
 #include "../include/input/injection_control.h"  // g_forceBypass/g_injectImmediateOnly/g_pollOverride*
@@ -2400,6 +2401,14 @@ void FrameDataMonitor() {
             // Practice/netplay/character and re-reads Doppel's move ID itself.
             if (!Mission::Engine::IsPracticeAutomationSuppressed()) {
                 DoppelTech::Tick();
+            }
+
+            // Sayuri's counter memory / Magical Cutter. Same shape as the Doppel
+            // poll above and for the same reason: it has to see her move ID on
+            // ticks where nothing else changed, and it self-gates on
+            // Practice/netplay/character before touching anything.
+            if (!Mission::Engine::IsPracticeAutomationSuppressed()) {
+                SayuriCounter::Tick();
             }
 
             // Continuous Recovery: restore values based on unified sample neutral flags + optional both-neutral delay
