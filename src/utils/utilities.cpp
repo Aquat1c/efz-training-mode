@@ -27,6 +27,7 @@
 #include "../include/game/hud_disable.h"
 #include "../include/game/random_block.h"
 #include "../include/game/doppel_tech.h"
+#include "../include/game/sayuri_counter.h"
 #include "../include/utils/switch_players.h"
 #include <sstream>
 #include <iomanip>
@@ -212,6 +213,11 @@ void ResetDisplayDataToDefaults() {
     displayData.p2DoppelTechMode = 0;   // OFF
     displayData.p1DoppelTechStage = 0;  // ALL
     displayData.p2DoppelTechStage = 0;  // ALL
+    // Sayuri
+    displayData.p1SayuriMemoryChoice = 0;  // OFF
+    displayData.p2SayuriMemoryChoice = 0;  // OFF
+    displayData.p1SayuriCutterMode = 0;    // NORMAL
+    displayData.p2SayuriCutterMode = 0;    // NORMAL
     // Rumi
     displayData.p1RumiBarehanded = false;
     displayData.p2RumiBarehanded = false;
@@ -538,6 +544,15 @@ void ResetRuntimeSettingsToDisplayDefaults() {
     DoppelTech::SetStage(1, displayData.p1DoppelTechStage);
     DoppelTech::SetStage(2, displayData.p2DoppelTechStage);
     DoppelTech::ResetState();
+
+    // Same story for Sayuri's counter memory: the live settings live in the
+    // SayuriCounter module, so a reset that only touched DisplayData would leave
+    // the menus reading OFF while the module kept driving what she remembers.
+    SayuriCounter::SetMemory(1, displayData.p1SayuriMemoryChoice, 0);
+    SayuriCounter::SetMemory(2, displayData.p2SayuriMemoryChoice, 0);
+    SayuriCounter::SetCutter(1, displayData.p1SayuriCutterMode);
+    SayuriCounter::SetCutter(2, displayData.p2SayuriCutterMode);
+    SayuriCounter::ResetState();
 }
 }
 

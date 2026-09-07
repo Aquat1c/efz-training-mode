@@ -35,6 +35,7 @@
 #include "../include/game/character_settings.h"
 #include "../include/game/character_action_catalog.h"
 #include "../include/game/character_hotswap.h"
+#include "../include/game/sayuri_counter.h"
 #include "../include/gui/overlay.h"
 #include "../include/gui/framebar.h"
 #include "../include/utils/controller_names.h"
@@ -513,6 +514,10 @@ const char* const kAkikoBulletChoices[3] = { "EGG / TUNA", "CARROT / RADISH", "S
 // Doppel Nanase: how the OPPONENT escapes her command-throw follow-ups.
 const char* const kDoppelTechChoices[6] = { "OFF", "NEVER", "TECH B", "TECH C", "ALWAYS", "RANDOM" };
 const char* const kDoppelTechStageChoices[4] = { "ALL", "STAGE 1", "STAGE 2", "STAGE 3" };
+// Sayuri Kurata: whether Magical Cutter is available out of every grounded
+// block, or only after the move she remembers. The REMEMBERED MOVE row's item
+// list is rebuilt per opponent and lives in the SayuriCounter module.
+const char* const kSayuriCutterChoices[2] = { "NORMAL", "ALWAYS READY" };
 const char* const kMaiStatusChoices[5] = { "INACTIVE", "ACTIVE GHOST", "UNSUMMON", "CHARGING", "AWAKENING" };
 
 const char* const kTriggerMotionChoices[] = {
@@ -4987,6 +4992,8 @@ Row* BuildHelpCharacterRows(int& count) {
     s_rows[n++] = Info("Doppel: Enlightened puts Doppel in the Final Memory state. Follow-Up Tech and Tech Stage decide whether, and out of which follow-up, the opponent escapes after her command throw connects. The grab itself and the Automatic Follow-up can never be escaped.");
     s_rows[n++] = Info("Doppel Follow-Up Tech: Off leaves the escape to the opponent's own input, whether that is a player, a recording, or the CPU. Never locks the opponent out at the selected stages, so those follow-ups always connect. Tech B escapes the B follow-ups (Maiden Fuji Yama, Exploding Inner-Soul Fist, Falling Maiden, Maiden Volcannon). Tech C escapes the A follow-ups (Maiden Crash, Relentless Granite-Breaking Barrage, Maiden Finger, Human Floor-Burning Polisher). Always escapes whichever follow-up Doppel actually goes for, and Random picks between the B and C escape once per follow-up. If the opponent gets their own escape in first, their choice wins.");
     s_rows[n++] = Info("Doppel Tech Stage picks where that escape is allowed. Stage 1 is the capture itself, and escaping there stops Maiden Crash and Maiden Fuji Yama. Stage 2 is Maiden Crash, and escaping there stops Relentless Granite-Breaking Barrage and Exploding Inner-Soul Fist. Stage 3 is those two supers, and escaping there stops Maiden Finger, Falling Maiden, Human Floor-Burning Polisher and Maiden Volcannon. Outside the chosen stage the opponent escapes only if they input it themselves.");
+    s_rows[n++] = Info("Sayuri: Remembered Move sets the attack she has countered and is waiting for. Whenever she blocks that same attack standing or crouching she flashes white, and A, B or C cuts straight out of the blockstun into Magical Cutter. Off leaves it to her own counter, Nothing empties it so you can practise baiting, Last Blocked keeps loading whatever she just blocked so it is ready the next time, and picking a move from the list stands in for landing the counter and holds it there so a stray counter cannot replace it. The list is the current opponent's moves and is rebuilt when they change. The cut-out needs a fresh press: a button already held through the block freeze produces nothing, so let go and press again. A dummy Sayuri on auto-block will keep loading and arming on her own, which is usually what you want.");
+    s_rows[n++] = Info("Sayuri: Magical Cutter set to Always Ready opens that same window on every standing or crouching block, no matter what she remembers. Air blocking never opens the window, and it stops working once Akiko's debuff has stacked up on her.");
     s_rows[n++] = Info("Mio: Stance picks Short or Long. Lock Stance holds her in the stance you picked.");
     s_rows[n++] = Info("Mai: Status sets Inactive, Active Ghost, Unsummon, Charging, or Awakening. Ghost Time, Charge Timer, and Awaken Timer set that duration, Infinite Ghost/Charge/Awaken hold it, and No Charge Cooldown finishes a charge instantly.");
     s_rows[n++] = Info("Mai also has Force Summon and Force Despawn; Aggressive Summon lets Force Summon work during Unsummon. Ghost Target X/Y with Apply Ghost Position places the ghost exactly.");
@@ -5578,6 +5585,7 @@ bool CharHasCustomRows(int charId) {
         case CHAR_ID_NAYUKIB:
         case CHAR_ID_NAYUKI:
         case CHAR_ID_KANO:
+        case CHAR_ID_SAYURI:
         case CHAR_ID_NANASE:
         case CHAR_ID_EXNANASE:
         case CHAR_ID_MIO:
@@ -5776,6 +5784,50 @@ void AddDoppelRows(Row* rows, int& n, DisplayData& d, int player) {
         "Picks which follow-up the opponent may escape. Elsewhere only their own input escapes.");
 }
 
+// Sayuri Kurata. The REMEMBERED MOVE list is per-opponent, so it is rebuilt in
+// the SayuriCounter module and handed here as a plain array of labels; the row
+// index is presentation only and the module keeps the resolved move ID.
+void AddSayuriRows(Row* rows, int& n, DisplayData& d, int player) {
+    SayuriCounter::RefreshMoveChoices();
+
+    int* choice = (player == 1) ? &d.p1SayuriMemoryChoice : &d.p2SayuriMemoryChoice;
+    // A selection that no longer names a move on THIS opponent falls back to
+    // OFF. Never silently keep the index: the same position means a different
+    // attack on the next character.
+    const int validated = SayuriCounter::ValidateChoiceIndex(player, *choice);
+    if (validated != *choice) {
+        // Publish the correction directly. This fires because the OPPONENT
+        // changed, not because the player touched anything, and a full settings
+        // apply from a row builder would re-push health, meter and RF into both
+        // characters mid-drill.
+        *choice = validated;
+        SayuriCounter::SetMemory(player, validated, 0);
+    }
+
+    rows[n++] = WithHelp(
+        DropdownRow("REMEMBERED MOVE", choice,
+                    SayuriCounter::MoveChoiceItems(player),
+                    SayuriCounter::MoveChoiceCount(player),
+                    OnAutoApply),
+        // The footer renders ONE line and truncates past roughly a hundred
+        // characters, so the full explanation lives on the wrapped
+        // Help > Character Settings page instead.
+        "Off changes nothing; Nothing keeps her empty; anything else is what she waits to block.");
+
+    if (!SayuriCounter::OpponentListAvailable(player)) {
+        rows[n++] = Info("No move list for this opponent. Last Blocked still works.");
+    }
+    if (SayuriCounter::MoveListTruncated(player)) {
+        rows[n++] = Info("Some of this opponent's moves are not listed.");
+    }
+
+    rows[n++] = WithHelp(
+        ChoicesRow("MAGICAL CUTTER",
+                   player == 1 ? &d.p1SayuriCutterMode : &d.p2SayuriCutterMode,
+                   kSayuriCutterChoices, 2, OnAutoApply),
+        "Always Ready opens her cut-out window on every standing or crouching block.");
+}
+
 void AddMioRows(Row* rows, int& n, DisplayData& d, int player) {
     if (player == 1) {
         rows[n++] = ChoicesRow("STANCE", &d.p1MioStance, kStanceChoices, 2, OnAutoApply);
@@ -5851,6 +5903,7 @@ bool AddPlayerCharacterRows(Row* rows, int& n, DisplayData& d, int player, int c
         case CHAR_ID_NAYUKIB:  AddNayukiRows(rows, n, d, player); break;
         case CHAR_ID_NAYUKI:   AddNeyukiRows(rows, n, d, player); break;
         case CHAR_ID_KANO:     AddKanoRows(rows, n, d, player); break;
+        case CHAR_ID_SAYURI:   AddSayuriRows(rows, n, d, player); break;
         case CHAR_ID_NANASE:   AddRumiRows(rows, n, d, player); break;
         case CHAR_ID_EXNANASE: AddDoppelRows(rows, n, d, player); break;
         case CHAR_ID_MIO:      AddMioRows(rows, n, d, player); break;
@@ -8248,6 +8301,7 @@ void RefreshSecondaryScreenMirrors() {
         { "RefreshHelpStrings",        &RefreshHelpStrings        },
         { "RefreshHotkeyStrings",      &RefreshHotkeyStrings      },
         { "RefreshMacroSlotChoices",   &RefreshMacroSlotChoices   },
+        { "RefreshSayuriMoveChoices",  &SayuriCounter::RefreshMoveChoices },
         { "RefreshDebugMirrors",       &RefreshDebugMirrors       },
         { "RefreshCrMirrors",          &RefreshCrMirrors          },
         { "RefreshEngineRegenMirrors", &RefreshEngineRegenMirrors },

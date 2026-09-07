@@ -1589,7 +1589,11 @@ static const MoveNote kSayuri[] = {
     {256, "214A", false},
     {258, "214A attack phase", MoveRole::AutomaticPhase, "214", 2},
     {259, "412A", false},
-    {260, "623A", false},
+    // Command map token 41 puts 260 in the j.412 family (40/41/42 -> 259/260/261),
+    // matching its neighbours; the retail 623A is 262. The old "623A" here was a
+    // transcription error shared with MOVE_COMMAND_MAPS.md:983 and it made 262
+    // unreachable through any notation lookup.
+    {260, "412B", false},
     {261, "412C", false},
     {262, "623A", false},
     {263, "623B", false},

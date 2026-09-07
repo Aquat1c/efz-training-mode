@@ -45,6 +45,7 @@ extern void SpamAttackButton(uintptr_t playerBase, uint8_t button, int frames, c
 // Random RG control
 #include "../include/game/random_rg.h"
 #include "../include/game/doppel_tech.h"
+#include "../include/game/sayuri_counter.h"
 // Random Block control
 #include "../include/game/random_block.h"
 #include "../include/game/auto_action.h" // g_p2ControlOverridden
@@ -2452,6 +2453,10 @@ namespace ImGuiGui {
                             ImGui::TextWrapped("Golden Doppel (Enlightened) toggle makes Doppel enter the FM state. Uncheck to disable.");
                             ImGui::TextWrapped("Follow-Up Tech decides how the opponent escapes her command-throw follow-ups: Never locks them out, Tech B escapes the B follow-ups, Tech C escapes the A follow-ups, Always escapes whichever branch she commits to, and Random picks B or C once per follow-up. Tech Stage picks where that escape is allowed. If the opponent gets their own escape in first their choice wins, and the grab itself and the Automatic Follow-up can never be escaped.");
                             ImGui::Dummy(ImVec2(1, 4));
+                            ImGui::TextColored(ImVec4(0.7f, 0.9f, 1.0f, 1.0f), "Sayuri");
+                            ImGui::TextWrapped("Remembered Move sets the attack she has countered and is waiting for. Whenever she blocks that same attack standing or crouching she flashes white, and A, B or C cuts straight out of the blockstun into Magical Cutter. Off leaves it to her own counter, Nothing empties it so you can practise baiting, Last Blocked keeps loading whatever she just blocked, and picking a move from the list stands in for landing the counter and holds it there so a stray counter cannot replace it. The list is the current opponent's moves and is rebuilt when they change. The cut-out needs a fresh press: a button already held through the block freeze produces nothing, so let go and press again. A dummy Sayuri on auto-block will keep loading and arming on her own.");
+                            ImGui::TextWrapped("Magical Cutter set to Always Ready opens that same window on every standing or crouching block, whatever she remembers. Air blocking never opens the window, and it stops working once Akiko's debuff has stacked up on her.");
+                            ImGui::Dummy(ImVec2(1, 4));
                             ImGui::TextColored(ImVec4(0.7f, 0.9f, 1.0f, 1.0f), "Nanase (Rumi)");
                             ImGui::TextWrapped("Toggle between Shinai and Barehanded mode. Infinite Shinai prevents it from breaking. You can also adjust Kimchi timer as well as make it stop decaying.");
                             ImGui::Dummy(ImVec2(1, 4));
@@ -3130,6 +3135,54 @@ namespace ImGuiGui {
             }
 
         }
+    // P1 Sayuri Kurata Settings
+    else if (p1CharID == CHAR_ID_SAYURI) {
+            // The remembered-move list is per-opponent, so it is rebuilt in the
+            // SayuriCounter module and shared with the custom menu rather than
+            // being built a second time here.
+            SayuriCounter::RefreshMoveChoices();
+            ImGui::TextUnformatted("Counter memory:");
+            int sayuriMem1 = SayuriCounter::ValidateChoiceIndex(1, guiState.localData.p1SayuriMemoryChoice);
+            guiState.localData.p1SayuriMemoryChoice = sayuriMem1;
+            ImGui::Text("Remembered Move:");
+            if (ImGui::Combo("##p1SayuriMemory", &sayuriMem1,
+                             SayuriCounter::MoveChoiceItems(1),
+                             SayuriCounter::MoveChoiceCount(1))) {
+                guiState.localData.p1SayuriMemoryChoice = sayuriMem1;
+            }
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip(
+                    "The attack Sayuri has countered and is waiting for.\n"
+                    "Whenever she blocks that attack standing or crouching she flashes white, and A, B or C cuts straight out of the blockstun into Magical Cutter.\n"
+                    "Off: nothing is forced - only her own counter loads it.\n"
+                    "Nothing: keeps it empty, for practising the bait.\n"
+                    "Last Blocked: keeps loading whatever she just blocked, so it is ready the next time that move comes out.\n"
+                    "Any move from the list: stands in for landing the counter on it, and holds it there so a stray counter cannot replace it.\n"
+                    "The list is the current opponent's moves and is rebuilt when they change.\n"
+                    "A dummy Sayuri on auto-block will keep loading and arming on her own.\n"
+                    "The cut-out needs a fresh press - a button already held through the block freeze produces nothing, so let go and press again.\n"
+                    "It stops working once Akiko's debuff has stacked up on her.");
+            }
+            if (!SayuriCounter::OpponentListAvailable(1)) {
+                ImGui::TextDisabled("No move list for this opponent. Last Blocked still works.");
+            }
+            if (SayuriCounter::MoveListTruncated(1)) {
+                ImGui::TextDisabled("Some of this opponent's moves are not listed.");
+            }
+            const char* sayuriCutterItems1[] = { "Normal", "Always Ready" };
+            int sayuriCutter1 = guiState.localData.p1SayuriCutterMode;
+            sayuriCutter1 = CLAMP(sayuriCutter1, 0, 1);
+            ImGui::Text("Magical Cutter:");
+            if (ImGui::Combo("##p1SayuriCutter", &sayuriCutter1, sayuriCutterItems1, IM_ARRAYSIZE(sayuriCutterItems1))) {
+                guiState.localData.p1SayuriCutterMode = sayuriCutter1;
+            }
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip(
+                    "Normal: only the move she remembers opens the cut-out window.\n"
+                    "Always Ready: every standing or crouching block opens it, whatever she remembers, so you can drill the reaction with no setup.\n"
+                    "Air blocking never opens the window, and it stops working once Akiko's debuff has stacked up on her.");
+            }
+        }
     // P1 Nanase (Rumi) Settings
     else if (p1CharID == CHAR_ID_NANASE) {
             ImGui::Text("Rumi Mode:");
@@ -3575,6 +3628,54 @@ namespace ImGuiGui {
             }
 
         }
+    // P2 Sayuri Kurata Settings
+    else if (p2CharID == CHAR_ID_SAYURI) {
+            // The remembered-move list is per-opponent, so it is rebuilt in the
+            // SayuriCounter module and shared with the custom menu rather than
+            // being built a second time here.
+            SayuriCounter::RefreshMoveChoices();
+            ImGui::TextUnformatted("Counter memory:");
+            int sayuriMem2 = SayuriCounter::ValidateChoiceIndex(2, guiState.localData.p2SayuriMemoryChoice);
+            guiState.localData.p2SayuriMemoryChoice = sayuriMem2;
+            ImGui::Text("Remembered Move:");
+            if (ImGui::Combo("##p2SayuriMemory", &sayuriMem2,
+                             SayuriCounter::MoveChoiceItems(2),
+                             SayuriCounter::MoveChoiceCount(2))) {
+                guiState.localData.p2SayuriMemoryChoice = sayuriMem2;
+            }
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip(
+                    "The attack Sayuri has countered and is waiting for.\n"
+                    "Whenever she blocks that attack standing or crouching she flashes white, and A, B or C cuts straight out of the blockstun into Magical Cutter.\n"
+                    "Off: nothing is forced - only her own counter loads it.\n"
+                    "Nothing: keeps it empty, for practising the bait.\n"
+                    "Last Blocked: keeps loading whatever she just blocked, so it is ready the next time that move comes out.\n"
+                    "Any move from the list: stands in for landing the counter on it, and holds it there so a stray counter cannot replace it.\n"
+                    "The list is the current opponent's moves and is rebuilt when they change.\n"
+                    "A dummy Sayuri on auto-block will keep loading and arming on her own.\n"
+                    "The cut-out needs a fresh press - a button already held through the block freeze produces nothing, so let go and press again.\n"
+                    "It stops working once Akiko's debuff has stacked up on her.");
+            }
+            if (!SayuriCounter::OpponentListAvailable(2)) {
+                ImGui::TextDisabled("No move list for this opponent. Last Blocked still works.");
+            }
+            if (SayuriCounter::MoveListTruncated(2)) {
+                ImGui::TextDisabled("Some of this opponent's moves are not listed.");
+            }
+            const char* sayuriCutterItems2[] = { "Normal", "Always Ready" };
+            int sayuriCutter2 = guiState.localData.p2SayuriCutterMode;
+            sayuriCutter2 = CLAMP(sayuriCutter2, 0, 1);
+            ImGui::Text("Magical Cutter:");
+            if (ImGui::Combo("##p2SayuriCutter", &sayuriCutter2, sayuriCutterItems2, IM_ARRAYSIZE(sayuriCutterItems2))) {
+                guiState.localData.p2SayuriCutterMode = sayuriCutter2;
+            }
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip(
+                    "Normal: only the move she remembers opens the cut-out window.\n"
+                    "Always Ready: every standing or crouching block opens it, whatever she remembers, so you can drill the reaction with no setup.\n"
+                    "Air blocking never opens the window, and it stops working once Akiko's debuff has stacked up on her.");
+            }
+        }
     // P2 Nanase (Rumi) Settings
     else if (p2CharID == CHAR_ID_NANASE) {
             ImGui::Text("Rumi Mode:");
@@ -3692,7 +3793,7 @@ namespace ImGuiGui {
         ImGui::Separator();
         ImGui::TextWrapped(
             "Character-specific settings allow you to modify special parameters unique to each character.\n"
-            "Supported: Ikumi (Blood/Genocide), Misuzu (Feathers), Mishio (Element/Awakened), Rumi (Stance, Kimchi), Akiko (Bullet/Time-Slow), Neyuki (Jam 0-9), Kano (Magic), Mio (Stance), Doppel (Enlightened(Gold), Follow-Up Tech/Tech Stage), Mai (Ghost/Awakening), Minagi (Michiru position control + Always readied)");
+            "Supported: Ikumi (Blood/Genocide), Misuzu (Feathers), Mishio (Element/Awakened), Rumi (Stance, Kimchi), Akiko (Bullet/Time-Slow), Neyuki (Jam 0-9), Kano (Magic), Sayuri (Remembered Move/Magical Cutter), Mio (Stance), Doppel (Enlightened(Gold), Follow-Up Tech/Tech Stage), Mai (Ghost/Awakening), Minagi (Michiru position control + Always readied)");
     }
     
     void RenderDebugInputTab() {
@@ -4408,6 +4509,23 @@ namespace ImGuiGui {
             DoppelTech::SetMode(2, displayData.p2DoppelTechMode);
             DoppelTech::SetStage(1, displayData.p1DoppelTechStage);
             DoppelTech::SetStage(2, displayData.p2DoppelTechStage);
+
+            // Sayuri's counter memory. The row index is presentation only, so it
+            // is resolved to a move ID through the SAME rebuilt list the menu
+            // rendered; an index that no longer names a move on this opponent
+            // collapses to OFF in both copies rather than pinning something else.
+            {
+                const int sayuriIdxP1 = SayuriCounter::ValidateChoiceIndex(1, displayData.p1SayuriMemoryChoice);
+                const int sayuriIdxP2 = SayuriCounter::ValidateChoiceIndex(2, displayData.p2SayuriMemoryChoice);
+                displayData.p1SayuriMemoryChoice = sayuriIdxP1;
+                displayData.p2SayuriMemoryChoice = sayuriIdxP2;
+                guiState.localData.p1SayuriMemoryChoice = sayuriIdxP1;
+                guiState.localData.p2SayuriMemoryChoice = sayuriIdxP2;
+                SayuriCounter::SetMemory(1, sayuriIdxP1, SayuriCounter::MoveIdForChoice(1, sayuriIdxP1));
+                SayuriCounter::SetMemory(2, sayuriIdxP2, SayuriCounter::MoveIdForChoice(2, sayuriIdxP2));
+            }
+            SayuriCounter::SetCutter(1, displayData.p1SayuriCutterMode);
+            SayuriCounter::SetCutter(2, displayData.p2SayuriCutterMode);
 
             // Update atomic variables from our local copy
             autoAirtechEnabled.store(displayData.autoAirtech);
