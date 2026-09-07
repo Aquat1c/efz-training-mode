@@ -1974,6 +1974,30 @@ static bool ShouldCancelDelayForState(const TriggerDelayState& state, short prev
     return false;
 }
 
+// MacroController::Play() is hardwired to P2, so the trigger-driven macro
+// starts below call PlayForPlayer(playerNum, ...) instead - that is what lets a
+// P1 dummy play a macro row at all. Play()'s user-facing handling is part of
+// the shipped P2 behaviour, though (cancelling a PreRecord, refusing to run
+// during a recording, and the rejection toast), so keep it here for both sides
+// rather than dropping it. With state == Idle this is exactly PlayForPlayer().
+static bool StartTriggerMacroPlayback(int playerNum) {
+    if (MacroController::GetState() == MacroController::State::PreRecord) {
+        MacroController::UnswapThenStop();
+        DirectDrawHook::AddMessage("Macro: PreRecord canceled", "MACRO", RGB(255, 200, 120), 900, 0, 120);
+        return false;
+    }
+    if (MacroController::GetState() == MacroController::State::Recording) {
+        DirectDrawHook::AddMessage("Macro: Cannot play while recording", "MACRO", RGB(255, 180, 120), 900, 0, 120);
+        return false;
+    }
+    if (MacroController::GetState() != MacroController::State::Idle) return false;
+    if (!MacroController::PlayForPlayer(playerNum, 0, false)) {
+        DirectDrawHook::AddMessage("Macro: Slot empty or unavailable", "MACRO", RGB(255, 120, 120), 1000, 0, 120);
+        return false;
+    }
+    return true;
+}
+
 void ProcessTriggerDelays(short moveID1, short moveID2, short prevMoveID1, short prevMoveID2) {
     std::lock_guard<std::recursive_mutex> stateLock(g_autoActionStateMutex);
     uintptr_t base = GetEFZBase();
@@ -2171,7 +2195,7 @@ void ProcessTriggerDelays(short moveID1, short moveID2, short prevMoveID1, short
                         if (!(MacroController::GetState() == MacroController::State::Replaying &&
                               MacroController::GetPlaybackPlayer() == 1)) {
                             LogOut("[AUTO-ACTION][MACRO] Starting macro playback (slot=" + std::to_string(sel) + ") for P1 on trigger expiry", true);
-                            const bool started = MacroController::PlayForPlayer(1, 0, false);
+                            const bool started = StartTriggerMacroPlayback(1);
                             if (started &&
                                 MacroController::GetState() == MacroController::State::Replaying) {
                                 ResetDelayState(p1DelayState);
@@ -2460,7 +2484,7 @@ void ProcessTriggerDelays(short moveID1, short moveID2, short prevMoveID1, short
                     if (!(MacroController::GetState() == MacroController::State::Replaying &&
                           MacroController::GetPlaybackPlayer() == 2)) {
                         LogOut("[AUTO-ACTION][MACRO] Starting macro playback (slot=" + std::to_string(sel) + ") for P2 on trigger expiry", true);
-                        const bool started = MacroController::PlayForPlayer(2, 0, false);
+                        const bool started = StartTriggerMacroPlayback(2);
                         if (started &&
                             MacroController::GetState() == MacroController::State::Replaying) {
                             ResetDelayState(p2DelayState);
@@ -2726,7 +2750,7 @@ void StartTriggerDelay(int playerNum, int triggerType, short moveID, int delayFr
                           MacroController::GetPlaybackPlayer() == playerNum)) {
                         LogOut("[AUTO-ACTION][MACRO] Starting macro playback (slot=" + std::to_string(sel) +
                                ") for P" + std::to_string(playerNum) + " (immediate)", true);
-                        const bool started = MacroController::PlayForPlayer(playerNum, 0, false);
+                        const bool started = StartTriggerMacroPlayback(playerNum);
                         if (started &&
                             MacroController::GetState() == MacroController::State::Replaying) {
                             return;
@@ -3240,16 +3264,6 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
                     LogOut("[AUTO-ACTION] P1 wake pre-arm skipped (" + reason + ")", true);
                 }
             p1_wake_prearm_done: ;
-            }
-        }
-
-        // Cleanup Forced Neutral if P1 exited 96 (mirror of the P2 block).
-        if (s_wakeForcedNeutralToken[1] != 0 &&
-            moveID1 != GROUNDTECH_RECOVERY) {
-            const bool macroPlaying =
-                (MacroController::GetState() == MacroController::State::Replaying);
-            if (!macroPlaying) {
-                ReleaseWakeForcedNeutral(1);
             }
         }
 
@@ -4827,6 +4841,22 @@ static void MonitorAutoActionsImpl(short moveID1, short moveID2, short prevMoveI
     MaybeAutoCloseFlowSequence(2, prevMoveID2, moveID2,
                                s_p2WakePrearmed || s_p2WakeMacroQueued,
                                g_pendingControlRestore.load());
+
+    // Cleanup Forced Neutral if P1 exited 96 (mirror of the P2 block).
+    // This sits at function level, beside the pre-arm expiry blocks below,
+    // instead of inside the P1 trigger gate: that gate stops running the moment
+    // the auto-action target moves off P1 (a control swap hands P1 back to the
+    // human), and a release that lived inside it would strand
+    // g_manualInputOverride[1] with mask 0 - plus a WakeForcedNeutral scoped
+    // reservation - on the fighter the user just took control of.
+    if (s_wakeForcedNeutralToken[1] != 0 &&
+        moveID1 != GROUNDTECH_RECOVERY) {
+        const bool macroPlaying =
+            (MacroController::GetState() == MacroController::State::Replaying);
+        if (!macroPlaying) {
+            ReleaseWakeForcedNeutral(1);
+        }
+    }
 
     // Clear pre-arm flags when window passes to avoid sticking
     int now = frameCounter.load();
