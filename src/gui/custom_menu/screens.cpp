@@ -223,16 +223,10 @@ const char* DefaultActionHelpText(const char* label) {
     if (TextEquals(label, "INSERT SAMPLE")) return "Inserts a small example macro into the editor.";
     if (TextEquals(label, "GUIDE")) return "Opens the macro guide page.";
 
-    if (TextEquals(label, "SAVE ACTIVE SLOT")) return "Sets the input used to save into the active savestate slot.";
-    if (TextEquals(label, "LOAD ACTIVE SLOT")) return "Sets the input used to load from the active savestate slot.";
-    if (TextEquals(label, "SLOT PREVIOUS")) return "Sets the input used to move to the previous savestate slot.";
-    if (TextEquals(label, "SLOT NEXT")) return "Sets the input used to move to the next savestate slot.";
-    if (TextEquals(label, "SAVESTATE SAVE")) return "Sets the raw key code used to save the active savestate slot.";
-    if (TextEquals(label, "SAVESTATE LOAD")) return "Sets the raw key code used to load the active savestate slot.";
-    if (TextEquals(label, "SAVE PRACTICE STATE")) return "Captures the current Practice match for manual reloads.";
-    if (TextEquals(label, "LOAD PRACTICE STATE")) return "Restores the last captured Practice match.";
-    if (TextEquals(label, "SAVE CURRENT MATCH")) return "Captures the live match into the working savestate.";
-    if (TextEquals(label, "LOAD CURRENT STATE")) return "Restores the working savestate into the live match.";
+    if (TextEquals(label, "SAVE PRACTICE SNAPSHOT")) return "Sets the input used to save the Practice snapshot.";
+    if (TextEquals(label, "LOAD PRACTICE SNAPSHOT")) return "Sets the input used to load the Practice snapshot.";
+    if (TextEquals(label, "SAVESTATE SAVE")) return "Sets the raw key code used to save the Practice snapshot.";
+    if (TextEquals(label, "SAVESTATE LOAD")) return "Sets the raw key code used to load the Practice snapshot.";
     if (TextEquals(label, "CLEAR CURRENT STATE")) return "Clears the working savestate from memory.";
     if (TextEquals(label, "LOAD SLOT TO CURRENT STATE")) return "Loads the chosen disk slot into the working savestate.";
     if (TextEquals(label, "SAVE CURRENT STATE TO SLOT")) return "Writes the working savestate to the chosen disk slot.";
@@ -323,7 +317,6 @@ const char* DefaultToggleHelpText(const char* label) {
     if (LabelEquals(label, "FREEZE RF ONLY NEUTRAL")) return "Freezes RF only while that fighter is neutral. CR: Both Neutral Reqd makes it wait for both.";
     if (LabelEquals(label, "RESTRICT TO PRACTICE")) return "Limits training-mode features to Practice mode.";
     if (LabelEquals(label, "CUSTOM SWAP KEY")) return "Enables a separate custom hotkey for position swapping.";
-    if (LabelEquals(label, "LOAD CUSTOM PALETTES")) return "Restores saved custom palette files when loading practice snapshots.";
     if (LabelEquals(label, "ENABLE P2 CONTROL")) return "Enables P2 controls in Practice mode; F6/F7 stance and blocking hotkeys are unavailable while this is on.";
     if (LabelEquals(label, "RANDOM BLOCK")) return "Coin-flips the dummy's guard each frame inside the Dummy Auto-Block window, so some hits land.";
     if (LabelEquals(label, "ADAPTIVE STANCE")) return "Automatically switches the dummy between standing and crouching guard depending on the incoming attack.";
@@ -387,7 +380,6 @@ const char* DefaultNumberHelpText(const char* label) {
     if (LabelEquals(label, "SE VOLUME")) return "Adjusts sound-effect volume as a percentage.";
     if (LabelEquals(label, "CR NEUTRAL DELAY (MS)")) return "Sets how long both players must stay neutral before continuous recovery applies.";
     if (LabelEquals(label, "AUTO-BLOCK TIMEOUT (MS)")) return "Sets how long neutral must last before First Hit and After Hit reset. 0 resets as soon as neutral starts.";
-    if (LabelEquals(label, "ACTIVE SLOT")) return "Chooses which disk savestate slot to load or save.";
     if (LabelEquals(label, "CURRENT SLOT")) return "Chooses the active macro slot.";
     if (LabelEquals(label, "LOCAL SIDE")) return "Sets which player side is treated as local control in the saved state.";
     if (LabelEquals(label, "AIRTECH DELAY")) return "Waits this many frames after the dummy can tech before it airtechs.";
@@ -431,10 +423,9 @@ const char* DefaultNumberHelpText(const char* label) {
 const char* DefaultChoiceHelpText(const char* label) {
     label = CleanLabel(label);
     if (LabelEquals(label, "UI FONT (ADVANCED MENU)")) return "Chooses which font the advanced ImGui menu uses.";
-    if (LabelEquals(label, "BACKEND")) return "Chooses whether savestates use this mod's own system, Revival's, or this mod's with a Revival fallback.";
     if (LabelEquals(label, "TRIGGER")) return "Chooses which auto-action timing you are editing on this page.";
     if (LabelEquals(label, "ELEMENT")) return "Sets Mishio's element to none, fire, or lightning, or forces her awakened state.";
-    if (LabelEquals(label, "TIME-SLOW TRIGGER")) return "Chooses when Akiko's time-slow state should activate.";
+    if (LabelEquals(label, "TIME-SLOW TRIGGER")) return "Shows which Akiko time-slow is running: none, A, B, or C. Changing it here does not start one.";
     if (LabelEquals(label, "STANCE")) return "Chooses Mio's short or long stance.";
     if (LabelEquals(label, "STATUS")) return "Chooses Mai's ghost or awakening state.";
     if (LabelEquals(label, "DUMMY AUTO-BLOCK")) return "Chooses when the dummy blocks: never, every hit, only the first hit, or only after the first hit.";
@@ -480,7 +471,6 @@ const char* DefaultSubmenuHelpText(const char* label) {
     if (LabelEquals(label, "PRACTICE")) return "Opens practice-mode behavior settings.";
     if (LabelEquals(label, "CONTINUOUS RECOVERY")) return "Opens per-player continuous recovery controls.";
     if (LabelEquals(label, "DISPLAY OVERLAYS")) return "Opens overlay visibility and detail settings.";
-    if (LabelEquals(label, "SAVESTATES")) return "Opens practice snapshot save and load settings.";
     if (LabelEquals(label, "HOTSWAP")) return "Opens character, stage, and music hotswap settings.";
     if (LabelEquals(label, "PLAYER VALUES")) return "Opens health, meter, RF, IC color, and position for both fighters in the current match.";
     if (LabelEquals(label, "GAMEPLAY")) return "Opens gameplay hotkey bindings.";
@@ -495,7 +485,6 @@ const char* DefaultSubmenuHelpText(const char* label) {
     if (LabelEquals(label, "INPUT / RUNTIME")) return "Opens switch-player controls and RF freeze cancels.";
     if (LabelEquals(label, "BGM")) return "Opens music playback debug tools.";
     if (LabelEquals(label, "FINAL MEMORY")) return "Opens Final Memory test actions.";
-    if (LabelEquals(label, "CURRENT STATE")) return "Opens the in-memory savestate controls.";
     if (LabelEquals(label, "SLOTS")) return "Opens disk slot load and save controls.";
     if (LabelEquals(label, "EDIT P1")) return "Opens editable Player 1 savestate values.";
     if (LabelEquals(label, "EDIT P2")) return "Opens editable Player 2 savestate values.";

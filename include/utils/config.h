@@ -81,8 +81,6 @@ namespace Config {
         int toggleImGuiKey;         // Legacy, ignored
         int savestateSaveKey;
         int savestateLoadKey;
-        int savestatePrevSlotKey;
-        int savestateNextSlotKey;
 
         // Practice/macro hotkeys (configurable)
         int switchPlayersKey;   // Default: 'L'

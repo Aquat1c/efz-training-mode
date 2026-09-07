@@ -2369,7 +2369,7 @@ namespace ImGuiGui {
                         // Box Display
                         if (ImGui::BeginTabItem("Box Display")) {
                             ImGui::TextWrapped("Box Display draws simple colored shapes over the match so you can see what the game is checking.");
-                            ImGui::TextWrapped("Enable it from Main -> Options -> Display Overlays. It is meant for Practice match screens.");
+                            ImGui::TextWrapped("Enable it from Main -> Options -> Display Overlays. It only draws during a local Practice match.");
                             ImGui::Dummy(ImVec2(1, 4));
 
                             ImGui::TextDisabled("Character boxes");
