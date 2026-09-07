@@ -1982,8 +1982,6 @@ void BindToggleStats()    { auto& s = MutableSettings(); BindHotkey("TOGGLE STAT
 void BindResetCounter()   { auto& s = MutableSettings(); BindHotkey("RESET COUNTER",   &s.resetFrameCounterKey,  "ResetFrameCounterKey"); }
 void BindSavestateSave()  { auto& s = MutableSettings(); BindHotkey("SAVESTATE SAVE",  &s.savestateSaveKey,      "SavestateSaveKey"); }
 void BindSavestateLoad()  { auto& s = MutableSettings(); BindHotkey("SAVESTATE LOAD",  &s.savestateLoadKey,      "SavestateLoadKey"); }
-void BindSavestatePrev()  { auto& s = MutableSettings(); BindHotkey("SLOT PREVIOUS",   &s.savestatePrevSlotKey,  "SavestatePrevSlotKey"); }
-void BindSavestateNext()  { auto& s = MutableSettings(); BindHotkey("SLOT NEXT",       &s.savestateNextSlotKey,  "SavestateNextSlotKey"); }
 void BindSwitchPlayers()  { auto& s = MutableSettings(); BindHotkey("SWITCH PLAYERS",  &s.switchPlayersKey,      "SwitchPlayersKey"); }
 void BindMacroRecord()    { auto& s = MutableSettings(); BindHotkey("MACRO RECORD",    &s.macroRecordKey,        "MacroRecordKey"); }
 void BindMacroPlay()      { auto& s = MutableSettings(); BindHotkey("MACRO PLAY",      &s.macroPlayKey,          "MacroPlayKey"); }
@@ -2207,8 +2205,6 @@ void EditToggleStatsVk()    { auto& s = MutableSettings(); EditKeyboardHotkey("T
 void EditResetCounterVk()   { auto& s = MutableSettings(); EditKeyboardHotkey("RESET COUNTER",   &s.resetFrameCounterKey, "ResetFrameCounterKey"); }
 void EditSavestateSaveVk()  { auto& s = MutableSettings(); EditKeyboardHotkey("SAVESTATE SAVE",  &s.savestateSaveKey,     "SavestateSaveKey"); }
 void EditSavestateLoadVk()  { auto& s = MutableSettings(); EditKeyboardHotkey("SAVESTATE LOAD",  &s.savestateLoadKey,     "SavestateLoadKey"); }
-void EditSavestatePrevVk()  { auto& s = MutableSettings(); EditKeyboardHotkey("SLOT PREVIOUS",   &s.savestatePrevSlotKey, "SavestatePrevSlotKey"); }
-void EditSavestateNextVk()  { auto& s = MutableSettings(); EditKeyboardHotkey("SLOT NEXT",       &s.savestateNextSlotKey, "SavestateNextSlotKey"); }
 void EditSwitchPlayersVk()  { auto& s = MutableSettings(); EditKeyboardHotkey("SWITCH PLAYERS",  &s.switchPlayersKey,     "SwitchPlayersKey"); }
 void EditMacroRecordVk()    { auto& s = MutableSettings(); EditKeyboardHotkey("MACRO RECORD",    &s.macroRecordKey,       "MacroRecordKey"); }
 void EditMacroPlayVk()      { auto& s = MutableSettings(); EditKeyboardHotkey("MACRO PLAY",      &s.macroPlayKey,         "MacroPlayKey"); }
@@ -2226,8 +2222,6 @@ const char* ValToggleStats()    { return HotkeyNameValue(Config::GetSettings().t
 const char* ValResetCounter()   { return HotkeyNameValue(Config::GetSettings().resetFrameCounterKey); }
 const char* ValSavestateSave()  { return HotkeyNameValue(Config::GetSettings().savestateSaveKey); }
 const char* ValSavestateLoad()  { return HotkeyNameValue(Config::GetSettings().savestateLoadKey); }
-const char* ValSavestatePrev()  { return HotkeyNameValue(Config::GetSettings().savestatePrevSlotKey); }
-const char* ValSavestateNext()  { return HotkeyNameValue(Config::GetSettings().savestateNextSlotKey); }
 const char* ValSwitchPlayers()  { return HotkeyNameValue(Config::GetSettings().switchPlayersKey); }
 const char* ValMacroRecord()    { return HotkeyNameValue(Config::GetSettings().macroRecordKey); }
 const char* ValMacroPlay()      { return HotkeyNameValue(Config::GetSettings().macroPlayKey); }
@@ -2244,8 +2238,6 @@ const char* ValToggleStatsCode()    { return HotkeyCodeValue(Config::GetSettings
 const char* ValResetCounterCode()   { return HotkeyCodeValue(Config::GetSettings().resetFrameCounterKey); }
 const char* ValSavestateSaveCode()  { return HotkeyCodeValue(Config::GetSettings().savestateSaveKey); }
 const char* ValSavestateLoadCode()  { return HotkeyCodeValue(Config::GetSettings().savestateLoadKey); }
-const char* ValSavestatePrevCode()  { return HotkeyCodeValue(Config::GetSettings().savestatePrevSlotKey); }
-const char* ValSavestateNextCode()  { return HotkeyCodeValue(Config::GetSettings().savestateNextSlotKey); }
 const char* ValSwitchPlayersCode()  { return HotkeyCodeValue(Config::GetSettings().switchPlayersKey); }
 const char* ValMacroRecordCode()    { return HotkeyCodeValue(Config::GetSettings().macroRecordKey); }
 const char* ValMacroPlayCode()      { return HotkeyCodeValue(Config::GetSettings().macroPlayKey); }
@@ -2404,11 +2396,9 @@ Row* BuildHotkeysSavestateRows(int& count) {
     int n = 0;
 
     s_rows[n++] = Header("SAVESTATE HOTKEYS");
-    s_rows[n++] = Action("SAVE ACTIVE SLOT", BindSavestateSave, ValSavestateSave);
-    s_rows[n++] = Action("LOAD ACTIVE SLOT", BindSavestateLoad, ValSavestateLoad);
-    s_rows[n++] = Action("SLOT PREVIOUS", BindSavestatePrev, ValSavestatePrev);
-    s_rows[n++] = Action("SLOT NEXT",     BindSavestateNext, ValSavestateNext);
-    s_rows[n++] = Info("Save/load hotkeys capture or restore the active slot immediately. Slot Previous and Slot Next only change which slot those hotkeys use.");
+    s_rows[n++] = Action("SAVE PRACTICE SNAPSHOT", BindSavestateSave, ValSavestateSave);
+    s_rows[n++] = Action("LOAD PRACTICE SNAPSHOT", BindSavestateLoad, ValSavestateLoad);
+    s_rows[n++] = Info("Save Practice Snapshot and Load Practice Snapshot capture and restore the whole Practice match right away. There is only one snapshot.");
     count = n;
     return s_rows;
 }
@@ -2459,8 +2449,6 @@ Row* BuildHotkeysManualRows(int& count) {
     s_rows[n++] = Header("SAVESTATES / MACROS");
     s_rows[n++] = Action("SAVESTATE SAVE",  EditSavestateSaveVk, ValSavestateSaveCode);
     s_rows[n++] = Action("SAVESTATE LOAD",  EditSavestateLoadVk, ValSavestateLoadCode);
-    s_rows[n++] = Action("SLOT PREVIOUS",   EditSavestatePrevVk, ValSavestatePrevCode);
-    s_rows[n++] = Action("SLOT NEXT",       EditSavestateNextVk, ValSavestateNextCode);
     s_rows[n++] = Action("MACRO RECORD",    EditMacroRecordVk,   ValMacroRecordCode);
     s_rows[n++] = Action("MACRO PLAY",      EditMacroPlayVk,     ValMacroPlayCode);
     s_rows[n++] = Action("MACRO NEXT SLOT", EditMacroSlotVk,     ValMacroSlotCode);
@@ -4559,252 +4547,6 @@ Row* BuildDebugRuntimeRows(int& count) {
     return s_rows;
 }
 
-bool CustomSavestateWorkingMissing() {
-    return !CustomSavestate::HasWorkingSnapshot();
-}
-
-bool CustomSavestateDiskSlotMissing() {
-    return !CustomSavestateDiskSlotExistsCached(g_customSavestateDiskSlot);
-}
-
-bool CustomSavestateUsingRevivalBackend() {
-    return CustomSavestate::GetConfiguredBackendMode() == CustomSavestate::BackendMode::Revival;
-}
-
-bool CustomSavestateMutationLocked() {
-    return CustomSavestateUsingRevivalBackend();
-}
-
-bool CustomSavestateInitialSlotSelected() {
-    return g_customSavestateDiskSlot == 0;
-}
-
-bool CustomSavestateRestoreDisabled() {
-    return CustomSavestateMutationLocked() || CustomSavestateWorkingMissing();
-}
-
-bool CustomSavestateDiskSaveDisabled() {
-    return CustomSavestateMutationLocked() || CustomSavestateWorkingMissing();
-}
-
-bool CustomSavestateDiskLoadDisabled() {
-    return CustomSavestateMutationLocked() || CustomSavestateDiskSlotMissing();
-}
-
-bool CustomSavestateEditorDisabled() {
-    return CustomSavestateMutationLocked() || CustomSavestateWorkingMissing();
-}
-
-bool CustomSavestateHotswapDisabled() {
-    return !CharacterHotswap::CanQueueReload();
-}
-
-const char* ValSavestateLive() {
-    CustomSavestate::Summary summary{};
-    if (!CustomSavestate::GetSummary(summary) || !summary.hasWorkingSnapshot) {
-        return "EMPTY";
-    }
-    return summary.workingSnapshotDirty ? "EDITED" : "READY";
-}
-
-const char* ValSavestateSlots() {
-    static char text[32] = {};
-    const int slot = CustomSavestate::GetActiveDiskSlot();
-    if (slot == 0) {
-        return "SLOT 0";
-    }
-    _snprintf_s(text, sizeof(text), _TRUNCATE, "SLOT %d", slot);
-    return text;
-}
-
-const char* ValSavestateEdit() {
-    if (CustomSavestateWorkingMissing()) {
-        return "EMPTY";
-    }
-    return CustomSavestateEditorDisabled() ? "LOCKED" : "READY";
-}
-
-void RunCustomSavestateCapture() {
-    CustomSavestate::CaptureWorkingSnapshot();
-    g_customSavestateHotswapDismissed = false;
-    g_customSavestateHotswapPrompt = false;
-}
-
-void RunCustomSavestateRestore() {
-    CustomSavestate::RestoreWorkingSnapshot();
-    g_customSavestateHotswapDismissed = false;
-    UpdateCustomSavestateHotswapPromptFromWorking();
-}
-
-void RunCustomSavestateSaveToDisk() {
-    CustomSavestate::SaveWorkingSnapshotToDisk(g_customSavestateDiskSlot);
-}
-
-void RunCustomSavestateLoadFromDisk() {
-    if (CustomSavestate::LoadWorkingSnapshotFromDisk(g_customSavestateDiskSlot)) {
-        g_customSavestateHotswapDismissed = false;
-        UpdateCustomSavestateHotswapPromptFromWorking();
-    } else {
-        g_customSavestateHotswapPrompt = false;
-    }
-}
-
-void OnCustomSavestateDiskSlotChanged() {
-    CustomSavestate::SetActiveDiskSlot(g_customSavestateDiskSlot);
-}
-
-void RunCustomSavestateClear() {
-    CustomSavestate::ClearWorkingSnapshot();
-    g_customSavestateHotswapDismissed = false;
-    g_customSavestateHotswapPrompt = false;
-}
-
-void RunCustomSavestateDismissHotswapPrompt() {
-    g_customSavestateHotswapDismissed = true;
-    g_customSavestateHotswapPrompt = false;
-}
-
-void RunCustomSavestateQueueWorkingHotswap() {
-    CustomSavestate::Summary summary{};
-    if (!CustomSavestate::GetSummary(summary)
-        || !summary.hasWorkingSnapshot
-        || summary.savedStageId == 0xFF) {
-        g_customSavestateHotswapPrompt = false;
-        return;
-    }
-
-    bool queued = false;
-    CharacterHotswap::PaletteSelection paletteSelection{};
-    if (CharacterHotswap::ReadCurrentPaletteSelection(paletteSelection)) {
-        CharacterHotswap::SanitizePaletteSelection(summary.savedP1CharId,
-                                                   summary.savedP2CharId,
-                                                   paletteSelection);
-        queued = CharacterHotswap::QueueReload(summary.savedP1CharId,
-                                               summary.savedP2CharId,
-                                               summary.savedStageId,
-                                               paletteSelection,
-                                               static_cast<unsigned short>(summary.savedBgmTrack));
-    } else {
-        queued = CharacterHotswap::QueueReload(summary.savedP1CharId,
-                                               summary.savedP2CharId,
-                                               summary.savedStageId,
-                                               static_cast<unsigned short>(summary.savedBgmTrack));
-    }
-
-    if (queued && CustomSavestate::QueueWorkingSnapshotRestoreAfterHotswap()) {
-        g_customSavestateHotswapDismissed = false;
-        g_customSavestateHotswapPrompt = false;
-    }
-}
-
-void OnCustomSavestateEditorChanged() {
-    CustomSavestate::SetWorkingEditableFields(g_customSavestateFields);
-}
-
-Row* BuildSavestateLiveRows(int& count) {
-    static Row s_rows[12];
-    int n = 0;
-
-    s_rows[n++] = Header("CURRENT STATE");
-    s_rows[n++] = Info("This is the in-memory savestate used for manual restore, editing, and slot saves.");
-    s_rows[n++] = Info("Save Current Match captures the live Practice match here. Load Current State applies it back to the match.");
-    s_rows[n++] = Info(g_customSavestateWorkingInfo);
-    s_rows[n++] = Info(g_customSavestateMetaInfo);
-    s_rows[n++] = Info(g_customSavestateStatusInfo);
-    s_rows[n++] = Action("SAVE CURRENT MATCH", RunCustomSavestateCapture, nullptr, CustomSavestateMutationLocked);
-    s_rows[n++] = Action("LOAD CURRENT STATE", RunCustomSavestateRestore, nullptr, CustomSavestateRestoreDisabled);
-    s_rows[n++] = Action("CLEAR CURRENT STATE", RunCustomSavestateClear, nullptr, CustomSavestateMutationLocked);
-    count = n;
-    return s_rows;
-}
-
-Row* BuildSavestateSlotRows(int& count) {
-    static Row s_rows[16];
-    int n = 0;
-
-    s_rows[n++] = Header("SLOTS");
-    s_rows[n++] = Info("Savestate hotkeys use the active slot directly. Loading a slot here only updates Current State for review, edits, or hotswap.");
-    s_rows[n++] = IntNum("ACTIVE SLOT", &g_customSavestateDiskSlot, 0, 8, 1, 1, OnCustomSavestateDiskSlotChanged);
-    s_rows[n++] = Info(g_customSavestateDiskInfo);
-    s_rows[n++] = Action("LOAD SLOT TO CURRENT STATE", RunCustomSavestateLoadFromDisk, nullptr, CustomSavestateDiskLoadDisabled);
-    s_rows[n++] = Action("SAVE CURRENT STATE TO SLOT", RunCustomSavestateSaveToDisk, nullptr, CustomSavestateDiskSaveDisabled);
-    if (g_customSavestateHotswapPrompt) {
-        s_rows[n++] = Info(g_customSavestateHotswapInfo);
-        s_rows[n++] = Action("HOTSWAP TO LOADED MATCH", RunCustomSavestateQueueWorkingHotswap, CharacterHotswap::GetActionValueText, CustomSavestateHotswapDisabled);
-        s_rows[n++] = Action("KEEP CURRENT MATCH", RunCustomSavestateDismissHotswapPrompt);
-    }
-    count = n;
-    return s_rows;
-}
-
-Row* BuildSavestateP1EditorRows(int& count) {
-    static Row s_rows[12];
-    int n = 0;
-
-    s_rows[n++] = Header("EDIT P1 STATE");
-    s_rows[n++] = IntNum("HP", &g_customSavestateFields.p1Hp, 0, 9999, 1, 100, OnCustomSavestateEditorChanged, CustomSavestateEditorDisabled);
-    s_rows[n++] = IntNum("METER", &g_customSavestateFields.p1Meter, 0, 1000, 1, 25, OnCustomSavestateEditorChanged, CustomSavestateEditorDisabled);
-    s_rows[n++] = DoubleNum("RF", &g_customSavestateFields.p1Rf, 0.0, 2000.0, 1.0, 25.0, "%.1f", OnCustomSavestateEditorChanged, CustomSavestateEditorDisabled);
-    s_rows[n++] = DoubleNum("X", &g_customSavestateFields.p1X, -5000.0, 5000.0, 1.0, 10.0, "%.1f", OnCustomSavestateEditorChanged, CustomSavestateEditorDisabled);
-    s_rows[n++] = DoubleNum("Y", &g_customSavestateFields.p1Y, -5000.0, 5000.0, 1.0, 10.0, "%.1f", OnCustomSavestateEditorChanged, CustomSavestateEditorDisabled);
-    s_rows[n++] = DoubleNum("X VEL", &g_customSavestateFields.p1XVel, -5000.0, 5000.0, 1.0, 10.0, "%.1f", OnCustomSavestateEditorChanged, CustomSavestateEditorDisabled);
-    s_rows[n++] = DoubleNum("Y VEL", &g_customSavestateFields.p1YVel, -5000.0, 5000.0, 1.0, 10.0, "%.1f", OnCustomSavestateEditorChanged, CustomSavestateEditorDisabled);
-    s_rows[n++] = IntNum("CPU", &g_customSavestateFields.p1CpuFlag, 0, 1, 1, 1, OnCustomSavestateEditorChanged, CustomSavestateEditorDisabled);
-    count = n;
-    return s_rows;
-}
-
-Row* BuildSavestateP2EditorRows(int& count) {
-    static Row s_rows[12];
-    int n = 0;
-
-    s_rows[n++] = Header("EDIT P2 STATE");
-    s_rows[n++] = IntNum("HP", &g_customSavestateFields.p2Hp, 0, 9999, 1, 100, OnCustomSavestateEditorChanged, CustomSavestateEditorDisabled);
-    s_rows[n++] = IntNum("METER", &g_customSavestateFields.p2Meter, 0, 1000, 1, 25, OnCustomSavestateEditorChanged, CustomSavestateEditorDisabled);
-    s_rows[n++] = DoubleNum("RF", &g_customSavestateFields.p2Rf, 0.0, 2000.0, 1.0, 25.0, "%.1f", OnCustomSavestateEditorChanged, CustomSavestateEditorDisabled);
-    s_rows[n++] = DoubleNum("X", &g_customSavestateFields.p2X, -5000.0, 5000.0, 1.0, 10.0, "%.1f", OnCustomSavestateEditorChanged, CustomSavestateEditorDisabled);
-    s_rows[n++] = DoubleNum("Y", &g_customSavestateFields.p2Y, -5000.0, 5000.0, 1.0, 10.0, "%.1f", OnCustomSavestateEditorChanged, CustomSavestateEditorDisabled);
-    s_rows[n++] = DoubleNum("X VEL", &g_customSavestateFields.p2XVel, -5000.0, 5000.0, 1.0, 10.0, "%.1f", OnCustomSavestateEditorChanged, CustomSavestateEditorDisabled);
-    s_rows[n++] = DoubleNum("Y VEL", &g_customSavestateFields.p2YVel, -5000.0, 5000.0, 1.0, 10.0, "%.1f", OnCustomSavestateEditorChanged, CustomSavestateEditorDisabled);
-    s_rows[n++] = IntNum("CPU", &g_customSavestateFields.p2CpuFlag, 0, 1, 1, 1, OnCustomSavestateEditorChanged, CustomSavestateEditorDisabled);
-    count = n;
-    return s_rows;
-}
-
-Row* BuildSavestateMatchEditorRows(int& count) {
-    static Row s_rows[8];
-    int n = 0;
-
-    s_rows[n++] = Header("EDIT MATCH STATE");
-    s_rows[n++] = Info(g_customSavestateMetaInfo);
-    s_rows[n++] = IntNum("LOCAL SIDE", &g_customSavestateFields.localSide, 0, 1, 1, 1, OnCustomSavestateEditorChanged, CustomSavestateEditorDisabled);
-    count = n;
-    return s_rows;
-}
-
-Row* BuildDebugSavestateRows(int& count) {
-    static Row s_rows[20];
-    int n = 0;
-    auto& s = MutableSettings();
-
-    s_rows[n++] = Header("SAVESTATES");
-    s_rows[n++] = Info("Hotkey save/load uses the active slot. Current State is the in-memory snapshot you can restore, edit, and write to a slot.");
-    s_rows[n++] = ChoicesRow("BACKEND", &s.savestateBackendMode, kSavestateBackendChoices, 3, OnSavestateBackendMode);
-    s_rows[n++] = Toggle("LOAD CUSTOM PALETTES", &s.savestateLoadCustomPalettes, OnSavestateLoadCustomPalettes);
-    s_rows[n++] = Info("When off, savestate loads keep the saved palette number but force default palettes instead of custom .pal files.");
-    s_rows[n++] = Info("If a savestate load gives you broken colors or other graphical issues, turn Load Custom Palettes off and load again.");
-    s_rows[n++] = Info(g_customSavestateModeInfo);
-    s_rows[n++] = Info(g_customSavestateWorkingInfo);
-    s_rows[n++] = Info(g_customSavestateDiskInfo);
-    s_rows[n++] = Info(g_customSavestateStatusInfo);
-    s_rows[n++] = Submenu("CURRENT STATE", "CURRENT STATE", BuildSavestateLiveRows, ValSavestateLive);
-    s_rows[n++] = Submenu("SLOTS",         "SAVESTATE SLOTS", BuildSavestateSlotRows, ValSavestateSlots);
-    s_rows[n++] = Submenu("EDIT P1",       "EDIT P1 STATE", BuildSavestateP1EditorRows, ValSavestateEdit);
-    s_rows[n++] = Submenu("EDIT P2",       "EDIT P2 STATE", BuildSavestateP2EditorRows, ValSavestateEdit);
-    s_rows[n++] = Submenu("EDIT MATCH",    "EDIT MATCH STATE", BuildSavestateMatchEditorRows, ValSavestateEdit);
-    count = n;
-    return s_rows;
-}
 
 Row* BuildDebugFinalMemoryRows(int& count) {
     static Row s_rows[8];
@@ -5092,7 +4834,7 @@ Row* BuildHelpQuickStartRows(int& count) {
     s_rows[n++] = Info("Practice hotkeys are ignored while the menu is open and for 0.5s after it closes, so a menu press does not leak into the match.");
     s_rows[n++] = Spacer();
     s_rows[n++] = Header("FAST SETUP");
-    s_rows[n++] = Info("1. Save a position once for quick spacing resets, or save a full Practice snapshot under Main > Options > Savestates for entire match state.");
+    s_rows[n++] = Info("1. Save a position once for quick spacing resets, or use the Practice snapshot hotkeys under Settings > Hotkeys > Savestate to keep the whole match state.");
     s_rows[n++] = Info("2. Pick dummy defense, recovery, or movement in Main > Opponent.");
     s_rows[n++] = Info("3. Turn on Frame Advantage, Combo Statistics, Frame Bar, or Framestep in Main > Options when you need extra feedback.");
     s_rows[n++] = Info("4. Use Auto Actions or Macros for repeatable wakeup, block, hitstun, airtech, and RG tests.");
@@ -5280,7 +5022,7 @@ Row* BuildHelpMacroRows(int& count) {
     s_rows[n++] = Info("The editor's Apply button saves the text into the current slot. Done closes the editor and keeps the draft text; Cancel reloads from the slot.");
     s_rows[n++] = Spacer();
     s_rows[n++] = Header("NOTATION");
-    s_rows[n++] = Info("Write macros as plain text: a header plus tick tokens. Use numpad directions 1..9, with 5 or N as neutral, and A/B/C/D for buttons.");
+    s_rows[n++] = Info("Write macros as plain text: one token per tick. The EFZMACRO 1 header is optional when you type text in, and Reload From Slot always writes it. Use numpad directions 1..9, with 5 or N as neutral, and A/B/C/D for buttons.");
     s_rows[n++] = Info("Examples include 5A, 6B, and 2C. A token is one direction plus its buttons, so a motion like 236C is written as separate ticks: 2 3 6C. xN repeats the token before it, so 5x3 is three neutral ticks. A group like {3: 6 6 6} writes three inputs inside one tick, and three is the maximum.");
     s_rows[n++] = Info("Whitespace is flexible; Apply To Slot normalizes the text after it parses successfully.");
     s_rows[n++] = Info("Write notation as if Player 1 is facing right. Player 2 playback flips 4 and 6.");
@@ -5398,24 +5140,15 @@ Row* BuildHelpSavestatesRows(int& count) {
     static Row s_rows[28];
     int n = 0;
     s_rows[n++] = Header("PRACTICE SNAPSHOTS");
-    s_rows[n++] = Info("Practice save/load runs through EfzRevival. Open Main > Options > Savestates for menu actions and palette behavior.");
+    s_rows[n++] = Info("Snapshots save and restore the whole Practice match through EfzRevival. They are hotkey-only.");
     s_rows[n++] = Info("Use them for retry loops and for keeping a whole setup between attempts. Save and load only work during a Practice match.");
     s_rows[n++] = Info("Position save/load hotkeys only move players. Snapshots capture the whole match state through Revival.");
-    s_rows[n++] = Spacer();
-    s_rows[n++] = Header("MENU ACTIONS");
-    s_rows[n++] = Info("Save Practice State captures the live match. Load Practice State restores the last save.");
-    s_rows[n++] = Info("The status counter on the Savestates row shows how many saves and loads have run this session.");
-    s_rows[n++] = Spacer();
-    s_rows[n++] = Header("OPTIONS");
-    s_rows[n++] = Info("Load Custom Palettes controls whether loads restore saved custom .pal colors.");
-    s_rows[n++] = Info("When it is off, loads keep the saved palette number but use the game's default palette instead.");
-    s_rows[n++] = Info("If a load gives you broken colors or missing effects, turn Load Custom Palettes off and load again.");
     s_rows[n++] = Spacer();
     s_rows[n++] = Header("HOTKEYS");
     s_rows[n++] = Info(g_helpSavestateSave);
     s_rows[n++] = Info(g_helpSavestateLoad);
-    s_rows[n++] = Info("Slot Previous and Slot Next change which slot the save/load hotkeys target. Bind them under Settings > Hotkeys > Savestate.");
-    s_rows[n++] = Info("Hotkeys write to the active slot immediately. The menu buttons always target the live match.");
+    s_rows[n++] = Info("There is one snapshot. Saving again replaces it, and loading always restores the latest save.");
+    s_rows[n++] = Info("Rebind both under Settings > Hotkeys > Savestate.");
     s_rows[n++] = Spacer();
     s_rows[n++] = Header("NOTES");
     s_rows[n++] = Info("EfzRevival must be present for snapshots to work. Unsupported Revival builds may disable or break save/load.");
@@ -6172,7 +5905,7 @@ Row* BuildCharsRows(int& count) {
 }
 
 // ===== OPPONENT screen =====
-const char* const kAirtechDirChoices[3] = { "NEUTRAL", "FORWARD", "BACK" };
+const char* const kAirtechDirChoices[3] = { "OFF", "FORWARD", "BACK" };
 const char* const kJumpDirChoices[3]    = { "NEUTRAL", "FORWARD", "BACK" };
 const char* const kJumpTargetChoices[3] = { "P1", "P2", "BOTH" };
 const char* const kDummyBlockChoices[4] = { "OFF", "ALL", "FIRST HIT", "AFTER HIT" };
@@ -6266,7 +5999,7 @@ Row* BuildOpponentRecoveryRows(int& count) {
 
     s_rows[n++] = WithHelp(ChoicesRow("AUTO-AIRTECH", &g_mirrorAirtechMode,
                                       kAirtechDirChoices, 3, OnAirtechMode),
-                           "Air-recovers automatically in the selected direction after the dummy can tech.");
+                           "Makes the dummy air-recover forward or back once it can tech. Neutral turns Auto-Airtech off.");
     s_rows[n++] = WithHelp(IntNum("  AIRTECH DELAY", &d.airtechDelay, 0, 60, 1, 5, OnAutoApply,
                                   nullptr, AirtechDelayHidden),
                            "Waits this many frames after airtech is available before recovering.");
@@ -6318,7 +6051,7 @@ Row* BuildOpponentRows(int& count) {
                            "Sets the dummy's F6 stance. Adaptive Stance takes it over while Dummy Auto-Block is on.");
     s_rows[n++] = WithHelp(ChoicesRow("AUTO-AIRTECH", &g_mirrorAirtechMode,
                                       kAirtechDirChoices, 3, OnAirtechMode),
-                           "Air-recovers automatically in the selected direction after the dummy can tech.");
+                           "Makes the dummy air-recover forward or back once it can tech. Neutral turns Auto-Airtech off.");
     s_rows[n++] = WithHelp(IntNum("  AIRTECH DELAY", &d.airtechDelay, 0, 60, 1, 5, OnAutoApply,
                                   nullptr, AirtechDelayHidden),
                            "Waits this many frames after airtech is available before recovering.");

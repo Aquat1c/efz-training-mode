@@ -287,8 +287,6 @@ void MonitorKeys() {
     int resetFrameCounterKey = cfg.resetFrameCounterKey;
     int savestateSaveKey = (cfg.savestateSaveKey > 0) ? cfg.savestateSaveKey : 'U';
     int savestateLoadKey = (cfg.savestateLoadKey > 0) ? cfg.savestateLoadKey : 'J';
-    int savestatePrevSlotKey = (cfg.savestatePrevSlotKey > 0) ? cfg.savestatePrevSlotKey : VK_OEM_COMMA;
-    int savestateNextSlotKey = (cfg.savestateNextSlotKey > 0) ? cfg.savestateNextSlotKey : VK_OEM_PERIOD;
     XINPUT_STATE currentPad{}; // kept for clarity; not used for idle scan
 
     bool windowActive = g_efzWindowActive.load();
@@ -967,7 +965,6 @@ void MonitorKeys() {
               (resetFrameCounterKey > 0 && IsKeyPressed(resetFrameCounterKey, true)) ||
               IsKeyPressed(VK_F7, true) || IsKeyPressed(VK_F9, true) ||
               IsKeyPressed(savestateSaveKey, true) || IsKeyPressed(savestateLoadKey, true) ||
-              IsKeyPressed(savestatePrevSlotKey, true) || IsKeyPressed(savestateNextSlotKey, true) ||
               IsKeyPressed(cfg.switchPlayersKey > 0 ? cfg.switchPlayersKey : 'L', true) ||
               IsKeyPressed(cfg.macroRecordKey > 0 ? cfg.macroRecordKey : 'I', true) ||
                IsKeyPressed(cfg.macroPlayKey > 0 ? cfg.macroPlayKey : 'O', true) ||
@@ -987,8 +984,6 @@ void MonitorKeys() {
                     (resetFrameCounterKey > 0 && ((GetAsyncKeyState(resetFrameCounterKey) & 0x8000) != 0)) ||
                     ((GetAsyncKeyState(savestateSaveKey) & 0x8000) != 0) ||
                     ((GetAsyncKeyState(savestateLoadKey) & 0x8000) != 0) ||
-                    ((GetAsyncKeyState(savestatePrevSlotKey) & 0x8000) != 0) ||
-                    ((GetAsyncKeyState(savestateNextSlotKey) & 0x8000) != 0) ||
                     ((GetAsyncKeyState(VK_F7) & 0x8000) != 0) ||
                     ((GetAsyncKeyState(VK_F9) & 0x8000) != 0) ||
                     ((GetAsyncKeyState(cfg.switchPlayersKey > 0 ? cfg.switchPlayersKey : 'L') & 0x8000) != 0) ||
@@ -1189,8 +1184,6 @@ bool ReadKeyMappingsFromIni() {
         {"Teleport", cfg.teleportKey}, {"Record Position", cfg.recordKey},
         {"Savestate Save", cfg.savestateSaveKey},
         {"Savestate Load", cfg.savestateLoadKey},
-        {"Savestate Previous", cfg.savestatePrevSlotKey},
-        {"Savestate Next", cfg.savestateNextSlotKey},
         {"Switch Players", cfg.switchPlayersKey},
         {"Macro Record", cfg.macroRecordKey},
         {"Macro Play", cfg.macroPlayKey}, {"Macro Slot", cfg.macroSlotKey},
