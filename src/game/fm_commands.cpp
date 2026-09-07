@@ -250,30 +250,22 @@ bool ExecuteFinalMemory(int playerNum, int characterId,
                    " pattern=" + postMirrorDesc +
                    (facingRight ? "" : std::string(" (src=") + preMirrorDesc + ")"), true);
             bool ok = false;
-            if (playerNum == 2) {
-                // An index advance means the FM detector expects the terminating
-                // button to be a few history entries old. Append those neutral
-                // entries; the last neutral is supplied by the native poll.
-                if (c.indexAdvance > 0) {
-                    pat.insert(pat.end(), static_cast<size_t>(c.indexAdvance), 0);
-                }
-                const P2AutoActionMotionSubmitResult submit =
-                    SubmitP2AutoActionPatternTransaction(
-                        pat, facingRight, consumerWaitPasses, generationOut);
-                if (submitResultOut) *submitResultOut = submit;
-                ok = submit == P2AutoActionMotionSubmitResult::Accepted;
-            } else if (c.indexAdvance > 0) {
-                ok = FreezeBufferWithPattern(playerNum, pat, c.indexAdvance);
-            } else {
-                ok = FreezeBufferWithPattern(playerNum, pat);
+            // An index advance means the FM detector expects the terminating
+            // button to be a few history entries old. Append those neutral
+            // entries; the last neutral is supplied by the native poll.
+            if (c.indexAdvance > 0) {
+                pat.insert(pat.end(), static_cast<size_t>(c.indexAdvance), 0);
             }
-            if (playerNum != 2 && submitResultOut) {
-                // The command/pattern is valid at this point. A legacy P1
-                // freezer rejection is a temporary owner collision.
-                *submitResultOut = ok
-                    ? P2AutoActionMotionSubmitResult::Accepted
-                    : P2AutoActionMotionSubmitResult::Busy;
-            }
+            // Both fighters use the generation-owned pattern transaction. It
+            // humanizes an AI-flagged target for one producer pass, so a P1
+            // dummy (after a control swap) gets the same native recognition
+            // as P2; the legacy P1 buffer freeze never did.
+            const AutoActionMotionSubmitResult submit =
+                SubmitAutoActionPatternTransaction(
+                    playerNum, pat, facingRight, consumerWaitPasses,
+                    generationOut);
+            if (submitResultOut) *submitResultOut = submit;
+            ok = submit == AutoActionMotionSubmitResult::Accepted;
             if (!ok) {
                 LogOut(std::string("[FM] Failed to freeze buffer for ") + c.name, true);
             } else {
