@@ -20,9 +20,10 @@ struct FinalMemoryCommand {
 // Builds (or returns cached) FM pattern list (excluding characters with none like Doppel).
 const std::vector<FinalMemoryCommand>& GetFinalMemoryCommands();
 
-// Attempt to execute a character's Final Memory. P2 uses the scoped native
-// motion transaction; P1 retains the legacy freeze route.  A wait larger than
-// one is reserved for wake/RG pre-buffer windows.
+// Attempt to execute a character's Final Memory. Both fighters dispatch the
+// pattern through the scoped native pattern transaction, which humanizes an
+// AI-flagged target for one producer pass (a P1 dummy after a control swap
+// included). A wait larger than one is reserved for wake/RG pre-buffer windows.
 bool ExecuteFinalMemory(int playerNum, int characterId,
                         int consumerWaitPasses = 1,
                         uint64_t* generationOut = nullptr,

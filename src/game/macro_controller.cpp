@@ -35,7 +35,8 @@ bool AreCharactersInitialized();
 // and that wake macro playback has fully completed.
 extern void RestoreP2ControlFlagsPreserveBufferAndTokenForMacro();
 extern std::atomic<bool> g_macroWakePreserveBuffer;
-extern std::atomic<bool> g_wakeMacroPlaybackCompleted;
+extern std::atomic<int> g_macroWakePreservePlayer;
+extern std::atomic<int> g_wakeMacroPlaybackCompleted;
 
 namespace {
     using Mask = uint8_t;
@@ -1100,13 +1101,21 @@ void Tick() {
                 // recognized on wake. In that case, only restore control
                 // flags. For all other macros, perform the standard full
                 // restore which clears buffer and neutralizes the token.
-                if (playPlayer == 2 && g_macroWakePreserveBuffer.load()) {
+                // The preserve request is honoured for P2 as before, and for
+                // P1 only when the auto-action wake path armed it for P1
+                // (after a control swap the dummy is P1); an unrelated P1
+                // playback keeps the ordinary full restore.
+                if (g_macroWakePreserveBuffer.load() &&
+                    (playPlayer == 2 ||
+                     g_macroWakePreservePlayer.load() == playPlayer)) {
                     g_macroWakePreserveBuffer.store(false);
+                    g_macroWakePreservePlayer.store(0);
                     // Signal auto-action that a wake-prebuffered macro has
                     // fully finished so it can schedule a delayed
-                    // neutralization of the motion token after wake.
-                    g_wakeMacroPlaybackCompleted.store(true);
-                    if (g_p2ControlOverridden) {
+                    // neutralization of the motion token after wake. Carry
+                    // the play player so the cleanup lands on that fighter.
+                    g_wakeMacroPlaybackCompleted.store(playPlayer);
+                    if (playPlayer == 2 && g_p2ControlOverridden) {
                         RestoreP2ControlFlagsPreserveBufferAndTokenForMacro();
                     }
                 } else {
