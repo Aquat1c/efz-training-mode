@@ -652,6 +652,49 @@
 // *(DWORD*)(playerBase + 13396) toggles 0/1 when Enlightened is active
 #define DOPPEL_ENLIGHTENED_OFFSET 0x3454
 
+// Doppel Nanase (ExNanase) - Maiden Capture follow-up tech latch.
+// DWORD on DOPPEL's OWN player struct at +0x3138 (12600 decimal). The engine
+// latches it from the OPPONENT's rising-edge button bytes (+0x18A/+0x18B/+0x18C)
+// inside a block gated on "latch == 0", which is what makes the first press stick.
+// Values: 0 = nothing latched, 1 = A, 2 = B, 3 = C.
+// A-branch follow-ups are refused when the latch is 3 (C); B-branch follow-ups are
+// refused when the latch is 2 (B). Value 1 (A) matches neither test, so it is an
+// effective lockout.
+//
+// WARNING: +0x3138 (12600) is NOT a dedicated field. Outside the four follow-up
+// states below it is Doppel's generic per-move scratch DWORD, reused as a counter
+// by her run (moveID 163), her velocity stash (170/171), her 214X hit loops
+// (271-273) and her 623X loops (274-276), and it is meaningless for every other
+// character. Reading or writing it without BOTH the character gate and the moveID
+// gate corrupts unrelated state. The gate is mandatory, not defensive.
+#define DOPPEL_TECH_LATCH_OFFSET 0x3138  // 12600 decimal
+
+// Latch values
+#define DOPPEL_TECH_NONE 0  // nothing latched yet
+#define DOPPEL_TECH_A    1  // A pressed - escapes nothing (lockout)
+#define DOPPEL_TECH_B    2  // B pressed - escapes the B-branch follow-ups
+#define DOPPEL_TECH_C    3  // C pressed - escapes the A-branch follow-ups
+
+// The only four Doppel moveIDs during which +0x3138 carries tech-choice meaning.
+#define DOPPEL_MOVE_CAPTURE_HOLD    254  // Maiden Capture hold ("Followup Stage 1")
+#define DOPPEL_MOVE_MAIDEN_CRASH    255  // Maiden Crash (Stage 2)
+#define DOPPEL_MOVE_BARRAGE         300  // Relentless Granite-Breaking Barrage (Stage 3, A-line)
+#define DOPPEL_MOVE_INNER_SOUL      306  // Exploding Inner-Soul Fist (Stage 3, B-line)
+// Doppel's recovery state after a successful tech (the opponent goes to BACKWARD_AIRTECH 158).
+#define DOPPEL_MOVE_TECHED_RECOVERY 258
+
+// Command/motion tokens Doppel's follow-up branch selection reads out of
+// MOTION_TOKEN_OFFSET (+0x262). A-line and B-line each have two encodings
+// because 236X and 214X follow-ups are interchangeable.
+#define DOPPEL_TOKEN_A_QCF   10   // 236A  (stage 1)
+#define DOPPEL_TOKEN_B_QCF   11   // 236B  (stage 1)
+#define DOPPEL_TOKEN_A_QCB   30   // 214A  (stage 1)
+#define DOPPEL_TOKEN_B_QCB   31   // 214B  (stage 1)
+#define DOPPEL_TOKEN_A_SUPER_QCF 100  // 236236A (stages 2/3)
+#define DOPPEL_TOKEN_B_SUPER_QCF 101  // 236236B (stages 2/3)
+#define DOPPEL_TOKEN_A_SUPER_QCB 110  // 214214A (stages 2/3)
+#define DOPPEL_TOKEN_B_SUPER_QCB 111  // 214214B (stages 2/3)
+
 // Nanase (Rumi) weapon/barehand mode swap
 // Native toggleCharacterMode routine
 #define TOGGLE_CHARACTER_MODE_RVA 0x0008E140

@@ -510,6 +510,9 @@ const char* const kFdFollowupChoices[7] = {
 };
 const char* const kAkikoSlowChoices[4] = { "INACTIVE", "A", "B", "C" };
 const char* const kAkikoBulletChoices[3] = { "EGG / TUNA", "CARROT / RADISH", "SARDINE / DURIAH" };
+// Doppel Nanase: how the OPPONENT escapes her command-throw follow-ups.
+const char* const kDoppelTechChoices[6] = { "OFF", "NEVER", "TECH B", "TECH C", "ALWAYS", "RANDOM" };
+const char* const kDoppelTechStageChoices[4] = { "ALL", "STAGE 1", "STAGE 2", "STAGE 3" };
 const char* const kMaiStatusChoices[5] = { "INACTIVE", "ACTIVE GHOST", "UNSUMMON", "CHARGING", "AWAKENING" };
 
 const char* const kTriggerMotionChoices[] = {
@@ -4981,7 +4984,9 @@ Row* BuildHelpCharacterRows(int& count) {
     s_rows[n++] = Info("Nayuki (Asleep): Jam Count sets her stored jams. Lock Jam Count restores that count whenever she is actionable or waking up.");
     s_rows[n++] = Info("Kano: Magic sets the stored magic value, and Lock Magic keeps it from being spent.");
     s_rows[n++] = Info("Nanase (Rumi): Barehanded Mode drops the shinai; Infinite Shinai restores it and overrides Barehanded Mode. Kimchi Active, Kimchi Timer, and Infinite Kimchi drive her Final Memory state.");
-    s_rows[n++] = Info("Doppel: Enlightened puts her in the Final Memory state.");
+    s_rows[n++] = Info("Doppel: Enlightened puts Doppel in the Final Memory state. Follow-Up Tech and Tech Stage decide whether, and out of which follow-up, the opponent escapes after her command throw connects. The grab itself and the Automatic Follow-up can never be escaped.");
+    s_rows[n++] = Info("Doppel Follow-Up Tech: Off leaves the escape to the opponent's own input, whether that is a player, a recording, or the CPU. Never locks the opponent out at the selected stages, so those follow-ups always connect. Tech B escapes the B follow-ups (Maiden Fuji Yama, Exploding Inner-Soul Fist, Falling Maiden, Maiden Volcannon). Tech C escapes the A follow-ups (Maiden Crash, Relentless Granite-Breaking Barrage, Maiden Finger, Human Floor-Burning Polisher). Always escapes whichever follow-up Doppel actually goes for, and Random picks between the B and C escape once per follow-up. If the opponent gets their own escape in first, their choice wins.");
+    s_rows[n++] = Info("Doppel Tech Stage picks where that escape is allowed. Stage 1 is the capture itself, and escaping there stops Maiden Crash and Maiden Fuji Yama. Stage 2 is Maiden Crash, and escaping there stops Relentless Granite-Breaking Barrage and Exploding Inner-Soul Fist. Stage 3 is those two supers, and escaping there stops Maiden Finger, Falling Maiden, Human Floor-Burning Polisher and Maiden Volcannon. Outside the chosen stage the opponent escapes only if they input it themselves.");
     s_rows[n++] = Info("Mio: Stance picks Short or Long. Lock Stance holds her in the stance you picked.");
     s_rows[n++] = Info("Mai: Status sets Inactive, Active Ghost, Unsummon, Charging, or Awakening. Ghost Time, Charge Timer, and Awaken Timer set that duration, Infinite Ghost/Charge/Awaken hold it, and No Charge Cooldown finishes a charge instantly.");
     s_rows[n++] = Info("Mai also has Force Summon and Force Despawn; Aggressive Summon lets Force Summon work during Unsummon. Ghost Target X/Y with Apply Ghost Position places the ghost exactly.");
@@ -5754,6 +5759,21 @@ void AddRumiRows(Row* rows, int& n, DisplayData& d, int player) {
 
 void AddDoppelRows(Row* rows, int& n, DisplayData& d, int player) {
     rows[n++] = Toggle("ENLIGHTENED", player == 1 ? &d.p1DoppelEnlightened : &d.p2DoppelEnlightened, OnAutoApply);
+    // These two rows sit in Doppel's pane but describe the OPPONENT. Explicit
+    // help text keeps them off the tooltip label-matching tables in screens.cpp.
+    rows[n++] = WithHelp(
+        ChoicesRow("FOLLOW-UP TECH",
+                   player == 1 ? &d.p1DoppelTechMode : &d.p2DoppelTechMode,
+                   kDoppelTechChoices, 6, OnAutoApply),
+        // The footer renders ONE line and truncates with "..." past roughly a
+        // hundred characters, so the full breakdown lives on the wrapped
+        // Help > Character Settings page instead.
+        "How the opponent escapes Doppel's follow-ups. Off leaves it to them; Never locks them out.");
+    rows[n++] = WithHelp(
+        ChoicesRow("TECH STAGE",
+                   player == 1 ? &d.p1DoppelTechStage : &d.p2DoppelTechStage,
+                   kDoppelTechStageChoices, 4, OnAutoApply),
+        "Picks which follow-up the opponent may escape. Elsewhere only their own input escapes.");
 }
 
 void AddMioRows(Row* rows, int& n, DisplayData& d, int player) {

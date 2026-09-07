@@ -44,6 +44,7 @@ extern void SpamAttackButton(uintptr_t playerBase, uint8_t button, int frames, c
 #include "../include/game/always_rg.h"
 // Random RG control
 #include "../include/game/random_rg.h"
+#include "../include/game/doppel_tech.h"
 // Random Block control
 #include "../include/game/random_block.h"
 #include "../include/game/auto_action.h" // g_p2ControlOverridden
@@ -2448,7 +2449,8 @@ namespace ImGuiGui {
                             ImGui::TextWrapped("Switch between Short and Long stance. Lock Stance prevents the game from automatically changing it during certain moves.");
                             ImGui::Dummy(ImVec2(1, 4));
                             ImGui::TextColored(ImVec4(0.7f, 0.9f, 1.0f, 1.0f), "Doppel");
-                            ImGui::TextWrapped("Golden Doppel (Enlightened) toggle makes Doppel enter the FM state. Uncheck to disable");
+                            ImGui::TextWrapped("Golden Doppel (Enlightened) toggle makes Doppel enter the FM state. Uncheck to disable.");
+                            ImGui::TextWrapped("Follow-Up Tech decides how the opponent escapes her command-throw follow-ups: Never locks them out, Tech B escapes the B follow-ups, Tech C escapes the A follow-ups, Always escapes whichever branch she commits to, and Random picks B or C once per follow-up. Tech Stage picks where that escape is allowed. If the opponent gets their own escape in first their choice wins, and the grab itself and the Automatic Follow-up can never be escaped.");
                             ImGui::Dummy(ImVec2(1, 4));
                             ImGui::TextColored(ImVec4(0.7f, 0.9f, 1.0f, 1.0f), "Nanase (Rumi)");
                             ImGui::TextWrapped("Toggle between Shinai and Barehanded mode. Infinite Shinai prevents it from breaking. You can also adjust Kimchi timer as well as make it stop decaying.");
@@ -3087,6 +3089,46 @@ namespace ImGuiGui {
                 guiState.localData.p1DoppelEnlightened = enlightened;
             }
             //ImGui::TextDisabled("(sets the FM-ready flag for testing)");
+
+            // Opponent escape behaviour for Doppel's command-throw follow-ups.
+            // Lives in Doppel's section because it is driven from Doppel's side,
+            // but what it changes is how the OPPONENT gets out.
+            ImGui::Separator();
+            ImGui::TextUnformatted("Opponent escape from her throw follow-ups:");
+            const char* doppelTechItems1[] = { "Off", "Never", "Tech B", "Tech C", "Always", "Random" };
+            int techMode = guiState.localData.p1DoppelTechMode;
+            techMode = CLAMP(techMode, 0, 5);
+            ImGui::Text("Follow-Up Tech:");
+            if (ImGui::Combo("##p1DoppelTechMode", &techMode, doppelTechItems1, IM_ARRAYSIZE(doppelTechItems1))) {
+                guiState.localData.p1DoppelTechMode = techMode;
+            }
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip(
+                    "Decides how the opponent escapes Doppel's throw follow-ups.\n"
+                    "Off: nothing is forced - the opponent's own input decides, whether that is a player, a recording, or the CPU.\n"
+                    "Never: the opponent cannot escape at the stages selected below, so those follow-ups always connect.\n"
+                    "Tech B: escapes the B follow-ups (Maiden Fuji Yama, Exploding Inner-Soul Fist, Falling Maiden, Maiden Volcannon).\n"
+                    "Tech C: escapes the A follow-ups (Maiden Crash, Relentless Granite-Breaking Barrage, Maiden Finger, Human Floor-Burning Polisher).\n"
+                    "Always: escapes whichever follow-up Doppel actually goes for.\n"
+                    "Random: picks between the B and C escape once per follow-up.\n"
+                    "If the opponent gets their own escape in first, their choice wins. The grab itself and the Automatic Follow-up can never be escaped.");
+            }
+            const char* doppelStageItems1[] = { "All", "Stage 1", "Stage 2", "Stage 3" };
+            int techStage = guiState.localData.p1DoppelTechStage;
+            techStage = CLAMP(techStage, 0, 3);
+            ImGui::Text("Tech Stage:");
+            if (ImGui::Combo("##p1DoppelTechStage", &techStage, doppelStageItems1, IM_ARRAYSIZE(doppelStageItems1))) {
+                guiState.localData.p1DoppelTechStage = techStage;
+            }
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip(
+                    "Picks where the escape is allowed. All covers every stage.\n"
+                    "Stage 1 is the capture itself; escaping there stops Maiden Crash and Maiden Fuji Yama.\n"
+                    "Stage 2 is Maiden Crash; escaping there stops Relentless Granite-Breaking Barrage and Exploding Inner-Soul Fist.\n"
+                    "Stage 3 is those two supers; escaping there stops Maiden Finger, Falling Maiden, Human Floor-Burning Polisher and Maiden Volcannon.\n"
+                    "Outside the chosen stage the opponent escapes only if they input it themselves.");
+            }
+
         }
     // P1 Nanase (Rumi) Settings
     else if (p1CharID == CHAR_ID_NANASE) {
@@ -3492,6 +3534,46 @@ namespace ImGuiGui {
                 guiState.localData.p2DoppelEnlightened = enlightened2;
             }
             ImGui::TextDisabled("(sets internal flag to 1 when checked, 0 when unchecked)");
+
+            // Opponent escape behaviour for Doppel's command-throw follow-ups.
+            // Lives in Doppel's section because it is driven from Doppel's side,
+            // but what it changes is how the OPPONENT gets out.
+            ImGui::Separator();
+            ImGui::TextUnformatted("Opponent escape from her throw follow-ups:");
+            const char* doppelTechItems2[] = { "Off", "Never", "Tech B", "Tech C", "Always", "Random" };
+            int techMode2 = guiState.localData.p2DoppelTechMode;
+            techMode2 = CLAMP(techMode2, 0, 5);
+            ImGui::Text("Follow-Up Tech:");
+            if (ImGui::Combo("##p2DoppelTechMode", &techMode2, doppelTechItems2, IM_ARRAYSIZE(doppelTechItems2))) {
+                guiState.localData.p2DoppelTechMode = techMode2;
+            }
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip(
+                    "Decides how the opponent escapes Doppel's throw follow-ups.\n"
+                    "Off: nothing is forced - the opponent's own input decides, whether that is a player, a recording, or the CPU.\n"
+                    "Never: the opponent cannot escape at the stages selected below, so those follow-ups always connect.\n"
+                    "Tech B: escapes the B follow-ups (Maiden Fuji Yama, Exploding Inner-Soul Fist, Falling Maiden, Maiden Volcannon).\n"
+                    "Tech C: escapes the A follow-ups (Maiden Crash, Relentless Granite-Breaking Barrage, Maiden Finger, Human Floor-Burning Polisher).\n"
+                    "Always: escapes whichever follow-up Doppel actually goes for.\n"
+                    "Random: picks between the B and C escape once per follow-up.\n"
+                    "If the opponent gets their own escape in first, their choice wins. The grab itself and the Automatic Follow-up can never be escaped.");
+            }
+            const char* doppelStageItems2[] = { "All", "Stage 1", "Stage 2", "Stage 3" };
+            int techStage2 = guiState.localData.p2DoppelTechStage;
+            techStage2 = CLAMP(techStage2, 0, 3);
+            ImGui::Text("Tech Stage:");
+            if (ImGui::Combo("##p2DoppelTechStage", &techStage2, doppelStageItems2, IM_ARRAYSIZE(doppelStageItems2))) {
+                guiState.localData.p2DoppelTechStage = techStage2;
+            }
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip(
+                    "Picks where the escape is allowed. All covers every stage.\n"
+                    "Stage 1 is the capture itself; escaping there stops Maiden Crash and Maiden Fuji Yama.\n"
+                    "Stage 2 is Maiden Crash; escaping there stops Relentless Granite-Breaking Barrage and Exploding Inner-Soul Fist.\n"
+                    "Stage 3 is those two supers; escaping there stops Maiden Finger, Falling Maiden, Human Floor-Burning Polisher and Maiden Volcannon.\n"
+                    "Outside the chosen stage the opponent escapes only if they input it themselves.");
+            }
+
         }
     // P2 Nanase (Rumi) Settings
     else if (p2CharID == CHAR_ID_NANASE) {
@@ -3610,7 +3692,7 @@ namespace ImGuiGui {
         ImGui::Separator();
         ImGui::TextWrapped(
             "Character-specific settings allow you to modify special parameters unique to each character.\n"
-            "Supported: Ikumi (Blood/Genocide), Misuzu (Feathers), Mishio (Element/Awakened), Rumi (Stance, Kimchi), Akiko (Bullet/Time-Slow), Neyuki (Jam 0-9), Kano (Magic), Mio (Stance), Doppel (Enlightened(Gold)), Mai (Ghost/Awakening), Minagi (Michiru position control + Always readied)");
+            "Supported: Ikumi (Blood/Genocide), Misuzu (Feathers), Mishio (Element/Awakened), Rumi (Stance, Kimchi), Akiko (Bullet/Time-Slow), Neyuki (Jam 0-9), Kano (Magic), Mio (Stance), Doppel (Enlightened(Gold), Follow-Up Tech/Tech Stage), Mai (Ghost/Awakening), Minagi (Michiru position control + Always readied)");
     }
     
     void RenderDebugInputTab() {
@@ -4320,6 +4402,13 @@ namespace ImGuiGui {
             displayData.p1RumiInfiniteShinai = updatedData.p1RumiInfiniteShinai;
             displayData.p2RumiInfiniteShinai = updatedData.p2RumiInfiniteShinai;
             
+            // Doppel Nanase follow-up teching (per side; the row lives on
+            // Doppel's side but drives the opponent's escape behaviour).
+            DoppelTech::SetMode(1, displayData.p1DoppelTechMode);
+            DoppelTech::SetMode(2, displayData.p2DoppelTechMode);
+            DoppelTech::SetStage(1, displayData.p1DoppelTechStage);
+            DoppelTech::SetStage(2, displayData.p2DoppelTechStage);
+
             // Update atomic variables from our local copy
             autoAirtechEnabled.store(displayData.autoAirtech);
             autoAirtechDirection.store(displayData.airtechDirection);
