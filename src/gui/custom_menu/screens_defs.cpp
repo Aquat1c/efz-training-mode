@@ -2916,7 +2916,11 @@ void RefreshDebugMirrors() {
     g_mirrorHudSpMeter     = HudDisable::IsElementDisabled(HudDisable::ElemSpMeter);
     g_mirrorHudRfGauge     = HudDisable::IsElementDisabled(HudDisable::ElemRfGauge);
     g_mirrorHudCombo       = HudDisable::IsElementDisabled(HudDisable::ElemComboPanel);
-    RefreshCustomSavestateMirrors();
+    // RefreshCustomSavestateMirrors() is deliberately NOT called any more. Savestates
+    // are a removed feature; this was the last reachable entry into the parked
+    // CustomSavestate:: API and ran every 250 ms while the menu was open (disk
+    // polling for slot files, misleading [SAVESTATE][MENU] logs) with no rows
+    // left to display any of it. The scaffold stays on disk for possible reuse.
 }
 
 void OnOverlayBorders() { g_ShowOverlayDebugBorders.store(g_mirrorOverlayBorders); }
@@ -4500,6 +4504,12 @@ bool DebugCancelRFP2Disabled() {
 }
 
 void RunDebugToggleSwitchPlayers() {
+    // Same guard as the hotkeys: switching mid-replay leaves the macro's poll
+    // override on the human's new slot and restores stale CPU flags at the end.
+    if (MacroController::GetState() != MacroController::State::Idle) {
+        DirectDrawHook::AddMessage("Switch Players disabled while a macro is active", "SYSTEM", RGB(255, 200, 120), 1200, 0, 100);
+        return;
+    }
     const bool ok = SwitchPlayers::ToggleLocalSide();
     if (!ok) {
         LogOut("[DEBUG/UI] SwitchPlayers toggle failed (Practice controller not ready?)", true);
