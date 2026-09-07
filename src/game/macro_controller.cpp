@@ -798,8 +798,12 @@ namespace {
             RestoreP2ControlState();
         }
         if (recordPlayer == 2 && s_recordSwitchesLocalControl) {
-            SwitchPlayers::SetLocalSide(0);
-            SwitchPlayers::ClearSwapFlag();
+            // Return the human to the side they started recording on, not
+            // unconditionally to P1 (a swapped player was being un-swapped here).
+            // SetLocalSide updates the swap flag itself (SetSwapFlagForLocalSide),
+            // so no explicit ClearSwapFlag - that would desync it after side 1.
+            const int prev = s_prevLocalSide.load();
+            SwitchPlayers::SetLocalSide((prev == 0 || prev == 1) ? prev : 0);
         }
         s_recordOwnsP2Control = false;
         s_recordSwitchesLocalControl = false;
@@ -1796,9 +1800,18 @@ static bool StartPlayback(int playerNum, bool exclusiveInput, int startTick,
     }
 
     if (GetCurrentGameMode() == GameMode::Practice) {
-        // Mission demonstrations and normal dummy macros are both authored from
-        // the P1-facing notation space. Keep P1 as the local menu side.
-        SwitchPlayers::SetLocalSide(0);
+        // Remember the human's side so Stop() (and the failure path below) can
+        // put them back; a swapped player used to be silently left on P1 after
+        // playback. Mission demonstrations and dummy macros are authored from
+        // the P1-facing notation space, so pull local control to P1 for the
+        // duration - but NOT when playback already targets the dummy slot
+        // (after a swap the dummy is P1): un-swapping there would hand the
+        // human's pad to the macro's own target.
+        const int curLocal = SwitchPlayers::GetLocalSide();
+        if (curLocal == 0 || curLocal == 1) s_prevLocalSide.store(curLocal);
+        if (curLocal != 0 && player != SwitchPlayers::GetRemotePlayerIndex()) {
+            SwitchPlayers::SetLocalSide(0);
+        }
     }
 
     if (!slot.macroStream.empty() && !slot.spans.empty()) {
@@ -1830,6 +1843,13 @@ static bool StartPlayback(int playerNum, bool exclusiveInput, int startTick,
             if (player == 2 &&
                 g_p2ControlOverridden.load(std::memory_order_acquire)) {
                 RestoreP2ControlState();
+            }
+            {
+                // Undo the side capture above; a rejected admission must not leave
+                // the human parked on P1 with s_prevLocalSide dangling.
+                const int prev = s_prevLocalSide.load();
+                if (prev == 0 || prev == 1) SwitchPlayers::SetLocalSide(prev);
+                s_prevLocalSide.store(-1);
             }
             LogOut("[MACRO][PLAY][PRIME] internal preparation failed", true);
             return false;

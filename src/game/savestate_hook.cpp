@@ -8,6 +8,7 @@
 #include "../../include/game/mission/tutorial_session.h"   // TutorialSession::IsActive (suppress toasts in lessons)
 #include "../../include/game/practice_offsets.h"
 #include "../../include/game/practice_hotkey_gate.h"
+#include "../../include/input/framestep.h"   // load must reconcile the mod-owned pause
 #include "../../include/utils/switch_players.h"
 #include "../../include/utils/pause_integration.h"
 #include "../../include/core/logger.h"
@@ -24,6 +25,7 @@
 #include <sstream>
 
 namespace {
+    static bool s_loadStartedFromOwnedPause = false;
     std::atomic<bool> s_installed{false};
     std::atomic<unsigned int> s_saveCount{0};
     std::atomic<unsigned int> s_loadCount{0};
@@ -144,11 +146,20 @@ namespace {
     void BeginTrackedLoad() {
         LogOut("[SAVESTATE][REVIVAL] === LOAD STATE BEGIN ===", true);
         CancelAutoActionsAndMacros();
+        // Revival's load-init restores +1400 (game speed) and runs its own unfreeze
+        // toggler, which resumed the match underneath the mod's framestep pause and
+        // left the Paused state desynced. Match the old custom-restore policy: a
+        // load clears our pause. Lives here, not in the hotkey handler, so the
+        // 1.02j inline path and Revival's own F-key are covered too.
+        s_loadStartedFromOwnedPause = Framestep::OwnsPauseState();
+        Framestep::CancelActiveState("revival savestate load");
     }
 
     void FinishTrackedLoad(bool result) {
         s_loadCount.fetch_add(1, std::memory_order_relaxed);
         RestoreModState();
+        Framestep::FinishSavestateRestore(s_loadStartedFromOwnedPause);
+        s_loadStartedFromOwnedPause = false;
         ComboOverlay::ResetState("revival savestate load");
         // Mission recorder/runner resynchronize across the rollback (fresh
         // recording attempt; a manual load mid-run resets the run).
