@@ -1101,13 +1101,15 @@ void Tick() {
                 // recognized on wake. In that case, only restore control
                 // flags. For all other macros, perform the standard full
                 // restore which clears buffer and neutralizes the token.
-                // The preserve request is honoured for P2 as before, and for
-                // P1 only when the auto-action wake path armed it for P1
-                // (after a control swap the dummy is P1); an unrelated P1
-                // playback keeps the ordinary full restore.
+                // Every arming site stores the target player alongside the
+                // flag under the same admission check, so the request is
+                // honoured only for the fighter it was armed for. On the
+                // default (no-swap) path the wake path always stores 2 next to
+                // the flag, so P2 behaves exactly as before; an unrelated
+                // playback can no longer consume a request armed for the other
+                // side and skip that playback's ordinary token neutralization.
                 if (g_macroWakePreserveBuffer.load() &&
-                    (playPlayer == 2 ||
-                     g_macroWakePreservePlayer.load() == playPlayer)) {
+                    g_macroWakePreservePlayer.load() == playPlayer) {
                     g_macroWakePreserveBuffer.store(false);
                     g_macroWakePreservePlayer.store(0);
                     // Signal auto-action that a wake-prebuffered macro has
