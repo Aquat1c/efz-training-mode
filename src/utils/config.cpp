@@ -414,11 +414,9 @@ namespace Config {
             file << "ResetFrameCounterKey=-1\n\n";
 
             file << "; The training menu opens with Esc. Help is available from the Help tab.\n";
-            file << "\n; Custom savestate working snapshot hotkeys\n";
+            file << "\n; Practice snapshot hotkeys (save/load through EfzRevival)\n";
             file << "SavestateSaveKey=" << keyValue(keyboardPlan.savestateSave) << "\n";
             file << "SavestateLoadKey=" << keyValue(keyboardPlan.savestateLoad) << "\n";
-            file << "SavestatePrevSlotKey=" << keyValue(keyboardPlan.savestatePrevious) << "\n";
-            file << "SavestateNextSlotKey=" << keyValue(keyboardPlan.savestateNext) << "\n";
 
             file << "\n; Practice: Switch Players toggle (Practice only)\n";
             file << "SwitchPlayersKey=" << keyValue(keyboardPlan.switchPlayers) << "\n";
@@ -736,8 +734,6 @@ namespace Config {
             settings.toggleImGuiKey = -1;
             settings.savestateSaveKey = GetValueInt("Hotkeys", "SavestateSaveKey", 0x55); // 'U'
             settings.savestateLoadKey = GetValueInt("Hotkeys", "SavestateLoadKey", 0x4A); // 'J'
-            settings.savestatePrevSlotKey = GetValueInt("Hotkeys", "SavestatePrevSlotKey", 0xBC); // ','
-            settings.savestateNextSlotKey = GetValueInt("Hotkeys", "SavestateNextSlotKey", 0xBE); // '.'
             // Additional configurable hotkeys
             settings.switchPlayersKey = GetValueInt("Hotkeys", "SwitchPlayersKey", 0x4C); // 'L'
             settings.macroRecordKey   = GetValueInt("Hotkeys", "MacroRecordKey",   0x49); // 'I'
@@ -793,8 +789,6 @@ namespace Config {
             LogOut("[CONFIG] ResetFrameCounterKey: " + std::to_string(settings.resetFrameCounterKey) + " (" + (settings.resetFrameCounterKey < 0 ? std::string("Disabled") : GetKeyName(settings.resetFrameCounterKey)) + ")", true);
             LogOut("[CONFIG] SavestateSaveKey: " + std::to_string(settings.savestateSaveKey) + " (" + GetKeyName(settings.savestateSaveKey) + ")", true);
             LogOut("[CONFIG] SavestateLoadKey: " + std::to_string(settings.savestateLoadKey) + " (" + GetKeyName(settings.savestateLoadKey) + ")", true);
-            LogOut("[CONFIG] SavestatePrevSlotKey: " + std::to_string(settings.savestatePrevSlotKey) + " (" + GetKeyName(settings.savestatePrevSlotKey) + ")", true);
-            LogOut("[CONFIG] SavestateNextSlotKey: " + std::to_string(settings.savestateNextSlotKey) + " (" + GetKeyName(settings.savestateNextSlotKey) + ")", true);
             LogOut("[CONFIG] SwitchPlayersKey: " + std::to_string(settings.switchPlayersKey) + " (" + GetKeyName(settings.switchPlayersKey) + ")", true);
             LogOut("[CONFIG] MacroRecordKey: " + std::to_string(settings.macroRecordKey) + " (" + GetKeyName(settings.macroRecordKey) + ")", true);
             LogOut("[CONFIG] MacroPlayKey: " + std::to_string(settings.macroPlayKey) + " (" + GetKeyName(settings.macroPlayKey) + ")", true);
@@ -979,8 +973,6 @@ namespace Config {
             file << "ResetFrameCounterKey=" << toHexString(settings.resetFrameCounterKey) << "\n";
             file << "SavestateSaveKey=" << toHexString(settings.savestateSaveKey) << "\n";
             file << "SavestateLoadKey=" << toHexString(settings.savestateLoadKey) << "\n";
-            file << "SavestatePrevSlotKey=" << toHexString(settings.savestatePrevSlotKey) << "\n";
-            file << "SavestateNextSlotKey=" << toHexString(settings.savestateNextSlotKey) << "\n";
             file << "SwitchPlayersKey=" << toHexString(settings.switchPlayersKey) << "\n";
             file << "MacroRecordKey=" << toHexString(settings.macroRecordKey) << "\n";
             file << "MacroPlayKey=" << toHexString(settings.macroPlayKey) << "\n";
@@ -1155,8 +1147,6 @@ namespace Config {
             if (k == "resetframecounterkey") settings.resetFrameCounterKey = (intValue == 0x35) ? -1 : intValue;
             if (k == "savestatesavekey") settings.savestateSaveKey = intValue;
             if (k == "savestateloadkey") settings.savestateLoadKey = intValue;
-            if (k == "savestateprevslotkey") settings.savestatePrevSlotKey = intValue;
-            if (k == "savestatenextslotkey") settings.savestateNextSlotKey = intValue;
             if (k == "switchplayerskey") settings.switchPlayersKey = intValue;
             if (k == "macrorecordkey") settings.macroRecordKey = intValue;
             if (k == "macroplaykey") settings.macroPlayKey = intValue;
